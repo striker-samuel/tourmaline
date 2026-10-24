@@ -14,18 +14,32 @@
 # — so the SAME definitions serve both (the functions resolve every path
 # through TOURMALINE_SOURCE_DIR at CALL time in the caller's scope).
 
-# Stage SDL3.dll next to an executable (engine links SDL3 PUBLIC, so every
-# consumer exe carries the import; Windows loads the DLL from the exe dir).
+# Stage the SDL3 runtime next to an executable. Windows: the vendored
+# prebuilt SDL3.dll (engine links SDL3 PUBLIC, so every consumer exe
+# carries the import; Windows loads the DLL from the exe dir). Linux:
+# the built .so (vendored source build or system install) - staging it
+# next to the exe + the $ORIGIN rpath below keeps the vendored build
+# loadable without a system install.
 # The genex names the REAL imported target (SDL3::SDL3-shared), not the
 # config's SDL3::SDL3 ALIAS: aliases stay directory-scoped forever, and this
 # staging runs in GAME-HOST scopes too (this file's dual-include contract)
-# where only the promoted IMPORTED_GLOBAL target is visible.
+# where only the promoted IMPORTED_GLOBAL target is visible. When the
+# shared target is not exposed (source-build configs name it differently,
+# static-only installs), fall back to the SDL3::SDL3 alias.
 function(tourmaline_stage_sdl3 TARGET)
+    if(TARGET SDL3::SDL3-shared)
+        set(_SDL3_STAGE_FILE "$<TARGET_FILE:SDL3::SDL3-shared>")
+    elseif(TARGET SDL3::SDL3)
+        set(_SDL3_STAGE_FILE "$<TARGET_FILE:SDL3::SDL3>")
+    else()
+        message(WARNING "tourmaline_stage_sdl3: no SDL3 target to stage")
+        return()
+    endif()
     add_custom_command(TARGET ${TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:SDL3::SDL3-shared>"
+            "${_SDL3_STAGE_FILE}"
             "$<TARGET_FILE_DIR:${TARGET}>"
-        COMMENT "Staging SDL3.dll next to ${TARGET}"
+        COMMENT "Staging the SDL3 runtime next to ${TARGET}"
     )
 endfunction()
 
@@ -36,6 +50,14 @@ endfunction()
 # nvngx_dlss.dll is fetched separately (never in git) - see the README in
 # external/streamline/bin/x64; the per-DLL EXISTS guard below warns + skips.
 function(tourmaline_stage_streamline TARGET)
+    if(NOT WIN32)
+        # The Streamline runtime set (sl.interposer.dll + nvngx_*.dll) is
+        # Windows-only; the engine's dlss backend reports unavailable on
+        # Linux by design (see engine/src/Renderer/dlss.cpp). Nothing to
+        # stage here.
+        message(STATUS "[${TARGET}] Streamline staging skipped (Windows-only runtime; DLSS stays unavailable)")
+        return()
+    endif()
     set(_SL_BIN_DIR "${TOURMALINE_SOURCE_DIR}/external/streamline/bin/x64")
     foreach(_SL_DLL IN ITEMS
             sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll
@@ -69,6 +91,17 @@ function(tourmaline_host_setup TGT)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
+    # Linux: staged .so's (SDL3 / OptickCore / libdxcompiler / libktx) live
+    # next to the exe, so the exe needs $ORIGIN in its rpath to find them
+    # without LD_LIBRARY_PATH. (Windows resolves staged DLLs from the exe
+    # dir by default - no equivalent needed.)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_target_properties(${TGT} PROPERTIES
+            BUILD_RPATH "\$ORIGIN"
+            INSTALL_RPATH "\$ORIGIN"
+        )
+    endif()
+
     # KTX + OptickCore are SHARED: stage their DLLs next to the exe.
     add_custom_command(TARGET ${TGT} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -88,8 +121,14 @@ function(tourmaline_host_setup TGT)
     # Small tracked dirs (fonts/, ...) fall back to the legacy app/content tree.
     if(DEFINED ENV{TOURMALINE_CONTENT_DIR})
         set(_TOURMALINE_CONTENT_DEFAULT "$ENV{TOURMALINE_CONTENT_DIR}")
-    else()
+    elseif(WIN32)
+        # The author's external content store; overridable per above.
         set(_TOURMALINE_CONTENT_DEFAULT "F:/content")
+    else()
+        # No canonical cross-machine content location on Linux - rely on
+        # the env var / cache var; an empty default just means the content
+        # dirs are not synced (the exe still builds and runs headless).
+        set(_TOURMALINE_CONTENT_DEFAULT "")
     endif()
     set(TOURMALINE_CONTENT_DIR "${_TOURMALINE_CONTENT_DEFAULT}" CACHE PATH
         "External binary content root (models/, paks/, ...). Not stored in git; synced next to the exe at build time.")

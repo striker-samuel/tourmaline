@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // WorldRendererElement: the control layer over WorldRenderer (see the
-// header for the split). Everything here moved from WorldRenderer â€” the
+// header for the split). Everything here moved from WorldRenderer — the
 // frame builder no longer polls input, owns keybinds, or drives modes.
 
 #include <Engine/Renderer/WorldRendererElement.h>
@@ -36,7 +36,7 @@ namespace engine {
 
 	void WorldRendererElement::onResize(smvk::Extent2D swapExtent) {
 		(void)swapExtent;
-		// The host recreated its swapchain â€” the renderer rebuilds its
+		// The host recreated its swapchain — the renderer rebuilds its
 		// swap views + temporal histories (it never recreates on its own).
 		m_renderer.OnSwapchainRecreated();
 	}
@@ -89,7 +89,7 @@ namespace engine {
 	// comparisons don't require opening the panel; see the footer readout
 	// in the renderer's panel for the full list). WASDQE/Space/Shift/Ctrl
 	// are reserved for camera movement and are never used here. Keys live
-	// in Engine/App/keybindings.h â€” this handler consumes semantic names,
+	// in Engine/App/keybindings.h — this handler consumes semantic names,
 	// never raw TOUR_KEY_* reads. Render settings flip through the friend
 	// access (the same members the panel's widgets touch).
 	void WorldRendererElement::HandleShortcuts() {
@@ -175,7 +175,7 @@ namespace engine {
 			m_renderer.m_vramWindow = !m_renderer.m_vramWindow;
 		}
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
-		// SkyIbl -> Off (see AmbientMode â€” single-source isolation for
+		// SkyIbl -> Off (see AmbientMode — single-source isolation for
 		// bisection, All is the production state).
 		// R cycles the baked-GI debug views (see GI_DEBUG_MODE_COUNT).
 		// F8 is an alias for R. Both work in every ambient mode.
@@ -270,7 +270,7 @@ namespace engine {
 			std::fprintf(stderr, "[ui] stats HUD %s\n",
 				m_renderer.m_showHud ? "on" : "off");
 		}
-		// F12: live frame-time histogram â€” a separate bottom strip UI
+		// F12: live frame-time histogram — a separate bottom strip UI
 		// (profiler::DrawFrameHistogramUi; the editor's View menu toggles
 		// the same state). Zero cost while disabled: RecordFrameTime is a
 		// single compare-and-return (see profiler::RecordFrameTime).

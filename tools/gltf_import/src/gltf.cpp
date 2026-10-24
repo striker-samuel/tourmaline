@@ -611,6 +611,24 @@ bool GltfLightToSceneLight(const tinygltf::Light& src, bool staticLight, SceneLi
 //      { "smvk": { "staticLight": true } }, plain "staticLight")
 // Static lights feed the lightmap/probe bakes and are excluded from
 // the runtime forward+ set (see SceneLight::kSceneLightFlag_Static).
+// KHR_lights_punctual node-level index: tinygltf v2.8.x parses the
+// top-level lights array into model.lights but no longer surfaces the
+// NODE's light reference as Node::light - it only lands in the node's
+// raw extension object. Read it there (extension shape:
+// "KHR_lights_punctual": { "light": <index> }).
+int GltfNodeLightIndex(const tinygltf::Node& node) {
+	auto it = node.extensions.find("KHR_lights_punctual");
+	if (it == node.extensions.end())
+		return -1;
+	const tinygltf::Value& ext = it->second;
+	if (!ext.IsObject() || !ext.Has("light"))
+		return -1;
+	const tinygltf::Value& idx = ext.Get("light");
+	if (!idx.IsInt() && !idx.IsNumber())
+		return -1;
+	return idx.GetNumberAsInt();
+}
+
 bool GltfExtrasStaticLight(const tinygltf::Value& extras) {
 	if (!extras.IsObject())
 		return false;
@@ -2210,17 +2228,19 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 	}
 
 	// KHR_lights_punctual: node.light indexes the top-level lights array
-	// (tinygltf parses it into model.lights + Node::light). Definitions
+	// (tinygltf 2.8.x keeps it only in the node's raw extension object -
+	// GltfNodeLightIndex reads it back). Definitions
 	// are deduplicated into the Cluster light pool under "light.<gltf
 	// index>" URIs (same registry as meshes); the group node stores the
 	// pool index in lightForNode, and world position/direction resolve
 	// from globalTransform at cook/runtime so parents + coordFix apply
 	// exactly like meshes. Node extras "smvk.staticLight" (or a STATIC_
-	// light name) flags the light as a bake source — first instance
+	// light name) flags the light as a bake source - first instance
 	// wins when the definition is shared.
-	if (gltfNode.light >= 0 && gltfNode.light < (int)model.lights.size()) {
+	const int gltfNodeLight = GltfNodeLightIndex(gltfNode);
+	if (gltfNodeLight >= 0 && gltfNodeLight < (int)model.lights.size()) {
 		const smvk::ClusterLightHandle h =
-			getOrCreateLight(gltfNode.light, GltfExtrasStaticLight(gltfNode.extras));
+			getOrCreateLight(gltfNodeLight, GltfExtrasStaticLight(gltfNode.extras));
 		if (h.valid())
 			cluster.scene.lightForNode[(uint32_t)groupNode] = h.index();
 	}

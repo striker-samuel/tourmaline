@@ -1,19 +1,19 @@
 ﻿// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// MATERIAL BALL PREVIEW â€” the FS half (see matball.vert.hlsl for the pass
+// MATERIAL BALL PREVIEW — the FS half (see matball.vert.hlsl for the pass
 // contract). One program, two draws, branched on the interpolated flag:
-//   flag=0 â€” the DEFAULT SKY background: the analytic EvaluateSkyColor
+//   flag=0 — the DEFAULT SKY background: the analytic EvaluateSkyColor
 //     over the CPU-built corner rays, the fixed default env below
-//   flag=1 â€” the BALL: the material's PBR under that same env â€”
+//   flag=1 — the BALL: the material's PBR under that same env —
 //     the analytic sun's GGX direct + the sky/ground hemisphere ambient
 //     (EvaluateSkyGradient at N and at the fresnel reflection R, blended
-//     by SchlickFresnel â€” a cheap stand-in for the 1-integral prefiltered
+//     by SchlickFresnel — a cheap stand-in for the 1-integral prefiltered
 //     IBL the runtime chain bakes; honest for a thumbnail's glance read)
 //     + the bindless texture slots (base/MR/occlusion, glTF channels).
 // Everything is HDR (pre-exposure units like the runtime sky); the final
 // color gets a fixed filmic tonemap + gamma so the PNG lands display-ready
-// (the offscreen is RGBA8_SRGB, but the tonemap is the look â€” a raw
+// (the offscreen is RGBA8_SRGB, but the tonemap is the look — a raw
 // 5.0-HDR sun would clip to flat white without it).
 #define MATBALL_PASS
 #include "common.hlsli"
@@ -45,7 +45,7 @@ struct VSOut
     [[vk::location(3)]] float flag : TEXCOORD3;
 };
 
-// THE DEFAULT SKY SETTING (fixed â€” deliberately not the scene's env: the
+// THE DEFAULT SKY SETTING (fixed — deliberately not the scene's env: the
 // sidecar must look the same for every material, every project): a
 // clear midday-ish sky, a warm sun at ~35deg elevation from +X. Values in
 // the same linear/HDR units the runtime env block carries.
@@ -62,7 +62,7 @@ static const EnvironmentFrameData kDefaultEnv =
 };
 
 // GGX specular (the standard single-term cut of default_lit_body's
-// chain â€” distribution + Smith geometry + Schlick F).
+// chain — distribution + Smith geometry + Schlick F).
 static float D_GGX(float NdotH, float a)
 {
     const float a2 = a * a;
@@ -76,7 +76,7 @@ static float G_Smith(float NdotV, float NdotL, float rough)
         * (NdotL / (NdotL * (1.0f - k) + k));
 }
 
-// Fixed filmic (Unreal-2-ish ACES approximation â€” the same family the
+// Fixed filmic (Unreal-2-ish ACES approximation — the same family the
 // runtime tonemap uses) + the sRGB transfer curve: a self-contained
 // display path for the thumbnail bytes.
 static float3 TonemapFilmic(float3 x)
@@ -142,7 +142,7 @@ float4 mainPS(VSOut IN) : SV_Target0
 
     // Ambient: the sky/ground hemisphere (the gradient at N, split by
     // the up-facing ratio) + the fresnel-weighted sky reflection (the
-    // gradient at R â€” the "chrome ball in a default sky" read).
+    // gradient at R — the "chrome ball in a default sky" read).
     const float3 ambSky = EvaluateSkyGradient(N, kDefaultEnv);
     const float3 ambDiff = kd * base.rgb * ambSky * 0.5f
         + kd * base.rgb * kDefaultEnv.ground.rgb * 0.3f;

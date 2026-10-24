@@ -8,13 +8,26 @@
 // ImportAsset for project imports). Replaces the old custom ImGui
 // browser (one dialog for every open type now).
 
+// Native file dialogs: Windows uses the shell's IFileOpenDialog/
+// IFileSaveDialog (COM); Linux shells out to zenity when installed (the
+// de-facto desktop file dialog) and falls back to a plain terminal
+// prompt - headless/SSH editor sessions still work.
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <shobjidl.h> // IFileOpenDialog
+#else
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#endif
 
 #include <string>
 
+#ifdef _WIN32
 namespace editor {
 
 bool NativeOpenFile(std::string& outPath, bool images) {
@@ -202,3 +215,106 @@ bool NativePickFolder(std::string& outPath) {
 }
 
 } // namespace editor
+
+#else // !_WIN32: zenity + terminal-prompt fallbacks
+// ---------------------------------------------------------------------------
+// Linux dialogs: `zenity --file-selection` covers the three modes (open /
+// save / folder). zenity prints the picked absolute path on stdout (UTF-8,
+// already in the engine's string convention) and exits non-zero on cancel,
+// so the popen contract maps 1:1. When zenity is missing (server installs,
+// minimal containers) the functions degrade to a terminal prompt on stdin.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+bool HaveZenity() {
+	return std::system("command -v zenity >/dev/null 2>&1") == 0;
+}
+
+// Runs zenity with `args` appended to --file-selection; returns false on
+// cancel/failure, else the picked path in outPath (trailing newline
+// stripped, quotes already handled by zenity itself).
+bool RunZenity(std::string& outPath, const char* args) {
+	// popen only takes a shell line: the args are repo-controlled
+	// constants (no caller-supplied text reaches the command line
+	// verbatim; suggested filenames go through the quoted form below).
+	std::string cmd = std::string("zenity --file-selection ") + args + " 2>/dev/null";
+	FILE* p = popen(cmd.c_str(), "r");
+	if (!p)
+		return false;
+	char buf[4096] = {};
+	const size_t n = std::fread(buf, 1, sizeof(buf) - 1, p);
+	const int rc = pclose(p);
+	if (rc != 0 || n == 0)
+		return false;
+	buf[n] = '\0';
+	std::string path(buf);
+	while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
+		path.pop_back();
+	if (path.empty())
+		return false;
+	outPath = std::move(path);
+	return true;
+}
+
+// Single-quote a suggested filename for the shell (zenity --filename=).
+std::string ShellQuote(const std::string& s) {
+	std::string q = "'";
+	for (char c : s) {
+		if (c == '\'')
+			q += "'\\''";
+		else
+			q += c;
+	}
+	q += "'";
+	return q;
+}
+
+// Terminal fallback (no zenity): type the path by hand.
+bool PromptPath(const char* what, std::string& outPath) {
+	std::cout << what << " (type path, empty cancels): " << std::flush;
+	std::string line;
+	if (!std::getline(std::cin, line))
+		return false;
+	while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+		line.pop_back();
+	if (line.empty())
+		return false;
+	outPath = std::move(line);
+	return true;
+}
+
+} // namespace (zenity helpers)
+
+namespace editor {
+
+bool NativeOpenFile(std::string& outPath, bool images) {
+	const char* filter = images
+		? "--file-filter='Images | *.ktx2 *.png *.jpg *.jpeg *.tga *.bmp *.exr *.hdr' "
+		  "--file-filter='All files | *'"
+		: "--file-filter='Scene files | *.gltf *.glb *.tour' "
+		  "--file-filter='All files | *'";
+	if (HaveZenity())
+		return RunZenity(outPath, filter);
+	return PromptPath("Open scene/image file", outPath);
+}
+
+bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {
+	const std::string suggest = suggestedName.empty() ? "scene.pak" : suggestedName;
+	// --save --confirm-overwrite + the suggested filename pre-filled.
+	const std::string args = std::string("--save --confirm-overwrite ")
+		+ "--file-filter='Pak files | *.pak' --file-filter='All files | *' "
+		+ "--filename=" + ShellQuote(suggest);
+	if (HaveZenity())
+		return RunZenity(outPath, args.c_str());
+	return PromptPath("Save pak", outPath);
+}
+
+bool NativePickFolder(std::string& outPath) {
+	if (HaveZenity())
+		return RunZenity(outPath, "--directory");
+	return PromptPath("Project folder", outPath);
+}
+
+} // namespace editor
+#endif // _WIN32 (native dialogs: Windows shell / Linux zenity)

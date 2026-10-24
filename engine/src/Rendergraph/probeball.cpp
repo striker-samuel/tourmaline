@@ -147,7 +147,7 @@ void ProbeBallVisual::Destroy() {
 	sphereIB = {};
 	vertexCount = indexCount = 0;
 	geometryValid = false;
-	program = ShaderProgram{};
+	program = ShaderProgram();
 	vsModule = {};
 	psModule = {};
 }

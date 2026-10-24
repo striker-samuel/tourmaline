@@ -11,7 +11,11 @@
 #include <bit>
 #include <cmath>
 #include <immintrin.h>
+#ifdef _WIN32
 #include <intrin.h>
+#else
+#include <cpuid.h> // __get_cpuid / __get_cpuid_count (the GCC cpuid path)
+#endif
 
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
@@ -1295,37 +1299,44 @@ namespace smvk {
 		bool CpuHasAvx2()
 		{
 			static const bool has = [] {
-				int regs[4];
-				__cpuid(regs, 0);
+				unsigned regs[4];
+#ifdef _WIN32
+				__cpuid(reinterpret_cast<int*>(regs), 0);
 				if (regs[0] < 7)
 					return false;
-				__cpuid(regs, 1);
+				__cpuid(reinterpret_cast<int*>(regs), 1);
 				const bool osxsave = (regs[2] & (1u << 27)) != 0;
 				if (!osxsave)
 					return false;
-				__cpuidex(regs, 7, 0);
+				__cpuidex(reinterpret_cast<int*>(regs), 7, 0);
 				return (regs[1] & (1u << 5)) != 0;
+#else
+				// GCC: __get_cpuid(count, &a,&b,&c,&d); returns 0 for
+				// unsupported leaves (covers the regs[0] < 7 guard).
+				if (!__get_cpuid_count(7, 0, &regs[0], &regs[1], &regs[2], &regs[3]))
+					return false;
+				unsigned features[4];
+				if (!__get_cpuid(1, &features[0], &features[1], &features[2], &features[3]))
+					return false;
+				const bool osxsave = (features[2] & (1u << 27)) != 0;
+				if (!osxsave)
+					return false;
+				return (regs[1] & (1u << 5)) != 0;
+#endif
 			}();
 			return has;
 		}
 
-	} // namespace
-
-	const std::vector<uint32_t>& World::ItemIndicesFor(IteratorFlags requiredFlags) const
-	{
-		if (auto it = flagLists.find(requiredFlags); it != flagLists.end())
-			return it->second;
-
-		std::vector<uint32_t>& indices = flagLists[requiredFlags];
-		const size_t n = itemFlags.size();
-		indices.reserve(n);
-
-		if (CpuHasAvx2()) {
-			// 8-wide scan of the dense flags column: AND + CMPEQ against
-			// the broadcast mask, movemask compresses the lane results
-			// into a bitmask, then bit-scan emits only the passing
-			// indices. Matches the scalar test exactly: all required bits
-			// set; extra bits ignored.
+		// GCC/Clang: the 8-wide AVX2 scan lives in one function with the
+		// avx2 target attribute enabled (the runtime probe above gates the
+		// call). MSVC compiles the explicit intrinsics without
+		// /arch:AVX2, so the split helper stays non-Windows-only.
+#ifndef _WIN32
+		__attribute__((target("avx2")))
+		void Avx2ItemIndices(std::vector<uint32_t>& indices,
+			const std::vector<IteratorFlags>& itemFlags, size_t n,
+			IteratorFlags requiredFlags)
+		{
 			const __m256i req = _mm256_set1_epi32(static_cast<int>(requiredFlags));
 			size_t i = 0;
 			for (; i + 8 <= n; i += 8) {
@@ -1345,6 +1356,52 @@ namespace smvk {
 				if ((itemFlags[i] & requiredFlags) == requiredFlags)
 					indices.push_back(static_cast<uint32_t>(i));
 			}
+		}
+#endif
+
+	} // namespace
+
+	const std::vector<uint32_t>& World::ItemIndicesFor(IteratorFlags requiredFlags) const
+	{
+		if (auto it = flagLists.find(requiredFlags); it != flagLists.end())
+			return it->second;
+
+		std::vector<uint32_t>& indices = flagLists[requiredFlags];
+		const size_t n = itemFlags.size();
+		indices.reserve(n);
+
+		if (CpuHasAvx2()) {
+			// 8-wide scan of the dense flags column: AND + CMPEQ against
+			// the broadcast mask, movemask compresses the lane results
+			// into a bitmask, then bit-scan emits only the passing
+			// indices. Matches the scalar test exactly: all required bits
+			// set; extra bits ignored.
+			// GCC/Clang: the intrinsics need the avx2 target enabled for
+			// this one function (the probe above gates it at runtime);
+			// MSVC accepts the explicit intrinsics without /arch:AVX2.
+#ifdef _WIN32
+			const __m256i req = _mm256_set1_epi32(static_cast<int>(requiredFlags));
+			size_t i = 0;
+			for (; i + 8 <= n; i += 8) {
+				const __m256i f = _mm256_loadu_si256(
+					reinterpret_cast<const __m256i*>(&itemFlags[i]));
+				const __m256i pass = _mm256_cmpeq_epi32(
+					_mm256_and_si256(f, req), req);
+				uint32_t mask = static_cast<uint32_t>(
+					_mm256_movemask_ps(_mm256_castsi256_ps(pass)));
+				while (mask != 0) {
+					const uint32_t bit = std::countr_zero(mask);
+					indices.push_back(static_cast<uint32_t>(i + bit));
+					mask &= mask - 1;
+				}
+			}
+			for (; i < n; ++i) {
+				if ((itemFlags[i] & requiredFlags) == requiredFlags)
+					indices.push_back(static_cast<uint32_t>(i));
+			}
+#else
+			Avx2ItemIndices(indices, itemFlags, n, requiredFlags);
+#endif
 		}
 		else {
 			for (size_t i = 0; i < n; ++i) {

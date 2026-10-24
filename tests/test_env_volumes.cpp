@@ -173,8 +173,10 @@ int main() {
 		Check(!cluster->scene.envAuthored, "envvol.volsonly-no-fake-author");
 	}
 
-	// Scene master switch applies even when there are no env blocks (the
-	// key is scene-level; absent = the default ON).
+	// Scene master switch: the env.zonesEnabled tour key is RETIRED with
+	// the always-on rework (75568c82: the default env packs as the infinite
+	// base zone - tour.cpp parses the key for format compatibility but
+	// forces the flag true). The check pins that contract.
 	{
 		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 		cluster->SetOfflineMode(true);
@@ -185,7 +187,7 @@ int main() {
 		std::string err;
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
 			"envzone.tour-ok");
-		Check(!cluster->scene.envZonesEnabled,
+		Check(cluster->scene.envZonesEnabled,
 			"envzone.tour-disable-no-blocks");
 	}
 

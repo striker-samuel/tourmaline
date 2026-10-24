@@ -28,6 +28,10 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <unistd.h> // readlink, fork, execv, waitpid
+#include <cerrno>
+#include <cstring>
 #endif
 
 namespace {
@@ -42,11 +46,21 @@ constexpr const char* kProjVersion = "1";
 // redirected-Documents edge the editor's SHGetKnownFolderPath handles
 // is not worth the COM plumbing here — standard setups match).
 std::string PrefsPath() {
+#ifdef _WIN32
 	const char* home = std::getenv("USERPROFILE");
 	if (!home || !*home)
 		return {};
 	return std::string(home) + "\\Documents\\tourmalineEditor"
 		"\\editor.prefs";
+#else
+	// The editor's non-Windows prefs contract (editor_app.cpp): $HOME
+	// + Documents/tourmalineEditor/editor.prefs.
+	const char* home = std::getenv("HOME");
+	if (!home || !*home)
+		return {};
+	return (fs::path(home) / "Documents" / "tourmalineEditor"
+		/ "editor.prefs").string();
+#endif
 }
 
 struct Prefs {
@@ -186,7 +200,35 @@ bool LaunchEditor(const std::string& editorExe, const std::string& project) {
 	return true;
 }
 #else
-bool LaunchEditor(const std::string&, const std::string&) { return false; }
+// fork + exec (the child keeps the launcher's stdio; the parent exits
+// as soon as the child is running, the same detached contract as
+// CreateProcessA on Windows).
+bool LaunchEditor(const std::string& editorExe, const std::string& project) {
+	fs::path exe(fs::path(editorExe).is_absolute()
+		? fs::path(editorExe) : fs::absolute(editorExe));
+	pid_t pid = fork();
+	if (pid < 0) {
+		std::cerr << "cannot fork to spawn '" << exe.string() << "'\n";
+		return false;
+	}
+	if (pid == 0) {
+		std::string proj = project;
+		std::vector<char*> argv;
+		argv.push_back(const_cast<char*>(exe.c_str()));
+		argv.push_back(const_cast<char*>("--project"));
+		argv.push_back(const_cast<char*>(proj.c_str()));
+		argv.push_back(nullptr);
+		execv(exe.c_str(), argv.data());
+		std::cerr << "cannot spawn '" << exe.string() << "': "
+			<< std::strerror(errno) << "\n";
+		std::_Exit(1);
+	}
+	// Detached contract (the CreateProcessA one): the parent does NOT
+	// babysit the child past exec; the launcher exits and the exec'd
+	// editor is reparented to init. A failed exec is reported by the
+	// child itself on the inherited stdio.
+	return true;
+}
 #endif
 
 std::string EditorExePath() {
@@ -194,6 +236,13 @@ std::string EditorExePath() {
 	char buf[MAX_PATH] = {};
 	if (GetModuleFileNameA(nullptr, buf, MAX_PATH))
 		return (fs::path(buf).parent_path() / "Editor.exe").string();
+#else
+	char buf[1024] = {};
+	const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+	if (n > 0) {
+		buf[n] = '\0';
+		return (fs::path(buf).parent_path() / "Editor").string();
+	}
 #endif
 	return "Editor.exe";
 }

@@ -20,6 +20,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#else
+#include <sys/mman.h> // mmap/mprotect/munmap (the VirtualAlloc-equivalent)
 #endif
 
 namespace smvk::mem {
@@ -47,7 +49,11 @@ void* ReserveVa(size_t bytes) {
 #ifdef _WIN32
 	return VirtualAlloc(nullptr, bytes, MEM_RESERVE, PAGE_READWRITE);
 #else
-	return std::malloc(bytes);
+	// mmap PROT_NONE = the exact MEM_RESERVE equivalent: address space
+	// only, pages materialize on commit (mprotect below). The old malloc
+	// fallback touched the whole reservation into existence upfront.
+	void* p = mmap(nullptr, bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	return (p == MAP_FAILED) ? nullptr : p;
 #endif
 }
 
@@ -56,8 +62,9 @@ void ReleaseVa(void* p, size_t bytes) {
 	(void)bytes;
 	VirtualFree(p, 0, MEM_RELEASE);
 #else
-	(void)bytes;
-	std::free(p);
+	(void)bytes; // munmap needs the length, but the caller's reserved_
+	// matches the original reservation.
+	munmap(p, bytes);
 #endif
 }
 
@@ -69,9 +76,9 @@ bool CommitVa(void* base, size_t from, size_t to) {
 	uint8_t* addr = static_cast<uint8_t*>(base) + from;
 	return VirtualAlloc(addr, to - from, MEM_COMMIT, PAGE_READWRITE) != nullptr;
 #else
-	// Non-Windows fallback commits upfront at reserve time.
-	(void)base; (void)from; (void)to;
-	return true;
+	// Pages materialize here (first mprotect fault maps them in).
+	uint8_t* addr = static_cast<uint8_t*>(base) + from;
+	return mprotect(addr, to - from, PROT_READ | PROT_WRITE) == 0;
 #endif
 }
 

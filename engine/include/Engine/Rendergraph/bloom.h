@@ -214,9 +214,9 @@ struct BloomChain {
 	}
 
 	void DestroyShaders() {
-		downProgram = ShaderProgram{};
-		upProgram = ShaderProgram{};
-		spdProgram = ShaderProgram{};
+		downProgram = ShaderProgram();
+		upProgram = ShaderProgram();
+		spdProgram = ShaderProgram();
 		vsModule = {};
 		downFragModule = {};
 		upFragModule = {};

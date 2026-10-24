@@ -851,6 +851,14 @@ void OnResourceExhaustion(const char* site);
 
 	struct ShaderProgram
 	{
+		// NOTE on the codebase's `= ShaderProgram()` spelling (never
+		// `= ShaderProgram{}`): GCC 13's gimplify ICEs on value-init
+		// TEMPORARIES of this aggregate (the array member's NSDMI +
+		// brace-init-list, gimplify.cc:3059); the paren form is
+		// semantically identical on every compiler. Local declarations
+		// use plain default-init (`ShaderProgram p;` - every member
+		// carries an NSDMI) for the same reason (see
+		// GfxRenderer::FilteredProgramWith).
 		Shader shaders[8]{};
 		size_t shaderCount = 0;
 

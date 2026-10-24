@@ -170,7 +170,7 @@ struct UiComposite {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 		fragModule = {};
 	}

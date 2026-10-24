@@ -102,6 +102,13 @@ bld/
 !/external/xatlas/source/
 !/external/xatlas/source/xatlas/
 !/external/xatlas/source/xatlas/xatlas.cpp
+# vk-headers-extra: NOT fetched - a single tracked vendored SDK header
+# (the LunarG-generated vk_format_utils.h) covering distro libvulkan-dev
+# packages that trim the utility headers (see engine/CMakeLists.txt).
+/external/vk-headers-extra/**
+!/external/vk-headers-extra/vulkan/
+!/external/vk-headers-extra/vulkan/utility/
+!/external/vk-headers-extra/vulkan/utility/vk_format_utils.h
 # streamline: fetched (SDK zip subset); the overlay is our bin/x64/README.md
 /external/streamline/**
 !/external/streamline/bin/
@@ -112,6 +119,16 @@ bld/
 # forbid redistribution; see bin/x64/README.md). Missing it just disables
 # DLSS-SR - the engine renders at native extent (verified headless).
 /external/streamline/bin/x64/nvngx_dlss.dll
+# directx-headers: fetched (Linux-only - DirectXTex's non-Win32 path
+# includes DirectX-Headers' wsl/winadapter.h + directx/d3d12.h); the
+# Windows build uses the SDK's own headers (see the root CMakeLists)
+/external/directx-headers/**
+# vulkan-headers: fetched (Linux-only - the full 1.4.357 symbol set ahead
+# of older distro libvulkan-dev headers; Windows uses its SDK's own)
+/external/vulkan-headers/**
+# directxmath: fetched (Linux-only DirectXTex dep - DirectXPackedVector.h;
+# Windows uses the SDK's)
+/external/directxmath/**
 
 [Oo]ut/
 [Ll]og/

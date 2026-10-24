@@ -14,7 +14,7 @@
 #include "vk_mem_alloc.h"
 #include <source_location>
 #include <ktx.h>
-#include <ktxVulkan.h>
+#include <ktxvulkan.h> // KTX-Software >=4.3 lowercase name (ktxVulkan.h on Windows-only, case-insensitive, FSes)
 // StaticVertexFmtHeap + StaticMeshAllocation live in the shared
 // Engine/Renderer/static_vertex_heap.h (the RHI handles + a CPU arena
 // replacing the VmaVirtualBlocks — the whole load stack now compiles
@@ -30,6 +30,15 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+
+// Vulkan header version gap: the KHR promotion of NV_compute_shader_
+// derivatives landed in vulkan_core.h after several distro-shipped
+// Vulkan loader packages (Ubuntu 24.04's 1.3.275 carries only the VK_NV
+// spelling). The extension NAME string is stable - define the constant
+// the device-extension request below uses when the header lacks it.
+#ifndef VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
+#define VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME "VK_KHR_compute_shader_derivatives"
+#endif
 
 inline const char* vkResultToString(VkResult result);
 
@@ -249,7 +258,10 @@ namespace smvk {
 				VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
 			};
 			const std::vector<const char*> instanceExtensions = {};
-		} config_;
+		};
+		// (Declared separately from the struct definition: GCC rejects
+		// NSDMIs inside a combined `struct X {...} member;` declaration.)
+		CoreConfiguration config_;
 
 		VkPhysicalDeviceDriverProperties vkPhysicalDeviceDriverProperties_ = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
@@ -299,7 +311,13 @@ namespace smvk {
 
 	public:
 
-		VulkanCore(CoreConfiguration config = {}) :config_(config) {};
+		// (Two ctors instead of a `= {}` default argument: GCC rejects
+		// the brace-enclosed default-arg form for this NSDMI-heavy
+		// aggregate deep inside this header (a parse-state quirk -
+		// minimized repros pass); the overload pair is identical on
+		// every compiler.)
+		VulkanCore() : config_() {}
+		VulkanCore(CoreConfiguration config) : config_(config) {}
 		~VulkanCore();
 		VulkanCore(const VulkanCore&) = delete;
 		VulkanCore& operator=(const VulkanCore&) = delete;

@@ -18,8 +18,6 @@
 #include <malloc.h>
 #endif
 
-#include <glslang/Include/glslang_c_interface.h>
-
 template <typename T> inline void mergeVectors(std::vector<T>& v1, const std::vector<T>& v2)
 {
     v1.insert(v1.end(), v2.begin(), v2.end());

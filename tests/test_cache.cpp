@@ -162,7 +162,7 @@ void TestRegistryRootAndRegistry() {
 			&& got.offset == 8192, "persisted upsert value");
 	}
 	// WAL sidecars exist next to the db while at least one connection
-	// is open; after Close they may remain â€” harmless either way.
+	// is open; after Close they may remain — harmless either way.
 
 	std::error_code ec;
 	std::filesystem::remove_all(dir, ec);
@@ -516,7 +516,7 @@ void TestStore() {
 
 	// Stage + read-before-flush (write-behind coherence). Texture-class
 	// payloads ride the real cooked-texture envelope (BuildTexturePayload:
-	// uri + sampler + ktx bytes) â€” exactly what the final paks embed, and
+	// uri + sampler + ktx bytes) — exactly what the final paks embed, and
 	// what PakBackend::TryRead parses on the VFS path below.
 	const std::vector<uint8_t> ktx = { 1, 2, 3, 4, 5 };
 	const std::vector<uint8_t> png = ktx;

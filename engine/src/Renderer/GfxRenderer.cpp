@@ -213,7 +213,12 @@ namespace engine {
 	smvk::ShaderProgram GfxRenderer::FilteredProgramWith(
 		smvk::ResourceManager& ctx,
 		const smvk::Holder<smvk::ShaderModuleHandle>& frag) {
-		smvk::ShaderProgram p{};
+		// Default-init, not value-init: ShaderProgram is a fully
+		// defaulted aggregate (every member carries an NSDMI), so both
+		// spellings are semantically identical - but GCC 13 ICEs in
+		// gimplify on the explicit `p{}` (array NSDMI + empty
+		// brace-init-list, gimplify.cc:3059). MSVC/Clang take either.
+		smvk::ShaderProgram p;
 		if (frag.empty())
 			return p;
 		// On-demand VS load (best-effort, cached — the lit path may not

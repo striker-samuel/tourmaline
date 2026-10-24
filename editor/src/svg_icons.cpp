@@ -157,9 +157,9 @@ bool EditorApp::EnsureSvgIcons() {
 			const unsigned char a = px[i + 3];
 			if (a == 255)
 				continue;
-			px[i + 0] = unsigned char((px[i + 0] * a + 127) / 255);
-			px[i + 1] = unsigned char((px[i + 1] * a + 127) / 255);
-			px[i + 2] = unsigned char((px[i + 2] * a + 127) / 255);
+			px[i + 0] = static_cast<unsigned char>((px[i + 0] * a + 127) / 255);
+			px[i + 1] = static_cast<unsigned char>((px[i + 1] * a + 127) / 255);
+			px[i + 2] = static_cast<unsigned char>((px[i + 2] * a + 127) / 255);
 		}
 		// UNORM RGBA8: raw value passthrough like the font atlas (the
 		// icons' sRGB-encoded colors must not linearize on sample).

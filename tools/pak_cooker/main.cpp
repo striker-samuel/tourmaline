@@ -137,7 +137,7 @@ namespace paktool {
 		float sunElevation = 55.0f;
 		float sunIntensity = 10000.0f;
 		// World-sun color (linear RGB): with the angles/intensity above it IS
-		// the cooked world sun â€” the bake env AND the pak runtime sun (a
+		// the cooked world sun — the bake env AND the pak runtime sun (a
 		// directional is synthesized from it when the cluster has none).
 		glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 		// Analytic sky IBL baked into the lightmap on open-sky rays
@@ -176,8 +176,8 @@ namespace paktool {
 
 	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
 	// env block when the tour carried one (the editor always writes env.default.*),
-	// else the CLI sun defaults (bare cooks). Every stage â€” the synthesized
-	// WorldSun, the lightmap / cubemap / cvolume bakes â€” reads this, so ONE
+	// else the CLI sun defaults (bare cooks). Every stage — the synthesized
+	// WorldSun, the lightmap / cubemap / cvolume bakes — reads this, so ONE
 	// authored sun/sky drives the editor viewport, the bakes and the pak.
 	struct BakeEnv {
 		float sunAzimuth = 30.0f, sunElevation = 55.0f;
@@ -223,7 +223,7 @@ namespace paktool {
 		});
 		if (hasDir || cluster.scene.hierarchy.empty())
 			return;
-		// toSun from compass azimuth (0 = +Z) + elevation â€” the same formula
+		// toSun from compass azimuth (0 = +Z) + elevation — the same formula
 		// as EnvironmentSettings::SunDirectionToSun (unit by construction).
 		const float az = be.sunAzimuth * 0.01745329252f;
 		const float el = be.sunElevation * 0.01745329252f;
@@ -232,9 +232,9 @@ namespace paktool {
 			std::cos(az) * ce };
 		// Node frame: the aim reads G*(0,0,-1) in EVERY coordFix mode
 		// (GltfPunctualAimAxis; raw locals, the basis rides the chain top),
-		// so local -Z maps to the emission direction -toSun â€” local +Z =
+		// so local -Z maps to the emission direction -toSun — local +Z =
 		// toSun (orthonormal basis, det +1). Under the conjugated Sponza
-		// root the plain +Z read flips (az/el inverted on the seed â€” the
+		// root the plain +Z read flips (az/el inverted on the seed — the
 		// verify cook caught it); parent under the SCENE root (addNode -1)
 		// instead, whose global frame is the raw identity, so the -Z read
 		// is exact and the App decode matches this construction 1:1.
@@ -287,7 +287,7 @@ namespace paktool {
 
 	// Reads a loose sidecar file by its content-root-relative vfs path
 	// ("gi/<guid>.cvmanifest" -> <contentDir>/gi/<guid>.cvmanifest). Empty
-	// on any failure (logged by the caller â€” a missing sidecar is "not
+	// on any failure (logged by the caller — a missing sidecar is "not
 	// baked", never fatal).
 	std::vector<uint8_t> ReadSidecarFile(const std::string& contentDir,
 		const std::string& vfsPath) {
@@ -307,7 +307,7 @@ namespace paktool {
 	// stem first (the runtime's fallback identity), then the source scene
 	// stems (the artifact list - every listed .geometry, or the tour
 	// reference identity). Bakes key on the SCENE they ran over
-	// (GiBaker --scene, the .sggi stem) â€” without the scene stems a
+	// (GiBaker --scene, the .sggi stem) — without the scene stems a
 	// differently-named out pak would silently miss its own bakes.
 	std::vector<std::string> SidecarStems(const Args& args) {
 		std::vector<std::string> stems;
@@ -526,7 +526,7 @@ namespace paktool {
 		return false;
 	}
 	// --tour is the DEFINITION (self-contained: the source glTF rides
-	// as root reference #0) â€” no artifact inference needed.
+	// as root reference #0) — no artifact inference needed.
 	return true;
 }
 
@@ -711,7 +711,7 @@ namespace paktool {
 			// The runtime resolves xforms[chartOffset + chartId] with NO
 			// bounds check (gfxfilter.hlsli): a vertex whose chartId is
 			// neither 0xFFFFFFFF nor inside its own mesh's xform slice
-			// samples another mesh's transform (or OOB garbage) â€” isolated
+			// samples another mesh's transform (or OOB garbage) — isolated
 			// triangles in wrong rects + black regions, positions perfect.
 			// The atlasAt probe above bounds-checks and silently falls
 			// back, so this fault is invisible to the sweep/density
@@ -877,7 +877,7 @@ namespace paktool {
 			// the vertex payload it ships with:
 			//   mlbadlocal: meshlet-local id >= vertexCount (corrupt tri)
 			//   mloob:      window id >= vertex count (STALE windows
-			//               referencing a pre-seam-dup vertex layout â€” the
+			//               referencing a pre-seam-dup vertex layout — the
 			//               "meshlets built before lightmap split" bug)
 			//   mlbigtris:  atlas-uv2 sweep over the meshlet topology
 			//               (>0.45 = a meshlet triangle sampling a distant
@@ -1487,7 +1487,7 @@ int Run(const PakArgs& c) {
 	// (never created here). Either way the registry accelerates texture
 	// transcodes: hash-validated payloads serve from the registry on hit
 	// and stage fresh ones on miss. A missing/locked/broken registry
-	// degrades to plain processing â€” the pak output is byte-identical.
+	// degrades to plain processing — the pak output is byte-identical.
 	std::unique_ptr<smvk::cache::CacheDb> registryDb;
 	std::unique_ptr<smvk::cache::ArtifactStore> registryStore;
 	std::unique_ptr<StoreArtifactCacheAdapter> registryAdapter;
@@ -1517,7 +1517,7 @@ int Run(const PakArgs& c) {
 			}
 			else {
 				tool::err() << "Registry db open failed (" << dbErr
-					<< ") â€” cooking without acceleration\n";
+					<< ") — cooking without acceleration\n";
 				registryDb.reset();
 			}
 		}
@@ -1535,7 +1535,7 @@ int Run(const PakArgs& c) {
 
 	// Tour path: the doc IS the definition (root reference #0 = the
 	// source glTF, inlined under the scene root exactly like the
-	// editor binds it). No source resolution, no side imports â€” the
+	// editor binds it). No source resolution, no side imports — the
 	// reference machinery builds the whole scene.
 	std::vector<std::unique_ptr<smvk::Cluster>> sceneClusters;
 	std::vector<std::string> sceneNames;
@@ -1594,7 +1594,7 @@ int Run(const PakArgs& c) {
 			// scene) are the sun/sky of record for every stage (see
 			// EnvForBake).
 		}
-		// DEFINITION BUILD â€” identical to the editor: empty scene root,
+		// DEFINITION BUILD — identical to the editor: empty scene root,
 		// then the reference bind (root reference #0 imports the source
 		// glTF under the scene root; the rest inline beneath it), then
 		// the command replay. HOST-path resolution (vfs = nullptr) so
@@ -1610,7 +1610,7 @@ int Run(const PakArgs& c) {
 					smvk::vfs::BaseDir(tour.references[0].source);
 				const size_t applied = ApplySceneReferences(*cluster, tour,
 					ownerBase, nullptr, nullptr,
-					nullptr /* HOST bind â€” editor parity */,
+					nullptr /* HOST bind — editor parity */,
 					opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 					args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
 					artifactCache);
@@ -1621,7 +1621,7 @@ int Run(const PakArgs& c) {
 			// Texture-asset POOL imports (ordered; see the tour's
 			// textureAsset records): replayed BEFORE the material records
 			// (a material tex ref or a light cookie naming a .texture must
-			// find its pool entry â€” the shared ImportTextureAssetToCluster,
+			// find its pool entry — the shared ImportTextureAssetToCluster,
 			// cook mode: no GPU). A failed import FAILS the cook loudly
 			// (the cookie would otherwise resolve empty and cook a
 			// wrong-texture pak).
@@ -1658,11 +1658,11 @@ int Run(const PakArgs& c) {
 			// materialAsset records): the editor session minted these into
 			// the cluster pool beyond the reference-bound materials, and the
 			// tour's assignMaterial/-m indices were recorded against that
-			// pool â€” replay the records in order (the record order IS the
+			// pool — replay the records in order (the record order IS the
 			// pool order) so the indices resolve exactly as authored. The
 			// shared import is the same path the editor ran
 			// (ImportMaterialAssetToCluster, cook mode: no GPU). A failed
-			// import shifts every later index â€” FAIL the cook loudly
+			// import shifts every later index — FAIL the cook loudly
 			// instead of cooking a wrong-material pak.
 			for (const auto& ma : tour.materialAssets) {
 				if (ma.editorDefault) {
@@ -1670,7 +1670,7 @@ int Run(const PakArgs& c) {
 					continue;
 				}
 				// Resolve: project-relative records against --content-dir
-				// FIRST (the record's in-project convention â€” as-is/CWD would
+				// FIRST (the record's in-project convention — as-is/CWD would
 				// hit the BUNDLED content tree over the project for same-named
 				// sources), then as-is for absolute/out-of-project records.
 				namespace fs = std::filesystem;
@@ -1714,16 +1714,16 @@ int Run(const PakArgs& c) {
 		}
 	}
 	else {
-		// No tour: ARTIFACT cook â€” the POSITIONAL artifact list (the
+		// No tour: ARTIFACT cook — the POSITIONAL artifact list (the
 		// ALREADY-PROCESSED .geometry blobs; the MeshImporter/import.exe
 		// output). glTF is IMPORT-ONLY and never cooks (the old
 		// GltfToClusterFromVfs in-cook glTF import is GONE): open/drop
 		// the .gltf in the editor (derive-if-stale) or run import.exe,
 		// then cook the .geometry. Each artifact carries the ONE derived
-		// scene (the source import's default scene) â€” no multi-scene
+		// scene (the source import's default scene) — no multi-scene
 		// fan-out, no --scene-index; the pak cooks ALL listed artifacts.
 		// Resolve + read each .geometry through the VFS (the runtime
-		// content abstraction â€” loose files today; pak-embedded /
+		// content abstraction — loose files today; pak-embedded /
 		// patched artifacts land through the same reads later).
 		for (const std::string& inVfs : args.inVfsList) {
 			std::string artPath = smvk::NormalizeAssetUri(
@@ -1733,7 +1733,7 @@ int Run(const PakArgs& c) {
 			auto artBytes = vfs.TryRead(artPath);
 			if (!artBytes || artBytes->empty()) {
 				tool::err() << "Artifact read failed: '" << inVfs
-					<< "' not in VFS (want the derived .geometry â€” import "
+					<< "' not in VFS (want the derived .geometry — import "
 					"the source glTF first: import.exe / the editor's "
 					"MeshImporter)" << std::endl;
 				return 1;
@@ -1817,7 +1817,7 @@ int Run(const PakArgs& c) {
 					return vfs.TryRead(p);
 				return std::nullopt;
 			};
-			// NOTE: heap-allocated â€” Cluster embeds multi-MB pool arrays
+			// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays
 			// and must never live on the (1MB) thread stack. Cook mode =
 			// GPU-free: CPU geometry + retained uploads only, textures
 			// are minted cook ids.
@@ -1831,7 +1831,7 @@ int Run(const PakArgs& c) {
 				artifactCache, readSibling);
 			if (built == 0) {
 				tool::err() << "Artifact build failed: '" << inVfs
-					<< "' built 0 nodes (degenerate/empty â€” re-import "
+					<< "' built 0 nodes (degenerate/empty — re-import "
 					"the source glTF)" << std::endl;
 				return 1;
 			}
@@ -1925,17 +1925,17 @@ int Run(const PakArgs& c) {
 
 	// World sun per scene (App parity: first directional wins as the
 	// runtime sun). Authored directionals always survive; sunless scenes
-	// synthesize one from the ENV BLOCK (EnvForBake â€” one authored sun).
+	// synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
 	for (auto& sc : sceneClusters)
 		EnsureWorldSun(*sc, EnvForBake(*sc, args));
 
 	// Sun of record -> the scene's look env (sun fields only): an
 	// AUTHORED directional (imported KHR punctual or tour-created) is
-	// scene CONTENT â€” it wins over the env block's sun fields so exactly
+	// scene CONTENT — it wins over the env block's sun fields so exactly
 	// ONE sun reaches the App (the env keeps its sky/fog/exposure). The
 	// env block is lux-native, so the light's lux copies straight in (no
 	// conversion). A synthesized WorldSun already carries the env's own
-	// values â€” the seed is a no-op there (float-exact round trip).
+	// values — the seed is a no-op there (float-exact round trip).
 	for (auto& sc : sceneClusters) {
 		if (!sc->scene.envAuthored)
 			continue; // runtime seeds from the light at load
@@ -2059,7 +2059,7 @@ int Run(const PakArgs& c) {
 				manifest.size());
 			if (!smvk::CubemapManifestParse(text, rows, mErr)) {
 				tool::err() << "loose cubemap manifest '" << mrel
-					<< "' rejected: " << mErr << " â€” not embedded\n";
+					<< "' rejected: " << mErr << " — not embedded\n";
 				continue;
 			}
 			cubemapKtx.emplace_back(mrel, std::move(manifest));
@@ -2068,7 +2068,7 @@ int Run(const PakArgs& c) {
 					ReadSidecarFile(args.contentDir, row.vfsPath);
 				if (ktx.empty()) {
 					tool::err() << "loose cubemap row '" << row.vfsPath
-						<< "' unreadable â€” not embedded\n";
+						<< "' unreadable — not embedded\n";
 					continue;
 				}
 				cubemapKtx.emplace_back(row.vfsPath, std::move(ktx));
@@ -2081,11 +2081,11 @@ int Run(const PakArgs& c) {
 			break;
 		}
 	}
-	// Loose GI bakes (GiBaker writes these â€” the editor cook flow runs
+	// Loose GI bakes (GiBaker writes these — the editor cook flow runs
 	// GiBaker from 0 BEFORE PakCooker): discover by STABLE PATH in the
 	// content's gi/ dir (the stems: pak stem first, then the source scene
 	// stem), REGISTER the stem bindings AND EMBED the payloads into the
-	// pak (Texture blobs at their gi/ paths â€” PakBackend serves by path,
+	// pak (Texture blobs at their gi/ paths — PakBackend serves by path,
 	// so the runtime's binding-first loaders resolve straight out of the
 	// pak; loose files still override through the overlay by the same
 	// paths). Missing = unbaked (the runtime falls back to the scene-id
@@ -2109,7 +2109,7 @@ int Run(const PakArgs& c) {
 			return std::string();
 		};
 		// Probe octree (the world field, GiBaker --out): a single
-		// payload, no manifest rows â€” embed gi/<stem>.sggi.
+		// payload, no manifest rows — embed gi/<stem>.sggi.
 		{
 			const std::string stem = findStemWith("sggi");
 			if (!stem.empty()) {
@@ -2118,7 +2118,7 @@ int Run(const PakArgs& c) {
 					ReadSidecarFile(args.contentDir, vfsPath);
 				if (bytes.empty()) {
 					tool::err() << "probe bake '" << vfsPath
-						<< "' unreadable â€” not embedded\n";
+						<< "' unreadable — not embedded\n";
 				}
 				else {
 					giBlobs.emplace_back(vfsPath, std::move(bytes));
@@ -2132,7 +2132,7 @@ int Run(const PakArgs& c) {
 		}
 		// Volume manifests (regular + convex): embed the manifest + every
 		// row's payload file, register the stem binding. Rows are bare
-		// VFS paths (legacy "<guid> <path>" rows still parse â€”
+		// VFS paths (legacy "<guid> <path>" rows still parse —
 		// SplitManifestRow takes the path column either way).
 		struct ManifestKind {
 			smvk::GiBinding::Kind kind;
@@ -2155,7 +2155,7 @@ int Run(const PakArgs& c) {
 				ReadSidecarFile(args.contentDir, manifestVfs);
 			if (manifest.empty()) {
 				tool::err() << "volume manifest '" << manifestVfs
-					<< "' unreadable â€” binding kept, not embedded\n";
+					<< "' unreadable — binding kept, not embedded\n";
 			}
 			else {
 				giBlobs.emplace_back(manifestVfs, std::move(manifest));
@@ -2182,7 +2182,7 @@ int Run(const PakArgs& c) {
 						ReadSidecarFile(args.contentDir, row);
 					if (bytes.empty()) {
 						tool::err() << "sidecar volume '" << row
-							<< "' unreadable â€” not embedded\n";
+							<< "' unreadable — not embedded\n";
 						continue;
 					}
 					giBlobs.emplace_back(row, std::move(bytes));
@@ -2227,7 +2227,7 @@ int Run(const PakArgs& c) {
 	// (PakBackend serves them; CubemapLibrary::Load resolves them). Added
 	// after the cluster serialize so the cook stages above never see
 	// synthetic textures in the asset pool. The .cubemanifest (if any) is
-	// text inside a Texture payload â€” served by path, decoded by the
+	// text inside a Texture payload — served by path, decoded by the
 	// cubemap manifest parser, never as an image.
 	for (auto& [vfsPath, ktx] : cubemapKtx) {
 		std::vector<uint8_t> payload = smvk::BuildTexturePayload(
@@ -2443,7 +2443,7 @@ int Run(const PakArgs& c) {
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 			smvk::PakTexturePayload p;
 			// v4 digested shape first (validates digest + tail section),
-			// legacy/digest-less fallback second â€” mirrors the runtime
+			// legacy/digest-less fallback second — mirrors the runtime
 			// split in DeserializeCluster.
 			if (smvk::ParseTexturePayloadV4(reader.Payload(*e), p)) {
 				++digested;

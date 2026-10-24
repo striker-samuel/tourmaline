@@ -109,7 +109,7 @@ struct SpotShadowAtlas {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 	}
 

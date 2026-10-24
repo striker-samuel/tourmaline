@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 #pragma once
@@ -150,7 +150,7 @@ public:
 	float stickLookSpeed_ = 2.8f;
 
 	float damping_ = 0.5f; // seconds, time constant for velocity decay when no input
-	float acceleration_ = 2.4f; // meters/sec�, how fast speed builds while moving
+	float acceleration_ = 2.4f; // meters/sec², how fast speed builds while moving
 
 	float maxSpeed_ = 2.0f; //m/s
 	float fastCoef_ = 4.0f; // raw multiplier

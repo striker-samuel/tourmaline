@@ -322,9 +322,9 @@ struct Particles {
 	}
 
 	void DestroyShaders() {
-		emitProgram = ShaderProgram{};
-		simProgram = ShaderProgram{};
-		drawProgram = ShaderProgram{};
+		emitProgram = ShaderProgram();
+		simProgram = ShaderProgram();
+		drawProgram = ShaderProgram();
 		emitModule = {};
 		simModule = {};
 		drawVsModule = {};

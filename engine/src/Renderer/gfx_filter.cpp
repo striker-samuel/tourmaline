@@ -468,13 +468,15 @@ void Destroy(State& s, RenderGraph& rg) {
 	FreeIndexRegion(s.clusterIndexAllocBits);
 	s.clusterIndexBase = 0;
 	s.clusterBuffer = {};
-	s.filterProgram = ShaderProgram{};
+	// (ShaderProgram() - the paren value-init form: GCC 13 ICEs on the
+	// brace temporary; see the NOTE at struct ShaderProgram in smvk.h.)
+	s.filterProgram = ShaderProgram();
 	s.filterModule = {};
-	s.hizProgram = ShaderProgram{};
+	s.hizProgram = ShaderProgram();
 	s.hizModule = {};
-	s.batchCullProgram = ShaderProgram{};
+	s.batchCullProgram = ShaderProgram();
 	s.batchCullModule = {};
-	s.drawCullProgram = ShaderProgram{};
+	s.drawCullProgram = ShaderProgram();
 	s.drawCullModule = {};
 	s.frameCounter = 0;
 }

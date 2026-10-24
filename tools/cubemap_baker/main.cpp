@@ -64,7 +64,7 @@
 #include <volk.h>
 
 #include "ktx.h"
-#include <ktxVulkan.h>
+#include <ktxvulkan.h> // KTX-Software >=4.3 lowercase name (ktxVulkan.h on Windows-only, case-insensitive, FSes)
 
 #include <glm/glm.hpp>
 

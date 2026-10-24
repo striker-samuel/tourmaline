@@ -131,10 +131,10 @@ bool BuildMeshletsForUpload(
 	if (vcount == 0 || icount < 3 || (icount % 3) != 0)
 		return fail("degenerate mesh");
 
-	// ENGINE limits first (kMeshletMaxVertices/Triangles â€” 64v/64t: one
+	// ENGINE limits first (kMeshletMaxVertices/Triangles — 64v/64t: one
 	// mesh-shader workgroup covers a whole meshlet, the invariant the mesh
 	// path and the cluster HZB cull assume): over-limit configs (stale
-	// authored cooks carrying e.g. meshletTris 124) clamp down â€” a meshlet
+	// authored cooks carrying e.g. meshletTris 124) clamp down — a meshlet
 	// bigger than the workgroup can draw would drop geometry. The absolute
 	// meshoptimizer bounds (3..255v / 1..512t) stay as the outer defense,
 	// unreachable for engine callers since the engine clamp is tighter.
@@ -387,7 +387,7 @@ bool BuildMeshletsForUpload(
 
 		if (!canSplit) {
 			if (fromSplit && depth > 0) {
-				// A split child: facing-pure (or a leftover) but small â€”
+				// A split child: facing-pure (or a leftover) but small —
 				// collect for the re-pack instead of emitting a speck.
 				Fragment f{};
 				std::memcpy(f.verts, winVerts,
@@ -446,7 +446,7 @@ bool BuildMeshletsForUpload(
 				if (!thisSide)
 					continue;
 				// Corrupt locals (local >= vertexCount) drop the whole
-				// triangle â€” a partial window push would shift every
+				// triangle — a partial window push would shift every
 				// later byte (the pack audit owns the loud report).
 				bool triOk = true;
 				for (unsigned int k = 0; k < 3; ++k)
@@ -481,15 +481,15 @@ bool BuildMeshletsForUpload(
 
 	// ---- Facing-fragment re-pack (the "speckle" fix) -------------------
 	// The split leaves facing-pure but TINY fragments (the crumpled cloth
-	// quarters nearly everything â€” observed knight mesh.0: 4.2x the
+	// quarters nearly everything — observed knight mesh.0: 4.2x the
 	// meshlets at ~23 tris each; the debug view reads that as speckle,
 	// and the per-cluster cull/indirect overhead scales with the count).
 	// The re-pack merges same-facing spatial neighbors back into FULL
 	// meshlets: fragments sorted (facing octant, Morton center) so
 	// neighbors stream adjacent, a small open-accumulator set greedily
-	// absorbs â€” the 64v/64t caps hold, and the MERGED CONE MUST STAY
+	// absorbs — the 64v/64t caps hold, and the MERGED CONE MUST STAY
 	// LIVE (checked per absorb, rollback on rejection), so the merge
-	// never builds what the cone test cannot use â€” the split's culling
+	// never builds what the cone test cannot use — the split's culling
 	// wins survive the packing. Opposing facings sit in different octants
 	// and never meet. Unmergeable leftovers emit solo (their conservative
 	// keep-cone just fails to cull, same as before).

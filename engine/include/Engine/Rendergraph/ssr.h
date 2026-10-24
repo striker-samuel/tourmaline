@@ -619,14 +619,14 @@ struct ScreenSpaceReflections {
 	}
 
 	void DestroyShaders() {
-		blurProgram = ShaderProgram{};
-		temporalProgram = ShaderProgram{};
-		composeProgram = ShaderProgram{};
-		composeDbgProgram = ShaderProgram{};
-		classifyProgram = ShaderProgram{};
-		indirectProgram = ShaderProgram{};
-		intersectProgram = ShaderProgram{};
-		copyProgram = ShaderProgram{};
+		blurProgram = ShaderProgram();
+		temporalProgram = ShaderProgram();
+		composeProgram = ShaderProgram();
+		composeDbgProgram = ShaderProgram();
+		classifyProgram = ShaderProgram();
+		indirectProgram = ShaderProgram();
+		intersectProgram = ShaderProgram();
+		copyProgram = ShaderProgram();
 		vsModule = {};
 		blurFragModule = {};
 		temporalFragModule = {};

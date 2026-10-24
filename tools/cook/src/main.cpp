@@ -24,7 +24,7 @@
 //
 // --cubemap on bakes preconvolved SPECULAR cubemaps DURING the cook (same
 // CPU path-tracer capture as tools/cubemap_baker, GGX importance-sampled
-// mip chains via Engine/Renderer/cubemap_prefilter.h â€” roughness = mip /
+// mip chains via Engine/Renderer/cubemap_prefilter.h — roughness = mip /
 // (levels-1)) and embeds them as Texture blobs at
 // gi/cubemaps/<name>[_N].ktx2 (PakBackend serves them by VFS path,
 // so CubemapLibrary::Load finds them with no code change). Probes and
@@ -33,7 +33,7 @@
 //
 // --lightmap on bakes 2D SG lightmaps DURING the cook (sun + static spot
 // NEE + analytic sky on open-sky rays, real materials, transmissive
-// pass-through â€” see Engine/GI/bake.h). It stamps chart-local UVs and
+// pass-through — see Engine/GI/bake.h). It stamps chart-local UVs and
 // chart IDs into the meshes, records per-chart atlas transforms for the
 // shader, and stores each mesh's atlas chunk ID in the pak. The cooker
 // writes a loose atlas at <contentDir>/gi/<scene>.sglm and also embeds
@@ -58,7 +58,7 @@
 // Curvature-weighted density (default on): --lm-meters-per-texel is the
 // BASE request; smoothly bending meshes chart at up to --lm-curve-max
 // times the base density so their normal-turn per texel stays under
-// --lm-curve-target degrees (creases over 45 deg do not count â€” density
+// --lm-curve-target degrees (creases over 45 deg do not count — density
 // cannot fix an authored edge). The atlas width is FIXED and the height
 // grows with content (only a --lm-max-height overflow lowers the
 // density), so curvature spends height, not a texel budget: same
@@ -171,7 +171,7 @@ namespace cooktool {
 		// texel per 25 cm (4 texels/m). The engine chart options speak
 		// texels/m; the cook converts (1/mpt, floored at 2 texels/m).
 		float lmMetersPerTexel = 0.25f;
-		uint32_t lmLobes = 12;       // 5|6|9|12 â€” PREFERRED max; the bake
+		uint32_t lmLobes = 12;       // 5|6|9|12 — PREFERRED max; the bake
 		// selects the smallest count per mesh
 		// whose fit residual fits the budget
 		// (SgLightmapBakeConfig::lobeRelError)
@@ -195,7 +195,7 @@ namespace cooktool {
 		// BC6H with the invalid-texel block-average prefill so uncovered
 		// zeros do not expand a block's endpoint box), "bc6h" (plain BC6H)
 		// or "uncompressed" (9 RGBA16F layers, 72 B/texel). BC6H stores one
-		// texture per lobe (8 B/texel per lobe) â€” ~6x smaller GPU footprint
+		// texture per lobe (8 B/texel per lobe) — ~6x smaller GPU footprint
 		// at 12 lobes, block-compression artifacts on top of the bake.
 		smvk::gi::SgLightmapCompression lmCompress =
 			smvk::gi::SgLightmapCompression::Bc6HOpt;
@@ -251,14 +251,14 @@ namespace cooktool {
 		// World-space size gate (meters, bbox diagonal): meshes smaller than
 		// this skip charts/bake entirely (probe/sky-lit at runtime). Bistro
 		// glassware/cutlery bake to a handful of texels at scene density
-		// anyway â€” probes serve them better, and the atlas keeps its texels
+		// anyway — probes serve them better, and the atlas keeps its texels
 		// for walls and facades. 0 = no gating.
 		float lmExcludeSmall = 0.0f;
 		float sunAzimuth = 30.0f;    // mirrors the runtime environment defaults
 		float sunElevation = 55.0f;
 		float sunIntensity = 10000.0f;
 		// World-sun color (linear RGB): with the angles/intensity above it IS
-		// the cooked world sun â€” the bake env AND the pak runtime sun (a
+		// the cooked world sun — the bake env AND the pak runtime sun (a
 		// directional is synthesized from it when the cluster has none).
 		glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 		// Analytic sky IBL baked into the lightmap on open-sky rays
@@ -270,7 +270,7 @@ namespace cooktool {
 		std::vector<std::string> spots;
 		// Ray-tracing backend for the in-pak bake transport (cvolumes,
 		// cubemap captures, lightmaps): "embree" (vendored external/embree,
-		// packet/SIMD traversal â€” the fast default) or "builtin" (the
+		// packet/SIMD traversal — the fast default) or "builtin" (the
 		// deterministic binned-SAH BVH reference; agrees within
 		// Monte-Carlo noise).
 		std::string backend = "embree";
@@ -292,7 +292,7 @@ namespace cooktool {
 		uint32_t cubemapBounces = 5;  // diffuse path depth after the first hit
 		// Transport samples per capture texel: the NEE sun/spot term is
 		// analytic (clean at 1 spp), but the bounce field is a Monte-Carlo
-		// path estimate â€” 1 spp reads as speckle, not GI, and the capture
+		// path estimate — 1 spp reads as speckle, not GI, and the capture
 		// stops representing the (multi-ray, denoised) lightmapped scene.
 		// 8 spp smooths the bounce term at ~8x capture cost.
 		uint32_t cubemapSpp = 8;
@@ -301,7 +301,7 @@ namespace cooktool {
 		float cubemapHeight = 1.5f;
 		float cubemapGrid = 8.0f;     // grid spacing in meters (0 = single probe at center)
 		// Sparse adaptive octree placement (Engine/Renderer/cubemap_placement):
-		// occupancy-driven subdivision instead of a uniform lattice â€” open
+		// occupancy-driven subdivision instead of a uniform lattice — open
 		// volumes stay coarse, near-surface cells refine, embedded centers
 		// drop, growth stops at the 32-probe runtime budget. Wins over --grid
 		// when set (explicit --cubemap-pos still wins over both).
@@ -311,7 +311,7 @@ namespace cooktool {
 		uint32_t cubemapOctreeDepth = 4; // octree depth cap (root = 0)
 		// Artist-pinned extra probes (repeatable "x,y,z"): appended AFTER
 		// grid/octree placement and marked 'pin' in the manifest so the
-		// runtime sorts them first â€” a pinned probe wins weight ties, e.g. a
+		// runtime sorts them first — a pinned probe wins weight ties, e.g. a
 		// capture exactly at the chrome ball. Unlike --cubemap-pos these never
 		// replace the automatic placement, they add to it.
 		std::vector<std::string> cubemapExtraPos;
@@ -358,7 +358,7 @@ namespace cooktool {
 		// path).
 		bool cvolume = true;
 		// Quick-bakes mode (the editor's "Update bakes now" button): run the
-		// capture stage ONLY and STOP â€” no pak write, no lightmap/LOD/collapse
+		// capture stage ONLY and STOP — no pak write, no lightmap/LOD/collapse
 		// stages. The loose sidecars the stage writes
 		// (gi/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest) are the
 		// output; they override the last pak's blobs through the runtime VFS
@@ -381,8 +381,8 @@ namespace cooktool {
 
 	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
 	// env block when the tour carried one (the editor always writes env.default.*),
-	// else the CLI sun defaults (bare cooks). Every stage â€” the synthesized
-	// WorldSun, the lightmap / cubemap / cvolume bakes â€” reads this, so ONE
+	// else the CLI sun defaults (bare cooks). Every stage — the synthesized
+	// WorldSun, the lightmap / cubemap / cvolume bakes — reads this, so ONE
 	// authored sun/sky drives the editor viewport, the bakes and the pak.
 	struct BakeEnv {
 		float sunAzimuth = 30.0f, sunElevation = 55.0f;
@@ -434,7 +434,7 @@ namespace cooktool {
 		});
 		if (hasDir || cluster.scene.hierarchy.empty())
 			return;
-		// toSun from compass azimuth (0 = +Z) + elevation â€” the same formula
+		// toSun from compass azimuth (0 = +Z) + elevation — the same formula
 		// as EnvironmentSettings::SunDirectionToSun (unit by construction).
 		const float az = be.sunAzimuth * 0.01745329252f;
 		const float el = be.sunElevation * 0.01745329252f;
@@ -443,9 +443,9 @@ namespace cooktool {
 			std::cos(az) * ce };
 		// Node frame: the aim reads G*(0,0,-1) in EVERY coordFix mode
 		// (GltfPunctualAimAxis; raw locals, the basis rides the chain top),
-		// so local -Z maps to the emission direction -toSun â€” local +Z =
+		// so local -Z maps to the emission direction -toSun — local +Z =
 		// toSun (orthonormal basis, det +1). Under the conjugated Sponza
-		// root the plain +Z read flips (az/el inverted on the seed â€” the
+		// root the plain +Z read flips (az/el inverted on the seed — the
 		// verify cook caught it); parent under the SCENE root (addNode -1)
 		// instead, whose global frame is the raw identity, so the -Z read
 		// is exact and the App decode matches this construction 1:1.
@@ -498,7 +498,7 @@ namespace cooktool {
 
 	// Reads a loose sidecar file by its content-root-relative vfs path
 	// ("gi/<guid>.cvmanifest" -> <contentDir>/gi/<guid>.cvmanifest). Empty
-	// on any failure (logged by the caller â€” a missing sidecar is "not
+	// on any failure (logged by the caller — a missing sidecar is "not
 	// baked", never fatal).
 	std::vector<uint8_t> ReadSidecarFile(const std::string& contentDir,
 		const std::string& vfsPath) {
@@ -518,7 +518,7 @@ namespace cooktool {
 	// stem first (the runtime's fallback identity), then the source scene
 	// stems (the artifact list - every listed .geometry, or the tour
 	// reference identity). Bakes key on the SCENE they ran over
-	// (GiBaker --scene, the .sggi stem) â€” without the scene stems a
+	// (GiBaker --scene, the .sggi stem) — without the scene stems a
 	// differently-named out pak would silently miss its own bakes.
 	std::vector<std::string> SidecarStems(const Args& args) {
 		std::vector<std::string> stems;
@@ -567,7 +567,7 @@ namespace cooktool {
 				continue;
 			// Trace scene per cluster: bake inputs mirror the lightmap/
 			// cubemap stages (texture-averaged albedo, cooked-punctual aim
-			// axis, the env-block sun/sky record (EnvForBake â€” ONE authored
+			// axis, the env-block sun/sky record (EnvForBake — ONE authored
 			// sun/sky everywhere), static light harvest) so the volume
 			// matches what the rest of the cook bakes.
 			const BakeEnv be = EnvForBake(*sc, args);
@@ -625,7 +625,7 @@ namespace cooktool {
 				const SceneCvol& cv = sc->scene.cvolForNode[node];
 				// World box decode (GiBaker parity): translation = center,
 				// basis lengths = full extents, normalized basis = the box
-				// axes (an OBB â€” six planes, CvBoxPlanesRotated).
+				// axes (an OBB — six planes, CvBoxPlanesRotated).
 				const glm::mat4& g = sc->scene.globalTransform[node];
 				const glm::vec3 c(g[3]);
 				glm::vec3 half;
@@ -1165,7 +1165,7 @@ namespace cooktool {
 	// the pak write). --out-pak names the DESTINATION pak for bake
 	// sidecar stems only (cvol manifest/volumes, cubemap base).
 	// --tour is the DEFINITION (self-contained: the source glTF rides
-	// as root reference #0) â€” no artifact inference needed.
+	// as root reference #0) — no artifact inference needed.
 	return true;
 }
 
@@ -1177,7 +1177,7 @@ namespace cooktool {
 		<< "              --out-pak <path> names the destination pak\n"
 		<< "              for bake sidecar stems only)\n"
 			<< "          (positional grammar: the VFS content root + the\n"
-			<< "          ALREADY-PROCESSED .geometry artifact list â€” glTF is\n"
+			<< "          ALREADY-PROCESSED .geometry artifact list — glTF is\n"
 			<< "          IMPORT-ONLY (import.exe <input> / the editor's\n"
 			<< "          MeshImporter derives the artifacts); the artifacts\n"
 			<< "          carry the scenes; the pak cooks ALL of them.)\n"
@@ -1214,7 +1214,7 @@ namespace cooktool {
 			<< "          (same engine core as GiBaker) and embeds them into\n"
 			<< "          the pak as Texture blobs under gi/ (volumes at\n"
 			<< "          gi/<pak-stem>_<name>.cvol, the runtime manifest at\n"
-			<< "          gi/<pak-stem>.cvmanifest) â€” the pak is self-contained\n"
+			<< "          gi/<pak-stem>.cvmanifest) — the pak is self-contained\n"
 			<< "          GI for the App; loose GiBaker sidecars still override\n"
 			<< "          through the overlay when present.\n"
 			<< "          [--cubemap on|off\n"
@@ -1270,7 +1270,7 @@ namespace cooktool {
 			<< "one texel per 25 cm = 4 texels/m; scaled nodes like sponza's\n"
 			<< "0.008 root convert through their world scale). The atlas\n"
 			<< "WIDTH is fixed at --lm-atlas-width; the HEIGHT grows with the\n"
-			<< "content (rows appended at the bottom) up to --lm-max-height â€”\n"
+			<< "content (rows appended at the bottom) up to --lm-max-height —\n"
 			<< "only a height-cap overflow (or a chart wider than the atlas)\n"
 			<< "triggers the density search, which then halves until the pack\n"
 			<< "fits and logs the converged texels/m + texels/m^2.\n"
@@ -1294,7 +1294,7 @@ namespace cooktool {
 			<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
 			<< "onto the built cluster before cooking. Tour cook settings\n"
 			<< "fill flags the CLI did not set (CLI wins). Deterministic:\n"
-			<< "the tour (or --in-vfs names the derived .geometry â€” glTF is\n"
+			<< "the tour (or --in-vfs names the derived .geometry — glTF is\n"
 			<< "IMPORT-ONLY, never a cook input; the editor's open/drop of a\n"
 			<< ".gltf runs the MeshImporter and derives the artifacts beside\n"
 			<< "the source) + identical pak out." << std::endl;
@@ -1455,7 +1455,7 @@ namespace cooktool {
 			// The runtime resolves xforms[chartOffset + chartId] with NO
 			// bounds check (gfxfilter.hlsli): a vertex whose chartId is
 			// neither 0xFFFFFFFF nor inside its own mesh's xform slice
-			// samples another mesh's transform (or OOB garbage) â€” isolated
+			// samples another mesh's transform (or OOB garbage) — isolated
 			// triangles in wrong rects + black regions, positions perfect.
 			// The atlasAt probe above bounds-checks and silently falls
 			// back, so this fault is invisible to the sweep/density
@@ -1621,7 +1621,7 @@ namespace cooktool {
 			// the vertex payload it ships with:
 			//   mlbadlocal: meshlet-local id >= vertexCount (corrupt tri)
 			//   mloob:      window id >= vertex count (STALE windows
-			//               referencing a pre-seam-dup vertex layout â€” the
+			//               referencing a pre-seam-dup vertex layout — the
 			//               "meshlets built before lightmap split" bug)
 			//   mlbigtris:  atlas-uv2 sweep over the meshlet topology
 			//               (>0.45 = a meshlet triangle sampling a distant
@@ -2109,7 +2109,7 @@ namespace cooktool {
 // Lightmap exclusion by node ancestry: true when any name on the node's
 // parent chain matches one of the --lm-exclude keywords with word
 // boundaries (case-insensitive; "tree" hits Linden_Tree_Mesh, not
-// StreetSign_mesh). Excluded subtrees still trace/cast â€” they only skip
+// StreetSign_mesh). Excluded subtrees still trace/cast — they only skip
 // charting and baked coefficients.
 bool NodeChainMatchesKeywords(const Scene& scene, uint32_t node,
 	const std::vector<std::string>& kws)
@@ -2235,7 +2235,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 //
 // Cross-rect streaks are structurally impossible in this scheme: every
 // triangle's corners land in ONE chart (seam corners are duplicated per
-// chart) and reach the atlas through that chart's single affine map â€”
+// chart) and reach the atlas through that chart's single affine map —
 // so the old sweep-repair pass is gone.
 uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	const smvk::gi::SgLightmapChartResult& chartRes, uint32_t chunkBase,
@@ -2263,7 +2263,7 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	// invariant from GenerateLightmapChartsXatlas carries through).
 	// Tight colocality mirrors xatlas's own epsilon (MeshDecl default
 	// 1.192092896e-07, per-component |da-db| <= eps*max(1,|a|,|b|)) in
-	// WORLD space â€” conservative vs the cook's density-scaled xatlas
+	// WORLD space — conservative vs the cook's density-scaled xatlas
 	// input (scale >= 1 only shrinks xatlas's world-space threshold,
 	// so a pair xatlas saw as split can still read as tight here;
 	// such residue, if any, is small-delta by construction). Pairs in
@@ -2271,7 +2271,7 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 	// slopSame/slopCross, never flagged. auditLabel distinguishes the
 	// chart SOURCE ("src ...": a hit is a real chart/stamp bug) from
 	// LOD-transfer stamps ("xfer ...": closest-point projection may
-	// legitimately snap colocated target verts apart â€” reported as
+	// legitimately snap colocated target verts apart — reported as
 	// XFER-DIVERGENT, informational). Case B (different chart) is
 	// expected; counted with the stitcher context (dotN vs
 	// kNormalGate 0.7): pairs the post-bake stitch refuses to
@@ -2325,12 +2325,12 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 		// measure the rendered discontinuity: L2 over the full SG
 		// amplitude vector. Void sampling is NOT this probe's domain:
 		// in-rect unclaimed texels are dilated (margin ring), beyond-
-		// rect bleed is the bc6hopt prefill's job â€” so each side is
+		// rect bleed is the bc6hopt prefill's job — so each side is
 		// flagged claimed/dilated (primary texel) and the deltas are
 		// bucketed by dotN: gated (<= 0.7: the crease population the
 		// OLD stitch gate refused) vs ungated (> 0.7: the stitched
 		// control), plus the opp sub-bucket (<= 0: still refused by
-		// the 0.0 stitch gate â€” the residual after the A/B).
+		// the 0.0 stitch gate — the residual after the A/B).
 		// Per-chart claimed-texel map (BuildTexelOf-equivalent), lazy.
 		std::vector<std::vector<uint32_t>> chartCov(
 			chartRes.charts.size());
@@ -2645,7 +2645,7 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
 // ---- Preconvolved specular cubemaps (--cubemap on) ------------------------
 // KTX2 encode of one preconvolved chain into memory bytes (same layout the
 // CubemapBaker writes to disk: RGBA32F cube, full mip chain, linear
-// transfer â€” the runtime must sample it without an sRGB decode).
+// transfer — the runtime must sample it without an sRGB decode).
 bool WriteCubemapKtx2ToMemory(const smvk::CubemapMipChains& chains,
 	uint32_t w, uint32_t h, uint32_t levels, std::vector<uint8_t>& out,
 	std::string& err) {
@@ -2748,7 +2748,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	}
 	// Same import basis change as CubemapBaker/GiBaker: cook imports at
 	// coordFix 0 read punctual aims with the conjugated -Z axis. The
-	// sun/sky record comes from the scene's env block (EnvForBake â€” ONE
+	// sun/sky record comes from the scene's env block (EnvForBake — ONE
 	// authored sun/sky everywhere, matching every other bake stage).
 	const BakeEnv be = EnvForBake(cluster, args);
 	buildOpts.punctualAimAxis = GltfPunctualAimAxis(0);
@@ -3141,11 +3141,11 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 
 	// Artist-pinned extra probes (--cubemap-extra-pos): appended AFTER
 	// placement, flagged 'pin' in the manifest so the runtime sorts them
-	// first â€” a pinned probe wins weight ties (e.g. the capture exactly at
+	// first — a pinned probe wins weight ties (e.g. the capture exactly at
 	// the chrome ball). Radii are deliberately tight: a pin is a local
 	// reflection source, not coverage. NOTE: the trace scene never
 	// contains runtime-injected props (the chrome ball is an app-side
-	// node), so a pin at the ball captures the ATRIUM AROUND it â€” exactly
+	// node), so a pin at the ball captures the ATRIUM AROUND it — exactly
 	// what a mirror ball should reflect.
 	std::vector<char> pinned;
 	for (const std::string& spec : args.cubemapExtraPos) {
@@ -3170,7 +3170,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	pinned.insert(pinned.begin(), positions.size() - pinned.size(), 0);
 
 	// AUTHORED captures (tour createCubemap / editor cubemap nodes):
-	// pinned probes harvested from the definition's cluster â€” position
+	// pinned probes harvested from the definition's cluster — position
 	// = the node's world transform, influence = the node-local radius
 	// (fade = radius/2, the CLI pin rule). Appended after the CLI
 	// --cubemap-extra-pos pins, same manifest semantics.
@@ -3214,7 +3214,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	const uint32_t levels = smvk::CubemapFullMipCount(S);
 	smvk::ThreadPool pool(0);
 
-	// Debug PNG outputs (loose, next to the pak inputs â€” never in the pak).
+	// Debug PNG outputs (loose, next to the pak inputs — never in the pak).
 	// Face strips (+ mip sheets) per capture, then one top-down map.
 	// Debug PNG outputs (loose, next to the KTX2 sidecars — never in
 	// the pak). Moved with the capture-set home (was textures/cubemaps).
@@ -3437,7 +3437,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 		// VFS path (stable, like the standalone CubemapBaker): the single
 		// capture keeps the bare <base> name (the runtime's direct
-		// <base>.ktx2 probe centers on the scene bounds â€” a 1-row
+		// <base>.ktx2 probe centers on the scene bounds — a 1-row
 		// manifest would move it to the capture point, so singles stay
 		// out of the manifest), multi-capture sets use <base>_<N>.
 		const std::string vfsPath = smvk::CubemapVfsPath(captureName);
@@ -3502,7 +3502,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// cook/world-space origin + influence/fade radii. Served as a Texture
 	// blob (PakBackend serves Texture blobs by VFS path) and consumed by
 	// WorldRenderer::LoadCubemaps. Single captures need none (the runtime
-	// centers a global probe on the scene bounds itself â€” a 1-row
+	// centers a global probe on the scene bounds itself — a 1-row
 	// manifest would move it to the capture point). Rows are bare
 	// stable paths (the trailing "guid <hex>" column of bake-asset rows
 	// stays parseable; the manifest itself rides the stable
@@ -3981,7 +3981,7 @@ int Run(const CookArgs& c) {
 	// button): the capture stage ONLY, then stop. The heavy stages are
 	// forced off (the cubemap stage needs just the imported trace scene);
 	// the capture set runs --cubemap on regardless of the tour's cook
-	// block. The loose sidecars the stage writes are the whole output â€”
+	// block. The loose sidecars the stage writes are the whole output —
 	// the early return below skips serialization + the pak write, so the
 	// pak from the last full cook stays untouched (loose sidecars override
 	// its blobs through the runtime VFS overlay by the same paths).
@@ -4074,14 +4074,14 @@ int Run(const CookArgs& c) {
 	// Meshlet DECOUPLING (--lightmap on): the lightmap stage below
 	// re-parameterizes meshes (chart-uv + chart-id stamping + seam vertex
 	// duplication + index remap), so meshlets must NOT be built before
-	// it â€” an import-time meshlet set references the PRE-stamp vertex
+	// it — an import-time meshlet set references the PRE-stamp vertex
 	// layout and draws the wrong chart uv per corner at runtime
 	// (stale-window GI corruption). With lightmaps on the importer and
 	// merged-block paths get a DISABLED config, and the cooker builds
 	// meshlets ONCE after the bake from the FINAL stamped topology
 	// (see the "Meshlet restore" stage below the lightmap block). The
 	// rule that keeps GI whole: meshlet generation may partition
-	// triangles, but it must never take part in â€” or see â€” the
+	// triangles, but it must never take part in — or see — the
 	// parameterization. With --lightmap off nothing mutates uploads
 	// after import, so import-time meshlets stay valid and the pipeline
 	// is unchanged.
@@ -4095,7 +4095,7 @@ int Run(const CookArgs& c) {
 	// (never created here). Either way the registry accelerates texture
 	// transcodes: hash-validated payloads serve from the registry on hit
 	// and stage fresh ones on miss. A missing/locked/broken registry
-	// degrades to plain processing â€” the pak output is byte-identical.
+	// degrades to plain processing — the pak output is byte-identical.
 	std::unique_ptr<smvk::cache::CacheDb> registryDb;
 	std::unique_ptr<smvk::cache::ArtifactStore> registryStore;
 	std::unique_ptr<StoreArtifactCacheAdapter> registryAdapter;
@@ -4125,7 +4125,7 @@ int Run(const CookArgs& c) {
 			}
 			else {
 				tool::err() << "Registry db open failed (" << dbErr
-					<< ") â€” cooking without acceleration\n";
+					<< ") — cooking without acceleration\n";
 				registryDb.reset();
 			}
 		}
@@ -4143,7 +4143,7 @@ int Run(const CookArgs& c) {
 
 	// Tour path: the doc IS the definition (root reference #0 = the
 	// source glTF, inlined under the scene root exactly like the
-	// editor binds it). No source resolution, no side imports â€” the
+	// editor binds it). No source resolution, no side imports — the
 	// reference machinery builds the whole scene.
 	std::vector<std::unique_ptr<smvk::Cluster>> sceneClusters;
 	std::vector<std::string> sceneNames;
@@ -4261,7 +4261,7 @@ int Run(const CookArgs& c) {
 	importMeshletCfg = meshletCfg;
 		if (args.lightmap)
 			importMeshletCfg.enabled = false;
-		// DEFINITION BUILD â€” identical to the editor: empty scene root,
+		// DEFINITION BUILD — identical to the editor: empty scene root,
 		// then the reference bind (root reference #0 imports the source
 		// glTF under the scene root; the rest inline beneath it), then
 		// the command replay. HOST-path resolution (vfs = nullptr) so
@@ -4277,7 +4277,7 @@ int Run(const CookArgs& c) {
 					smvk::vfs::BaseDir(tour.references[0].source);
 				const size_t applied = ApplySceneReferences(*cluster, tour,
 					ownerBase, nullptr, nullptr,
-					nullptr /* HOST bind â€” editor parity */,
+					nullptr /* HOST bind — editor parity */,
 					opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 					args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
 					artifactCache);
@@ -4288,7 +4288,7 @@ int Run(const CookArgs& c) {
 			// Texture-asset POOL imports (ordered; see the tour's
 			// textureAsset records): replayed BEFORE the material records
 			// (a material tex ref or a light cookie naming a .texture must
-			// find its pool entry â€” the shared ImportTextureAssetToCluster,
+			// find its pool entry — the shared ImportTextureAssetToCluster,
 			// cook mode: no GPU). A failed import FAILS the cook loudly
 			// (the cookie would otherwise resolve empty and cook a
 			// wrong-texture pak).
@@ -4325,11 +4325,11 @@ int Run(const CookArgs& c) {
 			// materialAsset records): the editor session minted these into
 			// the cluster pool beyond the reference-bound materials, and the
 			// tour's assignMaterial/-m indices were recorded against that
-			// pool â€” replay the records in order (the record order IS the
+			// pool — replay the records in order (the record order IS the
 			// pool order) so the indices resolve exactly as authored. The
 			// shared import is the same path the editor ran
 			// (ImportMaterialAssetToCluster, cook mode: no GPU). A failed
-			// import shifts every later index â€” FAIL the cook loudly
+			// import shifts every later index — FAIL the cook loudly
 			// instead of cooking a wrong-material pak.
 			for (const auto& ma : tour.materialAssets) {
 				if (ma.editorDefault) {
@@ -4337,7 +4337,7 @@ int Run(const CookArgs& c) {
 					continue;
 				}
 				// Resolve: project-relative records against --content-dir
-				// FIRST (the record's in-project convention â€” as-is/CWD would
+				// FIRST (the record's in-project convention — as-is/CWD would
 				// hit the BUNDLED content tree over the project for same-named
 				// sources), then as-is for absolute/out-of-project records.
 				namespace fs = std::filesystem;
@@ -4381,16 +4381,16 @@ int Run(const CookArgs& c) {
 		}
 	}
 	else {
-		// No tour: ARTIFACT cook â€” the POSITIONAL artifact list (the
+		// No tour: ARTIFACT cook — the POSITIONAL artifact list (the
 		// ALREADY-PROCESSED .geometry blobs; the MeshImporter/import.exe
 		// output). glTF is IMPORT-ONLY and never cooks (the old
 		// GltfToClusterFromVfs in-cook glTF import is GONE): open/drop
 		// the .gltf in the editor (derive-if-stale) or run import.exe,
 		// then cook the .geometry. Each artifact carries the ONE derived
-		// scene (the source import's default scene) â€” no multi-scene
+		// scene (the source import's default scene) — no multi-scene
 		// fan-out, no --scene-index; the pak cooks ALL listed artifacts.
 		// Resolve + read each .geometry through the VFS (the runtime
-		// content abstraction â€” loose files today; pak-embedded /
+		// content abstraction — loose files today; pak-embedded /
 		// patched artifacts land through the same reads later).
 		for (const std::string& inVfs : args.inVfsList) {
 			std::string artPath = smvk::NormalizeAssetUri(
@@ -4400,7 +4400,7 @@ int Run(const CookArgs& c) {
 			auto artBytes = vfs.TryRead(artPath);
 			if (!artBytes || artBytes->empty()) {
 				tool::err() << "Artifact read failed: '" << inVfs
-					<< "' not in VFS (want the derived .geometry â€” import "
+					<< "' not in VFS (want the derived .geometry — import "
 					"the source glTF first: import.exe / the editor's "
 					"MeshImporter)" << std::endl;
 				return 1;
@@ -4410,7 +4410,7 @@ int Run(const CookArgs& c) {
 			if (!smvk::assets::LoadMeshAssetBytes(artBytes->data(),
 				artBytes->size(), meshAsset, aerr)) {
 				tool::err() << "Artifact parse failed: '" << inVfs
-					<< "': " << aerr << " (re-import the source glTF â€” "
+					<< "': " << aerr << " (re-import the source glTF — "
 					"the MeshImporter overwrites the artifacts)"
 					<< std::endl;
 				return 1;
@@ -4447,7 +4447,7 @@ int Run(const CookArgs& c) {
 					return vfs.TryRead(p);
 				return std::nullopt;
 			};
-			// NOTE: heap-allocated â€” Cluster embeds multi-MB pool arrays
+			// NOTE: heap-allocated — Cluster embeds multi-MB pool arrays
 			// and must never live on the (1MB) thread stack. Cook mode =
 			// GPU-free: CPU geometry + retained uploads only, textures
 			// are minted cook ids.
@@ -4461,7 +4461,7 @@ int Run(const CookArgs& c) {
 				artifactCache, readSibling);
 			if (built == 0) {
 				tool::err() << "Artifact build failed: '" << inVfs
-					<< "' built 0 nodes (degenerate/empty â€” re-import "
+					<< "' built 0 nodes (degenerate/empty — re-import "
 					"the source glTF)" << std::endl;
 				return 1;
 			}
@@ -4489,7 +4489,7 @@ int Run(const CookArgs& c) {
 	} // close else block for the artifact path
 	// Import phase finished: commit any staged registry artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
-	// only â€” staged bytes were already used in the import.
+	// only — staged bytes were already used in the import.
 	if (registryStore && registryStore->StagedCount() > 0) {
 		const size_t staged = registryStore->StagedCount();
 		std::string flushErr;
@@ -4507,17 +4507,17 @@ int Run(const CookArgs& c) {
 
 	// World sun per scene (App parity: first directional wins as the
 	// runtime sun). Authored directionals always survive; sunless scenes
-	// synthesize one from the ENV BLOCK (EnvForBake â€” one authored sun).
+	// synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
 	for (auto& sc : sceneClusters)
 		EnsureWorldSun(*sc, EnvForBake(*sc, args));
 
 	// Sun of record -> the scene's look env (sun fields only): an
 	// AUTHORED directional (imported KHR punctual or tour-created) is
-	// scene CONTENT â€” it wins over the env block's sun fields so exactly
+	// scene CONTENT — it wins over the env block's sun fields so exactly
 	// ONE sun reaches the App (the env keeps its sky/fog/exposure). The
 	// env block is lux-native, so the light's lux copies straight in (no
 	// conversion). A synthesized WorldSun already carries the env's own
-	// values â€” the seed is a no-op there (float-exact round trip).
+	// values — the seed is a no-op there (float-exact round trip).
 	for (auto& sc : sceneClusters) {
 		if (!sc->scene.envAuthored)
 			continue; // runtime seeds from the light at load
@@ -4581,7 +4581,7 @@ int Run(const CookArgs& c) {
 	// writes them LOOSE beside the sources and registers them (the
 	// funnel); pak embeds the same paths (PakBackend serves by path).
 	std::vector<std::pair<std::string, std::vector<uint8_t>>> giBlobs;
-	// Authored convex GI volumes: bake IN-PROCESS only as the fallback â€”
+	// Authored convex GI volumes: bake IN-PROCESS only as the fallback —
 	// when the GiBaker cvolmanifest (stable path, see the discovery below)
 	// already exists (the editor cook flow runs GiBaker from 0 FIRST),
 	// its fresh bake wins (same definition, hand-tunable) and the
@@ -4609,7 +4609,7 @@ int Run(const CookArgs& c) {
 		}
 		if (haveLooseManifest) {
 			tool::out() << "cvolume manifest found (stable path)"
-				" â€” in-process bake skipped, the loose bake "
+				" — in-process bake skipped, the loose bake "
 				"embeds below\n";
 		}
 		else if (!BakeAuthoredCvolumes(sceneClusters, args, cvolSceneId,
@@ -4730,7 +4730,7 @@ int Run(const CookArgs& c) {
 				<< " / " << cluster->ListTextureUris().size()
 				<< " (decoded " << textured << ")\n" << std::flush;
 		}
-		// Sun/sky record from the scene's env block (EnvForBake â€” ONE
+		// Sun/sky record from the scene's env block (EnvForBake — ONE
 		// authored sun/sky everywhere, matching every other bake stage).
 		const BakeEnv be = EnvForBake(*cluster, args);
 		buildOpts.env.sunAzimuthDeg = be.sunAzimuth;
@@ -4771,7 +4771,7 @@ int Run(const CookArgs& c) {
 			return 1;
 		}
 		// CLI --spot specs APPEND to the harvested static scene lights
-		// (assignment would wipe them â€” both sets bake together).
+		// (assignment would wipe them — both sets bake together).
 		traceScene.spots.insert(
 			traceScene.spots.end(), spots.begin(), spots.end());
 		tool::err() << "  [LM] trace scene: " << traceScene.Bvh().TriangleCount()
@@ -4782,7 +4782,7 @@ int Run(const CookArgs& c) {
 
 		// Charts per eligible mesh (1:1 node->mesh, non-Blend material).
 		// Charts are the ATLAS packing unit (one mesh owns many chart
-		// rects, every rect small), so charting has no failure modes â€”
+		// rects, every rect small), so charting has no failure modes —
 		// the ATLAS round below lowers the density globally until all
 		// charts of ALL meshes fit the fixed-width atlas and its height
 		// cap.
@@ -4870,7 +4870,7 @@ int Run(const CookArgs& c) {
 				// MASK no-cast (cutout on a decal atlas) still charts.
 			}
 			// Instancing safety net: de-instancing above leaves every mesh
-			// 1:1, but degenerate clones keep the shared mapping â€” one
+			// 1:1, but degenerate clones keep the shared mapping — one
 			// lightmap position per instance is still unsupported, skip.
 			uint32_t refs = 0;
 			for (const auto& [n2, m2] : cluster->scene.meshForNode)
@@ -4881,7 +4881,7 @@ int Run(const CookArgs& c) {
 				continue;
 			}
 			// Name exclusion (--lm-exclude): vegetation leaf cards, glass
-			// props, ... â€” the worst lightmap targets in the scene. They
+			// props, ... — the worst lightmap targets in the scene. They
 			// keep their analytic/probe lighting and stay in the trace
 			// scene (still occlude/cast).
 			if (!args.lmExcludeKeywords.empty()
@@ -5315,7 +5315,7 @@ int Run(const CookArgs& c) {
 		// ---- Legacy per-mesh LOD sources (--lods on) ----
 		// With no successful proxy bake, siblings cook FIRST. Each mesh
 		// charts and bakes its own LOD0 upload
-		// (LOD0) exactly once â€” one bake, one atlas level â€” and every
+		// (LOD0) exactly once — one bake, one atlas level — and every
 		// sibling level receives the layout through UV transfer below.
 		// All LODs sample the same rects, so LOD switches never
 		// re-light and the atlas stops growing per level. LOD0's charts
@@ -5386,11 +5386,11 @@ int Run(const CookArgs& c) {
 			// canvas; Append rejects charts wider than the request and
 			// reports height overflow). Halve to feasible, geometric
 			// binary search to ~10%, drop hungriest meshes at the
-			// 1 texel/m floor â€” all driven by the height cap â€” but the
-			// WINNING probe's level+atlas are kept verbatim â€” xatlas
+			// 1 texel/m floor — all driven by the height cap — but the
+			// WINNING probe's level+atlas are kept verbatim — xatlas
 			// threading makes regeneration non-identical, so the winner
 			// is never re-probed. The winning level IS the bake level
-			// (LOD0 uploads) â€” the single bake and every UV transfer
+			// (LOD0 uploads) — the single bake and every UV transfer
 			// below consume it directly.
 			const uint32_t kMaxAtlasH = args.lmMaxHeight;
 			// Fixed atlas width, rounded to the BC6H 4-texel block
@@ -5460,7 +5460,7 @@ int Run(const CookArgs& c) {
 			// Repack failures split by class: Infeasible (near-capacity
 			// job) converges the density down; InternalError (the whole
 			// sep-inflated job under HALF the atlas area with no
-			// placement) is a packer deficiency â€” abort the cook loudly
+			// placement) is a packer deficiency — abort the cook loudly
 			// instead of converging into the ground to route around it.
 			bool repackBug = false;
 			auto repackOrAbort = [&](SgLightmapXatlasLevel& lv,
@@ -5603,7 +5603,7 @@ int Run(const CookArgs& c) {
 				}
 				else {
 					// Phase 2: geometric binary search in (fit, fail).
-					// Winners are kept verbatim (no regen â€” see above).
+					// Winners are kept verbatim (no regen — see above).
 					while (failDensity / fitDensity > 1.10f) {
 						if (++round > 32)
 							break;
@@ -5658,7 +5658,7 @@ int Run(const CookArgs& c) {
 					return 1;
 				}
 				// Fixed atlas width (xatlas's own canvas can be narrower;
-				// the empty right columns stay zero â€” see the planar
+				// the empty right columns stay zero — see the planar
 				// block). Safe here: stamping below is texel-space and
 				// the normalize pass divides by the FINAL dims.
 				atlas.width = atlasW;
@@ -5764,9 +5764,9 @@ int Run(const CookArgs& c) {
 			// the bake; see below).
 			for (LmWork& w : work) {
 				// Source stamp: the charted parameterization (always the
-				// mesh's own upload = LOD0) stamps itself directly â€”
+				// mesh's own upload = LOD0) stamps itself directly —
 				// per-corner chart-uv + chart-id stamping, seam-correct (see
-				// StampLightmapUvs) â€” with texel-space transforms (the
+				// StampLightmapUvs) — with texel-space transforms (the
 				// normalize pass below finishes the job).
 				smvk::StaticMeshUpload* srcUpload =
 					const_cast<smvk::StaticMeshUpload*>(
@@ -5790,7 +5790,7 @@ int Run(const CookArgs& c) {
 					tool::err() << "  [LM] stamp node " << w.node
 					<< ": uncharted=" << uncharted << "\n" << std::flush;
 				// The draw ring carries the LOBE COUNT (5/6/9/12) chosen by
-				// the bake for this MESH (read from any of its chunks â€”
+				// the bake for this MESH (read from any of its chunks —
 				// the per-mesh selection wrote them all); 0xFFFFFFFF = no
 				// lightmap stays the pak default. The per-chart atlas
 				// transforms ride the mesh for the shader unpack.
@@ -5857,7 +5857,7 @@ int Run(const CookArgs& c) {
 				}
 				// No meshlet work in the bake stage (decoupled by design):
 				// meshlets are built once, after ALL lightmap stamping
-				// finishes, by the "Meshlet restore" stage below â€” from
+				// finishes, by the "Meshlet restore" stage below — from
 				// this final stamped topology, never a pre-stamp layout.
 				++lmMeshes;
 			}
@@ -5963,7 +5963,7 @@ int Run(const CookArgs& c) {
 			// Raw-atlas debug PNG next to the atlas (<scene>_atlas.png):
 			// the baked payload itself (lobe 0, editor flat-view display
 			// mapping), NOT the uv2-unwrapped geometry draw the editor
-			// exports â€” comparing the two localizes corruption to the
+			// exports — comparing the two localizes corruption to the
 			// bake/payload vs the stamping/draw path. Non-fatal.
 			{
 				std::filesystem::path pngPath =
@@ -5983,7 +5983,7 @@ int Run(const CookArgs& c) {
 			}
 			// Chart-id map (<scene>_charts.png): chunk rects colored by the
 			// stamped chart id, inner content bright / margin ring dimmed /
-			// separator black â€” chart layout and padding-leak inspection at
+			// separator black — chart layout and padding-leak inspection at
 			// a glance (see lm_png.h). Non-fatal.
 			{
 				std::filesystem::path cPath =
@@ -6031,7 +6031,7 @@ int Run(const CookArgs& c) {
 			// Chart transform debug dump (<scene>_charts_debug.txt): every
 			// chunk's texel-space transform (exactly what the VS applies
 			// after the normalize pass) + bake-point/tri counts, plus an
-			// overlap audit of the chunk rects â€” xatlas packs the per-chart
+			// overlap audit of the chunk rects — xatlas packs the per-chart
 			// bitmaps disjoint, so rect intersections mean two payloads
 			// write the same atlas texels (last writer wins, both charts
 			// sample the shared region = the "overlapped charts" artifact).
@@ -6298,7 +6298,7 @@ int Run(const CookArgs& c) {
 		// Lobe selection diagnostics: per mesh, the candidate counts'
 		// relative irradiance errors and the kept count. "Nothing passed"
 		// (all errors over budget, chosen = preferred) is distinguishable
-		// from "the preferred count genuinely won" here â€” the chunk
+		// from "the preferred count genuinely won" here — the chunk
 		// histogram alone cannot tell them apart. rel = vs the traced
 		// probes (Monte-Carlo noise floor, diagnostics); deg = vs the
 		// preferred-count reconstruction (the selection criterion).
@@ -6376,7 +6376,7 @@ int Run(const CookArgs& c) {
 	}
 
 	// Quick-bakes stop HERE: the capture stage above wrote the loose
-	// sidecars (gi/cubemaps/<base>[_N].ktx2 + the .cubemanifest) â€”
+	// sidecars (gi/cubemaps/<base>[_N].ktx2 + the .cubemanifest) —
 	// that IS the quick-refresh output. Serialization, the pak write and
 	// every post-capture stage below belong to the full cook; skipping
 	// them keeps the last pak untouched (its blobs stay overridden by
@@ -6391,13 +6391,13 @@ int Run(const CookArgs& c) {
 	// Meshlet restore (post-lightmap): with --lightmap on, meshlets were
 	// deliberately NOT built anywhere earlier in this cook
 	// (importMeshletCfg disabled the importer and merged-block paths);
-	// they are built HERE, once, from the FINAL topology â€” after the
+	// they are built HERE, once, from the FINAL topology — after the
 	// chart-uv stamping and seam vertex duplication finished. Every
 	// meshlet vertex window references already-final chart uvs: the
 	// parameterization is complete before meshletization begins, so
 	// meshlet generation can partition triangles but never changes
 	// the lightmap parameterization. A failed build leaves the mesh
-	// WITHOUT meshlets (the runtime draws the classic indexed path) â€”
+	// WITHOUT meshlets (the runtime draws the classic indexed path) —
 	// never stale ones referencing a pre-stamp vertex layout. Covers
 	// every scene cluster and every drawable mesh (de-instanced clones
 	// and merged blocks rebind their nodes in meshForNode); meshes

@@ -103,7 +103,7 @@ struct AssetManifest {
 };
 
 // ---- .material (the material asset) --------------------------------------
-// The PBR values (no pool handles â€” a scene binds them) + texture refs
+// The PBR values (no pool handles — a scene binds them) + texture refs
 // (image files beside the glTF, as-authored glTF URIs; srgb flags by the
 // glTF texture slot convention: baseColor/emissive are sRGB, the rest
 // linear). Empty path = unbound slot.
@@ -161,7 +161,7 @@ bool SaveTextureAsset(const std::filesystem::path& path,
 
 // ---- .mesh (the scene-graph + geometry asset) ----------------------------
 // Everything the world build needs: the hierarchy (RAW locals as the glTF
-// authored them â€” the coordFix basis rides the scene root at load, same
+// authored them — the coordFix basis rides the scene root at load, same
 // contract as the live import), the packed SoA geometry blobs (the GPU
 // heap layout: VertexPos[] + VertexShading[] + u32[]), and the per-node
 // bindings: geometry instances (each with its MATERIAL ASSET GUID) +

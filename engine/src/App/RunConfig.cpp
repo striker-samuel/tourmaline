@@ -12,8 +12,15 @@
 #include <cstring>
 #include <string>
 
+#ifndef _WIN32
+#include <unistd.h> // ::environ (the process environment; MSVC uses _environ)
+#endif
+
 // NOTE: no extern for _environ here — <cstdlib> already declares it (as a
-// macro over __p__environ on MSVC); redeclaring trips C4273.
+// macro over __p__environ on MSVC); redeclaring trips C4273. On POSIX the
+// same holds via <unistd.h> above - the WarnUnknown loop qualifies ::environ
+// (a block-scope `extern char** environ;` inside namespace engine would
+// declare engine::environ, an undefined reference).
 
 
 namespace engine {
@@ -493,8 +500,7 @@ void RunConfig::WarnUnknown() {
 			std::fprintf(stderr, "[RunConfig] unknown TOURMALINE_* var (typo?): %s\n", name.c_str());
 	}
 #else
-	extern char** environ;
-	for (char** e = environ; e && *e; ++e) {
+	for (char** e = ::environ; e && *e; ++e) {
 		const char* eq = std::strchr(*e, '=');
 		if (!eq)
 			continue;

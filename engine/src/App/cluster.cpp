@@ -997,7 +997,7 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(
 	const MaterialCreateInfo& info)
 {
-	// Resolve baseColor texture â€“ prefer baseColorTexture, fall back to legacy diffuse
+	// Resolve baseColor texture – prefer baseColorTexture, fall back to legacy diffuse
 	TextureHandle baseTex = !info.baseColorTexture.empty() ? info.baseColorTexture : info.diffuse;
 
 	MaterialValues values{};

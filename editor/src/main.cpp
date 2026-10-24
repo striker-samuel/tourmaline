@@ -220,6 +220,79 @@ void InstallCrashHandler() {
 } // namespace
 #endif // _WIN32
 
+#ifndef _WIN32
+// ---------------------------------------------------------------------------
+// Crash stack writer (Linux): SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT handlers
+// that dump the glibc backtrace to stderr AND tourmaline_fatal.log in the
+// working directory - the same evidence contract as the Windows VEH above
+// (frame names need the symbol table: build with -g or run under gdb for
+// full resolution; module+offset still narrows the fault). The handler
+// re-raises with the default disposition afterward so exit status /
+// core dumps behave exactly as without it.
+// ---------------------------------------------------------------------------
+#include <csignal>
+#include <cstdarg>
+#include <cstdlib>
+#include <execinfo.h>
+
+namespace {
+
+FILE* g_crashLog = nullptr;
+
+void CrashLogOpen() {
+	if (!g_crashLog)
+		g_crashLog = std::fopen("tourmaline_fatal.log", "a");
+}
+
+void CrashLogPrintf(const char* fmt, ...) {
+	va_list a1, a2;
+	va_start(a1, fmt);
+	va_copy(a2, a1);
+	std::vfprintf(stderr, fmt, a1);
+	if (g_crashLog)
+		std::vfprintf(g_crashLog, fmt, a2);
+	va_end(a1);
+	va_end(a2);
+}
+
+void DumpStack() {
+	void* frames[64]{};
+	const int n = backtrace(frames, int(std::size(frames)));
+	char** syms = backtrace_symbols(frames, n);
+	CrashLogOpen();
+	CrashLogPrintf("[Crash] native stack (%d frames):\n", n);
+	for (int i = 0; i < n; ++i)
+		CrashLogPrintf("[Crash]   #%02d %s\n", i, syms ? syms[i] : "?");
+	std::free(syms);
+	if (g_crashLog) {
+		std::fflush(g_crashLog);
+		std::fclose(g_crashLog);
+		g_crashLog = nullptr;
+	}
+	std::fflush(stderr);
+}
+
+extern "C" void CrashHandler(int sig) {
+	CrashLogOpen();
+	CrashLogPrintf("[Crash] signal %d (%s)\n", sig, strsignal(sig));
+	DumpStack();
+	// Restore the default disposition and re-raise: WER-equivalent
+	// behavior (core dump / exit status) stays intact.
+	std::signal(sig, SIG_DFL);
+	std::raise(sig);
+}
+
+void InstallCrashHandler() {
+	std::signal(SIGSEGV, &CrashHandler);
+	std::signal(SIGBUS, &CrashHandler);
+	std::signal(SIGILL, &CrashHandler);
+	std::signal(SIGFPE, &CrashHandler);
+	std::signal(SIGABRT, &CrashHandler);
+}
+
+} // namespace
+#endif // !_WIN32 (Linux crash-stack writer)
+
 namespace {
 
 	void PrintUsage(const char* prog) {
@@ -289,11 +362,9 @@ namespace {
 	// didn't land in the tested window — the queue/split topology was never
 	// implicated. TOURMALINE_ASYNC_COMPUTE=0 still kills the split for A/B
 	// runs.
-#ifdef _WIN32
-	// Crash stack writer (see the comment block above): FIRST, before any
-	// subsystem init, so any boot-time fault is captured too.
-	InstallCrashHandler();
-#endif
+// Crash stack writer (see the comment blocks above): FIRST, before any
+// subsystem init, so any boot-time fault is captured too.
+InstallCrashHandler();
 	const char* scenePath = nullptr;
 	const char* outPak = nullptr;
 	const char* projectDir = nullptr;

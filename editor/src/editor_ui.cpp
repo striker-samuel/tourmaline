@@ -408,7 +408,7 @@ namespace editor {
 			// Project first (Unity/Unreal style): a project folder owns
 			// content/, paks/, gi/ and its own .tourmaline/ cache. Imports
 			// land in it and the editor shows them
-			// pipeline â€” no manual staging.
+			// pipeline — no manual staging.
 			if (ImGui::MenuItem("New / Open Project...")) {
 				std::string picked;
 				if (NativePickFolder(picked) && !picked.empty())
@@ -519,7 +519,7 @@ namespace editor {
 			// Del-key twin (modal registry 'Del'): deletes the editor-created
 			// content in the selection (created lights, terrain groups);
 			// imports/references are refused with a log (ids must stay
-			// stable â€” hide those instead).
+			// stable — hide those instead).
 			if (ImGui::MenuItem("Delete selection", "Del", false,
 				m_world && (m_selected != UINT32_MAX
 					|| !m_selection.empty())))
@@ -537,7 +537,7 @@ namespace editor {
 			// per-attr edits drop (their LAST occurrence already carries the
 			// live state), the redo tail clears, the .tour lightens. Creates
 			// and terrain paint stamps stay (structure / ordered bake). NOT
-			// undoable â€” same contract as Maya's delete-history.
+			// undoable — same contract as Maya's delete-history.
 			if (ImGui::MenuItem(
 				("Coalesce history (" + std::to_string(UndoDepth())
 					+ " cmds)").c_str(),
@@ -549,7 +549,7 @@ namespace editor {
 			}
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Keeps only the last edit per node/attr "
-					"channel â€” the surviving state â€” so the tour replays "
+					"channel — the surviving state — so the tour replays "
 					"identically from fewer commands.");
 			ImGui::EndMenu();
 		}
@@ -574,7 +574,7 @@ namespace editor {
 		}
 		if (ImGui::BeginMenu("View")) {
 			ImGui::TextDisabled("Debug views share the App's keys (F1..F6,"
-				"F9..F11, P) â€” same view, same key, live view.");
+				"F9..F11, P) — same view, same key, live view.");
 			// Shading: the GI tri-view (the bake workflow's three looks),
 			// ONE block — the old F1/F2 pair ("Unlit"/"Lit") duplicated
 			// these (same ViewMode targets; the tri-view adds the ambient
@@ -1226,7 +1226,7 @@ namespace editor {
 		const bool filtering = m_filterBuf[0] != '\0';
 		// Editor orbit cameras (virtual rows): click binds the ACTIVE
 		// viewport (same as its chip combo). These are session view state,
-		// never scene nodes â€” they don't select, don't cook, and stay out
+		// never scene nodes — they don't select, don't cook, and stay out
 		// of the shift-range order.
 		auto drawEditorCamRow = [&](size_t ci) {
 			const EditorCam& ec = m_editorCams[ci];
@@ -1358,7 +1358,7 @@ namespace editor {
 		m_outlinerOrder.clear(); // rebuilt below (tree XOR filter rows)
 		ImGui::BeginChild("##tree");
 		// World pseudo-node: global render settings. Pinned above the tree,
-		// never part of it â€” no children, no drag&drop, no rename/delete.
+		// never part of it — no children, no drag&drop, no rename/delete.
 		// (Filtered out by the node filter like everything else.)
 		if (!filtering || std::string("World").find(m_filterBuf) != std::string::npos) {
 			ImGui::PushID("worldnode");
@@ -1512,10 +1512,10 @@ namespace editor {
 			ImGui::SetScrollHereY(0.5f);
 		if (open) {
 			// Disabled references keep their placeholder row (the anchor
-			// for re-enabling) but the TREE is not shown â€” the nodes stay
+			// for re-enabling) but the TREE is not shown — the nodes stay
 			// in the scene (stable ids), just out of sight.
 			if (m_disabledRefRoots.contains(node)) {
-				ImGui::TextDisabled("    (reference disabled â€” %zu node(s) "
+				ImGui::TextDisabled("    (reference disabled — %zu node(s) "
 					"hidden)",
 					RefSubtreeSizeForOutliner(node));
 			}
@@ -1644,7 +1644,7 @@ namespace editor {
 		}
 		// 8-bit 1-4 channel data (transcoded RGBA32 lands here too: 4
 		// comps, 4-byte texels). NOTE: GetElementSize is bytes per TEXEL,
-		// not per component â€” RGBA8 reports 4.
+		// not per component — RGBA8 reports 4.
 		const ktx_uint32_t comps = ktxTexture2_GetNumComponents(raw);
 		const ktx_size_t elemSize =
 			ktxTexture_GetElementSize(reinterpret_cast<ktxTexture*>(raw));
@@ -2073,7 +2073,7 @@ namespace editor {
 		ImGui::Separator();
 		ImGui::Text("Cubemap capture: '%s'",
 			getNodeName(scene, int(node)).c_str());
-		ImGui::TextDisabled("pinned probe â€” wins weight ties at load");
+		ImGui::TextDisabled("pinned probe — wins weight ties at load");
 		auto beginCubeDrag = [&](const char* attr) {
 			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCubemapAttr ||
 				m_pending.cmd.node != node || m_pending.cmd.cubemapAttr != attr))
@@ -2733,7 +2733,7 @@ namespace editor {
 		DrawInspectorOverrides(node);
 
 		// Environment node: mark/use this node as an IBL source (scene
-		// definition â€” the block lives in the scene, the selection below
+		// definition — the block lives in the scene, the selection below
 		// resolves into the rendered look).
 		{
 			ImGui::Separator();
@@ -2805,7 +2805,7 @@ namespace editor {
 		}
 		// NOTE: the active-viewport orbit camera used to live here; it moved
 		// to the World panel ("Viewport camera"). Node pages show authored
-		// state only â€” camera nodes get the lens section above instead.
+		// state only — camera nodes get the lens section above instead.
 	}
 
 	void EditorApp::DrawCameraSection() {
@@ -2893,7 +2893,7 @@ namespace editor {
 				"(whole scene, atlas uv2 layout).");
 			ImGui::Checkbox("Export UV coordinates", &m_lmExportUv);
 			ImGui::SetItemTooltip("Render the atlas uv itself (checker + "
-				"gradient + stretch glow) instead of the baked content â€” "
+				"gradient + stretch glow) instead of the baked content — "
 				"the QA view of the parameterization.");
 			if (!m_lmGpu)
 				ImGui::BeginDisabled();
@@ -3009,7 +3009,7 @@ namespace editor {
 	// sampling settings each. A material that uses one mints the cluster
 	// texture resource at use time; until then these are authoring state.
 	// Persisted as img.* editorSettings (legacy) AND cooked fileNode records
-	// (path + colorspace + sampler intent â€” the cooker reads them for KTX
+	// (path + colorspace + sampler intent — the cooker reads them for KTX
 	// conversion); fileNodes win on load.
 	void EditorApp::DrawImagesTab() {
 		if (ImGui::Button("Add image...")) {
@@ -3018,7 +3018,7 @@ namespace editor {
 				AddImageDef(picked);
 		}
 		ImGui::SameLine();
-		ImGui::TextDisabled("%zu image(s) â€” outside the DAG, editor-only",
+		ImGui::TextDisabled("%zu image(s) — outside the DAG, editor-only",
 			m_images.size());
 		if (m_images.empty()) {
 			ImGui::TextDisabled("Create > Image... adds one; a material that");
@@ -3096,7 +3096,7 @@ namespace editor {
 	}
 
 	void EditorApp::DrawInsetTag() {
-		// (Viewport legend removed â€” overlay window, menu item and chip
+		// (Viewport legend removed — overlay window, menu item and chip
 		// button deleted. The per-view refresh combos moved onto the
 		// viewport chips, next to the per-panel view-mode combo.)
 
@@ -3462,7 +3462,7 @@ namespace editor {
 		ImGui::Text("Export the current scene + tour edits to a cooked .pak.");
 		ImGui::Separator();
 
-		// Labels ride their OWN lines and fields take the full width â€”
+		// Labels ride their OWN lines and fields take the full width —
 		// shared label/widget lines collide in narrow windows.
 		ImGui::Text("Output .pak path (relative to content/ or absolute):");
 		{
@@ -3518,7 +3518,7 @@ namespace editor {
 			const bool fresh = !m_cookDefHash.empty()
 				&& m_giBakedHash == m_cookDefHash;
 			ImGui::TextDisabled("GI baked (%s)", fresh ? "sidecars fresh"
-				: "may predate this cook â€” rebake to refresh");
+				: "may predate this cook — rebake to refresh");
 		}
 		if (m_bakeRunning) {
 			ImGui::Text("Baking GI... (detail in the task window)");
@@ -3688,7 +3688,7 @@ namespace editor {
 	// Texture-centric material authoring: pick a material, assign its PBR
 	// texture slots from the cluster texture registry, manage layers, and add
 	// textures as FILE PATH refs (KTX2 loads into the pool with the path as
-	// the URI â€” cook re-embeds the stashed bytes). Deeper per-material pages
+	// the URI — cook re-embeds the stashed bytes). Deeper per-material pages
 	// (emissive/alpha/flags/travel) live in the material focus page.
 	// Texture thumbnail bindings (the material page's previews; see the
 	// header block). The sampler is shared with the cubemap face strip

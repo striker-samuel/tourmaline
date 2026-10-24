@@ -5,6 +5,26 @@ project(Engine)
 
 set(ENGINE_BACKEND "Vulkan")
 
+# --- vk_format_utils.h fallback ----------------------------------------------
+# The engine includes <vulkan/utility/vk_format_utils.h> (impl.cpp), which
+# ships with the Vulkan SDK - but several distro libvulkan-dev packages
+# trim the utility headers (Ubuntu 24.04 does). Probe the system Vulkan
+# headers; when the file is absent, append the tracked vendored copy
+# (external/vk-headers-extra, the LunarG-generated SDK header, Apache-2.0
+# - see THIRD_PARTY_NOTICES) to the include path. The probe keeps the
+# system/SDK pair in charge wherever it exists (matching core/util
+# versions), and the vendored file only fills the gap.
+include(CheckIncludeFileCXX)
+set(CMAKE_REQUIRED_INCLUDES ${Vulkan_INCLUDE_DIRS})
+check_include_file_cxx("vulkan/utility/vk_format_utils.h" TOURMALINE_HAVE_VK_FORMAT_UTILS)
+set(CMAKE_REQUIRED_INCLUDES "")
+set(ENGINE_FALLBACK_INCS "")
+if(NOT TOURMALINE_HAVE_VK_FORMAT_UTILS)
+    message(STATUS "vk_format_utils.h missing from the system Vulkan headers - "
+        "appending the vendored copy (external/vk-headers-extra)")
+    set(ENGINE_FALLBACK_INCS "${TOURMALINE_SOURCE_DIR}/external/vk-headers-extra")
+endif()
+
 
 
 file(GLOB_RECURSE ENGINE_SRC CONFIGURE_DEPENDS
@@ -35,6 +55,7 @@ target_include_directories(engine
         # the executables (gltf_import PUBLIC-links engine, so linking it
         # here would be a dependency cycle).
         ${TOURMALINE_SOURCE_DIR}/tools/gltf_import/include
+        ${ENGINE_FALLBACK_INCS}
 )
 
 
@@ -52,6 +73,13 @@ if(ENGINE_BACKEND STREQUAL "Vulkan")
     target_compile_definitions(engine PRIVATE ENGINE_VULKAN)
 endif()
 
+# Full Vulkan headers (Linux; see the root CMakeLists block): PUBLIC so
+# every engine consumer (app, editor, tools, tests) compiles against the
+# same complete 1.4 symbol set, ahead of the older distro headers.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(engine PUBLIC vulkan_headers_iface)
+endif()
+
 # ---------------------------------------------------------------------------
 # Precompiled Header for the engine (moved with the world renderer from
 # appcore). CMake's built-in target_precompile_headers works with both
@@ -60,9 +88,26 @@ endif()
 # ever masks a header bug.
 # ---------------------------------------------------------------------------
 option(TOURMALINE_PCH "Use precompiled headers for engine" ON)
+if(TOURMALINE_PCH AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GCC's PCH does not carry #pragma-once state across the .gch boundary:
+    # every header reachable through pch.h AND the TU's own include chain
+    # redefines its contents (redefinition errors across Engine/*.h). The
+    # headers are #pragma-once style (no classic include guards), so GCC
+    # instead gets the pch.h FORCE-INCLUDED as a plain -include (identical
+    # header availability - many TUs rely on pch.h's transitive includes -
+    # at the cost of re-parsing it per TU, with fully normal pragma-once
+    # semantics). MSVC/Clang keep the real PCH.
+    message(STATUS "TOURMALINE_PCH: GCC uses -include pch.h instead of a .gch (PCH + #pragma once redefinition breakage)")
+    set(TOURMALINE_PCH OFF)
+    set(TOURMALINE_GCC_FORCE_INCLUDE_PCH ON)
+endif()
 if(TOURMALINE_PCH)
     target_precompile_headers(engine PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/pch.h
+    )
+elseif(TOURMALINE_GCC_FORCE_INCLUDE_PCH)
+    target_compile_options(engine PRIVATE
+        "-include${CMAKE_CURRENT_SOURCE_DIR}/pch.h"
     )
 endif()
 
@@ -103,45 +148,81 @@ target_link_libraries(engine
         imgui_backend_sdl3
         imgui_backend_vulkan
         lz4
-        winhttp
-        bcrypt
 )
+if(WIN32)
+    # Windows system libs. (winhttp/bcrypt were linked historically; the
+    # tree no longer references them, but the link stays to keep the
+    # proven Windows link line untouched.)
+    target_link_libraries(engine PRIVATE winhttp bcrypt)
+else()
+    # std::thread and the worker backends need -pthread; dl for the
+    # runtime module loads.
+    find_package(Threads REQUIRED)
+    target_link_libraries(engine PUBLIC Threads::Threads)
+    target_link_libraries(engine PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 # DXC -- shader compiling HLSL->SPIRV
+# Windows: the vendored external/dxc MSVC package (dxcompiler.lib import
+# lib; dxcompiler.dll/dxil.dll staged at the build root POST_BUILD).
+# Linux: the vendored external/dxc linux package (lib/libdxcompiler.so +
+# libdxil.so), staged at the build root too; the exes' $ORIGIN rpath
+# (cmake/HostSetup.cmake + editor/CMakeLists) keeps them loadable.
+# Staging targets ${TOURMALINE_BINARY_DIR} (the build root), where every
+# host exe runs from (RUNTIME_OUTPUT_DIRECTORY convention) - NOT the
+# static lib's own dir ($<TARGET_FILE_DIR:engine> would drop the DLLs in
+# engine/ where no loader searches).
 set(DXC_DIR "${TOURMALINE_SOURCE_DIR}/external/dxc")
 
 target_include_directories(engine PRIVATE
     "${DXC_DIR}/include"
 )
 
-target_link_libraries(engine PRIVATE
-    "${DXC_DIR}/lib/x64/dxcompiler.lib"
-)
+if(WIN32)
+    target_link_libraries(engine PRIVATE
+        "${DXC_DIR}/lib/x64/dxcompiler.lib"
+    )
 
+    add_custom_command(TARGET engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DXC_DIR}/bin/x64/dxcompiler.dll"
+            "${TOURMALINE_BINARY_DIR}"
 
-add_custom_command(TARGET engine POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${DXC_DIR}/bin/x64/dxcompiler.dll"
-        "$<TARGET_FILE_DIR:engine>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DXC_DIR}/bin/x64/dxil.dll"
+            "${TOURMALINE_BINARY_DIR}"
+    )
+else()
+    target_link_libraries(engine PRIVATE
+        "${DXC_DIR}/lib/libdxcompiler.so"
+    )
 
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${DXC_DIR}/bin/x64/dxil.dll"
-        "$<TARGET_FILE_DIR:engine>"
-)
+    add_custom_command(TARGET engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DXC_DIR}/lib/libdxcompiler.so"
+            "${TOURMALINE_BINARY_DIR}"
 
-# OptickCore builds SHARED upstream -> its DLL must sit next to the exe.
-# $TARGET_FILE:OptickCore resolves to the DLL on Windows.
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${DXC_DIR}/lib/libdxil.so"
+            "${TOURMALINE_BINARY_DIR}"
+    )
+endif()
+
+# OptickCore builds SHARED upstream -> its runtime (DLL on Windows, .so
+# on Linux) must sit next to the exes (build root, same staging target
+# as DXC above - the host-staging in cmake/HostSetup.cmake mirrors it).
 add_custom_command(TARGET engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:OptickCore>"
-        "$<TARGET_FILE_DIR:engine>"
+        "${TOURMALINE_BINARY_DIR}"
 )
 
-# SDL3 is SHARED (vendored prebuilt) -> its DLL must sit next to the exe.
+# SDL3 is SHARED (vendored prebuilt on Windows / built as a subproject or
+# system on Linux) -> same build-root staging.
 add_custom_command(TARGET engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:SDL3::SDL3>"
-        "$<TARGET_FILE_DIR:engine>"
+        "${TOURMALINE_BINARY_DIR}"
 )
 
 # ---------------------------------------------------------------------------

@@ -68,13 +68,27 @@ target_link_libraries(Editor
         # svg_icons.cpp: imgui_impl_vulkan.h pulls <vulkan/vulkan.h>
         # (the backend TU itself is compiled into the engine).
         Vulkan::Vulkan
-        # main.cpp crash stack writer (SymFromAddr/SymGetLineFromAddr64).
-        Dbghelp
 )
+if(WIN32)
+    # main.cpp crash stack writer (SymFromAddr/SymGetLineFromAddr64);
+    # the Linux counterpart uses glibc's execinfo backtrace (in libc).
+    target_link_libraries(Editor PRIVATE Dbghelp)
+endif()
 
 set_target_properties(Editor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+# Linux: the staged .so's (SDL3 / OptickCore / KTX / libdxcompiler) sit
+# next to the exe - $ORIGIN keeps them loadable (App gets this via
+# cmake/HostSetup.cmake's tourmaline_host_setup; the editor wires its own
+# properties).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_target_properties(Editor PROPERTIES
+        BUILD_RPATH "\$ORIGIN"
+        INSTALL_RPATH "\$ORIGIN"
+    )
+endif()
 
 # KTX / OptickCore are SHARED: stage next to Editor.exe (same as App).
 add_custom_command(TARGET Editor POST_BUILD

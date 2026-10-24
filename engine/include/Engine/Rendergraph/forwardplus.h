@@ -374,8 +374,8 @@ struct ForwardPlus {
 	}
 
 	void DestroyShaders() {
-		cullProgram = ShaderProgram{};
-		depthProgram = ShaderProgram{};
+		cullProgram = ShaderProgram();
+		depthProgram = ShaderProgram();
 		cullModule = {};
 		depthVsModule = {};
 	}

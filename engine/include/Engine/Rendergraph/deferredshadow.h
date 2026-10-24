@@ -500,7 +500,7 @@ struct DeferredShadows {
 
     void DestroyShaders() {
         for (uint32_t p = 0; p < 3; ++p) {
-            phasePrograms[p] = ShaderProgram{};
+            phasePrograms[p] = ShaderProgram();
             phaseModules[p] = {};
         }
     }

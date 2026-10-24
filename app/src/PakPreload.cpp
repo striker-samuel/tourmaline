@@ -16,6 +16,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h> // GetModuleFileNameA (exe-relative pak resolution)
+#else
+#include <unistd.h> // readlink (/proc/self/exe)
 #endif
 
 namespace app {
@@ -34,6 +36,10 @@ std::string ResolvePakOpenPath(const std::string& scenePak) {
 #ifdef _WIN32
 			DWORD n = GetModuleFileNameA(nullptr, exePath, DWORD(sizeof(exePath)));
 			(void)n;
+#else
+			const ssize_t n = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+			if (n > 0)
+				exePath[n] = '\0';
 #endif
 			if (exePath[0])
 				candidates.push_back(

@@ -23,6 +23,11 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <strings.h> // strcasecmp (ScanLutFiles' extension compare)
+#include <time.h>    // localtime_r (screenshot timestamp)
+#endif
+
 #include <Engine/core.h>
 #include <Engine/platform.h> // readFile (exe-relative SPV loads)
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
@@ -1465,7 +1470,7 @@ namespace engine {
 			std::cerr << "[WorldRenderer] default_normals_debug unavailable - Normals view falls back to Lit\n";
 		}
 		// Shading debug-view program pairs: ONE pairing rule for every
-		// flat FS Ã¢â‚¬â€ the direct twin (default.vert + FS) rides the direct
+		// flat FS — the direct twin (default.vert + FS) rides the direct
 		// fallback leg, the filtered twin (gfxfiltered.vert + FS, via
 		// GfxRenderer::FilteredProgramWith) rides the GPU-driven leg
 		// exactly like Lit (the views used to bypass the filter with
@@ -1514,7 +1519,7 @@ namespace engine {
 				pair.filtered = m_gfxRenderer.FilteredProgramWith(*m_context, frag);
 			}
 			// SSR contribution debug view (env/UI only): NOT part of the
-			// pairs Ã¢â‚¬â€ its FS declares its own 64B push
+			// pairs — its FS declares its own 64B push
 			// (SsrContributionDebugPush, not the scene pc the FS family
 			// shares), so it keeps the classic direct pairing and the
 			// view keeps its legacy no-opaque-leg behavior (see DebugFs).
@@ -2325,7 +2330,7 @@ namespace engine {
 		else {
 			m_uiDpiScale = m_imgui->AppliedDpiScale(); // auto = monitor content scale
 			// (Start-in-FPS + the ImGui event hook moved to the ELEMENT's
-			// onAttach Ã¢â‚¬â€ the mode switch is control; see
+			// onAttach — the mode switch is control; see
 			// WorldRendererElement::onAttach.)
 			// Feed every SDL event to the ImGui SDL3 backend (App::PollEvents).
 			m_host.SetImGuiEventHook(&smvk::ImGuiOverlay::ProcessEvent);
@@ -4910,7 +4915,7 @@ namespace engine {
 		}
 
 		// TMP-DIAG (TOURMALINE_MEMDUMP=<frame>): one-shot stderr dump of the
-		// allocation ledger Ã¢â‚¬â€ every image/buffer row (name, category,
+		// allocation ledger — every image/buffer row (name, category,
 		// geometry, exact bytes) + the per-category sums + the VMA heap
 		// rows. The headless audit companion to the VRAM viewer (Ctrl+M):
 		// rank the rows, name the memory. Remove later.
@@ -4990,7 +4995,7 @@ namespace engine {
 		}
 		// TMP-DIAG (TOURMALINE_FILTERAUDIT=<frame>): one-shot async download
 		// of the filter chain's per-frame state (draw verdicts + kept bits +
-		// indirect commands + batch headers of the retired flight slice Ã¢â‚¬â€
+		// indirect commands + batch headers of the retired flight slice —
 		// same retirement rule as the demand ring above), printed at poll
 		// time. The distant-LOD-sibling draw-drop hunt: the data side
 		// (meshlet ids/bounds/cones, the cluster index ranges, the mesh
@@ -5068,12 +5073,12 @@ namespace engine {
 						}
 						// Per-slot screen footprints (the same projection the
 						// filter's own stages use): answers WHICH clusters
-						// cover a screen band Ã¢â‚¬â€ kept or killed. In particular
+						// cover a screen band — kept or killed. In particular
 						// whether the black-band draws' killed clusters land
 						// ON the band pixels (cone kill with misplaced/wrong
 						// cones: the bound is on-screen but the cone rejects
 						// it) or OFF it (sphere kill: the bound itself is
-						// misplaced Ã¢â‚¬â€ the triangles project elsewhere than
+						// misplaced — the triangles project elsewhere than
 						// their bounds claim).
 						{
 							const smvk::gfx::View& vv = gfx.views[0];
@@ -5134,7 +5139,7 @@ namespace engine {
 					&& v0.batchCount > 0) {
 					// Submit at the pinned frame (the retired slice the
 					// demand ring reads: the previous same-flight user's
-					// state Ã¢â‚¬â€ the static bench camera keeps it
+					// state — the static bench camera keeps it
 					// representative).
 					m_filterAuditSlot = frameSlot;
 					m_filterAuditBatchCount = v0.batchCount;
@@ -6641,7 +6646,7 @@ namespace engine {
 		const smvk::MSAASettings& msaa) {
 		// Phase 2 masked pipeline: cull follows the material raster so
 		// the shadow depth contains exactly the faces the main view draws
-		// (cutout has no backface shadow depth Ã¢â‚¬â€ always back-face cull
+		// (cutout has no backface shadow depth — always back-face cull
 		// now). Rebinds only on cull changes (CommandBuffer dedupes
 		// identical states).
 		smvk::CullMode boundShadowMaskedCull = smvk::CullMode::FrontAndBack;
@@ -7067,7 +7072,7 @@ namespace engine {
 		m_viewportResources.motionBlur.Ensure(*m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
 		m_viewportResources.ssgi.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsgiDesc());
 		// MSAA pair: lazy (the frame lifecycle at the msaaEnabled site
-		// owns it) Ã¢â‚¬â€ recreate here only when the mode is active; the
+		// owns it) — recreate here only when the mode is active; the
 		// inactive resize leaves it destroyed.
 		if (m_passes.msaa && m_aaMode == AaMode::Msaa2x
 				&& m_context->SupportsMSAA2x()) {
@@ -7120,7 +7125,11 @@ namespace engine {
 		for (const auto& entry : std::filesystem::directory_iterator("content/luts", ec)) {
 			if (!entry.is_regular_file())
 				continue;
+#ifdef _WIN32
 			if (_stricmp(entry.path().extension().string().c_str(), ".png") != 0)
+#else
+			if (strcasecmp(entry.path().extension().string().c_str(), ".png") != 0)
+#endif
 				continue;
 			m_lutFiles.push_back(entry.path().filename().string());
 		}
@@ -7370,7 +7379,11 @@ namespace engine {
 		const std::time_t t = std::chrono::system_clock::to_time_t(
 			std::chrono::system_clock::now());
 		std::tm tmv{};
+#ifdef _WIN32
 		localtime_s(&tmv, &t);
+#else
+		localtime_r(&t, &tmv);
+#endif
 		char stamp[32];
 		std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
 		std::error_code ec;
@@ -7950,7 +7963,7 @@ namespace engine {
 			m_viewportResources.msaaEnabled = (m_aaMode == AaMode::Msaa2x) && !dlssUsable;
 			// MSAA target lifecycle (lazy, the EVSM pattern): the
 			// transient 2x color+depth pair + the SSGI MSAA resolve twin
-			// (~89 MiB at 1080p) exist ONLY in the effective MSAA mode Ã¢â‚¬â€
+			// (~89 MiB at 1080p) exist ONLY in the effective MSAA mode —
 			// Off / SMAA / DLSS never read them. Ensure is a
 			// steady-state no-op (extent/format drift recreates);
 			// Destroy when the mode leaves. useMsaa (the Main-leg gate)
@@ -8392,9 +8405,9 @@ namespace engine {
 		if (m_world) {
 			smvk::gfx::State& gfx = m_gfxRenderer.State();
 			// PREV-half capture (BEFORE the reset consumes the old cur):
-			// the deformed buffer is a parity DOUBLE buffer Ã¢â‚¬â€ last
+			// the deformed buffer is a parity DOUBLE buffer — last
 			// frame's cur half IS this frame's prev (the motion vector
-			// leg reads cur + prev for the skinned motion vectors Ã¢â‚¬â€
+			// leg reads cur + prev for the skinned motion vectors —
 			// static-heap vectors ghosted every animated mesh through
 			// the SMAA T2x resolve's history blending). The validity
 			// refinement (same-heap consecutive runs) happens at the
@@ -8427,7 +8440,7 @@ namespace engine {
 					c->GetSkinnedRangesBuffer());
 				// Parity flip: the pass writes the cur HALF of the
 				// double-buffered deformed heap (the BDA points there;
-				// every render fetch follows the BDA Ã¢â‚¬â€ no consumer
+				// every render fetch follows the BDA — no consumer
 				// arithmetic changes), while the other half keeps last
 				// frame's pose for the motion vector leg's prev fetch.
 				const uint64_t skinHeapBda = m_context->GetBufferDeviceAddress(
@@ -9366,7 +9379,7 @@ namespace engine {
 					.depthTestEnable = true,
 				};
 				// Phase 2 masked pipeline: cull follows the material raster so
-				// motion coverage matches Main (always back-face cull now Ã¢â‚¬â€
+				// motion coverage matches Main (always back-face cull now —
 				// cutout culls back). Rebinds only on cull
 				// changes (the CommandBuffer dedupes identical states).
 				smvk::CullMode boundMotionMaskedCull = smvk::CullMode::FrontAndBack;
@@ -9889,7 +9902,7 @@ namespace engine {
 					mat->shadingModel == smvk::ShadingModel::Masked;
 			}
 			// TMP-DIAG (TOURMALINE_NOCULL=1): force CullMode::None on every
-			// bindForMaterial bind Ã¢â‚¬â€ the facing proof for the distant-
+			// bindForMaterial bind — the facing proof for the distant-
 			// sibling draw-drop (the commands are written with real counts
 			// at CULLFLAGS=0x0 yet the pixels stay black; if the band
 			// appears with culling off, the filtered leg inverts facing
@@ -10008,23 +10021,23 @@ namespace engine {
 			const bool gfxActive = gfxSlot != UINT32_MAX;
 		// Debug views replace the shaded opaque leg:
 		//   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
-		//     the GPU chain and draw EVERY instance direct Ã¢â‚¬â€ HZB-culled
+		//     the GPU chain and draw EVERY instance direct — HZB-culled
 		//     clusters stay visible here to judge exactly what the filter
 		//     dropped (per-meshlet / per-LOD colors; the bind pose for
-		//     skinned meshes Ã¢â‚¬â€ they judge culling, not the animation).
+		//     skinned meshes — they judge culling, not the animation).
 		//   - The SHADING views (Unlit F2 / Cascades F4 / VertexColors F6 /
 		//     UV F9/F10 / POM F11 / SsrMask) are ONE flat FS swapped over
 		//     the SAME vertex path: they ride the GPU-driven leg exactly
-		//     like Lit Ã¢â‚¬â€ same cull chain, same LOD selection, same skinned
+		//     like Lit — same cull chain, same LOD selection, same skinned
 		//     fetch (they used to bypass with direct-only draws, which
 		//     rendered skinned meshes in the bind pose). The direct twin
 		//     binds only in the fallback leg (unfilterable /
 		//     shader-LOD-far instances).
-		//   - Cubemap: no FS swap Ã¢â‚¬â€ the filtered lit path stays, only the
+		//   - Cubemap: no FS swap — the filtered lit path stays, only the
 		//     frame's cubemapDebug pins to 1 (the env specular term
 		//     returns raw radiance; see the publish site).
 		//   - SsrContribution: stays a bypass view with NO opaque leg (its
-		//     FS declares its own push layout Ã¢â‚¬â€ see the program build).
+		//     FS declares its own push layout — see the program build).
 		// Missing programs fall back to Lit so a bad cook never blanks
 		// the frame.
 			ViewMode effView = m_debugView;
@@ -10081,7 +10094,7 @@ namespace engine {
 			// SKINNED meshes pose to the frame's DEFORMED heap in the
 			// Meshlets/Lods views so the meshlet shapes are judged ON the
 			// animated character (the same Northlight swap the lit/depth
-			// legs run Ã¢â‚¬â€ the debug views used to show the bind pose, hiding
+			// legs run — the debug views used to show the bind pose, hiding
 			// exactly the deformation the debugging needs to see).
 			// TOURMALINE_KD_NOSKIN=1 pins the bind pose for A/B.
 			auto pushMeshDebugSkinTail = [&](uint32_t meshId) {
@@ -10263,7 +10276,7 @@ namespace engine {
 				// (RangeMeshEligible), so nothing draws twice and
 				// nothing drops. The flat debug views bypass (direct draws
 				// above); the shading debug views skip the MESH leg (the
-				// mesh FS twins are lit-only) Ã¢â‚¬â€ the indexed loop below
+				// mesh FS twins are lit-only) — the indexed loop below
 				// covers those ranges with the debug FS instead.
 				const bool meshActive = meshActiveForFrame && !bypassFilter
 					&& !shadingDbg
@@ -10303,7 +10316,7 @@ namespace engine {
 				// MAT_STANDARD FS - the layered machinery compiled out;
 				// layered keep the monolith). Shading debug views bind
 				// the view's ONE flat FS for every range (no lobe/GI/std
-				// refinement Ã¢â‚¬â€ the debug FS doesn't vary) and keep the
+				// refinement — the debug FS doesn't vary) and keep the
 				// direct-style no-A2C pick (no debug A2C twins exist).
 				const bool rangeLayered = m_gfxRenderer.MaterialLayered(materialId);
 				smvk::ShaderProgram& litProg = shadingDbg
@@ -10406,7 +10419,7 @@ namespace engine {
 				// Shading debug views bind the view's direct twin here
 				// (the same flat FS the GPU-driven ranges shade with); the
 				// shader-LOD substitution is Lit-only, so far-level
-				// instances keep drawing direct Ã¢â‚¬â€ just debug-shaded.
+				// instances keep drawing direct — just debug-shaded.
 				smvk::ShaderProgram& prog = shadingDbg
 					? m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
 					: vertexLitLevel
@@ -10453,7 +10466,7 @@ namespace engine {
 
 				// Transparent follows the opaque debug view: the shading
 				// views bind the view's direct twin (the same flat FS the
-				// opaque legs shade with; via drawNode's delta pushes Ã¢â‚¬â€
+				// opaque legs shade with; via drawNode's delta pushes —
 				// the legs above left a valid push range exactly like the
 				// Lit view, so no full pushes are needed); LODs draws it
 				// flat in the instance LOD color. The flat views keep the
@@ -10497,7 +10510,7 @@ namespace engine {
 				// leg (its flat MeshDebugPush per draw is self-contained).
 				// the same clobbered BDAs). Restore the frame push once, before
 				// the loop; every other view needs nothing (the filtered/direct
-				// legs left a valid range in it Ã¢â‚¬â€ the shading views ride the
+				// legs left a valid range in it — the shading views ride the
 				// SAME legs as Lit, so their drawNode delta pushes below read
 				// live frame fields, no full pushes needed).
 				if (effView == ViewMode::Meshlets)
@@ -10522,7 +10535,7 @@ namespace engine {
 					smvk::BlendSettings::Opaque(),
 					msaaSettings,
 					// TMP-DIAG (TOURMALINE_LODVIEW_CULLBACK=1): bind Back instead
-					// of None in the LODs flat view Ã¢â‚¬â€ the winding-flip proof
+					// of None in the LODs flat view — the winding-flip proof
 					// for the distant-sibling draw-drop (every winding-
 					// sensitive stage kills them; the winding-agnostic views
 					// draw them). With Back bound, LOD3 instances whose
@@ -11216,10 +11229,10 @@ namespace engine {
 					&& !m_viewportResources.motionVectors.target.logicalView.empty()
 					&& m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
 				// Compute-chain handoff buffer addresses (hoisted above the
-				// branch): BOTH paths need them now Ã¢â‚¬â€ the temporal variant owns
+				// branch): BOTH paths need them now — the temporal variant owns
 				// the FULL chain since the self-contained repair (it used to
 				// assume the caller ran classify->intersect separately, which
-				// the either/or record never did Ã¢â‚¬â€ the temporal branch left raw
+				// the either/or record never did — the temporal branch left raw
 				// empty and the reflections read zero; see AddSsrTemporalPasses'
 				// compute-chain note).
 				const uint64_t rayListAddr = m_viewportResources.ssr.rayList.buffer.empty() ? 0 :
@@ -11498,8 +11511,8 @@ namespace engine {
 			blurDesc.velocityScale = m_motionBlurStrength;
 			blurDesc.tileDilation = m_motionBlurTileDilation;
 			// Disabled during any debug visualization (DebugVisualizationActive)
-			// Ã¢â‚¬â€ the same discipline as SSR/fog/bloom: the velocity gather smears
-			// the flat readout. An animated skinned mesh is the worst case Ã¢â‚¬â€
+			// — the same discipline as SSR/fog/bloom: the velocity gather smears
+			// the flat readout. An animated skinned mesh is the worst case —
 			// its motion vectors come from the STATIC bind-pose heap (see
 			// gfxfilteredmotion.vert.hlsl), so the gather bleeds the readout
 			// along wrong vectors: a dimmed ghost copy of the moving mesh
@@ -11545,7 +11558,7 @@ namespace engine {
 			dofDesc.highlightBoost = m_dofHighlightBoost;
 			dofDesc.highlightThreshold = m_dofHighlightThreshold;
 			// Disabled during any debug visualization (DebugVisualizationActive)
-			// Ã¢â‚¬â€ the same readout-contamination discipline as motion blur above:
+			// — the same readout-contamination discipline as motion blur above:
 			// a defocused readout is not a readout.
 			const bool dofOn = m_passes.dof && m_dofEnabled
 				&& m_viewportResources.dof.Valid()
@@ -13005,7 +13018,7 @@ namespace engine {
 							ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
 							// Task-less mesh-shader main leg: SETUP-TIME only
 							// (TOURMALINE_MESH=0/1 at startup + device support;
-							// no live toggle Ã¢â‚¬â€ the leg is canonical, not an
+							// no live toggle — the leg is canonical, not an
 						// A/B switch). Opaque base FS; without
 						// device mesh shaders the indexed multi-draws stay.
 							ImGui::TextDisabled(smvk::SupportsMeshShaders()
@@ -13370,7 +13383,7 @@ namespace engine {
 							ImGui::TextDisabled("Camera quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
 						}
 						// Controller status: name + live stick state, or "none".
-						// (m_inputUi: the ELEMENT's input back-pointer Ã¢â‚¬â€ pure
+						// (m_inputUi: the ELEMENT's input back-pointer — pure
 						// status/config widgets; this class never polls input
 						// for control.)
 						if (m_inputUi && m_inputUi->hasGamepad()) {
@@ -13688,7 +13701,7 @@ namespace engine {
 						ImGui::Separator();
 						const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
 						// The cull runs in compute (the CPU stat counts
-						// nothing now Ã¢â‚¬â€ always 0); the kept count lands via
+						// nothing now — always 0); the kept count lands via
 						// the async counter-word readback (see
 						// UpdateReadbacks), culled = candidates - kept. See
 						// the HUD filter line too.
@@ -14398,7 +14411,7 @@ namespace engine {
 							// ---- ownership walk (clusters own meshes +
 							// textures) --------------------------------
 							// Geometry: the residency ESTIMATE per unique
-							// mesh (36 B/vert + 4 B/index Ã¢â‚¬â€ the packed
+							// mesh (36 B/vert + 4 B/index — the packed
 							// SoA heap layout; instances share pool
 							// entries). Textures: EXACT ledger bytes via
 							// the cluster's registered handles (fallback
@@ -14547,7 +14560,7 @@ namespace engine {
 								}
 							}
 							// + the filter's cluster-ordered index copy
-							// (not attributable to one cluster Ã¢â‚¬â€ it stays
+							// (not attributable to one cluster — it stays
 							// in the geometry total but outside the rows).
 							uint64_t filterIdxBytes = 0;
 							if (smvk::gfx::Valid(m_gfxRenderer.gfx))
@@ -14623,7 +14636,7 @@ namespace engine {
 							// ImageTarget-category image, exact bytes;
 							// heap-placed/untracked get the computed
 							// estimate marked ~). Scrollable, uncapped:
-							// the target set is ~30 rows Ã¢â‚¬â€ the blob above
+							// the target set is ~30 rows — the blob above
 							// becomes an addressable list.
 							ImGui::Separator();
 							ImGui::TextUnformatted(
@@ -14729,7 +14742,7 @@ namespace engine {
 									return std::string(buf);
 								};
 								// Top-16 textures by EXACT bytes (estimate
-								// fallback sorts after exact Ã¢â‚¬â€ same-key
+								// fallback sorts after exact — same-key
 								// sort, the column marks which).
 								ImGui::Separator();
 								ImGui::TextUnformatted(
@@ -16255,7 +16268,7 @@ namespace engine {
 	}
 
 	// (UpdateCamera + SetUIMode moved to WorldRendererElement with the
-	// input polling and the virtual cursor ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â see its UpdateCamera/
+	// input polling and the virtual cursor — see its UpdateCamera/
 	// SetUIMode. The frame build reads the driven camera off Camera().)
 
 	void WorldRenderer::SetTextureFiltering(TextureFiltering mode)

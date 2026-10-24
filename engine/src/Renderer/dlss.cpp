@@ -13,12 +13,22 @@
 
 #include <Engine/Rendergraph/dlss.h>
 
-#include "vulkan_impl.h" // VulkanResourceManager + Image/ImageView pools
-
 #include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <string>
+
+#ifdef _WIN32
+// The full Streamline backend (LoadLibrary + slInit + tagged-resource
+// evaluate) is Windows-only: the runtime set staged by the build
+// (sl.interposer.dll + nvngx_*.dll) ships Windows binaries, and the SDK's
+// Linux interposer targets Proton-managed games, not native hosts. On
+// Linux this TU compiles the stub tail below instead - every Dlss*
+// entry reports unavailable and the renderer keeps its
+// renderScale/bilinear fallback (the same path a Windows run takes
+// when the Streamline files are absent). The pure-CPU jitter math
+// (DlssHalton/DlssPhaseCount) stays real on both platforms.
+#include "vulkan_impl.h" // VulkanResourceManager + Image/ImageView pools
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -27,7 +37,9 @@
 #include "sl_consts.h"
 #include "sl_dlss.h"
 #include "sl_pcl.h"
+#endif
 
+#ifdef _WIN32
 namespace {
 
 // ---------------------------------------------------------------------
@@ -165,9 +177,11 @@ struct TaggedResource {
 };
 
 } // namespace
+#endif // _WIN32 (first anon-namespace block: SL state + proc resolution)
 
 namespace smvk {
 
+#ifdef _WIN32
 // PclMarker must stay 1:1 with sl::PCLMarker (DlssPclMarker casts across).
 static_assert(static_cast<uint32_t>(PclMarker::SimulationStart) == static_cast<uint32_t>(sl::PCLMarker::eSimulationStart));
 static_assert(static_cast<uint32_t>(PclMarker::SimulationEnd) == static_cast<uint32_t>(sl::PCLMarker::eSimulationEnd));
@@ -513,6 +527,38 @@ void DlssDeactivate(uint32_t outputWidth, uint32_t outputHeight) {
 		std::fprintf(stderr, "[DLSS] slFreeResources failed (result=%u)\n",
 			static_cast<uint32_t>(res));
 }
+#else
+// ---------------------------------------------------------------------
+// Linux stubs (see the _WIN32 note at the top of this file): the
+// Streamline runtime never loads on this platform, so every entry
+// reports unavailable. DlssStartup keeps a one-time notice so a Linux
+// user toggling DLSS in the UI sees WHY it stays off; everything else
+// is silent (call sites already handle the unavailable case - it is
+// the same contract as a Windows run without the Streamline files).
+// ---------------------------------------------------------------------
+bool DlssStartup() {
+	static bool s_noticed = false;
+	if (!s_noticed) {
+		s_noticed = true;
+		std::fprintf(stderr,
+			"[DLSS] Streamline is Windows-only - the feature stays unavailable on this platform\n");
+	}
+	return false;
+}
+void DlssSetStartupEnabled(bool) {}
+void DlssShutdown() {}
+void DlssRelease() {}
+bool DlssAvailable() { return false; }
+const void* DlssVulkanGetInstanceProcAddr() { return nullptr; }
+bool DlssFeatureSupported() { return false; }
+bool DlssPclAvailable() { return false; }
+bool DlssBeginFrame(uint32_t) { return false; }
+void DlssPclMarker(PclMarker) {}
+void DlssEndFrame() {}
+bool DlssQueryOptimalSettings(DlssMode, uint32_t, uint32_t, DlssOptimalSettings&) { return false; }
+bool DlssApplyOptions(DlssMode, uint32_t, uint32_t) { return false; }
+void DlssDeactivate(uint32_t, uint32_t) {}
+#endif // _WIN32 (Streamline backend entry points)
 
 // ---------------------------------------------------------------------
 // Jitter helpers (pure CPU)
@@ -546,6 +592,7 @@ uint32_t DlssPhaseCount(uint32_t renderWidth, uint32_t renderHeight,
 // Per-frame evaluate
 // ---------------------------------------------------------------------
 
+#ifdef _WIN32
 namespace {
 
 bool DlssEvaluate(ResourceManager& ctx, void* vkCommandBuffer,
@@ -686,10 +733,20 @@ bool DlssEvaluate(ResourceManager& ctx, void* vkCommandBuffer,
 }
 
 } // namespace
+#endif // _WIN32 (DlssEvaluate + the tagged-resource plumbing)
 
 bool AddDlssPasses(RenderGraph& rg, ResourceManager& ctx,
 	Dlss& dlss, const DlssFrameInputs& inputs, float exposureValue,
 	uint32_t frameIndex, const char* name) {
+#ifndef _WIN32
+	// Linux stub: the Streamline runtime is Windows-only (see the file
+	// header above) - report the backend unavailable so the caller keeps
+	// its fallback upscale path. The DlssExposure/targets never get
+	// created; the app's own bilinear/renderScale chain covers them.
+	(void)rg; (void)ctx; (void)dlss; (void)inputs; (void)exposureValue;
+	(void)frameIndex; (void)name;
+	return false;
+#else
 	if (!g_ready)
 		return false;
 	assert(dlss.Valid());
@@ -753,6 +810,7 @@ bool AddDlssPasses(RenderGraph& rg, ResourceManager& ctx,
 		});
 	}
 	return true;
+#endif // _WIN32 (AddDlssPasses)
 }
 
 } // namespace smvk

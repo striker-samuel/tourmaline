@@ -239,11 +239,11 @@ void EditorApp::RebuildCookedLights() {
 	std::snprintf(buf, sizeof(buf),
 		"Cooked lights: %u dir, %u point, %u spot (%u static/bake-only)%s",
 		m_cookedDirs, m_cookedPoints, m_cookedSpots, m_cookedStaticSkipped,
-		sunTaken ? "" : " â€” no sun, viewport default stands in");
+		sunTaken ? "" : " — no sun, viewport default stands in");
 	Log(buf);
 	if ((m_cookedPoints + m_cookedSpots) != 0)
-		Log("Note: points/spots are logged only â€” the viewport renders the sun (no forward+ path).");
-	// The cooked sun seeded the scene default above â€” resolve into the
+		Log("Note: points/spots are logged only — the viewport renders the sun (no forward+ path).");
+	// The cooked sun seeded the scene default above — resolve into the
 	// rendered look.
 	ResolveSceneEnv();
 }

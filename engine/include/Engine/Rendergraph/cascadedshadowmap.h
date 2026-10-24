@@ -140,7 +140,7 @@ struct CascadedShadowAtlas {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 	}
 

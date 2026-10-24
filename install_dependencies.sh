@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # install_dependencies.sh - fetches the non-submodule third-party trees into
 # external/. Same pins as install_dependencies.ps1 (see that file for the full
-# commentary); the Windows-only binary packages (SDL3 prebuilt, dxc, Streamline)
-# are skipped here with a note.
+# commentary) EXCEPT the platform binaries, which each script owns its side
+# of: here SDL3 arrives as the 3.4.16 SOURCE zip (the root CMakeLists builds
+# it as a subproject when no system SDL3 is found) and DXC as the official
+# Linux package (bin/dxc + lib/libdxcompiler.so); the Windows prebuilts live
+# in the .ps1. The only skipped package is Streamline (the DLSS/Reflex
+# runtime set is Windows-only; the engine reports DLSS unavailable here).
 #
 # Every dep is attempted even if an earlier one fails; failed deps are
 # summarized at the end and the script exits non-zero. (The install functions
@@ -184,7 +188,8 @@ install_raw() { # name target file url sha
         return 0
     fi
     echo "[$name] installing external/$target/$file"
-    mkdir -p "$target_dir"
+    # the file may land in a subdir of the target (e.g. dxc/include/dxc/)
+    mkdir -p "$target_dir/$(dirname "$file")"
     download "$url" "$target_dir/$file" "$sha" || return 1
     echo "$stamp_id" > "$stamp"
     echo "[$name] done"
@@ -240,10 +245,70 @@ install_archive xatlas xatlas tar \
     5c7c3dfff9e40e32c31f1ecc3e8f6af376545008a03dfdb1fddbf5491f1b4dcb \
     '*' '' "$MAN/xatlas.exclude" "$MAN/xatlas.overlay" '' || fail xatlas
 
+# --- Vulkan-Headers (Linux): the full modern set --------------------------------
+# Several engine symbols are 1.4-era while distro libvulkan-dev packages
+# ship older trimmed headers (Ubuntu 24.04: 1.3.275). This pins the same
+# Vulkan-Headers the Windows SDK uses (1.4.357); the root CMakeLists puts
+# them ahead of the system headers (the LOADER stays the distro's -
+# backwards compatible). Windows uses its SDK's own headers.
+install_archive vulkan-headers vulkan-headers tar \
+    'https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/v1.4.357' \
+    7dc0dbcf1d49dd3d7da3761c251c6097dfbaac475321a4a8a99269d3d5abecdc \
+    'include' '' '' '' '' || fail vulkan-headers
+
+# --- SDL3 (Linux): the 3.4.16 SOURCE tree ----------------------------------
+# A system/distro SDL3 install wins in the build (find_package; see the SDL3
+# block in CMakeLists.txt) - this fetched tree is the fallback the root
+# CMakeLists builds as a subproject when no SDL3 is found. The .exclude
+# manifest trims the non-CMake platform folders out of the copy.
+install_archive SDL3 SDL3-3.4.16 zip \
+    'https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-3.4.16.zip' \
+    5f399fdfbc040169ef4418a3cb99ccc5a0641681f7ccc1da66eeec3c97fa4076 \
+    '*' '' "$MAN/SDL3.exclude" '' '' || fail SDL3
+
+# --- DXC (Linux): the official linux package at the same release as the
+# Windows pin. The subset keeps only what the build uses - bin/dxc (the
+# build-time HLSL->SPIR-V compiler; it rpath-resolves ../lib) and the two
+# .so's the engine links (libdxcompiler.so is the in-process compiler,
+# libdxil.so its validator companion). The archive also carries the whole
+# LLVM build tree under lib/ (CMakeFiles/, .o intermediates, static libs)
+# which nothing here links - the subset skips it. The two API headers come
+# from the release tag (the linux package ships no include/dxc).
+install_raw dxc-api-h  dxc include/dxc/dxcapi.h \
+    'https://raw.githubusercontent.com/microsoft/DirectXShaderCompiler/v1.9.2607/include/dxc/dxcapi.h' \
+    a8d409642ded485ea4fd4c055f1199a13538f0393755c2d958ade281afed4ca0 || fail dxc-api-h
+install_raw dxc-api-wa dxc include/dxc/WinAdapter.h \
+    'https://raw.githubusercontent.com/microsoft/DirectXShaderCompiler/v1.9.2607/include/dxc/WinAdapter.h' \
+    f5688a1408a8de8c0c35176bc900f21d7679d492215da94da4ab643cb66867f4 || fail dxc-api-wa
+install_archive dxc dxc tar \
+    'https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/linux_dxc_2026_07_29.x86_x64.tar.gz' \
+    55665c87824051ed4774ff3280a79ccbbb7d39243b9736ca5e98222134112d54 \
+    'bin/dxc lib/libdxcompiler.so lib/libdxil.so LICENCE-MIT.txt LICENSE-LLVM.txt LICENSE-MS.txt' \
+    '' '' '' '' || fail dxc
+
+# --- DirectX-Headers (Linux): DirectXTex's non-Win32 path includes
+# microsoft/DirectX-Headers' wsl/winadapter.h + directx/d3d12.h (the same
+# headers Texconv's Linux build consumes). Windows takes DirectXTex's own
+# _WIN32 path, so the pin lives here only.
+install_archive directx-headers directx-headers tar \
+    'https://codeload.github.com/microsoft/DirectX-Headers/tar.gz/v1.619.5' \
+    24a0b7d8079a2dbbc90753c0d8bc812040d052acce2302e69a97c5d873b313b8 \
+    'include' '' '' '' '' || fail directx-headers
+# DirectXMath (DirectXTex's non-Win32 path also includes DirectXPackedVector.h;
+# the headers live under Inc/ in the tarball)
+install_archive directxmath directxmath tar \
+    'https://codeload.github.com/microsoft/DirectXMath/tar.gz/jun2026' \
+    cb46002679b16a25fd11d0a2a13f6a7c7bf9c51bf04258fb5485e5b839da8474 \
+    'Inc' '' '' '' '' || fail directxmath
+# SAL header for DirectXMath on non-Windows: the same source Microsoft's
+# own DirectXMath WSL CI uses (dotnet/runtime's PAL sal.h - see their
+# .azuredevops WSL pipeline).
+install_raw sal directxmath Inc/sal.h \
+    'https://raw.githubusercontent.com/dotnet/runtime/v8.0.1/src/coreclr/pal/inc/rt/sal.h' \
+    7dae281adc3a09a691291fb90526f05e4f9ef8b16d7f33d716ba690f7241a492 || fail sal
+
 # --- Windows-only binary packages (skipped here) ---
-echo "[SDL3]       skipped (Windows-only MSVC devel package; build or install SDL3 from the distro/source)"
-echo "[dxc]        skipped (Windows-only; use the Vulkan SDK dxc on Linux)"
-echo "[streamline] skipped (Windows-only DLSS/Reflex runtimes)"
+echo "[streamline] skipped (Windows-only DLSS/Reflex runtimes; the engine reports DLSS unavailable on this platform)"
 
 # --- intentionally unused, opt-in ---
 if [ "$INCLUDE_UNUSED" = 1 ]; then
@@ -267,5 +332,6 @@ if [ -n "$FAILED_DEPS" ]; then
 fi
 
 echo "All fetchable dependencies installed."
-echo "Linux SDL3: install via your distro/SDK and point the build at it"
-echo "(external/SDL3-3.4.16 carries the Windows prebuilt package)."
+echo "System prerequisites NOT fetched here: the Vulkan loader/headers"
+echo "(libvulkan-dev or the Vulkan SDK), glslc for any GLSL sources, and KTX"
+echo "(KTX-Software - build/install it and point KTX_ROOT at the prefix)."

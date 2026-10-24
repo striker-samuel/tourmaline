@@ -5110,7 +5110,10 @@ void EditorApp::LoadImagesFromDoc(const smvk::tour::Doc& doc) {
 		return;
 	}
 	auto u64 = [](const std::string& s, uint64_t fb) {
-		try { return s.empty() ? fb : std::stoull(s); }
+		// (One explicit return type: std::stoull's unsigned long long and
+		// the uint64_t fb are distinct types on LP64 - MSVC folds them,
+		// GCC/Clang reject the inconsistent deduction.)
+		try { return s.empty() ? fb : static_cast<uint64_t>(std::stoull(s)); }
 		catch (...) { return fb; }
 	};
 	auto toI = [](const std::string& s, int fb) {

@@ -1,0 +1,16 @@
+# SDL3 source-tree cruft NOT copied by install_dependencies.sh (the root
+# CMakeLists builds this tree as a subproject on Linux when no system SDL3
+# is found; only the CMake-facing folders matter). Entries are inert when
+# the zip lacks them.
+Android.mk
+VisualC
+VisualC-GDK
+Xcode
+Xcode-iOS
+android
+build-scripts
+docs
+examples
+test
+.github
+.gitignore

@@ -177,9 +177,9 @@ void ProbePremix::Destroy(RenderGraph& rg) {
 	blendedImage = {};
 	selectionBda = 0;
 	selectionBuffer = {};
-	weightsProgram = ShaderProgram{};
+	weightsProgram = ShaderProgram();
 	weightsModule = {};
-	mixProgram = ShaderProgram{};
+	mixProgram = ShaderProgram();
 	mixModule = {};
 	size = 0;
 	mipCount = 0;

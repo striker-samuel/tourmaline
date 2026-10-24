@@ -28,7 +28,7 @@ target_include_directories(gltf_import
 # via engine's public includes. libktx is linked explicitly (engine keeps
 # it PRIVATE): the transcoder writes KTX2, and consumers link it through.
 # directxtex_bc: the texture-asset BCn encode targets (D3DXEncodeBC1/3/4/5/7
-# per 4x4 block â€” the same vendored block-codec layer the engine's BC6H GI
+# per 4x4 block — the same vendored block-codec layer the engine's BC6H GI
 # encode uses).
 target_link_libraries(gltf_import
     PUBLIC

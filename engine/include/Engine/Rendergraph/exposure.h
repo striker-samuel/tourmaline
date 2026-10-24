@@ -149,7 +149,7 @@ struct ExposureMeter {
 	}
 
 	void DestroyShaders() {
-		histogramProgram = ShaderProgram{};
+		histogramProgram = ShaderProgram();
 		histogramModule = {};
 	}
 

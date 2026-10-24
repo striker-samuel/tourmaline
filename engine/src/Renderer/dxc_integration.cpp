@@ -1,10 +1,20 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
+// In-process DXC (HLSL -> SPIR-V) integration. The DxcCreateInstance ABI
+// is the same COM shape on both platforms: on Windows it comes from the
+// vendored external/dxc MSVC package (dxcompiler.lib + dxcompiler.dll);
+// on Linux from the vendored external/dxc linux package (lib/
+// libdxcompiler.so) whose dxcapi.h + WinAdapter.h emulate the COM basics
+// (IUnknown, HRESULT, __uuidof, IID_PPV_ARGS) - so only the platform
+// include line below differs.
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <Unknwn.h>
+#endif
 #include <dxc/dxcapi.h>
 
 #include <string_view>

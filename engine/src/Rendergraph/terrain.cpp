@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // Tiled terrain heightfield, baked from authored H-tiles — see
@@ -58,8 +58,8 @@ bool TerrainField::EnsureShaders(ResourceManager& ctx,
 }
 
 void TerrainField::DestroyShaders() {
-	program = ShaderProgram{};
-	farProgram = ShaderProgram{};
+	program = ShaderProgram();
+	farProgram = ShaderProgram();
 	vsModule = {};
 	psModule = {};
 	farVsModule = {};

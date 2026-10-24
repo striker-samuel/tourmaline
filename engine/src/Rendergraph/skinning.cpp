@@ -53,7 +53,7 @@ void SkinVisual::Destroy() {
 	for (auto& b : paletteBuffers)
 		b = {};
 	csModule = {};
-	program = ShaderProgram{};
+	program = ShaderProgram();
 	valid = false;
 }
 

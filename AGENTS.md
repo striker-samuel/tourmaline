@@ -181,3 +181,36 @@ operational conditions like pool exhaustion.
   gracefully without the strict report. Spreading the gate is in-progress
   work; **using the pattern in new code is OK** (and expected at any new
   exhaustion-prone creation site).
+## Linux compatibility
+
+The tree builds and passes ctest on Linux (Ubuntu 24.04 + GCC 14 verified in
+WSL; 35/35 test parity with Windows). Conventions:
+
+- `install_dependencies.sh` is the Linux installer: it carries the
+  platform-specific pins (SDL3 3.4.16 SOURCE zip - the root CMakeLists
+  builds it as a subproject when no system SDL3 exists; the DXC official
+  linux package; Vulkan-Headers 1.4.357 - distro libvulkan-dev headers are
+  too old; DirectX-Headers + DirectXMath + the dotnet-PAL sal.h for
+  DirectXTex's non-Win32 path). Windows equivalents live in the .ps1.
+- Toolchain: **GCC 14+**. GCC 13 ICEs in `gimplify` on the engine's
+  array-NSDMI aggregates (see the NOTE at `struct ShaderProgram` in
+  engine/include/Engine/smvk.h) - never write `x = ShaderProgram{}` or
+  `ShaderProgram p{};` for that type; use the paren/default forms.
+- The engine PCH is MSVC/Clang-only; GCC force-includes pch.h as a plain
+  `-include` (GCC .gch does not carry #pragma-once state). Do not move
+  TUs off pch.h's transitive includes without adding their own includes.
+- `find_package(Ktx CONFIG)` - capital K (KTX 4.3+ ships KtxConfig.cmake;
+  lowercase only matches on case-insensitive filesystems).
+- `<ktxvulkan.h>` - KTX 4.3+ renamed the headers lowercase; on Windows the
+  old spelling worked via case-insensitivity. Always use the lowercase
+  includes.
+- DXC staging + every runtime .so stage at the BUILD ROOT
+  (`${TOURMALINE_BINARY_DIR}`), not the static lib's dir; Linux exes carry
+  a `$ORIGIN` rpath (cmake/HostSetup.cmake + editor/CMakeLists.txt).
+- Streamline/DLSS is Windows-only by design (engine/src/Renderer/dlss.cpp
+  compiles stubs on Linux); never add Linux loads of the sl.* runtime.
+- Runtime note: boots + loads + pipeline-compiles are verified on the
+  mesa software rasterizer (lavapipe), but its compute-pipeline compiler
+  crashes on the BDA-heavy engine shaders - the render loop needs a real
+  GPU. Do not "fix" lavapipe crashes as port bugs without a GPU-verified
+  repro.

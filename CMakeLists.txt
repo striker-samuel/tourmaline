@@ -42,6 +42,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(ENGINE_BACKEND "Vulkan" CACHE STRING "Rendering backend")
 find_package(Vulkan REQUIRED)
 
+# Full Vulkan headers on Linux: several engine symbols are 1.4-era while
+# distro libvulkan-dev packages ship older trimmed headers (Ubuntu 24.04:
+# 1.3.275). install_dependencies.sh pins the same Vulkan-Headers the
+# Windows SDK uses (1.4.357) into external/vulkan-headers; the interface
+# lib below puts them ahead of the system headers for every engine
+# consumer (the LOADER stays the distro's - backwards compatible).
+# Windows compiles against its SDK's own headers.
+if(NOT WIN32)
+    if(NOT EXISTS "${TOURMALINE_SOURCE_DIR}/external/vulkan-headers/include/vulkan/vulkan.h")
+        message(FATAL_ERROR "external/vulkan-headers missing: run install_dependencies.sh "
+            "(pins Vulkan-Headers 1.4.357 for the full symbol set)")
+    endif()
+    add_library(vulkan_headers_iface INTERFACE)
+    target_include_directories(vulkan_headers_iface INTERFACE
+        "${TOURMALINE_SOURCE_DIR}/external/vulkan-headers/include")
+endif()
+
 include(FetchContent)
 
 # MeshOptimizer (pinned git submodule)
@@ -59,6 +76,26 @@ add_library(directxtex_bc STATIC
 	external/DirectXTex/DirectXTex/BC6HBC7.cpp
 )
 target_include_directories(directxtex_bc PUBLIC external/DirectXTex)
+# DirectXTex's non-Win32 path (DirectXTexP.h + BC.h) includes microsoft/
+# DirectX-Headers' wsl/winadapter.h + directx/d3d12.h and DirectXMath's
+# DirectXPackedVector.h/DirectXMath.h (all fetched by
+# install_dependencies.sh); the _WIN32 path keeps using the SDK headers.
+# INTERFACE lib: PRIVATE-linking it into the STATIC directxtex_bc spreads
+# the usage requirements to every consumer that compiles DirectXTex
+# headers (engine, gltf_import, ...). wsl/stubs carries the Linux
+# COM/Windows-type shims (unknwn.h etc. - that is how DirectX-Headers'
+# own WSL CI builds); sal.h (directxmath/Inc) is the dotnet PAL copy
+# Microsoft's DirectXMath WSL CI uses.
+if(NOT WIN32)
+    add_library(directxtex_nonwin_iface INTERFACE)
+    target_include_directories(directxtex_nonwin_iface INTERFACE
+        external/directx-headers/include
+        external/directx-headers/include/wsl/stubs
+        external/directxmath/Inc)
+    # PUBLIC: every consumer that compiles DirectXTex headers sees the
+    # chain (engine's bc6h.cpp, gltf_import's tex_transcode.cpp, ...).
+    target_link_libraries(directxtex_bc PUBLIC directxtex_nonwin_iface)
+endif()
 target_compile_features(directxtex_bc PRIVATE cxx_std_20)
 # Third-party TU: silence everything (the upstream source is unmodified).
 if(MSVC)
@@ -90,19 +127,41 @@ set(EMBREE_RAY_MASK OFF CACHE BOOL "" FORCE)
 set(EMBREE_FILTER_FUNCTION OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/embree)
 
-# SDL3 (vendored prebuilt dev package: include/ + lib/<arch>/ + cmake/)
-# Provides windowing, input (keyboard/mouse/gamepad) and audio.
-list(PREPEND CMAKE_PREFIX_PATH "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16")
-set(SDL3_DIR "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16/cmake" CACHE PATH "SDL3 config dir" FORCE)
-find_package(SDL3 CONFIG REQUIRED)
-# IMPORTED_GLOBAL: the host-staging genexes ($<TARGET_FILE:SDL3::SDL3>)
-# evaluate in GAME-HOST scopes (this tree add_subdirectory'd as a
-# submodule) — imported targets are otherwise directory-scoped and
-# invisible outside this tree. SDL3::SDL3 is the config's ALIAS; the
-# GLOBAL property goes on the underlying imported target (the alias
-# resolves through it).
-set_target_properties(SDL3::SDL3-shared PROPERTIES IMPORTED_GLOBAL TRUE)
-# (The SDL3.dll / Streamline runtime STAGING functions moved to
+# SDL3 - windowing, input (keyboard/mouse/gamepad) and audio.
+# Windows: the vendored PREBUILT dev package (install_dependencies.ps1
+# fetches external/SDL3-3.4.16: include/ + lib/<arch>/ + cmake/ configs).
+# Linux: a system/distro SDL3 wins (find_package); when absent, the
+# vendored SOURCE tree (install_dependencies.sh fetches the same-version
+# source zip into external/SDL3-3.4.16) is built as a subproject.
+if(WIN32)
+    list(PREPEND CMAKE_PREFIX_PATH "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16")
+    set(SDL3_DIR "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16/cmake" CACHE PATH "SDL3 config dir" FORCE)
+    find_package(SDL3 CONFIG REQUIRED)
+    # IMPORTED_GLOBAL: the host-staging genexes ($<TARGET_FILE:SDL3::SDL3>)
+    # evaluate in GAME-HOST scopes (this tree add_subdirectory'd as a
+    # submodule) — imported targets are otherwise directory-scoped and
+    # invisible outside this tree. SDL3::SDL3 is the config's ALIAS; the
+    # GLOBAL property goes on the underlying imported target (the alias
+    # resolves through it).
+    set_target_properties(SDL3::SDL3-shared PROPERTIES IMPORTED_GLOBAL TRUE)
+else()
+    find_package(SDL3 CONFIG QUIET)
+    if(NOT SDL3_FOUND)
+        if(NOT EXISTS "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16/CMakeLists.txt")
+            message(FATAL_ERROR "SDL3 not found: install a system SDL3 (distro "
+              "package / SDK) or run install_dependencies.sh, which fetches the "
+              "3.4.16 source tree into external/SDL3-3.4.16 for an in-tree build.")
+        endif()
+        message(STATUS "SDL3: building the vendored source tree (external/SDL3-3.4.16)")
+        # Shared only (the engine links SDL3::SDL3; the host staging copies
+        # the .so next to the exes). SDL_STATIC would double the build for
+        # zero consumers.
+        set(SDL_SHARED ON CACHE BOOL "" FORCE)
+        set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+        add_subdirectory(external/SDL3-3.4.16 sdl3-vendored)
+    endif()
+endif()
+# (The SDL3 / Streamline runtime STAGING functions moved to
 # cmake/HostSetup.cmake so game hosts can include them from their
 # submodule copy of this tree — see the include below.)
 
@@ -160,20 +219,22 @@ if(DEFINED KTX_ROOT)
   list(PREPEND CMAKE_PREFIX_PATH "${KTX_ROOT}")
 endif()
 
-# Now try to locate the config package
-find_package(ktx CONFIG REQUIRED)
+# Now try to locate the config package. NOTE the capital-K package name:
+# KTX-Software ships KtxConfig.cmake (capital K) - Windows' case-insensitive
+# filesystem accepts the lowercase spelling, Linux does not.
+find_package(Ktx CONFIG REQUIRED)
 # IMPORTED_GLOBAL for the same reason as SDL3 above (the host-staging
 # genexes evaluate in game-host scopes).
 set_target_properties(KTX::ktx PROPERTIES IMPORTED_GLOBAL TRUE)
 
-if(NOT ktx_FOUND)
+if(NOT Ktx_FOUND)
   message(FATAL_ERROR
     "KTX not found.\n"
-    "Install KTX (KTX-Software) and make sure CMake can find ktxConfig.cmake.\n\n"
+    "Install KTX (KTX-Software) and make sure CMake can find KtxConfig.cmake.\n\n"
     "You can point CMake to it using ONE of:\n"
     "  - Set env var KTX_ROOT to the install prefix (contains include/ and lib/)\n"
     "  - Pass -DCMAKE_PREFIX_PATH=<prefix>\n"
-    "  - Pass -Dktx_DIR=<prefix>/lib/cmake/ktx\n\n"
+    "  - Pass -DKtx_DIR=<prefix>/lib/cmake/ktx\n\n"
     "Example (PowerShell):\n"
     "  $env:KTX_ROOT='C:/SDKs/ktx'\n"
     "  cmake -S . -B build\n"

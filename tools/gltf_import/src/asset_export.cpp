@@ -6,11 +6,11 @@
 //
 // The derivation runs the SAME deterministic GPU-free offline-mode import the
 // baker/cooker use (GltfToCluster on a null-RM Cluster), so node ids are
-// identical to a live import Ã¢â‚¬â€ scenes built from the assets address the
+// identical to a live import — scenes built from the assets address the
 // same nodes a .tour replay expects. The .mesh stores the RAW TRS (the
 // coordFix basis applies at the scene root at load, the same contract as
 // the live import) + the packed SoA GPU heap streams (the exact layout the
-// pak cooker stores Ã¢â‚¬â€ direct upload, no per-vertex work at load).
+// pak cooker stores — direct upload, no per-vertex work at load).
 
 #include <gltf_import/asset_export.h>
 
@@ -207,7 +207,7 @@ bool ReadFileBytes(const std::filesystem::path& path,
 // File-name-safe asset label (lower/upper/digits/_/-; the rest -> '_').
 std::string SanitizeLabel(std::string s) {
 	for (char& c : s)
-		if (!std::isalnum(unsigned char(c)) && c != '_' && c != '-')
+		if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
 			c = '_';
 	return s;
 }
@@ -1215,7 +1215,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	};
 
 	// 1) The deterministic cook-mode import (GPU-free like the baker;
-	// node ids identical to the live import Ã¢â‚¬â€ the .tour replay contract).
+	// node ids identical to the live import — the .tour replay contract).
 	smvk::MeshOptConfig meshOpt{};
 	meshOpt.enabled = config.lods;
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);

@@ -206,7 +206,7 @@ struct VolumetricFog {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 		fragModule = {};
 	}

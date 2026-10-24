@@ -444,38 +444,38 @@ compute milestone — see §9's compute item); `BindStaticVertexFmt` is real
 
 ---
 
-## 10. The engine port onto the RHI � what the seams proved, what remains
+## 10. The engine port onto the RHI — what the seams proved, what remains
 
 The goal (the user's framing, and the right one): WorldRenderer and the
 whole engine tree sit ONLY on the RHI facade; a backend is a linked
 library, nothing more. Status after the seam session:
 
 **Backend-neutral engine TUs (all verified linking both libs):**
-`WorldRenderer.cpp` was ALREADY clean (zero Vulkan symbols � the
+`WorldRenderer.cpp` was ALREADY clean (zero Vulkan symbols — the
 "Vulkan-coupled renderer" was never WorldRenderer itself; the coupling
 was in its satellites). The 2026-10 session landed four seams:
-- `gfx_filter.cpp` � the vestigial vulkan_impl.h include removed (the
+- `gfx_filter.cpp` — the vestigial vulkan_impl.h include removed (the
   static-heap port had already left nothing behind; two `VkDeviceSize`
   casts were the last Vulkan types, now `uint64_t`).
-- `skinning.cpp` � the raw `vkCmdPipelineBarrier2` (the BDA deformed
+- `skinning.cpp` — the raw `vkCmdPipelineBarrier2` (the BDA deformed
   heap's compute->graphics dependency) behind the new
   `CommandBuffer::EmitGlobalMemoryBarrier()` (rendergraph.h, the shared
   header): Vulkan emits the all-commands barrier; D3D12 emits a
   null-resource UAV barrier. THE pattern for item 3 below.
-- `profile.cpp` � `InitVulkanGPU` moved behind
+- `profile.cpp` — `InitVulkanGPU` moved behind
   `profiler::InitBackendGpuTimelines[Impl]` (impl.cpp carries the Optick
   Vulkan init; dx12_rhi_globals.cpp the not-wired notice). The TU now
   carries only the neutral gates/histogram (its unconditional
   `#include <optick.h>` via profile.h keeps it out of engine_d3d12's TU
-  list until that include is gated � the seam contract is done).
-- `imgui_overlay.cpp` � the full `ui::` seam (Init/NewFrame/record/
+  list until that include is gated — the seam contract is done).
+- `imgui_overlay.cpp` — the full `ui::` seam (Init/NewFrame/record/
   AddTexture/AddTextureView/RemoveTexture/ShutdownBackend, imgui_overlay.h):
   the overlay TU is backend-neutral; the Vulkan side lives in impl.cpp
   (the descriptor pool + ImplVulkan init + the paired SDL3 platform init
   + the texture descriptor sets); the D3D12 side is a documented stub
   until the imgui_impl_dx12 port (the shared-descriptor-heap form).
 
-**The last coupled TU: `dlss.cpp`** � Streamline's sl::Resource takes
+**The last coupled TU: `dlss.cpp`** — Streamline's sl::Resource takes
 VkImage/VkImageView/VkImageLayout + the evaluate path's vkCommandBuffer.
 dlss.h's contract is neutral; the seam is a backend-native
 resource-tagger + the native cmd. Not done; a validation chunk (SL's
@@ -515,15 +515,15 @@ the same HLSL through the same DXC (no -spirv), SM 6_5 (the box's
 HighestShaderModel), `-DTOURMALINE_DXIL=1` flips common.hlsli's binding
 block to the bounded-register form (the five 8192-wide regions matching
 the root signature's tables). The `vk::` ATTRIBUTES pass DXC un-ignored
-(warnings). BUT `vk::BufferPointer` (the engine's BDA constants model �
+(warnings). BUT `vk::BufferPointer` (the engine's BDA constants model —
 FrameUniforms/lights/materials/renderViews/... in the push blocks) is
 SPIR-V-ONLY: 108/111 stage shaders fail on it (measured; 3 debug
 shaders without it are the live allowlist, `HLSL_DXIL_OK_FILES`). The
 remaining rework: push blocks carry OFFSETS into bound
-ByteAddressBuffers instead of raw BDAs � the root signature gains a few
+ByteAddressBuffers instead of raw BDAs — the root signature gains a few
 constant-buffer table slots (one BAB per engine buffer table) and the
 push shims from address to (slot, offset). That is the real per-shader
-mountain (52 files carry BufferPointer types) � the build plumbing, the
+mountain (52 files carry BufferPointer types) — the build plumbing, the
 binding shim, and the measurement are done; the rework is the milestone.
 
 ## 11. The missing-steps inventory (the handoff before D3D12 integration)

@@ -1,14 +1,42 @@
 ﻿# Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-if(DEFINED ENV{VULKAN_SDK})
-  set(GLSLC "$ENV{VULKAN_SDK}/Bin/glslc.exe")
-  set(DXC   "$ENV{VULKAN_SDK}/Bin/dxc.exe")
+# DXC / GLSLC discovery (build-time shader compilation):
+#   Windows: the Vulkan SDK layout ($VULKAN_SDK/Bin/dxc.exe + glslc.exe).
+#   Linux: the vendored external/dxc (install_dependencies.sh fetches the
+#     official linux package - bin/dxc + lib/libdxcompiler.so), with an
+#     installed Vulkan SDK ($VULKAN_SDK/bin) taking precedence. glslc is
+#     soft-optional (the tree is HLSL-only; GLSL sources would need it,
+#     so its absence warns instead of failing).
+if(WIN32)
+  if(DEFINED ENV{VULKAN_SDK})
+    set(GLSLC "$ENV{VULKAN_SDK}/Bin/glslc.exe")
+    set(DXC   "$ENV{VULKAN_SDK}/Bin/dxc.exe")
+  else()
+    # No literal %VULKAN_SDK% — CMake never expands that. Fail fast at
+    # configure time instead of emitting broken per-shader commands.
+    message(FATAL_ERROR "[Shaders] VULKAN_SDK is not set: install the Vulkan SDK "
+      "or set VULKAN_SDK to its root (contains Bin/dxc.exe).")
+  endif()
 else()
-  # No literal %VULKAN_SDK% — CMake never expands that. Fail fast at
-  # configure time instead of emitting broken per-shader commands.
-  message(FATAL_ERROR "[Shaders] VULKAN_SDK is not set: install the Vulkan SDK "
-    "or set VULKAN_SDK to its root (contains Bin/dxc.exe).")
+  set(_SHADER_TOOL_HINTS)
+  if(DEFINED ENV{VULKAN_SDK})
+    list(APPEND _SHADER_TOOL_HINTS "$ENV{VULKAN_SDK}/bin")
+  endif()
+  list(APPEND _SHADER_TOOL_HINTS "${TOURMALINE_SOURCE_DIR}/external/dxc/bin")
+  find_program(DXC NAMES dxc HINTS ${_SHADER_TOOL_HINTS})
+  if(NOT DXC)
+    message(FATAL_ERROR "[Shaders] dxc not found: run install_dependencies.sh "
+      "(fetches the official Linux DXC package into external/dxc) or install "
+      "the Vulkan SDK and set VULKAN_SDK.")
+  endif()
+  find_program(GLSLC NAMES glslc HINTS ${_SHADER_TOOL_HINTS})
+  if(NOT GLSLC)
+    message(STATUS "[Shaders] glslc not found - GLSL shader sources (if any) "
+      "will not compile; the tree is HLSL-only so this is informational.")
+  endif()
+  message(STATUS "[Shaders] DXC   = ${DXC}")
+  message(STATUS "[Shaders] GLSLC = ${GLSLC}")
 endif()
 
 # Helper: map filename to stage + entry for HLSL

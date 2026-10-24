@@ -213,9 +213,9 @@ struct DepthOfField {
 	}
 
 	void DestroyShaders() {
-		lowProgram = ShaderProgram{};
-		cocProgram = ShaderProgram{};
-		bokehProgram = ShaderProgram{};
+		lowProgram = ShaderProgram();
+		cocProgram = ShaderProgram();
+		bokehProgram = ShaderProgram();
 		vsModule = {};
 		lowFragModule = {};
 		cocFragModule = {};

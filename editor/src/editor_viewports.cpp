@@ -118,7 +118,7 @@ void EditorApp::DrawSelectionRadial() {
 	ImGui::TextDisabled("Gizmo space");
 	{
 		// Handle orientation (World default): World = scene axes, Local =
-		// the node's rotated axes (scale is always local â€” no TRS form).
+		// the node's rotated axes (scale is always local — no TRS form).
 		const GizmoSpace spaces[2] = { GizmoSpace::World,
 			GizmoSpace::Local };
 		for (int i = 0; i < 2; ++i) {
@@ -325,12 +325,12 @@ void EditorApp::FinishBoxSelect() {
 void EditorApp::DrawViewportChrome() {
 	// Borders + per-viewport label (camera combo) + the rubber-band box.
 	// BACKGROUND list, not foreground: both composite above the Vulkan 3D
-	// scene, but the foreground list renders above EVERY ImGui window â€”
+	// scene, but the foreground list renders above EVERY ImGui window —
 	// the active viewport's (brighter, 2px) selection border painted over
 	// panels, combo dropdowns and tooltips touching the viewport edge.
 	// On the background list the chrome stays under all windows (a 1px
 	// edge spill hides beneath the abutting sibling panel, which is
-	// correct â€” panels are siblings, never covered by viewport chrome).
+	// correct — panels are siblings, never covered by viewport chrome).
 	ImDrawList* dl = ImGui::GetBackgroundDrawList();
 	const int count = ViewportCount();
 	for (int i = 0; i < count; ++i) {
@@ -343,7 +343,7 @@ void EditorApp::DrawViewportChrome() {
 	}
 	// ASSET DROP TARGETS: while an asset drag is in flight (the browser's
 	// mesh/material tiles), a transparent window covers each visible
-	// viewport â€” drop a MESH asset to add a scene reference, a MATERIAL
+	// viewport — drop a MESH asset to add a scene reference, a MATERIAL
 	// asset to assign it to the selection. The overlay exists ONLY
 	// during the drag (no clicks consumed otherwise; the highlight tint
 	// shows the drop zone).
@@ -403,7 +403,7 @@ void EditorApp::DrawViewportChrome() {
 	// Rubber-band box (window pixels), clipped to its viewport: a drag
 	// past the viewport edge used to paint the selection tint over the
 	// neighboring panels (same foreground-layer defect as the borders
-	// above â€” now background + clipped).
+	// above — now background + clipped).
 	if (m_vpBoxDragging && m_vpBoxVp >= 0 && m_vpBoxVp < kMaxViewports) {
 		const ViewportRect& vp = m_viewports[m_vpBoxVp].rect;
 		dl->PushClipRect(ImVec2(vp.x, vp.y),
@@ -500,7 +500,7 @@ void EditorApp::DrawViewportChrome() {
 	//		ImGui::SameLine();
 	//		// View type combo (this panel's shading/debug view). Flat UV
 	//		// panes are not viewports anymore (separate UV editor
-	//		// window) â€” 3D modes only here.
+	//		// window) — 3D modes only here.
 	//		if (ImGui::BeginCombo("##view", ViewModeName(vp.viewMode))) {
 	//			for (int m = 0; m <= int(ViewMode::Pom); ++m) {
 	//				const ViewMode vm = ViewMode(m);
@@ -550,12 +550,12 @@ void EditorApp::DrawViewportChrome() {
 
 // X-ray preview of the convex GI volumes (probes-only pivot): each
 // volume's hull (bake AABB clipped by its plane set, built in
-// TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport â€”
+// TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport —
 // wireframe at mode 1, + translucent priority-coded fill at mode 2.
 // Foreground = no depth, so the volumes read through geometry (the
 // point of the view: authoring shapes against walls/roofs).
 // Authored cvolume nodes label here too (their boxes ride the 3D
-// gizmo batches instead â€” depth-tested scene objects, all view
+// gizmo batches instead — depth-tested scene objects, all view
 // modes): name + priority at the box center, same priority hue.
 void EditorApp::DrawCvolPreviewOverlay() {
 	// MODAL: GI authoring previews belong to LIGHTING mode.
@@ -698,7 +698,7 @@ void EditorApp::UpdateOctreePreview() {
 		// Scene too large for a per-tile overlay at this size: keep
 		// the bounds box only (the GI panel says so).
 		Log("Octree preview: grid capped ("
-			+ std::to_string(nx * ny * nz) + " tiles) â€” bounds only.");
+			+ std::to_string(nx * ny * nz) + " tiles) — bounds only.");
 		return;
 	}
 	m_octreeTiles.reserve(size_t(nx * ny * nz));
@@ -714,7 +714,7 @@ void EditorApp::UpdateOctreePreview() {
 	Log("Octree preview: " + std::to_string(m_octreeTiles.size())
 		+ " tiles (" + std::to_string(nx) + "x" + std::to_string(ny)
 		+ "x" + std::to_string(nz) + " @ " + std::to_string(ts)
-		+ "m) â€” all dirty.");
+		+ "m) — all dirty.");
 }
 
 void EditorApp::DrawOctreePreviewOverlay() {
@@ -775,7 +775,7 @@ void EditorApp::DrawOctreePreviewOverlay() {
 			}
 		}
 		// Captures read through DrawCaptureBallOverlay (baked-aware balls,
-		// always on with the cubemap gizmos) â€” the precook grid draws
+		// always on with the cubemap gizmos) — the precook grid draws
 		// tiles + bounds only so the two never double up.
 		dl->PopClipRect();
 	}
@@ -860,11 +860,11 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 //      capped at 64 within the overlay max distance. Answers "is there a
 //      cubemap near X?" exactly like the App.
 //   2. AUTHORED pins with no loaded probe behind them: black balls (the
-//      editor-only half â€” "nothing rendered here yet"; bake to promote
+//      editor-only half — "nothing rendered here yet"; bake to promote
 //      them into half 1).
 // The click twin lives in PickGizmoMarker.
 // The shared GI probe marker (declared in editor_app.h): a regular
-// octahedron ortho-projected from a fixed 3/4 view â€” the gem read keeps
+// octahedron ortho-projected from a fixed 3/4 view — the gem read keeps
 // individual probes distinct where a same-color cluster of dots would
 // smear together. 6 axis vertices (+-X/+-Y/+-Z), 8 faces; a regular
 // octahedron's face outward normal is exactly normalize(a+b+c), so
@@ -891,7 +891,7 @@ void DrawProbeOctahedron(ImDrawList* dl, const ImVec2& cpt, float r,
 	for (int k = 0; k < 6; ++k)
 		p[k] = ImVec2(cpt.x + glm::dot(v[k], right) * r,
 			cpt.y - glm::dot(v[k], up) * r); // screen Y grows down
-	// The 8 faces as vertex-index triples (mutually adjacent â€” no
+	// The 8 faces as vertex-index triples (mutually adjacent — no
 	// opposite pair in a triple): 4 around +Y, 4 around -Y.
 	static const int faces[8][3] = {
 		{0, 2, 4}, {0, 4, 3}, {0, 3, 5}, {0, 5, 2},
@@ -949,7 +949,7 @@ void EditorApp::DrawCaptureBallOverlay() {
 	const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
 	const float maxDist2 = maxDist * maxDist;
 	// In-view witness (the viz window's legend): the busiest viewport's
-	// marker count â€” reset per frame, kept as a max so multi-viewport
+	// marker count — reset per frame, kept as a max so multi-viewport
 	// layouts report the fullest view, not whichever drew last.
 	m_probeDrawnLast = 0;
 	for (int i = 0; i < ViewportCount(); ++i) {
@@ -1043,7 +1043,7 @@ void EditorApp::DrawCaptureBallOverlay() {
 			m_probeDrawnLast = std::max(m_probeDrawnLast, drawn);
 			// Caption (the App draws it top-left of the full display;
 			// per viewport here so quads stay readable). The in-LEVEL
-			// total rides along â€” "how many am I authoring" is the
+			// total rides along — "how many am I authoring" is the
 			// legend question, answered right where the eye already is.
 			char ccap[96];
 			std::snprintf(ccap, sizeof(ccap),
@@ -1095,7 +1095,7 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 	ImGui::SetNextWindowSize(sz, ImGuiCond_Always);
 	// API-sized strip: beat the style's 32x32 window minimum (it made
 	// the 6px strips ~32px tall, swallowing the bottom dock's tab strip
-	// â€” tab clicks hit the splitter instead) and kill the padding.
+	// — tab clicks hit the splitter instead) and kill the padding.
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 	bool released = false;
@@ -1111,7 +1111,7 @@ bool SplitterHandle(const char* id, ImVec2 pos, ImVec2 sz, bool horizontal,
 		// (active id), the delta accumulates per frame while held, and
 		// the release ends the gesture exactly once. The strip window
 		// repositions from the value every frame, so it tracks the
-		// mouse 1:1 through the whole gesture â€” no jumps on grab or
+		// mouse 1:1 through the whole gesture — no jumps on grab or
 		// snap-back on release.
 		if (ImGui::IsItemActive()
 			&& ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
@@ -1166,7 +1166,7 @@ void EditorApp::DrawPanelSplitters() {
 #if 0 // UV editor window retired (the Live view window replaced the canvas era)
 void EditorApp::DrawUvEditorWindow() {
 	// UV EDITOR WINDOW (floating, separate from the viewports): chrome
-	// here, canvas CONTENT from RecordUvWindowPass â€” which is added
+	// here, canvas CONTENT from RecordUvWindowPass — which is added
 	// right after DrawUI and before the imgui pass, so the fill sits
 	// UNDER this window's chrome. Window/title backgrounds are pushed
 	// alpha-0 and the canvas is an InvisibleButton (draws nothing):

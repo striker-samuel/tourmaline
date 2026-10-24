@@ -210,7 +210,7 @@ struct MotionBlur {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 		fragModule = {};
 	}
@@ -242,8 +242,8 @@ struct MotionBlur {
 	}
 
 	void DestroyComputeShaders() {
-		tilesProgram = ShaderProgram{};
-		dilateProgram = ShaderProgram{};
+		tilesProgram = ShaderProgram();
+		dilateProgram = ShaderProgram();
 		tilesCsModule = {};
 		dilateCsModule = {};
 	}

@@ -135,6 +135,71 @@ Vendored but not wired into the build (intentional):
 Not vendored but required at build time: the **Vulkan SDK** and
 **KTX-Software** (see Requirements above).
 
+## Linux
+
+The tree builds on Linux (tested on Ubuntu 24.04, GCC 14) — the same
+CMake/Ninja flow, with `install_dependencies.sh` instead of the `.ps1`:
+
+```bash
+# 0. Submodules + fetched deps:
+git submodule update --init --recursive
+./install_dependencies.sh   # + the Linux pins: SDL3 source, DXC linux
+                            #   package, Vulkan-Headers 1.4.357,
+                            #   DirectX-Headers/DirectXMath (DirectXTex)
+
+# 1. System packages (Ubuntu 24.04 names):
+sudo apt install build-essential cmake ninja-build git curl unzip \
+  pkg-config glslang-tools libvulkan-dev zlib1g-dev \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+  libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
+  libasound2-dev libpulse-dev libdbus-1-dev libudev-dev libunwind-dev \
+  libpipewire-0.3-dev libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev \
+  libinput-dev
+
+# 2. KTX-Software (Ubuntu has no package; build/install once):
+git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF
+cmake --build build && sudo cmake --install build
+
+# 3. Configure + build (GCC 14 recommended; see the toolchain note below):
+CC=gcc-14 CXX=g++-14 cmake -B out/build/linux-Release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release .
+cmake --build out/build/linux-Release --target App
+
+# 4. Test:
+ctest --test-dir out/build/linux-Release --output-on-failure
+```
+
+Platform notes:
+
+- **GCC 14+ recommended.** GCC 13 works for most of the tree but hits
+  two compiler bugs in the engine (`gimplify` ICEs on array-NSDMI
+  aggregates; see the NOTE at `struct ShaderProgram` in
+  `engine/include/Engine/smvk.h`). Clang is expected to work but is
+  not exercised in CI.
+- **The PCH is an MSVC/Clang feature.** GCC gets pch.h force-included
+  as a plain `-include` instead (GCC's `.gch` does not carry
+  `#pragma once` state; see `engine/CMakeLists.txt`).
+- **Vulkan headers**: distro `libvulkan-dev` packages ship older
+  trimmed headers (Ubuntu 24.04: 1.3.275, missing 1.4-era symbols the
+  engine uses), so the build pins the full Vulkan-Headers 1.4.357 (the
+  same set the Windows SDK uses) ahead of the system headers. The
+  loader stays the system's.
+- **SDL3**: a system/distro SDL3 install wins (`find_package`); when
+  absent, the 3.4.16 source tree fetched by `install_dependencies.sh`
+  is built as a subproject.
+- **DLSS/Streamline stays unavailable on Linux** (the runtime set is
+  Windows-only; the engine falls back to the renderScale/bilinear path
+  and logs a one-time notice).
+- **Content**: set `TOURMALINE_CONTENT_DIR` to your content store (the
+  Windows default `F:/content` obviously does not apply).
+- **The runtime render loop expects a real GPU.** Builds, tests
+  (35/35 parity with Windows) and boot + world loading are verified;
+  the software rasterizer (lavapipe) crashes inside its compute-pipeline
+  compiler on the engine's BDA-heavy shaders.
+
 ## Build
 
 ```powershell

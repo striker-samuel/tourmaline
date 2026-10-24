@@ -551,10 +551,10 @@ struct Ssgi {
 	}
 
 	void DestroyShaders() {
-		ssaoRawProgram = ShaderProgram{};
-		saoRawProgram = ShaderProgram{};
-		blurProgram = ShaderProgram{};
-		composeProgram = ShaderProgram{};
+		ssaoRawProgram = ShaderProgram();
+		saoRawProgram = ShaderProgram();
+		blurProgram = ShaderProgram();
+		composeProgram = ShaderProgram();
 		vsModule = {};
 		ssaoFragModule = {};
 		saoFragModule = {};

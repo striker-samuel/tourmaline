@@ -343,11 +343,13 @@ void EditorApp::Shutdown() {
 	m_lmExportImage = {};
 	m_lmExportDepthView = {};
 	m_lmExportDepth = {};
-	m_unlitProgram = {};
-	m_litProgram = {};
-	m_bakedProgram = {};
-	m_wireProgram = {};
-	m_lineProgram = {};
+	// (ShaderProgram() - the paren value-init form: GCC rejects the brace
+	// temporary; see the NOTE at struct ShaderProgram in smvk.h.)
+	m_unlitProgram = smvk::ShaderProgram();
+	m_litProgram = smvk::ShaderProgram();
+	m_bakedProgram = smvk::ShaderProgram();
+	m_wireProgram = smvk::ShaderProgram();
+	m_lineProgram = smvk::ShaderProgram();
 	Super::Shutdown();
 }
 
@@ -384,7 +386,7 @@ void EditorApp::LoadPrefs() {
 		const std::string val = line.substr(eq + 1);
 		try {
 			// Same clamps as the panel splitters (a hand-edited
-			// prefs value must not degenerate the layout â€” a
+			// prefs value must not degenerate the layout — a
 			// sub-tab-height dock, for instance, made the console
 			// tab look dead).
 			if (section == "outliner" && key == "width")
@@ -662,7 +664,7 @@ void EditorApp::CloseScene() {
 	// tinygltf::Model (picking walks the world's asset registry).
 	cluster.SetRetainUploads(true);
 	// THE DEFINITION BUILD: the world assembles from the tour doc.
-	// Reference #0 is the source glTF itself (a ROOT reference â€” no
+	// Reference #0 is the source glTF itself (a ROOT reference — no
 	// placeholder, no namespace, cluster ids match a direct import
 	// exactly); every other reference inlines beneath it; the command
 	// log replays on top (below). No side imports: `path` non-empty
@@ -849,7 +851,7 @@ void EditorApp::CloseScene() {
 	m_images.clear(); // fresh world: image defs die with it
 	m_nextImageId = 1;
 	// (m_refIssues/m_refResolved are NOT cleared here: the reference
-	// bind above just filled them for THIS world â€” clearing would wipe
+	// bind above just filled them for THIS world — clearing would wipe
 	// the panel's reporting. They reset at load start/close instead.)
 	m_defaultMatWorld = UINT32_MAX;
 	m_overrideRules.clear();
@@ -870,7 +872,7 @@ void EditorApp::CloseScene() {
 		m_clusterBase = 1;
 	// Map the reference placeholder CLUSTER ids -> world ids (cluster
 	// base just became valid). Root references carry a -1 sentinel (no
-	// placeholder by design) â€” mapped to UINT32_MAX so the parallel
+	// placeholder by design) — mapped to UINT32_MAX so the parallel
 	// arrays stay index-aligned with m_references.
 	if (!m_refPhCluster.empty()) {
 		m_refPlaceholders.clear();
@@ -883,8 +885,8 @@ void EditorApp::CloseScene() {
 	// world's asset registry + retained uploads); the tour replays next.
 	Log("Loading tour...");
 	if (!tourOverride.empty() && directOpen) {
-		// Temp-doc reload (reference Reload): the snapshot â€” not the
-		// on-disk file â€” is the document. No autosave offer either:
+		// Temp-doc reload (reference Reload): the snapshot — not the
+		// on-disk file — is the document. No autosave offer either:
 		// the temp already IS the latest working state.
 		smvk::tour::Doc tmpDoc;
 		std::string tmpErr;
@@ -897,14 +899,14 @@ void EditorApp::CloseScene() {
 		}
 		else {
 			Log("reload snapshot unreadable (" + tmpErr
-				+ ") â€” falling back to the tour file.");
+				+ ") — falling back to the tour file.");
 			LoadTour();
 			CheckAutosaveOffer();
 		}
 	}
 	else if (!tourOverride.empty()) {
 		// Opened definition tour: OpenTourFile replays its own doc
-		// right after this build â€” nothing loads here (a second load
+		// right after this build — nothing loads here (a second load
 		// would double-apply the commands).
 	}
 	else {
@@ -918,7 +920,7 @@ void EditorApp::CloseScene() {
 	}
 	// Reference checkbox = the placeholder visibility AUTHORITY, applied
 	// AFTER the tour replay: disabled refs hide their subtrees (nodes
-	// kept, ids stable â€” the per-frame visibility filters stop draws/
+	// kept, ids stable — the per-frame visibility filters stop draws/
 	// picks and the outliner drops the tree), enabled refs clear any
 	// stale inherited/legacy hidden state (an old session's visibility
 	// command must never outvote the checkbox). Runs here because the
@@ -1298,7 +1300,7 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
 	const uint32_t streamFrame = static_cast<uint32_t>(m_frameCounter);
 	// Handle-based demand (NOT RequestMipsByDistance: that matches caller
 	// keys against bindless slots, but MaterialValues::textures stores RHI
-	// pool indices â€” equal only by creation-order coincidence. Resolving
+	// pool indices — equal only by creation-order coincidence. Resolving
 	// the live handle per slot is exact either way). Coarsest-only mode
 	// files no demand so Update() decays everything to the 1-mip floor.
 	if ((m_frameCounter & 3u) == 0u && m_texMode == TexMode::Streaming &&
@@ -1401,7 +1403,7 @@ bool EditorApp::ApplyTexMode() {
 		return false;
 	}
 	// The streamer must exist at import, so every switch reimports (the
-	// tour file is current â€” every edit saves it â€” so edits replay back).
+	// tour file is current — every edit saves it — so edits replay back).
 	Log("Texture mode switch: reimporting scene...");
 	return OpenScene(m_gltfPath);
 }
@@ -1446,14 +1448,14 @@ void EditorApp::UpdateCamera(float dt) {
 	// the wheel, and F / Shift+F framing. Everything acts on the ACTIVE
 	// viewport's camera. ORTHOGRAPHIC cameras (Top/Side) keep their axis
 	// lock: tumble is disabled so controls can never coerce them into
-	// angled perspective-like views â€” only the Projection combo changes
+	// angled perspective-like views — only the Projection combo changes
 	// the type. Ortho zoom scales the half-height.
 	SetupDefaultCameras();
 	// UV editor window retired — the wheel + MMB always drive the 3D
 	// orbit camera (the canvas-hover gate went with the window).
 	// Locked look-through: orbit navigation is parked while the active
 	// viewport follows a live camera node (move the node via gizmo or
-	// the transform inspector â€” the view tracks it). A lost node falls
+	// the transform inspector — the view tracks it). A lost node falls
 	// back to orbit, where navigation works again.
 	{
 		const int b = m_viewports[m_activeVp].boundNode;

@@ -88,7 +88,7 @@ struct PlacementPass {
 	}
 
 	void DestroyShaders() {
-		tileProgram = ShaderProgram{};
+		tileProgram = ShaderProgram();
 		tileModule = {};
 	}
 
@@ -518,8 +518,8 @@ struct PlacementScatterPrograms {
 		return true;
 	}
 	void Destroy() {
-		meshProgram = ShaderProgram{};
-		hfProgram = ShaderProgram{};
+		meshProgram = ShaderProgram();
+		hfProgram = ShaderProgram();
 		meshModule = {};
 		hfModule = {};
 	}
@@ -650,7 +650,9 @@ struct PlacementConstraint {
 			if (!l.empty()) rg.FreeBuffer(l);
 		headLogical = {}; nextLogical = {}; flag2Logical = {}; paramsLogical = {};
 		headBuffer = {}; nextBuffer = {}; flag2Buffer = {}; paramsBuffer = {};
-		buildProgram = {}; electProgram = {}; killProgram = {};
+		// (ShaderProgram() - the paren value-init form: GCC rejects the
+		// brace temporary; see the NOTE at struct ShaderProgram in smvk.h.)
+		buildProgram = ShaderProgram(); electProgram = ShaderProgram(); killProgram = ShaderProgram();
 		buildModule = {}; electModule = {}; killModule = {};
 	}
 

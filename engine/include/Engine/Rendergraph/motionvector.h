@@ -161,7 +161,7 @@ struct MotionVectors {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 		fragModule = {};
 	}

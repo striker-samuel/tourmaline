@@ -414,10 +414,10 @@ struct Smaa {
 	}
 
 	void DestroyShaders() {
-		edgeProgram = ShaderProgram{};
-		weightsProgram = ShaderProgram{};
-		nbProgram = ShaderProgram{};
-		resolveProgram = ShaderProgram{};
+		edgeProgram = ShaderProgram();
+		weightsProgram = ShaderProgram();
+		nbProgram = ShaderProgram();
+		resolveProgram = ShaderProgram();
 		edgeVsModule = {}; edgePsModule = {};
 		weightsVsModule = {}; weightsPsModule = {};
 		nbVsModule = {}; nbPsModule = {};

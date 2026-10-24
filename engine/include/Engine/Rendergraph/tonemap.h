@@ -127,7 +127,7 @@ struct Tonemapper {
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram{};
+		program = ShaderProgram();
 		vsModule = {};
 		fragModule = {};
 	}

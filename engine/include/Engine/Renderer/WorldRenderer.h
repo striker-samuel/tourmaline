@@ -3,7 +3,7 @@
 
 #pragma once
 // WorldRenderer: whole-frame renderer over a WORLD. The host (App's
-// main.cpp, the editor's live view) owns all content loading â€” scenes
+// main.cpp, the editor's live view) owns all content loading — scenes
 // arrive as a resolved smvk::World whose clusters/resources are already
 // uploaded to the context and render by handles. The renderer knows
 // nothing about paks, scene files or scene discovery; it owns every
@@ -260,7 +260,7 @@ inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out
 
 // ---------------------------------------------------------------------------
 // Ambient / GI source selection (N cycles): exactly one active source set
-// for clean isolation â€” All is the production state, the rest isolate a
+// for clean isolation — All is the production state, the rest isolate a
 // single GI contribution for bisection. The ambient is the only thing
 // this drives; the visible sky dome (K) and the direct sun / cascaded
 // shadows are unaffected (Off = direct light only).
@@ -268,7 +268,7 @@ inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out
 //               regular grid > probe volume); the sky IBL is the
 //               FALLBACK for uncovered pixels only, never additive
 //   Lightmaps:  baked 2D SG lightmaps ONLY (static draws)
-//   Probes:     baked 3D probes ONLY (regular grids + octree volume â€”
+//   Probes:     baked 3D probes ONLY (regular grids + octree volume —
 //               the palette view splits grid vs volume per pixel)
 //   SkyIbl:     analytic sky IBL only (all baked sources disabled)
 //   Off:        no GI/ambient contribution at all (pure direct sun frame)
@@ -387,7 +387,7 @@ enum class DebugFs : int {
 #if defined(DS_DEBUG_VIZ)
 // ---------------------------------------------------------------------------
 // Deferred-shadow debug visualizers (paper sections 5.3/5.4; debug builds
-// only â€” DS_DEBUG_VIZ, see app/CMakeLists.txt + CompileShaders.cmake).
+// only — DS_DEBUG_VIZ, see app/CMakeLists.txt + CompileShaders.cmake).
 // Rendered in default_lit.frag.hlsl, blended over the lit image or
 // replacing it. Numeric values must match the DS_VIZ_* defines in
 // engine/shaders/deferredshadow.hlsli.
@@ -451,7 +451,7 @@ struct ParticleDemo {
 
 // Deferred-shadow visualizer parameters (paper 5.3/5.4).
 // Standalone 32-byte payload, uploaded into a tiny per-flight ring and
-// reached through FrameUniforms::dsVizParams â€” deliberately NOT inlined
+// reached through FrameUniforms::dsVizParams — deliberately NOT inlined
 // in FrameUniforms: viz-gated #ifdefs inside GPU-pushed structs once made
 // the CPU/GPU layout config-dependent (per-flight stride bugs). This
 // struct is UNCONDITIONAL on both sides (C++/HLSL mirror in
@@ -481,7 +481,7 @@ struct FrameUniforms
 	glm::mat4 invView;
 	glm::mat4 invProj;
 	glm::mat4 invViewProj;
-	glm::mat4 prevViewProj; // last frame's proj*view (post Y-flip) â€“ motion vectors
+	glm::mat4 prevViewProj; // last frame's proj*view (post Y-flip) – motion vectors
 
 	glm::vec3 cameraPos;
 	float     time;
@@ -493,13 +493,13 @@ struct FrameUniforms
 	float farPlane;
 	float exposure;
 	// AO (DORMANT since the SSGI rework): the lighting pass no longer
-	// samples AO â€” Main exports the AO-sensitive lighting through the
+	// samples AO — Main exports the AO-sensitive lighting through the
 	// aoTerm MRT target and the SSGI compose pass applies it (see ssgi.h
 	// + ssao_compose.frag.hlsl). The FIELDS stay: FrameUniforms offsets
-	// are asserted vs the HLSL mirror â€” removing them would shift every
+	// are asserted vs the HLSL mirror — removing them would shift every
 	// later field. Always UINT32_MAX / 0 ("no AO here") for any future
 	// reader.
-	// Must match HLSL FrameUniforms in common.hlsli â€” offsets asserted below.
+	// Must match HLSL FrameUniforms in common.hlsli — offsets asserted below.
 	uint32_t aoTextureIndex = UINT32_MAX; // dormant (was: full-res composed AO bindless)
 	float aoIntensity = 0.0f;            // dormant (was: ambient composite strength)
 	// Explicit pad so env lands at offset 512 (16-byte aligned), matching
@@ -519,10 +519,10 @@ struct FrameUniforms
 	float cubemapIntensity = 1.0f;      // 648 specular IBL scale (UI)
 	uint32_t cubemapDebug = 0;          // 652 0 off, 1 cubemap-only, 2 probe weight
 	// Reflection probes for local specular IBL ride the Forward+ light
-	// buffer as type-2 entries (see smvk::kForwardPlusProbe) â€” no probe
+	// buffer as type-2 entries (see smvk::kForwardPlusProbe) — no probe
 	// storage buffer, no parallel tile lists. probeEntries is the tail
 	// length: the shader's index bound is fpLightCount + probeEntries
-	// (lights [0,L), probes [L,L+P) â€” a lights-only bound skips probes).
+	// (lights [0,L), probes [L,L+P) — a lights-only bound skips probes).
 	float cubemapLodBias = 0.0f;       // 656 added to roughness LOD (UI)
 	uint32_t probeTileFresh = 0;       // 660 1 = tile cull filed probe entries
 	uint32_t probeEntries = 0;         // 664 type-2 tail length
@@ -552,7 +552,7 @@ struct FrameUniforms
 	// 1 = prefiltered EVSM moments (blurred RG32F, 1-frame lag). The
 	// shadow_map_index / spotShadowMapIndex fields then address the
 	// blurred EVSM atlas instead of the depth atlas. Same offset/size as
-	// HLSL FrameUniforms::evsmMode â€” see the static_asserts below.
+	// HLSL FrameUniforms::evsmMode — see the static_asserts below.
 	uint32_t evsmMode = 1;      // 748
 	// ---- Forward+ decals (tiled projected splats, see
 	// smvk::ForwardPlusDecal + forwardplus.cs.hlsl). decals points at
@@ -560,7 +560,7 @@ struct FrameUniforms
 	// ForwardPlus builder's decal buffers (same tiling as the light
 	// lists; the tile-cull dispatch refreshes them every frame it runs,
 	// storing 0 with no decals). decalCount > 0 only when the cull
-	// dispatch runs this frame, so the shader never reads stale lists â€”
+	// dispatch runs this frame, so the shader never reads stale lists —
 	// and the tile pointers stay valid whenever the cull can run. ----
 	uint64_t decals = 0;            // 752 per-frame decal ring slice
 	uint64_t decalTileCounts = 0;   // 760 builder decal list counts
@@ -598,21 +598,21 @@ struct FrameUniforms
 	// Convex-volume tile masks (the cull's per-tile bitmask, see
 	// forwardplus.cs.hlsl): address + tile grid publish together under
 	// the decal tile-list freshness contract; zeros together mean "no
-	// tile cull refreshed the masks this view/frame" â€” the shader then
+	// tile cull refreshed the masks this view/frame" — the shader then
 	// walks every volume (per-volume AABB reject keeps it correct).
 	uint64_t cvolTileMasks = 0;  // 1280 per-tile volume bitmask buffer
 	uint32_t cvolTileCountX = 0; // 1288 mask tile grid width (0 = no mask)
 	uint32_t cvolTileSize = 0;   // 1292 mask tile size (16; fp tiling)
 	// ---- FramePSHot slab BDA (the FS-only hot struct, see FramePSHot
 	// below): the pixel shader reaches the hot slab through FrameUniforms
-	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member â€”
+	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member —
 	// a pc member shifted every sub-192 pc field and broke the HLSL
 	// mirror structs (the 10/1 device-loss crash; see
 	// Engine/Renderer/Renderer.h layout invariant). Filled per frame in
 	// UpdateFrameUniforms. ----
 	uint64_t frameHot = 0;      // 1296 this view's FramePSHot slab
 	// ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
-	// view's DsVizParams slice â€” the standalone 32 B payload (per-flight
+	// view's DsVizParams slice — the standalone 32 B payload (per-flight
 	// ring + one zero slice shared by secondary views, see
 	// UpdateFrameUniforms). Deliberately a BDA, not inlined fields:
 	// viz-gated #ifdefs inside this struct once made the CPU/GPU layout
@@ -623,17 +623,17 @@ struct FrameUniforms
 	// shaders skip off-by-default payloads (like dsVizParams above)
 	// without a BDA chase. Unconditional like every other field. ----
 	uint64_t flags = 0;         // 1312 kFrameFlag* bits
-	// ---- Dense octree resample (the BC6H Texture3D runtime path â€” see
+	// ---- Dense octree resample (the BC6H Texture3D runtime path — see
 	// m_giLevelTextures): per level 9 SG-lobe RGB layers (BC6H 3D) + 1
 	// weight layer (R16F 3D) in the shared volumeTextures bindless
 	// array; UINT32_MAX = absent level (beyond the baked levelCount).
 	// The diffuse sampler trilinear-filters these instead of walking
 	// probe lists per pixel (the probes never move). NOTE: uint32
-	// arrays align to 4 (not 16) on both sides â€” this member sits at
+	// arrays align to 4 (not 16) on both sides — this member sits at
 	// 1320, matching the HLSL mirror exactly (see the asserts below).
 	uint32_t giLevelLayers[80] = {}; // 1320 8 levels x (9 amp + 1 weight)
 	// ---- Convex-volume isotropic-mean textures (the volumetric fog's
-	// one-fetch-per-volume payload â€” PackGpuMeanLayer +
+	// one-fetch-per-volume payload — PackGpuMeanLayer +
 	// SgCvSampleVolumeMean, blended by SgCvRayComposite): 8 bindless
 	// slots, UINT32_MAX = none. Deliberate
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
@@ -685,7 +685,7 @@ struct FrameUniforms
 	uint32_t probePremixPad_[2] = {};      // 1968 (16-align tail; struct ends 1984)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
-// every field by absolute offset â€” any drift desyncs the GPU reads.
+// every field by absolute offset — any drift desyncs the GPU reads.
 // dsVizParams must directly follow frameHot (no config-dependent tail).
 static_assert(offsetof(FrameUniforms, frameHot) == 1296, "frameHot offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, dsVizParams) == 1304, "dsVizParams offset: HLSL mirror");
@@ -699,7 +699,7 @@ static_assert(offsetof(FrameUniforms, cvolTileMasks) == 1280, "cvolTileMasks off
 static_assert(offsetof(FrameUniforms, cvolTileCountX) == 1288, "cvolTileCountX offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, cvolTileSize) == 1292, "cvolTileSize offset: HLSL mirror");
 // GI block (the lit shader's frame.gi* reads + the F8 debug views live
-// or die by these â€” the debug view once silently read the wrong word
+// or die by these — the debug view once silently read the wrong word
 // here, so every member of the block is pinned, not just the tail).
 static_assert(offsetof(FrameUniforms, giProbes) == 704, "giProbes offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giGrid) == 712, "giGrid offset: HLSL mirror");
@@ -731,7 +731,7 @@ static_assert(offsetof(FrameUniforms, probePremixSel) == 1960, "probePremixSel o
 static_assert(offsetof(FrameUniforms, lmLayerKind) == 1940, "lmLayerKind offset: HLSL mirror");
 static_assert(sizeof(FrameUniforms) == 1984, "FrameUniforms size: HLSL mirror");
 
-// FramePSHot â€” tiny per-frame data frequently accessed by the pixel shader.
+// FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
 // Uploaded as a separate buffer slice per frame to keep PS register pressure low.
 struct FramePSHot
@@ -786,7 +786,7 @@ struct AppResources {
 	smvk::LogicalBufferHandle fpLightsLogical{}; // rendergraph alias (stable: buffer never resized)
 	// Decal ring (ForwardPlusDecal * FP_MAX_DECALS per flight frame):
 	// rebuilt + uploaded every frame from the WORLD's decal entities
-	// (see UpdateDecals â€” per-frame re-derivation, live edits included).
+	// (see UpdateDecals — per-frame re-derivation, live edits included).
 	smvk::Holder<smvk::BufferHandle> decalsBuffer;
 	smvk::LogicalBufferHandle decalsLogical{}; // rendergraph alias (stable)
 	// Analytic env-zone ring (EnvZoneGpu * kEnvZoneMaxZones per flight
@@ -805,7 +805,7 @@ struct AppResources {
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
 	// Alpha-to-coverage lit FS (default_lit_a2c): same VS, coverage-from-
-	// alpha cutout without discard â€” bound for Masked materials in 2x MSAA
+	// alpha cutout without discard — bound for Masked materials in 2x MSAA
 	// Main. Missing module leaves shaderCount 0 and Main keeps the
 	// discard variant everywhere.
 	smvk::Holder<smvk::ShaderModuleHandle> fragA2CShader;
@@ -813,7 +813,7 @@ struct AppResources {
 	// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
 	// Selected at draw time based on loaded GI assets (WorldRenderer::GIVariant).
 	smvk::ShaderProgram mainProgramGi[4];
-	// Standard-material twins (default_lit .std/.giNstd â€” MAT_STANDARD: the
+	// Standard-material twins (default_lit .std/.giNstd — MAT_STANDARD: the
 	// layered machinery compiled out). Bound for materials with
 	// layerMaterials.w <= 1; layered materials keep the programs above
 	// (fail-safe: missing std modules fall back to the monolith picks).
@@ -906,7 +906,7 @@ struct AppResources {
 	// Reuses the main VS and the reversed-Z masked-shadow FS module.
 	smvk::ShaderProgram prepassMaskedProgram;
 	// SSSR-style thin G-buffer programs (see gbuffer.frag.hlsl): default.vert
-	// + the trivial solid/cutout G-buffer FS pair â€” the Forward+ depth
+	// + the trivial solid/cutout G-buffer FS pair — the Forward+ depth
 	// prepass's G-buffer writers (bound instead of the VS-only
 	// depthProgram + prepassMaskedProgram when the G-buffer layer is
 	// wanted). Empty when the shaders failed to load (the prepass keeps
@@ -1393,7 +1393,7 @@ protected:
 	double m_cpuMsSmooth = 0.0;
 	double m_gpuMsSmooth = 0.0;
 	bool m_gpuTimingValid = false;
-	// GPU stage timings (shadow-path instrumentation, both PCF + EVSM â€”
+	// GPU stage timings (shadow-path instrumentation, both PCF + EVSM —
 	// see GpuStageTimer): last retired frame's per-stage ms + validity,
 	// EMA-smoothed copies for the UI overlay, and --bench accumulators
 	// (avg per measured frame, printed with the [perf] split).
@@ -1411,7 +1411,7 @@ protected:
 	std::vector<smvk::GpuMemoryHeap> m_gpuMemHeaps{};
 	double m_gpuMemLastQuerySec = -1e9; // throttle: max 1 Hz
 	double m_gpuMemLastLogSec = -1e9; // console: max ~1 per 10 s (when enabled)
-	double m_gpuMemQueryUs = 0.0; // last query wall time (Âµs, shown in UI)
+	double m_gpuMemQueryUs = 0.0; // last query wall time (µs, shown in UI)
 	bool m_gpuMemShowAllHeaps = false; // collapsed by default: VRAM heap only
 	bool m_gpuMemConsoleAutoLog = false; // periodic stderr snapshot; button always works
 	void RefreshGpuMemoryStats(bool force = false); // throttled query
@@ -1448,7 +1448,7 @@ public:
 	// decal leg of the forward+ tile cull, Main read hints) so the shader
 	// flag and the GPU lists can never disagree. Requires the forward+
 	// tile buffers: the cull dispatch refreshes the decal lists (storing
-	// 0 per tile with no decals), so decals ride the same pass as lights â€”
+	// 0 per tile with no decals), so decals ride the same pass as lights —
 	// including when the deferred-shadow pipeline owns the LIGHT lists
 	// (lightCount=0 cull; decals keep working). The world carries the
 	// CONTENT (decal entities in cluster pools); this is only visibility
@@ -1565,7 +1565,7 @@ public:
 	// Runtime LOD switch: pixel budget for the projected simplifier error
 	// (~1px = conservative, higher = more aggressive). Disabled = always LOD0.
 	// Per-node decisions are cached in the World and refreshed EVERY frame
-	// (full rate, the default; halfrate parity opt-out â€” see World::
+	// (full rate, the default; halfrate parity opt-out — see World::
 	// LodIndexForNode and m_lodFullRate); m_lodFrameInputs.frameId is the
 	// monotonic key. Selection is hysteretic around the budget
 	// (kLodSelectHysteresis), so switch distances don't flip siblings
@@ -1659,7 +1659,7 @@ public:
 	// fitted to the framed bounds at load (generic framing parks the
 	// camera radius*2.2 away unless TOURMALINE_CAM_POS/FWD pin it).
 	float m_sceneFarClip = 2000.0f;
-	// Scene lens (default-camera framing only â€” see the World settings'
+	// Scene lens (default-camera framing only — see the World settings'
 	// camera.default typed field): when the scene carries an authored
 	// DEFAULT CAMERA, its perspective lens replaces the App defaults in
 	// UpdateCameraAspect (generic framing leaves these untouched).
@@ -1681,7 +1681,7 @@ public:
 	// Resolved KHR_lights_punctual set for the loaded scene (snapshotted
 	// once in ResolveSceneLights after Resolve; refreshed silently by
 	// RefreshSceneLights on editor edits — see world_renderer.cpp).
-	// If the scene carries ANY lights, they render â€” no enable toggle.
+	// If the scene carries ANY lights, they render — no enable toggle.
 	ResolvedSceneLights m_sceneLights{};
 	void ResolveSceneLights();
 	// Light resolve shared by the bind-time path (log + env-sun seeding)
@@ -1715,14 +1715,14 @@ public:
 	// Lazy crosshair-pick acceleration (J): full scene triangle soup +
 	// CPU BVH, built on first use from the resolved world clusters.
 	// 0 = not built, 1 = ready, -1 = unavailable (cooked worlds carry no
-	// CPU triangle soup â€” consumers fail open).
+	// CPU triangle soup — consumers fail open).
 	int m_decalPickState = 0;
 	std::unique_ptr<smvk::gi::GiTraceScene> m_decalPickScene;
 	// ---- GPU particles (compute emitters, see ParticleDemo + smvk::Particles) ----
 	// Single gate for every consumer (Ensure, emitter ring upload, emit/sim
 	// dispatches, draw pass) so the flag and the GPU state can never
 	// disagree. Requires the Forward+ light pipeline only for the TILED
-	// lighting path â€” the draw shader falls back to a brute-force light
+	// lighting path — the draw shader falls back to a brute-force light
 	// loop when the tile lists are not fresh (deferred shadows own them).
 	bool m_particlesEnabled = true;
 	ParticleDemo m_particleDemo{};
@@ -1920,7 +1920,7 @@ public:
 	// main view's cascade/spot depth passes are replaced by EVSM moment
 	// passes (RG32F 2xMSAA + resolve) followed by separable Gaussian blur
 	// passes marked AsyncCompute. The blur runs on the dedicated compute
-	// queue (G1/C/G2 split submit, SameFrame default â€” no shadow lag); the
+	// queue (G1/C/G2 split submit, SameFrame default — no shadow lag); the
 	// OneFrameLag pipeline stays available in the UI. shadow_map_index
 	// fields then address the blurred atlas; FrameUniforms.evsmMode tells
 	// shaders. Falls back to PCF automatically when unsupported/invalid.
@@ -1933,13 +1933,13 @@ public:
 	smvk::EvsmPipelineMode m_evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
 	// Directional sampling descriptors for OneFrameLag: the blurred atlas
 	// read by lighting trails one flight slot, so it was baked with LAST
-	// frame's cascade fit â€” the sampling copy of
+	// frame's cascade fit — the sampling copy of
 	// GpuDirectionalLightDescription must trail one frame too or the
 	// receiver projection disagrees with the stale map content (EVSM-only
 	// acne under camera motion). SameFrame uploads the current fit.
 	smvk::GpuDirectionalLightDescription m_dirSamplePrev{};
 	bool m_dirSamplePrevValid = false;
-	// Soft shadows: artistic scalar over the physical penumbrae â€”
+	// Soft shadows: artistic scalar over the physical penumbrae —
 	// directional uses the sun disc angular radius (environment
 	// sunDiscSizeDeg) projected per cascade; spots use the emitting-sphere
 	// diameter (m_evsmSpotLightSize) with PCSS similar-triangles. 0 = hard.
@@ -1994,14 +1994,14 @@ public:
 	//    histogram point: one tiny distant object must not dictate the
 	//    whole range), padded and clamped to [nearClip, CascadeFar()].
 	//  - Temporal stabilization: the applied range follows the measured
-	//    range with asymmetric hysteresis (instant expand â€” never clip a
-	//    receiver; slow contract ~2%/frame â€” projections don't swim) and
+	//    range with asymmetric hysteresis (instant expand — never clip a
+	//    receiver; slow contract ~2%/frame — projections don't swim) and
 	//    is quantized to 0.25 m steps (tiny distribution changes don't
 	//    move the light projections at all).
 	//  - CUT/discards: a camera teleport (per-frame position jump), stale
 	//    stats, or a measured range escaping the applied one by >30%
 	//    discards the hysteresis history. A teleport additionally cools
-	//    down on the fixed heuristic range for 2 frames â€” the 1-frame-old
+	//    down on the fixed heuristic range for 2 frames — the 1-frame-old
 	//    stats describe the OLD view, so they are wrong for the new one;
 	//    the fresh post-cut stats snap in after the cooldown.
 	static constexpr uint32_t kSdsmGroups = 256; // must match SDSM_GROUPS (sdsm_stats.cs.hlsl)
@@ -2058,7 +2058,7 @@ public:
 			&& m_viewportResources.evsmSpot.ShadersValid();
 	}
 	// Direct-path EVSM moment recording: depth-only 2x MSAA through the
-	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) â€”
+	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) —
 	// the per-sample resolve (evsm_resolve.cs.hlsl) reconstructs the
 	// moments from the MSAA depth right after the caster passes.
 	smvk::RenderViewSet m_renderViews{}; // per-frame virtual cameras: main view + shadow cascade/spot views
@@ -2116,7 +2116,7 @@ public:
 	bool m_useGfxMesh = true;
 	// ---- Cooperative shadow draw lists (cascade + spot tiles) ----
 	// Candidates are prebuilt once per frame on the render thread (LOD
-	// decisions mutate the World halfrate cache â€” not thread-safe), then
+	// decisions mutate the World halfrate cache — not thread-safe), then
 	// each shadow view's command list is built on a worker while the main
 	// thread records the rest of the frame. Futures join before Execute
 	// (the tile-pass lambdas read the built ranges) and the ring uploads
@@ -2125,7 +2125,7 @@ public:
 	// Direct caster recording, both phases (opaque VS-only + masked
 	// alpha-test): the full legacy loop when the filter is off, and the
 	// unfiltered-caster fallback inside the indirect tile passes
-	// (skipFiltered=true skips registered meshes â€” they are covered by
+	// (skipFiltered=true skips registered meshes — they are covered by
 	// the per-view command list).
 	void RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
 		smvk::ShaderProgram& opaqueProgram, const IRenderer::PushConstants& pc,
@@ -2162,7 +2162,7 @@ public:
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Wireframe (P): raster override on every scene-triangle bind in the
-	// Main pass â€” PolygonMode::Line + Cull None (see backfaces). Composes
+	// Main pass — PolygonMode::Line + Cull None (see backfaces). Composes
 	// with any debug view (lit/unlit/meshlets/LODs) and the transparent
 	// leg; skydome, cone-line overlays and the depth prepass stay Fill so
 	// lines keep hidden-line removal against the prepass depth.
@@ -2173,7 +2173,7 @@ public:
 	                               // Draws the GPU-written candidate lines)
 	bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
 	// Opt-in EVSM atlas debug dump (TOURMALINE_EVSM_DUMP=<frame>): one-shot
-	// after Execute â€” per-stage stats (moments/temp/blurred) + a log-encoded
+	// after Execute — per-stage stats (moments/temp/blurred) + a log-encoded
 	// PNG of the cascade-0 tile in exports/ (edge-band width = prefilter
 	// width). Same pattern as TOURMALINE_DS_DUMP (stalls; debug only).
 	int m_evsmDumpAtFrame = -1;
@@ -2205,21 +2205,21 @@ public:
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewVs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrStencilViewPs;
 	smvk::ShaderProgram m_ssrStencilViewProgram{};
-	// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth â€”
+	// ---- SSSR trace Hi-Z (MAX-reduce over the COMPLETE renderDepth —
 	// see hzb_max.cs.hlsl): the tracing twin of the gfx filter's culling
 	// HZB. The culling pyramid is MIN-reduced (farthest-surface, the
 	// occlusion-cull conservatism) and built over the seed's partial set
-	// / Option A crudest-LOD occluders BEFORE the depth passes complete â€”
+	// / Option A crudest-LOD occluders BEFORE the depth passes complete —
 	// unusable for ray marching. This one is MAX-reduced (NEAREST surface
-	// per block â€” the ray-trace direction) over the final renderDepth,
+	// per block — the ray-trace direction) over the final renderDepth,
 	// emitted AFTER all depth passes. The BUFFER + mip layout moved into
-	// smvk::Ssgi::hzb (Engine/Rendergraph/ssgi.h) â€” it became a SHARED
+	// smvk::Ssgi::hzb (Engine/Rendergraph/ssgi.h) — it became a SHARED
 	// screen-space primitive (the SSR trace's mip walk, the SSR
 	// blur/compose block reps and the SSGI AO chain all read it); this
 	// renderer keeps only the module/program that runs the build passes.
 	// The trace's empty-space skip proves "every surface in the covered
 	// block is behind the ray's next position" from the block's nearest
-	// value â€” only provably-empty blocks are skipped (a missed reflection
+	// value — only provably-empty blocks are skipped (a missed reflection
 	// at worst, never a see-through).
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrHzbModule;
 	smvk::ShaderProgram m_ssrHzbProgram{};
@@ -2298,12 +2298,12 @@ public:
 	void LoadGiLightmaps();
 	// Grid header only (the shader reads each level's volumeMin/cellSize/
 	// dims from frame.giGrid). The probe/cell/index storage buffers are
-	// GONE â€” the dense BC6H layers replaced the probe-list walk, so the
+	// GONE — the dense BC6H layers replaced the probe-list walk, so the
 	// FrameUniforms giProbes/giCells/giIndices BDA slots are legacy-zero
 	// (kept for the mirror layout; nothing reads them).
 	smvk::Holder<smvk::BufferHandle> m_giGridBuffer;
 	uint64_t m_giGridAddress = 0;
-	// Dense trilinear resample (the BC6H Texture3D runtime path â€” the
+	// Dense trilinear resample (the BC6H Texture3D runtime path — the
 	// probes never move, so the per-voxel visibility-weighted blend is
 	// baked once at load and filtered per pixel instead of walking probe
 	// lists): per level 9 SG-lobe RGB layers (BC6H 3D) + 1 weight layer
@@ -2360,7 +2360,7 @@ public:
 	// (LoadCubemaps declared with the cubemap members above.)
 	// ---- SG 2D lightmaps: DEPRECATED and removed (were STATIC-geometry
 	// atlas textures plus a runtime branch). The pak-side chart payloads
-	// (texCoord2/chartId, lmChartXforms) stay cooked â€” the GPU filter's VS
+	// (texCoord2/chartId, lmChartXforms) stay cooked — the GPU filter's VS
 	// still indexes the chart-transform table (see EnsureChartXforms).
 	// ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
 	// --regular-out output; artist OBBs + density, hardware trilinear).
@@ -2394,7 +2394,7 @@ public:
 		smvk::gi::CvVolume volume;       // CPU mirror (def; coeffs freed)
 		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
 		uint32_t layerSlots[7] = {};    // bindless slots
-		// Isotropic-mean twin (the volumetric fog's one-fetch path Î“Ã‡Ã¶
+		// Isotropic-mean twin (the volumetric fog's one-fetch path ΓÇö
 		// PackGpuMeanLayer): created under the same failure discipline
 		// as the 7 layers (a volume publishes only with all 8 up).
 		smvk::Holder<smvk::TextureHandle> meanTex;
@@ -2406,7 +2406,7 @@ public:
 	bool CvolActive() const {
 		return m_cvolLoaded && m_cvolEnabled && ProbesWanted();
 	}
-	// Forward+ tile-cull DISPATCH gate â€” the frame's single source of
+	// Forward+ tile-cull DISPATCH gate — the frame's single source of
 	// truth, consumed by the dispatch site AND the FrameUniforms
 	// cvol-tile-mask publish (the mask address may only go out when the
 	// dispatch actually refreshes the masks this frame; a skipped
@@ -2450,7 +2450,7 @@ public:
 	bool m_dsDebugLightValid = false;
 #endif
 	// Retired-slice counter readback for the debug overlay (list/vis slot
-	// peaks, ~2 frames old â€” same lag as the exposure meter). Includes
+	// peaks, ~2 frames old — same lag as the exposure meter). Includes
 	// the phase 3/4 classification histogram (telemetry).
 	struct DsStats {
 		uint32_t listSlots = 0;
@@ -2477,7 +2477,7 @@ public:
 	// jittered matrix would make every marker buzz +/-0.25 px per frame.
 	glm::mat4 m_unjitteredViewProj{ 1.0f };
 	// This frame's projection WITHOUT jitter (post Y-flip): DLSS wants the
-	// clip transform unjittered (cameraViewToClip) â€” jitter travels as the
+	// clip transform unjittered (cameraViewToClip) — jitter travels as the
 	// separate pixel-space offset, never inside the matrices.
 	glm::mat4 m_unjitteredProj{ 1.0f };
 	// Last frame's m_unjitteredViewProj (same validity as m_prevViewProj):
@@ -2519,11 +2519,11 @@ public:
 	// ---- Screen-space reflections (HDR composite, post-DOF, pre-bloom) ----
 	// Receiver materials come from the THIN G-BUFFER (full-res RGBA8 oct
 	// normal + roughness + metal, written by the Forward+ prepass when
-	// SSR OR AO wants it â€” see fc.ssrGbufferWanted). Every depth read in
+	// SSR OR AO wants it — see fc.ssrGbufferWanted). Every depth read in
 	// the blur/composite goes through the SHARED final-depth MAX-HZB
 	// (smvk::Ssgi::hzb, built by the SSGI block after Main + particles:
 	// mip0 = the exact 1:1 depth copy, mip1 = nearest-of-2x2 block reps);
-	// the pyramid is a hard requirement now â€” frames without a built
+	// the pyramid is a hard requirement now — frames without a built
 	// pyramid skip SSR entirely (the old linear-march fallback died with
 	// the depth-load blur). The pane/glass A/B layer is gone (the pane
 	// pass was removed long before the SSGI rework; its knob + dead
@@ -2573,7 +2573,7 @@ public:
 	bool m_volumetricUseGi = true; // sample SG-GI probes (else sky-IBL fallback)
 	bool m_volumetricUseSun = true; // analytic sun single-scatter
 	// Fog-GI quality switch: convex volumes stack into the fog ambient
-	// (default, matches the lit path). Off = octree/sky only â€” the fog
+	// (default, matches the lit path). Off = octree/sky only — the fog
 	// bypasses the per-refresh volume walk entirely (A/B knob for heavy
 	// fog configs; UI checkbox + TOURMALINE_VOLUMETRIC_CVOL=0 headless).
 	bool m_volumetricUseCvolGi = true;
@@ -2646,7 +2646,7 @@ public:
 	// (TOURMALINE_A2C=1, default off). Bench data (bistro foliage view,
 	// RTX 5070 Ti): A2C moves the masked coverage/depth test after the FS
 	// (coverage needs the output alpha), so overlapping foliage layers
-	// can no longer early-reject â€” +6ms vs the demote-discard path. Keep
+	// can no longer early-reject — +6ms vs the demote-discard path. Keep
 	// it as a quality mode: foliage silhouettes resolve AA'd in MSAA.
 	bool m_msaaAlphaToCoverage = false;
 	// Global T2x toggle (see SmaaT2xState in smaa.h). The phase belongs to
@@ -2689,7 +2689,7 @@ public:
 	uint32_t m_dlssPhaseCount = 8;
 	smvk::DlssJitter m_dlssJitter{};
 	// slDLSSSetOptions drift tracking (re-applied on mode/output change;
-	// slFreeResources on deactivate â€” see RenderFrame's DLSS block).
+	// slFreeResources on deactivate — see RenderFrame's DLSS block).
 	bool m_dlssOptionsApplied = false;
 	smvk::DlssMode m_dlssOptionsMode = smvk::DlssMode::Off;
 	uint32_t m_dlssOptionsW = 0;
@@ -2816,7 +2816,7 @@ public:
 	// the last scene exposure). Rendering at a FIXED exposure instead of
 	// the held one keeps debug frames deterministic and the authored
 	// colors independent of the scene's adaptation state. Mirrors
-	// TONEMAP_EXPOSURE (world_renderer.cpp) â€” keep in sync.
+	// TONEMAP_EXPOSURE (world_renderer.cpp) — keep in sync.
 	static constexpr float kDebugViewExposure = 0.001f;
 	// Exposure actually applied this frame: the adapted/manual value in
 	// the Lit view, the fixed debug reference otherwise. Shading
@@ -2829,10 +2829,10 @@ public:
 	// True when a debug visualization REPLACES the scene pixels this
 	// record: any non-Lit ViewMode (F2..F11 flat programs), the GI
 	// baked debug views (R/F8) or a DS visualizer (Y, DS_DEBUG_VIZ).
-	// Scene post-fx that composites ON TOP of those pixels â€” SSR
+	// Scene post-fx that composites ON TOP of those pixels — SSR
 	// reflections (additive), bloom (additive), volumetric fog (Beer-Lambert throughput +
 	// scatter) and the SSR-only receiver-material layer (prepass
-	// stencil + PaneMask) â€” stays off while true,
+	// stencil + PaneMask) — stays off while true,
 	// same discipline as the metering freeze in ExposureMeteringActive:
 	// compositing over a flat readout pollutes it (reflections of the
 	// palette itself, fog-faded heat colors) the way metering it would
@@ -2846,10 +2846,10 @@ public:
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
 	uint32_t m_tonemapMode = smvk::kTonemapGT7;
-	// ---- AO (the SSGI post chain â€” Engine/Rendergraph/ssgi.h; GTAO is
+	// ---- AO (the SSGI post chain — Engine/Rendergraph/ssgi.h; GTAO is
 	// deprecated and removed). Runs AFTER Main (Main exports the
 	// AO-sensitive lighting through an aoTerm MRT target, the compose
-	// subtracts aoTerm*(1-aoEff) from the HDR â€” no temporal lag, Main
+	// subtracts aoTerm*(1-aoEff) from the HDR — no temporal lag, Main
 	// never samples AO). O cycles No AO -> SSAO -> SAO. ----
 	enum class AoMode : int { None = 0, Ssao = 1, Sao = 2 };
 	AoMode m_aoMode = AoMode::Sao;
@@ -2873,7 +2873,7 @@ public:
 	};
 	std::vector<DebugLight> m_debugLights;
 	// Skydome visibility (K): a debug visibility toggle like wireframe /
-	// hide-transparent â€” NOT environment state (the renderer owns no
+	// hide-transparent — NOT environment state (the renderer owns no
 	// environment; it renders the world's scene env). The pass-set flag
 	// m_passes.skydome stays the pipeline-shape switch.
 	bool m_skyEnabled = true;
@@ -3010,7 +3010,7 @@ public:
 	// on the graphics-queue backlog (the old sync download locked for the
 	// whole in-flight frame). One ticket in flight; while pending, new
 	// ticks skip their submit (results land 1-2 frames later instead of
-	// the old 2-3 â€” adaptation is time-damped, streaming is laggy anyway).
+	// the old 2-3 — adaptation is time-damped, streaming is laggy anyway).
 	uint64_t m_asyncReadbackTicket = 0;
 	uint32_t m_pendingReadbackSlot = 0;
 	bool m_pendingReadbackHasExposure = false;
@@ -3051,7 +3051,7 @@ public:
 	std::vector<uint32_t> m_filterAuditBatches;   // 4 words per slot
 	std::vector<uint32_t> m_filterAuditMeshes;    // drawConstants[].mesh snapshot
 	// Streamer slot-meta epoch last uploaded into the gfx filter (0 = none
-	// yet; register/unregister bumps it â€” retargets never do).
+	// yet; register/unregister bumps it — retargets never do).
 	uint64_t m_gfxMetaEpochUploaded = 0;
 	// Last consume's reported-slot count (telemetry).
 	uint32_t m_gfxDemandReported = 0;
