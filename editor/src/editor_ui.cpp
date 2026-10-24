@@ -4068,12 +4068,23 @@ namespace editor {
 			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
 				m_pending.cmd.attr == "roughness")
 				FinishDrag();
+			// ---- EMISSIVE COLOR + STRENGTH (HDR — the BLOOM link) ----
+			// The strength is the HDR radiance multiplier, the SAME
+			// scale the bloom threshold thresholds (pre-exposure HDR;
+			// the sunlit default thr=400, the panel slider to 4000):
+			// emissive * strength must CROSS the threshold for the glow
+			// to bloom (the bloom pass prefilters at threshold/knee —
+			// the exposure-relative scaling is the renderer's). The OLD
+			// combined control rode the strength on ColorEdit4's A
+			// slider — capped at 1.0, an emissive could NEVER cross a
+			// 400-threshold: "emissive not considered in lit view" —
+			// it read as a faint additive tint and never glowed.
 			glm::vec4 em(m->values.emissiveFactor.x,
 				m->values.emissiveFactor.y, m->values.emissiveFactor.z,
-				m->values.params2.z);
-			if (attr::Color("Emissive", &em.x,
-					"RGB color; the A slider carries the strength "
-					"multiplier")) {
+				1.0f);
+			if (attr::Color("Emissive color", &em.x,
+					"The emissive TINT (RGB); the intensity is the "
+					"strength row")) {
 				if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
 					m_pending.cmd.matWorld != mat || m_pending.cmd.attr != "emissive"))
 					FinalizePending();
@@ -4086,12 +4097,49 @@ namespace editor {
 					ReadSharedMatAttr(mat, "emissive",
 						m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum);
 				}
-				WriteSharedMatAttr(mat, "emissive", em, 0.0);
-				m_pending.cmd.vec4 = em;
+				// The color edit PRESERVES the current strength: the
+				// picker's own A slider (0..1) would clobber an HDR
+				// strength back to a faint tint — the strength row owns
+				// that field; write the picker's RGB with the live
+				// strength as the w.
+				WriteSharedMatAttr(mat, "emissive",
+					glm::vec4(em.x, em.y, em.z,
+						m->values.params2.z), 0.0);
+				m_pending.cmd.vec4 = glm::vec4(em.x, em.y, em.z,
+					m->values.params2.z);
 			}
 			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
 				m_pending.cmd.attr == "emissive")
 				FinishDrag();
+			{
+				float strength = m->values.params2.z;
+				if (attr::Float("Emissive strength", &strength, 5.0f, 0.0f,
+						4000.0f, "%.1f",
+						"HDR radiance multiplier — same HDR scale as the "
+						"bloom threshold: past it, the emissive BLOOMS "
+						"(sunlit scenes read ~400; 1.0 is a faint tint)")) {
+					if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetMatAttr ||
+						m_pending.cmd.matWorld != mat
+						|| m_pending.cmd.attr != "emissiveStrength"))
+						FinalizePending();
+					if (!m_pending.active) {
+						m_pending.active = true;
+						m_pending.cmd = EditCmd{};
+						m_pending.cmd.verb = EditVerb::SetMatAttr;
+						m_pending.cmd.matWorld = mat;
+						m_pending.cmd.attr = "emissiveStrength";
+						ReadSharedMatAttr(mat, "emissiveStrength",
+							m_pending.cmd.beforeVec4,
+							m_pending.cmd.beforeNum);
+					}
+					WriteSharedMatAttr(mat, "emissiveStrength",
+						glm::vec4(0), strength);
+					m_pending.cmd.number = strength;
+				}
+				if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active
+					&& m_pending.cmd.attr == "emissiveStrength")
+					FinishDrag();
+			}
 		}
 
 		// ---- Attribute flags + alpha ------------------------------------
@@ -5229,8 +5277,60 @@ namespace editor {
 			// Drag-drop payload kinds ("" = not draggable).
 			bool dragMesh = false;
 			bool dragMaterial = false;
+			// >= 0: a VIRTUAL FOLDER tile — the canon collection view of
+			// that filter index (see the kVFolders table below). Chrome,
+			// not an asset: never selects, never deletes, never drags.
+			int vfilter = -1;
 		};
 		std::vector<Entry> dirs, files;
+		// ---- VIRTUAL FOLDERS (the canon collection views) ---------------
+		// The header filter combo's views present as FOLDER TILES in the
+		// grid (the Unity project-window feel): each enters its collection
+		// on double-click; the active view's ".." leaves back to All. The
+		// tile ids ride the "vfolder://<n>" scheme — never a real path
+		// (plus the per-tile numeric uid below makes every tile id unique
+		// regardless — the duplicate-abs conflict fix).
+		{
+			struct VFolderDef { const char* label; int filter; IconType icon; };
+			static const VFolderDef kVFolders[8] = {
+				{ "Meshes", 1, IconType::Model },
+				{ "Materials", 2, IconType::Texture },
+				{ "Animations", 3, IconType::Animation },
+				{ "GI bakes", 4, IconType::GI },
+				{ "Cubemaps", 5, IconType::Env },
+				{ "GI cooks", 6, IconType::GI },
+				{ "Lightmap cooks", 7, IconType::GI },
+				{ "GI volumes", 8, IconType::GI },
+			};
+			if (m_assetsFilter != 0) {
+				// The active collection view's leave tile (".." -> All).
+				// (The expanded glTF/tour views build their own back tiles
+				// in their branches below — no second one here.)
+				Entry back{};
+				back.name = "..";
+				back.abs = put("vfolder://up");
+				back.dir = true;
+				back.back = true;
+				back.icon = IconType::Folder;
+				dirs.push_back(back);
+			}
+			else if (m_assetsExpandGltf.empty()
+				&& m_assetsExpandTour.empty()) {
+				// The root view: the canon folders up front (pinned
+				// ahead of the real directories by the stable sort
+				// below — the Unity feel: the collection roots are the
+				// affordance, the real folders follow).
+				for (const VFolderDef& v : kVFolders) {
+					Entry t{};
+					t.name = put(v.label);
+					t.abs = put("vfolder://" + std::to_string(v.filter));
+					t.dir = true;
+					t.vfilter = v.filter;
+					t.icon = v.icon;
+					dirs.push_back(t);
+				}
+			}
+		}
 		const auto iconForAsset = [&](smvk::assets::AssetKind k) {
 			switch (k) {
 			case smvk::assets::AssetKind::Geometry: return IconType::Model;
@@ -5468,14 +5568,40 @@ namespace editor {
 				c = char(std::tolower((unsigned char)c));
 			return la < lb;
 		};
-		std::sort(dirs.begin(), dirs.end(), byName);
+		// The canon VIRTUAL FOLDERS stay PINNED to the front of the dirs
+		// row (pre-sort push order preserved: a stable partition — the
+		// vfolders first in their authored order, the real directories
+		// byName behind them). The Unity feel: the collection roots are
+		// the affordance, the real folders follow.
+		const auto vfolderFirst = [](const Entry& a, const Entry& b) {
+			if ((a.vfilter >= 0) != (b.vfilter >= 0))
+				return a.vfilter >= 0;
+			if (a.vfilter >= 0 && b.vfilter >= 0)
+				return a.vfilter < b.vfilter;
+			return false;
+		};
+		std::stable_sort(dirs.begin(), dirs.end(),
+			[&](const Entry& a, const Entry& b) {
+				if (vfolderFirst(a, b))
+					return true;
+				if (vfolderFirst(b, a))
+					return false;
+				return byName(a, b);
+			});
 		std::sort(files.begin(), files.end(), byName);
 
 		const float tileW = 96.0f, tileH = 104.0f, iconS = 56.0f;
 		int cols = std::max(1,
 			int(ImGui::GetContentRegionAvail().x / tileW));
 		int col = 0;
-		auto tile = [&](const Entry& e) {
+		// THE PER-TILE UID (the id-conflict fix): every tile pushes a
+		// unique numeric seed before its abs id — a duplicate abs in one
+		// view (the same file listed twice through different views, or
+		// any future collision) can no longer collide ids (the red debug
+		// flash the filters showed).
+		int tileSeq = 0;
+		auto tile = [&](const Entry& e, int uid) {
+			ImGui::PushID(uid);
 			ImGui::PushID(e.abs.data());
 			ImGui::PushID(e.back ? 1 : 0);
 			// The SET highlight (the multi-selection); the primary
@@ -5483,8 +5609,10 @@ namespace editor {
 			// NAVIGATION CHROME NEVER HIGHLIGHTS: the ".." back tile
 			// carries the SAME abs as the expanded view's SOURCE tile
 			// (both = the glTF path) — selecting the source lit the
-			// ".." too ("the .. up directory gets highlighted").
-			const bool sel = !e.back
+			// ".." too ("the .. up directory gets highlighted"); the
+			// VIRTUAL FOLDERS are chrome the same way.
+			const bool chrome = e.back || e.vfilter >= 0;
+			const bool sel = !chrome
 				&& (std::find(m_assetsSelSet.begin(),
 					m_assetsSelSet.end(), e.abs.Str())
 					!= m_assetsSelSet.end()
@@ -5602,12 +5730,10 @@ namespace editor {
 			// entry; shift selects the anchor..entry RANGE over the
 			// display order (dirs then files — the vectors in scope).
 			// NAVIGATION TILES NEVER JOIN: the virtual-folder chrome (the
-			// ".." back tile, the expanded view's SOURCE tile) is a move,
-			// not an asset — the back tile entering the set (the
-			// "virtual folders have problems with multiselection" report)
-			// made ranges span chrome + the delete target the folder's
-			// PARENT.
-			if (clicked) {
+			// ".." back tile, the canon VIRTUAL FOLDERS) is a move, not
+			// an asset — chrome entering the set made ranges span it +
+			// the delete target the folder's PARENT.
+			if (clicked && e.vfilter < 0) {
 				const bool ctrl = ImGui::GetIO().KeyCtrl;
 				const bool shift = ImGui::GetIO().KeyShift;
 				m_assetsSel = e.abs.Str();
@@ -5638,7 +5764,8 @@ namespace editor {
 						auto last = std::find_if(v.rbegin(), v.rend(),
 							span).base();
 						for (auto it = first; it != last; ++it)
-							if (!it->back // chrome never ranges in
+							if (!(it->back || it->vfilter >= 0)
+								// chrome never ranges in
 								&& std::find(m_assetsSelSet.begin(),
 										m_assetsSelSet.end(), it->abs.Str())
 									== m_assetsSelSet.end())
@@ -5656,13 +5783,25 @@ namespace editor {
 				}
 			}
 			if (dbl) {
+				if (e.vfilter >= 0) {
+					// ENTER THE CANON COLLECTION VIEW (the virtual
+					// folder): the filter combo and the tile are the same
+					// knob.
+					m_assetsFilter = e.vfilter;
+					m_assetsSel.clear();
+					m_assetsSelSet.clear();
+					m_assetsAnchor.clear();
+				}
+				else {
 				m_assetsSel = e.abs.Str();
 				m_assetsSelSet = { e.abs.Str() };
 				m_assetsAnchor = e.abs.Str();
 				if (e.back) {
-					// Leave the expanded glTF/tour folder.
+					// Leave the expanded glTF/tour folder OR the canon
+					// collection view (".." -> All).
 					m_assetsExpandGltf.clear();
 					m_assetsExpandTour.clear();
+					m_assetsFilter = 0;
 					m_assetsSel.clear();
 				}
 				else if (e.gltf) {
@@ -5691,10 +5830,12 @@ namespace editor {
 						Log("Assets: a cook is running - wait for it "
 							"to finish.");
 				}
+				}
 			}
 			// Drag-and-drop sources (mesh -> viewport adds a scene
 			// reference; material -> the selection assigns it).
-			if (e.dragMesh || e.dragMaterial) {
+			// (The canon VIRTUAL FOLDERS never drag — chrome.)
+			if ((e.dragMesh || e.dragMaterial) && e.vfilter < 0) {
 				if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
 					const char* payloadType =
 						e.dragMesh ? "VT_ASSET_MESH" : "VT_ASSET_MAT";
@@ -5719,15 +5860,25 @@ namespace editor {
 				}
 			}
 			if (hovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-				const auto git = guidByAbs.find(e.abs.Str());
-				ImGui::SetTooltip("%s\n%s\n%s",
-					e.name.data(), e.abs.data(),
-					(git != guidByAbs.end() && !git->second.empty())
-					? git->second.c_str() : "(no asset uuid)");
+				if (e.vfilter >= 0) {
+					ImGui::SetTooltip("VIRTUAL FOLDER — the canon "
+						"collection view: every asset of this kind "
+						"across the project's content tree.\n"
+						"Double-click to enter; \"..\" leaves.");
+				}
+				else {
+					const auto git = guidByAbs.find(e.abs.Str());
+					ImGui::SetTooltip("%s\n%s\n%s",
+						e.name.data(), e.abs.data(),
+						(git != guidByAbs.end() && !git->second.empty())
+						? git->second.c_str() : "(no asset uuid)");
+				}
 			}
 			// Per-tile menu (right-click): delete through the same confirm
 			// modal as the header button (selection is pinned first).
-			if (ImGui::BeginPopupContextItem("##assettile_ctx")) {
+			// (The canon VIRTUAL FOLDERS never delete — chrome.)
+			if (e.vfilter < 0
+				&& ImGui::BeginPopupContextItem("##assettile_ctx")) {
 				// MULTI-AWARE: deleting a tile that sits in a multi-
 				// selection (>1) requests the WHOLE set (one confirm,
 				// every plan executes); a single/unselected tile keeps
@@ -5747,18 +5898,19 @@ namespace editor {
 			}
 			ImGui::PopID();
 			ImGui::PopID();
+			ImGui::PopID();
 		};
 		for (const Entry& e : dirs) {
 			if (col != 0)
 				ImGui::SameLine(0.0f, 4.0f);
-			tile(e);
+			tile(e, tileSeq++);
 			if (++col == cols)
 				col = 0;
 		}
 		for (const Entry& e : files) {
 			if (col != 0)
 				ImGui::SameLine(0.0f, 4.0f);
-			tile(e);
+			tile(e, tileSeq++);
 			if (++col == cols)
 				col = 0;
 		}
