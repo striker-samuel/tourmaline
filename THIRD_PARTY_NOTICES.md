@@ -37,7 +37,6 @@ a hand-written integration, or are an unpinnable snapshot:
 | Component | Path | License | Notes |
 |---|---|---|---|
 | [Embree](https://github.com/embree/embree) | `external/embree` | [Apache-2.0](external/embree/LICENSE.txt) | Ray-tracing backend for GI/lightmap bakes. Locally trimmed from upstream master (2026-10-01 era, still versioned 4.4.1): docs/tutorials/tests/superbuild removed, `ADD_SUBDIRECTORY(tests)` + `INCLUDE(CPack)` cut from the root CMakeLists; the ARM NEON SIMD headers stay in-tree. Build forces static lib, internal tasking, triangle-only |
-| [GLFW](https://www.glfw.org) | `external/glfw` | [zlib](external/glfw/LICENSE.md) | Legacy windowing for the samples (engine uses SDL3). Unpinnable mixed snapshot of the 3.5.0-era master (no single upstream commit matches exactly) |
 | [Dear ImGui](https://github.com/ocornut/imgui) | `external/imgui` | [MIT](external/imgui/LICENSE.txt) | Editor/UI; hand-written CMakeLists.txt (upstream ships none) |
 | [LZ4](https://github.com/lz4/lz4) | `external/lz4` | BSD-2-Clause (license text in the [`lz4.h`](external/lz4/lz4.h) header block) | Block codec for cooked pak blobs; hand-written minimal CMakeLists.txt (`lz4.{h,c}` only) |
 | [Optick](https://github.com/bombomby/optick) | `external/optick` | [MIT](external/optick/LICENSE) | CPU/GPU profiler (optional, `ENABLE_OPTICK`). Locally patched: `src/optick_gpu.vulkan.cpp` (query-pool resolve/submit order fix — recording into a submitted command buffer trips validation) + a cmake_minimum_required bump |
@@ -61,7 +60,7 @@ a hand-written integration, or are an unpinnable snapshot:
 ## Ported / embedded code and data (source kept in-tree)
 
 - [SMAA](https://github.com/iryoku/smaa) — Enhanced Subpixel Morphological Antialiasing, by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (2013) — MIT License. Used for the SMAA 1x / T2x antialiasing chain: the shader core is ported in `engine/shaders/smaa.hlsli`, and the precomputed area/search lookup tables are embedded byte-exact in `engine/include/Engine/Rendergraph/smaa_area_tex.h` and `smaa_search_tex.h`.
-- [Mastering Graphics Programming with Vulkan](https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan) — MIT License. Technique reference for the deferred shadow-map (DPS) work; only its license text is vendored (`external/MasteringGraphicsProgrammingwithVulkan/LICENSE.txt`).
+- [Mastering Graphics Programming with Vulkan](https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan) — MIT License. The scene format is derived from its scene description format (the `Portions Copyright (c) 2022 Packt` headers in `engine/src/Scene/` + `engine/include/Engine/Scene/`); also a technique reference for the deferred shadow-map (DPS) work. Nothing is vendored under `external/` — the license text is embedded in the third-party notice in [`LICENSE`](LICENSE).
 
 ## Not vendored, but required at build time
 

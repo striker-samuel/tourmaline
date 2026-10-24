@@ -1,0 +1,3 @@
+Populated by install_dependencies.ps1 (Windows-only; pinned: the
+microsoft/DirectXShaderCompiler v1.9.2607 release zip, dxc_2026_07_29.zip).
+Nothing else in this folder is tracked; the fetch is SHA256-verified.

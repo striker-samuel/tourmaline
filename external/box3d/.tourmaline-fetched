@@ -1,0 +1,3 @@
+Populated only by install_dependencies.(ps1|sh) --include-unused (pinned:
+upstream commit 954cf879). Box3D is NOT wired into any build target yet
+(future physics work); the folder is intentionally empty by default.

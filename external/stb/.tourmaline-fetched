@@ -1,0 +1,3 @@
+Populated by install_dependencies.ps1 / install_dependencies.sh (pinned:
+stb_image.h at upstream commit 013ac3be and stb_image_write.h at 1ee679ca,
+raw files). The two headers are the only content; SHA256-verified.

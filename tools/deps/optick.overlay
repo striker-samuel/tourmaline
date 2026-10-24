@@ -1,0 +1,11 @@
+CMakeLists.txt
+tools/OptickConfig.cmake.in
+src/optick.config.h
+src/optick.h
+src/optick_capi.cpp
+src/optick_capi.h
+src/optick_core.cpp
+src/optick_core.linux.h
+src/optick_gpu.d3d12.cpp
+src/optick_gpu.vulkan.cpp
+src/optick_memory.h

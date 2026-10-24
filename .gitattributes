@@ -65,3 +65,7 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# --- install_dependencies scripts: keep them runnable on their platform ---
+*.sh text eol=lf
+*.ps1 text eol=crlf

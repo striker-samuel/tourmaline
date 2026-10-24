@@ -1,0 +1,4 @@
+CMakeLists.txt
+.appveyor.yml
+README.md
+source/xatlas/xatlas.cpp

@@ -85,12 +85,55 @@ usage breakdown and the Tourmaline Debug panel:
   staged automatically next to the exe; if absent, DLSS simply reports
   unavailable (no hard dependency)
 
-Third-party code under `external/` comes in two forms: **unmodified upstream
-libraries are pinned git submodules** (GLM, nlohmann/json, meshoptimizer,
-DirectXTex, volk, SPIRV-Reflect, nanosvg — clone with `--recursive`), while
-**locally trimmed/patched trees and binary packages** (Embree, SDL3, ImGui,
-Optick, SQLiteCpp, xatlas, lz4, Streamline, VMA, ...) are vendored and built
-from source — see `THIRD_PARTY_NOTICES.md` for the full audit.
+## Dependencies
+
+Third-party code lives under `external/` in two forms: **unmodified upstream
+libraries are pinned git submodules** (clone with `--recursive`) and
+**trimmed/patched trees, single headers and binary packages are vendored**
+in-tree. The full license audit lives in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Pinned submodules (unmodified upstream):
+
+- **GLM** — math
+- **nlohmann/json** — JSON (required by tinygltf)
+- **meshoptimizer** — LOD simplification, meshlets, vertex-cache/fetch
+  optimization
+- **DirectXTex** — BC6H/BC7 block codecs (SGGI payload encode/decode)
+- **volk** — Vulkan loader
+- **SPIRV-Reflect** — CPU reflection for push/spec readback
+- **nanosvg** — editor SVG icon rasterization
+
+Vendored, built from source:
+
+- **Embree** — ray-tracing backend for the GI/lightmap bakes
+- **Dear ImGui** — editor and engine UI
+- **xatlas** — lightmap UV2 charting + packing
+- **LZ4** — block codec for cooked pak blobs
+- **SQLiteCpp** + the sqlite3 amalgamation — the editor's artifact cache
+- **Optick** — CPU/GPU profiler (`ENABLE_OPTICK`, on by default)
+
+Vendored, header-only:
+
+- **tinygltf** — glTF parsing (`tools/gltf_import`)
+- **stb** — `stb_image.h` / `stb_image_write.h`
+- **VulkanMemoryAllocator** — `vk_mem_alloc.h`
+
+Vendored, prebuilt binaries:
+
+- **SDL3** 3.4.16 (dev package) — windowing, input, audio
+- **DXC** (DirectXShaderCompiler) — engine-side runtime HLSL→SPIR-V
+  compilation; build-time shader compiles use the Vulkan SDK's `dxc.exe`
+- **NVIDIA Streamline** 2.14.1 — DLSS-SR / Reflex interposer + runtimes
+  (optional at runtime: absent binaries just disable DLSS)
+
+Vendored but not wired into the build (intentional):
+
+- **Box3D** — upcoming physics work
+- **zlib** — CRC/reference only
+
+Not vendored but required at build time: the **Vulkan SDK** and
+**KTX-Software** (see Requirements above).
 
 ## Build
 
@@ -217,3 +260,8 @@ author's.
 Copyright (c) 2026 Samuel Martin. Released under the **MIT License** — see
 [LICENSE](LICENSE). Third-party components keep their own licenses, see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The scene format is derived from the scene description format in
+[Mastering Graphics Programming with Vulkan](https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan)
+(Castorino & Portociampo, Packt, MIT) — see the third-party notice in
+[LICENSE](LICENSE).

@@ -17,7 +17,6 @@ add_library(engine STATIC ${ENGINE_SRC})
 target_include_directories(engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${TOURMALINE_SOURCE_DIR}/external/tiny_obj_loader
         ${TOURMALINE_SOURCE_DIR}/external/tinygltf
         ${nlohmann_json_SOURCE_DIR}/single_include
         ${nlohmann_json_SOURCE_DIR}/single_include/nlohmann
@@ -47,7 +46,6 @@ target_compile_definitions(engine
         TINYGLTF_NO_STB_IMAGE
         TINYGLTF_NO_STB_IMAGE_WRITE
         TINYGLTF_NO_EXTERNAL_IMAGE
-        GLFW_INCLUDE_NONE
 )
 
 if(ENGINE_BACKEND STREQUAL "Vulkan")
@@ -91,7 +89,6 @@ endif()
 
 target_link_libraries(engine
     PUBLIC
-        glfw
         SDL3::SDL3
         glm
         imgui_core
@@ -103,7 +100,6 @@ target_link_libraries(engine
         directxtex_bc
         volk
         KTX::ktx
-        imgui_backend_glfw
         imgui_backend_sdl3
         imgui_backend_vulkan
         lz4

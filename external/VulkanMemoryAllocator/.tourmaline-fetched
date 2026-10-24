@@ -1,0 +1,3 @@
+Populated by install_dependencies.ps1 / install_dependencies.sh (pinned:
+raw vk_mem_alloc.h at upstream commit 68d1c973, post-v3.3.0 master). The
+header is the only content; the fetch is SHA256-verified.

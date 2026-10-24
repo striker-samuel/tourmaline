@@ -3,7 +3,9 @@
 
 // Portions Copyright (c) 2022 Packt
 // Modified by Samuel Martin, 2026
-// Licensed under the MIT License. See external/Mastering-Graphics-Programming-with-Vulkan/LICENSE.txt for details.
+// Licensed under the MIT License (the scene format derives from "Mastering
+// Graphics Programming with Vulkan", Packt 2022). See the third-party
+// notice in LICENSE for details.
 
 #pragma once
 

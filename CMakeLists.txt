@@ -90,9 +90,6 @@ set(EMBREE_RAY_MASK OFF CACHE BOOL "" FORCE)
 set(EMBREE_FILTER_FUNCTION OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/embree)
 
-# GLFW (legacy windowing; retained for samples compat — engine uses SDL3)
-add_subdirectory(external/glfw)
-
 # SDL3 (vendored prebuilt dev package: include/ + lib/<arch>/ + cmake/)
 # Provides windowing, input (keyboard/mouse/gamepad) and audio.
 list(PREPEND CMAKE_PREFIX_PATH "${TOURMALINE_SOURCE_DIR}/external/SDL3-3.4.16")

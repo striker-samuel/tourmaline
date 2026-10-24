@@ -25,24 +25,94 @@ x64/
 x86/
 [Ww][Ii][Nn]32/
 [Aa][Rr][Mm]/
-# Embree's ARM NEON SIMD headers live in a dir literally named "arm/" —
-# the VS-template ARM pattern above swallowed them (silent build break in
-# fresh clones). Negate for the vendored Embree tree.
-!external/embree/common/simd/arm/
 [Aa][Rr][Mm]64/
 bld/
-[Bb]in/
-# Needed to add this to move ktx with the repo :)
-!external/ktx/bin/
-# Streamline runtime DLLs are vendored (no LFS - plain binary blobs).
-!external/streamline/bin/
-!external/streamline/bin/x64/
-# nvngx_dlss.dll (the ~56 MB NGX DLSS snippet) is NOT vendored - git never
-# carries it. Fetch it from the NVIDIA Streamline/DLSS SDK into this dir
-# (see external/streamline/bin/x64/README.md); missing it just disables
+[Oo]bj/
+
+# --- Fetched third-party trees (install_dependencies.ps1 / .sh) -----------
+# The vendored trees moved OUT of git: install_dependencies.(ps1|sh) fetches
+# them from pinned upstream archives (SHA256-verified). Only the tracked
+# overlay files below stay in the repo; the fetch never overwrites those.
+# NOTE: these rules must stay BELOW the unanchored VS-template patterns
+# above ([Bb]in/, x64/, [Aa][Rr][Mm]/...) - last match wins.
+/external/.downloads/
+/external/SDL3-3.4.16/**
+!/external/SDL3-3.4.16/.tourmaline-fetched
+/external/dxc/**
+!/external/dxc/.tourmaline-fetched
+/external/VulkanMemoryAllocator/**
+!/external/VulkanMemoryAllocator/.tourmaline-fetched
+/external/stb/**
+!/external/stb/.tourmaline-fetched
+/external/tinygltf/**
+!/external/tinygltf/.tourmaline-fetched
+/external/box3d/**
+!/external/box3d/.tourmaline-fetched
+/external/zlib/**
+!/external/zlib/.tourmaline-fetched
+# SQLiteCpp: the tree + the sqlite3 amalgamation are fetched; the tracked
+# overlays are the mixed-snapshot LICENSE/README + 4 pinned-modified sources
+/external/SQLiteCpp/**
+!/external/SQLiteCpp/LICENSE.txt
+!/external/SQLiteCpp/README.md
+!/external/SQLiteCpp/include/
+!/external/SQLiteCpp/include/SQLiteCpp/
+!/external/SQLiteCpp/include/SQLiteCpp/Database.h
+!/external/SQLiteCpp/include/SQLiteCpp/Savepoint.h
+!/external/SQLiteCpp/src/
+!/external/SQLiteCpp/src/Column.cpp
+!/external/SQLiteCpp/src/Savepoint.cpp
+# embree: fetched; overlays = the trimmed root CMakeLists + the 3 generated
+# config/hash headers (checked-in build products the trim relied on)
+/external/embree/**
+!/external/embree/CMakeLists.txt
+!/external/embree/include/
+!/external/embree/include/embree4/
+!/external/embree/include/embree4/rtcore_config.h
+!/external/embree/kernels/
+!/external/embree/kernels/config.h
+!/external/embree/kernels/hash.h
+# optick: fetched; overlays = the vendored-patched root CMakeLists +
+# OptickConfig.cmake.in + the 9 patched/added sources
+/external/optick/**
+!/external/optick/CMakeLists.txt
+!/external/optick/tools/
+!/external/optick/tools/OptickConfig.cmake.in
+!/external/optick/src/
+!/external/optick/src/optick.config.h
+!/external/optick/src/optick.h
+!/external/optick/src/optick_capi.cpp
+!/external/optick/src/optick_capi.h
+!/external/optick/src/optick_core.cpp
+!/external/optick/src/optick_core.linux.h
+!/external/optick/src/optick_gpu.d3d12.cpp
+!/external/optick/src/optick_gpu.vulkan.cpp
+!/external/optick/src/optick_memory.h
+# imgui / lz4: fetched (imgui at the v1.92.3 docking sync, lz4 at the
+# v1.10.0 release pair); the overlays are our hand-written CMakeLists
+/external/imgui/**
+!/external/imgui/CMakeLists.txt
+/external/lz4/**
+!/external/lz4/CMakeLists.txt
+# xatlas: fetched; overlays = our CMakeLists + 3 vendored-modified files
+/external/xatlas/**
+!/external/xatlas/CMakeLists.txt
+!/external/xatlas/.appveyor.yml
+!/external/xatlas/README.md
+!/external/xatlas/source/
+!/external/xatlas/source/xatlas/
+!/external/xatlas/source/xatlas/xatlas.cpp
+# streamline: fetched (SDK zip subset); the overlay is our bin/x64/README.md
+/external/streamline/**
+!/external/streamline/bin/
+!/external/streamline/bin/x64/
+!/external/streamline/bin/x64/README.md
+# nvngx_dlss.dll (the ~56 MB NGX DLSS snippet) arrives WITH the Streamline
+# zip via install_dependencies, but git never carries it (its license terms
+# forbid redistribution; see bin/x64/README.md). Missing it just disables
 # DLSS-SR - the engine renders at native extent (verified headless).
 /external/streamline/bin/x64/nvngx_dlss.dll
-[Oo]bj/
+
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
@@ -401,8 +471,8 @@ FodyWeavers.xsd
 # --- CMake-generated Visual Studio files (never commit) ---
 # This repo is CMake-based (CMakeLists.txt is the source of truth).
 # In-source configures pollute the tree with these; always build out-of-source.
-# NOTE: already-tracked upstream project files (e.g. external/DirectXTex,
-# external/glfw) stay tracked - gitignore only stops NEW generated files.
+# NOTE: already-tracked upstream project files (e.g. external/DirectXTex)
+# stay tracked - gitignore only stops NEW generated files.
 *.vcxproj
 *.vcxproj.filters
 *.slnx

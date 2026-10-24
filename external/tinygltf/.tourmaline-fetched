@@ -1,0 +1,4 @@
+Populated by install_dependencies.ps1 / install_dependencies.sh (pinned:
+raw tiny_gltf.h at upstream tag v2.8.10 - the pristine upstream release; the
+previously vendored copy was a clang-format-reformatted state). The header is
+the only content; the fetch is SHA256-verified.

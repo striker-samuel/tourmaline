@@ -1,0 +1,4 @@
+CMakeLists.txt
+include/embree4/rtcore_config.h
+kernels/config.h
+kernels/hash.h

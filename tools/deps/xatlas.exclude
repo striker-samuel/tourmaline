@@ -1,0 +1,10 @@
+.gitignore
+.travis.yml
+bin
+models/cube.obj
+models/degenerate_edge.obj
+models/double_sided.obj
+models/duplicate_edge.obj
+models/gazebo.obj
+models/zero_area_face.obj
+models/zero_length_edge.obj
