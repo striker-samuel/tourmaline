@@ -151,6 +151,25 @@ jobs:
           Add-Content $env:GITHUB_ENV 'VULKAN_SDK=C:\VulkanSDK\1.4.357.0'
           Add-Content $env:GITHUB_PATH 'C:\VulkanSDK\1.4.357.0\Bin'
 
+      - name: Cache prebuilt Embree 4.4.1 (x64 windows)
+        id: embree-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\embree
+          key: embree-4.4.1-x64-windows
+
+      - name: Download prebuilt Embree (cache miss)
+        if: steps.embree-cache.outputs.cache-hit != 'true'
+        run: |
+          curl.exe -L -o $env:TEMP\embree.zip `
+            https://github.com/embree/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip
+          $hash = (Get-FileHash $env:TEMP\embree.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f') {
+            throw "embree zip sha mismatch: $hash"
+          }
+          Expand-Archive $env:TEMP\embree.zip -DestinationPath $env:TEMP\embree-x
+          Move-Item "$env:TEMP\embree-x\embree-4.4.1.x64.windows" C:\embree
+
       - name: Cache KTX-Software install
         id: ktx-cache
         uses: actions/cache@v4
@@ -182,6 +201,7 @@ jobs:
       - name: Configure
         run: >
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DEMBREE_PREBUILT_DIR=C:/embree
           -DKTX_ROOT=C:/ktx .
 
       - name: Build (all targets)

@@ -225,6 +225,28 @@ add_custom_command(TARGET engine POST_BUILD
         "${TOURMALINE_BINARY_DIR}"
 )
 
+# Prebuilt-Embree route (root CMakeLists find_package): the shared
+# embree4.dll + its bundled TBB runtime must sit next to the exes (build
+# root) or the loader finds neither; the source route is a static lib and
+# stages nothing. embree_DIR points into <pkg>/lib/cmake/embree* - the
+# runtime DLLs sit in <pkg>/bin.
+if(embree_FOUND)
+    set(_EMBREE_BIN_DIR "${embree_DIR}/../../../bin")
+    foreach(_embree_dll IN ITEMS embree4.dll tbb12.dll tbbmalloc.dll)
+        if(EXISTS "${_EMBREE_BIN_DIR}/${_embree_dll}")
+            add_custom_command(TARGET engine POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_EMBREE_BIN_DIR}/${_embree_dll}"
+                    "${TOURMALINE_BINARY_DIR}"
+                COMMENT "Staging the prebuilt Embree runtime ${_embree_dll} at the build root"
+            )
+        else()
+            message(WARNING "prebuilt Embree runtime '${_embree_dll}' not found in "
+                "${_EMBREE_BIN_DIR} - executables may fail to load Embree")
+        endif()
+    endforeach()
+endif()
+
 # ---------------------------------------------------------------------------
 # Scene shaders (engine/shaders -> content/shaders/*.spv): the world
 # renderer's pipeline set, loaded relative to the working directory

@@ -107,25 +107,53 @@ endif()
 # LZ4 (vendored block codec for cooked pak blobs)
 add_subdirectory(external/lz4)
 
-# Embree ray-tracing backend for the bake transport (vendored
-# external/embree source — upstream master snapshot, 2026-10-01 era
-# (still versioned 4.4.1), trimmed: no docs/tutorials/tests/superbuild).
-# REQUIRED (not optional): the engine links it unconditionally and gates the
-# Embree traversal path on SMVK_GI_EMBREE. Static lib, no tutorials,
-# internal tasking (no TBB), triangle geometry (the bake only traces
-# triangles — the rest of Embree's geometry types stay off to keep the
-# build lean).
-set(EMBREE_STATIC_LIB ON CACHE BOOL "" FORCE)
-set(EMBREE_TUTORIALS OFF CACHE BOOL "" FORCE)
-set(EMBREE_TASKING_SYSTEM "INTERNAL" CACHE STRING "" FORCE)
-set(EMBREE_GEOMETRY_CURVE OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_SUBDIVISION OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_USER OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_INSTANCE OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_INSTANCE_ARRAY OFF CACHE BOOL "" FORCE)
-set(EMBREE_RAY_MASK OFF CACHE BOOL "" FORCE)
-set(EMBREE_FILTER_FUNCTION OFF CACHE BOOL "" FORCE)
-add_subdirectory(external/embree)
+# Embree ray-tracing backend for the bake transport (REQUIRED, not
+# optional: the engine links it unconditionally and gates the Embree
+# traversal path on SMVK_GI_EMBREE). Two routes:
+#
+#   PREBUILT (preferred when provided): an official upstream binary
+#     package (dynamic embree4 + bundled TBB runtime), located via
+#     -DEMBREE_PREBUILT_DIR=<package root> or a system install found by
+#     find_package(embree CONFIG). The imported `embree` target matches
+#     the source route's name, so the engine link line is identical;
+#     the embree4/tbb12/tbbmalloc DLLs stage at the build root (see
+#     engine/CMakeLists.txt). The CI uses this on Windows - the Embree
+#     TUs are the majority of the full-tree compile time there.
+#
+#   SOURCE (the default): the vendored external/embree tree - upstream
+#     master snapshot, 2026-10-01 era (still versioned 4.4.1), trimmed:
+#     no docs/tutorials/tests/superbuild. Static lib, internal tasking
+#     (no TBB), triangle geometry only (the bake only traces triangles -
+#     the rest of Embree's geometry types stay off to keep the build
+#     lean). Fetched by install_dependencies.(ps1|sh); see
+#     THIRD_PARTY_NOTICES.md.
+set(EMBREE_PREBUILT_DIR "" CACHE PATH
+    "Prebuilt Embree package root (contains lib/cmake/embree*); overrides the vendored source build")
+if(EMBREE_PREBUILT_DIR)
+    if(NOT EXISTS "${EMBREE_PREBUILT_DIR}/lib/cmake")
+        message(FATAL_ERROR "EMBREE_PREBUILT_DIR does not look like an Embree package root "
+            "(expected lib/cmake/ under it): ${EMBREE_PREBUILT_DIR}")
+    endif()
+    list(PREPEND CMAKE_PREFIX_PATH "${EMBREE_PREBUILT_DIR}")
+    message(STATUS "Embree: prebuilt package preferred from ${EMBREE_PREBUILT_DIR}")
+endif()
+find_package(embree 4 CONFIG QUIET)
+if(embree_FOUND)
+    message(STATUS "Embree: PREBUILT package (dynamic + TBB; config at ${embree_DIR})")
+else()
+    message(STATUS "Embree: vendored source tree (static, internal tasking, triangle-only)")
+    set(EMBREE_STATIC_LIB ON CACHE BOOL "" FORCE)
+    set(EMBREE_TUTORIALS OFF CACHE BOOL "" FORCE)
+    set(EMBREE_TASKING_SYSTEM "INTERNAL" CACHE STRING "" FORCE)
+    set(EMBREE_GEOMETRY_CURVE OFF CACHE BOOL "" FORCE)
+    set(EMBREE_GEOMETRY_SUBDIVISION OFF CACHE BOOL "" FORCE)
+    set(EMBREE_GEOMETRY_USER OFF CACHE BOOL "" FORCE)
+    set(EMBREE_GEOMETRY_INSTANCE OFF CACHE BOOL "" FORCE)
+    set(EMBREE_GEOMETRY_INSTANCE_ARRAY OFF CACHE BOOL "" FORCE)
+    set(EMBREE_RAY_MASK OFF CACHE BOOL "" FORCE)
+    set(EMBREE_FILTER_FUNCTION OFF CACHE BOOL "" FORCE)
+    add_subdirectory(external/embree)
+endif()
 
 # SDL3 - windowing, input (keyboard/mouse/gamepad) and audio.
 # Windows: the vendored PREBUILT dev package (install_dependencies.ps1
