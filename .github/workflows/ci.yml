@@ -8,6 +8,8 @@
 # Vulkan ICD. It runs in dev environments (real GPU / WSLg).
 #
 # Caches:
+#   - sccache compiler output (the big one: Embree's AVX-512 TUs; first run
+#     populates, subsequent runs hit - see the "Compiler cache stats" steps)
 #   - KTX-Software 4.4.2 install (built from source on first miss)
 #   - the Vulkan SDK install (Windows; installed on first miss)
 #   - external/.downloads (the installer scripts' pinned archives) keyed on
@@ -31,11 +33,16 @@ jobs:
   linux:
     name: Linux (Ubuntu 24.04, GCC 14)
     runs-on: ubuntu-24.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout (submodules recursive)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Setup compiler cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Install system packages
         run: |
@@ -83,10 +90,14 @@ jobs:
         run: >
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DKTX_ROOT=$HOME/ktx .
 
       - name: Build (all targets)
         run: cmake --build out/build/ci
+
+      - name: Compiler cache stats
+        run: sccache --show-stats
 
       - name: Test
         run: |
@@ -101,11 +112,16 @@ jobs:
   windows:
     name: Windows (MSVC x64)
     runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout (submodules recursive)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Setup compiler cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -163,10 +179,14 @@ jobs:
       - name: Configure
         run: >
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DKTX_ROOT=C:/ktx .
 
       - name: Build (all targets)
         run: cmake --build out/build/ci
+
+      - name: Compiler cache stats
+        run: sccache --show-stats
 
       - name: Test
         run: |
