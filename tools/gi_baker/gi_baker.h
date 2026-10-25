@@ -73,8 +73,8 @@ struct Args {
 	// Empty cvSpec = no convex bake.
 	std::string cvSpec;
 	uint32_t cvDirs = 1536;       // capture direction count (6*16^2)
-	float cvCaptureSpacing = 0.0f; // 0 = 3x probe spacing per volume
-	uint32_t cvSmoothing = 1;     // Laplacian volume-smoothing passes
+	float cvCaptureSpacing = 0.0f; // INERT (per-probe bake — no capture lattice); CLI compat
+	uint32_t cvSmoothing = 3;     // Laplacian volume-smoothing passes (per-probe bake needs it — see CvBakeConfig)
 	// Weave transmission for MASK (cutout cloth) materials: the cloth
 	// keeps its lit albedo AND passes light tinted per texel (the GI
 	// field behind the banners sees the tinted pools; the tint stays

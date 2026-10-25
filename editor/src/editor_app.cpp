@@ -761,7 +761,13 @@ void EditorApp::CloseScene() {
 			/*autoKtx=*/true, /*fileNodes=*/nullptr,
 			/*artifactCache=*/m_texCacheAdapter.get(),
 			/*guidResolver=*/&m_guidResolver,
-			/*outImages=*/&m_importImages);
+			/*outImages=*/&m_importImages,
+			// Content root: project-relative tour sources resolve
+			// against the PROJECT tree first (the editor's own
+			// convention — "a relative marker resolves against the
+			// project root"), never the editor's CWD (the build dir
+			// carries its own synced content/ copy that would win).
+			/*contentRoot=*/m_projectRoot);
 			Log("Definition: bound " + std::to_string(applied) +
 				" reference subtree(s) (" +
 				std::to_string(refDoc.references.size()) +
@@ -1051,6 +1057,13 @@ bool EditorApp::TryLoadSceneSglm() {
 		if (LoadSglm(c))
 			return true;
 	}
+	// No atlas for THIS scene: drop any previous scene's GPU layers too.
+	// The failure path used to leave them (and m_lmGpu) live, so F8 kept
+	// rendering the PREVIOUS atlas over the new scene — a translucent
+	// foreign texture misplaced on every model. The layers/textures are
+	// per-scene state; a missing atlas must read as "no baked view",
+	// not "the last one still counts".
+	ClearSglmLayers();
 	m_sglmStatus = "no baked atlas found for '" + stem
 		+ "' (tried " + std::to_string(candidates.size()) + " paths)";
 	return false;
@@ -1103,8 +1116,9 @@ void EditorApp::ClearSglmLayers() {
 // resolve) and builds each volume's hull: the bake AABB (gridMin..
 // gridMin + dims*spacing) clipped by the volume's plane set (3D
 // Sutherland-Hodgman). The hull feeds the LIGHTING-mode view option
-// (wireframe / translucent fill, color-coded by priority) — draw lives
-// in DrawCvolPreviewOverlay (editor_viewports.cpp).
+// (wireframe / translucent fill / probe grid — draw lives in
+// DrawCvolPreviewOverlay (editor_viewports.cpp); the probe-grid data
+// (strided sample + coverage counts) is built here alongside the hull.
 // ---------------------------------------------------------------------------
 bool EditorApp::TryLoadCvolumes() {
 	m_cvolPreviews.clear();
@@ -1157,6 +1171,69 @@ bool EditorApp::TryLoadCvolumes() {
 		pv.gridMin = vol.gridMin;
 		pv.gridMax = vol.gridMin
 			+ glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2]) * vol.spacing;
+		// Probe-grid preview data (the "Probes" cycle mode): full-volume
+		// coverage counts + a strided sample lattice (the stride keeps
+		// huge grids ImGui-cheap — 526k voxels draw as ~4k dots).
+		{
+			constexpr uint32_t kCvSampleCap = 4096;
+			const uint32_t lobes = smvk::gi::kSgLobeCount;
+			for (int a = 0; a < 3; ++a)
+				pv.sampleStep[a] = 1;
+			auto samples = [&]() {
+				uint64_t n = 1;
+				for (int a = 0; a < 3; ++a)
+					n *= (vol.dims[a] + pv.sampleStep[a] - 1)
+						/ pv.sampleStep[a];
+				return n;
+			};
+			while (samples() > kCvSampleCap) {
+				// Grow the step on the axis carrying the most samples.
+				int worst = 0;
+				for (int a = 1; a < 3; ++a)
+					if ((vol.dims[a] + pv.sampleStep[a] - 1)
+							/ pv.sampleStep[a]
+						> (vol.dims[worst] + pv.sampleStep[worst] - 1)
+							/ pv.sampleStep[worst])
+						worst = a;
+				++pv.sampleStep[worst];
+			}
+			for (int a = 0; a < 3; ++a)
+				pv.sampleCount[a] = (vol.dims[a] + pv.sampleStep[a] - 1)
+					/ pv.sampleStep[a];
+			pv.sampleState.assign(size_t(pv.sampleCount[0])
+				* pv.sampleCount[1] * pv.sampleCount[2], 0);
+			const uint32_t nx = vol.dims[0], ny = vol.dims[1];
+			size_t si = 0;
+			for (uint32_t z = 0; z < vol.dims[2]; z += pv.sampleStep[2])
+				for (uint32_t y = 0; y < vol.dims[1]; y += pv.sampleStep[1])
+					for (uint32_t x = 0; x < vol.dims[0];
+							x += pv.sampleStep[0], ++si) {
+						// coeffs are voxel-major, lobe-minor:
+						// [(z*Ny + y)*Nx + x][lobe].
+						const glm::vec3* c
+							= vol.coeffs.data()
+							+ (size_t((z * ny) + y) * nx + x) * lobes;
+						uint8_t nz = 0;
+						for (uint32_t l = 0; l < lobes; ++l)
+							if (glm::dot(c[l], c[l]) > 0.0f) {
+								nz = 1;
+								break;
+							}
+						pv.sampleState[si] = nz;
+					}
+			pv.probeSpacing = vol.spacing;
+			pv.voxTotal = vol.VoxelCount();
+			pv.voxNonzero = 0;
+			const size_t vox = size_t(pv.voxTotal);
+			for (size_t v = 0; v < vox; ++v) {
+				const glm::vec3* c = vol.coeffs.data() + v * lobes;
+				for (uint32_t l = 0; l < lobes; ++l)
+					if (glm::dot(c[l], c[l]) > 0.0f) {
+						++pv.voxNonzero;
+						break;
+					}
+			}
+		}
 		// Hull: start with the 6 AABB faces, clip every polygon by every
 		// plane (inside: n.P + d <= 0). Orientation does not matter for
 		// the preview (wireframe + X-ray fill).

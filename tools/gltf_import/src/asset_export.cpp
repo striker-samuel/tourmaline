@@ -1224,8 +1224,18 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	{
 		GltfToSceneImporter importer{ *cluster, model, gltfPath };
 		importer.setMeshOptConfig(meshOpt);
-		if (config.meshlets)
-			importer.setMeshletConfig(smvk::MeshletConfig{});
+		// Meshlets bake INTO THE .GEOMETRY (the artifact owns the cooked
+		// sets — pak assembly reads them, never re-decides). The old
+		// inverted form (config.meshlets -> setMeshletConfig({}), a
+		// default-DISABLED config) never built a single set: every
+		// .geometry shipped meshlet-less, the runtime GfxRenderer
+		// registered zero clusters and the whole scene fell back to the
+		// direct draw path. request -> the engine canon (64v/64t).
+		if (config.meshlets) {
+			smvk::MeshletConfig mlc{};
+			mlc.enabled = true;
+			importer.setMeshletConfig(mlc);
+		}
 		// Far-shading derivation (default off; see DeriveConfig::shaderLods).
 		importer.setDeriveShaderLods(config.shaderLods);
 		importer.setAutoKtx(true);
@@ -1479,10 +1489,10 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 						}
 						chain.push_back(std::move(s));
 					}
-					if (!chain.empty()) {
-						mesh.lodChains.resize(blob + 1);
-						mesh.lodChains[blob] = std::move(chain);
-					}
+				if (!chain.empty()) {
+					mesh.lodChains.resize(blob + 1);
+					mesh.lodChains[blob] = std::move(chain);
+				}
 				}
 				mesh.geometry.push_back(std::move(g));
 				++stats.geometryBlobs;

@@ -763,11 +763,15 @@ namespace editor {
 			m_showCameraGizmos = !m_showCameraGizmos;
 		ImGui::Separator();
 			{
-				// Convex GI volume preview (LIGHTING 'J'): off/wire/solid.
-				const char* cvNames[3] = { "Off", "Wireframe", "Solid" };
+				// Convex GI volume preview (LIGHTING 'J'): off/wire/
+				// solid/probes (the probe mode draws the dense bake
+				// lattice — coverage: green = baked nonzero, red =
+				// zero/invalid).
+				const char* cvNames[4] = { "Off", "Wireframe", "Solid",
+					"Probes" };
 				if (ImGui::BeginCombo("GI volumes (J)",
 					cvNames[m_cvolPreviewMode])) {
-					for (int i = 0; i < 3; ++i)
+					for (int i = 0; i < 4; ++i)
 						if (ImGui::Selectable(cvNames[i], m_cvolPreviewMode == i))
 							m_cvolPreviewMode = i;
 					ImGui::EndCombo();

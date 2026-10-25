@@ -397,7 +397,8 @@ private:
 	bool TryLoadSceneSglm();
 	// Convex GI volume bakes (probes-only pivot): the SCENE's baked
 	// gi/<stem>.cvmanifest + .cvol. Builds the preview hulls (AABB
-	// clipped by the volume's planes) for the LIGHTING-mode view option.
+	// clipped by the volume's planes) + the probe-grid sample for the
+	// LIGHTING-mode view option (J cycles wireframe / fill / probes).
 	bool TryLoadCvolumes();
 	static bool HasPakExtension(const std::string& path);
 	// "A scene worth acting on" (replaces the old m_hasGltfModel gates —
@@ -2222,6 +2223,17 @@ private:
 		glm::vec3 gridMax{ 0.0f };
 		glm::vec3 center{ 0.0f }; // hull centroid (label anchor)
 		std::vector<std::vector<glm::vec3>> polys; // convex hull polygons
+		// Probe-grid preview data ("Probes" cycle mode): a strided
+		// sub-lattice of the dense grid with per-sample bake state —
+		// zero/invalid voxels (solid interiors, no capture support) are
+		// the coverage answer the mode exists to show. sampleState is
+		// z-major over ceil(dims/step) samples; 1 = any nonzero lobe.
+		uint32_t sampleStep[3] = { 1, 1, 1 };
+		uint32_t sampleCount[3] = { 0, 0, 0 };
+		float probeSpacing = 0.5f; // vol.spacing (sample pos = gridMin + i*step*spacing)
+		std::vector<uint8_t> sampleState;
+		uint64_t voxTotal = 0;    // full-volume voxel count
+		uint64_t voxNonzero = 0;  // voxels carrying any nonzero lobe
 	};
 	std::vector<CvolPreview> m_cvolPreviews;
 	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)

@@ -185,15 +185,14 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
-	// Default: derive-if-stale (the editor's open/drop parity - a fresh
-	// import is a no-op when the artifacts are current; --force always
-	// re-derives).
-	if (!force && !smvk::assets::MeshArtifactStale(inPath)) {
-		std::cout << "Artifacts current (not stale): '" << input
-			<< "' - nothing to do (--force always re-derives)\n";
-		return 0;
-	}
-
+	// A DELIBERATE import always re-derives (the tool call IS the
+	// intent — the derive-if-stale no-op made "fresh import" test runs
+	// silently skip and left stale chain-carrying artifacts in place,
+	// which every later cook then idempotence-skipped). The staleness
+	// gate lives with the EDITOR's open/drop flow (MeshArtifactStale
+	// via ImportMeshSource); the CLI overwrites, period. --force stays
+	// accepted as a no-op (scripts keep working).
+	(void)force;
 	smvk::assets::AssetManifest manifest;
 	smvk::assets::DeriveStats stats;
 	std::string err;

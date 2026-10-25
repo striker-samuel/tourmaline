@@ -224,7 +224,12 @@ struct SceneExportSettings {
 	float cubemapExtraRadius = 5.5f;
 	// Meshlet cook (per-meshlet build over the cooked topology). The
 	// size limits are the ENGINE's kMeshletMaxVertices/Triangles.
-	bool meshlets = false;
+	// DEFAULT ON: the meshlet sets are a .geometry-level artifact (the
+	// cooked table the pak assembles blindly) and the engine's filtered
+	// main view is built on them — a meshlet-less .geometry registers
+	// zero GfxRenderer clusters and drops the whole scene to the direct
+	// draw path (the slow + visibly broken fallback).
+	bool meshlets = true;
 	uint32_t meshletMaxVerts = 64;
 	uint32_t meshletMaxTris = 64;
 	float meshletConeWeight = 0.0f;

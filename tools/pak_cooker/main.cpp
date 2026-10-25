@@ -1108,11 +1108,16 @@ namespace paktool {
 			}
 		}
 
-		// Textures (embedded .ktx2 byte sizes).
+		// Textures (embedded .ktx2 byte sizes; v4 digested payloads parse
+		// through the v4 reader first — the legacy v3 parse alone reads
+		// every digested blob as malformed).
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Texture)) {
 			smvk::PakTexturePayload p;
-			if (smvk::ParseTexturePayload(reader.Payload(*e), p)) {
-				tool::out() << "    tex  " << p.uri << " (" << p.ktxBytes.size() << " B)\n";
+			if (smvk::ParseTexturePayloadV4(reader.Payload(*e), p)
+				|| smvk::ParseTexturePayload(reader.Payload(*e), p)) {
+				tool::out() << "    tex  " << p.uri << " ("
+					<< p.ktxBytes.size() << " B"
+					<< (p.digest.empty() ? "" : " digested") << ")\n";
 			}
 			else {
 				tool::out() << "    [malformed texture blob: " << e->path << "]\n";
@@ -1476,9 +1481,15 @@ int Run(const PakArgs& c) {
 	smvk::MeshOptConfig opt;
 	opt.enabled = args.meshopt;
 	opt.overdrawThreshold = args.overdraw;
-	// Assembly never builds meshlets (they ride the cooked artifacts from
-	// cook.exe; the meshlet restore is cook's stage). Default-constructed
-	// = disabled inline builds = the engine canon (64v/64t per meshlet).
+	// Assembly NEVER builds meshlets (the architectural rule): the
+	// cooked sets ride the .geometry — BuildFromMeshAsset registers
+	// them verbatim (see gltf.cpp's meshlet registration) and the pak
+	// serializes what it loaded. No meshlet flag here, no inline build:
+	// the artifact owns the table, the pak assembles it. (The brief
+	// importMeshletCfg=true experiment was wrong twice over — it only
+	// affected glTF-source imports that this path never takes, and
+	// assembly deciding bake policy is exactly the bug class the
+	// artifact/pipeline split exists to kill.)
 	smvk::MeshletConfig importMeshletCfg;
 
 	// Project cache (convention, no flag): explicit programmatic roots
@@ -1613,7 +1624,8 @@ int Run(const PakArgs& c) {
 					nullptr /* HOST bind — editor parity */,
 					opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 					args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
-					artifactCache);
+					artifactCache, nullptr, nullptr,
+					/*contentRoot=*/args.contentDir);
 				tool::out() << "Definition: bound " << applied
 					<< " reference subtree(s) ("
 					<< tour.references.size() << " top-level)\n";

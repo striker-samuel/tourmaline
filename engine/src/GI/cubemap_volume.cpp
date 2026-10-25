@@ -22,9 +22,6 @@ namespace {
 
 constexpr uint32_t kCvolVersion = 1;
 constexpr float kPi = 3.14159265358979323846f;
-// Sky sentinel for capture depths: open-sky directions carry no surface
-// point; reprojection keeps their direction unshifted.
-constexpr float kCvSkyDepth = 1.0e6f;
 
 struct CvolFileHeader {
 	char magic[4] = { 'C', 'V', 'O', 'L' };
@@ -494,10 +491,6 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 	spacing = std::max(spacing, 0.01f);
 	cfg.captureDirs = std::max(cfg.captureDirs, 64u);
 	cfg.maxBounces = std::min(cfg.maxBounces, 8u);
-	const float captureSpacing = cfg.captureSpacing > 0.0f
-		? cfg.captureSpacing : 3.0f * spacing;
-	const float maxRadius = cfg.maxReprojectRadius > 0.0f
-		? cfg.maxReprojectRadius : 4.0f * captureSpacing;
 
 	glm::vec3 bMin, bMax;
 	if (!def.Bounds(bMin, bMax)) {
@@ -523,8 +516,8 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 
 	// Shared equal-solid-angle direction set (same rationale as the
 	// other bakers: correlated error reads as smooth bias). These are
-	// the capture "cubemap" texels: uniform solid angle 4pi/N, so the
-	// reprojection weights are exact.
+	// the per-probe ray directions: uniform solid angle 4pi/N, so the
+	// SG fit weights are exact.
 	const uint32_t N = cfg.captureDirs;
 	std::vector<glm::vec3> dirs(N);
 	for (uint32_t i = 0; i < N; ++i) {
@@ -535,128 +528,28 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 	}
 	const float texelSolidAngle = 4.0f * kPi / float(N);
 
-	// ---- Capture lattice (coarse; the reprojection amortizes these) ----
-	struct Capture {
-		glm::vec3 pos;
-		std::vector<glm::vec3> radiance;
-		std::vector<float> depth;
-	};
-	glm::vec3 capGridMin = bMin;
-	uint32_t capDims[3] = { 1, 1, 1 };
-	for (int a = 0; a < 3; ++a)
-		capDims[a] = std::max(1u, uint32_t(std::ceil(ext[a] / captureSpacing)));
-	const uint64_t capCount = uint64_t(capDims[0]) * capDims[1] * capDims[2];
-
-	// NOTE the double parens: `captures(size_t(capCount))` alone parses
-	// as a function declaration (most vexing parse) and the subscripts
-	// below fail with C2109.
-	std::vector<Capture> captures((size_t(capCount)));
-	std::vector<char> capValid(size_t(capCount), 0);
-	for (uint64_t c = 0; c < capCount; ++c) {
-		// Validity pass first: captures inside solid geometry are skipped
-		// (their neighbors cover the field; a capture 2cm inside a wall
-		// would reproject wall-interior noise over the whole cell).
-		// Fade band included (weight > 0): boundary captures feed the
-		// doorway bleed zone.
-		const uint32_t cx = uint32_t(c % capDims[0]);
-		const uint32_t cy = uint32_t((c / capDims[0]) % capDims[1]);
-		const uint32_t cz = uint32_t(c / (uint64_t(capDims[0]) * capDims[1]));
-		const glm::vec3 pos = capGridMin
-			+ (glm::vec3(cx, cy, cz) + 0.5f) * captureSpacing;
-		if (def.Weight(pos) <= 0.0f)
-			continue;
-		if (scene.Bvh().ClosestDistance(pos) < cfg.captureMinClearance)
-			continue;
-		capValid[size_t(c)] = 1;
-	}
+	// ---- Dense probes: DIRECT per-probe path trace ----
+	// The BO3 capture lattice + reprojection this bake shipped with
+	// amortized the trace over sparse captures — at the cost of a
+	// capture-support dependency: probes whose enclosing cell had no
+	// valid capture (solid interiors, clearance skips) baked zero, the
+	// parallax/depth gates rejected texels near walls, and coverage
+	// read as holes (the sponza bake: 48k of 526k probes invalid). The
+	// Embree backend traces the whole dense grid directly now: every
+	// probe runs its own equal-solid-angle set through TraceIncoming
+	// (same transport as every other baked source — sun/sky/bounces,
+	// the white-world field convention) and feeds the SG fit with
+	// exact texel solid angles. captureDirs keeps its meaning, now as
+	// the per-probe direction count (the octree probes run ~1024; 1536
+	// is generous — the sponza grid traces in ~2x the world octree's
+	// time). The mathematical identity case of the old pipeline
+	// (captureSpacing == spacing) is what this IS, minus the amortize.
 	{
 		const uint32_t threadCount = cfg.threadCount
 			? cfg.threadCount : std::thread::hardware_concurrency();
 		ThreadPool pool(threadCount ? threadCount : 1);
-		std::atomic<uint64_t> clamped{ 0 };
-		constexpr size_t kCapBatch = 32;
-		for (uint64_t base = 0; base < capCount; base += kCapBatch) {
-			const uint64_t end = std::min(base + kCapBatch, capCount);
-			std::vector<std::future<void>> futures;
-			futures.reserve(size_t(end - base));
-			for (uint64_t c = base; c < end; ++c) {
-				if (!capValid[size_t(c)])
-					continue;
-				// Each task writes captures[c] exactly once (the slot is
-				// pre-sized above) — no shared-container mutation.
-				futures.push_back(pool.enqueue([&, c] {
-					const uint32_t cx = uint32_t(c % capDims[0]);
-					const uint32_t cy = uint32_t((c / capDims[0]) % capDims[1]);
-					const uint32_t cz =
-						uint32_t(c / (uint64_t(capDims[0]) * capDims[1]));
-					const glm::vec3 pos = capGridMin
-						+ (glm::vec3(cx, cy, cz) + 0.5f) * captureSpacing;
-					const uint64_t seed = (uint64_t(cfg.seed) << 32)
-						^ (uint64_t(c) * 0x9e3779b97f4a7c15ull + 0x1234567ull);
-					Pcg32 rng(seed);
-					Capture& cap = captures[size_t(c)];
-					cap.pos = pos;
-					cap.radiance.resize(N);
-					cap.depth.assign(N, kCvSkyDepth);
-					for (uint32_t i = 0; i < N; ++i) {
-						float hitDist = kCvSkyDepth;
-						cap.radiance[i] = scene.TraceIncoming(pos, dirs[i], rng,
-							cfg.maxBounces, &hitDist);
-						cap.depth[i] = hitDist;
-					}
-					// Two-pass firefly clamp (same policy as every other
-					// bake: 8x the capture's own finite-sample mean).
-					double meanLum = 0.0;
-					for (const glm::vec3& L : cap.radiance)
-						meanLum += Luminance(L);
-					meanLum /= double(N);
-					const float cap8 = std::max(float(meanLum) * 8.0f, 1e-6f);
-					uint64_t localClamped = 0;
-					for (glm::vec3& L : cap.radiance) {
-						const float l = Luminance(L);
-						if (l > cap8 && l > 0.0f) {
-							L *= cap8 / l;
-							++localClamped;
-						}
-					}
-					clamped += localClamped;
-				}));
-			}
-			for (auto& f : futures)
-				f.get();
-		}
-		stats.captures = uint64_t(std::count(capValid.begin(), capValid.end(), 1));
-		stats.captureRays = stats.captures * N;
-		stats.samplesClamped = clamped.load();
-	}
-	if (stats.captures == 0) {
-		say("cvol bake: no valid capture points (volume empty or solid?)\n");
-		return false;
-	}
-	{
-		char line[192];
-		std::snprintf(line, sizeof(line),
-			"cvol bake: %llu captures (%.1f%% of lattice), %llu probes, "
-			"captureSpacing=%.2f maxRadius=%.2f\n",
-			(unsigned long long)stats.captures,
-			100.0 * double(stats.captures) / double(capCount),
-			(unsigned long long)n, captureSpacing, maxRadius);
-		say(line);
-	}
-
-	// Capture -> lattice index for the trilinear lookups (-1 = invalid).
-	std::vector<int32_t> capIndex(size_t(capCount), -1);
-	for (uint64_t c = 0; c < capCount; ++c)
-		if (capValid[size_t(c)])
-			capIndex[size_t(c)] = int32_t(c);
-
-	// ---- Dense probes: reproject the enclosing captures' cubemaps ----
-	{
-		const uint32_t threadCount = cfg.threadCount
-			? cfg.threadCount : std::thread::hardware_concurrency();
-		ThreadPool pool(threadCount ? threadCount : 1);
-		std::atomic<uint64_t> reprojected{ 0 };
 		std::atomic<uint64_t> invalid{ 0 };
+		std::atomic<uint64_t> clamped{ 0 };
 		constexpr size_t kBatch = 128;
 		for (uint64_t base = 0; base < n; base += kBatch) {
 			const uint64_t end = std::min(base + kBatch, n);
@@ -664,105 +557,61 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 			futures.reserve(size_t(end - base));
 			for (uint64_t v = base; v < end; ++v) {
 				futures.push_back(pool.enqueue([&, v] {
-					const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1];
+					const uint32_t nx = outVolume.dims[0],
+						ny = outVolume.dims[1];
 					const uint32_t ix = uint32_t(v % nx);
 					const uint32_t iy = uint32_t((v / nx) % ny);
-					const uint32_t iz = uint32_t(v / (uint64_t(nx) * ny));
+					const uint32_t iz =
+						uint32_t(v / (uint64_t(nx) * ny));
 					const glm::vec3 pos = outVolume.gridMin
-						+ (glm::vec3(ix, iy, iz) + 0.5f) * outVolume.spacing;
+						+ (glm::vec3(ix, iy, iz) + 0.5f)
+							* outVolume.spacing;
 
 					SgFitAccumulator acc;
 					acc.accumulateGram = false; // diagonal solve only
-					if (scene.Bvh().ClosestDistance(pos) >= cfg.probeMinClearance) {
-						// Trilinear weights over the capture lattice cell
-						// containing the probe (clamp-to-edge like the
-						// hardware path; renormalized when captures in
-						// the cell are invalid so the field keeps its
-						// energy near skipped captures).
-						const glm::vec3 rel = (pos - capGridMin) / captureSpacing
-							- 0.5f;
-						const int c0[3] = { int(std::floor(rel.x)),
-							int(std::floor(rel.y)), int(std::floor(rel.z)) };
-						const float fr[3] = {
-							std::clamp(rel.x - float(c0[0]), 0.0f, 1.0f),
-							std::clamp(rel.y - float(c0[1]), 0.0f, 1.0f),
-							std::clamp(rel.z - float(c0[2]), 0.0f, 1.0f),
-						};
-						struct Ref { int32_t idx; float w; };
-						Ref refs[8];
-						int refCount = 0;
-						float wSum = 0.0f;
-						for (int k = 0; k < 8; ++k) {
-							const int cx = c0[0] + (k & 1);
-							const int cy = c0[1] + ((k >> 1) & 1);
-							const int cz = c0[2] + ((k >> 2) & 1);
-							if (cx < 0 || cy < 0 || cz < 0
-								|| cx >= int(capDims[0]) || cy >= int(capDims[1])
-								|| cz >= int(capDims[2]))
-								continue;
-							const int32_t cap = capIndex[
-								size_t((uint64_t(cz) * capDims[1] + cy) * capDims[0] + cx)];
-							if (cap < 0)
-								continue;
-							const float w = (k & 1 ? fr[0] : 1.0f - fr[0])
-								* (((k >> 1) & 1) ? fr[1] : 1.0f - fr[1])
-								* (((k >> 2) & 1) ? fr[2] : 1.0f - fr[2]);
-							if (w <= 1e-6f)
-								continue;
-							refs[refCount].idx = cap;
-							refs[refCount].w = w;
-							++refCount;
-							wSum += w;
-						}
-						if (wSum > 1e-4f) {
-							const float invW = 1.0f / wSum;
-							uint64_t localReproj = 0;
-							for (int r = 0; r < refCount; ++r) {
-								const Capture& cap = captures[size_t(refs[r].idx)];
-								const float wCap = refs[r].w * invW
-									* texelSolidAngle;
-								const glm::vec3 toCap = cap.pos - pos;
-								const float capDist2 = glm::dot(toCap, toCap);
-								for (uint32_t i = 0; i < N; ++i) {
-									const glm::vec3& d = dirs[i];
-									const float z = cap.depth[i];
-									glm::vec3 dReproj = d;
-									if (z < kCvSkyDepth * 0.5f) {
-										// Parallax shift: the surface point
-										// the capture recorded along d,
-										// seen from the probe. Sky texels
-										// keep their direction (infinite
-										// depth, no shift).
-										const glm::vec3 surf = cap.pos + d * z;
-										const glm::vec3 disp = surf - pos;
-										const float dist2 = glm::dot(disp, disp);
-										if (dist2 > maxRadius * maxRadius
-											|| dist2 < 1e-8f)
-											continue;
-										dReproj = disp * (1.0f / std::sqrt(dist2));
-										// Depth gate: the recorded surface
-										// between capture and probe means
-										// the true visible surface from
-										// the probe is elsewhere — the
-										// capture's own near geometry
-										// shadows it (cheap BO3-style
-										// visibility rejection).
-										if (z * z < capDist2 * 0.25f)
-											continue;
-									}
-									acc.AddSample(dReproj, cap.radiance[i], wCap);
-									++localReproj;
-								}
+					if (scene.Bvh().ClosestDistance(pos)
+							>= cfg.probeMinClearance) {
+						// Deterministic per-probe seed (the capture
+						// stage's pattern): results independent of
+						// task scheduling.
+						const uint64_t seed = (uint64_t(cfg.seed) << 32)
+							^ (uint64_t(v) * 0x9e3779b97f4a7c15ull
+								+ 0x1234567ull);
+						Pcg32 rng(seed);
+						std::vector<glm::vec3> rad(N);
+						for (uint32_t i = 0; i < N; ++i)
+							rad[i] = scene.TraceIncoming(pos, dirs[i],
+								rng, cfg.maxBounces, nullptr);
+						// Two-pass firefly clamp (same policy as every
+						// other bake: 8x the probe's own finite-sample
+						// mean).
+						double meanLum = 0.0;
+						for (const glm::vec3& L : rad)
+							meanLum += Luminance(L);
+						meanLum /= double(N);
+						const float p8 =
+							std::max(float(meanLum) * 8.0f, 1e-6f);
+						uint64_t localClamped = 0;
+						for (glm::vec3& L : rad) {
+							const float l = Luminance(L);
+							if (l > p8 && l > 0.0f) {
+								L *= p8 / l;
+								++localClamped;
 							}
-							reprojected += localReproj;
 						}
-					} else {
+						clamped += localClamped;
+						for (uint32_t i = 0; i < N; ++i)
+							acc.AddSample(dirs[i], rad[i],
+								texelSolidAngle);
+					}
+					else {
 						++invalid;
 					}
 					glm::vec3 amps[kSgLobeCount];
 					acc.Solve(amps);
 					for (uint32_t i = 0; i < kSgLobeCount; ++i)
-						outVolume.coeffs[size_t(v) * kSgLobeCount + i] = amps[i];
+						outVolume.coeffs[size_t(v) * kSgLobeCount + i]
+							= amps[i];
 				}));
 			}
 			for (auto& f : futures)
@@ -775,8 +624,8 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 				say(line);
 			}
 		}
-		stats.reprojected = reprojected.load();
 		stats.probesInvalid = invalid.load();
+		stats.samplesClamped = clamped.load();
 	}
 
 	// ---- Validity dilation (probes inside solid geometry; the same
@@ -845,22 +694,19 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 	}
 
 	// ---- Volume smoothing (BO3 "volume smoothing"): gentle Laplacian
-	// over VALID voxels only — invalid ones just dilated, smoothing them
-	// against their source would undo the padding. The reprojection is
-	// already smooth by construction (trilinear capture weights), so
-	// this is a denoise, not a leak risk (the volume is convex-walled).
+	// over ALL voxels, dilated ones included. The valid-only exclusion
+	// this pass used to carry left the dilation's neighbor-average
+	// islands (the near-surface clearance shells — every wall's 5 cm
+	// band, dense clusters along thin geometry like the chains) as
+	// NEVER-SMOOTHED sharp values against the per-probe field: the
+	// runtime trilerp read them as a binary mask pattern laid over
+	// every surface. A lambda Laplacian softens the seams without
+	// emptying anything (the padding survives — it just stops being a
+	// hard edge), so the dilated voxels participate on both sides:
+	// they take neighbor averages AND contribute to their neighbors.
 	for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
 		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
 			nz = outVolume.dims[2];
-		std::vector<char> valid(size_t(n), 0);
-		for (uint64_t v = 0; v < n; ++v) {
-			const uint32_t ix = uint32_t(v % nx);
-			const uint32_t iy = uint32_t((v / nx) % ny);
-			const uint32_t iz = uint32_t(v / (uint64_t(nx) * ny));
-			valid[size_t(v)] = scene.Bvh().ClosestDistance(
-				outVolume.gridMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing)
-				>= cfg.probeMinClearance ? 1 : 0;
-		}
 		std::vector<glm::vec3> smoothed(size_t(n) * kSgLobeCount);
 		static const int kDx[6] = { 1, -1, 0, 0, 0, 0 };
 		static const int kDy[6] = { 0, 0, 1, -1, 0, 0 };
@@ -881,8 +727,6 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 							continue;
 						const uint64_t u =
 							(uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-						if (!valid[size_t(u)])
-							continue;
 						for (uint32_t i = 0; i < kSgLobeCount; ++i)
 							acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
 						++cnt;
@@ -891,7 +735,7 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 						const glm::vec3& cur =
 							outVolume.coeffs[size_t(v) * kSgLobeCount + i];
 						glm::vec3 next = cur;
-						if (cnt > 0 && valid[size_t(v)])
+						if (cnt > 0)
 							next = glm::mix(cur, acc[i] / float(cnt), lambda);
 						smoothed[size_t(v) * kSgLobeCount + i] = next;
 					}
@@ -904,11 +748,10 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 	{
 		char line[192];
 		std::snprintf(line, sizeof(line),
-			"cvol bake: done: %llu probes from %llu captures in %.1fs "
-			"(%.1f MiB GPU, %llu reprojected, %llu invalid, %llu clamped)\n",
-			(unsigned long long)n, (unsigned long long)stats.captures,
+			"cvol bake: done: %llu probes (per-probe direct trace) "
+			"in %.1fs (%.1f MiB GPU, %llu invalid, %llu clamped)\n",
+			(unsigned long long)n,
 			stats.seconds, double(outVolume.GpuBytes()) / (1024.0 * 1024.0),
-			(unsigned long long)stats.reprojected,
 			(unsigned long long)stats.probesInvalid,
 			(unsigned long long)stats.samplesClamped);
 		say(line);

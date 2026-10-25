@@ -1411,6 +1411,18 @@ bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& configIn,
 		++wave;
 	}
 	stats.refineWaves = wave + 1;
+	// Budget loudness: refinement silently stopping at the probe budget
+	// reads as "the bake didn't cover X" in every probe preview — the
+	// stranded regions keep their coarse parents (coverage exists, the
+	// RESOLUTION stops), and nothing said so. Say it when it happens.
+	if (stats.probeBudgetHits > 0) {
+		char line[160];
+		std::snprintf(line, sizeof(line),
+			"bake: probe budget: %llu leaves not subdivided (cap %u) — "
+			"raise --max-probes for finer coverage\n",
+			(unsigned long long)stats.probeBudgetHits, cfg.maxProbes);
+		say(line);
+	}
 
 	// ------------------------------------------------------------------
 	// Diffusion procedure: the brick lattice is a relaxation FIXED POINT

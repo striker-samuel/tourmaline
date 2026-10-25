@@ -497,7 +497,16 @@ size_t BuildFromMeshAsset(
 	// across EVERY import in the chain (root + nested references), with the
 	// (material, slot) users. Null = no record. Appended last so existing
 	// callers keep compiling.
-	std::vector<GltfImportImage>* outImages = nullptr);
+	std::vector<GltfImportImage>* outImages = nullptr,
+	// Content root (host-mode resolution): RELATIVE reference sources
+	// resolve against this BEFORE the process CWD — the project owns the
+	// content tree and tours record project-relative sources
+	// ("content/models/..."). Empty = CWD-first (the old behavior, which
+	// silently bound the TOOL'S OWN synced content/ copy — the build
+	// dir carries one — instead of the project's cooked .geometry:
+	// meshlets/LOD siblings went missing and every tour pak shipped a
+	// stale scene). Absolute sources and the vfs mode are unaffected.
+	const std::string& contentRoot = std::string());
 
 inline void GltfToCluster(
 	smvk::ResourceManager& ctx,

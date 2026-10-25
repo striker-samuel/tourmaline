@@ -673,7 +673,6 @@ namespace cooktool {
 				manifestRows.push_back(vfsPath + "  # " + def.name);
 				tool::out() << "  [CV] baked '" << def.name << "': dims="
 					<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
-					<< " captures=" << stats.captures
 					<< " probes=" << stats.probes
 					<< " (" << stats.seconds << "s)\n";
 			}
@@ -4280,7 +4279,8 @@ int Run(const CookArgs& c) {
 					nullptr /* HOST bind — editor parity */,
 					opt, importMeshletCfg, 0, nullptr, nullptr, nullptr,
 					args.autoKtx, tour.fileNodes.empty() ? nullptr : &tour.fileNodes,
-					artifactCache);
+					artifactCache, nullptr, nullptr,
+					/*contentRoot=*/args.contentDir);
 				tool::out() << "Definition: bound " << applied
 					<< " reference subtree(s) ("
 					<< tour.references.size() << " top-level)\n";

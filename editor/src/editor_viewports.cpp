@@ -551,7 +551,10 @@ void EditorApp::DrawViewportChrome() {
 // X-ray preview of the convex GI volumes (probes-only pivot): each
 // volume's hull (bake AABB clipped by its plane set, built in
 // TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport —
-// wireframe at mode 1, + translucent priority-coded fill at mode 2.
+// wireframe at mode 1, + translucent priority-coded fill at mode 2,
+// and the dense bake-lattice sample at mode 3 (green dots = nonzero
+// radiance, red = zero/invalid voxels — the coverage answer; the hull
+// rides along as a faint wire for spatial context).
 // Foreground = no depth, so the volumes read through geometry (the
 // point of the view: authoring shapes against walls/roofs).
 // Authored cvolume nodes label here too (their boxes ride the 3D
@@ -600,7 +603,7 @@ void EditorApp::DrawCvolPreviewOverlay() {
 					if (project(poly[k], a)
 						&& project(poly[(k + 1) % poly.size()], b))
 						dl->AddLine(a, b, wire, 1.5f);
-				if (m_cvolPreviewMode >= 2) {
+				if (m_cvolPreviewMode == 2) {
 					ImVec2 c0, c1, c2;
 					if (project(poly[0], c0))
 						for (size_t k = 1; k + 1 < poly.size(); ++k)
@@ -614,6 +617,47 @@ void EditorApp::DrawCvolPreviewOverlay() {
 				std::snprintf(label, sizeof(label), "%s  p%u",
 					cv.name.c_str(), cv.priority);
 				dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f), wire, label);
+			}
+			// Probe mode: the dense bake-lattice sample — green dots
+			// carry radiance, red are zero/invalid voxels (solid
+			// interiors / no capture support). Strided to stay
+			// ImGui-cheap; the counts ride a per-volume caption.
+			if (m_cvolPreviewMode == 3 && !cv.sampleState.empty()) {
+				constexpr ImU32 kBaked = IM_COL32(70, 230, 90, 215);
+				constexpr ImU32 kZero = IM_COL32(255, 80, 80, 170);
+				const glm::vec3 st(float(cv.sampleStep[0]),
+					float(cv.sampleStep[1]), float(cv.sampleStep[2]));
+				size_t si = 0;
+				for (uint32_t z = 0; z < cv.sampleCount[2]; ++z)
+					for (uint32_t y = 0; y < cv.sampleCount[1]; ++y)
+						for (uint32_t x = 0; x < cv.sampleCount[0];
+								++x, ++si) {
+							const glm::vec3 p = cv.gridMin
+								+ glm::vec3(float(x), float(y), float(z))
+								* st * cv.probeSpacing;
+							ImVec2 pt;
+							if (!project(p, pt))
+								continue;
+							dl->AddCircleFilled(pt, 1.8f,
+								cv.sampleState[si] ? kBaked : kZero);
+						}
+				if (si > 0) {
+					char cov[128];
+					std::snprintf(cov, sizeof(cov),
+						"%s: %llu/%llu voxels nonzero (step %ux%ux%u)",
+						cv.name.c_str(),
+						(unsigned long long)cv.voxNonzero,
+						(unsigned long long)cv.voxTotal,
+						cv.sampleStep[0], cv.sampleStep[1],
+						cv.sampleStep[2]);
+					const float capY = 52.0f
+						+ 16.0f * (&cv - m_cvolPreviews.data());
+					dl->AddText(ImVec2(vp.rect.x + 8.0f,
+						vp.rect.y + capY + 1.0f),
+						IM_COL32(0, 0, 0, 200), cov);
+					dl->AddText(ImVec2(vp.rect.x + 8.0f,
+						vp.rect.y + capY), IM_COL32_WHITE, cov);
+				}
 			}
 		}
 		if (showAuthored && m_world) {

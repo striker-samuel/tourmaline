@@ -540,6 +540,33 @@ bool BuildLodChainForUpload(
 				targetIndices, targetError, config.lodSimplifyOptions,
 				&relativeError);
 		}
+		// GEOMETRIC-ERROR PROBE: every WithAttributes variant reports the
+		// attribute-weighted QUADRIC error, not the geometric deviation
+		// — the UV terms (extent ~1) dilute the position component so a
+		// 25% decimation reports ~3e-7 "relative error" while the real
+		// deviation is ~2e-3. Serialized as-is the LOD estimator reads
+		// "every level is visually perfect" and drops the whole scene to
+		// its coarsest sibling meters from the camera (observed: LOD3 at
+		// 1.9 m; the runtime scale handling is correct — the import-side
+		// error must be GEOMETRIC, in the mesh's own raw units). Probe:
+		// a positions-only simplify to the same target count, take ITS
+		// relative error as the level's geometric error (the plain
+		// positions-only path always reported these — the pre-attribute
+		// chains carried exactly these numbers).
+		if (resultCount >= 3 && (preserveCoverage || !lmAttrs.empty()
+				|| useUvAttrs)) {
+			std::vector<unsigned int> probe(dest.size());
+			float probeErr = 0.0f;
+			const size_t probeCount = meshopt_simplify(
+				probe.data(),
+				lod0.indices.data(), icount,
+				positions, vcount, sizeof(StaticVertex),
+				targetIndices, targetError,
+				config.lodSimplifyOptions, &probeErr);
+			if (probeCount >= 3 && std::isfinite(probeErr)
+				&& probeErr >= relativeError)
+				relativeError = probeErr;
+		}
 
 		// --- Error-driven filter: drop broken candidates. ---
 		if (resultCount < 3 || (resultCount % 3) != 0)

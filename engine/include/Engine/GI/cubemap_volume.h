@@ -38,25 +38,22 @@
 // min-combining keeps a doorway fade alive next to a tight floor (a
 // product would crush it to zero at the threshold corner).
 //
-// Bake (BakeCvVolume): dense probes cannot be path-traced per node at
-// interior densities, so the cook follows the published BO3 pipeline —
-// bake sparse radiance+depth captures (conceptually small cubemaps; here
-// an equal-solid-angle direction set), then REPROJECT every capture into
-// every nearby probe position:
-//   1. capture lattice (coarser than the probe grid) inside the volume;
-//   2. per capture: radiance + first-hit distance along each direction
-//      (TraceIncoming, same transport as every other baked source);
-//   3. per dense probe: trilinear weights over the <= 8 enclosing
-//      captures; each capture's texels are parallax-shifted onto the
-//      probe (direction to the recorded surface point), depth-gated by
-//      the reprojection radius, and accumulated into the SG fit with
-//      capture weight x texel solid angle;
-//   4. diagonal SG projection (sg.h), validity dilation for probes in
-//      solid geometry (regular_volume.cpp pattern), optional Laplacian
-//      volume smoothing (BO3's "volume smoothing").
-// A bake with captureSpacing == spacing at the capture points reduces
-// exactly to the direct per-probe trace (the reprojection is the
-// identity there), which is the calibration point for the math.
+// Bake (BakeCvVolume): DIRECT per-probe path trace. This shipped as the
+// published BO3 pipeline — sparse radiance+depth captures reprojected
+// into the dense probes — but the capture-support dependency cost real
+// coverage: probes whose enclosing capture cell had no valid capture
+// (solid interiors, clearance skips) baked zero, and the parallax/
+// depth gates rejected texels near walls (the sponza bake: 48k of 526k
+// probes invalid, reading as holes in every probe preview). The Embree
+// backend traces the dense grid directly now: every probe runs its own
+// equal-solid-angle direction set through TraceIncoming (the same
+// transport as every other baked source) and feeds the diagonal SG
+// projection with exact texel solid angles — the old pipeline's own
+// mathematical identity case (captureSpacing == spacing), minus the
+// amortize, plus per-probe firefly clamping (8x the probe's own mean),
+// validity dilation for probes in solid geometry (the
+// regular_volume.cpp pattern), and the optional Laplacian volume
+// smoothing (BO3's "volume smoothing").
 //
 // Runtime: hardware trilinear over 7 RGBA16F 3D textures per volume
 // (identical GPU layout to SgRegularVolume), weight/priority blend in
@@ -197,40 +194,45 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Bake (sparse captures + cubemap reprojection)
+// Bake (per-probe direct path trace)
 // ---------------------------------------------------------------------------
 
 struct CvBakeConfig {
 	uint32_t captureDirs = 1536; // equal-solid-angle directions per
-	                             // capture (6 * 16^2; the conceptual
-	                             // cubemap face resolution)
-	uint32_t maxBounces = 3;     // diffuse path depth per capture ray
-	float captureSpacing = 0.0f;     // capture lattice (m); 0 = 3x spacing
-	float maxReprojectRadius = 0.0f; // texel trust radius (m);
-	                                 // 0 = 4x capture spacing
-	uint32_t smoothingPasses = 0; // Laplacian passes over the fitted
-	                              // grid (BO3 "volume smoothing")
+	                             // PROBE (6 * 16^2; the historical
+	                             // name: these were the capture
+	                             // "cubemap" texels before the
+	                             // per-probe rework)
+	uint32_t maxBounces = 3;     // diffuse path depth per probe ray
+	// INERT since the per-probe rework (kept for CLI/Args compat):
+	// the capture lattice + reprojection they tuned is gone.
+	float captureSpacing = 0.0f;     // was: capture lattice (m)
+	float maxReprojectRadius = 0.0f; // was: texel trust radius (m)
+	uint32_t smoothingPasses = 3; // Laplacian passes over the fitted
+	                              // grid (BO3 "volume smoothing"). The
+	                              // per-probe bake needs it (the capture
+	                              // reprojection was smooth by
+	                              // construction; independent per-probe
+	                              // estimates are not) and it softens the
+	                              // dilation's near-surface seams.
 	float smoothingLambda = 0.4f; // per-pass step (0..1)
 	float probeMinClearance = 0.05f;  // probe validity (m, to geometry)
-	float captureMinClearance = 0.10f; // capture validity (m)
+	float captureMinClearance = 0.10f; // INERT (was capture validity)
 	uint32_t threadCount = 0;     // 0 = hardware concurrency
 	uint32_t seed = 1;
 };
 
 struct CvBakeStats {
-	uint64_t captures = 0;      // valid captures baked
-	uint64_t captureRays = 0;   // path-traced capture rays
 	uint64_t probes = 0;        // dense grid nodes
 	uint64_t probesInvalid = 0; // inside solid geometry (dilated)
-	uint64_t reprojected = 0;   // texel contributions accumulated
-	uint64_t samplesClamped = 0; // firefly clamps at capture time
+	uint64_t samplesClamped = 0; // firefly clamps (8x per-probe mean)
 	double seconds = 0.0;
 };
 
 class GiTraceScene;
 using GiBakeProgress = void (*)(const char* line);
 
-// Bakes the volume's dense grid from sparse radiance+depth captures
+// Bakes the volume's dense grid with a DIRECT per-probe path trace
 // (see the file banner). The AABB grid covers def.Bounds() plus the
 // fade band; probes outside the convex still bake (their runtime weight
 // is zero but trilinear taps near the boundary read them).

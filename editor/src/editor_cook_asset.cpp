@@ -7,8 +7,10 @@
 #include "editor_app.h"
 
 #include <filesystem>
+#include <fstream>
+#include <vector>
 
-#include <Engine/Asset/bake_asset.h> // kBakeAssetKindCubemap (assetdb kind)
+#include <Engine/Asset/bake_asset.h> // kBakeAssetKindCubemap + SplitManifestRow
 
 namespace editor {
 
@@ -265,9 +267,18 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	const std::string contentRoot = fs::absolute(
 		fs::path(m_cook.outPak).parent_path() / "..")
 		.lexically_normal().generic_string();
+	// The cook bakes under the OUT-PAK stem (CookToPak's pakStem —
+	// GiBaker --scene, the bake-file stems: gi/<stem>.sggi,
+	// <stem>_<name>.cvol). The result paths must key on it too, NOT
+	// the scene stem: with a differently-named out pak the
+	// scene-keyed lookup recorded the WRONG bake (a fresh GiCook mint
+	// every recook pointing at the stale gi/Sponza.sggi while the
+	// fresh bake was gi/sponza_1.sggi — never an overwrite).
+	const std::string bakeStem =
+		fs::path(m_cook.outPak).stem().generic_string();
 	// World-field result of this cook: the STABLE path
-	// gi/<scene>.sggi ("" = giWorld off / not baked).
-	const std::string sggiVfs = "gi/" + scene + ".sggi";
+	// gi/<bakeStem>.sggi ("" = giWorld off / not baked).
+	const std::string sggiVfs = "gi/" + bakeStem + ".sggi";
 	const std::filesystem::path sggiHost =
 		fs::path(contentRoot) / sggiVfs;
 	const bool hasSggi = fs::is_regular_file(sggiHost, ec);
@@ -345,10 +356,10 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// die with this update (nothing references the old stem after the
 	// tour's bake guid reference swaps to the new one).
 	const std::string oldStem =
-		(!fresh && hasSggi && !a.blobGuid.empty() && a.blobGuid != scene)
-		? a.blobGuid : std::string();
+		(!fresh && hasSggi && !a.blobGuid.empty() && a.blobGuid != bakeStem)
+			? a.blobGuid : std::string();
 	if (hasSggi) {
-		a.blobGuid = scene;
+		a.blobGuid = bakeStem;
 		a.blobPath = sggiVfs;
 	}
 	a.bakedHash = smvk::cook::GiCookSettingsHash(a);
@@ -361,26 +372,44 @@ void EditorApp::RecordBakeAssetsFromCook() {
 		}
 	}
 	// Delete the old bake: update-and-overwrite means the superseded
-	// stem's files (gi/<oldStem>.* + <oldStem>_*.cvol bake files) go away
-	// with the reference swap — leaving them would orphan them in gi/
-	// and stale rows in the asset collections.
+	// stem's files go away with the reference swap — leaving them
+	// would orphan them in gi/ and stale rows in the asset collections.
 	if (!oldStem.empty()) {
+		// The superseded bake's footprint: its own named files
+		// (gi/<oldStem>.sggi/.cvmanifest/.regmanifest) plus every
+		// .cvol its manifest lists. NO blind stem-prefix sweep —
+		// "<oldStem>_<anything>" also matches SIBLING pak stems
+		// ("Sponza_" hits "Sponza_minimal_*"); the manifest rows are
+		// the exact list.
 		int deleted = 0;
 		const fs::path giDir = fs::path(contentRoot) / "gi";
 		std::error_code lec;
-		if (fs::is_directory(giDir, lec)) {
-			for (fs::directory_iterator it(giDir, lec), end;
-					!lec && it != end; it.increment(lec)) {
-				const std::string n = it->path().filename().string();
-				if (n.rfind(oldStem + ".", 0) != 0
-					&& n.rfind(oldStem + "_", 0) != 0)
-					continue; // not the old bake's footprint
-				if (!it->is_regular_file(lec))
+		std::vector<fs::path> doomed;
+		const auto pushIfFile = [&](const fs::path& p) {
+			if (fs::is_regular_file(p, lec))
+				doomed.push_back(p);
+		};
+		pushIfFile(giDir / (oldStem + ".sggi"));
+		pushIfFile(giDir / (oldStem + ".cvmanifest"));
+		pushIfFile(giDir / (oldStem + ".regmanifest"));
+		{
+			std::ifstream in(giDir / (oldStem + ".cvmanifest"));
+			std::string line;
+			while (std::getline(in, line)) {
+				const std::string row =
+					smvk::bake::SplitManifestRow(line);
+				if (row.empty())
 					continue;
-				if (fs::remove(it->path(), lec))
-					++deleted;
+				const fs::path rel(row);
+				// Manifest rows are content-relative VFS paths;
+				// absolute host rows pass through.
+				pushIfFile(rel.is_absolute() ? rel
+					: fs::path(contentRoot) / rel);
 			}
 		}
+		for (const fs::path& p : doomed)
+			if (fs::remove(p, lec))
+				++deleted;
 		if (deleted > 0)
 			Log("cook assets: deleted the superseded bake '" + oldStem
 				+ "' (" + std::to_string(deleted) + " file(s) under "

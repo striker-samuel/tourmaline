@@ -219,10 +219,10 @@ void Usage() {
 		<< "GiBaker --scene bistro --print-bounds | --scan-interior:\n"
 		<< "         scene AABB / enclosure map to place bar/street boxes.\n"
 		<< "GiBaker --scene bistro --cv-spec volumes.txt\n"
-		<< "         [--cv-dirs 1536] [--cv-capture-spacing 0]\n"
-		<< "         [--cv-smoothing 1]: bake STACKED CONVEX GI volumes\n"
-		<< "         (probes-only pivot; BO3-style sparse radiance+depth\n"
-		<< "         captures reprojected into dense probe grids).\n"
+		<< "         [--cv-dirs 1536]: bake STACKED CONVEX GI volumes\n"
+		<< "         (probes-only pivot; a DIRECT per-probe path trace per\n"
+		<< "         dense grid node — the BO3 capture/reprojection era\n"
+		<< "         is retired; --cv-capture-spacing parses but is inert).\n"
 		<< "         Spec file, one `volume <name>` block each:\n"
 		<< "           volume bar\n"
 		<< "             box 9.4,-1,0.6 28.4,5.5,18.6 [0.1,0.1]\n"
@@ -230,7 +230,6 @@ void Usage() {
 		<< "             face-fade 2 0.1 0.1          # retune plane #2\n"
 		<< "             priority 10\n"
 		<< "             spacing 0.5\n"
-		<< "             capture-spacing 1.5\n"
 		<< "         Writes gi/<scene>_<name>.cvol + updates the runtime\n"
 		<< "         manifest gi/<scene>.cvmanifest (rows are bare VFS paths).\n"
 		<< "         Volumes blend over the .sggi world field by priority.\n"
@@ -321,6 +320,111 @@ int AnalyzeRegularVolume(const std::string& path) {
 // level) plus a CPU Sample() irradiance transect across the volume so
 // blotchy runtime output can be bisected into bake-side (extreme or
 // disagreeing probes) vs GPU-side (transfer/sampling) faults.
+int AnalyzeCvVolume(const std::string& path) {
+	using namespace smvk::gi;
+	CvVolume vol;
+	std::string err;
+	if (!CvVolume::ReadFile(path, vol, err)) {
+		tool::err() << "Analyze: load failed: " << err << std::endl;
+		return 1;
+	}
+	auto lum = [](const glm::vec3& c) {
+		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+	};
+	const uint32_t nx = vol.dims[0], ny = vol.dims[1], nz = vol.dims[2];
+	const uint64_t n = vol.VoxelCount();
+	auto probeLum = [&](uint64_t v) {
+		double l = 0.0;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i)
+			l += lum(vol.coeffs[size_t(v) * kSgLobeCount + i]);
+		return l / kSgLobeCount;
+	};
+	tool::out() << "analyze: " << path << "\n  voxels=" << n
+		<< " dims=" << nx << "x" << ny << "x" << nz
+		<< " spacing=" << vol.spacing
+		<< " gridMin=(" << vol.gridMin.x << "," << vol.gridMin.y
+		<< "," << vol.gridMin.z << ")\n";
+	size_t nanV = 0;
+	double sum = 0.0, mx = 0.0;
+	for (uint64_t v = 0; v < n; ++v) {
+		bool nan = false;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+			const glm::vec3& a = vol.coeffs[size_t(v) * kSgLobeCount + i];
+			if (std::isnan(a.x + a.y + a.z) || std::isinf(a.x + a.y + a.z))
+				nan = true;
+		}
+		if (nan) {
+			++nanV;
+			continue;
+		}
+		const double l = probeLum(v);
+		sum += l;
+		mx = std::max(mx, l);
+	}
+	tool::out() << "  meanLum=" << (n ? sum / double(n) : 0.0)
+		<< " maxLum=" << mx << " nanVoxels=" << nanV << "\n";
+	// Neighbor variation per axis: the field's own high-frequency
+	// content (the trilerp exposes exactly this at runtime). High
+	// values here read as a mask/texture pattern on every surface.
+	struct NborExtreme { double d; glm::vec3 a, b; };
+	std::vector<NborExtreme> extremes;
+	for (int axis = 0; axis < 3; ++axis) {
+		const uint64_t stride = axis == 0 ? 1
+			: axis == 1 ? uint64_t(nx) : uint64_t(nx) * ny;
+		const uint64_t axisDim = axis == 0 ? nx : axis == 1 ? ny : nz;
+		double dSum = 0.0, dMax = 0.0;
+		uint64_t pairs = 0;
+		for (uint64_t z = 0; z < nz; ++z)
+			for (uint64_t y = 0; y < ny; ++y)
+				for (uint64_t x = 0; x < nx; ++x) {
+					const uint64_t v = (z * ny + y) * nx + x;
+					const uint64_t c[3] = { x, y, z };
+					if (c[axis] + 1 >= axisDim)
+						continue;
+					const double d = std::abs(probeLum(v + stride)
+						- probeLum(v));
+					dSum += d;
+					dMax = std::max(dMax, d);
+					++pairs;
+					if (extremes.size() < 4096)
+						extremes.push_back({ d,
+							vol.gridMin + glm::vec3(float(x), float(y),
+								float(z)) * vol.spacing,
+							vol.gridMin + glm::vec3(float(x), float(y),
+								float(z)) * vol.spacing
+							+ glm::vec3(axis == 0 ? 1.0f : 0.0f,
+								axis == 1 ? 1.0f : 0.0f,
+								axis == 2 ? 1.0f : 0.0f) * vol.spacing });
+					else if (d > extremes.back().d) {
+						extremes.back() = { d,
+							vol.gridMin + glm::vec3(float(x), float(y),
+								float(z)) * vol.spacing,
+							vol.gridMin + glm::vec3(float(x), float(y),
+								float(z)) * vol.spacing
+							+ glm::vec3(axis == 0 ? 1.0f : 0.0f,
+								axis == 1 ? 1.0f : 0.0f,
+								axis == 2 ? 1.0f : 0.0f) * vol.spacing };
+					}
+				}
+		tool::out() << "  neighbor|" << (axis == 0 ? 'x' : axis == 1 ? 'y' : 'z')
+			<< "|: meanDelta=" << (pairs ? dSum / double(pairs) : 0.0)
+			<< " maxDelta=" << dMax
+			<< " (relative " << (pairs && sum ? 100.0 * dSum / double(pairs)
+				/ (sum / double(n)) : 0.0) << "% of meanLum)\n";
+	}
+	std::sort(extremes.begin(), extremes.end(),
+		[](const NborExtreme& a, const NborExtreme& b) {
+			return a.d > b.d;
+		});
+	tool::out() << "  top neighbor extremes (delta, posA -> posB):\n";
+	for (size_t i = 0; i < extremes.size() && i < 12; ++i)
+		tool::out() << "    " << extremes[i].d << "  ("
+			<< extremes[i].a.x << "," << extremes[i].a.y << ","
+			<< extremes[i].a.z << ") -> (" << extremes[i].b.x << ","
+			<< extremes[i].b.y << "," << extremes[i].b.z << ")\n";
+	return 0;
+}
+
 int AnalyzeVolume(const std::string& path) {
 	using namespace smvk::gi;
 	SgGiVolume vol;
@@ -728,7 +832,8 @@ std::optional<std::string> SceneGltf(const std::string& id) {
 //   face-fade <planeIndex> <in> <out>  retune one plane's fades
 //   priority <n>                        higher wins (composited later)
 //   spacing <m>                        dense probe grid spacing
-//   capture-spacing <m>                capture lattice (default 3x spacing)
+//   capture-spacing <m>                INERT (the per-probe bake has no
+//                                      capture lattice); still parsed
 // ---------------------------------------------------------------------------
 struct CvSpecVolume {
 	smvk::gi::CvVolumeDef def;
@@ -956,6 +1061,9 @@ int Run(Args& args) {
 		if (args.analyze.size() >= 5
 			&& args.analyze.compare(args.analyze.size() - 5, 5, ".sgrv") == 0)
 			return AnalyzeRegularVolume(args.analyze);
+		if (args.analyze.size() >= 5
+			&& args.analyze.compare(args.analyze.size() - 5, 5, ".cvol") == 0)
+			return AnalyzeCvVolume(args.analyze);
 		return AnalyzeVolume(args.analyze);
 	}
 
@@ -1026,7 +1134,9 @@ int Run(Args& args) {
 					nullptr, nullptr,
 					nullptr /* HOST bind — editor parity */,
 					smvk::MeshOptConfig{}, smvk::MeshletConfig{},
-					0, nullptr);
+					0, nullptr, nullptr, nullptr,
+					true, nullptr, nullptr, nullptr, nullptr,
+					/*contentRoot=*/args.contentDir);
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
@@ -1936,6 +2046,10 @@ int Run(Args& args) {
 		<< " waves=" << stats.refineWaves
 		<< " paths=" << stats.pathsTraced
 		<< " seconds=" << stats.seconds << "\n";
+	if (stats.probeBudgetHits > 0)
+		tool::out() << "  budget: " << stats.probeBudgetHits
+			<< " leaves not subdivided (cap " << args.maxProbes
+			<< ") — raise --max-probes for finer coverage\n";
 	for (uint32_t lvl = 0; lvl < smvk::gi::kSgGiMaxLevels; ++lvl)
 		if (stats.probesPerLevel[lvl])
 			tool::out() << "  level " << lvl << ": " << stats.probesPerLevel[lvl] << " probes\n";

@@ -543,10 +543,14 @@ void EditorApp::ModalLightGizmosToggle() {
 }
 
 void EditorApp::ModalCvolPreviewCycle() {
-	// Off -> wireframe -> wireframe + translucent fill (the convex GI
-	// volumes baked by GiBaker --cv-spec; color-coded by priority).
-	static const char* kNames[3] = { "off", "wireframe", "solid" };
-	m_cvolPreviewMode = (m_cvolPreviewMode + 1) % 3;
+	// Off -> wireframe -> wireframe + translucent fill -> probe grid
+	// (the convex GI volumes baked by GiBaker --cv-spec; color-coded by
+	// priority; the probe mode draws the dense bake lattice — green
+	// dots carry radiance, red are zero/invalid voxels: the coverage
+	// answer).
+	static const char* kNames[4] = { "off", "wireframe", "solid",
+		"probes" };
+	m_cvolPreviewMode = (m_cvolPreviewMode + 1) % 4;
 	if (m_cvolPreviews.empty() && m_cvolPreviewMode != 0) {
 		Log("GI volume preview: no .cvmanifest bake files loaded "
 			"(bake GiBaker --cv-spec next to the pak).");
@@ -557,8 +561,30 @@ void EditorApp::ModalCvolPreviewCycle() {
 }
 
 void EditorApp::ModalViewBaked() {
-	if (m_lmGpu)
+	if (m_lmGpu) {
+		// Honest empty-view warning: an atlas with a scene whose meshes
+		// carry no lmChunk stamps (a recook with lightmap off strips
+		// them) draws NOTHING — the baked pass skips unchunked meshes
+		// by design (they would sample foreign texels). Say so instead
+		// of a silently blank viewport.
+		if (m_world) {
+			bool anyChunk = false;
+			m_world->forEachRenderItem(
+				smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable
+					| smvk::IteratorFlagBit_Transparent
+					| smvk::IteratorFlagBit_StaticVertexFmt),
+				[&](const smvk::World::RenderItem& item) {
+					if (smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh))
+						if (mesh->lmChunk != 0xFFFFFFFFu)
+							anyChunk = true;
+				});
+			if (!anyChunk)
+				Log("Baked view: the cooked scene carries no lightmap "
+					"chunks (recooked with lightmap off?) — unchunked "
+					"meshes are skipped, the view will be empty.");
+		}
 		ActiveViewMode() = ViewMode::Baked;
+	}
 	else
 		Log("Baked view needs a lightmap atlas (open a baked pak).");
 }

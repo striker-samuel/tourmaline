@@ -3006,7 +3006,8 @@ size_t ApplySceneReferences(
 	const std::vector<smvk::tour::FileNode>* fileNodes,
 	GltfArtifactCache* artifactCache,
 	GltfGuidResolver* guidResolver,
-	std::vector<GltfImportImage>* outImages) {
+	std::vector<GltfImportImage>* outImages,
+	const std::string& contentRoot) {
 	(void)ctx;
 	auto issue = [&](const std::string& msg) {
 		if (outIssues)
@@ -3133,10 +3134,32 @@ size_t ApplySceneReferences(
 						tourResolved = p;
 				}
 				else {
-					std::filesystem::path hp(modelSource);
+					// HOST resolution: RELATIVE sources try the CONTENT
+					// ROOT first (the project owns the content tree;
+					// tours record project-relative sources), then the
+					// CWD, then owner-relative. The old as-is(CWD)-first
+					// order silently bound the TOOL'S OWN synced
+					// content/ copy (the build dir carries one) instead
+					// of the project's tree.
+					std::filesystem::path hp;
 					std::error_code ec;
-					if (!std::filesystem::exists(hp, ec) && !cur.baseDir.empty())
-						hp = std::filesystem::path(cur.baseDir) / modelSource;
+					if (!contentRoot.empty()
+						&& std::filesystem::path(modelSource)
+							.is_relative()) {
+						const std::filesystem::path cr =
+							std::filesystem::path(contentRoot)
+							/ modelSource;
+						if (std::filesystem::exists(cr, ec)) {
+							hp = cr;
+						}
+					}
+					if (hp.empty()) {
+						hp = std::filesystem::path(modelSource);
+						if (!std::filesystem::exists(hp, ec)
+							&& !cur.baseDir.empty())
+							hp = std::filesystem::path(cur.baseDir)
+							/ modelSource;
+					}
 					if (std::filesystem::exists(hp, ec))
 						tourResolved = hp.generic_string();
 				}
@@ -3244,24 +3267,42 @@ size_t ApplySceneReferences(
 							meshBytes = vfs->TryRead(p);
 						}
 					}
-					else {
-						std::filesystem::path hp(modelSource);
-						std::error_code ec;
+				else {
+					// HOST resolution (content-root first for RELATIVE
+					// sources — see the tour branch above for the why:
+					// the project tree owns "content/..." sources; the
+					// CWD-first order bound the tool's own synced
+					// content/ copy and shipped a stale, meshlet-less
+					// scene in every tour pak).
+					std::filesystem::path hp;
+					std::error_code ec;
+					if (!contentRoot.empty()
+						&& std::filesystem::path(modelSource)
+							.is_relative()) {
+						const std::filesystem::path cr =
+							std::filesystem::path(contentRoot)
+							/ modelSource;
+						if (std::filesystem::exists(cr, ec))
+							hp = cr;
+					}
+					if (hp.empty()) {
+						hp = std::filesystem::path(modelSource);
 						if (!std::filesystem::exists(hp, ec)
 							&& !cur.baseDir.empty())
 							hp = std::filesystem::path(cur.baseDir)
-								/ modelSource;
-						if (std::filesystem::exists(hp, ec)) {
-							meshResolved = hp.generic_string();
-							std::ifstream in(hp,
-								std::ios::binary);
-							if (in)
-								meshBytes = std::vector<uint8_t>(
-									(std::istreambuf_iterator<char>(
-										in)),
-									std::istreambuf_iterator<char>());
-						}
+							/ modelSource;
 					}
+					if (std::filesystem::exists(hp, ec)) {
+						meshResolved = hp.generic_string();
+						std::ifstream in(hp,
+							std::ios::binary);
+						if (in)
+							meshBytes = std::vector<uint8_t>(
+								(std::istreambuf_iterator<char>(
+									in)),
+								std::istreambuf_iterator<char>());
+					}
+				}
 					if (meshBytes && !meshBytes->empty()) {
 						std::string meshErr;
 						if (smvk::assets::LoadMeshAssetBytes(
@@ -3438,8 +3479,21 @@ size_t ApplySceneReferences(
 				else
 					texSrc = std::make_shared<HostTextureSource>(
 						std::filesystem::path(baseDir));
+			// MESH BASE URI: the tour's RECORDED source when it is
+			// relative (the reference identity — matches the
+			// positional artifact path's URIs exactly), else the
+			// resolved host path. The absolute resolved path as base
+			// kills the URI machinery (NormalizeAssetUri rejects
+			// drive-letter absolutes — gltf.h's own warning: mesh URIs,
+			// and with them the LOD chains + meshlet registrations the
+			// pak serializer reads, silently drop) — the pool objects
+			// kept their sets but the serializer found nothing and
+			// shipped meshleted=0.
+			const std::string meshBaseUri =
+				std::filesystem::path(modelSource).is_relative()
+				? modelSource : resolved;
 			const size_t built = BuildFromMeshAsset(cluster,
-				streamer, meshAsset, meshManifest, resolved,
+				streamer, meshAsset, meshManifest, meshBaseUri,
 				ph, texSrc, autoKtx, artifactCache, readSibling);
 			if (built > 0) {
 				builtFromMesh = true;

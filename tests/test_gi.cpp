@@ -1223,17 +1223,16 @@ void TestCvVolume() {
 		CvBakeStats stats;
 		Check(BakeCvVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
 			"cvol bake empty scene runs");
-		Check(stats.captures > 0 && stats.reprojected > 0,
+		Check(stats.probes > 0 && stats.samplesClamped >= 0,
 			"cvol bake stats populated");
 		bool anySky = false;
 		for (const glm::vec3& a : baked.coeffs)
 			if (glm::length(a) > 0.0f)
 				anySky = true;
 		Check(anySky, "cvol bake empty scene carries sky");
-		// Reprojection identity: with captureSpacing == spacing the
-		// probe sits exactly on a capture (trilinear weight 1, sky
-		// texels unshifted), so the fitted amps must equal the direct
-		// fit of the capture's direction set.
+		// Per-probe identity: the bake IS the direct fit of the
+		// direction set now (the old reprojection pipeline's
+		// captureSpacing == spacing identity case, by construction).
 		{
 			const uint32_t N = cfg.captureDirs;
 			SgFitAccumulator ref;
@@ -1257,7 +1256,7 @@ void TestCvVolume() {
 				if (glm::length(baked.coeffs[idx * kSgLobeCount + i] - refAmps[i])
 					> 1e-3f * std::max(1.0f, glm::length(refAmps[i])))
 					same = false;
-			Check(same, "cvol reprojection identity at capture points");
+			Check(same, "cvol per-probe direct fit identity");
 		}
 		// Skyless: exact zero (no geometry, no light).
 		scene.skyIntensity = 0.0f;
@@ -1271,7 +1270,7 @@ void TestCvVolume() {
 				allZero = false;
 		Check(allZero, "cvol bake zero-sky exact zero");
 	}
-	// ---- Bake: floor-plane scene (radiance + depth reprojection path) ----
+	// ---- Bake: floor-plane scene (bounce radiance over geometry) ----
 	{
 		GiTraceScene scene;
 		// One ground quad at y = 0 (two triangles), albedo 0.5.
@@ -1296,7 +1295,7 @@ void TestCvVolume() {
 		CvBakeStats stats;
 		Check(BakeCvVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
 			"cvol bake floor scene runs");
-		Check(stats.captures > 0, "cvol floor scene has captures");
+		Check(stats.probes > 0, "cvol floor scene baked its grid");
 		bool finite = true;
 		bool nonNegative = true;
 		for (const glm::vec3& a : baked.coeffs) {

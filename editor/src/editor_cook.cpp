@@ -272,6 +272,12 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			gargs.contentDir = contentDir;
 			gargs.scene = pakStem;
 			gargs.tour = tempTourPath;
+			// Probe budget: the lib default is the console-class cap
+			// (262144, bake.h) and every real-scene bake silently hit it
+			// (sponza converged 262138/262144 — coverage stopped refining
+			// mid-scene; invisible until probeBudgetHits got loud). The
+			// authoring tool wants converged coverage: 1M probes.
+			gargs.maxProbes = 1u << 20;
 			std::string cookFinal, cookTemp;
 			if (wantWorld) {
 				cookFinal = (std::filesystem::path(contentDir) / "gi" /
@@ -616,6 +622,9 @@ void EditorApp::BakeGI() {
 			gargs.contentDir = contentRoot;
 			gargs.scene = pakStem;
 			gargs.tour = tempTourPath;
+			// Probe budget: 1M (see the cook stage-1 fill — the
+			// console-class default starves real scenes).
+			gargs.maxProbes = 1u << 20;
 			// Temp-file bake: GiBaker writes gi/<stem>.sggi.tmp, the
 			// worker atomically renames to gi/<stem>.sggi on success —
 			// a failed bake never leaves a half-written world field.
