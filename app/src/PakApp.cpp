@@ -41,7 +41,7 @@
 namespace app {
 	namespace {
 
-		// Pak stem -> scene id (GI sidecars resolve gi/<id>.*, check-scene
+		// Pak stem -> scene id (GI bake files resolve gi/<id>.*, check-scene
 		// extras key on it; see WorldRenderer::SetSceneId).
 		std::string StemOf(const std::string& p) {
 			const size_t slash = p.find_last_of("/\\");
@@ -311,7 +311,7 @@ namespace app {
 		smvk::mem::InitMemory();
 
 		// Entrypoint: a pak file + a scene index (0 = default). The scene
-		// id (GI sidecar stem + check-scene gating) is the pak stem.
+		// id (GI bake stem + check-scene gating) is the pak stem.
 		std::string sceneId = cfg.sceneId.empty() ? StemOf(cfg.pakPath) : cfg.sceneId;
 		if (sceneId.empty())
 			sceneId = "pak";

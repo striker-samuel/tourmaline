@@ -6,7 +6,7 @@
 //   <root>/project.tourproj   marker (name + version)
 //   <root>/content/            sources (models/<stem>/*.gltf, scenes/*.tour)
 //   <root>/paks/               cooked outputs (<stem>.pak)
-//   <root>/gi/                 baker sidecars (written by the cooker next
+//   <root>/gi/                 loose bake files (written by the cooker next
 //                             to the out pak; resolved by the loaders)
 //   <root>/.tourmaline/        OWNED artifact cache (the Unity Library/
 //                             equivalent: cache.db + assets.db +

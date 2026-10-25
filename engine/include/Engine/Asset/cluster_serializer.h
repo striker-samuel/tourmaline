@@ -27,7 +27,7 @@ struct ClusterSerializeStats {
 	// v4 tail-upload digests stamped (sidecar or ktx-direct flavor): these
 	// textures load objects + tail without a KTX parse.
 	uint32_t digestedTextures = 0;
-	// Named GI sidecars registered on the cooked clusters (see
+	// Named GI bake files registered on the cooked clusters (see
 	// Cluster::giBindings), written as one PakAssetKind::Gi blob.
 	uint32_t giBindings = 0;
 	// Meshlet cook output (indirect-path foundation): meshes carrying a

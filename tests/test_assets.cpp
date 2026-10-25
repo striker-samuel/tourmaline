@@ -2149,7 +2149,7 @@ void TestMultiSceneSerialize() {
 		Check(scenes[1].tocPath == "<cluster-local>#scene.1",
 			"multiscene.list.toc1");
 	}
-	// Named GI sidecars round-trip through one Gi blob (union across
+	// Named GI bake files round-trip through one Gi blob (union across
 	// scenes; parse needs no cluster). The dither flag rides along so
 	// the v6 section walk is covered by the listing below.
 	a->RegisterGiBinding(GiBinding::Kind::Lightmap, "town");

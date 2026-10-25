@@ -2000,7 +2000,7 @@ namespace editor {
 		}
 		setBool("Auto-convert textures (KTX2)", "autoKtx", es.autoKtx,
 			"Non-KTX sources transcode in-process at cook.");
-		setBool("Skip loose VFS sidecars (ignoreVfs)", "ignoreVfs",
+		setBool("Skip loose VFS bake files (ignoreVfs)", "ignoreVfs",
 			es.ignoreVfs,
 			"Embed ONLY what the scene itself carries: no loose\n"
 			"gi/<stem>.sggi, no cvmanifest/.cvol rows, no cubemap\n"
@@ -3350,7 +3350,7 @@ namespace editor {
 	//     breakdown (probe count, effective cell size, lookup cells and
 	//     max probes per cell — the chunk/cluster density answer), each
 	//     row tagged with the level's ramp swatch.
-	// Read-live like the overlays (the manifest sidecar + the .sggi
+	// Read-live like the overlays (the bake manifest + the .sggi
 	// cache are queried per frame — the window can never disagree with
 	// what the viewports draw). LIGHTING mode only: the overlays it
 	// documents are LIGHTING-gated too.
@@ -3402,7 +3402,7 @@ namespace editor {
 
 		// ---- legend: cubemap probes ----
 		ImGui::Separator();
-		ImGui::TextUnformatted("Cubemap probes (manifest sidecar)");
+		ImGui::TextUnformatted("Cubemap probes (bake manifest)");
 		std::vector<CubemapProbeRow> rows;
 		CubemapProbeRowsFromFile(rows);
 		ImGui::Text("In level: %zu    in view: %u (cap 64)",
@@ -3517,7 +3517,7 @@ namespace editor {
 		if (!m_giBakedHash.empty()) {
 			const bool fresh = !m_cookDefHash.empty()
 				&& m_giBakedHash == m_cookDefHash;
-			ImGui::TextDisabled("GI baked (%s)", fresh ? "sidecars fresh"
+			ImGui::TextDisabled("GI baked (%s)", fresh ? "bakes fresh"
 				: "may predate this cook — rebake to refresh");
 		}
 		if (m_bakeRunning) {
@@ -3529,7 +3529,7 @@ namespace editor {
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Run GiBaker over the current definition tour.\n"
-				"Sidecars land next to the cook's out pak; the live view\n"
+				"Bake files land next to the cook's out pak; the live view\n"
 				"rebinds itself on completion. Cooks stay GI-free.");
 
 		ImGui::Separator();
@@ -3647,7 +3647,7 @@ namespace editor {
 				ImGui::SetTooltip(
 					"Cubemap-only quick bake (GiBaker skipped): re-traces\n"
 					"every capture in the set; faces land below as each\n"
-					"capture finishes. Loose sidecars override the pak\n"
+					"capture finishes. Loose bakes override the pak\n"
 					"through the VFS overlay.");
 		}
 		DrawCubeFaceStrip();
@@ -3678,9 +3678,9 @@ namespace editor {
 			}
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Quick refresh, no pak write: GiBaker\n"
-					"re-runs the GI sidecars in place, then Cook\n"
+					"re-runs the GI bakes in place, then Cook\n"
 					"--quick-bakes re-captures the cubemap set as\n"
-					"loose sidecars. The last pak stays untouched.");
+					"loose bake files. The last pak stays untouched.");
 		}
 	}
 

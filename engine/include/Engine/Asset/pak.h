@@ -84,7 +84,7 @@ enum class PakAssetKind : uint32_t {
 	// keyed by its asset URI — loaded back into the Cluster lights pool
 	// exactly like Mesh blobs (see cluster_serializer.cpp).
 	Light = 5,
-	// Cooked GI registry: one blob per pak naming the sidecar GI payloads
+	// Cooked GI registry: one blob per pak naming the GI bake payloads
 	// (probe volumes / lightmap atlases under content/gi/) the packed
 	// scenes were cooked against. Invisible to the VFS backends (they only
 	// serve Texture blobs); read via ParseGiRegistryBlob / ListPakScenes
@@ -110,7 +110,7 @@ enum class PakAssetKind : uint32_t {
 	// (cubemap set manifest + KTX2 rows, GI payloads, terrain meta...)
 	// as inline sub-blobs addressed by their canonical keys
 	// (gi/cubemaps/<id>.* etc.). The LEVEL owns the data (ID-keyed:
-	// levels/<name>.level); the scene-stem sidecar association dies at
+	// levels/<name>.level); the scene-stem bake-file association dies at
 	// the pak level. See Asset/level.h for the blob format + accessors.
 	Level = 10,
 };

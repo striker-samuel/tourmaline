@@ -25,7 +25,7 @@ rem sg_lightmap.hlsli is commented out and no .sglm is loaded at runtime),
 rem so the bake stays OFF here (--lightmap off is explicit so it also wins
 rem over any tour cook block that enables it). A pak cooked without it
 rem carries lmChunk=-1 everywhere (the FS gates on lmChunk none and never
-rem samples it) and no sglm sidecar is written. The --lm-* tuning below is
+rem samples it) and no sglm bake file is written. The --lm-* tuning below is
 rem inert without the trigger (kept as the last-good bake config).
 rem --cubemap on bakes GGX-preconvolved specular cubemaps loose under the
 rem VFS root (gi/cubemaps/<stem>[_N].ktx2 + <stem>.cubemanifest,

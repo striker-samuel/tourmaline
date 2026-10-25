@@ -154,7 +154,7 @@ cook -outPak "" -meshopt on -lods off -lodRatios "0.75,0.5,0.3,0.15" -lodError 0
 * Legacy inputs tolerated: `-lmDensity` (texels/m → m/texel), `-lmBudget` (ignored).
 * Struct fields: see `TourCook` — meshopt/lods/lodRatios/lodError, lightmap +
   `lmMetersPerTexel/lmLobes/lmAtlasWidth/lmRays/lmProxyRes/lmExcludeSmall/lmExcludeKw`,
-  sun/sky, cubemap stage, meshlets, `giCvol/giWorld` (GiBaker sidecars), `autoKtx`.
+  sun/sky, cubemap stage, meshlets, `giCvol/giWorld` (GiBaker loose bakes), `autoKtx`.
 
 ---
 

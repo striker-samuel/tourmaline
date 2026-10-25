@@ -39,7 +39,7 @@ struct PakArgs {
 	bool meshopt = true;
 	float overdraw = 1.05f;
 	bool autoKtx = true;
-	// SKIP the loose VFS sidecar discovery at assembly (-1 = the tour's
+	// SKIP the loose VFS bake-file discovery at assembly (-1 = the tour's
 	// exportSettings node decides — the SceneExportSettings::ignoreVfs
 	// default; 0/1 = CLI-pinned, e.g. the editor passes the node's value
 	// through here). On = the pak embeds ONLY the scene's own content
@@ -50,7 +50,7 @@ struct PakArgs {
 	// Level blob (see Engine/Asset/level.h): pack the scene + the baked
 	// data into ONE levels/<name>.level blob. Empty = no level blob.
 	// (No cubemap knobs here: PAK never bakes captures — cook.exe does;
-	// pak embeds the loose sidecars it discovers at the canonical
+	// pak embeds the loose bake files it discovers at the canonical
 	// gi/cubemaps/ paths.)
 	std::string levelName;
 	// Tiled terrain source dir (host path; see Rendergraph/terrain_meta.h).
@@ -62,7 +62,7 @@ struct PakArgs {
 	float sunIntensity = 10000.0f;
 	float skyIntensity = 600.0f;
 	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
-	// Probe-volume sidecars this pak's scenes sample (repeatable).
+	// Probe-volume bake files this pak's scenes sample (repeatable).
 	std::vector<std::string> giProbes;
 };
 

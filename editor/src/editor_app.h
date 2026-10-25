@@ -395,7 +395,7 @@ private:
 	// project content first / bundled content second): the F8 baked view
 	// on a definition with a lightmap bake.
 	bool TryLoadSceneSglm();
-	// Convex GI volume sidecars (probes-only pivot): the SCENE's baked
+	// Convex GI volume bakes (probes-only pivot): the SCENE's baked
 	// gi/<stem>.cvmanifest + .cvol. Builds the preview hulls (AABB
 	// clipped by the volume's planes) for the LIGHTING-mode view option.
 	bool TryLoadCvolumes();
@@ -1331,7 +1331,7 @@ private:
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
 	bool m_showCameraGizmos = true;
 	// App-parity probe overlay (View menu): the LOADED
-	// probe rows (the manifest sidecar - see CubemapProbeRowsFromFile)
+	// probe rows (the bake manifest - see CubemapProbeRowsFromFile)
 	// drawn per viewport exactly like the App's probe-location
 	// overlay (dot + C<idx> + influence/fade rings, camera-distance
 	// colored). LIGHTING mode only, like the rest of the light set.
@@ -1552,10 +1552,10 @@ private:
 	// Quick bakes (quickBakes = true, the env panel's "Update bakes now"):
 	// stage 1 unchanged, stage 2 runs PakCooker --quick-bakes on — the
 	// cubemap capture stage ONLY, writing the loose
-	// textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest sidecars
+	// textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest bake files
 	// (no pak write, no lightmap/LOD/collapse stages). One click refreshes
-	// the GI sidecars AND the capture set; the last pak stays untouched
-	// and the fresh loose sidecars override its blobs through the VFS
+	// the GI bakes AND the capture set; the last pak stays untouched
+	// and the fresh loose bake files override its blobs through the VFS
 	// overlay.
 	void CookToPak(bool quickBakes = false, bool cubemapsOnly = false); // save tour + cooker on a worker (cubemapsOnly skips GiBaker)
 	void PollCookProcess();
@@ -1566,7 +1566,7 @@ private:
 	// ---- bake GI on demand (editor_cook.cpp): GiBaker over the SAME
 	// definition tour the cook snapshots (never part of the cook —
 	// cooks stay fast and GI-free; unbaked scenes render sky IBL).
-	// Sidecars key to the cook's out-pak stem; completion refreshes
+	// Bake files key to the cook's out-pak stem; completion refreshes
 	// the next open so the new bake shows immediately.
 	void BakeGI();
 	void PollBakeProcess();
@@ -1844,14 +1844,14 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
-	// Scene id (the open scene's stem): names the bake-asset sidecars
-	// the cooks/bakes write and the bake-asset flows read back
+	// Scene id (the open scene's stem): names the gi/ bake files
+	// the cooks/bakes write and the bake flows read back
 	// (gi/<stem>.*, textures/cubemaps/<stem>.cubemanifest - see
 	// SceneIdForHost and the cook/bake flows in editor_cook*).
 	std::string SceneIdForHost() const;
 	// ---- project (Unity/Unreal style; see editor_project.cpp) ----
 	// A project folder owns the whole body of work: content/ sources,
-	// paks/ cook outputs, gi/ bake sidecars, and its OWN .tourmaline/
+	// paks/ cook outputs, gi/ bake files, and its OWN .tourmaline/
 	// cache (the Unity Library/ equivalent: cache.db + assets.db GUID
 	// directory + pak/ per-class paks — no global disk, without a project
 	// the cache is off). Opening a project repoints the artifact
@@ -1915,7 +1915,7 @@ private:
 	// 3 = animations, 4 = GI bakes, 5 = cubemaps, 6 = GI cooks,
 	// 7 = lightmap cooks): non-zero lists every asset of that kind
 	// across the project's content tree (the glTF manifests for
-	// meshes/materials/animations; the assetdb bake/cook sidecar rows
+	// meshes/materials/animations; the assetdb bake/cook rows
 	// for the rest), not the directory listing.
 	int m_assetsFilter = 0;
 	// Expanded glTF (absolute path): the browser shows its derived
@@ -2014,7 +2014,7 @@ private:
 	std::string CreateCookAsset(bool gi, const std::string& dir);
 	// Typed GI product assets (content/gi/ folder): fresh UNBAKED
 	// .cubemap / .gicvolume manifests, adopted into the registry
-	// (assetdb kinds cubemap/gicvolume). No loose sidecars — the bake
+	// (assetdb kinds cubemap/gicvolume). No loose bake files — the bake
 	// payload path rides blobPath inside the manifest.
 	std::string CreateCubemapAsset(const std::string& dir);
 	std::string CreateGicvolumeAsset(const std::string& dir,
@@ -2216,7 +2216,7 @@ private:
 	// override volumes read at a glance.
 	int m_cvolPreviewMode = 0;
 	struct CvolPreview {
-		std::string name;    // sidecar file stem
+		std::string name;    // bake file stem
 		uint32_t priority = 0;
 		glm::vec3 gridMin{ 0.0f }; // bake AABB (gridMin..gridMax)
 		glm::vec3 gridMax{ 0.0f };
@@ -2227,7 +2227,7 @@ private:
 	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
 	// Capture balls + App-parity probe overlay (editor_viewports.cpp,
 	// ImGui foreground, LIGHTING mode only): the scene's LOADED probe
-	// rows (the cubemap manifest sidecar - see CubemapProbeRowsFromFile)
+	// rows (the cubemap bake manifest - see CubemapProbeRowsFromFile)
 	// drawn exactly like the App's probe-location overlay (dot + C<idx>
 	// + influence/fade rings, camera-distance colored), plus black balls
 	// for authored pins with no loaded probe behind them ("nothing
@@ -2235,14 +2235,14 @@ private:
 	// m_showCubemapGizmos (pins); m_showProbeOctahedra swaps the dot for
 	// a shaded octahedron marker (same rows, same colors).
 	void DrawCaptureBallOverlay();
-	// One loaded probe row (the manifest sidecar's placement half).
+	// One loaded probe row (the bake manifest's placement half).
 	struct CubemapProbeRow {
 		glm::vec3 center{ 0.0f };
 		float influence = 0.0f; // full-weight radius (m)
 		float fade = 0.0f;      // fade extent past influence (m)
 	};
-	// Loaded probe rows parsed straight from the scene's cubemap manifest
-	// sidecar (gi/cubemaps/<stem>.cubemanifest - the same file the
+	// Loaded probe rows parsed straight from the scene's cubemap bake
+	// manifest (gi/cubemaps/<stem>.cubemanifest - the same file the
 	// renderer loads at runtime), read under the project root first, then
 	// the bundled content tree. Empty (no manifest / no scene) = no
 	// loaded probes: the census reads all pins unbaked and the overlay
@@ -2560,7 +2560,7 @@ private:
 	// nothing links Boost anymore.
 	editor::FiberBackend m_fibers{};
 	// Definition fingerprint the last Bake GI ran for (empty = never
-	// baked this session): a cook that moves past it leaves sidecars
+	// baked this session): a cook that moves past it leaves the bakes
 	// stale — the cook dialog's freshness readout says so (rebake to
 	// refresh the live view's GI).
 	std::string m_giBakedHash;
@@ -2617,11 +2617,11 @@ private:
 	// ---- cubemap capture face strip (cook dialog) ----
 	// Live KTX2 face previews: while a cubemap cook runs, finished
 	// captures appear here as tonemapped face strips (parsed from the
-	// loose sidecars, never PNG); with no cook running the strip shows
+	// loose bake files, never PNG); with no cook running the strip shows
 	// the last-baked set. Manifest-independent (single captures show).
 	struct CubeFaceView {
 		std::string name;    // capture name (<base>[_N])
-		std::string ktxPath; // host path of the loose sidecar
+		std::string ktxPath; // host path of the loose bake file
 		std::filesystem::file_time_type mtime{};
 		bool hasMtime = false;
 		smvk::Holder<smvk::TextureHandle> tex; // strip texture (6 faces)
@@ -2636,11 +2636,11 @@ private:
 	int m_cubeTotal = -1;
 	int m_cubeDone = 0;
 	bool m_cubeRunActive = false;
-	void PollCubeFaces(); // scan sidecars, load new/changed via libktx
+	void PollCubeFaces(); // scan bake files, load new/changed via libktx
 	void DropCubeFaces(); // release textures + bindings (new cook, shutdown)
 	void DrawCubeFaceStrip(); // cook dialog section (see editor_ui.cpp)
 	void CookCubemapsNow(); // cubemap-only quick bake (skips GiBaker)
-	// Sidecar roots + capture base for the strip scan (mirrors the
+	// Bake-file roots + capture base for the strip scan (mirrors the
 	// manifest reader roots and the completion adopter base).
 	bool CubeWatchSpec(std::string& dirOut, std::string& baseOut) const;
 	// ---- ui state ----

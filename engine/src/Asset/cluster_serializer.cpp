@@ -1284,7 +1284,7 @@ bool SerializeClusters(
 	} // per-cluster loop
 
 	// Cooked GI registry (pak-level, one blob): union of the clusters'
-	// named sidecar bindings, first-seen order. Loaders enforce one
+	// named bake bindings, first-seen order. Loaders enforce one
 	// binding per kind for now (first wins + warn); the blob simply
 	// lists what the cook registered.
 	{
@@ -2485,7 +2485,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		decalByPakId.push_back(h);
 	}
 
-	// --- Cooked GI registry (named sidecars; 0..1 blobs, first wins) -----
+	// --- Cooked GI registry (named bake files; 0..1 blobs, first wins) -----
 	for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::Gi)) {
 		std::vector<GiBinding> bindings;
 		std::string gerr;

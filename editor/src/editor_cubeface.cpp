@@ -3,7 +3,7 @@
 
 // Cubemap capture face strip (cook dialog): live KTX2 face previews.
 // While a cubemap cook runs, finished captures appear here as tonemapped
-// face strips parsed from the loose sidecars (never PNG); with no cook
+// face strips parsed from the loose bake files (never PNG); with no cook
 // running the strip shows the last-baked set. Manifest-independent, so
 // single captures (no manifest row) display like multi-capture sets.
 //
@@ -47,7 +47,7 @@ void EditorApp::DropCubeFaces() {
 	m_cubeFaces.clear();
 }
 
-// Sidecar roots + capture base, mirroring the manifest reader
+// Bake-file roots + capture base, mirroring the manifest reader
 // (CubemapProbeRowsFromFile) and the completion adopter
 // (RecordBakeAssetsFromCook: the out-pak stem - the legacy naming rule;
 // capture sets are NAMELESS now).
@@ -148,7 +148,7 @@ static bool LoadKtxFaceStrip(const std::string& path,
 
 void EditorApp::PollCubeFaces() {
 	// Throttle: a directory scan every ~30 frames; loads only
-	// new/changed sidecars (mtime compare).
+	// new/changed bake files (mtime compare).
 	if ((++m_cubeFacePollFrame % 30) != 0 || !m_context || !m_imgui)
 		return;
 	std::string dir, base;

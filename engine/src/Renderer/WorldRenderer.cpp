@@ -12,7 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <stdexcept> // std::runtime_error throws (sidecar loads)
+#include <stdexcept> // std::runtime_error throws (GI bake loads)
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -1996,8 +1996,8 @@ namespace engine {
 		// set - see ResolveSceneLights / UpdateForwardPlusLights).
 		ResolveSceneLights();
 
-		// Named GI sidecars (pak Gi registry; one per kind for now).
-		ResolveGiSidecars();
+		// Named GI bakes (pak Gi registry; one per kind for now).
+		ResolveGiBakes();
 
 		// GeometryFX-style per-view filter (clustered): register static
 		// meshes from cooked meshlets (pak path) or retained uploads
@@ -5203,14 +5203,14 @@ namespace engine {
 	}
 
 	// ---------------------------------------------------------------------
-	// Named GI sidecars (Cluster::giBindings across the loaded clusters).
+	// Named GI bakes (Cluster::giBindings across the loaded clusters).
 	// Model supports N bindings; exactly one per kind is honored for now
 	// (first wins + warn). Empty outcome = registry-less pak: callers
 	// fall back to the scene id. The names are STABLE bake stems (the
 	// gi/<stem>.<ext> files GiBaker writes - like mesh blob paths); both
 	// resolve through the same VFS overlay (pak or loose).
 	// ---------------------------------------------------------------------
-	void WorldRenderer::ResolveGiSidecars() {
+	void WorldRenderer::ResolveGiBakes() {
 		m_giProbeName.clear();
 		m_giLightmapName.clear();
 		m_giRegName.clear();
@@ -7792,7 +7792,7 @@ namespace engine {
 		}
 		// The shipped layout: the project root (when the scene lives in
 		// one - project files win on collisions) over loose content/ at
-		// the bottom, so project-side cook/bake sidecars resolve exactly
+		// the bottom, so project-side cook/bake files resolve exactly
 		// where the cooker wrote them.
 		if (!m_projectRoot.empty())
 			vfs.Mount(std::make_shared<smvk::LooseBackend>(m_projectRoot),

@@ -70,7 +70,7 @@
 // through an OverlayVfs with a LooseBackend over --content-dir (the same
 // lookup rules as the runtime). In tour mode, replays an editor scene
 // definition. Both paths cook geometry and write a pak with embedded
-// textures and metadata. There is intentionally no sidecar pak manifest:
+// textures and metadata. There is intentionally no external pak manifest:
 // --dump-manifest reads the data back through PakReader and prints it to
 // stdout, so the report cannot drift from the written bytes.
 
@@ -139,7 +139,7 @@ namespace cooktool {
 		// (.geometry files - import.exe/the editor's MeshImporter
 		// produces them; raw glTF NEVER cooks here). inVfsList holds the
 		// artifacts; inVfs keeps the IDENTITY (the first artifact, or the
-		// tour's root reference) for the logs/sidecar stems.
+		// tour's root reference) for the logs/bake stems.
 		std::vector<std::string> inVfsList;
 		std::string inVfs; // the primary identity (first artifact / tour ref)
 		std::string outPak;
@@ -354,12 +354,12 @@ namespace cooktool {
 		// loose under gi/ + registered — pak embeds the same paths and
 		// the runtime App resolves them out of the pak). Default on:
 		// authoring the nodes IS the intent to bake them; --cvolume off
-		// skips (GiBaker loose sidecars stay the on-demand/hand-tuning
+		// skips (GiBaker loose bakes stay the on-demand/hand-tuning
 		// path).
 		bool cvolume = true;
 		// Quick-bakes mode (the editor's "Update bakes now" button): run the
 		// capture stage ONLY and STOP — no pak write, no lightmap/LOD/collapse
-		// stages. The loose sidecars the stage writes
+		// stages. The loose bake files the stage writes
 		// (gi/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest) are the
 		// output; they override the last pak's blobs through the runtime VFS
 		// overlay by the same paths. Forces --cubemap on and the heavy stages
@@ -496,11 +496,11 @@ namespace cooktool {
 		return out.empty() ? std::string("cvol") : out;
 	}
 
-	// Reads a loose sidecar file by its content-root-relative vfs path
-	// ("gi/<guid>.cvmanifest" -> <contentDir>/gi/<guid>.cvmanifest). Empty
-	// on any failure (logged by the caller — a missing sidecar is "not
+	// Reads a loose bake file by its content-root-relative vfs path
+	// ("gi/<scene>.cvmanifest" -> <contentDir>/gi/<scene>.cvmanifest). Empty
+	// on any failure (logged by the caller — a missing bake file is "not
 	// baked", never fatal).
-	std::vector<uint8_t> ReadSidecarFile(const std::string& contentDir,
+	std::vector<uint8_t> ReadLooseBakeFile(const std::string& contentDir,
 		const std::string& vfsPath) {
 		std::error_code ec;
 		const std::filesystem::path host =
@@ -514,13 +514,13 @@ namespace cooktool {
 			std::istreambuf_iterator<char>());
 	}
 
-	// Sidecar name stems (see the GI-sidecar discovery in main): the pak
+	// Bake-file name stems (see the GI bake-file discovery in main): the pak
 	// stem first (the runtime's fallback identity), then the source scene
 	// stems (the artifact list - every listed .geometry, or the tour
 	// reference identity). Bakes key on the SCENE they ran over
 	// (GiBaker --scene, the .sggi stem) — without the scene stems a
 	// differently-named out pak would silently miss its own bakes.
-	std::vector<std::string> SidecarStems(const Args& args) {
+	std::vector<std::string> BakeStems(const Args& args) {
 		std::vector<std::string> stems;
 		const std::string pakStem =
 			std::filesystem::path(args.outPak).stem().generic_string();
@@ -756,7 +756,7 @@ namespace cooktool {
 				if (!need(out.tour)) return false;
 			}
 			else if (a == "--out-pak") {
-				// Stem source for bake sidecar names (cvol manifest +
+				// Stem source for bake-file names (cvol manifest +
 				// volumes, cubemap base fallback): the pak this cook
 				// feeds. No pak is written (pak.exe assembles it) —
 				// without it the cvolume fallback mints stemless
@@ -1163,7 +1163,7 @@ namespace cooktool {
 	}
 	// Cook writes cooked artifacts in place, never paks (pak.exe owns
 	// the pak write). --out-pak names the DESTINATION pak for bake
-	// sidecar stems only (cvol manifest/volumes, cubemap base).
+	// file stems only (cvol manifest/volumes, cubemap base).
 	// --tour is the DEFINITION (self-contained: the source glTF rides
 	// as root reference #0) — no artifact inference needed.
 	return true;
@@ -1175,7 +1175,7 @@ namespace cooktool {
 		<< "              [--lods on|off] [...] (bakes write back in place;\n"
 		<< "              no pak write — pak.exe assembles it;\n"
 		<< "              --out-pak <path> names the destination pak\n"
-		<< "              for bake sidecar stems only)\n"
+		<< "              for bake file stems only)\n"
 			<< "          (positional grammar: the VFS content root + the\n"
 			<< "          ALREADY-PROCESSED .geometry artifact list — glTF is\n"
 			<< "          IMPORT-ONLY (import.exe <input> / the editor's\n"
@@ -1205,7 +1205,7 @@ namespace cooktool {
 			<< "          (world sun: when the scene carries no directional light,\n"
 			<< "           one is synthesized from the sun settings above, so the\n"
 			<< "           editor world sun travels pak -> App)\n"
-			<< "          [--gi-probe <name> ...]: registers probe sidecar names\n"
+			<< "          [--gi-probe <name> ...]: registers probe bake names\n"
 			<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
 			<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
 			<< "          resolves GI by these names (one per kind for now).\n"
@@ -1215,7 +1215,7 @@ namespace cooktool {
 			<< "          the pak as Texture blobs under gi/ (volumes at\n"
 			<< "          gi/<pak-stem>_<name>.cvol, the runtime manifest at\n"
 			<< "          gi/<pak-stem>.cvmanifest) — the pak is self-contained\n"
-			<< "          GI for the App; loose GiBaker sidecars still override\n"
+			<< "          GI for the App; loose GiBaker bakes still override\n"
 			<< "          through the overlay when present.\n"
 			<< "          [--cubemap on|off\n"
 			<< "           --cubemap-size 128 --cubemap-rays 128 --cubemap-bounces 5\n"
@@ -1286,7 +1286,7 @@ namespace cooktool {
 			<< "--quick-bakes on: capture-only refresh (the editor's 'Update\n"
 			<< "bakes now' button): runs the --cubemap capture stage and stops -\n"
 			<< "the loose gi/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest\n"
-			<< "sidecars ARE the output (they override the last pak's blobs\n"
+			<< "bake files ARE the output (they override the last pak's blobs\n"
 			<< "through the runtime VFS overlay). No pak is written; the\n"
 			<< "lightmap/LOD/collapse/cvolume stages are forced off. The\n"
 			<< "capture set is NAMELESS - the artifact stem names it.\n"
@@ -1837,7 +1837,7 @@ namespace cooktool {
 			}
 		}
 
-		// GI registry (named sidecars: kind + stem).
+		// GI registry (named bake files: kind + stem).
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Gi)) {
 			std::vector<smvk::GiBinding> bindings;
 			std::string gerr;
@@ -3216,7 +3216,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 
 	// Debug PNG outputs (loose, next to the pak inputs — never in the pak).
 	// Face strips (+ mip sheets) per capture, then one top-down map.
-	// Debug PNG outputs (loose, next to the KTX2 sidecars — never in
+	// Debug PNG outputs (loose, next to the KTX2 bake files — never in
 	// the pak). Moved with the capture-set home (was textures/cubemaps).
 	std::filesystem::path cubePngDir =
 		std::filesystem::path(args.contentDir) / "gi/cubemaps";
@@ -3527,7 +3527,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 			// closure is opt-in now, so the dead ones must go). Such a row
 			// serves nothing its pocket doesn't, wastes a resident slot
 			// + ~2 MB of pak data, and darkens whatever tile lists it
-			// lands in. The bake + loose sidecar stay (inspection), only
+			// lands in. The bake + loose bake file stay (inspection), only
 			// the row goes - the zone falls to the live neighbors + the
 			// (GI-occluded) sky fallback. Pinned rows are NEVER dropped
 			// (artist intent).
@@ -3981,9 +3981,9 @@ int Run(const CookArgs& c) {
 	// button): the capture stage ONLY, then stop. The heavy stages are
 	// forced off (the cubemap stage needs just the imported trace scene);
 	// the capture set runs --cubemap on regardless of the tour's cook
-	// block. The loose sidecars the stage writes are the whole output —
+	// block. The loose bake files the stage writes are the whole output —
 	// the early return below skips serialization + the pak write, so the
-	// pak from the last full cook stays untouched (loose sidecars override
+	// pak from the last full cook stays untouched (loose bake files override
 	// its blobs through the runtime VFS overlay by the same paths).
 	if (args.quickBakes) {
 		args.lightmap = false;
@@ -3998,7 +3998,7 @@ int Run(const CookArgs& c) {
 		for (const char* k : { "lightmap", "lods", "cubemap" })
 			args.explicitSet.insert(k);
 		tool::out() << "quick-bakes: capture-only refresh (no pak write; "
-			"loose cubemap sidecars under gi/cubemaps/)\n";
+			"loose cubemap bakes under gi/cubemaps/)\n";
 	}
 
 	// Lightmap bake (voxel-remesh proxy path): --lightmap on charts +
@@ -4164,8 +4164,8 @@ int Run(const CookArgs& c) {
 			tool::err() << "Tour warning: " << w << std::endl;
 		// The tour's root reference doubles as the artifact identity when
 		// the positional list is empty (the "Cooked <identity> -> ..." log
-		// + SidecarStems: bake-asset logicals key on the SCENE stem, so
-		// scene-keyed sidecar bakes survive differently-named out paks).
+		// + BakeStems: bake logicals key on the SCENE stem, so
+		// scene-keyed bake files survive differently-named out paks).
 		if (args.inVfs.empty() && !tour.references.empty())
 			args.inVfs = tour.references[0].source;
 		// Export settings (the cook-block REPLACEMENT): authored on the
@@ -4574,8 +4574,8 @@ int Run(const CookArgs& c) {
 	}
 
 	// GI blobs cook assembles for the pack (see the cvolume stage + the
-	// loose-sidecar handling below): one list — in-process-baked cvolumes
-	// (the no-sidecar fallback), the discovered GiBaker sidecars (probe
+	// loose-bake handling below): one list — in-process-baked cvolumes
+	// (the no-loose-bake fallback), the discovered GiBaker bake files (probe
 	// octree, regular/convex manifests + rows) and the lightmap .sglm.
 	// Every entry is (vfsPath, bytes) at canonical gi/... paths: cook
 	// writes them LOOSE beside the sources and registers them (the
@@ -4598,7 +4598,7 @@ int Run(const CookArgs& c) {
 		const std::string cvolSceneId = pakStem.empty()
 			? std::string("pak") : pakStem;
 		bool haveLooseManifest = false;
-		for (const std::string& stem : SidecarStems(args)) {
+		for (const std::string& stem : BakeStems(args)) {
 			std::error_code ec;
 			if (std::filesystem::is_regular_file(
 				std::filesystem::path(giDir)
@@ -5953,7 +5953,7 @@ int Run(const CookArgs& c) {
 				const std::string vfsPath =
 					"gi/" + sceneId + ".sglm";
 				std::vector<uint8_t> bytes =
-					ReadSidecarFile(args.contentDir, vfsPath);
+					ReadLooseBakeFile(args.contentDir, vfsPath);
 				if (bytes.empty())
 					tool::err() << "[LM] sglm embed skipped ('" << vfsPath
 					<< "' unreadable)\n" << std::flush;
@@ -6362,7 +6362,7 @@ int Run(const CookArgs& c) {
 			cubemapManifestBase))
 			return 1;
 	}
-	// Funnel: the loose sidecars above (KTX2s + manifest, written
+	// Funnel: the loose bake files above (KTX2s + manifest, written
 	// inside the bake) register their identity rows when a registry DB
 	// is open. Covers quick-bakes too (the early return below).
 	if (registryDb && !cubemapKtx.empty()) {
@@ -6372,17 +6372,17 @@ int Run(const CookArgs& c) {
 					bytes.data(), bytes.size(), "cook:cubemap"))
 				++regged;
 		tool::out() << "Funnel: " << regged << "/" << cubemapKtx.size()
-			<< " cubemap sidecars registered\n";
+			<< " cubemap bake files registered\n";
 	}
 
 	// Quick-bakes stop HERE: the capture stage above wrote the loose
-	// sidecars (gi/cubemaps/<base>[_N].ktx2 + the .cubemanifest) —
+	// bake files (gi/cubemaps/<base>[_N].ktx2 + the .cubemanifest) —
 	// that IS the quick-refresh output. Serialization, the pak write and
 	// every post-capture stage below belong to the full cook; skipping
 	// them keeps the last pak untouched (its blobs stay overridden by
 	// these fresh loose files through the runtime VFS overlay).
 	if (args.quickBakes) {
-		tool::out() << "quick-bakes: cubemap captures updated (loose sidecars"
+		tool::out() << "quick-bakes: cubemap captures updated (loose bake files"
 			" under gi/cubemaps/) - pak write skipped\n";
 		return 0;
 	}
@@ -6559,7 +6559,7 @@ int Run(const CookArgs& c) {
 		smvk::CookLodSiblings(*sc, lodOpt, meshletCfg, sibOpts);
 	}
 
-	// GI sidecar write-back + funnel registration (the giBlobs
+	// GI bake-file write-back + funnel registration (the giBlobs
 	// verdict): the in-process cvolumes + re-read sglm collected above
 	// have no other outlet (cook writes no pak) — without this they
 	// vanish. Every entry lands loose at its canonical gi/... path
@@ -6587,11 +6587,11 @@ int Run(const CookArgs& c) {
 					++regged;
 			}
 			else {
-				tool::err() << "  [GI] loose sidecar write failed for '"
+				tool::err() << "  [GI] loose bake file write failed for '"
 					<< vfsPath << "'\n" << std::flush;
 			}
 		}
-		tool::out() << "GI sidecars: " << wrote << "/"
+		tool::out() << "GI bake files: " << wrote << "/"
 			<< giBlobs.size() << " written loose, " << regged
 			<< " registered"
 			<< (registryDb ? "" : " (no registry db — skipped)")
@@ -6601,7 +6601,7 @@ int Run(const CookArgs& c) {
 	// COOK WRITE-BACK (no pak write): persist the cooked clusters into
 	// their source .geometry artifacts + <stem>.cooked manifests.
 	// pak.exe assembles the .pak from those (pure serialization); the
-	// loose bake sidecars the stages above wrote (cubemap .ktx2 +
+	// loose bake files the stages above wrote (cubemap .ktx2 +
 	// .cubemanifest, lightmap .sglm, GiBaker volumes) are discovered by
 	// pak at assembly time.
 	const auto t1 = std::chrono::steady_clock::now();

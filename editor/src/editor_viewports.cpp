@@ -781,8 +781,8 @@ void EditorApp::DrawOctreePreviewOverlay() {
 	}
 }
 
-// Loaded cubemap probe rows parsed straight from the scene's manifest
-// sidecar (see the header): the same rows the renderer loads at runtime.
+// Loaded cubemap probe rows parsed straight from the scene's bake
+// manifest (see the header): the same rows the renderer loads at runtime.
 bool EditorApp::CubemapProbeRowsFromFile(
 	std::vector<CubemapProbeRow>& out) const {
 	out.clear();
@@ -853,7 +853,7 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 
 // Capture balls + App-parity probe overlay (LIGHTING mode only). Two
 // halves sharing one viewport walk:
-//   1. LOADED probes (the manifest sidecar rows - see
+	//   1. LOADED probes (the bake manifest rows - see
 //      CubemapProbeRowsFromFile): center dot + C<idx> +
 //      influence ring (solid) + fade ring (dim), camera-distance colored
 //      (green = inside influence, yellow = in fade, gray = out of range),
@@ -930,7 +930,7 @@ void EditorApp::DrawCaptureBallOverlay() {
 		return;
 	if (!m_world)
 		return;
-	// Loaded probe rows (empty when no manifest sidecar - pins all read
+	// Loaded probe rows (empty when no bake manifest - pins all read
 	// unbaked, probes draw nothing).
 	std::vector<CubemapProbeRow> rows;
 	CubemapProbeRowsFromFile(rows);

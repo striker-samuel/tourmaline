@@ -9,7 +9,8 @@
 // cooks (PakCooker .sglm) were anonymous bake OUTPUTS — keyed by pak stem,
 // configured by the transient cook dialog (m_cook/TourCook), with no
 // project file to select, version, or rebind. The asset browser could list
-// the baked payloads (the "GI bakes" collection over bake-asset sidecars)
+// the baked payloads (the "GI bakes" collection over the bakes' .meta
+// identity files)
 // but the user could never CREATE the thing that OWNS the bake: its
 // settings + its result pointer.
 //
@@ -48,7 +49,7 @@ namespace smvk::cook {
 inline constexpr const char* kGiCookExt = ".gicook";
 inline constexpr const char* kLightmapCookExt = ".lmcook";
 // Typed GI product assets: first-class manifests that OWN their bake
-// payload (no loose sidecars — the payload path rides blobPath inside
+// payload (no loose bake files — the payload path rides blobPath inside
 // the typed asset folder, typically content/gi/). The registry
 // (assetdb kind) is the single index of who owns what.
 inline constexpr const char* kCubemapExt = ".cubemap";

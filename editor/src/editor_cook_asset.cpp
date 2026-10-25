@@ -110,7 +110,7 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 
 namespace {
 // Typed-asset placement: the GI folder (<project>/content/gi/) owns
-// .cubemap/.gicvolume manifests (no loose sidecars anywhere else).
+// .cubemap/.gicvolume manifests (no loose bake files anywhere else).
 std::string GiTypedDir(const std::string& projectRoot) {
 	namespace fs = std::filesystem;
 	std::error_code ec;
@@ -242,7 +242,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// The cook's bake outputs become/refresh BAKE ASSETS tied to this
 	// scene + tour (runs on the main thread from PollCookProcess after
 	// a successful cook — the GiBaker-from-0 stage already wrote the
-	// fresh sidecars + their .meta identities under the content root):
+	// fresh bake files + their .meta identities under the content root):
 	//   - the GiCook manifest (settings + the fresh .sggi result pointer)
 	//     updated in place when this scene already owns one, else minted
 	//     beside the content root + adopted into the assetdb;
@@ -260,7 +260,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 		return;
 	namespace fs = std::filesystem;
 	std::error_code ec;
-	// The sidecar gi/ dir: the content root next to the out pak (the
+	// The bake gi/ dir: the content root next to the out pak (the
 	// same derivation as Bake GI + the cooker's discovery).
 	const std::string contentRoot = fs::absolute(
 		fs::path(m_cook.outPak).parent_path() / "..")
@@ -361,7 +361,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 		}
 	}
 	// Delete the old bake: update-and-overwrite means the superseded
-	// stem's files (gi/<oldStem>.* + <oldStem>_*.cvol sidecars) go away
+	// stem's files (gi/<oldStem>.* + <oldStem>_*.cvol bake files) go away
 	// with the reference swap — leaving them would orphan them in gi/
 	// and stale rows in the asset collections.
 	if (!oldStem.empty()) {
@@ -402,7 +402,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	m_bakeGiCookGuid = a.guid;
 
 	// ---- cubemap capture set (only when this cook baked cubemaps) ----
-	// Typed asset (content/gi/<scene>.cubemap): no loose sidecars are
+	// Typed asset (content/gi/<scene>.cubemap): no loose bake files are
 	// written by the editor anymore. The legacy loose manifest
 	// (textures/cubemaps/<base>.cubemanifest) is still adopted when
 	// present (migration) so old cooks keep resolving.

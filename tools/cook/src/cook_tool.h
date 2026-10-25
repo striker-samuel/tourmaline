@@ -26,7 +26,7 @@ struct CookArgs {
 	std::string tour; // definition tour (preferred; else inVfsList/inVfs)
 	std::vector<std::string> inVfsList; // processed .geometry artifacts
 	std::string inVfs; // primary identity (first artifact)
-	std::string outPak; // destination pak (stem source for bake sidecar
+	std::string outPak; // destination pak (stem source for bake file
 	                    // names: cvol manifest/volumes, cubemap base fallback).
 	                    // No pak is written — pak.exe assembles it.
 	std::unordered_set<std::string> explicitSet; // CLI-wins tour-merge keys
@@ -72,7 +72,7 @@ struct CookArgs {
 	// NOTE: no giProbes here (pak owns probe registration; a --gi-probe
 	// CLI flag never took effect in cook and was removed).
 	// Preconvolved specular cubemaps (--cubemap on; cook.exe bakes, pak
-	// embeds the loose sidecars at the canonical gi/cubemaps/ paths).
+	// embeds the loose bake files at the canonical gi/cubemaps/ paths).
 	// Capture sets are NAMELESS: the base is the scene stem (pak.exe
 	// discovers + embeds by gi/cubemaps/<stem>.cubemanifest).
 	bool cubemap = false;

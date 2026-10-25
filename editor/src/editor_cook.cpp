@@ -96,8 +96,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		return;
 	}
 	if (m_bakeRunning) {
-		Log("Cook: a Bake GI is running — wait for it to finish (the GI "
-			"sidecars it writes are the ones this cook embeds).");
+		Log("Cook: a Bake GI is running — wait for it to finish (the "
+			"loose GI bakes it writes are the ones this cook embeds).");
 		return;
 	}
 	// TEMP coalesced tour snapshot (shared with Bake GI below).
@@ -113,7 +113,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// recorded identity (m_gltfPath) can be a project-RELATIVE
 	// "content/models/..." on tour-opened scenes, whose "." parent then
 	// resolved against the EDITOR CWD (the build dir) — every bake
-	// sidecar the cook stages (gi/*.sggi + *.cvol, textures/cubemaps/
+		// file the cook stages (gi/*.sggi + *.cvol, textures/cubemaps/
 	// <base>[_N].ktx2 + the .cubemanifest) landed next to the exe
 	// instead of the project (and the project-relative resolution below
 	// never saw them (the "cubemap probe preview not drawn in the
@@ -159,7 +159,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	cook.contentDir = contentDir;
 	cook.inVfs = inVfs;
 	// Auto-generate the output path if empty (session state — also the
-	// destination the completion handler + Bake GI derive the sidecar
+	// destination the completion handler + Bake GI derive the bake
 	// gi/ dir from, so it must be resolved on the MEMBER, not the local
 	// copy): the project paks dir when a project is open, else
 	// content/paks/<stem>.pak relative to the editor.
@@ -177,7 +177,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// FULL GI bake FROM 0 rides the cook (the pak carries its own GI):
 	// GiBaker first — the world-field octree (ExportCfg().giWorld) + the
 	// tour's authored convex volumes, fresh, nothing reused — then
-	// PakCooker discovers the fresh sidecars, EMBEDS them into the pak
+	// PakCooker discovers the fresh bake files, EMBEDS them into the pak
 	// and registers the guid bindings. The completion handler records
 	// the bake assets + the tour's bake references (see
 	// RecordBakeAssetsFromCook). This is minutes-long on real scenes
@@ -205,7 +205,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// FromCook overwrites the bake guid reference in the current scene's
 	// tour and deletes the superseded old bake), then the pak follows.
 	// Quick bakes: the same GiBaker stage, then PakCooker --quick-bakes
-	// (capture-only refresh — the loose sidecars are the output; no pak
+	// (capture-only refresh — the loose bake files are the output; no pak
 	// is written).
 	Log(std::string(quickBakes ? "Update bakes started -> " : "Cook started -> ")
 		+ cook.outPak
@@ -250,7 +250,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		// volumes; the definition tour is the only input, nothing
 		// reused; the STABLE stem paths overwrite, and the completion
 		// handler deletes the superseded old bake when the stem
-		// changed). The fresh sidecars land under <contentDir>/gi/
+		// changed). The fresh bake files land under <contentDir>/gi/
 		// exactly where stage 2 (PakCooker) discovers + embeds them
 		// into the pak. A failed GI bake FAILS the cook (the pak would
 		// silently miss its GI otherwise — the exact bug this flow
@@ -285,12 +285,12 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				r.ok = false;
 				r.log = "cook-gi: GiBaker exit=" + std::to_string(grc)
 					+ " — pak cook SKIPPED (the GI bake failed; "
-					"previous sidecars, if any, are untouched)\n";
+					"previous bake files, if any, are untouched)\n";
 				std::error_code ec;
 				std::filesystem::remove(tempTourPath, ec);
 				return r;
 			}
-			push("cook-gi: GiBaker exit=0 (fresh GI sidecars "
+			push("cook-gi: GiBaker exit=0 (fresh loose GI bakes "
 				"under " + contentDir + "/gi/)");
 			if (wantWorld && !cookTemp.empty()) {
 				std::error_code rec;
@@ -309,8 +309,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		// ---- stage 2: Cook.exe then Pak.exe (the import/cook/pak split:
 		// cook runs the bakes + writes them back into the artifacts,
 		// pak assembles the .pak from the cooked artifacts + the GI
-		// sidecar discovery/embed from stage 1). Quick bakes run the
-		// Cook capture stage ONLY, no pak write (the loose sidecars it
+		// bake-file discovery/embed from stage 1). Quick bakes run the
+		// Cook capture stage ONLY, no pak write (the loose bake files it
 		// writes are the output). Both run IN-PROCESS (CookLib/PakLib);
 		// the CLIs stay thin user interfaces over the same Runs.
 		cooktool::CookArgs cookArgs;
@@ -349,7 +349,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			pargs.outPak = cook.outPak;
 			// Level blob (the playable unit; see Engine/Asset/level.h):
 			// every editor cook packs one, keyed by the pak stem — the
-			// LEVEL owns the scene + baked data, the scene-stem sidecar
+			// LEVEL owns the scene + baked data, the scene-stem bake-file
 			// association dies at the pak level.
 			if (pargs.levelName.empty())
 				pargs.levelName = pakStem;
@@ -475,9 +475,9 @@ void EditorApp::PollCookProcess() {
 // ---- Bake GI on demand (never part of the cook) --------------------
 // GiBaker consumes the SAME definition-tour snapshot a cook would
 // (root reference + nodes), keyed to the cook's OUT-PAK STEM so the
-// sidecars land exactly where the editor/App loaders look:
+// bake files land exactly where the editor/App loaders look:
 // gi/<stem>_*.cvol + .cvmanifest, and gi/<stem>.sggi for the world
-// field. Missing sidecars are NOT an error anywhere down the line —
+// field. Missing bake files are NOT an error anywhere down the line —
 // every GI/volume/cubemap/lightmap loader falls back to the analytic
 // sky IBL (see DegradeAmbientForMissingSources in app).
 
@@ -502,7 +502,7 @@ void EditorApp::BakeGI() {
 			"Convex volumes in the cook dialog first.");
 		return;
 	}
-	// Sidecars key to the cook target's stem; derive the project (or
+	// Bake files key to the cook target's stem; derive the project (or
 	// legacy) default when the out pak was never set.
 	if (m_cook.outPak.empty() && !m_gltfPath.empty()) {
 		const std::string stem =
@@ -523,7 +523,7 @@ void EditorApp::BakeGI() {
 		return;
 	const std::string pakStem =
 		std::filesystem::path(m_cook.outPak).stem().string();
-	// contentRoot = the "content/" dir itself (sidecars land in gi/
+	// contentRoot = the "content/" dir itself (bake files land in gi/
 	// next to the pak — exactly what the loaders check).
 	const std::string contentRoot = std::filesystem::absolute(
 		std::filesystem::path(m_cook.outPak).parent_path() / "..")
@@ -588,9 +588,9 @@ void EditorApp::BakeGI() {
 			r.ok = (grc == 0);
 			r.log = "bake-gi: GiBaker exit=" + std::to_string(grc) + "\n";
 			if (!r.ok)
-				r.log += "bake-gi: GI bake FAILED (previous sidecars, "
-					"if any, are untouched; unbaked scenes render sky "
-					"IBL)\n";
+				r.log += "bake-gi: GI bake FAILED (previous bake "
+					"files, if any, are untouched; unbaked scenes render "
+					"sky IBL)\n";
 			else if (wantWorld && !bakeTemp.empty()) {
 				// Atomic publish of the temp bake output.
 				std::error_code rec;
@@ -645,10 +645,11 @@ void EditorApp::BakeGI() {
 				}
 			}
 			if (r.ok) {
-				// The sidecars now match the baked definition: record it so a
+				// The bake files now match the baked definition: record it so a
 				// later cook can warn when they go stale.
 				m_giBakedHash = m_giBakePendingHash;
-				Log("Bake GI finished OK — sidecars at their stable paths.");
+				Log("Bake GI finished OK — bake files at their stable "
+				"paths.");
 				TaskWindowFinish(true, "Bake GI finished OK.");
 			}
 			else {

@@ -1238,14 +1238,14 @@ public:
 	void ApplyHeadlessPostfxOverrides();
 
 	WorldRendererConfig& Passes() { return m_passes; }
-	// Scene id (host-provided): names the GI sidecars (gi/<id>.sggi/
+	// Scene id (host-provided): names the GI bake files (gi/<id>.sggi/
 	// .sglm/.regmanifest/.cvmanifest, superseded by the loaded world's
 	// Gi bindings) and gates the sponza check-scene extras (preset
 	// splats). The pak host passes the pak stem.
 	void SetSceneId(const std::string& id) { m_sceneId = id; }
 	// Project root: when the scene lives in a project, the project root
 	// mounts into the content VFS below the bundled content/ (project
-	// files win on collisions) so project-side cook/bake sidecars
+	// files win on collisions) so project-side cook/bake files
 	// (gi/<stem>.*, cubemaps, …) resolve exactly where the cooker wrote
 	// them. Empty = no project mount.
 	void SetProjectRoot(const std::string& dir) { m_projectRoot = dir; }
@@ -1651,7 +1651,7 @@ public:
 	// Host world loader (see SetWorldSource): called once during
 	// onAttach (after the context exists).
 	WorldSource m_worldSource;
-	// Scene id: names the GI sidecars (gi/<id>.sggi/.sglm/.regmanifest/
+	// Scene id: names the GI bake files (gi/<id>.sggi/.sglm/.regmanifest/
 	// .cvmanifest, superseded by the loaded world's Gi bindings) and
 	// gates the sponza check-scene extras (preset splats).
 	std::string m_sceneId;
@@ -2335,16 +2335,15 @@ public:
 			|| m_ambientMode == AmbientMode::Probes;
 	}
 	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
-	// GI sidecar stems resolved from the loaded clusters' registry
+	// GI bake stems resolved from the loaded clusters' registry
 	// (first binding per kind wins + warn; empty = fall back to the
-	// scene id, which is what registry-less paks use). Since the
-	// bake-asset migration the registry names are the bake GUIDs
-	// (gi/<guid>.sggi + friends); legacy paks still record human stems
-	// and resolve the same way. Resolved once per scene load, before
-	// the GI loaders run.
+	// scene id, which is what registry-less paks use). The registry
+	// names are the stable bake stems (gi/<stem>.sggi + friends);
+	// guid-era paks recorded guid names and resolve the same way.
+	// Resolved once per scene load, before the GI loaders run.
 	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giCvolName,
 		m_giCubemapName;
-	void ResolveGiSidecars();
+	void ResolveGiBakes();
 	// Bake-payload channel read (see World::ReadBakeBytes): the bytes at
 	// a GI/cubemap VFS path from the world's clusters — dynamic cluster
 	// first, so runtime quick-bakes override pak payloads. Empty = miss.

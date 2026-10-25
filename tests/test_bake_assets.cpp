@@ -1,22 +1,20 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// bake-asset tests: the bake-identity layer (Engine/Asset/bake_asset.h)
-// that makes GI bakes + cubemap captures first-class assets — per-file
-// .meta sidecars (fresh GUID at first bake, stable across rebakes),
-// guid-derived VFS paths, and the cubemanifest guid rows. No GPU.
+// bake-asset leftovers + cook-asset tests. The bake-identity layer
+// (Engine/Asset/bake_asset.h) that made GI bakes + cubemap captures
+// first-class GUID assets is RETIRED — bakes ride stable VFS paths
+// (gi/<stem>.*); what stays under test is the legacy-tolerant parsing
+// plus the cook-asset manifests. No GPU.
 //
 // What it pins down:
-//   1. sidecar: write/read round-trip (guid/kind/logical); missing and
-//      invalid sidecars read as absent.
-//   2. identity: first bake mints; rebake reuses the guid by (kind,
-//      logical) even after the payload file is renamed (sidecar travels
-//      with it); different logicals mint different guids.
-//   3. SplitManifestRow: "<guid> <path>  # <note>" rows, legacy bare
-//      paths, comments/blanks.
-//   4. cubemanifest: guid rows serialize/parse round-trip; legacy
+//   1. SplitManifestRow: "<guid> <path>  # <note>" rows (legacy
+//      bake-asset guid columns), bare paths, comments/blanks.
+//   2. cubemanifest: guid rows serialize/parse round-trip; legacy
 //      6-token and 7-token pin rows still parse (no guid); unknown
 //      trailing tokens still fail.
+//   3. cook assets (Engine/Asset/cook_asset.h): gicook/lmcook
+//      manifest round-trips + rejects.
 
 #include <cmath>
 #include <cstdio>

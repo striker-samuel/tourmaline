@@ -27,7 +27,7 @@
 #include <cstdio>
 #include <filesystem>
 
-#include <Engine/Renderer/cubemap.h> // baked-row comparison (manifest sidecar)
+#include <Engine/Renderer/cubemap.h> // baked-row comparison (bake manifest)
 
 namespace editor {
 
@@ -207,7 +207,7 @@ void EditorApp::RefreshSggiDensity() {
 	m_sggiDensityPath.clear();
 	// Candidate stems: the clusters' world-field bindings first (the
 	// live-view rebind resolved the bake stems), then the scene id (the
-	// stable sidecar convention) — same order as TryLoadSceneSglm.
+	// stable bake-path convention) — same order as TryLoadSceneSglm.
 	std::vector<std::string> stems;
 	if (m_world) {
 		for (const auto& clusterPtr : m_world->clusters) {

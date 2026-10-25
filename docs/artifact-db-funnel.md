@@ -87,7 +87,7 @@ No staging folder. The artifact DB **is** the staging area:
   manifest the bake succeeds and its output vanishes. Sponza only
   worked because GiBaker's manifest tripped the skip branch.
   Verdict: wire it (loose write + register), don't delete — the
-  no-sidecar fallback is intended by the editor flow.
+  no-loose-bake fallback is intended by the editor flow.
 - **Bistro stub manifest**: `bistro.gltf.meta` carried zero material
   entries → zero bound geometry. Regenerating the 254-entry manifest
   restored full binding (254 materials, 129 textures, 4.2M tris).

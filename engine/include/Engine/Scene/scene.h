@@ -234,7 +234,7 @@ struct SceneExportSettings {
 	bool giWorld = true;
 	// Auto-convert non-KTX textures to KTX2 at cook time.
 	bool autoKtx = true;
-	// SKIP the loose VFS sidecar discovery at pak assembly: when on,
+	// SKIP the loose VFS bake-file discovery at pak assembly: when on,
 	// Pak embeds ONLY what the scene itself carries (meshes, materials,
 	// textures — everything cooks straight into the pak, blobs by path)
 	// and resolves NOTHING loose: no gi/cubemaps/<stem>.cubemanifest +
@@ -242,7 +242,7 @@ struct SceneExportSettings {
 	// rows, no bindings for them (the scene renders probe-less + sky
 	// IBL ambient; bakes re-embed by turning this off). The canonical
 	// use: a MINIMAL variant pak (the same scene, no baked-GI payloads)
-	// without moving the loose sidecars aside — the discovery keys on
+	// without moving the loose bake files aside — the discovery keys on
 	// the SCENE stem, so renaming the out pak does not dodge it. The
 	// App-side --no-vfs flag is the runtime mirror (proves the pak is
 	// self-contained); this is the cook-side "do not even resolve it"
@@ -438,7 +438,7 @@ struct Scene {
 	// editor cvolume node). The definition is node-local (a few floats
 	// — no pool indirection); the box shape rides the node's transform.
 	// Recorded by tour replay; harvested as bake inputs by GiBaker
-	// (loose sidecars, on demand) AND PakCooker's --cvolume stage
+	// (loose bake files, on demand) AND PakCooker's --cvolume stage
 	// (baked + embedded into the pak for the runtime App).
 	std::unordered_map<NodeId, SceneCvol> cvolForNode;
 	// Node -> authored cubemap capture params (tour createCubemap /

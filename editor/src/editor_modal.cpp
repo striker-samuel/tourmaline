@@ -548,7 +548,7 @@ void EditorApp::ModalCvolPreviewCycle() {
 	static const char* kNames[3] = { "off", "wireframe", "solid" };
 	m_cvolPreviewMode = (m_cvolPreviewMode + 1) % 3;
 	if (m_cvolPreviews.empty() && m_cvolPreviewMode != 0) {
-		Log("GI volume preview: no .cvmanifest sidecars loaded "
+		Log("GI volume preview: no .cvmanifest bake files loaded "
 			"(bake GiBaker --cv-spec next to the pak).");
 	} else {
 		Log("GI volume preview: " + std::string(kNames[m_cvolPreviewMode])

@@ -26,7 +26,7 @@
 //
 // Inputs: ALREADY-PROCESSED .geometry artifacts (import.exe derives
 // them; cook.exe bakes + stamps <stem>.cooked — pak refuses
-// uncooked/stale inputs) + the LOOSE bake sidecars the cookers wrote
+// uncooked/stale inputs) + the LOOSE bake files the cookers wrote
 // (gi/*.sggi + *.cvol, gi/cubemaps/<base>[_N].ktx2 + .cubemanifest),
 // discovered by stable stem and embedded as Texture blobs. The tour,
 // when given, replays read-only for serialization (no synthesis —
@@ -41,7 +41,7 @@
 // through an OverlayVfs with a LooseBackend over --content-dir (the same
 // lookup rules as the runtime). In tour mode, replays an editor scene
 // definition. Both paths cook geometry and write a pak with embedded
-// textures and metadata. There is intentionally no sidecar pak manifest:
+// textures and metadata. There is intentionally no external pak manifest:
 // --dump-manifest reads the data back through PakReader and prints it to
 // stdout, so the report cannot drift from the written bytes.
 
@@ -107,7 +107,7 @@ namespace paktool {
 		// (.geometry files - import.exe/the editor's MeshImporter
 		// produces them; raw glTF NEVER cooks here). inVfsList holds the
 		// artifacts; inVfs keeps the IDENTITY (the first artifact, or the
-		// tour's root reference) for the logs/sidecar stems.
+		// tour's root reference) for the logs/bake stems.
 		std::vector<std::string> inVfsList;
 		std::string inVfs; // the primary identity (first artifact / tour ref)
 		std::string outPak;
@@ -120,7 +120,7 @@ namespace paktool {
 		float overdraw = 1.05f;
 		bool dumpManifest = false; // print pak contents to stdout (pak-sourced)
 		bool verify = true; // re-open the written pak with PakReader (self-check)
-		// SKIP the loose VFS sidecar discovery (-1 = the tour's
+		// SKIP the loose VFS bake-file discovery (-1 = the tour's
 		// exportSettings node decides; 0/1 = CLI-pinned). On = the pak
 		// embeds ONLY the scene's own content (meshes/materials/textures,
 		// blobs by path) — no gi/ cubemap manifests + KTX rows, no .sggi,
@@ -145,7 +145,7 @@ namespace paktool {
 		// EnvironmentSettings so covered pixels match the sky fallback
 		// pixels see. 0 = sky-less field (old behavior).
 		float skyIntensity = 600.0f;
-		// Probe-volume sidecars this pak's scenes sample (repeatable):
+		// Probe-volume bake files this pak's scenes sample (repeatable):
 		// registers gi/<name>.sggi names into the clusters (bake the matching
 		// volumes with GiBaker --out). Runtime resolves by name.
 		std::vector<std::string> giProbes;
@@ -285,11 +285,11 @@ namespace paktool {
 		return out.empty() ? std::string("cvol") : out;
 	}
 
-	// Reads a loose sidecar file by its content-root-relative vfs path
-	// ("gi/<guid>.cvmanifest" -> <contentDir>/gi/<guid>.cvmanifest). Empty
-	// on any failure (logged by the caller — a missing sidecar is "not
+	// Reads a loose bake file by its content-root-relative vfs path
+	// ("gi/<scene>.cvmanifest" -> <contentDir>/gi/<scene>.cvmanifest). Empty
+	// on any failure (logged by the caller — a missing bake file is "not
 	// baked", never fatal).
-	std::vector<uint8_t> ReadSidecarFile(const std::string& contentDir,
+	std::vector<uint8_t> ReadLooseBakeFile(const std::string& contentDir,
 		const std::string& vfsPath) {
 		std::error_code ec;
 		const std::filesystem::path host =
@@ -303,13 +303,13 @@ namespace paktool {
 			std::istreambuf_iterator<char>());
 	}
 
-	// Sidecar name stems (see the GI-sidecar discovery in main): the pak
+	// Bake-file name stems (see the GI bake-file discovery in main): the pak
 	// stem first (the runtime's fallback identity), then the source scene
 	// stems (the artifact list - every listed .geometry, or the tour
 	// reference identity). Bakes key on the SCENE they ran over
 	// (GiBaker --scene, the .sggi stem) — without the scene stems a
 	// differently-named out pak would silently miss its own bakes.
-	std::vector<std::string> SidecarStems(const Args& args) {
+	std::vector<std::string> BakeStems(const Args& args) {
 		std::vector<std::string> stems;
 		const std::string pakStem =
 			std::filesystem::path(args.outPak).stem().generic_string();
@@ -408,7 +408,7 @@ namespace paktool {
 				std::string v;
 				if (!need(v)) return false;
 				// CLI pin (wins over the exportSettings node's ignoreVfs):
-				// skip the loose VFS sidecar discovery — everything else
+				// skip the loose VFS bake-file discovery — everything else
 				// embeds straight from the scene.
 				out.ignoreVfs = (v == "on" || v == "1" || v == "true") ? 1 : 0;
 			}
@@ -535,7 +535,7 @@ namespace paktool {
 			<< "          pak.exe F:/content models/sponza/Sponza.geometry\n"
 			<< "              --out-pak F:/content/paks/sponza.pak [...]\n"
 			<< "          (ASSEMBLY ONLY: cooked artifacts + loose bake\n"
-			<< "          sidecars in, .pak out. import.exe derives the\n"
+			<< "          files in, .pak out. import.exe derives the\n"
 			<< "          artifacts, cook.exe runs the bakes (GI/cubemaps/\n"
 			<< "          LODs/meshlets) + writes them back with <stem>.cooked.\n"
 			<< "          Pak refuses uncooked/stale artifacts. No bakes run\n"
@@ -544,7 +544,7 @@ namespace paktool {
 			<< "          [--verify on|off] [--dump-pak <pak path>]\n"
 			<< "          [--dump-manifest on|off] [--dump-node <id> ...]\n"
 			<< "          [--meshopt on|off] [--overdraw 1.05]\n"
-			<< "          [--ignore-vfs on|off] (skip the loose gi/ sidecar\n"
+			<< "          [--ignore-vfs on|off] (skip the loose gi/ bake-file\n"
 			<< "           discovery - the scene's own content only; the\n"
 			<< "           tour's exportSettings node defaults it)\n"
 			<< "          [--auto-ktx on|off]\n"
@@ -1093,7 +1093,7 @@ namespace paktool {
 			}
 		}
 
-		// GI registry (named sidecars: kind + stem).
+		// GI registry (named bake files: kind + stem).
 		for (const smvk::PakTocEntry* e : reader.BlobsOfKind(smvk::PakAssetKind::Gi)) {
 			std::vector<smvk::GiBinding> bindings;
 			std::string gerr;
@@ -1556,8 +1556,8 @@ int Run(const PakArgs& c) {
 			tool::err() << "Tour warning: " << w << std::endl;
 		// The tour's root reference doubles as the artifact identity when
 		// the positional list is empty (the "Cooked <identity> -> ..." log
-		// + SidecarStems: bake-asset logicals key on the SCENE stem, so
-		// scene-keyed sidecar bakes survive differently-named out paks).
+		// + BakeStems: bake logicals key on the SCENE stem, so
+		// scene-keyed bake files survive differently-named out paks).
 		if (args.inVfs.empty() && !tour.references.empty())
 			args.inVfs = tour.references[0].source;
 		// Export settings (the cook-block REPLACEMENT): the scene's
@@ -1585,7 +1585,7 @@ int Run(const PakArgs& c) {
 				tool::err() << "Tour exportSettings: " << esWarn
 					<< std::endl;
 			// ignoreVfs: CLI pin wins; else the node's default (-1 unset).
-			// On = the loose VFS sidecar discovery below stays OFF (the
+			// On = the loose VFS bake-file discovery below stays OFF (the
 			// minimal-pak switch — everything else embeds by path).
 			if (args.ignoreVfs < 0)
 				args.ignoreVfs = es.ignoreVfs ? 1 : 0;
@@ -1993,7 +1993,7 @@ int Run(const PakArgs& c) {
 
 	// GI blobs embedded into the pak (discovery only — pak bakes
 	// nothing; cook + GiBaker own every bake): the discovered GiBaker
-	// sidecars (probe octree, regular/convex manifests + rows) and the
+	// bake files (probe octree, regular/convex manifests + rows) and the
 	// lightmap .sglm. Every entry is (vfsPath, bytes) — Texture blobs
 	// at gi/... paths embedded after Serialize below (PakBackend serves
 	// by path).
@@ -2045,11 +2045,11 @@ int Run(const PakArgs& c) {
 	// loose discovery stays OFF — the pak embeds ONLY the scene's own
 	// content, no resolved loose bakes (the minimal-pak switch).
 	if (cubemapManifestBase.empty() && args.ignoreVfs <= 0) {
-		for (const std::string& stem : SidecarStems(args)) {
+		for (const std::string& stem : BakeStems(args)) {
 			const std::string mrel =
 				"gi/cubemaps/" + stem + ".cubemanifest";
 			std::vector<uint8_t> manifest =
-				ReadSidecarFile(args.contentDir, mrel);
+				ReadLooseBakeFile(args.contentDir, mrel);
 			if (manifest.empty())
 				continue;
 			std::string mErr;
@@ -2065,7 +2065,7 @@ int Run(const PakArgs& c) {
 			cubemapKtx.emplace_back(mrel, std::move(manifest));
 			for (const auto& row : rows) {
 				std::vector<uint8_t> ktx =
-					ReadSidecarFile(args.contentDir, row.vfsPath);
+					ReadLooseBakeFile(args.contentDir, row.vfsPath);
 				if (ktx.empty()) {
 					tool::err() << "loose cubemap row '" << row.vfsPath
 						<< "' unreadable — not embedded\n";
@@ -2096,14 +2096,14 @@ int Run(const PakArgs& c) {
 	if (args.ignoreVfs <= 0) {
 		std::filesystem::path pakPath(args.outPak);
 		const std::string pakStem = pakPath.stem().generic_string();
-		const std::vector<std::string> stems = SidecarStems(args);
+		const std::vector<std::string> stems = BakeStems(args);
 		// First stem that has a readable file (the probe octree is a
 		// single payload; the manifests carry row payloads).
 		auto findStemWith = [&](const char* suffix) {
 			for (const std::string& stem : stems) {
 				const std::string vfs =
 					"gi/" + stem + "." + suffix;
-				if (!ReadSidecarFile(args.contentDir, vfs).empty())
+				if (!ReadLooseBakeFile(args.contentDir, vfs).empty())
 					return stem;
 			}
 			return std::string();
@@ -2115,7 +2115,7 @@ int Run(const PakArgs& c) {
 			if (!stem.empty()) {
 				const std::string vfsPath = "gi/" + stem + ".sggi";
 				std::vector<uint8_t> bytes =
-					ReadSidecarFile(args.contentDir, vfsPath);
+					ReadLooseBakeFile(args.contentDir, vfsPath);
 				if (bytes.empty()) {
 					tool::err() << "probe bake '" << vfsPath
 						<< "' unreadable — not embedded\n";
@@ -2152,7 +2152,7 @@ int Run(const PakArgs& c) {
 			const std::string manifestVfs =
 				"gi/" + stem + "." + ext;
 			std::vector<uint8_t> manifest =
-				ReadSidecarFile(args.contentDir, manifestVfs);
+				ReadLooseBakeFile(args.contentDir, manifestVfs);
 			if (manifest.empty()) {
 				tool::err() << "volume manifest '" << manifestVfs
 					<< "' unreadable — binding kept, not embedded\n";
@@ -2179,10 +2179,10 @@ int Run(const PakArgs& c) {
 					rows.push_back(p);
 				for (const std::string& row : rows) {
 					std::vector<uint8_t> bytes =
-						ReadSidecarFile(args.contentDir, row);
+						ReadLooseBakeFile(args.contentDir, row);
 					if (bytes.empty()) {
-						tool::err() << "sidecar volume '" << row
-							<< "' unreadable — not embedded\n";
+					tool::err() << "volume bake file '" << row
+						<< "' unreadable — not embedded\n";
 						continue;
 					}
 					giBlobs.emplace_back(row, std::move(bytes));
@@ -2195,7 +2195,7 @@ int Run(const PakArgs& c) {
 		}
 	}
 	else {
-		tool::out() << "ignoreVfs: loose sidecar discovery skipped - "
+		tool::out() << "ignoreVfs: loose bake-file discovery skipped - "
 			"the pak carries the scene's own content only (no gi/ "
 			"bake payloads, no bindings)\n";
 	}
@@ -2244,10 +2244,10 @@ int Run(const PakArgs& c) {
 			<< (isManifest ? " text" : " ktx2") << ")\n";
 	}
 	// GI payloads embedded into the pak (the discovered GiBaker
-	// sidecars + the lightmap .sglm — pak bakes nothing): Texture
+	// bake files + the lightmap .sglm — pak bakes nothing): Texture
 	// blobs at their gi/... paths — PakBackend serves by path, so the
 	// runtime's binding-first loaders read everything straight out of
-	// this pak (no loose sidecars needed; loose files still override
+	// this pak (no loose bake files needed; loose files still override
 	// through the overlay by the same paths). Same path-embed pattern
 	// as the .cubemanifest text above.
 	for (auto& [vfsPath, bytes] : giBlobs) {
@@ -2279,7 +2279,7 @@ int Run(const PakArgs& c) {
 	// giBlobs). Sub-blobs are addressed by their canonical keys (the
 	// vfs paths the standalone blobs ride), so loaders consume the
 	// unpacked bytes unchanged — the LEVEL owns the data; the
-	// scene-stem sidecar association dies at the pak level.
+	// scene-stem bake-file association dies at the pak level.
 	// ORDERING: this runs AFTER the pak file write + AppendPakBlobs —
 	// the scene sub-blob comes straight out of the WRITTEN pak (the
 	// index-0 "#scene" entry), never a second serialize (the cluster
@@ -2469,7 +2469,7 @@ int Run(const PakArgs& c) {
 		}
 	}
 
-	// No sidecar: the dump is printed straight from the pak TOC/blobs.
+	// No external manifest: the dump is printed straight from the pak TOC/blobs.
 	if (args.dumpManifest && verifyReader) {
 		DumpManifestFromPak(*verifyReader);
 	}

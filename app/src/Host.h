@@ -64,7 +64,7 @@ struct PakAppConfig {
 	// content/) so the pak backend is the ONLY scene-content source.
 	// Proves the pak is self-contained: anything the pak lacks falls
 	// back loudly (procedural cubemaps, missing GI) instead of being
-	// silently covered by loose sidecars. Engine resources (shaders,
+	// silently covered by loose bake files. Engine resources (shaders,
 	// fonts, LUTs) load exe-relative, never through the VFS.
 	bool noVfs = false;
 	// ---- Host extension element (the game-host hook) ----
@@ -83,7 +83,7 @@ struct PakAppConfig {
 	// True when the extra element owns the camera (RunPakApp then parks
 	// the renderer element's FPS camera drive for the whole run).
 	bool extraOwnsCamera = false;
-	// Scene id (GI sidecar stem + check-scene gating). Empty = pak stem.
+	// Scene id (GI bake stem + check-scene gating). Empty = pak stem.
 	std::string sceneId;
 	// Central run config (parsed once in main; Log/WarnUnknown there).
 	// Carried by value so the renderer consumes the same snapshot.

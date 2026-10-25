@@ -998,7 +998,7 @@ std::string EditorApp::GuidResolverHook::PathForGuid(const std::string& guid) {
 std::string EditorApp::SceneIdForHost() const {
 	// Scene id (the open scene's stem; the resolved source
 	// wins — paks never open here). Shared by the launch and the in-place
-	// rebind (the GI sidecar loaders resolve gi/<id>.* through the
+	// rebind (the GI bake loaders resolve gi/<id>.* through the
 	// project-aware VFS).
 	namespace fs = std::filesystem;
 	if (!m_gltfHostPath.empty())
@@ -1014,7 +1014,7 @@ bool EditorApp::TryLoadSceneSglm() {
 	m_sglmPath.clear();
 	// Candidate stems: the clusters' lightmap Gi bindings first (the
 	// live-view rebind resolved the bake stems), then the scene id (the
-	// stable sidecar convention). Candidate ROOTS mirror the binding
+	// stable bake-path convention). Candidate ROOTS mirror the binding
 	// resolution: the project content first, the bundled content second.
 	std::vector<std::string> stems;
 	if (m_world) {
@@ -1098,7 +1098,7 @@ void EditorApp::ClearSglmLayers() {
 
 // ---------------------------------------------------------------------------
 // Convex GI volume preview data (probes-only pivot). Loads the
-// gi/<scene>.cvmanifest + .cvol BAKE sidecars (project content first,
+// gi/<scene>.cvmanifest + .cvol BAKE files (project content first,
 // bundled content second — the same roots the live view's bindings
 // resolve) and builds each volume's hull: the bake AABB (gridMin..
 // gridMin + dims*spacing) clipped by the volume's plane set (3D

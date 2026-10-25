@@ -41,14 +41,14 @@ namespace smvk {
 	using ClusterCameraHandle = Handle<SceneCamera>;
 	using ClusterDecalHandle = Handle<SceneDecal>;
 
-	// Cooked GI binding (named sidecar payload): the GI payloads themselves
+	// Cooked GI binding (named bake payload): the GI payloads themselves
 	// (probe volumes, lightmap atlases, manifests, cubemap captures) live
-	// outside the pak; this names the sidecar (gi/<name>.sggi / .sglm /
+	// outside the pak; this names the bake file (gi/<name>.sggi / .sglm /
 	// .regmanifest / .cvmanifest, textures/cubemaps/<name>.cubemanifest)
-	// a cluster's scenes were cooked against. Since the bake-asset
-	// migration the name is the payload/manifest GUID (see
-	// Engine/Asset/bake_asset.h) — legacy paks still record human stems,
-	// which resolve the same way. See Cluster::giBindings.
+	// a cluster's scenes were cooked against. The name is the stable
+	// bake stem — guid-era paks recorded guid names (see
+	// Engine/Asset/bake_asset.h for the era history), which resolve the
+	// same way. See Cluster::giBindings.
 	struct GiBinding {
 		enum class Kind : uint32_t {
 			Probe = 0,      // gi/<name>.sggi world-field octree
@@ -147,7 +147,7 @@ namespace smvk {
 		// global transform at use time.
 		ClusterDecalHandle CreateDecal(SceneDecal def);
 
-		// Cooked GI bindings (named sidecar payloads): probe volumes
+		// Cooked GI bindings (named bake payloads): probe volumes
 		// (.sggi) and lightmap atlases (.sglm) live OUTSIDE the pak under
 		// content/gi/, and the cluster names the ones its scenes were
 		// cooked against. The model is a list (future multi-GI); loaders
