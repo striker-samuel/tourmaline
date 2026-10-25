@@ -8,8 +8,10 @@
 # Vulkan ICD. It runs in dev environments (real GPU / WSLg).
 #
 # Caches:
-#   - sccache compiler output (the big one: Embree's AVX-512 TUs; first run
-#     populates, subsequent runs hit - see the "Compiler cache stats" steps)
+#   - sccache compiler output on LINUX (the big one: Embree's AVX-512 TUs;
+#     first run populates, subsequent runs hit - see the "Compiler cache
+#     stats" step. Windows deliberately runs without it: measured 2.5+h vs
+#     ~25 min cold - see the note on the windows job)
 #   - KTX-Software 4.4.2 install (built from source on first miss)
 #   - the Vulkan SDK install (Windows; installed on first miss)
 #   - external/.downloads (the installer scripts' pinned archives) keyed on
@@ -112,16 +114,17 @@ jobs:
   windows:
     name: Windows (MSVC x64)
     runs-on: windows-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
+    # NOTE: no sccache here, deliberately. Measured on the runners: with
+    # the compiler cache riding the build (cold), the MSVC + engine-PCH +
+    # Embree AVX-512 build ran 2.5+ HOURS vs ~25 minutes without it (the
+    # Linux job completed in normal time and keeps its sccache). If Windows
+    # compile caching is wanted, diagnose the slowdown first (PCH/obj size
+    # on the 2-core runners is the prime suspect).
     steps:
       - name: Checkout (submodules recursive)
         uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Setup compiler cache (sccache)
-        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -179,14 +182,10 @@ jobs:
       - name: Configure
         run: >
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DKTX_ROOT=C:/ktx .
 
       - name: Build (all targets)
         run: cmake --build out/build/ci
-
-      - name: Compiler cache stats
-        run: sccache --show-stats
 
       - name: Test
         run: |
