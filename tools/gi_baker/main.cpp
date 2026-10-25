@@ -940,6 +940,18 @@ namespace gibaker {
 // Runs the bake; returns the process exit code (byte-identical to the
 // CLI run). See gi_baker.h.
 int Run(Args& args) {
+	// A non-empty out IS the world-field request. The CLI parse sets
+	// outExplicit together with --out; in-process callers (the editor's
+	// cook stage 1 / Bake GI) fill Args directly and were silently
+	// missing the parse-only flag: GiBaker baked the authored convex
+	// volumes, took the cvol-only early exit, returned 0 WITHOUT ever
+	// writing the .sggi, and the editor's temp publish then failed
+	// "file not found" — the three-day "Cook FAILED (see log above)"
+	// ghost. Sanitize once here so the gate can never disagree with
+	// the field it gates (same field-copy trap class as the Run(c)
+	// rebuild comment in cook/src/main.cpp).
+	if (!args.out.empty())
+		args.outExplicit = true;
 	if (!args.analyze.empty()) {
 		if (args.analyze.size() >= 5
 			&& args.analyze.compare(args.analyze.size() - 5, 5, ".sgrv") == 0)

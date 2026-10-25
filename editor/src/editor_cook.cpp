@@ -239,12 +239,20 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			// Live feed: each tool line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
 			// thread so the Console shows progress while the cook
-			// runs. r.log carries only the tail (exit codes) since
-			// the body was already streamed.
-			auto push = [feed](const std::string& line) {
-				std::lock_guard<std::mutex> lk(feed->mutex);
-				feed->lines.push_back(line);
-			};
+ 			// runs. r.log carries only the tail (exit codes) since
+ 			// the body was already streamed. err-tagged lines (the
+ 			// tools' tool::err()) also land in the bounded errLines
+ 			// tail the completion handler folds into the failure
+ 			// message.
+ 			auto push = [feed](const std::string& line, bool err = false) {
+ 				std::lock_guard<std::mutex> lk(feed->mutex);
+ 				feed->lines.push_back(line);
+ 				if (err) {
+ 					feed->errLines.push_back(line);
+ 					if (feed->errLines.size() > 8)
+ 						feed->errLines.erase(feed->errLines.begin());
+ 				}
+ 			};
 		// ---- stage 1: the scene's GI bake re-run IN PLACE (GiBaker —
 		// the world field when requested + the tour's authored convex
 		// volumes; the definition tour is the only input, nothing
@@ -276,8 +284,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			push("cook-gi: GiBaker (in-process)"
 				" --scene " + pakStem
 				+ (wantWorld ? " --out <tmp>" : ""));
-			tool::SetLineSink([&push](const std::string& line, bool) {
-				push(line);
+			tool::SetLineSink([&push](const std::string& line, bool err) {
+				push(line, err);
 			});
 			const int grc = gibaker::Run(gargs);
 			tool::SetLineSink(nullptr);
@@ -288,24 +296,38 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 					"previous bake files, if any, are untouched)\n";
 				std::error_code ec;
 				std::filesystem::remove(tempTourPath, ec);
-				return r;
+				// EVERY exit path must record the result: the job runs
+				// through std::function<void()> — a `return r;` would
+				// DISCARD r into the void and leave *result at its
+				// default ("no stage exits recorded"), the exact
+				// empty-tail signature the self-describing failure
+				// line caught in the field.
+				*result = r;
+				return;
 			}
 			push("cook-gi: GiBaker exit=0 (fresh loose GI bakes "
 				"under " + contentDir + "/gi/)");
 			if (wantWorld && !cookTemp.empty()) {
 				std::error_code rec;
 				std::filesystem::rename(cookTemp, cookFinal, rec);
-				if (rec) {
-					r.ok = false;
-					r.log = "cook-gi: temp publish failed ("
-						+ rec.message() + ") — pak cook SKIPPED\n";
-					std::error_code ec;
-					std::filesystem::remove(tempTourPath, ec);
-					return r;
-				}
+			if (rec) {
+				r.ok = false;
+				r.log = "cook-gi: temp publish failed ("
+					+ rec.message() + ") — pak cook SKIPPED\n";
+				std::error_code ec;
+				std::filesystem::remove(tempTourPath, ec);
+				*result = r; // record-then-return (see the note above)
+				return;
+			}
 				push("cook-gi: published '" + cookFinal + "'");
 			}
 		} // stage 1 skipped for cubemap-only refreshes
+		// Breadcrumb: the job is between stage 1 and the Cook stage
+		// here. The ghost-exit hunt (a run that logged the GiBaker
+		// exit-0 push, then "no stage exits recorded" with no job
+		// error — no C++ exception path can do that) needs these
+		// brackets to localize the silent exit if it ever recurs.
+		push("cook: stage 2 (Cook) starting");
 		// ---- stage 2: Cook.exe then Pak.exe (the import/cook/pak split:
 		// cook runs the bakes + writes them back into the artifacts,
 		// pak assembles the .pak from the cooked artifacts + the GI
@@ -326,8 +348,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		cookArgs.quickBakes = quickBakes;
 		push("cook: Cook (in-process)"
 			+ std::string(quickBakes ? " --quick-bakes" : ""));
-		tool::SetLineSink([&push](const std::string& line, bool) {
-			push(line);
+		tool::SetLineSink([&push](const std::string& line, bool err) {
+			push(line, err);
 		});
 		int rc = cooktool::Run(cookArgs);
 		tool::SetLineSink(nullptr);
@@ -353,8 +375,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			// association dies at the pak level.
 			if (pargs.levelName.empty())
 				pargs.levelName = pakStem;
-			tool::SetLineSink([&push](const std::string& line, bool) {
-				push(line);
+			tool::SetLineSink([&push](const std::string& line, bool err) {
+				push(line, err);
 			});
 			rc = paktool::Run(pargs);
 			tool::SetLineSink(nullptr);
@@ -364,6 +386,9 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			// Cleanup temp tour file.
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
+			// Breadcrumb + the result record itself (see the stage-1
+			// note: no value-returns — the void job discards them).
+			push("cook: job epilogue — result recorded");
 			*result = r;
 		},
 		[this, result](const editor::FiberBackend::Completion& c) {
@@ -407,9 +432,33 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 					TaskWindowPush(line);
 				}
 			}
-			Log(r.ok ? "Cook finished OK." : "Cook FAILED (see log above).");
-			TaskWindowFinish(r.ok, r.ok ? "Cook finished OK."
-				: "Cook FAILED (detail above; Console keeps the full log).");
+		// Self-describing failure line (the "see log above" pointer kept
+		// getting lost — pasted excerpts drop the console tail above
+		// the notice, and every failure exit writes its stage-exit line
+		// into r.log): the final line names the stage exits inline
+		// (e.g. "cook: Cook exit=1; pak: Pak exit=0") and folds in the
+		// last tool::err lines the sink tagged, so the actual tool error
+		// rides the notice itself.
+		std::string failSummary;
+		if (!r.ok) {
+			std::istringstream ts(r.log);
+			std::string tl;
+			while (std::getline(ts, tl))
+				if (!tl.empty())
+					failSummary += (failSummary.empty() ? "" : "; ") + tl;
+			std::shared_ptr<CookFeed> feed = m_cookFeed;
+			if (feed) {
+				std::lock_guard<std::mutex> lk(feed->mutex);
+				for (const std::string& e : feed->errLines)
+					failSummary += "\n  " + e;
+			}
+			if (failSummary.empty())
+				failSummary = "no stage exits recorded (job thrown?)";
+		}
+		Log(r.ok ? "Cook finished OK."
+			: "Cook FAILED (" + failSummary + "; detail above).");
+		TaskWindowFinish(r.ok, r.ok ? "Cook finished OK."
+			: "Cook FAILED (" + failSummary + ")");
 			if (r.ok) {
 				RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
 			}
@@ -550,13 +599,19 @@ void EditorApp::BakeGI() {
 	m_fibers.Post("bake-gi",
 		[pakStem, contentRoot, wantWorld, feed, tempTourPath = std::move(tempTourPath), result]() {
 			CookResult r{};
-			auto push = [feed](const std::string& line) {
+			auto push = [feed](const std::string& line, bool err = false) {
 				std::lock_guard<std::mutex> lk(feed->mutex);
 				feed->lines.push_back(line);
+				if (err) {
+					feed->errLines.push_back(line);
+					if (feed->errLines.size() > 8)
+						feed->errLines.erase(feed->errLines.begin());
+				}
 			};
 			// GiBaker runs IN-PROCESS (GiBakerLib): the CLI stays a thin
 			// user interface over the same Run. Baker lines stream
-			// through the tool line sink into this feed.
+			// through the tool line sink into this feed (err lines also
+			// land in the bounded errLines tail for the failure report).
 			gibaker::Args gargs;
 			gargs.contentDir = contentRoot;
 			gargs.scene = pakStem;
@@ -574,8 +629,8 @@ void EditorApp::BakeGI() {
 			push("bake-gi: GiBaker (in-process)"
 				" --scene " + pakStem
 				+ (wantWorld ? " --out <tmp>" : ""));
-			tool::SetLineSink([&push](const std::string& line, bool) {
-				push(line);
+			tool::SetLineSink([&push](const std::string& line, bool err) {
+				push(line, err);
 			});
 			const int grc = gibaker::Run(gargs);
 			tool::SetLineSink(nullptr);
@@ -652,11 +707,28 @@ void EditorApp::BakeGI() {
 				"paths.");
 				TaskWindowFinish(true, "Bake GI finished OK.");
 			}
-			else {
-				Log("Bake GI FAILED (see log above).");
-				TaskWindowFinish(false,
-					"Bake GI FAILED (detail above; Console keeps the full log).");
+		else {
+			// Self-describing failure (same contract as the cook's):
+			// the GiBaker exit rides the notice itself.
+			std::string failSummary;
+			std::istringstream ts(r.log);
+			std::string tl;
+			while (std::getline(ts, tl))
+				if (!tl.empty())
+					failSummary += (failSummary.empty() ? "" : "; ") + tl;
+			{
+				std::shared_ptr<CookFeed> feed = m_bakeFeed;
+				if (feed) {
+					std::lock_guard<std::mutex> lk(feed->mutex);
+					for (const std::string& e : feed->errLines)
+						failSummary += "\n  " + e;
+				}
 			}
+			if (failSummary.empty())
+				failSummary = "no stage exit recorded (job thrown?)";
+			Log("Bake GI FAILED (" + failSummary + "; detail above).");
+			TaskWindowFinish(false, "Bake GI FAILED (" + failSummary + ")");
+		}
 			m_giBakePendingHash.clear();
 		});
 }

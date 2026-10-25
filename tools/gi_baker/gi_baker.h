@@ -58,7 +58,7 @@ struct Args {
 	// the adaptive .sggi): fixed OBB grid, diagonal projection, hardware
 	// trilinear at runtime. Empty regularOut = no regular bake.
 	std::string regularOut;
-	bool outExplicit = false;
+	bool outExplicit = false; // set by --out (Run() also derives it from a non-empty out — in-process callers fill Args directly)
 	std::string regMin, regMax;   // "x,y,z" world AABB (axis-aligned OBB)
 	std::string regDims = "32,16,32"; // "nx,ny,nz"
 	float regSpacing = 0.0f;      // voxel spacing override (m); 0 = use regDims

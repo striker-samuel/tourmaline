@@ -2575,6 +2575,12 @@ private:
 	struct CookFeed {
 		std::mutex mutex;
 		std::vector<std::string> lines;
+		// Last few tool::err lines (bounded; the line sink tags them):
+		// the completion handler folds them into the final failure
+		// message so "Cook FAILED" names the failing stage, its exit
+		// code AND the actual tool error — the console's tail can
+		// scroll away or get trimmed out of a pasted excerpt.
+		std::vector<std::string> errLines;
 	};
 	std::shared_ptr<CookFeed> m_cookFeed;
 	std::shared_ptr<CookFeed> m_bakeFeed; // Bake-GI live feed (see above)
