@@ -186,7 +186,7 @@ void ImGuiOverlay::Render(CommandBuffer& cmd) {
     // Deferred user-texture retirement drain (see RetireUserTexture): one
     // tick per render (each render = a frame boundary). Entries older than
     // kUserTextureRetireRenders frames free — by then every submission that
-    // bound them has hit its flight-slot fence (MAX_FRAMES_IN_FLIGHT + 1
+    // bound them has hit its flight-slot fence (smvk::limits::MaxFramesInFlight + 1
     // margin), so the backend free (the seam's RemoveTexture) is clean.
     // Drained here (inside the render, after this frame's ImGui::Render())
     // so a queued id can never outlive the queue's own frame cadence.
@@ -290,7 +290,7 @@ ImTextureID ImGuiOverlay::AddUserTextureView(ImageViewHandle view,
 void ImGuiOverlay::RetireUserTexture(ImTextureID id) {
     // Deferred free (see the header contract): the binding is referenced
     // by the draw data of the frame that last drew it (and by up to
-    // MAX_FRAMES_IN_FLIGHT prior in-flight submissions) — freeing it
+    // smvk::limits::MaxFramesInFlight prior in-flight submissions) — freeing it
     // here (the seam's RemoveTexture is an immediate backend free)
     // binds a freed set and faults the device (the texture-viewer
     // X-close crash). Queue it; Render() drains aged entries once the

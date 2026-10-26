@@ -6,8 +6,10 @@
 #include "light.hlsli"
 #include "renderview.hlsli"
 
-#define MAX_LIGHTS 64
-#define MAX_MATERIALS 4096
+// Shared CPU/HLSL layout-contract limits (materials, lights, bindless
+// array bounds) — single source: engine/shaders/engine_limits.hlsli.
+// The C++ side bridges the same file via Engine/Core/Limits.h.
+#include "engine_limits.hlsli"
 
 // Specialization constant IDs (driver will constant-fold these)
 // Must match CPU-side pipeline creation (App::CreatePipelines)
@@ -43,13 +45,16 @@
 // (SPIR-V-only, 52 files) is the remaining DXIL rework — see the
 // porting notes' shader-milestone plan.
 // ---------------------------------------------------------------------------
-Texture2D textures[8192] : register(t0);
-Texture2D<uint4> uintTextures[8192] : register(t0); // alias, same slots
-Texture3D volumeTextures[8192] : register(t8192);
-TextureCube cubemaps[8192] : register(t16384);
-Texture2DMS<float4> texturesMS[8192] : register(t24576);
-SamplerState samplers[8] : register(s0);
-SamplerComparisonState comparisonSamplers[8] : register(s0); // alias
+Texture2D textures[MAX_TEXTURES] : register(t0);
+Texture2D<uint4> uintTextures[MAX_TEXTURES] : register(t0); // alias, same slots
+// The register bases derive from the same bounds (registers cannot be
+// macro expressions): t8192 = MAX_TEXTURES, t16384 = 2*MAX_TEXTURES,
+// t24576 = 3*MAX_TEXTURES.
+Texture3D volumeTextures[MAX_VOLUME_TEXTURES] : register(t8192);
+TextureCube cubemaps[MAX_TEXTURES] : register(t16384);
+Texture2DMS<float4> texturesMS[MAX_TEXTURES] : register(t24576);
+SamplerState samplers[MAX_SAMPLERS] : register(s0);
+SamplerComparisonState comparisonSamplers[MAX_SAMPLERS] : register(s0); // alias
 #else
 [[vk::binding(0, 0)]]
 //[[vk::binding(kBinding_Textures, 0)]]
@@ -228,7 +233,7 @@ struct EnvironmentFrameData
 
 struct LightBuffer
 {
-    Light lights[MAX_LIGHTS];
+    Light lights[MAX_SIMULTANEOUS_LIGHTS];
     //uint lightCount;
 };
 

@@ -2967,7 +2967,7 @@ public:
 	// Drops the preview binding(s) + selection (window closed / toggle
 	// off): the overlay's retire is DEFERRED (RetireUserTexture — the
 	// binding's descriptor set is referenced by the frame's ImGui draw
-	// data + up to MAX_FRAMES_IN_FLIGHT in-flight submissions; the old
+	// data + up to smvk::limits::MaxFramesInFlight in-flight submissions; the old
 	// immediate free bound a freed set and faulted the device on the
 	// X-close — the close-click frame's body still rendered the preview
 	// before the drop); the face views' Holders reset (their VkImageViews

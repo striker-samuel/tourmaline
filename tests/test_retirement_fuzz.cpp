@@ -26,7 +26,7 @@
 //   ProcessDeferrredTasks() == the between-frames drain
 // Only the fuzzer signals this semaphore, so the model knows EXACTLY when a
 // retirement has drained: DeferDestroy keys a destroy at
-//   published + MAX_FRAMES_IN_FLIGHT   (the retire margin rule)
+//   published + smvk::limits::MaxFramesInFlight   (the retire margin rule)
 // and it drains once (counter >= key) AND (a drain ran past that signal).
 //
 // Oracles (checked after EVERY op):
@@ -76,7 +76,7 @@ int g_checks = 0;
 
 // One heap range (vertex units for the vertex block, bytes for the index
 // block). retirePoint == 0 means LIVE; otherwise the retire key the owning
-// resource's free was deferred at (published + MAX_FRAMES_IN_FLIGHT).
+// resource's free was deferred at (published + smvk::limits::MaxFramesInFlight).
 struct RangeRow {
 	uint64_t base = 0;
 	uint64_t size = 0;
@@ -394,9 +394,9 @@ int main()
 
 	// The DeferDestroy margin rule (see the file header): a destroy at the
 	// current published point keys its retirement at
-	// published + MAX_FRAMES_IN_FLIGHT.
+	// published + smvk::limits::MaxFramesInFlight.
 	const auto retireKey = [&]() {
-		return m.published + MAX_FRAMES_IN_FLIGHT;
+		return m.published + smvk::limits::MaxFramesInFlight;
 	};
 
 	// Destroy a live mesh: the model rows move to retiring keyed at the
@@ -429,7 +429,7 @@ int main()
 		// GPU-signaled, never host-blocked like that). Signaling eagerly at
 		// publish keeps every waiter satisfied; the RETIREMENT cadence
 		// still lags by construction - a destroy keys at
-		// published + MAX_FRAMES_IN_FLIGHT, so it drains only after two MORE
+		// published + smvk::limits::MaxFramesInFlight, so it drains only after two MORE
 		// publishes pass + a drain runs.
 		{
 			const uint64_t roll = rng() % 100;
@@ -597,14 +597,14 @@ int main()
 	m.texSlotsLive.clear();
 
 	// Complete the timeline past every margin key + drain: nothing may
-	// remain (the last destroy keyed at published + MAX_FRAMES_IN_FLIGHT).
+	// remain (the last destroy keyed at published + smvk::limits::MaxFramesInFlight).
 	{
 		VkSemaphoreSignalInfo si{
 			VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, nullptr,
-			gpuTimeline, m.published + MAX_FRAMES_IN_FLIGHT };
+			gpuTimeline, m.published + smvk::limits::MaxFramesInFlight };
 		if (vkSignalSemaphore(dev, &si) != VK_SUCCESS)
 			Fail("finalDrain", iters, op, "final signal failed");
-		m.signaled = m.published + MAX_FRAMES_IN_FLIGHT;
+		m.signaled = m.published + smvk::limits::MaxFramesInFlight;
 		vctx->ProcessDeferrredTasks();
 		m.processed = m.signaled;
 		m.PruneDrained();

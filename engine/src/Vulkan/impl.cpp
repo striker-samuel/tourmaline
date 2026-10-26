@@ -3011,7 +3011,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 
 	//this->m_hostImageCopySupported = false;
 
-	// SamplerCache – owns up to MAX_SAMPLERS deduplicated VkSamplers.
+	// SamplerCache – owns up to smvk::limits::MaxSamplers deduplicated VkSamplers.
 	// Like VulkanPipelineCache, key (SamplerCreateInfo) → stable index.
 	samplerCache_ = smvk::mem::MakeProcess<VulkanSamplerCache>(this);
 	// Populate default slots: 0 = regular, 1 = shadow comparison,
@@ -3032,7 +3032,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		clampCi.addressW = smvk::AddressMode::ClampToEdge;
 		uint32_t idx2 = samplerCache_->GetOrCreate(clampCi);
 		assert(idx0 == 0 && idx1 == 1 && "sampler cache must allocate defaults at 0,1");
-		assert(idx2 < MAX_SAMPLERS && "clamp sampler must stay in the array");
+		assert(idx2 < smvk::limits::MaxSamplers && "clamp sampler must stay in the array");
 		assert(idx2 == 2 && "clamp sampler expected at index 2 (shaders hardcode samplers[2])");
 	}
 	const uint32_t pixel = 0xFF000000;
@@ -3061,7 +3061,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	// acquire rhythm and flushed by VulkanSwapchain::AcquireFramebuffer
 	// after the in-flight slot retires. No app-side plumbing.
 	m_engineGlobalsBuffer = CreateBuffer(
-		sizeof(smvk::EngineGlobals) * MAX_FRAMES_IN_FLIGHT,
+		sizeof(smvk::EngineGlobals) * smvk::limits::MaxFramesInFlight,
 		BufferType_Storage,
 		"engine globals"
 	).release();
@@ -3077,9 +3077,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		| VK_SHADER_STAGE_COMPUTE_BIT;
 
 	const VkDescriptorSetLayoutBinding bindings[kBinding_NumBindings] = {
-		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
-		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, MAX_SAMPLERS, stageFlags),
-		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MAX_TEXTURES, stageFlags),
+		getDSLBinding(kBinding_Textures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, smvk::limits::MaxTextures, stageFlags),
+		getDSLBinding(kBinding_Samplers, VK_DESCRIPTOR_TYPE_SAMPLER, smvk::limits::MaxSamplers, stageFlags),
+		getDSLBinding(kBinding_StorageImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, smvk::limits::MaxTextures, stageFlags),
 		// Engine globals: single read-only storage buffer, one slice per frame
 		// in flight. Each flight's OWN set (see the set allocation below)
 		// points at its own slice, written ONCE at init; FlushEngineGlobals
@@ -3087,14 +3087,14 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		getDSLBinding(kBinding_EngineGlobals, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 		// 3D volume textures (SG probe grids): same slot space as
 		// kBinding_Textures; UpdateDescriptors mirrors 3D views here.
-		getDSLBinding(kBinding_VolumeTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_VOLUME_TEXTURES, stageFlags),
+		getDSLBinding(kBinding_VolumeTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, smvk::limits::MaxVolumeTextures, stageFlags),
 		// Reflection cubemaps for specular IBL: same slot space as
 		// kBinding_Textures; UpdateDescriptors mirrors cube views here.
-		getDSLBinding(kBinding_Cubemaps, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
+		getDSLBinding(kBinding_Cubemaps, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, smvk::limits::MaxTextures, stageFlags),
 		// Multisampled 2D textures (EVSM per-sample depth resolve): same
 		// slot space as kBinding_Textures; UpdateDescriptors mirrors MSAA
 		// views here (Texture2DMS-typed shaders only reach those slots).
-		getDSLBinding(kBinding_MsaaTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES, stageFlags),
+		getDSLBinding(kBinding_MsaaTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, smvk::limits::MaxTextures, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -3155,21 +3155,21 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	// counts per allocated set (not the descriptors actually written - the
 	// partially-bound bindings do not shrink the allocation charge). The
 	// layout carries FOUR sampled-image arrays (Textures, VolumeTextures,
-	// Cubemaps, MsaaTextures): 3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES
+	// Cubemaps, MsaaTextures): 3 * smvk::limits::MaxTextures + smvk::limits::MaxVolumeTextures
 	// sampled slots PER SET, and the bindless table is REPLICATED PER FRAME
 	// (one set per flight - see the allocation below), so every entry
-	// scales by MAX_FRAMES_IN_FLIGHT. The old MAX_TEXTURES +
-	// MAX_VOLUME_TEXTURES reservation was HALF the single-set requirement -
+	// scales by smvk::limits::MaxFramesInFlight. The old smvk::limits::MaxTextures +
+	// smvk::limits::MaxVolumeTextures reservation was HALF the single-set requirement -
 	// this driver's allocation happened to succeed anyway, but the spec
 	// lets it fail (OUT_OF_POOL_MEMORY), and the unchecked call below would
 	// have kept NULL sets silently (every frame skips its descriptor
 	// updates - UpdateDescriptors skips null sets - and draws bind garbage).
 	std::vector<VkDescriptorPoolSize> poolSizes = {
 	  {
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    (3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES) * MAX_FRAMES_IN_FLIGHT },
-		{ VK_DESCRIPTOR_TYPE_SAMPLER,          MAX_SAMPLERS * MAX_FRAMES_IN_FLIGHT },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    MAX_TEXTURES * MAX_FRAMES_IN_FLIGHT },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * MAX_FRAMES_IN_FLIGHT * MAX_FRAMES_IN_FLIGHT }, // engine globals + texture-feedback slices, per set
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    (3 * smvk::limits::MaxTextures + smvk::limits::MaxVolumeTextures) * smvk::limits::MaxFramesInFlight },
+		{ VK_DESCRIPTOR_TYPE_SAMPLER,          smvk::limits::MaxSamplers * smvk::limits::MaxFramesInFlight },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    smvk::limits::MaxTextures * smvk::limits::MaxFramesInFlight },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * smvk::limits::MaxFramesInFlight * smvk::limits::MaxFramesInFlight }, // engine globals + texture-feedback slices, per set
 	  }
 	};
 	// Device limits for update-after-bind sets: the plain per-set limits
@@ -3182,31 +3182,31 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		VkPhysicalDeviceProperties2 props2{
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &indexingProps };
 		vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
-		const uint32_t needSampled = 3 * MAX_TEXTURES + MAX_VOLUME_TEXTURES;
+		const uint32_t needSampled = 3 * smvk::limits::MaxTextures + smvk::limits::MaxVolumeTextures;
 		if (indexingProps.maxDescriptorSetUpdateAfterBindSampledImages < needSampled
-			|| indexingProps.maxDescriptorSetUpdateAfterBindSamplers < MAX_SAMPLERS
-			|| indexingProps.maxDescriptorSetUpdateAfterBindStorageImages < MAX_TEXTURES) {
+			|| indexingProps.maxDescriptorSetUpdateAfterBindSamplers < smvk::limits::MaxSamplers
+			|| indexingProps.maxDescriptorSetUpdateAfterBindStorageImages < smvk::limits::MaxTextures) {
 			throw std::runtime_error(
 				"device update-after-bind descriptor limits are below the "
 				"bindless table requirements (sampled " +
 				std::to_string(needSampled) + ", storage " +
-				std::to_string(MAX_TEXTURES) + ", samplers " +
-				std::to_string(MAX_SAMPLERS) + ")");
+				std::to_string(smvk::limits::MaxTextures) + ", samplers " +
+				std::to_string(smvk::limits::MaxSamplers) + ")");
 		}
 		// Pool AGGREGATE: a UAB pool charges every allocated set's layout
 		// maxima up front, and the per-set limits above say nothing about
 		// the pool total - maxUpdateAfterBindDescriptorsInAllPools is the
 		// device-wide budget the replicated table now has to fit.
 		const uint64_t needPoolTotal =
-			uint64_t(needSampled) + MAX_TEXTURES + MAX_SAMPLERS
-			+ 2 * MAX_FRAMES_IN_FLIGHT;
+			uint64_t(needSampled) + smvk::limits::MaxTextures + smvk::limits::MaxSamplers
+			+ 2 * smvk::limits::MaxFramesInFlight;
 		if (indexingProps.maxUpdateAfterBindDescriptorsInAllPools
-			< needPoolTotal * MAX_FRAMES_IN_FLIGHT) {
+			< needPoolTotal * smvk::limits::MaxFramesInFlight) {
 			throw std::runtime_error(
 				"device maxUpdateAfterBindDescriptorsInAllPools (" +
 				std::to_string(indexingProps.maxUpdateAfterBindDescriptorsInAllPools)
 				+ ") is below the replicated bindless pool requirement ("
-				+ std::to_string(needPoolTotal * MAX_FRAMES_IN_FLIGHT) + ")");
+				+ std::to_string(needPoolTotal * smvk::limits::MaxFramesInFlight) + ")");
 		}
 	}
 	defaultDescriptorPool = CreateDescriptorPool(poolSizes);
@@ -3222,8 +3222,8 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	// slice. Per-flight sets make the binding write-once: a flight's
 	// slice address is baked into the set its command buffers bind, and
 	// no sibling flight can rewrite it mid-flight.
-	VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+	VkDescriptorSetLayout layouts[smvk::limits::MaxFramesInFlight];
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f)
 		layouts[f] = defaultSetLayout;
 
 	VkDescriptorSetAllocateInfo info
@@ -3231,7 +3231,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.pNext = nullptr,
 		.descriptorPool = pool,
-		.descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+		.descriptorSetCount = smvk::limits::MaxFramesInFlight,
 		.pSetLayouts = layouts,
 	};
 	VkResult allocResult = vkAllocateDescriptorSets(
@@ -3252,9 +3252,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	{
 		const Buffer* globalsBuffer = buffers_.get(m_engineGlobalsBuffer);
 		assert(globalsBuffer && globalsBuffer->vkBuffer != VK_NULL_HANDLE);
-		VkDescriptorBufferInfo bufferInfos[MAX_FRAMES_IN_FLIGHT];
-		VkWriteDescriptorSet writes[MAX_FRAMES_IN_FLIGHT];
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		VkDescriptorBufferInfo bufferInfos[smvk::limits::MaxFramesInFlight];
+		VkWriteDescriptorSet writes[smvk::limits::MaxFramesInFlight];
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			bufferInfos[f].buffer = globalsBuffer->vkBuffer;
 			bufferInfos[f].offset = f * sizeof(smvk::EngineGlobals);
 			bufferInfos[f].range = sizeof(smvk::EngineGlobals);
@@ -3268,7 +3268,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 			write.descriptorCount = 1;
 			write.pBufferInfo = &bufferInfos[f];
 		}
-		vkUpdateDescriptorSets(device_, MAX_FRAMES_IN_FLIGHT, writes, 0, nullptr);
+		vkUpdateDescriptorSets(device_, smvk::limits::MaxFramesInFlight, writes, 0, nullptr);
 	}
 
 	// ============================================================================
@@ -5927,11 +5927,12 @@ namespace smvk {
 	// The bindless pool is intentionally also our descriptor-slot allocator.
 	// NOTE (sharded pools): handle.index() is the global sharded index
 	// (shard * kShardCapacity + local). It doubles as the descriptor-array
-	// slot, so it must stay below MAX_TEXTURES – guaranteed by the
-	// static_assert in Memory/pool.h (MAX_TEXTURES >= kShardedMaxSize);
-	// this runtime check stays as a loud failure instead of corrupting writes.
+	// slot, so it must stay below MaxTextures – guaranteed by the
+	// static_assert at the pool/descriptor integration (vulkan_impl.h:
+	// smvk::limits::MaxTextures >= kShardedMaxSize); this runtime check
+	// stays as a loud failure instead of corrupting writes.
 	resource->descriptorIndex = handle.index();
-	assert(resource->descriptorIndex < MAX_TEXTURES && "bindless descriptor budget exhausted (sharded indices are sparse – raise MAX_TEXTURES or pack slots)");
+	assert(resource->descriptorIndex < smvk::limits::MaxTextures && "bindless descriptor budget exhausted (sharded indices are sparse – raise MaxTextures or pack slots)");
 
 	m_needToUpdateTextures = true;
 
@@ -8079,7 +8080,7 @@ void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task
 {
 	// ---------------------------------------------------------------------------
 	// RETIRE MARGIN: the retire point below is the last published GRAPHICS
-	// timeline point + MAX_FRAMES_IN_FLIGHT. The swapchain's timeline signals
+	// timeline point + smvk::limits::MaxFramesInFlight. The swapchain's timeline signals
 	// exactly once per completed frame, so the margin is literally "this many
 	// frames later" - and that span structurally covers every producer that
 	// can still reference the destroyed resource, WITHOUT the exact per-queue
@@ -8099,7 +8100,7 @@ void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task
 	//       "destroy only between frames" API contract) stays safe.
 	//
 	// The margin buys this by holding every deferred resource (buffers,
-	// images/views, mesh heap ranges, bindless slots) up to MAX_FRAMES_IN_FLIGHT
+	// images/views, mesh heap ranges, bindless slots) up to smvk::limits::MaxFramesInFlight
 	// extra frames - bounded, and negligible against the 512 MiB mesh heaps.
 	// The alternative (the exact join: max over per-queue last-use points plus
 	// a per-submitter drain of still-recording buffers) frees sooner but
@@ -8126,7 +8127,7 @@ void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task
 	// ReleaseTransientPlacement / the mesh heap frees) stays correct.
 	AddDeferredTask(std::move(task), TimelinePoint{
 		m_lastGraphicsSemaphore,
-		m_lastGraphicsValue + MAX_FRAMES_IN_FLIGHT });
+		m_lastGraphicsValue + smvk::limits::MaxFramesInFlight });
 	// TOURMALINE_DEFER_DIAG=1: the deferred-queue drain census (why do
 	// the editor's target-heap range frees never land while 03_fuzz's
 	// claims mode cycles? the marching-offsets signature).
@@ -8150,7 +8151,7 @@ void smvk::VulkanResourceManager::DeferDestroy(std::packaged_task<void()>&& task
 					"(lastGraphics=%llu sem=%p counterNow=%llu rq=%d)\n",
 					enq,
 					(unsigned long long)(m_lastGraphicsValue
-						+ MAX_FRAMES_IN_FLIGHT),
+						+ smvk::limits::MaxFramesInFlight),
 					(unsigned long long)m_lastGraphicsValue,
 					(void*)m_lastGraphicsSemaphore,
 					(unsigned long long)counterNow, int(rq));
@@ -8259,7 +8260,7 @@ void smvk::VulkanResourceManager::UpdateDescriptors(uint32_t frameIndex)
 	// Update every descriptor set that contains the global bindless table.
 	//
 	for (uint32_t frame = 0;
-		frame < MAX_FRAMES_IN_FLIGHT /*static_cast<uint32_t>(defaultDescriptorSets_.size())*/;
+		frame < smvk::limits::MaxFramesInFlight /*static_cast<uint32_t>(defaultDescriptorSets_.size())*/;
 		++frame)
 	{
 
@@ -8433,9 +8434,9 @@ void smvk::VulkanResourceManager::NullBindlessSlotWrites(uint32_t slot)
 {
 	if (m_nullImageView == VK_NULL_HANDLE)
 		return; // pre-init / teardown: nothing to write with
-	if (slot >= MAX_TEXTURES)
+	if (slot >= smvk::limits::MaxTextures)
 		return; // outside the Textures array: nothing was written here
-	for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; ++frame)
+	for (uint32_t frame = 0; frame < smvk::limits::MaxFramesInFlight; ++frame)
 	{
 		if (defaultDescriptorSets_[frame] == VK_NULL_HANDLE)
 			continue;
@@ -8465,8 +8466,8 @@ void smvk::VulkanResourceManager::NullBindlessSlotWrites(uint32_t slot)
 		// The 2D nil view in a typed (3D/cube) array slot is only
 		// view-type-mismatched IF a stale index ever reaches a typed read
 		// — still strictly safer than a use-after-free of a destroyed
-		// view. VolumeTextures declares only MAX_VOLUME_TEXTURES entries.
-		if (slot < MAX_VOLUME_TEXTURES)
+		// view. VolumeTextures declares only smvk::limits::MaxVolumeTextures entries.
+		if (slot < smvk::limits::MaxVolumeTextures)
 			pushWrite(smvk::Bindings::kBinding_VolumeTextures);
 		pushWrite(smvk::Bindings::kBinding_Cubemaps);
 		pushWrite(smvk::Bindings::kBinding_MsaaTextures);
@@ -8491,7 +8492,7 @@ void smvk::VulkanResourceManager::NullBindlessSlotWrites(uint32_t slot)
 void smvk::VulkanResourceManager::FlushEngineGlobals(uint32_t frameIndex)
 {
 	assert(!m_engineGlobalsBuffer.empty());
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 
 	const auto now = std::chrono::steady_clock::now();
 	const float time = std::chrono::duration<float>(now - m_globalsStartTime).count();
@@ -8730,7 +8731,7 @@ void smvk::VulkanResourceManager::CommitImageSyncStates(const std::unordered_map
 	}
 }
 bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
-	if (flight >= MAX_FRAMES_IN_FLIGHT)
+	if (flight >= smvk::limits::MaxFramesInFlight)
 		return false;
 	if (asyncSplitReady_[flight])
 		return true;
@@ -8782,7 +8783,7 @@ bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
 // Handles persist across frames; the per-flight pool reset in Acquire
 // returns them to recordable state alongside the split CBs.
 bool smvk::VulkanSwapchain::EnsureAsyncPassBuffers(uint32_t flight, uint32_t count) {
-	if (flight >= MAX_FRAMES_IN_FLIGHT || !asyncSplitReady_[flight])
+	if (flight >= smvk::limits::MaxFramesInFlight || !asyncSplitReady_[flight])
 		return false;
 	if (asyncPassBuffers[flight].size() >= count)
 		return true;
@@ -8879,7 +8880,7 @@ namespace smvk {
 	void DestroyBufferNow(VulkanResourceManager* ctx, BufferHandle handle) {
 		// TOURMALINE_RB_DIAG=1 (env-gated, the churn-death hunt's readback
 		// collision detector): this destroy runs from the DEFERRED retire
-		// (the swapchain's MAX_FRAMES_IN_FLIGHT margin), but the async
+		// (the swapchain's smvk::limits::MaxFramesInFlight margin), but the async
 		// readback ticket rides the Submitter's PRIVATE timeline — unordered
 		// from the swapchain's. If the buffer destroyed here is a source of
 		// a ticket still in flight, the copy reads a destroyed VkBuffer.
@@ -9747,7 +9748,7 @@ void smvk::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
 	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
 	poolInfo.queueFamilyIndex = graphicsFamily;
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; i++) {
 		VkCommandPoolCreateInfo perPool = poolInfo;
 		VK_CHECK(vkCreateCommandPool(
 			device_,
@@ -9768,7 +9769,7 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 
 	vkDeviceWaitIdle(device_);
 	DestroyTimestampPools();
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+	for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; i++) {
 		vkDestroyCommandPool(device_, perFrameCommandPools[i], nullptr);
 		// this freeds all the commands too
 		if (splitPools[i] != VK_NULL_HANDLE) { vkDestroyCommandPool(device_, splitPools[i], nullptr); splitPools[i] = VK_NULL_HANDLE; }
@@ -9928,7 +9929,7 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 	}
 	activePresentMode_ = presentMode;
 
-	uint32_t imageCount = DESIRED_SWAPCHAIN_IMAGE_COUNT;
+	uint32_t imageCount = smvk::limits::DesiredSwapchainImageCount;
 	minImageCount_ = support.capabilities.minImageCount;
 	if (imageCount < support.capabilities.minImageCount) {
 		imageCount = support.capabilities.minImageCount;
@@ -9939,7 +9940,7 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 		imageCount = support.capabilities.maxImageCount;
 	}
 	framesInFlight_ = imageCount + 2u;
-	framesInFlight_ = std::min(MAX_FRAMES_IN_FLIGHT, framesInFlight_);
+	framesInFlight_ = std::min(smvk::limits::MaxFramesInFlight, framesInFlight_);
 
 	QueueFamilyIndices indices = findQueueFamilies(physicalDevice_, surface_);
 	uint32_t queueFamilyIndices[] = {
@@ -10009,7 +10010,7 @@ void smvk::VulkanSwapchain::CreateTimestampPools() {
 	VkQueryPoolCreateInfo info{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
 	info.queryType = VK_QUERY_TYPE_TIMESTAMP;
 	info.queryCount = 2 + 2 * kGpuStageCount;
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+	for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
 		if (vkCreateQueryPool(device_, &info, nullptr, &timestampPools_[i]) != VK_SUCCESS)
 			timestampPools_[i] = VK_NULL_HANDLE;
 		timestampWritten_[i] = false;
@@ -10022,7 +10023,7 @@ void smvk::VulkanSwapchain::CreateTimestampPools() {
 	}
 }
 void smvk::VulkanSwapchain::DestroyTimestampPools() {
-	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+	for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
 		if (timestampPools_[i] != VK_NULL_HANDLE) {
 			vkDestroyQueryPool(device_, timestampPools_[i], nullptr);
 			timestampPools_[i] = VK_NULL_HANDLE;
@@ -11522,9 +11523,9 @@ uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto it = map_.find(ci);
 	if (it != map_.end()) return it->second;
-	if (samplers_.size() >= MAX_SAMPLERS) {
-		fprintf(stderr, "[VulkanSamplerCache] MAX_SAMPLERS (%u) exceeded – cannot create new sampler\n", (unsigned)MAX_SAMPLERS);
-		assert(false && "MAX_SAMPLERS exceeded");
+	if (samplers_.size() >= smvk::limits::MaxSamplers) {
+		fprintf(stderr, "[VulkanSamplerCache] smvk::limits::MaxSamplers (%u) exceeded – cannot create new sampler\n", (unsigned)smvk::limits::MaxSamplers);
+		assert(false && "smvk::limits::MaxSamplers exceeded");
 		return 0;
 	}
 	VkSampler sampler = VK_NULL_HANDLE;
@@ -11557,7 +11558,7 @@ bool smvk::VulkanSamplerCache::Recreate(uint32_t index, const SamplerCreateInfo&
 	// Point the new CI at this slot WITHOUT erasing the previous CI
 	// mapping for it: many passes call GetOrCreateSampler(defaultCI) every
 	// frame and must keep deduping to this stable slot (no new slots, no
-	// MAX_SAMPLERS leak across toggles). The slot holds "the current mode"
+	// smvk::limits::MaxSamplers leak across toggles). The slot holds "the current mode"
 	// — every CI ever installed here resolves to it, so postfx taps follow
 	// the toggle exactly like the hardcoded samplers[0]/[2] material paths.
 	infos_[index] = ci;
@@ -11677,8 +11678,8 @@ bool smvk::App::Initialize() {
 	// opened gamepad handles (destroyed before SDL_Quit).
 	m_sdlInput = std::make_unique<smvk::SdlInputBackend>();
 
-	int width_ = DEFAULT_WIDTH;
-	int height_ = DEFAULT_HEIGHT;
+	int width_ = smvk::limits::WindowDefaultWidth;
+	int height_ = smvk::limits::WindowDefaultHeight;
 	window = SDL_CreateWindow("Vulkan", width_, height_,
 		SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
 
@@ -12862,7 +12863,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	// defaultDescriptorSets_[flightSlot_] (see BindRenderPipeline /
 	// BindComputePipeline - the bindless sets are replicated per frame, each
 	// permanently pointing at its own EngineGlobals slice).
-	const uint32_t flight = fb.frameIndex % MAX_FRAMES_IN_FLIGHT;
+	const uint32_t flight = fb.frameIndex % smvk::limits::MaxFramesInFlight;
 	flightSlot_ = flight;
 
 	ResolveImages();
@@ -13168,7 +13169,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// respect submission BEGIN order). The per-slot host wait in
 			// Acquire covers N vs N-2 only; this closes N vs N-1 by
 			// construction. GPU frames serialize; CPU-side recording and
-			// submission still pipeline (MAX_FRAMES_IN_FLIGHT keeps its CPU
+			// submission still pipeline (smvk::limits::MaxFramesInFlight keeps its CPU
 			// overlap value). timelineValue_ here still holds the previous
 			// EndAndPresent's signal — this frame has not incremented it.
 			if (vkSwap->timelineValue_ != 0) {

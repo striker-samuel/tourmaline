@@ -32,6 +32,7 @@
 #include <Engine/Camera/camera.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/RendererLimits.h>
 #include <Engine/Renderer/dxc_integration.h> // TOURMALINE_LIVE_TRIANGLE's inline-HLSL compile
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/bvh.h>
@@ -42,8 +43,14 @@
 namespace editor {
 
 	namespace {
-		constexpr uint32_t kMaxMaterials = 4096;
-		constexpr uint32_t kMaxLights = 64;
+		// Ring strides mirror the main-pass material/light ABI: the
+		// renderer-owned budgets (shader MaterialsBuffer/LightBuffer
+		// bounds + WorldRenderer's rings derive from the same shared
+		// values — see Engine/Renderer/RendererLimits.h).
+		constexpr uint32_t kMaxMaterials =
+			engine::renderer::limits::MaxMaterials;
+		constexpr uint32_t kMaxLights =
+			engine::renderer::limits::MaxSimultaneousLights;
 
 		std::vector<char> LoadSpv(const char* path) {
 			return readFile(path);

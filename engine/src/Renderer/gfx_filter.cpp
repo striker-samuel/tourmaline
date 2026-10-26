@@ -66,7 +66,7 @@ static constexpr size_t kSeedIndirectBytes = kMaxBatchSlots * sizeof(SeedCommand
 static constexpr size_t kShadowIndirectBytes = kMaxBatches * sizeof(SeedCommand);
 // GPU cull chain per-(view, flight) buffers: the kept-bit ring (two parity
 // regions inside one buffer — the frame with parity P writes region P and
-// reads 1-P, written MAX_FRAMES_IN_FLIGHT frames earlier, flight-fenced
+// reads 1-P, written smvk::limits::MaxFramesInFlight frames earlier, flight-fenced
 // complete) and the cullState words (draw verdicts + the filter's atomic
 // filtered-offset counter).
 static constexpr size_t kKeptBytes = kMaxBatchSlots * 2 * sizeof(uint32_t);
@@ -137,7 +137,7 @@ static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 }
 
 static bool CreateSlotBuffers(ResourceManager& ctx, RenderGraph& rg, View& v) {
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		v.batchBuffers[f] = ctx.CreateBuffer(
 			kBatchBufferBytes, BufferType_Storage, "gfx batches");
 		v.drawBuffers[f] = ctx.CreateBuffer(
@@ -238,12 +238,12 @@ bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg, const char* csPath)
 }
 
 // Kept-bit parity for the frame being recorded: alternates between a
-// flight's consecutive users (MAX_FRAMES_IN_FLIGHT frames apart), so the
+// flight's consecutive users (smvk::limits::MaxFramesInFlight frames apart), so the
 // region this frame writes was last written by the previous same-flight
 // user — fence-complete, race-free (the rendergraph never needs to track
 // the cross-frame dependency; the flight submission ordering carries it).
 static uint32_t KeptParity(const State& s) {
-	return (s.frameCounter / MAX_FRAMES_IN_FLIGHT) % 2u;
+	return (s.frameCounter / smvk::limits::MaxFramesInFlight) % 2u;
 }
 
 bool EnsureBatchCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
@@ -300,7 +300,7 @@ bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg) {
 			.stage = ShaderStage::Compute };
 		s.skinBoundsProgram = { .shaders = { cs }, .shaderCount = 1 };
 	}
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		if (s.skinBoundsBuffers[f].empty()) {
 			s.skinBoundsBuffers[f] = ctx.CreateBuffer(
 				kSkinBoundsBytes, BufferType_Storage, "gfx skinBounds");
@@ -351,7 +351,7 @@ static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t d
 }
 
 static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, TemporalView& t) {
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		t.visClusterBuffers[f] = ctx.CreateBuffer(
 			kVisClusterBytes, BufferType_Storage, "gfx visibleClusters");
 		t.visDrawBuffers[f] = ctx.CreateBuffer(
@@ -383,7 +383,7 @@ static bool CreateTemporalBuffers(ResourceManager& ctx, RenderGraph& rg, Tempora
 
 void Destroy(State& s, RenderGraph& rg) {
 	for (auto& v : s.views) {
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
 			if (!v.drawLogicals[f].empty()) rg.FreeBuffer(v.drawLogicals[f]);
 			if (!v.indirectLogicals[f].empty()) rg.FreeBuffer(v.indirectLogicals[f]);
@@ -396,7 +396,7 @@ void Destroy(State& s, RenderGraph& rg) {
 		}
 	}
 	for (auto& t : s.temporals) {
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
 			if (!t.visDrawLogicals[f].empty()) rg.FreeBuffer(t.visDrawLogicals[f]);
 			if (!t.seedIndirectLogicals[f].empty()) rg.FreeBuffer(t.seedIndirectLogicals[f]);
@@ -407,7 +407,7 @@ void Destroy(State& s, RenderGraph& rg) {
 		}
 	}
 	for (auto& sv : s.shadowViews) {
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			if (!sv.drawLogicals[f].empty()) rg.FreeBuffer(sv.drawLogicals[f]);
 			if (!sv.indirectLogicals[f].empty()) rg.FreeBuffer(sv.indirectLogicals[f]);
 			sv.drawLogicals[f] = {};
@@ -424,7 +424,7 @@ void Destroy(State& s, RenderGraph& rg) {
 	// The GfxSkinBounds table logicals (the buffers themselves retire via
 	// their Holders; the rendergraph logicals need the explicit free, the
 	// same as every other per-flight external buffer above).
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		if (!s.skinBoundsLogicals[f].empty())
 			rg.FreeBuffer(s.skinBoundsLogicals[f]);
 		s.skinBoundsLogicals[f] = {};
@@ -438,7 +438,7 @@ void Destroy(State& s, RenderGraph& rg) {
 	s.coneDebugLinesLogical = {};
 	s.coneDebugLines = {};
 	s.coneDebug = false;
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		if (!s.meshParamsLogicals[f].empty()) rg.FreeBuffer(s.meshParamsLogicals[f]);
 		if (!s.meshBatchListLogicals[f].empty()) rg.FreeBuffer(s.meshBatchListLogicals[f]);
 		s.meshParamsLogicals[f] = {};
@@ -459,7 +459,7 @@ void Destroy(State& s, RenderGraph& rg) {
 	s.textureMetaBuffer = {};
 	s.textureMetaEpoch = 0;
 	s.textureMetaCount = 0;
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f)
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f)
 		s.demandBuffers[f] = {};
 	s.demandMaterialsBda = 0;
 	s.demandMipBias = 0.0f;
@@ -1130,7 +1130,7 @@ void BeginFrame(State& s) {
 	s.viewCount = 0;
 	// Kept-parity source: one BeginFrame per rendered frame
 	// (FilterMainView), so the parity alternates between a flight's
-	// consecutive users exactly MAX_FRAMES_IN_FLIGHT frames apart.
+	// consecutive users exactly smvk::limits::MaxFramesInFlight frames apart.
 	++s.frameCounter;
 }
 
@@ -1144,7 +1144,7 @@ static bool EnsureViewSlots(State& s, ResourceManager& ctx, RenderGraph& rg, uin
 		TemporalView temporal{};
 		if (!CreateTemporalBuffers(ctx, rg, temporal)) {
 			// Unwind the view slot we just allocated (all its ring slices).
-			RollbackSlotBuffers(rg, slot, MAX_FRAMES_IN_FLIGHT);
+			RollbackSlotBuffers(rg, slot, smvk::limits::MaxFramesInFlight);
 			return false;
 		}
 		s.views.push_back(std::move(slot));
@@ -1220,7 +1220,7 @@ void SnapshotVisible(State& s, uint32_t view) {
 
 void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
 	assert(view < s.views.size());
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	if (view >= s.temporals.size())
 		return;
 	TemporalView& t = s.temporals[view];
@@ -1434,7 +1434,7 @@ void BuildRemainderCommands(State& s, uint32_t view) {
 
 void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
 	assert(view < s.views.size());
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	if (view >= s.temporals.size())
 		return;
 	TemporalView& t = s.temporals[view];
@@ -1454,7 +1454,7 @@ void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t vi
 
 void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
 	assert(view < s.views.size());
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	if (view >= s.temporals.size())
 		return;
 	TemporalView& t = s.temporals[view];
@@ -1730,7 +1730,7 @@ bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
 static bool EnsureShadowBuffers(ResourceManager& ctx, RenderGraph& rg, ShadowView& sv) {
 	if (sv.buffersReady)
 		return true;
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		sv.drawBuffers[f] = ctx.CreateBuffer(
 			kDrawBufferBytes, BufferType_Storage, "gfx shadow draws");
 		sv.indirectBuffers[f] = ctx.CreateBuffer(
@@ -1901,7 +1901,7 @@ void BuildShadowList(State& s, uint32_t sview) {
 void UploadShadowList(State& s, ResourceManager& ctx,
 	uint32_t frameIndex, uint32_t sview) {
 	assert(sview < s.shadowViewCount);
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	ShadowView& sv = s.shadowViews[sview];
 	sv.frameIndex = frameIndex;
 	// GPU mirrors (main thread; the EndAndPresent flush orders the copies
@@ -1958,7 +1958,7 @@ LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview) {
 
 Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view) {
 	assert(view < s.viewCount);
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	View& v = s.views[view];
 	v.frameIndex = frameIndex;
 	v.stats.draws = (uint32_t)v.draws.size();
@@ -2609,7 +2609,7 @@ RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view) {
 	}
 	// The kept-bit ring: current parity region write + prev parity region
 	// read (ONE buffer — RW covers both; the prev region's last writer was
-	// MAX_FRAMES_IN_FLIGHT frames ago, flight-fence complete, so the
+	// smvk::limits::MaxFramesInFlight frames ago, flight-fence complete, so the
 	// rendergraph's own within-frame tracking never sees that dependency —
 	// the submission ordering carries it, like every other ringed buffer).
 	pass.AddBufferHint(v.keptLogicals[f], computeRW);
@@ -2808,7 +2808,7 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg) {
 		staticVertexFmtHeap.m_staticVertexPosBuffer);
 	s.vsShadeHeapBda = ctx.GetBufferDeviceAddress(
 		staticVertexFmtHeap.m_staticVertexShadingBuffer);
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		if (s.meshParamsBuffers[f].empty()) {
 			s.meshParamsBuffers[f] = ctx.CreateBuffer(
 				sizeof(GfxMeshParams), BufferType_Storage, "gfx mesh params");
@@ -2951,10 +2951,10 @@ void SetDemandInputs(State& s, ResourceManager& ctx,
 	// (mirror of the retired fragment-feedback ring's creation).
 	static std::vector<uint32_t> s_init;
 	if (s_init.empty())
-		s_init.assign(MAX_TEXTURES, kDemandNoReport);
-	for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		s_init.assign(smvk::limits::MaxTextures, kDemandNoReport);
+	for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 		s.demandBuffers[f] = ctx.CreateBuffer(
-			static_cast<uint64_t>(MAX_TEXTURES) * sizeof(uint32_t),
+			static_cast<uint64_t>(smvk::limits::MaxTextures) * sizeof(uint32_t),
 			BufferType_Storage, "gfx texture demand");
 		if (s.demandBuffers[f].empty())
 			return; // partial ring is safe: empty handles gate the dispatch
@@ -2969,7 +2969,7 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 	const TextureMeta* meta, size_t count) {
 	// count == 0 (no streamed textures at all): the publisher is gated
 	// off, but the epoch is absorbed so this stops re-attempting.
-	if (meta == nullptr || count == 0 || count > MAX_TEXTURES) {
+	if (meta == nullptr || count == 0 || count > smvk::limits::MaxTextures) {
 		s.textureMetaCount = 0;
 		s.textureMetaEpoch = epoch;
 		return true;
@@ -2991,9 +2991,9 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 }
 
 void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex) {
-	if (frameIndex >= MAX_FRAMES_IN_FLIGHT || s.demandBuffers[frameIndex].empty())
+	if (frameIndex >= smvk::limits::MaxFramesInFlight || s.demandBuffers[frameIndex].empty())
 		return;
-	// No-report fill of the whole slice (buffers always hold MAX_TEXTURES
+	// No-report fill of the whole slice (buffers always hold smvk::limits::MaxTextures
 	// slots; clearing the full slice keeps the upload size constant — the
 	// retired fragment-feedback ring's pattern). The transfer chain orders
 	// this fill after the in-flight readback copy (download-before-clear),
@@ -3002,7 +3002,7 @@ void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex) {
 	// texture sharp forever after the camera moves away.
 	static std::vector<uint32_t> s_clear;
 	if (s_clear.empty())
-		s_clear.assign(MAX_TEXTURES, kDemandNoReport);
+		s_clear.assign(smvk::limits::MaxTextures, kDemandNoReport);
 	ctx.UploadDataToBuffer(s.demandBuffers[frameIndex],
 		s_clear.data(), s_clear.size() * sizeof(uint32_t),
 		PipelineStage(PipelineStageBit_Compute),

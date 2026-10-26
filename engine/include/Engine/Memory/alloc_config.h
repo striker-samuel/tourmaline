@@ -19,7 +19,9 @@
 //
 // NOT runtime-configurable (compile-time by necessity): the ShardedPool
 // shard count/capacity (they are array bounds / static_asserts against
-// MAX_TEXTURES) and kDefaultAlign. Everything else below is.
+// the RHI bindless budget, smvk::limits::MaxTextures — the pool/
+// descriptor integration assert lives in Vulkan/detail/vulkan_impl.h)
+// and kDefaultAlign. Everything else below is.
 //
 // Lifetime model:
 //   - Process   : reserved once at startup, never reset (VulkanCore,

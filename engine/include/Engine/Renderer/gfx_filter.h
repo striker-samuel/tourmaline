@@ -662,26 +662,26 @@ struct View {
 	// only retires the same slot), and uploads flush immediately, so any
 	// single-copy buffer would be clobbered by the next frame while the
 	// current one still reads it. Same rule as RenderViewSet's slab.
-	Holder<BufferHandle> batchBuffers[MAX_FRAMES_IN_FLIGHT];
-	Holder<BufferHandle> drawBuffers[MAX_FRAMES_IN_FLIGHT];
-	Holder<BufferHandle> indirectBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle batchLogicals[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalBufferHandle drawLogicals[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalBufferHandle indirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> batchBuffers[smvk::limits::MaxFramesInFlight];
+	Holder<BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
+	Holder<BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle batchLogicals[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
 	// GPU cull chain state, per (view, flight):
 	//   kept — kept-bit ring with TWO parity regions inside one buffer
 	//          (the frame with parity P writes region P and reads 1-P,
-	//          written MAX_FRAMES_IN_FLIGHT frames earlier — the flight
+	//          written smvk::limits::MaxFramesInFlight frames earlier — the flight
 	//          fence guarantees that writer is complete; creation zeroes
 	//          it so the first frames seed nothing). One buffer per flight
 	//          is enough because the parity alternates between the
 	//          flight's consecutive users.
 	//   cullState — draw-cull verdict words + the filter's atomic
 	//          filtered-offset counter (word kCullStateCounterWord).
-	Holder<BufferHandle> keptBuffers[MAX_FRAMES_IN_FLIGHT];
-	Holder<BufferHandle> cullStateBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle keptLogicals[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalBufferHandle cullStateLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> keptBuffers[smvk::limits::MaxFramesInFlight];
+	Holder<BufferHandle> cullStateBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle keptLogicals[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle cullStateLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Filtered-index scratch lives in the static index monoblock (one index
 	// VkBuffer for mesh + cluster-ordered + filtered regions; firstIndex is
 	// absolute, so the index binding never switches). Per (view, flight)
@@ -689,8 +689,8 @@ struct View {
 	// Base in uint32 indices; allocBits is the VMA virtual-allocation
 	// bit pattern (VmaVirtualAllocation is a uint64_t handle; this header
 	// stays VMA-free, see the static_assert in gfx_filter.cpp).
-	uint32_t filteredBase[MAX_FRAMES_IN_FLIGHT] = {};
-	uint64_t filteredAllocBits[MAX_FRAMES_IN_FLIGHT] = {};
+	uint32_t filteredBase[smvk::limits::MaxFramesInFlight] = {};
+	uint64_t filteredAllocBits[smvk::limits::MaxFramesInFlight] = {};
 };
 
 // GPU mirror of one surviving (cluster, draw) pair ("visible meshlet").
@@ -874,7 +874,7 @@ struct TemporalView {
 	// and the vis/seed/remainder mirrors: frames overlap, uploads flush
 	// immediately, and a single shared pyramid would be clobbered by the
 	// next frame while the current one still reads it).
-	HizResources hiz[MAX_FRAMES_IN_FLIGHT];
+	HizResources hiz[smvk::limits::MaxFramesInFlight];
 	// CPU snapshot (headless-testable; GPU mirror below is uploaded by
 	// UploadVisible into the frameIndex ring slice).
 	std::vector<Batch> prevBatches; // surviving (cluster, draw) pairs
@@ -903,18 +903,18 @@ struct TemporalView {
 	std::vector<VisibleCluster> visPairScratch;
 	// GPU mirror, ringed per frame in flight (same rule as View buffers:
 	// frames overlap, uploads flush immediately).
-	Holder<BufferHandle> visClusterBuffers[MAX_FRAMES_IN_FLIGHT];
-	Holder<BufferHandle> visDrawBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle visClusterLogicals[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalBufferHandle visDrawLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> visClusterBuffers[smvk::limits::MaxFramesInFlight];
+	Holder<BufferHandle> visDrawBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle visClusterLogicals[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle visDrawLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Seed command list (T3): one indirect draw per prevBatch, reordered
 	// bucket-major (opaque runs first) with per-(bucket, material) ranges.
 	// Consumed by the seed depth pass; rebuilt from the snapshot each frame.
 	std::vector<SeedCommand> seedCommands;
 	std::vector<SeedRange> seedRanges;
 	uint32_t seedOpaqueCommands = 0; // leading commands using the opaque PSO
-	Holder<BufferHandle> seedIndirectBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle seedIndirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> seedIndirectBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle seedIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Remainder command list (T5): currVisible minus prevVisible, keyed by
 	// (cluster, model matrix). Drawn by depth pass 2 after the filter so
 	// newly exposed geometry lands in depth (and the HZB refresh) the same
@@ -922,8 +922,8 @@ struct TemporalView {
 	std::vector<SeedCommand> remainderCommands;
 	std::vector<SeedRange> remainderRanges;
 	uint32_t remainderOpaqueCommands = 0;
-	Holder<BufferHandle> remainderIndirectBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle remainderIndirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> remainderIndirectBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle remainderIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
 };
 
 // ---------------------------------------------------------------------------
@@ -965,10 +965,10 @@ struct ShadowView {
 	// Build scratch (parallel to the emit walk; capacity retained).
 	std::vector<detail::EmitEntry> emitScratch;
 	// Ringed per-frame GPU mirrors (draws BDA + indirect commands).
-	Holder<BufferHandle> drawBuffers[MAX_FRAMES_IN_FLIGHT];
-	Holder<BufferHandle> indirectBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle drawLogicals[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalBufferHandle indirectLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
+	Holder<BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
 	bool buffersReady = false;
 };
 
@@ -1024,7 +1024,7 @@ struct State {
 	// in-flight copy, and the frame's filter writes wait the chain, so a
 	// stale min can never pin a texture sharp — the cadence the retired
 	// fragment-feedback ring proved).
-	Holder<BufferHandle> demandBuffers[MAX_FRAMES_IN_FLIGHT];
+	Holder<BufferHandle> demandBuffers[smvk::limits::MaxFramesInFlight];
 	uint64_t demandMaterialsBda = 0; // this frame's slice (SetDemandInputs)
 	float demandMipBias = 0.0f;
 	// The per-frame DEFORMED heap (the Northlight compute-skinning
@@ -1055,8 +1055,8 @@ struct State {
 	// exists.
 	Holder<ShaderModuleHandle> skinBoundsModule;
 	ShaderProgram skinBoundsProgram{};
-	Holder<BufferHandle> skinBoundsBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle skinBoundsLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> skinBoundsBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle skinBoundsLogicals[smvk::limits::MaxFramesInFlight]{};
 	bool skinBoundsReady = false;
 	// GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
 	// DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
@@ -1087,13 +1087,13 @@ struct State {
 	Holder<ShaderModuleHandle> meshModule;
 	Holder<ShaderModuleHandle> meshFsModule;
 	ShaderProgram meshProgram{};
-	Holder<BufferHandle> meshParamsBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle meshParamsLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> meshParamsBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle meshParamsLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Compacted eligible batch indices, rewritten per mesh dispatch set
 	// (one upload per frame covering all variant spans; dispatches slice
 	// it via the listBDA base). kMaxBatches uints per flight.
-	Holder<BufferHandle> meshBatchLists[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle meshBatchListLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> meshBatchLists[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle meshBatchListLogicals[smvk::limits::MaxFramesInFlight]{};
 	std::vector<View> views;
 	std::vector<TemporalView> temporals; // parallel to views (same slot)
 	uint32_t viewCount = 0;
@@ -1439,7 +1439,7 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 // kDemandNoReport = no draw reported the texture this frame.
 [[nodiscard]] inline BufferHandle DemandBuffer(
 		const State& s, uint32_t frameIndex) {
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	return s.demandBuffers[frameIndex];
 }
 // GPU cull-state slice for the readback consumer (empty handle when the
@@ -1450,7 +1450,7 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 // MAIN view (views[0] - the filter's view 0; shadow legs keep their own).
 [[nodiscard]] inline BufferHandle CullStateBuffer(
 		const State& s, uint32_t frameIndex) {
-	assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	if (s.views.empty())
 		return BufferHandle{};
 	return s.views[0].cullStateBuffers[frameIndex];

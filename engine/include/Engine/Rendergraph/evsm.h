@@ -37,7 +37,7 @@
 // CascadedShadowAtlas / SpotShadowAtlas so existing lightVP math is reused.
 // Both atlases can be EVSM at once (two instances).
 //
-// Frame indexing: moments + blurred outputs are ringed by MAX_FRAMES_IN_FLIGHT.
+// Frame indexing: moments + blurred outputs are ringed by smvk::limits::MaxFramesInFlight.
 // With OneFrameLag, sample index = (writeIndex + FLIGHTS - 1) % FLIGHTS.
 
 #include <Engine/Rendergraph/rendergraph.h>
@@ -153,18 +153,18 @@ struct EvsmAtlas {
 	// the memory win that matters; the ping-pong layout is the price
 	// of correctness. 6 images per atlas, 3 per flight, all disjoint
 	// across the overlapping frame windows.
-	Holder<ImageHandle> moments[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<ImageViewHandle> momentsView[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<BindlessImageHandle> momentsBindless[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalImageViewHandle momentsLogical[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<ImageHandle> blurTemp[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<ImageViewHandle> blurTempView[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<BindlessImageHandle> blurTempBindless[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalImageViewHandle blurTempLogical[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<ImageHandle> blurred[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<ImageViewHandle> blurredView[MAX_FRAMES_IN_FLIGHT]{};
-	Holder<BindlessImageHandle> blurredBindless[MAX_FRAMES_IN_FLIGHT]{};
-	LogicalImageViewHandle blurredLogical[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<ImageHandle> moments[smvk::limits::MaxFramesInFlight]{};
+	Holder<ImageViewHandle> momentsView[smvk::limits::MaxFramesInFlight]{};
+	Holder<BindlessImageHandle> momentsBindless[smvk::limits::MaxFramesInFlight]{};
+	LogicalImageViewHandle momentsLogical[smvk::limits::MaxFramesInFlight]{};
+	Holder<ImageHandle> blurTemp[smvk::limits::MaxFramesInFlight]{};
+	Holder<ImageViewHandle> blurTempView[smvk::limits::MaxFramesInFlight]{};
+	Holder<BindlessImageHandle> blurTempBindless[smvk::limits::MaxFramesInFlight]{};
+	LogicalImageViewHandle blurTempLogical[smvk::limits::MaxFramesInFlight]{};
+	Holder<ImageHandle> blurred[smvk::limits::MaxFramesInFlight]{};
+	Holder<ImageViewHandle> blurredView[smvk::limits::MaxFramesInFlight]{};
+	Holder<BindlessImageHandle> blurredBindless[smvk::limits::MaxFramesInFlight]{};
+	LogicalImageViewHandle blurredLogical[smvk::limits::MaxFramesInFlight]{};
 
 	Holder<ShaderModuleHandle> resolveModule;
 	Holder<ShaderModuleHandle> blurHModule;
@@ -197,8 +197,8 @@ struct EvsmAtlas {
 	// the caller transition is a single mode flip.
 	[[nodiscard]] uint32_t SampleSlot(uint32_t flight) const {
 		if (pipeline == EvsmPipelineMode::SameFrame)
-			return flight % MAX_FRAMES_IN_FLIGHT;
-		return (flight + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+			return flight % smvk::limits::MaxFramesInFlight;
+		return (flight + smvk::limits::MaxFramesInFlight - 1) % smvk::limits::MaxFramesInFlight;
 	}
 
 	[[nodiscard]] uint32_t Columns() const {
@@ -217,9 +217,9 @@ struct EvsmAtlas {
 
 	// Bindless index of the moments image (resolve write / blur H read).
 	int32_t MomentsBindlessIndex(ResourceManager& ctx, uint32_t flight) const {
-		if (momentsBindless[flight % MAX_FRAMES_IN_FLIGHT].empty())
+		if (momentsBindless[flight % smvk::limits::MaxFramesInFlight].empty())
 			return -1;
-		return static_cast<int32_t>(ctx.GetBindlessIndex(momentsBindless[flight % MAX_FRAMES_IN_FLIGHT]));
+		return static_cast<int32_t>(ctx.GetBindlessIndex(momentsBindless[flight % smvk::limits::MaxFramesInFlight]));
 	}
 	// Bindless index of the blurred image (blur V write / lighting read).
 	int32_t BlurredBindlessIndex(ResourceManager& ctx, uint32_t sampleFlight) const {
@@ -231,9 +231,9 @@ struct EvsmAtlas {
 	// Per-flight scratch (the cross-frame hazard of a shared scratch is
 	// why this is NOT shared — see the struct comment).
 	int32_t TempBindlessIndex(ResourceManager& ctx, uint32_t flight) const {
-		if (blurTempBindless[flight % MAX_FRAMES_IN_FLIGHT].empty())
+		if (blurTempBindless[flight % smvk::limits::MaxFramesInFlight].empty())
 			return -1;
-		return static_cast<int32_t>(ctx.GetBindlessIndex(blurTempBindless[flight % MAX_FRAMES_IN_FLIGHT]));
+		return static_cast<int32_t>(ctx.GetBindlessIndex(blurTempBindless[flight % smvk::limits::MaxFramesInFlight]));
 	}
 	// Bindless texturesMS[] index of the transient 2x MSAA depth view (the
 	// per-sample resolve's source). -1 until the atlas is created.
@@ -274,7 +274,7 @@ struct EvsmAtlas {
 		if (!msaaDepthLogical.empty())
 			rg.FreeImageView(msaaDepthLogical);
 		msaaDepthLogical = {};
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			if (!blurredLogical[f].empty())
 				rg.FreeImageView(blurredLogical[f]);
 			if (!momentsLogical[f].empty())
@@ -344,7 +344,7 @@ struct EvsmAtlas {
 		// the resolve (graphics) and the blur (compute queue) ping-pong
 		// these images every frame, so no ownership transfers — events +
 		// layout barriers order the queues.
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			ImageCreateInfo mCI{};
 			mCI.format = desc.momentsFormat;
 			mCI.extent = { atlas.width, atlas.height, 1u };
@@ -476,7 +476,7 @@ struct EvsmAsyncPrefilter {
 	static void AddResolvePass(RenderGraph& rg, const EvsmAtlas& atlas,
 		ResourceManager& ctx, uint32_t flight, const char* name = nullptr) {
 		assert(atlas.Valid());
-		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
+		const uint32_t slot = flight % smvk::limits::MaxFramesInFlight;
 		const int32_t srcIdx = atlas.MsaaDepthBindlessIndex(ctx);
 		const int32_t dstIdx = atlas.MomentsBindlessIndex(ctx, slot);
 		assert(srcIdx >= 0 && dstIdx >= 0);
@@ -564,7 +564,7 @@ struct EvsmAsyncPrefilter {
 		ResourceManager& ctx, uint32_t flight, uint32_t tileIndex,
 		const char* nameH = nullptr, const char* nameV = nullptr) {
 		assert(atlas.Valid());
-		const uint32_t slot = flight % MAX_FRAMES_IN_FLIGHT;
+		const uint32_t slot = flight % smvk::limits::MaxFramesInFlight;
 		const int32_t srcIdx = atlas.MomentsBindlessIndex(ctx, slot);
 		const int32_t tmpIdx = atlas.TempBindlessIndex(ctx, slot);
 		const int32_t dstIdx = atlas.BlurredBindlessIndex(ctx, slot);

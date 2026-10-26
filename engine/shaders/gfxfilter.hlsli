@@ -27,6 +27,8 @@
 #define GFX_CULL_GUARD_PX 1.0f
 
 #include "hzb.hlsli"
+// Shared CPU/HLSL limits (single source — see the file's header comment).
+#include "engine_limits.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128
 #define GFX_MAX_DRAWS 4096
@@ -44,7 +46,7 @@
 #define GFX_MAX_CLUSTERS 262144
 #define GFX_MAX_FILTERED (65536 * 128 * 3)
 #define GFX_MAX_MESHES 8192         // mirrors kMaxMeshes
-#define GFX_MAX_TEXTURES 8192       // mirrors smvk::MAX_TEXTURES
+#define GFX_MAX_TEXTURES MAX_TEXTURES  // shared source: engine_limits.hlsli (smvk::limits::MaxTextures)
 
 // Positions as uint words (3 per vertex): the heap is packed float3
 // (stride 12), which a float3 array view cannot express under block layout
@@ -213,7 +215,8 @@ struct GfxSeedCmds { GfxSeedCmd cmd[GFX_MAX_BATCH_SLOTS]; };
 // Kept-bit ring: TWO parity regions in one buffer per flight. The frame
 // whose parity is P writes region P (every candidate slot gets a
 // definitive 0/1 store — no clearing needed) and reads region 1-P, which
-// was written exactly MAX_FRAMES_IN_FLIGHT frames earlier by the same
+// was written exactly smvk::limits::MaxFramesInFlight (2) frames earlier
+// by the same
 // flight's previous user (the flight fence guarantees that write is
 // complete; the current frame cannot race a concurrent one because the
 // parity regions alternate per flight use).

@@ -2417,8 +2417,8 @@ private:
 	// with an MMU read at 0x0 (Aftermath-confirmed). Mirrors the App
 	// renderer's m_resources.frameHot (see UpdateFrameUniforms).
 	smvk::Holder<smvk::BufferHandle> m_frameHotBuf; // ring: frames * kMaxViewports * sizeof(FramePSHot)
-	smvk::Holder<smvk::BufferHandle> m_materialsBuf;  // ring: frames * MAX_MATERIALS
-	smvk::Holder<smvk::BufferHandle> m_lightsBuf;     // ring: frames * MAX_LIGHTS
+	smvk::Holder<smvk::BufferHandle> m_materialsBuf;  // ring: frames * renderer::limits::MaxMaterials
+	smvk::Holder<smvk::BufferHandle> m_lightsBuf;     // ring: frames * renderer::limits::MaxSimultaneousLights
 	smvk::Holder<smvk::BufferHandle> m_cascadeBuf;    // ring: frames * GpuDirDesc
 	// Scene-wide lightmap chart transforms (see World::lmChartTable):
 	// uploaded on scene version change; the flat lightmap view + PNG

@@ -55,7 +55,7 @@ struct SkinVisual {
 	// the frame's single palette upload lands in the flight's buffer so
 	// the next frame's overwrite can never race this frame's reads (the
 	// meshParamsBuffers pattern).
-	Holder<BufferHandle> paletteBuffers[MAX_FRAMES_IN_FLIGHT] = {};
+	Holder<BufferHandle> paletteBuffers[smvk::limits::MaxFramesInFlight] = {};
 	bool valid = false;
 
 	// Compiles the compute shader + creates the per-flight palette

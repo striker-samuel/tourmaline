@@ -930,7 +930,7 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 	private:
 		friend struct CommandBuffer;
 
-		// The flight slot (fb.frameIndex % MAX_FRAMES_IN_FLIGHT) Execute is
+		// The flight slot (fb.frameIndex % smvk::limits::MaxFramesInFlight) Execute is
 		// recording for: the bindless descriptor sets are REPLICATED PER FRAME
 		// (one set per flight - see VulkanResourceManager's set allocation),
 		// each set's kBinding_EngineGlobals permanently pointing at its own

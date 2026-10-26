@@ -155,6 +155,24 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   the editor with its pick. The old in-editor blocking project modal is
   retired with the split; smoke/editor runs pass `--project F:/projects/game`
   (see the temp scripts)
+- Engine limits are OWNERSHIP-SCOPED (the old global MAX_* block in smvk.h
+  is gone). The shared CPU/HLSL layout-contract values (MAX_MATERIALS /
+  MAX_SIMULTANEOUS_LIGHTS / MAX_TEXTURES / MAX_VOLUME_TEXTURES /
+  MAX_SAMPLERS) live in ONE file — `engine/shaders/engine_limits.hlsli`
+  — whose ONLY C++ includer is `Engine/Core/Limits.h` (it converts the
+  macros to constexpr and #undefs them; never include the .hlsli from
+  C++ anywhere else). Public surface: `engine::renderer::limits`
+  (`Renderer/RendererLimits.h` — the GPU material table cap +
+  `MaxSimultaneousLights`, the RUNTIME how-many-lights-may-be-BOUND-AT-
+  ONCE-per-frame budget, NOT a per-scene/level cap; WorldRenderer's
+  FP_MAX_LIGHTS and the legacy smvk::Light ring both derive from it) and
+  `smvk::limits` (`RHI/DescriptorLimits.h` bindless budgets +
+  `RHI/FrameConfig.h` frame scheduling/window defaults, both re-exported
+  by smvk.h). Editing engine_limits.hlsli recompiles every shader AND
+  every engine TU on purpose — a layout contract must never ship
+  half-applied. The pool↔descriptor budget static_assert lives at the
+  INTEGRATION site (vulkan_impl.h, next to bindlessImages_), never in
+  Memory/pool.h (the generic pool must not know descriptor budgets).
 
 ## Strict resources (`--strict` / `TOURMALINE_STRICT=1`) + the RHI error contract
 

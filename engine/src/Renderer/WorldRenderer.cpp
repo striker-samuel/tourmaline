@@ -59,6 +59,7 @@
 
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/RendererLimits.h>
 
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
@@ -364,7 +365,11 @@ static smvk::CascadedShadowMapDesc MakeShadowDesc(uint32_t resolution, float lam
 // Engine/Rendergraph/forwardplus.h)
 // -----------------------------------------------------------------------------
 static constexpr uint32_t FP_TILE_SIZE = 16;
-static constexpr uint32_t FP_MAX_LIGHTS = 1024;
+// Runtime simultaneous-light budget — the renderer-owned limit shared by
+// BOTH light paths (the Forward+ ring below AND the legacy smvk::Light
+// ring / LightBuffer shader bound; see Engine/Renderer/RendererLimits.h).
+static constexpr uint32_t FP_MAX_LIGHTS =
+	engine::renderer::limits::MaxSimultaneousLights;
 // Probe entries ride the light buffer tail (see smvk::kForwardPlusProbe),
 // so light building caps early: appended probes can never truncate a
 // selected shadow spot, and the flight-slice stride still fits.
@@ -1144,12 +1149,12 @@ namespace engine {
 			"frame hot uniforms"
 		);
 		m_resources.lightsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::Light) * MAX_LIGHTS * m_swapchain->framesInFlight() * viewSlabs,
+			sizeof(smvk::Light) * engine::renderer::limits::MaxSimultaneousLights * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
 			"lights buffer"
 		);
 		m_resources.materialsBuffer = m_context->CreateBuffer(
-			sizeof(smvk::MaterialValues) * MAX_MATERIALS * m_swapchain->framesInFlight(),
+			sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials * m_swapchain->framesInFlight(),
 			smvk::BufferType_Storage,
 			"materials buffer"
 		);
@@ -1199,13 +1204,13 @@ namespace engine {
 		// the deferredshadow.h rings). Zero-filled once here; per-frame
 		// uploads only ever touch slice[flight], never the zero slice.
 		m_resources.dsVizParamsBuffer = m_context->CreateBuffer(
-			sizeof(DsVizParams) * (size_t(::MAX_FRAMES_IN_FLIGHT) + 1u),
+			sizeof(DsVizParams) * (size_t(smvk::limits::MaxFramesInFlight) + 1u),
 			smvk::BufferType_Storage,
 			"ds viz params"
 		);
 		if (!m_resources.dsVizParamsBuffer.empty()) {
 			const std::vector<uint8_t> vizZeros(
-				sizeof(DsVizParams) * (size_t(::MAX_FRAMES_IN_FLIGHT) + 1u), 0);
+				sizeof(DsVizParams) * (size_t(smvk::limits::MaxFramesInFlight) + 1u), 0);
 			m_context->UploadDataToBuffer(m_resources.dsVizParamsBuffer,
 				vizZeros.data(), vizZeros.size(),
 				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
@@ -4154,7 +4159,7 @@ namespace engine {
 		// Cascade frustum extraction must use the same Y-flipped proj, otherwise shadow tiles are Y-mirrored.
 		cameraProj[1][1] *= -1.0f;
 
-		smvk::Light lights[MAX_LIGHTS]{};
+		smvk::Light lights[engine::renderer::limits::MaxSimultaneousLights]{};
 		smvk::Light& light = lights[0];
 		light.color = glm::vec4(env.sunColor, 1.0f);
 		light.direction[0] = lightDir.x;
@@ -4346,7 +4351,7 @@ namespace engine {
 		// Keep lights[0].lightVP in sync for legacy single-cascade path / debug
 		std::memcpy(light.lightVP, dir.lightVP, sizeof(light.lightVP));
 
-		constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * MAX_LIGHTS;
+		constexpr size_t LIGHT_FRAME_STRIDE = sizeof(smvk::Light) * engine::renderer::limits::MaxSimultaneousLights;
 		size_t frameOffset = currentFrame * LIGHT_FRAME_STRIDE;
 		m_context->UploadDataToBuffer(
 			m_resources.lightsBuffer,
@@ -4422,12 +4427,12 @@ namespace engine {
 		// so a missing slot must stay a hole (default values), not shift
 		// every later material down by one.
 		const uint32_t slotCount = (uint32_t)m_world->materialLocations.size();
-		if (slotCount > MAX_MATERIALS) {
+		if (slotCount > engine::renderer::limits::MaxMaterials) {
 			std::cerr << "[WorldRenderer] Material slots (" << slotCount
-				<< ") exceed MAX_MATERIALS (" << MAX_MATERIALS
+				<< ") exceed engine::renderer::limits::MaxMaterials (" << engine::renderer::limits::MaxMaterials
 				<< ") - clamping upload, trailing materials will use defaults\n";
 		}
-		const uint32_t uploadCount = std::min(slotCount, MAX_MATERIALS);
+		const uint32_t uploadCount = std::min(slotCount, engine::renderer::limits::MaxMaterials);
 		// POOL -> BINDLESS remap (the engine twin of the editor's own
 		// material upload fix): MaterialValues.textures store RHI texture
 		// POOL indices, but the shaders index the bindless descriptor array.
@@ -4467,7 +4472,7 @@ namespace engine {
 		}
 
 		constexpr size_t MATERIAL_FRAME_STRIDE =
-			sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+			sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials;
 
 		size_t frameOffset =
 			currentFrame * MATERIAL_FRAME_STRIDE;
@@ -4570,7 +4575,7 @@ namespace engine {
 		// uses for pc.materialsBuffer: base + frameIndex * slab).
 		const uint64_t materialsBda =
 			m_context->GetBufferDeviceAddress(m_resources.materialsBuffer)
-			+ frameIndex * sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+			+ frameIndex * sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials;
 		smvk::gfx::SetDemandInputs(gfx, *m_context, materialsBda,
 			m_textureStreamer->GetConfig().mipBias);
 		const uint64_t epoch = m_textureStreamer->SlotMetaEpoch();
@@ -4706,7 +4711,7 @@ namespace engine {
 	void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
 		auto& meter = m_viewportResources.exposure;
 		const bool meterValid = meter.Valid()
-			&& frameSlot < static_cast<uint32_t>(::MAX_FRAMES_IN_FLIGHT);
+			&& frameSlot < static_cast<uint32_t>(smvk::limits::MaxFramesInFlight);
 		// Adaptation clock: accumulate the elapsed time BETWEEN adapt steps
 		// (the steps only run when a poll completes, every ~4-8 frames) so
 		// AdaptExposureFromBins can damp with the true elapsed seconds -
@@ -8340,14 +8345,14 @@ namespace engine {
 			+ fb.frameIndex * sizeof(FrameUniforms);
 
 		constexpr size_t LIGHT_FRAME_STRIDE =
-			sizeof(smvk::Light) * MAX_LIGHTS;
+			sizeof(smvk::Light) * engine::renderer::limits::MaxSimultaneousLights;
 
 		uint64_t lightsBufferAddress =
 			m_context->GetBufferDeviceAddress(m_resources.lightsBuffer)
 			+ fb.frameIndex * LIGHT_FRAME_STRIDE;
 
 		constexpr size_t MATERIAL_FRAME_STRIDE =
-			sizeof(smvk::MaterialValues) * MAX_MATERIALS;
+			sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials;
 
 		uint64_t materialsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.materialsBuffer)
@@ -15572,7 +15577,7 @@ namespace engine {
 						std::fprintf(stderr, "[SkinDump] deformed download FAILED\n");
 				}
 				// ---- (b) skinBounds cone table (this flight) ----
-				if (st.skinBoundsReady && fb.frameIndex < ::MAX_FRAMES_IN_FLIGHT
+				if (st.skinBoundsReady && fb.frameIndex < smvk::limits::MaxFramesInFlight
 					&& !st.skinBoundsBuffers[fb.frameIndex].empty()) {
 					// The skinned draws' slot ranges (the pass wrote exactly
 					// these): one covering span download.

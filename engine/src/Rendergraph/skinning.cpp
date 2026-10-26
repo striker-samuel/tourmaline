@@ -66,7 +66,7 @@ bool SkinVisual::AppendPass(ResourceManager& ctx, RenderGraph& rg,
 		return false;
 
 	// This flight's palette buffer (lazily created).
-	const uint32_t f = frameIndex % MAX_FRAMES_IN_FLIGHT;
+	const uint32_t f = frameIndex % smvk::limits::MaxFramesInFlight;
 	if (paletteBuffers[f].empty()) {
 		paletteBuffers[f] = ctx.CreateBuffer(
 			kSkinPaletteMax * sizeof(glm::mat4), BufferType_Storage,

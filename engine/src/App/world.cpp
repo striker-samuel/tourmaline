@@ -482,7 +482,8 @@ namespace smvk {
 			// Deduplicated by (cluster, cluster-local material): instanced
 			// scenes share a handful of materials across hundreds of thousands
 			// of nodes (scanlands: 96 materials over 374k instances). One slot
-			// per instance overflows the GPU materials buffer (MAX_MATERIALS)
+			// per instance overflows the GPU materials buffer (renderer
+			// limits: engine::renderer::limits::MaxMaterials)
 			// and shaders read OOB past it (GPU fault / device loss on heavy
 			// views). Mesh slots stay per-node (CPU-side only); material slots
 			// are GPU-indexed by materialId, so they must stay addressable.

@@ -604,7 +604,7 @@ namespace smvk {
 			std::atomic<bool> active{ false };
 			// UploadInFlight storage (never mallocs on the upload hot
 			// path). Monotonic: pending ranges/acquires stay in flight
-			// across frames (MAX_FRAMES_IN_FLIGHT + transfer->graphics
+			// across frames (smvk::limits::MaxFramesInFlight + transfer->graphics
 			// chain), so the backing transient bump is NEVER rewound
 			// while these are live — storage grows to the high-water
 			// mark and is reused per-element (clear/erase keeps
@@ -969,7 +969,7 @@ namespace smvk {
 		// keep every flight's set in sync; the engine-globals binding itself is
 		// never rewritten after init, so in-flight siblings never see each
 		// other's slices.
-		VkDescriptorSet defaultDescriptorSets_[MAX_FRAMES_IN_FLIGHT]{};
+		VkDescriptorSet defaultDescriptorSets_[smvk::limits::MaxFramesInFlight]{};
 
 		// Resources – one local shard per thread, no pool locks (see pool.h).
 		// create() allocates in the calling thread's shard; get()/destroy()
@@ -998,6 +998,15 @@ namespace smvk {
 		ShardedPool<ImageViewTag, ImageView> imageViews_;
 
 		ShardedPool<SamplerTag, VkSampler> samplers_;
+		// Bindless pools alias their sharded handle index as the
+		// descriptor-array slot (impl.cpp: resource->descriptorIndex =
+		// handle.index()), so the RHI bindless budget must cover the FULL
+		// ShardedPool index space. This is the pool/descriptor INTEGRATION
+		// point — the assert deliberately does NOT live in Memory/pool.h
+		// (the generic pool must not know descriptor budgets); the budget
+		// itself is RHI-owned (Engine/RHI/DescriptorLimits.h).
+		static_assert(kShardedMaxSize <= smvk::limits::MaxTextures,
+			"bindless descriptor budget must cover the full ShardedPool index space");
 		ShardedPool<BindlessImageTag, BindlessImage> bindlessImages_;
 		ShardedPool<DescriptorPoolTag, VkDescriptorPool> descriptorPools_;
 		ShardedPool<ShaderModuleTag, ShaderModule> shaderModules_;
@@ -1010,7 +1019,7 @@ namespace smvk {
 		mutable std::atomic<bool> m_needToUpdateTextures{ true };
 		mutable std::atomic<bool> m_needToUpdateSamplers{ true };
 
-		// SamplerCache API – stable index into sampler descriptor array [0, MAX_SAMPLERS)
+		// SamplerCache API – stable index into sampler descriptor array [0, smvk::limits::MaxSamplers)
 		uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
 		VkSampler GetVkSampler(uint32_t index) const;
 		uint32_t GetSamplerCount() const;
@@ -1188,7 +1197,7 @@ namespace smvk {
 		// Stage-timer query pool of a flight (the frame-timer pool: stage
 		// pairs ride queries 2+2s / 3+2s). NULL_HANDLE when unsupported.
 		VkQueryPool TimestampPool(uint32_t flight) const {
-			return (flight < MAX_FRAMES_IN_FLIGHT) ? timestampPools_[flight] : VkQueryPool(VK_NULL_HANDLE);
+			return (flight < smvk::limits::MaxFramesInFlight) ? timestampPools_[flight] : VkQueryPool(VK_NULL_HANDLE);
 		}
 		// Last vkQueuePresentKHR wall time (ms). Under FIFO VSync the
 		// present blocks for the vertical blank — idle wait, not CPU work.
@@ -1210,8 +1219,8 @@ namespace smvk {
 		Format depthFormat{};
 
 #pragma region ===[ Frame Commands List ]===
-		VkCommandPool perFrameCommandPools[MAX_FRAMES_IN_FLIGHT]{};
-		VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT]{};
+		VkCommandPool perFrameCommandPools[smvk::limits::MaxFramesInFlight]{};
+		VkCommandBuffer commandBuffers[smvk::limits::MaxFramesInFlight]{};
 		// True-async-compute split (EVSM SameFrame): G1 (graphics, through
 		// the moment passes) -> C (compute-queue blur) -> G2 (graphics,
 		// lighting onward). Chained with per-flight timeline semaphores
@@ -1222,10 +1231,10 @@ namespace smvk {
 		// lazily on first split use (needs the compute family), reset in
 		// Acquire (slot retired), destroyed in dtor. Monotonic values per
 		// flight.
-		VkCommandPool splitPools[MAX_FRAMES_IN_FLIGHT]{};      // graphics family (G2)
-		VkCommandBuffer splitBuffers[MAX_FRAMES_IN_FLIGHT]{};  // G2
-		VkCommandPool asyncComputePools[MAX_FRAMES_IN_FLIGHT]{}; // compute family (C)
-		VkCommandBuffer asyncComputeBuffers[MAX_FRAMES_IN_FLIGHT]{};
+		VkCommandPool splitPools[smvk::limits::MaxFramesInFlight]{};      // graphics family (G2)
+		VkCommandBuffer splitBuffers[smvk::limits::MaxFramesInFlight]{};  // G2
+		VkCommandPool asyncComputePools[smvk::limits::MaxFramesInFlight]{}; // compute family (C)
+		VkCommandBuffer asyncComputeBuffers[smvk::limits::MaxFramesInFlight]{};
 		// Per-pass C command buffers: the async passes chain as one
 		// CB + submit EACH, linked on the asyncG2C_ timeline (G1 signals
 		// g2cVal, pass k waits g2cVal+k / signals g2cVal+k+1, the last pass
@@ -1236,12 +1245,12 @@ namespace smvk {
 		// dependency solve; the intra-C hint barriers keep carrying only
 		// the layout transitions. Grown on demand from the async compute
 		// pool; handles survive the per-flight pool resets in Acquire.
-		std::vector<VkCommandBuffer> asyncPassBuffers[MAX_FRAMES_IN_FLIGHT]{};
-		VkSemaphore asyncG2C_[MAX_FRAMES_IN_FLIGHT]{}; // G1 -> C (+ intra-C chain values)
-		VkSemaphore asyncC2G_[MAX_FRAMES_IN_FLIGHT]{}; // C -> G2
-		uint64_t asyncG2CValue_[MAX_FRAMES_IN_FLIGHT] = {};
-		uint64_t asyncC2GValue_[MAX_FRAMES_IN_FLIGHT] = {};
-		bool asyncSplitReady_[MAX_FRAMES_IN_FLIGHT] = {};
+		std::vector<VkCommandBuffer> asyncPassBuffers[smvk::limits::MaxFramesInFlight]{};
+		VkSemaphore asyncG2C_[smvk::limits::MaxFramesInFlight]{}; // G1 -> C (+ intra-C chain values)
+		VkSemaphore asyncC2G_[smvk::limits::MaxFramesInFlight]{}; // C -> G2
+		uint64_t asyncG2CValue_[smvk::limits::MaxFramesInFlight] = {};
+		uint64_t asyncC2GValue_[smvk::limits::MaxFramesInFlight] = {};
+		bool asyncSplitReady_[smvk::limits::MaxFramesInFlight] = {};
 		bool EnsureAsyncSplit(uint32_t flight); // false = no dedicated compute
 		bool EnsureAsyncPassBuffers(uint32_t flight, uint32_t count); // grow per-pass C CBs
 		// Shared frame-command setup (the ctor): pool per flight
@@ -1270,7 +1279,7 @@ namespace smvk {
 		int windowWidth = 0;
 		int windowHeight = 0;
 		uint32_t framesInFlight_ = 0;
-		uint32_t desiredImageCount_ = DESIRED_SWAPCHAIN_IMAGE_COUNT;
+		uint32_t desiredImageCount_ = smvk::limits::DesiredSwapchainImageCount;
 		uint32_t currentImageIndex_ = 0;
 		uint32_t currentFrame_ = 0;
 
@@ -1283,9 +1292,9 @@ namespace smvk {
 
 		// Per-frame timestamp query pools (2 queries each: frame start/end)
 		// for the CPU/GPU time split overlay. Indexed by frame slot
-		// (currentFrame_ < MAX_FRAMES_IN_FLIGHT), so they survive Recreate.
-		VkQueryPool timestampPools_[MAX_FRAMES_IN_FLIGHT]{};
-		bool timestampWritten_[MAX_FRAMES_IN_FLIGHT] = {};
+		// (currentFrame_ < smvk::limits::MaxFramesInFlight), so they survive Recreate.
+		VkQueryPool timestampPools_[smvk::limits::MaxFramesInFlight]{};
+		bool timestampWritten_[smvk::limits::MaxFramesInFlight] = {};
 		float timestampPeriod_ = 0.0f; // ns per timestamp tick
 		double lastGpuMs_ = 0.0;
 		bool gpuTimingValid_ = false;
@@ -1434,7 +1443,7 @@ namespace smvk {
 	// ------------------------------------------------------------------
 	// VulkanSamplerCache – deduplicates VkSampler objects.
 	// Like VulkanPipelineCache, a description key (SamplerCreateInfo) maps
-	// to a stable descriptor-array index (0 .. MAX_SAMPLERS-1). The cache
+	// to a stable descriptor-array index (0 .. smvk::limits::MaxSamplers-1). The cache
 	// owns the VkSampler handles and drives descriptor updates.
 	// ------------------------------------------------------------------
 	class VulkanSamplerCache
@@ -1448,7 +1457,7 @@ namespace smvk {
 		// Returns stable index into the global sampler descriptor array.
 		// Creates the VkSampler on first use; subsequent calls with the
 		// same SamplerCreateInfo return the same index without allocation.
-		// Asserts if MAX_SAMPLERS would be exceeded (sampler count is a
+		// Asserts if smvk::limits::MaxSamplers would be exceeded (sampler count is a
 		// physical limit – caller must stay within budget).
 		uint32_t GetOrCreate(const SamplerCreateInfo& ci);
 

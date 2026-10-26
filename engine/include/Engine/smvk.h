@@ -5,6 +5,8 @@
 
 #include <Engine/Memory/handle.h>
 #include <Engine/Memory/string_view.h>
+#include <Engine/RHI/DescriptorLimits.h>
+#include <Engine/RHI/FrameConfig.h>
 
 #include <cassert>
 #include <array>
@@ -20,25 +22,20 @@
 #include <vector>
 #include <set>
 
-static constexpr uint32_t DEFAULT_WIDTH = 1920;
-static constexpr uint32_t DEFAULT_HEIGHT = 1080;
-static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-static constexpr uint32_t DESIRED_SWAPCHAIN_IMAGE_COUNT = 2;
-static constexpr uint32_t MAX_BUFFERS = 1024;
-static constexpr uint32_t MAX_LIGHTS = 64;
-// Bindless descriptor budget for sampled/storage image arrays. Must cover
-// the full ShardedPool index space (kNumPoolShards * kShardCapacity =
-// 16 * 512 = 8192): sharded handle indices double as descriptor-array
-// slots in the bindless pools (see Memory/pool.h static_assert).
-static constexpr uint32_t MAX_TEXTURES = 8192;
-static constexpr uint32_t MAX_SAMPLERS = 8;
-// 3D volume mirror binding (kBinding_VolumeTextures) reuses the SAME slot
-// space as MAX_TEXTURES (one mirror write per 3D view), so it needs the
-// same array bound.
-static constexpr uint32_t MAX_VOLUME_TEXTURES = 8192;
-static constexpr uint32_t MAX_MATERIALS = 4096;
-static constexpr uint32_t MAX_SHADOW_SAMPLERS = 8;
-static constexpr uint32_t MAX_COLOR_ATTACHEMNTS = 4096;
+// ENGINE LIMITS no longer live here — they are ownership-scoped:
+//   smvk::limits (RHI-owned: bindless descriptor budgets, frame
+//   scheduling, window defaults): Engine/RHI/DescriptorLimits.h +
+//   Engine/RHI/FrameConfig.h (both included above via this umbrella).
+//   engine::renderer::limits (renderer-owned: GPU material table +
+//   runtime simultaneous-light budgets): Engine/Renderer/
+//   RendererLimits.h — deliberately NOT included here; renderer-side
+//   files include it directly (the RHI must not know materials or
+//   lights exist).
+// The CPU/HLSL shared values' single source of truth:
+//   engine/shaders/engine_limits.hlsli (bridged into C++ by
+//   Engine/Core/Limits.h — the only C++ includer of that file).
+// Retired with the move (dead constants, zero references anywhere):
+//   MAX_BUFFERS, MAX_SHADOW_SAMPLERS, MAX_COLOR_ATTACHEMNTS.
 
 namespace smvk {
 

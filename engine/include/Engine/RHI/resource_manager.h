@@ -214,7 +214,8 @@ public:
     // that drops its partial cluster).
     void WaitForUploads();
     // Sampler cache – deduplicates by description, returns stable
-    // index into the global sampler descriptor array (0 .. MAX_SAMPLERS-1).
+    // index into the global sampler descriptor array
+    // (0 .. smvk::limits::MaxSamplers-1).
     // Mirrors VulkanPipelineCache: same SamplerCreateInfo → same index.
     uint32_t GetOrCreateSampler(const SamplerCreateInfo& ci);
     uint32_t GetSamplerCount() const;

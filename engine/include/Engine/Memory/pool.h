@@ -115,10 +115,10 @@ namespace smvk {
 	inline constexpr uint32_t kShardCapacity = mem::config::kShardCapacity;
 	inline constexpr uint32_t kShardedMaxSize = mem::config::kShardedMaxSize; // 8192, matches old Pool::kMaxSize
 
-	// Bindless pools alias their sharded handle index as the descriptor-array
-	// slot, so the global bindless budget must cover this entire index space.
-	static_assert(kShardedMaxSize <= MAX_TEXTURES,
-		"bindless descriptor budget must cover the full ShardedPool index space");
+	// The bindless-budget contract (kShardedMaxSize <= smvk::limits::
+	// MaxTextures) is asserted at the pool/descriptor INTEGRATION site
+	// (Vulkan/detail/vulkan_impl.h, next to the bindless pools): the
+	// generic memory pool must not know descriptor budgets.
 
 	inline thread_local uint32_t t_poolShard = 0; // main thread == shard 0
 	inline std::atomic<uint32_t> g_nextPoolShard{1};

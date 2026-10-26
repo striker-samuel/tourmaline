@@ -96,8 +96,8 @@ struct ExposureMeter {
 	// any single-copy buffer would be clobbered by the next frame while the
 	// current one still accumulates. Same rule as the gfx filter's per-view
 	// ring slices and RenderViewSet's slab.
-	Holder<BufferHandle> histogramBuffers[MAX_FRAMES_IN_FLIGHT];
-	LogicalBufferHandle histogramLogicals[MAX_FRAMES_IN_FLIGHT]{};
+	Holder<BufferHandle> histogramBuffers[smvk::limits::MaxFramesInFlight];
+	LogicalBufferHandle histogramLogicals[smvk::limits::MaxFramesInFlight]{};
 	ExposureDesc desc{};
 
 	Holder<ShaderModuleHandle> histogramModule;
@@ -108,18 +108,18 @@ struct ExposureMeter {
 	uint32_t lastTotal = 0;
 
 	[[nodiscard]] bool Valid() const {
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			if (histogramBuffers[f].empty() || histogramLogicals[f].empty())
 				return false;
 		}
 		return true;
 	}
 	[[nodiscard]] BufferHandle HistogramBuffer(uint32_t frameIndex) const {
-		assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+		assert(frameIndex < smvk::limits::MaxFramesInFlight);
 		return histogramBuffers[frameIndex];
 	}
 	[[nodiscard]] LogicalBufferHandle HistogramLogical(uint32_t frameIndex) const {
-		assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+		assert(frameIndex < smvk::limits::MaxFramesInFlight);
 		return histogramLogicals[frameIndex];
 	}
 	[[nodiscard]] bool ShadersValid() const {
@@ -160,7 +160,7 @@ struct ExposureMeter {
 		if (d.bins == 0 || d.bins > kExposureBinCount)
 			return false;
 		Destroy(rg);
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			Holder<BufferHandle> buf = ctx.CreateBuffer(
 				kExposureHistogramBytes, BufferType_Storage, "exposure histogram");
 			if (buf.empty()) {
@@ -189,7 +189,7 @@ struct ExposureMeter {
 	}
 
 	void Destroy(RenderGraph& rg) {
-		for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
 			if (!histogramLogicals[f].empty())
 				rg.FreeBuffer(histogramLogicals[f]);
 			histogramLogicals[f] = {};
@@ -234,7 +234,7 @@ struct ExposureMeter {
 		const char* name = "ExposureHistogram") const {
 		assert(Valid());
 		assert(!hdrView.empty());
-		assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+		assert(frameIndex < smvk::limits::MaxFramesInFlight);
 		RenderPass& pass = rg.AddComputePass(name);
 		ImageSyncRequest hdrReq{};
 		hdrReq.barrierMasks.accessMask = AccessFlags::ShaderRead;

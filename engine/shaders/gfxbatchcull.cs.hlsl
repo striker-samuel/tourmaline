@@ -16,7 +16,7 @@
 //      degenerate cones).
 //   3. temporal verdicts, all GPU-resident (zero CPU readbacks): the
 //      kept-bit parity ring holds the previous frame chain's verdicts
-//      (written MAX_FRAMES_IN_FLIGHT frames ago — flight-fenced complete).
+//      (written smvk::limits::MaxFramesInFlight (2) frames ago — flight-fenced complete).
 //        seed      = kept && prevKept  (reused visible set)
 //        remainder = kept && !prevKept (disocclusions: drawn the same
 //                                       frame — no one-frame holes)
@@ -164,7 +164,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
 
         // Every candidate slot gets a definitive write every frame — no
         // clearing, no stale content (the parity region's previous writer
-        // was MAX_FRAMES_IN_FLIGHT frames ago and is fence-complete).
+        // was smvk::limits::MaxFramesInFlight (2) frames ago and is fence-complete).
         pcB.kept.Get().kept[keptOff + slot] = keptV;
         pcB.batches.Get().batch[slot] =
             uint4(me.clusterStart + ci, drawIdx, 0u, 0u);

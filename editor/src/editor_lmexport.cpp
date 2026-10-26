@@ -11,6 +11,7 @@
 #include "editor_app.h"
 
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/RendererLimits.h>
 
 #include <cstdio>
 #include <filesystem>
@@ -22,9 +23,12 @@
 
 namespace editor {
 namespace {
-// Mirrors the main-pass ring strides (editor_render.cpp).
-constexpr uint32_t kMaxLights = 64;
-constexpr uint32_t kMaxMaterials = 4096;
+// Mirrors the main-pass ring strides (editor_render.cpp): the
+// renderer-owned budgets from Engine/Renderer/RendererLimits.h.
+constexpr uint32_t kMaxLights =
+	engine::renderer::limits::MaxSimultaneousLights;
+constexpr uint32_t kMaxMaterials =
+	engine::renderer::limits::MaxMaterials;
 } // namespace
 
 void EditorApp::EnsureLightmapExportTarget(smvk::Extent2D extent) {

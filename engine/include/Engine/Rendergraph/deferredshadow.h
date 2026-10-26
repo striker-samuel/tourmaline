@@ -420,20 +420,20 @@ inline void DsBuildTileMasks(const std::vector<ForwardPlusLight>& lights,
 
 struct DeferredShadows {
     // Per-flight ring (see the pipeline note above).
-    Holder<BufferHandle> zBins[MAX_FRAMES_IN_FLIGHT]{};
-    Holder<BufferHandle> tileMasks[MAX_FRAMES_IN_FLIGHT]{};
-    Holder<BufferHandle> tileGroupMasks[MAX_FRAMES_IN_FLIGHT]{};
-    Holder<BufferHandle> tileState[MAX_FRAMES_IN_FLIGHT]{};
-    Holder<BufferHandle> lightList[MAX_FRAMES_IN_FLIGHT]{};
-    Holder<BufferHandle> visibility[MAX_FRAMES_IN_FLIGHT]{};
-    Holder<BufferHandle> counters[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle zBinsLogical[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle tileMasksLogical[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle tileGroupMasksLogical[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle tileStateLogical[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle lightListLogical[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle visibilityLogical[MAX_FRAMES_IN_FLIGHT]{};
-    LogicalBufferHandle countersLogical[MAX_FRAMES_IN_FLIGHT]{};
+    Holder<BufferHandle> zBins[smvk::limits::MaxFramesInFlight]{};
+    Holder<BufferHandle> tileMasks[smvk::limits::MaxFramesInFlight]{};
+    Holder<BufferHandle> tileGroupMasks[smvk::limits::MaxFramesInFlight]{};
+    Holder<BufferHandle> tileState[smvk::limits::MaxFramesInFlight]{};
+    Holder<BufferHandle> lightList[smvk::limits::MaxFramesInFlight]{};
+    Holder<BufferHandle> visibility[smvk::limits::MaxFramesInFlight]{};
+    Holder<BufferHandle> counters[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle zBinsLogical[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle tileMasksLogical[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle tileGroupMasksLogical[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle tileStateLogical[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle lightListLogical[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle visibilityLogical[smvk::limits::MaxFramesInFlight]{};
+    LogicalBufferHandle countersLogical[smvk::limits::MaxFramesInFlight]{};
 
     Holder<ShaderModuleHandle> phaseModules[3]{};
     ShaderProgram phasePrograms[3]{};
@@ -447,7 +447,7 @@ struct DeferredShadows {
     [[nodiscard]] bool Valid() const {
         if (tileCountX == 0 || tileCountY == 0)
             return false;
-        for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
             if (zBins[f].empty() || tileMasks[f].empty() ||
                 tileGroupMasks[f].empty() || tileState[f].empty() ||
                 lightList[f].empty() || visibility[f].empty() ||
@@ -536,7 +536,7 @@ struct DeferredShadows {
             zBinsLogical, tileMasksLogical, tileGroupMasksLogical,
             tileStateLogical, lightListLogical, visibilityLogical, countersLogical
         };
-        for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
             for (uint32_t b = 0; b < 7; ++b) {
                 Holder<BufferHandle> buf = ctx.CreateBuffer(
                     specs[b].size, BufferType_Storage, specs[b].name);
@@ -582,7 +582,7 @@ struct DeferredShadows {
         Holder<BufferHandle>* buffers[7] = {
             zBins, tileMasks, tileGroupMasks, tileState, lightList, visibility, counters
         };
-        for (uint32_t f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
             for (uint32_t b = 0; b < 7; ++b) {
                 if (!logicals[b][f].empty())
                     rg.FreeBuffer(logicals[b][f]);

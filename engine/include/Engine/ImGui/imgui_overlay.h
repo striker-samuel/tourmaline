@@ -162,7 +162,7 @@ public:
     ImTextureID AddUserTextureView(ImageViewHandle view, uint32_t samplerIndex);
     // DEFERRED free of a binding minted above — never immediate: the
     // binding's descriptor set is referenced by the ImGui draw data of
-    // the frame that last drew it (and by up to MAX_FRAMES_IN_FLIGHT
+    // the frame that last drew it (and by up to smvk::limits::MaxFramesInFlight
     // prior in-flight submissions), so freeing it under them
     // (ImGui_ImplVulkan_RemoveTexture -> vkFreeDescriptorSets, immediate)
     // binds a freed set and faults the device — the texture-viewer
@@ -200,7 +200,7 @@ private:
     // Deferred user-texture retirement (see RetireUserTexture): one render
     // tick per Render() call; entries free once
     // (renderTicks_ - stamp) > kUserTextureRetireRenders.
-    static constexpr uint64_t kUserTextureRetireRenders = 4; // MAX_FRAMES_IN_FLIGHT (2-3) + 1 margin
+    static constexpr uint64_t kUserTextureRetireRenders = 4; // smvk::limits::MaxFramesInFlight (2-3) + 1 margin
     std::vector<std::pair<uint64_t, uint64_t>> userTextureRetireQueue_{}; // (id, render stamp)
     uint64_t renderTicks_ = 0;
 };
