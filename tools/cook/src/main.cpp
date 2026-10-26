@@ -108,6 +108,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/bake_inputs.h> // the invalidation model (unit hashes)
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/Renderer/cubemap.h>
@@ -3117,19 +3118,26 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 	}
 
-	// NAMELESS capture-set base: the FIRST input artifact's stem
-	// (Sponza.geometry -> "Sponza"). pak.exe discovers + embeds the
-	// manifest by side-car stem (gi/cubemaps/<stem>.cubemanifest), so the
-	// bake MUST land on that stem or the pak silently ships without GI
-	// (observed: the old "sky" default baked fine but never embedded,
-	// gi=0/cubemaps=0, no specular IBL at runtime). The runtime accepts
-	// whatever base the pak registers, so no name exists anywhere else.
+	// The RECORD-BOUND capture-set base (the invalidation model): the
+	// set uuid is STABLE across rebakes — the tour's giAsset captures
+	// record names the manifest, the per-capture ktx2 rows ride the same
+	// uuid, so SKIPPED captures keep their bytes in place (recook-
+	// idempotent like .geometry). No record yet = a fresh mint. The
+	// retired stem/sky derivations (the artifact stem / the "sky"
+	// default) never reliably matched the pak's discovery — the record
+	// IS the identification. ("gi/cubemaps/" is 12 chars; the
+	// .cubemanifest suffix 13.)
 	std::string base;
-	if (!args.inVfsList.empty())
-		base = std::filesystem::path(args.inVfsList.front())
-			.stem().generic_string();
-	if (base.empty())
-		base = "sky";
+	{
+		const std::string& rec = cluster.scene.giCapturesSource;
+		if (rec.size() > 25
+				&& rec.compare(0, 12, "gi/cubemaps/") == 0
+				&& rec.compare(rec.size() - 13, 13, ".cubemanifest")
+					== 0)
+			base = rec.substr(12, rec.size() - 25);
+		if (base.empty())
+			base = smvk::tour::GenerateUuid();
+	}
 
 	// Stable paths (like mesh blobs): captures at
 	// gi/cubemaps/<base>_<N>.ktx2 (the single capture keeps the
@@ -3238,12 +3246,73 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// Machine-readable total for progress clients (the editor's cook
 	// dialog parses it into TaskWindowStage fractions; per-capture
 	// "baked" lines below mark completion).
+	// The invalidation model's per-capture state (Engine/GI/
+	// bake_inputs.h): the geometry merkle + the previously recorded
+	// manifest rows (with their input hashes) + the .reach sidecar (the
+	// per-capture OBSERVED cells). A capture whose CURRENT def matches
+	// the old row's BY VALUE (the placement is deterministic — a moved
+	// or re-placed probe fails this) AND whose recorded input hash
+	// reproduces (the OLD def + OLD reach over the CURRENT grid — a
+	// changed seen cell, or new content in a formerly-empty traversed
+	// cell, breaks it) is FRESH: the expensive face bake is skipped and
+	// the ktx2 bytes stay in place.
+	BakeCellGrid grid = BuildBakeCellGrid(cluster);
+	std::vector<smvk::CubemapManifestEntry> oldRows;
+	CaptureReachFile oldReach;
+	{
+		const std::string rec = cluster.scene.giCapturesSource;
+		if (!rec.empty()) {
+			const std::vector<uint8_t> manifestBytes =
+				ReadLooseBakeFile(args.contentDir, rec);
+			if (!manifestBytes.empty()) {
+				std::string_view text(
+					reinterpret_cast<const char*>(manifestBytes.data()),
+					manifestBytes.size());
+				std::string mErr;
+				if (!smvk::CubemapManifestParse(text, oldRows, mErr))
+					tool::err() << "  [CUBE] old manifest rejected (full "
+						"re-bake): " << mErr << "\n";
+			}
+			const std::string reachVfs = rec.substr(0, rec.size() - 13)
+				+ "reach";
+			const std::vector<uint8_t> reachBytes =
+				ReadLooseBakeFile(args.contentDir, reachVfs);
+			if (!reachBytes.empty()
+					&& !ParseCaptureReach(reachBytes.data(),
+						reachBytes.size(), oldReach))
+				tool::err() << "  [CUBE] old reach rejected (full "
+					"re-bake)\n";
+		}
+	}
+	CubemapBakeConfigHashInputs cfgHash{};
+	cfgHash.size = args.cubemapSize;
+	cfgHash.rays = args.cubemapRays;
+	cfgHash.maskTransmission = args.maskTransmission;
+	tool::err() << "  [CUBE] invalidation state: oldRows="
+		<< oldRows.size() << " oldReach=" << oldReach.entries.size()
+		<< " gridCells=" << grid.cells.size()
+		<< " (meshes=" << grid.meshCount << ")\n" << std::flush;
+	std::vector<std::string> rowHashes(positions.size());
+	std::vector<std::vector<CellId>> rowCells(positions.size());
+	size_t skippedCaptures = 0;
+	auto oldReachCells = [&](size_t cap) -> const std::vector<CellId>& {
+		static const std::vector<CellId> kNone;
+		for (const CaptureReachFile::Entry& e : oldReach.entries)
+			if (e.rowIndex == cap)
+				return e.cells;
+		return kNone;
+	};
+
 	tool::err() << "  [CUBE] captures=" << positions.size() << "\n" << std::flush;
 
 	for (size_t cap = 0; cap < positions.size(); ++cap) {
 		const glm::vec3 origin = positions[cap];
-		const std::string captureName = positions.size() == 1
-			? base : base + "_" + std::to_string(cap);
+		// The capture name rides the set uuid (the manifest rows and
+		// the ktx2 files share it — the old single-capture bare-name
+		// special case died with the stem discovery; a 1-row set
+		// manifests like any other).
+		const std::string captureName =
+			base + "_" + std::to_string(cap);
 		// Store TRUE radiance (no /skyIntensity): the runtime's baked path
 		// scales only by the cubemap panel intensity, so a mirror
 		// reflecting a sun-lit wall matches looking at that wall directly.
@@ -3343,6 +3412,64 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 		captureDead.push_back(0);
 		fitBoxes.emplace_back(fitMin, fitMax);
+
+		// The per-capture FRESHNESS CHECK (the invalidation model — the
+		// state block above the loop): a capture is SKIPPED when an OLD
+		// row matches its CURRENT def BY VALUE (the manifest drops dead
+		// captures, so its row order loses the original capture indices
+		// — the def itself, position-first, is the identity; the
+		// placement is deterministic, so a moved probe matches nothing)
+		// AND that row's recorded input hash reproduces (the OLD def +
+		// OLD observed reach over the CURRENT grid). The skipped
+		// capture's ktx2 bytes stay in place (the set uuid is stable),
+		// the row + reach bookkeeping carries forward unchanged.
+		{
+			const bool isPinnedCap = cap < pinned.size()
+				&& pinned[cap] != 0;
+			const glm::vec2 rr = radii.size() == positions.size()
+				? radii[cap] : glm::vec2(10.0f, 5.0f);
+			// The manifest serializes defs at %.6g (6 significant digits),
+			// so a parsed-back old row is a QUANTIZED def — the match
+			// needs a tolerance at that granularity, never exact floats.
+			auto near3 = [](const glm::vec3& a, const glm::vec3& b) {
+				return glm::length(a - b) < 1e-3f;
+			};
+			auto nearF = [](float a, float b) {
+				return std::abs(a - b) < 1e-3f;
+			};
+			const smvk::CubemapManifestEntry* old = nullptr;
+			size_t oldRowIdx = 0;
+			for (size_t o = 0; o < oldRows.size(); ++o) {
+				const auto& r = oldRows[o];
+				if (near3(r.position, origin)
+						&& nearF(r.influenceRadius, rr.x)
+						&& nearF(r.fadeRadius, rr.y)
+						&& r.pinned == isPinnedCap
+						&& near3(r.boxMin, fitMin)
+						&& near3(r.boxMax, fitMax)) {
+					old = &r;
+					oldRowIdx = o;
+					break;
+				}
+			}
+			if (old && !old->inputHash.empty()) {
+				const std::vector<CellId>& cells =
+					oldReachCells(uint32_t(oldRowIdx));
+				const std::string fresh = CubemapBakeUnitHash(grid,
+					cluster, old->position, old->influenceRadius,
+					old->fadeRadius, old->boxMin, old->boxMax,
+					old->pinned, cfgHash, cells);
+				if (fresh == old->inputHash) {
+					rowHashes[cap] = old->inputHash;
+					rowCells[cap] = cells;
+					++skippedCaptures;
+					tool::err() << "  [CUBE] '" << captureName
+						<< "': inputs unchanged — SKIPPED (the baked "
+						<< "capture stands)\n" << std::flush;
+					continue;
+				}
+			}
+		}
 
 		// Trace 6 HDR base faces. Per texel: --cubemap-spp transport paths,
 		// averaged — the NEE sun/spot term is analytic (clean at 1 spp), but
@@ -3465,6 +3592,20 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 		out.emplace_back(vfsPath, std::move(ktx));
 
+		// The OBSERVED reach sweep + the unit hash (the invalidation
+		// model): the capture's deterministic ray set records every 1 m
+		// cell it traverses (one BVH traversal per ray — the cheap part
+		// of the bake it just ran), and the hash folds env + lights +
+		// the def + the config + those cells. The NEXT bake recomputes
+		// with the then-current grid hashes and skips this capture when
+		// nothing it can see changed.
+		rowCells[cap] = RecordCaptureReach(traceScene, origin, 128);
+		rowHashes[cap] = CubemapBakeUnitHash(grid, cluster, origin,
+			radii.size() == positions.size() ? radii[cap].x : 10.0f,
+			radii.size() == positions.size() ? radii[cap].y : 5.0f,
+			fitMin, fitMax, cap < pinned.size() && pinned[cap] != 0,
+			cfgHash, rowCells[cap]);
+
 		// Debug PNGs from the same preconvolved chains the KTX encodes
 		// (comparing these against the runtime view separates bake/encode
 		// faults from load/sample faults). Non-fatal by design.
@@ -3498,23 +3639,23 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 	}
 
-	// Multi-probe placement manifest: the runtime cannot guess grid
-	// positions from KTX blobs alone, so list every capture with its
-	// cook/world-space origin + influence/fade radii. Served as a Texture
-	// blob (PakBackend serves Texture blobs by VFS path) and consumed by
-	// WorldRenderer::LoadCubemaps. Single captures need none (the runtime
-	// centers a global probe on the scene bounds itself — a 1-row
-	// manifest would move it to the capture point). Rows are bare
-	// stable paths (the trailing "guid <hex>" column of bake-asset rows
-	// stays parseable; the manifest itself rides the stable
-	// <base>.cubemanifest path).
-	if (positions.size() > 1) {
+	// The placement manifest (ALWAYS when captures exist — the record
+	// model binds it: the tour's giAsset captures record names this
+	// manifest, so a 1-row set manifests too; the old single-capture
+	// "the runtime centers on the scene bounds" special case dies with
+	// the stem discovery). Rows carry their per-capture bake-input hash
+	// (the 'hash <hex>' manifest keyword — the pak gate's freshness
+	// check) + the .reach sidecar (the observed-cell bookkeeping, named
+	// from the same set uuid).
+	{
 		// Radii ride the parallel radii[] vector (filled per branch:
 		// explicit 10/5, grid tight to the spacing, octree per-cell,
 		// pinned extras tight to --cubemap-extra-radius), and the pinned[]
 		// flags mark the artist rows, so the manifest matches what the
 		// placement chose.
 		std::vector<smvk::CubemapManifestEntry> rows;
+		std::vector<std::string> keptHashes;
+		std::vector<std::vector<CellId>> keptCells;
 		rows.reserve(positions.size());
 		size_t droppedBlack = 0;
 		for (size_t cap = 0; cap < positions.size(); ++cap) {
@@ -3556,6 +3697,16 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 				e.DeriveSymmetricBox();
 			}
 			e.pinned = isPinned;
+			// The bake-input hash AT BAKE TIME (a skipped capture
+			// carries the old hash forward; a baked one carries the
+			// fresh sweep hash). An empty hash must never happen — the
+			// pak gate refuses hashless rows (an unverifiable capture
+			// is a stale one).
+			e.inputHash = cap < rowHashes.size()
+				? rowHashes[cap] : std::string();
+			keptHashes.push_back(e.inputHash);
+			keptCells.push_back(cap < rowCells.size()
+				? rowCells[cap] : std::vector<CellId>());
 			rows.push_back(std::move(e));
 		}
 		if (droppedBlack > 0)
@@ -3567,6 +3718,33 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		outManifestBase = base;
 		out.emplace_back(manifestVfs,
 			std::vector<uint8_t>(text.begin(), text.end()));
+		// The .reach sidecar (the observed-cell bookkeeping; the path
+		// derives from the SAME set uuid the record binds — not a stem
+		// guess). Loose + pak copies like the manifest.
+		{
+			CaptureReachFile reach;
+			reach.entries.resize(rows.size());
+			for (size_t r = 0; r < rows.size(); ++r) {
+				reach.entries[r].rowIndex = uint32_t(r);
+				reach.entries[r].cells = std::move(keptCells[r]);
+			}
+			std::vector<uint8_t> reachBytes;
+			SerializeCaptureReach(reach, reachBytes);
+			const std::string reachVfs = manifestVfs.substr(
+				0, manifestVfs.size() - 13) + "reach";
+			out.emplace_back(reachVfs, std::move(reachBytes));
+			const std::filesystem::path looseReach =
+				std::filesystem::path(args.contentDir) / reachVfs;
+			std::error_code ec;
+			std::filesystem::create_directories(
+				looseReach.parent_path(), ec);
+			std::ofstream rf(looseReach,
+				std::ios::binary | std::ios::trunc);
+			if (rf)
+				rf.write(
+					reinterpret_cast<const char*>(out.back().second.data()),
+					std::streamsize(out.back().second.size()));
+		}
 		// Loose manifest (the mesh-blob model: loose + pak copies at the
 		// same path). Best-effort like the payloads.
 		{
@@ -3584,10 +3762,24 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 					<< std::flush;
 			}
 		}
+		// The RECORD (the hard identification, as the volumes do): the
+		// capture set binds to the scene — the manifest path + the
+		// set-level fold of the row hashes (the pak gate's fast path;
+		// the per-row hashes ride the manifest itself). The caller
+		// stamps the tour's giAsset record from this scene state.
+		cluster.scene.giCapturesSource = manifestVfs;
+		cluster.scene.giCapturesGuid.clear();
+		{
+			std::string folded;
+			for (const std::string& h : keptHashes)
+				folded += h;
+			cluster.scene.giCapturesHash = BakeInputHash(folded);
+		}
 		tool::err() << "  [CUBE] manifest " << manifestVfs << "  probes="
 			<< rows.size() << " pinned="
 			<< size_t(std::count(pinned.begin(), pinned.end(), 1))
-			<< "\n" << std::flush;
+			<< " skipped=" << skippedCaptures << "\n"
+			<< std::flush;
 	}
 
 	// Top-down placement map (positions + mean colors + influence rings):
@@ -6415,6 +6607,48 @@ int Run(const CookArgs& c) {
 				++regged;
 		tool::out() << "Funnel: " << regged << "/" << cubemapKtx.size()
 			<< " cubemap bake files registered\n";
+	}
+	// The capture-set RECORD stamp (the invalidation model's write-back):
+	// the bake set cluster->scene.giCaptures* (the manifest path + the
+	// set-level hash fold) — mirror it onto the tour's giAsset record +
+	// retire the superseded old artifacts BY RECORD, so the pak (a
+	// separate process replaying the tour) sees exactly this set. Runs
+	// before the quick-bakes early exit so capture refreshes stamp too.
+	// (The editor's live doc follows via its own snapshot read-back.)
+	if (haveTour && !cluster->scene.giCapturesSource.empty()) {
+		std::string serr;
+		std::vector<std::string> superseded;
+		if (!smvk::tour::StampGiAssets(tour, cluster->scene, createdCvols,
+				&serr, &superseded)) {
+			tool::err() << "Tour giAsset stamp failed: " << serr
+				<< std::endl;
+			return 1;
+		}
+		std::string saveErr;
+		if (!smvk::tour::SaveTour(args.tour, tour, saveErr)) {
+			tool::err() << "Tour re-save failed: " << saveErr << std::endl;
+			return 1;
+		}
+		// The capture set's supersede list: the OLD record's files (a
+		// set replacement). The set uuid is stable across rebakes, so
+		// this only fires on a genuine record swap (a hand-cleared
+		// record + a fresh mint).
+		int deleted = 0;
+		for (const std::string& vfs : superseded) {
+			const std::filesystem::path host =
+				std::filesystem::path(args.contentDir) / vfs;
+			std::error_code ec;
+			if (std::filesystem::remove(host, ec))
+				++deleted;
+		}
+		tool::out() << "Tour stamped: " << tour.giAssets.size()
+			<< " giAsset binding(s) (captures: "
+			<< cluster->scene.giCapturesSource << ")"
+			<< (superseded.empty() ? std::string()
+				: " (deleted " + std::to_string(deleted)
+					+ "/" + std::to_string(superseded.size())
+					+ " superseded artifact(s))")
+			<< "\n";
 	}
 
 	// Quick-bakes stop HERE: the capture stage above wrote the loose

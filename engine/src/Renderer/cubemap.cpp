@@ -60,8 +60,12 @@ std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& en
 	std::string out;
 	char buf[512];
 	for (const auto& e : entries) {
+		// %.9g: float round-trip EXACT (the invalidation model's
+		// recomputes parse the def back and must reproduce the recorded
+		// bake-input hash bit-for-bit — %.6g quantization broke the
+		// def fold).
 		std::snprintf(buf, sizeof(buf),
-			"%s %.6g %.6g %.6g %.6g %.6g box %.6g %.6g %.6g %.6g %.6g %.6g%s%s%s\n",
+			"%s %.9g %.9g %.9g %.9g %.9g box %.9g %.9g %.9g %.9g %.9g %.9g%s%s%s%s%s\n",
 			e.vfsPath.c_str(),
 			(double)e.position.x, (double)e.position.y, (double)e.position.z,
 			(double)e.influenceRadius, (double)e.fadeRadius,
@@ -69,7 +73,9 @@ std::string CubemapManifestSerialize(const std::vector<CubemapManifestEntry>& en
 			(double)e.boxMax.x, (double)e.boxMax.y, (double)e.boxMax.z,
 			e.pinned ? " pin" : "",
 			!e.guid.empty() ? " guid " : "",
-			!e.guid.empty() ? e.guid.c_str() : "");
+			!e.guid.empty() ? e.guid.c_str() : "",
+			!e.inputHash.empty() ? " hash " : "",
+			!e.inputHash.empty() ? e.inputHash.c_str() : "");
 		out += buf;
 	}
 	return out;
@@ -114,7 +120,7 @@ bool CubemapManifestParse(std::string_view text,
 			i = j;
 		}
 		if (toks.size() < 6) {
-			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin] [guid <hex>]'";
+			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin] [guid <hex>] [hash <hex>]'";
 			out.clear();
 			return false;
 		}
@@ -135,7 +141,7 @@ bool CubemapManifestParse(std::string_view text,
 			|| !parseFloat(toks[3], e.position.z)
 			|| !parseFloat(toks[4], e.influenceRadius)
 			|| !parseFloat(toks[5], e.fadeRadius)) {
-			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin] [guid <hex>]'";
+			err = "line " + std::to_string(lineNo) + ": want '<vfsPath> x y z influence fade [pin] [guid <hex>] [hash <hex>]'";
 			out.clear();
 			return false;
 		}
@@ -189,8 +195,29 @@ bool CubemapManifestParse(std::string_view text,
 			}
 			i += 2;
 		}
+		// Optional 'hash <16-hex>': the bake-input hash at bake time
+		// (the pak gate's freshness check; the runtime skips the token —
+		// validation is bake/pak-side).
+		if (i < toks.size() && toks[i] == "hash") {
+			if (i + 1 >= toks.size() || toks[i + 1].size() != 16) {
+				err = "line " + std::to_string(lineNo) + ": 'hash' wants a 16-hex value";
+				out.clear();
+				return false;
+			}
+			e.inputHash = std::string(toks[i + 1]);
+			bool hex = true;
+			for (char c : e.inputHash)
+				hex = hex && ((c >= '0' && c <= '9')
+					|| (c >= 'a' && c <= 'f'));
+			if (!hex) {
+				err = "line " + std::to_string(lineNo) + ": 'hash' wants a 16-hex value";
+				out.clear();
+				return false;
+			}
+			i += 2;
+		}
 		if (i < toks.size()) {
-			err = "line " + std::to_string(lineNo) + ": unknown trailing token '" + std::string(toks[i]) + "' (want 'pin' or 'guid <hex>')";
+			err = "line " + std::to_string(lineNo) + ": unknown trailing token '" + std::string(toks[i]) + "' (want 'pin', 'guid <hex>' or 'hash <hex>')";
 			out.clear();
 			return false;
 		}

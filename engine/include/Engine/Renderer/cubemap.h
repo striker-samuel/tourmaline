@@ -154,6 +154,13 @@ struct CubemapManifestEntry {
 	glm::vec3 boxMax{ 0.0f };
 	bool pinned = false;
 	std::string guid; // bake-asset GUID of the capture ("" = legacy row)
+	// The bake-input hash AT BAKE TIME (Engine/GI/bake_inputs.h — the
+	// invalidation model). The pak gate recomputes the current hash and
+	// REFUSES the set on a mismatch or an empty value here (an
+	// unverifiable capture is a stale capture — old lighting must never
+	// ride into a pak). The runtime skips the token (validation is
+	// bake/pak-side).
+	std::string inputHash;
 
 	// Legacy symmetric box around the probe (old rows / single captures).
 	void DeriveSymmetricBox() {

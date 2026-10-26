@@ -141,12 +141,20 @@ struct TextureAssetCmd {
 // (the stamp's supersede list retires it BY RECORD), and the pak's
 // name never enters the bake identity at all.
 struct GiAssetCmd {
-	enum class Kind : uint8_t { World, Cvol };
+	enum class Kind : uint8_t { World, Cvol, Captures };
 	Kind kind = Kind::World;
 	uint32_t ref = 0;    // cvolume family ref (Kind::Cvol only): raw
 	                     // kCreateCvolRefBase|k form as authored
 	std::string source;  // VFS path, POSIX separators ("gi/<uuid>.sggi")
 	std::string guid;    // artifact .meta GUID ("" = path-only bind)
+	// The bake-input hash AT BAKE TIME (see Engine/GI/bake_inputs.h —
+	// the invalidation model). The PAK GATE recomputes the current unit
+	// hash and refuses the artifact on a mismatch or an empty hash here
+	// (an unverifiable bake is a stale bake — old lighting must never
+	// ride into a pak silently). The bake owners stamp it; the capture
+	// set's per-ROW hashes live in the manifest rows themselves (this is
+	// the set-level fold — the gate's fast path).
+	std::string bakedHash;
 };
 
 enum class Verb : uint8_t {

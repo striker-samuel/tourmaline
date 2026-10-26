@@ -57,6 +57,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/bake_inputs.h> // the invalidation model (unit hashes)
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h> // lightmap-chain diagnostic (--lm-probe)
 #include <Engine/GI/probe_volume.h>
@@ -164,6 +165,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 			std::string v;
 			if (!need(v, i)) return false;
 			out.maskTransmission = (v == "on" || v == "1" || v == "true");
+			out.maskTransmissionSet = true;
 		}
 		else if (a == "--cv-capture-spacing") {
 			std::string v;
@@ -1319,6 +1321,26 @@ int Run(Args& args) {
 		tool::out() << "  authored cvolumes: " << tourCvols.size()
 			<< " (tour nodes)\n";
 
+	// ---- The invalidation model's inputs (Engine/GI/bake_inputs.h):
+	// the node-authored bake config (the exportSettings node is the
+	// authoring surface; the CLI flag is an explicit override whose
+	// records then mismatch the pak gate BY DESIGN) + the geometry
+	// merkle (the 1 m cell grid over the traced static content). The
+	// per-unit freshness checks below skip re-bakes whose recorded
+	// input hash still matches.
+	::SceneExportSettings esNode{};
+	const bool hasEsNode = haveTour
+		&& smvk::tour::ExportSettingsFromDoc(tour, esNode, nullptr);
+	const bool maskTransmission = args.maskTransmissionSet
+		? args.maskTransmission
+		: (hasEsNode ? esNode.maskTransmission : false);
+	smvk::gi::BakeCellGrid bakeGrid;
+	if (haveTour) {
+		bakeGrid = smvk::gi::BuildBakeCellGrid(*cluster);
+		tool::out() << "  bake-input grid: " << bakeGrid.meshCount
+			<< " meshes, " << bakeGrid.cells.size() << " cells (1 m)\n";
+	}
+
 	// Optional texture averaging (role-agnostic per-texture average:
 	// baseColor tints albedo, emissive tints emission, metallicRoughness
 	// supplies the effective metallic like the runtime shader).
@@ -1396,11 +1418,20 @@ int Run(Args& args) {
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
 	buildOpts.traceBackendEmbree = (args.backend == "embree");
-	// Weave-transmissive cloth (--mask-transmission): the GI field sees
-	// the tinted light pools behind the banners; the tint stays REAL in
-	// the white-world bake (the tint through the cloth is not its diffuse
-	// albedo - see GiSceneBuildOptions::maskTransmissive).
-	buildOpts.maskTransmissive = args.maskTransmission;
+	// Weave-transmissive cloth (the effective maskTransmission — the
+	// node-authored value unless the CLI overrode it, resolved above):
+	// the GI field sees the tinted light pools behind the banners; the
+	// tint stays REAL in the white-world bake (the tint through the
+	// cloth is not its diffuse albedo - see GiSceneBuildOptions::
+	// maskTransmissive).
+	buildOpts.maskTransmissive = maskTransmission;
+	tool::out() << "  mask transmission: "
+		<< (maskTransmission ? "on" : "off")
+		<< (args.maskTransmissionSet && hasEsNode
+			&& args.maskTransmission != esNode.maskTransmission
+			? " (CLI override - the records will mismatch the pak gate; "
+				"author the exportSettings node instead)"
+			: "") << "\n";
 	tool::out() << "  trace backend: "
 		<< (buildOpts.traceBackendEmbree ? "embree" : "builtin") << "\n";
 	smvk::gi::BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, err);
@@ -1718,6 +1749,35 @@ int Run(Args& args) {
 				? args.cvCaptureSpacing : spec.captureSpacing;
 			cfg.smoothingPasses = args.cvSmoothing;
 			cfg.threadCount = args.threads;
+			// The per-volume FRESHNESS CHECK (the invalidation model):
+			// when the recorded bake-input hash matches the freshly
+			// computed one, the re-trace is SKIPPED — the bound artifact
+			// + record stand (the stamp re-issues them unchanged). This
+			// is the editor's partial-bake path: an edit far outside a
+			// volume's reach never re-traces it.
+			if (spec.node != UINT32_MAX) {
+				auto cvIt = cluster->scene.cvolForNode.find(spec.node);
+				if (cvIt != cluster->scene.cvolForNode.end()
+						&& !cvIt->second.bakeSource.empty()
+						&& spec.node
+							< cluster->scene.globalTransform.size()) {
+					smvk::gi::CvolBakeConfigHashInputs hc{};
+					hc.captureDirs = cfg.captureDirs;
+					hc.maxBounces = cfg.maxBounces;
+					hc.captureSpacing = 0.0f; // the auto lattice (inert CLI)
+					hc.smoothingPasses = cfg.smoothingPasses;
+					hc.maskTransmission = maskTransmission;
+					const std::string fresh = smvk::gi::CvolBakeUnitHash(
+						bakeGrid, *cluster, cvIt->second,
+						cluster->scene.globalTransform[spec.node], hc);
+					if (fresh == cvIt->second.bakeInputHash) {
+						tool::out() << "  [CV] volume '" << spec.def.name
+							<< "': inputs unchanged — SKIPPED (the bound "
+							"bake stands)\n";
+						continue;
+					}
+				}
+			}
 			tool::out() << "  [CV] volume '" << spec.def.name << "': priority="
 				<< spec.def.priority << " spacing=" << spec.spacing
 				<< " planes=" << spec.def.planes.size() << "\n";
@@ -1769,6 +1829,23 @@ int Run(Args& args) {
 				cvIt->second.bakeSource =
 					VfsRelPath(args.contentDir, outPath);
 				cvIt->second.bakeGuid.clear();
+				// The bake-input hash AT BAKE TIME (the pak gate's
+				// freshness check + the next run's skip).
+				if (spec.node < cluster->scene.globalTransform.size()) {
+					smvk::gi::CvolBakeConfigHashInputs hc{};
+					hc.captureDirs = cfg.captureDirs;
+					hc.maxBounces = cfg.maxBounces;
+					hc.captureSpacing = 0.0f;
+					hc.smoothingPasses = cfg.smoothingPasses;
+					hc.maskTransmission = maskTransmission;
+					cvIt->second.bakeInputHash =
+						smvk::gi::CvolBakeUnitHash(bakeGrid, *cluster,
+							cvIt->second,
+							cluster->scene.globalTransform[spec.node],
+							hc);
+				}
+				else
+					cvIt->second.bakeInputHash.clear();
 			}
 			else {
 				tool::out() << "  (unbound: no authored node for '"
@@ -1994,6 +2071,31 @@ int Run(Args& args) {
 		return 0;
 	}
 
+	// The world-field FRESHNESS CHECK (the invalidation model): when the
+	// recorded bake-input hash matches the freshly computed one, the
+	// whole octree bake is SKIPPED — the bound artifact + record stand
+	// (the stamp re-issues them unchanged; nothing is written, so the
+	// editor's minted --out path never even materializes as an orphan).
+	// The editor's partial-bake path: a cvol-only change skips the
+	// minutes-long world bake entirely.
+	if (haveTour && !cluster->scene.giWorldSource.empty()) {
+		const smvk::gi::WorldBakeConfigHashInputs wc =
+			smvk::gi::CanonicalWorldCfgHash(maskTransmission);
+		const std::string fresh = smvk::gi::WorldBakeUnitHash(
+			bakeGrid, *cluster, wc);
+		if (fresh == cluster->scene.giWorldInputHash
+				&& !cluster->scene.giWorldInputHash.empty()) {
+			tool::out() << "world-field bake SKIPPED (inputs unchanged; "
+				"the bound artifact stands)\n";
+			if (!stampTour())
+				return 1;
+			const auto t1 = std::chrono::steady_clock::now();
+			tool::out() << "GiBaker total: "
+				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
+			return 0;
+		}
+	}
+
 	smvk::gi::SgGiBakeConfig cfg{};
 	cfg.raysPerProbe = args.rays;
 	cfg.maxBounces = args.bounces;
@@ -2064,6 +2166,17 @@ int Run(Args& args) {
 	// records. VfsRelPath is the content-relative form the records carry.
 	cluster->scene.giWorldSource = VfsRelPath(args.contentDir, args.out);
 	cluster->scene.giWorldGuid.clear();
+	// The bake-input hash AT BAKE TIME (the pak gate's freshness check +
+	// the next run's skip). The canonical config derivation matches the
+	// gate's (the CLI-overridden knobs mismatch BY DESIGN).
+	cluster->scene.giWorldInputHash = smvk::gi::WorldBakeUnitHash(
+		bakeGrid, *cluster,
+		smvk::gi::CanonicalWorldCfgHash(maskTransmission));
+	tool::out() << "  world bake-input hash: "
+		<< cluster->scene.giWorldInputHash << " (env="
+		<< smvk::gi::BakeEnvHash(cluster->scene) << " lights="
+		<< smvk::gi::BakeLightsHash(*cluster) << " grid="
+		<< bakeGrid.root << ")\n";
 	tool::out() << "  probes=" << stats.probeCount
 		<< " waves=" << stats.refineWaves
 		<< " paths=" << stats.pathsTraced

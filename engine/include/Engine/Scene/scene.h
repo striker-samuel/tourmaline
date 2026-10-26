@@ -184,8 +184,12 @@ struct SceneCvol {
 	// a VFS path (POSIX separators — RANDOM MINTED, a fresh guid per
 	// bake: the record IS the identity, the name carries nothing to go
 	// stale); guid is the artifact's .meta GUID ("" = path-only bind).
+	// bakeInputHash: the bake-input hash AT BAKE TIME (Engine/GI/
+	// bake_inputs.h) — the pak gate's freshness check (a mismatch = the
+	// scene changed since the bake = REFUSE the artifact).
 	std::string bakeSource;
 	std::string bakeGuid;
+	std::string bakeInputHash;
 };
 
 // EXPORT SETTINGS (the cook/export configuration node — the scene's
@@ -246,6 +250,14 @@ struct SceneExportSettings {
 	// convex volumes (the cvolume nodes) + the adaptive world field.
 	bool giCvol = true;
 	bool giWorld = true;
+	// Weave-cloth transmission (sponza's bat convention: MASK cutout
+	// cloth passes light tinted per texel through the weave — the tinted
+	// light pools behind the banners). AUTHORED HERE (the scene owns the
+	// bake config — the invalidation hashes fold it) so Cook + GiBaker +
+	// the pak gate derive ONE value; the CLI flags stay as explicit
+	// overrides (an overridden run's records mismatch the gate and the
+	// pak refuses — author the node instead).
+	bool maskTransmission = false;
 	// Auto-convert non-KTX textures to KTX2 at cook time.
 	bool autoKtx = true;
 	// SKIP the loose VFS bake-file resolution at pak assembly: when on,
@@ -463,9 +475,20 @@ struct Scene {
 	// (the runtime sky-IBL ambient + the editor's honest "no baked
 	// volume" warnings). Same convention as SceneCvol::bakeSource
 	// (RANDOM MINTED VFS path — the record is the identity — + the
-	// artifact's .meta GUID when known).
+	// artifact's .meta GUID when known). giWorldInputHash: the bake-input
+	// hash at bake time (the pak gate's freshness check).
 	std::string giWorldSource;
 	std::string giWorldGuid;
+	std::string giWorldInputHash;
+	// The scene's CUBEMAP CAPTURE-SET binding (tour giAsset kind
+	// Captures): the record-bound cubemanifest (+ its ktx2 rows + the
+	// .reach bookkeeping named from the same uuid). Empty = never baked
+	// (the runtime analytic-sky specular fallback). giCapturesHash: the
+	// set-level fold of the per-row bake-input hashes (the gate's fast
+	// path; the rows carry the per-capture hashes).
+	std::string giCapturesSource;
+	std::string giCapturesGuid;
+	std::string giCapturesHash;
 	// Node -> authored cubemap capture params (tour createCubemap /
 	// editor cubemap node): pinned specular probe positions harvested
 	// by the cook's --cubemap stage. Position = node translate.

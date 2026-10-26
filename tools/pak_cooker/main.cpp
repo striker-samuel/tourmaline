@@ -84,6 +84,7 @@
 #include "pak_tool.h"
 #include <tool_log.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/bake_inputs.h> // the invalidation model (the pak gate)
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
 #include <Engine/Renderer/cubemap.h>
@@ -1938,6 +1939,312 @@ int Run(const PakArgs& c) {
 	smvk::Cluster* cluster =
 		sceneClusters.empty() ? nullptr : sceneClusters.front().get();
 
+	std::vector<std::pair<std::string, std::vector<uint8_t>>> giBlobs;
+
+	// THE PAK GATE + the record-bound GI embed (Engine/GI/bake_inputs.h —
+	// the invalidation model). Every baked-GI artifact the scene binds
+	// (the world field, each convex volume, the cubemap capture set) is
+	// FRESHNESS-CHECKED against the CURRENTLY replayed scene before it
+	// can enter the pak: the gate recomputes each unit's bake-input hash
+	// (env + static lights + the geometry merkle + the unit def + the
+	// canonical config) and REFUSES on a mismatch or a hashless record —
+	// an unverifiable bake is a stale bake, and stale lighting must
+	// NEVER ride into a pak silently (the incident: ten-day-old daylight
+	// cubemaps embedding into a dusk-cooked pak). A refusal fails the
+	// pak (exit 1): re-bake (the editor's Bake GI / the cook's --cubemap
+	// stage) before packing.
+	// ---------------------------------------------------------------------------
+	if (args.ignoreVfs <= 0) {
+		// The canonical config: the tour's exportSettings node (the
+		// authoring surface — the gate re-derives exactly what an
+		// un-flagged bake derives; CLI-overridden bakes mismatch by
+		// design).
+		::SceneExportSettings esNode{};
+		smvk::tour::ExportSettingsFromDoc(tour, esNode, nullptr);
+		// The FIRST scene cluster carries the replayed binding state
+		// (multi-scene paks share the tour's records).
+		smvk::Cluster* gateCluster =
+			sceneClusters.empty() ? nullptr : sceneClusters.front().get();
+		bool gateFailed = false;
+		auto gateRefuse = [&](const std::string& what,
+				const std::string& detail) {
+			tool::err() << "STALE BAKE REFUSED: " << what << " — " << detail
+				<< "\n  Re-bake (Bake GI / cook --cubemap) before "
+					"packing; the pak is NOT written.\n";
+			gateFailed = true;
+		};
+		// The gate's component hashes (the refuse lines name the
+		// diverging side — env / lights / grid — so an asymmetry is
+		// diagnosable from the log alone).
+		auto diagParts = [&](const smvk::Cluster& c) {
+			return "env=" + smvk::gi::BakeEnvHash(c.scene)
+				+ " lights=" + smvk::gi::BakeLightsHash(c)
+				+ " grid=" + smvk::gi::BuildBakeCellGrid(
+					const_cast<smvk::Cluster&>(c)).root;
+		};
+		smvk::gi::BakeCellGrid grid;
+		bool gridBuilt = false;
+		auto ensureGrid = [&]() -> const smvk::gi::BakeCellGrid& {
+			if (!gridBuilt) {
+				if (gateCluster)
+					grid = smvk::gi::BuildBakeCellGrid(*gateCluster);
+				gridBuilt = true;
+			}
+			return grid;
+		};
+
+		// Bound payloads embed ONCE (multi-scene paks: every cluster's
+		// scene carries the same tour bindings — the dedup keeps AddBlob
+		// one entry per path), bindings register PER CLUSTER (the union
+		// registry dedups again downstream).
+		std::set<std::string> embeddedGi;
+		auto embedGi = [&](const std::string& vfsPath,
+			const char* what) -> bool {
+			if (vfsPath.empty())
+				return false;
+			if (!embeddedGi.insert(vfsPath).second)
+				return true; // already embedded: the dedup no-op
+			std::vector<uint8_t> bytes =
+				ReadLooseBakeFile(args.contentDir, vfsPath);
+			if (bytes.empty()) {
+				tool::err() << "bound " << what << " '" << vfsPath
+					<< "' unreadable — not embedded\n";
+				return false;
+			}
+			giBlobs.emplace_back(vfsPath, std::move(bytes));
+			return true;
+		};
+
+		if (gateCluster) {
+			const auto& sn = gateCluster->scene;
+			// ---- World field (giAsset kind world) ----
+			if (!sn.giWorldSource.empty()) {
+				const std::string fresh = smvk::gi::WorldBakeUnitHash(
+					ensureGrid(), *gateCluster,
+					smvk::gi::CanonicalWorldCfgHash(
+						esNode.maskTransmission));
+				if (sn.giWorldInputHash.empty())
+					gateRefuse("the world field '" + sn.giWorldSource + "'",
+						"the record carries NO bake-input hash (a "
+						"pre-invalidation bake)");
+				else if (fresh != sn.giWorldInputHash)
+					gateRefuse("the world field '" + sn.giWorldSource + "'",
+						"the scene changed since the bake (env/lights/"
+						"geometry or the bake config); recorded="
+						+ sn.giWorldInputHash + " fresh=" + fresh
+						+ "; gate " + diagParts(*gateCluster));
+				else if (embedGi(sn.giWorldSource, "world-field bake"))
+					for (auto& sc : sceneClusters)
+						sc->RegisterGiBinding(
+							smvk::GiBinding::Kind::Probe,
+							sn.giWorldSource);
+			}
+			// ---- Convex volumes (giAsset kind cvol) ----
+			for (const auto& [node, def] : sn.cvolForNode) {
+				if (def.bakeSource.empty())
+					continue; // authored but never baked: embeds nothing
+				const std::string fresh =
+					node < sn.globalTransform.size()
+					? smvk::gi::CvolBakeUnitHash(ensureGrid(),
+						*gateCluster, def, sn.globalTransform[node],
+						smvk::gi::CanonicalCvolCfgHash(
+							esNode.maskTransmission))
+					: std::string();
+				if (def.bakeInputHash.empty())
+					gateRefuse("the convex volume '" + def.bakeSource + "'",
+						"the record carries NO bake-input hash (a "
+						"pre-invalidation bake)");
+				else if (fresh != def.bakeInputHash)
+					gateRefuse("the convex volume '" + def.bakeSource + "'",
+						"the scene changed since the bake; recorded="
+						+ def.bakeInputHash + " fresh=" + fresh
+						+ "; gate " + diagParts(*gateCluster));
+				else if (embedGi(def.bakeSource, "convex-volume bake"))
+					for (auto& sc : sceneClusters)
+						sc->RegisterGiBinding(
+							smvk::GiBinding::Kind::Cvol, def.bakeSource);
+			}
+			// ---- The cubemap capture set (giAsset kind captures) ----
+			if (!sn.giCapturesSource.empty()) {
+				const std::string manifestVfs = sn.giCapturesSource;
+				std::vector<uint8_t> manifestBytes =
+					ReadLooseBakeFile(args.contentDir, manifestVfs);
+				if (manifestBytes.empty()) {
+					gateRefuse("the capture set '" + manifestVfs + "'",
+						"the bound manifest is unreadable");
+				}
+				else {
+					std::string mErr;
+					std::vector<smvk::CubemapManifestEntry> rows;
+					const std::string_view text(
+						reinterpret_cast<const char*>(manifestBytes.data()),
+						manifestBytes.size());
+					if (!smvk::CubemapManifestParse(text, rows, mErr)) {
+						gateRefuse("the capture set '" + manifestVfs + "'",
+							"manifest rejected: " + mErr);
+					}
+					else {
+						// The .reach sidecar (the observed-cell
+						// bookkeeping; the path derives from the bound
+						// manifest's uuid).
+						const std::string reachVfs = manifestVfs.substr(
+							0, manifestVfs.size() - 13) + "reach";
+						const std::vector<uint8_t> reachBytes =
+							ReadLooseBakeFile(args.contentDir, reachVfs);
+						smvk::gi::CaptureReachFile reach;
+						if (reachBytes.empty()
+								|| !smvk::gi::ParseCaptureReach(
+									reachBytes.data(), reachBytes.size(),
+									reach)) {
+							gateRefuse("the capture set '" + manifestVfs
+								+ "'", "the .reach sidecar is missing or "
+									"unreadable");
+						}
+						else {
+							auto rowCells = [&](uint32_t row) {
+								for (const auto& e : reach.entries)
+									if (e.rowIndex == row)
+										return &e.cells;
+								return static_cast<
+									const std::vector<
+										smvk::gi::CellId>*>(nullptr);
+							};
+							const smvk::gi::CubemapBakeConfigHashInputs
+								cfgHash = smvk::gi::CanonicalCubemapCfgHash(
+									esNode);
+							// The set-level fast path: the recorded fold
+							// matches → every row is fresh.
+							std::string folded;
+							for (const auto& r : rows)
+								folded += r.inputHash;
+							const bool setFresh =
+								!sn.giCapturesHash.empty()
+								&& smvk::gi::BakeInputHash(folded)
+									== sn.giCapturesHash;
+							if (!setFresh) {
+								for (size_t r = 0; r < rows.size(); ++r) {
+									const auto& row = rows[r];
+									if (row.inputHash.empty()) {
+										gateRefuse("the capture '"
+											+ row.vfsPath + "'",
+											"the row carries NO "
+											"bake-input hash (a "
+											"pre-invalidation bake)");
+										continue;
+									}
+									const auto* cells = rowCells(
+										uint32_t(r));
+									const std::string fresh =
+										smvk::gi::CubemapBakeUnitHash(
+											ensureGrid(), *gateCluster,
+											row.position,
+											row.influenceRadius,
+											row.fadeRadius, row.boxMin,
+											row.boxMax, row.pinned,
+											cfgHash,
+											cells ? *cells
+												: std::vector<
+													smvk::gi::CellId>{});
+									if (fresh != row.inputHash)
+										gateRefuse("the capture '"
+											+ row.vfsPath + "'",
+											"the scene changed since the "
+											"bake (env/lights/geometry "
+											"or the capture config)");
+								}
+							}
+							if (!gateFailed) {
+								embedGi(manifestVfs,
+									"capture-set manifest");
+								embedGi(reachVfs, "capture-reach sidecar");
+								for (const auto& row : rows)
+									embedGi(row.vfsPath, "cubemap capture");
+								for (auto& sc : sceneClusters)
+									sc->RegisterGiBinding(
+										smvk::GiBinding::Kind::Cubemap,
+										manifestVfs);
+								tool::out()
+									<< "Registered + embedded capture set '"
+									<< manifestVfs << "' (" << rows.size()
+									<< " captures, gate-verified"
+									<< (setFresh ? " via the set fold"
+										: " per-row")
+									<< ")\n";
+							}
+						}
+					}
+				}
+			}
+		}
+		if (gateFailed)
+			return 1;
+		// ---- The REGULAR-volume manifest (a different bake family,
+		// not scene-bound yet): the legacy stem discovery stays ----
+		{
+			const std::vector<std::string> stems = BakeStems(args);
+			auto findStemWith = [&](const char* suffix) {
+				for (const std::string& stem : stems) {
+					const std::string vfs =
+						"gi/" + stem + "." + suffix;
+					if (!ReadLooseBakeFile(args.contentDir, vfs).empty())
+						return stem;
+				}
+				return std::string();
+			};
+			const std::string stem = findStemWith("regmanifest");
+			if (!stem.empty()) {
+				const std::string manifestVfs =
+					"gi/" + stem + ".regmanifest";
+				std::vector<uint8_t> manifest =
+					ReadLooseBakeFile(args.contentDir, manifestVfs);
+				if (manifest.empty()) {
+					tool::err() << "volume manifest '" << manifestVfs
+						<< "' unreadable — binding kept, not embedded\n";
+				}
+				else {
+					giBlobs.emplace_back(manifestVfs, std::move(manifest));
+					std::vector<std::string> rowList;
+					std::string cur;
+					for (char c : giBlobs.back().second) {
+						if (c == '\n' || c == '\r') {
+							const std::string p =
+								smvk::bake::SplitManifestRow(cur);
+							if (!p.empty())
+								rowList.push_back(p);
+							cur.clear();
+						}
+						else
+							cur.push_back(c);
+					}
+					const std::string p =
+						smvk::bake::SplitManifestRow(cur);
+					if (!p.empty())
+						rowList.push_back(p);
+					for (const std::string& row : rowList) {
+						std::vector<uint8_t> bytes =
+							ReadLooseBakeFile(args.contentDir, row);
+						if (bytes.empty()) {
+							tool::err() << "volume bake file '" << row
+								<< "' unreadable — not embedded\n";
+							continue;
+						}
+						giBlobs.emplace_back(row, std::move(bytes));
+					}
+				}
+				for (auto& sc : sceneClusters)
+					sc->RegisterGiBinding(
+						smvk::GiBinding::Kind::RegManifest, stem);
+				tool::out() << "Registered regmanifest GI '" << stem
+					<< "'\n";
+			}
+		}
+	}
+	else {
+		tool::out() << "ignoreVfs: loose bake-file resolution skipped - "
+			"the pak carries the scene's own content only (no gi/ "
+			"bake payloads, no bindings)\n";
+	}
+
 	// World sun per scene (App parity: first directional wins as the
 	// runtime sun). Authored directionals always survive; sunless scenes
 	// synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
@@ -2012,7 +2319,6 @@ int Run(const PakArgs& c) {
 	// lightmap .sglm. Every entry is (vfsPath, bytes) — Texture blobs
 	// at gi/... paths embedded after Serialize below (PakBackend serves
 	// by path).
-	std::vector<std::pair<std::string, std::vector<uint8_t>>> giBlobs;
 
 
 	// ---------------------------------------------------------------------------
@@ -2025,8 +2331,7 @@ int Run(const PakArgs& c) {
 	// rejected above (run cook.exe).
 	// ---------------------------------------------------------------------------
 	std::vector<std::pair<std::string, std::vector<uint8_t>>> cubemapKtx;
-	std::string cubemapManifestBase;
-
+	// ---------------------------------------------------------------------------
 
 
 	// Probe names (--giProbes), registered on every cooked cluster (the
@@ -2037,193 +2342,6 @@ int Run(const PakArgs& c) {
 		for (auto& sc : sceneClusters)
 			sc->RegisterGiBinding(smvk::GiBinding::Kind::Probe, probe);
 		tool::out() << "Registered probe GI '" << probe << "'\n";
-	}
-	// Cubemap manifest (the stage above minted it when the set baked
-	// > 1 capture): registered by its stable base name — the runtime
-	// loads gi/cubemaps/<base>.cubemanifest by path.
-	if (!cubemapManifestBase.empty()) {
-		for (auto& sc : sceneClusters)
-			sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
-				cubemapManifestBase);
-		tool::out() << "Registered cubemap manifest GI '"
-			<< cubemapManifestBase << "'\n";
-	}
-	// LOOSE cubemap bakes (an earlier --cubemap run / the editor's
-	// quick-bake left them at their stable paths): when the bake stage
-	// did not run, discover gi/cubemaps/<stem>.cubemanifest by the
-	// same stable stems and EMBED it + every row's KTX — no re-bake, the
-	// payloads ARE the bake output. Registered by its base like above;
-	// the embed loop below carries the cubemapKtx rows into the pak.
-	// Old-path (textures/cubemaps/) manifests are NOT discovered: the
-	// capture-set paths moved to gi/cubemaps/ (sanctioned break — recook).
-	// ignoreVfs (the exportSettings node / --ignore-vfs): the whole
-	// loose discovery stays OFF — the pak embeds ONLY the scene's own
-	// content, no resolved loose bakes (the minimal-pak switch).
-	if (cubemapManifestBase.empty() && args.ignoreVfs <= 0) {
-		for (const std::string& stem : BakeStems(args)) {
-			const std::string mrel =
-				"gi/cubemaps/" + stem + ".cubemanifest";
-			std::vector<uint8_t> manifest =
-				ReadLooseBakeFile(args.contentDir, mrel);
-			if (manifest.empty())
-				continue;
-			std::string mErr;
-			std::vector<smvk::CubemapManifestEntry> rows;
-			const std::string_view text(
-				reinterpret_cast<const char*>(manifest.data()),
-				manifest.size());
-			if (!smvk::CubemapManifestParse(text, rows, mErr)) {
-				tool::err() << "loose cubemap manifest '" << mrel
-					<< "' rejected: " << mErr << " — not embedded\n";
-				continue;
-			}
-			cubemapKtx.emplace_back(mrel, std::move(manifest));
-			for (const auto& row : rows) {
-				std::vector<uint8_t> ktx =
-					ReadLooseBakeFile(args.contentDir, row.vfsPath);
-				if (ktx.empty()) {
-					tool::err() << "loose cubemap row '" << row.vfsPath
-						<< "' unreadable — not embedded\n";
-					continue;
-				}
-				cubemapKtx.emplace_back(row.vfsPath, std::move(ktx));
-			}
-			for (auto& sc : sceneClusters)
-				sc->RegisterGiBinding(smvk::GiBinding::Kind::Cubemap,
-					stem);
-			tool::out() << "Registered + embedded loose cubemap manifest '"
-				<< stem << "' (" << rows.size() << " captures)\n";
-			break;
-		}
-	}
-	// Loose GI bakes: the scene's HARD giAsset bindings (stamped by the
-	// bake into the tour, replayed onto every scene cluster) drive the
-	// embed — the world field (Scene::giWorldSource) + each authored
-	// convex volume's baked .cvol (SceneCvol::bakeSource). Embed EXACTLY
-	// the bound files + register the runtime bindings (Probe/Cvol kinds,
-	// FULL vfs paths): the pak's NAME never enters the bake identity
-	// (the retired pak-stem discovery renamed the bake with every out
-	// pak and made every consumer guess). Missing bound files warn per
-	// record — an unbaked scene binds nothing and the runtime's "no
-	// probe binding" line says so honestly. The REGULAR-volume manifest
-	// keeps the legacy stem discovery (a different bake family, not
-	// scene-bound yet). ignoreVfs (the exportSettings node
-	// / --ignore-vfs): the whole loose resolution stays OFF — the pak
-	// embeds ONLY the scene's own content (the minimal-pak switch).
-	if (args.ignoreVfs <= 0) {
-		std::filesystem::path pakPath(args.outPak);
-		const std::string pakStem = pakPath.stem().generic_string();
-		const std::vector<std::string> stems = BakeStems(args);
-		auto findStemWith = [&](const char* suffix) {
-			for (const std::string& stem : stems) {
-				const std::string vfs =
-					"gi/" + stem + "." + suffix;
-				if (!ReadLooseBakeFile(args.contentDir, vfs).empty())
-					return stem;
-			}
-			return std::string();
-		};
-		// Bound payloads embed ONCE (multi-scene paks: every cluster's
-		// scene carries the same tour bindings — the dedup keeps AddBlob
-		// one entry per path), bindings register PER CLUSTER (the union
-		// registry dedups again downstream).
-		std::set<std::string> embeddedGi;
-		auto embedGi = [&](const std::string& vfsPath,
-			const char* what) -> bool {
-			if (vfsPath.empty())
-				return false;
-			if (!embeddedGi.insert(vfsPath).second)
-				return true; // already embedded: the dedup no-op
-			std::vector<uint8_t> bytes =
-				ReadLooseBakeFile(args.contentDir, vfsPath);
-			if (bytes.empty()) {
-				tool::err() << "bound " << what << " '" << vfsPath
-					<< "' unreadable — not embedded\n";
-				return false;
-			}
-			giBlobs.emplace_back(vfsPath, std::move(bytes));
-			return true;
-		};
-		// World field (giAsset kind world): one payload + one Probe
-		// binding (the FULL vfs path — the runtime's binding-first
-		// loader resolves it straight out of the pak).
-		for (auto& sc : sceneClusters) {
-			const auto& sn = sc->scene;
-			if (sn.giWorldSource.empty())
-				continue;
-			if (embedGi(sn.giWorldSource, "world-field bake"))
-				sc->RegisterGiBinding(
-					smvk::GiBinding::Kind::Probe, sn.giWorldSource);
-		}
-		// Convex volumes (giAsset kind cvol): one payload + one Cvol
-		// binding PER AUTHORED VOLUME (full vfs paths, cap 8 at load).
-		for (auto& sc : sceneClusters) {
-			const auto& sn = sc->scene;
-			for (const auto& [node, def] : sn.cvolForNode) {
-				if (def.bakeSource.empty())
-					continue; // authored but never baked
-				if (embedGi(def.bakeSource, "convex-volume bake"))
-					sc->RegisterGiBinding(
-						smvk::GiBinding::Kind::Cvol, def.bakeSource);
-			}
-		}
-		// Regular-volume manifest (the LEGACY stem channel — a different
-		// bake family, not yet scene-bound): embed the manifest + every
-		// row's payload, register the stem binding.
-		{
-			const std::string stem = findStemWith("regmanifest");
-			if (!stem.empty()) {
-				const std::string manifestVfs =
-					"gi/" + stem + ".regmanifest";
-				std::vector<uint8_t> manifest =
-					ReadLooseBakeFile(args.contentDir, manifestVfs);
-				if (manifest.empty()) {
-					tool::err() << "volume manifest '" << manifestVfs
-						<< "' unreadable — binding kept, not embedded\n";
-				}
-				else {
-					giBlobs.emplace_back(manifestVfs, std::move(manifest));
-					// Row payloads (SplitManifestRow takes the path column).
-					std::vector<std::string> rows;
-					std::string cur;
-					for (char c : giBlobs.back().second) {
-						if (c == '\n' || c == '\r') {
-							const std::string p =
-								smvk::bake::SplitManifestRow(cur);
-							if (!p.empty())
-								rows.push_back(p);
-							cur.clear();
-						}
-						else
-							cur.push_back(c);
-					}
-					const std::string p =
-						smvk::bake::SplitManifestRow(cur);
-					if (!p.empty())
-						rows.push_back(p);
-					for (const std::string& row : rows) {
-						std::vector<uint8_t> bytes =
-							ReadLooseBakeFile(args.contentDir, row);
-						if (bytes.empty()) {
-							tool::err() << "volume bake file '" << row
-								<< "' unreadable — not embedded\n";
-							continue;
-						}
-						giBlobs.emplace_back(row, std::move(bytes));
-					}
-				}
-				for (auto& sc : sceneClusters)
-					sc->RegisterGiBinding(
-						smvk::GiBinding::Kind::RegManifest, stem);
-				tool::out() << "Registered regmanifest GI '" << stem
-					<< "' (scene '" << pakStem << "')\n";
-			}
-		}
-	}
-	else {
-		tool::out() << "ignoreVfs: loose bake-file discovery skipped - "
-			"the pak carries the scene's own content only (no gi/ "
-			"bake payloads, no bindings)\n";
 	}
 
 	smvk::PakWriter writer;

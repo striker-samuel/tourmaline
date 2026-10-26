@@ -2754,14 +2754,14 @@ namespace engine {
 		// (cubemapSampler), never samplers[0] (Repeat would bleed seams).
 		m_cubemapSampler = m_context->GetOrCreateSampler(smvk::CubemapSampler());
 
-		// Try a pak-registered bake first (the cubemanifest GUID from the
-		// pak's Gi registry - stable across pak/scene renames), then the
-		// scene stem, then the "sky" fallback.
+		// The capture-set binding (the pak's Cubemap registration — the
+		// FULL manifest vfs path, record-bound; NO stem/scene-id/sky
+		// guessing: the pak gate guarantees the bound set is fresh, and
+		// an unbound pak simply has no cubemaps (the analytic sky
+		// specular fallback says so honestly).
 		std::vector<std::string> cubemapBases;
 		if (!m_giCubemapName.empty())
 			cubemapBases.push_back(m_giCubemapName);
-		cubemapBases.push_back(m_sceneId);
-		cubemapBases.push_back("sky");
 
 		bool fileBakeFound = false;
 		// Pinned manifest rows ('pin', cook --cubemap-extra-pos) sort
@@ -2773,14 +2773,18 @@ namespace engine {
 			if (base.empty())
 				continue;
 
-			// 1. Grid manifest: the cook writes
-			//    textures/cubemaps/<base>.cubemanifest when one capture
-			//    bakes N > 1 probes (<base>_0.ktx2, ...). Positions ride
-			//    the manifest in cook/world meters (trace BVH space =
-			//    World::ComputeSceneBounds space - both apply the scene
-			//    global transforms).
+			// 1. The capture-set manifest (record-bound: the pak's
+			// Cubemap registration carries the FULL vfs path —
+			// gi/cubemaps/<uuid>.cubemanifest. A bare base (a legacy
+			// editor injection) wraps through CubemapManifestVfsPath.
+			// Positions ride the manifest in cook/world meters (trace
+			// BVH space = World::ComputeSceneBounds space - both apply
+			// the scene global transforms).
+			const std::string manifestVfs =
+				base.find('/') != std::string::npos
+				? base : smvk::CubemapManifestVfsPath(base);
 			const std::span<const uint8_t> manifestBytes =
-				ReadBakeBytes(smvk::CubemapManifestVfsPath(base));
+				ReadBakeBytes(manifestVfs);
 			if (!manifestBytes.empty()) {
 				std::string mErr;
 				std::vector<smvk::CubemapManifestEntry> rows;
@@ -2789,7 +2793,7 @@ namespace engine {
 					manifestBytes.size());
 				if (!smvk::CubemapManifestParse(text, rows, mErr)) {
 					std::cerr << "[Cubemap] manifest rejected '"
-						<< smvk::CubemapManifestVfsPath(base) << "': "
+						<< manifestVfs << "': "
 						<< mErr << "\n";
 					continue;
 				}

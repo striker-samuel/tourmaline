@@ -458,6 +458,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			|| c.text == "lightmap" || c.text == "cubemap"
 			|| c.text == "cubemapOctree" || c.text == "meshlets"
 			|| c.text == "giCvol" || c.text == "giWorld"
+			|| c.text == "maskTransmission"
 			|| c.text == "autoKtx" || c.text == "ignoreVfs")
 			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
 		else
@@ -560,6 +561,8 @@ bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
 		es.giCvol = c.flag;
 	else if (a == "giWorld")
 		es.giWorld = c.flag;
+	else if (a == "maskTransmission")
+		es.maskTransmission = c.flag;
 	else if (a == "autoKtx")
 		es.autoKtx = c.flag;
 	else if (a == "ignoreVfs")
@@ -801,17 +804,23 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// identification, doc-level state like the pool imports above. The
 	// bake owner upserts these at bake time; the -ref indices are the
 	// cvolume family refs (the k-th createCvolume in file order — the
-	// same grammar setCvolAttr -ref uses).
+	// same grammar setCvolAttr -ref uses). The -hash carries the
+	// bake-input hash at bake time (the pak gate's freshness check).
 	for (const GiAssetCmd& ga : doc.giAssets) {
 		if (ga.source.empty())
 			continue; // half-written record: skip (mirrors fileNode)
-		f << "giAsset -kind "
-			<< (ga.kind == GiAssetCmd::Kind::Cvol ? "cvol" : "world");
+		const char* kindText =
+			ga.kind == GiAssetCmd::Kind::Cvol ? "cvol"
+			: ga.kind == GiAssetCmd::Kind::Captures ? "captures"
+			: "world";
+		f << "giAsset -kind " << kindText;
 		if (ga.kind == GiAssetCmd::Kind::Cvol)
 			f << " -ref " << (ga.ref & ~kCreateCvolRefBase);
 		f << " -source " << Quote(ga.source);
 		if (!ga.guid.empty())
 			f << " -guid " << ga.guid;
+		if (!ga.bakedHash.empty())
+			f << " -hash " << ga.bakedHash;
 		f << ";\n";
 	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
@@ -958,8 +967,10 @@ struct Flags {
 	bool hasGuid = false;
 	std::string type;      // -type <datatype> (setAttr value flavor)
 	bool hasType = false;
-	std::string kind;      // -kind <world|cvol> (giAsset records)
+	std::string kind;      // -kind <world|cvol|captures> (giAsset records)
 	bool hasKind = false;
+	std::string hash;      // -hash <hex> (giAsset bake-input hashes)
+	bool hasHash = false;
 };
 
 static bool ParseFlagWord(const std::string& w, bool& out) {
@@ -1033,7 +1044,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root" || w == "-kind";
+					w == "-type" || w == "-root" || w == "-kind" || w == "-hash";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1056,7 +1067,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root" || w == "-kind";
+					w == "-type" || w == "-root" || w == "-kind" || w == "-hash";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1146,6 +1157,14 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				w.pop_back();
 			f.hasKind = true;
 			f.kind = w;
+			i += 2;
+		}
+		else if (k == "-hash" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			f.hasHash = true;
+			f.hash = w;
 			i += 2;
 		}
 		else if (k == "-type" && i + 1 < toks.size()) {
@@ -1492,12 +1511,15 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		continue;
 	}
 		if (verb == "giAsset") {
-		// giAsset -kind world|cvol [-ref <k>] -source "<vfs>" [-guid "<g>"];
+		// giAsset -kind world|cvol|captures [-ref <k>] -source "<vfs>"
+		//   [-guid "<g>"] [-hash "<hex>"];
 		// The scene's HARD baked-GI identification (see GiAssetCmd): the
-		// world-field octree + one record per authored convex volume
+		// world-field octree, one record per authored convex volume
 		// (addressed by the cvolume family ref, the SAME -ref grammar
-		// setCvolAttr uses). Doc-level like textureAsset (replayed onto
-		// the scene by ApplyTourToCluster's post pass, not a command).
+		// setCvolAttr uses), and the capture set (the record-bound
+		// cubemanifest + its ktx2s + the .reach bookkeeping). Doc-level
+		// like textureAsset (replayed onto the scene by
+		// ApplyTourToCluster's post pass, not a command).
 		Flags fl{};
 		if (!ParseFlags(toks, 1, fl, err, lineNo))
 			return false;
@@ -1506,9 +1528,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			ga.kind = GiAssetCmd::Kind::Cvol;
 		else if (fl.kind == "world")
 			ga.kind = GiAssetCmd::Kind::World;
+		else if (fl.kind == "captures")
+			ga.kind = GiAssetCmd::Kind::Captures;
 		else {
 			warn("tour:" + std::to_string(lineNo) +
-				": giAsset -kind must be world|cvol (skipped)");
+				": giAsset -kind must be world|cvol|captures (skipped)");
 			continue;
 		}
 		if (ga.kind == GiAssetCmd::Kind::Cvol)
@@ -1520,6 +1544,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		}
 		ga.source = fl.source;
 		ga.guid = fl.hasGuid ? fl.guid : "";
+		ga.bakedHash = fl.hasHash ? fl.hash : "";
 		doc.giAssets.push_back(std::move(ga));
 		continue;
 	}
@@ -2251,10 +2276,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			"cubemapOctreeMin", "cubemapOctreeDepth",
 			"cubemapExtraRadius", "meshlets", "meshletMaxVerts",
 			"meshletMaxTris", "meshletConeWeight", "giCvol",
-			"giWorld", "autoKtx", "ignoreVfs" };
+			"giWorld", "maskTransmission", "autoKtx", "ignoreVfs" };
 		static const char* kBoolAttrs[] = { "meshopt", "lods",
 			"lightmap", "cubemap", "cubemapOctree", "meshlets",
-			"giCvol", "giWorld", "autoKtx", "ignoreVfs" };
+			"giCvol", "giWorld", "maskTransmission", "autoKtx",
+			"ignoreVfs" };
 		static const char* kStrAttrs[] = { "lodRatios",
 			"lmExcludeKw" };
 		auto inSet = [](const char* const* set, size_t n,
@@ -3783,6 +3809,19 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			scene.giWorldSource = ga.source;
 			scene.giWorldGuid = ga.guid;
+			scene.giWorldInputHash = ga.bakedHash;
+			continue;
+		}
+		if (ga.kind == GiAssetCmd::Kind::Captures) {
+			if (!scene.giCapturesSource.empty()) {
+				warn("tour: duplicate giAsset captures record '"
+					+ ga.source + "' (first kept: '"
+					+ scene.giCapturesSource + "')");
+				continue;
+			}
+			scene.giCapturesSource = ga.source;
+			scene.giCapturesGuid = ga.guid;
+			scene.giCapturesHash = ga.bakedHash;
 			continue;
 		}
 		const uint32_t k = ga.ref & ~kCreateCvolRefBase;
@@ -3799,6 +3838,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		it->second.bakeSource = ga.source;
 		it->second.bakeGuid = ga.guid;
+		it->second.bakeInputHash = ga.bakedHash;
 	}
 	if (createdCvolsOut)
 		*createdCvolsOut = createdCvols;
@@ -4091,7 +4131,7 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 	if (!scene.giWorldSource.empty())
 		doc.giAssets.push_back(GiAssetCmd{
 			GiAssetCmd::Kind::World, 0, scene.giWorldSource,
-			scene.giWorldGuid });
+			scene.giWorldGuid, scene.giWorldInputHash });
 	// Then one Cvol record per BOUND authored volume, in authored
 	// family order (createdCvols order = the tour's create order —
 	// stable, human-readable diffs). Volumes authored but unbaked
@@ -4107,8 +4147,14 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 		doc.giAssets.push_back(GiAssetCmd{
 			GiAssetCmd::Kind::Cvol,
 			kCreateCvolRefBase | k, it->second.bakeSource,
-			it->second.bakeGuid });
+			it->second.bakeGuid, it->second.bakeInputHash });
 	}
+	// The capture set last (one record; the per-capture hashes ride the
+	// manifest rows — this is the set-level fold the gate fast-paths).
+	if (!scene.giCapturesSource.empty())
+		doc.giAssets.push_back(GiAssetCmd{
+			GiAssetCmd::Kind::Captures, 0, scene.giCapturesSource,
+			scene.giCapturesGuid, scene.giCapturesHash });
 	// Hand-injected volumes (a binding on a node with no tour create —
 	// impossible from the bake owners, possible from hand-edited
 	// scenes): warn + skip (the record cannot address them).

@@ -79,8 +79,12 @@ struct Args {
 	// keeps its lit albedo AND passes light tinted per texel (the GI
 	// field behind the banners sees the tinted pools; the tint stays
 	// REAL in the white-world bake - GiSceneBuildOptions::
-	// maskTransmissive). Default OFF (MASK = the opaque occluder).
+	// maskTransmissive). The AUTHORING surface is the exportSettings
+	// node's maskTransmission field (the invalidation hashes fold the
+	// effective value); the CLI flag stays an explicit override whose
+	// records then mismatch the pak gate by design. Default OFF.
 	bool maskTransmission = false;
+	bool maskTransmissionSet = false; // the CLI flag was given
 };
 
 // Byte-identical to the CLI run (same return codes): parses argv in
