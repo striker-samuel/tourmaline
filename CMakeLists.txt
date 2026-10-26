@@ -396,6 +396,7 @@ add_subdirectory(engine)
 # ClosestDistance path).
 target_link_libraries(engine PRIVATE embree)
 add_subdirectory(tools/gltf_import)
+add_subdirectory(tools/project_pipeline) # the canonical project pipeline (Project.exe + the editor use it)
 # gltf_import is the ONLY tool every host builds (the viewer app + the
 # game hosts link it for the glTF import helpers). Everything below is
 # REPO-ONLY: subproject hosts (the game repos pinning this tree as a
@@ -403,6 +404,7 @@ add_subdirectory(tools/gltf_import)
 # samples — they want the engine + shaders + their own target.
 if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/import)
+add_subdirectory(tools/project)            # Project.exe: the project-pipeline CLI
   add_subdirectory(tools/artifact_cache)
   add_subdirectory(tools/cook)
   add_subdirectory(app)               # App.exe: the plain pak-viewer host

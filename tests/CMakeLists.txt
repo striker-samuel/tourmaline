@@ -555,6 +555,25 @@ set_target_properties(PakHostTests PROPERTIES
 
 add_test(NAME pak_host_tests COMMAND PakHostTests)
 
+# The canonical PROJECT IMPORT pipeline (project_pipeline): copy-in +
+# derive + validate + publish, the import fingerprint (settings/
+# revision invalidation), idempotent + source-change reimport, failure
+# retention, relocation. CPU-only.
+add_executable(ProjectPipelineTests test_project_pipeline.cpp)
+
+target_link_libraries(ProjectPipelineTests
+	PRIVATE
+		project_pipeline
+		gltf_import
+		engine
+)
+
+set_target_properties(ProjectPipelineTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME project_pipeline_tests COMMAND ProjectPipelineTests)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)
 tourmaline_stage_sdl3(SpirvReflectionTests)
@@ -587,3 +606,4 @@ tourmaline_stage_sdl3(LevelTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
 tourmaline_stage_sdl3(PakHostTests)
+tourmaline_stage_sdl3(ProjectPipelineTests)

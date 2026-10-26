@@ -612,11 +612,9 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 		return {};
 	const fs::path geometry =
 		fs::path(gltfPath).replace_extension(".geometry");
-	if (!smvk::assets::MeshArtifactStale(gltfPath)) {
-		Log("Import: artifact current — opening '" + geometry.generic_string()
-			+ "' (no re-import).");
-		return geometry.generic_string();
-	}
+	// The settings FIRST: the stale gate compares the recorded import
+	// fingerprint against THIS config (a settings/revision drift
+	// re-derives — see ImportFingerprintFor/MeshArtifactStale).
 	smvk::assets::DeriveConfig cfg{};
 	if (const char* e = std::getenv("TOURMALINE_EDITOR_MESHLETS"))
 		cfg.meshlets = std::atoi(e) != 0;
@@ -626,6 +624,11 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 	// opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
 	if (const char* e = std::getenv("TOURMALINE_EDITOR_SHADERLODS"))
 		cfg.shaderLods = std::atoi(e) != 0;
+	if (!smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
+		Log("Import: artifact current — opening '" + geometry.generic_string()
+			+ "' (no re-import).");
+		return geometry.generic_string();
+	}
 	// NO project guid: the derivation derives the asset identity from the
 	// SOURCE FILE CONTENT (SourceAssetGuid — see asset_export.h), so an
 	// in-project import and a from-zero re-import (another dir, machine,

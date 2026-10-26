@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -332,6 +333,9 @@ void WriteTourAnimAsset(const std::filesystem::path& path,
 //   source=<file name>      the glTF (display/reimport)
 //   sourcedigest=<32hex>     the ORIGINAL SOURCE content identity (from-zero
 //                           re-imports reproduce it; see SourceAssetGuid)
+//   fingerprint=<32hex>     the IMPORT fingerprint (settings + revisions —
+//                           see ImportFingerprintFor; a settings/revision
+//                           change re-derives on byte-identical sources)
 //   geometry=<file> <guid> <name>   (legacy "mesh=" rows still parse —
 //                                   pre-10/6 manifests wrote that key)
 //   material.<idx>=<file> <guid> <name>
@@ -341,6 +345,7 @@ bool ParseManifestLine(const std::string& key, const std::string& val,
 	if (key == "guid") { m.guid = val; return true; }
 	if (key == "source") { m.source = val; return true; }
 	if (key == "sourcedigest") { m.sourceDigest = val; return true; }
+	if (key == "fingerprint") { m.importFingerprint = val; return true; }
 	if (key == "stem") { m.stem = val; return true; }
 	AssetEntry e{};
 	bool have = false;
@@ -432,6 +437,8 @@ bool SaveAssetManifest(const std::filesystem::path& gltfPath,
 		: m.source));
 	if (!m.sourceDigest.empty())
 		lines.push_back("sourcedigest=" + m.sourceDigest);
+	if (!m.importFingerprint.empty())
+		lines.push_back("fingerprint=" + m.importFingerprint);
 	lines.push_back("stem=" + m.stem);
 	for (const AssetEntry& e : m.entries) {
 		std::string key;
@@ -1216,8 +1223,16 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 
 	// 1) The deterministic cook-mode import (GPU-free like the baker;
 	// node ids identical to the live import — the .tour replay contract).
+	// AUTHORITATIVE PREPROCESSING: the LOD chain + meshlets derive HERE —
+	// the .geometry carries them; cooks consume and never re-decide (the
+	// old cook-time --lods regeneration + geometry write-back is retired).
 	smvk::MeshOptConfig meshOpt{};
 	meshOpt.enabled = config.lods;
+	// The chain settings ride the config (the manifest records their
+	// fingerprint — a ratio change re-derives the artifact).
+	meshOpt.generateLods = config.lods;
+	meshOpt.lodRatios = config.lodRatios;
+	meshOpt.lodTargetError = config.lodTargetError;
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	cluster->SetOfflineMode(true);
 	std::vector<int> gltfNodeMap;
@@ -1297,6 +1312,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	manifest.source =
 		std::filesystem::path(gltfPath).filename().generic_string();
 	manifest.sourceDigest = SourceContentDigest(gltfPath, model);
+	manifest.importFingerprint = ImportFingerprintFor(config);
 	manifest.stem = stem;
 	auto guidFor = [&](AssetKind kind, int sourceIndex) -> std::string {
 		AssetEntry e{};
@@ -1903,7 +1919,8 @@ std::string DerivedEntryGuid(const std::string& sourceGuid,
 	return GuidHexFromBytes(seed, std::strlen(seed));
 }
 
-bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
+bool MeshArtifactStale(const std::filesystem::path& gltfPath,
+	const DeriveConfig& config) {
 	namespace fs = std::filesystem;
 	std::error_code ec;
 	const fs::path geometry =
@@ -1932,21 +1949,91 @@ bool MeshArtifactStale(const std::filesystem::path& gltfPath) {
 	// (a corrupt source with good artifacts keeps working until the
 	// derivation itself runs and fails loudly).
 	if (!m.sourceDigest.empty()) {
+		// CONTENT half: match -> CONTINUE (the settings half below still
+		// gets its say); mismatch -> stale.
 		tinygltf::Model model;
+		bool contentChanged;
 		if (LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
-			return SourceContentDigest(gltfPath, model) != m.sourceDigest;
-		return SourceAssetGuid(gltfPath) != m.sourceDigest;
+			contentChanged =
+				SourceContentDigest(gltfPath, model) != m.sourceDigest;
+		else
+			contentChanged =
+				SourceAssetGuid(gltfPath) != m.sourceDigest;
+		if (contentChanged)
+			return true;
 	}
-	// Legacy mtime rule (digest-less metas): the artifact predates the
-	// last source edit. (fs::last_write_time errors read as stale — the
-	// safe side always re-derives.)
-	const auto srcTime = fs::last_write_time(gltfPath, ec);
-	if (ec)
-		return true;
-	const auto artTime = fs::last_write_time(geometry, ec);
-	if (ec || artTime < srcTime)
+	else {
+		// Legacy mtime rule (digest-less metas): the artifact predates the
+		// last source edit. (fs::last_write_time errors read as stale —
+		// the safe side always re-derives.)
+		const auto srcTime = fs::last_write_time(gltfPath, ec);
+		if (ec)
+			return true;
+		const auto artTime = fs::last_write_time(geometry, ec);
+		if (ec || artTime < srcTime)
+			return true;
+	}
+	// SETTINGS/REVISION rule (metas that carry a fingerprint): the source
+	// content matches, but the artifact was derived under DIFFERENT
+	// settings or an older implementation — re-derive (the identity
+	// stays the same: this is freshness, not identity). Fingerprint-less
+	// metas predate the setting-aware gate; the digest rule above
+	// already forces their re-derivation, so no separate fallback.
+	if (!m.importFingerprint.empty()
+			&& m.importFingerprint != ImportFingerprintFor(config))
 		return true;
 	return false;
+}
+
+std::string ImportFingerprintFor(const DeriveConfig& config) {
+	// Canonical settings text: every field that changes the DERIVED BYTES.
+	// (Ratios print with %.4g — compact + locale-stable for the fixed set
+	// of values settings realistically carry.)
+	std::ostringstream s;
+	s << "meshlets=" << (config.meshlets ? 1 : 0)
+		<< ";lods=" << (config.lods ? 1 : 0)
+		<< ";shaderLods=" << (config.shaderLods ? 1 : 0)
+		<< ";lodError=" << std::fixed << std::setprecision(4)
+		<< config.lodTargetError
+		<< ";lodRatios=";
+	for (size_t i = 0; i < config.lodRatios.size(); ++i)
+		s << (i ? "," : "") << std::setprecision(4)
+			<< config.lodRatios[i];
+	// Implementation identity: the pipeline revision + the fixed meshlet
+	// canon (an engine canon change re-derives every meshlet set).
+	s << ";rev=" << kImportPipelineRevision
+		<< ";meshletCanon=" << smvk::kMeshletMaxVertices << "v"
+		<< smvk::kMeshletMaxTriangles << "t";
+	const std::string text = s.str();
+	return GuidHexFromBytes(text.data(), text.size());
+}
+
+std::vector<std::string> GltfExternalDependencies(
+	const std::filesystem::path& gltfPath) {
+	// Same host-side parse the importer uses (this module is the single
+	// glTF-aware surface). A source that fails to parse returns the empty
+	// set — the import itself reports the parse failure loudly right
+	// after; the dependency enumeration must never invent files.
+	std::vector<std::string> out;
+	tinygltf::Model model;
+	if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+		return out;
+	std::set<std::string> uris;
+	auto collect = [&](const std::string& uri) {
+		// Embedded data: URIs ride the .gltf bytes; remote http(s) URIs
+		// are not copyable locals.
+		if (uri.empty() || uri.rfind("data:", 0) == 0
+				|| uri.rfind("http://", 0) == 0
+				|| uri.rfind("https://", 0) == 0)
+			return;
+		uris.insert(uri);
+	};
+	for (const auto& b : model.buffers)
+		collect(b.uri);
+	for (const auto& im : model.images)
+		collect(im.uri);
+	out.assign(uris.begin(), uris.end());
+	return out;
 }
 
 // ---- shared material-asset import (editor + cook) ------------------------

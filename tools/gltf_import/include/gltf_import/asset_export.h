@@ -98,6 +98,13 @@ struct AssetManifest {
 	// can key on CONTENT (the mtime rule alone misfires on copies that
 	// preserve or reorders mtimes). Empty on legacy metas (pre-digest).
 	std::string sourceDigest;
+	// The IMPORT FINGERPRINT (32-hex — ImportFingerprintFor): the settings
+	// + implementation revisions the artifacts were derived under. The
+	// CONTENT digest above answers "did the source change"; this answers
+	// "would we derive the same artifact" (a LOD-ratio change or a
+	// processor revision bump re-derives even with byte-identical
+	// sources). Empty on legacy metas (pre-fingerprint).
+	std::string importFingerprint;
 	std::string stem;       // the asset file stem ("<stem>.geometry" etc.)
 	std::vector<AssetEntry> entries;
 };
@@ -253,10 +260,24 @@ struct MeshAsset {
 // have fresh derivations carry far vertex-lit policies again. Explicit
 // tour/material authoring (farVertexLit/farSpecular/farNormalMap) is
 // unaffected — this gate only controls what the importer DERIVES.
+//
+// AUTHORITATIVE PREPROCESSING (the project pipeline contract): the LOD
+// chain + meshlets are an IMPORT product — the .geometry carries them,
+// cooks consume them and never re-decide. The chain settings (ratios +
+// error) live HERE, are recorded in the manifest's import fingerprint
+// (ImportFingerprintFor) and flow into MeshOptConfig inside
+// DeriveGltfAssets; changing them changes the fingerprint and re-derives
+// the artifact.
 struct DeriveConfig {
 	bool meshlets = true;   // TOURMALINE_EDITOR_MESHLETS parity
 	bool lods = true;       // TOURMALINE_EDITOR_LODS parity
 	bool shaderLods = false; // TOURMALINE_EDITOR_SHADERLODS parity (opt-in)
+	// The LOD chain settings (MeshOptConfig::lodRatios/lodTargetError —
+	// the cook's historical --lod-ratios/--lod-error defaults; now owned
+	// by the import). Coarsest-last ratios vs LOD0; the error is the
+	// relative meshopt_simplify budget (fraction of extents).
+	std::vector<float> lodRatios{ 0.75f, 0.5f, 0.3f, 0.15f };
+	float lodTargetError = 0.01f;
 };
 
 struct DeriveStats {
@@ -353,12 +374,41 @@ bool ImportTextureSource(const std::filesystem::path& imagePath,
 	const std::string& sourceGuid, AssetKind kind, int sourceIndex);
 
 // The re-import gate: TRUE when the derived .geometry beside `gltfPath`
-// is missing/empty, the manifest is missing/unparseable, or the SOURCE
-// SET changed (SourceContentDigest: the .gltf + .bin + referenced images
-// — a repainted texture re-derives). FALSE = the artifact set is current;
-// open the .geometry directly without re-deriving. Digest-less (legacy)
+// is missing/empty, the manifest is missing/unparseable, the SOURCE SET
+// changed (SourceContentDigest: the .gltf + .bin + referenced images — a
+// repainted texture re-derives), or the recorded IMPORT FINGERPRINT
+// does not match the caller's config (settings or implementation
+// revision drift — changing the LOD ratios re-derives even on
+// byte-identical sources). FALSE = the artifact set is current; open
+// the .geometry directly without re-deriving. Digest-less (legacy)
 // metas fall back to the mtime rule.
-bool MeshArtifactStale(const std::filesystem::path& gltfPath);
+bool MeshArtifactStale(const std::filesystem::path& gltfPath,
+	const DeriveConfig& config = DeriveConfig{});
+
+// The import pipeline revision: bump when the DERIVATION's observable
+// behavior changes (what a re-import would produce differently —
+// simplification rules, meshlet building, attribute stamping, format
+// layout). Every recorded import fingerprint flips, so all artifacts
+// re-derive once, deliberately.
+inline constexpr uint32_t kImportPipelineRevision = 1;
+
+// The import fingerprint: the settings + implementation-identity half of
+// staleness (the CONTENT half is SourceContentDigest — identity and
+// freshness are separate concepts). Hashes the derive gates, the LOD
+// chain settings, the processor revision, and the fixed meshlet canon
+// (64v/64t — a canon change re-derives every meshlet set). Same
+// settings + same toolchain = same fingerprint, machine- and
+// directory-independent.
+[[nodiscard]] std::string ImportFingerprintFor(const DeriveConfig& config);
+
+// The glTF's EXTERNAL DEPENDENCY FILES (the .bin buffers + referenced
+// images, POSIX-relative authored URIs; remote http(s) URIs excluded —
+// they are not copyable locals). The project import copies exactly this
+// set + the .gltf itself into the project. This module is the single
+// glTF-aware surface (no second parser): the enumeration parses through
+// the same tinygltf path the importer uses.
+[[nodiscard]] std::vector<std::string> GltfExternalDependencies(
+	const std::filesystem::path& gltfPath);
 
 // Readers (round-trip; the world build + the read-only inspector use them).
 bool LoadMeshAsset(

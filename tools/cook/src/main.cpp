@@ -3859,7 +3859,7 @@ static std::string CookFlagsFingerprint(const Args& args) {
 
 bool WriteCookedArtifactsBack(const Args& args,
 	const std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
-	WriteBackStats& st, std::string& err) {
+	WriteBackStats& st, std::string& err, bool writeGeometry) {
 	// 1) Group every cooked mesh by its source artifact (the URI file
 	// part). Base meshes come from node references; LOD siblings (never
 	// node-attached) come from the LOD registry.
@@ -3903,6 +3903,44 @@ bool WriteCookedArtifactsBack(const Args& args,
 			r.lod = lod;
 			byFile[smvk::AssetFilePart(uriV)].push_back(r);
 		}
+	}
+	// The MARKER is the whole point when nothing mutated the geometry: the
+	// pak's freshness contract needs <stem>.cooked + (artifact <= marker)
+	// — it proves THIS cook ran against the artifact set. The imported
+	// .geometry is canonical and stays untouched (the LOD/meshlet
+	// regeneration that used to reach this write-back is retired; only
+	// the lightmap flow still mutates blobs and passes writeGeometry).
+	auto writeMarker = [&](const std::string& file) {
+		std::string stem = smvk::vfs::FileName(file);
+		if (const size_t mdot = stem.rfind(".geometry");
+			mdot != std::string::npos)
+			stem = stem.substr(0, mdot);
+		else if (const size_t mld = stem.rfind(".mesh");
+			mld != std::string::npos)
+			stem = stem.substr(0, mld);
+		const std::filesystem::path hostPath =
+			std::filesystem::path(args.contentDir) / file;
+		const std::filesystem::path manPath =
+			hostPath.parent_path() / (stem + ".cooked");
+		std::ofstream man(manPath, std::ios::binary | std::ios::trunc);
+		if (!man) {
+			err = "cannot write manifest '" + manPath.generic_string() + "'";
+			return false;
+		}
+		man << "cook=1\nflags=" << CookFlagsFingerprint(args) << "\n";
+		man.close();
+		if (!man) {
+			err = "manifest write failed '" + manPath.generic_string() + "'";
+			return false;
+		}
+		++st.artifacts;
+		return true;
+	};
+	if (!writeGeometry) {
+		for (auto& [file, refs] : byFile)
+			if (!writeMarker(file))
+				return false;
+		return true;
 	}
 	// 2) Per artifact: load the current derivation (preserves nodes /
 	// instances / lights / materials), overwrite the cooked blobs,
@@ -4682,6 +4720,55 @@ int Run(const CookArgs& c) {
 			sceneClusters.push_back(std::move(cluster));
 		}
 	} // close else block for the artifact path
+	// ---------------------------------------------------------------------------
+	// IMPORTED-PREPROCESSING VALIDATION: --lods/--meshlets are now
+	// REQUIREMENTS against the imported artifacts, not cook operations —
+	// the LOD chains + meshlet sets are an IMPORT product (the .geometry
+	// carries them; see DeriveConfig/ImportMeshSource), and the cook
+	// NEVER regenerates them (the old final-pass regeneration + geometry
+	// write-back is retired). A scene referencing geometry imported
+	// without the requested preprocessing fails HERE with an actionable
+	// diagnostic — reimport the source (Project.exe import / Import.exe),
+	// do not silently fall back to direct draws.
+	// ---------------------------------------------------------------------------
+	if (args.lods || args.meshlets) {
+		for (auto& sc : sceneClusters) {
+			smvk::Cluster& c = *sc;
+			// Per-cluster: chainable base meshes (lodIndex 0 with enough
+			// geometry to simplify) vs sibling entries (lodIndex >= 1);
+			// meshlet-carrying meshes vs cooked sets on the registry.
+			size_t chainable = 0, siblings = 0;
+			size_t meshBlobs = 0, meshletSets = 0;
+			for (const auto& [uri, lod] : c.ListMeshLods()) {
+				if (lod.lodIndex == 0) {
+					if (lod.triCount > 100)
+						++chainable;
+					if (c.GetMeshMeshlets(uri).has_value())
+						++meshletSets;
+					++meshBlobs;
+				}
+				else {
+					++siblings;
+				}
+			}
+			if (args.lods && chainable > 0 && siblings == 0) {
+				tool::err() << "The scene's geometry carries NO LOD chains"
+					" (" << chainable << " chainable meshes) — the cook no"
+					" longer generates them. Reimport the source with LODs"
+					" enabled (Project.exe import / Import.exe) and recook"
+					".\n";
+				return 1;
+			}
+			if (args.meshlets && meshBlobs > 0 && meshletSets == 0) {
+				tool::err() << "The scene's geometry carries NO meshlet"
+					" sets (" << meshBlobs << " meshes) — the cook no"
+					" longer generates them. Reimport the source with"
+					" meshlets enabled (Project.exe import / Import.exe)"
+					" and recook.\n";
+				return 1;
+			}
+		}
+	}
 	// Import phase finished: commit any staged registry artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
 	// only — staged bytes were already used in the import.
@@ -6817,23 +6904,20 @@ int Run(const CookArgs& c) {
 	}
 
 	// ---------------------------------------------------------------------------
-	// Final LOD sibling pass: the legacy per-mesh lightmap branch has
-	// already cooked siblings for UV transfer, so this skips those meshes.
-	// After a successful proxy bake, this pass cooks siblings from the
-	// stamped base uploads. Without lightmaps, it builds the normal LOD
-	// chain here rather than during import.
+	// (RETIRED) Final LOD sibling pass. This block used to regenerate the
+	// LOD chains + their meshlets at cook time ("without lightmaps, it
+	// builds the normal LOD chain here rather than during import") and the
+	// write-back persisted them INTO the imported .geometry — a duplicate
+	// preprocessing stage that destructively rewrote canonical imported
+	// assets. The chain generation is IMPORT-owned now (DeriveConfig::
+	// lods + lodRatios/lodTargetError flow into the derivation; the
+	// .geometry ships chain-ready), the cook VALIDATES the requested
+	// representation instead (the imported-preprocessing gate above the
+	// bake stages), and the write-back below persists geometry only under
+	// the (deprecated) lightmap flow. The lightmap path keeps its OWN
+	// in-memory sibling generation for the frostbite UV transfer — a
+	// scene-specific derivation that never leaves that flow.
 	// ---------------------------------------------------------------------------
-	{
-		smvk::MeshOptConfig lodOpt = opt;
-		lodOpt.generateLods = args.lods;
-		smvk::CookLodSiblingsOptions sibOpts;
-		// Chart-lock provenance + the parameterization audit only existed
-		// on the removed post-bake simplify path; the frostbite transfer
-		// shares one parameterization, so there is nothing to audit.
-	sibOpts.audit = false;
-	for (auto& sc : sceneClusters)
-		smvk::CookLodSiblings(*sc, lodOpt, meshletCfg, sibOpts);
-	}
 
 	// GI bake-file write-back + funnel registration (the giBlobs
 	// verdict): the in-process GI volumes + re-read sglm collected above
@@ -6874,16 +6958,18 @@ int Run(const CookArgs& c) {
 			<< "\n";
 	}
 
-	// COOK WRITE-BACK (no pak write): persist the cooked clusters into
-	// their source .geometry artifacts + <stem>.cooked manifests.
-	// pak.exe assembles the .pak from those (pure serialization); the
-	// loose bake files the stages above wrote (cubemap .ktx2 +
-	// .cubemanifest, lightmap .sglm, GiBaker volumes) are discovered by
-	// pak at assembly time.
+	// COOK WRITE-BACK: the <stem>.cooked manifests are the pak's freshness
+	// contract — always written. The imported .geometry is CANONICAL and is
+	// persisted ONLY when the (deprecated) lightmap flow actually mutated
+	// blobs (stamped chart UVs / lm bindings — a scene-specific derivation
+	// kept inside that flow); the plain path writes markers only and never
+	// touches the imported artifacts. pak.exe assembles the .pak from the
+	// imported artifacts + the loose bake files (pure serialization).
 	const auto t1 = std::chrono::steady_clock::now();
 	WriteBackStats wb;
 	std::string werr;
-	if (!WriteCookedArtifactsBack(args, sceneClusters, wb, werr)) {
+	if (!WriteCookedArtifactsBack(args, sceneClusters, wb, werr,
+			/*writeGeometry=*/args.lightmap)) {
 		tool::err() << "Write-back failed: " << werr << std::endl;
 		return 1;
 	}
@@ -6896,11 +6982,14 @@ int Run(const CookArgs& c) {
 		<< " -> cooked artifacts\n"
 		<< "  scenes=" << sceneClusters.size()
 		<< " artifacts=" << wb.artifacts
-		<< " blobs=" << wb.blobs
-		<< " siblings=" << wb.siblings
-		 << " meshleted=" << wb.meshleted << "/" << wb.blobs << " blobs"
-		 << " lmBound=" << wb.lmBound
-		 << " in " << secs << "s\n";
+		<< (args.lightmap
+			? " blobs=" + std::to_string(wb.blobs)
+				+ " siblings=" + std::to_string(wb.siblings)
+				+ " meshleted=" + std::to_string(wb.meshleted) + "/"
+				+ std::to_string(wb.blobs)
+				+ " lmBound=" + std::to_string(wb.lmBound)
+			: " (canonical .geometry untouched — markers only)")
+		<< " in " << secs << "s\n";
 	return 0;
 }
 
