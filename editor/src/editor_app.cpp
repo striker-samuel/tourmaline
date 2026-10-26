@@ -535,8 +535,8 @@ void EditorApp::CloseScene() {
 	m_sglmStatus = "no atlas loaded";
 	m_sglmBuf[0] = '\0';
 	ClearSglmLayers();
-	m_cvolPreviews.clear();
-	m_cvolPreviewMode = 0;
+	m_giVolumePreviews.clear();
+	m_giVolumePreviewMode = 0;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
 	m_refPlaceholders.clear();
@@ -938,7 +938,7 @@ void EditorApp::CloseScene() {
 	// Bake-output probes for the live view extras (scene-id keyed, never
 	// pak siblings — paks run in the App, not the editor).
 	TryLoadSceneSglm();
-	TryLoadCvolumes();
+	TryLoadGiVolumes();
 	RebuildCookedLights(); // census + seeds the viewport sun from the scene
 	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
@@ -1110,22 +1110,22 @@ void EditorApp::ClearSglmLayers() {
 }
 
 // ---------------------------------------------------------------------------
-// Convex GI volume preview data (probes-only pivot). Loads the
-// gi/<scene>.cvmanifest + .cvol BAKE files (project content first,
+// GI volume preview data (probes-only pivot). Loads the
+// gi/<scene>.givolumemanifest + .givolume BAKE files (project content first,
 // bundled content second — the same roots the live view's bindings
 // resolve) and builds each volume's hull: the bake AABB (gridMin..
 // gridMin + dims*spacing) clipped by the volume's plane set (3D
 // Sutherland-Hodgman). The hull feeds the LIGHTING-mode view option
 // (wireframe / translucent fill / probe grid — draw lives in
-// DrawCvolPreviewOverlay (editor_viewports.cpp); the probe-grid data
+// DrawGiVolumePreviewOverlay (editor_viewports.cpp); the probe-grid data
 // (strided sample + coverage counts) is built here alongside the hull.
 // ---------------------------------------------------------------------------
-bool EditorApp::TryLoadCvolumes() {
-	m_cvolPreviews.clear();
+bool EditorApp::TryLoadGiVolumes() {
+	m_giVolumePreviews.clear();
 	namespace fs = std::filesystem;
 	// The HARD identification (no stems, no manifests): each authored
-	// convex volume carries its baked .cvol ON THE LIVE SCENE
-	// (SceneCvol::bakeSource — the tour's giAsset cvol record, resolved
+	// GI volume carries its baked .givolume ON THE LIVE SCENE
+	// (SceneGiVolume::bakeSource — the tour's giAsset givolume record, resolved
 	// by ReplayTourDoc and kept current by the bake flows' stamp
 	// read-back). Volumes without a binding = authored but never baked
 	// (honest miss, named per volume). The binding paths are
@@ -1138,12 +1138,12 @@ bool EditorApp::TryLoadCvolumes() {
 		std::string path;
 	};
 	std::vector<Bound> bound;
-	for (const auto& [node, def] : m_world->scene.cvolForNode)
+	for (const auto& [node, def] : m_world->scene.giVolumeForNode)
 		if (!def.bakeSource.empty())
 			bound.push_back({ node, def.bakeSource });
 	if (bound.empty()) {
-		const bool hasCvols = !m_world->scene.cvolForNode.empty();
-		Log(hasCvols
+		const bool hasGiVolumes = !m_world->scene.giVolumeForNode.empty();
+		Log(hasGiVolumes
 			? "Convex GI volumes: authored but none baked (bake via "
 			  "Bake GI / the cook; the bake stamps the tour's giAsset "
 			  "records)"
@@ -1158,13 +1158,13 @@ bool EditorApp::TryLoadCvolumes() {
 		if (volPath.is_relative() && !m_projectRoot.empty())
 			volPath = (fs::path(m_projectRoot) / volPath)
 				.lexically_normal();
-		smvk::gi::CvVolume vol;
+		smvk::gi::GiVolume vol;
 		std::string err;
-		if (!smvk::gi::CvVolume::ReadFile(volPath.string(), vol, err)) {
+		if (!smvk::gi::GiVolume::ReadFile(volPath.string(), vol, err)) {
 			Log("Convex volume load failed '" + volPath.string() + "': " + err);
 			continue;
 		}
-		CvolPreview pv;
+		GiVolumePreview pv;
 		pv.name = volPath.stem().string();
 		pv.priority = vol.def.priority;
 		pv.gridMin = vol.gridMin;
@@ -1217,7 +1217,7 @@ bool EditorApp::TryLoadCvolumes() {
 						// coeffs are voxel-major, lobe-minor:
 						// [(z*Ny + y)*Nx + x][lobe]. The per-sample SG
 						// value = the sum of the 9 lobe luminances (the
-						// [CV] coeffs readout's scalar, so the preview
+						// [GIV] coeffs readout's scalar, so the preview
 						// ramp and the App's stderr stats agree).
 						const glm::vec3* c
 							= vol.coeffs.data()
@@ -1266,7 +1266,7 @@ bool EditorApp::TryLoadCvolumes() {
 			for (int f = 0; f < 6; ++f)
 				polys.push_back({ q[kFaces[f][0]], q[kFaces[f][1]],
 					q[kFaces[f][2]], q[kFaces[f][3]] });
-			for (const smvk::gi::CvPlane& plane : vol.def.planes) {
+			for (const smvk::gi::GiVolumePlane& plane : vol.def.planes) {
 				const auto inside = [&](const glm::vec3& p) {
 					return glm::dot(plane.normal, p) + plane.d <= 0.0f;
 				};
@@ -1307,7 +1307,7 @@ bool EditorApp::TryLoadCvolumes() {
 			}
 		pv.center = centroidCount > 0
 			? centroidSum / float(centroidCount) : pv.gridMin;
-		m_cvolPreviews.push_back(std::move(pv));
+		m_giVolumePreviews.push_back(std::move(pv));
 		++loaded;
 	}
 	if (loaded > 0) {

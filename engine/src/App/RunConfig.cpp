@@ -223,12 +223,12 @@ RunConfig RunConfig::Parse() {
 			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_DENSITY out of range "
 				"(0..2): %s\n", v);
 	}
-	if ((v = Get("TOURMALINE_VOLUMETRIC_CVOL")) != nullptr) {
+	if ((v = Get("TOURMALINE_VOLUMETRIC_GI_VOLUMES")) != nullptr) {
 		bool on = true;
 		if (IsOnOff(Trimmed(v), on))
-			c.volumetricCvol = on ? OnOffPin::On : OnOffPin::Off;
+			c.volumetricGiVolumes = on ? OnOffPin::On : OnOffPin::Off;
 		else
-			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_VOLUMETRIC_CVOL "
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_VOLUMETRIC_GI_VOLUMES "
 				"(want 1|on|0|off): %s\n", v);
 	}
 
@@ -271,8 +271,8 @@ RunConfig RunConfig::Parse() {
 		c.giPoints = std::atoi(v) != 0;
 	if ((v = Get("TOURMALINE_GI_OCCLUDE")) != nullptr)
 		c.giOcclude = std::atoi(v) != 0;
-	if ((v = Get("TOURMALINE_CVOL")) != nullptr)
-		c.cvolKilled = std::atoi(v) == 0;
+	if ((v = Get("TOURMALINE_GI_VOLUMES")) != nullptr)
+		c.giVolumesKilled = std::atoi(v) == 0;
 	c.cubemapDebug = ToInt(Get("TOURMALINE_CUBEMAP_DEBUG"), -1);
 	if ((v = Get("TOURMALINE_IBL")) != nullptr)
 		c.iblKilled = std::atoi(v) == 0;
@@ -430,7 +430,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
 		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",
 		"TOURMALINE_VOLUMETRIC", "TOURMALINE_VOLUMETRIC_STEPS", "TOURMALINE_VOLUMETRIC_DENSITY",
-		"TOURMALINE_VOLUMETRIC_CVOL", "TOURMALINE_SSR", "TOURMALINE_BLOOM_THRESHOLD",
+		"TOURMALINE_VOLUMETRIC_GI_VOLUMES", "TOURMALINE_SSR", "TOURMALINE_BLOOM_THRESHOLD",
 		"TOURMALINE_BLOOM_INTENSITY", "TOURMALINE_AO", "TOURMALINE_AUTO_EXPOSURE",
 		"TOURMALINE_CUBEMAP", "TOURMALINE_HIZ", "TOURMALINE_LOD", "TOURMALINE_LODFULL",
 		"TOURMALINE_SHADERLOD", "TOURMALINE_SPLIT", "TOURMALINE_WIREFRAME",
@@ -444,7 +444,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
 		"TOURMALINE_GI", "TOURMALINE_GI_DEBUG", "TOURMALINE_GI_DEBUG_LEVEL",
 		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",
-		"TOURMALINE_LIGHTMAP", "TOURMALINE_CVOL", "TOURMALINE_HITCH_LOG",
+		"TOURMALINE_LIGHTMAP", "TOURMALINE_GI_VOLUMES", "TOURMALINE_HITCH_LOG",
 		"TOURMALINE_MATERIAL_CENSUS", "TOURMALINE_SSR_STENCILVIEW",
 		"TOURMALINE_SSR_DEBUG",
 		"TOURMALINE_HOST_COPY", "TOURMALINE_AFTERMATH",

@@ -232,7 +232,7 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 }
 
 // ---- gizmo-marker picking (nodes with no mesh to raycast) -------------
-// Lights, cvolume centers and cubemap pins draw as X-ray markers with no
+// Lights, GI volume centers and cubemap pins draw as X-ray markers with no
 // geometry behind them, so the triangle walk can never hit them. This
 // projects each marker center to viewport pixels and takes the nearest
 // one inside the threshold — the click twin of what the eye sees. Only
@@ -288,11 +288,11 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 			consider(node, glm::vec3(scene.globalTransform[node][3]));
 		}
 	}
-	if (m_showCvolGizmos) {
-		for (const auto& [node, def] : scene.cvolForNode) {
+	if (m_showGiVolumeGizmos) {
+		for (const auto& [node, def] : scene.giVolumeForNode) {
 			(void)def;
 			glm::vec3 mn, mx;
-			if (!CvolBox(node, mn, mx))
+			if (!GiVolumeBox(node, mn, mx))
 				continue;
 			consider(node, (mn + mx) * 0.5f);
 		}

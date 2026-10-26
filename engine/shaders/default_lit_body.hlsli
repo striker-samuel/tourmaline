@@ -1232,7 +1232,7 @@ float envVis = 1.0f;
 #elif defined(GI_FULL)
     // Full stacked GI: convex volumes composited over the octree/sky
     // base by ordered priority. The volume walk runs FIRST (the
-    // high->low transmittance form, sg_cvol.hlsli): a volume with
+    // high->low transmittance form, sg_gi_volume.hlsli): a volume with
     // weight 1 fully owns the pixel, the transmission drops to 0 and
     // the octree/sky gather below never runs — the deep-inside pixel
     // pays its 7 texture taps and nothing else.
@@ -1246,7 +1246,7 @@ float envVis = 1.0f;
     float3 volAmps[SG_GI_LOBES];
     float volTrans = 1.0;
     bool volHit = false;
-    SgCvComposite(frame, SgCvTileMask(frame, clipPos.xy), IN.worldPos,
+    SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
         volAmps, volTrans, volHit);
     volHits = volHit ? 1u : 0u;
 

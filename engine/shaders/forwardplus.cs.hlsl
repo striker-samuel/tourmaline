@@ -3,7 +3,7 @@
 
 // Forward+ tile light culling (point/spot/probe; directional stays on CSM
 // path) + decal culling (projected splats share the light tiling) + convex
-// GI-volume culling (per-tile bitmask; sg_cvol.hlsli consumes it).
+// GI-volume culling (per-tile bitmask; sg_gi_volume.hlsli consumes it).
 //
 // Reflection probes ride the light buffer as type-2 entries
 // (kForwardPlusProbe: position = center, range = influence + fade): the
@@ -52,7 +52,7 @@ struct ForwardPlusCullPush
     uint maxLightsPerTile;
     // Per-tile convex-volume bitmask output (the tail slot keeps every
     // field offset identical to the old pad0/pad1 layout).
-    vk::BufferPointer<CvVolumeTileMaskBuffer> volumeMasks;
+    vk::BufferPointer<GiVolumeTileMaskBuffer> volumeMasks;
 };
 // NOTE: no static_assert here – this DXC (HLSL 2018 mode) rejects it at
 // global scope. Size is checked on the C++ side (64 bytes).
@@ -249,25 +249,25 @@ void mainCS(uint3 groupId : SV_GroupID)
     }
     frame.decalTileCounts.Get().counts[tileIdx] = dcount;
 
-    // ---- Cull convex GI volumes into the per-tile bitmask ----
+    // ---- Cull GI volumes into the per-tile bitmask ----
     // A volume reaches a tile when the bounding sphere of its
     // fade-expanded AABB intersects the tile's side planes (the
     // behind-camera reject included; the sphere is conservative over
-    // the AABB — the per-pixel AABB + plane tests in SgCvWeight make
+    // the AABB — the per-pixel AABB + plane tests in SgGiVolumeWeight make
     // the final call). NO depth-range cut, unlike the lights: fog-march
     // samples live IN FRONT of the nearest opaque surface (the march
     // starts at the camera), so the near-depth cut would wrongly drop
     // volumes that light the empty space before the wall; surface
     // shading only pays a slightly wider mask instead. The store is
-    // UNCONDITIONAL (fresh 0 with no volumes / cvol off — same
+    // UNCONDITIONAL (fresh 0 with no volumes / GI volumes off — same
     // discipline as the decal counts), so the shading passes never see
     // stale bits. Bit v = volume v (upload order = compositing priority
-    // order, sg_cvol.hlsli).
+    // order, sg_gi_volume.hlsli).
     uint volBits = 0u;
-    uint cvolCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
-    for (uint vi = 0; vi < cvolCount; ++vi)
+    uint giVolumeCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    for (uint vi = 0; vi < giVolumeCount; ++vi)
     {
-        const CvVolumeGpu V = frame.cvolVolumes.Get().volumes[vi];
+        const GiVolumeGpu V = frame.giVolumes.Get().volumes[vi];
         const float3 c = 0.5 * (V.aabbMin.xyz + V.aabbMax.xyz);
         const float r = 0.5 * length(V.aabbMax.xyz - V.aabbMin.xyz);
         float3 cView = mul(view, float4(c, 1.0f)).xyz;

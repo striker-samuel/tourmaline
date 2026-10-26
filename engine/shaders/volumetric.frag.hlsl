@@ -6,7 +6,7 @@
 #include "environment.hlsli"
 #include "sggi.hlsli"
 #include "sg_regular.hlsli"
-#include "sg_cvol.hlsli"
+#include "sg_gi_volume.hlsli"
 #include "dof.hlsli"
 
 struct PSIn
@@ -38,14 +38,14 @@ struct VolumetricPush
     float giScale;
     uint useGi;
     uint useSun;
-    uint useCvolGi;         // 1 = convex volumes stack into the fog GI
+    uint useGiVolumes;     // 1 = GI volumes stack into the fog GI
     float jitterStrength;
     float heightFalloff;
     float heightBase;
     float time;
     uint pad1;              // 8-align filler for the BDA tail below
     // Forward+ light feed for fog in-scatter (tile lists ride the cull
-    // freshness contract — frame.cvolTileCountX != 0 implies fresh;
+    // freshness contract — frame.giVolumeTileCountX != 0 implies fresh;
     // the light buffer + count publish whenever uploaded).
     vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts; // 0 = stale
     vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices; // 0 = stale
@@ -76,9 +76,9 @@ float VolPhaseHg(float cosT, float g)
 // divided by 4pi. Integral of one unit SG lobe = 2pi/l*(1-e^-2l); with the
 // fixed sharpness 4 the mean weight is (1-e^-8)/8 ~= 0.125 per lobe.
 // The mean is LINEAR in the amps — the fog consumes it through the
-// dedicated one-fetch/one-accumulator paths (SgCvRayComposite's lazy
+// dedicated one-fetch/one-accumulator paths (SgGiVolumeRayComposite's lazy
 // mean fetch + SgGiSampleMean; the CPU packs per-volume mean textures
-// with the same constant, CvVolume::PackGpuMeanLayer): the constant MUST
+// with the same constant, GiVolume::PackGpuMeanLayer): the constant MUST
 // stay in sync in all three places.
 float3 VolGiMean(float3 amps[SG_GI_LOBES])
 {
@@ -101,8 +101,8 @@ float3 VolGiMean(float3 amps[SG_GI_LOBES])
 // smooth as the ambient — and the per-light loop never runs inside the
 // hot march.
 // Tile lists are fresh when the cull ran this frame (the app publishes the
-// list addresses under the same freshness contract as the cvol tile masks;
-// frame.cvolTileCountX != 0 is the cross-check — one dispatch writes both).
+// list addresses under the same freshness contract as the GI-volume tile masks;
+// frame.giVolumeTileCountX != 0 is the cross-check — one dispatch writes both).
 // Stale/absent lists (or an off-grid tile) walk [0, fpLightCount)
 // directly — correct, just unculled.
 // ---------------------------------------------------------------------------
@@ -151,14 +151,14 @@ float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
     const uint nLights = min(vp.fpLightCount, (uint)MAX_FP_LIGHTS);
     if (nLights == 0u)
         return float3(0.0, 0.0, 0.0);
-    if (frame.cvolTileCountX != 0u)
+    if (frame.giVolumeTileCountX != 0u)
     {
-        const uint ts = max(frame.cvolTileSize, 1u);
+        const uint ts = max(frame.giVolumeTileSize, 1u);
         const uint tx = (uint)(pix.x / (float)ts);
-        if (tx < frame.cvolTileCountX)
+        if (tx < frame.giVolumeTileCountX)
         {
             const uint ty = (uint)(pix.y / (float)ts);
-            const uint tile = ty * frame.cvolTileCountX + tx;
+            const uint tile = ty * frame.giVolumeTileCountX + tx;
             if (tile < (uint)MAX_FP_TILES)
             {
                 const uint perTile = min(vp.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
@@ -290,17 +290,17 @@ PSOut mainPS(PSIn IN)
     // coverage, no volumes).
     const float3 skyMean =
         EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env) * 0.31831;
-    // Fog GI sources: giOn = the octree world field, cvolGiOn = convex
-    // volumes stacking over it. cvolGiOn is the fog-GI quality bypass
-    // (useCvolGi = 0): octree/sky only — no tile-mask load, no volume
-    // walk at all.
-    const bool cvolGiOn = (vp.useCvolGi != 0u) && (frame.cvolEnabled != 0u);
-    const bool fogGiOn = (giOn > 0.5) || cvolGiOn;
+    // Fog GI sources: giOn = the octree world field, giVolumesOn = GI
+    // volumes stacking over it. giVolumesOn is the fog-GI quality bypass
+    // (useGiVolumes = 0): octree/sky only ??? no tile-mask load, no volume
+    // walks.
+    const bool giVolumesOn = (vp.useGiVolumes != 0u) && (frame.giVolumesEnabled != 0u);
+    const bool fogGiOn = (giOn > 0.5) || giVolumesOn;
     // Per-tile volume bitmask is pixel-constant: one lookup per PIXEL
     // (0 under the bypass — the mean composite then walks nothing).
     uint volMask = 0u;
-    if (cvolGiOn)
-        volMask = SgCvTileMask(frame, IN.pos.xy);
+    if (giVolumesOn)
+        volMask = SgGiVolumeTileMask(frame, IN.pos.xy);
     // Scattering intensity hoisted (push constant, but keeps the hot
     // segment clean of the max()).
     const float intensity_ = intensity;
@@ -324,10 +324,10 @@ PSOut mainPS(PSIn IN)
     // AABB intervals vs the march ray -> base/slope plane coefficients
     // for the overlapping volumes. The march then blends exact weights
     // with FMA-only ramps (no plane loads, no dot3s per segment).
-    CvRayPrep rayPrep;
+    GiVolumeRayPrep rayPrep;
     float3 baseHeld = skyMean;
     if (fogGiOn)
-        SgCvRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
+        SgGiVolumeRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
 
     // Held forward+ light in-scatter (per-ambient-refresh — the lights
     // sit at fixed world positions, so the field is as smooth as the
@@ -381,7 +381,7 @@ PSOut mainPS(PSIn IN)
         float volTrans = 1.0;
         if (fogGiOn)
         {
-            SgCvRayComposite(frame, rayPrep, t, wpos, volAcc, volTrans);
+            SgGiVolumeRayComposite(frame, rayPrep, t, wpos, volAcc, volTrans);
             if (t - giT >= kVolGiRefreshDist)
             {
                 giT = t;

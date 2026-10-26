@@ -348,20 +348,20 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateTransform(c);
 		break;
 	}
-	case EditVerb::CreateCVolume: {
+	case EditVerb::CreateGiVolume: {
 		if (forward)
-			ExecCreateCVolume(c);
+			ExecCreateGiVolume(c);
 		else
-			ExecUncreateCvolume(c);
+			ExecUncreateGiVolume(c);
 		break;
 	}
-	case EditVerb::SetCvolAttr: {
-		const std::string& attr = c.cvolAttr;
+	case EditVerb::SetGiVolumeAttr: {
+		const std::string& attr = c.giVolumeAttr;
 		if (forward)
-			WriteNodeCvolAttr(c.node, attr, c.vec4, c.number,
+			WriteNodeGiVolumeAttr(c.node, attr, c.vec4, c.number,
 				c.afterText);
 		else
-			WriteNodeCvolAttr(c.node, attr, c.beforeVec4, c.beforeNum,
+			WriteNodeGiVolumeAttr(c.node, attr, c.beforeVec4, c.beforeNum,
 				c.beforeText);
 		break;
 	}
@@ -481,18 +481,18 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 	return -1;
 }
 
-int EditorApp::CreatedCvolIndex(uint32_t worldNode) const {
-	// Same contract as CreatedLightIndex, for the cvolume family:
-	// alive + emitting creates only (a deleted cvolume's CreateCVolume
+int EditorApp::CreatedGiVolumeIndex(uint32_t worldNode) const {
+	// Same contract as CreatedLightIndex, for the GI-volume family:
+	// alive + emitting creates only (a deleted GI volume's CreateGiVolume
 	// is dropped from the tour, so the file's -ref space spans the
 	// survivors — save-time indices and replay-time
-	// m_tourCreatedCvolNodes match).
+	// m_tourCreatedGiVolumeNodes match).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
-		if (h.verb != EditVerb::CreateCVolume)
+		if (h.verb != EditVerb::CreateGiVolume)
 			continue;
-		if (!m_world || !m_world->scene.cvolForNode.contains(h.node))
+		if (!m_world || !m_world->scene.giVolumeForNode.contains(h.node))
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
@@ -503,12 +503,12 @@ int EditorApp::CreatedCvolIndex(uint32_t worldNode) const {
 	return -1;
 }
 
-std::string EditorApp::UniqueCvolName() const {
-	// Next free "CVol_N" over live node names (1-based).
+std::string EditorApp::UniqueGiVolumeName() const {
+	// Next free "GIVolume_N" over live node names (1-based).
 	int n = 1;
 	if (m_world) {
 		for (;;) {
-			const std::string want = "CVol_" + std::to_string(n);
+			const std::string want = "GIVolume_" + std::to_string(n);
 			bool taken = false;
 			for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
 				taken = getNodeName(m_world->scene, int(i)) == want;
@@ -517,11 +517,11 @@ std::string EditorApp::UniqueCvolName() const {
 			++n;
 		}
 	}
-	return "CVol_" + std::to_string(n);
+	return "GIVolume_" + std::to_string(n);
 }
 
 int EditorApp::CreatedCubemapIndex(uint32_t worldNode) const {
-	// Same contract as CreatedCvolIndex, for the cubemap-capture family
+	// Same contract as CreatedGiVolumeIndex, for the cubemap-capture family
 	// (alive + emitting creates only).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
@@ -685,8 +685,8 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 			return false; // detached (tombstoned)
 		break;
 	}
-	case EditVerb::CreateCVolume: {
-		if (!scene.cvolForNode.contains(created))
+	case EditVerb::CreateGiVolume: {
+		if (!scene.giVolumeForNode.contains(created))
 			return false; // detached (tombstoned)
 		break;
 	}
@@ -746,7 +746,7 @@ bool EditorApp::IsCreatedChild(const EditorApp& app,
 		if (h.node != childNode)
 			continue;
 		if (h.verb == EditVerb::CreateLight
-			|| h.verb == EditVerb::CreateCVolume
+			|| h.verb == EditVerb::CreateGiVolume
 			|| h.verb == EditVerb::CreateCubemap
 			|| h.verb == EditVerb::CreateCamera
 			|| h.verb == EditVerb::CreateTransform
@@ -791,7 +791,7 @@ bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) 
 		if (h.node != parentSlot)
 			continue;
 		if (h.verb == EditVerb::CreateLight
-			|| h.verb == EditVerb::CreateCVolume
+			|| h.verb == EditVerb::CreateGiVolume
 			|| h.verb == EditVerb::CreateCubemap
 			|| h.verb == EditVerb::CreateCamera
 			|| h.verb == EditVerb::CreateTransform
@@ -1159,41 +1159,41 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 }
 
 // ---------------------------------------------------------------------------
-// Created convex volumes (cvolume nodes).
+// Created GI volumes (GI volume nodes).
 //
-// A created cvolume is a WORLD transform node (translate = box center,
+// A created GI volume is a WORLD transform node (translate = box center,
 // scale = full extents, axis-aligned — rotation ignored by design) plus
-// a node-local SceneCvol definition in scene.cvolForNode — so gizmos,
+// a node-local SceneGiVolume definition in scene.giVolumeForNode — so gizmos,
 // the inspector, the outliner and the tour all pick it up with no
 // special cases. Undo removes the node when it is still the childless
 // tail (ids stay stable); otherwise the node is tombstoned (hidden +
 // def detached) for the same reason.
-// Tour persistence: CreateCVolume carries the creation (CmdToTour emits
-// the LIVE params, so post-creation edits ride along); SetCvolAttr
-// addresses later creates via kCreateCvolRefBase (creation order).
+// Tour persistence: CreateGiVolume carries the creation (CmdToTour emits
+// the LIVE params, so post-creation edits ride along); SetGiVolumeAttr
+// addresses later creates via kCreateGiVolumeRefBase (creation order).
 // ---------------------------------------------------------------------------
-void EditorApp::DraftCreateCVolume() {
+void EditorApp::DraftCreateGiVolume() {
 	if (!m_world) {
-		Log("Create cvolume: no scene open.");
+		Log("Create GI volume: no scene open.");
 		return;
 	}
 	EditCmd c{};
-	c.verb = EditVerb::CreateCVolume;
+	c.verb = EditVerb::CreateGiVolume;
 	c.node = UINT32_MAX; // assigned at forward execution
 	const uint32_t sel = m_selected;
 	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
 		? sel : DefaultCreateParent();
-	c.afterText = UniqueCvolName();
+	c.afterText = UniqueGiVolumeName();
 	c.afterVec = ActiveCam().target;
 	c.svec = glm::vec3(8.0f); // 8 m authoring box
-	c.cvolPriority = 0;
-	c.cvolSpacing = 0.5f;
-	c.cvolInsideFade = 0.1f;
-	c.cvolOutsideFade = 0.1f;
+	c.giVolumePriority = 0;
+	c.giVolumeSpacing = 0.5f;
+	c.giVolumeInsideFade = 0.1f;
+	c.giVolumeOutsideFade = 0.1f;
 	Do(c);
 }
 
-void EditorApp::ExecCreateCVolume(EditCmd& c) {
+void EditorApp::ExecCreateGiVolume(EditCmd& c) {
 	if (!m_world)
 		return;
 	Scene& scene = m_world->scene;
@@ -1220,24 +1220,24 @@ void EditorApp::ExecCreateCVolume(EditCmd& c) {
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
 	scene.nameForNode[uint32_t(created)] = nameId;
-	::SceneCvol def{};
-	def.priority = c.cvolPriority;
-	def.spacing = std::max(c.cvolSpacing, 1e-3f);
-	def.insideFade = std::max(c.cvolInsideFade, 0.0f);
-	def.outsideFade = std::max(c.cvolOutsideFade, 0.0f);
-	scene.cvolForNode[uint32_t(created)] = def;
+	::SceneGiVolume def{};
+	def.priority = c.giVolumePriority;
+	def.spacing = std::max(c.giVolumeSpacing, 1e-3f);
+	def.insideFade = std::max(c.giVolumeInsideFade, 0.0f);
+	def.outsideFade = std::max(c.giVolumeOutsideFade, 0.0f);
+	scene.giVolumeForNode[uint32_t(created)] = def;
 	if (m_replayingTour)
-		m_tourCreatedCvolNodes.push_back(uint32_t(created));
+		m_tourCreatedGiVolumeNodes.push_back(uint32_t(created));
 	markAsChanged(scene, created);
 	recalculateGlobalTransforms(scene);
 	m_selected = uint32_t(created);
 	char buf[160];
-	std::snprintf(buf, sizeof(buf), "Created cvolume '%s' (#%u)",
+	std::snprintf(buf, sizeof(buf), "Created GI volume '%s' (#%u)",
 		c.afterText.c_str(), uint32_t(created));
 	Log(buf);
 }
 
-void EditorApp::ExecUncreateCvolume(EditCmd& c) {
+void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 	if (!m_world)
 		return;
 	Scene& scene = m_world->scene;
@@ -1250,7 +1250,7 @@ void EditorApp::ExecUncreateCvolume(EditCmd& c) {
 		// Physical removal: pop every vector addNode grew (flag arrays
 		// only when they are exactly node-sized — empty/mismatched
 		// means "default", which needs no entry).
-		scene.cvolForNode.erase(n);
+		scene.giVolumeForNode.erase(n);
 		scene.nameForNode.erase(n);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
@@ -1291,13 +1291,13 @@ void EditorApp::ExecUncreateCvolume(EditCmd& c) {
 		recalculateGlobalTransforms(scene);
 		if (m_selected == n)
 			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid cvolume creation (#" + std::to_string(n) + ").");
+		Log("Undid GI volume creation (#" + std::to_string(n) + ").");
 	} else {
 		// Non-tail (or parented) node: keep ids stable — hide the node
 		// and detach the def instead of shifting the world.
 		MarkHidden(scene, int(n));
-		scene.cvolForNode.erase(n);
-		Log("Undid cvolume creation (#" + std::to_string(n) +
+		scene.giVolumeForNode.erase(n);
+		Log("Undid GI volume creation (#" + std::to_string(n) +
 			"): hidden, ids kept stable (def retained in the command).");
 	}
 }
@@ -1413,7 +1413,7 @@ void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
 	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
 	if (tail && childless) {
-		// Physical removal (the ExecUncreateCvolume pattern: pop every
+		// Physical removal (the ExecUncreateGiVolume pattern: pop every
 		// vector addNode grew, unlink from the parent's child list).
 		scene.exportForNode.erase(n);
 		scene.nameForNode.erase(n);
@@ -1503,7 +1503,7 @@ bool EditorApp::ReadNodeExportAttr(uint32_t node, const std::string& attr,
 	else if (attr == "meshletMaxVerts") num = double(es.meshletMaxVerts);
 	else if (attr == "meshletMaxTris") num = double(es.meshletMaxTris);
 	else if (attr == "meshletConeWeight") num = double(es.meshletConeWeight);
-	else if (attr == "giCvol") flag = es.giCvol;
+	else if (attr == "giVolumes") flag = es.giVolumes;
 	else if (attr == "giWorld") flag = es.giWorld;
 	else if (attr == "autoKtx") flag = es.autoKtx;
 	else if (attr == "ignoreVfs") flag = es.ignoreVfs;
@@ -1545,7 +1545,7 @@ void EditorApp::PushExportAttr(uint32_t node, const std::string& attr,
 }
 
 int EditorApp::CreatedExportIndex(uint32_t worldNode) const {
-	// Same contract as CreatedCvolIndex, for the exportSettings family:
+	// Same contract as CreatedGiVolumeIndex, for the exportSettings family:
 	// alive + emitting creates only.
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
@@ -1754,12 +1754,12 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		auto lit = scene.lightForNode.find(n);
 		c.number = (lit != scene.lightForNode.end())
 			? double(lit->second) : -1.0;
-		// Cvolume def (created or replayed): node-local floats ride
+		// GI-volume def (created or replayed): node-local floats ride
 		// beforeVec4 (priority, spacing, inside, outside) + presence
 		// rides beforeFlag — the light-index precedent for the exact
 		// undo below.
-		auto cvit = scene.cvolForNode.find(n);
-		c.beforeFlag = (cvit != scene.cvolForNode.end());
+		auto cvit = scene.giVolumeForNode.find(n);
+		c.beforeFlag = (cvit != scene.giVolumeForNode.end());
 		if (c.beforeFlag)
 			c.beforeVec4 = glm::vec4(float(cvit->second.priority),
 				cvit->second.spacing, cvit->second.insideFade,
@@ -1801,7 +1801,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 	for (uint32_t id : nodes) {
 		scene.meshForNode.erase(id);
 		scene.materialForNode.erase(id);
-		scene.cvolForNode.erase(id);
+		scene.giVolumeForNode.erase(id);
 		scene.cubemapForNode.erase(id);
 		scene.cameraForNode.erase(id);
 		m_deletedNodes.insert(id);
@@ -1843,7 +1843,7 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
 		scene.lightForNode[n] = uint32_t(c.number);
 	if (c.beforeFlag)
-		scene.cvolForNode[n] = ::SceneCvol{ uint32_t(c.beforeVec4.x),
+		scene.giVolumeForNode[n] = ::SceneGiVolume{ uint32_t(c.beforeVec4.x),
 			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w };
 	if (c.beforeCubemap)
 		scene.cubemapForNode[n] =
@@ -2106,17 +2106,17 @@ void EditorApp::DuplicateSelection() {
 			c.afterVec = tr;
 			c.cubemapRadius = cmit->second.radius;
 		}
-		else if (auto cvit = m_world->scene.cvolForNode.find(t);
-			cvit != m_world->scene.cvolForNode.end()) {
-			c.verb = EditVerb::CreateCVolume;
+		else if (auto cvit = m_world->scene.giVolumeForNode.find(t);
+			cvit != m_world->scene.giVolumeForNode.end()) {
+			c.verb = EditVerb::CreateGiVolume;
 			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
 			c.afterText = name;
 			c.afterVec = tr;
 			c.svec = sc;
-			c.cvolPriority = cvit->second.priority;
-			c.cvolSpacing = cvit->second.spacing;
-			c.cvolInsideFade = cvit->second.insideFade;
-			c.cvolOutsideFade = cvit->second.outsideFade;
+			c.giVolumePriority = cvit->second.priority;
+			c.giVolumeSpacing = cvit->second.spacing;
+			c.giVolumeInsideFade = cvit->second.insideFade;
+			c.giVolumeOutsideFade = cvit->second.outsideFade;
 		}
 		else {
 			// Plain transform: created transforms AND imported empty
@@ -2380,7 +2380,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
-bool EditorApp::ReadNodeCvolAttr(uint32_t node, const std::string& attr,
+bool EditorApp::ReadNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 	glm::vec4& v4, double& num, std::string& text) const {
 	v4 = glm::vec4(0.0f);
 	num = 0.0;
@@ -2388,10 +2388,10 @@ bool EditorApp::ReadNodeCvolAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
-	auto it = scene.cvolForNode.find(node);
-	if (it == scene.cvolForNode.end())
+	auto it = scene.giVolumeForNode.find(node);
+	if (it == scene.giVolumeForNode.end())
 		return false;
-	const ::SceneCvol& def = it->second;
+	const ::SceneGiVolume& def = it->second;
 	if (attr == "priority") {
 		num = double(def.priority);
 	} else if (attr == "spacing") {
@@ -2414,15 +2414,15 @@ bool EditorApp::ReadNodeCvolAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
-bool EditorApp::WriteNodeCvolAttr(uint32_t node, const std::string& attr,
+bool EditorApp::WriteNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 	const glm::vec4& v4, double num, const std::string& text) {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	Scene& scene = m_world->scene;
-	auto it = scene.cvolForNode.find(node);
-	if (it == scene.cvolForNode.end())
+	auto it = scene.giVolumeForNode.find(node);
+	if (it == scene.giVolumeForNode.end())
 		return false;
-	::SceneCvol& def = it->second;
+	::SceneGiVolume& def = it->second;
 	if (attr == "priority") {
 		def.priority = uint32_t(std::max(num, 0.0));
 	} else if (attr == "spacing") {
@@ -2455,12 +2455,12 @@ bool EditorApp::WriteNodeCvolAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
-bool EditorApp::CvolOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
+bool EditorApp::GiVolumeOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
 	glm::vec3& half) const {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
-	if (!scene.cvolForNode.contains(node))
+	if (!scene.giVolumeForNode.contains(node))
 		return false;
 	if (node >= scene.globalTransform.size())
 		return false;
@@ -2479,12 +2479,12 @@ bool EditorApp::CvolOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
 	return true;
 }
 
-bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
+bool EditorApp::GiVolumeBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
 	// AABB of the (possibly rotated) authoring OBB.
 	glm::vec3 c;
 	glm::mat3 axes;
 	glm::vec3 half;
-	if (!CvolOBB(node, c, axes, half))
+	if (!GiVolumeOBB(node, c, axes, half))
 		return false;
 	mn = c;
 	mx = c;
@@ -2497,12 +2497,12 @@ bool EditorApp::CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const {
 	return true;
 }
 
-bool EditorApp::CvolBoxCorners(uint32_t node,
+bool EditorApp::GiVolumeBoxCorners(uint32_t node,
 	glm::vec3 outCorners[8]) const {
 	glm::vec3 c;
 	glm::mat3 axes;
 	glm::vec3 half;
-	if (!CvolOBB(node, c, axes, half))
+	if (!GiVolumeOBB(node, c, axes, half))
 		return false;
 	const glm::vec3 ax[3] = { axes[0] * half[0], axes[1] * half[1],
 		axes[2] * half[2] };
@@ -2770,8 +2770,8 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetLightAttr:
 			lastByAttr[{ int(c.verb), c.node, c.lightAttr }] = i;
 			break;
-		case EditVerb::SetCvolAttr:
-			lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] = i;
+		case EditVerb::SetGiVolumeAttr:
+			lastByAttr[{ int(c.verb), c.node, c.giVolumeAttr }] = i;
 			break;
 		case EditVerb::SetCubemapAttr:
 			lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] = i;
@@ -2810,9 +2810,9 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.lightAttr }] != i;
 			break;
-		case EditVerb::SetCvolAttr:
+		case EditVerb::SetGiVolumeAttr:
 			superseded =
-				lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] != i;
+				lastByAttr[{ int(c.verb), c.node, c.giVolumeAttr }] != i;
 			break;
 		case EditVerb::SetCubemapAttr:
 			superseded =
@@ -2855,7 +2855,7 @@ size_t EditorApp::CoalesceHistory() {
 	//                              AssignMaterial
 	//   (SetMatAttr, mat, attr)    shared material value edits
 	//   (SetLightAttr, node, attr) light property edits
-	//   (SetCvolAttr, node, attr)  convex-volume property edits
+	//   (SetGiVolumeAttr, node, attr)  convex-volume property edits
 	//   (SetCamAttr, node, attr)   camera property edits
 	std::map<std::pair<int, uint32_t>, size_t> lastByNode;
 	std::map<std::tuple<int, uint32_t, std::string>, size_t> lastByAttr;
@@ -2881,8 +2881,8 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::SetLightAttr:
 			lastByAttr[{ int(c.verb), c.node, c.lightAttr }] = i;
 			break;
-		case EditVerb::SetCvolAttr:
-			lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] = i;
+		case EditVerb::SetGiVolumeAttr:
+			lastByAttr[{ int(c.verb), c.node, c.giVolumeAttr }] = i;
 			break;
 		case EditVerb::SetCubemapAttr:
 			lastByAttr[{ int(c.verb), c.node, c.cubemapAttr }] = i;
@@ -2922,9 +2922,9 @@ size_t EditorApp::CoalesceHistory() {
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.lightAttr }] != i;
 			break;
-		case EditVerb::SetCvolAttr:
+		case EditVerb::SetGiVolumeAttr:
 			superseded =
-				lastByAttr[{ int(c.verb), c.node, c.cvolAttr }] != i;
+				lastByAttr[{ int(c.verb), c.node, c.giVolumeAttr }] != i;
 			break;
 		case EditVerb::SetCubemapAttr:
 			superseded =
@@ -2976,8 +2976,8 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::TerrainPaint: return "terrain paint";
 	case editor::EditVerb::Delete: return "delete";
 	case editor::EditVerb::CreateTransform: return "create transform";
-	case editor::EditVerb::CreateCVolume: return "create cvolume";
-	case editor::EditVerb::SetCvolAttr: return "cvolume edit";
+	case editor::EditVerb::CreateGiVolume: return "create GI volume";
+	case editor::EditVerb::SetGiVolumeAttr: return "GI volume edit";
 	case editor::EditVerb::CreateCubemap: return "create cubemap";
 	case editor::EditVerb::SetCubemapAttr: return "cubemap edit";
 	case editor::EditVerb::CreateCamera: return "create camera";
@@ -3063,12 +3063,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.name = c.afterText;
 			return true;
 		}
-		// Created-cvolume nodes own no cluster id either: renames
-		// persist as cvolume-attr lines (-ref addressing).
-		const int kv = app.CreatedCvolIndex(c.node);
+		// Created-GI-volume nodes own no cluster id either: renames
+		// persist as GI-volume-attr lines (-ref addressing).
+		const int kv = app.CreatedGiVolumeIndex(c.node);
 		if (kv >= 0) {
-			out.verb = smvk::tour::Verb::SetCvolAttr;
-			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.verb = smvk::tour::Verb::SetGiVolumeAttr;
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(kv);
 			out.text = "name";
 			out.name = c.afterText;
 			return true;
@@ -3109,11 +3109,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.vec4 = glm::vec4(c.afterVec, 1.0f);
 			return true;
 		}
-		// Created-cvolume nodes: same treatment (cvolume-attr triples).
-		const int kv = app.CreatedCvolIndex(c.node);
+		// Created-GI-volume nodes: same treatment (GI-volume-attr triples).
+		const int kv = app.CreatedGiVolumeIndex(c.node);
 		if (kv >= 0) {
-			out.verb = smvk::tour::Verb::SetCvolAttr;
-			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.verb = smvk::tour::Verb::SetGiVolumeAttr;
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(kv);
 			out.text = (c.verb == EditVerb::Translate) ? "position" : "rotation";
 			out.vec4 = glm::vec4(c.afterVec, 1.0f);
 			return true;
@@ -3147,11 +3147,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		return true;
 	}
 	case EditVerb::Scale: {
-		// Created-cvolume size edits ride the size channel (-ref).
-		const int kv = app.CreatedCvolIndex(c.node);
+		// Created-GI-volume size edits ride the size channel (-ref).
+		const int kv = app.CreatedGiVolumeIndex(c.node);
 		if (kv >= 0) {
-			out.verb = smvk::tour::Verb::SetCvolAttr;
-			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(kv);
+			out.verb = smvk::tour::Verb::SetGiVolumeAttr;
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(kv);
 			out.text = "size";
 			out.vec4 = glm::vec4(c.afterVec, 1.0f);
 			return true;
@@ -3419,17 +3419,17 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
-	case EditVerb::CreateCVolume: {
+	case EditVerb::CreateGiVolume: {
 		// Emit the LIVE create state: the node may have moved/scaled
 		// and its params may have been attr-edited after creation
-		// (those later SetCvolAttr commands re-emit harmlessly and
+		// (those later SetGiVolumeAttr commands re-emit harmlessly and
 		// idempotently — the light precedent).
 		const uint32_t created = c.node;
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
-		auto cvit = app.m_world->scene.cvolForNode.find(created);
-		if (cvit == app.m_world->scene.cvolForNode.end())
+		auto cvit = app.m_world->scene.giVolumeForNode.find(created);
+		if (cvit == app.m_world->scene.giVolumeForNode.end())
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
@@ -3438,7 +3438,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) — never drop the cvolume silently.
+			// CreateLight case) — never drop the GI volume silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -3448,7 +3448,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		glm::vec3 t, r, s;
 		app.ReadLocalTRS(created, t, r, s);
 		out.verb = smvk::tour::Verb::CreateNode;
-		out.nodeType = "cvolume";
+		out.nodeType = "givolume";
 		out.node = uint32_t(pp);
 		out.parentRef = parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
@@ -3460,19 +3460,19 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			cvit->second.outsideFade);
 		return true;
 	}
-	case EditVerb::SetCvolAttr: {
-		const int k = app.CreatedCvolIndex(c.node);
+	case EditVerb::SetGiVolumeAttr: {
+		const int k = app.CreatedGiVolumeIndex(c.node);
 		if (k >= 0) {
-			out.node = smvk::tour::kCreateCvolRefBase | uint32_t(k);
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(k);
 		} else if (!needNode()) {
 			return false;
 		}
-		out.verb = smvk::tour::Verb::SetCvolAttr;
-		out.text = c.cvolAttr;
-		if (c.cvolAttr == "position" || c.cvolAttr == "rotation"
-			|| c.cvolAttr == "size") {
+		out.verb = smvk::tour::Verb::SetGiVolumeAttr;
+		out.text = c.giVolumeAttr;
+		if (c.giVolumeAttr == "position" || c.giVolumeAttr == "rotation"
+			|| c.giVolumeAttr == "size") {
 			out.vec4 = c.vec4;
-		} else if (c.cvolAttr == "name") {
+		} else if (c.giVolumeAttr == "name") {
 			out.name = c.afterText;
 		} else {
 			out.number = c.number;
@@ -3601,7 +3601,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// The scene's export config node: a plain createNode -at
 		// exportSettings line (parent + name; identity transform). The
 		// attr payload rides the following SetExportAttr commands
-		// (live-state emission there, like the cvolume family).
+		// (live-state emission there, like the GI-volume family).
 		const uint32_t created = c.node;
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
@@ -3644,7 +3644,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (c.exportAttr == "meshopt" || c.exportAttr == "lods"
 			|| c.exportAttr == "lightmap" || c.exportAttr == "cubemap"
 			|| c.exportAttr == "cubemapOctree"
-			|| c.exportAttr == "meshlets" || c.exportAttr == "giCvol"
+			|| c.exportAttr == "meshlets" || c.exportAttr == "giVolumes"
 			|| c.exportAttr == "giWorld" || c.exportAttr == "autoKtx"
 			|| c.exportAttr == "ignoreVfs") {
 			out.flag = c.afterFlag; // bool attrs ride the flag slot
@@ -3662,7 +3662,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// delete target by the SaveTourTo pre-pass), name (secondary,
 		// via needNode's verify-name side effect), numeric id as the
 		// legacy fallback/disambiguator. Editor-created nodes (created
-		// lights, cvolumes, terrain groups/tiles — no cluster id) are
+		// lights, GI volumes, terrain groups/tiles — no cluster id) are
 		// never written: their creates are dropped by the live-state
 		// emission above, removing them from the file entirely.
 		if (!needNode())
@@ -4018,7 +4018,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		else if (c.verb == EditVerb::CreateLight
 			|| c.verb == EditVerb::CreateTerrain
 			|| c.verb == EditVerb::CreateTransform
-			|| c.verb == EditVerb::CreateCVolume
+			|| c.verb == EditVerb::CreateGiVolume
 			|| c.verb == EditVerb::CreateCubemap
 			|| c.verb == EditVerb::CreateCamera) {
 			ensureUuid(CreateEmitParent(*this, c));
@@ -4087,7 +4087,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// or failed reference): re-emit VERBATIM so they resolve again when
 	// their nodes come back. A reference round-trip must never erase
 	// edits from the file. EXCEPT family-ref attr orphans pointing past
-	// the create set this save emits (setLightAttr/setCvolAttr/
+	// the create set this save emits (setLightAttr/setGiVolumeAttr/
 	// setCubemapAttr/setCamAttr/terrainPaint with -ref k >= the
 	// family's emitted creates): a create set is fixed per file, so a
 	// past-the-end -ref can never resolve again — re-emitting it only
@@ -4101,8 +4101,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 					switch (v) {
 					case Verb::SetLightAttr:
 						return smvk::tour::kCreateLightRefBase;
-					case Verb::SetCvolAttr:
-						return smvk::tour::kCreateCvolRefBase;
+					case Verb::SetGiVolumeAttr:
+						return smvk::tour::kCreateGiVolumeRefBase;
 					case Verb::SetCubemapAttr:
 						return smvk::tour::kCreateCubemapRefBase;
 					case Verb::SetCamAttr:
@@ -4123,8 +4123,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 					const EditVerb ev = m_history[i].verb;
 					if ((tc.verb == Verb::SetLightAttr
 							&& ev == EditVerb::CreateLight)
-						|| (tc.verb == Verb::SetCvolAttr
-							&& ev == EditVerb::CreateCVolume)
+						|| (tc.verb == Verb::SetGiVolumeAttr
+							&& ev == EditVerb::CreateGiVolume)
 						|| (tc.verb == Verb::SetCubemapAttr
 							&& ev == EditVerb::CreateCubemap)
 						|| (tc.verb == Verb::SetCamAttr
@@ -4432,17 +4432,17 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			out.svec = tc.svec;
 			return true;
 		}
-		if (tn == "cvolume") {
-			out.verb = EditVerb::CreateCVolume;
+		if (tn == "givolume") {
+			out.verb = EditVerb::CreateGiVolume;
 			out.node = UINT32_MAX;
 			out.node2 = wp;
 			out.afterText = tc.text;
 			out.afterVec = tc.vec;
 			out.svec = tc.svec;
-			out.cvolPriority = uint32_t(std::max(tc.vec4.x, 0.0f));
-			out.cvolSpacing = std::max(tc.vec4.y, 1e-3f);
-			out.cvolInsideFade = std::max(tc.vec4.z, 0.0f);
-			out.cvolOutsideFade = std::max(tc.vec4.w, 0.0f);
+			out.giVolumePriority = uint32_t(std::max(tc.vec4.x, 0.0f));
+			out.giVolumeSpacing = std::max(tc.vec4.y, 1e-3f);
+			out.giVolumeInsideFade = std::max(tc.vec4.z, 0.0f);
+			out.giVolumeOutsideFade = std::max(tc.vec4.w, 0.0f);
 			return true;
 		}
 		if (tn == "cubemap") {
@@ -4553,7 +4553,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.lightShadow = tc.node2 != 0;
 		return true;
 	}
-	case smvk::tour::Verb::CreateCVolume: {
+	case smvk::tour::Verb::CreateGiVolume: {
 		uint32_t wp = UINT32_MAX;
 		if (!tc.parentRef.empty()) {
 			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
@@ -4566,16 +4566,16 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 				|| wp >= app.m_world->scene.hierarchy.size())
 				return false;
 		}
-		out.verb = EditVerb::CreateCVolume;
+		out.verb = EditVerb::CreateGiVolume;
 		out.node = UINT32_MAX; // assigned at forward execution
 		out.node2 = wp;        // parent (world)
 		out.afterText = tc.text;
 		out.afterVec = tc.vec;
 		out.svec = tc.svec;
-		out.cvolPriority = uint32_t(std::max(tc.vec4.x, 0.0f));
-		out.cvolSpacing = std::max(tc.vec4.y, 1e-3f);
-		out.cvolInsideFade = std::max(tc.vec4.z, 0.0f);
-		out.cvolOutsideFade = std::max(tc.vec4.w, 0.0f);
+		out.giVolumePriority = uint32_t(std::max(tc.vec4.x, 0.0f));
+		out.giVolumeSpacing = std::max(tc.vec4.y, 1e-3f);
+		out.giVolumeInsideFade = std::max(tc.vec4.z, 0.0f);
+		out.giVolumeOutsideFade = std::max(tc.vec4.w, 0.0f);
 		return true;
 	}
 	case smvk::tour::Verb::CreateCubemap: {
@@ -4695,26 +4695,26 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
-	case smvk::tour::Verb::SetCvolAttr: {
+	case smvk::tour::Verb::SetGiVolumeAttr: {
 		uint32_t target = UINT32_MAX;
-		if ((tc.node & smvk::tour::kCreateCvolRefBase) != 0) {
-			const uint32_t k = tc.node & ~smvk::tour::kCreateCvolRefBase;
-			if (k >= app.m_tourCreatedCvolNodes.size())
+		if ((tc.node & smvk::tour::kCreateGiVolumeRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateGiVolumeRefBase;
+			if (k >= app.m_tourCreatedGiVolumeNodes.size())
 				return false;
-			target = app.m_tourCreatedCvolNodes[k];
+			target = app.m_tourCreatedGiVolumeNodes[k];
 		} else {
 			target = app.ClusterToWorld(tc.node);
 		}
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		if (!app.m_world->scene.cvolForNode.contains(target))
-			return false; // not a cvolume: orphan, preserved verbatim
-		out.verb = EditVerb::SetCvolAttr;
+		if (!app.m_world->scene.giVolumeForNode.contains(target))
+			return false; // not a GI volume: orphan, preserved verbatim
+		out.verb = EditVerb::SetGiVolumeAttr;
 		out.node = target;
-		out.cvolAttr = tc.text;
+		out.giVolumeAttr = tc.text;
 		// Before-state from the live world (exact undo).
-		if (!app.ReadNodeCvolAttr(target, tc.text, out.beforeVec4,
+		if (!app.ReadNodeGiVolumeAttr(target, tc.text, out.beforeVec4,
 				out.beforeNum, out.beforeText))
 			return false;
 		if (tc.text == "position" || tc.text == "rotation"
@@ -4814,7 +4814,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (tc.text == "meshopt" || tc.text == "lods"
 			|| tc.text == "lightmap" || tc.text == "cubemap"
 			|| tc.text == "cubemapOctree" || tc.text == "meshlets"
-			|| tc.text == "giCvol" || tc.text == "giWorld"
+			|| tc.text == "giVolumes" || tc.text == "giWorld"
 			|| tc.text == "autoKtx" || tc.text == "ignoreVfs") {
 			out.afterFlag = tc.flag;
 		} else if (tc.text == "lodRatios" || tc.text == "lmExcludeKw") {
@@ -4956,7 +4956,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_world->materialLocations.push_back({ cl, h });
 	}
 	m_tourCreatedNodes.clear();
-	m_tourCreatedCvolNodes.clear();
+	m_tourCreatedGiVolumeNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
 	m_tourCreatedCameraNodes.clear();
 	m_tourCreatedExportNodes.clear();
@@ -5005,8 +5005,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// the mirror round-trips through save (the records are doc state,
 	// never derived here — only the bake owner writes them); the
 	// per-volume bindings resolve onto the live scene through the SAME
-	// family list the setCvolAttr replay used (m_tourCreatedCvolNodes,
-	// filled in command order above), so the editor's loaders (the cvol
+	// family list the setGiVolumeAttr replay used (m_tourCreatedGiVolumeNodes,
+	// filled in command order above), so the editor's loaders (the GI-volume
 	// preview) read exactly what the scene carries — no stem guessing.
 	// Clear-first keeps a re-replay idempotent (stale bindings from the
 	// previous pass die).
@@ -5015,7 +5015,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		Scene& liveScene = m_world->scene;
 		liveScene.giWorldSource.clear();
 		liveScene.giWorldGuid.clear();
-		for (auto& [node, def] : liveScene.cvolForNode) {
+		for (auto& [node, def] : liveScene.giVolumeForNode) {
 			def.bakeSource.clear();
 			def.bakeGuid.clear();
 		}
@@ -5030,16 +5030,16 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 				continue;
 			}
 			const uint32_t k =
-				ga.ref & ~smvk::tour::kCreateCvolRefBase;
-			if ((ga.ref & smvk::tour::kCreateCvolRefBase) == 0
-					|| k >= m_tourCreatedCvolNodes.size()) {
-				Log("tour: giAsset cvol ref out of range (dropped — '"
+				ga.ref & ~smvk::tour::kCreateGiVolumeRefBase;
+			if ((ga.ref & smvk::tour::kCreateGiVolumeRefBase) == 0
+					|| k >= m_tourCreatedGiVolumeNodes.size()) {
+				Log("tour: giAsset GI-volume ref out of range (dropped — '"
 					+ ga.source + "')");
 				continue;
 			}
-			auto it = liveScene.cvolForNode.find(
-				m_tourCreatedCvolNodes[k]);
-			if (it == liveScene.cvolForNode.end())
+			auto it = liveScene.giVolumeForNode.find(
+				m_tourCreatedGiVolumeNodes[k]);
+			if (it == liveScene.giVolumeForNode.end())
 				continue;
 			it->second.bakeSource = ga.source;
 			it->second.bakeGuid = ga.guid;
@@ -5070,11 +5070,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// already created it (createNode -at exportSettings) is untouched.
 	EnsureExportSettingsNode();
 	// Re-resolve the convex-volume preview AFTER the replay: the
-	// giAsset bindings ride the replayed cvolume definitions (resolved
+	// giAsset bindings ride the replayed GI-volume definitions (resolved
 	// above through the family list), so the pre-replay call inside the
 	// scene-load path always saw an empty scene. The reload keeps the
 	// preview honest after every doc replay (undo restores, too).
-	TryLoadCvolumes();
+	TryLoadGiVolumes();
 	// The replay rebuilt the world in place (same object).
 	return true;
 }

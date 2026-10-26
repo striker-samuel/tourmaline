@@ -352,7 +352,7 @@ namespace editor {
 				hot.fogEndAndFlags_w = frame.env.fogEndAndFlags.w;
 				hot.giIntensity = frame.giIntensity;
 				hot.giDebug = frame.giDebug;
-				hot.cvolEnabled = frame.cvolEnabled;
+				hot.giVolumesEnabled = frame.giVolumesEnabled;
 				const size_t hotSlice = (size_t(flight) * kMaxViewports
 					+ size_t(vp)) * sizeof(engine::FramePSHot);
 				m_context->UploadDataToBuffer(m_frameHotBuf, &hot, sizeof(hot),
@@ -1999,7 +1999,7 @@ namespace editor {
 				else if (m_world && m_vpBoxVp == m_activeVp) {
 					const smvk::Extent2D vpExt{ uint32_t(vp.w), uint32_t(vp.h) };
 				if (m_selMode == SelMode::Mesh) {
-					// X-ray markers first (lights/cvol centers/cubemap
+					// X-ray markers first (lights/GI volume centers/cubemap
 					// pins carry no mesh to raycast — the click twin of
 					// the gizmo diamonds and capture balls); meshes
 					// otherwise.

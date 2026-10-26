@@ -76,19 +76,19 @@ enum class EditVerb : uint8_t {
   	              // system uses these as displacement placeholders
   	              // (see editor_references.cpp): no other authoring
   	              // creates them today.
-  	CreateCVolume, // append a convex GI volume node (world): a DAG
+  	CreateGiVolume, // append a GI volume node (world): a DAG
   	              // transform (translate = box center, scale = full
   	              // extents, axis-aligned — rotation ignored) + a
-  	              // node-local SceneCvol definition (m_cvolForNode).
+  	              // node-local SceneGiVolume definition (m_giVolumeForNode).
   	              // c.node = CREATED world id once forward-executed
   	              // (UINT32_MAX before); c.node2 = parent world id;
   	              // afterText = name; afterVec = local position;
   	              // svec = local size; priority/spacing/fades below.
-  	              // Post-creation edits ride SetCvolAttr (like
+  	              // Post-creation edits ride SetGiVolumeAttr (like
   	              // lights: translate/rotate/scale/rename lower to
   	              // position/rotation/size/name channels).
-  	SetCvolAttr, // cvolume property edit; c.node = cvolume node
-  	              // (world), cvolAttr selects the channel (see below).
+  	SetGiVolumeAttr, // GI volume property edit; c.node = GI volume node
+  	              // (world), giVolumeAttr selects the channel (see below).
   	CreateCubemap, // append a cubemap capture node (world): a pinned
   	              // specular probe position + node-local SceneCubemap
   	              // definition (m_cubemapForNode). c.node = CREATED
@@ -166,19 +166,19 @@ struct EditCmd {
  	// afterText (name); before-state rides beforeVec4 / beforeNum /
  	// beforeFlag / beforeText.
  	std::string lightAttr;
-	// CreateCVolume payload (live-world domain; box center in
+	// CreateGiVolume payload (live-world domain; box center in
 	// afterVec, full-extents size in svec, name in afterText,
 	// parent in node2):
-	uint32_t cvolPriority = 0; // higher = composited later = wins
-	float cvolSpacing = 0.5f;  // dense probe grid spacing (m)
-	float cvolInsideFade = 0.1f;  // blend width inside each face (m)
-	float cvolOutsideFade = 0.1f; // blend width outside each face (m)
-	// SetCvolAttr channel ("priority","spacing","inside","outside",
+	uint32_t giVolumePriority = 0; // higher = composited later = wins
+	float giVolumeSpacing = 0.5f;  // dense probe grid spacing (m)
+	float giVolumeInsideFade = 0.1f;  // blend width inside each face (m)
+	float giVolumeOutsideFade = 0.1f; // blend width outside each face (m)
+	// SetGiVolumeAttr channel ("priority","spacing","inside","outside",
 	// "position","rotation","size","name"). Value rides number
 	// (scalars) / vec4 (triples: position, rotation-deg, size) /
 	// afterText (name); before-state rides beforeNum / beforeVec4 /
 	// beforeText.
-	std::string cvolAttr;
+	std::string giVolumeAttr;
 	// CreateCubemap payload (live-world domain; pinned probe position
 	// in afterVec, name in afterText, parent in node2):
 	float cubemapRadius = 1.5f; // influence radius (m), fade = r/2
@@ -207,7 +207,7 @@ struct EditCmd {
 	// "cubemapSize","cubemapRays","cubemapOctree","cubemapOctreeMax",
 	// "cubemapOctreeMin","cubemapOctreeDepth","cubemapExtraRadius",
 	// "meshlets","meshletMaxVerts","meshletMaxTris",
-	// "meshletConeWeight","giCvol","giWorld","autoKtx","ignoreVfs").
+	// "meshletConeWeight","giVolumes","giWorld","autoKtx","ignoreVfs").
 	// Value rides number (scalars) / afterFlag (bools) / afterText
 	// (strings); before-state rides beforeNum / beforeFlag /
 	// beforeText.
@@ -225,7 +225,7 @@ struct EditCmd {
 	// hasMat 0/1; erased links read 0). Restored exactly by undo.
 	std::vector<uint32_t> delNodeMaps;
 	// Delete payload: cubemap capture def presence (radius in
-	// beforeNum) — the cvol def uses beforeFlag/beforeVec4; a node
+	// beforeNum) — the GI-volume def uses beforeFlag/beforeVec4; a node
 	// carries at most one of the two kinds.
 	bool beforeCubemap = false;
 	// Delete payload: camera def presence (world camera index in

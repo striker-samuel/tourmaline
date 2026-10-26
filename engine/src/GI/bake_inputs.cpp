@@ -283,9 +283,9 @@ std::string BakeRegionHash(const BakeCellGrid& grid,
 // Unit hashes
 // ---------------------------------------------------------------------------
 
-std::string CvolBakeUnitHash(const BakeCellGrid& grid,
-	const Cluster& cluster, const SceneCvol& def,
-	const glm::mat4& nodeGlobal, const CvolBakeConfigHashInputs& cfg) {
+std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
+	const Cluster& cluster, const SceneGiVolume& def,
+	const glm::mat4& nodeGlobal, const GiVolumeBakeConfigHashInputs& cfg) {
 	// The volume's world AABB: the node global's basis lengths are the
 	// full extents (the harvest's OBB decode); the 8 corners give the
 	// region, expanded by the margin ring.
@@ -304,7 +304,7 @@ std::string CvolBakeUnitHash(const BakeCellGrid& grid,
 	mx += glm::vec3(m);
 
 	Hasher hs;
-	hs.feed("cvol");
+	hs.feed("givolume");
 	hs.feed(BakeEnvHash(cluster.scene));
 	hs.feed(BakeLightsHash(cluster));
 	// The definition's bake-relevant fields (the shape rides nodeGlobal,

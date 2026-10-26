@@ -210,7 +210,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 					<< ((c.node2 >> 16) & 0xFFFFu) << " -m "
 					<< c.material;
 			}
-			else if (c.nodeType == "cvolume") {
+			else if (c.nodeType == "givolume") {
 				// -t packs local position (box center: x y z) +
 				// priority spacing insideFade outsideFade
 				// (7 values); -s packs local size (full extents).
@@ -301,12 +301,12 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			<< " -m " << c.material;
 		break;
 	}
-	case Verb::CreateCVolume: {
+	case Verb::CreateGiVolume: {
 		// -t packs local position (box center: x y z) + priority
 		// spacing insideFade outsideFade (7 values); -s packs local
 		// size (full extents: sx sy sz). -p is the parent: bare id
 		// (legacy) or quoted name/path/uuid.
-		f << "createCvolume -p ";
+		f << "createGiVolume -p ";
 		if (!c.parentRef.empty())
 			f << Quote(c.parentRef);
 		else
@@ -400,14 +400,14 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			f << " -v " << c.number;
 		break;
 	}
-	case Verb::SetCvolAttr: {
+	case Verb::SetGiVolumeAttr: {
 		// Same addressing shape as setLightAttr (-ref k of the k-th
-		// createCvolume, else -n cluster id). Triples (position,
+		// createGiVolume, else -n cluster id). Triples (position,
 		// rotation-deg, size) ride -t; name rides -v as a string;
 		// scalars (priority, spacing, inside, outside) ride -v.
-		f << "setCvolAttr ";
-		if ((c.node & kCreateCvolRefBase) != 0)
-			f << "-ref " << (c.node & ~kCreateCvolRefBase);
+		f << "setGiVolumeAttr ";
+		if ((c.node & kCreateGiVolumeRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase);
 		else
 			f << "-n " << c.node;
 		f << " -at " << c.text;
@@ -422,7 +422,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		break;
 	}
 	case Verb::SetCubemapAttr: {
-		// Same addressing shape as setCvolAttr (-ref k of the k-th
+		// Same addressing shape as setGiVolumeAttr (-ref k of the k-th
 		// createCubemap, else -n cluster id). Position rides -t;
 		// name rides -v as a string; radius rides -v.
 		f << "setCubemapAttr ";
@@ -457,7 +457,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		else if (c.text == "meshopt" || c.text == "lods"
 			|| c.text == "lightmap" || c.text == "cubemap"
 			|| c.text == "cubemapOctree" || c.text == "meshlets"
-			|| c.text == "giCvol" || c.text == "giWorld"
+			|| c.text == "giVolumes" || c.text == "giWorld"
 			|| c.text == "maskTransmission"
 			|| c.text == "autoKtx" || c.text == "ignoreVfs")
 			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
@@ -557,8 +557,8 @@ bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
 			std::max(c.number, 0.0)), 1u, 512u);
 	else if (a == "meshletConeWeight")
 		es.meshletConeWeight = std::clamp(float(c.number), 0.0f, 1.0f);
-	else if (a == "giCvol")
-		es.giCvol = c.flag;
+	else if (a == "giVolumes")
+		es.giVolumes = c.flag;
 	else if (a == "giWorld")
 		es.giWorld = c.flag;
 	else if (a == "maskTransmission")
@@ -803,19 +803,19 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
 	// identification, doc-level state like the pool imports above. The
 	// bake owner upserts these at bake time; the -ref indices are the
-	// cvolume family refs (the k-th createCvolume in file order — the
-	// same grammar setCvolAttr -ref uses). The -hash carries the
+	// GI-volume family refs (the k-th createGiVolume in file order — the
+	// same grammar setGiVolumeAttr -ref uses). The -hash carries the
 	// bake-input hash at bake time (the pak gate's freshness check).
 	for (const GiAssetCmd& ga : doc.giAssets) {
 		if (ga.source.empty())
 			continue; // half-written record: skip (mirrors fileNode)
 		const char* kindText =
-			ga.kind == GiAssetCmd::Kind::Cvol ? "cvol"
+			ga.kind == GiAssetCmd::Kind::GiVolume ? "givolume"
 			: ga.kind == GiAssetCmd::Kind::Captures ? "captures"
 			: "world";
 		f << "giAsset -kind " << kindText;
-		if (ga.kind == GiAssetCmd::Kind::Cvol)
-			f << " -ref " << (ga.ref & ~kCreateCvolRefBase);
+		if (ga.kind == GiAssetCmd::Kind::GiVolume)
+			f << " -ref " << (ga.ref & ~kCreateGiVolumeRefBase);
 		f << " -source " << Quote(ga.source);
 		if (!ga.guid.empty())
 			f << " -guid " << ga.guid;
@@ -826,19 +826,19 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 	// Tabulated create properties (Maya createNode + setAttr flavor):
 	// -ref-addressed setLightAttr (-ref k of the k-th light-family
 	// create), TerrainPaint (-ref k of the k-th terrain-family create),
-	// setCvolAttr (-ref k of the k-th cvolume-family create) and
+	// setGiVolumeAttr (-ref k of the k-th GI-volume-family create) and
 	// setExportAttr (-ref k of the k-th exportSettings create) ride
 	// directly under their create, tab-indented.
 	// Families span both spellings (legacy createLight/createTerrain/
-	// createCvolume AND unified createNode pointLight/spotLight/
-	// terrain/cvolume) in one file-order index each, so -ref indices
+	// createGiVolume AND unified createNode pointLight/spotLight/
+	// terrain/givolume) in one file-order index each, so -ref indices
 	// resolve identically.
 	auto createFamily = [](const Command& c) -> int {
 		if (c.verb == Verb::CreateLight)
 			return 0;
 		if (c.verb == Verb::CreateTerrain)
 			return 1;
-		if (c.verb == Verb::CreateCVolume)
+		if (c.verb == Verb::CreateGiVolume)
 			return 2;
 		if (c.verb == Verb::CreateCubemap)
 			return 3;
@@ -849,7 +849,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				return 0;
 			if (c.nodeType == "terrain")
 				return 1;
-			if (c.nodeType == "cvolume")
+			if (c.nodeType == "givolume")
 				return 2;
 			if (c.nodeType == "cubemap")
 				return 3;
@@ -885,9 +885,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				|| (family == 1 && d.verb == Verb::TerrainPaint
 					&& (d.node & kCreateTerrainRefBase) != 0
 					&& (d.node & ~kCreateTerrainRefBase) == k)
-				|| (family == 2 && d.verb == Verb::SetCvolAttr
-					&& (d.node & kCreateCvolRefBase) != 0
-					&& (d.node & ~kCreateCvolRefBase) == k)
+				|| (family == 2 && d.verb == Verb::SetGiVolumeAttr
+					&& (d.node & kCreateGiVolumeRefBase) != 0
+					&& (d.node & ~kCreateGiVolumeRefBase) == k)
 				|| (family == 3 && d.verb == Verb::SetCubemapAttr
 					&& (d.node & kCreateCubemapRefBase) != 0
 					&& (d.node & ~kCreateCubemapRefBase) == k)
@@ -931,7 +931,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 // -pattern <regex> / -enabled <on|off> (override rules only)
 // -source <path> / -name <word> (reference lines only)
 // -ref <k> (setLightAttr on the k-th createLight, terrainPaint on the
-// k-th createTerrain, setCvolAttr on the k-th createCvolume in the doc)
+// k-th createTerrain, setGiVolumeAttr on the k-th createGiVolume in the doc)
 // -uuid <hex> (delete addressing / uuid lines)
 // -type <datatype> (setAttr value flavor, informational)
 // -s <nums...> (createTransform scale triple)
@@ -967,7 +967,7 @@ struct Flags {
 	bool hasGuid = false;
 	std::string type;      // -type <datatype> (setAttr value flavor)
 	bool hasType = false;
-	std::string kind;      // -kind <world|cvol|captures> (giAsset records)
+	std::string kind;      // -kind <world|givolume|captures> (giAsset records)
 	bool hasKind = false;
 	std::string hash;      // -hash <hex> (giAsset bake-input hashes)
 	bool hasHash = false;
@@ -1203,7 +1203,7 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "pointLight", CreateNodeKind::Dag },
 	{ "spotLight", CreateNodeKind::Dag },
 	{ "terrain", CreateNodeKind::Dag },
-	{ "cvolume", CreateNodeKind::Dag },
+	{ "givolume", CreateNodeKind::Dag },
 	{ "cubemap", CreateNodeKind::Dag },
 	{ "camera", CreateNodeKind::Dag },
 	{ "exportSettings", CreateNodeKind::Dag },
@@ -1511,12 +1511,12 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		continue;
 	}
 		if (verb == "giAsset") {
-		// giAsset -kind world|cvol|captures [-ref <k>] -source "<vfs>"
+		// giAsset -kind world|givolume|captures [-ref <k>] -source "<vfs>"
 		//   [-guid "<g>"] [-hash "<hex>"];
 		// The scene's HARD baked-GI identification (see GiAssetCmd): the
 		// world-field octree, one record per authored convex volume
-		// (addressed by the cvolume family ref, the SAME -ref grammar
-		// setCvolAttr uses), and the capture set (the record-bound
+		// (addressed by the GI-volume family ref, the SAME -ref grammar
+		// setGiVolumeAttr uses), and the capture set (the record-bound
 		// cubemanifest + its ktx2s + the .reach bookkeeping). Doc-level
 		// like textureAsset (replayed onto the scene by
 		// ApplyTourToCluster's post pass, not a command).
@@ -1524,19 +1524,19 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		if (!ParseFlags(toks, 1, fl, err, lineNo))
 			return false;
 		GiAssetCmd ga;
-		if (fl.kind == "cvol")
-			ga.kind = GiAssetCmd::Kind::Cvol;
+		if (fl.kind == "givolume")
+			ga.kind = GiAssetCmd::Kind::GiVolume;
 		else if (fl.kind == "world")
 			ga.kind = GiAssetCmd::Kind::World;
 		else if (fl.kind == "captures")
 			ga.kind = GiAssetCmd::Kind::Captures;
 		else {
 			warn("tour:" + std::to_string(lineNo) +
-				": giAsset -kind must be world|cvol|captures (skipped)");
+				": giAsset -kind must be world|givolume|captures (skipped)");
 			continue;
 		}
-		if (ga.kind == GiAssetCmd::Kind::Cvol)
-			ga.ref = fl.hasRef ? (kCreateCvolRefBase | fl.ref) : 0;
+		if (ga.kind == GiAssetCmd::Kind::GiVolume)
+			ga.ref = fl.hasRef ? (kCreateGiVolumeRefBase | fl.ref) : 0;
 		if (!fl.hasSource || fl.source.empty()) {
 			warn("tour:" + std::to_string(lineNo) +
 				": giAsset without -source (skipped)");
@@ -1618,8 +1618,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			effVerb = "createTransform";
 		else if (tn == "terrain")
 			effVerb = "createTerrain";
-		else if (tn == "cvolume")
-			effVerb = "createCvolume";
+		else if (tn == "givolume")
+			effVerb = "createGiVolume";
 		else if (tn == "cubemap")
 			effVerb = "createCubemap";
 		else if (tn == "camera")
@@ -1970,36 +1970,36 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.node2 = (uint32_t(v[8]) & 0xFFFFu)
 			| ((uint32_t(v[9]) & 0xFFFFu) << 16);
 	}
-	else if (effVerb == "createCvolume" && (fl.hasP || fl.hasPStr)
+	else if (effVerb == "createGiVolume" && (fl.hasP || fl.hasPStr)
 		&& fl.hasName && fl.t.size() >= 7 && fl.hasS
 		&& fl.svec.size() >= 3) {
 		// -t packs: x y z priority spacing insideFade outsideFade;
 		// -s packs: sx sy sz (full extents). -at is accepted and
-		// must read "cvolume" when present (unified-form echo).
-		if (fl.hasAt && fl.at != "cvolume") {
-			err = "line " + std::to_string(lineNo) + ": createCvolume wants -at cvolume";
+		// must read "givolume" when present (unified-form echo).
+		if (fl.hasAt && fl.at != "givolume") {
+			err = "line " + std::to_string(lineNo) + ": createGiVolume wants -at givolume";
 			return false;
 		}
 		double v[10] = {};
 		for (int k = 0; k < 7; ++k)
 			if (!ParseDouble(fl.t[size_t(k)], v[k])) {
 				err = "line " + std::to_string(lineNo)
-					+ ": bad createCvolume value";
+					+ ": bad createGiVolume value";
 				return false;
 			}
 		double s[3] = { 1.0, 1.0, 1.0 };
 		for (int k = 0; k < 3; ++k)
 			if (!ParseDouble(fl.svec[size_t(k)], s[k])) {
 				err = "line " + std::to_string(lineNo)
-					+ ": bad createCvolume size";
+					+ ": bad createGiVolume size";
 				return false;
 			}
 		if (s[0] <= 0.0 || s[1] <= 0.0 || s[2] <= 0.0 || v[4] <= 0.0
 			|| v[5] < 0.0 || v[6] < 0.0 || v[3] < 0.0) {
-			err = "line " + std::to_string(lineNo) + ": createCvolume params out of range";
+			err = "line " + std::to_string(lineNo) + ": createGiVolume params out of range";
 			return false;
 		}
-		c.verb = Verb::CreateCVolume;
+		c.verb = Verb::CreateGiVolume;
 		c.node = fl.hasP ? fl.p : 0;
 		if (fl.hasPStr)
 			c.parentRef = fl.pStr;
@@ -2127,7 +2127,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
-	else if (effVerb == "setCvolAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+	else if (effVerb == "setGiVolumeAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
 		static const char* kAttrs[] = { "priority", "spacing",
 			"inside", "outside", "position", "rotation", "size",
 			"name" };
@@ -2138,22 +2138,22 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				break;
 			}
 		if (!known) {
-			err = "line " + std::to_string(lineNo) + ": bad cvolume attr '" + fl.at + "'";
+			err = "line " + std::to_string(lineNo) + ": bad GI-volume attr '" + fl.at + "'";
 			return false;
 		}
-		c.verb = Verb::SetCvolAttr;
-		c.node = fl.hasRef ? (kCreateCvolRefBase | fl.ref) : fl.n;
+		c.verb = Verb::SetGiVolumeAttr;
+		c.node = fl.hasRef ? (kCreateGiVolumeRefBase | fl.ref) : fl.n;
 		c.text = fl.at;
 		if (fl.at == "position" || fl.at == "rotation"
 			|| fl.at == "size") {
 			if (fl.t.size() < 3) {
-				err = "line " + std::to_string(lineNo) + ": cvolume triple wants 3 values";
+				err = "line " + std::to_string(lineNo) + ": GI-volume triple wants 3 values";
 				return false;
 			}
 			double x = 0, y = 0, z = 0;
 			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
 				!ParseDouble(fl.t[2], z)) {
-				err = "line " + std::to_string(lineNo) + ": bad cvolume triple";
+				err = "line " + std::to_string(lineNo) + ": bad GI-volume triple";
 				return false;
 			}
 			c.vec4 = glm::vec4(float(x), float(y), float(z), 1.0f);
@@ -2275,11 +2275,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			"cubemapRays", "cubemapOctree", "cubemapOctreeMax",
 			"cubemapOctreeMin", "cubemapOctreeDepth",
 			"cubemapExtraRadius", "meshlets", "meshletMaxVerts",
-			"meshletMaxTris", "meshletConeWeight", "giCvol",
+			"meshletMaxTris", "meshletConeWeight", "giVolumes",
 			"giWorld", "maskTransmission", "autoKtx", "ignoreVfs" };
 		static const char* kBoolAttrs[] = { "meshopt", "lods",
 			"lightmap", "cubemap", "cubemapOctree", "meshlets",
-			"giCvol", "giWorld", "maskTransmission", "autoKtx",
+			"giVolumes", "giWorld", "maskTransmission", "autoKtx",
 			"ignoreVfs" };
 		static const char* kStrAttrs[] = { "lodRatios",
 			"lmExcludeKw" };
@@ -2686,7 +2686,7 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings, std::string* err, bool strict,
-	std::vector<uint32_t>* createdCvolsOut) {
+	std::vector<uint32_t>* createdGiVolumesOut) {
 	auto warn = [&](const std::string& w) {
 		if (warnings)
 			warnings->push_back(w);
@@ -2720,9 +2720,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Creation-order ids for SetLightAttr refs (kCreateLightRefBase | k):
 	// created light nodes have no cluster id until replayed.
 	std::vector<uint32_t> createdLights;
-	// Same scheme for created convex volumes (kCreateCvolRefBase | k),
-	// resolved by SetCvolAttr below.
-	std::vector<uint32_t> createdCvols;
+	// Same scheme for created convex volumes (kCreateGiVolumeRefBase | k),
+	// resolved by SetGiVolumeAttr below.
+	std::vector<uint32_t> createdGiVolumes;
 	// Same scheme for created cubemap captures (kCreateCubemapRefBase |
 	// k), resolved by SetCubemapAttr below.
 	std::vector<uint32_t> createdCubemaps;
@@ -2942,7 +2942,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		case Verb::Delete: {
 			// Maya delete at cook replay: drop the node's live links
-			// (mesh/material/light/cvolume) so nothing draws, bakes
+			// (mesh/material/light/givolume) so nothing draws, bakes
 			// or packs it. Addressed by uuid (primary), name, then
 			// id — the file-stable identity chain (numeric ids may
 			// shift as reference sets change; names/uuids do not).
@@ -2959,7 +2959,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.meshForNode.erase(target);
 			scene.materialForNode.erase(target);
 			scene.lightForNode.erase(target);
-			scene.cvolForNode.erase(target);
+			scene.giVolumeForNode.erase(target);
 			scene.cubemapForNode.erase(target);
 			scene.exportForNode.erase(target);
 			break;
@@ -3059,14 +3059,14 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		createdLights.push_back(uint32_t(newId));
 		break;
 	}
-	case Verb::CreateCVolume: {
+	case Verb::CreateGiVolume: {
 		// Authored convex GI volume: append a node under the recorded
 		// parent (TRS = translate + scale-as-size, axis-aligned) + a
-		// node-local SceneCvol definition. The shape resolves from
+		// node-local SceneGiVolume definition. The shape resolves from
 		// the node's transform at use; rotation is ignored by
 		// design (gi_baker box-spec shape).
 		uint32_t parent = 0;
-		if (!resolveParent(c, "createCvolume", c.node, parent)) {
+		if (!resolveParent(c, "createGiVolume", c.node, parent)) {
 			if (!failCmd(c))
 				return false;
 			break;
@@ -3075,7 +3075,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		const int newId = addNode(scene, int(parent), level);
 		if (newId < 0) {
 			if (err)
-				*err = "tour: createCvolume failed under parent " +
+				*err = "tour: createGiVolume failed under parent " +
 					std::to_string(parent);
 			if (!failCmd(c))
 				return false;
@@ -3086,16 +3086,16 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		m = glm::scale(m, glm::vec3(std::max(c.svec.x, 1e-3f),
 			std::max(c.svec.y, 1e-3f), std::max(c.svec.z, 1e-3f)));
 		scene.localTransform[size_t(newId)] = m;
-		SceneCvol def{};
+		SceneGiVolume def{};
 		def.priority = uint32_t(std::max(c.vec4.x, 0.0f));
 		def.spacing = std::max(c.vec4.y, 1e-3f);
 		def.insideFade = std::max(c.vec4.z, 0.0f);
 		def.outsideFade = std::max(c.vec4.w, 0.0f);
-		scene.cvolForNode[uint32_t(newId)] = def;
+		scene.giVolumeForNode[uint32_t(newId)] = def;
 		const uint32_t nameId = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(c.text);
 		scene.nameForNode[uint32_t(newId)] = nameId;
-		createdCvols.push_back(uint32_t(newId));
+		createdGiVolumes.push_back(uint32_t(newId));
 		break;
 	}
 	case Verb::CreateCubemap: {
@@ -3427,35 +3427,35 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		break;
 	}
-	case Verb::SetCvolAttr: {
+	case Verb::SetGiVolumeAttr: {
 		uint32_t target = c.node;
-		if ((target & kCreateCvolRefBase) != 0) {
-			const uint32_t k = target & ~kCreateCvolRefBase;
-			if (k >= createdCvols.size()) {
+		if ((target & kCreateGiVolumeRefBase) != 0) {
+			const uint32_t k = target & ~kCreateGiVolumeRefBase;
+			if (k >= createdGiVolumes.size()) {
 				if (err)
-					*err = "tour: setCvolAttr ref out of range: " +
+					*err = "tour: setGiVolumeAttr ref out of range: " +
 						std::to_string(k);
 				if (!failCmd(c))
 					return false;
 				break;
 			}
-			target = createdCvols[k];
+			target = createdGiVolumes[k];
 		}
 		else if (!checkNode(target, c)) {
 			if (!failCmd(c))
 				return false;
 			break;
 		}
-		auto cvit = scene.cvolForNode.find(target);
-		if (cvit == scene.cvolForNode.end()) {
+		auto cvit = scene.giVolumeForNode.find(target);
+		if (cvit == scene.giVolumeForNode.end()) {
 			if (err)
-				*err = "tour: setCvolAttr on non-cvolume node " +
+				*err = "tour: setGiVolumeAttr on non-GI-volume node " +
 					std::to_string(target);
 			if (!failCmd(c))
 				return false;
 			break;
 		}
-		SceneCvol& def = cvit->second;
+		SceneGiVolume& def = cvit->second;
 		if (c.text == "priority") {
 			def.priority = uint32_t(std::max(c.number, 0.0));
 		}
@@ -3501,7 +3501,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.localTransform[target] = m;
 		}
 		else {
-			warn("tour: unknown cvolume attr '" + c.text + "' (skipped)");
+			warn("tour: unknown GI-volume attr '" + c.text + "' (skipped)");
 		}
 		break;
 	}
@@ -3610,7 +3610,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		else if (c.text == "position" || c.text == "rotation") {
 			// Rebuild the node's local TRS with one channel replaced
-			// (editor TRS convention; mirrors the cubemap/cvolume path).
+			// (editor TRS convention; mirrors the cubemap/GI-volume path).
 			glm::vec3 skew, t, s;
 			glm::vec4 persp;
 			glm::quat q;
@@ -3700,7 +3700,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			// legacy verbs at parse time and never reach this case —
 			// EXCEPT exportSettings, which has no legacy verb: the
 			// WorldSettings-style export config singleton creates like
-			// the cvolume/camera family, payload via SetExportAttr.)
+			// the GI-volume/camera family, payload via SetExportAttr.)
 			if (c.nodeType == "exportSettings") {
 				uint32_t parent = 0;
 				if (!resolveParent(c, "createNode exportSettings", c.node,
@@ -3789,11 +3789,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 	}
 	// GI-asset binding pass (the LAST scene-content pass — the bindings
-	// address created cvolume nodes, so the command walk above must be
+	// address created GI-volume nodes, so the command walk above must be
 	// done). Each doc.giAssets record (the bake owner's stamped HARD
 	// identification of the scene's baked GI — see GiAssetCmd) resolves
 	// onto the replayed scene: kind World -> Scene::giWorldSource/ Guid;
-	// kind Cvol -> the addressed definition's SceneCvol::bakeSource/Guid.
+	// kind GiVolume -> the addressed definition's SceneGiVolume::bakeSource/Guid.
 	// Dangling family refs warn + drop (strict=false reference replay
 	// semantics — a broken record must not take the scene down); a
 	// duplicate World record takes the FIRST (the bake owner upserts, so
@@ -3824,15 +3824,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.giCapturesHash = ga.bakedHash;
 			continue;
 		}
-		const uint32_t k = ga.ref & ~kCreateCvolRefBase;
-		if ((ga.ref & kCreateCvolRefBase) == 0 || k >= createdCvols.size()) {
-			warn("tour: giAsset cvol ref out of range: " + std::to_string(k)
+		const uint32_t k = ga.ref & ~kCreateGiVolumeRefBase;
+		if ((ga.ref & kCreateGiVolumeRefBase) == 0 || k >= createdGiVolumes.size()) {
+			warn("tour: giAsset GI-volume ref out of range: " + std::to_string(k)
 				+ " (dropped — '" + ga.source + "')");
 			continue;
 		}
-		auto it = scene.cvolForNode.find(createdCvols[k]);
-		if (it == scene.cvolForNode.end()) {
-			warn("tour: giAsset cvol target is not a cvolume (dropped — '"
+		auto it = scene.giVolumeForNode.find(createdGiVolumes[k]);
+		if (it == scene.giVolumeForNode.end()) {
+			warn("tour: giAsset GI-volume target is not a GI volume (dropped — '"
 				+ ga.source + "')");
 			continue;
 		}
@@ -3840,8 +3840,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		it->second.bakeGuid = ga.guid;
 		it->second.bakeInputHash = ga.bakedHash;
 	}
-	if (createdCvolsOut)
-		*createdCvolsOut = createdCvols;
+	if (createdGiVolumesOut)
+		*createdGiVolumesOut = createdGiVolumes;
 	// Transform pass: collect per-node TRS triples (tour order = last wins
 	// per channel), then rebuild each touched node's local matrix.
 	{
@@ -4113,13 +4113,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 }
 
 bool StampGiAssets(Doc& doc, const Scene& scene,
-	const std::vector<uint32_t>& createdCvols, std::string* err,
+	const std::vector<uint32_t>& createdGiVolumes, std::string* err,
 	std::vector<std::string>* superseded) {
-	// Invert the family list once (node -> the k-th createCvolume, the
-	// index the giAsset cvol records address).
+	// Invert the family list once (node -> the k-th createGiVolume, the
+	// index the giAsset GI-volume records address).
 	std::unordered_map<uint32_t, uint32_t> familyOf;
-	for (size_t k = 0; k < createdCvols.size(); ++k)
-		familyOf[createdCvols[k]] = uint32_t(k);
+	for (size_t k = 0; k < createdGiVolumes.size(); ++k)
+		familyOf[createdGiVolumes[k]] = uint32_t(k);
 	// The supersede list (record-exact): the OLD records' paths the new
 	// set drops. Bake artifacts carry RANDOM minted names — a fresh bake
 	// never collides with (or overwrites) an old file — so the ONLY way
@@ -4132,21 +4132,21 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 		doc.giAssets.push_back(GiAssetCmd{
 			GiAssetCmd::Kind::World, 0, scene.giWorldSource,
 			scene.giWorldGuid, scene.giWorldInputHash });
-	// Then one Cvol record per BOUND authored volume, in authored
-	// family order (createdCvols order = the tour's create order —
+	// Then one GiVolume record per BOUND authored volume, in authored
+	// family order (createdGiVolumes order = the tour's create order —
 	// stable, human-readable diffs). Volumes authored but unbaked
 	// (empty bakeSource — never baked, or their bake failed) carry no
 	// record: the pak cooker embeds nothing for them and the runtime
 	// says "no convex-volume binding" honestly.
-	for (uint32_t k = 0; k < createdCvols.size(); ++k) {
-		const uint32_t node = createdCvols[k];
-		auto it = scene.cvolForNode.find(node);
-		if (it == scene.cvolForNode.end()
+	for (uint32_t k = 0; k < createdGiVolumes.size(); ++k) {
+		const uint32_t node = createdGiVolumes[k];
+		auto it = scene.giVolumeForNode.find(node);
+		if (it == scene.giVolumeForNode.end()
 				|| it->second.bakeSource.empty())
 			continue;
 		doc.giAssets.push_back(GiAssetCmd{
-			GiAssetCmd::Kind::Cvol,
-			kCreateCvolRefBase | k, it->second.bakeSource,
+			GiAssetCmd::Kind::GiVolume,
+			kCreateGiVolumeRefBase | k, it->second.bakeSource,
 			it->second.bakeGuid, it->second.bakeInputHash });
 	}
 	// The capture set last (one record; the per-capture hashes ride the
@@ -4158,16 +4158,16 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 	// Hand-injected volumes (a binding on a node with no tour create —
 	// impossible from the bake owners, possible from hand-edited
 	// scenes): warn + skip (the record cannot address them).
-	for (const auto& [node, def] : scene.cvolForNode) {
+	for (const auto& [node, def] : scene.giVolumeForNode) {
 		if (!def.bakeSource.empty() && !familyOf.count(node)) {
-			std::cerr << "tour: StampGiAssets: cvolume node "
+			std::cerr << "tour: StampGiAssets: GI-volume node "
 				<< node << " ('" << def.bakeSource
-				<< "') carries no createCvolume family ref (skipped)\n";
+				<< "') carries no createGiVolume family ref (skipped)\n";
 		}
 	}
 	// The supersede set-difference: every old path the new records no
 	// longer reference (a kept binding — e.g. the world field on a
-	// cvol-only rebake — keeps its file alive by construction).
+	// GI-volume-only rebake — keeps its file alive by construction).
 	if (superseded) {
 		superseded->clear();
 		for (const GiAssetCmd& old : oldRecords) {
@@ -4256,9 +4256,9 @@ std::string Describe(const Command& c) {
 			c.text.c_str(), c.vec4.x, c.vec4.y, c.vec4.z, c.vec4.w,
 			c.node2 & 0xFFFFu, (c.node2 >> 16) & 0xFFFFu, c.node);
 		break;
-	case Verb::CreateCVolume:
+	case Verb::CreateGiVolume:
 		std::snprintf(buf, sizeof(buf),
-			"createCvolume '%s' (%.1fm box, p%u s%.2f) under #%u",
+			"createGiVolume '%s' (%.1fm box, p%u s%.2f) under #%u",
 			c.text.c_str(), c.svec.x, uint32_t(c.vec4.x), c.vec4.y,
 			c.node);
 		break;
@@ -4300,13 +4300,13 @@ std::string Describe(const Command& c) {
 		std::snprintf(buf, sizeof(buf), "export.%s.%s", tgt, c.text.c_str());
 		break;
 	}
-	case Verb::SetCvolAttr: {
+	case Verb::SetGiVolumeAttr: {
 		char tgt[32];
-		if ((c.node & kCreateCvolRefBase) != 0)
-			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateCvolRefBase);
+		if ((c.node & kCreateGiVolumeRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateGiVolumeRefBase);
 		else
 			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
-		std::snprintf(buf, sizeof(buf), "cvol.%s.%s", tgt, c.text.c_str());
+		std::snprintf(buf, sizeof(buf), "givolume.%s.%s", tgt, c.text.c_str());
 		break;
 	}
 	case Verb::TerrainPaint:

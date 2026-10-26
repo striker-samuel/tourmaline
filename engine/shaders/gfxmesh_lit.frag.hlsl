@@ -19,7 +19,7 @@
 #include "sggi.hlsli"
 #include "sg_lightmap.hlsli"
 #include "sg_regular.hlsli"
-#include "sg_cvol.hlsli"
+#include "sg_gi_volume.hlsli"
 
 #define GFX_MESH_PSIN
 struct PSIn

@@ -470,7 +470,7 @@ namespace editor {
 				DraftCreateLight(true);
 			if (ImGui::MenuItem("Convex volume (GI)", nullptr, false,
 				canCreate))
-				DraftCreateCVolume();
+				DraftCreateGiVolume();
 			if (ImGui::MenuItem("Cubemap capture (pinned)", nullptr, false,
 				canCreate))
 				DraftCreateCubemap();
@@ -526,7 +526,7 @@ namespace editor {
 				DeleteSelection();
 			// Ctrl+D twin (modal registry 'Ctrl+D'): fresh Creates seeded
 			// from the LIVE state of every selected duplicable node
-			// (lights/cameras/cubemaps/cvolumes/transforms under the same
+			// (lights/cameras/cubemaps/GI volumes/transforms under the same
 			// parent); imports/terrain are refused with a log.
 			if (ImGui::MenuItem("Duplicate selection", "Ctrl+D", false,
 				m_world && (m_selected != UINT32_MAX
@@ -735,8 +735,8 @@ namespace editor {
 		ImGui::MenuItem("Selection wire overlay", nullptr, &m_wireOverlay);
 		if (ImGui::MenuItem("Light gizmos", "L", m_showLightGizmos))
 			m_showLightGizmos = !m_showLightGizmos;
-		if (ImGui::MenuItem("CVolume boxes", nullptr, m_showCvolGizmos))
-			m_showCvolGizmos = !m_showCvolGizmos;
+		if (ImGui::MenuItem("GI volume boxes", nullptr, m_showGiVolumeGizmos))
+			m_showGiVolumeGizmos = !m_showGiVolumeGizmos;
 		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
 			m_showCubemapGizmos))
 			m_showCubemapGizmos = !m_showCubemapGizmos;
@@ -770,10 +770,10 @@ namespace editor {
 				const char* cvNames[4] = { "Off", "Wireframe", "Solid",
 					"Probes" };
 				if (ImGui::BeginCombo("GI volumes (J)",
-					cvNames[m_cvolPreviewMode])) {
+					cvNames[m_giVolumePreviewMode])) {
 					for (int i = 0; i < 4; ++i)
-						if (ImGui::Selectable(cvNames[i], m_cvolPreviewMode == i))
-							m_cvolPreviewMode = i;
+						if (ImGui::Selectable(cvNames[i], m_giVolumePreviewMode == i))
+							m_giVolumePreviewMode = i;
 					ImGui::EndCombo();
 				}
 			}
@@ -1393,7 +1393,7 @@ namespace editor {
 					name.empty() ? "(unnamed)" : name.c_str(),
 					m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
 					FindNodeLight(n) ? " [light]" : "",
-					m_world->scene.cvolForNode.contains(n) ? " [cvol]" : "",
+					m_world->scene.giVolumeForNode.contains(n) ? " [giv]" : "",
 					m_world->scene.cubemapForNode.contains(n) ? " [cube]" : "",
 					m_world->scene.cameraForNode.contains(n) ? " [camera]" : "",
 					m_world->scene.exportForNode.contains(n) ? " [export]" : "",
@@ -1468,7 +1468,7 @@ namespace editor {
 		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 			name.empty() ? "(node)" : name.c_str(),
 			hasMesh ? " [mesh]" : "", lightTag,
-			scene.cvolForNode.contains(node) ? " [cvol]" : "",
+			scene.giVolumeForNode.contains(node) ? " [giv]" : "",
 			scene.cubemapForNode.contains(node) ? " [cube]" : "",
 			scene.cameraForNode.contains(node) ? " [camera]" : "",
 			scene.exportForNode.contains(node) ? " [export]" : "",
@@ -1818,83 +1818,83 @@ namespace editor {
 		DrawMaterialBody(mat);
 	}
 
-	void EditorApp::DrawCvolSection(uint32_t node) {
-		// Authored convex GI volume on this node (editor cvolume node):
+	void EditorApp::DrawGiVolumeSection(uint32_t node) {
+		// Authored GI volume on this node (editor GI volume node):
 		// box shape from the node's TRS (translate = center, scale = full
-		// extents), bake params below. Undoable SetCvolAttr edits persisted
-		// as setCvolAttr tour verbs so cooks replay them.
+		// extents), bake params below. Undoable SetGiVolumeAttr edits persisted
+		// as setGiVolumeAttr tour verbs so cooks replay them.
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
 		Scene& scene = m_world->scene;
-		auto it = scene.cvolForNode.find(node);
-		if (it == scene.cvolForNode.end())
+		auto it = scene.giVolumeForNode.find(node);
+		if (it == scene.giVolumeForNode.end())
 			return;
-		::SceneCvol& def = it->second;
+		::SceneGiVolume& def = it->second;
 		ImGui::Separator();
 		ImGui::Text("Convex volume: '%s'",
 			getNodeName(scene, int(node)).c_str());
 		glm::vec3 mn, mx;
-		if (CvolBox(node, mn, mx))
+		if (GiVolumeBox(node, mn, mx))
 			ImGui::TextDisabled("aabb (%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f) m",
 				mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
 		ImGui::TextDisabled("shape = node translate/scale/rotation (gizmo "
 			"or transform; a rotated box — the bake rotates the planes)");
-		auto beginCvolDrag = [&](const char* attr) {
-			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetCvolAttr ||
-				m_pending.cmd.node != node || m_pending.cmd.cvolAttr != attr))
+		auto beginGiVolumeDrag = [&](const char* attr) {
+			if (m_pending.active && (m_pending.cmd.verb != EditVerb::SetGiVolumeAttr ||
+				m_pending.cmd.node != node || m_pending.cmd.giVolumeAttr != attr))
 				FinalizePending();
 			if (!m_pending.active) {
 				m_pending.active = true;
 				m_pending.cmd = EditCmd{};
-				m_pending.cmd.verb = EditVerb::SetCvolAttr;
+				m_pending.cmd.verb = EditVerb::SetGiVolumeAttr;
 				m_pending.cmd.node = node;
-				m_pending.cmd.cvolAttr = attr;
-				ReadNodeCvolAttr(node, attr, m_pending.cmd.beforeVec4,
+				m_pending.cmd.giVolumeAttr = attr;
+				ReadNodeGiVolumeAttr(node, attr, m_pending.cmd.beforeVec4,
 					m_pending.cmd.beforeNum, m_pending.cmd.beforeText);
 			}
 		};
-		auto endCvolDrag = [&](const char* attr) {
+		auto endGiVolumeDrag = [&](const char* attr) {
 			if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active &&
-				m_pending.cmd.verb == EditVerb::SetCvolAttr &&
+				m_pending.cmd.verb == EditVerb::SetGiVolumeAttr &&
 				m_pending.cmd.node == node &&
-				m_pending.cmd.cvolAttr == attr)
+				m_pending.cmd.giVolumeAttr == attr)
 				FinishDrag();
 		};
 		int prio = int(def.priority);
 		if (ImGui::DragInt("Priority (higher wins)", &prio, 0.2f, 0, 16)) {
 			prio = std::clamp(prio, 0, 255);
-			beginCvolDrag("priority");
-			WriteNodeCvolAttr(node, "priority", glm::vec4(0), double(prio), {});
+			beginGiVolumeDrag("priority");
+			WriteNodeGiVolumeAttr(node, "priority", glm::vec4(0), double(prio), {});
 			m_pending.cmd.number = double(prio);
 		}
-		endCvolDrag("priority");
+		endGiVolumeDrag("priority");
 		float spacing = def.spacing;
 		if (ImGui::DragFloat("Probe spacing (m)", &spacing, 0.01f, 0.05f,
 			4.0f, "%.2f")) {
-			beginCvolDrag("spacing");
-			WriteNodeCvolAttr(node, "spacing", glm::vec4(0), double(spacing),
+			beginGiVolumeDrag("spacing");
+			WriteNodeGiVolumeAttr(node, "spacing", glm::vec4(0), double(spacing),
 				{});
 			m_pending.cmd.number = double(spacing);
 		}
-		endCvolDrag("spacing");
+		endGiVolumeDrag("spacing");
 		float inside = def.insideFade;
 		if (ImGui::DragFloat("Inside fade (m)", &inside, 0.01f, 0.0f,
 			4.0f, "%.2f")) {
-			beginCvolDrag("inside");
-			WriteNodeCvolAttr(node, "inside", glm::vec4(0), double(inside),
+			beginGiVolumeDrag("inside");
+			WriteNodeGiVolumeAttr(node, "inside", glm::vec4(0), double(inside),
 				{});
 			m_pending.cmd.number = double(inside);
 		}
-		endCvolDrag("inside");
+		endGiVolumeDrag("inside");
 		float outside = def.outsideFade;
 		if (ImGui::DragFloat("Outside fade (m)", &outside, 0.01f, 0.0f,
 			4.0f, "%.2f")) {
-			beginCvolDrag("outside");
-			WriteNodeCvolAttr(node, "outside", glm::vec4(0), double(outside),
+			beginGiVolumeDrag("outside");
+			WriteNodeGiVolumeAttr(node, "outside", glm::vec4(0), double(outside),
 				{});
 			m_pending.cmd.number = double(outside);
 		}
-		endCvolDrag("outside");
+		endGiVolumeDrag("outside");
 		ImGui::TextDisabled("bake: a future gi_baker --tour pass harvests "
 			"these (priority/spacing/fades) + the box");
 	}
@@ -2007,7 +2007,7 @@ namespace editor {
 		setBool("Skip loose VFS bake files (ignoreVfs)", "ignoreVfs",
 			es.ignoreVfs,
 			"Embed ONLY what the scene itself carries: no loose\n"
-			"gi/<stem>.sggi, no cvmanifest/.cvol rows, no cubemap\n"
+			"gi/<stem>.sggi, no givolumemanifest/.givolume rows, no cubemap\n"
 			"manifest/KTX rows at pak assembly (minimal variant pak).");
 
 		setBool("Lightmaps (bake)", "lightmap", es.lightmap,
@@ -2056,8 +2056,8 @@ namespace editor {
 
 		ImGui::Separator();
 		ImGui::Text("GI bakes (on demand — Bake GI in the Cook panel)");
-		setBool("Convex volumes (bake authored)", "giCvol", es.giCvol,
-			"Bake the authored cvolume nodes (gi/<stem>_*.cvol).");
+		setBool("GI volumes (bake authored)", "giVolumes", es.giVolumes,
+			"Bake the authored GI volume nodes (gi/<stem>_*.givolume).");
 		setBool("World field (adaptive octree)", "giWorld", es.giWorld,
 			"Bake gi/<stem>.sggi (slow; unbaked scenes render sky IBL).");
 	}
@@ -2615,8 +2615,8 @@ namespace editor {
 			}
 		}
 
-		// Authored convex GI volume on this node (cvolume inspector).
-		DrawCvolSection(node);
+		// Authored GI volume on this node (GI volume inspector).
+		DrawGiVolumeSection(node);
 		// Authored cubemap capture on this node (pinned probe inspector).
 		DrawCubemapSection(node);
 		// Authored camera on this node (lens inspector).
@@ -2853,7 +2853,7 @@ namespace editor {
 					case smvk::GiBinding::Kind::Probe: kindName = "probe"; break;
 					case smvk::GiBinding::Kind::Lightmap: kindName = "lightmap"; break;
 					case smvk::GiBinding::Kind::RegManifest: kindName = "regmanifest"; break;
-					case smvk::GiBinding::Kind::CvolManifest: kindName = "cvolmanifest"; break;
+					case smvk::GiBinding::Kind::GiVolumeManifest: kindName = "givolumemanifest"; break;
 					case smvk::GiBinding::Kind::Cubemap: kindName = "cubemap"; break;
 					}
 					ImGui::TextDisabled("registry: %s '%s'",
@@ -3378,7 +3378,7 @@ namespace editor {
 
 		// ---- marker switches ----
 		// (The gizmo-family toggles — capture markers, light gizmos,
-		// cvol boxes — stay View-menu-only; this window owns the
+		// GI volume boxes — stay View-menu-only; this window owns the
 		// probe/density cluster, no overlap.)
 		ImGui::Checkbox("Cubemap probe overlay", &m_showProbeOverlay);
 		ImGui::Checkbox("Octahedra markers (all probe sets)",
@@ -3514,9 +3514,9 @@ namespace editor {
 
 		ImGui::Separator();
 		ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
-		ImGui::TextDisabled("%u cvolume node(s) authored in this scene",
-			m_world ? uint32_t(m_world->scene.cvolForNode.size()) : 0u);
-		ImGui::TextDisabled("bake selectors (giCvol/giWorld) live on the "
+		ImGui::TextDisabled("%u GI volume node(s) authored in this scene",
+			m_world ? uint32_t(m_world->scene.giVolumeForNode.size()) : 0u);
+		ImGui::TextDisabled("bake selectors (giVolumes/giWorld) live on the "
 			"ExportSettings node");
 		if (!m_giBakedHash.empty()) {
 			const bool fresh = !m_cookDefHash.empty()
@@ -3566,8 +3566,8 @@ namespace editor {
 			CreateCubemapAsset(m_assetsDir);
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("New .gicvolume")) {
-			CreateGicvolumeAsset(m_assetsDir,
+		if (ImGui::Button("New .givolume")) {
+			CreateGivolumeAsset(m_assetsDir,
 				m_selected != UINT32_MAX ? m_selected : UINT32_MAX);
 		}
 		// Clickable captures: selecting one also refreshes the overlay
@@ -4406,10 +4406,10 @@ namespace editor {
 		const bool wantCm = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm
 			&& m_assetsSel.size() > 8
 			&& m_assetsSel.compare(m_assetsSel.size() - 8, 8, ".cubemap") == 0;
-		const bool wantCv = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm
-			&& m_assetsSel.size() > 10
-			&& m_assetsSel.compare(m_assetsSel.size() - 10, 10, ".gicvolume") == 0;
-		if (!wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm && !wantCv)
+		const bool wantGiv = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm
+			&& m_assetsSel.size() > 9
+			&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".givolume") == 0;
+		if (!wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm && !wantGiv)
 			return;
 		// Cache refresh on selection change (or a failed load retries never:
 		// a re-derive/re-bake + re-click reloads).
@@ -4420,7 +4420,7 @@ namespace editor {
 			m_assetInspectGiCook.reset();
 			m_assetInspectLmCook.reset();
 			m_assetInspectCubemap.reset();
-			m_assetInspectGicvolume.reset();
+			m_assetInspectGivolume.reset();
 			m_assetInspectTex.reset();
 			m_assetInspectTexInfoOk = false;
 			std::string err;
@@ -4482,12 +4482,12 @@ namespace editor {
 					m_assetInspectCubemap.reset();
 				}
 			}
-			else if (wantCv) {
-				m_assetInspectGicvolume.emplace();
-				if (!smvk::cook::LoadGicvolumeAsset(m_assetsSel,
-					*m_assetInspectGicvolume, err)) {
+			else if (wantGiv) {
+				m_assetInspectGivolume.emplace();
+				if (!smvk::cook::LoadGivolumeAsset(m_assetsSel,
+					*m_assetInspectGivolume, err)) {
 					Log("Assets: GI volume inspect failed: " + err);
-					m_assetInspectGicvolume.reset();
+					m_assetInspectGivolume.reset();
 				}
 			}
 			else {
@@ -4699,7 +4699,7 @@ namespace editor {
 			ImGui::TextDisabled("scene: %s",
 				c.scene.empty() ? "(unbound)" : c.scene.c_str());
 			ImGui::TextDisabled("convex volumes: %s   world field: %s",
-				c.cvol ? "on" : "off", c.world ? "on" : "off");
+				c.giVolumes ? "on" : "off", c.world ? "on" : "off");
 			ImGui::Separator();
 			if (c.blobGuid.empty()) {
 				ImGui::TextDisabled("blob: unbaked (no result yet)");
@@ -4761,8 +4761,8 @@ namespace editor {
 					stale ? "  STALE (settings changed)" : "  fresh");
 			}
 		}
-		else if (m_assetInspectGicvolume) {
-			const smvk::cook::GicvolumeAsset& c = *m_assetInspectGicvolume;
+		else if (m_assetInspectGivolume) {
+			const smvk::cook::GivolumeAsset& c = *m_assetInspectGivolume;
 			ImGui::Text("GI volume: '%s'", c.name.c_str());
 			ImGui::TextDisabled("guid %s", c.guid.c_str());
 			ImGui::TextDisabled("scene: %s",
@@ -4773,7 +4773,7 @@ namespace editor {
 				ImGui::TextDisabled("blob: unbaked (no result yet)");
 			}
 			else {
-				const bool stale = smvk::cook::GicvolumeBlobStale(c);
+				const bool stale = smvk::cook::GivolumeBlobStale(c);
 				ImGui::TextDisabled("blob: %s (%s)%s", c.blobGuid.c_str(),
 					c.blobPath.empty() ? "no path" : c.blobPath.c_str(),
 					stale ? "  STALE (settings changed)" : "  fresh");
@@ -5039,8 +5039,8 @@ namespace editor {
 			//if (ImGui::MenuItem("Cubemap Asset (.cubemap)")) {
 			//	CreateCubemapAsset(m_assetsDir);
 			//}
-			//if (ImGui::MenuItem("GI Volume Asset (.gicvolume)")) {
-			//	CreateGicvolumeAsset(m_assetsDir);
+			//if (ImGui::MenuItem("GI Volume Asset (.givolume)")) {
+			//	CreateGivolumeAsset(m_assetsDir);
 			//}
 			//// Texture asset (from a picked source image): the .texture
 			//// import-settings record + identity (see CreateTextureAsset).
@@ -5206,8 +5206,8 @@ namespace editor {
 			ImGuiPopupFlags_NoOpenOverItems)) {
 			if (ImGui::MenuItem("New Cubemap Asset (.cubemap)"))
 				CreateCubemapAsset(m_assetsDir);
-			if (ImGui::MenuItem("New GI Volume Asset (.gicvolume)"))
-				CreateGicvolumeAsset(m_assetsDir);
+			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
+				CreateGivolumeAsset(m_assetsDir);
 			if (ImGui::MenuItem("New Texture (from image)...")) {
 				std::string picked;
 				if (NativeOpenFile(picked, true) && !picked.empty())
@@ -5420,7 +5420,7 @@ namespace editor {
 				const char* want = (m_assetsFilter == 4) ? "gi"
 					: (m_assetsFilter == 5) ? "cubemap"
 					: (m_assetsFilter == 6) ? "gicook"
-					: (m_assetsFilter == 7) ? "lmcook" : "gicvolume";
+					: (m_assetsFilter == 7) ? "lmcook" : "givolume";
 				for (const auto& r : assetRows) {
 					// The cubemap collection also lists legacy loose rows
 					// (kind "cubemap" covers typed .cubemap assets AND the

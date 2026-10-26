@@ -29,7 +29,7 @@ namespace {
 // GPU's primitive clipper is NOT in play: an edge crossing the camera
 // plane (one endpoint behind the eye, w <= 0) cannot be perspective-
 // divided. The old pattern DROPPED such edges whole ("if (project(a) &&
-// project(b)) AddLine") - the cvolume/octree wires came apart whenever a
+// project(b)) AddLine") - the GI volume/octree wires came apart whenever a
 // box corner went behind the camera (walking into a volume cut its lines
 // at the eye). These helpers are the CPU twin of the GPU clipper: clip
 // against w >= kOverlayClipEps in CLIP space - where the plane is linear
@@ -75,7 +75,7 @@ bool ClipSegmentToCamera(const glm::mat4& vpm,
 // Sutherland-Hodgman clip of a world-space polygon against the single
 // camera plane. Fills out (clip-space verts, >= 3 on true - fan-
 // triangulate for fills). out must hold size + 2 entries (one plane adds
-// at most two crossings to a convex polygon; the cvol hull faces are
+// at most two crossings to a convex polygon; the GI-volume hull faces are
 // convex - clipped AABB faces).
 bool ClipPolyToCamera(const glm::mat4& vpm,
 	const glm::vec3* poly, size_t n,
@@ -624,7 +624,7 @@ void EditorApp::DrawViewportChrome() {
 	//	ImGui::PopID();
 	//}
 	// Convex GI volume preview (LIGHTING 'V': off/wireframe/solid).
-	DrawCvolPreviewOverlay();
+	DrawGiVolumePreviewOverlay();
 	DrawCaptureBallOverlay();
 	DrawBakeDensityOverlay();
 	DrawOctreePreviewOverlay();
@@ -633,24 +633,24 @@ void EditorApp::DrawViewportChrome() {
 
 // X-ray preview of the convex GI volumes (probes-only pivot): each
 // volume's hull (bake AABB clipped by its plane set, built in
-// TryLoadCvolumes) drawn in the ImGui FOREGROUND per viewport —
+// TryLoadGiVolumes) drawn in the ImGui FOREGROUND per viewport —
 // wireframe at mode 1, + translucent priority-coded fill at mode 2,
 // and the dense bake-lattice sample at mode 3 (green dots = nonzero
 // radiance, red = zero/invalid voxels — the coverage answer; the hull
 // rides along as a faint wire for spatial context).
 // Foreground = no depth, so the volumes read through geometry (the
 // point of the view: authoring shapes against walls/roofs).
-// Authored cvolume nodes label here too (their boxes ride the 3D
+// Authored GI volume nodes label here too (their boxes ride the 3D
 // gizmo batches instead — depth-tested scene objects, all view
 // modes): name + priority at the box center, same priority hue.
-void EditorApp::DrawCvolPreviewOverlay() {
+void EditorApp::DrawGiVolumePreviewOverlay() {
 	// MODAL: GI authoring previews belong to LIGHTING mode.
 	if (m_mode != EditorMode::Lighting)
 		return;
-	const bool showBaked = m_cvolPreviewMode != 0
-		&& !m_cvolPreviews.empty();
-	const bool showAuthored = m_showCvolGizmos && m_world
-		&& !m_world->scene.cvolForNode.empty();
+	const bool showBaked = m_giVolumePreviewMode != 0
+		&& !m_giVolumePreviews.empty();
+	const bool showAuthored = m_showGiVolumeGizmos && m_world
+		&& !m_world->scene.giVolumeForNode.empty();
 	if (!showBaked && !showAuthored)
 		return;
 	ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -675,7 +675,7 @@ void EditorApp::DrawCvolPreviewOverlay() {
 		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		if (showBaked)
-		for (const CvolPreview& cv : m_cvolPreviews) {
+		for (const GiVolumePreview& cv : m_giVolumePreviews) {
 			const ImU32 wire = priorityColor(cv.priority, 220);
 			const ImU32 fill = priorityColor(cv.priority, 42);
 			for (const auto& poly : cv.polys) {
@@ -695,7 +695,7 @@ void EditorApp::DrawCvolPreviewOverlay() {
 				// Fill (mode 2): clip the whole polygon against the camera
 				// plane, then fan - per-triangle projection dropped
 				// straddling faces whole.
-				if (m_cvolPreviewMode == 2 && poly.size() <= 38) {
+				if (m_giVolumePreviewMode == 2 && poly.size() <= 38) {
 					glm::vec4 cp[40]; // poly + 2 crossings headroom
 					size_t cn = 0;
 					if (ClipPolyToCamera(vpm, poly.data(), poly.size(),
@@ -723,7 +723,7 @@ void EditorApp::DrawCvolPreviewOverlay() {
 			// pulling bright across walls — the thing this mode exists
 			// to inspect at a glance). Strided to stay ImGui-cheap;
 			// the counts ride a per-volume caption.
-			if (m_cvolPreviewMode == 3 && !cv.sampleState.empty()) {
+			if (m_giVolumePreviewMode == 3 && !cv.sampleState.empty()) {
 				auto lumRamp = [](float t) {
 					// t in [0,1] -> dark red -> orange -> yellow ->
 					// white (a heat ramp; t=0 zero radiance).
@@ -765,7 +765,7 @@ void EditorApp::DrawCvolPreviewOverlay() {
 						cv.sampleStep[0], cv.sampleStep[1],
 						cv.sampleStep[2]);
 					const float capY = 52.0f
-						+ 16.0f * (&cv - m_cvolPreviews.data());
+						+ 16.0f * (&cv - m_giVolumePreviews.data());
 					dl->AddText(ImVec2(vp.rect.x + 8.0f,
 						vp.rect.y + capY + 1.0f),
 						IM_COL32(0, 0, 0, 200), cov);
@@ -779,9 +779,9 @@ void EditorApp::DrawCvolPreviewOverlay() {
 			// overlay contributes the name/priority tag at the box
 			// center (same priority hue both places).
 			const Scene& scene = m_world->scene;
-			for (const auto& [node, def] : scene.cvolForNode) {
+			for (const auto& [node, def] : scene.giVolumeForNode) {
 				glm::vec3 mn, mx;
-				if (!CvolBox(node, mn, mx))
+				if (!GiVolumeBox(node, mn, mx))
 					continue;
 				ImVec2 c;
 				if (project((mn + mx) * 0.5f, c)) {
@@ -814,7 +814,7 @@ void EditorApp::UpdateOctreePreview() {
 	m_octreeTiles.clear();
 	if (!m_world)
 		return;
-	// Scene AABB: node translations + authored cvol boxes (so empty
+	// Scene AABB: node translations + authored GI volume boxes (so empty
 	// scenes still frame their volumes).
 	glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
 	bool any = false;
@@ -829,9 +829,9 @@ void EditorApp::UpdateOctreePreview() {
 			any = true;
 		}
 	}
-	for (const auto& [node, def] : scene.cvolForNode) {
+	for (const auto& [node, def] : scene.giVolumeForNode) {
 		glm::vec3 bmn, bmx;
-		if (!CvolBox(node, bmn, bmx))
+			if (!GiVolumeBox(node, bmn, bmx))
 			continue;
 		mn = glm::min(mn, bmn);
 		mx = glm::max(mx, bmx);

@@ -113,7 +113,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// recorded identity (m_gltfPath) can be a project-RELATIVE
 	// "content/models/..." on tour-opened scenes, whose "." parent then
 	// resolved against the EDITOR CWD (the build dir) — every bake
-		// file the cook stages (gi/*.sggi + *.cvol, textures/cubemaps/
+		// file the cook stages (gi/*.sggi + *.givolume, textures/cubemaps/
 	// <base>[_N].ktx2 + the .cubemanifest) landed next to the exe
 	// instead of the project (and the project-relative resolution below
 	// never saw them (the "cubemap probe preview not drawn in the
@@ -268,7 +268,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		// when requested + the tour's authored convex volumes; the
 		// definition tour is the only input, nothing reused). Every
 		// artifact lands at a RANDOM-MINTED path (the editor mints the
-		// world path here; GiBaker mints each cvol) and the bake STAMPS
+		// world path here; GiBaker mints each GI volume) and the bake STAMPS
 		// the tour's giAsset records — the snapshot file carries them;
 		// the job reads them back below so the live doc's mirror
 		// follows, and the stamp's supersede list retires the replaced
@@ -560,7 +560,7 @@ void EditorApp::PollCookProcess() {
 // GiBaker consumes the SAME definition-tour snapshot a cook would
 // (root reference + nodes), keyed to the cook's OUT-PAK STEM so the
 // bake files land exactly where the editor/App loaders look:
-// gi/<stem>_*.cvol + .cvmanifest, and gi/<stem>.sggi for the world
+// gi/<stem>_*.givolume + .givolumemanifest, and gi/<stem>.sggi for the world
 // field. Missing bake files are NOT an error anywhere down the line —
 // every GI/volume/cubemap/lightmap loader falls back to the analytic
 // sky IBL (see DegradeAmbientForMissingSources in app).
@@ -578,12 +578,12 @@ void EditorApp::BakeGI() {
 		return;
 	}
 	// What to bake comes from the same flags the cook dialog shows.
-	const bool giHasCvols = !m_world->scene.cvolForNode.empty();
-	const bool wantCvols = ExportCfg().giCvol && giHasCvols;
+	const bool giHasGiVolumes = !m_world->scene.giVolumeForNode.empty();
+	const bool wantGiVolumes = ExportCfg().giVolumes && giHasGiVolumes;
 	const bool wantWorld = ExportCfg().giWorld;
-	if (!wantCvols && !wantWorld) {
+	if (!wantGiVolumes && !wantWorld) {
 		Log("Bake GI: nothing requested — enable World field and/or "
-			"Convex volumes in the cook dialog first.");
+			"GI volumes in the cook dialog first.");
 		return;
 	}
 	// Bake files key to the cook target's stem; derive the project (or
@@ -606,7 +606,7 @@ void EditorApp::BakeGI() {
 	if (!SnapshotTourForProcess("BakeGI", tempTourPath, defHash))
 		return;
 	// The bake artifacts: RANDOM-MINTED paths (the editor mints the
-	// world field here; GiBaker mints each cvol). The binding record IS
+	// world field here; GiBaker mints each GI volume). The binding record IS
 	// the identity — no stem-keyed file name anywhere; the stamp
 	// carries the minted paths + retires the superseded old artifacts
 	// BY RECORD. contentRoot = the "content/" dir itself (bake files
@@ -626,12 +626,12 @@ void EditorApp::BakeGI() {
 	// Blocking progress surface (modal task window).
 	TaskWindowBegin("Bake GI", "Baking GI ("
 		+ std::string(wantWorld ? "world field" : "")
-		+ std::string((wantWorld && wantCvols) ? " + " : "")
-		+ std::string(wantCvols ? "convex volumes" : "") + ")...");
+		+ std::string((wantWorld && wantGiVolumes) ? " + " : "")
+		+ std::string(wantGiVolumes ? "GI volumes" : "") + ")...");
 	Log("Bake GI started ("
 		+ std::string(wantWorld ? "world field" : "")
-		+ std::string((wantWorld && wantCvols) ? " + " : "")
-		+ std::string(wantCvols ? "convex volumes" : "") + ") -> "
+		+ std::string((wantWorld && wantGiVolumes) ? " + " : "")
+		+ std::string(wantGiVolumes ? "GI volumes" : "") + ") -> "
 		+ contentRoot + "/gi/ (minted random artifacts)");
  	auto feed = std::make_shared<CookFeed>();
  	m_bakeFeed = feed;

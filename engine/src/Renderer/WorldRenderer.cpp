@@ -271,7 +271,7 @@ static smvk::VolumetricDesc MakeVolumetricDesc() {
 	d.giScale = 1.0f;
 	d.useGi = 1;
 	d.useSun = 1;
-	d.useCvolGi = 1;
+	d.useGiVolumes = 1;
 	d.jitterStrength = 1.0f;
 	d.heightFalloff = 0.0f;
 	d.heightBase = 0.0f;
@@ -667,8 +667,8 @@ namespace engine {
 			m_volumetricDensity = *pins.volumetricDensity;
 		// Fog-GI quality bypass pin (pairs with the volumetric pin for
 		// pure-octree fog cost measurements).
-		if (pins.volumetricCvol.has_value())
-			m_volumetricUseCvolGi = (*pins.volumetricCvol == OnOffPin::On);
+		if (pins.volumetricGiVolumes.has_value())
+			m_volumetricUseGiVolumes = (*pins.volumetricGiVolumes == OnOffPin::On);
 	}
 
 	// Headless postfx pins (see the header): the Configure snapshot wins over
@@ -2102,7 +2102,7 @@ namespace engine {
 		// SG-GI baked probe volume (tools/gi_baker output): replaces the
 		// analytic sky IBL ambient with path-traced probes when present.
 		// Missing file is the normal state (no bake yet) - non-fatal.
-		LoadGiVolume();
+		LoadGiOctree();
 		// SG regular 3D probe volumes (DYNAMIC objects): artist OBB
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
@@ -2111,7 +2111,7 @@ namespace engine {
 		// cooked by cubemap reprojection; GiBaker --cv-spec). Composited
 		// over the octree world field by priority at runtime. Missing
 		// manifest is the normal state (no bake yet) - non-fatal.
-		LoadCvolumes();
+		LoadGiVolumes();
 		// Reflection cubemaps for specular IBL (cubemap_baker output):
 		// replaces the analytic sky specular with captured environment.
 		// Missing file is non-fatal (falls back to analytic sky).
@@ -2512,9 +2512,9 @@ namespace engine {
 			<< (bc6h ? "bc6h" : "rgba16f") << ")\n";
 	}
 
-	void WorldRenderer::LoadGiVolume() {
+	void WorldRenderer::LoadGiOctree() {
 		m_giLoaded = false;
-		m_giVolume = smvk::gi::SgGiVolume{};
+		m_giOctree = smvk::gi::SgGiVolume{};
 		m_giGridBuffer = {};
 		m_giGridAddress = 0;
 		m_giLevelTextures.clear();
@@ -2553,7 +2553,7 @@ namespace engine {
 			return;
 		}
 		std::string err;
-		if (!m_giVolume.ReadFromMemory(bytes, err)) {
+		if (!m_giOctree.ReadFromMemory(bytes, err)) {
 			std::cerr << "[GI] volume rejected: " << err << "\n";
 			fallbackSky();
 			return;
@@ -2564,7 +2564,7 @@ namespace engine {
 		// without them has nothing to serve (v1 files die on the version
 		// gate above; a bake that skipped BakeDenseLayers lands here).
 		bool anyDense = false;
-		for (const auto& dl : m_giVolume.denseLevels)
+		for (const auto& dl : m_giOctree.denseLevels)
 			anyDense = anyDense || dl.present;
 		if (!anyDense) {
 			std::cerr << "[GI] volume has no dense layers - re-bake with"
@@ -2591,7 +2591,7 @@ namespace engine {
 			std::vector<smvk::gi::SgProbeGpu> probeData;
 			std::vector<uint32_t> cellData;
 			std::vector<uint32_t> indexData;
-			m_giVolume.PackGpu(probeData, gridData, cellData, indexData);
+			m_giOctree.PackGpu(probeData, gridData, cellData, indexData);
 			if (probeData.empty()) {
 				std::cerr << "[GI] volume has no probes - ignored\n";
 				fallbackSky();
@@ -2616,7 +2616,7 @@ namespace engine {
 		// Slots ride frame.giLevelLayers (level * 10 + layer;
 		// UINT32_MAX = absent level, skipped by the sampler).
 		{
-			const auto& levels = m_giVolume.denseLevels;
+			const auto& levels = m_giOctree.denseLevels;
 			const uint32_t levelCount = uint32_t(std::min<size_t>(
 				levels.size(), kGiDenseMaxLevels));
 			uint32_t denseLevels = 0;
@@ -2719,34 +2719,34 @@ namespace engine {
 				worldMin = glm::min(worldMin, mn);
 				worldMax = glm::max(worldMax, mx);
 			}
-			std::cerr << "[GI] dbg: volume bounds (" << m_giVolume.boundsMin.x
-				<< "," << m_giVolume.boundsMin.y << "," << m_giVolume.boundsMin.z
-				<< ")..(" << m_giVolume.boundsMax.x << "," << m_giVolume.boundsMax.y
-				<< "," << m_giVolume.boundsMax.z << ")\n";
+			std::cerr << "[GI] dbg: volume bounds (" << m_giOctree.boundsMin.x
+				<< "," << m_giOctree.boundsMin.y << "," << m_giOctree.boundsMin.z
+				<< ")..(" << m_giOctree.boundsMax.x << "," << m_giOctree.boundsMax.y
+				<< "," << m_giOctree.boundsMax.z << ")\n";
 			std::cerr << "[GI] dbg: world   bounds (" << worldMin.x << "," << worldMin.y
 				<< "," << worldMin.z << ")..(" << worldMax.x << "," << worldMax.y
 				<< "," << worldMax.z << ")\n";
-			const glm::vec3 center = (m_giVolume.boundsMin + m_giVolume.boundsMax) * 0.5f;
+			const glm::vec3 center = (m_giOctree.boundsMin + m_giOctree.boundsMax) * 0.5f;
 			glm::vec3 amps[smvk::gi::kSgLobeCount];
-			const bool covered = m_giVolume.Sample(center, amps);
-			const bool camCovered = m_giVolume.Sample(
+			const bool covered = m_giOctree.Sample(center, amps);
+			const bool camCovered = m_giOctree.Sample(
 				m_cameraPositioner.cameraPosition_, amps);
 			std::cerr << "[GI] dbg: volume-center covered=" << (covered ? 1 : 0)
 				<< " amp0=(" << amps[0].r << "," << amps[0].g << "," << amps[0].b << ")"
 				<< "  camera covered=" << (camCovered ? 1 : 0) << "\n";
-			for (uint32_t lvl = 0; lvl < m_giVolume.levelCount; ++lvl) {
+			for (uint32_t lvl = 0; lvl < m_giOctree.levelCount; ++lvl) {
 				std::cerr << "[GI] dbg: level " << lvl
-					<< " cellSize=" << m_giVolume.cellSize[lvl];
-				if (lvl < m_giVolume.levelStats.size())
-					std::cerr << " probes=" << m_giVolume.levelStats[lvl].probeCount
-					<< " cells=" << m_giVolume.levelStats[lvl].cellCount;
+					<< " cellSize=" << m_giOctree.cellSize[lvl];
+				if (lvl < m_giOctree.levelStats.size())
+					std::cerr << " probes=" << m_giOctree.levelStats[lvl].probeCount
+					<< " cells=" << m_giOctree.levelStats[lvl].cellCount;
 				std::cerr << "\n";
 			}
 		}
 
 		std::cerr << "[GI] loaded '" << vfsPath << "': probes="
-			<< m_giVolume.probes.size() << " levels=" << m_giVolume.levelCount
-			<< " gpu=" << (m_giVolume.GpuBytes() / 1024) << " KiB\n";
+			<< m_giOctree.probes.size() << " levels=" << m_giOctree.levelCount
+			<< " gpu=" << (m_giOctree.GpuBytes() / 1024) << " KiB\n";
 	}
 
 	// ---------------------------------------------------------------------------
@@ -3308,11 +3308,11 @@ namespace engine {
 	}
 
 	// ---------------------------------------------------------------------------
-	// Convex GI volumes (Engine/GI/cubemap_volume.h; GiBaker --cv-spec).
+	// GI volumes (Engine/GI/cubemap_volume.h; GiBaker --gi-volume-spec).
 	// The volume list comes from the scene's HARD per-volume bindings (the
-	// tour giAsset cvol records — FULL vfs paths, up to SG_CV_MAX_VOLUMES
+	// tour giAsset givolume records — FULL vfs paths, up to SG_GI_VOLUME_MAX
 	// (8), stamped by the bake and bound into the pak by the cooker); the
-	// legacy cvmanifest channel serves old paks. Each volume uploads 7
+	// legacy givolumemanifest channel serves old paks. Each volume uploads 7
 	// RGBA16F 3D textures
 	// (dense probe grid, hardware trilinear) + one 80 B descriptor with
 	// the fade-expanded hull AABB (broad-phase reject), the CPU-packed
@@ -3323,58 +3323,58 @@ namespace engine {
 	// higher priority overrides lower (FOX override-volume rule).
 	// Missing manifest = "not baked yet" - non-fatal.
 	// ---------------------------------------------------------------------------
-	// GPU pack (must mirror CvVolumeGpu/CvPlaneGpu in
+	// GPU pack (must mirror GiVolumeGpu/GiVolumePlaneGpu in
 	// sg_lightmap_types.hlsli - all float4/uint4 rows, std430-clean).
-	struct CvolPlaneGpu {
+	struct GiVolumePlaneGpu {
 		float weightEquation[4]; // xyz -normal*fadeScale, w fadeBias - d*fadeScale
 	};
-	struct CvolVolumeGpu {
+	struct GiVolumeGpu {
 		float aabbMin[4];       // xyz fade-expanded hull AABB min, w pad
 		float aabbMax[4];       // xyz fade-expanded max, w pad
 		float uvwScale[4];      // xyz 1/(spacing*max(dims,1)), w pad
 		float uvwBias[4];       // xyz -gridMin*uvwScale, w pad
 		uint32_t planeCountBase[4]; // x plane count, y first pool plane, zw pad
 	};
-	struct CvolVolumesGpu {
-		CvolVolumeGpu volumes[8];          // SG_CV_MAX_VOLUMES
-		CvolPlaneGpu planes[8 * 16];      // SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES
+	struct GiVolumesGpu {
+		GiVolumeGpu volumes[8];          // SG_GI_VOLUME_MAX
+		GiVolumePlaneGpu planes[8 * 16];      // SG_GI_VOLUME_MAX * SG_GI_VOLUME_MAX_PLANES
 	};
-	static_assert(sizeof(CvolPlaneGpu) == 16);
-	static_assert(sizeof(CvolVolumeGpu) == 80);
-	static_assert(sizeof(CvolVolumesGpu) == 8 * 80 + 128 * 16);
+	static_assert(sizeof(GiVolumePlaneGpu) == 16);
+	static_assert(sizeof(GiVolumeGpu) == 80);
+	static_assert(sizeof(GiVolumesGpu) == 8 * 80 + 128 * 16);
 
-	void WorldRenderer::LoadCvolumes() {
-		m_cvolLoaded = false;
-		m_cvolEnabled = false;
-		m_cvolVolumes.clear();
-		m_cvolVolumesBuffer = {};
-		m_cvolVolumesAddress = 0;
+	void WorldRenderer::LoadGiVolumes() {
+		m_giVolumesLoaded = false;
+		m_giVolumesEnabled = false;
+		m_giVolumes.clear();
+		m_giVolumesBuffer = {};
+		m_giVolumesAddress = 0;
 
-		// The volume list: the scene's per-volume Cvol bindings FIRST
+		// The volume list: the scene's per-volume GiVolume bindings FIRST
 		// (FULL vfs paths — the tour giAsset hard identification, one
-		// binding per authored convex volume, manifest-free), else the
-		// LEGACY cvmanifest channel (old paks: the CvolManifest binding
-		// names the manifest; one .cvol path per line). NO scene-id/
-		// pak-filename guessing — a binding-less pak has no baked
+		// binding per authored GI volume, manifest-free), else the
+		// LEGACY givolumemanifest channel (old paks: the GiVolumeManifest
+		// binding names the manifest; one .givolume path per line). NO
+		// scene-id/pak-filename guessing — a binding-less pak has no baked
 		// volumes and says so.
 		std::vector<std::string> lines;
-		if (!m_giCvolPaths.empty()) {
-			lines = m_giCvolPaths;
+		if (!m_giVolumePaths.empty()) {
+			lines = m_giVolumePaths;
 		}
-		else if (!m_giCvolName.empty()) {
+		else if (!m_giVolumeManifestName.empty()) {
 			const std::string manifestPath =
-				m_giCvolName.find('/') != std::string::npos
-				? m_giCvolName
-				: std::string("gi/") + m_giCvolName + ".cvmanifest";
+				m_giVolumeManifestName.find('/') != std::string::npos
+				? m_giVolumeManifestName
+				: std::string("gi/") + m_giVolumeManifestName + ".cvmanifest";
 			const std::span<const uint8_t> manifestBytes =
 				ReadBakeBytes(manifestPath);
 			if (manifestBytes.empty()) {
-				std::cerr << "[CV] no convex-volume manifest '"
+				std::cerr << "[GIV] no GI-volume manifest '"
 					<< manifestPath
 					<< "' (bake: GiBaker --cv-spec <file>)\n";
 				return;
 			}
-			// Line-separated .cvol vfs paths (bake-asset rows carry the
+			// Line-separated .givolume vfs paths (bake-asset rows carry the
 			// payload guid first - see smvk::bake::SplitManifestRow; '#'
 			// comments and blanks skipped - GiBaker writes a header
 			// comment).
@@ -3396,27 +3396,27 @@ namespace engine {
 				lines.push_back(path);
 		}
 		else {
-			std::cerr << "[CV] no convex-volume binding (bake: GiBaker; "
+			std::cerr << "[GIV] no GI-volume binding (bake: GiBaker; "
 				"the bake stamps the tour's giAsset records and the pak "
 				"cooker binds them)\n";
 			return;
 		}
-		constexpr uint32_t kMaxVolumes = 8; // SG_CV_MAX_VOLUMES
+		constexpr uint32_t kMaxVolumes = 8; // SG_GI_VOLUME_MAX
 		for (const std::string& line : lines) {
-			if (m_cvolVolumes.size() >= kMaxVolumes) {
-				std::cerr << "[CV] manifest lists more than " << kMaxVolumes
+			if (m_giVolumes.size() >= kMaxVolumes) {
+				std::cerr << "[GIV] manifest lists more than " << kMaxVolumes
 					<< " volumes - extra entries ignored\n";
 				break;
 			}
 			const std::span<const uint8_t> volBytes = ReadBakeBytes(line);
 			if (volBytes.empty()) {
-				std::cerr << "[CV] missing volume '" << line << "' - skipped\n";
+				std::cerr << "[GIV] missing volume '" << line << "' - skipped\n";
 				continue;
 			}
-			CvolVolume cv{};
+			GiVolumeResources cv{};
 			std::string verr;
 			if (!cv.volume.ReadFromMemory(volBytes, verr)) {
-				std::cerr << "[CV] volume rejected: " << verr << "\n";
+				std::cerr << "[GIV] volume rejected: " << verr << "\n";
 				continue;
 			}
 			// Bake-content audit (distinguishes an empty bake - all-zero
@@ -3432,7 +3432,7 @@ namespace engine {
 					nz += (l > 1e-6) ? 1 : 0;
 					++total;
 				}
-				std::cerr << "[CV] coeffs '" << line << "': voxels="
+				std::cerr << "[GIV] coeffs '" << line << "': voxels="
 					<< (total / 9) << " nonzero=" << nz << "/" << total
 					<< " mean=" << (total ? sum / total : 0.0)
 					<< " max=" << mx << "\n";
@@ -3450,10 +3450,10 @@ namespace engine {
 				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
 				ci.mipLevels = 1;
 				ci.arrayLayers = 1;
-				ci.name = "cvol layer";
+				ci.name = "gi volume layer";
 				auto tex = m_context->CreateTexture(ci, layers[t].data());
 				if (tex.empty()) {
-					std::cerr << "[CV] layer " << t << " creation failed\n";
+					std::cerr << "[GIV] layer " << t << " creation failed\n";
 					ok = false;
 					break;
 				}
@@ -3474,10 +3474,10 @@ namespace engine {
 				mci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
 				mci.mipLevels = 1;
 				mci.arrayLayers = 1;
-				mci.name = "cvol mean";
+				mci.name = "gi volume mean";
 				auto meanTex = m_context->CreateTexture(mci, meanLayer.data());
 				if (meanTex.empty()) {
-					std::cerr << "[CV] mean texture creation failed\n";
+					std::cerr << "[GIV] mean texture creation failed\n";
 					ok = false;
 				}
 				else {
@@ -3490,29 +3490,29 @@ namespace engine {
 			// Coefficients are now resident on the GPU; drop the CPU copy.
 			cv.volume.coeffs.clear();
 			cv.volume.coeffs.shrink_to_fit();
-			m_cvolVolumes.push_back(std::move(cv));
+			m_giVolumes.push_back(std::move(cv));
 		}
-		if (m_cvolVolumes.empty()) {
-			std::cerr << "[CV] no volumes loaded\n";
+		if (m_giVolumes.empty()) {
+			std::cerr << "[GIV] no volumes loaded\n";
 			return;
 		}
 
 		// Priority sort (stable, LOW first): the shader composites in
 		// upload order, so later entries win - the FOX override rule.
-		std::stable_sort(m_cvolVolumes.begin(), m_cvolVolumes.end(),
-			[](const CvolVolume& a, const CvolVolume& b) {
+		std::stable_sort(m_giVolumes.begin(), m_giVolumes.end(),
+			[](const GiVolumeResources& a, const GiVolumeResources& b) {
 			return a.volume.def.priority < b.volume.def.priority;
 		});
 
-		// Descriptor pack (headers + shared plane pool, see CvolVolumesGpu).
+		// Descriptor pack (headers + shared plane pool, see GiVolumesGpu).
 		// Priority ride: upload order == compositing priority (LOW first,
 		// the shader walks HIGH first) - the old explicit priority field
 		// was dead weight, the order carries it.
-		CvolVolumesGpu descs{};
+		GiVolumesGpu descs{};
 		uint32_t planeBase = 0;
-		for (size_t v = 0; v < m_cvolVolumes.size(); ++v) {
-			const smvk::gi::CvVolume& vol = m_cvolVolumes[v].volume;
-			CvolVolumeGpu& g = descs.volumes[v];
+		for (size_t v = 0; v < m_giVolumes.size(); ++v) {
+			const smvk::gi::GiVolume& vol = m_giVolumes[v].volume;
+			GiVolumeGpu& g = descs.volumes[v];
 			// Fade-expanded hull AABB (broad-phase reject): Bounds() is
 			// already a generous superset of the convex hull, grown by the
 			// widest outsideFade per axis - a superset of the weight>0
@@ -3521,7 +3521,7 @@ namespace engine {
 			// before: a huge box means the per-pixel plane tests decide.
 			glm::vec3 mn = glm::vec3(-1e30f), mx = glm::vec3(1e30f);
 			float fadeOut = 0.0f;
-			for (const smvk::gi::CvPlane& pl : vol.def.planes)
+			for (const smvk::gi::GiVolumePlane& pl : vol.def.planes)
 				fadeOut = std::max(fadeOut, pl.outsideFade);
 			{
 				glm::vec3 bmn, bmx;
@@ -3558,8 +3558,8 @@ namespace engine {
 			g.planeCountBase[0] = planeCount;
 			g.planeCountBase[1] = planeBase;
 			for (uint32_t p = 0; p < planeCount; ++p) {
-				const smvk::gi::CvPlane& pl = vol.def.planes[p];
-				CvolPlaneGpu& pg = descs.planes[planeBase + p];
+				const smvk::gi::GiVolumePlane& pl = vol.def.planes[p];
+				GiVolumePlaneGpu& pg = descs.planes[planeBase + p];
 				// Folded ramp: t = saturate(dot(wEq.xyz, pos) + wEq.w)
 				// with wEq = (-n * fadeScale, fadeBias - d * fadeScale)
 				// (fadeScale = 1/max(in+out fade), fadeBias =
@@ -3576,24 +3576,24 @@ namespace engine {
 		}
 		constexpr smvk::PipelineStage kCvStages =
 			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
-		m_cvolVolumesBuffer = m_context->CreateBuffer(
-			sizeof(CvolVolumesGpu), smvk::BufferType_Storage, "cvol volumes");
-		m_context->UploadDataToBuffer(m_cvolVolumesBuffer, &descs,
-			sizeof(CvolVolumesGpu), kCvStages, smvk::AccessFlags::ShaderRead);
-		m_cvolVolumesAddress = m_context->GetBufferDeviceAddress(m_cvolVolumesBuffer);
+		m_giVolumesBuffer = m_context->CreateBuffer(
+			sizeof(GiVolumesGpu), smvk::BufferType_Storage, "gi volumes");
+		m_context->UploadDataToBuffer(m_giVolumesBuffer, &descs,
+			sizeof(GiVolumesGpu), kCvStages, smvk::AccessFlags::ShaderRead);
+		m_giVolumesAddress = m_context->GetBufferDeviceAddress(m_giVolumesBuffer);
 
-		m_cvolLoaded = true;
-		m_cvolEnabled = true; // on by default when baked; UI can toggle
-		// Headless A/B (same state as the panel checkbox): TOURMALINE_CVOL=0
+		m_giVolumesLoaded = true;
+		m_giVolumesEnabled = true; // on by default when baked; UI can toggle
+		// Headless A/B (same state as the panel checkbox): TOURMALINE_GI_VOLUMES=0
 		// drops the FULL variant to Octree for the run (isolates whether a
 		// dark interior comes from the convex volumes or the octree field).
-		if (const char* cvolEnv = std::getenv("TOURMALINE_CVOL")) {
-			if (std::atoi(cvolEnv) == 0)
-				m_cvolEnabled = false;
+		if (const char* giVolumesEnv = std::getenv("TOURMALINE_GI_VOLUMES")) {
+			if (std::atoi(giVolumesEnv) == 0)
+				m_giVolumesEnabled = false;
 		}
-		std::cerr << "[CV] loaded " << m_cvolVolumes.size()
+		std::cerr << "[GIV] loaded " << m_giVolumes.size()
 			<< " convex volume(s) from the scene's giAsset bindings\n";
-		for (const auto& cv : m_cvolVolumes) {
+		for (const auto& cv : m_giVolumes) {
 			const auto& d = cv.volume.def;
 			std::cerr << "  dims=" << cv.volume.dims[0] << "x" << cv.volume.dims[1]
 				<< "x" << cv.volume.dims[2] << " spacing=" << cv.volume.spacing
@@ -3609,12 +3609,12 @@ namespace engine {
 	// back to another baked source (or the sky IBL) instead of being
 	// silently empty. All/SkyIbl/Off never need this.
 	if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
-		m_ambientMode = (m_giLoaded || m_regLoaded || m_cvolLoaded)
+		m_ambientMode = (m_giLoaded || m_regLoaded || m_giVolumesLoaded)
 			? AmbientMode::Probes : AmbientMode::SkyIbl;
 		std::cerr << "[Scene] no lightmaps - ambient degraded to "
 			<< AmbientModeName(m_ambientMode) << "\n";
 	} else if (m_ambientMode == AmbientMode::Probes
-		&& !m_giLoaded && !m_regLoaded && !m_cvolLoaded) {
+		&& !m_giLoaded && !m_regLoaded && !m_giVolumesLoaded) {
 		m_ambientMode = m_lmLoaded
 			? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
 		std::cerr << "[Scene] no probes - ambient degraded to "
@@ -3970,31 +3970,31 @@ namespace engine {
 			data.regEnabled = 0u;
 		}
 		// Convex GI volumes (probes-only pivot's confined-space path).
-		// CvolActive() gates the upload (loaded + UI toggle + probes
+		// GiVolumesActive() gates the upload (loaded + UI toggle + probes
 		// ambient mode); the volumes ride the same giIntensity scale as
 		// the octree. Buffers/slots publish whenever loaded so the
 		// shader flag and GPU contents can never disagree.
-		if (m_cvolLoaded && m_cvolEnabled) {
-			data.cvolVolumes = m_cvolVolumesAddress;
+		if (m_giVolumesLoaded && m_giVolumesEnabled) {
+			data.giVolumes = m_giVolumesAddress;
 			const uint32_t n = std::min<uint32_t>(
-				uint32_t(m_cvolVolumes.size()), 8u);
+				uint32_t(m_giVolumes.size()), 8u);
 			for (uint32_t v = 0; v < n; ++v) {
 				for (uint32_t t = 0; t < 7; ++t)
-					data.cvolLayers[v * 7u + t] = m_cvolVolumes[v].layerSlots[t];
+					data.giVolumeLayers[v * 7u + t] = m_giVolumes[v].layerSlots[t];
 				// Volumetric one-fetch mean slots (fog-only payload).
-				data.cvolMeanLayers[v] = m_cvolVolumes[v].meanSlot;
+				data.giVolumeMeanLayers[v] = m_giVolumes[v].meanSlot;
 			}
-			data.cvolCount = n;
-			data.cvolEnabled = ProbesWanted() ? 1u : 0u;
+			data.giVolumeCount = n;
+			data.giVolumesEnabled = ProbesWanted() ? 1u : 0u;
 		}
 		else {
-			data.cvolVolumes = 0;
-			for (uint32_t& slot : data.cvolLayers)
+			data.giVolumes = 0;
+			for (uint32_t& slot : data.giVolumeLayers)
 				slot = UINT32_MAX;
-			for (uint32_t& slot : data.cvolMeanLayers)
+			for (uint32_t& slot : data.giVolumeMeanLayers)
 				slot = UINT32_MAX;
-			data.cvolCount = 0u;
-			data.cvolEnabled = 0u;
+			data.giVolumeCount = 0u;
+			data.giVolumesEnabled = 0u;
 		}
 		// Convex-volume tile masks: published under the decal tile-list
 		// freshness contract above, with the DsActive() term the dispatch
@@ -4003,10 +4003,10 @@ namespace engine {
 		// make the shader walk every volume instead; the per-volume AABB
 		// reject in SgCvWeight keeps that path correct.
 		if (m_viewportResources.forwardPlus.Valid() && TileCullWillRun()) {
-			data.cvolTileMasks =
+			data.giVolumeTileMasks =
 				m_viewportResources.forwardPlus.VolumeTileMasksAddress(*m_context);
-			data.cvolTileCountX = m_viewportResources.forwardPlus.tileCountX;
-			data.cvolTileSize = m_viewportResources.forwardPlus.desc.tileSize;
+			data.giVolumeTileCountX = m_viewportResources.forwardPlus.tileCountX;
+			data.giVolumeTileSize = m_viewportResources.forwardPlus.desc.tileSize;
 		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
@@ -4106,7 +4106,7 @@ namespace engine {
 		hot.fogEndAndFlags_w = data.env.fogEndAndFlags.w;
 		hot.giIntensity = data.giIntensity;
 		hot.giDebug = data.giDebug;
-		hot.cvolEnabled = data.cvolEnabled;
+		hot.giVolumesEnabled = data.giVolumesEnabled;
 		hot.pad_[0] = 0;
 		hot.pad_[1] = 0;
 
@@ -5269,9 +5269,9 @@ namespace engine {
 		m_giProbeName.clear();
 		m_giLightmapName.clear();
 		m_giRegName.clear();
-		m_giCvolName.clear();
+		m_giVolumeManifestName.clear();
 		m_giCubemapName.clear();
-		m_giCvolPaths.clear();
+		m_giVolumePaths.clear();
 		if (!m_world)
 			return;
 		auto takeFirst = [](std::string& slot, const std::string& name,
@@ -5299,24 +5299,24 @@ namespace engine {
 				case smvk::GiBinding::Kind::RegManifest:
 					takeFirst(m_giRegName, b.name, "regmanifest");
 					break;
-				case smvk::GiBinding::Kind::CvolManifest:
-					takeFirst(m_giCvolName, b.name, "cvolmanifest");
+				case smvk::GiBinding::Kind::GiVolumeManifest:
+					takeFirst(m_giVolumeManifestName, b.name, "givolumemanifest");
 					break;
 				case smvk::GiBinding::Kind::Cubemap:
 					takeFirst(m_giCubemapName, b.name, "cubemap");
 					break;
-				case smvk::GiBinding::Kind::Cvol:
+				case smvk::GiBinding::Kind::GiVolume:
 					// Per-volume scene bindings: FULL vfs paths, MANY
 					// legal (one per authored convex volume — the
 					// scene's hard giAsset identification, capped at
 					// the loader's 8). First-wins dedup (the pak union
 					// already dedups; a dynamic-cluster quick-bake
 					// re-registering a path must not double it).
-					if (m_giCvolPaths.size() >= 8)
+					if (m_giVolumePaths.size() >= 8)
 						break;
-					if (std::find(m_giCvolPaths.begin(), m_giCvolPaths.end(),
-							b.name) == m_giCvolPaths.end())
-						m_giCvolPaths.push_back(b.name);
+					if (std::find(m_giVolumePaths.begin(), m_giVolumePaths.end(),
+							b.name) == m_giVolumePaths.end())
+						m_giVolumePaths.push_back(b.name);
 					break;
 				}
 			}
@@ -5331,12 +5331,12 @@ namespace engine {
 				walkCluster(*clusterPtr);
 		}
 		if (!m_giProbeName.empty() || !m_giLightmapName.empty()
-			|| !m_giRegName.empty() || !m_giCvolName.empty()
-			|| !m_giCubemapName.empty() || !m_giCvolPaths.empty())
+			|| !m_giRegName.empty() || !m_giVolumeManifestName.empty()
+			|| !m_giCubemapName.empty() || !m_giVolumePaths.empty())
 			std::cerr << "[GI] bake bindings: probe='"
 			<< m_giProbeName << "' lightmap='" << m_giLightmapName
-			<< "' reg='" << m_giRegName << "' cvol='" << m_giCvolName
-			<< "' cvols=" << m_giCvolPaths.size()
+			<< "' reg='" << m_giRegName << "' givolume='" << m_giVolumeManifestName
+			<< "' gi volumes=" << m_giVolumePaths.size()
 			<< " cubemap='" << m_giCubemapName << "'\n";
 	}
 
@@ -6199,17 +6199,17 @@ namespace engine {
 		// View-coherent cache: camera still => free; camera moved =>
 		// invalidate (recomputed lazily per drawn probe below).
 		const glm::mat4 view = m_camera.getViewMatrix();
-		if (m_giProbeCullCache.size() != m_giVolume.probes.size()
+		if (m_giProbeCullCache.size() != m_giOctree.probes.size()
 			|| std::memcmp(&view, &m_giProbeCullView, sizeof(view)) != 0) {
 			m_giProbeCullView = view;
-			m_giProbeCullCache.assign(m_giVolume.probes.size(), 2);
+			m_giProbeCullCache.assign(m_giOctree.probes.size(), 2);
 		}
 		char& slot = m_giProbeCullCache[probeIdx];
 		if (slot != 2)
 			return slot != 0;
 		bool visible = true; // fail-open: no pick geometry => draw unculled
 		if (EnsurePickScene()) {
-			const glm::vec3 p = m_giVolume.probes[probeIdx].position;
+			const glm::vec3 p = m_giOctree.probes[probeIdx].position;
 			const glm::vec3 d = p - camPos;
 			const float dist = glm::length(d);
 			if (dist > 1e-4f) {
@@ -10916,11 +10916,11 @@ namespace engine {
 				m_viewportResources.forwardPlus.tileIndicesLogical);
 		}
 		// Convex-volume tile masks are read by Main in BOTH shading paths
-		// (cvol compositing is independent of the light-list source); the
+		// (GI-volume compositing is independent of the light-list source); the
 		// volume leg of the tile cull wrote them this frame
-		// (frameData.cvolTileMasks publishes only when the dispatch ran -
+		// (frameData.giVolumeTileMasks publishes only when the dispatch ran -
 		// TileCullWillRun gates them together).
-		if (frameData.cvolTileMasks != 0) {
+		if (frameData.giVolumeTileMasks != 0) {
 			smvk::ForwardPlus::AddVolumeMaskReadHints(mainPass,
 				m_viewportResources.forwardPlus.volumeTileMasksLogical);
 		}
@@ -11693,7 +11693,7 @@ namespace engine {
 			volDesc.giScale = m_volumetricGi;
 			volDesc.useGi = m_volumetricUseGi ? 1u : 0u;
 			volDesc.useSun = m_volumetricUseSun ? 1u : 0u;
-			volDesc.useCvolGi = m_volumetricUseCvolGi ? 1u : 0u;
+			volDesc.useGiVolumes = m_volumetricUseGiVolumes ? 1u : 0u;
 			volDesc.jitterStrength = m_volumetricJitter;
 			volDesc.heightFalloff = m_volumetricHeightFalloff;
 			volDesc.heightBase = m_volumetricHeightBase;
@@ -11708,8 +11708,8 @@ namespace engine {
 				&& !DebugVisualizationActive();
 			if (volOn) {
 				// Forward+ tile lists for the fog's in-scatter leg: published
-				// under the cvol-mask freshness contract (TileCullWillRun -
-				// same dispatch writes both, so frameData.cvolTileCountX != 0
+				// under the GI-volume-mask freshness contract (TileCullWillRun -
+				// same dispatch writes both, so frameData.giVolumeTileCountX != 0
 				// in the shader implies these are fresh too). Zeros = the
 				// shader walks [0, fpLightCount) directly instead.
 				uint64_t volFpTileCounts = 0, volFpTileIndices = 0;
@@ -11740,7 +11740,7 @@ namespace engine {
 				// volume bitmask (fragment) after the tile cull wrote it
 				// (compute) - order the edge (same freshness contract as the
 				// Main hint: the publish gate and the dispatch gate agree).
-				if (frameData.cvolTileMasks != 0) {
+				if (frameData.giVolumeTileMasks != 0) {
 					smvk::ForwardPlus::AddVolumeMaskReadHints(volPass,
 						m_viewportResources.forwardPlus.volumeTileMasksLogical);
 				}
@@ -12752,7 +12752,7 @@ namespace engine {
 								ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);
 								ImGui::Checkbox("GI probes ambient", &m_volumetricUseGi);
 								ImGui::Checkbox("Sun single-scatter", &m_volumetricUseSun);
-								ImGui::Checkbox("Convex volumes in fog GI", &m_volumetricUseCvolGi);
+								ImGui::Checkbox("Convex volumes in fog GI", &m_volumetricUseGiVolumes);
 								ImGui::SliderFloat("Dither (banding guard)", &m_volumetricJitter, 0.0f, 1.0f);
 								ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
 								if (m_volumetricHeightFalloff > 0.0f)
@@ -13348,7 +13348,7 @@ namespace engine {
 								"convex grid AABBs (priority hue); no depth test,\n"
 								"drawn over the current view");
 						}
-						if (m_giLoaded || m_regLoaded || m_cvolLoaded) {
+						if (m_giLoaded || m_regLoaded || m_giVolumesLoaded) {
 							// GI debug views (R / F8 cycle): 0 off, 1 baked
 							// irradiance, 2 source palette, 3 isolated octree level
 							// (the level slider picks it), 4 dominant octree level
@@ -13382,8 +13382,8 @@ namespace engine {
 									"this pixel's weight (its argmax over per-level "
 									"weight sums)");
 							}
-							if (m_cvolLoaded) {
-								ImGui::Checkbox("Convex GI volumes", &m_cvolEnabled);
+							if (m_giVolumesLoaded) {
+								ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
 								ImGui::TextDisabled("stacked probe volumes blend over the "
 									"octree by priority (gi/<scene>.cvmanifest)");
 							}
@@ -13662,11 +13662,11 @@ namespace engine {
 					if (ImGui::CollapsingHeader("GI volume", ImGuiTreeNodeFlags_DefaultOpen)) {
 						if (m_giLoaded) {
 							ImGui::Text("Probes: %u  levels: %u  GPU: %zu KiB",
-								(unsigned)m_giVolume.probes.size(), m_giVolume.levelCount,
-								m_giVolume.GpuBytes() / 1024);
-							for (uint32_t lvl = 0; lvl < m_giVolume.levelCount
-								&& lvl < m_giVolume.levelStats.size(); ++lvl) {
-								const auto& s = m_giVolume.levelStats[lvl];
+								(unsigned)m_giOctree.probes.size(), m_giOctree.levelCount,
+								m_giOctree.GpuBytes() / 1024);
+							for (uint32_t lvl = 0; lvl < m_giOctree.levelCount
+								&& lvl < m_giOctree.levelStats.size(); ++lvl) {
+								const auto& s = m_giOctree.levelStats[lvl];
 								ImGui::BulletText("lvl %u: %u probes  %u cells (max %u/cell)",
 									lvl, s.probeCount, s.cellCount, s.maxProbesPerCell);
 							}
@@ -15165,7 +15165,7 @@ namespace engine {
 			// UNJITTERED viewProj. Distance-filtered + count-capped so huge
 			// volumes stay ImGui-cheap. Without occlusion culling there is no
 			// depth test: occluded probes stay visible (debug).
-			if (m_giLoaded && m_giShowProbes && !m_giVolume.probes.empty()) {
+			if (m_giLoaded && m_giShowProbes && !m_giOctree.probes.empty()) {
 				ImDrawList* dl = ImGui::GetForegroundDrawList();
 				const ImVec2 disp = ImGui::GetIO().DisplaySize;
 				const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
@@ -15182,8 +15182,8 @@ namespace engine {
 				uint32_t drawn = 0;
 				uint32_t culled = 0;
 				constexpr uint32_t kMaxDrawn = 6000;
-				for (uint32_t pi = 0; pi < m_giVolume.probes.size(); ++pi) {
-					const smvk::gi::SgProbe& p = m_giVolume.probes[pi];
+				for (uint32_t pi = 0; pi < m_giOctree.probes.size(); ++pi) {
+					const smvk::gi::SgProbe& p = m_giOctree.probes[pi];
 					if (drawn >= kMaxDrawn)
 						break;
 					if (!p.valid)
@@ -15215,13 +15215,13 @@ namespace engine {
 				char cap[128];
 				if (m_giProbeOcclusionCull)
 					snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm), %u occluded",
-						drawn, (unsigned)m_giVolume.probes.size(), maxDist, culled);
+						drawn, (unsigned)m_giOctree.probes.size(), maxDist, culled);
 				else
 					snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm)",
-						drawn, (unsigned)m_giVolume.probes.size(), maxDist);
+						drawn, (unsigned)m_giOctree.probes.size(), maxDist);
 				dl->AddText(ImVec2(lx + 1.0f, ly + 1.0f), IM_COL32(0, 0, 0, 200), cap);
 				dl->AddText(ImVec2(lx, ly), IM_COL32_WHITE, cap);
-				for (uint32_t lvl = 0; lvl < std::min(m_giVolume.levelCount, 8u); ++lvl) {
+				for (uint32_t lvl = 0; lvl < std::min(m_giOctree.levelCount, 8u); ++lvl) {
 					dl->AddCircleFilled(ImVec2(lx + 4.0f, ly + 22.0f), 3.5f, kLevelColors[lvl]);
 					char lab[8];
 					snprintf(lab, sizeof(lab), "L%u", lvl);
@@ -15244,13 +15244,13 @@ namespace engine {
 			// edges through the UNJITTERED viewProj into the ImGui foreground
 			// list, so they ride on top of the current view with no depth test
 			// (debug intent: authoring bounds against walls/roofs). Sources:
-			// octree world field (m_giVolume.boundsMin/Max, cyan), regular
+			// octree world field (m_giOctree.boundsMin/Max, cyan), regular
 			// OBB volumes (green), convex grid AABBs (priority hue, like the
 			// editor LIGHTING preview). Edges whose both endpoints project
 			// (in front of the camera) draw; partially behind-camera boxes
 			// clip per-edge (may drop the crossing segment).
 			if (m_giShowVolumeBounds
-				&& (m_giLoaded || m_regLoaded || m_cvolLoaded)) {
+				&& (m_giLoaded || m_regLoaded || m_giVolumesLoaded)) {
 				ImDrawList* bdl = ImGui::GetForegroundDrawList();
 				const ImVec2 bdisp = ImGui::GetIO().DisplaySize;
 				const auto projectBox = [&](const glm::vec3& w, ImVec2& out) {
@@ -15290,14 +15290,14 @@ namespace engine {
 					q[6] = { mx.x, mx.y, mx.z }; q[7] = { mn.x, mx.y, mx.z };
 				};
 				uint32_t boxesDrawn = 0;
-				if (m_giLoaded && !m_giVolume.probes.empty()) {
+				if (m_giLoaded && !m_giOctree.probes.empty()) {
 					glm::vec3 q[8];
-					boxCorners(m_giVolume.boundsMin, m_giVolume.boundsMax, q);
+					boxCorners(m_giOctree.boundsMin, m_giOctree.boundsMax, q);
 					drawBoxEdges(q, IM_COL32(60, 200, 255, 220));
 					++boxesDrawn;
 					ImVec2 c;
 					if (projectBox(
-						(m_giVolume.boundsMin + m_giVolume.boundsMax) * 0.5f, c))
+						(m_giOctree.boundsMin + m_giOctree.boundsMax) * 0.5f, c))
 						bdl->AddText(ImVec2(c.x + 5.0f, c.y - 8.0f),
 							IM_COL32(60, 200, 255, 220), "octree");
 				}
@@ -15327,9 +15327,9 @@ namespace engine {
 						}
 					}
 				}
-				if (m_cvolLoaded) {
-					for (size_t vi = 0; vi < m_cvolVolumes.size(); ++vi) {
-						const auto& vol = m_cvolVolumes[vi].volume;
+				if (m_giVolumesLoaded) {
+					for (size_t vi = 0; vi < m_giVolumes.size(); ++vi) {
+						const auto& vol = m_giVolumes[vi].volume;
 						const glm::vec3 mn = vol.gridMin;
 						const glm::vec3 mx = vol.gridMin
 							+ glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2])
@@ -16496,7 +16496,7 @@ namespace engine {
 		}
 		ImGui::Checkbox("Env volumes", &m_worldMapEnvVolumes);
 		ImGui::SameLine();
-		ImGui::Checkbox("Cvolumes", &m_worldMapCvolumes);
+		ImGui::Checkbox("GI volumes", &m_worldMapGiVolumes);
 		ImGui::SameLine();
 		ImGui::Checkbox("Probes", &m_worldMapProbes);
 		ImGui::SameLine();
@@ -16612,7 +16612,7 @@ namespace engine {
 			c = std::min(std::max(c, 0.0f), 1.0f);
 			return (int)std::lround(std::pow(c, 1.0f / 2.2f) * 255.0f);
 		};
-		uint32_t nZones = 0, nZonesOff = 0, nCvol = 0, nProbes = 0,
+		uint32_t nZones = 0, nZonesOff = 0, nGiVolumes = 0, nProbes = 0,
 			nLights = 0, nDecals = 0;
 		// ---- Env volumes: OBB XZ footprints + inf-face arrows ---------
 		if (m_worldMapEnvVolumes && m_world) {
@@ -16687,14 +16687,14 @@ namespace engine {
 				}
 			}
 		}
-		// ---- Cvolumes -------------------------------------------------
-		if (m_worldMapCvolumes && m_world) {
+		// ---- GI volumes -----------------------------------------------
+		if (m_worldMapGiVolumes && m_world) {
 			const ::Scene& scene = m_world->scene;
-			for (const auto& [node, cv] : scene.cvolForNode) {
+			for (const auto& [node, cv] : scene.giVolumeForNode) {
 				(void)cv;
 				if (node >= scene.globalTransform.size())
 					continue;
-				++nCvol;
+				++nGiVolumes;
 				const glm::mat4& g = scene.globalTransform[node];
 				const glm::vec2 c(g[3].x, g[3].z);
 				const glm::vec2 ax(g[0].x, g[0].z);
@@ -16712,11 +16712,33 @@ namespace engine {
 						IM_COL32(60, 200, 255, 230), label);
 				}
 			}
+			// BAKED runtime volumes (the loaded set the renderer actually
+			// composites). The authored quads above only exist while the
+			// AUTHORING scene is live — a cooked pak world carries NO
+			// authored nodes, so the layer used to draw nothing exactly
+			// where the GI actually is. The lattice AABB footprint is the
+			// hull's XZ extent (axis-aligned by construction).
+			for (const GiVolumeResources& res : m_giVolumes) {
+				const smvk::gi::GiVolume& vol = res.volume;
+				if (vol.dims[0] == 0 || vol.dims[1] == 0 || vol.dims[2] == 0)
+					continue;
+				++nGiVolumes;
+				const glm::vec3 mn = vol.gridMin;
+				const glm::vec3 mx = vol.gridMin + glm::vec3(
+					float(vol.dims[0] - 1), float(vol.dims[1] - 1),
+					float(vol.dims[2] - 1)) * vol.spacing;
+				dl->AddRect(ImVec2(WX(mn.x), WZ(mn.z)),
+					ImVec2(WX(mx.x), WZ(mx.z)),
+					IM_COL32(60, 200, 255, 140), 0.0f, 0, 1.0f);
+				if (s > 0.8f && !vol.def.name.empty())
+					dl->AddText(ImVec2(WX(mn.x) + 4.0f, WZ(mn.z) + 2.0f),
+						IM_COL32(60, 200, 255, 160), vol.def.name.c_str());
+			}
 		}
 		// ---- Probes: GI lattice dots + cubemap influence rings --------
 		if (m_worldMapProbes) {
 			uint32_t drawn = 0;
-			for (const auto& p : m_giVolume.probes) {
+			for (const auto& p : m_giOctree.probes) {
 				if (!p.valid)
 					continue;
 				if (++drawn > 3000)
@@ -16798,9 +16820,9 @@ namespace engine {
 		}
 		dl->PopClipRect();
 		ImGui::TextDisabled(
-			"zones %u (%u off)  cvols %u  probes %u  lights %u  decals %u"
+			"zones %u (%u off)  gi volumes %u  probes %u  lights %u  decals %u"
 			"  1px = %.1fm  drag pan | wheel zoom",
-			nZones, nZonesOff, nCvol, nProbes, nLights, nDecals,
+			nZones, nZonesOff, nGiVolumes, nProbes, nLights, nDecals,
 			1.0f / s);
 		ImGui::End();
 	}

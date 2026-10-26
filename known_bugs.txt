@@ -1,6 +1,42 @@
 KNOWN BUGS
 ==========
 
+(GI-volume naming note: the former "cvol"/"cvolume" concept is GI
+volumes everywhere now — .givolume files, "GIVOL"-magic format, GiVolume*
+code identifiers, giAsset kind "givolume", TOURMALINE_GI_VOLUMES /
+TOURMALINE_VOLUMETRIC_GI_VOLUMES env knobs. Old baked data refuses
+gracefully at load ("givolume: bad magic"); re-bake to migrate.)
+
+(Known bug, pre-existing, found during the cvol->GiVolume rename's
+recook verification: cook_sponza.bat can never embed GI into its pak)
+
+The bat's Pak.exe line has NO --tour, so the pak packs the plain
+.geometry artifact (no tour replay -> no authored GI volume nodes, no
+bake bindings, no captures registered): the header's "Pak.exe embeds
+both ... + registers the bindings" describes a flow the invocation
+never exercises. The pak that actually carries the GI stack (the
+build dir's sponza_1.pak: sggi + givolume + cubemaps + bindings) came
+from the EDITOR cook flow, not the bat.
+
+Even WITH --tour added, the pak's freshness gate refuses every bake:
+GiVolumeBakeUnitHash folds the BakeCellGrid of the scene it is handed,
+and the two tools hand it DIFFERENT scenes — GiBaker builds its grid
+over the RAW .geometry cluster, the pak gate recomputes over the
+COOKED cluster (LOD siblings + meshlets cooked in by the bat's
+--lods/--meshlets), so the grid component of the hash can never match
+(observed: recorded grid=39a47ca2... fresh=049094d9..., env+lights
+identical). The gate is working as designed (the bake and the pack DO
+describe different geometry sets); the bug is that the bat's
+raw-cluster bake path was never aligned with the cooked-cluster gate.
+The editor flow does not hit this (it bakes and packs the same cooked
+scene).
+
+Fix options (unimplemented): bake the bat's GiBaker step against the
+cooked cluster (hand it the cooked scene, not the tour's raw
+reference), or gate on the raw-cluster grid on the pak side, or drop
+--lods/--meshlets from the bat so raw == cooked geometry. Until then:
+build sponza GI paks through the editor cook.
+
 (Texture Viewer close: DEVICE LOST — open, elusive)
 Closing the Texture Viewer (title-bar X; the backtick toggle likely the
 same) took the device down in an interactive session: vkWaitForFences

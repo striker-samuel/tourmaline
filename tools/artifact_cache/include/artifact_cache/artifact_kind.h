@@ -12,7 +12,7 @@
 //
 // Vocabulary (frozen — removing a kind breaks existing class paks):
 //   texture | mesh | material | animation | light | camera | scene | gi
-// gi covers ALL GI byproducts (sggi/cvol/regular/cubemap/lightmap rows,
+// gi covers ALL GI byproducts (sggi/givolume/regular/cubemap/lightmap rows,
 // keyed by canonical VFS uri) — no per-subtype classes; the uri already
 // disambiguates and one gi.pak keeps the file count flat. There is
 // deliberately no `level` klass: level blobs are pack-time assemblies

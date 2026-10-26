@@ -16,7 +16,7 @@ struct Args {
 	std::string scene;    // sponza | bistro | bistro-niagara
 	std::string inVfs;    // arbitrary model (overrides --scene input)
 	std::string tour;     // definition tour: root reference = the source,
-	                      // cvolume nodes = the convex bake inputs
+	                      // GI volume nodes = the convex bake inputs
 	std::string out;      // output host path (default <content>/gi/<scene>.sggi)
 	uint32_t rays = 1024;
 	uint32_t bounces = 3;
@@ -70,11 +70,11 @@ struct Args {
 	// Convex GI volumes (the probes-only pivot's confined-space path):
 	// --cv-spec authoring file, baked by sparse radiance+depth captures
 	// + cubemap reprojection into dense probe grids (BO3 pipeline).
-	// Empty cvSpec = no convex bake.
-	std::string cvSpec;
-	uint32_t cvDirs = 1536;       // capture direction count (6*16^2)
-	float cvCaptureSpacing = 0.0f; // INERT (per-probe bake — no capture lattice); CLI compat
-	uint32_t cvSmoothing = 3;     // Laplacian volume-smoothing passes (per-probe bake needs it — see CvBakeConfig)
+	// Empty giVolumeSpec = no convex bake.
+	std::string giVolumeSpec;
+	uint32_t giVolumeDirs = 1536;       // capture direction count (6*16^2)
+	float giVolumeCaptureSpacing = 0.0f; // INERT (per-probe bake — no capture lattice); CLI compat
+	uint32_t giVolumeSmoothing = 3;     // Laplacian volume-smoothing passes (per-probe bake needs it — see GiVolumeBakeConfig)
 	// Weave transmission for MASK (cutout cloth) materials: the cloth
 	// keeps its lit albedo AND passes light tinted per texel (the GI
 	// field behind the banners sees the tinted pools; the tint stays

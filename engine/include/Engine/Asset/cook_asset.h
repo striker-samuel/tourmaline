@@ -5,7 +5,7 @@
 // Cook-asset definitions: GI cooks + lightmap cooks as first-class project
 // assets (Unity Lighting-Settings style).
 //
-// The problem this solves: GI bakes (GiBaker .sggi/.sgrv/.cvol) and lightmap
+// The problem this solves: GI bakes (GiBaker .sggi/.sgrv/.givolume) and lightmap
 // cooks (PakCooker .sglm) were anonymous bake OUTPUTS — keyed by pak stem,
 // configured by the transient cook dialog (m_cook/TourCook), with no
 // project file to select, version, or rebind. The asset browser could list
@@ -53,26 +53,26 @@ inline constexpr const char* kLightmapCookExt = ".lmcook";
 // the typed asset folder, typically content/gi/). The registry
 // (assetdb kind) is the single index of who owns what.
 inline constexpr const char* kCubemapExt = ".cubemap";
-inline constexpr const char* kGicvolumeExt = ".gicvolume";
+inline constexpr const char* kGivolumeExt = ".givolume";
 // Assetdb/browser kinds (the sidecar importer + db row; opaque strings).
 inline constexpr const char* kCookAssetKindGiCook = "gicook";
 inline constexpr const char* kCookAssetKindLightmapCook = "lmcook";
 inline constexpr const char* kCookAssetKindCubemap = "cubemap";
-inline constexpr const char* kCookAssetKindGicvolume = "gicvolume";
+inline constexpr const char* kCookAssetKindGivolume = "givolume";
 
 // 32 lowercase hex chars (the asset-identity rule, shared with the
 // source-side GUIDs and the bake-asset GUIDs).
 [[nodiscard]] bool IsCookAssetGuid(std::string_view s);
 
 // ---- GI cook -----------------------------------------------------------
-// Owns the GiBaker world-field + convex-volume bake for one scene: the two
-// on-demand flags from the cook dialog (TourCook::giCvol/giWorld) plus the
+// Owns the GiBaker world-field + GI-volume bake for one scene: the two
+// on-demand flags from the cook dialog (TourCook::giVolumes/giWorld) plus the
 // result pointer (the .sggi bake guid/path; "" = never baked).
 struct GiCookAsset {
 	std::string guid;     // the asset's own GUID (manifest + .meta agree)
 	std::string name;     // display name (file stem by default)
 	std::string scene;    // scene stem this cook bakes ("" = unbound)
-	bool cvol = true;     // bake authored convex volumes (giCvol)
+	bool giVolumes = true; // bake authored GI volumes (giVolumes)
 	bool world = true;    // bake the world-field octree (giWorld)
 	std::string blobGuid; // result bake GUID ("" = unbaked)
 	std::string blobPath; // result VFS path, e.g. "gi/<guid>.sggi"
@@ -128,23 +128,23 @@ struct CubemapAsset {
 	std::string bakedHash;
 };
 
-// ---- Convex-volume (GI) asset ----------------------------------------------
-// Owns one authored convex volume's bake: the bake inputs snapshot +
-// result pointer (payload e.g. "gi/<guid>.cvol"; "" = unbaked).
-struct GicvolumeAsset {
+// ---- GI-volume asset -------------------------------------------------------
+// Owns one authored GI volume's bake: the bake inputs snapshot +
+// result pointer (payload e.g. "gi/<guid>.givolume"; "" = unbaked).
+struct GivolumeAsset {
 	std::string guid;
 	std::string name;
 	std::string scene;
 	uint32_t node = UINT32_MAX; // source scene node (UINT32_MAX = unbound)
 	uint32_t priority = 0;
 	std::string blobGuid;
-	std::string blobPath; // e.g. "gi/<guid>.cvol"
+	std::string blobPath; // e.g. "gi/<guid>.givolume"
 	std::string bakedHash;
 };
 
 [[nodiscard]] CubemapAsset DefaultCubemapAsset(const std::string& name,
 	const std::string& scene);
-[[nodiscard]] GicvolumeAsset DefaultGicvolumeAsset(const std::string& name,
+[[nodiscard]] GivolumeAsset DefaultGivolumeAsset(const std::string& name,
 	const std::string& scene, uint32_t node = UINT32_MAX);
 
 // Settings fingerprint (the staleness token: bakedHash == SettingsHash
@@ -162,13 +162,13 @@ struct GicvolumeAsset {
 		&& a.bakedHash != LightmapCookSettingsHash(a);
 }
 [[nodiscard]] std::string CubemapSettingsHash(const CubemapAsset& a);
-[[nodiscard]] std::string GicvolumeSettingsHash(const GicvolumeAsset& a);
+[[nodiscard]] std::string GivolumeSettingsHash(const GivolumeAsset& a);
 [[nodiscard]] inline bool CubemapBlobStale(const CubemapAsset& a) {
 	return !a.blobGuid.empty() && a.bakedHash != CubemapSettingsHash(a);
 }
-[[nodiscard]] inline bool GicvolumeBlobStale(const GicvolumeAsset& a) {
+[[nodiscard]] inline bool GivolumeBlobStale(const GivolumeAsset& a) {
 	return !a.blobGuid.empty()
-		&& a.bakedHash != GicvolumeSettingsHash(a);
+		&& a.bakedHash != GivolumeSettingsHash(a);
 }
 
 // Manifest IO (key=value ASCII like .material; tolerant: unknown keys
@@ -196,12 +196,12 @@ bool LoadCubemapAsset(const std::string& path, CubemapAsset& out,
 bool SaveCubemapAssetText(std::string& out, const CubemapAsset& a);
 bool LoadCubemapAssetText(const std::string& text, CubemapAsset& out,
 	std::string& err);
-bool SaveGicvolumeAsset(const std::string& path, const GicvolumeAsset& a,
+bool SaveGivolumeAsset(const std::string& path, const GivolumeAsset& a,
 	std::string& err);
-bool LoadGicvolumeAsset(const std::string& path, GicvolumeAsset& out,
+bool LoadGivolumeAsset(const std::string& path, GivolumeAsset& out,
 	std::string& err);
-bool SaveGicvolumeAssetText(std::string& out, const GicvolumeAsset& a);
-bool LoadGicvolumeAssetText(const std::string& text, GicvolumeAsset& out,
+bool SaveGivolumeAssetText(std::string& out, const GivolumeAsset& a);
+bool LoadGivolumeAssetText(const std::string& text, GivolumeAsset& out,
 	std::string& err);
 
 } // namespace smvk::cook

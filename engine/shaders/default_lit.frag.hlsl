@@ -10,5 +10,5 @@
 #include "sggi.hlsli"
 #include "sg_lightmap.hlsli"
 #include "sg_regular.hlsli"
-#include "sg_cvol.hlsli"
+#include "sg_gi_volume.hlsli"
 #include "default_lit_body.hlsli"

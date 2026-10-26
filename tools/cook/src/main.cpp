@@ -269,7 +269,7 @@ namespace cooktool {
 		float skyIntensity = 600.0f;
 		// Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
 		std::vector<std::string> spots;
-		// Ray-tracing backend for the in-pak bake transport (cvolumes,
+		// Ray-tracing backend for the in-pak bake transport (GI volumes,
 		// cubemap captures, lightmaps): "embree" (vendored external/embree,
 		// packet/SIMD traversal — the fast default) or "builtin" (the
 		// deterministic binned-SAH BVH reference; agrees within
@@ -332,7 +332,7 @@ namespace cooktool {
 	// for scenes WITHOUT GI volume data (the covered pixels' diffuse
 	// ambient comes from the analytic sky there, and interior captures
 	// would otherwise bake ~black with a probe-vs-fallback seam). With GI
-	// volumes in the pak (the .sggi octree + cvols - the standard
+	// volumes in the pak (the .sggi octree + GI volumes - the standard
 	// pipeline: cook -> GiBaker -> pak) the runtime ambient comes from
 	// the GI STACK, and the closure baked into the captures DOUBLE-COUNTS
 	// it: every mirror-like surface (the chrome probe ball, gold trim)
@@ -350,14 +350,14 @@ namespace cooktool {
 		// NOTE: captures store TRUE radiance (physical units); the runtime's
 		// baked path scales by the cubemap panel intensity only, matching the
 		// direct sun view. No bake-time intensity knob by design.
-		// Authored convex GI volumes (tour cvolume nodes) baked by THIS
-		// cook (the --cvolume stage: in-process BakeCvolume, written
+		// Authored GI volumes (tour GI volume nodes) baked by THIS
+		// cook (the --gi-volume stage: in-process BakeGiVolume, written
 		// loose under gi/ + registered — pak embeds the same paths and
 		// the runtime App resolves them out of the pak). Default on:
-		// authoring the nodes IS the intent to bake them; --cvolume off
+		// authoring the nodes IS the intent to bake them; --gi-volume off
 		// skips (GiBaker loose bakes stay the on-demand/hand-tuning
 		// path).
-		bool cvolume = true;
+		bool giVolume = true;
 		// Quick-bakes mode (the editor's "Update bakes now" button): run the
 		// capture stage ONLY and STOP — no pak write, no lightmap/LOD/collapse
 		// stages. The loose bake files the stage writes
@@ -383,7 +383,7 @@ namespace cooktool {
 	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
 	// env block when the tour carried one (the editor always writes env.default.*),
 	// else the CLI sun defaults (bare cooks). Every stage — the synthesized
-	// WorldSun, the lightmap / cubemap / cvolume bakes — reads this, so ONE
+	// WorldSun, the lightmap / cubemap / GI-volume bakes — reads this, so ONE
 	// authored sun/sky drives the editor viewport, the bakes and the pak.
 	struct BakeEnv {
 		float sunAzimuth = 30.0f, sunElevation = 55.0f;
@@ -483,7 +483,7 @@ namespace cooktool {
 			<< "," << be.sunColor.z << ")\n";
 	}
 
-	// Produce a filename-safe token for embedded cvol paths (manifest rows
+	// Produce a filename-safe token for embedded GI-volume paths (manifest rows
 	// use the first whitespace-delimited token as the path).
 	std::string SanitizeVfsToken(const std::string& s) {
 		std::string out;
@@ -494,11 +494,11 @@ namespace cooktool {
 			else
 				out.push_back('_');
 		}
-		return out.empty() ? std::string("cvol") : out;
+		return out.empty() ? std::string("givolume") : out;
 	}
 
 	// Reads a loose bake file by its content-root-relative vfs path
-	// ("gi/<scene>.cvmanifest" -> <contentDir>/gi/<scene>.cvmanifest). Empty
+	// ("gi/<scene>.givolumemanifest" -> <contentDir>/gi/<scene>.givolumemanifest). Empty
 	// on any failure (logged by the caller — a missing bake file is "not
 	// baked", never fatal).
 	std::vector<uint8_t> ReadLooseBakeFile(const std::string& contentDir,
@@ -545,27 +545,27 @@ namespace cooktool {
 		return stems;
 	}
 
-	// Authored convex GI volumes baked by THIS cook (the --cvolume
+	// Authored GI volumes baked by THIS cook (the --gi-volume
 	// fallback stage): the same engine core as GiBaker (BuildTraceScene-
-	// FromCluster + BakeCvVolume over the tour's cvolume nodes —
+	// FromCluster + BakeGiVolume over the tour's GI volume nodes —
 	// identical bake inputs: no collapse, no LODs, the definition cluster
 	// exactly as GiBaker sees it). Output = (vfsPath, bytes) pairs for
-	// the loose write funnel: one RANDOM-MINTED .cvol per volume (a fresh
+	// the loose write funnel: one RANDOM-MINTED .givolume per volume (a fresh
 	// guid — the binding record IS the identity, no stem-keyed name to
 	// go stale) — and each baked volume BINDS to its definition on the
-	// cluster scene (SceneCvol::bakeSource — the hard identification;
+	// cluster scene (SceneGiVolume::bakeSource — the hard identification;
 	// the caller stamps the tour's giAsset records from it). The
 	// cvmanifest round-trip is retired with the stems. Returns false on
 	// a bake failure — the cook fails loudly (a silently missing GI
-	// volume is exactly the "cooked cvolumes never reached the App"
+	// volume is exactly the "cooked GI volumes never reached the App"
 	// bug).
-	bool BakeAuthoredCvolumes(
+	bool BakeAuthoredGiVolumes(
 		std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
 		const Args& args,
 		std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
 		using namespace smvk::gi;
 		for (auto& sc : sceneClusters) {
-			if (!sc || sc->scene.cvolForNode.empty())
+			if (!sc || sc->scene.giVolumeForNode.empty())
 				continue;
 			// Trace scene per cluster: bake inputs mirror the lightmap/
 			// cubemap stages (texture-averaged albedo, cooked-punctual aim
@@ -608,17 +608,17 @@ namespace cooktool {
 			std::string terr;
 			BuildTraceSceneFromCluster(*sc, buildOpts, traceScene, terr);
 			if (!terr.empty()) {
-				tool::err() << "[CV] trace scene failed: " << terr << std::endl;
+				tool::err() << "[GIV] trace scene failed: " << terr << std::endl;
 				return false;
 			}
-			tool::out() << "  [CV] trace scene: "
+			tool::out() << "  [GIV] trace scene: "
 				<< traceScene.Bvh().TriangleCount() << " tris ("
 				<< averaged << " averaged, " << textured
 				<< " decoded textures)\n" << std::flush;
 			// Deterministic node order (hash-map iteration is not).
 			std::vector<uint32_t> nodes;
-			nodes.reserve(sc->scene.cvolForNode.size());
-			for (const auto& [node, def] : sc->scene.cvolForNode)
+			nodes.reserve(sc->scene.giVolumeForNode.size());
+			for (const auto& [node, def] : sc->scene.giVolumeForNode)
 				nodes.push_back(node);
 			std::sort(nodes.begin(), nodes.end());
 			for (uint32_t node : nodes) {
@@ -626,10 +626,10 @@ namespace cooktool {
 					continue;
 				// The binding target (a reference, not a copy — the
 				// binding update below lands on the scene).
-				SceneCvol& cv = sc->scene.cvolForNode[node];
+				SceneGiVolume& cv = sc->scene.giVolumeForNode[node];
 				// World box decode (GiBaker parity): translation = center,
 				// basis lengths = full extents, normalized basis = the box
-				// axes (an OBB — six planes, CvBoxPlanesRotated).
+				// axes (an OBB — six planes, GiVolumeBoxPlanesRotated).
 				const glm::mat4& g = sc->scene.globalTransform[node];
 				const glm::vec3 c(g[3]);
 				glm::vec3 half;
@@ -642,46 +642,46 @@ namespace cooktool {
 				}
 				std::string name = getNodeName(sc->scene, int(node));
 				if (name.empty())
-					name = "cvol" + std::to_string(node);
+					name = "givolume" + std::to_string(node);
 				name = SanitizeVfsToken(name);
-				CvVolumeDef def{};
+				GiVolumeDef def{};
 				def.name = name;
 				def.priority = cv.priority;
-				def.planes = CvBoxPlanesRotated(c, axes, half,
+				def.planes = GiVolumeBoxPlanesRotated(c, axes, half,
 					cv.insideFade, cv.outsideFade);
-				tool::out() << "  [CV] volume '" << def.name << "': priority="
+				tool::out() << "  [GIV] volume '" << def.name << "': priority="
 					<< def.priority << " spacing=" << cv.spacing
 					<< " planes=" << def.planes.size() << "\n" << std::flush;
 				// Engine defaults (1536 capture dirs, 3 bounces, auto
 				// capture lattice, HW threads): GiBaker stays the tuning
 				// tool for anything finer.
-				CvBakeConfig cfg{};
-				CvVolume vol;
-				CvBakeStats stats;
-				if (!BakeCvVolume(traceScene, def, cv.spacing, cfg, vol,
+				GiVolumeBakeConfig cfg{};
+				GiVolume vol;
+				GiVolumeBakeStats stats;
+				if (!BakeGiVolume(traceScene, def, cv.spacing, cfg, vol,
 					stats, [](const char* line) { tool::out() << line; })) {
-					tool::err() << "[CV] bake failed for '" << def.name
+					tool::err() << "[GIV] bake failed for '" << def.name
 						<< "'\n";
 					return false;
 				}
 				std::vector<uint8_t> bytes;
 				std::string werr;
 				if (!vol.WriteToMemory(bytes, werr)) {
-					tool::err() << "[CV] serialize failed for '" << def.name
+					tool::err() << "[GIV] serialize failed for '" << def.name
 						<< "': " << werr << "\n";
 					return false;
 				}
 			// The artifact name: RANDOM MINTED (a fresh guid per
 			// volume, per bake — the binding record is the identity).
 			const std::string vfsPath =
-				"gi/" + smvk::tour::GenerateUuid() + ".cvol";
+				"gi/" + smvk::tour::GenerateUuid() + ".givolume";
 			out.emplace_back(vfsPath, std::move(bytes));
 			// The HARD identification: the baked volume binds to its
 			// authored definition on the scene (the caller's tour stamp
 			// mirrors it into the giAsset records).
 			cv.bakeSource = vfsPath;
 			cv.bakeGuid.clear();
-			tool::out() << "  [CV] baked '" << def.name << "': dims="
+			tool::out() << "  [GIV] baked '" << def.name << "': dims="
 				<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
 				<< " probes=" << stats.probes
 				<< " (" << stats.seconds << "s)\n";
@@ -689,7 +689,7 @@ namespace cooktool {
 	}
 	// No manifest emission: the per-volume scene bindings (set above) +
 	// the caller's tour stamp REPLACE the cvmanifest round-trip. The
-	// out pairs (the loose .cvol writes) still ride the funnel below.
+	// out pairs (the loose .givolume writes) still ride the funnel below.
 	return true;
 }
 
@@ -758,10 +758,10 @@ namespace cooktool {
 				if (!need(out.tour)) return false;
 			}
 			else if (a == "--out-pak") {
-				// Stem source for bake-file names (cvol manifest +
+				// Stem source for bake-file names (GI-volume manifest +
 				// volumes, cubemap base fallback): the pak this cook
 				// feeds. No pak is written (pak.exe assembles it) —
-				// without it the cvolume fallback mints stemless
+				// without it the GI-volume fallback mints stemless
 				// "pak.*" names no discovery will ever find.
 				if (!need(out.outPak)) return false;
 			}
@@ -1004,10 +1004,10 @@ namespace cooktool {
 					" instead)\n";
 				return false;
 			}
-			else if (a == "--cvolume") {
+			else if (a == "--gi-volume") {
 				std::string v;
 				if (!need(v)) return false;
-				out.cvolume = (v == "on" || v == "1" || v == "true");
+				out.giVolume = (v == "on" || v == "1" || v == "true");
 			}
 			else if (a == "--quick-bakes") {
 				std::string v;
@@ -1165,7 +1165,7 @@ namespace cooktool {
 	}
 	// Cook writes cooked artifacts in place, never paks (pak.exe owns
 	// the pak write). --out-pak names the DESTINATION pak for bake
-	// file stems only (cvol manifest/volumes, cubemap base).
+	// file stems only (GI-volume manifest/volumes, cubemap base).
 	// --tour is the DEFINITION (self-contained: the source glTF rides
 	// as root reference #0) — no artifact inference needed.
 	return true;
@@ -1211,12 +1211,12 @@ namespace cooktool {
 			<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
 			<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
 			<< "          resolves GI by these names (one per kind for now).\n"
-			<< "          [--cvolume on|off (default on)]: bakes the tour's\n"
-			<< "          authored convex GI volumes (cvolume nodes) in-process\n"
+			<< "          [--gi-volume on|off (default on)]: bakes the tour's\n"
+			<< "          authored GI volumes (GI volume nodes) in-process\n"
 			<< "          (same engine core as GiBaker) and embeds them into\n"
 			<< "          the pak as Texture blobs under gi/ (volumes at\n"
-			<< "          gi/<pak-stem>_<name>.cvol, the runtime manifest at\n"
-			<< "          gi/<pak-stem>.cvmanifest) — the pak is self-contained\n"
+			<< "          gi/<pak-stem>_<name>.givolume, the runtime manifest at\n"
+			<< "          gi/<pak-stem>.givolumemanifest) — the pak is self-contained\n"
 			<< "          GI for the App; loose GiBaker bakes still override\n"
 			<< "          through the overlay when present.\n"
 			<< "          [--cubemap on|off\n"
@@ -1229,7 +1229,7 @@ namespace cooktool {
 			<< "           --cubemap-extra-radius 1.5\n"
 			<< "           --cubemap-spp 8\n"
 			<< "           --cubemap-ambient-closure on|off (default OFF: the\n"
-			<< "            GI stack (.sggi + cvols) owns the ambient; ON only\n"
+			<< "            GI stack (.sggi + GI volumes) owns the ambient; ON only\n"
 			<< "            for stack-less cooks - it matches the runtime sky\n"
 			<< "            fallback ambient, but double-counts with the stack)\n"
 			<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"
@@ -1290,7 +1290,7 @@ namespace cooktool {
 			<< "the loose gi/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest\n"
 			<< "bake files ARE the output (they override the last pak's blobs\n"
 			<< "through the runtime VFS overlay). No pak is written; the\n"
-			<< "lightmap/LOD/collapse/cvolume stages are forced off. The\n"
+			<< "lightmap/LOD/collapse/GI-volume stages are forced off. The\n"
 			<< "capture set is NAMELESS - the artifact stem names it.\n"
 			<< "--tour <scene.tour>: replay the editor's ASCII command overlay\n"
 			<< "(renames, transforms, materials, no-lightmap flags, reparents)\n"
@@ -3848,7 +3848,7 @@ static std::string CookFlagsFingerprint(const Args& args) {
 		<< ";cubemap=" << args.cubemap
 		<< ";lods=" << args.lods
 		<< ";meshlets=" << args.meshlets
-		<< ";cvolume=" << args.cvolume
+		<< ";givolume=" << args.giVolume
 		<< ";collapse=" << args.collapseStatic
 		<< ";cubemapSize=" << args.cubemapSize
 		<< ";lmMetersPerTexel=" << args.lmMetersPerTexel
@@ -4165,7 +4165,7 @@ int Run(const CookArgs& c) {
 	// bistro's --cubemap-ambient-closure on never reached the captures.)
 	args.cubemapAmbientClosure = c.cubemapAmbientClosure;
 	args.maskTransmission = c.maskTransmission;
-	args.cvolume = c.cvolume;
+	args.giVolume = c.giVolume;
 	args.quickBakes = c.quickBakes;
 	args.dumpPak = c.dumpPak;
 	args.dumpNodes = c.dumpNodes;
@@ -4182,7 +4182,7 @@ int Run(const CookArgs& c) {
 		args.lightmap = false;
 		args.lods = false;
 		args.collapseStatic = false;
-		args.cvolume = false;
+		args.giVolume = false;
 		args.cubemap = true;
 		// Pin the forced gates in explicitSet so the tour cook-default
 		// merge below ("CLI wins") cannot refill them from the tour's
@@ -4342,7 +4342,7 @@ int Run(const CookArgs& c) {
 	std::vector<std::string> sceneNames;
 	smvk::tour::Doc tour;
 	bool haveTour = false;
-	std::vector<uint32_t> createdCvols; // family refs (the cvol stamp's map)
+	std::vector<uint32_t> createdGiVolumes; // family refs (the GI-volume stamp's map)
 
 	if (!args.tour.empty()) {
 		// Load tour: the DEFINITION (root reference = the source glTF,
@@ -4563,7 +4563,7 @@ int Run(const CookArgs& c) {
 		std::vector<std::string> rwarn;
 		std::string rerr;
 		if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-			&rerr, true, &createdCvols)) {
+			&rerr, true, &createdGiVolumes)) {
 				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
@@ -4768,8 +4768,8 @@ int Run(const CookArgs& c) {
 			<< " I=" << e.sunIntensity << " (lux)\n";
 	}
 
-	// GI blobs cook assembles for the pack (see the cvolume stage + the
-	// loose-bake handling below): one list — in-process-baked cvolumes
+	// GI blobs cook assembles for the pack (see the GI-volume stage + the
+	// loose-bake handling below): one list — in-process-baked GI volumes
 	// (the no-loose-bake fallback), the discovered GiBaker bake files (probe
 	// octree, regular/convex manifests + rows) and the lightmap .sglm.
 	// Every entry is (vfsPath, bytes) at canonical gi/... paths: cook
@@ -4782,16 +4782,16 @@ int Run(const CookArgs& c) {
 	// wins (same definition, hand-tunable) and the pak embeds by
 	// binding. Baked before collapse/LODs: identical bake inputs to
 	// GiBaker's definition bake (the tour cluster as replayed), and
-	// cvolForNode node ids are still valid (collapse consumes static
+	// giVolumeForNode node ids are still valid (collapse consumes static
 	// subtrees later). The baked volumes bind to their definitions on
 	// the cluster scene + the tour stamp below writes the giAsset
 	// records (the manifest round-trip is retired with the stems).
-	if (args.cvolume) {
+	if (args.giVolume) {
 		bool anyBoundVolume = false;
 		for (const auto& sc : sceneClusters) {
 			if (!sc)
 				continue;
-			for (const auto& [node, def] : sc->scene.cvolForNode)
+			for (const auto& [node, def] : sc->scene.giVolumeForNode)
 				if (!def.bakeSource.empty()) {
 					anyBoundVolume = true;
 					break;
@@ -4800,11 +4800,11 @@ int Run(const CookArgs& c) {
 				break;
 		}
 		if (anyBoundVolume) {
-			tool::out() << "cvolumes scene-bound (tour giAsset records)"
+			tool::out() << "GI volumes scene-bound (tour giAsset records)"
 				" — in-process bake skipped, the bound bakes embed by "
 				"binding\n";
 		}
-		else if (!BakeAuthoredCvolumes(sceneClusters, args, giBlobs)) {
+		else if (!BakeAuthoredGiVolumes(sceneClusters, args, giBlobs)) {
 			return 1;
 		}
 		else {
@@ -4821,7 +4821,7 @@ int Run(const CookArgs& c) {
 				std::vector<std::string> superseded;
 				if (!smvk::tour::StampGiAssets(tour,
 						sceneClusters.front()->scene,
-						createdCvols, &serr, &superseded)) {
+						createdGiVolumes, &serr, &superseded)) {
 					tool::err() << "Tour giAsset stamp failed: "
 						<< serr << std::endl;
 					return 1;
@@ -6618,7 +6618,7 @@ int Run(const CookArgs& c) {
 	if (haveTour && !cluster->scene.giCapturesSource.empty()) {
 		std::string serr;
 		std::vector<std::string> superseded;
-		if (!smvk::tour::StampGiAssets(tour, cluster->scene, createdCvols,
+		if (!smvk::tour::StampGiAssets(tour, cluster->scene, createdGiVolumes,
 				&serr, &superseded)) {
 			tool::err() << "Tour giAsset stamp failed: " << serr
 				<< std::endl;
@@ -6836,11 +6836,11 @@ int Run(const CookArgs& c) {
 	}
 
 	// GI bake-file write-back + funnel registration (the giBlobs
-	// verdict): the in-process cvolumes + re-read sglm collected above
+	// verdict): the in-process GI volumes + re-read sglm collected above
 	// have no other outlet (cook writes no pak) — without this they
 	// vanish. Every entry lands loose at its canonical gi/... path
 	// (fresh bake wins) and registers its identity row when a registry
-	// DB is open. The cvolume fallback only fires with no loose
+	// DB is open. The GI-volume fallback only fires with no loose
 	// manifest present, so nothing hand-tuned is clobbered.
 	if (!giBlobs.empty()) {
 		size_t wrote = 0, regged = 0;
@@ -6981,7 +6981,7 @@ int main(int argc, char** argv) {
 	c.cubemapPngMips = args.cubemapPngMips;
 	c.cubemapAmbientClosure = args.cubemapAmbientClosure;
 	c.maskTransmission = args.maskTransmission;
-	c.cvolume = args.cvolume;
+	c.giVolume = args.giVolume;
 	c.quickBakes = args.quickBakes;
 	c.dumpPak = args.dumpPak;
 	c.dumpNodes = args.dumpNodes;

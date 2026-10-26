@@ -64,7 +64,7 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 			smvk::cook::DefaultGiCookAsset(
 				path.stem().string(), scene);
 		a.guid = guid;
-		a.cvol = ExportCfg().giCvol;
+		a.giVolumes = ExportCfg().giVolumes;
 		a.world = ExportCfg().giWorld;
 		ok = smvk::cook::SaveGiCookAsset(path.generic_string(), a,
 			werr);
@@ -112,7 +112,7 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 
 namespace {
 // Typed-asset placement: the GI folder (<project>/content/gi/) owns
-// .cubemap/.gicvolume manifests (no loose bake files anywhere else).
+// .cubemap/.givolume manifests (no loose bake files anywhere else).
 std::string GiTypedDir(const std::string& projectRoot) {
 	namespace fs = std::filesystem;
 	std::error_code ec;
@@ -179,7 +179,7 @@ std::string EditorApp::CreateCubemapAsset(const std::string& dir) {
 	return path.generic_string();
 }
 
-std::string EditorApp::CreateGicvolumeAsset(const std::string& dir,
+std::string EditorApp::CreateGivolumeAsset(const std::string& dir,
 	uint32_t node) {
 	namespace fs = std::filesystem;
 	if (m_projectRoot.empty()) {
@@ -196,7 +196,7 @@ std::string EditorApp::CreateGicvolumeAsset(const std::string& dir,
 	for (int i = 0; i < 10000; ++i) {
 		const std::string stem = base
 			+ (i == 0 ? std::string() : std::to_string(i));
-		path = fs::path(target) / (stem + smvk::cook::kGicvolumeExt);
+		path = fs::path(target) / (stem + smvk::cook::kGivolumeExt);
 		if (!fs::exists(path, ec))
 			break;
 		path.clear();
@@ -211,28 +211,28 @@ std::string EditorApp::CreateGicvolumeAsset(const std::string& dir,
 	uint32_t useNode = node;
 	uint32_t priority = 0;
 	if (m_world && useNode != UINT32_MAX) {
-		auto it = m_world->scene.cvolForNode.find(useNode);
-		if (it != m_world->scene.cvolForNode.end())
+		auto it = m_world->scene.giVolumeForNode.find(useNode);
+		if (it != m_world->scene.giVolumeForNode.end())
 			priority = it->second.priority;
 	}
-	smvk::cook::GicvolumeAsset a = smvk::cook::DefaultGicvolumeAsset(
+	smvk::cook::GivolumeAsset a = smvk::cook::DefaultGivolumeAsset(
 		path.stem().string(), scene, useNode);
 	a.guid = smvk::tour::GenerateUuid();
 	a.priority = priority;
 	std::string werr;
-	if (!smvk::cook::SaveGicvolumeAsset(path.generic_string(), a, werr)) {
+	if (!smvk::cook::SaveGivolumeAsset(path.generic_string(), a, werr)) {
 		Log("New GI volume asset: cannot write '" + path.generic_string()
 			+ "': " + werr);
 		return {};
 	}
 	std::string merr;
 	if (!smvk::cache::WriteAssetMeta(path.generic_string(), a.guid,
-			smvk::cook::kCookAssetKindGicvolume, merr)) {
+			smvk::cook::kCookAssetKindGivolume, merr)) {
 		Log("New GI volume asset: .meta write failed: " + merr);
 		return {};
 	}
 	AdoptProjectAsset(path.generic_string(),
-		smvk::cook::kCookAssetKindGicvolume);
+		smvk::cook::kCookAssetKindGivolume);
 	m_assetsDir = target;
 	m_assetsSel = path.generic_string();
 	Log("GI volume asset created: '" + path.generic_string()
@@ -343,7 +343,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 		}
 	}
 	// Settings + result snapshot (the blob pointer only when this cook
-	// baked a world field — cvol-only cooks keep a previous result
+	// baked a world field — GI-volume-only cooks keep a previous result
 	// alive if one exists; the hash covers whatever is stored). The
 	// result pointer = the tour's world giAsset record (the RANDOM
 	// minted artifact path; blobGuid mirrors the record's artifact
@@ -351,7 +351,7 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// bake owner's stamp already retired the replaced artifacts BY
 	// RECORD (exact set-difference; nothing to re-derive).
 	a.scene = scene;
-	a.cvol = ExportCfg().giCvol;
+	a.giVolumes = ExportCfg().giVolumes;
 	a.world = ExportCfg().giWorld;
 	if (hasSggi) {
 		a.blobGuid.clear(); // path-only bind (the artifact guid)
@@ -451,31 +451,31 @@ void EditorApp::RecordBakeAssetsFromCook() {
 			}
 		}
 	}
-	// ---- convex-volume assets (one typed .gicvolume per authored node) ----
-	// Each cvol node owns its bake pointer; the cook refreshes the
-	// settings snapshot + baked hash (payload e.g. gi/<scene>_<i>.cvol).
-	if (m_world && !m_world->scene.cvolForNode.empty()) {
+	// ---- GI-volume assets (one typed .givolume per authored node) ----
+	// Each GI volume node owns its bake pointer; the cook refreshes the
+	// settings snapshot + baked hash (payload e.g. gi/<scene>_<i>.givolume).
+	if (m_world && !m_world->scene.giVolumeForNode.empty()) {
 		const fs::path giDir = m_projectRoot.empty()
 			? fs::path("content") / "gi"
 			: fs::path(m_projectRoot) / "content" / "gi";
 		std::error_code gec;
 		fs::create_directories(giDir, gec);
-		for (const auto& [node, def] : m_world->scene.cvolForNode) {
+		for (const auto& [node, def] : m_world->scene.giVolumeForNode) {
 			const std::string stem =
-				scene + "_cvol" + std::to_string(node);
+				scene + "_givolume" + std::to_string(node);
 			const fs::path cvPath =
-				giDir / (stem + smvk::cook::kGicvolumeExt);
-			smvk::cook::GicvolumeAsset cv;
+				giDir / (stem + smvk::cook::kGivolumeExt);
+			smvk::cook::GivolumeAsset cv;
 			bool cvFresh = true;
 			{
 				std::string lerr;
 				if (fs::is_regular_file(cvPath, ec)
-					&& smvk::cook::LoadGicvolumeAsset(
+					&& smvk::cook::LoadGivolumeAsset(
 						cvPath.generic_string(), cv, lerr)
 					&& cv.scene == scene)
 					cvFresh = false;
 				else {
-					cv = smvk::cook::DefaultGicvolumeAsset(
+					cv = smvk::cook::DefaultGivolumeAsset(
 						stem, scene, node);
 					cv.guid = smvk::tour::GenerateUuid();
 				}
@@ -488,18 +488,18 @@ void EditorApp::RecordBakeAssetsFromCook() {
 			// binds + the preview reads; empty = never baked).
 			cv.blobGuid = def.bakeGuid;
 			cv.blobPath = def.bakeSource;
-			cv.bakedHash = smvk::cook::GicvolumeSettingsHash(cv);
+			cv.bakedHash = smvk::cook::GivolumeSettingsHash(cv);
 			std::string werr;
-			if (smvk::cook::SaveGicvolumeAsset(cvPath.generic_string(),
+			if (smvk::cook::SaveGivolumeAsset(cvPath.generic_string(),
 					cv, werr)) {
 				if (cvFresh) {
 					std::string merr;
 					smvk::cache::WriteAssetMeta(cvPath.generic_string(),
 						cv.guid,
-						smvk::cook::kCookAssetKindGicvolume, merr);
+						smvk::cook::kCookAssetKindGivolume, merr);
 				}
 				AdoptProjectAsset(cvPath.generic_string(),
-					smvk::cook::kCookAssetKindGicvolume);
+					smvk::cook::kCookAssetKindGivolume);
 			}
 		}
 		MarkOctreeDirty(); // baked output moved -> precook grid is stale

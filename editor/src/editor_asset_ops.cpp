@@ -190,7 +190,7 @@ bool PlanAssetDelete(const std::string& absPath,
 	}
 	if (HasSuffixLower(name, ".gicook") || HasSuffixLower(name, ".lmcook")
 		|| HasSuffixLower(name, ".cubemap")
-		|| HasSuffixLower(name, ".gicvolume"))
+		|| HasSuffixLower(name, ".givolume"))
 		out.notes.push_back("the baked blob payload stays (shared "
 			"bake output — delete it from GI bakes if really wanted)");
 	return true;

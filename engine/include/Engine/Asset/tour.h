@@ -128,9 +128,9 @@ struct TextureAssetCmd {
 // record names ONE baked artifact by VFS path + the artifact cache's
 // .meta GUID, keyed to what it serves:
 //   - kind World: the world-field probe octree;
-//   - kind Cvol: ONE authored convex volume, addressed by the cvolume
-//     family ref (the SAME -ref grammar setCvolAttr uses — the k-th
-//     createCvolume in file order), naming its own .cvol.
+//   - kind GiVolume: ONE authored GI volume, addressed by the GI-volume
+//     family ref (the SAME -ref grammar setGiVolumeAttr uses — the k-th
+//     createGiVolume in file order), naming its own .givolume.
 // Stamped by the bake owner (GiBaker / the editor cook) AT BAKE TIME,
 // consumed by the pak cooker (embeds EXACTLY the bound files + registers
 // the runtime GiBindings off them) and the editor (preview loaders
@@ -141,10 +141,10 @@ struct TextureAssetCmd {
 // (the stamp's supersede list retires it BY RECORD), and the pak's
 // name never enters the bake identity at all.
 struct GiAssetCmd {
-	enum class Kind : uint8_t { World, Cvol, Captures };
+	enum class Kind : uint8_t { World, GiVolume, Captures };
 	Kind kind = Kind::World;
-	uint32_t ref = 0;    // cvolume family ref (Kind::Cvol only): raw
-	                     // kCreateCvolRefBase|k form as authored
+	uint32_t ref = 0;    // GI-volume family ref (Kind::GiVolume only): raw
+	                     // kCreateGiVolumeRefBase|k form as authored
 	std::string source;  // VFS path, POSIX separators ("gi/<uuid>.sggi")
 	std::string guid;    // artifact .meta GUID ("" = path-only bind)
 	// The bake-input hash AT BAKE TIME (see Engine/GI/bake_inputs.h —
@@ -224,7 +224,7 @@ enum class Verb : uint8_t {
    	                // node TYPE, the rest is per-type payload:
    	                //   DAG types (hierarchy nodes — transform +
    	                //   parentable): transform, pointLight, spotLight,
-   	                //   terrain, cvolume, cubemap, camera,
+    	                //   terrain, givolume, cubemap, camera,
    	                //   exportSettings (the WorldSettings-style export
    	                //   config singleton; payload via setExportAttr,
    	                //   NOT on the create line). Replayed by
@@ -233,17 +233,17 @@ enum class Verb : uint8_t {
    	                //   System types (no DAG presence — editor-managed
    	                //   data): material, file, image. Parsed +
    	                //   validated, skipped at replay with a log.
-   	                // New files write ONLY this form; the legacy
-   	                // createLight/createTerrain/createTransform/
-   	                // createCvolume verbs still parse (backward compat).
- 	CreateCVolume,  // node = PARENT cluster id; text = volume name;
+    	                // New files write ONLY this form; the legacy
+    	                // createLight/createTerrain/createTransform
+    	                // verbs still parse (backward compat).
+ 	CreateGiVolume,  // node = PARENT cluster id; text = volume name;
 	                // vec = local position (box center); svec = local
 	                // size (full extents, m); vec4 = (priority,
 	                // spacing[m], insideFade[m], outsideFade[m]).
 	                // An authored convex GI volume (gi_baker box spec
 	                // shape): axis-aligned, rotation ignored.
- 	SetCvolAttr,    // node = target cluster id, or a created-volume ref
-	                // (kCreateCvolRefBase | k — see below); text = attr
+ 	SetGiVolumeAttr,    // node = target cluster id, or a created-volume ref
+	                // (kCreateGiVolumeRefBase | k — see below); text = attr
 	                // ("priority","spacing","inside","outside",
 	                // "position","rotation","size","name"); number =
 	                // scalar value; vec4 = triple value (position/
@@ -269,7 +269,7 @@ enum class Verb : uint8_t {
   	               // "cubemapOctreeMax","cubemapOctreeMin",
   	               // "cubemapOctreeDepth","cubemapExtraRadius",
   	               // "meshlets","meshletMaxVerts","meshletMaxTris",
-  	               // "meshletConeWeight","giCvol","giWorld","autoKtx",
+  	               // "meshletConeWeight","giVolumes","giWorld","autoKtx",
   	               // "ignoreVfs"); number = scalar value; flag = bool
   	               // value (-type bool); name = string value (-type
   	               // string). The scene's WorldSettings-style export
@@ -387,7 +387,7 @@ struct Command {
 	glm::vec3 vec{ 0.0f }; // translate / rotate-deg / scale /
 	                       // CreateLight local position
 	glm::vec3 svec{ 1.0f, 1.0f, 1.0f }; // createTransform local scale;
-	                       // CreateCVolume local size (full extents, m)
+	                       // CreateGiVolume local size (full extents, m)
 	glm::vec4 vec4{ 1.0f }; // mat vec attr value (baseColor/emissive);
 	                        // CreateLight: (typeFloat, intensity, range,
 	                        // innerConeDeg); SetLightAttr "color": rgb
@@ -404,7 +404,7 @@ struct Command {
 	                       // Delete: its PRIMARY addressing key
  	std::string nodeType;  // createNode -at type ("transform",
   	                       // "pointLight", "spotLight", "terrain",
-  	                       // "cvolume", "cubemap", "camera",
+  	                       // "givolume", "cubemap", "camera",
   	                       // "exportSettings", "material", "file",
   	                       // "image")
 };
@@ -423,12 +423,12 @@ inline constexpr uint32_t kCreateLightRefBase = 0x80000000u;
 // Disjoint bit from the light base; a node carries at most one.
 inline constexpr uint32_t kCreateTerrainRefBase = 0x40000000u;
 
-// Same scheme for convex volumes created by an earlier CreateCVolume:
-// SetCvolAttr (and only it — generic verbs on created volumes lower to
-// SetCvolAttr position/rotation/size/name at save) addresses them via
-// kCreateCvolRefBase | k (k-th CreateCVolume in file order). Disjoint
+// Same scheme for convex volumes created by an earlier CreateGiVolume:
+// SetGiVolumeAttr (and only it — generic verbs on created volumes lower to
+// SetGiVolumeAttr position/rotation/size/name at save) addresses them via
+// kCreateGiVolumeRefBase | k (k-th CreateGiVolume in file order). Disjoint
 // from both bases above; a node carries at most one.
-inline constexpr uint32_t kCreateCvolRefBase = 0x20000000u;
+inline constexpr uint32_t kCreateGiVolumeRefBase = 0x20000000u;
 
 // Same scheme for cubemap captures created by an earlier CreateCubemap:
 // SetCubemapAttr addresses them via kCreateCubemapRefBase | k (k-th
@@ -456,7 +456,7 @@ inline constexpr uint32_t kCreateExportRefBase = 0x04000000u;
 // UINT32_MAX masquerade as a terrain ref and misreported the replay
 // as "terrain ref out of range" instead of the honest node error).
 inline constexpr uint32_t kCreateRefFamilyMask =
-	kCreateLightRefBase | kCreateTerrainRefBase | kCreateCvolRefBase
+	kCreateLightRefBase | kCreateTerrainRefBase | kCreateGiVolumeRefBase
 	| kCreateCubemapRefBase | kCreateCameraRefBase
 	| kCreateExportRefBase;
 
@@ -489,7 +489,7 @@ struct Doc {
 	// GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
 	// identification — the world field + one record per authored convex
 	// volume. Resolved onto the replayed scene by ApplyTourToCluster
-	// (Scene::giWorld* + SceneCvol::bake*), read by the pak cooker / the
+	// (Scene::giWorld* + SceneGiVolume::bake*), read by the pak cooker / the
 	// editor loaders. The bake owner upserts these after every bake.
 	std::vector<GiAssetCmd> giAssets;
 	// fileInfo constants (Maya fileInfo block): fixed format metadata
@@ -542,24 +542,24 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 // replay): a failed command is REPORTED into `warnings` and skipped
 // instead of aborting — a partially-broken reference must not take the
 // whole scene down (ApplySceneReferences surfaces the list to the editor).
-// createdCvolsOut (optional): the resolved created-cvolume family —
-// createdCvolsOut[k] = the node id of the k-th createCvolume (the SAME
-// index the giAsset/cvol family refs address). The bake owners (GiBaker,
-// Cook.exe's in-process cvol bake) need it to stamp the doc's giAsset
+// createdGiVolumesOut (optional): the resolved created-GI-volume family —
+// createdGiVolumesOut[k] = the node id of the k-th createGiVolume (the SAME
+// index the giAsset/GI-volume family refs address). The bake owners (GiBaker,
+// Cook.exe's in-process GI-volume bake) need it to stamp the doc's giAsset
 // records back after a bake (StampGiAssets).
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr,
 	bool strict = true,
-	std::vector<uint32_t>* createdCvolsOut = nullptr);
+	std::vector<uint32_t>* createdGiVolumesOut = nullptr);
 
 // The bake owner's STAMP: mirror a replayed scene's GI bindings onto the
 // doc's giAsset records. The SCENE is the authority — the bake updates
-// Scene::giWorldSource + SceneCvol::bakeSource in place (unbaked volumes
+// Scene::giWorldSource + SceneGiVolume::bakeSource in place (unbaked volumes
 // keep their old bindings; deleted volumes drop), then this regenerates
 // doc.giAssets to match (World record when the scene carries one, one
-// Cvol record per bound volume, family-ref addressed over createdCvols).
-// Callers: GiBaker (writes the tour back), Cook.exe's in-process cvol
-// fallback, the editor cook (its live doc). Nodes outside createdCvols
+// GiVolume record per bound volume, family-ref addressed over createdGiVolumes).
+// Callers: GiBaker (writes the tour back), Cook.exe's in-process GI-volume
+// fallback, the editor cook (its live doc). Nodes outside createdGiVolumes
 // (hand-injected, no tour create) warn+skip. `superseded` (optional):
 // the OLD records' paths that the new set no longer references — the
 // caller deletes those files (record-exact; bake artifacts carry RANDOM
@@ -568,7 +568,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 // record set-difference is the exact list). Returns false only on a
 // structural error (err out).
 bool StampGiAssets(Doc& doc, const Scene& scene,
-	const std::vector<uint32_t>& createdCvols,
+	const std::vector<uint32_t>& createdGiVolumes,
 	std::string* err = nullptr,
 	std::vector<std::string>* superseded = nullptr);
 

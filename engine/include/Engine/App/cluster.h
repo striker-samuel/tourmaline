@@ -44,27 +44,27 @@ namespace smvk {
 	// Cooked GI binding (named bake payload): the GI payloads themselves
 	// (probe volumes, lightmap atlases, manifests, cubemap captures) live
 	// outside the pak; this names the bake file (gi/<name>.sggi / .sglm /
-	// .regmanifest / .cvmanifest, textures/cubemaps/<name>.cubemanifest)
+	// .regmanifest / .givolumemanifest, textures/cubemaps/<name>.cubemanifest)
 	// a cluster's scenes were cooked against. The name is the stable
 	// bake stem — guid-era paks recorded guid names (see
 	// Engine/Asset/bake_asset.h for the era history), which resolve the
 	// same way. See Cluster::giBindings.
 	//
-	// NEW (scene-carried giAsset bindings): Kind::Cvol records carry the
-	// FULL VFS path of ONE baked convex volume (gi/<scene>_<name>.cvol) —
-	// the scene's hard per-volume identification (tour giAsset kind
-	// cvol, stamped by the bake owner), replacing the manifest round-
-	// trip for cvols. Multiple Cvol bindings are legal (one per authored
-	// volume, cap SG_CV_MAX_VOLUMES); every other kind keeps the exactly-
-	// one semantics (ResolveGiBakes takes the first).
+	// NEW (scene-carried giAsset bindings): Kind::GiVolume records carry
+	// the FULL VFS path of ONE baked GI volume (gi/<scene>_<name>.givolume)
+	// — the scene's hard per-volume identification (tour giAsset kind
+	// givolume, stamped by the bake owner), replacing the manifest round-
+	// trip for GI volumes. Multiple GiVolume bindings are legal (one per
+	// authored volume, cap SG_GI_VOLUME_MAX); every other kind keeps the
+	// exactly-one semantics (ResolveGiBakes takes the first).
 	struct GiBinding {
 		enum class Kind : uint32_t {
 			Probe = 0,      // gi/<name>.sggi world-field octree
 			Lightmap = 1,   // gi/<name>.sglm lightmap atlas
 			RegManifest = 2,   // gi/<name>.regmanifest (regular volumes)
-			CvolManifest = 3,  // gi/<name>.cvmanifest (convex volumes)
+			GiVolumeManifest = 3,  // gi/<name>.givolumemanifest (legacy manifest channel)
 			Cubemap = 4,    // textures/cubemaps/<name>.cubemanifest
-			Cvol = 5,       // gi/<path>.cvol — ONE convex volume, FULL VFS
+			GiVolume = 5,   // gi/<path>.givolume — ONE GI volume, FULL VFS
 			                 // path (the per-volume scene binding)
 		};
 		Kind kind = Kind::Probe;
@@ -167,7 +167,7 @@ namespace smvk {
 
 		// ---- Bake payloads (entity-home for GI/cubemap content) ----------
 		// The baked bytes a cluster's scenes were cooked against (sggi
-		// octree, sgrv/cvol volumes, reg/cv/cubemap manifests, cubemap
+		// octree, sgrv/givolume volumes, reg/cv/cubemap manifests, cubemap
 		// KTX2s, sglm atlas), keyed by their VFS path — the payload half
 		// of the giBindings registry. Loaded pak clusters carry them
 		// zero-copy (spans into the PINNED pak image; owned copies only

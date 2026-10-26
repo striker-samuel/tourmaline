@@ -39,7 +39,7 @@
 //
 // The 1 m cell lower bound (the case): the finest useful cell is bound
 // by the re-bake units' REACH and the content's ATOMICITY. Captures
-// carry 1–8 m influence radii and the cvol lattice is authored at
+// carry 1–8 m influence radii and the GI-volume lattice is authored at
 // 0.25–1 m, so sub-meter cells cannot shrink any re-bake set — a 2 m
 // capture covers the same cells at 10 cm or 1 m; the borderline ring is
 // rounding noise. The MESH is the hash atom: a 10 cm banner move flips
@@ -136,16 +136,16 @@ std::string BakeRegionHash(const BakeCellGrid& grid,
 // bake-relevant fields (priority/spacing/fades — the shape rides the
 // node global, folded) + the bake config scalar set + the cells
 // overlapping the volume's OBB (+ the margin ring).
-struct CvolBakeConfigHashInputs {
-	uint32_t captureDirs = 0;    // 0 = the engine default (CvBakeConfig{})
+struct GiVolumeBakeConfigHashInputs {
+	uint32_t captureDirs = 0;    // 0 = the engine default (GiVolumeBakeConfig{})
 	uint32_t maxBounces = 0;     // 0 = default
 	float captureSpacing = 0.0f; // 0 = auto (spec-derived)
 	uint32_t smoothingPasses = 0;
 	bool maskTransmission = false;
 };
-std::string CvolBakeUnitHash(const BakeCellGrid& grid,
-	const Cluster& cluster, const SceneCvol& def,
-	const glm::mat4& nodeGlobal, const CvolBakeConfigHashInputs& cfg);
+std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
+	const Cluster& cluster, const SceneGiVolume& def,
+	const glm::mat4& nodeGlobal, const GiVolumeBakeConfigHashInputs& cfg);
 
 // A cubemap-capture unit hash: env + lights + the capture definition
 // (position/influence/fade/box/pinned) + the bake config scalar set +
@@ -217,12 +217,12 @@ std::string WorldBakeUnitHash(const BakeCellGrid& grid,
 // (author the exportSettings node instead; the mask/transmission node
 // field is the authoring surface).
 
-// The cvol bake config an un-flagged GiBaker run uses (Args defaults:
+// The GI-volume bake config an un-flagged GiBaker run uses (Args defaults:
 // 1536 capture dirs, 3 bounces, auto capture spacing, 3 smoothing
 // passes).
-inline CvolBakeConfigHashInputs CanonicalCvolCfgHash(
+inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
 	bool maskTransmission) {
-	CvolBakeConfigHashInputs c{};
+	GiVolumeBakeConfigHashInputs c{};
 	c.captureDirs = 1536;
 	c.maxBounces = 3;
 	c.captureSpacing = 0.0f;

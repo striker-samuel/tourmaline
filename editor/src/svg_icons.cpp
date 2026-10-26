@@ -63,9 +63,8 @@ EditorApp::IconType EditorApp::IconTypeFor(const std::string& name,
 	// Cook assets (settings + blob manifests) read as GI content, and so
 	// do the bake payloads/manifests themselves (previously File).
 	if (ext == ".gicook" || ext == ".lmcook" || ext == ".sggi"
-		|| ext == ".sglm" || ext == ".sgrv" || ext == ".cvol"
-		|| ext == ".regmanifest" || ext == ".cvmanifest"
-		|| ext == ".gicvolume")
+		|| ext == ".sglm" || ext == ".sgrv" || ext == ".givolume"
+		|| ext == ".regmanifest" || ext == ".givolumemanifest")
 		return IconType::GI;
 	if (ext == ".cubemanifest" || ext == ".cubemap")
 		return IconType::Env;

@@ -581,28 +581,29 @@ struct FrameUniforms
 	uint32_t regLayers[56] = {};    // 792 8 volumes x 7 layer slots
 	uint32_t regCount = 0;      // 1016 active OBB count
 	uint32_t regEnabled = 0;    // 1020 1 = OBB branch active
-	// 12 bytes: pads cvolVolumes to 1040, matching HLSL regPad (uint4,
-	// 16 bytes at 1024). A single 4-byte pad here drifted cvol* 8 bytes
-	// against the HLSL layout (latent cvol/reg corruption; fixed 10/2).
-	uint32_t regPad_[3] = {};   // 1024 (16-align to cvolVolumes@1040)
+	// 12 bytes: pads giVolumes to 1040, matching HLSL regPad (uint4,
+	// 16 bytes at 1024). A single 4-byte pad here drifted the GI-volume
+	// fields 8 bytes against the HLSL layout (latent GI-volume/reg
+	// corruption; fixed 10/2, under the historical cvol name).
+	uint32_t regPad_[3] = {};   // 1024 (16-align to giVolumes@1040)
 	// ---- Convolution volumes (dynamic geometry, Engine/GI/lightmap.h):
-	// cvolVolumes points at one CvVolumesBuffer BDA (8 volume headers +
-	// the shared packed plane pool, sg_lightmap_types.hlsli). cvolCount
-	// is the active volume count; cvolEnabled toggles the branch.
-	// Static/dynamic separation: draws carrying cvolCount > 0 sample the
+	// giVolumes points at one GiVolumesBuffer BDA (8 volume headers +
+	// the shared packed plane pool, sg_lightmap_types.hlsli). giVolumeCount
+	// is the active volume count; giVolumesEnabled toggles the branch.
+	// Static/dynamic separation: draws carrying giVolumeCount > 0 sample the
 	// volumes; static draws skip. ----
-	uint64_t cvolVolumes = 0;   // 1040 CvVolumesBuffer (headers + plane pool)
-	uint32_t cvolLayers[56] = {};  // 1048 8 volumes x 7 layer slots
-	uint32_t cvolCount = 0;     // 1272 active volume count
-	uint32_t cvolEnabled = 0;   // 1276 1 = volume branch active
+	uint64_t giVolumes = 0;   // 1040 GiVolumesBuffer (headers + plane pool)
+	uint32_t giVolumeLayers[56] = {};  // 1048 8 volumes x 7 layer slots
+	uint32_t giVolumeCount = 0;     // 1272 active volume count
+	uint32_t giVolumesEnabled = 0;   // 1276 1 = volume branch active
 	// Convex-volume tile masks (the cull's per-tile bitmask, see
 	// forwardplus.cs.hlsl): address + tile grid publish together under
 	// the decal tile-list freshness contract; zeros together mean "no
 	// tile cull refreshed the masks this view/frame" — the shader then
 	// walks every volume (per-volume AABB reject keeps it correct).
-	uint64_t cvolTileMasks = 0;  // 1280 per-tile volume bitmask buffer
-	uint32_t cvolTileCountX = 0; // 1288 mask tile grid width (0 = no mask)
-	uint32_t cvolTileSize = 0;   // 1292 mask tile size (16; fp tiling)
+	uint64_t giVolumeTileMasks = 0;  // 1280 per-tile volume bitmask buffer
+	uint32_t giVolumeTileCountX = 0; // 1288 mask tile grid width (0 = no mask)
+	uint32_t giVolumeTileSize = 0;   // 1292 mask tile size (16; fp tiling)
 	// ---- FramePSHot slab BDA (the FS-only hot struct, see FramePSHot
 	// below): the pixel shader reaches the hot slab through FrameUniforms
 	// (`FramePSHot hot = frame.frameHot.Get()`) instead of a pc member —
@@ -638,7 +639,7 @@ struct FrameUniforms
 	// slots, UINT32_MAX = none. Deliberate
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
 	// stays put when this grows. ----
-	uint32_t cvolMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
+	uint32_t giVolumeMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
 	// ---- Analytic environment zones (see Rendergraph/envzones.h):
 	// envZones is the BDA of this frame's EnvZoneGpu slice (the renderer
 	// packs the world's zone entities every frame), envZoneCount = the
@@ -649,7 +650,7 @@ struct FrameUniforms
 	// sky/fog/volumetrics. envZoneReserved keeps the 192-byte block size
 	// so the lightmap/probe tail offsets stay pinned (available for a
 	// future per-zone payload).
-	// APPEND-ONLY tail (after cvolMeanLayers): every pinned offset above
+	// APPEND-ONLY tail (after giVolumeMeanLayers): every pinned offset above
 	// stays put when this grows. ----
 	uint64_t envZones = 0;                  // 1672 EnvZoneGpu slice BDA
 	uint32_t envZoneCount = 0;              // 1680 live zone records
@@ -690,14 +691,14 @@ struct FrameUniforms
 static_assert(offsetof(FrameUniforms, frameHot) == 1296, "frameHot offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, dsVizParams) == 1304, "dsVizParams offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, flags) == 1312, "flags offset: HLSL mirror");
-// cvol block pinned end-to-end like the GI block above: the volumes'
+// GI-volume block pinned end-to-end like the GI block above: the volumes'
 // BDA/count/enable/mask fields are HLSL-mirrored by absolute offset.
-static_assert(offsetof(FrameUniforms, cvolVolumes) == 1040, "cvolVolumes offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, cvolCount) == 1272, "cvolCount offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, cvolEnabled) == 1276, "cvolEnabled offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, cvolTileMasks) == 1280, "cvolTileMasks offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, cvolTileCountX) == 1288, "cvolTileCountX offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, cvolTileSize) == 1292, "cvolTileSize offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumes) == 1040, "giVolumes offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeCount) == 1272, "giVolumeCount offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumesEnabled) == 1276, "giVolumesEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeTileMasks) == 1280, "giVolumeTileMasks offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeTileCountX) == 1288, "giVolumeTileCountX offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeTileSize) == 1292, "giVolumeTileSize offset: HLSL mirror");
 // GI block (the lit shader's frame.gi* reads + the F8 debug views live
 // or die by these — the debug view once silently read the wrong word
 // here, so every member of the block is pinned, not just the tail).
@@ -710,7 +711,7 @@ static_assert(offsetof(FrameUniforms, giIntensity) == 740, "giIntensity offset: 
 static_assert(offsetof(FrameUniforms, giDebug) == 744, "giDebug offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, evsmMode) == 748, "evsmMode offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giLevelLayers) == 1320, "giLevelLayers offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, cvolMeanLayers) == 1640, "cvolMeanLayers offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeMeanLayers) == 1640, "giVolumeMeanLayers offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -751,7 +752,7 @@ struct FramePSHot
 	float     fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
 	float     giIntensity;      // 68
 	uint32_t  giDebug;          // 72
-	uint32_t  cvolEnabled;      // 76
+	uint32_t  giVolumesEnabled;      // 76
 	uint32_t  pad_[3];          // 80 -> 96 (16-byte aligned total)
 };
 #if 0 // Lightmaps deprecated - size/offsets changed
@@ -772,7 +773,7 @@ static_assert(offsetof(FramePSHot, fogEndAndFlags_w) == 64);
 static_assert(offsetof(FramePSHot, giIntensity) == 68);
 static_assert(offsetof(FramePSHot, giDebug) == 72);
 static_assert(offsetof(FramePSHot, lmEnabled) == 76);
-static_assert(offsetof(FramePSHot, cvolEnabled) == 80);
+static_assert(offsetof(FramePSHot, giVolumesEnabled) == 80);
 #endif
 
 // Resources
@@ -1120,10 +1121,10 @@ public:
 	// Active GI permutation variant based on loaded GI assets
 	[[nodiscard]] GIVariant GetActiveGIVariant() const {
 		// Priority: Full > Octree > Regular > None
-		// Full requires octree + convex volumes + probes wanted
+		// Full requires octree + GI volumes + probes wanted
 		// Octree requires giLoaded + probes wanted
 		// Regular requires regLoaded + regEnabled + probes wanted
-		if (m_cvolLoaded && m_cvolEnabled && m_giLoaded && ProbesWanted()) {
+		if (m_giVolumesLoaded && m_giVolumesEnabled && m_giLoaded && ProbesWanted()) {
 			return GIVariant::Full;
 		}
 		if (m_giLoaded && ProbesWanted()) {
@@ -2282,7 +2283,7 @@ public:
 	std::vector<char> m_giProbeCullCache; // per-probe: 0 occluded, 1 visible, 2 unknown
 	bool GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos);
 	bool m_giLoaded = false;      // volume + dense layers live
-	smvk::gi::SgGiVolume m_giVolume; // CPU mirror (probe overlay + stats)
+	smvk::gi::SgGiVolume 	m_giOctree; // CPU mirror (probe overlay + stats)
 	// ---- SG 2D lightmaps (STATIC geometry, cook --lightmap output).
 	// Loaded once at scene init from the CLUSTER bake-payload channel
 	// (ReadBakeBytes: gi/<scene>.sglm): uploads ONLY the atlas textures
@@ -2352,12 +2353,12 @@ public:
 	// gi/ prefix + extension); scene-bound paks carry FULL VFS paths
 	// (gi/<scene>.sggi — the tour giAsset hard binding, no stem
 	// guessing, pak name never involved). Resolved once per scene load,
-	// before the GI loaders run. m_giCvolPaths: the per-volume Cvol
-	// bindings (Kind::Cvol — one FULL vfs path per authored convex
+	// before the GI loaders run. m_giVolumePaths: the per-volume GiVolume
+	// bindings (Kind::GiVolume — one FULL vfs path per authored GI
 	// volume, the scene's hard identification; manifest-free).
-	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giCvolName,
+	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giVolumeManifestName,
 		m_giCubemapName;
-	std::vector<std::string> m_giCvolPaths;
+	std::vector<std::string> m_giVolumePaths;
 	void ResolveGiBakes();
 	// Bake-payload channel read (see World::ReadBakeBytes): the bytes at
 	// a GI/cubemap VFS path from the world's clusters — dynamic cluster
@@ -2370,7 +2371,7 @@ public:
 		m_ambientMode = static_cast<AmbientMode>(
 			(static_cast<int>(m_ambientMode) + 1) % 5);
 	}
-	void LoadGiVolume();
+	void LoadGiOctree();
 	// (LoadCubemaps declared with the cubemap members above.)
 	// ---- SG 2D lightmaps: DEPRECATED and removed (were STATIC-geometry
 	// atlas textures plus a runtime branch). The pak-side chart payloads
@@ -2394,18 +2395,18 @@ public:
 	uint64_t m_regObbsAddress = 0;
 	bool RegActive() const { return m_regLoaded && m_regEnabled; }
 	void LoadGiRegularVolumes();
-	// ---- Convex GI volumes (Engine/GI/cubemap_volume.h; the probes-only
+	// ---- GI volumes (Engine/GI/cubemap_volume.h; the probes-only
 	// pivot's confined-space path). Loaded from the CLUSTER bake-payload
-	// channel (ReadBakeBytes: gi/<scene>.cvmanifest + its rows): up to 8
-	// volumes, each 7 RGBA16F 3D textures (dense probe grid, HW
-	// trilinear) + one descriptor (convex planes + per-plane fades +
-	// priority). The lit shader composites them ordered over the sparse
-	// octree world field (volumes BLEND by priority — never cross-
-	// interpolated with the octree's neighbors). ----
-	bool m_cvolLoaded = false;
-	bool m_cvolEnabled = false;       // UI toggle (confined-volume GI)
-	struct CvolVolume {
-		smvk::gi::CvVolume volume;       // CPU mirror (def; coeffs freed)
+	// channel (ReadBakeBytes — the scene's hard per-volume bindings, the
+	// tour giAsset records): up to 8 volumes, each 7 RGBA16F 3D textures
+	// (dense probe grid, HW trilinear) + one descriptor (convex planes +
+	// per-plane fades + priority). The lit shader composites them ordered
+	// over the sparse octree world field (volumes BLEND by priority —
+	// never cross-interpolated with the octree's neighbors). ----
+	bool m_giVolumesLoaded = false;
+	bool m_giVolumesEnabled = false;       // UI toggle (confined-volume GI)
+	struct GiVolumeResources {
+		smvk::gi::GiVolume volume;       // CPU mirror (def; coeffs freed)
 		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
 		uint32_t layerSlots[7] = {};    // bindless slots
 		// Isotropic-mean twin (the volumetric fog's one-fetch path ΓÇö
@@ -2414,20 +2415,20 @@ public:
 		smvk::Holder<smvk::TextureHandle> meanTex;
 		uint32_t meanSlot = UINT32_MAX; // bindless slot
 	};
-	std::vector<CvolVolume> m_cvolVolumes;
-	smvk::Holder<smvk::BufferHandle> m_cvolVolumesBuffer;
-	uint64_t m_cvolVolumesAddress = 0;
-	bool CvolActive() const {
-		return m_cvolLoaded && m_cvolEnabled && ProbesWanted();
+	std::vector<GiVolumeResources> m_giVolumes;
+	smvk::Holder<smvk::BufferHandle> m_giVolumesBuffer;
+	uint64_t m_giVolumesAddress = 0;
+	bool GiVolumesActive() const {
+		return m_giVolumesLoaded && m_giVolumesEnabled && ProbesWanted();
 	}
 	// Forward+ tile-cull DISPATCH gate — the frame's single source of
 	// truth, consumed by the dispatch site AND the FrameUniforms
-	// cvol-tile-mask publish (the mask address may only go out when the
+	// GI-volume-tile-mask publish (the mask address may only go out when the
 	// dispatch actually refreshes the masks this frame; a skipped
 	// dispatch would leave stale bits masquerading as fresh). Classic
 	// forward+ always runs it; under deferred shadows it runs only when
 	// a tile-list consumer still needs the lists: decals, probes, or
-	// convex-volume masks (the DS pipeline owns the lights then; the
+	// GI-volume masks (the DS pipeline owns the lights then; the
 	// volume leg re-runs as live work, like the decal leg).
 	bool TileCullWillRun() const {
 		if (!m_passes.forwardPlusCull)
@@ -2435,9 +2436,9 @@ public:
 		if (!DsActive())
 			return true;
 		return (DecalsActive() && m_decalFrameCount > 0)
-			|| ProbeTileListsWanted() || (m_cvolLoaded && m_cvolEnabled);
+			|| ProbeTileListsWanted() || (m_giVolumesLoaded && m_giVolumesEnabled);
 	}
-	void LoadCvolumes();
+	void LoadGiVolumes();
 	// Degrades single-source ambient modes whose source did not load
 	// (called once after all three GI loaders at scene init): keeps the
 	// isolation states meaningful instead of silently empty.
@@ -2586,11 +2587,11 @@ public:
 	float m_volumetricGi = 1.0f; // probe ambient strength
 	bool m_volumetricUseGi = true; // sample SG-GI probes (else sky-IBL fallback)
 	bool m_volumetricUseSun = true; // analytic sun single-scatter
-	// Fog-GI quality switch: convex volumes stack into the fog ambient
+	// Fog-GI quality switch: GI volumes stack into the fog ambient
 	// (default, matches the lit path). Off = octree/sky only — the fog
 	// bypasses the per-refresh volume walk entirely (A/B knob for heavy
-	// fog configs; UI checkbox + TOURMALINE_VOLUMETRIC_CVOL=0 headless).
-	bool m_volumetricUseCvolGi = true;
+	// fog configs; UI checkbox + TOURMALINE_VOLUMETRIC_GI_VOLUMES=0 headless).
+	bool m_volumetricUseGiVolumes = true;
 	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
 	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
 	float m_volumetricHeightBase = 0.0f; // reference height (m)
@@ -2948,12 +2949,12 @@ public:
 	// heightfield downsampled to a 256px preview when a terrain field
 	// is loaded, else an empty grid. Overlays (each toggleable):
 	// env-volume OBB footprints (+/-inf face arrows, priority colors),
-	// cvolumes, GI + cubemap probes, lights/decals, camera wedge.
+	// GI volumes, GI + cubemap probes, lights/decals, camera wedge.
 	// LATER layers slot in as one bool + one draw block each (shadow
 	// cascade boxes, terrain LOD heat, env zone weights).
 	bool m_worldMapWindow = false;           // C opens/closes
 	bool m_worldMapEnvVolumes = true;
-	bool m_worldMapCvolumes = true;
+	bool m_worldMapGiVolumes = true;
 	bool m_worldMapProbes = true;
 	bool m_worldMapLights = true;
 	bool m_worldMapCamera = true;

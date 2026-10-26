@@ -208,7 +208,7 @@ void EditorApp::UpdateModalInput() {
 			"frame all", "Shift+F" },
 		{ TOUR_KEY_L, 0, kScopeGlobal, &EditorApp::ModalLightGizmosToggle,
 			"light gizmos", "L" },
-		{ TOUR_KEY_J, 0, kScopeGlobal, &EditorApp::ModalCvolPreviewCycle,
+		{ TOUR_KEY_J, 0, kScopeGlobal, &EditorApp::ModalGiVolumePreviewCycle,
 			"view: GI volumes (off/wire/solid)", "J" },
 		{ TOUR_KEY_F8, 0, kScopeGlobal, &EditorApp::ModalViewBaked,
 			"view: baked irradiance", "F8" },
@@ -542,7 +542,7 @@ void EditorApp::ModalLightGizmosToggle() {
 	m_showLightGizmos = !m_showLightGizmos;
 }
 
-void EditorApp::ModalCvolPreviewCycle() {
+void EditorApp::ModalGiVolumePreviewCycle() {
 	// Off -> wireframe -> wireframe + translucent fill -> probe grid
 	// (the convex GI volumes baked by GiBaker --cv-spec; color-coded by
 	// priority; the probe mode draws the dense bake lattice — green
@@ -550,13 +550,13 @@ void EditorApp::ModalCvolPreviewCycle() {
 	// answer).
 	static const char* kNames[4] = { "off", "wireframe", "solid",
 		"probes" };
-	m_cvolPreviewMode = (m_cvolPreviewMode + 1) % 4;
-	if (m_cvolPreviews.empty() && m_cvolPreviewMode != 0) {
-		Log("GI volume preview: no .cvmanifest bake files loaded "
+	m_giVolumePreviewMode = (m_giVolumePreviewMode + 1) % 4;
+	if (m_giVolumePreviews.empty() && m_giVolumePreviewMode != 0) {
+		Log("GI volume preview: no .givolumemanifest bake files loaded "
 			"(bake GiBaker --cv-spec next to the pak).");
 	} else {
-		Log("GI volume preview: " + std::string(kNames[m_cvolPreviewMode])
-			+ " (" + std::to_string(m_cvolPreviews.size()) + " volume(s))");
+		Log("GI volume preview: " + std::string(kNames[m_giVolumePreviewMode])
+			+ " (" + std::to_string(m_giVolumePreviews.size()) + " volume(s))");
 	}
 }
 

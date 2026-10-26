@@ -2159,7 +2159,7 @@ void TestMultiSceneSerialize() {
 	// runtime manifests, the payload names stay opaque strings here.
 	a->RegisterGiBinding(GiBinding::Kind::RegManifest,
 		"0123456789abcdef0123456789abcdef");
-	b->RegisterGiBinding(GiBinding::Kind::CvolManifest,
+	b->RegisterGiBinding(GiBinding::Kind::GiVolumeManifest,
 		"fedcba9876543210fedcba9876543210");
 	a->RegisterGiBinding(GiBinding::Kind::Cubemap,
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
@@ -2194,10 +2194,10 @@ void TestMultiSceneSerialize() {
 					"multiscene.gi.cubemap");
 				Check(bindings[3].kind == GiBinding::Kind::Probe &&
 					bindings[3].name == "town_probe", "multiscene.gi.probe");
-				Check(bindings[4].kind == GiBinding::Kind::CvolManifest &&
+				Check(bindings[4].kind == GiBinding::Kind::GiVolumeManifest &&
 					bindings[4].name
 						== "fedcba9876543210fedcba9876543210",
-					"multiscene.gi.cvolmanifest");
+					"multiscene.gi.givolumemanifest");
 			}
 		}
 	}

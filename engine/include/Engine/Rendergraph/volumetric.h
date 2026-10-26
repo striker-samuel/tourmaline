@@ -73,7 +73,7 @@ struct VolumetricDesc {
 	float giScale = 1.0f;                 // probe ambient strength
 	uint32_t useGi = 1;                   // 1 = sample SG-GI probes
 	uint32_t useSun = 1;                  // 1 = analytic sun scatter
-	uint32_t useCvolGi = 1;                // 1 = convex volumes stack into the
+	uint32_t useGiVolumes = 1;             // 1 = GI volumes stack into the
 	                                       // fog GI (0 = octree/sky only ΓÇö the
 	                                       // fog-GI quality bypass; skips the
 	                                       // per-refresh volume walk entirely)
@@ -125,7 +125,7 @@ struct VolumetricPush {
 	float giScale = 1.0f;
 	uint32_t useGi = 1;
 	uint32_t useSun = 1;
-	uint32_t useCvolGi = 1; // 1 = convex volumes stack into the fog GI
+	uint32_t useGiVolumes = 1; // 1 = GI volumes stack into the fog GI
 	float jitterStrength = 1.0f;
 	float heightFalloff = 0.0f;
 	float heightBase = 0.0f;
@@ -133,7 +133,7 @@ struct VolumetricPush {
 	uint32_t pad1 = 0; // 8-align filler for the BDA tail below
 	// Forward+ light feed for fog in-scatter (the forward tiled lights
 	// contribute to the march, not just the surfaces): tile-list BDAs
-	// ride the same freshness contract as the cvol tile masks (address
+	// ride the same freshness contract as the GI-volume tile masks (address
 	// + grid publish together under TileCullWillRun, zeros together —
 	// the shader falls back to a direct [0, fpLightCount) walk when the
 	// cull didn't run). fpLights/fpLightCount/fpMaxPerTile publish
@@ -350,7 +350,7 @@ struct VolumetricFog {
 		push.giScale = (std::max)(0.0f, overrideDesc.giScale);
 		push.useGi = overrideDesc.useGi ? 1u : 0u;
 		push.useSun = overrideDesc.useSun ? 1u : 0u;
-		push.useCvolGi = overrideDesc.useCvolGi ? 1u : 0u;
+		push.useGiVolumes = overrideDesc.useGiVolumes ? 1u : 0u;
 		push.fpTileCounts = fpTileCountsAddr;
 		push.fpTileIndices = fpTileIndicesAddr;
 		push.fpLights = fpLightsAddr;

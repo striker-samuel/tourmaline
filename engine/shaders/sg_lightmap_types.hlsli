@@ -37,8 +37,8 @@ struct SgRegularObbGpu
 
 struct SgRegularObbBuffer { SgRegularObbGpu obbs[SG_REG_MAX_VOLUMES]; };
 
-// Convex GI volume (cubemap_volume.h) GPU types. Sampling helpers live in
-// sg_cvol.hlsli. Header + plane POOL split (the old layout inlined the
+// GI volume (cubemap_volume.h) GPU types. Sampling helpers live in
+// sg_gi_volume.hlsli. Header + plane POOL split (the old layout inlined the
 // whole 16-plane array in a 560 B aggregate; copying it by value through
 // the blend helpers dominated the shader's data-movement instruction
 // mix). Volumes are 80 B headers (fade-expanded AABB broad-phase + the
@@ -47,14 +47,14 @@ struct SgRegularObbBuffer { SgRegularObbGpu obbs[SG_REG_MAX_VOLUMES]; };
 // the planes a volume actually has). All members are float4/uint4 —
 // std430 keeps vec3 16-byte-stride, explicit vec4s mirror the C++ packer
 // with zero padding surprises (the SgRegularObbGpu rule above).
-#define SG_CV_MAX_VOLUMES 8
-#define SG_CV_LAYERS 7     // RGBA16F 3D textures per volume (sgrv layout)
-#define SG_CV_MAX_PLANES 16
-// Ray-space table cap for the fog march (sg_cvol.hlsli): at most this
+#define SG_GI_VOLUME_MAX 8
+#define SG_GI_VOLUME_LAYERS 7     // RGBA16F 3D textures per volume (sgrv layout)
+#define SG_GI_VOLUME_MAX_PLANES 16
+// Ray-space table cap for the fog march (sg_gi_volume.hlsli): at most this
 // many interval-overlapping volumes hold base/slope coefficients across
 // the march; the excess (pathological-only) evaluates per segment from
 // the pool, exactly.
-#define SG_CV_MAX_RAY_VOLUMES 4
+#define SG_GI_VOLUME_MAX_RAY 4
 
 // One convex half-space, folded into ONE pre-normalized float4:
 //   t = saturate(inside * fadeScale + fadeBias)
@@ -62,15 +62,15 @@ struct SgRegularObbBuffer { SgRegularObbGpu obbs[SG_REG_MAX_VOLUMES]; };
 //   weightEquation.xyz = -normal * fadeScale
 //   weightEquation.w   = fadeBias - d * fadeScale
 // (fadeScale = 1/max(insideFade+outsideFade, 1e-5), fadeBias =
-// outsideFade * fadeScale — packed by the CPU, LoadCvolumes). The plane
+// outsideFade * fadeScale — packed by the CPU, LoadGiVolumes). The plane
 // test is one dot3 + FMA + saturate on 16 B of data; the second float4
 // the old layout carried is gone.
-struct CvPlaneGpu
+struct GiVolumePlaneGpu
 {
     float4 weightEquation; // pre-normalized plane ramp (see above)
 };
 
-struct CvVolumeGpu
+struct GiVolumeGpu
 {
     float4 aabbMin;        // xyz fade-expanded hull AABB min (broad-phase reject)
     float4 aabbMax;        // xyz fade-expanded max, w pad
@@ -80,10 +80,10 @@ struct CvVolumeGpu
 };
 
 // One BDA covers headers + the packed plane pool (the volume count rides
-// FrameUniforms::cvolCount; priority is the UPLOAD order — the app sorts
+// FrameUniforms::giVolumeCount; priority is the UPLOAD order — the app sorts
 // low first, the compositor walks high first).
-struct CvVolumesBuffer
+struct GiVolumesBuffer
 {
-    CvVolumeGpu volumes[SG_CV_MAX_VOLUMES];                    // 8 x 80 B
-    CvPlaneGpu planes[SG_CV_MAX_VOLUMES * SG_CV_MAX_PLANES];   // up to 128 x 16 B
+    GiVolumeGpu volumes[SG_GI_VOLUME_MAX];                    // 8 x 80 B
+    GiVolumePlaneGpu planes[SG_GI_VOLUME_MAX * SG_GI_VOLUME_MAX_PLANES];   // up to 128 x 16 B
 };

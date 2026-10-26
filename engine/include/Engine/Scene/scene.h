@@ -165,21 +165,21 @@ inline glm::mat4 DecalNodeFrame(const glm::vec3& center, glm::vec3 axisZ,
 	return m;
 }
 
-// Authored convex GI volume (editor cvolume node / tour createCvolume):
+// Authored GI volume (editor GI volume node / tour createGiVolume):
 // a box-shaped dense-probe region (gi_baker box-spec shape). The SHAPE
 // rides the node's transform (translate = box center, scale = full
 // extents, ROTATION = the box axes — an OBB: the bake rotates the six
 // box planes, CvBoxPlanesRotated); this carries the bake params.
 // Node-local like SceneLight (no pool); resolved against
 // globalTransform[node] at use so parenting applies like meshes.
-struct SceneCvol {
+struct SceneGiVolume {
 	uint32_t priority = 0;   // higher = composited later = wins
 	float spacing = 0.5f;    // dense probe grid spacing (m)
 	float insideFade = 0.1f; // blend width inside each face (m)
 	float outsideFade = 0.1f;// blend width outside each face (m)
 	// The BAKED ARTIFACT binding (the mesh-reference convention applied
-	// to bakes): the .cvol this definition's bake produced, recorded by
-	// the bake owner at bake time (tour giAsset kind Cvol). Empty =
+	// to bakes): the .givolume this definition's bake produced, recorded by
+	// the bake owner at bake time (tour giAsset kind GiVolume). Empty =
 	// never baked — the definition exists but carries no field. Path is
 	// a VFS path (POSIX separators — RANDOM MINTED, a fresh guid per
 	// bake: the record IS the identity, the name carries nothing to go
@@ -200,8 +200,8 @@ struct SceneCvol {
 // session state: the settings travel with the SCENE, and Cook.exe
 // consumes them off the replayed scene (CLI flags still win — the same
 // explicit-override contract the cook block had). NOT serialized into
-// paks (bake-time only — the runtime never reads them; like SceneCvol,
-// the payload is tour/editor/cook state). Node-local like SceneCvol;
+// paks (bake-time only — the runtime never reads them; like SceneGiVolume,
+// the payload is tour/editor/cook state). Node-local like SceneGiVolume;
 // the FIRST exportSettings node in scene id order is THE one (the
 // editor seeds exactly one; hand-authored duplicates warn + first
 // wins). Field set mirrors the cook CLI flags one-for-one.
@@ -247,8 +247,8 @@ struct SceneExportSettings {
 	uint32_t meshletMaxTris = 64;
 	float meshletConeWeight = 0.0f;
 	// GI bakes (on-demand Bake GI only — cooks never bake GI): authored
-	// convex volumes (the cvolume nodes) + the adaptive world field.
-	bool giCvol = true;
+	// convex volumes (the GI volume nodes) + the adaptive world field.
+	bool giVolumes = true;
 	bool giWorld = true;
 	// Weave-cloth transmission (sponza's bat convention: MASK cutout
 	// cloth passes light tinted per texel through the weave — the tinted
@@ -292,7 +292,7 @@ inline constexpr uint32_t kEnvInfNegZ = 1u << 4;
 inline constexpr uint32_t kEnvInfPosZ = 1u << 5;
 
 // Authored env-volume settings (Unreal PostProcessVolume-style blending
-// over the transform-box bounds): node-local like SceneCvol, resolved
+// over the transform-box bounds): node-local like SceneGiVolume, resolved
 // against globalTransform[node] at use. The LOOK stays in the node's
 // SceneEnv block; this carries the SHAPE-side knobs (bounds/priority/
 // blending). Absent entry = legacy zone (full box, priority from the
@@ -310,7 +310,7 @@ struct EnvVolume {
 // node's transform (translate, world-resolved); this carries the
 // influence radius. Baked by PakCooker's --cubemap stage as a 'pin'
 // row (sorted first at load — a pinned probe wins weight ties, e.g.
-// the capture exactly at a chrome ball). Node-local like SceneCvol.
+// the capture exactly at a chrome ball). Node-local like SceneGiVolume.
 struct SceneCubemap {
 	float radius = 5.5f;   // influence radius (m); fade = radius/2
 };
@@ -324,7 +324,7 @@ struct SceneCubemap {
 // take lux raw). No legacy migration: tours authored before the lux
 // switch carry scene-unit values that read dark — re-author them.
 // Exposure 0.1..4, fog 0..1. Scene-attached like the other authored
-// node data below (cvol/cubemap): the resolved ACTIVE look lives in
+// node data below (givolume/cubemap): the resolved ACTIVE look lives in
 // Scene::environment; the default block + per-node alternatives live
 // beside it; the "which block renders" selection stays editor view
 // state (like the active camera) and is resolved into Scene::environment.
@@ -461,19 +461,19 @@ struct Scene {
 	// projector center, local -Z into the surface, +Y texture V up, scale
 	// = half extents (x, y, depth). See SceneDecal.
 	std::unordered_map<NodeId, uint32_t> decalForNode;
-	// Node -> authored convex GI volume params (tour createCvolume /
-	// editor cvolume node). The definition is node-local (a few floats
+	// Node -> authored GI volume params (tour createGiVolume /
+	// editor GI volume node). The definition is node-local (a few floats
 	// — no pool indirection); the box shape rides the node's transform.
 	// Recorded by tour replay; harvested as bake inputs by GiBaker
-	// (loose bake files, on demand) AND PakCooker's --cvolume stage
+	// (loose bake files, on demand) AND PakCooker's --gi-volume stage
 	// (baked + embedded into the pak for the runtime App). Each entry's
 	// bakeSource/bakeGuid carries the BAKED artifact binding (see
-	// SceneCvol) once the bake owner has stamped it.
-	std::unordered_map<NodeId, SceneCvol> cvolForNode;
+	// SceneGiVolume) once the bake owner has stamped it.
+	std::unordered_map<NodeId, SceneGiVolume> giVolumeForNode;
 	// The scene's WORLD-FIELD GI binding (tour giAsset kind World): the
 	// baked probe-octree artifact this scene uses. Empty = never baked
 	// (the runtime sky-IBL ambient + the editor's honest "no baked
-	// volume" warnings). Same convention as SceneCvol::bakeSource
+	// volume" warnings). Same convention as SceneGiVolume::bakeSource
 	// (RANDOM MINTED VFS path — the record is the identity — + the
 	// artifact's .meta GUID when known). giWorldInputHash: the bake-input
 	// hash at bake time (the pak gate's freshness check).
@@ -495,7 +495,7 @@ struct Scene {
 	std::unordered_map<NodeId, SceneCubemap> cubemapForNode;
 	// Node -> the scene's EXPORT SETTINGS (tour createNode -at
 	// exportSettings / the editor's auto-seeded WorldSettings node;
-	// see SceneExportSettings). Node-local like cvolForNode; the
+	// see SceneExportSettings). Node-local like giVolumeForNode; the
 	// singleton semantic is authoring-side (the editor seeds exactly
 	// one; consumers take the FIRST in node id order and warn on
 	// duplicates). Recorded by tour replay; consumed by Cook.exe (the
@@ -520,7 +520,7 @@ struct Scene {
 	// node block is selected.
 	SceneEnv defaultEnvironment;
 	// Node -> authored environment block (tour env.n / editor env node).
-	// The definition is node-local like SceneCvol; the active block is
+	// The definition is node-local like SceneGiVolume; the active block is
 	// resolved into `environment` by whoever owns the selection (the
 	// editor; the cook at bake time).
 	std::unordered_map<NodeId, SceneEnv> envForNode;

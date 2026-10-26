@@ -1587,7 +1587,7 @@ struct ImageCreateInfo
 	// the image's ARENA-OWNED debug name (copied at creation - caller
 	// strings carry no lifetime contract; see VulkanResourceManager's
 	// nameArena_): engine/auxiliary textures carry their creation names
-	// ("env zone map", "cvol layer", ...), content/material textures
+	// ("env zone map", "gi volume layer", ...), content/material textures
 	// carry their load paths (they contain a '/'). NUL-terminated
 	// (arena copies) for %s interop; empty view = unnamed. The inspector
 	// lists everything - no filter. bindless = the sampled bindless slot

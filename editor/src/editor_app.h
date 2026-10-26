@@ -395,11 +395,11 @@ private:
 	// project content first / bundled content second): the F8 baked view
 	// on a definition with a lightmap bake.
 	bool TryLoadSceneSglm();
-	// Convex GI volume bakes (probes-only pivot): the SCENE's baked
-	// gi/<stem>.cvmanifest + .cvol. Builds the preview hulls (AABB
+	// GI volume bakes (probes-only pivot): the SCENE's baked
+	// gi/<stem>.givolumemanifest + .givolume. Builds the preview hulls (AABB
 	// clipped by the volume's planes) + the probe-grid sample for the
 	// LIGHTING-mode view option (J cycles wireframe / fill / probes).
-	bool TryLoadCvolumes();
+	bool TryLoadGiVolumes();
 	static bool HasPakExtension(const std::string& path);
 	// "A scene worth acting on" (replaces the old m_hasGltfModel gates —
 	// a .tour definition just references ASSET UUIDS, so "has a source
@@ -513,7 +513,7 @@ private:
 	struct PickHit { uint32_t node = UINT32_MAX; float t = 0.0f; };
 	std::optional<PickHit> PickNode(int vpIdx, float mouseX, float mouseY,
 		smvk::Extent2D extent) const;
-	// Screen-space gizmo-marker pick (lights, cvolume centers, cubemap
+	// Screen-space gizmo-marker pick (lights, GI volume centers, cubemap
 	// pins — nodes with no mesh to raycast): nearest marker within the
 	// pixel threshold, X-ray semantics (wins over mesh hits). Honors the
 	// same View-menu visibility toggles the markers draw with.
@@ -751,7 +751,7 @@ private:
 	void ModalCycleNodeNext();
 	void ModalViewUv0();
 	void ModalLightGizmosToggle();
-	void ModalCvolPreviewCycle(); // LIGHTING 'V': off -> wireframe -> solid
+	void ModalGiVolumePreviewCycle(); // LIGHTING 'V': off -> wireframe -> solid
 	void ModalViewBaked();
 	void ModalViewLmUv();
 	void ModalUvInsetCycle();
@@ -860,10 +860,10 @@ private:
 	// backing for setLightAttr -ref addressing (TourToCmd) and the
 	// save-time creation index (CmdToTour). Rebuilt on every replay.
 	std::vector<uint32_t> m_tourCreatedNodes;
-	// Same scheme for history-created convex volumes (tour CreateCVolume
-	// file order): setCvolAttr -ref addressing. Rebuilt on every replay
+	// Same scheme for history-created GI volumes (tour CreateGiVolume
+	// file order): setGiVolumeAttr -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
-	std::vector<uint32_t> m_tourCreatedCvolNodes;
+	std::vector<uint32_t> m_tourCreatedGiVolumeNodes;
 	// Same scheme for history-created cubemap captures (tour
 	// CreateCubemap file order): setCubemapAttr -ref addressing.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
@@ -937,8 +937,8 @@ private:
 	// Creation-order index of a live created light (-1 when the node is
 	// not a history create): the -ref value CmdToTour emits.
 	int CreatedLightIndex(uint32_t worldNode) const;
-	// Creation-order index of a live created convex volume, same contract.
-	int CreatedCvolIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created GI volume, same contract.
+	int CreatedGiVolumeIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created cubemap capture, same
 	// contract.
 	int CreatedCubemapIndex(uint32_t worldNode) const;
@@ -986,8 +986,8 @@ private:
 	uint32_t DefaultCreateParent() const;
 	// Unique "Point_N"/"Spot_N" name over the live world lights.
 	std::string UniqueLightName(bool spot) const;
-	// Unique "CVol_N" name over the live world cvolume nodes.
-	std::string UniqueCvolName() const;
+	// Unique "GIVolume_N" name over the live world GI volume nodes.
+	std::string UniqueGiVolumeName() const;
 	// Unique "Cube_N" name over the live world cubemap captures.
 	std::string UniqueCubemapName() const;
 	// Unique "Camera_N" name over the live world cameras.
@@ -1221,11 +1221,11 @@ private:
 		const glm::vec4& v4, double num, bool flag, const std::string& text);
 	// Convex-volume property channels ("priority","spacing","inside",
 	// "outside","position","rotation","size","name") — the inspector's
-	// before-state + live-write path for SetCvolAttr (degrees for
-	// rotation, meters for triples). False when the node has no cvol.
-	bool ReadNodeCvolAttr(uint32_t node, const std::string& attr,
+	// before-state + live-write path for SetGiVolumeAttr (degrees for
+	// rotation, meters for triples). False when the node has no GI volume.
+	bool ReadNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 		glm::vec4& v4, double& num, std::string& text) const;
-	bool WriteNodeCvolAttr(uint32_t node, const std::string& attr,
+	bool WriteNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 		const glm::vec4& v4, double num, const std::string& text);
 	// Cubemap-capture property channels ("position","radius","name") —
 	// the inspector's before-state + live-write path for
@@ -1234,20 +1234,20 @@ private:
 		glm::vec4& v4, double& num, std::string& text) const;
 	bool WriteNodeCubemapAttr(uint32_t node, const std::string& attr,
 		const glm::vec4& v4, double num, const std::string& text);
-	// World-space authoring box of a cvolume node: center = global
+	// World-space authoring box of a GI volume node: center = global
 	// translate, half extents = 0.5 * global basis lengths, axes = the
 	// NORMALIZED basis (the node's world rotation — OBB; the bake
 	// rotates the six box planes with it). False when the node has
-	// no cvol. CvolBox (mn/mx) = the OBB's AABB.
-	bool CvolOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
+	// no GI volume. GiVolumeBox (mn/mx) = the OBB's AABB.
+	bool GiVolumeOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
 		glm::vec3& half) const;
-	bool CvolBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const;
+	bool GiVolumeBox(uint32_t node, glm::vec3& mn, glm::vec3& mx) const;
 	// The OBB's 8 world-space corners (drawing: the gizmo wires show
-	// the rotation). False when the node has no cvol.
-	bool CvolBoxCorners(uint32_t node, glm::vec3 outCorners[8]) const;
-	// Inspector "Convex volume" section for cvolume nodes (priority /
-	// spacing / fades via undoable SetCvolAttr; shape via the transform).
-	void DrawCvolSection(uint32_t node);
+	// the rotation). False when the node has no GI volume.
+	bool GiVolumeBoxCorners(uint32_t node, glm::vec3 outCorners[8]) const;
+	// Inspector "GI volume" section for GI volume nodes (priority /
+	// spacing / fades via undoable SetGiVolumeAttr; shape via the transform).
+	void DrawGiVolumeSection(uint32_t node);
 	// Inspector "Cubemap capture" section for capture nodes (radius
 	// via undoable SetCubemapAttr; position via the transform).
 	void DrawCubemapSection(uint32_t node);
@@ -1309,24 +1309,24 @@ private:
 	// First camera node in the live world, or UINT32_MAX (World panel,
 	// viewport camera bindings).
 	uint32_t FindCameraNode() const;
-	// Create menu: convex GI volume box at the active camera target
+	// Create menu: GI volume box at the active camera target
 	// (8 m box, priority 0, 0.5 m spacing, 0.1 m fades).
-	void DraftCreateCVolume();
+	void DraftCreateGiVolume();
 	// Create menu: pinned cubemap capture at the active camera target
 	// (influence radius 1.5 m; baked as a 'pin' row by the cook).
 	void DraftCreateCubemap();
-	// Created-cvolume execution (ExecCmd cases): append/remove the world
-	// node + node-local SceneCvol definition. ExecCreateCVolume records
+	// Created-GI-volume execution (ExecCmd cases): append/remove the world
+	// node + node-local SceneGiVolume definition. ExecCreateGiVolume records
 	// the assigned id back into the command (c.node).
-	void ExecCreateCVolume(EditCmd& c);
-	void ExecUncreateCvolume(EditCmd& c);
+	void ExecCreateGiVolume(EditCmd& c);
+	void ExecUncreateGiVolume(EditCmd& c);
 	// Created-cubemap execution (ExecCmd cases): append/remove the world
 	// node + node-local SceneCubemap definition. ExecCreateCubemap
 	// records the assigned id back into the command (c.node).
 	void ExecCreateCubemap(EditCmd& c);
 	void ExecUncreateCubemap(EditCmd& c);
-	// Viewport boxes for cvolume nodes (editor_gizmo.cpp batches).
-	bool m_showCvolGizmos = true;
+	// Viewport boxes for GI volume nodes (editor_gizmo.cpp batches).
+	bool m_showGiVolumeGizmos = true;
 	// Viewport markers for cubemap capture nodes (diamond + radius).
 	bool m_showCubemapGizmos = true;
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
@@ -1624,7 +1624,7 @@ private:
 	std::vector<smvk::tour::TextureAssetCmd> m_textureAssets;
 	// GI-asset bindings (the session mirror, see smvk::tour::GiAssetCmd):
 	// the scene's HARD baked-GI identification — the world field + one
-	// record per authored convex volume. Loaded from the tour on replay
+	// record per authored GI volume. Loaded from the tour on replay
 	// (ReplayTourDoc), written on save (SaveTourTo), UPDATED by the bake
 	// flows (the cook / Bake GI read the records the bake owner stamped
 	// into the snapshot tour back into this mirror — the editor never
@@ -1997,7 +1997,7 @@ private:
 	std::optional<smvk::cook::GiCookAsset> m_assetInspectGiCook;
 	std::optional<smvk::cook::LightmapCookAsset> m_assetInspectLmCook;
 	std::optional<smvk::cook::CubemapAsset> m_assetInspectCubemap;
-	std::optional<smvk::cook::GicvolumeAsset> m_assetInspectGicvolume;
+	std::optional<smvk::cook::GivolumeAsset> m_assetInspectGivolume;
 	// .texture asset page: the parsed asset + the probed SOURCE header
 	// (read-only facts for KTX2 sources; LDR sources edit the settings).
 	std::optional<smvk::assets::TextureAsset> m_assetInspectTex;
@@ -2022,11 +2022,11 @@ private:
 	// the new path ({} + log on failure).
 	std::string CreateCookAsset(bool gi, const std::string& dir);
 	// Typed GI product assets (content/gi/ folder): fresh UNBAKED
-	// .cubemap / .gicvolume manifests, adopted into the registry
-	// (assetdb kinds cubemap/gicvolume). No loose bake files — the bake
+	// .cubemap / .givolume manifests, adopted into the registry
+	// (assetdb kinds cubemap/givolume). No loose bake files — the bake
 	// payload path rides blobPath inside the manifest.
 	std::string CreateCubemapAsset(const std::string& dir);
-	std::string CreateGicvolumeAsset(const std::string& dir,
+	std::string CreateGivolumeAsset(const std::string& dir,
 		uint32_t node = UINT32_MAX);
 	// TEXTURE-ASSET creation (the Asset browser's New button + context
 	// menu): copies the picked source image (png/jpg/jpeg/tga/bmp/ktx2)
@@ -2218,13 +2218,13 @@ private:
 	// selection. Updated by DrawPlacementGraph, reset in DrawUI.
 	bool m_imguiFocusInPlacementGraph = false;
 	bool m_showLightGizmos = true; // viewport markers for light nodes
-	// ---- convex GI volume preview (LIGHTING mode, 'V' cycles; loaded
+	// ---- GI volume preview (LIGHTING mode, 'V' cycles; loaded
 	// from the .cvmanifest next to the opened pak) ----
 	// 0 = off, 1 = wireframe, 2 = wireframe + translucent fill.
 	// Color-coded by PRIORITY (hue = priority * 0.13 mod 1) so stacked
 	// override volumes read at a glance.
-	int m_cvolPreviewMode = 0;
-	struct CvolPreview {
+	int m_giVolumePreviewMode = 0;
+	struct GiVolumePreview {
 		std::string name;    // bake file stem
 		uint32_t priority = 0;
 		glm::vec3 gridMin{ 0.0f }; // bake AABB (gridMin..gridMax)
@@ -2250,8 +2250,8 @@ private:
 		uint64_t voxTotal = 0;    // full-volume voxel count
 		uint64_t voxNonzero = 0;  // voxels carrying any nonzero lobe
 	};
-	std::vector<CvolPreview> m_cvolPreviews;
-	void DrawCvolPreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
+	std::vector<GiVolumePreview> m_giVolumePreviews;
+	void DrawGiVolumePreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
 	// Capture balls + App-parity probe overlay (editor_viewports.cpp,
 	// ImGui foreground, LIGHTING mode only): the scene's LOADED probe
 	// rows (the cubemap bake manifest - see CubemapProbeRowsFromFile)
@@ -2282,7 +2282,7 @@ private:
 	void CaptureBakeState(size_t& bakedOut, size_t& totalOut);
 	// ---- octree PRECOOK visualization (GI authoring overlay) ----
 	// Fast authored overlay (no baker run): the world-field bounds tile
-	// grid + authored cvol boxes (capture balls ride the dedicated
+	// grid + authored GI volume boxes (capture balls ride the dedicated
 	// DrawCaptureBallOverlay above so the two never double up).
 	// Tiles split the scene AABB at the root-brick size; every tile
 	// starts dirty, a bake cleans them, any scene edit dirties them

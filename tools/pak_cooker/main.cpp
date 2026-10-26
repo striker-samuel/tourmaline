@@ -27,13 +27,13 @@
 // Inputs: ALREADY-PROCESSED .geometry artifacts (import.exe derives
 // them; cook.exe bakes + stamps <stem>.cooked — pak refuses
 // uncooked/stale inputs) + the LOOSE bake files the cookers wrote
-// (gi/*.sggi + *.cvol, gi/cubemaps/<base>[_N].ktx2 + .cubemanifest),
+// (gi/*.sggi + *.givolume, gi/cubemaps/<base>[_N].ktx2 + .cubemanifest),
 // discovered by stable stem and embedded as Texture blobs. The tour,
 // when given, replays read-only for serialization (no synthesis —
 // WorldSun/env seeding moved to the cook); --level packs the scene +
 // baked data into one levels/<name>.level blob.
 //
-// For bake-transport details see tools/cook (cubemap/lightmap/cvol
+// For bake-transport details see tools/cook (cubemap/lightmap/gi-volume
 // stages) and tools/gi_baker (world octree).
 //
 //
@@ -126,7 +126,7 @@ namespace paktool {
 		// exportSettings node decides; 0/1 = CLI-pinned). On = the pak
 		// embeds ONLY the scene's own content (meshes/materials/textures,
 		// blobs by path) — no gi/ cubemap manifests + KTX rows, no .sggi,
-		// no .cvmanifest + .cvol rows, no bindings (see SceneExportSettings).
+		// no .givolumemanifest + .givolume rows, no bindings (see SceneExportSettings).
 		int ignoreVfs = -1;
 		// KTX auto-convert (on by default): non-KTX sources transcode
 		// in-process (stb decode + libktx write, `.ktx2` sidecar cached next
@@ -179,7 +179,7 @@ namespace paktool {
 	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
 	// env block when the tour carried one (the editor always writes env.default.*),
 	// else the CLI sun defaults (bare cooks). Every stage — the synthesized
-	// WorldSun, the lightmap / cubemap / cvolume bakes — reads this, so ONE
+	// WorldSun, the lightmap / cubemap / GI-volume bakes — reads this, so ONE
 	// authored sun/sky drives the editor viewport, the bakes and the pak.
 	struct BakeEnv {
 		float sunAzimuth = 30.0f, sunElevation = 55.0f;
@@ -273,7 +273,7 @@ namespace paktool {
 			<< "," << be.sunColor.z << ")\n";
 	}
 
-	// Produce a filename-safe token for embedded cvol paths (manifest rows
+	// Produce a filename-safe token for embedded GI-volume paths (manifest rows
 	// use the first whitespace-delimited token as the path).
 	std::string SanitizeVfsToken(const std::string& s) {
 		std::string out;
@@ -284,11 +284,11 @@ namespace paktool {
 			else
 				out.push_back('_');
 		}
-		return out.empty() ? std::string("cvol") : out;
+		return out.empty() ? std::string("givolume") : out;
 	}
 
 	// Reads a loose bake file by its content-root-relative vfs path
-	// ("gi/<scene>.cvmanifest" -> <contentDir>/gi/<scene>.cvmanifest). Empty
+	// ("gi/<scene>.givolumemanifest" -> <contentDir>/gi/<scene>.givolumemanifest). Empty
 	// on any failure (logged by the caller — a missing bake file is "not
 	// baked", never fatal).
 	std::vector<uint8_t> ReadLooseBakeFile(const std::string& contentDir,
@@ -2039,30 +2039,30 @@ int Run(const PakArgs& c) {
 							smvk::GiBinding::Kind::Probe,
 							sn.giWorldSource);
 			}
-			// ---- Convex volumes (giAsset kind cvol) ----
-			for (const auto& [node, def] : sn.cvolForNode) {
+			// ---- GI volumes (giAsset kind givolume) ----
+			for (const auto& [node, def] : sn.giVolumeForNode) {
 				if (def.bakeSource.empty())
 					continue; // authored but never baked: embeds nothing
 				const std::string fresh =
 					node < sn.globalTransform.size()
-					? smvk::gi::CvolBakeUnitHash(ensureGrid(),
+					? smvk::gi::GiVolumeBakeUnitHash(ensureGrid(),
 						*gateCluster, def, sn.globalTransform[node],
-						smvk::gi::CanonicalCvolCfgHash(
+						smvk::gi::CanonicalGiVolumeCfgHash(
 							esNode.maskTransmission))
 					: std::string();
 				if (def.bakeInputHash.empty())
-					gateRefuse("the convex volume '" + def.bakeSource + "'",
+					gateRefuse("the GI volume '" + def.bakeSource + "'",
 						"the record carries NO bake-input hash (a "
 						"pre-invalidation bake)");
 				else if (fresh != def.bakeInputHash)
-					gateRefuse("the convex volume '" + def.bakeSource + "'",
+					gateRefuse("the GI volume '" + def.bakeSource + "'",
 						"the scene changed since the bake; recorded="
 						+ def.bakeInputHash + " fresh=" + fresh
 						+ "; gate " + diagParts(*gateCluster));
-				else if (embedGi(def.bakeSource, "convex-volume bake"))
+				else if (embedGi(def.bakeSource, "GI-volume bake"))
 					for (auto& sc : sceneClusters)
 						sc->RegisterGiBinding(
-							smvk::GiBinding::Kind::Cvol, def.bakeSource);
+							smvk::GiBinding::Kind::GiVolume, def.bakeSource);
 			}
 			// ---- The cubemap capture set (giAsset kind captures) ----
 			if (!sn.giCapturesSource.empty()) {

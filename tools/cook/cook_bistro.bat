@@ -39,7 +39,7 @@ rem --cubemap on bakes GGX-preconvolved specular cubemaps INTO the pak
 rem (textures/cubemaps/bistro.ktx2, high-frequency specular only;
 rem probes/lightmaps own diffuse + low-freq specular).
 rem --cubemap-ambient-closure on: bistro is a STACK-LESS cook (no
-rem GiBaker step - no .sggi octree + no cvols in the pak), so the
+rem GiBaker step - no .sggi octree + no GI volumes in the pak), so the
 rem covered pixels' diffuse ambient comes from the analytic sky
 rem fallback at runtime. The closure baked into the captures matches
 rem that fallback (interior captures would otherwise bake ~black with

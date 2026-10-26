@@ -74,7 +74,7 @@ $env:TOURMALINE_CAPTURE='48'
   sun only, 1 is authored, 2 doubles it)
 - `TOURMALINE_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
   (scene fog settings lose); `TOURMALINE_VOLUMETRIC_STEPS=<4..128>` pins the
-  march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_CVOL=0` is the
+  march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_GI_VOLUMES=0` is the
   fog-GI quality bypass (octree/sky only, no convex-volume walk per GI
   refresh) — pairs with `TOURMALINE_VOLUMETRIC` for pure-octree fog cost A/B
 - `TOURMALINE_PROBE_PREMIX=0|1` pins the Remember Me probe pre-mix
@@ -112,7 +112,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Heavy explanatory comments are the repo norm — keep the reasoning auditable
 - Bake albedo: the CUBEMAP captures bake TEXTURED (per-hit baseColor sampling —
   `GiTraceScene::AlbedoAt`, bilinear REPEAT over decoded texel data capped at
-  `kGiBakeTexelMaxDim` 512); the GI fields (.sggi octree + cvols) bake
+  `kGiBakeTexelMaxDim` 512); the GI fields (.sggi octree + GI volumes) bake
   white-world 0.7 by convention (the 9-lobe SG fit cannot represent per-material
   chroma — verified on Sponza). Sponza GI flow: `tools/cook/cook_sponza.bat`
   runs Cook → GiBaker (the convex volumes + the global octree from

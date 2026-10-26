@@ -68,7 +68,7 @@ void AddCircle(LineBatch& b, const glm::vec3& center, const glm::vec3& u,
 	}
 }
 
-// Wire box from the 8 corners (OBB: the cvolume authoring box carries
+// Wire box from the 8 corners (OBB: the GI volume authoring box carries
 // the node's rotation — same 12 edges, rotated corners). Corner layout
 // is BIT-ENCODED (i&1 = +axis0, i&2 = +axis1, i&4 = +axis2), so the
 // edge table is the hypercube set: every pair differs in EXACTLY ONE
@@ -353,16 +353,16 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
-	// Convex-volume boxes: one X-ray wire box per cvolume node (shape =
+	// GI-volume boxes: one X-ray wire box per GI volume node (shape =
 	// node translate/scale/ROTATION — an OBB), priority-hued like the GI
 	// preview overlay so authored and baked volumes read the same; the
-	// selection draws bright. LIGHTING mode only — cvolume nodes carry
+	// selection draws bright. LIGHTING mode only — GI volume nodes carry
 	// no mesh to click.
-	if (lightSetVisible && m_showCvolGizmos
-		&& !m_world->scene.cvolForNode.empty()) {
+	if (lightSetVisible && m_showGiVolumeGizmos
+		&& !m_world->scene.giVolumeForNode.empty()) {
 		const auto priorityRgb = [](uint32_t priority) {
 			// HSV(h, 0.7, 1.0) with h = priority * 0.13 mod 1 (same
-			// hue as DrawCvolPreviewOverlay's priorityColor).
+			// hue as DrawGiVolumePreviewOverlay's priorityColor).
 			const float h = std::fmod(float(priority) * 0.13f, 1.0f);
 			const float s = 0.7f, v = 1.0f;
 			const float c = v * s;
@@ -379,9 +379,9 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			else { r = c; b = x; }
 			return glm::vec3(r + m, g + m, b + m);
 		};
-		for (const auto& [node, def] : m_world->scene.cvolForNode) {
+		for (const auto& [node, def] : m_world->scene.giVolumeForNode) {
 			glm::vec3 corners[8];
-			if (!CvolBoxCorners(node, corners))
+			if (!GiVolumeBoxCorners(node, corners))
 				continue;
 			LineBatch b;
 			b.depthTest = false; // X-ray: author shapes against walls
@@ -411,7 +411,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// Cubemap capture visuals (X-ray batches): a distance-scaled diamond +
 	// the influence ring per AUTHORED capture node (position = the node's
 	// global translate). Magenta reads apart from lights
-	// (orange/cyan/yellow) and cvolumes (priority hues); the selection
+	// (orange/cyan/yellow) and GI volumes (priority hues); the selection
 	// draws bright. The CHROME-BALL visualization of the LOADED baked
 	// captures is the WorldRenderer's lit probe-ball pass (see
 	// Rendergraph/probeball.h + the View menu) — not a gizmo: the App
@@ -446,7 +446,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	}
 	// Camera frustum markers: one X-ray eye diamond + near/far box per
 	// authored camera node (pose = node transform, forward = -Z). Green
-	// reads apart from lights (orange/cyan/yellow), cvolumes (priority
+	// reads apart from lights (orange/cyan/yellow), GI volumes (priority
 	// hues) and cubemaps (magenta); the selection draws bright. Aspect
 	// follows the active viewport (schematic when panels disagree).
 	// LIGHTING mode steps these aside (the light set owns the viewport).

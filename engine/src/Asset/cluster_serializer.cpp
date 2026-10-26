@@ -1880,7 +1880,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	// those payloads stay pinned on the cluster below.
 	const auto texEntries = reader.BlobsOfKind(PakAssetKind::Texture);
 	// --- Bake payloads (GI/cubemap content riding as Texture blobs) ------
-	// sggi/sgrv/cvol/manifests/sglm + cubemap manifests/KTX2s ALL under
+	// sggi/sgrv/givolume/manifests/sglm + cubemap manifests/KTX2s ALL under
 	// gi/ (the canonical bake-asset home — cubemaps at gi/cubemaps/<id>.*,
 	// the id-keyed capture-set paths): CLUSTER-OWNED payload bytes (the
 	// entity home — see Cluster::bakePayloads / World::ReadBakeBytes),

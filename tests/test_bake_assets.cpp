@@ -149,7 +149,7 @@ void TestGiCookRoundTrip() {
 	const std::string blob = "fedcba9876543210fedcba9876543210";
 	GiCookAsset a = smvk::cook::DefaultGiCookAsset("MyGI", "sponza");
 	a.guid = guid;
-	a.cvol = false;
+	a.giVolumes = false;
 	a.world = true;
 	a.blobGuid = blob;
 	a.blobPath = "gi/" + blob + ".sggi";
@@ -161,7 +161,7 @@ void TestGiCookRoundTrip() {
 	std::string err;
 	Check(smvk::cook::LoadGiCookAssetText(text, back, err)
 		&& back.guid == guid && back.name == "MyGI"
-		&& back.scene == "sponza" && !back.cvol && back.world
+		&& back.scene == "sponza" && !back.giVolumes && back.world
 		&& back.blobGuid == blob
 		&& back.blobPath == "gi/" + blob + ".sggi"
 		&& back.bakedHash == a.bakedHash, "cook.gi.roundtrip");

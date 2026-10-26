@@ -98,7 +98,7 @@ GiCookAsset DefaultGiCookAsset(const std::string& name,
 	GiCookAsset a;
 	a.name = name;
 	a.scene = scene;
-	a.cvol = true;
+	a.giVolumes = true;
 	a.world = true;
 	return a;
 }
@@ -114,7 +114,7 @@ LightmapCookAsset DefaultLightmapCookAsset(const std::string& name,
 std::string GiCookSettingsHash(const GiCookAsset& a) {
 	std::ostringstream o;
 	o << "scene=" << a.scene << "\n";
-	o << "cvol=" << (a.cvol ? 1 : 0) << "\n";
+	o << "giVolumes=" << (a.giVolumes ? 1 : 0) << "\n";
 	o << "world=" << (a.world ? 1 : 0) << "\n";
 	return Hex16(HashStr(o.str()));
 }
@@ -144,7 +144,7 @@ bool SaveGiCookAssetText(std::string& out, const GiCookAsset& a) {
 	o << "guid=" << a.guid << "\n";
 	o << "name=" << a.name << "\n";
 	o << "scene=" << a.scene << "\n";
-	o << "cvol=" << (a.cvol ? 1 : 0) << "\n";
+	o << "giVolumes=" << (a.giVolumes ? 1 : 0) << "\n";
 	o << "world=" << (a.world ? 1 : 0) << "\n";
 	// The binary blob RESULT (the bake payload at its guid-derived path;
 	// empty = never baked — creation writes exactly this).
@@ -173,7 +173,7 @@ bool LoadGiCookAssetText(const std::string& text, GiCookAsset& out,
 		if (key == "guid") out.guid = val;
 		else if (key == "name") out.name = val;
 		else if (key == "scene") out.scene = val;
-		else if (key == "cvol") out.cvol = ParseBool(val, out.cvol);
+		else if (key == "giVolumes") out.giVolumes = ParseBool(val, out.giVolumes);
 		else if (key == "world") out.world = ParseBool(val, out.world);
 		else if (key == "blobGuid") out.blobGuid = val;
 		else if (key == "blobPath") out.blobPath = val;
@@ -357,9 +357,9 @@ CubemapAsset DefaultCubemapAsset(const std::string& name,
 	return a;
 }
 
-GicvolumeAsset DefaultGicvolumeAsset(const std::string& name,
+GivolumeAsset DefaultGivolumeAsset(const std::string& name,
 	const std::string& scene, uint32_t node) {
-	GicvolumeAsset a;
+	GivolumeAsset a;
 	a.name = name;
 	a.scene = scene;
 	a.node = node;
@@ -375,7 +375,7 @@ std::string CubemapSettingsHash(const CubemapAsset& a) {
 	return Hex16(HashStr(o.str()));
 }
 
-std::string GicvolumeSettingsHash(const GicvolumeAsset& a) {
+std::string GivolumeSettingsHash(const GivolumeAsset& a) {
 	std::ostringstream o;
 	o << "scene=" << a.scene << "\n";
 	o << "node=" << a.node << "\n";
@@ -467,7 +467,7 @@ bool LoadCubemapAsset(const std::string& path, CubemapAsset& out,
 	return LoadCubemapAssetText(text, out, err);
 }
 
-bool SaveGicvolumeAssetText(std::string& out, const GicvolumeAsset& a) {
+bool SaveGivolumeAssetText(std::string& out, const GivolumeAsset& a) {
 	std::ostringstream o;
 	o << "# Tourmaline convex-volume asset v1 (settings + baked result)\n";
 	o << "guid=" << a.guid << "\n";
@@ -482,10 +482,10 @@ bool SaveGicvolumeAssetText(std::string& out, const GicvolumeAsset& a) {
 	return true;
 }
 
-bool LoadGicvolumeAssetText(const std::string& text, GicvolumeAsset& out,
+bool LoadGivolumeAssetText(const std::string& text, GivolumeAsset& out,
 	std::string& err) {
-	out = GicvolumeAsset{};
-	const GicvolumeAsset defaults;
+	out = GivolumeAsset{};
+	const GivolumeAsset defaults;
 	std::istringstream in(text);
 	std::string line;
 	while (std::getline(in, line)) {
@@ -510,22 +510,22 @@ bool LoadGicvolumeAssetText(const std::string& text, GicvolumeAsset& out,
 		else if (key == "bakedHash") out.bakedHash = val;
 	}
 	if (!IsCookAssetGuid(out.guid)) {
-		err = "gicvolume asset carries no/invalid guid";
-		out = GicvolumeAsset{};
+		err = "givolume asset carries no/invalid guid";
+		out = GivolumeAsset{};
 		return false;
 	}
 	if (!out.blobGuid.empty() && !IsCookAssetGuid(out.blobGuid)) {
-		err = "gicvolume asset carries invalid blobGuid";
-		out = GicvolumeAsset{};
+		err = "givolume asset carries invalid blobGuid";
+		out = GivolumeAsset{};
 		return false;
 	}
 	return true;
 }
 
-bool SaveGicvolumeAsset(const std::string& path, const GicvolumeAsset& a,
+bool SaveGivolumeAsset(const std::string& path, const GivolumeAsset& a,
 	std::string& err) {
 	std::string text;
-	SaveGicvolumeAssetText(text, a);
+	SaveGivolumeAssetText(text, a);
 	std::ofstream f(fs::path(path), std::ios::binary | std::ios::trunc);
 	if (!f) {
 		err = "cannot write '" + path + "'";
@@ -539,7 +539,7 @@ bool SaveGicvolumeAsset(const std::string& path, const GicvolumeAsset& a,
 	return true;
 }
 
-bool LoadGicvolumeAsset(const std::string& path, GicvolumeAsset& out,
+bool LoadGivolumeAsset(const std::string& path, GivolumeAsset& out,
 	std::string& err) {
 	std::ifstream in(fs::path(path), std::ios::binary);
 	if (!in) {
@@ -548,7 +548,7 @@ bool LoadGicvolumeAsset(const std::string& path, GicvolumeAsset& out,
 	}
 	const std::string text((std::istreambuf_iterator<char>(in)),
 		std::istreambuf_iterator<char>());
-	return LoadGicvolumeAssetText(text, out, err);
+	return LoadGivolumeAssetText(text, out, err);
 }
 
 } // namespace smvk::cook

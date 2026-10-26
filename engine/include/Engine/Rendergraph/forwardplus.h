@@ -319,8 +319,8 @@ struct ForwardPlus {
 	Holder<BufferHandle> decalTileIndicesBuffer;
 	LogicalBufferHandle decalTileCountsLogical{};
 	LogicalBufferHandle decalTileIndicesLogical{};
-	// Convex GI-volume tile masks (same tiling; the cull's volume leg
-	// packs a <=8-bit survivor bitmask per tile — see sg_cvol.hlsli).
+	// GI-volume tile masks (same tiling; the cull's volume leg
+	// packs a <=8-bit survivor bitmask per tile — see sg_gi_volume.hlsli).
 	Holder<BufferHandle> volumeTileMasksBuffer;
 	LogicalBufferHandle volumeTileMasksLogical{};
 

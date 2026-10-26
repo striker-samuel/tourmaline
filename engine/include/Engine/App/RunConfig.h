@@ -87,8 +87,8 @@ struct RunConfig {
 	std::optional<int> volumetricSteps;
 	// volumetricDensity: 0..2 extinction (unset = authored wins)
 	std::optional<float> volumetricDensity;
-	// volumetricCvol: fog-GI cvol walk on/off (unset = authored wins)
-	std::optional<OnOffPin> volumetricCvol;
+	// volumetricGiVolumes: fog-GI GI-volume walk on/off (unset = authored wins)
+	std::optional<OnOffPin> volumetricGiVolumes;
 
 	// ---- shadows ----
 	// ds: 1|on|0|off (empty = default)
@@ -114,7 +114,7 @@ struct RunConfig {
 	int giDebugLevel = -1; // 0..7
 	bool giPoints = false;
 	bool giOcclude = false;
-	bool cvolKilled = false; // CVOL=0 demotes FULL->Octree
+	bool giVolumesKilled = false; // GI_VOLUMES=0 demotes FULL->Octree
 	int cubemapDebug = -1; // 0..2
 	bool iblKilled = false; // IBL=0 mutes ambient
 

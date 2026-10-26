@@ -367,11 +367,11 @@ struct ForwardPlusTileIndexBuffer
     uint indices[MAX_FP_TILES * MAX_FP_PER_TILE];
 };
 
-// Per-tile convex-volume bitmask (the volume leg of forwardplus.cs.hlsl):
-// bit v set = volume v (upload order = priority order, sg_cvol.hlsli)
+// Per-tile GI-volume bitmask (the volume leg of forwardplus.cs.hlsl):
+// bit v set = volume v (upload order = priority order, sg_gi_volume.hlsli)
 // can reach the tile. Written UNCONDITIONALLY by the tile cull (fresh 0
-// with no volumes / cvol off), same grid as the light/decal tile lists.
-struct CvVolumeTileMaskBuffer
+// with no volumes / GI volumes off), same grid as the light/decal tile lists.
+struct GiVolumeTileMaskBuffer
 {
     uint masks[MAX_FP_TILES];
 };
@@ -444,7 +444,7 @@ struct FramePSHot
     float  fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
     float  giIntensity;      // 68
     uint   giDebug;          // 72
-    uint   cvolEnabled;      // 76
+    uint   giVolumesEnabled;  // 76
     uint   pad_[3];          // 80 -> 96 (16-byte aligned total)
 };
 
@@ -622,34 +622,34 @@ uint decalCount;                                         // 776 0 = decals off
     uint regCount;                                             // 1016 active volumes
     uint regEnabled;                                           // 1020 1 = grid branch active
     uint4 regPad;                                              // 1024 (16-align tail)
-    // ---- Convex GI volumes (Engine/GI/cubemap_volume.h; BO3-style
+    // ---- GI volumes (Engine/GI/cubemap_volume.h; BO3-style
     // cubemap-reprojection bake, TPP/HZD-style stacked volumes). Up to
-    // SG_CV_MAX_VOLUMES volumes from gi/<scene>.cvmanifest, each a
+    // SG_GI_VOLUME_MAX volumes from gi/<scene>.givolumemanifest, each a
     // dense SG probe grid in 7 RGBA16F 3D textures (hardware trilinear)
     // plus an 80 B header (fade-expanded AABB broad-phase + packed
     // world->uvw transform + plane span) into a shared plane pool —
     // see sg_lightmap_types.hlsli. The app uploads them priority-sorted
-    // (LOW first); the compositor in sg_cvol.hlsli walks them HIGH first
+    // (LOW first); the compositor in sg_gi_volume.hlsli walks them HIGH first
     // with transmittance factors (E = irr(V_h)*w_h + ... + base*Π(1-w)) —
     // a weight-1 volume zeroes the transmittance and the base gather is
     // skipped entirely; density levels never share interpolation
     // neighbors. ----
-    vk::BufferPointer<CvVolumesBuffer> cvolVolumes;           // 1040 headers + packed plane pool
-    uint cvolLayers[56];                                       // 1048 8 volumes x 7 layer slots
-    uint cvolCount;                                            // 1272 active volumes
-    uint cvolEnabled;                                          // 1276 1 = convex-volume branch active
-    // ---- Convex-volume tile masks: the tile cull's per-tile volume
+    vk::BufferPointer<GiVolumesBuffer> giVolumes;               // 1040 headers + packed plane pool
+    uint giVolumeLayers[56];                                    // 1048 8 volumes x 7 layer slots
+    uint giVolumeCount;                                         // 1272 active volumes
+    uint giVolumesEnabled;                                      // 1276 1 = GI-volume branch active
+    // ---- GI-volume tile masks: the tile cull's per-tile volume
     // bitmask (bit v = volume v reaches this 16x16 tile; conservative
     // screen-space test, NO depth-range cut — fog-march samples live in
     // front of the nearest opaque surface). Published under the decal
     // tile-list freshness contract (address + grid together, zeros
-    // together): cvolTileCountX == 0 means no tile cull refreshed the
+    // together): giVolumeTileCountX == 0 means no tile cull refreshed the
     // masks this view/frame — the shader then walks every volume (the
-    // per-volume AABB reject in SgCvWeight keeps that path correct).
+    // per-volume AABB reject in SgGiVolumeWeight keeps that path correct).
     // Same grid as the light/decal tiles (pc.fpTileSize/fpTileCountX). ----
-    vk::BufferPointer<CvVolumeTileMaskBuffer> cvolTileMasks;  // 1280 per-tile volume bitmask
-    uint cvolTileCountX;                                        // 1288 tile grid width (0 = no mask)
-    uint cvolTileSize;                                          // 1292 tile size (16)
+    vk::BufferPointer<GiVolumeTileMaskBuffer> giVolumeTileMasks; // 1280 per-tile volume bitmask
+    uint giVolumeTileCountX;                                     // 1288 tile grid width (0 = no mask)
+    uint giVolumeTileSize;                                       // 1292 tile size (16)
     // ---- FramePSHot slab (FS-only hot struct, see FramePSHot below): the
     // pixel shader reaches the hot slab through FrameUniforms (FramePSHot
     // hot = frame.frameHot.Get()) instead of a pc member — a pc member
@@ -677,12 +677,12 @@ uint decalCount;                                         // 776 0 = decals off
     // never move — baked once at load). Must match the C++ mirror +
     // static_asserts (giLevelLayers at 1320, 80 slots).
     uint giLevelLayers[80];                                      // 1320 8 levels x (9 amp + 1 weight)
-    // ---- Convex-volume isotropic-mean textures (the volumetric fog's
+    // ---- GI-volume isotropic-mean textures (the volumetric fog's
     // one-fetch-per-volume payload — PackGpuMeanLayer +
-    // SgCvSampleVolumeMean, blended by SgCvRayComposite): 8 bindless
+    // SgGiVolumeSampleMean, blended by SgGiVolumeRayComposite): 8 bindless
     // slots, UINT32_MAX =
     // none. APPEND-ONLY tail: every pinned offset above stays put. ----
-    uint cvolMeanLayers[8];                                       // 1640 8 volumes x 1 mean slot
+    uint giVolumeMeanLayers[8];                                  // 1640 8 volumes x 1 mean slot
     // ---- Analytic env zones (see Rendergraph/envzones.h): envZones is
     // the BDA of this frame's EnvZoneGpu slice; envZoneCount = live
     // records (0 = every consumer takes the plain env path). No baked

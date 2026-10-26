@@ -7,7 +7,7 @@
 // History: baked outputs (GI octrees/volumes, lightmap atlases, cubemap
 // captures) once rode GUID-derived paths with ".meta" identity sidecars
 // (the bake-asset system). That machinery is REMOVED — bakes now ride
-// STABLE VFS paths like mesh blobs (gi/<scene>.sggi, gi/<scene>_<n>.cvol
+// STABLE VFS paths like mesh blobs (gi/<scene>.sggi, gi/<scene>_<n>.givolume
 // + gi/<scene>.cvmanifest, gi/<scene>.regmanifest, gi/<scene>.sglm,
 // textures/cubemaps/<base>[_N].ktx2 + <base>.cubemanifest); the pak's
 // Gi registry carries the stable stems (scene data, like meshes), and

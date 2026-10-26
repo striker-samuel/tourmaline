@@ -6,7 +6,7 @@
 // interface over the same Run). CookArgs mirrors the FULL CLI surface:
 // every --flag has a field here and the CLI main maps its parsed Args
 // 1:1 (the original lib split mapped only 6 fields — --cubemap,
-// --dump-pak, the lightmap/cvolume knobs and the tour-merge explicitSet
+// --dump-pak, the lightmap/GI-volume knobs and the tour-merge explicitSet
 // silently no-op'd through the CLI; that lossy map is what this struct
 // kills). Embedders (the editor) fill the subset they drive; every other
 // field keeps the CLI default.
@@ -27,7 +27,7 @@ struct CookArgs {
 	std::vector<std::string> inVfsList; // processed .geometry artifacts
 	std::string inVfs; // primary identity (first artifact)
 	std::string outPak; // destination pak (stem source for bake file
-	                    // names: cvol manifest/volumes, cubemap base fallback).
+	                    // names: GI-volume manifest/volumes, cubemap base fallback).
 	                    // No pak is written — pak.exe assembles it.
 	std::unordered_set<std::string> explicitSet; // CLI-wins tour-merge keys
 	bool meshopt = true;
@@ -93,15 +93,15 @@ struct CookArgs {
 	bool cubemapPngMips = true;
 	// Ambient closure (default OFF: the GI stack owns the ambient; ON
 	// only for stack-less cooks - matches the runtime sky fallback but
-	// double-counts with the .sggi + cvols in the pak).
+	// double-counts with the .sggi + GI volumes in the pak).
 	bool cubemapAmbientClosure = false;
 	// Weave transmission for MASK (cutout cloth) materials: the cloth
 	// keeps its lit albedo AND passes light tinted per texel (the tint
 	// stays real in white-world GI bakes). Default OFF (MASK stays the
 	// opaque occluder - bistro foliage).
 	bool maskTransmission = false;
-	// Authored convex GI volumes baked INTO the pak (default on).
-	bool cvolume = true;
+	// Authored GI volumes baked INTO the pak (default on).
+	bool giVolume = true;
 	bool quickBakes = false; // capture-only refresh, no pak write
 	// Read-only inspection (--dump-pak): no cooking, no writes.
 	std::string dumpPak;

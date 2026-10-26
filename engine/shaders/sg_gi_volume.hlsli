@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// Convex GI volumes (Engine/GI/cubemap_volume.h): shaped local probe
+// GI volumes (Engine/GI/cubemap_volume.h): shaped local probe
 // grids cooked by sparse cubemap-reprojection bakes, blended over the
 // world field by ordered priority compositing.
 //
@@ -45,17 +45,17 @@
 // equation + fade ramp folded into ONE pre-normalized float4, no
 // per-plane division, no 560 B aggregate copies). The tile cull
 // (forwardplus.cs.hlsl) additionally writes a per-tile volume bitmask
-// (frame.cvolTileMasks) so pixels only walk volumes that can reach
+// (frame.giVolumeTileMasks) so pixels only walk volumes that can reach
 // their tile.
 //
-// CPU parity: the PACKED form is algebraically equal to CvPlaneWeight /
-// CvVolumeDef::Weight (cubemap_volume.h): min-of-smoothsteps ==
+// CPU parity: the PACKED form is algebraically equal to GiVolumePlaneWeight /
+// GiVolumeDef::Weight (cubemap_volume.h): min-of-smoothsteps ==
 // smoothstep-of-min (the cubic is monotone on [0,1]) and
 // saturate(dot(weightEquation.xyz, pos) + weightEquation.w) ==
 // saturate((inside + outsideFade) / span) with
 // weightEquation = (-n * fadeScale, fadeBias - d * fadeScale).
 // Degenerate spans (insideFade + outsideFade < 1e-5) pack as a 1e-5 m
-// ramp — the authored CPU step branch (CvSmoothStep) collapses to the
+// ramp — the authored CPU step branch (GiVolumeSmoothStep) collapses to the
 // same values below any content-relevant epsilon; no authored content
 // hits it.
 
@@ -67,14 +67,14 @@
 // exactly (six per-plane cubics collapsed into one). The header's
 // fade-expanded AABB rejects far-off volumes before a single plane slot
 // is fetched (the tile mask above it rejects whole volumes per TILE).
-float SgCvWeight(FrameUniforms frame, CvVolumeGpu v, float3 pos)
+float SgGiVolumeWeight(FrameUniforms frame, GiVolumeGpu v, float3 pos)
 {
     // Broad-phase: the fade-expanded hull AABB (the CPU packer grew the
     // generous Bounds() box by the widest outsideFade per axis — a
     // superset of the weight>0 region, so a reject here is always exact).
     if (any(pos < v.aabbMin.xyz) || any(pos > v.aabbMax.xyz))
         return 0.0;
-    const uint count = min(v.planeCountBase.x, (uint)SG_CV_MAX_PLANES);
+    const uint count = min(v.planeCountBase.x, (uint)SG_GI_VOLUME_MAX_PLANES);
     float minT = 1.0;
     [loop]
     for (uint i = 0; i < count; ++i)
@@ -83,7 +83,7 @@ float SgCvWeight(FrameUniforms frame, CvVolumeGpu v, float3 pos)
         // Early out: once one plane is fully outside, the min cannot
         // recover.
         const float4 p =
-            frame.cvolVolumes.Get().planes[v.planeCountBase.y + i].weightEquation;
+            frame.giVolumes.Get().planes[v.planeCountBase.y + i].weightEquation;
         const float t = saturate(dot(p.xyz, pos) + p.w);
         minT = min(minT, t);
         if (minT <= 0.0)
@@ -92,28 +92,28 @@ float SgCvWeight(FrameUniforms frame, CvVolumeGpu v, float3 pos)
     return minT * minT * (3.0 - 2.0 * minT);
 }
 
-// Per-tile volume bitmask for a pixel (see CvVolumeTileMaskBuffer).
+// Per-tile volume bitmask for a pixel (see GiVolumeTileMaskBuffer).
 // Returns the all-volumes mask when no tile cull refreshed the masks
-// for this view/frame (cvolTileCountX == 0 — the app publishes address
+// for this view/frame (giVolumeTileCountX == 0 — the app publishes address
 // + grid together, zeros together) or the pixel lands outside the tile
 // grid: the mask is only ever allowed to NARROW the candidate set
 // (correctness lives in the per-pixel AABB + plane tests of
-// SgCvWeight), never invent or drop volumes on its own.
-uint SgCvTileMask(FrameUniforms frame, float2 pix)
+// SgGiVolumeWeight), never invent or drop volumes on its own.
+uint SgGiVolumeTileMask(FrameUniforms frame, float2 pix)
 {
-    const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
+    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     const uint all = (1u << volCount) - 1u; // volCount <= 8 -> fits
-    if (frame.cvolTileCountX == 0u)
+    if (frame.giVolumeTileCountX == 0u)
         return all;
-    const uint ts = max(frame.cvolTileSize, 1u);
+    const uint ts = max(frame.giVolumeTileSize, 1u);
     const uint tx = (uint)(pix.x / (float)ts);
-    if (tx >= frame.cvolTileCountX)
+    if (tx >= frame.giVolumeTileCountX)
         return all;
     const uint ty = (uint)(pix.y / (float)ts);
-    const uint tileIdx = ty * frame.cvolTileCountX + tx;
+    const uint tileIdx = ty * frame.giVolumeTileCountX + tx;
     if (tileIdx >= (uint)MAX_FP_TILES)
         return all;
-    return frame.cvolTileMasks.Get().masks[tileIdx] & all;
+    return frame.giVolumeTileMasks.Get().masks[tileIdx] & all;
 }
 
 // Samples one volume's dense grid at world pos: 7 hardware-trilinear
@@ -124,16 +124,16 @@ uint SgCvTileMask(FrameUniforms frame, float2 pix)
 // per-pixel value like the old full-owner index), so the plain bindless
 // index keeps the descriptor fetch scalar — no NonUniformResourceIndex
 // divergence on the taps.
-void SgCvSampleVolume(FrameUniforms frame, uint vol, float3 pos,
+void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     out float3 amps[SG_GI_LOBES])
 {
-    const CvVolumeGpu v = frame.cvolVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
-    float4 layers[SG_CV_LAYERS];
+    float4 layers[SG_GI_VOLUME_LAYERS];
     [unroll]
-    for (uint t = 0; t < SG_CV_LAYERS; ++t)
+    for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
     {
-        layers[t] = volumeTextures[frame.cvolLayers[vol * 7u + t]]
+        layers[t] = volumeTextures[frame.giVolumeLayers[vol * 7u + t]]
             .Sample(samplers[2], uvw);
     }
     SgRegularUnpack(layers, amps);
@@ -142,26 +142,26 @@ void SgCvSampleVolume(FrameUniforms frame, uint vol, float3 pos,
 // ---- Volumetric mean path (the fog twin of the sampling/compositing
 // above): the fog consumes only the isotropic mean, which is linear in
 // the lobe amps (VolGiMean = 0.124959 * Σ amps), so the mean rides a
-// CPU-BAKED per-volume RGB texture (CvVolume::PackGpuMeanLayer —
+// CPU-BAKED per-volume RGB texture (GiVolume::PackGpuMeanLayer —
 // trilerp(Σ amps) == Σ trilerp(amps), packed from the same coeffs) and
 // the walk never materializes the SG lobe arrays: ONE trilinear fetch
 // per volume instead of 7 + the 27-half unpack + the 9-lobe blend —
 // the surface representation (54 coefficient floats alive per lookup)
 // was pure register-pressure poison at up to vp.steps lookups per
-// pixel. Same header/AABB/plane weighting as SgCvWeight. ----
+// pixel. Same header/AABB/plane weighting as SgGiVolumeWeight. ----
 
 // Samples one volume's baked mean texture at world pos (one trilinear
 // RGB fetch; uvw from the same packed header transform).
-void SgCvSampleVolumeMean(FrameUniforms frame, uint vol, float3 pos,
+void SgGiVolumeSampleMean(FrameUniforms frame, uint vol, float3 pos,
     out float3 mean)
 {
-    const CvVolumeGpu v = frame.cvolVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
-    mean = volumeTextures[frame.cvolMeanLayers[vol]]
+    mean = volumeTextures[frame.giVolumeMeanLayers[vol]]
         .Sample(samplers[2], uvw).rgb;
 }
 
-// ---- Fog ray-space volume table (per-pixel prep, SgCvRayPrep) ----
+// ---- Fog ray-space volume table (per-pixel prep, SgGiVolumeRayPrep) ----
 // The march ray is pos(t) = camPos + rayDir * t, so each plane ramp
 //   t_p = saturate(dot(p.xyz, pos(t)) + p.w)
 //       = saturate(dot(p.xyz, camPos) + p.w + dot(p.xyz, rayDir) * t)
@@ -171,30 +171,30 @@ void SgCvSampleVolumeMean(FrameUniforms frame, uint vol, float3 pos,
 // plane-buffer loads, no dot3s per segment. Volumes whose
 // fade-expanded-AABB interval misses the ray never enter the table at
 // all (2 interval compares per segment, no loads). Register-bounded:
-// the first SG_CV_MAX_RAY_VOLUMES interval-overlapping volumes
+// the first SG_GI_VOLUME_MAX_RAY interval-overlapping volumes
 // (priority order) ride the table; any excess (pathological-only)
 // evaluates per segment straight from the pool, exactly
-// (SgCvWeight + one mean fetch).
-struct CvRayVolume
+// (SgGiVolumeWeight + one mean fetch).
+struct GiRayVolume
 {
     float enter;                        // ray interval [enter, exit]
     float exit;                         // (clipped to [0, rayLen])
     uint volume;                        // upload index (priority order)
     uint planeCount;                    // planes in base/slope below
-    float base[SG_CV_MAX_PLANES];       // dot(p.xyz, camPos) + p.w
-    float slope[SG_CV_MAX_PLANES];      // dot(p.xyz, rayDir)
+    float base[SG_GI_VOLUME_MAX_PLANES];       // dot(p.xyz, camPos) + p.w
+    float slope[SG_GI_VOLUME_MAX_PLANES];      // dot(p.xyz, rayDir)
 };
 
-struct CvRayPrep
+struct GiVolumeRayPrep
 {
     uint rayCount;                                   // table entries used
     uint tailCount;                                  // pool-fallback entries used
-    CvRayVolume rays[SG_CV_MAX_RAY_VOLUMES];        // priority ordered
-    uint tailVolumes[SG_CV_MAX_VOLUMES];             // priority ordered
-    float tailEnter[SG_CV_MAX_VOLUMES];              // segment skip intervals
-    float tailExit[SG_CV_MAX_VOLUMES];
-    float3 rayMean[SG_CV_MAX_RAY_VOLUMES];           // held means (lazy fetch)
-    bool rayMeanValid[SG_CV_MAX_RAY_VOLUMES];
+    GiRayVolume rays[SG_GI_VOLUME_MAX_RAY];        // priority ordered
+    uint tailVolumes[SG_GI_VOLUME_MAX];             // priority ordered
+    float tailEnter[SG_GI_VOLUME_MAX];              // segment skip intervals
+    float tailExit[SG_GI_VOLUME_MAX];
+    float3 rayMean[SG_GI_VOLUME_MAX_RAY];           // held means (lazy fetch)
+    bool rayMeanValid[SG_GI_VOLUME_MAX_RAY];
 };
 
 // Per-pixel ray-space prep for the fog march: tile mask -> per-volume
@@ -202,20 +202,20 @@ struct CvRayPrep
 // traffic) -> ray-interval table for the overlapping volumes (priority
 // order) with their planes transformed to base/slope form. Called ONCE
 // per pixel; the march then walks the table, never the pool.
-void SgCvRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
-    float3 rayDir, float rayLen, out CvRayPrep prep)
+void SgGiVolumeRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
+    float3 rayDir, float rayLen, out GiVolumeRayPrep prep)
 {
     prep.rayCount = 0u;
     prep.tailCount = 0u;
-    if (frame.cvolEnabled == 0u)
+    if (frame.giVolumesEnabled == 0u)
         return;
-    const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
+    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
     {
         if ((volMask & (1u << uint(v))) == 0u)
             continue;
-        const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
         // Fade-expanded AABB slab test (a superset of the weight>0
         // region — a miss is an exact weight-0 verdict for the whole
         // ray). Division by a ~0 ray component yields ±inf, which the
@@ -229,18 +229,18 @@ void SgCvRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
         const float exit = min(min(tmax.x, tmax.y), rayLen);
         if (exit < enter)
             continue; // ray misses the volume: zero weight everywhere
-        if (prep.rayCount < (uint)SG_CV_MAX_RAY_VOLUMES)
+        if (prep.rayCount < (uint)SG_GI_VOLUME_MAX_RAY)
         {
             const uint s = prep.rayCount;
             prep.rays[s].enter = enter;
             prep.rays[s].exit = exit;
             prep.rays[s].volume = uint(v);
-            const uint count = min(vol.planeCountBase.x, (uint)SG_CV_MAX_PLANES);
+            const uint count = min(vol.planeCountBase.x, (uint)SG_GI_VOLUME_MAX_PLANES);
             prep.rays[s].planeCount = count;
             [loop]
             for (uint p = 0; p < count; ++p)
             {
-                const float4 wEq = frame.cvolVolumes.Get()
+                const float4 wEq = frame.giVolumes.Get()
                     .planes[vol.planeCountBase.y + p].weightEquation;
                 prep.rays[s].base[p] = dot(wEq.xyz, camPos) + wEq.w;
                 prep.rays[s].slope[p] = dot(wEq.xyz, rayDir);
@@ -253,7 +253,7 @@ void SgCvRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
             // Pathological-only tail (5th+ overlapping volume): the
             // march evaluates these from the pool per segment, exactly.
             const uint k = prep.tailCount;
-            if (k < (uint)SG_CV_MAX_VOLUMES)
+            if (k < (uint)SG_GI_VOLUME_MAX)
             {
                 prep.tailVolumes[k] = uint(v);
                 prep.tailEnter[k] = enter;
@@ -269,9 +269,9 @@ void SgCvRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
 // volumes, plus the pool-fallback tail. Means are fetched LAZILY once
 // (the mean texture is static — a held mean stays valid), so a volume
 // whose interval goes live between octree refreshes still blends its
-// true mean. Same ordered transmittance math as SgCvComposite — the
+// true mean. Same ordered transmittance math as SgGiVolumeComposite — the
 // result is the composite AT this t with exact weights.
-void SgCvRayComposite(FrameUniforms frame, inout CvRayPrep prep, float t,
+void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, float t,
     float3 wpos, out float3 volAcc, out float trans)
 {
     volAcc = float3(0.0, 0.0, 0.0);
@@ -296,7 +296,7 @@ void SgCvRayComposite(FrameUniforms frame, inout CvRayPrep prep, float t,
             continue;
         if (!prep.rayMeanValid[s])
         {
-            SgCvSampleVolumeMean(frame, prep.rays[s].volume, wpos,
+            SgGiVolumeSampleMean(frame, prep.rays[s].volume, wpos,
                 prep.rayMean[s]);
             prep.rayMeanValid[s] = true;
         }
@@ -310,14 +310,14 @@ void SgCvRayComposite(FrameUniforms frame, inout CvRayPrep prep, float t,
     {
         if (t < prep.tailEnter[k] || t > prep.tailExit[k])
             continue;
-        const CvVolumeGpu vol =
-            frame.cvolVolumes.Get().volumes[prep.tailVolumes[k]];
-        const float w = SgCvWeight(frame, vol, wpos);
+        const GiVolumeGpu vol =
+            frame.giVolumes.Get().volumes[prep.tailVolumes[k]];
+        const float w = SgGiVolumeWeight(frame, vol, wpos);
         [branch]
         if (w <= 0.0)
             continue;
         float3 vMean;
-        SgCvSampleVolumeMean(frame, prep.tailVolumes[k], wpos, vMean);
+        SgGiVolumeSampleMean(frame, prep.tailVolumes[k], wpos, vMean);
         volAcc += vMean * (trans * w);
         trans *= 1.0 - w;
         if (trans <= 0.0)
@@ -331,9 +331,9 @@ void SgCvRayComposite(FrameUniforms frame, inout CvRayPrep prep, float t,
 // leftover base weight (0 when a deep-inside volume fully owns the
 // pixel — the caller skips the octree/sky gather entirely);
 // outHit whether any volume reached the pixel at all. volMask comes
-// from SgCvTileMask (hoistable per pixel; the volumetric march reuses
+// from SgGiVolumeTileMask (hoistable per pixel; the volumetric march reuses
 // one mask for all its segments).
-void SgCvComposite(FrameUniforms frame, uint volMask, float3 pos,
+void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
     out float3 amps[SG_GI_LOBES], out float transmission, out bool hit)
 {
     [unroll]
@@ -341,21 +341,21 @@ void SgCvComposite(FrameUniforms frame, uint volMask, float3 pos,
         amps[l] = float3(0.0, 0.0, 0.0);
     transmission = 1.0;
     hit = false;
-    if (frame.cvolEnabled == 0u)
+    if (frame.giVolumesEnabled == 0u)
         return;
-    const uint volCount = min(frame.cvolCount, (uint)SG_CV_MAX_VOLUMES);
+    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
     {
         if ((volMask & (1u << uint(v))) == 0u)
             continue;
-        const CvVolumeGpu vol = frame.cvolVolumes.Get().volumes[uint(v)];
-        const float w = SgCvWeight(frame, vol, pos);
+        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const float w = SgGiVolumeWeight(frame, vol, pos);
         [branch]
         if (w <= 0.0)
             continue;
         float3 vAmps[SG_GI_LOBES];
-        SgCvSampleVolume(frame, uint(v), pos, vAmps);
+        SgGiVolumeSample(frame, uint(v), pos, vAmps);
         const float c = transmission * w;
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)

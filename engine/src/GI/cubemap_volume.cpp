@@ -20,12 +20,12 @@ namespace smvk::gi {
 
 namespace {
 
-constexpr uint32_t kCvolVersion = 1;
+constexpr uint32_t kGiVolumeVersion = 1;
 constexpr float kPi = 3.14159265358979323846f;
 
-struct CvolFileHeader {
-	char magic[4] = { 'C', 'V', 'O', 'L' };
-	uint32_t version = kCvolVersion;
+struct GiVolumeFileHeader {
+	char magic[4] = { 'G', 'I', 'V', 'L' }; // "GIVL" = GiVolume (was "CVOL")
+	uint32_t version = kGiVolumeVersion;
 	uint32_t planeCount = 0;
 	uint32_t priority = 0;
 	uint32_t dims[3] = {};
@@ -37,7 +37,7 @@ struct CvolFileHeader {
 	uint32_t compressed = 0;  // 1 = LZ4 block
 	uint32_t pad = 0;
 };
-static_assert(sizeof(CvolFileHeader) == 4 + 4 * 4 + 12 + 4 + 12 + 4 + 4 * 3);
+static_assert(sizeof(GiVolumeFileHeader) == 4 + 4 * 4 + 12 + 4 + 12 + 4 + 4 * 3);
 
 inline float Luminance(const glm::vec3& c) {
 	return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
@@ -46,9 +46,9 @@ inline float Luminance(const glm::vec3& c) {
 inline float SafeSqrt(float v) { return v > 0.0f ? std::sqrt(v) : 0.0f; }
 
 // Clip a big box by every plane; the region must close (bounded).
-bool ClipBounds(const std::vector<CvPlane>& planes, glm::vec3& mn, glm::vec3& mx) {
+bool ClipBounds(const std::vector<GiVolumePlane>& planes, glm::vec3& mn, glm::vec3& mx) {
 	constexpr float kBig = 1.0e5f;
-	glm::vec3 lo(-kBig), hi(kBig);	for (const CvPlane& p : planes) {
+	glm::vec3 lo(-kBig), hi(kBig);	for (const GiVolumePlane& p : planes) {
 		// Current box corners; keep the inside ones plus the 12 edge /
 		// plane intersections — the AABB of those points is exact for
 		// box ∩ halfspace and a mild superset once several planes
@@ -112,16 +112,16 @@ bool ClipBounds(const std::vector<CvPlane>& planes, glm::vec3& mn, glm::vec3& mx
 // Definition
 // ---------------------------------------------------------------------------
 
-bool CvVolumeDef::Bounds(glm::vec3& mn, glm::vec3& mx) const {
+bool GiVolumeDef::Bounds(glm::vec3& mn, glm::vec3& mx) const {
 	return ClipBounds(planes, mn, mx);
 }
 
-std::vector<CvPlane> CvBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
+std::vector<GiVolumePlane> GiVolumeBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
 	float insideFade, float outsideFade) {
-	std::vector<CvPlane> planes;
+	std::vector<GiVolumePlane> planes;
 	planes.reserve(6);
 	auto add = [&](const glm::vec3& n, float d) {
-		CvPlane p{};
+		GiVolumePlane p{};
 		p.normal = n;
 		p.d = d;
 		p.insideFade = insideFade;
@@ -140,14 +140,14 @@ std::vector<CvPlane> CvBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
 	return planes;
 }
 
-std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
+std::vector<GiVolumePlane> GiVolumeBoxPlanesRotated(const glm::vec3& center,
 	const glm::mat3& axes, const glm::vec3& half,
 	float insideFade, float outsideFade) {
-	std::vector<CvPlane> planes;
+	std::vector<GiVolumePlane> planes;
 	planes.reserve(6);
 	// Axis i: unit direction u (normalized column), half-extent h.
 	// The two faces: u.P <= u.c + h and u.P >= u.c - h (inside:
-	// n.P + d <= 0). Identity axes reproduce CvBoxPlanes exactly
+	// n.P + d <= 0). Identity axes reproduce GiVolumeBoxPlanes exactly
 	// (-x face: d = u.c - h = c.x - h = mn.x, etc).
 	glm::vec3 u[3] = { axes[0], axes[1], axes[2] };
 	for (glm::vec3& a : u) {
@@ -157,7 +157,7 @@ std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
 	for (int i = 0; i < 3; ++i) {
 		const float h = half[i];
 		const float uc = glm::dot(u[i], center);
-		CvPlane p{};
+		GiVolumePlane p{};
 		p.insideFade = insideFade;
 		p.outsideFade = outsideFade;
 		p.normal = -u[i];
@@ -174,15 +174,15 @@ std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
 // Volume
 // ---------------------------------------------------------------------------
 
-uint64_t CvVolume::VoxelCount() const {
+uint64_t GiVolume::VoxelCount() const {
 	return uint64_t(dims[0]) * dims[1] * dims[2];
 }
 
-void CvVolume::Resize() {
+void GiVolume::Resize() {
 	coeffs.assign(size_t(VoxelCount()) * kSgLobeCount, glm::vec3(0.0f));
 }
 
-bool CvVolume::Sample(
+bool GiVolume::Sample(
 	const glm::vec3& p,
 	glm::vec3 outAmps[kSgLobeCount]) const
 {
@@ -217,7 +217,7 @@ bool CvVolume::Sample(
 	return true;
 }
 
-//bool CvVolume::Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const {
+//bool GiVolume::Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const {
 //	for (uint32_t i = 0; i < kSgLobeCount; ++i)
 //		outAmps[i] = glm::vec3(0.0f);
 //	if (coeffs.empty() || spacing <= 0.0f)
@@ -260,7 +260,7 @@ bool CvVolume::Sample(
 //	return true;
 //}
 
-void CvVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
+void GiVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
 	const uint64_t n = VoxelCount();
 	for (int t = 0; t < 7; ++t)
 		out[t].assign(size_t(n) * 4, uint16_t(0));
@@ -279,7 +279,7 @@ void CvVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
 	}
 }
 
-void CvVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
+void GiVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
 	// One RGBA16F texel per voxel: rgb = 0.124959 * ╬ú lobes (the
 	// isotropic mean the fog consumes ΓÇö VolGiMean's constant in
 	// volumetric.frag.hlsl, the fixed sharpness-4 SG mean weight
@@ -303,12 +303,12 @@ void CvVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
 	}
 }
 
-size_t CvVolume::GpuBytes() const {
+size_t GiVolume::GpuBytes() const {
 	return size_t(VoxelCount()) * 7 * 8;
 }
 
-bool CvVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const {
-	CvolFileHeader hdr{};
+bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const {
+	GiVolumeFileHeader hdr{};
 	hdr.planeCount = uint32_t(def.planes.size());
 	hdr.priority = def.priority;
 	hdr.dims[0] = dims[0];
@@ -322,7 +322,7 @@ bool CvVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const 
 	std::vector<uint8_t> planeBytes(def.planes.size() * 8 * sizeof(float));
 	auto* pf = reinterpret_cast<float*>(planeBytes.data());
 	for (size_t i = 0; i < def.planes.size(); ++i) {
-		const CvPlane& p = def.planes[i];
+		const GiVolumePlane& p = def.planes[i];
 		pf[i * 8 + 0] = p.normal.x;
 		pf[i * 8 + 1] = p.normal.y;
 		pf[i * 8 + 2] = p.normal.z;
@@ -350,65 +350,65 @@ bool CvVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const 
 	hdr.payloadBytes = uint32_t(payload.size());
 	hdr.compressed = 1;
 	if (!Lz4Compress(payload, compressed, 1)) {
-		err = "CvVolume: LZ4 compression failed";
+		err = "GiVolume: LZ4 compression failed";
 		return false;
 	}
 
-	out.resize(sizeof(CvolFileHeader) + compressed.size());
+	out.resize(sizeof(GiVolumeFileHeader) + compressed.size());
 	std::memcpy(out.data(), &hdr, sizeof(hdr));
 	std::memcpy(out.data() + sizeof(hdr), compressed.data(), compressed.size());
 	return true;
 }
 
-bool CvVolume::WriteFile(const std::string& path, std::string& err) const {
+bool GiVolume::WriteFile(const std::string& path, std::string& err) const {
 	std::vector<uint8_t> bytes;
 	if (!WriteToMemory(bytes, err))
 		return false;
 	FILE* f = std::fopen(path.c_str(), "wb");
 	if (!f) {
-		err = "CvVolume: cannot open output " + path;
+		err = "GiVolume: cannot open output " + path;
 		return false;
 	}
 	const size_t written = std::fwrite(bytes.data(), 1, bytes.size(), f);
 	std::fclose(f);
 	if (written != bytes.size()) {
-		err = "CvVolume: short write to " + path;
+		err = "GiVolume: short write to " + path;
 		return false;
 	}
 	return true;
 }
 
-bool CvVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) {
-	CvolFileHeader hdr{};
+bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) {
+	GiVolumeFileHeader hdr{};
 	if (bytes.size() < sizeof(hdr)) {
-		err = "cvol: file too small";
+		err = "givolume: file too small";
 		return false;
 	}
 	std::memcpy(&hdr, bytes.data(), sizeof(hdr));
-	if (std::memcmp(hdr.magic, "CVOL", 4) != 0) {
-		err = "cvol: bad magic";
+		if (std::memcmp(hdr.magic, "GIVL", 4) != 0) {
+		err = "givolume: bad magic";
 		return false;
 	}
-	if (hdr.version != kCvolVersion) {
-		err = "cvol: unsupported version " + std::to_string(hdr.version);
+	if (hdr.version != kGiVolumeVersion) {
+		err = "givolume: unsupported version " + std::to_string(hdr.version);
 		return false;
 	}
 	if (hdr.lobeCount != kSgLobeCount || hdr.sharpness != kSgSharpness) {
-		err = "cvol: basis mismatch (re-bake required)";
+		err = "givolume: basis mismatch (re-bake required)";
 		return false;
 	}
-	if (hdr.planeCount == 0 || hdr.planeCount > kCvMaxPlanes) {
-		err = "cvol: bad plane count";
+	if (hdr.planeCount == 0 || hdr.planeCount > kGiVolumeMaxPlanes) {
+		err = "givolume: bad plane count";
 		return false;
 	}
 	if (hdr.dims[0] == 0 || hdr.dims[1] == 0 || hdr.dims[2] == 0
-		|| hdr.dims[0] > kCvMaxDim || hdr.dims[1] > kCvMaxDim
-		|| hdr.dims[2] > kCvMaxDim) {
-		err = "cvol: bad dims";
+		|| hdr.dims[0] > kGiVolumeMaxDim || hdr.dims[1] > kGiVolumeMaxDim
+		|| hdr.dims[2] > kGiVolumeMaxDim) {
+		err = "givolume: bad dims";
 		return false;
 	}
 	if (hdr.spacing <= 0.0f) {
-		err = "cvol: bad spacing";
+		err = "givolume: bad spacing";
 		return false;
 	}
 
@@ -417,7 +417,7 @@ bool CvVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 		bytes.size() - sizeof(hdr));
 	if (hdr.compressed) {
 		if (!Lz4Decompress(stored, hdr.payloadBytes, payload)) {
-			err = "cvol: LZ4 decompression failed";
+			err = "givolume: LZ4 decompression failed";
 			return false;
 		}
 	} else {
@@ -427,14 +427,14 @@ bool CvVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 	const size_t planeBytes = size_t(hdr.planeCount) * 8 * sizeof(float);
 	const uint64_t n = uint64_t(hdr.dims[0]) * hdr.dims[1] * hdr.dims[2];
 	if (payload.size() != planeBytes + size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t)) {
-		err = "cvol: payload size mismatch";
+		err = "givolume: payload size mismatch";
 		return false;
 	}
 
 	def.planes.resize(hdr.planeCount);
 	const auto* pf = reinterpret_cast<const float*>(payload.data());
 	for (uint32_t i = 0; i < hdr.planeCount; ++i) {
-		CvPlane& p = def.planes[i];
+		GiVolumePlane& p = def.planes[i];
 		p.normal = glm::vec3(pf[i * 8 + 0], pf[i * 8 + 1], pf[i * 8 + 2]);
 		p.d = pf[i * 8 + 3];
 		p.insideFade = pf[i * 8 + 4];
@@ -459,7 +459,7 @@ bool CvVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 	return true;
 }
 
-bool CvVolume::ReadFile(const std::string& path, CvVolume& out, std::string& err) {
+bool GiVolume::ReadFile(const std::string& path, GiVolume& out, std::string& err) {
 	try {
 		const std::vector<char> raw = readFile(path);
 		const auto* begin = reinterpret_cast<const uint8_t*>(raw.data());
@@ -474,18 +474,18 @@ bool CvVolume::ReadFile(const std::string& path, CvVolume& out, std::string& err
 // Bake: sparse radiance+depth captures -> cubemap reprojection -> dense grid
 // ---------------------------------------------------------------------------
 
-bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
-	float spacing, const CvBakeConfig& configIn, CvVolume& outVolume,
-	CvBakeStats& stats, GiBakeProgress progress) {
+bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
+	float spacing, const GiVolumeBakeConfig& configIn, GiVolume& outVolume,
+	GiVolumeBakeStats& stats, GiBakeProgress progress) {
 	const auto t0 = std::chrono::steady_clock::now();
-	CvBakeConfig cfg = configIn;
+	GiVolumeBakeConfig cfg = configIn;
 	auto say = [&](const char* line) {
 		if (progress)
 			progress(line);
 	};
 
-	if (def.planes.empty() || def.planes.size() > kCvMaxPlanes) {
-		say("cvol bake: bad plane count\n");
+	if (def.planes.empty() || def.planes.size() > kGiVolumeMaxPlanes) {
+		say("givolume bake: bad plane count\n");
 		return false;
 	}
 	spacing = std::max(spacing, 0.01f);
@@ -494,7 +494,7 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 
 	glm::vec3 bMin, bMax;
 	if (!def.Bounds(bMin, bMax)) {
-		say("cvol bake: planes do not bound a closed region\n");
+		say("givolume bake: planes do not bound a closed region\n");
 		return false;
 	}
 
@@ -504,11 +504,11 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 	const glm::vec3 ext = bMax - bMin;
 	for (int a = 0; a < 3; ++a) {
 		outVolume.dims[a] = std::max(1u, uint32_t(std::ceil(ext[a] / spacing)));
-		outVolume.dims[a] = std::min(outVolume.dims[a], kCvMaxDim);
+		outVolume.dims[a] = std::min(outVolume.dims[a], kGiVolumeMaxDim);
 	}
 	const uint64_t n = outVolume.VoxelCount();
-	if (n > uint64_t(kCvMaxDim) * kCvMaxDim * kCvMaxDim) {
-		say("cvol bake: grid too dense (cap 256^3)\n");
+	if (n > uint64_t(kGiVolumeMaxDim) * kGiVolumeMaxDim * kGiVolumeMaxDim) {
+		say("givolume bake: grid too dense (cap 256^3)\n");
 		return false;
 	}
 	outVolume.Resize();
@@ -619,7 +619,7 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 			if (progress && ((base / kBatch) & 15u) == 0) {
 				char line[128];
 				std::snprintf(line, sizeof(line),
-					"cvol bake: %llu/%llu probes\n",
+					"givolume bake: %llu/%llu probes\n",
 					(unsigned long long)end, (unsigned long long)n);
 				say(line);
 			}
@@ -748,7 +748,7 @@ bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
 	{
 		char line[192];
 		std::snprintf(line, sizeof(line),
-			"cvol bake: done: %llu probes (per-probe direct trace) "
+			"givolume bake: done: %llu probes (per-probe direct trace) "
 			"in %.1fs (%.1f MiB GPU, %llu invalid, %llu clamped)\n",
 			(unsigned long long)n,
 			stats.seconds, double(outVolume.GpuBytes()) / (1024.0 * 1024.0),

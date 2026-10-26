@@ -158,19 +158,19 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		}
 		else if (a == "--print-bounds") { out.printBounds = true; }
 		else if (a == "--scan-interior") { out.scanInterior = true; }
-		else if (a == "--cv-spec") { if (!need(out.cvSpec, i)) return false; }
-		else if (a == "--cv-dirs") { if (!needU(out.cvDirs, i)) return false; }
-		else if (a == "--cv-smoothing") { if (!needU(out.cvSmoothing, i)) return false; }
+		else if (a == "--gi-volume-spec") { if (!need(out.giVolumeSpec, i)) return false; }
+		else if (a == "--gi-volume-dirs") { if (!needU(out.giVolumeDirs, i)) return false; }
+		else if (a == "--gi-volume-smoothing") { if (!needU(out.giVolumeSmoothing, i)) return false; }
 		else if (a == "--mask-transmission") {
 			std::string v;
 			if (!need(v, i)) return false;
 			out.maskTransmission = (v == "on" || v == "1" || v == "true");
 			out.maskTransmissionSet = true;
 		}
-		else if (a == "--cv-capture-spacing") {
+		else if (a == "--gi-volume-capture-spacing") {
 			std::string v;
 			if (!need(v, i)) return false;
-			out.cvCaptureSpacing = std::stof(v);
+			out.giVolumeCaptureSpacing = std::stof(v);
 		}
 		else if (a == "--lm-probe") { if (!needU(out.lmProbe, i)) return false; }
 		else if (a == "--help" || a == "-h") {
@@ -194,8 +194,8 @@ void Usage() {
 	tool::out() << "GiBaker --content-dir content --scene sponza\n"
 		<< "         [--out content/gi/sponza.sggi] [--in-vfs models/X/x.geometry]\n"
 		<< "         (bake outputs ride STABLE VFS paths like mesh blobs:\n"
-		<< "         gi/<scene>.sggi, gi/<scene>_<name>.cvol + the manifests\n"
-		<< "         gi/<scene>.cvmanifest / gi/<scene>.regmanifest (rows\n"
+		<< "         gi/<scene>.sggi, gi/<scene>_<name>.givolume + the manifests\n"
+		<< "         gi/<scene>.givolumemanifest / gi/<scene>.regmanifest (rows\n"
 		<< "         are bare VFS paths))\n"
 		<< "         [--rays 1024] [--bounces 3] [--error-rays 32]\n"
 		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 1048576]\n"
@@ -220,11 +220,11 @@ void Usage() {
 		<< "         PakCooker --lightmap on (writes gi/<scene>.sglm itself).\n"
 		<< "GiBaker --scene bistro --print-bounds | --scan-interior:\n"
 		<< "         scene AABB / enclosure map to place bar/street boxes.\n"
-		<< "GiBaker --scene bistro --cv-spec volumes.txt\n"
-		<< "         [--cv-dirs 1536]: bake STACKED CONVEX GI volumes\n"
+		<< "GiBaker --scene bistro --gi-volume-spec volumes.txt\n"
+		<< "         [--gi-volume-dirs 1536]: bake STACKED CONVEX GI volumes\n"
 		<< "         (probes-only pivot; a DIRECT per-probe path trace per\n"
 		<< "         dense grid node — the BO3 capture/reprojection era\n"
-		<< "         is retired; --cv-capture-spacing parses but is inert).\n"
+		<< "         is retired; --gi-volume-capture-spacing parses but is inert).\n"
 		<< "         Spec file, one `volume <name>` block each:\n"
 		<< "           volume bar\n"
 		<< "             box 9.4,-1,0.6 28.4,5.5,18.6 [0.1,0.1]\n"
@@ -232,8 +232,8 @@ void Usage() {
 		<< "             face-fade 2 0.1 0.1          # retune plane #2\n"
 		<< "             priority 10\n"
 		<< "             spacing 0.5\n"
-		<< "         Writes gi/<scene>_<name>.cvol + updates the runtime\n"
-		<< "         manifest gi/<scene>.cvmanifest (rows are bare VFS paths).\n"
+		<< "         Writes gi/<scene>_<name>.givolume + updates the runtime\n"
+		<< "         manifest gi/<scene>.givolumemanifest (rows are bare VFS paths).\n"
 		<< "         Volumes blend over the .sggi world field by priority.\n"
 		<< "GiBaker --scene bistro --lm-probe N --uniform-albedo off\n"
 		<< "         [--sun-... --sky-intensity ...]: lightmap-chain diagnostic\n"
@@ -322,11 +322,11 @@ int AnalyzeRegularVolume(const std::string& path) {
 // level) plus a CPU Sample() irradiance transect across the volume so
 // blotchy runtime output can be bisected into bake-side (extreme or
 // disagreeing probes) vs GPU-side (transfer/sampling) faults.
-int AnalyzeCvVolume(const std::string& path) {
+int AnalyzeGiVolume(const std::string& path) {
 	using namespace smvk::gi;
-	CvVolume vol;
+	GiVolume vol;
 	std::string err;
-	if (!CvVolume::ReadFile(path, vol, err)) {
+	if (!GiVolume::ReadFile(path, vol, err)) {
 		tool::err() << "Analyze: load failed: " << err << std::endl;
 		return 1;
 	}
@@ -825,7 +825,7 @@ std::optional<std::string> SceneGltf(const std::string& id) {
 }
 
 // ---------------------------------------------------------------------------
-// Convex-volume spec (--cv-spec): authoring format for stacked probe
+// Convex-volume spec (--gi-volume-spec): authoring format for stacked probe
 // volumes. One `volume <name>` block per volume; keys inside a block:
 //   box <min> <max> [inside,outside]   six planes from an AABB (fades
 //                                      default 0.1/0.1; min/max "x,y,z")
@@ -837,19 +837,19 @@ std::optional<std::string> SceneGltf(const std::string& id) {
 //   capture-spacing <m>                INERT (the per-probe bake has no
 //                                      capture lattice); still parsed
 // ---------------------------------------------------------------------------
-struct CvSpecVolume {
-	smvk::gi::CvVolumeDef def;
+struct GiVolumeSpecVolume {
+	smvk::gi::GiVolumeDef def;
 	float spacing = 0.5f;
 	float captureSpacing = 0.0f;
-	// The authored cvolume NODE (tour cvolume nodes; UINT32_MAX = a
-	// hand-written --cv-spec entry). The stamp binds baked volumes to
+	// The authored GI volume NODE (tour GI volume nodes; UINT32_MAX = a
+	// hand-written --gi-volume-spec entry). The stamp binds baked volumes to
 	// their definitions by node — hand-tuning extras carry no node and
 	// stay unbound (diagnostic-only under the scene-carried binding
 	// model: the pak embeds exactly what the scene binds).
 	uint32_t node = UINT32_MAX;
 };
 
-bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
+bool ParseGiVolumeSpec(const std::string& hostPath, std::vector<GiVolumeSpecVolume>& out,
 	std::string& err) {
 	std::ifstream in(hostPath);
 	if (!in) {
@@ -873,11 +873,11 @@ bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
 		if (!(ss >> key) || key.empty())
 			continue;
 		auto fail = [&](const std::string& why) {
-			err = "cv-spec:" + std::to_string(lineNo) + ": " + why;
+			err = "gi-volume-spec:" + std::to_string(lineNo) + ": " + why;
 			return false;
 		};
 		if (key == "volume") {
-			CvSpecVolume v{};
+			GiVolumeSpecVolume v{};
 			if (!(ss >> v.def.name) || v.def.name.empty()) {
 				v.def.name = "vol" + std::to_string(unnamed++);
 				ss.clear();
@@ -888,7 +888,7 @@ bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
 		}
 		if (!curIdx)
 			return fail("key '" + key + "' outside a volume block");
-		CvSpecVolume& v = out[*curIdx];
+		GiVolumeSpecVolume& v = out[*curIdx];
 		if (key == "box") {
 			std::string mn, mx, fades;
 			glm::vec3 bmn, bmx;
@@ -898,14 +898,14 @@ bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
 			if ((ss >> fades) && std::sscanf(fades.c_str(), "%f,%f",
 					&inF, &outF) != 2)
 				return fail("box fades want <in,out>");
-			auto planes = smvk::gi::CvBoxPlanes(bmn, bmx, inF, outF);
+			auto planes = smvk::gi::GiVolumeBoxPlanes(bmn, bmx, inF, outF);
 			v.def.planes.insert(v.def.planes.end(),
 				planes.begin(), planes.end());
 		} else if (key == "plane") {
 			std::string spec, sIn, sOut;
 			if (!(ss >> spec))
 				return fail("plane wants <nx,ny,nz,d> [in [out]]");
-			smvk::gi::CvPlane p{};
+			smvk::gi::GiVolumePlane p{};
 			glm::vec3 n;
 			if (!parseVec3(spec, n) || !(ss >> p.d))
 				return fail("plane wants <nx,ny,nz,d> [in [out]]");
@@ -945,14 +945,14 @@ bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
 		err = "cv-spec has no volume blocks";
 		return false;
 	}
-	for (const CvSpecVolume& v : out) {
+	for (const GiVolumeSpecVolume& v : out) {
 		if (v.def.planes.empty()) {
 			err = "volume '" + v.def.name + "' has no planes";
 			return false;
 		}
-		if (v.def.planes.size() > smvk::gi::kCvMaxPlanes) {
+		if (v.def.planes.size() > smvk::gi::kGiVolumeMaxPlanes) {
 			err = "volume '" + v.def.name + "' exceeds "
-				+ std::to_string(smvk::gi::kCvMaxPlanes) + " planes";
+				+ std::to_string(smvk::gi::kGiVolumeMaxPlanes) + " planes";
 			return false;
 		}
 		glm::vec3 mn, mx;
@@ -989,7 +989,7 @@ std::string VfsRelPath(const std::string& contentDir,
 	return hostPath;
 }
 
-// Merge one bake row into a volume manifest (shared by the reg/cvol
+// Merge one bake row into a volume manifest (shared by the reg/givolume
 // writers): reads the manifest when it exists; keeps every existing
 // line except a row carrying the same "# <note>" (the rebaked volume
 // replaces its own row — same volume, possibly a new path); appends the
@@ -1057,7 +1057,7 @@ int Run(Args& args) {
 	// outExplicit together with --out; in-process callers (the editor's
 	// cook stage 1 / Bake GI) fill Args directly and were silently
 	// missing the parse-only flag: GiBaker baked the authored convex
-	// volumes, took the cvol-only early exit, returned 0 WITHOUT ever
+	// volumes, took the GI-volume-only early exit, returned 0 WITHOUT ever
 	// writing the .sggi, and the editor's temp publish then failed
 	// "file not found" — the three-day "Cook FAILED (see log above)"
 	// ghost. Sanitize once here so the gate can never disagree with
@@ -1070,8 +1070,8 @@ int Run(Args& args) {
 			&& args.analyze.compare(args.analyze.size() - 5, 5, ".sgrv") == 0)
 			return AnalyzeRegularVolume(args.analyze);
 		if (args.analyze.size() >= 5
-			&& args.analyze.compare(args.analyze.size() - 5, 5, ".cvol") == 0)
-			return AnalyzeCvVolume(args.analyze);
+			&& args.analyze.compare(args.analyze.size() - 9, 9, ".givolume") == 0)
+			return AnalyzeGiVolume(args.analyze);
 		return AnalyzeVolume(args.analyze);
 	}
 
@@ -1084,7 +1084,7 @@ int Run(Args& args) {
 	std::string inVfs = args.inVfs;
 	std::string sceneId = args.scene;
 	// --tour: the DEFINITION is the input (root reference #0 = the
-	// source glTF, cvolume nodes = the convex bake inputs). The
+	// source glTF, GI volume nodes = the convex bake inputs). The
 	// cluster builds exactly like the editor / PakCooker do it; the
 	// scene id defaults to the tour stem (gi/<id>_* outputs). --in-vfs
 	// / --scene are ignored for the import.
@@ -1110,7 +1110,7 @@ int Run(Args& args) {
 		// Default output NAME: RANDOM MINTED (a fresh guid). Note the
 		// name alone does not request the world bake — --out explicit
 		// is the request flag (outExplicit); a bare --tour run bakes
-		// cvols only and exits at the cvol block. When the world does
+		// GI volumes only and exits at the GI-volume block. When the world does
 		// bake (an explicit --out, or the editor's minted gargs.out),
 		// the stamp carries the artifact path in the tour's giAsset
 		// records — no stem-keyed default anywhere (that convention is
@@ -1125,13 +1125,13 @@ int Run(Args& args) {
 
 	// GPU-free offline-mode Cluster. --tour builds the DEFINITION (empty
 	// root + reference bind + command replay, host-path resolution —
-	// identical to the editor / PakCooker, so authored cvolume nodes
+	// identical to the editor / PakCooker, so authored GI volume nodes
 	// land on the same deterministic ids); otherwise the legacy VFS
 	// glTF import.
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	cluster->SetOfflineMode(true);
 	smvk::tour::Doc tour;
-	std::vector<uint32_t> createdCvols; // family refs (the stamp's map)
+	std::vector<uint32_t> createdGiVolumes; // family refs (the stamp's map)
 	if (haveTour) {
 		std::string terr;
 		std::vector<std::string> twarn;
@@ -1155,7 +1155,7 @@ int Run(Args& args) {
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-					&rerr, true, &createdCvols)) {
+					&rerr, true, &createdGiVolumes)) {
 				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
@@ -1255,7 +1255,7 @@ int Run(Args& args) {
 		std::string serr;
 		std::vector<std::string> superseded;
 		if (!smvk::tour::StampGiAssets(tour, cluster->scene,
-				createdCvols, &serr, &superseded)) {
+				createdGiVolumes, &serr, &superseded)) {
 			tool::err() << "Tour giAsset stamp failed: " << serr
 				<< std::endl;
 			return false;
@@ -1285,18 +1285,18 @@ int Run(Args& args) {
 	};
 
 	// Authored convex volumes (editor Create > Convex volume, tour
-	// cvolume nodes): the definition's bake inputs. The node's WORLD
+	// GI volume nodes): the definition's bake inputs. The node's WORLD
 	// transform carries the box (translate = center, basis lengths =
 	// full extents, the NORMALIZED basis = the box axes — ROTATION
-	// supported: an OBB's six planes, CvBoxPlanesRotated); the node-local
+	// supported: an OBB's six planes, GiVolumeBoxPlanesRotated); the node-local
 	// def carries the bake params (priority/spacing/fades). The dense
 	// probe lattice stays axis-aligned over the OBB's AABB (Bounds);
 	// the plane weights carve the rotated hull.
-	std::vector<CvSpecVolume> tourCvols;
-	for (const auto& [node, def] : cluster->scene.cvolForNode) {
+	std::vector<GiVolumeSpecVolume> tourGiVolumes;
+	for (const auto& [node, def] : cluster->scene.giVolumeForNode) {
 		if (node >= cluster->scene.globalTransform.size())
 			continue;
-		CvSpecVolume v{};
+		GiVolumeSpecVolume v{};
 		const glm::mat4& g = cluster->scene.globalTransform[node];
 		const glm::vec3 c(g[3]);
 		glm::vec3 half;
@@ -1309,16 +1309,16 @@ int Run(Args& args) {
 		}
 		v.def.name = getNodeName(cluster->scene, int(node));
 		if (v.def.name.empty())
-			v.def.name = "cvol" + std::to_string(node);
+			v.def.name = "givolume" + std::to_string(node);
 		v.def.priority = def.priority;
 		v.spacing = def.spacing;
 		v.node = node;
-		v.def.planes = smvk::gi::CvBoxPlanesRotated(c, axes, half,
+		v.def.planes = smvk::gi::GiVolumeBoxPlanesRotated(c, axes, half,
 			def.insideFade, def.outsideFade);
-		tourCvols.push_back(std::move(v));
+		tourGiVolumes.push_back(std::move(v));
 	}
-	if (!tourCvols.empty())
-		tool::out() << "  authored cvolumes: " << tourCvols.size()
+	if (!tourGiVolumes.empty())
+		tool::out() << "  authored GI volumes: " << tourGiVolumes.size()
 			<< " (tour nodes)\n";
 
 	// ---- The invalidation model's inputs (Engine/GI/bake_inputs.h):
@@ -1361,7 +1361,7 @@ int Run(Args& args) {
 			// Full decoded texel data: the trace samples the baseColor
 			// texture at the interpolated hit UV (AlbedoAt). Irrelevant
 			// in white-world .sggi bakes (uniformAlbedo overrides it),
-			// live for the textured path + the cvol bakes.
+			// live for the textured path + the GI-volume bakes.
 			if (auto data = smvk::gi::GiDecodeKtxTexelData(
 					std::span<const uint8_t>(*src),
 					smvk::gi::kGiBakeTexelMaxDim)) {
@@ -1703,9 +1703,9 @@ int Run(Args& args) {
 				<< ": " << merged.size() << " volume(s)\n";
 		}
 		// Fall through only when another stage was requested explicitly
-		// (--out adaptive A/B or a convex bake pending below: --cv-spec
-		// or authored tour cvolumes). A regular-only run passes no --out.
-		if (!args.outExplicit && args.cvSpec.empty() && tourCvols.empty()) {
+		// (--out adaptive A/B or a convex bake pending below: --gi-volume-spec
+		// or authored tour GI volumes). A regular-only run passes no --out.
+		if (!args.outExplicit && args.giVolumeSpec.empty() && tourGiVolumes.empty()) {
 			const auto t1 = std::chrono::steady_clock::now();
 			tool::out() << "GiBaker total: "
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
@@ -1714,40 +1714,40 @@ int Run(Args& args) {
 	}
 
 	// Convex-volume bake (probes-only pivot). Sources stack: authored
-	// tour cvolume nodes (--tour, the definition) + hand-written
-	// --cv-spec entries. Bake each volume's dense probe grid by the
-	// per-probe direct trace, write gi/<scene>_<name>.cvol and BIND the
+	// tour GI volume nodes (--tour, the definition) + hand-written
+	// --gi-volume-spec entries. Bake each volume's dense probe grid by the
+	// per-probe direct trace, write gi/<scene>_<name>.givolume and BIND the
 	// artifact to its authored definition (the replayed scene's
-	// SceneCvol::bakeSource — the stamp at the end of Run mirrors the
+	// SceneGiVolume::bakeSource — the stamp at the end of Run mirrors the
 	// bindings onto the tour's giAsset records). Runs in addition to
-	// whatever else was asked for; like --regular-out, a cvol-only run
+	// whatever else was asked for; like --regular-out, a GI-volume-only run
 	// (no --out) exits after this block.
-	if (!args.cvSpec.empty() || !tourCvols.empty()) {
-		std::vector<CvSpecVolume> specVols;
+	if (!args.giVolumeSpec.empty() || !tourGiVolumes.empty()) {
+		std::vector<GiVolumeSpecVolume> specVols;
 		std::string specErr;
-		if (!args.cvSpec.empty()
-			&& !ParseCvSpec(args.cvSpec, specVols, specErr)) {
-			tool::err() << "Bad --cv-spec: " << specErr << std::endl;
+		if (!args.giVolumeSpec.empty()
+			&& !ParseGiVolumeSpec(args.giVolumeSpec, specVols, specErr)) {
+			tool::err() << "Bad --gi-volume-spec: " << specErr << std::endl;
 			return 2;
 		}
 		// Authored tour volumes lead (the definition is the source of
-		// truth); --cv-spec entries append for hand-tuning extras.
+		// truth); --gi-volume-spec entries append for hand-tuning extras.
 		specVols.insert(specVols.begin(),
-			tourCvols.begin(), tourCvols.end());
+			tourGiVolumes.begin(), tourGiVolumes.end());
 		if (specVols.size() > 8) {
 			tool::err() << "convex bake lists " << specVols.size()
 				<< " volumes; the runtime manifest caps at 8\n";
 			return 2;
 		}
-		const std::filesystem::path cvolGiDir =
+		const std::filesystem::path giVolumeDir =
 			std::filesystem::path(args.contentDir) / "gi";
-		for (CvSpecVolume& spec : specVols) {
-			smvk::gi::CvBakeConfig cfg{};
-			cfg.captureDirs = std::max(args.cvDirs, 64u);
+		for (GiVolumeSpecVolume& spec : specVols) {
+			smvk::gi::GiVolumeBakeConfig cfg{};
+			cfg.captureDirs = std::max(args.giVolumeDirs, 64u);
 			cfg.maxBounces = args.bounces;
-			cfg.captureSpacing = args.cvCaptureSpacing > 0.0f
-				? args.cvCaptureSpacing : spec.captureSpacing;
-			cfg.smoothingPasses = args.cvSmoothing;
+			cfg.captureSpacing = args.giVolumeCaptureSpacing > 0.0f
+				? args.giVolumeCaptureSpacing : spec.captureSpacing;
+			cfg.smoothingPasses = args.giVolumeSmoothing;
 			cfg.threadCount = args.threads;
 			// The per-volume FRESHNESS CHECK (the invalidation model):
 			// when the recorded bake-input hash matches the freshly
@@ -1756,34 +1756,34 @@ int Run(Args& args) {
 			// is the editor's partial-bake path: an edit far outside a
 			// volume's reach never re-traces it.
 			if (spec.node != UINT32_MAX) {
-				auto cvIt = cluster->scene.cvolForNode.find(spec.node);
-				if (cvIt != cluster->scene.cvolForNode.end()
+				auto cvIt = cluster->scene.giVolumeForNode.find(spec.node);
+				if (cvIt != cluster->scene.giVolumeForNode.end()
 						&& !cvIt->second.bakeSource.empty()
 						&& spec.node
 							< cluster->scene.globalTransform.size()) {
-					smvk::gi::CvolBakeConfigHashInputs hc{};
+					smvk::gi::GiVolumeBakeConfigHashInputs hc{};
 					hc.captureDirs = cfg.captureDirs;
 					hc.maxBounces = cfg.maxBounces;
 					hc.captureSpacing = 0.0f; // the auto lattice (inert CLI)
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
-					const std::string fresh = smvk::gi::CvolBakeUnitHash(
+					const std::string fresh = smvk::gi::GiVolumeBakeUnitHash(
 						bakeGrid, *cluster, cvIt->second,
 						cluster->scene.globalTransform[spec.node], hc);
 					if (fresh == cvIt->second.bakeInputHash) {
-						tool::out() << "  [CV] volume '" << spec.def.name
+						tool::out() << "  [GIV] volume '" << spec.def.name
 							<< "': inputs unchanged — SKIPPED (the bound "
 							"bake stands)\n";
 						continue;
 					}
 				}
 			}
-			tool::out() << "  [CV] volume '" << spec.def.name << "': priority="
+			tool::out() << "  [GIV] volume '" << spec.def.name << "': priority="
 				<< spec.def.priority << " spacing=" << spec.spacing
 				<< " planes=" << spec.def.planes.size() << "\n";
-			smvk::gi::CvVolume vol;
-			smvk::gi::CvBakeStats stats;
-			if (!smvk::gi::BakeCvVolume(traceScene, spec.def, spec.spacing,
+			smvk::gi::GiVolume vol;
+			smvk::gi::GiVolumeBakeStats stats;
+			if (!smvk::gi::BakeGiVolume(traceScene, spec.def, spec.spacing,
 					cfg, vol, stats,
 					[](const char* line) { tool::out() << line; })) {
 				tool::err() << "Convex bake failed for '" << spec.def.name
@@ -1795,8 +1795,8 @@ int Run(Args& args) {
 			// name carries no scene/stem information to go stale (a
 			// rebake never collides with or overwrites the old
 			// artifact; the stamp's supersede list retires it).
-			const std::string outPath = (cvolGiDir
-				/ (smvk::tour::GenerateUuid() + ".cvol"))
+			const std::string outPath = (giVolumeDir
+				/ (smvk::tour::GenerateUuid() + ".givolume"))
 				.generic_string();
 			{
 				std::filesystem::path out(outPath);
@@ -1815,12 +1815,12 @@ int Run(Args& args) {
 			// the stamp at the end of Run mirrors the scene onto the
 			// tour's giAsset records and retires the superseded old
 			// artifact BY RECORD (the path is RANDOM MINTED, so the
-			// rebake never overwrote anything). Hand-tuning --cv-spec
+			// rebake never overwrote anything). Hand-tuning --gi-volume-spec
 			// extras carry no node and stay unbound (the pak embeds
 			// exactly what the scene binds).
 			if (spec.node != UINT32_MAX) {
-				auto cvIt = cluster->scene.cvolForNode.find(spec.node);
-				if (cvIt == cluster->scene.cvolForNode.end()) {
+				auto cvIt = cluster->scene.giVolumeForNode.find(spec.node);
+				if (cvIt == cluster->scene.giVolumeForNode.end()) {
 					tool::err() << "baked volume's node "
 						<< spec.node << " not in the replayed scene — "
 						"binding dropped\n";
@@ -1832,14 +1832,14 @@ int Run(Args& args) {
 				// The bake-input hash AT BAKE TIME (the pak gate's
 				// freshness check + the next run's skip).
 				if (spec.node < cluster->scene.globalTransform.size()) {
-					smvk::gi::CvolBakeConfigHashInputs hc{};
+					smvk::gi::GiVolumeBakeConfigHashInputs hc{};
 					hc.captureDirs = cfg.captureDirs;
 					hc.maxBounces = cfg.maxBounces;
 					hc.captureSpacing = 0.0f;
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
 					cvIt->second.bakeInputHash =
-						smvk::gi::CvolBakeUnitHash(bakeGrid, *cluster,
+						smvk::gi::GiVolumeBakeUnitHash(bakeGrid, *cluster,
 							cvIt->second,
 							cluster->scene.globalTransform[spec.node],
 							hc);
@@ -1850,12 +1850,12 @@ int Run(Args& args) {
 			else {
 				tool::out() << "  (unbound: no authored node for '"
 					<< spec.def.name
-					<< "' — a --cv-spec extra, diagnostic-only)\n";
+					<< "' — a --gi-volume-spec extra, diagnostic-only)\n";
 			}
 			if (args.verify) {
-				smvk::gi::CvVolume reloaded;
+				smvk::gi::GiVolume reloaded;
 				std::string verr;
-				if (!smvk::gi::CvVolume::ReadFile(outPath, reloaded, verr)) {
+				if (!smvk::gi::GiVolume::ReadFile(outPath, reloaded, verr)) {
 					tool::err() << "Convex verify: reload failed: " << verr
 						<< std::endl;
 					return 1;
@@ -1867,15 +1867,15 @@ int Run(Args& args) {
 					return 1;
 			}
 		}
-		// NO cvmanifest anymore: the scene's HARD per-volume bindings
+		// NO givolumemanifest anymore: the scene's HARD per-volume bindings
 		// (updated above, mirrored onto the tour by the stamp at the
 		// end of Run) REPLACE the manifest round-trip — the pak cooker
 		// embeds exactly what the scene binds, the runtime loads by
-		// binding. The old gi/<scene>.cvmanifest channels (loose
+		// binding. The old gi/<scene>.givolumemanifest channels (loose
 		// discovery + legacy paks) are retired with the stem
 		// convention.
-		// A cvol-only run (no --out) is done; --out falls through to the
-		// adaptive world-field bake (the .sggi and .cvol files pair up).
+		// A GI-volume-only run (no --out) is done; --out falls through to the
+		// adaptive world-field bake (the .sggi and .givolume files pair up).
 		if (!args.outExplicit) {
 			if (!stampTour())
 				return 1;
@@ -2076,7 +2076,7 @@ int Run(Args& args) {
 	// whole octree bake is SKIPPED — the bound artifact + record stand
 	// (the stamp re-issues them unchanged; nothing is written, so the
 	// editor's minted --out path never even materializes as an orphan).
-	// The editor's partial-bake path: a cvol-only change skips the
+	// The editor's partial-bake path: a GI-volume-only change skips the
 	// minutes-long world bake entirely.
 	if (haveTour && !cluster->scene.giWorldSource.empty()) {
 		const smvk::gi::WorldBakeConfigHashInputs wc =
@@ -2161,7 +2161,7 @@ int Run(Args& args) {
 	tool::out() << "Wrote " << args.out << " ("
 		<< std::filesystem::file_size(args.out) << " B on disk)\n";
 	// The world-field binding (the same hard-identification stamp as the
-	// cvol volumes): the baked octree binds to the scene on the replayed
+	// GI volumes): the baked octree binds to the scene on the replayed
 	// state — the tour stamp at the exit mirrors it into the giAsset
 	// records. VfsRelPath is the content-relative form the records carry.
 	cluster->scene.giWorldSource = VfsRelPath(args.contentDir, args.out);

@@ -57,7 +57,7 @@ rem artifacts (pure serialization - bake flags are rejected there).
 rem SUN flags ride BOTH steps (cook bakes with that sun, pak serializes it).
 rem AMBIENT CLOSURE OFF (the default): sponza's pak carries the GI stack
 rem (GiBaker below), so the runtime ambient comes from the .sggi octree +
-rem cvols - baking the closure into the captures would DOUBLE-COUNT it
+rem GI volumes - baking the closure into the captures would DOUBLE-COUNT it
 rem (mirror-like surfaces - the chrome probe ball, gold trim - reflect
 rem ~traced-bounce + closure ~= 2x the ambient-lit field). Stack-less
 rem cooks (bistro) opt in with --cubemap-ambient-closure on.
@@ -73,9 +73,9 @@ rem BETWEEN cook + pak - F:/content/models/sponza/Sponza.tour authors
 rem the convex GI volumes (the per-space layer: dense local probe grids
 rem over the nave/atrium/galleries + the SEALED side aisles the coarse
 rem global octree underserves) and its --out writes the GLOBAL layer
-rem (gi/Sponza.sggi, the sparse adaptive octree - "the .sggi and .cvol
-rem files pair up"). Pak.exe embeds both (gi/<stem>.sggi + the cvmanifest
-rem + every .cvol row) + registers the bindings; the runtime resolves
+rem (gi/Sponza.sggi, the sparse adaptive octree - "the .sggi and .givolume
+rem files pair up"). Pak.exe embeds both (gi/<stem>.sggi + the givolumemanifest
+rem + every .givolume row) + registers the bindings; the runtime resolves
 rem them out of the pak. White-world GI fields (uniform albedo 0.7 - the
 rem established convention: per-material albedo prints chromatic dots
 rem the 9-lobe fit cannot represent, verified on Sponza); the cubemap

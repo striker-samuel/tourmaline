@@ -44,7 +44,7 @@ struct PakArgs {
 	// default; 0/1 = CLI-pinned, e.g. the editor passes the node's value
 	// through here). On = the pak embeds ONLY the scene's own content
 	// (meshes/materials/textures, blobs by path): no gi/ cubemap
-	// manifests + KTX rows, no .sggi, no .cvmanifest + .cvol rows, no
+	// manifests + KTX rows, no .sggi, no .givolumemanifest + .givolume rows, no
 	// bindings for them (see SceneExportSettings::ignoreVfs).
 	int ignoreVfs = -1;
 	// Level blob (see Engine/Asset/level.h): pack the scene + the baked

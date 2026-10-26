@@ -964,37 +964,37 @@ void TestRegularVolume() {
 	}
 }
 
-void TestCvVolume() {
-	// ---- Weight math (CPU mirror of sg_cvol.hlsli; per-plane fades) ----
+void TestGiVolume() {
+	// ---- Weight math (CPU mirror of sg_gi_volume.hlsli; per-plane fades) ----
 	{
-		CvVolumeDef def;
-		def.planes = CvBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
-		Check(def.planes.size() == 6, "cvol box has six planes");
-		Check(def.Contains(glm::vec3(0.0f)), "cvol box contains center");
+		GiVolumeDef def;
+		def.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
+		Check(def.planes.size() == 6, "GI volume box has six planes");
+		Check(def.Contains(glm::vec3(0.0f)), "GI volume box contains center");
 		Check(!def.Contains(glm::vec3(1.5f, 0.0f, 0.0f)),
-			"cvol box rejects outside");
-		Check(def.Weight(glm::vec3(0.0f)) == 1.0f, "cvol deep-inside weight 1");
+			"GI volume box rejects outside");
+		Check(def.Weight(glm::vec3(0.0f)) == 1.0f, "GI volume deep-inside weight 1");
 		Check(def.Weight(glm::vec3(2.0f, 0.0f, 0.0f)) == 0.0f,
-			"cvol far-outside weight 0");
+			"GI volume far-outside weight 0");
 		CheckNear(def.Weight(glm::vec3(1.0f, 0.0f, 0.0f)), 0.5f, 1e-5f,
-			"cvol face weight 0.5 (symmetric fades)");
-		// ---- Rotated box (OBB): CvBoxPlanesRotated --------------------
-		// Identity axes degenerate to CvBoxPlanes exactly (same plane
+			"GI volume face weight 0.5 (symmetric fades)");
+		// ---- Rotated box (OBB): GiVolumeBoxPlanesRotated --------------------
+		// Identity axes degenerate to GiVolumeBoxPlanes exactly (same plane
 		// order: -x, +x, -y, +y, -z, +z — the doorway-retune indices
 		// keep meaning the same faces).
 		{
-			const std::vector<CvPlane> id = CvBoxPlanesRotated(
+			const std::vector<GiVolumePlane> id = GiVolumeBoxPlanesRotated(
 				glm::vec3(0.0f), glm::mat3(1.0f), glm::vec3(1.0f),
 				0.1f, 0.1f);
-			const std::vector<CvPlane> aa = CvBoxPlanes(
+			const std::vector<GiVolumePlane> aa = GiVolumeBoxPlanes(
 				glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
 			Check(id.size() == 6 && aa.size() == 6,
-				"cvol rotated box six planes");
+				"GI volume rotated box six planes");
 			bool same = true;
 			for (size_t i = 0; i < 6; ++i)
 				same &= glm::all(glm::equal(id[i].normal, aa[i].normal))
 					&& id[i].d == aa[i].d;
-			Check(same, "cvol identity axes == axis-aligned planes");
+			Check(same, "GI volume identity axes == axis-aligned planes");
 		}
 		// 90-degree yaw around Y: the u0 axis maps to -Z, u2 to +X.
 		// A point 1.2 m out along WORLD +X (past the rotated u2 half
@@ -1002,134 +1002,134 @@ void TestCvVolume() {
 		// the OLD axis-aligned extent in Z (now the long axis) stays
 		// INSIDE (the rotation reshapes the hull, not just the AABB).
 		{
-			CvVolumeDef rot;
+			GiVolumeDef rot;
 			// yaw 90deg: columns = u0 = (0,0,-1), u1 = (0,1,0), u2 = (1,0,0)
-			rot.planes = CvBoxPlanesRotated(glm::vec3(0.0f),
+			rot.planes = GiVolumeBoxPlanesRotated(glm::vec3(0.0f),
 				glm::mat3(0.0f, 0.0f, -1.0f,
 					0.0f, 1.0f, 0.0f,
 					1.0f, 0.0f, 0.0f),
 				glm::vec3(1.0f, 2.0f, 0.5f), 0.0f, 0.0f);
 			Check(rot.Contains(glm::vec3(0.0f)),
-				"cvol rotated contains center");
+				"GI volume rotated contains center");
 			Check(!rot.Contains(glm::vec3(1.2f, 0.0f, 0.0f)),
-				"cvol rotated rejects past u2 half extent");
+				"GI volume rotated rejects past u2 half extent");
 			Check(rot.Contains(glm::vec3(0.4f, 0.0f, 0.0f)),
-				"cvol rotated accepts inside u2 half extent");
+				"GI volume rotated accepts inside u2 half extent");
 			// u0 half = 1.0 along -Z: 0.9 in, 1.2 out.
 			Check(rot.Contains(glm::vec3(0.0f, 0.0f, -0.9f)),
-				"cvol rotated accepts inside u0 half extent");
+				"GI volume rotated accepts inside u0 half extent");
 			Check(!rot.Contains(glm::vec3(0.0f, 0.0f, -1.2f)),
-				"cvol rotated rejects past u0 half extent");
+				"GI volume rotated rejects past u0 half extent");
 			// u1 half = 2.0 along Y: 1.9 in, 2.2 out (the tallest axis).
 			Check(rot.Contains(glm::vec3(0.0f, 1.9f, 0.0f)),
-				"cvol rotated tall axis inside");
+				"GI volume rotated tall axis inside");
 			Check(!rot.Contains(glm::vec3(0.0f, 2.2f, 0.0f)),
-				"cvol rotated tall axis outside");
+				"GI volume rotated tall axis outside");
 			// Off-center rotation: the same hull translated by c.
-			CvVolumeDef moved;
-			moved.planes = CvBoxPlanesRotated(
+			GiVolumeDef moved;
+			moved.planes = GiVolumeBoxPlanesRotated(
 				glm::vec3(5.0f, 0.0f, 0.0f), glm::mat3(1.0f),
 				glm::vec3(1.0f), 0.0f, 0.0f);
 			Check(moved.Contains(glm::vec3(5.0f, 0.0f, 0.0f)),
-				"cvol off-center contains center");
+				"GI volume off-center contains center");
 			Check(!moved.Contains(glm::vec3(0.0f)),
-				"cvol off-center rejects the origin");
+				"GI volume off-center rejects the origin");
 		}
 		// Inside the fade band: 0.05 m inside the +x face.
 		// smoothstep(-0.1, 0.1, 0.05): t = 0.75 -> 0.84375.
 		CheckNear(def.Weight(glm::vec3(0.95f, 0.0f, 0.0f)), 0.84375f, 1e-5f,
-			"cvol fade band smoothstep");
+			"GI volume fade band smoothstep");
 		// Inside the OUTSIDE fade band: 0.05 m outside the +x face.
 		// smoothstep(-0.1, 0.1, -0.05): t = 0.25 -> 0.15625 — the volume
 		// keeps partial influence in the doorway bleed zone.
 		CheckNear(def.Weight(glm::vec3(1.05f, 0.0f, 0.0f)), 0.15625f, 1e-5f,
-			"cvol outside fade band partial weight");
+			"GI volume outside fade band partial weight");
 		// Past the outside fade: no influence.
 		CheckNear(def.Weight(glm::vec3(1.2f, 0.0f, 0.0f)), 0.0f, 1e-6f,
-			"cvol past outside fade is 0");
+			"GI volume past outside fade is 0");
 		// Hard faces (zero fades): the weight steps at the plane.
-		CvVolumeDef hard;
-		hard.planes = CvBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.0f, 0.0f);
+		GiVolumeDef hard;
+		hard.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.0f, 0.0f);
 		Check(hard.Weight(glm::vec3(0.999f, 0.0f, 0.0f)) == 1.0f,
-			"cvol hard face inside");
+			"GI volume hard face inside");
 		Check(hard.Weight(glm::vec3(1.001f, 0.0f, 0.0f)) == 0.0f,
-			"cvol hard face outside");
+			"GI volume hard face outside");
 		// Doorway: retune the +x face (index 1) to a 2 m fade; the
 		// MIN-combine keeps the doorway fade alive where tight faces
 		// would crush a product to zero.
-		CvVolumeDef room;
-		room.planes = CvBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
+		GiVolumeDef room;
+		room.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
 		room.planes[1].insideFade = 2.0f;
 		room.planes[1].outsideFade = 2.0f;
 		// Room center: 1 m inside the doorway plane ->
 		// smoothstep(-2, 2, 1): t = 0.75 -> 0.84375.
 		CheckNear(room.Weight(glm::vec3(0.0f)), 0.84375f, 1e-5f,
-			"cvol doorway fade at room center");
+			"GI volume doorway fade at room center");
 		// Threshold: half weight, and the tight floor/walls do not
 		// crush it (min, not product).
 		CheckNear(room.Weight(glm::vec3(1.0f, -0.5f, 0.0f)), 0.5f, 1e-5f,
-			"cvol doorway threshold min-combine");
+			"GI volume doorway threshold min-combine");
 		// A tight face still dominates where it is the nearest boundary:
 		// 1 cm inside the floor -> smoothstep(-0.1, 0.1, 0.01):
 		// t = 0.55 -> 0.57475 (the doorway at this x is 0.84375).
 		CheckNear(room.Weight(glm::vec3(0.0f, -0.99f, 0.0f)), 0.57475f, 1e-4f,
-			"cvol tight floor wins near the floor");
+			"GI volume tight floor wins near the floor");
 	}
 	// ---- Bounds clipping ----
 	{
-		CvVolumeDef def;
-		def.planes = CvBoxPlanes(glm::vec3(0.0f), glm::vec3(2.0f), 0.1f, 0.1f);
+		GiVolumeDef def;
+		def.planes = GiVolumeBoxPlanes(glm::vec3(0.0f), glm::vec3(2.0f), 0.1f, 0.1f);
 		glm::vec3 mn, mx;
-		Check(def.Bounds(mn, mx), "cvol bounds box");
+		Check(def.Bounds(mn, mx), "GI volume bounds box");
 		bool ok = glm::length(mn - glm::vec3(0.0f)) < 1e-4f
 			&& glm::length(mx - glm::vec3(2.0f)) < 1e-4f;
-		Check(ok, "cvol bounds box extents");
-		CvPlane cut{};
+		Check(ok, "GI volume bounds box extents");
+		GiVolumePlane cut{};
 		cut.normal = glm::vec3(0.0f, 1.0f, 0.0f);
 		cut.d = -1.0f; // inside y <= 1
 		def.planes.push_back(cut);
 		Check(def.Bounds(mn, mx) && mx.y <= 1.0f + 1e-4f,
-			"cvol bounds clipped by extra plane");
+			"GI volume bounds clipped by extra plane");
 		// Unbounded plane set is rejected.
-		CvVolumeDef openSet;
-		CvPlane half{};
+		GiVolumeDef openSet;
+		GiVolumePlane half{};
 		half.normal = glm::vec3(1.0f, 0.0f, 0.0f);
 		openSet.planes.push_back(half);
 		glm::vec3 omn, omx;
-		Check(!openSet.Bounds(omn, omx), "cvol unbounded plane set rejected");
+		Check(!openSet.Bounds(omn, omx), "GI volume unbounded plane set rejected");
 	}
 	// ---- CPU trilinear mirror + serialization + GPU pack ----
 	{
-		CvVolume vol;
+		GiVolume vol;
 		vol.gridMin = glm::vec3(-0.5f);
 		vol.spacing = 1.0f;
 		vol.dims[0] = vol.dims[1] = vol.dims[2] = 1;
-		vol.def.planes = CvBoxPlanes(glm::vec3(-0.5f), glm::vec3(0.5f));
+		vol.def.planes = GiVolumeBoxPlanes(glm::vec3(-0.5f), glm::vec3(0.5f));
 		vol.Resize();
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
 			vol.coeffs[i] = glm::vec3(1.0f + float(i));
 		glm::vec3 amps[kSgLobeCount];
-		Check(vol.Sample(glm::vec3(0.0f), amps), "cvol single voxel covered");
+		Check(vol.Sample(glm::vec3(0.0f), amps), "GI volume single voxel covered");
 		bool match = true;
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
 			if (glm::length(amps[i] - vol.coeffs[i]) > 1e-5f)
 				match = false;
-		Check(match, "cvol single voxel returns amps");
+		Check(match, "GI volume single voxel returns amps");
 		Check(!vol.Sample(glm::vec3(5.0f, 0.0f, 0.0f), amps),
-			"cvol outside uncovered");
+			"GI volume outside uncovered");
 
 		// 2x1x1 strip: NEAREST-TAP sampling (the trilinear prefilter is
 		// disabled — the authored per-voxel data reads back un-blurred,
 		// the better result). The midpoint (grid coord 1.0 in x, exactly
 		// on the voxel boundary) floors to voxel #1, so the sample is the
 		// raw voxel #1 value — never an average.
-		CvVolume strip;
+		GiVolume strip;
 		strip.gridMin = glm::vec3(-1.0f, 0.0f, 0.0f);
 		strip.spacing = 1.0f;
 		strip.dims[0] = 2;
 		strip.dims[1] = 1;
 		strip.dims[2] = 1;
-		strip.def.planes = CvBoxPlanes(glm::vec3(-1.0f, 0.0f, 0.0f),
+		strip.def.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f, 0.0f, 0.0f),
 			glm::vec3(1.0f, 1.0f, 1.0f));
 		strip.def.priority = 3;
 		strip.Resize();
@@ -1138,20 +1138,20 @@ void TestCvVolume() {
 			strip.coeffs[1 * kSgLobeCount + i] = glm::vec3(2.0f);
 		}
 		Check(strip.Sample(glm::vec3(0.0f, 0.5f, 0.5f), amps),
-			"cvol strip covered");
+			"GI volume strip covered");
 		bool mid = true;
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
 			if (std::abs(amps[i].x - 2.0f) > 1e-4f)
 				mid = false;
-		Check(mid, "cvol nearest-tap midpoint floors to voxel 1");
+		Check(mid, "GI volume nearest-tap midpoint floors to voxel 1");
 
 		// File round trip (priority + planes + coeffs preserved).
 		const auto tmp = std::filesystem::temp_directory_path()
-			/ "tourmaline_gi_cvol_test.cvol";
+			/ "tourmaline_gi_volume_test.givolume";
 		std::string err;
-		Check(strip.WriteFile(tmp.string(), err), "cvol write");
-		CvVolume reloaded;
-		Check(CvVolume::ReadFile(tmp.string(), reloaded, err), "cvol read");
+		Check(strip.WriteFile(tmp.string(), err), "GI volume write");
+		GiVolume reloaded;
+		Check(GiVolume::ReadFile(tmp.string(), reloaded, err), "GI volume read");
 		bool same = reloaded.VoxelCount() == strip.VoxelCount()
 			&& reloaded.def.priority == 3
 			&& reloaded.def.planes.size() == strip.def.planes.size()
@@ -1166,7 +1166,7 @@ void TestCvVolume() {
 				if (glm::length(reloaded.coeffs[k] - strip.coeffs[k]) > 2e-3f)
 					same = false;
 		}
-		Check(same, "cvol roundtrip equal");
+		Check(same, "GI volume roundtrip equal");
 		std::filesystem::remove(tmp);
 
 		// GPU packing: 7 layers x voxels x RGBA halves (sgrv layout).
@@ -1176,8 +1176,8 @@ void TestCvVolume() {
 		for (int t = 0; t < 7; ++t)
 			if (layers[t].size() != size_t(2) * 4)
 				packOk = false;
-		Check(packOk, "cvol gpu pack shape");
-		Check(strip.GpuBytes() == size_t(2) * 56, "cvol gpu bytes");
+		Check(packOk, "GI volume gpu pack shape");
+		Check(strip.GpuBytes() == size_t(2) * 56, "GI volume gpu bytes");
 
 		// Isotropic-mean payload (the volumetric fog's one-fetch path —
 		// PackGpuMeanLayer): rgb = 0.124959 * Σ lobes per voxel (the
@@ -1186,7 +1186,7 @@ void TestCvVolume() {
 		// 7-fetch + unpack + lobe-sum path computes.
 		std::vector<uint16_t> meanLayer;
 		strip.PackGpuMeanLayer(meanLayer);
-		Check(meanLayer.size() == size_t(2) * 4, "cvol mean pack shape");
+		Check(meanLayer.size() == size_t(2) * 4, "GI volume mean pack shape");
 		bool meanOk = true;
 		for (uint64_t v = 0; v < strip.VoxelCount(); ++v) {
 			glm::vec3 sum(0.0f);
@@ -1202,7 +1202,7 @@ void TestCvVolume() {
 			if (UnpackHalf(meanLayer[size_t(v) * 4 + 3]) != 1.0f)
 				meanOk = false;
 		}
-		Check(meanOk, "cvol mean pack matches VolGiMean sum");
+		Check(meanOk, "GI volume mean pack matches VolGiMean sum");
 	}
 	// ---- Bake: empty scene (all-sky) ----
 	{
@@ -1212,24 +1212,24 @@ void TestCvVolume() {
 		scene.materials = { GiTraceMaterial{ glm::vec3(0.7f), glm::vec3(0.0f) } };
 		scene.triMaterial = {};
 		scene.Finalize();
-		CvVolumeDef def;
-		def.planes = CvBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f));
-		CvBakeConfig cfg{};
+		GiVolumeDef def;
+		def.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f));
+		GiVolumeBakeConfig cfg{};
 		cfg.captureDirs = 128;
 		cfg.maxBounces = 0;
 		cfg.smoothingPasses = 0;
 		cfg.threadCount = 2;
-		CvVolume baked;
-		CvBakeStats stats;
-		Check(BakeCvVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
-			"cvol bake empty scene runs");
+		GiVolume baked;
+		GiVolumeBakeStats stats;
+		Check(BakeGiVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
+			"GI volume bake empty scene runs");
 		Check(stats.probes > 0 && stats.samplesClamped >= 0,
-			"cvol bake stats populated");
+			"GI volume bake stats populated");
 		bool anySky = false;
 		for (const glm::vec3& a : baked.coeffs)
 			if (glm::length(a) > 0.0f)
 				anySky = true;
-		Check(anySky, "cvol bake empty scene carries sky");
+		Check(anySky, "GI volume bake empty scene carries sky");
 		// Per-probe identity: the bake IS the direct fit of the
 		// direction set now (the old reprojection pipeline's
 		// captureSpacing == spacing identity case, by construction).
@@ -1256,19 +1256,19 @@ void TestCvVolume() {
 				if (glm::length(baked.coeffs[idx * kSgLobeCount + i] - refAmps[i])
 					> 1e-3f * std::max(1.0f, glm::length(refAmps[i])))
 					same = false;
-			Check(same, "cvol per-probe direct fit identity");
+			Check(same, "GI volume per-probe direct fit identity");
 		}
 		// Skyless: exact zero (no geometry, no light).
 		scene.skyIntensity = 0.0f;
-		CvVolume skyless;
-		CvBakeStats stats2;
-		Check(BakeCvVolume(scene, def, 0.5f, cfg, skyless, stats2, nullptr),
-			"cvol bake skyless scene runs");
+		GiVolume skyless;
+		GiVolumeBakeStats stats2;
+		Check(BakeGiVolume(scene, def, 0.5f, cfg, skyless, stats2, nullptr),
+			"GI volume bake skyless scene runs");
 		bool allZero = true;
 		for (const glm::vec3& a : skyless.coeffs)
 			if (glm::length(a) != 0.0f)
 				allZero = false;
-		Check(allZero, "cvol bake zero-sky exact zero");
+		Check(allZero, "GI volume bake zero-sky exact zero");
 	}
 	// ---- Bake: floor-plane scene (bounce radiance over geometry) ----
 	{
@@ -1282,20 +1282,20 @@ void TestCvVolume() {
 		scene.materials = { GiTraceMaterial{ glm::vec3(0.5f), glm::vec3(0.0f) } };
 		scene.triMaterial = { 0, 0 };
 		scene.Finalize();
-		CvVolumeDef def;
+		GiVolumeDef def;
 		// Volume above the floor: y in [0.05, 2], x/z in [-1, 1].
-		def.planes = CvBoxPlanes(glm::vec3(-1.0f, 0.05f, -1.0f),
+		def.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f, 0.05f, -1.0f),
 			glm::vec3(1.0f, 2.0f, 1.0f));
-		CvBakeConfig cfg{};
+		GiVolumeBakeConfig cfg{};
 		cfg.captureDirs = 256;
 		cfg.maxBounces = 1;
 		cfg.smoothingPasses = 1;
 		cfg.threadCount = 2;
-		CvVolume baked;
-		CvBakeStats stats;
-		Check(BakeCvVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
-			"cvol bake floor scene runs");
-		Check(stats.probes > 0, "cvol floor scene baked its grid");
+		GiVolume baked;
+		GiVolumeBakeStats stats;
+		Check(BakeGiVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
+			"GI volume bake floor scene runs");
+		Check(stats.probes > 0, "GI volume floor scene baked its grid");
 		bool finite = true;
 		bool nonNegative = true;
 		for (const glm::vec3& a : baked.coeffs) {
@@ -1304,8 +1304,8 @@ void TestCvVolume() {
 			if (a.x < 0.0f || a.y < 0.0f || a.z < 0.0f)
 				nonNegative = false;
 		}
-		Check(finite, "cvol floor bake amps finite");
-		Check(nonNegative, "cvol floor bake amps non-negative");
+		Check(finite, "GI volume floor bake amps finite");
+		Check(nonNegative, "GI volume floor bake amps non-negative");
 		// Sky above, floor below: the lowest probe layer must see MORE
 		// floor-bounced light than the highest layer sees of... rather:
 		// both see sky; the point of the check is the field varies
@@ -1326,11 +1326,11 @@ void TestCvVolume() {
 			lo = lumAt(0);
 			hi = lumAt(ny - 1);
 		}
-		Check(lo > 0.0f && hi > 0.0f, "cvol floor bake nonzero layers");
+		Check(lo > 0.0f && hi > 0.0f, "GI volume floor bake nonzero layers");
 		// Probes close to the floor reproject its bounced light from
 		// below-facing directions; high probes see mostly open sky. The
 		// totals differ once the reprojection is depth-aware.
-		Check(std::abs(lo - hi) > 1e-4f, "cvol floor bake layers differ");
+		Check(std::abs(lo - hi) > 1e-4f, "GI volume floor bake layers differ");
 	}
 }
 
@@ -2716,7 +2716,7 @@ int main() {
 	smvk::gi::TestTriangleBvh();
 	smvk::gi::TestProbeVolumeRoundtrip();
 	smvk::gi::TestRegularVolume();
-	smvk::gi::TestCvVolume();
+	smvk::gi::TestGiVolume();
 	smvk::gi::TestFp16Pack();
 	smvk::gi::TestLightmapCurvatureScale();
 	smvk::gi::TestLmXatlasCharts();

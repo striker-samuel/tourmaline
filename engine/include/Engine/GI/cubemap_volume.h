@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// Convex GI volumes: shaped local probe grids cooked by cubemap
+// GI volumes: shaped local probe grids cooked by cubemap
 // reprojection (Black Ops 3 style), blended over the world field.
 //
 // The GI pivot: probes only. The world is covered by the sparse octree
 // (SgGiVolume, probe_volume.h); confined interiors/regions get AUTHORED
-// convex volumes (one per room/street/alley) carrying a dense SG probe
+// GI volumes (one per room/street/alley) carrying a dense SG probe
 // grid each. Lightmaps are deprecated and no longer cooked (the runtime
 // loader stays for existing content).
 //
@@ -38,7 +38,7 @@
 // min-combining keeps a doorway fade alive next to a tight floor (a
 // product would crush it to zero at the threshold corner).
 //
-// Bake (BakeCvVolume): DIRECT per-probe path trace. This shipped as the
+// Bake (BakeGiVolume): DIRECT per-probe path trace. This shipped as the
 // published BO3 pipeline — sparse radiance+depth captures reprojected
 // into the dense probes — but the capture-support dependency cost real
 // coverage: probes whose enclosing capture cell had no valid capture
@@ -57,7 +57,7 @@
 //
 // Runtime: hardware trilinear over 7 RGBA16F 3D textures per volume
 // (identical GPU layout to SgRegularVolume), weight/priority blend in
-// sg_cvol.hlsli. File format: .cvol ("CVOL" v1, LZ4 half payload).
+// sg_gi_volume.hlsli. File format: .givolume ("GIVOL" v1, LZ4 half payload).
 
 #include <algorithm>
 #include <cstdint>
@@ -75,9 +75,9 @@ namespace smvk::gi {
 // Convex definition (authored)
 // ---------------------------------------------------------------------------
 
-inline constexpr uint32_t kCvMaxPlanes = 16; // must match SG_CV_MAX_PLANES
+inline constexpr uint32_t kGiVolumeMaxPlanes = 16; // must match SG_GI_VOLUME_MAX_PLANES
 
-struct CvPlane {
+struct GiVolumePlane {
 	glm::vec3 normal{ 0.0f, 1.0f, 0.0f }; // unit; inside: dot(n, P) + d <= 0
 	float d = 0.0f;                       // plane offset (n . P + d)
 	float insideFade = 0.1f;  // blend width INSIDE the face (m)
@@ -86,7 +86,7 @@ struct CvPlane {
 	                          // doorway bleed zone
 };
 
-inline float CvSmoothStep(float e0, float e1, float x) {
+inline float GiVolumeSmoothStep(float e0, float e1, float x) {
 	if (e1 - e0 < 1e-5f)
 		return x >= e1 ? 1.0f : 0.0f;
 	const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
@@ -95,23 +95,23 @@ inline float CvSmoothStep(float e0, float e1, float x) {
 
 // Per-plane fade weight (authored-fades reference; the GPU packs this
 // into one folded float4 at upload time — weightEquation =
-// (-n*fadeScale, fadeBias - d*fadeScale) — see sg_cvol.hlsli for the
+// (-n*fadeScale, fadeBias - d*fadeScale) — see sg_gi_volume.hlsli for the
 // algebraic equivalence and the degenerate-span note).
-inline float CvPlaneWeight(const CvPlane& p, const glm::vec3& pos) {
+inline float GiVolumePlaneWeight(const GiVolumePlane& p, const glm::vec3& pos) {
 	const float inside = -(glm::dot(p.normal, pos) + p.d);
-	return CvSmoothStep(-p.outsideFade, p.insideFade, inside);
+	return GiVolumeSmoothStep(-p.outsideFade, p.insideFade, inside);
 }
 
-struct CvVolumeDef {
-	std::vector<CvPlane> planes; // must bound a closed convex region
+struct GiVolumeDef {
+	std::vector<GiVolumePlane> planes; // must bound a closed convex region
 	uint32_t priority = 0;      // higher = composited later = wins
 	std::string name;           // authoring id (bake output naming)
 
 	// Per-face weight: min over planes of the per-plane smoothstep.
 	float Weight(const glm::vec3& pos) const {
 		float w = 1.0f;
-		for (const CvPlane& p : planes) {
-			w = std::min(w, CvPlaneWeight(p, pos));
+		for (const GiVolumePlane& p : planes) {
+			w = std::min(w, GiVolumePlaneWeight(p, pos));
 			if (w <= 0.0f)
 				break;
 		}
@@ -119,7 +119,7 @@ struct CvVolumeDef {
 	}
 
 	bool Contains(const glm::vec3& pos) const {
-		for (const CvPlane& p : planes)
+		for (const GiVolumePlane& p : planes)
 			if (glm::dot(p.normal, pos) + p.d > 0.0f)
 				return false;
 		return !planes.empty();
@@ -135,16 +135,16 @@ struct CvVolumeDef {
 
 // Axis-aligned box helper: six planes with one fade pair each. Face
 // order: -x, +x, -y, +y, -z, +z (indices for per-face fade retuning).
-std::vector<CvPlane> CvBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
+std::vector<GiVolumePlane> GiVolumeBoxPlanes(const glm::vec3& mn, const glm::vec3& mx,
 	float insideFade = 0.1f, float outsideFade = 0.1f);
 
 // ROTATED box (OBB) helper: center + orthonormal axes as mat3 COLUMNS
 // (normalized defensively) + half extents -> six planes. The authored
-// cvolume nodes' rotation support: the dense probe lattice stays
+// GI volume nodes' rotation support: the dense probe lattice stays
 // axis-aligned over the OBB's AABB (Bounds); the plane weights carve
-// the rotated hull. Identity axes degenerate to CvBoxPlanes exactly.
+// the rotated hull. Identity axes degenerate to GiVolumeBoxPlanes exactly.
 // Face order: -u0, +u0, -u1, +u1, -u2, +u2.
-std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
+std::vector<GiVolumePlane> GiVolumeBoxPlanesRotated(const glm::vec3& center,
 	const glm::mat3& axes, const glm::vec3& half,
 	float insideFade = 0.1f, float outsideFade = 0.1f);
 
@@ -152,11 +152,11 @@ std::vector<CvPlane> CvBoxPlanesRotated(const glm::vec3& center,
 // Volume (cooked)
 // ---------------------------------------------------------------------------
 
-inline constexpr uint32_t kCvMaxDim = 256; // per-axis grid cap (sgrv parity)
+inline constexpr uint32_t kGiVolumeMaxDim = 256; // per-axis grid cap (sgrv parity)
 
-class CvVolume {
+class GiVolume {
 public:
-	CvVolumeDef def;
+	GiVolumeDef def;
 	glm::vec3 gridMin{ 0.0f }; // AABB lattice origin (def.Bounds)
 	float spacing = 0.5f;      // probe spacing (m)
 	uint32_t dims[3] = { 1, 1, 1 };
@@ -175,8 +175,8 @@ public:
 	// SgRegularVolume::PackGpuLayers (matches SgRegularUnpack).
 	void PackGpuLayers(std::vector<uint16_t> out[7]) const;
 	// Isotropic-mean payload (the volumetric fog's one-fetch-per-volume
-	// path — SgCvSampleVolumeMean / sg_cvol.hlsli, consumed through the
-	// ray-space composite SgCvRayComposite): one RGBA16F texel per
+	// path — SgGiVolumeSampleMean / sg_gi_volume.hlsli, consumed through the
+	// ray-space composite SgGiVolumeRayComposite): one RGBA16F texel per
 	// voxel, rgb = 0.124959 * Σ lobes. VolGiMean is linear in the amps,
 	// so trilerp(Σ) == Σ(trilerp) — the SAME mean the fog's 7-fetch +
 	// unpack + lobe-sum path computes, at 1/7 the fetches and none of
@@ -186,18 +186,18 @@ public:
 
 	bool WriteFile(const std::string& path, std::string& err) const;
 	// Same bytes as WriteFile (header + LZ4 half payload), into memory —
-	// the pak-embed path (PakCooker's --cvolume stage bakes volumes
+	// the pak-embed path (PakCooker's --gi-volume stage bakes volumes
 	// straight into pak Texture blobs).
 	bool WriteToMemory(std::vector<uint8_t>& out, std::string& err) const;
 	bool ReadFromMemory(std::span<const uint8_t> bytes, std::string& err);
-	static bool ReadFile(const std::string& path, CvVolume& out, std::string& err);
+	static bool ReadFile(const std::string& path, GiVolume& out, std::string& err);
 };
 
 // ---------------------------------------------------------------------------
 // Bake (per-probe direct path trace)
 // ---------------------------------------------------------------------------
 
-struct CvBakeConfig {
+struct GiVolumeBakeConfig {
 	uint32_t captureDirs = 1536; // equal-solid-angle directions per
 	                             // PROBE (6 * 16^2; the historical
 	                             // name: these were the capture
@@ -222,7 +222,7 @@ struct CvBakeConfig {
 	uint32_t seed = 1;
 };
 
-struct CvBakeStats {
+struct GiVolumeBakeStats {
 	uint64_t probes = 0;        // dense grid nodes
 	uint64_t probesInvalid = 0; // inside solid geometry (dilated)
 	uint64_t samplesClamped = 0; // firefly clamps (8x per-probe mean)
@@ -236,8 +236,8 @@ using GiBakeProgress = void (*)(const char* line);
 // (see the file banner). The AABB grid covers def.Bounds() plus the
 // fade band; probes outside the convex still bake (their runtime weight
 // is zero but trilinear taps near the boundary read them).
-bool BakeCvVolume(const GiTraceScene& scene, const CvVolumeDef& def,
-	float spacing, const CvBakeConfig& config, CvVolume& outVolume,
-	CvBakeStats& stats, GiBakeProgress progress = nullptr);
+bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
+	float spacing, const GiVolumeBakeConfig& config, GiVolume& outVolume,
+	GiVolumeBakeStats& stats, GiBakeProgress progress = nullptr);
 
 } // namespace smvk::gi
