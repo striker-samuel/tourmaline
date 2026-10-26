@@ -240,8 +240,10 @@ Platform notes:
 - **DLSS/Streamline stays unavailable on Linux** (the runtime set is
   Windows-only; the engine falls back to the renderScale/bilinear path
   and logs a one-time notice).
-- **Content**: set `TOURMALINE_CONTENT_DIR` to your content store (the
-  Windows default `F:/content` obviously does not apply).
+- **Content**: no external content store is read by the build — the
+  small runtime resources (fonts, LUTs) are tracked in `app/content/`
+  and synced next to the exe; scene content ships inside paks, passed
+  explicitly (`App --pak <path>` is REQUIRED).
 - **The runtime render loop expects a real GPU.** Builds, tests
   (35/35 parity with Windows) and boot + world loading are verified;
   the software rasterizer (lavapipe) crashes inside its compute-pipeline

@@ -114,45 +114,28 @@ function(tourmaline_host_setup TGT)
             "$<TARGET_FILE_DIR:${TGT}>"
     )
 
-    # Runtime content layout next to the exe is always:
-    #   content/models, content/paks, content/gi, content/fonts, content/textures, content/luts
-    # Large binaries (models/, paks/, gi/) live OUTSIDE git in TOURMALINE_CONTENT_DIR
-    # (default F:/content, overridable via -DTOURMALINE_CONTENT_DIR or the env var).
-    # Small tracked dirs (fonts/, ...) fall back to the legacy app/content tree.
-    if(DEFINED ENV{TOURMALINE_CONTENT_DIR})
-        set(_TOURMALINE_CONTENT_DEFAULT "$ENV{TOURMALINE_CONTENT_DIR}")
-    elseif(WIN32)
-        # The author's external content store; overridable per above.
-        set(_TOURMALINE_CONTENT_DEFAULT "F:/content")
-    else()
-        # No canonical cross-machine content location on Linux - rely on
-        # the env var / cache var; an empty default just means the content
-        # dirs are not synced (the exe still builds and runs headless).
-        set(_TOURMALINE_CONTENT_DEFAULT "")
-    endif()
-    set(TOURMALINE_CONTENT_DIR "${_TOURMALINE_CONTENT_DEFAULT}" CACHE PATH
-        "External binary content root (models/, paks/, ...). Not stored in git; synced next to the exe at build time.")
-    message(STATUS "[${TGT}] TOURMALINE_CONTENT_DIR = ${TOURMALINE_CONTENT_DIR}")
-
-    add_custom_command(TARGET ${TGT} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${TGT}>/content/textures
-        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${TGT}>/content/models
-        COMMENT "[${TGT}] Copying resource folders (shaders, textures, models) to the runtime directory"
-    )
-
-    # Sync each content subdir from the external store (preferred) or the
-    # legacy in-repo app/content tree (fallback). copy_directory creates
-    # the destination, so a missing source simply skips that subdir.
-    foreach(_CONTENT_SUB IN ITEMS models paks gi fonts textures luts)
-        if(EXISTS "${TOURMALINE_CONTENT_DIR}/${_CONTENT_SUB}")
-            set(_CONTENT_SRC "${TOURMALINE_CONTENT_DIR}/${_CONTENT_SUB}")
-        elseif(EXISTS "${TOURMALINE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
+    # Runtime content next to the exe: ONLY the small engine-read
+    # resources — content/fonts (the UI font, Roboto) + content/luts
+    # (the tonemap LUT strip) — plus the compiled content/shaders (the
+    # DXC sync below). The BIG binary store (models/, paks/, gi/,
+    # textures/) is deliberately NOT synced: the entry-point pak is
+    # EXPLICIT (App --pak <path> is REQUIRED — no default, nothing
+    # auto-runs) and everything a scene needs ships inside the pak
+    # (meshes, materials, textures, the giAsset-bound GI payloads).
+    # Populating content/paks with every pak from an external store
+    # just re-materialized 500+ MB of stale content into every build
+    # dir (knight/asteroids/banner paks that had nothing to do with the
+    # tree being built). The resources live IN THE REPO
+    # (app/content/fonts + app/content/luts — small, tracked, licensed
+    # — see THIRD_PARTY_NOTICES.md); there is no external content-root
+    # knob anymore (TOURMALINE_CONTENT_DIR is gone: it only ever fed
+    # this sync, and the store never carried fonts/luts anyway).
+    # copy_directory creates the destination.
+    foreach(_CONTENT_SUB IN ITEMS fonts luts)
+        if(EXISTS "${TOURMALINE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
             set(_CONTENT_SRC "${TOURMALINE_SOURCE_DIR}/app/content/${_CONTENT_SUB}")
         else()
             set(_CONTENT_SRC "")
-            if(_CONTENT_SUB STREQUAL "models" OR _CONTENT_SUB STREQUAL "paks")
-                message(WARNING "[${TGT}] Content '${_CONTENT_SUB}' not found in ${TOURMALINE_CONTENT_DIR} nor app/content - scenes needing it will fail at runtime.")
-            endif()
         endif()
         if(_CONTENT_SRC)
             message(STATUS "[${TGT}] Content '${_CONTENT_SUB}' <- ${_CONTENT_SRC}")
