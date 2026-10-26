@@ -79,6 +79,25 @@ public:
 			leases.push_back(shard);
 		}
 		threadCount = leases.size();
+		if (threadCount == 0) {
+			// ZERO-WORKER FAIL-FAST: every worker shard is leased (>= 15
+			// live workers elsewhere). A zero-worker pool would still
+			// ACCEPT enqueues that nobody executes — every future.get()
+			// would block forever (a silent permanent deadlock, reachable
+			// whenever two default-sized pools overlap). FAIL LOUDLY
+			// instead: nothing has been allocated yet (no ring, no
+			// threads, no leases — the acquire loop broke on its FIRST
+			// failure), so there is nothing to unwind. Callers treat this
+			// as the resource exhaustion it is: retry when the other pools
+			// release, or degrade explicitly (PakCrc32Parallel's serial
+			// CRC fallback). Deliberately NOT a silent switch to
+			// synchronous execution — hiding the oversubscription would
+			// reintroduce the bug class this guard exists for.
+			throw std::runtime_error(
+				"ThreadPool: all pool shards leased by live workers"
+				" (>= 15 elsewhere); refusing to construct a zero-worker"
+				" pool that would deadlock enqueue waiters");
+		}
 		// Ring storage from the process allocator (allocation failure
 		// crashes with the OOM diagnostic — no fallback). Slots are
 		// default-constructed (empty std::function: no allocation) and

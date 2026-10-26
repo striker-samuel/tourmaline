@@ -270,7 +270,12 @@ struct CascadedShadowAtlas {
 		const std::vector<float>& splits,
 		float zPadding = 1.0f,
 		float tanSunAngle = 0.0f,
-		float softness = 1.0f) const {
+		float softness = 1.0f,
+		// Caster-aware depth coverage (see GetDirectionalLightOrthoVP): the
+		// merged AABB of the caster-candidate geometry + the explicit max
+		// shadow distance clamp. Null = the slice-only fit.
+		const ShadowCasterFitBounds* casterBounds = nullptr,
+		float maxShadowDistance = kDirectionalShadowMaxDistance) const {
 		assert(Valid());
 		assert(splits.size() == static_cast<size_t>(cascadeCount + 1));
 
@@ -302,7 +307,9 @@ struct CascadedShadowAtlas {
 				zPadding,
 				true,
 				static_cast<int>(tileExtent.width),
-				&depthRange);
+				&depthRange,
+				casterBounds,
+				maxShadowDistance);
 
 			// NOTE: do NOT Y-flip the light ortho here. Flipping only lp[1][1]
 			// (scale) without the offset term lp[3][1] breaks the NDC mapping

@@ -593,6 +593,17 @@ struct Scene {
 	// any static subtree); rebuilt via RebuildStaticCache().
 	std::vector<uint8_t> staticRoot;
 	std::vector<uint8_t> staticNode;
+	// True when this scene was DESERIALIZED from a blob that carried the
+	// trailing static-subtree section (the serializer's v2+ layout — the
+	// section is ALWAYS written, so a deserialized scene has it and an
+	// in-memory/hand-built or pre-v2 scene does not). This is the
+	// AUTHORED-vs-LEGACY discriminator for static metadata: an ALL-ZERO
+	// staticRoot on a serialized scene is COOKED, intentional data (an
+	// authored all-dynamic scene), NOT an absent record. Consumers deciding
+	// "does this pak carry static marks at all" (the viewer's legacy
+	// fallback) must test THIS flag — never any_of(staticRoot), which
+	// misreads an authored all-dynamic scene as a legacy pak.
+	bool staticRootsSerialized = false;
 
 	// Lightmap opt-out (editor + cook): noLightmap[node] == 1 excludes the
 	// node's subtree from lightmap charting/baking (see PakCooker --lightmap

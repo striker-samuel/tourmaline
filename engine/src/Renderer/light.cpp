@@ -134,7 +134,9 @@ void smvk::GetDirectionalLightOrthoVP(
 	float zPadding,
 	bool enableTexelSnap,
 	int shadowMapRes,
-	float* outDepthRange
+	float* outDepthRange,
+	const ShadowCasterFitBounds* casterBounds,
+	float maxShadowDistance
 )
 {
 	if (!(shadowFar > shadowNear))
@@ -175,17 +177,60 @@ void smvk::GetDirectionalLightOrthoVP(
 	// Construct light orientation.
 	const glm::vec3 up = ChooseSafeUpForLookAt(lightDir);
 	float minAlongLight = FLT_MAX;
+	float maxAlongLight = -FLT_MAX;
 
 	for (const glm::vec3& corner : corners)
 	{
-		minAlongLight = std::min(
-			minAlongLight,
-			glm::dot(corner - center, lightDir)
-		);
+		const float a = glm::dot(corner - center, lightDir);
+		minAlongLight = std::min(minAlongLight, a);
+		maxAlongLight = std::max(maxAlongLight, a);
 	}
 
+	// The slice's own extents along the light axis (from the slice center):
+	// sunward (toward the sun, a < 0) and scene-ward (a > 0).
+	const float sunwardHalf = -minAlongLight;
+	const float sceneHalf = maxAlongLight;
+
+	// ---- Caster-aware depth coverage (the P2 gap) ----
+	// The contribution view retains casters arbitrarily far sunward; the
+	// slice-only fit put the light (sunwardHalf + zPadding) off the center,
+	// so a caster beyond that clipped at the light's near plane and its
+	// shadow popped. Fold the casters' extent along the light axis into the
+	// backoff + depth range, CLAMPED to slice extent + maxShadowDistance —
+	// the explicit pop bound (a world-scale caster AABB cannot explode the
+	// range; the clamp is a documented decision, not luck).
+	bool useCasters = casterBounds && casterBounds->valid;
+	float casterMinA = 0.0f, casterMaxA = 0.0f; // light-axis interval
+	if (useCasters)
+	{
+		const float sunCap = sunwardHalf + maxShadowDistance;
+		const float sceneCap = sceneHalf + maxShadowDistance;
+		float mnA = FLT_MAX, mxA = -FLT_MAX;
+		for (int i = 0; i < 8; ++i)
+		{
+			const glm::vec3 c(
+				(i & 1) ? casterBounds->max.x : casterBounds->min.x,
+				(i & 2) ? casterBounds->max.y : casterBounds->min.y,
+				(i & 4) ? casterBounds->max.z : casterBounds->min.z);
+			const float a = glm::dot(c - center, lightDir);
+			mnA = std::min(mnA, a);
+			mxA = std::max(mxA, a);
+		}
+		// Clamp the interval into the coverage window. A degenerate result
+		// (the whole AABB past the sun cap) drops the caster fit — the
+		// slice-only behavior stands.
+		casterMinA = std::max(mnA, -sunCap);
+		casterMaxA = std::min(mxA, sceneCap);
+		if (casterMaxA < casterMinA)
+			useCasters = false;
+	}
+	const float needSunward = useCasters
+		? std::max(sunwardHalf, -casterMinA) : sunwardHalf;
+	const float needScene = useCasters
+		? std::max(sceneHalf, casterMaxA) : sceneHalf;
+
 	float lightBackoff =
-		-minAlongLight + zPadding;
+		needSunward + zPadding;
 
 	glm::vec3 lightPosition =
 		center - lightDir * lightBackoff;
@@ -207,6 +252,20 @@ void smvk::GetDirectionalLightOrthoVP(
 
 		minBounds = glm::min(minBounds, cornerLS);
 		maxBounds = glm::max(maxBounds, cornerLS);
+	}
+
+	// Z-only extension from the (clamped) caster interval: the depth range
+	// must cover the casters the contribution cull retained. Only the
+	// light-axis extremes matter — z_view = -(lightBackoff + a) for any
+	// point with axis offset a, regardless of its perpendicular position —
+	// and the XY bounds above stay slice-fit on purpose: a caster whose
+	// shadow can REACH the slice shares its receiver's light-space xy
+	// (translation along the light axis moves depth only), so the slice
+	// window already contains every relevant caster's xy.
+	if (useCasters)
+	{
+		minBounds.z = std::min(minBounds.z, -(lightBackoff + casterMaxA));
+		maxBounds.z = std::max(maxBounds.z, -(lightBackoff + casterMinA));
 	}
 
 	//

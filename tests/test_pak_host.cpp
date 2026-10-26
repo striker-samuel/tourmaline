@@ -24,10 +24,19 @@
 #include <unistd.h> // readlink (/proc/self/exe)
 #endif
 
+#include <algorithm>
+#include <atomic>
+#include <memory>
+#include <thread>
+
 #include "Host.h"
 #include "PakPreload.h"
+#include "PakWorldLoader.h"
 
+#include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Scene/scene.h>
 
 namespace {
 
@@ -271,12 +280,120 @@ void TestPakCorruption() {
 	}
 }
 
+// ---- Static-flag application (app::ApplyCookedStaticFlags — the
+// loader's decision seam, driven on hand-built value worlds; finding B:
+// an authored ALL-DYNAMIC cooked scene must never be misread as a legacy
+// pak and re-frozen viewer-side) ----
+
+// One offline cluster with a two-node hierarchy, optionally carrying the
+// serialized-static-section flag (the cooked discriminator) and/or a
+// skeleton.
+std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized,
+	bool skeleton) {
+	auto world = std::make_unique<smvk::World>();
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	addNode(cluster->scene, -1, 0);
+	addNode(cluster->scene, 0, 1);
+	cluster->scene.staticRoot.assign(cluster->scene.hierarchy.size(), 0);
+	cluster->scene.staticRootsSerialized = staticsSerialized;
+	cluster->hasSkeleton = skeleton;
+	world->RegisterCluster(std::move(cluster));
+	return world;
+}
+
+bool AllNodesDynamic(const smvk::World& world) {
+	const ::Scene& s = world.clusters.front()->scene;
+	return s.staticRoot.size() == s.hierarchy.size()
+		&& std::all_of(s.staticRoot.begin(), s.staticRoot.end(),
+			[](uint8_t v) { return v == 0; });
+}
+
+void TestStaticFlagApplication() {
+	// THE FINDING-B CASE: a COOKED ALL-DYNAMIC scene (the serialized static
+	// section PRESENT, every mark false — an authored all-dynamic scene).
+	// Honored verbatim: NO viewer-invented freeze (the old any_of form
+	// misread exactly this scene as a legacy pak and blanket-froze it —
+	// the regression the loader rework was supposed to remove).
+	{
+		auto world = WorldWithOneCluster(/*staticsSerialized=*/true,
+			/*skeleton=*/false);
+		app::ApplyCookedStaticFlags(*world, "alldynamic.pak");
+		Check(AllNodesDynamic(*world),
+			"pakhost.staticflags.alldynamic-cooked-honored");
+	}
+	// A cooked cluster with REAL marks stays untouched (nothing to do;
+	// the marks are the cooked data).
+	{
+		auto world = WorldWithOneCluster(true, false);
+		::Scene& s = world->clusters.front()->scene;
+		MarkSubtreeStatic(s, 0);
+		app::ApplyCookedStaticFlags(*world, "marked.pak");
+		Check(s.staticRoot[0] == 1,
+			"pakhost.staticflags.cooked-marks-preserved");
+	}
+	// LEGACY (pre-section) non-skinned cluster: the loud compat fallback
+	// freezes the root — the documented old-pak behavior, now the ONLY
+	// route to a viewer-side freeze.
+	{
+		auto world = WorldWithOneCluster(false, false);
+		app::ApplyCookedStaticFlags(*world, "legacy.pak");
+		Check(!AllNodesDynamic(*world)
+			&& world->clusters.front()->scene.staticRoot[0] == 1,
+			"pakhost.staticflags.legacy-fallback-freezes");
+	}
+	// Skinned legacy cluster: NEVER frozen (the animation driver owns
+	// its transforms — the fallback skips skeletons even without the
+	// serialized section).
+	{
+		auto world = WorldWithOneCluster(false, true);
+		app::ApplyCookedStaticFlags(*world, "skinned-legacy.pak");
+		Check(AllNodesDynamic(*world),
+			"pakhost.staticflags.skeleton-never-frozen");
+	}
+}
+
+// ---- Parallel pak CRC first-use (finding C: PakCrc32's table init is a
+// magic static now — the old lazy bool + unsynchronized fill was a data
+// race when the FIRST CRC was the parallel one, with every worker racing
+// the same table) ----
+// MUST RUN FIRST in main: this process's very first PakCrc32 calls happen
+// inside these concurrent threads, so the static's initialization is
+// exercised exactly-once-under-race rather than pre-warmed.
+void TestParallelCrcFirstUse() {
+	std::vector<uint8_t> blob(4 * 1024 * 1024);
+	for (size_t i = 0; i < blob.size(); ++i)
+		blob[i] = uint8_t(i * 31u + (i >> 9));
+	const uint32_t serial = smvk::PakCrc32(blob.data(), blob.size());
+	// One thread takes the PARALLEL path with small chunks (every worker
+	// first-touches the table concurrently — the old race window); the
+	// others first-touch it serially at the same time. All must agree
+	// with the serial reference.
+	std::atomic<uint32_t> mismatches{ 0 };
+	std::vector<std::thread> threads;
+	for (int t = 0; t < 8; ++t)
+		threads.emplace_back([&, t] {
+			const uint32_t got = (t == 0)
+				? smvk::PakCrc32Parallel(
+					std::span<const uint8_t>(blob), 4096)
+				: smvk::PakCrc32(blob.data(), blob.size());
+			if (got != serial)
+				mismatches.fetch_add(1);
+		});
+	for (auto& th : threads)
+		th.join();
+	Check(mismatches.load() == 0,
+		"pakcorruption.parallel-crc-first-use-agrees");
+}
+
 } // namespace
 
 int main() {
+	TestParallelCrcFirstUse();
 	TestCliParse();
 	TestPakPathResolution();
 	TestPakCorruption();
+	TestStaticFlagApplication();
 	std::cout << "pak_host_tests: " << (g_checks - g_failures) << "/"
 		<< g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;

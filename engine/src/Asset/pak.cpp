@@ -4,6 +4,7 @@
 #include <Engine/Asset/pak.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstring>
 #include <filesystem>
@@ -114,21 +115,31 @@ uint32_t PakCrc32Parallel(std::span<const uint8_t> data, size_t chunkBytes) {
 		return PakCrc32(data.data(), data.size());
 	// Chunk-split, one CRC per worker, then fold right-to-left with the
 	// combine primitive (acc always covers [i+1, chunkCount)).
+	// Zero-worker guard (ThreadPool fail-fast): when every pool shard is
+	// leased by live workers elsewhere, the pool refuses to construct —
+	// this is a pure ACCELERATION path, so degrade explicitly to the
+	// serial CRC instead of failing the pak open.
 	struct ChunkCrc {
 		uint32_t crc;
 		size_t len;
 	};
 	const size_t chunkCount = (data.size() + chunkBytes - 1) / chunkBytes;
-	ThreadPool pool(std::min<size_t>(chunkCount,
-		std::thread::hardware_concurrency()));
 	std::vector<std::future<ChunkCrc>> futs;
-	futs.reserve(chunkCount);
-	for (size_t i = 0; i < chunkCount; ++i) {
-		const uint8_t* base = data.data() + i * chunkBytes;
-		const size_t len = std::min(chunkBytes, data.size() - i * chunkBytes);
-		futs.push_back(pool.enqueue([base, len]() -> ChunkCrc {
-			return ChunkCrc{ PakCrc32(base, len), len };
-		}));
+	try {
+		ThreadPool pool(std::min<size_t>(chunkCount,
+			std::thread::hardware_concurrency()));
+		futs.reserve(chunkCount);
+		for (size_t i = 0; i < chunkCount; ++i) {
+			const uint8_t* base = data.data() + i * chunkBytes;
+			const size_t len = std::min(chunkBytes, data.size() - i * chunkBytes);
+			futs.push_back(pool.enqueue([base, len]() -> ChunkCrc {
+				return ChunkCrc{ PakCrc32(base, len), len };
+			}));
+		}
+	}
+	catch (const std::runtime_error&) {
+		// All shards leased (see ThreadPool): serial CRC, same result.
+		return PakCrc32(data.data(), data.size());
 	}
 	ChunkCrc acc = futs.back().get();
 	futs.pop_back();
@@ -152,17 +163,21 @@ uint64_t PakHashPath(const std::string& normalizedPath) {
 }
 
 uint32_t PakCrc32(const void* data, size_t size) {
-	static uint32_t table[256];
-	static bool init = false;
-	if (!init) {
+	// Magic-static table: the C++ runtime guarantees exactly-one,
+	// thread-safe initialization (the OLD lazy `static bool init` +
+	// unsynchronized fill was a data race on FIRST USE — PakCrc32Parallel's
+	// workers all call this concurrently when a big pak's first CRC is the
+	// parallel one, and every worker raced the same table fill).
+	static const std::array<uint32_t, 256> table = [] {
+		std::array<uint32_t, 256> t{};
 		for (uint32_t i = 0; i < 256; ++i) {
 			uint32_t c = i;
 			for (int k = 0; k < 8; ++k)
 				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-			table[i] = c;
+			t[i] = c;
 		}
-		init = true;
-	}
+		return t;
+	}();
 	uint32_t crc = 0xFFFFFFFFu;
 	const uint8_t* p = static_cast<const uint8_t*>(data);
 	for (size_t i = 0; i < size; ++i)

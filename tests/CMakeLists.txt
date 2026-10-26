@@ -530,11 +530,13 @@ add_test(NAME retirement_fuzz_tests COMMAND RetirementFuzzTests)
 
 # Pak-viewer HOST regressions (finding #19: the CLI/pak-resolution/
 # corruption surface had no direct coverage): CPU-only, headless — the
-# app-host TUs (PakAppArgs.cpp + PakPreload.cpp) compile straight into the
-# test against the engine lib.
+# app-host TUs (PakAppArgs.cpp + PakPreload.cpp + PakWorldLoader.cpp,
+# whose ApplyCookedStaticFlags seam is driven on hand-built value
+# worlds) compile straight into the test against the engine lib.
 add_executable(PakHostTests test_pak_host.cpp
 	../app/src/PakAppArgs.cpp
 	../app/src/PakPreload.cpp
+	../app/src/PakWorldLoader.cpp
 )
 
 target_include_directories(PakHostTests

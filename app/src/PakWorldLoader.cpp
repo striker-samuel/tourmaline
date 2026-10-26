@@ -120,6 +120,36 @@ namespace app {
 
 	} // namespace
 
+	// STATIC-FLAG APPLICATION (public seam: PakHostTests drives it on
+	// hand-built value worlds — the loader's decision logic without the
+	// pak/GPU plumbing). Cooked detection is SECTION PRESENCE
+	// (Scene::staticRootsSerialized — set by the cluster deserializer when
+	// the scene blob carried the trailing static section), NEVER
+	// any_of(staticRoot): a serialized ALL-ZERO array is authored
+	// all-dynamic data and must be honored — the any_of form misread
+	// exactly that as a legacy pak and re-invented the viewer-side freeze
+	// (the blanket marking this pipeline removed). The fallback stays for
+	// genuinely legacy clusters (a pre-v2 blob / hand-built scene) and is
+	// loud; skinned clusters never freeze (the animation driver owns
+	// their transforms).
+	void ApplyCookedStaticFlags(smvk::World& world, const std::string& pakName) {
+		for (auto& clusterPtr : world.clusters) {
+			smvk::Cluster* c = clusterPtr.get();
+			if (!c || c->scene.hierarchy.empty())
+				continue;
+			if (c->scene.staticRootsSerialized)
+				continue; // cooked: honor the recorded marks verbatim
+				          // (all-zero = authored all-dynamic)
+			if (c->hasSkeleton)
+				continue; // skinned clusters stay dynamic (the anim driver)
+			std::cerr << "[App] cluster '" << pakName
+				<< "' carries no serialized static section (a legacy pak);"
+				" freezing its roots viewer-side — recook for authored"
+				" static flags\n";
+			MarkSubtreeStatic(c->scene, 0);
+		}
+	}
+
 	smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
 		PakPreload pre,
 		int sceneIndex,
@@ -202,26 +232,9 @@ namespace app {
 		// cluster root static AT RUNTIME — inventing scene metadata the
 		// cooker never wrote, which misclassified any genuinely dynamic
 		// (runtime-moved) cluster as frozen. The viewer-side freeze now
-		// fires ONLY as the loud compat fallback for old paks whose
-		// clusters carry no marks at all.
-		for (auto& clusterPtr : world->clusters) {
-			smvk::Cluster* c = clusterPtr.get();
-			if (!c || c->scene.hierarchy.empty())
-				continue;
-			const bool hasMarks =
-				c->scene.staticRoot.size() == c->scene.hierarchy.size()
-				&& std::any_of(c->scene.staticRoot.begin(),
-					c->scene.staticRoot.end(),
-					[](uint8_t v) { return v != 0; });
-			if (hasMarks)
-				continue; // cooked: honor the authored/cooked marks verbatim
-			if (c->hasSkeleton)
-				continue; // skinned clusters stay dynamic (the anim driver)
-			std::cerr << "[App] cluster '" << StemOf(pre.scenePak)
-				<< "' carries no cooked static marks (an old pak); freezing"
-				" its roots viewer-side — recook for authored static flags\n";
-			MarkSubtreeStatic(c->scene, 0);
-		}
+		// fires ONLY as the loud compat fallback for clusters whose scene
+		// blob carried NO static section (pre-v2 paks).
+		ApplyCookedStaticFlags(*world, pre.scenePak);
 		world->ResolveAndFixup_clusters();
 		// SSR wax (test amplification, TOURMALINE_SSR_WAX=1; the sponza
 		// check scene is the target): every opaque lit material's roughness

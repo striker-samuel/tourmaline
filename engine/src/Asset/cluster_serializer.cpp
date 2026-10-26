@@ -1460,7 +1460,11 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	if (!c.ok)
 		return fail("truncated scene blob");
 	// Trailing static-subtree section (v2): u32 count + count bytes.
-	// v1 blobs end exactly here (no static nodes).
+	// v1 blobs end exactly here (no static nodes). The section's PRESENCE
+	// is recorded on the scene (staticRootsSerialized): an all-zero array
+	// from a v2+ blob is AUTHORED all-dynamic data, not a missing record —
+	// consumers distinguishing cooked from legacy test the flag, never
+	// the array's contents (see Scene::staticRootsSerialized).
 	if (c.off < c.img.size()) {
 		const uint32_t staticCount = c.u32();
 		if (!c.ok || staticCount != nodeCount)
@@ -1470,6 +1474,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		scene.staticRoot.assign(
 			c.img.data() + c.off, c.img.data() + c.off + staticCount);
 		c.off += staticCount;
+		scene.staticRootsSerialized = true;
 	}
 	else {
 		scene.staticRoot.assign(nodeCount, 0);

@@ -27,6 +27,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <Engine/Renderer/light.h>
+#include <Engine/Renderer/renderview.h> // the contribution view (the culling half of the contract)
 
 namespace {
 
@@ -326,32 +327,177 @@ void TestCascadePaddingLargeSceneLowSun() {
 	}
 
 	// ---- Slice coverage at the large scale (the base contract) ----
-	{
-		const glm::vec3 lightDir = glm::normalize(
-			glm::vec3(-0.5f, -0.766f, -0.4f));
-		const glm::vec3 fwd = glm::normalize(glm::vec3(0.0f, -0.05f, -1.0f));
-		const glm::vec3 camPos(50.0f, 25.0f, 300.0f);
-		const glm::mat4 proj = MakeReverseZProj(
-			glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 2000.0f);
-		const glm::mat4 invProj = glm::inverse(proj);
-		const glm::mat4 view = glm::lookAt(camPos, camPos + fwd,
+		{
+			const glm::vec3 lightDir = glm::normalize(
+				glm::vec3(-0.5f, -0.766f, -0.4f));
+			const glm::vec3 fwd = glm::normalize(glm::vec3(0.0f, -0.05f, -1.0f));
+			const glm::vec3 camPos(50.0f, 25.0f, 300.0f);
+			const glm::mat4 proj = MakeReverseZProj(
+				glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 2000.0f);
+			const glm::mat4 invProj = glm::inverse(proj);
+			const glm::mat4 view = glm::lookAt(camPos, camPos + fwd,
+				glm::vec3(0.0f, 1.0f, 0.0f));
+			const glm::mat4 invView = glm::inverse(view);
+			glm::mat4 lv, lp;
+			smvk::GetDirectionalLightOrthoVP(lightDir, invView, invProj,
+				1.0f, 400.0f, lv, lp, kCascadeZPadding, true, kRes);
+			const glm::mat4 vp = lp * lv;
+			bool covered = true;
+			for (const glm::vec3& c :
+					SliceCorners(invProj, invView, 1.0f, 400.0f)) {
+				const glm::vec4 clip = vp * glm::vec4(c, 1.0f);
+				const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+				if (ndc.x < -1.0001f || ndc.x > 1.0001f ||
+					ndc.y < -1.0001f || ndc.y > 1.0001f ||
+					ndc.z < -0.0001f || ndc.z > 1.0001f)
+					covered = false;
+			}
+			Check(covered, "light.padding.large-scene.slice-covered");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// END-TO-END shadow coverage consistency (the P2): a caster RETAINED by
+// the contribution cull (MakeCasterContributionView) must land INSIDE the
+// cascade's depth range (GetDirectionalLightOrthoVP with the caster fit)
+// — the two systems must agree. The slice-only fit clipped far-sun
+// casters at the light's near plane: a tall building up-sun passed the
+// cull and its shadow STILL popped. The caster-bounds fit extends the
+// depth coverage to the retained casters' light-axis extent, clamped by
+// kDirectionalShadowMaxDistance (the explicit pop bound — a caster past
+// it clips by decision, not by luck).
+// ---------------------------------------------------------------------------
+void TestCasterFitEndToEnd() {
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	// Main camera at the origin looking -Z, fov 90, finite reversed-Z far
+	// (the fit's receiver slice lives in [shadowNear, shadowFar] along the
+	// view axis).
+	glm::mat4 proj = MakeReverseZProj(glm::radians(90.0f), 1.0f, 0.1f, 500.0f);
+	proj[1][1] *= -1.0f; // Vulkan Y-flip (the engine's main view convention)
+	const glm::mat4 view =
+		glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f),
 			glm::vec3(0.0f, 1.0f, 0.0f));
-		const glm::mat4 invView = glm::inverse(view);
+	const glm::mat4 invView = glm::inverse(view);
+	const glm::mat4 invProj = glm::inverse(proj);
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	const smvk::RenderView& mainView = views.Get(rv);
+
+	// Oblique sun (~45 deg elevation, up-sun at +x): lightDir points
+	// sun->ground.
+	const glm::vec3 lightDir =
+		glm::normalize(glm::vec3(-0.5f, -0.6f, -0.2f));
+	const smvk::RenderView swept =
+		smvk::MakeCasterContributionView(mainView, lightDir);
+
+	// The receiver slice the cascade fits.
+	constexpr float kShadowNear = 10.0f;
+	constexpr float kShadowFar = 80.0f;
+	constexpr float kCascadeZPadding = 25.0f; // WorldRenderer's constant
+	// The slice center + its sunward half-extent along the light axis
+	// (the old coverage bound was sunwardHalf + padding).
+	glm::vec3 sliceCenter(0.0f);
+	float sunwardHalf = 0.0f;
+	{
+		const auto corners = SliceCorners(invProj, invView,
+			kShadowNear, kShadowFar);
+		for (const glm::vec3& c : corners)
+			sliceCenter += c;
+		sliceCenter /= float(corners.size());
+		float minA = FLT_MAX;
+		for (const glm::vec3& c : corners)
+			minA = (std::min)(minA, glm::dot(c - sliceCenter, lightDir));
+		sunwardHalf = -minA;
+	}
+
+	// The caster candidates: a 120 m TALL TOWER whose top stands WELL past
+	// the old coverage (sunward ray distance far beyond sunwardHalf + 25)
+	// while its shadow still lands in the slice (the contribution view
+	// keeps it — the precondition of the whole contract).
+	smvk::ShadowCasterFitBounds casters;
+	casters.min = glm::vec3(130.0f, 0.0f, -40.0f);
+	casters.max = glm::vec3(150.0f, 120.0f, -20.0f);
+	casters.valid = true;
+	const glm::vec3 towerTop(casters.max);
+	const glm::vec3 towerBase(casters.min.x, casters.min.y, casters.min.z);
+
+	// 1. The contribution view RETAINS the tower (it can shadow the view —
+	//    the culling system keeps it).
+	const glm::vec3 towerCenter = (casters.min + casters.max) * 0.5f;
+	const float towerRadius = glm::length(casters.max - casters.min) * 0.5f;
+	Check(smvk::RenderViewIntersectsSphere(swept, towerCenter, towerRadius),
+		"light.casterfit.contribution-retains-tower");
+
+	// One fit + a depth probe.
+	auto fitLight = [&](const smvk::ShadowCasterFitBounds* bounds) {
 		glm::mat4 lv, lp;
 		smvk::GetDirectionalLightOrthoVP(lightDir, invView, invProj,
-			1.0f, 400.0f, lv, lp, kCascadeZPadding, true, kRes);
-		const glm::mat4 vp = lp * lv;
-		bool covered = true;
-		for (const glm::vec3& c :
-				SliceCorners(invProj, invView, 1.0f, 400.0f)) {
-			const glm::vec4 clip = vp * glm::vec4(c, 1.0f);
-			const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-			if (ndc.x < -1.0001f || ndc.x > 1.0001f ||
-				ndc.y < -1.0001f || ndc.y > 1.0001f ||
-				ndc.z < -0.0001f || ndc.z > 1.0001f)
-				covered = false;
-		}
-		Check(covered, "light.padding.large-scene.slice-covered");
+			kShadowNear, kShadowFar, lv, lp, kCascadeZPadding, true, 2048,
+			nullptr, bounds);
+		return lp * lv;
+	};
+	auto depthInside = [](const glm::mat4& vp, const glm::vec3& p) {
+		const glm::vec4 clip = vp * glm::vec4(p, 1.0f);
+		const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+		return ndc.z >= -0.001f && ndc.z <= 1.001f;
+	};
+
+	// 2. The DOCUMENTED GAP (the reason the fit exists): the slice-only
+	//    fit retains nothing beyond sunwardHalf + padding on the depth
+	//    axis — the tower passes the cull and still clips (its shadow
+	//    pops). Asserts the tower is genuinely past the old bound.
+	const glm::mat4 vpSliceOnly = fitLight(nullptr);
+	Check(!depthInside(vpSliceOnly, towerTop),
+		"light.casterfit.slice-only-fit-clips-tower (the P2 gap)");
+
+	// 3. THE CONTRACT: with the caster bounds, a contribution-retained
+	//    caster is DEPTH-COVERED — both the tower top and base land inside
+	//    the light's depth range. The culling volume and the depth fit now
+	//    agree.
+	const glm::mat4 vpFitted = fitLight(&casters);
+	Check(depthInside(vpFitted, towerTop),
+		"light.casterfit.retained-tower-top-covered");
+	Check(depthInside(vpFitted, towerBase),
+		"light.casterfit.retained-tower-base-covered");
+
+	// 4. The receiver side is untouched: every slice corner stays inside
+	//    the fitted frustum (the caster extension only widens DEPTH —
+	//    never narrows the receiver coverage or the xy window).
+	bool sliceCovered = true;
+	for (const glm::vec3& c :
+			SliceCorners(invProj, invView, kShadowNear, kShadowFar)) {
+		const glm::vec4 clip = vpFitted * glm::vec4(c, 1.0f);
+		const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+		if (ndc.x < -1.0001f || ndc.x > 1.0001f ||
+			ndc.y < -1.0001f || ndc.y > 1.0001f ||
+			ndc.z < -0.0001f || ndc.z > 1.0001f)
+			sliceCovered = false;
+	}
+	Check(sliceCovered, "light.casterfit.slice-still-covered");
+
+	// 5. The EXPLICIT clamp: a caster beyond sunwardHalf +
+	//    kDirectionalShadowMaxDistance clips by DECISION (the documented
+	//    pop bound — bounded, not lucky). Place the far tower at 1.5x the
+	//    cap sunward of the slice center along the light axis.
+	{
+		const float farT = sunwardHalf
+			+ 1.5f * smvk::kDirectionalShadowMaxDistance;
+		const glm::vec3 farTop = sliceCenter - lightDir * farT
+			+ glm::vec3(0.0f, 120.0f, 0.0f);
+		smvk::ShadowCasterFitBounds farCasters;
+		farCasters.min = sliceCenter - lightDir * (farT + 20.0f)
+			- glm::vec3(10.0f, 0.0f, 10.0f);
+		farCasters.max = sliceCenter - lightDir * (farT - 0.0f)
+			+ glm::vec3(10.0f, 120.0f, 10.0f);
+		farCasters.valid = true;
+		const glm::mat4 vpFar = fitLight(&farCasters);
+		Check(!depthInside(vpFar, farTop),
+			"light.casterfit.past-max-distance-clips (the explicit bound)");
+		// The near slice still covers with the far clamped bounds (the
+		// clamp never sacrifices the receiver side).
+		bool nearCovered = depthInside(vpFar,
+			sliceCenter + glm::vec3(0.0f, 0.0f, -30.0f));
+		Check(nearCovered, "light.casterfit.clamped-fit-keeps-receivers");
 	}
 }
 
@@ -360,6 +506,7 @@ void TestCascadePaddingLargeSceneLowSun() {
 int main() {
 	TestDirectionalTexelSnap();
 	TestCascadePaddingLargeSceneLowSun();
+	TestCasterFitEndToEnd();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

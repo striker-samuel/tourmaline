@@ -89,12 +89,16 @@ s_benchPreA = 0.0, s_benchPreB = 0.0, s_benchPreC = 0.0;
 // Engine/Rendergraph/cascadedshadowmap.h)
 // -----------------------------------------------------------------------------
 static constexpr uint32_t NUM_CASCADES = 4;
-// Light-space depth padding either side of each cascade's receiver slice;
+// Light-space depth padding either side of each cascade's RECEIVER slice.
 // GetDirectionalLightOrthoVP also backs the light off by the same amount
-// toward the sun, so the effective sunward coverage is ~2x this. Casters
-// nearer the sun than that fall behind the light's near plane and CLIP
-// out of the shadow map (tall rooftop/trim shadows popping as the fit
-// moves with the camera): 25 m keeps building-scale casters in range.
+// toward the sun, so the effective sunward coverage is ~2x this PAST THE
+// SLICE's own extent. DEPTH COVERAGE OF TALL/UP-SUN CASTERS is no longer
+// this constant's job: the caster-aware fit (ShadowCasterFitBounds, fed
+// from the caster-candidate AABB below) extends the backoff + depth range
+// to the retained casters' light-axis extent, clamped by
+// kDirectionalShadowMaxDistance — the explicit pop bound. Casters beyond
+// that past the slice clip out of the map (tall rooftop/trim shadows
+// popping as the fit moves with the camera) BY DECISION, not by luck.
 // Depth precision is a non-issue: the atlas is D32 and the per-cascade
 // depth bias divides by the ACTUAL depthRange, so a wider range stays
 // bias-corrected.
@@ -4332,6 +4336,45 @@ namespace engine {
 			}
 		}
 
+		// Caster-aware cascade depth coverage (the contribution-cull/depth-
+		// fit gap): the contribution view retains casters arbitrarily far
+		// sunward, but the slice-only ortho fit clipped them at the light's
+		// near plane — a tall building up-sun passed the cull and its
+		// shadow still popped. Feed the merged world-space AABB of the
+		// caster-candidate geometry (the same flag-qualified set the shadow
+		// draws iterate) into the fit; the clamp inside
+		// (kDirectionalShadowMaxDistance) is the explicit pop bound. One
+		// extra flag-filtered walk per frame — the shadow passes do four.
+		smvk::ShadowCasterFitBounds casterFit{};
+		if (m_world) {
+			glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+			m_world->forEachRenderItem(
+				smvk::IteratorFlagBit_StaticVertexFmt
+				| smvk::IteratorFlagBit_CastShadow,
+				[&](const smvk::World::RenderItem& item) {
+				const smvk::StaticMesh* meshDesc =
+					m_world->GetMesh(item.mesh);
+				if (!meshDesc)
+					return;
+				glm::vec3 sphereCenter;
+				float sphereRadius = 0.0f;
+				smvk::MeshBoundsToWorld(
+					m_world->scene.globalTransform[item.node],
+					meshDesc->geometry.aabbMin,
+					meshDesc->geometry.aabbMax,
+					sphereCenter, sphereRadius);
+				// Conservative sphere->box (the diagonal radius per axis
+				// over-covers slightly — depth coverage, never under-cover).
+				mn = glm::min(mn, sphereCenter - sphereRadius);
+				mx = glm::max(mx, sphereCenter + sphereRadius);
+			});
+			if (mn.x <= mx.x && mn.y <= mx.y && mn.z <= mx.z) {
+				casterFit.min = mn;
+				casterFit.max = mx;
+				casterFit.valid = true;
+			}
+		}
+
 		smvk::GpuDirectionalLightDescription dir =
 			m_viewportResources.directionalShadows.BuildDirectionalLight(
 				lightDir,
@@ -4345,7 +4388,8 @@ namespace engine {
 				// Soft directional shadows: the environment's sun disc
 				// angular radius becomes the physical penumbra angle.
 				std::tan(glm::radians(env.sunDiscSizeDeg)),
-				m_evsmSoftness);
+				m_evsmSoftness,
+				casterFit.valid ? &casterFit : nullptr);
 		// UI bias scales over the engine's texel-scaled per-cascade bias.
 		for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 			dir.cascades[i].bias *= m_cascadeDepthBiasScale;

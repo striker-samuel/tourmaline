@@ -177,6 +177,24 @@ namespace smvk {
 		float cameraNear,
 		float cameraFar
 	);
+	// Optional caster-aware cascade fit input (GetDirectionalLightOrthoVP):
+	// the merged world-space AABB of the shadow-casting CANDIDATE geometry —
+	// the same flag-qualified set the shadow draws iterate (everything the
+	// contribution cull may retain). invalid/absent = the slice-only fit.
+	struct ShadowCasterFitBounds {
+		glm::vec3 min{ 0.0f };
+		glm::vec3 max{ 0.0f };
+		bool valid = false;
+	};
+	// The explicit cap on how far BEYOND the receiver slice's own extent
+	// the directional shadow map's depth range reaches to cover casters
+	// (the documented pop bound: a caster farther sunward than this past
+	// the slice clips out of the map, by decision rather than by luck).
+	// D32 + the per-cascade bias dividing by the ACTUAL depthRange keep a
+	// wider range bias-corrected, so the cost of the coverage is size
+	// alone.
+	inline constexpr float kDirectionalShadowMaxDistance = 500.0f;
+
 	void GetDirectionalLightOrthoVP(
 		const glm::vec3 lightDir,
 		const glm::mat4& invCameraView,
@@ -191,7 +209,20 @@ namespace smvk {
 		// Optional: receives the ortho depth range (zFar - zNear, world units)
 		// so callers can scale NDC-space biases (e.g. oriented depth bias
 		// magnitude = worldBias / range). May be nullptr.
-		float* outDepthRange = nullptr
+		float* outDepthRange = nullptr,
+		// Optional caster-aware DEPTH coverage (the P2 coverage gap): the
+		// contribution view retains casters arbitrarily far sunward, but
+		// the slice-only fit clipped them at the light's near plane — a
+		// tall building up-sun passed the cull and its shadow still
+		// popped. When provided (valid), the light backs off and the
+		// depth range extends to cover the casters' extent along the
+		// light axis, clamped by maxShadowDistance. The XY window stays
+		// slice-fit: light-space xy of a caster whose shadow reaches the
+		// slice equals its receiver's (translation along the light moves
+		// depth only), so the slice window already contains every
+		// relevant caster's xy — depth was the only hole.
+		const ShadowCasterFitBounds* casterBounds = nullptr,
+		float maxShadowDistance = kDirectionalShadowMaxDistance
 	);
 	glm::mat4 GetPerspectiveProjectionForLight(
 		const SpotLight& l,

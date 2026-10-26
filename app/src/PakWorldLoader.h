@@ -35,4 +35,13 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
 	smvk::OverlayVfs& contentVfs,
 	smvk::TextureStreamer* sceneStreamer);
 
+// STATIC-FLAG APPLICATION (the loader's decision seam — public for
+// PakHostTests, which drives it on hand-built value worlds). Cooked
+// detection is SECTION PRESENCE (Scene::staticRootsSerialized), never
+// any_of(staticRoot): an authored ALL-DYNAMIC cooked scene (serialized,
+// all zeros) is cooked data and is honored verbatim; the viewer-side
+// freeze is the loud LEGACY fallback only (no serialized static section
+// + no skeleton). `pakName` labels the fallback log.
+void ApplyCookedStaticFlags(smvk::World& world, const std::string& pakName);
+
 } // namespace app
