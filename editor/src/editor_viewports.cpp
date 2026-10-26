@@ -20,6 +20,89 @@
 
 namespace editor {
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Near-plane clipping for the ImGui 3D-wire overlays
+// ---------------------------------------------------------------------------
+// The overlays draw 3D wires/fills through a 2D ImGui draw list, so the
+// GPU's primitive clipper is NOT in play: an edge crossing the camera
+// plane (one endpoint behind the eye, w <= 0) cannot be perspective-
+// divided. The old pattern DROPPED such edges whole ("if (project(a) &&
+// project(b)) AddLine") - the cvolume/octree wires came apart whenever a
+// box corner went behind the camera (walking into a volume cut its lines
+// at the eye). These helpers are the CPU twin of the GPU clipper: clip
+// against w >= kOverlayClipEps in CLIP space - where the plane is linear
+// in the endpoints, so the crossing point is exact - then divide.
+// Crossing segments draw up to (and past) the crossing point; anything
+// past the viewport is trimmed by the overlay's ImGui clip rect, exactly
+// like the rasterizer's scissor would.
+constexpr float kOverlayClipEps = 1e-3f; // ~1 mm in front of the eye
+
+// Clip-space point -> overlay pixels (caller guarantees w >= eps).
+ImVec2 OverlayPx(const glm::vec4& c, const ViewportRect& rect) {
+	const float inv = 1.0f / c.w;
+	return ImVec2(
+		rect.x + (c.x * inv * 0.5f + 0.5f) * rect.w,
+		rect.y + (c.y * inv * 0.5f + 0.5f) * rect.h);
+}
+
+// Clips one world-space segment to w >= kOverlayClipEps. False only when
+// the WHOLE segment is behind the camera plane.
+bool ClipSegmentToCamera(const glm::mat4& vpm,
+	const glm::vec3& w0, const glm::vec3& w1,
+	glm::vec4& out0, glm::vec4& out1) {
+	const glm::vec4 c0 = vpm * glm::vec4(w0, 1.0f);
+	const glm::vec4 c1 = vpm * glm::vec4(w1, 1.0f);
+	const bool in0 = c0.w >= kOverlayClipEps;
+	const bool in1 = c1.w >= kOverlayClipEps;
+	if (in0 && in1) {
+		out0 = c0;
+		out1 = c1;
+		return true;
+	}
+	if (!in0 && !in1)
+		return false;
+	// w(t) is linear in clip space: t lands the crossing point exactly on
+	// the clip plane (the Sutherland-Hodgman edge case).
+	const float t = (kOverlayClipEps - c0.w) / (c1.w - c0.w);
+	const glm::vec4 x = c0 + (c1 - c0) * t;
+	out0 = in0 ? c0 : x;
+	out1 = in0 ? x : c1;
+	return true;
+}
+
+// Sutherland-Hodgman clip of a world-space polygon against the single
+// camera plane. Fills out (clip-space verts, >= 3 on true - fan-
+// triangulate for fills). out must hold size + 2 entries (one plane adds
+// at most two crossings to a convex polygon; the cvol hull faces are
+// convex - clipped AABB faces).
+bool ClipPolyToCamera(const glm::mat4& vpm,
+	const glm::vec3* poly, size_t n,
+	glm::vec4* out, size_t& outN) {
+	outN = 0;
+	if (n == 0)
+		return false;
+	glm::vec4 prev = vpm * glm::vec4(poly[n - 1], 1.0f);
+	bool prevIn = prev.w >= kOverlayClipEps;
+	for (size_t k = 0; k < n; ++k) {
+		const glm::vec4 cur = vpm * glm::vec4(poly[k], 1.0f);
+		const bool curIn = cur.w >= kOverlayClipEps;
+		if (curIn != prevIn) {
+			const float t =
+				(kOverlayClipEps - prev.w) / (cur.w - prev.w);
+			out[outN++] = prev + (cur - prev) * t;
+		}
+		if (curIn)
+			out[outN++] = cur;
+		prev = cur;
+		prevIn = curIn;
+	}
+	return outN >= 3;
+}
+
+} // namespace
+
 bool EditorApp::IsSelected(uint32_t node) const {
 	return std::find(m_selection.begin(), m_selection.end(), node) !=
 		m_selection.end();
@@ -598,17 +681,30 @@ void EditorApp::DrawCvolPreviewOverlay() {
 			for (const auto& poly : cv.polys) {
 				if (poly.size() < 3)
 					continue;
-				ImVec2 a, b;
-				for (size_t k = 0; k < poly.size(); ++k)
-					if (project(poly[k], a)
-						&& project(poly[(k + 1) % poly.size()], b))
-						dl->AddLine(a, b, wire, 1.5f);
-				if (m_cvolPreviewMode == 2) {
-					ImVec2 c0, c1, c2;
-					if (project(poly[0], c0))
-						for (size_t k = 1; k + 1 < poly.size(); ++k)
-							if (project(poly[k], c1) && project(poly[k + 1], c2))
-								dl->AddTriangleFilled(c0, c1, c2, fill);
+				// Wire edges: NEAR-CLIPPED per segment (ClipSegmentToCamera)
+				// - the old both-endpoints-projected test dropped whole
+				// edges crossing the camera plane, cutting the hull apart
+				// whenever a corner went behind the eye.
+				for (size_t k = 0; k < poly.size(); ++k) {
+					glm::vec4 c0, c1;
+					if (ClipSegmentToCamera(vpm, poly[k],
+							poly[(k + 1) % poly.size()], c0, c1))
+						dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect),
+							wire, 1.5f);
+				}
+				// Fill (mode 2): clip the whole polygon against the camera
+				// plane, then fan - per-triangle projection dropped
+				// straddling faces whole.
+				if (m_cvolPreviewMode == 2 && poly.size() <= 38) {
+					glm::vec4 cp[40]; // poly + 2 crossings headroom
+					size_t cn = 0;
+					if (ClipPolyToCamera(vpm, poly.data(), poly.size(),
+							cp, cn)) {
+						const ImVec2 p0 = OverlayPx(cp[0], vp.rect);
+						for (size_t k = 1; k + 1 < cn; ++k)
+							dl->AddTriangleFilled(p0, OverlayPx(cp[k], vp.rect),
+								OverlayPx(cp[k + 1], vp.rect), fill);
+					}
 				}
 			}
 			ImVec2 c;
@@ -789,14 +885,6 @@ void EditorApp::DrawOctreePreviewOverlay() {
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const glm::mat4 vpm = vp.viewProj;
-		const auto project = [&](const glm::vec3& w, ImVec2& out) {
-			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
-			if (c.w <= 1e-6f)
-				return false;
-			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
-			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
-			return true;
-		};
 		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		// Tiles: dirty = orange-red wire, clean = teal wire.
@@ -813,9 +901,9 @@ void EditorApp::DrawOctreePreviewOverlay() {
 				{ 3, 0 }, { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
 				{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
 			for (const auto& e : kE) {
-				ImVec2 a, b;
-				if (project(c[e[0]], a) && project(c[e[1]], b))
-					dl->AddLine(a, b, col, 1.0f);
+				glm::vec4 c0, c1;
+				if (ClipSegmentToCamera(vpm, c[e[0]], c[e[1]], c0, c1))
+					dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect), col, 1.0f);
 			}
 		}
 		// World bounds: white wire.
@@ -831,9 +919,10 @@ void EditorApp::DrawOctreePreviewOverlay() {
 				{ 3, 0 }, { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
 				{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
 			for (const auto& e : kE) {
-				ImVec2 a, b;
-				if (project(c[e[0]], a) && project(c[e[1]], b))
-					dl->AddLine(a, b, IM_COL32(255, 255, 255, 200), 2.0f);
+				glm::vec4 c0, c1;
+				if (ClipSegmentToCamera(vpm, c[e[0]], c[e[1]], c0, c1))
+					dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect),
+						IM_COL32(255, 255, 255, 200), 2.0f);
 			}
 		}
 		// Captures read through DrawCaptureBallOverlay (baked-aware balls,
