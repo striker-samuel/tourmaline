@@ -36,7 +36,12 @@ namespace app {
 
 // Host configuration (one field per CLI flag; ParsePakAppArgs fills it).
 struct PakAppConfig {
-	std::string pakPath = "content/paks/sponza.pak";
+	// The entry-point pak — REQUIRED, no default: a bare App.exe must
+	// refuse instead of silently running whatever pak happens to sit at
+	// some hard-coded path (the old default content/paks/sponza.pak
+	// launched stale builds' content by accident). Empty after the
+	// parse = the parse gate rejects (usage + EXIT_FAILURE).
+	std::string pakPath;
 	int sceneIndex = 0;
 	bool minimal = false;
 	bool filterOnly = false;

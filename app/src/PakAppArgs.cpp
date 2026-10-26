@@ -16,11 +16,12 @@ namespace {
 
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
-		<< " [--pak <path.pak>] [--scene-index N]\n"
+		<< " --pak <path.pak> (REQUIRED) [--scene-index N]\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
-		<< "  --pak runs a cooked pak (default content/paks/sponza.pak);\n"
+		<< "  --pak runs a cooked pak — REQUIRED, there is no default\n"
+		<< "  (no entry-point pak = the App refuses to run);\n"
 		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
 		<< "  --scene-index picks another. The App loads OUR format only:\n"
 		<< "  preprocess glTF through the editor (import -> cook).\n"
@@ -151,6 +152,17 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 			exitCode = EXIT_FAILURE;
 			return false;
 		}
+	}
+	// The entry-point pak gate: no --pak, no run. Nothing launches —
+	// the old silent default (content/paks/sponza.pak) ran whatever
+	// stale pak happened to sit at that path, with no hint the user
+	// forgot to name their entry point.
+	if (cfg.pakPath.empty()) {
+		std::cerr << "--pak <path.pak> is REQUIRED: no entry-point pak, "
+			"nothing to run.\n";
+		PrintUsage(argv[0]);
+		exitCode = EXIT_FAILURE;
+		return false;
 	}
 	exitCode = EXIT_SUCCESS;
 	return true;
