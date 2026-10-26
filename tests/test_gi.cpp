@@ -24,6 +24,7 @@
 #include <Engine/App/cluster.h> // Cluster (static-bake-light harvest test)
 #include <Engine/Asset/compression.h> // Lz4Compress (sglm v1 fixture)
 #include <Engine/GI/bake.h>
+#include <Engine/GI/bake_inputs.h> // RecordCaptureReach (the reach sweep)
 #include <Engine/GI/bc6h.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
@@ -2699,6 +2700,100 @@ void TestGiWeaveTransmission() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The observed-reach sweep (RecordCaptureReach) — zero-direction axes +
+// boundary crossings (the invalidation model's traversal). The old
+// traversal divided the boundary-crossing parameter by the RAW direction
+// component: with a capture positioned EXACTLY on a cell boundary and a
+// ray whose component on another axis is EXACTLY zero, the parameter
+// computed 0/0 = NaN — and NaN never wins a < comparison, so EVERY axis
+// comparison collapsed and the walk died after one cell (skewed or
+// truncated reach sets: captures whose hash missed whole corridors).
+// ---------------------------------------------------------------------------
+void TestCaptureReachTraversal() {
+	using CellIdArr = std::array<int32_t, 3>;
+	// The discriminator: dirCount = 1 produces the ray
+	// dir = (1, 0, 0) EXACTLY (z = 1 - 2*(0.5)/1 = 0, r = 1, phi = 0 ->
+	// y-component r*sin(0) = 0). From a capture at (0, 1, 0) — x on the
+	// 0-cell boundary, y on the 1-cell boundary — an EMPTY scene (no hit,
+	// tHit = 2000): the sweep must record the +X corridor (x = 0..~2000,
+	// y = 1, z = 0 fixed). The OLD code died after one cell here.
+	{
+		GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 1, 0),
+			10000.0f, {}, {});
+		const std::vector<CellId> cells =
+			RecordCaptureReach(scene, glm::vec3(0.0f, 1.0f, 0.0f), 1);
+		bool corridor = cells.size() > 1000;
+		for (const CellId& c : cells)
+			if (c[1] != 1 || c[2] != 0 || c[0] < 0)
+				corridor = false;
+		Check(corridor, "gi.reach.zero-axis-ray.full-corridor (old NaN"
+			" traversal died after 1 cell)");
+	}
+	// Boundary crossings: the same +X ray from x = 0 records BOTH the
+	// start cell (0) and the immediate boundary-step neighbor (1) —
+	// the crossing at t = 0 must advance, not wedge the walk.
+	{
+		GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 1, 0),
+			10000.0f, {}, {});
+		const std::vector<CellId> cells =
+			RecordCaptureReach(scene, glm::vec3(0.0f, 1.0f, 0.0f), 1);
+		bool hasStart = false, hasNeighbor = false;
+		for (const CellId& c : cells) {
+			if (c == CellIdArr{ 0, 1, 0 })
+				hasStart = true;
+			if (c == CellIdArr{ 1, 1, 0 })
+				hasNeighbor = true;
+		}
+		Check(hasStart && hasNeighbor,
+			"gi.reach.boundary-crossing.steps-into-neighbor");
+	}
+	// A hit-rich scene (the open box): sorted-unique contract + the start
+	// cell + the hit ring (the bounce neighborhood) present + determinism
+	// (the same sweep must observe the same cells twice — the bake and
+	// the pak gate replay the same tour and must agree bit-for-bit).
+	{
+		std::vector<glm::vec3> pos;
+		std::vector<uint32_t> idx;
+		auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d) {
+			const uint32_t b0 = uint32_t(pos.size());
+			pos.push_back(a); pos.push_back(b); pos.push_back(c); pos.push_back(d);
+			idx.push_back(b0 + 0); idx.push_back(b0 + 1); idx.push_back(b0 + 2);
+			idx.push_back(b0 + 0); idx.push_back(b0 + 2); idx.push_back(b0 + 3);
+		};
+		quad({ -5, 0, -5 }, { 5, 0, -5 }, { 5, 0, 5 }, { -5, 0, 5 });
+		quad({ -5, 0, -5 }, { -5, 3, -5 }, { -5, 3, 5 }, { -5, 0, 5 });
+		quad({ 5, 0, -5 }, { 5, 0, 5 }, { 5, 3, 5 }, { 5, 3, -5 });
+		quad({ -5, 0, -5 }, { 5, 0, -5 }, { 5, 3, -5 }, { -5, 3, -5 });
+		quad({ -5, 0, 5 }, { -5, 3, 5 }, { 5, 3, 5 }, { 5, 0, 5 });
+		GiTraceScene scene = MakeUniformScene(0.7f, glm::vec3(0, 1, 0),
+			10000.0f, pos, idx);
+		const std::vector<CellId> a =
+			RecordCaptureReach(scene, glm::vec3(0.0f, 1.0f, 0.0f), 64);
+		const std::vector<CellId> b =
+			RecordCaptureReach(scene, glm::vec3(0.0f, 1.0f, 0.0f), 64);
+		Check(a == b, "gi.reach.deterministic");
+		bool sortedUnique =
+			std::is_sorted(a.begin(), a.end())
+			&& std::adjacent_find(a.begin(), a.end()) == a.end();
+		Check(sortedUnique, "gi.reach.sorted-unique");
+		bool hasStart = false;
+		for (const CellId& c : a)
+			if (c == CellIdArr{ 0, 1, 0 })
+				hasStart = true;
+		Check(hasStart, "gi.reach.contains-start-cell");
+		// All cells finite (a NaN-driven axis runaway would blow past the
+		// scene): the box spans [-5,5]x[0,3]x[-5,5]; the hit ring adds 1
+		// cell + the escape rays run to 2000 — bound at [-2001, 2001].
+		bool sane = !a.empty();
+		for (const CellId& c : a)
+			for (int32_t v : c)
+				if (v < -2001 || v > 2001)
+					sane = false;
+		Check(sane, "gi.reach.cells-bounded");
+	}
+}
+
 } // namespace smvk::gi
 
 int main() {
@@ -2728,6 +2823,7 @@ int main() {
 	smvk::gi::TestGiMalformedScene();
 	smvk::gi::TestLightmapAtlasRoundtrip();
 	smvk::gi::TestBc6hCodec();
+	smvk::gi::TestCaptureReachTraversal();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

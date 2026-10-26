@@ -38,6 +38,11 @@ public:
 	{
 		capacity_ = capacity;
 		used_ = 0;
+		// Full reset: a re-Initialize on a previously-used arena (a
+		// re-attach / config-driven re-alloc) must rewind the bump top or
+		// the arena keeps claiming exhaustion against the OLD top — the
+		// free list was cleared, so top_ was the only live state left.
+		top_ = 0;
 		nextId_ = 1;
 		free_.clear();
 		live_.clear();

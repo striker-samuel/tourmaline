@@ -3,6 +3,7 @@
 
 #include <Engine/smvk.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Memory/alloc_config.h> // mem::config::Runtime() (the heap budgets)
 #include <Engine/Renderer/static_vertex_heap.h>
 
 #include <Engine/Renderer/mesh.h>
@@ -66,17 +67,6 @@ namespace smvk {
 // engine AND engine_d3d12 (the whole mesh/static-heap layer is
 // backend-neutral; the CommandBuffer-side bind lives per-backend).
 
-namespace {
-
-// The static-heap budgets (512 MB each — the pre-branch sizing). The
-// branch-internal form read these through mem::config::Runtime(); the
-// runtime-config migration (in flight separately) will move these lines
-// onto it with the rest of the tree.
-constexpr uint64_t kDefaultStaticVertexHeapBytes = 512ull * 1024ull * 1024ull;
-constexpr uint64_t kDefaultStaticIndexHeapBytes = 512ull * 1024ull * 1024ull;
-
-} // namespace
-
 void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 {
 	// Idempotent: App and Editor both need the heap; a second call
@@ -89,20 +79,30 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 		&& staticVertexFmtHeap.m_staticIndexBuffer.valid()) {
 		return;
 	}
+	// The budgets come from mem::config::Runtime() (the compile-time
+	// defaults + the TOURMALINE_MEM_STATIC_VERTEX_MB /
+	// TOURMALINE_MEM_STATIC_INDEX_MB program-entry overrides) — read AT
+	// ALLOCATION TIME. The old code parsed the env overrides into the
+	// runtime config but still allocated the hardcoded 512 MiB values, so
+	// the overrides silently did nothing.
+	const uint64_t vertexHeapBytes =
+		mem::config::Runtime().staticVertexHeap;
+	const uint64_t indexHeapBytes =
+		mem::config::Runtime().staticIndexHeap;
 	const uint64_t maxVertices = std::min(
-		kDefaultStaticVertexHeapBytes / sizeof(smvk::VertexPos),
-		kDefaultStaticVertexHeapBytes / sizeof(smvk::VertexShading)
+		vertexHeapBytes / sizeof(smvk::VertexPos),
+		vertexHeapBytes / sizeof(smvk::VertexShading)
 	);
 	staticVertexFmtHeap.m_staticVertexPosBuffer =
-		ctx.CreateBuffer(kDefaultStaticVertexHeapBytes,
+		ctx.CreateBuffer(vertexHeapBytes,
 		                 smvk::BufferType_Vertex, "static vertex pos")
 			.release();
 	staticVertexFmtHeap.m_staticVertexShadingBuffer =
-		ctx.CreateBuffer(kDefaultStaticVertexHeapBytes,
+		ctx.CreateBuffer(vertexHeapBytes,
 		                 smvk::BufferType_Vertex, "static vertex shading")
 			.release();
 	staticVertexFmtHeap.m_staticIndexBuffer =
-		ctx.CreateBuffer(kDefaultStaticIndexHeapBytes,
+		ctx.CreateBuffer(indexHeapBytes,
 		                 smvk::BufferType_Storage, "static index")
 			.release();
 
@@ -116,6 +116,6 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	// Index virtual allocator — BYTES.
 	// ---------------------------------------------------------------------
 	staticVertexFmtHeap.m_staticIndexBlock.Initialize(
-		kDefaultStaticIndexHeapBytes);
+		indexHeapBytes);
 }
 };

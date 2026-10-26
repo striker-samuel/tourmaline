@@ -1274,6 +1274,18 @@ bool SerializeClusters(
 		{
 			PutU32(blob, scene.envZonesEnabled ? 1u : 0u);
 		}
+		// Explicit animation references (v16; v15 blobs end after the
+		// env-zone flag): the scene's recorded .tourAnim clip VFS paths
+		// (Scene::animClipRefs — the self-contained anim pipeline; the
+		// pak cooker stamps them + embeds the clip blobs at the same
+		// paths). u32 count + PutStr each, always written (possibly
+		// empty) so the layout is uniform; the LOAD side treats an
+		// absent section as no refs (pre-v16 paks).
+		{
+			PutU32(blob, static_cast<uint32_t>(scene.animClipRefs.size()));
+			for (const std::string& ref : scene.animClipRefs)
+				PutStr(blob, ref);
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1753,6 +1765,24 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			if (!c.ok)
 				return fail("truncated scene env-zone flag");
 			(void)zonesOn; // forced on above
+		}
+		// Explicit animation references (v16; v15 blobs end after the
+		// env-zone flag): u32 count + strings — the scene's recorded
+		// .tourAnim clips (see the writer). ABSENT (a pre-v16 blob) =
+		// no refs, the struct default.
+		if (c.off < c.img.size()) {
+			const uint32_t refCount = c.u32();
+			if (!c.ok || refCount > 1024)
+				return fail("bad scene anim refs section");
+			scene.animClipRefs.clear();
+			scene.animClipRefs.reserve(refCount);
+			for (uint32_t i = 0; i < refCount; ++i) {
+				std::string ref = c.str();
+				if (!c.ok)
+					return fail("truncated scene anim refs section");
+				if (!ref.empty())
+					scene.animClipRefs.push_back(std::move(ref));
+			}
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

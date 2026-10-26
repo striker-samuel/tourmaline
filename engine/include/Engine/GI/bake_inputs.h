@@ -79,6 +79,20 @@ inline std::string BakeInputHash(const std::string& s) {
 }
 
 // ---------------------------------------------------------------------------
+// The bake algorithm revision
+// ---------------------------------------------------------------------------
+// Folded into EVERY unit hash (volume / capture / world): bake BEHAVIOR
+// changes (tracing rules, sampling, the SG fit, transmission handling,
+// texel decode caps) alter bake output without touching any scene INPUT,
+// so the input hashes alone would keep validating pre-change artifacts.
+// Bump this whenever a code change alters what a bake produces; every
+// recorded hash then mismatches its re-computation and the pak gate
+// refuses the old records wholesale (the no-compat contract — re-bake).
+// It is deliberately NOT an input: it rides the unit definition side so
+// env/light/geometry hashes stay byte-stable for debugging.
+inline constexpr uint32_t kBakeAlgorithmRevision = 1;
+
+// ---------------------------------------------------------------------------
 // The geometry merkle
 // ---------------------------------------------------------------------------
 

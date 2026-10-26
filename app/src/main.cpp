@@ -3,8 +3,9 @@
 
 // App host entry: CLI parse -> pak-viewer run. The pak loading (preload,
 // world source, sponza check-scene extras, demo-content seeding) lives in
-// this target — PakApp.cpp/PakPreload.cpp/Host.h — NOT in the engine; the
-// engine's WorldRenderer renders whatever world the host hands it.
+// this target — PakApp.cpp / PakWorldLoader.cpp / PakAppArgs.cpp /
+// PakPreload.cpp / Host.h — NOT in the engine; the engine's WorldRenderer
+// renders whatever world the host hands it.
 #include "Host.h"
 
 #include <Engine/App/RunConfig.h>
@@ -16,10 +17,13 @@ int main(int argc, const char* argv[]) {
 	const engine::RunConfig runCfg = engine::RunConfig::Parse();
 	runCfg.Log();
 	engine::RunConfig::WarnUnknown();
+	// The CLI parse fills the dedicated options object ONLY — the
+	// host-supplied state below is assembled after it and can never be
+	// reset or erased by the parser.
 	app::PakAppConfig cfg;
 	cfg.run = runCfg;
 	int exitCode = 0;
-	if (!app::ParsePakAppArgs(argc, argv, cfg, exitCode))
+	if (!app::ParsePakAppArgs(argc, argv, cfg.cli, exitCode))
 		return exitCode;
 	return app::RunPakApp(cfg);
 }

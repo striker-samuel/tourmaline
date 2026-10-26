@@ -11,18 +11,21 @@ message(STATUS "APP_DIR = ${APP_DIR}")
 # App.exe: the pak-viewer HOST — the PLAIN viewer (no game layer; the
 # sponza invaders game lives in the top-level asteroids/ package). The
 # engine renders worlds; this target owns everything app-specific — CLI
-# parsing, pak preload + world source (PakApp.cpp / PakAppArgs.cpp /
-# PakPreload.cpp; see src/Host.h). Content/shader staging lives in the
-# shared cmake/HostSetup.cmake (see the root CMakeLists include).
+# parsing (PakAppArgs.cpp), pak preload + path resolution (PakPreload.cpp),
+# world loading + scene prep (PakWorldLoader.cpp) and the viewer host
+# wiring/lifecycle (PakApp.cpp; see src/Host.h for the layer split).
+# Content/shader staging lives in the shared cmake/HostSetup.cmake (see
+# the root CMakeLists include).
 # (appcore, the old WorldRenderer static lib, is long deleted;
 # DecalAssets.cpp went with the demo-decal seeding — decals resolve from
-# world content only now.)
+# world content only.)
 # ---------------------------------------------------------------------------
 add_executable(App
     src/main.cpp
     src/PakApp.cpp
     src/PakAppArgs.cpp
     src/PakPreload.cpp
+    src/PakWorldLoader.cpp
 )
 
 find_package(Vulkan REQUIRED)

@@ -510,23 +510,48 @@ add_test(NAME env_volume_tests COMMAND EnvVolumeTests)
 add_executable(RetirementFuzzTests test_retirement_fuzz.cpp)
 
 target_include_directories(RetirementFuzzTests
-    PRIVATE
-        ${CMAKE_SOURCE_DIR}/engine/src
-        ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/engine/src
+		${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator
 )
 
 target_link_libraries(RetirementFuzzTests
-    PRIVATE
-        engine
-        volk
-        KTX::ktx
+	PRIVATE
+		engine
+		volk
+		KTX::ktx
 )
 
 set_target_properties(RetirementFuzzTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
 add_test(NAME retirement_fuzz_tests COMMAND RetirementFuzzTests)
+
+# Pak-viewer HOST regressions (finding #19: the CLI/pak-resolution/
+# corruption surface had no direct coverage): CPU-only, headless — the
+# app-host TUs (PakAppArgs.cpp + PakPreload.cpp) compile straight into the
+# test against the engine lib.
+add_executable(PakHostTests test_pak_host.cpp
+	../app/src/PakAppArgs.cpp
+	../app/src/PakPreload.cpp
+)
+
+target_include_directories(PakHostTests
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/app/src
+)
+
+target_link_libraries(PakHostTests
+	PRIVATE
+		engine
+)
+
+set_target_properties(PakHostTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME pak_host_tests COMMAND PakHostTests)
 
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)
@@ -559,3 +584,4 @@ tourmaline_stage_sdl3(TerrainBlocksTests)
 tourmaline_stage_sdl3(LevelTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
+tourmaline_stage_sdl3(PakHostTests)

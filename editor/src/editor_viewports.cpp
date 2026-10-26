@@ -8,6 +8,7 @@
 #include "editor_app.h"
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -23,23 +24,39 @@ namespace editor {
 namespace {
 
 // ---------------------------------------------------------------------------
-// Near-plane clipping for the ImGui 3D-wire overlays
+// Full clip-space clipping for the ImGui 3D-wire overlays
 // ---------------------------------------------------------------------------
 // The overlays draw 3D wires/fills through a 2D ImGui draw list, so the
-// GPU's primitive clipper is NOT in play: an edge crossing the camera
-// plane (one endpoint behind the eye, w <= 0) cannot be perspective-
-// divided. The old pattern DROPPED such edges whole ("if (project(a) &&
-// project(b)) AddLine") - the GI volume/octree wires came apart whenever a
-// box corner went behind the camera (walking into a volume cut its lines
-// at the eye). These helpers are the CPU twin of the GPU clipper: clip
-// against w >= kOverlayClipEps in CLIP space - where the plane is linear
-// in the endpoints, so the crossing point is exact - then divide.
-// Crossing segments draw up to (and past) the crossing point; anything
-// past the viewport is trimmed by the overlay's ImGui clip rect, exactly
-// like the rasterizer's scissor would.
-constexpr float kOverlayClipEps = 1e-3f; // ~1 mm in front of the eye
+// GPU's primitive clipper is NOT in play. These helpers are the CPU twin
+// of that clipper: clipping happens in CLIP space, where every frustum
+// plane is LINEAR in the endpoints, so crossings are exact (interpolate
+// the clip coords, then divide).
+//
+// The FULL six-plane set (the old code clipped only against the eye
+// plane w >= eps — approximate in two ways: geometry between the eye and
+// the projection's NEAR plane still drew, and the ORTHO viewports were
+// never clipped at all, since ortho's w is constant 1). Both editor
+// viewport projections are reversed-Z ZO (the perspective
+// MakeReversedZProjRH: near -> NDC z = 1, far -> 0; the swapped-args
+// ortho: same), so the clip volume for w > 0 is:
+//   |x| <= w, |y| <= w, 0 <= z <= w     (z == w IS the near plane)
+// ---------------------------------------------------------------------------
+constexpr float kOverlayClipEps = 1e-3f; // keep-plane slack (~1 mm at 1 m)
 
-// Clip-space point -> overlay pixels (caller guarantees w >= eps).
+// The six keep-planes d = dot(plane, clip) >= -eps (reversed-Z ZO).
+inline std::array<glm::vec4, 6> OverlayClipPlanes() {
+	return {
+		glm::vec4{ 1.0f, 0.0f, 0.0f, 1.0f}, // x + w >= 0 (left)
+		glm::vec4{-1.0f, 0.0f, 0.0f, 1.0f}, // w - x >= 0 (right)
+		glm::vec4{ 0.0f, 1.0f, 0.0f, 1.0f}, // y + w >= 0 (bottom)
+		glm::vec4{ 0.0f, -1.0f, 0.0f, 1.0f}, // w - y >= 0 (top)
+		glm::vec4{ 0.0f, 0.0f, 1.0f, 0.0f}, // z >= 0 (reversed-Z far side)
+		glm::vec4{ 0.0f, 0.0f, -1.0f, 1.0f}, // w - z >= 0 (the NEAR plane)
+	};
+}
+
+// Clip-space point -> overlay pixels (caller guarantees the point passed
+// the six-plane test: w >= eps).
 ImVec2 OverlayPx(const glm::vec4& c, const ViewportRect& rect) {
 	const float inv = 1.0f / c.w;
 	return ImVec2(
@@ -47,58 +64,98 @@ ImVec2 OverlayPx(const glm::vec4& c, const ViewportRect& rect) {
 		rect.y + (c.y * inv * 0.5f + 0.5f) * rect.h);
 }
 
-// Clips one world-space segment to w >= kOverlayClipEps. False only when
-// the WHOLE segment is behind the camera plane.
+// Clips one world-space segment to the FULL clip volume (six planes).
+// False only when the whole segment is outside some plane. Each plane
+// yields a parameter interval (the distance is linear in clip coords);
+// the interval intersection is exact — the endpoints land ON the
+// crossing planes, exactly like the GPU clipper's emitted vertices.
 bool ClipSegmentToCamera(const glm::mat4& vpm,
 	const glm::vec3& w0, const glm::vec3& w1,
 	glm::vec4& out0, glm::vec4& out1) {
 	const glm::vec4 c0 = vpm * glm::vec4(w0, 1.0f);
 	const glm::vec4 c1 = vpm * glm::vec4(w1, 1.0f);
-	const bool in0 = c0.w >= kOverlayClipEps;
-	const bool in1 = c1.w >= kOverlayClipEps;
-	if (in0 && in1) {
-		out0 = c0;
-		out1 = c1;
-		return true;
+	float t0 = 0.0f, t1 = 1.0f;
+	for (const glm::vec4& p : OverlayClipPlanes()) {
+		const float d0 = glm::dot(p, c0);
+		const float d1 = glm::dot(p, c1);
+		if (d0 < -kOverlayClipEps && d1 < -kOverlayClipEps)
+			return false; // whole segment outside this plane
+		if (d0 >= -kOverlayClipEps && d1 >= -kOverlayClipEps)
+			continue; // whole segment inside: plane is a no-op
+		// One endpoint out: the crossing at d == -eps is the exact
+		// boundary point (d1 - d0 is strictly nonzero here).
+		const float t = (-kOverlayClipEps - d0) / (d1 - d0);
+		if (d0 < -kOverlayClipEps)
+			t0 = (std::max)(t0, t); // entering: move the start up to it
+		else
+			t1 = (std::min)(t1, t); // leaving: trim the end back to it
+		if (t0 > t1)
+			return false; // the interval closed: clipped away entirely
 	}
-	if (!in0 && !in1)
-		return false;
-	// w(t) is linear in clip space: t lands the crossing point exactly on
-	// the clip plane (the Sutherland-Hodgman edge case).
-	const float t = (kOverlayClipEps - c0.w) / (c1.w - c0.w);
-	const glm::vec4 x = c0 + (c1 - c0) * t;
-	out0 = in0 ? c0 : x;
-	out1 = in0 ? x : c1;
+	out0 = c0 + (c1 - c0) * t0;
+	out1 = c0 + (c1 - c0) * t1;
 	return true;
 }
 
-// Sutherland-Hodgman clip of a world-space polygon against the single
-// camera plane. Fills out (clip-space verts, >= 3 on true - fan-
-// triangulate for fills). out must hold size + 2 entries (one plane adds
-// at most two crossings to a convex polygon; the GI-volume hull faces are
-// convex - clipped AABB faces).
+// Sutherland-Hodgman clip of a world-space CONVEX polygon against the
+// full clip volume (one pass per plane; crossings are exact). Fills out
+// (clip-space verts, >= 3 on true — fan-triangulate for fills). out must
+// hold n + 12 entries (each of the six planes adds at most two crossings
+// to a convex polygon).
 bool ClipPolyToCamera(const glm::mat4& vpm,
 	const glm::vec3* poly, size_t n,
 	glm::vec4* out, size_t& outN) {
 	outN = 0;
 	if (n == 0)
 		return false;
-	glm::vec4 prev = vpm * glm::vec4(poly[n - 1], 1.0f);
-	bool prevIn = prev.w >= kOverlayClipEps;
-	for (size_t k = 0; k < n; ++k) {
-		const glm::vec4 cur = vpm * glm::vec4(poly[k], 1.0f);
-		const bool curIn = cur.w >= kOverlayClipEps;
-		if (curIn != prevIn) {
-			const float t =
-				(kOverlayClipEps - prev.w) / (cur.w - prev.w);
-			out[outN++] = prev + (cur - prev) * t;
+	// Ring 0: the world polygon in clip space.
+	std::array<glm::vec4, 64> ring{};
+	if (n > ring.size())
+		return false; // absurd overlay polygon: refuse, never overrun
+	for (size_t i = 0; i < n; ++i)
+		ring[i] = vpm * glm::vec4(poly[i], 1.0f);
+	size_t count = n;
+	for (const glm::vec4& p : OverlayClipPlanes()) {
+		size_t m = 0;
+		glm::vec4 prev = ring[count - 1];
+		bool prevIn = glm::dot(p, prev) >= -kOverlayClipEps;
+		for (size_t k = 0; k < count; ++k) {
+			const glm::vec4 cur = ring[k];
+			const bool curIn = glm::dot(p, cur) >= -kOverlayClipEps;
+			if (curIn != prevIn) {
+				// d is linear in the clip coords: t lands the crossing
+				// exactly on the boundary plane.
+				const float dPrev = glm::dot(p, prev);
+				const float dCur = glm::dot(p, cur);
+				const float t = (-kOverlayClipEps - dPrev) / (dCur - dPrev);
+				out[m++] = prev + (cur - prev) * t;
+			}
+			if (curIn)
+				out[m++] = cur;
+			prev = cur;
+			prevIn = curIn;
 		}
-		if (curIn)
-			out[outN++] = cur;
-		prev = cur;
-		prevIn = curIn;
+		if (m < 3)
+			return false; // fully clipped away
+		for (size_t i = 0; i < m; ++i)
+			ring[i] = out[i];
+		count = m;
 	}
+	for (size_t i = 0; i < count; ++i)
+		out[i] = ring[i];
+	outN = count;
 	return outN >= 3;
+}
+
+// Point visibility for the overlay's labels/markers: the same six-plane
+// keep test on one clip-space point (the near plane included — the old
+// project() lambdas only tested the eye plane, so labels for geometry
+// between the eye and near drew over the view).
+inline bool OverlayPointVisible(const glm::vec4& clip) {
+	for (const glm::vec4& p : OverlayClipPlanes())
+		if (glm::dot(p, clip) < -kOverlayClipEps)
+			return false;
+	return true;
 }
 
 } // namespace
@@ -667,7 +724,9 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 		const auto project = [&](const glm::vec3& w, ImVec2& out) {
 			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
 			if (c.w <= 1e-6f)
-				return false; // behind the camera
+				return false; // behind the camera (perspective)
+			if (!OverlayPointVisible(c))
+				return false; // outside the projection's clip volume
 			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
 			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;
@@ -692,12 +751,13 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 						dl->AddLine(OverlayPx(c0, vp.rect), OverlayPx(c1, vp.rect),
 							wire, 1.5f);
 				}
-				// Fill (mode 2): clip the whole polygon against the camera
-				// plane, then fan - per-triangle projection dropped
-				// straddling faces whole.
-				if (m_giVolumePreviewMode == 2 && poly.size() <= 38) {
-					glm::vec4 cp[40]; // poly + 2 crossings headroom
-					size_t cn = 0;
+			// Fill (mode 2): clip the whole polygon against the FULL clip
+			// volume (six planes, exact crossings), then fan - per-triangle
+			// projection dropped straddling faces whole. cp sized for the
+			// six-plane worst case: poly + 2 crossings per plane.
+			if (m_giVolumePreviewMode == 2 && poly.size() <= 38) {
+				glm::vec4 cp[64]; // 38 + 12 crossing headroom
+				size_t cn = 0;
 					if (ClipPolyToCamera(vpm, poly.data(), poly.size(),
 							cp, cn)) {
 						const ImVec2 p0 = OverlayPx(cp[0], vp.rect);
@@ -1114,6 +1174,12 @@ void EditorApp::DrawCaptureBallOverlay() {
 			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
 			if (c.w <= 1e-6f)
 				return false; // behind the camera
+			const glm::vec3 ndc = glm::vec3(c) / c.w;
+			// The projection's near plane (reversed-Z ZO: ndc z = 1) and
+			// the far side (z = 0): the old eye-plane-only test let
+			// between-eye-and-near markers draw over the view.
+			if (ndc.z < 0.0f || ndc.z > 1.0f)
+				return false;
 			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
 			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;
@@ -1125,6 +1191,8 @@ void EditorApp::DrawCaptureBallOverlay() {
 			const glm::vec3 ndc = glm::vec3(c) / c.w;
 			if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
 				return false; // off-screen (the App culls the same way)
+			if (ndc.z < 0.0f || ndc.z > 1.0f)
+				return false; // outside the depth range (see project above)
 			out.x = vp.rect.x + (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
 			out.y = vp.rect.y + (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;

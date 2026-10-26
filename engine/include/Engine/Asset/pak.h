@@ -15,6 +15,8 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/smvk.h> // TextureStreamMeta (v4 tail-upload digest form)
 
+#include <mutex>
+
 namespace smvk {
 
 // ---------------------------------------------------------------------------
@@ -271,8 +273,16 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 
 // Parsed pak view over borrowed bytes (the caller keeps the image alive;
 // PakBackend keeps a shared image for this reason). LZ4 blobs are
-// decompressed once at Open() into reader-owned buffers; Payload()
-// transparently returns decompressed bytes for flagged entries.
+// decompressed LAZILY on first Payload() access into reader-owned
+// buffers (guarded by an internal mutex; the decompressed bytes stay
+// cached for the reader's lifetime — a returned span is never
+// invalidated). Selective by construction: a pak whose consumer only
+// touches one scene never pays for the other entries' decompression
+// (the old eager Open() decompressed EVERY compressed entry up front,
+// dominating preload on multi-GB paks). Decompression failure at
+// Payload() time throws (the CRC already verified the image at Open, so
+// a bad LZ4 block means a torn write that passed CRC — loud, and the
+// host's load path turns it into a failed launch, not a corrupt scene).
 class PakReader {
 public:
 	// Validates magic/version/sizes/CRC. Nullopt on failure (reason logged).
@@ -291,9 +301,16 @@ public:
 private:
 	std::span<const uint8_t> image_;
 	std::vector<PakTocEntry> entries_;
-	// Decompressed bytes for entries with PakEntryFlag_Lz4, parallel to
-	// entries_ (empty for uncompressed entries).
-	std::vector<std::vector<uint8_t>> decompressed_;
+	// Lazy per-entry LZ4 decompression (parallel to entries_; sized at
+	// Open, filled under lazyMutex_ on first Payload() access and kept
+	// for the reader's lifetime — the spans Payload() returns must stay
+	// valid, so the cache never evicts). `done_` marks "decompressed"
+	// separately from "empty result" (an empty-after-decompress entry
+	// would otherwise re-decompress on every read — harmless, but exact
+	// is better). Mutable: Payload() is const (callers are const).
+	mutable std::vector<std::vector<uint8_t>> decompressed_;
+	mutable std::vector<uint8_t> decompressDone_;
+	mutable std::unique_ptr<std::mutex> lazyMutex_;
 };
 
 // IVfsBackend over a loaded pak image. Serves texture entries by their

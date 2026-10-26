@@ -5,9 +5,11 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <utility>
 #include <vector>
 #include <atomic>
+#include <bit> // std::countr_zero (the lease-mask bit index)
 
 #include <Engine/smvk.h>
 #include <Engine/Memory/alloc_config.h>
@@ -95,22 +97,38 @@ namespace smvk {
 	};
 
 	// =====================================================================
-	// Thread-shard registry for lock-free pools.
+	// Thread-shard LEASE registry for lock-free pools.
 	//
 	// Multithread model: one local shard per thread. The main thread owns
-	// shard 0. Each ThreadPool worker registers once at startup and owns a
-	// unique shard in [1, kNumPoolShards). As long as live threads <=
-	// kNumPoolShards and each thread only creates in its own shard, no
-	// locks are needed on the create/get/destroy fast path. Cross-shard
-	// get() after the producing thread has joined is safe (happens-before
-	// via std::future / thread join); concurrent mutation of the SAME
-	// entry from two threads is still UB (same as before, but now also
-	// without a mutex to hide it).
+	// shard 0 for the process lifetime. Every OTHER thread must hold a
+	// UNIQUE shard lease: shards are claimed through a CAS bitmask, never
+	// reused while leased, and released when the owning thread exits. The
+	// old modulo counter (`fetch_add % kNumPoolShards`) could hand shard 0
+	// (the main thread's) or a shard still owned by a LIVE worker of
+	// another pool to a new thread — two threads mutating the same shard
+	// with no lock anywhere is a silent data race, and sequential pools
+	// (pool A destructed, pool B constructed) eventually wrapped the
+	// counter into exactly that case.
+	//
+	// As long as live leases <= kNumPoolShards - 1 and each thread only
+	// creates in its own shard, no locks are needed on the create/get/
+	// destroy fast path. Cross-shard get() after the producing thread has
+	// joined is safe (happens-before via std::future / thread join);
+	// concurrent mutation of the SAME entry from two threads is still UB.
+	//
+	// Exhaustion (all shards leased): AcquirePoolShardLease returns
+	// kNoShardLease. RegisterPoolShard's fallback is then shard 0 with a
+	// LOUD warning — the documented "caller must serialize externally"
+	// state, now visible instead of silent. ThreadPool never takes that
+	// path: it pre-leases before spawning and runs fewer workers instead.
 	// =====================================================================
 	// Pool sharding constants live in mem::config (alloc_config.h) — the
 	// single place to resize. Aliased here so existing pool.h call sites
 	// (CurrentPoolShard, RegisterPoolShard, ShardedPool, ThreadPool caps)
 	// keep working unchanged.
+	static_assert(mem::config::kNumPoolShards >= 2
+		&& mem::config::kNumPoolShards <= 32,
+		"the lease mask is a 32-bit bitset over shards");
 	inline constexpr uint32_t kNumPoolShards = mem::config::kNumPoolShards;
 	inline constexpr uint32_t kShardCapacity = mem::config::kShardCapacity;
 	inline constexpr uint32_t kShardedMaxSize = mem::config::kShardedMaxSize; // 8192, matches old Pool::kMaxSize
@@ -121,18 +139,64 @@ namespace smvk {
 	// generic memory pool must not know descriptor budgets.
 
 	inline thread_local uint32_t t_poolShard = 0; // main thread == shard 0
-	inline std::atomic<uint32_t> g_nextPoolShard{1};
+	// Lease bitmask: bit S set == shard S is leased by a live thread.
+	// Bit 0 is pre-set (the main thread) and is NEVER claimable — the
+	// mask starts at 1, and the acquire candidate set masks bit 0 out.
+	inline std::atomic<uint32_t> g_poolShardLeases{1u};
+
+	// Sentinel: every lease-able shard is owned by a live thread.
+	inline constexpr uint32_t kNoShardLease = 0xFFFFFFFFu;
 
 	inline uint32_t CurrentPoolShard() noexcept { return t_poolShard; }
 	inline void SetCurrentPoolShard(uint32_t shard) noexcept {
 		assert(shard < kNumPoolShards);
 		t_poolShard = shard < kNumPoolShards ? shard : 0;
 	}
-	// Assigns a fresh shard to the calling thread. ThreadPool workers call
-	// this once. Wraps if oversubscribed (caller must then synchronize
-	// externally – ThreadPool caps workers at 16 so this never happens).
+
+	// Claims a UNIQUE unclaimed shard in [1, kNumPoolShards) (lowest first,
+	// so lease order is deterministic under no contention). Lock-free:
+	// CAS on the lease mask. kNoShardLease when every shard is leased.
+	inline uint32_t AcquirePoolShardLease() noexcept {
+		constexpr uint32_t kAllMask = (1u << mem::config::kNumPoolShards) - 1u;
+		uint32_t leased = g_poolShardLeases.load(std::memory_order_relaxed);
+		for (;;) {
+			const uint32_t candidates = ~leased & kAllMask & ~1u;
+			if (candidates == 0)
+				return kNoShardLease;
+			const uint32_t bit = candidates & (~candidates + 1u); // lowest set
+			const uint32_t shard = std::countr_zero(bit);
+			const uint32_t claimed = leased | bit;
+			if (g_poolShardLeases.compare_exchange_weak(leased, claimed,
+					std::memory_order_acq_rel, std::memory_order_relaxed))
+				return shard;
+			// leased was reloaded by the CAS failure: retry with it.
+		}
+	}
+
+	// Returns a shard to the lease pool (a thread that never leased, the
+	// main thread's shard 0, or the sentinel are all no-ops).
+	inline void ReleasePoolShardLease(uint32_t shard) noexcept {
+		if (shard == 0 || shard == kNoShardLease
+				|| shard >= kNumPoolShards)
+			return;
+		g_poolShardLeases.fetch_and(~(1u << shard), std::memory_order_acq_rel);
+	}
+
+	// Assigns a FRESH UNIQUE shard to the calling thread (one lease per
+	// thread; release via ReleasePoolShardLease before the thread exits,
+	// or let ThreadPool do it). Loud shard-0 fallback when every shard is
+	// leased: the caller must then serialize pool access externally (the
+	// pre-lease ThreadPool never lands here — it sizes itself down).
 	inline uint32_t RegisterPoolShard() noexcept {
-		uint32_t shard = g_nextPoolShard.fetch_add(1, std::memory_order_relaxed) % kNumPoolShards;
+		uint32_t shard = AcquirePoolShardLease();
+		if (shard == kNoShardLease) {
+			std::fprintf(stderr,
+				"[Pool] WARNING: all %u pool shards leased (>%u worker threads"
+				" live); this thread falls back to SHARD 0 — serialize pool"
+				" access externally or raise mem::config::kNumPoolShards\n",
+				kNumPoolShards, kNumPoolShards - 1);
+			shard = 0;
+		}
 		t_poolShard = shard;
 		return shard;
 	}

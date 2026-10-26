@@ -2,14 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 // CLI parsing for the pak-viewer host (the APP's own host layer; fills
-// PakAppConfig from argv — see Host.h).
+// ViewerOptions from argv — see Host.h). Numeric flags go through
+// validated parsers: the old atoi/atof silently mapped malformed values
+// ("--bench 12x", "--scene-index 1e3oops", an empty "--bench") to 0, and
+// a ZERO bench frame budget silently flipped the run to interactive
+// mode — a bench script that typo'd its budget would spin forever
+// instead of failing.
 
 #include "Host.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 
 namespace app {
 namespace {
@@ -41,27 +48,70 @@ void PrintUsage(const char* prog) {
 		<< "  backend serves scene content (proves the pak is self-contained)\n";
 }
 
+// Validated integer parse: the whole token must be a base-10 integer in
+// [lo, hi] (an optional single +/- sign, digits only). False on any
+// trailing garbage, overflow, or out-of-range value — the caller rejects
+// the invocation instead of running with a silently-zeroed flag.
+bool ParseInt(const char* s, long long lo, long long hi, long long& out) {
+	if (!s || !*s)
+		return false;
+	errno = 0;
+	char* end = nullptr;
+	const long long v = std::strtoll(s, &end, 10);
+	if (errno == ERANGE || end == s || (end && *end != '\0'))
+		return false;
+	if (v < lo || v > hi)
+		return false;
+	out = v;
+	return true;
+}
+
+// Validated float parse: the whole token must be a finite float in
+// [lo, hi] (strtod grammar — "4", "0.5", "1e2"; "inf"/"nan" rejected by
+// the finiteness + range check).
+bool ParseFloat(const char* s, float lo, float hi, float& out) {
+	if (!s || !*s)
+		return false;
+	errno = 0;
+	char* end = nullptr;
+	const float v = std::strtof(s, &end);
+	if (errno == ERANGE || end == s || (end && *end != '\0'))
+		return false;
+	if (!(v >= lo && v <= hi)) // NaN fails every comparison: rejected here
+		return false;
+	out = v;
+	return true;
+}
+
+// Numeric-flag reject path: loud + usage + failure exit.
+bool RejectNumeric(const char* flag, const char* value, const char* want,
+		int& exitCode) {
+	std::cerr << "Bad value for " << flag << ": '" << (value ? value : "")
+		<< "' (" << want << ")\n";
+	PrintUsage(nullptr);
+	exitCode = EXIT_FAILURE;
+	return false;
+}
+
 } // namespace
 
-bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
+bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 	int& exitCode) {
-	// Clean slate — EXCEPT cfg.run: main() pre-installs the central
-	// RunConfig (parsed once, logged, unknowns warned) BEFORE this parse.
-	// The old wholesale reset silently wiped it, so every RunConfig-carried
-	// env pin no-op'd: TOURMALINE_CAM_POS/FWD/YAW above all (the documented
-	// bench pins) never reached the renderer — headless A/B cameras sat at
-	// the hard-coded (4,3,6) default pose no matter the pin (observed:
-	// three different pinned poses rendered byte-identical captures).
-	const engine::RunConfig runPreserve = cfg.run;
-	cfg = PakAppConfig{};
-	cfg.run = runPreserve;
+	// The parser owns ONLY the ViewerOptions object (a fresh default per
+	// parse — the CLI surface is stateless). Host-supplied config
+	// (RunConfig pins, the extension hooks) lives on PakAppConfig and is
+	// NEVER reset, erased, or even read here: the old wholesale
+	// `cfg = PakAppConfig{}` reset silently wiped whatever the host had
+	// pre-installed (the documented RunConfig wipe bug was the first
+	// casualty; the extension hooks went the same way).
+	opts = ViewerOptions{};
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--pak") == 0) && i + 1 < argc) {
-			cfg.pakPath = argv[++i];
+			opts.pakPath = argv[++i];
 		}
 		else if (std::strncmp(a, "--pak=", 6) == 0) {
-			cfg.pakPath = a + 6;
+			opts.pakPath = a + 6;
 		}
 		else if (std::strcmp(a, "--gltf") == 0
 			|| std::strncmp(a, "--gltf=", 7) == 0) {
@@ -72,74 +122,100 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 			return false;
 		}
 		else if ((std::strcmp(a, "--scene-index") == 0) && i + 1 < argc) {
-			cfg.sceneIndex = std::atoi(argv[++i]);
+			const char* v = argv[++i];
+			long long n = 0;
+			if (!ParseInt(v, 0, 1024 * 1024, n))
+				return RejectNumeric("--scene-index", v,
+					"a scene index, 0..1048576", exitCode);
+			opts.sceneIndex = int(n);
 		}
 		else if (std::strncmp(a, "--scene-index=", 14) == 0) {
-			cfg.sceneIndex = std::atoi(a + 14);
+			const char* v = a + 14;
+			long long n = 0;
+			if (!ParseInt(v, 0, 1024 * 1024, n))
+				return RejectNumeric("--scene-index", v,
+					"a scene index, 0..1048576", exitCode);
+			opts.sceneIndex = int(n);
 		}
 		else if (std::strcmp(a, "--minimal") == 0) {
-			cfg.minimal = true;
+			opts.minimal = true;
 		}
 		else if (std::strcmp(a, "--filter-only") == 0) {
-			cfg.filterOnly = true;
+			opts.filterOnly = true;
 		}
 		else if ((std::strcmp(a, "--with") == 0) && i + 1 < argc) {
-			cfg.withCsv = argv[++i];
+			opts.withCsv = argv[++i];
 		}
 		else if (std::strncmp(a, "--with=", 7) == 0) {
-			cfg.withCsv = a + 7;
+			opts.withCsv = a + 7;
 		}
 		else if ((std::strcmp(a, "--without") == 0) && i + 1 < argc) {
-			cfg.withoutCsv = argv[++i];
+			opts.withoutCsv = argv[++i];
 		}
 		else if (std::strncmp(a, "--without=", 10) == 0) {
-			cfg.withoutCsv = a + 10;
+			opts.withoutCsv = a + 10;
 		}
 		else if (std::strcmp(a, "--bench") == 0 && i + 1 < argc) {
-			cfg.benchFrames = std::atoi(argv[++i]);
+			const char* v = argv[++i];
+			long long n = 0;
+			if (!ParseInt(v, 1, 1000000, n))
+				return RejectNumeric("--bench", v,
+					"a positive frame count, 1..1000000", exitCode);
+			opts.benchFrames = int(n);
 		}
 		else if (std::strncmp(a, "--bench=", 8) == 0) {
-			cfg.benchFrames = std::atoi(a + 8);
+			const char* v = a + 8;
+			long long n = 0;
+			if (!ParseInt(v, 1, 1000000, n))
+				return RejectNumeric("--bench", v,
+					"a positive frame count, 1..1000000", exitCode);
+			opts.benchFrames = int(n);
 		}
 		else if (std::strcmp(a, "--bench_move") == 0
 			|| std::strcmp(a, "--bench-move") == 0) {
 			// Bare flag: default flight speed (4 m/s walks the bistro street
 			// at a good LOD/streaming churn rate). Optional value follows.
-			cfg.benchMoveSpeed = 4.0f;
-			if (i + 1 < argc && argv[i + 1][0] != '-')
-				cfg.benchMoveSpeed = static_cast<float>(std::atof(argv[++i]));
+			opts.benchMoveSpeed = 4.0f;
+			if (i + 1 < argc && argv[i + 1][0] != '-') {
+				const char* v = argv[++i];
+				if (!ParseFloat(v, 0.01f, 1000.0f, opts.benchMoveSpeed))
+					return RejectNumeric("--bench_move", v,
+						"a speed in m/s, 0.01..1000", exitCode);
+			}
 		}
 		else if (std::strncmp(a, "--bench_move=", 14) == 0
 			|| std::strncmp(a, "--bench-move=", 13) == 0) {
 			const char* v = a + (std::strncmp(a, "--bench_move=", 14) == 0 ? 14 : 13);
-			cfg.benchMoveSpeed = static_cast<float>(std::atof(v));
+			if (!ParseFloat(v, 0.01f, 1000.0f, opts.benchMoveSpeed))
+				return RejectNumeric("--bench_move", v,
+					"a speed in m/s, 0.01..1000", exitCode);
 		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
-			cfg.presentMode = argv[++i];
-			cfg.presentSet = true;
+			opts.presentMode = argv[++i];
+			opts.presentSet = true;
 		}
 		else if (std::strncmp(a, "--present=", 10) == 0) {
-			cfg.presentMode = a + 10;
-			cfg.presentSet = true;
+			opts.presentMode = a + 10;
+			opts.presentSet = true;
 		}
 		else if (std::strcmp(a, "--disable_control") == 0 || std::strcmp(a, "--disable-control") == 0) {
-			cfg.disableControl = true;
+			opts.disableControl = true;
 		}
 		else if (std::strcmp(a, "--use_optick") == 0) {
-			cfg.useOptick = true;
+			opts.useOptick = true;
 		}
 		else if (std::strcmp(a, "--use_optick_gpu") == 0) {
-			cfg.useOptick = true;
-			cfg.useOptickGpu = true;
+			opts.useOptick = true;
+			opts.useOptickGpu = true;
 		}
 		else if (std::strcmp(a, "--no-dlss") == 0 || std::strcmp(a, "--no_dlss") == 0) {
-			cfg.noDlss = true;
+			opts.noDlss = true;
 		}
 		else if (std::strcmp(a, "--capture") == 0) {
-			cfg.capture = true;
+			opts.capture = true;
 		}
 		else if (std::strcmp(a, "--no-vfs") == 0 || std::strcmp(a, "--no_vfs") == 0) {
-			cfg.noVfs = true;
+			opts.noVfs = true;
 		}
 		else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
 			PrintUsage(argv[0]);
@@ -157,7 +233,7 @@ bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
 	// the old silent default (content/paks/sponza.pak) ran whatever
 	// stale pak happened to sit at that path, with no hint the user
 	// forgot to name their entry point.
-	if (cfg.pakPath.empty()) {
+	if (opts.pakPath.empty()) {
 		std::cerr << "--pak <path.pak> is REQUIRED: no entry-point pak, "
 			"nothing to run.\n";
 		PrintUsage(argv[0]);

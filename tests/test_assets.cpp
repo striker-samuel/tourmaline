@@ -1673,6 +1673,17 @@ void TestClusterSerializeCook() {
 	cluster->scene.meshForNode[child] = mh.index();
 	cluster->scene.materialForNode[child] = math.index();
 	setNodeName(cluster->scene, child, "QuadNode");
+	// Explicit animation references (the scene blob's trailing v16
+	// section — the self-contained anim pipeline): the cooked asset
+	// records its .tourAnim clip paths; the tail-layout assertions below
+	// pin the wire format (the section is the LAST thing in the blob).
+	cluster->scene.animClipRefs = {
+		"demo/knight.anim0_rig.anim",
+		"demo/knight.anim1_walk.anim",
+	};
+	// A cooked static mark alongside (the trailing v2 section): authored
+	// marks serialize verbatim for the runtime to honor.
+	MarkSubtreeStatic(cluster->scene, root);
 
 	// Cooked punctual light carrying the static flag (bake source —
 	// lightmap/probe harvest + runtime forward+ exclusion; see
@@ -1714,6 +1725,41 @@ void TestClusterSerializeCook() {
 	Check(reader->BlobsOfKind(PakAssetKind::Material).size() == 1, "cook.pak.mat1");
 	Check(reader->BlobsOfKind(PakAssetKind::Texture).size() == 1, "cook.pak.tex1");
 	Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 1, "cook.pak.scene1");
+
+	// Scene blob's trailing v16 ANIMATION-REFS section (the last thing
+	// the writer emits): u32 count + PutStr per ref. The blob tail must
+	// be exactly those bytes — the reader (ParseSceneBlob's mirror parse)
+	// consumes them and the trailing-bytes check demands an exact end.
+	{
+		const auto sceneBlobs = reader->BlobsOfKind(PakAssetKind::Scene);
+		if (sceneBlobs.size() == 1) {
+			const std::span<const uint8_t> p = reader->Payload(*sceneBlobs[0]);
+			// Expected tail: u32(2) + u32(len)+"a" + u32(len)+"b".
+			std::vector<uint8_t> expect;
+			auto putU32 = [&](uint32_t v) {
+				for (int i = 0; i < 4; ++i)
+					expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+			};
+			putU32(2);
+			putU32(uint32_t(cluster->scene.animClipRefs[0].size()));
+			expect.insert(expect.end(),
+				cluster->scene.animClipRefs[0].begin(),
+				cluster->scene.animClipRefs[0].end());
+			putU32(uint32_t(cluster->scene.animClipRefs[1].size()));
+			expect.insert(expect.end(),
+				cluster->scene.animClipRefs[1].begin(),
+				cluster->scene.animClipRefs[1].end());
+			const size_t at = p.size() - expect.size();
+			bool tailOk = p.size() >= expect.size();
+			for (size_t i = 0; tailOk && i < expect.size(); ++i)
+				tailOk = p[at + i] == expect[i];
+			Check(tailOk, "cook.pak.scene.animrefs-tail");
+			// (The authored static mark's serialization is covered by the
+			// real-pak stamptest flow — the pak cooker stamps + the App
+			// honors the marks; the manual light-blob parse above pins
+			// the section pattern style.)
+		}
+	}
 
 	// Light blob round-trip: definition fields + the trailing flags
 	// section (kSceneLightFlag_Static) the bake harvest reads back.

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 namespace smvk::gi {
@@ -164,6 +165,32 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
 	// cutouts + decal overlays included — some bake opts trace them):
 	// a retained upload + a material. The hash must cover everything any
 	// bake might trace.
+	// Bake-relevant TEXTURE CONTENT fingerprints, keyed by the cluster
+	// cook texture id (the MaterialValues texture slots): the bakes trace
+	// TEXTURED albedo/transmission (per-hit baseColor sampling —
+	// GiTraceScene::AlbedoAt/TransmissionAt — plus the metallicRoughness
+	// and emissive averages BuildTraceSceneFromCluster folds in), so the
+	// texture CONTENT is a bake input. The old leaf folded only the
+	// material's scalar state: swapping a texture's PIXELS while the
+	// material parameters (and the slot ids) stood still kept the same
+	// hash — a stale bake rode into the pak undetected. The fingerprint
+	// hashes the embedded SOURCE bytes (what every decode path decodes);
+	// a registered uri with no embedded source folds a stable marker so
+	// the bake and the pak gate replay the SAME deterministic fold (both
+	// replay the same cluster build — sources present or absent in
+	// lockstep).
+	std::map<uint32_t, std::string> textureFp;
+	for (const auto& [uri, handle] : cluster.ListTextureUris()) {
+		Hasher th;
+		th.feed("tex");
+		th.feed(uri.data(), uri.size());
+		const std::vector<uint8_t>* src = cluster.GetTextureSource(uri);
+		if (src && !src->empty())
+			th.feed(src->data(), src->size());
+		else
+			th.feed("<no-source>");
+		textureFp[uint32_t(handle.index())] = th.str();
+	}
 	// Per-cell member lists first (unordered iteration of meshForNode is
 	// order-nondeterministic — sorted members make the fold stable).
 	std::map<CellId, std::vector<std::string>> members;
@@ -208,6 +235,23 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
 		leaf.feedPod(mat->alphaMode);
 		leaf.feedPod(mat->alphaCutoff);
 		leaf.feedPod(mat->castsShadows);
+		// The material's BAKE-RELEVANT texture content: the slots any bake
+		// may sample — baseColor (the textured albedo + the weave
+		// transmission texels), metallicRoughness (the effective metallic
+		// average), emissive (the emissive average). No slot (-1) or a slot
+		// with no fingerprint folds the stable empty marker.
+		{
+			const int32_t slots[3] = {
+				mat->values.textures.x, mat->values.textures.y,
+				mat->values.textures2.x,
+			};
+			for (int32_t id : slots) {
+				auto it = id >= 0
+					? textureFp.find(uint32_t(id)) : textureFp.end();
+				leaf.feed(it != textureFp.end() ? it->second
+					: std::string("<no-texture>"));
+			}
+		}
 		const std::string leafHash = leaf.str();
 		++grid.meshCount;
 
@@ -288,13 +332,18 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 	const glm::mat4& nodeGlobal, const GiVolumeBakeConfigHashInputs& cfg) {
 	// The volume's world AABB: the node global's basis lengths are the
 	// full extents (the harvest's OBB decode); the 8 corners give the
-	// region, expanded by the margin ring.
+	// region, expanded by the margin ring. The corners are POSITIONS
+	// (w = 1): the old w = 0 dropped nodeGlobal's translation column, so
+	// a MOVED volume kept hashing the cells around the ORIGIN — the
+	// covered region (and the hash) stayed put while the volume flew
+	// away, and stale bakes kept matching.
 	glm::vec3 mn(1e30f), mx(-1e30f);
 	for (int i = 0; i < 8; ++i) {
 		glm::vec4 p(0.0f);
 		p.x = (i & 1) ? 1.0f : -1.0f;
 		p.y = (i & 2) ? 1.0f : -1.0f;
 		p.z = (i & 4) ? 1.0f : -1.0f;
+		p.w = 1.0f; // homogeneous POINT: transform carries the translation
 		const glm::vec3 w(nodeGlobal * p);
 		mn = glm::min(mn, w);
 		mx = glm::max(mx, w);
@@ -305,10 +354,19 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 
 	Hasher hs;
 	hs.feed("givolume");
+	// The bake algorithm revision (see bake_inputs.h): behavior changes
+	// must invalidate every pre-change record.
+	hs.feedPod(kBakeAlgorithmRevision);
 	hs.feed(BakeEnvHash(cluster.scene));
 	hs.feed(BakeLightsHash(cluster));
+	// The volume's FULL transform, by bits: the covered-cell fold below
+	// only sees the world AABB, so a rotation that leaves the covered
+	// cells identical (a near-symmetric OBB spin) or any re-aimed basis
+	// never changed the hash — the bake's sample lattice rides the whole
+	// matrix, so fold the whole matrix.
+	hs.feedPod(nodeGlobal);
 	// The definition's bake-relevant fields (the shape rides nodeGlobal,
-	// which is folded above).
+	// folded above).
 	hs.feedPod(def.priority);
 	hs.feedPod(def.spacing);
 	hs.feedPod(def.insideFade);
@@ -330,6 +388,9 @@ std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
 	const std::vector<CellId>& reachCells) {
 	Hasher hs;
 	hs.feed("cubemap");
+	// The bake algorithm revision (see bake_inputs.h): behavior changes
+	// must invalidate every pre-change record.
+	hs.feedPod(kBakeAlgorithmRevision);
 	hs.feed(BakeEnvHash(cluster.scene));
 	hs.feed(BakeLightsHash(cluster));
 	hs.feedPod(position);
@@ -359,6 +420,9 @@ std::string WorldBakeUnitHash(const BakeCellGrid& grid,
 	const Cluster& cluster, const WorldBakeConfigHashInputs& cfg) {
 	Hasher hs;
 	hs.feed("world");
+	// The bake algorithm revision (see bake_inputs.h): behavior changes
+	// must invalidate every pre-change record.
+	hs.feedPod(kBakeAlgorithmRevision);
 	hs.feed(BakeEnvHash(cluster.scene));
 	hs.feed(BakeLightsHash(cluster));
 	hs.feedPod(cfg.maxBounces);
@@ -391,42 +455,51 @@ std::vector<CellId> RecordCaptureReach(const GiTraceScene& trace,
 		const float tHit = bvh.Raycast(position, dir, kMaxDist, hit)
 			? hit.t : kMaxDist;
 		// The traversal: an Amanatides-Woo voxel walk over [0, tHit].
-		int32_t cx = CellOf(position.x), cy = CellOf(position.y),
-			cz = CellOf(position.z);
-		const glm::vec3 invDir(
-			1.0f / (std::abs(dir.x) < 1e-12f ? 1e-12f * (dir.x < 0 ? -1.0f : 1.0f) : dir.x),
-			1.0f / (std::abs(dir.y) < 1e-12f ? 1e-12f * (dir.y < 0 ? -1.0f : 1.0f) : dir.y),
-			1.0f / (std::abs(dir.z) < 1e-12f ? 1e-12f * (dir.z < 0 ? -1.0f : 1.0f) : dir.z));
-		const int32_t sx = dir.x > 0 ? 1 : -1, sy = dir.y > 0 ? 1 : -1,
-			sz = dir.z > 0 ? 1 : -1;
-		float tMaxX = ((float(cx + (sx > 0 ? 1 : 0)) * BakeCellGrid::kCell)
-				- position.x) / dir.x;
-		float tMaxY = ((float(cy + (sy > 0 ? 1 : 0)) * BakeCellGrid::kCell)
-				- position.y) / dir.y;
-		float tMaxZ = ((float(cz + (sz > 0 ? 1 : 0)) * BakeCellGrid::kCell)
-				- position.z) / dir.z;
-		const float stepX = BakeCellGrid::kCell / std::abs(dir.x);
-		const float stepY = BakeCellGrid::kCell / std::abs(dir.y);
-		const float stepZ = BakeCellGrid::kCell / std::abs(dir.z);
+		// Zero-direction axes never cross a boundary on that axis: their
+		// tMax/step are +infinity, which stays out of every min() race.
+		// The old code divided by the RAW axis component — an exactly-zero
+		// component with the position exactly on a cell boundary produced
+		// 0/0 = NaN (NaN never wins a < comparison, silently skewing the
+		// axis picks), and a zero component off-boundary produced a
+		// sign-dependent ±inf by luck. The boundary-crossing parameter
+		// below uses the guarded reciprocal form (a multiply, never a
+		// division by a possibly-zero raw component).
+		int32_t cell[3] = { CellOf(position.x), CellOf(position.y),
+			CellOf(position.z) };
+		float tMax[3], step[3];
+		int32_t sgn[3];
+		for (int a = 0; a < 3; ++a) {
+			const float d = dir[a];
+			if (std::abs(d) < 1e-12f) {
+				// The ray runs parallel to this axis's cell planes: no
+				// crossing ever (tMax=+inf loses every min() race; the
+				// step is never added before t > tHit).
+				sgn[a] = 1; // unused: tMax[a] is +inf forever
+				tMax[a] = (std::numeric_limits<float>::infinity)();
+				step[a] = (std::numeric_limits<float>::infinity)();
+				continue;
+			}
+			sgn[a] = d > 0.0f ? 1 : -1;
+			const float inv = 1.0f / d; // |d| >= 1e-12: the divide is safe
+			tMax[a] = ((float(cell[a] + (sgn[a] > 0 ? 1 : 0))
+					* BakeCellGrid::kCell) - position[a]) * inv;
+			step[a] = BakeCellGrid::kCell * std::abs(inv);
+		}
 		float t = 0.0f;
 		int32_t guard = 0;
 		while (t <= tHit && guard++ < 4096) {
-			cells.push_back({ cx, cy, cz });
-			if (tMaxX < tMaxY && tMaxX < tMaxZ) {
-				t = tMaxX;
-				tMaxX += stepX;
-				cx += sx;
-			}
-			else if (tMaxY < tMaxZ) {
-				t = tMaxY;
-				tMaxY += stepY;
-				cy += sy;
-			}
-			else {
-				t = tMaxZ;
-				tMaxZ += stepZ;
-				cz += sz;
-			}
+			cells.push_back({ cell[0], cell[1], cell[2] });
+			// Advance the axis with the NEAREST boundary crossing (ties
+			// fall to the later axis — deterministic and matches the old
+			// if/else chain's ordering).
+			int axis = 2;
+			if (tMax[0] < tMax[1])
+				axis = (tMax[0] < tMax[2]) ? 0 : 2;
+			else
+				axis = (tMax[1] < tMax[2]) ? 1 : 2;
+			t = tMax[axis];
+			tMax[axis] += step[axis];
+			cell[axis] += sgn[axis];
 		}
 		// The hit cell + a one-cell ring (the bounce neighborhood —
 		// bounce 1 leaves the hit surface into the adjacent cells).

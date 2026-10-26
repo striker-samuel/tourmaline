@@ -779,6 +779,11 @@ void EditorApp::DrawPlacementOverlay() {
 			const glm::vec4 c = vpm * glm::vec4(w, 1.0f);
 			if (c.w <= 1e-6f)
 				return false;
+			// The projection's near plane (reversed-Z ZO: ndc z = 1) and
+			// the far side (z = 0): markers between the eye and near used
+			// to draw over the view through the eye-plane-only test.
+			if (c.z < 0.0f || c.z > c.w)
+				return false;
 			out.x = vp.rect.x + (c.x / c.w * 0.5f + 0.5f) * float(vp.rect.w);
 			out.y = vp.rect.y + (c.y / c.w * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;

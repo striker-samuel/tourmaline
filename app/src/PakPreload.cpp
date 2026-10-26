@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// Background pak preload: file read + whole-image CRC + per-entry LZ4
-// decompression, kicked BEFORE the renderer starts Vulkan so it overlaps
-// instance/device/swapchain init and shader loading. App-host logic.
+// Background pak preload: file read + whole-image CRC (LZ4 entries
+// decompress lazily at first use inside the reader), kicked BEFORE the
+// renderer starts Vulkan so it overlaps instance/device/swapchain init
+// and shader loading. App-host logic.
 
 #include "PakPreload.h"
 
@@ -24,27 +25,42 @@ namespace app {
 
 std::string ResolvePakOpenPath(const std::string& scenePak) {
 	std::string pakOpenPath;
+	if (scenePak.empty())
+		return pakOpenPath;
+	// EXPLICIT, consistent resolution ladder (the old code only added the
+	// exe-relative candidate when the path had LEADING SLASHES to strip —
+	// a vfs-style "/content/..." — so an ORDINARY relative path
+	// ("content/paks/bistro.pak") never received the intended
+	// executable-relative fallback and failed whenever the CWD wasn't
+	// the build root):
+	//   1. as-is (absolute paths + CWD-relative),
+	//   2. CWD-relative with the leading separators stripped (vfs-style),
+	//   3. exe-relative (any relative path: ordinary + stripped).
 	std::vector<std::string> candidates;
-	if (!scenePak.empty()) {
-		std::string rel = scenePak;
-		while (!rel.empty() && (rel.front() == '/' || rel.front() == '\\'))
-			rel.erase(rel.begin());
-		candidates.push_back(scenePak);
-		if (!rel.empty() && rel != scenePak) {
-			candidates.push_back(rel);
-			char exePath[1024] = {};
+	candidates.push_back(scenePak);
+	std::string rel = scenePak;
+	while (!rel.empty() && (rel.front() == '/' || rel.front() == '\\'))
+		rel.erase(rel.begin());
+	if (!rel.empty() && rel != scenePak)
+		candidates.push_back(rel);
+	char exePath[1024] = {};
 #ifdef _WIN32
-			DWORD n = GetModuleFileNameA(nullptr, exePath, DWORD(sizeof(exePath)));
-			(void)n;
+	DWORD n = GetModuleFileNameA(nullptr, exePath, DWORD(sizeof(exePath)));
+	(void)n;
 #else
-			const ssize_t n = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-			if (n > 0)
-				exePath[n] = '\0';
+	const ssize_t n = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+	if (n > 0)
+		exePath[n] = '\0';
 #endif
-			if (exePath[0])
-				candidates.push_back(
-					(std::filesystem::path(exePath).parent_path() / rel).string());
-		}
+	// Exe-relative applies to anything that is not drive/server-ROOTED
+	// (has_root_name): ordinary relative paths AND the vfs-style
+	// "/content/..." (root-directory paths are relative on Windows, and
+	// on POSIX the stripped `rel` is what actually joins — matching the
+	// old leading-slash behavior). Only "C:\..." / UNC paths skip it.
+	const std::filesystem::path scenePakPath(scenePak);
+	if (exePath[0] && !rel.empty() && !scenePakPath.has_root_name()) {
+		candidates.push_back(
+			(std::filesystem::path(exePath).parent_path() / rel).string());
 	}
 	for (const std::string& c : candidates) {
 		std::error_code ec;
@@ -53,7 +69,7 @@ std::string ResolvePakOpenPath(const std::string& scenePak) {
 			break;
 		}
 	}
-	if (pakOpenPath.empty() && !scenePak.empty())
+	if (pakOpenPath.empty())
 		std::cerr << "[App] pak not found: '" << scenePak
 			<< "' (tried as-is, CWD-relative and exe-relative)" << std::endl;
 	return pakOpenPath;
@@ -91,10 +107,12 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 		p.image = std::move(image);
 		const auto t1 = std::chrono::steady_clock::now();
 		// ONE open covers everything: PakBackend::Open parses + verifies
-		// the CRC + (for big images) parallel-decompresses every LZ4
-		// entry. Its Reader() serves scene discovery + the cluster load;
-		// the old path opened the reader twice (double CRC + double
-		// decompress).
+		// the CRC (chunk-parallel on big images). LZ4 entries decompress
+		// LAZILY at first use inside the reader, so the open here is
+		// parse + CRC only — the decompression cost lands on the scenes
+		// actually loaded, not the whole archive. Its Reader() serves
+		// scene discovery + the cluster load; the old path opened the
+		// reader twice (double CRC + double decompress).
 		std::string pakErr;
 		p.backend = smvk::PakBackend::Open(p.image, p.scenePak, pakErr);
 		const auto t2 = std::chrono::steady_clock::now();

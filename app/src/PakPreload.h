@@ -3,8 +3,9 @@
 
 #pragma once
 // Private (app-host-internal, NOT public API): background pak file read +
-// parse + decompress, kicked before renderer init so it overlaps Vulkan
-// init + shader loading. Consumed by PakApp.cpp's world source.
+// parse (CRC-verified; LZ4 entries decompress lazily at first use inside
+// the reader), kicked before renderer init so it overlaps Vulkan init +
+// shader loading. Consumed by PakWorldLoader.cpp's world loading.
 #include <Engine/Asset/pak.h>
 
 #include <cstdint>
@@ -16,9 +17,9 @@
 namespace app {
 
 // Background pak preload result. The backend owns the image + the parsed
-// reader (already decompressed); the world source consumes it on the render
-// thread once the context exists. `backend` is null on any failure (error
-// filled).
+// reader (compressed entries decompress on first read); the world loader
+// consumes it on the render thread once the context exists. `backend` is
+// null on any failure (error filled).
 struct PakPreload {
 	std::string scenePak; // display name (also the VFS mount name)
 	std::string openPath; // resolved host path (empty = not found)

@@ -1918,6 +1918,121 @@ int Run(const PakArgs& c) {
 			}
 		}
 	}
+	// ---------------------------------------------------------------------------
+	// EXPLICIT ANIMATION REFERENCES + the embedded clips (the
+	// self-contained anim pipeline): every source artifact behind the
+	// clusters may carry .tourAnim clips — the importer's gltf.meta
+	// manifest lists them as anim.<idx> rows beside the .geometry. The
+	// pak RECORDS the clip VFS paths on every cluster whose meshes come
+	// from that artifact (scene.animClipRefs — the scene blob's trailing
+	// ref section) and EMBEDS the clip files as Texture-kind blobs at the
+	// same paths (the .cubemanifest text-in-a-Texture-payload pattern:
+	// PakBackend serves by path, so the runtime's mounted pak resolves
+	// the refs with no loose files). The old runtime discovery enumerated
+	// the loose demo/ dir for '<stem>.anim*' — a pak that depended on
+	// loose files for its own skinning.
+	// ---------------------------------------------------------------------------
+	std::vector<std::pair<std::string, std::vector<uint8_t>>> animBlobs;
+	{
+		std::map<std::string, std::vector<smvk::Cluster*>> byArtifact;
+		for (auto& sc : sceneClusters) {
+			std::unordered_set<std::string> files;
+			for (const auto& [node, meshIdx] : sc->scene.meshForNode) {
+				const auto h = sc->staticMeshes.getHandle(meshIdx);
+				if (!h.valid())
+					continue;
+				const auto uri = sc->GetMeshUri(h);
+				if (!uri.empty())
+					files.insert(smvk::AssetFilePart(uri));
+			}
+			for (const std::string& file : files)
+				byArtifact[file].push_back(sc.get());
+		}
+		for (const auto& [file, artClusters] : byArtifact) {
+			std::string stem = smvk::vfs::FileName(file);
+			if (const size_t mdot = stem.rfind(".geometry");
+				mdot != std::string::npos)
+				stem = stem.substr(0, mdot);
+			const std::string metaRel = smvk::vfs::Join(
+				smvk::vfs::BaseDir(file), stem + ".gltf.meta");
+			auto metaBytes = vfs.TryRead(metaRel);
+			if (!metaBytes || metaBytes->empty())
+				continue; // no manifest beside the blob: no anims recorded
+			smvk::assets::AssetManifest manifest;
+			std::string merr;
+			if (!smvk::assets::LoadAssetManifestText(
+					std::string(metaBytes->begin(), metaBytes->end()),
+					manifest, merr))
+				continue;
+			for (const smvk::assets::AssetEntry& e : manifest.entries) {
+				if (e.kind != smvk::assets::AssetKind::Anim
+						|| e.file.empty())
+					continue;
+				const std::string animVfs =
+					smvk::vfs::Join(smvk::vfs::BaseDir(file), e.file);
+				// Stamp the ref on every cluster of this artifact (the
+				// runtime attaches to the first SKELETON cluster; refs on
+				// the others are inert bookkeeping).
+				for (smvk::Cluster* c : artClusters) {
+					auto& refs = c->scene.animClipRefs;
+					if (std::find(refs.begin(), refs.end(), animVfs)
+							== refs.end())
+						refs.push_back(animVfs);
+				}
+				// Embed ONCE (dedup across artifacts/scenes): the clip
+				// file rides as a Texture-kind blob (text payload).
+				bool seen = false;
+				for (const auto& [p, b] : animBlobs)
+					if (p == animVfs) {
+						seen = true;
+						break;
+					}
+				if (seen)
+					continue;
+				std::vector<uint8_t> bytes =
+					ReadLooseBakeFile(args.contentDir, animVfs);
+				if (bytes.empty()) {
+					tool::err() << "anim clip missing (ref recorded, NOT"
+						" embedded — the pak needs the loose file): '"
+						<< animVfs << "' under --content-dir '"
+						<< args.contentDir << "'\n";
+					continue;
+				}
+				animBlobs.emplace_back(animVfs, std::move(bytes));
+				tool::out() << "Anim clip recorded + embedded: " << animVfs
+					<< " (" << artClusters.size() << " cluster(s))\n";
+			}
+		}
+	}
+	// ---------------------------------------------------------------------------
+	// COOKED STATIC FLAGS (the authored/preserved static pipeline): a
+	// cluster with NO skeleton and NO recorded anim refs never animates —
+	// the pak stamps its scene root static HERE (the cooked pak then
+	// carries staticRoots and the runtime honors them instead of
+	// inventing the marks viewer-side). Skeleton clusters and clusters
+	// with anim refs stay dynamic (the animation driver owns their
+	// transforms); AUTHORED static marks (editor/tour MarkSubtreeStatic —
+	// the derivation's staticRoot bits already replayed into these
+	// scenes) are preserved verbatim — the stamp only fills the
+	// no-marks-at-all case, never overrides an authored mark.
+	// ---------------------------------------------------------------------------
+	for (auto& sc : sceneClusters) {
+		smvk::Cluster& c = *sc;
+		if (c.scene.hierarchy.empty())
+			continue;
+		const bool hasAuthoredMarks =
+			c.scene.staticRoot.size() == c.scene.hierarchy.size()
+			&& std::any_of(c.scene.staticRoot.begin(),
+				c.scene.staticRoot.end(),
+				[](uint8_t v) { return v != 0; });
+		if (hasAuthoredMarks)
+			continue; // authored: preserve verbatim
+		if (c.hasSkeleton || !c.scene.animClipRefs.empty())
+			continue; // animated content: stays dynamic
+		MarkSubtreeStatic(c.scene, 0);
+		tool::out() << "Static marks cooked: cluster root frozen (no"
+			" skeleton, no anim refs)\n";
+	}
 	// Import phase finished: commit any staged registry artifacts (one
 	// pak grow per touched class). Flush failure loses acceleration
 	// only — staged bytes were already used in the import.
@@ -2404,6 +2519,22 @@ int Run(const PakArgs& c) {
 		}
 		tool::out() << "Embedded GI " << vfsPath
 			<< " (" << bytes.size() << " B)\n";
+	}
+	// Anim clips (the self-contained anim pipeline — see the stamp block
+	// above): Texture-kind blobs at the recorded ref paths, the same
+	// path-embed pattern as the manifests. PakBackend serves them by path;
+	// the runtime's content VFS resolves the scene's animClipRefs
+	// straight out of this pak.
+	for (auto& [vfsPath, bytes] : animBlobs) {
+		std::vector<uint8_t> payload = smvk::BuildTexturePayload(
+			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(bytes));
+		if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+			std::move(payload))) {
+			tool::err() << "Anim AddBlob failed: " << vfsPath << std::endl;
+			return 1;
+		}
+		tool::out() << "Embedded anim clip " << vfsPath
+			<< " (" << bytes.size() << " B text)\n";
 	}
 	// Tiled terrain (optional, independent of clusters): terrain.json +
 	// H/S PNGs -> Terrain blobs. Runs for mixed and terrain-only paks;

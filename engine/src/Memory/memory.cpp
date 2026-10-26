@@ -60,6 +60,19 @@ config::RuntimeConfig ParseRuntimeConfig() {
 	c.readbackStagingMin = EnvSize("TOURMALINE_MEM_READBACK_MIN_KB", kKiB, c.readbackStagingMin);
 	c.readbackStagingMax = EnvSize("TOURMALINE_MEM_READBACK_MAX_MB", kMiB, c.readbackStagingMax);
 	c.threadPoolQueueSlots = EnvSize("TOURMALINE_MEM_THREAD_SLOTS", 1, c.threadPoolQueueSlots);
+	// The ring allocation multiplies the slot count by the slot size in
+	// ThreadPool's constructor; a count beyond the ceiling either wraps
+	// that multiplication (out-of-bounds ring writes) or reserves
+	// gigabytes for a queue nothing needs. Reject to the default —
+	// same bad-value policy as EnvSize itself.
+	if (c.threadPoolQueueSlots > kMaxThreadPoolQueueSlots) {
+		std::fprintf(stderr,
+			"[Memory] TOURMALINE_MEM_THREAD_SLOTS=%zu above the ceiling"
+			" %zu; using default %zu\n",
+			c.threadPoolQueueSlots, kMaxThreadPoolQueueSlots,
+			size_t(kThreadPoolQueueSlots));
+		c.threadPoolQueueSlots = kThreadPoolQueueSlots;
+	}
 	c.commitQuantum = EnvSize("TOURMALINE_MEM_COMMIT_MB", kMiB, c.commitQuantum);
 	c.staticVertexHeap = EnvSize("TOURMALINE_MEM_STATIC_VERTEX_MB", kMiB, c.staticVertexHeap);
 	c.staticIndexHeap = EnvSize("TOURMALINE_MEM_STATIC_INDEX_MB", kMiB, c.staticIndexHeap);

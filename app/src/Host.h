@@ -9,6 +9,17 @@
 // through SetWorldSource; pak preload/parse, the sponza check-scene extras
 // and the demo-content seeding all live here.
 //
+// Layer split (the PakApp.cpp responsibilities, extracted):
+//   - ViewerOptions (below): the PURE CLI surface — every --flag the
+//     viewer parses. The parser fills EXACTLY this object; host-supplied
+//     config (RunConfig pins, the extension hooks) lives on PakAppConfig
+//     and is never reset or erased by a parse.
+//   - PakWorldLoader (PakWorldLoader.h): pak preload -> a loaded World
+//     (scene discovery, cluster load, anim clips, static flags, the
+//     scene-prep diagnostics).
+//   - RunPakApp (PakApp.cpp): the viewer HOST — renderer wiring, pass
+//     config, bench/DLSS/control, lifecycle, exit codes.
+//
 // Usage:
 //   App [--pak <path.pak>] [--scene-index N] [--no-vfs]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
@@ -34,8 +45,9 @@ namespace engine {
 
 namespace app {
 
-// Host configuration (one field per CLI flag; ParsePakAppArgs fills it).
-struct PakAppConfig {
+// The viewer's CLI options (one field per CLI flag; ParsePakAppArgs fills
+// this object and nothing else — see the layer note above).
+struct ViewerOptions {
 	// The entry-point pak — REQUIRED, no default: a bare App.exe must
 	// refuse instead of silently running whatever pak happens to sit at
 	// some hard-coded path (the old default content/paks/sponza.pak
@@ -72,6 +84,19 @@ struct PakAppConfig {
 	// silently covered by loose bake files. Engine resources (shaders,
 	// fonts, LUTs) load exe-relative, never through the VFS.
 	bool noVfs = false;
+	// Scene id (GI bake stem + check-scene gating). Empty = pak stem.
+	std::string sceneId;
+};
+
+// The full host run configuration: the parsed CLI options + the
+// host-supplied state the parser must NEVER touch. RunPakApp consumes
+// this; main() assembles it (CLI parse -> ViewerOptions, then installs
+// the RunConfig snapshot and any host extension hooks).
+struct PakAppConfig {
+	ViewerOptions cli;
+	// Central run config (parsed once in main; Log/WarnUnknown there).
+	// Carried by value so the renderer consumes the same snapshot.
+	engine::RunConfig run;
 	// ---- Host extension element (the game-host hook) ----
 	// A host (Asteroids.exe — asteroids/src/main.cpp) installs a factory
 	// that RunPakApp stacks OVER the renderer element (after its onAttach
@@ -88,17 +113,14 @@ struct PakAppConfig {
 	// True when the extra element owns the camera (RunPakApp then parks
 	// the renderer element's FPS camera drive for the whole run).
 	bool extraOwnsCamera = false;
-	// Scene id (GI bake stem + check-scene gating). Empty = pak stem.
-	std::string sceneId;
-	// Central run config (parsed once in main; Log/WarnUnknown there).
-	// Carried by value so the renderer consumes the same snapshot.
-	engine::RunConfig run;
 };
 
-// Parse argv into cfg. Returns true on success; on `--help`/unknown args
-// (or the removed `--gltf`) prints to stdout/stderr and returns false with
-// exitCode set (EXIT_SUCCESS for --help, EXIT_FAILURE otherwise).
-bool ParsePakAppArgs(int argc, const char* argv[], PakAppConfig& cfg,
+// Parse argv into `opts` (the dedicated CLI options object — nothing else
+// is read or reset). Returns true on success; on `--help`/unknown args/bad
+// values (or the removed `--gltf`) prints to stdout/stderr and returns
+// false with exitCode set (EXIT_SUCCESS for --help, EXIT_FAILURE
+// otherwise).
+bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 	int& exitCode);
 
 // One-call run: InitMemory, background pak preload overlapped with renderer

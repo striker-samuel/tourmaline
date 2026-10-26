@@ -493,6 +493,16 @@ struct Scene {
 	// editor cubemap node): pinned specular probe positions harvested
 	// by the cook's --cubemap stage. Position = node translate.
 	std::unordered_map<NodeId, SceneCubemap> cubemapForNode;
+	// Explicit ANIMATION references (the self-contained anim pipeline):
+	// the VFS paths of the .tourAnim clips this scene's content was
+	// imported with (the gltf.meta manifest's anim.<idx> rows, stamped by
+	// the pak cooker alongside the embedded clip blobs). The runtime
+	// resolves them through the content VFS — the mounted pak backend
+	// serves the embedded bytes, so a pak alone carries everything a
+	// skinned cluster needs (the old runtime discovery enumerated the
+	// loose demo/ dir — a pak-dependent-on-loose-files hole). Empty =
+	// no recorded clips (old paks fall back to the legacy paths).
+	std::vector<std::string> animClipRefs;
 	// Node -> the scene's EXPORT SETTINGS (tour createNode -at
 	// exportSettings / the editor's auto-seeded WorldSettings node;
 	// see SceneExportSettings). Node-local like giVolumeForNode; the

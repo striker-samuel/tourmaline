@@ -104,6 +104,14 @@ inline constexpr uint32_t kShardedMaxSize = kNumPoolShards * kShardCapacity; // 
 // grows and never OOMs). Sized for worst-case fan-out (pak decompress +
 // GI bakes enqueue in the low thousands); costs ~160 KB of transient VA.
 inline constexpr size_t kThreadPoolQueueSlots = 4096;
+// Runtime override CEILING for TOURMALINE_MEM_THREAD_SLOTS: the ring is
+// `slots * sizeof(std::function<void()>)` bytes, so an unchecked huge value
+// would either wrap the multiplication (out-of-bounds ring writes — the
+// checked multiply in ThreadPool catches that too) or reserve gigabytes of
+// process VA for a queue no workload needs. 4M slots (~128-512 MB) is far
+// past any sane fan-out; larger values warn and keep the compile-time
+// default (same policy as every other bad TOURMALINE_MEM_* value).
+inline constexpr size_t kMaxThreadPoolQueueSlots = size_t(1) << 22;
 
 // -- Page-commit granularity ------------------------------------------------
 // Physical pages commit in multiples of this quantum as the bump pointer

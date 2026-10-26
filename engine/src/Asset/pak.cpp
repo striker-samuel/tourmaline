@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <thread>
 
 #include <Engine/Asset/compression.h>
@@ -801,64 +802,21 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 			}
 		}
 	}
-	// Decompress LZ4 blobs into reader-owned buffers so Payload() stays a
-	// simple span (transparent to cluster deserialization + PakBackend).
-	// One pool job per compressed entry: entries are independent and each
-	// writes its own decompressed_[i], so the parallel pass stays lock-free;
-	// the serial fallback covers single-entry and tiny paks (pool spin-up
-	// would cost more than the work).
-	r.decompressed_.resize(r.entries_.size());
-	{
-		std::vector<size_t> lz4Idx;
-		lz4Idx.reserve(r.entries_.size());
-		for (size_t i = 0; i < r.entries_.size(); ++i) {
-			if (r.entries_[i].flags & PakEntryFlag_Lz4)
-				lz4Idx.push_back(i);
-		}
-		if (lz4Idx.size() <= 1) {
-			for (size_t i : lz4Idx) {
-				const PakTocEntry& e = r.entries_[i];
-				std::span<const uint8_t> stored = image.subspan(
-					static_cast<size_t>(e.offset), static_cast<size_t>(e.size));
-				if (!DecompressPakBlob(stored, true, r.decompressed_[i])) {
-					outError = "pak LZ4 decompress failed: " + e.path;
-					return std::nullopt;
-				}
-			}
-		}
-		else {
-			ThreadPool pool(std::min<size_t>(lz4Idx.size(),
-				std::thread::hardware_concurrency()));
-			std::vector<std::future<bool>> futs;
-			futs.reserve(lz4Idx.size());
-			std::vector<char> ok(lz4Idx.size(), 0);
-			for (size_t j = 0; j < lz4Idx.size(); ++j) {
-				const PakTocEntry& e = r.entries_[lz4Idx[j]];
-				// Capture by VALUE (span + stable element pointers): the
-				// workers may run the task after this loop iteration has
-				// ended, so references to loop locals would dangle. The
-				// element pointers are stable — both vectors finished
-				// growing before the enqueue loop.
-				const std::span<const uint8_t> stored = image.subspan(
-					static_cast<size_t>(e.offset), static_cast<size_t>(e.size));
-				std::vector<uint8_t>* out = &r.decompressed_[lz4Idx[j]];
-				char* okFlag = &ok[j];
-				futs.push_back(pool.enqueue([stored, out, okFlag]() -> bool {
-					*okFlag = DecompressPakBlob(stored, true, *out) ? 1 : 0;
-					return *okFlag != 0;
-				}));
-			}
-			for (auto& f : futs)
-				f.get();
-			for (size_t j = 0; j < lz4Idx.size(); ++j) {
-				if (!ok[j]) {
-					outError = "pak LZ4 decompress failed: "
-						+ r.entries_[lz4Idx[j]].path;
-					return std::nullopt;
-				}
-			}
-		}
-	}
+	// LAZY LZ4 decompression (finding #18): Open only parses + CRCs the
+	// image — compressed entries decompress on FIRST Payload() access
+	// (see Payload below) into reader-owned, lifetime-cached buffers.
+	// The old eager pass decompressed EVERY compressed entry at Open —
+	// a viewer that needs one scene out of a multi-GB pak paid for all
+	// of them before the first frame, and a torn LZ4 block surfaced at
+	// boot instead of at the entry that needs it.
+	// The lazily-decompressed payloads are cached for the reader's
+	// LIFETIME (Payload() hands out spans into decompressed_ — an
+	// eviction-based bounded cache would invalidate live spans; the
+	// cache is therefore bounded by "everything actually read", which
+	// is <= what the eager path materialized, always).
+	r.decompressed_.assign(r.entries_.size(), {});
+	r.decompressDone_.assign(r.entries_.size(), 0);
+	r.lazyMutex_ = std::make_unique<std::mutex>();
 	return r;
 }
 
@@ -893,8 +851,30 @@ std::span<const uint8_t> PakReader::Payload(const PakTocEntry& entry) const {
 	// Entries are only ever accessed via pointers into entries_ (Find /
 	// BlobsOfKind), so pointer arithmetic recovers the owned buffer.
 	const size_t idx = static_cast<size_t>(&entry - entries_.data());
-	if (idx < decompressed_.size() && !decompressed_[idx].empty())
+	if (entry.flags & PakEntryFlag_Lz4) {
+		// Lazy decompress-on-first-use (see Open): guarded so concurrent
+		// first reads (the preload thread + the render thread sharing a
+		// backend) decompress exactly once; the result stays cached for
+		// the reader's lifetime — the returned span never invalidates.
+		std::lock_guard<std::mutex> lock(*lazyMutex_);
+		if (!decompressDone_[idx]) {
+			const std::span<const uint8_t> stored = image_.subspan(
+				static_cast<size_t>(entry.offset),
+				static_cast<size_t>(entry.size));
+			std::vector<uint8_t> out;
+			if (!DecompressPakBlob(stored, true, out)) {
+				// The CRC already verified the image at Open: a failing
+				// LZ4 block means a torn-in-place write that passed CRC —
+				// loud (throw), and the host's load path turns it into a
+				// failed launch instead of a corrupt scene.
+				throw std::runtime_error(
+					"pak LZ4 decompress failed: " + entry.path);
+			}
+			decompressed_[idx] = std::move(out);
+			decompressDone_[idx] = 1;
+		}
 		return std::span<const uint8_t>(decompressed_[idx]);
+	}
 	return image_.subspan(static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
 }
 

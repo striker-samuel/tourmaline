@@ -291,6 +291,11 @@ void EditorApp::DrawBakeDensityOverlay() {
 			const glm::vec3 ndc = glm::vec3(c) / c.w;
 			if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
 				return false; // off-screen
+			// The projection's near plane (reversed-Z ZO: ndc z = 1) and
+			// the far side (z = 0): between-eye-and-near markers used to
+			// draw over the view through the eye-plane-only test.
+			if (ndc.z < 0.0f || ndc.z > 1.0f)
+				return false;
 			out.x = vp.rect.x + (ndc.x * 0.5f + 0.5f) * float(vp.rect.w);
 			out.y = vp.rect.y + (ndc.y * 0.5f + 0.5f) * float(vp.rect.h);
 			return true;
