@@ -89,7 +89,16 @@ s_benchPreA = 0.0, s_benchPreB = 0.0, s_benchPreC = 0.0;
 // Engine/Rendergraph/cascadedshadowmap.h)
 // -----------------------------------------------------------------------------
 static constexpr uint32_t NUM_CASCADES = 4;
-static constexpr float CASCADE_Z_PADDING = 10.0f;
+// Light-space depth padding either side of each cascade's receiver slice;
+// GetDirectionalLightOrthoVP also backs the light off by the same amount
+// toward the sun, so the effective sunward coverage is ~2x this. Casters
+// nearer the sun than that fall behind the light's near plane and CLIP
+// out of the shadow map (tall rooftop/trim shadows popping as the fit
+// moves with the camera): 25 m keeps building-scale casters in range.
+// Depth precision is a non-issue: the atlas is D32 and the per-cascade
+// depth bias divides by the ACTUAL depthRange, so a wider range stays
+// bias-corrected.
+static constexpr float CASCADE_Z_PADDING = 25.0f;
 static constexpr smvk::Format SHADOW_FORMAT = smvk::Format::D32_Float; // no stencil on the directional atlas
 
 // -----------------------------------------------------------------------------
@@ -6781,21 +6790,33 @@ namespace engine {
 					m_renderViews.Get(casterViewIndex), sphereCenter, sphereRadius))
 					return;
 			}
-			// Shadow contribution cull: skip casters outside the MAIN camera's
-			// view frustum. Only geometry that could contribute to the final
-			// image (i.e., is visible from the camera) is rendered into the
-			// shadow map. This is enabled by m_shadowContributionCulling and
-			// only applied to shadow views (casterViewIndex != kInvalidIndex).
-			if (m_shadowContributionCulling && casterViewIndex != smvk::RenderViewSet::kInvalidIndex) {
-				glm::vec3 sphereCenter;
-				float sphereRadius = 0.0f;
-				smvk::MeshBoundsToWorld(
-					model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
-					sphereCenter, sphereRadius);
-				if (!smvk::RenderViewIntersectsSphere(
-					m_renderViews.Get(0), sphereCenter, sphereRadius))
-					return;
-			}
+		// Shadow contribution cull: skip casters that can never shadow the
+		// MAIN camera's view. CASCADE views test against the per-frame
+		// SUN-SWEPT shade volume (m_casterContributionView - the main view
+		// swept toward the sun): the RAW main frustum dropped casters
+		// outside the camera that still cast INTO it (an oblique sun throws
+		// off-screen geometry's shadows across the view - they popped in and
+		// out at the screen edges as the camera moved casters across the
+		// frustum boundary). SPOT views skip the contribution test entirely:
+		// the spot cone (the plane cull above) is already their exact
+		// extent, and the sun-swept volume is the wrong shape for a spot
+		// origin.
+		const bool spotCasterView = casterViewIndex != smvk::RenderViewSet::kInvalidIndex
+			&& (m_renderViews.Get(casterViewIndex).m_renderViewFlags
+				& smvk::RenderViewFlagBit_SpotShadow) != 0;
+		if (m_shadowContributionCulling
+			&& casterViewIndex != smvk::RenderViewSet::kInvalidIndex
+			&& !spotCasterView
+			&& m_casterContributionViewValid) {
+			glm::vec3 sphereCenter;
+			float sphereRadius = 0.0f;
+			smvk::MeshBoundsToWorld(
+				model, meshDesc->geometry.aabbMin, meshDesc->geometry.aabbMax,
+				sphereCenter, sphereRadius);
+			if (!smvk::RenderViewIntersectsSphere(
+				m_casterContributionView, sphereCenter, sphereRadius))
+				return;
+		}
 			IRenderer::PushConstants objectPC{};
 			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 			// Per-draw dither-on-closeup flag (padEnd_[0]; always pushed - the
@@ -8269,6 +8290,20 @@ namespace engine {
 			if (spotViewBase == smvk::RenderViewSet::kInvalidIndex)
 				spotViewBase = view;
 		}
+		// Per-frame caster contribution volume: the main view swept toward
+		// the sun (MakeCasterContributionView). Built only while the SUN
+		// cascades exist - spot views never use it (their cone planes are
+		// the exact bound; a sun-shaped sweep is wrong geometry for a spot
+		// origin, so their shadow paths pass no contribution view).
+		m_casterContributionViewValid =
+			mainRenderView != smvk::RenderViewSet::kInvalidIndex
+			&& cascadeViewBase != smvk::RenderViewSet::kInvalidIndex;
+		if (m_casterContributionViewValid) {
+			m_casterContributionView = smvk::MakeCasterContributionView(
+				m_renderViews.Get(mainRenderView),
+				glm::vec3(dirLight.direction[0], dirLight.direction[1],
+					dirLight.direction[2]));
+		}
 		m_renderViews.Upload(*m_context, fb.frameIndex);
 		const uint64_t renderViewsAddress =
 			m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
@@ -8601,33 +8636,35 @@ namespace engine {
 			// slot vector must not grow while workers hold element refs
 			// (gfx::ShadowView threading contract).
 			//
-			// Contribution view (mesh-bound fast discard in BuildShadowList):
-			// the main camera's view - a caster that cannot touch it
-			// contributes nothing to it (the indirect-path twin of the
-			// direct fallback's item-level m_shadowContributionCulling).
-			// The main view was allocated above (indices stable for the
-			// frame); RenderViewSet outlives the worker builds.
-			const smvk::RenderView* shadowContributionView = nullptr;
-			if (m_shadowContributionCulling
-				&& mainRenderView != smvk::RenderViewSet::kInvalidIndex)
-				shadowContributionView = &m_renderViews.Get(mainRenderView);
-			m_gfxRenderer.BeginShadowFrame();
-			if (cascadeViewsValid)
-				for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
-					cascadeShadowSlot[ci] = m_gfxRenderer.BeginShadowView(
-						*m_context, *m_rendergraph,
-						m_renderViews.Get(cascadeViewBase + ci),
-						smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-						CascadeTileExtent().width, CascadeTileExtent().height,
-						shadowContributionView);
-			if (spotViewsValid)
-				for (uint32_t si = 0; si < spotSlotCount; ++si)
-					spotShadowSlot[si] = m_gfxRenderer.BeginShadowView(
-						*m_context, *m_rendergraph,
-						m_renderViews.Get(spotViewBase + si),
-						smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
-						m_spotShadowResolution, m_spotShadowResolution,
-						shadowContributionView);
+		// Contribution view (mesh-bound fast discard in BuildShadowList):
+		// the main camera's view SWEPT toward the sun
+		// (m_casterContributionView - the indirect-path twin of the direct
+		// fallback's item-level m_shadowContributionCulling). The RAW main
+		// frustum dropped casters outside the camera that still cast INTO
+		// it (oblique sun - shadow pop at the screen edges); the swept
+		// volume only drops casters that cannot reach the view. SPOT views
+		// opt out below (their cone planes are exact; a sun-shaped sweep
+		// would be the wrong geometry for a spot origin).
+		const smvk::RenderView* shadowContributionView = nullptr;
+		if (m_shadowContributionCulling && m_casterContributionViewValid)
+			shadowContributionView = &m_casterContributionView;
+		m_gfxRenderer.BeginShadowFrame();
+		if (cascadeViewsValid)
+			for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci)
+				cascadeShadowSlot[ci] = m_gfxRenderer.BeginShadowView(
+					*m_context, *m_rendergraph,
+					m_renderViews.Get(cascadeViewBase + ci),
+					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
+					CascadeTileExtent().width, CascadeTileExtent().height,
+					shadowContributionView);
+		if (spotViewsValid)
+			for (uint32_t si = 0; si < spotSlotCount; ++si)
+				spotShadowSlot[si] = m_gfxRenderer.BeginShadowView(
+					*m_context, *m_rendergraph,
+					m_renderViews.Get(spotViewBase + si),
+					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
+					m_spotShadowResolution, m_spotShadowResolution,
+					nullptr /* spots: cone planes are exact, no contribution cull */);
 			// Cooperative per-view list builds: workers overlap the rest of
 			// the frame's pass recording; futures join before Execute.
 			if (!m_shadowWorkers) {

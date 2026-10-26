@@ -1904,10 +1904,21 @@ public:
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
 	// Shadow contribution culling: during shadow map rendering, cull casters
-	// that fall outside the main camera's view frustum. Only geometry that
-	// could contribute to the final image is rendered into shadow maps.
-	// This is enabled by default for shadow views only (not the main view).
+	// that can never shadow the MAIN camera's view. CASCADE views test
+	// against m_casterContributionView - the main frustum swept toward the
+	// sun (MakeCasterContributionView): the RAW frustum dropped casters
+	// outside the camera that still cast INTO it (oblique sun - shadow pop
+	// at the screen edges while moving the camera). SPOT views skip the
+	// test entirely: the spot cone (their own view planes) is the exact
+	// bound, and a sun-shaped sweep is the wrong geometry for a spot origin.
 	bool m_shadowContributionCulling = true;
+	// Per-frame caster contribution volume (built where the frame's views
+	// are allocated, from mainRenderView + the sun's direction; see
+	// MakeCasterContributionView). Consumed by BOTH caster paths: the
+	// direct item-level cull (RecordShadowCastersDirect) and the indirect
+	// mesh-bound discard (gfx::BeginShadowView's contributionView).
+	smvk::RenderView m_casterContributionView{};
+	bool m_casterContributionViewValid = false;
 	// LiSPSM (Light Space Perspective Shadow Maps) for spotlights: warp the
 	// spot projection to match the camera's perspective frustum, maximizing
 	// texel density in camera/view space. When enabled, the spot projection is

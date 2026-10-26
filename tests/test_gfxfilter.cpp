@@ -2429,6 +2429,81 @@ void TestShadowMeshGate() {
 		"gfx.shadow-gate.scaled-bound-conservative");
 }
 
+// ---------------------------------------------------------------------------
+// Caster contribution volume (MakeCasterContributionView): the main view
+// swept toward the sun. A straight-down sun opens the TOP plane (a roof
+// above the camera must stay - its shadow falls into the view) while the
+// bottom and sides keep culling. An oblique sun opens the sunward SIDE
+// plane too (off-screen casters up-sun throw shadows across the view -
+// the shadow-pop-at-screen-edges case the raw frustum caused). This is
+// the plane source the shadow paths pass as CullShadowMeshBound's
+// contributionView.
+// ---------------------------------------------------------------------------
+
+void TestCasterContributionView() {
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	// Main camera at the origin looking -Z, fov 90 (half-width == depth),
+	// reversed-Z infinite far (the engine's main-view projection).
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const glm::mat4 view =
+		glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	const smvk::RenderView& mainView = views.Get(rv);
+	// Straight-down sun (lightDir points from the sun INTO the scene).
+	const smvk::RenderView swept =
+		smvk::MakeCasterContributionView(mainView, glm::vec3(0.0f, -1.0f, 0.0f));
+
+	// Caster ABOVE the frustum top, on-axis ahead: the raw view drops it
+	// (outside the top plane); the swept view keeps it - a roof over the
+	// camera casts straight down INTO the view.
+	const glm::vec3 roofAbove(0.0f, 50.0f, -5.0f);
+	Check(!smvk::RenderViewIntersectsSphere(mainView, roofAbove, 1.0f),
+		"gfx.contribution.raw-drops-above-top");
+	Check(smvk::RenderViewIntersectsSphere(swept, roofAbove, 1.0f),
+		"gfx.contribution.swept-keeps-above-top");
+
+	// Caster BELOW the frustum bottom: both drop it (down-sun - its shadow
+	// travels away from the view; the bottom plane survives the sweep).
+	const glm::vec3 below(0.0f, -50.0f, -5.0f);
+	Check(!smvk::RenderViewIntersectsSphere(mainView, below, 1.0f),
+		"gfx.contribution.raw-drops-below-bottom");
+	Check(!smvk::RenderViewIntersectsSphere(swept, below, 1.0f),
+		"gfx.contribution.swept-drops-below-bottom");
+
+	// Far off-axis sideways: the swept view still drops it (the side
+	// planes survive a straight-down sweep - a sideways caster's shadow
+	// cannot reach the view).
+	const glm::vec3 sideways(40.0f, 0.0f, -5.0f);
+	Check(!smvk::RenderViewIntersectsSphere(swept, sideways, 1.0f),
+		"gfx.contribution.swept-drops-sideways");
+
+	// Oblique sun (lightDir = normalize(-0.7, -1, 0): the sun sits up at
+	// +x): the sweep opens the RIGHT + TOP planes. An off-screen-RIGHT,
+	// high caster is up-sun - the raw view drops it, the swept view keeps
+	// it (its shadow crosses the view: the screen-edge pop case). The
+	// down-sun LEFT side keeps culling under the same sun.
+	const glm::vec3 obliqueSun = glm::normalize(glm::vec3(-0.7f, -1.0f, 0.0f));
+	const smvk::RenderView sweptOblique =
+		smvk::MakeCasterContributionView(mainView, obliqueSun);
+	const glm::vec3 upSunRight(40.0f, 20.0f, -5.0f);
+	Check(!smvk::RenderViewIntersectsSphere(mainView, upSunRight, 1.0f),
+		"gfx.contribution.raw-drops-up-sun-right");
+	Check(smvk::RenderViewIntersectsSphere(sweptOblique, upSunRight, 1.0f),
+		"gfx.contribution.oblique-swept-keeps-up-sun-right");
+	const glm::vec3 downSunLeft(-40.0f, -20.0f, -5.0f);
+	Check(!smvk::RenderViewIntersectsSphere(sweptOblique, downSunLeft, 1.0f),
+		"gfx.contribution.oblique-swept-drops-down-sun-left");
+
+	// Degenerate light direction: the swept view keeps the raw planes
+	// (never worse than the raw frustum).
+	const smvk::RenderView sweptDegenerate =
+		smvk::MakeCasterContributionView(mainView, glm::vec3(0.0f));
+	Check(!smvk::RenderViewIntersectsSphere(sweptDegenerate, roofAbove, 1.0f),
+		"gfx.contribution.degenerate-keeps-raw-planes");
+}
+
 } // namespace
 
 int main() {
@@ -2454,6 +2529,7 @@ int main() {
 	TestJitterCullStability();
 	TestGpuCandidateBuild();
 	TestShadowMeshGate();
+	TestCasterContributionView();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

@@ -1708,10 +1708,11 @@ bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
 	const float worldRadius = meshBound.w * MaxBasisScale(model);
 	if (!RenderViewIntersectsSphere(shadowView, worldCenter, worldRadius))
 		return true; // fully outside the shadow view's frustum
-	// Contribution: a caster that cannot touch the main camera's view
-	// (guard-dilated planes, the same conservatism the direct fallback
-	// path's item-level test uses) contributes nothing to it — drop the
-	// whole draw. Null view = contribution culling off.
+	// Contribution: a caster that cannot touch the main camera's SHADE
+	// volume (the caller passes the main view swept toward the sun - see
+	// MakeCasterContributionView; spot callers pass null, their cone planes
+	// are exact) contributes nothing to it — drop the whole draw. Null
+	// view = contribution culling off.
 	if (contributionView
 		&& !RenderViewIntersectsSphere(*contributionView, worldCenter, worldRadius))
 		return true;

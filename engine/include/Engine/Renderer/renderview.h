@@ -140,6 +140,53 @@ inline bool RenderViewIntersectsSphere(
 }
 
 // ---------------------------------------------------------------------------
+// Shadow-caster contribution volume (directional lights)
+// ---------------------------------------------------------------------------
+
+// The SHADE volume of a view for a directional light: the view's frustum
+// swept along -lightDir (toward the sun, where the casters live). A caster
+// anywhere in this volume can shadow SOMETHING inside the original frustum;
+// a caster outside it cannot (for this light direction).
+//
+// Plane math: sweeping a convex body A along a ray s keeps half-space
+// H(n, w) valid iff dot(n, s) >= 0 (swept points only drift deeper into
+// it); planes with dot(n, s) < 0 are EXITED by the sweep and stop
+// constraining the volume. With s = -lightDir that drops exactly the
+// SUNWARD-FACING planes: the volume opens toward the sun while the
+// down-sun sides stay bounded (a straight-down sun opens the top plane -
+// a roof above the camera must stay - and keeps the bottom).
+//
+// Why this exists: testing casters against the RAW main frustum (the old
+// contribution cull) dropped every caster outside the camera that still
+// cast INTO it - an oblique sun throws off-screen geometry's shadows
+// across the view, and those shadows popped in/out at the screen edges as
+// the camera moved casters across the frustum boundary. This swept volume
+// is the conservative replacement: it only drops casters that cannot
+// reach the view at all.
+//
+// Dropped planes are ZEROED instead of removed so the result stays a
+// RenderView and RenderViewIntersectsSphere works unmodified: a zeroed
+// plane (normal 0, w 0) never culls (dot(0, c) + 0 = 0 >= -radius). The
+// matrices are copied from the source view but never read - only the
+// planes matter. A degenerate lightDir keeps the raw planes (never worse
+// than the raw frustum).
+inline RenderView MakeCasterContributionView(
+	const RenderView& mainView,
+	const glm::vec3& lightDir)
+{
+	RenderView out = mainView;
+	if (glm::length(lightDir) < 1e-4f)
+		return out;
+	const glm::vec3 d = glm::normalize(lightDir);
+	for (uint32_t i = 0; i < 6; ++i) {
+		const glm::vec3 n(out.m_viewPlanes[i]);
+		if (glm::dot(n, d) > 0.0f)
+			out.m_viewPlanes[i] = glm::vec4(0.0f);
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame allocator + GPU upload
 // ---------------------------------------------------------------------------
 

@@ -1118,8 +1118,9 @@ inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debu
 // true = discard the whole draw before the per-cluster meshlet loop.
 //   1. the mesh union bound misses the SHADOW view's frustum, or
 //   2. contributionView set + the bound misses it (a caster outside the
-//      main camera's frustum cannot contribute to it — the indirect-path
-//      twin of the direct fallback's item-level contribution cull).
+//      caller's contribution volume - the main view swept toward the sun,
+//      see MakeCasterContributionView - cannot shadow it; the indirect-
+//      path twin of the direct fallback's item-level contribution cull).
 bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
 	const RenderView& shadowView, const RenderView* contributionView);
 
@@ -1342,8 +1343,10 @@ void AddSeedConsumeHints(RenderPass& pass,
 // created lazily by BeginShadowView on first claim of each slot).
 void BeginShadowFrame(State& s);
 // Claims the next shadow slot bound to an allocated RenderView (frustum
-// planes). contributionView: the main camera's view for the mesh-bound
-// contribution fast discard (null = no contribution culling). Main
+// planes). contributionView: the caster contribution volume for the
+// mesh-bound fast discard — for cascade views the main view swept toward
+// the sun (MakeCasterContributionView), null for spot views (their cone
+// planes are exact; null = no contribution culling). Main
 // thread only: the slot vector grows here, so claim every view of the
 // frame before dispatching BuildShadowList tasks. Returns the slot,
 // UINT32_MAX on failure.
