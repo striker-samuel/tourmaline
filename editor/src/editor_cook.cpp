@@ -176,15 +176,26 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	cook.outPak = m_cook.outPak;
 	// FULL GI bake FROM 0 rides the cook (the pak carries its own GI):
 	// GiBaker first — the world-field octree (ExportCfg().giWorld) + the
-	// tour's authored convex volumes, fresh, nothing reused — then
-	// PakCooker discovers the fresh bake files, EMBEDS them into the pak
-	// and registers the guid bindings. The completion handler records
-	// the bake assets + the tour's bake references (see
-	// RecordBakeAssetsFromCook). This is minutes-long on real scenes
+	// tour's authored convex volumes, fresh, nothing reused — writing
+	// RANDOM-MINTED artifacts (a fresh guid per bake; the binding record
+	// IS the identity, no stem-keyed file name anywhere) and STAMPING
+	// the tour's giAsset records (the hard identification; the
+	// in-process run stamps the snapshot below — the job reads them back
+	// into the editor's live-doc mirror, RecordBakeAssetsFromCook, and
+	// the stamp itself deletes the superseded old artifacts BY RECORD).
+	// Stage 2 (PakCooker, same snapshot) embeds EXACTLY the bound files
+	// + binds them into the pak. This is minutes-long on real scenes
 	// (the world field) — the on-demand Bake GI remains the quick path.
+	const bool wantWorld = ExportCfg().giWorld;
+	const std::string worldMintVfs = wantWorld
+		? "gi/" + smvk::tour::GenerateUuid() + ".sggi"
+		: std::string();
+	const std::string worldMintHost = worldMintVfs.empty()
+		? std::string()
+		: (std::filesystem::path(contentDir) / worldMintVfs)
+			.generic_string();
 	const std::string pakStem =
 		std::filesystem::path(cook.outPak).stem().string();
-	const bool wantWorld = ExportCfg().giWorld;
 	m_cookRunning = true;
 	// A new cook clears the last result line (the panel shows it until
 	// then) and the face strip (captures refill it as they land).
@@ -232,9 +243,9 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// result slot with the completion callback that runs ON MAIN via
 	// m_fibers.Pump() (the old future.wait_for branch in
 	// PollCookProcess, which now only drains the feed).
-	auto result = std::make_shared<CookResult>();
-	m_fibers.Post(quickBakes ? "update-bakes" : "cook",
-		[cook, feed, registryDir, pakStem, wantWorld, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
+ 	auto result = std::make_shared<CookResult>();
+ 	m_fibers.Post(quickBakes ? "update-bakes" : "cook",
+ 		[cook, feed, registryDir, pakStem, wantWorld, worldMintHost, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
 			CookResult r{};
 			// Live feed: each tool line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -253,16 +264,19 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
  						feed->errLines.erase(feed->errLines.begin());
  				}
  			};
-		// ---- stage 1: the scene's GI bake re-run IN PLACE (GiBaker —
-		// the world field when requested + the tour's authored convex
-		// volumes; the definition tour is the only input, nothing
-		// reused; the STABLE stem paths overwrite, and the completion
-		// handler deletes the superseded old bake when the stem
-		// changed). The fresh bake files land under <contentDir>/gi/
-		// exactly where stage 2 (PakCooker) discovers + embeds them
-		// into the pak. A failed GI bake FAILS the cook (the pak would
-		// silently miss its GI otherwise — the exact bug this flow
-		// exists to prevent). SKIPPED for cubemap-only refreshes.
+		// ---- stage 1: the scene's GI bake (GiBaker — the world field
+		// when requested + the tour's authored convex volumes; the
+		// definition tour is the only input, nothing reused). Every
+		// artifact lands at a RANDOM-MINTED path (the editor mints the
+		// world path here; GiBaker mints each cvol) and the bake STAMPS
+		// the tour's giAsset records — the snapshot file carries them;
+		// the job reads them back below so the live doc's mirror
+		// follows, and the stamp's supersede list retires the replaced
+		// old artifacts BY RECORD (exact; random names can never
+		// collide, so a failed bake only ever leaves an unbound orphan
+		// — removed below). A failed GI bake FAILS the cook (the pak
+		// would silently miss its GI otherwise — the exact bug this
+		// flow exists to prevent). SKIPPED for cubemap-only refreshes.
 		// Runs IN-PROCESS (GiBakerLib): the CLI stays a thin user
 		// interface over the same Run. Baker lines stream through the
 		// tool line sink into this feed (same lines the pipe carried).
@@ -270,7 +284,6 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		{
 			gibaker::Args gargs;
 			gargs.contentDir = contentDir;
-			gargs.scene = pakStem;
 			gargs.tour = tempTourPath;
 			// Probe budget: the lib default is the console-class cap
 			// (262144, bake.h) and every real-scene bake silently hit it
@@ -278,24 +291,24 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			// mid-scene; invisible until probeBudgetHits got loud). The
 			// authoring tool wants converged coverage: 1M probes.
 			gargs.maxProbes = 1u << 20;
-			std::string cookFinal, cookTemp;
-			if (wantWorld) {
-				cookFinal = (std::filesystem::path(contentDir) / "gi" /
-					(pakStem + ".sggi")).generic_string();
-				cookTemp = cookFinal + ".tmp";
-				gargs.out = cookTemp;
-			}
-			// Temp-file bake (same as BakeGI): publish atomically so
-			// a failed baker never corrupts the live world field.
+			if (wantWorld)
+				gargs.out = worldMintHost;
 			push("cook-gi: GiBaker (in-process)"
-				" --scene " + pakStem
-				+ (wantWorld ? " --out <tmp>" : ""));
+				+ std::string(wantWorld ? " --out <minted>" : ""));
 			tool::SetLineSink([&push](const std::string& line, bool err) {
 				push(line, err);
 			});
 			const int grc = gibaker::Run(gargs);
 			tool::SetLineSink(nullptr);
 			if (grc != 0) {
+				// Remove the minted orphan: the random name was never
+				// bound (no stamp on failure — the live records stand,
+				// the OLD artifacts are the last good bake), so the
+				// half-written file is unbound litter.
+				if (!worldMintHost.empty()) {
+					std::error_code ec;
+					std::filesystem::remove(worldMintHost, ec);
+				}
 				r.ok = false;
 				r.log = "cook-gi: GiBaker exit=" + std::to_string(grc)
 					+ " — pak cook SKIPPED (the GI bake failed; "
@@ -311,21 +324,27 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				*result = r;
 				return;
 			}
-			push("cook-gi: GiBaker exit=0 (fresh loose GI bakes "
+			push("cook-gi: GiBaker exit=0 (fresh minted GI artifacts "
 				"under " + contentDir + "/gi/)");
-			if (wantWorld && !cookTemp.empty()) {
-				std::error_code rec;
-				std::filesystem::rename(cookTemp, cookFinal, rec);
-			if (rec) {
-				r.ok = false;
-				r.log = "cook-gi: temp publish failed ("
-					+ rec.message() + ") — pak cook SKIPPED\n";
-				std::error_code ec;
-				std::filesystem::remove(tempTourPath, ec);
-				*result = r; // record-then-return (see the note above)
-				return;
-			}
-				push("cook-gi: published '" + cookFinal + "'");
+			// The stamped records ride the result: the bake wrote the
+			// giAsset bindings into the SNAPSHOT tour (its stampTour —
+			// GiBakerLib, supersede-deletion included), so read them
+			// back instead of re-deriving (the bake owner is the one
+			// authority on the records; the completion folds them into
+			// the live-doc mirror).
+			{
+				smvk::tour::Doc stamped;
+				std::string lerr;
+				std::vector<std::string> lwarn;
+				if (smvk::tour::LoadTour(tempTourPath, stamped, lerr,
+						&lwarn)) {
+					r.giAssets = std::move(stamped.giAssets);
+				}
+				else {
+					push("cook-gi: snapshot record read failed ("
+						+ lerr + ") — the live doc keeps its records",
+						true);
+				}
 			}
 		} // stage 1 skipped for cubemap-only refreshes
 		// Breadcrumb: the job is between stage 1 and the Cook stage
@@ -466,6 +485,16 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		TaskWindowFinish(r.ok, r.ok ? "Cook finished OK."
 			: "Cook FAILED (" + failSummary + ")");
 			if (r.ok) {
+				// The bake's giAsset records into the LIVE-doc mirror
+				// (the session state SaveTourTo writes; the bake owner
+				// stamped the snapshot — the job read them back). The
+				// editor never derives records itself.
+				if (!r.giAssets.empty()) {
+					m_giAssets = std::move(r.giAssets);
+					Log("Cook: tour giAsset bindings updated ("
+						+ std::to_string(m_giAssets.size())
+						+ " record(s)) — saved with the scene");
+				}
 				RecordBakeAssetsFromCook(); // bake assets + the tour's bake refs
 			}
 			// The cook is the PRODUCT step (a pak for the game/App — Run in
@@ -576,13 +605,22 @@ void EditorApp::BakeGI() {
 	std::string tempTourPath, defHash;
 	if (!SnapshotTourForProcess("BakeGI", tempTourPath, defHash))
 		return;
-	const std::string pakStem =
-		std::filesystem::path(m_cook.outPak).stem().string();
-	// contentRoot = the "content/" dir itself (bake files land in gi/
-	// next to the pak — exactly what the loaders check).
+	// The bake artifacts: RANDOM-MINTED paths (the editor mints the
+	// world field here; GiBaker mints each cvol). The binding record IS
+	// the identity — no stem-keyed file name anywhere; the stamp
+	// carries the minted paths + retires the superseded old artifacts
+	// BY RECORD. contentRoot = the "content/" dir itself (bake files
+	// land in gi/ next to the pak — exactly what the loaders check).
 	const std::string contentRoot = std::filesystem::absolute(
 		std::filesystem::path(m_cook.outPak).parent_path() / "..")
 		.lexically_normal().string();
+	const std::string worldMintVfs = wantWorld
+		? "gi/" + smvk::tour::GenerateUuid() + ".sggi"
+		: std::string();
+	const std::string worldMintHost = worldMintVfs.empty()
+		? std::string()
+		: (std::filesystem::path(contentRoot) / worldMintVfs)
+			.generic_string();
 	m_giBakePendingHash = defHash; // adopted as m_giBakedHash on success
 	m_bakeRunning = true;
 	// Blocking progress surface (modal task window).
@@ -594,16 +632,16 @@ void EditorApp::BakeGI() {
 		+ std::string(wantWorld ? "world field" : "")
 		+ std::string((wantWorld && wantCvols) ? " + " : "")
 		+ std::string(wantCvols ? "convex volumes" : "") + ") -> "
-		+ contentRoot + "/gi/" + pakStem + ".*");
+		+ contentRoot + "/gi/ (minted random artifacts)");
  	auto feed = std::make_shared<CookFeed>();
  	m_bakeFeed = feed;
 	// Fibers job (the editor's single off-main-thread lane): the old
 	// std::async worker verbatim, sharing a result slot with the
-	// completion callback that runs ON MAIN via m_fibers.Pump() (the
-	// old future.wait_for branch in PollBakeProcess).
+	// completion callback that runs ON MAIN via m_fibers.Pump() (the old
+	// future.wait_for branch in PollBakeProcess).
 	auto result = std::make_shared<CookResult>();
 	m_fibers.Post("bake-gi",
-		[pakStem, contentRoot, wantWorld, feed, tempTourPath = std::move(tempTourPath), result]() {
+		[contentRoot, wantWorld, worldMintHost, feed, tempTourPath = std::move(tempTourPath), result]() {
 			CookResult r{};
 			auto push = [feed](const std::string& line, bool err = false) {
 				std::lock_guard<std::mutex> lk(feed->mutex);
@@ -618,33 +656,51 @@ void EditorApp::BakeGI() {
 			// user interface over the same Run. Baker lines stream
 			// through the tool line sink into this feed (err lines also
 			// land in the bounded errLines tail for the failure report).
-			gibaker::Args gargs;
-			gargs.contentDir = contentRoot;
-			gargs.scene = pakStem;
-			gargs.tour = tempTourPath;
-			// Probe budget: 1M (see the cook stage-1 fill — the
-			// console-class default starves real scenes).
-			gargs.maxProbes = 1u << 20;
-			// Temp-file bake: GiBaker writes gi/<stem>.sggi.tmp, the
-			// worker atomically renames to gi/<stem>.sggi on success —
-			// a failed bake never leaves a half-written world field.
-			std::string bakeFinal, bakeTemp;
-			if (wantWorld) {
-				bakeFinal = (std::filesystem::path(contentRoot) / "gi" /
-					(pakStem + ".sggi")).generic_string();
-				bakeTemp = bakeFinal + ".tmp";
-				gargs.out = bakeTemp;
-			}
-			push("bake-gi: GiBaker (in-process)"
-				" --scene " + pakStem
-				+ (wantWorld ? " --out <tmp>" : ""));
+		gibaker::Args gargs;
+		gargs.contentDir = contentRoot;
+		gargs.tour = tempTourPath;
+		// Probe budget: 1M (see the cook stage-1 fill — the
+		// console-class default starves real scenes).
+		gargs.maxProbes = 1u << 20;
+		// The world field bakes to the editor-MINTED random path: the
+		// name is fresh per bake (a failed bake only ever leaves an
+		// unbound orphan — removed below — the live binding still
+		// names the last good artifact; atomic-by-construction, no
+		// tmp/rename dance needed).
+		if (wantWorld)
+			gargs.out = worldMintHost;
+		push("bake-gi: GiBaker (in-process)"
+			+ std::string(wantWorld ? " --out <minted>" : ""));
 			tool::SetLineSink([&push](const std::string& line, bool err) {
 				push(line, err);
 			});
-			const int grc = gibaker::Run(gargs);
-			tool::SetLineSink(nullptr);
-			// Temp tour snapshot cleanup (was deleted by the spawn
-			// path's early returns; single exit now).
+		const int grc = gibaker::Run(gargs);
+		tool::SetLineSink(nullptr);
+		if (grc != 0 && !worldMintHost.empty()) {
+			// Remove the minted orphan (never bound — no stamp ran).
+			std::error_code ec;
+			std::filesystem::remove(worldMintHost, ec);
+		}
+		// The stamped records ride the result BEFORE the snapshot dies:
+		// the bake wrote the giAsset bindings into the temp tour (its
+		// stampTour, supersede-deletion included), so read them back
+		// (the bake owner is the one authority; the completion folds
+		// them into the live-doc mirror only when the bake succeeded).
+		if (grc == 0) {
+			smvk::tour::Doc stamped;
+			std::string lerr;
+			std::vector<std::string> lwarn;
+			if (smvk::tour::LoadTour(tempTourPath, stamped, lerr,
+					&lwarn)) {
+				r.giAssets = std::move(stamped.giAssets);
+			}
+			else {
+				push("bake-gi: snapshot record read failed ("
+					+ lerr + ") — the live doc keeps its records", true);
+			}
+		}
+		// Temp tour snapshot cleanup (was deleted by the spawn
+		// path's early returns; single exit now).
 			{
 				std::error_code ec;
 				std::filesystem::remove(tempTourPath, ec);
@@ -655,19 +711,6 @@ void EditorApp::BakeGI() {
 				r.log += "bake-gi: GI bake FAILED (previous bake "
 					"files, if any, are untouched; unbaked scenes render "
 					"sky IBL)\n";
-			else if (wantWorld && !bakeTemp.empty()) {
-				// Atomic publish of the temp bake output.
-				std::error_code rec;
-				std::filesystem::rename(bakeTemp, bakeFinal, rec);
-				if (rec) {
-					r.ok = false;
-					r.log += "bake-gi: temp publish failed (" + rec.message()
-						+ ") — bake discarded\n";
-				}
-				else {
-					push("bake-gi: published '" + bakeFinal + "'");
-				}
-			}
 			std::error_code ec;
 			std::filesystem::remove(tempTourPath, ec);
 			*result = r;
@@ -708,10 +751,18 @@ void EditorApp::BakeGI() {
 					TaskWindowPush(line);
 				}
 			}
-			if (r.ok) {
-				// The bake files now match the baked definition: record it so a
-				// later cook can warn when they go stale.
-				m_giBakedHash = m_giBakePendingHash;
+		if (r.ok) {
+			// The bake's giAsset records into the LIVE-doc mirror (the
+			// bake owner stamped the snapshot; the job read them back).
+			if (!r.giAssets.empty()) {
+				m_giAssets = std::move(r.giAssets);
+				Log("Bake GI: tour giAsset bindings updated ("
+					+ std::to_string(m_giAssets.size())
+					+ " record(s)) — saved with the scene");
+			}
+			// The bake files now match the baked definition: record it so a
+			// later cook can warn when they go stale.
+			m_giBakedHash = m_giBakePendingHash;
 				Log("Bake GI finished OK — bake files at their stable "
 				"paths.");
 				TaskWindowFinish(true, "Bake GI finished OK.");

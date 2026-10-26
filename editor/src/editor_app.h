@@ -1622,6 +1622,14 @@ private:
 	// and light cookies resolve like the authoring session. Reset with
 	// the session.
 	std::vector<smvk::tour::TextureAssetCmd> m_textureAssets;
+	// GI-asset bindings (the session mirror, see smvk::tour::GiAssetCmd):
+	// the scene's HARD baked-GI identification — the world field + one
+	// record per authored convex volume. Loaded from the tour on replay
+	// (ReplayTourDoc), written on save (SaveTourTo), UPDATED by the bake
+	// flows (the cook / Bake GI read the records the bake owner stamped
+	// into the snapshot tour back into this mirror — the editor never
+	// derives records itself). Reset with the session.
+	std::vector<smvk::tour::GiAssetCmd> m_giAssets;
 	// AddSceneReference: the References PANEL path takes .tour SCENES
 	// only (references are scene documents — content enters scenes as
 	// ASSETS). allowGeometryAsset = the viewport DROP path (dragging a
@@ -2228,10 +2236,17 @@ private:
 		// zero/invalid voxels (solid interiors, no capture support) are
 		// the coverage answer the mode exists to show. sampleState is
 		// z-major over ceil(dims/step) samples; 1 = any nonzero lobe.
+		// sampleLum carries the per-sample SG value (the sum of the 9
+		// lobe luminances — the same scalar the [CV] coeffs readout
+		// uses) so the octahedra markers can be colored BY the baked
+		// radiance: leaks read as bright octahedra through walls at a
+		// glance. sampleLumMax normalizes the ramp.
 		uint32_t sampleStep[3] = { 1, 1, 1 };
 		uint32_t sampleCount[3] = { 0, 0, 0 };
 		float probeSpacing = 0.5f; // vol.spacing (sample pos = gridMin + i*step*spacing)
 		std::vector<uint8_t> sampleState;
+		std::vector<float> sampleLum;
+		float sampleLumMax = 1e-6f;
 		uint64_t voxTotal = 0;    // full-volume voxel count
 		uint64_t voxNonzero = 0;  // voxels carrying any nonzero lobe
 	};
@@ -2563,7 +2578,16 @@ private:
 	std::vector<std::string> m_consoleLines;
 	bool m_cookRunning = false;
 	bool m_bakeRunning = false; // on-demand GiBaker worker (see above)
-	struct CookResult { bool ok = false; std::string log; };
+	// Cook/bake job result: the stage-exit tail (self-describing
+	// failures) + the tour's fresh giAsset records (stage 1's bake
+	// stamped them into the SNAPSHOT tour; the job reads them back so
+	// the live-doc mirror follows without re-deriving — the bake owner
+	// is the one source of the records).
+	struct CookResult {
+		bool ok = false;
+		std::string log;
+		std::vector<smvk::tour::GiAssetCmd> giAssets;
+	};
 	// EDITOR-ONLY job backend (see editor_fibers.h; the class keeps its
 	// historical FiberBackend name): the single lane for all off-main-
 	// thread sync work (the cook/bake workers below; started in

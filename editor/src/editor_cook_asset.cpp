@@ -267,21 +267,20 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	const std::string contentRoot = fs::absolute(
 		fs::path(m_cook.outPak).parent_path() / "..")
 		.lexically_normal().generic_string();
-	// The cook bakes under the OUT-PAK stem (CookToPak's pakStem —
-	// GiBaker --scene, the bake-file stems: gi/<stem>.sggi,
-	// <stem>_<name>.cvol). The result paths must key on it too, NOT
-	// the scene stem: with a differently-named out pak the
-	// scene-keyed lookup recorded the WRONG bake (a fresh GiCook mint
-	// every recook pointing at the stale gi/Sponza.sggi while the
-	// fresh bake was gi/sponza_1.sggi — never an overwrite).
-	const std::string bakeStem =
-		fs::path(m_cook.outPak).stem().generic_string();
-	// World-field result of this cook: the STABLE path
-	// gi/<bakeStem>.sggi ("" = giWorld off / not baked).
-	const std::string sggiVfs = "gi/" + bakeStem + ".sggi";
-	const std::filesystem::path sggiHost =
-		fs::path(contentRoot) / sggiVfs;
-	const bool hasSggi = fs::is_regular_file(sggiHost, ec);
+	// The bake artifacts carry RANDOM minted names — the tour's giAsset
+	// records (the live-doc mirror, updated from the bake's stamp by the
+	// completion handler BEFORE this runs) are the ONLY identity. The
+	// registry's blob pointers read straight off them; the superseded
+	// old artifacts were already deleted BY RECORD (the bake owner's
+	// stamp did it — nothing left to derive here, no stems anywhere).
+	const std::string worldBlob = [&] {
+		for (const smvk::tour::GiAssetCmd& ga : m_giAssets)
+			if (ga.kind == smvk::tour::GiAssetCmd::Kind::World)
+				return ga.source;
+		return std::string();
+	}();
+	const bool hasSggi = !worldBlob.empty()
+		&& fs::is_regular_file(fs::path(contentRoot) / worldBlob, ec);
 
 	// ---- GiCook manifest: this scene's asset, else a fresh mint ----
 	smvk::cook::GiCookAsset a{};
@@ -346,21 +345,17 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// Settings + result snapshot (the blob pointer only when this cook
 	// baked a world field — cvol-only cooks keep a previous result
 	// alive if one exists; the hash covers whatever is stored). The
-	// result rides the STABLE path (blobGuid now carries the bake stem
-	// — the "has a result" identity inside gi/ — not a minted guid).
+	// result pointer = the tour's world giAsset record (the RANDOM
+	// minted artifact path; blobGuid mirrors the record's artifact
+	// guid, empty = path-only bind). NO supersede deletion here — the
+	// bake owner's stamp already retired the replaced artifacts BY
+	// RECORD (exact set-difference; nothing to re-derive).
 	a.scene = scene;
 	a.cvol = ExportCfg().giCvol;
 	a.world = ExportCfg().giWorld;
-	// The SUPERSEDED result identity (a different bake stem — the out
-	// pak was renamed): captured before the overwrite below; its files
-	// die with this update (nothing references the old stem after the
-	// tour's bake guid reference swaps to the new one).
-	const std::string oldStem =
-		(!fresh && hasSggi && !a.blobGuid.empty() && a.blobGuid != bakeStem)
-			? a.blobGuid : std::string();
 	if (hasSggi) {
-		a.blobGuid = bakeStem;
-		a.blobPath = sggiVfs;
+		a.blobGuid.clear(); // path-only bind (the artifact guid)
+		a.blobPath = worldBlob;
 	}
 	a.bakedHash = smvk::cook::GiCookSettingsHash(a);
 	{
@@ -370,50 +365,6 @@ void EditorApp::RecordBakeAssetsFromCook() {
 				+ werr);
 			return;
 		}
-	}
-	// Delete the old bake: update-and-overwrite means the superseded
-	// stem's files go away with the reference swap — leaving them
-	// would orphan them in gi/ and stale rows in the asset collections.
-	if (!oldStem.empty()) {
-		// The superseded bake's footprint: its own named files
-		// (gi/<oldStem>.sggi/.cvmanifest/.regmanifest) plus every
-		// .cvol its manifest lists. NO blind stem-prefix sweep —
-		// "<oldStem>_<anything>" also matches SIBLING pak stems
-		// ("Sponza_" hits "Sponza_minimal_*"); the manifest rows are
-		// the exact list.
-		int deleted = 0;
-		const fs::path giDir = fs::path(contentRoot) / "gi";
-		std::error_code lec;
-		std::vector<fs::path> doomed;
-		const auto pushIfFile = [&](const fs::path& p) {
-			if (fs::is_regular_file(p, lec))
-				doomed.push_back(p);
-		};
-		pushIfFile(giDir / (oldStem + ".sggi"));
-		pushIfFile(giDir / (oldStem + ".cvmanifest"));
-		pushIfFile(giDir / (oldStem + ".regmanifest"));
-		{
-			std::ifstream in(giDir / (oldStem + ".cvmanifest"));
-			std::string line;
-			while (std::getline(in, line)) {
-				const std::string row =
-					smvk::bake::SplitManifestRow(line);
-				if (row.empty())
-					continue;
-				const fs::path rel(row);
-				// Manifest rows are content-relative VFS paths;
-				// absolute host rows pass through.
-				pushIfFile(rel.is_absolute() ? rel
-					: fs::path(contentRoot) / rel);
-			}
-		}
-		for (const fs::path& p : doomed)
-			if (fs::remove(p, lec))
-				++deleted;
-		if (deleted > 0)
-			Log("cook assets: deleted the superseded bake '" + oldStem
-				+ "' (" + std::to_string(deleted) + " file(s) under "
-				+ giDir.generic_string() + ")");
 	}
 	// Identity + assetdb: the .meta carries the manifest's guid so
 	// AdoptProjectAsset keeps it stable across rebakes (fresh mints
@@ -532,8 +483,11 @@ void EditorApp::RecordBakeAssetsFromCook() {
 			cv.scene = scene;
 			cv.node = node;
 			cv.priority = def.priority;
-			cv.blobGuid = cv.guid;
-			cv.blobPath = std::string("gi/") + stem + ".cvol";
+			// The bake pointer = the LIVE binding (the scene's
+			// authoritative giAsset record — the same path the pak
+			// binds + the preview reads; empty = never baked).
+			cv.blobGuid = def.bakeGuid;
+			cv.blobPath = def.bakeSource;
 			cv.bakedHash = smvk::cook::GicvolumeSettingsHash(cv);
 			std::string werr;
 			if (smvk::cook::SaveGicvolumeAsset(cvPath.generic_string(),

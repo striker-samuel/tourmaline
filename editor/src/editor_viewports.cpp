@@ -618,13 +618,26 @@ void EditorApp::DrawCvolPreviewOverlay() {
 					cv.name.c_str(), cv.priority);
 				dl->AddText(ImVec2(c.x + 4.0f, c.y - 8.0f), wire, label);
 			}
-			// Probe mode: the dense bake-lattice sample — green dots
-			// carry radiance, red are zero/invalid voxels (solid
-			// interiors / no capture support). Strided to stay
-			// ImGui-cheap; the counts ride a per-volume caption.
+			// Probe mode: the dense bake-lattice sample as SMALL
+			// OCTAHEDRA colored by the SG value (the probe's baked
+			// radiance — Σ of the 9 lobe luminances, the same scalar
+			// the [CV] coeffs readout prints). Zero/invalid probes go
+			// dark red (the coverage answer); bright octahedra in
+			// solid regions = visibility leaks (the Laplacian/dilation
+			// pulling bright across walls — the thing this mode exists
+			// to inspect at a glance). Strided to stay ImGui-cheap;
+			// the counts ride a per-volume caption.
 			if (m_cvolPreviewMode == 3 && !cv.sampleState.empty()) {
-				constexpr ImU32 kBaked = IM_COL32(70, 230, 90, 215);
-				constexpr ImU32 kZero = IM_COL32(255, 80, 80, 170);
+				auto lumRamp = [](float t) {
+					// t in [0,1] -> dark red -> orange -> yellow ->
+					// white (a heat ramp; t=0 zero radiance).
+					const int r = 90 + int(165 * t);
+					const int g = int(230 * t * t);
+					const int b = int(255 * t * t * t);
+					return IM_COL32(std::min(r, 255),
+						std::min(g, 255), std::min(b, 255), 230);
+				};
+				const float invMax = 1.0f / cv.sampleLumMax;
 				const glm::vec3 st(float(cv.sampleStep[0]),
 					float(cv.sampleStep[1]), float(cv.sampleStep[2]));
 				size_t si = 0;
@@ -638,13 +651,18 @@ void EditorApp::DrawCvolPreviewOverlay() {
 							ImVec2 pt;
 							if (!project(p, pt))
 								continue;
-							dl->AddCircleFilled(pt, 1.8f,
-								cv.sampleState[si] ? kBaked : kZero);
+							const float t = cv.sampleLum[si] * invMax;
+							DrawProbeOctahedron(dl, pt,
+								m_probeMarkerSize,
+								cv.sampleState[si]
+									? lumRamp(std::sqrt(t))
+									: IM_COL32(70, 20, 20, 160));
 						}
 				if (si > 0) {
 					char cov[128];
 					std::snprintf(cov, sizeof(cov),
-						"%s: %llu/%llu voxels nonzero (step %ux%ux%u)",
+						"%s: %llu/%llu voxels nonzero (step %ux%ux%u "
+						"octahedra, color = SG radiance)",
 						cv.name.c_str(),
 						(unsigned long long)cv.voxNonzero,
 						(unsigned long long)cv.voxTotal,

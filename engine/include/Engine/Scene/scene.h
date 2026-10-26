@@ -177,6 +177,15 @@ struct SceneCvol {
 	float spacing = 0.5f;    // dense probe grid spacing (m)
 	float insideFade = 0.1f; // blend width inside each face (m)
 	float outsideFade = 0.1f;// blend width outside each face (m)
+	// The BAKED ARTIFACT binding (the mesh-reference convention applied
+	// to bakes): the .cvol this definition's bake produced, recorded by
+	// the bake owner at bake time (tour giAsset kind Cvol). Empty =
+	// never baked — the definition exists but carries no field. Path is
+	// a VFS path (POSIX separators — RANDOM MINTED, a fresh guid per
+	// bake: the record IS the identity, the name carries nothing to go
+	// stale); guid is the artifact's .meta GUID ("" = path-only bind).
+	std::string bakeSource;
+	std::string bakeGuid;
 };
 
 // EXPORT SETTINGS (the cook/export configuration node — the scene's
@@ -239,19 +248,20 @@ struct SceneExportSettings {
 	bool giWorld = true;
 	// Auto-convert non-KTX textures to KTX2 at cook time.
 	bool autoKtx = true;
-	// SKIP the loose VFS bake-file discovery at pak assembly: when on,
+	// SKIP the loose VFS bake-file resolution at pak assembly: when on,
 	// Pak embeds ONLY what the scene itself carries (meshes, materials,
 	// textures — everything cooks straight into the pak, blobs by path)
 	// and resolves NOTHING loose: no gi/cubemaps/<stem>.cubemanifest +
-	// KTX rows, no gi/<stem>.sggi, no gi/<stem>.cvmanifest + .cvol
-	// rows, no bindings for them (the scene renders probe-less + sky
-	// IBL ambient; bakes re-embed by turning this off). The canonical
-	// use: a MINIMAL variant pak (the same scene, no baked-GI payloads)
-	// without moving the loose bake files aside — the discovery keys on
-	// the SCENE stem, so renaming the out pak does not dodge it. The
-	// App-side --no-vfs flag is the runtime mirror (proves the pak is
-	// self-contained); this is the cook-side "do not even resolve it"
-	// switch. In-process cooks (the editor) honor it the same way.
+	// KTX rows, no giAsset binding resolution (the tour's HARD baked-GI
+	// records — world field + convex volumes — stay unembedded; the
+	// scene renders probe-less + sky IBL ambient; bakes re-embed by
+	// turning this off). The canonical use: a MINIMAL variant pak (the
+	// same scene, no baked-GI payloads) without moving the loose bake
+	// files aside — the bindings key on the SCENE, so renaming the out
+	// pak does not dodge them. The App-side --no-vfs flag is the runtime
+	// mirror (proves the pak is self-contained); this is the cook-side
+	// "do not even resolve it" switch. In-process cooks (the editor)
+	// honor it the same way.
 	bool ignoreVfs = false;
 };
 
@@ -444,8 +454,18 @@ struct Scene {
 	// — no pool indirection); the box shape rides the node's transform.
 	// Recorded by tour replay; harvested as bake inputs by GiBaker
 	// (loose bake files, on demand) AND PakCooker's --cvolume stage
-	// (baked + embedded into the pak for the runtime App).
+	// (baked + embedded into the pak for the runtime App). Each entry's
+	// bakeSource/bakeGuid carries the BAKED artifact binding (see
+	// SceneCvol) once the bake owner has stamped it.
 	std::unordered_map<NodeId, SceneCvol> cvolForNode;
+	// The scene's WORLD-FIELD GI binding (tour giAsset kind World): the
+	// baked probe-octree artifact this scene uses. Empty = never baked
+	// (the runtime sky-IBL ambient + the editor's honest "no baked
+	// volume" warnings). Same convention as SceneCvol::bakeSource
+	// (RANDOM MINTED VFS path — the record is the identity — + the
+	// artifact's .meta GUID when known).
+	std::string giWorldSource;
+	std::string giWorldGuid;
 	// Node -> authored cubemap capture params (tour createCubemap /
 	// editor cubemap node): pinned specular probe positions harvested
 	// by the cook's --cubemap stage. Position = node translate.

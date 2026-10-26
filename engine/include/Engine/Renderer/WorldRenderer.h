@@ -2335,14 +2335,18 @@ public:
 			|| m_ambientMode == AmbientMode::Probes;
 	}
 	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
-	// GI bake stems resolved from the loaded clusters' registry
-	// (first binding per kind wins + warn; empty = fall back to the
-	// scene id, which is what registry-less paks use). The registry
-	// names are the stable bake stems (gi/<stem>.sggi + friends);
-	// guid-era paks recorded guid names and resolve the same way.
-	// Resolved once per scene load, before the GI loaders run.
+	// GI bake names resolved from the loaded clusters' registry (first
+	// binding per kind wins + warn). The registry names: legacy paks
+	// carry bake STEMS (gi/<stem>.sggi + friends — the loader adds the
+	// gi/ prefix + extension); scene-bound paks carry FULL VFS paths
+	// (gi/<scene>.sggi — the tour giAsset hard binding, no stem
+	// guessing, pak name never involved). Resolved once per scene load,
+	// before the GI loaders run. m_giCvolPaths: the per-volume Cvol
+	// bindings (Kind::Cvol — one FULL vfs path per authored convex
+	// volume, the scene's hard identification; manifest-free).
 	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giCvolName,
 		m_giCubemapName;
+	std::vector<std::string> m_giCvolPaths;
 	void ResolveGiBakes();
 	// Bake-payload channel read (see World::ReadBakeBytes): the bytes at
 	// a GI/cubemap VFS path from the world's clusters — dynamic cluster

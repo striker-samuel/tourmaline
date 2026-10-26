@@ -544,24 +544,25 @@ namespace cooktool {
 		return stems;
 	}
 
-	// Authored convex GI volumes baked by THIS cook (the --cvolume stage):
-	// the same engine core as GiBaker (BuildTraceSceneFromCluster +
-	// BakeCvVolume over the tour's cvolume nodes — identical bake inputs:
-	// no collapse, no LODs, the definition cluster exactly as GiBaker sees
-	// it). Output = (vfsPath, bytes) pairs for loose write + registration:
-	// one .cvol per volume at gi/<pak-stem>_<name>.cvol + the runtime
-	// manifest text at gi/<pak-stem>.cvmanifest (bare-path rows: the
-	// runtime's SplitManifestRow + vfs.ReadBinary resolve them out of the
-	// pak through PakBackend's serve-Texture-by-path — the proven
-	// cubemap-manifest embed pattern). Returns false on a bake failure —
-	// the cook fails loudly (a silently missing GI volume is exactly the
-	// "cooked cvolumes never reached the App" bug).
+	// Authored convex GI volumes baked by THIS cook (the --cvolume
+	// fallback stage): the same engine core as GiBaker (BuildTraceScene-
+	// FromCluster + BakeCvVolume over the tour's cvolume nodes —
+	// identical bake inputs: no collapse, no LODs, the definition cluster
+	// exactly as GiBaker sees it). Output = (vfsPath, bytes) pairs for
+	// the loose write funnel: one RANDOM-MINTED .cvol per volume (a fresh
+	// guid — the binding record IS the identity, no stem-keyed name to
+	// go stale) — and each baked volume BINDS to its definition on the
+	// cluster scene (SceneCvol::bakeSource — the hard identification;
+	// the caller stamps the tour's giAsset records from it). The
+	// cvmanifest round-trip is retired with the stems. Returns false on
+	// a bake failure — the cook fails loudly (a silently missing GI
+	// volume is exactly the "cooked cvolumes never reached the App"
+	// bug).
 	bool BakeAuthoredCvolumes(
 		std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
-		const Args& args, const std::string& sceneId,
+		const Args& args,
 		std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
 		using namespace smvk::gi;
-		std::vector<std::string> manifestRows;
 		for (auto& sc : sceneClusters) {
 			if (!sc || sc->scene.cvolForNode.empty())
 				continue;
@@ -622,7 +623,9 @@ namespace cooktool {
 			for (uint32_t node : nodes) {
 				if (node >= sc->scene.globalTransform.size())
 					continue;
-				const SceneCvol& cv = sc->scene.cvolForNode[node];
+				// The binding target (a reference, not a copy — the
+				// binding update below lands on the scene).
+				SceneCvol& cv = sc->scene.cvolForNode[node];
 				// World box decode (GiBaker parity): translation = center,
 				// basis lengths = full extents, normalized basis = the box
 				// axes (an OBB — six planes, CvBoxPlanesRotated).
@@ -667,28 +670,27 @@ namespace cooktool {
 						<< "': " << werr << "\n";
 					return false;
 				}
-				const std::string vfsPath =
-					"gi/" + sceneId + "_" + def.name + ".cvol";
-				out.emplace_back(vfsPath, std::move(bytes));
-				manifestRows.push_back(vfsPath + "  # " + def.name);
-				tool::out() << "  [CV] baked '" << def.name << "': dims="
-					<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
-					<< " probes=" << stats.probes
-					<< " (" << stats.seconds << "s)\n";
-			}
+			// The artifact name: RANDOM MINTED (a fresh guid per
+			// volume, per bake — the binding record is the identity).
+			const std::string vfsPath =
+				"gi/" + smvk::tour::GenerateUuid() + ".cvol";
+			out.emplace_back(vfsPath, std::move(bytes));
+			// The HARD identification: the baked volume binds to its
+			// authored definition on the scene (the caller's tour stamp
+			// mirrors it into the giAsset records).
+			cv.bakeSource = vfsPath;
+			cv.bakeGuid.clear();
+			tool::out() << "  [CV] baked '" << def.name << "': dims="
+				<< vol.dims[0] << "x" << vol.dims[1] << "x" << vol.dims[2]
+				<< " probes=" << stats.probes
+				<< " (" << stats.seconds << "s)\n";
 		}
-		if (manifestRows.empty())
-			return true; // no authored cvolumes: nothing to embed
-		// Runtime manifest: bare-path rows (SplitManifestRow takes the first
-		// token; the '# name' notes are ignored by the parser, read by us).
-		std::string manifest =
-			"# convex GI volumes (cooked into this pak; pak vfs paths)\n";
-		for (const std::string& row : manifestRows)
-			manifest += row + "\n";
-		out.emplace_back("gi/" + sceneId + ".cvmanifest",
-			std::vector<uint8_t>(manifest.begin(), manifest.end()));
-		return true;
 	}
+	// No manifest emission: the per-volume scene bindings (set above) +
+	// the caller's tour stamp REPLACE the cvmanifest round-trip. The
+	// out pairs (the loose .cvol writes) still ride the funnel below.
+	return true;
+}
 
 	std::vector<float> ParseLodRatios(const std::string& s) {
 		std::vector<float> out;
@@ -4148,6 +4150,7 @@ int Run(const CookArgs& c) {
 	std::vector<std::string> sceneNames;
 	smvk::tour::Doc tour;
 	bool haveTour = false;
+	std::vector<uint32_t> createdCvols; // family refs (the cvol stamp's map)
 
 	if (!args.tour.empty()) {
 		// Load tour: the DEFINITION (root reference = the source glTF,
@@ -4365,10 +4368,10 @@ int Run(const CookArgs& c) {
 				tool::out() << "Definition: imported "
 				<< tour.materialAssets.size()
 				<< " material asset(s)\n";
-			std::vector<std::string> rwarn;
-			std::string rerr;
-			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-				&rerr)) {
+		std::vector<std::string> rwarn;
+		std::string rerr;
+		if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
+			&rerr, true, &createdCvols)) {
 				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
@@ -4582,39 +4585,78 @@ int Run(const CookArgs& c) {
 	// funnel); pak embeds the same paths (PakBackend serves by path).
 	std::vector<std::pair<std::string, std::vector<uint8_t>>> giBlobs;
 	// Authored convex GI volumes: bake IN-PROCESS only as the fallback —
-	// when the GiBaker cvolmanifest (stable path, see the discovery below)
-	// already exists (the editor cook flow runs GiBaker from 0 FIRST),
-	// its fresh bake wins (same definition, hand-tunable) and the
-	// discovery stage embeds it. Baked before collapse/LODs: identical
-	// bake inputs to GiBaker's definition bake (the tour cluster as
-	// replayed), and cvolForNode node ids are still valid (collapse
-	// consumes static subtrees later).
+	// when the scene's clusters carry BOUND volumes (the tour's giAsset
+	// records: GiBaker already baked + stamped them) that fresh bake
+	// wins (same definition, hand-tunable) and the pak embeds by
+	// binding. Baked before collapse/LODs: identical bake inputs to
+	// GiBaker's definition bake (the tour cluster as replayed), and
+	// cvolForNode node ids are still valid (collapse consumes static
+	// subtrees later). The baked volumes bind to their definitions on
+	// the cluster scene + the tour stamp below writes the giAsset
+	// records (the manifest round-trip is retired with the stems).
 	if (args.cvolume) {
-		const std::string giDir =
-			(std::filesystem::path(args.contentDir) / "gi")
-			.generic_string();
-		const std::string pakStem =
-			std::filesystem::path(args.outPak).stem().generic_string();
-		const std::string cvolSceneId = pakStem.empty()
-			? std::string("pak") : pakStem;
-		bool haveLooseManifest = false;
-		for (const std::string& stem : BakeStems(args)) {
-			std::error_code ec;
-			if (std::filesystem::is_regular_file(
-				std::filesystem::path(giDir)
-				/ (stem + ".cvmanifest"), ec)) {
-				haveLooseManifest = true;
+		bool anyBoundVolume = false;
+		for (const auto& sc : sceneClusters) {
+			if (!sc)
+				continue;
+			for (const auto& [node, def] : sc->scene.cvolForNode)
+				if (!def.bakeSource.empty()) {
+					anyBoundVolume = true;
+					break;
+				}
+			if (anyBoundVolume)
 				break;
+		}
+		if (anyBoundVolume) {
+			tool::out() << "cvolumes scene-bound (tour giAsset records)"
+				" — in-process bake skipped, the bound bakes embed by "
+				"binding\n";
+		}
+		else if (!BakeAuthoredCvolumes(sceneClusters, args, giBlobs)) {
+			return 1;
+		}
+		else {
+			// The stamp (as GiBaker does): the baked volumes bound on
+			// the cluster scenes above mirror onto the tour's giAsset
+			// records, so the pak cooker (a separate process, replaying
+			// the tour) sees exactly this bake — and the superseded
+			// artifacts (the old records' files) die BY RECORD. The
+			// editor cook flow re-stamps its live doc after the
+			// pipeline (the snapshot tour written here is temp), but
+			// this file IS the authority in the CLI flow.
+			if (haveTour && !sceneClusters.empty()) {
+				std::string serr;
+				std::vector<std::string> superseded;
+				if (!smvk::tour::StampGiAssets(tour,
+						sceneClusters.front()->scene,
+						createdCvols, &serr, &superseded)) {
+					tool::err() << "Tour giAsset stamp failed: "
+						<< serr << std::endl;
+					return 1;
+				}
+				std::string saveErr;
+				if (!smvk::tour::SaveTour(args.tour, tour, saveErr)) {
+					tool::err() << "Tour re-save failed: " << saveErr
+						<< std::endl;
+					return 1;
+				}
+				int deleted = 0;
+				for (const std::string& vfs : superseded) {
+					const std::filesystem::path host =
+						std::filesystem::path(args.contentDir) / vfs;
+					std::error_code ec;
+					if (std::filesystem::remove(host, ec))
+						++deleted;
+				}
+				tool::out() << "Tour stamped: " << tour.giAssets.size()
+					<< " giAsset binding(s) -> " << args.tour
+					<< (superseded.empty() ? std::string()
+						: " (deleted " + std::to_string(deleted)
+							+ "/" + std::to_string(superseded.size())
+							+ " superseded artifact(s))")
+					<< "\n";
 			}
 		}
-		if (haveLooseManifest) {
-			tool::out() << "cvolume manifest found (stable path)"
-				" — in-process bake skipped, the loose bake "
-				"embeds below\n";
-		}
-		else if (!BakeAuthoredCvolumes(sceneClusters, args, cvolSceneId,
-			giBlobs))
-			return 1;
 	}
 
 	// Static collapse: bake frozen subtrees into per-material mega-mesh

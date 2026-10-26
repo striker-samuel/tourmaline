@@ -123,6 +123,32 @@ struct TextureAssetCmd {
 	std::string name; // display name
 };
 
+// GI-asset binding (the scene's HARD identification of its baked GI
+// artifacts — the mesh-reference convention applied to bakes). Each
+// record names ONE baked artifact by VFS path + the artifact cache's
+// .meta GUID, keyed to what it serves:
+//   - kind World: the world-field probe octree;
+//   - kind Cvol: ONE authored convex volume, addressed by the cvolume
+//     family ref (the SAME -ref grammar setCvolAttr uses — the k-th
+//     createCvolume in file order), naming its own .cvol.
+// Stamped by the bake owner (GiBaker / the editor cook) AT BAKE TIME,
+// consumed by the pak cooker (embeds EXACTLY the bound files + registers
+// the runtime GiBindings off them) and the editor (preview loaders
+// resolve by record — no stem guessing, no manifests). Bake artifacts
+// carry RANDOM MINTED names (a fresh guid per bake): the record IS the
+// identity — the file name carries no scene/stem information to go
+// stale, a rebake never collides with or overwrites the old artifact
+// (the stamp's supersede list retires it BY RECORD), and the pak's
+// name never enters the bake identity at all.
+struct GiAssetCmd {
+	enum class Kind : uint8_t { World, Cvol };
+	Kind kind = Kind::World;
+	uint32_t ref = 0;    // cvolume family ref (Kind::Cvol only): raw
+	                     // kCreateCvolRefBase|k form as authored
+	std::string source;  // VFS path, POSIX separators ("gi/<uuid>.sggi")
+	std::string guid;    // artifact .meta GUID ("" = path-only bind)
+};
+
 enum class Verb : uint8_t {
 	Rename,
 	SetTranslate,
@@ -452,6 +478,12 @@ struct Doc {
 	// material (or a light cookie) referencing a .texture finds its pool
 	// entry exactly like the authoring session.
 	std::vector<TextureAssetCmd> textureAssets;
+	// GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
+	// identification — the world field + one record per authored convex
+	// volume. Resolved onto the replayed scene by ApplyTourToCluster
+	// (Scene::giWorld* + SceneCvol::bake*), read by the pak cooker / the
+	// editor loaders. The bake owner upserts these after every bake.
+	std::vector<GiAssetCmd> giAssets;
 	// fileInfo constants (Maya fileInfo block): fixed format metadata
 	// (application/product/version), then anything carried. Written
 	// right after the references.
@@ -502,9 +534,35 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 // replay): a failed command is REPORTED into `warnings` and skipped
 // instead of aborting — a partially-broken reference must not take the
 // whole scene down (ApplySceneReferences surfaces the list to the editor).
+// createdCvolsOut (optional): the resolved created-cvolume family —
+// createdCvolsOut[k] = the node id of the k-th createCvolume (the SAME
+// index the giAsset/cvol family refs address). The bake owners (GiBaker,
+// Cook.exe's in-process cvol bake) need it to stamp the doc's giAsset
+// records back after a bake (StampGiAssets).
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr,
-	bool strict = true);
+	bool strict = true,
+	std::vector<uint32_t>* createdCvolsOut = nullptr);
+
+// The bake owner's STAMP: mirror a replayed scene's GI bindings onto the
+// doc's giAsset records. The SCENE is the authority — the bake updates
+// Scene::giWorldSource + SceneCvol::bakeSource in place (unbaked volumes
+// keep their old bindings; deleted volumes drop), then this regenerates
+// doc.giAssets to match (World record when the scene carries one, one
+// Cvol record per bound volume, family-ref addressed over createdCvols).
+// Callers: GiBaker (writes the tour back), Cook.exe's in-process cvol
+// fallback, the editor cook (its live doc). Nodes outside createdCvols
+// (hand-injected, no tour create) warn+skip. `superseded` (optional):
+// the OLD records' paths that the new set no longer references — the
+// caller deletes those files (record-exact; bake artifacts carry RANDOM
+// minted names, so a stale file can never collide with a fresh bake —
+// the only way an old artifact lingers is nobody deleting it, and the
+// record set-difference is the exact list). Returns false only on a
+// structural error (err out).
+bool StampGiAssets(Doc& doc, const Scene& scene,
+	const std::vector<uint32_t>& createdCvols,
+	std::string* err = nullptr,
+	std::vector<std::string>* superseded = nullptr);
 
 // Structural reparent on any Scene (shared by the editor live path and the
 // cook replay path). Index-preserving: no nodes are added/removed, only

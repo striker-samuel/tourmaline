@@ -1123,42 +1123,41 @@ void EditorApp::ClearSglmLayers() {
 bool EditorApp::TryLoadCvolumes() {
 	m_cvolPreviews.clear();
 	namespace fs = std::filesystem;
-	const std::string stem = SceneIdForHost();
-	if (stem.empty())
+	// The HARD identification (no stems, no manifests): each authored
+	// convex volume carries its baked .cvol ON THE LIVE SCENE
+	// (SceneCvol::bakeSource — the tour's giAsset cvol record, resolved
+	// by ReplayTourDoc and kept current by the bake flows' stamp
+	// read-back). Volumes without a binding = authored but never baked
+	// (honest miss, named per volume). The binding paths are
+	// content-relative VFS paths — resolved against the project root
+	// (the content tree's owner), absolute host paths pass through.
+	if (!m_world)
 		return false;
-	// Manifest candidates (same roots as the sglm probe).
-	std::vector<fs::path> manifests;
-	if (!m_projectRoot.empty())
-		manifests.push_back(
-			(fs::path(m_projectRoot) / "gi" / (stem + ".cvmanifest"))
-				.lexically_normal());
-	manifests.push_back((fs::path("content") / "gi" / (stem + ".cvmanifest")));
-	fs::path manifestPath;
+	struct Bound {
+		uint32_t node;
+		std::string path;
+	};
+	std::vector<Bound> bound;
+	for (const auto& [node, def] : m_world->scene.cvolForNode)
+		if (!def.bakeSource.empty())
+			bound.push_back({ node, def.bakeSource });
+	if (bound.empty()) {
+		const bool hasCvols = !m_world->scene.cvolForNode.empty();
+		Log(hasCvols
+			? "Convex GI volumes: authored but none baked (bake via "
+			  "Bake GI / the cook; the bake stamps the tour's giAsset "
+			  "records)"
+			: "Convex GI volumes: none authored (Create > Convex volume "
+			  "in LIGHTING)");
+		return false;
+	}
 	std::error_code ec;
-	for (const fs::path& m : manifests)
-		if (fs::is_regular_file(m, ec)) {
-			manifestPath = m;
-			break;
-		}
-	if (manifestPath.empty())
-		return false;
-	// One .cvol vfs path per line (inline '#' comments + legacy guid
-	// columns handled by the shared parser, like every other manifest
-	// reader). Relative lines resolve against the CONTENT ROOT (the
-	// manifest's parent's parent); absolute host paths pass through.
-	std::ifstream in(manifestPath);
-	if (!in)
-		return false;
-	const fs::path contentRoot = manifestPath.parent_path().parent_path();
-	std::string line;
 	int loaded = 0;
-	while (std::getline(in, line)) {
-		const std::string row = smvk::bake::SplitManifestRow(line);
-		if (row.empty())
-			continue;
-		fs::path volPath = fs::path(row);
-		if (volPath.is_relative())
-			volPath = (contentRoot / volPath).lexically_normal();
+	for (const Bound& b : bound) {
+		fs::path volPath(b.path);
+		if (volPath.is_relative() && !m_projectRoot.empty())
+			volPath = (fs::path(m_projectRoot) / volPath)
+				.lexically_normal();
 		smvk::gi::CvVolume vol;
 		std::string err;
 		if (!smvk::gi::CvVolume::ReadFile(volPath.string(), vol, err)) {
@@ -1202,6 +1201,13 @@ bool EditorApp::TryLoadCvolumes() {
 					/ pv.sampleStep[a];
 			pv.sampleState.assign(size_t(pv.sampleCount[0])
 				* pv.sampleCount[1] * pv.sampleCount[2], 0);
+			pv.sampleLum.assign(pv.sampleState.size(), 0.0f);
+			pv.sampleLumMax = 1e-6f;
+			auto lumOf = [&](const glm::vec3& c) {
+				return 0.2126f * std::abs(c.r)
+					+ 0.7152f * std::abs(c.g)
+					+ 0.0722f * std::abs(c.b);
+			};
 			const uint32_t nx = vol.dims[0], ny = vol.dims[1];
 			size_t si = 0;
 			for (uint32_t z = 0; z < vol.dims[2]; z += pv.sampleStep[2])
@@ -1209,17 +1215,24 @@ bool EditorApp::TryLoadCvolumes() {
 					for (uint32_t x = 0; x < vol.dims[0];
 							x += pv.sampleStep[0], ++si) {
 						// coeffs are voxel-major, lobe-minor:
-						// [(z*Ny + y)*Nx + x][lobe].
+						// [(z*Ny + y)*Nx + x][lobe]. The per-sample SG
+						// value = the sum of the 9 lobe luminances (the
+						// [CV] coeffs readout's scalar, so the preview
+						// ramp and the App's stderr stats agree).
 						const glm::vec3* c
 							= vol.coeffs.data()
 							+ (size_t((z * ny) + y) * nx + x) * lobes;
+						float lum = 0.0f;
 						uint8_t nz = 0;
-						for (uint32_t l = 0; l < lobes; ++l)
-							if (glm::dot(c[l], c[l]) > 0.0f) {
+						for (uint32_t l = 0; l < lobes; ++l) {
+							const float ll = lumOf(c[l]);
+							lum += ll;
+							if (ll > 1e-6f)
 								nz = 1;
-								break;
-							}
+						}
 						pv.sampleState[si] = nz;
+						pv.sampleLum[si] = lum;
+						pv.sampleLumMax = std::max(pv.sampleLumMax, lum);
 					}
 			pv.probeSpacing = vol.spacing;
 			pv.voxTotal = vol.VoxelCount();
@@ -1299,7 +1312,7 @@ bool EditorApp::TryLoadCvolumes() {
 	}
 	if (loaded > 0) {
 		Log("Convex GI volumes: loaded " + std::to_string(loaded)
-			+ " from '" + manifestPath.string() + "' (J in LIGHTING toggles "
+			+ " from the scene's giAsset bindings (J in LIGHTING toggles "
 			+ "the preview)");
 		return true;
 	}

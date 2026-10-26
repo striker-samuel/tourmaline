@@ -2507,9 +2507,6 @@ namespace engine {
 		std::fill(std::begin(m_giLevelLayers), std::end(m_giLevelLayers),
 			UINT32_MAX);
 
-		const std::string stem = m_giProbeName.empty()
-			? m_sceneId : m_giProbeName;
-		const std::string vfsPath = std::string("gi/") + stem + ".sggi";
 		// GI-less scenes (e.g. scanlands): the flag gates keep the ambient
 		// honest (probes simply never enable); DegradeAmbientForMissing
 		// Sources() after the loaders fixes single-source modes. This
@@ -2517,6 +2514,23 @@ namespace engine {
 		auto fallbackSky = [&] {
 			std::cerr << "[GI] ambient keeps its mode; per-source flags gate\n";
 		};
+		// The probe binding names the artifact: scene-bound paks carry
+		// the FULL vfs path (gi/<scene>.sggi — the tour giAsset hard
+		// binding), legacy paks the bare bake stem (gi/<stem>.sggi —
+		// the loader adds the prefix + extension). NO scene-id/pak-
+		// filename guessing: a binding-less pak simply has no baked
+		// volume and says so below.
+		if (m_giProbeName.empty()) {
+			std::cerr << "[GI] no probe binding (bake with "
+				"tools/gi_baker/GiBaker; the bake stamps the tour's "
+				"giAsset records and the pak cooker binds them)\n";
+			fallbackSky();
+			return;
+		}
+		const std::string vfsPath = m_giProbeName.find('/') !=
+				std::string::npos
+			? m_giProbeName
+			: std::string("gi/") + m_giProbeName + ".sggi";
 		const std::span<const uint8_t> bytes = ReadBakeBytes(vfsPath);
 		if (bytes.empty()) {
 			std::cerr << "[GI] no baked volume '" << vfsPath
@@ -3277,8 +3291,11 @@ namespace engine {
 
 	// ---------------------------------------------------------------------------
 	// Convex GI volumes (Engine/GI/cubemap_volume.h; GiBaker --cv-spec).
-	// Reads the cluster bake channel at gi/<scene>.cvmanifest: one .cvol path per line, up
-	// to SG_CV_MAX_VOLUMES (8). Each volume uploads 7 RGBA16F 3D textures
+	// The volume list comes from the scene's HARD per-volume bindings (the
+	// tour giAsset cvol records — FULL vfs paths, up to SG_CV_MAX_VOLUMES
+	// (8), stamped by the bake and bound into the pak by the cooker); the
+	// legacy cvmanifest channel serves old paks. Each volume uploads 7
+	// RGBA16F 3D textures
 	// (dense probe grid, hardware trilinear) + one 80 B descriptor with
 	// the fade-expanded hull AABB (broad-phase reject), the CPU-packed
 	// world->uvw lattice transform and the plane span into a shared plane
@@ -3315,25 +3332,39 @@ namespace engine {
 		m_cvolVolumesBuffer = {};
 		m_cvolVolumesAddress = 0;
 
-		const std::string manifestPath = !m_giCvolName.empty()
-			? std::string("gi/") + m_giCvolName + ".cvmanifest"
-			: std::string("gi/") + m_sceneId + ".cvmanifest";
-		const std::span<const uint8_t> manifestBytes =
-			ReadBakeBytes(manifestPath);
-		if (manifestBytes.empty()) {
-			std::cerr << "[CV] no convex-volume manifest '" << manifestPath
-				<< "' (bake: GiBaker --cv-spec <file>)\n";
-			return;
-		}
-		// Line-separated .cvol vfs paths (bake-asset rows carry the
-		// payload guid first - see smvk::bake::SplitManifestRow; '#' comments
-		// and blanks skipped - GiBaker writes a header comment).
+		// The volume list: the scene's per-volume Cvol bindings FIRST
+		// (FULL vfs paths — the tour giAsset hard identification, one
+		// binding per authored convex volume, manifest-free), else the
+		// LEGACY cvmanifest channel (old paks: the CvolManifest binding
+		// names the manifest; one .cvol path per line). NO scene-id/
+		// pak-filename guessing — a binding-less pak has no baked
+		// volumes and says so.
 		std::vector<std::string> lines;
-		{
+		if (!m_giCvolPaths.empty()) {
+			lines = m_giCvolPaths;
+		}
+		else if (!m_giCvolName.empty()) {
+			const std::string manifestPath =
+				m_giCvolName.find('/') != std::string::npos
+				? m_giCvolName
+				: std::string("gi/") + m_giCvolName + ".cvmanifest";
+			const std::span<const uint8_t> manifestBytes =
+				ReadBakeBytes(manifestPath);
+			if (manifestBytes.empty()) {
+				std::cerr << "[CV] no convex-volume manifest '"
+					<< manifestPath
+					<< "' (bake: GiBaker --cv-spec <file>)\n";
+				return;
+			}
+			// Line-separated .cvol vfs paths (bake-asset rows carry the
+			// payload guid first - see smvk::bake::SplitManifestRow; '#'
+			// comments and blanks skipped - GiBaker writes a header
+			// comment).
 			std::string cur;
 			for (char c : manifestBytes) {
 				if (c == '\n' || c == '\r') {
-					const std::string path = smvk::bake::SplitManifestRow(cur);
+					const std::string path =
+						smvk::bake::SplitManifestRow(cur);
 					if (!path.empty())
 						lines.push_back(path);
 					cur.clear();
@@ -3345,6 +3376,12 @@ namespace engine {
 			const std::string path = smvk::bake::SplitManifestRow(cur);
 			if (!path.empty())
 				lines.push_back(path);
+		}
+		else {
+			std::cerr << "[CV] no convex-volume binding (bake: GiBaker; "
+				"the bake stamps the tour's giAsset records and the pak "
+				"cooker binds them)\n";
+			return;
 		}
 		constexpr uint32_t kMaxVolumes = 8; // SG_CV_MAX_VOLUMES
 		for (const std::string& line : lines) {
@@ -3537,7 +3574,7 @@ namespace engine {
 				m_cvolEnabled = false;
 		}
 		std::cerr << "[CV] loaded " << m_cvolVolumes.size()
-			<< " convex volume(s) from '" << manifestPath << "'\n";
+			<< " convex volume(s) from the scene's giAsset bindings\n";
 		for (const auto& cv : m_cvolVolumes) {
 			const auto& d = cv.volume.def;
 			std::cerr << "  dims=" << cv.volume.dims[0] << "x" << cv.volume.dims[1]
@@ -5216,6 +5253,7 @@ namespace engine {
 		m_giRegName.clear();
 		m_giCvolName.clear();
 		m_giCubemapName.clear();
+		m_giCvolPaths.clear();
 		if (!m_world)
 			return;
 		auto takeFirst = [](std::string& slot, const std::string& name,
@@ -5249,6 +5287,19 @@ namespace engine {
 				case smvk::GiBinding::Kind::Cubemap:
 					takeFirst(m_giCubemapName, b.name, "cubemap");
 					break;
+				case smvk::GiBinding::Kind::Cvol:
+					// Per-volume scene bindings: FULL vfs paths, MANY
+					// legal (one per authored convex volume — the
+					// scene's hard giAsset identification, capped at
+					// the loader's 8). First-wins dedup (the pak union
+					// already dedups; a dynamic-cluster quick-bake
+					// re-registering a path must not double it).
+					if (m_giCvolPaths.size() >= 8)
+						break;
+					if (std::find(m_giCvolPaths.begin(), m_giCvolPaths.end(),
+							b.name) == m_giCvolPaths.end())
+						m_giCvolPaths.push_back(b.name);
+					break;
 				}
 			}
 		};
@@ -5263,11 +5314,12 @@ namespace engine {
 		}
 		if (!m_giProbeName.empty() || !m_giLightmapName.empty()
 			|| !m_giRegName.empty() || !m_giCvolName.empty()
-			|| !m_giCubemapName.empty())
+			|| !m_giCubemapName.empty() || !m_giCvolPaths.empty())
 			std::cerr << "[GI] bake bindings: probe='"
 			<< m_giProbeName << "' lightmap='" << m_giLightmapName
 			<< "' reg='" << m_giRegName << "' cvol='" << m_giCvolName
-			<< "' cubemap='" << m_giCubemapName << "'\n";
+			<< "' cvols=" << m_giCvolPaths.size()
+			<< " cubemap='" << m_giCubemapName << "'\n";
 	}
 
 	// ---------------------------------------------------------------------

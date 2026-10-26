@@ -49,6 +49,14 @@ namespace smvk {
 	// bake stem — guid-era paks recorded guid names (see
 	// Engine/Asset/bake_asset.h for the era history), which resolve the
 	// same way. See Cluster::giBindings.
+	//
+	// NEW (scene-carried giAsset bindings): Kind::Cvol records carry the
+	// FULL VFS path of ONE baked convex volume (gi/<scene>_<name>.cvol) —
+	// the scene's hard per-volume identification (tour giAsset kind
+	// cvol, stamped by the bake owner), replacing the manifest round-
+	// trip for cvols. Multiple Cvol bindings are legal (one per authored
+	// volume, cap SG_CV_MAX_VOLUMES); every other kind keeps the exactly-
+	// one semantics (ResolveGiBakes takes the first).
 	struct GiBinding {
 		enum class Kind : uint32_t {
 			Probe = 0,      // gi/<name>.sggi world-field octree
@@ -56,6 +64,8 @@ namespace smvk {
 			RegManifest = 2,   // gi/<name>.regmanifest (regular volumes)
 			CvolManifest = 3,  // gi/<name>.cvmanifest (convex volumes)
 			Cubemap = 4,    // textures/cubemaps/<name>.cubemanifest
+			Cvol = 5,       // gi/<path>.cvol — ONE convex volume, FULL VFS
+			                 // path (the per-volume scene binding)
 		};
 		Kind kind = Kind::Probe;
 		std::string name;

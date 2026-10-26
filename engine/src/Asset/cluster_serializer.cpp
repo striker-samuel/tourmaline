@@ -1801,7 +1801,7 @@ bool ParseGiRegistryBlob(
 	for (uint32_t i = 0; i < count; ++i) {
 		const uint32_t kind = c.u32();
 		const std::string name = c.str();
-		if (!c.ok || kind > 4 || name.empty() ||
+		if (!c.ok || kind > 5 || name.empty() ||
 			name.size() > 512) {
 			err = "bad gi registry entry";
 			return false;

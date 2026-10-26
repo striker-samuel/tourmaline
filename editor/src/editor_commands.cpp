@@ -4195,6 +4195,12 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// session's cookie/.texture pool imports, replayed by reload/cook
 	// BEFORE the material records so refs resolve identically.
 	doc.textureAssets = m_textureAssets;
+	// GI-asset bindings (the scene's HARD baked-GI identification; see
+	// GiAssetCmd): the session mirror rides the doc — only the bake
+	// owner's stamps update it (the cook / Bake GI flows), reload
+	// round-trips it verbatim (the orphan-command contract: a reload
+	// must never erase records).
+	doc.giAssets = m_giAssets;
 	// Cook/export knobs ride the scene's exportSettings NODE (emitted by
 	// the history replay above as createNode -at exportSettings +
 	// setExportAttr lines); outPak/contentDir stay session-only — a
@@ -4995,6 +5001,50 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_history.push_back(c);
 		++applied;
 	}
+	// GI-asset bindings (the session mirror + the LIVE-SCENE resolution):
+	// the mirror round-trips through save (the records are doc state,
+	// never derived here — only the bake owner writes them); the
+	// per-volume bindings resolve onto the live scene through the SAME
+	// family list the setCvolAttr replay used (m_tourCreatedCvolNodes,
+	// filled in command order above), so the editor's loaders (the cvol
+	// preview) read exactly what the scene carries — no stem guessing.
+	// Clear-first keeps a re-replay idempotent (stale bindings from the
+	// previous pass die).
+	m_giAssets = doc.giAssets;
+	if (m_world) {
+		Scene& liveScene = m_world->scene;
+		liveScene.giWorldSource.clear();
+		liveScene.giWorldGuid.clear();
+		for (auto& [node, def] : liveScene.cvolForNode) {
+			def.bakeSource.clear();
+			def.bakeGuid.clear();
+		}
+		for (const smvk::tour::GiAssetCmd& ga : m_giAssets) {
+			if (ga.source.empty())
+				continue; // half-written record: skip (mirrors the writer)
+			if (ga.kind == smvk::tour::GiAssetCmd::Kind::World) {
+				if (!liveScene.giWorldSource.empty())
+					continue; // duplicate world record: first kept
+				liveScene.giWorldSource = ga.source;
+				liveScene.giWorldGuid = ga.guid;
+				continue;
+			}
+			const uint32_t k =
+				ga.ref & ~smvk::tour::kCreateCvolRefBase;
+			if ((ga.ref & smvk::tour::kCreateCvolRefBase) == 0
+					|| k >= m_tourCreatedCvolNodes.size()) {
+				Log("tour: giAsset cvol ref out of range (dropped — '"
+					+ ga.source + "')");
+				continue;
+			}
+			auto it = liveScene.cvolForNode.find(
+				m_tourCreatedCvolNodes[k]);
+			if (it == liveScene.cvolForNode.end())
+				continue;
+			it->second.bakeSource = ga.source;
+			it->second.bakeGuid = ga.guid;
+		}
+	}
 	m_replayingTour = false;
 	m_historyCursor = m_history.size();
 	Log("tour: applied " + std::to_string(applied) + "/"
@@ -5019,6 +5069,12 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// exactly one (WorldSettings scaffold). Idempotent — a doc that
 	// already created it (createNode -at exportSettings) is untouched.
 	EnsureExportSettingsNode();
+	// Re-resolve the convex-volume preview AFTER the replay: the
+	// giAsset bindings ride the replayed cvolume definitions (resolved
+	// above through the family list), so the pre-replay call inside the
+	// scene-load path always saw an empty scene. The reload keeps the
+	// preview honest after every doc replay (undo restores, too).
+	TryLoadCvolumes();
 	// The replay rebuilt the world in place (same object).
 	return true;
 }

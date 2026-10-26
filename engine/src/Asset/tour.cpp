@@ -797,6 +797,23 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << " -name " << Quote(ta.name);
 		f << ";\n";
 	}
+	// GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
+	// identification, doc-level state like the pool imports above. The
+	// bake owner upserts these at bake time; the -ref indices are the
+	// cvolume family refs (the k-th createCvolume in file order — the
+	// same grammar setCvolAttr -ref uses).
+	for (const GiAssetCmd& ga : doc.giAssets) {
+		if (ga.source.empty())
+			continue; // half-written record: skip (mirrors fileNode)
+		f << "giAsset -kind "
+			<< (ga.kind == GiAssetCmd::Kind::Cvol ? "cvol" : "world");
+		if (ga.kind == GiAssetCmd::Kind::Cvol)
+			f << " -ref " << (ga.ref & ~kCreateCvolRefBase);
+		f << " -source " << Quote(ga.source);
+		if (!ga.guid.empty())
+			f << " -guid " << ga.guid;
+		f << ";\n";
+	}
 	// Tabulated create properties (Maya createNode + setAttr flavor):
 	// -ref-addressed setLightAttr (-ref k of the k-th light-family
 	// create), TerrainPaint (-ref k of the k-th terrain-family create),
@@ -941,6 +958,8 @@ struct Flags {
 	bool hasGuid = false;
 	std::string type;      // -type <datatype> (setAttr value flavor)
 	bool hasType = false;
+	std::string kind;      // -kind <world|cvol> (giAsset records)
+	bool hasKind = false;
 };
 
 static bool ParseFlagWord(const std::string& w, bool& out) {
@@ -1014,7 +1033,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root";
+					w == "-type" || w == "-root" || w == "-kind";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1037,7 +1056,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root";
+					w == "-type" || w == "-root" || w == "-kind";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1119,6 +1138,14 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 				w.pop_back();
 			f.hasGuid = true;
 			f.guid = w;
+			i += 2;
+		}
+		else if (k == "-kind" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			f.hasKind = true;
+			f.kind = w;
 			i += 2;
 		}
 		else if (k == "-type" && i + 1 < toks.size()) {
@@ -1464,7 +1491,39 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				": textureAsset without -path (skipped)");
 		continue;
 	}
-		if (verb == "cook") {
+		if (verb == "giAsset") {
+		// giAsset -kind world|cvol [-ref <k>] -source "<vfs>" [-guid "<g>"];
+		// The scene's HARD baked-GI identification (see GiAssetCmd): the
+		// world-field octree + one record per authored convex volume
+		// (addressed by the cvolume family ref, the SAME -ref grammar
+		// setCvolAttr uses). Doc-level like textureAsset (replayed onto
+		// the scene by ApplyTourToCluster's post pass, not a command).
+		Flags fl{};
+		if (!ParseFlags(toks, 1, fl, err, lineNo))
+			return false;
+		GiAssetCmd ga;
+		if (fl.kind == "cvol")
+			ga.kind = GiAssetCmd::Kind::Cvol;
+		else if (fl.kind == "world")
+			ga.kind = GiAssetCmd::Kind::World;
+		else {
+			warn("tour:" + std::to_string(lineNo) +
+				": giAsset -kind must be world|cvol (skipped)");
+			continue;
+		}
+		if (ga.kind == GiAssetCmd::Kind::Cvol)
+			ga.ref = fl.hasRef ? (kCreateCvolRefBase | fl.ref) : 0;
+		if (!fl.hasSource || fl.source.empty()) {
+			warn("tour:" + std::to_string(lineNo) +
+				": giAsset without -source (skipped)");
+			continue;
+		}
+		ga.source = fl.source;
+		ga.guid = fl.hasGuid ? fl.guid : "";
+		doc.giAssets.push_back(std::move(ga));
+		continue;
+	}
+	if (verb == "cook") {
 			// REMOVED verb: the cook block is gone — the export settings
 			// are the scene's exportSettings NODE now (createNode -at
 			// exportSettings + setExportAttr; payload in
@@ -2600,7 +2659,8 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 } // namespace
 
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
-	std::vector<std::string>* warnings, std::string* err, bool strict) {
+	std::vector<std::string>* warnings, std::string* err, bool strict,
+	std::vector<uint32_t>* createdCvolsOut) {
 	auto warn = [&](const std::string& w) {
 		if (warnings)
 			warnings->push_back(w);
@@ -3702,6 +3762,46 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				scene.materialForNode[tileNode] = state.material;
 			}
 	}
+	// GI-asset binding pass (the LAST scene-content pass — the bindings
+	// address created cvolume nodes, so the command walk above must be
+	// done). Each doc.giAssets record (the bake owner's stamped HARD
+	// identification of the scene's baked GI — see GiAssetCmd) resolves
+	// onto the replayed scene: kind World -> Scene::giWorldSource/ Guid;
+	// kind Cvol -> the addressed definition's SceneCvol::bakeSource/Guid.
+	// Dangling family refs warn + drop (strict=false reference replay
+	// semantics — a broken record must not take the scene down); a
+	// duplicate World record takes the FIRST (the bake owner upserts, so
+	// a hand-duplicated line is author error, not state).
+	for (const GiAssetCmd& ga : doc.giAssets) {
+		if (ga.source.empty())
+			continue; // half-written record: skip (mirrors the writer)
+		if (ga.kind == GiAssetCmd::Kind::World) {
+			if (!scene.giWorldSource.empty()) {
+				warn("tour: duplicate giAsset world record '" + ga.source
+					+ "' (first kept: '" + scene.giWorldSource + "')");
+				continue;
+			}
+			scene.giWorldSource = ga.source;
+			scene.giWorldGuid = ga.guid;
+			continue;
+		}
+		const uint32_t k = ga.ref & ~kCreateCvolRefBase;
+		if ((ga.ref & kCreateCvolRefBase) == 0 || k >= createdCvols.size()) {
+			warn("tour: giAsset cvol ref out of range: " + std::to_string(k)
+				+ " (dropped — '" + ga.source + "')");
+			continue;
+		}
+		auto it = scene.cvolForNode.find(createdCvols[k]);
+		if (it == scene.cvolForNode.end()) {
+			warn("tour: giAsset cvol target is not a cvolume (dropped — '"
+				+ ga.source + "')");
+			continue;
+		}
+		it->second.bakeSource = ga.source;
+		it->second.bakeGuid = ga.guid;
+	}
+	if (createdCvolsOut)
+		*createdCvolsOut = createdCvols;
 	// Transform pass: collect per-node TRS triples (tour order = last wins
 	// per channel), then rebuild each touched node's local matrix.
 	{
@@ -3967,6 +4067,74 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				continue;
 			}
 			scene.defaultCameraNode = target;
+		}
+	}
+	return true;
+}
+
+bool StampGiAssets(Doc& doc, const Scene& scene,
+	const std::vector<uint32_t>& createdCvols, std::string* err,
+	std::vector<std::string>* superseded) {
+	// Invert the family list once (node -> the k-th createCvolume, the
+	// index the giAsset cvol records address).
+	std::unordered_map<uint32_t, uint32_t> familyOf;
+	for (size_t k = 0; k < createdCvols.size(); ++k)
+		familyOf[createdCvols[k]] = uint32_t(k);
+	// The supersede list (record-exact): the OLD records' paths the new
+	// set drops. Bake artifacts carry RANDOM minted names — a fresh bake
+	// never collides with (or overwrites) an old file — so the ONLY way
+	// an old artifact lingers is nobody deleting it, and this set
+	// difference is the exact list.
+	std::vector<GiAssetCmd> oldRecords = std::move(doc.giAssets);
+	doc.giAssets.clear();
+	// World first (the record order the writer emits).
+	if (!scene.giWorldSource.empty())
+		doc.giAssets.push_back(GiAssetCmd{
+			GiAssetCmd::Kind::World, 0, scene.giWorldSource,
+			scene.giWorldGuid });
+	// Then one Cvol record per BOUND authored volume, in authored
+	// family order (createdCvols order = the tour's create order —
+	// stable, human-readable diffs). Volumes authored but unbaked
+	// (empty bakeSource — never baked, or their bake failed) carry no
+	// record: the pak cooker embeds nothing for them and the runtime
+	// says "no convex-volume binding" honestly.
+	for (uint32_t k = 0; k < createdCvols.size(); ++k) {
+		const uint32_t node = createdCvols[k];
+		auto it = scene.cvolForNode.find(node);
+		if (it == scene.cvolForNode.end()
+				|| it->second.bakeSource.empty())
+			continue;
+		doc.giAssets.push_back(GiAssetCmd{
+			GiAssetCmd::Kind::Cvol,
+			kCreateCvolRefBase | k, it->second.bakeSource,
+			it->second.bakeGuid });
+	}
+	// Hand-injected volumes (a binding on a node with no tour create —
+	// impossible from the bake owners, possible from hand-edited
+	// scenes): warn + skip (the record cannot address them).
+	for (const auto& [node, def] : scene.cvolForNode) {
+		if (!def.bakeSource.empty() && !familyOf.count(node)) {
+			std::cerr << "tour: StampGiAssets: cvolume node "
+				<< node << " ('" << def.bakeSource
+				<< "') carries no createCvolume family ref (skipped)\n";
+		}
+	}
+	// The supersede set-difference: every old path the new records no
+	// longer reference (a kept binding — e.g. the world field on a
+	// cvol-only rebake — keeps its file alive by construction).
+	if (superseded) {
+		superseded->clear();
+		for (const GiAssetCmd& old : oldRecords) {
+			if (old.source.empty())
+				continue;
+			bool kept = false;
+			for (const GiAssetCmd& fresh : doc.giAssets)
+				if (fresh.source == old.source) {
+					kept = true;
+					break;
+				}
+			if (!kept)
+				superseded->push_back(old.source);
 		}
 	}
 	return true;

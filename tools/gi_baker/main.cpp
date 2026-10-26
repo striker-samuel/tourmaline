@@ -839,6 +839,12 @@ struct CvSpecVolume {
 	smvk::gi::CvVolumeDef def;
 	float spacing = 0.5f;
 	float captureSpacing = 0.0f;
+	// The authored cvolume NODE (tour cvolume nodes; UINT32_MAX = a
+	// hand-written --cv-spec entry). The stamp binds baked volumes to
+	// their definitions by node — hand-tuning extras carry no node and
+	// stay unbound (diagnostic-only under the scene-carried binding
+	// model: the pak embeds exactly what the scene binds).
+	uint32_t node = UINT32_MAX;
 };
 
 bool ParseCvSpec(const std::string& hostPath, std::vector<CvSpecVolume>& out,
@@ -1099,10 +1105,16 @@ int Run(Args& args) {
 		inVfs = *mapped;
 	}
 	if (args.out.empty()) {
-		if (sceneId.empty())
-			sceneId = "scene";
+		// Default output NAME: RANDOM MINTED (a fresh guid). Note the
+		// name alone does not request the world bake — --out explicit
+		// is the request flag (outExplicit); a bare --tour run bakes
+		// cvols only and exits at the cvol block. When the world does
+		// bake (an explicit --out, or the editor's minted gargs.out),
+		// the stamp carries the artifact path in the tour's giAsset
+		// records — no stem-keyed default anywhere (that convention is
+		// what the records retired).
 		args.out = (std::filesystem::path(args.contentDir) / "gi"
-			/ (sceneId + ".sggi")).generic_string();
+			/ (smvk::tour::GenerateUuid() + ".sggi")).generic_string();
 	}
 
 	tool::out() << "GiBaker: scene '" << sceneId << "' from "
@@ -1117,6 +1129,7 @@ int Run(Args& args) {
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	cluster->SetOfflineMode(true);
 	smvk::tour::Doc tour;
+	std::vector<uint32_t> createdCvols; // family refs (the stamp's map)
 	if (haveTour) {
 		std::string terr;
 		std::vector<std::string> twarn;
@@ -1140,7 +1153,7 @@ int Run(Args& args) {
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-					&rerr)) {
+					&rerr, true, &createdCvols)) {
 				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
@@ -1226,6 +1239,49 @@ int Run(Args& args) {
 		}
 	}
 
+	// The tour stamp (the bake owner's write-back): mirror the replayed
+	// scene's bindings onto the tour's giAsset records, re-save, and
+	// DELETE the superseded artifacts (record-exact — bake outputs carry
+	// RANDOM minted names, so the old set-difference is the only exact
+	// list; a kept binding keeps its file by construction). Runs at
+	// every SUCCESS exit when --tour was given; a failed bake never
+	// stamps (the old records stand, the artifacts on disk are the last
+	// good bake).
+	auto stampTour = [&]() -> bool {
+		if (!haveTour)
+			return true;
+		std::string serr;
+		std::vector<std::string> superseded;
+		if (!smvk::tour::StampGiAssets(tour, cluster->scene,
+				createdCvols, &serr, &superseded)) {
+			tool::err() << "Tour giAsset stamp failed: " << serr
+				<< std::endl;
+			return false;
+		}
+		std::string saveErr;
+		if (!smvk::tour::SaveTour(args.tour, tour, saveErr)) {
+			tool::err() << "Tour re-save failed: " << saveErr
+				<< std::endl;
+			return false;
+		}
+		int deleted = 0;
+		for (const std::string& vfs : superseded) {
+			const std::filesystem::path host =
+				std::filesystem::path(args.contentDir) / vfs;
+			std::error_code ec;
+			if (std::filesystem::remove(host, ec))
+				++deleted;
+		}
+		tool::out() << "Tour stamped: " << tour.giAssets.size()
+			<< " giAsset binding(s) -> " << args.tour
+			<< (superseded.empty() ? std::string()
+				: " (deleted " + std::to_string(deleted)
+					+ "/" + std::to_string(superseded.size())
+					+ " superseded artifact(s))")
+			<< "\n";
+		return true;
+	};
+
 	// Authored convex volumes (editor Create > Convex volume, tour
 	// cvolume nodes): the definition's bake inputs. The node's WORLD
 	// transform carries the box (translate = center, basis lengths =
@@ -1254,6 +1310,7 @@ int Run(Args& args) {
 			v.def.name = "cvol" + std::to_string(node);
 		v.def.priority = def.priority;
 		v.spacing = def.spacing;
+		v.node = node;
 		v.def.planes = smvk::gi::CvBoxPlanesRotated(c, axes, half,
 			def.insideFade, def.outsideFade);
 		tourCvols.push_back(std::move(v));
@@ -1627,12 +1684,13 @@ int Run(Args& args) {
 
 	// Convex-volume bake (probes-only pivot). Sources stack: authored
 	// tour cvolume nodes (--tour, the definition) + hand-written
-	// --cv-spec entries. Bake each dense probe grid from sparse
-	// radiance+depth captures by cubemap reprojection (BO3 pipeline),
-	// write gi/<scene>_<name>.cvol and update the runtime manifest
-	// gi/<scene>.cvmanifest. Runs in addition to whatever else was
-	// asked for; like --regular-out, a cvol-only run (no --out) exits
-	// after this block.
+	// --cv-spec entries. Bake each volume's dense probe grid by the
+	// per-probe direct trace, write gi/<scene>_<name>.cvol and BIND the
+	// artifact to its authored definition (the replayed scene's
+	// SceneCvol::bakeSource — the stamp at the end of Run mirrors the
+	// bindings onto the tour's giAsset records). Runs in addition to
+	// whatever else was asked for; like --regular-out, a cvol-only run
+	// (no --out) exits after this block.
 	if (!args.cvSpec.empty() || !tourCvols.empty()) {
 		std::vector<CvSpecVolume> specVols;
 		std::string specErr;
@@ -1650,7 +1708,6 @@ int Run(Args& args) {
 				<< " volumes; the runtime manifest caps at 8\n";
 			return 2;
 		}
-		std::vector<std::string> manifestLines;
 		const std::filesystem::path cvolGiDir =
 			std::filesystem::path(args.contentDir) / "gi";
 		for (CvSpecVolume& spec : specVols) {
@@ -1673,11 +1730,13 @@ int Run(Args& args) {
 					<< "'\n";
 				return 1;
 			}
-			// Stable payload path (like mesh blobs): the scene stem +
-			// the spec name. A rename re-bakes under the new name; the
-			// old row survives in the manifest until hand-edited.
+			// The artifact name: RANDOM MINTED (a fresh guid per
+			// bake). The binding record IS the identity — the file
+			// name carries no scene/stem information to go stale (a
+			// rebake never collides with or overwrites the old
+			// artifact; the stamp's supersede list retires it).
 			const std::string outPath = (cvolGiDir
-				/ (sceneId + "_" + spec.def.name + ".cvol"))
+				/ (smvk::tour::GenerateUuid() + ".cvol"))
 				.generic_string();
 			{
 				std::filesystem::path out(outPath);
@@ -1691,6 +1750,31 @@ int Run(Args& args) {
 			}
 			tool::out() << "Wrote " << outPath << " ("
 				<< std::filesystem::file_size(outPath) << " B on disk)\n";
+			// The HARD identification (as meshes do): the baked volume
+			// binds to ITS authored definition on the replayed scene —
+			// the stamp at the end of Run mirrors the scene onto the
+			// tour's giAsset records and retires the superseded old
+			// artifact BY RECORD (the path is RANDOM MINTED, so the
+			// rebake never overwrote anything). Hand-tuning --cv-spec
+			// extras carry no node and stay unbound (the pak embeds
+			// exactly what the scene binds).
+			if (spec.node != UINT32_MAX) {
+				auto cvIt = cluster->scene.cvolForNode.find(spec.node);
+				if (cvIt == cluster->scene.cvolForNode.end()) {
+					tool::err() << "baked volume's node "
+						<< spec.node << " not in the replayed scene — "
+						"binding dropped\n";
+					return 1;
+				}
+				cvIt->second.bakeSource =
+					VfsRelPath(args.contentDir, outPath);
+				cvIt->second.bakeGuid.clear();
+			}
+			else {
+				tool::out() << "  (unbound: no authored node for '"
+					<< spec.def.name
+					<< "' — a --cv-spec extra, diagnostic-only)\n";
+			}
 			if (args.verify) {
 				smvk::gi::CvVolume reloaded;
 				std::string verr;
@@ -1705,87 +1789,19 @@ int Run(Args& args) {
 				if (reloaded.VoxelCount() != vol.VoxelCount())
 					return 1;
 			}
-			manifestLines.push_back(VfsRelPath(args.contentDir, outPath)
-				+ "  # " + spec.def.name);
 		}
-		// Runtime manifest (stable path gi/<scene>.cvmanifest): this
-		// bake's rows first (rebaked volumes replace their own rows by
-		// spec-name note), then every surviving line (legacy "<guid>
-		// <path>" rows are still read by SplitManifestRow; hand rows
-		// kept) — hand-edited entries survive rebakes.
-		{
-			const std::filesystem::path manifestPath =
-				cvolGiDir / (sceneId + ".cvmanifest");
-			std::vector<std::string> lines;
-			// Merge helper: keep this bake's rows, then every surviving
-			// line of the previous manifest, minus exact duplicates.
-			auto readLines = [](const std::string& path,
-					std::vector<std::string>& out) {
-				std::ifstream in(path, std::ios::binary);
-				if (!in)
-					return;
-				std::string cur;
-				while (std::getline(in, cur)) {
-					while (!cur.empty() && (cur.back() == '\r'
-						|| cur.back() == ' '))
-						cur.pop_back();
-					if (!cur.empty() && cur[0] != '#')
-						out.push_back(cur);
-				}
-			};
-			std::vector<std::string> oldRows;
-			readLines(manifestPath.generic_string(), oldRows);
-			for (const std::string& add : manifestLines) {
-				// Replace the row carrying the same spec note (the
-				// rebaked volume's new path), else append.
-				auto rowNote = [](const std::string& line) {
-					const size_t hash = line.find('#');
-					if (hash == std::string::npos)
-						return std::string();
-					std::string note = line.substr(hash + 1);
-					size_t b = 0;
-					while (b < note.size() && (note[b] == ' '
-						|| note[b] == '\t'))
-						++b;
-					size_t e = note.size();
-					while (e > b && (note[e - 1] == ' '
-						|| note[e - 1] == '\t'))
-						--e;
-					return note.substr(b, e - b);
-				};
-				const std::string note = rowNote(add);
-				bool replaced = false;
-				for (std::string& old : oldRows) {
-					if (!note.empty() && rowNote(old) == note) {
-						old = add;
-						replaced = true;
-						break;
-					}
-				}
-				if (!replaced
-					&& std::find(oldRows.begin(), oldRows.end(), add)
-						== oldRows.end())
-					oldRows.push_back(add);
-			}
-			{
-				std::ofstream out(manifestPath,
-					std::ios::binary | std::ios::trunc);
-				if (!out) {
-					tool::err() << "Convex manifest write failed: "
-						<< manifestPath.generic_string() << std::endl;
-					return 1;
-				}
-				out << "# convex GI volumes (GiBaker --cv-spec; "
-					"<vfsPath> rows, hand lines kept)\n";
-				for (const std::string& l : oldRows)
-					out << l << "\n";
-			}
-			tool::out() << "Manifest " << manifestPath.generic_string()
-				<< ": " << oldRows.size() << " volume(s)\n";
-		}
+		// NO cvmanifest anymore: the scene's HARD per-volume bindings
+		// (updated above, mirrored onto the tour by the stamp at the
+		// end of Run) REPLACE the manifest round-trip — the pak cooker
+		// embeds exactly what the scene binds, the runtime loads by
+		// binding. The old gi/<scene>.cvmanifest channels (loose
+		// discovery + legacy paks) are retired with the stem
+		// convention.
 		// A cvol-only run (no --out) is done; --out falls through to the
 		// adaptive world-field bake (the .sggi and .cvol files pair up).
 		if (!args.outExplicit) {
+			if (!stampTour())
+				return 1;
 			const auto t1 = std::chrono::steady_clock::now();
 			tool::out() << "GiBaker total: "
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
@@ -2042,6 +2058,12 @@ int Run(Args& args) {
 
 	tool::out() << "Wrote " << args.out << " ("
 		<< std::filesystem::file_size(args.out) << " B on disk)\n";
+	// The world-field binding (the same hard-identification stamp as the
+	// cvol volumes): the baked octree binds to the scene on the replayed
+	// state — the tour stamp at the exit mirrors it into the giAsset
+	// records. VfsRelPath is the content-relative form the records carry.
+	cluster->scene.giWorldSource = VfsRelPath(args.contentDir, args.out);
+	cluster->scene.giWorldGuid.clear();
 	tool::out() << "  probes=" << stats.probeCount
 		<< " waves=" << stats.refineWaves
 		<< " paths=" << stats.pathsTraced
@@ -2115,6 +2137,10 @@ int Run(Args& args) {
 			return 1;
 	}
 
+	// The stamp before the exit (see stampTour): the world field just
+	// bound + every baked volume's record.
+	if (!stampTour())
+		return 1;
 	const auto t1 = std::chrono::steady_clock::now();
 	tool::out() << "GiBaker total: "
 		<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
