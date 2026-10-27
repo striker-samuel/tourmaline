@@ -476,6 +476,13 @@ namespace editor {
 				DraftCreateCubemap();
 			if (ImGui::MenuItem("Camera", nullptr, false, canCreate))
 				DraftCreateCamera();
+			if (ImGui::MenuItem("Locator", nullptr, false, canCreate)) {
+				// A named bare transform (no mesh/light/pool) — a game
+				// code anchor: spawn points, trigger zones, patrol
+				// markers. Tour: createNode -at transform; the runtime
+				// finds it by NAME (findNodeByName).
+				DraftCreateLocator();
+			}
 			if (ImGui::MenuItem("Terrain...", nullptr, false, canCreate)) {
 				// Seed the dialog defaults (name, material) once per open.
 				std::snprintf(m_terrainNameBuf, sizeof(m_terrainNameBuf), "%s",
@@ -1389,7 +1396,7 @@ namespace editor {
 				ImGui::PushID(int(n));
 				const bool sel = IsSelected(n);
 				char label[300];
-				std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s%s", n,
+				std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s%s%s", n,
 					name.empty() ? "(unnamed)" : name.c_str(),
 					m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
 					FindNodeLight(n) ? " [light]" : "",
@@ -1398,6 +1405,8 @@ namespace editor {
 					m_world->scene.cameraForNode.contains(n) ? " [camera]" : "",
 					m_world->scene.exportForNode.contains(n) ? " [export]" : "",
 					IsEnvNode(n) ? " [env]" : "",
+					(IsLocatorNode(m_world->scene, n) && !IsRefPlaceholder(n))
+						? " [locator]" : "",
 					IsRefPlaceholder(n) ? " [ref]" : "",
 					!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
 				if (ImGui::Selectable(label, sel)) {
@@ -1465,7 +1474,7 @@ namespace editor {
 				nodeLight->type == ::SceneLight::Type::Spot ? "spot" : "point");
 		}
 		char label[300];
-		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 			name.empty() ? "(node)" : name.c_str(),
 			hasMesh ? " [mesh]" : "", lightTag,
 			scene.giVolumeForNode.contains(node) ? " [giv]" : "",
@@ -1477,6 +1486,8 @@ namespace editor {
 			IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
 			IsStaticSubtreeRoot(scene, int(node)) ? " [static]" : "",
 			IsEnvNode(node) ? " [env]" : "",
+			(IsLocatorNode(scene, node) && !IsRefPlaceholder(node))
+				? " [locator]" : "",
 			IsRefPlaceholder(node) ? " [ref]" : "",
 			!IsVisibleNode(scene, int(node))
 			? (IsHiddenNode(scene, int(node)) ? " [hidden]" : " [hidden*]") : "");

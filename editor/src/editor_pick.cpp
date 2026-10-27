@@ -305,6 +305,16 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 			consider(node, glm::vec3(scene.globalTransform[node][3]));
 		}
 	}
+	// Locators: bare transform nodes (the teal crosses in the gizmo
+	// pass — see IsLocatorNode). Click-to-select like the light
+	// markers; the 14 px threshold matches.
+	for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
+		if (!IsLocatorNode(scene, node))
+			continue;
+		if (node >= scene.globalTransform.size())
+			continue;
+		consider(node, glm::vec3(scene.globalTransform[node][3]));
+	}
 	if (!found)
 		return std::nullopt;
 	return best;

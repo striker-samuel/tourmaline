@@ -992,6 +992,8 @@ private:
 	std::string UniqueCubemapName() const;
 	// Unique "Camera_N" name over the live world cameras.
 	std::string UniqueCameraName() const;
+	// Unique "Locator_N" name over the live world node names.
+	std::string UniqueLocatorName() const;
 	// Unique "Terrain_N" name over the live world terrains.
 	std::string UniqueTerrainName() const;
 	// Unique copy name for duplicates (Edit > Duplicate / Ctrl+D):
@@ -1306,6 +1308,18 @@ private:
 	// Create menu: camera at the active camera target (perspective,
 	// 50 deg, 0.1/1000 m).
 	void DraftCreateCamera();
+	// Create menu: locator — a NAMED bare transform (no mesh, no light,
+	// no pool entry — a game-code anchor; spawn points, trigger zones,
+	// patrol markers, music regions). The tour verb is CreateTransform
+	// (createNode -at transform); the runtime finds them by NAME
+	// (findNodeByName — the name IS the locator's identity).
+	void DraftCreateLocator();
+	// True when the node is a bare transform: no mesh/light/camera/decal/
+	// givolume/cubemap/export/env link — the "locator" definition. Used
+	// by the outliner tag, the gizmo marker, and the click pick. NOTE:
+	// imported empty group nodes ALSO match; they are the same concept
+	// (a named anchor with no payload — the tag is honest for both).
+	static bool IsLocatorNode(const Scene& scene, uint32_t node);
 	// First camera node in the live world, or UINT32_MAX (World panel,
 	// viewport camera bindings).
 	uint32_t FindCameraNode() const;

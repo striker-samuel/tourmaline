@@ -353,6 +353,46 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
+	// Locator markers: one distance-scaled 3-axis cross per bare
+	// transform node (no mesh/light/camera/etc — see IsLocatorNode).
+	// The cross reads as "a named anchor point" (the Maya locator look)
+	// — it is the click target and the world-position marker for game
+	// code anchors (spawn points, trigger zones, patrol markers).
+	// LIGHTING mode only — locators carry no mesh to raycast.
+	if (lightSetVisible && m_world && m_world->scene.hierarchy.size() > 0) {
+		const glm::vec3 eye = EditorCamEye(ActiveCam());
+		const Scene& scene = m_world->scene;
+		for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
+			if (!IsLocatorNode(scene, node))
+				continue;
+			if (node >= scene.globalTransform.size())
+				continue;
+			if (!IsVisibleNode(scene, int(node)))
+				continue;
+			const glm::vec3 p = glm::vec3(scene.globalTransform[node][3]);
+			float s = glm::distance(eye, p) * 0.03f;
+			if (!(s > 1e-5f))
+				continue;
+			if (node == m_selected)
+				s *= 1.6f; // selected marker reads bigger
+			LineBatch b;
+			// Teal cross — distinct from the light diamonds and the
+			// gizmo axis colors.
+			b.color = (node == m_selected)
+				? glm::vec4(0.4f, 1.0f, 0.9f, 1.0f)
+				: glm::vec4(0.2f, 0.8f, 0.7f, 1.0f);
+			// 3-axis cross (X/Z horizontal, Y vertical) — the position
+			// reads at a glance from any view angle.
+			b.verts.push_back({ p - glm::vec3(s, 0, 0) });
+			b.verts.push_back({ p + glm::vec3(s, 0, 0) });
+			b.verts.push_back({ p - glm::vec3(0, s, 0) });
+			b.verts.push_back({ p + glm::vec3(0, s, 0) });
+			b.verts.push_back({ p - glm::vec3(0, 0, s) });
+			b.verts.push_back({ p + glm::vec3(0, 0, s) });
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
 	// GI-volume boxes: one X-ray wire box per GI volume node (shape =
 	// node translate/scale/ROTATION — an OBB), priority-hued like the GI
 	// preview overlay so authored and baked volumes read the same; the

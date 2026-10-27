@@ -594,6 +594,23 @@ std::string EditorApp::UniqueCameraName() const {
 	return "Camera_" + std::to_string(n);
 }
 
+std::string EditorApp::UniqueLocatorName() const {
+	// Next free "Locator_N" over live node names (1-based).
+	int n = 1;
+	if (m_world) {
+		for (;;) {
+			const std::string want = "Locator_" + std::to_string(n);
+			bool taken = false;
+			for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
+				taken = getNodeName(m_world->scene, int(i)) == want;
+			if (!taken)
+				break;
+			++n;
+		}
+	}
+	return "Locator_" + std::to_string(n);
+}
+
 std::string EditorApp::UniqueTerrainName() const {
 	// Next free "Terrain_N" over live node names (1-based).
 	int n = 1;
@@ -877,6 +894,63 @@ void EditorApp::DraftCreateCamera() {
 	c.camNear = std::max(cam.nearClip, 1e-4f);
 	c.camFar = std::max(cam.farClip, c.camNear * 1.1f + 1e-3f);
 	c.camOrthoHalfH = std::clamp(cam.orthoHalfH, 1e-2f, 1e5f);
+	Do(c);
+}
+
+bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
+	// The "locator" definition: a bare transform — no type link of any
+	// kind. This is the INVERSE of the contains-chain the outliner uses
+	// for tags; it catches editor-created locators, imported glTF empty
+	// group nodes, and tour replayed createNode -at transform nodes.
+	// Hidden/flagged nodes still count (the flags are display state, not
+	// type identity). A terrain group node also matches (its tiles carry
+	// the meshes) — see TerrainGroupOf for the distinction when needed.
+	if (node >= scene.hierarchy.size())
+		return false;
+	if (scene.meshForNode.contains(node))
+		return false;
+	if (scene.lightForNode.contains(node))
+		return false;
+	if (scene.cameraForNode.contains(node))
+		return false;
+	if (scene.decalForNode.contains(node))
+		return false;
+	if (scene.giVolumeForNode.contains(node))
+		return false;
+	if (scene.cubemapForNode.contains(node))
+		return false;
+	if (scene.exportForNode.contains(node))
+		return false;
+	if (scene.envForNode.contains(node))
+		return false;
+	if (scene.envVolumeForNode.contains(node))
+		return false;
+	return true;
+}
+
+void EditorApp::DraftCreateLocator() {
+	if (!m_world) {
+		Log("Create locator: no scene open.");
+		return;
+	}
+	// A locator is a Create Transform with a meaningful default name —
+	// the NAME is the identity game code will look up (findNodeByName).
+	// The tour verb is createNode -at transform; the pak scene blob
+	// serializes the node's hierarchy row + transform + name with ZERO
+	// payload, so it round-trips with no format change.
+	EditCmd c{};
+	c.verb = EditVerb::CreateTransform;
+	c.node = UINT32_MAX; // assigned at forward execution
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = UniqueLocatorName();
+	// Spawn at the active camera target (what you're looking at — the
+	// most likely intent for a spawn point / trigger / patrol marker).
+	const EditorCam& cam = ActiveCam();
+	c.afterVec = cam.target;
+	c.vec4 = glm::vec4(0.0f); // no rotation
+	c.svec = glm::vec3(1.0f); // unit scale
 	Do(c);
 }
 
