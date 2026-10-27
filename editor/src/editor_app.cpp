@@ -413,6 +413,9 @@ void EditorApp::LoadPrefs() {
 			// is project-owned) — a stale entry is ignored.
 			else if (section == "project" && key == "dir")
 				m_projectRoot = val;
+			// [renderQuality] retired: the GI/shadow renderer knobs are
+			// SESSION-ONLY now (live on the WYSIWYG view, nothing saved);
+			// a stale prefs section falls through ignored.
 			// Recents (most recent first; recentN index-ordered).
 			else if (section == "projects"
 				&& key.rfind("recent", 0) == 0 && key.size() > 6) {

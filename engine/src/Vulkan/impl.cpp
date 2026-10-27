@@ -4183,6 +4183,136 @@ void smvk::UploadStreamer::uploadImage(ImageHandle imageHandle, const void* data
 	// update global sync
 	VulkanResourceManager::ImageGlobalSyncState st{}; st.masks.stageMask = FromVkPipelineStage(dstStages); if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess)); st.masks.accessMask = FromVkAccess(dstAccess); st.layout = remainTransfer ? ImageLayout::TransferDstOptimal : ImageLayout::ShaderReadOnlyOptimal; if (remainTransfer) st.masks.stageMask = PipelineStageBit_Transfer; m_rm->SetImageSyncState(imageHandle, st);
 }
+void smvk::UploadStreamer::uploadImageRegions(ImageHandle imageHandle, const void* blob, size_t blobBytes,
+	const VkBufferImageCopy2* copies, size_t copyCount,
+	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
+	if (!blob || blobBytes == 0 || copies == nullptr || copyCount == 0 || imageHandle.empty()) return;
+	Image* img = m_rm->images_.get(imageHandle);
+	if (!img || img->vkImage == VK_NULL_HANDLE) return;
+	assert(img->type == ImageType::Image3D && "uploadImageRegions targets persistent 3D atlases (single mip/layer)");
+	assert(img->mipLevels == 1 && img->arrayLayers == 1 && "uploadImageRegions: single-mip, single-layer atlases only");
+
+	// The pre-copy barrier's oldLayout comes from the TRACKED layout, not
+	// UNDEFINED: a persistent atlas holds other slots' contents, and a
+	// UNDEFINED-source barrier discards the whole subresource (Vulkan
+	// treats UNDEFINED as "contents don't need preserving"). First-ever
+	// upload into a never-transitioned image: UNDEFINED is correct there
+	// (nobody can be sampling an unestablished atlas). SRO is the steady
+	// state — every uploadImage/uploadImageRegions leaves the atlas there.
+	const VulkanResourceManager::ImageGlobalSyncState tracked = m_rm->GetImageSyncState(imageHandle);
+	VkImageLayout currentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	if (tracked.layout == ImageLayout::ShaderReadOnlyOptimal || tracked.layout == ImageLayout::TransferDstOptimal)
+		currentLayout = ToVkImageLayout(tracked.layout);
+	else
+		assert(tracked.layout == ImageLayout::Undefined &&
+			"uploadImageRegions: atlas must be Undefined (fresh) or ShaderReadOnly (established)");
+
+	// Staging-ring half — identical mechanics to uploadImage (ring alloc
+	// with precise in-flight wrap sync, temp-buffer fallback for oversize,
+	// deferred cleanup keyed to the batch's timeline point). ONE
+	// allocation + ONE memcpy for the whole blob: the copies index into
+	// it via their bufferOffset fields.
+	ThreadUploadState& ust = states_[CurrentPoolShard()];
+	UploadShardActiveGuard shardGuard{ ust.active };
+	VkDeviceSize ringOff = allocFromRing(ust, blobBytes, 16);
+	VmaAllocation tmpAlloc = VK_NULL_HANDLE; VkBuffer tmpBuf = VK_NULL_HANDLE; bool useTmp = false;
+	void* dstPtr = nullptr;
+	VkBuffer srcBuf = ust.ring.buffer;
+	VkDeviceSize srcOff = ringOff;
+	if (ringOff == VK_WHOLE_SIZE) {
+		VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+		ci.size = blobBytes;
+		ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO; aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT; aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+		VmaAllocationInfo info{}; VK_CHECK(vmaCreateBuffer(m_rm->m_allocator, &ci, &aci, &tmpBuf, &tmpAlloc, &info));
+		dstPtr = info.pMappedData;
+		srcBuf = tmpBuf;
+		srcOff = 0;
+		useTmp = true;
+	}
+	else {
+		dstPtr = static_cast<char*>(ust.ring.mapped) + ringOff;
+	}
+	memcpy(dstPtr, blob, blobBytes);
+	vmaFlushAllocation(m_rm->m_allocator, useTmp ? tmpAlloc : ust.ring.allocation, srcOff, blobBytes);
+	ensureCmd(ust);
+
+	const VkImageSubresourceRange fullRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, img->mipLevels, 0, img->arrayLayers };
+	uint32_t srcF = m_transfer->queueFamilyIndex();
+	uint32_t dstF = m_graphics->queueFamilyIndex();
+	const bool crossQueue = srcF != dstF;
+	// CONCURRENT atlases (created concurrentCompute: graphics+compute+
+	// transfer) skip release/acquire ownership pairs — see the matching
+	// comment in uploadImage.
+	const bool needOwnership = crossQueue && !img->isConcurrent;
+	const uint32_t relSrcF = needOwnership ? srcF : VK_QUEUE_FAMILY_IGNORED;
+	const uint32_t acqDstF = needOwnership ? dstF : VK_QUEUE_FAMILY_IGNORED;
+	// Pre-copy: CURRENT -> TRANSFER_DST, ONCE for the whole batch
+	// (content-preserving — see the tracked-layout note above).
+	// ALL_COMMANDS + MEMORY_READ on the src side covers every prior
+	// reader of the other slots; other queues are already ordered by
+	// submitTransfer's timeline waits at ALL_COMMANDS.
+	if (currentLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+		ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange,
+			VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	else
+		ImageBarrier(ust.curCmd, img->vkImage, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, fullRange,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	// ALL the region copies in ONE vkCmdCopyBufferToImage2 (tight buffer
+	// layout per copy: bufferRowLength/bufferImageHeight = 0; the
+	// copies' bufferOffsets are rebased onto this batch's ring alloc).
+	// One copy command = one driver submission chunk instead of N.
+	{
+		std::vector<VkBufferImageCopy2> regions(copies, copies + copyCount);
+		for (VkBufferImageCopy2& r : regions)
+			r.bufferOffset += srcOff;
+		VkCopyBufferToImageInfo2 copyInfo{ VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2, nullptr,
+			srcBuf, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			uint32_t(regions.size()), regions.data() };
+		vkCmdCopyBufferToImage2(ust.curCmd, &copyInfo);
+	}
+	// Post-copy: TRANSFER_DST -> SHADER_READ_ONLY, ONCE for the batch.
+	// No "remain transfer dst" mode — atlas pages are always published for
+	// sampling the same frame (the frame's main submit waits this batch).
+	if (crossQueue) {
+		if (needOwnership) {
+			VkImageMemoryBarrier2 rel{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr,
+				VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, 0, 0,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				srcF, dstF, img->vkImage, fullRange };
+			VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO, nullptr, 0, 0, nullptr, 0, nullptr, 1, &rel };
+			vkCmdPipelineBarrier2(ust.curCmd, &dep);
+		}
+		VkImageMemoryBarrier2 acq{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, nullptr,
+			0, 0, dstStages, dstAccess,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			relSrcF, acqDstF, img->vkImage, fullRange };
+		ust.pendingImageAcquires.push_back(acq);
+	}
+	else {
+		ImageBarrier(ust.curCmd, img->vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, fullRange,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, dstStages, dstAccess,
+			VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED);
+	}
+	ust.hasPending = true;
+	if (useTmp) {
+		ust.pendingCleanups.push_back(std::packaged_task<void()>([rm = m_rm, buf = tmpBuf, alloc = tmpAlloc] { vmaDestroyBuffer(rm->m_allocator, buf, alloc); }));
+	}
+	ust.stagedBytesSinceFlush += blobBytes;
+	if (ust.stagedBytesSinceFlush >= flushThreshold_) {
+		submitState(ust, false);
+	}
+	VulkanResourceManager::ImageGlobalSyncState st{};
+	st.masks.stageMask = FromVkPipelineStage(dstStages);
+	if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE) st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
+	st.masks.accessMask = FromVkAccess(dstAccess);
+	st.layout = ImageLayout::ShaderReadOnlyOptimal;
+	m_rm->SetImageSyncState(imageHandle, st);
+}
 void smvk::UploadStreamer::uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
 	VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
 	if (!data || imageHandle.empty() || regions.empty()) return;
@@ -5264,6 +5394,106 @@ void smvk::VulkanResourceManager::UploadDataToImage2D(
 		),
 		submitHandle
 	);
+}
+void smvk::VulkanResourceManager::UploadDataToImage3DRegions(
+	ImageHandle image,
+	const ImageRegionCopy3D* copies,
+	size_t copyCount,
+	const void* blob,
+	size_t blobBytes,
+	VkPipelineStageFlags2 dstStages,
+	VkAccessFlags2 dstAccess
+)
+{
+	assert(blob != nullptr);
+	assert(copies != nullptr || copyCount == 0);
+	assert(!image.empty() && "UploadDataToImage3DRegions: empty image handle");
+	Image* img = image.empty() ? nullptr : images_.get(image);
+	assert(img && img->vkImage != VK_NULL_HANDLE && "UploadDataToImage3DRegions: dead image handle");
+	if (!img || img->vkImage == VK_NULL_HANDLE || !blob || copies == nullptr || copyCount == 0)
+		return;
+	// Persistent 3D atlas contract: single mip/layer subresource (the
+	// whole-image 3D path asserts the same — see UploadDataToImage2D's
+	// 3D branch).
+	assert(img->type == ImageType::Image3D && "UploadDataToImage3DRegions: Image3D atlases only");
+	assert(img->mipLevels == 1 && img->arrayLayers == 1 && "UploadDataToImage3DRegions: single-mip, single-layer atlases only");
+
+	// Per-entry validation. Block-compressed formats copy in 4x4x1
+	// blocks: offsets AND extents must be block-aligned (the 68-texel
+	// stored brick is deliberately 4-divisible), and each entry's tight
+	// payload is blocksX * blocksY * depth * bytesPerBlock — the same
+	// math as the whole-image 3D path. srcOffset + size must land in
+	// the blob.
+	const FormatBlockInfo fmt = GetFormatBlockInfo(img->format);
+	assert(fmt.bytesPerBlock > 0 && "UploadDataToImage3DRegions: format not usable as an atlas payload");
+
+	// Stack of copy entries (world-field frames batch a handful of
+	// bricks; the driver sees one vkCmdCopyBufferToImage2 for all).
+	VkBufferImageCopy2 vkCopies[64];
+	assert(copyCount <= (sizeof(vkCopies) / sizeof(vkCopies[0]))
+		&& "UploadDataToImage3DRegions: batch cap 64 entries — split larger frames");
+	if (copyCount > (sizeof(vkCopies) / sizeof(vkCopies[0])))
+		return;
+	for (size_t i = 0; i < copyCount; ++i) {
+		const ImageRegion3D& region = copies[i].region;
+		assert(region.mipLevel == 0 && region.baseArrayLayer == 0
+			&& "UploadDataToImage3DRegions: subresource remap unsupported");
+		assert(region.offset.x >= 0 && region.offset.y >= 0 && region.offset.z >= 0
+			&& "UploadDataToImage3DRegions: negative region offset");
+		assert(region.extent.width > 0 && region.extent.height > 0 && region.extent.depth > 0
+			&& "UploadDataToImage3DRegions: empty region");
+		assert(region.offset.x + (int32_t)region.extent.width <= (int32_t)img->extent.width
+			&& region.offset.y + (int32_t)region.extent.height <= (int32_t)img->extent.height
+			&& region.offset.z + (int32_t)region.extent.depth <= (int32_t)img->extent.depth
+			&& "UploadDataToImage3DRegions: region exceeds image extent");
+		if (fmt.compressed) {
+			assert((uint32_t)region.offset.x % fmt.blockWidth == 0 && (uint32_t)region.offset.y % fmt.blockHeight == 0
+				&& "UploadDataToImage3DRegions: compressed region offsets must be block-aligned");
+			assert(region.extent.width % fmt.blockWidth == 0 && region.extent.height % fmt.blockHeight == 0
+				&& "UploadDataToImage3DRegions: compressed region extents must be block-aligned");
+		}
+		const uint32_t blocksX = (region.extent.width + fmt.blockWidth - 1) / fmt.blockWidth;
+		const uint32_t blocksY = (region.extent.height + fmt.blockHeight - 1) / fmt.blockHeight;
+		const size_t entryBytes = (size_t)blocksX * blocksY * region.extent.depth * fmt.bytesPerBlock;
+		assert(copies[i].srcOffset + entryBytes <= blobBytes
+			&& "UploadDataToImage3DRegions: entry payload exceeds the blob");
+
+		VkBufferImageCopy2& r = vkCopies[i];
+		r = VkBufferImageCopy2{ VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2 };
+		r.bufferOffset = copies[i].srcOffset;
+		r.bufferRowLength = 0; // tight region layout
+		r.bufferImageHeight = 0;
+		r.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		r.imageOffset = { region.offset.x, region.offset.y, region.offset.z };
+		r.imageExtent = { region.extent.width, region.extent.height, region.extent.depth };
+	}
+
+	assert(m_streamer && "UploadDataToImage3DRegions requires the upload streamer");
+	if (m_streamer) {
+		// NOT flushed per call (unlike the whole-image 3D path's
+		// flushLocal): atlas pages batch with the page-table buffer upload
+		// in one transfer batch — present-time flush + the frame
+		// submit's timeline wait publishes data AND table together, and
+		// the batch ordering (region copies first, table upload recorded
+		// after in the same streamer shard) guarantees no table entry can
+		// point at data that has not landed yet.
+		m_streamer->uploadImageRegions(image, blob, blobBytes, vkCopies, copyCount,
+			dstStages, dstAccess);
+	}
+}
+
+void smvk::VulkanResourceManager::UploadDataToImage3DRegion(
+	ImageHandle image,
+	const ImageRegion3D& region,
+	const void* data,
+	size_t dataSize,
+	VkPipelineStageFlags2 dstStages,
+	VkAccessFlags2 dstAccess
+)
+{
+	// 1-entry form of the batch (identical validation + recording).
+	const ImageRegionCopy3D one{ region, 0 };
+	UploadDataToImage3DRegions(image, &one, 1, data, dataSize, dstStages, dstAccess);
 }
 [[nodiscard]] smvk::Image smvk::VulkanResourceManager::CreateImageImpl(const ImageCreateInfo& ci)
 {

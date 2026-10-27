@@ -292,7 +292,12 @@ struct DirectionalCascadeBuffer
 // ---- Forward+ tiled lights (point/spot/probe; directional stays on CSM path) ----
 // Must match C++ smvk::ForwardPlusLight (96 bytes).
 // flags bit0 = shadow request (kForwardPlusFlag_CastShadow); shadowTile >= 0
-// means this frame assigned a spot-shadow tile (spot only, points ignore).
+// means this frame assigned a local-light shadow tile: SPOTS get one
+// perspective tile (index into the atlas descriptor array), POINTS get SIX
+// consecutive cube-face tiles (shadowTile = the first; the sampler adds the
+// dominant-axis face number - see shadows.hlsli GetPointShadowFactorTile).
+// shadowMapIndex is the bindless atlas the light samples (the D32 tile
+// atlas for points; the blurred EVSM moments for spots when evsmMode on).
 // cookieIndex >= 0 = bindless gobo texture projected through the spot cone
 // (spot only). functionType > 0 = procedural light function (see
 // light.hlsli EvaluateLightFunction): 1 flicker, 2 pulse, 3 cone bands.
@@ -313,8 +318,8 @@ struct ForwardPlusLight
     float outerAngle;   // 52 radians (spot)
     int type;           // 56 0=point, 1=spot
     int flags;          // 60 bit0 = cast-shadow request
-    int shadowTile;     // 64 tile in spot atlas, -1 = unshadowed
-    int shadowMapIndex; // 68 bindless spot atlas index, -1 = unshadowed
+    int shadowTile;     // 64 spot: tile index; point: FIRST of 6 face tiles; -1 = unshadowed
+    int shadowMapIndex; // 68 bindless atlas index, -1 = unshadowed
     float shadowBias;   // 72 receiver-depth bias (perspective)
     float pad2_;        // 76
     int cookieIndex;    // 80 bindless gobo texture, -1 = none
@@ -323,13 +328,21 @@ struct ForwardPlusLight
     float functionScale; // 92 modulation depth / pattern scale
 };
 
+// Local-light shadow tiles: 8 spot tiles + 6 cube-face tiles per shadowed
+// point light (2 max). MUST match C++ kMaxSpotShadows / kMaxPointShadowLights
+// / kMaxLocalShadowTiles (spotshadow.h) - both sides size the per-frame
+// descriptor ring off these.
 #define MAX_SPOT_SHADOWS 8
+#define MAX_POINT_SHADOW_LIGHTS 2
+#define MAX_LOCAL_SHADOW_TILES (MAX_SPOT_SHADOWS + 6 * MAX_POINT_SHADOW_LIGHTS)
 
-// Spot-shadow tile descriptors. Reuses GpuCascadeDescription layout
-// (lightVP + atlas UV transform + bias); splitEnd stores the spot range.
+// Local-light shadow tile descriptors (spot tiles + point cube-face tiles;
+// the frame numbering is spots first, faces after). Reuses
+// GpuCascadeDescription layout (lightVP + atlas UV transform + bias);
+// splitEnd stores the light range.
 struct SpotShadowBuffer
 {
-    GpuCascadeDescription tiles[MAX_SPOT_SHADOWS];
+    GpuCascadeDescription tiles[MAX_LOCAL_SHADOW_TILES];
 };
 
 #define MAX_FP_LIGHTS 1024
@@ -365,6 +378,30 @@ struct ForwardPlusTileCountBuffer
 struct ForwardPlusTileIndexBuffer
 {
     uint indices[MAX_FP_TILES * MAX_FP_PER_TILE];
+};
+
+// Relevance-sort capacity of the cull's tile lists (surface AND fog): the
+// desc's maxLightsPerTile / maxFogPerTile must stay <= it (16 today). A
+// larger push clamps HERE (both the inserted slots and the stored counts
+// follow), so list addressing can never leave the allocated rows.
+#define MAX_FP_TILE_SORT_SLOTS 32
+
+// Per-tile FOG lists (the volumetric march's light candidates): SEPARATE
+// buffers from the surface lists because their candidacy ignores the tile
+// depth slab — march samples live in front of the nearest opaque surface,
+// so slab cuts would drop lights the fog needs (the same no-cut rationale
+// the GiVolumeTileMaskBuffer leg documents). Probes never ride them (the
+// march is scalar — no specular IBL). Row stride = the desc's
+// maxFogPerTile (the type row is the sort-cap upper bound, matching the
+// surface-list pattern where the type row is MAX_FP_PER_TILE).
+struct ForwardPlusFogTileCountBuffer
+{
+    uint counts[MAX_FP_TILES];
+};
+
+struct ForwardPlusFogTileIndexBuffer
+{
+    uint indices[MAX_FP_TILES * MAX_FP_TILE_SORT_SLOTS];
 };
 
 // Per-tile GI-volume bitmask (the volume leg of forwardplus.cs.hlsl):
@@ -497,7 +534,9 @@ struct EnvZonesBuffer
 // deferred-shadow fields at 672, SG-GI fields at 704, evsmMode at 748,
 // decal fields at 752, regular-volume fields at 784, convex-volume
 // fields at 1040, frameHot at 1296, dsVizParams at 1304, flags at 1312
-// (total 1328).
+// (total 1328); the append-only tail adds giLevelLayers at 1320,
+// giVolumeMeanLayers at 1640, envZones at 1672, lightmaps at 1888,
+// probe pre-mix at 1952, worldFields at 1976 (total 2000).
 // The DS visualizer inputs live in the standalone DsVizParams payload
 // (NOT inlined here): viz-gated #ifdefs inside this struct once made the
 // CPU/GPU layout config-dependent.
@@ -715,7 +754,19 @@ uint decalCount;                                         // 776 0 = decals off
     uint probePremixIndex;                                         // 1952 blended cubemap (off = 0xffffffff)
     uint probePremixMips;                                          // 1956 blended chain mip count
     uint64_t probePremixSel;                                       // 1960 selection BDA (weights pass output)
-    uint2 probePremixPad_;                                         // 1968 (16-align tail; struct ends 1984)
+    uint2 probePremixPad_;                                         // 1968 (16-align tail; struct was 1984)
+    // ---- World voxel fields (Engine/WorldFields — the atlas-backed
+    // virtual world volume system; sampler in world_field.hlsli, layout
+    // contract in Engine/WorldFields/WorldFieldGpu.h). worldFields is
+    // the BDA of this frame's field/page-table storage buffer (0 = the
+    // subsystem is off — SampleWorldField returns zeros); the buffer and
+    // its BDA are stable for the system's lifetime, the CONTENT is
+    // re-published whenever residency moves. worldFieldCount = live
+    // fields (field ids are registration order, fog first). APPEND-ONLY
+    // tail: every pinned offset above stays put. ----
+    uint64_t worldFields;                                          // 1976 field/page-table BDA (0 = off)
+    uint worldFieldCount;                                          // 1984 live GPU fields
+    uint worldFieldsPad_;                                          // 1988 (16-align tail; struct ends 2000)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

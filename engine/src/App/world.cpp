@@ -584,13 +584,15 @@ namespace smvk {
 				scene.defaultEnvironment = cs.defaultEnvironment;
 				envTaken = true;
 			}
-			// Render settings (the postfx look + the GI/shadow render
-			// config — see SceneRenderSettings): first-wins like the
-			// resolved env above. Without this the world scene kept
-			// struct defaults and the renderer's PushPostfxEnv seed
-			// never saw an authored look/config at all (pak-hosted
-			// worlds lost the block; the editor's borrowed single-world
-			// path never noticed — it reads its own scene).
+			// Render settings (the postfx LOOK — see
+			// SceneRenderSettings): first-wins like the resolved env
+			// above. Without this the world scene kept struct defaults
+			// and the renderer's PushPostfxEnv seed never saw an
+			// authored look at all (pak-hosted worlds lost the block;
+			// the editor's borrowed single-world path never noticed —
+			// it reads its own scene). (The GI/shadow quality knobs are
+			// NOT part of this — host-owned session state; see
+			// RenderQualityConfig.)
 			if (!renderTaken && cs.hasRenderSettings) {
 				scene.renderSettings = cs.renderSettings;
 				scene.defaultRenderSettings = cs.defaultRenderSettings;

@@ -154,6 +154,34 @@ public:
                                void* out, size_t size);
     void UploadDataToImage2D(const struct Image& image, const void* data,
                              PipelineStage dstStages, AccessFlags dstAccess, size_t src_offset);
+    // BATCHED partial upload into a persistent 3D image — the world-field
+    // atlas pager's frame form (Engine/WorldFields): ONE packed blob +
+    // a {srcOffset, region} table (ImageRegionCopy3D, smvk.h — the
+    // BulkCopyBuffer pattern, image edition). One ring allocation, one
+    // memcpy, ONE layout-transition pair, one copy command with all
+    // regions (vs N single uploads = N barrier pairs). Block alignment +
+    // bounds + per-entry payload size are asserted inside. PUBLICATION
+    // CONTRACT (both region forms): the copies are recorded into the
+    // calling thread's upload-streamer shard and NOT flushed per call —
+    // they flush at present time (or the 256MB threshold), and every
+    // transfer batch executes only after ALL previously submitted
+    // graphics frames have fully retired (submitTransfer waits the
+    // latest graphics retirement at ALL_COMMANDS), while the frame's own
+    // main submit waits the transfer chain. Net effect: same-frame
+    // render passes read the new contents, and overwriting a slot can
+    // never race a previous frame's samples of its old contents. Call
+    // between frames on the render thread (the v1 world-field
+    // discipline); a cross-thread publisher needs the completion-ticket
+    // work first.
+    void UploadDataToImage3DRegions(ImageHandle image,
+                                   const ImageRegionCopy3D* copies, size_t copyCount,
+                                   const void* blob, size_t blobBytes,
+                                   PipelineStage dstStages, AccessFlags dstAccess);
+    // The 1-entry convenience of the batch above (single region; `data`
+    // is the region's tight payload).
+    void UploadDataToImage3DRegion(ImageHandle image, const ImageRegion3D& region,
+                                   const void* data, size_t dataSize,
+                                   PipelineStage dstStages, AccessFlags dstAccess);
 
     void UpdateDescriptors(uint32_t frameIndex = 0);
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;

@@ -536,6 +536,26 @@ namespace smvk {
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		void uploadImageKtx(ImageHandle imageHandle, const void* data, size_t dataSize, const std::vector<VkBufferImageCopy>& regions,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+		// BATCHED partial copy into a PERSISTENT image: one packed blob
+		// (`blob`/`blobBytes`) + a table of {bufferOffset, imageOffset,
+		// extent} copies (VkBufferImageCopy2 already is that entry). The
+		// world-field atlas pagers stream a frame's brick slots into a
+		// shared 3D atlas through this — one ring allocation, one memcpy
+		// pass, ONE layout-transition pair around all the copies (vs the
+		// per-call ping-pong of N single uploads). Layout contract (the
+		// reason this is NOT uploadImage with an extent): the pre-copy
+		// barrier transitions from the image's CURRENT layout (tracked
+		// sync state) — NOT UNDEFINED, which would discard every other
+		// slot's contents. The post-copy barrier + cross-queue handling
+		// (parked acquire when the transfer family is distinct) mirror
+		// uploadImage. Caller validates block alignment/region bounds
+		// (VulkanResourceManager::UploadDataToImage3DRegions front door);
+		// this records and returns — the shard's batch flush (present
+		// time) publishes it, and the frame's main submit waits the
+		// transfer chain, so same-frame render passes read the result.
+		void uploadImageRegions(ImageHandle imageHandle, const void* blob, size_t blobBytes,
+			const VkBufferImageCopy2* copies, size_t copyCount,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		bool tryHostImageCopy(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mipLevels,
 			uint32_t arrayLayers, const void* data, size_t dataSize,
 			const std::vector<VkBufferImageCopy>& regions, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -841,6 +861,26 @@ namespace smvk {
 			std::span<const BufferBulkCopy> copies,
 			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		void UploadDataToImage2D(const Image& image, const void* data, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t src_offset);
+		// BATCHED partial upload into a persistent 3D image (the
+		// world-field atlas pager): one packed blob + a table of
+		// {srcOffset, region} copies (ImageRegionCopy3D, smvk.h — the
+		// BulkCopyBuffer pattern, image edition). Validates every entry
+		// (block alignment / region bounds / per-region payload size /
+		// blob bounds), then records ONE staged batch: one ring
+		// allocation, one memcpy, ONE layout-transition pair, one copy
+		// command with all regions. NOT flushed per call — the shard
+		// batch flushes at present time and the frame's main submit
+		// waits the transfer chain, so same-frame render passes read the
+		// new contents (the publication contract on the facade
+		// overloads).
+		void UploadDataToImage3DRegions(ImageHandle image,
+			const ImageRegionCopy3D* copies, size_t copyCount,
+			const void* blob, size_t blobBytes,
+			VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+		// The 1-entry convenience of the batch above (identical
+		// validation + recording through it).
+		void UploadDataToImage3DRegion(ImageHandle image, const ImageRegion3D& region,
+			const void* data, size_t dataSize, VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
 		// GPU buffer -> CPU memory: one copy into a persistent grow-on-demand
 		// staging buffer, a wait for that copy, then a memcpy. Render-thread
 		// only (shares the graphics submitter + the shared staging buffer).

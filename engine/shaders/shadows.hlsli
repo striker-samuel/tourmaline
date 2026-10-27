@@ -626,13 +626,220 @@ float GetSpotShadowFactorFromPC(
         return 1.0f;
     if ((uint) tileIndex >= pc.spotShadowCount)
         return 1.0f;
-    if (pc.spotShadowCount > (uint) MAX_SPOT_SHADOWS)
+    // Count is the frame TOTAL (spot tiles + point faces): the array-bound
+    // guard is the combined capacity, not the spot-only budget.
+    if (pc.spotShadowCount > (uint) MAX_LOCAL_SHADOW_TILES)
         return 1.0f;
     uint atlasIdx = NonUniformResourceIndex(pc.spotShadowMapIndex);
     GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
     return GetSpotShadowFactorTile(samplerId, worldPos, faceNormal, spotDirection, t, atlasIdx);
 }
 
+#endif // ENGINE_HAS_PC
+
+// ---- Point-light shadows (six 90-degree cube-face tiles per light) ----
+// The light's shadowTile is the FIRST face tile; the face is picked by the
+// DOMINANT AXIS of (biased receiver - light position) - the same
+// major-axis selection cubemap_prefilter DirectionToFaceUv uses (X-first
+// tie-breaks, then Y, then Z; face order +X,-X,+Y,-Y,+Z,-Z = CubemapFace).
+// Selecting from the BIASED position keeps the projection inside the NDC
+// square by construction (each NDC axis is one non-dominant component over
+// the dominant one, so |ndc.xy| <= 1 whenever the dominant axis matches
+// the face) - the normal bias can tip a receiver over a seam and the
+// biased direction's face simply owns it. Seam PCF taps clamp into the
+// tile (PCFShadowAtlas) like every other tile path - the half-texel band
+// at face seams is the accepted cube-shadow tradeoff (a shared-matrix
+// neighbor-face lookup would need the second descriptor read; the band is
+// one bias wide and normal-bias-sized).
+// lightTravelDir is normalize(receiver - lightPosition): the point-light
+// stand-in for the spot axis in GetOrientedBias (the travel direction).
+float GetPointShadowFactorTile(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 lightPosition,
+    vk::BufferPointer<SpotShadowBuffer> tiles,
+    uint tileBase,        // light.shadowTile: FIRST face tile index
+    uint tileCount,       // frame total (spot tiles + point faces)
+    uint atlasIdx         // bindless D32 atlas (light.shadowMapIndex)
+)
+{
+    if (tileBase >= tileCount)
+        return 1.0f;
+
+    // All six face tiles of a light are built together and share the
+    // normal bias: read it from the BASE tile, bias the receiver, THEN
+    // pick the face from the biased direction (keeps the projection
+    // inside the NDC square by construction - see the block comment).
+    const float normalBias = tiles.Get().tiles[tileBase].normalBias;
+    const float3 biasedWorld = worldPos + faceNormal * normalBias;
+    const float3 dir = biasedWorld - lightPosition; // light -> biased receiver
+    const float dist = length(dir);
+    if (dist <= 1e-6f)
+        return 1.0f; // at the light origin: nothing between to occlude
+    const float3 travel = dir / dist;
+
+    // Dominant-axis face selection - MUST mirror the CPU side
+    // (cubemap_prefilter DirectionToFaceUv / BuildPointFaceTile basis):
+    // X-first tie-breaks, then Y, then Z; strict > 0 sign test; face
+    // order +X,-X,+Y,-Y,+Z,-Z (CubemapFace). A drift here mis-tiles the
+    // lookup (the projection lands in the wrong face's frustum and
+    // reads lit/out-of-range).
+    const float3 a = abs(dir);
+    uint face;
+    if (a.x >= a.y && a.x >= a.z)
+        face = dir.x > 0.0f ? 0u : 1u;
+    else if (a.y >= a.x && a.y >= a.z)
+        face = dir.y > 0.0f ? 2u : 3u;
+    else
+        face = dir.z > 0.0f ? 4u : 5u;
+
+    const uint tile = tileBase + face;
+    if (tile >= tileCount)
+        return 1.0f;
+    const GpuCascadeDescription t = tiles.Get().tiles[tile];
+
+    const float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
+    if (clip.w <= 1e-6f)
+        return 1.0f;
+    const float3 ndc = clip.xyz / clip.w;
+    if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+        return 1.0f;
+    const float2 uv = ndc.xy * 0.5f + 0.5f;
+    // Dominant-axis guarantee: |uv| <= 1; fp epsilon at the seam can tip
+    // it a hair over - treat as lit (the neighbor face's shadow resumes a
+    // bias-width away; the band is the accepted seam tradeoff above).
+    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+        return 1.0f;
+    const float2 uvAtlas = uv * t.uvScale + t.uvBias;
+    // Sec. 4.2 slope-scaled bias: the point's per-pixel travel direction
+    // stands in for the spot axis.
+    const float receiverDepth = ndc.z + GetOrientedBias(faceNormal, travel, t.bias, false);
+    return PCFShadowAtlas(
+        samplerId, uvAtlas, receiverDepth, atlasIdx,
+        t.invShadowSize, t.uvClampMin, t.uvClampMax);
+}
+
+#ifdef ENGINE_HAS_PC
+float GetPointShadowFactorFromPC(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 lightPosition,
+    int tileBase,
+    int shadowMapIndex
+)
+{
+    if (tileBase < 0 || shadowMapIndex < 0)
+        return 1.0f;
+    if (pc.spotShadowCount == 0u)
+        return 1.0f;
+    if (pc.spotShadowCount > (uint) MAX_LOCAL_SHADOW_TILES)
+        return 1.0f;
+    // NOTE: the per-light index addresses whatever atlas kind the app
+    // built the light for: the D32 PCF atlas by default, the blurred EVSM
+    // moments when the point path runs GetPointShadowFactorEvsmFromPC
+    // (the caller picks the sampler by mode, exactly like the spots).
+    return GetPointShadowFactorTile(
+        samplerId, worldPos, faceNormal, lightPosition,
+        pc.spotShadowBuffer, (uint) tileBase, pc.spotShadowCount,
+        NonUniformResourceIndex((uint) shadowMapIndex));
+}
+#endif // ENGINE_HAS_PC
+
+// ---- Point-light shadows over the EVSM moments -------------------------
+// The spot-shaped moment path (SampleEvsmSpotTileSoft) reused per face:
+// the dominant-axis face is picked from the NORMAL-BIASED direction (the
+// same selection the PCF path makes - biased so the projection stays
+// inside the face's NDC square by construction), then the face's tile
+// descriptor drives the spot sampler verbatim:
+//  - lightTravelDir (normalize(biasedReceiver - lightPosition)) stands in
+//    for the spot axis in both the oriented-bias and the blocker search.
+//  - the penumbra projects through the face's own "cone" half angle: a
+//    cube face is a 90-degree frustum, so outerAngle = PI/4 is exact.
+//  - the tile pads (near plane / lightSize / softness) carry the PCSS
+//    knobs, always written by BuildPointFaceTile (PCF ignores them).
+// (Definition lives below the block comment at its spot counterpart.)
+float GetSpotShadowFactorEvsmTile(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 spotDirection,
+    float outerAngle,
+    GpuCascadeDescription t,
+    uint evsmAtlasIdx,
+    float exponent,
+    float2 pix
+);
+
+float GetPointShadowFactorEvsmTile(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 lightPosition,
+    vk::BufferPointer<SpotShadowBuffer> tiles,
+    uint tileBase,        // light.shadowTile: FIRST face tile index
+    uint tileCount,       // frame total (spot tiles + point faces)
+    uint momentsIdx,      // bindless blurred-moment atlas (light.shadowMapIndex)
+    float exponent,
+    float2 pix
+)
+{
+    if (tileBase >= tileCount || momentsIdx == 0xFFFFFFFFu)
+        return 1.0f;
+    // Face selection from the biased direction - MUST mirror the PCF path
+    // above (X-first tie-breaks, +X/-X/+Y/-Y/+Z/-Z order) so the point's
+    // PCF and EVSM sample the SAME face for the same receiver.
+    const float normalBias = tiles.Get().tiles[tileBase].normalBias;
+    const float3 biasedWorld = worldPos + faceNormal * normalBias;
+    const float3 dir = biasedWorld - lightPosition; // light -> biased receiver
+    const float dist = length(dir);
+    if (dist <= 1e-6f)
+        return 1.0f; // at the light origin: nothing between to occlude
+    const float3 travel = dir / dist;
+    const float3 a = abs(dir);
+    uint face;
+    if (a.x >= a.y && a.x >= a.z)
+        face = dir.x > 0.0f ? 0u : 1u;
+    else if (a.y >= a.x && a.y >= a.z)
+        face = dir.y > 0.0f ? 2u : 3u;
+    else
+        face = dir.z > 0.0f ? 4u : 5u;
+    const uint tile = tileBase + face;
+    if (tile >= tileCount)
+        return 1.0f;
+    const GpuCascadeDescription t = tiles.Get().tiles[tile];
+    // A cube face spans 90 degrees: its half angle 45 (PI/4) is the exact
+    // "outerAngle" for the soft-penumbra tile-UV projection.
+    const float kPointFaceOuterAngle = 0.7853981634f;
+    return GetSpotShadowFactorEvsmTile(
+        samplerId, worldPos, faceNormal, travel,
+        kPointFaceOuterAngle, t, momentsIdx, exponent, pix);
+}
+
+#ifdef ENGINE_HAS_PC
+float GetPointShadowFactorEvsmFromPC(
+    uint samplerId,
+    float3 worldPos,
+    float3 faceNormal,
+    float3 lightPosition,
+    int tileBase,
+    int momentsIdx,
+    float exponent,
+    float2 pix
+)
+{
+    if (tileBase < 0 || momentsIdx < 0)
+        return 1.0f;
+    if (pc.spotShadowCount == 0u)
+        return 1.0f;
+    if (pc.spotShadowCount > (uint) MAX_LOCAL_SHADOW_TILES)
+        return 1.0f;
+    return GetPointShadowFactorEvsmTile(
+        samplerId, worldPos, faceNormal, lightPosition,
+        pc.spotShadowBuffer, (uint) tileBase, pc.spotShadowCount,
+        NonUniformResourceIndex((uint) momentsIdx), exponent, pix);
+}
 #endif // ENGINE_HAS_PC
 
 float GetShadowFactorODB(

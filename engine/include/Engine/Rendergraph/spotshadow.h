@@ -4,11 +4,28 @@
 #pragma once
 // Spot-shadow atlas builder + caster selection.
 //
-// Complements the directional CascadedShadowAtlas: a single D32 atlas holds up
-// to kMaxSpotShadows square tiles (one perspective render per shadowed spot).
-// Only spots that opt in via kForwardPlusFlag_CastShadow are eligible, and per
-// frame SelectSpotShadowCasters() picks at most `maxCount` of them using a
-// screenspace/distance heuristic (see below), so most spots stay cheap.
+// Complements the directional CascadedShadowAtlas: a single D32 atlas holds
+// up to kMaxSpotShadows square tiles (one perspective render per shadowed
+// spot). Only spots that opt in via kForwardPlusFlag_CastShadow are
+// eligible, and per frame SelectSpotShadowCasters() picks at most `maxCount`
+// of them using a screenspace/distance heuristic (see below), so most spots
+// stay cheap.
+//
+// Point lights ride the SAME atlas as six 90-degree "cube face" tiles per
+// light (GetPointShadowFaceVP / BuildPointFaceTile): a shadowed point light
+// claims 6 consecutive slots [base, base+6) in CubemapFace order, and the
+// sampling side (shadows.hlsli GetPointShadowFactorTile) picks the face by
+// dominant axis - the exact selection cubemap_prefilter
+// DirectionToFaceUv uses - then reuses the spot tile math verbatim
+// (project -> NDC -> tile UV -> PCF). One atlas image / one bindless index /
+// one tile-descriptor buffer / one set of push-constant fields serve both
+// light types; the frame's tile numbering is spots first, point faces after.
+// EVSM: the moment/blur atlases tile the FULL combined grid (tileCount =
+// kMaxLocalShadowTiles - same ceil(sqrt) columns as this D32 atlas, so the
+// tile descriptors stay layout-identical between both representations) and
+// the point faces ride them the same as spots when EVSM is enabled (see
+// shadows.hlsli GetPointShadowFactorEvsmTile); the PCF path remains the
+// fallback whenever the moments are missing.
 //
 // Layout convention (matches shaders/shadows.hlsli spot path + shadow.vert):
 //  - atlas is columns x rows tiles, tile i at (i % cols, i / cols)
@@ -37,11 +54,26 @@
 
 namespace smvk {
 
-// Hard cap: tile-descriptor buffer + HLSL SpotShadowBuffer are sized for this.
+// Hard cap on SPOT tiles per frame (selection budget + the EVSM spot
+// moment atlas size). The descriptor buffer / HLSL SpotShadowBuffer are
+// sized for the combined total below, not this alone.
 static constexpr uint32_t kMaxSpotShadows = 8;
+// Shadowed point lights per frame: each claims SIX atlas tiles (one per
+// cube face), so 2 lights = 12 tiles. Kept small on purpose - the
+// RenderView budget (kMaxRenderViews 64: 1 main + 4 cascades + 8 spot
+// tiles + 12 faces = 25) and the raster cost (6 depth passes per light)
+// both scale with it.
+static constexpr uint32_t kMaxPointShadowLights = 2;
+static constexpr uint32_t kPointShadowFaceCount = 6;
+// Total atlas/descriptor capacity: spot tiles first, point faces after.
+// MUST stay in sync with MAX_LOCAL_SHADOW_TILES in common.hlsli (the HLSL
+// SpotShadowBuffer array bound and the C++ ring-buffer stride both key
+// off it - editing either without the other mis-frames every shadow).
+static constexpr uint32_t kMaxLocalShadowTiles =
+	kMaxSpotShadows + kMaxPointShadowLights * kPointShadowFaceCount;
 
 struct SpotShadowMapDesc {
-	uint32_t slotCount = 4;                 // active tiles this frame (<= kMax)
+	uint32_t slotCount = 4;                 // active tiles this frame (<= cap)
 	uint32_t resolution = 1024;             // per-tile res, square
 	Format format = Format::D32_Float;      // depth-only atlas
 	float nearPlane = 0.5f;                 // perspective near for all spots
@@ -127,8 +159,9 @@ struct SpotShadowAtlas {
 	}
 
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const SpotShadowMapDesc& desc,
-		const char* vsPath = kSpotShadowVsPath) {
-		if (desc.slotCount == 0 || desc.slotCount > kMaxSpotShadows)
+		const char* vsPath = kSpotShadowVsPath,
+		uint32_t slotCap = kMaxLocalShadowTiles) {
+		if (desc.slotCount == 0 || desc.slotCount > slotCap)
 			return false;
 		if (desc.resolution == 0)
 			return false;
@@ -205,7 +238,8 @@ struct SpotShadowAtlas {
 
 	// Recreate only when slotCount / resolution / format drift.
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const SpotShadowMapDesc& desc,
-		const char* vsPath = kSpotShadowVsPath) {
+		const char* vsPath = kSpotShadowVsPath,
+		uint32_t slotCap = kMaxLocalShadowTiles) {
 		if (Valid() &&
 			slotCount == desc.slotCount &&
 			tileExtent.width == desc.resolution &&
@@ -268,6 +302,62 @@ struct SpotShadowAtlas {
 		tile.pad2_[0] = std::max(lightSize, 0.0f);
 		tile.pad2_[1] = std::max(softness, 0.0f);
 		(void)shadowMapIndex; // atlas index lives in the light / push constants
+		return tile;
+	}
+
+	// One cube-face tile of a shadowed POINT light (see the file header).
+	// tileIndex is the face's slot in the combined frame numbering (spots
+	// first, then point faces); the light's ForwardPlusLight.shadowTile
+	// stores the FIRST face's index and the sampler adds the face number
+	// (dominant-axis selection, shadows.hlsli GetPointShadowFactorTile).
+	// Face order is CubemapFace (+X, -X, +Y, -Y, +Z, -Z) - the same table
+	// the sampling side's selection mirrors.
+	// The pads carry the same receiver-side knobs the SPOT tiles pack
+	// (they used to stay zeroed for the PCF-only point path): pad_ = the
+	// perspective near plane the EVSM sampling needs to invert RH_ZO eye
+	// depth, pad2 = the emitting-sphere diameter + artistic softness the
+	// PCSS-style penumbra projects through the cube face's 90-degree half
+	// angle (see SampleEvsmSpotTileSoft reused by GetPointShadowFactorEvsm:
+	// the face IS a cone, half angle 45). The PCF path ignores the pads.
+	GpuCascadeDescription BuildPointFaceTile(
+		const glm::vec3& position,
+		uint32_t face,
+		float range,
+		uint32_t tileIndex,
+		float nearPlane = 0.5f,
+		float bias = 0.0f,
+		float lightSize = 0.35f,
+		float softness = 1.0f) const {
+		assert(Valid());
+		assert(tileIndex < slotCount);
+		assert(face < kPointShadowFaceCount);
+
+		GpuCascadeDescription tile{};
+		const glm::mat4 vp = GetPointShadowFaceVP(position, face, range, nearPlane);
+		std::memcpy(tile.lightVP, glm::value_ptr(vp), sizeof(tile.lightVP));
+		tile.splitEnd = range;
+		tile.bias = bias;
+		tile.normalBias = 0.02f; // same receiver-side world bias as spot tiles
+		tile.pad_ = nearPlane;
+		tile.pad2_[0] = std::max(lightSize, 0.0f);
+		tile.pad2_[1] = std::max(softness, 0.0f);
+		tile.invShadowSize = glm::vec2(
+			1.0f / static_cast<float>(tileExtent.width),
+			1.0f / static_cast<float>(tileExtent.height));
+
+		const float invAtlasW = 1.0f / static_cast<float>(atlasExtent.width);
+		const float invAtlasH = 1.0f / static_cast<float>(atlasExtent.height);
+		const uint32_t cols = Columns();
+		const float offX = static_cast<float>((tileIndex % cols) * tileExtent.width);
+		const float offY = static_cast<float>((tileIndex / cols) * tileExtent.height);
+		tile.uvScale = glm::vec2(
+			static_cast<float>(tileExtent.width) * invAtlasW,
+			static_cast<float>(tileExtent.height) * invAtlasH);
+		tile.uvBias = glm::vec2(offX * invAtlasW, offY * invAtlasH);
+		const float texelU = 0.5f * invAtlasW;
+		const float texelV = 0.5f * invAtlasH;
+		tile.uvClampMin = tile.uvBias + glm::vec2(texelU, texelV);
+		tile.uvClampMax = tile.uvBias + tile.uvScale - glm::vec2(texelU, texelV);
 		return tile;
 	}
 
@@ -385,6 +475,82 @@ inline std::vector<SpotShadowCandidate> SelectSpotShadowCasters(
 		const float cosOuter = std::cos(glm::clamp(l.outerAngle, 0.0f, glm::radians(89.0f)));
 		const float cone = (1.0f - cosOuter) + 0.05f;
 		const float score = l.intensity * cone * (0.25f + coverage) / std::max(dist * dist, 1.0f);
+
+		SpotShadowCandidate c{};
+		c.lightIndex = i;
+		c.score = score;
+		c.dist = dist;
+		c.screenRadius = coverage;
+		out.push_back(c);
+	}
+
+	std::sort(out.begin(), out.end(), [](const SpotShadowCandidate& a, const SpotShadowCandidate& b) {
+		if (a.score != b.score)
+			return a.score > b.score;
+		return a.lightIndex < b.lightIndex;
+	});
+	if (out.size() > maxCount)
+		out.resize(maxCount);
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Caster selection, point-light variant: which requesting points get one
+// of `maxCount` SIX-TILE face sets. Same shape as SelectSpotShadowCasters
+// (hard culls, then score, deterministic order) with one difference: a
+// point is omnidirectional, so there is no cone term - the score is the
+// spot scorer with cone = 1 (bright, close, on-screen lights win). Each
+// selected light costs SIX atlas tiles + six depth passes, which is why
+// kMaxPointShadowLights stays small.
+// ---------------------------------------------------------------------------
+inline std::vector<SpotShadowCandidate> SelectPointShadowCasters(
+	const std::vector<ForwardPlusLight>& lights,
+	const glm::mat4& viewProj,
+	const glm::vec3& cameraPos,
+	float maxDistance,
+	uint32_t maxCount,
+	float proj11Abs)
+{
+	std::vector<SpotShadowCandidate> out;
+	if (maxCount == 0 || maxDistance <= 0.0f)
+		return out;
+	maxCount = std::min(maxCount, kMaxPointShadowLights);
+
+	const float projFactor = std::max(proj11Abs, 1e-4f);
+	for (uint32_t i = 0; i < lights.size(); ++i) {
+		const ForwardPlusLight& l = lights[i];
+		if (l.type != static_cast<int32_t>(kForwardPlusPoint))
+			continue;
+		if ((l.flags & kForwardPlusFlag_CastShadow) == 0)
+			continue;
+		if (l.intensity <= 0.0f || l.range <= 0.0f)
+			continue;
+
+		const glm::vec3 lightPosition(l.position[0], l.position[1], l.position[2]);
+		const glm::vec3 toLight = lightPosition - cameraPos;
+		const float dist = glm::length(toLight);
+		if (dist > maxDistance)
+			continue;
+
+		// NDC-box test of the bounding sphere (conservative margin) - the
+		// sphere is the whole influence ball for a point (no cone to test).
+		const glm::vec4 clip = viewProj * glm::vec4(lightPosition, 1.0f);
+		if (clip.w <= 1e-4f) {
+			if (dist > l.range)
+				continue;
+		} else {
+			const float radiusNdc = (l.range * projFactor) / clip.w;
+			const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+			const float m = radiusNdc;
+			if (ndc.x < -1.0f - m || ndc.x > 1.0f + m ||
+				ndc.y < -1.0f - m || ndc.y > 1.0f + m ||
+				ndc.z < -m || ndc.z > 1.0f + m)
+				continue;
+		}
+
+		const float radiusNdc = (l.range * projFactor) / std::max(clip.w <= 1e-4f ? dist : clip.w, 1e-4f);
+		const float coverage = glm::clamp(radiusNdc, 0.0f, 2.0f);
+		const float score = l.intensity * (0.25f + coverage) / std::max(dist * dist, 1.0f);
 
 		SpotShadowCandidate c{};
 		c.lightIndex = i;

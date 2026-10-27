@@ -206,6 +206,21 @@ void ResourceManager::UploadDataToImage2D(const Image& image, const void* data,
     VkAccessFlags2 vkAccess = toVkAccess(dstAccess);
     impl_->vulkan.UploadDataToImage2D(image, data, vkStage, vkAccess, src_offset);
 }
+void ResourceManager::UploadDataToImage3DRegion(ImageHandle image, const ImageRegion3D& region,
+                                   const void* data, size_t dataSize,
+                                   PipelineStage dstStages, AccessFlags dstAccess) {
+    VkPipelineStageFlags2 vkStage = toVkPipelineStage(dstStages);
+    VkAccessFlags2 vkAccess = toVkAccess(dstAccess);
+    impl_->vulkan.UploadDataToImage3DRegion(image, region, data, dataSize, vkStage, vkAccess);
+}
+void ResourceManager::UploadDataToImage3DRegions(ImageHandle image,
+                                   const ImageRegionCopy3D* copies, size_t copyCount,
+                                   const void* blob, size_t blobBytes,
+                                   PipelineStage dstStages, AccessFlags dstAccess) {
+    VkPipelineStageFlags2 vkStage = toVkPipelineStage(dstStages);
+    VkAccessFlags2 vkAccess = toVkAccess(dstAccess);
+    impl_->vulkan.UploadDataToImage3DRegions(image, copies, copyCount, blob, blobBytes, vkStage, vkAccess);
+}
 uint32_t ResourceManager::UpdateTexture(Holder<TextureHandle>& holder,
     const ImageCreateInfo& ci, const void* data) {
     // Recreate-based content refresh (see resource_manager.h): create the

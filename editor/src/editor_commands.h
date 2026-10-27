@@ -159,7 +159,7 @@ struct EditCmd {
 	float lightInnerDeg = 0.0f;
 	float lightOuterDeg = 0.0f;
 	bool lightStatic = false; // bake-only (kSceneLightFlag_Static)
-	bool lightShadow = false; // spot shadow request (spots only)
+	bool lightShadow = false; // cast-shadow request (spot tile / point cube faces)
  	// SetLightAttr channel ("color","intensity","range","inner","outer",
  	// "static","shadow","name"). Value rides vec4 (color) / number
  	// (scalars, degrees for cones) / afterFlag (static/shadow) /

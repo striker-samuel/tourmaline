@@ -86,8 +86,13 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	// lights; any other value limits the light leg (the deferred-shadow
 	// pipeline passes 0 — its shading consumes the DS lists, but the decal
 	// leg of the cull still refreshes the decal tile lists).
+	// fogMaxDistance: the volumetric march range the fog lists are culled
+	// against (the cull builds the per-tile FOG lists unconditionally —
+	// march-range candidacy, see ForwardPlusCullPush::fogTile* — so the
+	// app just feeds the pass's maxDistance every frame).
 	void AppendTileCull(smvk::FrameContext& fc,
-		uint32_t lightCountOverride = UINT32_MAX);
+		uint32_t lightCountOverride = UINT32_MAX,
+		float fogMaxDistance = 80.0f);
 	// Option A occluder prepass: fills fc.hizDepthView (Clear, VS-only,
 	// solid opaque only) with big occluders at their SELECTED LOD for the
 	// HZB build — the occluder rasterizes the same surface Main draws, so

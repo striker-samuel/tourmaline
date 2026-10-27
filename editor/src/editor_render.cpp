@@ -2203,7 +2203,15 @@ namespace editor {
 		m_wysiwygValid = m_wysiwyg->onAttach();
 		m_wysiwygWorld = m_world.get();
 		m_wysiwygSceneId = SceneIdForHost();
-		if (!m_wysiwygValid) {
+		if (m_wysiwygValid) {
+			// RENDER QUALITY re-apply: the attach's GI loaders just
+			// flipped the per-source opt-ins (m_regEnabled /
+			// m_giVolumesEnabled) ON for baked content — the SESSION's
+			// renderer options (the Render tab; see m_renderQuality)
+			// win over the on-when-baked defaults, so push them AFTER
+			// the attach (and again per panel edit).
+			m_wysiwyg->PushRenderQuality(m_renderQuality);
+		} else {
 			Log("Live view: renderer attach failed — see the console "
 				"(the window shows a hint).");
 			// Element contract: a failed attach is NOT detached — drop

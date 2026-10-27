@@ -328,10 +328,7 @@ void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
 }
 
 // Render-settings record (see SceneRenderSettings): the global postfx
-// look + render config — 36 words, written ONCE per scene (never per
-// env block). The 8-word tail carries the GI/ambient source + the
-// per-source opt-ins + probe pre-mix + EVSM shadows; older paks fail
-// the reader loudly on the trailing-bytes check (the sanctioned break).
+// look — 28 words, written ONCE per scene (never per env block).
 void PutSceneRenderSettings(std::vector<uint8_t>& out,
 	const SceneRenderSettings& r) {
 	PutU32(out, r.bloomEnabled ? 1u : 0u);
@@ -361,15 +358,6 @@ void PutSceneRenderSettings(std::vector<uint8_t>& out,
 	PutU32(out, uint32_t(r.aaMode));
 	PutU32(out, r.cubemapEnabled ? 1u : 0u);
 	PutF32(out, r.cubemapIntensity);
-	// Render-config tail (the GI/shadow configuration half).
-	PutU32(out, uint32_t(r.giMode));
-	PutF32(out, r.giIntensity);
-	PutU32(out, r.lightmapsEnabled ? 1u : 0u);
-	PutU32(out, r.regProbesEnabled ? 1u : 0u);
-	PutU32(out, r.giVolumesEnabled ? 1u : 0u);
-	PutU32(out, r.probePremixEnabled ? 1u : 0u);
-	PutU32(out, r.evsmEnabled ? 1u : 0u);
-	PutF32(out, r.evsmSoftness);
 }
 
 struct Cursor {
@@ -495,16 +483,6 @@ struct Cursor {
 		r.aaMode = int(u32());
 		r.cubemapEnabled = u32() != 0;
 		r.cubemapIntensity = f32();
-		// Render-config tail (mirrors PutSceneRenderSettings): the GI/
-		// ambient source + per-source opt-ins + probe pre-mix + EVSM.
-		r.giMode = int(u32());
-		r.giIntensity = f32();
-		r.lightmapsEnabled = u32() != 0;
-		r.regProbesEnabled = u32() != 0;
-		r.giVolumesEnabled = u32() != 0;
-		r.probePremixEnabled = u32() != 0;
-		r.evsmEnabled = u32() != 0;
-		r.evsmSoftness = f32();
 		return r;
 	}
 };

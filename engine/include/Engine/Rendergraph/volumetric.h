@@ -132,17 +132,20 @@ struct VolumetricPush {
 	float time = 0.0f;
 	uint32_t pad1 = 0; // 8-align filler for the BDA tail below
 	// Forward+ light feed for fog in-scatter (the forward tiled lights
-	// contribute to the march, not just the surfaces): tile-list BDAs
-	// ride the same freshness contract as the GI-volume tile masks (address
-	// + grid publish together under TileCullWillRun, zeros together —
-	// the shader falls back to a direct [0, fpLightCount) walk when the
-	// cull didn't run). fpLights/fpLightCount/fpMaxPerTile publish
+	// contribute to the march, not just the surfaces): the DEDICATED fog
+	// tile lists (march-range candidacy — no depth-slab cuts, see
+	// ForwardPlusCullPush::fogTile*; the surface lists' slab culling is
+	// wrong for march samples, which live in front of the nearest opaque
+	// surface). BDAs ride the same freshness contract as the GI-volume
+	// tile masks (address + grid publish together under TileCullWillRun,
+	// zeros together — the shader falls back to a direct [0, fpLightCount)
+	// walk when the cull didn't run). fpLights/fpLightCount publish
 	// whenever the light buffer is uploaded (independent of the cull).
-	uint64_t fpTileCounts = 0;   // per-tile light index lists (0 = stale)
-	uint64_t fpTileIndices = 0;  // (0 = stale)
+	uint64_t fogTileCounts = 0;   // per-tile fog light lists (0 = stale)
+	uint64_t fogTileIndices = 0;  // (0 = stale)
 	uint64_t fpLights = 0;       // ForwardPlusLight buffer (this flight)
 	uint32_t fpLightCount = 0;   // lights-only bound (probes sort after)
-	uint32_t fpMaxPerTile = 128; // list stride - probe slots (matches pc)
+	uint32_t fogMaxPerTile = 16; // fog list stride (matches the cull push)
 };
 static_assert(sizeof(VolumetricPush) == 128);
 
@@ -318,14 +321,15 @@ struct VolumetricFog {
 		float frameTime,
 		const VolumetricDesc& overrideDesc,
 		const char* name = nullptr,
-		// Forward+ light feed (fog in-scatter): tile-list addresses ride
-		// the cull freshness contract (0 = stale -> direct walk), the
-		// light buffer + count publish whenever uploaded.
-		uint64_t fpTileCountsAddr = 0,
-		uint64_t fpTileIndicesAddr = 0,
+		// Forward+ light feed (fog in-scatter): the DEDICATED fog tile
+		// lists' addresses ride the cull freshness contract (0 = stale ->
+		// direct walk), the light buffer + count publish whenever
+		// uploaded.
+		uint64_t fogTileCountsAddr = 0,
+		uint64_t fogTileIndicesAddr = 0,
 		uint64_t fpLightsAddr = 0,
 		uint32_t fpLightCountIn = 0,
-		uint32_t fpMaxPerTileIn = 128) const {
+		uint32_t fogMaxPerTileIn = 16) const {
 		assert(Valid());
 		assert(!hdrView.empty() && hdrBindlessIndex != UINT32_MAX);
 		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
@@ -351,11 +355,11 @@ struct VolumetricFog {
 		push.useGi = overrideDesc.useGi ? 1u : 0u;
 		push.useSun = overrideDesc.useSun ? 1u : 0u;
 		push.useGiVolumes = overrideDesc.useGiVolumes ? 1u : 0u;
-		push.fpTileCounts = fpTileCountsAddr;
-		push.fpTileIndices = fpTileIndicesAddr;
+		push.fogTileCounts = fogTileCountsAddr;
+		push.fogTileIndices = fogTileIndicesAddr;
 		push.fpLights = fpLightsAddr;
 		push.fpLightCount = fpLightCountIn;
-		push.fpMaxPerTile = fpMaxPerTileIn;
+		push.fogMaxPerTile = fogMaxPerTileIn;
 		push.jitterStrength = std::clamp(overrideDesc.jitterStrength, 0.0f, 1.0f);
 		push.heightFalloff = (std::max)(0.0f, overrideDesc.heightFalloff);
 		push.heightBase = overrideDesc.heightBase;

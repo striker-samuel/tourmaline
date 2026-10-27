@@ -74,6 +74,7 @@
 #include <Engine/Rendergraph/ui.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
+#include <Engine/WorldFields/WorldField.h>
 
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
@@ -297,6 +298,31 @@ inline const char* AmbientModeName(AmbientMode m) {
 	}
 	return "?";
 }
+
+// ---------------------------------------------------------------------------
+// RENDER QUALITY CONFIG (host-owned, never scene content): HOW the
+// renderer runs — the GI/ambient source, the per-source opt-ins, the
+// probe pre-mix, EVSM shadows. This is machine/session state exactly
+// like render scale or DLSS mode: the editor drives it live from the
+// Render tab (PushRenderQuality, re-applied after every WYSIWYG attach
+// so the session's choices beat the loaders' on-when-baked defaults),
+// the App's panels/keys drive the same members per session, headless
+// runs pin them via TOURMALINE_* (RunConfig). Nothing here rides tours/
+// paks — the scene's SceneRenderSettings owns the LOOK (bloom/tonemap/
+// exposure/AO/SSR/AA/cubemap grades) only. Defaults mirror the
+// engine's unauthored state.
+// ---------------------------------------------------------------------------
+struct RenderQualityConfig {
+	int giMode = 0;                  // 0..5 — AmbientMode (All/Lightmaps/
+	                                 // Probes/SkyIbl/Off/Baked; the N cycle)
+	float giIntensity = 1.0f;        // 0..2 baked-GI + sky-IBL ambient scale
+	bool lightmapsEnabled = false;   // proxy lightmap branch (opt-in)
+	bool regProbesEnabled = true;    // regular probe grids (dynamic-object GI)
+	bool giVolumesEnabled = true;    // convex GI volumes (confined-space GI)
+	bool probePremixEnabled = true;  // GPU probe pre-mix (single-fetch path)
+	bool evsmEnabled = false;        // EVSM moment shadows (else PCF)
+	float evsmSoftness = 1.0f;       // EVSM penumbra artistic scale (0 = hard)
+};
 
 // GI permutation variants (matches SPEC_GI_VARIANT in common.hlsli):
 // 0 = GI_NONE (sky IBL only), 1 = GI_OCTREE (sparse octree),
@@ -690,7 +716,18 @@ struct FrameUniforms
 	uint32_t probePremixIndex = UINT32_MAX; // 1952 blended cubemap (off = max)
 	uint32_t probePremixMips = 0;           // 1956 blended chain mip count
 	uint64_t probePremixSel = 0;            // 1960 selection BDA (weights pass output)
-	uint32_t probePremixPad_[2] = {};      // 1968 (16-align tail; struct ends 1984)
+	uint32_t probePremixPad_[2] = {};      // 1968 (16-align tail; struct was 1984)
+	// ---- World voxel fields (Engine/WorldFields, the atlas-backed
+	// virtual world volume system; sampler in world_field.hlsli, layout
+	// contract in Engine/WorldFields/WorldFieldGpu.h). worldFields = the
+	// BDA of the field/page-table storage buffer (0 = subsystem off —
+	// SampleWorldField returns zeros); the buffer + BDA are stable for
+	// the system's lifetime, the CONTENT re-publishes on residency moves.
+	// worldFieldCount = live fields (ids are registration order, fog
+	// first). APPEND-ONLY tail: every pinned offset above stays put. ----
+	uint64_t worldFields = 0;      // 1976 field/page-table BDA (0 = off)
+	uint32_t worldFieldCount = 0;  // 1984 live GPU fields
+	uint32_t worldFieldsPad_ = 0; // 1988 (16-align tail; struct ends 2000)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -737,7 +774,11 @@ static_assert(offsetof(FrameUniforms, probePremixIndex) == 1952, "probePremixInd
 static_assert(offsetof(FrameUniforms, probePremixMips) == 1956, "probePremixMips offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, probePremixSel) == 1960, "probePremixSel offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, lmLayerKind) == 1940, "lmLayerKind offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 1984, "FrameUniforms size: HLSL mirror");
+// World-fields tail (the append-only block): the table BDA + live count
+// the shared sampler reads.
+static_assert(offsetof(FrameUniforms, worldFields) == 1976, "worldFields offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, worldFieldCount) == 1984, "worldFieldCount offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 2000, "FrameUniforms size: HLSL mirror");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -802,7 +843,7 @@ struct AppResources {
 	// entities (see UpdateEnvZones). No rendergraph alias: reached through
 	// FrameUniforms::envZones (BDA) by the terrain/volumetric FS.
 	smvk::Holder<smvk::BufferHandle> envZonesBuffer;
-	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxSpotShadows per frame
+	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxLocalShadowTiles per frame (spot tiles + point faces)
 	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
 	// DS visualizer params ring (DsVizParams per flight + one zero slice
 	// shared by secondary views, which never viz; reached through
@@ -1188,19 +1229,18 @@ public:
 	// the pins re-apply after the seed (and at startup Configure). The UI
 	// panel stays live afterwards.
 	void ApplyHeadlessVolumetricOverrides();
-	// Postfx look seed (the App panels' settings): bloom (complete) +
-	// tonemap + exposure + AO + SSR + motion blur + DOF + AA + cubemap
-	// IBL, PLUS the render-configuration half (the GI/ambient source, GI
-	// intensity, the per-source opt-ins, probe pre-mix, EVSM shadows —
-	// see the block inside). Runs once per scene load/rebind from the
-	// resolved render settings; the panels/keys stay live afterwards
-	// (the volumetric contract). Headless TOURMALINE_* pins win over the
-	// seed (see ApplyHeadlessPostfxOverrides).
-	// Postfx seed from the RENDER SETTINGS (the split look — see
+	// Postfx look seed from the RENDER SETTINGS (the split look — see
 	// SceneRenderSettings). The env block still contributes its
 	// "exposure" row (the editor VIEWPORT brightness multiplier — an
 	// environment-authored value, folded as EV below); everything else
-	// look-related reads the render settings.
+	// look-related reads the render settings. Runs once per scene
+	// load/rebind; the panels/keys stay live afterwards (the volumetric
+	// contract). Headless TOURMALINE_* pins win over the seed (see
+	// ApplyHeadlessPostfxOverrides). LOOK ONLY by design: the quality/
+	// renderer knobs (the GI/ambient source, the per-source opt-ins,
+	// probe pre-mix, EVSM) are HOST-OWNED session state — the editor's
+	// PushRenderQuality prefs, the App's panels/keys, the TOURMALINE_*
+	// pins — and never scene content (see RenderQualityConfig).
 	void PushPostfxEnv(const SceneRenderSettings& r, const SceneEnv& env) {
 		m_bloomEnabled = r.bloomEnabled;
 		m_bloomIntensity = std::clamp(r.bloomIntensity, 0.0f, 2.0f);
@@ -1240,23 +1280,21 @@ public:
 		m_aaMode = static_cast<AaMode>(std::clamp(r.aaMode, 0, 3));
 		m_cubemapEnabled = r.cubemapEnabled;
 		m_cubemapIntensity = std::clamp(r.cubemapIntensity, 0.0f, 4.0f);
-		// ---- RENDER CONFIGURATION (the block's second half: HOW the
-		// renderer runs — the same members the App's GI/shadow panels and
-		// the N key drive; see SceneRenderSettings). Two-step application:
-		// this seed runs once per scene load/rebind (and live per editor
-		// panel edit), but the GI LOADERS (bind path) flip the per-source
-		// opt-ins (m_regEnabled / m_giVolumesEnabled) back on for baked
-		// content — the bind path re-applies this half AFTER the loaders
-		// so the AUTHORED block wins over the on-when-baked default (see
-		// the PushRenderConfig re-seed in onAttach).
-		m_ambientMode = static_cast<AmbientMode>(std::clamp(r.giMode, 0, 5));
-		m_giIntensity = std::clamp(r.giIntensity, 0.0f, 2.0f);
-		m_lmEnabled = r.lightmapsEnabled;
-		m_regEnabled = r.regProbesEnabled;
-		m_giVolumesEnabled = r.giVolumesEnabled;
-		m_probePremixEnabled = r.probePremixEnabled;
-		m_evsmEnabled = r.evsmEnabled;
-		m_evsmSoftness = std::max(r.evsmSoftness, 0.0f);
+	}
+	// RENDER QUALITY push (host-owned): the same members the App's
+	// GI/shadow panels and the N key drive. The editor applies its
+	// stored prefs after the WYSIWYG attach (AFTER the GI loaders —
+	// they flip the per-source opt-ins ON for baked content, the
+	// prefs win) and live per panel edit.
+	void PushRenderQuality(const RenderQualityConfig& q) {
+		m_ambientMode = static_cast<AmbientMode>(std::clamp(q.giMode, 0, 5));
+		m_giIntensity = std::clamp(q.giIntensity, 0.0f, 2.0f);
+		m_lmEnabled = q.lightmapsEnabled;
+		m_regEnabled = q.regProbesEnabled;
+		m_giVolumesEnabled = q.giVolumesEnabled;
+		m_probePremixEnabled = q.probePremixEnabled;
+		m_evsmEnabled = q.evsmEnabled;
+		m_evsmSoftness = std::max(q.evsmSoftness, 0.0f);
 	}
 	// Headless postfx pins (the Configure snapshot): same "scene settings
 	// lose" contract as the volumetric ones — called at startup Configure
@@ -1329,6 +1367,12 @@ public:
 	bool SsrEnabled() const { return m_ssrEnabled; }
 	void SetVolumetricEnabled(bool v) { m_volumetricEnabled = v; }
 	bool VolumetricEnabled() const { return m_volumetricEnabled; }
+	// World voxel fields (Engine/WorldFields): renderers/passes needing
+	// CPU-side access (e.g. a wind consumer feeding physics) reach the
+	// system here; GPU consumers go through FrameUniforms::worldFields +
+	// world_field.hlsli instead.
+	engine::worldfields::WorldFieldSystem& WorldFields() { return m_worldFields; }
+	const engine::worldfields::WorldFieldSystem& WorldFields() const { return m_worldFields; }
 	void SetSkydomeEnabled(bool v) { m_skyEnabled = v; }
 	bool SkydomeEnabled() const { return m_skyEnabled; }
 
@@ -1494,6 +1538,13 @@ public:
 	// Per-frame re-derivation: dynamically-created decals (app presets,
 	// J spawns) appear the same frame without any refresh call.
 	uint32_t UpdateDecals(uint32_t currentFrame);
+	// World voxel fields (Engine/WorldFields): registers the frame's
+	// field set ONCE (onAttach, after the world resolves — field ids are
+	// registration order, fog first per WORLD_FIELD_ID_* in
+	// world_field.hlsli). v1 registers the TOURMALINE_WORLD_FIELDS=1
+	// checkerboard shakedown field; fog/wind register here as their
+	// consumers land. The field set closes at the first GPU publish.
+	void InitWorldFields();
 	// J: lazily builds the CPU pick BVH (scene triangle soup, see
 	// smvk::gi::BuildTraceSceneFromCluster) and raycasts the camera
 	// center ray; on hit spawns a blood-splat ENTITY (World::
@@ -1730,6 +1781,13 @@ public:
 	bool m_spotShadowsEnabled = true;
 	int m_spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
 	float m_spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
+	// Point-shadow selection (same shape, six tiles per light): the
+	// per-light opt-in is the same authored cast-shadow flag; each selected
+	// point claims 6 consecutive atlas tiles (cube faces) + 6 depth passes,
+	// so the budget stays at kMaxPointShadowLights.
+	bool m_pointShadowsEnabled = true;
+	int m_pointShadowMax = 1;               // shadowed points, clamped to kMaxPointShadowLights
+	float m_pointShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
 	bool m_showLightPoints = false;
 	bool m_showLightNumbers = false;
 	float m_lightPointSize = 6.0f; // ImGui circle radius (px)
@@ -1801,11 +1859,26 @@ public:
 		float hueSpread = 0.55f;   // per-light hue spread around baseHue
 		float baseHue = 0.08f;     // base hue (0.08 = warm ember)
 		glm::vec3 center{ 0.0f, 0.0f, 0.0f }; // crowd center (world)
+		// Crowd shadow participation: when on, the first `shadowCount`
+		// crowd lights (strided across the spiral for even spatial spread)
+		// carry the kForwardPlusFlag_CastShadow request so the SAME
+		// point-shadow selection + six-cube-face-tile atlas picks them up
+		// like authored point lights. The cap keeps a 96-light crowd from
+		// claiming the whole point atlas budget (the global m_pointShadowMax
+		// still tops the selection; a flagged crowd light costs SIX
+		// cube-face tiles + six depth passes per frame). Requires the Point
+		// shadows toggle in Spot Shadows (the atlas gate).
+		bool castShadows = false;  // off by default (stress tool, not content)
+		int shadowCount = 2;       // crowd lights requesting shadows (stride-spread)
 	};
 	LightDemo m_lightDemo{};
-	// Crowd lights actually appended this frame (stats readout; the count
-	// caps at FP_MAX_BUILD_LIGHTS minus the scene lights).
+	// Crowd lights actually appended this frame (spawned-report readout;
+	// the count caps at FP_MAX_BUILD_LIGHTS minus the scene lights).
 	uint32_t m_lightCrowdCount = 0;
+	// The live Forward+ point/spot set the frame built (the scene's
+	// lights; the spawn helper appends to it directly - one list, one
+	// count, no separate light category).
+	uint32_t m_fpLightCount = 0;
 	smvk::CubemapLibrary m_cubemaps{}; // reflection cubemaps for IBL
 	// ---- Reflection cubemap UI + cached probe rows ----
 	// Probe data rides the Forward+ light buffer as type-2 entries
@@ -1930,6 +2003,18 @@ public:
 	uint32_t m_spotShadowCount = 0; // shadowed spots this frame (tiles used)
 	int32_t m_spotShadowMapIndex = -1; // bindless spot atlas, -1 = none
 	std::vector<smvk::GpuCascadeDescription> m_spotShadowTiles; // spot tiles this frame (feed the spot RenderViews)
+	// Point-light shadows (six cube-face tiles per light, same atlas):
+	// frame numbering is spots first, faces after, so the combined tile
+	// index of face f of light k is m_spotShadowCount + k*6 + f.
+	uint32_t m_pointShadowLightCount = 0; // shadowed points this frame
+	uint32_t m_pointShadowTileCount = 0;  // 6 * light count (face tiles used)
+	std::vector<smvk::GpuCascadeDescription> m_pointShadowTiles; // face tiles this frame (feed the face RenderViews, CubemapFace order per light)
+	// Total local-light shadow tiles this frame (spots + point faces): the
+	// pc.spotShadowCount / DsPhasePush.spotShadowCount the shaders guard
+	// tile indexing against (the array bound is kMaxLocalShadowTiles).
+	uint32_t LocalShadowTileCount() const {
+		return m_spotShadowCount + m_pointShadowTileCount;
+	}
 	// Shadow contribution culling: during shadow map rendering, cull casters
 	// that can never shadow the MAIN camera's view. CASCADE views test
 	// against m_casterContributionView - the main frustum swept toward the
@@ -2627,6 +2712,17 @@ public:
 	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
 	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
 	float m_volumetricHeightBase = 0.0f; // reference height (m)
+	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
+	// virtual world volume system). World-space (NOT viewport-scoped):
+	// follows the frame's camera (PrepareFrame's interest point),
+	// publishes its field/page-table BDA into FrameUniforms::worldFields,
+	// and any pass samples it through the shared world_field.hlsli. One
+	// infrastructure, independent fields (fog density, wind, ...): the
+	// field set registers ONCE in onAttach (InitWorldFields — ids are
+	// registration order, fog first per WORLD_FIELD_ID_*). v1 is gated
+	// by TOURMALINE_WORLD_FIELDS=1 (the checkerboard shakedown field +
+	// budgeted pools; fog/wind register with their consumers). ----
+	engine::worldfields::WorldFieldSystem m_worldFields;
 	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
 	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
 	// neutral strip + a screenshot reference into exports/ for Photoshop.

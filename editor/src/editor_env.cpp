@@ -414,15 +414,65 @@ namespace editor {
 	}
 
 	void EditorApp::DrawRenderSettingsPanel() {
-		// RENDER SETTINGS (the split postfx look — SceneRenderSettings): the
-		// scene-global render grade — the same values the LIVE VIEW renders
-		// (the per-edit PushPostfxEnv at the tail) and the tour/pak/App carry.
-		// Numeric/enum rows use the attribute stubs; switches use native
-		// ImGui checkboxes so changes write the backing bool exactly once.
-		// Render settings always show all parameter rows, regardless of whether
-		// the corresponding effect is active; users can edit inactive presets.
+		// RENDER SETTINGS: the renderer options (top — GI/shadow knobs,
+		// live on the WYSIWYG view per edit, session-only) + the postfx
+		// look (SceneRenderSettings — the scene-global grade the tour/
+		// pak/App carry). Numeric/enum rows use the attribute stubs;
+		// switches use native ImGui checkboxes so changes write the
+		// backing bool exactly once. Both halves always show all
+		// parameter rows regardless of whether the corresponding effect
+		// is active; users can edit inactive presets.
 		ImGui::Separator();
 		ImGui::Text("Render settings (GI / shadows / bloom / tonemap / exposure / AO / SSR)");
+		{
+			engine::RenderQualityConfig& q = m_renderQuality;
+			ImGui::PushID("render_quality");
+			ImGui::TextDisabled("Global illumination");
+			int gi = std::clamp(q.giMode, 0, 5);
+			if (attr::Enum("GI mode", &gi,
+				"All (baked GI; sky fallback)\0Lightmaps only\0"
+				"Probes only (grids + volume)\0Sky IBL only\0"
+				"Off (direct only)\0Baked (no sky fallback)\0",
+				"The ambient source (the App's N cycle). Single-source "
+				"modes degrade at load when their bake is missing; "
+				"Baked isolates the baked field (uncovered pixels go "
+				"direct-only, no analytic sky anywhere in the ambient)."))
+				q.giMode = gi;
+			attr::Slider("GI intensity", &q.giIntensity, 0.0f, 2.0f, "%.2f",
+				"The baked-GI + sky-IBL ambient scale (0 = direct sun "
+				"only, 1 = authored, 2 = double)");
+			ImGui::Checkbox("Lightmaps##gi_lm", &q.lightmapsEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Baked 2D lightmap branch (static "
+					"geometry; needs a --lightmap bake)");
+			ImGui::Checkbox("Regular probe volumes##gi_reg", &q.regProbesEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Baked regular probe grids "
+					"(dynamic-object GI)");
+			ImGui::Checkbox("Convex GI volumes##gi_cv", &q.giVolumesEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Confined-space dense probe volumes, "
+					"composited over the octree field by priority");
+			ImGui::Checkbox("Probe pre-mix##gi_premix", &q.probePremixEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("GPU pre-mixed probe blend (one cubemap "
+					"fetch per pixel); off = the per-pixel probe walk");
+			ImGui::TextDisabled("Shadows");
+			ImGui::Checkbox("EVSM moment shadows##evsm", &q.evsmEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("EVSM moment shadow maps (soft shadows; "
+					"falls back to PCF when unsupported)");
+			attr::Slider("EVSM softness", &q.evsmSoftness, 0.0f, 4.0f, "%.2f",
+				"The penumbra artistic scale over the physical size "
+				"(0 = hard)");
+			ImGui::PopID();
+			// Live push per edit (plain member writes — the same pattern
+			// as the look's PushPostfxEnv at the tail; session-only, and
+			// LaunchWysiwyg re-applies after every attach so relaunches
+			// keep the session's choices).
+			if (m_wysiwyg && m_wysiwygValid)
+				m_wysiwyg->PushRenderQuality(q);
+		}
 		if (!m_world) {
 			ImGui::TextDisabled("No scene — open a scene to author the look.");
 			return;
@@ -434,50 +484,6 @@ namespace editor {
 			// Native ImGui controls here avoid relying on the attr::Bool stub's
 			// click/toggle semantics. The section is ID-scoped, and the ## suffixes
 			// keep the visible labels while guaranteeing unique control IDs.
-			// ---- GI / SHADOW RENDER CONFIGURATION: renderer-level toggles
-			// — HOW the renderer runs, not look grades (the same states the
-			// App's GI + shadow panels and the N key drive). Authored here,
-			// saved forward tour (render.* keys) -> pak -> App; the engine
-			// seeds the same members once per scene load (PushPostfxEnv)
-			// and this panel pushes them live per edit below.
-			ImGui::TextDisabled("Global illumination");
-			int gi = std::clamp(r.giMode, 0, 5);
-			if (attr::Enum("GI mode", &gi,
-				"All (baked GI; sky fallback)\0Lightmaps only\0"
-				"Probes only (grids + volume)\0Sky IBL only\0"
-				"Off (direct only)\0Baked (no sky fallback)\0",
-				"The ambient source (the App's N cycle). Single-source "
-				"modes degrade at load when their bake is missing; "
-				"Baked isolates the baked field (uncovered pixels go "
-				"direct-only, no analytic sky anywhere in the ambient)."))
-				r.giMode = gi;
-			attr::Slider("GI intensity", &r.giIntensity, 0.0f, 2.0f, "%.2f",
-				"The baked-GI + sky-IBL ambient scale (0 = direct sun "
-				"only, 1 = authored, 2 = double)");
-			ImGui::Checkbox("Lightmaps##gi_lm", &r.lightmapsEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Baked 2D lightmap branch (static "
-					"geometry; needs a --lightmap bake)");
-			ImGui::Checkbox("Regular probe volumes##gi_reg", &r.regProbesEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Baked regular probe grids "
-					"(dynamic-object GI)");
-			ImGui::Checkbox("Convex GI volumes##gi_cv", &r.giVolumesEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Confined-space dense probe volumes, "
-					"composited over the octree field by priority");
-			ImGui::Checkbox("Probe pre-mix##gi_premix", &r.probePremixEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("GPU pre-mixed probe blend (one cubemap "
-					"fetch per pixel); off = the per-pixel probe walk");
-			ImGui::TextDisabled("Shadows");
-			ImGui::Checkbox("EVSM moment shadows##evsm", &r.evsmEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("EVSM moment shadow maps (soft shadows; "
-					"falls back to PCF when unsupported)");
-			attr::Slider("EVSM softness", &r.evsmSoftness, 0.0f, 4.0f, "%.2f",
-				"The penumbra artistic scale over the physical size "
-				"(0 = hard)");
 			ImGui::Separator();
 			ImGui::TextDisabled("Post-processing look");
 			ImGui::PushID("bloom");
@@ -800,17 +806,9 @@ namespace editor {
 			put("render.aaMode", std::to_string(r.aaMode));
 			put("render.cubemapEnabled", r.cubemapEnabled ? "1" : "0");
 			put("render.cubemapIntensity", std::to_string(r.cubemapIntensity));
-			// Render-config tail (the GI/shadow configuration half — see
-			// SceneRenderSettings): the GI/ambient source + per-source
-			// opt-ins + probe pre-mix + EVSM shadows.
-			put("render.giMode", std::to_string(r.giMode));
-			put("render.giIntensity", std::to_string(r.giIntensity));
-			put("render.lightmapsEnabled", r.lightmapsEnabled ? "1" : "0");
-			put("render.regProbesEnabled", r.regProbesEnabled ? "1" : "0");
-			put("render.giVolumesEnabled", r.giVolumesEnabled ? "1" : "0");
-			put("render.probePremixEnabled", r.probePremixEnabled ? "1" : "0");
-			put("render.evsmEnabled", r.evsmEnabled ? "1" : "0");
-			put("render.evsmSoftness", std::to_string(r.evsmSoftness));
+			// (The GI/shadow quality knobs never ride render.* keys —
+			// editor.prefs [renderQuality] owns them; see
+			// DrawRenderSettingsPanel's split note.)
 		}
 		// Analytic env-zone master switch (scene-level; see
 		// Rendergraph/envzones.h). Absent = the Scene default ON.
@@ -926,15 +924,8 @@ namespace editor {
 			else if (f == "aaMode") r.aaMode = int(StrFloat(v, float(r.aaMode)));
 			else if (f == "cubemapEnabled") r.cubemapEnabled = StrFloat(v, r.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
 			else if (f == "cubemapIntensity") r.cubemapIntensity = StrFloat(v, r.cubemapIntensity);
-			// Render-config tail (the GI/shadow configuration half).
-			else if (f == "giMode") r.giMode = int(StrFloat(v, float(r.giMode)));
-			else if (f == "giIntensity") r.giIntensity = StrFloat(v, r.giIntensity);
-			else if (f == "lightmapsEnabled") r.lightmapsEnabled = StrFloat(v, r.lightmapsEnabled ? 1.0f : 0.0f) != 0.0f;
-			else if (f == "regProbesEnabled") r.regProbesEnabled = StrFloat(v, r.regProbesEnabled ? 1.0f : 0.0f) != 0.0f;
-			else if (f == "giVolumesEnabled") r.giVolumesEnabled = StrFloat(v, r.giVolumesEnabled ? 1.0f : 0.0f) != 0.0f;
-			else if (f == "probePremixEnabled") r.probePremixEnabled = StrFloat(v, r.probePremixEnabled ? 1.0f : 0.0f) != 0.0f;
-			else if (f == "evsmEnabled") r.evsmEnabled = StrFloat(v, r.evsmEnabled ? 1.0f : 0.0f) != 0.0f;
-			else if (f == "evsmSoftness") r.evsmSoftness = StrFloat(v, r.evsmSoftness);
+			// (The GI/shadow quality knobs are editor.prefs state — never
+			// render.* keys; unknown fields fall through ignored.)
 		};
 		SceneRenderSettings render = scene.defaultRenderSettings;
 		bool haveRender = false;

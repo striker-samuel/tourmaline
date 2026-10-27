@@ -236,6 +236,71 @@ void OnResourceExhaustion(const char* site);
 		PassThrough,
 	};
 
+	// Block/texel geometry of a Format — the CPU-visible half of the
+	// backend's getFormatInfo table (impl.cpp keeps its own copy for the
+	// copy-region math; both derive from the same spec numbers). The
+	// world-field atlas / cook brick-layout math uses this: a stored
+	// brick's tightly packed payload is
+	//   blocksX = ceil(storedW / blockWidth)
+	//   blocksY = ceil(storedH / blockHeight)
+	//   bytes   = blocksX * blocksY * storedD * bytesPerBlock
+	// (blocks are 4x4x1 for BCn: Z stays per-texel). Compressed formats
+	// require offsets/extents divisible by the block footprint — the
+	// 68-texel stored brick (64 interior + 2 halo per side) is
+	// deliberately 4-divisible for exactly that.
+	struct FormatBlockInfo
+	{
+		uint32_t blockWidth = 1;
+		uint32_t blockHeight = 1;
+		uint32_t bytesPerBlock = 1;
+		bool compressed = false;
+	};
+	constexpr FormatBlockInfo GetFormatBlockInfo(Format f)
+	{
+		switch (f)
+		{
+		case Format::R8_UNorm: case Format::R8_SNorm:
+		case Format::R8_UInt: case Format::R8_SInt:
+			return { 1, 1, 1, false };
+		case Format::RG8_UNorm: case Format::RG8_SNorm:
+		case Format::RG8_UInt: case Format::RG8_SInt:
+			return { 1, 1, 2, false };
+		case Format::RGBA8_UNorm: case Format::RGBA8_SNorm:
+		case Format::RGBA8_UInt: case Format::RGBA8_SInt:
+		case Format::RGBA8_SRGB: case Format::BGRA8_UNorm:
+		case Format::BGRA8_SRGB:
+		case Format::R16_UNorm: case Format::R16_SNorm:
+		case Format::R16_UInt: case Format::R16_SInt: case Format::R16_Float:
+			return { 1, 1, 4, false };
+		case Format::RG16_UNorm: case Format::RG16_SNorm:
+		case Format::RG16_UInt: case Format::RG16_SInt: case Format::RG16_Float:
+		case Format::R32_UInt: case Format::R32_SInt: case Format::R32_Float:
+		case Format::RGB10A2_UNorm: case Format::RGB10A2_UInt:
+		case Format::R11G11B10_Float:
+			return { 1, 1, 8, false };
+		case Format::RGBA16_UNorm: case Format::RGBA16_SNorm:
+		case Format::RGBA16_UInt: case Format::RGBA16_SInt: case Format::RGBA16_Float:
+		case Format::RG32_UInt: case Format::RG32_SInt: case Format::RG32_Float:
+			return { 1, 1, 8, false };
+		case Format::RGB32_UInt: case Format::RGB32_SInt: case Format::RGB32_Float:
+			return { 1, 1, 12, false };
+		case Format::RGBA32_UInt: case Format::RGBA32_SInt:
+		case Format::RGBA32_Float:
+			return { 1, 1, 16, false };
+		case Format::BC1_RGB_UNorm: case Format::BC1_RGB_SRGB:
+		case Format::BC1_RGBA_UNorm: case Format::BC1_RGBA_SRGB:
+		case Format::BC2_UNorm: case Format::BC2_SRGB:
+		case Format::BC3_UNorm: case Format::BC3_SRGB:
+		case Format::BC4_UNorm: case Format::BC4_SNorm:
+		case Format::BC5_UNorm: case Format::BC5_SNorm:
+		case Format::BC6H_UFloat: case Format::BC6H_SFloat:
+		case Format::BC7_UNorm: case Format::BC7_SRGB:
+			return { 4, 4, 8, true };
+		default:
+			return { 1, 1, 0, false }; // Undefined/depth/stencil: not atlas payload formats
+		}
+	}
+
 	// ============================================================================
 	// Resource access
 	// ============================================================================
@@ -1448,6 +1513,32 @@ struct ImageCreateInfo
 		// between the graphics moment passes and the async prefilter.
 		// Ignored on single-queue devices (falls back to EXCLUSIVE).
 		bool concurrentCompute = false;
+	};
+
+	// Sub-region of an image for targeted (partial) uploads — the world
+	// field atlas pagers write individual brick slots into a persistent
+	// 3D atlas with this (see ResourceManager::UploadDataToImage3DRegion).
+	// mipLevel/arrayLayer select the subresource; offset/extent are
+	// texel (block) units relative to that subresource.
+	struct ImageRegion3D
+	{
+		uint32_t mipLevel = 0;
+		uint32_t baseArrayLayer = 0;
+		Offset3D offset{};
+		Extent3D extent{};
+	};
+
+	// One entry of a BATCHED region upload (the BulkCopyBuffer pattern,
+	// image edition): `srcOffset` indexes into the caller's single packed
+	// blob; the region says where in the image those bytes land. The
+	// batch (UploadDataToImage3DRegions) stages the blob ONCE and records
+	// ONE layout-transition pair around all the copies — N per-brick
+	// uploads cost one barrier pair + one ring allocation + one memcpy
+	// pass + one copy command, not N of each.
+	struct ImageRegionCopy3D
+	{
+		ImageRegion3D region{};
+		size_t srcOffset = 0; // byte offset into the upload blob
 	};
 
 	enum class ResourceOwnership : uint8_t

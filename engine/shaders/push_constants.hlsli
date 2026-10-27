@@ -44,12 +44,16 @@ struct PushConstants
     uint fpLightCount;
     uint fpTileSize;
     uint fpMaxPerTile;
-    // Spot shadows (opaque pass sampling + spot depth passes).
+    // Local-light shadows (spot tiles + point cube-face tiles; opaque pass
+    // sampling + the tile depth passes).
     // spotShadowBuffer: tile descriptors (GpuCascadeDescription tiles).
-    // spotShadowMapIndex: bindless spot atlas, UINT32_MAX when none.
-    // spotShadowCount: active tiles this frame (<= MAX_SPOT_SHADOWS).
-    // spotIndex: tile rendered by the current shadow pass,
-    //   0xFFFFFFFF when the pass is NOT a spot shadow pass.
+    // spotShadowMapIndex: bindless atlas, UINT32_MAX when none (EVSM mode:
+    // the blurred SPOT moments - point lights always use their per-light
+    // shadowMapIndex, the D32 atlas).
+    // spotShadowCount: active tiles this frame, spots + point faces
+    //   (<= MAX_LOCAL_SHADOW_TILES).
+    // spotIndex: tile rendered by the current shadow pass (any local-light
+    //   tile), 0xFFFFFFFF when the pass is NOT a shadow pass.
     vk::BufferPointer<SpotShadowBuffer>
     spotShadowBuffer;
     uint spotShadowMapIndex;

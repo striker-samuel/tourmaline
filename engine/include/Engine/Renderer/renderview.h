@@ -46,6 +46,7 @@ typedef enum RenderViewFlagBits {
 	RenderViewFlagBit_ShadowCascade = 1u << 1, // directional light CSM cascade
 	RenderViewFlagBit_SpotShadow = 1u << 2,    // spot light shadow tile
 	RenderViewFlagBit_Custom = 1u << 3,        // reflection/mini-map/other
+	RenderViewFlagBit_PointShadow = 1u << 4,   // point light shadow face tile
 } RenderViewFlagBits;
 typedef uint32_t RenderViewFlags;
 
@@ -308,6 +309,16 @@ public:
 		const glm::vec2& tileSize) {
 		return AllocateView(
 			glm::make_mat4(tile.lightVP), tileSize, RenderViewFlagBit_SpotShadow);
+	}
+
+	// One shadowed point light -> 6 views (one per cube-face tile; the
+	// caller allocates them back-to-back so face f is base + f, matching
+	// the frame's consecutive tile numbering - see spotshadow.h).
+	uint32_t AllocatePointShadowFaceView(
+		const GpuCascadeDescription& tile,
+		const glm::vec2& tileSize) {
+		return AllocateView(
+			glm::make_mat4(tile.lightVP), tileSize, RenderViewFlagBit_PointShadow);
 	}
 
 	// Any other custom pass.

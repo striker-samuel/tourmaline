@@ -2496,10 +2496,14 @@ namespace editor {
 						c.beforeFlag, c.beforeText);
 					Do(c);
 				}
-				if (isSpot) {
+				// Cast-shadow participation: spots get one perspective tile,
+				// points get six cube-face tiles - both ride the local-light
+				// shadow atlas (spotshadow.h).
+				if (isSpot || li->type == ::SceneLight::Type::Point) {
 					bool lshadow = (li->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0;
 					if (attr::Bool("Shadows", lshadow,
-							"Spot shadow map participation")) {
+							isSpot ? "Spot shadow map participation"
+								: "Point shadow map participation (six cube-face tiles)")) {
 						EditCmd c{};
 						c.verb = EditVerb::SetLightAttr;
 						c.node = node;
@@ -2509,6 +2513,8 @@ namespace editor {
 							c.beforeFlag, c.beforeText);
 						Do(c);
 					}
+				}
+				if (isSpot) {
 					// Spot COOKIE (gobo): a .texture asset path (or image URI)
 					// projected through the cone — the authored cookieUri the
 					// light build resolves to the bindless index (empty = none).
@@ -2565,9 +2571,6 @@ namespace editor {
 							"through the cone as a gobo. Empty = none. "
 							"Unresolvable refs warn at the light build and "
 							"drop (the light renders unmodified).");
-				}
-				else {
-					ImGui::TextDisabled("points cannot cast shadows (spot atlas only)");
 				}
 				// Procedural light FUNCTION (points + spots): per-pixel intensity
 				// modulation — flicker (candle-like time noise), pulse (sine

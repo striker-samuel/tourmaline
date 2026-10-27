@@ -25,6 +25,7 @@
 #define RENDERVIEW_FLAG_SHADOW_CASCADE (1u << 1)
 #define RENDERVIEW_FLAG_SPOT_SHADOW    (1u << 2)
 #define RENDERVIEW_FLAG_CUSTOM         (1u << 3)
+#define RENDERVIEW_FLAG_POINT_SHADOW   (1u << 4)
 
 // One virtual camera + its render target (256 bytes).
 // m_viewPlanes: inward frustum planes (xyz normal, w distance), normalized.

@@ -388,11 +388,23 @@ static constexpr uint32_t FP_MAX_LIGHTS =
 // selected shadow spot, and the flight-slice stride still fits.
 static constexpr uint32_t FP_PROBE_RESERVE = smvk::kForwardPlusMaxProbes;
 static constexpr uint32_t FP_MAX_BUILD_LIGHTS = FP_MAX_LIGHTS - FP_PROBE_RESERVE;
-// Hard per-tile list cap. Overflow lights pop (accepted): the shading pass
-// walks only the first FP_MAX_PER_TILE list entries per tile. Spots are
-// written to the light buffer before the point grid so the few expensive
-// cone lights never lose their slots to the crowd.
-static constexpr uint32_t FP_MAX_PER_TILE = 8;
+// Hard per-tile SURFACE list cap. The cull RELEVANCE-SORTS candidates
+// (key = light-center distance to the tile depth slab; spots pinned
+// ahead of points), so overflow pops the FARTHEST candidates — a
+// graceful distance fade, not the first-come hard edge that read as
+// tile seams under dense crowds (neighboring tiles kept different
+// arbitrary subsets; the seam was loudest where their depth slabs
+// disagreed, i.e. at depth discontinuities). 8 first-come -> 16
+// sorted: the per-pixel walk doubles at most, and the dropped lights
+// are the dimmest by distance. The sort capacity is the shader's
+// MAX_FP_TILE_SORT_SLOTS (32) — keep this <= it.
+static constexpr uint32_t FP_MAX_PER_TILE = 16;
+// Per-tile FOG list cap (the volumetric march's own lists — march-range
+// candidacy, no depth-slab cuts; see ForwardPlusCullPush::fogTile*).
+// Bounded so the march's per-refresh light walk stays cheap even in
+// dense crowds (the refresh cadence walks this list every kVolGiRefresh
+// meters per pixel). Same sort; same MAX_FP_TILE_SORT_SLOTS ceiling.
+static constexpr uint32_t FP_FOG_PER_TILE = 16;
 // Decals share the tiling (parallel per-tile lists, see ForwardPlusDecal):
 // global decal cap (ring stride) + per-tile list cap. Must stay in sync
 // with the shader defines MAX_FP_DECALS / MAX_FP_DECALS_PER_TILE.
@@ -404,6 +416,7 @@ static smvk::ForwardPlusDesc MakeForwardPlusDesc() {
 	d.tileSize = FP_TILE_SIZE;
 	d.maxLights = FP_MAX_LIGHTS;
 	d.maxLightsPerTile = FP_MAX_PER_TILE;
+	d.maxFogPerTile = FP_FOG_PER_TILE;
 	d.maxDecals = FP_MAX_DECALS;
 	d.maxDecalsPerTile = FP_MAX_DECALS_PER_TILE;
 	d.name = "forwardplus";
@@ -429,10 +442,14 @@ static smvk::ParticlesDesc MakeParticlesDesc() {
 }
 
 // -----------------------------------------------------------------------------
-// Spot-shadow atlas config (tile descriptors live in spotshadow.h).
-// The atlas is fixed at kMaxSpotShadows slots; the per-frame selection picks
-// at most m_spotShadowMax casters (upper limit + distance/screenspace
-// heuristic, see SelectSpotShadowCasters).
+// Local-light shadow atlas config (tile descriptors live in spotshadow.h).
+// The atlas is fixed at kMaxLocalShadowTiles slots (8 spot tiles + 12
+// point cube-face tiles); the per-frame selections pick at most
+// m_spotShadowMax spots + m_pointShadowMax points (upper limit +
+// distance/screenspace heuristic, see SelectSpotShadowCasters /
+// SelectPointShadowCasters). Point faces ride the SAME atlas/descriptor
+// buffer/bindless index - only the tile math differs (six 90-degree
+// perspective faces per light).
 // -----------------------------------------------------------------------------
 static constexpr uint32_t SPOT_SHADOW_RES = 1024; // ceiling (the member clamps below)
 static constexpr float SPOT_SHADOW_NEAR = 0.5f;
@@ -440,7 +457,7 @@ static constexpr float SPOT_SHADOW_BIAS = 0.0005f; // NDC base for slope-scaled 
 
 static smvk::SpotShadowMapDesc MakeSpotShadowDesc(uint32_t resolution) {
 	smvk::SpotShadowMapDesc d{};
-	d.slotCount = smvk::kMaxSpotShadows;
+	d.slotCount = smvk::kMaxLocalShadowTiles;
 	d.resolution = resolution;
 	d.format = smvk::Format::D32_Float;
 	d.nearPlane = SPOT_SHADOW_NEAR;
@@ -472,7 +489,19 @@ static smvk::EvsmDesc MakeEvsmSpotDesc(smvk::EvsmPipelineMode pipeline,
 	uint32_t tileResolution) {
 	smvk::EvsmDesc d{};
 	d.tileResolution = tileResolution;
-	d.tileCount = smvk::kMaxSpotShadows;
+	// Full combined grid (spots first, point faces after) so the moment
+	// atlas tiles EXACTLY the D32 spot-shadow atlas: both derive cols from
+	// ceil(sqrt) over the same count, hence the tile descriptors
+	// (lightVP + uvBias/uvScale/uvClamp) are layout-identical and one
+	// descriptor table addresses either representation. Sizing to the
+	// spots alone (the old kMaxSpotShadows) drifted the grid for tiles
+	// >= 4 (ceil(sqrt(8)) = 3 cols vs the D32's 5) AND caps the atlas at
+	// spot-only. Memory is the price of the union grid:
+	//   RGBA32F moments/scratch/blurred = 6 x (cols*res x rows*res x 16 B)
+	//   -> 256-res ~126 MB, 512-res ~505 MB, 1024-res ~2 GB (+ MSAA depth)
+	// only the tiles in use take moment/blur passes though - unused
+	// regions cost VRAM, not time.
+	d.tileCount = smvk::kMaxLocalShadowTiles;
 	d.momentsFormat = smvk::Format::RGBA32_Float;
 	d.depthFormat = smvk::Format::D32_Float;
 	d.msaaSamples = 2;
@@ -751,8 +780,12 @@ namespace engine {
 		// never to black).
 		if (pins.cubemap.has_value() && !*pins.cubemap)
 			m_cubemapEnabled = false;
-		// ---- GI / ambient render-config pins (the seed's second half;
-		// the getenv twins live in onAttach) ----
+		// ---- GI / ambient quality pins (the getenv twins live in
+		// onAttach). Quality config is HOST-OWNED (the editor prefs'
+		// PushRenderQuality / the App's panels — never a scene seed),
+		// so nothing below re-applies against these today; the block is
+		// the layering-contract guard — any future seed-side writer
+		// gets stomped here, pins keep winning.
 		// Ambient source pin (TOURMALINE_AMBIENT spellings; the N key
 		// stays live after). Applied before the legacy GI overlap so the
 		// legacy demotion sees the pinned mode.
@@ -1275,7 +1308,7 @@ namespace engine {
 			"env zones buffer"
 		);
 		m_resources.spotShadowBuffer = m_context->CreateBuffer(
-			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows * m_swapchain->framesInFlight() * viewSlabs,
+			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxLocalShadowTiles * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
 			"spot shadow tiles buffer"
 		);
@@ -1910,6 +1943,12 @@ namespace engine {
 			<< m_world->meshLocations.size() << " materials="
 			<< m_world->materialLocations.size() << std::endl;
 
+		// World voxel fields (Engine/WorldFields): the field set registers
+		// ONCE, here — after the world resolves, before the first frame
+		// (field ids are registration order and the set closes at the
+		// first GPU publish). Re-attach keeps the set (idempotent inside).
+		InitWorldFields();
+
 // Scene bounds log + default-camera framing (see below): the light set
 // is the resolved authored set - no procedural grid to fit.
 		{
@@ -2194,39 +2233,6 @@ namespace engine {
 		// the atlas textures for the per-pixel lightmap branch. Missing
 		// file is the normal state (not baked / not opted in) - non-fatal.
 		LoadGiLightmaps();
-		// RENDER-CONFIG RE-SEED (the GI/shadow half of
-		// SceneRenderSettings): the loaders above flip the per-source
-		// opt-ins (m_regEnabled / m_giVolumesEnabled) ON for baked
-		// content after the ResolveSceneLights seed already ran — the
-		// AUTHORED block wins over that on-when-baked default (a scene
-		// that opted out of regular probes / GI volumes stays opted out;
-		// a scene without the block keeps the loader default, the struct
-		// defaults mirroring it). Idempotent for the look half. Runs
-		// BEFORE the degrade below so an authored-but-missing source
-		// still degrades instead of rendering silently empty.
-		if (m_world->scene.hasRenderSettings) {
-			PushPostfxEnv(m_world->scene.renderSettings,
-				m_world->scene.environment);
-			// Headless pins win over the seed (same contract as
-			// ResolveSceneLights above — scene settings lose).
-			ApplyHeadlessPostfxOverrides();
-			// --bench determinism pin (see m_autoExposurePin): the seed
-			// above re-seeds m_autoExposureEnabled from the authored
-			// block; the pin re-applies here, after the seed AND the
-			// headless overrides (an explicit TOURMALINE_AUTO_EXPOSURE
-			// snapshot pin stays the more deliberate choice and wins).
-			if (m_autoExposurePin >= 0)
-				m_autoExposureEnabled = (m_autoExposurePin != 0);
-			std::cerr << "[Scene] render config: gi="
-				<< AmbientModeName(m_ambientMode)
-				<< " intensity=" << m_giIntensity
-				<< " lm=" << (m_lmEnabled ? "on" : "off")
-				<< " reg=" << (m_regEnabled ? "on" : "off")
-				<< " cv=" << (m_giVolumesEnabled ? "on" : "off")
-				<< " premix=" << (m_probePremixEnabled ? "on" : "off")
-				<< " evsm=" << (m_evsmEnabled ? "on" : "off")
-				<< " soft=" << m_evsmSoftness << "\n";
-		}
 		// Single-source isolation modes degrade when their source did not
 		// load (All/SkyIbl need nothing): keeps them from being silently
 		// empty - the UI/env selector keeps working after.
@@ -2259,10 +2265,11 @@ namespace engine {
 			std::cerr << "[WorldRenderer] Failed to create cascaded shadow atlas\n";
 			return false;
 		}
-		// Spot-shadow atlas (fixed kMaxSpotShadows slots; selection caps usage).
-		// Non-fatal: without it all spots simply run unshadowed.
+		// Local-light shadow atlas (fixed kMaxLocalShadowTiles slots: 8 spot
+		// tiles + 12 point cube faces; the per-frame selections cap usage).
+		// Non-fatal: without it all spots/points simply run unshadowed.
 		if (!m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc(m_spotShadowResolution))) {
-			std::cerr << "[WorldRenderer] Spot shadow atlas unavailable - spots run unshadowed\n";
+			std::cerr << "[WorldRenderer] Spot shadow atlas unavailable - spots/points run unshadowed\n";
 		}
 		// EVSM moment atlases (RGBA32F 2xMSAA + async blur). Non-fatal: when
 		// the device lacks RGBA32F render/blur/filter support (or shaders
@@ -3768,6 +3775,129 @@ namespace engine {
 		return z;
 	}
 
+	// =====================================================================
+	// World voxel fields (Engine/WorldFields) — the milestone-2 shakedown:
+	// a procedural world-space checkerboard field paged through the full
+	// virtual-addressing + atlas + page-table machinery. NOT a fog/wind
+	// consumer yet (those register here with their passes) — this exists
+	// to prove the infrastructure end to end: R8 atlas, two LODs, toroidal
+	// clipmap windows, forced eviction under a deliberately tiny pool.
+	// =====================================================================
+
+	namespace {
+
+	// Smooth world-space field (continuous everywhere — the seam test
+	// needs a continuous function: the atlas stores f(worldPos) at every
+	// stored texel INCLUDING the halo, so in-atlas trilinear filtering
+	// equals filtering the world function; a discontinuous pattern would
+	// hide cross-brick filtering bugs).
+	class CheckerboardBrickSource final : public worldfields::IWorldFieldBrickSource
+	{
+	public:
+		// value in [0,1]: three plane-wave sines (cheap, continuous,
+		// visibly volumetric when visualized).
+		static float WorldValue(glm::vec3 p)
+		{
+			float v = 0.25f + 0.25f * std::sin(p.x * 0.31f)
+				+ 0.25f * std::sin(p.y * 0.27f)
+				+ 0.25f * std::sin(p.z * 0.23f);
+			return std::min(std::max(v, 0.0f), 1.0f);
+		}
+
+		bool GenerateBrick(const worldfields::WorldFieldDesc& field, uint32_t lod,
+			int32_t x, int32_t y, int32_t z,
+			std::byte* payload, size_t payloadBytes) override
+		{
+			const uint32_t stored = worldfields::kBrickStoredRes;
+			const size_t expect = size_t(stored) * stored * stored;
+			assert(payloadBytes == expect && field.format == smvk::Format::R8_UNorm);
+			// LOD voxel edge (base * 2^lod): the checker samples the SAME
+			// world function at every level (a proper LOD downsample —
+			// coarser bricks sample the same world lattice at sparser
+			// positions, so LOD fallback walks are consistent).
+			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
+			// Stored-texel world position: brick min corner + TEXEL
+			// CENTER offset (texel + 0.5 - halo). The +0.5 aligns the
+			// stored lattice with hardware trilinear's texel-center grid:
+			// SampleLevel at continuous cell L blends texels i0/i0+1 with
+			// weight frac(L-0.5), exactly the dense-lattice interpolation
+			// between centers (i+0.5)*voxel — point-sampling texel CORNERS
+			// instead would shift every filtered sample half a voxel.
+			// The -halo side samples the NEIGHBOR bricks' positions, so
+			// brick-edge filtering reads the true adjacent values (the
+			// whole point of the stored halo).
+			const glm::vec3 brickMin = field.originMeters
+				+ glm::vec3(float(x), float(y), float(z))
+					* (float(worldfields::kBrickInteriorRes) * voxel);
+			size_t i = 0;
+			for (uint32_t tz = 0; tz < stored; ++tz)
+				for (uint32_t ty = 0; ty < stored; ++ty)
+					for (uint32_t tx = 0; tx < stored; ++tx) {
+						const glm::vec3 texel = brickMin
+							+ glm::vec3(float(tx) + 0.5f - float(worldfields::kBrickBorder),
+								float(ty) + 0.5f - float(worldfields::kBrickBorder),
+								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
+						payload[i++] = std::byte(
+							uint8_t(WorldValue(texel) * 255.0f + 0.5f));
+					}
+			assert(i == payloadBytes);
+			return true;
+		}
+	};
+
+	CheckerboardBrickSource g_checkerSource;
+
+	} // namespace
+
+	void WorldRenderer::InitWorldFields()
+	{
+		// Re-attach guard (the editor's relaunch flow re-runs onAttach on
+		// the SAME renderer instance): the field set — and its published
+		// state — persists; registering again would trip the append-only
+		// assert for zero benefit.
+		if (m_worldFields.FieldCount() > 0)
+			return;
+
+		// v1 gate: opt-in while the system proves out (the fog/wind
+		// consumers keep this env as their default once they land). Absent
+		// or 0 = the subsystem stays off (PrepareFrame no-ops on an empty
+		// field set, FrameUniforms carries 0/0).
+		const char* env = std::getenv("TOURMALINE_WORLD_FIELDS");
+		if (!env || std::atoi(env) != 1)
+			return;
+
+		worldfields::WorldFieldDesc checker{};
+		checker.name = "WorldFieldCheckerboard";
+		checker.format = smvk::Format::R8_UNorm;
+		checker.encoding = worldfields::WorldFieldEncoding::Linear;
+		checker.updateMode = worldfields::WorldFieldUpdateMode::StaticStreamed;
+		checker.baseVoxelSizeMeters = 1.0f;
+		checker.lodCount = 2; // 1 m + 2 m
+		// Deliberately SMALL pool + table so normal flight churns pages
+		// and exercises eviction + stale-window handling continuously.
+		checker.tableDimX = 4;
+		checker.tableDimY = 2;
+		checker.tableDimZ = 4;
+		checker.poolSlotsX = 2;
+		checker.poolSlotsY = 2;
+		checker.poolSlotsZ = 2;
+		checker.decodeScale = glm::vec4(1.0f);
+		checker.decodeBias = glm::vec4(0.0f);
+		checker.fallbackValue = glm::vec4(0.0f);
+
+		// Field id 0 (registration order — the WORLD_FIELD_ID_* contract).
+		// Batch form: the init flow registers the whole set in ONE call
+		// (fog/wind join this table as their consumers land).
+		worldfields::WorldFieldHandle handles[1] = {};
+		worldfields::IWorldFieldBrickSource* sources[1] = { &g_checkerSource };
+		const uint32_t registered =
+			m_worldFields.RegisterFields(&checker, 1, handles);
+		if (registered == 1)
+			m_worldFields.SetBrickSources(handles, sources, 1);
+		std::cerr << "[WorldFields] checkerboard field registered (id 0, R8, "
+			<< checker.lodCount << " LODs, 2x2x2 pool)\n";
+	}
+
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
 
 		const int width_ = renderExtent.width;
@@ -4180,6 +4310,18 @@ namespace engine {
 		else {
 			data.decals = 0;
 			data.decalCount = 0;
+		}
+
+		// World-field table (Engine/WorldFields): BDA + live count for
+		// the shared sampler (world_field.hlsli). The BDA is stable
+		// (allocated once at first publish); with the subsystem off this
+		// is a cheap 0/0 read and every consumer takes its fallback path.
+		{
+			const worldfields::WorldFieldGpuBinding wfBinding =
+				m_worldFields.GpuBinding();
+			data.worldFields = wfBinding.tableBda;
+			data.worldFieldCount = wfBinding.fieldCount;
+			data.worldFieldsPad_ = 0;
 		}
 
 		// Destination scope covers every consumer: BDA reads in vertex,
@@ -5665,6 +5807,10 @@ namespace engine {
 				pl.range = L.range; // 0 = infinite (shaders handle <= 0)
 				pl.intensity = L.intensity;
 				pl.type = (int32_t)smvk::kForwardPlusPoint;
+				// Authored cast-shadow request (the same flag spots use; the
+				// frame's point selection honors it - six cube-face tiles).
+				if ((L.flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0)
+					pl.flags |= smvk::kForwardPlusFlag_CastShadow;
 				pl.shadowTile = -1;
 				pl.shadowMapIndex = -1;
 				pl.cookieIndex = -1; // points never project a gobo
@@ -5783,12 +5929,14 @@ namespace engine {
 	// The light set is the scene's resolved authored set (ResolveSceneLights
 	// FromWorld): static placement, no orbit/bob - cookies + light
 	// functions ride the authored fields. A CPU copy is kept in
-	// m_debugLights for the ImGui light-point overlay. Spot-shadow
-	// selection runs here: spots carrying the cast-shadow request flag
+	// m_debugLights for the ImGui light-point overlay. Local-light shadow
+	// selections run here: spots carrying the cast-shadow request flag
 	// are ranked by the screenspace/distance heuristic and the top-N
-	// (upper limit m_spotShadowMax) get atlas tiles; their shadowTile /
-	// shadowMapIndex are patched before upload. Results land in
-	// m_spotShadowCount / m_spotShadowMapIndex for the frame's passes.
+	// (upper limit m_spotShadowMax) get ONE atlas tile each; requesting
+	// POINTS get SIX consecutive cube-face tiles each (upper limit
+	// m_pointShadowMax). shadowTile / shadowMapIndex are patched before
+	// upload. Results land in m_spotShadowCount / m_spotShadowMapIndex /
+	// m_pointShadow{LightCount,TileCount} for the frame's passes.
 	// ---------------------------------------------------------------------
 	uint32_t WorldRenderer::UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
 		using fp_clk = std::chrono::steady_clock;
@@ -5843,12 +5991,28 @@ namespace engine {
 				L.shadowTile = -1;
 				L.shadowMapIndex = -1;
 				L.cookieIndex = -1;
+				// Shadow CASTERS (opt-in UI toggle): the point-shadow
+				// selection honors the same request flag the authored
+				// lights use. Strided across the spiral (every Nth entry
+				// of the golden-angle generation) so the flagged subset
+				// spreads over the disc instead of clustering at the
+				// center - the selection heuristic then ranks them against
+				// the scene's own requesting lights for the shared atlas.
+				if (m_lightDemo.castShadows && m_lightDemo.shadowCount > 0) {
+					const int stride = (m_lightDemo.count
+						+ m_lightDemo.shadowCount - 1) / m_lightDemo.shadowCount;
+					if (i % stride == 0)
+						L.flags |= smvk::kForwardPlusFlag_CastShadow;
+				}
 				lights.push_back(L);
 				m_debugLights.push_back({ glm::vec3(L.position),
 					glm::vec3(L.color), (int)L.type });
 				++m_lightCrowdCount;
 			}
 		}
+		// ONE live count: the scene's forward+ set (which the spawner
+		// appended to above) - the single number every readout shows.
+		m_fpLightCount = (uint32_t)lights.size();
 
 		// ---- Spot-shadow caster selection (upper limit + heuristic) ----
 		m_spotShadowCount = 0;
@@ -5864,8 +6028,10 @@ namespace engine {
 					m_spotShadowMaxDistance, budget, proj11);
 				const int32_t atlasIdx = m_viewportResources.spotShadows.BindlessIndex(*m_context);
 				// EVSM: lights address the blurred moments (1-frame lag);
-				// tile descriptors are layout-identical (same 8x1024 grid).
-				// NOTE: the tile lightVP below is built from the CURRENT
+				// tile descriptors are layout-identical (the moment atlas
+				// tiles the full combined grid, same ceil(sqrt) columns as
+				// this D32 atlas - see MakeEvsmSpotDesc). NOTE: the tile
+				// lightVP below is built from the CURRENT
 				// light state while the blurred spot atlas trails one slot
 				// under OneFrameLag - fine for static spots, but ANIMATED
 				// spots would need prev-frame tile descriptors like
@@ -5905,21 +6071,105 @@ namespace engine {
 						sl.shadowMapIndex = sampleIdx;
 						sl.shadowBias = SPOT_SHADOW_BIAS;
 					}
-					constexpr size_t SPOT_FRAME_STRIDE =
-						sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
+				constexpr size_t SPOT_FRAME_STRIDE =
+					sizeof(smvk::GpuCascadeDescription) * smvk::kMaxLocalShadowTiles;
+				m_context->UploadDataToBuffer(
+					m_resources.spotShadowBuffer,
+					tiles.data(),
+					sizeof(smvk::GpuCascadeDescription) * tiles.size(),
+					smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment),
+					smvk::AccessFlags::ShaderRead,
+					0,
+					currentFrame * SPOT_FRAME_STRIDE
+				);
+				m_spotShadowCount = (uint32_t)selected.size();
+				m_spotShadowMapIndex = sampleIdx;
+				// Keep the tiles for the per-frame spot RenderViews.
+				m_spotShadowTiles = std::move(tiles);
+			}
+		}
+		}
+
+		// ---- Point-light shadow selection (six cube-face tiles per light) ----
+		// Same gate/shape as the spot selection above: requesting points
+		// ranked by the screenspace/distance heuristic; each winner claims
+		// SIX consecutive tiles ([m_spotShadowCount + k*6, +6) - spots
+		// occupy the front of the frame numbering) and carries shadowTile =
+		// the FIRST face tile (the sampler adds the dominant-axis face
+		// number, see shadows.hlsli GetPointShadowFactorTile). Face tiles
+		// address the SAME atlas the spots do: the D32 PCF atlas by
+		// default, the prefiltered EVSM moments whenever EVSM is active
+		// (shadowMapIndex flips to the blurred-moments bindless - the
+		// receive sites pick the sampler by a per-light index, so both
+		// paths stay uniform with the spot convention).
+		m_pointShadowLightCount = 0;
+		m_pointShadowTileCount = 0;
+		m_pointShadowTiles.clear();
+		if (m_passes.spotShadows && m_pointShadowsEnabled
+			&& m_viewportResources.spotShadows.Valid() && !lights.empty()) {
+			const uint32_t wantMax =
+				(uint32_t)std::clamp(m_pointShadowMax, 0, (int)smvk::kMaxPointShadowLights);
+			// Tile headroom: the spots already claimed m_spotShadowCount of
+			// the kMaxLocalShadowTiles slots; every point needs six more.
+			const uint32_t claimed = std::min(m_spotShadowCount,
+				m_viewportResources.spotShadows.slotCount);
+			const uint32_t headroom =
+				(m_viewportResources.spotShadows.slotCount > claimed)
+				? (m_viewportResources.spotShadows.slotCount - claimed) / 6u : 0u;
+			const uint32_t budget = std::min(wantMax, headroom);
+			if (budget > 0) {
+				const float proj11 = std::abs(frame.proj[1][1]);
+				auto selected = smvk::SelectPointShadowCasters(
+					lights, frame.viewProj, frame.cameraPos,
+					m_pointShadowMaxDistance, budget, proj11);
+				const int32_t atlasIdx =
+					m_viewportResources.spotShadows.BindlessIndex(*m_context);
+				if (atlasIdx >= 0 && !selected.empty()) {
+					// Face tiles sample the same atlas kind the spots do:
+					// the blurred EVSM moments when EVSM is active (the
+					// per-light flip that keeps PCF the exact fallback when
+					// the moment atlas is missing), the D32 atlas otherwise.
+					const int32_t evsmIdx = (EvsmActive())
+						? m_viewportResources.evsmSpot.BlurredBindlessIndex(
+							*m_context, currentFrame)
+						: -1;
+					const int32_t sampleIdx = (evsmIdx >= 0) ? evsmIdx : atlasIdx;
+					std::vector<smvk::GpuCascadeDescription> tiles(selected.size() * 6u);
+					const uint32_t faceBase0 = m_spotShadowCount;
+					for (size_t k = 0; k < selected.size(); ++k) {
+						smvk::ForwardPlusLight& pl = lights[selected[k].lightIndex];
+						const glm::vec3 lightPos(pl.position[0], pl.position[1], pl.position[2]);
+						const uint32_t base = faceBase0 + (uint32_t)k * 6u;
+						for (uint32_t f = 0; f < smvk::kPointShadowFaceCount; ++f)
+							tiles[k * 6 + f] = m_viewportResources.spotShadows.BuildPointFaceTile(
+								lightPos, f, pl.range, base + f,
+								SPOT_SHADOW_NEAR, SPOT_SHADOW_BIAS,
+								// PCSS penumbra knobs the EVSM point path
+								// reads through the SAME tile pads the spot
+								// path uses (always written; PCF ignores them).
+								m_evsmSpotLightSize, m_evsmSoftness);
+						pl.shadowTile = (int32_t)base;
+						pl.shadowMapIndex = sampleIdx;
+						pl.shadowBias = SPOT_SHADOW_BIAS;
+					}
+					constexpr size_t TILE_BYTES = sizeof(smvk::GpuCascadeDescription);
+					constexpr size_t LOCAL_FRAME_STRIDE =
+						TILE_BYTES * smvk::kMaxLocalShadowTiles;
+					// Face descriptors land AFTER the spot tiles in the same
+					// frame slice (the combined numbering every shader index
+					// guards against with pc.spotShadowCount).
 					m_context->UploadDataToBuffer(
 						m_resources.spotShadowBuffer,
 						tiles.data(),
-						sizeof(smvk::GpuCascadeDescription) * tiles.size(),
+						TILE_BYTES * tiles.size(),
 						smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment),
 						smvk::AccessFlags::ShaderRead,
 						0,
-						currentFrame * SPOT_FRAME_STRIDE
+						currentFrame * LOCAL_FRAME_STRIDE + m_spotShadowCount * TILE_BYTES
 					);
-					m_spotShadowCount = (uint32_t)selected.size();
-					m_spotShadowMapIndex = sampleIdx;
-					// Keep the tiles for the per-frame spot RenderViews.
-					m_spotShadowTiles = std::move(tiles);
+					m_pointShadowLightCount = (uint32_t)selected.size();
+					m_pointShadowTileCount = (uint32_t)tiles.size();
+					m_pointShadowTiles = std::move(tiles);
 				}
 			}
 		}
@@ -5927,9 +6177,9 @@ namespace engine {
 		// ---- Deferred shadows, phase 1 (CPU Prepare, paper 2.1) ----
 		// Sort by closest distance to the near plane BEFORE the upload: the
 		// GPU light buffer and every zBin index refer to this order. Runs
-		// after the spot-shadow selection so patched shadowTile fields travel
-		// with their lights. (When the pipeline is off, keep the spots-first
-		// order the capped forward+ list relies on.)
+		// after the spot/point shadow selections so patched shadowTile
+		// fields travel with their lights. (When the pipeline is off, keep
+		// the spots-first order the capped forward+ list relies on.)
 		if (DsActive() && !lights.empty()) {
 			smvk::DsSortLightsByNearDistance(lights, frame.view);
 #if defined(DS_DEBUG_VIZ)
@@ -6486,7 +6736,9 @@ namespace engine {
 		push.spotShadowBuffer = spotShadowBufferAddress;
 		push.spotShadowMapIndex =
 			m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX;
-		push.spotShadowCount = m_spotShadowCount;
+		// The count the shaders guard tile indexing against is the frame
+		// TOTAL: spot tiles + point cube-face tiles (combined numbering).
+		push.spotShadowCount = LocalShadowTileCount();
 		push.lightCount = std::min(fpLightCount, FP_MAX_LIGHTS);
 		push.tileCountX = ds.tileCountX;
 		push.tileCountY = ds.tileCountY;
@@ -6525,11 +6777,12 @@ namespace engine {
 				cmd.Dispatch(tx, ty, 1);
 			});
 		}
-		// Phase 4 - Generate Deferred Shadows (samples the spot atlas).
+		// Phase 4 - Generate Deferred Shadows (samples the local-light
+		// atlas: spot tiles + point cube faces).
 		{
 			auto& pass = ds.AddPhase4Pass(*m_rendergraph, depthView,
 				fpLightsLogical, m_resources.spotShadowLogical,
-				m_spotShadowCount > 0 ? m_viewportResources.spotShadows.logicalView
+				LocalShadowTileCount() > 0 ? m_viewportResources.spotShadows.logicalView
 				: smvk::LogicalImageViewHandle{},
 				frameIndex);
 			// EVSM SameFrame: phase 4 samples the blurred moments via
@@ -6573,12 +6826,13 @@ namespace engine {
 		const uint32_t groups = ds.groupCountX * ds.groupCountY;
 		constexpr uint32_t kEntries = 1 + smvk::kDsMaxLightGroups;
 
-		std::fprintf(stderr,
-			"[ds-dump] frame=%u spotTiles=%u mapIdx=%d (retired stats: list=%u vis=%u lit=%u shadow=%u penumbra=%u early=%u final=%u)\n",
-			frameIndex, m_spotShadowCount, m_spotShadowMapIndex,
-			m_dsStats.listSlots, m_dsStats.visSlots, m_dsStats.clsAllLit,
-			m_dsStats.clsAllShadow, m_dsStats.clsPenumbra,
-			m_dsStats.sumEarly, m_dsStats.sumFinal);
+	std::fprintf(stderr,
+		"[ds-dump] frame=%u localTiles=%u (spots %u + point faces %u) spotMapIdx=%d (retired stats: list=%u vis=%u lit=%u shadow=%u penumbra=%u early=%u final=%u)\n",
+		frameIndex, LocalShadowTileCount(), m_spotShadowCount,
+		m_pointShadowTileCount, m_spotShadowMapIndex,
+		m_dsStats.listSlots, m_dsStats.visSlots, m_dsStats.clsAllLit,
+		m_dsStats.clsAllShadow, m_dsStats.clsPenumbra,
+		m_dsStats.sumEarly, m_dsStats.sumFinal);
 
 		// ---- Phase 1 output (CPU Tile Light Masks, phase 2's input) ----
 		{
@@ -8375,6 +8629,15 @@ namespace engine {
 		// reads their live counts/addresses into FrameUniforms.
 		(void)UpdateDecals(fb.frameIndex);
 		UpdateEnvZones(fb.frameIndex);
+		// World-field residency + publication BEFORE UpdateFrameUniforms
+		// for the same reason (it reads the live BDA/count) — and because
+		// the publication contract needs the uploads enqueued before
+		// present: the region copies + page-table upload ride one streamer
+		// batch, executed after every previously submitted frame retired
+		// and before this frame's main submit waits it (same-frame passes
+		// sample the result — see WorldField.h's contract block).
+		m_worldFields.PrepareFrame(m_context, fb.frameIndex,
+			m_cameraPositioner.cameraPosition_);
 		// The renderer owns no environment: the frame's look is built
 		// from the WORLD's scene env here, once per frame (the main
 		// view, the shadow fits and every secondary view take it as a
@@ -8429,7 +8692,8 @@ namespace engine {
 		// RenderView allocation (see smvk::RenderViewSet):
 		//   main camera            -> 1 view,
 		//   directional sun        -> 1 view per shadow cascade (4),
-		//   shadowed spot lights   -> 1 view per selected atlas tile.
+		//   shadowed spot lights   -> 1 view per selected atlas tile,
+		//   shadowed point lights  -> 6 views (one per cube-face tile).
 		// Indices are stable for the frame; the GPU slab is indexed through
 		// PushConstants::renderViews + the per-pass renderViewIndex.
 		// ---------------------------------------------------------------------
@@ -8447,6 +8711,17 @@ namespace engine {
 				tile, { static_cast<float>(m_spotShadowResolution), static_cast<float>(m_spotShadowResolution) });
 			if (spotViewBase == smvk::RenderViewSet::kInvalidIndex)
 				spotViewBase = view;
+		}
+		// Point-light cube faces: SIX views per selected light, allocated
+		// back-to-back in the same order as the tile numbering (face f of
+		// light k = pointViewBase + k*6 + f). Same tile resolution as the
+		// spots (one shared atlas).
+		uint32_t pointViewBase = smvk::RenderViewSet::kInvalidIndex;
+		for (const smvk::GpuCascadeDescription& tile : m_pointShadowTiles) {
+			const uint32_t view = m_renderViews.AllocatePointShadowFaceView(
+				tile, { static_cast<float>(m_spotShadowResolution), static_cast<float>(m_spotShadowResolution) });
+			if (pointViewBase == smvk::RenderViewSet::kInvalidIndex)
+				pointViewBase = view;
 		}
 		// Per-frame caster contribution volume: the main view swept toward
 		// the sun (MakeCasterContributionView). Built only while the SUN
@@ -8562,8 +8837,10 @@ namespace engine {
 		uint64_t fpLightsAddress =
 			m_context->GetBufferDeviceAddress(m_resources.fpLightsBuffer)
 			+ fb.frameIndex * FP_LIGHT_FRAME_STRIDE;
+		// Per-frame tile-descriptor slice: spot tiles first, point cube
+		// faces after (kMaxLocalShadowTiles descriptors per flight frame).
 		constexpr size_t SPOT_FRAME_STRIDE =
-			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxSpotShadows;
+			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxLocalShadowTiles;
 		uint64_t spotShadowBufferAddress =
 			m_context->GetBufferDeviceAddress(m_resources.spotShadowBuffer)
 			+ fb.frameIndex * SPOT_FRAME_STRIDE;
@@ -8592,8 +8869,10 @@ namespace engine {
 			.fpMaxPerTile = FP_MAX_PER_TILE,
 			.spotShadowBuffer = spotShadowBufferAddress,
 			.spotShadowMapIndex = m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX,
-			.spotShadowCount = m_spotShadowCount,
-			.spotIndex = UINT32_MAX, // not a spot shadow pass
+			// Frame TOTAL (spot tiles + point faces) - the bound every
+			// tile-indexing shader guards against (MAX_LOCAL_SHADOW_TILES).
+			.spotShadowCount = LocalShadowTileCount(),
+			.spotIndex = UINT32_MAX, // not a local-light shadow pass
 			// Transparency technique for Blend materials: 0 = dithered
 			// screen-door (default, opaque state), 1 = classic alpha blend.
 			.pad_pc = (m_transparentMode == smvk::TransparentMode::Blended) ? 1u : 0u,
@@ -8766,14 +9045,23 @@ namespace engine {
 		const uint32_t spotSlotCount = spotPassesOn
 			? std::min(m_spotShadowCount, m_viewportResources.spotShadows.slotCount)
 			: 0;
+		// Point cube-face passes: same atlas. DEPTH (PCF) when the EVSM
+		// moments are off/unavailable; the SAME 2xMSAA moment-pass
+		// substitution the spots take when they are on (the moment atlas
+		// tiles the FULL combined grid - one atlas serves both light types).
+		const bool pointPassesOn = m_passes.spotShadows && m_pointShadowTileCount > 0
+			&& m_viewportResources.spotShadows.Valid();
+		const uint32_t pointSlotCount = pointPassesOn
+			? std::min(m_pointShadowTileCount, m_viewportResources.spotShadows.slotCount)
+			: 0;
 		// EVSM gates: moment passes replace the depth passes tile-for-tile, and
 		// the indirect GPU path stays on the depth-only VS (its FS moments
 		// variant is a follow-up), so EVSM forces the direct recording path.
 		const bool evsmDirOn = EvsmActive() && m_passes.directionalShadows
 			&& m_viewportResources.directionalShadows.Valid();
-		const bool evsmSpotOn = EvsmActive() && spotPassesOn;
+		const bool evsmSpotOn = EvsmActive() && (spotPassesOn || pointPassesOn);
 		const bool shadowIndirect = !evsmDirOn && !evsmSpotOn
-			&& (m_passes.directionalShadows || spotSlotCount > 0)
+			&& (m_passes.directionalShadows || spotSlotCount > 0 || pointSlotCount > 0)
 			&& m_passes.gfxFilter && m_gfxFilterAvailable
 			&& m_gfxRenderer.EnsureShadowSeeds(*m_context);
 		const bool cascadeViewsValid =
@@ -8781,11 +9069,16 @@ namespace engine {
 			&& cascadeViewBase != smvk::RenderViewSet::kInvalidIndex;
 		const bool spotViewsValid = spotSlotCount > 0
 			&& spotViewBase != smvk::RenderViewSet::kInvalidIndex;
+		const bool pointViewsValid = pointSlotCount > 0
+			&& pointViewBase != smvk::RenderViewSet::kInvalidIndex;
 		uint32_t cascadeShadowSlot[NUM_CASCADES];
 		uint32_t spotShadowSlot[smvk::kMaxSpotShadows];
+		uint32_t pointShadowSlot[smvk::kMaxPointShadowLights * smvk::kPointShadowFaceCount];
 		std::fill_n(cascadeShadowSlot, NUM_CASCADES, UINT32_MAX);
 		std::fill_n(spotShadowSlot, smvk::kMaxSpotShadows, UINT32_MAX);
-		if (shadowIndirect && (cascadeViewsValid || spotViewsValid))
+		std::fill_n(pointShadowSlot,
+			smvk::kMaxPointShadowLights * smvk::kPointShadowFaceCount, UINT32_MAX);
+		if (shadowIndirect && (cascadeViewsValid || spotViewsValid || pointViewsValid))
 		{
 			SMVK_PROFILE_CATEGORY("ShadowListDispatch", Optick::Category::Rendering);
 			BuildShadowDrawCandidates();
@@ -8823,6 +9116,16 @@ namespace engine {
 					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
 					m_spotShadowResolution, m_spotShadowResolution,
 					nullptr /* spots: cone planes are exact, no contribution cull */);
+		// Point cube faces: same claim pattern, one view per face (face
+		// planes are the exact 90-degree bound - no contribution cull).
+		if (pointViewsValid)
+			for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
+				pointShadowSlot[fi] = m_gfxRenderer.BeginShadowView(
+					*m_context, *m_rendergraph,
+					m_renderViews.Get(pointViewBase + fi),
+					smvk::gfx::CullFlagBit_Frustum | smvk::gfx::CullFlagBit_Degenerate,
+					m_spotShadowResolution, m_spotShadowResolution,
+					nullptr);
 			// Cooperative per-view list builds: workers overlap the rest of
 			// the frame's pass recording; futures join before Execute.
 			if (!m_shadowWorkers) {
@@ -8846,6 +9149,9 @@ namespace engine {
 			for (uint32_t si = 0; si < spotSlotCount; ++si)
 				if (spotShadowSlot[si] != UINT32_MAX)
 					enqueueBuild(spotShadowSlot[si]);
+			for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
+				if (pointShadowSlot[fi] != UINT32_MAX)
+					enqueueBuild(pointShadowSlot[fi]);
 		}
 		if (m_passes.directionalShadows)
 		{
@@ -8891,12 +9197,13 @@ namespace engine {
 					(void)momentPass;
 					continue;
 				}
-				auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci]);
-				// GPU stage timer (kGpuStagePcfRaster): begin at the first
-				// cascade, end at the LAST raster shadow pass (the last spot
-				// tile below when spots run, else this cascade).
-				const bool pcfTsBegin = (ci == 0);
-				const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn;
+			auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(*m_rendergraph, ci, cascadeNames[ci]);
+			// GPU stage timer (kGpuStagePcfRaster): begin at the first
+			// cascade, end at the LAST raster shadow pass (the last spot
+			// tile or point cube face below when they run, else this
+			// cascade).
+			const bool pcfTsBegin = (ci == 0);
+			const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn && !pointPassesOn;
 				if (shadowIndirect && cascadeShadowSlot[ci] != UINT32_MAX) {
 					const uint32_t slot = cascadeShadowSlot[ci];
 					m_gfxRenderer.AddShadowConsumeHints(shadowPass, slot);
@@ -8964,12 +9271,13 @@ namespace engine {
 				if (evsmSpotOn) {
 					// EVSM moment pass: DEPTH-ONLY 2xMSAA D32 (PCF shadow
 					// programs; the per-sample resolve follows below). GPU
-					// stage timer: the LAST moment pass (the spot tiles
-					// follow the cascades) closes kGpuStageEvsmCasters; the
-					// FIRST opens it when the directional block didn't
-					// (spot-only frames).
+					// stage timer: opening as before (spot-only frames when
+					// the directional block didn't), but CLOSING moves to
+					// the LAST point face below ((si == spotCount - 1) &&
+					// !pointPassesOn) - the faces fill the same kGpuStageEvsm
+					// Casters window when they run after the spots.
 					const bool evsmTsBegin = (si == 0) && !evsmDirOn;
-					const bool evsmTsEnd = (si == spotCount - 1);
+					const bool evsmTsEnd = (si == spotCount - 1) && !pointPassesOn;
 					auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
 						*m_rendergraph, m_viewportResources.evsmSpot, si, fb.frameIndex, spotNames[si]);
 					momentPass.SetRecordingFunc([this, spotPC, casterViewIndex, evsmTsBegin, evsmTsEnd](smvk::CommandBuffer& cmd)
@@ -8986,13 +9294,14 @@ namespace engine {
 					(void)momentPass;
 					continue;
 				}
-				auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si]);
-				// GPU stage timer: the FIRST spot opens kGpuStagePcfRaster
-				// when the directional block didn't (spot-only frames); the
-				// LAST spot tile closes it (the spot tiles follow the
-				// cascades in the raster stage).
-				const bool pcfTsBegin = (si == 0) && !m_passes.directionalShadows;
-				const bool pcfTsEnd = (si == spotCount - 1);
+			auto& spotPass = m_viewportResources.spotShadows.AddSpotPass(*m_rendergraph, si, spotNames[si]);
+			// GPU stage timer: the FIRST spot opens kGpuStagePcfRaster
+			// when the directional block didn't (spot-only frames); the
+			// LAST spot tile closes it unless point faces follow (the spot
+			// tiles follow the cascades in the raster stage, the point
+			// faces follow the spot tiles).
+			const bool pcfTsBegin = (si == 0) && !m_passes.directionalShadows;
+			const bool pcfTsEnd = (si == spotCount - 1) && !pointPassesOn;
 				if (shadowIndirect && spotShadowSlot[si] != UINT32_MAX) {
 					const uint32_t slot = spotShadowSlot[si];
 					m_gfxRenderer.AddShadowConsumeHints(spotPass, slot);
@@ -9029,6 +9338,118 @@ namespace engine {
 					});
 				}
 				(void)spotPass;
+			}
+		}
+
+		// ---- Point-light shadow passes - one per cube-face tile ----
+		// Six passes per selected point (face f of light k = tile
+		// m_spotShadowCount + k*6 + f in the combined numbering - spots
+		// first, faces after). DEPTH (PCF) normally; under EVSM the
+		// SPOT-shaped moment-pass substitution applies tile-for-tile (the
+		// moment atlas tiles the full combined grid, so a face's moments
+		// land exactly where its D32 tile lives and one descriptor table
+		// addresses both). View slots were claimed together with the
+		// cascades/spots above so the slot vector never grows while the
+		// cooperative builds are in flight.
+		if (pointPassesOn) {
+			const uint32_t faceCount = pointSlotCount;
+			// 12 max: kMaxPointShadowLights x 6 faces. Label = light
+			// ordinal + face (selection order, not the light's index).
+			const char* pointNames[smvk::kMaxPointShadowLights * smvk::kPointShadowFaceCount] = {
+				"PointShadow0F0", "PointShadow0F1", "PointShadow0F2",
+				"PointShadow0F3", "PointShadow0F4", "PointShadow0F5",
+				"PointShadow1F0", "PointShadow1F1", "PointShadow1F2",
+				"PointShadow1F3", "PointShadow1F4", "PointShadow1F5",
+			};
+			static_assert(sizeof(pointNames) / sizeof(pointNames[0])
+				>= smvk::kMaxPointShadowLights * smvk::kPointShadowFaceCount);
+
+			SMVK_PROFILE_CATEGORY("PointShadows", Optick::Category::Rendering);
+			SMVK_PROFILE_TAG("pointFaceCount", faceCount);
+
+			for (uint32_t fi = 0; fi < faceCount; ++fi) {
+				SMVK_PROFILE_SCOPE_COLOR("PointShadow", Optick::Color::Orange);
+				SMVK_PROFILE_TAG("pointFace", fi);
+				IRenderer::PushConstants facePC = pc;
+				// Combined tile index (spots first, then faces): the pass
+				// renders atlas slot tileIndex, and the legacy shadow.vert
+				// spotIndex fallback reads the SAME descriptor index.
+				const uint32_t tileIndex = m_spotShadowCount + fi;
+				facePC.spotIndex = tileIndex;
+				// Each face renders from its own allocated RenderView.
+				const uint32_t casterViewIndex =
+					pointViewBase != smvk::RenderViewSet::kInvalidIndex
+					? pointViewBase + fi
+					: smvk::RenderViewSet::kInvalidIndex;
+				facePC.renderViewIndex = casterViewIndex;
+				if (evsmSpotOn) {
+					// EVSM moment pass (mirror of the spot block above):
+					// DEPTH-ONLY 2xMSAA into the face's tile of the
+					// combined-grid moment atlas. Stage timer: opens when
+					// no earlier moment pass did (face-only frames when the
+					// directional and spot blocks didn't), the LAST face
+					// closes it (spot faces run LAST in the window).
+					const bool evsmTsBegin = (fi == 0)
+						&& !evsmDirOn && !spotPassesOn;
+					const bool evsmTsEnd = (fi == faceCount - 1);
+					auto& momentPass = smvk::EvsmAsyncPrefilter::AddMomentPass(
+						*m_rendergraph, m_viewportResources.evsmSpot, tileIndex,
+						fb.frameIndex, pointNames[fi]);
+					momentPass.SetRecordingFunc([this, facePC, casterViewIndex, evsmTsBegin, evsmTsEnd](smvk::CommandBuffer& cmd)
+					{
+						if (evsmTsBegin)
+							cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
+						RecordShadowCastersDirect(cmd,
+							m_viewportResources.spotShadows.program,
+							facePC, casterViewIndex, /*skipFiltered=*/false,
+							smvk::MSAASettings::Count2());
+						if (evsmTsEnd)
+							cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
+					});
+					(void)momentPass;
+					continue;
+				}
+				auto& facePass = m_viewportResources.spotShadows.AddSpotPass(
+					*m_rendergraph, tileIndex, pointNames[fi]);
+				// GPU stage timer: the faces follow the spot tiles in the
+				// raster stage - the first opens kGpuStagePcfRaster when no
+				// earlier raster shadow pass did, the LAST face closes it.
+				const bool pcfTsBegin = (fi == 0)
+					&& !m_passes.directionalShadows && !spotPassesOn;
+				const bool pcfTsEnd = (fi == faceCount - 1);
+				if (shadowIndirect && pointShadowSlot[fi] != UINT32_MAX) {
+					const uint32_t slot = pointShadowSlot[fi];
+					m_gfxRenderer.AddShadowConsumeHints(facePass, slot);
+					facePass.SetRecordingFunc([this, slot, casterViewIndex, facePC, renderViewsAddress, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd)
+					{
+						if (pcfTsBegin)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
+						// GPU context + pass scope come from RenderGraph::Execute
+						// (pass name "PointShadow<k>F<f>" carries the face).
+						m_gfxRenderer.RecordShadowList(cmd, *m_context, slot,
+							renderViewsAddress, casterViewIndex, facePC);
+						// Fallback: unregistered casters only (registered ones
+						// are covered by the indirect command list).
+						RecordShadowCastersDirect(cmd,
+							m_viewportResources.spotShadows.program,
+							facePC, casterViewIndex, /*skipFiltered=*/true);
+						if (pcfTsEnd)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
+					});
+				}
+				else {
+					facePass.SetRecordingFunc([this, facePC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd)
+					{
+						if (pcfTsBegin)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
+						RecordShadowCastersDirect(cmd,
+							m_viewportResources.spotShadows.program,
+							facePC, casterViewIndex, /*skipFiltered=*/false);
+						if (pcfTsEnd)
+							cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
+					});
+				}
+				(void)facePass;
 			}
 		}
 
@@ -9110,6 +9531,14 @@ namespace engine {
 				smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
 					*m_rendergraph, m_viewportResources.evsmSpot, *m_context,
 					fb.frameIndex, si);
+			// Point cube faces follow the spots on the SAME grid: blur
+			// exactly the tiles that were rendered this frame (combined
+			// numbering - m_spotShadowCount + fi) so the sampler never
+			// reads un-blurred moment data for a live face.
+			for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
+				smvk::EvsmAsyncPrefilter::AddTileBlurPasses(
+					*m_rendergraph, m_viewportResources.evsmSpot, *m_context,
+					fb.frameIndex, m_spotShadowCount + fi);
 		}
 
 		// ---- Forward+ passes (depth prepass + tile cull) ----
@@ -9453,7 +9882,11 @@ namespace engine {
 		const bool probeListsWanted = ProbeTileListsWanted();
 		rfPB = bench_clk::now();
 		if (TileCullWillRun())
-			m_fpRenderer.AppendTileCull(fc, fpLightCount + ProbeEntryCount());
+			// fogMaxDistance feeds the cull's per-tile FOG lists (the
+			// volumetric march-range candidacy — built unconditionally,
+			// consumed only when the volumetric pass runs).
+			m_fpRenderer.AppendTileCull(fc, fpLightCount + ProbeEntryCount(),
+				m_volumetricMaxDistance);
 		if (dsOn)
 			AppendDeferredShadowPhases(fb.frameIndex,
 				frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,
@@ -11088,9 +11521,10 @@ namespace engine {
 			fpLightRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
 			mainPass.AddBufferHint(m_resources.fpLightsLogical, fpLightRead);
 		}
-		// Spot-shadow tiles are host-uploaded per frame and sampled in the
-		// main fragment shader: hint orders the upload vs. the read.
-		if (m_spotShadowCount > 0) {
+		// Local-light shadow tiles (spots + point faces) are host-uploaded
+		// per frame and sampled in the main fragment shader: hint orders
+		// the upload vs. the read.
+		if (LocalShadowTileCount() > 0) {
 			smvk::BufferSyncRequest spotRead{};
 			spotRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
 			spotRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
@@ -11865,17 +12299,21 @@ namespace engine {
 				// and add scatter on top (DebugVisualizationActive).
 				&& !DebugVisualizationActive();
 			if (volOn) {
-				// Forward+ tile lists for the fog's in-scatter leg: published
-				// under the GI-volume-mask freshness contract (TileCullWillRun -
-				// same dispatch writes both, so frameData.giVolumeTileCountX != 0
-				// in the shader implies these are fresh too). Zeros = the
-				// shader walks [0, fpLightCount) directly instead.
-				uint64_t volFpTileCounts = 0, volFpTileIndices = 0;
+				// Forward+ FOG tile lists for the fog's in-scatter leg: the
+				// DEDICATED march-range lists (not the surface lists —
+				// those are slab-culled, which is wrong for march samples
+				// living in front of the nearest opaque surface). Published
+				// under the GI-volume-mask freshness contract
+				// (TileCullWillRun - same dispatch writes both, so
+				// frameData.giVolumeTileCountX != 0 in the shader implies
+				// these are fresh too). Zeros = the shader walks
+				// [0, fpLightCount) directly instead.
+				uint64_t volFogTileCounts = 0, volFogTileIndices = 0;
 				if (m_viewportResources.forwardPlus.Valid() && TileCullWillRun()) {
-					volFpTileCounts =
-						m_viewportResources.forwardPlus.TileCountsAddress(*m_context);
-					volFpTileIndices =
-						m_viewportResources.forwardPlus.TileIndicesAddress(*m_context);
+					volFogTileCounts =
+						m_viewportResources.forwardPlus.FogTileCountsAddress(*m_context);
+					volFogTileIndices =
+						m_viewportResources.forwardPlus.FogTileIndicesAddress(*m_context);
 				}
 				auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
 					*m_rendergraph,
@@ -11889,11 +12327,11 @@ namespace engine {
 					frameData.time,
 					volDesc,
 					"Volumetric",
-					volFpTileCounts,
-					volFpTileIndices,
+					volFogTileCounts,
+					volFogTileIndices,
 					fpLightsAddress,
 					fpLightCount,
-					FP_MAX_PER_TILE);
+					FP_FOG_PER_TILE);
 				// Convex-volume tile masks: the fog march reads the per-tile
 				// volume bitmask (fragment) after the tile cull wrote it
 				// (compute) - order the edge (same freshness contract as the
@@ -11902,12 +12340,12 @@ namespace engine {
 					smvk::ForwardPlus::AddVolumeMaskReadHints(volPass,
 						m_viewportResources.forwardPlus.volumeTileMasksLogical);
 				}
-				// Forward+ tile lists: same cull->fog edge for the in-scatter
-				// leg (published iff the cull ran - see above).
-				if (volFpTileCounts != 0) {
-					smvk::ForwardPlus::AddTileReadHints(volPass,
-						m_viewportResources.forwardPlus.tileCountsLogical,
-						m_viewportResources.forwardPlus.tileIndicesLogical);
+				// Forward+ fog tile lists: same cull->fog edge for the
+				// in-scatter leg (published iff the cull ran - see above).
+				if (volFogTileCounts != 0) {
+					smvk::ForwardPlus::AddFogTileReadHints(volPass,
+						m_viewportResources.forwardPlus.fogTileCountsLogical,
+						m_viewportResources.forwardPlus.fogTileIndicesLogical);
 				}
 			sceneHdrView = m_viewportResources.volumetric.OutputView();
 			sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
@@ -12933,7 +13371,7 @@ namespace engine {
 								? m_world->scene.environment
 								: SceneEnv{};
 							ImGui::TextDisabled("%u point/spot, sun az %.0f el %.0f",
-								(unsigned)m_sceneLights.forwardPlusLights.size(),
+								m_fpLightCount,
 								sunEnv.sunAzimuth, sunEnv.sunElevation);
 						}
 						if (ImGui::CollapsingHeader("Directional Shadows (CSM)")) {
@@ -12954,18 +13392,21 @@ namespace engine {
 									m_viewportResources.directionalShadows.atlasExtent.width,
 									m_viewportResources.directionalShadows.atlasExtent.height);
 							}
-							// Spot tile resolution (depth + EVSM spot atlases).
-							{
-								const uint32_t spotOptions[] = { 256, 512, 1024 };
-								const char* spotNames[] = { "256", "512 (PS5)", "1024" };
-								int spotIdx = 1; // canon = 512 (PS5-quality base)
-								for (int i = 0; i < 3; ++i)
-									if (spotOptions[i] == m_spotShadowResolution)
-										spotIdx = i;
-								if (ImGui::Combo("Spot tile resolution", &spotIdx, spotNames, 3))
-									m_spotShadowResolution = spotOptions[std::clamp(spotIdx, 0, 2)];
-								ImGui::TextDisabled("PCF + EVSM spot atlases recreate on change.");
-							}
+						// Local-light tile resolution (the SHARED spot + point
+						// atlas; PCF depth + the EVSM spot moment twin).
+						{
+							const uint32_t spotOptions[] = { 256, 512, 1024 };
+							const char* spotNames[] = { "256", "512 (PS5)", "1024" };
+							int spotIdx = 1; // canon = 512 (PS5-quality base)
+							for (int i = 0; i < 3; ++i)
+								if (spotOptions[i] == m_spotShadowResolution)
+									spotIdx = i;
+							if (ImGui::Combo("Spot/point tile resolution", &spotIdx, spotNames, 3))
+								m_spotShadowResolution = spotOptions[std::clamp(spotIdx, 0, 2)];
+							ImGui::TextDisabled("PCF + EVSM spot atlases recreate on change.\n"
+								"Point cube faces share the spot tile resolution\n"
+								"(PCF depth, or the EVSM moments under EVSM - one grid).");
+						}
 							ImGui::SliderFloat("Split lambda", &m_cascadeLambda, 0.0f, 1.0f, "%.2f");
 							ImGui::TextDisabled("0 = linear splits, 1 = logarithmic (starves the far cascade).");
 							ImGui::Checkbox("SDSM (fit splits to measured depth)", &m_sdsmEnabled);
@@ -12999,6 +13440,21 @@ namespace engine {
 							if (ImGui::SliderInt("Shadow spots max", &spotMax, 0, (int)smvk::kMaxSpotShadows))
 								m_spotShadowMax = spotMax;
 							ImGui::SliderFloat("Shadow max distance (m)", &m_spotShadowMaxDistance, 5.0f, 120.0f);
+							ImGui::Separator();
+							// Point lights: six cube-face tiles per selected
+							// light in the SAME atlas. PCF (depth compare)
+							// or the prefiltered EVSM moments whenever EVSM
+							// is enabled - the tiles ride either atlas kind
+							// through their per-light index (one combined
+							// grid serves both representations).
+							ImGui::Checkbox("Point shadows (per-light flag)", &m_pointShadowsEnabled);
+							int pointMax = m_pointShadowMax;
+							if (ImGui::SliderInt("Shadow points max", &pointMax, 0, (int)smvk::kMaxPointShadowLights))
+								m_pointShadowMax = pointMax;
+							ImGui::SliderFloat("Point shadow max distance (m)", &m_pointShadowMaxDistance, 5.0f, 120.0f);
+							ImGui::TextDisabled("Each shadowed point renders SIX faces per frame\n"
+								"(one atlas tile each, shared resolution with spots);\n"
+								"spots take one tile each.");
 						}
 						if (ImGui::CollapsingHeader("Shadow Filtering (EVSM)")) {
 							// EVSM (Exponential Variance Shadow Maps): RGBA32F 2xMSAA
@@ -13015,9 +13471,11 @@ namespace engine {
 									: smvk::EvsmPipelineMode::OneFrameLag;
 							}
 							ImGui::SliderFloat("Softness", &m_evsmSoftness, 0.0f, 3.0f);
-							ImGui::SliderFloat("Spot light size (m)", &m_evsmSpotLightSize, 0.0f, 2.0f);
-							ImGui::TextDisabled("RGBA32F 2xMSAA moments (dual Cantelli), 9-tap Gaussian H+V (async);"
-								" soft = moment-blocker PCSS (solar angle / light size)");
+							ImGui::SliderFloat("Local light size (m)", &m_evsmSpotLightSize, 0.0f, 2.0f);
+							ImGui::TextDisabled("RGBA32F 2xMSAA moments (dual Cantelli), 9-tap Gaussian H+V (async);\n"
+								"soft = moment-blocker PCSS (solar angle / light size).\n"
+								"Spots AND shadowed points ride the moment atlas\n"
+								"(the points penumbra through each face's 90-degree half angle).");
 						}
 					}
 					if (ImGui::CollapsingHeader("Post Processing")) {
@@ -13203,11 +13661,8 @@ namespace engine {
 							// perf lines while sliding the count.
 							ImGui::Checkbox("Enable crowd", &m_lightDemo.enabled);
 							ImGui::SameLine();
-							ImGui::TextDisabled("crowd %u + scene %u = %u / build cap",
-								m_lightCrowdCount,
-								(unsigned)m_sceneLights.forwardPlusLights.size(),
-								m_lightCrowdCount
-									+ (unsigned)m_sceneLights.forwardPlusLights.size());
+							ImGui::TextDisabled(m_lightCrowdCount > 0
+								? "(spawned)" : "(off)");
 							ImGui::SliderInt("Count", &m_lightDemo.count, 0, 96);
 							ImGui::SliderFloat3("Center", &m_lightDemo.center.x, -30.0f, 30.0f);
 							ImGui::SliderFloat("Spiral radius (m)", &m_lightDemo.radius, 0.5f, 30.0f);
@@ -13225,6 +13680,25 @@ namespace engine {
 							ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
 							ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
 							ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);
+							// Shadow casters (opt-in): the first `shadowCount`
+							// crowd lights stride-spread across the spiral ride
+							// the cast-shadow request, so the same point-shadow
+							// selection + six-face tile atlas picks them up
+							// against the scene's own requesting lights (the
+							// global Shadow points max still caps the tile
+							// budget - a 96-light crowd cannot own the atlas).
+							ImGui::Checkbox("Cast shadows (crowd)", &m_lightDemo.castShadows);
+							if (m_lightDemo.castShadows) {
+								const int crowdlights = std::max(m_lightDemo.count, 1);
+								const int shadowCap = std::min((int)smvk::kMaxPointShadowLights, crowdlights);
+								int crowdShadows = std::min(m_lightDemo.shadowCount, shadowCap);
+								if (ImGui::SliderInt("Shadow casters (of count)",
+										&crowdShadows, 0, shadowCap))
+									m_lightDemo.shadowCount = crowdShadows;
+								ImGui::TextDisabled("%u point shadow lights live "
+									"after selection (six cube faces each)",
+									m_pointShadowLightCount);
+							}
 							ImGui::TextDisabled("TOURMALINE_LIGHT_CROWD=<n> pins the crowd "
 								"headless (the UI stays live). Deterministic spiral; "
 								"the animation rides the fixed-dt frame time.");
@@ -13236,9 +13710,7 @@ namespace engine {
 							ImGui::Checkbox("Show decals", &m_decalsEnabled);
 							ImGui::SameLine();
 							ImGui::TextDisabled(DecalsActive() ? "(active)" : "(off)");
-							ImGui::Text("Entities: %u (world) / %u uploaded",
-								m_world ? (unsigned)m_world->decalLocations.size() : 0u,
-								m_decalFrameCount);
+							ImGui::Text("Decals: %u", m_decalFrameCount);
 							if (ImGui::Button("Splat at crosshair (J)"))
 								SpawnDecalAtCrosshair();
 							ImGui::TextDisabled("J raycasts the crosshair (pick BVH builds once,"
@@ -13753,15 +14225,19 @@ namespace engine {
 						const glm::vec3 toSunDbg = frameEnv.SunDirectionToSun();
 						ImGui::Text(" sun toSun: %.2f %.2f %.2f  int %.0f lux",
 							toSunDbg.x, toSunDbg.y, toSunDbg.z, frameEnv.sunIntensity);
-						ImGui::Text("RenderViews: %u allocated (main=%u, CSM @%u, spots @%u)",
+						ImGui::Text("RenderViews: %u allocated (main=%u, CSM @%u, spots @%u, point faces @%u)",
 							m_renderViews.Count(), m_renderViews.MainViewIndex(),
-							cascadeViewBase, spotViewBase);
+							cascadeViewBase, spotViewBase, pointViewBase);
 						ImGui::Separator();
 						ImGui::Text("Spot shadows: %u / %u tiles  atlas %ux%u",
 							m_spotShadowCount, smvk::kMaxSpotShadows,
 							m_viewportResources.spotShadows.atlasExtent.width,
 							m_viewportResources.spotShadows.atlasExtent.height);
-						ImGui::TextDisabled("Select: intensity*cone*coverage/dist^2, NDC-box + distance culled");
+						ImGui::Text("Point shadows: %u lights / %u (%u face tiles, 6 each)",
+							m_pointShadowLightCount, smvk::kMaxPointShadowLights,
+							m_pointShadowTileCount);
+						ImGui::TextDisabled("Select: intensity*cone*coverage/dist^2 (spots),\n"
+							"intensity*coverage/dist^2 (points); NDC-box + distance culled");
 						if (!m_viewportResources.spotShadows.Valid())
 							ImGui::TextDisabled("Spot atlas: MISSING (spots run unshadowed)");
 						ImGui::Separator();
@@ -13943,9 +14419,8 @@ namespace engine {
 						ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 							fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
 							FP_TILE_SIZE, FP_MAX_PER_TILE);
-						const int wantLights = (int)m_sceneLights.forwardPlusLights.size();
-						ImGui::Text("Lights: %d / %u%s", wantLights, FP_MAX_LIGHTS,
-							wantLights > (int)FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
+						ImGui::Text("Lights: %u / %u%s", m_fpLightCount, FP_MAX_LIGHTS,
+							m_fpLightCount > FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
 						ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
 							FP_MAX_PER_TILE);
 						ImGui::Text("Decals: %u / %u (cap %u/tile)%s", m_decalFrameCount,
@@ -15681,11 +16156,11 @@ namespace engine {
 		}
 
 		// Cooperative shadow list builds must land before Execute: the
-		// cascade/spot pass recording lambdas read the built ranges at
-		// record time. The ring uploads then run on the main thread (the
-		// engine's buffer sync-state tables are sharded by handle, not by
-		// calling thread) and flush with the EndAndPresent upload batch
-		// ahead of every consumer pass.
+		// cascade/spot/point-face pass recording lambdas read the built
+		// ranges at record time. The ring uploads then run on the main
+		// thread (the engine's buffer sync-state tables are sharded by
+		// handle, not by calling thread) and flush with the EndAndPresent
+		// upload batch ahead of every consumer pass.
 		if (!m_shadowFutures.empty()) {
 			SMVK_PROFILE_SCOPE("ShadowListJoin");
 			for (auto& fut : m_shadowFutures)
@@ -15699,6 +16174,9 @@ namespace engine {
 				for (uint32_t si = 0; si < spotSlotCount; ++si)
 					if (spotShadowSlot[si] != UINT32_MAX)
 						m_gfxRenderer.UploadShadowList(*m_context, fb.frameIndex, spotShadowSlot[si]);
+				for (uint32_t fi = 0; fi < pointSlotCount; ++fi)
+					if (pointShadowSlot[fi] != UINT32_MAX)
+						m_gfxRenderer.UploadShadowList(*m_context, fb.frameIndex, pointShadowSlot[fi]);
 			}
 		}
 		const auto rfT4 = bench_clk::now();

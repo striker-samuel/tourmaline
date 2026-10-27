@@ -44,13 +44,42 @@ groupshared uint gsEarlyIdx[DS_MAX_LIGHTS_PER_TILE];
 
 // Per-light visibility: spots with an assigned shadow tile run soft
 // shadows over the spot atlas (paper 2.4 — PCSS; same guards as the inline
-// path); everything else is fully lit.
+// path); points with tiles run the cube-face path; everything else is
+// fully lit.
 // EVSM (frame.evsmMode): the atlas holds prefiltered moments — PCSS's
 // blocker search is replaced by the moment blocker (ln(m+)/c) driving a
 // variable penumbra disk of ESM taps (tile pads carry near /
 // lightSize / softness). PCF path keeps the classic blocker-search PCSS.
+// Points ride the moments too when enabled: the face is picked by the
+// dominant axis (same selection as the PCF path) and the spot-shaped
+// moment sampler runs with the travel direction standing in for the spot
+// axis and the cube face's exact 90-degree half angle; the per-light
+// shadowMapIndex then addresses the blurred moments instead of the D32
+// atlas (the app flips it when building the light, spot convention).
 float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceNormal, float2 pix)
 {
+    if (L.type == 0) {
+        // Point cube-face tiles (six consecutive, dominant-axis sampled).
+        if (L.shadowTile < 0 || L.shadowMapIndex < 0)
+            return 1.0f;
+        if (pcDS.spotShadowCount == 0u)
+            return 1.0f;
+        if (pcDS.spotShadowCount > (uint)MAX_LOCAL_SHADOW_TILES)
+            return 1.0f;
+        // EVSM: the per-light index addresses the blurred moments and the
+        // face selection leads into the spot-shaped moment sampler (the
+        // face = a 90-degree cone; travel dir = the spot axis stand-in).
+        if (pcDS.frameUniforms.Get().evsmMode != 0u)
+            return GetPointShadowFactorEvsmTile(0u, worldPos, faceNormal,
+                L.position, pcDS.spotShadowBuffer,
+                (uint)L.shadowTile, pcDS.spotShadowCount,
+                NonUniformResourceIndex((uint)L.shadowMapIndex),
+                EVSM_EXPONENT, pix);
+        return GetPointShadowFactorTile(0u, worldPos, faceNormal,
+            L.position, pcDS.spotShadowBuffer,
+            (uint)L.shadowTile, pcDS.spotShadowCount,
+            NonUniformResourceIndex((uint)L.shadowMapIndex));
+    }
     if (L.type != 1)
         return 1.0f;
     if (L.shadowTile < 0)
@@ -58,7 +87,7 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
     if (pcDS.spotShadowCount == 0u || pcDS.spotShadowMapIndex == 0xFFFFFFFFu)
         return 1.0f;
     if ((uint)L.shadowTile >= pcDS.spotShadowCount ||
-        pcDS.spotShadowCount > (uint)MAX_SPOT_SHADOWS)
+        pcDS.spotShadowCount > (uint)MAX_LOCAL_SHADOW_TILES)
         return 1.0f;
     const uint atlasIdx = NonUniformResourceIndex(pcDS.spotShadowMapIndex);
     const GpuCascadeDescription t = pcDS.spotShadowBuffer.Get().tiles[L.shadowTile];

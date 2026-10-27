@@ -44,14 +44,16 @@ struct VolumetricPush
     float heightBase;
     float time;
     uint pad1;              // 8-align filler for the BDA tail below
-    // Forward+ light feed for fog in-scatter (tile lists ride the cull
-    // freshness contract — frame.giVolumeTileCountX != 0 implies fresh;
-    // the light buffer + count publish whenever uploaded).
-    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts; // 0 = stale
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices; // 0 = stale
+    // Forward+ light feed for fog in-scatter (the forward tiled lights
+    // contribute to the march, not just the surfaces): the DEDICATED fog
+    // tile lists ride the cull freshness contract — frame.giVolumeTileCountX
+    // != 0 implies fresh (one dispatch writes both); the light buffer +
+    // count publish whenever uploaded.
+    vk::BufferPointer<ForwardPlusFogTileCountBuffer> fogTileCounts; // 0 = stale
+    vk::BufferPointer<ForwardPlusFogTileIndexBuffer> fogTileIndices; // 0 = stale
     vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
     uint fpLightCount;      // lights-only bound (probes sort after)
-    uint fpMaxPerTile;      // list stride - probe slots (matches pc)
+    uint fogMaxPerTile;     // fog list stride (matches the cull push)
 };
 
 [[vk::push_constant]]
@@ -143,8 +145,15 @@ float3 VolLightInScatter(ForwardPlusLight pl, float3 pos, float3 rayDir)
     return plColor * (atten * phase);
 }
 
-// All forward+ lights' in-scatter at pos: tile-list walk when the lists
-// are fresh (cull ran this frame), else the unculled light head.
+// All forward+ lights' in-scatter at pos: the DEDICATED fog tile lists
+// when fresh (cull ran this frame), else the unculled light head.
+// The fog lists are separate from the surface lists on purpose: their
+// candidacy ignores the tile depth slab (march samples live in front of
+// the nearest opaque surface — slab cuts split the fog on the tile grid
+// at depth discontinuities) and only cuts beyond the march range, so a
+// list is valid for EVERY depth along the pixel's ray through the tile.
+// Bounded + relevance-sorted by the cull: the per-refresh walk below
+// costs at most fogMaxPerTile lights even in dense crowds.
 float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
     uint2 pix)
 {
@@ -161,18 +170,20 @@ float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
             const uint tile = ty * frame.giVolumeTileCountX + tx;
             if (tile < (uint)MAX_FP_TILES)
             {
-                const uint perTile = min(vp.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
+                // Same stride clamp as the cull (both derive from the
+                // desc's maxFogPerTile, so the rows always agree).
+                const uint fSlots = min(vp.fogMaxPerTile,
+                    (uint)MAX_FP_TILE_SORT_SLOTS);
                 const uint listCount = min(
-                    vp.fpTileCounts.Get().counts[tile] & 0xFFFFu, perTile);
-                const uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
-                const uint baseIdx = tile * stride;
+                    vp.fogTileCounts.Get().counts[tile], fSlots);
+                const uint baseIdx = tile * fSlots;
                 float3 acc = float3(0.0, 0.0, 0.0);
                 [loop]
                 for (uint s = 0u; s < listCount; ++s)
                 {
-                    const uint li = vp.fpTileIndices.Get().indices[baseIdx + s];
+                    const uint li = vp.fogTileIndices.Get().indices[baseIdx + s];
                     if (li >= nLights)
-                        continue; // probe entry (rides the buffer tail)
+                        continue; // probe entries never ride the fog list; belt+braces
                     acc += VolLightInScatter(vp.fpLights.Get().lights[li],
                         pos, rayDir);
                 }

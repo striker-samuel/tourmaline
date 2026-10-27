@@ -173,6 +173,18 @@ ctest --test-dir out/build/x64-Release --output-on-failure
   half-applied. The pool↔descriptor budget static_assert lives at the
   INTEGRATION site (vulkan_impl.h, next to bindlessImages_), never in
   Memory/pool.h (the generic pool must not know descriptor budgets).
+- Public APIs take RAW POINTERS + COUNT/SIZE, never container types:
+  `f(const Thing* items, size_t itemCount)` / `f(void* out, size_t outBytes)`
+  — NOT `std::vector`/`std::span`/`std::array` parameters. The caller owns
+  the memory (no hidden allocation/copy, no allocator coupling, trivial C
+  ABI/export + FFI later, "nothing" is just `{nullptr, 0}`), and count is
+  explicit at the boundary instead of implied by a container. Containers
+  are fine as INTERNAL storage and as return values when convenient; the
+  rule is about parameter lists. Batch/getter pairs use the same shape:
+  `Things() const` + `ThingCount() const` (pointer + count), not a
+  vector return. Historical span-taking RHI overloads exist
+  (BulkCopyBuffer, the async readbacks) — don't propagate them to new
+  code; when touching one, prefer adding a pointer+count overload.
 
 ## Strict resources (`--strict` / `TOURMALINE_STRICT=1`) + the RHI error contract
 

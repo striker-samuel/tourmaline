@@ -432,6 +432,77 @@ glm::mat4 smvk::GetSpotLightVP(
 	return proj * view;
 }
 
+// ---------------------------------------------------------------------------
+// Point-light shadow faces (see light.h GetPointShadowFaceVP doc).
+//
+// Per-face basis derived from the cubemap convention table
+// (cubemap.h FaceUvToDirection + cubemap_prefilter DirectionToFaceUv). The
+// CONTRACT: NDC.x must equal the face's su(d) and NDC.y its sv(d) - i.e.
+// the tile's UV grid IS the cubemap face's UV grid, so the sampling side
+// (dominant-axis selection + su/sv solve) and the raster side (this VP)
+// land on the same texel. glm::lookAt(pos, pos+fwd, up) derives
+// s = cross(fwd, up) (the +NDC.x axis) and u = cross(s, fwd) (the +NDC.y
+// axis); passing the table's (fwd, up) satisfies the contract:
+//   face 0 +X: su=-z/x, sv=-y/x  -> fwd +X, up -Y  (s -Z, u -Y)
+//   face 1 -X: su=-z/x, sv=+y/x  -> fwd -X, up -Y  (s +Z, u -Y; the negated
+//        fwd flips the w denominator, so both NDC axes flip vs +X - the
+//        up that reproduces the table is still -Y, NOT +Y)
+//   face 2 +Y: su=+x/y, sv=+z/y  -> fwd +Y, up +Z  (s +X, u +Z)
+//   face 3 -Y: su=-x/y, sv=+z/y  -> fwd -Y, up -Z  (s +X, u -Z)
+//   face 4 +Z: su=+x/z, sv=-y/z  -> fwd +Z, up -Y  (s +X, u -Y)
+//   face 5 -Z: su=+x/z, sv=+y/z  -> fwd -Z, up -Y  (s -X, u -Y)
+// (Verified per-face in test_light.cpp: the tile UV must equal
+// DirectionToFaceUv's (u,v) for the same direction - a sign error on any
+// face mirrors that face's tile and the parity check catches it.)
+//
+// Why the basis must be axis-aligned (not any rotated frame): the
+// dominant-axis partition only bounds |NDC.x|, |NDC.y| <= 1 when each
+// NDC axis isolates ONE non-dominant world component. A frame rotated
+// 45 degrees in the face plane would mix both components and push the
+// NDC corners out to sqrt(2) - the 90-degree frustum would not cover
+// the face's dominant-axis square.
+// ---------------------------------------------------------------------------
+glm::mat4 smvk::GetPointShadowFaceVP(
+	const glm::vec3& position,
+	uint32_t face,
+	float range,
+	float nearPlane
+)
+{
+	static constexpr glm::vec3 kFaceFwd[6] = {
+		glm::vec3( 1.0f, 0.0f, 0.0f), // +X
+		glm::vec3(-1.0f, 0.0f, 0.0f), // -X
+		glm::vec3( 0.0f, 1.0f, 0.0f), // +Y
+		glm::vec3( 0.0f,-1.0f, 0.0f), // -Y
+		glm::vec3( 0.0f, 0.0f, 1.0f), // +Z
+		glm::vec3( 0.0f, 0.0f,-1.0f), // -Z
+	};
+	static constexpr glm::vec3 kFaceUp[6] = {
+		glm::vec3(0.0f,-1.0f, 0.0f), // +X (s -Z, u -Y)
+		glm::vec3(0.0f,-1.0f, 0.0f), // -X (s +Z, u -Y) - NOT +Y, see above
+		glm::vec3(0.0f, 0.0f, 1.0f), // +Y (s +X, u +Z)
+		glm::vec3(0.0f, 0.0f,-1.0f), // -Y (s +X, u -Z)
+		glm::vec3(0.0f,-1.0f, 0.0f), // +Z (s +X, u -Y)
+		glm::vec3(0.0f,-1.0f, 0.0f), // -Z (s -X, u -Y)
+	};
+	if (face > 5u)
+		face = 0u;
+
+	const glm::vec3 fwd = kFaceFwd[face];
+	const glm::vec3 up = kFaceUp[face];
+	const glm::mat4 view = glm::lookAt(position, position + fwd, up);
+	// 90-degree FOV + unit aspect: tan(45deg) = 1, so a direction whose
+	// dominant axis is `fwd` lands at |NDC.x|, |NDC.y| <= 1 exactly (the
+	// boundary |su| = 1 / |sv| = 1 is the face seam shared with the
+	// neighbor). far = the light's range (cutoff; receivers beyond it are
+	// unlit anyway - the falloff window kills them before the shadow test).
+	const float farPlane = std::max(range, nearPlane + 0.01f);
+	const glm::mat4 proj = glm::perspectiveRH_ZO(
+		glm::radians(90.0f), 1.0f, nearPlane, farPlane);
+	// No Y-flip, same shared-matrix contract as the spot/cascade paths.
+	return proj * view;
+}
+
 // LiSPSM (Light Space Perspective Shadow Maps) for spotlights.
 // Warps the spot projection to match the camera's perspective frustum,
 // providing better texel density in camera/view space.

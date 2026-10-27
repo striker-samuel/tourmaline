@@ -488,6 +488,43 @@ set_target_properties(LevelTests PROPERTIES
 
 add_test(NAME level_tests COMMAND LevelTests)
 
+# World voxel fields (Engine/WorldFields): virtual addressing, atlas slot
+# math, decode packings, pool bookkeeping, residency churn under forced
+# eviction, and the paged-atlas == dense-reference seam proof (the
+# milestone 1+2 acceptance suite; GPU-side publish path is smoke-tested by
+# WorldFieldsGpuTests).
+add_executable(WorldFieldsTests test_world_fields.cpp)
+
+target_link_libraries(WorldFieldsTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(WorldFieldsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME world_fields_tests COMMAND WorldFieldsTests)
+
+# WorldFieldsGpuTests: the DEVICE half — real (hidden-window) Vulkan
+# context, batched region uploads through the streamer, blocking
+# readbacks proving atlas bytes/table roundtrip/page-slot semantics
+# (milestone 2's GPU acceptance). Mirrors the retirement fuzzer's
+# bootstrap needs (volk linked directly, PRIVATE on engine).
+add_executable(WorldFieldsGpuTests test_world_fields_gpu.cpp)
+
+target_link_libraries(WorldFieldsGpuTests
+    PRIVATE
+        engine
+        volk
+)
+
+set_target_properties(WorldFieldsGpuTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME world_fields_gpu_tests COMMAND WorldFieldsGpuTests)
+
 # Unreal-style env volumes (coverage, priority, tour replay).
 add_executable(EnvVolumeTests test_env_volumes.cpp)
 
@@ -603,6 +640,8 @@ tourmaline_stage_sdl3(TerrainPackTests)
 tourmaline_stage_sdl3(TerrainHFieldTests)
 tourmaline_stage_sdl3(TerrainBlocksTests)
 tourmaline_stage_sdl3(LevelTests)
+tourmaline_stage_sdl3(WorldFieldsTests)
+tourmaline_stage_sdl3(WorldFieldsGpuTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
 tourmaline_stage_sdl3(PakHostTests)

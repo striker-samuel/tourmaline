@@ -44,15 +44,21 @@ namespace smvk {
 // GPU light (must match HLSL ForwardPlusLight in common.hlsli / forwardplus)
 // 96 bytes, 16-byte aligned.
 //
-// Shadow fields (spot only, points ignore them):
-//  shadowTile      – tile index into the spot-shadow atlas description
-//                    buffer, or -1 when this light casts no shadow this frame.
-//  shadowMapIndex  – bindless index of the spot-shadow atlas (same for all
-//                    shadowed spots in the frame), -1 when unshadowed.
+// Shadow fields (spots AND points):
+//  shadowTile      – SPOTS: tile index into the local-light shadow atlas
+//                    descriptor buffer. POINTS: the FIRST of SIX consecutive
+//                    cube-face tiles (the sampler adds the dominant-axis
+//                    face number, see shadows.hlsli GetPointShadowFactorTile).
+//                    -1 when this light casts no shadow this frame.
+//  shadowMapIndex  – bindless index of the atlas the light samples: the D32
+//                    tile atlas for points (always) and spots (PCF mode);
+//                    the blurred EVSM moments for spots in EVSM mode. -1
+//                    when unshadowed.
 //  shadowBias      – depth bias applied to the receiver depth (perspective).
 // `flags` bit kForwardPlusFlag_CastShadow is the *request* flag: the app sets
 // it on lights allowed to cast shadows; per-frame selection then assigns
-// shadowTile/MapIndex only to the top-N casters (see spotshadow.h).
+// shadowTile/MapIndex only to the top-N casters (see spotshadow.h - spots
+// take 1 tile each, points take 6).
 //
 // Light cookie (spot only): cookieIndex is the bindless texture index of a
 // gobo projected through the spot cone (cone-UV convention matches the
@@ -269,7 +275,17 @@ inline ForwardPlusDecal MakeDecal(const glm::vec3& center, glm::vec3 axisZ,
 struct ForwardPlusDesc {
 	uint32_t tileSize = 16;
 	uint32_t maxLights = 1024;
-	uint32_t maxLightsPerTile = 128;
+	// Surface list: up to maxLightsPerTile SLOTS per tile, relevance-
+	// sorted by the cull (nearest reach first; spots pinned ahead of
+	// points — see forwardplus.cs.hlsl). Overflow pops the FARTHEST
+	// candidates, so the pop is a graceful distance fade, not the
+	// first-come hard edge that showed as tile seams.
+	uint32_t maxLightsPerTile = 16;
+	// Per-tile FOG list cap (separate lists for the volumetric march —
+	// ForwardPlusCullPush::fogTile*; march-range candidacy, no slab cuts).
+	// Must stay in sync with the shader MAX_FP_FOG_TILE_SLOTS sort-array
+	// size.
+	uint32_t maxFogPerTile = 16;
 	// Decals share the light tiling (same tile size / tile counts): the
 	// cull pass fills parallel per-tile decal index lists in the same
 	// dispatch. Must stay in sync with the shader MAX_FP_DECALS /
@@ -279,7 +295,7 @@ struct ForwardPlusDesc {
 	const char* name = "forwardplus";
 };
 
-// Must match forwardplus.cs.hlsl ForwardPlusCullPush (64 bytes).
+// Must match forwardplus.cs.hlsl ForwardPlusCullPush (88 bytes).
 struct ForwardPlusCullPush {
 	uint64_t frameUniforms = 0;
 	uint64_t lights = 0;
@@ -294,8 +310,26 @@ struct ForwardPlusCullPush {
 	// Per-tile convex-volume bitmask output (replaces the old pad0/pad1
 	// tail — every other field offset is unchanged).
 	uint64_t volumeMasks = 0;
+	// ---- Per-tile FOG lists (separate from the surface lists) ----
+	// The volumetric march samples OUTSIDE the surface depth slab (in
+	// front of the nearest opaque surface), so the surface lists' slab
+	// cuts would drop lights the fog needs (the fog split on the tile
+	// grid at depth discontinuities - the GI-volume mask leg's no-cut
+	// rationale, applied to a dedicated list so the surface lists stay
+	// tight). Candidates: side planes + a marching-range far cut at
+	// fogMaxDistance (no slab cuts); packed up to desc.maxFogPerTile
+	// slots per tile, relevance-sorted (see the shader). Everything is
+	// zeroed on the same freshness contract as the mask leg.
+	uint64_t fogTileCounts = 0;
+	uint64_t fogTileIndices = 0;
+	// March-range far cut (the volumetricDesc.maxDistance the pass will
+	// actually run with).
+	float fogMaxDistance = 80.0f;
+	// Fog row stride (desc.maxFogPerTile — must match the volumetric
+	// push's fogMaxPerTile so both sides address the same rows).
+	uint32_t maxFogPerTile = 16;
 };
-static_assert(sizeof(ForwardPlusCullPush) == 64);
+static_assert(sizeof(ForwardPlusCullPush) == 88);
 
 inline constexpr const char* kForwardPlusCsPath = "content/shaders/forwardplus.cs.hlsl.spv";
 inline constexpr const char* kForwardPlusDepthVsPath = "content/shaders/default.vert.hlsl.spv";
@@ -319,6 +353,14 @@ struct ForwardPlus {
 	Holder<BufferHandle> decalTileIndicesBuffer;
 	LogicalBufferHandle decalTileCountsLogical{};
 	LogicalBufferHandle decalTileIndicesLogical{};
+	// Per-tile FOG lists (volumetric march candidates — see
+	// ForwardPlusCullPush::fogTile*). Separate buffers so the surface
+	// lists' stride/probe layout (and every surface consumer) stays
+	// untouched. Stride is desc.maxFogPerTile.
+	Holder<BufferHandle> fogTileCountsBuffer;
+	Holder<BufferHandle> fogTileIndicesBuffer;
+	LogicalBufferHandle fogTileCountsLogical{};
+	LogicalBufferHandle fogTileIndicesLogical{};
 	// GI-volume tile masks (same tiling; the cull's volume leg
 	// packs a <=8-bit survivor bitmask per tile — see sg_gi_volume.hlsli).
 	Holder<BufferHandle> volumeTileMasksBuffer;
@@ -388,6 +430,10 @@ struct ForwardPlus {
 			return false;
 		if (d.tileSize == 0 || d.maxLights == 0 || d.maxLightsPerTile == 0)
 			return false;
+		// Fog row stride 0 would allocate a zero-size buffer and an
+		// invalid BDA for the cull's fog stores — reject like the others.
+		if (d.maxFogPerTile == 0)
+			return false;
 		Destroy(rg);
 
 		const uint32_t tcx = TileCountFor(swapExtent.width, d.tileSize);
@@ -413,6 +459,15 @@ struct ForwardPlus {
 			sizeof(uint32_t) * tiles * d.maxDecalsPerTile, BufferType_Storage,
 			"forwardplus decalTileIndices");
 		if (decalCounts.empty() || decalIndices.empty())
+			return false;
+		// Per-tile FOG lists: one count + one index entry per tile/slot
+		// (small buffers - the fog slots are few by design).
+		Holder<BufferHandle> fogCounts = ctx.CreateBuffer(
+			sizeof(uint32_t) * tiles, BufferType_Storage, "forwardplus fogTileCounts");
+		Holder<BufferHandle> fogIndices = ctx.CreateBuffer(
+			sizeof(uint32_t) * tiles * d.maxFogPerTile, BufferType_Storage,
+			"forwardplus fogTileIndices");
+		if (fogCounts.empty() || fogIndices.empty())
 			return false;
 		// Convex-volume tile masks (one bitmask uint per tile; the volume
 		// leg of the cull fills them unconditionally every dispatch).
@@ -441,12 +496,27 @@ struct ForwardPlus {
 				rg.FreeBuffer(decalIndicesLogical);
 			return false;
 		}
+		LogicalBufferHandle fogCountsLogical = rg.AddExternalBuffer(fogCounts, "forwardplus fogTileCounts");
+		LogicalBufferHandle fogIndicesLogical = rg.AddExternalBuffer(fogIndices, "forwardplus fogTileIndices");
+		if (fogCountsLogical.empty() || fogIndicesLogical.empty()) {
+			rg.FreeBuffer(countsLogical);
+			rg.FreeBuffer(indicesLogical);
+			rg.FreeBuffer(decalCountsLogical);
+			rg.FreeBuffer(decalIndicesLogical);
+			if (!fogCountsLogical.empty())
+				rg.FreeBuffer(fogCountsLogical);
+			if (!fogIndicesLogical.empty())
+				rg.FreeBuffer(fogIndicesLogical);
+			return false;
+		}
 		LogicalBufferHandle volumeMasksLogical = rg.AddExternalBuffer(volumeMasks, "forwardplus volumeTileMasks");
 		if (volumeMasksLogical.empty()) {
 			rg.FreeBuffer(countsLogical);
 			rg.FreeBuffer(indicesLogical);
 			rg.FreeBuffer(decalCountsLogical);
 			rg.FreeBuffer(decalIndicesLogical);
+			rg.FreeBuffer(fogCountsLogical);
+			rg.FreeBuffer(fogIndicesLogical);
 			return false;
 		}
 
@@ -463,6 +533,10 @@ struct ForwardPlus {
 		decalTileIndicesBuffer = std::move(decalIndices);
 		decalTileCountsLogical = decalCountsLogical;
 		decalTileIndicesLogical = decalIndicesLogical;
+		fogTileCountsBuffer = std::move(fogCounts);
+		fogTileIndicesBuffer = std::move(fogIndices);
+		fogTileCountsLogical = fogCountsLogical;
+		fogTileIndicesLogical = fogIndicesLogical;
 		volumeTileMasksBuffer = std::move(volumeMasks);
 		volumeTileMasksLogical = volumeMasksLogical;
 
@@ -487,12 +561,18 @@ struct ForwardPlus {
 			rg.FreeBuffer(decalTileCountsLogical);
 		if (!decalTileIndicesLogical.empty())
 			rg.FreeBuffer(decalTileIndicesLogical);
+		if (!fogTileCountsLogical.empty())
+			rg.FreeBuffer(fogTileCountsLogical);
+		if (!fogTileIndicesLogical.empty())
+			rg.FreeBuffer(fogTileIndicesLogical);
 		if (!volumeTileMasksLogical.empty())
 			rg.FreeBuffer(volumeTileMasksLogical);
 		tileCountsLogical = {};
 		tileIndicesLogical = {};
 		decalTileCountsLogical = {};
 		decalTileIndicesLogical = {};
+		fogTileCountsLogical = {};
+		fogTileIndicesLogical = {};
 		volumeTileMasksLogical = {};
 		depthBindlessIndex = UINT32_MAX;
 		depthBindless = {};
@@ -501,6 +581,8 @@ struct ForwardPlus {
 		tileIndicesBuffer = {};
 		decalTileCountsBuffer = {};
 		decalTileIndicesBuffer = {};
+		fogTileCountsBuffer = {};
+		fogTileIndicesBuffer = {};
 		volumeTileMasksBuffer = {};
 		extent = { 0, 0 };
 		tileCountX = tileCountY = tileCount = 0;
@@ -519,6 +601,7 @@ struct ForwardPlus {
 			extent.width == swapExtent.width && extent.height == swapExtent.height &&
 			desc.tileSize == d.tileSize && desc.maxLights == d.maxLights &&
 			desc.maxLightsPerTile == d.maxLightsPerTile &&
+			desc.maxFogPerTile == d.maxFogPerTile &&
 			desc.maxDecals == d.maxDecals && desc.maxDecalsPerTile == d.maxDecalsPerTile &&
 			tileCountX == wantX && tileCountY == wantY;
 		if (shapeOk) {
@@ -545,6 +628,12 @@ struct ForwardPlus {
 	}
 	uint64_t DecalTileIndicesAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(decalTileIndicesBuffer);
+	}
+	uint64_t FogTileCountsAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(fogTileCountsBuffer);
+	}
+	uint64_t FogTileIndicesAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(fogTileIndicesBuffer);
 	}
 	uint64_t VolumeTileMasksAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(volumeTileMasksBuffer);
@@ -649,6 +738,8 @@ struct ForwardPlus {
 		pass.AddBufferHint(tileIndicesLogical, tileWrite);
 		pass.AddBufferHint(decalTileCountsLogical, tileWrite);
 		pass.AddBufferHint(decalTileIndicesLogical, tileWrite);
+		pass.AddBufferHint(fogTileCountsLogical, tileWrite);
+		pass.AddBufferHint(fogTileIndicesLogical, tileWrite);
 		pass.AddBufferHint(volumeTileMasksLogical, tileWrite);
 		return pass;
 	}
@@ -662,6 +753,18 @@ struct ForwardPlus {
 		tileRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 		mainPass.AddBufferHint(countsLogical, tileRead);
 		mainPass.AddBufferHint(indicesLogical, tileRead);
+	}
+
+	// Fog-list sibling of AddTileReadHints: the volumetric pass reads the
+	// dedicated fog tile lists (march-range candidates — see
+	// ForwardPlusCullPush::fogTile*). Same fragment-stage read request.
+	static void AddFogTileReadHints(RenderPass& pass,
+		LogicalBufferHandle fogCountsLogical, LogicalBufferHandle fogIndicesLogical) {
+		BufferSyncRequest fogRead{};
+		fogRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		fogRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+		pass.AddBufferHint(fogCountsLogical, fogRead);
+		pass.AddBufferHint(fogIndicesLogical, fogRead);
 	}
 
 	// Decal-list sibling of AddTileReadHints (Main samples the decal tile

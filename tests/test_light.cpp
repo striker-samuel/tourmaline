@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 // light_tests: CPU-side regression tests for the directional-light ortho
-// fit + texel snap (Engine/Renderer/light.cpp). No GPU required: the snap
-// is pure matrix math.
+// fit + texel snap (Engine/Renderer/light.cpp) and the point-light shadow
+// face VPs (GetPointShadowFaceVP). No GPU required: both are pure matrix
+// math.
 //
 // The texel snap must do two things the previous implementation did not:
 //   1. actually change lightVP (the old code shifted the view by delta and
@@ -14,7 +15,7 @@
 //      move in whole-texel steps (no sub-texel edge shimmer).
 // Quantizing the view origin is the only workable lever: the view is glued
 // to the frustum-slice center, so every slice-derived light-space quantity
-// is translation-invariant and cannot stop the grid from sliding.
+//      is translation-invariant and cannot stop the grid from sliding.
 // Coverage is asserted too: the grown window must still contain the slice.
 
 #include <array>
@@ -28,6 +29,8 @@
 
 #include <Engine/Renderer/light.h>
 #include <Engine/Renderer/renderview.h> // the contribution view (the culling half of the contract)
+#include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_prefilter.h> // DirectionToFaceUv (the sampling-side face selection)
 
 namespace {
 
@@ -503,10 +506,116 @@ void TestCasterFitEndToEnd() {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// Point-light shadow faces (GetPointShadowFaceVP). The contract under test
+// is the RASTER <-> SAMPLE parity: the sampling shader picks the face by
+// dominant axis (mirroring cubemap_prefilter DirectionToFaceUv) and
+// projects through the SAME matrix the raster pass used. So for every
+// direction, the face DirectionToFaceUv picks must
+//   a) contain the projected point (|ndc.xy| <= 1, depth inside [0,1]),
+//   b) produce tile UV == DirectionToFaceUv's (u,v) - i.e. the face VP's
+//      NDC square IS the cubemap face's UV grid.
+// A drift in either half (face basis vs selection) mis-tiles the lookup.
+// ---------------------------------------------------------------------------
+void TestPointShadowFaces() {
+	const glm::vec3 lightPos(3.0f, -2.0f, 7.0f); // off-origin: catches translation bugs
+	const float range = 20.0f;
+	const float nearPlane = 0.5f;
+
+	// 1. Face centers land dead-center of their tile (uv 0.5, 0.5).
+	{
+		bool centersOk = true;
+		for (uint32_t f = 0; f < 6; ++f) {
+			const smvk::CubemapFaceVec c =
+				smvk::CubemapFaceCenter(static_cast<smvk::CubemapFace>(f));
+			const glm::vec3 centerDir(c.x, c.y, c.z);
+			const glm::mat4 vp = smvk::GetPointShadowFaceVP(lightPos, f, range, nearPlane);
+			const glm::vec4 clip = vp * glm::vec4(lightPos + centerDir * (range * 0.5f), 1.0f);
+			const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+			if (std::abs(ndc.x) > 1e-4f || std::abs(ndc.y) > 1e-4f
+				|| ndc.z <= 0.0f || ndc.z >= 1.0f)
+				centersOk = false;
+		}
+		Check(centersOk, "light.pointfaces.face-centers-project-to-tile-center");
+	}
+
+	// 2. Sphere coverage + UV parity over a dense direction grid
+	//    (golden-angle spiral, like the engine's light crowd).
+	{
+		bool covered = true;
+		bool parity = true;
+		bool depthOk = true;
+		const int N = 1024;
+		for (int i = 0; i < N; ++i) {
+			const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(N);
+			const float r = std::sqrt(std::max(0.0f, 1.0f - y * y));
+			const float a = float(i) * 2.39996323f;
+			const glm::vec3 dir(r * std::cos(a), y, r * std::sin(a));
+
+			// Sampling-side selection (the HLSL mirrors THIS function).
+			smvk::CubemapFace face = smvk::CubemapFace::Px;
+			float u = 0.5f, v = 0.5f;
+			if (!smvk::DirectionToFaceUv(dir, face, u, v)) {
+				covered = false;
+				continue;
+			}
+			const uint32_t f = static_cast<uint32_t>(face);
+			const glm::mat4 vp = smvk::GetPointShadowFaceVP(lightPos, f, range, nearPlane);
+			const glm::vec4 clip = vp * glm::vec4(lightPos + dir * (range * 0.5f), 1.0f);
+			const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+
+			// a) Dominant-axis guarantee: the selected face's frustum
+			//    contains the direction (seam directions sit AT 1.0).
+			if (ndc.x < -1.0f - 1e-3f || ndc.x > 1.0f + 1e-3f ||
+				ndc.y < -1.0f - 1e-3f || ndc.y > 1.0f + 1e-3f)
+				covered = false;
+			if (ndc.z <= 0.0f || ndc.z >= 1.0f)
+				depthOk = false;
+			// b) Tile UV == the cubemap face UV (the shared-grid contract).
+			const float tileU = ndc.x * 0.5f + 0.5f;
+			const float tileV = ndc.y * 0.5f + 0.5f;
+			if (std::abs(tileU - u) > 1e-4f || std::abs(tileV - v) > 1e-4f)
+				parity = false;
+		}
+		Check(covered, "light.pointfaces.dominant-axis-coverage (|ndc.xy| <= 1)");
+		Check(depthOk, "light.pointfaces.depth-in-range");
+		Check(parity, "light.pointfaces.tile-uv-matches-DirectionToFaceUv");
+	}
+
+	// 3. Near/far depth mapping along a face-center ray: nearPlane -> 0,
+	//    range -> ~1 (the depth compare the PCF path relies on). The near
+	//    sample sits ON the boundary (analytically exactly 0); the far
+	//    sample steps just inside (at exactly `range` it reads 1.0 - the
+	//    shader's out-of-range guard).
+	{
+		const glm::mat4 vp = smvk::GetPointShadowFaceVP(lightPos, 0, range, nearPlane);
+		const glm::vec3 fwd(1.0f, 0.0f, 0.0f);
+		const glm::vec4 nearClip = vp * glm::vec4(lightPos + fwd * nearPlane, 1.0f);
+		const glm::vec4 farClip = vp * glm::vec4(lightPos + fwd * (range * 0.999f), 1.0f);
+		const float zNear = nearClip.z / nearClip.w;
+		const float zFar = farClip.z / farClip.w;
+		Check(std::abs(zNear) < 1e-4f, "light.pointfaces.near-maps-to-zero");
+		Check(zFar > 0.99f && zFar < 1.0f, "light.pointfaces.far-maps-to-one");
+		// Monotone in between (an occluder closer than the receiver must
+		// read a SMALLER depth for the receiverDepth <= d compare to work).
+		bool monotone = true;
+		for (int k = 1; k < 10; ++k) {
+			const float d0 = nearPlane + (range - nearPlane) * float(k - 1) / 9.0f;
+			const float d1 = nearPlane + (range - nearPlane) * float(k) / 9.0f;
+			const glm::vec4 c0 = vp * glm::vec4(lightPos + fwd * d0, 1.0f);
+			const glm::vec4 c1 = vp * glm::vec4(lightPos + fwd * d1, 1.0f);
+			if (c0.z / c0.w >= c1.z / c1.w)
+				monotone = false;
+		}
+		Check(monotone, "light.pointfaces.depth-monotone (occluder < receiver)");
+	}
+}
+
 int main() {
 	TestDirectionalTexelSnap();
 	TestCascadePaddingLargeSceneLowSun();
 	TestCasterFitEndToEnd();
+	TestPointShadowFaces();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

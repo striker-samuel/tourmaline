@@ -160,6 +160,26 @@ namespace smvk {
 		float nearPlane = 0.5f,
 		float aspect = 1.0f
 	);
+	// Point-light shadow face VP: one of the six 90-degree perspective
+	// frustums that tile the sphere around a point light (the "cube" of a
+	// cube-map shadow, rasterized as six atlas TILES - see spotshadow.h
+	// BuildPointFaceTile). `face` is 0..5 in CubemapFace order
+	// (+X, -X, +Y, -Y, +Z, -Z) and the per-face basis (forward/up) is the
+	// engine cubemap convention (cubemap.h FaceUvToDirection), so a
+	// direction whose dominant axis is the face axis projects to NDC
+	// |xy| <= 1 EXACTLY (each NDC axis is one non-dominant component over
+	// the dominant one - never a mix) and the NDC square matches the
+	// cubemap face's (su, sv). The sampling side (shadows.hlsli
+	// GetPointShadowFactorTile) picks the face by dominant axis the same
+	// way cubemap_prefilter DirectionToFaceUv does, then projects through
+	// the SAME matrix from the tile descriptor - raster and sample share
+	// one VP per face, the same contract as the spot/cascade paths.
+	glm::mat4 GetPointShadowFaceVP(
+		const glm::vec3& position,
+		uint32_t face,
+		float range,
+		float nearPlane = 0.5f
+	);
 	// LiSPSM (Light Space Perspective Shadow Maps) for spotlights.
 	// Warps the spot projection to match the camera's perspective frustum,
 	// providing better texel density in camera/view space.

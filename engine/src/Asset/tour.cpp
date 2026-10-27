@@ -2577,8 +2577,7 @@ void TourEnvVolApplyField(EnvVolume& vol, const std::string& f,
 	else if (f == "enabled") vol.enabled = TourEnvFloat(v, vol.enabled ? 1.0f : 0.0f) != 0.0f;
 }
 // Render-settings block (render.* keys — scene-level, never per-node):
-// the postfx look + the GI/shadow render config (the config tail below;
-// see SceneRenderSettings). Missing keys keep struct defaults.
+// the postfx look. Missing keys keep struct defaults.
 void TourRenderApplyField(SceneRenderSettings& r, const std::string& f,
 	const std::string& v) {
 	if (f == "bloomEnabled") r.bloomEnabled = TourEnvFloat(v, r.bloomEnabled ? 1.0f : 0.0f) != 0.0f;
@@ -2608,18 +2607,12 @@ void TourRenderApplyField(SceneRenderSettings& r, const std::string& f,
 	else if (f == "aaMode") r.aaMode = int(TourEnvFloat(v, float(r.aaMode)));
 	else if (f == "cubemapEnabled") r.cubemapEnabled = TourEnvFloat(v, r.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
 	else if (f == "cubemapIntensity") r.cubemapIntensity = TourEnvFloat(v, r.cubemapIntensity);
-	// Render-config tail (the GI/shadow configuration half — see
-	// SceneRenderSettings): the GI/ambient source + per-source opt-ins
-	// + probe pre-mix + EVSM shadows.
-	else if (f == "giMode") r.giMode = int(TourEnvFloat(v, float(r.giMode)));
-	else if (f == "giIntensity") r.giIntensity = TourEnvFloat(v, r.giIntensity);
-	else if (f == "lightmapsEnabled") r.lightmapsEnabled = TourEnvFloat(v, r.lightmapsEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "regProbesEnabled") r.regProbesEnabled = TourEnvFloat(v, r.regProbesEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "giVolumesEnabled") r.giVolumesEnabled = TourEnvFloat(v, r.giVolumesEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "probePremixEnabled") r.probePremixEnabled = TourEnvFloat(v, r.probePremixEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "evsmEnabled") r.evsmEnabled = TourEnvFloat(v, r.evsmEnabled ? 1.0f : 0.0f) != 0.0f;
-	else if (f == "evsmSoftness") r.evsmSoftness = TourEnvFloat(v, r.evsmSoftness);
 }
+// (The GI/shadow renderer knobs — the ambient source, the per-source
+// opt-ins, probe pre-mix, EVSM — never ride render.* keys: they are
+// QUALITY settings, host-owned session state (WorldRenderer.h's
+// RenderQualityConfig), not scene content. Unknown render.* fields
+// fall through here ignored, never fatal.)
 TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 	TourEnvBlocks eb{};
 	bool inNode = false;

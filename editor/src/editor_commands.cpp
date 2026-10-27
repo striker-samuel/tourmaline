@@ -843,7 +843,7 @@ void EditorApp::DraftCreateLight(bool spot) {
 	c.lightInnerDeg = 20.0f;
 	c.lightOuterDeg = 35.0f;
 	c.lightStatic = false; // dynamic: visible in the viewport immediately
-	c.lightShadow = spot;  // spots default to shadow-casting (points can't)
+	c.lightShadow = true; // spots + points both default to shadow-casting
 	Do(c);
 }
 
@@ -917,7 +917,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	def.outerConeAngle = glm::radians(std::clamp(c.lightOuterDeg, 0.0f, 89.0f));
 	if (c.lightStatic)
 		def.flags |= ::SceneLight::kSceneLightFlag_Static;
-	if (c.lightShadow && def.type == ::SceneLight::Type::Spot)
+	if (c.lightShadow && def.type != ::SceneLight::Type::Directional)
 		def.flags |= ::SceneLight::kSceneLightFlag_CastShadow;
 	def.name = c.afterText;
 	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());

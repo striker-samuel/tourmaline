@@ -1399,6 +1399,15 @@ private:
 	smvk::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
 	bool m_wysiwygBakeWasRunning = false; // bake-completion edge (GI landed post-attach)
+	// RENDER QUALITY (the WYSIWYG's GI/shadow knobs — AmbientMode/GI
+	// intensity, the per-source opt-ins, probe pre-mix, EVSM): the
+	// SESSION's renderer options — the Render tab drives them live
+	// (PushRenderQuality per edit) and LaunchWysiwyg re-applies them
+	// after every WYSIWYG attach (the GI loaders flip the per-source
+	// opt-ins on when content is baked; the session's choices win).
+	// Session-ONLY by design: never persisted, never scene/tour
+	// content (see WorldRenderer.h's RenderQualityConfig).
+	engine::RenderQualityConfig m_renderQuality{};
 	// The covered rect (screen px, captured same-frame by
 	// DrawLiveViewStage in DrawUI — the ACTIVE Lit viewport's rect; the
 	// compose pass writes exactly it and the drive renders at its

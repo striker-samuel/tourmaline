@@ -15,12 +15,22 @@
 //   1. loads its 16x16 depth texels, tracks NDC min/max (reversed-Z:
 //      1 = near, 0 = far/sky),
 //   2. unprojects tile corners via invProj -> view-space side planes,
-//   3. sphere-tests every light against the 6 tile planes,
-//   4. writes the first maxLightsPerTile passing light indices + the true
-//      (unclamped) pass count; the shading pass iterates at most
-//      maxLightsPerTile entries, so overflow lights pop (accepted: spots
-//      are uploaded to the light buffer before the point grid so the few
-//      cone lights never lose their slots),
+//   3. sphere-tests every light against the 4 tile side planes,
+//   4. SURFACE list: lights passing the side planes AND the tile depth
+//      slab are RELEVANCE-SORTED (key = distance from the light center
+//      to the slab; spots pinned ahead of points) and the best
+//      maxLightsPerTile survive — overflow pops the FARTHEST candidates,
+//      a graceful distance fade instead of the old first-come hard edge
+//      that read as tile seams under dense crowds. The stored count is
+//      the sorted list length (never beyond the written entries).
+//   4b. FOG list: SEPARATE per-tile lists for the volumetric march
+//      (fogTileCounts/fogTileIndices, stride maxFogPerTile). Candidacy
+//      ignores the depth slab — march samples live in front of the
+//      nearest opaque surface — and only cuts beyond the march range
+//      (fogMaxDistance); same relevance sort, spots pinned; probes never
+//      ride (scalar march). The fog walk then sees a BOUNDED,
+//      seam-free list (the march-range candidacy is per-tile constant,
+//      so neighboring tiles no longer disagree at depth slabs).
 //   5. sphere-tests every decal (ForwardPlusDecal bounding sphere) the
 //      same way and writes parallel per-tile decal lists,
 //   6. sphere-tests every convex GI volume's fade-expanded AABB against
@@ -53,9 +63,16 @@ struct ForwardPlusCullPush
     // Per-tile convex-volume bitmask output (the tail slot keeps every
     // field offset identical to the old pad0/pad1 layout).
     vk::BufferPointer<GiVolumeTileMaskBuffer> volumeMasks;
+    // Per-tile FOG lists (see the header + the C++ mirror in
+    // Engine/Rendergraph/forwardplus.h): march-range candidacy for the
+    // volumetric pass, separate buffers from the surface lists.
+    vk::BufferPointer<ForwardPlusFogTileCountBuffer> fogTileCounts;
+    vk::BufferPointer<ForwardPlusFogTileIndexBuffer> fogTileIndices;
+    float fogMaxDistance;   // march-range far cut
+    uint maxFogPerTile;     // fog row stride (matches the volumetric push)
 };
 // NOTE: no static_assert here – this DXC (HLSL 2018 mode) rejects it at
-// global scope. Size is checked on the C++ side (64 bytes).
+// global scope. Size is checked on the C++ side (88 bytes).
 
 [[vk::push_constant]]
 ConstantBuffer<ForwardPlusCullPush> pcCull;
@@ -142,16 +159,42 @@ void mainCS(uint3 groupId : SV_GroupID)
     // light-saturated tiles pop their probes, flipping specular IBL to
     // the global fallback cubemap (chrome ball "breaks" when a light grid
     // comes on). Overflow now only ever pops within its own class:
-    // lights beyond perTile (first-come = spots-first buffer order, the
-    // accepted Forward+ trade-off), probes beyond the tail slots
-    // (first-come = upload order, pinned probes first).
-    // counts packs both TRUE (unclamped) values: low 16 = lights, high
-    // 16 = probes.
+    // probes beyond the tail slots (first-come = upload order, pinned
+    // probes first). LIGHT overflow pops by RELEVANCE instead (sorted
+    // insertion below): the farthest candidates go first — the old
+    // first-come pop read as hard tile seams under dense crowds because
+    // neighboring tiles kept different arbitrary subsets.
+    // counts: low 16 = SORTED light list length (never beyond the
+    // written entries), high 16 = TRUE (unclamped) probe count.
     uint lightCount = min(pcCull.lightCount, (uint)MAX_FP_LIGHTS);
     uint maxPerTile = min(pcCull.maxLightsPerTile, (uint)MAX_FP_PER_TILE);
+    // Sort capacity: the sorted insertion can only track
+    // MAX_FP_TILE_SORT_SLOTS entries; a desc raise beyond it clamps here
+    // and the stored count follows (see common.hlsli). 16 today.
+    maxPerTile = min(maxPerTile, (uint)MAX_FP_TILE_SORT_SLOTS);
     const uint stride = maxPerTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
-    uint lcount = 0;
-    uint pcount = 0;
+    // Fog row stride: the pushed desc value clamped to the same sort
+    // capacity (the volumetric consumer clamps identically, so both
+    // sides address the same rows of the fog buffers).
+    const uint fogStride = min(pcCull.maxFogPerTile, (uint)MAX_FP_TILE_SORT_SLOTS);
+    uint lcount = 0;  // sorted surface list length
+    uint pcount = 0;  // true probe count (first-come packing)
+    uint fcount = 0;  // sorted fog list length
+
+    // Relevance-sorted tile list scratch (surface + fog). Written back
+    // once after the light loop; the sort is an insertion that evicts the
+    // WORST (largest key) entry once full.
+    uint sIdx[MAX_FP_TILE_SORT_SLOTS];
+    float sKey[MAX_FP_TILE_SORT_SLOTS];
+    uint fIdx[MAX_FP_TILE_SORT_SLOTS];
+    float fKey[MAX_FP_TILE_SORT_SLOTS];
+
+    // Spot pin: cone lights sort ahead of points unconditionally (the
+    // pre-sort contract — spots never lose their slots to the crowd;
+    // they are also few, so their own order collapsing to buffer order
+    // among themselves is the old first-come semantics). 1e6 dwarfs any
+    // real view distance (sky-tile slabs unproject to ~1e5).
+    const float kSpotPin = 1e6;
 
     float4x4 view = frame.view;
     for (uint li = 0; li < lightCount; ++li)
@@ -165,14 +208,8 @@ void mainCS(uint3 groupId : SV_GroupID)
         if (cView.z > range)
             continue;
 
-        // Depth-range test (view looks down -z): tile covers
-        // [-farthestDist, -nearestDist].
-        if (-cView.z + range < nearestDist)
-            continue;
-        if (-cView.z - range > farthestDist)
-            continue;
-
-        // Side planes (origin planes, outward normals).
+        // Side planes (origin planes, outward normals) — shared by the
+        // surface and fog tracks below.
         bool outside = false;
         [unroll]
         for (int p = 0; p < 4; ++p)
@@ -186,20 +223,97 @@ void mainCS(uint3 groupId : SV_GroupID)
         if (outside)
             continue;
 
+        const float d = -cView.z; // light center view distance
+        const float spotPin = (L.type == 1) ? -kSpotPin : 0.0f;
+
         if (L.type == kForwardPlusProbe) {
-            if (pcount < (uint)MAX_FP_PROBE_TILE_SLOTS)
-                pcCull.tileIndices.Get().indices[tileIdx * stride + maxPerTile + pcount] = li;
-            pcount++;
-        } else {
-            if (lcount < maxPerTile)
-                pcCull.tileIndices.Get().indices[tileIdx * stride + lcount] = li;
-            lcount++;
+            // Probes: surface specular IBL only — slab candidacy, plain
+            // first-come packing (their own tail slots).
+            if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
+                if (pcount < (uint)MAX_FP_PROBE_TILE_SLOTS)
+                    pcCull.tileIndices.Get().indices[tileIdx * stride + maxPerTile + pcount] = li;
+                pcount++;
+            }
+            continue;
+        }
+
+        // ---- Surface track (slab candidacy + sorted insertion) ----
+        // The slab cuts are conservative for every OPAQUE pixel of the
+        // tile (pixels live inside the slab by construction), unchanged
+        // from the classic cull. Relevance key = distance from the light
+        // CENTER to the slab interval: 0 = the center sits inside the
+        // slab (the tile's pixels pass right by the light); larger = the
+        // light only reaches in from farther out, so it pops first.
+        if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
+            const float key = max(max(nearestDist - d, d - farthestDist), 0.0f) + spotPin;
+            // Insert: append while free, else evict the worst (largest
+            // key) when this candidate beats it. Strict '<' = stable ties
+            // (buffer order among equals — spots first).
+            if (lcount < maxPerTile) {
+                sIdx[lcount] = li;
+                sKey[lcount] = key;
+                lcount++;
+            } else {
+                float worst = sKey[0];
+                uint worstI = 0u;
+                [loop]
+                for (uint w = 1u; w < maxPerTile; ++w) {
+                    if (sKey[w] > worst) { worst = sKey[w]; worstI = w; }
+                }
+                if (key < worst) {
+                    sIdx[worstI] = li;
+                    sKey[worstI] = key;
+                }
+            }
+        }
+
+        // ---- Fog track (march-range candidacy + sorted insertion) ----
+        // NO slab cuts: a march sample lives outside the slab whenever
+        // it is in the air between the camera and the tile's nearest
+        // surface, and a light sitting entirely in front of that surface
+        // still lights that air. Cutting on the slab split the fog on the
+        // tile grid at depth discontinuities (neighboring tiles' slabs
+        // disagree). The single cut: the light's nearest face beyond the
+        // march range (fogMaxDistance) can never reach a sample in
+        // [0, fogMaxDistance]. Relevance key = distance from the center
+        // to the march interval [0, fogMaxDistance] — same shape as the
+        // surface key.
+        if (d - range <= pcCull.fogMaxDistance) {
+            const float key = max(max(-d, d - pcCull.fogMaxDistance), 0.0f) + spotPin;
+            if (fcount < fogStride) {
+                fIdx[fcount] = li;
+                fKey[fcount] = key;
+                fcount++;
+            } else {
+                float worst = fKey[0];
+                uint worstI = 0u;
+                [loop]
+                for (uint w = 1u; w < fogStride; ++w) {
+                    if (fKey[w] > worst) { worst = fKey[w]; worstI = w; }
+                }
+                if (key < worst) {
+                    fIdx[worstI] = li;
+                    fKey[worstI] = key;
+                }
+            }
         }
     }
 
-    // Packed TRUE (unclamped) counts: lights low 16 bits, probes high 16.
+    // ---- Write back the sorted surface list ----
+    [loop]
+    for (uint s = 0u; s < lcount; ++s)
+        pcCull.tileIndices.Get().indices[tileIdx * stride + s] = sIdx[s];
+    // Packed counts: lights low 16 bits (sorted length), probes high 16
+    // (true count — the specular walk min()s it with the slot budget).
     // The light loops mask the low word, the specular walk shifts.
     pcCull.tileCounts.Get().counts[tileIdx] = (lcount & 0xFFFFu) | (pcount << 16);
+
+    // ---- Write back the sorted fog list (UNCONDITIONAL stores — fresh 0
+    // with no candidates, same discipline as the decal counts) ----
+    [loop]
+    for (uint s = 0u; s < fcount; ++s)
+        pcCull.fogTileIndices.Get().indices[tileIdx * fogStride + s] = fIdx[s];
+    pcCull.fogTileCounts.Get().counts[tileIdx] = fcount;
 
     // ---- Cull decals (same conservative bounding-sphere test as the
     // lights: tile side planes + depth range). Decals share the light

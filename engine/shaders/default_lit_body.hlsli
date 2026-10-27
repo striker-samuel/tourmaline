@@ -246,11 +246,14 @@ plColor *= EvaluateLightFunction(
             g_time(time), spotUV, pl.type == 1);
     }
 
-    // Shadow factor: inline spot-atlas sample (legacy path) or the
+    // Shadow factor: inline local-light atlas sample (legacy path) or the
     // deferred-shadow pipeline's precomputed per-pixel visibility.
-    // EVSM (frame.evsmMode): pl.shadowMapIndex addresses the blurred
-    // moments instead of the depth atlas; linear sampler 0. Soft variant:
-    // PCSS penumbra from the moment blocker (tile pads carry the knobs).
+    // Spots: EVSM (frame.evsmMode) addresses the blurred moments via
+    // pl.shadowMapIndex; linear sampler 0, PCSS penumbra from the moment
+    // blocker (tile pads carry the knobs). Points: six cube-face tiles,
+    // PCF depth atlas by default and the SAME moment atlas under EVSM
+    // (per-light shadowMapIndex flips to the blurred moments when EVSM is
+    // active; the dominant-axis face selection is identical in both paths).
     float shadowFactor = vis;
     if (useInlineShadow && pl.type == 1 && pl.shadowTile >= 0)
     {
@@ -264,6 +267,23 @@ plColor *= EvaluateLightFunction(
             // regular sampler (0) — never the comparison sampler (1).
             shadowFactor = GetSpotShadowFactorFromPC(0, worldPos, geomN,
                 pl.direction, pl.shadowTile);
+    }
+    else if (useInlineShadow && pl.type == 0 && pl.shadowTile >= 0)
+    {
+        // Point cube-face tiles: dominant-axis face + the spot tile math
+        // (GetPointShadowFactorFromPC). Under EVSM the per-light index
+        // addresses the blurred moments and the same face selection
+        // drives the spot-shaped moment sampler (GetPointShadowFactor
+        // EvsmFromPC) - PCF depth atlas stays the exact fallback.
+        // Regular sampler 0 like every other manual-compare path.
+        uint evsm2 = pc.frameUniforms.Get().evsmMode;
+        if (evsm2 != 0u && pl.shadowMapIndex >= 0)
+            shadowFactor = GetPointShadowFactorEvsmFromPC(0, worldPos, geomN,
+                pl.position, pl.shadowTile, pl.shadowMapIndex,
+                EVSM_EXPONENT, pix);
+        else
+            shadowFactor = GetPointShadowFactorFromPC(0, worldPos, geomN,
+                pl.position, pl.shadowTile, pl.shadowMapIndex);
     }
     if (shadowFactor <= 0.0f)
         return;

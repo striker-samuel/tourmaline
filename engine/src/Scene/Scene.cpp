@@ -298,12 +298,10 @@ static bool loadEnvFloats(FILE* f, SceneEnv& e)
   return true;
 }
 
-// Render-settings record (see SceneRenderSettings): the postfx look +
-// render config's 35 floats in fixed order (bloom 3 + tonemap 1 +
-// exposure 7 + AO 9 + SSR 2 + motionblur/dof/aa 3 + cubemap 2 + the GI/
-// shadow config tail 8 — giMode, giIntensity, the five toggles,
-// evsmSoftness). Bools/modes ride as 0/1 floats. Split out of the env
-// record; the config-tail bump breaks old 27-float files loudly (the
+// Render-settings record (see SceneRenderSettings): the postfx look's
+// 27 floats in fixed order (bloom 3 + tonemap 1 + exposure 7 + AO 9 +
+// SSR 2 + motionblur/dof/aa 3 + cubemap 2). Bools/modes ride as 0/1
+// floats. Split out of the env record (old files fail loudly — the
 // sanctioned no-conversions break, AGENTS.md).
 static void saveRenderFloats(FILE* f, const SceneRenderSettings& r)
 {
@@ -320,10 +318,6 @@ static void saveRenderFloats(FILE* f, const SceneRenderSettings& r)
     r.motionBlurEnabled ? 1.0f : 0.0f, r.dofEnabled ? 1.0f : 0.0f,
     float(r.aaMode),
     r.cubemapEnabled ? 1.0f : 0.0f, r.cubemapIntensity,
-    float(r.giMode), r.giIntensity,
-    r.lightmapsEnabled ? 1.0f : 0.0f, r.regProbesEnabled ? 1.0f : 0.0f,
-    r.giVolumesEnabled ? 1.0f : 0.0f, r.probePremixEnabled ? 1.0f : 0.0f,
-    r.evsmEnabled ? 1.0f : 0.0f, r.evsmSoftness,
   };
   static_assert(sizeof(floats) / sizeof(float) == kSceneRenderFloatCount,
     "render float order drifted from kSceneRenderFloatCount");
@@ -363,16 +357,6 @@ static bool loadRenderFloats(FILE* f, SceneRenderSettings& r)
   r.aaMode = int(floats[24]);
   r.cubemapEnabled = floats[25] != 0.0f;
   r.cubemapIntensity = floats[26];
-  // Render-config tail (see SceneRenderSettings): the GI/ambient source
-  // + per-source opt-ins + probe pre-mix + EVSM shadows.
-  r.giMode = int(floats[27]);
-  r.giIntensity = floats[28];
-  r.lightmapsEnabled = floats[29] != 0.0f;
-  r.regProbesEnabled = floats[30] != 0.0f;
-  r.giVolumesEnabled = floats[31] != 0.0f;
-  r.probePremixEnabled = floats[32] != 0.0f;
-  r.evsmEnabled = floats[33] != 0.0f;
-  r.evsmSoftness = floats[34];
   return true;
 }
 
