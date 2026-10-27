@@ -29,7 +29,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#include <unistd.h> // readlink, fork, execv, waitpid
+#include <unistd.h> // readlink, fork, execv
 #include <cerrno>
 #include <cstring>
 #endif

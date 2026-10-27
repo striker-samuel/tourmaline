@@ -34,7 +34,8 @@ namespace fs = std::filesystem;
 #define NOMINMAX
 #include <Windows.h> // GetModuleFileNameA (the stage-tool resolution)
 #else
-#include <unistd.h> // readlink (/proc/self/exe)
+#include <unistd.h> // readlink (/proc/self/exe), fork, execv, _exit
+#include <sys/wait.h> // waitpid + the WIFEXITED/WEXITSTATUS macros
 #endif
 
 // ---- build settings (persisted per project) -------------------------------
