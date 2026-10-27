@@ -3100,6 +3100,20 @@ public:
 	bool m_worldMapProbes = true;
 	bool m_worldMapLights = true;
 	bool m_worldMapCamera = true;
+	// WorldFields layer (Engine/WorldFields): the fog field's clipmap
+	// windows + resident/in-flight brick footprints per LOD, and a fog
+	// DENSITY heat overlay sampled from the procedural reference at the
+	// camera's height (cooked content replaces the reference function —
+	// the overlay is a debug view of the SOURCE, the atlas shows
+	// residency).
+	bool m_worldMapFields = true;
+	bool m_worldMapFogHeat = true;
+	// WorldPartition layer: the streaming interest (position + velocity
+	// lead) and the 256 m root-cell / 64 m subcell grid under its radius.
+	bool m_worldMapCells = false;
+	// Per-draw collection scratch (the WorldFields debug API, reused).
+	std::vector<worldfields::WorldFieldSystem::WorldFieldDebugBrick>
+		m_worldMapBrickScratch;
 	glm::vec2 m_worldMapCenter{ 0.0f, 0.0f }; // world XZ, canvas center
 	float m_worldMapScale = 0.0f; // px per meter; <= 0 = fit on next draw
 	// Heightmap preview (built lazily from the baked terrain's CPU

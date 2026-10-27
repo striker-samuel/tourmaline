@@ -1969,6 +1969,13 @@ namespace engine {
 		}
 		m_worldFieldProvider.SetContext(m_context);
 		m_worldPartition.AddProvider(&m_worldFieldProvider);
+		// Debug: force the World Map (C) window open — headless UI smoke
+		// (the capture exports the composited frame INCLUDING the map's
+		// fields/cells layers + the streaming footer).
+		if (const char* mapEnv = std::getenv("TOURMALINE_WORLDMAP")) {
+			if (std::atoi(mapEnv) == 1)
+				m_worldMapWindow = true;
+		}
 
 // Scene bounds log + default-camera framing (see below): the light set
 // is the resolved authored set - no procedural grid to fit.
@@ -17216,6 +17223,14 @@ namespace engine {
 		ImGui::SameLine();
 		if (ImGui::Button("Fit"))
 			m_worldMapScale = 0.0f; // fit on next draw below
+		// Streaming layers (the WorldFields + WorldPartition debug — see
+		// the draw blocks below): field residency, the fog density
+		// reference heat, the partition interest cells.
+		ImGui::Checkbox("Fields", &m_worldMapFields);
+		ImGui::SameLine();
+		ImGui::Checkbox("Fog heat", &m_worldMapFogHeat);
+		ImGui::SameLine();
+		ImGui::Checkbox("Cells", &m_worldMapCells);
 		// World extent: terrain bounds, else scene bounds, else default.
 		float minX = -2048.0f, minZ = -2048.0f;
 		float sizeX = 4096.0f, sizeZ = 4096.0f;
@@ -17243,7 +17258,10 @@ namespace engine {
 			DropWorldMapHeight();
 		ImVec2 avail = ImGui::GetContentRegionAvail();
 		const float cw = std::max(avail.x, 50.0f);
-		const float ch = std::max(avail.y - ImGui::GetTextLineHeightWithSpacing(), 50.0f);
+		// Two reserved footer lines: the layer counts + the streaming
+		// stats (the fields line below).
+		const float footer = 2.0f * ImGui::GetTextLineHeightWithSpacing();
+		const float ch = std::max(avail.y - footer, 50.0f);
 		if (m_worldMapScale <= 0.0f) {
 			m_worldMapScale =
 				std::min(cw, ch) / std::max(sizeX, sizeZ);
@@ -17322,6 +17340,199 @@ namespace engine {
 			c = std::min(std::max(c, 0.0f), 1.0f);
 			return (int)std::lround(std::pow(c, 1.0f / 2.2f) * 255.0f);
 		};
+		// ---- WorldFields layers (Engine/WorldFields; field id 0 = the
+		// fog density field). LOD palette: 0 cyan, 1 green, 2 amber. ----
+		const bool fogFieldLive = m_worldFields.GpuBinding().Valid();
+		const glm::vec3 mapEye = m_cameraPositioner.cameraPosition_;
+		constexpr uint32_t kMapFogFieldId = 0;
+		if (m_worldMapFogHeat && fogFieldLive) {
+			// Fog density heat: the PROCEDURAL REFERENCE sampled on a
+			// world-quantized ~24 px grid at the camera's height (a debug
+			// view of the source function the bricks encode — cooked
+			// content swaps the reference, the layer keeps working).
+			const float worldCell = std::max(24.0f / s, 1.0f);
+			const float x1 = vx0 + cw / s;
+			const float z1 = vz0 + ch / s;
+			for (float gz = std::floor(vz0 / worldCell) * worldCell;
+				gz < z1; gz += worldCell)
+				for (float gx = std::floor(vx0 / worldCell) * worldCell;
+					gx < x1; gx += worldCell) {
+					const float d = WorldFogDensitySource::WorldDensity01(
+						glm::vec3(gx, mapEye.y, gz));
+					if (d <= 0.02f)
+						continue;
+					// (density^0.6 keeps the low range visible; blue ->
+					// white ramp, alpha carries the value)
+					const float t = std::pow(std::min(d, 1.0f), 0.6f);
+					const int r = 60 + int(t * 180.0f);
+					const int g = 150 + int(t * 90.0f);
+					const int b = 230;
+					dl->AddRectFilled(
+						ImVec2(WX(gx), WZ(gz)),
+						ImVec2(WX(std::min(gx + worldCell, x1)),
+							WZ(std::min(gz + worldCell, z1))),
+						IM_COL32(r, g, b, int(t * 96.0f)));
+				}
+		}
+		if (m_worldMapCells) {
+			// ---- WorldPartition layer: the streaming interest(s) —
+			// position + velocity lead arrow — and the 256 m root-cell /
+			// 64 m subcell grid under the interest radius. ----
+			const worldpartition::StreamingInterest* interests =
+				m_worldPartition.Interests();
+			const size_t interestCount = m_worldPartition.InterestCount();
+			for (size_t i = 0; i < interestCount; ++i) {
+				const worldpartition::StreamingInterest& in = interests[i];
+				const float ir = float(std::max(in.radiusMeters, 0.0));
+				const double cLoX = std::floor((in.position.x - ir)
+					/ worldpartition::kRootCellSize) * worldpartition::kRootCellSize;
+				const double cLoZ = std::floor((in.position.z - ir)
+					/ worldpartition::kRootCellSize) * worldpartition::kRootCellSize;
+				for (double cz = cLoZ;
+					cz <= in.position.z + ir; cz += worldpartition::kRootCellSize)
+					for (double cx = cLoX;
+						cx <= in.position.x + ir; cx += worldpartition::kRootCellSize) {
+						dl->AddRect(
+							ImVec2(WX(float(cx)), WZ(float(cz))),
+							ImVec2(WX(float(cx + worldpartition::kRootCellSize)),
+								WZ(float(cz + worldpartition::kRootCellSize))),
+							IM_COL32(120, 130, 165, 110), 1.0f);
+						// Subcells (64 m) only when they read (>6 px).
+						if (s * float(worldpartition::kSubcellSize) >= 6.0f) {
+							for (int sz = 0; sz < 4; ++sz)
+								for (int sx = 0; sx < 4; ++sx) {
+									const float scx = float(cx)
+										+ float(sx) * float(worldpartition::kSubcellSize);
+									const float scz = float(cz)
+										+ float(sz) * float(worldpartition::kSubcellSize);
+									dl->AddRect(
+										ImVec2(WX(scx), WZ(scz)),
+										ImVec2(WX(scx
+											+ float(worldpartition::kSubcellSize)),
+											WZ(scz
+												+ float(worldpartition::kSubcellSize))),
+										IM_COL32(120, 130, 165, 38), 1.0f);
+								}
+						}
+					}
+				// Interest: position dot + the velocity lead vector
+				// (the prefetch rule the clipmap centers follow).
+				const ImVec2 p(WX(float(in.position.x)),
+					WZ(float(in.position.z)));
+				dl->AddCircleFilled(p, 5.0f, IM_COL32(255, 255, 255, 220));
+				const double vl = glm::length(in.velocity);
+				if (vl > 0.1) {
+					const glm::dvec3 lead = in.velocity * double(0.5);
+					dl->AddLine(p,
+						ImVec2(p.x + float(lead.x) * s, p.y + float(lead.z) * s),
+						IM_COL32(255, 235, 130, 220), 2.0f);
+				}
+			}
+		}
+		uint32_t nFieldBricks = 0, nFieldWindows = 0, nFieldInFlight = 0;
+		if (m_worldMapFields && fogFieldLive) {
+			// One-shot headless smoke evidence: the capture composite is
+			// scene-only BY DESIGN (a grading reference — the UI layers
+			// never appear in exports), so this log is the proof the
+			// fields layer drew with live data.
+			static bool s_loggedFirstDraw = false;
+			if (!s_loggedFirstDraw) {
+				s_loggedFirstDraw = true;
+				const worldfields::WorldFieldStats st = m_worldFields.Stats();
+				std::fprintf(stderr,
+					"[WorldMap] fields layer live: %u residents,"
+					" %u in-flight, %u pool free, %.1f MiB atlas\n",
+					st.residentBricks, st.inFlightBricks, st.freeSlots,
+					st.atlasBytes / (1024.0 * 1024.0));
+			}
+			// ---- Clipmap windows: one outline per LOD (bright -> dim),
+			// then resident brick footprints (filled, LOD palette) and
+			// in-flight generations (1 px outline — the streaming edge). ----
+			const auto lodColor = [](uint32_t lod, int alpha) -> ImU32 {
+				static constexpr int kPal[3][3] = {
+					{ 90, 200, 235 }, { 110, 210, 120 }, { 235, 180, 90 }
+				};
+				const int* k = kPal[lod < 3 ? lod : 2];
+				return IM_COL32(k[0], k[1], k[2], alpha);
+			};
+			constexpr uint32_t kMaxDebugWindows = 8;
+			worldfields::WorldFieldSystem::WorldFieldDebugWindow
+				windows[kMaxDebugWindows];
+			const uint32_t windowTotal = m_worldFields.CollectDebugWindows(
+				kMapFogFieldId, windows, kMaxDebugWindows);
+			nFieldWindows = std::min(windowTotal, kMaxDebugWindows);
+			// Per-LOD world brick edge (lookup for the brick footprints).
+			float brickEdge[worldfields::kMaxFieldLods] = {};
+			glm::vec3 fieldOrigin(0.0f);
+			for (uint32_t w = 0; w < nFieldWindows; ++w) {
+				const auto& win = windows[w];
+				if (win.lod < worldfields::kMaxFieldLods)
+					brickEdge[win.lod] = float(worldfields::kBrickInteriorRes)
+						* win.voxelSizeMeters;
+				fieldOrigin = glm::vec3(win.originMeters[0],
+					win.originMeters[1], win.originMeters[2]);
+				const float edge = float(worldfields::kBrickInteriorRes)
+					* win.voxelSizeMeters;
+				const float wx0 = fieldOrigin.x + float(win.minX) * edge;
+				const float wz0 = fieldOrigin.z + float(win.minZ) * edge;
+				const float wx1 = fieldOrigin.x
+					+ float(win.minX + int32_t(win.dimX)) * edge;
+				const float wz1 = fieldOrigin.z
+					+ float(win.minZ + int32_t(win.dimZ)) * edge;
+				// Window outline (alpha falls off with LOD: the fallback).
+				dl->AddRect(ImVec2(WX(wx0), WZ(wz0)), ImVec2(WX(wx1), WZ(wz1)),
+					lodColor(win.lod, int(150 - 40 * int(win.lod))), 1.5f);
+				// LOD tag at the window corner (when it fits).
+				char tag[8];
+				std::snprintf(tag, sizeof(tag), "L%u", win.lod);
+				dl->AddText(ImVec2(WX(wx0) + 3.0f, WZ(wz0) + 3.0f),
+					lodColor(win.lod, 190), tag);
+			}
+			// Resident bricks (cull: outside the view or < 2.5 px).
+			m_worldMapBrickScratch.resize(4096);
+			const uint32_t brickTotal = m_worldFields.CollectDebugBricks(
+				kMapFogFieldId, m_worldMapBrickScratch.data(),
+				uint32_t(m_worldMapBrickScratch.size()));
+			nFieldBricks = std::min(brickTotal,
+				uint32_t(m_worldMapBrickScratch.size()));
+			const float x1 = vx0 + cw / s;
+			const float z1 = vz0 + ch / s;
+			for (uint32_t b = 0; b < nFieldBricks; ++b) {
+				const auto& key = m_worldMapBrickScratch[b];
+				const float edge = brickEdge[key.lod];
+				if (edge <= 0.0f)
+					continue; // no established window at that LOD
+				const float bx0 = fieldOrigin.x + float(key.x) * edge;
+				const float bz0 = fieldOrigin.z + float(key.z) * edge;
+				const float px = edge * s;
+				if (px < 2.5f || bx0 + edge < vx0 || bx0 > x1
+					|| bz0 + edge < vz0 || bz0 > z1)
+					continue;
+				dl->AddRectFilled(
+					ImVec2(WX(bx0), WZ(bz0)),
+					ImVec2(WX(bx0 + edge), WZ(bz0 + edge)),
+					lodColor(key.lod, int(56 - 12 * int(key.lod))));
+			}
+			// In-flight (the async work pool's current jobs: 1 px outline).
+			worldfields::WorldFieldSystem::WorldFieldDebugBrick inFlight[64];
+			const uint32_t inFlightTotal = m_worldFields.CollectDebugInFlight(
+				kMapFogFieldId, inFlight, 64);
+			nFieldInFlight = std::min(inFlightTotal, 64u);
+			for (uint32_t b = 0; b < nFieldInFlight; ++b) {
+				const auto& key = inFlight[b];
+				const float edge = brickEdge[key.lod];
+				if (edge <= 0.0f)
+					continue;
+				const float bx0 = fieldOrigin.x + float(key.x) * edge;
+				const float bz0 = fieldOrigin.z + float(key.z) * edge;
+				if (bx0 + edge < vx0 || bx0 > x1 || bz0 + edge < vz0 || bz0 > z1)
+					continue;
+				dl->AddRect(
+					ImVec2(WX(bx0), WZ(bz0)),
+					ImVec2(WX(bx0 + edge), WZ(bz0 + edge)),
+					lodColor(key.lod, 160), 1.0f);
+			}
+		}
 		uint32_t nZones = 0, nZonesOff = 0, nGiVolumes = 0, nProbes = 0,
 			nLights = 0, nDecals = 0;
 		// ---- Env volumes: OBB XZ footprints + inf-face arrows ---------
@@ -17534,6 +17745,30 @@ namespace engine {
 			"  1px = %.1fm  drag pan | wheel zoom",
 			nZones, nZonesOff, nGiVolumes, nProbes, nLights, nDecals,
 			1.0f / s);
+		// Streaming footer (the WorldFields + partition line): residents,
+		// in-flight, pool pressure, atlas bytes, the per-frame churn. Dark
+		// when the system is off.
+		{
+			const worldfields::WorldFieldStats st = m_worldFields.Stats();
+			const worldfields::WorldFieldGpuBinding bind =
+				m_worldFields.GpuBinding();
+			char line[192];
+			if (bind.Valid()) {
+				std::snprintf(line, sizeof(line),
+					"fields: %u live  %u bricks (win %u / inflight %u)"
+					"  pool %u free  %.1f MiB atlas  uploads %u/frame"
+					"  evict %u  skipped %u",
+					bind.fieldCount, st.residentBricks, nFieldWindows,
+					st.inFlightBricks, st.freeSlots,
+					st.atlasBytes / (1024.0 * 1024.0),
+					st.pendingUploads, st.evictions, st.requestsSkipped);
+			}
+			else {
+				std::snprintf(line, sizeof(line),
+					"fields: off (TOURMALINE_WORLD_FIELDS=1)");
+			}
+			ImGui::TextDisabled("%s", line);
+		}
 		ImGui::End();
 	}
 

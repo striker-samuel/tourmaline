@@ -316,6 +316,39 @@ public:
 		policy_ = policy;
 	}
 
+	// ---- debug/inspection (the World Map C window's Fields layer; the
+	// editor's residency view grows on the same API) — pointer+count
+	// collectors, count clamped to capacity, the TRUE total returned ----
+	struct WorldFieldDebugBrick
+	{
+		uint32_t lod = 0;
+		int32_t x = 0;
+		int32_t y = 0;
+		int32_t z = 0;
+	};
+	struct WorldFieldDebugWindow
+	{
+		uint32_t lod = 0;
+		int32_t minX = 0;
+		int32_t minY = 0;
+		int32_t minZ = 0;
+		uint32_t dimX = 0;
+		uint32_t dimY = 0;
+		uint32_t dimZ = 0;
+		float voxelSizeMeters = 0.0f;
+		float originMeters[3] = { 0.0f, 0.0f, 0.0f }; // world min corner of brick (0,0,0)
+	};
+	// Resident bricks of a field (their world footprints derive from
+	// key * interiorRes * voxelSize + the field origin).
+	uint32_t CollectDebugBricks(uint32_t fieldId,
+		WorldFieldDebugBrick* out, uint32_t capacity) const;
+	// The per-LOD clipmap window rects (absolute brick coords).
+	uint32_t CollectDebugWindows(uint32_t fieldId,
+		WorldFieldDebugWindow* out, uint32_t capacity) const;
+	// Generations currently dispatched to the work pool.
+	uint32_t CollectDebugInFlight(uint32_t fieldId,
+		WorldFieldDebugBrick* out, uint32_t capacity) const;
+
 	// ---- shared addressing math (the CPU half of world_field.hlsli;
 	// formulas identical incl. floor discipline — the tests pin it) ----
 

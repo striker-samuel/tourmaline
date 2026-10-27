@@ -945,4 +945,82 @@ WorldFieldStats WorldFieldSystem::Stats() const
 	return s;
 }
 
+// ---------------------------------------------------------------------------
+// Debug/inspection collectors (the World Map C window's Fields layer)
+// ---------------------------------------------------------------------------
+
+uint32_t WorldFieldSystem::CollectDebugBricks(uint32_t fieldId,
+	WorldFieldDebugBrick* out, uint32_t capacity) const
+{
+	if (out == nullptr)
+		capacity = 0;
+	uint32_t total = 0;
+	for (const auto& kv : bricks_) {
+		const BrickEntry& e = kv.second;
+		if (e.key.fieldId != fieldId || e.phase != BrickPhase::Resident)
+			continue;
+		if (total < capacity) {
+			out[total].lod = e.key.lod;
+			out[total].x = e.key.x;
+			out[total].y = e.key.y;
+			out[total].z = e.key.z;
+		}
+		++total;
+	}
+	return total;
+}
+
+uint32_t WorldFieldSystem::CollectDebugWindows(uint32_t fieldId,
+	WorldFieldDebugWindow* out, uint32_t capacity) const
+{
+	if (out == nullptr)
+		capacity = 0;
+	if (fieldId >= fields_.size() || !fields_[fieldId].alive)
+		return 0;
+	const FieldSlot& f = fields_[fieldId];
+	const FieldRuntime& rt = fieldRuntime_[fieldId];
+	uint32_t total = 0;
+	for (uint32_t lod = 0; lod < f.desc.lodCount; ++lod) {
+		const LevelState& lv = rt.levels[lod];
+		if (!lv.established)
+			continue;
+		if (total < capacity) {
+			out[total].lod = lod;
+			out[total].minX = lv.windowMinBrick.x;
+			out[total].minY = lv.windowMinBrick.y;
+			out[total].minZ = lv.windowMinBrick.z;
+			out[total].dimX = f.desc.tableDimX;
+			out[total].dimY = f.desc.tableDimY;
+			out[total].dimZ = f.desc.tableDimZ;
+			out[total].voxelSizeMeters = f.desc.baseVoxelSizeMeters
+				* float(1u << lod);
+			out[total].originMeters[0] = f.desc.originMeters.x;
+			out[total].originMeters[1] = f.desc.originMeters.y;
+			out[total].originMeters[2] = f.desc.originMeters.z;
+		}
+		++total;
+	}
+	return total;
+}
+
+uint32_t WorldFieldSystem::CollectDebugInFlight(uint32_t fieldId,
+	WorldFieldDebugBrick* out, uint32_t capacity) const
+{
+	if (out == nullptr)
+		capacity = 0;
+	uint32_t total = 0;
+	for (const InFlightJob& job : inFlight_) {
+		if (job.key.fieldId != fieldId)
+			continue;
+		if (total < capacity) {
+			out[total].lod = job.key.lod;
+			out[total].x = job.key.x;
+			out[total].y = job.key.y;
+			out[total].z = job.key.z;
+		}
+		++total;
+	}
+	return total;
+}
+
 } // namespace engine::worldfields
