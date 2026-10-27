@@ -538,3 +538,11 @@ pipeline_cache*.bin
 /external/df_game_data/
 
 /portfolio/
+
+# --- project-pipeline build projects (the canonical content flow) ---
+# cook_sponza.bat defaults the demo project to the USER'S Documents
+# (%USERPROFILE%\Documents\Tourmaline\...), so the repo tree stays clean;
+# this entry covers anyone overriding TOURMALINE_PROJECT_DIR to a
+# repo-relative path. A project directory is SELF-CONTAINED (copy it to
+# another machine and Project.exe build works with no external store).
+/projects/

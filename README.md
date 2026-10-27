@@ -275,10 +275,11 @@ Platform notes:
 
 Executables run from their build directory (e.g. `out/build/x64-Release`)
 and load `content/` relative to the CWD. The app is a pak viewer — content
-is cooked separately (below):
+is cooked separately through the project pipeline (below):
 
 ```powershell
-.\App.exe --pak content/paks/bistro.pak
+.\App.exe --pak content/paks/sponza.pak    # the demo pak (built by the
+                                           # project pipeline — see below)
 ```
 
 Headless deterministic capture / benchmarking (the full A/B matrix is
@@ -288,7 +289,7 @@ declared in `engine/include/Engine/App/RunConfig.h`):
 $env:TOURMALINE_SSR='1'; $env:TOURMALINE_AA='off'; $env:TOURMALINE_AUTO_EXPOSURE='0'
 $env:TOURMALINE_CAM_POS='24.26,1.82,-9.52'; $env:TOURMALINE_CAM_FWD='-0.947,-0.022,-0.321'
 $env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must be < bench)
-& .\App.exe --pak content/paks/bistro.pak --disable_control --bench 64
+& .\App.exe --pak content/paks/sponza.pak --disable_control --bench 64
 ```
 
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
@@ -302,19 +303,68 @@ $env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must
   see `docs/probe_premix_plan.md`)
   (Linux: same variables exported, `./App` instead of `.\App.exe`).
 
-### Content pipeline
+### Content pipeline (the canonical project flow)
+
+One project → one importer → one geometry preprocessing stage → one
+scene cooker → one packager. `Project.exe` is the entry point; the
+editor and the batch scripts use the same implementation — there is no
+alternate path that derives different geometry from the same source.
 
 ```
-loose glTF / KTX2 assets
-  -> tools/gltf_import     (mesh/material extraction)
-  -> tools/cook            (asset cooking: geometry, textures, manifests)
-  -> tools/gi_baker / tools/cubemap_baker / lightmaps   (Embree ray tracing)
-  -> tools/pak_cooker      (*.pak archives: LZ4, magic-versioned)
-  -> App.exe / Editor.exe   (VFS + artifact DB on top of the paks)
+glTF / GLB source          (NOT in git — an external content store)
+  |
+  |  Project.exe init/import      the ONE importer (tools/gltf_import):
+  |                               copy the source + deps INTO the project,
+  |                               derive the .geometry family — the LOD
+  |                               chains + meshlets bake AT IMPORT
+  v
+Project assets             (renderer-ready .geometry + .material + .anim
+  |                         + the import manifest with its fingerprint)
+  |  Project.exe build
+  |     -> Cook                 scene-dependent bakes (cubemap captures);
+  |     |                       consumes the imported .geometry, never
+  |     |                       regenerates or rewrites it
+  |     -> GiBaker              the world field + authored GI volumes
+  |     -> Pak                  assembly + the bake-freshness gate + verify
+  v
+*.pak                      -> App.exe / Editor.exe (VFS + artifact DB)
 ```
+
+**The demo (Sponza).** One command creates the project, imports the
+source, seeds the authored scene, cooks, bakes, paks (the freshness gate
+accepts only fresh bakes) and syncs the pak next to `App.exe`; later runs
+are incremental (unchanged content reimports and bakes nothing):
+
+```powershell
+# Your content store root — must contain models\sponza\Sponza.gltf +
+# Sponza.bin + the textures + the authored Sponza.tour.
+# Defaults to F:\content on the author's machine; override anywhere:
+$env:TOURMALINE_CONTENT_DIR = 'D:\my-content-store'
+
+tools\cook\cook_sponza.bat        # or the explicit commands:
+#   Project.exe init  --project <dir> --from-gltf <store>\models\sponza\Sponza.gltf `
+#                       --from-scene <store>\models\sponza\Sponza.tour
+#   Project.exe build --project <dir> --output <dir>\paks\Sponza.pak
+#   Project.exe status --project <dir>     # explains staleness per source
+
+cd out\build\x64-Release
+.\App.exe --pak content/paks/sponza.pak
+```
+
+The project defaults to your **user Documents** — `%USERPROFILE%\
+Documents\Tourmaline\Sponza` on Windows (`~/Documents/Tourmaline/Sponza`
+elsewhere), never the repo tree — and `TOURMALINE_PROJECT_DIR` overrides
+it. It is **self-contained**: after the first successful build it rebuilds
+with no external content store present at all — the imported copies are
+the source of record, and a project directory can be copied to another
+machine and built there as-is. The demo content itself is not in git
+(large scene binaries live in the external store); set
+`TOURMALINE_CONTENT_DIR` or copy a built project over.
 
 The editor drives the same pipeline in-process (its Cook command wraps
-the same entry points the CLI tools expose).
+the same entry points the CLI tools expose), and every bake stage records
+content fingerprints the pak gate re-verifies: stale bakes are refused,
+never silently embedded.
 
 ## Repository layout
 
