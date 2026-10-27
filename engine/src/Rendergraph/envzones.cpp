@@ -6,6 +6,7 @@
 // resolver (falloff + first-zone selection) for tooling/tests.
 
 #include <Engine/Rendergraph/envzones.h>
+#include <Engine/Scene/scene.h>
 
 #include <algorithm>
 #include <cmath>
@@ -144,6 +145,26 @@ bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
 		return true;
 	}
 	return false;
+}
+
+EnvZone DeriveZoneLook(const SceneEnv& e, const SceneEnv& base)
+{
+	EnvZone z{};
+	for (int c = 0; c < 3; ++c) {
+		const float d = base.skyColor[c];
+		z.skyTint[c] = d > 1e-5f ? e.skyColor[c] / d : 1.0f;
+	}
+	// MapSceneEnv feeds skyIntensity straight into iblIntensity, which is
+	// the plain path's ambient scale - so the authored sky intensity IS
+	// the zone's ambient intensity.
+	z.ambientI = e.skyIntensity;
+	z.fogColor = e.fogColor;
+	z.fogDensity = e.fogDensity;
+	z.volumetrics = base.volumetrics > 1e-5f
+		? std::max(e.volumetrics, 0.0f) / base.volumetrics
+		: 1.0f;
+	z.volumetricDensity = e.volumetricDensity;
+	return z;
 }
 
 } // namespace smvk::envzones

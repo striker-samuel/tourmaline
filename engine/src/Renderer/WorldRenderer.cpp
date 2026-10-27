@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <cstring>
 #include <ctime>
 #include <stdexcept> // std::runtime_error throws (GI bake loads)
@@ -1296,17 +1297,31 @@ namespace engine {
 		);
 		m_resources.decalsLogical = m_rendergraph->AddExternalBuffer(
 			m_resources.decalsBuffer, "forwardplus decals");
-		// Analytic env-zone ring (one EnvZoneGpu[kEnvZoneMaxZones] slice
-		// per flight frame; re-packed from the world every frame - see
-		// UpdateEnvZones). Uploaded through UploadDataToBuffer like the
-		// decal ring; the FS reaches it through FrameUniforms::envZones.
-		m_resources.envZonesBuffer = m_context->CreateBuffer(
-			sizeof(smvk::envzones::EnvZoneGpu)
-				* smvk::envzones::kEnvZoneMaxZones
-				* m_swapchain->framesInFlight(),
+		// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the
+		// rework of the old per-frame zone ring): the LOOK records
+		// (EnvTileRecord[kEnvTileMaxRecords], a FIXED buffer — records[0]
+		// is the base). The CELLS buffer is created at the grid extent in
+		// UpdateEnvTiles (the grid follows the scene bounds; a bounds
+		// change recreates it). Both reached through FrameUniforms raw
+		// BDAs by the tile-address resolver.
+		m_resources.envTileRecordsBuffer = m_context->CreateBuffer(
+			sizeof(engine::worldpartition::EnvTileRecord)
+				* engine::worldpartition::kEnvTileMaxRecords,
 			smvk::BufferType_Storage,
-			"env zones buffer"
+			"env tile records buffer"
 		);
+		if (!m_resources.envTileRecordsBuffer.empty()) {
+			// Creation ZERO-FILL (the GPU-counter hygiene): a fresh
+			// DEVICE_LOCAL allocation can start garbage; zeroed reads as
+			// record-0 = the base look — benign before the first bake.
+			std::vector<std::byte> zeros(
+				sizeof(engine::worldpartition::EnvTileRecord)
+				* engine::worldpartition::kEnvTileMaxRecords, std::byte{});
+			m_context->UploadDataToBuffer(m_resources.envTileRecordsBuffer,
+				zeros.data(), zeros.size(),
+				smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+				smvk::AccessFlags::ShaderRead);
+		}
 		m_resources.spotShadowBuffer = m_context->CreateBuffer(
 			sizeof(smvk::GpuCascadeDescription) * smvk::kMaxLocalShadowTiles * m_swapchain->framesInFlight() * viewSlabs,
 			smvk::BufferType_Storage,
@@ -2364,10 +2379,10 @@ namespace engine {
 			// surrounding init flushed earlier uploads before this block).
 			m_context->FlushUploads();
 		}
-		// Analytic env zones (Rendergraph/envzones.h) need no init-time
-		// bake: UpdateEnvZones re-packs the world's zone entities into the
-		// per-frame GPU ring right before UpdateFrameUniforms, so live
-		// authoring (and scene loads) are always current.
+		// World env tiles (Engine/WorldPartition/WorldEnvTiles.h) need no
+		// init-time bake either: UpdateEnvTiles runs the dirty-hash bake
+		// right before UpdateFrameUniforms (the first frame after load
+		// builds; a zone edit rebuilds; no per-frame cost).
 		// Chrome-ball probe visual (Rendergraph/probeball.h): the shared
 		// sphere + programs; draws gate on ShadersValid (a missing .spv
 		// only skips the balls).
@@ -3787,27 +3802,6 @@ namespace engine {
 	// scattering is NOT: the shader computes base * zoneFactor, so the
 	// authored absolute scattering converts to a ratio of the resolved
 	// base (1 = the same intensity as the global pass, 0 = off).
-	static smvk::envzones::EnvZone EnvZoneFromSceneEnv(const SceneEnv& e,
-		const SceneEnv& base)
-	{
-		smvk::envzones::EnvZone z{};
-		for (int c = 0; c < 3; ++c) {
-			const float d = base.skyColor[c];
-			z.skyTint[c] = d > 1e-5f ? e.skyColor[c] / d : 1.0f;
-		}
-		// MapSceneEnv feeds skyIntensity straight into iblIntensity, which
-		// is the plain path's ambient scale - so the authored sky
-		// intensity IS the zone's ambient intensity.
-		z.ambientI = e.skyIntensity;
-		z.fogColor = e.fogColor;
-		z.fogDensity = e.fogDensity;
-		z.volumetrics = base.volumetrics > 1e-5f
-			? std::max(e.volumetrics, 0.0f) / base.volumetrics
-			: 1.0f;
-		z.volumetricDensity = e.volumetricDensity;
-		return z;
-	}
-
 	// =====================================================================
 	// World voxel fields (Engine/WorldFields) — the FOG consumer's field:
 	// a procedural world-space density field paged through the full
@@ -4311,30 +4305,36 @@ namespace engine {
 		}
 		data.evsmMode = EvsmActive() ? 1u : 0u;
 
-		// ---- Analytic environment zones (see Rendergraph/envzones.h):
-		// ALWAYS ON (the rework): the default environment packs as an
-		// infinite zone (see UpdateEnvZones) and every consumer resolves
-		// the covering OBB per pixel. envZoneCount > 0 publishes this
-		// frame's packed slice BDA; the records were built by
-		// UpdateEnvZones (called just before this function) — count and
-		// contents are always in sync. A failed buffer = count 0 -> the
-		// consumers take the plain resolved env path.
-		if (m_envZoneFrameCount > 0
-			&& !m_resources.envZonesBuffer.empty()) {
-			constexpr size_t ENV_ZONE_FRAME_STRIDE =
-				sizeof(smvk::envzones::EnvZoneGpu)
-				* smvk::envzones::kEnvZoneMaxZones;
-			data.envZones =
-				m_context->GetBufferDeviceAddress(m_resources.envZonesBuffer)
-				+ size_t(currentFrame) * ENV_ZONE_FRAME_STRIDE;
-			data.envZoneCount = std::min(m_envZoneFrameCount,
-				smvk::envzones::kEnvZoneMaxZones);
+		// ---- World env tiles (Engine/WorldPartition/WorldEnvTiles.h —
+		// the runtime rework of the old OBB-volume zone system): the bake
+		// ran just before this function (UpdateEnvTiles — a dirty-hash
+		// rebuild, NOT a per-frame pack); envZoneCount > 0 + flags bit0
+		// publish the record array BDA + the tile-grid header + the cell
+		// grid BDA. A failed buffer = count 0 -> the consumers take the
+		// plain resolved env path.
+		if (m_envTilesPublished
+			&& !m_resources.envTileRecordsBuffer.empty()
+			&& !m_resources.envTileCellsBuffer.empty()) {
+			data.envZones = m_context->GetBufferDeviceAddress(
+				m_resources.envTileRecordsBuffer);
+			data.envZoneCount = m_envTiles.RecordCount();
 			data.envZoneFlags = 1u;
+			data.envTileMinX = m_envTiles.GridMin().x;
+			data.envTileMinZ = m_envTiles.GridMin().y;
+			data.envTileDimX = m_envTiles.DimX();
+			data.envTileDimZ = m_envTiles.DimZ();
+			data.envTileCells = m_context->GetBufferDeviceAddress(
+				m_resources.envTileCellsBuffer);
 		}
 		else {
 			data.envZones = 0;
 			data.envZoneCount = 0;
 			data.envZoneFlags = 0;
+			data.envTileMinX = 0;
+			data.envTileMinZ = 0;
+			data.envTileDimX = 0;
+			data.envTileDimZ = 0;
+			data.envTileCells = 0;
 		}
 
 		// ---- Forward+ decals (tiled projected splats) ----
@@ -8204,127 +8204,132 @@ namespace engine {
 	// zonePriority - 0 by default - sits under the node priorities).
 	// Failure/overflow is non-fatal (count 0 = the plain resolved env
 	// path, the default look still renders through it).
-	void WorldRenderer::UpdateEnvZones(uint32_t currentFrame) {
-		m_envZoneFrameCount = 0;
-		if (!m_world || m_resources.envZonesBuffer.empty())
+	void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
+		// The env-tile bake (the world-tile rework of the zone system):
+		// hash the bake inputs (zone tables + their transforms + the base
+		// looks — the full set Build() consumes) and rebuild ONLY on
+		// change (world load, an editor zone edit — never per frame). The
+		// retired path packed + uploaded 64 x 144 B records EVERY frame
+		// and resolved OBBs per pixel; the bake is the same
+		// coverage/priority/weight math rasterized once onto the 64 m
+		// world-tile grid.
+		(void)currentFrame;
+		if (!m_world) {
+			m_envTilesPublished = false;
 			return;
+		}
 		const ::Scene& scene = m_world->scene;
-		const SceneEnv& resolved = scene.environment;
 
-		struct Cand {
-			NodeId node;
-			float priority;
-			double volume;
-			smvk::envzones::EnvZoneGpu gpu;
+		// ---- The dirty fingerprint: everything Build() reads. ----
+		uint64_t hash = 2166136261u;
+		const auto mixU32 = [&hash](uint32_t v) {
+			hash ^= v; hash *= 16777619ull;
 		};
-		std::vector<Cand> cands;
-		cands.reserve(scene.envForNode.size() + 1);
-		// ZONE ZERO: the default environment, fully unbounded. The look
-		// derives against ITSELF (the self-ratio: skyTint 1, volumetrics
-		// 1 - the neutral base the node zones' ratios are taken against).
-		Cand defaultZoneCand{};
-		bool hasDefaultZone = false;
-		{
-			smvk::envzones::EnvZoneGpu gpu;
-			if (smvk::envzones::MakeEnvZoneGpu(glm::mat4(1.0f), 63u,
-					EnvZoneFromSceneEnv(scene.defaultEnvironment,
-						scene.defaultEnvironment),
-					scene.defaultEnvironment.zonePriority, 1.0f, 0.0f,
-					gpu)) {
-				defaultZoneCand = Cand{ NodeId(UINT32_MAX),
-					scene.defaultEnvironment.zonePriority,
-					std::numeric_limits<double>::infinity(), gpu };
-				hasDefaultZone = true;
-				cands.push_back(defaultZoneCand);
-			}
-		}
+		const auto mixF = [&hash](float f) {
+			hash ^= std::hash<float>{}(f); hash *= 16777619ull;
+		};
+		const auto mixEnv = [&](const SceneEnv& e) {
+			for (int c = 0; c < 3; ++c) { mixF(e.skyColor[c]); mixF(e.fogColor[c]); }
+			mixF(e.skyIntensity); mixF(e.fogDensity); mixF(e.volumetrics);
+			mixF(e.volumetricDensity); mixF(e.zonePriority);
+		};
+		mixEnv(scene.environment);
+		mixEnv(scene.defaultEnvironment);
+		mixU32(scene.envAuthored ? 1u : 0u);
 		for (const auto& [node, env] : scene.envForNode) {
-			if (node >= scene.globalTransform.size())
-				continue;
+			mixU32(node);
+			mixEnv(env);
+			// The OBB shape: the node's transform (position/rotation/
+			// scale all matter — column lengths are the half extents).
+			if (node < scene.globalTransform.size())
+				for (int c = 0; c < 4; ++c)
+					for (int r = 0; r < 4; ++r)
+						mixF(scene.globalTransform[node][c][r]);
 			const auto vit = scene.envVolumeForNode.find(node);
-			const bool hasVol = vit != scene.envVolumeForNode.end();
-			if (hasVol && !vit->second.enabled)
-				continue; // Unreal bEnabled
-			const float weight = hasVol
-				? std::clamp(vit->second.blendWeight, 0.0f, 1.0f) : 1.0f;
-			if (!(weight > 0.0f))
-				continue;
-			const uint32_t infMask = hasVol
-				? (vit->second.infMask & 63u) : 0u;
-			const float radius = hasVol
-				? std::max(vit->second.blendRadius, 0.0f) : 0.0f;
-			const float priority = hasVol
-				? vit->second.priority : env.zonePriority;
-			smvk::envzones::EnvZoneGpu gpu;
-			if (!smvk::envzones::MakeEnvZoneGpu(scene.globalTransform[node],
-				infMask, EnvZoneFromSceneEnv(env, resolved), priority,
-				weight, radius, gpu))
-				continue; // empty zone (flat axis without an inf face)
-			// Bounded volume = product of finite half extents; any inf
-			// face / legacy INFINITE column = unbounded (loses ties to
-			// bounded zones - "innermost" wins).
-			const glm::mat4& g = scene.globalTransform[node];
-			double volume = 1.0;
-			bool unbounded = (infMask & 63u) != 0u;
-			for (int a = 0; a < 3 && !unbounded; ++a) {
-				const float h = glm::length(glm::vec3(g[a]));
-				if (!std::isfinite(h))
-					unbounded = true;
-				else
-					volume *= double(h);
+			if (vit != scene.envVolumeForNode.end()) {
+				mixU32(vit->second.infMask);
+				mixF(vit->second.priority);
+				mixF(vit->second.blendWeight);
+				mixF(vit->second.blendRadius);
+				mixU32(vit->second.enabled ? 1u : 0u);
 			}
-			if (unbounded)
-				volume = std::numeric_limits<double>::infinity();
-			cands.push_back({ node, priority, volume, gpu });
 		}
-		std::sort(cands.begin(), cands.end(),
-			[](const Cand& a, const Cand& b) {
-				if (a.priority != b.priority)
-					return a.priority > b.priority;
-				if (a.volume != b.volume)
-					return a.volume < b.volume;
-				return a.node < b.node;
-			});
-		if (cands.size() > smvk::envzones::kEnvZoneMaxZones) {
-			if (cands.size() != m_envZoneLastCount) {
-				std::cerr << "[Zones] " << cands.size()
-					<< " zone entities, only the top "
-					<< smvk::envzones::kEnvZoneMaxZones
-					<< " by priority/volume are uploaded\n";
-				m_envZoneLastCount = uint32_t(cands.size());
-			}
-			cands.resize(smvk::envzones::kEnvZoneMaxZones);
-			// THE DEFAULT ZONE NEVER TRUNCATES AWAY: it sorts at the
-			// BOTTOM (priority 0, unbounded, sentinel id) so an overflow
-			// would drop it first — but it IS the global base look. If
-			// the resize cut it, it takes the last slot instead (a
-			// lowest-priority NODE zone loses its seat).
-			const auto defIt = std::find_if(cands.begin(), cands.end(),
-				[](const Cand& c) {
-					return c.node == NodeId(UINT32_MAX);
-				});
-			if (defIt == cands.end() && hasDefaultZone)
-				cands.back() = defaultZoneCand;
-		}
-		else {
-			m_envZoneLastCount = uint32_t(cands.size());
-		}
+		// The scene bounds frame the grid extent + the vertical split
+		// search — include them so an edit that moves the world re-grids.
+		const ::Aabb bounds = m_world->ComputeSceneBounds();
+		mixF(bounds.mn.x); mixF(bounds.mn.y); mixF(bounds.mn.z);
+		mixF(bounds.mx.x); mixF(bounds.mx.y); mixF(bounds.mx.z);
 
-		// One upload per frame slice: zero the unused tail (the shader
-		// loops only envZoneCount records, but zeroing keeps a stale
-		// larger count from a previous frame from ever reading garbage).
-		std::vector<smvk::envzones::EnvZoneGpu> records(
-			smvk::envzones::kEnvZoneMaxZones);
-		for (size_t i = 0; i < cands.size(); ++i)
-			records[i] = cands[i].gpu;
-		const size_t stride = sizeof(smvk::envzones::EnvZoneGpu)
-			* smvk::envzones::kEnvZoneMaxZones;
-		m_context->UploadDataToBuffer(m_resources.envZonesBuffer,
-			records.data(), records.size() * sizeof(records[0]),
-			smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-			smvk::AccessFlags::ShaderRead, 0,
-			size_t(currentFrame) * stride);
-		m_envZoneFrameCount = uint32_t(cands.size());
+		if (hash != m_envTilesDirtyHash || !m_envTilesPublished) {
+			m_envTilesDirtyHash = hash;
+			m_envTilesPublished = false;
+
+			// ---- Grid extent: the scene bounds + one tile of margin,
+			// clamped to the max grid edge (16 km). Degenerate/no bounds
+			// (a flat scene): a default 1 km window around the origin. ----
+			glm::vec3 mn = bounds.mn, mx = bounds.mx;
+			const bool valid = mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z
+				&& (mx.x > mn.x || mx.z > mn.z);
+			if (!valid) {
+				mn = glm::vec3(-512.0f, -16.0f, -512.0f);
+				mx = glm::vec3(512.0f, 16.0f, 512.0f);
+			}
+			const glm::vec2 margin(worldpartition::kEnvTileSize);
+			const glm::vec2 gMin =
+				glm::floor(glm::vec2(mn.x, mn.z) / worldpartition::kEnvTileSize)
+					* worldpartition::kEnvTileSize - margin;
+			const glm::vec2 gMax =
+				glm::ceil(glm::vec2(mx.x, mx.z) / worldpartition::kEnvTileSize)
+					* worldpartition::kEnvTileSize + margin;
+			uint32_t dimX = std::min(uint32_t((gMax.x - gMin.x)
+					/ worldpartition::kEnvTileSize),
+				worldpartition::kEnvTileMaxDim);
+			uint32_t dimZ = std::min(uint32_t((gMax.y - gMin.y)
+					/ worldpartition::kEnvTileSize),
+				worldpartition::kEnvTileMaxDim);
+
+			if (m_envTiles.Build(scene, gMin, dimX, dimZ, mn.y, mx.y)
+				&& !m_resources.envTileRecordsBuffer.empty()) {
+				// Records: fixed buffer, upload the used prefix.
+				m_context->UploadDataToBuffer(
+					m_resources.envTileRecordsBuffer,
+					m_envTiles.Records(),
+					sizeof(worldpartition::EnvTileRecord) * m_envTiles.RecordCount(),
+					smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+					smvk::AccessFlags::ShaderRead);
+				// Cells: recreate when the grid extent changed (the BDA
+				// re-reads fresh each frame; the old holder retires through
+				// the deferred queue while in-flight frames still read it).
+				const size_t cellBytes = sizeof(worldpartition::EnvTileCell)
+					* m_envTiles.CellCount();
+				if (m_resources.envTileCellsBuffer.empty()
+					|| m_envTileCellBytes != cellBytes) {
+					m_resources.envTileCellsBuffer = m_context->CreateBuffer(
+						cellBytes, smvk::BufferType_Storage, "env tile cells");
+					m_envTileCellBytes = m_resources.envTileCellsBuffer.empty()
+						? 0 : cellBytes;
+					if (m_resources.envTileCellsBuffer.empty()) {
+						smvk::OnResourceExhaustion("env tile cells");
+						return; // count 0 -> the plain env path, retried next frame
+					}
+				}
+				m_context->UploadDataToBuffer(
+					m_resources.envTileCellsBuffer,
+					m_envTiles.Cells(), cellBytes,
+					smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+					smvk::AccessFlags::ShaderRead);
+				m_envTilesPublished = true;
+				// One-time diagnostic (the bake replaced the per-frame pack).
+				if (m_envTileZoneCount == UINT32_MAX) {
+					m_envTileZoneCount = m_envTiles.RecordCount();
+					std::cerr << "[EnvTiles] baked " << dimX << "x" << dimZ
+						<< " tiles @64 m, " << m_envTiles.RecordCount()
+						<< " records (the zone OBB walk is retired)\n";
+				}
+			}
+			// Build failure (degenerate extents): the plain env path; the
+			// hash stands so a no-bounds world does not retry every frame.
+		}
 	}
 	void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
 		// --no-vfs: mute the loose discovery mounts entirely. The host's
@@ -8681,7 +8686,7 @@ namespace engine {
 		// Decal + env-zone ring uploads BEFORE UpdateFrameUniforms: it
 		// reads their live counts/addresses into FrameUniforms.
 		(void)UpdateDecals(fb.frameIndex);
-		UpdateEnvZones(fb.frameIndex);
+		UpdateEnvTiles(fb.frameIndex);
 		// World-field residency + publication BEFORE UpdateFrameUniforms
 		// for the same reason (it reads the live BDA/count) — and because
 		// the publication contract needs the uploads enqueued before
@@ -13059,43 +13064,44 @@ namespace engine {
 							ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
 							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
 								AmbientModeName(m_ambientMode));
-						// ---- Analytic environment zones (world/env
-						// separation; see Rendergraph/envzones.h): zone
-						// records (the scene's DEFAULT env as an infinite
-						// base zone + the scene.envForNode entities) are
-						// packed into a GPU buffer every frame and the
-						// terrain/volumetric shaders resolve the exact
-						// OBB coverage + blend radius per pixel. ALWAYS ON
-						// since the rework — the old runtime toggle and
-						// the authored Scene::envZonesEnabled master
-						// switch are retired.
-						if (ImGui::CollapsingHeader("Zones (scene entities)")) {
-							ImGui::TextDisabled("Always on: the default "
-								"environment is the infinite base zone; "
-								"node zones override by priority.");
-							if (m_envZoneFrameCount == 0) {
-									ImGui::TextDisabled("No active zone records this frame - "
-										"the plain env path renders.");
-								}
-								else {
-									ImGui::TextDisabled("Uploaded %u zone record(s) "
-										"(priority desc, then innermost; blend radius "
-										"softens outside the box).",
-										(unsigned)m_envZoneFrameCount);
-								}
-								if (m_world) {
-									size_t zoneCount = 0;
-									for (const auto& [node, env]
-										: m_world->scene.envForNode) {
-										(void)node;
-										(void)env;
-										++zoneCount;
-									}
-									ImGui::TextDisabled("Zone entities: %u (scale = half "
-										"extents; an INFINITE axis = an unbounded slab).",
-										(unsigned)zoneCount);
-								}
+					// ---- World env tiles (Engine/WorldPartition/
+						// WorldEnvTiles.h - the runtime rework of the old
+						// OBB-volume zone system): the zone tables BAKE
+						// onto the 64 m world-tile grid on change (a dirty
+						// hash, not a per-frame pack) and the terrain/
+						// volumetric shaders resolve a zone by TILE
+						// ADDRESS. ALWAYS ON - the base record (the
+						// default environment) is the weight-1 fallback.
+						if (ImGui::CollapsingHeader("Zones (world tiles)")) {
+							ImGui::TextDisabled("Always on: zones bake to "
+								"64 m world tiles; record 0 is the base "
+								"(the default env).");
+							if (!m_envTilesPublished) {
+								ImGui::TextDisabled("No tiles baked this frame - "
+									"the plain env path renders.");
 							}
+							else {
+								ImGui::TextDisabled("Baked %u x %u tiles @64 m, "
+									"%u record(s). Grid @ (%.0f, %.0f).",
+									(unsigned)m_envTiles.DimX(),
+									(unsigned)m_envTiles.DimZ(),
+									(unsigned)m_envTiles.RecordCount(),
+									m_envTiles.GridMin().x,
+									m_envTiles.GridMin().y);
+							}
+							if (m_world) {
+								size_t zoneCount = 0;
+								for (const auto& [node, env]
+									: m_world->scene.envForNode) {
+									(void)node;
+									(void)env;
+									++zoneCount;
+								}
+								ImGui::TextDisabled("Zone entities: %u (the bake "
+									"input; edits rebuild on the dirty hash).",
+									(unsigned)zoneCount);
+							}
+						}
 							if (!m_world) {
 								ImGui::TextDisabled("No world - nothing to author.");
 							}

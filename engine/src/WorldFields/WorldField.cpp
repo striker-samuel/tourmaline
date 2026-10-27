@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <future>
 
 #include <Engine/WorldFields/WorldField.h>

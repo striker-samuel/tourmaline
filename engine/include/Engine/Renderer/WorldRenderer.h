@@ -78,6 +78,7 @@
 #include <Engine/WorldFields/WorldFieldProvider.h>
 #include <Engine/WorldFields/WorldFieldCodec.h>
 #include <Engine/WorldPartition/WorldPartition.h>
+#include <Engine/WorldPartition/WorldEnvTiles.h>
 
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
@@ -676,22 +677,28 @@ struct FrameUniforms
 	// APPEND-ONLY tail (after giLevelLayers): every pinned offset above
 	// stays put when this grows. ----
 	uint32_t giVolumeMeanLayers[8] = {}; // 1640 8 volumes x 1 mean texture slot
-	// ---- Analytic environment zones (see Rendergraph/envzones.h):
-	// envZones is the BDA of this frame's EnvZoneGpu slice (the renderer
-	// packs the world's zone entities every frame), envZoneCount = the
-	// live record count (0 = every consumer takes the plain env path).
-	// No baked map, no world-size/texel/4-zone limits: shaders resolve
-	// the exact OBB coverage + EnvVolume blendWeight/blendRadius per
-	// pixel. The sun stays global (one sun everywhere); zones own
-	// sky/fog/volumetrics. envZoneReserved keeps the 192-byte block size
-	// so the lightmap/probe tail offsets stay pinned (available for a
-	// future per-zone payload).
-	// APPEND-ONLY tail (after giVolumeMeanLayers): every pinned offset above
-	// stays put when this grows. ----
-	uint64_t envZones = 0;                  // 1672 EnvZoneGpu slice BDA
-	uint32_t envZoneCount = 0;              // 1680 live zone records
-	uint32_t envZoneFlags = 0;              // 1684 reserved (0 today)
-	uint32_t envZoneReserved[48] = {};      // 1688 keeps the tail offsets pinned
+	// ---- World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the
+	// runtime rework of the old OBB-volume zone system): the zone tables
+	// BAKE onto the 64 m world-tile grid (a dirty-hash rebuild, not a
+	// per-frame pack) and the shaders resolve a zone by TILE ADDRESS, not
+	// per-pixel OBB intersection. envZones is the RAW BDA of the
+	// EnvTileRecord array (records[0] = the base/default look — the old
+	// zone-zero), envZoneCount = live records (0 = every consumer takes
+	// the plain env path), envZoneFlags bit0 = tiles live. The old
+	// reserved block is re-split IN PLACE into the tile-grid header +
+	// a shorter reserved — every pinned offset below stays put
+	// (lmLayers@1888, probe@1952, worldFields@1976).
+	// APPEND-ONLY tail (after giVolumeMeanLayers): every pinned offset
+	// above stays put when this grows. ----
+	uint64_t envZones = 0;      // 1672 EnvTileRecord array BDA (raw)
+	uint32_t envZoneCount = 0;  // 1680 live records (incl. base)
+	uint32_t envZoneFlags = 0;  // 1684 bit0 = tiles live
+	float envTileMinX = 0.0f;   // 1688 tile-grid min corner X (m)
+	float envTileMinZ = 0.0f;   // 1692 min corner Z
+	uint32_t envTileDimX = 0;   // 1696 tiles per axis (64 m each)
+	uint32_t envTileDimZ = 0;   // 1700
+	uint64_t envTileCells = 0;  // 1704 the EnvTileCell grid BDA (raw)
+	uint32_t envTileReserved[42] = {}; // 1712 (keeps lmLayers@1888 pinned)
 	// ---- SG 2D lightmaps (STATIC geometry, Engine/GI/lightmap.h):
 	// atlas layers ride the bindless texture slots. lmLayerKind selects
 	// the layout: 0 = the classic 9 RGBA16F stream layers, 1 = BC6H
@@ -766,7 +773,12 @@ static_assert(offsetof(FrameUniforms, giVolumeMeanLayers) == 1640, "giVolumeMean
 static_assert(offsetof(FrameUniforms, envZones) == 1672, "envZones offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, envZoneCount) == 1680, "envZoneCount offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, envZoneFlags) == 1684, "envZoneFlags offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, envZoneReserved) == 1688, "envZoneReserved offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileMinX) == 1688, "envTileMinX offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileMinZ) == 1692, "envTileMinZ offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileDimX) == 1696, "envTileDimX offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileDimZ) == 1700, "envTileDimZ offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileCells) == 1704, "envTileCells offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, envTileReserved) == 1712, "envTileReserved offset: HLSL mirror");
 // SG 2D lightmap tail (append-only; see the block above envZoneReserved).
 static_assert(offsetof(FrameUniforms, lmLayers) == 1888, "lmLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, lmEnabled) == 1936, "lmEnabled offset: HLSL mirror");
@@ -841,11 +853,16 @@ struct AppResources {
 	// (see UpdateDecals — per-frame re-derivation, live edits included).
 	smvk::Holder<smvk::BufferHandle> decalsBuffer;
 	smvk::LogicalBufferHandle decalsLogical{}; // rendergraph alias (stable)
-	// Analytic env-zone ring (EnvZoneGpu * kEnvZoneMaxZones per flight
-	// frame): re-packed + uploaded every frame from the WORLD's zone
-	// entities (see UpdateEnvZones). No rendergraph alias: reached through
-	// FrameUniforms::envZones (BDA) by the terrain/volumetric FS.
-	smvk::Holder<smvk::BufferHandle> envZonesBuffer;
+	// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
+	// rework of the old per-frame zone ring): the zone LOOK records
+	// (EnvTileRecord[64], records[0] = the base) + the 64 m tile CELLS
+	// (EnvTileCell grid, recreated when the grid extent changes). BAKED
+	// from the WORLD's zone entities on a dirty hash (see UpdateEnvTiles —
+	// load/edit, not per frame). No rendergraph alias: reached through
+	// FrameUniforms::envZones/envTileCells (raw BDAs) by the terrain/
+	// volumetric FS via the tile-address resolver.
+	smvk::Holder<smvk::BufferHandle> envTileRecordsBuffer;
+	smvk::Holder<smvk::BufferHandle> envTileCellsBuffer;
 	smvk::Holder<smvk::BufferHandle> spotShadowBuffer; // GpuCascadeDescription * kMaxLocalShadowTiles per frame (spot tiles + point faces)
 	smvk::LogicalBufferHandle spotShadowLogical{}; // rendergraph alias (stable: buffer never resized)
 	// DS visualizer params ring (DsVizParams per flight + one zero slice
@@ -3046,23 +3063,25 @@ public:
 	// snapshot at Configure: TOURMALINE_TERRAIN_HFSHADOW[_STEPS]).
 	int m_terrainHfShadow = 1;
 	int m_terrainHfSteps = 16;
-	// Analytic environment zones (see Rendergraph/envzones.h): the
-	// renderer packs the zone set into a per-flight GPU buffer every
-	// frame (UpdateEnvZones) and the terrain/volumetric shaders resolve
-	// the covering OBB per pixel. ALWAYS ON since the rework: the scene's
-	// DEFAULT environment packs as a FULLY UNBOUNDED zone (all six faces
-	// infinite — the "default one spans inf") and the node zones override
-	// it by priority/innermost wherever they cover. The old runtime
-	// toggle (m_envZonesEnabled) and the authored Scene::envZonesEnabled
-	// master switch are retired — the field stays on the tour/pak wire
-	// (forced true at every read) for format compatibility.
-	// Per-frame zone count for this flight slice (filled by
-	// UpdateEnvZones right before UpdateFrameUniforms).
-	uint32_t m_envZoneFrameCount = 0;
-	uint32_t m_envZoneLastCount = UINT32_MAX; // overflow warning dedupe
-	// Packs + uploads the zone records (priority desc, innermost, node
-	// id). Failure/overflow is non-fatal (plain env path).
-	void UpdateEnvZones(uint32_t currentFrame);
+	// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
+	// rework of the old OBB-volume zone system): the zone tables BAKE onto
+	// the 64 m tile grid whenever they change (a cheap per-frame HASH, not
+	// a per-frame pack) and the terrain/volumetric shaders resolve a zone
+	// by TILE ADDRESS. ALWAYS ON: the base record ([0], the scene's DEFAULT
+	// environment, the old zone-zero) is the weight-1 fallback everywhere
+	// (out-of-grid included). The old runtime toggle (m_envZonesEnabled)
+	// and the authored Scene::envZonesEnabled master switch are retired —
+	// the field stays on the tour/pak wire (forced true at every read) for
+	// format compatibility.
+	engine::worldpartition::WorldEnvTiles m_envTiles;
+	uint64_t m_envTilesDirtyHash = 0; // the zone-table fingerprint
+	bool m_envTilesPublished = false; // buffers exist + built
+	uint32_t m_envTileZoneCount = UINT32_MAX; // overflow log dedupe
+	size_t m_envTileCellBytes = 0; // the cells buffer size (recreate key)
+	// Hashes the zone tables + transforms (the bake inputs) and rebuilds +
+	// re-uploads the tiles on change (see UpdateEnvTiles — called before
+	// UpdateFrameUniforms).
+	void UpdateEnvTiles(uint32_t currentFrame);
 	// ---- Texture inspector (aux-texture debug view) ----
 	// A SEPARATE floating ImGui window (not part of the debug panel — it
 	// only opens on the keybind::TEXTURE_VIEWER_TOGGLE shortcut, backtick),

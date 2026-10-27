@@ -10,32 +10,35 @@
 // OBB: translation + rotation = placement, column lengths = half extents,
 // an INFINITE column or an EnvVolume inf-mask face = an unbounded slab /
 // half-space (the exact contract lives in ZoneCovers). The look rides the
-// node's SceneEnv block. There is NO baked map anymore: the renderer
-// packs the zones into a small GPU buffer every frame and the shaders
-// resolve the covering zone per pixel (EnvZoneAt - the exact CPU
-// ZoneCovers test, with EnvVolume's blendWeight/blendRadius applied).
+// node's SceneEnv block.
 //
-// Why: the old 2D XZ RGBA8 map clamped the world to 4 km / 10 m texels,
-// capped the scene at 3 zones (one alpha channel was the fallback), could
-// not represent rotated boxes or Y-varying coverage, and ignored
-// EnvVolume's blend radius. The buffer is cheap (64 x 144 B per frame),
-// has no world-size limit, no texel quantization and no hard zone cap
-// beyond the GPU loop bound.
+// RUNTIME (the world-tile rework): the OBB-volume walk is RETIRED from the
+// GPU path — the renderer BAKES the zones onto the 64 m world-tile grid
+// (Engine/WorldPartition/WorldEnvTiles.h: one subcell per cell, the
+// dominant record + weight + a vertical split for half-spaces) and the
+// shaders resolve a zone by TILE ADDRESS, not per-pixel OBB intersection.
+// The packers below remain the BAKE's core: Build() turns the scene's
+// zone tables into sorted EnvZoneGpu candidates, evaluates coverage via
+// the same ZoneCovers-sanitized math, and rasterizes the winners. CPU
+// helpers (EnvZoneFalloff/EnvZoneAt) stay the unit-testable mirror.
 //
 // Consumers: the terrain field (its ambient + fog blend per zone) and the
 // volumetric fog (its march density/scatter blend per zone at the ray
-// midpoint). The sun stays global (one sun everywhere). CPU helpers
-// (EnvZoneFalloff/EnvZoneAt) mirror the shader resolver for tests/tooling.
+// midpoint) — both through the tile lookup now. The sun stays global (one
+// sun everywhere).
 
 #include <glm/glm.hpp>
 
 #include <cstdint>
 #include <vector>
 
+// Global-scope forward (SceneEnv is Engine/Scene/scene.h's; a forward
+// inside the namespace below would mint a DIFFERENT type).
+struct SceneEnv;
+
 namespace smvk::envzones {
 
-// GPU loop bound (the buffer is sized for this many records). Zones past
-// it are dropped after the priority sort (the renderer logs once).
+// Record budget (records[0] is the base, so 63 authored zones + the base).
 inline constexpr uint32_t kEnvZoneMaxZones = 64;
 
 // One zone's blendable look (the env subset zones own; the sun stays
@@ -87,13 +90,23 @@ bool MakeEnvZoneGpu(const glm::mat4& transform, uint32_t infMask,
 // infinite faces contribute nothing). Mirrors the shader helper.
 float EnvZoneFalloff(const EnvZoneGpu& zone, const glm::vec3& p);
 
-// Resolves the FIRST influencing zone in `zones` (the renderer uploads
-// them sorted priority desc, then innermost, then node id - so the first
+// Resolves the FIRST influencing zone in `zones` (the bake uploads them
+// sorted priority desc, then innermost, then node id - so the first
 // hit is the winner) and blends its look with the weight
 // blendWeight * falloff. Returns false when no zone influences p (the
-// caller keeps the plain resolved env look). Mirrors the shader
-// EnvZoneAt; used by tooling/tests.
+// caller keeps the plain resolved env look). The bake's evaluation core;
+// the shader-side mirror is the TILE lookup now.
 bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
 	float& weight, EnvZone& look);
+
+// Derives a zone's blendable look from an authored SceneEnv block
+// RELATIVE to the resolved base (the base = scene.environment, the
+// ACTIVE block): skyTint is the authored sky color as a RATIO of the
+// base's (identity when equal), ambientI carries skyIntensity absolute
+// (MapSceneEnv feeds it to iblIntensity), fog color/density + the
+// volumetric extinction are absolute, volumetrics is a RATIO over the
+// pass base intensity (1 = global, 0 = off). The DEFAULT block derives
+// against ITSELF (the neutral base record).
+EnvZone DeriveZoneLook(const SceneEnv& env, const SceneEnv& base);
 
 } // namespace smvk::envzones

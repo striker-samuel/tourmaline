@@ -557,12 +557,21 @@ float ComputeFogFactor(float viewDepth, float worldY, EnvironmentFrameData env)
 }
 
 // ---------------------------------------------------------------------------
-// Analytic environment zones (see Rendergraph/envzones.h): the renderer
-// uploads an EnvZoneGpu slice per frame (envZones BDA + envZoneCount); the
-// terrain/volumetric shaders resolve the covering OBB + the EnvVolume
-// blendWeight/blendRadius per pixel. No baked map, no world-size/texel or
-// 4-zone limits; the sun stays global. All helpers fall back to the plain
-// env path when envZoneCount is 0.
+// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
+// rework of the old OBB-volume zone system): the zone tables BAKE onto
+// the 64 m world-tile grid (a dirty-hash rebuild at load/edit — NOT a
+// per-frame pack) and this resolver walks a TILE ADDRESS instead of
+// intersecting OBBs per pixel:
+//   cell = floor((p.xz - gridMin) / 64) -> EnvTileCell
+//   -> (lower/upper record at splitY, weight) -> records[rec]
+// records[0] is ALWAYS the base (the default environment block — the old
+// zone-zero semantic: outside every zone, and out-of-grid, the base look
+// applies at weight 1). The sun stays global. All helpers fall back to
+// the plain env path when envZoneCount is 0. FIDELITY: the winner
+// selection + weights are the retired walk's math evaluated at the
+// tile's sample positions — fade bands quantize to 64 m tile granularity
+// (a zone coarser than a tile is faithful; sub-tile detail is not
+// representable by design).
 // ---------------------------------------------------------------------------
 
 struct EnvZoneLook
@@ -575,60 +584,21 @@ struct EnvZoneLook
     float volumetricDensity;  // absolute extinction (1/m)
 };
 
-// Soft falloff in 0..1 at p: 1 inside the OBB, fading to 0 at blendRadius
-// metres outside the bounded faces (Euclidean distance; infinite faces
-// contribute nothing). Mirrors envzones::EnvZoneFalloff.
-float EnvZoneFalloff(EnvZoneGpu z, float3 p)
+// Unpacks one tile record into the blendable look (records[0] = base).
+void EnvTileUnpack(EnvTileRecord r, out EnvZoneLook z)
 {
-    const float3 half = asfloat(z.halfAndMask.xyz);
-    const uint infMask = z.halfAndMask.w & 63u;
-    const float4 p4 = float4(p, 1.0);
-    // worldToLocal holds ROWS (see common.hlsli) - dot products keep this
-    // independent of matrix-convention flags.
-    const float3 local = float3(
-        dot(z.worldToLocal[0], p4),
-        dot(z.worldToLocal[1], p4),
-        dot(z.worldToLocal[2], p4));
-    float dist2 = 0.0;
-    [unroll]
-    for (uint a = 0; a < 3; ++a)
-    {
-        const float h = half[a];
-        const bool flat = isfinite(h) && !(h > 0.0);
-        const uint negBit = 1u << (2u * a);
-        const uint posBit = 2u << (2u * a);
-        const bool faceInf = (infMask & (negBit | posBit)) != 0u;
-        if (flat && !faceInf)
-            return 0.0; // empty zone
-        const bool negInf = !isfinite(h) || (infMask & negBit) != 0u
-            || (flat && faceInf);
-        const bool posInf = !isfinite(h) || (infMask & posBit) != 0u
-            || (flat && faceInf);
-        const float scale = (isfinite(h) && h > 0.0) ? h : 1.0;
-        if (!negInf && local[a] < -1.0)
-        {
-            const float d = (-1.0 - local[a]) * scale;
-            dist2 += d * d;
-        }
-        if (!posInf && local[a] > 1.0)
-        {
-            const float d = (local[a] - 1.0) * scale;
-            dist2 += d * d;
-        }
-    }
-    if (!(dist2 > 0.0))
-        return 1.0;
-    const float radius = max(z.shape.z, 0.0);
-    if (!(radius > 0.0))
-        return 0.0;
-    const float t = saturate(sqrt(dist2) / radius);
-    return 1.0 - t * t * (3.0 - 2.0 * t);
+    z.skyTint = r.sky.rgb;
+    z.ambientI = r.sky.a;
+    z.fogColor = r.fog.rgb;
+    z.fogDensity = r.fog.a;
+    z.volumetrics = r.vol.x;
+    z.volumetricDensity = r.vol.y;
 }
 
-// Resolves the first influencing zone (the renderer uploads records
-// priority desc -> innermost -> node id, so the first hit is the winner).
-// weight = blendWeight * falloff; the look is the zone's authored subset.
-// Returns false when no zone influences p (the caller keeps the plain look).
+// Resolves the zone at p by TILE ADDRESS (the retired per-pixel OBB walk's
+// replacement). weight = the baked blendWeight*falloff; the look is the
+// tile's record. Returns false when no tiles are live (the caller keeps
+// the plain look).
 bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     out EnvZoneLook z)
 {
@@ -639,26 +609,40 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     z.fogDensity = 0.0;
     z.volumetrics = 1.0;
     z.volumetricDensity = 0.0;
-    const uint n = min(frame.envZoneCount, (uint)ENV_ZONE_MAX);
-    if (n == 0u)
+    const uint n = frame.envZoneCount;
+    if (n == 0u || (frame.envZoneFlags & 1u) == 0u)
         return false;
-    [loop]
-    for (uint i = 0; i < n; ++i)
+
+    // Out of grid (or a degenerate grid): the BASE record at weight 1 —
+    // the zone-zero semantic; the grid spans the scene bounds + margin,
+    // beyond it the default environment applies.
+    const float2 rel = (p.xz - float2(frame.envTileMinX, frame.envTileMinZ))
+        / 64.0;
+    const int2 cellI = int2(floor(rel));
+    if (any(cellI < int2(0, 0)) || any(cellI >= int2(frame.envTileDimX, frame.envTileDimZ)))
     {
-        const EnvZoneGpu g = frame.envZones.Get().zones[i];
-        const float w = saturate(g.shape.y) * EnvZoneFalloff(g, p);
-        if (!(w > 0.0))
-            continue;
-        weight = w;
-        z.skyTint = g.sky.rgb;
-        z.ambientI = g.sky.a;
-        z.fogColor = g.fog.rgb;
-        z.fogDensity = g.fog.a;
-        z.volumetrics = g.vol.x;
-        z.volumetricDensity = g.vol.y;
+        const EnvTileRecord base =
+            vk::BufferPointer<EnvTileRecord>(frame.envZones).Get();
+        EnvTileUnpack(base, z);
+        weight = 1.0;
         return true;
     }
-    return false;
+
+    // The cell: (lower/upper record + splitY + weights).
+    const EnvTileCell c = vk::BufferPointer<EnvTileCell>(
+        frame.envTileCells
+        + uint64_t(uint(cellI.y) * frame.envTileDimX + uint(cellI.x)) * 32u
+    ).Get();
+    const bool upper = p.y > c.splitY;
+    const uint rec = upper ? c.upperRecord : c.lowerRecord;
+    const float w = upper ? c.upperWeight : c.lowerWeight;
+    if (rec >= n)
+        return false; // stale/corrupt index: the plain path, never garbage
+    const EnvTileRecord r = vk::BufferPointer<EnvTileRecord>(
+        frame.envZones + uint64_t(rec) * 48u).Get();
+    EnvTileUnpack(r, z);
+    weight = w;
+    return w > 0.0;
 }
 
 // Zone-tinted + zone-intensity ambient irradiance for N (the

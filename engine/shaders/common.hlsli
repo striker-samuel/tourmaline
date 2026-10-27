@@ -509,24 +509,34 @@ struct DsVizParams
 // BDA chase. Scalar-constructor spelling (no integer-suffix reliance).
 #define DS_FLAG_VIZ (uint64_t(1))
 
-// Analytic env-zone record (see Rendergraph/envzones.h + the C++ mirror).
-// 144 B, DX-layout safe (all 16-byte chunks). worldToLocal holds the ROWS
-// of the sanitized inverse frame, so the resolver uses dot products and
-// never depends on matrix-convention flags. halfAndMask.xyz = asuint(half
-// extents), .w = the EnvVolume inf-mask bits.
-#define ENV_ZONE_MAX 64
-struct EnvZoneGpu
+// World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
+// rework of the old OBB-volume zone system): the zone LOOK records (48 B
+// each; the OBB fields are retired — the tile carries the shape) + the
+// per-tile cells. records[0] is ALWAYS the base (the default environment
+// block, the old zone-zero semantic). The cells ride a separate BDA; a
+// cell = (lower/upper record + splitY + weights) — see EnvTileCell.
+#define ENV_TILE_MAX 64
+struct EnvTileRecord
 {
-    float4 worldToLocal[4]; // rows of the sanitized inverse frame
-    uint4 halfAndMask;      // xyz asuint(half), w infMask
-    float4 shape;           // x priority, y blendWeight, z blendRadius, w reserved
     float4 sky;             // rgb skyTint, a ambientI
     float4 fog;             // rgb fogColor, a fogDensity
-    float4 vol;             // x volumetrics, y volumetricDensity, zw reserved
+    float4 vol;             // x volumetrics ratio, y volumetricDensity, zw reserved
 };
-struct EnvZonesBuffer
+struct EnvTileRecordsBuffer
 {
-    EnvZoneGpu zones[ENV_ZONE_MAX];
+    EnvTileRecord records[ENV_TILE_MAX];
+};
+// One 64 m world tile (a subcell column): the dominant record BELOW and
+// ABOVE splitY (the vertical split carries underwater/interior
+// half-spaces; lower==upper + splitY=-FLT_MAX = the no-split case).
+struct EnvTileCell
+{
+    uint lowerRecord;       // 0
+    uint upperRecord;       // 4
+    float splitY;           // 8
+    float lowerWeight;      // 12
+    float upperWeight;      // 16
+    uint reserved[3];       // 20 (32 B total)
 };
 
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
@@ -722,16 +732,23 @@ uint decalCount;                                         // 776 0 = decals off
     // slots, UINT32_MAX =
     // none. APPEND-ONLY tail: every pinned offset above stays put. ----
     uint giVolumeMeanLayers[8];                                  // 1640 8 volumes x 1 mean slot
-    // ---- Analytic env zones (see Rendergraph/envzones.h): envZones is
-    // the BDA of this frame's EnvZoneGpu slice; envZoneCount = live
-    // records (0 = every consumer takes the plain env path). No baked
-    // map, no world-size/texel/4-zone limits. envZoneReserved keeps the
-    // 192-byte block so the lightmap/probe tail offsets stay pinned.
-    // APPEND-ONLY tail: every pinned offset above stays put. ----
-    vk::BufferPointer<EnvZonesBuffer> envZones;                   // 1672 EnvZoneGpu slice BDA
-    uint envZoneCount;                                            // 1680 live zone records
-    uint envZoneFlags;                                            // 1684 reserved
-    uint envZoneReserved[48];                                     // 1688 keeps the tail pinned
+    // ---- World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the
+    // runtime rework of the OBB-volume zone system): envZones is the RAW
+    // BDA of the EnvTileRecord array (records[0] = the base/default look);
+    // envZoneCount = live records (0 = every consumer takes the plain env
+    // path); envZoneFlags bit0 = tiles live. The old reserved block is
+    // re-split IN PLACE into the tile-grid header + a shorter reserved —
+    // every pinned offset below stays put (lmLayers@1888, probe@1952,
+    // worldFields@1976). APPEND-ONLY tail. ----
+    uint64_t envZones;                                           // 1672 EnvTileRecord array BDA (raw)
+    uint envZoneCount;                                           // 1680 live records (incl. base)
+    uint envZoneFlags;                                           // 1684 bit0 = tiles live
+    float envTileMinX;                                            // 1688 tile-grid min corner X (m)
+    float envTileMinZ;                                            // 1692 min corner Z
+    uint envTileDimX;                                             // 1696 tiles per axis (64 m each)
+    uint envTileDimZ;                                             // 1700
+    uint64_t envTileCells;                                        // 1704 the EnvTileCell grid BDA (raw)
+    uint envTileReserved[42];                                     // 1712 (keeps lmLayers@1888 pinned)
     // ---- SG 2D lightmaps (STATIC geometry): atlas layers ride the
     // bindless texture slots (mirror of the C++ APPEND-ONLY tail — every
     // pinned offset above stays put). lmLayerKind: 0 = 9 RGBA16F stream
