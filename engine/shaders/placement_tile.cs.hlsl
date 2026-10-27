@@ -111,7 +111,18 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     inst.prototypeId = proto;
     inst.stableLow = id.x;
     inst.customB = i; // candidate index: constraint passes recompute IDs
+
+    // ---- Bounded append (the capacity guard). ----
+    // count is the RAW result: on overflow it stays > capacity (each
+    // over-capacity thread still bumped it) and every consumer clamps
+    // with min(count, capacity). The dropped-accepted count lands in
+    // overflow — a diagnostic error, never a silent truncation.
     uint slot;
     InterlockedAdd(pc.outCount.Get().count, 1u, slot);
+    if (slot >= pc.outCount.Get().capacity)
+    {
+        InterlockedAdd(pc.outCount.Get().overflow, 1u);
+        return;
+    }
     pc.outInstances.Get().items[slot] = inst;
 }

@@ -106,7 +106,19 @@ struct PlacementRenderInstance {
 };
 
 // Per-tile output: instance array (fixed bound, BDA view allocates
-// nothing) + single-uint append counter.
+// nothing) + the append-counter triple (16 bytes).
+//
+//   count    — the RAW atomic append result. On overflow it keeps growing
+//              past capacity (every over-capacity thread still bumps it);
+//              consumers MUST clamp with min(count, capacity) before
+//              indexing items[] (the constraint kernels do).
+//   overflow — how many ACCEPTED candidates the capacity guard dropped.
+//              A successful tile reports 0; > 0 is a capacity/diagnostic
+//              error, never a silently truncated success.
+//   capacity — the items[] append bound, written by PlacementPass::
+//              ClearTile before every dispatch (DEVICE_LOCAL pages
+//              recycle garbage on churn — the zero-on-creation
+//              convention; the guard reads it back here).
 struct PlacementInstanceBuffer
 {
     PlacementRenderInstance items[65536];
@@ -115,6 +127,9 @@ struct PlacementInstanceBuffer
 struct PlacementCountBuffer
 {
     uint count;
+    uint overflow;
+    uint capacity;
+    uint pad;
 };
 
 #endif

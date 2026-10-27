@@ -15,21 +15,36 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/Placement/placement_point.h>
+
 namespace smvk::placement {
 
 // Output buffer views (HLSL: vk::BufferPointer, see placement_tile.cs.hlsl).
 struct PlacementInstanceBuffer {
 	RenderInstance items[1]; // variable-length
 };
-struct PlacementCountBuffer {
+
+// Must match HLSL PlacementCountBuffer (16 bytes) — the append-counter
+// triple. count is the RAW atomic result (grows past capacity on
+// overflow); consumers clamp with min(count, capacity) before any
+// items[] access. overflow counts ACCEPTED candidates the guard dropped
+// (> 0 = a capacity diagnostic, never a silent truncation); capacity is
+// the items[] append bound PlacementPass::ClearTile primes before every
+// dispatch (zero-on-creation: DEVICE_LOCAL pages recycle garbage).
+struct PlacementCountGpu {
 	uint32_t count = 0;
+	uint32_t overflow = 0;
+	uint32_t capacity = 0;
+	uint32_t pad = 0;
 };
+static_assert(sizeof(PlacementCountGpu) == 16,
+	"PlacementCountGpu size changed — update placement_common.hlsli");
 
 // Must match HLSL PlacementTilePush (144 bytes, 16-byte rows after the
 // two 8-byte BDAs; compiled with -fvk-use-dx-layout).
 struct PlacementTilePush {
 	uint64_t outInstances = 0; // BDA of PlacementInstanceBuffer
-	uint64_t outCount = 0;     // BDA of PlacementCountBuffer (single uint)
+	uint64_t outCount = 0;     // BDA of PlacementCountBuffer (count/overflow/capacity)
 	uint32_t seedLo = 0;
 	uint32_t seedHi = 0;
 	uint32_t nodeId = 0;

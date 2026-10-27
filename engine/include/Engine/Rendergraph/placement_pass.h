@@ -32,13 +32,17 @@
 #include <Engine/platform.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
 namespace smvk::placement {
 
 struct PlacementPassDesc {
-	uint32_t maxInstancesPerTile = 65536; // must match HLSL array bound
+	uint32_t maxInstancesPerTile = 65536; // per-slot append bound (capacity);
+	                                      // may be < the HLSL view bound
+	                                      // (65536) — the kernels guard with
+	                                      // the count buffer's capacity
 	uint32_t maxTiles = 8;                // concurrent resident GPU tile slots
 	const char* name = "placement";
 };
@@ -95,6 +99,7 @@ struct PlacementPass {
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const PlacementPassDesc& d,
 		const char* tileCsPath = kPlacementTileCsPath) {
 		if (d.maxInstancesPerTile == 0 || d.maxTiles == 0) return false;
+		if (d.maxInstancesPerTile > 65536) return false; // the HLSL view bound
 		Destroy(rg);
 		std::vector<Holder<BufferHandle>> inst;
 		std::vector<Holder<BufferHandle>> cnt;
@@ -107,13 +112,20 @@ struct PlacementPass {
 				sizeof(RenderInstance) * d.maxInstancesPerTile,
 				BufferType_Storage, "placement tile instances");
 			Holder<BufferHandle> cb = ctx.CreateBuffer(
-				sizeof(uint32_t), BufferType_Storage, "placement tile count");
-			if (ib.empty() || cb.empty()) return false;
+				sizeof(PlacementCountGpu), BufferType_Storage, "placement tile count");
+			if (ib.empty() || cb.empty()) {
+				// Graceful by default (the RHI returns empty handles and
+				// never decides policy); strict turns it into a loud abort
+				// at the call site (see AGENTS.md — the error contract).
+				smvk::OnResourceExhaustion("placement tile buffers");
+				return false;
+			}
 			LogicalBufferHandle il = rg.AddExternalBuffer(ib, "placement tile instances");
 			LogicalBufferHandle cl = rg.AddExternalBuffer(cb, "placement tile count");
 			if (il.empty() || cl.empty()) {
 				rg.FreeBuffer(il);
 				rg.FreeBuffer(cl);
+				smvk::OnResourceExhaustion("placement tile logicals");
 				return false;
 			}
 			inst.push_back(std::move(ib));
@@ -127,8 +139,10 @@ struct PlacementPass {
 		countBuffers = std::move(cnt);
 		instanceLogicals = std::move(instL);
 		countLogicals = std::move(cntL);
-		// Prime all append counters to zero (device memory is not
-		// guaranteed zero; the kernel appends from the counter).
+		// Prime every append counter BEFORE first use: count/overflow zeroed
+		// AND capacity published (DEVICE_LOCAL pages recycle garbage on
+		// churn — the UploadDataToBuffer zero-on-creation convention; the
+		// kernels' capacity guard reads it back).
 		for (uint32_t s = 0; s < tileSlots; ++s) ClearTile(ctx, s);
 		return EnsureShaders(ctx, tileCsPath);
 	}
@@ -158,13 +172,15 @@ struct PlacementPass {
 		return Create(ctx, rg, d, tileCsPath);
 	}
 
-	// Zeroes a slot's append counter. Call before recording the eval pass
-	// for that slot (uploads flush immediately; the pass RW hint orders
-	// the dispatch after prior uses).
+	// Primes a slot's append counter for the next dispatch: count/overflow
+	// zeroed AND capacity published (the kernels' guard reads it). Call
+	// before recording the eval pass for that slot (uploads flush
+	// immediately; the pass RW hint orders the dispatch after prior uses).
 	void ClearTile(ResourceManager& ctx, uint32_t slot) const {
 		assert(slot < tileSlots);
-		const uint32_t zero = 0;
-		ctx.UploadDataToBuffer(countBuffers[slot], &zero, sizeof(zero),
+		PlacementCountGpu state{};
+		state.capacity = desc.maxInstancesPerTile;
+		ctx.UploadDataToBuffer(countBuffers[slot], &state, sizeof(state),
 			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
 	}
 
@@ -194,10 +210,17 @@ struct PlacementPass {
 	}
 
 	// Recording helper: bind + push + dispatch. No-op when empty.
+	// Dispatch-setup contract (Phase 0): candidateCount sane, output BDAs
+	// valid, prototype count within the kernels' 8 slots — asserted so a
+	// mis-built push faults at dispatch setup, not as device garbage.
 	// Non-const: CommandBuffer::BindComputePipeline takes ShaderProgram&.
 	void PushAndDispatch(CommandBuffer& cmd, const PlacementTilePush& push) {
 		assert(ShadersValid());
 		if (push.candidateCount == 0) return;
+		assert(push.outInstances != 0 && "placement: null instances BDA");
+		assert(push.outCount != 0 && "placement: null count BDA");
+		assert(push.protoCount >= 1 && push.protoCount <= 8
+			&& "placement: protoCount outside the kernel's 8 slots");
 		cmd.BindComputePipeline(tileProgram);
 		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
 		cmd.Dispatch(PlacementDispatchGroups(push.candidateCount), 1, 1);
@@ -205,15 +228,29 @@ struct PlacementPass {
 
 	// Debug readback: count + instances for one slot (staging copy + fence
 	// wait; stalls — parity checks, transient draws, bake only).
-	// Returns instance count, or UINT32_MAX on failure.
+	// Returns the CLAMPED instance count (min of the raw count, the slot's
+	// capacity and maxInstances), or UINT32_MAX on failure. overflowOut,
+	// when non-null, receives the guard's dropped-accepted count — a
+	// successful tile reports 0; > 0 means the capacity was too small and
+	// the caller must treat the tile as an error/diagnostic, not a
+	// truncated success.
 	uint32_t DownloadTile(ResourceManager& ctx, uint32_t slot,
-		std::vector<RenderInstance>& out, uint32_t maxInstances) const {
+		std::vector<RenderInstance>& out, uint32_t maxInstances,
+		uint32_t* overflowOut = nullptr) const {
 		assert(slot < tileSlots);
 		out.clear();
-		uint32_t count = 0;
-		if (!ctx.DownloadDataFromBuffer(countBuffers[slot], &count, sizeof(count)))
+		PlacementCountGpu state;
+		if (!ctx.DownloadDataFromBuffer(countBuffers[slot], &state, sizeof(state)))
 			return UINT32_MAX;
-		count = count > maxInstances ? maxInstances : count;
+		if (overflowOut) *overflowOut = state.overflow;
+		if (state.overflow > 0)
+			std::fprintf(stderr, "[Placement] tile slot %u OVERFLOW: %u accepted "
+				"candidates dropped (capacity %u) — raise "
+				"PlacementPassDesc::maxInstancesPerTile\n",
+				slot, state.overflow, state.capacity);
+		uint32_t count = state.count;
+		if (count > state.capacity) count = state.capacity; // raw -> clamped
+		if (count > maxInstances) count = maxInstances;
 		if (count == 0) return 0;
 		out.resize(count);
 		if (!ctx.DownloadDataFromBuffer(instanceBuffers[slot], out.data(),
@@ -345,15 +382,20 @@ struct PlacementMeshGpu {
 		prob = make(sizeof(float) * tris, "placement mesh prob");
 		alias = make(sizeof(uint32_t) * tris, "placement mesh alias");
 		if (pos.empty() || idx.empty() || prob.empty() || alias.empty()
-			|| (hasNormals && nrm.empty()) || (hasUVs && uv.empty()))
+			|| (hasNormals && nrm.empty()) || (hasUVs && uv.empty())) {
+			smvk::OnResourceExhaustion("placement mesh domain buffers");
 			return false;
+		}
 		posL = rg.AddExternalBuffer(pos, "placement mesh pos");
 		nrmL = hasNormals ? rg.AddExternalBuffer(nrm, "placement mesh nrm") : LogicalBufferHandle{};
 		uvL = hasUVs ? rg.AddExternalBuffer(uv, "placement mesh uv") : LogicalBufferHandle{};
 		idxL = rg.AddExternalBuffer(idx, "placement mesh idx");
 		probL = rg.AddExternalBuffer(prob, "placement mesh prob");
 		aliasL = rg.AddExternalBuffer(alias, "placement mesh alias");
-		if (posL.empty() || idxL.empty() || probL.empty() || aliasL.empty()) return false;
+		if (posL.empty() || idxL.empty() || probL.empty() || aliasL.empty()) {
+			smvk::OnResourceExhaustion("placement mesh domain logicals");
+			return false;
+		}
 		ctx.UploadDataToBuffer(pos, pos4.data(), sizeof(glm::vec4) * verts,
 			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
 		if (hasNormals) ctx.UploadDataToBuffer(nrm, nrm4.data(), sizeof(glm::vec4) * verts,
@@ -410,9 +452,15 @@ struct PlacementHeightfieldGpu {
 		if ((uint64_t)hf.width * hf.height > kPlacementMaxHfTexels) return false;
 		heights = ctx.CreateBuffer(sizeof(float) * hf.heights.size(),
 			BufferType_Storage, "placement heightfield");
-		if (heights.empty()) return false;
+		if (heights.empty()) {
+			smvk::OnResourceExhaustion("placement heightfield buffer");
+			return false;
+		}
 		heightsL = rg.AddExternalBuffer(heights, "placement heightfield");
-		if (heightsL.empty()) return false;
+		if (heightsL.empty()) {
+			smvk::OnResourceExhaustion("placement heightfield logical");
+			return false;
+		}
 		ctx.UploadDataToBuffer(heights, hf.heights.data(),
 			sizeof(float) * hf.heights.size(),
 			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
@@ -421,6 +469,42 @@ struct PlacementHeightfieldGpu {
 	}
 	uint64_t Address(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(heights);
+	}
+};
+
+// The device-side PlacementDomainParams home for the scatter kernels
+// (mesh + heightfield): one small buffer, uploaded per (layer, domain
+// binding) change — NOT per frame. The scatter push addresses it by BDA
+// (the 64B push budget carries nothing inline).
+struct PlacementParamsGpu {
+	Holder<BufferHandle> params;
+	LogicalBufferHandle logical{};
+
+	[[nodiscard]] bool Valid() const { return !params.empty() && !logical.empty(); }
+	void Destroy(RenderGraph& rg) {
+		if (!logical.empty()) rg.FreeBuffer(logical);
+		logical = {};
+		params = {};
+	}
+	bool Upload(ResourceManager& ctx, RenderGraph& rg, const PlacementDomainParams& p) {
+		Destroy(rg);
+		params = ctx.CreateBuffer(sizeof(PlacementDomainParams),
+			BufferType_Storage, "placement scatter params");
+		if (params.empty()) {
+			smvk::OnResourceExhaustion("placement scatter params buffer");
+			return false;
+		}
+		logical = rg.AddExternalBuffer(params, "placement scatter params");
+		if (logical.empty()) {
+			smvk::OnResourceExhaustion("placement scatter params logical");
+			return false;
+		}
+		ctx.UploadDataToBuffer(params, &p, sizeof(p),
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		return true;
+	}
+	uint64_t Address(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(params);
 	}
 };
 
@@ -543,10 +627,15 @@ struct PlacementScatterPrograms {
 		if (!paramsLogical.empty()) rp.AddBufferHint(paramsLogical, read);
 		return rp;
 	}
-	// Recording helper (mirrors PlacementPass::PushAndDispatch).
+	// Recording helper (mirrors PlacementPass::PushAndDispatch). Same
+	// dispatch-setup contract: asserts the output/params BDAs and the
+	// candidate count before any dispatch is recorded.
 	static void PushAndDispatchScatter(CommandBuffer& cmd, ShaderProgram& program,
 		const PlacementScatterPush& push) {
 		if (push.candidateCount == 0) return;
+		assert(push.outInstances != 0 && "placement scatter: null instances BDA");
+		assert(push.outCount != 0 && "placement scatter: null count BDA");
+		assert(push.params != 0 && "placement scatter: null params BDA");
 		cmd.BindComputePipeline(program);
 		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
 		cmd.Dispatch(PlacementDispatchGroups(push.candidateCount), 1, 1);
@@ -623,7 +712,10 @@ struct PlacementConstraint {
 			BufferType_Storage, "placement con flags");
 		Holder<BufferHandle> prm = ctx.CreateBuffer(sizeof(PlacementConParams),
 			BufferType_Storage, "placement con params");
-		if (head.empty() || next.empty() || flag2.empty() || prm.empty()) return false;
+		if (head.empty() || next.empty() || flag2.empty() || prm.empty()) {
+			smvk::OnResourceExhaustion("placement constraint buffers");
+			return false;
+		}
 		LogicalBufferHandle headL = rg.AddExternalBuffer(head, "placement con head");
 		LogicalBufferHandle nextL = rg.AddExternalBuffer(next, "placement con next");
 		LogicalBufferHandle flag2L = rg.AddExternalBuffer(flag2, "placement con flags");
@@ -631,6 +723,7 @@ struct PlacementConstraint {
 		if (headL.empty() || nextL.empty() || flag2L.empty() || prmL.empty()) {
 			rg.FreeBuffer(headL); rg.FreeBuffer(nextL);
 			rg.FreeBuffer(flag2L); rg.FreeBuffer(prmL);
+			smvk::OnResourceExhaustion("placement constraint logicals");
 			return false;
 		}
 		maxInstances = maxInst;
@@ -766,9 +859,12 @@ struct PlacementConstraint {
 			&& vol.dimX <= 64 && vol.dimY <= 64 && vol.dimZ <= 64
 			&& (uint64_t)vol.dimX * vol.dimY * vol.dimZ <= kPlacementConMaxCells;
 	}
-	// Pure-CPU con params fill (headless-testable).
+	// Pure-CPU con params fill (headless-testable). The tile rides along:
+	// the kernels RECOMPUTE StableIDs from (seed, node, tile, customB) —
+	// a zeroed tile hashes the WRONG IDs and elects wrong cell winners
+	// (caught on device by PlacementGpuTests' elect-mask parity).
 	static bool FillConParams(const PlacementSystem::LayerBinding& layer,
-		const ConstraintVolume& vol, PlacementConParams& out) {
+		TileID tile, const ConstraintVolume& vol, PlacementConParams& out) {
 		if (!VolumeFitsGpu(vol)) return false;
 		out = PlacementConParams{};
 		out.origin = vol.origin;
@@ -777,6 +873,7 @@ struct PlacementConstraint {
 		out.seedLo = (uint32_t)(layer.program.graphSeed & 0xFFFFFFFFull);
 		out.seedHi = (uint32_t)(layer.program.graphSeed >> 32);
 		out.nodeId = layer.program.nodeId;
+		out.tileX = tile.x; out.tileY = tile.y; out.tileZ = tile.z;
 		return true;
 	}
 	static bool BuildConPush(uint64_t instancesBDA, uint64_t headBDA, uint64_t nextBDA,

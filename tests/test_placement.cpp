@@ -212,6 +212,7 @@ void TestAcceptance();
 void TestNoise();
 void TestTileDeterminism();
 void TestTileStreamingOrder();
+void TestOracleEdges();
 void TestMinDistance();
 void TestTileCache();
 void TestTransientDraws();
@@ -397,6 +398,135 @@ void TestTileStreamingOrder() {
 			if (ta->instances[i].position != tb->instances[i].position) { same = false; break; }
 	}
 	Check(same, "place.tile.order-independent");
+}
+
+// Phase-0 oracle edges: the CPU oracle's degenerate/limit inputs the GPU
+// kernels must also survive (their parity target). Zero candidates, zero
+// density, full density, 0/1/8 prototypes, negative tile coordinates,
+// multi-tile separation.
+void TestOracleEdges() {
+	using namespace smvk::placement;
+	DependencyVersions deps;
+
+	// Zero candidates per tile: empty, no crash.
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		sys.registerLayer(MakeGridLayer(grid, 0.5f, 0));
+		Check(sys.generateTile(101, TileID{ 0, 0, 0 }, deps) == 0,
+			"place.edge.zero-candidates");
+	}
+
+	// Zero density: nobody accepted; full density: everyone accepted.
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		sys.registerLayer(MakeGridLayer(grid, 0.0f, 256));
+		Check(sys.generateTile(101, TileID{ 0, 0, 0 }, deps) == 0,
+			"place.edge.zero-density");
+	}
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		sys.registerLayer(MakeGridLayer(grid, 1.0f, 256));
+		Check(sys.generateTile(101, TileID{ 0, 0, 0 }, deps) == 256,
+			"place.edge.full-density");
+	}
+
+	// 0/1/8 prototypes: empty table defaults to proto 0; a full 8-slot
+	// table never escapes the kernel's bound and spreads across bins.
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		auto lb = MakeGridLayer(grid, 1.0f, 512);
+		lb.prototypes.clear();
+		sys.registerLayer(lb);
+		sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
+		const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
+		bool allZero = t && !t->instances.empty();
+		for (const RenderInstance& in : t->instances)
+			if (in.prototypeId != 0) { allZero = false; break; }
+		Check(allZero, "place.edge.no-protos-default-zero");
+	}
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		auto lb = MakeGridLayer(grid, 1.0f, 512);
+		Prototype only; only.weight = 1.0f;
+		lb.prototypes.add(only);
+		sys.registerLayer(lb);
+		sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
+		const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
+		bool allZero = t && !t->instances.empty();
+		for (const RenderInstance& in : t->instances)
+			if (in.prototypeId != 0) { allZero = false; break; }
+		Check(allZero, "place.edge.one-proto");
+	}
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		auto lb = MakeGridLayer(grid, 1.0f, 2048);
+		for (int i = 0; i < 8; ++i) {
+			Prototype p; p.weight = 1.0f;
+			lb.prototypes.add(p);
+		}
+		sys.registerLayer(lb);
+		sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
+		const PlacementTile* t = sys.findTile(101, TileID{ 0, 0, 0 });
+		bool inBounds = t && t->instances.size() == 2048;
+		bool seen[8] = {};
+		int distinct = 0;
+		for (const RenderInstance& in : t->instances) {
+			if (in.prototypeId >= 8) { inBounds = false; break; }
+			if (!seen[in.prototypeId]) { seen[in.prototypeId] = true; ++distinct; }
+		}
+		Check(inBounds, "place.edge.eight-protos-bounded");
+		Check(distinct >= 2, "place.edge.eight-protos-spread");
+	}
+
+	// Negative tile coordinates: deterministic, non-empty, and a
+	// DIFFERENT population than the origin tile (the tile id feeds the
+	// StableID lanes).
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		sys.registerLayer(MakeGridLayer(grid, 0.6f, 512));
+		const TileID neg{ -3, -1, -7 };
+		const size_t n = sys.generateTile(101, neg, deps);
+		const size_t n0 = sys.generateTile(101, TileID{ 0, 0, 0 }, deps);
+		const PlacementTile* a = sys.findTile(101, neg);
+		const size_t nAgain = sys.generateTile(101, neg, deps);
+		const PlacementTile* b = sys.findTile(101, neg);
+		bool identical = a && b && a->instances.size() == b->instances.size();
+		if (identical) {
+			for (size_t i = 0; i < a->instances.size(); ++i)
+				if (a->instances[i].position != b->instances[i].position
+					|| a->instances[i].prototypeId != b->instances[i].prototypeId
+					|| a->instances[i].stableLow != b->instances[i].stableLow) {
+					identical = false; break;
+				}
+		}
+		Check(n > 0, "place.edge.negative-tile-nonempty");
+		Check(identical, "place.edge.negative-tile-regen-identical");
+		Check(a->instances[0].stableLow != sys.findTile(101, TileID{ 0, 0, 0 })->instances[0].stableLow
+			|| n != n0, "place.edge.tile-id-separates");
+	}
+
+	// Multiple adjacent tiles in one system: all resident, none empty at
+	// full density, and the aggregate is the per-tile sum.
+	{
+		GridDomain grid;
+		PlacementSystem sys;
+		sys.registerLayer(MakeGridLayer(grid, 1.0f, 128));
+		size_t total = 0;
+		for (int32_t x = -1; x <= 1; ++x)
+			for (int32_t z = -1; z <= 1; ++z)
+				total += sys.generateTile(101, TileID{ x, 0, z }, deps);
+		Check(sys.residentTileCount() == 9 && total == 9 * 128,
+			"place.edge.multi-tile-aggregate");
+		Check(sys.residentInstanceCount(101) == total,
+			"place.edge.multi-tile-instance-count");
+	}
 }
 
 void TestMinDistance() {
@@ -937,6 +1067,12 @@ void TestScatterParams() {
 	using namespace smvk::placement;
 	Check(sizeof(PlacementDomainParams) == 176, "place.scatter.params-176B");
 	Check(sizeof(PlacementScatterPush) == 64, "place.scatter.push-64B");
+	// The append-counter triple ABI (the capacity-guard contract).
+	Check(sizeof(PlacementCountGpu) == 16, "place.count.16B");
+	Check(offsetof(PlacementCountGpu, count) == 0
+		&& offsetof(PlacementCountGpu, overflow) == 4
+		&& offsetof(PlacementCountGpu, capacity) == 8,
+		"place.count.fields");
 	Check(offsetof(PlacementScatterPush, params) == 16, "place.scatter.params-bda");
 	Check(offsetof(PlacementScatterPush, candidateCount) == 44, "place.scatter.count");
 	// Mesh mapping.
@@ -1138,12 +1274,12 @@ void TestConBridge() {
 	lb.program.graphSeed = 0xFEDCBA9876543210ull;
 	lb.program.nodeId = 9;
 	PlacementConParams prm;
-	Check(PlacementConstraint::FillConParams(lb, ok, prm), "place.con.fill-ok");
+	Check(PlacementConstraint::FillConParams(lb, TileID{ 5, -2, 7 }, ok, prm), "place.con.fill-ok");
 	Check(prm.seedLo == 0x76543210ul && prm.seedHi == 0xFEDCBA98ul, "place.con.fill-seed");
 	Check(prm.nodeId == 9 && prm.spacing == 4.0f, "place.con.fill-ids");
 	Check(prm.dimX == 18 && prm.dimY == 34 && prm.dimZ == 18, "place.con.fill-dims");
-	Check(prm.tileX == 0 && prm.tileY == 0 && prm.tileZ == 0, "place.con.fill-tile-zero");
-	Check(!PlacementConstraint::FillConParams(lb, unbounded, prm), "place.con.fill-refuses");
+	Check(prm.tileX == 5 && prm.tileY == -2 && prm.tileZ == 7, "place.con.fill-tile-roundtrip");
+	Check(!PlacementConstraint::FillConParams(lb, TileID{ 5, -2, 7 }, unbounded, prm), "place.con.fill-refuses");
 	PlacementConPush push;
 	Check(PlacementConstraint::BuildConPush(1, 2, 3, 4, 5, 6, push), "place.con.push-ok");
 	Check(push.instances == 1 && push.head == 2 && push.next == 3 && push.flag2 == 4
@@ -1607,6 +1743,7 @@ int main() {
 	TestNoise();
 	TestTileDeterminism();
 	TestTileStreamingOrder();
+	TestOracleEdges();
 	TestMinDistance();
 	TestTileCache();
 	TestTransientDraws();

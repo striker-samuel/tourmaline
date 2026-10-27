@@ -374,6 +374,30 @@ set_target_properties(PlacementTests PROPERTIES
 
 add_test(NAME placement_tests COMMAND PlacementTests)
 
+# PlacementGpuTests: the DEVICE half of the placement system's Phase-0
+# safety baseline — real (hidden-window) Vulkan context driving the
+# actual scatter kernels through the rendergraph (swapchain frame), with
+# blocking readbacks proving CPU-oracle multiset parity for grid/mesh/
+# heightfield, the capacity-guard/overflow contract, and the constraint
+# trio's survivor parity. Mirrors the world-fields GPU test's bootstrap
+# (volk + hidden window + RM), plus a Swapchain for compute execution
+# (the 03_fuzz precedent). CI-excluded like world_fields_gpu_tests
+# (hosted runners lack a display/ICD); plain local ctest runs it on a
+# real GPU.
+add_executable(PlacementGpuTests test_placement_gpu.cpp)
+
+target_link_libraries(PlacementGpuTests
+    PRIVATE
+        engine
+        volk
+)
+
+set_target_properties(PlacementGpuTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME placement_gpu_tests COMMAND PlacementGpuTests)
+
 add_executable(MemoryTests test_memory.cpp)
 
 target_link_libraries(MemoryTests

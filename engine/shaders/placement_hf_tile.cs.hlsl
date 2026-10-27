@@ -68,7 +68,13 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     inst.stableLow = id.x;
     inst.customB = i;
 
+    // ---- Bounded append (the capacity guard; see placement_common). ----
     uint slot;
     InterlockedAdd(pc.outCount.Get().count, 1u, slot);
+    if (slot >= pc.outCount.Get().capacity)
+    {
+        InterlockedAdd(pc.outCount.Get().overflow, 1u);
+        return;
+    }
     pc.outInstances.Get().items[slot] = inst;
 }

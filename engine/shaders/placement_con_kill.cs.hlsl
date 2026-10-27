@@ -19,7 +19,9 @@ ConstantBuffer<PlacementConPush> pc;
 void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 {
     uint slot = groupId.x * 64 + threadId.x;
-    uint count = pc.countBuf.Get().count;
+    // Raw count can exceed capacity on scatter overflow — clamp before
+    // any items[]/flag2[] access (the capacity-guard contract).
+    uint count = min(pc.countBuf.Get().count, pc.countBuf.Get().capacity);
     if (slot >= count)
         return;
 
