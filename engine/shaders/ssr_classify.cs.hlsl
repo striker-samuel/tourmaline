@@ -84,9 +84,15 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
     bool valid = inRange && !DofIsBackgroundOrGarbage(dBest);
 
     // Roughness + metal from the thin G-buffer at the receiver pixel.
+    // MSAA guard: the G-buffer is intentionally absent under 2x MSAA
+    // (fc.ssrGbufferWanted has !useMsaa; the push carries UINT32_MAX —
+    // the old unguarded textures[UINT32_MAX] read was undefined behavior,
+    // whatever the descriptor array happened to return). Without material
+    // data we cannot classify reflectivity: conservative matte (roughness
+    // 1, metal 0) = no rays generated = SSR silently off under MSAA.
     float roughness = 1.0f;
     float metal = 0.0f;
-    if (valid)
+    if (valid && sp.gbufferTextureIndex != 0xffffffffu)
     {
         Texture2D gbTex = textures[NonUniformResourceIndex(sp.gbufferTextureIndex)];
         float4 gb = gbTex.Load(int3(fullPxC, 0));

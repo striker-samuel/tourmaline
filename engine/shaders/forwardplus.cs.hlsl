@@ -70,6 +70,7 @@ struct ForwardPlusCullPush
     vk::BufferPointer<ForwardPlusFogTileIndexBuffer> fogTileIndices;
     float fogMaxDistance;   // march-range far cut
     uint maxFogPerTile;     // fog row stride (matches the volumetric push)
+    uint fogListsWanted;    // 0 = skip the fog track (vol pass off — no consumer)
 };
 // NOTE: no static_assert here – this DXC (HLSL 2018 mode) rejects it at
 // global scope. Size is checked on the C++ side (88 bytes).
@@ -177,6 +178,10 @@ void mainCS(uint3 groupId : SV_GroupID)
     // capacity (the volumetric consumer clamps identically, so both
     // sides address the same rows of the fog buffers).
     const uint fogStride = min(pcCull.maxFogPerTile, (uint)MAX_FP_TILE_SORT_SLOTS);
+    // The fog track's consumer gate: 0 = the volumetric pass is off this
+    // frame (skip the per-light fog candidacy + the writeback entirely —
+    // real per-tile work saved, not dead stores).
+    const bool fogLists = pcCull.fogListsWanted != 0u;
     uint lcount = 0;  // sorted surface list length
     uint pcount = 0;  // true probe count (first-come packing)
     uint fcount = 0;  // sorted fog list length
@@ -277,8 +282,10 @@ void mainCS(uint3 groupId : SV_GroupID)
         // march range (fogMaxDistance) can never reach a sample in
         // [0, fogMaxDistance]. Relevance key = distance from the center
         // to the march interval [0, fogMaxDistance] — same shape as the
-        // surface key.
-        if (d - range <= pcCull.fogMaxDistance) {
+        // surface key. GATED on fogListsWanted: the volumetric pass's
+        // consumer gate (the per-light fog candidacy + sorted insertion
+        // is real work per tile, not free dead stores when fog is off).
+        if (fogLists && d - range <= pcCull.fogMaxDistance) {
             const float key = max(max(-d, d - pcCull.fogMaxDistance), 0.0f) + spotPin;
             if (fcount < fogStride) {
                 fIdx[fcount] = li;
@@ -308,12 +315,15 @@ void mainCS(uint3 groupId : SV_GroupID)
     // The light loops mask the low word, the specular walk shifts.
     pcCull.tileCounts.Get().counts[tileIdx] = (lcount & 0xFFFFu) | (pcount << 16);
 
-    // ---- Write back the sorted fog list (UNCONDITIONAL stores — fresh 0
-    // with no candidates, same discipline as the decal counts) ----
-    [loop]
-    for (uint s = 0u; s < fcount; ++s)
-        pcCull.fogTileIndices.Get().indices[tileIdx * fogStride + s] = fIdx[s];
-    pcCull.fogTileCounts.Get().counts[tileIdx] = fcount;
+    // ---- Write back the sorted fog list (UNCONDITIONAL count store —
+    // fresh 0 with no candidates, same discipline as the decal counts;
+    // SKIPPED entirely when fog is off — no consumer reads the lists) ----
+    if (fogLists) {
+        [loop]
+        for (uint s = 0u; s < fcount; ++s)
+            pcCull.fogTileIndices.Get().indices[tileIdx * fogStride + s] = fIdx[s];
+        pcCull.fogTileCounts.Get().counts[tileIdx] = fcount;
+    }
 
     // ---- Cull decals (same conservative bounding-sphere test as the
     // lights: tile side planes + depth range). Decals share the light

@@ -339,6 +339,19 @@ PSOut mainPS(PSIn IN)
     static const float kVolGiRefreshDist = 0.75;
     float giT = -1e30; // distance of the last refresh (expired -> seg 0)
 
+    // Light refresh cadence: DECOUPLED from the GI cadence above. Local
+    // lights are point/spot emitters with 1-10 m influence radii — the
+    // in-scatter field they produce is smooth enough to hold for 3 m
+    // (vs 0.75 m for the probe ambient which sits in baked density
+    // gradients), but a 0.75 m light cadence meant ~15 full tile-list
+    // walks per pixel on a 16-step 80 m march — the dominant per-pixel
+    // fog-lighting cost (the review's finding #1). 3 m sits in the
+    // 2-4 m band the review suggested; near small lights the 1 m
+    // segment distribution still resolves the scatter ramp (the march
+    // SAMPLES exact per segment; only the LIGHT LIST walk is held).
+    static const float kVolLightRefreshDist = 3.0;
+    float lightT = -1e30; // distance of the last light refresh
+
     // Ray-space volume prep (once per pixel): tile mask -> fade-expanded
     // AABB intervals vs the march ray -> base/slope plane coefficients
     // for the overlapping volumes. The march then blends exact weights
@@ -348,9 +361,10 @@ PSOut mainPS(PSIn IN)
     if (fogGiOn)
         SgGiVolumeRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
 
-    // Held forward+ light in-scatter (per-ambient-refresh — the lights
-    // sit at fixed world positions, so the field is as smooth as the
-    // ambient; never evaluated inside the hot march).
+    // Held forward+ light in-scatter (per-LIGHT-refresh — decoupled from
+    // the GI cadence above, 3 m vs 0.75 m; the lights sit at fixed world
+    // positions, so the field is as smooth as the ambient; never
+    // evaluated inside the hot march).
     float3 lightsHeld = float3(0.0, 0.0, 0.0);
     const bool fogLightsOn = vp.fpLightCount > 0u;
 
@@ -422,13 +436,22 @@ PSOut mainPS(PSIn IN)
                 const bool octreeCovered = (giOn > 0.5) && (volTrans > 0.0)
                     && SgGiSampleMean(frame, wpos, octMean);
                 baseHeld = octreeCovered ? octMean : skyMean;
-                // Forward+ lights (same cadence — smooth field): the
-                // direct in-scatter contribution at this depth.
-                if (fogLightsOn)
-                    lightsHeld = VolForwardPlusLights(frame, wpos, rayDir,
-                        (uint2)IN.pos.xy);
             }
             ambient = (volAcc + baseHeld * volTrans) * giStrength;
+        }
+
+        // ---- Forward+ light in-scatter: INDEPENDENT of the GI block
+        // above (the review's finding #3 — the old nest under
+        // if (fogGiOn) { ... } meant GI-off fog never evaluated local
+        // lights even with fpLightCount > 0). Own cadence at
+        // kVolLightRefreshDist (finding #1 — the 0.75 m GI cadence meant
+        // ~15 tile-list walks per pixel; 3 m is the review-suggested
+        // 2-4 m band). The lights sit at fixed world positions; the
+        // in-scatter field is smooth at the segment scale.
+        if (fogLightsOn && t - lightT >= kVolLightRefreshDist) {
+            lightT = t;
+            lightsHeld = VolForwardPlusLights(frame, wpos, rayDir,
+                (uint2)IN.pos.xy);
         }
 
         float3 source = ambient + lightsHeld;

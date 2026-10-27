@@ -92,7 +92,8 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
 	// app just feeds the pass's maxDistance every frame).
 	void AppendTileCull(smvk::FrameContext& fc,
 		uint32_t lightCountOverride = UINT32_MAX,
-		float fogMaxDistance = 80.0f);
+		float fogMaxDistance = 80.0f,
+		bool fogListsWanted = false);
 	// Option A occluder prepass: fills fc.hizDepthView (Clear, VS-only,
 	// solid opaque only) with big occluders at their SELECTED LOD for the
 	// HZB build — the occluder rasterizes the same surface Main draws, so

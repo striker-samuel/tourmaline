@@ -328,8 +328,13 @@ struct ForwardPlusCullPush {
 	// Fog row stride (desc.maxFogPerTile — must match the volumetric
 	// push's fogMaxPerTile so both sides address the same rows).
 	uint32_t maxFogPerTile = 16;
+	// 0 = skip the fog track entirely (the volumetric pass is OFF this
+	// frame — no consumer of the lists; the per-light fog candidacy +
+	// sorted insertion per tile is real work, not free dead stores).
+	// 1 = build the fog lists (the volumetric pass will run).
+	uint32_t fogListsWanted = 0;
 };
-static_assert(sizeof(ForwardPlusCullPush) == 88);
+static_assert(sizeof(ForwardPlusCullPush) == 96);
 
 inline constexpr const char* kForwardPlusCsPath = "content/shaders/forwardplus.cs.hlsl.spv";
 inline constexpr const char* kForwardPlusDepthVsPath = "content/shaders/default.vert.hlsl.spv";

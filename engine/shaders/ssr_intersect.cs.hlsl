@@ -75,7 +75,10 @@ static const float kSsrMaxReflected = 8192.0f; // firefly cap (same as the old t
 
 // Receiver G-buffer tap at the half-res ray pixel's full-res tap:
 // oct world normal + continuous roughness + metal (see
-// gbuffer.frag.hlsl). Unbound G-buffer = the matte sentinel.
+// gbuffer.frag.hlsl). Unbound G-buffer = the matte sentinel (the
+// default below — the MSAA path pushes UINT32_MAX; the old unguarded
+// textures[UINT32_MAX] read was undefined behavior, whatever the
+// descriptor array happened to return).
 struct SsrGb
 {
     float3 normal;
@@ -89,6 +92,8 @@ SsrGb SsrGbTap(int2 fullPx)
     g.normal = float3(0.0f, 0.0f, 1.0f);
     g.roughness = 1.0f;
     g.metal = 0.0f;
+    if (sp.gbufferTextureIndex == 0xffffffffu)
+        return g; // MSAA (no G-buffer): the matte sentinel, never a bad fetch
     Texture2D gbTex = textures[NonUniformResourceIndex(sp.gbufferTextureIndex)];
     float4 gb = gbTex.Load(int3(fullPx, 0));
     g.normal = SsrOctDecode(gb.xy);

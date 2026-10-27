@@ -9971,13 +9971,29 @@ namespace engine {
 		// work (negligible next to the depth preload); the DS lists own the
 		// lights either way.
 		const bool probeListsWanted = ProbeTileListsWanted();
+		// The fog-list consumer gate (the volumetric pass must actually
+		// RUN this frame — the per-tile fog candidacy + sorted insertion
+		// in the cull is real work, not free dead stores). The SAME
+		// conditions as the volOn gate at the volumetric pass build below
+		// (pass + enabled + target valid + depth valid + density-or-field
+		// + intensity + not debug viz); computed here because the cull
+		// dispatch runs before the pass-build site.
+		const bool volFogListsWanted = m_passes.volumetric && m_volumetricEnabled
+			&& m_viewportResources.volumetric.Valid()
+			&& !m_viewportResources.renderDepth.logicalView.empty()
+			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+			&& (m_volumetricDensity > 0.0f
+				|| m_worldFields.GpuBinding().Valid())
+			&& m_volumetricIntensity > 0.0f
+			&& !DebugVisualizationActive();
 		rfPB = bench_clk::now();
 		if (TileCullWillRun())
 			// fogMaxDistance feeds the cull's per-tile FOG lists (the
-			// volumetric march-range candidacy — built unconditionally,
-			// consumed only when the volumetric pass runs).
+			// volumetric march-range candidacy — GATED on
+			// volFogListsWanted: skipped when the volumetric pass won't
+			// run, consumed only when it does).
 			m_fpRenderer.AppendTileCull(fc, fpLightCount + ProbeEntryCount(),
-				m_volumetricMaxDistance);
+				m_volumetricMaxDistance, volFogListsWanted);
 		if (dsOn)
 			AppendDeferredShadowPhases(fb.frameIndex,
 				frameUniformsAddress, fpLightsAddress, spotShadowBufferAddress,

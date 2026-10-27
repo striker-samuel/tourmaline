@@ -553,7 +553,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 }
 
 void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
-	uint32_t lightCountOverride, float fogMaxDistance) {
+	uint32_t lightCountOverride, float fogMaxDistance, bool fogListsWanted) {
 	AppFrameContext& fc = static_cast<AppFrameContext&>(base);
 	if (!fp)
 		return;
@@ -588,9 +588,13 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
 		cullPC.maxLightsPerTile = desc.maxLightsPerTile;
 		// Fog lists (march-range candidates — see ForwardPlusCullPush):
 		// the dedicated per-tile buffers built every dispatch + the march
-		// range the volumetric pass will run with. The lists are filled
-		// unconditionally (fog off = unused, cheap), so toggling
-		// volumetrics needs no cull-side branching.
+		// range the volumetric pass will run with. GATED on
+		// fogListsWanted: the per-light fog candidacy + sorted insertion
+		// per tile is real work (not free dead stores) — skip it when the
+		// volumetric pass won't run this frame. The cull shader skips the
+		// fog track + writeback; the volumetric pass's zero-address
+		// fallback (walk [0, fpLightCount) directly) is the consumer's
+		// safety net when the lists are absent.
 		cullPC.fogTileCounts = fp->FogTileCountsAddress(ctx);
 		cullPC.fogTileIndices = fp->FogTileIndicesAddress(ctx);
 		// Match AddVolumetricPass's ray clamp ((std::max)(1.0f, ...)): a
@@ -598,6 +602,7 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
 		// reach inside its clamped range.
 		cullPC.fogMaxDistance = (std::max)(1.0f, fogMaxDistance);
 		cullPC.maxFogPerTile = desc.maxFogPerTile;
+		cullPC.fogListsWanted = fogListsWanted ? 1u : 0u;
 		auto& cullPass = fp->AddCullPass(rg, fc.depthView, fc.fpLights,
 			"ForwardPlusCull", fc.decals);
 		cullPass.SetRecordingFunc([this, cullPC, tileCountX = fp->tileCountX, tileCountY = fp->tileCountY](smvk::CommandBuffer& cmd) mutable
