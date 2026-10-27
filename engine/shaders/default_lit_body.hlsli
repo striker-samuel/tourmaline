@@ -1271,6 +1271,11 @@ float envVis = 1.0f;
     // weight like every other source — the old chain REPLACED the empty
     // spec base with full volume amps on the first hit, so E and spec
     // disagreed across fade edges outside octree coverage.
+    // The sky DIFFUSE base is iblOn-gated: the isolation modes (Baked,
+    // Probes) kill the analytic sky everywhere in the ambient, this
+    // composite included — without the gate a volume-covered pixel
+    // outside octree coverage still leaked sky * volTrans, defeating
+    // the "baked only" isolation exactly where volumes fade.
     E = SgGiDiffuseIrradiance(volAmps, N);
     [unroll]
     for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
@@ -1284,7 +1289,7 @@ float envVis = 1.0f;
     }
     else
     {
-        E += irradiance * volTrans; // analytic sky diffuse base
+        E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
     }
     covered = octreeCovered || volHit;
 

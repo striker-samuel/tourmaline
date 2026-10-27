@@ -675,6 +675,33 @@ namespace engine {
 			m_volumetricUseGiVolumes = (*pins.volumetricGiVolumes == OnOffPin::On);
 	}
 
+	// Ambient-source pin mapping: ONE spelling set shared by the onAttach
+	// getenv site and ApplyHeadlessPostfxOverrides (the pin re-application
+	// after every scene seed) so the two can never disagree.
+	static std::optional<AmbientMode> AmbientModeFromPin(std::string_view v) {
+		if (v == "all") return AmbientMode::All;
+		if (v == "baked" || v == "bakedonly") return AmbientMode::Baked;
+		if (v == "lightmaps" || v == "lm") return AmbientMode::Lightmaps;
+		if (v == "probes") return AmbientMode::Probes;
+		if (v == "skyibl" || v == "ibl") return AmbientMode::SkyIbl;
+		if (v == "off" || v == "none") return AmbientMode::Off;
+		return std::nullopt;
+	}
+	// Legacy TOURMALINE_GI overlap: 1/on -> All; 0/off demotes the baked
+	// modes to SkyIbl. nullopt = no change (the spelling is unknown).
+	static std::optional<AmbientMode> LegacyGiAmbientPin(std::string_view v,
+		AmbientMode cur) {
+		if (v == "1" || v == "on")
+			return AmbientMode::All;
+		if (v == "0" || v == "off") {
+			if (cur == AmbientMode::All || cur == AmbientMode::Probes
+				|| cur == AmbientMode::Baked)
+				return AmbientMode::SkyIbl;
+			return std::nullopt; // already non-baked: keep
+		}
+		return std::nullopt;
+	}
+
 	// Headless postfx pins (see the header): the Configure snapshot wins over
 	// the authored scene seed (the AGENTS.md "scene settings lose" contract).
 	// Called at startup Initialize AND after the per-scene PushPostfxEnv seed
@@ -724,6 +751,49 @@ namespace engine {
 		// never to black).
 		if (pins.cubemap.has_value() && !*pins.cubemap)
 			m_cubemapEnabled = false;
+		// ---- GI / ambient render-config pins (the seed's second half;
+		// the getenv twins live in onAttach) ----
+		// Ambient source pin (TOURMALINE_AMBIENT spellings; the N key
+		// stays live after). Applied before the legacy GI overlap so the
+		// legacy demotion sees the pinned mode.
+		if (pins.ambient.has_value()) {
+			if (const std::optional<AmbientMode> m =
+				AmbientModeFromPin(*pins.ambient))
+				m_ambientMode = *m;
+			else
+				std::cerr << "[WorldRenderer] unknown TOURMALINE_AMBIENT value: "
+					<< *pins.ambient << " (all|baked|lightmaps|probes|skyibl|off)\n";
+		}
+		// Legacy TOURMALINE_GI overlap (1/on -> All; 0/off demotes the
+		// baked modes to SkyIbl).
+		if (pins.gi.has_value()) {
+			if (const std::optional<AmbientMode> m =
+				LegacyGiAmbientPin(*pins.gi, m_ambientMode))
+				m_ambientMode = *m;
+			else
+				std::cerr << "[WorldRenderer] unknown TOURMALINE_GI value: "
+					<< *pins.gi << "\n";
+		}
+		// IBL kill (any ambient mode -> Off; All carries sky + baked, so
+		// muting kills all ambient).
+		if (pins.iblKilled && m_ambientMode != AmbientMode::Off)
+			m_ambientMode = AmbientMode::Off;
+		// GI intensity pin (the panel slider's headless twin; validated +
+		// clamped at Parse).
+		if (pins.giIntensity.has_value())
+			m_giIntensity = *pins.giIntensity;
+		// Lightmap branch + probe pre-mix pins (the UI checkboxes stay
+		// live after).
+		if (pins.lightmap.has_value())
+			m_lmEnabled = (*pins.lightmap == OnOffPin::On);
+		if (pins.probePremix.has_value())
+			m_probePremixEnabled = (*pins.probePremix == OnOffPin::On);
+		// EVSM pins (the shadow panel's toggle + the softness A/B knob;
+		// the UI stays live after).
+		if (pins.evsmSet)
+			m_evsmEnabled = pins.evsm;
+		if (pins.evsmSoft >= 0.0f)
+			m_evsmSoftness = pins.evsmSoft;
 	}
 
 	bool WorldRenderer::onAttach() {
@@ -1060,30 +1130,30 @@ namespace engine {
 		}
 		// Ambient / GI source override for headless runs (same states the
 		// N key cycles; the runtime cycle stays live after):
-		//   TOURMALINE_AMBIENT=all|lightmaps|probes|skyibl|off
+		//   TOURMALINE_AMBIENT=all|baked|lightmaps|probes|skyibl|off
+		// (Spellings shared with ApplyHeadlessPostfxOverrides via
+		// AmbientModeFromPin — the pin re-applies after every scene seed
+		// now that the render config seeds m_ambientMode.)
 		if (const char* amb = std::getenv("TOURMALINE_AMBIENT")) {
 			const std::string_view a = trimEnv(amb);
-			if (a == "all") m_ambientMode = AmbientMode::All;
-			else if (a == "lightmaps" || a == "lm") m_ambientMode = AmbientMode::Lightmaps;
-			else if (a == "probes") m_ambientMode = AmbientMode::Probes;
-			else if (a == "skyibl" || a == "ibl") m_ambientMode = AmbientMode::SkyIbl;
-			else if (a == "off" || a == "none") m_ambientMode = AmbientMode::Off;
-			else std::cerr << "[WorldRenderer] unknown TOURMALINE_AMBIENT value: "
-				<< a << " (all|lightmaps|probes|skyibl|off)\n";
+			if (const std::optional<AmbientMode> m = AmbientModeFromPin(a))
+				m_ambientMode = *m;
+			else
+				std::cerr << "[WorldRenderer] unknown TOURMALINE_AMBIENT value: "
+				<< a << " (all|baked|lightmaps|probes|skyibl|off)\n";
 			std::cerr << "[WorldRenderer] ambient source: "
 				<< AmbientModeName(m_ambientMode) << "\n";
 		}
 		// Legacy GI override (pre-ambient-modes runs): 1/on -> All,
-		// 0/off -> out of the baked modes into SkyIbl.
+		// 0/off -> out of the baked modes into SkyIbl. (Shared mapping:
+		// LegacyGiAmbientPin, also used by the post-seed pin re-apply.)
 		if (const char* giEnv = std::getenv("TOURMALINE_GI")) {
 			const std::string_view gi = trimEnv(giEnv);
-			if (gi == "1" || gi == "on") m_ambientMode = AmbientMode::All;
-			else if (gi == "0" || gi == "off") {
-				if (m_ambientMode == AmbientMode::All
-					|| m_ambientMode == AmbientMode::Probes)
-					m_ambientMode = AmbientMode::SkyIbl;
-			}
-			else std::cerr << "[WorldRenderer] unknown TOURMALINE_GI value: " << gi << "\n";
+			if (const std::optional<AmbientMode> m =
+				LegacyGiAmbientPin(gi, m_ambientMode))
+				m_ambientMode = *m;
+			else if (!(gi == "0" || gi == "off"))
+				std::cerr << "[WorldRenderer] unknown TOURMALINE_GI value: " << gi << "\n";
 		}
 		// GI intensity (the panel slider's headless twin): scales the
 		// baked-GI ambient AND the sky-IBL fallback in the lit shader
@@ -2124,6 +2194,39 @@ namespace engine {
 		// the atlas textures for the per-pixel lightmap branch. Missing
 		// file is the normal state (not baked / not opted in) - non-fatal.
 		LoadGiLightmaps();
+		// RENDER-CONFIG RE-SEED (the GI/shadow half of
+		// SceneRenderSettings): the loaders above flip the per-source
+		// opt-ins (m_regEnabled / m_giVolumesEnabled) ON for baked
+		// content after the ResolveSceneLights seed already ran — the
+		// AUTHORED block wins over that on-when-baked default (a scene
+		// that opted out of regular probes / GI volumes stays opted out;
+		// a scene without the block keeps the loader default, the struct
+		// defaults mirroring it). Idempotent for the look half. Runs
+		// BEFORE the degrade below so an authored-but-missing source
+		// still degrades instead of rendering silently empty.
+		if (m_world->scene.hasRenderSettings) {
+			PushPostfxEnv(m_world->scene.renderSettings,
+				m_world->scene.environment);
+			// Headless pins win over the seed (same contract as
+			// ResolveSceneLights above — scene settings lose).
+			ApplyHeadlessPostfxOverrides();
+			// --bench determinism pin (see m_autoExposurePin): the seed
+			// above re-seeds m_autoExposureEnabled from the authored
+			// block; the pin re-applies here, after the seed AND the
+			// headless overrides (an explicit TOURMALINE_AUTO_EXPOSURE
+			// snapshot pin stays the more deliberate choice and wins).
+			if (m_autoExposurePin >= 0)
+				m_autoExposureEnabled = (m_autoExposurePin != 0);
+			std::cerr << "[Scene] render config: gi="
+				<< AmbientModeName(m_ambientMode)
+				<< " intensity=" << m_giIntensity
+				<< " lm=" << (m_lmEnabled ? "on" : "off")
+				<< " reg=" << (m_regEnabled ? "on" : "off")
+				<< " cv=" << (m_giVolumesEnabled ? "on" : "off")
+				<< " premix=" << (m_probePremixEnabled ? "on" : "off")
+				<< " evsm=" << (m_evsmEnabled ? "on" : "off")
+				<< " soft=" << m_evsmSoftness << "\n";
+		}
 		// Single-source isolation modes degrade when their source did not
 		// load (All/SkyIbl need nothing): keeps them from being silently
 		// empty - the UI/env selector keeps working after.
@@ -3611,7 +3714,10 @@ namespace engine {
 	void WorldRenderer::DegradeAmbientForMissingSources() {
 	// Single-source isolation modes whose source did not load fall
 	// back to another baked source (or the sky IBL) instead of being
-	// silently empty. All/SkyIbl/Off never need this.
+	// silently empty. All/SkyIbl/Off/Baked never need this — Baked is
+	// the multi-source isolation (every baked source stays live, the
+	// sky is off ON PURPOSE), so it renders direct-only where nothing
+	// is baked rather than degrading into the sky it excluded.
 	if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
 		m_ambientMode = (m_giLoaded || m_regLoaded || m_giVolumesLoaded)
 			? AmbientMode::Probes : AmbientMode::SkyIbl;
@@ -3623,6 +3729,13 @@ namespace engine {
 			? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
 		std::cerr << "[Scene] no probes - ambient degraded to "
 			<< AmbientModeName(m_ambientMode) << "\n";
+	} else if (m_ambientMode == AmbientMode::Baked
+		&& !m_lmLoaded && !m_giLoaded && !m_regLoaded && !m_giVolumesLoaded) {
+		// No demotion (direct-only is the honest output of the mode's
+		// contract), but never SILENTLY: an empty frame here looks like
+		// a broken bake, so the one-liner keeps the diagnosis obvious.
+		std::cerr << "[Scene] Baked mode: no baked sources loaded - "
+			"direct-only everywhere (bake the scene or switch modes)\n";
 	}
 }
 
@@ -3775,11 +3888,12 @@ namespace engine {
 		// built from the world's scene env by the caller).
 		data.env = env.ToFrameData();
 		// Ambient sources (N cycles All -> Lightmaps -> Probes -> SkyIbl
-		// -> Off): per-source isolation - the sky IBL flag enables the
-		// analytic sky as the ambient FALLBACK (pixels no baked source
-		// covers; the shader composes it after the source branches, so
-		// covered pixels take the baked field alone). Direct light /
-		// sky dome / shadows are unaffected.
+		// -> Off -> Baked): per-source isolation - the sky IBL flag
+		// enables the analytic sky as the ambient FALLBACK (pixels no
+		// baked source covers; the shader composes it after the source
+		// branches, so covered pixels take the baked field alone) AND
+		// gates the GI-volume composite's sky base. Direct light / sky
+		// dome / shadows are unaffected.
 		data.env.fogEndAndFlags.w = IblWanted() ? 1.0f : 0.0f;
 
 		// Reflection cubemap for specular IBL (global fallback) + knobs.

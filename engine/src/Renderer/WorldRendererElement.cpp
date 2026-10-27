@@ -175,8 +175,9 @@ namespace engine {
 			m_renderer.m_vramWindow = !m_renderer.m_vramWindow;
 		}
 		// Ambient / GI source: N cycles All -> Lightmaps -> Probes ->
-		// SkyIbl -> Off (see AmbientMode — single-source isolation for
-		// bisection, All is the production state).
+		// SkyIbl -> Off -> Baked (see AmbientMode — isolation for
+		// bisection, All is the production state, Baked = All minus
+		// the sky fallback).
 		// R cycles the baked-GI debug views (see GI_DEBUG_MODE_COUNT).
 		// F8 is an alias for R. Both work in every ambient mode.
 		if (m_input.isKeyPressed(keybind::AMBIENT_CYCLE)) {

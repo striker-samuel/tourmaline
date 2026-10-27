@@ -272,6 +272,11 @@ inline bool TextureFilteringFromString(std::string_view s, TextureFiltering& out
 //               the palette view splits grid vs volume per pixel)
 //   SkyIbl:     analytic sky IBL only (all baked sources disabled)
 //   Off:        no GI/ambient contribution at all (pure direct sun frame)
+//   Baked:      All's baked sources with the sky IBL fallback OFF —
+//               uncovered pixels and the GI-volume composite base take
+//               direct only (baked-field isolation: what the bakes
+//               contribute alone, no analytic sky anywhere in the
+//               ambient)
 // ---------------------------------------------------------------------------
 enum class AmbientMode : int {
 	All = 0,        // baked GI; sky IBL fallback for uncovered pixels
@@ -279,6 +284,7 @@ enum class AmbientMode : int {
 	Probes = 2,     // baked probe systems only (grids + volume)
 	SkyIbl = 3,     // analytic sky IBL only
 	Off = 4,        // direct light only
+	Baked = 5,      // All minus the sky fallback (baked GI isolation)
 };
 inline const char* AmbientModeName(AmbientMode m) {
 	switch (m) {
@@ -287,6 +293,7 @@ inline const char* AmbientModeName(AmbientMode m) {
 	case AmbientMode::Probes: return "Probes only (grids + volume)";
 	case AmbientMode::SkyIbl: return "Sky IBL only";
 	case AmbientMode::Off: return "Off (direct only)";
+	case AmbientMode::Baked: return "Baked (no sky fallback)";
 	}
 	return "?";
 }
@@ -1181,12 +1188,14 @@ public:
 	// the pins re-apply after the seed (and at startup Configure). The UI
 	// panel stays live afterwards.
 	void ApplyHeadlessVolumetricOverrides();
-	// Postfx look seed (the App panels' settings, authored in SceneEnv):
-	// bloom (complete) + tonemap + exposure + AO + SSR + motion blur +
-	// DOF + AA + cubemap IBL. Runs once per scene load/rebind from the
-	// resolved env; the panels/keys stay live afterwards (the volumetric
-	// contract). Headless TOURMALINE_* pins win over the seed (see
-	// ApplyHeadlessPostfxOverrides).
+	// Postfx look seed (the App panels' settings): bloom (complete) +
+	// tonemap + exposure + AO + SSR + motion blur + DOF + AA + cubemap
+	// IBL, PLUS the render-configuration half (the GI/ambient source, GI
+	// intensity, the per-source opt-ins, probe pre-mix, EVSM shadows —
+	// see the block inside). Runs once per scene load/rebind from the
+	// resolved render settings; the panels/keys stay live afterwards
+	// (the volumetric contract). Headless TOURMALINE_* pins win over the
+	// seed (see ApplyHeadlessPostfxOverrides).
 	// Postfx seed from the RENDER SETTINGS (the split look — see
 	// SceneRenderSettings). The env block still contributes its
 	// "exposure" row (the editor VIEWPORT brightness multiplier — an
@@ -1231,6 +1240,23 @@ public:
 		m_aaMode = static_cast<AaMode>(std::clamp(r.aaMode, 0, 3));
 		m_cubemapEnabled = r.cubemapEnabled;
 		m_cubemapIntensity = std::clamp(r.cubemapIntensity, 0.0f, 4.0f);
+		// ---- RENDER CONFIGURATION (the block's second half: HOW the
+		// renderer runs — the same members the App's GI/shadow panels and
+		// the N key drive; see SceneRenderSettings). Two-step application:
+		// this seed runs once per scene load/rebind (and live per editor
+		// panel edit), but the GI LOADERS (bind path) flip the per-source
+		// opt-ins (m_regEnabled / m_giVolumesEnabled) back on for baked
+		// content — the bind path re-applies this half AFTER the loaders
+		// so the AUTHORED block wins over the on-when-baked default (see
+		// the PushRenderConfig re-seed in onAttach).
+		m_ambientMode = static_cast<AmbientMode>(std::clamp(r.giMode, 0, 5));
+		m_giIntensity = std::clamp(r.giIntensity, 0.0f, 2.0f);
+		m_lmEnabled = r.lightmapsEnabled;
+		m_regEnabled = r.regProbesEnabled;
+		m_giVolumesEnabled = r.giVolumesEnabled;
+		m_probePremixEnabled = r.probePremixEnabled;
+		m_evsmEnabled = r.evsmEnabled;
+		m_evsmSoftness = std::max(r.evsmSoftness, 0.0f);
 	}
 	// Headless postfx pins (the Configure snapshot): same "scene settings
 	// lose" contract as the volumetric ones — called at startup Configure
@@ -2260,8 +2286,9 @@ public:
 	// smvk::gi + Engine/GI). Loaded once at scene init from the
 	// CLUSTER bake-payload channel (ReadBakeBytes: gi/<scene>.sggi,
 	// pak-embedded or editor-injected). N cycles the
-	// ambient source (All -> Lightmaps -> Probes -> SkyIbl -> Off — see
-	// AmbientMode); R / F8 cycle the baked-GI debug views. ----
+	// ambient source (All -> Lightmaps -> Probes -> SkyIbl -> Off ->
+	// Baked — see AmbientMode); R / F8 cycle the baked-GI debug
+	// views. ----
 	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
 	int m_giDebug = 0;             // R / F8 cycle: 0 off, 1 baked irradiance,
 	                                // 2 GI source palette, 3 isolated level,
@@ -2329,21 +2356,26 @@ public:
 	// Ambient-source gating (see AmbientMode): the per-source "wanted"
 	// helpers drive the FrameUniforms enable flags; the *Active() gates
 	// additionally require the content to be loaded. Sky IBL rides the
-	// env flag (All + SkyIbl).
+	// env flag (All + SkyIbl) — Baked deliberately EXCLUDES it (the
+	// isolation: the sky flag also gates the GI-volume composite's sky
+	// base in the lit shader).
 	bool IblWanted() const {
 		return m_ambientMode == AmbientMode::All
 			|| m_ambientMode == AmbientMode::SkyIbl;
 	}
 	bool ProbesWanted() const {
 		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::Baked
 			|| m_ambientMode == AmbientMode::Probes;
 	}
 	bool LmWanted() const {
 		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::Baked
 			|| m_ambientMode == AmbientMode::Lightmaps;
 	}
 	bool RegWanted() const {
 		return m_ambientMode == AmbientMode::All
+			|| m_ambientMode == AmbientMode::Baked
 			|| m_ambientMode == AmbientMode::Probes;
 	}
 	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
@@ -2369,7 +2401,7 @@ public:
 	}
 	void CycleAmbientMode() {
 		m_ambientMode = static_cast<AmbientMode>(
-			(static_cast<int>(m_ambientMode) + 1) % 5);
+			(static_cast<int>(m_ambientMode) + 1) % 6);
 	}
 	void LoadGiOctree();
 	// (LoadCubemaps declared with the cubemap members above.)

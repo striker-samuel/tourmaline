@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm> // std::clamp (the giIntensity pin bound)
 #include <string>
 
 #ifndef _WIN32
@@ -265,6 +266,27 @@ RunConfig RunConfig::Parse() {
 		c.ambient = v;
 	if ((v = Get("TOURMALINE_GI")) != nullptr)
 		c.gi = v;
+	// GI intensity (WorldRenderer.cpp:1092, the atof+clamp getenv twin —
+	// non-numeric parses as 0 like atof, then the clamp bounds it).
+	if ((v = Get("TOURMALINE_GI_INTENSITY")) != nullptr) {
+		c.giIntensity = std::clamp(ToFloat(v, 0.0f), 0.0f, 2.0f);
+	}
+	// Lightmap branch + probe pre-mix on/off pins (the getenv spellings
+	// "1|on|0|off"; invalid warns and stays unset so the authored block wins).
+	if ((v = Get("TOURMALINE_LIGHTMAP")) != nullptr) {
+		bool on = false;
+		if (IsOnOff(Trimmed(v), on))
+			c.lightmap = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_LIGHTMAP (want 0|1): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_PROBE_PREMIX")) != nullptr) {
+		bool on = false;
+		if (IsOnOff(Trimmed(v), on))
+			c.probePremix = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_PROBE_PREMIX (want 0|1): %s\n", v);
+	}
 	c.giDebug = ToInt(Get("TOURMALINE_GI_DEBUG"), -1);
 	c.giDebugLevel = ToInt(Get("TOURMALINE_GI_DEBUG_LEVEL"), -1);
 	if ((v = Get("TOURMALINE_GI_POINTS")) != nullptr)
@@ -399,6 +421,13 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " VOL=%s", onOffStr(*volumetric));
 	if (volumetricSteps)
 		std::fprintf(stderr, " VOL_STEPS=%d", *volumetricSteps);
+	if (giIntensity)
+		std::fprintf(stderr, " GI_INTENSITY=%.2f", static_cast<double>(*giIntensity));
+	if (lightmap)
+		std::fprintf(stderr, " LIGHTMAP=%s", onOffStr(*lightmap));
+	if (probePremix)
+		std::fprintf(stderr, " PROBE_PREMIX=%s", onOffStr(*probePremix));
+	opt(ambient, "AMBIENT");
 	if (capture >= 0)
 		std::fprintf(stderr, " CAPTURE=%d", capture);
 	if (ssrDump >= 0)
@@ -443,6 +472,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_SDSM", "TOURMALINE_EVSM_DUMP", "TOURMALINE_SSR_DUMP",
 		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
 		"TOURMALINE_GI", "TOURMALINE_GI_DEBUG", "TOURMALINE_GI_DEBUG_LEVEL",
+		"TOURMALINE_GI_INTENSITY",
 		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",
 		"TOURMALINE_LIGHTMAP", "TOURMALINE_GI_VOLUMES", "TOURMALINE_HITCH_LOG",
 		"TOURMALINE_MATERIAL_CENSUS", "TOURMALINE_SSR_STENCILVIEW",

@@ -308,6 +308,12 @@ namespace smvk {
 		// cluster scene with a selected env block wins the world slot
 		// (first scene loaded into the world wins). Remapped below.
 		bool activeEnvTaken = false;
+		// Render-settings first-wins (same contract as the env above —
+		// the look + the render config are scene-global, one block):
+		// the first cluster scene carrying an AUTHORED render block
+		// wins the world slots (hasRenderSettings=false never wins, so
+		// an unauthored cluster never shadows an authored one).
+		bool renderTaken = false;
 
 		// World root node (parent = -1)
 		const int root = addNode(scene, -1, 0);
@@ -577,6 +583,19 @@ namespace smvk {
 				scene.envAuthored = true;
 				scene.defaultEnvironment = cs.defaultEnvironment;
 				envTaken = true;
+			}
+			// Render settings (the postfx look + the GI/shadow render
+			// config — see SceneRenderSettings): first-wins like the
+			// resolved env above. Without this the world scene kept
+			// struct defaults and the renderer's PushPostfxEnv seed
+			// never saw an authored look/config at all (pak-hosted
+			// worlds lost the block; the editor's borrowed single-world
+			// path never noticed — it reads its own scene).
+			if (!renderTaken && cs.hasRenderSettings) {
+				scene.renderSettings = cs.renderSettings;
+				scene.defaultRenderSettings = cs.defaultRenderSettings;
+				scene.hasRenderSettings = true;
+				renderTaken = true;
 			}
 			// Default camera (world settings' typed camera.default field):
 			// cluster-space -> world-space offset remap, first-wins across

@@ -106,10 +106,17 @@ struct RunConfig {
 	int decalAutosplat = -1;
 
 	// ---- GI / ambient ----
-	// ambient: all|lightmaps|lm|probes|skyibl|ibl|off|none
+	// ambient: all|baked|lightmaps|lm|probes|skyibl|ibl|off|none
 	std::optional<std::string> ambient;
 	// giLegacy: 1|on|0|off overlap with ambient
 	std::optional<std::string> gi;
+	// giIntensity: 0..2 ambient scale, clamped (the panel slider's
+	// headless twin; unset = authored giIntensity wins)
+	std::optional<float> giIntensity;
+	// lightmap: 1|on|0|off proxy lightmap branch (unset = authored wins)
+	std::optional<OnOffPin> lightmap;
+	// probePremix: 1|on|0|off GPU probe pre-mix (unset = authored wins)
+	std::optional<OnOffPin> probePremix;
 	int giDebug = -1; // 0..4
 	int giDebugLevel = -1; // 0..7
 	bool giPoints = false;

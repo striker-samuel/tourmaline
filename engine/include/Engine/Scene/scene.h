@@ -420,6 +420,26 @@ struct SceneRenderSettings {
 	int aaMode = 3; // 0=Off, 1=Msaa2x, 2=Smaa1x, 3=SmaaT2x
 	bool cubemapEnabled = true;
 	float cubemapIntensity = 1.0f;
+	// RENDER CONFIGURATION (the block's second half — HOW the renderer
+	// runs, not what the image looks like): the GI/ambient source
+	// selection + the per-source opt-ins + the probe pre-mix + EVSM
+	// moment shadows. Seeds the SAME members the App's GI/shadow panels
+	// and the N key/O checkbox drive (see WorldRenderer::PushPostfxEnv).
+	// Defaults MIRROR the engine's unauthored state so a scene without
+	// this block renders exactly as before (regProbes/giVolumes ride the
+	// loaders' on-when-baked default, lightmaps/EVSM are opt-in off).
+	int giMode = 0;                  // 0..5 — AmbientMode (All/Lightmaps/
+	                                 // Probes/SkyIbl/Off/Baked — the App's
+	                                 // N cycle; Baked = All minus the sky
+	                                 // fallback)
+	float giIntensity = 1.0f;        // baked-GI + sky-IBL ambient scale
+	                                 // (0 = direct sun only, 2 = double)
+	bool lightmapsEnabled = false;   // proxy lightmap branch (opt-in)
+	bool regProbesEnabled = true;    // regular probe grids (dynamic-object GI)
+	bool giVolumesEnabled = true;    // convex GI volumes (confined-space GI)
+	bool probePremixEnabled = true;  // GPU probe pre-mix (single-fetch path)
+	bool evsmEnabled = false;        // EVSM moment shadows (else PCF)
+	float evsmSoftness = 1.0f;       // EVSM penumbra artistic scale (0 = hard)
 };
 
 // Authored-environment binary record (see saveEnvFloats/loadEnvFloats
@@ -429,10 +449,12 @@ struct SceneRenderSettings {
 // Bools/modes ride as 0/1 floats.
 inline constexpr int kSceneEnvFloatCount = 17;
 // Render-settings record (see saveRenderFloats/loadRenderFloats):
-// 27 floats, the look block's fixed order (bloom 3 + tonemap 1 +
-// exposure 7 + AO 9 + SSR 2 + motionblur/dof/aa 3 + cubemap 2).
-// Bools/modes ride as 0/1 floats.
-inline constexpr int kSceneRenderFloatCount = 27;
+// 35 floats, the look block's fixed order (bloom 3 + tonemap 1 +
+// exposure 7 + AO 9 + SSR 2 + motionblur/dof/aa 3 + cubemap 2) + the
+// render-config tail 8 (giMode + giIntensity + the five toggles +
+// evsmSoftness). Bools/modes ride as 0/1 floats. Old 27-float files
+// fail the read loudly (the sanctioned no-conversions break).
+inline constexpr int kSceneRenderFloatCount = 35;
 
 struct Scene {
 

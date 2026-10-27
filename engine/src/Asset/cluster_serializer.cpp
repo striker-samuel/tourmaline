@@ -328,7 +328,10 @@ void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
 }
 
 // Render-settings record (see SceneRenderSettings): the global postfx
-// look — 28 words, written ONCE per scene (never per env block).
+// look + render config — 36 words, written ONCE per scene (never per
+// env block). The 8-word tail carries the GI/ambient source + the
+// per-source opt-ins + probe pre-mix + EVSM shadows; older paks fail
+// the reader loudly on the trailing-bytes check (the sanctioned break).
 void PutSceneRenderSettings(std::vector<uint8_t>& out,
 	const SceneRenderSettings& r) {
 	PutU32(out, r.bloomEnabled ? 1u : 0u);
@@ -358,6 +361,15 @@ void PutSceneRenderSettings(std::vector<uint8_t>& out,
 	PutU32(out, uint32_t(r.aaMode));
 	PutU32(out, r.cubemapEnabled ? 1u : 0u);
 	PutF32(out, r.cubemapIntensity);
+	// Render-config tail (the GI/shadow configuration half).
+	PutU32(out, uint32_t(r.giMode));
+	PutF32(out, r.giIntensity);
+	PutU32(out, r.lightmapsEnabled ? 1u : 0u);
+	PutU32(out, r.regProbesEnabled ? 1u : 0u);
+	PutU32(out, r.giVolumesEnabled ? 1u : 0u);
+	PutU32(out, r.probePremixEnabled ? 1u : 0u);
+	PutU32(out, r.evsmEnabled ? 1u : 0u);
+	PutF32(out, r.evsmSoftness);
 }
 
 struct Cursor {
@@ -483,6 +495,16 @@ struct Cursor {
 		r.aaMode = int(u32());
 		r.cubemapEnabled = u32() != 0;
 		r.cubemapIntensity = f32();
+		// Render-config tail (mirrors PutSceneRenderSettings): the GI/
+		// ambient source + per-source opt-ins + probe pre-mix + EVSM.
+		r.giMode = int(u32());
+		r.giIntensity = f32();
+		r.lightmapsEnabled = u32() != 0;
+		r.regProbesEnabled = u32() != 0;
+		r.giVolumesEnabled = u32() != 0;
+		r.probePremixEnabled = u32() != 0;
+		r.evsmEnabled = u32() != 0;
+		r.evsmSoftness = f32();
 		return r;
 	}
 };
@@ -1613,15 +1635,15 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		// Render settings (the postfx look): u32 authored flag + ONE
 		// record. Blobs from before the split end after the env section —
 		// the struct defaults stand (the sanctioned break).
-		if (c.off < c.img.size()) {
-			const uint32_t renderFlag = c.u32();
-			SceneRenderSettings rs = c.sceneRenderSettings();
-			if (!c.ok)
-				return fail("truncated scene render settings section");
-			scene.renderSettings = rs;
-			scene.defaultRenderSettings = rs;
-			scene.hasRenderSettings = renderFlag != 0;
-		}
+	if (c.off < c.img.size()) {
+		const uint32_t renderFlag = c.u32();
+		SceneRenderSettings rs = c.sceneRenderSettings();
+		if (!c.ok)
+			return fail("truncated scene render settings section");
+		scene.renderSettings = rs;
+		scene.defaultRenderSettings = rs;
+		scene.hasRenderSettings = renderFlag != 0;
+	}
 		// Default camera (v10): the authored camera node the runtime App
 		// spawns at (see the writer above). v9 blobs end after the env
 		// section — defaultCameraNode stays UINT32_MAX (no default).
