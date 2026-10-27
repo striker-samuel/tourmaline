@@ -105,6 +105,18 @@ publication point defer to the next frame — by design.
   identity through the pager, fidelity-tested against a dense reference
   (including exact brick-boundary positions and the
   sqrt-filtering-noncommutativity bound).
+- **World env tiles** (`WorldEnvTiles`): the environment zone system's
+  runtime rework — the retired per-frame zone ring (64 x 144 B packed
+  every frame) and the per-pixel OBB walk are gone; the zone tables BAKE
+  onto the 64 m subcell grid on a dirty hash (load/edit only), and the
+  terrain/volumetric shaders resolve a zone by TILE ADDRESS (the cell's
+  dominant record + weight + the vertical split for underwater/interior
+  half-spaces). The authoring surface is unchanged (the editor's OBB
+  volumes + the tour/pak keys are the bake's input). Records[0] = the
+  base (the default environment — the old zone-zero). Fidelity contract:
+  the winner selection + weights are the retired walk's exact math at
+  tile-sample positions; zones coarser than a tile are faithful, fade
+  bands quantize to 64 m granularity by design.
 
 The App wiring: `WorldRenderer` owns the partition + the provider +
 the work pool; the frame builds the camera interest (position +
