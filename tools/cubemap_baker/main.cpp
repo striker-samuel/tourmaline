@@ -98,7 +98,7 @@ struct Args {
 	std::string prefilter = "box";
 	uint32_t prefilterRays = 128; // GGX samples per output texel
 	uint32_t bounces = 5; // diffuse path depth after the first hit (NEE at every vertex)
-	uint32_t spp = 8;             // transport paths per capture texel (bounce GI)
+	uint32_t spp = 32;            // transport paths per capture texel (bounce GI)
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -926,6 +926,65 @@ int main(int argc, char** argv) {
 			}
 			for (auto& fu : futures)
 				fu.get();
+
+			// ---- Post-capture cleanup (the bake-quality rework): a
+			// firefly clamp (two-pass, to 8x the face mean — the same
+			// pattern the GI probe/volume bakes use) then a small 3x3
+			// center-weighted blur (the lightmap denoise pattern: the
+			// kernel removes speckle without erasing the directional
+			// signal). Level 0 of the prefilter chain is a copy of the
+			// base, so cleaning the base cleans the whole chain.
+			// NOTE: in-face 3x3 (seam-aware blur would cross faces via
+			// DirectionToFaceUv — a refinement if face-edge seams show).
+			{
+				for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+					std::vector<float>& face = faces[f];
+					// Pass 1: the face's mean radiance (firefly reference).
+					glm::vec3 mean(0.0f);
+					size_t n = 0;
+					for (size_t i = 0; i < face.size(); i += 4) {
+						mean += glm::vec3(face[i], face[i + 1], face[i + 2]);
+						++n;
+					}
+					if (n > 0)
+						mean /= float(n);
+					const glm::vec3 cap = mean * 8.0f;
+					// Pass 2: clamp outliers (hue-preserving per-channel
+					// min, the bake.cpp firefly pattern).
+					for (size_t i = 0; i < face.size(); i += 4) {
+						face[i] = std::min(face[i], cap.r);
+						face[i + 1] = std::min(face[i + 1], cap.g);
+						face[i + 2] = std::min(face[i + 2], cap.b);
+					}
+					// 3x3 center-weighted blur (center 4, orthogonal 1,
+					// diagonal 0.5 — the lightmap denoise kernel). The
+					// kernel operates on RGBA32F in-place (a copy for
+					// the source).
+					const std::vector<float> src = face;
+					auto tap = [&](int32_t x, int32_t y, int32_t c) -> float {
+						x = std::clamp(x, 0, int32_t(S) - 1);
+						y = std::clamp(y, 0, int32_t(S) - 1);
+						return src[(size_t(y) * S + size_t(x)) * 4 + size_t(c)];
+					};
+					for (uint32_t y = 0; y < S; ++y)
+						for (uint32_t x = 0; x < S; ++x)
+							for (uint32_t c = 0; c < 3; ++c) {
+								float sum = 4.0f * tap(int32_t(x), int32_t(y), c);
+								float w = 4.0f;
+								static constexpr int32_t kOx[4] = { 1, -1, 0, 0 };
+								static constexpr int32_t kOy[4] = { 0, 0, 1, -1 };
+								static constexpr int32_t kDx[4] = { 1, 1, -1, -1 };
+								static constexpr int32_t kDy[4] = { 1, -1, 1, -1 };
+								for (uint32_t k = 0; k < 4; ++k) {
+									sum += 1.0f * tap(int32_t(x) + kOx[k], int32_t(y) + kOy[k], c);
+									w += 1.0f;
+									sum += 0.5f * tap(int32_t(x) + kDx[k], int32_t(y) + kDy[k], c);
+									w += 0.5f;
+								}
+								face[(size_t(y) * S + size_t(x)) * 4 + c] = sum / w;
+							}
+				}
+			}
 
 			std::vector<std::vector<std::vector<float>>> chains;
 			chains.reserve(smvk::kCubemapFaceCount);

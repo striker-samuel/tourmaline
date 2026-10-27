@@ -296,7 +296,7 @@ namespace cooktool {
 		// path estimate — 1 spp reads as speckle, not GI, and the capture
 		// stops representing the (multi-ray, denoised) lightmapped scene.
 		// 8 spp smooths the bounce term at ~8x capture cost.
-		uint32_t cubemapSpp = 8;
+		uint32_t cubemapSpp = 32;
 		std::vector<std::string> cubemapPos; // repeatable "x,y,z" (empty =
 		// bounds center at cubemapHeight)
 		float cubemapHeight = 1.5f;
@@ -3287,6 +3287,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	CubemapBakeConfigHashInputs cfgHash{};
 	cfgHash.size = args.cubemapSize;
 	cfgHash.rays = args.cubemapRays;
+	cfgHash.spp = args.cubemapSpp;
 	cfgHash.maskTransmission = args.maskTransmission;
 	tool::err() << "  [CUBE] invalidation state: oldRows="
 		<< oldRows.size() << " oldReach=" << oldReach.entries.size()
@@ -3540,6 +3541,54 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		}
 		for (auto& fu : futures)
 			fu.get();
+
+		// ---- Post-capture cleanup (the bake-quality rework — same as
+		// the cubemap_baker): firefly clamp (two-pass to 8x the face
+		// mean) then a 3x3 center-weighted blur (the lightmap denoise
+		// kernel). Level 0 of the prefilter is a copy of the base, so
+		// cleaning the base cleans the whole chain.
+		{
+			for (uint32_t f = 0; f < smvk::kCubemapFaceCount; ++f) {
+				std::vector<float>& face = faces[f];
+				glm::vec3 mean(0.0f);
+				size_t n = 0;
+				for (size_t i = 0; i < face.size(); i += 4) {
+					mean += glm::vec3(face[i], face[i + 1], face[i + 2]);
+					++n;
+				}
+				if (n > 0)
+					mean /= float(n);
+				const glm::vec3 cap = mean * 8.0f;
+				for (size_t i = 0; i < face.size(); i += 4) {
+					face[i] = std::min(face[i], cap.r);
+					face[i + 1] = std::min(face[i + 1], cap.g);
+					face[i + 2] = std::min(face[i + 2], cap.b);
+				}
+				const std::vector<float> src = face;
+				auto tap = [&](int32_t x, int32_t y, int32_t c) -> float {
+					x = std::clamp(x, 0, int32_t(S) - 1);
+					y = std::clamp(y, 0, int32_t(S) - 1);
+					return src[(size_t(y) * S + size_t(x)) * 4 + size_t(c)];
+				};
+				for (uint32_t y = 0; y < S; ++y)
+					for (uint32_t x = 0; x < S; ++x)
+						for (uint32_t c = 0; c < 3; ++c) {
+							float sum = 4.0f * tap(int32_t(x), int32_t(y), c);
+							float w = 4.0f;
+							static constexpr int32_t kOx[4] = { 1, -1, 0, 0 };
+							static constexpr int32_t kOy[4] = { 0, 0, 1, -1 };
+							static constexpr int32_t kDx[4] = { 1, 1, -1, -1 };
+							static constexpr int32_t kDy[4] = { 1, -1, 1, -1 };
+							for (uint32_t k = 0; k < 4; ++k) {
+								sum += 1.0f * tap(int32_t(x) + kOx[k], int32_t(y) + kOy[k], c);
+								w += 1.0f;
+								sum += 0.5f * tap(int32_t(x) + kDx[k], int32_t(y) + kDy[k], c);
+								w += 0.5f;
+							}
+							face[(size_t(y) * S + size_t(x)) * 4 + c] = sum / w;
+						}
+			}
+		}
 
 		// GGX-preconvolve into the specular mip chain (one face per
 		// worker; roughness = level / (levels - 1)).

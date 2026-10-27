@@ -401,6 +401,7 @@ std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
 	hs.feedPod(pinned);
 	hs.feedPod(cfg.size);
 	hs.feedPod(cfg.rays);
+	hs.feedPod(cfg.spp);
 	hs.feedPod(cfg.maskTransmission);
 	// The OBSERVED reach: the recorded cells' CURRENT grid hashes (a
 	// cell now absent = empty geometry = the stable empty marker). This

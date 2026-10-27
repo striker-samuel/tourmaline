@@ -171,6 +171,7 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 struct CubemapBakeConfigHashInputs {
 	uint32_t size = 128;
 	uint32_t rays = 128;
+	uint32_t spp = 32; // transport paths per texel (bumping this re-captures)
 	bool maskTransmission = false;
 };
 using CellId = std::array<int32_t, 3>;
