@@ -294,18 +294,19 @@ FogGiSample SampleFogGi(const FrameUniforms frame, float3 worldPos, uint lod)
         result.radiance = gi.rgb;
         result.resident = true;
 
-        // Coverage: the SEPARATE BC4 coverage field (field id 2) shares
-        // the same page table entry (same brick/slot — paired fields
-        // publish together). Sample its atlas at the same uvw.
+        // Coverage: the SEPARATE BC4 coverage field (field id 2). It has
+        // its OWN page table + slot assignments (independent LRU from
+        // the radiance field — the same brick coordinate maps to
+        // different physical slots), so we resolve it through its own
+        // SampleWorldField walk rather than reusing the radiance field's
+        // uvw (which would address the WRONG slot in the coverage
+        // atlas). SampleWorldField handles the page-table lookup, the
+        // coarser-walk, and the fallback (not resident = fallbackValue
+        // = 0 = uncovered = the sky fallback in the fog shader).
         if (WORLD_FIELD_ID_FOG_GI + 1u < frame.worldFieldCount) {
-            const WorldFieldGpu cf = WorldFieldLoadField(
-                frame.worldFields, WORLD_FIELD_ID_FOG_GI + 1u, h.h.y);
-            if (cf.meta.x != 0xffffffffu) {
-                Texture3D<float4> covAtlas = volumeTextures[
-                    NonUniformResourceIndex(cf.meta.x)];
-                const float4 cov = covAtlas.SampleLevel(samplers[2], uvw, 0.0);
-                result.coverage = cov.r;
-            }
+            const float4 cov = SampleWorldField(
+                frame, WORLD_FIELD_ID_FOG_GI + 1u, worldPos, l);
+            result.coverage = cov.r;
         }
 
         // If the coverage field is absent, treat resident as covered

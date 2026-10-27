@@ -3977,6 +3977,63 @@ namespace engine {
 
 	WorldFogGiMeanSource g_fogGiMeanSource;
 
+	// ---------------------------------------------------------------------------
+	// The fog-GI COVERAGE field source: encodes the SG probe coverage
+	// signal (covered vs uncovered) as BC4 bricks. The paired sampler
+	// (SampleFogGi) fetches this alongside the radiance atlas — the
+	// coverage channel distinguishes a genuinely dark covered voxel
+	// (radiance ~0, coverage ~1: use the dark value) from an uncovered
+	// position (coverage ~0: fall to the sky mean) — BC6H RGB cannot
+	// carry that in alpha. v1 encodes the binary covered/uncovered from
+	// the CPU reference walk (SgGiVolume::Sample's bool); the gradual
+	// weight-proportional fade at walls is a refinement (the binary
+	// field already preserves the wall-rejection behavior: a position
+	// behind every covering probe's visibility = uncovered = sky).
+	// ---------------------------------------------------------------------------
+	class WorldFogGiCoverageSource final : public worldfields::IWorldFieldBrickSource
+	{
+	public:
+		bool GenerateBrick(const worldfields::WorldFieldDesc& field,
+			uint32_t lod, int32_t x, int32_t y, int32_t z,
+			std::byte* payload, size_t payloadBytes) override
+		{
+			const uint32_t stored = worldfields::kBrickStoredRes;
+			const size_t blockBytes = worldfields::StoredBrickBlockBytes(
+				stored, 4, 4, 8); // BC4 (8 B/block, same as the density field)
+			assert(payloadBytes == blockBytes
+				&& field.format == smvk::Format::BC4_UNorm);
+			if (payloadBytes != blockBytes)
+				return false;
+			if (!g_fogGiVolume || g_fogGiVolume->levelCount == 0)
+				return false;
+
+			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
+			const glm::vec3 brickMin = field.originMeters
+				+ glm::vec3(float(x), float(y), float(z))
+					* (float(worldfields::kBrickInteriorRes) * voxel);
+			std::vector<uint8_t> texels(size_t(stored) * stored * stored);
+			size_t i = 0;
+			for (uint32_t tz = 0; tz < stored; ++tz)
+				for (uint32_t ty = 0; ty < stored; ++ty)
+					for (uint32_t tx = 0; tx < stored; ++tx) {
+						const glm::vec3 texel = brickMin
+							+ glm::vec3(
+								float(tx) + 0.5f - float(worldfields::kBrickBorder),
+								float(ty) + 0.5f - float(worldfields::kBrickBorder),
+								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
+						glm::vec3 amps[smvk::gi::kSgLobeCount];
+						// Binary coverage: covered = 255, uncovered = 0.
+						// The paired sampler's 0.02 threshold maps to ~5/255.
+						texels[i++] = g_fogGiVolume->Sample(texel, amps)
+							? 255 : 0;
+					}
+			return worldfields::Bc4EncodeBrick(texels.data(), stored,
+				payload, payloadBytes) == payloadBytes;
+		}
+	};
+
+	WorldFogGiCoverageSource g_fogGiCoverageSource;
+
 	} // namespace
 
 	void WorldRenderer::InitWorldFields()
@@ -4067,6 +4124,43 @@ namespace engine {
 		std::cerr << "[WorldFields] fog-GI mean field registered (id 1, "
 			"BC6H radiance, " << fogGi.lodCount << " LODs @2 m, "
 			"4x4x3 pool)\n";
+
+		// ---- The fog-GI COVERAGE field — id 2 (the paired BC4 visibility
+		// texture): the same world addressing + brick coordinates + halos
+		// as the radiance field (id 1), encoding the SG probe
+		// covered/uncovered signal. The paired sampler (SampleFogGi)
+		// fetches it alongside the radiance atlas — the coverage channel
+		// distinguishes a genuinely dark covered voxel from an uncovered
+		// position (the sky fallback), which BC6H RGB cannot carry in
+		// alpha.
+		worldfields::WorldFieldDesc fogGiCov{};
+		fogGiCov.name = "WorldFogGiCoverage";
+		fogGiCov.format = smvk::Format::BC4_UNorm;
+		fogGiCov.encoding = worldfields::WorldFieldEncoding::Linear;
+		fogGiCov.updateMode = worldfields::WorldFieldUpdateMode::StaticStreamed;
+		fogGiCov.baseVoxelSizeMeters = 2.0f; // SAME as the radiance field (paired)
+		fogGiCov.lodCount = 2; // 2 m + 4 m (SAME as the radiance field)
+		fogGiCov.tableDimX = 4;
+		fogGiCov.tableDimY = 2;
+		fogGiCov.tableDimZ = 4;
+		fogGiCov.poolSlotsX = 4;
+		fogGiCov.poolSlotsY = 4;
+		fogGiCov.poolSlotsZ = 3;
+		fogGiCov.decodeScale = glm::vec4(1.0f);
+		fogGiCov.decodeBias = glm::vec4(0.0f);
+		fogGiCov.fallbackValue = glm::vec4(0.0f); // uncovered (sky fallback)
+
+		worldfields::WorldFieldHandle covHandles[1] = {};
+		worldfields::IWorldFieldBrickSource* covSources[1] = {
+			&g_fogGiCoverageSource
+		};
+		const uint32_t registeredCov =
+			m_worldFields.RegisterFields(&fogGiCov, 1, covHandles);
+		if (registeredCov == 1)
+			m_worldFields.SetBrickSources(covHandles, covSources, 1);
+		std::cerr << "[WorldFields] fog-GI coverage field registered (id 2, "
+			"BC4 visibility, " << fogGiCov.lodCount << " LODs @2 m, "
+			"paired with the radiance field)\n";
 	}
 
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
