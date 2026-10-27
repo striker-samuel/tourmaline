@@ -7,35 +7,40 @@ code identifiers, giAsset kind "givolume", TOURMALINE_GI_VOLUMES /
 TOURMALINE_VOLUMETRIC_GI_VOLUMES env knobs. Old baked data refuses
 gracefully at load ("givolume: bad magic"); re-bake to migrate.)
 
-(Known bug, pre-existing, found during the cvol->GiVolume rename's
-recook verification: cook_sponza.bat can never embed GI into its pak)
-
-The bat's Pak.exe line has NO --tour, so the pak packs the plain
-.geometry artifact (no tour replay -> no authored GI volume nodes, no
-bake bindings, no captures registered): the header's "Pak.exe embeds
-both ... + registers the bindings" describes a flow the invocation
-never exercises. The pak that actually carries the GI stack (the
-build dir's sponza_1.pak: sggi + givolume + cubemaps + bindings) came
-from the EDITOR cook flow, not the bat.
-
-Even WITH --tour added, the pak's freshness gate refuses every bake:
-GiVolumeBakeUnitHash folds the BakeCellGrid of the scene it is handed,
-and the two tools hand it DIFFERENT scenes — GiBaker builds its grid
-over the RAW .geometry cluster, the pak gate recomputes over the
-COOKED cluster (LOD siblings + meshlets cooked in by the bat's
---lods/--meshlets), so the grid component of the hash can never match
-(observed: recorded grid=39a47ca2... fresh=049094d9..., env+lights
-identical). The gate is working as designed (the bake and the pack DO
-describe different geometry sets); the bug is that the bat's
-raw-cluster bake path was never aligned with the cooked-cluster gate.
-The editor flow does not hit this (it bakes and packs the same cooked
-scene).
-
-Fix options (unimplemented): bake the bat's GiBaker step against the
-cooked cluster (hand it the cooked scene, not the tour's raw
-reference), or gate on the raw-cluster grid on the pak side, or drop
---lods/--meshlets from the bat so raw == cooked geometry. Until then:
-build sponza GI paks through the editor cook.
+(FIXED — the canonical project pipeline, 2026-10): cook_sponza.bat can
+never embed GI into its pak — RESOLVED. The bat now drives the project
+pipeline (Project.exe init/build; see the asset-pipeline spec) and every
+historical cause is gone:
+  1. The bat's Pak.exe line had NO --tour: the orchestrator passes the
+     project's scene tour, so the pak replays the definition (bindings,
+     volumes, captures registered).
+  2. The raw-vs-cooked grid mismatch: import now BAKES the LOD chains +
+     meshlets into the .geometry (DeriveConfig carries the LOD settings;
+     the manifest records the import fingerprint), and Cook no longer
+     regenerates or writes geometry back (markers only) — GiBaker and
+     the pak gate resolve the SAME canonical .geometry, so the grid
+     component of every unit hash matches by construction.
+  3. The CLI-override mismatch (the bat's GiBaker --mask-transmission on
+     vs the gate's canonical exportSettings value): maskTransmission is
+     now AUTHORED on the tour's exportSettings node (setExportAttr -ref
+     0 -at maskTransmission -v on) and every stage reads it from there —
+     GiBaker, the Cook capture bake (the merge list gained the row), and
+     the pak gate's canonical config.
+  4. The tour's root reference was ABSOLUTE (F:/content/...), which broke
+     mesh-URI registration (NormalizeAssetUri rejects drive-letter
+     absolutes) and shipped meshleted=0: the tour now references the
+     .geometry project-relatively, and the build orchestrator REJECTS
+     absolute references outright.
+  5. GiBaker's re-bake skips now require the bound artifact to EXIST —
+     a fresh project checkout (matching hashes, missing files) bakes
+     instead of handing the pak a bound-but-unreadable record.
+Verified end-to-end from a clean project: Project.exe init --from-gltf
+--from-scene, then build twice — first build reimports + cooks captures
+(with weave) + bakes the world field + both GI volumes + paks with the
+freshness gate ACCEPTING everything (sggi + 2 givolumes + the capture
+set embedded, meshleted=300/300, 12959 meshlets); the second build
+reimports nothing and GiBaker skips every unit. The App renders the full
+GI stack from the pak (131070-probe octree + 2 volumes + cubemaps).
 
 (Texture Viewer close: DEVICE LOST — open, elusive)
 Closing the Texture Viewer (title-bar X; the backtick toggle likely the

@@ -14,12 +14,15 @@
 // Exit codes: 0 success, 1 pipeline failure, 2 usage.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include <project_pipeline/build_pipeline.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
 
@@ -36,6 +39,11 @@ int Usage(const char* prog) {
 		<< "         [--lod-error 0.01] [--shader-lods] [--force]\n"
 		<< "         copy the source into the project + derive the native\n"
 		<< "         artifact family (idempotent: unchanged = no-op)\n"
+		<< "  build  --project <dir> --output <pak>\n"
+		<< "         [--scene content/scenes/<scene>.tour]\n"
+		<< "         reimport stale sources -> Cook -> GiBaker -> Pak (the\n"
+		<< "         bake-freshness gate refuses stale bakes; a failed\n"
+		<< "         build never replaces the last valid pak)\n"
 		<< "  status --project <dir>\n"
 		<< "         report every imported source: current, or why not\n";
 	return 2;
@@ -67,7 +75,8 @@ int main(int argc, const char* argv[]) {
 	const std::string cmd = argv[1];
 
 	// Shared flag scan.
-	std::string projectDir, source, name, ratiosCsv;
+	std::string projectDir, source, name, ratiosCsv, scene, output,
+		fromScene;
 	bool fromGltf = false, force = false;
 	bool noLods = false, noMeshlets = false, shaderLods = false;
 	bool ratiosSet = false, errorSet = false;
@@ -91,6 +100,21 @@ int main(int argc, const char* argv[]) {
 			name = argv[++i];
 		else if (std::strncmp(a, "--name=", 7) == 0)
 			name = a + 7;
+		else if ((std::strcmp(a, "--scene") == 0) && i + 1 < argc)
+			scene = argv[++i];
+		else if (std::strncmp(a, "--scene=", 8) == 0)
+			scene = a + 8;
+		else if ((std::strcmp(a, "--from-scene") == 0) && i + 1 < argc)
+			fromScene = argv[++i];
+		else if (std::strncmp(a, "--from-scene=", 13) == 0)
+			fromScene = a + 13;
+		else if ((std::strcmp(a, "--output") == 0
+				|| std::strcmp(a, "--out-pak") == 0) && i + 1 < argc)
+			output = argv[++i];
+		else if (std::strncmp(a, "--output=", 9) == 0)
+			output = a + 9;
+		else if (std::strncmp(a, "--out-pak=", 10) == 0)
+			output = a + 10;
 		else if ((std::strcmp(a, "--lod-ratios") == 0) && i + 1 < argc) {
 			ratiosCsv = argv[++i];
 			ratiosSet = true;
@@ -136,17 +160,104 @@ int main(int argc, const char* argv[]) {
 		}
 		std::cout << "Project " << (created ? "created" : "adopted")
 			<< ": " << p.root << " (name '" << p.name << "')\n";
-		if (!fromGltf)
+		// Persist the default build settings on first creation (the
+		// project owns the stage flags — scripts never duplicate them).
+		if (created) {
+			std::error_code ec;
+			std::filesystem::create_directories(
+				p.DerivedDataDir(), ec);
+			const std::filesystem::path bs =
+				std::filesystem::path(p.DerivedDataDir())
+				/ "build-settings.txt";
+			if (!std::filesystem::is_regular_file(bs, ec)) {
+				std::ofstream out(bs, std::ios::binary
+					| std::ios::trunc);
+				if (out)
+					out << "# Tourmaline project build settings (the"
+						" stage flags the build orchestrator reads;\n"
+						"# edit here, never in a batch script)\n"
+						"cubemap=on\n"
+						"lightmap=off\n"
+						"giBackend=embree\n"
+						"giMaxProbes=131072\n";
+			}
+		}
+		if (!fromGltf && fromScene.empty())
 			return 0;
-		// --from-gltf = the normal import right after creation (the same
-		// path as a separate 'import' command — no special casing).
+		// --from-gltf / --from-scene = the normal import/seed right
+		// after creation (the same paths as separate commands).
 	}
 
-	if (cmd == "import" || (cmd == "init" && fromGltf)) {
-		if (source.empty()) {
-			std::cerr << (cmd == "import"
-				? "--source is required.\n"
-				: "--from-gltf is required.\n");
+	if (cmd == "import" || (cmd == "init"
+			&& (fromGltf || !fromScene.empty()))) {
+		std::string err;
+		smvk::project::Project p =
+			smvk::project::Project::Open(projectDir, err);
+		if (!p.Valid()) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		// The import half (--from-gltf or a bare 'import').
+		if (!source.empty() || fromGltf) {
+			if (source.empty()) {
+				std::cerr << (cmd == "import"
+					? "--source is required.\n"
+					: "--from-gltf is required.\n");
+				return Usage(argv[0]);
+			}
+			smvk::project::ImportRequest req;
+			req.project = p;
+			req.source = std::filesystem::path(source);
+			req.settings.lods = !noLods;
+			req.settings.meshlets = !noMeshlets;
+			req.settings.shaderLods = shaderLods;
+			if (ratiosSet
+					&& !ParseRatios(ratiosCsv, req.settings.lodRatios)) {
+				std::cerr << "bad --lod-ratios '" << ratiosCsv
+					<< "' (want comma-separated fractions in (0,1), e.g."
+					" 0.75,0.5,0.3)\n";
+				return 2;
+			}
+			if (errorSet)
+				req.settings.lodTargetError = lodError;
+			req.force = force;
+			smvk::project::ImportResult result;
+			if (!smvk::project::ImportProjectAsset(req, result, err)) {
+				std::cerr << "import failed: " << err << "\n";
+				return 1;
+			}
+			if (!result.derived)
+				std::cout << "Import current (no work): "
+					<< result.geometry.generic_string() << "\n";
+			else
+				std::cout << "Imported: "
+					<< result.projectSource.generic_string()
+					<< "\n  geometry=" << result.geometry.generic_string()
+					<< "\n  guid=" << result.guid
+					<< "\n  blobs=" << result.geometryBlobs
+					<< " lods=" << result.lodLevels
+					<< " meshletSets=" << result.meshletSets << "\n";
+		}
+		// The scene-seed half (--from-scene; runs after the import so the
+		// reference re-pointing knows the imported family).
+		if (!fromScene.empty()) {
+			const std::string stem = std::filesystem::path(
+				source.empty() ? fromScene : source).stem().string();
+			const std::string seeded =
+				smvk::project::SeedProjectScene(p, fromScene, stem, err);
+			if (seeded.empty()) {
+				std::cerr << "scene seed failed: " << err << "\n";
+				return 1;
+			}
+			std::cout << "Scene: " << seeded
+				<< " (authored scenes are never regenerated)\n";
+		}
+		return 0;
+	}
+
+	if (cmd == "build") {
+		if (output.empty()) {
+			std::cerr << "--output <pak> is required.\n";
 			return Usage(argv[0]);
 		}
 		std::string err;
@@ -156,37 +267,19 @@ int main(int argc, const char* argv[]) {
 			std::cerr << err << "\n";
 			return 1;
 		}
-		smvk::project::ImportRequest req;
-		req.project = p;
-		req.source = std::filesystem::path(source);
-		req.settings.lods = !noLods;
-		req.settings.meshlets = !noMeshlets;
-		req.settings.shaderLods = shaderLods;
-		if (ratiosSet && !ParseRatios(ratiosCsv, req.settings.lodRatios)) {
-			std::cerr << "bad --lod-ratios '" << ratiosCsv
-				<< "' (want comma-separated fractions in (0,1), e.g."
-				" 0.75,0.5,0.3)\n";
-			return 2;
-		}
-		if (errorSet)
-			req.settings.lodTargetError = lodError;
-		req.force = force;
-		smvk::project::ImportResult result;
-		if (!smvk::project::ImportProjectAsset(req, result, err)) {
-			std::cerr << "import failed: " << err << "\n";
+		smvk::project::BuildOptions opts;
+		opts.scene = scene;
+		opts.outputPak = output;
+		smvk::project::BuildReport report;
+		if (!smvk::project::BuildProject(p, opts, report, err)) {
+			std::cerr << "build failed: " << err << "\n";
 			return 1;
 		}
-		if (!result.derived) {
-			std::cout << "Import current (no work): "
-				<< result.geometry.generic_string() << "\n";
-			return 0;
-		}
-		std::cout << "Imported: " << result.projectSource.generic_string()
-			<< "\n  geometry=" << result.geometry.generic_string()
-			<< "\n  guid=" << result.guid
-			<< "\n  blobs=" << result.geometryBlobs
-			<< " lods=" << result.lodLevels
-			<< " meshletSets=" << result.meshletSets << "\n";
+		std::cout << "Built: " << report.pak
+			<< "\n  scene=" << report.scene
+			<< "\n  artifact=" << report.artifact
+			<< "\n  reimported=" << (report.reimported ? "yes" : "no")
+			<< "\n";
 		return 0;
 	}
 

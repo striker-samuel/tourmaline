@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <set>
 #include <system_error>
 
@@ -245,6 +246,87 @@ bool ImportProjectAsset(const ImportRequest& request,
 		return false;
 	}
 	return true;
+}
+
+std::string SeedProjectScene(const Project& project,
+	const std::string& externalTour, const std::string& importedStem,
+	std::string& err) {
+	err.clear();
+	if (!project.Valid()) {
+		err = "invalid project";
+		return {};
+	}
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path src = fs::path(externalTour);
+	if (!fs::is_regular_file(src, ec)) {
+		err = "scene tour not found: " + externalTour;
+		return {};
+	}
+	const fs::path destDir =
+		fs::path(project.root) / "content" / "scenes";
+	const fs::path dest = destDir / src.filename();
+	if (fs::is_regular_file(dest, ec)) {
+		// Authored scenes are never regenerated: an existing project
+		// scene wins (the caller opens/builds it as-is).
+		return project.RelativeTo(dest.generic_string());
+	}
+	// Read + re-point the root reference #0 at the project's imported
+	// .geometry (content/models/<stem>/<stem>.geometry). The reference
+	// must end up PROJECT-RELATIVE (an absolute path breaks the mesh-URI
+	// machinery the pak serializer reads).
+	const fs::path projectGeometry =
+		fs::path(project.ImportsDir()) / importedStem
+		/ (importedStem + ".geometry");
+	const std::string projectRef =
+		project.RelativeTo(projectGeometry.generic_string());
+	std::ifstream in(src, std::ios::binary);
+	std::ostringstream text;
+	text << in.rdbuf();
+	std::istringstream lines(text.str());
+	std::ostringstream out;
+	std::string line;
+	bool repointed = false;
+	while (std::getline(lines, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		// reference ... -source "<path>" ... (the root reference #0 is
+		// the first `reference` line).
+		if (!repointed
+				&& line.compare(0, 10, "reference ") == 0) {
+			const size_t at = line.find("-source \"");
+			if (at != std::string::npos) {
+				const size_t end = line.find('"', at + 9);
+				if (end != std::string::npos) {
+					// Same-stem .geometry reference -> the project copy;
+					// a different target keeps its recorded form (it must
+					// already be project-relative or the build reports
+					// it).
+					const std::string path =
+						line.substr(at + 9, end - (at + 9));
+					const std::string file =
+						fs::path(path).filename().generic_string();
+					if (file == importedStem + ".geometry")
+						line = line.substr(0, at + 9) + projectRef
+							+ line.substr(end);
+					repointed = true;
+				}
+			}
+		}
+		out << line << "\n";
+	}
+	fs::create_directories(destDir, ec);
+	std::ofstream of(dest, std::ios::binary | std::ios::trunc);
+	if (!of) {
+		err = "cannot write '" + dest.generic_string() + "'";
+		return {};
+	}
+	of << out.str();
+	if (!of.good()) {
+		err = "failed writing '" + dest.generic_string() + "'";
+		return {};
+	}
+	return project.RelativeTo(dest.generic_string());
 }
 
 } // namespace smvk::project

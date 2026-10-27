@@ -1767,15 +1767,32 @@ int Run(Args& args) {
 					hc.captureSpacing = 0.0f; // the auto lattice (inert CLI)
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
-					const std::string fresh = smvk::gi::GiVolumeBakeUnitHash(
-						bakeGrid, *cluster, cvIt->second,
-						cluster->scene.globalTransform[spec.node], hc);
-					if (fresh == cvIt->second.bakeInputHash) {
-						tool::out() << "  [GIV] volume '" << spec.def.name
-							<< "': inputs unchanged — SKIPPED (the bound "
-							"bake stands)\n";
-						continue;
-					}
+				const std::string fresh = smvk::gi::GiVolumeBakeUnitHash(
+					bakeGrid, *cluster, cvIt->second,
+					cluster->scene.globalTransform[spec.node], hc);
+				// The skip requires the bound ARTIFACT to exist (a fresh
+				// project checkout/relocation carries the tour but not
+				// the gi/ bakes — a hash match with a missing file must
+				// bake, or the pak gate refuses the bound-but-unreadable
+				// record).
+				std::error_code skipEc;
+				const bool boundExists =
+					!cvIt->second.bakeSource.empty()
+					&& std::filesystem::is_regular_file(
+						std::filesystem::path(args.contentDir)
+						/ std::filesystem::path(
+							cvIt->second.bakeSource), skipEc);
+				if (fresh == cvIt->second.bakeInputHash && boundExists) {
+					tool::out() << "  [GIV] volume '" << spec.def.name
+						<< "': inputs unchanged — SKIPPED (the bound "
+						"bake stands)\n";
+					continue;
+				}
+				if (fresh == cvIt->second.bakeInputHash && !boundExists)
+					tool::out() << "  [GIV] volume '" << spec.def.name
+						<< "': inputs unchanged but the bound bake is"
+						" missing — baking (fresh project/relocation"
+						" checkout)\n";
 				}
 			}
 			tool::out() << "  [GIV] volume '" << spec.def.name << "': priority="
@@ -2083,8 +2100,18 @@ int Run(Args& args) {
 			smvk::gi::CanonicalWorldCfgHash(maskTransmission);
 		const std::string fresh = smvk::gi::WorldBakeUnitHash(
 			bakeGrid, *cluster, wc);
+		// The skip requires the bound ARTIFACT to exist: a matching hash
+		// with a MISSING file is not current (a fresh project checkout or
+		// a relocation copies the tour but not the gi/ bakes — skipping
+		// there would hand the pak a bound-but-unreadable record and the
+		// gate would refuse).
+		std::error_code fec;
+		const bool artifactExists = std::filesystem::is_regular_file(
+			std::filesystem::path(args.contentDir)
+			/ std::filesystem::path(cluster->scene.giWorldSource), fec);
 		if (fresh == cluster->scene.giWorldInputHash
-				&& !cluster->scene.giWorldInputHash.empty()) {
+				&& !cluster->scene.giWorldInputHash.empty()
+				&& artifactExists) {
 			tool::out() << "world-field bake SKIPPED (inputs unchanged; "
 				"the bound artifact stands)\n";
 			if (!stampTour())
@@ -2094,6 +2121,12 @@ int Run(Args& args) {
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
 			return 0;
 		}
+		if (fresh == cluster->scene.giWorldInputHash
+				&& !cluster->scene.giWorldInputHash.empty()
+				&& !artifactExists)
+			tool::out() << "world-field inputs unchanged but the bound"
+				" artifact is missing — baking (fresh project/relocation"
+				" checkout)\n";
 	}
 
 	smvk::gi::SgGiBakeConfig cfg{};

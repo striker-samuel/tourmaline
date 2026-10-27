@@ -13,6 +13,7 @@ add_library(project_pipeline STATIC
     src/project.cpp
     src/registry.cpp
     src/import_pipeline.cpp
+    src/build_pipeline.cpp
 )
 
 target_include_directories(project_pipeline

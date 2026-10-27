@@ -4458,6 +4458,14 @@ int Run(const CookArgs& c) {
 			use("lodError", args.lodError, es.lodError);
 			use("meshlets", args.meshlets, es.meshlets);
 			use("autoKtx", args.autoKtx, es.autoKtx);
+			// The weave-cloth transmission rides the SAME authoring
+			// surface for every bake (the exportSettings node; GiBaker
+			// already reads it). Without this row the capture bake
+			// resolved the CLI default (off) while GiBaker baked with
+			// the authored value — the scene said one thing, the
+			// captures traced another.
+			use("maskTransmission", args.maskTransmission,
+				es.maskTransmission);
 			if (!es.lmExcludeKw.empty() &&
 				!args.explicitSet.contains("lmExclude")) {
 				if (!args.lmExclude.empty())

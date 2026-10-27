@@ -85,4 +85,18 @@ struct ImportStatus {
 std::vector<ImportStatus> ProjectImportStatuses(const Project& project,
 	std::string* err = nullptr);
 
+// ---- scene seeding (the authored .tour into the project) ------------------
+
+// Copies an EXTERNAL authored scene tour into the project's
+// content/scenes/ and re-points its root reference #0 at the project's
+// imported .geometry (content/models/<stem>/<stem>.geometry). NEVER
+// overwrites an existing project scene (authored scenes are never
+// regenerated); the bake records (giAsset hashes) ride along as-is — the
+// project's GiBaker re-bakes what is missing and re-stamps them.
+// `importedStem` is the imported source stem (the family directory name).
+// Returns the project-relative scene path (or err).
+std::string SeedProjectScene(const Project& project,
+	const std::string& externalTour, const std::string& importedStem,
+	std::string& err);
+
 } // namespace smvk::project
