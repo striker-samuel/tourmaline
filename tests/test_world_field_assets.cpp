@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
@@ -244,14 +245,22 @@ int main()
 			&& d.lodCount == 2 && d.decodeScale.x == 0.02f,
 			"asset.make-desc");
 
-		// File roundtrip (the pre-approved opencode temp dir).
+		// File roundtrip. The path must be writable on EVERY host this test
+		// runs on — CI runners included: temp_directory_path() is the
+		// guaranteed-to-exist per-user temp dir on Windows and Linux alike.
+		// (A hardcoded dev-machine path made fopen fail — the writer does
+		// NOT create directories — fake-failing these three checks on both
+		// CI jobs: Linux saw "C:/..." as a relative path into a missing
+		// dir, the Windows runner has no C:\Users\samuel.)
 		wf::WorldFieldAsset fromFile;
 		{
-			const char* tmpPath = "C:/Users/samuel/AppData/Local/Temp/opencode/wf_fidelity_test.wfb";
-			Check(builder.WriteToFile(tmpPath), "asset.write-to-file");
-			Check(wf::WorldFieldAsset::LoadFromFile(&fromFile, tmpPath),
+			const std::filesystem::path tmpPath =
+				std::filesystem::temp_directory_path() / "wf_fidelity_test.wfb";
+			const std::string tmpPathStr = tmpPath.string();
+			Check(builder.WriteToFile(tmpPathStr.c_str()), "asset.write-to-file");
+			Check(wf::WorldFieldAsset::LoadFromFile(&fromFile, tmpPathStr.c_str()),
 				"asset.load-from-file");
-			std::remove(tmpPath);
+			std::remove(tmpPathStr.c_str());
 			Check(fromFile.FindBrick(0, 0, 0, 0, &p, &pb)
 				== wf::WorldFieldAsset::BrickLookup::Payload
 				&& pb == kBlockBytes && std::memcmp(p, b0.data(), kBlockBytes) == 0,

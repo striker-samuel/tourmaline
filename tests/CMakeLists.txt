@@ -542,7 +542,10 @@ add_test(NAME world_field_asset_tests COMMAND WorldFieldAssetTests)
 # context, batched region uploads through the streamer, blocking
 # readbacks proving atlas bytes/table roundtrip/page-slot semantics
 # (milestone 2's GPU acceptance). Mirrors the retirement fuzzer's
-# bootstrap needs (volk linked directly, PRIVATE on engine).
+# bootstrap needs (volk linked directly, PRIVATE on engine), INCLUDING
+# the CI exclusion: hosted runners lack a display (Linux) / a Vulkan ICD
+# (Windows), so ci.yml's ctest skips it via -E (see the header there).
+# Plain local ctest runs it wherever a real window + GPU exist.
 add_executable(WorldFieldsGpuTests test_world_fields_gpu.cpp)
 
 target_link_libraries(WorldFieldsGpuTests
