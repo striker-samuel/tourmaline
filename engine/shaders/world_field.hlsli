@@ -189,7 +189,7 @@ float4 SampleWorldField(const FrameUniforms frame, uint fieldId, float3 worldPos
         return 0.0.xxxx;
 
     const WorldFieldTableHeader h = WorldFieldLoadHeader(frame.worldFields);
-    const WorldFieldGpu f = WorldFieldLoadField(frame.worldFields, fieldId, h.y);
+    const WorldFieldGpu f = WorldFieldLoadField(frame.worldFields, fieldId, h.h.y);
     if (f.meta.x == 0xffffffffu)
         return f.fallbackValue; // degraded pool: never touch the atlas
 
@@ -202,9 +202,10 @@ float4 SampleWorldField(const FrameUniforms frame, uint fieldId, float3 worldPos
     return f.fallbackValue;
 }
 
-// Sample at whatever level best matches a desired voxel size (the
-// finest level whose voxels are <= the request; coarser than every
-// level = the coarsest). Same fallback walk as SampleWorldField.
+// Sample at whatever level best matches a desired voxel size: the
+// FINEST level whose voxels are <= the request (most detail that still
+// satisfies it); a request finer than every level takes the finest
+// (closest from above). Same fallback walk as SampleWorldField.
 float4 SampleWorldFieldAuto(const FrameUniforms frame, uint fieldId,
     float3 worldPos, float desiredVoxelSizeMeters)
 {
@@ -213,9 +214,9 @@ float4 SampleWorldFieldAuto(const FrameUniforms frame, uint fieldId,
         return 0.0.xxxx;
 
     const WorldFieldTableHeader h = WorldFieldLoadHeader(frame.worldFields);
-    const WorldFieldGpu f = WorldFieldLoadField(frame.worldFields, fieldId, h.y);
+    const WorldFieldGpu f = WorldFieldLoadField(frame.worldFields, fieldId, h.h.y);
 
-    uint pick = f.meta.z - 1u; // coarsest default (finer than request -> take what exists)
+    uint pick = 0u; // finest default (a request finer than every level)
     for (uint l = 0; l < f.meta.z; ++l) {
         if (f.levels[l].voxelSizeMeters <= desiredVoxelSizeMeters) {
             pick = l;

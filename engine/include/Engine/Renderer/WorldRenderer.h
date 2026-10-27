@@ -76,6 +76,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/WorldFields/WorldField.h>
 #include <Engine/WorldFields/WorldFieldProvider.h>
+#include <Engine/WorldFields/WorldFieldCodec.h>
 #include <Engine/WorldPartition/WorldPartition.h>
 
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>

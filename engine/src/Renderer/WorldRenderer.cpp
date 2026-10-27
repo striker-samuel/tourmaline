@@ -3802,32 +3802,43 @@ namespace engine {
 	}
 
 	// =====================================================================
-	// World voxel fields (Engine/WorldFields) — the milestone-2 shakedown:
-	// a procedural world-space checkerboard field paged through the full
-	// virtual-addressing + atlas + page-table machinery. NOT a fog/wind
-	// consumer yet (those register here with their passes) — this exists
-	// to prove the infrastructure end to end: R8 atlas, two LODs, toroidal
-	// clipmap windows, forced eviction under a deliberately tiny pool.
+	// World voxel fields (Engine/WorldFields) — the FOG consumer's field:
+	// a procedural world-space density field paged through the full
+	// virtual-addressing + atlas + page-table machinery and CONSUMED by
+	// the volumetric march (volumetric.frag.hlsl adds the decoded
+	// extinction to the analytic sigma; id 0 = fog per WORLD_FIELD_ID_*).
+	// BC4 sqrt-density bricks, 1 m voxels, three LODs (1/2/4 m).
+	// Cooked .wfb content replaces the procedural source without any
+	// consumer change (CookedBrickSource serves the same bricks); wind
+	// registers as a second field when its consumer lands.
 	// =====================================================================
 
 	namespace {
 
-	// Smooth world-space field (continuous everywhere — the seam test
-	// needs a continuous function: the atlas stores f(worldPos) at every
-	// stored texel INCLUDING the halo, so in-atlas trilinear filtering
-	// equals filtering the world function; a discontinuous pattern would
-	// hide cross-brick filtering bugs).
-	class CheckerboardBrickSource final : public worldfields::IWorldFieldBrickSource
+	// The volumetric pass's per-field maximum extinction (m^-1): the
+	// field stores normalized sqrt-encoded density, the shader decodes
+	// extinction = decodeScale.x * enc^2. Tuning constant — later rides
+	// the cooked asset's decode metadata.
+	constexpr float kFogFieldMaxExtinction = 0.05f;
+
+	// Normalized world fog density in [0,1] (continuous everywhere — the
+	// stored lattice + halo must sample a continuous function for
+	// seam-free cross-brick filtering, the contract every fidelity test
+	// pins). A near-ground band (the courtyard floor is ~y 0..1) plus
+	// two soft volumes — static world fog; time-varying fields are the
+	// CpuUpdated/GpuGenerated modes, not wired.
+	class WorldFogDensitySource final : public worldfields::IWorldFieldBrickSource
 	{
 	public:
-		// value in [0,1]: three plane-wave sines (cheap, continuous,
-		// visibly volumetric when visualized).
-		static float WorldValue(glm::vec3 p)
+		static float WorldDensity01(glm::vec3 p)
 		{
-			float v = 0.25f + 0.25f * std::sin(p.x * 0.31f)
-				+ 0.25f * std::sin(p.y * 0.27f)
-				+ 0.25f * std::sin(p.z * 0.23f);
-			return std::min(std::max(v, 0.0f), 1.0f);
+			const float ground = std::exp(-std::max(p.y - 0.35f, 0.0f) / 5.0f);
+			float v = 0.55f * ground;
+			const glm::vec3 c0(18.0f, 2.5f, -12.0f);
+			const glm::vec3 c1(-22.0f, 1.5f, 8.0f);
+			v += 0.35f * std::exp(-glm::length(p - c0) / 14.0f);
+			v += 0.35f * std::exp(-glm::length(p - c1) / 10.0f);
+			return std::min(v, 1.0f);
 		}
 
 		bool GenerateBrick(const worldfields::WorldFieldDesc& field, uint32_t lod,
@@ -3835,26 +3846,25 @@ namespace engine {
 			std::byte* payload, size_t payloadBytes) override
 		{
 			const uint32_t stored = worldfields::kBrickStoredRes;
-			const size_t expect = size_t(stored) * stored * stored;
-			assert(payloadBytes == expect && field.format == smvk::Format::R8_UNorm);
-			// LOD voxel edge (base * 2^lod): the checker samples the SAME
-			// world function at every level (a proper LOD downsample —
-			// coarser bricks sample the same world lattice at sparser
-			// positions, so LOD fallback walks are consistent).
+			const size_t blockBytes = worldfields::StoredBrickBlockBytes(stored, 4, 4, 8);
+			assert(payloadBytes == blockBytes
+				&& field.format == smvk::Format::BC4_UNorm);
+			if (payloadBytes != blockBytes)
+				return false;
+			// LOD voxel edge (base * 2^lod): every level samples the SAME
+			// world function (coarser bricks = sparser lattice positions,
+			// so the LOD fallback walk is consistent).
 			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
 			// Stored-texel world position: brick min corner + TEXEL
-			// CENTER offset (texel + 0.5 - halo). The +0.5 aligns the
-			// stored lattice with hardware trilinear's texel-center grid:
-			// SampleLevel at continuous cell L blends texels i0/i0+1 with
-			// weight frac(L-0.5), exactly the dense-lattice interpolation
-			// between centers (i+0.5)*voxel — point-sampling texel CORNERS
-			// instead would shift every filtered sample half a voxel.
-			// The -halo side samples the NEIGHBOR bricks' positions, so
-			// brick-edge filtering reads the true adjacent values (the
-			// whole point of the stored halo).
+			// CENTER offset (texel + 0.5 - halo) — the half-texel-aligned
+			// lattice hardware trilinear filters on (point-sampling
+			// corners would shift every filtered sample half a voxel);
+			// the halo samples the NEIGHBOR bricks' positions (the whole
+			// point of the stored border).
 			const glm::vec3 brickMin = field.originMeters
 				+ glm::vec3(float(x), float(y), float(z))
 					* (float(worldfields::kBrickInteriorRes) * voxel);
+			std::vector<uint8_t> texels(size_t(stored) * stored * stored);
 			size_t i = 0;
 			for (uint32_t tz = 0; tz < stored; ++tz)
 				for (uint32_t ty = 0; ty < stored; ++ty)
@@ -3863,15 +3873,21 @@ namespace engine {
 							+ glm::vec3(float(tx) + 0.5f - float(worldfields::kBrickBorder),
 								float(ty) + 0.5f - float(worldfields::kBrickBorder),
 								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
-						payload[i++] = std::byte(
-							uint8_t(WorldValue(texel) * 255.0f + 0.5f));
+						// Sqrt density BEFORE quantization: the 8 bits
+						// concentrate where LOW densities live (fog's
+						// perceptual range); the shader's decode is
+						// scale * enc^2 (SqrtUNorm).
+						texels[i++] = uint8_t(
+							std::sqrt(WorldDensity01(texel)) * 255.0f + 0.5f);
 					}
-			assert(i == payloadBytes);
-			return true;
+			// Per-z-slice BC4_UNORM blocks — exactly the atlas slot
+			// layout the region uploads expect.
+			return worldfields::Bc4EncodeBrick(texels.data(), stored,
+				payload, payloadBytes) == payloadBytes;
 		}
 	};
 
-	CheckerboardBrickSource g_checkerSource;
+	WorldFogDensitySource g_fogDensitySource;
 
 	} // namespace
 
@@ -3884,44 +3900,48 @@ namespace engine {
 		if (m_worldFields.FieldCount() > 0)
 			return;
 
-		// v1 gate: opt-in while the system proves out (the fog/wind
-		// consumers keep this env as their default once they land). Absent
-		// or 0 = the subsystem stays off (PrepareFrame no-ops on an empty
-		// field set, FrameUniforms carries 0/0).
+		// Gate: opt-in while the system proves out. Absent or 0 = the
+		// subsystem stays off (PrepareFrame no-ops on an empty field set,
+		// FrameUniforms carries 0/0, the volumetric march's field branch
+		// is dead).
 		const char* env = std::getenv("TOURMALINE_WORLD_FIELDS");
 		if (!env || std::atoi(env) != 1)
 			return;
 
-		worldfields::WorldFieldDesc checker{};
-		checker.name = "WorldFieldCheckerboard";
-		checker.format = smvk::Format::R8_UNorm;
-		checker.encoding = worldfields::WorldFieldEncoding::Linear;
-		checker.updateMode = worldfields::WorldFieldUpdateMode::StaticStreamed;
-		checker.baseVoxelSizeMeters = 1.0f;
-		checker.lodCount = 2; // 1 m + 2 m
-		// Deliberately SMALL pool + table so normal flight churns pages
-		// and exercises eviction + stale-window handling continuously.
-		checker.tableDimX = 4;
-		checker.tableDimY = 2;
-		checker.tableDimZ = 4;
-		checker.poolSlotsX = 2;
-		checker.poolSlotsY = 2;
-		checker.poolSlotsZ = 2;
-		checker.decodeScale = glm::vec4(1.0f);
-		checker.decodeBias = glm::vec4(0.0f);
-		checker.fallbackValue = glm::vec4(0.0f);
+		// The fog density field — id 0 (registration order; the
+		// WORLD_FIELD_ID_FOG contract the volumetric march samples).
+		// Memory profile per the world-partition doc: a 6x6x5 slot pool
+		// of 68^3 BC4 bricks (~27 MiB), an 8x4x8 clipmap window per LOD
+		// (512 x 256 x 512 m at LOD 0 — the window is virtual, only the
+		// nearest cells ever take slots).
+		worldfields::WorldFieldDesc fog{};
+		fog.name = "WorldFogDensity";
+		fog.format = smvk::Format::BC4_UNorm;
+		fog.encoding = worldfields::WorldFieldEncoding::SqrtUNorm;
+		fog.updateMode = worldfields::WorldFieldUpdateMode::StaticStreamed;
+		fog.baseVoxelSizeMeters = 1.0f;
+		fog.lodCount = 3; // 1 m + 2 m + 4 m
+		fog.tableDimX = 8;
+		fog.tableDimY = 4;
+		fog.tableDimZ = 8;
+		fog.poolSlotsX = 6;
+		fog.poolSlotsY = 6;
+		fog.poolSlotsZ = 5;
+		// decode: extinction = 0.05 * enc^2 (m^-1) on .r — the maximum
+		// field extinction; the decoded fallback (missing/unstreamed
+		// bricks) is 0: no contribution, no seams.
+		fog.decodeScale = glm::vec4(kFogFieldMaxExtinction, 0.0f, 0.0f, 0.0f);
+		fog.decodeBias = glm::vec4(0.0f);
+		fog.fallbackValue = glm::vec4(0.0f);
 
-		// Field id 0 (registration order — the WORLD_FIELD_ID_* contract).
-		// Batch form: the init flow registers the whole set in ONE call
-		// (fog/wind join this table as their consumers land).
 		worldfields::WorldFieldHandle handles[1] = {};
-		worldfields::IWorldFieldBrickSource* sources[1] = { &g_checkerSource };
-		const uint32_t registered =
-			m_worldFields.RegisterFields(&checker, 1, handles);
+		worldfields::IWorldFieldBrickSource* sources[1] = { &g_fogDensitySource };
+		const uint32_t registered = m_worldFields.RegisterFields(&fog, 1, handles);
 		if (registered == 1)
 			m_worldFields.SetBrickSources(handles, sources, 1);
-		std::cerr << "[WorldFields] checkerboard field registered (id 0, R8, "
-			<< checker.lodCount << " LODs, 2x2x2 pool)\n";
+		std::cerr << "[WorldFields] fog density field registered (id 0, BC4 "
+			"sqrt-density, " << fog.lodCount << " LODs, 6x6x5 pool, max extinction "
+			<< kFogFieldMaxExtinction << " 1/m)\n";
 	}
 
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {
@@ -8697,11 +8717,15 @@ namespace engine {
 		// cannot run this frame (pass off / disabled / target missing /
 		// zero density or intensity / a debug visualization would read
 		// twice) - fog never silently disappears. Mirrors the volOn gate
-		// at the volumetric pass build below.
+		// at the volumetric pass build below. A live world-field fog
+		// (id 0, the registration-order contract) keeps the pass running
+		// at zero ANALYTIC density — the bricks carry their own
+		// extinction (the shader's field branch sums it into sigma).
 		if (m_world && m_world->scene.environment.fogQuality == 2) {
 			const bool volRuns = m_passes.volumetric && m_volumetricEnabled
 				&& m_viewportResources.volumetric.Valid()
-				&& m_volumetricDensity > 0.0f
+				&& (m_volumetricDensity > 0.0f
+					|| m_worldFields.GpuBinding().Valid())
 				&& m_volumetricIntensity > 0.0f
 				&& !DebugVisualizationActive();
 			if (!volRuns)
@@ -12339,7 +12363,12 @@ namespace engine {
 				&& m_viewportResources.volumetric.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
-				&& m_volumetricDensity > 0.0f && m_volumetricIntensity > 0.0f
+				// Zero ANALYTIC density still marches when the world-field
+				// fog is live (the bricks carry their own extinction; the
+				// shader's early-out takes the same branch).
+				&& (m_volumetricDensity > 0.0f
+					|| m_worldFields.GpuBinding().Valid())
+				&& m_volumetricIntensity > 0.0f
 				// Debug views: fog would Beer-Lambert the flat readout
 				// and add scatter on top (DebugVisualizationActive).
 				&& !DebugVisualizationActive();

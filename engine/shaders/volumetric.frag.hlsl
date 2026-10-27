@@ -8,6 +8,7 @@
 #include "sg_regular.hlsli"
 #include "sg_gi_volume.hlsli"
 #include "dof.hlsli"
+#include "world_field.hlsli"
 
 struct PSIn
 {
@@ -215,7 +216,14 @@ PSOut mainPS(PSIn IN)
 
     float density = max(vp.density, 0.0f);
     float intensity = max(vp.intensity, 0.0f);
-    if (density <= 1e-6 || intensity <= 1e-6)
+    // World-field voxel fog (Engine/WorldFields): with a live field
+    // (frame.worldFieldCount > 0 — id 0 is the fog density field, the
+    // registration-order contract), zero ANALYTIC density must still
+    // march: the resident bricks carry their own extinction (missing
+    // bricks decode to the field's 0 fallback — no contribution, no
+    // seams). Only both-zero (no field AND no analytic density) or zero
+    // intensity early out.
+    if ((density <= 1e-6 && frame.worldFieldCount == 0u) || intensity <= 1e-6)
     {
         OUT.outColor = float4(base, 1.0f);
         return OUT;
@@ -380,6 +388,17 @@ PSOut mainPS(PSIn IN)
         float sigma = density;
         if (vp.heightFalloff > 0.0)
             sigma *= exp(-max(wpos.y - vp.heightBase, 0.0) * vp.heightFalloff);
+        // ---- World-field voxel fog (Engine/WorldFields): additional
+        // extinction from the resident 3D brick field — BC4 sqrt-density
+        // decoded to m^-1 via the field's decodeScale (the .r channel;
+        // id 0 = fog per WORLD_FIELD_ID_*). LOD 0 (1 m voxels) at the
+        // segment sample; the sampler's coarser-walk picks up resident
+        // coarse bricks when fine pages are still streaming, and every
+        // miss decodes to the field's 0 fallback — missing/unstreamed
+        // bricks contribute NOTHING (no seams, no stale data). One
+        // page-table lookup + one trilinear 3D fetch per segment.
+        if (frame.worldFieldCount > 0u)
+            sigma += SampleWorldField(frame, WORLD_FIELD_ID_FOG, wpos, 0u).r;
 
         // ---- Ambient: EXACT per-segment volume weights from the
         // ray-space table (FMA-only ramps — no plane loads, no dot3s
