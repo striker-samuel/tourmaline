@@ -718,7 +718,9 @@ namespace engine {
 		return std::nullopt;
 	}
 	// Legacy TOURMALINE_GI overlap: 1/on -> All; 0/off demotes the baked
-	// modes to SkyIbl. nullopt = no change (the spelling is unknown).
+	// modes to SkyIbl. nullopt = the SPELLING is unknown (a no-op "already
+	// correct" returns the current mode, NOT nullopt — the re-application
+	// path must not warn on a valid pin that needs no change).
 	static std::optional<AmbientMode> LegacyGiAmbientPin(std::string_view v,
 		AmbientMode cur) {
 		if (v == "1" || v == "on")
@@ -727,7 +729,7 @@ namespace engine {
 			if (cur == AmbientMode::All || cur == AmbientMode::Probes
 				|| cur == AmbientMode::Baked)
 				return AmbientMode::SkyIbl;
-			return std::nullopt; // already non-baked: keep
+			return cur; // already non-baked: keep (a VALID no-op, not unknown)
 		}
 		return std::nullopt;
 	}
@@ -828,6 +830,14 @@ namespace engine {
 			m_evsmEnabled = pins.evsm;
 		if (pins.evsmSoft >= 0.0f)
 			m_evsmSoftness = pins.evsmSoft;
+		// GI-volumes kill pin (TOURMALINE_GI_VOLUMES=0): the render-settings
+		// seed (PushPostfxEnv -> PushRenderQuality) restores the AUTHORED
+		// m_giVolumesEnabled above — a headless kill must re-apply AFTER
+		// the seed, or an authored scene with volumes enabled silently
+		// re-enables them (GI isolation runs compromised). One-way kill
+		// like the cubemap pin: the pin only turns volumes OFF, never ON.
+		if (pins.giVolumesKilled)
+			m_giVolumesEnabled = false;
 	}
 
 	bool WorldRenderer::onAttach() {

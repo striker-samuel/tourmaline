@@ -261,11 +261,15 @@ RunConfig RunConfig::Parse() {
 	}
 	c.decalAutosplat = ToInt(Get("TOURMALINE_DECAL_AUTOSPLAT"), -1);
 
-	// GI / ambient (WorldRenderer.cpp:1004..1083, :3170).
+	// GI / ambient (WorldRenderer.cpp:1004..1083, :3170). TRIMMED here so
+	// the pin re-application path (ApplyHeadlessPostfxOverrides, which
+	// reads c.ambient/c.gi verbatim) never sees the whitespace the startup
+	// getenv site trims — a trailing-space "baked " must parse IDENTICALLY
+	// on both paths.
 	if ((v = Get("TOURMALINE_AMBIENT")) != nullptr)
-		c.ambient = v;
+		c.ambient = Trimmed(v);
 	if ((v = Get("TOURMALINE_GI")) != nullptr)
-		c.gi = v;
+		c.gi = Trimmed(v);
 	// GI intensity (WorldRenderer.cpp:1092, the atof+clamp getenv twin —
 	// non-numeric parses as 0 like atof, then the clamp bounds it).
 	if ((v = Get("TOURMALINE_GI_INTENSITY")) != nullptr) {
@@ -278,14 +282,14 @@ RunConfig RunConfig::Parse() {
 		if (IsOnOff(Trimmed(v), on))
 			c.lightmap = on ? OnOffPin::On : OnOffPin::Off;
 		else
-			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_LIGHTMAP (want 0|1): %s\n", v);
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_LIGHTMAP (want 1|on|0|off): %s\n", v);
 	}
 	if ((v = Get("TOURMALINE_PROBE_PREMIX")) != nullptr) {
 		bool on = false;
 		if (IsOnOff(Trimmed(v), on))
 			c.probePremix = on ? OnOffPin::On : OnOffPin::Off;
 		else
-			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_PROBE_PREMIX (want 0|1): %s\n", v);
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_PROBE_PREMIX (want 1|on|0|off): %s\n", v);
 	}
 	c.giDebug = ToInt(Get("TOURMALINE_GI_DEBUG"), -1);
 	c.giDebugLevel = ToInt(Get("TOURMALINE_GI_DEBUG_LEVEL"), -1);

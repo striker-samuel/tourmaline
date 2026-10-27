@@ -1613,15 +1613,15 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		// Render settings (the postfx look): u32 authored flag + ONE
 		// record. Blobs from before the split end after the env section —
 		// the struct defaults stand (the sanctioned break).
-	if (c.off < c.img.size()) {
-		const uint32_t renderFlag = c.u32();
-		SceneRenderSettings rs = c.sceneRenderSettings();
-		if (!c.ok)
-			return fail("truncated scene render settings section");
-		scene.renderSettings = rs;
-		scene.defaultRenderSettings = rs;
-		scene.hasRenderSettings = renderFlag != 0;
-	}
+		if (c.off < c.img.size()) {
+			const uint32_t renderFlag = c.u32();
+			SceneRenderSettings rs = c.sceneRenderSettings();
+			if (!c.ok)
+				return fail("truncated scene render settings section");
+			scene.renderSettings = rs;
+			scene.defaultRenderSettings = rs;
+			scene.hasRenderSettings = renderFlag != 0;
+		}
 		// Default camera (v10): the authored camera node the runtime App
 		// spawns at (see the writer above). v9 blobs end after the env
 		// section — defaultCameraNode stays UINT32_MAX (no default).

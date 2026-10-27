@@ -431,12 +431,12 @@ struct SceneRenderSettings {
 // in Scene.cpp): 16 base floats + zonePriority, fixed order. Shrunk when
 // the postfx block split into SceneRenderSettings (old files fail the
 // read loudly — the sanctioned no-conversions break, AGENTS.md).
-// Bools/modes ride as 0/1 floats.
+// Booleans are stored as 0/1 floats; enum values are stored numerically.
 inline constexpr int kSceneEnvFloatCount = 17;
 // Render-settings record (see saveRenderFloats/loadRenderFloats):
 // 27 floats, the look block's fixed order (bloom 3 + tonemap 1 +
 // exposure 7 + AO 9 + SSR 2 + motionblur/dof/aa 3 + cubemap 2).
-// Bools/modes ride as 0/1 floats.
+// Booleans are stored as 0/1 floats; enum values are stored numerically.
 inline constexpr int kSceneRenderFloatCount = 27;
 
 struct Scene {

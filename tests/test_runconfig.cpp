@@ -152,6 +152,57 @@ int main() {
 		Check(true, "runconfig.log-no-crash");
 	}
 
+	// ---- The three pin re-application regressions (the review batch) ----
+	// (1) TOURMALINE_AMBIENT with trailing whitespace: the Parse snapshot
+	// must TRIM so the re-application path (ApplyHeadlessPostfxOverrides,
+	// which reads c.ambient/c.gi verbatim) sees the same value the startup
+	// getenv site trims — "baked " must parse IDENTICALLY on both paths.
+	SetVar("TOURMALINE_AMBIENT", "baked ");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.ambient.has_value() && *c.ambient == "baked",
+			"runconfig.ambient-trimmed (re-application parity)");
+	}
+	SetVar("TOURMALINE_AMBIENT", " baked");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.ambient.has_value() && *c.ambient == "baked",
+			"runconfig.ambient-trimmed-lead");
+	}
+	UnsetVar("TOURMALINE_AMBIENT");
+
+	// (2) TOURMALINE_GI_VOLUMES=0 sets the kill pin (the re-application
+	// path must re-apply it AFTER the render-settings seed — an authored
+	// scene with volumes enabled must never silently re-enable them).
+	SetVar("TOURMALINE_GI_VOLUMES", "0");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.giVolumesKilled, "runconfig.gi-volumes-kill-pin");
+	}
+	SetVar("TOURMALINE_GI_VOLUMES", "1");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(!c.giVolumesKilled, "runconfig.gi-volumes-kill-pin-off");
+	}
+	UnsetVar("TOURMALINE_GI_VOLUMES");
+
+	// (3) TOURMALINE_GI=0 with TOURMALINE_AMBIENT=off: a valid no-op pair
+	// (the legacy pin sees an already-non-baked mode and keeps it). The
+	// Parse snapshot stores both; the re-application path's
+	// LegacyGiAmbientPin must return the CURRENT mode (not nullopt) for a
+	// valid no-op — the false "unknown value" warning was the bug.
+	SetVar("TOURMALINE_AMBIENT", "off");
+	SetVar("TOURMALINE_GI", "0");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.ambient.has_value() && *c.ambient == "off",
+			"runconfig.gi-noop-pair-ambient");
+		Check(c.gi.has_value() && *c.gi == "0",
+			"runconfig.gi-noop-pair-gi");
+	}
+	UnsetVar("TOURMALINE_AMBIENT");
+	UnsetVar("TOURMALINE_GI");
+
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

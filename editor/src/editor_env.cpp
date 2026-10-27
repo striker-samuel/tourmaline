@@ -463,8 +463,8 @@ namespace editor {
 				ImGui::SetTooltip("EVSM moment shadow maps (soft shadows; "
 					"falls back to PCF when unsupported)");
 			attr::Slider("EVSM softness", &q.evsmSoftness, 0.0f, 4.0f, "%.2f",
-				"The penumbra artistic scale over the physical size "
-				"(0 = hard)");
+				"Scales shadow softness relative to the light's "
+				"physical size (0 = hard).");
 			ImGui::PopID();
 			// Live push per edit (plain member writes — the same pattern
 			// as the look's PushPostfxEnv at the tail; session-only, and
