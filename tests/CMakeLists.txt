@@ -506,6 +506,38 @@ set_target_properties(WorldFieldsTests PROPERTIES
 
 add_test(NAME world_fields_tests COMMAND WorldFieldsTests)
 
+# The shared spatial-streaming core (Engine/WorldPartition): world-cell
+# addressing, interest flow, the provider frame sequence (synthetic
+# cells, no terrain — docs/world_partition.md milestone 1).
+add_executable(WorldPartitionTests test_world_partition.cpp)
+
+target_link_libraries(WorldPartitionTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(WorldPartitionTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME world_partition_tests COMMAND WorldPartitionTests)
+
+# The cooked-brick asset form (milestone 4): BC4 codec error bounds, the
+# .wfb builder/reader roundtrip, sqrt-density fidelity vs a dense
+# reference, and the CookedBrickSource through the paging system.
+add_executable(WorldFieldAssetTests test_world_field_assets.cpp)
+
+target_link_libraries(WorldFieldAssetTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(WorldFieldAssetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME world_field_asset_tests COMMAND WorldFieldAssetTests)
+
 # WorldFieldsGpuTests: the DEVICE half — real (hidden-window) Vulkan
 # context, batched region uploads through the streamer, blocking
 # readbacks proving atlas bytes/table roundtrip/page-slot semantics
@@ -642,6 +674,8 @@ tourmaline_stage_sdl3(TerrainBlocksTests)
 tourmaline_stage_sdl3(LevelTests)
 tourmaline_stage_sdl3(WorldFieldsTests)
 tourmaline_stage_sdl3(WorldFieldsGpuTests)
+tourmaline_stage_sdl3(WorldPartitionTests)
+tourmaline_stage_sdl3(WorldFieldAssetTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
 tourmaline_stage_sdl3(PakHostTests)

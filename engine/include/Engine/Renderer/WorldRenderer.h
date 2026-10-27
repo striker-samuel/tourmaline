@@ -75,6 +75,8 @@
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
 #include <Engine/WorldFields/WorldField.h>
+#include <Engine/WorldFields/WorldFieldProvider.h>
+#include <Engine/WorldPartition/WorldPartition.h>
 
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
@@ -2721,8 +2723,19 @@ public:
 	// field set registers ONCE in onAttach (InitWorldFields — ids are
 	// registration order, fog first per WORLD_FIELD_ID_*). v1 is gated
 	// by TOURMALINE_WORLD_FIELDS=1 (the checkerboard shakedown field +
-	// budgeted pools; fog/wind register with their consumers). ----
+	// budgeted pools; fog/wind register with their consumers).
+	// ---- The WorldPartition (Engine/WorldPartition) drives it: the
+	// frame builds a StreamingInterest from the camera (position +
+	// velocity), the partition runs the provider sequence, and the
+	// WorldFieldProvider maps CommitFrame onto the fields' publication.
+	// Brick generation runs on a small DEDICATED work pool (async — the
+	// pool's ring is ours alone per the enqueue/backpressure contract). ----
 	engine::worldfields::WorldFieldSystem m_worldFields;
+	engine::worldfields::WorldFieldProvider m_worldFieldProvider{ m_worldFields };
+	engine::worldpartition::WorldPartition m_worldPartition;
+	std::unique_ptr<smvk::ThreadPool> m_worldFieldWorkPool;
+	glm::vec3 m_worldFieldPrevEye{ 0.0f };
+	bool m_worldFieldPrevEyeValid = false;
 	// ---- Artistic LUT grading (TPP-style 32^3 strip, see tonemap.h) ----
 	// content/luts/*.png: 1024x32 sRGB-encoded strips. F7 exports the
 	// neutral strip + a screenshot reference into exports/ for Photoshop.

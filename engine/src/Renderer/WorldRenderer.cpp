@@ -1948,6 +1948,27 @@ namespace engine {
 		// (field ids are registration order and the set closes at the
 		// first GPU publish). Re-attach keeps the set (idempotent inside).
 		InitWorldFields();
+		// The WorldPartition drives the providers from here on: the
+		// frame builds a StreamingInterest from the camera, the partition
+		// runs the sequence (interests -> gather -> commit -> retire), and
+		// the WorldFieldProvider maps CommitFrame onto the fields'
+		// publication. Empty field set = the whole flow no-ops cheaply.
+		// Async generation: a small DEDICATED pool (the enqueue contract
+		// blocks on a full ring — sharing a pool would hitch the render
+		// thread on other users' backpressure). The zero-worker
+		// construction throw (every pool shard leased elsewhere) degrades
+		// to synchronous generation, never a crash.
+		try {
+			m_worldFieldWorkPool = std::make_unique<smvk::ThreadPool>(2);
+			m_worldFields.SetWorkPool(m_worldFieldWorkPool.get());
+		}
+		catch (const std::exception& e) {
+			std::fprintf(stderr,
+				"[WorldFields] work pool unavailable (%s) — synchronous generation\n",
+				e.what());
+		}
+		m_worldFieldProvider.SetContext(m_context);
+		m_worldPartition.AddProvider(&m_worldFieldProvider);
 
 // Scene bounds log + default-camera framing (see below): the light set
 // is the resolved authored set - no procedural grid to fit.
@@ -2471,6 +2492,11 @@ namespace engine {
 	void WorldRenderer::onDetach() {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		m_host.WaitForDeviceIdle();
+		// World fields: drain every in-flight async generation and
+		// detach the work pool BEFORE it dies (member destruction order
+		// would otherwise leave the system pointing at a dead pool).
+		m_worldFields.WaitForInFlightBricks();
+		m_worldFields.SetWorkPool(nullptr);
 		// GeometryFX filter state: frees rendergraph logicals AND the
 		// static-index-monoblock virtual regions (cluster + filtered ring).
 		// Must run while the rendergraph and the static heap are alive;
@@ -8635,9 +8661,28 @@ namespace engine {
 		// present: the region copies + page-table upload ride one streamer
 		// batch, executed after every previously submitted frame retired
 		// and before this frame's main submit waits it (same-frame passes
-		// sample the result — see WorldField.h's contract block).
-		m_worldFields.PrepareFrame(m_context, fb.frameIndex,
-			m_cameraPositioner.cameraPosition_);
+		// sample the result — see WorldField.h's contract block). The
+		// WorldPartition runs the flow: the camera interest (position +
+		// measured velocity for the clipmap lead) -> provider sequence ->
+		// WorldFieldProvider::CommitFrame.
+		{
+			engine::worldpartition::StreamingInterest interest{};
+			interest.position = glm::dvec3(m_cameraPositioner.cameraPosition_);
+			if (m_worldFieldPrevEyeValid && m_deltaTime > 1e-4f) {
+				interest.velocity = glm::dvec3(
+					m_cameraPositioner.cameraPosition_ - m_worldFieldPrevEye)
+					/ double(m_deltaTime);
+			}
+			interest.radiusMeters = 256.0;
+			interest.priority = 1.0f;
+			interest.layerMask = engine::worldpartition::StreamLayerBit(
+				engine::worldpartition::StreamLayer::WorldField);
+			interest.desired = engine::worldpartition::DesiredResidency::GpuReady;
+			m_worldFieldPrevEye = m_cameraPositioner.cameraPosition_;
+			m_worldFieldPrevEyeValid = true;
+			m_worldPartition.SetInterests(&interest, 1);
+			m_worldPartition.UpdateFrame(fb.frameIndex);
+		}
 		// The renderer owns no environment: the frame's look is built
 		// from the WORLD's scene env here, once per frame (the main
 		// view, the shadow fits and every secondary view take it as a

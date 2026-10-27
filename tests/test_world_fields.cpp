@@ -26,17 +26,21 @@
 //
 // Hand-rolled runner (no test framework dependency), like the other tests.
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
 
+#include <Engine/Memory/memory.h>
 #include <Engine/WorldFields/WorldField.h>
 #include <Engine/WorldFields/WorldFieldGpu.h>
 
@@ -768,7 +772,198 @@ static void TestEvictionPolicy()
 }
 
 // ---------------------------------------------------------------------------
-// 6) GPU struct layout contract smoke (the static_asserts in
+// 6) ASYNC streaming (milestone 3): worker-thread generation on a real
+// ThreadPool — the acceptance scenario is continuous movement + a
+// teleport + forced exhaustion with jobs in flight. The invariants:
+// every published page points at its own slot (no stale page ever), the
+// in-flight set drains to zero, no re-dispatch storm (the InFlight phase
+// hides keys from the request scan), and stale results (teleported away
+// mid-flight) are DROPPED — never published.
+// ---------------------------------------------------------------------------
+struct AtomicLinearSource final : wf::IWorldFieldBrickSource
+{
+	std::atomic<int> totalCalls{ 0 };
+	std::atomic<int> absentCalls{ 0 };
+
+	static uint8_t Quantized(glm::vec3 p)
+	{
+		float v = 0.125f + 0.0031f * p.x + 0.0021f * p.y + 0.0013f * p.z;
+		v = std::min(std::max(v, 0.0f), 1.0f);
+		return uint8_t(v * 255.0f + 0.5f);
+	}
+
+	bool GenerateBrick(const wf::WorldFieldDesc& field, uint32_t lod,
+		int32_t x, int32_t y, int32_t z,
+		std::byte* payload, size_t payloadBytes) override
+	{
+		++totalCalls; // atomic: worker threads race this
+		// y < 0 world bricks are empty (absence + drop paths).
+		const float brickMinY = field.originMeters.y
+			+ float(y) * float(wf::kBrickInteriorRes) * field.baseVoxelSizeMeters
+				* float(1u << lod);
+		if (brickMinY + 1e-4f < 0.0f) {
+			++absentCalls;
+			return false;
+		}
+		const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
+		const glm::vec3 brickMin = field.originMeters
+			+ glm::vec3(float(x), float(y), float(z))
+				* (float(wf::kBrickInteriorRes) * voxel);
+		size_t i = 0;
+		for (uint32_t tz = 0; tz < wf::kBrickStoredRes; ++tz)
+			for (uint32_t ty = 0; ty < wf::kBrickStoredRes; ++ty)
+				for (uint32_t tx = 0; tx < wf::kBrickStoredRes; ++tx) {
+					const glm::vec3 p = brickMin + glm::vec3(
+						float(tx) + 0.5f - float(wf::kBrickBorder),
+						float(ty) + 0.5f - float(wf::kBrickBorder),
+						float(tz) + 0.5f - float(wf::kBrickBorder)) * voxel;
+					payload[i++] = std::byte(Quantized(p));
+				}
+		return true;
+	}
+};
+
+static void TestAsyncStreaming()
+{
+	// The ThreadPool's ring lives in the process allocator (InitMemory is
+	// idempotent — see test_memory.cpp).
+	smvk::mem::InitMemory();
+	smvk::ThreadPool pool(2);
+	{
+		// Liveness probe: a trivial task must complete while the main
+		// thread SPINS (the whole async design relies on workers getting
+		// scheduled alongside a running main thread).
+		auto fut = pool.enqueue([] { return 42; });
+		const auto t0 = std::chrono::steady_clock::now();
+		while (fut.wait_for(std::chrono::milliseconds(0))
+			!= std::future_status::ready) {
+			if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(2))
+				break;
+		}
+		Check(fut.get() == 42, "async.pool-liveness (spin-wait completes)");
+	}
+
+	wf::WorldFieldSystem sys;
+	wf::WorldFieldStreamingPolicy policy{};
+	policy.maxBrickLoadsPerFrame = 4;
+	policy.maxInFlightBricks = 4; // deliberately tight: the cap engages
+	policy.evictHysteresisFrames = 2;
+	policy.proactiveEvictFrames = 6;
+	policy.protectCoarsestLod = true;
+	sys.SetStreamingPolicy(policy);
+
+	wf::WorldFieldDesc d{};
+	d.name = "AsyncTestField";
+	d.format = smvk::Format::R8_UNorm;
+	d.encoding = wf::WorldFieldEncoding::Linear;
+	d.baseVoxelSizeMeters = 1.0f;
+	d.lodCount = 2;
+	d.tableDimX = 2;
+	d.tableDimY = 2;
+	d.tableDimZ = 2;
+	d.poolSlotsX = 2;
+	d.poolSlotsY = 2;
+	d.poolSlotsZ = 1; // 4 slots under a 16-cell window: forced churn
+	d.fallbackValue = glm::vec4(0.0f);
+	const wf::WorldFieldHandle h = sys.RegisterField(d);
+	AtomicLinearSource source;
+	sys.SetBrickSource(h, &source);
+	sys.SetWorkPool(&pool);
+	Check(sys.WorkPool() == &pool, "async.pool-installed");
+
+	SimAtlas atlas;
+	atlas.w = 2 * 68;
+	atlas.h = 2 * 68;
+	atlas.d = 1 * 68;
+	atlas.bytes.assign(size_t(atlas.w) * atlas.h * atlas.d, 0u);
+	std::unordered_map<uint32_t, wf::WorldBrickKey> slotLastUpload;
+
+	bool pageInvariantHeld = true;
+	bool regionBoundsHeld = true;
+	uint64_t totalUploads = 0;
+	uint64_t totalSkips = 0;
+	for (uint64_t f = 0; f < 60; ++f) {
+		glm::vec3 eye(40.0f + float(f) * 40.0f, 24.0f, 40.0f);
+		if (f == 30)
+			eye = glm::vec3(-613.0f, 211.0f, -353.0f); // TELEPORT mid-flight
+		else if (f > 30)
+			eye += glm::vec3(float(int(f) - 30) * 25.0f, 0.0f, -13.0f);
+
+		sys.ComputeResidency(eye, f);
+
+		for (uint32_t u = 0; u < sys.PendingUploadCount(); ++u) {
+			const wf::WorldFieldRegionUpload& up = sys.PendingUploads()[u];
+			const int32_t ox = up.region.offset.x, oy = up.region.offset.y, oz = up.region.offset.z;
+			if (up.payloadBytes != size_t(68) * 68 * 68 || (ox % 68) || (oy % 68) || (oz % 68))
+				regionBoundsHeld = false;
+			for (uint32_t z = 0; z < 68; ++z)
+				for (uint32_t y = 0; y < 68; ++y)
+					std::memcpy(&atlas.bytes[(size_t(oz + z) * atlas.h + size_t(oy + y)) * atlas.w + size_t(ox)],
+						up.payload + (size_t(z) * 68 + size_t(y)) * 68, 68);
+			slotLastUpload[up.atlasSlot] = up.key;
+			++totalUploads;
+		}
+		sys.DropPendingGpuWork();
+
+		// The slot-reuse invariant on the published table.
+		TableView view{ sys.TableBytes(), sys.TableUsedBytes() };
+		if (view.base && view.usedBytes) {
+			const wf::WorldFieldTableHeader hd = view.Header();
+			for (uint32_t fId = 0; fId < hd.fieldCount; ++fId) {
+				const wf::WorldFieldGpu fg = view.Field(fId, hd.fieldStride);
+				for (uint32_t lod = 0; lod < fg.meta.z; ++lod) {
+					const wf::WorldLevelGpu& lv = fg.levels[lod];
+					for (uint32_t e = 0;
+						e < lv.windowDim.x * lv.windowDim.y * lv.windowDim.z; ++e) {
+						const wf::WorldPageGpu page = view.Page(lv.pageTableOffset + e * 16u);
+						if (page.atlasSlot < 0)
+							continue;
+						const wf::WorldBrickKey key{ fId, lod,
+							page.brickX, page.brickY, page.brickZ };
+						const auto it = slotLastUpload.find(uint32_t(page.atlasSlot));
+						if (it == slotLastUpload.end() || !(it->second == key))
+							pageInvariantHeld = false;
+					}
+				}
+			}
+		}
+		totalSkips += sys.Stats().requestsSkipped;
+		if (f % 10 == 0)
+			std::cout << "[info] async frame " << f
+				<< " inFlight=" << sys.InFlightCount()
+				<< " uploads=" << totalUploads
+				<< " calls=" << source.totalCalls.load()
+				<< " absent=" << source.absentCalls.load()
+				<< " stats=" << sys.Stats().residentBricks << "r/"
+				<< sys.Stats().inFlightBricks << "i/"
+				<< sys.Stats().absentBricks << "a\n";
+		// Pace the frames (a real frame is ~16 ms; this loop otherwise
+		// completes 60 iterations FASTER than one worker brick — a test
+		// artifact, not a starvation bug: the workers need wall-clock to
+		// produce 314 KB bricks while the main thread spins for free).
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+
+	Check(totalSkips > 0, "async.inflight-cap-and-exhaustion-skips");
+	Check(pageInvariantHeld, "async.page-points-at-own-slot (teleports + churn)");
+	Check(regionBoundsHeld, "async.region-bounds");
+	Check(sys.InFlightCount() <= policy.maxInFlightBricks, "async.inflight-cap-respected");
+
+	// Deterministic teardown: wait for the in-flight workers WITHOUT
+	// consuming their futures (wait(), not get() — the drain owns the
+	// payloads), detach the pool (the drain is pool-independent), then
+	// one final compute that ONLY drains. The SOURCE below is a stack
+	// object — this sequence covers every worker before it dies.
+	sys.WaitForInFlightBricks();
+	sys.SetWorkPool(nullptr);
+	sys.ComputeResidency(glm::vec3(400.0f, 24.0f, 400.0f), 60);
+	Check(sys.InFlightCount() == 0, "async.drained-to-zero");
+	Check(totalUploads > 0, "async.published-async-bricks");
+	Check(source.totalCalls.load() > 0, "async.source-called-on-workers");
+}
+
+// ---------------------------------------------------------------------------
+// 7) GPU struct layout contract smoke (the static_asserts in
 // WorldFieldGpu.h do the real work; this pins the table header arithmetic).
 // ---------------------------------------------------------------------------
 static void TestGpuLayout()
@@ -781,11 +976,14 @@ static void TestGpuLayout()
 
 int main()
 {
+	std::setvbuf(stdout, nullptr, _IONBF, 0); // crash diagnostics: keep every PASS line
 	TestAddressing();
 	TestAtlasMath();
 	TestDecode();
 	TestResidencyChurnAndSeams();
 	TestEvictionPolicy();
+	TestAsyncStreaming();
+	TestGpuLayout();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

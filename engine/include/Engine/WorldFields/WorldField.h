@@ -67,9 +67,11 @@
 
 #include <Engine/smvk.h>
 #include <Engine/Memory/pool.h>
+#include <Engine/Utils/thread_pool.h>
 #include <Engine/WorldFields/WorldFieldTypes.h>
 #include <Engine/WorldFields/WorldFieldGpu.h>
 #include <Engine/WorldFields/WorldFieldAtlas.h>
+#include <Engine/WorldPartition/WorldPartition.h>
 
 namespace engine::worldfields {
 
@@ -139,10 +141,15 @@ struct WorldFieldHandle
 // construction). Tightly packed: texel/block (x,y,z) at
 //   uncompressed: ((z * stored) + y) * stored + x  texels
 //   BCn         : ((z * blocksY) + by) * blocksX + bx blocks (4x4x1)
-// (stored = 68 = kBrickStoredRes). Called on the PREPARE thread (v1: the
-// render thread; the async-worker streaming milestone keeps this
-// synchronous per worker). Return false = brick known-empty (the pager
-// negative-caches it; pages read it as not-resident).
+// (stored = 68 = kBrickStoredRes). Return false = brick known-empty (the
+// pager negative-caches it; pages read it as not-resident).
+//
+// THREADING CONTRACT: with a work pool installed
+// (WorldFieldSystem::SetWorkPool), GenerateBrick runs CONCURRENTLY on
+// worker threads — implementations must be pure/thread-safe (no shared
+// mutable state; immutable loaded assets are fine). Synchronous mode
+// (no pool) runs it on the render thread. The payload buffer is
+// caller-owned per call.
 // ---------------------------------------------------------------------------
 class IWorldFieldBrickSource
 {
@@ -159,9 +166,15 @@ public:
 // ---------------------------------------------------------------------------
 struct WorldFieldStreamingPolicy
 {
-	// Max bricks generated+uploaded per frame, across all fields (the
-	// demand budget; a 68^3 R8 brick is ~307 KB, BC4 half that).
+	// Max bricks GENERATED per frame, across all fields — the dispatch
+	// budget. In sync mode this bounds render-thread work; with a work
+	// pool it bounds the per-frame dispatch (the in-flight cap below
+	// bounds the outstanding set). A 68^3 R8 brick is ~307 KB, BC4 half.
 	uint32_t maxBrickLoadsPerFrame = 8;
+	// Outstanding async generations across all fields (work-pool mode).
+	// The frame's requests beyond this stay un-dispatched and are simply
+	// re-collected next frame — graceful, never corrupting.
+	uint32_t maxInFlightBricks = 16;
 	// A resident brick outside every window for this many frames becomes
 	// evictable (hysteresis — camera jitter must not thrash pages).
 	uint32_t evictHysteresisFrames = 30;
@@ -171,6 +184,10 @@ struct WorldFieldStreamingPolicy
 	// Never demand-evict a field's coarsest-LOD bricks while any other
 	// candidate exists (coarse pages are every fine miss's fallback).
 	bool protectCoarsestLod = true;
+	// Interest lookahead: clipmap centers lead the primary interest's
+	// velocity by this many seconds (fast movement needs residency ahead
+	// of the camera; 0 = centers exactly on the interest).
+	float interestLeadSeconds = 0.5f;
 };
 
 // ---------------------------------------------------------------------------
@@ -193,6 +210,7 @@ struct WorldFieldStats
 	uint32_t fieldCount = 0;
 	uint32_t residentBricks = 0;
 	uint32_t absentBricks = 0; // negative-cached empties (no physical slot)
+	uint32_t inFlightBricks = 0; // dispatched to the work pool, pending
 	uint32_t pendingUploads = 0; // this frame's queued region copies
 	uint32_t evictions = 0; // this frame
 	uint32_t requestsSkipped = 0; // this frame (budget/pool exhausted)
@@ -237,7 +255,9 @@ public:
 
 	// ---- per frame ----
 	// ComputeResidency: move clipmap windows to the interest point,
-	// request/evict/generate bricks, rebuild the GPU table (CPU-pure).
+	// request/evict/generate bricks, rebuild the GPU table (CPU-pure on
+	// the render thread; async generations dispatch to the work pool
+	// here and their results publish in a LATER frame's PublishGpu).
 	// PublishGpu: ensure pools/buffer, then ONE BATCHED region upload per
 	// target atlas (UploadDataToImage3DRegions — one ring alloc, one
 	// memcpy, ONE layout-transition pair, one copy command per image) and
@@ -245,9 +265,29 @@ public:
 	// both.
 	void PrepareFrame(smvk::ResourceManager* ctx, uint32_t frameIndex,
 		glm::vec3 interestPoint);
+	// The WorldPartition provider path (Engine/WorldFields/
+	// WorldFieldProvider.h): residency follows the RESOLVED interest set
+	// — the highest-priority WorldField-layer interest drives the clipmap
+	// centers, LED along its velocity by policy.interestLeadSeconds (the
+	// prefetch rule: d >= v * t_worstReady + d_safety).
+	void PrepareFrameInterests(smvk::ResourceManager* ctx, uint64_t frameIndex,
+		const worldpartition::StreamingInterest* interests, size_t count);
 	void ComputeResidency(glm::vec3 interestPoint, uint64_t frameIndex);
 	void PublishGpu(smvk::ResourceManager& ctx);
 	void DropPendingGpuWork(); // discard queued uploads (headless/tests)
+
+	// ---- async generation ----
+	// Install/uninstall the worker pool (NOT owned). null = synchronous
+	// generation on the render thread (the default; tests/headless). The
+	// pool must outlive the system's in-flight jobs (or call
+	// WaitForInFlightBricks first).
+	void SetWorkPool(smvk::ThreadPool* pool) { workPool_ = pool; }
+	smvk::ThreadPool* WorkPool() const { return workPool_; }
+	// Block until every in-flight generation lands in the ready list.
+	// Owners with STACK-owned sources call this before destroying them
+	// (in-flight workers still reference the source).
+	void WaitForInFlightBricks();
+	uint32_t InFlightCount() const { return uint32_t(inFlight_.size()); }
 
 	// ---- GPU binding (FrameUniforms::worldFields/worldFieldCount) ----
 	WorldFieldGpuBinding GpuBinding() const { return binding_; }
@@ -310,15 +350,42 @@ private:
 		uint32_t gen = 0;
 		bool alive = true;
 		IWorldFieldBrickSource* source = nullptr; // not owned
+		uint32_t sourceGen = 0; // bumped on source swap: in-flight results
+		// from the previous source are dropped at drain
 		std::unique_ptr<WorldFieldAtlasPool> pool; // one pool per field (v1)
+	};
+
+	// Brick lifecycle phase (the streamed state machine):
+	//   Absent   : known-empty (negative cache; no slot, no upload)
+	//   InFlight : generation dispatched to the work pool (sync mode never
+	//              holds this state — it goes straight to Resident)
+	//   Resident : owns an atlas slot, published in the table
+	enum class BrickPhase : uint8_t
+	{
+		Absent,
+		InFlight,
+		Resident,
 	};
 
 	struct BrickEntry
 	{
 		WorldBrickKey key{};
-		int32_t slot = -1; // physical slot; -1 when known-absent
-		bool resident = false;
+		int32_t slot = -1; // physical slot; -1 unless Resident
+		BrickPhase phase = BrickPhase::Absent;
 		uint64_t lastUseFrame = 0; // last frame inside a window (LRU clock)
+	};
+
+	// One dispatched async generation (the future owns the payload; the
+	// worker owns nothing shared — desc is copied, the source must be
+	// thread-safe per the IWorldFieldBrickSource contract). sourceGen
+	// stamps the source-swap generation: results from a swapped-out
+	// source never publish.
+	struct InFlightJob
+	{
+		WorldBrickKey key{};
+		std::future<std::vector<std::byte>> payload{};
+		uint64_t submitFrame = 0;
+		uint32_t sourceGen = 0;
 	};
 
 	// Per field per LOD window bookkeeping (CPU side of WorldLevelGpu).
@@ -351,11 +418,25 @@ private:
 	size_t ComputeTableCapacityBytes() const;
 	bool EnsureTableGpu(smvk::ResourceManager& ctx);
 	bool EnsurePoolsGpu(smvk::ResourceManager& ctx, bool& outAnyCreated);
+	// Async plumbing: dispatch a generation to the work pool (false =
+	// cap reached — re-request next frame); drain completed jobs into the
+	// resident/pending-upload path on the render thread (the publication
+	// contract is untouched: uploads still flow PublishGpu on the render
+	// thread, regions before the table, one batch).
+	bool DispatchBrickJob(const WorldBrickKey& key, const FieldSlot& f);
+	void DrainInFlight(uint64_t frame);
+	void CancelInFlightForField(uint32_t fieldId);
+	// The shared resident-publish path (sync + async results converge
+	// here): slot acquire (+ demand eviction), payload -> arena, the
+	// queued region upload, the table mark.
+	bool PublishBrick(const WorldBrickKey& key, FieldSlot& f,
+		const std::byte* payload, size_t payloadBytes, uint64_t frame);
 
 	std::vector<FieldSlot> fields_; // grows; index = field id (GPU order)
 	std::vector<FieldRuntime> fieldRuntime_; // parallel to fields_
 	std::unordered_map<WorldBrickKey, BrickEntry, WorldBrickKeyHash> bricks_;
 	std::vector<RequestQ> requestScratch_;
+	std::vector<InFlightJob> inFlight_; // outstanding async generations
 
 	std::vector<WorldFieldRegionUpload> pendingUploads_;
 	std::vector<std::byte> pendingArena_; // payload storage for pendingUploads_
@@ -371,9 +452,11 @@ private:
 	bool published_ = false; // first PublishGpu done (field set closes)
 	uint32_t aliveCount_ = 0;
 	uint32_t nextGen_ = 0;
+	smvk::ThreadPool* workPool_ = nullptr; // optional async generation
 
 	WorldFieldStreamingPolicy policy_{};
 	uint64_t frame_ = 0;
+	glm::vec3 lastInterestCenter_{ 0.0f }; // no-interest frames keep it
 
 	// per-frame stat deltas (reset in ComputeResidency)
 	uint32_t statEvictions_ = 0;

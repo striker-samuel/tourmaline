@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstring>
+#include <future>
 
 #include <Engine/WorldFields/WorldField.h>
 #include <Engine/WorldFields/WorldFieldAtlas.h>
@@ -179,11 +181,14 @@ void WorldFieldSystem::SetBrickSource(WorldFieldHandle handle,
 	if (!f.alive || f.gen != handle.gen)
 		return;
 	f.source = source;
+	++f.sourceGen; // in-flight results from the old source drop at drain
 	// A new source can answer bricks the old one called empty: drop this
-	// field's ABSENCE cache (residents keep their slots — a source swap
-	// mid-run is not a v1 flow, set once at init).
+	// field's ABSENCE cache (residents keep their slots; in-flight jobs
+	// drain-drop via the sourceGen stamp). A source swap mid-run is not
+	// a v1 flow, set once at init.
 	for (auto it = bricks_.begin(); it != bricks_.end();) {
-		if (it->second.key.fieldId == handle.index && !it->second.resident)
+		if (it->second.key.fieldId == handle.index
+			&& it->second.phase == BrickPhase::Absent)
 			it = bricks_.erase(it);
 		else
 			++it;
@@ -235,7 +240,35 @@ smvk::ImageHandle WorldFieldSystem::FieldAtlas(uint32_t fieldId) const
 void WorldFieldSystem::PrepareFrame(smvk::ResourceManager* ctx, uint32_t frameIndex,
 	glm::vec3 interestPoint)
 {
-	ComputeResidency(interestPoint, frameIndex);
+	lastInterestCenter_ = interestPoint;
+	ComputeResidency(lastInterestCenter_, frameIndex);
+	if (ctx)
+		PublishGpu(*ctx);
+	else
+		DropPendingGpuWork();
+}
+
+void WorldFieldSystem::PrepareFrameInterests(smvk::ResourceManager* ctx, uint64_t frameIndex,
+	const worldpartition::StreamingInterest* interests, size_t count)
+{
+	assert(interests != nullptr || count == 0);
+	// The highest-priority WorldField-layer interest (the partition sorts
+	// priority-first) drives the clipmap centers, LED along its velocity
+	// by policy.interestLeadSeconds — the prefetch rule: fast movement
+	// needs residency ahead of the camera, not just around it.
+	for (size_t i = 0; i < count; ++i) {
+		const worldpartition::StreamingInterest& in = interests[i];
+		if ((in.layerMask & worldpartition::StreamLayerBit(
+				worldpartition::StreamLayer::WorldField)) == 0)
+			continue;
+		lastInterestCenter_ = glm::vec3(in.position
+			+ in.velocity * double(policy_.interestLeadSeconds));
+		break;
+	}
+	// No field-layer interest this frame: KEEP the last centers (no window
+	// churn; residents keep refreshing) and still publish whatever became
+	// ready.
+	ComputeResidency(lastInterestCenter_, frameIndex);
 	if (ctx)
 		PublishGpu(*ctx);
 	else
@@ -319,15 +352,30 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 	// ---- proactive eviction (aged residents; protected LODs skipped) ----
 	ProactiveEvict(frame);
 
+	// ---- drain completed async generations FIRST (render thread) ----
+	// Publishing frees slots + turns requests non-pending before the
+	// dispatch below re-collects; stale results (source swapped mid-flight,
+	// or the brick left every window — a teleport) are DROPPED: never
+	// published, never a stale page. The publication contract is untouched
+	// (uploads still flow PublishGpu on this thread, regions before table).
+	// Gate: non-empty jobs — NOT workPool_ (draining is pool-independent;
+	// an owner uninstalling the pool with jobs outstanding still gets
+	// them published; only DISPATCHING needs the pool).
+	if (!inFlight_.empty())
+		DrainInFlight(frame);
+
 	// ---- request processing under budget ----
 	{
 		// Arena reserve: payloads must stay pointer-stable for this frame
-		// (pendingUploads_ points into it); the budget bounds the count.
+		// (pendingUploads_ points into it). Worst case = the async drain
+		// (up to maxInFlight) + this frame's dispatch (maxBrickLoads).
 		size_t maxPayload = 1;
 		for (const FieldSlot& f : fields_)
 			if (f.alive && f.pool)
 				maxPayload = std::max<size_t>(maxPayload, f.pool->StoredBrickBytes());
-		pendingArena_.reserve(size_t(policy_.maxBrickLoadsPerFrame) * maxPayload);
+		pendingArena_.reserve(
+			(size_t(policy_.maxInFlightBricks) + policy_.maxBrickLoadsPerFrame)
+			* maxPayload);
 	}
 
 	uint32_t processed = 0;
@@ -338,12 +386,27 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 		}
 		const WorldBrickKey& key = requestScratch_[ri].key;
 		FieldSlot& f = fields_[key.fieldId];
-		WorldFieldAtlasPool& pool = *f.pool;
-		const size_t payloadBytes = pool.StoredBrickBytes();
-		if (brickScratch_.size() < payloadBytes)
-			brickScratch_.resize(payloadBytes);
 		++processed; // generation counts against the budget, hit or miss
 
+		// ASYNC: dispatch to the work pool; the result publishes in a
+		// LATER frame's drain (the frame's publication point has not
+		// passed yet for this brick — by design, see the provider doc).
+		if (workPool_) {
+			if (inFlight_.size() >= policy_.maxInFlightBricks) {
+				++statRequestsSkipped_; // in-flight cap — re-request next frame
+				continue;
+			}
+			if (!DispatchBrickJob(key, f)) {
+				++statRequestsSkipped_; // no source / enqueue refused
+				continue;
+			}
+			continue;
+		}
+
+		// SYNC: generate inline, publish immediately.
+		const size_t payloadBytes = f.pool->StoredBrickBytes();
+		if (brickScratch_.size() < payloadBytes)
+			brickScratch_.resize(payloadBytes);
 		const bool ok = f.source && f.source->GenerateBrick(f.desc, key.lod,
 			key.x, key.y, key.z, brickScratch_.data(), payloadBytes);
 		if (!ok) {
@@ -351,49 +414,160 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 			// no re-request while it stays in window).
 			BrickEntry e{};
 			e.key = key;
-			e.slot = -1;
-			e.resident = false;
+			e.phase = BrickPhase::Absent;
 			e.lastUseFrame = frame;
 			bricks_.insert_or_assign(key, e);
 			continue;
 		}
-
-		uint32_t slot = 0;
-		if (!pool.TryAcquireSlot(key, slot)) {
-			WorldBrickKey victim{};
-			if (!PickVictimAndRelease(key.fieldId, f, frame, victim)) {
-				++statRequestsSkipped_; // pool exhausted — graceful skip
-				continue;
-			}
-			++statEvictions_;
-			if (!pool.TryAcquireSlot(key, slot)) {
-				// The victim release must have returned a slot; if not,
-				// skip rather than upload into a slot we do not own.
-				++statRequestsSkipped_;
-				continue;
-			}
-		}
-
-		// Payload -> arena (16-aligned offset; pointer-stable this frame
-		// through the reserve above), then the queued region upload.
-		const size_t aligned = (pendingArena_.size() + 15u) & ~size_t(15u);
-		pendingArena_.resize(aligned + payloadBytes);
-		std::memcpy(pendingArena_.data() + aligned, brickScratch_.data(), payloadBytes);
-		pendingUploads_.push_back(WorldFieldRegionUpload{
-			pool.Image(), pool.SlotRegion(slot), key, slot,
-			pendingArena_.data() + aligned, payloadBytes });
-
-		BrickEntry e{};
-		e.key = key;
-		e.slot = int32_t(slot);
-		e.resident = true;
-		e.lastUseFrame = frame;
-		bricks_.insert_or_assign(key, e);
-		tableDirty_ = true;
+		(void)PublishBrick(key, f, brickScratch_.data(), payloadBytes, frame);
 	}
 
 	if (tableDirty_)
 		RebuildTable();
+}
+
+// ---------------------------------------------------------------------------
+// Async generation plumbing
+// ---------------------------------------------------------------------------
+
+bool WorldFieldSystem::DispatchBrickJob(const WorldBrickKey& key, const FieldSlot& f)
+{
+	assert(workPool_ != nullptr && f.source != nullptr && f.pool != nullptr);
+	const size_t payloadBytes = f.pool->StoredBrickBytes();
+	// Worker-owned copies (no shared mutable state; the source must be
+	// thread-safe per the IWorldFieldBrickSource contract).
+	const WorldFieldDesc desc = f.desc;
+	IWorldFieldBrickSource* source = f.source;
+	const uint32_t lod = key.lod;
+	const int32_t bx = key.x, by = key.y, bz = key.z;
+
+	std::future<std::vector<std::byte>> fut;
+	try {
+		// enqueue BLOCKS on a full ring (the pool's backpressure contract)
+		// and THROWS if the pool is stopped — a stopped/unshared-safe pool
+		// is an owner bug, but degrading to a skip beats crashing.
+		fut = workPool_->enqueue([desc, source, lod, bx, by, bz, payloadBytes]
+			() -> std::vector<std::byte> {
+			// Value-init then fill: the memset is accepted (a memset of
+			// 307 KB is ~10us against a generation pass in the hundreds).
+			std::vector<std::byte> payload(payloadBytes, std::byte{});
+			if (!source->GenerateBrick(desc, lod, bx, by, bz,
+					payload.data(), payloadBytes))
+				payload.clear(); // empty vector = "source reports absent"
+			return payload;
+		});
+	}
+	catch (const std::exception&) {
+		return false;
+	}
+
+	InFlightJob job{};
+	job.key = key;
+	job.payload = std::move(fut);
+	job.submitFrame = frame_;
+	job.sourceGen = f.sourceGen;
+	inFlight_.push_back(std::move(job));
+
+	// Mark the entry InFlight so the request scan does not re-dispatch.
+	BrickEntry e{};
+	e.key = key;
+	e.phase = BrickPhase::InFlight;
+	e.lastUseFrame = frame_;
+	bricks_.insert_or_assign(key, e);
+	return true;
+}
+
+void WorldFieldSystem::DrainInFlight(uint64_t frame)
+{
+	for (size_t i = 0; i < inFlight_.size();) {
+		InFlightJob& job = inFlight_[i];
+		const std::future_status st = job.payload.wait_for(std::chrono::seconds(0));
+		if (st != std::future_status::ready) {
+			++i;
+			continue;
+		}
+		const WorldBrickKey key = job.key;
+		const uint32_t sourceGen = job.sourceGen;
+		std::vector<std::byte> payload = job.payload.get();
+		// Swap-remove; the moved-in back element re-processes this slot.
+		inFlight_[i] = std::move(inFlight_.back());
+		inFlight_.pop_back();
+
+		auto it = bricks_.find(key);
+		const bool tracked = it != bricks_.end()
+			&& it->second.phase == BrickPhase::InFlight;
+		// STALE results never publish: a source swap mid-flight
+		// (sourceGen bumped) or an entry that vanished (field teardown).
+		const bool staleSource = key.fieldId >= fields_.size()
+			|| !fields_[key.fieldId].alive
+			|| fields_[key.fieldId].sourceGen != sourceGen;
+		if (!tracked || staleSource) {
+			if (it != bricks_.end() && it->second.phase == BrickPhase::InFlight)
+				bricks_.erase(it); // re-requestable under the new source
+			continue;
+		}
+		// Absent result: negative-cache (same as the sync path).
+		if (payload.empty()) {
+			it->second.phase = BrickPhase::Absent;
+			continue;
+		}
+		// Teleported away mid-flight? Drop the work — never a stale page.
+		if ((frame - it->second.lastUseFrame) > policy_.evictHysteresisFrames) {
+			bricks_.erase(it);
+			continue;
+		}
+		FieldSlot& f = fields_[key.fieldId];
+		(void)PublishBrick(key, f, payload.data(), payload.size(), frame);
+	}
+}
+
+void WorldFieldSystem::WaitForInFlightBricks()
+{
+	// WAIT, never get(): std::future::get() is single-shot (it consumes
+	// the shared state — a later drain's get() would throw future_error
+	// out of ComputeResidency). wait() blocks without consuming; the
+	// drain on the next ComputeResidency owns the payloads.
+	for (InFlightJob& job : inFlight_)
+		job.payload.wait();
+}
+
+bool WorldFieldSystem::PublishBrick(const WorldBrickKey& key, FieldSlot& f,
+	const std::byte* payload, size_t payloadBytes, uint64_t frame)
+{
+	WorldFieldAtlasPool& pool = *f.pool;
+	uint32_t slot = 0;
+	if (!pool.TryAcquireSlot(key, slot)) {
+		WorldBrickKey victim{};
+		if (!PickVictimAndRelease(key.fieldId, f, frame, victim)) {
+			++statRequestsSkipped_; // pool exhausted — graceful skip
+			return false;
+		}
+		++statEvictions_;
+		if (!pool.TryAcquireSlot(key, slot)) {
+			// The victim release must have returned a slot; if not, skip
+			// rather than upload into a slot we do not own.
+			++statRequestsSkipped_;
+			return false;
+		}
+	}
+
+	// Payload -> arena (16-aligned offset; pointer-stable this frame via
+	// the reserve), then the queued region upload.
+	const size_t aligned = (pendingArena_.size() + 15u) & ~size_t(15u);
+	pendingArena_.resize(aligned + payloadBytes);
+	std::memcpy(pendingArena_.data() + aligned, payload, payloadBytes);
+	pendingUploads_.push_back(WorldFieldRegionUpload{
+		pool.Image(), pool.SlotRegion(slot), key, slot,
+		pendingArena_.data() + aligned, payloadBytes });
+
+	BrickEntry e{};
+	e.key = key;
+	e.slot = int32_t(slot);
+	e.phase = BrickPhase::Resident;
+	e.lastUseFrame = frame;
+	bricks_.insert_or_assign(key, e);
+	tableDirty_ = true;
+	return true;
 }
 
 bool WorldFieldSystem::PickVictimAndRelease(uint32_t fieldId, const FieldSlot& f,
@@ -409,7 +583,7 @@ bool WorldFieldSystem::PickVictimAndRelease(uint32_t fieldId, const FieldSlot& f
 		auto best = bricks_.end();
 		for (auto it = bricks_.begin(); it != bricks_.end(); ++it) {
 			const BrickEntry& e = it->second;
-			if (!e.resident || e.key.fieldId != fieldId)
+			if (e.phase != BrickPhase::Resident || e.key.fieldId != fieldId)
 				continue;
 			const bool isCoarsest = (e.key.lod == coarsest);
 			if (isCoarsest != coarsePass)
@@ -443,7 +617,8 @@ void WorldFieldSystem::ProactiveEvict(uint64_t frame)
 		return;
 	for (auto it = bricks_.begin(); it != bricks_.end();) {
 		BrickEntry& e = it->second;
-		if (!e.resident || (frame - e.lastUseFrame) <= threshold) {
+		if (e.phase != BrickPhase::Resident
+			|| (frame - e.lastUseFrame) <= threshold) {
 			++it;
 			continue;
 		}
@@ -576,7 +751,8 @@ void WorldFieldSystem::RebuildTable()
 						page.atlasSlot = -1; // not resident (empty tag = the abs brick)
 						const WorldBrickKey key{ fi, lod, abs.x, abs.y, abs.z };
 						const auto it = bricks_.find(key);
-						if (it != bricks_.end() && it->second.resident)
+						if (it != bricks_.end()
+							&& it->second.phase == BrickPhase::Resident)
 							page.atlasSlot = it->second.slot;
 						// int & on two's complement == the shader's uint3
 						// wrap for negative bricks (-1 & 3 == 3).
@@ -752,11 +928,13 @@ WorldFieldStats WorldFieldSystem::Stats() const
 	s.pendingUploads = uint32_t(pendingUploads_.size());
 	s.evictions = statEvictions_;
 	s.requestsSkipped = statRequestsSkipped_;
+	s.inFlightBricks = uint32_t(inFlight_.size());
 	for (const auto& kv : bricks_) {
-		if (kv.second.resident)
+		if (kv.second.phase == BrickPhase::Resident)
 			++s.residentBricks;
-		else
+		else if (kv.second.phase == BrickPhase::Absent)
 			++s.absentBricks;
+		// (InFlight counts via inFlightBricks above)
 	}
 	for (const FieldSlot& f : fields_) {
 		if (!f.alive || !f.pool)
