@@ -466,6 +466,8 @@ void RunConfig::WarnUnknown() {
 		// WorldFields/WorldPartition (the atlas-backed voxel-field system +
 		// the C-map's streaming layers; parsed at their use sites):
 		"TOURMALINE_WORLD_FIELDS", "TOURMALINE_WORLDMAP",
+		// Fog-GI A/B source toggle (0=worldfield, 1=octree, 2=sky-only):
+		"TOURMALINE_FOG_GI_SOURCE",
 		"TOURMALINE_VOLUMETRIC_GI_VOLUMES", "TOURMALINE_SSR", "TOURMALINE_BLOOM_THRESHOLD",
 		"TOURMALINE_BLOOM_INTENSITY", "TOURMALINE_AO", "TOURMALINE_AUTO_EXPOSURE",
 		"TOURMALINE_CUBEMAP", "TOURMALINE_HIZ", "TOURMALINE_LOD", "TOURMALINE_LODFULL",

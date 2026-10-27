@@ -663,6 +663,14 @@ namespace engine {
 // definitions follow.
 namespace engine {
 
+	// The fog-GI world-field source's SgGiVolume pointer (set by
+	// LoadGiOctree when the .sggi loads; null = no GI data — the
+	// fog-GI brick source reports empty and the shader falls to the
+	// sky mean). Declared here (file scope, before every user: the
+	// LoadGiOctree setter at ~2880 and the WorldFogGiMeanSource reader
+	// in the anonymous namespace at ~3960).
+	static const smvk::gi::SgGiVolume* g_fogGiVolume = nullptr;
+
 	// HOST (the App this element rides on - see the header): cheap
 	// construction, everything resolves at onAttach (Run time, after the
 	// host's Initialize). The dtor only releases what onDetach did not
@@ -2873,6 +2881,10 @@ namespace engine {
 			}
 		}
 		m_giLoaded = true;
+		// Wire the fog-GI world-field source (the CPU reference walk
+		// evaluates the probe mean per brick texel — see
+		// WorldFogGiMeanSource above).
+		g_fogGiVolume = &m_giOctree;
 
 		// CPU-side sanity: the volume must cover the scene interior.
 		if (const char* giDbg = std::getenv("TOURMALINE_GI_DEBUG")) {
@@ -3900,6 +3912,71 @@ namespace engine {
 
 	WorldFogDensitySource g_fogDensitySource;
 
+	// ---------------------------------------------------------------------------
+	// The fog-GI radiance field source: evaluates the SG probe blend per
+	// brick texel (the CPU reference walk — SgGiVolume::Sample — the
+	// exact math the GPU's dense octree layers bake) and encodes the
+	// ISOTROPIC MEAN (0.124959 * SG amps) as BC6H RGB blocks. The pointer
+	// to the loaded SgGiVolume is set by the WorldRenderer at GI load
+	// (g_fogGiVolume, declared at file scope above — LoadGiOctree sets
+	// it); null = no GI data (the field's fallback = the sky mean).
+	// ---------------------------------------------------------------------------
+	class WorldFogGiMeanSource final : public worldfields::IWorldFieldBrickSource
+	{
+	public:
+		bool GenerateBrick(const worldfields::WorldFieldDesc& field,
+			uint32_t lod, int32_t x, int32_t y, int32_t z,
+			std::byte* payload, size_t payloadBytes) override
+		{
+			const uint32_t stored = worldfields::kBrickStoredRes;
+			const size_t blockBytes = worldfields::StoredBrickBlockBytes(
+				stored, 4, 4, 16); // BC6H
+			assert(payloadBytes == blockBytes
+				&& field.format == smvk::Format::BC6H_UFloat);
+			if (payloadBytes != blockBytes)
+				return false;
+			if (!g_fogGiVolume || g_fogGiVolume->levelCount == 0)
+				return false; // no GI data loaded
+
+			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
+			const glm::vec3 brickMin = field.originMeters
+				+ glm::vec3(float(x), float(y), float(z))
+					* (float(worldfields::kBrickInteriorRes) * voxel);
+			// Pack the mean as fp16 triples (the BC6H codec input).
+			std::vector<uint16_t> halves(size_t(stored) * stored * stored * 3);
+			constexpr float kMeanWeight = 0.124959f; // (1-e^-8)/8, VolGiMean
+			size_t i = 0;
+			for (uint32_t tz = 0; tz < stored; ++tz)
+				for (uint32_t ty = 0; ty < stored; ++ty)
+					for (uint32_t tx = 0; tx < stored; ++tx) {
+						const glm::vec3 texel = brickMin
+							+ glm::vec3(
+								float(tx) + 0.5f - float(worldfields::kBrickBorder),
+								float(ty) + 0.5f - float(worldfields::kBrickBorder),
+								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
+						glm::vec3 amps[smvk::gi::kSgLobeCount];
+						glm::vec3 mean(0.0f);
+						if (g_fogGiVolume->Sample(texel, amps)) {
+							for (uint32_t l = 0; l < smvk::gi::kSgLobeCount; ++l)
+								mean += amps[l];
+							mean *= kMeanWeight;
+						}
+						// PackHalf + clamp: BC6H-UF is unsigned (the same
+						// packing the dense bake uses).
+						halves[i++] = smvk::gi::PackHalf(
+							std::min(std::max(mean.r, 0.0f), 65504.0f));
+						halves[i++] = smvk::gi::PackHalf(
+							std::min(std::max(mean.g, 0.0f), 65504.0f));
+						halves[i++] = smvk::gi::PackHalf(
+							std::min(std::max(mean.b, 0.0f), 65504.0f));
+					}
+			return worldfields::Bc6hEncodeBrick(halves.data(), stored,
+				payload, payloadBytes) == payloadBytes;
+		}
+	};
+
+	WorldFogGiMeanSource g_fogGiMeanSource;
+
 	} // namespace
 
 	void WorldRenderer::InitWorldFields()
@@ -3945,14 +4022,51 @@ namespace engine {
 		fog.decodeBias = glm::vec4(0.0f);
 		fog.fallbackValue = glm::vec4(0.0f);
 
-		worldfields::WorldFieldHandle handles[1] = {};
-		worldfields::IWorldFieldBrickSource* sources[1] = { &g_fogDensitySource };
+		worldfields::WorldFieldHandle handles[2] = {};
+		worldfields::IWorldFieldBrickSource* sources[2] = {
+			&g_fogDensitySource, &g_fogGiMeanSource
+		};
 		const uint32_t registered = m_worldFields.RegisterFields(&fog, 1, handles);
 		if (registered == 1)
 			m_worldFields.SetBrickSources(handles, sources, 1);
 		std::cerr << "[WorldFields] fog density field registered (id 0, BC4 "
 			"sqrt-density, " << fog.lodCount << " LODs, 6x6x5 pool, max extinction "
 			<< kFogFieldMaxExtinction << " 1/m)\n";
+
+		// ---- The fog-GI radiance field — id 1 (WORLD_FIELD_ID_FOG_GI):
+		// the baked SG probe ISOTROPIC MEAN as BC6H RGB bricks (2 m
+		// voxels, 2 LODs). The paired sampler (world_field.hlsli
+		// SampleFogGi) resolves the page table once and fetches the
+		// mean — no octree walk, no 9-lobe fetch, no per-level
+		// early-out logic in the fog pass. The source evaluates the
+		// CPU reference walk (SgGiVolume::Sample) per texel on the
+		// async work pool; no GI data = the field stays empty (the
+		// shader falls to the sky mean).
+		worldfields::WorldFieldDesc fogGi{};
+		fogGi.name = "WorldFogGiMean";
+		fogGi.format = smvk::Format::BC6H_UFloat;
+		fogGi.encoding = worldfields::WorldFieldEncoding::Linear;
+		fogGi.updateMode = worldfields::WorldFieldUpdateMode::StaticStreamed;
+		fogGi.baseVoxelSizeMeters = 2.0f; // 2 m voxels (the fog-GI doc's setting)
+		fogGi.lodCount = 2; // 2 m + 4 m
+		fogGi.tableDimX = 4;
+		fogGi.tableDimY = 2;
+		fogGi.tableDimZ = 4;
+		fogGi.poolSlotsX = 4;
+		fogGi.poolSlotsY = 4;
+		fogGi.poolSlotsZ = 3;
+		// Linear decode (identity): the BC6H stores HDR radiance directly.
+		fogGi.decodeScale = glm::vec4(1.0f);
+		fogGi.decodeBias = glm::vec4(0.0f);
+		fogGi.fallbackValue = glm::vec4(0.0f); // sky mean handled by the shader
+
+		const uint32_t registeredGi =
+			m_worldFields.RegisterFields(&fogGi, 1, &handles[1]);
+		if (registeredGi == 1)
+			m_worldFields.SetBrickSources(&handles[1], &sources[1], 1);
+		std::cerr << "[WorldFields] fog-GI mean field registered (id 1, "
+			"BC6H radiance, " << fogGi.lodCount << " LODs @2 m, "
+			"4x4x3 pool)\n";
 	}
 
 	FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame, smvk::Extent2D renderExtent, smvk::Extent2D swapExtent, const smvk::EnvironmentSettings& env) {

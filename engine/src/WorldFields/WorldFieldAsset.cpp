@@ -10,6 +10,15 @@
 
 namespace engine::worldfields {
 
+// Per-brick block bytes for the asset's formatKind (1 = BC4 8 B/block,
+// 2 = BC6H 16 B/block — the stored brick is 68^3 texels in 4x4x1 blocks).
+static size_t AssetBrickBlockBytes(uint16_t formatKind)
+{
+	return formatKind == 2
+		? StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 16) // BC6H
+		: StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 8); // BC4
+}
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
@@ -19,9 +28,14 @@ WorldFieldAssetBuilder::WorldFieldAssetBuilder(smvk::Format format,
 	uint16_t lodCount, glm::vec3 originMeters,
 	glm::vec4 decodeScale, glm::vec4 decodeBias, glm::vec4 fallbackValue)
 {
-	assert(format == smvk::Format::BC4_UNorm
-		&& "v1 asset form carries BC4_UNORM blocks (the static-density codec)");
-	header_.formatKind = 1;
+	if (format == smvk::Format::BC4_UNorm)
+		header_.formatKind = 1;
+	else if (format == smvk::Format::BC6H_UFloat)
+		header_.formatKind = 2;
+	else {
+		assert(false && "asset form carries BC4_UNORM (density) or BC6H_UFloat (GI radiance)");
+		header_.formatKind = 1;
+	}
 	header_.encoding = uint16_t(encoding);
 	header_.baseVoxelSizeMeters = baseVoxelSizeMeters;
 	header_.lodCount = lodCount;
@@ -52,9 +66,9 @@ void WorldFieldAssetBuilder::AddBrick(uint32_t lod, int32_t x, int32_t y,
 	int32_t z, const std::byte* blocks, size_t blockBytes)
 {
 	assert(blocks != nullptr);
-	// The one BC4 brick size (68/4)^2 * 68 * 8 bytes.
-	const size_t expected = StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 8);
-	assert(blockBytes == expected && "AddBrick: BC4 stored-brick block size");
+	// Per-brick block bytes for the builder's format kind.
+	const size_t expected = AssetBrickBlockBytes(header_.formatKind);
+	assert(blockBytes == expected && "AddBrick: stored-brick block size for the format kind");
 	if (blockBytes != expected)
 		return;
 	WorldFieldAssetIndexRow row{};
@@ -143,8 +157,8 @@ bool WorldFieldAsset::LoadFromMemory(WorldFieldAsset* out,
 		return false; // fail closed on any other magic (no converters)
 	if (h.brickInteriorRes != kBrickInteriorRes || h.storedRes != kBrickStoredRes)
 		return false; // the brick-geometry layout contract
-	if (h.formatKind != 1)
-		return false; // unknown payload form
+	if (h.formatKind != 1 && h.formatKind != 2)
+		return false; // unknown payload form (1 = BC4 density, 2 = BC6H radiance)
 	if (h.lodCount == 0 || h.lodCount > kMaxFieldLods)
 		return false;
 	const size_t indexBytes = size_t(h.brickCount) * sizeof(WorldFieldAssetIndexRow);
@@ -165,7 +179,7 @@ bool WorldFieldAsset::LoadFromMemory(WorldFieldAsset* out,
 		if (r.payloadBytes != 0u) {
 			if (r.payloadOffset + r.payloadBytes > h.payloadBytes)
 				return false;
-			const size_t expected = StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 8);
+			const size_t expected = AssetBrickBlockBytes(h.formatKind);
 			if (r.payloadBytes != expected)
 				return false;
 		}
@@ -252,7 +266,9 @@ WorldFieldDesc WorldFieldAsset::MakeDesc(const char* name,
 	// The asset OWNS the data semantics; the deployment owns paging.
 	WorldFieldDesc d{};
 	d.name = name ? name : "cooked world field";
-	d.format = smvk::Format::BC4_UNorm; // formatKind 1
+	d.format = (header_.formatKind == 2)
+		? smvk::Format::BC6H_UFloat // the fog-GI radiance format
+		: smvk::Format::BC4_UNorm; // formatKind 1 (density)
 	d.encoding = WorldFieldEncoding(header_.encoding);
 	d.updateMode = WorldFieldUpdateMode::StaticStreamed;
 	d.baseVoxelSizeMeters = header_.baseVoxelSizeMeters;
@@ -285,9 +301,14 @@ bool CookedBrickSource::GenerateBrick(const WorldFieldDesc& field, uint32_t lod,
 {
 	// The desc came from MakeDesc on this asset — the payload size the
 	// pager reserved matches the asset's blocks. (A mismatched desc is
-	// a wiring bug; fail closed rather than serve torn data.)
-	const size_t expected = StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 8);
-	if (payloadBytes != expected || field.format != smvk::Format::BC4_UNorm)
+	// a wiring bug; fail closed rather than serve torn data.) The
+	// expected size derives from the FIELD's format (BC4 density = 8 B
+	// blocks, BC6H radiance = 16 B blocks).
+	const bool isBc6h = field.format == smvk::Format::BC6H_UFloat;
+	const size_t expected = isBc6h
+		? StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 16)
+		: StoredBrickBlockBytes(kBrickStoredRes, 4, 4, 8);
+	if (payloadBytes != expected)
 		return false;
 
 	const std::byte* blocks = nullptr;

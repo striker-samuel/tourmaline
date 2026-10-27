@@ -44,7 +44,7 @@ struct VolumetricPush
     float heightFalloff;
     float heightBase;
     float time;
-    uint pad1;              // 8-align filler for the BDA tail below
+    uint fogGiSource;      // 0=worldfield (default), 1=octree (A/B), 2=sky-only; was pad1
     // Forward+ light feed for fog in-scatter (the forward tiled lights
     // contribute to the march, not just the surfaces): the DEDICATED fog
     // tile lists ride the cull freshness contract — frame.giVolumeTileCountX
@@ -429,13 +429,44 @@ PSOut mainPS(PSIn IN)
             if (t - giT >= kVolGiRefreshDist)
             {
                 giT = t;
-                // Octree base (gated on the octree flag AND the live
-                // transmission — the walk is dead work under a
-                // weight-1 volume).
-                float3 octMean = float3(0.0, 0.0, 0.0);
-                const bool octreeCovered = (giOn > 0.5) && (volTrans > 0.0)
-                    && SgGiSampleMean(frame, wpos, octMean);
-                baseHeld = octreeCovered ? octMean : skyMean;
+                // ---- Fog GI base: the A/B source toggle. The world-field
+                // path (default) samples the baked BC6H mean via the
+                // paired fog-GI sampler — ONE page-table lookup + ONE
+                // trilinear 3D fetch per refresh, no octree walk, no
+                // 9-lobe fetch. The octree path (the legacy SgGiSampleMean
+                // walk over the dense BC6H level layers) stays as the A/B
+                // reference. TOURMALINE_FOG_GI_SOURCE selects:
+                //   worldfield (default) — the paired fog-GI field
+                //   octree — the legacy SgGiSampleMean walk
+                //   sky — the sky mean everywhere (the floor baseline)
+                // Both paths preserve the covered/uncovered contract: an
+                // uncovered position keeps the sky mean (the world
+                // field's coverage channel distinguishes genuine darkness
+                // from missing probes — see SampleFogGi).
+                if (volTrans > 0.0) {
+                    if (vp.fogGiSource == 1u) {
+                        // Legacy: the octree walk (the A/B reference).
+                        float3 octMean = float3(0.0, 0.0, 0.0);
+                        const bool octreeCovered = (giOn > 0.5)
+                            && SgGiSampleMean(frame, wpos, octMean);
+                        baseHeld = octreeCovered ? octMean : skyMean;
+                    }
+                    else if (vp.fogGiSource == 2u) {
+                        // Sky-only (the floor baseline for perf A/B).
+                        baseHeld = skyMean;
+                    }
+                    else {
+                        // Default: the world-field fog-GI path.
+                        const FogGiSample gi =
+                            SampleFogGi(frame, wpos, 0u);
+                        if (gi.resident && gi.coverage > 0.02)
+                            baseHeld = gi.radiance;
+                        else
+                            baseHeld = skyMean;
+                    }
+                }
+                // volTrans <= 0: a weight-1 GI volume owns the base —
+                // the octree/field walk is dead work; keep baseHeld.
             }
             ambient = (volAcc + baseHeld * volTrans) * giStrength;
         }

@@ -50,7 +50,7 @@ namespace engine::worldfields {
 struct WorldFieldAssetHeader
 {
 	char magic[4] = { 'T', 'W', 'F', 'B' };
-	uint16_t formatKind = 1; // 1 = BC4_UNORM blocks
+	uint16_t formatKind = 1; // 1 = BC4_UNORM (8 B/block), 2 = BC6H_UFloat (16 B/block)
 	uint16_t encoding = uint16_t(WorldFieldEncoding::SqrtUNorm);
 	float baseVoxelSizeMeters = 1.0f;
 	uint16_t lodCount = 1;

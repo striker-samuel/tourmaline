@@ -130,7 +130,7 @@ struct VolumetricPush {
 	float heightFalloff = 0.0f;
 	float heightBase = 0.0f;
 	float time = 0.0f;
-	uint32_t pad1 = 0; // 8-align filler for the BDA tail below
+	uint32_t fogGiSource = 0; // 0=worldfield (default), 1=octree (A/B), 2=sky-only
 	// Forward+ light feed for fog in-scatter (the forward tiled lights
 	// contribute to the march, not just the surfaces): the DEDICATED fog
 	// tile lists (march-range candidacy — no depth-slab cuts, see
@@ -364,7 +364,14 @@ struct VolumetricFog {
 		push.heightFalloff = (std::max)(0.0f, overrideDesc.heightFalloff);
 		push.heightBase = overrideDesc.heightBase;
 		push.time = frameTime;
-		push.pad1 = 0;
+		// The fog-GI A/B source toggle (TOURMALINE_FOG_GI_SOURCE):
+		// 0/unset = worldfield (the default BC6H mean field), 1 = the
+		// legacy octree walk (SgGiSampleMean), 2 = sky-only (the floor
+		// baseline for perf A/B). Parsed once like the other env pins.
+		push.fogGiSource = [] {
+			const char* e = std::getenv("TOURMALINE_FOG_GI_SOURCE");
+			return e ? uint32_t(std::clamp(std::atoi(e), 0, 2)) : 0u;
+		}();
 
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");
 		pass.SetOffset(0, 0)

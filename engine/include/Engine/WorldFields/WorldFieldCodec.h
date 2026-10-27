@@ -26,7 +26,13 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <glm/glm.hpp>
+
 namespace engine::worldfields {
+
+// ---------------------------------------------------------------------------
+// BC4 codecs (the static density format: one channel, 8 B per 4x4x1 block)
+// ---------------------------------------------------------------------------
 
 // Encode one stored brick's UNORM texels (68^3, tight z/y/x layout)
 // into BC4_UNORM blocks. outCapacity must be >= StoredBrickBlockBytes()
@@ -40,7 +46,29 @@ size_t Bc4EncodeBrick(const uint8_t* storedTexels, uint32_t storedSize,
 size_t Bc4DecodeBrick(const std::byte* blocks, size_t blockBytes,
 	uint32_t storedSize, uint8_t* outTexels, size_t outCapacity);
 
-// Block math for a stored brick in a given format (BC4: 4x4x1 blocks).
+// ---------------------------------------------------------------------------
+// BC6H codecs (the fog-GI radiance format: RGB half-float, 16 B per
+// 4x4x1 block — the same block shape the dense SG-GI layers use). A
+// stored brick (68^3 texels) encodes PER-Z-SLICE as 17x17 blocks x 68
+// slices = 314,368 bytes. The input is fp16 TRIPLES (halves, 3 per
+// texel, tightly packed z/y/x) — the caller packs float RGB through
+// PackHalfClamped (the existing bc6h.h helpers).
+// ---------------------------------------------------------------------------
+
+// Encode one stored brick's fp16 RGB texels (68^3, 3 halves per texel,
+// tight z/y/x layout) into BC6H_UFloat blocks (the reference-quality
+// multi-mode encoder via the vendored DirectXTex D3DXEncodeBC6HU).
+size_t Bc6hEncodeBrick(const uint16_t* halves, uint32_t storedSize,
+	std::byte* outBlocks, size_t outCapacity);
+
+// Software decode (DirectTex's BC6H decoder) — fidelity checks/tooling.
+size_t Bc6hDecodeBrick(const std::byte* blocks, size_t blockBytes,
+	uint32_t storedSize, uint16_t* outHalves, size_t outCapacity);
+
+// ---------------------------------------------------------------------------
+// Shared block math (BC4: 4x4x1 of 8 B; BC6H: 4x4x1 of 16 B)
+// ---------------------------------------------------------------------------
+
 constexpr size_t StoredBrickBlockBytes(uint32_t storedSize,
 	uint32_t blockWidth, uint32_t blockHeight, uint32_t bytesPerBlock)
 {
