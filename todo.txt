@@ -143,4 +143,57 @@ the naive union blindly):
     (a barrier delivers only to its own dst scope; later readers with a
     different scope each need their own delivery).
 
+(Engine, next-PR) PR07 — THE PLACEMENT SHADOW-VIEWS + OCCLUSION/LOD +
+THE PERF/GOLDEN CONTRACT. PR01-PR06 left the chain MAIN-VIEW-ONLY and
+FRUSTUM-ONLY: PlacementWorldRuntime records one cull chain + one draw
+per tile (viewBudget defaults 1) and the cull verdict is the cooked
+sphere-vs-frustum + species distance + constraint-alive
+(placement_cull.hlsli; PLACEMENT_CULL_FRUSTUM) — no occlusion, no LOD,
+no shadow views. Four scoped gaps, in dependency order:
+
+  - Shadow-view cull policies: the per-(slot, view) machinery is
+    ALREADY THERE (the vis array strides [slot * viewBudget + view],
+    PlacementVisibleSet is per view, and placement_cull.cs takes
+    (renderViews, renderViewIndex)) — what is missing is the POLICY +
+    the wiring. Shadow cascades need placed geometry too (meadows/
+    grass casting shadows) but should NOT pay the main view's cull
+    shape: a depth-only cascade view has no contribution test to
+    piggyback, so the honest options are (a) one shared conservative
+    FRUSTUM-ONLY visible set recorded for the union of the shadow
+    views (viewBudget 2: main + one shared shadow set — the cascade
+    frusta are cheap to union CPU-side) or (b) per-cascade sets
+    (viewBudget 1 + cascadeCount — honest per-view cost, more cull
+    dispatches). Decide with the per-pass timings from the perf scene
+    below, then wire the shadow draws into the cascade views' command
+    recording (the renderer's shadow-view list joins RecordCullChain).
+  - HZB/LOD: every placed instance today draws its BASE proto mesh —
+    no LOD tier, no occlusion rejection. The mesh side has both halves
+    to borrow: the HZB pass + its per-view occlusion walk, and
+    World::SelectLodIndex applying the instance's world scale at pick
+    time (the LOD sibling errors stay MESH-LOCAL by contract — never
+    bake a scene transform into the serialized error). The placement
+    shape: a placement-tier LOD per proto (the prototype table owns
+    the proto id; selection needs the instance's world scale + the
+    VIEW's distance — a per-view distance band picking the tier in the
+    cull/build pass, NOT per-draw CPU work) and OPTIONALLY one HZB
+    sample against the placement sphere (the same conservative sphere
+    the frustum test already uses). A/B both on the perf scene before
+    either becomes load-bearing — the skinned-mesh lesson (a lossy
+    filter stage silently dropping visible chunks) says prove the
+    occluder leg exoneration FIRST, pin with a lever (the
+    TOURMALINE_SKIN_CONE pattern), ship conservative by default.
+  - Perf scenes: a placement-heavy bench target (the meadow/tile
+    content the GPU tests already seed, or a bistro strip) under the
+    --bench + TOURMALINE_CAPTURE contract with the per-pass timings
+    (scatter/prefix/cull/drawbuild/draw) in the stderr table — the
+    chain's per-frame cost needs ONE scene it is tuned against, the
+    role sponza played for the octree/volumetrics A/B matrix.
+  - Golden captures: the capture + diff protocol as the placement
+    regression gate — a golden per PIN-MATRIX (the TOURMALINE_* pin
+    set -> one screenshot, re-captured on shader/runtime changes),
+    compared with the established NOISE-FLOOR contract (identical-
+    source runs differ ~11.5k-12k samples / sum ~15.0-15.6k / max ~20
+    at 4 px stride; any honest "unchanged" verdict must sit BELOW it —
+    the octree retirement's merge record is the working example).
+
 
