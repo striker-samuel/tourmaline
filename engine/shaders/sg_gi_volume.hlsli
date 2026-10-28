@@ -141,8 +141,24 @@ float SgGiVolumeVisAxis(float along, float dist)
     // (0 or 1), and the renormalization at the cell boundary produced
     // the visible grid (the sponza_3 flat-irradiance report).
     [branch]
-    if (along > dist + 0.35)
-        return max(0.0, 1.0 - (along - dist - 0.35) / (0.25 * dist + 0.5));
+    // PROPORTIONAL REACH (the thin-wall leak fix): the reach is
+    // dist * 1.5, not dist + a fixed slack. The old +0.35 absolute
+    // slack (in spacing units) spanned ~0.175 m at 0.5 m spacing —
+    // a second-floor probe right at a thin ceiling and a first-floor
+    // pixel right below it were BOTH within the slack band of the
+    // ceiling, the factor stayed 1.0, and the bright second-floor
+    // radiance leaked through (the sponza floor-to-floor report).
+    // Proportional: a probe AT a surface (dist 0.05 m) reaches only
+    // 0.075 m — through-thin-wall leak ~zero; a probe 1 m from any
+    // surface reaches 1.5 m — plenty of coverage; the cap (2.5 m)
+    // reaches 3.75 m — full open-space coverage. On-surface pixels
+    // still read their own probes (the pixel at the surface sits at
+    // along ≈ dist, well within dist * 1.5).
+    // The RAMP width is also proportional (0.5 * dist + 0.05):
+    // at-surface probes ramp to zero over 0.075 m (near-instant),
+    // 1 m-open probes over 0.55 m (smooth), cap-open over 1.3 m.
+    if (along > dist * 1.5)
+        return max(0.0, 1.0 - (along - dist * 1.5) / (0.5 * dist + 0.05));
     return 1.0;
 }
 
