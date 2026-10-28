@@ -764,6 +764,37 @@ int main()
 			"gpu.con-oracle-regime");
 	}
 
+	// The shared fabricated render-view slab (sections 6+8): one view,
+	// identity matrices, an inward half-tile frustum box.
+	smvk::Holder<smvk::BufferHandle> viewSlab;
+	smvk::LogicalBufferHandle viewSlabL{};
+	{
+		glm::mat4 ident(1.0f);
+		std::vector<float> viewBytes(64); // 256B = one RenderView (floats)
+		auto putMat = [&](size_t base, const glm::mat4& m) {
+			for (int c = 0; c < 4; ++c)
+				for (int r = 0; r < 4; ++r)
+					viewBytes[base + c * 4 + r] = m[c][r];
+		};
+		putMat(0, ident);        // m_viewProjectionMatrix
+		putMat(16, ident);       // m_inverseViewProjectionMatrix
+		const glm::vec4 planes[6] = {
+			glm::vec4(1, 0, 0, 4), glm::vec4(-1, 0, 0, 36),
+			glm::vec4(0, 1, 0, 100), glm::vec4(0, -1, 0, 100),
+			glm::vec4(0, 0, 1, 4), glm::vec4(0, 0, -1, 36) };
+		for (int pl = 0; pl < 6; ++pl)
+			for (int k = 0; k < 4; ++k)
+				viewBytes[32 + pl * 4 + k] = planes[pl][k];
+		viewSlab = rm.CreateBuffer(sizeof(float) * viewBytes.size(),
+			smvk::BufferType_Storage, "placement test view slab");
+		Check(!viewSlab.empty(), "gpu.vis-view-slab");
+		viewSlabL = rg.AddExternalBuffer(viewSlab, "placement test view slab");
+		Check(!viewSlabL.empty(), "gpu.vis-view-logical");
+		rm.UploadDataToBuffer(viewSlab, viewBytes.data(),
+			sizeof(float) * viewBytes.size(),
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
+	}
+
 	// =====================================================================
 	// 6) The PR03 visible chain (cull -> prefix -> scatter -> drawbuild):
 	//    three prototypes with DISTINCT cooked bounds + a species draw
@@ -791,37 +822,6 @@ int main()
 		PlacementVisibleSet vis;
 		ok = vis.Create(rm, rg, 4096);
 		Check(ok && vis.Valid(), "gpu.vis-set-create");
-
-		// The render-view slab: one fabricated view (identity matrices —
-		// the chain only reads the planes; the VS reads viewProj).
-		glm::mat4 ident(1.0f);
-		std::vector<float> viewBytes(64); // 256B = one RenderView (floats)
-		auto putMat = [&](size_t base, const glm::mat4& m) {
-			for (int c = 0; c < 4; ++c)
-				for (int r = 0; r < 4; ++r)
-					viewBytes[base + c * 4 + r] = m[c][r];
-		};
-		putMat(0, ident);        // m_viewProjectionMatrix
-		putMat(16, ident);       // m_inverseViewProjectionMatrix
-		// m_viewPlanes[6] at float 32..56: an inward box x in [-4, 36],
-		// z in [-4, 36], y generous (flat grid at y=0).
-		const glm::vec4 planes[6] = {
-			glm::vec4(1, 0, 0, 4), glm::vec4(-1, 0, 0, 36),
-			glm::vec4(0, 1, 0, 100), glm::vec4(0, -1, 0, 100),
-			glm::vec4(0, 0, 1, 4), glm::vec4(0, 0, -1, 36) };
-		for (int pl = 0; pl < 6; ++pl)
-			for (int k = 0; k < 4; ++k)
-				viewBytes[32 + pl * 4 + k] = planes[pl][k];
-		smvk::Holder<smvk::BufferHandle> viewSlab = rm.CreateBuffer(
-			sizeof(float) * viewBytes.size(), smvk::BufferType_Storage,
-			"placement test view slab");
-		Check(!viewSlab.empty(), "gpu.vis-view-slab");
-		smvk::LogicalBufferHandle viewSlabL = rg.AddExternalBuffer(viewSlab,
-			"placement test view slab");
-		Check(!viewSlabL.empty(), "gpu.vis-view-logical");
-		rm.UploadDataToBuffer(viewSlab, viewBytes.data(),
-			sizeof(float) * viewBytes.size(),
-			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 
 		// The layer: full density (deterministic population), three
 		// prototypes with distinct cooked spheres; proto 1 has a 12m
@@ -934,7 +934,9 @@ int main()
 		};
 		const glm::vec4 spheres[3] = { sphereOf(0), sphereOf(1), sphereOf(2) };
 		const glm::vec4 mirrorPlanes[6] = {
-			planes[0], planes[1], planes[2], planes[3], planes[4], planes[5] };
+			glm::vec4(1, 0, 0, 4), glm::vec4(-1, 0, 0, 36),
+			glm::vec4(0, 1, 0, 100), glm::vec4(0, -1, 0, 100),
+			glm::vec4(0, 0, 1, 4), glm::vec4(0, 0, -1, 36) };
 		const glm::vec3 camPos(0.0f, 5.0f, 0.0f);
 		std::vector<std::vector<uint32_t>> expected(3);
 		for (uint32_t i = 0; i < n; ++i) {
@@ -1130,6 +1132,203 @@ int main()
 			"gpu.eco-maskless-refuses");
 		Check(!PlacementProgramGpu().Upload(rm, rg, maskless, 0),
 			"gpu.eco-maskless-program-refuses");
+	}
+
+	// =====================================================================
+	// 8) The WORLD RUNTIME (PR05b): the FULL stack on device — the fake
+	//    world (heights + paint) -> PlacementWorldRuntime::BeginFrame
+	//    (the residency tick -> the harvest -> the uploads -> the scatter
+	//    dispatch) -> RecordCullChain (the PR03 bins + indirect) — the
+	//    exact object the renderer embeds, driven end to end.
+	// =====================================================================
+	std::fprintf(stderr, "[place-gpu] stage: world runtime\n");
+	{
+		using namespace smvk::terrain;
+		// The fake world (a 16m terrain, the LOCKED pack constants).
+		TerrainHField field;
+		field.meta.worldSize = 16.0f;
+		field.meta.originX = -8.0f;
+		field.meta.originZ = -8.0f;
+		field.meta.hTileSize = 4.0f;
+		field.meta.hRes = 4;
+		field.meta.gBlock = 8.0f;
+		field.meta.baseY = kTerrainBaseY;
+		field.meta.range = kTerrainRange;
+		const uint32_t nH = field.tilesPerAxis();
+		field.tiles.assign(size_t(nH) * nH,
+			std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+		for (uint32_t tz = 0; tz < nH; ++tz)
+			for (uint32_t tx = 0; tx < nH; ++tx) {
+				auto& tile = field.tiles[size_t(tz) * nH + tx];
+				for (uint32_t py = 0; py < field.meta.hRes; ++py)
+					for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+						const float h01 =
+							(float)(tx * 4 + pxx + tz * 4 + py) / 1024.0f;
+						uint8_t r, g;
+						EncodeRG16(h01, r, g);
+						const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+						tile[o] = r; tile[o + 1] = g;
+					}
+			}
+		std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+		const uint32_t sRes = 8;
+		for (auto& t : sTiles)
+			t.assign(size_t(sRes) * sRes * 4, 0);
+		for (uint32_t tz = 0; tz < 2; ++tz)
+			for (uint32_t tx = 0; tx < 2; ++tx) {
+				auto& tile = sTiles[size_t(tz) * 2 + tx];
+				for (uint32_t py = 0; py < sRes; ++py)
+					for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+						const size_t o = (size_t(py) * sRes + pxx) * 4;
+						tile[o + 0] = uint8_t((pxx * 24 + py * 8) % 256);
+						tile[o + 3] = 255;
+					}
+			}
+		WorldMaskGrid maskGrid{ &sTiles, 2, sRes };
+
+		// The meadow layer (kept alive; the runtime borrows it).
+		PlacementSystem::LayerBinding lb;
+		lb.programId = 303;
+		lb.program.graphSeed = 4242;
+		lb.program.nodeId = 1;
+		lb.program.instrs = {
+			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 20.0f, 60.0f, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		};
+		lb.program.acceptIndex = 2;
+		lb.domainKind = DomainKind::Heightfield;
+		lb.config.candidatesPerTile = 512;
+		Prototype pa; pa.weight = 1.0f;
+		pa.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+		pa.boundsMax = glm::vec3(0.5f, 1.0f, 0.5f);
+		Prototype pb; pb.weight = 1.0f;
+		pb.boundsMin = glm::vec3(-1.0f, 0.0f, -1.0f);
+		pb.boundsMax = glm::vec3(1.0f, 3.0f, 1.0f);
+		pb.maxDrawDistance = 33.0f; // the species distance: the tile sits
+		                            // ~30-35m from the cam — the far part
+		                            // culls, the near keeps (PARTIAL)
+		lb.prototypes.add(pa);
+		lb.prototypes.add(pb);
+
+		// The CPU oracle over the SAME tile (the runtime's harvest is
+		// deterministic — same inputs, same world->texel contract).
+		WorldTileData oracleData;
+		Check(BuildWorldTileDomain(field, maskGrid, 8.0f, 0, 0, 2.0f,
+				oracleData), "gpu.rt-oracle-domain");
+		PlacementSystem::LayerBinding oracleLayer = lb;
+		HeightfieldDomain oracleDom = oracleData.domain;
+		oracleDom.field = &oracleData.heights;
+		oracleLayer.heightfield = &oracleDom;
+		oracleLayer.ecotope = &oracleData.eco;
+		const TileID tile{ 0, 0, 0 };
+		std::vector<RenderInstance> oracle = EvaluateTile(oracleLayer, tile);
+		Check(oracle.size() > 0 && oracle.size() < 512, "gpu.rt-oracle-shape");
+
+		// The runtime (heap: it owns pools + maps).
+		auto rt = std::make_unique<PlacementWorldRuntime>();
+		rt->layer = &lb;
+		rt->hfield = &field;
+		rt->masks = &maskGrid;
+		rt->tileSize = 8.0f;
+		rt->haloMeters = 2.0f;
+		rt->slotBudget = 2;
+		rt->viewBudget = 1;
+		Check(rt->Create(rm, rg), "gpu.rt-create");
+		Check(rt->Valid(), "gpu.rt-valid");
+
+		DependencyVersions deps;
+		const glm::vec4 interest[1] = { glm::vec4(0.0f, 0.0f, 8.0f, 8.0f) };
+		// Frame 1: BeginFrame (the scatter) + the cull chain — same frame,
+		// the graph orders them through the external-buffer edges.
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			rt->BeginFrame(rm, g, interest, 1, deps);
+			rt->RecordCullChain(rm, g, 0, viewSlabL,
+				rm.GetBufferDeviceAddress(viewSlab), 0,
+				glm::vec3(0.0f, 5.0f, 0.0f), kPlacementCullFrustum | kPlacementCullDistance);
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+
+		// The scatter parity: the slot's instances == the oracle (the
+		// harvested-window contract end to end).
+		int32_t foundSlot = -1;
+		for (size_t s = 0; s < rt->active.size(); ++s)
+			if (rt->active[s].published) { foundSlot = int32_t(s); break; }
+		Check(foundSlot >= 0, "gpu.rt-tile-published");
+		if (foundSlot >= 0) {
+			std::vector<RenderInstance> gpu;
+			uint32_t overflow = 1;
+			const uint32_t n = rt->pass.DownloadTile(rm, uint32_t(foundSlot),
+				gpu, 4096, &overflow);
+			Check(overflow == 0 && n == oracle.size(),
+				"gpu.rt-scatter-count-parity");
+			Check(SortedEqual(gpu, oracle), "gpu.rt-scatter-multiset-parity");
+			Check(rt->VisSet(foundSlot) != nullptr,
+				"gpu.rt-visset-exposed");
+			// The cull chain's bins: proto 0 all-visible-ish; proto 1 the
+			// 9m species distance trims the far half (cam at the corner).
+			const PlacementVisibleSet* vs = rt->VisSet(foundSlot);
+			PlacementBinsGpu binsOut;
+			ok = rm.DownloadDataFromBuffer(vs->bins, &binsOut,
+				sizeof(binsOut));
+			Check(ok, "gpu.rt-bins-readback");
+			Check(binsOut.counts[0] + binsOut.counts[1] == binsOut.total
+				&& binsOut.total > 0 && binsOut.total < n,
+				"gpu.rt-total-visible-regime");
+			PlacementIndirectCmd cmds[2];
+			ok = rm.DownloadDataFromBuffer(vs->indirect, cmds,
+				kPlacementIndirectStride * 2);
+			Check(ok, "gpu.rt-indirect-readback");
+			Check(cmds[0].instanceCount == binsOut.counts[0]
+				&& cmds[0].firstInstance == 0
+				&& cmds[1].instanceCount == binsOut.counts[1]
+				&& cmds[1].firstInstance == binsOut.offsets[1],
+				"gpu.rt-indirect-parity");
+		}
+
+		// A second frame with the SAME interest: no re-dispatch (the
+		// idle-camera rule — nothing regenerates).
+		size_t dispatchesBefore = 0;
+		for (const auto& a : rt->active)
+			if (a.published) ++dispatchesBefore;
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			rt->BeginFrame(rm, g, interest, 1, deps);
+			rt->RecordCullChain(rm, g, 0, viewSlabL,
+				rm.GetBufferDeviceAddress(viewSlab), 0,
+				glm::vec3(0.0f, 5.0f, 0.0f), kPlacementCullFrustum | kPlacementCullDistance);
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+		// Same published set; the count buffer UNTOUCHED this frame (no
+		// ClearTile): the parity survives (the stable-resident contract).
+		if (foundSlot >= 0) {
+			std::vector<RenderInstance> gpu2;
+			uint32_t overflow2 = 1;
+			const uint32_t n2 = rt->pass.DownloadTile(rm,
+				uint32_t(foundSlot), gpu2, 4096, &overflow2);
+			Check(n2 == oracle.size() && overflow2 == 0,
+				"gpu.rt-idle-frame-stable");
+		}
+
+		// A terrain-edit tick (deps bump): the tile REGENERATES through
+		// the runtime (a new scatter dispatch in the same frame).
+		DependencyVersions deps2;
+		deps2.terrain = 5;
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			rt->BeginFrame(rm, g, interest, 1, deps2);
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+		if (foundSlot >= 0) {
+			std::vector<RenderInstance> gpu3;
+			uint32_t overflow3 = 1;
+			const uint32_t n3 = rt->pass.DownloadTile(rm,
+				uint32_t(foundSlot), gpu3, 4096, &overflow3);
+			Check(n3 == oracle.size() && overflow3 == 0,
+				"gpu.rt-edit-regenerates-parity");
+		}
+		rt->Destroy(rg);
 	}
 
 	std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);

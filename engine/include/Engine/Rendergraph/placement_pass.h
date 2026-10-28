@@ -26,6 +26,7 @@
 
 #include <Engine/Memory/pool.h>
 #include <Engine/Placement/placement_gpu.h>
+#include <Engine/Placement/placement_terrain.h>
 #include <Engine/Placement/placement_tile.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
@@ -349,21 +350,28 @@ struct PlacementProgramGpu {
 	// (or an out-of-range paint channel) — never a silent zero density.
 	bool Upload(ResourceManager& ctx, RenderGraph& rg,
 		const PlacementSystem::LayerBinding& layer, uint64_t rev) {
-		const uint32_t ecoChannels = layer.ecotope ? layer.ecotope->channels : 0;
+		return Upload(ctx, rg, layer.program, layer.programId, rev,
+			layer.ecotope ? layer.ecotope->channels : 0);
+	}
+	// The explicit-eco form (the WORLD RUNTIME's authority: the paint
+	// comes from the world's S-tile channels (4), not the layer binding).
+	bool Upload(ResourceManager& ctx, RenderGraph& rg,
+		const PlacementProgram& prog, uint64_t programIdIn,
+		uint64_t rev, uint32_t ecoChannels) {
 		const char* err = nullptr;
-		if (!ValidateProgramForGpu(layer.program, ecoChannels, err)) {
+		if (!ValidateProgramForGpu(prog, ecoChannels, err)) {
 			std::fprintf(stderr, "[Placement] program %llu NOT GPU-evaluable: %s"
 				" — the layer runs on the CPU oracle\n",
-				(unsigned long long)layer.programId, err ? err : "?");
+				(unsigned long long)programIdIn, err ? err : "?");
 			Destroy(rg);
 			programId = revision = 0;
 			return false;
 		}
 		Destroy(rg);
-		const size_t n = layer.program.instrs.size();
+		const size_t n = prog.instrs.size();
 		std::vector<GpuFieldInstr> gpu(n);
 		for (size_t i = 0; i < n; ++i) {
-			const FieldInstr& in = layer.program.instrs[i];
+			const FieldInstr& in = prog.instrs[i];
 			gpu[i].op = static_cast<uint32_t>(in.op);
 			gpu[i].a = in.a;
 			gpu[i].b = in.b;
@@ -383,10 +391,10 @@ struct PlacementProgramGpu {
 		}
 		ctx.UploadDataToBuffer(instrs, gpu.data(), sizeof(GpuFieldInstr) * n,
 			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
-		programId = layer.programId;
+		programId = programIdIn;
 		revision = rev;
 		instrCount = (uint32_t)n;
-		acceptIndex = layer.program.acceptIndex;
+		acceptIndex = prog.acceptIndex;
 		return true;
 	}
 	// Re-uploads only when the (programId, revision) key changed.
@@ -1458,6 +1466,365 @@ struct PlacementConstraint {
 		out.params = paramsBDA;
 		out.countBuf = countBDA;
 		return true;
+	}
+};
+
+// ---------------------------------------------------------------------------
+// PR05b: the WORLD PLACEMENT RUNTIME — one placement layer's full frame
+// integration over world tiles, embeddable by the renderer (the object
+// the WorldRenderer hosts per layer). Owns the whole GPU stack built by
+// PR01-PR04 and drives the plan's tile lifecycle per frame:
+//
+//   BeginFrame(interests, deps):
+//     the CPU residency tick (PlacementSystem::UpdateResidency — the
+//     activation tokens + half-open interest math), then per
+//     activation: claim a GPU slot (PlacementGpuTiles — stale tenants
+//     evict through the rendergraph's deferred retirement), harvest
+//     the world tile (BuildWorldTileDomain — heights + halo + the
+//     painted mask), upload the window data + the program SSA, clear
+//     the append counter, and RECORD the scatter (+ the constraint
+//     trio when the layer min-spaces) into the CURRENT frame's graph.
+//     Published-since-last-frame tiles finish their slot claims (the
+//     chain that reads them is ordered by the graph's buffer edges).
+//
+//   RecordCullChain(view): the PR03 chain per published tile — the
+//     per-(slot, view) visible sets + the GPU-written indirect
+//     commands. The renderer then records one DrawIndexedIndirect per
+//     (tile, proto) from VisSet(slot).Indirect* — everything between
+//     the scatter and the draw is GPU-side, no per-instance CPU work,
+//     no count readback.
+// ---------------------------------------------------------------------------
+struct PlacementWorldRuntime {
+	// ---- inputs (caller-owned, must outlive the runtime) ----
+	const PlacementSystem::LayerBinding* layer = nullptr; // program+protos+config
+	const smvk::terrain::TerrainHField* hfield = nullptr;  // the world heights
+	const WorldMaskGrid* masks = nullptr;                 // the world paint
+	float tileSize = 64.0f;
+	float haloMeters = 2.0f;      // WorldTileHaloMeters(minSpacing, texel)
+	uint32_t slotBudget = 8;      // concurrent resident GPU tiles
+	uint32_t viewBudget = 1;     // per-view visible sets per tile
+
+	// ---- the owned stack ----
+	PlacementSystem system;       // the CPU tile map + the tokens
+	PlacementPass pass;           // the per-slot instance buffers + counters
+	PlacementScatterPrograms scatter;
+	PlacementCullPrograms cullPrograms;
+	PlacementConstraint constraint;
+	PlacementProgramGpu program;  // the uploaded graph SSA
+	PlacementGpuTiles slots;      // TileKey -> pass-slot map + tokens
+	std::vector<PlacementVisibleSet> vis; // [slot * viewBudget + view]
+	bool created = false;
+
+	// Per-slot harvest + uploads (live while the slot is tenanted; the
+	// Holders' deferred destroy retires an evicted tenant's buffers
+	// behind the frames still reading them).
+	struct ActiveTile {
+		TileKey key{};
+		uint64_t generation = 0;
+		int32_t slot = -1;
+		bool published = false;      // scatter recorded; drawable
+		WorldTileData data;          // the harvested window (CPU side)
+		PlacementHeightfieldGpu hf;  // the uploaded heights
+		PlacementEcoMaskGpu eco;     // the uploaded paint
+		PlacementParamsGpu params;   // the scatter params
+		void Destroy(RenderGraph& rg) {
+			hf.Destroy(rg);
+			eco.Destroy(rg);
+			params.Destroy(rg);
+			data = WorldTileData{};
+			slot = -1;
+			published = false;
+		}
+	};
+	std::vector<ActiveTile> active; // slot-indexed
+
+	[[nodiscard]] bool Valid() const { return created && pass.Valid(); }
+
+	bool Create(ResourceManager& ctx, RenderGraph& rg) {
+		if (!layer || !hfield || !masks) return false;
+		if (slotBudget == 0 || viewBudget == 0) return false;
+		Destroy(rg);
+		PlacementPassDesc desc{};
+		desc.maxInstancesPerTile = 65536;
+		desc.maxTiles = slotBudget;
+		if (!pass.Ensure(ctx, rg, desc)) return false;
+		if (!scatter.Ensure(ctx)) return false;
+		if (!cullPrograms.Ensure(ctx)) return false;
+		if (!constraint.EnsureShaders(ctx)) return false;
+		// The program upload — the eco authority here is the WORLD's
+		// S-tile paint (4 channels), not the layer binding's pointer
+		// (the runtime harvests the mask per tile itself).
+		if (!program.Upload(ctx, rg, layer->program, layer->programId,
+				0, masks ? 4u : 0u))
+			return false;
+		slots.Init(slotBudget);
+		vis.resize(size_t(slotBudget) * size_t(viewBudget));
+		for (auto& v : vis)
+			if (!v.Create(ctx, rg, desc.maxInstancesPerTile))
+				return false;
+		active.resize(slotBudget); // default-constructed in place (the
+		                           // Holders' copies are deleted)
+		// The layer (the caller keeps it alive) registered on the CPU
+		// system under its own id.
+		if (!system.hasLayer(layer->programId))
+			system.registerLayer(*layer);
+		created = true;
+		return true;
+	}
+	void Destroy(RenderGraph& rg) {
+		for (auto& a : active)
+			a.Destroy(rg);
+		active.clear();
+		for (auto& v : vis)
+			v.Destroy(rg);
+		vis.clear();
+		program.Destroy(rg);
+		constraint.Destroy(rg);
+		cullPrograms.Destroy();
+		scatter.Destroy();
+		pass.Destroy(rg);
+		slots.Init(0);
+		created = false;
+	}
+
+	// The per-slot visible set (the draw feed): the renderer records
+	// DrawIndexedIndirect(vis.Indirect*, proto * stride, 1, stride) per
+	// published tile + proto.
+	[[nodiscard]] const PlacementVisibleSet* VisSet(int32_t slot,
+		uint32_t view = 0) const {
+		if (slot < 0 || slot >= int32_t(active.size())
+			|| view >= viewBudget || !active[size_t(slot)].published)
+			return nullptr;
+		return &vis[size_t(slot) * size_t(viewBudget) + size_t(view)];
+	}
+	// The immutable indirect halves the renderer seeds once per
+	// prototype table (protoCount <= kPlacementMaxProtos).
+	bool SeedIndirect(ResourceManager& ctx, uint32_t view,
+		const PlacementIndirectCmd* seeds, uint32_t cmdCount) {
+		if (view >= viewBudget) return false;
+		bool ok = true;
+		for (size_t s = 0; s < active.size(); ++s)
+			if (active[s].published
+				&& !vis[s * size_t(viewBudget) + size_t(view)]
+					.SeedIndirect(ctx, seeds, cmdCount))
+				ok = false;
+		return ok;
+	}
+
+	// ---- THE FRAME TICK -------------------------------------------------
+	// Records the scatter (+ constraint) dispatches for newly activated
+	// tiles into the CURRENT frame's graph. The interests are world-XZ
+	// rects (glm::vec4 minX/minZ/maxX/maxZ, half-open). Tiles published
+	// in an EARLIER frame become drawable (their chain is ordered by
+	// the graph's external-buffer edges — no count readback).
+	void BeginFrame(ResourceManager& ctx, RenderGraph& rg,
+		const glm::vec4* interests, size_t interestCount,
+		const DependencyVersions& deps) {
+		if (!created) return;
+		// 1) The residency tick (tokens + half-open interest math).
+		std::vector<PlacementSystem::ActivationRequest> acts;
+		system.UpdateResidency(layer->programId, tileSize,
+			interests, interestCount, deps, size_t(slotBudget), acts);
+		// 2) Per activation: slot claim -> harvest -> upload -> dispatch.
+		for (const auto& a : acts) {
+			// Finish the claim of any PREVIOUS dispatch for this key
+			// first (a re-activation supersedes it; the old slot
+			// contents get rebuilt in place below).
+			const int32_t existing = slots.Find(a.key);
+			if (existing >= 0 && !active[size_t(existing)].published) {
+				slots.Finish(existing, a.key,
+					slots.slots[size_t(existing)].generation);
+			}
+			const int32_t slot = existing >= 0 ? existing : slots.Claim(a.key);
+			if (slot < 0) {
+				std::fprintf(stderr, "[Placement] world tile {%d,%d} "
+					"activation DROPPED — every GPU slot is mid-generation\n",
+					a.key.tile.x, a.key.tile.z);
+				continue;
+			}
+			ActiveTile& at = active[size_t(slot)];
+			// Out with the old tenant's uploads FIRST (Destroy resets the
+			// bookkeeping fields), then rebind the slot to this claim.
+			at.Destroy(rg);
+			at.key = a.key;
+			at.generation = a.generation;
+			at.slot = slot;
+			at.published = false;
+			// The harvest (the heights window + halo + the paint).
+			if (!BuildWorldTileDomain(*hfield, *masks, tileSize,
+					a.key.tile.x, a.key.tile.z, haloMeters, at.data)) {
+				std::fprintf(stderr, "[Placement] world tile {%d,%d} "
+					"outside the terrain — dropped\n",
+					a.key.tile.x, a.key.tile.z);
+				continue;
+			}
+			// The uploads: heights + paint + params (+ the program is
+			// uploaded once at Create — cached per (programId, revision)).
+			if (!at.hf.Upload(ctx, rg, at.data.heights)) continue;
+			const bool wantsEco =
+				ProgramUsesEcotopeMask(layer->program) && masks;
+			if (wantsEco && !at.eco.Upload(ctx, rg, at.data.eco)) continue;
+			const PlacementProgramView pv = program.View(ctx);
+			PlacementEcoView ecoView;
+			if (wantsEco) {
+				ecoView = at.eco.View(ctx);
+				const PlacementEcoView cpuSide =
+					PlacementEcoMaskGpu::ViewOf(at.data.eco);
+				ecoView.ox = cpuSide.ox; ecoView.oz = cpuSide.oz;
+				ecoView.sx = cpuSide.sx; ecoView.sz = cpuSide.sz;
+			}
+			// The per-tile scatter params: the LAYER with the tile's
+			// domain repointed (the extent + the harvested field).
+			PlacementSystem::LayerBinding tileLayer = *layer;
+			HeightfieldDomain tileDom = at.data.domain;
+			tileDom.field = &at.data.heights;
+			tileLayer.heightfield = &tileDom;
+			tileLayer.ecotope = wantsEco ? &at.data.eco : nullptr;
+			ScatterBDAs bdas{};
+			bdas.heights = at.hf.Address(ctx);
+			PlacementDomainParams prm;
+			if (!FillScatterParams(tileLayer, pv, ecoView, bdas, prm)) {
+				std::fprintf(stderr, "[Placement] world tile {%d,%d} "
+					"params refused — dropped\n", a.key.tile.x, a.key.tile.z);
+				continue;
+			}
+			if (!at.params.Upload(ctx, rg, prm)) continue;
+			// The scatter dispatch (the counter zeroed first).
+			pass.ClearTile(ctx, uint32_t(slot));
+			PlacementScatterPush push;
+			BuildScatterPush(tileLayer, a.key.tile,
+				pass.TileInstancesAddress(ctx, uint32_t(slot)),
+				pass.TileCountAddress(ctx, uint32_t(slot)),
+				at.params.Address(ctx), push);
+			smvk::RenderPass& eval = PlacementScatterPrograms::AddScatterPass(
+				rg, pass, uint32_t(slot), { at.hf.heightsL },
+				at.params.logical, "PlacementWorldScatter");
+			eval.SetRecordingFunc([this, slot, push](
+					smvk::CommandBuffer& cmd) {
+				PlacementScatterPrograms::PushAndDispatchScatter(cmd,
+					scatter.hfProgram, push);
+			});
+			// The constraint trio when the layer min-spaces (bounded grid
+			// volumes; dispatch width = the candidate upper bound).
+			if (layer->config.minSpacing > 0.0f) {
+				const ConstraintVolume vol = ConstraintVolumeForLayer(tileLayer);
+				PlacementConParams conPrm;
+				if (PlacementConstraint::FillConParams(tileLayer,
+						a.key.tile, vol, conPrm)) {
+					constraint.UploadParams(ctx, conPrm);
+					constraint.Clear(ctx);
+					PlacementConPush conPush;
+					PlacementConstraint::BuildConPush(
+						pass.TileInstancesAddress(ctx, uint32_t(slot)),
+						constraint.HeadAddress(ctx),
+						constraint.NextAddress(ctx),
+						constraint.Flag2Address(ctx),
+						constraint.ParamsAddress(ctx),
+						pass.TileCountAddress(ctx, uint32_t(slot)), conPush);
+					const uint32_t width = tileLayer.config.candidatesPerTile;
+					smvk::RenderPass& cBuild = PlacementConstraint::AddBuildPass(
+						rg, constraint, pass.instanceLogicals[size_t(slot)],
+						pass.countLogicals[size_t(slot)]);
+					cBuild.SetRecordingFunc([this, conPush, width](
+							smvk::CommandBuffer& cmd) {
+						PlacementConstraint::PushAndDispatchCon(cmd,
+							constraint.buildProgram, conPush, width);
+					});
+					smvk::RenderPass& cElect = PlacementConstraint::AddElectPass(
+						rg, constraint, pass.instanceLogicals[size_t(slot)],
+						pass.countLogicals[size_t(slot)]);
+					cElect.SetRecordingFunc([this, conPush, width](
+							smvk::CommandBuffer& cmd) {
+						PlacementConstraint::PushAndDispatchCon(cmd,
+							constraint.electProgram, conPush, width);
+					});
+					smvk::RenderPass& cKill = PlacementConstraint::AddKillPass(
+						rg, constraint, pass.instanceLogicals[size_t(slot)],
+						pass.countLogicals[size_t(slot)]);
+					cKill.SetRecordingFunc([this, conPush, width](
+							smvk::CommandBuffer& cmd) {
+						PlacementConstraint::PushAndDispatchCon(cmd,
+							constraint.killProgram, conPush, width);
+					});
+				}
+			}
+			// Published: the chain that reads it (this frame's cull or a
+			// later one) is ordered by the graph's buffer edges.
+			at.published = true;
+			// The CPU token publish (the CPU-side tile mirror).
+			system.PublishActivation(a.key, a.generation);
+		}
+	}
+
+	// ---- THE CULL CHAIN (per view) -------------------------------------
+	// Records cull -> prefix -> scatter -> drawbuild for every published
+	// tile. The renderer calls this per view (the main camera, each
+	// shadow view...) BEFORE recording the draws; overlapping in-flight
+	// frames need their own VIEW SETS (view < viewBudget).
+	void RecordCullChain(ResourceManager& ctx, RenderGraph& rg,
+		uint32_t view, LogicalBufferHandle renderViewsLogical,
+		uint64_t renderViewsBDA, uint32_t renderViewIndex,
+		const glm::vec3& camPos, uint32_t cullFlags) {
+		if (!created || view >= viewBudget) return;
+		for (size_t s = 0; s < active.size(); ++s) {
+			const ActiveTile& at = active[s];
+			if (!at.published || at.slot < 0) continue;
+			PlacementVisibleSet& vs =
+				vis[s * size_t(viewBudget) + size_t(view)];
+			vs.ClearFrame(ctx); // the mask + bin atomics (per-frame zero)
+			PlacementCullPush cullPush;
+			FillCullPush(*layer,
+				pass.TileInstancesAddress(ctx, uint32_t(s)),
+				pass.TileCountAddress(ctx, uint32_t(s)),
+				vs.MaskAddress(ctx), vs.BinsAddress(ctx),
+				0 /* alive: constraint tiles wire flag2 here in v2 */,
+				renderViewsBDA, renderViewIndex, camPos, cullFlags,
+				cullPush);
+			PlacementScatterVisPush scPush{};
+			scPush.instances = pass.TileInstancesAddress(ctx, uint32_t(s));
+			scPush.count = pass.TileCountAddress(ctx, uint32_t(s));
+			scPush.mask = vs.MaskAddress(ctx);
+			scPush.bins = vs.BinsAddress(ctx);
+			scPush.visible = vs.VisibleAddress(ctx);
+			scPush.protoCount = cullPush.protoCount;
+			PlacementDrawBuildPush dbPush{};
+			dbPush.bins = vs.BinsAddress(ctx);
+			dbPush.indirect = vs.IndirectAddress(ctx);
+			dbPush.protoCount = cullPush.protoCount;
+
+			smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(rg,
+				pass, uint32_t(s), vs, LogicalBufferHandle{},
+				renderViewsLogical);
+			cull.SetRecordingFunc([this, cullPush](
+					smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchCull(cmd,
+					cullPrograms.cullProgram, cullPush,
+					pass.desc.maxInstancesPerTile /* the capacity bound —
+						the kernel self-bounds from the count buffer */);
+			});
+			smvk::RenderPass& pre =
+				PlacementCullPrograms::AddPrefixPass(rg, vs);
+			pre.SetRecordingFunc([this, cullPush](
+					smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchPrefix(cmd,
+					cullPrograms.prefixProgram, cullPush);
+			});
+			smvk::RenderPass& sc = PlacementCullPrograms::AddScatterVisPass(
+				rg, pass, uint32_t(s), vs);
+			sc.SetRecordingFunc([this, scPush](
+					smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchScatterVis(cmd,
+					cullPrograms.scatterProgram, scPush,
+					pass.desc.maxInstancesPerTile);
+			});
+			smvk::RenderPass& db =
+				PlacementCullPrograms::AddDrawBuildPass(rg, vs);
+			db.SetRecordingFunc([this, dbPush](
+					smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchDrawBuild(cmd,
+					cullPrograms.buildProgram, dbPush);
+			});
+		}
 	}
 };
 
