@@ -73,9 +73,10 @@ struct GiVolumePlaneGpu
 struct GiVolumeGpu
 {
     float4 aabbMin;        // xyz fade-expanded hull AABB min (broad-phase reject)
-    float4 aabbMax;        // xyz fade-expanded max, w pad
-    float4 uvwScale;       // xyz world->lattice-uvw scale = 1/(spacing*max(dims,1)), w pad
-    float4 uvwBias;        // xyz = -gridMin * uvwScale, w pad (uvw = saturate(pos*scale + bias))
+    float4 aabbMax;        // xyz fade-expanded max, w = dims.z (the vis-tap
+                           //     lattice math below needs the grid dims)
+    float4 uvwScale;       // xyz world->lattice-uvw scale = 1/(spacing*max(dims,1)), w = dims.x
+    float4 uvwBias;        // xyz = -gridMin * uvwScale, w = dims.y (uvw = saturate(pos*scale + bias))
     uint4 planeCountBase;  // x plane count, y first plane in the shared pool below, zw pad
 };
 

@@ -20,12 +20,14 @@ namespace smvk::gi {
 
 namespace {
 
-constexpr uint32_t kGiVolumeVersion = 1;
+// File format: NO VERSION SCHEME (the repo data rule) — the MAGIC is
+// the identity. "GVOL" = the post-visibility-bake shape (per-voxel
+// 6-axis obstacle distances + the cell-clean flags; the predecessor
+// "GIVL"/"CVOL" eras refuse at the magic — re-bake, no conversions).
 constexpr float kPi = 3.14159265358979323846f;
 
 struct GiVolumeFileHeader {
-	char magic[4] = { 'G', 'I', 'V', 'L' }; // "GIVL" = GiVolume (was "CVOL")
-	uint32_t version = kGiVolumeVersion;
+	char magic[4] = { 'G', 'V', 'O', 'L' };
 	uint32_t planeCount = 0;
 	uint32_t priority = 0;
 	uint32_t dims[3] = {};
@@ -37,7 +39,7 @@ struct GiVolumeFileHeader {
 	uint32_t compressed = 0;  // 1 = LZ4 block
 	uint32_t pad = 0;
 };
-static_assert(sizeof(GiVolumeFileHeader) == 4 + 4 * 4 + 12 + 4 + 12 + 4 + 4 * 3);
+static_assert(sizeof(GiVolumeFileHeader) == 60);
 
 inline float Luminance(const glm::vec3& c) {
 	return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
@@ -200,65 +202,87 @@ bool GiVolume::Sample(
 		rel.z > float(dims[2]))
 		return false;
 
-	const int x = std::clamp(
-		int(std::floor(rel.x)), 0, int(dims[0]) - 1);
-	const int y = std::clamp(
-		int(std::floor(rel.y)), 0, int(dims[1]) - 1);
-	const int z = std::clamp(
-		int(std::floor(rel.z)), 0, int(dims[2]) - 1);
-
-	const size_t base =
-		size_t((uint64_t(z) * dims[1] + y) * dims[0] + x)
-		* kSgLobeCount;
-
-	for (uint32_t i = 0; i < kSgLobeCount; ++i)
-		outAmps[i] = coeffs[base + i];
-
+	// Voxel-center convention: node (i,j,k) sits at gridMin +
+	// (ijk + 0.5) * spacing, so the continuous grid coordinate is
+	// rel - 0.5 (hardware Linear/Clamp mirror; == SgRegularVolume's
+	// trilerp). THE CPU MIRROR OF SgGiVolumeSample (sg_gi_volume.hlsli):
+	// the 8 cell corners each weighted by their 6-axis obstacle
+	// distances vs the tap offset (the through-wall rejection), the
+	// renormalized sum replaces the plain trilerp. Absent vis (a
+	// hand-built volume / the pre-visibility era) degenerates to the
+	// plain trilerp — every factor is 1. NOTE the runtime additionally
+	// carries the per-cell clean flag fast path (the bake PROVES no
+	// tap can reject and skips to the hardware trilerp); the CPU
+	// always evaluates the weighted form — same values, no fast path
+	// needed.
+	const float gx = rel.x - 0.5f, gy = rel.y - 0.5f, gz = rel.z - 0.5f;
+	const int x0 = int(std::floor(gx)), y0 = int(std::floor(gy)),
+		z0 = int(std::floor(gz));
+	const float fx = std::clamp(gx - float(x0), 0.0f, 1.0f);
+	const float fy = std::clamp(gy - float(y0), 0.0f, 1.0f);
+	const float fz = std::clamp(gz - float(z0), 0.0f, 1.0f);
+	const auto idx = [&](int x, int y, int z) {
+		x = std::clamp(x, 0, int(dims[0]) - 1);
+		y = std::clamp(y, 0, int(dims[1]) - 1);
+		z = std::clamp(z, 0, int(dims[2]) - 1);
+		return size_t((uint64_t(z) * dims[1] + uint64_t(y)) * dims[0] + uint64_t(x));
+	};
+	const bool haveVis = vis.size() == size_t(VoxelCount()) * 6;
+	// The per-axis visibility factor (SgGiVolumeVisFactor's CPU twin):
+	// dist 0 = blocked; the rejection starts at dist + slack and ramps
+	// to zero over 0.25*dist — the slack keeps a point AT an obstacle
+	// surface reading its own surface probe.
+	const float slack = 0.35f; // spacing units (== the shader constant)
+	const auto visFactor = [&](int x, int y, int z) {
+		if (!haveVis)
+			return 1.0f;
+		const size_t c = idx(x, y, z);
+		const glm::vec3 dRel(gx - (float(x) + 0.5f),
+			gy - (float(y) + 0.5f), gz - (float(z) + 0.5f));
+		float w = 1.0f;
+		static const float kAxes[6][3] = {
+			{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
+			{ 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 }
+		};
+		for (int k = 0; k < 6; ++k) {
+			const float dist = vis[c * 6 + size_t(k)] / spacing;
+			const float along = dRel.x * kAxes[k][0]
+				+ dRel.y * kAxes[k][1] + dRel.z * kAxes[k][2];
+			if (along > dist + slack) {
+				w *= std::max(0.0f,
+					1.0f - (along - dist - slack) / (0.25f * dist + 0.02f));
+				if (w <= 0.0f)
+					return 0.0f;
+			}
+		}
+		return w;
+	};
+	float wSum = 0.0f;
+	glm::vec3 acc[kSgLobeCount] = {};
+	for (int dz = 0; dz <= 1; ++dz)
+		for (int dy = 0; dy <= 1; ++dy)
+			for (int dx = 0; dx <= 1; ++dx) {
+				const float wv = visFactor(x0 + dx, y0 + dy, z0 + dz);
+				if (wv <= 0.0f)
+					continue;
+				const float w = wv
+					* (dx ? fx : 1.0f - fx)
+					* (dy ? fy : 1.0f - fy)
+					* (dz ? fz : 1.0f - fz);
+				const size_t c = idx(x0 + dx, y0 + dy, z0 + dz)
+					* kSgLobeCount;
+				for (uint32_t i = 0; i < kSgLobeCount; ++i)
+					acc[i] += coeffs[c + i] * w;
+				wSum += w;
+			}
+	if (wSum > 1e-4f)
+		for (uint32_t i = 0; i < kSgLobeCount; ++i)
+			outAmps[i] = acc[i] / wSum;
+	// All 8 taps blocked (a point deep inside a wall): reads zero — the
+	// hull weight still owns the pixel; zero beats the old both-sides
+	// blend (the leak).
 	return true;
 }
-
-//bool GiVolume::Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const {
-//	for (uint32_t i = 0; i < kSgLobeCount; ++i)
-//		outAmps[i] = glm::vec3(0.0f);
-//	if (coeffs.empty() || spacing <= 0.0f)
-//		return false;
-//	const glm::vec3 rel = (p - gridMin) / spacing;
-//	if (rel.x < 0.0f || rel.y < 0.0f || rel.z < 0.0f
-//		|| rel.x > float(dims[0]) || rel.y > float(dims[1])
-//		|| rel.z > float(dims[2]))
-//		return false;
-//	// Voxel-center convention: node (i,j,k) sits at gridMin +
-//	// (ijk + 0.5) * spacing, so the continuous grid coordinate is
-//	// rel - 0.5 (hardware Linear/Clamp mirror; == SgRegularVolume::Sample).
-//	const float gx = rel.x - 0.5f, gy = rel.y - 0.5f, gz = rel.z - 0.5f;
-//	const int x0 = int(std::floor(gx)), y0 = int(std::floor(gy)),
-//		z0 = int(std::floor(gz));
-//	const float fx = std::clamp(gx - float(x0), 0.0f, 1.0f);
-//	const float fy = std::clamp(gy - float(y0), 0.0f, 1.0f);
-//	const float fz = std::clamp(gz - float(z0), 0.0f, 1.0f);
-//	const auto idx = [&](int x, int y, int z) {
-//		x = std::clamp(x, 0, int(dims[0]) - 1);
-//		y = std::clamp(y, 0, int(dims[1]) - 1);
-//		z = std::clamp(z, 0, int(dims[2]) - 1);
-//		return size_t((uint64_t(z) * dims[1] + uint64_t(y)) * dims[0] + uint64_t(x));
-//	};
-//	const size_t c000 = idx(x0, y0, z0) * kSgLobeCount;
-//	const size_t c100 = idx(x0 + 1, y0, z0) * kSgLobeCount;
-//	const size_t c010 = idx(x0, y0 + 1, z0) * kSgLobeCount;
-//	const size_t c110 = idx(x0 + 1, y0 + 1, z0) * kSgLobeCount;
-//	const size_t c001 = idx(x0, y0, z0 + 1) * kSgLobeCount;
-//	const size_t c101 = idx(x0 + 1, y0, z0 + 1) * kSgLobeCount;
-//	const size_t c011 = idx(x0, y0 + 1, z0 + 1) * kSgLobeCount;
-//	const size_t c111 = idx(x0 + 1, y0 + 1, z0 + 1) * kSgLobeCount;
-//	for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-//		const glm::vec3 v00 = glm::mix(coeffs[c000 + i], coeffs[c100 + i], fx);
-//		const glm::vec3 v10 = glm::mix(coeffs[c010 + i], coeffs[c110 + i], fx);
-//		const glm::vec3 v01 = glm::mix(coeffs[c001 + i], coeffs[c101 + i], fx);
-//		const glm::vec3 v11 = glm::mix(coeffs[c011 + i], coeffs[c111 + i], fx);
-//		outAmps[i] = glm::mix(glm::mix(v00, v10, fy), glm::mix(v01, v11, fy), fz);
-//	}
-//	return true;
-//}
 
 void GiVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
 	const uint64_t n = VoxelCount();
@@ -303,8 +327,55 @@ void GiVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
 	}
 }
 
+void GiVolume::PackGpuVisLayers(std::vector<uint8_t> out[2]) const {
+	// Two RGBA8_UNORM 3D layers per volume, one texel per voxel:
+	//   visA = (+x, -x, +y, -y) obstacle distances
+	//   visB = (+z, -z, cellClean flag, spare)
+	// Each distance is quantized unorm8 over [0, 15] SPACING UNITS
+	// (dist/spacing capped at 15 — beyond any in-cell tap offset, so
+	// the top of the range reads fully open to the runtime factor).
+	// Absent vis (a hand-built volume / the pre-visibility era) packs
+	// ALL-OPEN distances + ALL-CLEAN flags — the plain-trilerp
+	// no-rejection contract, byte-identical behavior to before the
+	// visibility bake existed.
+	constexpr float kVisFullScale = 15.0f;
+	const uint64_t n = VoxelCount();
+	const bool haveVis = vis.size() == size_t(n) * 6;
+	const bool haveFlags = visCellClean.size() == size_t(n);
+	for (int t = 0; t < 2; ++t)
+		out[t].assign(size_t(n) * 4, uint8_t(255));
+	if (!haveVis) {
+		// visA stays all-255 (open); visB's flag byte is channel 2 —
+		// all-open means all-clean too, so leave it 255 as well.
+		return;
+	}
+	for (uint64_t v = 0; v < n; ++v) {
+		const float dist[6] = {
+			std::min(vis[size_t(v) * 6 + 0] / spacing, kVisFullScale),
+			std::min(vis[size_t(v) * 6 + 1] / spacing, kVisFullScale),
+			std::min(vis[size_t(v) * 6 + 2] / spacing, kVisFullScale),
+			std::min(vis[size_t(v) * 6 + 3] / spacing, kVisFullScale),
+			std::min(vis[size_t(v) * 6 + 4] / spacing, kVisFullScale),
+			std::min(vis[size_t(v) * 6 + 5] / spacing, kVisFullScale),
+		};
+		for (int k = 0; k < 6; ++k) {
+			const uint8_t q = uint8_t(dist[k] / kVisFullScale * 255.0f + 0.5f);
+			// k 0..3 ride visA channels 0..3 (+x,-x,+y,-y);
+			// k 4..5 ride visB channels 0..1 (+z,-z).
+			if (k < 4)
+				out[0][size_t(v) * 4 + size_t(k)] = q;
+			else
+				out[1][size_t(v) * 4 + (size_t(k) - 4)] = q;
+		}
+		// visB channel 2 = the forward-cell clean flag (255 = clean).
+		out[1][size_t(v) * 4 + 2] = haveFlags && visCellClean[size_t(v)]
+			? uint8_t(255) : uint8_t(0);
+	}
+}
+
 size_t GiVolume::GpuBytes() const {
-	return size_t(VoxelCount()) * 7 * 8;
+	// 7 RGBA16F layers (56 B) + 2 RGBA8_UNORM vis layers (8 B) per voxel.
+	return size_t(VoxelCount()) * 64;
 }
 
 bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const {
@@ -334,8 +405,23 @@ bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const 
 	}
 
 	const uint64_t n = VoxelCount();
+	// Payload: planes + coeffs + the 6-axis visibility block (6 fp32
+// per voxel, meters, capped at the bake's visibilityMaxDistance;
+// 0 = blocked) + the per-voxel cell-clean flags (1 byte each, the
+// tail 4-aligned). Blocks are written ONLY when the in-memory data
+// is complete (a hand-built volume serializes with neither, and the
+// reader sizes the payload to tell the cases apart - empty in,
+// empty out: the no-rejection contract stays honest to disk).
+	const size_t visFloats = vis.size() == size_t(n) * 6
+		? size_t(n) * 6 : 0;
+	const size_t flagBytes = visCellClean.size() == size_t(n)
+		? size_t(n) : 0;
+	const size_t flagTail = (flagBytes + 3u) & ~size_t(3u);
 	std::vector<uint8_t> payload;
-	payload.resize(planeBytes.size() + size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t));
+	payload.resize(planeBytes.size()
+		+ size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t)
+		+ visFloats * sizeof(float)
+		+ flagTail);
 	std::memcpy(payload.data(), planeBytes.data(), planeBytes.size());
 	auto* dst = reinterpret_cast<uint16_t*>(payload.data() + planeBytes.size());
 	for (uint64_t v = 0; v < n; ++v)
@@ -345,6 +431,15 @@ bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const 
 			dst[(size_t(v) * kSgLobeCount + lobe) * 3 + 1] = PackHalf(a.g);
 			dst[(size_t(v) * kSgLobeCount + lobe) * 3 + 2] = PackHalf(a.b);
 		}
+	if (visFloats) {
+		float* vdst = reinterpret_cast<float*>(
+			payload.data() + planeBytes.size()
+			+ size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t));
+		std::memcpy(vdst, vis.data(), visFloats * sizeof(float));
+	}
+	if (flagBytes)
+		std::memcpy(payload.data() + payload.size() - flagTail,
+			visCellClean.data(), flagBytes);
 
 	std::vector<uint8_t> compressed;
 	hdr.payloadBytes = uint32_t(payload.size());
@@ -385,12 +480,8 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 		return false;
 	}
 	std::memcpy(&hdr, bytes.data(), sizeof(hdr));
-		if (std::memcmp(hdr.magic, "GIVL", 4) != 0) {
-		err = "givolume: bad magic";
-		return false;
-	}
-	if (hdr.version != kGiVolumeVersion) {
-		err = "givolume: unsupported version " + std::to_string(hdr.version);
+	if (std::memcmp(hdr.magic, "GVOL", 4) != 0) {
+		err = "givolume: bad magic (pre-visibility bakes refuse - re-bake)";
 		return false;
 	}
 	if (hdr.lobeCount != kSgLobeCount || hdr.sharpness != kSgSharpness) {
@@ -426,7 +517,19 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 
 	const size_t planeBytes = size_t(hdr.planeCount) * 8 * sizeof(float);
 	const uint64_t n = uint64_t(hdr.dims[0]) * hdr.dims[1] * hdr.dims[2];
-	if (payload.size() != planeBytes + size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t)) {
+	const size_t coeffBytes = size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t);
+	// Payload shapes (the writer's three cases): coeffs only (a
+	// hand-built volume — no rejection data, the pre-visibility
+	// behavior), coeffs + vis floats, or coeffs + vis + the 4-aligned
+	// flag tail.
+	const size_t visBytes = size_t(n) * 6 * sizeof(float);
+	const size_t flagTail = (size_t(n) + 3u) & ~size_t(3u);
+	const size_t coeffEnd = planeBytes + coeffBytes;
+	const bool hasVis = payload.size() >= coeffEnd + visBytes;
+	const bool hasFlags = payload.size() >= coeffEnd + visBytes + flagTail;
+	if (payload.size() != coeffEnd
+		&& payload.size() != coeffEnd + visBytes
+		&& payload.size() != coeffEnd + visBytes + flagTail) {
 		err = "givolume: payload size mismatch";
 		return false;
 	}
@@ -456,6 +559,22 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 				UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 0]),
 				UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 1]),
 				UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 2]));
+
+	// The visibility block: 6 fp32 obstacle distances per voxel +
+	// the cell-clean flags. Absent blocks stay EMPTY — the no-rejection
+	// contract (Sample degenerates to the plain trilerp,
+	// PackGpuVisLayers carries all-open/all-clean defaults).
+	vis.clear();
+	visCellClean.clear();
+	if (hasVis) {
+		const auto* vsrc = reinterpret_cast<const float*>(
+			payload.data() + coeffEnd);
+		vis.assign(vsrc, vsrc + size_t(n) * 6);
+	}
+	if (hasFlags) {
+		visCellClean.assign(payload.data() + coeffEnd + visBytes,
+			payload.data() + coeffEnd + visBytes + size_t(n));
+	}
 	return true;
 }
 
@@ -471,7 +590,8 @@ bool GiVolume::ReadFile(const std::string& path, GiVolume& out, std::string& err
 }
 
 // ---------------------------------------------------------------------------
-// Bake: sparse radiance+depth captures -> cubemap reprojection -> dense grid
+// Bake: per-probe direct path trace -> SG fit -> same-side dilation +
+// Laplacian -> 6-axis visibility + the clean-cell flags
 // ---------------------------------------------------------------------------
 
 bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
@@ -513,6 +633,44 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	}
 	outVolume.Resize();
 	stats.probes = n;
+
+	// ---- Shared per-voxel state: validity + 6-axis visibility ----
+	// Hoisted ONCE (the trace loop, the dilation and the clean-flag
+	// pass below all consume it; the trace used to recompute the
+	// clearance test inline and the dilation recomputed the whole
+	// array). valid = the probe center clears cfg.probeMinClearance of
+	// geometry (the trace set; the dilation fills them).
+	// The 6-axis visibility (the through-wall rejection data — the
+	// dense-grid rebirth of the retired .sggi octree's per-probe
+	// wall-awareness) rides the SAME walk: 6 raycasts per probe along
+	// the lattice axes, obstacle distance capped at
+	// cfg.visibilityMaxDistance (a miss = the cap = "open"); invalid
+	// probes record ALL-ZERO = "blocked" (any runtime tap whose offset
+	// exceeds the slack rejects, so inside-solid texels never
+	// contribute). The runtime twin is SgGiVolumeVisFactor
+	// (sg_gi_volume.hlsli); the CPU twin is GiVolume::Sample.
+	std::vector<char> valid(size_t(n), 0);
+	outVolume.vis.assign(size_t(n) * 6, 0.0f);
+	const float visCap = std::max(cfg.visibilityMaxDistance, spacing);
+	// Axis order +x,-x,+y,-y,+z,-z (the runtime/CPU twins read the
+	// same order).
+	static const glm::vec3 kVisAxes[6] = {
+		glm::vec3(1, 0, 0), glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0),
+		glm::vec3(0, -1, 0), glm::vec3(0, 0, 1), glm::vec3(0, 0, -1)
+	};
+	{
+		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1];
+		for (uint64_t v = 0; v < n; ++v) {
+			const uint32_t ix = uint32_t(v % nx);
+			const uint32_t iy = uint32_t((v / nx) % ny);
+			const uint32_t iz =
+				uint32_t(v / (uint64_t(nx) * ny));
+			const glm::vec3 pos = outVolume.gridMin
+				+ (glm::vec3(ix, iy, iz) + 0.5f) * outVolume.spacing;
+			valid[size_t(v)] = scene.Bvh().ClosestDistance(pos)
+				>= cfg.probeMinClearance ? 1 : 0;
+		}
+	}
 
 	// Shared equal-solid-angle direction set (same rationale as the
 	// other bakers: correlated error reads as smooth bias). These are
@@ -569,8 +727,7 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 
 					SgFitAccumulator acc;
 					acc.accumulateGram = false; // diagonal solve only
-					if (scene.Bvh().ClosestDistance(pos)
-							>= cfg.probeMinClearance) {
+					if (valid[size_t(v)]) {
 						// Deterministic per-probe seed (the capture
 						// stage's pattern): results independent of
 						// task scheduling.
@@ -603,6 +760,19 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 						for (uint32_t i = 0; i < N; ++i)
 							acc.AddSample(dirs[i], rad[i],
 								texelSolidAngle);
+						// 6-axis obstacle distances (the through-wall
+						// rejection data — see the hoisted block above).
+						// A miss = the cap = open; the pre-zeroed array
+						// already carries the blocked zeros for the
+						// invalid set.
+						for (uint32_t k = 0; k < 6; ++k) {
+							TriangleBvh::Hit vh;
+							outVolume.vis[size_t(v) * 6 + k] =
+								scene.Bvh().Raycast(pos, kVisAxes[k],
+									visCap, vh)
+								? std::min(vh.t, visCap)
+								: visCap;
+						}
 					}
 					else {
 						++invalid;
@@ -628,22 +798,36 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 		stats.samplesClamped = clamped.load();
 	}
 
+	
+	// ---- Shared neighbor gates (the same-side rule) ----
+	// The axis pair table: index k = 0..5 is +x,-x,+y,-y,+z,-z; the
+	// neighbor at v + kAxis[k] is reached through v's axis k and looks
+	// back through its OPPOSITE (k^1) — the adjacent +x/-x, +y/-y,
+	// +z/-z table pairs in the vis member. visOpen(v, k): voxel v's
+	// obstacle distance along axis k vs the neighbor one spacing away.
+	// The 0.35-spacing gate slack is PAIRED with the runtime factor's
+	// slack (SgGiVolumeVisFactor / GiVolume::Sample) — a point AT an
+	// obstacle surface keeps reading its own surface's neighbors.
+	const auto visOpen = [&](uint64_t v, int k) {
+		return outVolume.vis[size_t(v) * 6 + size_t(k)]
+			>= spacing - 0.35f * spacing;
+	};
+	const auto mutuallyOpen = [&](uint64_t v, uint64_t u, int k) {
+		return visOpen(v, k) && visOpen(u, k ^ 1);
+	};
+
 	// ---- Validity dilation (probes inside solid geometry; the same
 	// Jacobi scheme as the regular-volume bake: nearest-valid values
 	// spread over the holes so facade-adjacent trilinear taps see
-	// facade-like lighting instead of black).
+	// facade-like lighting instead of black). SAME-SIDE ONLY since the
+	// visibility bake: a neighbor participates only when the pair is
+	// MUTUALLY OPEN, so the fill can no longer average ACROSS a wall —
+	// the old unconditional fill bridged thin walls with the mean of
+	// both rooms (leak path one). The valid array is the hoisted one
+	// (no recomputation here).
 	{
 		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
 			nz = outVolume.dims[2];
-		std::vector<char> valid(size_t(n), 0);
-		for (uint64_t v = 0; v < n; ++v) {
-			const uint32_t ix = uint32_t(v % nx);
-			const uint32_t iy = uint32_t((v / nx) % ny);
-			const uint32_t iz = uint32_t(v / (uint64_t(nx) * ny));
-			valid[size_t(v)] = scene.Bvh().ClosestDistance(
-				outVolume.gridMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing)
-				>= cfg.probeMinClearance ? 1 : 0;
-		}
 		for (int pass = 0; pass < 64; ++pass) {
 			bool anyFill = false;
 			std::vector<glm::vec3> fill(size_t(n) * kSgLobeCount);
@@ -670,6 +854,8 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 								(uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
 							if (!valid[size_t(u)])
 								continue;
+							if (!mutuallyOpen(v, u, k))
+								continue; // across a wall: the same-side gate
 							for (uint32_t i = 0; i < kSgLobeCount; ++i)
 								acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
 							++cnt;
@@ -704,56 +890,119 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	// emptying anything (the padding survives — it just stops being a
 	// hard edge), so the dilated voxels participate on both sides:
 	// they take neighbor averages AND contribute to their neighbors.
-	for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
-		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
-			nz = outVolume.dims[2];
-		std::vector<glm::vec3> smoothed(size_t(n) * kSgLobeCount);
-		static const int kDx[6] = { 1, -1, 0, 0, 0, 0 };
-		static const int kDy[6] = { 0, 0, 1, -1, 0, 0 };
-		static const int kDz[6] = { 0, 0, 0, 0, 1, -1 };
-		const float lambda = std::clamp(cfg.smoothingLambda, 0.0f, 1.0f);
-		for (uint32_t iz = 0; iz < nz; ++iz)
-			for (uint32_t iy = 0; iy < ny; ++iy)
-				for (uint32_t ix = 0; ix < nx; ++ix) {
-					const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
-					glm::vec3 acc[kSgLobeCount] = {};
-					int cnt = 0;
-					for (int k = 0; k < 6; ++k) {
-						const int jx = int(ix) + kDx[k];
-						const int jy = int(iy) + kDy[k];
-						const int jz = int(iz) + kDz[k];
-						if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx)
-							|| jy >= int(ny) || jz >= int(nz))
-							continue;
-						const uint64_t u =
-							(uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-						for (uint32_t i = 0; i < kSgLobeCount; ++i)
-							acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-						++cnt;
+	// The visibility bake: the neighbor set is SAME-SIDE GATED
+	// (the mutuallyOpen rule above): along-surface neighbors still
+	// smooth — the seam-softening this pass exists for — while
+	// across-wall pairs are excluded, so the Laplacian no longer
+	// smears bright exterior values into dark interiors through thin
+	// walls (leak path two).
+	{
+		for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
+			const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
+				nz = outVolume.dims[2];
+			std::vector<glm::vec3> smoothed(size_t(n) * kSgLobeCount);
+			static const int kDx[6] = { 1, -1, 0, 0, 0, 0 };
+			static const int kDy[6] = { 0, 0, 1, -1, 0, 0 };
+			static const int kDz[6] = { 0, 0, 0, 0, 1, -1 };
+			const float lambda = std::clamp(cfg.smoothingLambda, 0.0f, 1.0f);
+			for (uint32_t iz = 0; iz < nz; ++iz)
+				for (uint32_t iy = 0; iy < ny; ++iy)
+					for (uint32_t ix = 0; ix < nx; ++ix) {
+						const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+						glm::vec3 acc[kSgLobeCount] = {};
+						int cnt = 0;
+						for (int k = 0; k < 6; ++k) {
+							const int jx = int(ix) + kDx[k];
+							const int jy = int(iy) + kDy[k];
+							const int jz = int(iz) + kDz[k];
+							if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx)
+								|| jy >= int(ny) || jz >= int(nz))
+								continue;
+							const uint64_t u =
+								(uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
+							if (!mutuallyOpen(v, u, k))
+								continue; // across a wall: no cross-side smear
+							for (uint32_t i = 0; i < kSgLobeCount; ++i)
+								acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+							++cnt;
+						}
+						for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+							const glm::vec3& cur =
+								outVolume.coeffs[size_t(v) * kSgLobeCount + i];
+							glm::vec3 next = cur;
+							if (cnt > 0)
+								next = glm::mix(cur, acc[i] / float(cnt), lambda);
+							smoothed[size_t(v) * kSgLobeCount + i] = next;
+						}
 					}
-					for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-						const glm::vec3& cur =
-							outVolume.coeffs[size_t(v) * kSgLobeCount + i];
-						glm::vec3 next = cur;
-						if (cnt > 0)
-							next = glm::mix(cur, acc[i] / float(cnt), lambda);
-						smoothed[size_t(v) * kSgLobeCount + i] = next;
-					}
-				}
-		outVolume.coeffs = std::move(smoothed);
+			outVolume.coeffs = std::move(smoothed);
+		}
 	}
 
-	const auto t1 = std::chrono::steady_clock::now();
+	// ---- Fast-path flags (the forward cell's clean bit) ----
+	// Clean = every corner of the cell [v, v+1]^3 records every axis
+	// distance >= 1.35 spacing units: the maximum in-cell tap offset
+	// along any axis is 1 spacing, and rejection only starts past
+	// dist + 0.35, so no tap in a clean cell can ever reject and the
+	// runtime's hardware trilerp IS the visibility-weighted blend.
+	// Conservative by construction (a clean-but-near-wall cell simply
+	// takes the weighted path — same values, more fetches). Voxels at
+	// the +1 edges have no forward cell (the runtime clamps its base
+	// corner to dims-2) and stay 0.
+	uint64_t visBlocked = 0, visCleanCells = 0;
+	{
+		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
+			nz = outVolume.dims[2];
+		outVolume.visCellClean.assign(size_t(n), 0);
+		constexpr float kCleanMin = 1.35f; // 1 spacing reach + the 0.35 slack
+		for (uint64_t v = 0; v < n; ++v) {
+			// Blocked = every axis zero (the inside-solid set — the
+			// runtime factor kills any offset past the slack).
+			bool blocked = true;
+			for (uint32_t k = 0; k < 6; ++k)
+				if (outVolume.vis[size_t(v) * 6 + k] > 1e-4f) {
+					blocked = false;
+					break;
+				}
+			if (blocked)
+				++visBlocked;
+		}
+		for (uint32_t iz = 0; iz + 1 < nz; ++iz)
+			for (uint32_t iy = 0; iy + 1 < ny; ++iy)
+				for (uint32_t ix = 0; ix + 1 < nx; ++ix) {
+					bool clean = true;
+					for (uint32_t dz = 0; dz < 2 && clean; ++dz)
+						for (uint32_t dy = 0; dy < 2 && clean; ++dy)
+							for (uint32_t dx = 0; dx < 2 && clean; ++dx) {
+								const uint64_t c = ((uint64_t(iz + dz) * ny
+									+ uint64_t(iy + dy)) * nx + uint64_t(ix + dx));
+								for (uint32_t k = 0; k < 6; ++k)
+									if (outVolume.vis[size_t(c) * 6 + k] / spacing
+											< kCleanMin) {
+										clean = false;
+										break;
+									}
+							}
+					if (clean) {
+						const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+						outVolume.visCellClean[size_t(v)] = 1;
+						++visCleanCells;
+					}
+				}
+	}	const auto t1 = std::chrono::steady_clock::now();
 	stats.seconds = std::chrono::duration<double>(t1 - t0).count();
 	{
-		char line[192];
+		char line[224];
 		std::snprintf(line, sizeof(line),
 			"givolume bake: done: %llu probes (per-probe direct trace) "
-			"in %.1fs (%.1f MiB GPU, %llu invalid, %llu clamped)\n",
+			"in %.1fs (%.1f MiB GPU, %llu invalid, %llu clamped, "
+			"vis: %llu blocked / %llu clean cells)\n",
 			(unsigned long long)n,
 			stats.seconds, double(outVolume.GpuBytes()) / (1024.0 * 1024.0),
 			(unsigned long long)stats.probesInvalid,
-			(unsigned long long)stats.samplesClamped);
+			(unsigned long long)stats.samplesClamped,
+			(unsigned long long)visBlocked,
+			(unsigned long long)visCleanCells);
 		say(line);
 	}
 	return true;

@@ -788,7 +788,16 @@ uint decalCount;                                         // 776 0 = decals off
     // tail: every pinned offset above stays put. ----
     uint64_t worldFields;                                          // 1976 field/page-table BDA (0 = off)
     uint worldFieldCount;                                          // 1984 live GPU fields
-    uint worldFieldsPad_;                                          // 1988 (16-align tail; struct ends 2000)
+    uint worldFieldsPad_;                                          // 1988 (16-align tail; struct was 1992)
+    // ---- GI-volume VISIBILITY layers (the through-wall rejection —
+    // see sg_gi_volume.hlsli's SgGiVolumeSample): 2 RGBA8_UNORM 3D
+    // textures per volume (visA = +x,-x,+y,-y obstacle distances;
+    // visB = +z,-z, the forward-cell clean flag, spare — each distance
+    // quantized unorm8 over [0, 15] SPACING UNITS). UINT32_MAX =
+    // absent (the volume predates the visibility bake — the sample
+    // takes the plain hardware trilerp, the pre-visibility behavior).
+    // APPEND-ONLY tail: every pinned offset above stays put. ----
+    uint giVolumeVisLayers[16];                                    // 1992 8 volumes x 2 vis layer slots
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

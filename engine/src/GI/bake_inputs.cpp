@@ -531,7 +531,6 @@ bool SerializeCaptureReach(const CaptureReachFile& reach,
 	std::vector<uint8_t>& out) {
 	out.clear();
 	PutU32(out, CaptureReachFile::kMagic);
-	PutU32(out, CaptureReachFile::kVersion);
 	PutU32(out, uint32_t(reach.entries.size()));
 	for (const CaptureReachFile::Entry& e : reach.entries) {
 		PutU32(out, e.rowIndex);
@@ -546,16 +545,14 @@ bool SerializeCaptureReach(const CaptureReachFile& reach,
 bool ParseCaptureReach(const uint8_t* data, size_t size,
 	CaptureReachFile& out) {
 	out.entries.clear();
-	if (size < 12)
+	if (size < 8)
 		return false;
 	const uint8_t* p = data;
 	const uint8_t* end = data + size;
-	uint32_t magic = 0, version = 0, count = 0;
-	if (!GetU32(p, end, magic) || !GetU32(p, end, version)
-			|| !GetU32(p, end, count))
+	uint32_t magic = 0, count = 0;
+	if (!GetU32(p, end, magic) || !GetU32(p, end, count))
 		return false;
-	if (magic != CaptureReachFile::kMagic
-			|| version != CaptureReachFile::kVersion)
+	if (magic != CaptureReachFile::kMagic)
 		return false;
 	if (count > 65536)
 		return false;

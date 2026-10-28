@@ -38,35 +38,34 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-constexpr uint32_t kSglmVersion = 3;
-
-// v2 payload segment slice: each slice compresses/decompresses through
+// File format: NO VERSION SCHEME (the repo data rule) - the MAGIC is
+// the identity ("SGLA" = the current SG lightmap atlas shape; the
+// "SGLM" era - including its v1/v2 layout variants - refuses at the
+// magic; re-bake, no conversions, no legacy readers).
+//
+// Payload segment slice: each slice compresses/decompresses through
 // the blob codec independently (kMaxBlobBytes cap). 16M-texel atlases
-// pack a ~1.2 GB section — over the cap for a single LZ4 block.
+// pack a ~1.2 GB section - over the cap for a single LZ4 block.
 constexpr uint32_t kSglmSegmentBytes = 256u * 1024u * 1024u;
 
 struct SglmFileHeader {
-	char magic[4] = { 'S', 'G', 'L', 'M' };
-	uint32_t version = kSglmVersion;
+	char magic[4] = { 'S', 'G', 'L', 'A' };
 	uint32_t atlasWidth = 0;
 	uint32_t atlasHeight = 0;
 	uint32_t chunkCount = 0;
 	uint32_t payloadBytes = 0; // uncompressed post-header section
-	// 0 = section stored raw, 1 = single LZ4 block (v1 files),
-	// 2 = segmented LZ4 (v2: u32 segCount + (u64 raw, u64 comp) table +
-	// segCount blocks, slices of kSglmSegmentBytes raw bytes).
-	uint32_t compressed = 0;
-	// v3 tail (BC6H payload; absent in v1/v2 files):
-	// 0 = section = chunk table + per-chunk half payloads (v1/v2 body),
-	// 1 = section = chunk table + BC6H blocks (bc6h), 2 = same with the
-	// cook's opt prefill (bc6hopt — same GPU layout, different cook
-	// quality path; kept for round-trip fidelity + logging).
+	// 2 = segmented LZ4: u32 segCount + (u64 raw, u64 comp) table +
+	// segCount blocks, slices of kSglmSegmentBytes raw bytes (the only
+	// encoding the writer emits - the reader accepts exactly it).
+	uint32_t compressed = 2;
+	// 0 = section = chunk table + per-chunk half payloads,
+	// 1 = section = chunk table + BC6H blocks (bc6h), 2 = same with
+	// the cook's opt prefill (bc6hopt - same GPU layout, different
+	// cook quality path; kept for round-trip fidelity + logging).
 	uint32_t payloadKind = 0;
 	uint32_t bc6hLobes = 0;   // lobe images stored
 	uint32_t bc6hBlockBytes = 0; // bc6hBlocks size in bytes
 };
-constexpr uint32_t kSglmHeaderBytesV1V2 = 28; // header without the v3 tail
-
 inline float Luminance(const glm::vec3& c) {
 	return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
 }
@@ -2398,7 +2397,7 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 		return false;
 	}
 	hdr.payloadBytes = uint32_t(section.size());
-	// Segmented LZ4 (v2): the full section of a 16M-texel atlas (~1.2 GB)
+	// Segmented LZ4: the full section of a 16M-texel atlas (~1.2 GB)
 	// cannot pass the single-block codec (kMaxBlobBytes), so it is
 	// compressed in kSglmSegmentBytes slices with a size table.
 	hdr.compressed = 2;
@@ -2457,28 +2456,18 @@ bool SgLightmapAtlas::WriteFile(const std::string& path, std::string& err) const
 
 bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) {
 	SglmFileHeader hdr{};
-	if (bytes.size() < kSglmHeaderBytesV1V2) {
+	if (bytes.size() < sizeof(hdr)) {
 		err = "sglm: file too small";
 		return false;
 	}
-	// v1/v2 files carry the 28-byte header; v3 appends the BC6H tail.
-	std::memcpy(&hdr, bytes.data(),
-		bytes.size() < sizeof(hdr) ? bytes.size() : sizeof(hdr));
-	if (std::memcmp(hdr.magic, "SGLM", 4) != 0) {
-		err = "sglm: bad magic";
+	std::memcpy(&hdr, bytes.data(), sizeof(hdr));
+	if (std::memcmp(hdr.magic, "SGLA", 4) != 0) {
+		err = "sglm: bad magic (the pre-visibility-era \"SGLM\" formats"
+			" refuse — re-bake)";
 		return false;
 	}
-	const uint32_t headerSize = hdr.version >= 3
-		? uint32_t(sizeof(hdr)) : kSglmHeaderBytesV1V2;
-	if (hdr.version != 1 && hdr.version != 2 && hdr.version != 3) {
-		err = "sglm: unsupported version " + std::to_string(hdr.version);
-		return false;
-	}
-	if (bytes.size() < headerSize) {
-		err = "sglm: file too small";
-		return false;
-	}
-	const bool bc6h = hdr.version >= 3 && hdr.payloadKind >= 1;
+	const uint32_t headerSize = uint32_t(sizeof(hdr));
+	const bool bc6h = hdr.payloadKind >= 1;
 	if (hdr.atlasWidth == 0 || hdr.atlasHeight == 0
 		|| hdr.chunkCount == 0 || hdr.chunkCount > 1048576
 		|| hdr.payloadBytes == 0
@@ -2496,7 +2485,7 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 	const std::span<const uint8_t> stored(bytes.data() + headerSize,
 		bytes.size() - headerSize);
 	if (hdr.compressed == 2) {
-		// Segmented LZ4 (v2): u32 segCount + (u64 raw, u64 comp) table +
+		// Segmented LZ4: u32 segCount + (u64 raw, u64 comp) table +
 		// segCount blocks. Raw sizes must tile payloadBytes exactly.
 		if (stored.size() < 4)
 			return err = "sglm: truncated segment table", false;
@@ -2528,14 +2517,6 @@ bool SgLightmapAtlas::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 		}
 		if (rawOff != section.size())
 			return err = "sglm: segment sizes do not tile the payload", false;
-	}
-	else if (hdr.compressed == 1) {
-		// v1 single LZ4 block (files written before the segment format;
-		// sections over kMaxBlobBytes cannot exist in this layout).
-		if (!Lz4Decompress(stored, hdr.payloadBytes, section)) {
-			err = "sglm: LZ4 decompression failed";
-			return false;
-		}
 	}
 	else {
 		if (stored.size() != hdr.payloadBytes)

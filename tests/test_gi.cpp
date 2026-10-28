@@ -23,7 +23,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h> // Cluster (static-bake-light harvest test)
-#include <Engine/Asset/compression.h> // Lz4Compress (sglm v1 fixture)
+#include <Engine/Asset/compression.h> // Lz4Compress (payload fixtures)
 #include <Engine/GI/bake.h>
 #include <Engine/GI/bake_inputs.h> // RecordCaptureReach (the reach sweep)
 #include <Engine/GI/bc6h.h>
@@ -940,11 +940,11 @@ void TestGiVolume() {
 		Check(!vol.Sample(glm::vec3(5.0f, 0.0f, 0.0f), amps),
 			"GI volume outside uncovered");
 
-		// 2x1x1 strip: NEAREST-TAP sampling (the trilinear prefilter is
-		// disabled — the authored per-voxel data reads back un-blurred,
-		// the better result). The midpoint (grid coord 1.0 in x, exactly
-		// on the voxel boundary) floors to voxel #1, so the sample is the
-		// raw voxel #1 value — never an average.
+		// 2x1x1 strip: the VISIBILITY-WEIGHTED trilerp (the CPU mirror
+		// of SgGiVolumeSample). With NO vis data (a hand-built volume)
+		// every corner factor is 1 — the plain trilerp: the midpoint
+		// (grid coord 1.0 in x, exactly on the voxel boundary) is the
+		// 50/50 blend of voxels #0 (0) and #1 (2) = 1.0.
 		GiVolume strip;
 		strip.gridMin = glm::vec3(-1.0f, 0.0f, 0.0f);
 		strip.spacing = 1.0f;
@@ -963,11 +963,27 @@ void TestGiVolume() {
 			"GI volume strip covered");
 		bool mid = true;
 		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			if (std::abs(amps[i].x - 2.0f) > 1e-4f)
+			if (std::abs(amps[i].x - 1.0f) > 1e-4f)
 				mid = false;
-		Check(mid, "GI volume nearest-tap midpoint floors to voxel 1");
+		Check(mid, "GI volume no-vis midpoint is the plain trilerp blend");
 
-		// File round trip (priority + planes + coeffs preserved).
+		// The rejection: hand-author the 6-axis vis (a wall just behind
+		// voxel #1 — its -x obstacle at 0.05 m) + no clean flags. A
+		// sample at the boundary now REJECTS voxel #1 (the offset 0.5
+		// spacing units along its blocked axis exceeds dist+slack) and
+		// reads voxel #0's value alone: the through-wall behavior.
+		strip.vis.assign(2 * 6, 15.0f * strip.spacing); // open everywhere
+		strip.vis[1 * 6 + 1] = 0.05f; // voxel #1's -x obstacle (a wall)
+		strip.visCellClean.clear();    // no fast-path flags
+		Check(strip.Sample(glm::vec3(0.0f, 0.5f, 0.5f), amps),
+			"GI volume strip covered (vis)");
+		bool rej = true;
+		for (uint32_t i = 0; i < kSgLobeCount; ++i)
+			if (std::abs(amps[i].x - 0.0f) > 1e-4f)
+				rej = false;
+		Check(rej, "GI volume blocked-side tap rejects across the wall");
+
+		// File round trip (priority + planes + coeffs + the vis data).
 		const auto tmp = std::filesystem::temp_directory_path()
 			/ "tourmaline_gi_volume_test.givolume";
 		std::string err;
@@ -989,6 +1005,18 @@ void TestGiVolume() {
 					same = false;
 		}
 		Check(same, "GI volume roundtrip equal");
+		// The v2 visibility block round-trips: the hand-authored
+		// blocked axis + the open defaults survive byte-exact (the
+		// clean-flag block was absent — serialized as the no-flags
+		// shape, read back empty).
+		bool visSame = reloaded.vis.size() == strip.vis.size();
+		if (visSame)
+			for (size_t k = 0; k < strip.vis.size(); ++k)
+				if (std::abs(reloaded.vis[k] - strip.vis[k]) > 1e-5f)
+					visSame = false;
+		Check(visSame, "GI volume vis roundtrip equal");
+		Check(reloaded.visCellClean.empty(),
+			"GI volume absent clean flags stay absent");
 		std::filesystem::remove(tmp);
 
 		// GPU packing: 7 layers x voxels x RGBA halves (sgrv layout).
@@ -999,7 +1027,30 @@ void TestGiVolume() {
 			if (layers[t].size() != size_t(2) * 4)
 				packOk = false;
 		Check(packOk, "GI volume gpu pack shape");
-		Check(strip.GpuBytes() == size_t(2) * 56, "GI volume gpu bytes");
+		Check(strip.GpuBytes() == size_t(2) * 64, "GI volume gpu bytes");
+
+		// The vis GPU pack (PackGpuVisLayers): 2 RGBA8_UNORM layers x
+		// voxels x 4 bytes; the distances quantized unorm8 over [0,15]
+		// spacing units; the clean-flag channel rides layer 1's .b
+		// (255 = clean). The hand-authored 0.05 m -x obstacle on voxel
+		// #1 packs at 0.05/1.0/15*255 ~= 1 (nearly blocked); the open
+		// axes pack 255; with no clean flags every .b reads 0.
+		{
+			std::vector<uint8_t> vis[2];
+			strip.PackGpuVisLayers(vis);
+			bool shapeOk = vis[0].size() == size_t(2) * 4
+				&& vis[1].size() == size_t(2) * 4;
+			Check(shapeOk, "GI volume vis pack shape");
+			const uint8_t qBlocked = uint8_t(
+				0.05f / 15.0f * 255.0f + 0.5f);
+			// Layer 0 carries +x,-x,+y,-y: voxel #1's -x is channel 1.
+			bool valsOk = vis[0][1 * 4 + 0] == uint8_t(255) // voxel1 +x open
+				&& vis[0][1 * 4 + 1] == qBlocked // voxel1 -x = the wall
+				&& vis[0][0 * 4 + 0] == uint8_t(255) // voxel0 open
+				&& vis[1][1 * 4 + 0] == uint8_t(255) // voxel1 +z open
+				&& vis[1][1 * 4 + 2] == uint8_t(0); // no clean flags
+			Check(valsOk, "GI volume vis pack values");
+		}
 
 		// Isotropic-mean payload (the volumetric fog's one-fetch path —
 		// PackGpuMeanLayer): rgb = 0.124959 * Σ lobes per voxel (the
@@ -1080,6 +1131,33 @@ void TestGiVolume() {
 					same = false;
 			Check(same, "GI volume per-probe direct fit identity");
 		}
+				// The visibility bake (empty scene): every probe's every axis
+		// records the CAP (no obstacle anywhere = open), and every
+		// forward cell is CLEAN (no rejection possible) — the
+		// fast-path shape a no-geometry bake should produce.
+		{
+			bool visOpen = baked.vis.size()
+				== size_t(baked.VoxelCount()) * 6;
+			for (size_t k = 0; visOpen && k < baked.vis.size(); ++k)
+				if (std::abs(baked.vis[k]
+						- cfg.visibilityMaxDistance) > 1e-5f)
+						visOpen = false;
+				Check(visOpen, "GI volume empty-scene vis all open");
+            // Every FORWARD cell is clean (no geometry anywhere); the
+            // edge voxels' flags stay 0 by contract (no forward cell
+            // exists - the runtime clamps its base corner to
+            // dims-2), so the set count is (nx-1)*(ny-1)*(nz-1).
+            bool cleanAll = baked.visCellClean.size()
+                == size_t(baked.VoxelCount());
+            size_t setCells = 0;
+            for (size_t k = 0; k < baked.visCellClean.size(); ++k)
+                if (baked.visCellClean[k])
+                    ++setCells;
+            if (cleanAll)
+                cleanAll = setCells == size_t(baked.dims[0] - 1)
+                    * (baked.dims[1] - 1) * (baked.dims[2] - 1);
+            Check(cleanAll, "GI volume empty-scene cells all clean");
+		}
 		// Skyless: exact zero (no geometry, no light).
 		scene.skyIntensity = 0.0f;
 		GiVolume skyless;
@@ -1091,6 +1169,113 @@ void TestGiVolume() {
 			if (glm::length(a) != 0.0f)
 				allZero = false;
 		Check(allZero, "GI volume bake zero-sky exact zero");
+	}
+		// ---- Bake: the WALL scene (the through-wall rejection data end
+	// to end) ----
+	// A thin wall slab (x in [-0.05, 0.05], y in [0, 3], z in
+	// [-1.5, 1.5]) baked into a volume straddling it at 0.5 m
+	// spacing: the probes either side must record the wall on their
+	// FACING axis (and the cap = open on the away axes), and the cells
+	// straddling the wall are NOT clean (the runtime's weighted path)
+	// while cells well away from it are. No probe center lands inside
+	// the 10 cm slab at this spacing — the wall falls BETWEEN the
+	// x=±0.25 probe pair, which is exactly the runtime leak geometry.
+	{
+		GiTraceScene scene;
+		const glm::vec3 q[] = {
+			glm::vec3(0.05f, 0.0f, -1.5f), glm::vec3(0.05f, 3.0f, -1.5f),
+			glm::vec3(0.05f, 3.0f, 1.5f), glm::vec3(0.05f, 0.0f, 1.5f),
+			glm::vec3(-0.05f, 0.0f, -1.5f), glm::vec3(-0.05f, 3.0f, -1.5f),
+			glm::vec3(-0.05f, 3.0f, 1.5f), glm::vec3(-0.05f, 0.0f, 1.5f),
+		};
+		for (const glm::vec3& p : q)
+			scene.positions.push_back(p);
+		auto quad = [&](size_t a, size_t b, size_t c, size_t d) {
+			scene.indices.push_back(uint32_t(a));
+			scene.indices.push_back(uint32_t(b));
+			scene.indices.push_back(uint32_t(c));
+			scene.indices.push_back(uint32_t(a));
+			scene.indices.push_back(uint32_t(c));
+			scene.indices.push_back(uint32_t(d));
+		};
+		quad(0, 1, 2, 3); // +x face
+		quad(4, 7, 6, 5); // -x face (wound the other way)
+		scene.materials = { GiTraceMaterial{ glm::vec3(0.7f), glm::vec3(0.0f) } };
+		scene.triMaterial.assign(scene.indices.size() / 3, 0);
+		scene.skyIntensity = 0.0f; // geometry-only: deterministic
+		scene.Finalize();
+		GiVolumeDef def;
+		def.planes = GiVolumeBoxPlanes(glm::vec3(-2.5f, 0.0f, -1.5f),
+			glm::vec3(2.5f, 3.0f, 1.5f));
+		GiVolumeBakeConfig cfg{};
+		cfg.captureDirs = 64;
+		cfg.maxBounces = 0;
+		cfg.smoothingPasses = 0;
+		cfg.threadCount = 2;
+		GiVolume baked;
+		GiVolumeBakeStats stats;
+		Check(BakeGiVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
+			"GI volume wall-scene bake runs");
+		const uint32_t nx = baked.dims[0];
+		const uint64_t n = baked.VoxelCount();
+		Check(baked.vis.size() == size_t(n) * 6,
+			"GI volume wall-scene vis populated");
+		// gridMin = (-1.5, 0, -1.5), spacing 0.5 -> probe centers at
+		// x = -1.25, -0.75, -0.25, 0.25, 0.75, 1.25 (the +0.5 center
+		// convention). The wall's faces sit 0.2 m from the x=±0.25
+		// probes; x=±0.75 read ~0.7 m.
+		const float cap = cfg.visibilityMaxDistance;
+		const auto probeAt = [&](float x, float y, float z) -> int {
+			const glm::vec3 rel = (glm::vec3(x, y, z) - baked.gridMin)
+				/ baked.spacing;
+			const int ix = int(std::lround(rel.x - 0.5f));
+			const int iy = int(std::lround(rel.y - 0.5f));
+			const int iz = int(std::lround(rel.z - 0.5f));
+			if (ix < 0 || iy < 0 || iz < 0 || ix >= int(baked.dims[0])
+				|| iy >= int(baked.dims[1]) || iz >= int(baked.dims[2]))
+				return -1;
+			return int((uint64_t(iz) * baked.dims[1] + uint64_t(iy)) * nx
+				+ uint64_t(ix));
+		};
+		bool wallRecorded = true;
+		{
+			const int right = probeAt(0.25f, 1.5f, 0.0f);
+			const int left = probeAt(-0.25f, 1.5f, 0.0f);
+			if (right < 0 || left < 0) {
+				wallRecorded = false;
+			}
+			else {
+				const float rMinusX = baked.vis[size_t(right) * 6 + 1];
+				const float lPlusX = baked.vis[size_t(left) * 6 + 0];
+				const float rPlusX = baked.vis[size_t(right) * 6 + 0];
+				const float lMinusX = baked.vis[size_t(left) * 6 + 1];
+				wallRecorded = rMinusX > 0.1f && rMinusX < 0.35f
+					&& lPlusX > 0.1f && lPlusX < 0.35f
+					&& rPlusX > cap - 1e-3f
+					&& lMinusX > cap - 1e-3f;
+			}
+		}
+		Check(wallRecorded, "GI volume wall-scene probes record the wall");
+		bool flagsOk = baked.visCellClean.size() == size_t(n);
+		if (flagsOk) {
+			// Both cells touching the wall (bases at the ±0.25 and the
+			// 0.25/0.75 pair) are NOT clean; the far cell (bases
+			// 1.75/2.25, min obstacle 1.7 m > 1.35 spacing units) is.
+			// NOT the last x voxel — its forward cell doesn't exist
+			// and the flag stays 0 by contract.
+			const int sLeft = probeAt(-0.25f, 1.5f, 0.0f);
+			const int sRight = probeAt(0.25f, 1.5f, 0.0f);
+			const int farCell = probeAt(1.75f, 1.5f, 0.0f);
+			flagsOk = sLeft >= 0 && sRight >= 0 && farCell >= 0
+				&& !baked.visCellClean[size_t(sLeft)]
+				&& !baked.visCellClean[size_t(sRight)]
+				&& baked.visCellClean[size_t(farCell)];
+		}
+		Check(flagsOk, "GI volume wall-scene clean flags");
+		glm::vec3 amps[kSgLobeCount];
+		Check(baked.Sample(glm::vec3(1.25f, 1.5f, 0.0f), amps),
+			"GI volume wall-scene far sample covered");
+		(void)amps; // the photometric content is zero by construction
 	}
 	// ---- Bake: floor-plane scene (bounce radiance over geometry) ----
 	{
@@ -2140,7 +2325,7 @@ void TestGiMalformedScene() {
 	}
 }
 
-// .sglm roundtrip: v2 writes the section as segmented LZ4 (a 16M-texel
+// .sglm roundtrip: the writer stores the section as segmented LZ4 (a 16M-texel
 // atlas packs ~1.2 GB, over the single-block codec's kMaxBlobBytes cap
 // — the failure that killed the first night bistro cook), and the
 // reader keeps v1 single-block files alive.
@@ -2204,76 +2389,9 @@ void TestLightmapAtlasRoundtrip() {
 	Check(a.WriteFile(tmp.string(), err), "sglm write");
 	SgLightmapAtlas b;
 	Check(SgLightmapAtlas::ReadFile(tmp.string(), b, err), "sglm read");
-	Check(payloadClose(a, b), "sglm v2 roundtrip equal");
+	Check(payloadClose(a, b), "sglm roundtrip equal");
 
-	// v1 back-compat: hand-build the legacy single-block layout
-	// (version 1, compressed 1) from the same section bytes.
-	{
-		std::vector<uint8_t> section;
-		auto putU32 = [&](uint32_t v) {
-			uint8_t b4[4];
-			std::memcpy(b4, &v, 4);
-			section.insert(section.end(), b4, b4 + 4);
-		};
-		auto putF32 = [&](float v) {
-			uint8_t b4[4];
-			std::memcpy(b4, &v, 4);
-			section.insert(section.end(), b4, b4 + 4);
-		};
-		for (uint32_t ci = 0; ci < 2; ++ci) {
-			const SgLightmapChunk& c = a.chunks[ci];
-			putU32(c.lobeCount);
-			putU32(c.meshKey);
-			putF32(c.rectMin[0]);
-			putF32(c.rectMin[1]);
-			putF32(c.rectMax[0]);
-			putF32(c.rectMax[1]);
-		}
-		for (uint32_t ci = 0; ci < 2; ++ci) {
-			const SgLightmapChunk& c = a.chunks[ci];
-			const auto& p = a.payloads[ci];
-			putU32(p.width);
-			putU32(p.height);
-			const size_t texels = size_t(p.width) * p.height;
-			section.resize(section.size() + texels * kLightmapMaxLobes * 6, 0);
-			uint16_t* dst = reinterpret_cast<uint16_t*>(
-				section.data() + section.size() - texels * kLightmapMaxLobes * 6);
-			for (size_t i = 0; i < texels; ++i)
-				for (uint32_t l = 0; l < c.lobeCount; ++l) {
-					const glm::vec3& v = p.coeffs[i * c.lobeCount + l];
-					dst[(i * kLightmapMaxLobes + l) * 3 + 0] = PackHalf(v.r);
-					dst[(i * kLightmapMaxLobes + l) * 3 + 1] = PackHalf(v.g);
-					dst[(i * kLightmapMaxLobes + l) * 3 + 2] = PackHalf(v.b);
-				}
-		}
-		std::vector<uint8_t> comp;
-		Check(smvk::Lz4Compress(std::span<const uint8_t>(section), comp, 1),
-			"sglm v1 fixture compress");
-		struct Hdr {
-			char magic[4];
-			uint32_t version, w, h, chunks, payload, comp;
-		};
-		static_assert(sizeof(Hdr) == 28);
-		Hdr h{};
-		std::memcpy(h.magic, "SGLM", 4);
-		h.version = 1;
-		h.w = a.width;
-		h.h = a.height;
-		h.chunks = uint32_t(a.chunks.size());
-		h.payload = uint32_t(section.size());
-		h.comp = 1;
-		std::vector<uint8_t> file(sizeof(h) + comp.size());
-		std::memcpy(file.data(), &h, sizeof(h));
-		std::memcpy(file.data() + sizeof(h), comp.data(), comp.size());
-		SgLightmapAtlas c1;
-		Check(c1.ReadFromMemory(std::span<const uint8_t>(
-				file.data(), file.size()), err), "sglm v1 read");
-		if (!err.empty())
-			std::cout << "  sglm v1 err: " << err << "\n";
-		Check(payloadClose(a, c1), "sglm v1 back-compat equal");
-	}
-
-	// v3 BC6H (bc6hopt): compress -> write -> read keeps the block
+	// BC6H (bc6hopt): compress -> write -> read keeps the block
 	// payload verbatim, reconstructs the chunk payloads from the blocks
 	// EXACTLY as a direct decode would (the read path must not re-derive
 	// anything), and the decoded content tracks the fixture coarsely
@@ -2286,15 +2404,15 @@ void TestLightmapAtlasRoundtrip() {
 			&& a.bc6hBlocks.size()
 				== size_t(a.width / 4) * (a.height / 4) * 16 * 12,
 			"sglm bc6h layout");
-		Check(a.WriteFile(tmp.string(), err), "sglm v3 write");
+		Check(a.WriteFile(tmp.string(), err), "sglm bc6h write");
 		SgLightmapAtlas d;
 		Check(SgLightmapAtlas::ReadFile(tmp.string(), d, err),
-			"sglm v3 read");
+			"sglm bc6h read");
 		Check(d.compression == SgLightmapCompression::Bc6HOpt
 			&& d.bc6hLobes == 12
 			&& d.bc6hBlocks == a.bc6hBlocks
 			&& d.width == a.width && d.height == a.height,
-			"sglm v3 blocks equal");
+			"sglm bc6h blocks equal");
 		// Reference decode: the read-side payloads must equal a direct
 		// block decode (no re-fitting, no re-encoding).
 		const size_t blockBytes = size_t(a.width / 4) * (a.height / 4) * 16;
@@ -2326,7 +2444,7 @@ void TestLightmapAtlasRoundtrip() {
 					}
 			}
 		}
-		Check(reconExact, "sglm v3 payload recon");
+		Check(reconExact, "sglm bc6h payload recon");
 		// Coarse content check: the decode tracks the fixture (mean
 		// relative error well under 50% despite the noisy data).
 		double errSum = 0.0;
@@ -2343,7 +2461,7 @@ void TestLightmapAtlasRoundtrip() {
 			}
 		}
 		Check(errN > 0 && errSum / double(errN) < 0.5,
-			"sglm v3 payload close");
+			"sglm bc6h payload close");
 	}
 }
 

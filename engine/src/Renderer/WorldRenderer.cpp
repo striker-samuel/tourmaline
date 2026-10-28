@@ -3429,7 +3429,39 @@ namespace engine {
 					cv.meanSlot = m_context->GetTextureBindlessIndex(cv.meanTex);
 				}
 			}
-			if (!ok)
+			// Visibility twins (PackGpuVisLayers - the through-wall
+			// rejection): 2 RGBA8_UNORM 3D textures (the 6 axis
+			// distances + the clean-cell flag). SOFT failure: a failed
+			// vis upload keeps the volume live - the slots stay
+			// UINT32_MAX and the shader treats absent vis as all-clean
+			// (the plain hardware trilerp, the pre-visibility behavior)
+			// instead of dropping the volume's GI entirely.
+			{
+				std::vector<uint8_t> visLayers[2];
+				cv.volume.PackGpuVisLayers(visLayers);
+				for (uint32_t t = 0; t < 2; ++t) {
+					smvk::ImageCreateInfo vci{};
+					vci.type = smvk::ImageType::Image3D;
+					vci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+						cv.volume.dims[2] };
+					vci.format = smvk::Format::RGBA8_UNorm;
+					vci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					vci.mipLevels = 1;
+					vci.arrayLayers = 1;
+					vci.name = "gi volume vis";
+					auto tex = m_context->CreateTexture(vci, visLayers[t].data());
+					if (tex.empty()) {
+						std::cerr << "[GIV] vis layer " << t
+							<< " creation failed - the volume keeps the"
+							<< " plain trilerp (no through-wall rejection)\n";
+						continue;
+					}
+					cv.visLayers[t] = std::move(tex);
+					cv.visSlots[t] =
+						m_context->GetTextureBindlessIndex(cv.visLayers[t]);
+				}
+			}			if (!ok)
 				continue;
 			// Coefficients are now resident on the GPU; drop the CPU copy.
 			cv.volume.coeffs.clear();
@@ -3479,16 +3511,23 @@ namespace engine {
 			// CPU-packed world->uvw lattice transform (the old shader
 			// rebuilt this from gridMin/spacing/dims per tap):
 			// uvw = saturate(pos * uvwScale + uvwBias), with the degenerate
-			// guards (dims >= 1, spacing*dims >= 1e-6) baked in.
+			// guards (dims >= 1, spacing*dims >= 1e-6) baked in. The
+			// header's spare w slots carry the GRID DIMS (the
+			// visibility tap math in SgGiVolumeSample converts uvw to
+			// lattice space: dims.x = uvwScale.w, dims.y = uvwBias.w,
+			// dims.z = aabbMax.w).
 			const glm::vec3 d = glm::max(
 				glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2]), glm::vec3(1.0f));
 			const glm::vec3 s = glm::max(
 				glm::vec3(vol.spacing) * d, glm::vec3(1e-6f));
 			const glm::vec3 scale = 1.0f / s;
 			g.uvwScale[0] = scale.x; g.uvwScale[1] = scale.y; g.uvwScale[2] = scale.z;
+			g.uvwScale[3] = d.x;
 			g.uvwBias[0] = -vol.gridMin.x * scale.x;
 			g.uvwBias[1] = -vol.gridMin.y * scale.y;
 			g.uvwBias[2] = -vol.gridMin.z * scale.z;
+			g.uvwBias[3] = d.y;
+			g.aabbMax[3] = d.z;
 			// Plane span into the shared pool, FOLDED into one ramp:
 			// t = saturate(dot(wEq.xyz, pos) + wEq.w) with
 			// wEq = (-n * fadeScale, fadeBias - d * fadeScale) - the
@@ -4060,6 +4099,11 @@ namespace engine {
 					data.giVolumeLayers[v * 7u + t] = m_giVolumes[v].layerSlots[t];
 				// Volumetric one-fetch mean slots (fog-only payload).
 				data.giVolumeMeanLayers[v] = m_giVolumes[v].meanSlot;
+				// The through-wall rejection layers (UINT32_MAX = absent ->
+				// the plain trilerp fast path).
+				for (uint32_t t = 0; t < 2; ++t)
+					data.giVolumeVisLayers[v * 2u + t] =
+						m_giVolumes[v].visSlots[t];
 			}
 			data.giVolumeCount = n;
 			data.giVolumesEnabled = ProbesWanted() ? 1u : 0u;

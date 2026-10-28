@@ -357,6 +357,37 @@ int AnalyzeGiVolume(const std::string& path) {
 	}
 	tool::out() << "  meanLum=" << (n ? sum / double(n) : 0.0)
 		<< " maxLum=" << mx << " nanVoxels=" << nanV << "\n";
+	// The visibility bake (v2): blocked voxels (all 6 axis distances
+	// zero — the inside-solid set the runtime factor rejects), the
+	// mean per-axis obstacle distance (spacing units; the cap = open),
+	// and the clean-cell fast-path coverage. Absent vis (a
+	// pre-visibility bake / a hand-built file) prints "none".
+	if (vol.vis.size() == size_t(n) * 6 && n > 0) {
+		uint64_t blocked = 0, cleanCells = 0;
+		double distSum = 0.0;
+		for (uint64_t v = 0; v < n; ++v) {
+			bool blk = true;
+			for (uint32_t k = 0; k < 6; ++k) {
+				const float d = vol.vis[size_t(v) * 6 + k];
+				distSum += d;
+				if (d > 1e-4f)
+					blk = false;
+			}
+			if (blk)
+				++blocked;
+		}
+		if (vol.visCellClean.size() == size_t(n))
+			for (uint64_t v = 0; v < n; ++v)
+				if (vol.visCellClean[size_t(v)])
+					++cleanCells;
+		tool::out() << "  vis: blocked=" << blocked << "/" << n
+			<< " meanDist=" << (distSum / (double(n) * 6.0))
+			<< "m cleanCells=" << cleanCells << "\n";
+	}
+	else {
+		tool::out() << "  vis: none (the pre-visibility format — no"
+			<< " through-wall rejection)\n";
+	}
 	// Neighbor variation per axis: the field's own high-frequency
 	// content (the trilerp exposes exactly this at runtime). High
 	// values here read as a mask/texture pattern on every surface.

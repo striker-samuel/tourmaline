@@ -738,7 +738,15 @@ struct FrameUniforms
 	// first). APPEND-ONLY tail: every pinned offset above stays put. ----
 	uint64_t worldFields = 0;      // 1976 field/page-table BDA (0 = off)
 	uint32_t worldFieldCount = 0;  // 1984 live GPU fields
-	uint32_t worldFieldsPad_ = 0; // 1988 (16-align tail; struct ends 2000)
+	uint32_t worldFieldsPad_ = 0; // 1988 (16-align tail; struct was 1992)
+	// ---- GI-volume VISIBILITY layers (the through-wall rejection —
+	// SgGiVolumeSample in sg_gi_volume.hlsli): 2 RGBA8_UNORM 3D
+	// textures per volume (visA = +x,-x,+y,-y obstacle distances; visB
+	// = +z,-z, the forward-cell clean flag, spare — unorm8 over [0,15]
+	// spacing units). UINT32_MAX = absent (the pre-visibility behavior:
+	// the plain hardware trilerp). APPEND-ONLY tail (after
+	// worldFieldsPad_): every pinned offset above stays put. ----
+	uint32_t giVolumeVisLayers[16] = {}; // 1992 8 volumes x 2 vis slots
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -794,7 +802,8 @@ static_assert(offsetof(FrameUniforms, lmLayerKind) == 1940, "lmLayerKind offset:
 // the shared sampler reads.
 static_assert(offsetof(FrameUniforms, worldFields) == 1976, "worldFields offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, worldFieldCount) == 1984, "worldFieldCount offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 2000, "FrameUniforms size: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeVisLayers) == 1992, "giVolumeVisLayers offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 2064, "FrameUniforms size: HLSL mirror (2056 of fields + the 16-align tail pad)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -2531,11 +2540,20 @@ public:
 		smvk::gi::GiVolume volume;       // CPU mirror (def; coeffs freed)
 		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
 		uint32_t layerSlots[7] = {};    // bindless slots
-		// Isotropic-mean twin (the volumetric fog's one-fetch path ΓÇö
+		// Isotropic-mean twin (the volumetric fog's one-fetch path —
 		// PackGpuMeanLayer): created under the same failure discipline
 		// as the 7 layers (a volume publishes only with all 8 up).
 		smvk::Holder<smvk::TextureHandle> meanTex;
 		uint32_t meanSlot = UINT32_MAX; // bindless slot
+		// Visibility twins (PackGpuVisLayers — the through-wall
+		// rejection): 2 RGBA8_UNORM 3D textures (the 6 axis distances +
+		// the clean-cell flag). SOFT against the failure discipline:
+		// failed vis layers publish with UINT32_MAX slots — the shader
+		// treats absent vis as all-clean (the plain hardware trilerp,
+		// the pre-visibility behavior) instead of dropping the volume's
+		// GI entirely.
+		smvk::Holder<smvk::TextureHandle> visLayers[2];
+		uint32_t visSlots[2] = { UINT32_MAX, UINT32_MAX };
 	};
 	std::vector<GiVolumeResources> m_giVolumes;
 	smvk::Holder<smvk::BufferHandle> m_giVolumesBuffer;

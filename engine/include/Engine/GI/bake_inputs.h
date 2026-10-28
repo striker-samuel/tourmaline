@@ -193,11 +193,12 @@ std::vector<CellId> RecordCaptureReach(const GiTraceScene& trace,
 
 // The .reach sidecar (the manifest-adjacent bake bookkeeping, named
 // from the BOUND set uuid — not a stem guess): the per-capture recorded
-// cell id lists. Binary: magic + version + per capture (rowIndex, count,
+// cell id lists. Binary: magic + per capture (rowIndex, count,
 // cell ids). Empty rows are legal (a capture that sees nothing move).
+// NO VERSION SCHEME (the repo data rule) - the magic is the identity;
+// the old versioned layout refused at the magic, re-record.
 struct CaptureReachFile {
-	static constexpr uint32_t kMagic = 0x52454143u; // 'REAC'
-	static constexpr uint32_t kVersion = 1;
+	static constexpr uint32_t kMagic = 0x52454158u; // 'REAX'
 	struct Entry {
 		uint32_t rowIndex = 0;
 		std::vector<CellId> cells;

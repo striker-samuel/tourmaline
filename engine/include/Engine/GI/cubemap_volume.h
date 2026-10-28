@@ -165,16 +165,55 @@ public:
 	// SgRegularVolume layout, shared by the GPU packer below.
 	std::vector<glm::vec3> coeffs;
 
+	// ---- Per-voxel 6-axis visibility (the through-wall rejection
+	// data) ----
+	// 6 obstacle distances per voxel, measured from the voxel center
+	// along the lattice axes, order +x,-x,+y,-y,+z,-z, in METERS,
+	// capped at the bake's visibilityMaxDistance (a miss = the cap =
+	// "open"). 0 = BLOCKED (the probe is inside solid geometry — every
+	// runtime tap whose offset exceeds the slack rejects, so
+	// inside-solid texels never contribute). This is the dense-grid
+	// rebirth of the retired .sggi octree's 6-axis probe visibility
+	// (the wall-awareness the octree walker used to reject through-wall
+	// probes — SgGiVisibilityFactor; the runtime twin is
+	// SgGiVolumeVisFactor in sg_gi_volume.hlsli, and the bake's
+	// dilation/smoothing gates below consume the same data). EMPTY
+	// (a hand-built volume, or the pre-visibility bakes) = "no
+	// rejection": PackGpuVisLayers materializes all-open distances +
+	// all-clean flags, and Sample degenerates to the plain trilerp —
+	// exactly the pre-visibility behavior.
+	std::vector<float> vis; // 6 per voxel (meters; empty = open)
+	// Per-voxel fast-path flag: 1 = the FORWARD cell (this voxel ..
+	// +1 per axis) is CLEAN — every corner's every axis distance
+	// >= 1.35 spacing units (the max in-cell tap offset along an axis
+	// is 1 spacing; rejection starts at dist+0.35), so no tap can
+	// reject and the hardware trilerp IS the visibility-weighted
+	// blend. The shader point-fetches it at the cell's base corner
+	// and takes the 7-fetch hardware path when set. Baked once;
+	// empty = all clean (paired with the open-vis default above).
+	std::vector<uint8_t> visCellClean;
+
 	uint64_t VoxelCount() const;
 	void Resize(); // allocate coeffs per dims (zeroed)
 
-	// Trilinear coefficient interpolation (CPU mirror of the hardware
-	// filtered 3D-texture path). Returns false outside the AABB.
+	// Visibility-weighted trilinear interpolation — the CPU MIRROR of
+	// the runtime path (SgGiVolumeSample: each of the 8 cell corners
+	// is weighted by its 6-axis obstacle distances vs the tap offset,
+	// the renormalized sum replaces the plain trilerp; absent vis =
+	// the plain trilerp). Returns false outside the AABB.
 	bool Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const;
 
 	// 7 RGBA16F 3D-texture payloads, byte-identical layout to
 	// SgRegularVolume::PackGpuLayers (matches SgRegularUnpack).
 	void PackGpuLayers(std::vector<uint16_t> out[7]) const;
+	// 2 RGBA8_UNORM 3D-texture payloads — the visibility data
+	// (visA = +x,-x,+y,-y; visB = +z,-z,cellClean,spare), each axis
+	// distance quantized unorm8 over [0, 15] SPACING UNITS (15 units
+	// is beyond any in-cell tap offset ~1.7, so the top of the range
+	// reads as fully open; ~3 cm granularity at 0.5 m spacing — the
+	// rejection ramp is 0.25*dist, an order coarser). Absent vis packs
+	// all-open + all-clean = the no-rejection contract above.
+	void PackGpuVisLayers(std::vector<uint8_t> out[2]) const;
 	// Isotropic-mean payload (the volumetric fog's one-fetch-per-volume
 	// path — SgGiVolumeSampleMean / sg_gi_volume.hlsli, consumed through the
 	// ray-space composite SgGiVolumeRayComposite): one RGBA16F texel per
@@ -183,7 +222,7 @@ public:
 	// unpack + lobe-sum path computes, at 1/7 the fetches and none of
 	// the lobe-array register pressure.
 	void PackGpuMeanLayer(std::vector<uint16_t>& out) const;
-	size_t GpuBytes() const; // 56 B/voxel resident
+	size_t GpuBytes() const; // 64 B/voxel resident (56 + 2 vis layers)
 
 	bool WriteFile(const std::string& path, std::string& err) const;
 	// Same bytes as WriteFile (header + LZ4 half payload), into memory —
@@ -219,6 +258,12 @@ struct GiVolumeBakeConfig {
 	float smoothingLambda = 0.4f; // per-pass step (0..1)
 	float probeMinClearance = 0.05f;  // probe validity (m, to geometry)
 	float captureMinClearance = 0.10f; // INERT (was capture validity)
+	// 6-axis visibility cap (m): obstacle distances record at
+	// min(hitT, cap); a miss records the cap = "open". The oct-bake
+	// parity value (2.5 m comfortably exceeds any in-cell tap offset —
+	// spacing*sqrt(3) — so "capped" reads as fully open to the runtime
+	// factor).
+	float visibilityMaxDistance = 2.5f;
 	uint32_t threadCount = 0;     // 0 = hardware concurrency
 	uint32_t seed = 1;
 };

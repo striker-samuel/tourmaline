@@ -116,19 +116,144 @@ uint SgGiVolumeTileMask(FrameUniforms frame, float2 pix)
     return frame.giVolumeTileMasks.Get().masks[tileIdx] & all;
 }
 
-// Samples one volume's dense grid at world pos: 7 hardware-trilinear
-// 3D reads + the shared 27-half unpack. uvw = saturate(pos * uvwScale +
-// uvwBias) — the CPU packed the lattice transform (dims/spacing/origin
-// are load-time invariants; the shader used to rebuild them per tap).
-// The layer index rides a wave-UNIFORM loop counter here (never a
-// per-pixel value like the old full-owner index), so the plain bindless
-// index keeps the descriptor fetch scalar — no NonUniformResourceIndex
-// divergence on the taps.
+// ---- Through-wall rejection (the visibility bake) ----
+// The dense-grid rebirth of the retired .sggi octree's per-probe
+// 6-axis wall-awareness (SgGiVisibilityFactor): each cell corner's 6
+// obstacle distances (spacing units, [0, 15] full-scale unorm8 —
+// PackGpuVisLayers) gate that corner's tap by the tap OFFSET projected
+// on each axis. dist 0 = BLOCKED (the probe is inside solid); the
+// 0.35-spacing-unit slack keeps a point AT an obstacle surface reading
+// its own surface probe (the surface we shade lives at the recorded
+// distance); the rejection ramps to zero over a 25%-of-dist margin so
+// thin obstacles do not nuke open-air coverage. Per-axis product — the
+// CPU twin is GiVolume::Sample; the bake's same-side gates
+// (mutuallyOpen) use the SAME slack (0.35 spacing — keep in sync).
+float SgGiVolumeVisAxis(float along, float dist)
+{
+    // dist = 0 = obstacle at distance 0 (blocked); a miss at bake time
+    // records the cap, which no in-cell offset can exceed = open.
+    [branch]
+    if (along > dist + 0.35)
+        return max(0.0, 1.0 - (along - dist - 0.35) / (0.25 * dist + 0.02));
+    return 1.0;
+}
+
+float SgGiVolumeVisFactor(float3 dRel, float4 visA, float4 visB)
+{
+    // visA = +x,-x,+y,-y; visB = +z,-z (the .zw tail is the flag pool).
+    // dRel is the tap offset in SPACING UNITS (pos - corner, /spacing).
+    const float kFull = 15.0;
+    float w = 1.0;
+    w *= SgGiVolumeVisAxis(+dRel.x, visA.x * kFull);
+    w *= SgGiVolumeVisAxis(-dRel.x, visA.y * kFull);
+    w *= SgGiVolumeVisAxis(+dRel.y, visA.z * kFull);
+    w *= SgGiVolumeVisAxis(-dRel.y, visA.w * kFull);
+    w *= SgGiVolumeVisAxis(+dRel.z, visB.x * kFull);
+    w *= SgGiVolumeVisAxis(-dRel.z, visB.y * kFull);
+    return w;
+}
+
+// Samples one volume's dense grid at world pos. Two paths:
+//  - FAST (the common cell): the bake's per-voxel clean flag
+//    (visB.b, point-fetched at the cell's base corner) proves every
+//    corner of this cell sees every in-cell point — no tap can reject,
+//    so the plain 7-fetch hardware trilerp below IS the
+//    visibility-weighted blend. Absent vis layers (a pre-visibility
+//    bake / a failed vis upload) also take this path — the
+//    no-rejection contract, exactly the old behavior.
+//  - WEIGHTED (cells near geometry): the 8 corners each weighted by
+//    VisFactor(offset, that corner's distances) x the trilerp weight,
+//    renormalized; surviving corners fetch their 7 lobe layers
+//    point-sampled. ~72 loads in the wall band only — the clean cells
+//    around it stay at 8.
+// uvw = saturate(pos * uvwScale + uvwBias) — the CPU packed the
+// lattice transform; the grid dims ride the header's spare w slots
+// (dims.x = uvwScale.w, dims.y = uvwBias.w, dims.z = aabbMax.w) so the
+// lattice-space math below needs no extra fields. The layer index
+// rides a wave-UNIFORM loop counter (never a per-pixel value), so the
+// plain bindless index keeps the descriptor fetch scalar — no
+// NonUniformResourceIndex divergence on the taps.
 void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     out float3 amps[SG_GI_LOBES])
 {
     const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+
+    // ---- the cell + the clean-flag fast path ----
+    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    if (visSlotB != 0xffffffffu)
+    {
+        // Lattice coords: rel = uvw * dims, the voxel-center
+        // convention (texel c's center at uvw (c+0.5)/dims); the
+        // sample's cell = [b, b+1]^3, b = floor(rel - 0.5) clamped to
+        // dims-2; f = the in-cell fraction (the trilerp weights).
+        const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+        const float3 rel = uvw * dims;
+        const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+        // The forward cell's clean bit rides voxel b's visB.b channel
+        // (Load = OpImageFetch, the exact-texel read the vis math
+        // needs — no sampler filtering; DXC's Texture3D Load takes an
+        // int4 = xyz + the mip slot 0).
+        if (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5)
+        {
+            const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
+            const float3 f = saturate(rel - 0.5 - float3(b));
+            float3 acc[SG_GI_LOBES] = { float3(0, 0, 0), float3(0, 0, 0),
+                float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
+                float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
+                float3(0, 0, 0) };
+            float wSum = 0.0;
+            [unroll]
+            for (uint c = 0; c < 8; ++c)
+            {
+                const int3 cc = int3(b) + int3(c & 1 ? 1 : 0,
+                    c & 2 ? 1 : 0, c & 4 ? 1 : 0);
+                const float3 dRel = rel - (float3(cc) + 0.5);
+                const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+                const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+                const float wv = SgGiVolumeVisFactor(dRel, visA, visB);
+                if (wv <= 0.0)
+                    continue; // this corner is across a wall: rejected
+                const float3 t3 = float3(c & 1 ? f.x : 1.0 - f.x,
+                    c & 2 ? f.y : 1.0 - f.y, c & 4 ? f.z : 1.0 - f.z);
+                const float wt = wv * (t3.x * t3.y * t3.z);
+                if (wt <= 0.0)
+                    continue;
+                float4 layers[SG_GI_VOLUME_LAYERS];
+                [unroll]
+                for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
+                    layers[t] = volumeTextures[
+                        frame.giVolumeLayers[vol * 7u + t]]
+                        .Load(int4(cc, 0));
+                float3 corner[SG_GI_LOBES];
+                SgRegularUnpack(layers, corner);
+                [unroll]
+                for (uint l = 0; l < SG_GI_LOBES; ++l)
+                    acc[l] += corner[l] * wt;
+                wSum += wt;
+            }
+            if (wSum > 1e-4)
+            {
+                [unroll]
+                for (uint l = 0; l < SG_GI_LOBES; ++l)
+                    amps[l] = acc[l] / wSum;
+            }
+            else
+            {
+                // All 8 corners blocked (a point deep inside a wall —
+                // no visible pixel should land here): read zero; the
+                // hull weight still owns the pixel and zero beats the
+                // old both-sides blend (the leak).
+                [unroll]
+                for (uint l = 0; l < SG_GI_LOBES; ++l)
+                    amps[l] = float3(0.0, 0.0, 0.0);
+            }
+            return;
+        }
+    }
+
+    // FAST PATH: the 7 hardware-trilinear 3D reads + the shared
+    // 27-half unpack (the cell is clean — or no vis data: same shape).
     float4 layers[SG_GI_VOLUME_LAYERS];
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)

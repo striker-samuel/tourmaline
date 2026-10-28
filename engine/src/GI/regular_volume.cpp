@@ -21,12 +21,14 @@ namespace smvk::gi {
 
 namespace {
 
-constexpr uint32_t kSgrvVersion = 1;
+// File format: NO VERSION SCHEME (the repo data rule) - the MAGIC is
+// the identity ("RGVL" = the regular SG probe lattice; the old "SGRV"
+// era refused at the magic when the header changed - re-bake, no
+// conversions).
 constexpr float kPi = 3.14159265358979323846f;
 
 struct SgrvFileHeader {
-	char magic[4] = { 'S', 'G', 'R', 'V' };
-	uint32_t version = kSgrvVersion;
+	char magic[4] = { 'R', 'G', 'V', 'L' };
 	uint32_t dims[3] = {};
 	uint32_t lobeCount = kSgLobeCount;
 	float sharpness = kSgSharpness;
@@ -36,7 +38,7 @@ struct SgrvFileHeader {
 	uint32_t payloadBytes = 0; // uncompressed size
 	uint32_t compressed = 0;   // 1 = LZ4 block
 };
-static_assert(sizeof(SgrvFileHeader) == 4 + 4 * 5 + 4 + 12 + 36 + 12 + 4 * 2);
+static_assert(sizeof(SgrvFileHeader) == 92);
 
 inline float Luminance(const glm::vec3& c) {
 	return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
@@ -210,12 +212,8 @@ bool SgRegularVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string
 		return false;
 	}
 	std::memcpy(&hdr, bytes.data(), sizeof(hdr));
-	if (std::memcmp(hdr.magic, "SGRV", 4) != 0) {
+	if (std::memcmp(hdr.magic, "RGVL", 4) != 0) {
 		err = "sgrv: bad magic";
-		return false;
-	}
-	if (hdr.version != kSgrvVersion) {
-		err = "sgrv: unsupported version " + std::to_string(hdr.version);
 		return false;
 	}
 	if (hdr.lobeCount != kSgLobeCount || hdr.sharpness != kSgSharpness) {
