@@ -75,8 +75,11 @@ $env:TOURMALINE_CAPTURE='48'
 - `TOURMALINE_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
   (scene fog settings lose); `TOURMALINE_VOLUMETRIC_STEPS=<4..128>` pins the
   march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_GI_VOLUMES=0` is the
-  fog-GI quality bypass (octree/sky only, no convex-volume walk per GI
-  refresh) — pairs with `TOURMALINE_VOLUMETRIC` for pure-octree fog cost A/B
+  fog-GI quality bypass (NO convex-volume walks — the world-field/sky fog-GI
+  base still samples; only the volume composite is skipped — pairs with
+  `TOURMALINE_VOLUMETRIC` for volume-walk cost A/B); `TOURMALINE_FOG_GI_DEBUG=2`
+  is the transmittance view (throughput as grayscale — the optical-density
+  diagnostic: white = no extinction, black = complete)
 - `TOURMALINE_PROBE_PREMIX=0|1` pins the Remember Me probe pre-mix
   (docs/probe_premix_plan.md; default on): `1` = the per-frame GPU weights
   + mix passes (a blended cubemap + a GPU-owned selection; the material

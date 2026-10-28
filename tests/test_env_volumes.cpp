@@ -400,6 +400,56 @@ int main() {
 			Check(out.valid && out.record == 0 && out.weight == 1.0f,
 				"envtile.out-of-grid-base");
 		}
+
+		// AnyVolumetricFog (the volOn gates' zone-density leg + the
+		// shader's envZoneFlags bit1 source — the scan that keeps the
+		// volumetric pass marching at ZERO pass density whenever the
+		// env table authors fog): only a record's ABSOLUTE
+		// volumetricDensity counts; the base record carries the scene
+		// env's own (SceneEnv's 0.015 default), so a default-constructed
+		// env already authors fog.
+		{
+			// The pure-base bake (no node zones): the base record's
+			// 0.015 default alone makes the scan true.
+			{
+				::Scene s;
+				WorldEnvTiles t;
+				Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+					"envtile.fogscan-base-build");
+				Check(t.AnyVolumetricFog(),
+					"envtile.fogscan-base-authored (the base record carries the scene env's volumetrics)");
+			}
+			// NO fog authored anywhere (the base env zeroed + every zone
+			// zeroed): the zone tables cannot raise extinction from a
+			// zero pass density — the scan is false.
+			{
+				::Scene s;
+				s.defaultEnvironment.volumetricDensity = 0.0f;
+				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
+					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
+				s.envForNode[z].volumetricDensity = 0.0f;
+				WorldEnvTiles t;
+				Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+					"envtile.fogscan-none-build");
+				Check(!t.AnyVolumetricFog(),
+					"envtile.fogscan-none (no fog authored anywhere)");
+			}
+			// ONE node zone authoring absolute volumetricDensity: the
+			// scan is true — the zone raises extinction from a zero
+			// pass density (the review's zone-fog gate case).
+			{
+				::Scene s;
+				s.defaultEnvironment.volumetricDensity = 0.0f;
+				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
+					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
+				s.envForNode[z].volumetricDensity = 0.02f;
+				WorldEnvTiles t;
+				Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+					"envtile.fogscan-zone-build");
+				Check(t.AnyVolumetricFog(),
+					"envtile.fogscan-zone-authored (a node zone's absolute density)");
+			}
+		}
 		// The grid EXTENT contract (ComputeEnvGridExtent — the review's
 		// finding: mesh-only bounds left volumes outside the grid, their
 		// look silently reverting to the base record outside it).

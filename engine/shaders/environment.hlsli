@@ -656,6 +656,138 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     return w > 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// The per-segment zone resolver (the volumetric march's TILE CACHE).
+// EnvZoneAt's full walk — cell fetch, vertical band pick, record fetch,
+// unpack — memoized on the (XZ cell, record) pair: the CELL re-reads only
+// when the march crosses a 64 m tile boundary, the RECORD only when the
+// vertical band changes (y crossing splitY / midHiY) or the pick moves to
+// a different record. A 64-step march through one room costs ONE cell
+// fetch + ONE record fetch; the segments between reuse the resolve — the
+// buffers are NOT re-walked at every step. (rec, weight) are paired per
+// band per cell (the weight rides the same cell+band slot as the record),
+// so one comparison gates both refetches.
+//
+// WHY PER SEGMENT (the review's finding): the old march resolved the zone
+// ONCE at the camera ray's midpoint and used that single density for the
+// whole sightline. A ray through two zones took the middle zone's
+// density for the full length; a NEAR WALL changed the midpoint — a
+// scene-depth-dependent zone pick that changed with the view without
+// the camera moving. Per-segment resolution makes each segment's
+// extinction its own zone's.
+// ---------------------------------------------------------------------------
+static const int2 kEnvZoneCellOutOfGrid = int2(0x7fffffff, 0x7fffffff);
+
+struct EnvZoneMarchCache
+{
+    int2 cell;          // the cached XZ tile key (kEnvZoneCellOutOfGrid = out of grid)
+    EnvTileCell c;      // the cell content (the vertical pick source)
+    uint rec;           // the cached record pick (0xFFFFFFFF = none yet)
+    float weight;       // the cached blend weight (paired with the pick)
+    EnvZoneLook look;   // the cached unpacked record
+    bool usable;        // the cached serve is valid (w > 0, rec < count)
+    bool live;          // at least one resolve happened
+};
+
+// Resolves the zone at p through the cache; same semantics as EnvZoneAt
+// (false = the plain path, weight 0 — the caller keeps the pass base).
+bool EnvZoneSegment(float3 p, FrameUniforms frame,
+    inout EnvZoneMarchCache cache, out float weight, out EnvZoneLook z)
+{
+    weight = 0.0;
+    z.skyTint = float3(1.0, 1.0, 1.0);
+    z.ambientI = 0.0;
+    z.fogColor = float3(0.0, 0.0, 0.0);
+    z.fogDensity = 0.0;
+    z.volumetrics = 1.0;
+    z.volumetricDensity = 0.0;
+    const uint n = frame.envZoneCount;
+    if (n == 0u || (frame.envZoneFlags & 1u) == 0u)
+        return false; // the caller hoists this; the belt+braces re-check
+
+    // The XZ tile key. Out of grid canonicalizes to ONE sentinel cell so
+    // the base-record-at-weight-1 state (EnvZoneAt's zone-zero semantic)
+    // caches like any other — the synthesized cell is a no-split
+    // lower=upper=record-0 column and the pick below flows through the
+    // common path with no special cases.
+    const float2 rel = (p.xz - float2(frame.envTileMinX, frame.envTileMinZ))
+        / 64.0;
+    const int2 cellI = int2(floor(rel));
+    int2 cellKey = cellI;
+    if (any(cellI < int2(0, 0))
+        || any(cellI >= int2(frame.envTileDimX, frame.envTileDimZ)))
+        cellKey = kEnvZoneCellOutOfGrid;
+
+    // CELL level: re-read the cell only at a tile-key change.
+    if (!cache.live || all(cache.cell != cellKey))
+    {
+        if (all(cellKey == kEnvZoneCellOutOfGrid))
+        {
+            // Out of grid: the BASE record at weight 1 (the zone-zero
+            // semantic — same as EnvZoneAt).
+            cache.c.lowerRecord = 0u;
+            cache.c.upperRecord = 0u;
+            cache.c.splitY = -3.402823466e+38f;
+            cache.c.lowerWeight = 1.0;
+            cache.c.upperWeight = 1.0;
+            cache.c.midRecord = 0xFFFFFFFFu;
+            cache.c.midHiY = -3.402823466e+38f;
+            cache.c.midWeight = 0.0;
+        }
+        else
+        {
+            cache.c = vk::BufferPointer<EnvTileCell>(
+                frame.envTileCells
+                + uint64_t(uint(cellI.y) * frame.envTileDimX
+                    + uint(cellI.x)) * 32u
+            ).Get();
+        }
+        cache.cell = cellKey;
+        cache.live = true;
+    }
+
+    // The vertical band pick (cheap branches off the CACHED cell — y
+    // crossing splitY/midHiY inside one tile changes the record; the
+    // same pick order as EnvZoneAt: mid band first, then the half
+    // spaces).
+    uint rec; float w;
+    if (cache.c.midRecord != 0xFFFFFFFFu
+        && p.y >= cache.c.splitY && p.y <= cache.c.midHiY) {
+        rec = cache.c.midRecord;
+        w = cache.c.midWeight;
+    } else if (p.y > cache.c.splitY) {
+        rec = cache.c.upperRecord;
+        w = cache.c.upperWeight;
+    } else {
+        rec = cache.c.lowerRecord;
+        w = cache.c.lowerWeight;
+    }
+
+    // RECORD level: re-read only when the pick (or its paired weight —
+    // an adjacent tile of the same zone at a different falloff sample)
+    // changes. A stale/corrupt index (rec >= n) caches as unusable for
+    // the cell — never garbage, never a re-fetch storm.
+    if (rec != cache.rec || w != cache.weight)
+    {
+        cache.rec = rec;
+        cache.weight = w;
+        if (rec < n)
+        {
+            const EnvTileRecord r = vk::BufferPointer<EnvTileRecord>(
+                frame.envZones + uint64_t(rec) * 48u).Get();
+            EnvTileUnpack(r, cache.look);
+            cache.usable = w > 0.0;
+        }
+        else
+        {
+            cache.usable = false;
+        }
+    }
+    weight = cache.weight;
+    z = cache.look;
+    return cache.usable;
+}
+
 // Zone-tinted + zone-intensity ambient irradiance for N (the
 // EvaluateIrradiance shape with the zone's skyTint applied to the env
 // colors and its ambientI scaling the result). Honors the IBL flag like

@@ -150,6 +150,19 @@ public:
 	// ---- pointer + count accessors (the FrameUniforms publication) ----
 	const EnvTileRecord* Records() const { return records_.data(); }
 	uint32_t RecordCount() const { return recordCount_; }
+	// Zone-authored volumetric fog present: ANY live record (the base
+	// [0] included — it carries the scene env's own volumetrics pair)
+	// with a positive ABSOLUTE volumetricDensity. Only the absolute
+	// density can raise extinction from a zero pass density (the
+	// volOn gates' zone leg + the shader's zone early-out bit — the
+	// pair must stay in sync); the volumetrics RATIO alone is
+	// multiplicative over the pass intensity the gates already require
+	// positive, so a ratio-only record with no density anywhere
+	// contributes nothing. The base record's density is SceneEnv's
+	// default 0.015, so a published bake virtually always passes this
+	// scan — by design: the scene env (the base block) IS a zone
+	// author, and the env table owns the look.
+	bool AnyVolumetricFog() const;
 	const EnvTileCell* Cells() const { return cells_.data(); }
 	uint32_t CellCount() const { return uint32_t(cells_.size()); }
 	glm::vec2 GridMin() const { return gridMin_; }

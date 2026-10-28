@@ -74,9 +74,12 @@ struct VolumetricDesc {
 	uint32_t useGi = 1;                   // 1 = sample SG-GI probes
 	uint32_t useSun = 1;                  // 1 = analytic sun scatter
 	uint32_t useGiVolumes = 1;             // 1 = GI volumes stack into the
-	                                       // fog GI (0 = octree/sky only ΓÇö the
-	                                       // fog-GI quality bypass; skips the
-	                                       // per-refresh volume walk entirely)
+	                                       // fog GI (0 = the quality bypass:
+	                                       // NO volume walks — the
+	                                       // world-field/sky base still
+	                                       // samples, independent sources;
+	                                       // only the convex-volume
+	                                       // composite skips)
 	float jitterStrength = 1.0f;          // 0 = off, 1 = full IGN dither
 	float heightFalloff = 0.0f;           // extra height density falloff (1/m, 0=off)
 	float heightBase = 0.0f;              // reference height (m)
@@ -146,7 +149,8 @@ struct VolumetricPush {
 	uint64_t fpLights = 0;       // ForwardPlusLight buffer (this flight)
 	uint32_t fpLightCount = 0;   // lights-only bound (probes sort after)
 	uint32_t fogMaxPerTile = 16; // fog list stride (matches the cull push)
-	uint32_t fogGiDebug = 0;     // 0 = off, 1 = the BC4 coverage debug view
+	uint32_t fogGiDebug = 0;     // 0 = off, 1 = the BC4 coverage view, 2 = the
+	                              //     transmittance view (throughput.xxx)
 };
 // 132 B of members + 4 B tail alignment (the uint64_t BDAs): the HLSL
 // push block reads through 132; the padded C++ tail is dead bytes.
@@ -369,23 +373,27 @@ struct VolumetricFog {
 		push.time = frameTime;
 		// The fog-GI A/B source toggle (TOURMALINE_FOG_GI_SOURCE):
 		// 0/unset = worldfield (the default BC6H mean field — the shader
-		// falls to the OCTREE walk when no fog-GI field is registered,
-		// so the default never loses the loaded probe GI to the
-		// subsystem being off), 1 = the legacy octree walk
-		// (SgGiSampleMean), 2 = sky-only (the floor baseline for perf
-		// A/B). Parsed once like the other env pins.
+		// falls to the sky mean wherever the field is not resident, so
+		// the default never loses the loaded probe GI to the subsystem
+		// being off), [1 RESERVED — the legacy octree walk is retired
+		// with the .sggi runtime; the value reads as the default],
+		// 2 = sky-only (the floor baseline for perf A/B). Parsed once
+		// like the other env pins.
 		push.fogGiSource = [] {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_SOURCE");
 			return e ? uint32_t(std::clamp(std::atoi(e), 0, 2)) : 0u;
 		}();
-		// The fog-GI coverage debug view (TOURMALINE_FOG_GI_DEBUG=1):
-		// the volumetric pass outputs the BC4 coverage field at each
-		// pixel's depth point as grayscale (red = no radiance brick,
-		// green = the coverage pair still streaming) — the readable map
-		// of what the fog's GI base consumes.
+		// The fog-GI coverage debug view (TOURMALINE_FOG_GI_DEBUG):
+		// 1 = the BC4 coverage field at each pixel's depth point as
+		// grayscale (red = no radiance brick, green = the coverage
+		// pair still streaming) — the readable map of what the fog's
+		// GI base consumes; 2 = the TRANSMITTANCE view (the march's
+		// surviving throughput as grayscale — the optical-density
+		// diagnostic: white = no extinction, black = complete; the
+		// review's prescribed density probe, replacing the composite).
 		push.fogGiDebug = [] {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_DEBUG");
-			return (e && std::atoi(e) == 1) ? 1u : 0u;
+			return e ? uint32_t(std::clamp(std::atoi(e), 0, 2)) : 0u;
 		}();
 
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");

@@ -4166,7 +4166,12 @@ namespace engine {
 			data.envZones = m_context->GetBufferDeviceAddress(
 				m_resources.envTileRecordsBuffer);
 			data.envZoneCount = m_envTiles.RecordCount();
-			data.envZoneFlags = 1u;
+			// bit0 = tiles live; bit1 = any record authors volumetric
+			// fog (the shader's zone early-out leg — the SAME
+			// AnyVolumetricFog scan the volOn gates read; never let
+			// the two drift).
+			data.envZoneFlags = 1u
+				| (m_envTiles.AnyVolumetricFog() ? 2u : 0u);
 			data.envTileMinX = m_envTiles.GridMin().x;
 			data.envTileMinZ = m_envTiles.GridMin().y;
 			data.envTileDimX = m_envTiles.DimX();
@@ -8543,12 +8548,16 @@ namespace engine {
 		// at the volumetric pass build below. A live world-field fog
 		// (id 0, the registration-order contract) keeps the pass running
 		// at zero ANALYTIC density — the bricks carry their own
-		// extinction (the shader's field branch sums it into sigma).
+		// extinction (the shader's field branch sums it into sigma) —
+		// and so does ZONE-authored fog (the env-tile records carry
+		// ABSOLUTE volumetricDensity; the base record holds the scene
+		// env's own).
 		if (m_world && m_world->scene.environment.fogQuality == 2) {
 			const bool volRuns = m_passes.volumetric && m_volumetricEnabled
 				&& m_viewportResources.volumetric.Valid()
 				&& (m_volumetricDensity > 0.0f
-					|| m_worldFields.GpuBinding().Valid())
+					|| m_worldFields.GpuBinding().Valid()
+					|| ZoneVolumetricFogLive())
 				&& m_volumetricIntensity > 0.0f
 				&& !DebugVisualizationActive();
 			if (!volRuns)
@@ -9776,15 +9785,16 @@ namespace engine {
 		// RUN this frame — the per-tile fog candidacy + sorted insertion
 		// in the cull is real work, not free dead stores). The SAME
 		// conditions as the volOn gate at the volumetric pass build below
-		// (pass + enabled + target valid + depth valid + density-or-field
-		// + intensity + not debug viz); computed here because the cull
-		// dispatch runs before the pass-build site.
+		// (pass + enabled + target valid + depth valid + density-or-
+		// field-or-zone-fog + intensity + not debug viz); computed here
+		// because the cull dispatch runs before the pass-build site.
 		const bool volFogListsWanted = m_passes.volumetric && m_volumetricEnabled
 			&& m_viewportResources.volumetric.Valid()
 			&& !m_viewportResources.renderDepth.logicalView.empty()
 			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
 			&& (m_volumetricDensity > 0.0f
-				|| m_worldFields.GpuBinding().Valid())
+				|| m_worldFields.GpuBinding().Valid()
+				|| ZoneVolumetricFogLive())
 			&& m_volumetricIntensity > 0.0f
 			&& !DebugVisualizationActive();
 		rfPB = bench_clk::now();
@@ -12203,10 +12213,14 @@ namespace engine {
 				&& !m_viewportResources.renderDepth.logicalView.empty()
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
 				// Zero ANALYTIC density still marches when the world-field
-				// fog is live (the bricks carry their own extinction; the
-				// shader's early-out takes the same branch).
+				// fog is live (the bricks carry their own extinction) OR
+				// when the env-zone tables author fog (the tile records
+				// carry ABSOLUTE volumetricDensity — the base record holds
+				// the scene env's own; the shader's early-out reads the
+				// same scan via envZoneFlags bit1).
 				&& (m_volumetricDensity > 0.0f
-					|| m_worldFields.GpuBinding().Valid())
+					|| m_worldFields.GpuBinding().Valid()
+					|| ZoneVolumetricFogLive())
 				&& m_volumetricIntensity > 0.0f
 				// Debug views: fog would Beer-Lambert the flat readout
 				// and add scatter on top (DebugVisualizationActive).

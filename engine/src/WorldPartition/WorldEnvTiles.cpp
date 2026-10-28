@@ -467,4 +467,21 @@ WorldEnvTiles::Lookup WorldEnvTiles::At(glm::vec3 pos) const
 	return out;
 }
 
+bool WorldEnvTiles::AnyVolumetricFog() const
+{
+	// The volOn gates' zone-density leg (see the header comment): can
+	// the zone tables raise visible extinction from a ZERO pass
+	// density? Only a record's ABSOLUTE volumetricDensity (vol.y)
+	// can — the ratio is multiplicative over the pass intensity the
+	// gates already require positive. records_ is the fixed 64-slot
+	// array; only [0, recordCount_) are live (the bake's assignment
+	// prefix — everything past it is zeroed residue).
+	if (!built_)
+		return false;
+	for (uint32_t i = 0; i < recordCount_; ++i)
+		if (records_[i].vol.y > 0.0f)
+			return true;
+	return false;
+}
+
 } // namespace engine::worldpartition

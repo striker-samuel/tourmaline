@@ -685,7 +685,11 @@ struct FrameUniforms
 	// per-pixel OBB intersection. envZones is the RAW BDA of the
 	// EnvTileRecord array (records[0] = the base/default look — the old
 	// zone-zero), envZoneCount = live records (0 = every consumer takes
-	// the plain env path), envZoneFlags bit0 = tiles live. The old
+	// the plain env path), envZoneFlags bit0 = tiles live, bit1 = ANY
+	// live record authors volumetric fog (a positive absolute
+	// volumetricDensity — the volumetric pass's zone-density gate leg;
+	// packed from WorldEnvTiles::AnyVolumetricFog, the SAME scan the
+	// CPU volOn gates read). The old
 	// reserved block is re-split IN PLACE into the tile-grid header +
 	// a shorter reserved — every pinned offset below stays put
 	// (lmLayers@1888, probe@1952, worldFields@1976).
@@ -693,7 +697,7 @@ struct FrameUniforms
 	// above stays put when this grows. ----
 	uint64_t envZones = 0;      // 1672 EnvTileRecord array BDA (raw)
 	uint32_t envZoneCount = 0;  // 1680 live records (incl. base)
-	uint32_t envZoneFlags = 0;  // 1684 bit0 = tiles live
+	uint32_t envZoneFlags = 0;  // 1684 bit0 = tiles live, bit1 = zone fog authored
 	float envTileMinX = 0.0f;   // 1688 tile-grid min corner X (m)
 	float envTileMinZ = 0.0f;   // 1692 min corner Z
 	uint32_t envTileDimX = 0;   // 1696 tiles per axis (64 m each)
@@ -1394,6 +1398,18 @@ public:
 	bool SsrEnabled() const { return m_ssrEnabled; }
 	void SetVolumetricEnabled(bool v) { m_volumetricEnabled = v; }
 	bool VolumetricEnabled() const { return m_volumetricEnabled; }
+	// Zone-authored volumetric fog is live (the env-tile bake published
+	// + any record carries ABSOLUTE volumetricDensity): the volOn
+	// gates' THIRD density leg — the zone tables can raise extinction
+	// from a zero pass density (the base record carries the scene
+	// env's own volumetrics; node zones carry theirs), exactly like
+	// the world-field leg beside it. Every volOn mirror (the pass
+	// build, the fog degrade, the fog tile-list gate) and the shader's
+	// early-out (FrameUniforms::envZoneFlags bit1) read the SAME scan
+	// (WorldEnvTiles::AnyVolumetricFog) — never let one drift.
+	[[nodiscard]] bool ZoneVolumetricFogLive() const {
+		return m_envTilesPublished && m_envTiles.AnyVolumetricFog();
+	}
 	// World voxel fields (Engine/WorldFields): renderers/passes needing
 	// CPU-side access (e.g. a wind consumer feeding physics) reach the
 	// system here; GPU consumers go through FrameUniforms::worldFields +

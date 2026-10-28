@@ -741,13 +741,17 @@ uint decalCount;                                         // 776 0 = decals off
     // runtime rework of the OBB-volume zone system): envZones is the RAW
     // BDA of the EnvTileRecord array (records[0] = the base/default look);
     // envZoneCount = live records (0 = every consumer takes the plain env
-    // path); envZoneFlags bit0 = tiles live. The old reserved block is
+    // path); envZoneFlags bit0 = tiles live, bit1 = ANY live record
+    // authors volumetric fog (a positive absolute volumetricDensity — the
+    // volumetric pass's zone-density early-out leg; packed CPU-side from
+    // the same WorldEnvTiles scan the volOn gates read). The old reserved
+    // block is
     // re-split IN PLACE into the tile-grid header + a shorter reserved —
     // every pinned offset below stays put (lmLayers@1888, probe@1952,
     // worldFields@1976). APPEND-ONLY tail. ----
     uint64_t envZones;                                           // 1672 EnvTileRecord array BDA (raw)
     uint envZoneCount;                                           // 1680 live records (incl. base)
-    uint envZoneFlags;                                           // 1684 bit0 = tiles live
+    uint envZoneFlags;                                           // 1684 bit0 = tiles live, bit1 = zone fog authored
     float envTileMinX;                                            // 1688 tile-grid min corner X (m)
     float envTileMinZ;                                            // 1692 min corner Z
     uint envTileDimX;                                             // 1696 tiles per axis (64 m each)

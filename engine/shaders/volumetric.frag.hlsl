@@ -39,7 +39,10 @@ struct VolumetricPush
     float giScale;
     uint pad0;              // was useGi (the octree probes toggle — retired with .sggi; layout tail)
     uint useSun;
-    uint useGiVolumes;     // 1 = GI volumes stack into the fog GI
+    uint useGiVolumes;     // 1 = the convex GI volumes stack into the fog
+                           //     GI (0 = the quality bypass: NO volume
+                           //     walks — the world-field/sky fog-GI base
+                           //     still samples, independent sources)
     float jitterStrength;
     float heightFalloff;
     float heightBase;
@@ -55,7 +58,10 @@ struct VolumetricPush
     vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
     uint fpLightCount;      // lights-only bound (probes sort after)
     uint fogMaxPerTile;     // fog list stride (matches the cull push)
-    uint fogGiDebug;        // 0 = off, 1 = the coverage debug view (grayscale)
+    uint fogGiDebug;        // 0 = off, 1 = the coverage debug view
+                           //     (grayscale), 2 = the TRANSMITTANCE view
+                           //     (throughput.xxx — the optical-density
+                           //     diagnostic: white = no extinction)
 };
 
 [[vk::push_constant]]
@@ -223,9 +229,17 @@ PSOut mainPS(PSIn IN)
     // registration-order contract), zero ANALYTIC density must still
     // march: the resident bricks carry their own extinction (missing
     // bricks decode to the field's 0 fallback — no contribution, no
-    // seams). Only both-zero (no field AND no analytic density) or zero
+    // seams). Env-zone fog is the same story (the review's finding):
+    // the tile records carry ABSOLUTE volumetricDensity — the base
+    // record holds the scene env's own (default 0.015), node zones
+    // hold theirs — so zero pass density must still march whenever
+    // any record authors fog (envZoneFlags bit1, packed CPU-side by
+    // the same WorldEnvTiles scan the volOn gates read). Only
+    // all-three-zero (no analytic, no field, no zone fog) or zero
     // intensity early out.
-    if ((density <= 1e-6 && frame.worldFieldCount == 0u) || intensity <= 1e-6)
+    const bool zoneFogPossible = (frame.envZoneFlags & 2u) != 0u;
+    if ((density <= 1e-6 && frame.worldFieldCount == 0u && !zoneFogPossible)
+        || intensity <= 1e-6)
     {
         OUT.outColor = float4(base, 1.0f);
         return OUT;
@@ -266,28 +280,6 @@ PSOut mainPS(PSIn IN)
         return OUT;
     }
 
-    // ---- Analytic env zones (see environment.hlsli EnvZone*): the march
-    // constants (scattering ratio + extinction density) resolve at the
-    // ray's MIDPOINT in 3D and lerp with the pass base by blendWeight *
-    // falloff. The near-weighted segment distribution concentrates samples
-    // in the first meters, so the midpoint reads as the pixel's fog; a
-    // zone with volumetrics 0 drives the blend to 0 and the march
-    // degenerates to pass-through (the composite returns base). ----
-    {
-        float zoneWeight = 0.0;
-        EnvZoneLook zoneLook;
-        if (EnvZoneAt(camPos + rayDir * (rayLen * 0.5), frame,
-            zoneWeight, zoneLook))
-        {
-            float zIntensity = intensity;
-            float zDensity = density;
-            EnvZoneVolumetrics(zoneLook, zoneWeight, intensity, density,
-                zIntensity, zDensity);
-            intensity = zIntensity;
-            density = zDensity;
-        }
-    }
-
     uint nSteps = clamp(vp.steps, 4, 128);
     // Static IGN dither for the march origin (banding guard), hashed at the
     // native pixel grid so the grain is per-pixel fine. Deliberately NOT
@@ -298,7 +290,6 @@ PSOut mainPS(PSIn IN)
 
     float3 sunDir = normalize(frame.env.sunDirection.xyz + 1e-9);
     float3 sunHdr = frame.env.sunColor.rgb * max(frame.env.sunColor.w, 0.0f);
-    float iblOn = saturate(frame.env.fogEndAndFlags.w);
     float sunOn = (vp.useSun != 0) ? 1.0 : 0.0;
     float cosSun = dot(rayDir, sunDir);
     float phase = VolPhaseHg(cosSun, vp.anisotropy) * 0.0795775; // /4pi
@@ -307,24 +298,43 @@ PSOut mainPS(PSIn IN)
     // ---- Loop-invariant GI bases (the old body re-evaluated the sky
     // ambient every segment; these are pixel-constants) ----
     // Sky's up-facing mean — the fog ambient fallback (no volume
-    // coverage; the octree probes are RETIRED with the .sggi runtime).
+    // coverage, no world-field residency; the octree probes are
+    // RETIRED with the .sggi runtime). EvaluateIrradiance carries the
+    // IBL flag internally, so the fallback needs no separate fold.
     const float3 skyMean =
         EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env) * 0.31831;
-    // The fog GI: the CONVEX GI volumes (their own mean textures, the
-    // ordered-transmittance composite) + the world-field mean where
-    // resident, over the sky base. giVolumesOn is the fog-GI quality
-    // bypass (useGiVolumes = 0): sky/world-field only — no tile-mask
-    // load, no volume walks.
-    const bool giVolumesOn = (vp.useGiVolumes != 0u) && (frame.giVolumesEnabled != 0u);
-    const bool fogGiOn = giVolumesOn;
+    // The fog GI is TWO INDEPENDENT sources (the review's finding: the
+    // old fogGiOn = giVolumesOn gated the world-field walk behind the
+    // convex-volume stack, so disabling the volumes also killed the
+    // field GI): the WORLD-FIELD mean (SampleFogGi below — runs
+    // either way; fogGiSource 2 stays the sky-only A/B lever) and the
+    // CONVEX GI VOLUMES (their own mean textures, the
+    // ordered-transmittance composite — volumeGiOn is its ONLY gate;
+    // useGiVolumes = 0 is the quality bypass: no tile-mask load, no
+    // volume walks, the field/sky base untouched).
+    const bool volumeGiOn = (vp.useGiVolumes != 0u) && (frame.giVolumesEnabled != 0u);
     // Per-tile volume bitmask is pixel-constant: one lookup per PIXEL
     // (0 under the bypass — the mean composite then walks nothing).
     uint volMask = 0u;
-    if (giVolumesOn)
+    if (volumeGiOn)
         volMask = SgGiVolumeTileMask(frame, IN.pos.xy);
-    // Scattering intensity hoisted (push constant, but keeps the hot
-    // segment clean of the max()).
-    const float intensity_ = intensity;
+
+    // ---- Analytic env zones, PER SEGMENT (the tile cache): the march
+    // constants (scatter ratio + extinction density) resolve at EACH
+    // segment's midpoint through EnvZoneSegment — EnvZoneAt's walk
+    // memoized on the (XZ cell, record) pair, so the zone buffers
+    // re-read only at 64 m tile boundaries and vertical band changes
+    // (a 64-step march through one room costs ONE cell + ONE record
+    // fetch). The OLD midpoint resolution picked ONE zone for the
+    // whole sightline: a ray through two zones took the middle zone's
+    // density for the full length, and a NEAR WALL moved the midpoint
+    // — a zone pick that changed with scene depth without the camera
+    // moving. Zone volumetrics 0 = the zone's segments are
+    // pass-through (see the integration below). ----
+    const bool zonesLive = frame.envZoneCount > 0u
+        && (frame.envZoneFlags & 1u) != 0u;
+    EnvZoneMarchCache zoneCache = (EnvZoneMarchCache)0;
+    zoneCache.rec = 0xFFFFFFFFu; // force the first record fetch
 
     // GI refresh cadence: means and the octree/sky base are spatially
     // low-frequency, so the march refreshes them every
@@ -381,7 +391,7 @@ PSOut mainPS(PSIn IN)
     // with FMA-only ramps (no plane loads, no dot3s per segment).
     GiVolumeRayPrep rayPrep;
     float3 baseHeld = skyMean;
-    if (fogGiOn)
+    if (volumeGiOn)
         SgGiVolumeRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
 
     // Held forward+ light in-scatter (per-LIGHT-refresh — decoupled from
@@ -391,11 +401,10 @@ PSOut mainPS(PSIn IN)
     float3 lightsHeld = float3(0.0, 0.0, 0.0);
     const bool fogLightsOn = vp.fpLightCount > 0u;
 
-    // Ambient base: the GI-off value is pixel-constant (one sky eval for
-    // the whole march); the GI-on value refreshes on the cadence below.
+    // Ambient base: the init is the sky fallback (seg 0's refresh
+    // overwrites it below); skyMean is IBL-gated inside
+    // EvaluateIrradiance, so no separate fold.
     float3 ambient = skyMean * giStrength;
-    if (!fogGiOn)
-        ambient *= iblOn;
 
     // Extinction is achromatic — scalar throughput (the old float3 kept
     // three identical components alive through the whole march).
@@ -422,7 +431,41 @@ PSOut mainPS(PSIn IN)
         float t = s0 + jitter * segW;
         float3 wpos = camPos + rayDir * t;
 
-        float sigma = density;
+        // ---- Zone volumetrics, PER SEGMENT through the tile cache: the
+        // pass base lerps toward the covering record by its baked
+        // weight — the record's ABSOLUTE volumetricDensity REPLACES the
+        // pass density at full weight (the env table owns the look;
+        // the pass/panel value survives only in fade bands), and the
+        // ratio scales the pass intensity (0 = the zone's fog master:
+        // the segment becomes pass-through — see the integration
+        // below). The UN-JITTERED segment midpoint owns the pick: the
+        // dither must never shuffle a tile boundary pick (the medium
+        // sample at t stays dithered; the zone pick must not be).
+        float segIntensity = intensity;
+        float segDensity = density;
+        // fogRatio = the zone's volumetrics RATIO at the segment's
+        // blend weight (the same lerp EnvZoneVolumetrics applies to
+        // the intensity). It gates the WORLD-FIELD leg below: the
+        // baked voxel field is fog too, so a zone-off fade that muted
+        // only the analytic leg would keep extinguishing scatterless
+        // through the band (black air at the fade edge) — the ratio
+        // mutes every fog source in the zone together.
+        float fogRatio = 1.0;
+        if (zonesLive)
+        {
+            float3 segMid = camPos + rayDir * ((s0 + s1) * 0.5);
+            float zoneW = 0.0;
+            EnvZoneLook zLook;
+            if (EnvZoneSegment(segMid, frame, zoneCache, zoneW, zLook))
+            {
+                EnvZoneVolumetrics(zLook, zoneW, intensity, density,
+                    segIntensity, segDensity);
+                fogRatio = lerp(1.0, max(zLook.volumetrics, 0.0),
+                    saturate(zoneW));
+            }
+        }
+
+        float sigma = segDensity;
         if (vp.heightFalloff > 0.0)
             sigma *= exp(-max(wpos.y - vp.heightBase, 0.0) * vp.heightFalloff);
         // ---- World-field voxel fog (Engine/WorldFields): additional
@@ -434,8 +477,11 @@ PSOut mainPS(PSIn IN)
         // miss decodes to the field's 0 fallback — missing/unstreamed
         // bricks contribute NOTHING (no seams, no stale data). One
         // page-table lookup + one trilinear 3D fetch per segment.
+        // Scaled by the zone's fogRatio (the zone's fog master mutes
+        // the voxel field with the analytic fog — see above).
         if (frame.worldFieldCount > 0u)
-            sigma += SampleWorldField(frame, WORLD_FIELD_ID_FOG, wpos, 0u).r;
+            sigma += SampleWorldField(frame, WORLD_FIELD_ID_FOG, wpos, 0u).r
+                * fogRatio;
 
         // ---- Ambient: EXACT per-segment volume weights from the
         // ray-space table (FMA-only ramps — no plane loads, no dot3s
@@ -446,49 +492,53 @@ PSOut mainPS(PSIn IN)
         // holding the whole composite.
         float3 volAcc = float3(0.0, 0.0, 0.0);
         float volTrans = 1.0;
-        if (fogGiOn)
-        {
+        if (volumeGiOn)
             SgGiVolumeRayComposite(frame, rayPrep, t, wpos, volAcc, volTrans);
-            if (t - giT >= kVolGiRefreshDist)
-            {
-                giT = t;
-                // ---- Fog GI base: the A/B source toggle. The default
-                // samples the baked BC6H mean via the paired fog-GI
-                // world-field sampler — ONE page-table lookup + ONE
-                // trilinear 3D fetch per refresh — and degrades to the
-                // sky mean wherever the field is not resident (the
-                // covered/uncovered contract: the field's coverage
-                // channel distinguishes genuine darkness from missing
-                // pages — see SampleFogGi). The LEGACY OCTREE path is
-                // RETIRED (stage 3 of the .sggi retirement — the walker
-                // is gone); TOURMALINE_FOG_GI_SOURCE's value 1 is
-                // reserved and reads as the default. Value 2 = the sky
-                // mean everywhere (the floor baseline for perf A/B).
-                // The convex GI volumes composite INDEPENDENTLY of this
-                // toggle (SgGiVolumeRayComposite above — their mean
-                // textures are their own data source).
-                if (volTrans > 0.0) {
-                    if (vp.fogGiSource == 2u) {
-                        // Sky-only (the floor baseline for perf A/B).
-                        baseHeld = skyMean;
-                    }
-                    else {
-                        // Default: the world-field fog-GI path (the
-                        // field's own residency/coverage degradation
-                        // owns the streaming holes — sky between them).
-                        const FogGiSample gi =
-                            SampleFogGi(frame, wpos, 0u);
-                        if (gi.resident && gi.coverage > 0.02)
-                            baseHeld = gi.radiance;
-                        else
-                            baseHeld = skyMean;
-                    }
+        // The base refresh runs INDEPENDENT of the volume stack (the
+        // review's finding: fogGiOn = giVolumesOn gated the world-field
+        // walk behind the volumes — disabling the volumes killed the
+        // field GI). With the bypass on, volAcc/volTrans stay 0/1 and
+        // the refresh serves the world-field/sky base directly.
+        if (t - giT >= kVolGiRefreshDist)
+        {
+            giT = t;
+            // ---- Fog GI base: the A/B source toggle. The default
+            // samples the baked BC6H mean via the paired fog-GI
+            // world-field sampler — ONE page-table lookup + ONE
+            // trilinear 3D fetch per refresh — and degrades to the
+            // sky mean wherever the field is not resident (the
+            // covered/uncovered contract: the field's coverage
+            // channel distinguishes genuine darkness from missing
+            // pages — see SampleFogGi). The LEGACY OCTREE path is
+            // RETIRED (stage 3 of the .sggi retirement — the walker
+            // is gone); TOURMALINE_FOG_GI_SOURCE's value 1 is
+            // reserved and reads as the default. Value 2 = the sky
+            // mean everywhere (the floor baseline for perf A/B).
+            // The convex GI volumes composite INDEPENDENTLY of this
+            // toggle (SgGiVolumeRayComposite above — their mean
+            // textures are their own data source).
+            if (volTrans > 0.0) {
+                if (vp.fogGiSource == 2u) {
+                    // Sky-only (the floor baseline for perf A/B).
+                    baseHeld = skyMean;
                 }
-                // volTrans <= 0: a weight-1 GI volume owns the base —
-                // the octree/field walk is dead work; keep baseHeld.
+                else {
+                    // Default: the world-field fog-GI path (the
+                    // field's own residency/coverage degradation
+                    // owns the streaming holes — sky between them).
+                    const FogGiSample gi =
+                        SampleFogGi(frame, wpos, 0u);
+                    if (gi.resident && gi.coverage > 0.02)
+                        baseHeld = gi.radiance;
+                    else
+                        baseHeld = skyMean;
+                }
             }
-            ambient = (volAcc + baseHeld * volTrans) * giStrength;
+            // volTrans <= 0 (volumeGiOn only — volTrans is 1 under
+            // the bypass): a weight-1 GI volume owns the base — the
+            // field walk is dead work; keep baseHeld.
         }
+        ambient = (volAcc + baseHeld * volTrans) * giStrength;
 
         // ---- Forward+ light in-scatter: INDEPENDENT of the GI block
         // above (the review's finding #3 — the old nest under
@@ -505,6 +555,15 @@ PSOut mainPS(PSIn IN)
         }
 
         float3 source = ambient + lightsHeld;
+        // ---- The sun leg is UNSHADOWED (an architectural limitation,
+        // not a coding bug): no terrain/geometry occlusion runs for the
+        // medium — an enclosed room still takes the full directional
+        // sun in-scatter, and the strong directionality can exaggerate
+        // the fog's apparent anisotropy. Shadowing the medium costs a
+        // shadow-map tap (or a march) per segment; the surface lights'
+        // shadowing does not transfer. Same discipline as the
+        // local-light leg (single scattering, no shadowing) —
+        // documented, deliberate. ----
         if (sunOn > 0.5)
             source += sunHdr * (phase * max(vp.sunScale, 0.0f));
         // Quarantine: a non-finite baked probe amplitude (NaN/Inf) must cost
@@ -521,16 +580,47 @@ PSOut mainPS(PSIn IN)
         // old body paid. Equal for small tau, but the exact form stays
         // well-behaved on coarse/dense segments (tau vs 1-e^-tau),
         // which is what makes longer steps survivable.
-        const float trans = exp(-sigma * segW);
-        const float scatterWeight = throughput * intensity_ * (1.0 - trans);
-        scatter += SanitizeHdr(source * scatterWeight);
-        throughput *= trans;
+        // ---- The ZONE-OFF skip (the review's finding): a segment
+        // whose zone-blended intensity resolves to ~0 is PASS-THROUGH —
+        // no scatter AND no extinction. Only the zone blend can drive
+        // the positive pass master to 0 (the top early-out gated the
+        // pass base); this implements the documented semantic "a zone
+        // with volumetrics 0 drives the blend to 0" — the old code
+        // zeroed only the scatter leg and kept extinguishing, so a
+        // fog-off zone rendered as dense black air. Only the DISABLED
+        // portion of the ray is skipped; enabled segments march on.
+        if (segIntensity > 1e-6)
+        {
+            const float trans = exp(-sigma * segW);
+            const float scatterWeight =
+                throughput * segIntensity * (1.0 - trans);
+            scatter += SanitizeHdr(source * scatterWeight);
+            throughput *= trans;
+        }
 
         if (throughput < 3.333333e-4f)
         {
             throughput = 0.0;
             break;
         }
+    }
+
+    // ---- The TRANSMITTANCE view (TOURMALINE_FOG_GI_DEBUG=2 — the
+    // optical-density diagnostic the review prescribes): the march's
+    // surviving throughput as grayscale, replacing the composite (the
+    // view IS the diagnostic, same as the coverage view). White = no
+    // extinction, black = complete extinction — the pure Beer-Lambert
+    // term with every scatter/GI/phase leg removed. The diagnosis
+    // contract: with constant density, height falloff off, and no
+    // zone/world-field contributions, equal-length rays show EQUAL
+    // transmittance regardless of orientation; if this image is
+    // coherent but the lit fog image is not, the divergence lives in
+    // the scatter/GI legs (source), not the extinction — if the
+    // transmittance itself is unexpected, focus on the zone lookup,
+    // the sampled extinction, and the reconstructed ray distance.
+    if (vp.fogGiDebug == 2u) {
+        OUT.outColor = float4(throughput.xxx, 1.0f);
+        return OUT;
     }
 
     float3 outColor = base * throughput + scatter;
