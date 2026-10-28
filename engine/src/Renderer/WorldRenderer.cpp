@@ -1232,18 +1232,25 @@ namespace engine {
 		// F8 is the legacy alias): 0 off, 1 baked irradiance,
 		// 2 source palette. (The octree's level-isolation/argmax modes
 		// 3/4 are RETIRED with the .sggi walker — a pinned 3/4 reads as
-		// the flat-irradiance view.)
+		// the probe-distance view (the coplanarity check).)
 		if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
-			if (mode >= 0 && mode <= 2)
+			if (mode >= 0 && mode <= 3)
 				m_giDebug = mode;
-			else if (mode == 3 || mode == 4) {
+			else if (mode == 4) {
 				m_giDebug = 1;
-				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG mode "
-					<< mode << " retired with the octree — flat view\n";
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG mode 4"
+					<< " retired (octree) — flat view\n";
 			}
 			else
-				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..2\n";
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..3\n";
+		}
+		// Probe-point 3D overlay for headless runs (same as the panel
+		// checkbox; draws the convex volume lattice colored by probe
+		// status — the coplanarity check).
+		if (const char* giPtsEnv = std::getenv("TOURMALINE_GI_POINTS")) {
+			if (std::atoi(giPtsEnv) != 0)
+				m_giShowProbes = true;
 		}
 
 		// Tear-free VSync without the strict-FIFO 30fps lock (see PresentMode);
@@ -13867,6 +13874,12 @@ namespace engine {
 						}
 						ImGui::TextDisabled("Lights draw in the UI pass (points = light color, spots diamond);\n"
 							"no depth test: occluded lights stay visible (debug intent)");
+						ImGui::Checkbox("Probe points (3D coplanarity check)", &m_giShowProbes);
+						if (m_giShowProbes) {
+							ImGui::SliderFloat("Probe overlay distance (m)",
+								&m_giProbePointMaxDist, 5.0f, 300.0f, "%.0f m");
+							ImGui::TextDisabled("red = blocked  yellow = near (< 1 m)  green = open\nno depth test: behind-wall probes visible");
+						}
 						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
 						if (m_giShowVolumeBounds) {
 							ImGui::TextDisabled("regular OBBs (green) + convex grid AABBs\n"
@@ -13874,14 +13887,17 @@ namespace engine {
 						}
 						if (m_regLoaded || m_giVolumesLoaded) {
 							// GI debug views (R / F8 cycle): 0 off, 1 baked
-							// irradiance, 2 source palette. (The octree's
-							// isolated/dominant-level views 3/4 are RETIRED
-							// with the .sggi walker.)
-							const char* dbgNames[3] = { "Off", "Baked irradiance",
-								"GI source" };
-							int dbgIdx = std::min(m_giDebug, 2);
-							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 3))
-								m_giDebug = std::clamp(dbgIdx, 0, 2);
+							// irradiance, 2 source palette, 3 the probe-
+							// distance view (the coplanarity check — the
+							// nearest probe's min 6-axis obstacle distance:
+							// red = on/in a surface, yellow = near, green
+							// = open). (The octree's dominant-level view
+							// 4 is retired with the walker.)
+							const char* dbgNames[4] = { "Off", "Baked irradiance",
+								"GI source", "Probe distance" };
+							int dbgIdx = m_giDebug;
+							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 4))
+								m_giDebug = std::clamp(dbgIdx, 0, 3);
 							if (m_giDebug == 1) {
 								ImGui::TextDisabled("flat irradiance of the active source "
 									"(lightmap/grid/volumes); magenta = none\n"
@@ -15666,6 +15682,80 @@ namespace engine {
 					}
 				}
 			}
+			// GI PROBE-POINT OVERLAY (the convex volumes' lattice in 3D —
+			// the coplanarity check): each probe drawn as a 3D-projected
+			// dot colored by its 6-axis min obstacle distance (from the
+			// CPU-side vis array). Red = blocked/inside geometry, yellow
+			// = near-surface (< 1 m), green = open. Distance-filtered +
+			// stride-capped so huge volumes stay ImGui-cheap. No depth
+			// test: occluded probes stay visible (debug intent — you want
+			// to see the ones behind walls).
+			if (m_giShowProbes && m_giVolumesLoaded) {
+				ImDrawList* pdl = ImGui::GetForegroundDrawList();
+				const ImVec2 pdisp = ImGui::GetIO().DisplaySize;
+				const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
+				const float maxDist = std::max(m_giProbePointMaxDist, 1.0f);
+				constexpr uint32_t kProbeCap = 6000;
+				uint32_t drawn = 0, blocked = 0;
+				for (const GiVolumeResources& res : m_giVolumes) {
+					const smvk::gi::GiVolume& vol = res.volume;
+					if (vol.dims[0] == 0 || vol.dims[1] == 0
+						|| vol.dims[2] == 0)
+						continue;
+					const size_t n = size_t(vol.VoxelCount());
+					if (res.volume.vis.size() != n * 6)
+						continue; // no vis data (hand-built)
+					// Stride so the drawn count stays under the cap.
+					const size_t stride =
+						std::max<size_t>(1, n / kProbeCap);
+					for (size_t v = 0; v < n && drawn < kProbeCap;
+						v += stride) {
+						const uint32_t ix = uint32_t(v % vol.dims[0]);
+						const uint32_t iy =
+							uint32_t((v / vol.dims[0]) % vol.dims[1]);
+						const uint32_t iz = uint32_t(
+							v / (size_t(vol.dims[0]) * vol.dims[1]));
+						const glm::vec3 pos = vol.gridMin
+							+ (glm::vec3(ix, iy, iz) + 0.5f)
+								* vol.spacing;
+						const glm::vec3 d = pos - camPos;
+						if (glm::dot(d, d) > maxDist * maxDist)
+							continue;
+						const glm::vec4 clip =
+							m_unjitteredViewProj * glm::vec4(pos, 1.0f);
+						if (clip.w <= 1e-4f)
+							continue; // behind the camera
+						const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+						if (std::abs(ndc.x) > 1.0f
+							|| std::abs(ndc.y) > 1.0f)
+							continue; // off-screen
+						const ImVec2 pt(
+							(ndc.x * 0.5f + 0.5f) * pdisp.x,
+							(ndc.y * 0.5f + 0.5f) * pdisp.y);
+						// The probe's min 6-axis distance (meters).
+						float vm = 1e30f;
+						for (uint32_t k = 0; k < 6; ++k)
+							vm = std::min(vm, vol.vis[v * 6 + k]);
+						const bool isBlocked = vm < 0.05f;
+						if (isBlocked)
+							++blocked;
+						const ImU32 col = isBlocked
+							? IM_COL32(255, 60, 60, 200)
+							: vm < 1.0f
+							? IM_COL32(255, 220, 60, 200)
+							: IM_COL32(90, 230, 90, 140);
+						pdl->AddCircleFilled(pt,
+							isBlocked ? 3.5f : 2.5f, col);
+						++drawn;
+					}
+				}
+				// Heartbeat: proves the overlay draws with live data.
+				if ((m_frameCounter % 300) == 0) {
+					std::cerr << "[GI] probe overlay: drawn=" << drawn
+						<< " blocked=" << blocked
+						<< " maxDist=" << maxDist << "\n";
+				}
+			}
 			// GI volume bounding-box wireframe (m_giShowVolumeBounds): AABB/OBB
 			// edges through the UNJITTERED viewProj into the ImGui foreground
 			// list, so they ride on top of the current view with no depth test
@@ -17412,6 +17502,9 @@ namespace engine {
 			const int cols = std::max(1, int(std::ceil(cw / binPx)));
 			const int rows = std::max(1, int(std::ceil(ch / binPx)));
 			std::vector<uint32_t> occupancy(size_t(cols) * size_t(rows), 0u);
+						// Per-bin min 6-axis distance (the coplanarity check):
+						// the worst-case across each XZ column's Y stack.
+						std::vector<float> visMin(size_t(cols) * size_t(rows), 1e30f);
 			for (const GiVolumeResources& res : m_giVolumes) {
 				const smvk::gi::GiVolume& vol = res.volume;
 				if (vol.dims[0] == 0 || vol.dims[1] == 0 || vol.dims[2] == 0)
@@ -17431,6 +17524,27 @@ namespace engine {
 						const int by = std::min(rows - 1, int(y / binPx));
 						occupancy[size_t(by) * size_t(cols) + size_t(bx)]
 							+= vol.dims[1];
+							// Per-column min 6-axis distance (the coplanarity
+							// check): the worst-case across the Y stack. The vis
+							// data is the CPU-side array (coeffs were freed, the
+							// vis stays). 0 = blocked, cap = open.
+								if (res.volume.vis.size()
+								== size_t(res.volume.VoxelCount()) * 6) {
+								float colMin = 1e30f;
+								for (uint32_t iy = 0; iy < vol.dims[1]; ++iy) {
+									const size_t vIdx =
+										(size_t(lz) * vol.dims[1] + iy)
+												* vol.dims[0] + lx;
+										for (uint32_t k = 0; k < 6; ++k)
+											colMin = std::min(colMin,
+													res.volume.vis[vIdx * 6 + k]);
+									}
+								if (colMin < 1e29f) {
+									const size_t bi =
+										(size_t(by) * size_t(cols) + size_t(bx));
+										visMin[bi] = std::min(visMin[bi], colMin);
+									}
+								}
 					}
 			}
 			for (int by = 0; by < rows; ++by) {
@@ -17442,11 +17556,23 @@ namespace engine {
 					const float density = std::min(1.0f, std::log2(1.0f + float(n)) / 6.0f);
 					const ImVec2 pt(o.x + std::min((float(bx) + 0.5f) * binPx, cw - 0.5f),
 						o.y + std::min((float(by) + 0.5f) * binPx, ch - 0.5f));
-					// Radius rides the bin so one-dot-per-column reads as
-					// the lattice's own pitch (not a sub-bin speck).
+						// Color by the per-bin probe status (the coplanarity
+							// check): red = any probe blocked/inside geometry (vis
+							// < 0.05 m), yellow = near-surface (< 1.0 m), green =
+							// open (>= 1.0 m). The density carries the radius.
+						const float vm = visMin[size_t(by) * size_t(cols) + size_t(bx)];
+						ImU32 dotCol;
+						if (vm < 0.05f)
+							dotCol = IM_COL32(255, 60, 60, 220);
+						else if (vm < 1.0f)
+							dotCol = IM_COL32(255, 220, 60, 220);
+						else
+							dotCol = IM_COL32(90, 230, 90, 220);
+						// Radius rides the bin so one-dot-per-column reads as
+							// the lattice's own pitch (not a sub-bin speck).
 					dl->AddCircleFilled(pt,
-						std::min(0.34f * binPx, 3.0f) + 1.2f * density,
-						IM_COL32(90, 230, 90, 110 + int(140.0f * density)));
+							std::min(0.34f * binPx, 3.0f) + 1.2f * density,
+							dotCol);
 				}
 			}
 			// One-shot headless evidence (the capture is scene-only — the

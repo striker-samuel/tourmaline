@@ -2410,6 +2410,9 @@ public:
 	                                // feeds the frame's legacy giDebug byte,
 	                                // always 0)
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
+	bool m_giShowProbes = false;  // probe-point 3D overlay (the coplanarity check:
+	                              // red = blocked, yellow = near-surface, green = open)
+	float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
 	bool m_giShowVolumeBounds = false; // GI volume AABB/OBB wireframe overlay
 	                              // (ImGui foreground, on top of the current
 	                              // view: regular OBBs + convex grid AABBs,

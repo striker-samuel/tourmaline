@@ -161,6 +161,39 @@ float SgGiVolumeVisFactor(float3 dRel, float4 visA, float4 visB)
     return w;
 }
 
+// ---- Debug: the nearest probe's minimum axis distance ----
+// The coplanarity check for the splotchy-field diagnosis: for a pixel's
+// cell in the given volume, the base corner's minimum of the 6 stored
+// obstacle distances (spacing units). Dark = the probe is very close
+// to a surface in at least one axis (coplanar / inside geometry — the
+// rejection ramp is active); bright = the probe is in open space (the
+// cap = fully open). Clusters of dark probes near surfaces are the
+// ones whose rejection modifies the blend — the splotchiness source.
+// Returns the min distance normalized to [0, 1] over the 15-unit
+// full-scale range (0 = blocked/coplanar, 1 = fully open).
+float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
+{
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    if (visSlotA == 0xffffffffu || visSlotB == 0xffffffffu)
+        return 1.0; // no vis data (the pre-visibility behavior)
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    const float4 visA = volumeTextures[visSlotA].Load(int4(b, 0));
+    const float4 visB = volumeTextures[visSlotB].Load(int4(b, 0));
+    const float kFull = 15.0;
+    const float d0 = visA.x * kFull;
+    const float d1 = visA.y * kFull;
+    const float d2 = visA.z * kFull;
+    const float d3 = visA.w * kFull;
+    const float d4 = visB.x * kFull;
+    const float d5 = visB.y * kFull;
+    const float mn = min(min(min(d0, d1), min(d2, d3)), min(d4, d5));
+    return saturate(mn / kFull);
+}
 // Samples one volume's dense grid at world pos. Two paths:
 //  - FAST (the common cell): the bake's per-voxel clean flag
 //    (visB.b, point-fetched at the cell's base corner) proves every

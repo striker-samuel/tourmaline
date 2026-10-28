@@ -1317,9 +1317,42 @@ float envVis = 1.0f;
             OUT.outColor = float4(0.8f, 0.0f, 0.8f, 1.0f);
             return OUT;
         }
-        if (giDbgMode == 1u || giDbgMode == 3u)
+        if (giDbgMode == 1u)
         {
             OUT.outColor = float4(SanitizeHdr(bakedE
+                * max(frame.exposure, 1e-6f)), 1.0f);
+            return OUT;
+        }
+        if (giDbgMode == 3u)
+        {
+            // PROBE DISTANCE: the nearest probe's minimum 6-axis
+            // obstacle distance for the pixel's cell in the first
+            // covering volume (the coplanarity check). Red = the
+            // probe is ON or IN a surface (dist 0, blocked), yellow
+            // = near-surface (the rejection ramp is active), green
+            // = open (no rejection). Splotchy clusters of red/yellow
+            // reveal the unlucky probe positions.
+            uint dbgVol = 0u;
+            [loop]
+            for (uint dv = 0; dv < min(frame.giVolumeCount, (uint)8); ++dv)
+            {
+                if ((SgGiVolumeTileMask(frame, clipPos.xy) & (1u << dv)) == 0u)
+                    continue;
+                const GiVolumeGpu dV = frame.giVolumes.Get().volumes[dv];
+                if (SgGiVolumeWeight(frame, dV, IN.worldPos) > 0.0)
+                {
+                    dbgVol = dv;
+                    break;
+                }
+            }
+            const float probeDist =
+                SgGiVolumeDebugProbeDistance(frame, dbgVol, IN.worldPos);
+            // Color ramp: red (0) -> yellow (0.3) -> green (1.0)
+            const float3 dbgCol = probeDist < 0.3
+                ? lerp(float3(1, 0, 0), float3(1, 1, 0), probeDist / 0.3)
+                : lerp(float3(1, 1, 0), float3(0, 1, 0),
+                    (probeDist - 0.3) / 0.7);
+            OUT.outColor = float4(SanitizeHdr(dbgCol
                 * max(frame.exposure, 1e-6f)), 1.0f);
             return OUT;
         }
