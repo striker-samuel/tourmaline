@@ -1189,11 +1189,17 @@ public:
 	// Active GI permutation variant based on loaded GI assets
 	[[nodiscard]] GIVariant GetActiveGIVariant() const {
 		// Priority: Full > Octree > Regular > None
-		// Full requires octree + GI volumes + probes wanted
-		// Octree requires giLoaded + probes wanted
-		// Regular requires regLoaded + regEnabled + probes wanted
+		// Full = the CONVEX GI volumes (the legacy octree underneath is
+		// RETIRED at runtime — never loaded, frame.giEnabled stays 0;
+		// the GI_FULL shader handles the no-octree case via the volume
+		// compositing + sky fallback). Octree requires giLoaded (never
+		// true now — the branch is dead until stage 3 removes it).
+		// Regular requires regLoaded + regEnabled.
 		if (m_giVolumesLoaded && m_giVolumesEnabled && m_giLoaded && ProbesWanted()) {
 			return GIVariant::Full;
+		}
+		if (m_giVolumesLoaded && m_giVolumesEnabled && ProbesWanted()) {
+			return GIVariant::Full; // no octree underneath: volumes + sky
 		}
 		if (m_giLoaded && ProbesWanted()) {
 			return GIVariant::Octree;
