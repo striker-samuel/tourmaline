@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 #include <Engine/Rendergraph/envzones.h>
