@@ -28,23 +28,43 @@ bool PlacementSystem::hasLayer(uint64_t programId) const {
 }
 
 size_t PlacementSystem::generateTile(uint64_t programId, TileID tile, const DependencyVersions& deps) {
+	uint64_t generation = 0;
+	if (!GenerateTilePending(programId, tile, deps, generation))
+		return 0;
+	// The synchronous form publishes immediately (the result IS complete
+	// when this returns; the token never goes stale in between).
+	PublishActivation(TileKey{ tile, programId }, generation);
+	const PlacementTile* t = findTile(programId, tile);
+	return t ? t->instances.size() : 0;
+}
+
+bool PlacementSystem::GenerateTilePending(uint64_t programId, TileID tile,
+	const DependencyVersions& deps, uint64_t& generationOut) {
+	generationOut = 0;
 	auto it = layers_.find(programId);
-	if (it == layers_.end()) return 0;
+	if (it == layers_.end()) return false;
 	TileKey key{ tile, programId };
 	PlacementTile& t = tiles_[key]; // creates on demand
 	t.key = key;
+	// The token contract: a Generating tile KEEPS its in-flight
+	// activation token (UpdateResidency's claim) — the caller publishes
+	// against THAT token and a re-activation (bumping past it) refuses
+	// the stale job. Every other state (fresh, Resident-refresh, Dirty)
+	// claims a NEW token.
+	if (t.state != TileState::Generating)
+		t.generation = ++tick_;
 	t.state = TileState::Generating;
+	t.deps = deps;
+	t.lastAccess = tick_;
+	generationOut = t.generation;
 	std::vector<StableID> ids;
 	t.instances = EvaluateTile(it->second, tile, &ids);
 	// Sort for the instanced draw path: contiguous per-prototype runs.
 	// Key (prototypeId, StableID) is fully deterministic, so regen and
 	// cross-platform order agree exactly.
 	SortInstancesForDraw(t.instances, ids);
-	t.deps = deps;
-	t.state = TileState::Resident;
-	t.lastAccess = ++tick_;
 	ComputeTileBounds(t);
-	return t.instances.size();
+	return true;
 }
 
 void PlacementSystem::invalidateLayer(uint64_t programId) {
@@ -109,7 +129,6 @@ size_t PlacementSystem::residentTileCount() const {
 		if (tile.state == TileState::Resident) ++n;
 	return n;
 }
-
 size_t PlacementSystem::residentInstanceCount(uint64_t programId) const {
 	size_t n = 0;
 	for (const auto& [key, tile] : tiles_)
@@ -121,6 +140,179 @@ size_t PlacementSystem::residentInstanceCount(uint64_t programId) const {
 const PlacementTile* PlacementSystem::findTile(uint64_t programId, TileID tile) const {
 	auto it = tiles_.find(TileKey{ tile, programId });
 	return it != tiles_.end() ? &it->second : nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// World-tile residency (PR05)
+// ---------------------------------------------------------------------------
+void PlacementSystem::UpdateResidency(uint64_t programId, float tileSize,
+	const glm::vec4* rects, size_t rectCount,
+	const DependencyVersions& deps, size_t maxResidentTiles,
+	std::vector<ActivationRequest>& out) {
+	out.clear();
+	if (tileSize <= 0.0f || !hasLayer(programId)) return;
+	// The half-open interest tile set (deduplicated; small — a linear
+	// member test beats a hash dependency).
+	std::vector<TileID> wanted;
+	auto addTile = [&](TileID t) {
+		for (const TileID& w : wanted)
+			if (w == t) return;
+		wanted.push_back(t);
+	};
+	auto hasTile = [&](TileID t) {
+		for (const TileID& w : wanted)
+			if (w == t) return true;
+		return false;
+	};
+	for (size_t r = 0; r < rectCount; ++r) {
+		const glm::vec4& rc = rects[r]; // minX, minZ, maxX, maxZ
+		if (!(rc.z > rc.x) || !(rc.w > rc.y)) continue;
+		// Floor at the min, exclusive at the max (the half-open rule:
+		// a max exactly on a tile boundary does NOT include the next
+		// tile — neighbors never duplicate shared borders).
+		const int32_t tx0 = (int32_t)std::floor(rc.x / tileSize);
+		const int32_t tz0 = (int32_t)std::floor(rc.y / tileSize);
+		const int32_t tx1 = (int32_t)std::ceil(rc.z / tileSize) - 1;
+		const int32_t tz1 = (int32_t)std::ceil(rc.w / tileSize) - 1;
+		for (int32_t tz = tz0; tz <= tz1; ++tz)
+			for (int32_t tx = tx0; tx <= tx1; ++tx)
+				addTile(TileID{ tx, 0, tz });
+	}
+
+	// 1) Fresh interests enter Generating; stale residents (deps changed
+	// OR region-invalidated Dirty) regenerate with a NEW token; tiles
+	// already Generating keep their in-flight claim (a deps change
+	// under them re-activates — the older result's publish refuses).
+	for (const TileID& tile : wanted) {
+		const TileKey key{ tile, programId };
+		auto it = tiles_.find(key);
+		if (it == tiles_.end()) {
+			PlacementTile& t = tiles_[key];
+			t.key = key;
+			t.state = TileState::Generating;
+			t.deps = deps;
+			t.generation = ++tick_;
+			t.lastAccess = tick_;
+			ActivationRequest req;
+			req.key = key;
+			req.generation = t.generation;
+			req.deps = deps;
+			req.regenerate = false;
+			out.push_back(req);
+		} else if (it->second.state == TileState::Generating) {
+			// In flight. If the deps CHANGED under it, re-activate with a
+			// new token — the in-flight result evaluated the old deps and
+			// its publish must be refused (never publish stale contents
+			// recorded as fresh).
+			if (it->second.deps != deps) {
+				it->second.deps = deps;
+				it->second.generation = ++tick_;
+				it->second.lastAccess = tick_;
+				ActivationRequest req;
+				req.key = key;
+				req.generation = it->second.generation;
+				req.deps = deps;
+				req.regenerate = true;
+				out.push_back(req);
+			} else {
+				it->second.lastAccess = ++tick_;
+			}
+		} else if (it->second.state == TileState::Resident
+			&& it->second.deps == deps) {
+			// Resident + fresh: keep (the LRU touch below covers it).
+			// Camera movement NEVER regenerates an unchanged tile.
+		} else {
+			// Resident-with-changed-deps, or region-Dirtied (the
+			// InvalidateRegion path): regenerate with a NEW token.
+			it->second.state = TileState::Generating;
+			it->second.deps = deps;
+			it->second.generation = ++tick_;
+			it->second.lastAccess = tick_;
+			ActivationRequest req;
+			req.key = key;
+			req.generation = it->second.generation;
+			req.deps = deps;
+			req.regenerate = true;
+			out.push_back(req);
+		}
+	}
+
+	// 2) LRU-touch every resident interest tile (never evict interests).
+	for (const TileID& tile : wanted) {
+		auto it = tiles_.find(TileKey{ tile, programId });
+		if (it != tiles_.end() && it->second.state == TileState::Resident)
+			it->second.lastAccess = ++tick_;
+	}
+
+	// 3) Evict beyond budget: NON-interest residents first, LRU. The
+	// interest set itself is the caller's budget responsibility (it
+	// derives from the camera interest — bounded by construction).
+	{
+		size_t kept = 0; // the interest set's residents AND in-flight
+		for (const auto& [key, t] : tiles_)
+			if (key.programId == programId
+				&& (t.state == TileState::Resident || t.state == TileState::Generating)
+				&& hasTile(key.tile))
+				++kept;
+		size_t nonInterest = 0;
+		for (const auto& [key, t] : tiles_)
+			if (key.programId == programId && t.state == TileState::Resident
+				&& !hasTile(key.tile))
+				++nonInterest;
+		size_t toDrop = kept + nonInterest > maxResidentTiles
+			? kept + nonInterest - maxResidentTiles : 0;
+		if (toDrop > 0) {
+			std::vector<std::pair<uint64_t, TileKey>> order;
+			order.reserve(nonInterest);
+			for (const auto& [key, t] : tiles_)
+				if (key.programId == programId && t.state == TileState::Resident
+					&& !hasTile(key.tile))
+					order.emplace_back(t.lastAccess, key);
+			std::sort(order.begin(), order.end(),
+				[](const auto& a, const auto& b) { return a.first < b.first; });
+			for (size_t i = 0; i < order.size() && toDrop > 0; ++i) {
+				auto it = tiles_.find(order[i].second);
+				if (it != tiles_.end()) {
+					tiles_.erase(it);
+					--toDrop;
+				}
+			}
+		}
+	}
+}
+
+void PlacementSystem::InvalidateRegion(uint64_t programId, float tileSize,
+	const glm::vec2& rectMin, const glm::vec2& rectMax, float haloMeters) {
+	if (tileSize <= 0.0f) return;
+	// The rect + halo (the cross-boundary influence: a min-spacing
+	// winner or a central-difference normal reading a neighbour's edge
+	// data), then the same half-open walk.
+	const glm::vec2 mn = rectMin - glm::vec2(haloMeters);
+	const glm::vec2 mx = rectMax + glm::vec2(haloMeters);
+	const int32_t tx0 = (int32_t)std::floor(mn.x / tileSize);
+	const int32_t tz0 = (int32_t)std::floor(mn.y / tileSize);
+	const int32_t tx1 = (int32_t)std::ceil(mx.x / tileSize) - 1;
+	const int32_t tz1 = (int32_t)std::ceil(mx.y / tileSize) - 1;
+	for (int32_t tz = tz0; tz <= tz1; ++tz)
+		for (int32_t tx = tx0; tx <= tx1; ++tx) {
+			auto it = tiles_.find(TileKey{ TileID{ tx, 0, tz }, programId });
+			if (it != tiles_.end() && it->second.state == TileState::Resident)
+				it->second.state = TileState::Dirty;
+		}
+}
+
+bool PlacementSystem::PublishActivation(const TileKey& key, uint64_t generation) {
+	auto it = tiles_.find(key);
+	if (it == tiles_.end()) return false;   // dropped while running
+	PlacementTile& t = it->second;
+	// The stale-token refusal: a newer activation took the tile (or it
+	// was invalidated + re-activated) while this job ran — drop the
+	// result; the next residency tick regenerates with the fresh deps.
+	if (t.state != TileState::Generating || t.generation != generation)
+		return false;
+	t.state = TileState::Resident;
+	t.lastAccess = ++tick_;
+	return true;
 }
 
 std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer,

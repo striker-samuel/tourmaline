@@ -69,6 +69,9 @@ struct PlacementTile {
 	TileState state = TileState::Unloaded;
 	std::vector<RenderInstance> instances; // resident output, SORTED by (prototypeId, StableID)
 	DependencyVersions deps;               // versions at generation time
+	uint64_t generation = 0;               // PR05: the activation token (bumped per
+	                                       // (re)activation; a delayed publish with a
+	                                       // stale token is refused)
 	uint64_t lastAccess = 0;               // LRU stamp (PlacementSystem::tick_)
 	glm::vec3 boundsMin{ 0.0f };           // cached instance bounds (coarse cull)
 	glm::vec3 boundsMax{ 0.0f };
@@ -115,10 +118,20 @@ public:
 	void registerLayer(LayerBinding layer);
 	bool hasLayer(uint64_t programId) const;
 
-	// Generate (or refresh) one tile synchronously on CPU. Reference
-	// oracle for the GPU kernels; also the bring-up runtime path.
+	// Generate (or refresh) one tile synchronously on CPU — the legacy
+	// oracle form: generate + publish in one call (the token contract
+	// does not apply: the result is complete when this returns).
 	// Returns resident instance count.
 	size_t generateTile(uint64_t programId, TileID tile, const DependencyVersions& deps);
+
+	// The token-governed form (PR05): generate WITHOUT publishing (the
+	// tile enters Generating with a fresh activation token). The caller
+	// publishes via PublishActivation(key, generation) when the result is
+	// complete — a stale token (the tile was re-activated, invalidated
+	// or dropped meanwhile) refuses and the caller discards its result.
+	// The CPU oracle path and the GPU scatter path share this flow.
+	bool GenerateTilePending(uint64_t programId, TileID tile,
+		const DependencyVersions& deps, uint64_t& generationOut);
 
 	// Mark tiles whose key matches programId dirty (layer edit / dep bump).
 	void invalidateLayer(uint64_t programId);
@@ -126,6 +139,59 @@ public:
 
 	// LRU: drop Resident tiles (except those in keep[]) beyond budget.
 	void evictBeyond(size_t maxResident, const std::vector<TileKey>& keep = {});
+
+	// ---- World-tile residency (PR05 — the plan's tile integration) ----
+	// The CPU residency tick over WORLD tiles (the PlacementRef::tileSize
+	// grid; the tile's world rect is HALF-OPEN
+	// [tile*tileSize, (tile+1)*tileSize) — the canonical world-space
+	// candidate ownership rule: neighbors never duplicate shared
+	// borders, and the grid domain's jitter keeps every candidate inside
+	// its own tile).
+	//
+	//   * ACTIVATE the tiles intersecting the interest rects (world XZ,
+	//     half-open). Fresh tiles enter Generating; their Activation
+	//     carries a GENERATION TOKEN bumped on every (re)assignment, so
+	//     a delayed job can never publish stale contents after a rapid
+	//     edit cycle (publish with a stale token is refused).
+	//   * REGENERATE Resident tiles whose DependencyVersions went stale
+	//     (an edit class bumped underneath them).
+	//   * EVICT beyond budget, LRU (never the tiles activating this
+	//     tick). Camera movement only changes the interest set — a
+	//     resident tile that stays intersecting is NOT touched.
+	//
+	// The caller dispatches the returned activations (CPU oracle or the
+	// GPU scatter path), then publishes with
+	// PublishActivation(key, generation) — a stale generation is refused
+	// and the tile stays dirty for the next tick.
+	struct ActivationRequest {
+		TileKey key;
+		uint64_t generation = 0;
+		DependencyVersions deps;      // the versions to record
+		bool regenerate = false;      // true = was resident but stale
+	};
+	// rects: rectCount glm::vec4 world-XZ rects (minX, minZ, maxX, maxZ),
+	// half-open. Every tile intersecting any rect activates; resident
+	// tiles outside the interest set are NOT touched (camera movement
+	// never regenerates — only the interest set changes).
+	void UpdateResidency(uint64_t programId, float tileSize,
+		const glm::vec4* rects, size_t rectCount,
+		const DependencyVersions& deps, size_t maxResidentTiles,
+		std::vector<ActivationRequest>& out);
+
+	// Region invalidation (the editor paint path): mark every tile
+	// intersecting [rectMin, rectMax] expanded by haloMeters Dirty. The
+	// halo carries the cross-boundary influence — a min-spacing winner
+	// or a central-difference normal sample reading a neighbouring
+	// tile's edge data. Bounded by the layer's world placement.
+	void InvalidateRegion(uint64_t programId, float tileSize,
+		const glm::vec2& rectMin, const glm::vec2& rectMax,
+		float haloMeters);
+
+	// Publishes a completed activation. Refuses (returns false) when the
+	// generation token went stale — the tile was re-activated or
+	// invalidated while the job ran; the caller drops its result and the
+	// next residency tick regenerates.
+	bool PublishActivation(const TileKey& key, uint64_t generation);
 
 	// Transient per-frame feed: visible resident tiles → draws.
 	// frustumTest(center, radius) returns true when kept; LOD pick via callback.

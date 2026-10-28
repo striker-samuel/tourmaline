@@ -156,6 +156,33 @@ struct WorldMaskGrid {
 	}
 };
 
+// The cross-boundary halo (meters) every world tile's harvest AND
+// invalidation must carry: the min-distance winners read ±minSpacing
+// across borders, the central-difference normals read ±1 heightfield
+// texel. Pass the SAME value to PlacementSystem::InvalidateRegion.
+inline float WorldTileHaloMeters(float minSpacing, float heightTexel) {
+	return std::max(minSpacing > 0.0f ? minSpacing : 0.0f, 2.0f * heightTexel);
+}
+
+// The per-tile harvested world data (the residency entry owns it; the
+// layer binding REPOINTS at it per tile — heights + domain + eco).
+struct WorldTileData {
+	HeightfieldData heights;   // the tile window (+ halo), meters
+	HeightfieldDomain domain; // extent = the HALF-OPEN tile rect
+	EcotopeMaskData eco;      // the tile's paint window (+ the same halo)
+};
+
+// Builds one world placement tile's data: the heightfield window
+// (+ halo texels), the domain extent (the tile's half-open rect), and
+// the ecotope paint window. The tile rect is
+// [tile*tileSize, (tile+1)*tileSize) on world XZ — the canonical
+// candidate-ownership rule. Returns false when the tile lies outside
+// the world or the sources are invalid.
+bool BuildWorldTileDomain(const smvk::terrain::TerrainHField& field,
+	const WorldMaskGrid& masks, float tileSize,
+	int32_t tileX, int32_t tileZ, float haloMeters,
+	WorldTileData& out);
+
 // Harvests the [rectMin, rectMax) world-XZ window (+ halo texels) of the
 // tiled heights into a placement HeightfieldData (meters). Returns false
 // on an invalid field/rect.

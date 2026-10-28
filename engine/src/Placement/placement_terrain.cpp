@@ -379,8 +379,7 @@ bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
 	const WorldMaskGrid& masks,
 	const glm::vec2& rectMin, const glm::vec2& rectMax,
 	EcotopeMaskData& out) {
-	out = EcotopeMaskData{};
-	if (!masks.Valid()) return false;
+	out = EcotopeMaskData{};	if (!masks.Valid()) return false;
 	const float texel = meta.gBlock / float(masks.tileRes);
 	const uint32_t worldTexels = masks.tilesPerAxis * masks.tileRes;
 	int32_t ix0, ix1, iz0, iz1;
@@ -412,6 +411,42 @@ bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
 		}
 	}
 	return out.valid();
+}
+
+bool BuildWorldTileDomain(const smvk::terrain::TerrainHField& field,
+	const WorldMaskGrid& masks, float tileSize,
+	int32_t tileX, int32_t tileZ, float haloMeters,
+	WorldTileData& out) {
+	out = WorldTileData{};
+	if (tileSize <= 0.0f || !field.valid() || !masks.Valid()) return false;
+	const auto& meta = field.meta;
+	const glm::vec2 rectMin(float(tileX) * tileSize, float(tileZ) * tileSize);
+	const glm::vec2 rectMax = rectMin + glm::vec2(tileSize);
+	// The world-rect bounds check (the harvest clamps interiors, but a
+	// fully-outside tile refuses honestly).
+	const glm::vec2 worldMin(meta.originX, meta.originZ);
+	const glm::vec2 worldMax = worldMin + glm::vec2(meta.worldSize);
+	if (rectMax.x <= worldMin.x || rectMax.y <= worldMin.y
+		|| rectMin.x >= worldMax.x || rectMin.y >= worldMax.y)
+		return false;
+	// Heights: the tile rect + the halo (in texels — the window grows
+	// so the normals' central differences stay interior).
+	const float texel = meta.hTileSize / float(meta.hRes);
+	const uint32_t halo = haloMeters > 0.0f
+		? uint32_t(std::ceil(haloMeters / texel)) : 0;
+	if (!HarvestWorldHeightfield(field, rectMin, rectMax, halo, out.heights))
+		return false;
+	// The domain extent = the HALF-OPEN tile rect (candidates live in
+	// [min, max); the window around it is read-only halo).
+	out.domain.field = &out.heights;
+	out.domain.extentMin = rectMin;
+	out.domain.extentMax = rectMax;
+	// The paint window: the same rect (the eco sampler edge-clamps into
+	// the halo naturally; a window halo keeps the mask's edge reads off
+	// the clamped border when the halo was earned).
+	if (!HarvestWorldEcotope(meta, masks, rectMin, rectMax, out.eco))
+		return false;
+	return true;
 }
 
 } // namespace smvk::placement

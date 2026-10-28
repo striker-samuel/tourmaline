@@ -456,14 +456,107 @@ struct PlacementEcoMaskGpu {
 		v.w = w; v.h = h; v.channels = channels;
 		return v;
 	}
-	// The CPU-side view of the SAME data (origin/spacing from the source
-	// mask — the caller fills them; the buffer carries only the grid).
+// The CPU-side view of the SAME data (origin/spacing from the source
+// mask — the caller fills them; the buffer carries only the grid).
 	static PlacementEcoView ViewOf(const EcotopeMaskData& eco) {
 		PlacementEcoView v;
 		v.w = eco.width; v.h = eco.height; v.channels = eco.channels;
 		v.ox = eco.origin.x; v.oz = eco.origin.y;
 		v.sx = eco.spacing.x; v.sz = eco.spacing.y;
 		return v;
+	}
+};
+
+// ---------------------------------------------------------------------------
+// PR05: GPU tile-slot residency — the TileKey -> PlacementPass slot map
+// with generation tokens. The caller claims a slot when dispatching a
+// tile's scatter chain, and publishes/retires with the rendergraph's
+// in-flight conventions (never reassign a slot a prior frame's cull/
+// draw still reads). A delayed publish against a stale generation (the
+// slot was re-claimed under a newer activation) is refused — a rapid
+// editor repaint can never read half-tenant contents.
+// ---------------------------------------------------------------------------
+struct PlacementGpuTileSlot {
+	TileKey key{};             // empty programId = FREE
+	uint64_t generation = 0;  // the activation token (bumped per claim)
+	uint64_t lastUse = 0;     // LRU stamp
+	bool generating = false;  // claimed, dispatched, not yet published
+};
+
+struct PlacementGpuTiles {
+	std::vector<PlacementGpuTileSlot> slots;
+	uint64_t tick_ = 0;
+
+	void Init(uint32_t slotCount) {
+		slots.assign(slotCount, PlacementGpuTileSlot{});
+		tick_ = 0;
+	}
+	[[nodiscard]] bool Valid() const { return !slots.empty(); }
+
+	// The slot serving key, or -1 (bumps LRU). FREE slots never match:
+	// a real key carries programId != 0.
+	int32_t Find(const TileKey& key) {
+		if (key.programId == 0) return -1;
+		for (size_t i = 0; i < slots.size(); ++i)
+			if (slots[i].key == key) {
+				slots[i].lastUse = ++tick_;
+				return int32_t(i);
+			}
+		return -1;
+	}
+	// Claims a slot for key: a FREE one first, else the LRU
+	// non-generating (published) one — evicting means REASSIGNMENT (the
+	// caller guarantees the prior tenant's frames retired). -1 when
+	// every slot is mid-generation.
+	int32_t Claim(const TileKey& key) {
+		int32_t victim = -1;
+		uint64_t best = ~0ull;
+		for (size_t i = 0; i < slots.size(); ++i) {
+			PlacementGpuTileSlot& s = slots[i];
+			if (s.key.programId == 0) {
+				assign(s, key);
+				return int32_t(i);
+			}
+			if (!s.generating && s.lastUse < best) {
+				best = s.lastUse;
+				victim = int32_t(i);
+			}
+		}
+		if (victim < 0) return -1;
+		assign(slots[size_t(victim)], key);
+		return victim;
+	}
+	// Publishes a claimed slot. Refuses when the slot was re-claimed
+	// under a newer activation (stale generation) or the key moved.
+	bool Finish(int32_t slot, const TileKey& key, uint64_t generation) {
+		if (slot < 0 || slot >= int32_t(slots.size())) return false;
+		PlacementGpuTileSlot& s = slots[size_t(slot)];
+		if (!s.generating || s.generation != generation || !(s.key == key))
+			return false;
+		s.generating = false; // published: the tenant's buffers are readable
+		s.lastUse = ++tick_;
+		return true;
+	}
+	// Retires a published slot back to FREE (the caller guarantees the
+	// in-flight cull/draw users retired).
+	void Release(int32_t slot) {
+		if (slot < 0 || slot >= int32_t(slots.size())) return;
+		slots[size_t(slot)] = PlacementGpuTileSlot{};
+	}
+	// The LIVE (published) keys, for diagnostics/LRU walks.
+	template<typename Func>
+	void ForEachPublished(Func&& func) const {
+		for (const PlacementGpuTileSlot& s : slots)
+			if (s.key.programId != 0 && !s.generating)
+				func(s);
+	}
+
+private:
+	void assign(PlacementGpuTileSlot& s, const TileKey& key) {
+		s.key = key;
+		s.generation = ++tick_;
+		s.generating = true;
+		s.lastUse = tick_;
 	}
 };
 

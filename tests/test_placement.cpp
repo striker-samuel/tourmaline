@@ -246,6 +246,15 @@ void TestTerrainRaycast();
 // texel centers, the heights decode through baseY/range, and the
 // S-tile paint channels land as the ecotope mask's 4 channels.
 void TestWorldBridge();
+
+// ---------------------------------------------------------------------------
+// PR05: the world-tile residency tick — activation (half-open tile
+// math), deps-driven regeneration, region invalidation + halo, the
+// stale-token refusal, LRU eviction, the GPU slot map, and the full
+// world meadow flow over the bridge (fake world -> BuildWorldTileDomain
+// -> GenerateTilePending -> publish -> deterministic population).
+// ---------------------------------------------------------------------------
+void TestWorldResidency();
 void TestFieldEval() {
 	using namespace smvk::placement;
 	// density = 0.5 * slopeMask(flat=0deg, steep=40deg)
@@ -2174,9 +2183,324 @@ void TestWorldBridge() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// PR05: the world-tile residency tick — activation (half-open tile
+// math), deps-driven regeneration, region invalidation + halo, the
+// stale-token refusal, LRU eviction, the GPU slot map, and the full
+// world meadow flow over the bridge.
+// ---------------------------------------------------------------------------
+void TestWorldResidency() {
+	using namespace smvk::placement;
+	DependencyVersions deps;
+
+	// ---- the CPU residency tick (a plain grid layer over 64m tiles). ----
+	GridDomain grid; // the domain binding (per-tile origins are derived)
+	grid.extent = glm::vec2(64.0f, 64.0f);
+	grid.cellsX = 16; grid.cellsZ = 16;
+	PlacementSystem sys;
+	sys.registerLayer(MakeGridLayer(grid, 0.5f, 512));
+
+	// Fresh interest: ONE rect covering [0,128) x [0,64) activates the
+	// tiles {0,0} and {1,0} — the HALF-OPEN rule (128 lands exactly on
+	// the 2-tile boundary; the third tile must NOT activate).
+	std::vector<PlacementSystem::ActivationRequest> acts;
+	const glm::vec4 rects[1] = { glm::vec4(0.0f, 0.0f, 128.0f, 64.0f) };
+	sys.UpdateResidency(101, 64.0f, rects, 1, deps, 16, acts);
+	Check(acts.size() == 2, "place.res.fresh-two-tiles");
+	bool tileKeysOk = acts.size() == 2
+		&& acts[0].key.tile == TileID{ 0, 0, 0 }
+		&& acts[1].key.tile == TileID{ 1, 0, 0 }
+		&& !acts[0].regenerate && !acts[1].regenerate;
+	Check(tileKeysOk, "place.res.half-open-tile-math");
+
+	// The synchronous publish flow: pending-generate then publish.
+	for (const auto& a : acts) {
+		uint64_t gen = 0;
+		Check(sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen)
+			&& gen == a.generation, "place.res.pending-gen");
+		Check(sys.PublishActivation(a.key, a.generation), "place.res.publish-ok");
+	}
+	Check(sys.residentTileCount() == 2, "place.res.two-resident");
+
+	// A second tick with UNCHANGED deps + the same interest: NO new
+	// activations (camera-idle never regenerates).
+	sys.UpdateResidency(101, 64.0f, rects, 1, deps, 16, acts);
+	Check(acts.empty(), "place.res.idle-no-regen");
+
+	// Deps change (a paint under the residents): both regenerate.
+	DependencyVersions deps2;
+	deps2.terrain = 7;
+	sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
+	Check(acts.size() == 2 && acts[0].regenerate && acts[1].regenerate,
+		"place.res.deps-changed-regen");
+	// Complete the regeneration for both.
+	for (const auto& a : acts) {
+		uint64_t gen = 0;
+		Check(sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen),
+			"place.res.regen-pending");
+		Check(sys.PublishActivation(a.key, a.generation), "place.res.regen-publish");
+	}
+
+	// THE STALE-TOKEN REFUSAL: a delayed publish after a re-activation.
+	{
+		DependencyVersions deps3;   // a paint under tile A
+		deps3.terrain = 11;
+		sys.UpdateResidency(101, 64.0f, rects, 1, deps3, 16, acts);
+		Check(acts.size() == 2 && acts[0].regenerate,
+			"place.res.stale-setup-regen");
+		const uint64_t staleGen = acts[0].generation; // tile A's claim
+		// The delayed job is still running when ANOTHER paint lands:
+		// the tick re-activates A with a NEW token (the in-flight result
+		// evaluated the older deps — its publish must be refused).
+		DependencyVersions deps4;
+		deps4.terrain = 12;
+		sys.UpdateResidency(101, 64.0f, rects, 1, deps4, 16, acts);
+		Check(acts.size() >= 1, "place.res.stale-reactivation");
+		bool aReactivated = false;
+		uint64_t freshGen = 0;
+		for (const auto& a : acts)
+			if (a.key.tile == TileID{ 0, 0, 0 } && a.regenerate) {
+				aReactivated = true;
+				freshGen = a.generation;
+			}
+		Check(aReactivated && freshGen > staleGen,
+			"place.res.region-dirty-regen");
+		// The delayed publish with the OLD token refuses.
+		Check(!sys.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 }, staleGen),
+			"place.res.stale-token-refused");
+		// The fresh flow generates + publishes cleanly.
+		uint64_t gen = 0;
+		Check(sys.GenerateTilePending(101, TileID{ 0, 0, 0 }, deps4, gen)
+			&& gen == freshGen, "place.res.new-pending");
+		Check(sys.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 }, gen),
+			"place.res.new-publish");
+		// Complete tile B's pending flow too (it was also re-activated).
+		for (const auto& a : acts)
+			if (a.key.tile == TileID{ 1, 0, 0 }) {
+				uint64_t g = 0;
+				sys.GenerateTilePending(101, a.key.tile, deps4, g);
+				sys.PublishActivation(a.key, g);
+			}
+	}
+
+	// Region invalidation + the neighbor HALO: a stamp at the exact
+	// tile corner dirties all sharing tiles within the halo.
+	{
+		// Re-resident everything first.
+		sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
+		for (const auto& a : acts) {
+			uint64_t gen = 0;
+			sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen);
+			sys.PublishActivation(a.key, a.generation);
+		}
+		Check(sys.residentTileCount() == 2, "place.res.pre-halo-resident");
+		// A stamp at (64, 32) — ON the shared boundary x=64 — with a 4m
+		// halo: BOTH tiles dirty.
+		sys.InvalidateRegion(101, 64.0f, glm::vec2(63.5f, 31.5f),
+			glm::vec2(64.5f, 32.5f), 4.0f);
+		sys.UpdateResidency(101, 64.0f, rects, 1, deps2, 16, acts);
+		Check(acts.size() == 2, "place.res.halo-dirties-both");
+		for (const auto& a : acts) {
+			uint64_t gen = 0;
+			sys.GenerateTilePending(a.key.programId, a.key.tile, a.deps, gen);
+			sys.PublishActivation(a.key, a.generation);
+		}
+	}
+
+	// LRU eviction: the interest MOVES to a new tile; the old residents
+	// (outside the interest) evict beyond budget.
+	{
+		// Boundary-aligned far rect: EXACTLY tile {16, 16} (the
+		// half-open rule keeps it a single activation).
+		const glm::vec4 far1[1] = { glm::vec4(1024.0f, 1024.0f, 1088.0f, 1088.0f) };
+		sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts); // budget 2
+		Check(acts.size() == 1 && acts[0].key.tile == TileID{ 16, 0, 16 },
+			"place.res.new-interest-activates");
+		uint64_t gen = 0;
+		sys.GenerateTilePending(101, acts[0].key.tile, deps2, gen);
+		sys.PublishActivation(acts[0].key, acts[0].generation);
+		// Old non-interest residents evicted (3 residents, budget 2).
+		Check(sys.residentTileCount() == 2, "place.res.evict-beyond-budget");
+	}
+
+	// ---- the GPU slot map. ----
+	{
+		PlacementGpuTiles gpuTiles;
+		gpuTiles.Init(2);
+		Check(gpuTiles.Valid(), "place.gpu-tiles-init");
+		const TileKey kA{ TileID{ 0, 0, 0 }, 101 };
+		const TileKey kB{ TileID{ 1, 0, 0 }, 101 };
+		int32_t sa = gpuTiles.Claim(kA);
+		int32_t sb = gpuTiles.Claim(kB);
+		Check(sa == 0 && sb == 1, "place.gpu-tiles-claim-free");
+		// All slots mid-generation: a third claim refuses.
+		Check(gpuTiles.Claim(TileKey{ TileID{ 2, 0, 0 }, 101 }) == -1,
+			"place.gpu-tiles-full-refuses");
+		// Publish A; find A back; a stale finish refuses.
+		Check(gpuTiles.Finish(sa, kA, gpuTiles.slots[size_t(sa)].generation),
+			"place.gpu-tiles-finish-ok");
+		Check(gpuTiles.Find(kA) == sa, "place.gpu-tiles-find");
+		const uint64_t staleGen = gpuTiles.slots[size_t(sa)].generation + 999;
+		Check(!gpuTiles.Finish(sa, kA, staleGen), "place.gpu-tiles-stale-refuses");
+		// Claim C reassigns the PUBLISHED slot (LRU) — A's generation
+		// bumped; B (still generating) stays.
+		const TileKey kC{ TileID{ 2, 0, 0 }, 101 };
+		int32_t sc = gpuTiles.Claim(kC);
+		Check(sc == sa, "place.gpu-tiles-evict-published-lru");
+		Check(gpuTiles.Find(kA) == -1, "place.gpu-tiles-evicted-not-found");
+		// A stale FINISH for the EVICTED tenant (delayed) refuses.
+		Check(!gpuTiles.Finish(sc, kA, 1), "place.gpu-tiles-evicted-finish-refuses");
+		Check(gpuTiles.Finish(sc, kC, gpuTiles.slots[size_t(sc)].generation),
+			"place.gpu-tiles-new-tenant-finish");
+		// Release + re-find.
+		gpuTiles.Release(sc);
+		Check(gpuTiles.Find(kC) == -1, "place.gpu-tiles-released");
+	}
+
+	// ---- the full world flow: fake world -> tile domain -> meadow. ----
+	{
+		using namespace smvk::terrain;
+		// A 16m world (4x4 H-tiles x 4 texels, 1m/texel) + 2x2 S-tiles
+		// (8 texels). Tiles of 8m -> a 2x2 placement-tile grid.
+		TerrainHField field;
+		// The LOCKED pack contract: worldY = kTerrainBaseY + h01 *
+		// kTerrainRange (terrain_pack.h) — the meta mirrors the same
+		// values in production; the harvest decodes through the
+		// constants. Design the ramp for ~30deg slopes under them.
+		field.meta.worldSize = 16.0f;
+		field.meta.originX = -8.0f;
+		field.meta.originZ = -8.0f;
+		field.meta.hTileSize = 4.0f;
+		field.meta.hRes = 4;
+		field.meta.gBlock = 8.0f;
+		field.meta.baseY = smvk::terrain::kTerrainBaseY;
+		field.meta.range = smvk::terrain::kTerrainRange;
+		const uint32_t nH = field.tilesPerAxis();
+		field.tiles.assign(size_t(nH) * nH,
+			std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+		for (uint32_t tz = 0; tz < nH; ++tz)
+			for (uint32_t tx = 0; tx < nH; ++tx) {
+				auto& tile = field.tiles[size_t(tz) * nH + tx];
+				for (uint32_t py = 0; py < field.meta.hRes; ++py)
+					for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+						// World texel (tx*4+pxx, tz*4+py): a smooth plane —
+						// ~30deg under the LOCKED range (420m), so the
+						// SlopeMask(20,60) band gates meaningfully.
+						const float h01 =
+							(float)(tx * 4 + pxx + tz * 4 + py) / 1024.0f;
+						uint8_t r, g;
+						EncodeRG16(h01, r, g);
+						const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+						tile[o] = r; tile[o + 1] = g;
+					}
+			}
+		std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+		const uint32_t sRes = 8;
+		for (auto& t : sTiles)
+			t.assign(size_t(sRes) * sRes * 4, 0);
+		for (uint32_t tz = 0; tz < 2; ++tz)
+			for (uint32_t tx = 0; tx < 2; ++tx) {
+				auto& tile = sTiles[size_t(tz) * 2 + tx];
+				for (uint32_t py = 0; py < sRes; ++py)
+					for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+						const size_t o = (size_t(py) * sRes + pxx) * 4;
+						tile[o + 0] = uint8_t((pxx * 24 + py * 8) % 256); // ch0 paint
+						tile[o + 3] = 255;                              // ch3 full
+					}
+			}
+		WorldMaskGrid grid2{ &sTiles, 2, sRes };
+
+		// Build ONE tile's domain (tile (0,0) covers [0,8) x [0,8) —
+		// inside the world's [-8,8] span; the world-covering 8m tiles are
+		// (-1,-1)..(0,0), so this exercises NEGATIVE-adjacent coords).
+		WorldTileData td;
+		const float halo = WorldTileHaloMeters(2.0f, 1.0f);
+		Check(halo == 2.0f, "place.res.halo-math");
+		Check(BuildWorldTileDomain(field, grid2, 8.0f, 0, 0, halo, td),
+			"place.res.tile-domain-built");
+		// The tile rect (world): [8-8, 16-8) = [0, 8] — the extent.
+		Check(td.domain.extentMin == glm::vec2(0.0f, 0.0f)
+			&& td.domain.extentMax == glm::vec2(8.0f, 8.0f),
+			"place.res.tile-extent");
+		Check(td.heights.valid() && td.eco.valid() && td.eco.channels == 4,
+			"place.res.tile-data-valid");
+		// The halo grew the heights window past the 8m tile.
+		Check(td.heights.width > 8 && td.heights.height > 8,
+			"place.res.tile-window-halo");
+
+		// The meadow layer OVER the tile: the binding REPOINTS at the
+		// per-tile data, then the pending/publish residency flow.
+		PlacementSystem sys2;
+		PlacementSystem::LayerBinding lb;
+		lb.programId = 202;
+		lb.program.graphSeed = 99;
+		lb.program.nodeId = 5;
+		lb.program.instrs = {
+			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 20.0f, 60.0f, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		};
+		lb.program.acceptIndex = 2;
+		lb.domainKind = DomainKind::Heightfield;
+		lb.heightfield = &td.domain;
+		lb.ecotope = &td.eco;
+		lb.config.candidatesPerTile = 256;
+		Prototype p; p.weight = 1.0f;
+		lb.prototypes.add(p);
+		sys2.registerLayer(lb);
+		// Map the WORLD tile (0,0) onto the placement TileID (0,0) via
+		// the residency tick (interest = the tile rect).
+		const glm::vec4 tRect[1] = { glm::vec4(0.0f, 0.0f, 8.0f, 8.0f) };
+		std::vector<PlacementSystem::ActivationRequest> acts2;
+		sys2.UpdateResidency(202, 8.0f, tRect, 1, deps, 4, acts2);
+		Check(acts2.size() == 1 && acts2[0].key.tile == TileID{ 0, 0, 0 },
+			"place.res.world-tile-activation");
+		uint64_t gen = 0;
+		Check(sys2.GenerateTilePending(202, acts2[0].key.tile, deps, gen),
+			"place.res.world-meadow-pending");
+		Check(sys2.PublishActivation(acts2[0].key, acts2[0].generation),
+			"place.res.world-meadow-publish");
+		const PlacementTile* tile =
+			sys2.findTile(202, acts2[0].key.tile);
+		Check(tile && !tile->instances.empty(), "place.res.world-meadow-populated");
+		// Every instance lives INSIDE the tile's half-open rect (the
+		// seam rule: neighbors never duplicate borders).
+		bool inside = tile && !tile->instances.empty();
+		if (inside)
+			for (const RenderInstance& in : tile->instances)
+				if (in.position.x < td.domain.extentMin.x
+					|| in.position.x >= td.domain.extentMax.x
+					|| in.position.z < td.domain.extentMin.y
+					|| in.position.z >= td.domain.extentMax.y) {
+					inside = false; break;
+				}
+		Check(inside, "place.res.instances-inside-half-open-tile");
+		// Regeneration determinism (unload/reload stability): a repaint
+		// stamp INSIDE the tile + the halo dirties + regenerates.
+		const size_t n0 = tile ? tile->instances.size() : 0;
+		sys2.InvalidateRegion(202, 8.0f, glm::vec2(3.0f, 3.0f),
+			glm::vec2(5.0f, 5.0f), halo);
+		sys2.UpdateResidency(202, 8.0f, tRect, 1, deps, 4, acts2);
+		Check(acts2.size() == 1 && acts2[0].regenerate,
+			"place.res.world-repaint-regen");
+		uint64_t gen2 = 0;
+		sys2.GenerateTilePending(202, acts2[0].key.tile, deps, gen2);
+		sys2.PublishActivation(acts2[0].key, acts2[0].generation);
+		const PlacementTile* tile2 = sys2.findTile(202, acts2[0].key.tile);
+		bool stable = tile2 && tile2->instances.size() == n0;
+		if (stable)
+			for (size_t i = 0; i < n0; ++i)
+				if (tile2->instances[i].position != tile->instances[i].position
+					|| tile2->instances[i].prototypeId != tile->instances[i].prototypeId
+					|| tile2->instances[i].stableLow != tile->instances[i].stableLow) {
+					stable = false; break;
+				}
+		Check(stable, "place.res.world-repaint-stable");
+	}
+}
+
 int main() {
-	TestStableDeterminism();
-	TestChannels();
+	TestStableDeterminism();	TestChannels();
 	TestPrototypeSelect();
 	TestPointsSoA();
 	TestRenderInstanceAbi();
@@ -2215,6 +2539,7 @@ int main() {
 	TestTerrainBrush();
 	TestTerrainRaycast();
 	TestWorldBridge();
+	TestWorldResidency();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }
