@@ -273,20 +273,24 @@ compile_shaders(
         "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
         "default_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
         "default_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
-        # GI permutations (SPEC_GI_VARIANT specialization constant)
+        # GI permutations (SPEC_GI_VARIANT specialization constant).
+        # The .gi1 (GI_OCTREE) row is RETIRED with the .sggi runtime — the ID
+        # stays reserved (the shared specialization ABI never renumbers);
+        # the WorldRenderer's module loop skips it and stale .gi1/.gi1std
+        # .spv in old build trees simply never load.
+        # GI_FULL is RENAMED GI_VOLUMES (same ID 3 — the octree base it
+        # stacked over is gone; volumes-over-sky).
         "default_lit.frag.hlsl|.gi0|GI_NONE=1"
-        "default_lit.frag.hlsl|.gi1|GI_OCTREE=1"
         "default_lit.frag.hlsl|.gi2|GI_REGULAR=1"
-        "default_lit.frag.hlsl|.gi3|GI_FULL=1"
+        "default_lit.frag.hlsl|.gi3|GI_VOLUMES=1"
         # Standard-material twins (MAT_STANDARD: no layered machinery —
         # the 3 extra MaterialValues + per-layer texture loops compile
         # out; GfxRenderer binds them for layerMaterials.w <= 1, the
         # monolith keeps layered materials — fail-safe fallback).
         "default_lit.frag.hlsl|.std|MAT_STANDARD=1"
         "default_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
-        "default_lit.frag.hlsl|.gi1std|GI_OCTREE=1|MAT_STANDARD=1"
         "default_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
-        "default_lit.frag.hlsl|.gi3std|GI_FULL=1|MAT_STANDARD=1"
+        "default_lit.frag.hlsl|.gi3std|GI_VOLUMES=1|MAT_STANDARD=1"
         # Mesh-path FS twins (gfxmesh_lit: material from a flat varying):
         # same SG/GI permutations, selected exactly like the indexed leg
         # (see GfxRenderer::MeshProgramFor).
@@ -295,14 +299,12 @@ compile_shaders(
         "gfxmesh_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
         "gfxmesh_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
         "gfxmesh_lit.frag.hlsl|.gi0|GI_NONE=1"
-        "gfxmesh_lit.frag.hlsl|.gi1|GI_OCTREE=1"
         "gfxmesh_lit.frag.hlsl|.gi2|GI_REGULAR=1"
-        "gfxmesh_lit.frag.hlsl|.gi3|GI_FULL=1"
+        "gfxmesh_lit.frag.hlsl|.gi3|GI_VOLUMES=1"
         "gfxmesh_lit.frag.hlsl|.std|MAT_STANDARD=1"
         "gfxmesh_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
-        "gfxmesh_lit.frag.hlsl|.gi1std|GI_OCTREE=1|MAT_STANDARD=1"
         "gfxmesh_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
-        "gfxmesh_lit.frag.hlsl|.gi3std|GI_FULL=1|MAT_STANDARD=1"
+        "gfxmesh_lit.frag.hlsl|.gi3std|GI_VOLUMES=1|MAT_STANDARD=1"
         # SSR compose debug twin (SSR_DEBUG_CONTRIB): the composite's
         # EXACT add term on a second attachment (SV_Target1) - bound only
         # when TOURMALINE_SSR_DEBUG=1 arms m_debugSsr (the WorldRenderer

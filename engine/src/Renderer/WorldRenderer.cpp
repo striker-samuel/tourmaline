@@ -663,14 +663,6 @@ namespace engine {
 // definitions follow.
 namespace engine {
 
-	// The fog-GI world-field source's SgGiVolume pointer (set by
-	// LoadGiOctree when the .sggi loads; null = no GI data — the
-	// fog-GI brick source reports empty and the shader falls to the
-	// sky mean). Declared here (file scope, before every user: the
-	// LoadGiOctree setter at ~2880 and the WorldFogGiMeanSource reader
-	// in the anonymous namespace at ~3960).
-	static const smvk::gi::SgGiVolume* g_fogGiVolume = nullptr;
-
 	// HOST (the App this element rides on - see the header): cheap
 	// construction, everything resolves at onAttach (Run time, after the
 	// host's Initialize). The dtor only releases what onDetach did not
@@ -1238,36 +1230,20 @@ namespace engine {
 		}
 		// GI debug view for headless runs (same modes the R key cycles;
 		// F8 is the legacy alias): 0 off, 1 baked irradiance,
-		// 2 source palette, 3 isolated level (the level byte selects
-		// it - TOURMALINE_GI_DEBUG_LEVEL), 4 dominant level.
+		// 2 source palette. (The octree's level-isolation/argmax modes
+		// 3/4 are RETIRED with the .sggi walker — a pinned 3/4 reads as
+		// the flat-irradiance view.)
 		if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
-			if (mode >= 0 && mode <= 4)
+			if (mode >= 0 && mode <= 2)
 				m_giDebug = mode;
+			else if (mode == 3 || mode == 4) {
+				m_giDebug = 1;
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG mode "
+					<< mode << " retired with the octree — flat view\n";
+			}
 			else
-				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
-		}
-		// Isolated-level selector for GI debug mode 3 (headless twin of
-		// the panel slider).
-		if (const char* giLvlEnv = std::getenv("TOURMALINE_GI_DEBUG_LEVEL")) {
-			const int lvl = std::atoi(giLvlEnv);
-			if (lvl >= 0 && lvl <= 7)
-				m_giDebugLevel = lvl;
-			else
-				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG_LEVEL wants 0..7\n";
-		}
-		// Probe-point overlay for headless runs (same as the panel
-		// checkbox; draws the probe lattice colored by octree level).
-		if (const char* giPtsEnv = std::getenv("TOURMALINE_GI_POINTS")) {
-			if (std::atoi(giPtsEnv) != 0)
-				m_giShowProbes = true;
-		}
-		// Occlusion cull for the probe overlay (same as the panel
-		// checkbox; hides probes behind scene geometry via the CPU pick
-		// BVH so captures show only probes that can affect the view).
-		if (const char* giOccEnv = std::getenv("TOURMALINE_GI_OCCLUDE")) {
-			if (std::atoi(giOccEnv) != 0)
-				m_giProbeOcclusionCull = true;
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..2\n";
 		}
 
 		// Tear-free VSync without the strict-FIFO 30fps lock (see PresentMode);
@@ -1464,11 +1440,15 @@ namespace engine {
 			}
 		}
 
-		// GI permutation lit FS variants: each permutation compiles a different
-		// GI path (none/octree/regular/full). The app selects the matching
-		// program at draw time based on loaded GI assets.
+		// GI permutation lit FS variants: each permutation compiles a
+		// different GI path (none/[retired]/regular/volumes — index 1
+		// is the RESERVED octree ID whose .spv no longer builds; the
+		// slot stays empty, nothing selects it). The app selects the
+		// matching program at draw time based on loaded GI assets.
 		// Non-fatal: missing variants fall back to the base mainProgram.
 		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (gi == 1u)
+				continue; // the retired octree permutation (ABI-reserved ID)
 			try {
 				const std::string path = std::string("content/shaders/default_lit.frag.hlsl.gi")
 					+ std::to_string(gi) + ".spv";
@@ -1508,6 +1488,8 @@ namespace engine {
 				" - non-layered materials keep the monolith\n";
 		}
 		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (gi == 1u)
+				continue; // the retired octree permutation (ABI-reserved ID)
 			try {
 				const std::string path = std::string("content/shaders/default_lit.frag.hlsl.gi")
 					+ std::to_string(gi) + "std.spv";
@@ -1576,7 +1558,8 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_vertexcolor_debug unavailable - F6 falls back to Lit\n";
 		}
-		// GI permutation lit programs (one per GI variant: NONE/OCTREE/REGULAR/FULL).
+		// GI permutation lit programs (one per GI variant:
+		// NONE/[retired octree]/REGULAR/VOLUMES — index 1 stays empty).
 		// Created if the corresponding fragment module loaded successfully.
 		// The app selects the matching program at draw time based on loaded GI assets.
 		for (uint32_t gi = 0; gi < 4; ++gi) {
@@ -2286,24 +2269,14 @@ namespace engine {
 		m_fpRenderer.ConfigureGbuffer(m_resources.gbufferProgram,
 			m_resources.gbufferMaskedProgram);
 
-		// SG-GI baked probe volume: RETIRED AT RUNTIME (stage 1 of the
-		// legacy-.sggi retirement — see tourmaline_octree_retirement_
-		// plan.md). The octree never loads: GiActive() stays false so
-		// frame.giEnabled == 0, and the GI_FULL variant's shader handles
-		// the no-octree case via the volume/sky fallback. The CPU/GPU
-		// state is EXPLICITLY reset here so a scene rebind can never
-		// resurrect a stale octree pointer, buffer address or texture
-		// slots from an earlier load (the loader itself stays compiled —
-		// stage 3 removes it).
-		m_giLoaded = false;
-		m_giOctree = smvk::gi::SgGiVolume{};
-		m_giGridBuffer = {};
-		m_giGridAddress = 0;
-		m_giLevelTextures.clear();
-		std::fill(std::begin(m_giLevelLayers), std::end(m_giLevelLayers),
-			UINT32_MAX);
-		std::cerr << "[GI] legacy .sggi octree: not loaded (retired at "
-			"runtime — convex GI volumes + sky IBL carry the ambient)\n";
+		// SG-GI baked probe volume: the legacy .sggi octree is DELETED
+		// (stage 3 of the octree retirement — tourmaline_octree_
+		// retirement_plan.md): no loader, no members, no state to reset —
+		// a scene rebind has nothing octree-shaped to resurrect. The
+		// frame's gi* block stays the zeroed legacy ABI; the ambient
+		// rides the convex GI volumes + the sky IBL.
+		std::cerr << "[GI] legacy .sggi octree: retired (deleted — convex"
+			" GI volumes + sky IBL carry the ambient)\n";
 		// SG regular 3D probe volumes (DYNAMIC objects): artist OBB
 		// grids from tools/gi_baker --regular-out. Missing manifest is
 		// the normal state (no bake yet) - non-fatal.
@@ -2719,246 +2692,6 @@ namespace engine {
 			<< (bc6h ? "bc6h" : "rgba16f") << ")\n";
 	}
 
-	void WorldRenderer::LoadGiOctree() {
-		m_giLoaded = false;
-		m_giOctree = smvk::gi::SgGiVolume{};
-		m_giGridBuffer = {};
-		m_giGridAddress = 0;
-		m_giLevelTextures.clear();
-		std::fill(std::begin(m_giLevelLayers), std::end(m_giLevelLayers),
-			UINT32_MAX);
-
-		// GI-less scenes (e.g. scanlands): the flag gates keep the ambient
-		// honest (probes simply never enable); DegradeAmbientForMissing
-		// Sources() after the loaders fixes single-source modes. This
-		// lambda only logs.
-		auto fallbackSky = [&] {
-			std::cerr << "[GI] ambient keeps its mode; per-source flags gate\n";
-		};
-		// The probe binding names the artifact: scene-bound paks carry
-		// the FULL vfs path (gi/<scene>.sggi — the tour giAsset hard
-		// binding), legacy paks the bare bake stem (gi/<stem>.sggi —
-		// the loader adds the prefix + extension). NO scene-id/pak-
-		// filename guessing: a binding-less pak simply has no baked
-		// volume and says so below.
-		if (m_giProbeName.empty()) {
-			std::cerr << "[GI] no probe binding (bake with "
-				"tools/gi_baker/GiBaker; the bake stamps the tour's "
-				"giAsset records and the pak cooker binds them)\n";
-			fallbackSky();
-			return;
-		}
-		const std::string vfsPath = m_giProbeName.find('/') !=
-				std::string::npos
-			? m_giProbeName
-			: std::string("gi/") + m_giProbeName + ".sggi";
-		const std::span<const uint8_t> bytes = ReadBakeBytes(vfsPath);
-		if (bytes.empty()) {
-			std::cerr << "[GI] no baked volume '" << vfsPath
-				<< "' - sky IBL ambient (bake with tools/gi_baker/GiBaker)\n";
-			fallbackSky();
-			return;
-		}
-		std::string err;
-		if (!m_giOctree.ReadFromMemory(bytes, err)) {
-			std::cerr << "[GI] volume rejected: " << err << "\n";
-			fallbackSky();
-			return;
-		}
-
-		// v2 requirement: the dense runtime layers - the shader
-		// trilinear-filters them (the probe-list walk is gone), so a file
-		// without them has nothing to serve (v1 files die on the version
-		// gate above; a bake that skipped BakeDenseLayers lands here).
-		bool anyDense = false;
-		for (const auto& dl : m_giOctree.denseLevels)
-			anyDense = anyDense || dl.present;
-		if (!anyDense) {
-			std::cerr << "[GI] volume has no dense layers - re-bake with"
-				" GiBaker (the runtime trilinear path needs them)\n";
-			fallbackSky();
-			return;
-		}
-		// Device gate (the SupportsEvsm lesson: capability, not
-		// convention - BC6H 2D support proves nothing about sampled+linear
-		// BC6H 3D): degrade to sky IBL instead of guessing.
-		if (!m_context->SupportsBc6h3DSampling()) {
-			std::cerr << "[GI] device lacks sampled+linear BC6H 3D -"
-				" dense layers unusable (sky IBL ambient)\n";
-			fallbackSky();
-			return;
-		}
-
-		// Grid header only: the shader reads each level's volumeMin/
-		// cellSize/dims through frame.giGrid. PackGpu also packs the
-		// probe/cell/index payloads - transient CPU vectors, discarded
-		// right here (the GPU probe arrays are gone with the walk).
-		smvk::gi::SgGiGridGpu gridData{};
-		{
-			std::vector<smvk::gi::SgProbeGpu> probeData;
-			std::vector<uint32_t> cellData;
-			std::vector<uint32_t> indexData;
-			m_giOctree.PackGpu(probeData, gridData, cellData, indexData);
-			if (probeData.empty()) {
-				std::cerr << "[GI] volume has no probes - ignored\n";
-				fallbackSky();
-				return;
-			}
-		}
-		constexpr smvk::PipelineStage kGiStages =
-			smvk::PipelineStage(smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment);
-		m_giGridBuffer = m_context->CreateBuffer(
-			sizeof(smvk::gi::SgGiGridGpu), smvk::BufferType_Storage, "sggi grid");
-		m_context->UploadDataToBuffer(m_giGridBuffer, &gridData,
-			sizeof(gridData), kGiStages, smvk::AccessFlags::ShaderRead);
-		m_giGridAddress = m_context->GetBufferDeviceAddress(m_giGridBuffer);
-
-		// Dense layers: cooked payloads straight to images - no resample,
-		// no BC6H encode at load (GiBaker baked the visibility-weighted
-		// blend and compressed it; the runtime only creates images). Per
-		// level: 9 SG-lobe BC6H payloads + 1 R16F weight volume, all at
-		// the REAL dims (no padding on ANY axis - BC6H blocks are 4x4x1
-		// and partial edge blocks are legal, so the VkImage is exactly
-		// dims; the natural uvw transform follows in the sampler).
-		// Slots ride frame.giLevelLayers (level * 10 + layer;
-		// UINT32_MAX = absent level, skipped by the sampler).
-		{
-			const auto& levels = m_giOctree.denseLevels;
-			const uint32_t levelCount = uint32_t(std::min<size_t>(
-				levels.size(), kGiDenseMaxLevels));
-			uint32_t denseLevels = 0;
-			size_t denseBytes = 0;
-			for (uint32_t lvl = 0; lvl < levelCount; ++lvl) {
-				const smvk::gi::SgGiVolume::DenseLevel& dl = levels[lvl];
-				if (!dl.present)
-					continue;
-				// Rollback point: a failed level's already-created
-				// textures are exactly the vector tail - erasing frees
-				// them (Holder is RAII), so a half-created level leaks
-				// nothing for the GI lifetime.
-				const size_t texStart = m_giLevelTextures.size();
-				bool levelOk = true;
-				for (uint32_t lobe = 0;
-					lobe < smvk::gi::kSgLobeCount && levelOk; ++lobe) {
-					smvk::ImageCreateInfo ci{};
-					ci.type = smvk::ImageType::Image3D;
-					ci.extent = { dl.dims[0], dl.dims[1], dl.dims[2] };
-					ci.format = smvk::Format::BC6H_UFloat;
-					ci.usage = smvk::ImageUsage::Sampled
-						| smvk::ImageUsage::TransferDst;
-					ci.mipLevels = 1;
-					ci.arrayLayers = 1;
-					ci.name = "gi dense lobe";
-					auto tex = m_context->CreateTexture(ci,
-						dl.lobeBlocks[lobe].data());
-					if (tex.empty()) {
-						std::cerr << "[GI] dense level " << lvl
-							<< " lobe " << lobe << " texture failed\n";
-						levelOk = false;
-						break;
-					}
-					m_giLevelLayers[lvl * kGiDenseLayersPerLevel + lobe] =
-						m_context->GetTextureBindlessIndex(tex);
-					m_giLevelTextures.push_back(std::move(tex));
-				}
-				if (levelOk) {
-					smvk::ImageCreateInfo ci{};
-					ci.type = smvk::ImageType::Image3D;
-					ci.extent = { dl.dims[0], dl.dims[1], dl.dims[2] };
-					ci.format = smvk::Format::R16_Float;
-					ci.usage = smvk::ImageUsage::Sampled
-						| smvk::ImageUsage::TransferDst;
-					ci.mipLevels = 1;
-					ci.arrayLayers = 1;
-					ci.name = "gi dense weight";
-					auto tex = m_context->CreateTexture(ci, dl.weight.data());
-					if (tex.empty()) {
-						std::cerr << "[GI] dense level " << lvl
-							<< " weight texture failed\n";
-						levelOk = false;
-					}
-					else {
-						m_giLevelLayers[lvl * kGiDenseLayersPerLevel
-							+ smvk::gi::kSgLobeCount] =
-							m_context->GetTextureBindlessIndex(tex);
-						m_giLevelTextures.push_back(std::move(tex));
-					}
-				}
-				if (!levelOk) {
-					// Free the level's partial set + revert its slots
-					// (UINT32_MAX = absent; the sampler skips it).
-					m_giLevelTextures.resize(texStart);
-					for (uint32_t t = 0; t < kGiDenseLayersPerLevel; ++t)
-						m_giLevelLayers[lvl * kGiDenseLayersPerLevel + t] =
-						UINT32_MAX;
-					continue;
-				}
-				// Bytes counted only for fully-created levels (failed
-				// levels own nothing after the rollback above).
-				++denseLevels;
-				denseBytes += dl.Bytes();
-			}
-			std::cerr << "[GI] dense layers: " << denseLevels << "/"
-				<< levelCount << " levels ("
-				<< (denseBytes / 1024) << " KiB BC6H+R16F)\n";
-			if (denseLevels == 0) {
-				std::cerr << "[GI] no usable dense levels - sky IBL ambient\n";
-				fallbackSky();
-				return;
-			}
-		}
-		m_giLoaded = true;
-		// Wire the fog-GI world-field source (the CPU reference walk
-		// evaluates the probe mean per brick texel — see
-		// WorldFogGiMeanSource above).
-		g_fogGiVolume = &m_giOctree;
-
-		// CPU-side sanity: the volume must cover the scene interior.
-		if (const char* giDbg = std::getenv("TOURMALINE_GI_DEBUG")) {
-			(void)giDbg;
-			// World mesh AABB from the RESOLVED runtime scene vs the volume
-			// bounds: any transform/axis mismatch between the bake source
-			// and the app world shows up here as diverging bounds.
-			glm::vec3 worldMin(1e30f), worldMax(-1e30f);
-			for (const auto& [node, meshIdx] : m_world->scene.meshForNode) {
-				const smvk::StaticMesh* mesh = m_world->GetMesh(meshIdx);
-				if (!mesh)
-					continue;
-				const glm::mat4& g = m_world->scene.globalTransform[node];
-				const glm::vec3 mn = glm::vec3(g * glm::vec4(mesh->geometry.aabbMin, 1.0f));
-				const glm::vec3 mx = glm::vec3(g * glm::vec4(mesh->geometry.aabbMax, 1.0f));
-				worldMin = glm::min(worldMin, mn);
-				worldMax = glm::max(worldMax, mx);
-			}
-			std::cerr << "[GI] dbg: volume bounds (" << m_giOctree.boundsMin.x
-				<< "," << m_giOctree.boundsMin.y << "," << m_giOctree.boundsMin.z
-				<< ")..(" << m_giOctree.boundsMax.x << "," << m_giOctree.boundsMax.y
-				<< "," << m_giOctree.boundsMax.z << ")\n";
-			std::cerr << "[GI] dbg: world   bounds (" << worldMin.x << "," << worldMin.y
-				<< "," << worldMin.z << ")..(" << worldMax.x << "," << worldMax.y
-				<< "," << worldMax.z << ")\n";
-			const glm::vec3 center = (m_giOctree.boundsMin + m_giOctree.boundsMax) * 0.5f;
-			glm::vec3 amps[smvk::gi::kSgLobeCount];
-			const bool covered = m_giOctree.Sample(center, amps);
-			const bool camCovered = m_giOctree.Sample(
-				m_cameraPositioner.cameraPosition_, amps);
-			std::cerr << "[GI] dbg: volume-center covered=" << (covered ? 1 : 0)
-				<< " amp0=(" << amps[0].r << "," << amps[0].g << "," << amps[0].b << ")"
-				<< "  camera covered=" << (camCovered ? 1 : 0) << "\n";
-			for (uint32_t lvl = 0; lvl < m_giOctree.levelCount; ++lvl) {
-				std::cerr << "[GI] dbg: level " << lvl
-					<< " cellSize=" << m_giOctree.cellSize[lvl];
-				if (lvl < m_giOctree.levelStats.size())
-					std::cerr << " probes=" << m_giOctree.levelStats[lvl].probeCount
-					<< " cells=" << m_giOctree.levelStats[lvl].cellCount;
-				std::cerr << "\n";
-			}
-		}
-
-		std::cerr << "[GI] loaded '" << vfsPath << "': probes="
-			<< m_giOctree.probes.size() << " levels=" << m_giOctree.levelCount
-			<< " gpu=" << (m_giOctree.GpuBytes() / 1024) << " KiB\n";
-	}
 
 	// ---------------------------------------------------------------------------
 	// Reflection cubemaps for specular IBL (tools/cubemap_baker output).
@@ -3823,18 +3556,18 @@ namespace engine {
 	// sky is off ON PURPOSE), so it renders direct-only where nothing
 	// is baked rather than degrading into the sky it excluded.
 	if (m_ambientMode == AmbientMode::Lightmaps && !m_lmLoaded) {
-		m_ambientMode = (m_giLoaded || m_regLoaded || m_giVolumesLoaded)
+		m_ambientMode = (m_regLoaded || m_giVolumesLoaded)
 			? AmbientMode::Probes : AmbientMode::SkyIbl;
 		std::cerr << "[Scene] no lightmaps - ambient degraded to "
 			<< AmbientModeName(m_ambientMode) << "\n";
 	} else if (m_ambientMode == AmbientMode::Probes
-		&& !m_giLoaded && !m_regLoaded && !m_giVolumesLoaded) {
+		&& !m_regLoaded && !m_giVolumesLoaded) {
 		m_ambientMode = m_lmLoaded
 			? AmbientMode::Lightmaps : AmbientMode::SkyIbl;
 		std::cerr << "[Scene] no probes - ambient degraded to "
 			<< AmbientModeName(m_ambientMode) << "\n";
 	} else if (m_ambientMode == AmbientMode::Baked
-		&& !m_lmLoaded && !m_giLoaded && !m_regLoaded && !m_giVolumesLoaded) {
+		&& !m_lmLoaded && !m_regLoaded && !m_giVolumesLoaded) {
 		// No demotion (direct-only is the honest output of the mode's
 		// contract), but never SILENTLY: an empty frame here looks like
 		// a broken bake, so the one-liner keeps the diagnosis obvious.
@@ -3938,128 +3671,6 @@ namespace engine {
 	};
 
 	WorldFogDensitySource g_fogDensitySource;
-
-	// ---------------------------------------------------------------------------
-	// The fog-GI radiance field source: evaluates the SG probe blend per
-	// brick texel (the CPU reference walk — SgGiVolume::Sample — the
-	// exact math the GPU's dense octree layers bake) and encodes the
-	// ISOTROPIC MEAN (0.124959 * SG amps) as BC6H RGB blocks. The pointer
-	// to the loaded SgGiVolume is set by the WorldRenderer at GI load
-	// (g_fogGiVolume, declared at file scope above — LoadGiOctree sets
-	// it); null = no GI data (the field's fallback = the sky mean).
-	// ---------------------------------------------------------------------------
-	class WorldFogGiMeanSource final : public worldfields::IWorldFieldBrickSource
-	{
-	public:
-		bool GenerateBrick(const worldfields::WorldFieldDesc& field,
-			uint32_t lod, int32_t x, int32_t y, int32_t z,
-			std::byte* payload, size_t payloadBytes) override
-		{
-			const uint32_t stored = worldfields::kBrickStoredRes;
-			const size_t blockBytes = worldfields::StoredBrickBlockBytes(
-				stored, 4, 4, 16); // BC6H
-			assert(payloadBytes == blockBytes
-				&& field.format == smvk::Format::BC6H_UFloat);
-			if (payloadBytes != blockBytes)
-				return false;
-			if (!g_fogGiVolume || g_fogGiVolume->levelCount == 0)
-				return false; // no GI data loaded
-
-			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
-			const glm::vec3 brickMin = field.originMeters
-				+ glm::vec3(float(x), float(y), float(z))
-					* (float(worldfields::kBrickInteriorRes) * voxel);
-			// Pack the mean as fp16 triples (the BC6H codec input).
-			std::vector<uint16_t> halves(size_t(stored) * stored * stored * 3);
-			constexpr float kMeanWeight = 0.124959f; // (1-e^-8)/8, VolGiMean
-			size_t i = 0;
-			for (uint32_t tz = 0; tz < stored; ++tz)
-				for (uint32_t ty = 0; ty < stored; ++ty)
-					for (uint32_t tx = 0; tx < stored; ++tx) {
-						const glm::vec3 texel = brickMin
-							+ glm::vec3(
-								float(tx) + 0.5f - float(worldfields::kBrickBorder),
-								float(ty) + 0.5f - float(worldfields::kBrickBorder),
-								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
-						glm::vec3 amps[smvk::gi::kSgLobeCount];
-						glm::vec3 mean(0.0f);
-						if (g_fogGiVolume->Sample(texel, amps)) {
-							for (uint32_t l = 0; l < smvk::gi::kSgLobeCount; ++l)
-								mean += amps[l];
-							mean *= kMeanWeight;
-						}
-						// PackHalf + clamp: BC6H-UF is unsigned (the same
-						// packing the dense bake uses).
-						halves[i++] = smvk::gi::PackHalf(
-							std::min(std::max(mean.r, 0.0f), 65504.0f));
-						halves[i++] = smvk::gi::PackHalf(
-							std::min(std::max(mean.g, 0.0f), 65504.0f));
-						halves[i++] = smvk::gi::PackHalf(
-							std::min(std::max(mean.b, 0.0f), 65504.0f));
-					}
-			return worldfields::Bc6hEncodeBrick(halves.data(), stored,
-				payload, payloadBytes) == payloadBytes;
-		}
-	};
-
-	WorldFogGiMeanSource g_fogGiMeanSource;
-
-	// ---------------------------------------------------------------------------
-	// The fog-GI COVERAGE field source: encodes the SG probe coverage
-	// signal (covered vs uncovered) as BC4 bricks. The paired sampler
-	// (SampleFogGi) fetches this alongside the radiance atlas — the
-	// coverage channel distinguishes a genuinely dark covered voxel
-	// (radiance ~0, coverage ~1: use the dark value) from an uncovered
-	// position (coverage ~0: fall to the sky mean) — BC6H RGB cannot
-	// carry that in alpha. v1 encodes the binary covered/uncovered from
-	// the CPU reference walk (SgGiVolume::Sample's bool); the gradual
-	// weight-proportional fade at walls is a refinement (the binary
-	// field already preserves the wall-rejection behavior: a position
-	// behind every covering probe's visibility = uncovered = sky).
-	// ---------------------------------------------------------------------------
-	class WorldFogGiCoverageSource final : public worldfields::IWorldFieldBrickSource
-	{
-	public:
-		bool GenerateBrick(const worldfields::WorldFieldDesc& field,
-			uint32_t lod, int32_t x, int32_t y, int32_t z,
-			std::byte* payload, size_t payloadBytes) override
-		{
-			const uint32_t stored = worldfields::kBrickStoredRes;
-			const size_t blockBytes = worldfields::StoredBrickBlockBytes(
-				stored, 4, 4, 8); // BC4 (8 B/block, same as the density field)
-			assert(payloadBytes == blockBytes
-				&& field.format == smvk::Format::BC4_UNorm);
-			if (payloadBytes != blockBytes)
-				return false;
-			if (!g_fogGiVolume || g_fogGiVolume->levelCount == 0)
-				return false;
-
-			const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
-			const glm::vec3 brickMin = field.originMeters
-				+ glm::vec3(float(x), float(y), float(z))
-					* (float(worldfields::kBrickInteriorRes) * voxel);
-			std::vector<uint8_t> texels(size_t(stored) * stored * stored);
-			size_t i = 0;
-			for (uint32_t tz = 0; tz < stored; ++tz)
-				for (uint32_t ty = 0; ty < stored; ++ty)
-					for (uint32_t tx = 0; tx < stored; ++tx) {
-						const glm::vec3 texel = brickMin
-							+ glm::vec3(
-								float(tx) + 0.5f - float(worldfields::kBrickBorder),
-								float(ty) + 0.5f - float(worldfields::kBrickBorder),
-								float(tz) + 0.5f - float(worldfields::kBrickBorder)) * voxel;
-						glm::vec3 amps[smvk::gi::kSgLobeCount];
-						// Binary coverage: covered = 255, uncovered = 0.
-						// The paired sampler's 0.02 threshold maps to ~5/255.
-						texels[i++] = g_fogGiVolume->Sample(texel, amps)
-							? 255 : 0;
-					}
-			return worldfields::Bc4EncodeBrick(texels.data(), stored,
-				payload, payloadBytes) == payloadBytes;
-		}
-	};
-
-	WorldFogGiCoverageSource g_fogGiCoverageSource;
 
 	} // namespace
 
@@ -4386,32 +3997,18 @@ namespace engine {
 		data.giIntensity = m_giIntensity;
 		data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu)
 			| (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
-		// SG-GI probe volume (grid BDA + the per-mode flag). GiActive() is
-		// the single gate so the shader flag and the buffers can never
-		// disagree. The giProbes/giCells/giIndices slots are legacy-zero
-		// (the dense BC6H layers replaced the probe-list walk; the fields
-		// stay for the FrameUniforms mirror layout).
-		if (GiActive()) {
-			data.giProbes = 0;
-			data.giGrid = m_giGridAddress;
-			data.giCells = 0;
-			data.giIndices = 0;
-			data.giEnabled = 1u;
-			// Dense layers (the BC6H Texture3D runtime path): the sampler
-			// trilinear-filters these (cooked payloads, baked by GiBaker).
-			for (uint32_t s = 0;
-				s < kGiDenseMaxLevels * kGiDenseLayersPerLevel; ++s)
-				data.giLevelLayers[s] = m_giLevelLayers[s];
-		}
-		else {
-			data.giProbes = 0;
-			data.giGrid = 0;
-			data.giCells = 0;
-			data.giIndices = 0;
-			data.giEnabled = 0u;
-			for (uint32_t& slot : data.giLevelLayers)
-				slot = UINT32_MAX;
-		}
+		// The LEGACY .sggi probe-volume frame block — RETIRED (stage 3 of
+		// the octree retirement): the loader is deleted, so the whole
+		// block is the zeroed ABI forever (giEnabled 0, no grid BDA, all
+		// layer slots absent). The live baked GI rides the convex GI
+		// volumes (giVolumes*) + the regular grids (reg*) + the sky.
+		data.giProbes = 0;
+		data.giGrid = 0;
+		data.giCells = 0;
+		data.giIndices = 0;
+		data.giEnabled = 0u;
+		for (uint32_t& slot : data.giLevelLayers)
+			slot = UINT32_MAX;
 		// SG 2D lightmaps (static draws; the atlas-space uv + per-draw lobe
 		// count ride the pak's vertex data / draw ring). Static/dynamic
 		// separation: lm/reg ride the same giIntensity scale as the probe
@@ -5804,7 +5401,6 @@ namespace engine {
 	// resolve through the same VFS overlay (pak or loose).
 	// ---------------------------------------------------------------------
 	void WorldRenderer::ResolveGiBakes() {
-		m_giProbeName.clear();
 		m_giLightmapName.clear();
 		m_giRegName.clear();
 		m_giVolumeManifestName.clear();
@@ -5829,7 +5425,12 @@ namespace engine {
 					continue;
 				switch (b.kind) {
 				case smvk::GiBinding::Kind::Probe:
-					takeFirst(m_giProbeName, b.name, "probe");
+					// The .sggi octree loader is RETIRED — the probe
+					// binding is acknowledged (kept for the log below +
+					// the pak binding enum ABI) but nothing consumes it.
+					std::cerr << "[GI] probe binding '" << b.name
+						<< "' acknowledged + ignored (the .sggi octree"
+							" is retired)\n";
 					break;
 				case smvk::GiBinding::Kind::Lightmap:
 					takeFirst(m_giLightmapName, b.name, "lightmap");
@@ -5868,11 +5469,10 @@ namespace engine {
 			if (clusterPtr && !clusterPtr->isDynamic)
 				walkCluster(*clusterPtr);
 		}
-		if (!m_giProbeName.empty() || !m_giLightmapName.empty()
+		if (!m_giLightmapName.empty()
 			|| !m_giRegName.empty() || !m_giVolumeManifestName.empty()
 			|| !m_giCubemapName.empty() || !m_giVolumePaths.empty())
-			std::cerr << "[GI] bake bindings: probe='"
-			<< m_giProbeName << "' lightmap='" << m_giLightmapName
+			std::cerr << "[GI] bake bindings: lightmap='" << m_giLightmapName
 			<< "' reg='" << m_giRegName << "' givolume='" << m_giVolumeManifestName
 			<< "' gi volumes=" << m_giVolumePaths.size()
 			<< " cubemap='" << m_giCubemapName << "'\n";
@@ -6830,8 +6430,9 @@ namespace engine {
 		// Pick acceleration needs CPU-side triangle soup. Cooked worlds
 		// carry none (pak clusters upload straight to the GPU; the glTF
 		// re-import source went away with the scene registry), so the
-		// BVH stays off and every consumer fails OPEN: probe culling
-		// draws unculled, the crosshair splat logs + no-ops.
+		// BVH stays off and every consumer fails OPEN: the crosshair
+		// splat logs + no-ops. (The octree probe-culling consumer died
+		// with the .sggi loader.)
 		if (m_decalPickState == 0) {
 			std::cerr << "[Pick] no CPU pick source (cooked worlds upload "
 				"straight to the GPU) - pick BVH off\n";
@@ -6839,35 +6440,6 @@ namespace engine {
 		}
 		return m_decalPickState > 0 && m_decalPickScene
 			&& !m_decalPickScene->Bvh().Empty();
-	}
-
-	bool WorldRenderer::GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos) {
-		// View-coherent cache: camera still => free; camera moved =>
-		// invalidate (recomputed lazily per drawn probe below).
-		const glm::mat4 view = m_camera.getViewMatrix();
-		if (m_giProbeCullCache.size() != m_giOctree.probes.size()
-			|| std::memcmp(&view, &m_giProbeCullView, sizeof(view)) != 0) {
-			m_giProbeCullView = view;
-			m_giProbeCullCache.assign(m_giOctree.probes.size(), 2);
-		}
-		char& slot = m_giProbeCullCache[probeIdx];
-		if (slot != 2)
-			return slot != 0;
-		bool visible = true; // fail-open: no pick geometry => draw unculled
-		if (EnsurePickScene()) {
-			const glm::vec3 p = m_giOctree.probes[probeIdx].position;
-			const glm::vec3 d = p - camPos;
-			const float dist = glm::length(d);
-			if (dist > 1e-4f) {
-				smvk::gi::TriangleBvh::Hit hit;
-				// Occluded when geometry blocks the ray well short of the
-				// probe (5 cm bias: probes float >= 3 cm off surfaces).
-				visible = !m_decalPickScene->Bvh().Raycast(
-					camPos, d / dist, dist - 0.05f, hit);
-			}
-		}
-		slot = visible ? 1 : 0;
-		return visible;
 	}
 
 	void WorldRenderer::SpawnDecalAtCrosshair() {
@@ -13316,9 +12888,8 @@ namespace engine {
 						if (ImGui::CollapsingHeader("Global Illumination + SSGI / AO", ImGuiTreeNodeFlags_DefaultOpen)) {
 							ImGui::TextDisabled("Ambient source: %s (N cycles)", AmbientModeName(m_ambientMode));
 							ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
-							if (!m_giLoaded && !m_regLoaded)
-								ImGui::TextDisabled("No baked GI: content/gi/%s.* missing",
-									m_sceneId.empty() ? "?" : m_sceneId.c_str());
+							if (!m_regLoaded && !m_giVolumesLoaded)
+								ImGui::TextDisabled("No baked GI: no .givolume set loaded");
 							// Lightmaps: proxy-baked .sglm atlas content (cook
 							// --lightmap: one voxel-remesh proxy bake,
 							// UV-transferred to the real meshes). Off until
@@ -13622,16 +13193,14 @@ namespace engine {
 								ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
 								ImGui::SliderFloat("Sun strength", &m_volumetricSun, 0.0f, 4.0f);
 								ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);
-								ImGui::Checkbox("GI probes ambient", &m_volumetricUseGi);
 								ImGui::Checkbox("Sun single-scatter", &m_volumetricUseSun);
 								ImGui::Checkbox("Convex volumes in fog GI", &m_volumetricUseGiVolumes);
 								ImGui::SliderFloat("Dither (banding guard)", &m_volumetricJitter, 0.0f, 1.0f);
 								ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
 								if (m_volumetricHeightFalloff > 0.0f)
 									ImGui::SliderFloat("Height base (m)", &m_volumetricHeightBase, -10.0f, 30.0f);
-								if (!m_giLoaded)
-									ImGui::TextDisabled("No probe volume: ambient falls back to sky IBL.");
-								ImGui::TextDisabled("Probes carry sky+sun bounce; sun adds HG forward scatter.");
+								ImGui::TextDisabled("Volumes carry sky+sun bounce; sun adds HG forward scatter.");
+								ImGui::TextDisabled("No .givolume set: the fog ambient falls back to sky IBL.");
 							}
 						}
 					}
@@ -14239,59 +13808,36 @@ namespace engine {
 						}
 						ImGui::TextDisabled("Lights draw in the UI pass (points = light color, spots diamond);\n"
 							"no depth test: occluded lights stay visible (debug intent)");
-						ImGui::Checkbox("Probe points overlay", &m_giShowProbes);
-						if (m_giShowProbes) {
-							ImGui::SliderFloat("Overlay radius (m)", &m_giProbePointMaxDist,
-								2.0f, 120.0f, "%.0f");
-							ImGui::TextDisabled("colors: L0 red -> L4 cyan -> L7 pink (coarse->fine)");
-								ImGui::Checkbox("Occlusion cull (CPU picking BVH)", &m_giProbeOcclusionCull);
-								if (m_giProbeOcclusionCull)
-									ImGui::TextDisabled("hides probes behind geometry using the CPU picking BVH (one-time import hitch)");
-						}
 						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
 						if (m_giShowVolumeBounds) {
-							ImGui::TextDisabled("octree AABB (cyan) + regular OBBs (green) +\n"
-								"convex grid AABBs (priority hue); no depth test,\n"
-								"drawn over the current view");
+							ImGui::TextDisabled("regular OBBs (green) + convex grid AABBs\n"
+								"(priority hue); no depth test, drawn over the view");
 						}
-						if (m_giLoaded || m_regLoaded || m_giVolumesLoaded) {
+						if (m_regLoaded || m_giVolumesLoaded) {
 							// GI debug views (R / F8 cycle): 0 off, 1 baked
-							// irradiance, 2 source palette, 3 isolated octree level
-							// (the level slider picks it), 4 dominant octree level
-							// (which octave carries the pixel). The sggi walk already
-							// implemented modes 3/4 - this combo just reaches them.
-							const char* dbgNames[5] = { "Off", "Baked irradiance",
-								"GI source", "Isolated level", "Dominant level" };
-							int dbgIdx = m_giDebug;
-							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 5))
-								m_giDebug = std::clamp(dbgIdx, 0, 4);
+							// irradiance, 2 source palette. (The octree's
+							// isolated/dominant-level views 3/4 are RETIRED
+							// with the .sggi walker.)
+							const char* dbgNames[3] = { "Off", "Baked irradiance",
+								"GI source" };
+							int dbgIdx = std::min(m_giDebug, 2);
+							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 3))
+								m_giDebug = std::clamp(dbgIdx, 0, 2);
 							if (m_giDebug == 1) {
 								ImGui::TextDisabled("flat irradiance of the active source "
-									"(lightmap/grid/probes); magenta = none\n"
+									"(lightmap/grid/volumes); magenta = none\n"
 									"works in EVERY ambient mode (N): isolate the source "
 									"with N, then read it here");
 							}
 							else if (m_giDebug == 2) {
 								ImGui::TextDisabled("source palette: red = lightmap (deprecated), "
-									"green = regular grid (legacy), blue = octree world field, "
-									"cyan = convex volume blended, magenta = none");
-							}
-							else if (m_giDebug == 3) {
-								int lvl = m_giDebugLevel;
-								if (ImGui::SliderInt("Isolated level", &lvl, 0, 7))
-									m_giDebugLevel = std::clamp(lvl, 0, 7);
-								ImGui::TextDisabled("the octree walk gathers ONLY this "
-									"level - per-octave contribution in isolation");
-							}
-							else if (m_giDebug == 4) {
-								ImGui::TextDisabled("the octree level carrying most of "
-									"this pixel's weight (its argmax over per-level "
-									"weight sums)");
+									"green = regular grid (legacy), cyan = convex volume "
+									"blended, magenta = none");
 							}
 							if (m_giVolumesLoaded) {
 								ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
 								ImGui::TextDisabled("stacked probe volumes blend over the "
-									"octree by priority (gi/<scene>.cvmanifest)");
+									"sky base by priority (gi/<scene>.cvmanifest)");
 							}
 						}
 					}
@@ -14570,22 +14116,15 @@ namespace engine {
 								m_viewportResources.exposure.desc.keyValue);
 					}
 					if (ImGui::CollapsingHeader("GI volume", ImGuiTreeNodeFlags_DefaultOpen)) {
-						if (m_giLoaded) {
-							ImGui::Text("Probes: %u  levels: %u  GPU: %zu KiB",
-								(unsigned)m_giOctree.probes.size(), m_giOctree.levelCount,
-								m_giOctree.GpuBytes() / 1024);
-							for (uint32_t lvl = 0; lvl < m_giOctree.levelCount
-								&& lvl < m_giOctree.levelStats.size(); ++lvl) {
-								const auto& s = m_giOctree.levelStats[lvl];
-								ImGui::BulletText("lvl %u: %u probes  %u cells (max %u/cell)",
-									lvl, s.probeCount, s.cellCount, s.maxProbesPerCell);
-							}
-							ImGui::TextDisabled("9 SG lobes @ sharpness 4, 96 B/probe, 6-axis visibility");
-						}
-						else {
-							ImGui::TextDisabled("No baked volume: content/gi/%s.sggi",
-								m_sceneId.empty() ? "?" : m_sceneId.c_str());
-						}
+						// The .sggi octree stats are RETIRED with the loader;
+						// the honest counts are the loaded convex + regular
+						// GI volumes (the World Map (C) draws the convex
+						// lattices + reports the lattice-site totals).
+						ImGui::Text("Convex GI volumes: %u  regular grids: %u",
+							(unsigned)m_giVolumes.size(),
+							(unsigned)m_regVolumes.size());
+						ImGui::TextDisabled("the legacy .sggi octree is retired — "
+							"convex .givolume bakes + sky IBL carry the ambient");
 					}
 					if (ImGui::CollapsingHeader("AA + motion + AO state", ImGuiTreeNodeFlags_DefaultOpen)) {
 						if (m_aaMode == AaMode::Msaa2x) {
@@ -16068,98 +15607,17 @@ namespace engine {
 					}
 				}
 			}
-
-			// SG-GI probe-point overlay (like the forward+ light points):
-			// draws the probe lattice colored by octree level through the
-			// UNJITTERED viewProj. Distance-filtered + count-capped so huge
-			// volumes stay ImGui-cheap. Without occlusion culling there is no
-			// depth test: occluded probes stay visible (debug).
-			if (m_giLoaded && m_giShowProbes && !m_giOctree.probes.empty()) {
-				ImDrawList* dl = ImGui::GetForegroundDrawList();
-				const ImVec2 disp = ImGui::GetIO().DisplaySize;
-				const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
-				const float maxDist = std::max(m_giProbePointMaxDist, 1.0f);
-				const float maxDist2 = maxDist * maxDist;
-				// Level colors: coarse red -> fine pink; point size shrinks
-				// with level so dense fine probes don't swamp the view.
-				static const ImU32 kLevelColors[8] = {
-					IM_COL32(255, 64, 64, 210), IM_COL32(255, 160, 32, 210),
-					IM_COL32(230, 230, 60, 210), IM_COL32(70, 230, 90, 210),
-					IM_COL32(60, 200, 255, 210), IM_COL32(110, 130, 255, 210),
-					IM_COL32(200, 100, 255, 210), IM_COL32(255, 110, 200, 210),
-				};
-				uint32_t drawn = 0;
-				uint32_t culled = 0;
-				constexpr uint32_t kMaxDrawn = 6000;
-				for (uint32_t pi = 0; pi < m_giOctree.probes.size(); ++pi) {
-					const smvk::gi::SgProbe& p = m_giOctree.probes[pi];
-					if (drawn >= kMaxDrawn)
-						break;
-					if (!p.valid)
-						continue;
-					const glm::vec3 d = p.position - camPos;
-					if (glm::dot(d, d) > maxDist2)
-						continue;
-					if (m_giProbeOcclusionCull && !GiProbeVisibleFromCamera(pi, camPos)) {
-						++culled;
-						continue;
-					}
-					const glm::vec4 clip = m_unjitteredViewProj * glm::vec4(p.position, 1.0f);
-					if (clip.w <= 1e-4f)
-						continue;
-					const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-					if (std::abs(ndc.x) > 1.0f || std::abs(ndc.y) > 1.0f)
-						continue;
-					const ImVec2 pt(
-						(ndc.x * 0.5f + 0.5f) * disp.x,
-						(ndc.y * 0.5f + 0.5f) * disp.y);
-					const uint32_t lvl = std::min(p.level, 7u);
-					const float r = std::max(4.0f - 0.7f * float(lvl), 1.5f);
-					dl->AddCircleFilled(pt, r, kLevelColors[lvl]);
-					++drawn;
-				}
-				// Legend: level colors + drawn count, pinned top-left.
-				float lx = 8.0f;
-				const float ly = 8.0f;
-				char cap[128];
-				if (m_giProbeOcclusionCull)
-					snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm), %u occluded",
-						drawn, (unsigned)m_giOctree.probes.size(), maxDist, culled);
-				else
-					snprintf(cap, sizeof(cap), "GI probes: %u/%u drawn (<= %.0fm)",
-						drawn, (unsigned)m_giOctree.probes.size(), maxDist);
-				dl->AddText(ImVec2(lx + 1.0f, ly + 1.0f), IM_COL32(0, 0, 0, 200), cap);
-				dl->AddText(ImVec2(lx, ly), IM_COL32_WHITE, cap);
-				for (uint32_t lvl = 0; lvl < std::min(m_giOctree.levelCount, 8u); ++lvl) {
-					dl->AddCircleFilled(ImVec2(lx + 4.0f, ly + 22.0f), 3.5f, kLevelColors[lvl]);
-					char lab[8];
-					snprintf(lab, sizeof(lab), "L%u", lvl);
-					dl->AddText(ImVec2(lx + 10.0f + 1.0f, ly + 16.0f + 1.0f),
-						IM_COL32(0, 0, 0, 200), lab);
-					dl->AddText(ImVec2(lx + 10.0f, ly + 16.0f), IM_COL32_WHITE, lab);
-					lx += 34.0f;
-				}
-				// Headless heartbeat: proves the overlay (and the occlusion
-				// cull, when on) actually executes; captures exclude UI.
-				if ((m_frameCounter % 300) == 0) {
-					std::cerr << "[GI] overlay: drawn=" << drawn
-						<< " culled=" << culled
-						<< " cull=" << (m_giProbeOcclusionCull ? "on" : "off")
-						<< " cache=" << m_giProbeCullCache.size() << "\n";
-				}
-			}
-
 			// GI volume bounding-box wireframe (m_giShowVolumeBounds): AABB/OBB
 			// edges through the UNJITTERED viewProj into the ImGui foreground
 			// list, so they ride on top of the current view with no depth test
 			// (debug intent: authoring bounds against walls/roofs). Sources:
-			// octree world field (m_giOctree.boundsMin/Max, cyan), regular
-			// OBB volumes (green), convex grid AABBs (priority hue, like the
-			// editor LIGHTING preview). Edges whose both endpoints project
+			// regular OBB volumes (green), convex grid AABBs (priority hue,
+			// like the editor LIGHTING preview; the legacy octree bounds box
+			// died with the .sggi loader). Edges whose both endpoints project
 			// (in front of the camera) draw; partially behind-camera boxes
 			// clip per-edge (may drop the crossing segment).
 			if (m_giShowVolumeBounds
-				&& (m_giLoaded || m_regLoaded || m_giVolumesLoaded)) {
+				&& (m_regLoaded || m_giVolumesLoaded)) {
 				ImDrawList* bdl = ImGui::GetForegroundDrawList();
 				const ImVec2 bdisp = ImGui::GetIO().DisplaySize;
 				const auto projectBox = [&](const glm::vec3& w, ImVec2& out) {
@@ -16199,17 +15657,6 @@ namespace engine {
 					q[6] = { mx.x, mx.y, mx.z }; q[7] = { mn.x, mx.y, mx.z };
 				};
 				uint32_t boxesDrawn = 0;
-				if (m_giLoaded && !m_giOctree.probes.empty()) {
-					glm::vec3 q[8];
-					boxCorners(m_giOctree.boundsMin, m_giOctree.boundsMax, q);
-					drawBoxEdges(q, IM_COL32(60, 200, 255, 220));
-					++boxesDrawn;
-					ImVec2 c;
-					if (projectBox(
-						(m_giOctree.boundsMin + m_giOctree.boundsMax) * 0.5f, c))
-						bdl->AddText(ImVec2(c.x + 5.0f, c.y - 8.0f),
-							IM_COL32(60, 200, 255, 220), "octree");
-				}
 				if (m_regLoaded) {
 					for (size_t vi = 0; vi < m_regVolumes.size(); ++vi) {
 						const auto& obb = m_regVolumes[vi].volume.obb;

@@ -37,14 +37,14 @@ struct VolumetricPush
     float anisotropy;
     float sunScale;
     float giScale;
-    uint useGi;
+    uint pad0;              // was useGi (the octree probes toggle — retired with .sggi; layout tail)
     uint useSun;
     uint useGiVolumes;     // 1 = GI volumes stack into the fog GI
     float jitterStrength;
     float heightFalloff;
     float heightBase;
     float time;
-    uint fogGiSource;      // 0=worldfield (default), 1=octree (A/B), 2=sky-only; was pad1
+    uint fogGiSource;      // 0=worldfield (default), [1 retired], 2=sky-only; was pad1
     // Forward+ light feed for fog in-scatter (the forward tiled lights
     // contribute to the march, not just the surfaces): the DEDICATED fog
     // tile lists ride the cull freshness contract — frame.giVolumeTileCountX
@@ -80,10 +80,11 @@ float VolPhaseHg(float cosT, float g)
 // divided by 4pi. Integral of one unit SG lobe = 2pi/l*(1-e^-2l); with the
 // fixed sharpness 4 the mean weight is (1-e^-8)/8 ~= 0.125 per lobe.
 // The mean is LINEAR in the amps — the fog consumes it through the
-// dedicated one-fetch/one-accumulator paths (SgGiVolumeRayComposite's lazy
-// mean fetch + SgGiSampleMean; the CPU packs per-volume mean textures
-// with the same constant, GiVolume::PackGpuMeanLayer): the constant MUST
-// stay in sync in all three places.
+// dedicated one-fetch/one-accumulator path (SgGiVolumeRayComposite's lazy
+// mean fetch; the CPU packs per-volume mean textures with the same
+// constant, GiVolume::PackGpuMeanLayer): the constant MUST stay in sync
+// in both places. (The octree twin SgGiSampleMean is retired with the
+// .sggi runtime — stage 3 of the octree retirement.)
 float3 VolGiMean(float3 amps[SG_GI_LOBES])
 {
     float3 sum = float3(0.0, 0.0, 0.0);
@@ -298,7 +299,6 @@ PSOut mainPS(PSIn IN)
     float3 sunDir = normalize(frame.env.sunDirection.xyz + 1e-9);
     float3 sunHdr = frame.env.sunColor.rgb * max(frame.env.sunColor.w, 0.0f);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
-    float giOn = (vp.useGi != 0 && frame.giEnabled != 0) ? 1.0 : 0.0;
     float sunOn = (vp.useSun != 0) ? 1.0 : 0.0;
     float cosSun = dot(rayDir, sunDir);
     float phase = VolPhaseHg(cosSun, vp.anisotropy) * 0.0795775; // /4pi
@@ -306,16 +306,17 @@ PSOut mainPS(PSIn IN)
 
     // ---- Loop-invariant GI bases (the old body re-evaluated the sky
     // ambient every segment; these are pixel-constants) ----
-    // Sky's up-facing mean — the fog ambient fallback (no octree
-    // coverage, no volumes).
+    // Sky's up-facing mean — the fog ambient fallback (no volume
+    // coverage; the octree probes are RETIRED with the .sggi runtime).
     const float3 skyMean =
         EvaluateIrradiance(float3(0.0, 1.0, 0.0), frame.env) * 0.31831;
-    // Fog GI sources: giOn = the octree world field, giVolumesOn = GI
-    // volumes stacking over it. giVolumesOn is the fog-GI quality bypass
-    // (useGiVolumes = 0): octree/sky only ??? no tile-mask load, no volume
-    // walks.
+    // The fog GI: the CONVEX GI volumes (their own mean textures, the
+    // ordered-transmittance composite) + the world-field mean where
+    // resident, over the sky base. giVolumesOn is the fog-GI quality
+    // bypass (useGiVolumes = 0): sky/world-field only — no tile-mask
+    // load, no volume walks.
     const bool giVolumesOn = (vp.useGiVolumes != 0u) && (frame.giVolumesEnabled != 0u);
-    const bool fogGiOn = (giOn > 0.5) || giVolumesOn;
+    const bool fogGiOn = giVolumesOn;
     // Per-tile volume bitmask is pixel-constant: one lookup per PIXEL
     // (0 under the bypass — the mean composite then walks nothing).
     uint volMask = 0u;
@@ -451,49 +452,25 @@ PSOut mainPS(PSIn IN)
             if (t - giT >= kVolGiRefreshDist)
             {
                 giT = t;
-                // ---- Fog GI base: the A/B source toggle. The world-field
-                // path (default) samples the baked BC6H mean via the
-                // paired fog-GI sampler — ONE page-table lookup + ONE
-                // trilinear 3D fetch per refresh, no octree walk, no
-                // 9-lobe fetch. The octree path (the legacy SgGiSampleMean
-                // walk over the dense BC6H level layers) stays as the A/B
-                // reference. TOURMALINE_FOG_GI_SOURCE selects:
-                //   worldfield (default) — the paired fog-GI field
-                //   octree — the legacy SgGiSampleMean walk
-                //   sky — the sky mean everywhere (the floor baseline)
-                // Both paths preserve the covered/uncovered contract: an
-                // uncovered position keeps the sky mean (the world
-                // field's coverage channel distinguishes genuine darkness
-                // from missing probes — see SampleFogGi).
+                // ---- Fog GI base: the A/B source toggle. The default
+                // samples the baked BC6H mean via the paired fog-GI
+                // world-field sampler — ONE page-table lookup + ONE
+                // trilinear 3D fetch per refresh — and degrades to the
+                // sky mean wherever the field is not resident (the
+                // covered/uncovered contract: the field's coverage
+                // channel distinguishes genuine darkness from missing
+                // pages — see SampleFogGi). The LEGACY OCTREE path is
+                // RETIRED (stage 3 of the .sggi retirement — the walker
+                // is gone); TOURMALINE_FOG_GI_SOURCE's value 1 is
+                // reserved and reads as the default. Value 2 = the sky
+                // mean everywhere (the floor baseline for perf A/B).
+                // The convex GI volumes composite INDEPENDENTLY of this
+                // toggle (SgGiVolumeRayComposite above — their mean
+                // textures are their own data source).
                 if (volTrans > 0.0) {
-                    if (vp.fogGiSource == 1u) {
-                        // Legacy: the octree walk (the A/B reference).
-                        float3 octMean = float3(0.0, 0.0, 0.0);
-                        const bool octreeCovered = (giOn > 0.5)
-                            && SgGiSampleMean(frame, wpos, octMean);
-                        baseHeld = octreeCovered ? octMean : skyMean;
-                    }
-                    else if (vp.fogGiSource == 2u) {
+                    if (vp.fogGiSource == 2u) {
                         // Sky-only (the floor baseline for perf A/B).
                         baseHeld = skyMean;
-                    }
-                    else if (frame.worldFieldCount <= WORLD_FIELD_ID_FOG_GI) {
-                        // Default + NO fog-GI field registered (the
-                        // TOURMALINE_WORLD_FIELDS gate, or the field
-                        // itself missing): the field path is
-                        // guaranteed-sky, so the baked OCTREE GI (the
-                        // surface path's own data) serves the fog — the
-                        // default must never silently lose the loaded
-                        // probe GI to a subsystem that is off (the
-                        // review's finding: source 0 + fields off = sky
-                        // even with baked probes). An explicit source-0
-                        // pin still tests the FIELD path when the fields
-                        // are live — the branch above only takes the
-                        // no-field case.
-                        float3 octMean = float3(0.0, 0.0, 0.0);
-                        const bool octreeCovered = (giOn > 0.5)
-                            && SgGiSampleMean(frame, wpos, octMean);
-                        baseHeld = octreeCovered ? octMean : skyMean;
                     }
                     else {
                         // Default: the world-field fog-GI path (the

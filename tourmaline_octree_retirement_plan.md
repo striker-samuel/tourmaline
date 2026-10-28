@@ -58,3 +58,46 @@ git diff --check
 If you have applied an earlier World Map probes patch, do not layer this patch on top unchanged; revert that patch or rebase the overlapping map hunks first. This patch supersedes the earlier map-only fix.
 
 **Status:** Patch is syntax/format-checked using a synthetic source fixture rebuilt from the public GitHub snippets. No live compilation, runtime lighting validation, or `git apply --check` against a full repository checkout was possible in this environment. Run the checks above on your checkout before merging.
+
+## Execution log (the retire-legacy-sggi branch)
+
+- **Stage 1 (8e6cf74e):** runtime retirement landed — no `LoadGiOctree()`
+  call, explicit rebind reset, `GIVariant::Full` without `m_giLoaded`,
+  only WorldFogDensity (field 0) registered, the World Map lattice
+  layer + honest counts, the legacy stats replaced. Validated on
+  sponza_3 (octree-off log lines, volumes load + composite, interior
+  capture stays lit, `TOURMALINE_GI_VOLUMES=0` drops visibly, the
+  fields run registers only the fog field).
+- **Stage 2 (352c58a8):** the pipeline gate — the project pipeline's
+  GiBaker stage passes only `--content-dir` + `--tour` (volume-only);
+  the pak's world-field freshness gate retired (the record is
+  acknowledged + ignored, `.givolume`/cubemaps keep their gates). Clean
+  bake to a NEW folder: zero `.sggi`, the pak builds + loads + stays
+  lit. THE DELETION GATE PASSED.
+- **Stage 3 (runtime half):** `LoadGiOctree` defn/decl, `m_giOctree`,
+  `m_giLoaded`, `m_giGridBuffer`, `m_giGridAddress`, `m_giLevelTextures`,
+  `m_giLevelLayers`, `GiActive()`, `GiProbeVisibleFromCamera`, the probe
+  overlay + its UI + the `TOURMALINE_GI_POINTS`/`GI_OCCLUDE`/
+  `GI_DEBUG_LEVEL` pins, the octree debug views 3/4, the CPU fog-GI
+  brick sources + `g_fogGiVolume`, `m_giProbeName`, the GI_OCTREE
+  permutation (CMake rows + loader skip), the GI_FULL→GI_VOLUMES
+  rename (ID 3 preserved, ID 1 reserved — NO ABI renumber), the shader
+  walkers (`SgGiSample`/`SgGiSampleMean` + probe helpers) — all deleted;
+  the shared SG basis/irradiance/specular math preserved in
+  `sggi.hlsli`; the frame `gi*` block stays the zeroed legacy ABI.
+  Render-identical: interior 11,869/15,516/max 15 and volumetrics
+  (matched pins) 7,098/8,231/max 10 — both BELOW the measured
+  run-to-run noise floor (~11.5k/15,046/max 20 for identical-source
+  runs). 42/42 ctest.
+
+- **Stage 3 (data-layer half — REMAINING):** the audit confirmed the
+  deletion is SAFE: the convex-volume bake (`BakeGiVolume`,
+  cubemap_volume.cpp) is fully self-contained (its own direct per-probe
+  trace, no bake.cpp octree internals), so `BakeSgGiVolume` +
+  bake.cpp's ~12 anonymous-namespace octree helpers + `SgGiVolume`
+  (probe_volume.h/.cpp: serializer, dense packer, Sample) + the
+  GiBaker `--out` block + test_gi's `.sggi` round-trip section are all
+  octree-only. That surgery (a few hundred lines across bake.h/.cpp,
+  probe_volume.h/.cpp, gi_baker, test_gi.cpp) is the tracked follow-up;
+  the runtime half above is complete, validated, and landable on its
+  own.

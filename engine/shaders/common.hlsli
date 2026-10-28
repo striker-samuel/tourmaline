@@ -18,7 +18,7 @@
 #define SPEC_SSR_ENABLED     2  // 0=disable SSR, 1=enable SSR
 #define SPEC_GI_INTENSITY    3  // intensity scale (float, driver promotes to constant)
 
-#define SPEC_GI_VARIANT     10  // GI variant: 0=GI_NONE, 1=GI_OCTREE, 2=GI_REGULAR, 3=GI_FULL
+#define SPEC_GI_VARIANT     10  // GI variant: 0=GI_NONE, [1 retired — GI_OCTREE], 2=GI_REGULAR, 3=GI_VOLUMES
 
 // Far-LOD quality knobs for the lit program family (see ShaderLodPolicy
 // + World::FarShadingAt): applied as specialization constants on the
@@ -624,17 +624,17 @@ struct FrameUniforms
     vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 688 64B slots
     uint dsTileCountX;                                 // 696 8px tiles/row
     uint dsEnabled;                                    // 700 1 = consume lists
-    // ---- SG-GI baked probe volume (see sggi.hlsli + Engine/GI). Static
-    // buffers uploaded once at scene load; giEnabled flips every frame.
-    // giIntensity scales the ambient contribution, giDebug selects the
-    // F8 irradiance debug view (1 = flat probe diffuse, pre-exposure).
-    // The release layout keeps the 720 B prefix property: these fields
-    // precede the DS visualizer tail below.
+    // ---- SG-GI LEGACY PROBE-VOLUME frame fields (the .sggi octree —
+    // RETIRED): the runtime zeroes this whole block forever (no loader,
+    // no walker reads it); the FIELDS stay because the FrameUniforms
+    // layout is a shared C++/HLSL ABI contract with static_asserts on
+    // both sides — removing them would renumber every later field. The
+    // live GI rides giVolumes*/lm*/reg* below + the sky IBL.
     vk::BufferPointer<SgGiProbesBuffer> giProbes;   // 704 probe array (96 B each)
     vk::BufferPointer<SgGiGrid> giGrid;            // 712 level descriptors
     vk::BufferPointer<SgGiCellsBuffer> giCells;    // 720 uint2 (start,count)/cell
     vk::BufferPointer<SgGiIndexBuffer> giIndices;   // 728 u32 probe index list
-    uint giEnabled;                                 // 736 1 = sample probes for ambient
+    uint giEnabled;                                 // 736 (always 0 — legacy)
     float giIntensity;                              // 740 ambient scale
     uint giDebug;                                    // 744 0 off, 1 irradiance view
     uint evsmMode;                                   // 748 0 = PCF depth, 1 = EVSM moments (was padding)
@@ -815,7 +815,7 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_EVSM_MODE)]]   const uint evsmMode = 0;     // 0=PCF depth, 1=EVSM moments
 [[vk::constant_id(SPEC_SSR_ENABLED)]] const uint ssrEnabled = 0;   // 0=disable SSR, 1=enable SSR
 [[vk::constant_id(SPEC_GI_INTENSITY)]] const float giIntensity = 1.0f; // intensity scale
-[[vk::constant_id(SPEC_GI_VARIANT)]]  const uint giVariant = 0;     // 0=GI_NONE, 1=GI_OCTREE, 2=GI_REGULAR, 3=GI_FULL
+[[vk::constant_id(SPEC_GI_VARIANT)]]  const uint giVariant = 0;     // 0=GI_NONE, [1 RETIRED — GI_OCTREE deleted with the .sggi runtime; the ID stays reserved so the shared specialization ABI never renumbers], 2=GI_REGULAR, 3=GI_VOLUMES
 [[vk::constant_id(SPEC_LIT_SPECULAR)]] const uint litSpecular = 1;   // 0=Lambert-only far shading, 1=full GGX specular
 [[vk::constant_id(SPEC_LIT_NORMALMAP)]] const uint litNormalMap = 1; // 0=geometric normal, 1=tangent-space normal fetch
 

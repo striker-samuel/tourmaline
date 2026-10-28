@@ -1111,11 +1111,6 @@ float envVis = 1.0f;
     // the scaled branches), so the slider looked dead on unbaked
     // scenes / uncovered geometry.
     const float giScale = max(frame.giIntensity, 0.0f);
-    // The octree walk's dominant level (its argmax over per-level weight
-    // sums) for the mode-4 debug view; 0xFFFFFFFFu = no walk ran this
-    // pixel (full-volume fast path / regular grids) — the mode-4 branch
-    // falls back to the source palette then.
-    uint dbgBestLvl = 0xFFFFFFFFu;
 
     // ---------------------------------------------------------------
     // Static lightmaps (highest-priority static source): draws carrying
@@ -1177,10 +1172,15 @@ float envVis = 1.0f;
 
     // ---------------------------------------------------------------
     // GI permutations (set via SPEC_GI_VARIANT specialization constant):
-    //   GI_NONE   (0): No baked GI, sky IBL fallback only
-    //   GI_OCTREE (1): Sparse octree world field (SgGiSample)
+    //   GI_NONE    (0): No baked GI, sky IBL fallback only
+    //   [1]        : RETIRED — the legacy sparse-octree world field (the
+    //                .sggi runtime is deleted; the ID stays reserved so
+    //                the shared specialization ABI never renumbers)
     //   GI_REGULAR (2): Regular 3D probe grids (SgRegularSampleFrame)
-    //   GI_FULL   (3): Octree + Convex volumes (volumes override at weight >= 1)
+    //   GI_VOLUMES (3): Convex volumes over the sky base (the GI_FULL
+    //                rename — the octree underneath is gone; volumes
+    //                blend by ordered priority, the sky serves the
+    //                uncovered fade)
     // ---------------------------------------------------------------
 #if defined(GI_NONE)
     // No baked GI - pure sky IBL fallback
@@ -1190,37 +1190,6 @@ float envVis = 1.0f;
     }
     // giSource, bakedE, giDbgMode already initialized to 0
     // envVis, ambientSpec already set to defaults above
-
-#elif defined(GI_OCTREE)
-    // Sparse octree world field only
-    giDbgMode = frame.giDebug & 0xffu;
-
-    if (frame.giEnabled != 0u)
-    {
-        float3 octAmps[SG_GI_LOBES];
-        float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-        bool octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
-        dbgBestLvl = dbgL;
-        if (octreeCovered)
-        {
-            const float3 E = SgGiDiffuseIrradiance(octAmps, N) * giScale;
-            giSource = 3u;
-            bakedE = E;
-            envVis = SpecularOcclusionFromGI(E, giScale, N, frame.env, shadingRoughness);
-            ambientSpec = envSpec * envVis;
-            if (!isBlendMat)
-                ambient += kD * baseColor * (E / PI) * occlusion;
-            // Octree SG specular (high crossover 0.45)
-            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
-            if (roughW > 0.0f)
-            {
-                const float3 giSpecular =
-                    SgGiSpecular(octAmps, R, shadingRoughness) * giScale
-                    * Fenv * occlusion;
-                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
-            }
-        }
-    }
 
 #elif defined(GI_REGULAR)
     // Regular 3D probe grids (artist OBBs)
@@ -1249,18 +1218,19 @@ float envVis = 1.0f;
         }
     }
 
-#elif defined(GI_FULL)
-    // Full stacked GI: convex volumes composited over the octree/sky
-    // base by ordered priority. The volume walk runs FIRST (the
-    // high->low transmittance form, sg_gi_volume.hlsli): a volume with
-    // weight 1 fully owns the pixel, the transmission drops to 0 and
-    // the octree/sky gather below never runs — the deep-inside pixel
-    // pays its 7 texture taps and nothing else.
+#elif defined(GI_VOLUMES)
+    // Volumes-over-sky GI: convex volumes composited by ordered priority
+    // (the high->low transmittance form, sg_gi_volume.hlsli). A volume
+    // with weight 1 fully owns the pixel — the transmission drops to 0
+    // and the sky gather below never runs; the deep-inside pixel pays
+    // its 7 texture taps and nothing else. The RETIRED octree base is
+    // gone (stage 3 of the .sggi retirement): the uncovered fade rides
+    // the analytic sky diffuse, iblOn-gated so the isolation modes
+    // (Baked/Probes) keep their meaning at the fade edges.
     giDbgMode = frame.giDebug & 0xffu;
     float3 E;
     float3 specAmps[SG_GI_LOBES];
     bool covered = false;
-    uint volHits = 0u;
 
     // Convex volumes: blended amps + the leftover base weight.
     float3 volAmps[SG_GI_LOBES];
@@ -1268,55 +1238,26 @@ float envVis = 1.0f;
     bool volHit = false;
     SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
         volAmps, volTrans, volHit);
-    volHits = volHit ? 1u : 0u;
-
-    // Octree world field — only the transmission leftover needs it
-    // (mode-4 debug note: a fully-owned pixel skips the walk, same as
-    // the old full-owner fast path, so its level palette reads 0).
-    float3 octAmps[SG_GI_LOBES];
-    float dbgW = 0.0; uint dbgC = 0u; bool dbgF = false; uint dbgL = 0u;
-    bool octreeCovered = false;
-    if (frame.giEnabled != 0u && volTrans > 0.0) {
-        octreeCovered = SgGiSample(frame, IN.worldPos, octAmps, dbgW, dbgC, dbgF, dbgL);
-        dbgBestLvl = dbgL;
-    }
 
     // Base + volumes — every consumer (E, spec amps, the fog-leg mean)
     // is LINEAR in the lobe amps, so the one accumulated amp set
     // evaluates them all:
-    //   E    = irr(volAmps) + (octreeCovered ? irr(octAmps) : skyE) * volTrans
-    //   spec = volAmps      + (octreeCovered ? octAmps      : 0   ) * volTrans
-    // The uncovered spec base is ZERO amps (the sky's specular lives in
-    // ambientSpec below), and the first volume now blends in by its
-    // weight like every other source — the old chain REPLACED the empty
-    // spec base with full volume amps on the first hit, so E and spec
-    // disagreed across fade edges outside octree coverage.
-    // The sky DIFFUSE base is iblOn-gated: the isolation modes (Baked,
-    // Probes) kill the analytic sky everywhere in the ambient, this
-    // composite included — without the gate a volume-covered pixel
-    // outside octree coverage still leaked sky * volTrans, defeating
-    // the "baked only" isolation exactly where volumes fade.
+    //   E    = irr(volAmps) + skyE * volTrans
+    //   spec = volAmps      (the sky's specular lives in ambientSpec —
+    //                        the uncovered spec base is ZERO amps, and
+    //                        the first volume blends in by its weight
+    //                        like every other source)
     E = SgGiDiffuseIrradiance(volAmps, N);
     [unroll]
     for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
         specAmps[sA] = volAmps[sA];
-    if (octreeCovered)
-    {
-        E += SgGiDiffuseIrradiance(octAmps, N) * volTrans;
-        [unroll]
-        for (uint sB = 0; sB < SG_GI_LOBES; ++sB)
-            specAmps[sB] += octAmps[sB] * volTrans;
-    }
-    else
-    {
-        E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
-    }
-    covered = octreeCovered || volHit;
+    E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
+    covered = volHit;
 
     if (covered)
     {
         const float3 giE = E * giScale;
-        giSource = (volHits > 0u) ? 4u : 3u;
+        giSource = 4u;
         bakedE = giE;
         envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
         ambientSpec = envSpec * envVis;
@@ -1382,18 +1323,9 @@ float envVis = 1.0f;
                 * max(frame.exposure, 1e-6f)), 1.0f);
             return OUT;
         }
-        if (giDbgMode == 4u && dbgBestLvl != 0xFFFFFFFFu)
-        {
-            const float3 lvlPal[8] = {
-                float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f),
-                float3(0.0f, 0.25f, 1.0f), float3(1.0f, 1.0f, 0.0f),
-                float3(1.0f, 0.0f, 1.0f), float3(0.0f, 1.0f, 1.0f),
-                float3(1.0f, 1.0f, 1.0f), float3(1.0f, 0.5f, 0.0f)
-            };
-            OUT.outColor = float4(SanitizeHdr(lvlPal[dbgBestLvl & 7u]
-                * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
-            return OUT;
-        }
+        // (Mode 4 — the octree's dominant-level palette — retired with
+        // the octree walk: dbgBestLvl has no writer, the mode falls
+        // through to the source palette below.)
         float3 pal = (giSource == 1u) ? float3(1.0f, 0.0f, 0.0f)
             : (giSource == 2u) ? float3(0.0f, 1.0f, 0.0f)
             : (giSource == 4u) ? float3(0.0f, 1.0f, 1.0f)

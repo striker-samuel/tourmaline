@@ -329,13 +329,15 @@ struct RenderQualityConfig {
 };
 
 // GI permutation variants (matches SPEC_GI_VARIANT in common.hlsli):
-// 0 = GI_NONE (sky IBL only), 1 = GI_OCTREE (sparse octree),
-// 2 = GI_REGULAR (regular grids), 3 = GI_FULL (octree + volumes)
+// 0 = GI_NONE (sky IBL only), [1 = RESERVED — GI_OCTREE, deleted with
+// the .sggi runtime; the shared specialization ABI keeps the ID],
+// 2 = GI_REGULAR (regular grids), 3 = GI_VOLUMES (the GI_FULL rename:
+// convex volumes over the sky base — the octree underneath is gone)
 enum class GIVariant : uint32_t {
 	None = 0,
-	Octree = 1,
+	// (1 reserved: the retired octree)
 	Regular = 2,
-	Full = 3,
+	Volumes = 3,
 };
 
 // ---------------------------------------------------------------------------
@@ -1188,21 +1190,12 @@ public:
 	}
 	// Active GI permutation variant based on loaded GI assets
 	[[nodiscard]] GIVariant GetActiveGIVariant() const {
-		// Priority: Full > Octree > Regular > None
-		// Full = the CONVEX GI volumes (the legacy octree underneath is
-		// RETIRED at runtime — never loaded, frame.giEnabled stays 0;
-		// the GI_FULL shader handles the no-octree case via the volume
-		// compositing + sky fallback). Octree requires giLoaded (never
-		// true now — the branch is dead until stage 3 removes it).
-		// Regular requires regLoaded + regEnabled.
-		if (m_giVolumesLoaded && m_giVolumesEnabled && m_giLoaded && ProbesWanted()) {
-			return GIVariant::Full;
-		}
+		// Priority: Volumes > Regular > None. The convex GI volumes
+		// carry the baked ambient over the sky base (the legacy octree
+		// underneath is RETIRED — deleted with the .sggi runtime; the
+		// GI_VOLUMES shader handles the uncovered fade via the sky).
 		if (m_giVolumesLoaded && m_giVolumesEnabled && ProbesWanted()) {
-			return GIVariant::Full; // no octree underneath: volumes + sky
-		}
-		if (m_giLoaded && ProbesWanted()) {
-			return GIVariant::Octree;
+			return GIVariant::Volumes;
 		}
 		if (m_regLoaded && m_regEnabled && ProbesWanted()) {
 			return GIVariant::Regular;
@@ -2402,26 +2395,19 @@ public:
 	// views. ----
 	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
 	int m_giDebug = 0;             // R / F8 cycle: 0 off, 1 baked irradiance,
-	                                // 2 GI source palette, 3 isolated level,
-	                                // 4 dominant level (the sggi walk's
-	                                // level-isolation + argmax debugs)
-	int m_giDebugLevel = 0;        // isolated level for mode 3 (0..7)
+	                                // 2 GI source palette (the octree's
+	                                // level-isolation/argmax debug modes died
+	                                // with the walker; 3/4 read as 1 here)
+	int m_giDebugLevel = 0;        // (retired with the octree level debugs —
+	                                // feeds the frame's legacy giDebug byte,
+	                                // always 0)
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
-	bool m_giShowProbes = false;  // probe-point overlay (ImGui foreground,
-	                              // like the forward+ light points)
-	float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
-	bool m_giProbeOcclusionCull = false; // overlay: hide probes occluded
-	                              // from the camera (CPU pick-BVH raycast;
-	                              // off = see through walls, debug intent)
 	bool m_giShowVolumeBounds = false; // GI volume AABB/OBB wireframe overlay
 	                              // (ImGui foreground, on top of the current
-	                              // view: octree bounds + regular OBBs +
-	                              // convex grid AABBs, no depth test)
-	glm::mat4 m_giProbeCullView = glm::mat4(0.0f); // view matrix the cache was built for
-	std::vector<char> m_giProbeCullCache; // per-probe: 0 occluded, 1 visible, 2 unknown
-	bool GiProbeVisibleFromCamera(uint32_t probeIdx, const glm::vec3& camPos);
-	bool m_giLoaded = false;      // volume + dense layers live
-	smvk::gi::SgGiVolume 	m_giOctree; // CPU mirror (probe overlay + stats)
+	                              // view: regular OBBs + convex grid AABBs,
+	                              // no depth test; the legacy octree bounds
+	                              // box + the probe-point overlay died with
+	                              // the .sggi loader)
 	// ---- SG 2D lightmaps (STATIC geometry, cook --lightmap output).
 	// Loaded once at scene init from the CLUSTER bake-payload channel
 	// (ReadBakeBytes: gi/<scene>.sglm): uploads ONLY the atlas textures
@@ -2446,24 +2432,12 @@ public:
 	// Bake-channel load (ReadBakeBytes: pak-embedded or editor-injected;
 	// no VFS needed — the channel already resolved it).
 	void LoadGiLightmaps();
-	// Grid header only (the shader reads each level's volumeMin/cellSize/
-	// dims from frame.giGrid). The probe/cell/index storage buffers are
-	// GONE — the dense BC6H layers replaced the probe-list walk, so the
-	// FrameUniforms giProbes/giCells/giIndices BDA slots are legacy-zero
-	// (kept for the mirror layout; nothing reads them).
-	smvk::Holder<smvk::BufferHandle> m_giGridBuffer;
-	uint64_t m_giGridAddress = 0;
-	// Dense trilinear resample (the BC6H Texture3D runtime path — the
-	// probes never move, so the per-voxel visibility-weighted blend is
-	// baked once at load and filtered per pixel instead of walking probe
-	// lists): per level 9 SG-lobe RGB layers (BC6H 3D) + 1 weight layer
-	// (R16F 3D), in the shared volumeTextures bindless array. Slots ride
-	// frame.giLevelLayers (level * kGiDenseLayersPerLevel + layer;
-	// UINT32_MAX = absent level); the textures stay alive here.
-	static constexpr uint32_t kGiDenseLayersPerLevel = 10;
-	static constexpr uint32_t kGiDenseMaxLevels = 8;
-	std::vector<smvk::Holder<smvk::TextureHandle>> m_giLevelTextures;
-	uint32_t m_giLevelLayers[kGiDenseMaxLevels * kGiDenseLayersPerLevel] = {};
+	// The legacy .sggi octree loader (LoadGiOctree + the grid/dense-layer
+	// members) is DELETED — stage 3 of the octree retirement. The
+	// FrameUniforms gi* mirror fields stay as the zeroed legacy ABI
+	// (the C++/HLSL layout static_asserts never renumber); the giVariant
+	// ID 1 (GI_OCTREE) stays reserved. The probe-visibility helpers and
+	// the probe-point overlay died with the loader.
 	// Ambient-source gating (see AmbientMode): the per-source "wanted"
 	// helpers drive the FrameUniforms enable flags; the *Active() gates
 	// additionally require the content to be loaded. Sky IBL rides the
@@ -2489,7 +2463,10 @@ public:
 			|| m_ambientMode == AmbientMode::Baked
 			|| m_ambientMode == AmbientMode::Probes;
 	}
-	bool GiActive() const { return m_giLoaded && ProbesWanted(); }
+	// GiActive() — the legacy .sggi octree gate — is DELETED with the
+	// loader (stage 3 of the octree retirement): frame.giEnabled is
+	// unconditionally 0 and the gi* FrameUniforms block is the zeroed
+	// legacy ABI.
 	// GI bake names resolved from the loaded clusters' registry (first
 	// binding per kind wins + warn). The registry names: legacy paks
 	// carry bake STEMS (gi/<stem>.sggi + friends — the loader adds the
@@ -2499,7 +2476,9 @@ public:
 	// before the GI loaders run. m_giVolumePaths: the per-volume GiVolume
 	// bindings (Kind::GiVolume — one FULL vfs path per authored GI
 	// volume, the scene's hard identification; manifest-free).
-	std::string m_giProbeName, m_giLightmapName, m_giRegName, m_giVolumeManifestName,
+	// (The Probe-kind binding is acknowledged-and-ignored at load: the
+	// octree loader is gone; old paks still carry the records.)
+	std::string m_giLightmapName, m_giRegName, m_giVolumeManifestName,
 		m_giCubemapName;
 	std::vector<std::string> m_giVolumePaths;
 	void ResolveGiBakes();
@@ -2514,7 +2493,8 @@ public:
 		m_ambientMode = static_cast<AmbientMode>(
 			(static_cast<int>(m_ambientMode) + 1) % 6);
 	}
-	void LoadGiOctree();
+	// (LoadGiOctree — the legacy .sggi loader — is DELETED; see the
+	// members' retirement note above the ambient gating.)
 	// (LoadCubemaps declared with the cubemap members above.)
 	// ---- SG 2D lightmaps: DEPRECATED and removed (were STATIC-geometry
 	// atlas textures plus a runtime branch). The pak-side chart payloads
