@@ -65,7 +65,7 @@ std::string EditorApp::CreateCookAsset(bool gi, const std::string& dir) {
 				path.stem().string(), scene);
 		a.guid = guid;
 		a.giVolumes = ExportCfg().giVolumes;
-		a.world = ExportCfg().giWorld;
+		// (The world-field flag is retired with the octree bake.)
 		ok = smvk::cook::SaveGiCookAsset(path.generic_string(), a,
 			werr);
 	}
@@ -245,9 +245,10 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// scene + tour (runs on the main thread from PollCookProcess after
 	// a successful cook — the GiBaker-from-0 stage already wrote the
 	// fresh bake files + their .meta identities under the content root):
-	//   - the GiCook manifest (settings + the fresh .sggi result pointer)
-	//     updated in place when this scene already owns one, else minted
-	//     beside the content root + adopted into the assetdb;
+	//   - the GiCook manifest (settings + the result pointer for any
+	//     legacy world record) updated in place when this scene already
+	//     owns one, else minted beside the content root + adopted into
+	//     the assetdb;
 	//   - the cubemap capture-set manifest adopted when this cook baked
 	//     cubemaps (the cook minted its identity + wrote it loose);
 	//   - the bake GUID REFERENCES into the tour (m_bakeGiCookGuid /
@@ -342,17 +343,18 @@ void EditorApp::RecordBakeAssetsFromCook() {
 			}
 		}
 	}
-	// Settings + result snapshot (the blob pointer only when this cook
-	// baked a world field — GI-volume-only cooks keep a previous result
-	// alive if one exists; the hash covers whatever is stored). The
-	// result pointer = the tour's world giAsset record (the RANDOM
-	// minted artifact path; blobGuid mirrors the record's artifact
-	// guid, empty = path-only bind). NO supersede deletion here — the
-	// bake owner's stamp already retired the replaced artifacts BY
-	// RECORD (exact set-difference; nothing to re-derive).
+	// Settings + result snapshot (the blob pointer only while the tour
+	// still carries a LEGACY world record from a pre-retirement bake —
+	// the world bake is gone, so new cooks never mint one; a volume-only
+	// cook keeps a previous record alive if it exists, and the hash
+	// covers whatever is stored). The result pointer = the tour's world
+	// giAsset record (the RANDOM minted artifact path; blobGuid mirrors
+	// the record's artifact guid, empty = path-only bind). NO supersede
+	// deletion here — the bake owner's stamp already retired the
+	// replaced artifacts BY RECORD (exact set-difference; nothing to
+	// re-derive).
 	a.scene = scene;
 	a.giVolumes = ExportCfg().giVolumes;
-	a.world = ExportCfg().giWorld;
 	if (hasSggi) {
 		a.blobGuid.clear(); // path-only bind (the artifact guid)
 		a.blobPath = worldBlob;

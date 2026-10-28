@@ -6,6 +6,8 @@
 // NOTE: pool.h must precede Rendergraph/environment.h (bake.h pulls it).
 #include <Engine/Memory/pool.h>
 #include <Engine/GI/bake.h>
+#include <Engine/GI/sg.h> // PackHalf/UnpackHalf (the fp16 amp packing;
+//                          the deleted probe_volume.h used to carry sg.h here)
 #include <Engine/Renderer/mesh.h> // StaticMeshUpload (charts API)
 
 #include <algorithm>

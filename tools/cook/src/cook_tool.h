@@ -93,7 +93,7 @@ struct CookArgs {
 	bool cubemapPngMips = true;
 	// Ambient closure (default OFF: the GI stack owns the ambient; ON
 	// only for stack-less cooks - matches the runtime sky fallback but
-	// double-counts with the .sggi + GI volumes in the pak).
+	// double-counts with the GI volumes in the pak).
 	bool cubemapAmbientClosure = false;
 	// Weave transmission for MASK (cutout cloth) materials: the cloth
 	// keeps its lit albedo AND passes light tinted per texel (the tint

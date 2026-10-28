@@ -1,19 +1,21 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// GiBaker: offline SG-GI probe-volume baker (GPU-free). Bakes a scene's
-// indirect lighting into an adaptive spherical-Gaussian probe volume
-// (Engine/GI: path tracer + adaptive brick placement + error-driven
-// refinement) and writes the LZ4-compressed .sggi the runtime App loads
-// from content/gi/<scene>.sggi.
+// GiBaker: offline SG-GI probe-volume baker (GPU-free). Bakes the scene's
+// GI products the runtime loads: the AUTHORED convex GI volumes (per-probe
+// direct path trace -> dense .givolume grids, Engine/GI/cubemap_volume)
+// and the regular dynamic-object lattices (--regular-out, .sgrv).
 //
-//   GiBaker --content-dir F:/content --scene sponza
-//           [--out F:/content/gi/sponza.sggi]
-//           [--rays 1024] [--bounces 3] [--error-rays 32]
-//           [--root 8.0] [--min-brick 0.25] [--max-probes 262144]
-//           [--tolerance 0.12] [--waves 8] [--threads 0]
+//   GiBaker --content-dir F:/content --tour <def.tour>
+//           [--rays 1024] [--bounces 3] [--threads 0]
 //           [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]
 //           [--sky-intensity 600] [--textures on|off] [--verify on|off]
+//
+// The ADAPTIVE .sggi world-field bake (--out) is RETIRED — stage 3 of
+// the octree retirement (tourmaline_octree_retirement_plan.md): the
+// flag parses (old scripts get the loud refusal below) but Run refuses
+// a non-empty --out. The ambient rides the authored .givolume set + the
+// sky IBL fallback.
 //
 // Scene resolution mirrors the App runtime: --scene sponza | bistro |
 // bistro-niagara maps to the SAME derived .geometry artifact the runtime
@@ -60,7 +62,6 @@
 #include <Engine/GI/bake_inputs.h> // the invalidation model (unit hashes)
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h> // lightmap-chain diagnostic (--lm-probe)
-#include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
@@ -101,20 +102,10 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--scene") { if (!need(out.scene, i)) return false; }
 		else if (a == "--in-vfs") { if (!need(out.inVfs, i)) return false; }
 		else if (a == "--tour") { if (!need(out.tour, i)) return false; }
-		else if (a == "--out") { if (!need(out.out, i)) return false; out.outExplicit = true; }
+		else if (a == "--out") { if (!need(out.out, i)) return false; } // RETIRED: parses so old scripts reach Run()'s loud refusal
 		else if (a == "--rays") { if (!needU(out.rays, i)) return false; }
 		else if (a == "--bounces") { if (!needU(out.bounces, i)) return false; }
-		else if (a == "--error-rays") { if (!needU(out.errorRays, i)) return false; }
-		else if (a == "--root") { if (!needF(out.root, i)) return false; }
-		else if (a == "--min-brick") { if (!needF(out.minBrick, i)) return false; }
-		else if (a == "--max-probes") { if (!needU(out.maxProbes, i)) return false; }
-		else if (a == "--tolerance") { if (!needF(out.tolerance, i)) return false; }
-		else if (a == "--near-factor") { if (!needF(out.nearFactor, i)) return false; }
-		else if (a == "--waves") { if (!needU(out.waves, i)) return false; }
 		else if (a == "--threads") { if (!needU(out.threads, i)) return false; }
-		else if (a == "--diffusion") { if (!needU(out.diffusion, i)) return false; }
-		else if (a == "--smoothing-passes") { if (!needU(out.smoothingPasses, i)) return false; }
-		else if (a == "--support") { if (!needF(out.support, i)) return false; }
 		else if (a == "--sun-azimuth") { if (!needF(out.sunAzimuth, i)) return false; }
 		else if (a == "--sun-elevation") { if (!needF(out.sunElevation, i)) return false; }
 		else if (a == "--sun-intensity") { if (!needF(out.sunIntensity, i)) return false; }
@@ -184,23 +175,21 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 	if (out.analyze.empty() && out.inVfs.empty() && out.scene.empty()
 		&& out.tour.empty()) {
 		tool::err() << "Required: --scene <id>, --in-vfs <model.gltf>,"
-			<< " --tour <def.tour>, or --analyze <file.sggi>" << std::endl;
+			<< " --tour <def.tour>, or --analyze <file.sgrv|file.givolume>"
+			<< std::endl;
 		return false;
 	}
 	return true;
 }
 
 void Usage() {
-	tool::out() << "GiBaker --content-dir content --scene sponza\n"
-		<< "         [--out content/gi/sponza.sggi] [--in-vfs models/X/x.geometry]\n"
+	tool::out() << "GiBaker --content-dir content --tour def.tour\n"
+		<< "         [--in-vfs models/X/x.geometry --scene sponza]\n"
 		<< "         (bake outputs ride STABLE VFS paths like mesh blobs:\n"
-		<< "         gi/<scene>.sggi, gi/<scene>_<name>.givolume + the manifests\n"
+		<< "         gi/<scene>_<name>.givolume + the manifests\n"
 		<< "         gi/<scene>.givolumemanifest / gi/<scene>.regmanifest (rows\n"
 		<< "         are bare VFS paths))\n"
-		<< "         [--rays 1024] [--bounces 3] [--error-rays 32]\n"
-		<< "         [--root 8.0] [--min-brick 0.25] [--max-probes 1048576]\n"
-		<< "         [--tolerance 0.12] [--near-factor 1.0] [--waves 8] [--threads 0]\n"
-		<< "         [--diffusion 0] [--smoothing-passes 0] [--support 1.25]\n"
+		<< "         [--rays 1024] [--bounces 3] [--threads 0]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
 		<< "         [--sky-intensity 600] [--textures on|off] [--emissive on|off]\n"
 		<< "         [--verify on|off] [--uniform-albedo off|0.7|r,g,b]\n"
@@ -209,8 +198,11 @@ void Usage() {
 		<< "         (bakes use REAL materials by default; sun + static spots\n"
 		<< "         via NEE; transmissive meshes pass rays through, tinted.\n"
 		<< "         --uniform-albedo overrides with a known flat albedo)\n"
-		<< "GiBaker --analyze <file.sggi>: dump probe amplitude stats and a\n"
-		<< "         CPU-sampled irradiance transect (bake diagnostics).\n"
+		<< "         [--out <path>] is RETIRED (the .sggi world-field bake died\n"
+		<< "         with the octree): the flag parses but Run refuses it.\n"
+		<< "GiBaker --analyze <file.sgrv|file.givolume>: coefficient stats and\n"
+		<< "         a CPU-sampled irradiance transect (bake diagnostics).\n"
+		<< "         (The .sggi analyzer is retired with the octree bake.)\n"
 		<< "GiBaker --scene bistro --regular-out content/gi/bistro_bar.sgrv\n"
 		<< "         --reg-preset bistro-bar|bistro-street|scene\n"
 		<< "         [--reg-min x,y,z --reg-max x,y,z] [--reg-dims nx,ny,nz]\n"
@@ -234,7 +226,7 @@ void Usage() {
 		<< "             spacing 0.5\n"
 		<< "         Writes gi/<scene>_<name>.givolume + updates the runtime\n"
 		<< "         manifest gi/<scene>.givolumemanifest (rows are bare VFS paths).\n"
-		<< "         Volumes blend over the .sggi world field by priority.\n"
+		<< "         Volumes blend over the sky base by priority.\n"
 		<< "GiBaker --scene bistro --lm-probe N --uniform-albedo off\n"
 		<< "         [--sun-... --sky-intensity ...]: lightmap-chain diagnostic\n"
 		<< "         (authored-pack charts -> rasterize -> bake) on N meshes;\n"
@@ -243,7 +235,7 @@ void Usage() {
 }
 
 // Regular-volume inspector (.sgrv): coefficient stats + a trilinear
-// irradiance transect, mirroring AnalyzeVolume for the adaptive format.
+// irradiance transect (the .givolume analyzer below mirrors it).
 int AnalyzeRegularVolume(const std::string& path) {
 	using namespace smvk::gi;
 	SgRegularVolume vol;
@@ -426,391 +418,9 @@ int AnalyzeGiVolume(const std::string& path) {
 			<< extremes[i].b.y << "," << extremes[i].b.z << ")\n";
 	return 0;
 }
-
-int AnalyzeVolume(const std::string& path) {
-	using namespace smvk::gi;
-	SgGiVolume vol;
-	std::string err;
-	if (!SgGiVolume::ReadFile(path, vol, err)) {
-		tool::err() << "Analyze: load failed: " << err << std::endl;
-		return 1;
-	}
-	auto lum = [](const glm::vec3& c) {
-		return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
-	};
-	tool::out() << "analyze: " << path << "\n  probes=" << vol.probes.size()
-		<< " levels=" << vol.levelCount
-		<< " boundsMin=(" << vol.boundsMin.x << "," << vol.boundsMin.y << "," << vol.boundsMin.z << ")"
-		<< " boundsMax=(" << vol.boundsMax.x << "," << vol.boundsMax.y << "," << vol.boundsMax.z << ")\n";
-
-	size_t nanProbes = 0, infProbes = 0;
-	double sumLum = 0.0, maxLum = 0.0;
-	float minLum = std::numeric_limits<float>::max();
-	std::vector<double> levelSum(kSgGiMaxLevels, 0.0);
-	std::vector<double> levelMax(kSgGiMaxLevels, 0.0);
-	std::vector<uint32_t> levelCount(kSgGiMaxLevels, 0);
-	struct Extreme { double l; uint32_t level; glm::vec3 pos; };
-	std::vector<Extreme> extremes;
-	for (const SgProbe& p : vol.probes) {
-		double pl = 0.0;
-		bool nan = false, inf = false;
-		for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-			for (int c = 0; c < 3; ++c) {
-				const float v = p.amps[i][c];
-				if (std::isnan(v)) nan = true;
-				if (std::isinf(v)) inf = true;
-			}
-			pl += lum(p.amps[i]);
-		}
-		pl /= kSgLobeCount;
-		if (nan) ++nanProbes;
-		if (inf) ++infProbes;
-		if (!nan && !inf) {
-			sumLum += pl;
-			maxLum = std::max(maxLum, pl);
-			minLum = std::min(minLum, float(pl));
-			if (p.level < kSgGiMaxLevels) {
-				levelSum[p.level] += pl;
-				levelMax[p.level] = std::max(levelMax[p.level], pl);
-				++levelCount[p.level];
-			}
-			extremes.push_back({ pl, p.level, p.position });
-		}
-	}
-	tool::out() << "  meanLum=" << (vol.probes.empty() ? 0.0 : sumLum / vol.probes.size())
-		<< " minLum=" << (minLum == std::numeric_limits<float>::max() ? -1.0 : minLum)
-		<< " maxLum=" << maxLum
-		<< " nanProbes=" << nanProbes << " infProbes=" << infProbes << "\n";
-	for (uint32_t l = 0; l < vol.levelCount; ++l)
-		tool::out() << "  level " << l << ": n=" << levelCount[l]
-			<< " mean=" << (levelCount[l] ? levelSum[l] / levelCount[l] : 0.0)
-			<< " max=" << levelMax[l] << "\n";
-	std::sort(extremes.begin(), extremes.end(),
-		[](const Extreme& a, const Extreme& b) { return a.l > b.l; });
-	tool::out() << "  top extremes (lum, level, pos):\n";
-	for (size_t i = 0; i < std::min<size_t>(extremes.size(), 10); ++i)
-		tool::out() << "    " << extremes[i].l << " L" << extremes[i].level
-			<< " (" << extremes[i].pos.x << "," << extremes[i].pos.y << "," << extremes[i].pos.z << ")\n";
-	// Isolation census: for each probe, same-level neighbors within
-	// 1.5x its support radius. Fine probes with ~0 fine neighbors are
-	// speckle-subdivision orphans: their footprint shows as a lone dot
-	// against a coarser neighborhood (and vice versa). Healthy dense
-	// regions have 5+ same-level neighbors.
-	{
-		const float cell = 1.0f;
-		glm::vec3 gmin(1e30f);
-		for (const SgProbe& p : vol.probes)
-			gmin = glm::min(gmin, p.position);
-		std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
-		auto key = [&](int x, int y, int z) {
-			return (uint64_t(uint32_t(x) + 512) << 42)
-				| (uint64_t(uint32_t(y) + 512) << 21)
-				| uint64_t(uint32_t(z) + 512);
-		};
-		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
-			const glm::vec3 d = (vol.probes[i].position - gmin) / cell;
-			grid[key(int(d.x), int(d.y), int(d.z))].push_back(i);
-		}
-		std::vector<uint32_t> isoHist(8, 0);
-		uint32_t fineIso = 0, fineTotal = 0;
-		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
-			const SgProbe& p = vol.probes[i];
-			const float r = 1.5f * p.radius;
-			const glm::vec3 lo = (p.position - glm::vec3(r) - gmin) / cell;
-			const glm::vec3 hi = (p.position + glm::vec3(r) - gmin) / cell;
-			uint32_t same = 0;
-			for (int x = int(lo.x); x <= int(hi.x); ++x)
-				for (int y = int(lo.y); y <= int(hi.y); ++y)
-					for (int z = int(lo.z); z <= int(hi.z); ++z) {
-						auto it = grid.find(key(x, y, z));
-						if (it == grid.end())
-							continue;
-						for (uint32_t j : it->second) {
-							if (j == i || vol.probes[j].level != p.level)
-								continue;
-							const glm::vec3 dd = p.position - vol.probes[j].position;
-							if (glm::dot(dd, dd) < r * r)
-								++same;
-						}
-					}
-			isoHist[std::min(same, 7u)]++;
-			if (p.level + 2 >= vol.levelCount) { // finest two levels
-				++fineTotal;
-				if (same == 0)
-					++fineIso;
-			}
-		}
-		tool::out() << "  isolation histogram (same-level neighbors within 1.5R):\n";
-		for (int n = 0; n < 8; ++n)
-			tool::out() << "    n=" << n << ": " << isoHist[n] << "\n";
-		tool::out() << "  fine-level isolated (0 same-level neighbors): "
-			<< fineIso << "/" << fineTotal << "\n";
-	}
-	// Zero census: probes whose mean amplitude is exactly (or near) zero
-	// cannot be honest in sunlit open air (a downward ray always finds a
-	// bounce). They are NaN-sanitized casualties or fit failures, and
-	// their wide supports dilute (darken) large neighborhoods — suspects
-	// for dark patches. Dump positions to see where they live.
-	{
-		uint32_t zeroCount = 0;
-		tool::out() << "  zero probes (meanLum < 1e-6), first 25 with level+pos:\n";
-		for (const SgProbe& p : vol.probes) {
-			glm::vec3 m(0.0f);
-			for (uint32_t i = 0; i < kSgLobeCount; ++i)
-				m += p.amps[i];
-			const double pl = (0.2126 * m.x + 0.7152 * m.y + 0.0722 * m.z) / kSgLobeCount;
-			if (pl < 1e-6) {
-				++zeroCount;
-				if (zeroCount <= 25)
-					tool::out() << "    L" << p.level << " (" << p.position.x << ","
-						<< p.position.y << "," << p.position.z << ") r=" << p.radius << "\n";
-			}
-		}
-		tool::out() << "  zero probes total: " << zeroCount << "/" << vol.probes.size() << "\n";
-	}
-	// Hue census: per-probe mean-amplitude RGB, max/min channel ratio.
-	// A white-world bake must be ~sun-tinted everywhere (ratio ~= 1.1);
-	// ratios >> 2 mean chromatic probes that read as colored dots in the
-	// albedo-free debug view (which has no local albedo to blame).
-	{
-		size_t over2 = 0, over5 = 0;
-		double worstRatio = 0.0;
-		glm::vec3 worstMean(0.0f);
-		glm::vec3 worstPos(0.0f);
-		uint32_t worstLevel = 0;
-		for (const SgProbe& p : vol.probes) {
-			glm::vec3 m(0.0f);
-			for (uint32_t i = 0; i < kSgLobeCount; ++i)
-				m += p.amps[i];
-			m /= float(kSgLobeCount);
-			const float mx = std::max(m.x, std::max(m.y, m.z));
-			const float mn = std::min(m.x, std::min(m.y, m.z));
-			if (!(mx > 1e-6f))
-				continue; // dark probe: no hue to speak of
-			const double ratio = double(mx) / double(std::max(mn, 1e-6f));
-			if (ratio > 2.0) ++over2;
-			if (ratio > 5.0) ++over5;
-			if (ratio > worstRatio) {
-				worstRatio = ratio;
-				worstMean = m;
-				worstPos = p.position;
-				worstLevel = p.level;
-			}
-		}
-		tool::out() << "  hue: ratio>2: " << over2 << " ratio>5: " << over5
-			<< " worst=" << worstRatio << " mean=(" << worstMean.x << ","
-			<< worstMean.y << "," << worstMean.z << ") L" << worstLevel
-			<< " (" << worstPos.x << "," << worstPos.y << "," << worstPos.z << ")\n";
-	}
-
-	// Transect: CPU Sample() + up-normal irradiance across the volume at
-	// standing eye height. Adjacent steps share almost all contributors,
-	// so cliffs here mean the baked probes genuinely disagree (bake fault),
-	// while a smooth transect with a blotchy GPU image means the fault is
-	// downstream (pack/grid/shader).
-	const glm::vec3 lo = vol.boundsMin, hi = vol.boundsMax;
-	// Standing eye height (volume bounds are padded ~rootBrick/4 below
-	// the actual floor, so lo.y + 1.5 can end up under the scene).
-	const float y = std::clamp(1.0f, lo.y, hi.y);
-	const float z = (lo.z + hi.z) * 0.5f;
-	const glm::vec3 up(0, 1, 0);
-	size_t uncovered = 0, steps = 0;
-	double prevLum = -1.0, maxStep = 0.0;
-	tool::out() << "  transect y=" << y << " z=" << z << " (x, r, g, b, covered):\n";
-	for (float x = lo.x; x <= hi.x; x += 0.25f) {
-		glm::vec3 amps[kSgLobeCount];
-		const bool ok = vol.Sample(glm::vec3(x, y, z), amps);
-		++steps;
-		if (!ok) { ++uncovered; continue; }
-		const glm::vec3 e = SgDiffuseIrradiance(amps, up);
-		const double l = lum(e);
-		if (prevLum >= 0.0)
-			maxStep = std::max(maxStep, std::abs(l - prevLum) / std::max(prevLum, 1e-3));
-		prevLum = l;
-		tool::out() << "    " << x << " " << e.r << " " << e.g << " " << e.b << " 1\n";
-	}
-	tool::out() << "  transect steps=" << steps << " uncovered=" << uncovered
-		<< " maxAdjacentRelStep=" << maxStep << "\n";
-
-	// Per-level weight census at the transect points: for each point,
-	// the visibility-weighted (wv) share of each octree level in the
-	// blended result, brute-forced over all probes (independent
-	// reimplementation of ProbeWeight/VisibilityFactor from
-	// probe_volume.cpp — also a cross-check of the runtime blend).
-	// Reports where COARSE probes dominate a point that FINE probes also
-	// cover (the coarse-leak signature: big soft blobs amid dense fine
-	// probes).
-	{
-		auto wendland = [](const glm::vec3& pos, const SgProbe& p) {
-			const glm::vec3 d = pos - p.position;
-			const float dist2 = glm::dot(d, d);
-			const float r2 = p.radius * p.radius;
-			if (dist2 >= r2)
-				return 0.0f;
-			const float x2 = dist2 / r2;
-			const float x2m = 1.0f - x2;
-			return x2m * x2m * x2m;
-		};
-		static const glm::vec3 kAxes[6] = {
-			glm::vec3(1, 0, 0), glm::vec3(-1, 0, 0), glm::vec3(0, 1, 0),
-			glm::vec3(0, -1, 0), glm::vec3(0, 0, 1), glm::vec3(0, 0, -1),
-		};
-		auto visFactor = [&](const glm::vec3& pos, const SgProbe& p) {
-			const float slack = std::clamp(0.35f * p.radius, 0.05f, 0.3f);
-			const glm::vec3 d = pos - p.position;
-			float w = 1.0f;
-			for (uint32_t k = 0; k < 6; ++k) {
-				const float dist = p.visibility[k];
-				if (dist <= 0.0f)
-					continue;
-				const float along = glm::dot(d, kAxes[k]);
-				if (along > dist + slack) {
-					w *= std::max(0.0f, 1.0f
-						- (along - dist - slack) / (0.25f * dist + 0.02f));
-					if (w <= 0.0f)
-						return 0.0f;
-				}
-			}
-			return w;
-		};
-		tool::out() << "  level census (point, then wv share % per level L1..L5, dominant):\n";
-		uint32_t coarseDominant = 0, fineDominant = 0, censusPts = 0, leakPts = 0;
-		// 3D sweep: heights through the arches + z rows through the
-		// recesses (the transect-only census can miss leak pockets).
-		const float ys[5] = { 0.5f, 1.5f, 3.5f, 6.0f, 9.0f };
-		const float span = hi.z - lo.z;
-		const float zs[3] = { z - span * 0.25f, z, z + span * 0.25f };
-		for (float yA : ys) {
-			if (yA < lo.y || yA > hi.y)
-				continue;
-			for (float zA : zs) {
-				for (float x = lo.x; x <= hi.x; x += 0.5f) {
-					const glm::vec3 pos(x, yA, zA);
-			float wByLevel[kSgGiMaxLevels] = {};
-			for (const SgProbe& p : vol.probes) {
-				if (!p.valid)
-					continue;
-				const float w = wendland(pos, p);
-				if (w <= 0.0f)
-					continue;
-				const float wv = w * visFactor(pos, p);
-				if (wv > 0.0f && p.level < kSgGiMaxLevels)
-					wByLevel[p.level] += wv;
-			}
-			float total = 0.0f;
-			for (uint32_t l = 0; l < vol.levelCount; ++l)
-				total += wByLevel[l];
-			if (total <= 1e-4f)
-				continue;
-			++censusPts;
-			uint32_t dom = 0;
-			float best = -1.0f;
-			for (uint32_t l = 0; l < vol.levelCount; ++l)
-				if (wByLevel[l] > best) { best = wByLevel[l]; dom = l; }
-			const float fineShare = (vol.levelCount > 4)
-				? (wByLevel[3] + wByLevel[4])
-					/ (total + 1e-6f) : 0.0f;
-			if (dom <= 2)
-				++coarseDominant;
-			else
-				++fineDominant;
-			// Flag the leak signature: coarse dominant while fine probes
-			// hold a real share too (they were spent on this region!).
-			if (dom <= 2 && fineShare > 0.15f) {
-				++leakPts;
-				tool::out() << "    (" << x << "," << yA << "," << zA
-					<< ") LEAK? dom=L" << dom << " shares:";
-			} else if (dom <= 2) {
-				tool::out() << "    (" << x << "," << yA << "," << zA
-					<< ") coarse-only dom=L" << dom << " shares:";
-			} else
-				continue;
-			for (uint32_t l = 1; l < std::min<uint32_t>(vol.levelCount, 6u); ++l)
-				tool::out() << " L" << l << "="
-					<< int(100.0f * wByLevel[l] / (total + 1e-6f)) << "%";
-			tool::out() << "\n";
-				}
-			}
-		}
-		tool::out() << "  census: " << censusPts << " pts, coarse-dominant "
-			<< coarseDominant << ", fine-dominant " << fineDominant
-			<< ", leak-signature " << leakPts << "\n";
-	}
-
-	// Same-level neighbor disagreement (speckle census): for each probe of
-	// the finest levels, compare its mean amplitude luminance against the
-	// same-level neighbors inside 2x spacing. The relative deviation is
-	// exactly what runtime blends turn into per-probe patches when no
-	// smoothing runs: median ~5% reads smooth, median ~30%+ reads as
-	// white/grey dots the size of a probe support.
-	{
-		const float cell = 1.0f;
-		glm::vec3 gmin(1e30f);
-		for (const SgProbe& p : vol.probes)
-			gmin = glm::min(gmin, p.position);
-		auto key = [&](int x, int y, int z) {
-			return (uint64_t(uint32_t(x) + 512) << 42)
-				| (uint64_t(uint32_t(y) + 512) << 21)
-				| uint64_t(uint32_t(z) + 512);
-		};
-		std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
-		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
-			const glm::vec3 d = (vol.probes[i].position - gmin) / cell;
-			grid[key(int(d.x), int(d.y), int(d.z))].push_back(i);
-		}
-		auto meanLumOf = [&](const SgProbe& p) {
-			glm::vec3 m(0.0f);
-			for (uint32_t i = 0; i < kSgLobeCount; ++i)
-				m += p.amps[i];
-			m /= float(kSgLobeCount);
-			return 0.2126f * m.x + 0.7152f * m.y + 0.0722f * m.z;
-		};
-		std::vector<double> devs;
-		for (uint32_t i = 0; i < vol.probes.size(); ++i) {
-			const SgProbe& p = vol.probes[i];
-			if (p.level + 2 < vol.levelCount)
-				continue; // finest two levels only
-			const float r = 2.0f * p.radius;
-			const glm::vec3 lo = (p.position - glm::vec3(r) - gmin) / cell;
-			const glm::vec3 hi = (p.position + glm::vec3(r) - gmin) / cell;
-			double nbSum = 0.0;
-			uint32_t nb = 0;
-			for (int x = int(lo.x); x <= int(hi.x); ++x)
-				for (int y = int(lo.y); y <= int(hi.y); ++y)
-					for (int z = int(lo.z); z <= int(hi.z); ++z) {
-						auto it = grid.find(key(x, y, z));
-						if (it == grid.end())
-							continue;
-						for (uint32_t j : it->second) {
-							if (j == i || vol.probes[j].level != p.level)
-								continue;
-							const glm::vec3 dd = p.position - vol.probes[j].position;
-							if (glm::dot(dd, dd) < r * r) {
-								nbSum += meanLumOf(vol.probes[j]);
-								++nb;
-							}
-						}
-					}
-			if (nb < 3)
-				continue;
-			const double self = meanLumOf(p);
-			const double nbMean = nbSum / nb;
-			if (nbMean > 1e-4 && self > 1e-4)
-				devs.push_back(std::abs(self - nbMean) / nbMean);
-		}
-		if (!devs.empty()) {
-			std::sort(devs.begin(), devs.end());
-			const auto q = [&](double f) {
-				return devs[size_t(f * double(devs.size() - 1))];
-			};
-			tool::out() << "  speckle census (|self-nbMean|/nbMean, finest levels): n="
-				<< devs.size() << " median=" << q(0.5)
-				<< " p75=" << q(0.75) << " p90=" << q(0.9)
-				<< " p99=" << q(0.99) << "\n";
-		}
-	}
-	return 0;
-}
+// (AnalyzeVolume — the .sggi inspector — is RETIRED with the octree bake:
+// stage 3 of the octree retirement. The live analyzers are
+// AnalyzeRegularVolume (.sgrv) + AnalyzeGiVolume (.givolume) above.)
 
 // Scene-id -> glTF vfs path (mirrors the App pak loader (main.cpp)).
 std::optional<std::string> SceneGltf(const std::string& id) {
@@ -1053,18 +663,23 @@ namespace gibaker {
 // Runs the bake; returns the process exit code (byte-identical to the
 // CLI run). See gi_baker.h.
 int Run(Args& args) {
-	// A non-empty out IS the world-field request. The CLI parse sets
-	// outExplicit together with --out; in-process callers (the editor's
-	// cook stage 1 / Bake GI) fill Args directly and were silently
-	// missing the parse-only flag: GiBaker baked the authored convex
-	// volumes, took the GI-volume-only early exit, returned 0 WITHOUT ever
-	// writing the .sggi, and the editor's temp publish then failed
-	// "file not found" — the three-day "Cook FAILED (see log above)"
-	// ghost. Sanitize once here so the gate can never disagree with
-	// the field it gates (same field-copy trap class as the Run(c)
-	// rebuild comment in cook/src/main.cpp).
-	if (!args.out.empty())
-		args.outExplicit = true;
+	// The --out WORLD-FIELD BAKE is RETIRED (stage 3 of the octree
+	// retirement — tourmaline_octree_retirement_plan.md): the .sggi
+	// octree bake is deleted, so a non-empty out can only be a stale
+	// caller (an old script's --out, or an un-migrated in-process fill
+	// of Args.out). REFUSE LOUDLY instead of silently baking only the
+	// volumes and exiting 0 — that exact silent-no-write is the trap
+	// this head used to sanitize against (the editor's three-day
+	// "Cook FAILED (see log above)" ghost: the missing outExplicit
+	// derivation once made the volume-only early exit look like success).
+	if (!args.out.empty()) {
+		tool::err() << "--out <path>: the .sggi world-field bake is RETIRED"
+			<< " (the octree died with the legacy .sggi runtime). Bakes"
+			<< " write their own minted artifacts; drop --out / clear"
+			<< " Args.out. Convex GI volumes + the sky IBL carry the"
+			<< " ambient now." << std::endl;
+		return 2;
+	}
 	if (!args.analyze.empty()) {
 		if (args.analyze.size() >= 5
 			&& args.analyze.compare(args.analyze.size() - 5, 5, ".sgrv") == 0)
@@ -1072,7 +687,9 @@ int Run(Args& args) {
 		if (args.analyze.size() >= 5
 			&& args.analyze.compare(args.analyze.size() - 9, 9, ".givolume") == 0)
 			return AnalyzeGiVolume(args.analyze);
-		return AnalyzeVolume(args.analyze);
+		tool::err() << "--analyze wants a .sgrv or .givolume (the .sggi"
+			<< " analyzer is retired with the octree bake)" << std::endl;
+		return 2;
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();
@@ -1106,22 +723,13 @@ int Run(Args& args) {
 		}
 		inVfs = *mapped;
 	}
-	if (args.out.empty()) {
-		// Default output NAME: RANDOM MINTED (a fresh guid). Note the
-		// name alone does not request the world bake — --out explicit
-		// is the request flag (outExplicit); a bare --tour run bakes
-		// GI volumes only and exits at the GI-volume block. When the world does
-		// bake (an explicit --out, or the editor's minted gargs.out),
-		// the stamp carries the artifact path in the tour's giAsset
-		// records — no stem-keyed default anywhere (that convention is
-		// what the records retired).
-		args.out = (std::filesystem::path(args.contentDir) / "gi"
-			/ (smvk::tour::GenerateUuid() + ".sggi")).generic_string();
-	}
 
+	// (No output path derivation: the retired --out world bake used to
+	// mint a default here. Every live stage writes its own artifacts —
+	// convex .givolume files mint per volume, .sgrv goes where
+	// --regular-out says.)
 	tool::out() << "GiBaker: scene '" << sceneId << "' from "
-		<< (haveTour ? args.tour : inVfs)
-		<< " -> " << args.out << "\n";
+		<< (haveTour ? args.tour : inVfs) << "\n";
 
 	// GPU-free offline-mode Cluster. --tour builds the DEFINITION (empty
 	// root + reference bind + command replay, host-path resolution —
@@ -1702,10 +1310,11 @@ int Run(Args& args) {
 			tool::out() << "Manifest " << manifestPath.generic_string()
 				<< ": " << merged.size() << " volume(s)\n";
 		}
-		// Fall through only when another stage was requested explicitly
-		// (--out adaptive A/B or a convex bake pending below: --gi-volume-spec
-		// or authored tour GI volumes). A regular-only run passes no --out.
-		if (!args.outExplicit && args.giVolumeSpec.empty() && tourGiVolumes.empty()) {
+		// Fall through only when a convex bake is pending below
+		// (--gi-volume-spec or authored tour GI volumes). A regular-only
+		// run is done here. (The --out adaptive A/B fall-through died
+		// with the world-field bake — stage 3 of the octree retirement.)
+		if (args.giVolumeSpec.empty() && tourGiVolumes.empty()) {
 			const auto t1 = std::chrono::steady_clock::now();
 			tool::out() << "GiBaker total: "
 				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
@@ -1885,15 +1494,15 @@ int Run(Args& args) {
 			}
 		}
 		// NO givolumemanifest anymore: the scene's HARD per-volume bindings
-		// (updated above, mirrored onto the tour by the stamp at the
-		// end of Run) REPLACE the manifest round-trip — the pak cooker
-		// embeds exactly what the scene binds, the runtime loads by
-		// binding. The old gi/<scene>.givolumemanifest channels (loose
-		// discovery + legacy paks) are retired with the stem
-		// convention.
-		// A GI-volume-only run (no --out) is done; --out falls through to the
-		// adaptive world-field bake (the .sggi and .givolume files pair up).
-		if (!args.outExplicit) {
+		// (updated above, mirrored onto the tour by the stamp below)
+		// REPLACE the manifest round-trip — the pak cooker embeds exactly
+		// what the scene binds, the runtime loads by binding. The old
+		// gi/<scene>.givolumemanifest channels (loose discovery + legacy
+		// paks) are retired with the stem convention.
+		// (The --out fall-through to the adaptive world-field bake that
+		// once paired the .sggi and .givolume files is RETIRED with the
+		// world bake — a convex run always exits here.)
+		{
 			if (!stampTour())
 				return 1;
 			const auto t1 = std::chrono::steady_clock::now();
@@ -2088,205 +1697,22 @@ int Run(Args& args) {
 		return 0;
 	}
 
-	// The world-field FRESHNESS CHECK (the invalidation model): when the
-	// recorded bake-input hash matches the freshly computed one, the
-	// whole octree bake is SKIPPED — the bound artifact + record stand
-	// (the stamp re-issues them unchanged; nothing is written, so the
-	// editor's minted --out path never even materializes as an orphan).
-	// The editor's partial-bake path: a GI-volume-only change skips the
-	// minutes-long world bake entirely.
-	if (haveTour && !cluster->scene.giWorldSource.empty()) {
-		const smvk::gi::WorldBakeConfigHashInputs wc =
-			smvk::gi::CanonicalWorldCfgHash(maskTransmission);
-		const std::string fresh = smvk::gi::WorldBakeUnitHash(
-			bakeGrid, *cluster, wc);
-		// The skip requires the bound ARTIFACT to exist: a matching hash
-		// with a MISSING file is not current (a fresh project checkout or
-		// a relocation copies the tour but not the gi/ bakes — skipping
-		// there would hand the pak a bound-but-unreadable record and the
-		// gate would refuse).
-		std::error_code fec;
-		const bool artifactExists = std::filesystem::is_regular_file(
-			std::filesystem::path(args.contentDir)
-			/ std::filesystem::path(cluster->scene.giWorldSource), fec);
-		if (fresh == cluster->scene.giWorldInputHash
-				&& !cluster->scene.giWorldInputHash.empty()
-				&& artifactExists) {
-			tool::out() << "world-field bake SKIPPED (inputs unchanged; "
-				"the bound artifact stands)\n";
-			if (!stampTour())
-				return 1;
-			const auto t1 = std::chrono::steady_clock::now();
-			tool::out() << "GiBaker total: "
-				<< std::chrono::duration<double>(t1 - t0).count() << "s\n";
-			return 0;
-		}
-		if (fresh == cluster->scene.giWorldInputHash
-				&& !cluster->scene.giWorldInputHash.empty()
-				&& !artifactExists)
-			tool::out() << "world-field inputs unchanged but the bound"
-				" artifact is missing — baking (fresh project/relocation"
-				" checkout)\n";
-	}
-
-	smvk::gi::SgGiBakeConfig cfg{};
-	cfg.raysPerProbe = args.rays;
-	cfg.maxBounces = args.bounces;
-	cfg.errorRaysPerProbe = args.errorRays;
-	cfg.rootBrickSize = args.root;
-	cfg.minBrickSize = args.minBrick;
-	cfg.maxProbes = args.maxProbes;
-	cfg.errorTolerance = args.tolerance;
-	cfg.nearSurfaceFactor = args.nearFactor;
-	cfg.maxRefineWaves = args.waves;
-	cfg.threadCount = args.threads;
-	cfg.diffusionIterations = args.diffusion;
-	cfg.smoothingPasses = args.smoothingPasses;
-	cfg.probeSupportFactor = args.support;
-
-	smvk::gi::SgGiVolume volume;
-	smvk::gi::SgGiBakeStats stats;
-	if (!smvk::gi::BakeSgGiVolume(traceScene, cfg, volume, stats,
-			[](const char* line) { tool::out() << line; })) {
-		tool::err() << "Bake failed" << std::endl;
-		return 1;
-	}
-
-	// Dense runtime layers (the BC6H Texture3D path): bake the
-	// visibility-weighted partition-of-unity blend + BC6H-compress it
-	// HERE, at cook time — the .sggi ships finished payloads and the
-	// runtime only creates images (no encoder, no half-float
-	// intermediates, no repeated allocations at load; the exact baked
-	// result is deterministic).
-	if (!volume.BakeDenseLayers()) {
-		tool::err() << "Dense layer bake failed (no usable levels)" << std::endl;
-		return 1;
-	}
-	{
-		uint32_t denseLvls = 0;
-		size_t denseBytes = 0;
-		for (const auto& dl : volume.denseLevels)
-			if (dl.present) {
-				++denseLvls;
-				denseBytes += dl.Bytes();
-			}
-		tool::out() << "Dense layers: " << denseLvls << " levels ("
-			<< (denseBytes / 1024) << " KiB BC6H+R16F)\n";
-		for (uint32_t lvl = 0; lvl < volume.denseLevels.size(); ++lvl)
-			if (volume.denseLevels[lvl].present)
-				tool::out() << "  dense level " << lvl << ": "
-					<< volume.denseLevels[lvl].dims[0] << "x"
-					<< volume.denseLevels[lvl].dims[1] << "x"
-					<< volume.denseLevels[lvl].dims[2] << " voxels\n";
-	}
-
-	{
-		std::filesystem::path out(args.out);
-		std::error_code ec;
-		std::filesystem::create_directories(out.parent_path(), ec);
-	}
-	std::string writeErr;
-	if (!volume.WriteFile(args.out, writeErr)) {
-		tool::err() << "Write failed: " << writeErr << std::endl;
-		return 1;
-	}
-
-	tool::out() << "Wrote " << args.out << " ("
-		<< std::filesystem::file_size(args.out) << " B on disk)\n";
-	// The world-field binding (the same hard-identification stamp as the
-	// GI volumes): the baked octree binds to the scene on the replayed
-	// state — the tour stamp at the exit mirrors it into the giAsset
-	// records. VfsRelPath is the content-relative form the records carry.
-	cluster->scene.giWorldSource = VfsRelPath(args.contentDir, args.out);
-	cluster->scene.giWorldGuid.clear();
-	// The bake-input hash AT BAKE TIME (the pak gate's freshness check +
-	// the next run's skip). The canonical config derivation matches the
-	// gate's (the CLI-overridden knobs mismatch BY DESIGN).
-	cluster->scene.giWorldInputHash = smvk::gi::WorldBakeUnitHash(
-		bakeGrid, *cluster,
-		smvk::gi::CanonicalWorldCfgHash(maskTransmission));
-	tool::out() << "  world bake-input hash: "
-		<< cluster->scene.giWorldInputHash << " (env="
-		<< smvk::gi::BakeEnvHash(cluster->scene) << " lights="
-		<< smvk::gi::BakeLightsHash(*cluster) << " grid="
-		<< bakeGrid.root << ")\n";
-	tool::out() << "  probes=" << stats.probeCount
-		<< " waves=" << stats.refineWaves
-		<< " paths=" << stats.pathsTraced
-		<< " seconds=" << stats.seconds << "\n";
-	if (stats.probeBudgetHits > 0)
-		tool::out() << "  budget: " << stats.probeBudgetHits
-			<< " leaves not subdivided (cap " << args.maxProbes
-			<< ") — raise --max-probes for finer coverage\n";
-	for (uint32_t lvl = 0; lvl < smvk::gi::kSgGiMaxLevels; ++lvl)
-		if (stats.probesPerLevel[lvl])
-			tool::out() << "  level " << lvl << ": " << stats.probesPerLevel[lvl] << " probes\n";
-
-	// Self-check: reload through the production reader and spot-check.
-	if (args.verify) {
-		smvk::gi::SgGiVolume reloaded;
-		std::string verr;
-		if (!smvk::gi::SgGiVolume::ReadFile(args.out, reloaded, verr)) {
-			tool::err() << "Verify: reload failed: " << verr << std::endl;
-			return 1;
-		}
-		if (reloaded.probes.size() != volume.probes.size()
-			|| reloaded.levelCount != volume.levelCount) {
-			tool::err() << "Verify: round-trip mismatch\n";
-			return 1;
-		}
-		size_t mismatches = 0;
-		for (size_t i = 0; i < volume.probes.size(); ++i) {
-			const auto& a = volume.probes[i];
-			const auto& b = reloaded.probes[i];
-			if (glm::length(a.position - b.position) > 1e-4f
-				|| std::abs(a.radius - b.radius) > 1e-3f
-				|| a.level != b.level)
-				++mismatches;
-		}
-		tool::out() << "  verify: " << reloaded.probes.size()
-			<< " probes reloaded, " << mismatches << " mismatches"
-			<< (mismatches ? " BAD!" : " OK") << "\n";
-		// Dense round-trip: the cooked payloads must survive byte-exact
-		// (BC6H blocks + R16F halves — the runtime uploads them as-is).
-		size_t denseMismatch = 0;
-		if (reloaded.denseLevels.size() != volume.denseLevels.size()) {
-			++denseMismatch;
-		} else {
-			for (size_t l = 0; l < volume.denseLevels.size(); ++l) {
-				const auto& a = volume.denseLevels[l];
-				const auto& b = reloaded.denseLevels[l];
-				if (a.present != b.present) {
-					++denseMismatch;
-					continue;
-				}
-				if (!a.present)
-					continue;
-				if (a.dims[0] != b.dims[0] || a.dims[1] != b.dims[1]
-					|| a.dims[2] != b.dims[2]) {
-					++denseMismatch;
-					continue;
-				}
-				for (uint32_t lb = 0; lb < smvk::gi::kSgLobeCount; ++lb)
-					if (a.lobeBlocks[lb] != b.lobeBlocks[lb]) {
-						++denseMismatch;
-						break;
-					}
-				if (a.weight != b.weight)
-					++denseMismatch;
-			}
-		}
-		tool::out() << "  verify: dense levels byte-exact, "
-			<< denseMismatch << " mismatches"
-			<< (denseMismatch ? " BAD!" : " OK") << "\n";
-		if (mismatches || denseMismatch)
-			return 1;
-	}
-
-	// The stamp before the exit (see stampTour): the world field just
-	// bound + every baked volume's record.
-	if (!stampTour())
-		return 1;
+	// (The ADAPTIVE WORLD-FIELD BAKE — the freshness check, BakeSgGiVolume,
+	// the dense-layer bake, the .sggi write + world binding/hash stamp,
+	// the reload verify — is DELETED: stage 3 (data layer) of the octree
+	// retirement (tourmaline_octree_retirement_plan.md). Every stage above
+	// owns its exit; the only way to land here is a run that requested NO
+	// bake stage at all (e.g. the pipeline's bare --tour over a project
+	// with zero authored GI volume nodes). Say so and exit clean — the
+	// pipeline schedules this tool unconditionally, so a volume-less
+	// project must stay green, not fail its stage. Nothing baked, nothing
+	// to stamp.)
+	tool::out() << "GiBaker: no bake stage requested (authored GI volumes: "
+		<< tourGiVolumes.size() << ", --gi-volume-spec: "
+		<< (args.giVolumeSpec.empty() ? "none" : "set")
+		<< ", --regular-out: "
+		<< (args.regularOut.empty() ? "none" : "set")
+		<< ") - nothing to bake\n";
 	const auto t1 = std::chrono::steady_clock::now();
 	tool::out() << "GiBaker total: "
 		<< std::chrono::duration<double>(t1 - t0).count() << "s\n";

@@ -43,12 +43,10 @@ namespace fs = std::filesystem;
 struct BuildSettings {
 	bool cubemap = true;          // the capture bake (Cook --cubemap)
 	bool lightmap = false;         // deprecated path (off)
-	// Legacy .sggi world-bake knobs — RETIRED from the GiBaker schedule
-	// (stage 2 of the octree retirement): nothing consumes them anymore;
-	// the parse stays so existing projects' settings files keep loading
-	// (stage 3 removes the pair).
-	std::string giBackend = "embree";
-	long long giMaxProbes = 131072;
+	// (The legacy .sggi world-bake knobs — giBackend/giMaxProbes — are
+	// REMOVED (stage 3 of the octree retirement completed the stage-2
+	// retirement): old projects' settings files keep loading, their
+	// giBackend=/giMaxProbes= lines hit the unknown-key skip below.)
 };
 
 BuildSettings LoadBuildSettings(const Project& p) {
@@ -73,10 +71,7 @@ BuildSettings LoadBuildSettings(const Project& p) {
 			s.cubemap = val != "off";
 		else if (key == "lightmap")
 			s.lightmap = val == "on";
-		else if (key == "giBackend")
-			s.giBackend = val;
-		else if (key == "giMaxProbes")
-			s.giMaxProbes = std::atoll(val.c_str());
+		// (giBackend/giMaxProbes skip: retired with the .sggi bake.)
 	}
 	return s;
 }

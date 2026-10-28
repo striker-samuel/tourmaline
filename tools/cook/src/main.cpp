@@ -332,7 +332,7 @@ namespace cooktool {
 	// for scenes WITHOUT GI volume data (the covered pixels' diffuse
 	// ambient comes from the analytic sky there, and interior captures
 	// would otherwise bake ~black with a probe-vs-fallback seam). With GI
-	// volumes in the pak (the .sggi octree + GI volumes - the standard
+	// volumes in the pak (the standard
 	// pipeline: cook -> GiBaker -> pak) the runtime ambient comes from
 	// the GI STACK, and the closure baked into the captures DOUBLE-COUNTS
 	// it: every mirror-like surface (the chrome probe ball, gold trim)
@@ -519,7 +519,7 @@ namespace cooktool {
 	// stem first (the runtime's fallback identity), then the source scene
 	// stems (the artifact list - every listed .geometry, or the tour
 	// reference identity). Bakes key on the SCENE they ran over
-	// (GiBaker --scene, the .sggi stem) — without the scene stems a
+	// (the GiBaker scene stem convention) — without the scene stems a
 	// differently-named out pak would silently miss its own bakes.
 	std::vector<std::string> BakeStems(const Args& args) {
 		std::vector<std::string> stems;
@@ -1208,9 +1208,10 @@ namespace cooktool {
 			<< "           one is synthesized from the sun settings above, so the\n"
 			<< "           editor world sun travels pak -> App)\n"
 			<< "          [--gi-probe <name> ...]: registers probe bake names\n"
-			<< "          (gi/<name>.sggi, baked separately) into the pak; the\n"
-			<< "          lightmap atlas registers itself on --lightmap. Runtime\n"
-			<< "          resolves GI by these names (one per kind for now).\n"
+			<< "          (gi/<name>.sggi) into the pak — LEGACY: the .sggi\n"
+			<< "          octree is retired, the runtime acknowledges + ignores\n"
+			<< "          probe bindings; the lightmap atlas registers itself on\n"
+			<< "          --lightmap.\n"
 			<< "          [--gi-volume on|off (default on)]: bakes the tour's\n"
 			<< "          authored GI volumes (GI volume nodes) in-process\n"
 			<< "          (same engine core as GiBaker) and embeds them into\n"
@@ -1229,7 +1230,7 @@ namespace cooktool {
 			<< "           --cubemap-extra-radius 1.5\n"
 			<< "           --cubemap-spp 8\n"
 			<< "           --cubemap-ambient-closure on|off (default OFF: the\n"
-			<< "            GI stack (.sggi + GI volumes) owns the ambient; ON only\n"
+			<< "            GI stack (the GI volumes) owns the ambient; ON only\n"
 			<< "            for stack-less cooks - it matches the runtime sky\n"
 			<< "            fallback ambient, but double-counts with the stack)\n"
 			<< "           --cubemap-png on|off --cubemap-png-mips on|off]:\n"

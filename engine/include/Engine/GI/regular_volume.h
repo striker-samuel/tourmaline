@@ -4,9 +4,10 @@
 #pragma once
 // SgRegularVolume: Ready-at-Dawn-style regular SG probe lattice.
 //
-// Contrast with SgGiVolume (probe_volume.h), which is an adaptive scattered
-// point cloud: octree bricks, relocated probes, per-probe support spheres,
-// cell lists, 6-axis visibility rejection, multi-level weighted blend.
+// (The historical contrast — the adaptive scattered octree point cloud
+// with bricks, relocated probes, support spheres, cell lists and
+// 6-axis visibility — was SgGiVolume, the deleted probe_volume.h,
+// retired with the .sggi octree: stage 3 of the octree retirement.)
 //
 // This is the boring-and-regular alternative:
 //

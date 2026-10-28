@@ -560,7 +560,10 @@ bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
 	else if (a == "giVolumes")
 		es.giVolumes = c.flag;
 	else if (a == "giWorld")
-		es.giWorld = c.flag;
+		; // RETIRED (the .sggi world-field bake died with the octree —
+		  // stage 3 of the octree retirement): acknowledge + ignore, so
+		  // old tours' exportSettings nodes keep loading without a warn
+		  // per attr.
 	else if (a == "maskTransmission")
 		es.maskTransmission = c.flag;
 	else if (a == "autoKtx")
@@ -2277,6 +2280,10 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			"cubemapExtraRadius", "meshlets", "meshletMaxVerts",
 			"meshletMaxTris", "meshletConeWeight", "giVolumes",
 			"giWorld", "maskTransmission", "autoKtx", "ignoreVfs" };
+		// ("giWorld" stays an ACCEPTED token — the setExportAttr parse
+		// HARD-FAILS unknown attrs and every pre-retirement tour carries
+		// the line — but ApplyExportSettings above now acknowledges +
+		// ignores it: the flag has no executor anymore.)
 		static const char* kBoolAttrs[] = { "meshopt", "lods",
 			"lightmap", "cubemap", "cubemapOctree", "meshlets",
 			"giVolumes", "giWorld", "maskTransmission", "autoKtx",

@@ -2,34 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// GI bake pipeline: adaptive probe placement + CPU path tracing + fixed-basis
-// SG fitting (see GI/sg.h for the representation).
+// The GI TRACE SCENE: the shared CPU path-tracing substrate every live
+// bake consumes (see GI/sg.h for the representation). The ADAPTIVE
+// OCTREE bake (bricks, relocation, error-refinement waves,
+// BakeSgGiVolume) that once owned this header is DELETED — stage 3
+// (data layer) of the legacy-.sggi retirement
+// (tourmaline_octree_retirement_plan.md); the live baked-GI products
+// (convex .givolume grids via BakeGiVolume, regular lattices via
+// BakeSgRegularVolume, lightmap atlases via BakeSgLightmapChunks)
+// each own their bake in their own TU and share only the trace scene
+// below: world-space triangle collection + the BVH, transport with
+// next-event estimation for the sun, the analytic sky on miss, the
+// transmission/albedo sampling, and the KTX texel decode helpers.
 //
-// Pipeline (bake a fully static scene, no GPU required):
+// Pipeline (build the trace scene, no GPU required):
 //   1. Collect world-space opaque triangles + materials from a cook-mode
 //      Cluster (BuildTraceSceneFromCluster) and build a triangle BVH.
-//   2. Cover the scene bounds with a coarse brick grid ("root bricks").
-//   3. Geometry-driven refinement: recursively subdivide bricks that are
-//      close to surfaces (distance-to-geometry heuristic — surfaces are
-//      where indirect lighting starts to vary, the same observation behind
-//      volumetric lightmaps). Far-from-geometry bricks stay coarse; open
-//      empty space keeps a handful of large probes.
-//   4. Spawn one probe per leaf brick, relocated into valid free space
-//      (pushed away from walls / out of solid geometry).
-//   5. Path trace incoming radiance at every probe (uniform
-//      sphere sampling of directions, next-event estimation for the sun
-//      at bounce vertices, analytic sky on miss; emissive contributes
-//      nothing) and fit the fixed SG basis amplitudes (non-negative
-//      least squares).
-//   6. Error-driven refinement: measure the probe's reconstruction error
-//      at off-center test points against fresh path-traced reference
-//      irradiance; subdivide high-error bricks and bake the children.
-//      This is the pass that makes probe density follow LIGHTING
-//      complexity (doorways, corners, sharp indirect gradients) rather
-//      than geometry complexity — a blank uniformly-lit wall spends no
-//      probes while a bright doorway gets very dense sampling.
-//   7. Trace 6-axis visibility distances per probe (baked wall-awareness
-//      for the runtime interpolation) and assemble/serialize the volume.
+//   2. GiTraceScene::Finalize assembles the bake environment (sky + sun
+//      + the static-light NEE list) on top; bakes path-trace through
+//      TraceIncoming / SkyRadiance / SampleSun / the transmission +
+//      albedo samplers.
 //
 // Light transport conventions (matching the runtime renderer):
 //   - The baked field carries the COMPLETE ambient: bounced sun IS
@@ -64,7 +56,6 @@
 
 #include <glm/glm.hpp>
 
-#include <Engine/GI/probe_volume.h>
 #include <Engine/GI/triangle_bvh.h>
 // NOTE: must precede Rendergraph/environment.h — rendergraph.h relies on
 // the includer having pulled Engine/Memory/pool.h in first.
@@ -473,69 +464,13 @@ std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
 	std::span<const uint8_t> ktxBytes, uint32_t maxDim);
 
 // ---------------------------------------------------------------------------
-// Bake
+// The adaptive-octree BAKE section (SgGiBakeConfig, SgGiBakeStats,
+// BakeSgGiVolume) is DELETED — stage 3 (data layer) of the legacy-.sggi
+// retirement (tourmaline_octree_retirement_plan.md). The trace scene above
+// is the shared substrate; the live bakes are declared in their own
+// headers: BakeGiVolume (cubemap_volume.h), BakeSgRegularVolume
+// (regular_volume.h), BakeSgLightmapChunks (lightmap.h).
 // ---------------------------------------------------------------------------
 
-struct SgGiBakeConfig {
-	uint32_t raysPerProbe = 4096;        // uniform-sphere radiance samples
-	//uint32_t raysPerProbe = 256;        // uniform-sphere radiance samples
-	uint32_t maxBounces = 3;           // diffuse path depth (vertices after the first hit)
-	uint32_t errorRaysPerProbe = 32;    // reference irradiance rays per test point
-	uint32_t maxProbes = 262144;      // console-class budget: PS4/PS5 baked GI
-	                                     // ships ~100-250k probes; 1M measured
-	                                     // ~12 ms/frame of GPU gather and starved
-	                                     // the per-cell caps
-	float rootBrickSize = 8.0f;        // coarsest brick (m)
-	float minBrickSize = 0.5f;         // finest brick (m): console-class probe
-	                                     // spacing (~0.5-1 m in Enlighten/id-class
-	                                     // volumes; 0.25 starved budget + GPU)
-	float nearSurfaceFactor = 1.0f;    // geometry stage: subdivide while distToGeom < factor * brickSize
-	float errorTolerance = 0.12f;      // relative irradiance error that triggers subdivision
-	float errorFloor = 0.02f;          // luminance floor (x scene mean) in the error metric
-	uint32_t maxRefineWaves = 8;
-	float probeClearanceFactor = 0.2f;  // keep probes >= factor * brickSize from surfaces
-	float probeMinClearance = 0.03f;   // absolute clearance floor (m)
-	float visibilityMaxDistance = 2.5f; // 6-axis obstacle distance cap (m)
-	float probeSupportFactor = 1.0f;  // support radius = factor * brickSize.
-	                                     // 1.0 = probe covers its own brick +
-	                                     // half of each neighbor: partition of
-	                                     // unity holds (every point within R of
-	                                     // a center) and per-cell lists stay
-	                                     // ~27 (scale-free: bigger supports
-	                                     // stuff cells to the 64 cap = dropped
-	                                     // probes + 9 ms/frame gather)
-	// Diffusion procedure (see bake.cpp): placement relaxation +
-	// radiance smoothing passes over the probe graph.
-	uint32_t diffusionIterations = 0;  // repulsion passes; MUST stay 0 for
-	                                     // correctness (post-bake moves invalidate
-	                                     // baked radiance). Opt-in only.
-	uint32_t smoothingPasses = 0;      // Laplacian passes; 0 = ship raw amps
-	                                     // (smoothing without a visibility term
-	                                     // leaks bright across walls). Opt-in only.
-	float smoothingLambda = 0.6f;      // Laplacian step size per pass
-	uint32_t threadCount = 0;          // 0 = hardware concurrency
-	uint32_t seed = 1;
-};
-
-struct SgGiBakeStats {
-	uint32_t probeCount = 0;
-	uint32_t probesPerLevel[kSgGiMaxLevels] = {};
-	uint32_t bricksBuilt = 0;
-	uint32_t refineWaves = 0;
-	uint32_t probeBudgetHits = 0; // leaves not subdivided because of the budget
-	uint64_t pathsTraced = 0;
-	uint64_t samplesClamped = 0; // firefly-filter hits (sun-pool outliers tamed)
-	uint64_t samplesNonFinite = 0; // non-finite radiance samples (excluded from
-	                               // the firefly-cap mean; the SG fit quarantines)
-	double seconds = 0.0;
-};
-
-// Full bake: placement (geometry + error refinement), tracing, fitting,
-// visibility, volume assembly. Progress callbacks are line-buffered
-// stdout-friendly (called from the calling thread only).
-using GiBakeProgress = void (*)(const char* line);
-
-bool BakeSgGiVolume(const GiTraceScene& scene, const SgGiBakeConfig& config,
-	SgGiVolume& outVolume, SgGiBakeStats& stats, GiBakeProgress progress = nullptr);
 
 } // namespace smvk::gi

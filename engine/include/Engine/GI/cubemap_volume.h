@@ -3,18 +3,19 @@
 
 #pragma once
 // GI volumes: shaped local probe grids cooked by cubemap
-// reprojection (Black Ops 3 style), blended over the world field.
+// reprojection (Black Ops 3 style), blended over the sky base.
 //
-// The GI pivot: probes only. The world is covered by the sparse octree
-// (SgGiVolume, probe_volume.h); confined interiors/regions get AUTHORED
-// GI volumes (one per room/street/alley) carrying a dense SG probe
-// grid each. Lightmaps are deprecated and no longer cooked (the runtime
-// loader stays for existing content).
+// The GI pivot: probes only. The ambient is carried by AUTHORED GI
+// volumes (one per room/street/alley), each a dense SG probe grid;
+// uncovered space falls to the analytic sky IBL. (The legacy sparse
+// octree world field — SgGiVolume, the deleted probe_volume.h — is
+// retired: stage 3 of the octree retirement.) Lightmaps are deprecated
+// and no longer cooked (the runtime loader stays for existing content).
 //
 // Stacking model (TPP/HZD/BO3 lineage — volumes BLEND, grids never
 // cross-interpolate across density levels):
 //
-//   E = SampleGlobalOctree(P, N)      // or the sky fallback
+//   E = SkyDiffuseBase(P, N)        // the analytic-sky fallback
 //   for (v : volumesSortedLowToHighPriority)
 //       E = lerp(E, SampleVolumeTrilinear(v, P, N), v.Weight(P))
 //

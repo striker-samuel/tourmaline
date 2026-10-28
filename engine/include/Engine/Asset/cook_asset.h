@@ -65,17 +65,21 @@ inline constexpr const char* kCookAssetKindGivolume = "givolume";
 [[nodiscard]] bool IsCookAssetGuid(std::string_view s);
 
 // ---- GI cook -----------------------------------------------------------
-// Owns the GiBaker world-field + GI-volume bake for one scene: the two
-// on-demand flags from the cook dialog (TourCook::giVolumes/giWorld) plus the
-// result pointer (the .sggi bake guid/path; "" = never baked).
+// Owns the GiBaker GI-volume bake settings for one scene: the on-demand
+// flag from the cook dialog (TourCook::giVolumes) plus the result
+// pointer (the bake guid/path; "" = never baked). (The world-field
+// flag + the .sggi blob it pointed at are RETIRED with the octree —
+// stage 3 of the octree retirement; old sidecars' world=/blobPath=
+// lines load through the unknown-key tolerance.)
 struct GiCookAsset {
 	std::string guid;     // the asset's own GUID (manifest + .meta agree)
 	std::string name;     // display name (file stem by default)
 	std::string scene;    // scene stem this cook bakes ("" = unbound)
 	bool giVolumes = true; // bake authored GI volumes (giVolumes)
-	bool world = true;    // bake the world-field octree (giWorld)
 	std::string blobGuid; // result bake GUID ("" = unbaked)
-	std::string blobPath; // result VFS path, e.g. "gi/<guid>.sggi"
+	std::string blobPath; // result VFS path (historically the .sggi; the
+	                      // world bake is gone, volume-only cooks keep a
+	                      // previous record alive)
 	std::string bakedHash; // settings fingerprint at bake ("" = unbaked)
 };
 

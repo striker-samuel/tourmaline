@@ -1578,7 +1578,9 @@ bool EditorApp::ReadNodeExportAttr(uint32_t node, const std::string& attr,
 	else if (attr == "meshletMaxTris") num = double(es.meshletMaxTris);
 	else if (attr == "meshletConeWeight") num = double(es.meshletConeWeight);
 	else if (attr == "giVolumes") flag = es.giVolumes;
-	else if (attr == "giWorld") flag = es.giWorld;
+	// ("giWorld" reads as unknown here — the field is retired with the
+	// .sggi octree; the tour PARSE still tolerates the token, so old
+	// files load, but the editor can no longer author it.)
 	else if (attr == "autoKtx") flag = es.autoKtx;
 	else if (attr == "ignoreVfs") flag = es.ignoreVfs;
 	else return false;

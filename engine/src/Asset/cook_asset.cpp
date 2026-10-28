@@ -99,7 +99,6 @@ GiCookAsset DefaultGiCookAsset(const std::string& name,
 	a.name = name;
 	a.scene = scene;
 	a.giVolumes = true;
-	a.world = true;
 	return a;
 }
 
@@ -115,7 +114,8 @@ std::string GiCookSettingsHash(const GiCookAsset& a) {
 	std::ostringstream o;
 	o << "scene=" << a.scene << "\n";
 	o << "giVolumes=" << (a.giVolumes ? 1 : 0) << "\n";
-	o << "world=" << (a.world ? 1 : 0) << "\n";
+	// (The world= line is gone with the flag — hashes change vs old
+	// records by design: the settings genuinely changed.)
 	return Hex16(HashStr(o.str()));
 }
 
@@ -145,7 +145,8 @@ bool SaveGiCookAssetText(std::string& out, const GiCookAsset& a) {
 	o << "name=" << a.name << "\n";
 	o << "scene=" << a.scene << "\n";
 	o << "giVolumes=" << (a.giVolumes ? 1 : 0) << "\n";
-	o << "world=" << (a.world ? 1 : 0) << "\n";
+	// (The world= line is retired with the flag; old files' world= keys
+	// hit the loader's unknown-key tolerance.)
 	// The binary blob RESULT (the bake payload at its guid-derived path;
 	// empty = never baked — creation writes exactly this).
 	o << "blobGuid=" << a.blobGuid << "\n";
@@ -174,7 +175,8 @@ bool LoadGiCookAssetText(const std::string& text, GiCookAsset& out,
 		else if (key == "name") out.name = val;
 		else if (key == "scene") out.scene = val;
 		else if (key == "giVolumes") out.giVolumes = ParseBool(val, out.giVolumes);
-		else if (key == "world") out.world = ParseBool(val, out.world);
+		// ("world" hits the unknown-key skip below — retired with the
+		// octree; old sidecars keep loading.)
 		else if (key == "blobGuid") out.blobGuid = val;
 		else if (key == "blobPath") out.blobPath = val;
 		else if (key == "bakedHash") out.bakedHash = val;

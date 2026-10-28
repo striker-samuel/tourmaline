@@ -417,20 +417,9 @@ std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
 	return hs.str();
 }
 
-std::string WorldBakeUnitHash(const BakeCellGrid& grid,
-	const Cluster& cluster, const WorldBakeConfigHashInputs& cfg) {
-	Hasher hs;
-	hs.feed("world");
-	// The bake algorithm revision (see bake_inputs.h): behavior changes
-	// must invalidate every pre-change record.
-	hs.feedPod(kBakeAlgorithmRevision);
-	hs.feed(BakeEnvHash(cluster.scene));
-	hs.feed(BakeLightsHash(cluster));
-	hs.feedPod(cfg.maxBounces);
-	hs.feedPod(cfg.maskTransmission);
-	hs.feed(grid.root); // global: the octree bake path-traces globally
-	return hs.str();
-}
+// (WorldBakeUnitHash — the legacy .sggi world-field hash — is deleted with
+// the octree bake: stage 3 of the octree retirement. The live per-product
+// unit hashes above carry the freshness model.)
 
 // ---------------------------------------------------------------------------
 // The observed-reach sweep

@@ -17,24 +17,17 @@ struct Args {
 	std::string inVfs;    // arbitrary model (overrides --scene input)
 	std::string tour;     // definition tour: root reference = the source,
 	                      // GI volume nodes = the convex bake inputs
-	std::string out;      // output host path (default <content>/gi/<scene>.sggi)
-	uint32_t rays = 1024;
-	uint32_t bounces = 3;
-	uint32_t errorRays = 32;
-	float root = 8.0f;
-	float minBrick = 0.5f;
-	uint32_t maxProbes = 262144;
-	float tolerance = 0.12f;
-	float nearFactor = 1.0f;
-	uint32_t waves = 8;
-	uint32_t threads = 0; // 0 = hardware concurrency
-	uint32_t diffusion = 0; // placement jitter+repulsion (keep 0: post-bake
-	                      // moves invalidate baked radiance)
-	uint32_t smoothingPasses = 0; // Laplacian radiance passes (keep 0: smoothing
-	                              // without visibility leaks across walls)
-	float support = 1.0f; // support radius = factor * brickSize (1.0 =
-	                       // partition of unity + ~27 probes/cell; higher
-	                       // stuffs cells to the cap and drops probes)
+	// RETIRED (stage 3 of the octree retirement — the .sggi world-field
+	// bake is deleted): --out still parses (old scripts get the loud
+	// refusal) but Run() REFUSES any non-empty out — the convex/regular
+	// bakes mint their own artifacts.
+	std::string out;      // non-empty => Run() refuses (exit 2)
+	uint32_t rays = 1024;  // regular-bake rays/probe (convex bakes per-probe
+	uint32_t bounces = 3;  // transport depth (regular + convex + lm chains)
+	uint32_t threads = 0;  // 0 = hardware concurrency
+	// (The oct-bake-only knobs — errorRays/root/minBrick/maxProbes/
+	// tolerance/nearFactor/waves/diffusion/smoothingPasses/support — are
+	// deleted with BakeSgGiVolume.)
 	float sunAzimuth = 30.0f;
 	float sunElevation = 55.0f;
 	float sunIntensity = 10000.0f;
@@ -48,7 +41,8 @@ struct Args {
 	// transport math, agrees within Monte-Carlo noise).
 	std::string backend = "embree";
 	uint32_t lmProbe = 0; // >0: lightmap-chain diagnostic on N meshes
-	std::string analyze; // .sggi host path: inspect instead of baking
+	std::string analyze; // .sgrv / .givolume host path: inspect instead of
+	                      // baking (.sggi is retired — Run() refuses it)
 	// White-world albedo: default "0.7" (single known albedo everywhere).
 	// "off" restores the textured bake (per-material albedo from factors
 	// + KTX averages; known to print chromatic dots on contrasty scenes).
@@ -58,7 +52,6 @@ struct Args {
 	// the adaptive .sggi): fixed OBB grid, diagonal projection, hardware
 	// trilinear at runtime. Empty regularOut = no regular bake.
 	std::string regularOut;
-	bool outExplicit = false; // set by --out (Run() also derives it from a non-empty out — in-process callers fill Args directly)
 	std::string regMin, regMax;   // "x,y,z" world AABB (axis-aligned OBB)
 	std::string regDims = "32,16,32"; // "nx,ny,nz"
 	float regSpacing = 0.0f;      // voxel spacing override (m); 0 = use regDims

@@ -90,14 +90,70 @@ If you have applied an earlier World Map probes patch, do not layer this patch o
   run-to-run noise floor (~11.5k/15,046/max 20 for identical-source
   runs). 42/42 ctest.
 
-- **Stage 3 (data-layer half — REMAINING):** the audit confirmed the
+- **Stage 3 (data-layer half — DONE):** the audit confirmed the
   deletion is SAFE: the convex-volume bake (`BakeGiVolume`,
   cubemap_volume.cpp) is fully self-contained (its own direct per-probe
   trace, no bake.cpp octree internals), so `BakeSgGiVolume` +
   bake.cpp's ~12 anonymous-namespace octree helpers + `SgGiVolume`
   (probe_volume.h/.cpp: serializer, dense packer, Sample) + the
   GiBaker `--out` block + test_gi's `.sggi` round-trip section are all
-  octree-only. That surgery (a few hundred lines across bake.h/.cpp,
-  probe_volume.h/.cpp, gi_baker, test_gi.cpp) is the tracked follow-up;
-  the runtime half above is complete, validated, and landable on its
-  own.
+  octree-only — and all DELETED. The retirement reached the tool/data
+  edges the runtime audit surfaced:
+  - bake.h/.cpp keep ONLY the shared trace substrate
+    (GiTraceScene + the KTX texel decode + BuildTraceSceneFromCluster)
+    — `SgGiBakeConfig`/`SgGiBakeStats`/`BakeSgGiVolume` and the
+    brick/relocation/refinement namespace are gone (bake.cpp
+    1779 -> 952 lines); `WorldBakeUnitHash`/`CanonicalWorldCfgHash`
+    deleted from bake_inputs (GiVolume/Cubemap/Region hashes stay).
+  - `probe_volume.h/.cpp` deleted outright; every include site
+    migrated (WorldRenderer.h, gi_baker, test_gi, editor_app.h; the
+    lightmap.cpp half-pack include that rode the deleted header now
+    includes sg.h directly).
+  - GiBaker: the `.sggi` analyzer (AnalyzeVolume) is retired
+    (`--analyze` wants .sgrv/.givolume); `--out` PARSES but Run
+    REFUSES a non-empty out loudly (exit 2) so old scripts + stale
+    in-process callers cannot silently bake volumes + exit 0 looking
+    successful; the oct-only Args knobs deleted (errorRays/root/
+    minBrick/maxProbes/tolerance/nearFactor/waves/diffusion/
+    smoothingPasses/support — rays/bounces/threads/verify stay for
+    the regular/convex bakes); the minted-default `out` derivation
+    gone; the world-bake tail (freshness check, bake, dense bake,
+    write, world binding + hash stamp, verify) replaced by the honest
+    "no bake stage requested" exit 0 — the pipeline schedules GiBaker
+    unconditionally, so a volume-less project must stay green (a bare
+    `--scene` run that used to world-bake a minted .sggi now reports
+    nothing-to-bake; verified: exit 2/exit 2/exit 0).
+  - The EDITOR's world legs retired: both in-process `gibaker::Run`
+    call sites (cook stage 1 + Bake GI) are convex-volume-only (no
+    minting, no `gargs.out`, no maxProbes budget note); the `.sggi`
+    density overlay (RefreshSggiDensity + the lattice dots + the
+    legend + the reload/toggle UI) died with the loader — the
+    cubemap-density half stays; the `ExportCfg().giWorld` dialog
+    checkbox + the TourCook field retired (the tour token stays
+    ACCEPTED — `setExportAttr` hard-fails unknown attrs and every
+    pre-retirement tour carries the line — but ApplyExportSettings
+    acknowledges + ignores it); `GiCookAsset::world` deleted (old
+    sidecars' world= lines load through the unknown-key tolerance;
+    the hash drops the line by design), the legacy world-record
+    blobPath snapshot kept while a tour still carries a World record.
+  - The pipeline's `giBackend`/`giMaxProbes` settings pair removed
+    (the stage-2 comment promised stage 3 does it); cook's
+    `--gi-probe` help marked legacy (the binding kind stays for old
+    paks; the runtime acknowledges + ignores it).
+  - VALIDATION: full build (App + Editor + every tool) + 42/42 ctest
+    (test_gi keeps the SG/BVH/lightmap/volume tests; test_bake_assets'
+    GiCook round trip updated + a legacy-world=-line tolerance check);
+    the CLI contract triple verified (--out refusal exit 2, .sggi
+    analyze refusal exit 2, bare --scene nothing-to-bake exit 0 with
+    the trace scene still building: 262,267 tris); the stage-2
+    volume-only pak loads IDENTICALLY (the same [GIV] payload stats
+    voxels=1512/13608 mean=6776.02 max=25204, center 255,250,239)
+    and the A/A noise floor holds (11,939/15,562/max 21 vs the
+    established ~11.5k/15,046/max 20).
+  - The plan's four stages are COMPLETE. The octree is fully retired:
+    no runtime loader, no shader walker, no bake machinery, no
+    serializer, no analyzer, no authoring flag. What remains of the
+    legacy is pure ABI/data tolerance: the zeroed frame `gi*` block,
+    the reserved specialization ID 1, the accepted-but-ignored
+    `giWorld` tour token + Probe binding kind + World giAsset record
+    fields, and old `.sggi` files on disk that nothing reads.

@@ -150,7 +150,6 @@ void TestGiCookRoundTrip() {
 	GiCookAsset a = smvk::cook::DefaultGiCookAsset("MyGI", "sponza");
 	a.guid = guid;
 	a.giVolumes = false;
-	a.world = true;
 	a.blobGuid = blob;
 	a.blobPath = "gi/" + blob + ".sggi";
 	a.bakedHash = smvk::cook::GiCookSettingsHash(a);
@@ -161,7 +160,7 @@ void TestGiCookRoundTrip() {
 	std::string err;
 	Check(smvk::cook::LoadGiCookAssetText(text, back, err)
 		&& back.guid == guid && back.name == "MyGI"
-		&& back.scene == "sponza" && !back.giVolumes && back.world
+		&& back.scene == "sponza" && !back.giVolumes
 		&& back.blobGuid == blob
 		&& back.blobPath == "gi/" + blob + ".sggi"
 		&& back.bakedHash == a.bakedHash, "cook.gi.roundtrip");
@@ -169,7 +168,7 @@ void TestGiCookRoundTrip() {
 	// fields themselves never affect the hash.
 	Check(!smvk::cook::GiCookBlobStale(back), "cook.gi.fresh");
 	GiCookAsset changed = back;
-	changed.world = false;
+	changed.giVolumes = !changed.giVolumes;
 	Check(smvk::cook::GiCookBlobStale(changed), "cook.gi.stale");
 	GiCookAsset moved = back;
 	moved.blobPath = "gi/renamed.sggi";
@@ -179,6 +178,20 @@ void TestGiCookRoundTrip() {
 	fresh.guid = guid;
 	Check(fresh.blobGuid.empty() && fresh.bakedHash.empty()
 		&& !smvk::cook::GiCookBlobStale(fresh), "cook.gi.unbaked");
+	// (The world= flag is retired with the octree bake — an old
+	// sidecar's world= line loads through the unknown-key tolerance.)
+	{
+		GiCookAsset legacy;
+		std::string lerr;
+		Check(smvk::cook::LoadGiCookAssetText(
+				"guid=" + guid + "\nname=L\nscene=s\n"
+				+ "giVolumes=1\nworld=1\n"
+				+ "blobGuid=" + blob + "\n"
+				+ "blobPath=gi/x.sggi\nbakedHash=ab\n",
+				legacy, lerr)
+			&& legacy.giVolumes && legacy.blobGuid == blob,
+			"cook.gi.legacy-world-ignored");
+	}
 }
 
 void TestLightmapCookRoundTrip() {

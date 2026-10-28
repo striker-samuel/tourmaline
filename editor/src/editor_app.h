@@ -53,7 +53,6 @@
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/lightmap.h>
-#include <Engine/GI/probe_volume.h>
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/ImGui/imgui_overlay.h>
@@ -118,10 +117,10 @@ private:
 void DrawTourmalineGem(ImDrawList* dl, const ImVec2& p, float h);
 
 // The shared GI probe marker (editor_viewports.cpp): a regular octahedron
-// ortho-projected from a fixed 3/4 view, painter-sorted + Lambert-shaded —
+// ortho-projected from a fixed 3/4 view, painter-sorted + Lambert-shaded -
 // the "gem" read that keeps individual probes distinct where same-color
-// dot clusters smear. Used by BOTH probe overlays (the cubemap manifest
-// rows in DrawCaptureBallOverlay and the .sggi lattice in
+// dot clusters smear. Used by the probe overlays (the cubemap manifest
+// rows in DrawCaptureBallOverlay and the density-prediction markers in
 // DrawBakeDensityOverlay); the color table stays the caller's.
 void DrawProbeOctahedron(ImDrawList* dl, const ImVec2& center, float radius,
 	ImU32 col);
@@ -1354,8 +1353,9 @@ private:
 	// Octahedra marker variant for the probe overlays: the same loaded
 	// rows and camera-distance color table, but each probe draws as a
 	// shaded 3D octahedron instead of the flat dot (the shared
-	// DrawProbeOctahedron). Applies to BOTH probe marker sets — the
-	// cubemap manifest rows AND the .sggi lattice dots.
+	// DrawProbeOctahedron). Applies to the cubemap manifest rows AND
+	// the density-prediction markers. (The .sggi lattice dots are
+	// retired with the octree.)
 	bool m_showProbeOctahedra = false;
 	// Probe-overlay visualization controls (GI probe viz window, View
 	// menu): rings/labels declutter switches, marker radius in px, and
@@ -1364,11 +1364,10 @@ private:
 	bool m_probeLabels = true;  // C<idx> text per probe
 	float m_probeMarkerSize = 3.5f; // marker radius (px)
 	float m_probeOverlayMaxDist = 80.0f; // overlay distance cutoff (m)
-	// Drawn-count witnesses for the viz window's "in view" legend lines:
-	// the last frame's marker counts (probe rows / sggi lattice), kept
-	// fresh by the two overlay draw passes.
+	// Drawn-count witness for the viz window's "in view" legend line:
+	// the last frame's probe-row marker count, kept fresh by the
+	// overlay draw pass. (The sggi twin died with the lattice overlay.)
 	uint32_t m_probeDrawnLast = 0;
-	uint32_t m_sggiDrawnLast = 0;
 	// ---- WYSIWYG LIVE VIEW (the full-graph renderer, View menu) ------
 	// The App's whole frame pipeline (CSM/EVSM shadows, AO, SSR,
 	// volumetrics, GI, bloom + the authored postfx grade) rendering in
@@ -1571,7 +1570,8 @@ private:
 
 	// ---- cook (editor_cook.cpp) ----
 	// Full cook (quickBakes = false): stage 1 re-runs the scene's GI bake
-	// IN PLACE (GiBaker — the world field + convex volumes), stage 2 runs
+	// IN PLACE (GiBaker - the tour's authored convex volumes; the
+	// world-field octree leg is retired), stage 2 runs
 	// PakCooker (meshopt/LODs/lightmaps/cubemap captures + the pak write).
 	// Quick bakes (quickBakes = true, the env panel's "Update bakes now"):
 	// stage 1 unchanged, stage 2 runs PakCooker --quick-bakes on — the
@@ -1727,11 +1727,10 @@ private:
 	// The GI-authoring legend + control center: every probe-overlay
 	// switch (cubemap rows, octahedra markers, rings, labels), the
 	// size/distance knobs, and the counts the user reasons with while
-	// authoring — cubemap manifest totals (level / pins / in view), the
-	// .sggi lattice per-LEVEL breakdown (probe count, effective cell
-	// size, lookup cells, max probes per cell = the per-cluster density
-	// answer), each with its ramp swatch. LIGHTING mode only (the
-	// overlays it documents are LIGHTING-gated too).
+	// authoring - cubemap manifest totals (level / pins / in view), each
+	// with its ramp swatch. LIGHTING mode only (the
+	// overlays it documents are LIGHTING-gated too). (The .sggi lattice
+	// per-LEVEL breakdown died with the octree overlay.)
 	bool m_showGiVizWindow = false;
 	void DrawGiVizWindow();
 	// Texture plugs of one source asset (its .meta rows, cached while the
@@ -2077,12 +2076,12 @@ private:
 	float m_pendingDropY = -1.0f;
 	// Cook-completion bookkeeping (PollCookProcess on a successful cook):
 	// the cook's bake outputs become/refresh BAKE ASSETS tied to this
-	// scene — the GiCook manifest (settings + the fresh .sggi result
-	// pointer) adopted into the project assetdb, the cubemap capture-set
-	// manifest adopted when cubemaps baked — and the bake GUID references
-	// land in the tour (m_bakeGiCookGuid / m_bakeCubemapGuid, editorSet
-	// keys — every incremental tour save carries them). No-op without a
-	// scene; logs what it recorded.
+	// scene - the GiCook manifest (settings + any legacy world-record
+	// result pointer) adopted into the project assetdb, the cubemap
+	// capture-set manifest adopted when cubemaps baked - and the bake
+	// GUID references land in the tour (m_bakeGiCookGuid /
+	// m_bakeCubemapGuid, editorSet keys - every incremental tour save
+	// carries them). No-op without a scene; logs what it recorded.
 	void RecordBakeAssetsFromCook();
 	// Artifact cache root (empty when no project is open). The project
 	// owns its artifact cache: cache.db (processed-import registry)
@@ -2327,16 +2326,15 @@ private:
 	void DrawOctreePreviewOverlay(); // wire tiles + world bounds
 	void MarkOctreeDirty(); // scene edit -> all tiles dirty
 	// ---- bake-DENSITY visualization (LIGHTING GI authoring overlays) ----
-	// Two density views answering "do the bake density settings fit the
+	// The density view answering "do the bake density settings fit the
 	// scene" WITHOUT baking: the cubemap probe set the current cook
 	// settings would place (octree placement, or the 8 m grid mirror
-	// when the octree is off — same code + same BVH occlusion as the
-	// cooker), and the baked .sggi world-field probe lattice (per-level
-	// density + effective cell sizes). Both draw in the ImGui foreground
-	// per viewport (no depth test, like the App's probe overlays).
-	// Refresh is MANUAL (GI panel buttons, same contract as "Update
-	// precook") plus auto-refresh when a mode is toggled on with an
-	// empty cache.
+	// when the octree is off - same code + same BVH occlusion as the
+	// cooker). Draws in the ImGui foreground per viewport (no depth
+	// test, like the App's probe overlays). Refresh is MANUAL (GI panel
+	// buttons, same contract as "Update precook") plus auto-refresh when
+	// the mode is toggled on with an empty cache. (The baked .sggi
+	// lattice twin is retired with the octree.)
 	bool m_cubemapDensityOn = false;
 	struct CubemapDensityProbe {
 		glm::vec3 center{ 0.0f };
@@ -2349,12 +2347,9 @@ private:
 	std::string m_cubemapDensityInfo;  // one-line status for the GI panel
 	std::string m_cubemapDensityScene; // scene stem the cache was built for
 	void RefreshCubemapDensity(); // rebuild BVH + placement from m_cook
-	bool m_sggiDensityOn = false;
-	smvk::gi::SgGiVolume m_sggiDensity; // last loaded .sggi (CPU only)
-	std::string m_sggiDensityInfo;      // probes/levels/cells readout
-	std::string m_sggiDensityPath;      // loaded file (staleness witness)
-	float m_sggiDensityMaxDist = 80.0f; // overlay distance cutoff (m)
-	void RefreshSggiDensity(); // (re)load gi/<stem>.sggi by binding/stem
+	// (The SGGI density overlay — m_sggiDensity, RefreshSggiDensity, the
+	// loaded .sggi lattice dots — is RETIRED with the octree: stage 3 of
+	// the octree retirement. Cubemap density above is the live half.)
 	void DrawBakeDensityOverlay(); // ImGui foreground markers + captions
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat

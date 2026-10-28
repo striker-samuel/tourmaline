@@ -12,8 +12,9 @@
 
 namespace engine::worldfields {
 
-// Same clamped fp16 pack the dense SG bake uses (probe_volume.cpp):
-// BC6H-UF is unsigned — clamp to [0, 65504].
+// Same clamped fp16 pack the dense SG bakes use (BC6H-UF is unsigned —
+// clamp to [0, 65504]; the convention outlived the .sggi dense layer
+// that first introduced it).
 static inline uint16_t PackHalfClamped(float v)
 {
 	return smvk::gi::PackHalf(std::min(std::max(v, 0.0f), 65504.0f));

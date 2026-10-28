@@ -2,23 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 // Bake-density visualization (see editor_app.h: the LIGHTING-mode GI
-// authoring overlays). Two views answering "do the bake density settings
-// fit the scene" WITHOUT baking:
+// authoring overlays). One live view answering "do the bake density
+// settings fit the scene" WITHOUT baking:
 //
 //   - Cubemap density: the probe set the current cook settings WOULD
 //     place — BuildOctreeProbePositions with the editor's octree knobs,
 //     or the 8 m grid mirror (same recipe as Cook.exe) when the octree
 //     is off — over a CPU BVH built from the world's retained uploads
 //     (same occlusion source as the cooker, builtin backend).
-//   - SGGI density: the baked .sggi world-field lattice, per-probe dots
-//     colored by octree level (the App's level ramp) + level histogram
-//     and effective cell sizes.
 //
-// Both draw in the ImGui foreground per viewport (no depth test —
-// occluded markers stay visible, like the App's probe overlays); the
+// (The SGGI half — the baked .sggi world-field lattice dots — is
+// RETIRED with the legacy octree: stage 3 of the octree retirement.)
+//
+// Draws in the ImGui foreground per viewport (no depth test — occluded
+// markers stay visible, like the App's probe overlays); the
 // baked-manifest capture overlay keeps its own (distance) colors, so
 // predicted-vs-baked never share a channel: predicted cubemap probes
-// use the subdivision-DEPTH ramp, sggi probes the octree-LEVEL ramp.
+// use the subdivision-DEPTH ramp.
 
 #include "editor_app.h"
 
@@ -31,8 +31,10 @@
 
 namespace editor {
 
-// Octree-level ramp, byte-identical to the App's SG-GI probe overlay
-// (WorldRenderer: coarse red -> fine pink; shared density language).
+// Depth/level ramp, coarse red -> fine pink (the shared density
+// language the App's probe overlay used to speak; the octree-level
+// twin retired with the .sggi lattice, the ramp stays for the cubemap
+// prediction depth).
 // Namespace-scope + extern in editor_app.h: the GI-viz window's legend
 // swatches share it (declared in editor_app.h next to DrawProbeOctahedron).
 const ImU32 kDensityLevelColors[8] = {
@@ -52,7 +54,6 @@ constexpr float kDensityGridHeight = 1.5f;  // --cubemap-height default (m)
 constexpr float kDensityEmbedDist = 0.3f;   // occupancy cull reach (m)
 constexpr uint32_t kDensityMaxProbes = 32;  // runtime scan budget
 constexpr uint32_t kDensityRingCap = 64;    // influence rings drawn (dots: all)
-constexpr uint32_t kDensitySggiCap = 6000;  // App-parity dot cap
 
 void DensityCaption(ImDrawList* dl, float rectX, float rectY, float rowY,
 	const char* text, ImU32 col = IM_COL32_WHITE) {
@@ -202,82 +203,19 @@ void EditorApp::RefreshCubemapDensity() {
 		+ m_cubemapDensityInfo);
 }
 
-void EditorApp::RefreshSggiDensity() {
-	m_sggiDensity = smvk::gi::SgGiVolume{};
-	m_sggiDensityPath.clear();
-	// Candidate stems: the clusters' world-field bindings first (the
-	// live-view rebind resolved the bake stems), then the scene id (the
-	// stable bake-path convention) — same order as TryLoadSceneSglm.
-	std::vector<std::string> stems;
-	if (m_world) {
-		for (const auto& clusterPtr : m_world->clusters) {
-			if (!clusterPtr)
-				continue;
-			for (const smvk::GiBinding& b : clusterPtr->giBindings) {
-				if (b.kind == smvk::GiBinding::Kind::Probe && !b.name.empty()
-					&& std::find(stems.begin(), stems.end(), b.name)
-						== stems.end())
-					stems.push_back(b.name);
-			}
-		}
-	}
-	const std::string stem = SceneIdForHost();
-	if (!stem.empty()
-		&& std::find(stems.begin(), stems.end(), stem) == stems.end())
-		stems.push_back(stem);
-	std::vector<std::string> roots;
-	if (!m_projectRoot.empty())
-		roots.push_back(m_projectRoot);
-	roots.push_back("content");
-	for (const std::string& r : roots) {
-		for (const std::string& s : stems) {
-			const std::string cand = (std::filesystem::path(r) / "gi"
-				/ (s + ".sggi")).lexically_normal().string();
-			std::error_code ec;
-			if (!std::filesystem::is_regular_file(cand, ec))
-				continue;
-			smvk::gi::SgGiVolume vol;
-			std::string err;
-			if (!smvk::gi::SgGiVolume::ReadFile(cand, vol, err)) {
-				m_sggiDensityInfo = "sggi load failed: " + err;
-				Log(m_sggiDensityInfo);
-				return;
-			}
-			m_sggiDensity = std::move(vol);
-			m_sggiDensityPath = cand;
-			char info[256];
-			std::snprintf(info, sizeof(info),
-				"%s: %zu probes, %u levels",
-				s.c_str(), m_sggiDensity.probes.size(),
-				m_sggiDensity.levelCount);
-			m_sggiDensityInfo = info;
-			Log(std::string("SGGI density loaded '") + cand + "': "
-				+ m_sggiDensityInfo);
-			return;
-		}
-	}
-	m_sggiDensityInfo = "no .sggi for '" + stem + "' (bake GI first)";
-}
-
 void EditorApp::DrawBakeDensityOverlay() {
 	// MODAL: GI authoring previews belong to LIGHTING mode.
 	if (m_mode != EditorMode::Lighting)
 		return;
 	if (!m_world)
 		return;
-	const bool showCube = m_cubemapDensityOn;
-	const bool showSggi = m_sggiDensityOn;
-	if (!showCube && !showSggi)
-		return;
+	if (!m_cubemapDensityOn)
+		return; // (the sggi half is retired with the octree)
 	// Baked manifest rows (the comparison half of the cubemap caption;
 	// read live like DrawCaptureBallOverlay so the two never disagree).
 	std::vector<CubemapProbeRow> bakedRows;
-	if (showCube)
-		CubemapProbeRowsFromFile(bakedRows);
+	CubemapProbeRowsFromFile(bakedRows);
 	ImDrawList* dl = ImGui::GetForegroundDrawList();
-	// In-view witness for the viz window (same max-across-viewports
-	// semantics as DrawCaptureBallOverlay's m_probeDrawnLast).
-	m_sggiDrawnLast = 0;
 	for (int i = 0; i < ViewportCount(); ++i) {
 		const EditorViewport& vp = m_viewports[i];
 		const glm::mat4 vpm = vp.viewProj;
@@ -303,7 +241,7 @@ void EditorApp::DrawBakeDensityOverlay() {
 		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		// ---- cubemap density: predicted probes, depth-colored ----
-		if (showCube) {
+		{
 			uint32_t rings = 0;
 			uint32_t idx = 0;
 			for (const CubemapDensityProbe& pr : m_cubemapDensity) {
@@ -364,78 +302,9 @@ void EditorApp::DrawBakeDensityOverlay() {
 				DensityCaption(dl, vp.rect.x, vp.rect.y, 68.0f, m_cubemapDensityInfo.c_str(),
 					IM_COL32(180, 200, 220, 255));
 		}
-		// ---- sggi density: baked lattice, level-colored ----
-		if (showSggi) {
-			const auto& vol = m_sggiDensity;
-			if (!vol.probes.empty()) {
-				const float maxDist =
-					std::max(m_sggiDensityMaxDist, 1.0f);
-				const float maxDist2 = maxDist * maxDist;
-				const size_t stride = std::max<size_t>(1,
-					vol.probes.size() / kDensitySggiCap);
-				uint32_t drawn = 0;
-				for (size_t pi = 0; pi < vol.probes.size(); pi += stride) {
-					const smvk::gi::SgProbe& p = vol.probes[pi];
-					if (!p.valid)
-						continue;
-					const glm::vec3 d = p.position - eye;
-					if (glm::dot(d, d) > maxDist2)
-						continue;
-					ImVec2 pt;
-					if (!project(p.position, pt))
-						continue;
-				const uint32_t lvl = std::min(p.level, 7u);
-				// Coarse levels read bigger (the App's ramp language);
-				// the octahedra variant keeps the same level radius so
-				// the two shape modes stay comparable at a glance.
-				const float r = std::max(
-					4.0f - 0.7f * float(lvl), 1.5f);
-				if (m_showProbeOctahedra)
-					DrawProbeOctahedron(dl, pt, r,
-						kDensityLevelColors[lvl]);
-				else
-					dl->AddCircleFilled(pt, r,
-						kDensityLevelColors[lvl]);
-				++drawn;
-			}
-			m_sggiDrawnLast = std::max(m_sggiDrawnLast, drawn);
-				char scap[256];
-				std::snprintf(scap, sizeof(scap),
-					"SGGI: %u/%zu drawn (<= %.0fm, stride %zu)",
-					drawn, vol.probes.size(), maxDist, stride);
-				DensityCaption(dl, vp.rect.x, vp.rect.y, showCube ? 100.0f : 52.0f, scap);
-				// Histogram + effective cell sizes: the density answer.
-				uint64_t perLevel[8] = {};
-				for (const smvk::gi::SgProbe& p : vol.probes)
-					++perLevel[std::min(p.level, 7u)];
-				char hist[256];
-				int hn = std::snprintf(hist, sizeof(hist), "levels ");
-				for (uint32_t l = 0;
-					l < std::min(vol.levelCount, 8u) && hn > 0
-						&& size_t(hn) < sizeof(hist) - 24; ++l)
-					hn += std::snprintf(hist + hn, sizeof(hist) - hn,
-						"%sL%u:%llu", l ? " " : "", l,
-						(unsigned long long)perLevel[l]);
-				DensityCaption(dl, vp.rect.x, vp.rect.y, showCube ? 116.0f : 68.0f, hist,
-					IM_COL32(180, 200, 220, 255));
-				char cells[256];
-				int cn = std::snprintf(cells, sizeof(cells), "cells ");
-				for (uint32_t l = 0;
-					l < std::min(vol.levelCount, 8u) && cn > 0
-						&& size_t(cn) < sizeof(cells) - 16; ++l)
-					cn += std::snprintf(cells + cn, sizeof(cells) - cn,
-						"%s%.2fm", l ? " " : "", vol.cellSize[l]);
-				DensityCaption(dl, vp.rect.x, vp.rect.y, showCube ? 132.0f : 84.0f, cells,
-					IM_COL32(180, 200, 220, 255));
-			}
-			else {
-				char scap[256];
-				std::snprintf(scap, sizeof(scap), "SGGI: %s",
-					m_sggiDensityInfo.empty() ? "no volume — Refresh in GI panel"
-						: m_sggiDensityInfo.c_str());
-				DensityCaption(dl, vp.rect.x, vp.rect.y, showCube ? 100.0f : 52.0f, scap);
-			}
-		}
+		// (The SGGI density half — the baked .sggi lattice dots — is
+		// RETIRED with the octree: stage 3 of the octree retirement. The
+		// cubemap density preview above is the live half.)
 		dl->PopClipRect();
 	}
 }

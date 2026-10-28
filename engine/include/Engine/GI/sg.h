@@ -18,9 +18,12 @@
 //    structure of indirect radiance: diffuse irradiance plus rough-glossy
 //    reflections. Mirror reflections are left to the analytic sky env.
 //
-//  - Storage per probe: 9 RGB amplitudes + 6-axis visibility distances +
-//    position/support radius, packed to 96 B on the GPU (SgProbeGpu,
-//    half-float amplitudes). See probe_volume.h.
+//  - Storage per probe (the historical sparse-octree form): 9 RGB
+//    amplitudes + 6-axis visibility distances + position/support
+//    radius, packed to 96 B on the GPU (SgProbeGpu, half-float
+//    amplitudes). That runtime is RETIRED with the .sggi octree
+//    (probe_volume.h deleted — stage 3 of the octree retirement); the
+//    live consumers store lobe amps in dense grids/volumes instead.
 //
 // CPU/HLSL parity: kSgBasis / kSgSharpness must match
 // engine/shaders/sggi.hlsli exactly (same numbers, same order). The .hlsli

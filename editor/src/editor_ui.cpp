@@ -2069,8 +2069,8 @@ namespace editor {
 		ImGui::Text("GI bakes (on demand — Bake GI in the Cook panel)");
 		setBool("GI volumes (bake authored)", "giVolumes", es.giVolumes,
 			"Bake the authored GI volume nodes (gi/<stem>_*.givolume).");
-		setBool("World field (adaptive octree)", "giWorld", es.giWorld,
-			"Bake gi/<stem>.sggi (slow; unbaked scenes render sky IBL).");
+		ImGui::TextDisabled("the world-field octree bake is retired — convex\n"
+			"volumes + the sky IBL carry the ambient");
 	}
 
 	void EditorApp::DrawCubemapSection(uint32_t node) {
@@ -3411,12 +3411,6 @@ namespace editor {
 				&m_cubemapDensityOn)
 			&& m_cubemapDensityOn && m_cubemapDensity.empty())
 			RefreshCubemapDensity();
-		ImGui::Checkbox("GI octree density (.sggi lattice)",
-			&m_sggiDensityOn);
-		if (m_sggiDensityOn && m_sggiDensity.probes.empty())
-			RefreshSggiDensity();
-		ImGui::SliderFloat("Octree overlay distance",
-			&m_sggiDensityMaxDist, 5.0f, 300.0f, "%.0f m");
 
 		// ---- legend: cubemap probes ----
 		ImGui::Separator();
@@ -3439,40 +3433,6 @@ namespace editor {
 		ImGui::TextUnformatted(
 			"authored pin, no baked probe behind it (black ball)");
 
-		// ---- legend: .sggi lattice ----
-		ImGui::Separator();
-		ImGui::TextUnformatted("GI octree lattice (.sggi)");
-		const auto& vol = m_sggiDensity;
-		if (vol.probes.empty()) {
-			ImGui::TextDisabled("no volume loaded — %s",
-				m_sggiDensityInfo.empty()
-					? "bake GI, then toggle GI octree density"
-					: m_sggiDensityInfo.c_str());
-		} else {
-			ImGui::Text("In level: %zu probes, %u octree level(s)"
-				"    in view: %u",
-				vol.probes.size(), vol.levelCount, m_sggiDrawnLast);
-			// Per-level rows: probes counted from the sorted probe
-			// array (always present), cells + max-per-cell from
-			// BuildGrids' levelStats (the load path fills them; the
-			// guard keeps a sparse volume honest).
-			uint64_t perLevel[8] = {};
-			for (const smvk::gi::SgProbe& p : vol.probes)
-				++perLevel[std::min(p.level, 7u)];
-			ImGui::TextUnformatted(
-				"per level: probes / effective cell / cells / max per cell");
-			for (uint32_t l = 0; l < std::min(vol.levelCount, 8u); ++l) {
-				legendSwatch(kDensityLevelColors[l]);
-				const bool stats = l < vol.levelStats.size();
-				ImGui::Text("L%u: %llu  cell %.2f m  %u cell(s)  max %u",
-					l, (unsigned long long)perLevel[l],
-					vol.cellSize[l],
-					stats ? vol.levelStats[l].cellCount : 0u,
-					stats ? vol.levelStats[l].maxProbesPerCell : 0u);
-			}
-			ImGui::TextDisabled(
-				"ramp: coarse red -> fine pink (the App's SG-GI language)");
-		}
 		ImGui::End();
 	}
 
@@ -3530,8 +3490,9 @@ namespace editor {
 		ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
 		ImGui::TextDisabled("%u GI volume node(s) authored in this scene",
 			m_world ? uint32_t(m_world->scene.giVolumeForNode.size()) : 0u);
-		ImGui::TextDisabled("bake selectors (giVolumes/giWorld) live on the "
-			"ExportSettings node");
+		ImGui::TextDisabled("bake selectors (giVolumes) live on the "
+			"ExportSettings node (the world-field selector is retired "
+			"with the octree)");
 		if (!m_giBakedHash.empty()) {
 			const bool fresh = !m_cookDefHash.empty()
 				&& m_giBakedHash == m_cookDefHash;
@@ -3636,21 +3597,6 @@ namespace editor {
 		ImGui::TextDisabled("%s", m_cubemapDensityInfo.empty()
 			? "no prediction yet"
 			: m_cubemapDensityInfo.c_str());
-		if (ImGui::Checkbox("GI octree density", &m_sggiDensityOn)
-			&& m_sggiDensityOn && m_sggiDensity.probes.empty())
-			RefreshSggiDensity();
-		ImGui::SameLine();
-		if (ImGui::Button("Reload .sggi")) {
-			RefreshSggiDensity();
-		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Reload gi/<stem>.sggi (binding stem, then\n"
-				"scene stem) after baking. Manual like 'Update precook'.");
-		ImGui::TextDisabled("%s", m_sggiDensityInfo.empty()
-			? "no volume loaded"
-			: m_sggiDensityInfo.c_str());
-		if (!m_sggiDensityPath.empty())
-			ImGui::TextDisabled("%s", m_sggiDensityPath.c_str());
 		if (m_cookRunning && m_cubeRunActive && m_cubeTotal > 0) {
 			ImGui::Text("Cubemaps %d/%d captures...",
 				m_cubeDone, m_cubeTotal);
@@ -4712,8 +4658,9 @@ namespace editor {
 			ImGui::TextDisabled("guid %s", c.guid.c_str());
 			ImGui::TextDisabled("scene: %s",
 				c.scene.empty() ? "(unbound)" : c.scene.c_str());
-			ImGui::TextDisabled("convex volumes: %s   world field: %s",
-				c.giVolumes ? "on" : "off", c.world ? "on" : "off");
+			ImGui::TextDisabled("convex volumes: %s   (the world-field "
+				"flag is retired with the octree)",
+				c.giVolumes ? "on" : "off");
 			ImGui::Separator();
 			if (c.blobGuid.empty()) {
 				ImGui::TextDisabled("blob: unbaked (no result yet)");

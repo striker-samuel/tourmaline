@@ -38,7 +38,6 @@
 #include <Engine/GI/bc6h.h>
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
-#include <Engine/GI/probe_volume.h>
 #include <Engine/GI/regular_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>

@@ -208,6 +208,9 @@ struct EditCmd {
 	// "cubemapOctreeMin","cubemapOctreeDepth","cubemapExtraRadius",
 	// "meshlets","meshletMaxVerts","meshletMaxTris",
 	// "meshletConeWeight","giVolumes","giWorld","autoKtx","ignoreVfs").
+	// ("giWorld" is RETIRED — the .sggi octree bake is gone; the token
+	// stays TOLERATED on the parse side so old tours load, but the
+	// editor no longer authors it and ApplyExportAttr ignores it.)
 	// Value rides number (scalars) / afterFlag (bools) / afterText
 	// (strings); before-state rides beforeNum / beforeFlag /
 	// beforeText.

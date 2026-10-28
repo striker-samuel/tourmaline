@@ -209,18 +209,11 @@ bool SerializeCaptureReach(const CaptureReachFile& reach,
 bool ParseCaptureReach(const uint8_t* data, size_t size,
 	CaptureReachFile& out);
 
-// The world-field unit hash: env + lights + the bake config + the
-// WHOLE grid root (the octree bake path-traces globally; per-node
-// partiality is phase 2). NOTE: the probe BUDGET (--max-probes) is a
-// coverage knob, not a semantic one — it is deliberately NOT folded
-// (a converged bake is budget-independent; the budget-hit warning
-// stays loud).
-struct WorldBakeConfigHashInputs {
-	uint32_t maxBounces = 0;     // 0 = default
-	bool maskTransmission = false;
-};
-std::string WorldBakeUnitHash(const BakeCellGrid& grid,
-	const Cluster& cluster, const WorldBakeConfigHashInputs& cfg);
+// (The WORLD-FIELD unit hash + its config inputs
+// (WorldBakeConfigHashInputs / WorldBakeUnitHash) are DELETED with the
+// legacy .sggi octree bake — stage 3 of the octree retirement: nothing
+// hashes the world field anymore. The live per-product unit hashes are
+// GiVolumeBakeUnitHash / CubemapBakeUnitHash / BakeRegionHash above.)
 
 // ---------------------------------------------------------------------------
 // The canonical config derivations (the ONE source both sides use)
@@ -246,15 +239,9 @@ inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
 	return c;
 }
 
-// The world-field bake config (3 bounces default; the capture-dirs knob
-// does not exist on the octree bake).
-inline WorldBakeConfigHashInputs CanonicalWorldCfgHash(
-	bool maskTransmission) {
-	WorldBakeConfigHashInputs c{};
-	c.maxBounces = 3;
-	c.maskTransmission = maskTransmission;
-	return c;
-}
+// (CanonicalWorldCfgHash — the world-field config derivation — is deleted
+// with WorldBakeUnitHash: stage 3 of the octree retirement, nothing folds a
+// world-field hash anymore.)
 
 // The cubemap capture config — node-derived (the exportSettings'
 // cubemapSize/cubemapRays are the authoring surface; the cook's capture

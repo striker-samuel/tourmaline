@@ -248,9 +248,11 @@ struct SceneExportSettings {
 	uint32_t meshletMaxTris = 64;
 	float meshletConeWeight = 0.0f;
 	// GI bakes (on-demand Bake GI only — cooks never bake GI): authored
-	// convex volumes (the GI volume nodes) + the adaptive world field.
+	// convex volumes (the GI volume nodes). (The giWorld flag — the
+	// adaptive world field — is RETIRED with the .sggi octree: stage 3
+	// of the octree retirement; old tours' giWorld tokens load as
+	// acknowledged-and-ignored.)
 	bool giVolumes = true;
-	bool giWorld = true;
 	// Weave-cloth transmission (sponza's bat convention: MASK cutout
 	// cloth passes light tinted per texel through the weave — the tinted
 	// light pools behind the banners). AUTHORED HERE (the scene owns the
