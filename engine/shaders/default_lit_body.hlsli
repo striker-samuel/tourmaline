@@ -1332,18 +1332,38 @@ float envVis = 1.0f;
             // = near-surface (the rejection ramp is active), green
             // = open (no rejection). Splotchy clusters of red/yellow
             // reveal the unlucky probe positions.
-            uint dbgVol = 0u;
+            // WALK BACKWARD (highest priority first — mirrors
+            // SgGiVolumeComposite's selection order): overlapping
+            // volumes' debug reads the one that OWNS the lighting.
+            // Guard: no covering volume (regular grids only, or the
+            // volumes are off) falls to the source palette instead
+            // of accessing an invalid volume index.
+            uint dbgVol = 0xFFFFFFFFu; // no volume found yet
             [loop]
-            for (uint dv = 0; dv < min(frame.giVolumeCount, (uint)8); ++dv)
+            for (int dv = int(min(frame.giVolumeCount, (uint)8)) - 1;
+                dv >= 0; --dv)
             {
-                if ((SgGiVolumeTileMask(frame, clipPos.xy) & (1u << dv)) == 0u)
+                if ((SgGiVolumeTileMask(frame, clipPos.xy)
+                    & (1u << uint(dv))) == 0u)
                     continue;
-                const GiVolumeGpu dV = frame.giVolumes.Get().volumes[dv];
+                const GiVolumeGpu dV =
+                    frame.giVolumes.Get().volumes[uint(dv)];
                 if (SgGiVolumeWeight(frame, dV, IN.worldPos) > 0.0)
                 {
-                    dbgVol = dv;
+                    dbgVol = uint(dv);
                     break;
                 }
+            }
+            if (dbgVol == 0xFFFFFFFFu)
+            {
+                // No convex volume covers this pixel (regular-grid GI
+                // or no GI at all): show the palette, not a bad read.
+                float3 pal = (giSource == 2u)
+                    ? float3(0.0f, 1.0f, 0.0f)
+                    : float3(0.0f, 0.25f, 1.0f);
+                OUT.outColor = float4(SanitizeHdr(pal
+                    * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
+                return OUT;
             }
             const float probeDist =
                 SgGiVolumeDebugProbeDistance(frame, dbgVol, IN.worldPos);

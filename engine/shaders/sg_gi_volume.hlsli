@@ -121,26 +121,11 @@ uint SgGiVolumeTileMask(FrameUniforms frame, float2 pix)
 // 6-axis wall-awareness (SgGiVisibilityFactor): each cell corner's 6
 // obstacle distances (spacing units, [0, 15] full-scale unorm8 —
 // PackGpuVisLayers) gate that corner's tap by the tap OFFSET projected
-// on each axis. dist 0 = BLOCKED (the probe is inside solid); the
-// 0.35-spacing-unit slack keeps a point AT an obstacle surface reading
-// its own surface probe (the surface we shade lives at the recorded
-// distance); the rejection ramps to zero over a 25%-of-dist margin so
-// thin obstacles do not nuke open-air coverage. Per-axis product — the
-// CPU twin is GiVolume::Sample; the bake's same-side gates
-// (mutuallyOpen) use the SAME slack (0.35 spacing — keep in sync).
+// on each axis. dist 0 = BLOCKED (the probe is inside solid).
+// Per-axis product — the CPU twin is GiVolume::Sample; the bake's
+// same-side gate (sameSide, source-only) uses a paired threshold.
 float SgGiVolumeVisAxis(float along, float dist)
 {
-    // dist = 0 = obstacle at distance 0 (blocked); a miss at bake time
-    // records the cap, which no in-cell offset can exceed = open.
-    // The ramp denominator 0.25*dist + 0.5 (was 0.02 — the octree's
-    // near-instant rejection) is the DARK-SQUARE FIX: blocked probes
-    // (dist=0) now reject GRADUALLY across the cell (0.5 spacing
-    // units of ramp instead of 0.02), so the transition between
-    // clean and non-clean cells is smooth instead of a lattice-
-    // aligned cliff. The old 0.02 made the factor essentially binary
-    // (0 or 1), and the renormalization at the cell boundary produced
-    // the visible grid (the sponza_3 flat-irradiance report).
-    [branch]
     // HYBRID REACH (the black-shadow fix): proportional for large
     // dist (tight isolation), floor-clamped for small dist (wall-
     // pixel coverage). The pure proportional (dist * 1.5) went to
@@ -163,7 +148,6 @@ float SgGiVolumeVisAxis(float along, float dist)
     const float reach = max(dist * 1.5, 0.5);
     if (along > reach)
         return max(0.0, 1.0 - (along - reach) / max(0.5 * dist, 0.3));
-    return 1.0;
     return 1.0;
 }
 
@@ -190,8 +174,14 @@ float SgGiVolumeVisFactor(float3 dRel, float4 visA, float4 visB)
 // rejection ramp is active); bright = the probe is in open space (the
 // cap = fully open). Clusters of dark probes near surfaces are the
 // ones whose rejection modifies the blend — the splotchiness source.
-// Returns the min distance normalized to [0, 1] over the 15-unit
-// full-scale range (0 = blocked/coplanar, 1 = fully open).
+// Returns the min distance normalized to [0, 1] over the BAKE CAP
+// (2.5 m / spacing — the default visibilityMaxDistance), not the
+// storage full-scale (15 units). The storage quantizes over [0,15]
+// but the bake only writes up to the cap, so normalizing by 15
+// under-reports: a fully open probe (cap = 2.5 m = 5 units at 0.5 m
+// spacing) reads as 5/15 = 0.33 — nearly yellow instead of green.
+// Normalizing by the cap (2.5 m / spacing) puts fully open at 1.0
+// (green) and near-surface at proportionally smaller values.
 float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
 {
     const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
@@ -206,6 +196,13 @@ float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
     const float4 visA = volumeTextures[visSlotA].Load(int4(b, 0));
     const float4 visB = volumeTextures[visSlotB].Load(int4(b, 0));
     const float kFull = 15.0;
+    // The storage quantizes over [0, kFull]; the bake cap (2.5 m)
+    // determines what "fully open" means in spacing units.
+    // Reconstruct the spacing from the packed lattice transform:
+    // uvwScale = 1 / (spacing * dims), so spacing = 1 / (uvwScale * dims).
+    const float spacingApprox =
+        1.0 / (v.uvwScale.x * dims.x);
+    const float kCapUnits = 2.5 / max(spacingApprox, 0.01); // cap in spacing units
     const float d0 = visA.x * kFull;
     const float d1 = visA.y * kFull;
     const float d2 = visA.z * kFull;
@@ -213,7 +210,7 @@ float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
     const float d4 = visB.x * kFull;
     const float d5 = visB.y * kFull;
     const float mn = min(min(min(d0, d1), min(d2, d3)), min(d4, d5));
-    return saturate(mn / kFull);
+    return saturate(mn / max(kCapUnits, 0.1));
 }
 // Samples one volume's dense grid at world pos. Two paths:
 //  - FAST (the common cell): the bake's per-voxel clean flag

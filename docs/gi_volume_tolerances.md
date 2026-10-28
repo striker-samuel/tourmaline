@@ -73,7 +73,8 @@ reads as fully open to the runtime factor.
 
 **Why 2.5:** the octree parity value. Comfortably exceeds any
 in-cell offset; low enough that the unorm8 quantization (over
-[0, 15] spacing units) has ~1 cm granularity.
+[0, 15] spacing units) has ~3 cm granularity at 0.5 m spacing
+(15/255 × 0.5 m ≈ 0.029 m).
 
 ### 1d. The VISIBILITY QUANTIZATION — `[0, 15]` spacing units, unorm8
 
@@ -153,13 +154,18 @@ Each probe's radiance samples are clamped to 8× the probe's own
 finite-sample mean luminance. This is the standard firefly filter
 (sun-pool outliers tamed per-probe, not globally).
 
-### 2f. The probe-count CAP — `256³` (per-axis)
+### 2f. The probe-count CAP — `256` per-axis
 
 **File:** `engine/include/Engine/GI/cubemap_volume.h` (`kGiVolumeMaxDim`)
 
 The maximum per-axis grid dimension. Combined with the bake
 refusal for grids denser than 256³ total, this caps the worst-case
-volume at 16M probes (256 MB of coefficients at 9 fp32 per probe).
+volume at 16M probes. Each probe stores 9 SG lobes × RGB vec3
+(27 fp32 = 108 B of coefficients) + 6 fp32 visibility distances
+(24 B) = 132 B/probe — a 256³ volume is ~2.2 GiB of coefficients
+alone, well past practical GPU budgets. Real volumes are far
+smaller (sponza's whole-building is 62×28×37 = 64k probes =
+~8.5 MB).
 
 ---
 
@@ -177,10 +183,14 @@ readers, no conversions. Old files refuse at the magic — re-bake.
 | `.sglm` | `SGLA` | the SG lightmap atlas |
 | `.reach` | `REAX` | the capture-reach sidecar |
 
-### 3b. The unorm8 VIS quantization — `[0, 15]` spacing units
+### 3b. The on-disk VISIBILITY payload — 6 fp32 distances + clean flags per voxel
 
-Same as 1d — the file stores the same 2 RGBA8_UNORM payloads the
-GPU consumes (visA = +x,-x,+y,-y; visB = +z,-z, clean flag, spare).
+The .givolume file stores per-voxel: 6 fp32 obstacle distances
+(meters, capped at `visibilityMaxDistance`; 0 = blocked) + 1 byte
+clean-cell flag (4-aligned tail). These are the FULL-PRECISION
+bake outputs. The GPU representation (2 RGBA8_UNORM textures
+created at load time by `PackGpuVisLayers`) is a QUANTIZED
+DERIVATIVE — not what the file stores.
 
 ---
 
