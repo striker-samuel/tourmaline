@@ -569,6 +569,49 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// The draw program pair (the placement instanced VS + the diagnostic
+// unlit PS). The VS preserves the scene push's first 192B (its tail
+// rides at kPlacementVsPushOffset), so the pipeline uses the SAME 256B
+// scene layout every other draw uses and the material system's lit
+// fragments bind unchanged. See placement_draw.h's recording contract.
+// ---------------------------------------------------------------------------
+struct PlacementDrawPrograms {
+	Holder<ShaderModuleHandle> vsModule, psModule;
+	ShaderProgram program{};
+
+	[[nodiscard]] bool Valid() const {
+		return program.shaderCount == 2 && !vsModule.empty() && !psModule.empty();
+	}
+	bool Ensure(ResourceManager& ctx,
+		const char* vsPath = kPlacementInstancedVsPath,
+		const char* psPath = kPlacementUnlitPsPath) {
+		if (Valid()) return true;
+		try {
+			if (vsModule.empty())
+				vsModule = ctx.CreateShaderModule(
+					readFile(vsPath ? vsPath : kPlacementInstancedVsPath),
+					"placementInstancedVS");
+			if (psModule.empty())
+				psModule = ctx.CreateShaderModule(
+					readFile(psPath ? psPath : kPlacementUnlitPsPath),
+					"placementUnlitPS");
+		} catch (...) {
+			return false;
+		}
+		if (vsModule.empty() || psModule.empty()) return false;
+		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
+		Shader ps{ .module = psModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		program = { .shaders = { vs, ps }, .shaderCount = 2 };
+		return true;
+	}
+	void Destroy() {
+		program = ShaderProgram();
+		vsModule = {};
+		psModule = {};
+	}
+};
+
+// ---------------------------------------------------------------------------
 // PR03: the per-(tile slot, view) visible-path scratch. The persistent
 // 40-byte instances NEVER move per camera frame — only the visible-
 // index list does. One set per (slot, view); overlapping in-flight
@@ -675,6 +718,8 @@ struct PlacementVisibleSet {
 	uint64_t IndirectAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(indirect);
 	}
+	// The indirect buffer HANDLE (the renderer's DrawIndexedIndirect).
+	BufferHandle IndirectBuffer() const { return indirect; }
 };
 
 // The chain's shader program set (cull + prefix + scatter + drawbuild).

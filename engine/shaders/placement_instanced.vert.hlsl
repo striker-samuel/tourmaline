@@ -135,15 +135,20 @@ VSOut mainVS(VSIn IN)
         }
     }
 
-    // ---- Compose T * RotY * S (column-major). ----
+    // ---- Compose T * RotY * S for the COLUMN-vector mul(model, v). ----
+    // HLSL's mul(M, v) computes row_i · v, so an AFFINE transform carries
+    // its translation in the .w of rows 0..2 — NOT in model[3] (that row
+    // only feeds the result's w component; the old build put the
+    // translation there, projecting every quad near the ORIGIN — the
+    // zero-pixels draw failure this test's section 10 caught on device).
     float c, s;
     sincos(inst.yaw, s, c);
     float sx = inst.scale.x; // uniform by construction; x is representative
     float4x4 model;
-    model[0] = float4(c * sx, 0.0f, -s * sx, 0.0f);
-    model[1] = float4(0.0f, sx, 0.0f, 0.0f);
-    model[2] = float4(s * sx, 0.0f, c * sx, 0.0f);
-    model[3] = float4(inst.position, 1.0f);
+    model[0] = float4(c * sx, 0.0f, -s * sx, inst.position.x);
+    model[1] = float4(0.0f, sx, 0.0f, inst.position.y);
+    model[2] = float4(s * sx, 0.0f, c * sx, inst.position.z);
+    model[3] = float4(0.0f, 0.0f, 0.0f, 1.0f);
 
     float4 world = mul(model, float4(IN.position, 1.0f));
     OUT.worldPos = world.xyz;

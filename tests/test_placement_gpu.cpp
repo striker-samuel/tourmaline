@@ -47,7 +47,9 @@
 #include <volk.h>
 #include <SDL3/SDL.h>
 
+#include <Engine/App/cluster.h>
 #include <Engine/Placement/placement_domain.h>
+#include <Engine/Placement/placement_draw.h>
 #include <Engine/Placement/placement_eval.h>
 #include <Engine/Placement/placement_gpu.h>
 #include <Engine/Placement/placement_prototype.h>
@@ -55,6 +57,7 @@
 #include <Engine/Rendergraph/meshparticles.h>
 #include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Renderer/mesh.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
 
@@ -1640,6 +1643,409 @@ int main()
 		}
 
 		mp.Destroy(rg);
+	}
+
+	// =====================================================================
+	// 10) THE DRAW (the definition-of-done proof): the full stack drawn
+	 //    for real — a static-heap quad mesh, THREE prototype bins, the
+	//    runtime's scatter + chain + a GRAPHICS PASS recording
+	//    DrawIndexedIndirect per bin through the placement VS + the
+	//    diagnostic unlit PS, into an external color target whose
+	//    readback COUNTS the rasterized pixels. Instances -> commands ->
+	//    pixels, end to end on device.
+	// =====================================================================
+	std::fprintf(stderr, "[place-gpu] stage: the draw\n");
+	{
+		using namespace smvk::terrain;
+		// ---- the static-mesh heap: one quad (the retirement-fuzz path).
+		smvk::AllocateStaticVertexFmt(rm);
+		auto cluster = std::make_unique<smvk::Cluster>(&rm);
+		smvk::StaticMeshUpload up;
+		up.vertices.resize(4);
+		up.vertices[0].pos = glm::vec3(-0.5f, 0.0f, -0.5f);
+		up.vertices[1].pos = glm::vec3(0.5f, 0.0f, -0.5f);
+		up.vertices[2].pos = glm::vec3(0.5f, 0.0f, 0.5f);
+		up.vertices[3].pos = glm::vec3(-0.5f, 0.0f, 0.5f);
+		for (auto& v : up.vertices) {
+			v.color = glm::vec4(1.0f);
+			v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+			v.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+		}
+		up.indices = { 0, 1, 2, 0, 2, 3 };
+		up.aabbMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+		up.aabbMax = glm::vec3(0.5f, 0.0f, 0.5f);
+		const auto meshHandle = cluster->UploadStaticMesh(up);
+		Check(!meshHandle.empty(), "gpu.draw-mesh-uploaded");
+		const smvk::StaticMesh* mesh = cluster->staticMeshes.get(meshHandle);
+		Check(mesh && !mesh->geometry.surfaces.empty(), "gpu.draw-mesh-surface");
+		// The heap upload must LAND before the draw frames record (the
+		// streamer defers copies; a frame that draws first reads zeros).
+		rm.FlushUploads();
+		rm.WaitForUploads();
+		const smvk::Surface& surf = mesh->geometry.surfaces[0];
+
+		// ---- the runtime (the section-8 fake world + a 3-proto layer). ----
+		TerrainHField field;
+		field.meta.worldSize = 16.0f;
+		field.meta.originX = -8.0f;
+		field.meta.originZ = -8.0f;
+		field.meta.hTileSize = 4.0f;
+		field.meta.hRes = 4;
+		field.meta.gBlock = 8.0f;
+		field.meta.baseY = kTerrainBaseY;
+		field.meta.range = kTerrainRange;
+		const uint32_t nH = field.tilesPerAxis();
+		field.tiles.assign(size_t(nH) * nH,
+			std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+		for (uint32_t tz = 0; tz < nH; ++tz)
+			for (uint32_t tx = 0; tx < nH; ++tx) {
+				auto& tile = field.tiles[size_t(tz) * nH + tx];
+				for (uint32_t py = 0; py < field.meta.hRes; ++py)
+					for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+						const float h01 =
+							(float)(tx * 4 + pxx + tz * 4 + py) / 1024.0f;
+						uint8_t r, g;
+						EncodeRG16(h01, r, g);
+						const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+						tile[o] = r; tile[o + 1] = g;
+					}
+			}
+		std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+		const uint32_t sRes = 8;
+		for (auto& t : sTiles)
+			t.assign(size_t(sRes) * sRes * 4, 0);
+		for (uint32_t tz = 0; tz < 2; ++tz)
+			for (uint32_t tx = 0; tx < 2; ++tx) {
+				auto& tile = sTiles[size_t(tz) * 2 + tx];
+				for (uint32_t py = 0; py < sRes; ++py)
+					for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+						const size_t o = (size_t(py) * sRes + pxx) * 4;
+						tile[o + 0] = uint8_t((pxx * 24 + py * 8) % 256);
+						tile[o + 3] = 255;
+					}
+			}
+		WorldMaskGrid maskGrid{ &sTiles, 2, sRes };
+
+		PlacementSystem::LayerBinding lb;
+		lb.programId = 404;
+		lb.program.graphSeed = 4242;
+		lb.program.nodeId = 1;
+		lb.program.instrs = {
+			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 20.0f, 60.0f, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		};
+		lb.program.acceptIndex = 2;
+		lb.domainKind = DomainKind::Heightfield;
+		lb.config.candidatesPerTile = 512;
+		// THREE prototypes (the exit gate: three distinct bins drawing
+		// from the same generated tile) — flat quads with sizes that
+		// rasterize clearly.
+		Prototype p0; p0.weight = 1.0f;
+		p0.boundsMin = glm::vec3(-0.6f, 0.0f, -0.6f);
+		p0.boundsMax = glm::vec3(0.6f, 0.3f, 0.6f);
+		Prototype p1; p1.weight = 1.0f;
+		p1.boundsMin = glm::vec3(-0.8f, 0.0f, -0.8f);
+		p1.boundsMax = glm::vec3(0.8f, 0.5f, 0.8f);
+		Prototype p2; p2.weight = 1.0f;
+		p2.boundsMin = glm::vec3(-1.0f, 0.0f, -1.0f);
+		p2.boundsMax = glm::vec3(1.0f, 0.8f, 1.0f);
+		lb.prototypes.add(p0);
+		lb.prototypes.add(p1);
+		lb.prototypes.add(p2);
+		lb.config.minScale = 1.2f;
+		lb.config.maxScale = 2.4f;
+
+		auto rt = std::make_unique<PlacementWorldRuntime>();
+		rt->layer = &lb;
+		rt->hfield = &field;
+		rt->masks = &maskGrid;
+		rt->tileSize = 8.0f;
+		rt->haloMeters = 2.0f;
+		rt->slotBudget = 1;
+		rt->viewBudget = 1;
+		Check(rt->Create(rm, rg), "gpu.draw-rt-create");
+
+		// The draw programs (the placement VS + the diagnostic unlit PS).
+		smvk::placement::PlacementDrawPrograms drawProgs;
+		Check(drawProgs.Ensure(rm), "gpu.draw-programs");
+
+		// ---- a REAL camera: a perspective + look-at over the tile ----
+		// (the tile lives at y ~ -33..-28 on [0,8]^2; the eye hovers 14m
+		// above, looking down-forward; the Vulkan Y flip baked in.)
+		const glm::vec3 eye(4.0f, -18.0f, -3.0f);
+		const glm::vec3 at(4.0f, -30.0f, 4.0f);
+		glm::mat4 proj = glm::perspective(1.0f, 1.0f, 0.5f, 100.0f);
+		proj[1][1] *= -1.0f; // the Vulkan clip-space Y flip
+		const glm::mat4 view = glm::lookAt(eye, at, glm::vec3(0.0f, 1.0f, 0.0f));
+		const glm::mat4 viewProj = proj * view;
+		// The cull planes: derive the six frustum planes from viewProj
+		// (rows of the composition; generous inward normals).
+		std::vector<float> slabBytes(64, 0.0f);
+		auto putMatSlab = [&](size_t base, const glm::mat4& m) {
+			for (int c = 0; c < 4; ++c)
+				for (int r = 0; r < 4; ++r)
+					slabBytes[base + c * 4 + r] = m[c][r];
+		};
+		putMatSlab(0, viewProj);   // m_viewProjectionMatrix
+		putMatSlab(16, glm::inverse(viewProj)); // m_inverseViewProjectionMatrix
+		{
+			const glm::vec4 rows[4] = {
+				glm::vec4(viewProj[0][0], viewProj[1][0], viewProj[2][0], viewProj[3][0]),
+				glm::vec4(viewProj[0][1], viewProj[1][1], viewProj[2][1], viewProj[3][1]),
+				glm::vec4(viewProj[0][2], viewProj[1][2], viewProj[2][2], viewProj[3][2]),
+				glm::vec4(viewProj[0][3], viewProj[1][3], viewProj[2][3], viewProj[3][3]) };
+			// The inward half-spaces: w + row (near), w - row (far) per axis.
+			for (int p = 0; p < 3; ++p) {
+				glm::vec4 lo = rows[3] + rows[p];
+				glm::vec4 hi = rows[3] - rows[p];
+				const float nlo = glm::length(glm::vec3(lo));
+				const float nhi = glm::length(glm::vec3(hi));
+				for (int k = 0; k < 4; ++k) {
+					slabBytes[32 + (p * 2 + 0) * 4 + k] = lo[k] / nlo;
+					slabBytes[32 + (p * 2 + 1) * 4 + k] = hi[k] / nhi;
+				}
+			}
+		}
+		smvk::Holder<smvk::BufferHandle> drawSlab = rm.CreateBuffer(
+			sizeof(float) * slabBytes.size(), smvk::BufferType_Storage,
+			"placement draw view slab");
+		Check(!drawSlab.empty(), "gpu.draw-view-slab");
+		smvk::LogicalBufferHandle drawSlabL = rg.AddExternalBuffer(drawSlab,
+			"placement draw view slab");
+		Check(!drawSlabL.empty(), "gpu.draw-view-logical");
+		rm.UploadDataToBuffer(drawSlab, slabBytes.data(),
+			sizeof(float) * slabBytes.size(),
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
+
+		// ---- the external color target (the readback proof surface). ----
+		const uint32_t targetW = 256, targetH = 256;
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { targetW, targetH, 1 };
+		ci.format = smvk::Format::RGBA8_UNorm;
+		ci.usage = smvk::ImageUsage::ColorAttachment
+			| smvk::ImageUsage::TransferSrc;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		ci.name = "placement draw target";
+		smvk::Holder<smvk::ImageHandle> target = rm.CreateImage(ci, nullptr);
+		Check(!target.empty(), "gpu.draw-target-created");
+		const smvk::ImageViewCreateInfo vci{
+			.viewType = smvk::ImageViewType::View2D,
+			.format = smvk::Format::RGBA8_UNorm,
+			.subresourceRange = { smvk::ImageAspect::Color, 0, 1, 0, 1 },
+			.name = "placement draw target view",
+		};
+		smvk::Holder<smvk::ImageViewHandle> targetView =
+			rm.CreateImageView(target, vci);
+		Check(!targetView.empty(), "gpu.draw-target-view");
+		smvk::LogicalImageViewHandle targetLogical =
+			rg.AddExternalImageView(targetView, smvk::Format::RGBA8_UNorm,
+				"placement draw target view");
+		Check(!targetLogical.empty(), "gpu.draw-target-logical");
+
+		// The immutable indirect halves: the SAME quad mesh for the three
+		// prototype bins (indexCount 6, the heap's firstIndex/baseVertex).
+		// Seeding must happen when the tile is PUBLISHED (the runtime's
+		// SeedIndirect walks the published slots — before that it is a
+		// no-op), so the seed call lives INSIDE the draw-frame record
+		// below, right after the publish is observed.
+		const auto fillSeeds = [&](PlacementIndirectCmd* seeds) {
+			for (int p = 0; p < 3; ++p) {
+				seeds[p].indexCount = uint32_t(up.indices.size());
+				seeds[p].firstIndex = surf.firstIndex;
+				seeds[p].vertexOffset = surf.baseVertex;
+			}
+		};
+
+		// ---- frame 1: the scatter + the chain (the tile publishes). ----
+		DependencyVersions deps;
+		const glm::vec4 interest[1] = { glm::vec4(0.0f, 0.0f, 8.0f, 8.0f) };
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			rt->BeginFrame(rm, g, interest, 1, deps);
+			rt->RecordCullChain(rm, g, 0, drawSlabL,
+				rm.GetBufferDeviceAddress(drawSlab), 0,
+				glm::vec3(eye), kPlacementCullFrustum);
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+
+		// ---- frame 2: the chain re-runs (the idle tile, no re-dispatch)
+		// + THE DRAW into the external target. ----
+		int32_t drawSlot = -1;
+		bool seeded = false;
+		const auto recordDrawFrame = [&](smvk::RenderGraph& g) {
+			rt->BeginFrame(rm, g, interest, 1, deps);
+			rt->RecordCullChain(rm, g, 0, drawSlabL,
+				rm.GetBufferDeviceAddress(drawSlab), 0,
+				glm::vec3(eye), kPlacementCullFrustum);
+			for (size_t s = 0; s < rt->active.size(); ++s)
+				if (rt->active[s].published) { drawSlot = int32_t(s); break; }
+			if (drawSlot < 0)
+				return;
+			// THE RUNTIME CONTRACT: seed the published visible sets once
+			// per prototype table — the frame that observes the publish
+			// is the earliest the seed can exist.
+			if (!seeded) {
+				PlacementIndirectCmd seeds[3];
+				fillSeeds(seeds);
+				Check(rt->SeedIndirect(rm, 0, seeds, 3),
+					"gpu.draw-seed-indirect");
+				seeded = true;
+			}
+			const PlacementVisibleSet* vs = rt->VisSet(drawSlot);
+			smvk::RenderPass& draw = g.AddPass("PlacementDraw");
+			draw.SetOffset(0, 0);
+			draw.SetExtent({ targetW, targetH });
+			draw.SetColor({ targetLogical },
+				smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
+				smvk::ClearColor(0.1f, 0.2f, 0.3f, 1.0f));
+			// The ordering edges: the draw reads the chain's outputs.
+			smvk::BufferSyncRequest read{};
+			read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead
+				| smvk::AccessFlags::IndirectCommandRead;
+			read.barrierMasks.stageMask = smvk::PipelineStageBit_AllGraphics;
+			draw.AddBufferHint(rt->pass.instanceLogicals[size_t(drawSlot)], read);
+			draw.AddBufferHint(vs->maskL, read);
+			draw.AddBufferHint(vs->binsL, read);
+			draw.AddBufferHint(vs->visibleL, read);
+			draw.AddBufferHint(vs->indirectL, read);
+			const PlacementVsPush tail{
+				vs->VisibleAddress(rm),
+				rt->pass.TileInstancesAddress(rm, uint32_t(drawSlot)),
+				rm.GetBufferDeviceAddress(drawSlab),
+				0u, 0u };
+			// CAPTURE DISCIPLINE: the graph executes AFTER this record
+			// callback returns (GpuHost::RunFrame -> rg->Execute), so the
+			// recording lambda must own everything it touches that lives
+			// in THIS scope — the push tail by value, the indirect buffer
+			// handle by value, the program by pointer to the test-scope
+			// holder. Capturing them by reference leaves the push reading
+			// a dead stack slot (the garbage-addresses -> zero-pixels
+			// bug this test was built to catch).
+			const smvk::BufferHandle indirectBuf = vs->IndirectBuffer();
+			smvk::ShaderProgram* const program = &drawProgs.program;
+			draw.SetRecordingFunc([tail, indirectBuf, program](
+				smvk::CommandBuffer& cmd) {
+				cmd.BindStaticVertexFmt();
+				cmd.BindRenderPipeline(*program,
+					smvk::VertexFormat::StaticVertexFormat,
+					smvk::DepthSettings{ .depthFunc = smvk::CompareOp::Always,
+						.writeEnable = false, .depthTestEnable = false },
+					smvk::StencilSettings{}, smvk::BlendSettings{},
+					smvk::MSAASettings{},
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+				cmd.PushConstants(kPlacementVsPushOffset, sizeof(tail),
+					&tail, smvk::ShaderStage::All);
+				// ONE indirect draw per prototype bin — the GPU-written
+				// instanceCount + firstInstance drive everything.
+				for (int p = 0; p < 3; ++p)
+					cmd.DrawIndexedIndirect(indirectBuf,
+						uint64_t(p) * kPlacementIndirectStride, 1,
+						kPlacementIndirectStride);
+			});
+		};
+		// TWO draw frames — the FIRST is the publish frame (BeginFrame
+		// observes the activation token, the visible set is created, the
+		// host seeds the immutable indirect halves) and the SECOND is the
+		// first frame the draw can rasterize. This is NOT a workaround for
+		// test timing — it pins a REAL rendergraph sync sharp edge, caught
+		// on device right here:
+		//
+		//   THE STRANDED-UPLOAD WRITE. The seed is an UploadDataToBuffer
+		//   (a TRANSFER-scoped write). In the SAME frame, drawbuild
+		//   re-writes the buffer's dynamic halves with a COMPUTE-scoped
+		//   write, and the draw pass then reads the buffer at
+		//   DRAW_INDIRECT. The graph's per-buffer sync state tracks only
+		//   the LAST write's scope, so the barrier it emits before the
+		//   draw carries src = COMPUTE only. Vulkan memory dependencies
+		//   are NOT transitive: the seed's TRANSFER_WRITE was made visible
+		//   to drawbuild's COMPUTE scope, but nothing ever delivers it to
+		//   the DRAW_INDIRECT read — so the publish frame's draw reads the
+		//   PRE-seed indexCount (the creation-zero 0) and the indirect
+		//   command is a SILENT no-op draw (0 indices — no fault, no
+		//   pixels; the post-frame readback of the very same buffer shows
+		//   the seeded indexCount 6 + drawbuild's instanceCount 69).
+		//   The next frame's submit waits the previous frame's timeline at
+		//   ALL_COMMANDS, which makes every prior write (including the
+		//   stranded upload) visible to the whole command buffer — and the
+		//   draw works.
+		//
+		//   CONSUMER RULE until the graph unions per-resource write
+		//   scopes (the durable fix is for drawbuild to own the FULL
+		//   command — writing the immutable halves from its push — so the
+		//   indirect buffer is single-scope-written per frame): never let
+		//   a draw depend on bytes an UPLOAD wrote to a buffer that a
+		//   kernel re-writes in the same frame. Accept the one-frame lag
+		//   (a pop-in, benign for streaming tiles) or rewrite the bytes in
+		//   the kernel's scope.
+		host.RunFrame(recordDrawFrame);
+		rm.FlushUploads();
+		rm.WaitForUploads();
+		if (drawSlot >= 0) {
+			// The publish frame's observed state: the buffer HOLDS the
+			// seeded immutable halves + drawbuild's dynamic halves, yet the
+			// frame rasterized nothing (the stranded-write note above).
+			const PlacementVisibleSet* vs = rt->VisSet(size_t(drawSlot));
+			PlacementIndirectCmd cmds[3];
+			std::vector<uint8_t> px(size_t(targetW) * targetH * 4, 0);
+			if (rm.DownloadDataFromBuffer(vs->indirect, cmds,
+					kPlacementIndirectStride * 3)
+				&& rm.DownloadDataFromImage(target,
+					smvk::ImageLayout::ColorAttachmentOptimal, px.data(),
+					px.size())) {
+				size_t lit = 0;
+				for (size_t i = 0; i + 3 < px.size(); i += 4)
+					if (px[i] > 100) ++lit;
+				std::fprintf(stderr, "[place-gpu] draw publish frame: "
+					"cmd0 {idx=%u inst=%u fi=%u}, %zu px lit\n",
+					cmds[0].indexCount, cmds[0].instanceCount,
+					cmds[0].firstInstance, lit);
+			}
+		}
+		host.RunFrame(recordDrawFrame);
+		rm.FlushUploads();
+		rm.WaitForUploads();
+
+		Check(drawSlot >= 0, "gpu.draw-tile-published");
+
+		// ---- the readback: COUNT the rasterized pixels. ----
+		if (drawSlot >= 0) {
+			const PlacementVisibleSet* vs = rt->VisSet(drawSlot);
+			PlacementBinsGpu bins;
+			ok = rm.DownloadDataFromBuffer(vs->bins, &bins, sizeof(bins));
+			Check(ok, "gpu.draw-bins-readback");
+			Check(bins.total > 0, "gpu.draw-visible-nonempty");
+			std::vector<uint8_t> px(size_t(targetW) * targetH * 4, 0);
+			ok = rm.DownloadDataFromImage(target,
+				smvk::ImageLayout::ColorAttachmentOptimal, px.data(), px.size());
+			Check(ok, "gpu.draw-target-readback");
+			size_t lit = 0, firstLit = SIZE_MAX;
+			for (size_t i = 0; i + 3 < px.size(); i += 4) {
+				// The clear (0.1, 0.2, 0.3) -> (25, 51, 76); a drawn pixel
+				// is the white*shade quad (>= 140 on R).
+				if (px[i] > 100) {
+					++lit;
+					if (firstLit == SIZE_MAX) firstLit = i;
+				}
+			}
+			Check(lit > 100, "gpu.draw-pixels-rasterized");
+			if (lit > 0)
+				std::fprintf(stderr, "[place-gpu] draw: %zu/%zu pixels lit"
+					" (bins %u+%u+%u, first rgb %u,%u,%u)\n", lit,
+					px.size() / 4, bins.counts[0], bins.counts[1],
+					bins.counts[2], px[firstLit], px[firstLit + 1],
+					px[firstLit + 2]);
+			// THREE bins drew: every bin with a nonzero count contributed
+			// pixels (the commands drove real rasterization).
+			const uint32_t drawingBins = uint32_t((bins.counts[0] > 0)
+				+ (bins.counts[1] > 0) + (bins.counts[2] > 0));
+			Check(drawingBins >= 2, "gpu.draw-multiple-bins-drew");
+			Check(bins.counts[0] + bins.counts[1] + bins.counts[2]
+					== bins.total,
+				"gpu.draw-bin-sum-parity");
+		}
+		rt->Destroy(rg);
 	}
 
 	std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);

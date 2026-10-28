@@ -64,6 +64,35 @@ static_assert(sizeof(PlacementVsPush) == 32, "PlacementVsPush moved — update p
 inline constexpr const char* kPlacementInstancedVsPath =
 	"content/shaders/placement_instanced.vert.hlsl.spv";
 
+// The DIAGNOSTIC unlit fragment (the draw chain's independent proof
+// path — the production path binds the material system's lit
+// fragments through the same interface).
+inline constexpr const char* kPlacementUnlitPsPath =
+	"content/shaders/placement_unlit.frag.hlsl.spv";
+
+// ---------------------------------------------------------------------------
+// The DRAW recording contract (the app's graphics pass). The program
+// pair + the recipe live in Rendergraph/placement_pass.h
+// (PlacementDrawPrograms — the RHI-aware layer); this header stays
+// World-free per the subsystem rule.
+//
+// Per (tile, proto) draw, inside a color-attachment pass:
+//   cmd.BindStaticVertexFmt();          // the monoblock index binding
+//   cmd.BindRenderPipeline(program, VertexFormat::StaticVertexFormat,
+//       DepthSettings{ .depthFunc = CompareOp::GreaterEqual,
+//                      .writeEnable = true, .depthTestEnable = true },
+//       StencilSettings{}, BlendSettings{}, MSAASettings{},
+//       RasterSettings{ .cullMode = CullMode::Back });
+//   cmd.PushConstants(0, 192, sceneBytes, ShaderStage::All);
+//   cmd.PushConstants(kPlacementVsPushOffset, sizeof(PlacementVsPush),
+//       &tail, ShaderStage::All);
+//   cmd.DrawIndexedIndirect(indirectHandle, proto * 20, 1, 20);
+// The immutable halves (indexCount/firstIndex/vertexOffset) were seeded
+// from the prototype mesh's heap range; instanceCount == 0 bins draw
+// nothing (the GPU no-op draw). The VS preserves the scene push bytes,
+// so the material system's lit fragments bind unchanged.
+// ---------------------------------------------------------------------------
+
 // One contiguous prototype run inside a tile's sorted instance buffer.
 struct ProtoRun {
 	uint32_t prototypeId = 0;
