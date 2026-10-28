@@ -3461,7 +3461,22 @@ namespace engine {
 					cv.visSlots[t] =
 						m_context->GetTextureBindlessIndex(cv.visLayers[t]);
 				}
-			}			if (!ok)
+				// DEBUG LEVER (the visibility-off A/B test): the vis
+				// textures exist, but reporting them absent makes the
+				// shader take the plain-trilerp fast path for EVERY
+				// cell - visibility weighting fully disabled with
+				// everything else identical. Pins the dark-square A/B:
+				// does the grid disappear with the rejection off?
+				if (const char* visEnv = std::getenv("TOURMALINE_GI_VIS")) {
+					if (std::atoi(visEnv) == 0) {
+					cv.visSlots[0] = UINT32_MAX;
+					cv.visSlots[1] = UINT32_MAX;
+					std::cerr << "[GIV] TOURMALINE_GI_VIS=0: visibility"
+						<< " weighting DISABLED (the plain trilerp)\n";
+					}
+				}
+			}
+			if (!ok)
 				continue;
 			// Coefficients are now resident on the GPU; drop the CPU copy.
 			cv.volume.coeffs.clear();
