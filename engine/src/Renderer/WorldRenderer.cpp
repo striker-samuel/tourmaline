@@ -17320,15 +17320,38 @@ namespace engine {
 		if (m_worldMapProbes) {
 			// The loaded CONVEX GI volumes' lattices — the runtime's
 			// remaining baked GI (the legacy octree never loads: stage 1
-			// of the retirement). Total 3D sites counted; the XZ columns
-			// bin at ~6px so the draw-list cost scales with map pixels
-			// rather than lattice density; a column's Y stack folds into
-			// its bin (the density coloring carries the multiplicity).
+			// of the retirement). Total 3D sites counted; a column's Y
+			// stack folds into its bin (the density coloring carries the
+			// multiplicity).
 			// NOTE: these are lattice SITES — not proof every sample is
 			// valid or inside the convex hull.
-			constexpr float kBinPx = 6.0f;
-			const int cols = std::max(1, int(std::ceil(cw / kBinPx)));
-			const int rows = std::max(1, int(std::ceil(ch / kBinPx)));
+			//
+			// BIN SIZE TRACKS THE LATTICE PITCH (the sponza_3 report):
+			// the original fixed ~6px bin moired against a 0.5 m lattice
+			// at fit zoom (~8.4 px pitch) — two regular grids beat against
+			// each other and 279 of 2644 covered bins came up EMPTY, so
+			// the layer read as "holes in a grid pattern" (regular gaps
+			// that MOVED with zoom — the aliasing signature, not data: the
+			// lattice itself has a column at every (lx, lz) site inside
+			// the footprints; even inside-solid probes count). Now the
+			// bin is the lattice pitch clamped to [6, 32] px: pixel-scale
+			// when zoomed out (many columns per bin, the density colors
+			// carry them), EXACT lattice-scale in between (one dot per
+			// column), and past 32 px the honest gaps between discrete
+			// probes show — you are looking between 0.5 m-spaced sites.
+			float minSpacing = std::numeric_limits<float>::max();
+			for (const GiVolumeResources& res : m_giVolumes) {
+				const smvk::gi::GiVolume& vol = res.volume;
+				if (vol.dims[0] == 0 || vol.dims[1] == 0 || vol.dims[2] == 0)
+					continue;
+				minSpacing = std::min(minSpacing, vol.spacing);
+			}
+			const float kBinMinPx = 6.0f, kBinMaxPx = 32.0f;
+			const float binPx = minSpacing < std::numeric_limits<float>::max()
+				? std::clamp(minSpacing * s, kBinMinPx, kBinMaxPx)
+				: kBinMinPx;
+			const int cols = std::max(1, int(std::ceil(cw / binPx)));
+			const int rows = std::max(1, int(std::ceil(ch / binPx)));
 			std::vector<uint32_t> occupancy(size_t(cols) * size_t(rows), 0u);
 			for (const GiVolumeResources& res : m_giVolumes) {
 				const smvk::gi::GiVolume& vol = res.volume;
@@ -17345,8 +17368,8 @@ namespace engine {
 							|| x < 0.0f || x >= cw || y < 0.0f || y >= ch)
 							continue;
 						++giOnScreen; // XZ columns in view
-						const int bx = std::min(cols - 1, int(x / kBinPx));
-						const int by = std::min(rows - 1, int(y / kBinPx));
+						const int bx = std::min(cols - 1, int(x / binPx));
+						const int by = std::min(rows - 1, int(y / binPx));
 						occupancy[size_t(by) * size_t(cols) + size_t(bx)]
 							+= vol.dims[1];
 					}
@@ -17358,9 +17381,12 @@ namespace engine {
 						continue;
 					++giMapMarkers;
 					const float density = std::min(1.0f, std::log2(1.0f + float(n)) / 6.0f);
-					const ImVec2 pt(o.x + std::min((float(bx) + 0.5f) * kBinPx, cw - 0.5f),
-						o.y + std::min((float(by) + 0.5f) * kBinPx, ch - 0.5f));
-					dl->AddCircleFilled(pt, 1.3f + 1.5f * density,
+					const ImVec2 pt(o.x + std::min((float(bx) + 0.5f) * binPx, cw - 0.5f),
+						o.y + std::min((float(by) + 0.5f) * binPx, ch - 0.5f));
+					// Radius rides the bin so one-dot-per-column reads as
+					// the lattice's own pitch (not a sub-bin speck).
+					dl->AddCircleFilled(pt,
+						std::min(0.34f * binPx, 3.0f) + 1.2f * density,
 						IM_COL32(90, 230, 90, 110 + int(140.0f * density)));
 				}
 			}
