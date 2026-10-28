@@ -812,8 +812,21 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 		return outVolume.vis[size_t(v) * 6 + size_t(k)]
 			>= spacing - 0.35f * spacing;
 	};
-	const auto mutuallyOpen = [&](uint64_t v, uint64_t u, int k) {
-		return visOpen(v, k) && visOpen(u, k ^ 1);
+	// The gate checks the SOURCE's visibility only (u's ability to see
+	// toward the target v). The TARGET's own vis is meaningless for the
+	// fill decision: inside-geometry targets carry all-zero distances by
+	// definition, and requiring THEIR openness too (the old mutual form)
+	// meant inside-geometry probes were NEVER filled - their dilation
+	// stayed zero, and the renormalized weighted path at runtime read a
+	// few surviving corners' raw values as dark lattice-aligned squares
+	// (the sponza_3 report: the flat irradiance view showed the grid).
+	// The SOURCE's check alone is sufficient: a valid neighbor that can
+	// see toward the target is on the same side; one that cannot (the
+	// wall between them) is across.
+	const auto sameSide = [&](uint64_t u, uint64_t v, int k) {
+		// u is the SOURCE (valid), v is the TARGET (any). Check u's
+		// visibility toward v: axis k^1 is u's back-axis toward v.
+		return visOpen(u, k ^ 1);
 	};
 
 	// ---- Validity dilation (probes inside solid geometry; the same
@@ -854,8 +867,8 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 								(uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
 							if (!valid[size_t(u)])
 								continue;
-							if (!mutuallyOpen(v, u, k))
-								continue; // across a wall: the same-side gate
+							if (!sameSide(u, v, k))
+								continue; // the source cannot see the target: across a wall
 							for (uint32_t i = 0; i < kSgLobeCount; ++i)
 								acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
 							++cnt;
@@ -891,7 +904,7 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	// hard edge), so the dilated voxels participate on both sides:
 	// they take neighbor averages AND contribute to their neighbors.
 	// The visibility bake: the neighbor set is SAME-SIDE GATED
-	// (the mutuallyOpen rule above): along-surface neighbors still
+	// (the sameSide rule above): along-surface neighbors still
 	// smooth — the seam-softening this pass exists for — while
 	// across-wall pairs are excluded, so the Laplacian no longer
 	// smears bright exterior values into dark interiors through thin
@@ -920,7 +933,7 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 								continue;
 							const uint64_t u =
 								(uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-							if (!mutuallyOpen(v, u, k))
+							if (!sameSide(u, v, k))
 								continue; // across a wall: no cross-side smear
 							for (uint32_t i = 0; i < kSgLobeCount; ++i)
 								acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];

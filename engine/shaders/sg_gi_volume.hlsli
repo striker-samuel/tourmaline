@@ -132,9 +132,17 @@ float SgGiVolumeVisAxis(float along, float dist)
 {
     // dist = 0 = obstacle at distance 0 (blocked); a miss at bake time
     // records the cap, which no in-cell offset can exceed = open.
+    // The ramp denominator 0.25*dist + 0.5 (was 0.02 — the octree's
+    // near-instant rejection) is the DARK-SQUARE FIX: blocked probes
+    // (dist=0) now reject GRADUALLY across the cell (0.5 spacing
+    // units of ramp instead of 0.02), so the transition between
+    // clean and non-clean cells is smooth instead of a lattice-
+    // aligned cliff. The old 0.02 made the factor essentially binary
+    // (0 or 1), and the renormalization at the cell boundary produced
+    // the visible grid (the sponza_3 flat-irradiance report).
     [branch]
     if (along > dist + 0.35)
-        return max(0.0, 1.0 - (along - dist - 0.35) / (0.25 * dist + 0.02));
+        return max(0.0, 1.0 - (along - dist - 0.35) / (0.25 * dist + 0.5));
     return 1.0;
 }
 
@@ -212,11 +220,10 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                 const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
                 const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
                 const float wv = SgGiVolumeVisFactor(dRel, visA, visB);
-                if (wv <= 0.0)
-                    continue; // this corner is across a wall: rejected
+                const float wvEff = wv;
                 const float3 t3 = float3(c & 1 ? f.x : 1.0 - f.x,
                     c & 2 ? f.y : 1.0 - f.y, c & 4 ? f.z : 1.0 - f.z);
-                const float wt = wv * (t3.x * t3.y * t3.z);
+                const float wt = wvEff * (t3.x * t3.y * t3.z);
                 if (wt <= 0.0)
                     continue;
                 float4 layers[SG_GI_VOLUME_LAYERS];
