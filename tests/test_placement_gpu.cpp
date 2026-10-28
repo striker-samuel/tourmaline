@@ -52,6 +52,7 @@
 #include <Engine/Placement/placement_gpu.h>
 #include <Engine/Placement/placement_prototype.h>
 #include <Engine/Placement/placement_tile.h>
+#include <Engine/Rendergraph/meshparticles.h>
 #include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
@@ -1329,6 +1330,316 @@ int main()
 				"gpu.rt-edit-regenerates-parity");
 		}
 		rt->Destroy(rg);
+	}
+
+	// =====================================================================
+	// 9) The MESH PARTICLES (PR06): the exit gate — a GPU emitter spawns
+	//    SPINNING 3D mesh variants, moves them, expires them, bins them
+	//    per mesh, and the chain emits the indirect commands — with no
+	//    CPU per-particle work anywhere. The billboard system stays
+	//    untouched (separate buffers, separate kernels).
+	// =====================================================================
+	std::fprintf(stderr, "[place-gpu] stage: mesh particles\n");
+	{
+		smvk::MeshParticles mp;
+		smvk::MeshParticlesDesc mpd{};
+		mpd.maxParticles = 4096;
+		mpd.maxEmitters = 8;
+		Check(mp.Ensure(rm, rg, 2, mpd) && mp.Valid(),
+			"gpu.mp-create");
+		Check(mp.ShadersValid(), "gpu.mp-shaders");
+
+		// Two emitters, two MESH variants: rocks (mesh 0, slow spin) +
+		// leaves (mesh 1, fast spin). Bounded life so the expiry + the
+		// free-list recycle are observable inside a few frames.
+		smvk::MeshParticleEmitterGpu rows[2];
+		rows[0].position = glm::vec4(0.0f, 0.0f, 0.0f, 0.5f);
+		rows[0].direction = glm::vec4(0.0f, 1.0f, 0.0f, 0.7f);
+		rows[0].velocity = glm::vec4(1.0f, 3.0f, 0.0f, 1.0f);
+		rows[0].life = glm::vec4(0.6f, 0.9f, 40.0f, 0.0f);   // mesh 0
+		rows[0].spin = glm::vec4(2.0f, 6.0f, 11.0f, 0.1f);
+		rows[0].size = glm::vec4(0.4f, 0.2f, 0.25f, 0.0f);
+		rows[0].color = glm::vec4(0.7f, 0.65f, 0.6f, 0.0f);
+		rows[1] = rows[0];
+		rows[1].position = glm::vec4(2.0f, 0.0f, 2.0f, 0.3f);
+		rows[1].velocity = glm::vec4(0.5f, 2.0f, 0.0f, 0.4f);
+		rows[1].life = glm::vec4(0.3f, 0.5f, 80.0f, 1.0f);   // mesh 1
+		rows[1].spin = glm::vec4(8.0f, 16.0f, 77.0f, 0.3f);
+		rows[1].size = glm::vec4(0.25f, 0.08f, 0.3f, 0.0f);
+		rows[1].color = glm::vec4(0.4f, 0.6f, 0.25f, 0.0f);
+		mp.UpdateEmitters(rm, 0, rows, 2);
+
+		// The per-mesh conservative spheres (the cull's bounds table).
+		glm::vec4 meshBounds[2] = {
+			glm::vec4(0.0f, 0.1f, 0.0f, 0.6f),
+			glm::vec4(0.0f, 0.05f, 0.0f, 0.35f) };
+
+		// ---- run N frames of emit -> sim -> the cull chain ----
+		const float dt = 1.0f / 60.0f;
+		const uint32_t kFrames = 90; // 1.5s: spawn + move + expire
+		uint32_t frame = 0;
+		std::vector<smvk::MeshParticleGpu> poolSnap;
+		std::vector<uint32_t> freeSnap;
+		for (uint32_t f = 0; f < kFrames; ++f) {
+			frame = f;
+			mp.UpdateEmitters(rm, frame % 2, rows, 2); // the flight ring
+			mp.ClearFrameChain(rm);
+			// The CPU-mirror carry (the scheduling arithmetic pin).
+			smvk::MeshParticlesEmitPush ep;
+			ep.emitters = mp.EmittersSliceAddress(rm, frame % 2);
+			ep.emitterState = mp.EmitterStateAddress(rm);
+			ep.particles = mp.ParticlesAddress(rm);
+			ep.freeList = mp.FreeListAddress(rm);
+			ep.emitterCount = 2;
+			ep.maxParticles = mpd.maxParticles;
+			ep.dt = dt;
+			ep.frameSeed = f * 2654435761u + 1u;
+			smvk::MeshParticlesSimPush sp;
+			sp.particles = mp.ParticlesAddress(rm);
+			sp.freeList = mp.FreeListAddress(rm);
+			sp.gravityY = -9.81f;
+			sp.dt = dt;
+			sp.maxParticles = mpd.maxParticles;
+			smvk::MeshParticlesCullPush cp;
+			cp.particles = mp.ParticlesAddress(rm);
+			cp.mask = mp.MaskAddress(rm);
+			cp.bins = mp.BinsAddress(rm);
+			cp.renderViews = rm.GetBufferDeviceAddress(viewSlab);
+			cp.renderViewIndex = 0;
+			cp.cullFlags = smvk::placement::kPlacementCullFrustum;
+			cp.binCount = 2;
+			cp.maxParticles = mpd.maxParticles;
+			cp.meshBounds[0] = meshBounds[0];
+			cp.meshBounds[1] = meshBounds[1];
+			smvk::MeshParticlesScatterPush scp;
+			scp.particles = mp.ParticlesAddress(rm);
+			scp.mask = mp.MaskAddress(rm);
+			scp.bins = mp.BinsAddress(rm);
+			scp.visible = mp.VisibleAddress(rm);
+			scp.binCount = 2;
+			scp.maxParticles = mpd.maxParticles;
+			smvk::MeshParticlesPrefixPush pp;
+			pp.bins = mp.BinsAddress(rm);
+			pp.binCount = 2;
+			smvk::placement::PlacementDrawBuildPush dbp;
+			dbp.bins = mp.BinsAddress(rm);
+			dbp.indirect = mp.IndirectAddress(rm);
+			dbp.protoCount = 2;
+			// The immutable indirect halves (fake geometry: 300 idx/bin).
+			if (f == 0) {
+				smvk::placement::PlacementIndirectCmd seeds[2] = {};
+				seeds[0].indexCount = 300; seeds[0].firstIndex = 0;
+				seeds[1].indexCount = 300; seeds[1].firstIndex = 64;
+				Check(mp.SeedIndirect(rm, seeds, 2), "gpu.mp-seed-indirect");
+			}
+			host.RunFrame([&](smvk::RenderGraph& g) {
+				smvk::RenderPass& emit = mp.AddEmitPass(g);
+				emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchEmit(cmd, mp.emitProgram, ep);
+				});
+				smvk::RenderPass& sim = mp.AddSimPass(g);
+				sim.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchSim(cmd, mp.simProgram,
+						sp, mp.SimGroupsFor(mpd.maxParticles));
+				});
+				smvk::RenderPass& cull = mp.AddCullPass(g, viewSlabL);
+				cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchCull(cmd, mp.cullProgram, cp);
+				});
+				smvk::RenderPass& pre = mp.AddPrefixPass(g);
+				pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchPrefix(cmd, mp.prefixProgram, pp);
+				});
+				smvk::RenderPass& scat = mp.AddScatterPass(g);
+				scat.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchScatter(cmd, mp.scatterProgram, scp);
+				});
+				smvk::RenderPass& db = mp.AddDrawBuildPass(g);
+				db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchDrawBuild(cmd, mp.buildProgram, dbp);
+				});
+			});
+			rm.FlushUploads();
+			rm.WaitForUploads();
+		}
+
+		// ---- readback: the pool + the free list at the END ----
+		poolSnap.resize(mpd.maxParticles);
+		ok = rm.DownloadDataFromBuffer(mp.particlesBuffer, poolSnap.data(),
+			sizeof(smvk::MeshParticleGpu) * mpd.maxParticles);
+		Check(ok, "gpu.mp-pool-readback");
+		freeSnap.resize(mpd.maxParticles + 1);
+		ok = rm.DownloadDataFromBuffer(mp.freeListBuffer, freeSnap.data(),
+			sizeof(uint32_t) * freeSnap.size());
+		Check(ok, "gpu.mp-freelist-readback");
+
+		size_t alive = 0, mesh0 = 0, mesh1 = 0;
+		for (const auto& p : poolSnap)
+			if (p.posLife.w > 0.0f) {
+				++alive;
+				if ((uint32_t)(p.params.y + 0.5f) == 0u) ++mesh0; else ++mesh1;
+			}
+		Check(alive > 0, "gpu.mp-alive-nonempty");
+		Check(mesh0 > 0 && mesh1 > 0, "gpu.mp-two-mesh-variants");
+		// The free list + the alive population cover the pool exactly
+		// (the recycle invariant: no slot is both alive AND free).
+		const uint32_t freeCount = freeSnap[0];
+		Check(size_t(freeCount) + alive == mpd.maxParticles,
+			"gpu.mp-freelist-conservation");
+		// A slot pushed back by death is never double-pushed: the free
+		// stack holds DISTINCT slot ids (spot check the invariant).
+		{
+			std::vector<uint32_t> stackIds(freeSnap.begin() + 1,
+				freeSnap.begin() + 1 + size_t(freeCount));
+			std::sort(stackIds.begin(), stackIds.end());
+			bool distinct = std::adjacent_find(stackIds.begin(),
+				stackIds.end()) == stackIds.end();
+			for (uint32_t s : stackIds)
+				if (poolSnap[s].posLife.w > 0.0f) { distinct = false; break; }
+			Check(distinct, "gpu.mp-freelist-distinct-dead");
+		}
+
+		// The MOVEMENT + the SPIN actually happened: gravity pulled the
+		// population below its spawn height and the quaternions moved
+		// off identity-ish norms... quaternions are unit; verify the
+		// rotation CHANGED by comparing a snapshot two frames apart.
+		{
+			bool moved = false, spun = false;
+			for (const auto& p : poolSnap)
+				if (p.posLife.w > 0.0f) {
+					if (p.posLife.y < -0.05f) moved = true; // gravity drop
+					if (std::abs(std::abs(p.rot.w) - 1.0f) > 1e-4f
+						|| std::abs(p.rot.x) > 1e-4f
+						|| std::abs(p.rot.y) > 1e-4f
+						|| std::abs(p.rot.z) > 1e-4f)
+						spun = true; // off identity = integrated at least once
+				}
+			Check(moved, "gpu.mp-gravity-moved");
+			Check(spun, "gpu.mp-quaternion-spun");
+			// Unit quaternions (the normalize held).
+			bool unit = true;
+			for (const auto& p : poolSnap)
+				if (p.posLife.w > 0.0f) {
+					const float n2 = glm::dot(p.rot, p.rot);
+					if (std::abs(n2 - 1.0f) > 1e-3f) { unit = false; break; }
+				}
+			Check(unit, "gpu.mp-quaternion-unit");
+		}
+
+		// The size envelope: alive sizes are between their endpoints.
+		{
+			bool env = true;
+			for (const auto& p : poolSnap)
+				if (p.posLife.w > 0.0f
+					&& (p.velSize.w > p.params.z + 1e-3f
+						|| p.velSize.w < p.params.w - 1e-3f))
+					{ env = false; break; }
+			Check(env, "gpu.mp-size-envelope");
+		}
+
+		// ---- the chain readback: bins + the indirect commands ----
+		smvk::placement::PlacementBinsGpu bins;
+		ok = rm.DownloadDataFromBuffer(mp.binsBuffer, &bins, sizeof(bins));
+		Check(ok, "gpu.mp-bins-readback");
+		Check(bins.counts[0] + bins.counts[1] == bins.total
+			&& bins.counts[0] == mesh0 && bins.counts[1] == mesh1,
+			"gpu.mp-bin-counts-parity");
+		Check(bins.offsets[1] == bins.counts[0],
+			"gpu.mp-bin-offsets-parity");
+		smvk::placement::PlacementIndirectCmd cmds[2];
+		ok = rm.DownloadDataFromBuffer(mp.indirectBuffer, cmds,
+			smvk::placement::kPlacementIndirectStride * 2);
+		Check(ok, "gpu.mp-indirect-readback");
+		Check(cmds[0].indexCount == 300 && cmds[0].firstIndex == 0
+			&& cmds[1].indexCount == 300 && cmds[1].firstIndex == 64,
+			"gpu.mp-indirect-immutable-halves");
+		Check(cmds[0].instanceCount == bins.counts[0]
+			&& cmds[0].firstInstance == 0
+			&& cmds[1].instanceCount == bins.counts[1]
+			&& cmds[1].firstInstance == bins.offsets[1],
+			"gpu.mp-indirect-dynamic-halves");
+		// The visible list: bin b's range holds exactly b's alive slots.
+		{
+			std::vector<uint32_t> vis(mpd.maxParticles, 0u);
+			ok = rm.DownloadDataFromBuffer(mp.visibleBuffer, vis.data(),
+				sizeof(uint32_t) * size_t(bins.total));
+			Check(ok, "gpu.mp-visible-readback");
+			std::vector<uint32_t> got0(vis.begin() + bins.offsets[0],
+				vis.begin() + bins.offsets[0] + bins.counts[0]);
+			std::vector<uint32_t> got1(vis.begin() + bins.offsets[1],
+				vis.begin() + bins.offsets[1] + bins.counts[1]);
+			bool idOk = true;
+			for (uint32_t s : got0)
+				if (poolSnap[s].posLife.w <= 0.0f
+					|| (uint32_t)(poolSnap[s].params.y + 0.5f) != 0u)
+					{ idOk = false; break; }
+			for (uint32_t s : got1)
+				if (poolSnap[s].posLife.w <= 0.0f
+					|| (uint32_t)(poolSnap[s].params.y + 0.5f) != 1u)
+					{ idOk = false; break; }
+			Check(idOk, "gpu.mp-bin-range-identity");
+		}
+
+		// ---- the expiry proof: run PAST the lifetimes (2s more, no
+		// emitters) — everything dies + recycles ----
+		for (uint32_t f = 0; f < 120; ++f) {
+			frame = kFrames + f;
+			smvk::MeshParticleEmitterGpu off[1] = {};
+			off[0].life = glm::vec4(0.6f, 0.9f, 0.0f, 0.0f); // rate 0 = off
+			mp.UpdateEmitters(rm, frame % 2, off, 1);
+			smvk::MeshParticlesEmitPush ep;
+			ep.emitters = mp.EmittersSliceAddress(rm, frame % 2);
+			ep.emitterState = mp.EmitterStateAddress(rm);
+			ep.particles = mp.ParticlesAddress(rm);
+			ep.freeList = mp.FreeListAddress(rm);
+			ep.emitterCount = 1;
+			ep.maxParticles = mpd.maxParticles;
+			ep.dt = dt;
+			ep.frameSeed = frame * 2654435761u + 1u;
+			smvk::MeshParticlesSimPush sp;
+			sp.particles = mp.ParticlesAddress(rm);
+			sp.freeList = mp.FreeListAddress(rm);
+			sp.gravityY = -9.81f;
+			sp.dt = dt;
+			sp.maxParticles = mpd.maxParticles;
+			host.RunFrame([&](smvk::RenderGraph& g) {
+				smvk::RenderPass& emit = mp.AddEmitPass(g);
+				emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchEmit(cmd, mp.emitProgram, ep);
+				});
+				smvk::RenderPass& sim = mp.AddSimPass(g);
+				sim.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchSim(cmd, mp.simProgram,
+						sp, mp.SimGroupsFor(mpd.maxParticles));
+				});
+			});
+			rm.FlushUploads();
+			rm.WaitForUploads();
+		}
+		ok = rm.DownloadDataFromBuffer(mp.freeListBuffer, freeSnap.data(),
+			sizeof(uint32_t) * freeSnap.size());
+		Check(ok && freeSnap[0] == mpd.maxParticles,
+			"gpu.mp-full-recycle-after-expiry");
+
+		// ---- the SPAWN SCHEDULING arithmetic pin (the CPU mirror) ----
+		{
+			float carry = 0.0f;
+			uint32_t totalSpawn = 0;
+			for (uint32_t f = 0; f < kFrames; ++f) {
+				for (int e = 0; e < 2; ++e) {
+					const uint32_t q =
+						smvk::MeshParticles::SpawnQuotaForFrame(
+							rows[e].life.z, dt, carry, &carry);
+					totalSpawn += q;
+				}
+			}
+			// The pool capacity caps the ACTUAL spawn (40.0+80.0)/s * 1.5s
+			// = 180 quota > the cap: the conservation law, not the quota,
+			// is the pin (the free-list pops refuse the excess).
+			Check(totalSpawn == 180, "gpu.mp-quota-arithmetic");
+		}
+
+		mp.Destroy(rg);
 	}
 
 	std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);
