@@ -43,6 +43,10 @@ namespace fs = std::filesystem;
 struct BuildSettings {
 	bool cubemap = true;          // the capture bake (Cook --cubemap)
 	bool lightmap = false;         // deprecated path (off)
+	// Legacy .sggi world-bake knobs — RETIRED from the GiBaker schedule
+	// (stage 2 of the octree retirement): nothing consumes them anymore;
+	// the parse stays so existing projects' settings files keep loading
+	// (stage 3 removes the pair).
 	std::string giBackend = "embree";
 	long long giMaxProbes = 131072;
 };
@@ -312,20 +316,23 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 		}
 	}
 
-	// ---- 5) GiBaker (the world field + authored GI volumes) --------------
+	// ---- 5) GiBaker (the authored GI volumes only) -----------------------
 	{
-		// --out EXPLICIT: without the flag GiBaker is a GI-volume-only
-		// run (the world-field bake is gated on outExplicit). The scene
-		// id + output path are the tour stem under the project's gi/.
-		const std::string sceneId =
-			fs::path(tourAbs).stem().generic_string();
+		// The legacy .sggi world bake is RETIRED from the schedule (stage
+		// 2 of tourmaline_octree_retirement_plan.md): NO --out, no
+		// --backend, no --max-probes — a bare run is GI-VOLUME-ONLY (the
+		// world bake is gated on the explicit --out; see GiBaker's
+		// outExplicit contract). The runtime's ambient rides the baked
+		// .givolume set + the sky IBL fallback (stage 1 stopped loading
+		// the octree); the volume-only GiBaker pass refreshes any
+		// authored/convex volumes the Cook's in-process bake did not
+		// already stamp fresh. Old projects keep their existing .sggi
+		// files untouched — nothing reads them at runtime anymore (the
+		// pak's world-field gate no-ops without a giWorldSource record,
+		// which only a --out bake ever wrote).
 		const std::vector<std::string> a = {
 			"--content-dir", project.root,
 			"--tour", tourAbs.generic_string(),
-			"--out", (projectRoot / "gi"
-				/ (sceneId + ".sggi")).generic_string(),
-			"--backend", settings.giBackend,
-			"--max-probes", std::to_string(settings.giMaxProbes),
 		};
 		const int rc = RunStage("GiBaker.exe", a, err);
 		if (rc != 0) {

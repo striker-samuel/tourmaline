@@ -2132,27 +2132,21 @@ int Run(const PakArgs& c) {
 
 		if (gateCluster) {
 			const auto& sn = gateCluster->scene;
-			// ---- World field (giAsset kind world) ----
+			// ---- World field (giAsset kind world): RETIRED ------------
+			// The runtime stopped loading the .sggi octree (stage 1 of
+			// tourmaline_octree_retirement_plan.md); stage 2 stops
+			// REQUIRING the artifact. The pak neither embeds nor
+			// freshness-gates the world bake anymore: an authored tour's
+			// legacy world record (stamped when the scene was baked
+			// against the old pipeline) is acknowledged + ignored — a
+			// fresh project cooks volumes-only with no .sggi demand, and
+			// OLD .sggi files left on disk simply never embed (nothing
+			// reads them). Per-volume .givolume bakes + the cubemap sets
+			// below keep their full freshness gates.
 			if (!sn.giWorldSource.empty()) {
-				const std::string fresh = smvk::gi::WorldBakeUnitHash(
-					ensureGrid(), *gateCluster,
-					smvk::gi::CanonicalWorldCfgHash(
-						esNode.maskTransmission));
-				if (sn.giWorldInputHash.empty())
-					gateRefuse("the world field '" + sn.giWorldSource + "'",
-						"the record carries NO bake-input hash (a "
-						"pre-invalidation bake)");
-				else if (fresh != sn.giWorldInputHash)
-					gateRefuse("the world field '" + sn.giWorldSource + "'",
-						"the scene changed since the bake (env/lights/"
-						"geometry or the bake config); recorded="
-						+ sn.giWorldInputHash + " fresh=" + fresh
-						+ "; gate " + diagParts(*gateCluster));
-				else if (embedGi(sn.giWorldSource, "world-field bake"))
-					for (auto& sc : sceneClusters)
-						sc->RegisterGiBinding(
-							smvk::GiBinding::Kind::Probe,
-							sn.giWorldSource);
+				tool::out() << "World field '" << sn.giWorldSource
+					<< "' record ignored (the .sggi octree is retired at"
+						" runtime — not embedded, not freshness-gated)\n";
 			}
 			// ---- GI volumes (giAsset kind givolume) ----
 			for (const auto& [node, def] : sn.giVolumeForNode) {
