@@ -64,3 +64,83 @@ data. Revisit if the editor ever runs the skinning preview / the gfx filter
 chain (it would then get the same GfxSkinBounds table; until then the
 editor overlay is honest only for static meshes).
 
+(Engine, design-pending) THE STRANDED-UPLOAD WRITE — a rendergraph sync
+sharp edge where an UPLOAD's bytes can become permanently invisible to a
+draw that reads them in the same frame, even though the frame's submit
+waits for the upload. Caught on device by PlacementGpuTests' new section
+10 (the end-to-end pixels-on-device draw proof, commit 370798dd): the
+publish frame's DrawIndexedIndirect read indexCount == 0 (a SILENT no-op
+draw — no fault, no pixels) while the POST-FRAME READBACK OF THE VERY SAME
+BUFFER showed the seeded indexCount == 6 + the kernel's instanceCount ==
+69. The mechanism, end to end:
+
+  1. PlacementWorldRuntime::BeginFrame publishes a world tile; the host
+     seeds the immutable indirect halves via
+     PlacementVisibleSet::SeedIndirect (engine/include/Engine/
+     Rendergraph/placement_pass.h ~691) — an UploadDataToBuffer, i.e. a
+     TRANSFER-scoped write (a copy on the upload timeline; the frame's
+     submit DOES wait for it at ALL_COMMANDS — execution is ordered, the
+     problem is purely memory VISIBILITY, not the semaphore).
+  2. The SAME frame's PlacementDrawBuild pass (AddDrawBuildPass,
+     placement_pass.h ~831; placement_drawbuild.cs.hlsl) rewrites the same
+     buffer's dynamic halves — a COMPUTE-scoped write. The graph emits
+     TRANSFER -> COMPUTE before drawbuild, so drawbuild ITSELF correctly
+     sees the seed.
+  3. The draw pass then reads the buffer at DRAW_INDIRECT. The graph's
+     per-resource sync state tracks only the LAST write's scope — the
+     pass-walk state update REPLACES the masks with the newest pass's
+     request (engine/src/Vulkan/impl.cpp line 13608: bufferStates[k] =
+     dstState; the image twin at line 13542) — so the barrier it emits
+     before the draw (the VkBufferMemoryBarrier2 fill at line 13581, src
+     straight from that tracked state) carries src = COMPUTE ONLY.
+  4. Vulkan memory dependencies are NOT transitive: the seed's
+     TRANSFER_WRITE was made visible to drawbuild's COMPUTE scope, but NO
+     barrier ever delivers it to the DRAW_INDIRECT read — so the draw
+     fetches a stale indexCount (the creation-zero 0) and no-ops. The
+     NEXT frame draws correctly because EndAndPresentFramebuffer's submit
+     waits the previous frame's timeline at ALL_COMMANDS, which makes
+     every prior write (including the stranded upload) visible to the
+     whole command buffer — hence a RELIABLE one-frame lag (a benign
+     pop-in for streaming tiles, pinned as a contract by the test).
+
+Reproduce the barrier evidence with TOURMALINE_BARRIER_TRACE=all on the
+PlacementGpuTests draw stage (any non-numeric value traces EVERY frame;
+numeric N traces only that frameIndex, '0' is off):
+
+  [RG] pass 'PlacementDrawBuild' ... barrier buf h=78:
+      srcStage=1000(TRANSFER) srcAcc=1000 -> dstStage=800(COMPUTE)
+  [RG] pass 'PlacementDraw'     ... barrier buf h=78:
+      srcStage=800(COMPUTE)  srcAcc=60   -> dstStage=1807fc dstAcc=21
+
+The TRANSFER write never reappears in any draw-side src — that is the
+whole bug in two trace lines.
+
+CONSUMER RULE until fixed (documented in tests/test_placement_gpu.cpp's
+section-10 comment block, with the publish-frame stderr note showing
+"cmd0 {idx=6 inst=69}, 0 px lit"): never let a draw depend on bytes an
+UPLOAD wrote to a buffer that a KERNEL re-writes in the same frame —
+accept the one-frame lag, or rewrite the bytes in the kernel's scope.
+
+FIX CANDIDATES (engine-side design deliberately left open — do NOT take
+the naive union blindly):
+  - Preferred, local: drawbuild owns the FULL command — carry the immutable
+    halves (indexCount/firstIndex/vertexOffset per proto, 8 protos = 96B)
+    in the PlacementDrawBuildPush and write all five fields, making the
+    indirect buffer single-scope-written (COMPUTE) per frame. The draw's
+    COMPUTE -> DRAW_INDIRECT barrier is then complete BY CONSTRUCTION, the
+    seed upload becomes irrelevant to any reader, and the runtime carries
+    the prototype table once via the existing pointer+count SeedIndirect
+    contract (store + push instead of store + upload).
+  - Engine-core alternative: accumulate a per-resource WRITE-scope union
+    (a "write debt") into BufferGlobalSyncState/ImageGlobalSyncState so
+    any consumer's barrier src includes every pending write's scope. A
+    naive `state.masks |= req.barrierMasks` prototype was tried and
+    BROKE OTHER PASSES: accumulated READ scopes produced access bits whose
+    supporting stages were not in the mask (e.g. IndirectCommandRead with
+    no DrawIndirect stage) — invalid (stage x access) pairings. Any union
+    approach must track WRITE (stage, access) PAIRS only, never read
+    scopes, and the debt must survive read passes until the buffer dies
+    (a barrier delivers only to its own dst scope; later readers with a
+    different scope each need their own delivery).
+
+
