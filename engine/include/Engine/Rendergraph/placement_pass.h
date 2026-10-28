@@ -260,24 +260,18 @@ struct PlacementPass {
 	}
 
 	// ---- CPU LayerBinding -> GPU push ----------------------------------
-	// Extracts a constant density when the program is a single Const
-	// (the kernels' supported shape); otherwise falls back to 0.5 and
-	// the caller is expected to upgrade the kernel, not the data.
-	static bool TryExtractConstDensity(const PlacementProgram& prog, float& out) {
-		if (prog.instrs.size() == 1 && prog.acceptIndex == 0
-			&& prog.instrs[0].op == FieldOp::Const) {
-			out = prog.instrs[0].params[0];
-			return true;
-		}
-		return false;
-	}
-
-	// Fills a push from a grid-domain layer. Returns false when the layer
-	// has no grid binding (mesh/heightfield need their kernels).
+	// PR02: the density comes from the UPLOADED PROGRAM (instrBDA) —
+	// there is no const-extraction and no 0.5 fallback. The caller
+	// validates + uploads the program through PlacementProgramGpu and
+	// passes its view; an invalid-for-GPU program refuses the fill
+	// explicitly (the caller runs the CPU oracle instead — never a
+	// silent approximation).
 	static bool BuildTilePush(const PlacementSystem::LayerBinding& layer,
-		TileID tile, uint64_t instancesBDA, uint64_t countBDA,
+		TileID tile, const PlacementProgramView& program,
+		uint64_t instancesBDA, uint64_t countBDA,
 		PlacementTilePush& out) {
 		if (layer.domainKind != DomainKind::Grid || !layer.grid) return false;
+		if (!program.Valid()) return false;
 		out = PlacementTilePush{};
 		out.outInstances = instancesBDA;
 		out.outCount = countBDA;
@@ -290,10 +284,8 @@ struct PlacementPass {
 		out.cellsX = layer.grid->cellsX;
 		out.gridExtent = layer.grid->extent;
 		out.cellsZ = layer.grid->cellsZ;
-		float density = 0.5f;
-		TryExtractConstDensity(layer.program, density);
-		out.density = density;
-		out.noiseAmp = 0.0f;
+		out.densityScale = layer.config.densityScale;
+		// noiseAmpRetired/noiseFreqRetired stay 0 (the program subsumes).
 		out.minScale = layer.config.minScale;
 		out.maxScale = layer.config.maxScale;
 		// Weighted prototype shares, clamped to the kernel's 8 slots.
@@ -303,9 +295,99 @@ struct PlacementPass {
 			&out.weightsB.x, &out.weightsB.y, &out.weightsB.z, &out.weightsB.w };
 		for (size_t i = 0; i < n; ++i) *w[i] = layer.prototypes.at(i).weight;
 		if (n == 0) { out.protoCount = 1; out.weightsA.x = 1.0f; }
+		// The program tail (the graph SSA the kernel evaluates).
+		out.instrBDA = program.instrBDA;
+		out.instrCount = program.instrCount;
+		out.acceptIndex = program.acceptIndex;
 		return true;
 	}
 }; // struct PlacementPass
+
+// ---------------------------------------------------------------------------
+// The uploaded field program (PR02): converts FieldInstr -> GpuFieldInstr
+// (the stable device layout), validates, uploads ONCE per (programId,
+// revision) — the caller holds one PlacementProgramGpu per layer and
+// re-Ensures after a graph edit/reload, never per frame. The kernels
+// evaluate the actual SSA; invalid programs refuse at validation (the
+// caller falls back to the CPU oracle with a diagnostic — never a
+// silent density substitution).
+// ---------------------------------------------------------------------------
+struct PlacementProgramGpu {
+	uint64_t programId = 0;
+	uint64_t revision = 0;
+	Holder<BufferHandle> instrs;     // GpuFieldInstr[instrCount]
+	LogicalBufferHandle instrsL{};
+	uint32_t instrCount = 0;
+	uint32_t acceptIndex = 0;
+
+	[[nodiscard]] bool Valid() const {
+		return !instrs.empty() && !instrsL.empty() && instrCount > 0;
+	}
+	void Destroy(RenderGraph& rg) {
+		if (!instrsL.empty()) rg.FreeBuffer(instrsL);
+		instrsL = {};
+		instrs = {};
+		instrCount = acceptIndex = 0;
+	}
+	// Validates + converts + uploads. Returns false (with a stderr
+	// diagnostic) when the program is not GPU-evaluable — the caller
+	// must NOT dispatch; run the CPU oracle instead.
+	bool Upload(ResourceManager& ctx, RenderGraph& rg,
+		const PlacementSystem::LayerBinding& layer, uint64_t rev) {
+		const char* err = nullptr;
+		if (!ValidateProgramForGpu(layer.program, err)) {
+			std::fprintf(stderr, "[Placement] program %llu NOT GPU-evaluable: %s"
+				" — the layer runs on the CPU oracle\n",
+				(unsigned long long)layer.programId, err ? err : "?");
+			Destroy(rg);
+			programId = revision = 0;
+			return false;
+		}
+		Destroy(rg);
+		const size_t n = layer.program.instrs.size();
+		std::vector<GpuFieldInstr> gpu(n);
+		for (size_t i = 0; i < n; ++i) {
+			const FieldInstr& in = layer.program.instrs[i];
+			gpu[i].op = static_cast<uint32_t>(in.op);
+			gpu[i].a = in.a;
+			gpu[i].b = in.b;
+			gpu[i].reserved = 0;
+			for (int k = 0; k < 4; ++k) gpu[i].params[k] = in.params[k];
+		}
+		instrs = ctx.CreateBuffer(sizeof(GpuFieldInstr) * n,
+			BufferType_Storage, "placement field program");
+		if (instrs.empty()) {
+			smvk::OnResourceExhaustion("placement program instrs buffer");
+			return false;
+		}
+		instrsL = rg.AddExternalBuffer(instrs, "placement field program");
+		if (instrsL.empty()) {
+			smvk::OnResourceExhaustion("placement program instrs logical");
+			return false;
+		}
+		ctx.UploadDataToBuffer(instrs, gpu.data(), sizeof(GpuFieldInstr) * n,
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		programId = layer.programId;
+		revision = rev;
+		instrCount = (uint32_t)n;
+		acceptIndex = layer.program.acceptIndex;
+		return true;
+	}
+	// Re-uploads only when the (programId, revision) key changed.
+	bool Ensure(ResourceManager& ctx, RenderGraph& rg,
+		const PlacementSystem::LayerBinding& layer, uint64_t rev) {
+		if (Valid() && programId == layer.programId && revision == rev)
+			return true;
+		return Upload(ctx, rg, layer, rev);
+	}
+	PlacementProgramView View(ResourceManager& ctx) const {
+		PlacementProgramView v;
+		v.instrBDA = Valid() ? ctx.GetBufferDeviceAddress(instrs) : 0;
+		v.instrCount = instrCount;
+		v.acceptIndex = acceptIndex;
+		return v;
+	}
+};
 
 // ---- Mesh / heightfield domain GPU data -------------------------------
 // Padded uploads (float4 positions/normals) + BDAs + params fill. The
@@ -509,14 +591,19 @@ struct PlacementParamsGpu {
 };
 
 // Pure-CPU params fill (headless-testable; BDAs wired by the caller from
-// the structs above + PlacementPass slot addresses).
+// the structs above + PlacementPass slot addresses). PR02: the program
+// view carries the field SSA; an invalid program refuses (explicit CPU
+// fallback, never a silent approximation). Grid layers use their own
+// kernel/push (BuildTilePush) and refuse here, as before.
 inline bool FillScatterParams(const PlacementSystem::LayerBinding& layer,
-	const ScatterBDAs& bdas, PlacementDomainParams& out) {
+	const PlacementProgramView& program, const ScatterBDAs& bdas,
+	PlacementDomainParams& out) {
+	if (!program.Valid()) return false;
 	out = PlacementDomainParams{};
-	float density = 0.5f;
-	PlacementPass::TryExtractConstDensity(layer.program, density);
-	out.density = density;
-	out.noiseAmp = 0.0f;
+	out.densityScale = layer.config.densityScale;
+	out.instrBDA = program.instrBDA;
+	out.instrCount = program.instrCount;
+	out.acceptIndex = program.acceptIndex;
 	out.minScale = layer.config.minScale;
 	out.maxScale = layer.config.maxScale;
 	const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();

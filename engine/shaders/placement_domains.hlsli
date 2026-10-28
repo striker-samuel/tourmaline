@@ -22,16 +22,21 @@ struct PlacementProbBuffer { float p[PLACEMENT_MAX_TRIS]; };
 struct PlacementAliasBuffer { uint a[PLACEMENT_MAX_TRIS]; };
 struct PlacementHeightBuffer { float h[PLACEMENT_MAX_HF]; };
 
-// Must match C++ PlacementDomainParams (176 bytes, dx-layout).
+// Must match C++ PlacementDomainParams (192 bytes, dx-layout).
+//
+// PR02: the DENSITY itself moved into the uploaded program (the
+// instrBDA tail) — the old density/noiseAmp/noiseFreq slots are retired
+// (density became densityScale; the noise slots must be 0 — the
+// program's Noise2 instructions are the noise source now).
 struct PlacementDomainParams
 {
-    float density;    // 0
-    float noiseAmp;   // 4
-    float noiseFreq;  // 8
+    float densityScale; // 0 (was: the const-extracted density shortcut)
+    float noiseAmpRetired;  // 4  RETIRED: 0
+    float noiseFreqRetired; // 8  RETIRED: 0
     float minScale;   // 12
     float maxScale;   // 16
     uint protoCount;  // 20
-    uint2 padA;       // 24
+    uint padA;        // 24
     float weights0;   // 32
     float weights1;   // 36
     float weights2;   // 40
@@ -61,20 +66,19 @@ struct PlacementDomainParams
     float extMinZ;    // 164
     float extMaxX;    // 168
     float extMaxZ;    // 172
+    // ---- the program tail (PR02: the graph SSA) ----
+    vk::BufferPointer<PlacementInstrBuffer> instrs; // 176
+    uint instrCount;   // 184
+    uint acceptIndex;  // 188
 };
 
-float PlacementScatterDensity(PlacementDomainParams prm, float3 p,
-    uint seedLo, uint seedHi)
-{
-    float d = prm.density;
-    if (prm.noiseAmp > 0.0f)
-    {
-        float n = PlacementValueNoise2D(p.x * prm.noiseFreq, p.z * prm.noiseFreq,
-            seedLo, seedHi);
-        d = saturate(d + prm.noiseAmp * (n - 0.5f) * 2.0f);
-    }
-    return PlacementQuantizeDensity(d);
-}
+// RETIRED (PR02): PlacementScatterDensity — the old base+noise density
+// shortcut. The kernels now call PlacementEvaluateField
+// (placement_field.hlsli) with the params' program tail; the density
+// order contract is:
+//   d  = PlacementEvaluateField(instrs, count, accept, p, n, seedLo, seedHi)
+//   q  = PlacementQuantizeDensity(d * prm.densityScale)
+//   keep = PlacementRandom01(id, PLACEMENT_CH_DENSITY) < q
 
 uint PlacementScatterProto(float r, PlacementDomainParams prm)
 {

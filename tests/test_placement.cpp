@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #include <Engine/Placement/placement_ids.h>
@@ -226,6 +227,7 @@ void TestCacheRoundTrip();
 void TestPhysicsQuery();
 void TestPromotion();
 void TestPushBridge();
+void TestProgramValidation();
 void TestKernelAlgorithmParity();
 void TestScatterParams();
 void TestMeshKernelParity();
@@ -672,11 +674,16 @@ void TestTransientDraws() {
 
 void TestGpuPushAbi() {
 	using namespace smvk::placement;
-	Check(sizeof(PlacementTilePush) == 144, "place.gpu.push-144B");
+	Check(sizeof(PlacementTilePush) == 168, "place.gpu.push-168B");
 	Check(offsetof(PlacementTilePush, candidateCount) == 28, "place.gpu.count-offset");
 	Check(offsetof(PlacementTilePush, gridOrigin) == 48, "place.gpu.grid-offset");
-	Check(offsetof(PlacementTilePush, density) == 80, "place.gpu.density-offset");
+	Check(offsetof(PlacementTilePush, densityScale) == 80, "place.gpu.density-scale-offset");
 	Check(offsetof(PlacementTilePush, weightsA) == 112, "place.gpu.weights-offset");
+	Check(offsetof(PlacementTilePush, instrBDA) == 144, "place.gpu.instr-bda-offset");
+	Check(offsetof(PlacementTilePush, instrCount) == 152, "place.gpu.instr-count-offset");
+	Check(offsetof(PlacementTilePush, acceptIndex) == 156, "place.gpu.accept-offset");
+	Check(sizeof(GpuFieldInstr) == 32, "place.gpu.instr-32B");
+	Check(offsetof(GpuFieldInstr, params) == 16, "place.gpu.instr-params-offset");
 	Check(PlacementDispatchGroups(64) == 1, "place.gpu.dispatch-exact");
 	Check(PlacementDispatchGroups(65) == 2, "place.gpu.dispatch-roundup");
 	Check(PlacementDispatchGroups(4096) == 64, "place.gpu.dispatch-4k");
@@ -958,43 +965,141 @@ void TestPushBridge() {
 	lb.programId = 7;
 	lb.program.graphSeed = 0x123456789ABCull;
 	lb.program.nodeId = 3;
-	lb.program.instrs = { OpConst(0.35f) };
-	lb.program.acceptIndex = 0;
+	// PR02: a COMPOUND program (noise * slope, no const extraction) — the
+	// kernels evaluate the actual SSA; the push carries the program view.
+	lb.program.instrs = { FieldInstr{ .op = FieldOp::Noise2,
+			.params = { 0.02f, 0.0f, 0.0f, 0.0f } },
+		FieldInstr{ .op = FieldOp::SlopeMask,
+			.params = { 10.0f, 40.0f, 0.0f, 0.0f } },
+		FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 } };
+	lb.program.acceptIndex = 2;
+	lb.config.densityScale = 1.5f;
 	lb.domainKind = DomainKind::Grid;
 	lb.grid = &grid;
 	lb.config.candidatesPerTile = 2048;
 	Prototype oak; oak.weight = 3.0f;
 	Prototype pine; pine.weight = 1.0f;
 	lb.prototypes.add(oak); lb.prototypes.add(pine);
-	float d = 0.0f;
-	Check(PlacementPass::TryExtractConstDensity(lb.program, d) && d == 0.35f,
-		"place.bridge.const-density");
-	PlacementProgram multi;
-	multi.instrs = { OpConst(0.5f), OpConst(0.5f) };
-	multi.acceptIndex = 1;
-	Check(!PlacementPass::TryExtractConstDensity(multi, d), "place.bridge.multi-fallback");
+	PlacementProgramView view{ 0x3000, 3, 2 };
 	PlacementTilePush push;
-	Check(PlacementPass::BuildTilePush(lb, TileID{ 1, 2, 3 }, 0x1000, 0x2000, push),
-		"place.bridge.build-ok");
+	Check(PlacementPass::BuildTilePush(lb, TileID{ 1, 2, 3 }, view,
+		0x1000, 0x2000, push), "place.bridge.build-ok");
 	Check(push.seedLo == 0x56789ABCul && push.seedHi == 0x1234u, "place.bridge.seed-split");
 	Check(push.nodeId == 3 && push.candidateCount == 2048, "place.bridge.ids");
 	Check(push.tileX == 1 && push.tileY == 2 && push.tileZ == 3, "place.bridge.tile");
 	Check(push.gridOrigin == glm::vec3(10, 2, 30) && push.cellsX == 16 && push.cellsZ == 8,
 		"place.bridge.grid");
-	Check(push.density == 0.35f && push.noiseAmp == 0.0f, "place.bridge.density");
+	Check(push.densityScale == 1.5f
+		&& push.noiseAmpRetired == 0.0f && push.noiseFreqRetired == 0.0f,
+		"place.bridge.density-scale");
+	Check(push.instrBDA == 0x3000 && push.instrCount == 3 && push.acceptIndex == 2,
+		"place.bridge.program-tail");
 	Check(push.protoCount == 2 && push.weightsA.x == 3.0f && push.weightsA.y == 1.0f,
 		"place.bridge.weights");
 	Check(push.outInstances == 0x1000 && push.outCount == 0x2000, "place.bridge.bda");
-	// Mesh layer (no kernel yet) refuses honestly.
+	// An empty program view refuses honestly (invalid-for-GPU layers run
+	// the CPU oracle — never a silent approximation).
+	Check(!PlacementPass::BuildTilePush(lb, TileID{}, PlacementProgramView{},
+		0, 0, push), "place.bridge.no-program-refuses");
+	// Mesh layer (no kernel for the grid push) refuses honestly.
 	PlacementSystem::LayerBinding mlb = lb;
 	mlb.domainKind = DomainKind::MeshSurface;
 	mlb.grid = nullptr;
-	Check(!PlacementPass::BuildTilePush(mlb, TileID{}, 0, 0, push), "place.bridge.mesh-refuses");
+	Check(!PlacementPass::BuildTilePush(mlb, TileID{}, view, 0, 0, push),
+		"place.bridge.mesh-refuses");
 	// Empty prototype table -> single default weight.
 	PlacementSystem::LayerBinding elb = lb;
 	elb.prototypes.clear();
-	Check(PlacementPass::BuildTilePush(elb, TileID{}, 0, 0, push)
+	Check(PlacementPass::BuildTilePush(elb, TileID{}, view, 0, 0, push)
 		&& push.protoCount == 1 && push.weightsA.x == 1.0f, "place.bridge.empty-proto");
+}
+
+// PR02: the GPU-program gate — validation refusals are the difference
+// between a loud CPU fallback and a silently mis-evaluated forest.
+void TestProgramValidation() {
+	using namespace smvk::placement;
+	// A valid compound program (every op class): passes.
+	{
+		PlacementProgram p;
+		p.instrs = {
+			FieldInstr{ .op = FieldOp::Noise2, .params = { 0.02f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 10, 40, 0, 0 } },
+			FieldInstr{ .op = FieldOp::AltitudeMask, .params = { 0, 5, 15, 25 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+			FieldInstr{ .op = FieldOp::Mul, .a = 3, .b = 2 },
+			FieldInstr{ .op = FieldOp::Remap, .a = 4, .params = { 0, 1, 0.1f, 0.9f } },
+		};
+		p.acceptIndex = 5;
+		const char* err = nullptr;
+		Check(ValidateProgramForGpu(p, err) && err == nullptr,
+			"place.prog.valid-compound");
+	}
+	// Empty program refuses.
+	{
+		PlacementProgram p;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, err) && err != nullptr,
+			"place.prog.empty-refuses");
+	}
+	// Instruction cap.
+	{
+		PlacementProgram p;
+		p.instrs.assign(kPlacementMaxFieldInstrs + 1, OpConst(0.5f));
+		p.acceptIndex = 0;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, err) && err != nullptr,
+			"place.prog.instr-cap-refuses");
+	}
+	// acceptIndex out of range.
+	{
+		PlacementProgram p;
+		p.instrs = { OpConst(0.5f) };
+		p.acceptIndex = 1;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, err), "place.prog.accept-oob-refuses");
+	}
+	// SSA violations: forward/self references refuse.
+	{
+		PlacementProgram p;
+		p.instrs = { OpConst(0.5f),
+			FieldInstr{ .op = FieldOp::Mul, .a = 1, .b = 0 } }; // a == i (self)
+		p.acceptIndex = 1;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-self-refuses");
+		p.instrs[1].a = 2; // forward
+		Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-forward-refuses");
+		p.instrs[1].a = 0; p.instrs[1].b = 5; // forward b
+		Check(!ValidateProgramForGpu(p, err), "place.prog.ssa-forward-b-refuses");
+	}
+	// Unknown opcode refuses (no HLSL evaluator form).
+	{
+		PlacementProgram p;
+		p.instrs = { OpConst(0.5f) };
+		p.instrs[0].op = static_cast<FieldOp>(17);
+		p.acceptIndex = 0;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, err), "place.prog.unknown-op-refuses");
+	}
+	// Non-finite constants refuse.
+	{
+		PlacementProgram p;
+		p.instrs = { OpConst(0.5f) };
+		p.instrs[0].params[2] = std::numeric_limits<float>::infinity();
+		p.acceptIndex = 0;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, err), "place.prog.nonfinite-refuses");
+	}
+	// The quiet query form agrees with the diagnostic form.
+	{
+		PlacementProgram ok2;
+		ok2.instrs = { OpConst(0.5f) };
+		ok2.acceptIndex = 0;
+		Check(ProgramIsGpuEvaluable(ok2), "place.prog.quiet-valid");
+		PlacementProgram bad;
+		bad.instrs = { OpConst(0.5f) };
+		bad.acceptIndex = 9;
+		Check(!ProgramIsGpuEvaluable(bad), "place.prog.quiet-invalid");
+	}
 }
 
 // From-scratch reimplementation of placement_tile.cs.hlsl's documented
@@ -1065,7 +1170,11 @@ void TestKernelAlgorithmParity() {
 
 void TestScatterParams() {
 	using namespace smvk::placement;
-	Check(sizeof(PlacementDomainParams) == 176, "place.scatter.params-176B");
+	Check(sizeof(PlacementDomainParams) == 192, "place.scatter.params-192B");
+	Check(offsetof(PlacementDomainParams, instrBDA) == 176
+		&& offsetof(PlacementDomainParams, instrCount) == 184
+		&& offsetof(PlacementDomainParams, acceptIndex) == 188,
+		"place.scatter.program-tail");
 	Check(sizeof(PlacementScatterPush) == 64, "place.scatter.push-64B");
 	// The append-counter triple ABI (the capacity-guard contract).
 	Check(sizeof(PlacementCountGpu) == 16, "place.count.16B");
@@ -1089,15 +1198,22 @@ void TestScatterParams() {
 	mlb.domainKind = DomainKind::MeshSurface;
 	mlb.mesh = &mesh;
 	mlb.config.candidatesPerTile = 64;
+	mlb.config.densityScale = 1.25f;
 	ScatterBDAs b{ 11, 22, 0, 33, 44, 55, 0 };
+	PlacementProgramView view{ 0x500, 1, 0 };
 	PlacementDomainParams prm;
-	Check(FillScatterParams(mlb, b, prm), "place.scatter.mesh-ok");
+	Check(FillScatterParams(mlb, view, b, prm), "place.scatter.mesh-ok");
 	Check(prm.domainKind == kPlacementScatterDomain_Mesh, "place.scatter.mesh-kind");
 	Check(prm.triCount == 1 && prm.vertCount == 3, "place.scatter.mesh-counts");
 	Check((prm.flags & kPlacementFlag_HasNormals) != 0, "place.scatter.mesh-normals");
 	Check((prm.flags & kPlacementFlag_HasUVs) == 0, "place.scatter.mesh-no-uvs");
 	Check(prm.posBDA == 11 && prm.idxBDA == 33 && prm.probBDA == 44, "place.scatter.mesh-bda");
-	Check(prm.density == 0.7f, "place.scatter.mesh-density");
+	Check(prm.densityScale == 1.25f, "place.scatter.mesh-density-scale");
+	Check(prm.instrBDA == 0x500 && prm.instrCount == 1 && prm.acceptIndex == 0,
+		"place.scatter.program-fields");
+	// An empty program view refuses (explicit CPU fallback).
+	Check(!FillScatterParams(mlb, PlacementProgramView{}, b, prm),
+		"place.scatter.no-program-refuses");
 	// Heightfield mapping.
 	HeightfieldData hf;
 	hf.width = 3; hf.height = 3;
@@ -1117,7 +1233,7 @@ void TestScatterParams() {
 	hlb.config.candidatesPerTile = 32;
 	ScatterBDAs hb{ 0, 0, 0, 0, 0, 0, 77 };
 	PlacementDomainParams hprm;
-	Check(FillScatterParams(hlb, hb, hprm), "place.scatter.hf-ok");
+	Check(FillScatterParams(hlb, view, hb, hprm), "place.scatter.hf-ok");
 	Check(hprm.domainKind == kPlacementScatterDomain_Heightfield, "place.scatter.hf-kind");
 	Check(hprm.hfW == 3 && hprm.hfH == 3, "place.scatter.hf-dims");
 	Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
@@ -1131,7 +1247,7 @@ void TestScatterParams() {
 	glb.program.instrs = { OpConst(0.5f) };
 	glb.program.acceptIndex = 0;
 	PlacementDomainParams gprm;
-	Check(!FillScatterParams(glb, hb, gprm), "place.scatter.grid-refuses");
+	Check(!FillScatterParams(glb, view, hb, gprm), "place.scatter.grid-refuses");
 	// Push build.
 	PlacementScatterPush push;
 	Check(BuildScatterPush(mlb, TileID{ 7, 0, 8 }, 0xAAA, 0xBBB, 0xCCC, push),
@@ -1757,6 +1873,7 @@ int main() {
 	TestPhysicsQuery();
 	TestPromotion();
 	TestPushBridge();
+	TestProgramValidation();
 	TestKernelAlgorithmParity();
 	TestScatterParams();
 	TestMeshKernelParity();

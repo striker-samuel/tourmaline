@@ -40,8 +40,111 @@ struct PlacementCountGpu {
 static_assert(sizeof(PlacementCountGpu) == 16,
 	"PlacementCountGpu size changed — update placement_common.hlsli");
 
-// Must match HLSL PlacementTilePush (144 bytes, 16-byte rows after the
+// ---------------------------------------------------------------------------
+// The GPU field-program upload (PR02: the kernels evaluate the ACTUAL
+// graph SSA, never a density+noise shortcut).
+//
+// FieldInstr stays the CPU/compiler IR; this is the EXPLICIT device
+// representation with stable 16-byte-aligned rows (never assume raw
+// FieldInstr and an HLSL buffer view are interchangeable). Converted +
+// uploaded once per (programId, revision) — PlacementProgramGpu caches
+// it; never per frame.
+// ---------------------------------------------------------------------------
+inline constexpr uint32_t kPlacementMaxFieldInstrs = 64;
+
+// Must match HLSL PlacementFieldInstr (placement_field.hlsli, 32 bytes:
+// one uint4 row + one float4 row, 16-aligned).
+struct alignas(16) GpuFieldInstr {
+	uint32_t op = 0;        // FieldOp numeric value
+	uint32_t a = 0;         // SSA operand index (validated: < i when used)
+	uint32_t b = 0;
+	uint32_t reserved = 0;
+	float params[4] = { 0, 0, 0, 0 };
+};
+static_assert(sizeof(GpuFieldInstr) == 32, "GpuFieldInstr layout changed — update placement_field.hlsli");
+
+// The descriptor the kernels carry (split: the BDA lives in the per-
+// kernel push/params; count/accept ride with it).
+struct PlacementProgramView {
+	uint64_t instrBDA = 0;
+	uint32_t instrCount = 0;
+	uint32_t acceptIndex = 0;
+	bool Valid() const { return instrBDA != 0 && instrCount > 0; }
+};
+
+// Validates a program for GPU evaluation. Checks: instruction cap,
+// supported opcodes (op <= AltitudeMask — every FieldOp the HLSL
+// evaluator implements), SSA operands strictly before their use (a/b
+// < i for the ops that read them), acceptIndex in range, finite
+// constants. On failure returns false and (when errorOut is non-null)
+// a human-readable diagnostic naming the offending instruction. This is
+// the gate against SILENT approximation: an invalid program NEVER
+// reaches the kernels — the caller refuses GPU generation explicitly
+// (CPU fallback or a loud error), never a density-0.5 substitution.
+bool ValidateProgramForGpu(const PlacementProgram& prog,
+	const char*& errorOut);
+
+inline bool ValidateProgramForGpu(const PlacementProgram& prog,
+	const char*& errorOut) {
+	errorOut = nullptr;
+	if (prog.instrs.empty()) { errorOut = "empty program"; return false; }
+	if (prog.instrs.size() > kPlacementMaxFieldInstrs) {
+		errorOut = "instruction count exceeds the GPU cap "
+			"(kPlacementMaxFieldInstrs)";
+		return false;
+	}
+	if (prog.acceptIndex >= prog.instrs.size()) {
+		errorOut = "acceptIndex out of range";
+		return false;
+	}
+	// Ops that READ the SSA operands (the input ops ignore a/b).
+	auto usesA = [](uint32_t op) {
+		return op >= 6 && op <= 14; // Add..Invert
+	};
+	auto usesB = [](uint32_t op) {
+		return op >= 6 && op <= 9; // Add/Mul/Min/Max
+	};
+	for (size_t i = 0; i < prog.instrs.size(); ++i) {
+		const FieldInstr& in = prog.instrs[i];
+		const uint32_t op = static_cast<uint32_t>(in.op);
+		if (op > 16) { // > FieldOp::AltitudeMask
+			errorOut = "unsupported opcode (no HLSL evaluator form)";
+			return false;
+		}
+		if (usesA(op) && in.a >= i) {
+			errorOut = "SSA operand 'a' must reference an EARLIER value";
+			return false;
+		}
+		if (usesB(op) && in.b >= i) {
+			errorOut = "SSA operand 'b' must reference an EARLIER value";
+			return false;
+		}
+		for (int k = 0; k < 4; ++k)
+			if (!std::isfinite(in.params[k])) {
+				errorOut = "non-finite constant parameter";
+				return false;
+			}
+	}
+	return true;
+}
+
+// True when the program is GPU-evaluable (ValidateProgramForGpu with a
+// discarded diagnostic — the quiet query form for call sites that log
+// once and fall back to the CPU oracle).
+inline bool ProgramIsGpuEvaluable(const PlacementProgram& prog) {
+	const char* err = nullptr;
+	return ValidateProgramForGpu(prog, err);
+}
+
+// Must match HLSL PlacementTilePush (168 bytes, 16-byte rows after the
 // two 8-byte BDAs; compiled with -fvk-use-dx-layout).
+//
+// PR02: the density field itself moved INTO the uploaded program (the
+// instrBDA tail) — the kernels evaluate the actual graph SSA and this
+// push carries only the per-LAYER scalars (densityScale, prototype
+// weights, scale range). The old density+noiseAmp shortcut slots are
+// retired: density became densityScale; noiseAmp/noiseFreq must be 0
+// (the program's Noise2 instructions are the noise source now).
 struct PlacementTilePush {
 	uint64_t outInstances = 0; // BDA of PlacementInstanceBuffer
 	uint64_t outCount = 0;     // BDA of PlacementCountBuffer (count/overflow/capacity)
@@ -58,9 +161,9 @@ struct PlacementTilePush {
 	glm::vec2 gridExtent{ 64.0f, 64.0f };
 	uint32_t cellsZ = 8;
 	uint32_t pad1 = 0;
-	float density = 0.5f;
-	float noiseAmp = 0.0f;  // 0 = constant density; else d = saturate(base + amp*(n-0.5)*2)
-	float noiseFreq = 0.02f;
+	float densityScale = 1.0f;   // was: density (the const-extracted shortcut)
+	float noiseAmpRetired = 0.0f;   // RETIRED: must stay 0 (program subsumes)
+	float noiseFreqRetired = 0.0f;   // RETIRED: must stay 0
 	uint32_t pad2 = 0;
 	float minScale = 0.8f;
 	float maxScale = 1.2f;
@@ -68,8 +171,14 @@ struct PlacementTilePush {
 	uint32_t pad3 = 0;
 	glm::vec4 weightsA{ 1, 0, 0, 0 }; // prototypes 0..3
 	glm::vec4 weightsB{ 0, 0, 0, 0 }; // prototypes 4..7
+	// ---- PR02 program tail (the graph SSA the kernel evaluates) ----
+	uint64_t instrBDA = 0;     // GpuFieldInstr[] upload
+	uint32_t instrCount = 0;    // <= kPlacementMaxFieldInstrs
+	uint32_t acceptIndex = 0;  // which value is the density
+	uint32_t pad4 = 0;
+	uint32_t pad5 = 0;
 };
-static_assert(sizeof(PlacementTilePush) == 144, "PlacementTilePush size changed — update placement_tile.cs.hlsl");
+static_assert(sizeof(PlacementTilePush) == 168, "PlacementTilePush size changed — update placement_tile.cs.hlsl");
 
 inline constexpr uint32_t kPlacementTileThreads = 64;
 inline uint32_t PlacementDispatchGroups(uint32_t candidateCount) {
@@ -126,15 +235,20 @@ inline constexpr uint32_t kPlacementScatterDomain_Heightfield = 2;
 inline constexpr uint32_t kPlacementFlag_HasNormals = 1u << 0;
 inline constexpr uint32_t kPlacementFlag_HasUVs = 1u << 1;
 
-// Must match placement_domains.hlsli PlacementDomainParams (176 bytes).
+// Must match placement_domains.hlsli PlacementDomainParams (192 bytes).
+//
+// PR02: the density moved into the uploaded program (instrBDA tail) —
+// the params carry the per-LAYER scalars only. density became
+// densityScale; noiseAmp/noiseFreq are RETIRED slots (must be 0 — the
+// program's Noise2 instructions are the noise source).
 struct PlacementDomainParams {
-	float density = 0.5f;
-	float noiseAmp = 0.0f;
-	float noiseFreq = 0.02f;
+	float densityScale = 1.0f;    // was: density (the const-extracted shortcut)
+	float noiseAmpRetired = 0.0f; // RETIRED: must stay 0
+	float noiseFreqRetired = 0.0f; // RETIRED: must stay 0
 	float minScale = 0.8f;
 	float maxScale = 1.0f;
 	uint32_t protoCount = 1;
-	uint32_t padA[2] = {};
+	uint32_t padA = 0;
 	float weights[8] = { 1, 0, 0, 0, 0, 0, 0, 0 };
 	uint32_t domainKind = 0;
 	uint32_t triCount = 0;
@@ -153,8 +267,12 @@ struct PlacementDomainParams {
 	float hfSX = 1.0f, hfSZ = 1.0f; // meters per texel
 	float extMinX = 0.0f, extMinZ = 0.0f; // scatter rect (world XZ)
 	float extMaxX = 64.0f, extMaxZ = 64.0f;
+	// ---- PR02 program tail (the graph SSA the kernels evaluate) ----
+	uint64_t instrBDA = 0;    // GpuFieldInstr[] upload
+	uint32_t instrCount = 0;  // <= kPlacementMaxFieldInstrs
+	uint32_t acceptIndex = 0; // which value is the density
 };
-static_assert(sizeof(PlacementDomainParams) == 176, "PlacementDomainParams moved — update placement_domains.hlsli");
+static_assert(sizeof(PlacementDomainParams) == 192, "PlacementDomainParams moved — update placement_domains.hlsli");
 
 // Must match the scatter kernels' push (64 bytes).
 struct PlacementScatterPush {

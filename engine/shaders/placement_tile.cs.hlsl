@@ -3,18 +3,20 @@
 
 // placement_tile.cs.hlsl — GPU tile evaluation, grid-domain MVP.
 // One thread per candidate (any order — no atomics except the final
-// append). Mirrors CPU EvaluateTile() for: constant+noise density,
-// quantized stochastic accept, weighted prototype, yaw+uniform scale.
+// append). Mirrors CPU EvaluateTile() exactly: candidate -> StableID ->
+// grid sample -> THE PROGRAM (PlacementEvaluateField: the actual graph
+// SSA, every FieldOp) -> densityScale -> quantized stochastic accept ->
+// weighted prototype -> yaw+uniform scale -> bounded append.
 //
-// NOT yet mirrored on GPU (CPU oracle only, see placement_tile.h):
-// mesh-surface alias sampling, heightfield texture sampling, min-distance
-// cell-winner pass, slope-to-rock rule. Each arrives as its own kernel
-// with a CPU-parity test before the CPU path is allowed to diverge.
+// The mesh-surface alias sampling + heightfield sampling live in their
+// own kernels (same evaluator, same push family or their params);
+// min-distance is the constraint trio; the CPU EvaluateTile() in
+// placement_tile.h is the oracle for all paths.
 
 #include "placement_common.hlsli"
 #include "placement_field.hlsli"
 
-// Must match C++ PlacementTilePush (144 bytes).
+// Must match C++ PlacementTilePush (168 bytes).
 struct PlacementTilePush
 {
     vk::BufferPointer<PlacementInstanceBuffer> outInstances; // 0
@@ -30,9 +32,9 @@ struct PlacementTilePush
     float2 gridExtent;// 64
     uint cellsZ;      // 72
     uint pad1;        // 76
-    float density;    // 80
-    float noiseAmp;   // 84
-    float noiseFreq;  // 88
+    float densityScale; // 80 (was: the const-extracted density shortcut)
+    float noiseAmpRetired;  // 84 RETIRED: 0 (the program subsumes noise)
+    float noiseFreqRetired; // 88 RETIRED: 0
     uint pad2;        // 92
     float minScale;   // 96
     float maxScale;   // 100
@@ -40,6 +42,12 @@ struct PlacementTilePush
     uint pad3;        // 108
     float4 weightsA;  // 112
     float4 weightsB;  // 128
+    // ---- the program tail (PR02: the graph SSA) ----
+    vk::BufferPointer<PlacementInstrBuffer> instrs; // 144
+    uint instrCount;   // 152
+    uint acceptIndex;  // 156
+    uint pad4;         // 160
+    uint pad5;         // 164
 };
 
 [[vk::push_constant]]
@@ -85,15 +93,16 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
                       pc.gridOrigin.y,
                       pc.gridOrigin.z + fz * pc.gridExtent.y);
 
-    // ---- Density field: base + value noise. ----
-    float d = pc.density;
-    if (pc.noiseAmp > 0.0f)
-    {
-        float n = PlacementValueNoise2D(p.x * pc.noiseFreq, p.z * pc.noiseFreq,
-            pc.seedLo, pc.seedHi);
-        d = saturate(d + pc.noiseAmp * (n - 0.5f) * 2.0f);
-    }
-    float q = PlacementQuantizeDensity(d);
+    // ---- THE PROGRAM: the actual graph SSA (PR02). ----
+    // Density order mirrors the CPU contract exactly:
+    //   d = EvaluateField(program, sample)[acceptIndex]
+    //   q = QuantizeDensity(d * layer.densityScale)
+    //   keep = Random01(id, Density) < q
+    // (last-ULP evaluator divergence is absorbed by the quantization).
+    float3 nrm = float3(0.0f, 1.0f, 0.0f); // grid domain: flat base plane
+    float d = PlacementEvaluateField(pc.instrs, pc.instrCount,
+        pc.acceptIndex, p, nrm, pc.seedLo, pc.seedHi);
+    float q = PlacementQuantizeDensity(d * pc.densityScale);
     bool keep = (q >= 1.0f) || (PlacementRandom01(id, PLACEMENT_CH_DENSITY) < q);
     if (!keep)
         return;

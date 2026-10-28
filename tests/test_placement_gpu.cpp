@@ -199,6 +199,50 @@ PlacementSystem::LayerBinding MakeLayer(uint64_t id, float density, uint32_t can
 	return lb;
 }
 
+// ---------------------------------------------------------------------------
+// Compound-program builders (PR02 parity: the kernels run the ACTUAL
+// graph SSA — noise, slope, altitude, remap/power chains — not the old
+// density+noise shortcut).
+// ---------------------------------------------------------------------------
+void BuildGridCompoundProgram(PlacementProgram& prog)
+{
+	prog.instrs = {
+		FieldInstr{ .op = FieldOp::Noise2, .params = { 0.05f, 0.0f, 0.0f, 0.0f } },
+		FieldInstr{ .op = FieldOp::Noise2, .params = { 0.13f, 7.5f, -3.0f, 0.0f } },
+		FieldInstr{ .op = FieldOp::Power, .a = 1, .params = { 2.0f, 0, 0, 0 } },
+		FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 2 },
+		FieldInstr{ .op = FieldOp::Remap, .a = 3, .params = { 0.1f, 0.9f, 0.15f, 1.0f } },
+		FieldInstr{ .op = FieldOp::Smoothstep, .a = 4, .params = { 0.2f, 0.8f } },
+	};
+	prog.acceptIndex = 5;
+}
+
+void BuildMeshCompoundProgram(PlacementProgram& prog)
+{
+	// Slope-gated noise: the folded mesh's normals drive the mask.
+	prog.instrs = {
+		FieldInstr{ .op = FieldOp::SlopeMask, .params = { 12.0f, 45.0f, 0, 0 } },
+		FieldInstr{ .op = FieldOp::Noise2, .params = { 0.09f, 0, 0, 0 } },
+		FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		FieldInstr{ .op = FieldOp::Clamp01, .a = 2 },
+	};
+	prog.acceptIndex = 3;
+}
+
+void BuildHfCompoundProgram(PlacementProgram& prog)
+{
+	// The meadow stack: altitude band * slope * noise, remapped up.
+	prog.instrs = {
+		FieldInstr{ .op = FieldOp::AltitudeMask, .params = { 0.5f, 2.0f, 6.0f, 9.0f } },
+		FieldInstr{ .op = FieldOp::SlopeMask, .params = { 8.0f, 35.0f, 0, 0 } },
+		FieldInstr{ .op = FieldOp::Noise2, .params = { 0.07f, 0, 0, 0 } },
+		FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		FieldInstr{ .op = FieldOp::Mul, .a = 3, .b = 2 },
+		FieldInstr{ .op = FieldOp::Remap, .a = 4, .params = { 0.0f, 0.8f, 0.1f, 0.95f } },
+	};
+	prog.acceptIndex = 5;
+}
+
 } // namespace
 
 int main()
@@ -251,12 +295,17 @@ int main()
 	Check(ok && scatter.Valid(), "gpu.scatter-programs");
 
 	// =====================================================================
-	// 1) Grid kernel parity (Const program — the kernel's supported shape).
+	// 1) Grid kernel parity — a COMPOUND program (noise octaves, power,
+	//    remap, smoothstep — the actual graph SSA, not a Const shortcut)
+	//    plus a non-unit densityScale (the contract order
+	//    q = QuantizeDensity(d * densityScale) must hold).
 	// =====================================================================
 	std::fprintf(stderr, "[place-gpu] stage: grid parity\n");
 	{
 		GridDomain grid = MakeGrid(glm::vec3(10.0f, 2.0f, 30.0f), 16);
-		auto lb = MakeLayer(7, 0.45f, 1500);
+		auto lb = MakeLayer(7, 0.45f, 1500); // density field replaced below
+		BuildGridCompoundProgram(lb.program);
+		lb.config.densityScale = 1.4f;
 		lb.domainKind = DomainKind::Grid;
 		lb.grid = &grid;
 		Prototype a; a.weight = 2.0f;
@@ -265,10 +314,15 @@ int main()
 		lb.prototypes.add(a); lb.prototypes.add(b); lb.prototypes.add(c);
 		const TileID tile{ 1, 2, 3 };
 		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
+		Check(oracle.size() > 0 && oracle.size() < 1500, "gpu.grid-oracle-shape");
+
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.grid-program-upload");
+		PlacementProgramView view = prog.View(rm);
 
 		pass.ClearTile(rm, 0);
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile,
+		ok = PlacementPass::BuildTilePush(lb, tile, view,
 			pass.TileInstancesAddress(rm, 0), pass.TileCountAddress(rm, 0), push);
 		Check(ok, "gpu.grid-push-built");
 		host.RunFrame([&](smvk::RenderGraph& g) {
@@ -290,16 +344,20 @@ int main()
 	}
 
 	// =====================================================================
-	// 2) Mesh-surface scatter parity.
+	// 2) Mesh-surface scatter parity — a FOLDED mesh (normals vary per
+	//    candidate, so SlopeMask actually gates) under a slope*noise
+	//    compound program.
 	// =====================================================================
 	PlacementMeshGpu meshGpu;
 	{
 		PlacementMeshData mesh;
-		// Two-triangle quad (non-degenerate, area-weighting is uniform).
+		// Folded quad: two triangles with clearly different normals.
 		mesh.positions = {
-			glm::vec3(0, 0, 0), glm::vec3(4, 0, 0), glm::vec3(0, 0, 4),
-			glm::vec3(4, 0, 0), glm::vec3(4, 0, 4), glm::vec3(0, 0, 4) };
-		mesh.normals.assign(6, glm::vec3(0, 1, 0));
+			glm::vec3(0, 0, 0), glm::vec3(4, 2.5f, 0), glm::vec3(0, 0, 4),
+			glm::vec3(4, 2.5f, 0), glm::vec3(4, 0, 4), glm::vec3(0, 0, 4) };
+		mesh.normals = {
+			glm::vec3(0, 0.6f, 0.8f), glm::vec3(0, 0.6f, 0.8f), glm::vec3(0, 0.6f, 0.8f),
+			glm::vec3(0, 0.89f, 0.45f), glm::vec3(0, 0.89f, 0.45f), glm::vec3(0, 0.89f, 0.45f) };
 		mesh.uvs = {
 			glm::vec2(0, 0), glm::vec2(1, 0), glm::vec2(0, 1),
 			glm::vec2(1, 0), glm::vec2(1, 1), glm::vec2(0, 1) };
@@ -308,6 +366,7 @@ int main()
 		Check(ok && meshGpu.Valid(), "gpu.mesh-upload");
 
 		auto lb = MakeLayer(8, 0.6f, 800);
+		BuildMeshCompoundProgram(lb.program);
 		lb.domainKind = DomainKind::MeshSurface;
 		lb.mesh = &mesh;
 		Prototype a; a.weight = 1.0f;
@@ -315,11 +374,16 @@ int main()
 		lb.prototypes.add(a); lb.prototypes.add(b);
 		const TileID tile{ -2, 0, 5 };
 		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
+		Check(oracle.size() > 0, "gpu.mesh-oracle-nonempty");
+
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.mesh-program-upload");
+		PlacementProgramView view = prog.View(rm);
 
 		PlacementParamsGpu paramsGpu;
 		PlacementDomainParams prm;
 		ScatterBDAs bdas = meshGpu.Addresses(rm);
-		ok = FillScatterParams(lb, bdas, prm);
+		ok = FillScatterParams(lb, view, bdas, prm);
 		Check(ok && prm.domainKind == kPlacementScatterDomain_Mesh, "gpu.mesh-params-filled");
 		ok = paramsGpu.Upload(rm, rg, prm);
 		Check(ok, "gpu.mesh-params-uploaded");
@@ -348,7 +412,9 @@ int main()
 	}
 
 	// =====================================================================
-	// 3) Heightfield scatter parity.
+	// 3) Heightfield scatter parity — the meadow stack (altitude band *
+	//    slope * noise, remapped) over real terrain: heights AND normals
+	//    vary per candidate, so AltitudeMask and SlopeMask both gate.
 	// =====================================================================
 	PlacementHeightfieldGpu hfGpu;
 	{
@@ -370,6 +436,7 @@ int main()
 		Check(ok && hfGpu.Valid(), "gpu.hf-upload");
 
 		auto lb = MakeLayer(9, 0.5f, 900);
+		BuildHfCompoundProgram(lb.program);
 		lb.domainKind = DomainKind::Heightfield;
 		lb.heightfield = &hdom;
 		Prototype a; a.weight = 1.0f;
@@ -378,12 +445,17 @@ int main()
 		lb.prototypes.add(a); lb.prototypes.add(b); lb.prototypes.add(c);
 		const TileID tile{ 0, -3, -6 };
 		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
+		Check(oracle.size() > 0 && oracle.size() < 900, "gpu.hf-oracle-shape");
+
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.hf-program-upload");
+		PlacementProgramView view = prog.View(rm);
 
 		PlacementParamsGpu paramsGpu;
 		PlacementDomainParams prm;
 		ScatterBDAs bdas{};
 		bdas.heights = hfGpu.Address(rm);
-		ok = FillScatterParams(lb, bdas, prm);
+		ok = FillScatterParams(lb, view, bdas, prm);
 		Check(ok && prm.domainKind == kPlacementScatterDomain_Heightfield,
 			"gpu.hf-params-filled");
 		ok = paramsGpu.Upload(rm, rg, prm);
@@ -437,9 +509,13 @@ int main()
 		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
 		Check(oracle.size() == 512, "gpu.tiny-oracle-full");
 
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.tiny-program-upload");
+		PlacementProgramView view = prog.View(rm);
+
 		tiny.ClearTile(rm, 0);
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile,
+		ok = PlacementPass::BuildTilePush(lb, tile, view,
 			tiny.TileInstancesAddress(rm, 0), tiny.TileCountAddress(rm, 0), push);
 		Check(ok, "gpu.tiny-push-built");
 		host.RunFrame([&](smvk::RenderGraph& g) {
@@ -498,8 +574,11 @@ int main()
 		con.Clear(rm); // head/next/flag2 zeroed (tile-gen cadence only)
 
 		pass.ClearTile(rm, 3);
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.con-program-upload");
+		PlacementProgramView view = prog.View(rm);
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile,
+		ok = PlacementPass::BuildTilePush(lb, tile, view,
 			pass.TileInstancesAddress(rm, 3), pass.TileCountAddress(rm, 3), push);
 		Check(ok, "gpu.con-scatter-push");
 

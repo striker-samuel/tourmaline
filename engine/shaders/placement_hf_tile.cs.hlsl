@@ -46,8 +46,11 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     float3 nrm = PlacementHfNormal(pc.prm.Get(), x, z);
     float3 p = float3(x, y, z);
 
-    // ---- Density + accept. ----
-    float q = PlacementScatterDensity(pc.prm.Get(), p, pc.seedLo, pc.seedHi);
+    // ---- THE PROGRAM + accept (PR02: the actual graph SSA). ----
+    float d = PlacementEvaluateField(pc.prm.Get().instrs,
+        pc.prm.Get().instrCount, pc.prm.Get().acceptIndex,
+        p, nrm, pc.seedLo, pc.seedHi);
+    float q = PlacementQuantizeDensity(d * pc.prm.Get().densityScale);
     bool keep = (q >= 1.0f) || (PlacementRandom01(id, PLACEMENT_CH_DENSITY) < q);
     if (!keep)
         return;
