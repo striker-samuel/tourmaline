@@ -182,6 +182,12 @@ float SgGiVolumeVisFactor(float3 dRel, float4 visA, float4 visB)
 // spacing) reads as 5/15 = 0.33 — nearly yellow instead of green.
 // Normalizing by the cap (2.5 m / spacing) puts fully open at 1.0
 // (green) and near-surface at proportionally smaller values.
+// NOTE: this assumes the DEFAULT bake cap (2.5 m). A volume baked
+// with a non-default GiVolumeBakeConfig::visibilityMaxDistance will
+// show a slightly mis-scaled ramp (open probes at < 1.0). The
+// correct fix is storing the baked cap in the volume metadata —
+// a format change deferred until it matters (no current content
+// uses a non-default cap).
 float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
 {
     const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];

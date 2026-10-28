@@ -135,16 +135,15 @@ noise.
 
 A cell [v, v+1]³ is "clean" (fast path: plain trilerp, no
 rejection) only if all 8 corners have all 6 axis distances
-≥ 1.35 spacing units. This is conservative — the actual
-no-rejection threshold is 0.65 (see 1a), so cells in the
-[0.65, 1.35] range take the weighted path unnecessarily (same
+≥ 1.35 spacing units. This is conservative — the theoretical
+no-rejection threshold for the hybrid reach is **~0.667**
+(max offset 1.0 / reach factor 1.5), so cells in the
+[0.667, 1.35] range take the weighted path unnecessarily (same
 values, more fetches — a perf cost, not a correctness issue).
 
-**Why 1.35:** = 1.0 (max in-cell offset) + 0.35 (the old absolute
-slack). Kept from the pre-proportional design; should be
-revised to 0.65 × 1.5 = ~0.98 for the hybrid reach, but the
-conservatism is harmless (the weighted path with all factors = 1
-gives identical values to the plain trilerp).
+**Why 1.35:** = 1.0 (max in-cell offset) + 0.35 (the original
+absolute slack). The hybrid reach's actual threshold is lower
+(1.0 / 1.5 ≈ 0.667), but the conservatism is harmless.
 
 ### 2e. The FIREFLY CLAMP — `8×` the probe's finite-sample mean
 
@@ -158,14 +157,13 @@ finite-sample mean luminance. This is the standard firefly filter
 
 **File:** `engine/include/Engine/GI/cubemap_volume.h` (`kGiVolumeMaxDim`)
 
-The maximum per-axis grid dimension. Combined with the bake
-refusal for grids denser than 256³ total, this caps the worst-case
-volume at 16M probes. Each probe stores 9 SG lobes × RGB vec3
-(27 fp32 = 108 B of coefficients) + 6 fp32 visibility distances
-(24 B) = 132 B/probe — a 256³ volume is ~2.2 GiB of coefficients
-alone, well past practical GPU budgets. Real volumes are far
-smaller (sponza's whole-building is 62×28×37 = 64k probes =
-~8.5 MB).
+The maximum per-axis grid dimension. A 256³ volume contains
+16.8 million probes, requiring approximately **1.69 GiB** of
+FP32 coefficients (27 fp32 per probe = 9 SG lobes × RGB vec3
+× 4 bytes), or **2.06 GiB** including 6 FP32 visibility
+distances per probe — excluding clean flags, metadata, and
+temporary bake allocations. Real volumes are far smaller
+(sponza's whole-building is 62×28×37 = 64k probes = ~8.5 MB).
 
 ---
 

@@ -22,8 +22,9 @@ to SPIR-V at build time and load next to the executable.
 - **Shadows** — cascaded sun + per-spot shadow atlases, EVSM soft shadows,
   deferred shadow maps (DPS) with debug visualizers.
 - **Lighting & GI** — analytic lights, SSR, raymarched volumetric fog with
-  fog-GI sampling, SSAO / SAO, lightmap and cubemap GI bakes (xatlas
-  charting + Embree ray tracing) cooked offline into the content packs.
+  fog-GI sampling, SSAO / SAO, cubemap GI bakes + convex probe volumes
+  (Embree ray tracing) cooked offline into the content packs. Lightmaps
+  are baked but deprecated (the runtime loader stays for existing content).
 - **Post-processing** — auto exposure, bloom, GT7-style tonemap, DoF,
   motion blur, SMAA (1x/T2x), optional NVIDIA DLSS-SR / Reflex via the
   Streamline interposer.
@@ -47,10 +48,11 @@ against, but expect gaps, visual artifacts, stale bakes and API churn.
 
 - **Terrain** — procedural tiles, height painting and LOD stitching are
   unfinished; seams, missing tiles and unstable edits are known.
-- **GI (global illumination)** — probe cubemaps, convex volumes, the
-  world-field octree and lightmap baking are preview-quality; bakes may be
-  stale, incomplete or visibly wrong outside the scenes they were authored
-  for.
+- **GI (global illumination)** — probe cubemaps, convex GI volumes,
+  dense regular grids, and lightmap baking are preview-quality; bakes
+  may be stale, incomplete or visibly wrong outside the scenes they
+  were authored for. (The legacy world-field octree is retired —
+  its runtime, bake machinery, serializer and analyzer are deleted.)
 
 Treat both as preview-quality, not production features.
 
@@ -112,7 +114,7 @@ Pinned submodules (unmodified upstream):
 - **nlohmann/json** — JSON (required by tinygltf)
 - **meshoptimizer** — LOD simplification, meshlets, vertex-cache/fetch
   optimization
-- **DirectXTex** — BC6H/BC7 block codecs (SGGI payload encode/decode)
+- **DirectXTex** — BC6H/BC7 block codecs (GI volume + lightmap payload encoding, cubemap compression)
 - **volk** — Vulkan loader
 - **SPIRV-Reflect** — CPU reflection for push/spec readback
 - **nanosvg** — editor SVG icon rasterization
@@ -194,8 +196,10 @@ git submodule update --init --recursive
                             #   package, Vulkan-Headers 1.4.357,
                             #   DirectX-Headers/DirectXMath (DirectXTex)
 
-# 1. System packages (Ubuntu 24.04 names):
-sudo apt install build-essential cmake ninja-build git curl unzip \
+# 1. System packages (Ubuntu 24.04 names; gcc-14/g++-14 are REQUIRED —
+#    see the toolchain note below; run BEFORE install_dependencies.sh
+#    so curl and friends are available):
+sudo apt install build-essential gcc-14 g++-14 cmake ninja-build git curl unzip \
   pkg-config glslang-tools libvulkan-dev zlib1g-dev \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxinerama-dev \
   libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev \
@@ -206,9 +210,10 @@ sudo apt install build-essential cmake ninja-build git curl unzip \
 
 # 2. KTX-Software (Ubuntu has no package; build/install once):
 git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+cmake -S KTX-Software -B KTX-Software/build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
   -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF
-cmake --build build && sudo cmake --install build
+cmake --build KTX-Software/build && sudo cmake --install KTX-Software/build
 
 # 3. Configure + build (GCC 14 recommended; see the toolchain note below):
 CC=gcc-14 CXX=g++-14 cmake -B out/build/linux-Release -G Ninja \
@@ -245,7 +250,7 @@ Platform notes:
   and synced next to the exe; scene content ships inside paks, passed
   explicitly (`App --pak <path>` is REQUIRED).
 - **The runtime render loop expects a real GPU.** Builds, tests
-  (35/35 parity with Windows) and boot + world loading are verified;
+  (42/42 parity with Windows) and boot + world loading are verified;
   the software rasterizer (lavapipe) crashes inside its compute-pipeline
   compiler on the engine's BDA-heavy shaders.
 
@@ -268,7 +273,7 @@ Platform notes:
 - **Push-constant contract.** C++ structs (`engine/include/Engine/Rendergraph/`)
   and their HLSL mirrors stay layout-identical, guarded by
   `static_assert(sizeof(...))` and contract tests.
-- **35 plain executables as tests** (no gtest): hand-rolled `Check()`
+- **42 plain executables as tests** (no gtest): hand-rolled `Check()`
   runners with `checks=/failures=` summaries, wired through `ctest`.
 
 ## Run
@@ -351,8 +356,7 @@ cd out\build\x64-Release
 .\App.exe --pak content/paks/sponza.pak
 ```
 
-The project defaults to your **user Documents** — `%USERPROFILE%\
-Documents\Tourmaline\Sponza` on Windows (`~/Documents/Tourmaline/Sponza`
+The project defaults to your **user Documents** — `%USERPROFILE%\Documents\Tourmaline\Sponza` on Windows (`~/Documents/Tourmaline/Sponza`
 elsewhere), never the repo tree — and `TOURMALINE_PROJECT_DIR` overrides
 it. It is **self-contained**: after the first successful build it rebuilds
 with no external content store present at all — the imported copies are
@@ -375,7 +379,7 @@ app/         App.exe — pak-viewer host shell
 tools/       gltf_import, cook, pak_cooker, gi_baker, cubemap_baker,
              artifact_cache, python helpers (bench/golden capture)
 samples/     minimal Vulkan samples (01_triangle, 02_blur, 03_fuzz)
-tests/       35 plain-exe test executables (ctest)
+tests/       42 plain-exe test executables (ctest)
 external/    third-party sources: pinned git submodules + vendored trees
              (see THIRD_PARTY_NOTICES.md)
 docs/        project guide + editor tour documentation
