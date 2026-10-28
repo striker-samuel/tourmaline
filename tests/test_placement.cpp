@@ -1556,9 +1556,50 @@ void TestConBruteForce() {
 void TestDrawFeed() {
 	using namespace smvk::placement;
 	Check(sizeof(PlacementVsPush) == 32, "place.draw.push-32B");
-	Check(offsetof(PlacementVsPush, alive) == 8, "place.draw.alive-offset");
+	Check(offsetof(PlacementVsPush, visible) == 0, "place.draw.visible-offset");
+	Check(offsetof(PlacementVsPush, instances) == 8, "place.draw.instances-offset");
 	Check(offsetof(PlacementVsPush, cullFlags) == 28, "place.draw.flags-offset");
 	Check(kPlacementVsPushOffset == 192, "place.draw.tail-offset");
+	// PR03 chain ABI: the bins slab, the indirect command, the cull push.
+	Check(sizeof(PlacementBinsGpu) == 128, "place.draw.bins-128B");
+	Check(sizeof(PlacementIndirectCmd) == 20
+		&& kPlacementIndirectStride == 20, "place.draw.indirect-20B");
+	Check(sizeof(PlacementCullPush) == 240, "place.draw.cull-push-240B");
+	Check(offsetof(PlacementCullPush, protoBounds) == 64
+		&& offsetof(PlacementCullPush, protoDist) == 192
+		&& offsetof(PlacementCullPush, camPos) == 224,
+		"place.draw.cull-push-tail");
+	Check(sizeof(PlacementScatterVisPush) == 48, "place.draw.scatter-vis-48B");
+	Check(sizeof(PlacementDrawBuildPush) == 32, "place.draw.build-push-32B");
+	// FillCullPush: the cooked-mesh bounds -> conservative spheres, the
+	// species distances, the layer's scale bound.
+	{
+		PlacementSystem::LayerBinding lb;
+		lb.config.maxScale = 2.5f;
+		Prototype a; a.boundsMin = glm::vec3(-1, 0, -1); a.boundsMax = glm::vec3(1, 2, 1);
+		a.maxDrawDistance = 40.0f;
+		Prototype b; b.boundsMin = glm::vec3(-0.5f); b.boundsMax = glm::vec3(0.5f);
+		Prototype c; c.boundsMin = glm::vec3(-2, -2, -2); c.boundsMax = glm::vec3(2, 2, 2);
+		c.maxDrawDistance = 120.0f;
+		lb.prototypes.add(a); lb.prototypes.add(b); lb.prototypes.add(c);
+		PlacementCullPush cp;
+		FillCullPush(lb, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 2,
+			glm::vec3(7, 8, 9), kPlacementCullFrustum | kPlacementCullAlive, cp);
+		Check(cp.instances == 0x11 && cp.count == 0x22 && cp.mask == 0x33
+			&& cp.bins == 0x44 && cp.alive == 0x55 && cp.renderViews == 0x66,
+			"place.draw.cull-fill-bdas");
+		Check(cp.protoCount == 3 && cp.renderViewIndex == 2
+			&& cp.cullFlags == (kPlacementCullFrustum | kPlacementCullAlive),
+			"place.draw.cull-fill-flags");
+		Check(cp.protoBounds[0] == glm::vec4(0, 1, 0, glm::length(glm::vec3(1, 1, 1))),
+			"place.draw.cull-fill-sphere0");
+		Check(cp.protoBounds[1] == glm::vec4(0, 0, 0, glm::length(glm::vec3(0.5f))),
+			"place.draw.cull-fill-sphere1");
+		Check(cp.protoDist[0] == 40.0f && cp.protoDist[1] == 0.0f
+			&& cp.protoDist[2] == 120.0f, "place.draw.cull-fill-distances");
+		Check(cp.camPos == glm::vec3(7, 8, 9) && cp.maxInstanceScale == 2.5f,
+			"place.draw.cull-fill-view");
+	}
 	// Matrix convention: yaw=0 -> identity rotation + translation.
 	glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), 0.0f, glm::vec3(2));
 	Check(m0[3] == glm::vec4(1, 2, 3, 1), "place.draw.matrix-translation");

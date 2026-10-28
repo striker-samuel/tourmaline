@@ -389,6 +389,307 @@ struct PlacementProgramGpu {
 	}
 };
 
+// ---------------------------------------------------------------------------
+// PR03: the per-(tile slot, view) visible-path scratch. The persistent
+// 40-byte instances NEVER move per camera frame — only the visible-
+// index list does. One set per (slot, view); overlapping in-flight
+// frames need their own sets (the rendergraph's logical/external
+// buffer + in-flight retirement conventions apply).
+//
+// Frame cadence (per slot-view):
+//   ClearFrame  — zero the mask + the bin slab (counts/appendNext;
+//                 offsets/total are rewritten by prefix anyway)
+//   cull -> prefix -> scatter -> drawbuild  (four compute passes; the
+//                 rendergraph's buffer-hint edges order them)
+//   SeedIndirect — once per prototype-table change (the immutable halves)
+// ---------------------------------------------------------------------------
+struct PlacementVisibleSet {
+	Holder<BufferHandle> mask;      // bitpack verdict: maxInstances/32 words
+	Holder<BufferHandle> bins;      // PlacementBinsGpu (128B)
+	Holder<BufferHandle> visible;   // uint32[maxInstances]
+	Holder<BufferHandle> indirect;  // PlacementIndirectCmd[8] (BufferType_Indirect)
+	LogicalBufferHandle maskL{}, binsL{}, visibleL{}, indirectL{};
+	uint32_t maxInstances = 0;
+
+	[[nodiscard]] bool Valid() const {
+		return !mask.empty() && !bins.empty() && !visible.empty()
+			&& !indirect.empty() && !maskL.empty() && !binsL.empty()
+			&& !visibleL.empty() && !indirectL.empty();
+	}
+	void Destroy(RenderGraph& rg) {
+		for (LogicalBufferHandle l : { maskL, binsL, visibleL, indirectL })
+			if (!l.empty()) rg.FreeBuffer(l);
+		maskL = {}; binsL = {}; visibleL = {}; indirectL = {};
+		mask = {}; bins = {}; visible = {}; indirect = {};
+		maxInstances = 0;
+	}
+	bool Create(ResourceManager& ctx, RenderGraph& rg, uint32_t maxInst) {
+		Destroy(rg);
+		if (maxInst == 0 || maxInst > kPlacementMaxTileInstances) return false;
+		mask = ctx.CreateBuffer(sizeof(uint32_t) * ((maxInst + 31) / 32),
+			BufferType_Storage, "placement cull mask");
+		bins = ctx.CreateBuffer(sizeof(PlacementBinsGpu),
+			BufferType_Storage, "placement cull bins");
+		visible = ctx.CreateBuffer(sizeof(uint32_t) * maxInst,
+			BufferType_Storage, "placement visible");
+		indirect = ctx.CreateBuffer(kPlacementIndirectStride * kPlacementMaxProtos,
+			BufferType_Indirect, "placement indirect");
+		if (mask.empty() || bins.empty() || visible.empty() || indirect.empty()) {
+			smvk::OnResourceExhaustion("placement visible-set buffers");
+			return false;
+		}
+		maskL = rg.AddExternalBuffer(mask, "placement cull mask");
+		binsL = rg.AddExternalBuffer(bins, "placement cull bins");
+		visibleL = rg.AddExternalBuffer(visible, "placement visible");
+		indirectL = rg.AddExternalBuffer(indirect, "placement indirect");
+		if (maskL.empty() || binsL.empty() || visibleL.empty() || indirectL.empty()) {
+			smvk::OnResourceExhaustion("placement visible-set logicals");
+			return false;
+		}
+		maxInstances = maxInst;
+		// Creation-zero the atomics (the zero-on-creation convention).
+		ClearFrame(ctx);
+		return true;
+	}
+	// Per-frame zero of the mask + the bin slab's atomics.
+	void ClearFrame(ResourceManager& ctx) const {
+		assert(Valid());
+		const std::vector<uint32_t> zeros((maxInstances + 31) / 32, 0);
+		ctx.UploadDataToBuffer(mask, zeros.data(),
+			sizeof(uint32_t) * zeros.size(),
+			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+		PlacementBinsGpu zeroBins{};
+		ctx.UploadDataToBuffer(bins, &zeroBins, sizeof(zeroBins),
+			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+	}
+	// Seeds the immutable command halves ONCE per prototype-table change
+	// (the GPU rewrites instanceCount/firstInstance per frame). Pointer +
+	// count: seeds is cmdCount PlacementIndirectCmd values (cmdCount <=
+	// kPlacementMaxProtos; the dynamic halves are overwritten anyway).
+	bool SeedIndirect(ResourceManager& ctx,
+		const PlacementIndirectCmd* seeds, uint32_t cmdCount) const {
+		assert(Valid());
+		if (!seeds || cmdCount == 0 || cmdCount > kPlacementMaxProtos) return false;
+		std::vector<PlacementIndirectCmd> slab(kPlacementMaxProtos,
+			PlacementIndirectCmd{});
+		for (uint32_t i = 0; i < cmdCount; ++i) {
+			slab[i].indexCount = seeds[i].indexCount;
+			slab[i].instanceCount = 0; // drawbuild's per-frame output
+			slab[i].firstIndex = seeds[i].firstIndex;
+			slab[i].vertexOffset = seeds[i].vertexOffset;
+			slab[i].firstInstance = 0; // drawbuild's per-frame output
+		}
+		ctx.UploadDataToBuffer(indirect, slab.data(),
+			kPlacementIndirectStride * kPlacementMaxProtos,
+			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+		return true;
+	}
+	uint64_t MaskAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(mask);
+	}
+	uint64_t BinsAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(bins);
+	}
+	uint64_t VisibleAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(visible);
+	}
+	uint64_t IndirectAddress(ResourceManager& ctx) const {
+		return ctx.GetBufferDeviceAddress(indirect);
+	}
+};
+
+// The chain's shader program set (cull + prefix + scatter + drawbuild).
+struct PlacementCullPrograms {
+	Holder<ShaderModuleHandle> cullModule, prefixModule, scatterModule, buildModule;
+	ShaderProgram cullProgram{}, prefixProgram{}, scatterProgram{}, buildProgram{};
+
+	[[nodiscard]] bool Valid() const {
+		return cullProgram.shaderCount != 0 && prefixProgram.shaderCount != 0
+			&& scatterProgram.shaderCount != 0 && buildProgram.shaderCount != 0
+			&& !cullModule.empty() && !prefixModule.empty()
+			&& !scatterModule.empty() && !buildModule.empty();
+	}
+	bool Ensure(ResourceManager& ctx,
+		const char* cullCsPath = kPlacementCullCsPath,
+		const char* prefixCsPath = kPlacementPrefixCsPath,
+		const char* scatterCsPath = kPlacementScatterVisCsPath,
+		const char* buildCsPath = kPlacementDrawBuildCsPath) {
+		if (Valid()) return true;
+		try {
+			if (cullModule.empty())
+				cullModule = ctx.CreateShaderModule(
+					readFile(cullCsPath ? cullCsPath : kPlacementCullCsPath),
+					"placementCullCS");
+			if (prefixModule.empty())
+				prefixModule = ctx.CreateShaderModule(
+					readFile(prefixCsPath ? prefixCsPath : kPlacementPrefixCsPath),
+					"placementPrefixCS");
+			if (scatterModule.empty())
+				scatterModule = ctx.CreateShaderModule(
+					readFile(scatterCsPath ? scatterCsPath : kPlacementScatterVisCsPath),
+					"placementScatterVisCS");
+			if (buildModule.empty())
+				buildModule = ctx.CreateShaderModule(
+					readFile(buildCsPath ? buildCsPath : kPlacementDrawBuildCsPath),
+					"placementDrawBuildCS");
+		} catch (...) {
+			return false;
+		}
+		if (cullModule.empty() || prefixModule.empty()
+			|| scatterModule.empty() || buildModule.empty())
+			return false;
+		Shader c{ .module = cullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		cullProgram = { .shaders = { c }, .shaderCount = 1 };
+		Shader p{ .module = prefixModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		prefixProgram = { .shaders = { p }, .shaderCount = 1 };
+		Shader s{ .module = scatterModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		scatterProgram = { .shaders = { s }, .shaderCount = 1 };
+		Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		buildProgram = { .shaders = { b }, .shaderCount = 1 };
+		return true;
+	}
+	void Destroy() {
+		cullProgram = ShaderProgram();
+		prefixProgram = ShaderProgram();
+		scatterProgram = ShaderProgram();
+		buildProgram = ShaderProgram();
+		cullModule = {}; prefixModule = {}; scatterModule = {}; buildModule = {};
+	}
+
+	// ---- Pass shells (buffer-hint edges order the chain) ----
+	// cull: instances+count read; mask+bins RW (+ alive read when used).
+	static RenderPass& AddCullPass(RenderGraph& rg, const PlacementPass& pass,
+		uint32_t slot, const PlacementVisibleSet& vis,
+		LogicalBufferHandle aliveLogical,
+		LogicalBufferHandle renderViewsLogical) {
+		RenderPass& rp = rg.AddComputePass("PlacementCull");
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(pass.instanceLogicals[slot], read);
+		rp.AddBufferHint(pass.countLogicals[slot], read);
+		if (!aliveLogical.empty()) rp.AddBufferHint(aliveLogical, read);
+		if (!renderViewsLogical.empty()) rp.AddBufferHint(renderViewsLogical, read);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(vis.maskL, rw);
+		rp.AddBufferHint(vis.binsL, rw);
+		return rp;
+	}
+	// prefix: bins RW (reads counts, writes offsets/total).
+	static RenderPass& AddPrefixPass(RenderGraph& rg, const PlacementVisibleSet& vis) {
+		RenderPass& rp = rg.AddComputePass("PlacementPrefix");
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(vis.binsL, rw);
+		return rp;
+	}
+	// scatter: instances+count+bins read; bins RW (appendNext) + visible RW.
+	static RenderPass& AddScatterVisPass(RenderGraph& rg, const PlacementPass& pass,
+		uint32_t slot, const PlacementVisibleSet& vis) {
+		RenderPass& rp = rg.AddComputePass("PlacementScatterVisible");
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(pass.instanceLogicals[slot], read);
+		rp.AddBufferHint(pass.countLogicals[slot], read);
+		rp.AddBufferHint(vis.maskL, read);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(vis.binsL, rw);
+		rp.AddBufferHint(vis.visibleL, rw);
+		return rp;
+	}
+	// drawbuild: bins read; indirect RW (the dynamic halves).
+	static RenderPass& AddDrawBuildPass(RenderGraph& rg, const PlacementVisibleSet& vis) {
+		RenderPass& rp = rg.AddComputePass("PlacementDrawBuild");
+		BufferSyncRequest read{};
+		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(vis.binsL, read);
+		BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(vis.indirectL, rw);
+		return rp;
+	}
+
+	// ---- Recording helpers (dispatch widths: the CPU-known capacity
+	// upper bound — the kernels self-bound from the count buffer). ----
+	static void PushAndDispatchCull(CommandBuffer& cmd, ShaderProgram& program,
+		const PlacementCullPush& push, uint32_t capacity) {
+		if (capacity == 0) return;
+		assert(push.instances != 0 && push.count != 0
+			&& push.mask != 0 && push.bins != 0);
+		assert(push.renderViews != 0);
+		assert(push.protoCount >= 1 && push.protoCount <= kPlacementMaxProtos);
+		cmd.BindComputePipeline(program);
+		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.Dispatch(PlacementDispatchGroups(capacity), 1, 1);
+	}
+	static void PushAndDispatchPrefix(CommandBuffer& cmd, ShaderProgram& program,
+		const PlacementCullPush& push) {
+		cmd.BindComputePipeline(program);
+		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.Dispatch(1, 1, 1);
+	}
+	static void PushAndDispatchScatterVis(CommandBuffer& cmd, ShaderProgram& program,
+		const PlacementScatterVisPush& push, uint32_t capacity) {
+		if (capacity == 0) return;
+		assert(push.instances != 0 && push.count != 0 && push.mask != 0
+			&& push.bins != 0 && push.visible != 0);
+		cmd.BindComputePipeline(program);
+		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.Dispatch(PlacementDispatchGroups(capacity), 1, 1);
+	}
+	static void PushAndDispatchDrawBuild(CommandBuffer& cmd, ShaderProgram& program,
+		const PlacementDrawBuildPush& push) {
+		assert(push.bins != 0 && push.indirect != 0);
+		cmd.BindComputePipeline(program);
+		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.Dispatch(1, 1, 1);
+	}
+};
+
+// Pure-CPU fill (headless-testable): the per-proto conservative spheres
+// come from the layer's cooked-mesh bounds (boundsMin/Max -> center +
+// radius — never a made-up guard factor); the species distances from
+// the prototypes' maxDrawDistance. BDAs are raw values the caller
+// resolved (the PlacementPass slot + the PlacementVisibleSet + the
+// app's render-view slab).
+inline void FillCullPush(const PlacementSystem::LayerBinding& layer,
+	uint64_t instancesBDA, uint64_t countBDA, uint64_t maskBDA,
+	uint64_t binsBDA, uint64_t aliveBDA, uint64_t renderViewsBDA,
+	uint32_t renderViewIndex, const glm::vec3& camPos, uint32_t cullFlags,
+	PlacementCullPush& out) {
+	out = PlacementCullPush{};
+	out.instances = instancesBDA;
+	out.count = countBDA;
+	out.mask = maskBDA;
+	out.bins = binsBDA;
+	out.alive = aliveBDA;   // 0 = skip the alive test (CPU tiles)
+	out.renderViews = renderViewsBDA;
+	out.renderViewIndex = renderViewIndex;
+	out.cullFlags = cullFlags;
+	const size_t n = layer.prototypes.size() > kPlacementMaxProtos
+		? kPlacementMaxProtos : layer.prototypes.size();
+	out.protoCount = (uint32_t)(n == 0 ? 1 : n);
+	for (size_t i = 0; i < n; ++i) {
+		const Prototype& p = layer.prototypes.at(i);
+		const glm::vec3 center = (p.boundsMin + p.boundsMax) * 0.5f;
+		const glm::vec3 halfDiag = (p.boundsMax - p.boundsMin) * 0.5f;
+		out.protoBounds[i] = glm::vec4(center, glm::length(halfDiag));
+		out.protoDist[i] = p.maxDrawDistance;
+	}
+	if (n == 0)
+		out.protoBounds[0] = glm::vec4(0.0f, 0.0f, 0.0f, 0.5f);
+	out.camPos = camPos;
+	out.maxInstanceScale = layer.config.maxScale;
+}
+
 // ---- Mesh / heightfield domain GPU data -------------------------------
 // Padded uploads (float4 positions/normals) + BDAs + params fill. The
 // HLSL views (placement_domains.hlsli) interpret raw bytes; the float4

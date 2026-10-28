@@ -2,19 +2,27 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// Instanced draw feed: turns resident tiles into per-(tile, prototype)
-// runs for DrawIndexedIndirect, with zero per-instance CPU work per frame.
+// Instanced draw feed: turns resident tiles into GPU-visible draws with
+// zero per-instance CPU work per frame.
 //
-// Contract with the GPU (see placement_instanced.vert.hlsl):
-//   - tile instances are SORTED by (prototypeId, StableID) at generation,
-//     so each prototype's instances form one contiguous run;
-//   - the indirect command's firstInstance = run start in the tile's
-//     instance buffer (SV_InstanceID already includes it under SPIR-V);
-//   - per-instance frustum/alive culling happens in the VS (degenerate
-//     collapse); the CPU only coarse-culls whole tiles via cached bounds.
-// The app owns GPU buffers and LOD/material resolution: it uploads each
-// tile once, adds its buffer base to run starts, picks LOD per run by
-// range, and records one indirect command per run. Placement stays
+// Contract with the GPU (the PR03 visible chain — see
+// placement_instanced.vert.hlsl + placement_cull.hlsli):
+//   - the scatter kernels write the persistent 40-byte instances ONCE
+//     per tile generation (they never move per camera frame);
+//   - per (tile slot, view), the cull chain (cull -> prefix ->
+//     scatter -> drawbuild) builds the visible-index list + the proto
+//     bins + the indirect commands' dynamic halves on the GPU — no
+//     count readback, no CPU per-instance work;
+//   - the CPU coarse-culls whole tiles via cached bounds, seeds the
+//     immutable indirect halves (indexCount/firstIndex/vertexOffset)
+//     once per prototype table, and records ONE DrawIndexedIndirect
+//     per (tile, proto) — stride kPlacementIndirectStride, offset
+//     proto * stride (instanceCount == 0 bins draw nothing);
+//   - the VS fetches visible[SV_InstanceID] -> source slot -> the
+//     instance (SV_InstanceID includes the command's firstInstance =
+//     the bin's offset — validated by PlacementGpuTests' bin-range
+//     identity checks).
+// The app owns GPU buffers and LOD/material resolution. Placement stays
 // World-free; Scene is never touched.
 
 #include <cstdint>
@@ -33,16 +41,23 @@ namespace smvk::placement {
 // VS tail push offset: the main pass' unused prevModel scratch
 // (bytes 192..224), same overlay precedent as gfx::kFilteredVsPushOffset.
 inline constexpr uint32_t kPlacementVsPushOffset = 192;
-inline constexpr uint32_t kPlacementCullFrustum = 1;
-inline constexpr uint32_t kPlacementCullAlive = 2;
+
+// The debug re-test bit (VS-only): re-run the legacy guard-based
+// frustum test and collapse failures — a compare switch while the
+// cull chain is validated. Production runs with cullFlags = 0 (the
+// production bound is the per-proto cooked sphere in the cull kernel).
+inline constexpr uint32_t kPlacementCullDebugRetest = 8;
 
 // Must match placement_instanced.vert.hlsl PlacementVsMainPush tail (32B).
+// PR03: the visible-chain fetch — visible[SV_InstanceID] -> source slot
+// -> instance. The old `alive` BDA is gone (the cull kernel owns
+// liveness now); the fetch itself is a load, no per-instance test.
 struct PlacementVsPush {
+	uint64_t visible = 0;     // BDA of the (slot, view) visible-index list
 	uint64_t instances = 0;   // BDA of the tile's PlacementInstanceBuffer
-	uint64_t alive = 0;       // BDA of flag2 buffer, 0 = skip alive test
 	uint64_t renderViews = 0; // BDA of the RenderView slab
 	uint32_t renderViewIndex = 0;
-	uint32_t cullFlags = kPlacementCullFrustum | kPlacementCullAlive;
+	uint32_t cullFlags = 0;   // 0 = trust the chain; DEBUG_RETEST = legacy compare
 };
 static_assert(sizeof(PlacementVsPush) == 32, "PlacementVsPush moved — update placement_instanced.vert.hlsl");
 

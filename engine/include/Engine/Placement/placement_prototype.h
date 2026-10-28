@@ -22,6 +22,8 @@ struct Prototype {
 	glm::vec3 boundsMin{ -0.5f };
 	glm::vec3 boundsMax{ 0.5f };
 	uint32_t flags = 0;
+	float maxDrawDistance = 0.0f; // species distance cull; 0 = unlimited
+	                               // (grass short, trees/rocks far)
 };
 
 class PrototypeTable {

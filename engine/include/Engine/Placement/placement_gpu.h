@@ -289,4 +289,121 @@ struct PlacementScatterPush {
 };
 static_assert(sizeof(PlacementScatterPush) == 64, "PlacementScatterPush moved — update scatter kernels");
 
+// ---------------------------------------------------------------------------
+// PR03: the GPU-visible binning path (per-view scratch over the
+// persistent instance buffers — the instances NEVER move per camera
+// frame; only the visible-index list does).
+//
+// Pipeline (all GPU, no readback on the frame path):
+//   cull     — per instance: frustum/proto-sphere + alive + species-
+//              distance tests -> bitpack mask + per-proto atomic counts
+//   prefix   — one thread: counts -> exclusive offsets + total
+//   scatter  — per instance: mask bit set -> atomic per-bin append ->
+//              visible[offset[proto] + n] = source slot
+//   drawbuild— per proto: write the indirect commands' dynamic halves
+//              (instanceCount = counts[p], firstInstance = offsets[p]);
+//              the CPU seeds the immutable halves (indexCount/
+//              firstIndex/vertexOffset) once per prototype table
+// The VS then fetches: visible[SV_InstanceID] -> source slot -> the
+// 40-byte instance (SV_InstanceID includes the command's firstInstance
+// under SPIR-V, so bin p's draw walks exactly its own visible range).
+//
+// Atomic within-bin order is arbitrary per frame (documented): the
+// buffer position is NOT an identity — overrides key by StableID (the
+// plan's rule); a stable candidate-index scatter is the refinement if
+// deterministic within-bin order is ever needed.
+// ---------------------------------------------------------------------------
+
+// The per-(tile slot, view) bin slab (128 bytes).
+struct PlacementBinsGpu {
+	uint32_t counts[8] = {};     // cull's atomics: per-proto visible counts
+	uint32_t offsets[8] = {};    // prefix's exclusive sums (bin base in visible[])
+	uint32_t appendNext[8] = {}; // scatter's per-bin append cursors (re-zeroed)
+	uint32_t total = 0;         // sum of counts
+	uint32_t pad[7] = {};
+};
+static_assert(sizeof(PlacementBinsGpu) == 128,
+	"PlacementBinsGpu moved — update placement_cull.hlsli");
+
+// VkDrawIndexedIndirectCommand shape (the gfxfilter GfxIndirectCmd
+// precedent). The CPU seeds indexCount/firstIndex/vertexOffset per
+// prototype; the GPU writes instanceCount/firstInstance per frame.
+struct PlacementIndirectCmd {
+	uint32_t indexCount = 0;
+	uint32_t instanceCount = 0;
+	uint32_t firstIndex = 0;
+	int32_t vertexOffset = 0;
+	uint32_t firstInstance = 0;
+};
+static_assert(sizeof(PlacementIndirectCmd) == 20,
+	"PlacementIndirectCmd moved — update placement_cull.hlsli");
+inline constexpr uint32_t kPlacementIndirectStride = sizeof(PlacementIndirectCmd);
+inline constexpr uint32_t kPlacementMaxProtos = 8;
+// The HLSL view bound (PlacementInstanceBuffer.items[...]) — the C++
+// spelling (placement_common.hlsli's PLACEMENT_MAX_TILE_INSTANCES).
+inline constexpr uint32_t kPlacementMaxTileInstances = 65536;
+
+// Cull flag bits (PlacementCullPush.cullFlags + the VS debug tail).
+inline constexpr uint32_t kPlacementCullFrustum = 1;
+inline constexpr uint32_t kPlacementCullAlive = 2;
+inline constexpr uint32_t kPlacementCullDistance = 4;
+
+// Must match placement_cull.hlsli PlacementCullPush (240 bytes, dx-layout).
+// The kernels SELF-BOUND the live count from the count buffer
+// (min(raw, capacity)); the dispatch width is the CPU-known capacity.
+struct PlacementCullPush {
+	uint64_t instances = 0;  // BDA of the tile's PlacementInstanceBuffer
+	uint64_t count = 0;      // BDA of the tile's PlacementCountBuffer
+	uint64_t mask = 0;       // BDA of the bitpacked verdict buffer
+	uint64_t bins = 0;       // BDA of PlacementBinsGpu
+	uint64_t alive = 0;      // BDA of flag2, 0 = skip the alive test
+	uint64_t renderViews = 0; // BDA of the RenderView slab
+	uint32_t renderViewIndex = 0;
+	uint32_t cullFlags = kPlacementCullFrustum | kPlacementCullAlive;
+	uint32_t protoCount = 1;
+	uint32_t padD = 0;       // (was liveCount — self-bounded on device)
+	// Per-proto conservative spheres (center.xyz, radius.w) from the
+	// cooked mesh bounds — NOT a made-up guard factor; and per-proto max
+	// draw distances (0 = unlimited).
+	glm::vec4 protoBounds[kPlacementMaxProtos]{ glm::vec4(0.0f, 0.0f, 0.0f, 0.5f) };
+	float protoDist[kPlacementMaxProtos] = {};
+	glm::vec3 camPos{ 0.0f };    // species-distance origin (per-view CPU data)
+	float maxInstanceScale = 1.0f; // radius scaling bound (config.maxScale)
+};
+static_assert(sizeof(PlacementCullPush) == 240,
+	"PlacementCullPush moved — update placement_cull.hlsli");
+
+inline constexpr const char* kPlacementCullCsPath = "content/shaders/placement_cull.cs.hlsl.spv";
+inline constexpr const char* kPlacementPrefixCsPath = "content/shaders/placement_prefix.cs.hlsl.spv";
+inline constexpr const char* kPlacementScatterVisCsPath = "content/shaders/placement_scatter_visible.cs.hlsl.spv";
+inline constexpr const char* kPlacementDrawBuildCsPath = "content/shaders/placement_drawbuild.cs.hlsl.spv";
+
+// Must match placement_scatter_visible.cs.hlsl PlacementScatterVisPush
+// (48 bytes). The kernels SELF-BOUND from the count buffer
+// (min(raw, capacity)); the dispatch width is the CPU-known capacity.
+struct PlacementScatterVisPush {
+	uint64_t instances = 0;
+	uint64_t count = 0;
+	uint64_t mask = 0;
+	uint64_t bins = 0;
+	uint64_t visible = 0;
+	uint32_t protoCount = 1; // chain parity; unused by the kernel
+	uint32_t pad0 = 0;
+};
+static_assert(sizeof(PlacementScatterVisPush) == 48,
+	"PlacementScatterVisPush moved — update placement_scatter_visible.cs.hlsl");
+
+// Must match placement_drawbuild.cs.hlsl PlacementDrawBuildPush
+// (32 bytes).
+struct PlacementDrawBuildPush {
+	uint64_t bins = 0;
+	uint64_t indirect = 0;
+	uint32_t protoCount = 1;
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+	uint32_t pad2 = 0;
+};
+static_assert(sizeof(PlacementDrawBuildPush) == 32,
+	"PlacementDrawBuildPush moved — update placement_drawbuild.cs.hlsl");
+
 } // namespace smvk::placement

@@ -119,9 +119,11 @@ struct PlacementRenderInstance {
 //              ClearTile before every dispatch (DEVICE_LOCAL pages
 //              recycle garbage on churn — the zero-on-creation
 //              convention; the guard reads it back here).
+#define PLACEMENT_MAX_TILE_INSTANCES 65536
+
 struct PlacementInstanceBuffer
 {
-    PlacementRenderInstance items[65536];
+    PlacementRenderInstance items[PLACEMENT_MAX_TILE_INSTANCES];
 };
 
 struct PlacementCountBuffer

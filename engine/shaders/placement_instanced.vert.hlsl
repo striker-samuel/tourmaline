@@ -2,42 +2,43 @@
 // SPDX-License-Identifier: MIT
 
 // Placement instanced-path vertex shader: draws GPU-resident placement
-// instances via DrawIndexedIndirect, one command per (tile, prototype) run.
+// instances via DrawIndexedIndirect, one command per (tile, prototype)
+// bin — the PR03 GPU-visible chain (cull -> prefix -> scatter ->
+// drawbuild writes the visible-index list + the commands' dynamic
+// halves; the CPU only coarse-culls whole tiles and records the
+// indirect draws).
 //
-// Differences vs gfxfiltered.vert.hlsl:
-//   - model matrix is composed per instance from the placement instance
-//     buffer: T(position) * RotY(yaw) * S(uniform scale). Scale is always
-//     uniform (enforced at generation), so normals rotate without the
-//     adjugate: worldNormal = RotY * normal. Mirroring never occurs
-//     (det = sc^3 > 0), so tangent handedness passes through.
-//   - instance fetch index = SV_InstanceID, which under SPIR-V already
-//     includes the indirect command's firstInstance (runs are sorted by
-//     prototype at generation; see PlacementTile).
-//   - per-instance culling in the VS (frustum sphere + alive flag), with
-//     failures collapsed to out-of-clip degenerates — the particles_draw
-//     precedent. Clip does the exact cull; the VS test only saves work.
-//     Frustum radius is conservative (guard factor below); it may keep,
-//     never wrongly culls.
+//   - INSTANCE FETCH: visible[SV_InstanceID] -> the SOURCE slot ->
+//     the 40-byte instance. SV_InstanceID includes the indirect
+//     command's firstInstance under SPIR-V, so bin p's draw walks
+//     exactly its own visible range [offsets[p], offsets[p]+counts[p])
+//     — no degenerate-collapse vertex waste, no per-instance VS test
+//     on the hot path.
+//   - model matrix is composed per instance: T(position) * RotY(yaw) *
+//     S(uniform scale). Scale is always uniform (enforced at
+//     generation), so normals rotate without the adjugate. Mirroring
+//     never occurs (det = sc^3 > 0), so tangent handedness passes
+//     through.
+//   - cullFlags & PLACEMENT_CULL_DEBUG_RETEST: the LEGACY conservative
+//     frustum re-test (the pre-chain degenerate collapse) kept as a
+//     DEBUG compare switch while the chain is validated — the guard
+//     factor form, never for production (the production bound is the
+//     per-proto cooked sphere in the cull kernel).
 //   - placement draws are dynamic: lmChunk none, lightmapUv zero.
 //
-// Push: 32B PlacementVsPush tail at byte offset 192 (the main pass'
-// unused prevModel scratch — same overlay precedent as FilteredVsPush;
-// different passes, no conflict). The 256B scene push stays intact for
-// the fragment shader, so all existing fragment shaders work unchanged.
+// Push: 32B tail at byte offset 192 (the main pass' unused prevModel
+// scratch — same overlay precedent as FilteredVsPush; different passes,
+// no conflict). The 256B scene push stays intact for the fragment
+// shader, so all existing fragment shaders work unchanged.
 #define PLACEMENT_INSTANCED_PASS
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "placement_common.hlsli"
-#include "placement_constraint.hlsli"
+#include "placement_cull.hlsli"
 
-// Conservative bound: unit-cube half-diagonal (0.866) * max scale, times
-// a guard for prototype extents beyond the unit cube. May keep culled
-// instances (extra VS cost), never culls visible ones.
-#define PLACEMENT_VS_BOUND_GUARD 4.0f
-
-// Cull flag bits (PlacementVsPush.cullFlags).
-#define PLACEMENT_CULL_FRUSTUM 1
-#define PLACEMENT_CULL_ALIVE   2
+// VS debug re-test bit (PlacementVsPush.cullFlags): re-run the legacy
+// guard-based frustum test and collapse failures (compare switch only).
+#define PLACEMENT_CULL_DEBUG_RETEST 8
 
 struct PlacementVsMainPush
 {
@@ -47,11 +48,11 @@ struct PlacementVsMainPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    vk::BufferPointer<PlacementInstanceBuffer> instances; // 192
-    vk::BufferPointer<PlacementFlag2Buffer> alive;        // 200 (0 = all alive)
-    vk::BufferPointer<RenderViewBuffer> renderViews;      // 208
+    vk::BufferPointer<PlacementVisibleBuffer> visible;     // 192
+    vk::BufferPointer<PlacementInstanceBuffer> instances;   // 200
+    vk::BufferPointer<RenderViewBuffer> renderViews;       // 208
     uint renderViewIndex;  // 216
-    uint cullFlags;        // 220
+    uint cullFlags;        // 220 (debug re-test switch; 0 = trust the chain)
 };
 
 [[vk::push_constant]]
@@ -69,9 +70,11 @@ struct VSIn
     // sentinel), and StaticVertexFormat no longer binds the second UV
     // channel anyway (lightmaps deprecated — see mesh.h).
     // NOTE: via SPIR-V, SV_InstanceID maps to InstanceIndex, which already
-    // includes the indirect command's firstInstance. No BaseInstance fetch
-    // (and no shaderDrawParameters requirement): idx below IS the tile
-    // buffer index for per-prototype runs.
+    // includes the indirect command's firstInstance (= the proto bin's
+    // offset in the visible list). idx below IS the global visible-list
+    // position — the chain's per-bin ranges make each draw walk exactly
+    // its own instances (the nonzero-firstInstance contract, pinned by
+    // PlacementGpuTests' bin-range identity checks).
     uint instanceID : SV_InstanceID;
 };
 struct VSOut
@@ -90,18 +93,25 @@ struct VSOut
 VSOut mainVS(VSIn IN)
 {
     VSOut OUT;
-    // Indirect firstInstance is pre-added to SV_InstanceID by hardware.
+    // Indirect firstInstance is pre-added to SV_InstanceID by hardware:
+    // idx is the position inside the GLOBAL visible list — bin p's draw
+    // walks exactly [offsets[p], offsets[p] + counts[p]).
     uint idx = IN.instanceID;
-    PlacementRenderInstance inst = pcPV.instances.Get().items[idx];
+    // THE CHAIN FETCH: visible slot -> source instance. No per-instance
+    // test on the hot path — the cull kernel already decided (the
+    // degenerate-collapse waste of the pre-chain VS is gone).
+    uint source = pcPV.visible.Get().v[idx];
+    PlacementRenderInstance inst = pcPV.instances.Get().items[source];
 
-    // ---- Per-instance cull (degenerate collapse on failure). ----
-    bool culled = false;
-    if ((pcPV.cullFlags & PLACEMENT_CULL_ALIVE) != 0 && pcPV.alive.Get().v[idx].y == 0)
-        culled = true;
-    if (!culled && (pcPV.cullFlags & PLACEMENT_CULL_FRUSTUM) != 0)
+    // DEBUG compare switch (PLACEMENT_CULL_DEBUG_RETEST): the legacy
+    // guard-based conservative frustum re-test, kept while the chain is
+    // validated. Production leaves this OFF (the production bound is
+    // the per-proto cooked sphere in the cull kernel).
+    if ((pcPV.cullFlags & PLACEMENT_CULL_DEBUG_RETEST) != 0)
     {
+        bool culled = false;
         float boundR = 0.8660254f * max(inst.scale.x, max(inst.scale.y, inst.scale.z))
-            * PLACEMENT_VS_BOUND_GUARD;
+            * 4.0f; // the old guard factor — debug-only
         for (uint p = 0; p < 6; ++p)
         {
             float4 plane = pcPV.renderViews.Get().views[pcPV.renderViewIndex].m_viewPlanes[p];
@@ -111,19 +121,18 @@ VSOut mainVS(VSIn IN)
                 break;
             }
         }
-    }
-    if (culled)
-    {
-        // Outside a common clip plane: the whole triangle clips away.
-        OUT.pos = float4(2.0f, 2.0f, 2.0f, 1.0f);
-        OUT.color = float3(0.0f, 0.0f, 0.0f);
-        OUT.uv = float2(0.0f, 0.0f);
-        OUT.worldPos = float3(0.0f, 0.0f, 0.0f);
-        OUT.normal = float3(0.0f, 1.0f, 0.0f);
-        OUT.tangent = float4(1.0f, 0.0f, 0.0f, 1.0f);
-        OUT.lightmapUv = float2(0.0f, 0.0f);
-        OUT.lmChunk = 0xFFFFFFFFu;
-        return OUT;
+        if (culled)
+        {
+            OUT.pos = float4(2.0f, 2.0f, 2.0f, 1.0f);
+            OUT.color = float3(0.0f, 0.0f, 0.0f);
+            OUT.uv = float2(0.0f, 0.0f);
+            OUT.worldPos = float3(0.0f, 0.0f, 0.0f);
+            OUT.normal = float3(0.0f, 1.0f, 0.0f);
+            OUT.tangent = float4(1.0f, 0.0f, 0.0f, 1.0f);
+            OUT.lightmapUv = float2(0.0f, 0.0f);
+            OUT.lmChunk = 0xFFFFFFFFu;
+            return OUT;
+        }
     }
 
     // ---- Compose T * RotY * S (column-major). ----

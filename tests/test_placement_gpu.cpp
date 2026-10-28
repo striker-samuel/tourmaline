@@ -759,6 +759,257 @@ int main()
 			"gpu.con-oracle-regime");
 	}
 
+	// =====================================================================
+	// 6) The PR03 visible chain (cull -> prefix -> scatter -> drawbuild):
+	//    three prototypes with DISTINCT cooked bounds + a species draw
+	 //   distance on the middle one, a fabricated frustum covering half
+	//    the tile — readback the bins, the visible list and the indirect
+	//    commands and compare against a CPU mirror over the GPU's OWN
+	//    scatter bits (the same instance set, the same sphere/planes
+	//    math). This is the nonzero-firstInstance contract too: bin p's
+	//    draw range [offsets[p], offsets[p]+counts[p]) must contain
+	//    exactly proto p's visible slots (what the VS walks via
+	//    SV_InstanceID).
+	// =====================================================================
+	std::fprintf(stderr, "[place-gpu] stage: visible chain\n");
+	{
+		PlacementCullPrograms cullProgs;
+		ok = cullProgs.Ensure(rm);
+		Check(ok && cullProgs.Valid(), "gpu.vis-programs");
+
+		PlacementPass pass2;
+		PlacementPassDesc desc2{};
+		desc2.maxInstancesPerTile = 4096;
+		desc2.maxTiles = 1;
+		ok = pass2.Ensure(rm, rg, desc2);
+		Check(ok && pass2.Valid(), "gpu.vis-pass-create");
+		PlacementVisibleSet vis;
+		ok = vis.Create(rm, rg, 4096);
+		Check(ok && vis.Valid(), "gpu.vis-set-create");
+
+		// The render-view slab: one fabricated view (identity matrices —
+		// the chain only reads the planes; the VS reads viewProj).
+		glm::mat4 ident(1.0f);
+		std::vector<float> viewBytes(64); // 256B = one RenderView (floats)
+		auto putMat = [&](size_t base, const glm::mat4& m) {
+			for (int c = 0; c < 4; ++c)
+				for (int r = 0; r < 4; ++r)
+					viewBytes[base + c * 4 + r] = m[c][r];
+		};
+		putMat(0, ident);        // m_viewProjectionMatrix
+		putMat(16, ident);       // m_inverseViewProjectionMatrix
+		// m_viewPlanes[6] at float 32..56: an inward box x in [-4, 36],
+		// z in [-4, 36], y generous (flat grid at y=0).
+		const glm::vec4 planes[6] = {
+			glm::vec4(1, 0, 0, 4), glm::vec4(-1, 0, 0, 36),
+			glm::vec4(0, 1, 0, 100), glm::vec4(0, -1, 0, 100),
+			glm::vec4(0, 0, 1, 4), glm::vec4(0, 0, -1, 36) };
+		for (int pl = 0; pl < 6; ++pl)
+			for (int k = 0; k < 4; ++k)
+				viewBytes[32 + pl * 4 + k] = planes[pl][k];
+		smvk::Holder<smvk::BufferHandle> viewSlab = rm.CreateBuffer(
+			sizeof(float) * viewBytes.size(), smvk::BufferType_Storage,
+			"placement test view slab");
+		Check(!viewSlab.empty(), "gpu.vis-view-slab");
+		smvk::LogicalBufferHandle viewSlabL = rg.AddExternalBuffer(viewSlab,
+			"placement test view slab");
+		Check(!viewSlabL.empty(), "gpu.vis-view-logical");
+		rm.UploadDataToBuffer(viewSlab, viewBytes.data(),
+			sizeof(float) * viewBytes.size(),
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
+
+		// The layer: full density (deterministic population), three
+		// prototypes with distinct cooked spheres; proto 1 has a 12m
+		// species draw distance (the camera sits at the tile corner).
+		GridDomain grid = MakeGrid(glm::vec3(0.0f, 0.0f, 0.0f), 16);
+		auto lb = MakeLayer(12, 1.0f, 1024);
+		lb.domainKind = DomainKind::Grid;
+		lb.grid = &grid;
+		Prototype pa; pa.weight = 1.0f;
+		pa.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+		pa.boundsMax = glm::vec3(0.5f, 1.0f, 0.5f);
+		Prototype pb; pb.weight = 1.0f;
+		pb.boundsMin = glm::vec3(-1.0f, 0.0f, -1.0f);
+		pb.boundsMax = glm::vec3(1.0f, 3.0f, 1.0f);
+		pb.maxDrawDistance = 12.0f; // the species distance cull
+		Prototype pc; pc.weight = 1.0f;
+		pc.boundsMin = glm::vec3(-2.0f, -2.0f, -2.0f);
+		pc.boundsMax = glm::vec3(2.0f, 2.0f, 2.0f);
+		lb.prototypes.add(pa); lb.prototypes.add(pb); lb.prototypes.add(pc);
+		const TileID tile{ 1, 0, 1 };
+		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
+		Check(oracle.size() == 1024, "gpu.vis-oracle-full");
+
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.vis-program-upload");
+		PlacementProgramView view = prog.View(rm);
+
+		pass2.ClearTile(rm, 0);
+		PlacementTilePush push;
+		ok = PlacementPass::BuildTilePush(lb, tile, view,
+			pass2.TileInstancesAddress(rm, 0), pass2.TileCountAddress(rm, 0), push);
+		Check(ok, "gpu.vis-scatter-push");
+
+		PlacementCullPush cullPush;
+		FillCullPush(lb, pass2.TileInstancesAddress(rm, 0),
+			pass2.TileCountAddress(rm, 0), vis.MaskAddress(rm),
+			vis.BinsAddress(rm), 0 /* no constraint tile: skip alive */,
+			rm.GetBufferDeviceAddress(viewSlab), 0, glm::vec3(0, 5, 0),
+			kPlacementCullFrustum | kPlacementCullDistance, cullPush);
+		Check(cullPush.protoCount == 3
+			&& cullPush.protoDist[1] == 12.0f, "gpu.vis-cull-push-filled");
+		PlacementScatterVisPush scPush{};
+		scPush.instances = pass2.TileInstancesAddress(rm, 0);
+		scPush.count = pass2.TileCountAddress(rm, 0);
+		scPush.mask = vis.MaskAddress(rm);
+		scPush.bins = vis.BinsAddress(rm);
+		scPush.visible = vis.VisibleAddress(rm);
+		scPush.protoCount = 3;
+		PlacementDrawBuildPush dbPush{};
+		dbPush.bins = vis.BinsAddress(rm);
+		dbPush.indirect = vis.IndirectAddress(rm);
+		dbPush.protoCount = 3;
+		// Seed the immutable indirect halves (fake mesh geometry: proto i
+		// draws 300 indices at firstIndex i*64).
+		PlacementIndirectCmd seeds[3] = {};
+		for (int i = 0; i < 3; ++i) {
+			seeds[i].indexCount = 300;
+			seeds[i].firstIndex = uint32_t(i) * 64;
+			seeds[i].vertexOffset = 0;
+		}
+		ok = vis.SeedIndirect(rm, seeds, 3);
+		Check(ok, "gpu.vis-indirect-seeded");
+		vis.ClearFrame(rm); // zero mask + bin atomics (the frame cadence)
+
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			smvk::RenderPass& eval = pass2.AddEvalPass(g, 0, "PlacementEvalVis");
+			eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				pass2.PushAndDispatch(cmd, push);
+			});
+			smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(g, pass2,
+				0, vis, smvk::LogicalBufferHandle{}, viewSlabL);
+			cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchCull(cmd,
+					cullProgs.cullProgram, cullPush, 4096);
+			});
+			smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(g, vis);
+			pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchPrefix(cmd,
+					cullProgs.prefixProgram, cullPush);
+			});
+			smvk::RenderPass& sc = PlacementCullPrograms::AddScatterVisPass(g,
+				pass2, 0, vis);
+			sc.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchScatterVis(cmd,
+					cullProgs.scatterProgram, scPush, 4096);
+			});
+			smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(g, vis);
+			db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				PlacementCullPrograms::PushAndDispatchDrawBuild(cmd,
+					cullProgs.buildProgram, dbPush);
+			});
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+
+		std::vector<RenderInstance> gpu;
+		uint32_t overflow = 1;
+		const uint32_t n = pass2.DownloadTile(rm, 0, gpu, 4096, &overflow);
+		Check(n == 1024 && overflow == 0, "gpu.vis-scatter-full");
+
+		// ---- the CPU mirror: same instances (GPU bits), same math. ----
+		// Sphere per proto + the fabricated planes + the species
+		// distance — the expected visible SET per proto.
+		auto sphereOf = [&](uint32_t p) {
+			const Prototype& pr = lb.prototypes.at(p);
+			const glm::vec3 c = (pr.boundsMin + pr.boundsMax) * 0.5f;
+			const glm::vec3 h = (pr.boundsMax - pr.boundsMin) * 0.5f;
+			return glm::vec4(c, glm::length(h));
+		};
+		const glm::vec4 spheres[3] = { sphereOf(0), sphereOf(1), sphereOf(2) };
+		const glm::vec4 mirrorPlanes[6] = {
+			planes[0], planes[1], planes[2], planes[3], planes[4], planes[5] };
+		const glm::vec3 camPos(0.0f, 5.0f, 0.0f);
+		std::vector<std::vector<uint32_t>> expected(3);
+		for (uint32_t i = 0; i < n; ++i) {
+			const RenderInstance& inst = gpu[i];
+			const uint32_t p = inst.prototypeId;
+			const float s = std::max({ inst.scale.x, inst.scale.y, inst.scale.z });
+			const float r = spheres[p].w * s;
+			const glm::vec3 center = inst.position + glm::vec3(spheres[p]) * s;
+			bool visible = true;
+			// species distance (proto 1 only here)
+			if (lb.prototypes.at(p).maxDrawDistance > 0.0f) {
+				const float d = glm::length(center - camPos) - r;
+				if (d > lb.prototypes.at(p).maxDrawDistance) visible = false;
+			}
+			if (visible)
+				for (int pl = 0; pl < 6 && visible; ++pl) {
+					const glm::vec4& plane = mirrorPlanes[pl];
+					if (glm::dot(glm::vec3(plane), center) + plane.w < -r)
+						visible = false;
+				}
+			if (visible) expected[p].push_back(i);
+		}
+
+		// ---- the bins readback. ----
+		PlacementBinsGpu binsOut;
+		ok = rm.DownloadDataFromBuffer(vis.bins, &binsOut, sizeof(binsOut));
+		Check(ok, "gpu.vis-bins-readback");
+		uint32_t offset = 0;
+		bool offsetsOk = true, countsOk = true;
+		for (int p = 0; p < 3; ++p) {
+			if (binsOut.counts[p] != expected[p].size()) countsOk = false;
+			if (binsOut.offsets[p] != offset) offsetsOk = false;
+			offset += binsOut.counts[p];
+		}
+		Check(countsOk, "gpu.vis-bin-counts-parity");
+		Check(offsetsOk, "gpu.vis-bin-offsets-parity");
+		Check(binsOut.total == offset
+			&& binsOut.total < n, "gpu.vis-total-parity");
+		Check(expected[0].size() > 0 && expected[1].size() > 0
+			&& expected[2].size() > 0, "gpu.vis-all-three-bins-nonempty");
+		// The species distance actually culled proto 1 somewhere.
+		Check(expected[1].size() < n / 3, "gpu.vis-species-distance-culls");
+
+		// ---- the visible list: bin ranges hold exactly proto p's slots
+		// (the nonzero-firstInstance VS contract). ----
+		std::vector<uint32_t> visibleOut(n, 0);
+		ok = rm.DownloadDataFromBuffer(vis.visible, visibleOut.data(),
+			sizeof(uint32_t) * n);
+		Check(ok, "gpu.vis-list-readback");
+		bool rangesOk = true;
+		for (int p = 0; p < 3; ++p) {
+			std::vector<uint32_t> got(visibleOut.begin() + binsOut.offsets[p],
+				visibleOut.begin() + binsOut.offsets[p] + binsOut.counts[p]);
+			std::vector<uint32_t> want = expected[p];
+			std::sort(got.begin(), got.end());
+			std::sort(want.begin(), want.end());
+			if (got != want) { rangesOk = false; break; }
+		}
+		Check(rangesOk, "gpu.vis-bin-range-identity");
+
+		// ---- the indirect commands. ----
+		PlacementIndirectCmd cmds[8];
+		ok = rm.DownloadDataFromBuffer(vis.indirect, cmds,
+			kPlacementIndirectStride * 3);
+		Check(ok, "gpu.vis-indirect-readback");
+		bool cmdsOk = true;
+		for (int p = 0; p < 3; ++p) {
+			if (cmds[p].indexCount != 300 || cmds[p].firstIndex != uint32_t(p) * 64
+				|| cmds[p].vertexOffset != 0)
+				cmdsOk = false; // the CPU-seeded immutable halves stand
+			if (cmds[p].instanceCount != binsOut.counts[p]
+				|| cmds[p].firstInstance != binsOut.offsets[p])
+				cmdsOk = false; // the GPU-written dynamic halves
+		}
+		Check(cmdsOk, "gpu.vis-indirect-commands-parity");
+		// Nonzero firstInstance occurs for later bins (the VS contract
+		// walks them via SV_InstanceID).
+		Check(binsOut.offsets[1] > 0 || binsOut.offsets[2] > 0,
+			"gpu.vis-nonzero-first-instance");
+	}
+
 	std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
 }
