@@ -546,3 +546,11 @@ pipeline_cache*.bin
 # repo-relative path. A project directory is SELF-CONTAINED (copy it to
 # another machine and Project.exe build works with no external store).
 /projects/
+
+# ---- demo content releases (paired with the repo; the .pak binaries
+# live on the eleases branch, pushed to the oldpc remote only —
+# see releases/README.md). Un-ignore the folder + manifest, keep the
+# big binaries out of master. ----
+!releases/
+!releases/README.md
+releases/paks/*.pak
