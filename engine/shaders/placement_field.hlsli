@@ -30,6 +30,7 @@
 #define PLACEMENT_OP_INVERT   14
 #define PLACEMENT_OP_SLOPEMASK 15
 #define PLACEMENT_OP_ALTIMASK  16
+#define PLACEMENT_OP_ECOMASK   17  // painted ecotope weight, params[0] = channel
 
 // Must match C++ kPlacementMaxFieldInstrs.
 #define PLACEMENT_MAX_FIELD_INSTRS 64
@@ -48,6 +49,46 @@ struct PlacementInstrBuffer
 {
     PlacementFieldInstr i[PLACEMENT_MAX_FIELD_INSTRS];
 };
+
+// The ecotope weight mask (PR04): a channel-planar float grid over
+// world XZ. Must match C++ EcotopeMaskData's layout
+// ([c][z][x], channels*height*width floats) + the same texel mapping
+// (origin/spacing, the 1.001 edge clamp) and bilinear composition —
+// painting density must never reshuffle unrelated stable IDs.
+struct PlacementEcoBuffer { float w[1048576]; }; // 4M floats max (16MB)
+struct PlacementEcoMask
+{
+    vk::BufferPointer<PlacementEcoBuffer> weights; // 0
+    uint channels; // 8
+    uint w;        // 12
+    uint h;        // 16
+    uint pad;      // 20
+    float ox;      // 24
+    float oz;      // 28
+    float sx;      // 32
+    float sz;      // 36
+};
+
+// Bilinear, edge-clamped ecotope weight — mirrors C++
+// EcotopeMaskData::Sample exactly (including the defensive 0 on an
+// out-of-range channel; validated programs never send one).
+float PlacementSampleEcoMask(PlacementEcoMask eco, uint channel,
+    float x, float z)
+{
+    if (channel >= eco.channels)
+        return 0.0f;
+    float gx = clamp((x - eco.ox) / eco.sx, 0.0f, (float)eco.w - 1.001f);
+    float gz = clamp((z - eco.oz) / eco.sz, 0.0f, (float)eco.h - 1.001f);
+    uint x0 = (uint)gx, z0 = (uint)gz;
+    float fx = gx - (float)x0, fz = gz - (float)z0;
+    uint base = (channel * eco.h + z0) * eco.w + x0;
+    float w00 = eco.weights.Get().w[base];
+    float w10 = eco.weights.Get().w[base + 1];
+    float w01 = eco.weights.Get().w[base + eco.w];
+    float w11 = eco.weights.Get().w[base + eco.w + 1];
+    return w00 * (1 - fx) * (1 - fz) + w10 * fx * (1 - fz)
+         + w01 * (1 - fx) * fz + w11 * fx * fz;
+}
 
 float PlacementValueNoise2D(float x, float z, uint seedLo, uint seedHi) {
     int2 base = int2((int)floor(x), (int)floor(z));
@@ -97,7 +138,8 @@ float PlacementSmoothstepF(float e0, float e1, float x) {
 float PlacementEvaluateField(
     vk::BufferPointer<PlacementInstrBuffer> instrs,
     uint instrCount, uint acceptIndex,
-    float3 p, float3 n, uint seedLo, uint seedHi)
+    float3 p, float3 n, uint seedLo, uint seedHi,
+    PlacementEcoMask eco)
 {
     float v[PLACEMENT_MAX_FIELD_INSTRS];
     const float slopeDeg = (n.y >= 1.0f) ? 0.0f
@@ -175,6 +217,10 @@ float PlacementEvaluateField(
             r = lo * hi;
             break;
         }
+        case PLACEMENT_OP_ECOMASK:
+            r = PlacementSampleEcoMask(eco, (uint)max(ins.params.x, 0.0f),
+                p.x, p.z);
+            break;
         default:
             r = 0.0f; // validated programs never reach this
             break;

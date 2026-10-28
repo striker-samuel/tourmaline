@@ -70,6 +70,16 @@ struct PlacementDomainParams
     vk::BufferPointer<PlacementInstrBuffer> instrs; // 176
     uint instrCount;   // 184
     uint acceptIndex;  // 188
+    // ---- the ecotope-mask tail (PR04: the painted layer) ----
+    vk::BufferPointer<PlacementEcoBuffer> eco; // 192 (0 = none)
+    uint ecoW;         // 200
+    uint ecoH;         // 204
+    uint ecoChannels;  // 208
+    uint padEco;       // 212
+    float ecoOX;       // 216
+    float ecoOZ;       // 220
+    float ecoSX;       // 224
+    float ecoSZ;       // 228
 };
 
 // RETIRED (PR02): PlacementScatterDensity — the old base+noise density

@@ -100,7 +100,12 @@ enum class NodeKind : int {
 	                // i[1] = bound terrain GROUP world node (-1 = analytic:
 	                // when bound, the LIVE painted heights drive previews)
 	                // (appended after Layer: kind ints are serialized)
-	Count = 21,
+	EcotopeMask = 21, // field: painted ecotope weight at world XZ (the
+	                // paint layer channel). f: channel (0 = the first).
+	                // Reads the layer's EcotopeMaskData — a maskless layer
+	                // REFUSES GPU evaluation (never a silent zero density).
+	                // (appended: kind ints are serialized)
+	Count = 22,
 };
 
 const char* NodeKindName(NodeKind k);

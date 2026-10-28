@@ -168,6 +168,10 @@ std::vector<KindType> BuildAll() {
 		Int("seed32", "seed", 1), Int("terrainBind", "bind", -1),
 		Pin("domain", "dom", C::Domain, true) }));
 
+	add(NodeKind::EcotopeMask, MakeType("placement.ecotope", "Field", {
+		Num("channel", "ch", 0.0),
+		Pin("out", "o", C::Field, true) }));
+
 	return all;
 }
 

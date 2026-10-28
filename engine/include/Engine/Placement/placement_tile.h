@@ -106,6 +106,9 @@ public:
 		const GridDomain* grid = nullptr;             // not owned (caller keeps alive)
 		const PlacementMeshData* mesh = nullptr;      // not owned
 		const HeightfieldDomain* heightfield = nullptr; // not owned
+		const EcotopeMaskData* ecotope = nullptr;    // not owned (PR04: the
+		                                              // painted layer the
+		                                              // EcotopeMask op reads)
 		PrototypeTable prototypes;
 		TileGenConfig config;
 	};

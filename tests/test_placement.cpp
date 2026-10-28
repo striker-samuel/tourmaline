@@ -274,6 +274,54 @@ void TestFieldEval() {
 	DomainSample high; high.p = glm::vec3(0, 100, 0); high.n = glm::vec3(0, 1, 0);
 	Check(EvaluateProgram(p3, mid)[0] > 0.99f, "place.eval.alt-inside");
 	Check(EvaluateProgram(p3, high)[0] < 1e-5f, "place.eval.alt-outside");
+	// EcotopeMask (PR04): the painted weight at world XZ. The mask is a
+	// 2-channel grid: channel 0 = a west->east ramp, channel 1 = constant
+	// 0.25. Outside the grid, the edge clamp pins the border texels; a
+	// maskless layer reads 0 (the GPU gate refuses such programs).
+	{
+		EcotopeMaskData eco;
+		eco.width = 4; eco.height = 4; eco.channels = 2;
+		eco.origin = glm::vec2(0.0f, 0.0f);
+		eco.spacing = glm::vec2(8.0f, 8.0f);
+		eco.weights.assign(2 * 16, 0.0f);
+		for (uint32_t z = 0; z < 4; ++z)
+			for (uint32_t x = 0; x < 4; ++x)
+				eco.weights[z * 4 + x] = float(x) / 3.0f;       // ch0 ramp
+		for (uint32_t i = 16; i < 32; ++i) eco.weights[i] = 0.25f; // ch1 const
+		Check(eco.valid(), "place.eco.valid");
+		// Grid-coordinate k lands EXACTLY on texel k (fx=0): world x=8 is
+		// grid 1 -> 1/3; x=16 -> 2/3. (Texel CENTERS in world space —
+		// grid k+0.5 — bilinear straddle the next texel: the heightfield
+		// sampling contract.)
+		Check(std::abs(eco.Sample(0, 8.0f, 8.0f) - 1.0f / 3.0f) < 1e-6f,
+			"place.eco.texel-center");
+		Check(std::abs(eco.Sample(0, 16.0f, 0.0f) - 2.0f / 3.0f) < 1e-6f,
+			"place.eco.texel-center2");
+		Check(std::abs(eco.Sample(1, 5.0f, 30.0f) - 0.25f) < 1e-6f,
+			"place.eco.channel1");
+		// Midpoint bilinear: (0 + 1/3)/2 = 1/6 at x=4 between texels 0,1.
+		Check(std::abs(eco.Sample(0, 4.0f, 4.0f) - 1.0f / 6.0f) < 1e-6f,
+			"place.eco.bilinear-mid");
+		// Edge clamp: the min edge pins exactly to texel 0 (0.0); the max
+		// edge pins to 2.999 (the w-1.001 form) — ~1.0 but not exact.
+		Check(eco.Sample(0, -500.0f, 4.0f) == 0.0f, "place.eco.edge-clamp-min");
+		Check(eco.Sample(0, 500.0f, 4.0f) > 0.9995f, "place.eco.edge-clamp-max");
+		// The op through the evaluator: meadow = ecoMask * altitude.
+		PlacementProgram p4;
+		FieldInstr em; em.op = FieldOp::EcotopeMask; em.params[0] = 0.0f;
+		FieldInstr alt; alt.op = FieldOp::AltitudeMask;
+		alt.params[0] = 0; alt.params[1] = 5; alt.params[2] = 15; alt.params[3] = 25;
+		FieldInstr mm; mm.op = FieldOp::Mul; mm.a = 0; mm.b = 1;
+		p4.instrs = { em, alt, mm }; p4.acceptIndex = 2;
+		DomainSample at24; at24.p = glm::vec3(24.0f, 10.0f, 24.0f);
+		DomainSample at4; at4.p = glm::vec3(4.0f, 10.0f, 4.0f);
+		Check(std::abs(EvaluateProgram(p4, at24, &eco)[2] - 1.0f) < 1e-3f,
+			"place.eco.eval-full-weight");
+		Check(std::abs(EvaluateProgram(p4, at4, &eco)[2] - 1.0f / 6.0f) < 1e-5f,
+			"place.eco.eval-mid-weight");
+		// No mask bound: reads 0 (the GPU gate refuses loudly).
+		Check(EvaluateProgram(p4, at24)[2] == 0.0f, "place.eco.eval-maskless-zero");
+	}
 	// Transform helpers use own channels: yaw in [-pi,pi], scale in range
 	StableID id = MakeStableID(1, 0, TileID{}, 0, 0);
 	float yaw = YawFromId(id);
@@ -674,7 +722,7 @@ void TestTransientDraws() {
 
 void TestGpuPushAbi() {
 	using namespace smvk::placement;
-	Check(sizeof(PlacementTilePush) == 168, "place.gpu.push-168B");
+	Check(sizeof(PlacementTilePush) == 208, "place.gpu.push-208B");
 	Check(offsetof(PlacementTilePush, candidateCount) == 28, "place.gpu.count-offset");
 	Check(offsetof(PlacementTilePush, gridOrigin) == 48, "place.gpu.grid-offset");
 	Check(offsetof(PlacementTilePush, densityScale) == 80, "place.gpu.density-scale-offset");
@@ -682,6 +730,8 @@ void TestGpuPushAbi() {
 	Check(offsetof(PlacementTilePush, instrBDA) == 144, "place.gpu.instr-bda-offset");
 	Check(offsetof(PlacementTilePush, instrCount) == 152, "place.gpu.instr-count-offset");
 	Check(offsetof(PlacementTilePush, acceptIndex) == 156, "place.gpu.accept-offset");
+	Check(offsetof(PlacementTilePush, ecoBDA) == 168, "place.gpu.eco-bda-offset");
+	Check(offsetof(PlacementTilePush, ecoChannels) == 184, "place.gpu.eco-channels-offset");
 	Check(sizeof(GpuFieldInstr) == 32, "place.gpu.instr-32B");
 	Check(offsetof(GpuFieldInstr, params) == 16, "place.gpu.instr-params-offset");
 	Check(PlacementDispatchGroups(64) == 1, "place.gpu.dispatch-exact");
@@ -981,8 +1031,9 @@ void TestPushBridge() {
 	Prototype pine; pine.weight = 1.0f;
 	lb.prototypes.add(oak); lb.prototypes.add(pine);
 	PlacementProgramView view{ 0x3000, 3, 2 };
+	PlacementEcoView ecoView{}; // no mask: this program uses none
 	PlacementTilePush push;
-	Check(PlacementPass::BuildTilePush(lb, TileID{ 1, 2, 3 }, view,
+	Check(PlacementPass::BuildTilePush(lb, TileID{ 1, 2, 3 }, view, ecoView,
 		0x1000, 0x2000, push), "place.bridge.build-ok");
 	Check(push.seedLo == 0x56789ABCul && push.seedHi == 0x1234u, "place.bridge.seed-split");
 	Check(push.nodeId == 3 && push.candidateCount == 2048, "place.bridge.ids");
@@ -1000,17 +1051,40 @@ void TestPushBridge() {
 	// An empty program view refuses honestly (invalid-for-GPU layers run
 	// the CPU oracle — never a silent approximation).
 	Check(!PlacementPass::BuildTilePush(lb, TileID{}, PlacementProgramView{},
-		0, 0, push), "place.bridge.no-program-refuses");
+		ecoView, 0, 0, push), "place.bridge.no-program-refuses");
+	// A program that READS the painted layer refuses without a mask.
+	{
+		EcotopeMaskData eco; // 2 channels, minimal valid grid
+		eco.width = 8; eco.height = 8; eco.channels = 2;
+		eco.weights.assign(2 * 64, 0.5f);
+		auto ecoLb = lb;
+		ecoLb.ecotope = &eco;
+		ecoLb.program.instrs = { FieldInstr{ .op = FieldOp::EcotopeMask,
+				.params = { 0.0f, 0, 0, 0 } } };
+		ecoLb.program.acceptIndex = 0;
+		Check(!PlacementPass::BuildTilePush(ecoLb, TileID{}, view,
+			PlacementEcoView{}, 0, 0, push), "place.bridge.eco-without-mask-refuses");
+		PlacementEcoView okEco{ 0x777, 8, 8, 2, 0, 0, 1, 1 };
+		Check(PlacementPass::BuildTilePush(ecoLb, TileID{}, view, okEco,
+			0, 0, push) && push.ecoBDA == 0x777 && push.ecoChannels == 2
+			&& push.ecoW == 8 && push.ecoH == 8,
+			"place.bridge.eco-tail-filled");
+		// The layer's own mask binding is part of the gate.
+		auto unbound = ecoLb;
+		unbound.ecotope = nullptr;
+		Check(!PlacementPass::BuildTilePush(unbound, TileID{}, view, okEco,
+			0, 0, push), "place.bridge.eco-layer-unbound-refuses");
+	}
 	// Mesh layer (no kernel for the grid push) refuses honestly.
 	PlacementSystem::LayerBinding mlb = lb;
 	mlb.domainKind = DomainKind::MeshSurface;
 	mlb.grid = nullptr;
-	Check(!PlacementPass::BuildTilePush(mlb, TileID{}, view, 0, 0, push),
+	Check(!PlacementPass::BuildTilePush(mlb, TileID{}, view, ecoView, 0, 0, push),
 		"place.bridge.mesh-refuses");
 	// Empty prototype table -> single default weight.
 	PlacementSystem::LayerBinding elb = lb;
 	elb.prototypes.clear();
-	Check(PlacementPass::BuildTilePush(elb, TileID{}, view, 0, 0, push)
+	Check(PlacementPass::BuildTilePush(elb, TileID{}, view, ecoView, 0, 0, push)
 		&& push.protoCount == 1 && push.weightsA.x == 1.0f, "place.bridge.empty-proto");
 }
 
@@ -1075,10 +1149,31 @@ void TestProgramValidation() {
 	{
 		PlacementProgram p;
 		p.instrs = { OpConst(0.5f) };
-		p.instrs[0].op = static_cast<FieldOp>(17);
+		p.instrs[0].op = static_cast<FieldOp>(18);
 		p.acceptIndex = 0;
 		const char* err = nullptr;
 		Check(!ValidateProgramForGpu(p, err), "place.prog.unknown-op-refuses");
+	}
+	// EcotopeMask: the channel gate — no mask refuses, out-of-range
+	// channel refuses, a valid channel passes.
+	{
+		PlacementProgram p;
+		p.instrs = { FieldInstr{ .op = FieldOp::EcotopeMask,
+				.params = { 0.0f, 0, 0, 0 } } };
+		p.acceptIndex = 0;
+		const char* err = nullptr;
+		Check(!ValidateProgramForGpu(p, 0, err) && err != nullptr,
+			"place.prog.eco-no-mask-refuses");
+		Check(ValidateProgramForGpu(p, 1, err),
+			"place.prog.eco-channel0-with-1-channel-ok");
+		p.instrs[0].params[0] = 1.0f; // channel 1
+		Check(ValidateProgramForGpu(p, 2, err),
+			"place.prog.eco-channel1-with-2-channels-ok");
+		Check(!ValidateProgramForGpu(p, 1, err),
+			"place.prog.eco-channel1-with-1-channel-refuses");
+		p.instrs[0].params[0] = -0.5f; // negative
+		Check(!ValidateProgramForGpu(p, 2, err),
+			"place.prog.eco-negative-channel-refuses");
 	}
 	// Non-finite constants refuse.
 	{
@@ -1170,11 +1265,16 @@ void TestKernelAlgorithmParity() {
 
 void TestScatterParams() {
 	using namespace smvk::placement;
-	Check(sizeof(PlacementDomainParams) == 192, "place.scatter.params-192B");
+	Check(sizeof(PlacementDomainParams) == 232, "place.scatter.params-232B");
 	Check(offsetof(PlacementDomainParams, instrBDA) == 176
 		&& offsetof(PlacementDomainParams, instrCount) == 184
 		&& offsetof(PlacementDomainParams, acceptIndex) == 188,
 		"place.scatter.program-tail");
+	Check(offsetof(PlacementDomainParams, ecoBDA) == 192
+		&& offsetof(PlacementDomainParams, ecoW) == 200
+		&& offsetof(PlacementDomainParams, ecoChannels) == 208
+		&& offsetof(PlacementDomainParams, ecoOX) == 216,
+		"place.scatter.eco-tail");
 	Check(sizeof(PlacementScatterPush) == 64, "place.scatter.push-64B");
 	// The append-counter triple ABI (the capacity-guard contract).
 	Check(sizeof(PlacementCountGpu) == 16, "place.count.16B");
@@ -1201,8 +1301,9 @@ void TestScatterParams() {
 	mlb.config.densityScale = 1.25f;
 	ScatterBDAs b{ 11, 22, 0, 33, 44, 55, 0 };
 	PlacementProgramView view{ 0x500, 1, 0 };
+	PlacementEcoView ecoView{}; // this program uses no mask
 	PlacementDomainParams prm;
-	Check(FillScatterParams(mlb, view, b, prm), "place.scatter.mesh-ok");
+	Check(FillScatterParams(mlb, view, ecoView, b, prm), "place.scatter.mesh-ok");
 	Check(prm.domainKind == kPlacementScatterDomain_Mesh, "place.scatter.mesh-kind");
 	Check(prm.triCount == 1 && prm.vertCount == 3, "place.scatter.mesh-counts");
 	Check((prm.flags & kPlacementFlag_HasNormals) != 0, "place.scatter.mesh-normals");
@@ -1212,7 +1313,7 @@ void TestScatterParams() {
 	Check(prm.instrBDA == 0x500 && prm.instrCount == 1 && prm.acceptIndex == 0,
 		"place.scatter.program-fields");
 	// An empty program view refuses (explicit CPU fallback).
-	Check(!FillScatterParams(mlb, PlacementProgramView{}, b, prm),
+	Check(!FillScatterParams(mlb, PlacementProgramView{}, ecoView, b, prm),
 		"place.scatter.no-program-refuses");
 	// Heightfield mapping.
 	HeightfieldData hf;
@@ -1233,7 +1334,7 @@ void TestScatterParams() {
 	hlb.config.candidatesPerTile = 32;
 	ScatterBDAs hb{ 0, 0, 0, 0, 0, 0, 77 };
 	PlacementDomainParams hprm;
-	Check(FillScatterParams(hlb, view, hb, hprm), "place.scatter.hf-ok");
+	Check(FillScatterParams(hlb, view, ecoView, hb, hprm), "place.scatter.hf-ok");
 	Check(hprm.domainKind == kPlacementScatterDomain_Heightfield, "place.scatter.hf-kind");
 	Check(hprm.hfW == 3 && hprm.hfH == 3, "place.scatter.hf-dims");
 	Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
@@ -1247,7 +1348,27 @@ void TestScatterParams() {
 	glb.program.instrs = { OpConst(0.5f) };
 	glb.program.acceptIndex = 0;
 	PlacementDomainParams gprm;
-	Check(!FillScatterParams(glb, view, hb, gprm), "place.scatter.grid-refuses");
+	Check(!FillScatterParams(glb, view, ecoView, hb, gprm), "place.scatter.grid-refuses");
+	// A program that READS the painted layer refuses without a mask.
+	{
+		EcotopeMaskData eco; // 2 channels, minimal valid grid
+		eco.width = 16; eco.height = 16; eco.channels = 2;
+		eco.weights.assign(2 * 256, 0.5f);
+		auto ecoLb = mlb;
+		ecoLb.ecotope = &eco;
+		ecoLb.program.instrs = { FieldInstr{ .op = FieldOp::EcotopeMask,
+				.params = { 1.0f, 0, 0, 0 } } };
+		ecoLb.program.acceptIndex = 0;
+		PlacementDomainParams eprm;
+		Check(!FillScatterParams(ecoLb, view, PlacementEcoView{}, b, eprm),
+			"place.scatter.eco-without-mask-refuses");
+		PlacementEcoView okEco{ 0x999, 16, 16, 2, 4.0f, 6.0f, 1.0f, 2.0f };
+		Check(FillScatterParams(ecoLb, view, okEco, b, eprm)
+			&& eprm.ecoBDA == 0x999 && eprm.ecoChannels == 2
+			&& eprm.ecoW == 16 && eprm.ecoH == 16
+			&& eprm.ecoOX == 4.0f && eprm.ecoSZ == 2.0f,
+			"place.scatter.eco-tail-filled");
+	}
 	// Push build.
 	PlacementScatterPush push;
 	Check(BuildScatterPush(mlb, TileID{ 7, 0, 8 }, 0xAAA, 0xBBB, 0xCCC, push),

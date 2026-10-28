@@ -268,10 +268,16 @@ struct PlacementPass {
 	// silent approximation).
 	static bool BuildTilePush(const PlacementSystem::LayerBinding& layer,
 		TileID tile, const PlacementProgramView& program,
+		const PlacementEcoView& eco,
 		uint64_t instancesBDA, uint64_t countBDA,
 		PlacementTilePush& out) {
 		if (layer.domainKind != DomainKind::Grid || !layer.grid) return false;
 		if (!program.Valid()) return false;
+		// The eco gate: a program that READS the painted layer refuses
+		// when the LAYER carries no mask or the view is unresolved
+		// (never a silent zero density).
+		if (ProgramUsesEcotopeMask(layer.program)
+			&& (!layer.ecotope || !eco.Valid())) return false;
 		out = PlacementTilePush{};
 		out.outInstances = instancesBDA;
 		out.outCount = countBDA;
@@ -299,6 +305,13 @@ struct PlacementPass {
 		out.instrBDA = program.instrBDA;
 		out.instrCount = program.instrCount;
 		out.acceptIndex = program.acceptIndex;
+		// The ecotope-mask tail (PR04: the painted layer).
+		out.ecoBDA = eco.bda;
+		out.ecoW = eco.w;
+		out.ecoH = eco.h;
+		out.ecoChannels = eco.channels;
+		out.ecoOX = eco.ox; out.ecoOZ = eco.oz;
+		out.ecoSX = eco.sx; out.ecoSZ = eco.sz;
 		return true;
 	}
 }; // struct PlacementPass
@@ -331,11 +344,14 @@ struct PlacementProgramGpu {
 	}
 	// Validates + converts + uploads. Returns false (with a stderr
 	// diagnostic) when the program is not GPU-evaluable — the caller
-	// must NOT dispatch; run the CPU oracle instead.
+	// must NOT dispatch; run the CPU oracle instead. The eco gate: a
+	// program using EcotopeMask refuses when the layer carries no mask
+	// (or an out-of-range paint channel) — never a silent zero density.
 	bool Upload(ResourceManager& ctx, RenderGraph& rg,
 		const PlacementSystem::LayerBinding& layer, uint64_t rev) {
+		const uint32_t ecoChannels = layer.ecotope ? layer.ecotope->channels : 0;
 		const char* err = nullptr;
-		if (!ValidateProgramForGpu(layer.program, err)) {
+		if (!ValidateProgramForGpu(layer.program, ecoChannels, err)) {
 			std::fprintf(stderr, "[Placement] program %llu NOT GPU-evaluable: %s"
 				" — the layer runs on the CPU oracle\n",
 				(unsigned long long)layer.programId, err ? err : "?");
@@ -385,6 +401,68 @@ struct PlacementProgramGpu {
 		v.instrBDA = Valid() ? ctx.GetBufferDeviceAddress(instrs) : 0;
 		v.instrCount = instrCount;
 		v.acceptIndex = acceptIndex;
+		return v;
+	}
+};
+
+// ---------------------------------------------------------------------------
+// PR04: the uploaded ecotope weight mask — the painted layer the
+// EcotopeMask FieldOp reads. Uploaded ONCE per mask edit (the caller
+// re-Ensures after a paint change), never per frame. Invalid programs
+// (maskless layers using EcotopeMask) refuse at validation.
+// ---------------------------------------------------------------------------
+inline constexpr uint32_t kPlacementMaxEcoTexels = 1048576; // 4M floats
+
+struct PlacementEcoMaskGpu {
+	Holder<BufferHandle> weights;    // float[channels*h*w]
+	LogicalBufferHandle weightsL{};
+	uint32_t w = 0, h = 0, channels = 0;
+
+	[[nodiscard]] bool Valid() const {
+		return !weights.empty() && !weightsL.empty() && channels >= 1;
+	}
+	void Destroy(RenderGraph& rg) {
+		if (!weightsL.empty()) rg.FreeBuffer(weightsL);
+		weightsL = {};
+		weights = {};
+		w = h = channels = 0;
+	}
+	bool Upload(ResourceManager& ctx, RenderGraph& rg,
+		const EcotopeMaskData& eco) {
+		Destroy(rg);
+		if (!eco.valid()) return false;
+		if ((uint64_t)eco.channels * eco.height * eco.width
+			> kPlacementMaxEcoTexels) return false;
+		weights = ctx.CreateBuffer(sizeof(float) * eco.weights.size(),
+			BufferType_Storage, "placement ecotope mask");
+		if (weights.empty()) {
+			smvk::OnResourceExhaustion("placement ecotope mask buffer");
+			return false;
+		}
+		weightsL = rg.AddExternalBuffer(weights, "placement ecotope mask");
+		if (weightsL.empty()) {
+			smvk::OnResourceExhaustion("placement ecotope mask logical");
+			return false;
+		}
+		ctx.UploadDataToBuffer(weights, eco.weights.data(),
+			sizeof(float) * eco.weights.size(),
+			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+		w = eco.width; h = eco.height; channels = eco.channels;
+		return true;
+	}
+	PlacementEcoView View(ResourceManager& ctx) const {
+		PlacementEcoView v;
+		v.bda = Valid() ? ctx.GetBufferDeviceAddress(weights) : 0;
+		v.w = w; v.h = h; v.channels = channels;
+		return v;
+	}
+	// The CPU-side view of the SAME data (origin/spacing from the source
+	// mask — the caller fills them; the buffer carries only the grid).
+	static PlacementEcoView ViewOf(const EcotopeMaskData& eco) {
+		PlacementEcoView v;
+		v.w = eco.width; v.h = eco.height; v.channels = eco.channels;
+		v.ox = eco.origin.x; v.oz = eco.origin.y;
+		v.sx = eco.spacing.x; v.sz = eco.spacing.y;
 		return v;
 	}
 };
@@ -897,14 +975,27 @@ struct PlacementParamsGpu {
 // fallback, never a silent approximation). Grid layers use their own
 // kernel/push (BuildTilePush) and refuse here, as before.
 inline bool FillScatterParams(const PlacementSystem::LayerBinding& layer,
-	const PlacementProgramView& program, const ScatterBDAs& bdas,
+	const PlacementProgramView& program, const PlacementEcoView& eco,
+	const ScatterBDAs& bdas,
 	PlacementDomainParams& out) {
 	if (!program.Valid()) return false;
+	// The eco gate: a program that READS the painted layer refuses
+	// when the LAYER carries no mask or the view is unresolved
+	// (never a silent zero density).
+	if (ProgramUsesEcotopeMask(layer.program)
+		&& (!layer.ecotope || !eco.Valid())) return false;
 	out = PlacementDomainParams{};
 	out.densityScale = layer.config.densityScale;
 	out.instrBDA = program.instrBDA;
 	out.instrCount = program.instrCount;
 	out.acceptIndex = program.acceptIndex;
+	// The ecotope-mask tail (PR04: the painted layer).
+	out.ecoBDA = eco.bda;
+	out.ecoW = eco.w;
+	out.ecoH = eco.h;
+	out.ecoChannels = eco.channels;
+	out.ecoOX = eco.ox; out.ecoOZ = eco.oz;
+	out.ecoSX = eco.sx; out.ecoSZ = eco.sz;
 	out.minScale = layer.config.minScale;
 	out.maxScale = layer.config.maxScale;
 	const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();

@@ -131,6 +131,25 @@ glm::vec3 HeightfieldData::sampleNormal(float x, float z) const {
 	return glm::normalize(n);
 }
 
+float EcotopeMaskData::Sample(uint32_t channel, float x, float z) const {
+	if (!valid() || channel >= channels) return 0.0f;
+	// Same texel mapping + clamp + bilinear composition as
+	// HeightfieldData::sampleHeight (the documented parity contract).
+	float gx = (x - origin.x) / spacing.x;
+	float gz = (z - origin.y) / spacing.y;
+	gx = std::clamp(gx, 0.0f, (float)width - 1.001f);
+	gz = std::clamp(gz, 0.0f, (float)height - 1.001f);
+	const uint32_t x0 = (uint32_t)gx, z0 = (uint32_t)gz;
+	const float fx = gx - (float)x0, fz = gz - (float)z0;
+	const size_t base = ((size_t)channel * height + z0) * width + x0;
+	const float w00 = weights[base];
+	const float w10 = weights[base + 1];
+	const float w01 = weights[base + width];
+	const float w11 = weights[base + width + 1];
+	return w00 * (1 - fx) * (1 - fz) + w10 * fx * (1 - fz)
+		+ w01 * (1 - fx) * fz + w11 * fx * fz;
+}
+
 DomainSample HeightfieldDomain::sample(StableID id) const {
 	DomainSample s;
 	const Random02 j = Random02Of(id, RandomChannel::Position);

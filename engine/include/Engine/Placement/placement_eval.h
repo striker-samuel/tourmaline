@@ -16,8 +16,13 @@
 namespace smvk::placement {
 
 // Evaluates the field program at one domain sample. Returns values[] parallel
-// to program.instrs; density = values[program.acceptIndex].
-std::vector<float> EvaluateProgram(const PlacementProgram& prog, const DomainSample& s);
+// to program.instrs; density = values[program.acceptIndex]. The ecotope
+// mask (when the program carries EcotopeMask instructions) resolves the
+// painted weight at the sample's world XZ; null refuses nothing at the
+// math level but yields 0 for mask reads (the GPU GATE refuses such
+// programs loudly — see ValidateProgramForGpu).
+std::vector<float> EvaluateProgram(const PlacementProgram& prog, const DomainSample& s,
+	const EcotopeMaskData* eco = nullptr);
 
 // Quantize density to 8 bit BEFORE threshold comparison so CPU/GPU float
 // differences cannot flip accept/reject (strong determinism, §35).

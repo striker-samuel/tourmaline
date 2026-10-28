@@ -489,6 +489,12 @@ struct Ctx {
 			ins.params[2] = F.size() > 2 ? F[2] : 15;
 			ins.params[3] = F.size() > 3 ? F[3] : 25;
 			return push();
+		case NodeKind::EcotopeMask:
+			// The painted ecotope weight at the sample's world XZ; the
+			// channel selects the layer's EcotopeMaskData paint plane.
+			ins.op = FieldOp::EcotopeMask;
+			ins.params[0] = F.size() > 0 ? F[0] : 0;
+			return push();
 		case NodeKind::Add: ins.op = FieldOp::Add; break;
 		case NodeKind::Mul: ins.op = FieldOp::Mul; break;
 		case NodeKind::Min: ins.op = FieldOp::Min; break;

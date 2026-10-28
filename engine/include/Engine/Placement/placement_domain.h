@@ -86,6 +86,31 @@ struct HeightfieldData {
 	glm::vec3 sampleNormal(float x, float z) const;
 };
 
+// ---- Ecotope weight mask (PR04 — the painted layer) ------------------
+// Scalar coverage over world XZ with N channels (the paint layers: one
+// per ecotope — meadow, shrub, rock...). The EcotopeMask FieldOp reads
+// one channel per instruction (params[0] = the channel index). CPU here
+// is the oracle; the GPU mirror (PlacementEvaluateField's eco
+// descriptor + float-grid upload) must agree EXACTLY — same texel
+// mapping (origin/spacing, texel centers), same bilinear composition
+// and the same edge clamp as HeightfieldData (the 1.001 form), so
+// painting density never reshuffles unrelated stable IDs.
+struct EcotopeMaskData {
+	uint32_t width = 0;    // texels in x
+	uint32_t height = 0;   // texels in z
+	uint32_t channels = 0; // paint layers (>= 1)
+	glm::vec2 origin{ 0.0f };   // world XZ of texel (0,0)
+	glm::vec2 spacing{ 1.0f, 1.0f }; // meters per texel in x/z
+	std::vector<float> weights; // channels*height*width, [c][z][x]
+
+	bool valid() const {
+		return width >= 2 && height >= 2 && channels >= 1
+			&& weights.size() == (size_t)channels * height * width;
+	}
+	// Bilinear, edge-clamped (mirrors the HLSL evaluator exactly).
+	float Sample(uint32_t channel, float x, float z) const;
+};
+
 struct HeightfieldDomain {
 	const HeightfieldData* field = nullptr; // not owned
 	glm::vec2 extentMin{ 0.0f };  // scatter rect in world XZ

@@ -50,9 +50,18 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     float3 p = PlacementSampleMesh(pc.prm.Get(), a.x, a.y, b.x, b.y, nrm, tri);
 
     // ---- THE PROGRAM + accept (PR02: the actual graph SSA). ----
+    PlacementEcoMask eco;
+    eco.weights = pc.prm.Get().eco;
+    eco.channels = pc.prm.Get().ecoChannels;
+    eco.w = pc.prm.Get().ecoW;
+    eco.h = pc.prm.Get().ecoH;
+    eco.ox = pc.prm.Get().ecoOX;
+    eco.oz = pc.prm.Get().ecoOZ;
+    eco.sx = pc.prm.Get().ecoSX;
+    eco.sz = pc.prm.Get().ecoSZ;
     float d = PlacementEvaluateField(pc.prm.Get().instrs,
         pc.prm.Get().instrCount, pc.prm.Get().acceptIndex,
-        p, nrm, pc.seedLo, pc.seedHi);
+        p, nrm, pc.seedLo, pc.seedHi, eco);
     float q = PlacementQuantizeDensity(d * pc.prm.Get().densityScale);
     bool keep = (q >= 1.0f) || (PlacementRandom01(id, PLACEMENT_CH_DENSITY) < q);
     if (!keep)

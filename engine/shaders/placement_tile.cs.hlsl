@@ -48,6 +48,16 @@ struct PlacementTilePush
     uint acceptIndex;  // 156
     uint pad4;         // 160
     uint pad5;         // 164
+    // ---- the ecotope-mask tail (PR04: the painted layer) ----
+    vk::BufferPointer<PlacementEcoBuffer> eco; // 168 (0 = none)
+    uint ecoW;         // 176
+    uint ecoH;         // 180
+    uint ecoChannels;  // 184
+    uint padEco;       // 188
+    float ecoOX;       // 192
+    float ecoOZ;       // 196
+    float ecoSX;       // 200
+    float ecoSZ;       // 204
 };
 
 [[vk::push_constant]]
@@ -100,8 +110,17 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     //   keep = Random01(id, Density) < q
     // (last-ULP evaluator divergence is absorbed by the quantization).
     float3 nrm = float3(0.0f, 1.0f, 0.0f); // grid domain: flat base plane
+    PlacementEcoMask eco;
+    eco.weights = pc.eco;
+    eco.channels = pc.ecoChannels;
+    eco.w = pc.ecoW;
+    eco.h = pc.ecoH;
+    eco.ox = pc.ecoOX;
+    eco.oz = pc.ecoOZ;
+    eco.sx = pc.ecoSX;
+    eco.sz = pc.ecoSZ;
     float d = PlacementEvaluateField(pc.instrs, pc.instrCount,
-        pc.acceptIndex, p, nrm, pc.seedLo, pc.seedHi);
+        pc.acceptIndex, p, nrm, pc.seedLo, pc.seedHi, eco);
     float q = PlacementQuantizeDensity(d * pc.densityScale);
     bool keep = (q >= 1.0f) || (PlacementRandom01(id, PLACEMENT_CH_DENSITY) < q);
     if (!keep)

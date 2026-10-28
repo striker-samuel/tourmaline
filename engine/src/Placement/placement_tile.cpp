@@ -149,7 +149,7 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 			break;
 		}
 		if (!layer.program.valid()) continue;
-		auto values = EvaluateProgram(layer.program, s);
+		auto values = EvaluateProgram(layer.program, s, layer.ecotope);
 		float density = values[layer.program.acceptIndex];
 		if (!AcceptCandidate(density, id, layer.config.densityScale)) continue;
 

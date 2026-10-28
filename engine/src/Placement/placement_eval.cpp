@@ -38,7 +38,8 @@ static float Smoothstep(float e0, float e1, float x) {
 	return t * t * (3.0f - 2.0f * t);
 }
 
-std::vector<float> EvaluateProgram(const PlacementProgram& prog, const DomainSample& s) {
+std::vector<float> EvaluateProgram(const PlacementProgram& prog, const DomainSample& s,
+	const EcotopeMaskData* eco) {
 	std::vector<float> v(prog.instrs.size(), 0.0f);
 	const float slopeDeg = (s.n.y >= 1.0f) ? 0.0f
 		: (s.n.y <= 0.0f) ? 90.0f
@@ -78,6 +79,15 @@ std::vector<float> EvaluateProgram(const PlacementProgram& prog, const DomainSam
 			float lo = Smoothstep(in.params[0], in.params[1], s.p.y);
 			float hi = 1.0f - Smoothstep(in.params[2], in.params[3], s.p.y);
 			v[i] = lo * hi;
+			break;
+		}
+		case FieldOp::EcotopeMask: {
+			// params[0] = the paint channel. Out-of-range channels (a
+			// malformed program — the GPU gate refuses them) read 0
+			// defensively, mirroring the HLSL evaluator.
+			const uint32_t ch = in.params[0] >= 0.0f
+				? (uint32_t)in.params[0] : 0u;
+			v[i] = eco ? eco->Sample(ch, s.p.x, s.p.z) : 0.0f;
 			break;
 		}
 		}

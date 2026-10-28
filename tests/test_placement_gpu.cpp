@@ -319,10 +319,11 @@ int main()
 		PlacementProgramGpu prog;
 		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.grid-program-upload");
 		PlacementProgramView view = prog.View(rm);
+		PlacementEcoView ecoView{}; // this program reads no mask
 
 		pass.ClearTile(rm, 0);
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile, view,
+		ok = PlacementPass::BuildTilePush(lb, tile, view, ecoView,
 			pass.TileInstancesAddress(rm, 0), pass.TileCountAddress(rm, 0), push);
 		Check(ok, "gpu.grid-push-built");
 		host.RunFrame([&](smvk::RenderGraph& g) {
@@ -379,11 +380,12 @@ int main()
 		PlacementProgramGpu prog;
 		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.mesh-program-upload");
 		PlacementProgramView view = prog.View(rm);
+		PlacementEcoView ecoView{}; // this program reads no mask
 
 		PlacementParamsGpu paramsGpu;
 		PlacementDomainParams prm;
 		ScatterBDAs bdas = meshGpu.Addresses(rm);
-		ok = FillScatterParams(lb, view, bdas, prm);
+		ok = FillScatterParams(lb, view, ecoView, bdas, prm);
 		Check(ok && prm.domainKind == kPlacementScatterDomain_Mesh, "gpu.mesh-params-filled");
 		ok = paramsGpu.Upload(rm, rg, prm);
 		Check(ok, "gpu.mesh-params-uploaded");
@@ -450,12 +452,13 @@ int main()
 		PlacementProgramGpu prog;
 		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.hf-program-upload");
 		PlacementProgramView view = prog.View(rm);
+		PlacementEcoView ecoView{}; // this program reads no mask
 
 		PlacementParamsGpu paramsGpu;
 		PlacementDomainParams prm;
 		ScatterBDAs bdas{};
 		bdas.heights = hfGpu.Address(rm);
-		ok = FillScatterParams(lb, view, bdas, prm);
+		ok = FillScatterParams(lb, view, ecoView, bdas, prm);
 		Check(ok && prm.domainKind == kPlacementScatterDomain_Heightfield,
 			"gpu.hf-params-filled");
 		ok = paramsGpu.Upload(rm, rg, prm);
@@ -512,10 +515,11 @@ int main()
 		PlacementProgramGpu prog;
 		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.tiny-program-upload");
 		PlacementProgramView view = prog.View(rm);
+		PlacementEcoView ecoView{};
 
 		tiny.ClearTile(rm, 0);
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile, view,
+		ok = PlacementPass::BuildTilePush(lb, tile, view, ecoView,
 			tiny.TileInstancesAddress(rm, 0), tiny.TileCountAddress(rm, 0), push);
 		Check(ok, "gpu.tiny-push-built");
 		host.RunFrame([&](smvk::RenderGraph& g) {
@@ -577,8 +581,9 @@ int main()
 		PlacementProgramGpu prog;
 		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.con-program-upload");
 		PlacementProgramView view = prog.View(rm);
+		PlacementEcoView ecoView{};
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile, view,
+		ok = PlacementPass::BuildTilePush(lb, tile, view, ecoView,
 			pass.TileInstancesAddress(rm, 3), pass.TileCountAddress(rm, 3), push);
 		Check(ok, "gpu.con-scatter-push");
 
@@ -843,10 +848,11 @@ int main()
 		PlacementProgramGpu prog;
 		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.vis-program-upload");
 		PlacementProgramView view = prog.View(rm);
+		PlacementEcoView ecoView{};
 
 		pass2.ClearTile(rm, 0);
 		PlacementTilePush push;
-		ok = PlacementPass::BuildTilePush(lb, tile, view,
+		ok = PlacementPass::BuildTilePush(lb, tile, view, ecoView,
 			pass2.TileInstancesAddress(rm, 0), pass2.TileCountAddress(rm, 0), push);
 		Check(ok, "gpu.vis-scatter-push");
 
@@ -1008,6 +1014,122 @@ int main()
 		// walks them via SV_InstanceID).
 		Check(binsOut.offsets[1] > 0 || binsOut.offsets[2] > 0,
 			"gpu.vis-nonzero-first-instance");
+	}
+
+	// =====================================================================
+	// 7) The PR04 ecotope mask: a PAINTED meadow graph —
+	//    ecoMask(channel 0: a painted weight grid) * noise, over the
+	//    heightfield (real heights + normals). The parity proves the
+	//    mask's world->texel mapping + bilinear + the channel gate
+	//    produce the oracle's EXACT accepted multiset on device.
+	// =====================================================================
+	std::fprintf(stderr, "[place-gpu] stage: ecotope mask\n");
+	{
+		// The painted mask: 2 channels over the hf extent. Channel 0 =
+		// a weight island (blobby coverage); channel 1 = constant (a
+		// different ecotope the program does NOT read).
+		EcotopeMaskData eco;
+		eco.width = 17; eco.height = 17; eco.channels = 2;
+		eco.origin = glm::vec2(100.0f, 200.0f);   // the hf extent's origin
+		eco.spacing = glm::vec2(1.0f, 1.0f);      // 16m over 17 texels
+		eco.weights.assign(2 * 17 * 17, 0.0f);
+		for (uint32_t z = 0; z < 17; ++z)
+			for (uint32_t x = 0; x < 17; ++x) {
+				const float dx = float(x) - 8.0f, dz = float(z) - 8.0f;
+				const float d = std::sqrt(dx * dx + dz * dz);
+				eco.weights[(size_t)z * 17 + x] =
+					std::max(0.0f, 1.0f - d / 7.0f);          // ch0 island
+				eco.weights[289 + (size_t)z * 17 + x] = 0.5f; // ch1 const
+			}
+		Check(eco.valid(), "gpu.eco-mask-valid");
+
+		HeightfieldData hf;
+		hf.width = 9; hf.height = 9;
+		hf.origin = glm::vec3(100.0f, 0.0f, 200.0f);
+		hf.spacing = glm::vec2(2.0f, 2.0f);
+		hf.heights.resize(81);
+		for (uint32_t z = 0; z < 9; ++z)
+			for (uint32_t x = 0; x < 9; ++x)
+				hf.heights[z * 9 + x] = 3.0f * float(x) - 1.5f * float(z)
+					+ 2.0f * ValueNoise2D(float(x) * 0.3f, float(z) * 0.3f, 42);
+		HeightfieldDomain hdom;
+		hdom.field = &hf;
+		hdom.extentMin = glm::vec2(100.0f, 200.0f);
+		hdom.extentMax = glm::vec2(116.0f, 216.0f);
+
+		// The meadow program: paintedWeight * slope * noise.
+		auto lb = MakeLayer(13, 0.5f, 900);
+		lb.program.instrs = {
+			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 50.0f, 75.0f, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Noise2, .params = { 0.09f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+			FieldInstr{ .op = FieldOp::Mul, .a = 3, .b = 2 },
+		};
+		lb.program.acceptIndex = 4;
+		lb.domainKind = DomainKind::Heightfield;
+		lb.heightfield = &hdom;
+		lb.ecotope = &eco; // THE painted layer binding
+		Prototype a; a.weight = 1.0f;
+		Prototype b; b.weight = 2.0f;
+		lb.prototypes.add(a); lb.prototypes.add(b);
+		const TileID tile{ 3, 0, -3 };
+		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
+		Check(oracle.size() > 0 && oracle.size() < 900, "gpu.eco-oracle-shape");
+
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(), "gpu.eco-program-upload");
+		PlacementProgramView view = prog.View(rm);
+		PlacementEcoMaskGpu ecoGpu;
+		Check(ecoGpu.Upload(rm, rg, eco) && ecoGpu.Valid(), "gpu.eco-mask-upload");
+		PlacementEcoView ecoView = ecoGpu.View(rm);
+		// The GPU view's texel mapping comes from the source mask.
+		PlacementEcoView cpuSide = PlacementEcoMaskGpu::ViewOf(eco);
+		ecoView.ox = cpuSide.ox; ecoView.oz = cpuSide.oz;
+		ecoView.sx = cpuSide.sx; ecoView.sz = cpuSide.sz;
+		Check(ecoView.Valid() && ecoView.channels == 2, "gpu.eco-view-valid");
+
+		PlacementParamsGpu paramsGpu;
+		PlacementDomainParams prm;
+		ScatterBDAs bdas{};
+		bdas.heights = hfGpu.Address(rm); // reuse section 3's hf upload
+		ok = FillScatterParams(lb, view, ecoView, bdas, prm);
+		Check(ok && prm.ecoBDA == ecoView.bda && prm.ecoChannels == 2
+			&& prm.ecoOX == 100.0f, "gpu.eco-params-filled");
+		ok = paramsGpu.Upload(rm, rg, prm);
+		Check(ok, "gpu.eco-params-uploaded");
+
+		pass.ClearTile(rm, 2);
+		PlacementScatterPush push;
+		BuildScatterPush(lb, tile, pass.TileInstancesAddress(rm, 2),
+			pass.TileCountAddress(rm, 2), paramsGpu.Address(rm), push);
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			smvk::RenderPass& eval = PlacementScatterPrograms::AddScatterPass(g, pass, 2,
+				{ hfGpu.heightsL }, paramsGpu.logical, "PlacementScatterEco");
+			eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				PlacementScatterPrograms::PushAndDispatchScatter(cmd,
+					scatter.hfProgram, push);
+			});
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+
+		std::vector<RenderInstance> gpu;
+		uint32_t overflow = 1;
+		const uint32_t n = pass.DownloadTile(rm, 2, gpu, 4096, &overflow);
+		Check(overflow == 0, "gpu.eco-no-overflow");
+		Check(n == oracle.size(), "gpu.eco-count-parity");
+		Check(SortedEqual(gpu, oracle), "gpu.eco-multiset-parity");
+
+		// The eco GATE on device-adjacent plumbing: a maskless layer
+		// using EcotopeMask refuses the fill (never a silent zero).
+		auto maskless = lb;
+		maskless.ecotope = nullptr;
+		PlacementDomainParams refused;
+		Check(!FillScatterParams(maskless, view, ecoView, bdas, refused),
+			"gpu.eco-maskless-refuses");
+		Check(!PlacementProgramGpu().Upload(rm, rg, maskless, 0),
+			"gpu.eco-maskless-program-refuses");
 	}
 
 	std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);

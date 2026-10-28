@@ -73,19 +73,29 @@ struct PlacementProgramView {
 };
 
 // Validates a program for GPU evaluation. Checks: instruction cap,
-// supported opcodes (op <= AltitudeMask — every FieldOp the HLSL
+// supported opcodes (op <= EcotopeMask — every FieldOp the HLSL
 // evaluator implements), SSA operands strictly before their use (a/b
 // < i for the ops that read them), acceptIndex in range, finite
-// constants. On failure returns false and (when errorOut is non-null)
-// a human-readable diagnostic naming the offending instruction. This is
-// the gate against SILENT approximation: an invalid program NEVER
-// reaches the kernels — the caller refuses GPU generation explicitly
-// (CPU fallback or a loud error), never a density-0.5 substitution.
+// constants, and — when the program uses EcotopeMask — that the layer
+// actually carries that mask channel (ecoChannels > params[0]; a
+// maskless layer or an out-of-range paint channel refuses LOUDLY, not
+// a silent zero density). On failure returns false and (when errorOut
+// is non-null) a human-readable diagnostic naming the offending
+// instruction. This is the gate against SILENT approximation: an
+// invalid program NEVER reaches the kernels — the caller refuses GPU
+// generation explicitly (CPU fallback or a loud error), never a
+// density-0.5 substitution.
 bool ValidateProgramForGpu(const PlacementProgram& prog,
-	const char*& errorOut);
+	uint32_t ecoChannels, const char*& errorOut);
 
+// The eco-free convenience form (programs without EcotopeMask ops).
 inline bool ValidateProgramForGpu(const PlacementProgram& prog,
 	const char*& errorOut) {
+	return ValidateProgramForGpu(prog, 0, errorOut);
+}
+
+inline bool ValidateProgramForGpu(const PlacementProgram& prog,
+	uint32_t ecoChannels, const char*& errorOut) {
 	errorOut = nullptr;
 	if (prog.instrs.empty()) { errorOut = "empty program"; return false; }
 	if (prog.instrs.size() > kPlacementMaxFieldInstrs) {
@@ -107,7 +117,7 @@ inline bool ValidateProgramForGpu(const PlacementProgram& prog,
 	for (size_t i = 0; i < prog.instrs.size(); ++i) {
 		const FieldInstr& in = prog.instrs[i];
 		const uint32_t op = static_cast<uint32_t>(in.op);
-		if (op > 16) { // > FieldOp::AltitudeMask
+		if (op > 17) { // > FieldOp::EcotopeMask
 			errorOut = "unsupported opcode (no HLSL evaluator form)";
 			return false;
 		}
@@ -118,6 +128,15 @@ inline bool ValidateProgramForGpu(const PlacementProgram& prog,
 		if (usesB(op) && in.b >= i) {
 			errorOut = "SSA operand 'b' must reference an EARLIER value";
 			return false;
+		}
+		if (op == 17) { // EcotopeMask: params[0] = the paint channel
+			const float chf = in.params[0];
+			if (!(chf >= 0.0f) || chf != std::floor(chf)
+				|| (uint32_t)chf >= ecoChannels) {
+				errorOut = "EcotopeMask channel out of range for the "
+					"layer's mask (or the layer carries no mask)";
+				return false;
+			}
 		}
 		for (int k = 0; k < 4; ++k)
 			if (!std::isfinite(in.params[k])) {
@@ -171,14 +190,22 @@ struct PlacementTilePush {
 	uint32_t pad3 = 0;
 	glm::vec4 weightsA{ 1, 0, 0, 0 }; // prototypes 0..3
 	glm::vec4 weightsB{ 0, 0, 0, 0 }; // prototypes 4..7
-	// ---- PR02 program tail (the graph SSA the kernel evaluates) ----
+	// ---- the program tail (PR02: the graph SSA) ----
 	uint64_t instrBDA = 0;     // GpuFieldInstr[] upload
 	uint32_t instrCount = 0;    // <= kPlacementMaxFieldInstrs
 	uint32_t acceptIndex = 0;  // which value is the density
 	uint32_t pad4 = 0;
 	uint32_t pad5 = 0;
+	// ---- the ecotope-mask tail (PR04: the painted layer) ----
+	uint64_t ecoBDA = 0;       // float[channels*h*w] upload (0 = none)
+	uint32_t ecoW = 0;
+	uint32_t ecoH = 0;
+	uint32_t ecoChannels = 0;
+	uint32_t padEco = 0;
+	float ecoOX = 0.0f, ecoOZ = 0.0f; // world XZ of texel (0,0)
+	float ecoSX = 1.0f, ecoSZ = 1.0f; // meters per texel
 };
-static_assert(sizeof(PlacementTilePush) == 168, "PlacementTilePush size changed — update placement_tile.cs.hlsl");
+static_assert(sizeof(PlacementTilePush) == 208, "PlacementTilePush size changed — update placement_tile.cs.hlsl");
 
 inline constexpr uint32_t kPlacementTileThreads = 64;
 inline uint32_t PlacementDispatchGroups(uint32_t candidateCount) {
@@ -271,8 +298,32 @@ struct PlacementDomainParams {
 	uint64_t instrBDA = 0;    // GpuFieldInstr[] upload
 	uint32_t instrCount = 0;  // <= kPlacementMaxFieldInstrs
 	uint32_t acceptIndex = 0; // which value is the density
+	// ---- PR04 ecotope-mask tail (the painted layer) ----
+	uint64_t ecoBDA = 0;      // float[channels*h*w] upload (0 = none)
+	uint32_t ecoW = 0;
+	uint32_t ecoH = 0;
+	uint32_t ecoChannels = 0;
+	uint32_t padEco = 0;
+	float ecoOX = 0.0f, ecoOZ = 0.0f; // world XZ of texel (0,0)
+	float ecoSX = 1.0f, ecoSZ = 1.0f; // meters per texel
 };
-static_assert(sizeof(PlacementDomainParams) == 192, "PlacementDomainParams moved — update placement_domains.hlsli");
+static_assert(sizeof(PlacementDomainParams) == 232, "PlacementDomainParams moved — update placement_domains.hlsli");
+
+// True when the program carries EcotopeMask instructions (the layer
+// MUST then carry a mask — the validation gate enforces the channel).
+inline bool ProgramUsesEcotopeMask(const PlacementProgram& prog) {
+	for (const FieldInstr& in : prog.instrs)
+		if (in.op == FieldOp::EcotopeMask) return true;
+	return false;
+}
+
+// The resolved ecotope-mask descriptor (the params/push tails' source).
+struct PlacementEcoView {
+	uint64_t bda = 0;
+	uint32_t w = 0, h = 0, channels = 0;
+	float ox = 0.0f, oz = 0.0f, sx = 1.0f, sz = 1.0f;
+	bool Valid() const { return bda != 0 && channels > 0 && w >= 2 && h >= 2; }
+};
 
 // Must match the scatter kernels' push (64 bytes).
 struct PlacementScatterPush {

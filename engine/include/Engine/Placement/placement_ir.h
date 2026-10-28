@@ -35,6 +35,13 @@ enum class FieldOp : uint32_t {
 	SlopeMask = 15, // 1 - smoothstep(p0=maxFlatDeg, p1=steepDeg, slopeDeg)
 	                // slopeDeg derived from NormalY. a ignored.
 	AltitudeMask = 16, // smoothstep(p0, p1, y) * (1 - smoothstep(p2, p3, y))
+	EcotopeMask = 17, // painted ecotope weight at the sample's world XZ.
+	                  // params[0] = the mask CHANNEL index (validated
+	                  // against the layer's EcotopeMaskData::channels);
+	                  // bilinear, edge-clamped. Needs the layer's ecotope
+	                  // mask upload — a program using this op refuses
+	                  // GPU evaluation (and CPU returns 0) when the layer
+	                  // carries no mask.
 };
 
 struct FieldInstr {
