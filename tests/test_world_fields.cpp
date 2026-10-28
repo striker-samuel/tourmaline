@@ -963,6 +963,104 @@ static void TestAsyncStreaming()
 }
 
 // ---------------------------------------------------------------------------
+// 6b) STUCK-BRICK REGRESSION (the review finding): a drained async job whose
+// publication is REFUSED (pool exhausted, no evictable victim — every
+// resident still hysteresis-protected in-window) must not leave its entry
+// marked InFlight. The request scan only re-collects keys with NO entry, so
+// a surviving InFlight entry whose job is gone is stuck FOREVER: the brick
+// stays missing even after the pressure clears. Phase A manufactures the
+// refusal (stationary interest: 8-brick window, 2-slot pool, residents
+// ticked in-window every frame => no victims); phase B moves the interest
+// to a disjoint window so the phase-A residents age out, get proactively
+// evicted, and the pool serves again. The invariant: the map's InFlight
+// entries never exceed the live jobs (Stats().inFlightBricks vs
+// InFlightCount()), and after the teardown drain both are ZERO.
+// ---------------------------------------------------------------------------
+static void TestAsyncStuckBrickRecovery()
+{
+	smvk::mem::InitMemory();
+	smvk::ThreadPool pool(2);
+	{
+		// Worker liveness (mirrors TestAsyncStreaming's probe).
+		auto fut = pool.enqueue([] { return 7; });
+		const auto t0 = std::chrono::steady_clock::now();
+		while (fut.wait_for(std::chrono::milliseconds(0))
+			!= std::future_status::ready) {
+			if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(2))
+				break;
+		}
+		Check(fut.get() == 7, "stuck.pool-liveness");
+	}
+
+	wf::WorldFieldSystem sys;
+	wf::WorldFieldStreamingPolicy policy{};
+	policy.maxBrickLoadsPerFrame = 8;
+	policy.maxInFlightBricks = 8;
+	policy.evictHysteresisFrames = 2;
+	policy.proactiveEvictFrames = 4;
+	policy.protectCoarsestLod = false; // single LOD: no protected pass
+	sys.SetStreamingPolicy(policy);
+
+	wf::WorldFieldDesc d{};
+	d.name = "StuckRecoveryField";
+	d.format = smvk::Format::R8_UNorm;
+	d.encoding = wf::WorldFieldEncoding::Linear;
+	d.baseVoxelSizeMeters = 1.0f;
+	d.lodCount = 1;
+	d.tableDimX = 2; // 2x2x2 = an 8-brick window...
+	d.tableDimY = 2;
+	d.tableDimZ = 2;
+	d.poolSlotsX = 2;
+	d.poolSlotsY = 1;
+	d.poolSlotsZ = 1; // ...under a 2-slot pool: forced exhaustion
+	d.fallbackValue = glm::vec4(0.0f);
+	const wf::WorldFieldHandle h = sys.RegisterField(d);
+	AtomicLinearSource source;
+	sys.SetBrickSource(h, &source);
+	sys.SetWorkPool(&pool);
+
+	// The stuck invariant: the map's InFlight-phase entries must never
+	// exceed the live jobs (a drift = a drained job whose publication
+	// failed but whose entry survived — the review's stuck brick).
+	bool inflightInvariantHeld = true;
+	uint64_t totalSkips = 0;
+	uint64_t phaseBUploads = 0;
+	const glm::vec3 eyeA(32.0f, 32.0f, 32.0f); // inside brick (0,0,0)
+	const glm::vec3 eyeB(2032.0f, 32.0f, 32.0f); // brick ~31: disjoint window
+	for (uint64_t f = 0; f < 36; ++f) {
+		const bool phaseB = f >= 16;
+		const glm::vec3 eye = phaseB ? eyeB : eyeA;
+		sys.ComputeResidency(eye, f);
+		totalSkips += sys.Stats().requestsSkipped;
+		if (phaseB)
+			phaseBUploads += sys.PendingUploadCount();
+		if (sys.Stats().inFlightBricks > sys.InFlightCount())
+			inflightInvariantHeld = false;
+		sys.DropPendingGpuWork();
+		// Wall-clock pacing: workers must outpace the loop's free spin
+		// (a 68^3 quantize is ~ms-scale per brick; see TestAsyncStreaming).
+		std::this_thread::sleep_for(std::chrono::milliseconds(4));
+	}
+
+	Check(totalSkips > 0, "stuck.exhaustion-actually-hit (skips > 0)");
+	Check(inflightInvariantHeld,
+		"stuck.no-entry-outlives-its-job (inFlight map <= jobs, every frame)");
+	Check(phaseBUploads > 0, "stuck.pressure-cleared-and-published (phase B)");
+
+	// Teardown: wait WITHOUT consuming, detach the pool, one drain-only
+	// compute (the drain is pool-independent). Both counters must be zero:
+	// the jobs drained AND no drained-but-unpublished entry left behind.
+	sys.WaitForInFlightBricks();
+	sys.SetWorkPool(nullptr);
+	sys.ComputeResidency(eyeB, 36);
+	Check(sys.InFlightCount() == 0, "stuck.jobs-drained-to-zero");
+	Check(sys.Stats().inFlightBricks == 0,
+		"stuck.map-inflight-entries-zero (no stuck brick after teardown)");
+	Check(sys.Stats().residentBricks > 0,
+		"stuck.recovered-residents (the disjoint window is served)");
+}
+
+// ---------------------------------------------------------------------------
 // 7) GPU struct layout contract smoke (the static_asserts in
 // WorldFieldGpu.h do the real work; this pins the table header arithmetic).
 // ---------------------------------------------------------------------------
@@ -983,6 +1081,7 @@ int main()
 	TestResidencyChurnAndSeams();
 	TestEvictionPolicy();
 	TestAsyncStreaming();
+	TestAsyncStuckBrickRecovery();
 	TestGpuLayout();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

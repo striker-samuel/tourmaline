@@ -17,10 +17,16 @@
 //   worldPos -> floor((pos.xz - gridMin) / 64) -> cell ->
 //     (dominant record below/above splitY, weights) -> records[rec]
 //
-// A cell carries TWO records split at a Y plane — the vertical half-space
-// zones (underwater y<=0, an interior floor) need a different look above
-// vs below within one tile column. lower==upper + splitY = -FLT_MAX is
-// the no-split common case. Each record index is into the records array
+// A cell carries up to THREE records: a lower/upper pair split at a Y
+// plane (the vertical half-space zones — underwater y<=0, an interior
+// floor), plus an optional mid BAND bounded by [splitY, midHiY] — the
+// enclosed-room shape (base below the floor, the room inside, base above
+// the ceiling) needs all three. lower==upper + splitY = -FLT_MAX +
+// midRecord = 0xFFFFFFFF is the no-split common case. Columns whose
+// profile needs FOUR+ records (multiple stacked env zones in one 64 m
+// column) are not representable: the bake keeps the largest vertical
+// mass and logs a diagnostic (the explicit reject — never a silently
+// wrong shape). Each record index is into the records array
 // where [0] is ALWAYS the base (the default environment block, the old
 // zone-zero semantic: outside every zone the base look applies at weight
 // 1; out-of-grid positions fall to it too).
@@ -62,8 +68,14 @@ struct EnvTileRecord
 static_assert(sizeof(EnvTileRecord) == 48, "EnvTileRecord: HLSL mirror");
 
 // One 64 m world tile (a subcell column). HLSL mirror: EnvTileCell,
-// 32 B. lower/upperWeight = the zone's blendWeight*falloff at the slot's
-// sample heights; the base (record 0) tiles carry weight 1.
+// 32 B. The column's vertical profile is up to THREE records: lower /
+// mid / upper, where mid is a BAND bounded by [splitY, midHiY] —
+// lower==upper + splitY = -FLT_MAX + midRecord = 0xFFFFFFFF is the
+// no-split common case; a two-record profile sets splitY and leaves
+// midRecord dead; a three-record profile (an enclosed interior: base ->
+// room -> base, or a stacked pair) fills the band fields. lower/mid/
+// upperWeight = the zone's blendWeight*falloff sampled at each slot's
+// interval mid; the base (record 0) tiles carry weight 1.
 struct EnvTileCell
 {
 	uint32_t lowerRecord = 0;
@@ -71,13 +83,46 @@ struct EnvTileCell
 	float splitY = -3.402823466e+38f; // -FLT_MAX: no vertical split
 	float lowerWeight = 0.0f;
 	float upperWeight = 0.0f;
-	uint32_t reserved[3] = { 0, 0, 0 }; // 32 B total
+	// The mid BAND (three-record columns): midRecord = 0xFFFFFFFF means
+	// no band (the two-record/no-split shapes above); otherwise the band
+	// covers splitY <= y <= midHiY.
+	uint32_t midRecord = 0xFFFFFFFFu;
+	float midHiY = -3.402823466e+38f;
+	float midWeight = 0.0f;
 };
 static_assert(sizeof(EnvTileCell) == 32, "EnvTileCell: HLSL mirror");
 
 inline constexpr uint32_t kEnvTileMaxRecords = 64; // [0]=base + 63 zones
 inline constexpr uint32_t kEnvTileMaxDim = 256; // 256 tiles * 64 m = 16 km edge
 inline constexpr float kEnvTileSize = 64.0f; // == kSubcellSize (one subcell per tile)
+
+// The grid extent for a bake: the tile-aligned XZ window + the vertical
+// search range. MESH-ONLY scene bounds miss volumes placed outside the
+// geometry (a volumes-only scene fell to the fixed fallback window; a
+// zone hanging past the models fell OUTSIDE the grid and its look
+// silently reverted to the base record outside — the review's finding),
+// so the extent UNIONS the env-volume OBB bounds in. INFINITE faces /
+// INF column lengths extend the WORLD axes the axis projects on to the
+// grid's design edge (16 km): an infinite zone applies wherever the
+// grid can reach; beyond the clamp the base record wins (the documented
+// world edge). The VERTICAL range never extends for infinite axes — an
+// infinite-Y zone wins at every ladder height, and stretching the
+// ladder would tank the whole scene's vertical resolution.
+struct EnvGridExtent
+{
+	glm::vec2 gridMin{ 0.0f };
+	uint32_t dimX = 0, dimZ = 0;
+	float yMin = 0.0f, yMax = 0.0f;
+};
+// The seed bounds (the caller's ::Aabb flattened — no Utils/bvh.h
+// dependency in this header).
+struct EnvGridBounds
+{
+	glm::vec3 mn{};
+	glm::vec3 mx{};
+};
+EnvGridExtent ComputeEnvGridExtent(const Scene& scene,
+	const EnvGridBounds& sceneBounds);
 
 // The bake. Rebuildable; the caller drives dirtiness (the renderer hashes
 // the zone tables + transforms per frame — cheap — and rebuilds on

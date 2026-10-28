@@ -210,6 +210,14 @@ bool WorldFieldSystem::FieldAlive(uint32_t fieldId) const
 	return fieldId < fields_.size() && fields_[fieldId].alive;
 }
 
+IWorldFieldBrickSource* WorldFieldSystem::BrickSource(
+	uint32_t fieldId) const
+{
+	if (fieldId >= fields_.size() || !fields_[fieldId].alive)
+		return nullptr;
+	return fields_[fieldId].source;
+}
+
 smvk::ImageHandle WorldFieldSystem::FieldAtlas(uint32_t fieldId) const
 {
 	if (fieldId >= fields_.size() || !fields_[fieldId].alive || !fields_[fieldId].pool)
@@ -518,7 +526,20 @@ void WorldFieldSystem::DrainInFlight(uint64_t frame)
 			continue;
 		}
 		FieldSlot& f = fields_[key.fieldId];
-		(void)PublishBrick(key, f, payload.data(), payload.size(), frame);
+		if (!PublishBrick(key, f, payload.data(), payload.size(), frame)) {
+			// Publication refused (pool exhausted and no evictable victim —
+			// every resident is still hysteresis-protected). The JOB is
+			// already gone (swap-removed above), so the entry must NOT
+			// survive as InFlight: that phase hides the key from the
+			// request scan (entries are tick-and-skip, never re-collected)
+			// and the brick would be STUCK FOREVER — the drained-but-never-
+			// published case. Erase so the next frame re-collects and
+			// re-dispatches; the pressure is transient (residents age out
+			// of the hysteresis window once the interest moves on, or the
+			// proactive evictor frees them) and the retry then succeeds.
+			bricks_.erase(it);
+			continue;
+		}
 	}
 }
 
@@ -929,13 +950,18 @@ WorldFieldStats WorldFieldSystem::Stats() const
 	s.pendingUploads = uint32_t(pendingUploads_.size());
 	s.evictions = statEvictions_;
 	s.requestsSkipped = statRequestsSkipped_;
-	s.inFlightBricks = uint32_t(inFlight_.size());
 	for (const auto& kv : bricks_) {
 		if (kv.second.phase == BrickPhase::Resident)
 			++s.residentBricks;
 		else if (kv.second.phase == BrickPhase::Absent)
 			++s.absentBricks;
-		// (InFlight counts via inFlightBricks above)
+		else if (kv.second.phase == BrickPhase::InFlight)
+			// The MAP's in-flight phase — NOT InFlightCount() (the live
+			// JOBS). The two match while every dispatched brick has its
+			// job; a drift (entries > jobs) is exactly the drained-but-
+			// unpublished state, which DrainInFlight now erases — the
+			// stat makes a regression of that bug directly observable.
+			++s.inFlightBricks;
 	}
 	for (const FieldSlot& f : fields_) {
 		if (!f.alive || !f.pool)

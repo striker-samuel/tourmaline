@@ -210,7 +210,9 @@ struct WorldFieldStats
 	uint32_t fieldCount = 0;
 	uint32_t residentBricks = 0;
 	uint32_t absentBricks = 0; // negative-cached empties (no physical slot)
-	uint32_t inFlightBricks = 0; // dispatched to the work pool, pending
+	uint32_t inFlightBricks = 0; // bricks MARKED in-flight (the map's
+	// phase) — InFlightCount() is the live jobs; entries > jobs would be
+	// the drained-but-unpublished state (DrainInFlight erases it)
 	uint32_t pendingUploads = 0; // this frame's queued region copies
 	uint32_t evictions = 0; // this frame
 	uint32_t requestsSkipped = 0; // this frame (budget/pool exhausted)
@@ -252,6 +254,12 @@ public:
 	void SetBrickSource(WorldFieldHandle handle, IWorldFieldBrickSource* source);
 	uint32_t FieldCount() const { return static_cast<uint32_t>(fields_.size()); }
 	bool FieldAlive(uint32_t fieldId) const;
+	// The installed brick source (null when source-less/dead/unknown id).
+	// Debug/tooling ONLY — the runtime renders whatever the source bakes;
+	// a consumer that needs to reason about the CONTENT (the World Map's
+	// fog-heat reference layer) uses this to know whether ITS evaluation
+	// matches the bricks (the procedural reference vs cooked content).
+	IWorldFieldBrickSource* BrickSource(uint32_t fieldId) const;
 
 	// ---- per frame ----
 	// ComputeResidency: move clipmap windows to the interest point,

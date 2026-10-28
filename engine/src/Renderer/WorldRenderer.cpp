@@ -2002,9 +2002,11 @@ namespace engine {
 		}
 		m_worldFieldProvider.SetContext(m_context);
 		m_worldPartition.AddProvider(&m_worldFieldProvider);
-		// Debug: force the World Map (C) window open — headless UI smoke
-		// (the capture exports the composited frame INCLUDING the map's
-		// fields/cells layers + the streaming footer).
+		// Debug: force the World Map (C) window open — headless smoke
+		// evidence. Frame captures are scene-only BY DESIGN (the grading
+		// reference — ImGui layers never appear in exports), so the map's
+		// fields/cells layers are verified by the FIRST-DRAW stderr log
+		// (the "[WorldMap] fields layer live" line), not by the export.
 		if (const char* mapEnv = std::getenv("TOURMALINE_WORLDMAP")) {
 			if (std::atoi(mapEnv) == 1)
 				m_worldMapWindow = true;
@@ -8482,31 +8484,19 @@ namespace engine {
 			m_envTilesDirtyHash = hash;
 			m_envTilesPublished = false;
 
-			// ---- Grid extent: the scene bounds + one tile of margin,
-			// clamped to the max grid edge (16 km). Degenerate/no bounds
-			// (a flat scene): a default 1 km window around the origin. ----
-			glm::vec3 mn = bounds.mn, mx = bounds.mx;
-			const bool valid = mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z
-				&& (mx.x > mn.x || mx.z > mn.z);
-			if (!valid) {
-				mn = glm::vec3(-512.0f, -16.0f, -512.0f);
-				mx = glm::vec3(512.0f, 16.0f, 512.0f);
-			}
-			const glm::vec2 margin(worldpartition::kEnvTileSize);
-			const glm::vec2 gMin =
-				glm::floor(glm::vec2(mn.x, mn.z) / worldpartition::kEnvTileSize)
-					* worldpartition::kEnvTileSize - margin;
-			const glm::vec2 gMax =
-				glm::ceil(glm::vec2(mx.x, mx.z) / worldpartition::kEnvTileSize)
-					* worldpartition::kEnvTileSize + margin;
-			uint32_t dimX = std::min(uint32_t((gMax.x - gMin.x)
-					/ worldpartition::kEnvTileSize),
-				worldpartition::kEnvTileMaxDim);
-			uint32_t dimZ = std::min(uint32_t((gMax.y - gMin.y)
-					/ worldpartition::kEnvTileSize),
-				worldpartition::kEnvTileMaxDim);
+			// ---- Grid extent: the mesh scene bounds UNION the env-volume
+			// OBB bounds (a volumes-only scene, a zone hanging past the
+			// models — the review's finding: mesh-only bounds left those
+			// outside the grid and their look silently reverted to the
+			// base record; infinite faces extend their world axes to the
+			// 16 km design edge). The math + its contract live in
+			// WorldPartition (ComputeEnvGridExtent) next to the bake.
+			const worldpartition::EnvGridExtent ext =
+				worldpartition::ComputeEnvGridExtent(scene,
+					worldpartition::EnvGridBounds{ bounds.mn, bounds.mx });
 
-			if (m_envTiles.Build(scene, gMin, dimX, dimZ, mn.y, mx.y)
+			if (m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ,
+					ext.yMin, ext.yMax)
 				&& !m_resources.envTileRecordsBuffer.empty()) {
 				// Records: fixed buffer, upload the used prefix.
 				m_context->UploadDataToBuffer(
@@ -8540,7 +8530,7 @@ namespace engine {
 				// One-time diagnostic (the bake replaced the per-frame pack).
 				if (m_envTileZoneCount == UINT32_MAX) {
 					m_envTileZoneCount = m_envTiles.RecordCount();
-					std::cerr << "[EnvTiles] baked " << dimX << "x" << dimZ
+					std::cerr << "[EnvTiles] baked " << ext.dimX << "x" << ext.dimZ
 						<< " tiles @64 m, " << m_envTiles.RecordCount()
 						<< " records (the zone OBB walk is retired)\n";
 				}
@@ -17468,7 +17458,7 @@ namespace engine {
 		// reference heat, the partition interest cells.
 		ImGui::Checkbox("Fields", &m_worldMapFields);
 		ImGui::SameLine();
-		ImGui::Checkbox("Fog heat", &m_worldMapFogHeat);
+		ImGui::Checkbox("Fog heat (proc. ref)", &m_worldMapFogHeat);
 		ImGui::SameLine();
 		ImGui::Checkbox("Cells", &m_worldMapCells);
 		// World extent: terrain bounds, else scene bounds, else default.
@@ -17586,33 +17576,50 @@ namespace engine {
 		const glm::vec3 mapEye = m_cameraPositioner.cameraPosition_;
 		constexpr uint32_t kMapFogFieldId = 0;
 		if (m_worldMapFogHeat && fogFieldLive) {
-			// Fog density heat: the PROCEDURAL REFERENCE sampled on a
-			// world-quantized ~24 px grid at the camera's height (a debug
-			// view of the source function the bricks encode — cooked
-			// content swaps the reference, the layer keeps working).
-			const float worldCell = std::max(24.0f / s, 1.0f);
-			const float x1 = vx0 + cw / s;
-			const float z1 = vz0 + ch / s;
-			for (float gz = std::floor(vz0 / worldCell) * worldCell;
-				gz < z1; gz += worldCell)
-				for (float gx = std::floor(vx0 / worldCell) * worldCell;
-					gx < x1; gx += worldCell) {
-					const float d = WorldFogDensitySource::WorldDensity01(
-						glm::vec3(gx, mapEye.y, gz));
-					if (d <= 0.02f)
-						continue;
-					// (density^0.6 keeps the low range visible; blue ->
-					// white ramp, alpha carries the value)
-					const float t = std::pow(std::min(d, 1.0f), 0.6f);
-					const int r = 60 + int(t * 180.0f);
-					const int g = 150 + int(t * 90.0f);
-					const int b = 230;
-					dl->AddRectFilled(
-						ImVec2(WX(gx), WZ(gz)),
-						ImVec2(WX(std::min(gx + worldCell, x1)),
-							WZ(std::min(gz + worldCell, z1))),
-						IM_COL32(r, g, b, int(t * 96.0f)));
-				}
+			// Fog density heat — SOURCE-AWARE (the review's finding): the
+			// layer evaluates the PROCEDURAL REFERENCE, which is exactly
+			// what the bricks encode ONLY while the fog field's installed
+			// source is g_fogDensitySource. A cooked/alternate source
+			// would make this evaluation a LIE — the heatmap would
+			// disagree with the fog actually rendered — so the layer
+			// disables itself and says why, instead of silently showing
+			// the wrong function.
+			const bool proceduralReference =
+				m_worldFields.BrickSource(kMapFogFieldId)
+					== &g_fogDensitySource;
+			if (!proceduralReference) {
+				dl->AddText(ImVec2(o.x + 6.0f, o.y + 4.0f),
+					IM_COL32(220, 160, 90, 255),
+					"fog heat: source is not the procedural reference "
+					"(layer disabled)");
+			} else {
+				// The procedural reference sampled on a world-quantized
+				// ~24 px grid at the camera's height (the function the
+				// bricks encode — the layer label keeps that explicit).
+				const float worldCell = std::max(24.0f / s, 1.0f);
+				const float x1 = vx0 + cw / s;
+				const float z1 = vz0 + ch / s;
+				for (float gz = std::floor(vz0 / worldCell) * worldCell;
+					gz < z1; gz += worldCell)
+					for (float gx = std::floor(vx0 / worldCell) * worldCell;
+						gx < x1; gx += worldCell) {
+						const float d = WorldFogDensitySource::WorldDensity01(
+							glm::vec3(gx, mapEye.y, gz));
+						if (d <= 0.02f)
+							continue;
+						// (density^0.6 keeps the low range visible; blue ->
+						// white ramp, alpha carries the value)
+						const float t = std::pow(std::min(d, 1.0f), 0.6f);
+						const int r = 60 + int(t * 180.0f);
+						const int g = 150 + int(t * 90.0f);
+						const int b = 230;
+						dl->AddRectFilled(
+							ImVec2(WX(gx), WZ(gz)),
+							ImVec2(WX(std::min(gx + worldCell, x1)),
+								WZ(std::min(gz + worldCell, z1))),
+							IM_COL32(r, g, b, int(t * 96.0f)));
+					}
+			}
 		}
 		if (m_worldMapCells) {
 			// ---- WorldPartition layer: the streaming interest(s) —

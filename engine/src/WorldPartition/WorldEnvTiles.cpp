@@ -11,6 +11,113 @@
 
 namespace engine::worldpartition {
 
+EnvGridExtent ComputeEnvGridExtent(const Scene& scene,
+	const EnvGridBounds& sceneBounds)
+{
+	// ---- The seed: the mesh scene bounds (degenerate/no bounds — a flat
+	// or mesh-less scene — falls to the 1 km default window around the
+	// origin; env volumes below can still grow it out). ----
+	glm::vec3 mn = sceneBounds.mn, mx = sceneBounds.mx;
+	const bool valid = mx.x >= mn.x && mx.y >= mn.y && mx.z >= mn.z
+		&& (mx.x > mn.x || mx.z > mn.z);
+	if (!valid) {
+		mn = glm::vec3(-512.0f, -16.0f, -512.0f);
+		mx = glm::vec3(512.0f, 16.0f, 512.0f);
+	}
+	const auto unionPoint = [&](const glm::vec3& p) {
+		mn = glm::min(mn, p);
+		mx = glm::max(mx, p);
+	};
+
+	// ---- The env-volume OBB bounds, unioned in. ----
+	// The infinite-axis stand-in: half the max grid edge — the grid then
+	// spans the full 16 km on that axis after the margin + dim clamp.
+	const float infExtent = 0.5f * float(kEnvTileMaxDim) * kEnvTileSize;
+	for (const auto& [node, env] : scene.envForNode) {
+		if (node >= scene.globalTransform.size())
+			continue;
+		uint32_t infMask = 0;
+		float blendWeight = 1.0f;
+		bool enabled = true;
+		if (const auto vit = scene.envVolumeForNode.find(node);
+			vit != scene.envVolumeForNode.end()) {
+			infMask = vit->second.infMask;
+			blendWeight = vit->second.blendWeight;
+			enabled = vit->second.enabled;
+		}
+		if (!enabled || blendWeight <= 0.0f)
+			continue; // the bake skips it: no bounds contribution
+		const glm::mat4& g = scene.globalTransform[node];
+		// Per local axis: the column length is the half extent; INF
+		// length (the legacy INF scale) or an inf-mask face on the axis
+		// makes it unbounded (the bake's own rule).
+		bool axisInf[3] = { false, false, false };
+		for (int c = 0; c < 3; ++c) {
+			const float len = glm::length(glm::vec3(g[c]));
+			axisInf[c] = !std::isfinite(len)
+				|| (infMask & (3u << (2 * c))) != 0u;
+		}
+		// The FINITE axes' corners (translation + rotation applied): the
+		// zone's world AABB — an all-infinite zone degenerates to its
+		// translation.
+		for (int sz = -1; sz <= 1; sz += 2)
+			for (int sy = -1; sy <= 1; sy += 2)
+				for (int sx = -1; sx <= 1; sx += 2) {
+					const glm::vec4 local(
+						axisInf[0] ? 0.0f : float(sx),
+						axisInf[1] ? 0.0f : float(sy),
+						axisInf[2] ? 0.0f : float(sz),
+						1.0f);
+					unionPoint(glm::vec3(g * local));
+				}
+		// The UNBOUNDED axes: extend the WORLD XZ grid where the axis
+		// projects (a nonzero column component), or — a flat column, the
+		// authoring norm is axis-aligned — the world axis c. NEVER the
+		// vertical range (see the header).
+		const auto unionAxisX = [&](float v) {
+			mn.x = std::min(mn.x, v);
+			mx.x = std::max(mx.x, v);
+		};
+		const auto unionAxisZ = [&](float v) {
+			mn.z = std::min(mn.z, v);
+			mx.z = std::max(mx.z, v);
+		};
+		for (int c = 0; c < 3; ++c) {
+			if (!axisInf[c])
+				continue;
+			const glm::vec3 col = glm::vec3(g[c]);
+			const bool flat = !(glm::length(col) > 0.0f);
+			const bool extX = flat ? c == 0 : std::abs(col.x) > 1e-6f;
+			const bool extZ = flat ? c == 2 : std::abs(col.z) > 1e-6f;
+			if (extX) {
+				unionAxisX(-infExtent);
+				unionAxisX(infExtent);
+			}
+			if (extZ) {
+				unionAxisZ(-infExtent);
+				unionAxisZ(infExtent);
+			}
+		}
+	}
+
+	// ---- Tile-aligned + one tile of margin + the 16 km dim clamp. ----
+	const glm::vec2 margin(kEnvTileSize);
+	EnvGridExtent out{};
+	out.gridMin =
+		glm::floor(glm::vec2(mn.x, mn.z) / kEnvTileSize) * kEnvTileSize
+			- margin;
+	const glm::vec2 gMax =
+		glm::ceil(glm::vec2(mx.x, mx.z) / kEnvTileSize) * kEnvTileSize
+			+ margin;
+	out.dimX = std::min(uint32_t((gMax.x - out.gridMin.x) / kEnvTileSize),
+		kEnvTileMaxDim);
+	out.dimZ = std::min(uint32_t((gMax.y - out.gridMin.y) / kEnvTileSize),
+		kEnvTileMaxDim);
+	out.yMin = mn.y;
+	out.yMax = mx.y;
+	return out;
+}
+
 bool WorldEnvTiles::Build(const Scene& scene, glm::vec2 gridMin,
 	uint32_t dimX, uint32_t dimZ, float yMin, float yMax)
 {
@@ -167,53 +274,135 @@ bool WorldEnvTiles::Build(const Scene& scene, glm::vec2 gridMin,
 			return a.nodeId < b.nodeId;
 		});
 
-	// ---- Raster: every tile column evaluates the winner at THREE sample
-	// heights (lo/mid/hi over the scene's Y range); equal winners collapse
-	// to the no-split cell, different winners get a bisection split. ----
+	// ---- Raster: every tile column walks a ~1 m vertical slice ladder,
+	// bisects each flip edge, and packs the merged interval list. (The
+	// retired lo/mid/hi triple + a single lo/hi bisection could only ever
+	// find ONE flip: an enclosed room — base below, the interior inside,
+	// base above — bisected between the SAME base winners at both ends
+	// and the interior record VANISHED from the bake entirely; the
+	// review's finding. The ladder sees every band at its resolution and
+	// the cell now carries three records.)
+	struct ColumnInterval
+	{
+		uint32_t record = 0;
+		float lo = 0.0f, hi = 0.0f; // flip edges (refined)
+	};
 	const float yLo = yMin + 0.01f;
 	const float yHi = yMax - 0.01f;
-	const float yMid = 0.5f * (yLo + yHi);
+	const float height = yHi - yLo;
+	// ~1 m slices on a 64 m scene; clamped 17..129 (taller scenes trade
+	// vertical resolution, same class as the retired 6-step bisection).
+	const int sliceCount = int(std::clamp(std::ceil(height) + 1.0f,
+		17.0f, 129.0f));
+	// (resize, not the vexing parse: vector<T> v(count) declares a
+	// function when count is wrapped in a cast's parens.)
+	std::vector<Lookup> slices;
+	slices.resize(size_t(sliceCount));
+	std::vector<ColumnInterval> intervals;
+	uint32_t rejectedColumns = 0;
 	cells_.assign(size_t(dimX_) * dimZ_, EnvTileCell{});
 	for (uint32_t iz = 0; iz < dimZ_; ++iz)
 		for (uint32_t ix = 0; ix < dimX_; ++ix) {
 			const float wx = gridMin_.x + (float(ix) + 0.5f) * kEnvTileSize;
 			const float wz = gridMin_.y + (float(iz) + 0.5f) * kEnvTileSize;
 			EnvTileCell& cell = cells_[size_t(iz) * dimX_ + ix];
-			const Lookup lo = Evaluate(glm::vec3(wx, yLo, wz));
-			const Lookup mid = Evaluate(glm::vec3(wx, yMid, wz));
-			const Lookup hi = Evaluate(glm::vec3(wx, yHi, wz));
-			if (lo.record == hi.record && mid.record == lo.record) {
-				// No vertical change: one record, the mid-sample weight.
-				cell.lowerRecord = mid.record;
-				cell.upperRecord = mid.record;
+
+			// 1) The ladder: the winner at each slice height.
+			for (int i = 0; i < sliceCount; ++i)
+				slices[size_t(i)] = Evaluate(glm::vec3(wx,
+					yLo + height * (float(i) / float(sliceCount - 1)), wz));
+
+			// 2) The intervals: runs of equal winners, each flip edge
+			// refined by a 6-step bisection INSIDE its ladder gap (a
+			// sub-gap band reads as the gap's far record — 1 m accuracy,
+			// the retired bake's own class).
+			intervals.clear();
+			uint32_t cur = slices[0].record;
+			float runLo = yLo;
+			for (int i = 0; i + 1 < sliceCount; ++i) {
+				if (slices[size_t(i + 1)].record == cur)
+					continue;
+				float a = yLo + height * (float(i) / float(sliceCount - 1));
+				float b = yLo + height * (float(i + 1) / float(sliceCount - 1));
+				for (int it = 0; it < 6; ++it) {
+					const float m = 0.5f * (a + b);
+					if (Evaluate(glm::vec3(wx, m, wz)).record == cur)
+						a = m;
+					else
+						b = m;
+				}
+				const float edge = 0.5f * (a + b);
+				intervals.push_back(ColumnInterval{ cur, runLo, edge });
+				cur = slices[size_t(i + 1)].record;
+				runLo = edge;
+			}
+			intervals.push_back(ColumnInterval{ cur, runLo, yHi });
+			// Sanitize the list: drop degenerate zero-width runs (two
+			// bisection edges landing equal — belt and braces), then fuse
+			// same-record neighbors the drop can leave behind. Adjacent
+			// intervals SHARE an edge by construction (one run's hi is
+			// the next run's lo) — that is NOT a merge condition.
+			for (size_t k = 0; k < intervals.size();)
+				if (intervals[k].hi <= intervals[k].lo)
+					intervals.erase(intervals.begin() + ptrdiff_t(k));
+				else
+					++k;
+			for (size_t k = 0; intervals.size() > 1
+				&& k < intervals.size() - 1;)
+				if (intervals[k].record == intervals[k + 1].record) {
+					intervals[k].hi = intervals[k + 1].hi;
+					intervals.erase(intervals.begin() + ptrdiff_t(k) + 1);
+				} else {
+					++k;
+				}
+
+			// 3) Pack: 1 = no split, 2 = the splitY plane, 3 = the mid
+			// band, >3 = the explicit reject (the largest vertical mass —
+			// a 4+ stack of env zones in one 64 m column is not
+			// representable; keep the dominant look, log once per bake).
+			const auto midSample = [&](const ColumnInterval& in) {
+				const Lookup l = Evaluate(glm::vec3(wx,
+					0.5f * (in.lo + in.hi), wz));
+				return l.record == in.record ? l.weight : 1.0f;
+			};
+			if (intervals.size() > 3) {
+				size_t best = 0;
+				for (size_t k = 1; k < intervals.size(); ++k)
+					if (intervals[k].hi - intervals[k].lo
+						> intervals[best].hi - intervals[best].lo)
+						best = k;
+				cell.lowerRecord = intervals[best].record;
+				cell.upperRecord = intervals[best].record;
 				cell.splitY = -std::numeric_limits<float>::max();
-				cell.lowerWeight = mid.weight;
-				cell.upperWeight = mid.weight;
+				cell.lowerWeight = midSample(intervals[best]);
+				cell.upperWeight = cell.lowerWeight;
+				cell.midRecord = 0xFFFFFFFFu;
+				++rejectedColumns;
 				continue;
 			}
-			// Vertical split: bisect the Y where the winner flips between
-			// the lo and hi records (6 steps — a 1 m resolution on a 64 m
-			// scene height; sub-tile Y detail is not representable by
-			// design, this only needs the PLANE).
-			float a = yLo;
-			float b = yHi;
-			for (int it = 0; it < 6; ++it) {
-				const float m = 0.5f * (a + b);
-				const Lookup lm = Evaluate(glm::vec3(wx, m, wz));
-				if (lm.record == lo.record)
-					a = m;
-				else
-					b = m;
+			cell.lowerRecord = intervals.front().record;
+			cell.upperRecord = intervals.back().record;
+			cell.lowerWeight = midSample(intervals.front());
+			cell.upperWeight = midSample(intervals.back());
+			if (intervals.size() == 1) {
+				cell.splitY = -std::numeric_limits<float>::max();
+				cell.midRecord = 0xFFFFFFFFu;
+				continue;
 			}
-			cell.lowerRecord = lo.record;
-			cell.upperRecord = hi.record;
-			cell.splitY = 0.5f * (a + b);
-			// Slot weights at the quarter samples of their halves.
-			const Lookup loQ = Evaluate(glm::vec3(wx, 0.5f * (yLo + cell.splitY), wz));
-			const Lookup hiQ = Evaluate(glm::vec3(wx, 0.5f * (cell.splitY + yHi), wz));
-			cell.lowerWeight = loQ.record == lo.record ? loQ.weight : lo.weight;
-			cell.upperWeight = hiQ.record == hi.record ? hiQ.weight : hi.weight;
+			cell.splitY = intervals[0].hi;
+			if (intervals.size() == 2) {
+				cell.midRecord = 0xFFFFFFFFu;
+				continue;
+			}
+			// Three: the mid band bounded by [splitY, midHiY].
+			cell.midRecord = intervals[1].record;
+			cell.midHiY = intervals[1].hi;
+			cell.midWeight = midSample(intervals[1]);
 		}
+	if (rejectedColumns > 0)
+		std::fprintf(stderr, "[EnvTiles] %u column(s) carry 4+ vertical "
+			"records — not representable (64 m tile, 3 slots); kept the "
+			"largest vertical mass per column\n", rejectedColumns);
 	built_ = true;
 	return true;
 }
@@ -260,9 +449,19 @@ WorldEnvTiles::Lookup WorldEnvTiles::At(glm::vec3 pos) const
 		return out;
 	}
 	const EnvTileCell& cell = cells_[size_t(fz) * dimX_ + size_t(fx)];
-	const bool upper = pos.y > cell.splitY;
-	out.record = upper ? cell.upperRecord : cell.lowerRecord;
-	out.weight = upper ? cell.upperWeight : cell.lowerWeight;
+	// The vertical profile: the optional mid band first (the enclosed
+	// room), else the splitY half-spaces.
+	if (cell.midRecord != 0xFFFFFFFFu
+		&& pos.y >= cell.splitY && pos.y <= cell.midHiY) {
+		out.record = cell.midRecord;
+		out.weight = cell.midWeight;
+	} else if (pos.y > cell.splitY) {
+		out.record = cell.upperRecord;
+		out.weight = cell.upperWeight;
+	} else {
+		out.record = cell.lowerRecord;
+		out.weight = cell.lowerWeight;
+	}
 	out.valid = true;
 	return out;
 }

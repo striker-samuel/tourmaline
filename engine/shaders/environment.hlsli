@@ -563,7 +563,8 @@ float ComputeFogFactor(float viewDepth, float worldY, EnvironmentFrameData env)
 // per-frame pack) and this resolver walks a TILE ADDRESS instead of
 // intersecting OBBs per pixel:
 //   cell = floor((p.xz - gridMin) / 64) -> EnvTileCell
-//   -> (lower/upper record at splitY, weight) -> records[rec]
+//   -> (lower/mid/upper record — the mid band or the splitY half-spaces,
+//       weight) -> records[rec]
 // records[0] is ALWAYS the base (the default environment block — the old
 // zone-zero semantic: outside every zone, and out-of-grid, the base look
 // applies at weight 1). The sun stays global. All helpers fall back to
@@ -628,14 +629,24 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
         return true;
     }
 
-    // The cell: (lower/upper record + splitY + weights).
+    // The cell: up to three records — the mid band (the enclosed room)
+    // first, else the splitY half-spaces.
     const EnvTileCell c = vk::BufferPointer<EnvTileCell>(
         frame.envTileCells
         + uint64_t(uint(cellI.y) * frame.envTileDimX + uint(cellI.x)) * 32u
     ).Get();
-    const bool upper = p.y > c.splitY;
-    const uint rec = upper ? c.upperRecord : c.lowerRecord;
-    const float w = upper ? c.upperWeight : c.lowerWeight;
+    uint rec; float w;
+    if (c.midRecord != 0xFFFFFFFFu
+        && p.y >= c.splitY && p.y <= c.midHiY) {
+        rec = c.midRecord;
+        w = c.midWeight;
+    } else if (p.y > c.splitY) {
+        rec = c.upperRecord;
+        w = c.upperWeight;
+    } else {
+        rec = c.lowerRecord;
+        w = c.lowerWeight;
+    }
     if (rec >= n)
         return false; // stale/corrupt index: the plain path, never garbage
     const EnvTileRecord r = vk::BufferPointer<EnvTileRecord>(

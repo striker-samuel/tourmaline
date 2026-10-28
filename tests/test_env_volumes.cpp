@@ -20,6 +20,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/WorldPartition/WorldEnvTiles.h>
 
 namespace {
 
@@ -271,6 +272,200 @@ int main() {
 		smvk::envzones::EnvZone got;
 		Check(!smvk::envzones::EnvZoneAt(zones, glm::vec3(0), w, got)
 			&& w == 0.0f, "envzone.zero-skip");
+	}
+
+	// WorldEnvTiles (the bake behind the shader's tile-address resolver):
+	// the vertical profile per tile column. The retired lo/mid/hi triple
+	// + a single lo/hi bisection could only find ONE flip — an enclosed
+	// room (base below, interior inside, base above) bisected between the
+	// SAME base winners at both ends and the interior record VANISHED.
+	// These pin the reworked bake: the room (3 records), the stacked pair,
+	// the explicit 4+ reject (the largest vertical mass, never garbage),
+	// and the preserved no-split / underwater half-space shapes.
+	{
+		using engine::worldpartition::WorldEnvTiles;
+		const auto makeTileZone = [](::Scene& s, const glm::vec3& half,
+			const glm::vec3& pos, const glm::vec3& fog, float priority) {
+			const int n = addNode(s, -1, 0);
+			if (int(s.globalTransform.size()) <= n)
+				s.globalTransform.resize(size_t(n) + 1, glm::mat4(1.0f));
+			s.globalTransform[size_t(n)] =
+				glm::translate(glm::mat4(1.0f), pos)
+				* glm::scale(glm::mat4(1.0f), half);
+			SceneEnv e{};
+			e.fogColor = fog; // the look: distinct per zone = record identity
+			e.zonePriority = priority;
+			s.envForNode[uint32_t(n)] = e;
+			return uint32_t(n);
+		};
+		const auto recOf = [](const WorldEnvTiles& t, const glm::vec3& fog) {
+			for (uint32_t r = 0; r < t.RecordCount(); ++r)
+				if (glm::vec3(t.Records()[r].fog) == fog)
+					return r;
+			return 0xFFFFFFFFu;
+		};
+
+		// THE ROOM: one bounded interior (Y 15..25 over a 0..40 range) —
+		// base below, the interior inside, base above.
+		{
+			::Scene s;
+			(void)makeTileZone(s, glm::vec3(32, 5, 32), glm::vec3(32, 20, 32),
+				glm::vec3(1, 0, 0), 5.0f);
+			WorldEnvTiles t;
+			Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+				"envtile.room-build");
+			const uint32_t room = recOf(t, glm::vec3(1, 0, 0));
+			Check(room != 0xFFFFFFFFu && room != 0, "envtile.room-record");
+			Check(t.At(glm::vec3(32, 5, 32)).record == 0,
+				"envtile.room-below-is-base");
+			Check(t.At(glm::vec3(32, 20, 32)).record == room,
+				"envtile.room-inside-is-interior (the vanished-interior regression)");
+			Check(t.At(glm::vec3(32, 35, 32)).record == 0,
+				"envtile.room-above-is-base");
+		}
+
+		// THE STACK: base -> A (Y 10..20) -> B (Y 20..40) — three records.
+		{
+			::Scene s;
+			(void)makeTileZone(s, glm::vec3(32, 5, 32), glm::vec3(32, 15, 32),
+				glm::vec3(0, 1, 0), 5.0f);
+			(void)makeTileZone(s, glm::vec3(32, 10, 32), glm::vec3(32, 30, 32),
+				glm::vec3(0, 0, 1), 5.0f);
+			WorldEnvTiles t;
+			Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+				"envtile.stack-build");
+			const uint32_t a = recOf(t, glm::vec3(0, 1, 0));
+			const uint32_t b = recOf(t, glm::vec3(0, 0, 1));
+			Check(a != 0xFFFFFFFFu && b != 0xFFFFFFFFu && a != b,
+				"envtile.stack-records");
+			Check(t.At(glm::vec3(32, 5, 32)).record == 0,
+				"envtile.stack-below-is-base");
+			Check(t.At(glm::vec3(32, 15, 32)).record == a,
+				"envtile.stack-inside-A");
+			Check(t.At(glm::vec3(32, 30, 32)).record == b,
+				"envtile.stack-inside-B");
+		}
+
+		// THE REJECT: four records in one column (base 10 m, A/B 4 m
+		// each, C 22 m) — not representable; the bake keeps the LARGEST
+		// vertical mass (C) everywhere in the column, loudly.
+		{
+			::Scene s;
+			(void)makeTileZone(s, glm::vec3(32, 2, 32), glm::vec3(32, 12, 32),
+				glm::vec3(1, 0, 0), 5.0f);
+			(void)makeTileZone(s, glm::vec3(32, 2, 32), glm::vec3(32, 16, 32),
+				glm::vec3(0, 1, 0), 6.0f);
+			(void)makeTileZone(s, glm::vec3(32, 11, 32), glm::vec3(32, 29, 32),
+				glm::vec3(0, 0, 1), 7.0f);
+			WorldEnvTiles t;
+			Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+				"envtile.reject-build");
+			const uint32_t c = recOf(t, glm::vec3(0, 0, 1));
+			Check(c != 0xFFFFFFFFu, "envtile.reject-record-C");
+			// Every probe returns a VALID record with weight > 0 — the
+			// reject is honest (the dominant look), never garbage.
+			const uint32_t count = t.RecordCount();
+			const float probes[5] = { 2.0f, 12.0f, 16.0f, 29.0f, 38.0f };
+			bool allValid = true, allDominant = true;
+			for (float y : probes) {
+				const WorldEnvTiles::Lookup l = t.At(glm::vec3(32, y, 32));
+				if (!l.valid || l.record >= count || !(l.weight > 0.0f))
+					allValid = false;
+				if (l.record != c)
+					allDominant = false;
+			}
+			Check(allValid, "envtile.reject-probes-valid (no garbage)");
+			Check(allDominant,
+				"envtile.reject-largest-mass-kept (the explicit reject)");
+		}
+
+		// Preserved shapes: no-split outside every zone + the underwater
+		// half-space split (kEnvInfNegY: the zone wins below its top).
+		{
+			::Scene s;
+			const uint32_t z = makeTileZone(s, glm::vec3(32, 8, 32),
+				glm::vec3(32, 8, 32), glm::vec3(0.5f, 0.5f, 0.1f), 5.0f);
+			s.envVolumeForNode[z].infMask = kEnvInfNegY; // covers y <= 16
+			WorldEnvTiles t;
+			Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
+				"envtile.halfspace-build");
+			const uint32_t under = recOf(t, glm::vec3(0.5f, 0.5f, 0.1f));
+			Check(under != 0xFFFFFFFFu && under != 0,
+				"envtile.halfspace-record");
+			Check(t.At(glm::vec3(32, 5, 32)).record == under,
+				"envtile.halfspace-below-is-zone");
+			Check(t.At(glm::vec3(32, 30, 32)).record == 0,
+				"envtile.halfspace-above-is-base");
+			const WorldEnvTiles::Lookup out = t.At(glm::vec3(500.0f, 5.0f, 500.0f));
+			Check(out.valid && out.record == 0 && out.weight == 1.0f,
+				"envtile.out-of-grid-base");
+		}
+		// The grid EXTENT contract (ComputeEnvGridExtent — the review's
+		// finding: mesh-only bounds left volumes outside the grid, their
+		// look silently reverting to the base record outside it).
+		{
+			using engine::worldpartition::ComputeEnvGridExtent;
+			using engine::worldpartition::EnvGridBounds;
+			using engine::worldpartition::kEnvTileMaxDim;
+			// Volumes-only scene (degenerate mesh bounds): the zone's own
+			// bounds grow the grid out of the fallback window.
+			{
+				::Scene s;
+				(void)makeTileZone(s, glm::vec3(32, 5, 32),
+					glm::vec3(1000.0f, 20.0f, 1000.0f), glm::vec3(1, 0, 0), 5.0f);
+				const auto e = ComputeEnvGridExtent(s, EnvGridBounds{
+					glm::vec3(0.0f), glm::vec3(0.0f) }); // flat mesh bounds
+				const bool covers = e.gridMin.x <= 1000.0f - 32.0f
+					&& e.gridMin.y <= 1000.0f - 32.0f
+					&& (e.gridMin.x + float(e.dimX) * 64.0f) >= 1000.0f + 32.0f
+					&& (e.gridMin.y + float(e.dimZ) * 64.0f) >= 1000.0f + 32.0f;
+				Check(covers, "envtile.extent-volumes-only-scene-covered");
+			}
+			// A zone hanging PAST the mesh bounds: the union covers it.
+			{
+				::Scene s;
+				(void)makeTileZone(s, glm::vec3(32, 5, 32),
+					glm::vec3(500.0f, 20.0f, 500.0f), glm::vec3(1, 0, 0), 5.0f);
+				const auto e = ComputeEnvGridExtent(s, EnvGridBounds{
+					glm::vec3(0.0f), glm::vec3(64.0f, 8.0f, 64.0f) });
+				const bool covers = (e.gridMin.x + float(e.dimX) * 64.0f)
+					>= 532.0f && (e.gridMin.y + float(e.dimZ) * 64.0f) >= 532.0f;
+				Check(covers, "envtile.extent-zone-past-mesh-bounds-covered");
+			}
+			// An infinite XZ zone (all-inf mask): the grid stretches to
+			// the 16 km design edge — the zone applies wherever the grid
+			// reaches.
+			{
+				::Scene s;
+				const uint32_t z = makeTileZone(s, glm::vec3(1, 1, 1),
+					glm::vec3(0.0f), glm::vec3(0, 1, 0), 5.0f);
+				s.envVolumeForNode[z].infMask = 63u; // every face infinite
+				const auto e = ComputeEnvGridExtent(s, EnvGridBounds{
+					glm::vec3(-32.0f), glm::vec3(32.0f) });
+				Check(e.dimX == kEnvTileMaxDim && e.dimZ == kEnvTileMaxDim,
+					"envtile.extent-infinite-zone-full-grid");
+			}
+			// The underwater half-space (infinite Y face ONLY): the grid
+			// must NOT stretch (the zone's XZ is the finite box) and the
+			// vertical range must stay the scene's (an infinite-Y zone
+			// wins at every ladder height — stretching it would tank the
+			// vertical resolution).
+			{
+				::Scene s;
+				const uint32_t z = makeTileZone(s, glm::vec3(32, 8, 32),
+					glm::vec3(0.0f, 8.0f, 0.0f), glm::vec3(0, 1, 0), 5.0f);
+				s.envVolumeForNode[z].infMask = kEnvInfNegY;
+				const auto e = ComputeEnvGridExtent(s, EnvGridBounds{
+					glm::vec3(-32.0f, -16.0f, -32.0f),
+					glm::vec3(32.0f, 48.0f, 32.0f) });
+				const float spanX = float(e.dimX) * 64.0f;
+				const float spanZ = float(e.dimZ) * 64.0f;
+				Check(spanX <= 512.0f && spanZ <= 512.0f,
+					"envtile.extent-underwater-grid-not-stretched");
+				Check(e.yMin >= -16.0f && e.yMax <= 48.0f,
+					"envtile.extent-underwater-vertical-range-kept");
+			}
+		}
 	}
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";

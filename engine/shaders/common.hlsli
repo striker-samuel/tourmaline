@@ -514,7 +514,8 @@ struct DsVizParams
 // each; the OBB fields are retired — the tile carries the shape) + the
 // per-tile cells. records[0] is ALWAYS the base (the default environment
 // block, the old zone-zero semantic). The cells ride a separate BDA; a
-// cell = (lower/upper record + splitY + weights) — see EnvTileCell.
+// cell = (lower/mid/upper record + splitY/midHiY + weights) — see
+// EnvTileCell.
 #define ENV_TILE_MAX 64
 struct EnvTileRecord
 {
@@ -526,9 +527,11 @@ struct EnvTileRecordsBuffer
 {
     EnvTileRecord records[ENV_TILE_MAX];
 };
-// One 64 m world tile (a subcell column): the dominant record BELOW and
-// ABOVE splitY (the vertical split carries underwater/interior
-// half-spaces; lower==upper + splitY=-FLT_MAX = the no-split case).
+// One 64 m world tile (a subcell column): up to THREE records — the
+// dominant record BELOW and ABOVE splitY (the vertical split carries
+// underwater/interior half-spaces) plus an optional mid BAND bounded by
+// [splitY, midHiY] (the enclosed room: base -> interior -> base).
+// lower==upper + splitY=-FLT_MAX + midRecord=0xFFFFFFFF = no split.
 struct EnvTileCell
 {
     uint lowerRecord;       // 0
@@ -536,7 +539,9 @@ struct EnvTileCell
     float splitY;           // 8
     float lowerWeight;      // 12
     float upperWeight;      // 16
-    uint reserved[3];       // 20 (32 B total)
+    uint midRecord;         // 20 (0xFFFFFFFF = no mid band)
+    float midHiY;           // 24 (the band's high edge)
+    float midWeight;        // 28 (32 B total)
 };
 
 // Offsets mirror the C++ FrameUniforms in App/world_renderer.h (asserted
