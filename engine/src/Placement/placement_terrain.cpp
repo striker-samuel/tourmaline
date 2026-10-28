@@ -308,4 +308,110 @@ void TerrainWriteBox(TerrainGroupData& g,
 				= box[(size_t)z * boxW + x];
 }
 
+// ---------------------------------------------------------------------------
+// WORLD-TILE BRIDGE (see placement_terrain.h's contract block)
+// ---------------------------------------------------------------------------
+namespace {
+
+// The inclusive world-texel window covering [rectMin, rectMax) (+/- halo),
+// clamped to the world's texel grid. Returns false when the rect lies
+// entirely outside the world.
+bool WorldTexelWindow(const smvk::terrain::TerrainMeta& meta,
+	float texel, const glm::vec2& rectMin, const glm::vec2& rectMax,
+	int32_t halo, uint32_t worldTexels,
+	int32_t& ix0, int32_t& ix1, int32_t& iz0, int32_t& iz1) {
+	ix0 = (int32_t)std::floor((rectMin.x - meta.originX) / texel) - halo;
+	ix1 = (int32_t)std::ceil((rectMax.x - meta.originX) / texel) - 1 + halo;
+	iz0 = (int32_t)std::floor((rectMin.y - meta.originZ) / texel) - halo;
+	iz1 = (int32_t)std::ceil((rectMax.y - meta.originZ) / texel) - 1 + halo;
+	ix0 = std::max(ix0, 0);
+	iz0 = std::max(iz0, 0);
+	ix1 = std::min(ix1, (int32_t)worldTexels - 1);
+	iz1 = std::min(iz1, (int32_t)worldTexels - 1);
+	return ix1 >= ix0 && iz1 >= iz0;
+}
+
+} // namespace
+
+bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
+	const glm::vec2& rectMin, const glm::vec2& rectMax, uint32_t halo,
+	HeightfieldData& out) {
+	out = HeightfieldData{};
+	if (!field.valid()) return false;
+	const auto& meta = field.meta;
+	const uint32_t n = field.tilesPerAxis();
+	if (n == 0 || meta.hRes == 0) return false;
+	const float texel = meta.hTileSize / float(meta.hRes);
+	const uint32_t worldTexels = uint32_t(
+		std::lround(meta.worldSize / texel));
+	int32_t ix0, ix1, iz0, iz1;
+	if (!WorldTexelWindow(meta, texel, rectMin, rectMax, int32_t(halo),
+			worldTexels, ix0, ix1, iz0, iz1))
+		return false;
+	const uint32_t w = uint32_t(ix1 - ix0 + 1);
+	const uint32_t h = uint32_t(iz1 - iz0 + 1);
+	out.width = w;
+	out.height = h;
+	// +half a texel: placement texel i == world texel (base+i)'s CENTER
+	// (the documented convention bridge).
+	out.origin = glm::vec3(
+		meta.originX + (float(ix0) + 0.5f) * texel, 0.0f,
+		meta.originZ + (float(iz0) + 0.5f) * texel);
+	out.spacing = glm::vec2(texel, texel);
+	out.heights.resize((size_t)w * h);
+	for (int32_t iz = iz0; iz <= iz1; ++iz) {
+		const uint32_t tz = uint32_t(iz) / meta.hRes;
+		const uint32_t py = uint32_t(iz) % meta.hRes;
+		for (int32_t ix = ix0; ix <= ix1; ++ix) {
+			const uint32_t tx = uint32_t(ix) / meta.hRes;
+			const uint32_t pxx = uint32_t(ix) % meta.hRes;
+			const auto& tile = field.tiles[size_t(tz) * size_t(n) + size_t(tx)];
+			const size_t o = (size_t(py) * size_t(meta.hRes) + size_t(pxx)) * 4;
+			out.heights[(size_t(iz - iz0)) * w + size_t(ix - ix0)]
+				= smvk::terrain::HeightToWorld(
+					smvk::terrain::DecodeH01(tile[o], tile[o + 1]));
+		}
+	}
+	return out.valid();
+}
+
+bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
+	const WorldMaskGrid& masks,
+	const glm::vec2& rectMin, const glm::vec2& rectMax,
+	EcotopeMaskData& out) {
+	out = EcotopeMaskData{};
+	if (!masks.Valid()) return false;
+	const float texel = meta.gBlock / float(masks.tileRes);
+	const uint32_t worldTexels = masks.tilesPerAxis * masks.tileRes;
+	int32_t ix0, ix1, iz0, iz1;
+	if (!WorldTexelWindow(meta, texel, rectMin, rectMax, 0,
+			worldTexels, ix0, ix1, iz0, iz1))
+		return false;
+	const uint32_t w = uint32_t(ix1 - ix0 + 1);
+	const uint32_t h = uint32_t(iz1 - iz0 + 1);
+	out.width = w;
+	out.height = h;
+	out.channels = 4; // RGBA = the paint layers (the FieldOp channel index)
+	out.origin = glm::vec2(
+		meta.originX + (float(ix0) + 0.5f) * texel,
+		meta.originZ + (float(iz0) + 0.5f) * texel);
+	out.spacing = glm::vec2(texel, texel);
+	out.weights.assign((size_t)4 * h * w, 0.0f);
+	for (int32_t iz = iz0; iz <= iz1; ++iz) {
+		const uint32_t tz = uint32_t(iz) / masks.tileRes;
+		const uint32_t py = uint32_t(iz) % masks.tileRes;
+		for (int32_t ix = ix0; ix <= ix1; ++ix) {
+			const uint32_t tx = uint32_t(ix) / masks.tileRes;
+			const uint32_t pxx = uint32_t(ix) % masks.tileRes;
+			const auto& tile =
+				(*masks.tiles)[size_t(tz) * size_t(masks.tilesPerAxis) + size_t(tx)];
+			const size_t o = (size_t(py) * size_t(masks.tileRes) + size_t(pxx)) * 4;
+			for (uint32_t c = 0; c < 4; ++c)
+				out.weights[((size_t)c * h + size_t(iz - iz0)) * w + size_t(ix - ix0)]
+					= float(tile[o + c]) * (1.0f / 255.0f);
+		}
+	}
+	return out.valid();
+}
+
 } // namespace smvk::placement

@@ -240,6 +240,12 @@ void TestTerrainGroups();
 void TestTerrainBrush();
 void TestTerrainRaycast();
 
+// The WORLD-TILE BRIDGE: a reduced-scale fake world (2x2 H-tiles of 8
+// texels + 2x2 S-tiles of 8 texels -> 1m/texel, 16m world) proving the
+// convention bridge — the harvested fields' texels ARE the world's
+// texel centers, the heights decode through baseY/range, and the
+// S-tile paint channels land as the ecotope mask's 4 channels.
+void TestWorldBridge();
 void TestFieldEval() {
 	using namespace smvk::placement;
 	// density = 0.5 * slopeMask(flat=0deg, steep=40deg)
@@ -1815,8 +1821,7 @@ void TestDrawFeed() {
 		"place.draw.radius-sane");
 }
 
-void TestTerrainUpload() {
-	using namespace smvk::placement;
+void TestTerrainUpload() {	using namespace smvk::placement;
 	TerrainParams p;
 	p.origin = glm::vec2(10, 20);
 	p.size = 32.0f;
@@ -2007,6 +2012,168 @@ void TestTerrainRaycast() {
 		100.0f, t) && t == 0.0f, "place.raycast.start-under");
 }
 
+// ---------------------------------------------------------------------------
+// The WORLD-TILE BRIDGE: a reduced-scale fake world (4x4 H-tiles of 4
+// texels -> 1m/texel, 16m world; 2x2 S-tiles of 8 texels -> the same
+// 1m pitch) proving the convention bridge — the harvested fields'
+// texels ARE the world's texel centers, heights decode through
+// baseY/range, and the S-tile paint channels land as the ecotope
+// mask's 4 channels (the "ride" contract).
+// ---------------------------------------------------------------------------
+void TestWorldBridge() {
+	using namespace smvk::placement;
+	using namespace smvk::terrain;
+
+	// ---- the fake world: 4x4 H-tiles x 4 texels (16m world) ----
+	TerrainHField field;
+	field.meta.worldSize = 16.0f;
+	field.meta.originX = -8.0f;
+	field.meta.originZ = -8.0f;
+	field.meta.hTileSize = 4.0f;
+	field.meta.hRes = 4;            // 1m/texel
+	field.meta.baseY = -40.0f;
+	field.meta.range = 420.0f;
+	const uint32_t nH = field.tilesPerAxis(); // worldSize/hTileSize = 4
+	field.tiles.assign(size_t(nH) * nH,
+		std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+	// Paint h01 = a deterministic ramp by world texel index so the
+	// decode path is verifiable: world texel (ix, iz) at 1m ->
+	// h01 = (ix + iz) / 30 (kept in 0..1).
+	auto worldTexelH01 = [&](int32_t ix, int32_t iz) {
+		return float((uint32_t(ix) % 32u) + (uint32_t(iz) % 32u)) / 450.0f;
+	};
+	for (uint32_t tz = 0; tz < nH; ++tz)
+		for (uint32_t tx = 0; tx < nH; ++tx) {
+			auto& tile = field.tiles[size_t(tz) * nH + tx];
+			for (uint32_t py = 0; py < field.meta.hRes; ++py)
+				for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+					const int32_t ix = int32_t(tx * field.meta.hRes + pxx);
+					const int32_t iz = int32_t(tz * field.meta.hRes + py);
+					uint8_t r, g;
+					EncodeRG16(worldTexelH01(ix, iz), r, g);
+					const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+					tile[o] = r; tile[o + 1] = g;
+				}
+		}
+	Check(field.valid(), "place.world.field-valid");
+
+	// ---- the fake paint: 2x2 S-tiles x 8 texels (gBlock 8m -> 1m) ----
+	std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+	const uint32_t sRes = 8;
+	for (uint32_t tz = 0; tz < 2; ++tz)
+		for (uint32_t tx = 0; tx < 2; ++tx) {
+			auto& tile = sTiles[size_t(tz) * 2 + tx];
+			tile.assign(size_t(sRes) * sRes * 4, 0);
+			for (uint32_t py = 0; py < sRes; ++py)
+				for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+					const size_t o = (size_t(py) * sRes + pxx) * 4;
+					tile[o + 0] = uint8_t((pxx * 16 + py * 4) % 256); // ch0 paint
+					tile[o + 1] = 77;  // ch1 constant
+					tile[o + 2] = 200; // ch2 constant
+					tile[o + 3] = 255; // ch3 full
+				}
+		}
+
+	// ---- heights: a 6m window with a 1-texel halo ----
+	HeightfieldData hf;
+	Check(HarvestWorldHeightfield(field, glm::vec2(-2.0f, 0.0f),
+		glm::vec2(4.0f, 6.0f), 1, hf), "place.world.hf-harvest-ok");
+	Check(hf.valid(), "place.world.hf-valid");
+	// The window: x texels [5..12], z texels [7..14] (rect + halo,
+	// world-clamped); origin = the base texel's CENTER (+0.5 — the
+	// convention bridge).
+	Check(hf.width == 8 && hf.height == 8, "place.world.hf-window");
+	Check(hf.origin.x == -8.0f + 5.5f && hf.origin.z == -8.0f + 7.5f,
+		"place.world.hf-origin-half-texel");
+	Check(hf.spacing.x == 1.0f && hf.spacing.y == 1.0f, "place.world.hf-spacing");
+	// Placement texel (0,0) == world texel (5,7)'s center: the height at
+	// the placement origin equals the RG16-quantized h01 of that texel.
+	{
+		uint8_t r, g;
+		EncodeRG16(worldTexelH01(5, 7), r, g);
+		Check(std::abs(hf.sampleHeight(hf.origin.x, hf.origin.z)
+			- HeightToWorld(DecodeH01(r, g))) < 1e-5f,
+			"place.world.hf-texel-center-identity");
+	}
+	// Interior bilinear AGREES with the world sampler: the world's own
+	// SampleH01 at a world point inside the window (meters via the meta).
+	{
+		const glm::vec2 worldPt(-1.25f, 2.75f);
+		const float worldMeters = HeightToWorld(SampleH01(field, worldPt.x, worldPt.y));
+		const float placementMeters = hf.sampleHeight(worldPt.x, worldPt.y);
+		Check(std::abs(worldMeters - placementMeters) < 1e-3f,
+			"place.world.hf-matches-world-sampler");
+	}
+	// An out-of-world rect refuses.
+	HeightfieldData bad;
+	Check(!HarvestWorldHeightfield(field, glm::vec2(100.0f, 100.0f),
+		glm::vec2(120.0f, 120.0f), 0, bad), "place.world.hf-outside-refuses");
+
+	// ---- ecotope: the same window, no halo ----
+	WorldMaskGrid grid{ &sTiles, 2, sRes };
+	// The mask grid's gBlock: worldSize/tilesPerAxis = 8m per S-tile.
+	// The bridge derives texel = gBlock/tileRes from the META, so give
+	// the meta the matching gBlock (production: 256/256).
+	field.meta.gBlock = 8.0f;
+	EcotopeMaskData eco;
+	Check(HarvestWorldEcotope(field.meta, grid, glm::vec2(-2.0f, 0.0f),
+		glm::vec2(4.0f, 6.0f), eco), "place.world.eco-harvest-ok");
+	Check(eco.valid() && eco.channels == 4, "place.world.eco-valid");
+	// The eco window: x texels [6..11], z texels [8..13]; origin = the
+	// base texel's center.
+	Check(eco.width == 6 && eco.height == 6, "place.world.eco-window");
+	Check(eco.origin.x == -8.0f + 6.5f && eco.origin.y == -8.0f + 8.5f,
+		"place.world.eco-origin-half-texel");
+	// The paint lands: world texel (7,9) is placement texel (1,1) —
+	// its ch0 paint (S-tile pixel (7,1): (7*16 + 1*4) % 256 = 116/255).
+	{
+		const float want = float((7u * 16u + 1u * 4u) % 256u) / 255.0f;
+		Check(std::abs(eco.Sample(0, eco.origin.x + 1.0f, eco.origin.y + 1.0f)
+			- want) < 1e-5f, "place.world.eco-paint-identity");
+	}
+	// Channels 1..3 constants survive the ride.
+	Check(std::abs(eco.Sample(1, eco.origin.x + 2.0f, eco.origin.y + 2.0f)
+		- 77.0f / 255.0f) < 1e-5f, "place.world.eco-ch1");
+	Check(eco.Sample(3, eco.origin.x + 2.0f, eco.origin.y + 2.0f) > 0.99f,
+		"place.world.eco-ch3-full");
+	// THE RIDE: the harvested heights + mask compose as a placement layer
+	// — the ecotope program over the harvested heightfield produces a
+	// deterministic population (the PR05 world-tile residency shape).
+	{
+		HeightfieldDomain hdom;
+		hdom.field = &hf;
+		hdom.extentMin = glm::vec2(-2.0f, 0.0f);
+		hdom.extentMax = glm::vec2(4.0f, 6.0f);
+		PlacementSystem::LayerBinding lb;
+		lb.programId = 77;
+		lb.program.graphSeed = 4242;
+		lb.program.nodeId = 1;
+		lb.program.instrs = {
+			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 30.0f, 70.0f, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		};
+		lb.program.acceptIndex = 2;
+		lb.domainKind = DomainKind::Heightfield;
+		lb.heightfield = &hdom;
+		lb.ecotope = &eco; // THE PAINTED LAYER RIDES THE WORLD TILE
+		lb.config.candidatesPerTile = 512;
+		Prototype p; p.weight = 1.0f;
+		lb.prototypes.add(p);
+		const TileID tile{ 0, 0, 0 };
+		std::vector<RenderInstance> a = EvaluateTile(lb, tile);
+		std::vector<RenderInstance> b = EvaluateTile(lb, tile);
+		bool identical = a.size() == b.size() && !a.empty();
+		if (identical)
+			for (size_t i = 0; i < a.size(); ++i)
+				if (a[i].position != b[i].position
+					|| a[i].prototypeId != b[i].prototypeId) {
+					identical = false; break;
+				}
+		Check(identical, "place.world.eco-rides-heightfield-deterministic");
+	}
+}
+
 int main() {
 	TestStableDeterminism();
 	TestChannels();
@@ -2047,6 +2214,7 @@ int main() {
 	TestTerrainGroups();
 	TestTerrainBrush();
 	TestTerrainRaycast();
+	TestWorldBridge();
 	std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
 	return g_failures == 0 ? 0 : 1;
 }

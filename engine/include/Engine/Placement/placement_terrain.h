@@ -19,6 +19,7 @@
 
 #include <Engine/Placement/placement_domain.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Rendergraph/terrain_hfield.h>
 
 namespace smvk::placement {
 
@@ -113,5 +114,61 @@ void TerrainCopyBox(const TerrainGroupData& g,
 void TerrainWriteBox(TerrainGroupData& g,
 	uint32_t x0, uint32_t x1, uint32_t z0, uint32_t z1,
 	const std::vector<float>& box, uint32_t boxW);
+
+// ---------------------------------------------------------------------------
+// WORLD-TILE BRIDGE (the ecotope + terrain "ride" — the PR05 foundation).
+//
+// THE ANSWER to "can ecotope ride the world tiles' heightfield": YES —
+// both ride the SAME world texel grid. The tiled world carries:
+//   * H-tiles — RG16 heights (RGBA8, R=MSB/G=LSB, h01 -> meters via
+//     baseY/range), texel centers at (px+0.5)*texel (TerrainHField's
+//     contract);
+//   * S-tiles — RGBA8 MATERIAL MASKS (the paint layers: 4 channels per
+//     texel), 1m/texel, the same world texel pitch as the heights.
+// The ecotope FieldOp's EcotopeMaskData maps straight onto the S-tile
+// channels (channel index = paint layer), and the heightfield domain
+// reuses the decoded heights — THE CONVERSION happens HERE, once per
+// harvested window, not per sample.
+//
+// CONVENTION NORMALIZATION (the single documented bridge): the world
+// samples TEXEL CENTERS; the placement contracts (HeightfieldData +
+// EcotopeMaskData) use grid-k (origin + k*spacing, grid k == texel k).
+// Each harvested field's origin is offset by +half a texel, so the
+// placement field's texel i IS the world texel (windowBase+i)'s center
+// — the placement bilinear then interpolates exactly the world's texel
+// pairs, and both CPU and GPU sample ONE contract afterwards. Windows
+// clamp at the world edge (the world sampler's own clamp).
+//
+// The height window adds a `halo` texel border on every side so the
+// placement normal's central differences never read outside the window.
+// ---------------------------------------------------------------------------
+
+// The world S-tile material-mask grid (the ecotope paint source): a
+// tilesPerAxis x tilesPerAxis grid of tileRes x tileRes RGBA8 tiles
+// (production: 16x16 x 256 — the world's harvested `masks`).
+struct WorldMaskGrid {
+	const std::vector<std::vector<uint8_t>>* tiles = nullptr; // [tz*nS+tx]
+	uint32_t tilesPerAxis = 0;
+	uint32_t tileRes = 0;
+	[[nodiscard]] bool Valid() const {
+		return tiles && tilesPerAxis > 0 && tileRes > 0
+			&& tiles->size() >= size_t(tilesPerAxis) * size_t(tilesPerAxis);
+	}
+};
+
+// Harvests the [rectMin, rectMax) world-XZ window (+ halo texels) of the
+// tiled heights into a placement HeightfieldData (meters). Returns false
+// on an invalid field/rect.
+bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
+	const glm::vec2& rectMin, const glm::vec2& rectMax, uint32_t halo,
+	HeightfieldData& out);
+
+// Harvests the same window (no halo — the mask is a direct read) of the
+// S-tile paint channels into a placement EcotopeMaskData (4 channels,
+// 0..255 -> 0..1). Returns false on an invalid grid/rect.
+bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
+	const WorldMaskGrid& masks,
+	const glm::vec2& rectMin, const glm::vec2& rectMax,
+	EcotopeMaskData& out);
 
 } // namespace smvk::placement
