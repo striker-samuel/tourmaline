@@ -193,6 +193,19 @@ public:
 	// next residency tick regenerates.
 	bool PublishActivation(const TileKey& key, uint64_t generation);
 
+	// Cancels a pending activation the host REFUSED to process this frame
+	// (the GPU runtime's constraint pacing — at most one constraint trio
+	// per frame, the shared scratch's serialization). A FRESH activation
+	// (no prior content) erases clean — the next UpdateResidency
+	// re-requests it. A REGENERATION reverts to Dirty: the tile keeps
+	// serving its current (stale) content until the deferred trio runs,
+	// and the next tick re-emits the activation (a Generating tile with
+	// matching deps would otherwise never re-emit — the deferral would
+	// leak with nobody left to publish it). Refuses a stale generation
+	// (the tile re-activated under a newer token meanwhile — stands).
+	bool CancelActivation(const TileKey& key, uint64_t generation,
+		bool revertToDirty);
+
 	// Transient per-frame feed: visible resident tiles → draws.
 	// frustumTest(center, radius) returns true when kept; LOD pick via callback.
 	// Scene is NEVER touched — output is a scratch vector the caller maps

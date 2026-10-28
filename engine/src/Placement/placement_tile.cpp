@@ -315,6 +315,23 @@ bool PlacementSystem::PublishActivation(const TileKey& key, uint64_t generation)
 	return true;
 }
 
+bool PlacementSystem::CancelActivation(const TileKey& key, uint64_t generation,
+	bool revertToDirty) {
+	auto it = tiles_.find(key);
+	if (it == tiles_.end()) return false;
+	PlacementTile& t = it->second;
+	if (t.state != TileState::Generating || t.generation != generation)
+		return false; // published / stale under a newer token: stands
+	if (revertToDirty) {
+		// The tile had content (a regeneration was deferred): keep the
+		// current contents serving and re-emit the activation next tick.
+		t.state = TileState::Dirty;
+	} else {
+		tiles_.erase(it); // fresh: nothing existed; re-request clean
+	}
+	return true;
+}
+
 std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& layer,
 	TileID tile, std::vector<StableID>* idsOut) {
 	std::vector<RenderInstance> accepted;
@@ -385,6 +402,21 @@ ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& l
 		vol.dimX = (uint32_t)(layer.grid->extent.x / vol.spacing) + 2;
 		vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
 		vol.dimZ = (uint32_t)(layer.grid->extent.y / vol.spacing) + 2;
+	} else if (layer.domainKind == DomainKind::Heightfield && layer.heightfield) {
+		// The WORLD-TILE case (the runtime's layers): the volume spans the
+		// tile's harvested scatter rect + a spacing of slack, over a Y
+		// band anchored at 0 (heightfields carry no Y origin; the band is
+		// the GPU gate's dimY<=64 limit anyway — a 128 m band only fits
+		// spacing >= ~2.2, exactly the Grid case's shape). Terrain living
+		// outside the band skips the constraint on BOTH sides (the CPU
+		// oracle and the GPU trio share this volume — parity by
+		// construction), so the approximation never splits the two.
+		const glm::vec2 emin = layer.heightfield->extentMin;
+		const glm::vec2 emax = layer.heightfield->extentMax;
+		vol.origin = glm::vec3(emin.x, -64.0f, emin.y);
+		vol.dimX = (uint32_t)((emax.x - emin.x) / vol.spacing) + 2;
+		vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
+		vol.dimZ = (uint32_t)((emax.y - emin.y) / vol.spacing) + 2;
 	}
 	return vol;
 }

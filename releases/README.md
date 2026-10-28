@@ -4,7 +4,7 @@ Paired demo content for the repo — the playable paks built by the
 canonical project pipeline. The `.pak` binaries are deliberately NOT
 on `master` (gitignored): big binaries don't belong in the code flow.
 They are committed on the **`releases` branch** and pushed to the
-**`oldpc` origin** remote only. Publishing to GitHub releases (or a
+**remote named `oldpc`** only. Publishing to GitHub releases (or a
 LFS move) happens later, on purpose — see "Publishing" below.
 
 ## The paks
@@ -44,5 +44,7 @@ the project handles incremental re-imports automatically.
    bisect can reproduce the bake.
 
 ---
-built from: (see `git log -1 --format=%H` on the `releases` branch's
-merge-base with master at the time the paks were committed)
+built from master `242ebe70ac885923af118ef4e6feae60e6e98c90` (the
+releases-branch drop commit `028c7a62` records the same). On a refresh:
+note the NEW master hash here and in the drop commit message so the
+bake stays reproducible against a bisect.

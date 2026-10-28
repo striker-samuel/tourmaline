@@ -615,13 +615,13 @@ int main()
 					conPush, width);
 			});
 			smvk::RenderPass& elect = PlacementConstraint::AddElectPass(g, con,
-				pass.instanceLogicals[3], pass.countLogicals[3]);
+				pass.instanceLogicals[3], pass.countLogicals[3], con.flag2Logical);
 			elect.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
 				PlacementConstraint::PushAndDispatchCon(cmd, con.electProgram,
 					conPush, width);
 			});
 			smvk::RenderPass& kill = PlacementConstraint::AddKillPass(g, con,
-				pass.instanceLogicals[3], pass.countLogicals[3]);
+				pass.instanceLogicals[3], pass.countLogicals[3], con.flag2Logical);
 			kill.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
 				PlacementConstraint::PushAndDispatchCon(cmd, con.killProgram,
 					conPush, width);
@@ -1336,6 +1336,299 @@ int main()
 	}
 
 	// =====================================================================
+	// 8b) The WORLD RUNTIME's REVIEW REGRESSIONS (the 2026-11 findings,
+	//     the c49ad10 follow-up): the seed-at-init contract (#6 — tiles
+	//     publishing LATER must receive the cached immutable halves; the
+	//     old code seeded only already-published slots, so the documented
+	//     seed-once-at-init pattern seeded NOTHING), the slot LRU (#4 —
+	//     a published slot must be eviction-eligible; a stuck
+	//     "generating" claim starved the whole budget), the min-spacing
+	//     wiring (#5 + #7 — the per-tile ALIVE flags reach the cull so
+	//     constraint-rejected instances never reach the draws, and TWO
+	//     constrained tiles stay independent through the one-trio-per-
+	//     frame pacing), and the program revision (#8 — an edited graph
+	//     re-uploads before the tiles regenerate under it).
+	// =====================================================================
+	std::fprintf(stderr, "[place-gpu] stage: world runtime regressions\n");
+	{
+		using namespace smvk::terrain;
+		// The same fake 16 m world as section 8 (2x2 world tiles @ 8 m).
+		TerrainHField field;
+		field.meta.worldSize = 16.0f;
+		field.meta.originX = -8.0f;
+		field.meta.originZ = -8.0f;
+		field.meta.hTileSize = 4.0f;
+		field.meta.hRes = 4;
+		field.meta.gBlock = 8.0f;
+		field.meta.baseY = kTerrainBaseY;
+		field.meta.range = kTerrainRange;
+		const uint32_t nH = field.tilesPerAxis();
+		field.tiles.assign(size_t(nH) * nH,
+			std::vector<uint8_t>(size_t(field.meta.hRes) * field.meta.hRes * 4, 0));
+		for (uint32_t tz = 0; tz < nH; ++tz)
+			for (uint32_t tx = 0; tx < nH; ++tx) {
+				auto& tile = field.tiles[size_t(tz) * nH + tx];
+				for (uint32_t py = 0; py < field.meta.hRes; ++py)
+					for (uint32_t pxx = 0; pxx < field.meta.hRes; ++pxx) {
+						const float h01 =
+							(float)(tx * 4 + pxx + tz * 4 + py) / 1024.0f;
+						uint8_t r, g;
+						EncodeRG16(h01, r, g);
+						const size_t o = (size_t(py) * field.meta.hRes + pxx) * 4;
+						tile[o] = r; tile[o + 1] = g;
+					}
+			}
+		std::vector<std::vector<uint8_t>> sTiles(2 * 2);
+		const uint32_t sRes = 8;
+		for (auto& t : sTiles)
+			t.assign(size_t(sRes) * sRes * 4, 0);
+		for (uint32_t tz = 0; tz < 2; ++tz)
+			for (uint32_t tx = 0; tx < 2; ++tx) {
+				auto& tile = sTiles[size_t(tz) * 2 + tx];
+				for (uint32_t py = 0; py < sRes; ++py)
+					for (uint32_t pxx = 0; pxx < sRes; ++pxx) {
+						const size_t o = (size_t(py) * sRes + pxx) * 4;
+						tile[o + 0] = uint8_t((pxx * 24 + py * 8) % 256);
+						tile[o + 3] = 255;
+					}
+			}
+		WorldMaskGrid maskGrid{ &sTiles, 2, sRes };
+
+		// The layer: the meadow program + MIN-SPACING 4 (the GPU
+		// constraint gate's own shape rule — dimY = 128/4+2 = 34 <= 64;
+		// a tighter spacing cannot run the trio at all, exactly like the
+		// Grid volumes).
+		PlacementSystem::LayerBinding lb;
+		lb.programId = 313;
+		lb.program.graphSeed = 9191;
+		lb.program.nodeId = 1;
+		lb.program.instrs = {
+			FieldInstr{ .op = FieldOp::EcotopeMask, .params = { 0.0f, 0, 0, 0 } },
+			FieldInstr{ .op = FieldOp::SlopeMask, .params = { 20.0f, 60.0f, 0, 0 } },
+			FieldInstr{ .op = FieldOp::Mul, .a = 0, .b = 1 },
+		};
+		lb.program.acceptIndex = 2;
+		lb.domainKind = DomainKind::Heightfield;
+		lb.config.candidatesPerTile = 256;
+		lb.config.minSpacing = 4.0f;
+		Prototype pa; pa.weight = 1.0f;
+		pa.boundsMin = glm::vec3(-0.5f, 0.0f, -0.5f);
+		pa.boundsMax = glm::vec3(0.5f, 1.0f, 0.5f);
+		Prototype pb; pb.weight = 1.0f;
+		pb.boundsMin = glm::vec3(-1.0f, 0.0f, -1.0f);
+		pb.boundsMax = glm::vec3(1.0f, 3.0f, 1.0f);
+		lb.prototypes.add(pa);
+		lb.prototypes.add(pb);
+
+		// The per-tile CPU oracle (min-spaced) + the RAW (spacing 0)
+		// reference — the constraint must actually kill a measurable
+		// fraction or the checks below are vacuous.
+		const auto oracleFor = [&](int32_t tx, int32_t tz,
+				float minSpacing, std::vector<RenderInstance>& out) {
+			WorldTileData data;
+			if (!BuildWorldTileDomain(field, maskGrid, 8.0f, tx, tz,
+					2.0f, data))
+				return false;
+			PlacementSystem::LayerBinding layer = lb;
+			HeightfieldDomain dom = data.domain;
+			dom.field = &data.heights;
+			layer.heightfield = &dom;
+			layer.ecotope = &data.eco;
+			layer.config.minSpacing = minSpacing;
+			out = EvaluateTile(layer, TileID{ tx, 0, tz });
+			return true;
+		};
+		std::vector<RenderInstance> minSpaced[2], rawRef[2];
+		Check(oracleFor(0, 0, 4.0f, minSpaced[0]) && !minSpaced[0].empty(),
+			"gpu.rr-oracle-tileA-minspaced");
+		Check(oracleFor(-1, 0, 4.0f, minSpaced[1]) && !minSpaced[1].empty(),
+			"gpu.rr-oracle-tileB-minspaced");
+		Check(oracleFor(0, 0, 0.0f, rawRef[0]) && rawRef[0].size() > minSpaced[0].size(),
+			"gpu.rr-oracle-raw-larger (min-spacing kills a fraction)");
+		Check(oracleFor(-1, 0, 0.0f, rawRef[1]) && rawRef[1].size() > minSpaced[1].size(),
+			"gpu.rr-oracle-raw-larger-B");
+
+		auto rt = std::make_unique<PlacementWorldRuntime>();
+		rt->layer = &lb;
+		rt->hfield = &field;
+		rt->masks = &maskGrid;
+		rt->tileSize = 8.0f;
+		rt->haloMeters = 2.0f;
+		rt->slotBudget = 2;
+		rt->viewBudget = 1;
+		// Create exercises the FULL constraint allocation (the review's
+		// #3: EnsureShaders alone left UploadParams/Clear asserting).
+		Check(rt->Create(rm, rg) && rt->Valid(), "gpu.rr-create");
+
+		// THE SEED-AT-INIT CONTRACT (#6): seed BEFORE any tile is live —
+		// the documented renderer pattern. The table is cached and every
+		// publish below must carry it.
+		{
+			PlacementIndirectCmd seeds[2] = {};
+			seeds[0].indexCount = 300; seeds[0].firstIndex = 0;
+			seeds[1].indexCount = 300; seeds[1].firstIndex = 64;
+			Check(rt->SeedIndirect(rm, 0, seeds, 2), "gpu.rr-seed-at-init");
+		}
+
+		// The frame driver: BeginFrame + the ALIVE-ONLY cull (no frustum, no
+// distance — the bins then count EXACTLY the alive instances), until
+// the caller's predicate holds (the constraint PACING defers the second
+// tile of a multi-activation frame to a later frame; stale out-of-
+// interest tenants can stay published on the GPU slots by design — the
+// LRU cache — so the predicates match on the CURRENT interest's keys).
+DependencyVersions deps;
+const auto publishedCount = [&](const std::function<bool(const TileKey&)>& match) {
+	uint32_t n = 0;
+	for (const auto& a : rt->active)
+		if (a.published && match(a.key)) ++n;
+	return n;
+};
+const auto runFramesUntil = [&](const glm::vec4* interest, size_t n,
+		const std::function<bool()>& done, uint32_t cap) {
+	for (uint32_t f = 0; f < cap; ++f) {
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			rt->BeginFrame(rm, g, interest, n, deps);
+			rt->RecordCullChain(rm, g, 0, viewSlabL,
+				rm.GetBufferDeviceAddress(viewSlab), 0,
+				glm::vec3(0.0f, 5.0f, 0.0f), kPlacementCullAlive);
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+		if (done()) return f + 1;
+	}
+	return cap;
+};
+const auto zIs = [](int32_t z) {
+	return [z](const TileKey& k) { return k.tile.z == z; };
+};
+// TWO tiles in one interest (the pacing: one trio per frame —
+		// both must still reach their own correct constraint state).
+		const glm::vec4 interestAB[1] = { glm::vec4(-8.0f, 0.0f, 8.0f, 8.0f) };
+		Check(runFramesUntil(interestAB, 1,
+				[&] { return publishedCount(zIs(0)) == 2; }, 8) < 8,
+			"gpu.rr-two-tiles-published (pacing converges)");
+
+		// Per published tile: the seed table (#6), the ALIVE parity (#5
+		// — the cull drops constraint-killed instances; the bins equal
+		// the min-spaced oracle, NOT the raw scatter), and the per-tile
+		// flag2 readback (#7 — two constrained tiles, independent state).
+		{
+			uint32_t checked = 0;
+			for (size_t s = 0; s < rt->active.size(); ++s) {
+				const auto& at = rt->active[s];
+				if (!at.published) continue;
+				++checked;
+				const bool isTileB = at.key.tile.x == -1;
+				const std::vector<RenderInstance>& oracle =
+					isTileB ? minSpaced[1] : minSpaced[0];
+				// (#6) the immutable halves arrived with the publish.
+				const PlacementVisibleSet* vs = rt->VisSet(int32_t(s));
+				PlacementIndirectCmd cmds[2] = {};
+				ok = vs && rm.DownloadDataFromBuffer(vs->indirect, cmds,
+					kPlacementIndirectStride * 2);
+				Check(ok && cmds[0].indexCount == 300
+					&& cmds[1].indexCount == 300,
+					"gpu.rr-seed-applied-at-publish (the cached table)");
+				// (#5) the bins: alive-only cull == the min-spaced oracle.
+				PlacementBinsGpu bins{};
+				ok = rm.DownloadDataFromBuffer(vs->bins, &bins, sizeof(bins));
+				Check(ok && bins.total == oracle.size()
+					&& bins.counts[0] + bins.counts[1] == bins.total,
+					"gpu.rr-bins-equal-minspaced-oracle (the alive filter)");
+				// (#7) the per-tile flag2: .y == 1 exactly the oracle size.
+				std::vector<glm::uvec2> flags(
+					2 * size_t(rt->pass.desc.maxInstancesPerTile));
+				ok = rm.DownloadDataFromBuffer(at.aliveBuffer,
+					flags.data(),
+					sizeof(uint32_t) * 2 * rt->pass.desc.maxInstancesPerTile);
+				size_t aliveFlags = 0;
+				if (ok)
+					for (const auto& f : flags)
+						if (f.y == 1u) ++aliveFlags;
+				Check(ok && aliveFlags == oracle.size(),
+					"gpu.rr-flag2-per-tile (two constrained tiles, independent)");
+			}
+			Check(checked == 2, "gpu.rr-exactly-two-published");
+		}
+
+		// THE SLOT LRU (#4): move the interest to the other two tiles.
+		// A published slot was stuck "generating" pre-fix — Claim() could
+		// only refuse once the budget filled and NO new tile would ever
+		// activate. Post-fix the old two evict (LRU) and the new two
+		// publish — with their own seeds (#6 held for later tenants).
+		const glm::vec4 interestCD[1] = { glm::vec4(-8.0f, -8.0f, 8.0f, 0.0f) };
+		const uint32_t cdFrames = runFramesUntil(interestCD, 1,
+				[&] { return publishedCount(zIs(-1)) == 2; }, 8);
+		Check(cdFrames < 8,
+			"gpu.rr-lru-reuse (the moved interest activates)");
+		{
+			bool newKeysOnly = true;
+			for (const auto& at : rt->active) {
+				if (!at.published) continue;
+				if (at.key.tile.z >= 0) newKeysOnly = false;
+			}
+			Check(publishedCount(zIs(-1)) == 2, "gpu.rr-lru-two-published");
+			Check(newKeysOnly, "gpu.rr-lru-serves-the-new-interest");
+			// The new tenants carry the seed table too.
+			for (size_t s = 0; s < rt->active.size(); ++s) {
+				if (!rt->active[s].published) continue;
+				const PlacementVisibleSet* vs = rt->VisSet(int32_t(s));
+				PlacementIndirectCmd cmds[2] = {};
+				ok = vs && rm.DownloadDataFromBuffer(vs->indirect, cmds,
+					kPlacementIndirectStride * 2);
+				Check(ok && cmds[0].indexCount == 300,
+					"gpu.rr-lru-new-tenant-seeded");
+				break; // one representative is enough
+			}
+		}
+
+		// THE PROGRAM REVISION (#8): edit the graph (the slope mask now
+		// rejects everything — 1 - smoothstep(-2,-1,~0) == 0) + bump the
+		// dep version. The tiles regenerate AND the GPU program must
+		// re-upload — the regenerated tile matches the UPDATED oracle
+		// (pre-fix the stale SSA served the old density: a non-empty
+		// tile against an empty oracle). The pacing completes one
+		// regeneration per frame (the deferred one reverts to Dirty and
+		// finishes on a later frame — stale content serving meanwhile,
+		// the documented deferral contract), so drive frames until BOTH
+		// current-interest tiles are empty.
+		{
+			lb.program.instrs[1] = FieldInstr{ .op = FieldOp::SlopeMask,
+				.params = { -2.0f, -1.0f, 0, 0 } };
+			DependencyVersions deps2;
+			deps2.biome = 3;
+			std::vector<RenderInstance> updated[1];
+			Check(oracleFor(0, -1, 4.0f, updated[0]) && updated[0].empty(),
+				"gpu.rr-updated-oracle-empty");
+			bool allEmpty = false;
+			for (uint32_t f = 0; f < 8 && !allEmpty; ++f) {
+				host.RunFrame([&](smvk::RenderGraph& g) {
+					rt->BeginFrame(rm, g, interestCD, 1, deps2);
+				});
+				rm.FlushUploads();
+				rm.WaitForUploads();
+				allEmpty = true;
+				for (size_t s = 0; s < rt->active.size(); ++s) {
+					// Only the CURRENT interest's tiles (the GPU slots
+					// are an LRU cache: an out-of-interest stale tenant
+					// may stay published until reassigned — by design).
+					if (!rt->active[s].published
+						|| rt->active[s].key.tile.z != -1)
+						continue;
+					std::vector<RenderInstance> gpu;
+					uint32_t overflow = 1;
+					const uint32_t n = rt->pass.DownloadTile(rm,
+						uint32_t(s), gpu, 256, &overflow);
+					if (n != 0 || overflow != 0) allEmpty = false;
+				}
+			}
+			Check(allEmpty,
+				"gpu.rr-program-revision-served (the edited graph re-uploaded)");
+		}
+		rt->Destroy(rg);
+	}
+
+	// =====================================================================
 	// 9) The MESH PARTICLES (PR06): the exit gate — a GPU emitter spawns
 	//    SPINNING 3D mesh variants, moves them, expires them, bins them
 	//    per mesh, and the chain emits the indirect commands — with no
@@ -1371,6 +1664,52 @@ int main()
 		rows[1].size = glm::vec4(0.25f, 0.08f, 0.3f, 0.0f);
 		rows[1].color = glm::vec4(0.4f, 0.6f, 0.25f, 0.0f);
 		mp.UpdateEmitters(rm, 0, rows, 2);
+
+		// ---- THE EMIT-ONLY frame: the spawn quaternions BEFORE any sim
+		// step (the sim NORMALIZES, so a post-sim length check cannot see
+		// a broken emitter — the review's finding: the retired Shoemake
+		// form produced |q|^2 = 1 + s1^2*cos^2 > 1). One frame of emit
+		// alone, read the pool, check every live rotation's length.
+		{
+			smvk::MeshParticlesEmitPush ep0;
+			ep0.emitters = mp.EmittersSliceAddress(rm, 0);
+			ep0.emitterState = mp.EmitterStateAddress(rm);
+			ep0.particles = mp.ParticlesAddress(rm);
+			ep0.freeList = mp.FreeListAddress(rm);
+			ep0.emitterCount = 2;
+			ep0.maxParticles = mpd.maxParticles;
+			ep0.dt = 1.0f / 60.0f;
+			ep0.frameSeed = 7u;
+			host.RunFrame([&](smvk::RenderGraph& g) {
+				smvk::RenderPass& emit = mp.AddEmitPass(g);
+				emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+					mp.PushAndDispatchEmit(cmd, mp.emitProgram, ep0);
+				});
+			});
+			rm.FlushUploads();
+			rm.WaitForUploads();
+			std::vector<smvk::MeshParticleGpu> fresh(mpd.maxParticles);
+			if (rm.DownloadDataFromBuffer(mp.particlesBuffer, fresh.data(),
+					sizeof(smvk::MeshParticleGpu) * mpd.maxParticles)) {
+				size_t spawned = 0;
+				bool unitAtEmit = true;
+				for (const auto& p : fresh)
+					if (p.posLife.w > 0.0f) {
+						++spawned;
+						const float n2 = glm::dot(p.rot, p.rot);
+						if (std::abs(n2 - 1.0f) > 1e-3f) {
+							unitAtEmit = false;
+							break;
+						}
+					}
+				Check(spawned > 0, "gpu.mp-emit-only-spawned");
+				Check(unitAtEmit,
+					"gpu.mp-quaternion-unit-at-emit (pre-sim, the Shoemake form)");
+			}
+			// The leftover emit-only population simply rides the main
+			// loop below (alive slots stay alive — every invariant the
+			// loop checks is population-relative, so no reset is needed).
+		}
 
 		// The per-mesh conservative spheres (the cull's bounds table).
 		glm::vec4 meshBounds[2] = {

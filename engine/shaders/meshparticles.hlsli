@@ -44,6 +44,21 @@ struct MeshParticleGpu
 
 struct MeshParticleBuffer { MeshParticleGpu p[MESHPARTICLE_MAX]; };
 
+// The quaternion rotation matrix (the standard form; q = (x, y, z, w)).
+// SHARED by the draw VS (the transform) and the cull CS (an off-origin
+// mesh bound's local sphere center rotates with the particle — the
+// unrotated center would miss near the frustum planes).
+float3x3 MeshParticleQuatMatrix(float4 q)
+{
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    return float3x3(
+        float3(1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)),
+        float3(2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)),
+        float3(2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)));
+}
+
 // Must match C++ MeshParticleEmitterGpu (128 bytes, 16-aligned).
 // The spawn shapes + the RNG reuse the billboard kernel's forms.
 struct MeshParticleEmitterGpu

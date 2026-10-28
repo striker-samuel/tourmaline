@@ -183,6 +183,10 @@ inline constexpr const char* kMeshParticlesScatterCsPath =
 // The drawbuild pass reuses the PR03 chain's kernel verbatim (its push
 // — bins/indirect/protoCount — is bin-agnostic).
 inline constexpr uint32_t kMeshParticlesMaxBins = 8;
+// The shader-side fixed bounds (meshparticles.hlsli's MESHPARTICLE_MAX /
+// MESHPARTICLE_MAX_EMITTERS) — Create() rejects descriptors beyond them.
+inline constexpr uint32_t kMeshParticlesMaxPool = 65536;
+inline constexpr uint32_t kMeshParticlesMaxEmitters = 16;
 
 struct MeshParticles {
 	MeshParticlesDesc desc{};
@@ -472,6 +476,14 @@ inline bool MeshParticles::Create(ResourceManager& ctx, RenderGraph& rg,
 	uint32_t framesInFlight, const MeshParticlesDesc& d) {
 	if (d.maxParticles == 0 || d.maxEmitters == 0 || framesInFlight == 0)
 		return false;
+	// The SHADER-side fixed limits (meshparticles.hlsli): the pool is
+	// indexed against MESHPARTICLE_MAX (65536) and the emitters loop is
+	// capped at MESHPARTICLE_MAX_EMITTERS (16) — the emit kernel's
+	// self-bound is `e >= MAX_EMITTERS`, so a larger host table would
+	// silently drop emitters. Reject loudly instead.
+	if (d.maxParticles > kMeshParticlesMaxPool
+		|| d.maxEmitters > kMeshParticlesMaxEmitters)
+		return false;
 	Destroy(rg);
 	// Programs: the five mesh kernels + the reused drawbuild.
 	try {
@@ -558,6 +570,13 @@ inline bool MeshParticles::Create(ResourceManager& ctx, RenderGraph& rg,
 	// Creation-zero the atomics + the pool: the free list's FULL stack
 	// (slots[0..N) = 0..N-1, count = N — every slot free), the carry at
 	// 0, the pool dead (posLife.w = 0), and the chain's mask/bins zero.
+	// desc is assigned BEFORE this block: ClearFrameChain() sizes its
+	// mask upload from desc.maxParticles — with the assignment after,
+	// the initial clear used the DEFAULT 65536 against a pool-sized mask
+	// buffer (an over-sized upload: 8 KB against a 512-byte buffer at
+	// maxParticles 4096 — the review's finding).
+	desc = d;
+	this->framesInFlight = framesInFlight;
 	{
 		std::vector<uint32_t> stack(size_t(d.maxParticles) + 1u, 0u);
 		stack[0] = d.maxParticles;
@@ -577,8 +596,6 @@ inline bool MeshParticles::Create(ResourceManager& ctx, RenderGraph& rg,
 			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
 		ClearFrameChain(ctx);
 	}
-	desc = d;
-	this->framesInFlight = framesInFlight;
 	return true;
 }
 

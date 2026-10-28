@@ -67,17 +67,8 @@ struct VSOut
     [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
 };
 
-// The quaternion rotation matrix (the standard form; q = (x, y, z, w)).
-float3x3 MeshParticleQuatMatrix(float4 q)
-{
-    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
-    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
-    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
-    return float3x3(
-        float3(1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)),
-        float3(2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)),
-        float3(2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)));
-}
+// The quaternion rotation matrix lives in meshparticles.hlsli
+// (MeshParticleQuatMatrix — shared with the cull's bound rotation).
 
 VSOut mainVS(VSIn IN)
 {

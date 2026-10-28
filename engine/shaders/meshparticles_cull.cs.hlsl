@@ -28,14 +28,22 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 
     const uint bin = min((uint)(p.params.y + 0.5),
         (uint)MESHPARTICLE_MAX_BINS - 1u);
-    // The conservative sphere: the per-MESH bound scaled by the
-    // particle's CURRENT size (the envelope), at the particle position
-    // — PlacementSphereVisible (the shared PR03 helper; particles carry
-    // no species distance in v1).
+    // The conservative sphere — ROTATED: mesh particles carry ARBITRARY
+    // quaternions, so an off-origin mesh bound's local sphere center
+    // rotates with the particle (the shared helper's unrotated
+    // pos + bound.xyz*s would wrongly reject near the frustum planes —
+    // the review's finding). Pre-rotate + pre-scale the center and the
+    // radius, then hand the helper a scale of 1 (the radius is
+    // rotation-invariant).
+    const float s = p.velSize.w;
+    const float3x3 Rq = MeshParticleQuatMatrix(p.rot);
+    const float4 bound = float4(
+        mul(Rq, pc.meshBounds[bin].xyz) * s,
+        pc.meshBounds[bin].w * s);
     const bool visible = PlacementSphereVisible(pc.renderViews,
-        pc.renderViewIndex, pc.cullFlags, pc.meshBounds[bin],
+        pc.renderViewIndex, pc.cullFlags, bound,
         0.0f, pc.camPos, p.posLife.xyz,
-        float3(p.velSize.w, p.velSize.w, p.velSize.w));
+        float3(1.0f, 1.0f, 1.0f));
     if (!visible)
         return;
 

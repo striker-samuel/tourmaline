@@ -107,12 +107,16 @@ void mainCS(uint3 groupId : SV_GroupID)
         float u1 = ParticleRand01(rng);
         float u2 = ParticleRand01(rng);
         float u3 = ParticleRand01(rng);
-        const float s1 = sqrt(max(0.0, 1.0 - u0 * u0));
+
+        float a = sqrt(1.0 - u1);
+        float b = sqrt(u1);
+
         float4 rot = float4(
-            s1 * cos(6.2831853 * u2),          // x
-            s1 * sin(6.2831853 * u2),          // y
-            s1 * cos(6.2831853 * u3),          // z
-            u0);                               // w  (Shoemake: uniform)
+            a * sin(6.2831853 * u2),
+            a * cos(6.2831853 * u2),
+            b * sin(6.2831853 * u3),
+            b * cos(6.2831853 * u3));
+
         float3 spinAxis = ParticleRandUnit(rng);
         float angVel = lerp(em.spin.x, em.spin.y, ParticleRand01(rng));
 

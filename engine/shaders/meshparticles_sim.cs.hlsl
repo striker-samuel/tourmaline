@@ -3,17 +3,20 @@
 
 // meshparticles_sim.cs.hlsl — the MESH-particle simulation pass (PR06):
 // one thread per pool slot, the billboard sim's integration shape
-// (gravity/drag/aging + the free-list recycle) extended with:
+// (gravity/aging + the free-list recycle) extended with:
 //
-//   * the QUATERNION SPIN: q' = q + 0.5*dt*(omega-quaternion)*q,
-//     re-normalized (the standard first-order angular integration —
-//     exact for constant omega to O(dt^2));
+//   * the QUATERNION SPIN: the EXACT half-angle increment
+//     dq = (axis * sin(|w|*dt/2), cos(|w|*dt/2)), q' = dq * q,
+//     re-normalized — constant omega per step, not the first-order
+//     q + 0.5*dt*(omega-quaternion)*q form;
 //   * the SIZE ENVELOPE: the uniform scale lerps sizeStart -> sizeEnd
 //     over the life fraction (posLife.w * invLifeMax = the remaining
 //     fraction; the lerp runs on the AGE fraction);
-//   * the drag/gravityScale live ON THE PARTICLE (baked at spawn from
-//     its emitter row) — no emitter ring read here, so a parameter
-//     re-upload mid-life never changes in-flight dynamics.
+//   * the gravityScale lives ON THE PARTICLE (baked at spawn from its
+//     emitter row) — no emitter ring read here, so a parameter
+//     re-upload mid-life never changes in-flight dynamics. NO DRAG in
+//     v1 (the debris/leaf motion envelope is dominated by gravity +
+//     spin; a drag field is a refinement — see the dynamics section).
 //
 // Dead slots (life already <= 0) cost one load + branch — no compaction
 // pass by design; the cull mask keeps them out of the bins, so the draw

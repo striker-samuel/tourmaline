@@ -1433,6 +1433,7 @@ struct PlacementConstraint {
 	}
 	static RenderPass& AddElectPass(RenderGraph& rg, const PlacementConstraint& con,
 		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
+		LogicalBufferHandle flag2Logical,
 		const char* name = "PlacementConElect") {
 		RenderPass& rp = rg.AddComputePass(name);
 		BufferSyncRequest read{};
@@ -1446,11 +1447,12 @@ struct PlacementConstraint {
 		BufferSyncRequest rw{};
 		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
-		rp.AddBufferHint(con.flag2Logical, rw);
+		rp.AddBufferHint(flag2Logical, rw);
 		return rp;
 	}
 	static RenderPass& AddKillPass(RenderGraph& rg, const PlacementConstraint& con,
 		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
+		LogicalBufferHandle flag2Logical,
 		const char* name = "PlacementConKill") {
 		RenderPass& rp = rg.AddComputePass(name);
 		BufferSyncRequest read{};
@@ -1464,7 +1466,7 @@ struct PlacementConstraint {
 		BufferSyncRequest rw{};
 		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
 		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
-		rp.AddBufferHint(con.flag2Logical, rw);
+		rp.AddBufferHint(flag2Logical, rw);
 		return rp;
 	}
 
@@ -1558,6 +1560,19 @@ struct PlacementWorldRuntime {
 	PlacementProgramGpu program;  // the uploaded graph SSA
 	PlacementGpuTiles slots;      // TileKey -> pass-slot map + tokens
 	std::vector<PlacementVisibleSet> vis; // [slot * viewBudget + view]
+	// The prototype draw-command table (the immutable indirect halves),
+	// CACHED: SeedIndirect stores it here and every tile that publishes
+	// LATER gets it applied (the review's finding: seeding only the
+	// already-published slots left every subsequently-activated tile
+	// with zero indexCounts — drawbuild rewrites only the dynamic
+	// halves, so the immutable fields must ride the publish).
+	PlacementIndirectCmd protoSeeds[kPlacementMaxProtos] = {};
+	uint32_t protoSeedCount = 0;
+	// The program revision (the hashed graph inputs + deps) — a change
+	// re-uploads the GPU SSA so an editor graph edit reaches the tiles
+	// regenerating under it (the review's finding: the once-at-Create
+	// upload served stale instructions).
+	uint64_t programRevision = 0;
 	bool created = false;
 
 	// Per-slot harvest + uploads (live while the slot is tenanted; the
@@ -1572,10 +1587,25 @@ struct PlacementWorldRuntime {
 		PlacementHeightfieldGpu hf;  // the uploaded heights
 		PlacementEcoMaskGpu eco;     // the uploaded paint
 		PlacementParamsGpu params;   // the scatter params
+		// The PER-TILE constraint ALIVE flags (flag2[slot].y — the kill
+		// pass's min-spacing verdict). PER-TILE because the cull chain
+		// reads it every frame until eviction, long after the shared
+		// constraint scratch (head/next/params) has moved on to a later
+		// tile's generation — a shared flag2 would serve the LAST tile's
+		// verdicts to every resident tile (the review's findings 5+7).
+		// Created at tenancy only when the layer min-spaces; empty =
+		// no constraint filter (the cull's alive test off).
+		Holder<BufferHandle> aliveBuffer;
+		LogicalBufferHandle aliveL{};
+		uint64_t aliveBDA = 0;
 		void Destroy(RenderGraph& rg) {
 			hf.Destroy(rg);
 			eco.Destroy(rg);
 			params.Destroy(rg);
+			if (!aliveL.empty()) rg.FreeBuffer(aliveL);
+			aliveL = {};
+			aliveBuffer = {};
+			aliveBDA = 0;
 			data = WorldTileData{};
 			slot = -1;
 			published = false;
@@ -1595,7 +1625,15 @@ struct PlacementWorldRuntime {
 		if (!pass.Ensure(ctx, rg, desc)) return false;
 		if (!scatter.Ensure(ctx)) return false;
 		if (!cullPrograms.Ensure(ctx)) return false;
-		if (!constraint.EnsureShaders(ctx)) return false;
+		// The COMPLETE constraint object — buffers, not just the shader
+		// programs (the review's CRITICAL finding: EnsureShaders alone
+		// left UploadParams/Clear asserting against unallocated handles
+		// the moment a layer min-spaces). Sized by the pass's tile
+		// capacity; the scratch is shared and the trio is PACED one tile
+		// per frame (see BeginFrame).
+		if (!constraint.Create(ctx, rg, desc.maxInstancesPerTile,
+				kPlacementConMaxCells))
+			return false;
 		// The program upload — the eco authority here is the WORLD's
 		// S-tile paint (4 channels), not the layer binding's pointer
 		// (the runtime harvests the mask per tile itself).
@@ -1643,15 +1681,25 @@ struct PlacementWorldRuntime {
 		return &vis[size_t(slot) * size_t(viewBudget) + size_t(view)];
 	}
 	// The immutable indirect halves the renderer seeds once per
-	// prototype table (protoCount <= kPlacementMaxProtos).
+	// prototype table (protoCount <= kPlacementMaxProtos). The table is
+	// CACHED and re-applied at every publish (see protoSeeds): the
+	// documented seed-once-at-init pattern stores it before any tile is
+	// live, and each subsequently published tile needs it.
 	bool SeedIndirect(ResourceManager& ctx, uint32_t view,
 		const PlacementIndirectCmd* seeds, uint32_t cmdCount) {
 		if (view >= viewBudget) return false;
+		if (!seeds || cmdCount == 0 || cmdCount > kPlacementMaxProtos)
+			return false;
+		// Cache (all views of every future publish read the same table).
+		for (uint32_t i = 0; i < cmdCount; ++i)
+			protoSeeds[i] = seeds[i];
+		protoSeedCount = cmdCount;
+		// Apply to every ALREADY-published tile's set (this view).
 		bool ok = true;
 		for (size_t s = 0; s < active.size(); ++s)
 			if (active[s].published
 				&& !vis[s * size_t(viewBudget) + size_t(view)]
-					.SeedIndirect(ctx, seeds, cmdCount))
+					.SeedIndirect(ctx, protoSeeds, protoSeedCount))
 				ok = false;
 		return ok;
 	}
@@ -1662,16 +1710,82 @@ struct PlacementWorldRuntime {
 	// rects (glm::vec4 minX/minZ/maxX/maxZ, half-open). Tiles published
 	// in an EARLIER frame become drawable (their chain is ordered by
 	// the graph's external-buffer edges — no count readback).
+	//
+	// THE CONSTRAINT PACING: when the layer min-spaces, AT MOST ONE tile
+	// runs its constraint trio per frame. The shared scratch (head/next)
+	// and the params are UPLOADS — host-side deferred, all landing at
+	// this frame's flush — so two trios in one frame would have the
+	// second tile's uploads overwrite the first's before either pass
+	// executes, and no rendergraph barrier can restore per-tile state
+	// (the review's finding). The per-tile ALIVE flags are separate
+	// buffers (per ActiveTile), so the ONE-trio pacing is purely a
+	// scratch/params serialization; deferred tiles re-request next frame
+	// (still in window, still unpublished on the CPU mirror).
+	[[nodiscard]] static uint64_t ProgramRevisionHash(
+		const PlacementSystem::LayerBinding& layer,
+		const DependencyVersions& deps, uint32_t ecoChannels) {
+		uint64_t h = 2166136261u;
+		const auto mix = [&h](uint64_t v) {
+			h ^= v; h *= 16777619ull;
+		};
+		mix(deps.terrain); mix(deps.biome); mix(deps.prototypes);
+		mix(deps.gameplay);
+		mix(layer.program.graphSeed); mix(layer.program.nodeId);
+		mix(layer.program.acceptIndex); mix(ecoChannels);
+		for (const FieldInstr& i : layer.program.instrs) {
+			mix(static_cast<uint64_t>(i.op)); mix(i.a); mix(i.b);
+			for (int k = 0; k < 4; ++k)
+				mix(glm::floatBitsToUint(i.params[k]));
+		}
+		return h;
+	}
 	void BeginFrame(ResourceManager& ctx, RenderGraph& rg,
 		const glm::vec4* interests, size_t interestCount,
 		const DependencyVersions& deps) {
 		if (!created) return;
+		// 0) The PROGRAM REFRESH: the graph SSA re-uploads when the
+		// hashed inputs changed (an editor density edit + a bumped dep
+		// version — the review's finding: the once-at-Create upload
+		// served stale instructions to tiles regenerating under the
+		// new graph). The upload is a TRANSFER write consumed by the
+		// SAME frame's scatter at COMPUTE scope — a one-hop barrier,
+		// never the stranded-write hazard class.
+		{
+			const uint64_t rev =
+				ProgramRevisionHash(*layer, deps, masks ? 4u : 0u);
+			if (rev != programRevision || !program.Valid()) {
+				if (!program.Upload(ctx, rg, layer->program,
+						layer->programId, rev, masks ? 4u : 0u)) {
+					// The graph became non-GPU-evaluable: refuse the
+					// frame's activations rather than scatter with the
+					// STALE program (the caller's CPU oracle owns the
+					// layer until the graph is evaluable again).
+					return;
+				}
+				programRevision = rev;
+			}
+		}
 		// 1) The residency tick (tokens + half-open interest math).
 		std::vector<PlacementSystem::ActivationRequest> acts;
 		system.UpdateResidency(layer->programId, tileSize,
 			interests, interestCount, deps, size_t(slotBudget), acts);
 		// 2) Per activation: slot claim -> harvest -> upload -> dispatch.
+		uint32_t conTrioThisFrame = 0;
+		const bool wantsCon = layer->config.minSpacing > 0.0f;
 		for (const auto& a : acts) {
+			// The constraint pacing — checked BEFORE the slot claim so a
+			// deferred tile never holds a generating claim. The CPU
+			// activation is CANCELED (a Generating tile with matching deps
+			// never re-requests — the deferral would leak it), so the
+			// tile re-enters fresh on the next residency tick.
+			if (wantsCon && conTrioThisFrame >= 1) {
+				// FRESH activations erase clean; REGENERATIONS revert to
+				// Dirty (their stale content keeps serving until the
+				// deferred trio runs).
+				(void)system.CancelActivation(a.key, a.generation,
+					a.regenerate);
+				continue;
+			}
 			// Finish the claim of any PREVIOUS dispatch for this key
 			// first (a re-activation supersedes it; the old slot
 			// contents get rebuilt in place below).
@@ -1695,6 +1809,30 @@ struct PlacementWorldRuntime {
 			at.generation = a.generation;
 			at.slot = slot;
 			at.published = false;
+			// The per-tile constraint ALIVE buffer (the kill pass's
+			// verdicts the cull reads every frame until eviction) —
+			// creation-zeroed per the zero-on-creation convention.
+			if (wantsCon) {
+				const size_t aliveElems =
+					2 * size_t(pass.desc.maxInstancesPerTile);
+				at.aliveBuffer = ctx.CreateBuffer(
+					sizeof(uint32_t) * aliveElems, BufferType_Storage,
+					"placement con alive");
+				at.aliveL = at.aliveBuffer.empty() ? LogicalBufferHandle{}
+					: rg.AddExternalBuffer(at.aliveBuffer,
+						"placement con alive");
+				if (at.aliveBuffer.empty() || at.aliveL.empty()) {
+					smvk::OnResourceExhaustion("placement con alive");
+					at.Destroy(rg);
+					continue; // retried next frame (the request persists)
+				}
+				const std::vector<uint32_t> zeros(aliveElems, 0u);
+				ctx.UploadDataToBuffer(at.aliveBuffer, zeros.data(),
+					sizeof(uint32_t) * zeros.size(),
+					PipelineStageBit_Transfer, AccessFlags::TransferWrite,
+					0, 0);
+				at.aliveBDA = ctx.GetBufferDeviceAddress(at.aliveBuffer);
+			}
 			// The harvest (the heights window + halo + the paint).
 			if (!BuildWorldTileDomain(*hfield, *masks, tileSize,
 					a.key.tile.x, a.key.tile.z, haloMeters, at.data)) {
@@ -1750,8 +1888,12 @@ struct PlacementWorldRuntime {
 					scatter.hfProgram, push);
 			});
 			// The constraint trio when the layer min-spaces (bounded grid
-			// volumes; dispatch width = the candidate upper bound).
-			if (layer->config.minSpacing > 0.0f) {
+			// volumes; dispatch width = the candidate upper bound). The
+			// trio's flag2 is the PER-TILE alive buffer (the kill pass
+			// writes its verdicts there — the cull chain reads them every
+			// frame until eviction); the shared scratch (head/next) and
+			// params are serialized by the one-trio pacing above.
+			if (wantsCon) {
 				const ConstraintVolume vol = ConstraintVolumeForLayer(tileLayer);
 				PlacementConParams conPrm;
 				if (PlacementConstraint::FillConParams(tileLayer,
@@ -1763,7 +1905,7 @@ struct PlacementWorldRuntime {
 						pass.TileInstancesAddress(ctx, uint32_t(slot)),
 						constraint.HeadAddress(ctx),
 						constraint.NextAddress(ctx),
-						constraint.Flag2Address(ctx),
+						at.aliveBDA,
 						constraint.ParamsAddress(ctx),
 						pass.TileCountAddress(ctx, uint32_t(slot)), conPush);
 					const uint32_t width = tileLayer.config.candidatesPerTile;
@@ -1777,7 +1919,7 @@ struct PlacementWorldRuntime {
 					});
 					smvk::RenderPass& cElect = PlacementConstraint::AddElectPass(
 						rg, constraint, pass.instanceLogicals[size_t(slot)],
-						pass.countLogicals[size_t(slot)]);
+						pass.countLogicals[size_t(slot)], at.aliveL);
 					cElect.SetRecordingFunc([this, conPush, width](
 							smvk::CommandBuffer& cmd) {
 						PlacementConstraint::PushAndDispatchCon(cmd,
@@ -1785,17 +1927,42 @@ struct PlacementWorldRuntime {
 					});
 					smvk::RenderPass& cKill = PlacementConstraint::AddKillPass(
 						rg, constraint, pass.instanceLogicals[size_t(slot)],
-						pass.countLogicals[size_t(slot)]);
+						pass.countLogicals[size_t(slot)], at.aliveL);
 					cKill.SetRecordingFunc([this, conPush, width](
 							smvk::CommandBuffer& cmd) {
 						PlacementConstraint::PushAndDispatchCon(cmd,
 							constraint.killProgram, conPush, width);
 					});
+					++conTrioThisFrame;
 				}
 			}
 			// Published: the chain that reads it (this frame's cull or a
-			// later one) is ordered by the graph's buffer edges.
+			// later one) is ordered by the graph's buffer edges. Finishing
+			// the slot claim HERE (not just on reactivation) is what
+			// makes the slot eviction-eligible — without it every
+			// successfully published slot stayed "generating" forever,
+			// and once the budget filled, Claim() could only refuse (the
+			// review's stuck-slot finding). The scatter/trio dispatches
+			// are recorded into THIS frame's graph, so the publication
+			// point is exactly the claim's completion.
 			at.published = true;
+			// NOTE: Finish matches the SLOT's own generation (the
+			// PlacementGpuTiles claim token), not the activation request's
+			// system token — two independent counters.
+			(void)slots.Finish(slot, a.key,
+				slots.slots[size_t(slot)].generation);
+			// Apply the cached prototype table to every view of this
+			// newly published tile (the immutable indirect halves —
+			// drawbuild owns only the dynamic ones). NOTE the documented
+			// one-frame lag: the seeds are an UPLOAD (TRANSFER-scoped)
+			// feeding a buffer drawbuild rewrites at COMPUTE scope —
+			// the publish frame's draw reads the creation-zero halves
+			// (a silent no-op draw), the next frame draws; see
+			// todo.txt's stranded-upload-write case.
+			if (protoSeedCount > 0)
+				for (uint32_t v = 0; v < viewBudget; ++v)
+					(void)vis[size_t(slot) * size_t(viewBudget) + v]
+						.SeedIndirect(ctx, protoSeeds, protoSeedCount);
 			// The CPU token publish (the CPU-side tile mirror).
 			system.PublishActivation(a.key, a.generation);
 		}
@@ -1818,12 +1985,20 @@ struct PlacementWorldRuntime {
 				vis[s * size_t(viewBudget) + size_t(view)];
 			vs.ClearFrame(ctx); // the mask + bin atomics (per-frame zero)
 			PlacementCullPush cullPush;
+			// The ALIVE filter: the per-tile kill verdicts (flag2.y) when
+			// the tile min-spaces — the cull drops constraint-killed
+			// instances BEFORE the bins (the review's finding: the old
+			// 0 here meant min-spacing rejections still reached the
+			// indirect draws).
+			const uint32_t aliveFlag =
+				at.aliveBDA != 0 ? kPlacementCullAlive : 0u;
 			FillCullPush(*layer,
 				pass.TileInstancesAddress(ctx, uint32_t(s)),
 				pass.TileCountAddress(ctx, uint32_t(s)),
 				vs.MaskAddress(ctx), vs.BinsAddress(ctx),
-				0 /* alive: constraint tiles wire flag2 here in v2 */,
-				renderViewsBDA, renderViewIndex, camPos, cullFlags,
+				at.aliveBDA,
+				renderViewsBDA, renderViewIndex, camPos,
+				cullFlags | aliveFlag,
 				cullPush);
 			PlacementScatterVisPush scPush{};
 			scPush.instances = pass.TileInstancesAddress(ctx, uint32_t(s));
@@ -1838,7 +2013,7 @@ struct PlacementWorldRuntime {
 			dbPush.protoCount = cullPush.protoCount;
 
 			smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(rg,
-				pass, uint32_t(s), vs, LogicalBufferHandle{},
+				pass, uint32_t(s), vs, at.aliveL,
 				renderViewsLogical);
 			cull.SetRecordingFunc([this, cullPush](
 					smvk::CommandBuffer& cmd) {
