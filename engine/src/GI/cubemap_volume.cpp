@@ -229,14 +229,12 @@ bool GiVolume::Sample(
 	};
 	const bool haveVis = vis.size() == size_t(VoxelCount()) * 6;
 	// The per-axis visibility factor (SgGiVolumeVisFactor's CPU twin):
-	// PROPORTIONAL REACH (the thin-wall leak fix — matches the shader):
-	// the rejection starts at dist * 1.5 (not dist + a fixed slack)
-	// and ramps to zero over 0.5*dist + 0.05. A probe AT a surface
-	// (dist 0.05) reaches only 0.075 — through-thin-wall leak ~zero;
-	// an open probe (dist 1.0) reaches 1.5 — full coverage. The old
-	// +0.35 absolute slack spanned 0.175 m at 0.5 m spacing, letting
-	// second-floor probes leak through thin ceilings to first-floor
-	// pixels (the sponza floor-to-floor report).
+	// HYBRID REACH (matches the shader): proportional for large dist,
+	// floor-clamped for small dist (wall-pixel coverage). The pure
+	// proportional went to ~zero for near-surface probes — wall
+	// pixels lost their nearest probes → black shadows. The floor
+	// (max(dist * 1.5, 0.5)) ensures 0.5 spacing units of minimum
+	// reach. The ramp width is also floor-clamped: max(0.5*dist, 0.3).
 	const auto visFactor = [&](int x, int y, int z) {
 		if (!haveVis)
 			return 1.0f;
@@ -252,9 +250,11 @@ bool GiVolume::Sample(
 			const float dist = vis[c * 6 + size_t(k)] / spacing;
 			const float along = dRel.x * kAxes[k][0]
 				+ dRel.y * kAxes[k][1] + dRel.z * kAxes[k][2];
-			if (along > dist * 1.5f) {
+			const float reach = std::max(dist * 1.5f, 0.5f);
+			if (along > reach) {
 				w *= std::max(0.0f,
-					1.0f - (along - dist * 1.5f) / (0.5f * dist + 0.05f));
+					1.0f - (along - reach)
+						/ std::max(0.5f * dist, 0.3f));
 				if (w <= 0.0f)
 					return 0.0f;
 			}

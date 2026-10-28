@@ -141,24 +141,29 @@ float SgGiVolumeVisAxis(float along, float dist)
     // (0 or 1), and the renormalization at the cell boundary produced
     // the visible grid (the sponza_3 flat-irradiance report).
     [branch]
-    // PROPORTIONAL REACH (the thin-wall leak fix): the reach is
-    // dist * 1.5, not dist + a fixed slack. The old +0.35 absolute
-    // slack (in spacing units) spanned ~0.175 m at 0.5 m spacing —
-    // a second-floor probe right at a thin ceiling and a first-floor
-    // pixel right below it were BOTH within the slack band of the
-    // ceiling, the factor stayed 1.0, and the bright second-floor
-    // radiance leaked through (the sponza floor-to-floor report).
-    // Proportional: a probe AT a surface (dist 0.05 m) reaches only
-    // 0.075 m — through-thin-wall leak ~zero; a probe 1 m from any
-    // surface reaches 1.5 m — plenty of coverage; the cap (2.5 m)
-    // reaches 3.75 m — full open-space coverage. On-surface pixels
-    // still read their own probes (the pixel at the surface sits at
-    // along ≈ dist, well within dist * 1.5).
-    // The RAMP width is also proportional (0.5 * dist + 0.05):
-    // at-surface probes ramp to zero over 0.075 m (near-instant),
-    // 1 m-open probes over 0.55 m (smooth), cap-open over 1.3 m.
-    if (along > dist * 1.5)
-        return max(0.0, 1.0 - (along - dist * 1.5) / (0.5 * dist + 0.05));
+    // HYBRID REACH (the black-shadow fix): proportional for large
+    // dist (tight isolation), floor-clamped for small dist (wall-
+    // pixel coverage). The pure proportional (dist * 1.5) went to
+    // ~zero for near-surface probes — wall-adjacent pixels lost
+    // their nearest probes (all 8 corners rejected, wSum < the
+    // threshold, amps = 0) and rendered as hard black shadows
+    // along walls (the sponza report: one-sided, the side whose
+    // cell corners were mostly inside the wall or near-surface).
+    // The floor (max(dist * 1.5, 0.5)) ensures near-surface probes
+    // always reach at least 0.5 spacing units (0.25 m at 0.5 m
+    // spacing) — enough for same-side wall pixels to read them.
+    // Through-thin-wall leak: a probe 0.1 m from a thin wall
+    // reaches 0.25 m; a pixel on the other side at 0.05 m from the
+    // wall has offset 0.25 m — right at the reach boundary, the
+    // ramp midpoint (~50% leak, a smooth transition, vs the old
+    // 100% absolute-slack leak and the 0% pure-proportional black).
+    // The RAMP width is also floor-clamped: max(0.5 * dist, 0.3)
+    // — near-surface probes ramp over 0.3 units (smooth), open
+    // probes proportionally.
+    const float reach = max(dist * 1.5, 0.5);
+    if (along > reach)
+        return max(0.0, 1.0 - (along - reach) / max(0.5 * dist, 0.3));
+    return 1.0;
     return 1.0;
 }
 
