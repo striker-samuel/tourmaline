@@ -50,7 +50,14 @@
 // then wind).
 #define WORLD_FIELD_ID_FOG 0
 #define WORLD_FIELD_ID_FOG_GI 1
-#define WORLD_FIELD_ID_WIND 2
+// Field ids are WorldRenderer::InitWorldFields' REGISTRATION order: fog
+// density (0), the fog-GI BC6H radiance (1), the fog-GI BC4 coverage
+// (2 — SampleFogGi's pair, registered right after the radiance). WIND is
+// the NEXT free id: 3 (an old draft said 2 — that is the coverage pair's
+// slot now; the wind sampler does not exist yet, fix it HERE before it
+// ever ships).
+#define WORLD_FIELD_ID_FOG_GI_COVERAGE 2
+#define WORLD_FIELD_ID_WIND 3
 
 // ---- struct mirrors (offsets pinned; see WorldFieldGpu.h) ----
 
@@ -120,15 +127,19 @@ float4 WorldFieldDecode(float4 encoded, const WorldFieldGpu f)
     return f.decodeScale * encoded + f.decodeBias; // Linear + SignedNormalized
 }
 
-// One level attempt: window bounds -> toroidal lookup -> stale/absent
-// guard -> slot decode -> halo-padded atlas UVW -> trilinear -> decode.
+// The resolve half of a level attempt: window bounds -> toroidal
+// lookup -> stale/absent guard -> slot decode -> halo-padded atlas UVW.
 // false = miss (outside the window, page not resident, stale toroidal
-// tag, or no atlas) — the caller walks coarser, then falls back.
-bool WorldFieldTryLevel(uint64_t tableBda, const WorldFieldGpu f, const WorldLevelGpu lv,
-    float3 worldPos, out float4 result)
+// tag, or no atlas). The SAMPLE half lives in WorldFieldTryLevel; the
+// split lets a caller distinguish "brick not resident" from a sampled
+// value (the fog-GI coverage pair streams its two fields' pages
+// independently — see SampleFogGi).
+bool WorldFieldResolveUvw(uint64_t tableBda, const WorldFieldGpu f,
+    const WorldLevelGpu lv, float3 worldPos, out float3 uvw)
 {
+    uvw = float3(0.0, 0.0, 0.0);
     if (f.meta.x == 0xffffffffu)
-        return false; // no physical atlas (creation degraded) — fallback
+        return false; // no physical atlas (creation degraded)
 
     // Continuous voxel cell. floor() everywhere: negative world coords
     // map to NEGATIVE bricks (truncation puts every negative cell one
@@ -166,7 +177,19 @@ bool WorldFieldTryLevel(uint64_t tableBda, const WorldFieldGpu f, const WorldLev
     // NEIGHBOR brick's data as stored INSIDE this slot — correct
     // world-space filtering with zero slot-to-slot atlas bleed.
     const float3 atlasVoxel = float3(sx, sy, sz) * 68.0 + local + 2.0;
-    const float3 uvw = atlasVoxel / (f.atlasSlots.xyz * 68.0);
+    uvw = atlasVoxel / (f.atlasSlots.xyz * 68.0);
+    return true;
+}
+
+// One level attempt: resolve -> trilinear -> decode.
+// false = miss (outside the window, page not resident, stale toroidal
+// tag, or no atlas) — the caller walks coarser, then falls back.
+bool WorldFieldTryLevel(uint64_t tableBda, const WorldFieldGpu f, const WorldLevelGpu lv,
+    float3 worldPos, out float4 result)
+{
+    float3 uvw;
+    if (!WorldFieldResolveUvw(tableBda, f, lv, worldPos, uvw))
+        return false;
 
     // NonUniformResourceIndex: the shared API must stay correct for a
     // per-pixel divergent fieldId (a wave-uniform caller pays a little
@@ -242,6 +265,11 @@ struct FogGiSample
     float3 radiance;    // the baked isotropic mean (0.124959 * SG amps)
     float coverage;     // the baked probe coverage weight (0 = sky fall)
     bool resident;       // a resident brick pair served the sample
+    // The coverage field's OWN page served (false = the coverage brick
+    // is still streaming or the field is absent — `coverage` then reads
+    // 1.0, the unweighted serve; the fog path ignores this, the debug
+    // view (TOURMALINE_FOG_GI_DEBUG) marks it).
+    bool coverageResident;
 };
 
 FogGiSample SampleFogGi(const FrameUniforms frame, float3 worldPos, uint lod)
@@ -250,6 +278,7 @@ FogGiSample SampleFogGi(const FrameUniforms frame, float3 worldPos, uint lod)
     result.radiance = float3(0.0, 0.0, 0.0);
     result.coverage = 0.0;
     result.resident = false;
+    result.coverageResident = false;
     if (frame.worldFields == 0u || frame.worldFieldCount == 0u
         || WORLD_FIELD_ID_FOG_GI >= frame.worldFieldCount)
         return result;
@@ -264,28 +293,10 @@ FogGiSample SampleFogGi(const FrameUniforms frame, float3 worldPos, uint lod)
 
     uint l = min(lod, f.meta.z - 1u);
     for (; l < f.meta.z; ++l) {
-        const WorldLevelGpu lv = f.levels[l];
-        const float3 cell = (worldPos - f.originMeters.xyz) / lv.voxelSizeMeters;
-        const int3 brick = int3(floor(cell / 64.0));
-        const float3 local = cell - float3(brick) * 64.0;
-        const int3 rel = brick - lv.windowMinBrick.xyz;
-        if (any(rel < int3(0, 0, 0)) || any(rel >= int3(lv.windowDim.xyz)))
-            continue;
-        const uint3 ring = uint3(brick) & (lv.windowDim.xyz - 1u);
-        const uint byteIndex = ((ring.z * lv.windowDim.y + ring.y)
-            * lv.windowDim.x + ring.x) * 16u;
-        const WorldPageGpu page = WorldFieldLoadPage(
-            frame.worldFields, lv.pageTableOffset, byteIndex);
-        if (page.brickSlot.w < 0 || any(page.brickSlot.xyz != brick))
+        float3 uvw;
+        if (!WorldFieldResolveUvw(frame.worldFields, f, f.levels[l],
+                worldPos, uvw))
             continue; // stale toroidal entry or not resident
-
-        // Slot -> atlas XYZ (the fog-GI field's own slot grid).
-        const uint s = uint(page.brickSlot.w);
-        const uint sx = s % f.atlasSlots.x;
-        const uint sy = (s / f.atlasSlots.x) % f.atlasSlots.y;
-        const uint sz = s / (f.atlasSlots.x * f.atlasSlots.y);
-        const float3 atlasVoxel = float3(sx, sy, sz) * 68.0 + local + 2.0;
-        const float3 uvw = atlasVoxel / (f.atlasSlots.xyz * 68.0);
 
         // Radiance: one trilinear BC6H fetch (RGB = the baked mean).
         Texture3D<float4> atlas = volumeTextures[
@@ -297,22 +308,35 @@ FogGiSample SampleFogGi(const FrameUniforms frame, float3 worldPos, uint lod)
         // Coverage: the SEPARATE BC4 coverage field (field id 2). It has
         // its OWN page table + slot assignments (independent LRU from
         // the radiance field — the same brick coordinate maps to
-        // different physical slots), so we resolve it through its own
-        // SampleWorldField walk rather than reusing the radiance field's
-        // uvw (which would address the WRONG slot in the coverage
-        // atlas). SampleWorldField handles the page-table lookup, the
-        // coarser-walk, and the fallback (not resident = fallbackValue
-        // = 0 = uncovered = the sky fallback in the fog shader).
+        // different physical slots), so it resolves through its OWN
+        // walk (never the radiance field's uvw — that addresses the
+        // WRONG slot in the coverage atlas). A NOT-RESIDENT coverage
+        // brick is the TRANSIENT (the pair streams independently), not
+        // "uncovered": serve the radiance UNWEIGHTED (coverage 1) — the
+        // radiance IS resident, only its normalizer hasn't streamed yet —
+        // instead of dropping to the sky fallback.
         if (WORLD_FIELD_ID_FOG_GI + 1u < frame.worldFieldCount) {
-            const float4 cov = SampleWorldField(
-                frame, WORLD_FIELD_ID_FOG_GI + 1u, worldPos, l);
-            result.coverage = cov.r;
+            const WorldFieldGpu f2 = WorldFieldLoadField(frame.worldFields,
+                WORLD_FIELD_ID_FOG_GI + 1u, h.h.y);
+            if (f2.meta.x != 0xffffffffu) {
+                uint l2 = min(l, f2.meta.z - 1u);
+                for (; l2 < f2.meta.z; ++l2) {
+                    float3 uvw2;
+                    if (!WorldFieldResolveUvw(frame.worldFields, f2,
+                            f2.levels[l2], worldPos, uvw2))
+                        continue;
+                    Texture3D<float4> atlas2 = volumeTextures[
+                        NonUniformResourceIndex(f2.meta.x)];
+                    result.coverage = WorldFieldDecode(
+                        atlas2.SampleLevel(samplers[2], uvw2, 0.0), f2).r;
+                    result.coverageResident = true;
+                    break;
+                }
+            }
         }
-
-        // If the coverage field is absent, treat resident as covered
-        // (the radiance IS the data — no separate coverage baked).
-        if (WORLD_FIELD_ID_FOG_GI + 1u >= frame.worldFieldCount)
-            result.coverage = 1.0;
+        // No coverage field registered (or its pool degraded): the
+        // radiance IS the data — no separate coverage baked, serve full.
+        result.coverage = result.coverageResident ? result.coverage : 1.0;
 
         return result;
     }

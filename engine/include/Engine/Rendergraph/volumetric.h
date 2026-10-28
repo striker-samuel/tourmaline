@@ -146,8 +146,11 @@ struct VolumetricPush {
 	uint64_t fpLights = 0;       // ForwardPlusLight buffer (this flight)
 	uint32_t fpLightCount = 0;   // lights-only bound (probes sort after)
 	uint32_t fogMaxPerTile = 16; // fog list stride (matches the cull push)
+	uint32_t fogGiDebug = 0;     // 0 = off, 1 = the BC4 coverage debug view
 };
-static_assert(sizeof(VolumetricPush) == 128);
+// 132 B of members + 4 B tail alignment (the uint64_t BDAs): the HLSL
+// push block reads through 132; the padded C++ tail is dead bytes.
+static_assert(sizeof(VolumetricPush) == 136);
 
 // Default SPVs (fullscreen-triangle VS shared with tonemap + volumetric PS).
 inline constexpr const char* kVolumetricVsPath = "content/shaders/tonemap.vert.hlsl.spv";
@@ -365,12 +368,24 @@ struct VolumetricFog {
 		push.heightBase = overrideDesc.heightBase;
 		push.time = frameTime;
 		// The fog-GI A/B source toggle (TOURMALINE_FOG_GI_SOURCE):
-		// 0/unset = worldfield (the default BC6H mean field), 1 = the
-		// legacy octree walk (SgGiSampleMean), 2 = sky-only (the floor
-		// baseline for perf A/B). Parsed once like the other env pins.
+		// 0/unset = worldfield (the default BC6H mean field — the shader
+		// falls to the OCTREE walk when no fog-GI field is registered,
+		// so the default never loses the loaded probe GI to the
+		// subsystem being off), 1 = the legacy octree walk
+		// (SgGiSampleMean), 2 = sky-only (the floor baseline for perf
+		// A/B). Parsed once like the other env pins.
 		push.fogGiSource = [] {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_SOURCE");
 			return e ? uint32_t(std::clamp(std::atoi(e), 0, 2)) : 0u;
+		}();
+		// The fog-GI coverage debug view (TOURMALINE_FOG_GI_DEBUG=1):
+		// the volumetric pass outputs the BC4 coverage field at each
+		// pixel's depth point as grayscale (red = no radiance brick,
+		// green = the coverage pair still streaming) — the readable map
+		// of what the fog's GI base consumes.
+		push.fogGiDebug = [] {
+			const char* e = std::getenv("TOURMALINE_FOG_GI_DEBUG");
+			return (e && std::atoi(e) == 1) ? 1u : 0u;
 		}();
 
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");

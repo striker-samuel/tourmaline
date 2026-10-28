@@ -707,6 +707,17 @@ namespace engine {
 		// sources from the lit-surface base for pixel-diff verification).
 		if (pins.volumetricDensity.has_value())
 			m_volumetricDensity = *pins.volumetricDensity;
+		// Scattering-intensity pin (the density pin's sibling — a
+		// fogless-authored scene needs intensity > 0 for the pass to
+		// build at all).
+		if (pins.volumetricIntensity.has_value())
+			m_volumetricIntensity = *pins.volumetricIntensity;
+		// The sun/GI scatter-scale pins (SUN=0 + GI>0 = pure probe-ambient
+		// scatter — the fog-GI source A/B's pixel-visible isolation).
+		if (pins.volumetricSun.has_value())
+			m_volumetricSun = *pins.volumetricSun;
+		if (pins.volumetricGi.has_value())
+			m_volumetricGi = *pins.volumetricGi;
 		// Fog-GI quality bypass pin (pairs with the volumetric pin for
 		// pure-octree fog cost measurements).
 		if (pins.volumetricGiVolumes.has_value())
@@ -17488,9 +17499,9 @@ namespace engine {
 			DropWorldMapHeight();
 		ImVec2 avail = ImGui::GetContentRegionAvail();
 		const float cw = std::max(avail.x, 50.0f);
-		// Two reserved footer lines: the layer counts + the streaming
-		// stats (the fields line below).
-		const float footer = 2.0f * ImGui::GetTextLineHeightWithSpacing();
+		// Three footer lines: layer counts, probe visibility/controls,
+		// and streaming stats.
+		const float footer = 3.0f * ImGui::GetTextLineHeightWithSpacing();
 		const float ch = std::max(avail.y - footer, 50.0f);
 		if (m_worldMapScale <= 0.0f) {
 			m_worldMapScale =
@@ -17904,17 +17915,41 @@ namespace engine {
 			}
 		}
 		// ---- Probes: GI lattice dots + cubemap influence rings --------
+		uint32_t giOnScreen = 0, giMapMarkers = 0;
 		if (m_worldMapProbes) {
-			uint32_t drawn = 0;
+			// Cover the ENTIRE octree, not the first 3000 valid entries.
+			// Dense probes share ~6px screen-space bins so the draw-list
+			// cost scales with map pixels rather than scene probe count.
+			constexpr float kBinPx = 6.0f;
+			const int cols = std::max(1, int(std::ceil(cw / kBinPx)));
+			const int rows = std::max(1, int(std::ceil(ch / kBinPx)));
+			std::vector<uint32_t> occupancy(size_t(cols) * size_t(rows), 0u);
 			for (const auto& p : m_giOctree.probes) {
 				if (!p.valid)
 					continue;
-				if (++drawn > 3000)
-					break;
 				++nProbes;
-				dl->AddCircleFilled(
-					ImVec2(WX(p.position.x), WZ(p.position.z)), 2.0f,
-					IM_COL32(90, 230, 90, 210));
+				const float x = WX(p.position.x) - o.x;
+				const float y = WZ(p.position.z) - o.y;
+				if (!std::isfinite(x) || !std::isfinite(y)
+					|| x < 0.0f || x >= cw || y < 0.0f || y >= ch)
+					continue;
+				++giOnScreen;
+				const int bx = std::min(cols - 1, int(x / kBinPx));
+				const int by = std::min(rows - 1, int(y / kBinPx));
+				++occupancy[size_t(by) * size_t(cols) + size_t(bx)];
+			}
+			for (int by = 0; by < rows; ++by) {
+				for (int bx = 0; bx < cols; ++bx) {
+					const uint32_t n = occupancy[size_t(by) * size_t(cols) + size_t(bx)];
+					if (!n)
+						continue;
+					++giMapMarkers;
+					const float density = std::min(1.0f, std::log2(1.0f + float(n)) / 6.0f);
+					const ImVec2 pt(o.x + std::min((float(bx) + 0.5f) * kBinPx, cw - 0.5f),
+						o.y + std::min((float(by) + 0.5f) * kBinPx, ch - 0.5f));
+					dl->AddCircleFilled(pt, 1.3f + 1.5f * density,
+						IM_COL32(90, 230, 90, 110 + int(140.0f * density)));
+				}
 			}
 			for (const auto& pr : m_cubemapProbes) {
 				const glm::vec3 pp(
@@ -17988,10 +18023,11 @@ namespace engine {
 		}
 		dl->PopClipRect();
 		ImGui::TextDisabled(
-			"zones %u (%u off)  gi volumes %u  probes %u  lights %u  decals %u"
-			"  1px = %.1fm  drag pan | wheel zoom",
-			nZones, nZonesOff, nGiVolumes, nProbes, nLights, nDecals,
-			1.0f / s);
+			"zones %u (%u off)  gi volumes %u  lights %u  decals %u",
+			nZones, nZonesOff, nGiVolumes, nLights, nDecals);
+		ImGui::TextDisabled(
+			"probes %u total  GI in view %u  map dots %u  1px = %.1fm  drag / wheel",
+			nProbes, giOnScreen, giMapMarkers, 1.0f / s);
 		// Streaming footer (the WorldFields + partition line): residents,
 		// in-flight, pool pressure, atlas bytes, the per-frame churn. Dark
 		// when the system is off.

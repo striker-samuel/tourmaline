@@ -87,6 +87,15 @@ struct RunConfig {
 	std::optional<int> volumetricSteps;
 	// volumetricDensity: 0..2 extinction (unset = authored wins)
 	std::optional<float> volumetricDensity;
+	// volumetricIntensity: 0..4 scattering intensity (unset = authored
+	// wins) — the density pin's sibling; a fogless-authored scene needs
+	// it to march at all (the pass gates on intensity > 0).
+	std::optional<float> volumetricIntensity;
+	// volumetricSun / volumetricGi: 0..4 scatter scales (unset = authored
+	// wins) — SUN=0 + GI>0 isolates the probe-ambient scatter for the
+	// fog-GI source A/B.
+	std::optional<float> volumetricSun;
+	std::optional<float> volumetricGi;
 	// volumetricGiVolumes: fog-GI GI-volume walk on/off (unset = authored wins)
 	std::optional<OnOffPin> volumetricGiVolumes;
 

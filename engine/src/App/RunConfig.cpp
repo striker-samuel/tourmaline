@@ -224,6 +224,40 @@ RunConfig RunConfig::Parse() {
 			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_DENSITY out of range "
 				"(0..2): %s\n", v);
 	}
+	// Scattering-intensity pin (0..4, the panel slider's range): the
+	// DENSITY pin's sibling — heavy densities with a scene-authored
+	// intensity 0 render NOTHING (the pass build gates on intensity >
+	// 0), so the pixel-diff isolation the density pin documents needs
+	// this to actually march on a fogless scene.
+	if ((v = Get("TOURMALINE_VOLUMETRIC_INTENSITY")) != nullptr) {
+		const float vi = static_cast<float>(std::strtod(v, nullptr));
+		if (vi >= 0.0f && vi <= 4.0f)
+			c.volumetricIntensity = vi;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_INTENSITY out of range "
+				"(0..4): %s\n", v);
+	}
+	// The sun/GI scatter-scale pins (0..4, the fog panel's own sliders):
+	// with SUN=0 + GI>0 the march output is PURE probe-ambient scatter —
+	// the isolation the fog-GI source A/B (TOURMALINE_FOG_GI_SOURCE)
+	// needs to be pixel-visible (the analytic sun in-scatter otherwise
+	// dominates the GI base by ~10x on a sunlit scene).
+	if ((v = Get("TOURMALINE_VOLUMETRIC_SUN")) != nullptr) {
+		const float vs = static_cast<float>(std::strtod(v, nullptr));
+		if (vs >= 0.0f && vs <= 4.0f)
+			c.volumetricSun = vs;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_SUN out of range "
+				"(0..4): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_VOLUMETRIC_GI")) != nullptr) {
+		const float vg = static_cast<float>(std::strtod(v, nullptr));
+		if (vg >= 0.0f && vg <= 4.0f)
+			c.volumetricGi = vg;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_GI out of range "
+				"(0..4): %s\n", v);
+	}
 	if ((v = Get("TOURMALINE_VOLUMETRIC_GI_VOLUMES")) != nullptr) {
 		bool on = true;
 		if (IsOnOff(Trimmed(v), on))
@@ -463,6 +497,8 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
 		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",
 		"TOURMALINE_VOLUMETRIC", "TOURMALINE_VOLUMETRIC_STEPS", "TOURMALINE_VOLUMETRIC_DENSITY",
+		"TOURMALINE_VOLUMETRIC_INTENSITY", "TOURMALINE_FOG_GI_DEBUG",
+		"TOURMALINE_VOLUMETRIC_SUN", "TOURMALINE_VOLUMETRIC_GI",
 		// WorldFields/WorldPartition (the atlas-backed voxel-field system +
 		// the C-map's streaming layers; parsed at their use sites):
 		"TOURMALINE_WORLD_FIELDS", "TOURMALINE_WORLDMAP",

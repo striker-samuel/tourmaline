@@ -55,6 +55,7 @@ struct VolumetricPush
     vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
     uint fpLightCount;      // lights-only bound (probes sort after)
     uint fogMaxPerTile;     // fog list stride (matches the cull push)
+    uint fogGiDebug;        // 0 = off, 1 = the coverage debug view (grayscale)
 };
 
 [[vk::push_constant]]
@@ -352,6 +353,27 @@ PSOut mainPS(PSIn IN)
     static const float kVolLightRefreshDist = 3.0;
     float lightT = -1e30; // distance of the last light refresh
 
+    // ---- The fog-GI COVERAGE debug view (TOURMALINE_FOG_GI_DEBUG=1):
+    // grayscale = the BC4 coverage field at each pixel's DEPTH point
+    // (the visible surface's baked probe coverage — the readable map of
+    // what the fog's base consumes), RED = no radiance brick resident,
+    // GREEN = radiance resident but the coverage pair still streaming
+    // (the transient SampleFogGi serves unweighted). Replaces the fog
+    // composite entirely (the view IS the diagnostic).
+    if (vp.fogGiDebug == 1u) {
+        const FogGiSample gi =
+            SampleFogGi(frame, camPos + rayDir * rayLen, 0u);
+        float3 dbg;
+        if (!gi.resident)
+            dbg = float3(0.9, 0.1, 0.1);
+        else if (!gi.coverageResident)
+            dbg = float3(0.1, 0.9, 0.2);
+        else
+            dbg = float3(gi.coverage, gi.coverage, gi.coverage);
+        OUT.outColor = float4(dbg, 1.0f);
+        return OUT;
+    }
+
     // Ray-space volume prep (once per pixel): tile mask -> fade-expanded
     // AABB intervals vs the march ray -> base/slope plane coefficients
     // for the overlapping volumes. The march then blends exact weights
@@ -455,8 +477,28 @@ PSOut mainPS(PSIn IN)
                         // Sky-only (the floor baseline for perf A/B).
                         baseHeld = skyMean;
                     }
+                    else if (frame.worldFieldCount <= WORLD_FIELD_ID_FOG_GI) {
+                        // Default + NO fog-GI field registered (the
+                        // TOURMALINE_WORLD_FIELDS gate, or the field
+                        // itself missing): the field path is
+                        // guaranteed-sky, so the baked OCTREE GI (the
+                        // surface path's own data) serves the fog — the
+                        // default must never silently lose the loaded
+                        // probe GI to a subsystem that is off (the
+                        // review's finding: source 0 + fields off = sky
+                        // even with baked probes). An explicit source-0
+                        // pin still tests the FIELD path when the fields
+                        // are live — the branch above only takes the
+                        // no-field case.
+                        float3 octMean = float3(0.0, 0.0, 0.0);
+                        const bool octreeCovered = (giOn > 0.5)
+                            && SgGiSampleMean(frame, wpos, octMean);
+                        baseHeld = octreeCovered ? octMean : skyMean;
+                    }
                     else {
-                        // Default: the world-field fog-GI path.
+                        // Default: the world-field fog-GI path (the
+                        // field's own residency/coverage degradation
+                        // owns the streaming holes — sky between them).
                         const FogGiSample gi =
                             SampleFogGi(frame, wpos, 0u);
                         if (gi.resident && gi.coverage > 0.02)
