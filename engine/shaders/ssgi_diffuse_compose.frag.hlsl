@@ -259,15 +259,16 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         float3 dbg = base;
         if (cp.debugView == 1u)
         {
-            // Hit confidence, the TRACE's own (the raw target's alpha,
-            // pre-filter): valid local hits read bright, the smooth
-            // screen-boundary loss is the expected read. The dbgGain
-            // pre-scale puts conf 1.0 at display white.
-            Texture2D rawTex = textures[NonUniformResourceIndex(cp.rawTextureIndex)];
-            int2 rawPx = clamp(int2(fullPx / 2), int2(0, 0), halfExtentI - 1);
-            float rawConf = saturate(rawTex.Load(int3(rawPx, 0)).a);
+            // Hit confidence, the COMPOSE-PATH value (the upsampled,
+            // filtered confidence that actually scales the composite's
+            // replacement — what the final image consumes): valid local
+            // neighborhoods read bright, the smooth screen-boundary
+            // loss is the expected read. The dbgGain pre-scale (1/
+            // exposure, Main's flat-debug-view trick) puts conf 1.0 at
+            // display white — the unitless channel would otherwise
+            // tonemap to black under the physical-units exposure.
             float dbgGain = 1.0f / max(frame.exposure, 1e-6f);
-            dbg = float3(rawConf, rawConf, rawConf) * dbgGain;
+            dbg = float3(conf, conf, conf) * dbgGain;
         }
         else if (cp.debugView == 2u)
         {

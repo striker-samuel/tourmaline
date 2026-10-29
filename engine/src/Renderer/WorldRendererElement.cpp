@@ -125,8 +125,15 @@ namespace engine {
 		if (m_input.isKeyPressed(keybind::AUTO_EXPOSURE_TOGGLE)) {
 			m_renderer.m_autoExposureEnabled = !m_renderer.m_autoExposureEnabled;
 		}
+		// Motion vectors: a DEBUG VIEW now (was the m_showMotionDebug
+		// overlay — a view owns the pixel; the tonemap's debug branch
+		// replaces the scene composite entirely). V toggles it like the
+		// other take-over selections (SetDebugView clears the R/F8 + Y
+		// overlay views).
 		if (m_input.isKeyPressed(keybind::MOTION_DEBUG_TOGGLE)) {
-			m_renderer.m_showMotionDebug = !m_renderer.m_showMotionDebug;
+			m_renderer.SetDebugView(
+				(m_renderer.m_debugView == ViewMode::MotionVectors)
+				? ViewMode::Lit : ViewMode::MotionVectors);
 		}
 		if (m_input.isKeyPressed(keybind::LOD_TOGGLE)) {
 			m_renderer.m_lodEnabled = !m_renderer.m_lodEnabled;

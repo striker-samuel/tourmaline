@@ -1023,6 +1023,13 @@ namespace engine {
 			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
 			else if (dv == "ssrmask" || dv == "ssr_mask" || dv == "ssr-mask") m_debugView = ViewMode::SsrMask;
 			else if (dv == "normals" || dv == "normal" || dv == "n") m_debugView = ViewMode::Normals;
+			// The mapped twin (vertex normal + the material's normal map).
+			else if (dv == "normalsmapped" || dv == "normals_mapped" || dv == "mappednormals")
+				m_debugView = ViewMode::NormalsMapped;
+			// Motion vectors (the tonemap's debug view; the V key's
+			// twin for headless runs).
+			else if (dv == "motion" || dv == "motionvectors" || dv == "motion_vectors")
+				m_debugView = ViewMode::MotionVectors;
 			// Diffuse SSGI views (the compose's debugView push — the
 			// chain must be enabled, TOURMALINE_SSGI=1, or the view
 			// silently shows Lit).
@@ -1687,6 +1694,14 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_normals_debug unavailable - Normals view falls back to Lit\n";
 		}
+		try {
+			auto normalsMappedCode = readFile("content/shaders/default_normals_mapped_debug.frag.hlsl.spv");
+			m_resources.fragNormalsMappedDebugShader =
+				m_context->CreateShaderModule(normalsMappedCode, "fragNormalsMappedDebug");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_normals_mapped_debug unavailable - Mapped normals view falls back to Lit\n";
+		}
 		// Shading debug-view program pairs: ONE pairing rule for every
 		// flat FS — the direct twin (default.vert + FS) rides the direct
 		// fallback leg, the filtered twin (gfxfiltered.vert + FS, via
@@ -1730,6 +1745,7 @@ namespace engine {
 				{ DebugFs::Pom, m_resources.fragPomShader },
 				{ DebugFs::SsrMask, m_resources.fragSsrMaskDebugShader },
 				{ DebugFs::Normals, m_resources.fragNormalsDebugShader },
+				{ DebugFs::NormalsMapped, m_resources.fragNormalsMappedDebugShader },
 			};
 			for (const auto& [slot, frag] : slots) {
 				auto& pair = m_resources.debugPrograms[size_t(slot)];
@@ -4988,16 +5004,14 @@ namespace engine {
 	bool WorldRenderer::DebugVisualizationActive() const {
 		// F2..F11 replace the Main opaque/transparent legs with flat
 		// programs; the GI debug views (R/F8) and the DS visualizers (Y)
-		// early-out of the lit fragment shader the same way.
-		if (m_debugView != ViewMode::Lit) {
-			// EXCEPT the diffuse SSGI views (Ssgi*): those render
-			// through the SSGI compose's debugView push, not a fragment
-			// swap — the lit path AND the post-fx chain must stay live
-			// or there is nothing to visualize. The compose replaces
-			// the pixel with the visualization itself.
-			if (!IsSsgiDiffuseDebugView(m_debugView))
-				return true;
-		}
+		// early-out of the lit fragment shader the same way. The Ssgi*
+		// diffuse views ALSO land here (they replace the pixels through
+		// the SSGI compose's debugView push — the composites-over-readout
+		// effects must stay off their readout exactly like the flat
+		// views'); their LIT-PATH inputs stay live via
+		// FlatDebugViewActive (see its header note).
+		if (m_debugView != ViewMode::Lit)
+			return true;
 		if (m_giDebug != 0)
 			return true;
 #if defined(DS_DEBUG_VIZ)
@@ -5005,6 +5019,19 @@ namespace engine {
 			return true;
 #endif
 		return false;
+	}
+
+	bool WorldRenderer::FlatDebugViewActive() const {
+		// The lit-path half of the gate (see the header note): true only
+		// when the debug view actually REPLACED Main's lit fragment path
+		// (flat FS / GI baked views / DS visualizers) — the MRT ambient
+		// exports are zeros and the AO compose is a no-op. The Ssgi*
+		// views render POST-Main through the SSGI compose: Main's lit
+		// path, the thin G-buffer leg, the shared HZB and the AO chain
+		// all stay live under them.
+		if (!DebugVisualizationActive())
+			return false;
+		return !IsSsgiDiffuseDebugView(m_debugView);
 	}
 
 	// Bins -> percentile target + damped adapt (tail of UpdateAutoExposure,
@@ -7613,7 +7640,19 @@ namespace engine {
 			case ViewMode::Normals:
 				title = "Normals (world space)";
 				lines[0] = "world normal as color (n*0.5+0.5): +X red, +Y green, +Z blue.";
-				lines[1] = "geometric normal only - no normal-map perturbation.";
+				lines[1] = "geometric normal only - no normal-map perturbation";
+				lines[2] = "(the mapped view owns those).";
+				break;
+			case ViewMode::NormalsMapped:
+				title = "Normals (mapped, world space)";
+				lines[0] = "the SHADING normal as color: vertex normal + the";
+				lines[1] = "material's normal map (lit-path tangent-space math);";
+				lines[2] = "layered materials fall back to the geometric normal.";
+				break;
+			case ViewMode::MotionVectors:
+				title = "Motion vectors (V)";
+				lines[0] = "direction -> hue, magnitude -> intensity;";
+				lines[1] = "the temporal jitter is stripped (TRUE motion).";
 				break;
 			case ViewMode::SsrContribution:
 				title = "SSR contribution";
@@ -10032,9 +10071,13 @@ namespace engine {
 			&& m_ssaoIntensity > 0.0f;
 		const bool ssgiDiffuseWantsGbuffer = m_passes.ssgiDiffuse
 			&& m_ssgiDiffuseEnabled && m_ssgiDiffuseIntensity > 0.0f;
+		// FlatDebugViewActive (not DebugVisualizationActive): the Ssgi*
+		// views keep the lit path + this leg live — the diffuse chain
+		// reads the G-buffer under them (see FlatDebugViewActive's
+		// header note); only the flat-FS views orphan it.
 		fc.ssrGbufferWanted = (ssrWantsGbuffer || aoWantsNormal
 				|| ssgiDiffuseWantsGbuffer)
-			&& !DebugVisualizationActive()
+			&& !FlatDebugViewActive()
 			&& !useMsaa
 			&& m_viewportResources.ssr.gbuffer.Valid();
 		fc.gbufferView = fc.ssrGbufferWanted
@@ -12100,14 +12143,21 @@ namespace engine {
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
 			const bool aoWanted = m_passes.ssao && m_aoMode != AoMode::None
 				&& m_ssaoIntensity > 0.0f
-				&& !DebugVisualizationActive()
+				// FlatDebugViewActive: the AO chain runs under the Ssgi*
+				// views too (Main's lit exports are valid there + the
+				// diffuse baseline sourcing wants AO's third output); the
+				// flat-FS views write zero aoTerm exports, so it skips.
+				&& !FlatDebugViewActive()
 				&& ssgi.Valid();
 			// The diffuse SSGI trace marches the same shared pyramid
 			// (its blur/compose read mip1/mip0 like the SSR filters) —
 			// the chain is a third HZB consumer, not an AO mode.
+			// FlatDebugViewActive: the chain (and its HZB) stay LIVE
+			// under the Ssgi* debug views — they render through the
+			// compose's debugView push; the flat-FS views kill it.
 			const bool ssgiDiffuseWantsHzb = m_passes.ssgiDiffuse
 				&& m_ssgiDiffuseEnabled && m_ssgiDiffuseIntensity > 0.0f
-				&& !DebugVisualizationActive()
+				&& !FlatDebugViewActive()
 				&& m_viewportResources.ssgiDiffuse.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
 				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
@@ -13398,7 +13448,11 @@ namespace engine {
 				"Tonemap",
 				motionView,
 				motionBindless,
-				m_showMotionDebug ? 1u : 0u,
+				// The motion-vector DEBUG VIEW (ViewMode::MotionVectors —
+				// the old m_showMotionDebug overlay, reclassified): the
+				// tonemap's debug branch replaces the scene composite
+				// entirely while a view is active.
+				(m_debugView == ViewMode::MotionVectors) ? 1u : 0u,
 				m_motionDebugScale,
 				{},
 				UINT32_MAX,
@@ -13427,7 +13481,7 @@ namespace engine {
 					"TonemapCapture",
 					motionView,
 					motionBindless,
-					m_showMotionDebug ? 1u : 0u,
+					(m_debugView == ViewMode::MotionVectors) ? 1u : 0u,
 					m_motionDebugScale,
 					{},
 					UINT32_MAX,
@@ -14004,12 +14058,15 @@ namespace engine {
 							"SSGI diffuse: filtered layer",
 							"SSGI diffuse: ambient baseline",
 							"SSGI diffuse: contribution",
+							"Normals (mapped, world-space)",
+							"Motion vectors (V)",
 						};
 						// Combo index <-> ViewMode mapping (SsrContribution stays
 						// env-only; UV1 and Normals are combo/env only; the
 						// Ssgi diffuse views likewise — they render through
 						// the SSGI compose's debugView push, not a fragment
-						// swap, so they need the chain enabled).
+						// swap, so they need the chain enabled; MotionVectors
+						// renders through the tonemap's debug branch).
 						static const ViewMode kComboViews[] = {
 							ViewMode::Lit, ViewMode::Unlit,
 							ViewMode::Meshlets, ViewMode::Cascades,
@@ -14021,15 +14078,28 @@ namespace engine {
 							ViewMode::SsgiConfidence, ViewMode::SsgiRaw,
 							ViewMode::SsgiLayer, ViewMode::SsgiBaseline,
 							ViewMode::SsgiContribution,
+							ViewMode::NormalsMapped, ViewMode::MotionVectors,
 						};
 						int view = 0;
-						for (int i = 0; i < 17; ++i)
+						for (int i = 0; i < 19; ++i)
 							if (kComboViews[i] == m_debugView)
 								view = i;
 						// SetDebugView: the direct selection takes over
 						// (clears the R/F8 + Y overlay views).
-						if (ImGui::Combo("Debug view", &view, viewNames, 17))
+						if (ImGui::Combo("Debug view", &view, viewNames, 19))
 							SetDebugView(kComboViews[view]);
+						// Motion vectors (V): the tonemap's debug view —
+						// direction -> hue, magnitude -> intensity, jitter
+						// stripped (TRUE motion). Gated on the motion pass
+						// (the old overlay's gate; without it the tonemap
+						// branch silently shows the scene).
+						if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
+							bool motionView = (m_debugView == ViewMode::MotionVectors);
+							if (ImGui::Checkbox("Motion vectors (V)", &motionView))
+								SetDebugView(motionView ? ViewMode::MotionVectors : ViewMode::Lit);
+							if (motionView)
+								ImGui::SliderFloat("Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
+						}
 						const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 						ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 						if (ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones)) {
@@ -14046,11 +14116,11 @@ namespace engine {
 
 					ImGui::SeparatorText("Overlays");
 					{
-						if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
-							ImGui::Checkbox("Show motion vectors (V)", &m_showMotionDebug);
-							if (m_showMotionDebug)
-								ImGui::SliderFloat("Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
-						}
+						// (The motion-vector visualization moved OUT of the
+						// overlays: it is a debug VIEW now — see the Debug
+						// views section above / ViewMode::MotionVectors. A
+						// view owns the pixel; an overlay stacked over the
+						// scene read as neither one nor the other.)
 						ImGui::Checkbox("Light points overlay", &m_showLightPoints);
 						ImGui::Checkbox("Light numbers overlay", &m_showLightNumbers);
 						if (m_showLightPoints || m_showLightNumbers) {

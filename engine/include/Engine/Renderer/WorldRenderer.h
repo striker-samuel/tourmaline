@@ -387,16 +387,19 @@ enum class ViewMode : int {
 	              // stays on the filtered lit path - only the env
 	              // specular term changes.
 	// ---- Diffuse SSGI debug views (combo/env only — no free F-key).
-	// Unlike every other non-Lit view these KEEP the lit fragment
-	// path AND let the scene post-fx run (IsSsgiDiffuseDebugView
-	// excludes them from DebugVisualizationActive): the diffuse SSGI
-	// chain itself renders the visualization through its compose
-	// shader's debugView push, so the view needs the chain LIVE. The
-	// diffuse composite REPLACES the pixel with the visualization
-	// (values are raw HDR — exposure holds its last scene value under
-	// a debug view; pair with TOURMALINE_AUTO_EXPOSURE=0 for readable
-	// captures). The chain must be enabled (TOURMALINE_SSGI=1 / the
-	// render-settings checkbox) or the view silently shows Lit. ----
+	// Unlike every other non-Lit view these KEEP the lit fragment path
+	// AND the SSGI chain's inputs (FlatDebugViewActive excludes them:
+	// the diffuse SSGI chain renders the visualization through its
+	// compose shader's debugView push, so the view needs Main's real
+	// lit exports + the thin G-buffer + the shared HZB + the AO chain
+	// LIVE). The COMPOSITING post-fx gate (DebugVisualizationActive:
+	// SSR/bloom/fog/motion-blur/DOF) still trips for them — those stack
+	// over the readout, and the SSGI composite REPLACES the pixel with
+	// the visualization (values are raw HDR — exposure holds its last
+	// scene value under a debug view; pair with
+	// TOURMALINE_AUTO_EXPOSURE=0 for readable captures). The chain must
+	// be enabled (TOURMALINE_SSGI=1 / the render-settings checkbox) or
+	// the view silently shows Lit. ----
 	SsgiConfidence = 13,   // hit confidence (grayscale; the smooth
 	                       // screen-edge loss is the expected read)
 	SsgiRaw = 14,          // raw trace radiance (pre-blur — noisy,
@@ -407,6 +410,19 @@ enum class ViewMode : int {
 	                       // (the existing probe/sky diffuse)
 	SsgiContribution = 17, // the SIGNED s*(ssgi - baseline) delta
 	                       // (positive brightens, negative darkens)
+	// MAPPED world normals (combo/env only): the SHADING normal -
+	// vertex normal + the material's normal-map perturbation, the lit
+	// body's exact tangent-space math - as false color (n*0.5+0.5).
+	// The geometric-only sibling is Normals above; the parallax-
+	// displaced normal stays the POM view's readout.
+	NormalsMapped = 18,
+	// Motion vectors (combo/env only, the V key): direction -> hue,
+	// magnitude -> intensity, the temporal jitter stripped (TRUE
+	// motion). NOT a fragment swap - the tonemap's debug view renders
+	// it and REPLACES the scene composite entirely (the old "overlay"
+	// checkbox reclassified: a debug view owns the pixel, it does not
+	// stack over the scene). Needs the motion-vector pass on.
+	MotionVectors = 19,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -459,6 +475,7 @@ enum class DebugFs : int {
 	Pom,          // default_pom (F11)
 	SsrMask,      // default_ssrmask_debug
 	Normals,      // default_normals_debug (combo/env only)
+	NormalsMapped, // default_normals_mapped_debug (combo/env only)
 	Count
 };
 
@@ -474,6 +491,7 @@ enum class DebugFs : int {
 	case ViewMode::Pom: return DebugFs::Pom;
 	case ViewMode::SsrMask: return DebugFs::SsrMask;
 	case ViewMode::Normals: return DebugFs::Normals;
+	case ViewMode::NormalsMapped: return DebugFs::NormalsMapped;
 	default: return std::nullopt;
 	}
 }
@@ -1016,6 +1034,11 @@ struct AppResources {
 	// World-space normals debug view (combo/env only): the interpolated
 	// geometric normal as false color (default_normals_debug.frag.hlsl).
 	smvk::Holder<smvk::ShaderModuleHandle> fragNormalsDebugShader;
+	// MAPPED world normals debug view (combo/env only): the SHADING
+	// normal - vertex normal + the normal-map perturbation, the lit
+	// body's tangent-space math verbatim (default_normals_mapped_debug.
+	// frag.hlsl; layered materials fall back to the geometric normal).
+	smvk::Holder<smvk::ShaderModuleHandle> fragNormalsMappedDebugShader;
 	// Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
@@ -2803,7 +2826,10 @@ public:
 	glm::vec2 m_prevJitterUV{ 0.0f };
 	glm::vec2 m_jitterDeltaUV{ 0.0f };
 	std::vector<glm::mat4> m_prevGlobalTransforms; // last frame's node transforms
-	bool m_showMotionDebug = false; // tonemap debug view: motion vectors
+	// Motion vectors are a DEBUG VIEW now (ViewMode::MotionVectors, the
+	// V key / combo / env) — the tonemap's debug view renders them and
+	// REPLACES the scene composite; the old "overlay" checkbox is
+	// retired with the member that drove it (m_showMotionDebug).
 	float m_motionDebugScale = 16.0f; // debug view velocity amplification
 	// ---- Motion blur pass (HDR velocity gather, see motionblur.h) ----
 	bool m_motionBlurEnabled = true; // runs after Main, before Bloom/Tonemap (M)
@@ -3180,6 +3206,19 @@ public:
 	// palette itself, fog-faded heat colors) the way metering it would
 	// poison the exposure.
 	bool DebugVisualizationActive() const;
+	// The LIT-PATH half of the debug-view gate: true when the debug view
+	// REPLACED Main's lit fragment path (a flat FS, the GI baked views,
+	// a DS visualizer) — the MRT ambient exports (aoTerm/envSpec) are
+	// zeros and the AO compose is a no-op, so the LIT-PATH consumers
+	// (the thin G-buffer leg's want gate, the shared HZB build, the AO
+	// chain, the diffuse SSGI chain) skip. The Ssgi* views are NOT flat
+	// swaps — they render through the SSGI compose's debugView push and
+	// need the lit path + every one of those inputs LIVE (Main ran the
+	// real lit FS; the SSGI compose replaces the pixels POST-Main) — so
+	// they are excluded here while DebugVisualizationActive() (the
+	// composites-over-readout gate: SSR/bloom/fog/blur/DOF) still trips
+	// for them: those composites must stay off the readout either way.
+	bool FlatDebugViewActive() const;
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	float m_bloomIntensity = 0.6f; // tonemap bloom-add scale (== BLOOM_INTENSITY)
