@@ -21,19 +21,22 @@
 //     reflection direction garbage, ~0.05% visible coverage), found
 //     via the deterministic-mirror bypass + the contribution debug
 //     attachment (d8491e1d's WIP note -> the fix).
-//   - SsrOctDecode: the G-buffer oct normal decode (shared by the
-//     classify's validity path and the intersect's receiver/hit reads)
+//   - SsrOctDecode: the G-buffer oct normal decode — MOVED to
+//     ssr_receiver.hlsli (the FS filters decode the packed receiver
+//     normals too; this file includes it), shared by the classify's
+//     validity path and the intersect's receiver/hit reads
 //
 // License note: the VNDF sampler + ray format are AMD FidelityFX SSSR
 // (MIT-licensed, see the SDK headers); this file keeps their shape so
 // the port stays auditable against the SDK.
 
 #include "vertex_pack.hlsli"
+#include "ssr_receiver.hlsli"
 
 // Ray list: one packed uint per ray (halfW*halfH capacity — the classify
 // compacts only reflective pixels; the worst case (everything shoots)
-// fits by construction). The C++ sizes the buffer from the half extent.
-#define SSR_RAY_LIST_CAP (2048u * 2048u / 4u)
+// fits by construction). The C++ sizes the buffer from the half extent;
+// SSR_RAY_LIST_CAP (ssr_receiver.hlsli) is the declared indexing domain.
 struct SsrRayList { uint rays[SSR_RAY_LIST_CAP]; };
 
 // Classify->args handoff: [0] = the live ray count (classify appends,
@@ -72,25 +75,6 @@ void SsrUnpackRayCoords(uint packed, out uint2 coord, out bool copyH, out bool c
 bool SsrIsMirrorReflection(float roughness)
 {
     return roughness < 0.0001f;
-}
-
-// Octahedral decode of the G-buffer RG (the inverse of
-// gbuffer.frag.hlsl OctEncodeNormal; same fold/sign as
-// vertex_pack.hlsli OctDecodeNormal).
-float3 SsrOctDecode(float2 e01)
-{
-    float x = e01.x * 2.0f - 1.0f;
-    float y = e01.y * 2.0f - 1.0f;
-    float z = 1.0f - abs(x) - abs(y);
-    if (z < 0.0f)
-    {
-        float tx = (1.0f - abs(y)) * OctSignH(x);
-        float ty = (1.0f - abs(x)) * OctSignH(y);
-        x = tx;
-        y = ty;
-    }
-    float l2 = x * x + y * y + z * z;
-    return (l2 > 1e-24f) ? float3(x, y, z) / sqrt(l2) : float3(0.0f, 0.0f, 1.0f);
 }
 
 static const float SSR_PI = 3.14159265358979f;

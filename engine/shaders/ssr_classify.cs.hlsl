@@ -21,12 +21,18 @@
 // variance history).
 //
 // Outputs:
-//   ray list  : packed uint per ray (coords + copy flags — see
-//               UnpackRayCoords below; the intersect unpacks them)
-//   counter   : the ray count (read + reset by the indirect-args pass)
-//   radiance  : float4 per half-res pixel (0 for non-ray pixels)
+//   ray list    : packed uint per ray (coords + copy flags — see
+//                 UnpackRayCoords below; the intersect unpacks them)
+//   counter     : the ray count (read + reset by the indirect-args pass)
+//   radiance    : float4 per half-res pixel (0 for non-ray pixels)
+//   receiverData: packed uint per half-res pixel — the SELECTED
+//                 receiver's thin G-buffer sample (see
+//                 ssr_receiver.hlsli). Written for EVERY in-range
+//                 pixel (rays or not: the blur/compose taps reach
+//                 non-ray pixels); kSsrReceiverNoData when the
+//                 G-buffer is absent or the block is background.
 
-// Must match Engine/Rendergraph/ssr.h SsrClassifyPush (64 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrClassifyPush (72 bytes).
 // uint64 BDAs lead (see ssr.h — scalars never precede a BDA).
 struct SsrClassifyPush
 {
@@ -34,6 +40,7 @@ struct SsrClassifyPush
     vk::BufferPointer<SsrRayList> rayList;   // packed uint per ray (halfW*halfH capacity)
     vk::BufferPointer<SsrRayCounter> rayCounter; // [0] = the count (reset by the args pass)
     vk::BufferPointer<SsrRadiance> radiance; // float4 per half-res pixel (0 for non-rays)
+    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
     uint gbufferTextureIndex; // thin G-buffer (RGBA8: oct normal + roughness + metal)
     uint depthTextureIndex;  // full-res depth (validity + receiver selection)
     float glossThreshold; // rays wanted for roughness < this (mirrors < 0.0001 always shoot)
@@ -90,14 +97,22 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
     // whatever the descriptor array happened to return). Without material
     // data we cannot classify reflectivity: conservative matte (roughness
     // 1, metal 0) = no rays generated = SSR silently off under MSAA.
+    //
+    // The SAME selection feeds the receiver metadata buffer (the packed
+    // G-buffer sample below): the blur/compose read THEIR material +
+    // normals from it, so every stage agrees on which surface owns this
+    // half-res pixel (the old blur re-read the block's top-left texel —
+    // a material-edge block borrowed a neighbor's radius bucket).
     float roughness = 1.0f;
     float metal = 0.0f;
+    uint packedReceiver = kSsrReceiverNoData;
     if (valid && sp.gbufferTextureIndex != 0xffffffffu)
     {
         Texture2D gbTex = textures[NonUniformResourceIndex(sp.gbufferTextureIndex)];
         float4 gb = gbTex.Load(int3(fullPxC, 0));
         roughness = gb.b;
         metal = (gb.a >= 0.5f) ? 1.0f : 0.0f;
+        packedReceiver = SsrPackReceiver(gb);
     }
 
     bool isMirror = valid && IsMirrorReflection(roughness);
@@ -117,11 +132,20 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gtid : SV_GroupThreadID)
     bool is_base_ray = true;
     needs_ray = needs_ray && is_base_ray;
 
+    uint flatIdx = px.y * sp.halfW + px.x;
+    // Receiver metadata: EVERY in-range pixel, rays or not (the
+    // blur/compose taps reach pixels that never shot — they still need
+    // the receiver's material + normal). Background/no-G-buffer blocks
+    // keep the kSsrReceiverNoData sentinel (matte, +Z, non-metal — the
+    // consumers' background early-outs reject those pixels before the
+    // material matters, and the no-G-buffer fallback reads as the old
+    // depth-only/fixed-radius behavior).
+    if (inRange)
+        sp.receiverData.Get().v[flatIdx] = packedReceiver;
     // Non-ray pixels write silence directly (mirrors the SDK's
     // zero-init + matte handling; the miss-silence keeps the analytic
     // sky IBL the sole sky contributor — no envmap double-count).
     // Every pixel is owned by exactly one writer per frame.
-    uint flatIdx = px.y * sp.halfW + px.x;
     if (inRange && !needs_ray)
         sp.radiance.Get().v[flatIdx] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 

@@ -11932,6 +11932,12 @@ namespace engine {
 					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.radiance.buffer);
 				const uint64_t indirectArgsAddr = m_viewportResources.ssr.indirectArgs.buffer.empty() ? 0 :
 					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.indirectArgs.buffer);
+				// Receiver metadata (the classify's packed per-half-res-
+				// pixel receiver sample — see ssr_receiver.hlsli): written
+				// by the classify pass, read by the blur (the radius
+				// bucket) + the composite (the tap normals).
+				const uint64_t receiverDataAddr = m_viewportResources.ssr.receiverData.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(m_viewportResources.ssr.receiverData.buffer);
 				if (taaUsable) {
 					const smvk::SsrTaaFrameParams taaParams =
 						smvk::SsrTaaBeginFrame(m_ssrTaa, true);
@@ -11964,6 +11970,7 @@ namespace engine {
 						rayCounterAddr,
 						radianceAddr,
 						indirectArgsAddr,
+						receiverDataAddr,
 						ssrHzbAddr,
 						ssrHzbMips,
 						ssrHzbLogical,
@@ -12011,6 +12018,7 @@ namespace engine {
 						rayCounterAddr,
 						radianceAddr,
 						indirectArgsAddr,
+						receiverDataAddr,
 						ssrHzbAddr,
 						ssrHzbMips,
 						ssrHzbLogical,

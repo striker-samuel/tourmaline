@@ -181,7 +181,7 @@ struct SsrDesc {
 	const char* logicalName = "ssrLogical";
 };
 
-// Must match ssr_classify.cs.hlsl SsrClassifyPush (64 bytes) — the
+// Must match ssr_classify.cs.hlsl SsrClassifyPush (72 bytes) — the
 // SSSR tile-classify pass: full half-res dispatch, wave-compacts the
 // wanted rays into the ray list. All uint64 BDAs lead (C++ pads
 // mid-struct uint64s to 8 while the HLSL/D3D layout packs rows, so
@@ -192,6 +192,7 @@ struct SsrClassifyPush {
 	uint64_t rayListAddr = 0;   // BDA of the packed ray list (halfW*halfH uints)
 	uint64_t rayCounterAddr = 0; // BDA of the count ([0] live, [1] frozen)
 	uint64_t radianceAddr = 0;  // BDA of the per-pixel radiance (halfW*halfH float4)
+	uint64_t receiverDataAddr = 0; // BDA of the packed receiver metadata (halfW*halfH uints)
 	uint32_t gbufferTextureIndex = UINT32_MAX; // thin G-buffer (RGBA8: oct normal + roughness + metal)
 	uint32_t depthTextureIndex = UINT32_MAX; // full-res depth (validity + receiver selection)
 	float glossThreshold = 0.94f; // rays wanted for roughness < this (mirrors always shoot)
@@ -201,7 +202,7 @@ struct SsrClassifyPush {
 	uint32_t pad1 = 0;
 	uint32_t pad2 = 0;
 };
-static_assert(sizeof(SsrClassifyPush) == 64);
+static_assert(sizeof(SsrClassifyPush) == 72);
 
 // Must match ssr_prepare_indirect.cs.hlsl SsrIndirectPush (16 bytes).
 struct SsrIndirectPush {
@@ -289,15 +290,19 @@ struct SsrTracePush {
 };
 static_assert(sizeof(SsrTracePush) == 80);
 
-// Must match ssr_blur.frag.hlsl SsrBlurPush (56 bytes).
+// Must match ssr_blur.frag.hlsl SsrBlurPush (64 bytes).
 // SSGI shared-HZB rework: every depth read (center block quad max + one
 // rep per tap) comes from the final-depth MAX-HZB mip1 via BDA scalars —
 // no depthTextureIndex, no depth image input. hzb* fields are REQUIRED
 // (the shader dereferences hzb unconditionally); the app gates the chain
-// on the HZB build instead.
+// on the HZB build instead. receiverData: the classify's packed receiver
+// metadata (the SELECTED receiver's material + normal) — REQUIRED
+// whenever gbufferTextureIndex is bound (the blur dereferences it for
+// the radius bucket); the no-G-buffer path never touches it.
 struct SsrBlurPush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
 	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip1 reads)
+	uint64_t receiverData = 0; // BDA of the packed receiver metadata (classify-selected)
 	uint32_t reflTextureIndex = UINT32_MAX; // half-res raw reflection
 	uint32_t samplerIndex = 0; // linear clamp (reflection taps only)
 	float sharpness = 10.0f;
@@ -307,22 +312,25 @@ struct SsrBlurPush {
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
 	uint32_t halfW = 0; // half-res extent (BDA tap clamp domain)
 	uint32_t halfH = 0;
-	// Thin G-buffer (RGBA8): the receiver roughness picks the kernel
-	// radius bucket (2/3/4 rings). UINT32_MAX = no G-buffer (legacy
-	// mirror path): radius 2, the old 5x5 exactly.
+	// Thin G-buffer gate (the radius-bucket source moved to the receiver
+	// buffer — this is the availability flag, not a texture read).
+	// UINT32_MAX = no G-buffer: the receiver buffer holds the no-data
+	// sentinel -> radius 2, the old 5x5 exactly.
 	uint32_t gbufferTextureIndex = UINT32_MAX;
 };
-static_assert(sizeof(SsrBlurPush) == 56);
+static_assert(sizeof(SsrBlurPush) == 64);
 
-// Must match ssr_blur_separable.frag.hlsl SsrSeparableBlurPush (64
+// Must match ssr_blur_separable.frag.hlsl SsrSeparableBlurPush (72
 // bytes) — the H+V twin of SsrBlurPush: identical field order through
 // gbufferTextureIndex, then the axis selector + pad. One compiled
 // program serves both passes (axis is a push constant, not a shader
 // variant). All-scalar layout on purpose (same straddling-vector
-// hazard as SsrBlurPush).
+// hazard as SsrBlurPush). receiverData: the classify's packed receiver
+// metadata (same contract as SsrBlurPush's).
 struct SsrSeparableBlurPush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
 	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip1 reads)
+	uint64_t receiverData = 0; // BDA of the packed receiver metadata (classify-selected)
 	uint32_t reflTextureIndex = UINT32_MAX; // half-res source (raw for H, blurTemp for V)
 	uint32_t samplerIndex = 0; // linear clamp (reflection taps only)
 	float sharpness = 10.0f;
@@ -332,15 +340,14 @@ struct SsrSeparableBlurPush {
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
 	uint32_t halfW = 0; // half-res extent (BDA tap clamp domain)
 	uint32_t halfH = 0;
-	// Thin G-buffer (RGBA8): the receiver roughness picks the kernel
-	// radius bucket (2/3/4 rings). UINT32_MAX = no G-buffer (legacy
-	// mirror path): radius 2, the old 5x5 exactly.
+	// Thin G-buffer gate (see SsrBlurPush's twin — the availability
+	// flag; the material itself comes from the receiver buffer).
 	uint32_t gbufferTextureIndex = UINT32_MAX;
 	// 0 = horizontal (raw -> blurTemp), 1 = vertical (blurTemp -> blurred)
 	uint32_t axis = 0;
 	uint32_t pad0 = 0;
 };
-static_assert(sizeof(SsrSeparableBlurPush) == 64);
+static_assert(sizeof(SsrSeparableBlurPush) == 72);
 
 // Must match ssr_compose.frag.hlsl SsrComposePush (64 bytes).
 // SSGI shared-HZB rework: center depth from HZB mip0 (the exact 1:1
@@ -518,11 +525,17 @@ struct ScreenSpaceReflections {
 	// Compute-chain handoff buffers (the SSSR classify->args->intersect
 	// chain): rayList (packed uint per ray, halfW*halfH capacity),
 	// rayCounter ([0] live count / [1] frozen count), indirectArgs (the
-	// VkDispatchIndirectCommand), radiance (float4 per half-res pixel).
+	// VkDispatchIndirectCommand), radiance (float4 per half-res pixel),
+	// receiverData (the classify's packed receiver metadata: one uint
+	// per half-res pixel — the SELECTED receiver's thin G-buffer sample
+	// every consumer (blur radius bucket + the filters' normals) reads,
+	// so no stage re-does the block's 4-tap depth scan; see
+	// ssr_receiver.hlsli).
 	CBuf rayList;
 	CBuf rayCounter;
 	CBuf indirectArgs;
 	CBuf radiance;
+	CBuf receiverData;
 	// Full-res composite output (base HDR + upsampled reflection). These
 	// keep the historic field names so downstream code (DLSS color input,
 	// status UI) is untouched.
@@ -570,7 +583,7 @@ struct ScreenSpaceReflections {
 			gbuffer2.Valid() &&
 			history[0].Valid() && history[1].Valid() &&
 			rayList.Valid() && rayCounter.Valid() && indirectArgs.Valid() &&
-			radiance.Valid() &&
+			radiance.Valid() && receiverData.Valid() &&
 			!image.empty() && !logicalView.empty();
 	}
 	[[nodiscard]] bool ShadersValid() const {
@@ -796,6 +809,7 @@ struct ScreenSpaceReflections {
 		DestroyBuffer(rg, rayCounter);
 		DestroyBuffer(rg, indirectArgs);
 		DestroyBuffer(rg, radiance);
+		DestroyBuffer(rg, receiverData);
 	}
 
 	bool CreateTarget(ResourceManager& ctx, RenderGraph& rg, Extent2D targetExtent, const SsrDesc& d) {
@@ -1022,6 +1036,27 @@ struct ScreenSpaceReflections {
 			DestroyBuffer(rg, newIndirectArgs);
 			return false;
 		}
+		// Receiver metadata (see the receiverData field comment): one
+		// packed uint per half-res pixel, fully rewritten by the classify
+		// every frame before any read — no creation zero-fill needed
+		// (unlike the ray counter's InterlockedAdd append contract).
+		CBuf newReceiverData;
+		if (!CreateBuffer(ctx, rg, rayCount * sizeof(uint32_t),
+				"ssrReceiverData", newReceiverData)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
+			DestroyBuffer(rg, newRayList);
+			DestroyBuffer(rg, newRayCounter);
+			DestroyBuffer(rg, newIndirectArgs);
+			DestroyBuffer(rg, newRadiance);
+			return false;
+		}
 		// Separable-blur intermediate (see the blurTemp field comment):
 		// created LAST so every earlier failure block stays untouched —
 		// one new failure block instead of one per earlier resource.
@@ -1041,6 +1076,7 @@ struct ScreenSpaceReflections {
 			DestroyBuffer(rg, newRayCounter);
 			DestroyBuffer(rg, newIndirectArgs);
 			DestroyBuffer(rg, newRadiance);
+			DestroyBuffer(rg, newReceiverData);
 			return false;
 		}
 		raw = std::move(newRaw);
@@ -1055,6 +1091,7 @@ struct ScreenSpaceReflections {
 		rayCounter = std::move(newRayCounter);
 		indirectArgs = std::move(newIndirectArgs);
 		radiance = std::move(newRadiance);
+		receiverData = std::move(newReceiverData);
 		halfExtent = half;
 		format = d.format;
 		desc = d;
@@ -1118,17 +1155,24 @@ struct ScreenSpaceReflections {
 // 2D kernel's (2r+1)^2 (10/14/18 vs 25/49/81 at the radius 2/3/4
 // buckets). Both 1D passes weight their taps against the ORIGINAL
 // scene HZB mip1 depths (never the intermediate image's — see the
-// shader header), and both carry the HZB buffer-read hint the 2D pass
-// has (BDA reads are invisible to the graph without it). The V pass
-// reads blurTemp as an input image so the graph owns the
-// color-attachment-write -> shader-read transition. Names stay the
-// fixed SSRBlurH/SSRBlurV in the separable branch (GPU-timeline A/B
-// readability); blurName only names the 2D baseline pass.
+// shader header), and both carry the HZB + receiver-data buffer-read
+// hints the 2D pass has (BDA reads are invisible to the graph without
+// them — the classify's receiver writes must be visible before these
+// fragment reads). The blur no longer SAMPLES the G-buffer texture
+// (the receiver material comes from the receiver-data buffer), so
+// gbufferView left the input set — gbufferBindlessIndex stays as the
+// push's availability gate. The V pass reads blurTemp as an input
+// image so the graph owns the color-attachment-write ->
+// shader-read transition. Names stay the fixed SSRBlurH/SSRBlurV in
+// the separable branch (GPU-timeline A/B readability); blurName only
+// names the 2D baseline pass.
 void AddSsrBlurPasses(RenderGraph& rg,
 	LogicalImageViewHandle gbufferView,
 	uint32_t gbufferBindlessIndex,
 	uint64_t hzbAddr,
 	LogicalBufferHandle hzbLogical,
+	uint64_t receiverDataAddr,
+	LogicalBufferHandle receiverDataLogical,
 	uint32_t hzbMip1Offset,
 	uint32_t hzbMip1Stride,
 	uint64_t frameUniformsAddr,
@@ -1148,6 +1192,7 @@ void AddSsrBlurPasses(RenderGraph& rg,
 			SsrSeparableBlurPush push{};
 			push.frameUniforms = frameUniformsAddr;
 			push.hzb = hzbAddr;
+			push.receiverData = receiverDataAddr;
 			push.reflTextureIndex = source.bindlessIndex;
 			push.samplerIndex = linearSamplerIndex;
 			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
@@ -1161,12 +1206,9 @@ void AddSsrBlurPasses(RenderGraph& rg,
 			push.axis = axis;
 
 			RenderPass& pass = rg.AddPass(horizontal ? "SSRBlurH" : "SSRBlurV");
-			std::vector<LogicalImageViewHandle> blurInputs = { source.logical };
-			if (gbufferOn)
-				blurInputs.push_back(gbufferView); // receiver roughness -> radius
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages(blurInputs)
+				.SetInputImages({ source.logical })
 				.SetColor({ destination.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -1178,6 +1220,12 @@ void AddSsrBlurPasses(RenderGraph& rg,
 				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
 				hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 				pass.AddBufferHint(hzbLogical, hzbRead);
+				// Receiver metadata read (the radius-bucket material):
+				// barrier the classify's compute writes.
+				BufferSyncRequest recvRead{};
+				recvRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+				recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+				pass.AddBufferHint(receiverDataLogical, recvRead);
 			}
 			ShaderProgram progCopy = separableBlurProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
@@ -1201,6 +1249,7 @@ void AddSsrBlurPasses(RenderGraph& rg,
 		SsrBlurPush push{};
 		push.frameUniforms = frameUniformsAddr;
 		push.hzb = hzbAddr;
+		push.receiverData = receiverDataAddr;
 		push.reflTextureIndex = raw.bindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
 		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
@@ -1213,12 +1262,9 @@ void AddSsrBlurPasses(RenderGraph& rg,
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 
 		RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
-		std::vector<LogicalImageViewHandle> blurInputs = { raw.logical };
-		if (gbufferOn)
-			blurInputs.push_back(gbufferView); // receiver roughness -> radius
 		pass.SetOffset(0, 0)
 			.SetExtent(halfExtent)
-			.SetInputImages(blurInputs)
+			.SetInputImages({ raw.logical })
 			.SetColor({ blurred.logical },
 				AttachmentLoadOp::DontCare,
 				AttachmentStoreOp::Store);
@@ -1229,6 +1275,12 @@ void AddSsrBlurPasses(RenderGraph& rg,
 			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
 			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 			pass.AddBufferHint(hzbLogical, hzbRead);
+			// Receiver metadata read (the radius-bucket material):
+			// barrier the classify's compute writes.
+			BufferSyncRequest recvRead{};
+			recvRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(receiverDataLogical, recvRead);
 		}
 		ShaderProgram progCopy = blurProgram; // copyable (handles only)
 		pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
@@ -1287,6 +1339,10 @@ void AddSsrPasses(RenderGraph& rg,
 	uint64_t rayCounterAddr = 0,
 	uint64_t radianceAddr = 0,
 	uint64_t indirectArgsAddr = 0,
+	// The classify's receiver-metadata buffer BDA (packed per-half-res-
+	// pixel receiver sample — see ssr_receiver.hlsli). Written by the
+	// classify pass below (RW hint), read by the blur (radius bucket).
+	uint64_t receiverDataAddr = 0,
 	uint64_t hzbAddr = 0,
 	uint32_t hzbMips = 0,
 	LogicalBufferHandle hzbLogical = LogicalBufferHandle{},
@@ -1324,14 +1380,17 @@ void AddSsrPasses(RenderGraph& rg,
 	// ---- Classify: full half-res dispatch, wave-compacts the wanted
 	// rays (see ssr_classify.cs.hlsl). Reads the G-buffer + depth;
 	// writes the ray list + the counter + the radiance silence for
-	// non-ray pixels. Every half-res pixel is owned by exactly one of
-	// {classify, intersect} per frame — no clear, no stale.
+	// non-ray pixels + the receiver metadata (EVERY in-range pixel —
+	// the blur/compose taps reach non-ray pixels). Every half-res
+	// pixel is owned by exactly one of {classify, intersect} per frame
+	// — no clear, no stale.
 	{
 		SsrClassifyPush push{};
 		push.frameUniforms = frameUniformsAddr;
 		push.rayListAddr = rayListAddr;
 		push.rayCounterAddr = rayCounterAddr;
 		push.radianceAddr = radianceAddr;
+		push.receiverDataAddr = receiverDataAddr;
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 		push.depthTextureIndex = depthBindlessIndex;
 		push.glossThreshold = overrideDesc.glossThreshold;
@@ -1345,6 +1404,10 @@ void AddSsrPasses(RenderGraph& rg,
 			pass.AddBufferHint(rayList.logical, rw);
 			pass.AddBufferHint(rayCounter.logical, rw);
 			pass.AddBufferHint(radiance.logical, rw);
+			// Receiver metadata: classified WRITE (the graph orders it
+			// before the blur/compose fragment reads via their read
+			// hints on the same logical buffer).
+			pass.AddBufferHint(receiverData.logical, rw);
 		}
 		{
 			ImageSyncRequest depthReq{};
@@ -1495,7 +1558,8 @@ ShaderProgram progCopy = copyProgram;
 	// Mode-dependent (AddSsrBlurPasses): the original single-pass 2D
 	// bilateral, or the separable H+V pair through blurTemp.
 	AddSsrBlurPasses(rg, gbufferView, gbufferBindlessIndex,
-		hzbAddr, hzbLogical, hzbMip1Offset, hzbMip1Stride,
+		hzbAddr, hzbLogical, receiverDataAddr, receiverData.logical,
+		hzbMip1Offset, hzbMip1Stride,
 		frameUniformsAddr, linearSamplerIndex, overrideDesc, blurName);
 
 	// ---- Composite: blurred half-res + HZB depth authority + HDR ----
@@ -1597,6 +1661,9 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	uint64_t rayCounterAddr,
 	uint64_t radianceAddr,
 	uint64_t indirectArgsAddr,
+	// The classify's receiver-metadata buffer BDA (see AddSsrPasses'
+	// pair): written by the classify below, read by the blur.
+	uint64_t receiverDataAddr,
 	uint64_t hzbAddr,
 	uint32_t hzbMips,
 	LogicalBufferHandle hzbLogical,
@@ -1651,18 +1718,21 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	// 0.0). That empty-raw wiring was almost certainly the original
 	// "smear" the path got parked for, too — reprojected nothing blended
 	// with nothing. The chain below is the AddSsrPasses one verbatim
-	// (classify/indirect/intersect/copy); the ONE behavioral difference:
-	// the intersect's frameIndex is the caller's dither EPOCH (the
-	// record counter), not the spatial path's static pattern — the
-	// animated ray-origin dither decorrelates consecutive traces so the
-	// temporal pass converges the per-frame speckle to the lobe mean
-	// (a static dither would park the pattern instead).
+	// (classify/indirect/intersect/copy; the classify also writes the
+	// receiver metadata, every in-range pixel — same as the spatial
+	// path); the ONE behavioral difference: the intersect's frameIndex
+	// is the caller's dither EPOCH (the record counter), not the
+	// spatial path's static pattern — the animated ray-origin dither
+	// decorrelates consecutive traces so the temporal pass converges
+	// the per-frame speckle to the lobe mean (a static dither would
+	// park the pattern instead).
 	{
 		SsrClassifyPush push{};
 		push.frameUniforms = frameUniformsAddr;
 		push.rayListAddr = rayListAddr;
 		push.rayCounterAddr = rayCounterAddr;
 		push.radianceAddr = radianceAddr;
+		push.receiverDataAddr = receiverDataAddr;
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 		push.depthTextureIndex = depthBindlessIndex;
 		push.glossThreshold = overrideDesc.glossThreshold;
@@ -1676,6 +1746,7 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 			pass.AddBufferHint(rayList.logical, rw);
 			pass.AddBufferHint(rayCounter.logical, rw);
 			pass.AddBufferHint(radiance.logical, rw);
+			pass.AddBufferHint(receiverData.logical, rw);
 		}
 		{
 			ImageSyncRequest depthReq{};
@@ -1829,7 +1900,8 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	// temporal-path repair's second half: the two copies can no longer
 	// drift).
 		AddSsrBlurPasses(rg, gbufferView, gbufferBindlessIndex,
-			hzbAddr, hzbLogical, hzbMip1Offset, hzbMip1Stride,
+			hzbAddr, hzbLogical, receiverDataAddr, receiverData.logical,
+			hzbMip1Offset, hzbMip1Stride,
 			frameUniformsAddr, linearSamplerIndex, overrideDesc, blurName);
 
 		// ---- Temporal: blurred + history[parity^1] + motion + depth ----
@@ -1962,6 +2034,9 @@ push.frameUniforms = frameUniformsAddr;
 		uint64_t rayCounterAddr,
 		uint64_t radianceAddr,
 		uint64_t indirectArgsAddr,
+		// The classify's receiver-metadata buffer BDA (see the full
+		// variant's pair).
+		uint64_t receiverDataAddr,
 		uint64_t hzbAddr,
 		uint32_t hzbMips,
 		LogicalBufferHandle hzbLogical,
@@ -1986,6 +2061,7 @@ push.frameUniforms = frameUniformsAddr;
 			gbuffer2View, gbuffer2BindlessIndex,
 			envSpecView, envSpecBindlessIndex,
 			rayListAddr, rayCounterAddr, radianceAddr, indirectArgsAddr,
+			receiverDataAddr,
 			hzbAddr, hzbMips, hzbLogical, hzbMip1Offset, hzbMip1Stride,
 			motionView, motionBindlessIndex,
 			frameUniformsAddr, linearSamplerIndex, desc,

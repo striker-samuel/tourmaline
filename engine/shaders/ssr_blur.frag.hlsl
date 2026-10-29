@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "hzb.hlsli"
+#include "ssr_receiver.hlsli"
 
 // SSR blur: depth-aware bilateral blur of the half-res reflection
 // layer (rgb = reflected x fresnel x intensity, a = confidence), with
@@ -35,16 +36,21 @@ struct PSOut
     float4 outColor : SV_Target0; // RGBA16F blurred reflection layer
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrBlurPush (56 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrBlurPush (64 bytes).
 // All-scalar layout on purpose: float2 members would land at offsets 28
 // and 36, which are not 8-byte aligned — spirv-val rejects the module
 // ("improperly straddling vector") and the driver is free to load the
 // whole push block at shifted offsets, corrupting every member after
 // pad0. The C++ mirror already uses separate floats; this matches it.
+// Receiver-data note: the classify's packed receiver metadata (the
+// SELECTED receiver's material + normal) — one BDA scalar per read,
+// replacing the old top-left-texel G-buffer Load (a material-edge block
+// borrowed a neighbor's radius bucket).
 struct SsrBlurPush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
     vk::BufferPointer<HzbBuffer> hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
+    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
     uint reflTextureIndex;  // half-res raw reflection
     uint samplerIndex;      // linear clamp (reflection taps only)
     float sharpness; // depth edge weight (higher = tighter)
@@ -54,9 +60,11 @@ struct SsrBlurPush
     uint hzbMip1Stride; // mip1 row stride (floats)
     uint halfW;    // half-res extent (BDA tap clamp domain)
     uint halfH;
-    uint gbufferTextureIndex; // thin G-buffer (RGBA8: receiver roughness
-                              // -> radius bucket); 0xffffffff = legacy
-                              // mirror (no G-buffer -> radius 2)
+    uint gbufferTextureIndex; // thin G-buffer gate: 0xffffffff = no
+                              // G-buffer (the receiver buffer holds the
+                              // no-data sentinel -> radius 2, the old
+                              // 5x5 exactly); the G-buffer TEXTURE is
+                              // no longer sampled by this pass
 };
 
 [[vk::push_constant]]
@@ -118,17 +126,18 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // (bit-identical, the validated look, and the blur taps stay off the
     // whole-screen budget — the measured cost of a roughness-only gate
     // was +2..3.5 ms for zero visible dielectric gain). The radius is a
-    // coarse per-material knob: the receiver block's top-left full-res
-    // texel stands in for the receiver (a material-edge block borrows a
-    // neighbor's bucket — the depth bilateral weights already guard
-    // those seams). No G-buffer = the legacy mirror path: radius 2, the
-    // old behavior exactly.
+    // coarse per-material knob. MATERIAL SOURCE: the classify's receiver
+    // metadata (the SELECTED nearest-valid texel of the block — the same
+    // surface the classifier gated rays on; the old top-left-texel read
+    // let a material-edge block borrow a neighbor's bucket). No
+    // G-buffer = the sentinel (matte, non-metal) -> radius 2, the old
+    // behavior exactly.
     float roughness = 0.0f;
     bool metal = false;
     if (bp.gbufferTextureIndex != 0xffffffffu)
     {
-        Texture2D gbTex = textures[NonUniformResourceIndex(bp.gbufferTextureIndex)];
-        float4 gb = gbTex.Load(int3(halfPx * 2, 0));
+        float4 gb = SsrUnpackReceiver(bp.receiverData.Get().v[
+            (uint) halfPx.y * bp.halfW + (uint) halfPx.x]);
         roughness = saturate(gb.b);
         metal = gb.a >= 0.5f;
     }
