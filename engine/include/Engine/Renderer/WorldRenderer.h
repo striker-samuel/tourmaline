@@ -2721,12 +2721,6 @@ public:
 	// invalidates instead (m_ssrLastBlurMode below).
 	int m_ssrBlurMode = 0;
 	int m_ssrLastBlurMode = 0; // live-switch detector -> SSR TAA history reset
-	// Composite diagnostic mode (see smvk::SsrComposeDebug — the
-	// dark-triangle hunt): 0 = normal, 1..7 the A/B switches. Live from
-	// the UI combo or TOURMALINE_SSR_COMPOSE_DEBUG headless; per-recording
-	// and stateless (no history reset — the composite eats whatever the
-	// temporal/blur chain produced, unchanged).
-	int m_ssrComposeDebug = 0;
 	// ---- Debug material override (the SSR blur-bucket test rig) ----
 	// Overwrites EVERY uploaded material's metallic/roughness (UpdateMaterials:
 	// params.y/z + the metallicRoughness texture slot disabled so the
