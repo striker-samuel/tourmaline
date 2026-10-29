@@ -110,12 +110,24 @@ $env:TOURMALINE_CAPTURE='48'
 
 ## Tests
 
-Tests are plain executables (no gtest), built by the normal target build and
-run via ctest from the build directory:
+Tests are plain executables (no gtest), gated behind CMake's standard
+`BUILD_TESTING` switch (`include(CTest)` in the root CMakeLists - ON by
+default). A dedicated tests tree keeps them separable from working configs:
 
 ```powershell
-ctest --test-dir out/build/x64-Release --output-on-failure
+cmake -B out/build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON .
+cmake --build out/build/tests
+ctest --test-dir out/build/tests --output-on-failure
 ```
+
+The normal configs (out/build/x64-Release etc.) build the test targets by
+default too — `ctest --test-dir out/build/x64-Release --output-on-failure`
+keeps working as-is. Pass `-DBUILD_TESTING=OFF` to exclude the test targets
+from a configure entirely (that is what CI does: `.github/workflows/ci.yml`
+is BUILD VERIFICATION ONLY; the suite runs in the separate, independent
+`Tests` workflow — `.github/workflows/tests.yml`, same Linux/Windows matrix,
+the five GPU-window tests excluded on hosted runners: no display / Vulkan
+ICD).
 
 ## Conventions
 

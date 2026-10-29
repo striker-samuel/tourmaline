@@ -1,14 +1,12 @@
-# CI: build the full tree + run the test suite on both supported platforms.
+# CI: BUILD VERIFICATION ONLY - configure + compile the full tree (every
+# non-test target) on both supported platforms. The test targets are not
+# even built (-DBUILD_TESTING=OFF) and nothing is executed: the test
+# suite lives in the SEPARATE, independent Tests workflow (tests.yml -
+# own concurrency group, no dependency either way), so a test failure
+# never changes this workflow's result and vice versa.
 #
 #   Linux   - Ubuntu 24.04 + GCC 14 (the verified configuration)
 #   Windows - MSVC x64 + the Vulkan SDK (dxc.exe compiles the shaders)
-#
-# retirement_fuzz_tests, world_fields_gpu_tests, placement_gpu_tests,
-# probepremix_gpu_tests and rhi_upload_barriers_gpu_tests
-# are EXCLUDED on both: they create a real (hidden) SDL window + offscreen
-# Vulkan device, and hosted runners have neither a display (Linux:
-# SDL_Init finds no video device) nor a Vulkan ICD (Windows: the RM ctor
-# finds no device). They run in dev environments (real GPU / WSLg).
 #
 # Caches:
 #   - sccache compiler output on LINUX (the big one: Embree's AVX-512 TUs;
@@ -21,7 +19,8 @@
 #     the installer scripts' hash
 #
 # Not covered: the runtime render loop (needs a real GPU - see the README
-# platform notes).
+# platform notes); the test suite (tests.yml owns it, GPU-window tests
+# excluded there on hosted runners).
 
 name: CI
 
@@ -91,30 +90,19 @@ jobs:
       - name: Fetch third-party deps (install_dependencies.sh)
         run: ./install_dependencies.sh
 
-      - name: Configure
+      - name: Configure (tests OFF - build verification only)
         run: >
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          -DKTX_ROOT=$HOME/ktx .
+          -DKTX_ROOT=$HOME/ktx
+          -DBUILD_TESTING=OFF .
 
-      - name: Build (all targets)
+      - name: Build (all non-test targets)
         run: cmake --build out/build/ci
 
       - name: Compiler cache stats
         run: sccache --show-stats
-
-      - name: Test
-        run: |
-          mkdir -p .ci-content
-          # retirement_fuzz + world_fields_gpu + placement_gpu +
-          # probepremix_gpu excluded: real SDL window + offscreen
-          # Vulkan device - hosted runners have no display / ICD (see
-          # the header).
-          ctest --test-dir out/build/ci --output-on-failure \
-            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"
-        env:
-          TOURMALINE_CONTENT_DIR: ${{ github.workspace }}/.ci-content
 
   windows:
     name: Windows (MSVC x64)
@@ -203,25 +191,12 @@ jobs:
       - name: Fetch third-party deps (install_dependencies.ps1)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File install_dependencies.ps1
 
-      - name: Configure
+      - name: Configure (tests OFF - build verification only)
         run: >
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DEMBREE_PREBUILT_DIR=C:/embree
-          -DKTX_ROOT=C:/ktx .
+          -DKTX_ROOT=C:/ktx
+          -DBUILD_TESTING=OFF .
 
-      - name: Build (all targets)
+      - name: Build (all non-test targets)
         run: cmake --build out/build/ci
-
-      - name: Test
-        run: |
-          New-Item -ItemType Directory -Force .ci-content | Out-Null
-          ctest --test-dir out/build/ci --output-on-failure `
-            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"
-        env:
-          TOURMALINE_CONTENT_DIR: ${{ github.workspace }}\.ci-content
-        # retirement_fuzz_tests + world_fields_gpu_tests +
-        # placement_gpu_tests + probepremix_gpu_tests +
-        # rhi_upload_barriers_gpu_tests
-        # are excluded: all five create a real offscreen Vulkan device and
-        # hosted Windows runners expose no Vulkan ICD (Linux lacks the
-        # display for the window). They run in dev environments instead.

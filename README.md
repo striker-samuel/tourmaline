@@ -1,6 +1,7 @@
 # Tourmaline
 
 [![CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)
+[![Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)
 
 A C++20 toy engine and renderer for learning real-time graphics on Vulkan 1.3 —
 a personal project by Samuel Martin, built from scratch (RHI, render graph,
@@ -275,6 +276,13 @@ Platform notes:
   `static_assert(sizeof(...))` and contract tests.
 - **42 plain executables as tests** (no gtest): hand-rolled `Check()`
   runners with `checks=/failures=` summaries, wired through `ctest`.
+  Gated behind CMake's standard `BUILD_TESTING` (ON by default;
+  `-DBUILD_TESTING=OFF` skips the test targets entirely — a dedicated
+  `out/build/tests` tree with `-DBUILD_TESTING=ON` keeps them out of
+  working configs). On GitHub, CI (`ci.yml`) verifies compilation only;
+  the suite runs in the separate, independent `Tests` workflow
+  (`tests.yml`), with the five GPU-window tests excluded on hosted
+  runners (no display / Vulkan ICD).
 
 ## Run
 
