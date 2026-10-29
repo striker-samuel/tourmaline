@@ -526,6 +526,10 @@ void RunConfig::WarnUnknown() {
 		// WorldRenderer's m_ssrBlurMode at startup (the UI combo still
 		// wins interactively).
 		"TOURMALINE_SSR_BLUR",
+		// SSR composite diagnostic pin (0..7, smvk::SsrComposeDebug): the
+		// dark-triangle hunt's A/B switches, pairs with the frozen-camera
+		// capture pins.
+		"TOURMALINE_SSR_COMPOSE_DEBUG",
 		"TOURMALINE_HOST_COPY", "TOURMALINE_AFTERMATH",
 		"TOURMALINE_SERIALIZE", "TOURMALINE_BARRIER_TRACE", "TOURMALINE_ASYNC_COMPUTE",
 		"TOURMALINE_PIPELINE_CACHE_DIR", "TOURMALINE_NO_VALIDATION",

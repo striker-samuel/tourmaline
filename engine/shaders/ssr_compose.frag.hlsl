@@ -88,7 +88,8 @@ struct SsrComposePush
     float vignetteWidth; // NDC edge fade width (outer % of NDC range)
     float glossThreshold; // the classify's ray gate (eligibility mask)
     uint gbufferTextureIndex; // full-res thin G-buffer (normal + material)
-    uint pad0;
+    uint debugMode; // SsrComposeDebug (Engine/Rendergraph/ssr.h): the
+                    // dark-triangle hunt's live A/B switches
     uint pad1;
 };
 
@@ -104,6 +105,22 @@ float SsrUpEdgeWeight(float tapDist, float centerDist, float sharpness)
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
+    // DIAGNOSTIC G (MagentaFill): constant magenta BEFORE any texture
+    // or buffer access — if this does not cover the image, the artifact
+    // is rasterization / viewport / scissor / later passes, not SSR.
+    // SCENE-DOMAIN SCALE: the composite output feeds the HDR pipeline
+    // (exposure/bloom/tonemap) whose operating range here is ~hundreds
+    // of nits — a [0,1] debug fill tonemaps to BLACK (the first pass of
+    // this view read as "off"), so the diagnostic colors ride the same
+    // ~300-unit pedestal as the scene's midtones.
+    if (cp.debugMode == 7u)
+    {
+        OUT.outColor = float4(300.0f, 0.0f, 300.0f, 1.0f);
+#ifdef SSR_DEBUG_CONTRIB
+        OUT.outContrib = float4(300.0f, 0.0f, 300.0f, 1.0f);
+#endif
+        return OUT;
+    }
     FrameUniforms frame = cp.frameUniforms.Get();
     Texture2D blurTex = textures[NonUniformResourceIndex(cp.blurTextureIndex)];
     Texture2D hdrTex = textures[NonUniformResourceIndex(cp.hdrTextureIndex)];
@@ -111,6 +128,17 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     float nearPlane = max(frame.nearPlane, 1e-4f);
 
     float3 base = SanitizeHdr(hdrTex.Sample(smp, IN.uv).rgb);
+
+    // DIAGNOSTIC A (BypassSsr): the base HDR with ZERO SSR contribution
+    // — if the artifact survives this, it is not SSR composition.
+    if (cp.debugMode == 1u)
+    {
+        OUT.outColor = float4(base, 1.0f);
+#ifdef SSR_DEBUG_CONTRIB
+        OUT.outContrib = float4(0.0f, 0.0f, 0.0f, 1.0f);
+#endif
+        return OUT;
+    }
 
     int2 fullPx = int2(pos.xy);
     // Center depth from HZB mip0 (the exact 1:1 depth copy the build
@@ -156,10 +184,14 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         // no mask).
         const bool metal = gb.a >= 0.5f;
         const float roughness = saturate(gb.b);
-        eligibility = metal
+        // DIAGNOSTIC D (NoEligibility): the gate bypassed (eligibility
+        // 1 everywhere) — isolates the mask from the rest of the add.
+        eligibility = (cp.debugMode == 4u)
             ? 1.0f
-            : 1.0f - smoothstep(cp.glossThreshold - 0.1f, cp.glossThreshold,
-                                roughness);
+            : (metal
+                ? 1.0f
+                : 1.0f - smoothstep(cp.glossThreshold - 0.1f, cp.glossThreshold,
+                                    roughness));
     }
 
     // Half-res reflection extent derived from the full-res depth extent
@@ -231,7 +263,10 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             // normal — same-depth surfaces with different orientations
             // (wall meets floor) stop bleeding halos into each other.
             // Gated: no G-buffer = the old depth-only weights.
-            if (haveNormals)
+            // DIAGNOSTIC C (NoNormalReject): the factor skipped —
+            // isolates the normal comparison (and its 0.75..0.98 band)
+            // from the depth/spatial weights.
+            if (haveNormals && cp.debugMode != 3u)
             {
                 float4 repGb = SsrUnpackReceiver(cp.receiverData.Get().v[
                     (uint) hp.y * (uint) halfExtent.x + (uint) hp.x]);
@@ -259,9 +294,34 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // integral — a mirror read cubemap-IBL + screen-trace stacked).
     // envSpecTextureIndex = 0xffffffff = the additive fallback (the
     // export absent — the old behavior).
+    // DIAGNOSTIC E (ConfView): the add's GATES as the output — R = the
+    // reconstructed confidence the compositor consumes (the TEMPORAL
+    // alpha when SSR TAA is on: the composite eats the history slot,
+    // not the blur), G = the material eligibility, B = the effective
+    // add gate (conf x eligibility). A visually correct blurred RGB can
+    // carry a malformed alpha mask — this is the alpha inspection.
+    // Scaled into the scene's HDR domain (~300 = a midtone) so the
+    // tonemap does not crush the [0,1] ratios to black.
+    if (cp.debugMode == 5u)
+    {
+        const float conf = (wSum > 1e-4f) ? saturate(accA / wSum) : 0.0f;
+        OUT.outColor = float4(conf, eligibility, conf * eligibility, 1.0f)
+            * 300.0f;
+#ifdef SSR_DEBUG_CONTRIB
+        OUT.outContrib = float4(0.0f, 0.0f, 0.0f, 1.0f);
+#endif
+        return OUT;
+    }
     const bool envSpecOn = cp.envSpecTextureIndex != 0xffffffffu;
+    // DIAGNOSTIC B (AdditiveOnly): the replacement term skipped — the
+    // add is add*layer even with the export bound (brightens SSR; a
+    // LOCALIZATION probe, not a fix: if the dark shape dies here, the
+    // culprit is conf * (layer - envSpec) — inspect envSpec vs the
+    // reconstructed layer/conf and whether both sides are the same
+    // output pixel + lighting domain).
+    const bool additiveOnly = cp.debugMode == 2u;
     float3 envSpec = float3(0.0f, 0.0f, 0.0f);
-    if (envSpecOn) {
+    if (envSpecOn && !additiveOnly) {
         Texture2D envSpecTex =
             textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
         envSpec = envSpecTex.Load(int3(fullPx, 0)).rgb;
@@ -282,7 +342,7 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         // the classify never traced it, so its base IBL stands exactly
         // as the base authored it.
         const float add = conf * eligibility;
-        outColor += envSpecOn
+        outColor += (envSpecOn && !additiveOnly)
             ? add * (layer - envSpec)
             : add * layer; // the additive fallback (no export bound)
     }
@@ -292,6 +352,26 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     float edge = max(abs(ndcC.x), abs(ndcC.y));
     float vignette = saturate((1.0f - edge) / max(cp.vignetteWidth, 0.01f));
     outColor = lerp(base, outColor, vignette);
+    // DIAGNOSTIC F (DeltaView): the ± add term — red = DARKENING, green
+    // = brightening. The replacement composite can legitimately darken
+    // (conf * (layer - envSpec) with layer < envSpec: the traced
+    // reflection darker than the IBL slice it replaces), and the old
+    // SanitizeHdr(outColor - base) view clamped that negative half away —
+    // a dark artifact was invisible in the contrib debug by construction.
+    // The 4x saturate keeps the reviewer's shape; the ~300 scene-domain
+    // pedestal makes the surviving [0,1] ratios visible through the HDR
+    // tonemap (deltas live in raw HDR units, so a few units of change
+    // already saturate a channel — small changes scale linearly below
+    // that).
+    if (cp.debugMode == 6u)
+    {
+        float3 delta = outColor - base;
+        float darkening = max(max(-delta.r, -delta.g), -delta.b);
+        float brightening = max(max(delta.r, delta.g), delta.b);
+        OUT.outColor = float4(saturate(darkening * 4.0f),
+            saturate(brightening * 4.0f), 0.0f, 1.0f) * 300.0f;
+        return OUT;
+    }
     OUT.outColor = float4(SanitizeHdr(outColor), 1.0f);
 #ifdef SSR_DEBUG_CONTRIB
     // The exact add term: post-vignette outColor - base = the reflection

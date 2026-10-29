@@ -140,6 +140,34 @@ enum class SsrBlurMode : uint32_t
 	SeparableHV = 1,
 };
 
+// SSR composite DIAGNOSTIC modes (the dark-triangle hunt): live A/B
+// switches isolating each suspected contribution — selectable from the
+// SSR UI panel (live) or TOURMALINE_SSR_COMPOSE_DEBUG headless, all
+// capturable from the same frozen camera (TOURMALINE_CAM_POS/FWD +
+// TOURMALINE_CAPTURE). Per-recording (the composite is stateless per
+// frame — no history reset needed on a flip; the temporal layer
+// upstream is unaffected). Interpretation: A killing the artifact =
+// SSR composition; B = the envSpec replacement term (conf * (layer -
+// envSpec) is NEGATIVE when the traced layer is darker than the IBL it
+// replaces — the leading suspect); C = the upsample's normal
+// rejection; D = the material-eligibility gate; E shows the add's
+// gates (R = the reconstructed confidence the compositor consumes —
+// the TEMPORAL alpha when TAA is on — G = eligibility, B = the
+// effective add gate); F shows the ± add term (red = darkening, green
+// = brightening — the old contrib view clamped negatives away); G
+// fills magenta before any read (the fullscreen-draw coverage check).
+enum class SsrComposeDebug : uint32_t
+{
+	Off = 0,
+	BypassSsr = 1,      // A: outColor = base (zero SSR contribution)
+	AdditiveOnly = 2,   // B: skip the envSpec replacement (add*layer)
+	NoNormalReject = 3, // C: skip the upsample's normal agreement
+	NoEligibility = 4,  // D: skip the material-eligibility gate
+	ConfView = 5,       // E: R=conf G=eligibility B=conf*eligibility
+	DeltaView = 6,      // F: red=darkening green=brightening (4x scaled)
+	MagentaFill = 7,    // G: constant magenta (raster coverage check)
+};
+
 struct SsrDesc {
 	Format format = Format::RGBA16_Float; // must match the HDR target
 	uint32_t steps = 32;                 // raymarch steps, 1..128
@@ -167,6 +195,10 @@ struct SsrDesc {
 	// on a live flip (blurTemp exists in both modes); the app owns the
 	// temporal-history invalidation on a mode switch.
 	SsrBlurMode blurMode = SsrBlurMode::Bilateral2D;
+	// Composite diagnostic mode (see SsrComposeDebug): the dark-triangle
+	// hunt's live A/B switches. Per-recording, stateless, no history
+	// reset on a flip.
+	SsrComposeDebug composeDebug = SsrComposeDebug::Off;
 	// SSR contribution debug attachment (the compose .dbg variant +
 	// ssrContrib target): the composite writes its EXACT add term to a
 	// second attachment so the contribution is directly visible (the
@@ -387,7 +419,9 @@ struct SsrComposePush {
 	float vignetteWidth = 0.15f; // NDC edge fade width (outer % of NDC range)
 	float glossThreshold = 0.94f; // the classify's ray gate (eligibility mask)
 	uint32_t gbufferTextureIndex = UINT32_MAX; // full-res thin G-buffer (normal + material)
-	uint32_t pad0 = 0;
+	// The composite diagnostic mode (SsrComposeDebug) — consumes pad0's
+	// slot, keeping the block at 88 bytes.
+	uint32_t debugMode = 0;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SsrComposePush) == 88);
@@ -1678,6 +1712,8 @@ ShaderProgram progCopy = copyProgram;
 		// The upsample's normal agreement: the full-res center normal
 		// (the thin G-buffer) + the tap normals (the receiver metadata).
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		// The diagnostic mode (SsrComposeDebug — the dark-triangle hunt).
+		push.debugMode = static_cast<uint32_t>(overrideDesc.composeDebug);
 
 		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, hdrView };
 		if (gbufferOn)
@@ -2092,6 +2128,9 @@ push.frameUniforms = frameUniformsAddr;
 		// The upsample's normal agreement (the spatial variant's pair):
 		// the full-res center normal + the tap normals.
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+		// The diagnostic mode (SsrComposeDebug — the spatial variant's
+		// pair; the SAME shader serves both paths).
+		push.debugMode = static_cast<uint32_t>(overrideDesc.composeDebug);
 
 		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, hdrView };
 		if (gbufferOn)
