@@ -107,8 +107,10 @@ struct SsgiAoBlurPush {
 };
 static_assert(sizeof(SsgiAoBlurPush) == 32);
 
-// Must match ssao_compose.frag.hlsl SsgiAoComposePush (64 bytes): the
-// envSpec field consumed the old pad0. uint64 BDAs lead; scalars after.
+// Must match ssao_compose.frag.hlsl SsgiAoComposePush (72 bytes): the
+// envSpec field consumed the old pad0; the diffuseAmbient pair (the
+// third-output gate + pad) lands the block on a multiple of 8. uint64
+// BDAs lead; scalars after.
 struct SsgiAoComposePush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
 	uint64_t hzb = 0; // BDA of the MAX-HZB (mip0 center depth, mip1 reps)
@@ -128,8 +130,15 @@ struct SsgiAoComposePush {
 	float sharpness = 8.0f; // depth edge weight
 	float intensity = 1.0f; // aoEff = lerp(1, ao, intensity) (the old hot.aoIntensity)
 	float maxDistance = 25.0f; // rep-dist decode (matches raw/blur)
+	// Diffuse-ambient baseline output (the diffuse SSGI replacement
+	// contract — ssgi_diffuse.h's chain): 1 = the compose writes its
+	// THIRD color attachment (max(aoTerm - envSpec, 0) * aoEff), the
+	// exact slice the diffuse SSGI composite replaces. Requires the
+	// envSpec leg (the subtraction reads it); 0 = unwritten.
+	uint32_t diffuseAmbientOn = 0;
+	uint32_t pad0 = 0;
 };
-static_assert(sizeof(SsgiAoComposePush) == 64);
+static_assert(sizeof(SsgiAoComposePush) == 72);
 
 // ---- desc ----
 
@@ -157,6 +166,11 @@ struct SsgiDesc {
 	const char* envSpecName = "ssgiEnvSpec";
 	const char* envSpecMsaaName = "ssgiEnvSpecMsaa";
 	const char* envSpecComposedName = "ssgiEnvSpecComposed";
+	// Diffuse-ambient baseline output (the diffuse SSGI replacement
+	// contract — Engine/Rendergraph/ssgi_diffuse.h): the AO compose's
+	// THIRD color attachment (max(aoTerm - envSpec, 0) * aoEff), bound
+	// only while diffuse SSGI is on.
+	const char* diffuseAmbientName = "ssgiDiffuseAmbient";
 };
 
 // Raw-pass selector (the app's AoMode minus None/Gtao).
@@ -511,6 +525,13 @@ struct Ssgi {
 	Target envSpec;        // FULL-res RGBA16F: Main's MRT export (the env-spec slice)
 	Target envSpecMsaa;    // FULL-res 2x RGBA16F: lazy MSAA twin (resolve -> envSpec)
 	Target envSpecComposed; // FULL-res RGBA16F: the compose's aoEff-scaled output
+	// Diffuse-ambient baseline (the diffuse SSGI replacement contract —
+	// Engine/Rendergraph/ssgi_diffuse.h): the AO compose's THIRD output
+	// (max(aoTerm - envSpec, 0) * aoEff — the exact diffuse-ambient
+	// slice the base holds post-AO). Written only while diffuse SSGI
+	// is on (the third attachment binds then); the diffuse composite
+	// derives it inline from Main's raw exports when AO is OFF.
+	Target diffuseAmbient; // FULL-res RGBA16F
 	Extent2D fullExtent{ 0, 0 };
 	Extent2D halfExtent{ 0, 0 };
 	Extent2D aoTermMsaaExtent{ 0, 0 }; // the lazy twin's create key
@@ -763,12 +784,26 @@ struct Ssgi {
 			DestroyTarget(rg, newEnvSpec);
 			return false;
 		}
+		// Diffuse-ambient baseline (the third-output family, see the
+		// target block): rides the envSpec pair's lifecycle.
+		Target newDiffuseAmbient;
+		if (!CreateTarget(ctx, rg, full, d.hdrFormat,
+				d.diffuseAmbientName, newDiffuseAmbient)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newTerm);
+			DestroyTarget(rg, newComposed);
+			DestroyTarget(rg, newEnvSpec);
+			DestroyTarget(rg, newEnvSpecComposed);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
 		aoTerm = std::move(newTerm);
 		composed = std::move(newComposed);
 		envSpec = std::move(newEnvSpec);
 		envSpecComposed = std::move(newEnvSpecComposed);
+		diffuseAmbient = std::move(newDiffuseAmbient);
 		fullExtent = full;
 		halfExtent = half;
 		aoFormat = d.aoFormat;
@@ -786,6 +821,7 @@ struct Ssgi {
 		DestroyTarget(rg, envSpec);
 		DestroyMsaaEnvSpec(rg);
 		DestroyTarget(rg, envSpecComposed);
+		DestroyTarget(rg, diffuseAmbient);
 		fullExtent = { 0, 0 };
 		halfExtent = { 0, 0 };
 	}
@@ -894,7 +930,14 @@ struct Ssgi {
 		const char* composeName = "SsgiAoCompose",
 		LogicalImageViewHandle envSpecView = LogicalImageViewHandle{},
 		uint32_t envSpecBindlessIndex = UINT32_MAX,
-		LogicalImageViewHandle envSpecOutView = LogicalImageViewHandle{}) const {
+		LogicalImageViewHandle envSpecOutView = LogicalImageViewHandle{},
+		// Diffuse-ambient baseline output (the diffuse SSGI replacement
+		// contract — ssgi_diffuse.h): bound as the compose's THIRD color
+		// attachment (the aoEff-scaled diffuse-ambient slice the diffuse
+		// SSGI composite replaces). Empty = the output stays unbound
+		// (diffuse SSGI off). Requires the envSpec leg (the baseline's
+		// subtraction reads it).
+		LogicalImageViewHandle diffuseAmbientOutView = LogicalImageViewHandle{}) const {
 		assert(Valid());
 		assert(mode == SsgiAoMode::Ssao || mode == SsgiAoMode::Sao);
 		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
@@ -1029,6 +1072,13 @@ struct Ssgi {
 				&& envSpecBindlessIndex != UINT32_MAX && envSpec.Valid();
 			push.envSpecTextureIndex =
 				envSpecOn ? envSpecBindlessIndex : UINT32_MAX;
+			// The diffuse-ambient baseline's third attachment (see the
+			// signature note): only while the diffuse chain wants it AND
+			// the envSpec leg is bound (the baseline reads envSpec).
+			const bool diffuseAmbientOn = !diffuseAmbientOutView.empty()
+				&& diffuseAmbient.Valid() && envSpecOn;
+			push.diffuseAmbientOn = diffuseAmbientOn ? 1u : 0u;
+			push.pad0 = 0;
 			push.fullW = fullExtent.width;
 			push.fullH = fullExtent.height;
 			push.hzbMip1Offset = hzbMip1Offset;
@@ -1046,14 +1096,26 @@ struct Ssgi {
 			RenderPass& pass = rg.AddPass(composeName ? composeName : "SsgiAoCompose");
 			pass.SetOffset(0, 0)
 				.SetExtent(fullExtent)
-				.SetInputImages(composeInputs)
-				.SetColor(envSpecOn
-					? std::vector<LogicalImageViewHandle>{ composed.logical,
-						envSpecOutView.empty() ? envSpecComposed.logical
-							: envSpecOutView }
-					: std::vector<LogicalImageViewHandle>{ composed.logical },
+				.SetInputImages(composeInputs);
+			{
+				// Color attachments: the AO-applied HDR, then the paired
+				// env-spec export (the SSR contract), then the diffuse-
+				// ambient baseline (the diffuse SSGI contract) — each
+				// only while its consumer chain is on (the shader leaves
+				// the unwritten outputs undefined, exactly the envSpec
+				// pattern).
+				std::vector<LogicalImageViewHandle> composeColors;
+				composeColors.push_back(composed.logical);
+				if (envSpecOn)
+					composeColors.push_back(envSpecOutView.empty()
+						? envSpecComposed.logical
+						: envSpecOutView);
+				if (diffuseAmbientOn)
+					composeColors.push_back(diffuseAmbientOutView);
+				pass.SetColor(composeColors,
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
+			}
 			{
 				BufferSyncRequest hzbRead{};
 				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;

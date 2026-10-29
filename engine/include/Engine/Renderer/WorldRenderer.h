@@ -62,6 +62,7 @@
 #include <Engine/Rendergraph/smaa.h>
 #include <Engine/Rendergraph/spotshadow.h>
 #include <Engine/Rendergraph/ssgi.h>
+#include <Engine/Rendergraph/ssgi_diffuse.h>
 #include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Rendergraph/probeball.h>
@@ -106,6 +107,9 @@ struct WorldRendererConfig {
 	bool ssr = true;                // screen-space reflections (depth-reconstructed)
 	bool volumetric = true;         // raymarched GI-probe volumetric fog (HDR composite)
 	bool ssao = true;               // AO master switch (SSAO/GTAO/SAO per AoMode)
+	bool ssgiDiffuse = true;        // diffuse screen-space GI master switch (the runtime
+	                                 // enable is m_ssgiDiffuseEnabled — MSAA scenes gate
+	                                 // off at the frame site, no stable 1x G-buffer)
 	bool bloom = true;              // HDR bloom chain
 	bool exposure = true;           // histogram meter + CPU eye adaptation
 	bool tonemap = true;            // HDR -> swapchain tonemap
@@ -132,6 +136,7 @@ struct WorldRendererConfig {
 		c.ssr = false;
 		c.volumetric = false;
 		c.ssao = false;
+		c.ssgiDiffuse = false;
 		c.bloom = false;
 		c.exposure = false;
 		c.ui = false;
@@ -381,7 +386,58 @@ enum class ViewMode : int {
 	              // see environment.hlsli). NOT a fragment swap: the view
 	              // stays on the filtered lit path - only the env
 	              // specular term changes.
+	// ---- Diffuse SSGI debug views (combo/env only — no free F-key).
+	// Unlike every other non-Lit view these KEEP the lit fragment
+	// path AND let the scene post-fx run (IsSsgiDiffuseDebugView
+	// excludes them from DebugVisualizationActive): the diffuse SSGI
+	// chain itself renders the visualization through its compose
+	// shader's debugView push, so the view needs the chain LIVE. The
+	// diffuse composite REPLACES the pixel with the visualization
+	// (values are raw HDR — exposure holds its last scene value under
+	// a debug view; pair with TOURMALINE_AUTO_EXPOSURE=0 for readable
+	// captures). The chain must be enabled (TOURMALINE_SSGI=1 / the
+	// render-settings checkbox) or the view silently shows Lit. ----
+	SsgiConfidence = 13,   // hit confidence (grayscale; the smooth
+	                       // screen-edge loss is the expected read)
+	SsgiRaw = 14,          // raw trace radiance (pre-blur — noisy,
+	                       // recognizable incoming lighting)
+	SsgiLayer = 15,        // the filtered GI layer the compose consumes
+	                       // (the temporal slot when TAA ran)
+	SsgiBaseline = 16,     // the diffuse ambient baseline being replaced
+	                       // (the existing probe/sky diffuse)
+	SsgiContribution = 17, // the SIGNED s*(ssgi - baseline) delta
+	                       // (positive brightens, negative darkens)
 };
+
+// The diffuse SSGI debug views (see the ViewMode block): rendered by
+// the SSGI compose's debugView push, not a fragment swap — these views
+// need the post-fx chain LIVE, so DebugVisualizationActive excludes
+// them (the flat-FS views replace the scene; these annotate it).
+[[nodiscard]] inline bool IsSsgiDiffuseDebugView(ViewMode v) {
+	switch (v) {
+	case ViewMode::SsgiConfidence:
+	case ViewMode::SsgiRaw:
+	case ViewMode::SsgiLayer:
+	case ViewMode::SsgiBaseline:
+	case ViewMode::SsgiContribution:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// The compose shader's debugView push value for an Ssgi view (0 = the
+// normal composite; see SsgiDiffuseComposePush::debugView).
+[[nodiscard]] inline uint32_t SsgiDiffuseDebugViewId(ViewMode v) {
+	switch (v) {
+	case ViewMode::SsgiConfidence: return 1u;
+	case ViewMode::SsgiRaw: return 2u;
+	case ViewMode::SsgiLayer: return 3u;
+	case ViewMode::SsgiBaseline: return 4u;
+	case ViewMode::SsgiContribution: return 5u;
+	default: return 0u;
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Flat shading debug-view FS slots (one FS per view; ViewMode above): the
@@ -1038,6 +1094,7 @@ struct ViewportResources {
 	smvk::VolumetricFog volumetric; // GI-probe raymarched fog HDR output + program + pass
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssgi ssgi; // SSGI post chain: shared MAX-HZB + AO raw/blur/compose + Main's aoTerm MRT targets
+	smvk::ScreenSpaceDiffuseGi ssgiDiffuse; // diffuse SSGI chain: half-res cosine trace + blur/temporal + the ambient-replacement compose (Engine/Rendergraph/ssgi_diffuse.h)
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
@@ -3148,6 +3205,28 @@ public:
 	int m_saoSpiralTurns = 7; // SAO extra spiral twist 1..16
 	// Compat: SSAO on/off maps onto AoMode (None vs Ssao); SAO counts as on.
 	[[nodiscard]] bool SsaoEnabled() const { return m_aoMode != AoMode::None; }
+	// ---- Diffuse screen-space GI (Engine/Rendergraph/ssgi_diffuse.h —
+	// one cosine-hemisphere bounce at half res, the energy-conserving
+	// REPLACEMENT of the diffuse ambient slice, NOT an additive stack).
+	// Independent of SSR (specular stays SSR's) and of AO (the baseline
+	// sourcing switches with it). Default OFF: experimental v1 — enable
+	// via the render-settings checkbox or TOURMALINE_SSGI=1. Gated off
+	// under MSAA (no stable single-sample G-buffer companion) and under
+	// the flat debug views (the Ssgi* compose views keep it live). ----
+	bool m_ssgiDiffuseEnabled = false;
+	float m_ssgiDiffuseIntensity = 1.0f;  // s: the replacement strength (0 = off)
+	float m_ssgiDiffuseMaxDistance = 5.0f; // ray length budget (m) — the LOCAL bounce
+	float m_ssgiDiffuseThickness = 0.3f;  // depth acceptance band (m)
+	float m_ssgiDiffuseTemporalBlend = 0.9f; // history weight 0..0.98
+	float m_ssgiDiffuseBlurSharpness = 10.0f; // bilateral depth edge weight
+	int m_ssgiDiffuseMaxIntersections = 64;   // traversal cap (exhaustion = miss)
+	bool m_ssgiDiffuseTaaEnabled = true;  // temporal accumulation of the GI layer
+	// Record-sequence state (the SsrTaaState discipline): parity picks
+	// the history slot the next temporal record writes; invalidated on
+	// target rebuild and motion-vector loss.
+	smvk::SsgiDiffuseTaaState m_ssgiDiffuseTaa;
+	// True when this record emitted the temporal chain (end-step input).
+	bool m_ssgiDiffuseFrameRanTemporal = false;
 	// ---- Forward+ light debug overlay (drawn in the ImGui UI pass) ----
 	// CPU copy of the last light set (positions/colors/types), projected
 	// through the frame viewProj and drawn as points + buffer indices.

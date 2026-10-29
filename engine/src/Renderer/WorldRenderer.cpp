@@ -322,6 +322,36 @@ static smvk::SsgiDesc MakeSsgiDesc() {
 }
 
 // -----------------------------------------------------------------------------
+// Diffuse SSGI config (Engine/Rendergraph/ssgi_diffuse.h — one
+// cosine-hemisphere bounce at half res + the energy-conserving
+// ambient-REPLACEMENT compose). The values are the plan's v1 starting
+// points for tuning, not long-standing engine defaults: 1 ray/pixel,
+// 5 m bounce, 64 traversal steps, 0.9 temporal weight. Runs AFTER the
+// AO compose (its baseline output) and BEFORE SSR (which then traces
+// + composites over the GI-adjusted HDR).
+// -----------------------------------------------------------------------------
+static constexpr float SSGI_DIFFUSE_MAX_DISTANCE = 5.0f; // the LOCAL bounce (m)
+static constexpr float SSGI_DIFFUSE_THICKNESS = 0.3f;    // depth acceptance band (m)
+static constexpr float SSGI_DIFFUSE_INTENSITY = 1.0f;    // replacement strength
+static constexpr float SSGI_DIFFUSE_TEMPORAL_BLEND = 0.9f; // history weight
+static constexpr float SSGI_DIFFUSE_BLUR_SHARPNESS = 10.0f; // depth edge weight
+static constexpr uint32_t SSGI_DIFFUSE_MAX_INTERSECTIONS = 64; // traversal cap
+
+static smvk::SsgiDiffuseDesc MakeSsgiDiffuseDesc() {
+	smvk::SsgiDiffuseDesc d{};
+	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
+	d.maxDistance = SSGI_DIFFUSE_MAX_DISTANCE;
+	d.thickness = SSGI_DIFFUSE_THICKNESS;
+	d.intensity = SSGI_DIFFUSE_INTENSITY;
+	d.temporalBlend = SSGI_DIFFUSE_TEMPORAL_BLEND;
+	d.blurSharpness = SSGI_DIFFUSE_BLUR_SHARPNESS;
+	d.maxIntersections = SSGI_DIFFUSE_MAX_INTERSECTIONS;
+	d.raysPerPixel = 1; // v1: the fixed one-ray full dispatch
+	d.name = "ssgiDiffuse";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
 // Resolution config.
 //
 // Internal resolution (render scale): the scene (HDR/MSAA/bloom/Forward+
@@ -777,6 +807,11 @@ namespace engine {
 		// stays live after). SSR (SSGI reflections) defaults ON.
 		if (pins.ssr.has_value())
 			m_ssrEnabled = (*pins.ssr == OnOffPin::On);
+		// Diffuse SSGI pin (TOURMALINE_SSGI=0|1) for headless A/B +
+		// capture runs (the ImGui checkbox stays live after). The chain
+		// defaults OFF (experimental v1), so captures opt IN with =1.
+		if (pins.ssgi.has_value())
+			m_ssgiDiffuseEnabled = (*pins.ssgi == OnOffPin::On);
 		// Bloom tuning pins (threshold is pre-exposure HDR, same units as
 		// the ImGui sliders; intensity is the tonemap add scale). The
 		// ImGui sliders stay live after.
@@ -988,6 +1023,14 @@ namespace engine {
 			else if (dv == "ssr" || dv == "ssr_contribution") m_debugView = ViewMode::SsrContribution;
 			else if (dv == "ssrmask" || dv == "ssr_mask" || dv == "ssr-mask") m_debugView = ViewMode::SsrMask;
 			else if (dv == "normals" || dv == "normal" || dv == "n") m_debugView = ViewMode::Normals;
+			// Diffuse SSGI views (the compose's debugView push — the
+			// chain must be enabled, TOURMALINE_SSGI=1, or the view
+			// silently shows Lit).
+			else if (dv == "ssgi" || dv == "ssgi_confidence") m_debugView = ViewMode::SsgiConfidence;
+			else if (dv == "ssgi_raw") m_debugView = ViewMode::SsgiRaw;
+			else if (dv == "ssgi_layer" || dv == "ssgi_temporal") m_debugView = ViewMode::SsgiLayer;
+			else if (dv == "ssgi_baseline" || dv == "ssgi_ambient") m_debugView = ViewMode::SsgiBaseline;
+			else if (dv == "ssgi_contribution") m_debugView = ViewMode::SsgiContribution;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
@@ -2545,6 +2588,16 @@ namespace engine {
 				std::cerr << "[WorldRenderer] SSR target unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
 			}
+			{
+				smvk::SsgiDiffuseDesc dgiDesc = MakeSsgiDiffuseDesc();
+				dgiDesc.intensity = m_ssgiDiffuseIntensity;
+				if (!m_viewportResources.ssgiDiffuse.Ensure(*m_context,
+						*m_rendergraph, renderExtent, dgiDesc)) {
+					std::cerr << "[WorldRenderer] diffuse SSGI chain unavailable "
+						"(HDR " << renderExtent.width << "x"
+						<< renderExtent.height << ")\n";
+				}
+			}
 			if (!m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, MakeVolumetricDesc())) {
 				std::cerr << "[WorldRenderer] Volumetric target unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
@@ -2615,6 +2668,7 @@ namespace engine {
 		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 		m_viewportResources.dof.Destroy(*m_rendergraph);
 		m_viewportResources.ssr.Destroy(*m_rendergraph);
+		m_viewportResources.ssgiDiffuse.Destroy(*m_rendergraph);
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
@@ -4935,8 +4989,15 @@ namespace engine {
 		// F2..F11 replace the Main opaque/transparent legs with flat
 		// programs; the GI debug views (R/F8) and the DS visualizers (Y)
 		// early-out of the lit fragment shader the same way.
-		if (m_debugView != ViewMode::Lit)
-			return true;
+		if (m_debugView != ViewMode::Lit) {
+			// EXCEPT the diffuse SSGI views (Ssgi*): those render
+			// through the SSGI compose's debugView push, not a fragment
+			// swap — the lit path AND the post-fx chain must stay live
+			// or there is nothing to visualize. The compose replaces
+			// the pixel with the visualization itself.
+			if (!IsSsgiDiffuseDebugView(m_debugView))
+				return true;
+		}
 		if (m_giDebug != 0)
 			return true;
 #if defined(DS_DEBUG_VIZ)
@@ -7425,7 +7486,11 @@ namespace engine {
 	// views imply m_debugView == Lit (SetDebugView's take-over + the
 	// cycle snaps), so exactly one layer is named at a time.
 	void WorldRenderer::DrawDebugViewHint() {
-		if (!DebugVisualizationActive())
+		// The Ssgi* diffuse views are EXCLUDED from
+		// DebugVisualizationActive (their chain must stay live to have
+		// something to visualize), so they pass the gate below too.
+		if (!DebugVisualizationActive()
+			&& !IsSsgiDiffuseDebugView(m_debugView))
 			return;
 		// Resolve the title + the legend lines for the active layer.
 		const char* title = nullptr;
@@ -7469,12 +7534,23 @@ namespace engine {
 			case 2:
 				title = "GI debug: source palette (R/F8)";
 				lines[0] = "red = lightmap (deprecated), green = regular grid (legacy),";
-				lines[1] = "cyan = convex volume blended, magenta = none.";
+				lines[1] = "blue = octree world field, cyan = convex volume,";
+				lines[2] = "magenta = none.";
 				break;
-			default:
+			case 3:
 				title = "GI debug: probe distance (R/F8)";
 				lines[0] = "nearest probe's obstacle distance: red = on/in a surface,";
 				lines[1] = "yellow = near (< 1 m), green = open.";
+				break;
+			default:
+				// Mode 4 (the octree's dominant-level argmax) retired with
+				// the .sggi walk: the shader falls through to the source
+				// palette (default_lit_body's note) — the cycle stop stays
+				// reachable (GI_DEBUG_MODE_COUNT 5), so label what it
+				// ACTUALLY shows.
+				title = "GI debug: dominant level (retired, R/F8)";
+				lines[0] = "retired with the octree walk - renders the source palette";
+				lines[1] = "(same colors as mode 2).";
 				break;
 			}
 		}
@@ -7542,6 +7618,32 @@ namespace engine {
 			case ViewMode::SsrContribution:
 				title = "SSR contribution";
 				lines[0] = "the reflection layer's exact add term.";
+				break;
+			case ViewMode::SsgiConfidence:
+				title = "SSGI diffuse: confidence";
+				lines[0] = "grayscale hit confidence; expect smooth loss at";
+				lines[1] = "screen boundaries (needs SSGI enabled).";
+				break;
+			case ViewMode::SsgiRaw:
+				title = "SSGI diffuse: raw radiance";
+				lines[0] = "the pre-filter trace: noisy, recognizable";
+				lines[1] = "incoming lighting (raw HDR values).";
+				break;
+			case ViewMode::SsgiLayer:
+				title = "SSGI diffuse: filtered layer";
+				lines[0] = "the blur/temporal layer the compose consumes";
+				lines[1] = "(converges while the camera holds still).";
+				break;
+			case ViewMode::SsgiBaseline:
+				title = "SSGI diffuse: ambient baseline";
+				lines[0] = "the existing probe/sky diffuse ambient being";
+				lines[1] = "replaced (max(aoTerm - envSpec, 0) x aoEff).";
+				break;
+			case ViewMode::SsgiContribution:
+				title = "SSGI diffuse: contribution";
+				lines[0] = "the SIGNED s x (ssgi - baseline) delta:";
+				lines[1] = "green = brightens, red = dimmer than the baked";
+				lines[2] = "ambient it replaces, black = no change.";
 				break;
 			default:
 				return; // Lit with no overlays - nothing to hint
@@ -7781,6 +7883,12 @@ namespace engine {
 		}
 		m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc(m_debugSsr));
 		{
+			smvk::SsgiDiffuseDesc rebuildDgiDesc = MakeSsgiDiffuseDesc();
+			rebuildDgiDesc.intensity = m_ssgiDiffuseIntensity;
+			m_viewportResources.ssgiDiffuse.Ensure(*m_context, *m_rendergraph,
+				renderExtent, rebuildDgiDesc);
+		}
+		{
 			smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
 			rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
 			m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildVolDesc);
@@ -7803,6 +7911,9 @@ namespace engine {
 		smvk::SmaaInvalidateHistory(m_smaaT2x);
 		// Same for the SSR temporal history (targets recreated above).
 		smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+		// And the diffuse SSGI temporal history (its own ping-pong —
+		// never shared with SSR's; the mirrors ride the same recreate).
+		smvk::SsgiDiffuseTaaInvalidateHistory(m_ssgiDiffuseTaa);
 		UpdateCameraAspect(renderExtent);
 	}
 
@@ -8620,6 +8731,27 @@ namespace engine {
 				|| m_viewportResources.ssr.extent.height != renderExtent.height)
 				smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 			m_viewportResources.ssr.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsrDesc(m_debugSsr));
+			// The diffuse SSGI chain follows the SSR pattern: silent
+			// target recreation (extent drift outside RebuildSwapViews)
+			// loses the temporal history content — invalidate first so
+			// the next temporal record warms up instead of blending
+			// against garbage.
+			if (!m_viewportResources.ssgiDiffuse.TargetsValid()
+				|| m_viewportResources.ssgiDiffuse.extent.width != renderExtent.width
+				|| m_viewportResources.ssgiDiffuse.extent.height != renderExtent.height)
+				smvk::SsgiDiffuseTaaInvalidateHistory(m_ssgiDiffuseTaa);
+			{
+				smvk::SsgiDiffuseDesc frameDgiDesc = MakeSsgiDiffuseDesc();
+				frameDgiDesc.intensity = m_ssgiDiffuseIntensity;
+				frameDgiDesc.maxDistance = m_ssgiDiffuseMaxDistance;
+				frameDgiDesc.thickness = m_ssgiDiffuseThickness;
+				frameDgiDesc.temporalBlend = m_ssgiDiffuseTemporalBlend;
+				frameDgiDesc.blurSharpness = m_ssgiDiffuseBlurSharpness;
+				frameDgiDesc.maxIntersections = (uint32_t)std::clamp(
+					m_ssgiDiffuseMaxIntersections, 4, 128);
+				m_viewportResources.ssgiDiffuse.Ensure(*m_context,
+					*m_rendergraph, renderExtent, frameDgiDesc);
+			}
 			{
 				smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
 				rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
@@ -9889,14 +10021,19 @@ namespace engine {
 		// the prepass already rasterizes every opaque surface; Main is
 		// untouched, no stencil classification). False under MSAA (the
 		// prepass has no stable 1x G-buffer companion). Consumers: the SSR
-		// trace (receiver normals) AND the SSGI AO compose's joint
-		// bilateral (center normal) - wanted when EITHER is on (the AO
-		// chain degrades to depth-only edge weights without it).
+		// trace (receiver normals), the SSGI AO compose's joint bilateral
+		// (center normal) AND the diffuse SSGI chain (receiver normals +
+		// metal + the albedo layer) - wanted when ANY is on (the AO
+		// chain degrades to depth-only edge weights without it; the
+		// diffuse SSGI chain gates off entirely - no receiver data).
 		const bool ssrWantsGbuffer = m_passes.ssr && m_ssrEnabled
 			&& m_ssrIntensity > 0.0f;
 		const bool aoWantsNormal = m_passes.ssao && m_aoMode != AoMode::None
 			&& m_ssaoIntensity > 0.0f;
-		fc.ssrGbufferWanted = (ssrWantsGbuffer || aoWantsNormal)
+		const bool ssgiDiffuseWantsGbuffer = m_passes.ssgiDiffuse
+			&& m_ssgiDiffuseEnabled && m_ssgiDiffuseIntensity > 0.0f;
+		fc.ssrGbufferWanted = (ssrWantsGbuffer || aoWantsNormal
+				|| ssgiDiffuseWantsGbuffer)
 			&& !DebugVisualizationActive()
 			&& !useMsaa
 			&& m_viewportResources.ssr.gbuffer.Valid();
@@ -11946,6 +12083,12 @@ namespace engine {
 		uint64_t ssgiHzbAddr = 0;
 		uint32_t ssgiHzbMips = 0;
 		smvk::LogicalBufferHandle ssgiHzbLogical{};
+		// The diffuse SSGI chain's emission gate (Engine/Rendergraph/
+		// ssgi_diffuse.h), hoisted OUT of the SSGI scope: the AO compose
+		// below needs it BEFORE it emits (the diffuse baseline is the
+		// compose's optional THIRD color attachment), and the emission
+		// site after the scene-HDR pointer setup reuses it.
+		bool ssgiDiffuseChainOn = false;
 		{
 			SMVK_PROFILE_CATEGORY("SSGI", Optick::Category::Rendering);
 			smvk::Ssgi& ssgi = m_viewportResources.ssgi;
@@ -11959,6 +12102,15 @@ namespace engine {
 				&& m_ssaoIntensity > 0.0f
 				&& !DebugVisualizationActive()
 				&& ssgi.Valid();
+			// The diffuse SSGI trace marches the same shared pyramid
+			// (its blur/compose read mip1/mip0 like the SSR filters) —
+			// the chain is a third HZB consumer, not an AO mode.
+			const bool ssgiDiffuseWantsHzb = m_passes.ssgiDiffuse
+				&& m_ssgiDiffuseEnabled && m_ssgiDiffuseIntensity > 0.0f
+				&& !DebugVisualizationActive()
+				&& m_viewportResources.ssgiDiffuse.Valid()
+				&& !m_viewportResources.renderDepth.logicalView.empty()
+				&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
 			// SPD path selection (hzb_spd.cs.hlsl — Phase 1 of the HZB
 			// upgrade; see the members' env contract). Extents beyond
 			// 4096 exceed the tested 64x64-tile upper-level capacity
@@ -11971,7 +12123,7 @@ namespace engine {
 			const bool hzbSpdProgramOk = m_ssrHzbSpdProgram.shaderCount == 1;
 			const bool hzbSpdLive = m_hzbSpd && !m_hzbSpdVerify
 				&& hzbSpdProgramOk && hzbSpdExtentOk;
-			const bool ssgiHzbBuilt = (ssrWantsHzb || aoWanted)
+			const bool ssgiHzbBuilt = (ssrWantsHzb || aoWanted || ssgiDiffuseWantsHzb)
 				&& (hzbSpdLive || m_ssrHzbProgram.shaderCount == 1)
 				&& ssgi.hzb.Ensure(*m_context, *m_rendergraph,
 					renderExtent.width, renderExtent.height)
@@ -12021,6 +12173,15 @@ namespace engine {
 					}
 				}
 			}
+			// The diffuse SSGI chain runs when its own gate passes AND
+			// the shared HZB built AND the thin G-buffer leg actually
+			// wrote this frame (the gate's gbuffer term — false under
+			// MSAA, so the chain is off there; the plan's v1 scope).
+			// Computed BEFORE the AO emission so the compose can bind
+			// the diffuse-baseline third output when both run.
+			ssgiDiffuseChainOn = ssgiDiffuseWantsHzb
+				&& ssgiHzbBuilt && ssgiHzbMips != 0
+				&& fc.ssrGbufferWanted;
 			if (aoWanted && ssgiHzbBuilt && ssgiHzbMips != 0) {
 				smvk::SsgiDesc ssgiDesc = MakeSsgiDesc();
 				ssgiDesc.radius = m_ssaoRadius;
@@ -12071,6 +12232,14 @@ namespace engine {
 					: UINT32_MAX,
 					ssgiEnvSpecOn
 					? m_viewportResources.ssgi.envSpecComposed.logical
+					: smvk::LogicalImageViewHandle{},
+					// The diffuse-ambient baseline (the diffuse SSGI
+					// replacement contract): the THIRD attachment, bound
+					// only while the diffuse chain runs this frame —
+					// the composite then REPLACES that slice instead of
+					// stacking on it.
+					(ssgiDiffuseChainOn && ssgiEnvSpecOn)
+					? m_viewportResources.ssgi.diffuseAmbient.logical
 					: smvk::LogicalImageViewHandle{});
 				ssgiAoEmitted = true;
 			}
@@ -12125,6 +12294,144 @@ namespace engine {
 					m_viewportResources.ssgi.envSpec.logical;
 				sceneEnvSpecBindless =
 					m_viewportResources.ssgi.envSpec.bindlessIndex;
+			}
+		}
+
+		// ---------------------------------------------------------------------
+		// Diffuse screen-space GI - SSGI diffuse (Engine/Rendergraph/
+		// ssgi_diffuse.h). One cosine-hemisphere bounce at half res.
+		//
+		// PLACEMENT: after the SSGI/AO compose, BEFORE SSR (the plan's
+		// pass order). The trace source is the FROZEN pre-compose HDR
+		// (sceneHdrView above - post-AO, pre-diffuse): the compose
+		// writes its OWN full-res target and re-points the pointer
+		// below, so the trace never samples the just-composited result
+		// (no recursive feedback, no rendergraph read/write hazard),
+		// and SSR then traces + composites over the GI-adjusted HDR.
+		//
+		// ENERGY CONSERVATION (the reason this is NOT an additive
+		// bounce): the compose REPLACES the diffuse-ambient slice the
+		// base already holds - L = base + s*c*(albedo*kd*Li - baseline)
+		// - with the baseline sourced from the AO compose's THIRD
+		// output when AO ran, or Main's raw aoTerm/envSpec exports
+		// (aoEff = 1) when it didn't. c = 0 keeps the baked GI/probe
+		// fallback exactly (the off-screen safety).
+		//
+		// MSAA: gated off (ssgiDiffuseChainOn carries the
+		// fc.ssrGbufferWanted term - no stable single-sample G-buffer
+		// companion under MSAA; support needs a consistent
+		// depth/material resolve first).
+		//
+		// Debug views: the Ssgi* ViewMode entries render through the
+		// compose's debugView push (the chain stays LIVE under them -
+		// IsSsgiDiffuseDebugView keeps DebugVisualizationActive false).
+		// ---------------------------------------------------------------------
+		bool ssgiDiffuseEmitted = false;
+		{
+			SMVK_PROFILE_CATEGORY("SSGI-diffuse", Optick::Category::Rendering);
+			smvk::ScreenSpaceDiffuseGi& dgi = m_viewportResources.ssgiDiffuse;
+			// The baseline's sourcing mode: the AO compose's third
+			// output (both chains ran this frame), or Main's raw
+			// exports with aoEff = 1 (AO off). The exports ride the
+			// SSGI chain's lifecycle - absent exports mean no
+			// reconstructable baseline, so the chain stays off (the
+			// replacement IS the feature; an additive stack without
+			// the baseline would double-count the baked GI).
+			const bool diffuseAmbientBound = ssgiDiffuseChainOn && ssgiAoEmitted
+				&& m_viewportResources.ssgi.diffuseAmbient.Valid();
+			const bool diffuseBaselineOk = diffuseAmbientBound
+				|| (m_viewportResources.ssgi.aoTerm.Valid()
+					&& !sceneEnvSpecView.empty());
+			if (ssgiDiffuseChainOn && diffuseBaselineOk) {
+				// Temporal needs the motion-vector target; without it
+				// the record takes the spatial-only path and the TAA
+				// history invalidates at the end of the frame (the
+				// SsrTaaEndFrame discipline).
+				const bool taaUsable = m_ssgiDiffuseTaaEnabled
+					&& m_passes.motionVectors
+					&& m_viewportResources.motionVectors.Valid()
+					&& !m_viewportResources.motionVectors.target.logicalView.empty()
+					&& m_viewportResources.motionVectors.target.bindlessIndex != UINT32_MAX;
+				const smvk::SsgiDiffuseTaaFrameParams taaParams =
+					smvk::SsgiDiffuseTaaBeginFrame(m_ssgiDiffuseTaa, taaUsable);
+				// The animated IGN epoch (the record counter - the
+				// dither that decorrelates consecutive traces so the
+				// temporal pass converges the one-ray hemisphere
+				// estimate to its mean).
+				const uint32_t dgiDitherEpoch =
+					static_cast<uint32_t>(m_frameCounter & 0xffffffffu);
+				smvk::SsgiDiffuseDesc dgiDesc = MakeSsgiDiffuseDesc();
+				dgiDesc.intensity = m_ssgiDiffuseIntensity;
+				dgiDesc.maxDistance = m_ssgiDiffuseMaxDistance;
+				dgiDesc.thickness = m_ssgiDiffuseThickness;
+				dgiDesc.temporalBlend = m_ssgiDiffuseTemporalBlend;
+				dgiDesc.blurSharpness = m_ssgiDiffuseBlurSharpness;
+				dgiDesc.maxIntersections = (uint32_t)std::clamp(
+					m_ssgiDiffuseMaxIntersections, 4, 128);
+				const uint64_t dgiRadianceAddr = dgi.radiance.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(dgi.radiance.buffer);
+				const uint64_t dgiReceiverAddr = dgi.receiverData.buffer.empty() ? 0 :
+					m_context->GetBufferDeviceAddress(dgi.receiverData.buffer);
+				dgi.AddPasses(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					// The thin G-buffer pair (fc's views ride
+					// ssrGbufferWanted, which the chain's gate required).
+					fc.gbufferView,
+					m_viewportResources.ssr.gbuffer.bindlessIndex,
+					fc.gbuffer2View,
+					m_viewportResources.ssr.gbuffer2.bindlessIndex,
+					taaUsable
+					? m_viewportResources.motionVectors.target.logicalView
+					: smvk::LogicalImageViewHandle{},
+					taaUsable
+					? m_viewportResources.motionVectors.target.bindlessIndex
+					: UINT32_MAX,
+					dgiRadianceAddr,
+					dgiReceiverAddr,
+					ssgiHzbAddr,
+					ssgiHzbMips,
+					ssgiHzbLogical,
+					m_viewportResources.ssgi.hzb.Mip1Offset(),
+					m_viewportResources.ssgi.hzb.Mip1Stride(),
+					// The baseline pair (see diffuseAmbientBound): the
+					// AO compose's third output, else the raw exports.
+					diffuseAmbientBound
+					? m_viewportResources.ssgi.diffuseAmbient.logical
+					: smvk::LogicalImageViewHandle{},
+					diffuseAmbientBound
+					? m_viewportResources.ssgi.diffuseAmbient.bindlessIndex
+					: UINT32_MAX,
+					m_viewportResources.ssgi.aoTerm.logical,
+					m_viewportResources.ssgi.aoTerm.bindlessIndex,
+					sceneEnvSpecView,
+					sceneEnvSpecBindless,
+					frameUniformsAddress,
+					linearSampler,
+					dgiDesc,
+					m_jitterDeltaUV.x,
+					m_jitterDeltaUV.y,
+					taaParams.historyValid,
+					taaParams.parity,
+					taaUsable,
+					dgiDitherEpoch,
+					SsgiDiffuseDebugViewId(m_debugView));
+				m_ssgiDiffuseFrameRanTemporal = taaUsable;
+				// The scene HDR pointer moves: downstream (SSR,
+				// MotionBlur, DOF, volumetrics, exposure) consumes the
+				// GI-replaced HDR.
+				sceneHdrView = dgi.OutputView();
+				sceneHdrBindless = dgi.OutputBindless();
+				ssgiDiffuseEmitted = true;
+			}
+			else {
+				// Chain off this record: freeze + invalidate the TAA
+				// history (the end-step below) so the next record warms
+				// up instead of blending stale GI.
+				m_ssgiDiffuseFrameRanTemporal = false;
 			}
 		}
 
@@ -13408,6 +13715,27 @@ namespace engine {
 							};
 							ImGui::Combo("Blur mode", &m_ssrBlurMode, blurModes, 2);
 						}
+						// Diffuse screen-space GI (see ssgi_diffuse.h): one
+						// cosine-hemisphere bounce that REPLACES the diffuse
+						// ambient slice (never an additive stack over the
+						// baked GI). Independent of SSR/AO; off under MSAA.
+						// Default OFF (experimental v1).
+						// Labels are "SSGI diffuse"-prefixed on purpose: the
+						// bare "GI intensity" collided with the baked-GI
+						// slider above (same Lighting section -> one ImGui
+						// ID hash, the second widget misbehaves).
+						ImGui::Checkbox("Diffuse screen-space GI (SSGI)", &m_ssgiDiffuseEnabled);
+						if (m_ssgiDiffuseEnabled) {
+							ImGui::SliderFloat("SSGI diffuse intensity", &m_ssgiDiffuseIntensity, 0.0f, 4.0f);
+							ImGui::SliderFloat("SSGI diffuse max distance (m)", &m_ssgiDiffuseMaxDistance, 0.5f, 50.0f);
+							ImGui::SliderFloat("SSGI diffuse thickness (m)", &m_ssgiDiffuseThickness, 0.01f, 2.0f);
+							ImGui::SliderFloat("SSGI diffuse bilateral sharpness", &m_ssgiDiffuseBlurSharpness, 0.0f, 32.0f);
+							ImGui::SliderInt("SSGI diffuse traversal steps", &m_ssgiDiffuseMaxIntersections, 4, 128);
+							ImGui::SliderFloat("SSGI diffuse temporal blend", &m_ssgiDiffuseTemporalBlend, 0.0f, 0.98f);
+							ImGui::Checkbox("SSGI diffuse temporal filter", &m_ssgiDiffuseTaaEnabled);
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("Motion-reprojected accumulation with depth + normal rejection; falls back to the spatial-only path without motion vectors.");
+						}
 					}
 
 					// ---- Post Processing: exposure, tonemap, bloom, motion
@@ -13671,9 +13999,17 @@ namespace engine {
 							"F11 POM (parallax occlusion)",
 							"SSR mask (receivers)",
 							"Normals (world-space)",
+							"SSGI diffuse: confidence",
+							"SSGI diffuse: raw radiance",
+							"SSGI diffuse: filtered layer",
+							"SSGI diffuse: ambient baseline",
+							"SSGI diffuse: contribution",
 						};
 						// Combo index <-> ViewMode mapping (SsrContribution stays
-						// env-only; UV1 and Normals are combo/env only).
+						// env-only; UV1 and Normals are combo/env only; the
+						// Ssgi diffuse views likewise — they render through
+						// the SSGI compose's debugView push, not a fragment
+						// swap, so they need the chain enabled).
 						static const ViewMode kComboViews[] = {
 							ViewMode::Lit, ViewMode::Unlit,
 							ViewMode::Meshlets, ViewMode::Cascades,
@@ -13682,14 +14018,17 @@ namespace engine {
 							ViewMode::Cubemap,
 							ViewMode::Pom, ViewMode::SsrMask,
 							ViewMode::Normals,
+							ViewMode::SsgiConfidence, ViewMode::SsgiRaw,
+							ViewMode::SsgiLayer, ViewMode::SsgiBaseline,
+							ViewMode::SsgiContribution,
 						};
 						int view = 0;
-						for (int i = 0; i < 12; ++i)
+						for (int i = 0; i < 17; ++i)
 							if (kComboViews[i] == m_debugView)
 								view = i;
 						// SetDebugView: the direct selection takes over
 						// (clears the R/F8 + Y overlay views).
-						if (ImGui::Combo("Debug view", &view, viewNames, 12))
+						if (ImGui::Combo("Debug view", &view, viewNames, 17))
 							SetDebugView(kComboViews[view]);
 						const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 						ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
@@ -13724,16 +14063,24 @@ namespace engine {
 								&m_giProbePointMaxDist, 5.0f, 300.0f, "%.0f m");
 						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
 						if (m_regLoaded || m_giVolumesLoaded) {
-							// GI debug views (R / F8 cycle): 0 off, 1 baked
-							// irradiance, 2 source palette, 3 probe distance.
-							// They render through the LIT shader: selecting
-							// one snaps the base view to Lit (invisible
-							// under a flat mode otherwise).
-							const char* dbgNames[4] = { "Off", "Baked irradiance",
-								"GI source", "Probe distance" };
+							// GI debug views (R / F8 cycle, ALL
+							// GI_DEBUG_MODE_COUNT=5 stops): 0 off, 1 baked
+							// irradiance, 2 source palette, 3 probe
+							// distance, 4 the retired dominant level
+							// (renders the source palette — the octree
+							// argmax went with the .sggi walk). The combo
+							// used to clamp to 0..3, so the R-reachable
+							// mode 4 showed no selection; the list now
+							// mirrors the cycle exactly. They render
+							// through the LIT shader: selecting one snaps
+							// the base view to Lit (invisible under a
+							// flat mode otherwise).
+							const char* dbgNames[5] = { "Off", "Baked irradiance",
+								"GI source", "Probe distance",
+								"Dominant level (retired = palette)" };
 							int dbgIdx = m_giDebug;
-							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 4)) {
-								m_giDebug = std::clamp(dbgIdx, 0, 3);
+							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 5)) {
+								m_giDebug = std::clamp(dbgIdx, 0, 4);
 								if (m_giDebug != 0)
 									m_debugView = ViewMode::Lit;
 							}
@@ -16451,6 +16798,12 @@ namespace engine {
 		// during Execute (when the temporal chain ran). A spatial-only
 		// record freezes the phase and invalidates (see SsrTaaEndFrame).
 		smvk::SsrTaaEndFrame(m_ssrTaa, m_ssrFrameRanTemporal);
+		// Diffuse SSGI temporal toggle (the same discipline, this
+		// chain's OWN ping-pong): the temporal pass wrote
+		// history[parity] during Execute; a spatial-only or skipped
+		// record freezes the phase and invalidates.
+		smvk::SsgiDiffuseTaaEndFrame(m_ssgiDiffuseTaa,
+			m_ssgiDiffuseFrameRanTemporal);
 		// DLSS end-of-record step: advance the Halton phase when the pass
 		// ran (record cadence like the T2x parity, never per-image), arm
 		// the history reset when it didn't (next activation warms up), and

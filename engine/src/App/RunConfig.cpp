@@ -160,6 +160,13 @@ RunConfig RunConfig::Parse() {
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_SSR (want 1|on|0|off): %s\n", v);
 	}
+	if ((v = Get("TOURMALINE_SSGI")) != nullptr) {
+		bool on = true;
+		if (IsOnOff(Trimmed(v), on))
+			c.ssgi = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_SSGI (want 1|on|0|off): %s\n", v);
+	}
 	if ((v = Get("TOURMALINE_BLOOM_THRESHOLD")) != nullptr) {
 		const float bt = static_cast<float>(std::strtod(v, nullptr));
 		if (bt >= 0.0f && bt <= 16000.0f)
@@ -528,7 +535,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_WORLD_FIELDS", "TOURMALINE_WORLDMAP",
 		// Fog-GI A/B source toggle (0=worldfield, 1=octree, 2=sky-only):
 		"TOURMALINE_FOG_GI_SOURCE",
-		"TOURMALINE_VOLUMETRIC_GI_VOLUMES", "TOURMALINE_SSR", "TOURMALINE_BLOOM_THRESHOLD",
+		"TOURMALINE_VOLUMETRIC_GI_VOLUMES", "TOURMALINE_SSR", "TOURMALINE_SSGI", "TOURMALINE_BLOOM_THRESHOLD",
 		"TOURMALINE_BLOOM_INTENSITY", "TOURMALINE_AO", "TOURMALINE_AUTO_EXPOSURE",
 		"TOURMALINE_CUBEMAP", "TOURMALINE_HIZ", "TOURMALINE_LOD", "TOURMALINE_LODFULL",
 		"TOURMALINE_SHADERLOD", "TOURMALINE_SPLIT", "TOURMALINE_WIREFRAME",

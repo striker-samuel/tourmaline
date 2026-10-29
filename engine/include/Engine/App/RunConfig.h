@@ -61,6 +61,12 @@ struct RunConfig {
 	// ---- postfx (authored pins: snapshot, re-applied after every seed) ----
 	// ssr: 1|on|0|off (unset = authored ssrEnabled wins)
 	std::optional<OnOffPin> ssr;
+	// ssgi: 1|on|0|off (unset = authored ssgiDiffuseEnabled wins). The
+	// DIFFUSE screen-space GI chain (ssgi_diffuse.h — one cosine
+	// bounce that replaces the diffuse ambient slice; the AO/ssr pins
+	// are the independent neighbors). The chain defaults OFF, so
+	// headless captures opt IN with =1.
+	std::optional<OnOffPin> ssgi;
 	// bloomThreshold: 0..16000 pre-exposure HDR (unset = authored wins)
 	std::optional<float> bloomThreshold;
 	// bloomIntensity: 0..4 tonemap add scale (unset = authored wins)

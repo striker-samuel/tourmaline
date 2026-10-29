@@ -63,9 +63,11 @@ struct AppFrameContext : public smvk::FrameContext {
 	// legacy VS-only prepass, no color). The PREPASS binds the
 	// gbuffer/gbuffer_masked programs instead of the VS-only
 	// depth/shadow pair for the phases. False under MSAA (the prepass
-	// depth has no stable 1x companion) and when BOTH consumers are
-	// off: the SSR trace (receiver normals) and the SSGI AO compose's
-	// joint bilateral (center normal) — either being on wants it.
+	// depth has no stable 1x companion) and when ALL consumers are off:
+	// the SSR trace (receiver normals), the SSGI AO compose's joint
+	// bilateral (center normal), and the diffuse SSGI chain (receiver
+	// normals + metal + the gbuffer2 albedo layer — see
+	// ssgi_diffuse.h) — ANY being on wants it.
 	bool ssrGbufferWanted = false;
 	smvk::LogicalImageViewHandle gbufferView{};
 	// The F0-CHROMA layer 2 (gbuffer.frag.hlsl's SV_Target1: RGB = the

@@ -42,6 +42,19 @@
 // absent) passes the input through — the compose stays usable for the
 // plain AO chain without the export.
 //
+// PAIRED DIFFUSE-AMBIENT BASELINE (the diffuse SSGI replacement
+// contract, the THIRD MRT output — ssgi_diffuse.h's chain): Main's
+// exports also reconstruct the DIFFUSE ambient slice,
+//     diffuseAmbient = max(aoTerm - envSpec, 0) * aoEff
+// (aoTerm = (ambient + ambientSpec) * occ, envSpec = ambientSpec *
+// occ — the subtraction isolates the diffuse part; the aoEff matches
+// the depth this pass just moved the hdr's ambient slice to). The
+// diffuse SSGI composite REPLACES that slice with its screen-space
+// trace wherever confident (result = base + s*c*(ssgi - baseline)),
+// so it needs the exact post-AO baseline as an input — this output is
+// it, one store, bound only while diffuse SSGI is on (the push's
+// diffuseAmbientOn; unwritten when off, exactly the envSpec pattern).
+//
 // Loads per full-res pixel (7, + the HDR read the pass exists to modify —
 // the old chain spent 9 with a corner-texel depth guess per tap):
 //   1 center depth   (HZB mip0 — the exact 1:1 depth copy, BDA scalar)
@@ -67,11 +80,17 @@ struct PSOut
     // (no envSpec bound) leaves this unwritten — bound ONLY when the
     // second attachment is attached (see ssgi.h's compose wiring).
     float4 outEnvSpec : SV_Target1;
+    // Diffuse-ambient baseline (the diffuse SSGI replacement contract,
+    // see the header note): max(aoTerm - envSpec, 0) * aoEff. Bound
+    // ONLY while the third attachment is attached + the push's
+    // diffuseAmbientOn is set.
+    float4 outDiffuseAmbient : SV_Target2;
 };
 
-// Must match Engine/Rendergraph/ssgi.h SsgiAoComposePush (64 bytes):
-// the envSpec field consumed the old pad0. uint64 BDAs lead (see
-// SsrClassifyPush's note); scalars after.
+// Must match Engine/Rendergraph/ssgi.h SsgiAoComposePush (72 bytes):
+// the envSpec field consumed the old pad0; the diffuseAmbient pair
+// (the third-output gate + pad) lands the block back on a multiple of
+// 8. uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
 struct SsgiAoComposePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms; // nearPlane (center dist)
@@ -88,6 +107,8 @@ struct SsgiAoComposePush
     float sharpness; // depth edge weight
     float intensity; // aoEff = lerp(1, ao, intensity) (the old hot.aoIntensity)
     float maxDistance; // rep-dist decode (matches raw/blur)
+    uint diffuseAmbientOn; // 1 = write outDiffuseAmbient (target2)
+    uint pad0;
 };
 
 [[vk::push_constant]]
@@ -106,6 +127,11 @@ PSOut mainPS(PSIn IN)
     // 0xffffffff = the pass-through variant (no second attachment
     // bound): the output stays unwritten (the attachment is absent).
     const bool envSpecOn = cp.envSpecTextureIndex != 0xffffffffu;
+    // Diffuse-ambient baseline (the third output, see the header): the
+    // diffuse SSGI composite's replacement slice. Requires the envSpec
+    // read (the subtraction isolates the diffuse part of aoTerm), so
+    // the baseline implies envSpecOn at the wiring site.
+    const bool diffuseAmbientOn = cp.diffuseAmbientOn != 0u && envSpecOn;
 
     int2 fullPx = int2(IN.pos.xy);
     // Center depth from HZB mip0 (the exact 1:1 depth copy the build pass
@@ -115,7 +141,8 @@ PSOut mainPS(PSIn IN)
 
     // Sky center: Main's lit FS never ran there, so nothing AO-attenuable
     // was exported (target1 holds the black clear) — straight passthrough
-    // (the env-spec export too: the 0 clear passes through unchanged).
+    // (the env-spec export too: the 0 clear passes through unchanged; the
+    // diffuse baseline likewise computes to 0 from the same clears).
     if (AoIsBackground(d))
     {
         OUT.outColor = float4(hdrTex.Load(int3(fullPx, 0)).rgb, 1.0f);
@@ -123,6 +150,14 @@ PSOut mainPS(PSIn IN)
             Texture2D envSpecTex =
                 textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
             OUT.outEnvSpec = envSpecTex.Load(int3(fullPx, 0));
+        }
+        if (diffuseAmbientOn) {
+            Texture2D envSpecTex =
+                textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
+            OUT.outDiffuseAmbient = float4(max(
+                aoTermTex.Load(int3(fullPx, 0)).rgb
+                    - envSpecTex.Load(int3(fullPx, 0)).rgb,
+                float3(0.0f, 0.0f, 0.0f)), 1.0f);
         }
         return OUT;
     }
@@ -186,8 +221,23 @@ PSOut mainPS(PSIn IN)
     if (envSpecOn) {
         Texture2D envSpecTex =
             textures[NonUniformResourceIndex(cp.envSpecTextureIndex)];
-        OUT.outEnvSpec = float4(
-            envSpecTex.Load(int3(fullPx, 0)).rgb * aoEff, 1.0f);
+        float3 envSpecVal = envSpecTex.Load(int3(fullPx, 0)).rgb;
+        // Paired env-spec scaling (the SSR replacement contract, see the
+        // header note): the hdr's env-spec slice now holds envSpec *
+        // aoEff, so the export writes the SAME aoEff — the SSR
+        // composite then subtracts exactly what its base holds.
+        OUT.outEnvSpec = float4(envSpecVal * aoEff, 1.0f);
+        // Diffuse-ambient baseline (the diffuse SSGI replacement
+        // contract, the third output): the diffuse slice of the term,
+        // at the SAME aoEff this pass just moved the hdr's ambient to
+        // (hdr' = hdr - aoTerm*(1-aoEff) applies to the whole term —
+        // diffuse and specular slices alike — so the diffuse slice
+        // post-AO is (aoTerm - envSpec) * aoEff exactly).
+        if (diffuseAmbientOn) {
+            OUT.outDiffuseAmbient = float4(
+                max(term - envSpecVal, float3(0.0f, 0.0f, 0.0f)) * aoEff,
+                1.0f);
+        }
     }
     return OUT;
 }
