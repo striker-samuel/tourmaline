@@ -1925,6 +1925,38 @@ namespace engine {
 			std::cerr << "[WorldRenderer] hzb_max unavailable - SSR trace keeps the linear march\n";
 		}
 
+		// SPD HZB build module (hzb_spd.cs.hlsl - the single-dispatch
+		// twin, MAX-reduce base build; see the members above for the
+		// A/B + verify env contract). Failure is non-fatal: the renderer
+		// falls back to the per-mip hzb_max build (same resources).
+		try {
+			auto hzbSpdCode = readFile("content/shaders/hzb_spd.cs.hlsl.spv");
+			m_ssrHzbSpdModule = m_context->CreateShaderModule(hzbSpdCode, "ssgiHzbSpdCS");
+			if (!m_ssrHzbSpdModule.empty()) {
+				smvk::Shader cs{
+					.module = m_ssrHzbSpdModule,
+					.entryPoint = "mainCS",
+					.stage = smvk::ShaderStage::Compute };
+				m_ssrHzbSpdProgram = { .shaders = { cs }, .shaderCount = 1 };
+			}
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] hzb_spd unavailable - HZB keeps the per-mip build\n";
+		}
+		// Read ONCE at startup (headless A/B pinning, like
+		// TOURMALINE_SSR_BLUR): 0/absent = per-mip (default until the
+		// paths are verified identical), 1 = SPD live, VERIFY adds the
+		// shadow build + post-Execute compare.
+		if (const char* hzbSpdEnv = std::getenv("TOURMALINE_HZB_SPD")) {
+			m_hzbSpd = std::atoi(hzbSpdEnv) != 0;
+		}
+		if (const char* hzbSpdVerEnv = std::getenv("TOURMALINE_HZB_SPD_VERIFY")) {
+			m_hzbSpdVerify = std::atoi(hzbSpdVerEnv) != 0;
+		}
+		if (m_hzbSpd || m_hzbSpdVerify)
+			std::cerr << "[WorldRenderer] HZB SPD: live=" << m_hzbSpd
+				<< " verify=" << m_hzbSpdVerify << "\n";
+
 		// Texture streaming: tail-resident glTF uploads with a CPU
 			// screen-coverage demand pass (see UpdateTextureStreaming). The
 			// streamer views cluster-owned KTX payloads, so clusters must
@@ -6715,6 +6747,85 @@ namespace engine {
 				cmd.Dispatch(tx, ty, 1);
 			});
 		}
+	}
+
+	// ---------------------------------------------------------------------
+	// SPD-vs-per-mip HZB verification (TOURMALINE_HZB_SPD_VERIFY; post-
+	// Execute, stalls): downloads BOTH pyramids built this frame from the
+	// same depth (the per-mip path's live ssgi.hzb + the SPD shadow
+	// ssgi.hzbVerify) and compares every mip texel. The reductions are
+	// deterministic MIN/MAX over identical finite inputs (both paths
+	// sanitize at the same points), so EXACT equality is the pass
+	// contract — any mismatch is a tiling/clamp/ordering bug. Reports
+	// per-frame + running totals; the first few mismatches print texel
+	// detail (mip, coords, both values) for bisection.
+	// ---------------------------------------------------------------------
+	void WorldRenderer::CompareHzbSpdVerify() {
+		smvk::Ssgi& ssgi = m_viewportResources.ssgi;
+		if (!ssgi.hzb.Valid() || !ssgi.hzbVerify.Valid()) {
+			std::fprintf(stderr, "[HzbSpdVerify] pyramids unavailable - skipped\n");
+			return;
+		}
+		const uint32_t w = ssgi.hzb.width;
+		const uint32_t h = ssgi.hzb.height;
+		const uint32_t mips = ssgi.hzb.mipCount;
+		const uint32_t vMips = ssgi.hzbVerify.mipCount;
+		if (ssgi.hzbVerify.width != w || ssgi.hzbVerify.height != h
+			|| vMips != mips) {
+			std::fprintf(stderr, "[HzbSpdVerify] extent/mip drift "
+				"(live %ux%u/%u vs shadow %ux%u/%u) - skipped\n",
+				w, h, mips, ssgi.hzbVerify.width, ssgi.hzbVerify.height, vMips);
+			return;
+		}
+		const size_t floats = (size_t)smvk::gfx::HzbTotalFloats(w, h);
+		std::vector<float> perMip(floats, 0.0f);
+		std::vector<float> spd(floats, 0.0f);
+		if (!m_context->DownloadDataFromBuffer(ssgi.hzb.buffer,
+				perMip.data(), floats * sizeof(float))
+			|| !m_context->DownloadDataFromBuffer(ssgi.hzbVerify.buffer,
+				spd.data(), floats * sizeof(float))) {
+			std::fprintf(stderr, "[HzbSpdVerify] download failed - skipped\n");
+			return;
+		}
+		uint64_t mismatches = 0;
+		uint32_t mismatchedMips = 0;
+		uint32_t printed = 0;
+		constexpr uint32_t kPrintLimit = 8;
+		for (uint32_t m = 0; m < mips; ++m) {
+			uint32_t mw = 0, mh = 0;
+			smvk::gfx::HzbMipDims(w, h, m, mw, mh);
+			const uint32_t off = ssgi.hzb.mipOffsets[m];
+			uint64_t mipMismatch = 0;
+			for (uint32_t y = 0; y < mh; ++y) {
+				for (uint32_t x = 0; x < mw; ++x) {
+					const size_t i = (size_t)off + y * mw + x;
+					if (perMip[i] != spd[i]) {
+						++mipMismatch;
+						if (printed < kPrintLimit) {
+							++printed;
+							std::fprintf(stderr,
+								"[HzbSpdVerify]   mip %u (%u,%u): per-mip=%.6g spd=%.6g\n",
+								m, x, y, perMip[i], spd[i]);
+						}
+					}
+				}
+			}
+			if (mipMismatch != 0) {
+				++mismatchedMips;
+				mismatches += mipMismatch;
+				std::fprintf(stderr, "[HzbSpdVerify]   mip %u (%ux%u): %llu mismatching texels\n",
+					m, mw, mh, (unsigned long long)mipMismatch);
+			}
+		}
+		++m_hzbSpdVerifyFrames;
+		m_hzbSpdVerifyMismatches += mismatches;
+		std::fprintf(stderr, "[HzbSpdVerify] frame %llu %ux%u mips=%u: %s"
+			" (%llu mismatching texels across %u mips; running: %llu over %llu frames)\n",
+			(unsigned long long)m_frameCounter, w, h, mips,
+			mismatches == 0 ? "MATCH" : "MISMATCH",
+			(unsigned long long)mismatches, mismatchedMips,
+			(unsigned long long)m_hzbSpdVerifyMismatches,
+			(unsigned long long)m_hzbSpdVerifyFrames);
 	}
 
 	// ---------------------------------------------------------------------
@@ -11826,8 +11937,20 @@ namespace engine {
 				&& m_ssaoIntensity > 0.0f
 				&& !DebugVisualizationActive()
 				&& ssgi.Valid();
+			// SPD path selection (hzb_spd.cs.hlsl — Phase 1 of the HZB
+			// upgrade; see the members' env contract). Extents beyond
+			// 4096 exceed the tested 64x64-tile upper-level capacity
+			// (AMD SPD's documented limit) — always the per-mip path.
+			// Verify mode forces the CONSUMERS onto the proven per-mip
+			// build and runs SPD into the shadow pyramid: a wrong SPD
+			// cannot corrupt the frame while it is being validated.
+			const bool hzbSpdExtentOk = renderExtent.width <= 4096u
+				&& renderExtent.height <= 4096u;
+			const bool hzbSpdProgramOk = m_ssrHzbSpdProgram.shaderCount == 1;
+			const bool hzbSpdLive = m_hzbSpd && !m_hzbSpdVerify
+				&& hzbSpdProgramOk && hzbSpdExtentOk;
 			const bool ssgiHzbBuilt = (ssrWantsHzb || aoWanted)
-				&& m_ssrHzbProgram.shaderCount == 1
+				&& (hzbSpdLive || m_ssrHzbProgram.shaderCount == 1)
 				&& ssgi.hzb.Ensure(*m_context, *m_rendergraph,
 					renderExtent.width, renderExtent.height)
 				&& ssgi.hzb.Valid();
@@ -11836,10 +11959,44 @@ namespace engine {
 				if (ssgiHzbAddr != 0) {
 					ssgiHzbMips = ssgi.hzb.mipCount;
 					ssgiHzbLogical = ssgi.hzb.logical;
-					ssgi.AddHzbMipPasses(*m_rendergraph, m_ssrHzbProgram,
-						ssgiHzbAddr,
-						m_viewportResources.renderDepth.logicalView,
-						m_viewportResources.renderDepth.bindlessIndex);
+					if (hzbSpdLive) {
+						// ONE dispatch replaces the ~12 per-mip passes;
+						// the counter BDA is this flight's ring slice.
+						ssgi.AddHzbSpdPass(*m_rendergraph, m_ssrHzbSpdProgram,
+							ssgi.hzb, ssgiHzbAddr,
+							ssgi.hzb.CounterAddress(*m_context, fc.frameIndex),
+							ssgi.hzb.counterLogical,
+							m_viewportResources.renderDepth.logicalView,
+							m_viewportResources.renderDepth.bindlessIndex);
+					} else {
+						ssgi.AddHzbMipPasses(*m_rendergraph, m_ssrHzbProgram,
+							ssgiHzbAddr,
+							m_viewportResources.renderDepth.logicalView,
+							m_viewportResources.renderDepth.bindlessIndex);
+					}
+					// Shadow verify build (TOURMALINE_HZB_SPD_VERIFY):
+					// the same depth through the SPD path into a second
+					// pyramid; CompareHzbSpdVerify byte-compares the two
+					// post-Execute. Both passes read the same depth view
+					// and write disjoint buffers — the graph orders them
+					// freely.
+					if (m_hzbSpdVerify && hzbSpdProgramOk && hzbSpdExtentOk
+						&& ssgi.hzbVerify.Ensure(*m_context, *m_rendergraph,
+							renderExtent.width, renderExtent.height)
+						&& ssgi.hzbVerify.Valid()) {
+						const uint64_t verifyAddr =
+							ssgi.hzbVerify.Address(*m_context);
+						if (verifyAddr != 0) {
+							ssgi.AddHzbSpdPass(*m_rendergraph,
+								m_ssrHzbSpdProgram, ssgi.hzbVerify, verifyAddr,
+								ssgi.hzbVerify.CounterAddress(*m_context,
+									fc.frameIndex),
+								ssgi.hzbVerify.counterLogical,
+								m_viewportResources.renderDepth.logicalView,
+								m_viewportResources.renderDepth.bindlessIndex);
+							m_hzbSpdVerifyArmed = true;
+						}
+					}
 				}
 			}
 			if (aoWanted && ssgiHzbBuilt && ssgiHzbMips != 0) {
@@ -16204,6 +16361,16 @@ namespace engine {
 			m_dumpFirstFrameHzb = false;
 			m_host.WaitForDeviceIdle();
 			m_gfxRenderer.DumpHzb(*m_context, gfxSlot);
+		}
+		// SPD-vs-per-mip HZB verification (TOURMALINE_HZB_SPD_VERIFY):
+		// this frame built the live pyramid with the per-mip path AND the
+		// shadow with the SPD single dispatch; compare every mip now that
+		// the GPU is idle. Stalls by design (validation tool, not a
+		// shipping path) — see CompareHzbSpdVerify.
+		if (m_hzbSpdVerifyArmed) {
+			m_hzbSpdVerifyArmed = false;
+			m_host.WaitForDeviceIdle();
+			CompareHzbSpdVerify();
 		}
 		// Opt-in deferred-shadow dump (TOURMALINE_DS_DUMP=<frame>): one
 		// shot after Execute with the phase results final. Stalls

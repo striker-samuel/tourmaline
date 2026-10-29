@@ -86,6 +86,13 @@ $env:TOURMALINE_CAPTURE='48'
   does ONE fetch + dominant-box parallax), `0` = the per-pixel walk
   fallback (≤8 fetches + per-pixel box parallax). `0.00%` differing pixels
   is the A/B contract between the two
+- `TOURMALINE_HZB_SPD=0|1` A/Bs the SSGI MAX-HZB build (default 0 =
+  the per-mip dispatches): `1` = the single-dispatch SPD build
+  (hzb_spd.cs.hlsl — same BDA buffer, same mip offsets, byte-identical
+  output). `TOURMALINE_HZB_SPD_VERIFY=1` builds BOTH from the same depth
+  (per-mip live + SPD shadow) and byte-compares every mip post-Execute
+  (stalls; the validation harness — 0 mismatching texels is the
+  contract). Extents > 4096 always fall back to the per-mip path
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
   forced off - uncapped immediate present; an explicit `--present <mode>`
   wins)

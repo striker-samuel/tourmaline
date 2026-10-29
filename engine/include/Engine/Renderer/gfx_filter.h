@@ -790,6 +790,27 @@ struct HzbPush {
 };
 static_assert(sizeof(HzbPush) == 48);
 
+// Single-dispatch SPD HZB build (hzb_spd.cs.hlsl): one 256-lane
+// workgroup per 64x64 mip-0 tile cascades mips 0..6 through LDS; a
+// completion counter hands the tail (mips 7+) to the last completed
+// group — AMD SPD's protocol, on the SAME BDA buffer + mip layout +
+// clamped-footprint semantics as the per-mip HzbPush path (byte-
+// identical output is the A/B + verify contract).
+// counter = THIS frame-in-flight's slice of the counter ring (the
+// caller resolves BDA + 16 * frameIndex at call time).
+struct HzbSpdPush {
+	uint64_t hzb = 0;
+	uint64_t counter = 0;
+	uint32_t width = 0; // mip 0 extent
+	uint32_t height = 0;
+	uint32_t mipCount = 0; // 1..kHizMaxMips
+	uint32_t depthTextureIndex = UINT32_MAX;
+	uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets per level
+	uint32_t groupCount = 0; // dispatch gx*gy (last-group test)
+	uint32_t pad = 0;
+};
+static_assert(sizeof(HzbSpdPush) == 104);
+
 // (cluster, model) identity reduced to one u64 sort key: 32-bit bitwise
 // hash of the 16 model-matrix words in the high half, cluster id in the
 // low half. Hashing raw bits is exactly consistent with memcmp equality

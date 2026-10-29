@@ -37,3 +37,33 @@ struct HzbPush
     uint depthTextureIndex; // bindless depth (mip 0 build only)
     uint pad;
 };
+
+// ---- single-dispatch SPD build (hzb_spd.cs.hlsl) ----
+//
+// Completion counter for the last-group handoff (mips 7+): a DEDICATED
+// BDA buffer, never shared between builds that can overlap (the C++
+// side slices a per-frame-in-flight ring). Creation-zero-filled AND
+// reset by the last group after its bump — never a recycled garbage
+// count (the GPU-counter convention, see AGENTS.md).
+struct HzbSpdCounter
+{
+    uint completed; // groups that published mips 0..6 this dispatch
+};
+
+// C++ mirror: Engine/Renderer/gfx_filter.h (HzbSpdPush, 104 bytes, DX
+// layout — two 64-bit BDAs lead, four scalars, the 16 mip float
+// offsets, then the tail). mipOffsets carries gfx::HzbMipOffsetFloats
+// per level (only [0, mipCount) is meaningful); groupCount is the
+// dispatch's total workgroups (gx*gy) for the last-group test.
+struct HzbSpdPush
+{
+    vk::BufferPointer<HzbBuffer> hzb;
+    vk::BufferPointer<HzbSpdCounter> counter; // this flight's slice
+    uint width; // mip 0 extent (== depth extent)
+    uint height;
+    uint mipCount; // total levels (1..16)
+    uint depthTextureIndex; // bindless depth (the mip 0 copy)
+    uint mipOffsets[16]; // float offsets per level
+    uint groupCount; // dispatch gx*gy (last-group test)
+    uint pad;
+};

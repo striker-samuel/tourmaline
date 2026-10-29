@@ -269,6 +269,11 @@ compile_shaders(
     # FilteredLitProgram), so the shader's SG evaluation folds to literals.
     # Output: default_lit.frag.hlsl.sg{5,6,9,12}.spv next to the base module.
     VARIANTS
+        # HZB SPD reduction twins (hzb_spd.cs.hlsl): the base output
+        # compiles HZB_REDUCE_MAX=1 (the SSR/AO MAX pyramid — Phase 1,
+        # ssgi.h AddHzbSpdPass); the .min twin flips the reduction for
+        # the gfx-filter culling HZB (Phase 2 — same algorithm, MIN).
+        "hzb_spd.cs.hlsl|.min|HZB_REDUCE_MAX=0"
         "default_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
         "default_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
         "default_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"

@@ -44,6 +44,7 @@
 
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Profile/profile.h> // profiler::GpuPassScope (recording funcs)
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/platform.h>
 
@@ -172,9 +173,20 @@ inline constexpr const char* kSsgiHzbCsPath = "content/shaders/hzb_max.cs.hlsl.s
 struct Ssgi {
 
 	// ---- final-depth MAX-HZB (shared screen-space primitive) ----
+	//
+	// SPD completion-counter ring (hzb_spd.cs.hlsl): MaxFramesInFlight
+	// 16-byte slices so builds that could overlap in flight never share
+	// a word. Creation-zero-filled via UploadDataToBuffer (the GPU-
+	// counter convention: fresh DEVICE_LOCAL allocations recycle freed
+	// pages, a stale count breaks the last-group test silently), and the
+	// shader's last group resets its slice to 0 after building the tail.
+	static constexpr uint32_t kHzbCounterSliceBytes = 16;
+
 	struct Hzb {
 		Holder<BufferHandle> buffer;
 		LogicalBufferHandle logical{};
+		Holder<BufferHandle> counterBuffer; // SPD ring (see kHzbCounterSliceBytes)
+		LogicalBufferHandle counterLogical{};
 		uint32_t width = 0;
 		uint32_t height = 0;
 		uint32_t mipCount = 0;
@@ -185,6 +197,20 @@ struct Ssgi {
 		}
 		[[nodiscard]] uint64_t Address(ResourceManager& ctx) const {
 			return buffer.empty() ? 0 : ctx.GetBufferDeviceAddress(buffer);
+		}
+		// BDA of one flight's counter slice (call-time resolution, same
+		// discipline as Address — pass the value into the pass capture).
+		// frameIndex is the RAW frame counter (the rendergraph's flight
+		// slot is frameIndex % MaxFramesInFlight); slices never collide
+		// between builds that could overlap in flight.
+		[[nodiscard]] uint64_t CounterAddress(ResourceManager& ctx,
+			uint32_t frameIndex) const {
+			if (counterBuffer.empty())
+				return 0;
+			const uint64_t slice = (uint64_t)(frameIndex
+				% smvk::limits::MaxFramesInFlight);
+			return ctx.GetBufferDeviceAddress(counterBuffer)
+				+ slice * kHzbCounterSliceBytes;
 		}
 		[[nodiscard]] uint32_t Mip1Offset() const {
 			return mipCount > 1 ? mipOffsets[1] : 0;
@@ -200,8 +226,12 @@ struct Ssgi {
 		void Destroy(RenderGraph& rg) {
 			if (!logical.empty())
 				rg.FreeBuffer(logical);
+			if (!counterLogical.empty())
+				rg.FreeBuffer(counterLogical);
 			logical = {};
+			counterLogical = {};
 			buffer = {};
+			counterBuffer = {};
 			width = height = mipCount = 0;
 		}
 
@@ -209,12 +239,16 @@ struct Ssgi {
 		// WorldRenderer::EnsureSsrHzb): free the logical, zero-fill the
 		// fresh buffer (0 = far/sky at every MAX block — reads as "no
 		// data" until the build pass runs), register it with the graph.
+		// The SPD counter ring rides along (zero-filled: a garbage count
+		// in a recycled page makes the last-group test miss and leaves
+		// the tail mips stale — see AGENTS.md's counter convention).
 		bool Ensure(ResourceManager& ctx, RenderGraph& rg, uint32_t w, uint32_t h) {
 			if (w == 0 || h == 0)
 				return false;
 			const uint32_t wantMips = gfx::HzbMipCount(w, h);
 			if (width == w && height == h && mipCount == wantMips
-				&& !buffer.empty() && !logical.empty())
+				&& !buffer.empty() && !logical.empty()
+				&& !counterBuffer.empty() && !counterLogical.empty())
 				return true;
 			Destroy(rg);
 			width = w;
@@ -253,11 +287,37 @@ struct Ssgi {
 				width = height = mipCount = 0;
 				return false;
 			}
+			const size_t counterBytes =
+				(size_t)kHzbCounterSliceBytes * smvk::limits::MaxFramesInFlight;
+			counterBuffer = ctx.CreateBuffer(counterBytes,
+				BufferType_Storage, "ssgi hzb spd counter");
+			if (counterBuffer.empty()) {
+				Destroy(rg); // allocation failure: fail the whole Ensure
+				return false;
+			}
+			{
+				std::vector<uint8_t> zeros(counterBytes, 0);
+				ctx.UploadDataToBuffer(counterBuffer, zeros.data(), zeros.size(),
+					PipelineStage(PipelineStageBit_Compute),
+					AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+			}
+			counterLogical = rg.AddExternalBuffer(counterBuffer,
+				"ssgi hzb spd counter");
+			if (counterLogical.empty()) {
+				Destroy(rg);
+				return false;
+			}
 			return true;
 		}
 	};
 
 	Hzb hzb;
+	// SPD verify shadow (TOURMALINE_HZB_SPD_VERIFY): a SECOND pyramid
+	// built by the SPD pass from the same depth while the proven
+	// per-mip path builds the live one; the renderer byte-compares the
+	// two post-Execute (see WorldRenderer::CompareHzbSpdVerify). Debug
+	// scaffolding — only Ensure'd while the verify env is on.
+	Hzb hzbVerify;
 
 	// One compute pass per mip level (rendergraph barriers between; no
 	// intra-pass barrier API): mip 0 copies the depth texture 1:1, mips 1+
@@ -333,6 +393,95 @@ struct Ssgi {
 				cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
 			});
 		}
+	}
+
+	// Single-dispatch SPD build (hzb_spd.cs.hlsl): the whole pyramid in
+	// ONE compute pass — one 256-lane workgroup per 64x64 mip-0 tile,
+	// LDS cascade for mips 0..6, completion counter + last-group tail
+	// for mips 7+ (see the shader header for the protocol + the release/
+	// acquire barriers; a rendergraph barrier cannot order INSIDE one
+	// dispatch). Same buffer, same gfx::HzbMipOffsetFloats offsets, same
+	// clamped-2x2 footprints as AddHzbMipPasses — byte-identical output
+	// is the A/B contract (TOURMALINE_HZB_SPD_VERIFY compares the two
+	// paths every frame while armed).
+	// spdProgram: hzb_spd.cs.hlsl (mainCS, HZB_REDUCE_MAX=1 build).
+	// hzb: the pyramid to build (the live ssgi.hzb, or hzbVerify under
+	//   verification) — the offsets/dims come from it.
+	// hzbAddr/counterAddr: BDAs resolved at CALL time (captures only
+	//   copy values — the repo's pass discipline); counterAddr is
+	//   hzb.CounterAddress(ctx, frameIndex), this flight's ring slice.
+	void AddHzbSpdPass(RenderGraph& rg, const ShaderProgram& spdProgram,
+		const Hzb& hzb, uint64_t hzbAddr, uint64_t counterAddr,
+		LogicalBufferHandle counterLogical,
+		LogicalImageViewHandle depthView, uint32_t depthBindlessIndex) const {
+		assert(spdProgram.shaderCount == 1);
+		assert(hzb.Valid());
+		assert(hzbAddr != 0);
+		assert(counterAddr != 0 && !counterLogical.empty());
+		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
+		RenderPass& pass = rg.AddComputePass("SsgiHzbSPD");
+		{
+			// The HZB buffer: read (footprints) + write (every level)
+			// within the same dispatch — same hint as the per-mip passes.
+			BufferSyncRequest hzbRW{};
+			hzbRW.barrierMasks.accessMask =
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+			hzbRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(hzb.logical, hzbRW);
+		}
+		{
+			// The completion counter: InterlockedAdd/Exchange from every
+			// group (read-modify-write — the atomics need the RW hint).
+			BufferSyncRequest counterRW{};
+			counterRW.barrierMasks.accessMask =
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+			counterRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+			pass.AddBufferHint(counterLogical, counterRW);
+		}
+		{
+			// Depth sampled in compute for the mip-0 copy (the single
+			// dispatch always reads it — DepthStencilReadOnlyOptimal
+			// matches the bindless descriptor layout, same as the per-mip
+			// path's mip-0 pass).
+			ImageSyncRequest depthReq{};
+			depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+			depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
+			pass.AddImageHint(depthView, depthReq);
+		}
+		const uint32_t width = hzb.width;
+		const uint32_t height = hzb.height;
+		const uint32_t mipCount = hzb.mipCount;
+		// Tile dispatch: one workgroup per 64x64 mip-0 region (the shader
+		// derives every finer level from its tile; the last group builds
+		// the tail). gx == mip-6 width, gy == mip-6 height.
+		const uint32_t groupX = (width + 63u) / 64u;
+		const uint32_t groupY = (height + 63u) / 64u;
+		// (mipOffsets captured by value — kHizMaxMips is small)
+		uint32_t offsets[gfx::kHizMaxMips];
+		for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
+			offsets[k] = hzb.mipOffsets[k];
+		ShaderProgram spdProgCopy = spdProgram; // copyable (handles only)
+		pass.SetRecordingFunc(
+			[spdProgCopy, hzbAddr, counterAddr, depthBindlessIndex, width,
+			height, mipCount, groupX, groupY, offsets](CommandBuffer& cmd) mutable {
+			::smvk::profiler::GpuPassScope spdScope(
+				"SsgiHzbSPD", __FILE__, __LINE__);
+			gfx::HzbSpdPush push{};
+			push.hzb = hzbAddr;
+			push.counter = counterAddr;
+			push.width = width;
+			push.height = height;
+			push.mipCount = mipCount;
+			push.depthTextureIndex = depthBindlessIndex;
+			for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
+				push.mipOffsets[k] = offsets[k];
+			push.groupCount = groupX * groupY;
+			cmd.BindComputePipeline(spdProgCopy);
+			cmd.PushConstants(0, sizeof(push), &push,
+				ShaderStage::Compute);
+			cmd.Dispatch(groupX, groupY, 1);
+		});
 	}
 
 	// ---- targets ----

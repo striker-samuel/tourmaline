@@ -2414,6 +2414,34 @@ public:
 	// at worst, never a see-through).
 	smvk::Holder<smvk::ShaderModuleHandle> m_ssrHzbModule;
 	smvk::ShaderProgram m_ssrHzbProgram{};
+	// ---- SPD HZB build (hzb_spd.cs.hlsl — Phase 1 of the HZB upgrade,
+	// docs in the shader header): the single-dispatch twin of the
+	// per-mip build above. A/B + validation switches, read ONCE at
+	// startup like TOURMALINE_SSR_BLUR so the headless bench matrix can
+	// pin them:
+	//   TOURMALINE_HZB_SPD=1        — SPD feeds the consumers (default
+	//                                  OFF: the multi-mip path stays live
+	//                                  until the two produce identical
+	//                                  pyramids).
+	//   TOURMALINE_HZB_SPD_VERIFY=1 — multipass feeds the consumers; SPD
+	//                                  builds a SHADOW pyramid
+	//                                  (Ssgi::hzbVerify) from the same
+	//                                  depth; post-Execute byte-compare
+	//                                  of every mip (stalls — debug
+	//                                  only). Forces the proven path for
+	//                                  the frame's actual consumers, so a
+	//                                  broken SPD cannot corrupt output
+	//                                  while it is being validated.
+	// Extents beyond 4096 (the tested 64x64-tile upper-level capacity,
+	// AMD SPD's documented limit) always fall back to the per-mip path.
+	smvk::Holder<smvk::ShaderModuleHandle> m_ssrHzbSpdModule;
+	smvk::ShaderProgram m_ssrHzbSpdProgram{};
+	bool m_hzbSpd = false;
+	bool m_hzbSpdVerify = false;
+	bool m_hzbSpdVerifyArmed = false;  // this frame built both pyramids
+	uint64_t m_hzbSpdVerifyFrames = 0; // running compare stats (report)
+	uint64_t m_hzbSpdVerifyMismatches = 0;
+	void CompareHzbSpdVerify();        // post-Execute one-shot (stalls)
 	bool m_debugDumpHzb = false;    // one-shot: dump HZB buffer contents (stderr)
 	bool m_dumpFirstFrameHzb = false;      // opt-in: dump HZB once on the next frame (stalls)
 	int m_dumpAtFrame = -1;                // opt-in (TOURMALINE_DS_DUMP=<frame>): one-shot deferred-shadow dump (stalls)
