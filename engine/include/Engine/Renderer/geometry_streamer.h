@@ -62,10 +62,63 @@
 //        LODs on each side), and buy little the meshlet visibility
 //        does not already capture. Do NOT build it without a measured
 //        shadow-raster cost case that the per-view culling leaves
-//        unaddressed. Also out: stage 6 (disk streaming - the pak
-//        image stays pinned; promotes are pure offset math into it),
-//        skinned siblings (always resident - the deformed-heap parity
-//        math must not see ranges disappear), physical sparse backing.
+//        unaddressed. Also out: stage 6 (DISK-RANGE STREAMING - see the
+//        full TODO note below), skinned siblings (always resident - the
+//        deformed-heap parity math must not see ranges disappear),
+//        physical sparse backing.
+//
+// ---- STAGE 6 TODO: disk-range streaming (read only the bytes you
+// ---- actually need) - BUILD ONLY WHEN A MEASURED NEED APPEARS -----
+//
+// The problem: stages 1-4 stream VRAM only. The pak IMAGE (the whole
+// file) stays in system RAM for the cluster's lifetime (PinPakImage -
+// meshes, textures and bake payloads all borrow it), so a deferred
+// sibling costs zero VRAM but its bytes sit in RAM regardless. For
+// single-small-pak scenes that is fine; for LARGE multi-pak worlds
+// (the world-partition story) it is the actual wall. THE TRIGGER TO
+// BUILD: a real multi-pak world where system RAM is the measured
+// constraint - not before (the widest-blast-radius change in the plan:
+// PakReader's image contract is borrowed by everything).
+//
+// What is ALREADY stage-6-ready (built on purpose in stages 1-4):
+//   - Per-LOD byte addressing exists exactly: every sibling is its own
+//     blob with its own TOC entry (file-absolute offset+size), and
+//     DeferredMeshLod::src already carries file-absolute stream
+//     offsets (e->offset + posOff etc.) - the same numbers work
+//     against a file handle, zero format/cook changes.
+//   - Mesh blobs are UNCOMPRESSED by contract (the serializer
+//     hard-fails LZ4 mesh blobs precisely so uploads are offset math)
+//     - every range is independently readable.
+//   - The demand/throttle machinery (which LOD, 16 MiB + 4/frame)
+//     exists; stage 6 only swaps WHERE the promote bytes come from.
+//
+// What has to change when it lands:
+//   - PakReader: a range mode - parse the TOC, keep the file handle,
+//     ReadRange(offset, size) instead of ImageData().
+//   - DeserializeCluster (streaming on): deferred siblings read TWO
+//     small ranges per blob - the header (front) and the MESLET
+//     TRAILER at idxOff + idxBytes (AFTER the bulk streams - easy to
+//     accidentally read the whole blob "just for the meshlets" and
+//     quietly lose the win). Bases + pinned coarsest read whole blobs
+//     (they upload immediately anyway).
+//   - Promote: the four stream ranges read into a staging buffer ->
+//     the existing UploadStaticMeshesDirect (offsets rebased, or a
+//     file-source variant of the bulk-copy table). MUST go async
+//     (loader thread + staging ring) - a sync file read on the render
+//     thread stalls; the tick's throttle already tolerates a frame or
+//     two of read latency (the node draws the coarser resident
+//     fallback meanwhile - the hysteresis band handles exactly that
+//     transient).
+//   - Textures keep the image pinned initially (ktx spans the
+//     texture streamer borrows; some are compressed = not
+//     range-addressable like meshes). Meshes-first is a partial win;
+//     textures are the follow-up.
+//
+// Payoff when built: system RAM becomes TOC + blob headers + meshlet
+// metadata + ONLY the promoted payloads; with eviction, an
+// evicted-and-idle level costs zero bytes ANYWHERE until something
+// looks at it again. That composes with world partition into the
+// load-a-huge-world-without-loading-a-huge-world story.
 //
 // The promote/evict paths are timeline-safe by construction: promotes
 // allocate FRESH arena ranges; evicts ride DestroyMesh's

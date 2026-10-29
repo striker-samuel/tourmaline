@@ -148,7 +148,12 @@ $env:TOURMALINE_CAPTURE='48'
   committed size. Per-cascade LOD demand is RETIRED (owner decision:
   the per-view meshlet/cluster shadow culling already captures the
   savings; cascade LOD floors risk overlap-seam artifacts - see
-  geometry_streamer.h's scope note)
+  geometry_streamer.h's scope note). Stage 6 (disk-range streaming -
+  read only the promote bytes from the file instead of pinning the
+  whole pak image in RAM) is a clearly-noted TODO in
+  geometry_streamer.h: build ONLY when a multi-pak world makes system
+  RAM the measured constraint; the addressing/throttle plumbing is
+  already stage-6-ready
 
 ## Tests
 
