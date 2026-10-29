@@ -2009,6 +2009,19 @@ void TestClusterSerializeCook() {
 			expect.insert(expect.end(),
 				cluster->scene.animClipRefs[1].begin(),
 				cluster->scene.animClipRefs[1].end());
+			// The v17 per-node volumetric-shadow caster section trails
+			// the anim refs (u32 nodeCount + nodeCount flag bytes; this
+			// scene never marks a caster, so the writer emits the
+			// all-zero fallback). The tail pin USED to end at the anim
+			// refs - v16's "last section" contract - and has failed
+			// every FRESH build since v17 appended the caster bytes
+			// (811b461f): unnoticed locally because the stale
+			// AssetTests.exe kept passing (the targeted App-only
+			// rebuilds never relinked it), loud in CI where every build
+			// is fresh.
+			putU32(uint32_t(cluster->scene.hierarchy.size()));
+			expect.insert(expect.end(),
+				cluster->scene.hierarchy.size(), uint8_t(0));
 			const size_t at = p.size() - expect.size();
 			bool tailOk = p.size() >= expect.size();
 			for (size_t i = 0; tailOk && i < expect.size(); ++i)
