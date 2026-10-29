@@ -87,6 +87,11 @@ struct VolumetricDesc {
 	float jitterStrength = 1.0f;          // 0 = off, 1 = full IGN dither
 	float heightFalloff = 0.0f;           // extra height density falloff (1/m, 0=off)
 	float heightBase = 0.0f;              // reference height (m)
+	// The perf-plan cadence knobs (see the push pair's notes): the
+	// baked-GI base refresh interval and the world-field density
+	// sampling interval (m).
+	float giRefreshDist = 1.5f;
+	float fieldCadence = 1.0f;
 	const char* name = "volumetric";
 	const char* viewName = "volumetricView";
 	const char* logicalName = "volumetricLogical";
@@ -129,6 +134,9 @@ inline void ApplyVolumetricQuality(VolumetricDesc& d, VolumetricQuality q) {
 //     shadowing: the unshadowed sun leg, the original behavior).
 struct VolumetricPush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice
+	// DEAD in the integrate shader (the HDR read moved to the
+	// composite pass; kept for the layout's stability - the field
+	// ordering is the HLSL mirror contract).
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t depthTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
@@ -173,10 +181,18 @@ struct VolumetricPush {
 	uint32_t fogGiDebug = 0;     // 0 = off, 1 = the BC4 coverage view, 2 = the
 	                              //     transmittance view (throughput.xxx),
 	                              //     3 = the god-ray sun-visibility view
+	// The perf-plan cadence knobs (the two TAIL additions - the block
+	// grows 136 -> 144, the old C++ tail pad consumed):
+	float giRefreshDist = 1.5f;  // the baked-GI base refresh interval (m;
+	                              //     was the hardcoded 0.75 - ambient
+	                              //     radiance, coarser is optically safe)
+	float fieldCadence = 1.0f;   // the world-field DENSITY sampling interval
+	                              //     (m; two cached samples, lerped per
+	                              //     segment - extinction-grade accuracy)
 };
-// 132 B of members + 4 B tail alignment (the uint64_t BDAs): the HLSL
-// push block reads through 132; the padded C++ tail is dead bytes.
-static_assert(sizeof(VolumetricPush) == 136);
+// 140 B of members + 4 B tail alignment (the uint64_t BDAs): the HLSL
+// push block reads through 140; the padded C++ tail is dead bytes.
+static_assert(sizeof(VolumetricPush) == 144);
 // The repurposed slots (the no-enlargement contract): the cascade BDA
 // lands on the old texelSize float2, the atlas index on the retired
 // useGi, the count on the dead time — all three 8/4-aligned exactly as
@@ -188,11 +204,54 @@ static_assert(offsetof(VolumetricPush, shadowDepthIndex) == 64,
 static_assert(offsetof(VolumetricPush, numCascades) == 88,
 	"VolumetricPush numCascades mirror drift (was time)");
 
-// Default SPVs (fullscreen-triangle VS shared with tonemap + volumetric PS).
+// The full-resolution composite half of the fog split (see the
+// integrate push's header note): the depth-aware bilateral upsample of
+// the half-res (scatter, throughput) + the HDR reconstruction. Must
+// match volumetric_composite.frag.hlsl VolumetricCompositePush
+// (52 B of members + 4 B tail alignment - the HLSL block reads
+// through 52). uint64 BDA leads; scalars after.
+struct VolumetricCompositePush {
+	uint64_t frameUniforms = 0; // BDA (invProj for the view distances)
+	uint32_t hdrTextureIndex = UINT32_MAX; // the FROZEN scene HDR (pre-fog)
+	uint32_t fogTextureIndex = UINT32_MAX; // half-res (scatter, throughput)
+	uint32_t fogDepthTextureIndex = UINT32_MAX; // half-res rep view dist (R32F)
+	uint32_t depthTextureIndex = UINT32_MAX; // full-res scene depth
+	uint32_t samplerIndex = 0; // linear clamp (the HDR tap)
+	float invDepthW = 0.0f; // 1 / full-res depth extent
+	float invDepthH = 0.0f;
+	float maxDistance = 80.0f; // the sky clamp (matches the integrate)
+	float depthFalloff = 0.02f; // the bilateral band scale (2% of z)
+	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
+};
+static_assert(sizeof(VolumetricCompositePush) == 56);
+
+// Default SPVs (fullscreen-triangle VS shared with tonemap; the split
+// PS pair - the old combined shader is retired).
 inline constexpr const char* kVolumetricVsPath = "content/shaders/tonemap.vert.hlsl.spv";
-inline constexpr const char* kVolumetricPsPath = "content/shaders/volumetric.frag.hlsl.spv";
+inline constexpr const char* kVolumetricIntegratePsPath =
+	"content/shaders/volumetric_integrate.frag.hlsl.spv";
+inline constexpr const char* kVolumetricCompositePsPath =
+	"content/shaders/volumetric_composite.frag.hlsl.spv";
 
 struct VolumetricFog {
+	// The half-resolution integration targets (the perf split): the
+	// (scatter, throughput) fog + the representative view distance the
+	// composite's bilateral weights key on (R32F, LINEAR distance).
+	Holder<ImageHandle> fogImage;
+	Holder<ImageViewHandle> fogView;
+	Holder<BindlessImageHandle> fogBindless;
+	uint32_t fogBindlessIndex = UINT32_MAX;
+	LogicalImageViewHandle fogLogical{};
+	Holder<ImageHandle> fogDepthImage;
+	Holder<ImageViewHandle> fogDepthView;
+	Holder<BindlessImageHandle> fogDepthBindless;
+	uint32_t fogDepthBindlessIndex = UINT32_MAX;
+	LogicalImageViewHandle fogDepthLogical{};
+	Extent2D halfExtent{ 0, 0 };  // the integration extent (max(1, full/2))
+	// The FULL-resolution composite output (the same 1:1 HDR target the
+	// old combined pass wrote - exposure/DLSS/tonemap downstream are
+	// untouched, the whole point of the split).
 	Holder<ImageHandle> image;
 	Holder<ImageViewHandle> view;
 	Holder<BindlessImageHandle> bindless;
@@ -203,13 +262,22 @@ struct VolumetricFog {
 	Format format = Format::RGBA16_Float;
 
 	Holder<ShaderModuleHandle> vsModule;
-	Holder<ShaderModuleHandle> fragModule;
-	ShaderProgram program{};
+	Holder<ShaderModuleHandle> integrateFragModule;
+	Holder<ShaderModuleHandle> compositeFragModule;
+	ShaderProgram integrateProgram{};
+	ShaderProgram compositeProgram{};
 	VolumetricDesc desc{};
 
-	[[nodiscard]] bool TargetValid() const { return !image.empty() && !logicalView.empty(); }
+	[[nodiscard]] bool TargetValid() const {
+		return !image.empty() && !logicalView.empty()
+			&& !fogImage.empty() && !fogLogical.empty()
+			&& !fogDepthImage.empty() && !fogDepthLogical.empty();
+	}
 	[[nodiscard]] bool ShadersValid() const {
-		return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
+		return integrateProgram.shaderCount != 0
+			&& compositeProgram.shaderCount != 0
+			&& !vsModule.empty() && !integrateFragModule.empty()
+			&& !compositeFragModule.empty();
 	}
 	[[nodiscard]] bool Valid() const { return TargetValid() && ShadersValid(); }
 
@@ -223,34 +291,50 @@ struct VolumetricFog {
 			std::max(1u, render.height / divisor),
 		};
 	}
+	static Extent2D HalfExtentFor(Extent2D render) {
+		return { std::max(1u, render.width / 2), std::max(1u, render.height / 2) };
+	}
 
 	bool EnsureShaders(ResourceManager& ctx,
 		const char* vsPath = kVolumetricVsPath,
-		const char* psPath = kVolumetricPsPath) {
+		const char* integratePath = kVolumetricIntegratePsPath,
+		const char* compositePath = kVolumetricCompositePsPath) {
 		if (ShadersValid())
 			return true;
 		try {
 			const std::string vs = vsPath ? vsPath : kVolumetricVsPath;
-			const std::string ps = psPath ? psPath : kVolumetricPsPath;
+			const std::string integrate =
+				integratePath ? integratePath : kVolumetricIntegratePsPath;
+			const std::string composite =
+				compositePath ? compositePath : kVolumetricCompositePsPath;
 			if (vsModule.empty())
 				vsModule = ctx.CreateShaderModule(readFile(vs), "volumetricVert");
-			if (fragModule.empty())
-				fragModule = ctx.CreateShaderModule(readFile(ps), "volumetricFrag");
+			if (integrateFragModule.empty())
+				integrateFragModule = ctx.CreateShaderModule(readFile(integrate),
+					"volumetricIntegrateFrag");
+			if (compositeFragModule.empty())
+				compositeFragModule = ctx.CreateShaderModule(readFile(composite),
+					"volumetricCompositeFrag");
 		} catch (...) {
 			return false;
 		}
-		if (vsModule.empty() || fragModule.empty())
+		if (vsModule.empty() || integrateFragModule.empty()
+			|| compositeFragModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader ps{ .module = fragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
-		program = { .shaders = { vs, ps }, .shaderCount = 2 };
+		Shader integratePS{ .module = integrateFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader compositePS{ .module = compositeFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		integrateProgram = { .shaders = { vs, integratePS }, .shaderCount = 2 };
+		compositeProgram = { .shaders = { vs, compositePS }, .shaderCount = 2 };
 		return true;
 	}
 
 	void DestroyShaders() {
-		program = ShaderProgram();
+		integrateProgram = ShaderProgram();
+		compositeProgram = ShaderProgram();
 		vsModule = {};
-		fragModule = {};
+		integrateFragModule = {};
+		compositeFragModule = {};
 	}
 
 	bool CreateTarget(ResourceManager& ctx, RenderGraph& rg, Extent2D renderExtentIn, const VolumetricDesc& d) {
@@ -259,6 +343,97 @@ struct VolumetricFog {
 		DestroyTarget(rg);
 
 		const Extent2D out = OutputExtentFor(renderExtentIn, d.resolutionDivisor);
+		const Extent2D half = HalfExtentFor(renderExtentIn);
+
+		// ---- The half-res integration pair (created FIRST; the failure
+		// blocks unwind in reverse): the (scatter, throughput) fog +
+		// the representative view distance. ----
+		{
+			ImageCreateInfo ci{};
+			ci.extent = { half.width, half.height, 1 };
+			ci.format = d.format;
+			ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+			ci.mipLevels = 1;
+			ci.arrayLayers = 1;
+			ci.name = "volumetricFog";
+			Holder<ImageHandle> newFogImage = ctx.CreateImage(ci, nullptr);
+			Holder<ImageViewHandle> newFogView;
+			Holder<BindlessImageHandle> newFogBindless;
+			uint32_t newFogBindlessIndex = UINT32_MAX;
+			LogicalImageViewHandle newFogLogical;
+			if (!newFogImage.empty()) {
+				ImageViewCreateInfo vci{};
+				vci.viewType = ImageViewType::View2D;
+				vci.format = Format::Undefined; // inherit
+				vci.subresourceRange = { ImageAspect::Color, 0, 1, 0, 1 };
+				vci.name = "volumetricFogView";
+				newFogView = ctx.CreateImageView(newFogImage, vci);
+				if (!newFogView.empty()) {
+					newFogBindless = ctx.CreateBindlessImage(newFogView,
+						ImageLayout::ShaderReadOnlyOptimal);
+					if (!newFogBindless.empty()) {
+						newFogBindlessIndex = ctx.GetBindlessIndex(newFogBindless);
+						newFogLogical =
+							rg.AddExternalImageView(newFogView, d.format,
+								"volumetricFogLogical");
+					}
+				}
+			}
+			if (newFogLogical.empty()) {
+				return false;
+			}
+			fogImage = std::move(newFogImage);
+			fogView = std::move(newFogView);
+			fogBindless = std::move(newFogBindless);
+			fogBindlessIndex = newFogBindlessIndex;
+			fogLogical = newFogLogical;
+		}
+		{
+			ImageCreateInfo ci{};
+			ci.extent = { half.width, half.height, 1 };
+			ci.format = Format::R32_Float; // LINEAR view distance (the key)
+			ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+			ci.mipLevels = 1;
+			ci.arrayLayers = 1;
+			ci.name = "volumetricFogDepth";
+			Holder<ImageHandle> newDepthImage = ctx.CreateImage(ci, nullptr);
+			Holder<ImageViewHandle> newDepthView;
+			Holder<BindlessImageHandle> newDepthBindless;
+			uint32_t newDepthBindlessIndex = UINT32_MAX;
+			LogicalImageViewHandle newDepthLogical;
+			if (!newDepthImage.empty()) {
+				ImageViewCreateInfo vci{};
+				vci.viewType = ImageViewType::View2D;
+				vci.format = Format::Undefined; // inherit
+				vci.subresourceRange = { ImageAspect::Color, 0, 1, 0, 1 };
+				vci.name = "volumetricFogDepthView";
+				newDepthView = ctx.CreateImageView(newDepthImage, vci);
+				if (!newDepthView.empty()) {
+					newDepthBindless = ctx.CreateBindlessImage(newDepthView,
+						ImageLayout::ShaderReadOnlyOptimal);
+					if (!newDepthBindless.empty()) {
+						newDepthBindlessIndex =
+							ctx.GetBindlessIndex(newDepthBindless);
+						newDepthLogical =
+							rg.AddExternalImageView(newDepthView,
+								Format::R32_Float,
+								"volumetricFogDepthLogical");
+					}
+				}
+			}
+			if (newDepthLogical.empty()) {
+				DestroyFogTargets(rg);
+				return false;
+			}
+			fogDepthImage = std::move(newDepthImage);
+			fogDepthView = std::move(newDepthView);
+			fogDepthBindless = std::move(newDepthBindless);
+			fogDepthBindlessIndex = newDepthBindlessIndex;
+			fogDepthLogical = newDepthLogical;
+		}
+
+		// ---- The full-resolution composite output (the SAME 1:1 target
+		// the old combined pass wrote - downstream untouched). ----
 		ImageCreateInfo ci{};
 		ci.extent = { out.width, out.height, 1 };
 		ci.format = d.format;
@@ -272,8 +447,10 @@ struct VolumetricFog {
 		ci.name = d.name;
 
 		Holder<ImageHandle> newImage = ctx.CreateImage(ci, nullptr);
-		if (newImage.empty())
+		if (newImage.empty()) {
+			DestroyFogTargets(rg);
 			return false;
+		}
 
 		ImageViewCreateInfo vci{};
 		vci.viewType = ImageViewType::View2D;
@@ -282,19 +459,25 @@ struct VolumetricFog {
 		vci.name = d.viewName;
 
 		Holder<ImageViewHandle> newView = ctx.CreateImageView(newImage, vci);
-		if (newView.empty())
+		if (newView.empty()) {
+			DestroyFogTargets(rg);
 			return false;
+		}
 
 		Holder<BindlessImageHandle> newBindless =
 			ctx.CreateBindlessImage(newView, ImageLayout::ShaderReadOnlyOptimal);
-		if (newBindless.empty())
+		if (newBindless.empty()) {
+			DestroyFogTargets(rg);
 			return false;
+		}
 		const uint32_t newBindlessIndex = ctx.GetBindlessIndex(newBindless);
 
 		LogicalImageViewHandle newLogical =
 			rg.AddExternalImageView(newView, d.format, d.logicalName);
-		if (newLogical.empty())
+		if (newLogical.empty()) {
+			DestroyFogTargets(rg);
 			return false;
+		}
 
 		image = std::move(newImage);
 		view = std::move(newView);
@@ -302,10 +485,29 @@ struct VolumetricFog {
 		bindlessIndex = newBindlessIndex;
 		logicalView = newLogical;
 		extent = out;
+		halfExtent = half;
 		renderExtent = renderExtentIn;
 		format = d.format;
 		ctx.GetOrCreateSampler(SamplerCreateInfo{});
 		return true;
+	}
+
+	void DestroyFogTargets(RenderGraph& rg) {
+		if (!fogLogical.empty())
+			rg.FreeImageView(fogLogical);
+		fogLogical = {};
+		fogBindlessIndex = UINT32_MAX;
+		fogBindless = {};
+		fogView = {};
+		fogImage = {};
+		if (!fogDepthLogical.empty())
+			rg.FreeImageView(fogDepthLogical);
+		fogDepthLogical = {};
+		fogDepthBindlessIndex = UINT32_MAX;
+		fogDepthBindless = {};
+		fogDepthView = {};
+		fogDepthImage = {};
+		halfExtent = { 0, 0 };
 	}
 
 	void DestroyTarget(RenderGraph& rg) {
@@ -318,6 +520,7 @@ struct VolumetricFog {
 		image = {};
 		extent = { 0, 0 };
 		renderExtent = { 0, 0 };
+		DestroyFogTargets(rg);
 	}
 
 	// Idempotent output + program creation. Live-updates desc (lighting
@@ -326,18 +529,22 @@ struct VolumetricFog {
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D renderExtentIn,
 		const VolumetricDesc& d,
 		const char* vsPath = kVolumetricVsPath,
-		const char* psPath = kVolumetricPsPath) {
+		const char* integratePath = kVolumetricIntegratePsPath,
+		const char* compositePath = kVolumetricCompositePsPath) {
 		desc = d;
 		const Extent2D want = OutputExtentFor(renderExtentIn, d.resolutionDivisor);
+		const Extent2D wantHalf = HalfExtentFor(renderExtentIn);
 		bool ok = true;
 		if (!(TargetValid() &&
 				extent.width == want.width && extent.height == want.height &&
+				halfExtent.width == wantHalf.width
+				&& halfExtent.height == wantHalf.height &&
 				renderExtent.width == renderExtentIn.width &&
 				renderExtent.height == renderExtentIn.height &&
 				format == d.format)) {
 			ok = CreateTarget(ctx, rg, renderExtentIn, d);
 		}
-		ok = EnsureShaders(ctx, vsPath, psPath) && ok;
+		ok = EnsureShaders(ctx, vsPath, integratePath, compositePath) && ok;
 		return ok;
 	}
 
@@ -455,34 +662,91 @@ struct VolumetricFog {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_DEBUG");
 			return e ? uint32_t(std::clamp(std::atoi(e), 0, 3)) : 0u;
 		}();
+		// The perf-plan cadence knobs (the desc's pair - see the push
+		// struct's note).
+		push.giRefreshDist = (std::max)(0.1f, overrideDesc.giRefreshDist);
+		push.fieldCadence = (std::max)(0.1f, overrideDesc.fieldCadence);
 
+		// ---- Pass 1: the INTEGRATION (half res) - the march only, no
+		// HDR read. MRT: the (scatter, throughput) fog + the rep view
+		// distance. The returned pass is THIS one (the caller's read
+		// hints - the GI-volume tile masks, the Forward+ fog tile
+		// lists - attach to the pass that reads those buffers).
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");
 		pass.SetOffset(0, 0)
-			.SetExtent(extent);
+			.SetExtent(halfExtent);
 		// The raw CSM depth atlas is a sampled input only while the
 		// god-ray leg runs (the graph owns the last-shadow-write ->
 		// this-read ordering through the logical view; the Main pass
 		// binds the same view for its surface shadows).
 		if (sunShadowsEnabled)
-			pass.SetInputImages({ hdrView, depthView, shadowDepthView });
+			pass.SetInputImages({ depthView, shadowDepthView });
 		else
-			pass.SetInputImages({ hdrView, depthView });
-		pass.SetColor({ logicalView },
+			pass.SetInputImages({ depthView });
+		pass.SetColor({ fogLogical, fogDepthLogical },
 				AttachmentLoadOp::DontCare,
 				AttachmentStoreOp::Store);
-		ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
-		pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-			cmd.BindRenderPipeline(
-				progCopy,
-				VertexLayoutId::Empty,
-				DepthSettings::Disabled(),
-				StencilSettings::DefaultDisabled(),
-				BlendSettings::Opaque(),
-				MSAASettings::Count1(),
-				RasterSettings{ .cullMode = CullMode::None });
-			cmd.PushConstants(0, sizeof(VolumetricPush), &push, ShaderStage::All);
-			cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-		});
+		{
+			ShaderProgram progCopy = integrateProgram; // copyable (handles only)
+			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
+				cmd.BindRenderPipeline(
+					progCopy,
+					VertexLayoutId::Empty,
+					DepthSettings::Disabled(),
+					StencilSettings::DefaultDisabled(),
+					BlendSettings::Opaque(),
+					MSAASettings::Count1(),
+					RasterSettings{ .cullMode = CullMode::None });
+				cmd.PushConstants(0, sizeof(VolumetricPush), &push, ShaderStage::All);
+				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+			});
+		}
+
+		// ---- Pass 2: the COMPOSITE (full res) - the depth-aware
+		// bilateral upsample of the half-res fog + the HDR
+		// reconstruction into the SAME 1:1 output target the old
+		// combined pass wrote (exposure/DLSS/tonemap downstream are
+		// untouched - the whole point of the split).
+		{
+			VolumetricCompositePush cpush{};
+			cpush.frameUniforms = frameUniformsAddr;
+			cpush.hdrTextureIndex = hdrBindlessIndex;
+			cpush.fogTextureIndex = fogBindlessIndex;
+			cpush.fogDepthTextureIndex = fogDepthBindlessIndex;
+			cpush.depthTextureIndex = depthBindlessIndex;
+			cpush.samplerIndex = linearSamplerIndex;
+			cpush.invDepthW = 1.0f
+				/ static_cast<float>(std::max(1u, depthExtent.width));
+			cpush.invDepthH = 1.0f
+				/ static_cast<float>(std::max(1u, depthExtent.height));
+			cpush.maxDistance = (std::max)(1.0f, overrideDesc.maxDistance);
+			cpush.depthFalloff = 0.02f;
+			cpush.pad0 = 0;
+			cpush.pad1 = 0;
+
+			RenderPass& cpass = rg.AddPass("VolumetricComposite");
+			cpass.SetOffset(0, 0)
+				.SetExtent(extent)
+				.SetInputImages({ hdrView, depthView, fogLogical,
+					fogDepthLogical })
+				.SetColor({ logicalView },
+					AttachmentLoadOp::DontCare,
+					AttachmentStoreOp::Store);
+			ShaderProgram progCopy = compositeProgram; // copyable (handles only)
+			cpass.SetRecordingFunc([progCopy, cpush](CommandBuffer& cmd) mutable {
+				cmd.BindRenderPipeline(
+					progCopy,
+					VertexLayoutId::Empty,
+					DepthSettings::Disabled(),
+					StencilSettings::DefaultDisabled(),
+					BlendSettings::Opaque(),
+					MSAASettings::Count1(),
+					RasterSettings{ .cullMode = CullMode::None });
+				cmd.PushConstants(0, sizeof(VolumetricCompositePush), &cpush,
+					ShaderStage::All);
+				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+			});
+		}
 		return pass;
 	}
 

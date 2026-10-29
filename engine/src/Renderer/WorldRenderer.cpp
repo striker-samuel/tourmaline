@@ -767,6 +767,11 @@ namespace engine {
 		// sources from the lit-surface base for pixel-diff verification).
 		if (pins.volumetricDensity.has_value())
 			m_volumetricDensity = *pins.volumetricDensity;
+		// The perf-plan cadence knobs (the split integrate shader).
+		if (pins.volumetricGiRefresh.has_value())
+			m_volumetricGiRefresh = *pins.volumetricGiRefresh;
+		if (pins.volumetricFieldCadence.has_value())
+			m_volumetricFieldCadence = *pins.volumetricFieldCadence;
 		// Scattering-intensity pin (the density pin's sibling — a
 		// fogless-authored scene needs intensity > 0 for the pass to
 		// build at all).
@@ -3818,8 +3823,9 @@ namespace engine {
 	// World voxel fields (Engine/WorldFields) — the FOG consumer's field:
 	// a procedural world-space density field paged through the full
 	// virtual-addressing + atlas + page-table machinery and CONSUMED by
-	// the volumetric march (volumetric.frag.hlsl adds the decoded
-	// extinction to the analytic sigma; id 0 = fog per WORLD_FIELD_ID_*).
+	// the volumetric march (volumetric_integrate.frag.hlsl adds the
+	// decoded extinction to the analytic sigma — on the fieldCadence
+	// sampling interval; id 0 = fog per WORLD_FIELD_ID_*).
 	// BC4 sqrt-density bricks, 1 m voxels, three LODs (1/2/4 m).
 	// Cooked .wfb content replaces the procedural source without any
 	// consumer change (CookedBrickSource serves the same bricks); wind
@@ -13059,6 +13065,10 @@ namespace engine {
 			volDesc.useGiVolumes = m_volumetricUseGiVolumes ? 1u : 0u;
 			volDesc.jitterStrength = m_volumetricJitter;
 			volDesc.heightFalloff = m_volumetricHeightFalloff;
+			// The perf-plan cadence knobs (the split integrate shader's
+			// sampling intervals - see the desc's note).
+			volDesc.giRefreshDist = m_volumetricGiRefresh;
+			volDesc.fieldCadence = m_volumetricFieldCadence;
 			volDesc.heightBase = m_volumetricHeightBase;
 			m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, volDesc);
 			const bool volOn = m_passes.volumetric && m_volumetricEnabled
@@ -14120,6 +14130,12 @@ namespace engine {
 							ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
 							if (m_volumetricHeightFalloff > 0.0f)
 								ImGui::SliderFloat("Height base (m)", &m_volumetricHeightBase, -10.0f, 30.0f);
+							ImGui::SliderFloat("GI refresh (m)", &m_volumetricGiRefresh, 0.1f, 4.0f, "%.2f");
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("The baked-GI base refresh interval along the march (was hardcoded 0.75). Ambient radiance is low-frequency - coarser is safe; the GI-volume blend weights stay exact per segment.");
+							ImGui::SliderFloat("Field density cadence (m)", &m_volumetricFieldCadence, 0.25f, 4.0f, "%.2f");
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("The world-field fog-density sampling interval: the field is fetched at this spacing and lerped between segments (1 m default - extinction-grade accuracy).");
 							ImGui::Separator();
 							// Sun occlusion for the fog - the TWO INDEPENDENT
 							// toggles (the A/B matrix: CSM only / screen-space

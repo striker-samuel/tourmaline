@@ -231,6 +231,24 @@ RunConfig RunConfig::Parse() {
 			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_DENSITY out of range "
 				"(0..2): %s\n", v);
 	}
+	// The perf-plan cadence knobs (the split integrate shader's sampling
+	// intervals - see the header's pair).
+	if ((v = Get("TOURMALINE_VOLUMETRIC_GI_REFRESH")) != nullptr) {
+		const float gr = static_cast<float>(std::strtod(v, nullptr));
+		if (gr >= 0.1f && gr <= 4.0f)
+			c.volumetricGiRefresh = gr;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_GI_REFRESH out of "
+				"range (0.1..4): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_VOLUMETRIC_FIELD_CADENCE")) != nullptr) {
+		const float fc = static_cast<float>(std::strtod(v, nullptr));
+		if (fc >= 0.25f && fc <= 4.0f)
+			c.volumetricFieldCadence = fc;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_VOLUMETRIC_FIELD_CADENCE out of "
+				"range (0.25..4): %s\n", v);
+	}
 	// Scattering-intensity pin (0..4, the panel slider's range): the
 	// DENSITY pin's sibling — heavy densities with a scene-authored
 	// intensity 0 render NOTHING (the pass build gates on intensity >
@@ -557,6 +575,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
 		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",
 		"TOURMALINE_VOLUMETRIC", "TOURMALINE_VOLUMETRIC_STEPS", "TOURMALINE_VOLUMETRIC_DENSITY",
+		"TOURMALINE_VOLUMETRIC_GI_REFRESH", "TOURMALINE_VOLUMETRIC_FIELD_CADENCE",
 		"TOURMALINE_GODRAYS", "TOURMALINE_FOG_CSM", "TOURMALINE_GODRAYS_DEBUG",
 		"TOURMALINE_GODRAYS_INTENSITY",
 		"TOURMALINE_VOLUMETRIC_INTENSITY", "TOURMALINE_FOG_GI_DEBUG",

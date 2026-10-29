@@ -2928,6 +2928,13 @@ public:
 	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
 	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
 	float m_volumetricHeightBase = 0.0f; // reference height (m)
+	// The perf-plan cadence knobs (the split integrate shader): the
+	// baked-GI base refresh interval (was the hardcoded 0.75) and the
+	// world-field DENSITY sampling interval (the lerp cadence - two
+	// cached samples). Headless pins: TOURMALINE_VOLUMETRIC_GI_REFRESH /
+	// TOURMALINE_VOLUMETRIC_FIELD_CADENCE.
+	float m_volumetricGiRefresh = 1.5f; // m (ambient radiance - coarser safe)
+	float m_volumetricFieldCadence = 1.0f; // m (extinction-grade accuracy)
 	// ---- Sun occlusion for the fog: TWO INDEPENDENT toggles (the A/B
 	// matrix - CSM only / screen-space only / combined; multiplying the
 	// two visibility forms would darken the fog twice, so the

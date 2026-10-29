@@ -96,6 +96,12 @@ struct RunConfig {
 	// at weight 1 (EnvZoneVolumetrics), so this pin only reads on the
 	// zone-off path — authored content owns the density otherwise.
 	std::optional<float> volumetricDensity;
+	// giRefresh: 0.1..4 m - the baked-GI base refresh interval inside
+	// the fog march (was the hardcoded 0.75; the perf plan item 4).
+	std::optional<float> volumetricGiRefresh;
+	// fieldCadence: 0.25..4 m - the world-field DENSITY sampling
+	// interval (the perf plan item 3: two cached samples, lerped).
+	std::optional<float> volumetricFieldCadence;
 	// volumetricIntensity: 0..4 scattering intensity (unset = authored
 	// wins) — the density pin's sibling; a fogless-authored scene needs
 	// it to march at all (the pass gates on intensity > 0).
