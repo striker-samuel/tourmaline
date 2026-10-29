@@ -280,6 +280,18 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ClearDitherCloseup(scene, int(c.node));
 		break;
 	}
+	case EditVerb::SetCastsVolumetricShadow: {
+		const bool v = forward ? c.afterFlag : c.beforeFlag;
+		if (v)
+			MarkCastsVolumetricShadow(scene, int(c.node));
+		else
+			ClearCastsVolumetricShadow(scene, int(c.node));
+		// The flag feeds the world's item-flag classification (the
+		// CastVolumetricShadow iterator bit) - refresh the draw state
+		// so the live renderer's caster walk sees the flip.
+		RefreshNodeDrawState(c.node);
+		break;
+	}
 	case EditVerb::SetVisibility: {
 		const bool hidden = forward ? c.afterFlag : c.beforeFlag;
 		if (hidden)
@@ -1070,8 +1082,8 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 			scene.noLightmap.pop_back();
 		if (scene.lightmap.size() == n + 1)
 			scene.lightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
+		if (scene.castsVolumetricShadow.size() == n + 1)
+			scene.castsVolumetricShadow.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1214,8 +1226,8 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 			scene.noLightmap.pop_back();
 		if (scene.lightmap.size() == n + 1)
 			scene.lightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
+		if (scene.castsVolumetricShadow.size() == n + 1)
+			scene.castsVolumetricShadow.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1358,8 +1370,8 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 			scene.noLightmap.pop_back();
 		if (scene.lightmap.size() == n + 1)
 			scene.lightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
+		if (scene.castsVolumetricShadow.size() == n + 1)
+			scene.castsVolumetricShadow.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1523,8 +1535,8 @@ void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
 			scene.noLightmap.pop_back();
 		if (scene.lightmap.size() == n + 1)
 			scene.lightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
+		if (scene.castsVolumetricShadow.size() == n + 1)
+			scene.castsVolumetricShadow.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1754,8 +1766,8 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 			scene.noLightmap.pop_back();
 		if (scene.lightmap.size() == n + 1)
 			scene.lightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
+		if (scene.castsVolumetricShadow.size() == n + 1)
+			scene.castsVolumetricShadow.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -2325,8 +2337,8 @@ void EditorApp::ExecUncreateTransform(EditCmd& c) {
 			scene.noLightmap.pop_back();
 		if (scene.lightmap.size() == n + 1)
 			scene.lightmap.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
+		if (scene.castsVolumetricShadow.size() == n + 1)
+			scene.castsVolumetricShadow.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -2836,6 +2848,7 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 	case EditVerb::SetNoLightmap:
 	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetCastsVolumetricShadow:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
 			lastByNode[{ int(c.verb), c.node }] = i;
@@ -2874,6 +2887,7 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 	case EditVerb::SetNoLightmap:
 	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetCastsVolumetricShadow:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
 			superseded = lastByNode[{ int(c.verb), c.node }] != i;
@@ -2947,6 +2961,7 @@ size_t EditorApp::CoalesceHistory() {
 	case EditVerb::SetNoLightmap:
 	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetCastsVolumetricShadow:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
 			lastByNode[{ int(c.verb), c.node }] = i;
@@ -2986,6 +3001,7 @@ size_t EditorApp::CoalesceHistory() {
 	case EditVerb::SetNoLightmap:
 	case EditVerb::SetLightmap:
 	case EditVerb::SetDitherCloseup:
+	case EditVerb::SetCastsVolumetricShadow:
 	case EditVerb::SetStatic:
 	case EditVerb::AssignMaterial:
 			superseded = lastByNode[{ int(c.verb), c.node }] != i;
@@ -3043,6 +3059,7 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetNoLightmap: return "lightmap flag (legacy opt-out)";
 	case editor::EditVerb::SetLightmap: return "lightmap flag (opt-in)";
 	case editor::EditVerb::SetDitherCloseup: return "dither flag";
+	case editor::EditVerb::SetCastsVolumetricShadow: return "volumetric caster mark";
 	case editor::EditVerb::SetStatic: return "static mark";
 	case editor::EditVerb::SetVisibility: return "visibility";
 	case editor::EditVerb::Parent: return "reparent";
@@ -3288,6 +3305,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::SetDitherCloseup;
+		out.flag = c.afterFlag;
+		return true;
+	case EditVerb::SetCastsVolumetricShadow:
+		if (!needNode())
+			return false;
+		out.verb = smvk::tour::Verb::SetCastsVolumetricShadow;
 		out.flag = c.afterFlag;
 		return true;
 	case EditVerb::SetStatic:
@@ -4416,6 +4439,14 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterFlag = tc.flag;
 		out.beforeFlag = node < app.m_world->scene.ditherCloseup.size() &&
 			app.m_world->scene.ditherCloseup[node] != 0;
+		return true;
+	case smvk::tour::Verb::SetCastsVolumetricShadow:
+		if (!needNode())
+			return false;
+		out.verb = EditVerb::SetCastsVolumetricShadow;
+		out.afterFlag = tc.flag;
+		out.beforeFlag =
+			IsCastsVolumetricShadowNode(app.m_world->scene, int(node));
 		return true;
 	case smvk::tour::Verb::SetVisibility:
 		if (!needNode())

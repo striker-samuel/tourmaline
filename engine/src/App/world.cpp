@@ -17,6 +17,7 @@
 #include <cpuid.h> // __get_cpuid / __get_cpuid_count (the GCC cpuid path)
 #endif
 
+#include <cstdio>
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -323,7 +324,7 @@ namespace smvk {
 		scene.staticNode.assign(scene.hierarchy.size(), 0);
 		scene.noLightmap.assign(scene.hierarchy.size(), 0);
 		scene.lightmap.assign(scene.hierarchy.size(), 0);
-		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+		scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
 		scene.hidden.assign(scene.hierarchy.size(), 0);
 
 		for (auto& clusterPtr : clusters) {
@@ -393,16 +394,16 @@ namespace smvk {
 					scene.lightmap.end(), nodeCount, 0);
 			}
 			// Carry the dither-on-closeup flags (missing == off).
-			if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
-				scene.ditherCloseup.insert(
-					scene.ditherCloseup.end(),
-					cs.ditherCloseup.begin(),
-					cs.ditherCloseup.end()
+			if (cs.castsVolumetricShadow.size() == cs.hierarchy.size()) {
+				scene.castsVolumetricShadow.insert(
+					scene.castsVolumetricShadow.end(),
+					cs.castsVolumetricShadow.begin(),
+					cs.castsVolumetricShadow.end()
 				);
 			}
 			else {
-				scene.ditherCloseup.insert(
-					scene.ditherCloseup.end(), nodeCount, 0);
+				scene.castsVolumetricShadow.insert(
+					scene.castsVolumetricShadow.end(), nodeCount, 0);
 			}
 			// Carry visibility (hidden) flags (missing == all visible).
 			if (cs.hidden.size() == cs.hierarchy.size()) {
@@ -699,6 +700,12 @@ namespace smvk {
 		// nodes are those carrying a mesh; material drives Opaque vs Transparent.
 		// Hidden subtrees (Clarisse-style visibility overrides) are excluded:
 		// they keep None so no pass iterates them (see drawItems below).
+		// TEST RIG (see the CastVolumetricShadow site below): parsed
+		// once at the cook, before the loop.
+		const bool sFogShadowMarkAllTestRig = [] {
+			const char* e = std::getenv("TOURMALINE_FOG_SHADOW_MARK_ALL");
+			return e && std::atoi(e) != 0;
+		}();
 		flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
 		for (auto& [node, meshIdx] : scene.meshForNode) {
 			if (node >= flags.size())
@@ -710,6 +717,20 @@ namespace smvk {
 				| static_cast<IteratorFlags>(IteratorFlagBit_StaticVertexFmt);
 			if (IsStaticNode(scene, (int)node))
 				f |= static_cast<IteratorFlags>(IteratorFlagBit_Static);
+			// The coarse fog-tile caster mark (scene-owned, material-
+			// independent - see the bit's note): large occluders the
+			// dedicated volumetric shadow pass renders. TEST RIG
+			// (TOURMALINE_FOG_SHADOW_MARK_ALL=1, the headless A/B
+			// override - the editor's per-node checkbox is the
+			// authoring surface, this only exists so the tile machinery
+			// is validatable without authored content): mark EVERY
+			// opaque surface caster as a volumetric caster too.
+			if (IsCastsVolumetricShadowNode(scene, int(node))
+				|| (sFogShadowMarkAllTestRig
+					&& scene.materialForNode.find(node)
+						!= scene.materialForNode.end()))
+				f |= static_cast<IteratorFlags>(
+					IteratorFlagBit_CastVolumetricShadow);
 
 			// Material-driven classification. Falls back to Opaque if node has
 			// no material (e.g. default).

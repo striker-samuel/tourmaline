@@ -828,6 +828,16 @@ uint decalCount;                                         // 776 0 = decals off
     // takes the plain hardware trilerp, the pre-visibility behavior).
     // APPEND-ONLY tail: every pinned offset above stays put. ----
     uint giVolumeVisLayers[16];                                    // 1992 8 volumes x 2 vis layer slots
+    // ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass):
+    // the dedicated sun-oriented ortho + the tile's normalized atlas
+    // rect (against the FULL atlas - the only full-atlas-normalized
+    // consumer; every cascade normalizes against the grid). APPEND-ONLY
+    // tail. enabled = 0 -> the fog sun leg falls back to the CSM tap
+    // or fully lit. ----
+    float4x4 fogShadowVP;                                          // 2064
+    float4 fogShadowRect;                                          // 2128 xy origin + zw size
+    float fogShadowBias;                                           // 2144 NDC depth bias
+    uint fogShadowEnabled;                                         // 2148
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

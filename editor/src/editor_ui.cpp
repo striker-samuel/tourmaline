@@ -2713,6 +2713,26 @@ namespace editor {
 				inherited ? "dithered" : "off");
 		}
 
+		// Volumetric-shadow caster mark (SELF flag - the coarse fog tile):
+		// the dedicated god-ray shadow pass renders ONLY flagged meshes
+		// (large occluders). Live per frame (the renderer re-resolves the
+		// flag each frame via the CastVolumetricShadow iterator bit).
+		{
+			ImGui::Separator();
+			bool self = IsCastsVolumetricShadowNode(scene, int(node));
+			if (ImGui::Checkbox("Casts volumetric shadow", &self)) {
+				EditCmd c{};
+				c.verb = EditVerb::SetCastsVolumetricShadow;
+				c.node = node;
+				c.afterFlag = self;
+				c.beforeFlag = !self;
+				Do(c);
+			}
+			ImGui::TextDisabled("large occluders only (buildings, roofs,\n"
+				"walls, cliffs): the coarse fog-shadow tile; small props\n"
+				"and foliage belong to the surface CSM's detail");
+		}
+
 		// Terrain group/tile: height paint controls (editor paint mode).
 		if (const uint32_t group = TerrainGroupOf(node); group != UINT32_MAX) {
 			ImGui::Separator();

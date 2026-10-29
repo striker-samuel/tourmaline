@@ -313,12 +313,17 @@ RunConfig RunConfig::Parse() {
 				"(0..4): %s\n", v);
 	}
 	if ((v = Get("TOURMALINE_FOG_CSM")) != nullptr) {
-		bool on = true;
-		if (IsOnOff(Trimmed(v), on))
-			c.fogCsm = on ? OnOffPin::On : OnOffPin::Off;
+		const std::string fc = Trimmed(v);
+		if (fc == "0" || StrCaseCmp(fc.c_str(), "off") == 0)
+			c.fogCsm = 0;
+		else if (fc == "1" || StrCaseCmp(fc.c_str(), "on") == 0
+			|| StrCaseCmp(fc.c_str(), "csm") == 0)
+			c.fogCsm = 1;
+		else if (fc == "2" || StrCaseCmp(fc.c_str(), "coarse") == 0)
+			c.fogCsm = 2;
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_FOG_CSM "
-				"(want 1|on|0|off): %s\n", v);
+				"(want 0|off|1|on|csm|2|coarse): %s\n", v);
 	}
 
 	// Shadows / capture (WorldRenderer.cpp:925..1000).

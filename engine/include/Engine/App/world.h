@@ -80,6 +80,13 @@ namespace smvk {
 		// shadow, prepass and motion passes test one bit instead of
 		// fetching the material per node per pass.
 		IteratorFlagBit_Masked = 1u << 10,
+		// Volumetric-shadow caster (the coarse fog tile's marked large
+		// occluders - see Scene::castsVolumetricShadow): set alongside
+		// Opaque/CastShadow for flagged nodes so the coarse fog-shadow
+		// pass iterates a prefiltered list (forEachRenderItem's exact
+		// flag-match walk). Material-independent - the SCENE owns the
+		// mark (buildings/roofs/cliffs, not small props).
+		IteratorFlagBit_CastVolumetricShadow = 1u << 11,
 		//IteratorFlagBit_Skinned,
 	} IteratorFlagBits;
 	typedef uint32_t IteratorFlags;

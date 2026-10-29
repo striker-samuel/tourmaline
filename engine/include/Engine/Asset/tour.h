@@ -168,6 +168,8 @@ enum class Verb : uint8_t {
 	SetLightmap,    // flag (bake opt-in; default off, see Scene::lightmap)
 	SetDitherCloseup, // flag (subtree dither on camera closeup)
 	SetVisibility,  // flag: hidden self state (hierarchical, see Scene::hidden)
+	SetCastsVolumetricShadow, // flag: the coarse fog-tile caster mark
+	                          // (self flag, see Scene::castsVolumetricShadow)
 	SetStatic,      // flag: static-subtree ROOT mark (Scene::staticRoot —
 	                // frozen transforms after the initial build, mega-mesh
 	                // collapse eligibility; see Scene/static_merge.h)

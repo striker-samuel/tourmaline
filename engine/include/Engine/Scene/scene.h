@@ -667,6 +667,17 @@ struct Scene {
 	// Empty or size-mismatched == all visible. Carried through
 	// merge/serialize/world-resolve paths alongside noLightmap.
 	std::vector<uint8_t> hidden;
+	// Volumetric-shadow caster mark (the coarse fog tile, see
+	// WorldRenderer's fog sun-shadow block): castsVolumetricShadow[node]
+	// == 1 includes the node's mesh in the dedicated coarse shadow pass
+	// that occludes the fog march's sun term (large occluders only -
+	// buildings, substantial roofs, walls, cliffs; small props and
+	// foliage stay off, they belong to the surface CSM's detail). A
+	// SELF flag (per mesh instance, not subtree). Source default is
+	// off; empty or size-mismatched == off everywhere. Carried through
+	// the merge/serialize/world-resolve paths like the flag tables
+	// above.
+	std::vector<uint8_t> castsVolumetricShadow;
 };
 
 int addNode(Scene& scene, int parent, int level);
@@ -858,6 +869,32 @@ inline void ClearDitherCloseup(Scene& scene, int node)
 	if (scene.ditherCloseup.size() != scene.hierarchy.size())
 		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 	scene.ditherCloseup[(size_t)node] = 0;
+}
+
+// Volumetric-shadow caster mark (SELF flag - see the table's comment):
+// the node's mesh joins the coarse fog shadow pass. Grows if needed.
+inline void MarkCastsVolumetricShadow(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.castsVolumetricShadow.size() != scene.hierarchy.size())
+		scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
+	scene.castsVolumetricShadow[(size_t)node] = 1;
+}
+inline void ClearCastsVolumetricShadow(Scene& scene, int node)
+{
+	if (node < 0 || (size_t)node >= scene.hierarchy.size())
+		return;
+	if (scene.castsVolumetricShadow.size() != scene.hierarchy.size())
+		scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
+	scene.castsVolumetricShadow[(size_t)node] = 0;
+}
+// Self-flag predicate (empty/mismatched == off).
+inline bool IsCastsVolumetricShadowNode(const Scene& scene, int node)
+{
+	return node >= 0
+		&& (size_t)node < scene.castsVolumetricShadow.size()
+		&& scene.castsVolumetricShadow[(size_t)node] != 0;
 }
 
 // Marks node as lightmap-excluded (subtree). Grows the array if needed.

@@ -31,7 +31,7 @@ int addNode(Scene& scene, int parent, int level)
   scene.staticNode.push_back(0);
   scene.noLightmap.push_back(0);
   scene.lightmap.push_back(0);
-  scene.ditherCloseup.push_back(0);
+  scene.castsVolumetricShadow.push_back(0);
   scene.hidden.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
@@ -375,7 +375,7 @@ void loadScene(const char* fileName, Scene& scene)
   scene.noLightmap.assign(sz, 0);
   scene.lightmap.assign(sz, 0);
   scene.hidden.assign(sz, 0);
-  scene.ditherCloseup.assign(sz, 0);
+  scene.castsVolumetricShadow.assign(sz, 0);
   scene.lightForNode.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
@@ -501,6 +501,19 @@ void loadScene(const char* fileName, Scene& scene)
     if (fread(&zonesOn, sizeof(zonesOn), 1, f) == 1) {
       (void)zonesOn;
       scene.envZonesEnabled = true;
+    }
+  }
+  // Volumetric-shadow caster section (appended LAST): u32 count + count
+  // bytes (the castsVolumetricShadow self flags - the coarse fog tile's
+  // caster marks). Absent on older files (EOF) - the all-off default
+  // stands.
+  {
+    uint32_t vCount = 0;
+    if (fread(&vCount, sizeof(vCount), 1, f) == 1 &&
+        vCount > 0 && vCount <= 1024 * 1024) {
+      std::vector<uint8_t> flags(vCount, 0);
+      if (fread(flags.data(), 1, vCount, f) == vCount && vCount == sz)
+        scene.castsVolumetricShadow = std::move(flags);
     }
   }
   // Cooked punctual lights are NOT carried in this legacy format: they
@@ -632,6 +645,21 @@ void saveScene(const char* fileName, const Scene& scene)
   {
     const uint32_t zonesOn = scene.envZonesEnabled ? 1u : 0u;
     fwrite(&zonesOn, sizeof(zonesOn), 1, f);
+  }
+  // Volumetric-shadow caster section (appended LAST): u32 count + count
+  // bytes, all-zero when unused. Old loaders stop earlier - trailing
+  // bytes ignored.
+  {
+    const uint32_t vCount = (uint32_t)scene.hierarchy.size();
+    fwrite(&vCount, sizeof(vCount), 1, f);
+    if (vCount > 0) {
+      if (scene.castsVolumetricShadow.size() == scene.hierarchy.size()) {
+        fwrite(scene.castsVolumetricShadow.data(), 1, vCount, f);
+      } else {
+        std::vector<uint8_t> zeros(vCount, 0);
+        fwrite(zeros.data(), 1, vCount, f);
+      }
+    }
   }
   fclose(f);
 }
@@ -893,7 +921,7 @@ void mergeScenes(
   scene.staticNode.push_back(0);
   scene.noLightmap.push_back(0);
   scene.lightmap.push_back(0);
-  scene.ditherCloseup.push_back(0);
+  scene.castsVolumetricShadow.push_back(0);
   scene.hidden.push_back(0);
   // Cooked punctual lights are Cluster pool assets: their node links
   // (pool indices) cannot shift across scenes here — lights merge via
@@ -942,10 +970,10 @@ void mergeScenes(
     else
       scene.hidden.insert(scene.hidden.end(), s->hierarchy.size(), 0);
 
-    if (s->ditherCloseup.size() == s->hierarchy.size())
-      mergeVectors(scene.ditherCloseup, s->ditherCloseup);
+    if (s->castsVolumetricShadow.size() == s->hierarchy.size())
+      mergeVectors(scene.castsVolumetricShadow, s->castsVolumetricShadow);
     else
-      scene.ditherCloseup.insert(scene.ditherCloseup.end(), s->hierarchy.size(), 0);
+      scene.castsVolumetricShadow.insert(scene.castsVolumetricShadow.end(), s->hierarchy.size(), 0);
 
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
@@ -1164,10 +1192,10 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
     eraseSelected(scene.hidden, indicesToDelete);
   else
     scene.hidden.assign(scene.hierarchy.size(), 0);
-  if (scene.ditherCloseup.size() == oldSize)
-    eraseSelected(scene.ditherCloseup, indicesToDelete);
+  if (scene.castsVolumetricShadow.size() == oldSize)
+    eraseSelected(scene.castsVolumetricShadow, indicesToDelete);
   else
-    scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
+    scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
   RebuildStaticCache(scene);
 
   // 4b) All the perFrame should change the key values with the newIndices[] array

@@ -181,6 +181,9 @@ struct VolumetricPush {
 	uint32_t fogGiDebug = 0;     // 0 = off, 1 = the BC4 coverage view, 2 = the
 	                              //     transmittance view (throughput.xxx),
 	                              //     3 = the god-ray sun-visibility view
+	                              //     (the CSM taps), 4 = the coarse-tile
+	                              //     raw depth view, 5 = the coarse-tile
+	                              //     fog-shadow visibility view
 	// The perf-plan cadence knobs (the two TAIL additions - the block
 	// grows 136 -> 144, the old C++ tail pad consumed):
 	float giRefreshDist = 1.5f;  // the baked-GI base refresh interval (m;
@@ -660,7 +663,7 @@ struct VolumetricFog {
 		// review's prescribed density probe, replacing the composite).
 		push.fogGiDebug = [] {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_DEBUG");
-			return e ? uint32_t(std::clamp(std::atoi(e), 0, 3)) : 0u;
+			return e ? uint32_t(std::clamp(std::atoi(e), 0, 5)) : 0u;
 		}();
 		// The perf-plan cadence knobs (the desc's pair - see the push
 		// struct's note).

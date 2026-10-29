@@ -223,8 +223,14 @@ float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
 // tap per active fog segment against the RAW CSM atlas (see the former
 // volumetric.frag.hlsl header - the surface path's conventions, the
 // depth-delta soft penumbra, the fallthrough).
+// ATLAS-SHAPE NOTE: the coarse volumetric tile appends a row below the
+// cascade grid, so the physical atlas is TALLER than the grid the
+// cascade descriptors normalize against - the tap therefore samples
+// with NORMALIZED atlas UV (SampleLevel, PCFShadowAtlas's form), never
+// a texel Load scaled by the physical dims (that would smear the
+// grid-normalized y across the taller image).
 // ---------------------------------------------------------------------------
-float SampleFogSunCSM(float3 wpos, float4x4 view, uint2 atlasSize)
+float SampleFogSunCSM(float3 wpos, float4x4 view)
 {
     float viewDepth = max(-mul(view, float4(wpos, 1.0)).z, 0.0);
     int first = SelectCascadeGpu(viewDepth, vp.cascadeBuffer, vp.numCascades);
@@ -254,12 +260,9 @@ float SampleFogSunCSM(float3 wpos, float4x4 view, uint2 atlasSize)
             vp.cascadeBuffer.Get().dir.cascades[k].uvClampMin,
             vp.cascadeBuffer.Get().dir.cascades[k].uvClampMax);
 
-        uint2 texel = min(
-            uint2(atlasUV * float2(atlasSize)),
-            atlasSize - 1u);
-
+        SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
         float storedDepth = textures[vp.shadowDepthIndex]
-            .Load(int3(texel, 0)).r;
+            .SampleLevel(smp, atlasUV, 0.0).r;
 
         float bias =
             vp.cascadeBuffer.Get().dir.cascades[k].bias * 0.3;
@@ -274,6 +277,51 @@ float SampleFogSunCSM(float3 wpos, float4x4 view, uint2 atlasSize)
     }
 
     return 1.0;
+}
+
+// ---------------------------------------------------------------------------
+// The COARSE volumetric shadow tile (the perf plan item 5): the
+// dedicated sun-oriented ortho over the camera fog frustum with ONLY
+// the marked large occluders rendered (RecordVolumetricShadowCasters).
+// ONE depth fetch, NO cascade selection loop, NO PCF - the depth-delta
+// soft ramp (the CSM tap's twin, on the fog tile's own bias). The
+// tile's rect normalizes against the FULL atlas (the only such
+// consumer - every cascade normalizes against the grid). enabled = 0
+// (no tile / no marked casters / mode off) returns fully lit.
+// Works under EVSM: the tile renders through its own RAW depth pass,
+// never the EVSM moment path.
+// ---------------------------------------------------------------------------
+float SampleVolumetricShadow(float3 wpos, FrameUniforms frame)
+{
+    if (frame.fogShadowEnabled == 0u)
+        return 1.0;
+
+    float4 clip = mul(frame.fogShadowVP, float4(wpos, 1.0));
+    if (clip.w <= 0.0)
+        return 1.0;
+
+    float3 ndc = clip.xyz / clip.w;
+    float2 uv = ndc.xy * 0.5 + 0.5;
+    // Reject positions outside the receiver volume (the ortho fit over
+    // the fog frustum): never read as shadowed.
+    if (ndc.z <= 0.0 || ndc.z >= 1.0 ||
+        any(uv < 0.0) || any(uv > 1.0))
+        return 1.0;
+
+    float2 atlasUV = frame.fogShadowRect.xy
+        + uv * frame.fogShadowRect.zw;
+    atlasUV = clamp(atlasUV, frame.fogShadowRect.xy,
+        frame.fogShadowRect.xy + frame.fogShadowRect.zw);
+
+    SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
+    float storedDepth = textures[vp.shadowDepthIndex]
+        .SampleLevel(smp, atlasUV, 0.0).r;
+
+    float receiver = ndc.z - frame.fogShadowBias * 0.3;
+    static const float kFogSunSoften = 16.0;
+    float soft = max(frame.fogShadowBias * kFogSunSoften, 1e-6);
+    float delta = storedDepth - receiver;
+    return saturate(delta / soft + 0.5);
 }
 
 PSOut mainPS(PSIn IN)
@@ -385,15 +433,20 @@ PSOut mainPS(PSIn IN)
     float phase = VolPhaseHg(cosSun, vp.anisotropy) * 0.0795775; // /4pi
     float giStrength = max(frame.giIntensity, 0.0f) * max(vp.giScale, 0.0f);
 
-    // ---- CSM god-ray prep (loop-invariant): the raw atlas extents,
-    // resolved ONCE per pixel. ----
-    const bool shadowSun =
-        vp.numCascades > 0u &&
-        vp.shadowDepthIndex != 0xFFFFFFFFu &&
-        vp.useSun != 0u;
-    uint2 atlasSize = uint2(1, 1);
-    if (shadowSun)
-        textures[vp.shadowDepthIndex].GetDimensions(atlasSize.x, atlasSize.y);
+    // ---- CSM god-ray prep (loop-invariant): the shadow atlas index
+    // bound. Two lookup forms, SELECTABLE (never combined - the fog
+    // sun-shadow mode): the COARSE tile (frame.fogShadowEnabled, the
+    // dedicated marked-caster pass - works under EVSM) takes priority;
+    // the CSM cascade tap (vp.numCascades, PCF mode only) is the
+    // fallback; neither bound = the unshadowed sun leg.
+    // ----
+    const bool coarseShadowSun = frame.fogShadowEnabled != 0u;
+    const bool csmShadowSun =
+        !coarseShadowSun
+        && vp.numCascades > 0u
+        && vp.shadowDepthIndex != 0xFFFFFFFFu;
+    const bool shadowSun = (coarseShadowSun || csmShadowSun)
+        && vp.useSun != 0u;
 
     // The FULL-resolution pixel for the pixel-keyed lookups (the tile
     // lists + the GI-volume tile mask - the half-res coordinate rule).
@@ -473,9 +526,12 @@ PSOut mainPS(PSIn IN)
 
     float throughput = 1.0;
     float3 scatter = float3(0.0, 0.0, 0.0);
-    // The god-ray leg's visibility accumulator (fogGiDebug==3).
+    // The god-ray leg's visibility accumulators (fogGiDebug==3 the CSM
+    // map, ==5 the coarse-tile map - the ground-truth instruments).
     float visSum = 0.0;
     uint visCount = 0u;
+    float coarseVisSum = 0.0;
+    uint coarseVisCount = 0u;
 
     [loop]
     for (uint i = 0; i < 128; ++i)
@@ -575,15 +631,30 @@ PSOut mainPS(PSIn IN)
         }
 
         float3 source = ambient + lightsHeld;
-        // ---- The sun leg, CSM-SHADOWED (the god-ray leg, unchanged).
+        // ---- The sun leg, SHADOWED by the SELECTED fog sun-shadow
+        // mode (never both - multiplying two occlusion forms would
+        // darken the fog twice): the COARSE tile first (the dedicated
+        // marked-caster pass), else the CSM cascade tap. A BLOCKED
+        // segment is NOT skipped: visibility gates ONLY the
+        // directional sun term (under a roof the sun shaft dies, the
+        // ambient fog stays).
         if (sunOn > 0.5)
         {
             float visibility = 1.0;
             if (shadowSun && sigma > 1e-6 && segIntensity > 1e-6)
             {
-                visibility = SampleFogSunCSM(wpos, frame.view, atlasSize);
-                visSum += visibility;
-                visCount += 1u;
+                if (coarseShadowSun)
+                {
+                    visibility = SampleVolumetricShadow(wpos, frame);
+                    coarseVisSum += visibility;
+                    coarseVisCount += 1u;
+                }
+                else
+                {
+                    visibility = SampleFogSunCSM(wpos, frame.view);
+                    visSum += visibility;
+                    visCount += 1u;
+                }
             }
             source += sunHdr * (phase * max(vp.sunScale, 0.0f)) * visibility;
         }
@@ -613,10 +684,51 @@ PSOut mainPS(PSIn IN)
         OUT.outDepth = float4(repDist, 0.0, 0.0, 1.0);
         return OUT;
     }
-    // ---- The GOD-RAY visibility view (fogGiDebug==3).
+    // ---- The GOD-RAY visibility view (fogGiDebug==3): the CSM taps.
     if (vp.fogGiDebug == 3u) {
         const float meanVis = visCount > 0u
             ? visSum / float(visCount) : 1.0;
+        const float dbgGain = 1.0 / max(frame.exposure, 1e-6);
+        OUT.outFog = float4((meanVis * dbgGain).xxx, 0.0);
+        OUT.outDepth = float4(repDist, 0.0, 0.0, 1.0);
+        return OUT;
+    }
+    // ---- The COARSE-TILE views (fogGiDebug==4/5 - the perf plan
+    // item 5's diagnostics): 4 = the raw tile DEPTH at each pixel's
+    // fog-shadow projection (the tile's own content; the standard-Z
+    // stored value, bright = far/lit), 5 = the coarse fog-shadow
+    // VISIBILITY (the march's mean SampleVolumetricShadow - the
+    // mode-3 twin for the tile).
+    if (vp.fogGiDebug == 4u) {
+        const float dbgGain = 1.0 / max(frame.exposure, 1e-6);
+        float dbg = 1.0;
+        if (frame.fogShadowEnabled != 0u) {
+            float4 clip = mul(frame.fogShadowVP,
+                float4(camPos + rayDir * rayLen, 1.0));
+            if (clip.w > 0.0) {
+                float3 ndc = clip.xyz / clip.w;
+                float2 uv = ndc.xy * 0.5 + 0.5;
+                if (ndc.z > 0.0 && ndc.z < 1.0
+                    && all(uv >= float2(0.0, 0.0))
+                    && all(uv <= float2(1.0, 1.0))) {
+                    float2 atlasUV = frame.fogShadowRect.xy
+                        + uv * frame.fogShadowRect.zw;
+                    atlasUV = clamp(atlasUV, frame.fogShadowRect.xy,
+                        frame.fogShadowRect.xy + frame.fogShadowRect.zw);
+                    SamplerState smp =
+                        samplers[NonUniformResourceIndex(vp.samplerIndex)];
+                    dbg = textures[vp.shadowDepthIndex]
+                        .SampleLevel(smp, atlasUV, 0.0).r;
+                }
+            }
+        }
+        OUT.outFog = float4((dbg * dbgGain).xxx, 0.0);
+        OUT.outDepth = float4(repDist, 0.0, 0.0, 1.0);
+        return OUT;
+    }
+    if (vp.fogGiDebug == 5u) {
+        const float meanVis = coarseVisCount > 0u
+            ? coarseVisSum / float(coarseVisCount) : 1.0;
         const float dbgGain = 1.0 / max(frame.exposure, 1e-6);
         OUT.outFog = float4((meanVis * dbgGain).xxx, 0.0);
         OUT.outDepth = float4(repDist, 0.0, 0.0, 1.0);

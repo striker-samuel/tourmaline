@@ -123,10 +123,10 @@ struct RunConfig {
 	// shaft structure pixel-visible in A/B diffs even against blown
 	// sky).
 	std::optional<float> godraysIntensity;
-	// fogCsm: 1|on|0|off (unset = authored wins) - the volumetric
-	// march's per-segment CSM sun shadowing (PCF mode only: under EVSM
-	// the raw atlas is not written and the leg gates off).
-	std::optional<OnOffPin> fogCsm;
+	// fogCsm: 0|off = no fog sun shadowing, 1|on|csm (default) = the
+	// march's per-segment CSM tap, 2|coarse = the dedicated volumetric
+	// shadow tile (the marked-large-occluder pass; works under EVSM).
+	std::optional<int> fogCsm;
 
 	// ---- shadows ----
 	// ds: 1|on|0|off (empty = default)

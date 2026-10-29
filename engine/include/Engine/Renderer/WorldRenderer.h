@@ -835,6 +835,23 @@ struct FrameUniforms
 	// the plain hardware trilerp). APPEND-ONLY tail (after
 	// worldFieldsPad_): every pinned offset above stays put. ----
 	uint32_t giVolumeVisLayers[16] = {}; // 1992 8 volumes x 2 vis slots
+	// ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass - the
+	// dedicated 512-class tile appended to the raw CSM atlas, see the
+	// fog sun-shadow block + cascadedshadowmap.h's FogTileUvRect).
+	// APPEND-ONLY tail (after giVolumeVisLayers): lightVP = the
+	// sun-oriented ortho over the camera fog frustum + the upstream
+	// caster bounds; rect = the tile's normalized atlas rect (xy origin
+	// + zw size, against the FULL atlas); bias = the NDC depth bias;
+	// enabled = 0 when the tile is absent/disabled/no marked casters
+	// (the sun leg falls back to the CSM tap or fully lit). The pad
+	// mirrors HLSL's float4x4 16-byte alignment (glm::mat4 is UNALIGNED
+	// in this build and packs at 2056 - the mirror contract needs
+	// 2064).
+	uint32_t fogShadowPad_[2] = {};  // 2056 (the HLSL mat4 align gap)
+	glm::mat4 fogShadowVP{};         // 2064
+	glm::vec4 fogShadowRect{};       // 2128
+	float fogShadowBias = 0.0f;      // 2144
+	uint32_t fogShadowEnabled = 0;   // 2148
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -891,7 +908,12 @@ static_assert(offsetof(FrameUniforms, lmLayerKind) == 1940, "lmLayerKind offset:
 static_assert(offsetof(FrameUniforms, worldFields) == 1976, "worldFields offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, worldFieldCount) == 1984, "worldFieldCount offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeVisLayers) == 1992, "giVolumeVisLayers offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 2064, "FrameUniforms size: HLSL mirror (2056 of fields + the 16-align tail pad)");
+// The fog-shadow tail (the append-only block above).
+static_assert(offsetof(FrameUniforms, fogShadowVP) == 2064, "fogShadowVP offset: HLSL mirror (2056 + the mat4 16-align pad)");
+static_assert(offsetof(FrameUniforms, fogShadowRect) == 2128, "fogShadowRect offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, fogShadowBias) == 2144, "fogShadowBias offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148, "fogShadowEnabled offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 2160, "FrameUniforms size: HLSL mirror (2152 of fields + the 16-align tail pad)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -2424,6 +2446,17 @@ public:
 		smvk::ShaderProgram& opaqueProgram, const IRenderer::PushConstants& pc,
 		uint32_t casterViewIndex, bool skipFiltered,
 		const smvk::MSAASettings& msaa = smvk::MSAASettings{});
+	// The coarse VOLUMETRIC shadow tile's caster recorder (the fog
+	// god-ray pass): ONLY the CastVolumetricShadow-marked items (the
+	// scene flag's prefiltered walk - large occluders by design, never
+	// the full surface caster set), Opaque-only (buildings have no
+	// cutout), front-face-culled depth-only (the cascade passes' own
+	// anti-acne program). No per-item frustum cull for v1: the marked
+	// set is small by design and the ortho clip handles the rest (the
+	// plan's "a CPU-built caster list is acceptable").
+	void RecordVolumetricShadowCasters(smvk::CommandBuffer& cmd,
+		smvk::ShaderProgram& opaqueProgram,
+		const IRenderer::PushConstants& pc);
 	smvk::mem::LinearPtr<smvk::ThreadPool> m_shadowWorkers;
 	std::vector<std::future<void>> m_shadowFutures;
 	std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;
@@ -2935,13 +2968,26 @@ public:
 	// TOURMALINE_VOLUMETRIC_FIELD_CADENCE.
 	float m_volumetricGiRefresh = 1.5f; // m (ambient radiance - coarser safe)
 	float m_volumetricFieldCadence = 1.0f; // m (extinction-grade accuracy)
-	// ---- Sun occlusion for the fog: TWO INDEPENDENT toggles (the A/B
-	// matrix - CSM only / screen-space only / combined; multiplying the
-	// two visibility forms would darken the fog twice, so the
-	// screen-space leg composites ADDITIVELY instead).
-	// (1) The CSM fog sun shadows (SampleFogSunCSM inside the march -
-	// PCF mode only: under EVSM the raw atlas is not written).
-	bool m_fogCsmEnabled = true;
+	// ---- Sun occlusion for the fog: a THREE-WAY mode (the A/B matrix -
+	// CSM only / coarse tile only / off; multiplying the two visibility
+	// forms would darken the fog twice, so they are never combined and
+	// the screen-space god-ray leg composites ADDITIVELY either way).
+	// 0 = off, 1 = the CSM fog sun shadows (SampleFogSunCSM inside the
+	// march - PCF mode only: under EVSM the raw atlas is not written),
+	// 2 = the COARSE volumetric shadow tile (the dedicated sun-oriented
+	// 512-class tile + the marked-large-occluder caster set; reads the
+	// RAW atlas it renders itself, so it works under EVSM too - the
+	// fog sun-occlusion fallback in that mode).
+	int m_fogSunShadowMode = 1;
+	// The eligible marked-caster count this frame (the enabled gate's
+	// CPU twin - 0 = no coarse tile content, the shader falls back).
+	uint32_t m_fogShadowCasterCount = 0;
+	// The coarse tile's light VP + validity for the RENDERVIEW
+	// allocation (shadow.vert takes the VP from the view at
+	// renderViewIndex - the single source of truth for every shadow
+	// pass; a dedicated view carries the fog ortho).
+	glm::mat4 m_fogShadowViewVP{};
+	bool m_fogShadowViewValid = false;
 	// (2) The screen-space god rays (godrays.h - the Dishonored-style
 	// sun occlusion mask + radial scatter). Reads ONLY the scene depth,
 	// so it runs in PCF and EVSM modes alike - the fog sun-occlusion

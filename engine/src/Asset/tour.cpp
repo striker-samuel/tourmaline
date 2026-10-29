@@ -160,6 +160,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << "setDitherCloseup -n " << c.node << " -type \"bool\" -v "
 			<< FlagVal(c.flag);
 		break;
+	case Verb::SetCastsVolumetricShadow:
+		f << "setCastsVolumetricShadow -n " << c.node
+			<< " -type \"bool\" -v " << FlagVal(c.flag);
+		break;
 	case Verb::SetVisibility:
 		f << "setVisibility -n " << c.node << " -type \"bool\" -v "
 			<< FlagVal(c.flag);
@@ -1711,6 +1715,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
+		else if (effVerb == "setCastsVolumetricShadow" && fl.hasN && fl.hasV) {
+			c.verb = Verb::SetCastsVolumetricShadow;
+			c.node = fl.n;
+			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+		}
 		else if (effVerb == "setStatic" && fl.hasN && fl.hasV) {
 			c.verb = Verb::SetStatic;
 			c.node = fl.n;
@@ -2906,6 +2915,18 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		if (scene.ditherCloseup.size() != scene.hierarchy.size())
 			scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 		scene.ditherCloseup[target] = c.flag ? 1 : 0;
+		break;
+	}
+	case Verb::SetCastsVolumetricShadow: {
+		uint32_t target = 0;
+		if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		if (scene.castsVolumetricShadow.size() != scene.hierarchy.size())
+			scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
+		scene.castsVolumetricShadow[target] = c.flag ? 1 : 0;
 		break;
 	}
 	case Verb::SetStatic: {
@@ -4257,6 +4278,11 @@ std::string Describe(const Command& c) {
 	case Verb::SetDitherCloseup:
 		target(c.node, tgt);
 		std::snprintf(buf, sizeof(buf), "ditherCloseup %s = %d", tgt, c.flag ? 1 : 0);
+		break;
+	case Verb::SetCastsVolumetricShadow:
+		target(c.node, tgt);
+		std::snprintf(buf, sizeof(buf), "castsVolumetricShadow %s = %d",
+			tgt, c.flag ? 1 : 0);
 		break;
 	case Verb::SetVisibility:
 		target(c.node, tgt);

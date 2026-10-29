@@ -51,6 +51,8 @@ void EditorApp::RefreshNodeDrawState(uint32_t node) {
 		return;
 	smvk::IteratorFlags f = smvk::IteratorFlags(
 		smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_StaticVertexFmt);
+	if (IsCastsVolumetricShadowNode(scene, int(node)))
+		f |= smvk::IteratorFlags(smvk::IteratorFlagBit_CastVolumetricShadow);
 	auto matIt = scene.materialForNode.find(node);
 	uint32_t matIdx = smvk::World::kInvalidIndex;
 	if (matIt != scene.materialForNode.end() &&

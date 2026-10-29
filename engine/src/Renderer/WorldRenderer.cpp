@@ -425,6 +425,13 @@ static smvk::CascadedShadowMapDesc MakeShadowDesc(uint32_t resolution, float lam
 	smvk::CascadedShadowMapDesc d{};
 	d.cascadeCount = NUM_CASCADES;
 	d.cascadeResolution = resolution;
+	// The coarse VOLUMETRIC shadow tile (the fog god-ray pass): a
+	// 512-class tile appended below the cascade grid - ALWAYS allocated
+	// (a live mode flip to Coarse never recreates the atlas; +8 MB of
+	// D32 at 2048-class cascades). Invisible to every cascade consumer
+	// (the descriptors normalize against the grid extent - see
+	// BuildDirectionalLight's EVSM-safety note).
+	d.fogShadowResolution = 512;
 	d.format = SHADOW_FORMAT;
 	d.lambda = lambda;
 	d.zPadding = CASCADE_Z_PADDING;
@@ -794,8 +801,9 @@ namespace engine {
 			m_godraysEnabled = (*pins.godrays == OnOffPin::On);
 		if (pins.godraysIntensity.has_value())
 			m_godraysIntensity = *pins.godraysIntensity;
+		// The fog sun-shadow mode (0 off / 1 CSM / 2 the coarse tile).
 		if (pins.fogCsm.has_value())
-			m_fogCsmEnabled = (*pins.fogCsm == OnOffPin::On);
+			m_fogSunShadowMode = std::clamp(*pins.fogCsm, 0, 2);
 	}
 
 	// Ambient-source pin mapping: ONE spelling set shared by the onAttach
@@ -4431,6 +4439,122 @@ namespace engine {
 		// fill/upload below targets the same slice).
 		data.dsVizParams = m_context->GetBufferDeviceAddress(m_resources.dsVizParamsBuffer)
 			+ size_t(currentFrame) * sizeof(DsVizParams);
+		// ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass -
+		// the perf plan item 5): build the sun-oriented ortho over the
+		// camera's FOG frustum (near..min(far, the fog max distance))
+		// with the UPSTREAM-caster bounds (GetDirectionalLightOrthoVP's
+		// casterFit mechanism - off-screen buildings behind the camera
+		// still cast shafts INTO the view), texel-snapped at the 512
+		// tile res. Independent of the SDSM cascade splits by
+		// construction (a fresh fit, never the splits table). The
+		// casters = the CastVolumetricShadow-marked walk (large
+		// occluders only); zero eligible casters -> enabled=0 (the fog
+		// sun leg falls back to the CSM tap / fully lit, the plan's
+		// skip rule).
+		{
+			const bool coarseActive = m_fogSunShadowMode == 2
+				&& m_passes.directionalShadows
+				&& m_viewportResources.directionalShadows.Valid()
+				&& m_viewportResources.directionalShadows.fogTileExtent.width != 0
+				&& m_world;
+			if (coarseActive) {
+				const glm::vec3 toSun = env.SunDirectionToSun();
+				const glm::vec3 lightDir = -toSun; // the travel direction
+				auto cameraView = m_camera.getViewMatrix();
+				auto cameraProj = m_camera.getProjMatrix();
+				// The fog frustum's corners key on the same Y-flipped
+				// proj the CSM fit uses (the frustum-corners helper is
+				// flip-aware).
+				cameraProj[1][1] *= -1.0f;
+				const auto invView = glm::inverse(cameraView);
+				const auto invProj = glm::inverse(cameraProj);
+
+				// The upstream-caster bounds: the AABB merge of the
+				// VOLUMETRIC-marked casters (the 4697-4725 pattern with
+				// the scene flag's iterator bit - NOT the full surface
+				// caster set).
+				smvk::ShadowCasterFitBounds casterFit{};
+				uint32_t markedCount = 0;
+				{
+					glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+					m_world->forEachRenderItem(
+						smvk::IteratorFlagBit_StaticVertexFmt
+						| smvk::IteratorFlagBit_CastVolumetricShadow
+						| smvk::IteratorFlagBit_Opaque,
+						[&](const smvk::World::RenderItem& item) {
+						++markedCount;
+						const smvk::StaticMesh* meshDesc =
+							m_world->GetMesh(item.mesh);
+						if (!meshDesc) return;
+						glm::vec3 sphereCenter;
+						float sphereRadius = 0.0f;
+						smvk::MeshBoundsToWorld(
+							m_world->scene.globalTransform[item.node],
+							meshDesc->geometry.aabbMin,
+							meshDesc->geometry.aabbMax,
+							sphereCenter, sphereRadius);
+						mn = glm::min(mn, sphereCenter - sphereRadius);
+						mx = glm::max(mx, sphereCenter + sphereRadius);
+					});
+					if (mn.x <= mx.x && mn.y <= mx.y && mn.z <= mx.z) {
+						casterFit.min = mn;
+						casterFit.max = mx;
+						casterFit.valid = true;
+					}
+				}
+
+				if (markedCount > 0) {
+					glm::mat4 lv, lp;
+					float depthRange = 0.0f;
+					GetDirectionalLightOrthoVP(
+						lightDir, invView, invProj,
+						/*shadowNear*/ std::max(data.nearPlane, 0.05f),
+						/*shadowFar*/ std::min(data.farPlane,
+							(std::max)(m_volumetricMaxDistance, 1.0f)),
+						lv, lp,
+						CASCADE_Z_PADDING,
+						/*texelSnap*/ true,
+						int(m_viewportResources.directionalShadows
+							.fogTileExtent.width),
+						&depthRange,
+						casterFit.valid ? &casterFit : nullptr,
+						smvk::kDirectionalShadowMaxDistance);
+					const glm::mat4 lvp = lp * lv;
+					std::memcpy(glm::value_ptr(data.fogShadowVP),
+						glm::value_ptr(lvp), sizeof(data.fogShadowVP));
+					// The RenderView twin (shadow.vert's VP source).
+					m_fogShadowViewVP = lvp;
+					m_fogShadowViewValid = true;
+					data.fogShadowRect = m_viewportResources
+						.directionalShadows.FogTileUvRect();
+					// The NDC depth bias: ~half a tile texel of world
+					// depth (the CSM per-cascade bake's rule of thumb),
+					// clamped like the near cascades.
+					const float orthoW = (lp[0][0] != 0.0f)
+						? 2.0f / lp[0][0] : 1.0f;
+					const float orthoH = (lp[1][1] != 0.0f)
+						? 2.0f / std::abs(lp[1][1]) : 1.0f;
+					const float texelWorld = (std::max)(orthoW, orthoH)
+						/ static_cast<float>(m_viewportResources
+							.directionalShadows.fogTileExtent.width);
+					const float depthWorld = (std::min)(
+						(std::max)(texelWorld * 0.5f, 0.001f), 0.015f);
+					data.fogShadowBias = (depthRange > 1e-6f)
+						? depthWorld / depthRange : 0.0f;
+					data.fogShadowEnabled = 1u;
+					m_fogShadowCasterCount = markedCount;
+				}
+				else {
+					m_fogShadowCasterCount = 0;
+					m_fogShadowViewValid = false;
+				}
+			}
+			else {
+				m_fogShadowCasterCount = 0;
+				m_fogShadowViewValid = false;
+			}
+		}
+
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
@@ -7471,6 +7595,69 @@ namespace engine {
 			, [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
 	}
 
+	void WorldRenderer::RecordVolumetricShadowCasters(smvk::CommandBuffer& cmd,
+		smvk::ShaderProgram& opaqueProgram, const IRenderer::PushConstants& pc)
+	{
+		if (!m_world)
+			return;
+		// The coarse fog tile's caster set: the SCENE flag's prefiltered
+		// walk (CastVolumetricShadow | Opaque - marked large occluders
+		// only, no masked phase: buildings/roofs/cliffs have no cutout).
+		// No per-item light-space cull for v1 (the marked set is small
+		// by design and the ortho rasterizer clips) - the plan's
+		// "CPU-built caster list is acceptable".
+		cmd.BindRenderPipeline(
+			opaqueProgram,
+			smvk::VertexLayoutId::Static,
+			smvk::DepthSettings{
+				.depthFunc = smvk::CompareOp::LessEqual,
+				.writeEnable = true,
+				.depthTestEnable = true,
+				.depthBiasEnable = false,
+				.depthBiasConstantFactor = 0.0f,
+				.depthBiasClamp = 0.0f,
+				.depthBiasSlopeFactor = 0.0f
+			},
+			smvk::StencilSettings{},
+			smvk::BlendSettings{},
+			smvk::MSAASettings::Count1(),
+			smvk::RasterSettings{
+				.cullMode = smvk::CullMode::Front
+			}
+		);
+		cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc,
+			smvk::ShaderStage::All);
+		m_world->forEachRenderItem(
+			smvk::IteratorFlagBit_StaticVertexFmt
+			| smvk::IteratorFlagBit_CastVolumetricShadow
+			| smvk::IteratorFlagBit_Opaque,
+			[&](const smvk::World::RenderItem& item) {
+			if (item.material == smvk::World::kInvalidIndex)
+				return;
+			auto& model = m_world->scene.globalTransform[item.node];
+			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
+			if (!meshDesc)
+				return;
+			IRenderer::PushConstants objectPC{};
+			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+			// No dither fade on the marked large occluders (the fade
+			// subtree is a closeup-camera effect; push 0 so a stale
+			// partial-range flag never leaks between draws - the
+			// RecordShadowCastersDirect contract).
+			objectPC.padEnd_[0] = 0u;
+			cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
+				sizeof(objectPC.padEnd_[0]), &objectPC.padEnd_[0],
+				smvk::ShaderStage::All);
+			cmd.PushConstants(offsetof(IRenderer::PushConstants, model),
+				sizeof(objectPC.model), objectPC.model,
+				smvk::ShaderStage::All);
+			for (auto& draw_set : meshDesc->geometry.surfaces) {
+				cmd.DrawIndexed(draw_set.indexCount, 1,
+					draw_set.firstIndex, draw_set.baseVertex);
+			}
+		});
+	}
+
 	void WorldRenderer::ResetLodStats() {
 		m_lodShaderDraws = 0;
 		m_lodChainMeshes = 0;
@@ -9178,6 +9365,20 @@ namespace engine {
 		const uint32_t cascadeViewBase = m_renderViews.AllocateDirectionalLightViews(
 			dirLight,
 			{ static_cast<float>(CascadeTileExtent().width), static_cast<float>(CascadeTileExtent().height) });
+		// The coarse VOLUMETRIC shadow tile's dedicated view (the fog
+		// god-ray ortho - shadow.vert's renderViewIndex path, the single
+		// VP source; a plain AllocateView with no cascade/spot flag so
+		// no existing per-flag consumer mistakes it for one).
+		uint32_t fogShadowViewIndex = smvk::RenderViewSet::kInvalidIndex;
+		if (m_fogShadowViewValid) {
+			fogShadowViewIndex = m_renderViews.AllocateView(
+				m_fogShadowViewVP,
+				{ static_cast<float>(
+					m_viewportResources.directionalShadows.fogTileExtent.width),
+				static_cast<float>(
+					m_viewportResources.directionalShadows.fogTileExtent.height) },
+				0u /* no flag: not a cascade, not a spot */);
+		}
 		uint32_t spotViewBase = smvk::RenderViewSet::kInvalidIndex;
 		for (const smvk::GpuCascadeDescription& tile : m_spotShadowTiles) {
 			const uint32_t view = m_renderViews.AllocateSpotShadowView(
@@ -9726,6 +9927,41 @@ namespace engine {
 				}
 				(void)shadowPass;
 			}
+		}
+
+		// ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass -
+		// the perf plan item 5): ONE depth-only pass into the atlas's
+		// appended row with ONLY the CastVolumetricShadow-marked large
+		// occluders. Its own RAW tile - it renders in PCF AND EVSM
+		// modes alike (never the EVSM moment path), which makes it the
+		// fog sun-occlusion FALLBACK under EVSM. The projection rides
+		// FrameUniforms::fogShadow* (built in UpdateFrameUniforms - the
+		// sun-oriented ortho over the camera fog frustum + the
+		// upstream-caster bounds, texel-snapped at the tile res).
+		// Skipped when the mode is off, the tile is absent, or NO
+		// marked casters exist (enabled=0 -> the fog sun leg falls back
+		// to the CSM tap / fully lit).
+		if (m_fogSunShadowMode == 2
+			&& m_viewportResources.directionalShadows.Valid()
+			&& m_viewportResources.directionalShadows.fogTileExtent.width != 0
+			&& m_fogShadowCasterCount > 0
+			&& fogShadowViewIndex != smvk::RenderViewSet::kInvalidIndex) {
+			SMVK_PROFILE_SCOPE_COLOR("VolumetricShadow", Optick::Color::OrangeRed);
+			SMVK_PROFILE_TAG("markedCasters", m_fogShadowCasterCount);
+			auto& fogShadowPass = m_viewportResources.directionalShadows
+				.AddVolumetricShadowPass(*m_rendergraph);
+			IRenderer::PushConstants fogPC = pc;
+			// shadow.vert's VP source: the dedicated fog view (the
+			// renderViewIndex path - the same single-source contract the
+			// cascade/spot passes use).
+			fogPC.renderViewIndex = fogShadowViewIndex;
+			fogShadowPass.SetRecordingFunc(
+				[this, fogPC](smvk::CommandBuffer& cmd) {
+				RecordVolumetricShadowCasters(cmd,
+					m_viewportResources.directionalShadows.program,
+					fogPC);
+			});
+			(void)fogShadowPass;
 		}
 
 		// ---- Spot shadow passes - one per selected caster tile ----
@@ -13122,7 +13358,7 @@ namespace engine {
 				//      plan's own "PCF/EVSM: disabled for fog" setting;
 				//      EVSM fog shadowing would need a moment evaluation
 				//      — a separate feature).
-				const bool volSunShadows = m_fogCsmEnabled
+				const bool volSunShadows = (m_fogSunShadowMode == 1)
 					&& m_passes.directionalShadows
 					&& !EvsmActive()
 					&& m_viewportResources.directionalShadows.Valid()
@@ -14137,14 +14373,25 @@ namespace engine {
 							if (ImGui::IsItemHovered())
 								ImGui::SetTooltip("The world-field fog-density sampling interval: the field is fetched at this spacing and lerped between segments (1 m default - extinction-grade accuracy).");
 							ImGui::Separator();
-							// Sun occlusion for the fog - the TWO INDEPENDENT
-							// toggles (the A/B matrix: CSM only / screen-space
-							// only / combined). The screen-space leg composites
-							// ADDITIVELY (multiplying the two visibility forms
-							// would darken the fog twice).
-							ImGui::Checkbox("CSM fog sun shadows", &m_fogCsmEnabled);
-							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip("The volumetric march's per-segment CSM tap (SampleFogSunCSM). PCF mode only - under EVSM the raw atlas is not written and this leg gates off.");
+							// Sun occlusion for the fog - the THREE-WAY
+							// mode (never combined: multiplying the two
+							// visibility forms would darken the fog
+							// twice; the screen-space leg composites
+							// additively either way).
+							{
+								const char* fogShadowModes[3] = {
+									"Off", "CSM cascades", "Coarse tile (marked casters)"
+								};
+								int fsm = std::clamp(m_fogSunShadowMode, 0, 2);
+								if (ImGui::Combo("Fog sun shadows", &fsm,
+										fogShadowModes, 3))
+									m_fogSunShadowMode = fsm;
+								if (ImGui::IsItemHovered())
+									ImGui::SetTooltip(
+										"CSM: the march's per-segment cascade tap (PCF mode only - under EVSM the raw atlas is stale).\n"
+										"Coarse: the dedicated sun-oriented tile with ONLY Casts-Volumetric-Shadow-marked large occluders - works under EVSM.\n"
+										"Mark casters in the editor's node inspector.");
+							}
 							ImGui::Checkbox("Screen-space god rays (Dishonored)", &m_godraysEnabled);
 							if (ImGui::IsItemHovered())
 								ImGui::SetTooltip("Sun occlusion mask + radial scattering over the scene depth - additive over the CSM leg, and the fog sun-occlusion fallback under EVSM. Debug views: TOURMALINE_GODRAYS_DEBUG=1..4.");

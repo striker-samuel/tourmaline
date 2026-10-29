@@ -1310,6 +1310,21 @@ bool SerializeClusters(
 			for (const std::string& ref : scene.animClipRefs)
 				PutStr(blob, ref);
 		}
+		// Per-node volumetric-shadow caster section (v17; v16 blobs end
+		// after the anim refs): u32 count + count bytes (the
+		// castsVolumetricShadow self flags - the coarse fog tile's caster
+		// marks, see Scene::castsVolumetricShadow). All-zero when unused;
+		// missing == off on read (pre-v17 paks).
+		{
+			PutU32(blob, nodeCount);
+			if (scene.castsVolumetricShadow.size() == scene.hierarchy.size()) {
+				blob.insert(blob.end(), scene.castsVolumetricShadow.begin(),
+					scene.castsVolumetricShadow.end());
+			}
+			else {
+				blob.insert(blob.end(), nodeCount, 0);
+			}
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1813,6 +1828,20 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 					scene.animClipRefs.push_back(std::move(ref));
 			}
 		}
+		// Per-node volumetric-shadow caster section (v17; v16 blobs end
+		// after the anim refs): u32 count + count bytes. Missing == off
+		// (pre-v17 paks); present must end the blob exactly (the shared
+		// trailing-bytes check below).
+		if (c.off < c.img.size()) {
+			const uint32_t volCasterCount = c.u32();
+			if (!c.ok || volCasterCount != nodeCount)
+				return fail("bad scene volumetric-caster section");
+			if (c.off + volCasterCount > c.img.size())
+				return fail("truncated scene volumetric-caster section");
+			scene.castsVolumetricShadow.assign(
+				c.img.data() + c.off, c.img.data() + c.off + volCasterCount);
+			c.off += volCasterCount;
+		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
 	}
@@ -1821,6 +1850,8 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		scene.ditherCloseup.assign(nodeCount, 0);
 	if (scene.hidden.empty())
 		scene.hidden.assign(nodeCount, 0);
+	if (scene.castsVolumetricShadow.empty())
+		scene.castsVolumetricShadow.assign(nodeCount, 0);
 	RebuildStaticCache(scene);
 	MarkAllRootsChanged(scene);
 	recalculateGlobalTransforms(scene);

@@ -31,6 +31,8 @@ enum class EditVerb : uint8_t {
 	SetLightmap, // bake opt-in (default off; meshes opt in deliberately)
 	SetDitherCloseup, // subtree dither on camera closeup
 	SetVisibility,  // Clarisse-style self hidden flag (hierarchical effect)
+	SetCastsVolumetricShadow, // the coarse fog-tile caster mark (self
+	                          // flag, see Scene::castsVolumetricShadow)
 	SetStatic,      // static-subtree ROOT mark (frozen transforms,
 	                // mega-mesh collapse eligibility; whole tree)
 	Parent, // world parent id
