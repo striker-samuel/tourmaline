@@ -52,14 +52,19 @@ struct PSOut
 };
 #endif
 
-// Must match Engine/Rendergraph/ssr.h SsrComposePush (80 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrComposePush (88 bytes).
 // uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
 // receiverData: the classify's packed receiver metadata (the half-res
 // tap normals for the upsample's normal agreement); gbufferTextureIndex:
-// the FULL-res thin G-buffer (the center normal's source — the center
-// must be the pixel's OWN normal, not a block representative, or edge
-// detection weakens exactly where upsampling needs it). 0xffffffff on
-// either = depth-only (the MSAA/no-G-buffer fallback).
+// the FULL-res thin G-buffer (the center normal's + the output pixel's
+// OWN material's source — the center must be the pixel's OWN normal,
+// not a block representative, or edge detection weakens exactly where
+// upsampling needs it). glossThreshold: the classify's ray gate, reused
+// as the composite's MATERIAL ELIGIBILITY threshold (a matte dielectric
+// output pixel must not receive its reflective neighbor's layer even
+// when depth + normal agree — coplanar different-material surfaces).
+// 0xffffffff on gbufferTextureIndex = depth-only (the MSAA/no-G-buffer
+// fallback; eligibility stays 1).
 struct SsrComposePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -81,8 +86,10 @@ struct SsrComposePush
     uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
     uint hzbMip1Stride; // mip1 row stride (floats)
     float vignetteWidth; // NDC edge fade width (outer % of NDC range)
-    uint gbufferTextureIndex; // full-res thin G-buffer (center normal)
+    float glossThreshold; // the classify's ray gate (eligibility mask)
+    uint gbufferTextureIndex; // full-res thin G-buffer (normal + material)
     uint pad0;
+    uint pad1;
 };
 
 [[vk::push_constant]]
@@ -122,16 +129,37 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                          (float(fullPx.y) + 0.5f) * cp.invDepthH * 2.0f - 1.0f);
     float centerDist = DofViewDist(d, ndcC, frame.invProj);
 
-    // Center normal: the pixel's OWN full-res G-buffer normal (not a
-    // half-res block representative — a representative would weaken
-    // edge detection exactly where the upsample needs it). World-space
-    // oct, same domain as the receiver metadata's tap normals.
+    // Center normal + material: the pixel's OWN full-res G-buffer texel
+    // (not a half-res block representative — a representative would
+    // weaken edge detection exactly where the upsample needs it).
+    // World-space oct, same domain as the receiver metadata's tap
+    // normals. The SAME load carries the eligibility material (below).
     bool haveNormals = cp.gbufferTextureIndex != 0xffffffffu;
     float3 centerN = float3(0.0f, 0.0f, 1.0f);
+    float eligibility = 1.0f;
     if (haveNormals)
     {
         Texture2D gbTex = textures[NonUniformResourceIndex(cp.gbufferTextureIndex)];
-        centerN = SsrOctDecode(gbTex.Load(int3(fullPx, 0)).xy);
+        float4 gb = gbTex.Load(int3(fullPx, 0));
+        centerN = SsrOctDecode(gb.xy);
+        // MATERIAL ELIGIBILITY (the floating-patch fix): the output
+        // pixel's own material must be an SSR-classified reflector.
+        // The classify shoots rays only for roughness < glossThreshold
+        // or metal, so a matte dielectric's own radiance slot is
+        // silence — but the UPSAMPLE could still carry a neighboring
+        // reflective metal's layer across their shared plane (depth +
+        // normal agree on coplanar different-material surfaces; the
+        // half-res blur can blur it in too). Gate the ADD by the
+        // pixel's eligibility — the classify's own rule, with a smooth
+        // 0.1 band below the threshold so the cut does not ring. No
+        // G-buffer = eligibility 1 (the legacy path: no material data,
+        // no mask).
+        const bool metal = gb.a >= 0.5f;
+        const float roughness = saturate(gb.b);
+        eligibility = metal
+            ? 1.0f
+            : 1.0f - smoothstep(cp.glossThreshold - 0.1f, cp.glossThreshold,
+                                roughness);
     }
 
     // Half-res reflection extent derived from the full-res depth extent
@@ -249,9 +277,14 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         const float3 layer = (accA > 1e-5f)
             ? accRgb / accA
             : float3(0.0f, 0.0f, 0.0f);
+        // eligibility gates the WHOLE add symmetrically: an ineligible
+        // (matte) pixel neither gains the layer nor loses its envSpec —
+        // the classify never traced it, so its base IBL stands exactly
+        // as the base authored it.
+        const float add = conf * eligibility;
         outColor += envSpecOn
-            ? conf * (layer - envSpec)
-            : conf * layer; // the additive fallback (no export bound)
+            ? add * (layer - envSpec)
+            : add * layer; // the additive fallback (no export bound)
     }
     // NDC vignette: fade reflections near screen edges using the target
     // pixel's NDC coordinates. max(|ndc|) ramps from 0 (center) to 1

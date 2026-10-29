@@ -349,15 +349,20 @@ struct SsrSeparableBlurPush {
 };
 static_assert(sizeof(SsrSeparableBlurPush) == 72);
 
-// Must match ssr_compose.frag.hlsl SsrComposePush (80 bytes).
+// Must match ssr_compose.frag.hlsl SsrComposePush (88 bytes).
 // SSGI shared-HZB rework: center depth from HZB mip0 (the exact 1:1
 // depth copy), each tap block's representative from mip1
 // (nearest-of-2x2 = the exact value the old per-tap 4-load quad max
 // derived). No depthTextureIndex, no depth image input; hzb* REQUIRED.
 // receiverData: the classify's packed receiver metadata (the upsample's
 // tap normals) — REQUIRED while gbufferTextureIndex is bound.
-// gbufferTextureIndex: the FULL-res thin G-buffer (the center normal).
-// UINT32_MAX on either = depth-only (the MSAA/no-G-buffer fallback).
+// gbufferTextureIndex: the FULL-res thin G-buffer (the center normal +
+// the output pixel's own material for the eligibility mask).
+// glossThreshold: the classify's ray gate, reused as the composite's
+// material-eligibility threshold (a matte dielectric output pixel must
+// not receive its reflective neighbor's layer across a shared plane).
+// UINT32_MAX on gbufferTextureIndex = depth-only (the MSAA/no-G-buffer
+// fallback; eligibility stays 1).
 struct SsrComposePush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
 	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip0/mip1 reads)
@@ -380,10 +385,12 @@ struct SsrComposePush {
 	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
 	float vignetteWidth = 0.15f; // NDC edge fade width (outer % of NDC range)
-	uint32_t gbufferTextureIndex = UINT32_MAX; // full-res thin G-buffer (center normal)
+	float glossThreshold = 0.94f; // the classify's ray gate (eligibility mask)
+	uint32_t gbufferTextureIndex = UINT32_MAX; // full-res thin G-buffer (normal + material)
 	uint32_t pad0 = 0;
+	uint32_t pad1 = 0;
 };
-static_assert(sizeof(SsrComposePush) == 80);
+static_assert(sizeof(SsrComposePush) == 88);
 
 // Temporal (TAA) state for the SSR reflection layer: one per renderer,
 // advanced once per recorded frame (record cadence, never per-image —
@@ -1664,6 +1671,10 @@ ShaderProgram progCopy = copyProgram;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
 		push.vignetteWidth = overrideDesc.vignetteWidth;
+		// The material-eligibility gate (the classify's own threshold):
+		// a matte dielectric output pixel must not receive its
+		// reflective neighbor's layer across a shared plane.
+		push.glossThreshold = overrideDesc.glossThreshold;
 		// The upsample's normal agreement: the full-res center normal
 		// (the thin G-buffer) + the tap normals (the receiver metadata).
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
@@ -2069,6 +2080,15 @@ push.frameUniforms = frameUniformsAddr;
 		push.fullH = extent.height;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
+		// The temporal composite never carried the vignette width (a
+		// pre-existing omission — it rode the push default 0.15 instead
+		// of the desc's; the spatial variant set it). Paired with the
+		// eligibility gate below for one consistent temporal compose.
+		push.vignetteWidth = overrideDesc.vignetteWidth;
+		// The material-eligibility gate (the spatial variant's pair):
+		// a matte dielectric output pixel must not receive its
+		// reflective neighbor's layer across a shared plane.
+		push.glossThreshold = overrideDesc.glossThreshold;
 		// The upsample's normal agreement (the spatial variant's pair):
 		// the full-res center normal + the tap normals.
 		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
