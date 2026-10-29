@@ -145,7 +145,10 @@ $env:TOURMALINE_CAPTURE='48'
   headless churn-test pair - small budgets force evict/re-promote
   cycling). Physical sparse backing (actual page release) stays out:
   eviction frees arena RANGES for reuse, the monoblocks keep their
-  committed size
+  committed size. Per-cascade LOD demand is RETIRED (owner decision:
+  the per-view meshlet/cluster shadow culling already captures the
+  savings; cascade LOD floors risk overlap-seam artifacts - see
+  geometry_streamer.h's scope note)
 
 ## Tests
 

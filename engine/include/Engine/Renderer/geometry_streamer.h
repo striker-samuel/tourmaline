@@ -49,11 +49,23 @@
 //        the monoblocks keep their committed size, which is the plan's
 //        option 1; option 2 (sparse VkBuffer backing, physical page
 //        release) stays out.
-//   OUT: stage 5 (cascade-specific demand - cascades keep sharing the
-//        camera chain), stage 6 (disk streaming - the pak image stays
-//        pinned; promotes are pure offset math into it), skinned
-//        siblings (always resident - the deformed-heap parity math
-//        must not see ranges disappear), physical sparse backing.
+//   OUT: stage 5 (cascade-specific LOD demand) - RETIRED BY OWNER
+//        DECISION, not deferred: the GPU-driven shadow path already
+//        prunes per-view work at the MESLET/cluster level
+//        (gfx::BuildShadowList culls each view's draw list against
+//        that view's planes + the contribution sweep), and the node
+//        LOD is error-driven, so far cascades naturally receive
+//        mostly-far (already-coarse) geometry. Per-cascade LOD floors
+//        would add four candidate lists + direct-leg plumbing + more
+//        streaming demand sources, risk seam artifacts where cascades
+//        overlap (a mesh at a cascade boundary drawn at different
+//        LODs on each side), and buy little the meshlet visibility
+//        does not already capture. Do NOT build it without a measured
+//        shadow-raster cost case that the per-view culling leaves
+//        unaddressed. Also out: stage 6 (disk streaming - the pak
+//        image stays pinned; promotes are pure offset math into it),
+//        skinned siblings (always resident - the deformed-heap parity
+//        math must not see ranges disappear), physical sparse backing.
 //
 // The promote/evict paths are timeline-safe by construction: promotes
 // allocate FRESH arena ranges; evicts ride DestroyMesh's
