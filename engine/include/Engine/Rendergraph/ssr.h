@@ -431,16 +431,22 @@ inline void SsrTaaInvalidateHistory(SsrTaaState& st) {
 	st.parity = 0;
 }
 
-// Must match ssr_temporal.frag.hlsl SsrTemporalPush (64 bytes).
+// Must match ssr_temporal.frag.hlsl SsrTemporalPush (72 bytes).
 // All-scalar layout on purpose: float2 members would land at offsets
 // that are not 8-byte aligned — spirv-val rejects the module
 // ("improperly straddling vector"), same hazard as SsrBlurPush.
+// prevDepthTextureIndex: the previous record's depth mirror (the
+// ssr_depth_history.frag.hlsl copy this chain emits per temporal
+// record) — the disocclusion test's history side. UINT32_MAX = the
+// current-depth approximation (the old behavior, hosts without the
+// mirror).
 struct SsrTemporalPush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (exact view distances)
 	uint32_t currTextureIndex = UINT32_MAX; // half-res blurred reflection (this frame)
 	uint32_t historyTextureIndex = UINT32_MAX; // half-res temporal history (previous record)
 	uint32_t motionTextureIndex = UINT32_MAX; // render-extent RG16F motion (prevUV - currUV)
 	uint32_t depthTextureIndex = UINT32_MAX; // full-res depth (authority + disocclusion)
+	uint32_t prevDepthTextureIndex = UINT32_MAX; // previous record's depth mirror (history side)
 	uint32_t samplerIndex = 0; // linear clamp
 	uint32_t historyValid = 0; // 0 = warmup passthrough of curr
 	float jitterDeltaX = 0.0f; // (prevJitter - currJitter) UV (attenuation only)
@@ -451,8 +457,18 @@ struct SsrTemporalPush {
 	float invDepthH = 0.0f; // 1 / full-res depth height
 	float blend = 0.9f; // history weight 0..0.98 (before attenuation)
 	float sharpness = 10.0f; // depth edge weight (higher = tighter)
+	uint32_t pad0 = 0;
 };
-static_assert(sizeof(SsrTemporalPush) == 64);
+static_assert(sizeof(SsrTemporalPush) == 72);
+
+// Must match ssr_depth_history.frag.hlsl SsrDepthHistoryPush (8 bytes)
+// — the renderDepth -> prevDepth R32F mirror copy (one fullscreen
+// pass per temporal record; see the shader header).
+struct SsrDepthHistoryPush {
+	uint32_t depthTextureIndex = UINT32_MAX; // full-res final depth
+	uint32_t pad0 = 0;
+};
+static_assert(sizeof(SsrDepthHistoryPush) == 8);
 
 // Default SPVs (fullscreen-triangle VS shared with tonemap + SSR PS
 // trio; the trace FS is GONE — replaced by the compute chain below).
@@ -474,6 +490,10 @@ inline constexpr const char* kSsrClassifyCsPath = "content/shaders/ssr_classify.
 inline constexpr const char* kSsrIndirectCsPath = "content/shaders/ssr_prepare_indirect.cs.hlsl.spv";
 inline constexpr const char* kSsrIntersectCsPath = "content/shaders/ssr_intersect.cs.hlsl.spv";
 inline constexpr const char* kSsrCopyPsPath = "content/shaders/ssr_copy.frag.hlsl.spv";
+// The temporal depth-history copy (renderDepth -> the prevDepth R32F
+// mirror, one pass per temporal record; see ssr_depth_history.frag.hlsl).
+inline constexpr const char* kSsrDepthHistoryPsPath =
+	"content/shaders/ssr_depth_history.frag.hlsl.spv";
 
 struct ScreenSpaceReflections {
 	// Half-res target helper (raw + blurred reflection share the layout).
@@ -529,6 +549,15 @@ struct ScreenSpaceReflections {
 	// (SsrTaaState, owned by the app) gates the blend — a warmup record
 	// fills the slot with the current blurred tap instead.
 	Target history[2];
+	// The PREVIOUS record's depth mirror (the temporal disocclusion
+	// test's history side): full-res R32F, copied from the final
+	// renderDepth by the SSRDepthHistory pass at the end of every
+	// TEMPORAL record (see ssr_depth_history.frag.hlsl). historyValid
+	// implies the previous record was temporal (SsrTaaEndFrame
+	// invalidates otherwise), so the mirror is always exactly one
+	// record old when the test reads it; the warmup record never reads
+	// it. Same cross-frame image cycle as the history ping-pong.
+	Target prevDepth;
 	// Compute-chain handoff buffers (the SSSR classify->args->intersect
 	// chain): rayList (packed uint per ray, halfW*halfH capacity),
 	// rayCounter ([0] live count / [1] frozen count), indirectArgs (the
@@ -571,6 +600,7 @@ struct ScreenSpaceReflections {
 	Holder<ShaderModuleHandle> indirectModule;
 	Holder<ShaderModuleHandle> intersectModule;
 	Holder<ShaderModuleHandle> copyFragModule;
+	Holder<ShaderModuleHandle> depthHistoryFragModule; // the prevDepth mirror copy
 	ShaderProgram blurProgram{};
 	ShaderProgram separableBlurProgram{}; // H+V twin (one program, axis via push)
 	ShaderProgram temporalProgram{};
@@ -580,6 +610,7 @@ struct ScreenSpaceReflections {
 	ShaderProgram indirectProgram{}; // compute, 1x1x1
 	ShaderProgram intersectProgram{}; // compute, indirect 8x8 groups
 	ShaderProgram copyProgram{}; // fullscreen FS (tonemap VS + the copy PS)
+	ShaderProgram depthHistoryProgram{}; // fullscreen FS (tonemap VS + the depth-mirror PS)
 	SsrDesc desc{};
 
 	[[nodiscard]] bool TargetsValid() const {
@@ -588,7 +619,7 @@ struct ScreenSpaceReflections {
 		return raw.Valid() && blurred.Valid() && blurTemp.Valid() &&
 			gbuffer.Valid() &&
 			gbuffer2.Valid() &&
-			history[0].Valid() && history[1].Valid() &&
+			history[0].Valid() && history[1].Valid() && prevDepth.Valid() &&
 			rayList.Valid() && rayCounter.Valid() && indirectArgs.Valid() &&
 			radiance.Valid() && receiverData.Valid() &&
 			!image.empty() && !logicalView.empty();
@@ -598,10 +629,12 @@ struct ScreenSpaceReflections {
 			intersectProgram.shaderCount != 0 && copyProgram.shaderCount != 0 &&
 			blurProgram.shaderCount != 0 && separableBlurProgram.shaderCount != 0 &&
 			temporalProgram.shaderCount != 0 && composeProgram.shaderCount != 0 &&
+			depthHistoryProgram.shaderCount != 0 &&
 			!vsModule.empty() && !classifyModule.empty() && !indirectModule.empty() &&
 			!intersectModule.empty() && !copyFragModule.empty() &&
 			!blurFragModule.empty() && !separableBlurFragModule.empty() &&
-			!temporalFragModule.empty() && !composeFragModule.empty();
+			!temporalFragModule.empty() && !composeFragModule.empty() &&
+			!depthHistoryFragModule.empty();
 		// (composeDbgProgram deliberately excluded: it is the OPTIONAL
 		// debug twin - a missing .dbg.spv must not kill the chain; the
 		// composite pass checks it before binding.)
@@ -674,6 +707,12 @@ struct ScreenSpaceReflections {
 				intersectModule = ctx.CreateShaderModule(readFile(intersect), "ssrIntersectCS");
 			if (copyFragModule.empty())
 				copyFragModule = ctx.CreateShaderModule(readFile(copy), "ssrCopyFrag");
+			// The temporal depth-history copy: fixed path (the compose
+			// .dbg twin's discipline), loaded unconditionally — the
+			// temporal path needs it every record.
+			if (depthHistoryFragModule.empty())
+				depthHistoryFragModule =
+					ctx.CreateShaderModule(readFile(kSsrDepthHistoryPsPath), "ssrDepthHistoryFrag");
 		} catch (...) {
 			return false;
 		}
@@ -681,7 +720,8 @@ struct ScreenSpaceReflections {
 			separableBlurFragModule.empty() ||
 			temporalFragModule.empty() || composeFragModule.empty() ||
 			classifyModule.empty() || indirectModule.empty() ||
-			intersectModule.empty() || copyFragModule.empty())
+			intersectModule.empty() || copyFragModule.empty() ||
+			depthHistoryFragModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
 		Shader blurPS{ .module = blurFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
@@ -692,6 +732,7 @@ struct ScreenSpaceReflections {
 		Shader indirectCS{ .module = indirectModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		Shader intersectCS{ .module = intersectModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		Shader copyPS{ .module = copyFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader depthHistoryPS{ .module = depthHistoryFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		blurProgram = { .shaders = { vs, blurPS }, .shaderCount = 2 };
 		separableBlurProgram = { .shaders = { vs, separableBlurPS }, .shaderCount = 2 };
 		temporalProgram = { .shaders = { vs, temporalPS }, .shaderCount = 2 };
@@ -704,6 +745,7 @@ struct ScreenSpaceReflections {
 		indirectProgram = { .shaders = { indirectCS }, .shaderCount = 1 };
 		intersectProgram = { .shaders = { intersectCS }, .shaderCount = 1 };
 		copyProgram = { .shaders = { vs, copyPS }, .shaderCount = 2 };
+		depthHistoryProgram = { .shaders = { vs, depthHistoryPS }, .shaderCount = 2 };
 		return true;
 	}
 
@@ -717,6 +759,7 @@ struct ScreenSpaceReflections {
 		indirectProgram = ShaderProgram();
 		intersectProgram = ShaderProgram();
 		copyProgram = ShaderProgram();
+		depthHistoryProgram = ShaderProgram();
 		vsModule = {};
 		blurFragModule = {};
 		separableBlurFragModule = {};
@@ -727,6 +770,7 @@ struct ScreenSpaceReflections {
 		indirectModule = {};
 		intersectModule = {};
 		copyFragModule = {};
+		depthHistoryFragModule = {};
 	}
 
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
@@ -1086,9 +1130,33 @@ struct ScreenSpaceReflections {
 			DestroyBuffer(rg, newReceiverData);
 			return false;
 		}
+		// The temporal disocclusion test's depth mirror (see the
+		// prevDepth field comment): full-res R32F, written once per
+		// TEMPORAL record by the SSRDepthHistory pass. Rides the same
+		// last-created/failure-block pattern (~8 MB at 1080p).
+		Target newPrevDepth;
+		if (!CreateTarget(ctx, rg, full, Format::R32_Float,
+				"ssrPrevDepth", newPrevDepth)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
+			DestroyBuffer(rg, newRayList);
+			DestroyBuffer(rg, newRayCounter);
+			DestroyBuffer(rg, newIndirectArgs);
+			DestroyBuffer(rg, newRadiance);
+			DestroyBuffer(rg, newReceiverData);
+			DestroyTarget(rg, newBlurTemp);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
 		blurTemp = std::move(newBlurTemp);
+		prevDepth = std::move(newPrevDepth);
 		gbuffer = std::move(newGbuffer);
 		gbuffer2 = std::move(newGbuffer2);
 		history[0] = std::move(newHist0);
@@ -1114,6 +1182,7 @@ struct ScreenSpaceReflections {
 		DestroyTarget(rg, gbuffer2);
 		DestroyTarget(rg, history[0]);
 		DestroyTarget(rg, history[1]);
+		DestroyTarget(rg, prevDepth);
 		DestroyTarget(rg);
 		DestroyTarget(rg, contrib);
 		halfExtent = { 0, 0 };
@@ -1935,6 +2004,11 @@ push.frameUniforms = frameUniformsAddr;
 		push.historyTextureIndex = histPrev.bindlessIndex;
 		push.motionTextureIndex = motionBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
+		// The disocclusion test's history side: the PREVIOUS record's
+		// depth mirror (the current depth at a previous-frame coordinate
+		// was a different camera's geometry — see the shader's
+		// disocclusion note).
+		push.prevDepthTextureIndex = prevDepth.bindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
 		push.historyValid = historyValid ? 1u : 0u;
 		push.jitterDeltaX = jitterDeltaX;
@@ -1949,7 +2023,8 @@ push.frameUniforms = frameUniformsAddr;
 			RenderPass& pass = rg.AddPass(temporalName ? temporalName : "SSRTemporal");
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages({ blurred.logical, histPrev.logical, motionView, depthView })
+				.SetInputImages({ blurred.logical, histPrev.logical, motionView,
+					depthView, prevDepth.logical })
 				.SetColor({ histCurr.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -2042,6 +2117,43 @@ push.frameUniforms = frameUniformsAddr;
 					MSAASettings::Count1(),
 					RasterSettings{ .cullMode = CullMode::None });
 				cmd.PushConstants(0, sizeof(SsrComposePush), &push, ShaderStage::All);
+				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+			});
+		}
+
+		// ---- Depth history copy: the final renderDepth -> the prevDepth
+		// R32F mirror for the NEXT temporal record's disocclusion test
+		// (the temporal pass above read the PREVIOUS copy — emission
+		// order gives the read->write barrier within the frame; the next
+		// record's read is a cross-frame cycle exactly like the history
+		// ping-pong). Emitted ONLY on the temporal path on purpose:
+		// historyValid implies the previous record was temporal
+		// (SsrTaaEndFrame invalidates otherwise), so the mirror is
+		// always exactly one record old when the test reads it; the
+		// warmup record never reads it. The depth is final here (the
+		// HZB build — the SSR chain's gate — already consumed the
+		// complete renderDepth).
+		{
+			SsrDepthHistoryPush push{};
+			push.depthTextureIndex = depthBindlessIndex;
+			RenderPass& pass = rg.AddPass("SSRDepthHistory");
+			pass.SetOffset(0, 0)
+				.SetExtent(extent)
+				.SetInputImages({ depthView })
+				.SetColor({ prevDepth.logical },
+					AttachmentLoadOp::DontCare,
+					AttachmentStoreOp::Store);
+			ShaderProgram progCopy = depthHistoryProgram; // copyable (handles only)
+			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
+				cmd.BindRenderPipeline(
+					progCopy,
+					VertexLayoutId::Empty,
+					DepthSettings::Disabled(),
+					StencilSettings::DefaultDisabled(),
+					BlendSettings::Opaque(),
+					MSAASettings::Count1(),
+					RasterSettings{ .cullMode = CullMode::None });
+				cmd.PushConstants(0, sizeof(SsrDepthHistoryPush), &push, ShaderStage::All);
 				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
 			});
 		}

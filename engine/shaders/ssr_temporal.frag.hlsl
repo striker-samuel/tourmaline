@@ -28,7 +28,7 @@ struct PSOut
     float4 outColor : SV_Target0; // RGBA16F temporally filtered reflection layer
 };
 
-// Must match Engine/Rendergraph/ssr.h SsrTemporalPush (64 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrTemporalPush (72 bytes).
 // All-scalar layout on purpose: float2 members at non-8-byte-aligned
 // offsets make spirv-val reject the module ("improperly straddling
 // vector"), see SsrBlurPush in ssr_blur.frag.hlsl.
@@ -39,6 +39,9 @@ struct SsrTemporalPush
     uint historyTextureIndex; // half-res temporal history (previous record)
     uint motionTextureIndex;  // render-extent RG16F motion (prevUV - currUV)
     uint depthTextureIndex;   // full-res depth (authority + disocclusion)
+    uint prevDepthTextureIndex; // previous record's depth mirror (the
+                                // disocclusion test's history side; see
+                                // ssr_depth_history.frag.hlsl)
     uint samplerIndex;        // linear clamp
     uint historyValid;        // 0 = warmup passthrough of curr
     float jitterDeltaX;       // (prevJitter - currJitter) UV
@@ -49,6 +52,7 @@ struct SsrTemporalPush
     float invDepthH;          // 1 / full-res depth height
     float blend;              // history weight 0..0.98 (before attenuation)
     float sharpness;          // depth edge weight (higher = tighter)
+    uint pad0;
 };
 
 [[vk::push_constant]]
@@ -151,14 +155,36 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         ? hRgbAcc / hConfAcc
         : float3(0.0f, 0.0f, 0.0f);
 
-    // Disocclusion: compare the reprojected location's representative
-    // depth against the center distance. Background or a surface step
-    // means this pixel was occluded last frame — reject the history.
+    // Disocclusion: the reprojected location's depth from the
+    // PREVIOUS record's depth mirror (the SSRDepthHistory copy this
+    // chain keeps per temporal record) against the center distance —
+    // the depth of the surface the HISTORY reflected, at a
+    // last-frame coordinate. The old test sampled the CURRENT depth
+    // at the previous frame's coordinate: two cameras' geometry mixed
+    // (under camera motion the current depth at prevUv is a different
+    // world location — the test measured screen-space depth variation
+    // instead of surface identity and randomly rejected/accepted
+    // history). The prev-frame value linearizes with the same near/d
+    // form (near is frame-stable), so the relative-threshold
+    // comparison keeps its meaning; a STATIC surface's camera-motion
+    // parallax is absorbed by the tolerance + the motion-attenuated
+    // blend below. prevDepthTextureIndex = MAX = the current-depth
+    // approximation (the old behavior — a host without the mirror).
     float2 fullExtent = float2(1.0f / max(invDepthSize.x, 1e-9f),
                                1.0f / max(invDepthSize.y, 1e-9f));
     int2 tapFull = clamp(int2(prevUv * fullExtent),
                          int2(0, 0), int2(max(fullExtent - 1.0f, float2(1.0f, 1.0f))));
-    float tapD = depthTex.Load(int3(tapFull, 0)).r;
+    float tapD;
+    if (tp.prevDepthTextureIndex != 0xffffffffu)
+    {
+        Texture2D prevDepthTex =
+            textures[NonUniformResourceIndex(tp.prevDepthTextureIndex)];
+        tapD = prevDepthTex.Load(int3(tapFull, 0)).r;
+    }
+    else
+    {
+        tapD = depthTex.Load(int3(tapFull, 0)).r;
+    }
     float tapDist;
     if (DofIsBackgroundOrGarbage(tapD))
         tapDist = 1e5; // sky sentinel (matches dof.hlsli scale)
