@@ -7018,7 +7018,7 @@ namespace engine {
 				return;
 			cmd.BindRenderPipeline(
 				m_resources.shadowMaskedProgram,
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				smvk::DepthSettings{
 					.depthFunc = smvk::CompareOp::LessEqual,
 					.writeEnable = true,
@@ -7139,7 +7139,7 @@ namespace engine {
 		// has no back face to render).
 		cmd.BindRenderPipeline(
 			opaqueProgram,
-			smvk::VertexFormat::StaticVertexFormat,
+			smvk::VertexLayoutId::Static,
 			smvk::DepthSettings{
 				.depthFunc = smvk::CompareOp::LessEqual,
 				.writeEnable = true,
@@ -8817,9 +8817,16 @@ namespace engine {
 					break;
 				}
 			}
+			// Gate: the TAIL must exist (ProbeEntryCount). The old
+			// `fpLightCount > 0` term demanded a punctual light too -
+			// dead on captured-but-lightless scenes (sponza: sun only,
+			// zero fp lights - the pre-mix NEVER ran there). The tail
+			// window [lightCount, lightCount + probeCount) is valid at
+			// ANY lightCount including 0: the probe upload at the fp
+			// tail runs on probeEntries alone, and the weights pass
+			// walks [lightCount, +probeCount) whatever lightCount is.
 			if (m_probePremix.Ensure(*m_context, *m_rendergraph,
 					smvk::probepremix::kDefaultBlendSize, captureMips)
-				&& fpLightCount > 0
 				&& ProbeEntryCount() > 0) {
 				m_probePremix.AppendPasses(*m_rendergraph,
 					fpLightsAddress, fpLightCount, ProbeEntryCount(),
@@ -10003,7 +10010,7 @@ namespace engine {
 						return;
 					cmd.BindRenderPipeline(
 						m_viewportResources.motionVectors.program,
-						smvk::VertexFormat::StaticVertexFormat,
+						smvk::VertexLayoutId::Static,
 						motionDepth,
 						smvk::StencilSettings{},
 						smvk::BlendSettings::Opaque(),
@@ -10109,7 +10116,7 @@ namespace engine {
 							cull = rmat->pipeline.raster.cullMode;
 						cmd.BindRenderPipeline(
 							m_gfxRenderer.FilteredMotionProgram(),
-							smvk::VertexFormat::StaticVertexFormat,
+							smvk::VertexLayoutId::Static,
 							motionDepth,
 							smvk::StencilSettings{},
 							smvk::BlendSettings::Opaque(),
@@ -10131,7 +10138,7 @@ namespace engine {
 				// Phase 1: solid geometry, back-culled like the prepass.
 				cmd.BindRenderPipeline(
 					m_viewportResources.motionVectors.program,
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					motionDepth,
 					smvk::StencilSettings{},
 					smvk::BlendSettings::Opaque(),
@@ -10194,7 +10201,7 @@ namespace engine {
 					};
 					cmd.BindRenderPipeline(
 						m_viewportResources.motionVectors.program,
-						smvk::VertexFormat::StaticVertexFormat,
+						smvk::VertexLayoutId::Static,
 						motionDepth,
 						smvk::StencilSettings{},
 						smvk::BlendSettings::Opaque(),
@@ -10548,7 +10555,7 @@ namespace engine {
 				// line FS while P is on (binds the twin, tracks the original).
 				cmd.BindRenderPipeline(
 					wireTwinOf(bound),
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					depth,
 					noStencil,
 					blend,
@@ -10570,7 +10577,7 @@ namespace engine {
 			if (m_passes.skydome && m_skyEnabled && m_skydome.ShadersValid()) {
 				cmd.BindRenderPipeline(
 					m_skydome.program,
-					smvk::VertexFormat::Empty,
+					smvk::VertexLayoutId::Empty,
 					smvk::DepthSettings::Disabled(),
 					noStencil,
 					smvk::BlendSettings::Opaque(),
@@ -10611,7 +10618,7 @@ namespace engine {
 			cmd.BindRenderPipeline(
 				// Initial bind: the flat-line twin of main while P is on.
 				wireTwinOf(m_resources.mainProgram),
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				opaqueDepth,
 				noStencil,
 				smvk::BlendSettings::Opaque(),
@@ -10734,7 +10741,7 @@ namespace engine {
 			if (meshletDbg) {
 				cmd.BindRenderPipeline(
 					m_gfxRenderer.MeshDebugProgram(),
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					opaqueDepth,
 					noStencil,
 					smvk::BlendSettings::Opaque(),
@@ -10834,7 +10841,7 @@ namespace engine {
 			if (lodDbg) {
 				cmd.BindRenderPipeline(
 					m_gfxRenderer.MeshDebugProgram(),
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					opaqueDepth,
 					noStencil,
 					smvk::BlendSettings::Opaque(),
@@ -11144,7 +11151,7 @@ namespace engine {
 						if (d.materialId != boundMaterial) {
 				cmd.BindRenderPipeline(
 					m_gfxRenderer.MeshDebugProgram(),
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					opaqueDepth,
 					noStencil,
 					smvk::BlendSettings::Opaque(),
@@ -11220,7 +11227,7 @@ namespace engine {
 								}
 								cmd.BindRenderPipeline(
 									wireTwinOf(m_resources.vertexLitProgram),
-									smvk::VertexFormat::StaticVertexFormat,
+									smvk::VertexLayoutId::Static,
 									opaqueDepth,
 									noStencil,
 									opaqueBlend,
@@ -11270,7 +11277,7 @@ namespace engine {
 								}
 								cmd.BindRenderPipeline(
 									wireTwinOf(farSpecTrans->main),
-									smvk::VertexFormat::StaticVertexFormat,
+									smvk::VertexLayoutId::Static,
 									opaqueDepth,
 									noStencil,
 									opaqueBlend,
@@ -11321,7 +11328,7 @@ namespace engine {
 							}
 							cmd.BindRenderPipeline(
 								wireTwinOf(*prog),
-								smvk::VertexFormat::StaticVertexFormat,
+								smvk::VertexLayoutId::Static,
 								opaqueDepth,
 								noStencil,
 								opaqueBlend,
@@ -11355,7 +11362,7 @@ namespace engine {
 				&& m_gfxRenderer.DebugProgramsValid()) {
 				cmd.BindRenderPipeline(
 					m_gfxRenderer.LineProgram(),
-					smvk::VertexFormat::DebugLine,
+					smvk::VertexLayoutId::DebugLine,
 					transparentDepth,
 					noStencil,
 					smvk::BlendSettings::Opaque(),
@@ -11472,6 +11479,28 @@ namespace engine {
 			mainPass.AddImageHint(m_viewportResources.evsmDir.blurredLogical[sampleSlot], evsmRead);
 			mainPass.AddImageHint(m_viewportResources.evsmSpot.blurredLogical[sampleSlot], evsmRead);
 		}
+		// Probe pre-mix: Main's fragment samples the blended cubemap
+		// through the bindless cube view (frame.probePremixIndex -
+		// environment.hlsli's single-fetch branch). The hint is the
+		// mix pass's compute WRITE -> Main's fragment READ edge (plus
+		// the General -> ShaderReadOnlyOptimal transition):
+		// CollectPassUsages builds edges from attachment usages and
+		// explicit hints ONLY - a bindless fetch is invisible to it.
+		// The cube-view read pairs with the mix pass's per-mip storage
+		// writes because both logical views resolve to the SAME physical
+		// blendedImage. The gate mirrors the frame-uniform publish a
+		// few hundred lines above (probePremixIndex) so the edge exists
+		// exactly whenever the material can take the branch. Without
+		// it Main could be sorted - and executed - before this frame's
+		// mix (the same class of missing edge the EVSM hint above
+		// documents).
+		if (m_probePremixEnabled && m_probePremix.valid) {
+			smvk::ImageSyncRequest premixRead{};
+			premixRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			premixRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			premixRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+			mainPass.AddImageHint(m_probePremix.cubeLogical, premixRead);
+		}
 
 		// ---------------------------------------------------------------------
 		// GPU particles - additive HDR billboards over the resolved Main color
@@ -11524,7 +11553,7 @@ namespace engine {
 			particlePass.SetRecordingFunc([this, drawPush](smvk::CommandBuffer& cmd) {
 				cmd.BindRenderPipeline(
 					m_viewportResources.particles.drawProgram,
-					smvk::VertexFormat::Empty,
+					smvk::VertexLayoutId::Empty,
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::GreaterEqual,
 						.writeEnable = false,
@@ -12018,7 +12047,7 @@ namespace engine {
 								[progCopy, push](smvk::CommandBuffer& cmd) mutable {
 								cmd.BindRenderPipeline(
 									progCopy,
-									smvk::VertexFormat::Empty,
+									smvk::VertexLayoutId::Empty,
 									smvk::DepthSettings::Disabled(),
 									smvk::StencilSettings::DefaultDisabled(),
 									smvk::BlendSettings::Opaque(),
@@ -12102,7 +12131,7 @@ namespace engine {
 									[progCopy, push](smvk::CommandBuffer& cmd) mutable {
 									cmd.BindRenderPipeline(
 										progCopy,
-										smvk::VertexFormat::Empty,
+										smvk::VertexLayoutId::Empty,
 										smvk::DepthSettings::Disabled(),
 										smvk::StencilSettings::DefaultDisabled(),
 										smvk::BlendSettings::Opaque(),

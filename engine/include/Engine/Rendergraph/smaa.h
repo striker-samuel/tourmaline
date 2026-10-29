@@ -538,7 +538,7 @@ struct Smaa {
 					ClearColor(0, 0, 0, 0)); // edges (and alpha) must be cleared
 			ShaderProgram progCopy = edgeProgram;
 			pass.SetRecordingFunc([progCopy, edgePush](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(progCopy, VertexFormat::Empty,
+				cmd.BindRenderPipeline(progCopy, VertexLayoutId::Empty,
 					DepthSettings::Disabled(), StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(), MSAASettings::Count1(),
 					RasterSettings{ .cullMode = CullMode::None });
@@ -572,7 +572,7 @@ struct Smaa {
 					ClearColor(0, 0, 0, 0)); // weights (and alpha) must be cleared
 			ShaderProgram progCopy = weightsProgram;
 			pass.SetRecordingFunc([progCopy, weightsPush](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(progCopy, VertexFormat::Empty,
+				cmd.BindRenderPipeline(progCopy, VertexLayoutId::Empty,
 					DepthSettings::Disabled(), StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(), MSAASettings::Count1(),
 					RasterSettings{ .cullMode = CullMode::None });
@@ -608,7 +608,7 @@ struct Smaa {
 					AttachmentStoreOp::Store);
 			ShaderProgram progCopy = nbProgram;
 			pass.SetRecordingFunc([progCopy, nbPush](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(progCopy, VertexFormat::Empty,
+				cmd.BindRenderPipeline(progCopy, VertexLayoutId::Empty,
 					DepthSettings::Disabled(), StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(), MSAASettings::Count1(),
 					RasterSettings{ .cullMode = CullMode::None });
@@ -636,7 +636,7 @@ struct Smaa {
 					AttachmentStoreOp::Store);
 			ShaderProgram progCopy = resolveProgram;
 			pass.SetRecordingFunc([progCopy, resolvePush](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(progCopy, VertexFormat::Empty,
+				cmd.BindRenderPipeline(progCopy, VertexLayoutId::Empty,
 					DepthSettings::Disabled(), StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(), MSAASettings::Count1(),
 					RasterSettings{ .cullMode = CullMode::None });

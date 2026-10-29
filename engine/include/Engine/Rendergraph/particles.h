@@ -523,7 +523,7 @@ struct Particles {
 	// depth. StoreOp Store on depth keeps it valid for the post chain
 	// (SSR/volumetric sample it after Main; same rule as the Main pass).
 	// Caller binds drawProgram with BlendSettings::Add() +
-	// VertexFormat::Empty, pushes ParticlesDrawPush and calls
+	// VertexLayoutId::Empty, pushes ParticlesDrawPush and calls
 	// Draw(6, maxParticles, 0, 0).
 	RenderPass& AddDrawPass(RenderGraph& rg,
 		LogicalImageViewHandle colorView,

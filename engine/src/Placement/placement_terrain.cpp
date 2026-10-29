@@ -98,7 +98,7 @@ bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 			if (glm::dot(t, t) < 1e-8f)
 				t = glm::vec3(1, 0, 0);
 			t = glm::normalize(t);
-			StaticVertex v{};
+			ImportStaticVertex v{};
 			v.pos = glm::vec3(lx, hgt, lz);
 			v.color = glm::vec4(1.0f);
 			v.texCoord = glm::vec2(float(x) * invW, float(z) * invH);

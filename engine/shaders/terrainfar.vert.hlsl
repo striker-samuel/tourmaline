@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// Tiled terrain FAR vertex shader (L3 blocks, TerrainFarVertexFormat).
+// Tiled terrain FAR vertex shader (L3 blocks, TerrainFarLayout).
 //
 // VSIn location 0 = packed half4 grid (ix, iz, shade, skirtFlag) — the
 // article's Terrain IV 64-bit layout. World XZ reconstructs from the block

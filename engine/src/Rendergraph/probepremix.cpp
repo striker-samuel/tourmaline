@@ -10,20 +10,16 @@ namespace smvk::probepremix {
 namespace {
 
 // The shader payloads (paths ride the App content dir like every other
-// module; entry points mainCS by the .cs.hlsl convention).
+// module; entry points mainCS by the .cs.hlsl convention). readFile
+// (platform.h) carries the exe-relative fallback - a bare ifstream here
+// stranded the module whenever CWD != the exe dir (the ctest runs:
+// tests spawn with the caller's CWD, and the module silently failed
+// Ensure with "shader missing" while every readFile-based module kept
+// working).
 inline constexpr const char* kWeightsCsPath =
 	"content/shaders/probepremix_weights.cs.hlsl.spv";
 inline constexpr const char* kMixCsPath =
 	"content/shaders/probepremix_mix.cs.hlsl.spv";
-
-std::vector<char> ReadShader(const char* path) {
-	std::ifstream in(path, std::ios::binary);
-	if (!in)
-		return {};
-	return std::vector<char>(
-		(std::istreambuf_iterator<char>(in)),
-		std::istreambuf_iterator<char>());
-}
 
 } // namespace
 
@@ -74,6 +70,15 @@ bool ProbePremix::Ensure(ResourceManager& ctx, RenderGraph& rg,
 			cubeView = std::move(view);
 			cubeBindless = std::move(bindless);
 			cubeBindlessIndex = ctx.GetBindlessIndex(cubeBindless);
+		// Persistent logical alias for the sampled cube view: the
+		// material pass (Main) hints its fragment read on THIS handle
+		// (created once here, freed in Destroy - the same discipline
+		// as the per-mip storage handles below; per-frame re-minting
+		// would leak graph pool entries).
+		cubeLogical = rg.AddExternalImageView(cubeView,
+			Format::RGBA16_Float, "premix cube logical");
+		if (cubeLogical.empty())
+			return false;
 		}
 
 		// Per-mip storage views: 2D-array over the 6 face layers at ONE
@@ -121,13 +126,30 @@ bool ProbePremix::Ensure(ResourceManager& ctx, RenderGraph& rg,
 			sizeof(BlendSelectionGpu), BufferType_Storage, "premix selection");
 		if (sel.empty())
 			return false;
+		// Creation-zero-fill (the GPU-counter convention): the mix pass
+		// AND the material's single-fetch branch read sel.count off this
+		// buffer BEFORE the weights pass ever writes it - a frame with the
+		// module valid but the probe tail empty (AppendPasses skipped)
+		// still publishes probePremixIndex, and fresh DEVICE_LOCAL
+		// allocations recycle freed pages, so an unfilled count can
+		// start from garbage and the consumers would dereference
+		// garbage cubemap indices.
+		const BlendSelectionGpu zeroSelection{};
+		ctx.UploadDataToBuffer(sel, &zeroSelection, sizeof(zeroSelection),
+			PipelineStageBit_All, AccessFlags::ShaderRead, 0, 0);
 		selectionBuffer = std::move(sel);
 		selectionBda = ctx.GetBufferDeviceAddress(selectionBuffer);
+		// The ONE logical alias for the module's lifetime: both
+		// AppendPasses hints reuse this handle (per-call minting
+		// allocated a fresh logical buffer per pass per frame - the
+		// graph's logical pools are never cleared by NewFrame).
+		selectionLogical = rg.AddExternalBuffer(selectionBuffer,
+			"premix selection");
 	}
 
 	// Programs.
 	{
-		std::vector<char> code = ReadShader(kWeightsCsPath);
+		std::vector<char> code = readFile(kWeightsCsPath);
 		if (code.empty()) {
 			std::cerr << "[ProbePremix] weights shader missing: "
 				<< kWeightsCsPath << "\n";
@@ -143,7 +165,7 @@ bool ProbePremix::Ensure(ResourceManager& ctx, RenderGraph& rg,
 		};
 	}
 	{
-		std::vector<char> code = ReadShader(kMixCsPath);
+		std::vector<char> code = readFile(kMixCsPath);
 		if (code.empty()) {
 			std::cerr << "[ProbePremix] mix shader missing: "
 				<< kMixCsPath << "\n";
@@ -168,6 +190,12 @@ void ProbePremix::Destroy(RenderGraph& rg) {
 		if (!logical.empty())
 			rg.FreeImageView(logical);
 	mipLogical.clear();
+	if (!cubeLogical.empty())
+		rg.FreeImageView(cubeLogical);
+	cubeLogical = {};
+	if (!selectionLogical.empty())
+		rg.FreeBuffer(selectionLogical);
+	selectionLogical = {};
 	mipStorageIndex.clear();
 	mipStorageBindless.clear();
 	mipStorageViews.clear();
@@ -194,10 +222,10 @@ bool ProbePremix::AppendPasses(RenderGraph& rg, uint64_t lightsBda,
 
 	// ---- Pass A: weights (one group; deterministic selection) ----
 	{
-		// Graph buffer handle for the selection (barriered write; the
-		// External buffer exists for the whole module lifetime).
-		LogicalBufferHandle selectionLogical =
-			rg.AddExternalBuffer(selectionBuffer, "premix selection");
+		// Graph buffer handle for the selection write: the module's ONE
+		// persistent alias (Ensure minted it; sharing it across both
+		// passes is what builds the same-frame write->read edge, and
+		// re-minting it here would leak a logical entry per frame).
 		WeightsPush push{};
 		push.lights = lightsBda;
 		push.selection = selectionBda;
@@ -223,11 +251,9 @@ bool ProbePremix::AppendPasses(RenderGraph& rg, uint64_t lightsBda,
 
 	// ---- Pass B: mix (one dispatch per mip; groups cover face*8x8) ----
 	{
-		// Graph buffer handle for the selection read (the weights pass
-		// wrote it; the same-frame edge resolves through the shared
-		// logical buffer).
-		LogicalBufferHandle selectionLogical =
-			rg.AddExternalBuffer(selectionBuffer, "premix selection");
+		// Graph buffer handle for the selection read: the SAME alias as
+		// the weights pass hinted (the shared handle is the same-frame
+		// write->read edge).
 		RenderPass& pass = rg.AddComputePass("ProbePremixMix");
 		// Selection read (the weights pass wrote it; same-frame edge).
 		BufferSyncRequest selRead{};

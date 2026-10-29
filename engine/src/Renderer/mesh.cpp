@@ -62,7 +62,7 @@ namespace smvk {
 		return out;
 	}
 
-// GetVertexFormatDescription lives in vertex_format.cpp and this file's
+// GetVertexLayoutDesc lives in vertex_format.cpp and this file's
 // static-heap allocation is pure facade: BOTH compile into the Vulkan
 // engine AND engine_d3d12 (the whole mesh/static-heap layer is
 // backend-neutral; the CommandBuffer-side bind lives per-backend).
@@ -74,24 +74,34 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	// vmaVirtualAllocate on a null block because it never called this).
 	if (staticVertexFmtHeap.m_staticVertexBlock.Valid()
 		&& staticVertexFmtHeap.m_staticIndexBlock.Valid()
+		&& staticVertexFmtHeap.m_staticLightmapBlock.Valid()
 		&& staticVertexFmtHeap.m_staticVertexPosBuffer.valid()
 		&& staticVertexFmtHeap.m_staticVertexShadingBuffer.valid()
+		&& staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid()
 		&& staticVertexFmtHeap.m_staticIndexBuffer.valid()) {
 		return;
 	}
 	// The budgets come from mem::config::Runtime() (the compile-time
 	// defaults + the TOURMALINE_MEM_STATIC_VERTEX_MB /
-	// TOURMALINE_MEM_STATIC_INDEX_MB program-entry overrides) — read AT
-	// ALLOCATION TIME. The old code parsed the env overrides into the
-	// runtime config but still allocated the hardcoded 512 MiB values, so
-	// the overrides silently did nothing.
+	// TOURMALINE_MEM_STATIC_INDEX_MB /
+	// TOURMALINE_MEM_STATIC_LIGHTMAP_MB program-entry overrides) — read
+	// AT ALLOCATION TIME. The old code parsed the env overrides into
+	// the runtime config but still allocated the hardcoded 512 MiB
+	// values, so the overrides silently did nothing.
 	const uint64_t vertexHeapBytes =
 		mem::config::Runtime().staticVertexHeap;
 	const uint64_t indexHeapBytes =
 		mem::config::Runtime().staticIndexHeap;
+	// The OPTIONAL lightmap stream's own (much smaller) budget: carved
+	// only for meshes with chart data — lightmaps are deprecated, so
+	// this heap is usually empty.
+	const uint64_t lightmapHeapBytes =
+		mem::config::Runtime().staticLightmapHeap;
+	// With the 16-byte shading stream the position stream (12 B) is the
+	// binding constraint (the old 24-byte shading stream was).
 	const uint64_t maxVertices = std::min(
-		vertexHeapBytes / sizeof(smvk::VertexPos),
-		vertexHeapBytes / sizeof(smvk::VertexShading)
+		vertexHeapBytes / sizeof(smvk::PackedVertexPosition),
+		vertexHeapBytes / sizeof(smvk::PackedVertexShading)
 	);
 	staticVertexFmtHeap.m_staticVertexPosBuffer =
 		ctx.CreateBuffer(vertexHeapBytes,
@@ -100,6 +110,10 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	staticVertexFmtHeap.m_staticVertexShadingBuffer =
 		ctx.CreateBuffer(vertexHeapBytes,
 		                 smvk::BufferType_Vertex, "static vertex shading")
+			.release();
+	staticVertexFmtHeap.m_staticVertexLightmapBuffer =
+		ctx.CreateBuffer(lightmapHeapBytes,
+		                 smvk::BufferType_Storage, "static vertex lightmap")
 			.release();
 	staticVertexFmtHeap.m_staticIndexBuffer =
 		ctx.CreateBuffer(indexHeapBytes,
@@ -111,6 +125,14 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	// same vertex count at the same vertexBase).
 	// ---------------------------------------------------------------------
 	staticVertexFmtHeap.m_staticVertexBlock.Initialize(maxVertices);
+
+	// ---------------------------------------------------------------------
+	// Lightmap virtual allocator — VERTEX units, INDEPENDENTLY packed
+	// (only lightmapped meshes carve; the bases are per-mesh, see
+	// StaticMesh::lightmapBase).
+	// ---------------------------------------------------------------------
+	staticVertexFmtHeap.m_staticLightmapBlock.Initialize(
+		lightmapHeapBytes / sizeof(smvk::PackedVertexLightmap));
 
 	// ---------------------------------------------------------------------
 	// Index virtual allocator — BYTES.

@@ -10,36 +10,44 @@
 #include <Engine/smvk.h>
 #include <Engine/Renderer/mesh.h>
 
+#include <cassert>
+
 namespace smvk {
 
-const VertexFormatDescription& GetVertexFormatDescription(VertexFormat format) {
+const VertexLayoutDesc& GetVertexLayoutDesc(VertexLayoutId format) {
 	switch (format)
 	{
-	case VertexFormat::Empty:
+	case VertexLayoutId::Empty:
 	{
-		static const VertexFormatDescription emptyFormat{};
+		static const VertexLayoutDesc emptyFormat{};
 		return emptyFormat;
 	}
-	case VertexFormat::StaticVertexFormat:
-		return StaticVertexFormat;
-	case VertexFormat::LightmappedStaticVertexFormat:
+	case VertexLayoutId::Static:
+		return StaticLayout;
+	case VertexLayoutId::StaticLightmapped:
 		// Gated-off lightmap option (see mesh.h): nothing binds it
 		// while lightmaps stay deprecated; the case keeps the format
 		// reachable the moment the chart-unpack VSs return.
-		return LightmappedStaticVertexFormat;
-	case VertexFormat::SkinnedVertexFormat:
-		return SkinnedVertexFormat;
-	case VertexFormat::DebugLine:
-		return DebugLineFormat;
-	case VertexFormat::TerrainVertexFormat:
-		return TerrainVertexFormat;
-	case VertexFormat::TerrainLowVertexFormat:
-		return TerrainLowVertexFormat;
-	case VertexFormat::TerrainFarVertexFormat:
-		return TerrainFarVertexFormat;
+		return StaticLightmappedLayout;
+	case VertexLayoutId::Skinned:
+		return SkinnedLayout;
+	case VertexLayoutId::DebugLine:
+		return DebugLineLayout;
+	case VertexLayoutId::TerrainFull:
+		return TerrainFullLayout;
+	case VertexLayoutId::TerrainReduced:
+		return TerrainReducedLayout;
+	case VertexLayoutId::TerrainFarGrid:
+		return TerrainFarLayout;
 	}
-	static const VertexFormatDescription fallbackFormat{};
-	return fallbackFormat;
+	// An out-of-enum value can only come from memory corruption or a
+	// garbage cast — an INVALID layout id must never masquerade as an
+	// intentionally vertex-free pipeline (Empty above is the ONLY
+	// legitimate empty layout). Loud in every build; the returned
+	// description is unreachable fallback data.
+	assert(false && "GetVertexLayoutDesc: unknown VertexLayoutId id");
+	static const VertexLayoutDesc invalidFormat{};
+	return invalidFormat;
 }
 
 } // namespace smvk

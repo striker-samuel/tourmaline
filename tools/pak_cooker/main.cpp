@@ -649,35 +649,41 @@ namespace paktool {
 				continue;
 			}
 			// ---- stream layout (packed-SoA; see cluster_serializer.cpp) ----
-			// Mesh blobs: [u32 layout marker (=1) | u64 posOff | u64 shadeOff
-			// | u64 idxOff | VertexPos[] | VertexShading[] | u32[]]. The
-			// shading stream carries chartUv PACKED (RG16_UNORM at shade+8)
-			// and chart (u32 at shade+20); positions are float3 at pos,
-			// stride 12.
-			size_t posBase = 0, shadeBase = 0, idxBase = 0;
+			// Mesh blobs (marker 2): [u32 layout marker | u64 posOff |
+			// u64 shadeOff | u64 lmOff | u64 idxOff |
+			// PackedVertexPosition[] | PackedVertexShading[16B] |
+			// PackedVertexLightmap[8B, optional] | u32[]]. Chart data rides
+			// the SEPARATE lightmap stream (lmOff = 0 = none); positions
+			// are float3 at pos, stride 12.
+			size_t posBase = 0, lmBase = 0, idxBase = 0;
 			{
 				const uint32_t layout = c.u32();
 				const uint64_t posOff = c.u64();
 				const uint64_t shadeOff = c.u64();
+				const uint64_t lmOff = c.u64();
 				const uint64_t idxOff = c.u64();
-				if (!c.ok || layout != 1u
-					|| (size_t)posOff + (size_t)vc * sizeof(smvk::VertexPos) > c.img.size()
-					|| (size_t)shadeOff + (size_t)vc * sizeof(smvk::VertexShading) > c.img.size()
+				if (!c.ok || layout != 2u
+					|| (size_t)posOff + (size_t)vc * sizeof(smvk::PackedVertexPosition) > c.img.size()
+					|| (size_t)shadeOff + (size_t)vc * sizeof(smvk::PackedVertexShading) > c.img.size()
+					|| lmOff + size_t(lmOff != 0) * vc * sizeof(smvk::PackedVertexLightmap) > c.img.size()
 					|| (size_t)idxOff + (size_t)ic * 4 > c.img.size()) {
 					tool::out() << "    [truncated mesh blob: " << e->path << "]\n";
 					continue;
 				}
 				posBase = (size_t)posOff;
-				shadeBase = (size_t)shadeOff;
+				lmBase = (size_t)lmOff;
 				idxBase = (size_t)idxOff;
 			}
-			// chart-local uv + chart id probe (SoA shading stream).
+			// chart-local uv + chart id probe (the optional lightmap
+			// stream; lmBase 0 = the blob carries no chart data).
 			auto chartAt = [&](size_t v) -> std::tuple<float, float, uint32_t> {
-				const uint8_t* p = c.img.data() + shadeBase
-					+ v * sizeof(smvk::VertexShading);
+				if (lmBase == 0)
+					return { 0.0f, 0.0f, 0xFFFFFFFFu };
+				const uint8_t* p = c.img.data() + lmBase
+					+ v * sizeof(smvk::PackedVertexLightmap);
 				uint32_t cuv = 0, cid = 0;
-				memcpy(&cuv, p + 8, 4);
-				memcpy(&cid, p + 20, 4);
+				memcpy(&cuv, p + 0, 4);
+				memcpy(&cid, p + 4, 4);
 				return { float(cuv & 0xFFFFu) / 65535.0f,
 					float(cuv >> 16) / 65535.0f, cid };
 			};
@@ -771,7 +777,7 @@ namespace paktool {
 				auto posAt = [&](size_t v) {
 					float p[3];
 					memcpy(p, c.img.data() + posBase
-						+ v * sizeof(smvk::VertexPos), 12);
+						+ v * sizeof(smvk::PackedVertexPosition), 12);
 					return glm::vec3(p[0], p[1], p[2]);
 				};
 				for (uint32_t t = 0; t * 3 + 3 <= ic; ++t) {

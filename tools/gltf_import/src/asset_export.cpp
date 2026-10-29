@@ -721,7 +721,12 @@ constexpr uint32_t kMeshMagic =
 // binding (lmChunk + chart xforms) so the COOK can write cooked
 // artifacts back and pak assembly needs no bake. v1 files still
 // load (the binding defaults to uncharted).
-constexpr uint32_t kMeshVersion = 2;
+// v3 = the split lightmap stream: geometry blobs carry the packed AoS
+// SoA (positions + 16-byte shading) + an OPTIONAL parallel
+// PackedVertexLightmap stream (count-gated; empty = uncharted). Older
+// .mesh files fail closed — reimport from zero per the no-conversion
+// policy.
+constexpr uint32_t kMeshVersion = 3;
 
 } // namespace
 
@@ -792,12 +797,18 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 		}
 		PutVec3(b, g.aabbMin);
 		PutVec3(b, g.aabbMax);
-		static_assert(sizeof(smvk::VertexPos) == 12, "layout drift");
-		static_assert(sizeof(smvk::VertexShading) == 24, "layout drift");
+		static_assert(sizeof(smvk::PackedVertexPosition) == 12, "layout drift");
+		static_assert(sizeof(smvk::PackedVertexShading) == 16, "layout drift");
+		static_assert(sizeof(smvk::PackedVertexLightmap) == 8, "layout drift");
 		PutBytes(b, g.positions.data(),
-			g.positions.size() * sizeof(smvk::VertexPos));
+			g.positions.size() * sizeof(smvk::PackedVertexPosition));
 		PutBytes(b, g.shading.data(),
-			g.shading.size() * sizeof(smvk::VertexShading));
+			g.shading.size() * sizeof(smvk::PackedVertexShading));
+		// v3: OPTIONAL lightmap stream, count-gated (empty = uncharted).
+		PutU32(b, uint32_t(g.lightmap.size()));
+		if (!g.lightmap.empty())
+			PutBytes(b, g.lightmap.data(),
+				g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
 		PutBytes(b, g.indices.data(),
 			g.indices.size() * sizeof(uint32_t));
 	}
@@ -817,9 +828,13 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 		PutVec3(b, g.aabbMin);
 		PutVec3(b, g.aabbMax);
 		PutBytes(b, g.positions.data(),
-			g.positions.size() * sizeof(smvk::VertexPos));
+			g.positions.size() * sizeof(smvk::PackedVertexPosition));
 		PutBytes(b, g.shading.data(),
-			g.shading.size() * sizeof(smvk::VertexShading));
+			g.shading.size() * sizeof(smvk::PackedVertexShading));
+		PutU32(b, uint32_t(g.lightmap.size()));
+		if (!g.lightmap.empty())
+			PutBytes(b, g.lightmap.data(),
+				g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
 		PutBytes(b, g.indices.data(),
 			g.indices.size() * sizeof(uint32_t));
 	};
@@ -883,7 +898,7 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 	// --- Trailing SKIN section (the Northlight data path; files above
 	// end after the registry and load as static - the reader tolerates
 	// the absence). The cluster skeleton (the joint table in ASSET node
-	// space) + the per-BASE-blob VertexSkin streams (mesh.h binding 2).
+	// space) + the per-BASE-blob PackedSkinInfluences streams (mesh.h binding 2).
 	// LOD siblings stay static (the runtime skinning slice owns per-LOD
 	// skin propagation).
 	{
@@ -905,7 +920,7 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m,
 			PutU32(b, uint32_t(g.skin.size()));
 			if (!g.skin.empty())
 				PutBytes(b, g.skin.data(),
-					g.skin.size() * sizeof(smvk::VertexSkin));
+					g.skin.size() * sizeof(smvk::PackedSkinInfluences));
 		}
 	}
 	if (!WriteFileBytes(path, b, err))
@@ -941,8 +956,11 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 		err = "not a .mesh asset";
 		return false;
 	}
-	if (version != kMeshVersion && version != 1) {
-		err = "unsupported .mesh version " + std::to_string(version);
+	// v3 ONLY (the split lightmap stream): older .mesh files fail closed
+	// — reimport from zero per the no-conversion policy.
+	if (version != kMeshVersion) {
+		err = "unsupported .mesh version " + std::to_string(version)
+			+ " (reimport from zero)";
 		return false;
 	}
 	const uint32_t nodeCount = r.U32();
@@ -1009,17 +1027,31 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 		g.positions.resize(vcount);
 		g.shading.resize(vcount);
 		g.indices.resize(icount);
-		const void* pos = r.Skip(size_t(vcount) * sizeof(smvk::VertexPos));
-		const void* sha = r.Skip(size_t(vcount) * sizeof(smvk::VertexShading));
+		const void* pos = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexPosition));
+		const void* sha = r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexShading));
+		// v3: OPTIONAL count-gated lightmap stream.
+		const uint32_t lmCount = r.U32();
+		const void* lm = lmCount
+			? r.Skip(size_t(lmCount) * sizeof(smvk::PackedVertexLightmap))
+			: nullptr;
 		const void* idx = r.Skip(size_t(icount) * sizeof(uint32_t));
 		if (!r.ok) {
 			err = "truncated .mesh geometry blob";
 			return false;
 		}
 		std::memcpy(g.positions.data(), pos,
-			size_t(vcount) * sizeof(smvk::VertexPos));
+			size_t(vcount) * sizeof(smvk::PackedVertexPosition));
 		std::memcpy(g.shading.data(), sha,
-			size_t(vcount) * sizeof(smvk::VertexShading));
+			size_t(vcount) * sizeof(smvk::PackedVertexShading));
+		if (lmCount) {
+			if (lmCount != vcount) {
+				err = "lightmap stream vertex mismatch";
+				return false;
+			}
+			g.lightmap.resize(lmCount);
+			std::memcpy(g.lightmap.data(), lm,
+				size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
+		}
 		std::memcpy(g.indices.data(), idx,
 			size_t(icount) * sizeof(uint32_t));
 	}
@@ -1067,17 +1099,26 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 			g.shading.resize(vcount);
 			g.indices.resize(icount);
 			const void* pos =
-				r.Skip(size_t(vcount) * sizeof(smvk::VertexPos));
+				r.Skip(size_t(vcount) * sizeof(smvk::PackedVertexPosition));
 			const void* sha = r.Skip(
-				size_t(vcount) * sizeof(smvk::VertexShading));
+				size_t(vcount) * sizeof(smvk::PackedVertexShading));
+			const uint32_t lmCount = r.U32();
+			const void* lm = lmCount
+				? r.Skip(size_t(lmCount) * sizeof(smvk::PackedVertexLightmap))
+				: nullptr;
 			const void* idx =
 				r.Skip(size_t(icount) * sizeof(uint32_t));
 			if (!r.ok)
 				return;
 			std::memcpy(g.positions.data(), pos,
-				size_t(vcount) * sizeof(smvk::VertexPos));
+				size_t(vcount) * sizeof(smvk::PackedVertexPosition));
 			std::memcpy(g.shading.data(), sha,
-				size_t(vcount) * sizeof(smvk::VertexShading));
+				size_t(vcount) * sizeof(smvk::PackedVertexShading));
+			if (lmCount && lmCount == vcount) {
+				g.lightmap.resize(lmCount);
+				std::memcpy(g.lightmap.data(), lm,
+					size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
+			}
 			std::memcpy(g.indices.data(), idx,
 				size_t(icount) * sizeof(uint32_t));
 		};
@@ -1132,7 +1173,7 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 	}
 	// --- Trailing SKIN section (the Northlight data path; ABSENT = a
 	// pre-skin file, loads as static): the cluster skeleton (the joint
-	// table in ASSET node space) + the per-BASE-blob VertexSkin streams.
+	// table in ASSET node space) + the per-BASE-blob PackedSkinInfluences streams.
 	// LOD siblings stay static (the runtime skinning slice owns per-LOD
 	// skin propagation).
 	if (r.off < r.n) {
@@ -1189,9 +1230,9 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 			MeshAsset::Geometry& g = out.geometry[gi];
 			g.skin.resize(skinCount);
 			if (const void* p = r.Skip(size_t(skinCount)
-					* sizeof(smvk::VertexSkin)))
+					* sizeof(smvk::PackedSkinInfluences)))
 				std::memcpy(g.skin.data(), p,
-					size_t(skinCount) * sizeof(smvk::VertexSkin));
+					size_t(skinCount) * sizeof(smvk::PackedSkinInfluences));
 			else if (skinCount > 0) {
 				err = "corrupt .mesh skin section (stream bytes)";
 				return false;
@@ -1282,7 +1323,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		for (int gltfNode : gltfRoots)
 			importer.import(gltfNode);
 		// SKIN post pass (the Northlight data path): build the cluster
-		// Skeleton + patch the recorded (mesh, skin) pairs' VertexSkin
+		// Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
 		// streams (the gltfNodeMap is fully populated now - the same
 		// post-pass contract as GltfToCluster's inline flow).
 		importer.BuildSkinData();
@@ -1450,9 +1491,20 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 							cluster->GetRetainedUpload(h)) {
 						g.positions.resize(up->vertices.size());
 						g.shading.resize(up->vertices.size());
-						for (size_t v = 0; v < up->vertices.size(); ++v)
+						g.lightmap.resize(up->vertices.size());
+						bool charted = false;
+						for (size_t v = 0; v < up->vertices.size(); ++v) {
 							smvk::PackStaticVertex(up->vertices[v],
-								g.positions[v], g.shading[v]);
+								g.positions[v], g.shading[v],
+								g.lightmap[v]);
+							if (up->vertices[v].chartId != 0xFFFFFFFFu)
+								charted = true;
+						}
+						// Uncharted geometry carries NO lightmap stream
+						// (count-gated on disk; the engine blob marks it
+						// lmOff = 0).
+						if (!charted)
+							g.lightmap.clear();
 						g.indices = up->indices;
 						g.surfaces = up->surfaces;
 						g.aabbMin = up->aabbMin;
@@ -1486,11 +1538,21 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 								cluster->GetRetainedUpload(*sibH)) {
 							s.geo.positions.resize(up->vertices.size());
 							s.geo.shading.resize(up->vertices.size());
+							s.geo.lightmap.resize(up->vertices.size());
+							bool charted = false;
 							for (size_t v = 0;
-								v < up->vertices.size(); ++v)
+								v < up->vertices.size(); ++v) {
 								smvk::PackStaticVertex(up->vertices[v],
 									s.geo.positions[v],
-									s.geo.shading[v]);
+									s.geo.shading[v], s.geo.lightmap[v]);
+								if (up->vertices[v].chartId != 0xFFFFFFFFu)
+									charted = true;
+							}
+							// Uncharted siblings carry NO lightmap stream
+							// (count-gated on disk; the engine blob marks
+							// it lmOff = 0).
+							if (!charted)
+								s.geo.lightmap.clear();
 							s.geo.indices = up->indices;
 							s.geo.surfaces = up->surfaces;
 							s.geo.aabbMin = up->aabbMin;

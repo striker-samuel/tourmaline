@@ -3,6 +3,9 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/asset_registry.h>
+// GetMeshHeapVertexBase reads StaticMeshAllocation::vertexBase through the
+// forward-declared pointer — the heap header carries the full definition.
+#include <Engine/Renderer/static_vertex_heap.h>
 
 #include <algorithm>
 #include <cmath>
@@ -370,6 +373,15 @@ const StaticMeshUpload* Cluster::GetRetainedUpload(ClusterStaticMeshHandle handl
 	if (it == retainedUploads_.end())
 		return nullptr;
 	return &it->second;
+}
+
+uint32_t Cluster::GetMeshHeapVertexBase(ClusterStaticMeshHandle handle) const {
+	if (!handle.valid())
+		return 0xFFFFFFFFu;
+	const auto it = meshAllocations_.find(handle.index());
+	if (it == meshAllocations_.end())
+		return 0xFFFFFFFFu;
+	return static_cast<uint32_t>(it->second->vertexBase);
 }
 
 void Cluster::RegisterMeshLod(StringViewT uri, const LodInfo& lod) {

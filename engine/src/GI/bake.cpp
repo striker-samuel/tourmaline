@@ -901,7 +901,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 
 	for (const NodeGeo& g : geos) {
 		const uint32_t base = uint32_t(out.positions.size());
-		for (const StaticVertex& v : g.upload->vertices) {
+		for (const ImportStaticVertex& v : g.upload->vertices) {
 			const glm::vec4 wp = g.global * glm::vec4(v.pos, 1.0f);
 			out.positions.push_back(glm::vec3(wp));
 			if (anyTextured)

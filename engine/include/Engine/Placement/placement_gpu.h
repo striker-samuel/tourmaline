@@ -11,6 +11,7 @@
 // Mesh-surface / heightfield domains + GPU min-distance arrive next;
 // the CPU EvaluateTile() in placement_tile.h is the oracle for all paths.
 
+#include <cstddef>
 #include <cstdint>
 
 #include <glm/glm.hpp>
@@ -445,16 +446,36 @@ static_assert(sizeof(PlacementScatterVisPush) == 48,
 	"PlacementScatterVisPush moved — update placement_scatter_visible.cs.hlsl");
 
 // Must match placement_drawbuild.cs.hlsl PlacementDrawBuildPush
-// (32 bytes).
+// (128 bytes). The prototype table rides the push (8 protos x
+// {indexCount, firstIndex, vertexOffset} = the 96B tail) so the KERNEL
+// owns the COMPLETE command: the stranded-upload-write class (an
+// UPLOAD's bytes seeding a buffer a same-frame kernel re-writes leaves
+// the upload's write scope stranded from the draw's barrier — Vulkan
+// memory dependencies are not transitive; see todo.txt) cannot exist
+// here BY CONSTRUCTION: the indirect buffer is single-scope-written
+// (COMPUTE) per frame, so the draw's compute-write ->
+// indirect-command-read barrier is always complete.
 struct PlacementDrawBuildPush {
-	uint64_t bins = 0;
-	uint64_t indirect = 0;
-	uint32_t protoCount = 1;
-	uint32_t pad0 = 0;
-	uint32_t pad1 = 0;
-	uint32_t pad2 = 0;
+	uint64_t bins = 0;      // 0  PlacementBinsGpu BDA
+	uint64_t indirect = 0;  // 8  PlacementIndirectBuffer BDA
+	uint32_t protoCount = 1; // 16 live bins (<= the table below)
+	uint32_t pad0 = 0;      // 20
+	uint32_t pad1 = 0;      // 24
+	uint32_t pad2 = 0;      // 28
+	// The immutable command halves (the prototype table's mesh
+	// addressing). instanceCount/firstInstance are the per-frame
+	// dynamic halves the kernel derives from the bins. Entries past
+	// the registered table stay zero (a zero indexCount draws nothing —
+	// the graceful unseeded state).
+	uint32_t indexCount[kPlacementMaxProtos] = {};  // 32
+	uint32_t firstIndex[kPlacementMaxProtos] = {};  // 64
+	int32_t vertexOffset[kPlacementMaxProtos] = {}; // 96
 };
-static_assert(sizeof(PlacementDrawBuildPush) == 32,
+static_assert(sizeof(PlacementDrawBuildPush) == 128,
 	"PlacementDrawBuildPush moved — update placement_drawbuild.cs.hlsl");
+static_assert(offsetof(PlacementDrawBuildPush, indexCount) == 32
+	&& offsetof(PlacementDrawBuildPush, firstIndex) == 64
+	&& offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
+	"PlacementDrawBuildPush array offsets moved — update the HLSL mirror");
 
 } // namespace smvk::placement

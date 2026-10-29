@@ -76,6 +76,7 @@ config::RuntimeConfig ParseRuntimeConfig() {
 	c.commitQuantum = EnvSize("TOURMALINE_MEM_COMMIT_MB", kMiB, c.commitQuantum);
 	c.staticVertexHeap = EnvSize("TOURMALINE_MEM_STATIC_VERTEX_MB", kMiB, c.staticVertexHeap);
 	c.staticIndexHeap = EnvSize("TOURMALINE_MEM_STATIC_INDEX_MB", kMiB, c.staticIndexHeap);
+	c.staticLightmapHeap = EnvSize("TOURMALINE_MEM_STATIC_LIGHTMAP_MB", kMiB, c.staticLightmapHeap);
 	c.targetHeapBlock = EnvSize("TOURMALINE_MEM_TARGET_BLOCK_MB", kMiB, c.targetHeapBlock);
 
 	// Validation: CommitUpTo uses a mask-based align, so the quantum must be

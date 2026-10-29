@@ -3,8 +3,11 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <span>
+#include <string>
 #include <vector>
 #include <optional>
 
@@ -191,50 +194,75 @@ namespace smvk {
 	// GPU vertex streams
 	// -----------------------------------------------------------------------------
 
-	struct VertexPos {
+	struct PackedVertexPosition {
 		glm::vec3 pos;
 	};
 
-	// GPU shading stream (24 bytes): color is packed via
+	// GPU shading stream (16 bytes): color is packed via
 	// vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv
-	// via vertexpack::PackUvHalf fetched as Format::RG16_Float, chartUv
-	// (the CHART-LOCAL lightmap UV in the chart's inner rect, [0,1]) via
-	// vertexpack::PackChartUv fetched as Format::RG16_UNorm — UNORM
-	// because chart-space UVs need 65536-step precision (half-float is
-	// 1-texel-at-2048, 4-texel-at-8192), normal/tangent via
-	// PackNormalOct/PackTangentOct fetched as Format::R32_UInt and
-	// unpacked by hand in the vertex shader (see vertex_pack.hlsli).
-	// The bitangent is never stored (B = cross(N, T) * w in the fragment).
-	// chart (R32_UInt) is the owning lightmap chart index (0xFFFFFFFF =
-	// uncharted). LIGHTMAPS ARE DEPRECATED: the chartUv/chart words stay
-	// in the stream (serializer + mesh-shader heap reads round-trip them
-	// and one buffer serves both formats), but StaticVertexFormat does
-	// NOT bind them — only the gated-off LightmappedStaticVertexFormat
-	// does, whose vertex shader resolves the final atlas UV as
-	// chartUv * xform.scale + xform.offset with the per-draw chart offset
-	// (see GfxDraw::lmChartOffset). The ATLAS-space uv2 no longer rides
-	// the vertex stream — it is unpacked in the shader.
-	struct VertexShading {
+	// via vertexpack::PackUvHalf fetched as Format::RG16_Float,
+	// normal/tangent via PackNormalOct/PackTangentOct fetched as
+	// Format::R32_UInt and unpacked by hand in the vertex shader (see
+	// vertex_pack.hlsli). The bitangent is never stored (B =
+	// cross(N, T) * w in the fragment).
+	//
+	// THE LIGHTMAP WORDS MOVED OUT (they were never a contiguous tail —
+	// in the old 24-byte record chartUv sat at bytes 8..11 BETWEEN uv
+	// and normal, chart at 20..23 AFTER tangent): chartUv/chart now ride
+	// the SEPARATE PackedVertexLightmap stream below, carved ONLY for
+	// meshes that actually carry chart data. Every mesh that is not
+	// lightmapped (all of them while lightmaps stay deprecated) saves
+	// the full 8 B/vertex: 36 -> 28 B/vertex (12 position + 16 shading),
+	// ~8 MB per million vertices of position+shading storage. The
+	// trade-offs taken: an optional third heap stream, a serializer
+	// layout bump (mesh blob marker 2 — old paks fail closed, recook
+	// from zero per the no-conversion policy), and the mesh-shader leg
+	// fetches the chart words through the per-draw lightmap delta
+	// (GfxDraw.misc2.w) instead of inline shading words.
+	struct PackedVertexShading {
 		uint32_t color;      // RGBA8_UNORM
 		uint32_t uv;         // RG16_FLOAT (packHalf2x16)
-		uint32_t chartUv;    // RG16_UNORM (packUnorm2x16) — chart-local UV
 		uint32_t normal;     // custom oct encoding (16+16)
 		uint32_t tangent;    // custom oct encoding (16+15) + handedness bit
-		uint32_t chart;      // R32_UINT — lightmap chart index
 	};
-	static_assert(sizeof(VertexShading) == 24);
+	static_assert(sizeof(PackedVertexShading) == 16);
+	static_assert(offsetof(PackedVertexShading, color) == 0
+		&& offsetof(PackedVertexShading, uv) == 4
+		&& offsetof(PackedVertexShading, normal) == 8
+		&& offsetof(PackedVertexShading, tangent) == 12,
+		"PackedVertexShading repacked — update StaticLayout/SkinnedLayout"
+		" + the blob layout marker");
 
-	// GPU shading stream for SKINNED meshes (16 bytes, no lightmaps):
-	// color, uv, normal, tangent only. Skinned meshes are dynamic and
-	// never carry lightmap charts, so chartUv/chartId are omitted
-	// entirely (no TexCoord1/ChartId attributes, tighter stride).
-	struct VertexSkinnedShading {
-		uint32_t color;      // RGBA8_UNORM
-		uint32_t uv;         // RG16_FLOAT (packHalf2x16)
-		uint32_t normal;     // custom oct encoding (16+16)
-		uint32_t tangent;    // custom oct encoding (16+15) + handedness bit
+	// OPTIONAL lightmap stream (8 bytes, carved only for meshes whose
+	// vertices carry chart data — any chartId != 0xFFFFFFFF): chartUv is
+	// the CHART-LOCAL lightmap UV in the chart's inner rect, [0,1],
+	// packed via vertexpack::PackChartUv fetched as Format::RG16_UNorm —
+	// UNORM because chart-space UVs need 65536-step precision (half-float
+	// is 1-texel-at-2048, 4-texel-at-8192); chartId is the owning chart
+	// index (0xFFFFFFFF = uncharted). Consumed (when lightmaps return) by
+	// the chart-unpack shader as
+	//   atlasUv = chartUv * xform[misc2.x + chartId].xy + ...zw
+	// with the per-draw chart offset (GfxDraw.misc2.x). Addressing: the
+	// lightmap heap packs INDEPENDENTLY of the pos/shading windows (that
+	// is where the memory comes from), so it is NOT bindable through
+	// baseVertex at offset 0 — the mesh-shader leg reads it via the
+	// per-draw delta (GfxDraw.misc2.w = lightmapBase - meshVertexBase,
+	// 0xFFFFFFFF = none), and a future raster chart-unpack VS does the
+	// same through its per-draw push (or a per-draw BindVertexBuffer
+	// offset).
+	struct PackedVertexLightmap {
+		uint32_t chartUv = 0;             // RG16_UNORM (packUnorm2x16)
+		uint32_t chartId = 0xFFFFFFFFu;   // R32_UINT — 0xFFFFFFFF = uncharted
 	};
-	static_assert(sizeof(VertexSkinnedShading) == 16);
+	static_assert(sizeof(PackedVertexLightmap) == 8);
+	// NOTE: no separate skinned shading struct. The old
+	// VertexSkinnedShading (16 bytes: color/uv/normal/tangent only, no
+	// lightmap tail) was REMOVED — SkinnedLayout binds the SAME
+	// 24-byte stream as the static format (one heap, and its 16-byte
+	// stride used to misalign every vertex past the first against the
+	// shared stream). If a genuinely compact skinned layout is ever
+	// wanted, design it explicitly against the heap it reads — never
+	// revive this shape as a silent alternative.
 
 	// GPU skin stream (8 bytes, binding 2): joint ids RGBA8_UInt + blend
 	// weights RGBA8_UNorm, 4 influences per vertex. Joint ids index the
@@ -248,22 +276,22 @@ namespace smvk {
 	// carries no TexCoord1/ChartId). VS math: skinMat = sum(w_i * pal[j_i])
 	// / sum(w_i); pos = skinMat * pos; normal/tangent = mat3(skinMat) * n,
 	// renormalized.
-	struct VertexSkin {
+	struct PackedSkinInfluences {
 		uint32_t joints;   // RGBA8_UINT — palette indices x4
 		uint32_t weights;  // RGBA8_UNORM — blend weights x4 (renormalize in VS)
 	};
-	static_assert(sizeof(VertexSkin) == 8);
+	static_assert(sizeof(PackedSkinInfluences) == 8);
 
 	// GPU TERRAIN vertex (32 bytes, ONE interleaved binding): the tiled
 	// heightfield's own stream — never the glTF static streams (generated
 	// geometry, no UVs/charts/skin; the tangent carries its bitangent-flip
 	// handedness in w so no side channel is needed). Layout (offsets are
-	// load-bearing, see TerrainVertexFormat):
+	// load-bearing, see TerrainFullLayout):
 	//   POSITION      R32G32B32_FLOAT  @ 0   (pos.pos)
 	//   NORMAL        R16G16B16A16_FLOAT @ 12  (normal[4], xyz + pad)
 	//   TANGENT_BFLIP R16G16B16A16_FLOAT @ 20  (tangent[4], xyz + flip w)
 	//   COLOR         R8G8B8A8_UNORM    @ 28  (color[4], albedo tint)
-	// The LOWER-DETAIL format (TerrainLowVertexFormat) binds POSITION +
+	// The LOWER-DETAIL format (TerrainReducedLayout) binds POSITION +
 	// COLOR only, at the SAME offsets in the SAME 32-byte stride — one
 	// vertex buffer serves both pipelines; the far/low pipeline just
 	// fetches two attributes instead of four (the terrain LOD's cheap
@@ -340,7 +368,7 @@ namespace smvk {
 	// per-draw flag, never on the value). chartId is the owning lightmap
 	// chart index (0xFFFFFFFF = uncharted), stamped by the cook alongside
 	// texCoord2 (seam corners are duplicated per chart).
-		struct StaticVertex {
+		struct ImportStaticVertex {
 		glm::vec3 pos;
 		glm::vec4 color;
 		glm::vec2 texCoord;
@@ -349,7 +377,7 @@ namespace smvk {
 		glm::vec4 tangent;
 		uint32_t chartId = 0xFFFFFFFFu;
 
-		bool operator==(const StaticVertex& other) const {
+		bool operator==(const ImportStaticVertex& other) const {
 			return pos == other.pos &&
 				color == other.color &&
 				texCoord == other.texCoord &&
@@ -360,34 +388,39 @@ namespace smvk {
 		}
 	};
 
-	// One AoS import vertex -> one VertexPos + one VertexShading (the
-	// exact GPU heap-stream layout). Shared by Cluster::UploadStaticMesh(es)
-	// (runtime upload) and the pak cooker's packed-SoA mesh blobs (v4;
-	// cooked geometry round-trips the heap layout verbatim) — the two must
-	// never diverge.
-	inline void PackStaticVertex(const StaticVertex& src,
-		VertexPos& pos, VertexShading& shade) noexcept {
+	// One AoS import vertex -> one PackedVertexPosition + one
+	// PackedVertexShading + one PackedVertexLightmap (the exact GPU
+	// heap-stream layout). Shared by Cluster::UploadStaticMesh(es)
+	// (runtime upload) and the pak cooker's packed-SoA mesh blobs (v5;
+	// cooked geometry round-trips the heap layout verbatim) — the two
+	// must never diverge. The lightmap word pair packs unconditionally;
+	// the STREAM decision (whether the mesh carves a lightmap range at
+	// all) happens at allocation — any chartId != 0xFFFFFFFF.
+	inline void PackStaticVertex(const ImportStaticVertex& src,
+		PackedVertexPosition& pos, PackedVertexShading& shade,
+		PackedVertexLightmap& lm) noexcept {
 		pos.pos = src.pos;
 		shade.color = vertexpack::PackColorUnorm8(src.color);
 		shade.uv = vertexpack::PackUvHalf(src.texCoord);
-		shade.chartUv = vertexpack::PackChartUv(src.texCoord2);
-		shade.chart = src.chartId;
 		shade.normal = vertexpack::PackNormalOct(src.normal);
 		shade.tangent = vertexpack::PackTangentOct(
 			glm::vec3(src.tangent), src.tangent.w);
+		lm.chartUv = vertexpack::PackChartUv(src.texCoord2);
+		lm.chartId = src.chartId;
 	}
 
 	// Inverse pack (the .mesh-asset cook path rebuilds AoS uploads from
 	// the packed SoA streams; lossy exactly like the GPU fetch, so the
 	// round trip is byte-stable).
-	inline void UnpackStaticVertex(const VertexPos& pos,
-		const VertexShading& shade, StaticVertex& out) noexcept {
+	inline void UnpackStaticVertex(const PackedVertexPosition& pos,
+		const PackedVertexShading& shade, const PackedVertexLightmap& lm,
+		ImportStaticVertex& out) noexcept {
 		out.pos = pos.pos;
 		const glm::vec4 c = glm::unpackUnorm4x8(shade.color);
 		out.color = c;
 		out.texCoord = glm::unpackHalf2x16(shade.uv);
-		out.texCoord2 = glm::unpackUnorm2x16(shade.chartUv);
-		out.chartId = shade.chart;
+		out.texCoord2 = glm::unpackUnorm2x16(lm.chartUv);
+		out.chartId = lm.chartId;
 		out.normal = vertexpack::UnpackNormalOct(shade.normal);
 		out.tangent = vertexpack::UnpackTangentOct(shade.tangent);
 	}
@@ -426,7 +459,7 @@ namespace smvk {
 	};
 	static_assert(sizeof(DebugLineVertex) == 12);
 
-	inline const VertexFormatDescription DebugLineFormat{
+	inline const VertexLayoutDesc DebugLineLayout{
 		.bindings = {
 			{
 				.binding = 0,
@@ -435,6 +468,7 @@ namespace smvk {
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
+						.location = 0,
 						.format = Format::RGB32_Float,
 						.offset = offsetof(DebugLineVertex, pos)
 					}
@@ -443,192 +477,229 @@ namespace smvk {
 		}
 	};
 
-	inline const VertexFormatDescription StaticVertexFormat{
+	inline const VertexLayoutDesc StaticLayout{
 		.bindings = {
 			{
 				.binding = 0,
-				.stride = sizeof(VertexPos),
+				.stride = sizeof(PackedVertexPosition),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
+						.location = 0,
 						.format = Format::RGB32_Float,
-						.offset = offsetof(VertexPos, pos)
+						.offset = offsetof(PackedVertexPosition, pos)
 					}
 				}
 			},
 			{
 				.binding = 1,
-				.stride = sizeof(VertexShading),
+				.stride = sizeof(PackedVertexShading),
 				.inputRate = VertexInputRate::Vertex,
 			.attributes = {
-				// Location order is load-bearing: shader VSIn locations
-				// 0..4 are Position, Color, TexCoord0, Normal, Tangent.
-				// Lightmaps are DEPRECATED: the second UV channel
-				// (chartUv + chart) stays in the 24-byte stream and the
-				// serializer, but this format does not bind it — the
-				// static vertex shaders declare no TexCoord1/ChartId
-				// inputs. LightmappedStaticVertexFormat below keeps the
-				// option alive (gated off until lightmaps return).
+				// Shader VSIn locations are EXPLICIT (0..4 = Position,
+				// Color, TexCoord0, Normal, Tangent) — the pairing with
+				// the compiled static vertex shaders is pinned by
+				// location, no longer by this list's order.
+				// Lightmaps are DEPRECATED: the chart words ride the
+				// SEPARATE optional PackedVertexLightmap stream (carved
+				// only for meshes with chart data — see the struct above)
+				// and this format does not bind them. The static vertex
+				// shaders declare no TexCoord1/ChartId inputs;
+				// StaticLightmappedLayout below keeps the option alive
+				// (gated off until lightmaps return).
 					{
 						.semantic = VertexSemantic::Color,
+						.location = 1,
 						.format = Format::RGBA8_UNorm,
-						.offset = offsetof(VertexShading, color)
+						.offset = offsetof(PackedVertexShading, color)
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
+						.location = 2,
 						.format = Format::RG16_Float,
-						.offset = offsetof(VertexShading, uv)
+						.offset = offsetof(PackedVertexShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
+						.location = 3,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, normal)
+						.offset = offsetof(PackedVertexShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
+						.location = 4,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, tangent)
+						.offset = offsetof(PackedVertexShading, tangent)
 					}
 			}
 		}
 	}
 };
 
-	// LIGHTMAPPED static format (the gated-off lightmap option): the SAME
-	// bindings + stride as StaticVertexFormat, with the second UV channel
-	// appended — TexCoord1 (chart-local lightmap UV, RG16_UNorm) as VSIn
-	// location 5 and ChartId (R32_UInt) as location 6. Nothing binds this
-	// format while lightmaps stay deprecated; when they return, the
-	// lightmap-aware vertex shaders (chart-unpack tail: atlasUv =
-	// chartUv * xform.xy + xform.zw with the per-draw chart offset) pair
-	// with it, and the classic static VSs above keep their 0..4 locations.
-	// The heap stream, PackStaticVertex and the pak blobs carry the
-	// chartUv/chart words unchanged either way — one buffer serves both
-	// formats, like the terrain full/low pair.
-	inline const VertexFormatDescription LightmappedStaticVertexFormat{
+	// LIGHTMAPPED static format (the gated-off lightmap option): the
+	// SAME bindings 0/1 as StaticLayout (position + the 16-byte shading
+	// stream) plus BINDING 2 = the optional PackedVertexLightmap stream
+	// (8-byte stride): TexCoord1 (chart-local lightmap UV, RG16_UNorm)
+	// as VSIn location 5 and ChartId (R32_UInt) as location 6. Nothing
+	// binds this format while lightmaps stay deprecated; when they
+	// return, the lightmap-aware vertex shaders (chart-unpack tail:
+	// atlasUv = chartUv * xform.xy + xform.zw with the per-draw chart
+	// offset) pair with it, and the classic static VSs above keep their
+	// 0..4 locations. ADDRESSING NOTE: the lightmap heap packs
+	// independently of the pos/shading windows (that is where the memory
+	// saving comes from), so binding 2 is NOT addressable through
+	// baseVertex at offset 0 — the consuming shader reads it through a
+	// per-draw BindVertexBuffer offset or the per-draw BDA delta
+	// (GfxDraw.misc2.w, the mesh-shader leg's pattern). The binding
+	// declaration pins the formats/locations ABI either way.
+	inline const VertexLayoutDesc StaticLightmappedLayout{
 		.bindings = {
 			{
 				.binding = 0,
-				.stride = sizeof(VertexPos),
+				.stride = sizeof(PackedVertexPosition),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
 						.format = Format::RGB32_Float,
-						.offset = offsetof(VertexPos, pos)
+						.offset = offsetof(PackedVertexPosition, pos)
 					}
 				}
 			},
 			{
 				.binding = 1,
-				.stride = sizeof(VertexShading),
+				.stride = sizeof(PackedVertexShading),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Color,
+						.location = 1,
 						.format = Format::RGBA8_UNorm,
-						.offset = offsetof(VertexShading, color)
+						.offset = offsetof(PackedVertexShading, color)
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
+						.location = 2,
 						.format = Format::RG16_Float,
-						.offset = offsetof(VertexShading, uv)
+						.offset = offsetof(PackedVertexShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
+						.location = 3,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, normal)
+						.offset = offsetof(PackedVertexShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
+						.location = 4,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, tangent)
-					},
+						.offset = offsetof(PackedVertexShading, tangent)
+					}
+				}
+			},
+			{
+				.binding = 2,
+				.stride = sizeof(PackedVertexLightmap),
+				.inputRate = VertexInputRate::Vertex,
+				.attributes = {
 					{
 						.semantic = VertexSemantic::TexCoord1,
+						.location = 5,
 						.format = Format::RG16_UNorm,
-						.offset = offsetof(VertexShading, chartUv)
+						.offset = offsetof(PackedVertexLightmap, chartUv)
 					},
 					{
 						.semantic = VertexSemantic::ChartId,
+						.location = 6,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, chart)
+						.offset = offsetof(PackedVertexLightmap, chartId)
 					}
 				}
 			}
 		}
 	};
 
-	// Skinned vertex format: bindings 0 (position) + 1 (chart-free
-	// VertexSkinnedShading: color/uv/normal/tangent only) plus the
-	// binding-2 skin stream. No TexCoord1/ChartId — dynamic meshes never
-	// sample lightmaps — so JointIndices/JointWeights follow as locations
-	// 5/6. Depth/shadow passes bind only bindings 0+2 (position + skin) —
-	// skinning must move the position.
-	inline const VertexFormatDescription SkinnedVertexFormat{
+	// Skinned vertex format: bindings 0 (position) + 1 (the SAME 16-byte
+	// PackedVertexShading heap stream as StaticLayout — ONE heap serves
+	// both formats, the terrain full/low precedent; skinned meshes never
+	// carry lightmap charts, so they never carve the optional lightmap
+	// stream) plus the binding-2 skin stream. JointIndices/JointWeights
+	// are locations 5/6. Depth/shadow passes bind only bindings 0+2
+	// (position + skin) — skinning must move the position. NOTE: there
+	// is no separate compact skinned shading struct — the old
+	// VertexSkinnedShading (a plausible-looking alternative whose 16-byte
+	// stride misaligned against the then-24-byte heap stream) was
+	// REMOVED; the 16-byte goal is now reached by the MAIN stream itself
+	// being 16 bytes (28 B/vertex static, 36 B skinned incl. the skin
+	// influences).
+	inline const VertexLayoutDesc SkinnedLayout{
 		.bindings = {
 			{
 				.binding = 0,
-				.stride = sizeof(VertexPos),
+				.stride = sizeof(PackedVertexPosition),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
+						.location = 0,
 						.format = Format::RGB32_Float,
-						.offset = offsetof(VertexPos, pos)
+						.offset = offsetof(PackedVertexPosition, pos)
 					}
 				}
 			},
 			{
 				.binding = 1,
-				// The SAME 24-byte heap shading stream as
-				// StaticVertexFormat (VertexShading) - ONE heap serves
-				// both formats (the terrain full/low precedent): the
-				// chart tail (chartUv + chart, bytes 16..23) stays
-				// UNBOUND (skinned meshes are dynamic and never
-				// lightmapped). The old 16-byte VertexSkinnedShading
-				// stride misaligned every vertex past the first against
-				// the heap stream.
-				.stride = sizeof(VertexShading),
+				// The SAME 16-byte heap shading stream as StaticLayout
+				// (PackedVertexShading) - ONE heap serves both formats
+				// (the terrain full/low precedent). Skinned meshes never
+				// carry lightmap charts, so they never carve the
+				// optional PackedVertexLightmap stream.
+				.stride = sizeof(PackedVertexShading),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Color,
+						.location = 1,
 						.format = Format::RGBA8_UNorm,
-						.offset = offsetof(VertexShading, color)
+						.offset = offsetof(PackedVertexShading, color)
 					},
 					{
 						.semantic = VertexSemantic::TexCoord0,
+						.location = 2,
 						.format = Format::RG16_Float,
-						.offset = offsetof(VertexShading, uv)
+						.offset = offsetof(PackedVertexShading, uv)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
+						.location = 3,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, normal)
+						.offset = offsetof(PackedVertexShading, normal)
 					},
 					{
 						.semantic = VertexSemantic::Tangent,
+						.location = 4,
 						.format = Format::R32_UInt,
-						.offset = offsetof(VertexShading, tangent)
+						.offset = offsetof(PackedVertexShading, tangent)
 					}
 				}
 			},
 			{
 				.binding = 2,
-				.stride = sizeof(VertexSkin),
+				.stride = sizeof(PackedSkinInfluences),
 				.inputRate = VertexInputRate::Vertex,
 				.attributes = {
 					{
 						.semantic = VertexSemantic::JointIndices,
+						.location = 5,
 						.format = Format::RGBA8_UInt,
-						.offset = offsetof(VertexSkin, joints)
+						.offset = offsetof(PackedSkinInfluences, joints)
 					},
 					{
 						.semantic = VertexSemantic::JointWeights,
+						.location = 6,
 						.format = Format::RGBA8_UNorm,
-						.offset = offsetof(VertexSkin, weights)
+						.offset = offsetof(PackedSkinInfluences, weights)
 					}
 				}
 			}
@@ -638,11 +709,9 @@ namespace smvk {
 
 	// Terrain FULL-detail format: ONE interleaved binding, 32-byte
 	// stride, four attributes (near tiles; the shading path reads the
-	// normal + tangent + bitangent flip). Attribute order is
-	// load-bearing: terrain VSIn locations are 0=Position, 1=Normal,
-	// 2=TangentBFlip, 3=Color (locations are assigned in list order,
-	// see getVkVertexAttributeDescriptions).
-	inline const VertexFormatDescription TerrainVertexFormat{
+	// normal + tangent + bitangent flip). Shader VSIn locations are
+	// EXPLICIT: 0=Position, 1=Normal, 2=TangentBFlip, 3=Color.
+	inline const VertexLayoutDesc TerrainFullLayout{
 		.bindings = {
 			{
 				.binding = 0,
@@ -651,21 +720,25 @@ namespace smvk {
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
+						.location = 0,
 						.format = Format::RGB32_Float,
 						.offset = offsetof(TerrainVertex, pos)
 					},
 					{
 						.semantic = VertexSemantic::Normal,
+						.location = 1,
 						.format = Format::RGBA16_Float,
 						.offset = offsetof(TerrainVertex, normal)
 					},
 					{
 						.semantic = VertexSemantic::TangentBFlip,
+						.location = 2,
 						.format = Format::RGBA16_Float,
 						.offset = offsetof(TerrainVertex, tangent)
 					},
 					{
 						.semantic = VertexSemantic::Color,
+						.location = 3,
 						.format = Format::RGBA8_UNorm,
 						.offset = offsetof(TerrainVertex, color)
 					}
@@ -678,10 +751,12 @@ namespace smvk {
 	// two attributes only (far tiles; the cheap shading path skips the
 	// normal/tangent fetch entirely — POSITION @0 and COLOR @28). One
 	// vertex buffer serves BOTH formats: the far pipeline simply binds
-	// fewer attributes out of the same 32-byte records. VSIn locations
-	// are 0=Position, 1=Color (the far terrain shader declares only
-	// these two).
-	inline const VertexFormatDescription TerrainLowVertexFormat{
+	// fewer attributes out of the same 32-byte records (the SAME
+	// physical vertex size as the full format — "low" refers to the
+	// fetched-attribute count, not the record size). VSIn locations are
+	// 0=Position, 1=Color (the low terrain shader declares only these
+	// two, in that order).
+	inline const VertexLayoutDesc TerrainReducedLayout{
 		.bindings = {
 			{
 				.binding = 0,
@@ -690,11 +765,13 @@ namespace smvk {
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
+						.location = 0,
 						.format = Format::RGB32_Float,
 						.offset = offsetof(TerrainVertex, pos)
 					},
 					{
 						.semantic = VertexSemantic::Color,
+						.location = 1,
 						.format = Format::RGBA8_UNorm,
 						.offset = offsetof(TerrainVertex, color)
 					}
@@ -707,7 +784,7 @@ namespace smvk {
 	// Terrain FAR format: ONE interleaved binding, 8-byte stride, one
 	// RGBA16_FLOAT attribute (grid ix/iz/shade/skirt packed half4).
 	// VSIn location 0 = PackedGrid (the far terrain VS declares only this).
-	inline const VertexFormatDescription TerrainFarVertexFormat{
+	inline const VertexLayoutDesc TerrainFarLayout{
 		.bindings = {
 			{
 				.binding = 0,
@@ -716,6 +793,7 @@ namespace smvk {
 				.attributes = {
 					{
 						.semantic = VertexSemantic::Position,
+						.location = 0,
 						.format = Format::RGBA16_Float,
 						.offset = offsetof(TerrainFarVertex, p)
 					}
@@ -723,6 +801,56 @@ namespace smvk {
 			}
 		}
 	};
+
+	// ---------------------------------------------------------------------------
+	// Vertex-layout validation (backend-neutral: compiles into every
+	// backend TU with the descriptions above). Structural invariants the
+	// EXPLICIT locations made checkable: unique location per format,
+	// usable attribute formats, offsets aligned to the format and
+	// contained in the owning binding's stride, bounded binding indices.
+	// A pipeline built from an invalid layout is a programmer error —
+	// the Vulkan build asserts this (see BuildGraphicsPipeline) and the
+	// CPU test pins it; err (optional) receives the first problem found.
+	// ---------------------------------------------------------------------------
+	inline bool ValidateVertexLayout(const VertexLayoutDesc& desc,
+		std::string* err = nullptr)
+	{
+		const auto fail = [err](const char* what) {
+			if (err)
+				*err = what;
+			return false;
+		};
+		// maxVertexInputBindings/Attributes minimums are 16 across
+		// Vulkan versions — the engine's layouts stay well under.
+		std::array<bool, 16> bindingUsed{};
+		std::array<bool, 16> locationUsed{};
+		for (const VertexBinding& b : desc.bindings) {
+			if (b.binding >= bindingUsed.size())
+				return fail("binding index >= 16 (maxVertexInputBindings)");
+			if (bindingUsed[b.binding])
+				return fail("duplicate binding index");
+			bindingUsed[b.binding] = true;
+			for (const VertexAttribute& a : b.attributes) {
+				if (a.location >= locationUsed.size())
+					return fail("attribute location >= 16"
+						" (maxVertexInputAttributes)");
+				if (locationUsed[a.location])
+					return fail("duplicate attribute location");
+				locationUsed[a.location] = true;
+				const FormatBlockInfo fb = GetFormatBlockInfo(a.format);
+				if (fb.bytesPerBlock == 0 || fb.compressed)
+					return fail("attribute format is not a usable"
+						" vertex-attribute format");
+				const uint32_t compBytes =
+					fb.bytesPerBlock / std::max(GetFormatComponentCount(a.format), 1u);
+				if (a.offset % compBytes != 0)
+					return fail("attribute offset not aligned to the format");
+				if (a.offset + fb.bytesPerBlock > b.stride)
+					return fail("attribute overruns its binding stride");
+			}
+		}
+		return true;
+	}
 
 
 	// -----------------------------------------------------------------------------
@@ -756,7 +884,7 @@ namespace smvk {
 	struct StaticMesh {
 		Geometry geometry;
 		// Skinned marker (the import post pass / the deserializer sets
-		// it from a non-empty VertexSkin stream): tooling + the draw
+		// it from a non-empty PackedSkinInfluences stream): tooling + the draw
 		// path's format pick gate on this + the retained stream, never
 		// on a heuristic.
 		bool skinned = false;
@@ -768,6 +896,13 @@ namespace smvk {
 		// count rides the gfx draw ring (GfxDraw.misc.w) to the lit
 		// fragment). 0xFFFFFFFF = none.
 		uint32_t lmChunk = 0xFFFFFFFFu;
+		// OPTIONAL lightmap stream: this mesh's window start in the
+		// lightmap heap, in VERTEX units — carved only when the mesh's
+		// vertices carry chart data (any chartId != 0xFFFFFFFF).
+		// 0xFFFFFFFF = no lightmap window. The mesh-shader leg's draw
+		// ring carries the addressing delta (lightmapBase - the mesh's
+		// global vertexBase) in GfxDraw.misc2.w.
+		uint32_t lightmapBase = 0xFFFFFFFFu;
 		// Lightmap chart atlas transforms, parallel to the cook's chart
 		// indices (one float4 per chart: xy = scale, zw = offset, so
 		// atlasUv = chartUv * xy + zw). Empty when the mesh carries no
@@ -783,36 +918,45 @@ namespace smvk {
 	// -----------------------------------------------------------------------------
 
 	struct StaticMeshUpload {
-		std::vector<StaticVertex> vertices;
+		std::vector<ImportStaticVertex> vertices;
 		std::vector<uint32_t> indices;
 		std::vector<Surface> surfaces;
 		glm::vec3 aabbMin{};
 		glm::vec3 aabbMax{};
 		// glTF skin stream (binding 2), parallel to `vertices` when
-		// non-empty: the packed VertexSkin per vertex (top-4 influences,
+		// non-empty: the packed PackedSkinInfluences per vertex (top-4 influences,
 		// renormalized, RGBA8). Joint ids index the CLUSTER's Skeleton
 		// joint table (touranim.h; the glTF JOINTS_0 order). Empty = a
 		// static mesh (the formats/paths gate on the empty stream, never
 		// on a separate flag).
-		std::vector<VertexSkin> skin;
+		std::vector<PackedSkinInfluences> skin;
 	};
 
 	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);
 
-	enum struct VertexFormat {
+	enum struct VertexLayoutId {
 		Empty
-		, StaticVertexFormat
-		, LightmappedStaticVertexFormat
-		, SkinnedVertexFormat
+		, Static
+		, StaticLightmapped
+		, Skinned
 		, DebugLine
-		, TerrainVertexFormat
-		, TerrainLowVertexFormat
-		, TerrainFarVertexFormat
+		, TerrainFull
+		, TerrainReduced
+		, TerrainFarGrid
 	};
 
-	// Returns the static description for the given format (no per-call
-	// copies: BindRenderPipeline runs this on every bind).
-	const VertexFormatDescription& GetVertexFormatDescription(VertexFormat format);
+	// LAYOUT ids vs REPRESENTATIONS (the naming convention): this enum
+	// selects the pipeline's vertex-INPUT layout — WHICH attributes a
+	// pipeline binds at WHICH locations — never the physical vertex
+	// size. TerrainFull and TerrainReduced bind different attribute
+	// counts out of the SAME 32-byte records ("Reduced" is the fetched
+	// set, not a smaller vertex); Static/StaticLightmapped/Skinned all
+	// stride the SAME 24-byte packed shading stream (Skinned adds the
+	// binding-2 skin influences, the lightmapped tail stays unbound in
+	// the other two). The physical reps are the Packed* structs above.
+	// Returns the static description for the given layout id (no
+	// per-call copies: BindRenderPipeline runs this on every bind).
+	const VertexLayoutDesc& GetVertexLayoutDesc(VertexLayoutId layout);
 
 
 

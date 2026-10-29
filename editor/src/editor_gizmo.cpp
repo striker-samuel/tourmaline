@@ -844,7 +844,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				depthPipeline = r.depthTest;
 				if (depthPipeline)
 					cmd.BindRenderPipeline(m_lineProgram,
-						smvk::VertexFormat::DebugLine,
+						smvk::VertexLayoutId::DebugLine,
 						// Reversed-Z: GreaterEqual = closer-or-equal passes.
 						smvk::DepthSettings{
 							.depthFunc = smvk::CompareOp::GreaterEqual,
@@ -854,7 +854,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 						smvk::PrimitiveTopology::LineList);
 				else
 					cmd.BindRenderPipeline(m_lineProgram,
-						smvk::VertexFormat::DebugLine,
+						smvk::VertexLayoutId::DebugLine,
 						smvk::DepthSettings{
 							.depthFunc = smvk::CompareOp::Always,
 							.writeEnable = false, .depthTestEnable = false },

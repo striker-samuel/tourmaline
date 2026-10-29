@@ -981,10 +981,10 @@ namespace editor {
 				c = m_world->scene.hierarchy[c].nextSibling)
 				stack.push_back(uint32_t(c));
 		}
-		const smvk::VertexFormat fmt =
-			HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
-			: smvk::VertexFormat::Empty;
-		if (fmt == smvk::VertexFormat::StaticVertexFormat)
+		const smvk::VertexLayoutId fmt =
+			HasDrawItems() ? smvk::VertexLayoutId::Static
+			: smvk::VertexLayoutId::Empty;
+		if (fmt == smvk::VertexLayoutId::Static)
 			cmd.BindStaticVertexFmt();
 		cmd.BindRenderPipeline(prog, fmt,
 			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
@@ -1197,7 +1197,7 @@ namespace editor {
 			// Wires: depth-tested over the fill (z=1 vs the fill's 0.9999).
 			if (wc > 0) {
 				cmd.BindRenderPipeline(m_lineProgram,
-					smvk::VertexFormat::DebugLine,
+					smvk::VertexLayoutId::DebugLine,
 					// Reversed-Z: GreaterEqual = closer-or-equal passes.
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::GreaterEqual,
@@ -1216,7 +1216,7 @@ namespace editor {
 			// Highlight: face loop (yellow) or vertex cross (cyan), on top.
 			if (hc > 0) {
 				cmd.BindRenderPipeline(m_lineProgram,
-					smvk::VertexFormat::DebugLine,
+					smvk::VertexLayoutId::DebugLine,
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::Always,
 						.writeEnable = false, .depthTestEnable = false },
@@ -1385,7 +1385,7 @@ namespace editor {
 				if (selectedWireOverlay && m_selected != UINT32_MAX &&
 					m_wireProgram.shaderCount == 2) {
 					cmd.BindRenderPipeline(m_wireProgram,
-						smvk::VertexFormat::StaticVertexFormat,
+						smvk::VertexLayoutId::Static,
 						smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
 							.writeEnable = false, .depthTestEnable = true },
 						smvk::StencilSettings{}, smvk::BlendSettings{},
@@ -1400,12 +1400,12 @@ namespace editor {
 			}
 			smvk::ShaderProgram& prog = MainProgram(mode);
 			// BindRenderPipeline re-binds the static monoblock internally for
-			// StaticVertexFormat (which does not exist on an empty world), so
+			// StaticLayout (which does not exist on an empty world), so
 			// empty passes bind Empty (no draws either way).
-			const smvk::VertexFormat fmt =
-				HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
-				: smvk::VertexFormat::Empty;
-			if (fmt == smvk::VertexFormat::StaticVertexFormat)
+			const smvk::VertexLayoutId fmt =
+				HasDrawItems() ? smvk::VertexLayoutId::Static
+				: smvk::VertexLayoutId::Empty;
+			if (fmt == smvk::VertexLayoutId::Static)
 				cmd.BindStaticVertexFmt();
 			const smvk::DepthSettings depth{
 				.depthFunc = smvk::CompareOp::GreaterEqual,
@@ -1475,7 +1475,7 @@ namespace editor {
 			if (selectedWireOverlay && m_selected != UINT32_MAX &&
 				m_wireProgram.shaderCount == 2) {
 				cmd.BindRenderPipeline(m_wireProgram,
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
 						.writeEnable = false, .depthTestEnable = true },
 					smvk::StencilSettings{}, smvk::BlendSettings{},
@@ -1559,10 +1559,10 @@ namespace editor {
 				smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
 		pass.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd) {
 			smvk::ShaderProgram& prog = InsetProgram();
-			const smvk::VertexFormat fmt =
-				HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
-				: smvk::VertexFormat::Empty;
-			if (fmt == smvk::VertexFormat::StaticVertexFormat)
+			const smvk::VertexLayoutId fmt =
+				HasDrawItems() ? smvk::VertexLayoutId::Static
+				: smvk::VertexLayoutId::Empty;
+			if (fmt == smvk::VertexLayoutId::Static)
 				cmd.BindStaticVertexFmt();
 			const smvk::DepthSettings depth{
 				.depthFunc = smvk::CompareOp::GreaterEqual,
@@ -1763,10 +1763,10 @@ namespace editor {
 		// color (App parity - the preview's tonemap layer applies the
 		// same exposure, see PreviewExposure).
 		const float meshletColorPreScale = 1.0f / PreviewExposure();
-		const smvk::VertexFormat fmt =
-			HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
-			: smvk::VertexFormat::Empty;
-		if (fmt == smvk::VertexFormat::StaticVertexFormat)
+		const smvk::VertexLayoutId fmt =
+			HasDrawItems() ? smvk::VertexLayoutId::Static
+			: smvk::VertexLayoutId::Empty;
+		if (fmt == smvk::VertexLayoutId::Static)
 			cmd.BindStaticVertexFmt();
 		cmd.BindRenderPipeline(m_meshDebugProgram, fmt,
 			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
@@ -2415,7 +2415,7 @@ namespace editor {
 					smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
 				.SetRecordingFunc([this](smvk::CommandBuffer& cmd) {
 					cmd.BindRenderPipeline(m_triangleProgram,
-						smvk::VertexFormat::Empty,
+						smvk::VertexLayoutId::Empty,
 						smvk::DepthSettings::Disabled(),
 						smvk::StencilSettings::DefaultDisabled(),
 						smvk::BlendSettings::Opaque(),

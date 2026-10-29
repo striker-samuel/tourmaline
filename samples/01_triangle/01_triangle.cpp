@@ -154,7 +154,7 @@ private:
 		{ //recording
 			cmd.BindRenderPipeline(
 				m_program,
-				smvk::VertexFormat::Empty
+				smvk::VertexLayoutId::Empty
 			)
 				;
 			cmd.Draw(

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-"""Headless golden capture: deterministic screenshot + content hash.
+"""Headless golden capture: deterministic screenshot + PIXEL hash.
 
 Runs App.exe headless (fixed camera, fixed bench budget) and hashes the
 exported screenshot so CI catches pixel regressions in the 14k-line
@@ -15,6 +15,14 @@ Environment pinned per AGENTS.md (SSR on, AA off, manual exposure, frozen
 camera). --update writes the new hash to tools/golden_hashes.txt; without
 it the run FAILS on mismatch (CI mode). The capture frame must land INSIDE
 the bench budget (capture < bench) or auto-exit happens first.
+
+The hash is over DECODED PIXELS, not file bytes: the engine's PNG writer
+emits nondeterministic (but valid) deflate streams — two runs of the same
+frame produce byte-different IDATs that decode to IDENTICAL pixels
+(verified: 0.00% differing / avg 0.00 via compare_screenshots.ps1 on two
+same-frame exports whose sha256 disagreed). Pillow decodes when installed;
+without it the tool falls back to the raw file hash and SAYS SO (that
+fallback is only stable for a deterministic encoder).
 
 Note: hashes are GPU/driver-sensitive; keep one baseline per (scene, GPU).
 A mismatch means "look at the PNG", not "revert blindly".
@@ -47,6 +55,24 @@ def load_hashes() -> dict:
                 k, v = line.split("=", 1)
                 out[k.strip()] = v.strip()
     return out
+
+
+def pixel_digest(path: Path) -> str:
+    """sha256 over DECODED pixels — NOT the file bytes.
+
+    The engine's PNG writer emits nondeterministic (but valid) deflate
+    streams: two same-frame exports hashed differently as files yet
+    diffed 0.00% / avg 0.00 as pixels (compare_screenshots.ps1). Pillow
+    decodes when installed; without it the fallback hashes raw bytes and
+    SAYS so (only stable for a deterministic encoder)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("NOTE: Pillow absent - hashing RAW FILE BYTES (flaky against"
+              " the threaded PNG writer; pip install pillow)")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    with Image.open(path) as im:
+        return hashlib.sha256(im.tobytes()).hexdigest()
 
 
 def main() -> int:
@@ -84,14 +110,17 @@ def main() -> int:
         print("ERROR: no exports/screenshot_*.png produced")
         return 1
     shot = shots[-1]
-    digest = hashlib.sha256(shot.read_bytes()).hexdigest()
+    digest = pixel_digest(shot)
     key = f"{Path(args.pak).stem}.bench{args.bench}.cap{args.capture}"
-    print(f"{key}: {shot.name} sha256={digest}")
+    print(f"{key}: {shot.name} pixel-sha256={digest}")
 
     hashes = load_hashes()
     if args.update:
         hashes[key] = digest
         lines = ["# golden screenshot hashes: <pak-stem>.bench<N>.cap<M>=sha256",
+                 "# sha256 over DECODED PIXELS (the PNG writer's deflate",
+                 "# stream is nondeterministic; file bytes flake - see the",
+                 "# pixel_digest note in golden_capture.py).",
                  "# GPU/driver-sensitive: one baseline per (scene, GPU).",
                  *[f"{k}={v}" for k, v in sorted(hashes.items())]]
         HASH_FILE.write_text("\n".join(lines) + "\n")

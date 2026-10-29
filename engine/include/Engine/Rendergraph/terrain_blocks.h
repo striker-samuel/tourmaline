@@ -6,7 +6,7 @@
 //
 // A G-block is a 256 m square of terrain surface baked from the H-field at
 // one of three LOD grids (L0 64 / L1 32 / L2 16 quads per edge) into the
-// 32-byte TerrainVertex stream (world space, TerrainVertexFormat — the
+// 32-byte TerrainVertex stream (world space, TerrainFullLayout — the
 // article's Terrain I..III full-float layout). Every block shares one
 // index buffer PER LOD (BuildBlockIndices); per-block vertex ranges ride
 // vertexBase like the old tile field.

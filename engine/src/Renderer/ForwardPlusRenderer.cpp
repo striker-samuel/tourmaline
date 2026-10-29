@@ -180,7 +180,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 					return;
 				cmd.BindRenderPipeline(
 					gbufferOn ? gbufferMaskedProgram : prepassMaskedProgram,
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					smvk::DepthSettings{
 						.depthFunc = smvk::CompareOp::GreaterEqual,
 						.writeEnable = true,
@@ -345,7 +345,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 		// RGBA8 thin G-buffer — no textures, no lighting).
 		cmd.BindRenderPipeline(
 			gbufferOn ? gbufferProgram : fp->depthProgram,
-			smvk::VertexFormat::StaticVertexFormat,
+			smvk::VertexLayoutId::Static,
 			smvk::DepthSettings{
 				.depthFunc = smvk::CompareOp::GreaterEqual,
 				.writeEnable = true,
@@ -529,7 +529,7 @@ void ForwardPlusRenderer::AppendOccluderPrepass(smvk::FrameContext& base) {
 			};
 			cmd.BindRenderPipeline(
 				fp->depthProgram,
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				smvk::DepthSettings{
 					.depthFunc = smvk::CompareOp::GreaterEqual,
 					.writeEnable = true,

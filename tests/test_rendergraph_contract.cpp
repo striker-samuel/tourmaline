@@ -77,7 +77,10 @@ int main() {
 		== smvk::gfx::kFilteredVsPushOffset + sizeof(smvk::gfx::FilteredVsPush)
 			- sizeof(smvk::gfx::MeshTailPush),
 		"contract.meshtail-overlays-filtered-skin-tail");
-	Check(sizeof(smvk::gfx::GfxMeshParams) == 232, "contract.meshparams-232");
+	// 240B = 2 matrices (128) + 11 BDAs (88) + 4 uints + the deformed BDA
+	// (8) + 2 uints. The lightmap BDA sits between shading and indices on
+	// BOTH sides (gfxmesh.hlsli) — never reorder one side alone.
+	Check(sizeof(smvk::gfx::GfxMeshParams) == 240, "contract.meshparams-240");
 
 	// 2. Mesh eligibility truth table.
 	Check(smvk::gfx::MeshDrawEligible(smvk::gfx::DrawSetBit_Opaque, 0),

@@ -119,6 +119,7 @@ namespace smvk {
 		struct StaticMeshDirectSource {
 			uint64_t posSrc = 0;   // content-relative stream offsets
 			uint64_t shadeSrc = 0;
+			uint64_t lmSrc = 0;    // lightmap stream (0 = none)
 			uint64_t idxSrc = 0;
 			uint32_t vertexCount = 0;
 			uint32_t indexCount = 0;
@@ -217,7 +218,7 @@ namespace smvk {
 		// The cluster carries ONE Skeleton (the first imported glTF skin
 		// wins - the knight has exactly one; multi-skin clusters would
 		// need a table keyed by mesh, deliberately deferred). The
-		// per-mesh VertexSkin streams (mesh.h, binding 2) index the
+		// per-mesh PackedSkinInfluences streams (mesh.h, binding 2) index the
 		// Skeleton's joint table; the palette build
 		// (touranim::BuildSkinPalette) evaluates it per frame.
 		//
@@ -231,12 +232,12 @@ namespace smvk {
 		// ------------------------------------------------------------------
 		smvk::touranim::Skeleton skeleton;
 		bool hasSkeleton = false;
-		// Patches a retained upload's VertexSkin stream (the import post
+		// Patches a retained upload's PackedSkinInfluences stream (the import post
 		// pass; also the deserializer on load). No-op when uploads are
 		// not retained (the caller logs); the stream rides the upload
 		// through serialize/deserialize like any other stream.
 		void PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
-			std::vector<VertexSkin>&& stream);
+			std::vector<PackedSkinInfluences>&& stream);
 		// Marks a mesh pool entry skinned (the deserializer + the import
 		// post pass; the runtime draw path gates on the retained stream,
 		// this is the pool-level marker for tooling).
@@ -248,16 +249,16 @@ namespace smvk {
 		// The GPU binding-2 allocation comes with the skinning pipeline
 		// (slice 2); until then this is the draw path's source. Null =
 		// static mesh.
-		[[nodiscard]] const std::vector<VertexSkin>* GetMeshSkinStream(
+		[[nodiscard]] const std::vector<PackedSkinInfluences>* GetMeshSkinStream(
 			ClusterStaticMeshHandle handle) const;
 		// The RETAINED upload's skin stream (or null). The import post pass
 		// reads it back: the stream attached before OptimizeStaticMeshUpload
 		// rode the vertex remap, so it is already in final vertex order.
 		// Null when uploads are not retained or the mesh carries no skin.
-		[[nodiscard]] const std::vector<VertexSkin>* GetRetainedSkinStream(
+		[[nodiscard]] const std::vector<PackedSkinInfluences>* GetRetainedSkinStream(
 			ClusterStaticMeshHandle handle) const;
 		void SetMeshSkinStream(ClusterStaticMeshHandle handle,
-			std::vector<VertexSkin>&& stream);
+			std::vector<PackedSkinInfluences>&& stream);
 
 		// ------------------------------------------------------------------
 		// SKINNED-MESH GPU data (the Northlight compute-skinning path).
@@ -265,7 +266,7 @@ namespace smvk {
 		// The heaps stay the BIND POSE (the skinning pass's input - the
 		// v4 fast-load streams untouched). The pass reads: the palette
 		// (per frame, the World/animation driver), the SKINNED STREAM
-		// buffer (VertexSkin per vertex - the joint ids + weights), + the
+		// buffer (PackedSkinInfluences per vertex - the joint ids + weights), + the
 		// bind-pose pos/normal/tangent words from the heaps; and writes
 		// the DEFORMED buffer ([pos3, normalW, tangentW] per vertex, 20B
 		// - the Northlight "GPU skinning produce animated positions and
@@ -412,6 +413,13 @@ namespace smvk {
 		// into the cluster's uri arena and stays valid for the cluster's
 		// lifetime.
 		StringViewT GetMeshUri(ClusterStaticMeshHandle handle) const;
+		// The mesh's vertexBase into the STATIC pos/shading heaps (vertex
+		// units — the global vertex ids the cluster-ordered index streams
+		// carry). 0xFFFFFFFF when the handle is empty/unknown. Consumers
+		// derive per-draw window deltas from it (the lightmap stream's
+		// independently-packed windows — the draw ring's GfxDraw.misc2.w).
+		[[nodiscard]] uint32_t GetMeshHeapVertexBase(
+			ClusterStaticMeshHandle handle) const;
 		StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
 		StringViewT GetLightUri(ClusterLightHandle handle) const;
 		StringViewT GetCameraUri(ClusterCameraHandle handle) const;
@@ -490,7 +498,7 @@ namespace smvk {
 		// index: the import post pass + the deserializer fill these (see
 		// GetMeshSkinStream); the GPU allocation comes with the skinning
 		// pipeline.
-		std::unordered_map<uint32_t, std::vector<VertexSkin>> skinStreams_;
+		std::unordered_map<uint32_t, std::vector<PackedSkinInfluences>> skinStreams_;
 		// The Northlight compute-skinning GPU state (EnsureSkinnedGpuData):
 		// the per-mesh ranges + the skinned-stream buffer (static) + the
 		// deformed buffer (the per-frame output the draw paths fetch -

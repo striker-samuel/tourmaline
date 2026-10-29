@@ -219,7 +219,7 @@ struct GltfToSceneImporter
 	// SKIN post pass (the Northlight data path): builds the cluster
 	// Skeleton from the glTF skins (joints via the fully-populated node
 	// map + inverseBindMatrices) and patches every recorded
-	// (mesh, skin) pair's retained upload with the packed VertexSkin
+	// (mesh, skin) pair's retained upload with the packed PackedSkinInfluences
 	// stream (JOINTS_0/WEIGHTS_0 -> top-4 normalized RGBA8). Called by
 	// the import flow's owner AFTER the node walk finishes (the joint
 	// nodes may import after the meshes that reference them). The
@@ -232,7 +232,7 @@ private:
 		getOrCreateMaterial(int gltfMaterialIndex);
 
 	// `skinned` attaches the primitive's JOINTS_0/WEIGHTS_0 as a
-	// VertexSkin stream BEFORE the meshopt pass, so it rides the vertex
+	// PackedSkinInfluences stream BEFORE the meshopt pass, so it rides the vertex
 	// remap in lockstep with the geometry (BuildSkinData then only builds
 	// the Skeleton + publishes the stream; a stream attached after
 	// optimization would desync from the reordered vertices and spike).
@@ -577,7 +577,7 @@ inline void GltfToCluster(
 	// every (mesh, node.skin) pair - build the cluster Skeleton (the
 	// gltfNodeMap is fully populated now; the joint nodes may import
 	// after the meshes that reference them) + patch the retained
-	// uploads' VertexSkin streams. Before this, skinned glTFs silently
+	// uploads' PackedSkinInfluences streams. Before this, skinned glTFs silently
 	// imported as static geometry.
 	importer.BuildSkinData();
 

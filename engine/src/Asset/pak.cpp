@@ -35,6 +35,29 @@ size_t AlignUp(size_t v, size_t align) {
 	return (v + align - 1) & ~(align - 1);
 }
 
+// Shared reflected CRC-32 lookup table (the 0xEDB88320 polynomial).
+// ONE immutable magic-static instance: the C++ runtime guarantees
+// exactly-once, THREAD-SAFE initialization. The old lazy
+// `static bool init` + unsynchronized mutable fill (both Crc32 feed
+// helpers, pre-fix) was a data race on FIRST USE - concurrent first
+// appends to different pak files from separate threads read/wrote the
+// same table bytes simultaneously (PakCrc32 already carried the
+// magic-static form with this exact history; the feeds predated that
+// fix). Every CRC step in this TU funnels through this one instance.
+const uint32_t* Crc32Table() {
+	static const std::array<uint32_t, 256> table = [] {
+		std::array<uint32_t, 256> t{};
+		for (uint32_t i = 0; i < 256; ++i) {
+			uint32_t c = i;
+			for (int k = 0; k < 8; ++k)
+				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+			t[i] = c;
+		}
+		return t;
+	}();
+	return table.data();
+}
+
 void AppendU32(std::vector<uint8_t>& out, uint32_t v) {
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
 	out.insert(out.end(), p, p + 4);
@@ -163,21 +186,11 @@ uint64_t PakHashPath(const std::string& normalizedPath) {
 }
 
 uint32_t PakCrc32(const void* data, size_t size) {
-	// Magic-static table: the C++ runtime guarantees exactly-one,
-	// thread-safe initialization (the OLD lazy `static bool init` +
-	// unsynchronized fill was a data race on FIRST USE — PakCrc32Parallel's
-	// workers all call this concurrently when a big pak's first CRC is the
-	// parallel one, and every worker raced the same table fill).
-	static const std::array<uint32_t, 256> table = [] {
-		std::array<uint32_t, 256> t{};
-		for (uint32_t i = 0; i < 256; ++i) {
-			uint32_t c = i;
-			for (int k = 0; k < 8; ++k)
-				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-			t[i] = c;
-		}
-		return t;
-	}();
+	// The shared magic-static table (see Crc32Table for the
+	// thread-safety history: the old lazy fill raced on first use -
+	// PakCrc32Parallel's workers all call this concurrently when a big
+	// pak's first CRC is the parallel one).
+	const uint32_t* table = Crc32Table();
 	uint32_t crc = 0xFFFFFFFFu;
 	const uint8_t* p = static_cast<const uint8_t*>(data);
 	for (size_t i = 0; i < size; ++i)
@@ -467,17 +480,9 @@ void WriteTocEntry(std::vector<uint8_t>& out, const PakTocEntry& e) {
 // streams the file range, then feeds those bytes from memory.
 // Caller seeds crc with 0xFFFFFFFF, finalizes with ^0xFFFFFFFF.
 bool Crc32FeedFile(std::istream& f, uint64_t end, uint32_t& crc) {
-	static uint32_t table[256];
-	static bool init = false;
-	if (!init) {
-		for (uint32_t i = 0; i < 256; ++i) {
-			uint32_t c = i;
-			for (int k = 0; k < 8; ++k)
-				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-			table[i] = c;
-		}
-		init = true;
-	}
+	// The shared magic-static table (Crc32Table): thread-safe on first
+	// use - the OLD lazy fill here raced concurrent first appends.
+	const uint32_t* table = Crc32Table();
 	std::vector<uint8_t> buf(1 << 20);
 	uint64_t pos = 0;
 	f.clear();
@@ -496,17 +501,9 @@ bool Crc32FeedFile(std::istream& f, uint64_t end, uint32_t& crc) {
 }
 
 void Crc32FeedBytes(const void* data, size_t size, uint32_t& crc) {
-	static uint32_t table[256];
-	static bool init = false;
-	if (!init) {
-		for (uint32_t i = 0; i < 256; ++i) {
-			uint32_t c = i;
-			for (int k = 0; k < 8; ++k)
-				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-			table[i] = c;
-		}
-		init = true;
-	}
+	// The shared magic-static table (Crc32Table): thread-safe on first
+	// use - the OLD lazy fill here raced concurrent first appends.
+	const uint32_t* table = Crc32Table();
 	const uint8_t* p = static_cast<const uint8_t*>(data);
 	for (size_t i = 0; i < size; ++i)
 		crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
@@ -579,8 +576,16 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		f.seekg(4, std::ios::cur); // flags
 		f.read(reinterpret_cast<char*>(&tocOffset), 8);
 		f.read(reinterpret_cast<char*>(&tocCount), 8);
+		// Overflow-safe existing-pak gate (the old
+		// `tocOffset + kTocEntryFixed * tocCount > fileSize` WRAPPED:
+		// both operands are file-controlled u64s): the TOC must start
+		// in [kHeaderSize, fileSize) and its FIXED-size footprint
+		// (36 B/entry, a lower bound - paths add more) must fit before
+		// EOF. All subtraction; a seek beyond EOF fails the reads
+		// below anyway, but this catches it before allocating.
 		if (!f || magic != kPakMagic
-			|| tocOffset + kTocEntryFixed * tocCount > fileSize) {
+			|| tocOffset < kHeaderSize || tocOffset > fileSize
+			|| tocCount > (fileSize - tocOffset) / kTocEntryFixed) {
 			err = "existing pak unreadable: " + pakPath;
 			return false;
 		}
@@ -609,7 +614,10 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 			return false;
 		}
 		// New payloads land AFTER every live old byte (old TOC+footer
-		// included): an interrupted append keeps the old pak valid.
+		// included): nothing live is ever overwritten, so direct
+		// (offset, size) reads keep resolving across an interrupted
+		// append (the crash-ordering contract in pak.h — Open itself
+		// stays broken until a later append heals the footer).
 		payloadBase = AlignUp(size_t(tocOffset) + TocEntryBytes(entries)
 			+ kFooterSize, kAlign);
 	}
@@ -666,9 +674,13 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 			return false;
 		}
 	}
-	// Patch the header LAST (see pak.h: interrupted appends keep the
-	// previous valid contents). No version field: the magic IS the
-	// version, and appended blobs never change the format.
+	// Patch the header, then the footer + resize complete the grow.
+	// The header is the ONE live byte range rewritten (the crash
+	// contract in pak.h: everything else lands after every live old
+	// byte; direct (offset, size) reads never touch the header, and
+	// Open stays broken from the first payload write until the footer
+	// lands — a later append heals it). No version field: the magic IS
+	// the version, and appended blobs never change the format.
 	f.seekp(0, std::ios::beg);
 	f.write(reinterpret_cast<const char*>(&kPakMagic), 4);
 	{
@@ -759,6 +771,20 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		outError = "pak header/footer TOC mismatch";
 		return std::nullopt;
 	}
+	// TOC placement: the TOC region lives in [kHeaderSize, fOff) - it
+	// may not start inside the header (payloads always follow the
+	// 32-byte header) and may not touch the footer region. This gate
+	// also bounds every subtraction below: fOff <= image.size(), so
+	// `fOff - off` is well-defined for any off that passes it. Checked
+	// BEFORE the whole-image CRC: it is two compares, and a malformed
+	// offset should not pay a multi-GB table walk first. (A CRC only
+	// proves the bytes are as-authored - a hostile/corrupt blob can
+	// carry a RECOMPUTED CRC over any offset field, so the range
+	// checks do the actual safety work.)
+	if (tocOffset < kHeaderSize || tocOffset > fOff) {
+		outError = "pak TOC offset out of range";
+		return std::nullopt;
+	}
 	// Whole-image CRC dominates startup for multi-GB paks (the table walk
 	// is ~1 GB/s serial); big images verify chunk-parallel instead.
 	const size_t crcBytes = fOff + 16;
@@ -770,12 +796,17 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		return std::nullopt;
 	}
 
-	// Parse TOC.
+	// Parse TOC. Every bounds check is SUBTRACTION-based: the operands
+	// are attacker-controlled u64/u32 fields, and unsigned ADDITION
+	// wraps - a wrapped `off + kTocEntryFixed` (or `offset + size`
+	// below) can sail through a `> bound` compare and hand subspan()
+	// an out-of-range pair (UINT64_MAX offsets are the canonical wrap;
+	// the old additive checks let them through).
 	PakReader r;
 	r.image_ = image;
 	size_t off = static_cast<size_t>(tocOffset);
 	for (uint64_t i = 0; i < tocCount; ++i) {
-		if (off + kTocEntryFixed > image.size()) {
+		if (off > fOff || kTocEntryFixed > fOff - off) {
 			outError = "pak TOC overruns image";
 			return std::nullopt;
 		}
@@ -788,14 +819,18 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 		memcpy(&e.size, image.data() + off + 24, 8);
 		memcpy(&pathLen, image.data() + off + 32, 4);
 		off += kTocEntryFixed;
-		if (pathLen > 4096 || off + pathLen > image.size()) {
+		if (pathLen > 4096 || pathLen > fOff - off) {
 			outError = "pak TOC path overruns image";
 			return std::nullopt;
 		}
 		e.kind = static_cast<PakAssetKind>(kind);
 		e.path.assign(reinterpret_cast<const char*>(image.data() + off), pathLen);
 		off += pathLen;
-		if (e.offset + e.size > tocOffset) {
+		// Blob ranges live in the PAYLOAD region [kHeaderSize,
+		// tocOffset): lower-bound checked, upper bound by subtraction
+		// (the old `e.offset + e.size > tocOffset` wrapped).
+		if (e.offset < kHeaderSize || e.offset > tocOffset
+			|| e.size > tocOffset - e.offset) {
 			outError = "pak blob overruns TOC: " + e.path;
 			return std::nullopt;
 		}

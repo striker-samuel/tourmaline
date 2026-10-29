@@ -398,6 +398,65 @@ set_target_properties(PlacementGpuTests PROPERTIES
 
 add_test(NAME placement_gpu_tests COMMAND PlacementGpuTests)
 
+# ProbePremixGpuTests: the DEVICE half of the probe pre-mix module's
+# frame discipline - the rendergraph pool-discipline regression
+# (AppendPasses must never mint logical handles per frame; the
+# pre-fix leak exhausted the 8192-entry buffer pool in ~2 minutes at
+# 60fps), the Ensure/Destroy reconfigure discipline, and an execute
+# smoke with a live probe entry + selection readback. Mirrors the
+# placement GPU test's bootstrap (hidden window + RM + swapchain +
+# graph; the shaders load from content/shaders relative to the build
+# root). CI-excluded like the other GPU tests (hosted runners lack a
+# display/ICD).
+add_executable(ProbePremixGpuTests test_probepremix_gpu.cpp)
+
+target_link_libraries(ProbePremixGpuTests
+    PRIVATE
+        engine
+        volk
+)
+
+if(TARGET EngineScene_shaders)
+    # Ensure() loads content/shaders/probepremix_*.cs.hlsl.spv from the
+    # working directory (the build root): never build the test before
+    # the shaders exist.
+    add_dependencies(ProbePremixGpuTests EngineScene_shaders)
+endif()
+
+set_target_properties(ProbePremixGpuTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME probepremix_gpu_tests COMMAND ProbePremixGpuTests)
+
+# RhiUploadBarrierGpuTests: the DEVICE-level regression for the
+# split-writer upload hazard (todo.txt's stranded-upload-write class,
+# retired from production placement by PR1 and reproduced here
+# INTENTIONALLY at the RHI level - independent of the placement
+# renderer): a BufferType_Indirect command whose static halves come
+# from UploadDataToBuffer and whose dynamic halves a same-frame compute
+# pass rewrites, feeding an immediate DrawIndexedIndirect. First-frame
+# command + pixel readbacks; the tiny include-free test shaders live in
+# engine/shaders (rhitest_*). Mirrors the placement GPU test's
+# bootstrap. CI-excluded like the other GPU tests (no display/ICD).
+add_executable(RhiUploadBarrierGpuTests test_rhi_upload_barriers_gpu.cpp)
+
+target_link_libraries(RhiUploadBarrierGpuTests
+    PRIVATE
+        engine
+        volk
+)
+
+if(TARGET EngineScene_shaders)
+    add_dependencies(RhiUploadBarrierGpuTests EngineScene_shaders)
+endif()
+
+set_target_properties(RhiUploadBarrierGpuTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME rhi_upload_barriers_gpu_tests COMMAND RhiUploadBarrierGpuTests)
+
 add_executable(MemoryTests test_memory.cpp)
 
 target_link_libraries(MemoryTests
@@ -707,3 +766,5 @@ tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
 tourmaline_stage_sdl3(PakHostTests)
 tourmaline_stage_sdl3(ProjectPipelineTests)
+tourmaline_stage_sdl3(ProbePremixGpuTests)
+tourmaline_stage_sdl3(RhiUploadBarrierGpuTests)

@@ -62,7 +62,7 @@ namespace smvk {
 // trailing static-subtree section (see cluster_serializer.cpp); a TOC
 // entry with PakEntryFlag_Lz4 stores `u64 uncompressedSizeLE + LZ4 block
 // bytes` (see compression.h) and the reader decompresses transparently.
-// Mesh blobs carry PACKED SoA streams (VertexPos[] + VertexShading[] +
+// Mesh blobs carry PACKED SoA streams (PackedVertexPosition[] + PackedVertexShading[] +
 // u32[] — the exact GPU heap layout, plus blob-relative subrange offsets)
 // stored UNCOMPRESSED, so the payload bytes are direct pak-image subspans
 // and the loader stages them with pure offset math (BulkCopyBuffer
@@ -162,12 +162,23 @@ struct PakAppendInfo {
 // stays unique-by-path; first-match Find keeps resolving) — the
 // superseded payload becomes dead space (cache GC compacts later).
 //
-// Crash ordering: payloads land after the old TOC+footer (nothing live
-// is overwritten), the header patch is the final write — an
-// interrupted append leaves the PREVIOUS pak contents valid (the
-// header still points at the intact old TOC; trailing bytes are
-// ignored). Torn header writes remain possible; the scratch store
-// treats a pak that fails PakReader::Open as disposable.
+// Crash ordering (read exactly — the old text overpromised): payloads
+// land after every live old byte (nothing live is overwritten), then
+// the new TOC, then the header patch, then the footer + the
+// truncating resize. PakReader::Open accepts the footer ONLY at the
+// physical end of the file, so from the FIRST payload write until the
+// final footer+resize the old footer is buried and an interrupted
+// append leaves a file that FAILS Open. The previous contents' BYTES
+// all survive — direct (offset, size) reads (the artifact registry's
+// addressing) keep resolving across any crash — and a later append
+// heals the file with a fresh footer. No in-place write ordering can
+// do better: the footer must end up at the new end, so mid-append the
+// file is inherently footer-less; a crash-safe grow would need
+// build-in-temp + atomic replace, which the cache's append frequency
+// against multi-GB class paks does not justify. Torn header writes
+// remain possible (the header is the one live range rewritten); the
+// scratch store treats a pak that fails PakReader::Open as disposable
+// and re-cooks from sources.
 // out receives one (offset, size) per blob, in order.
 bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 	const std::vector<std::pair<std::string,

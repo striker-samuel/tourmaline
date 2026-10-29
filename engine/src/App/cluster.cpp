@@ -39,33 +39,43 @@ namespace smvk {
 // -----------------------------------------------------------------------------
 void FreeStaticMeshRangesNow(
 	StaticHeapArena::AllocId vertexAllocation,
-	StaticHeapArena::AllocId indexAllocation)
+	StaticHeapArena::AllocId indexAllocation,
+	StaticHeapArena::AllocId lightmapAllocation)
 {
 	if (vertexAllocation)
 		staticVertexFmtHeap.m_staticVertexBlock.Free(vertexAllocation);
 	if (indexAllocation)
 		staticVertexFmtHeap.m_staticIndexBlock.Free(indexAllocation);
+	if (lightmapAllocation)
+		staticVertexFmtHeap.m_staticLightmapBlock.Free(lightmapAllocation);
 }
 
 void DeferFreeStaticMeshRanges(
 	ResourceManager* ctx,
 	StaticHeapArena::AllocId vertexAllocation,
-	StaticHeapArena::AllocId indexAllocation)
+	StaticHeapArena::AllocId indexAllocation,
+	StaticHeapArena::AllocId lightmapAllocation)
 {
 	if (!ctx) {
 		// Defensive (allocations imply a live ctx_): nothing was ever
 		// staged through this path, free in place.
-		FreeStaticMeshRangesNow(vertexAllocation, indexAllocation);
+		FreeStaticMeshRangesNow(vertexAllocation, indexAllocation,
+			lightmapAllocation);
 		return;
 	}
 	StaticHeapArena* vertexBlock = &staticVertexFmtHeap.m_staticVertexBlock;
 	StaticHeapArena* indexBlock = &staticVertexFmtHeap.m_staticIndexBlock;
+	StaticHeapArena* lightmapBlock =
+		&staticVertexFmtHeap.m_staticLightmapBlock;
 	ctx->DeferDestroyTask(std::packaged_task<void()>(
-		[vertexBlock, vertexAllocation, indexBlock, indexAllocation] {
+		[vertexBlock, vertexAllocation, indexBlock, indexAllocation,
+			lightmapBlock, lightmapAllocation] {
 			if (vertexAllocation)
 				vertexBlock->Free(vertexAllocation);
 			if (indexAllocation)
 				indexBlock->Free(indexAllocation);
+			if (lightmapAllocation)
+				lightmapBlock->Free(lightmapAllocation);
 		}));
 }
 } // namespace smvk
@@ -174,22 +184,43 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// 3. Convert AoS -> SoA-ish GPU streams
 	// =========================================================================
 
-	std::vector<VertexPos> positions(vertexCount);
-	std::vector<VertexShading> shading(vertexCount);
+	std::vector<PackedVertexPosition> positions(vertexCount);
+	std::vector<PackedVertexShading> shading(vertexCount);
+	std::vector<PackedVertexLightmap> lightmap(vertexCount);
+	bool hasLightmap = false;
 
 	for (uint32_t i = 0; i < vertexCount; ++i) {
 
-		const StaticVertex& src = data.vertices[i];
+		const ImportStaticVertex& src = data.vertices[i];
 
-		positions[i].pos = src.pos;
+		PackStaticVertex(src, positions[i], shading[i], lightmap[i]);
+		// The optional stream carves only when chart data exists (the
+		// uncharted sentinel means "never lightmapped").
+		if (src.chartId != 0xFFFFFFFFu)
+			hasLightmap = true;
+	}
 
-		shading[i].color = vertexpack::PackColorUnorm8(src.color);
-		shading[i].uv = vertexpack::PackUvHalf(src.texCoord);
-		shading[i].chartUv = vertexpack::PackChartUv(src.texCoord2);
-		shading[i].chart = src.chartId;
-		shading[i].normal = vertexpack::PackNormalOct(src.normal);
-		shading[i].tangent = vertexpack::PackTangentOct(
-			glm::vec3(src.tangent), src.tangent.w);
+	// =========================================================================
+	// 3b. The OPTIONAL lightmap range — carved only for charted meshes,
+	// independently packed (its base is NOT vertexBase).
+	// =========================================================================
+
+	if (hasLightmap) {
+		uint64_t lightmapBase = 0;
+		alloc.lightmapAllocation =
+			staticVertexFmtHeap.m_staticLightmapBlock.Allocate(
+				vertexCount, 1, lightmapBase);
+		if (alloc.lightmapAllocation == 0) {
+			// All-or-nothing: release the vertex + index ranges carved
+			// above.
+			staticVertexFmtHeap.m_staticVertexBlock.Free(
+				alloc.vertexAllocation);
+			if (alloc.indexAllocation)
+				staticVertexFmtHeap.m_staticIndexBlock.Free(
+					alloc.indexAllocation);
+			return {};
+		}
+		alloc.lightmapBase = lightmapBase;
 	}
 
 
@@ -198,10 +229,10 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// =========================================================================
 
 	const uint64_t positionOffset =
-		vertexBase * sizeof(VertexPos);
+		vertexBase * sizeof(PackedVertexPosition);
 
 	const uint64_t positionBytes =
-		vertexCount * sizeof(VertexPos);
+		vertexCount * sizeof(PackedVertexPosition);
 
 	ctx_->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexPosBuffer,
@@ -221,10 +252,10 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 	// =========================================================================
 
 	const uint64_t shadingOffset =
-		vertexBase * sizeof(VertexShading);
+		vertexBase * sizeof(PackedVertexShading);
 
 	const uint64_t shadingBytes =
-		vertexCount * sizeof(VertexShading);
+		vertexCount * sizeof(PackedVertexShading);
 
 	ctx_->UploadDataToBuffer(
 		staticVertexFmtHeap.m_staticVertexShadingBuffer,
@@ -237,6 +268,27 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 		0,
 		shadingOffset
 	);
+
+	// =========================================================================
+	// 5b. Upload the OPTIONAL lightmap stream (BDA-read by the mesh-shader
+	// leg + the future chart-unpack VS — ShaderRead, not a vertex-binding
+	// fetch: the stream is a storage buffer by design).
+	// =========================================================================
+
+	if (alloc.lightmapAllocation) {
+		const uint64_t lightmapOffset =
+			alloc.lightmapBase * sizeof(PackedVertexLightmap);
+		const uint64_t lightmapBytes =
+			vertexCount * sizeof(PackedVertexLightmap);
+		ctx_->UploadDataToBuffer(
+			staticVertexFmtHeap.m_staticVertexLightmapBuffer,
+			lightmap.data(),
+			lightmapBytes,
+			PipelineStageBit_All,
+			AccessFlags::ShaderRead,
+			0,
+			lightmapOffset);
+	}
 
 
 	// =========================================================================
@@ -289,17 +341,23 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 
 	mesh.geometry.surfaces.push_back(surface);
 
+	// The optional lightmap window's published base (0xFFFFFFFF = none)
+	// — the draw-ring fill reads it to compute the per-draw delta.
+	mesh.lightmapBase = alloc.lightmapAllocation
+		? static_cast<uint32_t>(alloc.lightmapBase) : 0xFFFFFFFFu;
 
 	const ClusterStaticMeshHandle handle =
 		staticMeshes.create(std::move(result));
 
 	if (handle.empty()) {
-		// The three UploadDataToBuffer calls above were already staged into
-		// these ranges (vertex/shading/index), so the frees must retire with
-		// that GPU work - never in place (see DeferFreeStaticMeshRanges).
+		// The UploadDataToBuffer calls above were already staged into
+		// these ranges (vertex/shading/lightmap/index), so the frees must
+		// retire with that GPU work - never in place (see
+		// DeferFreeStaticMeshRanges).
 		DeferFreeStaticMeshRanges(
 			ctx_,
-			alloc.vertexAllocation, alloc.indexAllocation);
+			alloc.vertexAllocation, alloc.indexAllocation,
+			alloc.lightmapAllocation);
 		return {};
 	}
 
@@ -318,7 +376,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(
 }
 
 void smvk::Cluster::PatchRetainedSkinStream(
-	ClusterStaticMeshHandle handle, std::vector<VertexSkin>&& stream)
+	ClusterStaticMeshHandle handle, std::vector<PackedSkinInfluences>&& stream)
 {
 	if (handle.empty() || stream.empty())
 		return;
@@ -347,7 +405,7 @@ void smvk::Cluster::SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned)
 		mesh->skinned = skinned;
 }
 
-const std::vector<smvk::VertexSkin>* smvk::Cluster::GetMeshSkinStream(
+const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetMeshSkinStream(
 	ClusterStaticMeshHandle handle) const
 {
 	if (handle.empty())
@@ -356,7 +414,7 @@ const std::vector<smvk::VertexSkin>* smvk::Cluster::GetMeshSkinStream(
 	return it == skinStreams_.end() ? nullptr : &it->second;
 }
 
-const std::vector<smvk::VertexSkin>* smvk::Cluster::GetRetainedSkinStream(
+const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetRetainedSkinStream(
 	ClusterStaticMeshHandle handle) const
 {
 	if (handle.empty())
@@ -368,7 +426,7 @@ const std::vector<smvk::VertexSkin>* smvk::Cluster::GetRetainedSkinStream(
 }
 
 void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
-	std::vector<smvk::VertexSkin>&& stream)
+	std::vector<smvk::PackedSkinInfluences>&& stream)
 {
 	if (handle.empty() || stream.empty())
 		return;
@@ -381,7 +439,7 @@ void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
 // ---------------------------------------------------------------------------
 // SKINNED-MESH GPU data (the Northlight compute-skinning path). Built
 // once per cluster (idempotent): the skinned-stream buffer (the
-// concatenated VertexSkin rows, static) + the DEFORMED buffer (the
+// concatenated PackedSkinInfluences rows, static) + the DEFORMED buffer (the
 // skinning pass's per-frame output: [pos3, normalW, tangentW] per vertex,
 // 20B) + the ranges table ((heapBase, count, skinBase) per range, static).
 // The heaps stay the BIND POSE (the pass's input).
@@ -402,7 +460,7 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 	// a mismatched stream clamps to the geometry count).
 	skinnedRanges_.clear();
 	skinnedRanges_.reserve(skinStreams_.size());
-	std::vector<smvk::VertexSkin> streamData;
+	std::vector<smvk::PackedSkinInfluences> streamData;
 	uint32_t minBase = UINT32_MAX;
 	uint32_t maxEnd = 0;
 	for (auto& [poolIdx, stream] : skinStreams_) {
@@ -435,7 +493,7 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 			double wsum = 0.0;
 			uint32_t zeroW = 0, maxJoint = 0;
 			for (uint32_t v = 0; v < r.vertexCount; ++v) {
-				const smvk::VertexSkin& sk = streamData[r.skinBase + v];
+				const smvk::PackedSkinInfluences& sk = streamData[r.skinBase + v];
 				const float s = float(sk.weights & 0xFF)
 					+ float((sk.weights >> 8) & 0xFF)
 					+ float((sk.weights >> 16) & 0xFF)
@@ -467,7 +525,7 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 	// 5 words per vertex: pos (3 uint words, reinterpreted floats) +
 	// normal and tangent (the packed oct words). The skinning pass writes
 	// them; the draw fetches map vi - skinnedDeformedBase_ into the span.
-	const size_t skinBytes = streamData.size() * sizeof(smvk::VertexSkin);
+	const size_t skinBytes = streamData.size() * sizeof(smvk::PackedSkinInfluences);
 	skinnedStream_ = ctx_->CreateBuffer(
 		skinBytes > 0 ? skinBytes : 4, BufferType_Storage, "skinned stream");
 	// The deformed buffer is a PARITY DOUBLE BUFFER (two halves of the
@@ -624,7 +682,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 	auto failCarved = [&ranges](size_t upto) {
 		for (size_t j = 0; j < upto; ++j)
 			FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
-				ranges[j].alloc.indexAllocation);
+				ranges[j].alloc.indexAllocation,
+				ranges[j].alloc.lightmapAllocation);
 	};
 	for (size_t i = 0; i < uploads.size(); ++i) {
 		const StaticMeshUpload& data = uploads[i];
@@ -659,6 +718,27 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 				return {};
 			}
 		}
+		// The OPTIONAL lightmap range: carved only when any vertex is
+		// charted (independently packed — its base is not vertexBase).
+		{
+			bool charted = false;
+			for (const ImportStaticVertex& v : data.vertices)
+				if (v.chartId != 0xFFFFFFFFu) {
+					charted = true;
+					break;
+				}
+			if (charted) {
+				uint64_t lmBase = 0;
+				r.alloc.lightmapAllocation =
+					staticVertexFmtHeap.m_staticLightmapBlock.Allocate(
+						vertexCount, 1, lmBase);
+				if (r.alloc.lightmapAllocation == 0) {
+					failCarved(i + 1);
+					return {};
+				}
+				r.alloc.lightmapBase = lmBase;
+			}
+		}
 	}
 
 	// =========================================================================
@@ -686,6 +766,10 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 		surface.indexCount = indexCount;
 		surface.baseVertex = static_cast<int32_t>(r.vertexBase);
 		mesh.geometry.surfaces.push_back(surface);
+		// The optional lightmap window's published base (0xFFFFFFFF =
+		// none) — the draw-ring fill reads it for the per-draw delta.
+		mesh.lightmapBase = r.alloc.lightmapAllocation
+			? static_cast<uint32_t>(r.alloc.lightmapBase) : 0xFFFFFFFFu;
 		handles[i] = staticMeshes.create(std::move(mesh));
 		if (handles[i].empty()) {
 			// Roll the created entries back (frees their heap ranges via
@@ -704,7 +788,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 			// happen only after every pool entry succeeds), so an
 			// immediate retry of the batch still sees the full capacity.
 			FreeStaticMeshRangesNow(r.alloc.vertexAllocation,
-				r.alloc.indexAllocation);
+				r.alloc.indexAllocation, r.alloc.lightmapAllocation);
 			return {};
 		}
 		r.alloc.vertexBase = r.vertexBase;
@@ -723,18 +807,21 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 
 	size_t totalVerts = 0;
 	size_t totalIdx = 0;
-	for (const StaticMeshUpload& data : uploads) {
-		totalVerts += data.vertices.size();
-		totalIdx += data.indices.size();
+	for (size_t i = 0; i < uploads.size(); ++i) {
+		totalVerts += uploads[i].vertices.size();
+		totalIdx += uploads[i].indices.size();
 	}
-	std::vector<VertexPos> positions(totalVerts);
-	std::vector<VertexShading> shading(totalVerts);
+	std::vector<PackedVertexPosition> positions(totalVerts);
+	std::vector<PackedVertexShading> shading(totalVerts);
+	std::vector<PackedVertexLightmap> lightmap(totalVerts);
 	std::vector<uint32_t> indices(totalIdx);
 	std::vector<BufferBulkCopy> posCopies;
 	std::vector<BufferBulkCopy> shadeCopies;
+	std::vector<BufferBulkCopy> lmCopies;
 	std::vector<BufferBulkCopy> idxCopies;
 	posCopies.reserve(uploads.size());
 	shadeCopies.reserve(uploads.size());
+	lmCopies.reserve(uploads.size());
 	idxCopies.reserve(uploads.size());
 	size_t srcVert = 0;
 	size_t srcIdx = 0;
@@ -745,10 +832,12 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 			static_cast<uint32_t>(data.vertices.size());
 		const uint32_t indexCount =
 			static_cast<uint32_t>(data.indices.size());
-		VertexPos* posOut = positions.data() + srcVert;
-		VertexShading* shadeOut = shading.data() + srcVert;
+		PackedVertexPosition* posOut = positions.data() + srcVert;
+		PackedVertexShading* shadeOut = shading.data() + srcVert;
+		PackedVertexLightmap* lmOut = lightmap.data() + srcVert;
 		for (uint32_t v = 0; v < vertexCount; ++v)
-			PackStaticVertex(data.vertices[v], posOut[v], shadeOut[v]);
+			PackStaticVertex(data.vertices[v], posOut[v], shadeOut[v],
+				lmOut[v]);
 		if (indexCount > 0) {
 			memcpy(indices.data() + srcIdx, data.indices.data(),
 				size_t(indexCount) * sizeof(uint32_t));
@@ -758,19 +847,31 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 				size_t(indexCount) * sizeof(uint32_t) });
 		}
 		posCopies.push_back(BufferBulkCopy{
-			srcVert * sizeof(VertexPos),
-			size_t(r.vertexBase) * sizeof(VertexPos),
-			size_t(vertexCount) * sizeof(VertexPos) });
+			srcVert * sizeof(PackedVertexPosition),
+			size_t(r.vertexBase) * sizeof(PackedVertexPosition),
+			size_t(vertexCount) * sizeof(PackedVertexPosition) });
 		shadeCopies.push_back(BufferBulkCopy{
-			srcVert * sizeof(VertexShading),
-			size_t(r.vertexBase) * sizeof(VertexShading),
-			size_t(vertexCount) * sizeof(VertexShading) });
+			srcVert * sizeof(PackedVertexShading),
+			size_t(r.vertexBase) * sizeof(PackedVertexShading),
+			size_t(vertexCount) * sizeof(PackedVertexShading) });
+		// The lightmap stream packs CONTIGUOUSLY in the staging blob
+		// (only charted meshes contribute); the destination addresses
+		// each mesh's independently-carved window. The source slice
+		// rides the SAME srcVert slot as the shading words (the
+		// lightmap vector is vertex-parallel).
+		if (r.alloc.lightmapAllocation) {
+			lmCopies.push_back(BufferBulkCopy{
+				srcVert * sizeof(PackedVertexLightmap),
+				size_t(r.alloc.lightmapBase)
+					* sizeof(PackedVertexLightmap),
+				size_t(vertexCount) * sizeof(PackedVertexLightmap) });
+		}
 		srcVert += vertexCount;
 		srcIdx += indexCount;
 	}
 
 	// =========================================================================
-	// 4. Three table-driven bulk uploads (one per heap; the RHI stages 512MB
+	// 4. Four table-driven bulk uploads (one per heap; the RHI stages 512MB
 	//    blobs — one memcpy pass + one submit + one barrier set per blob)
 	// =========================================================================
 
@@ -782,6 +883,13 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 		shading.data(), shadeCopies,
 		PipelineStageBit_Vertex,
 		AccessFlags::VertexAttributeRead);
+	if (!lmCopies.empty()) {
+		ctx_->BulkCopyBuffer(
+			staticVertexFmtHeap.m_staticVertexLightmapBuffer,
+			lightmap.data(), lmCopies,
+			PipelineStageBit_All,
+			AccessFlags::ShaderRead);
+	}
 	if (!idxCopies.empty()) {
 		ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
 			indices.data(), idxCopies,
@@ -815,7 +923,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 	auto failCarved = [&ranges](size_t upto) {
 		for (size_t j = 0; j < upto; ++j)
 			FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
-				ranges[j].alloc.indexAllocation);
+				ranges[j].alloc.indexAllocation,
+				ranges[j].alloc.lightmapAllocation);
 	};
 	for (size_t i = 0; i < sources.size(); ++i) {
 		const StaticMeshDirectSource& src = sources[i];
@@ -844,6 +953,19 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 				return {};
 			}
 		}
+		// The OPTIONAL lightmap range: the source blob carries the
+		// stream only for charted meshes (lmSrc != 0).
+		if (src.lmSrc != 0) {
+			uint64_t lmBase = 0;
+			r.alloc.lightmapAllocation =
+				staticVertexFmtHeap.m_staticLightmapBlock.Allocate(
+					src.vertexCount, 1, lmBase);
+			if (r.alloc.lightmapAllocation == 0) {
+				failCarved(i + 1);
+				return {};
+			}
+			r.alloc.lightmapBase = lmBase;
+		}
 	}
 
 	// =========================================================================
@@ -865,6 +987,10 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 		surface.indexCount = src.indexCount;
 		surface.baseVertex = static_cast<int32_t>(r.vertexBase);
 		mesh.geometry.surfaces.push_back(surface);
+		// The optional lightmap window's published base (0xFFFFFFFF =
+		// none) — the draw-ring fill reads it for the per-draw delta.
+		mesh.lightmapBase = r.alloc.lightmapAllocation
+			? static_cast<uint32_t>(r.alloc.lightmapBase) : 0xFFFFFFFFu;
 		handles[i] = staticMeshes.create(std::move(mesh));
 		if (handles[i].empty()) {
 			// Same rollback contract as UploadStaticMeshes: the rolled-back
@@ -878,7 +1004,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 			// ranges free in place (nothing was staged - the bulk copies
 			// happen only after every pool entry succeeds).
 			FreeStaticMeshRangesNow(r.alloc.vertexAllocation,
-				r.alloc.indexAllocation);
+				r.alloc.indexAllocation, r.alloc.lightmapAllocation);
 			return {};
 		}
 		r.alloc.vertexBase = r.vertexBase;
@@ -898,20 +1024,29 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 	std::vector<BufferBulkCopy> posCopies;
 	std::vector<BufferBulkCopy> shadeCopies;
 	std::vector<BufferBulkCopy> idxCopies;
+	std::vector<BufferBulkCopy> lmCopies;
 	posCopies.reserve(sources.size());
 	shadeCopies.reserve(sources.size());
+	lmCopies.reserve(sources.size());
 	idxCopies.reserve(sources.size());
 	for (size_t i = 0; i < sources.size(); ++i) {
 		const StaticMeshDirectSource& src = sources[i];
 		MeshRange& r = ranges[i];
 		posCopies.push_back(BufferBulkCopy{
 			size_t(src.posSrc),
-			size_t(r.vertexBase) * sizeof(VertexPos),
-			size_t(src.vertexCount) * sizeof(VertexPos) });
+			size_t(r.vertexBase) * sizeof(PackedVertexPosition),
+			size_t(src.vertexCount) * sizeof(PackedVertexPosition) });
 		shadeCopies.push_back(BufferBulkCopy{
 			size_t(src.shadeSrc),
-			size_t(r.vertexBase) * sizeof(VertexShading),
-			size_t(src.vertexCount) * sizeof(VertexShading) });
+			size_t(r.vertexBase) * sizeof(PackedVertexShading),
+			size_t(src.vertexCount) * sizeof(PackedVertexShading) });
+		if (src.lmSrc != 0) {
+			lmCopies.push_back(BufferBulkCopy{
+				size_t(src.lmSrc),
+				size_t(r.alloc.lightmapBase)
+					* sizeof(PackedVertexLightmap),
+				size_t(src.vertexCount) * sizeof(PackedVertexLightmap) });
+		}
 		if (src.indexCount > 0) {
 			idxCopies.push_back(BufferBulkCopy{
 				size_t(src.idxSrc),
@@ -927,6 +1062,13 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 		content, shadeCopies,
 		PipelineStageBit_Vertex,
 		AccessFlags::VertexAttributeRead);
+	if (!lmCopies.empty()) {
+		ctx_->BulkCopyBuffer(
+			staticVertexFmtHeap.m_staticVertexLightmapBuffer,
+			content, lmCopies,
+			PipelineStageBit_All,
+			AccessFlags::ShaderRead);
+	}
 	if (!idxCopies.empty()) {
 		ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
 			content, idxCopies,
@@ -967,13 +1109,15 @@ void smvk::Cluster::DestroyMesh(
 			allocation->vertexAllocation;
 		const StaticHeapArena::AllocId indexAllocation =
 			allocation->indexAllocation;
+		const StaticHeapArena::AllocId lightmapAllocation =
+			allocation->lightmapAllocation;
 
 		delete allocation;
 		meshAllocations_.erase(it);
 
 		DeferFreeStaticMeshRanges(
 			ctx_,
-			vertexAllocation, indexAllocation);
+			vertexAllocation, indexAllocation, lightmapAllocation);
 	}
 
 	staticMeshes.destroy(handle);

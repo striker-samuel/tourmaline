@@ -1781,7 +1781,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 	auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
 	data.vertices.reserve(posAcc.count);
 	for (size_t i = 0; i < posAcc.count; ++i) {
-		smvk::StaticVertex v{};
+		smvk::ImportStaticVertex v{};
 			v.pos = readVec3F(model, posAcc, i);
 		v.color = { 1.0f, 1.0f, 1.0f, 1.0f };
 		v.texCoord = { 0.0f, 0.0f }; // will fill if UVs exist
@@ -1863,7 +1863,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 
 }
 
-// Packs a primitive's JOINTS_0/WEIGHTS_0 into the VertexSkin stream
+// Packs a primitive's JOINTS_0/WEIGHTS_0 into the PackedSkinInfluences stream
 // (top-4 renormalized RGBA8; joint ids in the glTF JOINTS_0 order = the
 // cluster Skeleton joint table). Built in the POSITION-accessor order,
 // parallel to the mesh upload's vertices, so OptimizeStaticMeshUpload can
@@ -1871,7 +1871,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 // unskinned primitive (missing/invalid attributes or empty).
 static bool PackVertexSkinStream(const tinygltf::Model& model,
 	const tinygltf::Primitive& prim,
-	std::vector<smvk::VertexSkin>& out)
+	std::vector<smvk::PackedSkinInfluences>& out)
 {
 	auto jt = prim.attributes.find("JOINTS_0");
 	auto wt = prim.attributes.find("WEIGHTS_0");
@@ -2295,7 +2295,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 // (mesh, node.skin) pair; this builds the cluster Skeleton (joints via the
 // FULLY-POPULATED gltfNodeMap - joint nodes may import after the meshes
 // that reference them, which is why this is a post pass) and patches every
-// recorded mesh's retained upload with the packed VertexSkin stream
+// recorded mesh's retained upload with the packed PackedSkinInfluences stream
 // (mesh.h, binding 2: RGBA8_UInt joint ids + RGBA8_UNorm weights, top-4
 // influences renormalized). The stream rides the upload through the
 // serializer (the mesh blob's trailing skin section); the skeleton lands in
@@ -2405,7 +2405,7 @@ int GltfToSceneImporter::BuildSkinData() {
 		cluster.hasSkeleton = true;
 	}
 	// Per-recorded-mesh skin streams: JOINTS_0/WEIGHTS_0 -> packed
-	// VertexSkin (top-4 renormalized RGBA8).
+	// PackedSkinInfluences (top-4 renormalized RGBA8).
 	int patched = 0;
 	for (const SkinRef& r : skinRefs_) {
 		if (r.skinIndex < 0 || (size_t)r.skinIndex >= model.skins.size()
@@ -2422,8 +2422,8 @@ int GltfToSceneImporter::BuildSkinData() {
 		// already rode OptimizeStaticMeshUpload's vertex remap, so it is in
 		// FINAL vertex order - prefer it. The accessor-order pack is the
 		// fallback for an unoptimized mesh (no reorder => the orders agree).
-		std::vector<smvk::VertexSkin> stream;
-		if (const std::vector<smvk::VertexSkin>* existing =
+		std::vector<smvk::PackedSkinInfluences> stream;
+		if (const std::vector<smvk::PackedSkinInfluences>* existing =
 				cluster.GetRetainedSkinStream(r.mesh);
 			existing && !existing->empty()) {
 			stream = *existing;
@@ -2652,8 +2652,13 @@ size_t BuildFromMeshAsset(
 	auto makeUpload = [](const smvk::assets::MeshAsset::Geometry& g) {
 		smvk::StaticMeshUpload up{};
 		up.vertices.resize(g.positions.size());
+		// Uncharted blobs carry NO lightmap stream (count-gated on disk);
+		// the unpack uses an all-uncharted record for those (the inverse
+		// pack's sentinel round-trips to chartId 0xFFFFFFFF anyway).
+		const smvk::PackedVertexLightmap lmNone{};
 		for (size_t v = 0; v < g.positions.size(); ++v)
 			smvk::UnpackStaticVertex(g.positions[v], g.shading[v],
+				!g.lightmap.empty() ? g.lightmap[v] : lmNone,
 				up.vertices[v]);
 		up.indices = g.indices;
 		up.aabbMin = g.aabbMin;
@@ -2952,7 +2957,7 @@ size_t BuildFromMeshAsset(
 				&& gi < baseHandles.size(); ++gi) {
 				if (!asset.geometry[gi].skin.empty())
 					cluster.SetMeshSkinStream(baseHandles[gi],
-						std::vector<smvk::VertexSkin>(
+						std::vector<smvk::PackedSkinInfluences>(
 							asset.geometry[gi].skin));
 			}
 		}

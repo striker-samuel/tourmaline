@@ -314,7 +314,7 @@ int main() {
 			const auto& skin = asset.geometry[bodyGeo].skin;
 			std::vector<uint32_t> use(c->skeleton.joints.size(), 0);
 			std::vector<float> wsum(c->skeleton.joints.size(), 0.0f);
-			for (const smvk::VertexSkin& s : skin) {
+			for (const smvk::PackedSkinInfluences& s : skin) {
 				const uint32_t j[4] = { s.joints & 0xFFu,
 					(s.joints >> 8) & 0xFFu,
 					(s.joints >> 16) & 0xFFu,

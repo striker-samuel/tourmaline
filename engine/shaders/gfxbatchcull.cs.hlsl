@@ -57,7 +57,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
     GfxDraw d;
     d.model = float4x4(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     d.misc = uint4(0, 0, 0, 0);
-    d.misc2 = uint4(0, 0, 0xFFFFFFFFu, 0);
+    d.misc2 = uint4(0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu); // misc2.w lm sentinel
     GfxMeshEntry me;
     me.clusterStart = 0u;
     me.clusterCount = 0u;

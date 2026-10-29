@@ -32,7 +32,7 @@
 //    + density). Static/dynamic separation is per-draw via the chunk id
 //    riding the gfx draw ring (GfxDraw.misc.w; 0xFFFFFFFF = none).
 //
-// Ownership: the COOK bakes charts, fills StaticVertex::texCoord2 with
+// Ownership: the COOK bakes charts, fills ImportStaticVertex::texCoord2 with
 // the per-vertex CHART-LOCAL uvs (+ chartId), records each mesh's
 // per-chart atlas transforms (StaticMesh::lmChartXforms), stamps each
 // mesh's atlas chunk id, and writes the .sglm. The runtime uploads the
@@ -44,7 +44,7 @@
 // File format: .sglm (SGLM v1, LZ4-compressed half payload, see .cpp).
 // GPU layout: 9 RGBA16F 2D textures (36 half slots = 12 lobes x RGB);
 // chunks with fewer lobes use the prefix subset. Chunk rects address one
-// shared UV space; chart-local UVs ride in StaticVertex::texCoord2
+// shared UV space; chart-local UVs ride in ImportStaticVertex::texCoord2
 // (filled at cook time).
 
 #include <cstdint>
@@ -322,7 +322,7 @@ bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
 // chart SEAMS approximate (the seam-side triangle samples the neighbor
 // chart's margin — a mild, dilated artifact confined to seams).
 //
-// The COOK stamps chart-local UVs into StaticVertex::texCoord2 (+ chart
+// The COOK stamps chart-local UVs into ImportStaticVertex::texCoord2 (+ chart
 // ids) and records the per-chart atlas-space transforms
 // (SgLightmapAtlas::AtlasTexel decomposed as scale + offset) on the mesh
 // for the shader unpack; the lobe count rides the draw ring.

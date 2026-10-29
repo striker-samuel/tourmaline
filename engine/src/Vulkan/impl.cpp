@@ -55,6 +55,7 @@
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/dlss.h>
+#include <Engine/Renderer/mesh.h> // ValidateVertexLayout (pipeline build)
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
@@ -3309,10 +3310,16 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	// StaticVertexFmt
 	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
+	// The OPTIONAL lightmap stream's buffer + arena (marker 2): carved only
+	// for charted meshes, but the buffer exists whenever the heap does —
+	// destroy it unconditionally (empty handles are a no-op) so it cannot
+	// surface as the exit-time [LEAK] Buffer report.
+	destroy(this, staticVertexFmtHeap.m_staticVertexLightmapBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticIndexBuffer);
 	// The arenas (the VmaVirtualBlock replacement) are lifetime-global CPU
 	// state: drop the bookkeeping, nothing device-side remains.
 	staticVertexFmtHeap.m_staticVertexBlock.Initialize(0);
+	staticVertexFmtHeap.m_staticLightmapBlock.Initialize(0);
 	staticVertexFmtHeap.m_staticIndexBlock.Initialize(0);
 	//
 	if (m_streamer) { m_streamer->waitAll(); m_streamer->destroy(); m_streamer.reset(); }
@@ -11036,7 +11043,7 @@ bool smvk::StencilSettings::operator<(const StencilSettings& other) const noexce
 }
 //
 std::vector<VkVertexInputBindingDescription>
-smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormatDescription& format)
+smvk::getVkVertexInputBindingDescriptions(const smvk::VertexLayoutDesc& format)
 {
 	std::vector<VkVertexInputBindingDescription> descriptions;
 	descriptions.reserve(format.bindings.size());
@@ -11054,7 +11061,7 @@ smvk::getVkVertexInputBindingDescriptions(const smvk::VertexFormatDescription& f
 	return descriptions;
 }
 std::vector<VkVertexInputAttributeDescription>
-smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& format)
+smvk::getVkVertexAttributeDescriptions(const smvk::VertexLayoutDesc& format)
 {
 	std::vector<VkVertexInputAttributeDescription> descriptions;
 
@@ -11066,12 +11073,16 @@ smvk::getVkVertexAttributeDescriptions(const smvk::VertexFormatDescription& form
 
 	descriptions.reserve(attributeCount);
 
-	uint32_t location = 0;
-
+	// Locations are EXPLICIT on the attributes (the pre-fix counter
+	// assigned them by list position, so reordering a layout silently
+	// re-bound every shader input while the semantic names looked
+	// unchanged). The structural invariants (unique locations, offsets
+	// within strides) are validated by ValidateVertexLayout — the
+	// pipeline build asserts it before reaching here.
 	for (const VertexBinding& binding : format.bindings) {
 		for (const VertexAttribute& attribute : binding.attributes) {
 			descriptions.push_back({
-				.location = location++,
+				.location = attribute.location,
 				.binding = binding.binding,
 				.format = toVkFormat(attribute.format),
 				.offset = attribute.offset,
@@ -11143,6 +11154,20 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 	// VERTEX INPUT
 	// ========================================================
 
+	// Structural layout invariants (unique locations, formats fitting
+	// their binding strides): a bad layout is a programmer error, not an
+	// operational condition — assert (debug aborts, release logs loud
+	// and builds the layout anyway rather than refusing to render).
+	{
+		std::string layoutErr;
+		if (!ValidateVertexLayout(key.vertexFormat, &layoutErr)) {
+			std::fprintf(stderr,
+				"[PipelineCache] INVALID vertex layout: %s (building"
+				" anyway)\n", layoutErr.c_str());
+			assert(false && "invalid vertex layout");
+		}
+	}
+
 	auto bindingDescriptions =
 		getVkVertexInputBindingDescriptions(
 			key.vertexFormat);
@@ -11162,7 +11187,11 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 	// reflection keeps the full set (fail-open, the old behavior). A VS
 	// with no real inputs (fullscreen triangles) filters everything —
 	// correct: nothing is consumed; the binding descriptions stay (a
-	// stride-only binding is legal).
+	// stride-only binding is legal). While matching, the input's
+	// reflected COMPONENT COUNT is checked against the bound format:
+	// consuming more components than the format provides reads
+	// undefined data (the old reflection carried only the location, so
+	// this mismatch passed silently) — loud, fail-open.
 	if (!attributeDescriptions.empty()) {
 		const Shader* vs = nullptr;
 		for (uint8_t i = 0; i < key.program.shaderCount; ++i) {
@@ -11175,6 +11204,34 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 			const SpirvReflection refl =
 				ctx_->ReflectShaderModule(vs->module);
 			if (refl.valid) {
+				// Component compatibility (the explicit-location
+				// pairing): an input consuming MORE components than its
+				// bound attribute's format provides reads undefined data
+				// — loud, fail-open (the old reflection carried only
+				// the location, so this mismatch passed silently).
+				for (const VertexBinding& b :
+					key.vertexFormat.bindings) {
+					for (const VertexAttribute& attr :
+						b.attributes) {
+						for (const SpirvStageInput& in :
+							refl.stageInputs) {
+							if (in.location != attr.location)
+								continue;
+							const uint32_t formatComps =
+								GetFormatComponentCount(attr.format);
+							if (in.componentCount > formatComps)
+								std::fprintf(stderr,
+									"[PipelineCache] vertex input"
+									" location %u ('%s') consumes %u"
+									" components but the bound attribute"
+									" format provides %u - the fetch"
+									" reads undefined data\n",
+									attr.location, in.name.c_str(),
+									in.componentCount, formatComps);
+							break;
+						}
+					}
+				}
 				std::erase_if(attributeDescriptions,
 					[&refl](const VkVertexInputAttributeDescription& a) {
 					for (const SpirvStageInput& in
@@ -11591,7 +11648,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 }
 smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 	ShaderProgram& program,
-	const VertexFormatDescription& vertexFormat,
+	const VertexLayoutDesc& vertexFormat,
 	const Format* colorFormats,
 	uint32_t colorAttachmentCount,
 	Format depthFormat,
@@ -13903,7 +13960,7 @@ void smvk::CommandBuffer::WriteStageTimestamp(uint32_t stageTimer, bool begin)
 }
 void smvk::CommandBuffer::BindRenderPipeline(
 	ShaderProgram& shaderProgram,
-	VertexFormat vertexFormat,
+	VertexLayoutId vertexFormat,
 	const DepthSettings& depthSettings,
 	const StencilSettings& stencilSettings,
 	const BlendSettings& blendSettings,
@@ -13940,23 +13997,23 @@ void smvk::CommandBuffer::BindRenderPipeline(
 	{
 		currentPipeline_ = graphicsPipeline_;
 		currentLayout_ = graphicsLayout_;
-		if (vertexFormat == VertexFormat::StaticVertexFormat)
+		if (vertexFormat == VertexLayoutId::Static)
 			BindStaticVertexFmt();
 		return;
 	}
 
 	switch (vertexFormat)
 	{
-	case VertexFormat::StaticVertexFormat:
+	case VertexLayoutId::Static:
 		BindStaticVertexFmt();
 		break;
-	case VertexFormat::Empty:
+	case VertexLayoutId::Empty:
 		break;
 	default:
 		break;
 	}
-	const VertexFormatDescription& formatDescription =
-		GetVertexFormatDescription(vertexFormat);
+	const VertexLayoutDesc& formatDescription =
+		GetVertexLayoutDesc(vertexFormat);
 
 	// Attachment formats feed the pipeline cache key. Small fixed
 	// storage (passes have few attachments); heap fallback keeps a wide

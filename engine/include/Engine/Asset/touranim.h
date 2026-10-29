@@ -131,7 +131,7 @@ bool LoadTourAnimText(const std::string& text, AnimDoc& doc, std::string& err,
 // ---------------------------------------------------------------------------
 
 // Skeleton cooked from a glTF skin: joints[i] is the cluster node id,
-// inverseBind[i] its inverse world matrix at bind time. VertexSkin joint
+// inverseBind[i] its inverse world matrix at bind time. PackedSkinInfluences joint
 // ids (mesh.h) INDEX this table (glTF JOINTS_0 order); .tourAnim -joint
 // ids are node ids — map track -> palette index once at bind time.
 struct Skeleton {

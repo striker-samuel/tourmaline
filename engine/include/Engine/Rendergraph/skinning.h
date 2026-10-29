@@ -36,7 +36,7 @@ inline constexpr uint32_t kSkinPaletteMax = 256;
 // the shader's comment carries the offsets).
 struct SkinPush {
 	uint64_t palette = 0;   // 0  float4x4[256] (per frame)
-	uint64_t skin = 0;      // 8  VertexSkin pairs (static)
+	uint64_t skin = 0;      // 8  PackedSkinInfluences pairs (static)
 	uint64_t ranges = 0;    // 16 (heapBase, count, skinBase, pad) rows
 	uint64_t deformed = 0;  // 24 [pos3, normalW, tangentW] output
 	uint64_t posHeap = 0;   // 32 bind-pose positions (3 words/v)

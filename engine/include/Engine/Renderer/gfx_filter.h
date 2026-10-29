@@ -201,6 +201,14 @@ struct alignas(16) Draw {
 	// 0xFFFFFFFF = the build dropped the draw (cap). 0 in the CPU-cull
 	// legacy path (which never reads it).
 	uint32_t candidateBase = 0xFFFFFFFFu;
+	// HLSL misc2.w: the ADDITIVE lightmap-heap delta (lightmapBase -
+	// meshVertexBase, both vertex units — the lightmap stream packs
+	// INDEPENDENTLY of the pos/shading windows). The mesh-shader leg
+	// fetches the chart words at (vi + lmDelta) * 2; 0xFFFFFFFF = the
+	// mesh carries no lightmap stream. Unused by the indexed-raster legs
+	// (the classic filtered VS binds the lightmapped layout per mesh
+	// when lightmaps return).
+	uint32_t lmDelta = 0xFFFFFFFFu;
 };
 static_assert(sizeof(Draw) == 96);
 
@@ -482,7 +490,8 @@ inline constexpr const char* kGfxMeshMsPath = "content/shaders/gfxfilter.mesh.hl
 inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.hlsl.spv";
 
 // Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
-// (two matrices first for 16-alignment, then 9 BDAs, then 6 uints = 224B).
+// (two matrices first for 16-alignment, then 10 BDAs, 4 uints, the
+// deformed BDA + 2 uints = 240B).
 // batchList points at this dispatch's slice of the compacted eligible
 // batch indices (base folded into the address); listCount bounds it.
 // TWO matrices (the culling-freeze contract): viewProj = the gfx view
@@ -500,6 +509,10 @@ struct GfxMeshParams {
 	uint64_t batches = 0;
 	uint64_t positions = 0;
 	uint64_t shading = 0;
+	// The OPTIONAL lightmap stream (PackedVertexLightmap): fetched via the
+	// per-draw additive delta (GfxDraw.misc2.w = lightmapBase -
+	// meshVertexBase); 0 when no scene mesh carries chart data at all.
+	uint64_t lightmap = 0;
 	uint64_t indices = 0;
 	uint64_t lmXforms = 0;
 	uint64_t batchList = 0;
@@ -518,7 +531,7 @@ struct GfxMeshParams {
 	uint32_t deformedBase = 0xFFFFFFFFu; // the skinned span's heap-id base
 	uint32_t pad0 = 0;
 };
-static_assert(sizeof(GfxMeshParams) == 232);
+static_assert(sizeof(GfxMeshParams) == 240);
 
 // Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
 // deliberately OVERLAYS the FilteredVsPush tail's VS-skin fields — the mesh
@@ -593,6 +606,9 @@ struct DrawRequest {
 	DrawSetMask drawSet = DrawSetBit_Opaque;
 	uint32_t lmChunk = 0xFFFFFFFFu; // rides the draw ring (misc.w)
 	uint32_t lmChartOffset = 0; // base into the chart transform buffer (misc2.x)
+	// The per-draw additive lightmap-heap delta (HLSL misc2.w; see the
+	// Draw field). 0xFFFFFFFF = the mesh carries no lightmap stream.
+	uint32_t lmDelta = 0xFFFFFFFFu;
 };
 
 struct Cluster {
@@ -1239,7 +1255,8 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
 	DrawSetMask drawSet = DrawSetBit_Opaque,
-	uint32_t lmChunk = 0xFFFFFFFFu, uint32_t lmChartOffset = 0);
+	uint32_t lmChunk = 0xFFFFFFFFu, uint32_t lmChartOffset = 0,
+	uint32_t lmDelta = 0xFFFFFFFFu);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // The normal-cone (backface) and sphere-vs-frustum parts always run. The

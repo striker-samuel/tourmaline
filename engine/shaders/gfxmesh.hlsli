@@ -34,9 +34,14 @@
 #define GFX_MESH_HALVES 2
 
 // Positions heap as uint words (same GfxPositions view as the filter).
-// Shading heap as uint words (6 per vertex: color, uv, chartUv, normal,
-// tangent, chart — see VertexShading in Engine/Renderer/mesh.h).
-struct GfxShadingHeap { uint words[GFX_MAX_VERTICES * 6]; };
+// Shading heap as uint words (4 per vertex: color, uv, normal, tangent —
+// see PackedVertexShading in Engine/Renderer/mesh.h). The lightmap words
+// (chartUv, chartId) moved OUT to the OPTIONAL PackedVertexLightmap
+// stream (2 words per vertex, its own heap): unlightmapped meshes don't
+// carry it at all, so the fetch is guarded by the per-draw delta
+// (GfxDraw.misc2.w = lightmapBase - meshVertexBase, 0xFFFFFFFF = none).
+struct GfxShadingHeap { uint words[GFX_MAX_VERTICES * 4]; };
+struct GfxLightmapHeap { uint words[GFX_MAX_VERTICES * 2]; };
 // Compacted eligible batch indices for one variant dispatch.
 struct GfxMeshBatchList { uint batch[GFX_MAX_BATCHES * 2]; };
 // DEFORMED vertex heap: 5 words per vertex [pos3 asuint, packed normal,
@@ -72,6 +77,12 @@ struct GfxMeshParamsData
     vk::BufferPointer<GfxBatches> batches;
     vk::BufferPointer<GfxPositions> positions;
     vk::BufferPointer<GfxShadingHeap> shading;
+    // The OPTIONAL lightmap stream (PackedVertexLightmap, 2 words/vertex,
+    // INDEPENDENTLY packed windows): fetched as
+    //   lm words[(vi + draw.misc2.w) * 2]
+    // where misc2.w carries the per-draw additive delta (lightmapBase -
+    // meshVertexBase; 0xFFFFFFFF = the draw's mesh carries no lightmap).
+    vk::BufferPointer<GfxLightmapHeap> lightmap;
     vk::BufferPointer<GfxIndices> indices;
     vk::BufferPointer<GfxChartXforms> lmXforms;
     vk::BufferPointer<GfxMeshBatchList> batchList;

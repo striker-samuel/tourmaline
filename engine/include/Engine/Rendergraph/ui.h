@@ -229,7 +229,7 @@ struct UiComposite {
 		pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
 			cmd.BindRenderPipeline(
 				progCopy,
-				VertexFormat::Empty,
+				VertexLayoutId::Empty,
 				DepthSettings::Disabled(),
 				StencilSettings::DefaultDisabled(),
 				opaqueBlend

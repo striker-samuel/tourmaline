@@ -4,10 +4,14 @@
 // Packed vertex-stream unpack (CPU mirror: Engine/Renderer/vertex_pack.h —
 // keep the two in sync: same fold, same sign(0)=+1, same rounding).
 //
-// VertexShading is 16 bytes: color RGBA8_UNORM, uv RG16_FLOAT (both decoded
-// by the vertex-fetch hardware into float), normal/tangent as R32_UInt
-// octahedral words decoded here. The bitangent is never stored; the
-// fragment shader rebuilds B = cross(N, T) * w.
+// The shading stream (C++ VertexShading) is 24 bytes: color RGBA8_UNORM,
+// uv RG16_FLOAT (both decoded by the vertex-fetch hardware into float),
+// normal/tangent as R32_UInt octahedral words decoded here, plus the
+// 8-byte lightmap tail (chartUv RG16_UNORM + chart R32_UInt) that the
+// active static format does NOT bind (kept in the stream for the
+// gated-off lightmapped format — see mesh.h's trade-off note). The
+// bitangent is never stored; the fragment shader rebuilds
+// B = cross(N, T) * w.
 #pragma once
 
 float OctSignH(float v) { return v >= 0.0f ? 1.0f : -1.0f; }

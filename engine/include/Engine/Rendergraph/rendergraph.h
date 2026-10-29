@@ -28,7 +28,7 @@ namespace smvk
 			void* stageTimerOpaque = nullptr);
 		void BindRenderPipeline(
 			ShaderProgram& shaderProgram,
-			VertexFormat vertexFormat = VertexFormat::Empty,
+			VertexLayoutId vertexFormat = VertexLayoutId::Empty,
 			const DepthSettings& depthSettings =
 			DepthSettings::DepthTest(),
 			const StencilSettings& stencilSettings =
@@ -139,7 +139,7 @@ namespace smvk
 		void BindStaticVertexFmt();
 
 		// Binds an arbitrary RHI buffer as vertex binding N (pos-only debug
-		// streams use binding 0 with VertexFormat::DebugLine).
+		// streams use binding 0 with VertexLayoutId::DebugLine).
 		void BindVertexBuffer(BufferHandle buffer, uint32_t binding = 0,
 			uint64_t offset = 0);
 
@@ -174,7 +174,7 @@ namespace smvk
 		// skip the lookup and the vkCmdBind* re-issue entirely.
 		bool graphicsBound_ = false;
 		ShaderProgram boundProgram_{};
-		VertexFormat boundVertexFormat_ = VertexFormat::Empty;
+		VertexLayoutId boundVertexFormat_ = VertexLayoutId::Empty;
 		DepthSettings boundDepth_{};
 		StencilSettings boundStencil_{};
 		BlendSettings boundBlend_{};

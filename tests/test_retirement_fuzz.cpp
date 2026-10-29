@@ -519,9 +519,9 @@ int main()
 				s.vertexCount = randVerts();
 				s.indexCount = randIdx();
 				s.posSrc = rng() % (blob.size()
-					- size_t(s.vertexCount) * sizeof(smvk::VertexPos));
+					- size_t(s.vertexCount) * sizeof(smvk::PackedVertexPosition));
 				s.shadeSrc = rng() % (blob.size()
-					- size_t(s.vertexCount) * sizeof(smvk::VertexShading));
+					- size_t(s.vertexCount) * sizeof(smvk::PackedVertexShading));
 				s.idxSrc = rng() % (blob.size()
 					- size_t(s.indexCount) * sizeof(uint32_t));
 				s.aabbMin = glm::vec3(-1.f);

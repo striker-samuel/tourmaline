@@ -269,15 +269,16 @@ void OnResourceExhaustion(const char* site);
 		case Format::RGBA8_UInt: case Format::RGBA8_SInt:
 		case Format::RGBA8_SRGB: case Format::BGRA8_UNorm:
 		case Format::BGRA8_SRGB:
+			return { 1, 1, 4, false };
 		case Format::R16_UNorm: case Format::R16_SNorm:
 		case Format::R16_UInt: case Format::R16_SInt: case Format::R16_Float:
-			return { 1, 1, 4, false };
+			return { 1, 1, 2, false };
 		case Format::RG16_UNorm: case Format::RG16_SNorm:
 		case Format::RG16_UInt: case Format::RG16_SInt: case Format::RG16_Float:
 		case Format::R32_UInt: case Format::R32_SInt: case Format::R32_Float:
 		case Format::RGB10A2_UNorm: case Format::RGB10A2_UInt:
 		case Format::R11G11B10_Float:
-			return { 1, 1, 8, false };
+			return { 1, 1, 4, false };
 		case Format::RGBA16_UNorm: case Format::RGBA16_SNorm:
 		case Format::RGBA16_UInt: case Format::RGBA16_SInt: case Format::RGBA16_Float:
 		case Format::RG32_UInt: case Format::RG32_SInt: case Format::RG32_Float:
@@ -298,6 +299,52 @@ void OnResourceExhaustion(const char* site);
 			return { 4, 4, 8, true };
 		default:
 			return { 1, 1, 0, false }; // Undefined/depth/stencil: not atlas payload formats
+		}
+	}
+
+	// Scalar components a Format's texel carries (the vertex-layout
+	// validation's shader-side compatibility check: a vertex shader
+	// input at location N consumes <= this many components out of the
+	// bound attribute's format — consuming MORE reads undefined data,
+	// and the pipeline builder flags it). Compressed formats are not
+	// vertex-attribute formats (returns 0 = unusable).
+	constexpr uint32_t GetFormatComponentCount(Format f)
+	{
+		switch (f)
+		{
+		case Format::R8_UNorm: case Format::R8_SNorm:
+		case Format::R8_UInt: case Format::R8_SInt:
+		case Format::R16_UNorm: case Format::R16_SNorm:
+		case Format::R16_UInt: case Format::R16_SInt:
+		case Format::R16_Float:
+		case Format::R32_UInt: case Format::R32_SInt:
+		case Format::R32_Float:
+			return 1;
+		case Format::RG8_UNorm: case Format::RG8_SNorm:
+		case Format::RG8_UInt: case Format::RG8_SInt:
+		case Format::RG16_UNorm: case Format::RG16_SNorm:
+		case Format::RG16_UInt: case Format::RG16_SInt:
+		case Format::RG16_Float:
+		case Format::RG32_UInt: case Format::RG32_SInt:
+		case Format::RG32_Float:
+			return 2;
+		case Format::RGB32_UInt: case Format::RGB32_SInt:
+		case Format::RGB32_Float:
+			return 3;
+		case Format::RGBA8_UNorm: case Format::RGBA8_SNorm:
+		case Format::RGBA8_UInt: case Format::RGBA8_SInt:
+		case Format::RGBA8_SRGB: case Format::BGRA8_UNorm:
+		case Format::BGRA8_SRGB:
+		case Format::RGBA16_UNorm: case Format::RGBA16_SNorm:
+		case Format::RGBA16_UInt: case Format::RGBA16_SInt:
+		case Format::RGBA16_Float:
+		case Format::RGB10A2_UNorm: case Format::RGB10A2_UInt:
+		case Format::R11G11B10_Float:
+		case Format::RGBA32_UInt: case Format::RGBA32_SInt:
+		case Format::RGBA32_Float:
+			return 4;
+		default:
+			return 0;
 		}
 	}
 
@@ -425,6 +472,16 @@ void OnResourceExhaustion(const char* site);
 	struct VertexAttribute
 	{
 		VertexSemantic semantic = VertexSemantic::Position;
+		// The shader input location this attribute binds. EXPLICIT, not
+		// derived from declaration order (the pre-fix counter assigned
+		// locations by list position, so reordering the vector silently
+		// re-bound every shader input while the semantic names looked
+		// unchanged). Must be unique within the format and match the
+		// consuming vertex shader's reflected stage-input location
+		// (the pipeline builder pairs the two by this number and
+		// validates component compatibility; see
+		// getVkVertexAttributeDescriptions + the spirv reflection).
+		uint32_t location = 0;
 		Format format = Format::Undefined;
 		uint32_t offset = 0;
 
@@ -443,11 +500,11 @@ void OnResourceExhaustion(const char* site);
 		bool operator==(const VertexBinding&) const = default;
 	};
 
-	struct VertexFormatDescription
+	struct VertexLayoutDesc
 	{
 		std::vector<VertexBinding> bindings;
 
-		bool operator==(const VertexFormatDescription&) const = default;
+		bool operator==(const VertexLayoutDesc&) const = default;
 	};
 
 	// ============================================================================
@@ -1447,7 +1504,7 @@ void OnResourceExhaustion(const char* site);
 	struct PipelineKey
 	{
 		ShaderProgram program{};
-		VertexFormatDescription vertexFormat{};
+		VertexLayoutDesc vertexFormat{};
 		std::vector<Format> colorFormats;
 		Format depthFormat = Format::Undefined;
 		Format stencilFormat = Format::Undefined;

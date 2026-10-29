@@ -64,7 +64,7 @@ smvk::StaticMeshUpload MakeSphere(int rings, int segments, float radius) {
 		const float ringR = std::sin(theta) * radius;
 		for (int s = 0; s <= segments; ++s) {
 			const float phi = (float)s / (float)segments * 2.0f * glm::pi<float>();
-			smvk::StaticVertex v{};
+			smvk::ImportStaticVertex v{};
 			v.pos = glm::vec3(std::cos(phi) * ringR, y, std::sin(phi) * ringR);
 			v.normal = ringR > 1e-9f ? glm::normalize(v.pos) : glm::vec3(0, theta < 1.0f ? 1.0f : -1.0f, 0);
 			out.vertices.push_back(v);
@@ -254,7 +254,7 @@ void TestRegistration() {
 
 smvk::StaticMeshUpload MakeTri(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
 	smvk::StaticMeshUpload out{};
-	smvk::StaticVertex va{}, vb{}, vc{};
+	smvk::ImportStaticVertex va{}, vb{}, vc{};
 	va.pos = a;
 	vb.pos = b;
 	vc.pos = c;
@@ -1095,7 +1095,7 @@ void TestMeshletIntegrity() {
 			const int nu = 48, nv = 48;
 			for (int j = 0; j <= nv; ++j)
 				for (int i = 0; i <= nu; ++i) {
-					smvk::StaticVertex v{};
+					smvk::ImportStaticVertex v{};
 					const float x = (float)i / nu;
 					const float z = (float)j / nv;
 					v.pos = glm::vec3(x,

@@ -70,6 +70,13 @@ struct SpirvSpecConstant
 struct SpirvStageInput
 {
 	uint32_t location = 0;
+	// The input's scalar component count (1 for scalars, N for
+	// vectors). The pipeline builder pairs the location against the
+	// bound attribute's FORMAT and flags an input that consumes MORE
+	// components than the format provides (the fetch would read
+	// undefined data — the old reflection carried only the location,
+	// so this mismatch passed silently).
+	uint32_t componentCount = 0;
 	std::string name;
 
 	bool operator==(const SpirvStageInput&) const = default;

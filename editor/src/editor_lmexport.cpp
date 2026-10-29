@@ -185,10 +185,10 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 		// as content (UV-coordinate QA mode).
 		smvk::ShaderProgram& prog = m_lmExportUv
 			? FlatUvCoordProgram() : FlatUvProgram(ViewMode::FlatUv1);
-		const smvk::VertexFormat fmt =
-			HasDrawItems() ? smvk::VertexFormat::StaticVertexFormat
-			: smvk::VertexFormat::Empty;
-		if (fmt == smvk::VertexFormat::StaticVertexFormat)
+		const smvk::VertexLayoutId fmt =
+			HasDrawItems() ? smvk::VertexLayoutId::Static
+			: smvk::VertexLayoutId::Empty;
+		if (fmt == smvk::VertexLayoutId::Static)
 			cmd.BindStaticVertexFmt();
 		cmd.BindRenderPipeline(prog, fmt,
 			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
@@ -227,7 +227,7 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 			|| m_lmExportLinesCount == 0)
 			return;
 		cmd.BindRenderPipeline(m_lineProgram,
-			smvk::VertexFormat::DebugLine,
+			smvk::VertexLayoutId::DebugLine,
 			smvk::DepthSettings{ .depthFunc = smvk::CompareOp::GreaterEqual,
 				.writeEnable = false, .depthTestEnable = true },
 			smvk::StencilSettings{}, smvk::BlendSettings{},

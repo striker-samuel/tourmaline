@@ -3,7 +3,7 @@
 
 #pragma once
 
-// Packed GPU vertex streams (see VertexShading in mesh.h).
+// Packed GPU vertex streams (see PackedVertexShading in mesh.h).
 //
 // The shading stream is 24 bytes: color (RGBA8_UNORM), uv (RG16_FLOAT =
 // packHalf2x16), chartUv chart-local lightmap UV (RG16_UNORM =

@@ -188,8 +188,16 @@ struct StaticVertexFmtHeap
 {
 	BufferHandle m_staticVertexPosBuffer{};
 	BufferHandle m_staticVertexShadingBuffer{};
+	// OPTIONAL lightmap stream (PackedVertexLightmap, 8 B/vertex):
+	// carved only for meshes whose vertices carry chart data —
+	// independently packed (its windows do NOT mirror the pos/shading
+	// vertexBase), so consumers address it through per-mesh bases
+	// (StaticMesh::lightmapBase / the draw ring's misc2.w delta), never
+	// through baseVertex at offset 0.
+	BufferHandle m_staticVertexLightmapBuffer{};
 	BufferHandle m_staticIndexBuffer{};
-	StaticHeapArena m_staticVertexBlock; // VERTEX units (both vertex streams)
+	StaticHeapArena m_staticVertexBlock; // VERTEX units (pos + shading streams)
+	StaticHeapArena m_staticLightmapBlock; // VERTEX units (the lightmap stream)
 	StaticHeapArena m_staticIndexBlock;  // BYTES (u32 index monoblock)
 };
 inline StaticVertexFmtHeap staticVertexFmtHeap;
@@ -198,12 +206,17 @@ inline StaticVertexFmtHeap staticVertexFmtHeap;
 // (cluster.cpp's deferred frees) — never in place while a frame may still
 // draw from the range; vertexBase/indexByteOffset are the published geometry
 // (surfaces' firstIndex/baseVertex address the monoblock through them).
+// lightmapBase/lightmapAllocation are 0/absent for non-lightmapped meshes
+// (the optional stream).
 struct StaticMeshAllocation
 {
 	StaticHeapArena::AllocId vertexAllocation = 0;
 	StaticHeapArena::AllocId indexAllocation = 0;
+	StaticHeapArena::AllocId lightmapAllocation = 0;
 	uint64_t vertexBase = 0;      // VERTEX units into the pos/shading heaps
 	uint64_t indexByteOffset = 0; // byte offset into the index monoblock
+	uint64_t lightmapBase = 0;    // VERTEX units into the lightmap heap
+	                              // (lightmapAllocation 0 = unused)
 };
 
 } // namespace smvk

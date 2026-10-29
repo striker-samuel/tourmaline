@@ -32,6 +32,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/platform.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -623,7 +624,10 @@ struct PlacementDrawPrograms {
 //                 offsets/total are rewritten by prefix anyway)
 //   cull -> prefix -> scatter -> drawbuild  (four compute passes; the
 //                 rendergraph's buffer-hint edges order them)
-//   SeedIndirect — once per prototype-table change (the immutable halves)
+//   SeedIndirect — once per prototype-table change, at the RUNTIME
+//                 level: pure metadata (the table rides draw-build's
+//                 push; no GPU write — the indirect buffer is
+//                 single-scope-written by drawbuild every frame)
 // ---------------------------------------------------------------------------
 struct PlacementVisibleSet {
 	Holder<BufferHandle> mask;      // bitpack verdict: maxInstances/32 words
@@ -684,28 +688,14 @@ struct PlacementVisibleSet {
 		ctx.UploadDataToBuffer(bins, &zeroBins, sizeof(zeroBins),
 			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
 	}
-	// Seeds the immutable command halves ONCE per prototype-table change
-	// (the GPU rewrites instanceCount/firstInstance per frame). Pointer +
-	// count: seeds is cmdCount PlacementIndirectCmd values (cmdCount <=
-	// kPlacementMaxProtos; the dynamic halves are overwritten anyway).
-	bool SeedIndirect(ResourceManager& ctx,
-		const PlacementIndirectCmd* seeds, uint32_t cmdCount) const {
-		assert(Valid());
-		if (!seeds || cmdCount == 0 || cmdCount > kPlacementMaxProtos) return false;
-		std::vector<PlacementIndirectCmd> slab(kPlacementMaxProtos,
-			PlacementIndirectCmd{});
-		for (uint32_t i = 0; i < cmdCount; ++i) {
-			slab[i].indexCount = seeds[i].indexCount;
-			slab[i].instanceCount = 0; // drawbuild's per-frame output
-			slab[i].firstIndex = seeds[i].firstIndex;
-			slab[i].vertexOffset = seeds[i].vertexOffset;
-			slab[i].firstInstance = 0; // drawbuild's per-frame output
-		}
-		ctx.UploadDataToBuffer(indirect, slab.data(),
-			kPlacementIndirectStride * kPlacementMaxProtos,
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
-		return true;
-	}
+	// NOTE: no indirect seeding here. The draw-build kernel owns the
+	// COMPLETE command (the prototype table rides its push — the
+	// runtime's SeedIndirect metadata cache); the indirect buffer is
+	// single-scope-written (COMPUTE) per frame. The old
+	// SeedIndirect-uploaded immutable halves were the
+	// stranded-upload-write hazard (todo.txt): an UPLOAD's bytes on a
+	// buffer this set's kernel rewrites in the same frame never became
+	// visible to the indirect draw.
 	uint64_t MaskAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(mask);
 	}
@@ -827,17 +817,23 @@ struct PlacementCullPrograms {
 		rp.AddBufferHint(vis.visibleL, rw);
 		return rp;
 	}
-	// drawbuild: bins read; indirect RW (the dynamic halves).
+	// drawbuild: bins read; indirect WRITE. The kernel owns the COMPLETE
+	// command (the prototype table rides the push) — it overwrites
+	// every active command and never reads prior contents, so the
+	// read|write hint would order a read that does not exist. The
+	// downstream indirect draw's hint (IndirectCommandRead) pairs with
+	// this write: the compute-write -> indirect-read barrier is
+	// complete by construction (single writer per frame).
 	static RenderPass& AddDrawBuildPass(RenderGraph& rg, const PlacementVisibleSet& vis) {
 		RenderPass& rp = rg.AddComputePass("PlacementDrawBuild");
 		BufferSyncRequest read{};
 		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
 		read.barrierMasks.stageMask = PipelineStageBit_Compute;
 		rp.AddBufferHint(vis.binsL, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
-		rp.AddBufferHint(vis.indirectL, rw);
+		BufferSyncRequest write{};
+		write.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+		write.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(vis.indirectL, write);
 		return rp;
 	}
 
@@ -872,6 +868,7 @@ struct PlacementCullPrograms {
 	static void PushAndDispatchDrawBuild(CommandBuffer& cmd, ShaderProgram& program,
 		const PlacementDrawBuildPush& push) {
 		assert(push.bins != 0 && push.indirect != 0);
+		assert(push.protoCount >= 1 && push.protoCount <= kPlacementMaxProtos);
 		cmd.BindComputePipeline(program);
 		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
 		cmd.Dispatch(1, 1, 1);
@@ -1561,11 +1558,11 @@ struct PlacementWorldRuntime {
 	PlacementGpuTiles slots;      // TileKey -> pass-slot map + tokens
 	std::vector<PlacementVisibleSet> vis; // [slot * viewBudget + view]
 	// The prototype draw-command table (the immutable indirect halves),
-	// CACHED: SeedIndirect stores it here and every tile that publishes
-	// LATER gets it applied (the review's finding: seeding only the
-	// already-published slots left every subsequently-activated tile
-	// with zero indexCounts — drawbuild rewrites only the dynamic
-	// halves, so the immutable fields must ride the publish).
+	// CACHED: SeedIndirect registers it here and RecordCullChain
+	// push-carries it into every draw-build recording (the kernel owns
+	// the COMPLETE command — the table is the push's 96-byte tail, not
+	// a GPU upload; the old upload form was the stranded-upload-write
+	// hazard, see todo.txt).
 	PlacementIndirectCmd protoSeeds[kPlacementMaxProtos] = {};
 	uint32_t protoSeedCount = 0;
 	// The program revision (the hashed graph inputs + deps) — a change
@@ -1680,28 +1677,24 @@ struct PlacementWorldRuntime {
 			return nullptr;
 		return &vis[size_t(slot) * size_t(viewBudget) + size_t(view)];
 	}
-	// The immutable indirect halves the renderer seeds once per
-	// prototype table (protoCount <= kPlacementMaxProtos). The table is
-	// CACHED and re-applied at every publish (see protoSeeds): the
-	// documented seed-once-at-init pattern stores it before any tile is
-	// live, and each subsequently published tile needs it.
-	bool SeedIndirect(ResourceManager& ctx, uint32_t view,
+	// The prototype table the renderer registers once per mesh-table
+	// change (protoCount <= kPlacementMaxProtos): the immutable indirect
+	// halves draw-build push-carries. The table is CACHED here and
+	// captured by-value by the NEXT RecordCullChain recording (a
+	// re-registration is seen by the next recorded frame). Pure
+	// metadata — no GPU write; the indirect buffer is single-scope-
+	// written (COMPUTE) by draw-build every frame, so the bytes this
+	// used to upload can never strand from the draw's barrier (the
+	// old upload was the stranded-upload-write hazard; see todo.txt).
+	bool SeedIndirect(ResourceManager& /*ctx*/, uint32_t view,
 		const PlacementIndirectCmd* seeds, uint32_t cmdCount) {
 		if (view >= viewBudget) return false;
 		if (!seeds || cmdCount == 0 || cmdCount > kPlacementMaxProtos)
 			return false;
-		// Cache (all views of every future publish read the same table).
 		for (uint32_t i = 0; i < cmdCount; ++i)
 			protoSeeds[i] = seeds[i];
 		protoSeedCount = cmdCount;
-		// Apply to every ALREADY-published tile's set (this view).
-		bool ok = true;
-		for (size_t s = 0; s < active.size(); ++s)
-			if (active[s].published
-				&& !vis[s * size_t(viewBudget) + size_t(view)]
-					.SeedIndirect(ctx, protoSeeds, protoSeedCount))
-				ok = false;
-		return ok;
+		return true;
 	}
 
 	// ---- THE FRAME TICK -------------------------------------------------
@@ -1951,18 +1944,12 @@ struct PlacementWorldRuntime {
 			// system token — two independent counters.
 			(void)slots.Finish(slot, a.key,
 				slots.slots[size_t(slot)].generation);
-			// Apply the cached prototype table to every view of this
-			// newly published tile (the immutable indirect halves —
-			// drawbuild owns only the dynamic ones). NOTE the documented
-			// one-frame lag: the seeds are an UPLOAD (TRANSFER-scoped)
-			// feeding a buffer drawbuild rewrites at COMPUTE scope —
-			// the publish frame's draw reads the creation-zero halves
-			// (a silent no-op draw), the next frame draws; see
-			// todo.txt's stranded-upload-write case.
-			if (protoSeedCount > 0)
-				for (uint32_t v = 0; v < viewBudget; ++v)
-					(void)vis[size_t(slot) * size_t(viewBudget) + v]
-						.SeedIndirect(ctx, protoSeeds, protoSeedCount);
+			// NO seed upload at publish: the prototype table is PUSH-
+			// carried metadata (SeedIndirect's cache, captured by
+			// RecordCullChain below), and draw-build single-scope-writes
+			// the complete command — the publish frame's draw is
+			// drawable immediately (the old publication-time upload was
+			// the stranded-upload-write hazard; see todo.txt).
 			// The CPU token publish (the CPU-side tile mirror).
 			system.PublishActivation(a.key, a.generation);
 		}
@@ -2011,6 +1998,34 @@ struct PlacementWorldRuntime {
 			dbPush.bins = vs.BinsAddress(ctx);
 			dbPush.indirect = vs.IndirectAddress(ctx);
 			dbPush.protoCount = cullPush.protoCount;
+			// The prototype table (SeedIndirect's cache) rides the push:
+			// draw-build owns the COMPLETE command, so the table must be
+			// captured here, BY VALUE (an already-recorded pass never
+			// sees a later re-registration). The FULL 8-slot table is
+			// initialized: entries past the registered count carry zeros
+			// (indexCount 0 = a no-op draw — the graceful unseeded state,
+			// the same class the creation-zero buffer always had). A
+			// table SMALLER than the layer's bin count draws nothing for
+			// the uncovered bins — loud, not silent.
+			{
+				const uint32_t tableCount = std::min(protoSeedCount,
+					uint32_t(kPlacementMaxProtos));
+				if (tableCount < cullPush.protoCount)
+					std::fprintf(stderr,
+						"[Placement] prototype table (%u entries) smaller"
+						" than the layer's protoCount (%u) - bins past the"
+						" table carry zero indexCount (no-op draws)\n",
+						tableCount, cullPush.protoCount);
+				dbPush.protoCount = std::min(cullPush.protoCount,
+					uint32_t(kPlacementMaxProtos));
+				for (uint32_t i = 0; i < kPlacementMaxProtos; ++i) {
+					const PlacementIndirectCmd& seed = i < tableCount
+						? protoSeeds[i] : PlacementIndirectCmd{};
+					dbPush.indexCount[i] = seed.indexCount;
+					dbPush.firstIndex[i] = seed.firstIndex;
+					dbPush.vertexOffset[i] = seed.vertexOffset;
+				}
+			}
 
 			smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(rg,
 				pass, uint32_t(s), vs, at.aliveL,

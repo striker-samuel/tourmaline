@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Cone-axis debug lines: pos-only stream, flat push color.
-// Used with VertexFormat::DebugLine + PrimitiveTopology::LineList.
+// Used with VertexLayoutId::DebugLine + PrimitiveTopology::LineList.
 // C++ mirror: app::LineDebugPush (80 bytes).
 struct LineDebugPush
 {

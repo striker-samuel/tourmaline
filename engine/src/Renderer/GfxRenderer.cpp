@@ -522,7 +522,7 @@ namespace engine {
 		if (opaqueCount > 0) {
 			cmd.BindRenderPipeline(
 				seedOpaqueProgram,
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				smvk::DepthSettings{
 					.depthFunc = smvk::CompareOp::GreaterEqual,
 					.writeEnable = true,
@@ -549,7 +549,7 @@ namespace engine {
 			// the full prepass still depths these clusters (T3)
 			cmd.BindRenderPipeline(
 				seedMaskedProgram,
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				smvk::DepthSettings{
 					.depthFunc = smvk::CompareOp::GreaterEqual,
 					.writeEnable = true,
@@ -809,7 +809,7 @@ namespace engine {
 		if (opaqueCount > 0) {
 			cmd.BindRenderPipeline(
 				shadowSeedOpaqueProgram,
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				smvk::DepthSettings{
 					.depthFunc = smvk::CompareOp::LessEqual,
 					.writeEnable = true,
@@ -838,7 +838,7 @@ namespace engine {
 				continue; // unknown material: no valid materialId push
 			cmd.BindRenderPipeline(
 				shadowSeedMaskedProgram,
-				smvk::VertexFormat::StaticVertexFormat,
+				smvk::VertexLayoutId::Static,
 				smvk::DepthSettings{
 					.depthFunc = smvk::CompareOp::LessEqual,
 					.writeEnable = true,
@@ -1501,8 +1501,26 @@ namespace engine {
 			// table for the SELECTED LOD sibling (each level owns its chart
 			// list; unlightmapped meshes resolve 0 and gate on lmChunk).
 			const uint32_t chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
+			// Per-draw lightmap-heap delta (HLSL misc2.w): the sibling's
+			// lightmap window base minus its heap vertexBase (the global
+			// vertex ids the cluster-ordered index streams carry; the
+			// mesh-shader fetch maps vi + delta into the stream). Sentinel
+			// (0xFFFFFFFF) when the mesh carries no lightmap data at all.
+			uint32_t lmDelta = 0xFFFFFFFFu;
+			if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
+				const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
+				if (const smvk::StaticMesh* m
+					= lmLoc->cluster->staticMeshes.get(h);
+					m && m->lightmapBase != 0xFFFFFFFFu) {
+					const uint32_t vb =
+						lmLoc->cluster->GetMeshHeapVertexBase(h);
+					if (vb != 0xFFFFFFFFu)
+						lmDelta = m->lightmapBase - vb;
+				}
+			}
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
-				item.material, drawFlags, drawSet, lmChunk, chartOffset);
+				item.material, drawFlags, drawSet, lmChunk, chartOffset,
+				lmDelta);
 			if (dumpGates) ++s_gates.pushed;
 			// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt):
 			// the pushed draw list, once per process (the camera is static

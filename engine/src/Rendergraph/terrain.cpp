@@ -387,7 +387,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
 			continue;
 		cmd.BindIndexBuffer(indexBuffers[l], 0);
 		cmd.BindRenderPipeline(program,
-			VertexFormat::TerrainVertexFormat, depth, stencil, blend, msaa,
+			VertexLayoutId::TerrainFull, depth, stencil, blend, msaa,
 			RasterSettings{} /* back-face cull, CCW front (block winding) */);
 		pushPcTail();
 		for (uint32_t bi : lodBlocks[l]) {
@@ -403,7 +403,7 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
 		cmd.BindVertexBuffer(farVertexBuffer, 0, 0);
 		cmd.BindIndexBuffer(farIndexBuffer, 0);
 		cmd.BindRenderPipeline(farProgram,
-			VertexFormat::TerrainFarVertexFormat, depth, stencil, blend,
+			VertexLayoutId::TerrainFarGrid, depth, stencil, blend,
 			msaa, RasterSettings{});
 		pushPcTail();
 		TerrainBlockPush farTail = tail;

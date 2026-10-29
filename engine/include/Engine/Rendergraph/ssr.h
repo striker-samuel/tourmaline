@@ -1249,7 +1249,7 @@ ShaderProgram progCopy = copyProgram;
 		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
 			cmd.BindRenderPipeline(
 				progCopy,
-				VertexFormat::Empty,
+				VertexLayoutId::Empty,
 				DepthSettings::Disabled(),
 				StencilSettings::DefaultDisabled(),
 				BlendSettings::Opaque(),
@@ -1298,7 +1298,7 @@ ShaderProgram progCopy = copyProgram;
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(),
@@ -1365,7 +1365,7 @@ ShaderProgram progCopy = copyProgram;
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(),
@@ -1622,7 +1622,7 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 		pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
 			cmd.BindRenderPipeline(
 				progCopy,
-				VertexFormat::Empty,
+				VertexLayoutId::Empty,
 				DepthSettings::Disabled(),
 				StencilSettings::DefaultDisabled(),
 				BlendSettings::Opaque(),
@@ -1671,7 +1671,7 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(),
@@ -1716,7 +1716,7 @@ push.frameUniforms = frameUniformsAddr;
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(),
@@ -1782,7 +1782,7 @@ push.frameUniforms = frameUniformsAddr;
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					progCopy,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(),

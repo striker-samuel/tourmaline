@@ -119,7 +119,7 @@ struct MotionVectorTarget {
 	}
 };
 
-// Default SPVs (StaticVertexFormat VS + motion PS).
+// Default SPVs (StaticLayout VS + motion PS).
 inline constexpr const char* kMotionVectorVsPath = "content/shaders/motionvector.vert.hlsl.spv";
 inline constexpr const char* kMotionVectorPsPath = "content/shaders/motionvector.frag.hlsl.spv";
 

@@ -249,7 +249,7 @@ struct Tonemapper {
 		pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 			cmd.BindRenderPipeline(
 				progCopy,
-				VertexFormat::Empty,
+				VertexLayoutId::Empty,
 				DepthSettings::Disabled(),
 				StencilSettings::DefaultDisabled(),
 				BlendSettings::Opaque(),

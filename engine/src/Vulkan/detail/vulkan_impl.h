@@ -1536,7 +1536,7 @@ namespace smvk {
 
 		PipelineBundle GetRenderPipeline(
 			ShaderProgram& program,
-			const VertexFormatDescription& vertexFormat,
+			const VertexLayoutDesc& vertexFormat,
 			const Format* colorFormats,
 			uint32_t colorAttachmentCount,
 			Format depthFormat = Format::Undefined,
@@ -1602,8 +1602,8 @@ namespace smvk {
 		std::unordered_map<ComputeKey, PipelineBundle, ComputeKeyHash> computePipelines_;
 	};
 
-	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexFormatDescription& format);
-	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexFormatDescription& format);
+	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexLayoutDesc& format);
+	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexLayoutDesc& format);
 
 	// destroy for internal VulkanResourceManager – for Holder type-erased deleter
 	void destroy(VulkanResourceManager* ctx, ImageHandle handle);

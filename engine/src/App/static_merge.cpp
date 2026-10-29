@@ -101,8 +101,8 @@ StaticMergeResult CollapseStaticSubtrees(
 				normalMat = glm::transpose(glm::inverse(glm::mat3(global)));
 
 			const uint32_t base = (uint32_t)g.upload.vertices.size();
-			for (const StaticVertex& v : src->vertices) {
-				StaticVertex b = v;
+			for (const ImportStaticVertex& v : src->vertices) {
+				ImportStaticVertex b = v;
 				const glm::vec4 wp = global * glm::vec4(v.pos, 1.0f);
 				b.pos = glm::vec3(wp);
 				b.normal = glm::normalize(normalMat * v.normal);

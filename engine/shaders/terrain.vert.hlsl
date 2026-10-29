@@ -3,7 +3,7 @@
 
 // Tiled terrain FULL-detail vertex shader (near tiles).
 //
-// VSIn locations follow TerrainVertexFormat's attribute order exactly
+// VSIn locations follow TerrainFullLayout's attribute order exactly
 // (mesh.h: locations are assigned in attribute-list order):
 //   0 = POSITION      (R32G32B32_FLOAT)
 //   1 = NORMAL        (R16G16B16A16_FLOAT, half xyz, w pad)

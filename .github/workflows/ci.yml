@@ -3,7 +3,8 @@
 #   Linux   - Ubuntu 24.04 + GCC 14 (the verified configuration)
 #   Windows - MSVC x64 + the Vulkan SDK (dxc.exe compiles the shaders)
 #
-# retirement_fuzz_tests, world_fields_gpu_tests and placement_gpu_tests
+# retirement_fuzz_tests, world_fields_gpu_tests, placement_gpu_tests,
+# probepremix_gpu_tests and rhi_upload_barriers_gpu_tests
 # are EXCLUDED on both: they create a real (hidden) SDL window + offscreen
 # Vulkan device, and hosted runners have neither a display (Linux:
 # SDL_Init finds no video device) nor a Vulkan ICD (Windows: the RM ctor
@@ -106,11 +107,12 @@ jobs:
       - name: Test
         run: |
           mkdir -p .ci-content
-          # retirement_fuzz + world_fields_gpu + placement_gpu excluded:
-          # real SDL window + offscreen Vulkan device - hosted runners
-          # have no display / ICD (see the header).
+          # retirement_fuzz + world_fields_gpu + placement_gpu +
+          # probepremix_gpu excluded: real SDL window + offscreen
+          # Vulkan device - hosted runners have no display / ICD (see
+          # the header).
           ctest --test-dir out/build/ci --output-on-failure \
-            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests)$"
+            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"
         env:
           TOURMALINE_CONTENT_DIR: ${{ github.workspace }}/.ci-content
 
@@ -214,10 +216,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force .ci-content | Out-Null
           ctest --test-dir out/build/ci --output-on-failure `
-            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests)$"
+            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"
         env:
           TOURMALINE_CONTENT_DIR: ${{ github.workspace }}\.ci-content
-        # retirement_fuzz_tests + world_fields_gpu_tests + placement_gpu_tests
-        # are excluded: all three create a real offscreen Vulkan device and
+        # retirement_fuzz_tests + world_fields_gpu_tests +
+        # placement_gpu_tests + probepremix_gpu_tests +
+        # rhi_upload_barriers_gpu_tests
+        # are excluded: all five create a real offscreen Vulkan device and
         # hosted Windows runners expose no Vulkan ICD (Linux lacks the
         # display for the window). They run in dev environments instead.

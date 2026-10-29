@@ -1566,7 +1566,8 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags,
-	DrawSetMask drawSet, uint32_t lmChunk, uint32_t lmChartOffset) {
+	DrawSetMask drawSet, uint32_t lmChunk, uint32_t lmChartOffset,
+	uint32_t lmDelta) {
 	assert(view < s.viewCount);
 	assert(mesh < s.meshes.size());
 	View& v = s.views[view];
@@ -1588,6 +1589,7 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	d.drawSet = drawSet;
 	d.lmChunk = lmChunk;
 	d.lmChartOffset = lmChartOffset;
+	d.lmDelta = lmDelta;
 	v.draws.push_back(d);
 }
 
@@ -1841,6 +1843,9 @@ void BuildShadowList(State& s, uint32_t sview) {
 		dc.mesh = d.mesh;
 		dc.flags = d.flags;
 		dc.drawSet = d.drawSet;
+		dc.lmChunk = d.lmChunk;
+		dc.lmChartOffset = d.lmChartOffset;
+		dc.lmDelta = d.lmDelta;
 		sv.drawConstants.push_back(dc);
 		const Mesh& mesh = s.meshes[d.mesh];
 		const float basisScale = MaxBasisScale(d.model);
@@ -2066,6 +2071,7 @@ void BuildBatches(State& s, uint32_t view) {
 		dc.drawSet = d.drawSet;
 		dc.lmChunk = d.lmChunk;
 		dc.lmChartOffset = d.lmChartOffset;
+		dc.lmDelta = d.lmDelta;
 		dc.material = d.material;
 		// Filled below with the draw's candidate-slot base
 		// (0xFFFFFFFF = the cap dropped the draw).
@@ -2860,6 +2866,10 @@ uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
 	p.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
 	p.positions = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexPosBuffer);
 	p.shading = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
+	// The OPTIONAL lightmap stream: fetched via the per-draw additive
+	// delta (GfxDraw.misc2.w). 0 when the stream's buffer has no scene
+	// data at all (lightmaps deprecated — the common case).
+	p.lightmap = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexLightmapBuffer);
 	const uint64_t indexHeapAddr = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
 	p.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
 	p.lmXforms = lmXformsAddr;
@@ -2910,7 +2920,7 @@ void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	// never reach this dispatch — see MeshDrawEligible).
 	cmd.BindRenderPipeline(
 		meshProg,
-		VertexFormat::Empty, // no VS stage: vertex input ignored, keep empty
+		VertexLayoutId::Empty, // no VS stage: vertex input ignored, keep empty
 		depth,
 		StencilSettings::DefaultDisabled(),
 		BlendSettings::Opaque(),

@@ -639,7 +639,7 @@ bool GenerateLightmapChartsXatlas(
 		j.up = in.upload;
 		const float s = (in.densityScale > 1e-6f) ? in.densityScale : 1.0f;
 		j.posScaled.reserve(in.upload->vertices.size());
-		for (const StaticVertex& v : in.upload->vertices)
+		for (const ImportStaticVertex& v : in.upload->vertices)
 			j.posScaled.push_back(v.pos * s);
 		jobs.push_back(std::move(j));
 	}

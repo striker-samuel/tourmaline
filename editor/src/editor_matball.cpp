@@ -21,7 +21,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-#include <Engine/Renderer/mesh.h> // TerrainVertex + TerrainVertexFormat
+#include <Engine/Renderer/mesh.h> // TerrainVertex + TerrainFullLayout
 #include <Engine/platform.h>       // readFile (the .spv loader)
 #include <stb_image_write.h>
 
@@ -272,7 +272,7 @@ void EditorApp::RecordMatBallPass() {
 			smvk::RasterSettings raster{};
 			raster.cullMode = smvk::CullMode::None;
 			cmd.BindRenderPipeline(progCopy,
-				smvk::VertexFormat::TerrainVertexFormat,
+				smvk::VertexLayoutId::TerrainFull,
 				smvk::DepthSettings::Disabled(),
 				smvk::StencilSettings::DefaultDisabled(),
 				smvk::BlendSettings::Opaque(), smvk::MSAASettings::Count1(),

@@ -62,9 +62,9 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Lightmaps are deprecated: StaticVertexFormat no longer binds the
+    // Lightmaps are deprecated: StaticLayout no longer binds the
     // second UV channel (TexCoord1/ChartId would be locations 5/6), so
-    // this VS declares neither. The gated-off LightmappedStaticVertexFormat
+    // this VS declares neither. The gated-off StaticLightmappedLayout
     // keeps the option; the MESH leg (gfxfilter.mesh.hlsl) still reads the
     // chart words straight from the shading heap, untouched.
     uint instanceID : SV_InstanceID;
@@ -81,7 +81,7 @@ struct VSOut
     // vec4 (layer-weight normalization divides by the RGBA sum), and a
     // vec3 here leaves Location 0 component 3 undeclared — the
     // VUID-RuntimeSpirv-OpEntryPoint-08743 interface mismatch. Pass the
-    // vertex color through (same StaticVertexFormat stream default.vert
+    // vertex color through (same StaticLayout stream default.vert
     // forwards): the filter is transparent draw compaction, so tint +
     // layer weights must survive it exactly like the direct path.
     [[vk::location(0)]] float4 color : COLOR0;
@@ -112,7 +112,7 @@ VSOut mainVS(VSIn IN)
     // (vertexID - vsDeformedBase) * 5). ONE storage fetch swap - no
     // per-vertex skin math here, the same contract as the mesh-shader leg
     // (gfxfilter.mesh.hlsl). Static draws keep the fixed-function inputs
-    // (the StaticVertexFormat fetch of the bind-pose heaps); the stale
+    // (the StaticLayout fetch of the bind-pose heaps); the stale
     // IN.position/normalPacked/tangentPacked of a skinned draw are
     // simply ignored (the fixed-function fetch still happens - the
     // bandwidth waste is the documented slice-2 trade; emptying the

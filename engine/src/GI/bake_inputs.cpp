@@ -226,7 +226,7 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
 		Hasher leaf;
 		leaf.feed("mesh");
 		leaf.feed(upload->vertices.data(),
-			upload->vertices.size() * sizeof(StaticVertex));
+			upload->vertices.size() * sizeof(ImportStaticVertex));
 		leaf.feed(upload->indices.data(),
 			upload->indices.size() * sizeof(uint32_t));
 		leaf.feedPod(g);

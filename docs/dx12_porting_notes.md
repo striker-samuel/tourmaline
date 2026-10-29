@@ -286,7 +286,7 @@ sampled SRV views (the UI composite pass samples them in the Vulkan engine).
 load stack runs unchanged on engine_d3d12 (`World::LoadClusterFromPak` →
 `DeserializeCluster` → parallel KTX loads → `UploadStaticMeshesDirect` →
 `ResolveAndFixup`), then a minimal draw loop: `forEachRenderItem` →
-`BindRenderPipeline(StaticVertexFormat)` + `BindStaticVertexFmt` +
+`BindRenderPipeline(VertexLayoutId::Static)` + `BindStaticVertexFmt` +
 per-surface `PushConstants` + `DrawIndexed`. The material texture slots
 go through the ENGINE'S OWN pool→bindless remap (`BuildPoolToBindlessMap`
 — `values.textures[0]` stores the RHI TEXTURE POOL index; the shader's

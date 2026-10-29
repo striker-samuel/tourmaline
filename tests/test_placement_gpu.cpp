@@ -827,9 +827,13 @@ int main()
 		ok = vis.Create(rm, rg, 4096);
 		Check(ok && vis.Valid(), "gpu.vis-set-create");
 
-		// The layer: full density (deterministic population), three
+		// The layer: full density (deterministic population), FOUR
 		// prototypes with distinct cooked spheres; proto 1 has a 12m
 		// species draw distance (the camera sits at the tile corner).
+		// Proto 3 carries WEIGHT ZERO - the generator never picks it, so
+		// its bin is the ZERO-VISIBLE-INSTANCE regression: the command
+		// must still be written COMPLETE (its static halves from the
+		// push table, instanceCount 0) - a no-op draw, never garbage.
 		GridDomain grid = MakeGrid(glm::vec3(0.0f, 0.0f, 0.0f), 16);
 		auto lb = MakeLayer(12, 1.0f, 1024);
 		lb.domainKind = DomainKind::Grid;
@@ -844,7 +848,11 @@ int main()
 		Prototype pc; pc.weight = 1.0f;
 		pc.boundsMin = glm::vec3(-2.0f, -2.0f, -2.0f);
 		pc.boundsMax = glm::vec3(2.0f, 2.0f, 2.0f);
+		Prototype pd; pd.weight = 0.0f; // never picked: bin 3 stays empty
+		pd.boundsMin = glm::vec3(-0.25f, 0.0f, -0.25f);
+		pd.boundsMax = glm::vec3(0.25f, 0.5f, 0.25f);
 		lb.prototypes.add(pa); lb.prototypes.add(pb); lb.prototypes.add(pc);
+		lb.prototypes.add(pd);
 		const TileID tile{ 1, 0, 1 };
 		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
 		Check(oracle.size() == 1024, "gpu.vis-oracle-full");
@@ -866,7 +874,7 @@ int main()
 			vis.BinsAddress(rm), 0 /* no constraint tile: skip alive */,
 			rm.GetBufferDeviceAddress(viewSlab), 0, glm::vec3(0, 5, 0),
 			kPlacementCullFrustum | kPlacementCullDistance, cullPush);
-		Check(cullPush.protoCount == 3
+		Check(cullPush.protoCount == 4
 			&& cullPush.protoDist[1] == 12.0f, "gpu.vis-cull-push-filled");
 		PlacementScatterVisPush scPush{};
 		scPush.instances = pass2.TileInstancesAddress(rm, 0);
@@ -874,21 +882,28 @@ int main()
 		scPush.mask = vis.MaskAddress(rm);
 		scPush.bins = vis.BinsAddress(rm);
 		scPush.visible = vis.VisibleAddress(rm);
-		scPush.protoCount = 3;
+		scPush.protoCount = 4;
 		PlacementDrawBuildPush dbPush{};
 		dbPush.bins = vis.BinsAddress(rm);
 		dbPush.indirect = vis.IndirectAddress(rm);
-		dbPush.protoCount = 3;
-		// Seed the immutable indirect halves (fake mesh geometry: proto i
-		// draws 300 indices at firstIndex i*64).
-		PlacementIndirectCmd seeds[3] = {};
-		for (int i = 0; i < 3; ++i) {
+		dbPush.protoCount = 4;
+		// The prototype table (fake mesh geometry: proto i draws 300
+		// indices at firstIndex i*64) rides the PUSH - draw-build owns
+		// the COMPLETE command (no seed upload anywhere; the stranded-
+		// upload-write class cannot exist in this chain anymore).
+		PlacementIndirectCmd seeds[4] = {};
+		for (int i = 0; i < 4; ++i) {
 			seeds[i].indexCount = 300;
 			seeds[i].firstIndex = uint32_t(i) * 64;
 			seeds[i].vertexOffset = 0;
 		}
-		ok = vis.SeedIndirect(rm, seeds, 3);
-		Check(ok, "gpu.vis-indirect-seeded");
+		for (uint32_t i = 0; i < kPlacementMaxProtos; ++i) {
+			const PlacementIndirectCmd& s = i < 4
+				? seeds[i] : PlacementIndirectCmd{};
+			dbPush.indexCount[i] = s.indexCount;
+			dbPush.firstIndex[i] = s.firstIndex;
+			dbPush.vertexOffset[i] = s.vertexOffset;
+		}
 		vis.ClearFrame(rm); // zero mask + bin atomics (the frame cadence)
 
 		host.RunFrame([&](smvk::RenderGraph& g) {
@@ -936,13 +951,14 @@ int main()
 			const glm::vec3 h = (pr.boundsMax - pr.boundsMin) * 0.5f;
 			return glm::vec4(c, glm::length(h));
 		};
-		const glm::vec4 spheres[3] = { sphereOf(0), sphereOf(1), sphereOf(2) };
+		const glm::vec4 spheres[4] = { sphereOf(0), sphereOf(1),
+			sphereOf(2), sphereOf(3) };
 		const glm::vec4 mirrorPlanes[6] = {
 			glm::vec4(1, 0, 0, 4), glm::vec4(-1, 0, 0, 36),
 			glm::vec4(0, 1, 0, 100), glm::vec4(0, -1, 0, 100),
 			glm::vec4(0, 0, 1, 4), glm::vec4(0, 0, -1, 36) };
 		const glm::vec3 camPos(0.0f, 5.0f, 0.0f);
-		std::vector<std::vector<uint32_t>> expected(3);
+		std::vector<std::vector<uint32_t>> expected(4);
 		for (uint32_t i = 0; i < n; ++i) {
 			const RenderInstance& inst = gpu[i];
 			const uint32_t p = inst.prototypeId;
@@ -970,7 +986,7 @@ int main()
 		Check(ok, "gpu.vis-bins-readback");
 		uint32_t offset = 0;
 		bool offsetsOk = true, countsOk = true;
-		for (int p = 0; p < 3; ++p) {
+		for (int p = 0; p < 4; ++p) {
 			if (binsOut.counts[p] != expected[p].size()) countsOk = false;
 			if (binsOut.offsets[p] != offset) offsetsOk = false;
 			offset += binsOut.counts[p];
@@ -981,6 +997,10 @@ int main()
 			&& binsOut.total < n, "gpu.vis-total-parity");
 		Check(expected[0].size() > 0 && expected[1].size() > 0
 			&& expected[2].size() > 0, "gpu.vis-all-three-bins-nonempty");
+		// The weight-zero proto's bin: the ZERO-VISIBLE regression (its
+		// command must still be written complete below).
+		Check(expected[3].empty() && binsOut.counts[3] == 0,
+			"gpu.vis-zero-weight-bin-empty");
 		// The species distance actually culled proto 1 somewhere.
 		Check(expected[1].size() < n / 3, "gpu.vis-species-distance-culls");
 
@@ -991,7 +1011,7 @@ int main()
 			sizeof(uint32_t) * n);
 		Check(ok, "gpu.vis-list-readback");
 		bool rangesOk = true;
-		for (int p = 0; p < 3; ++p) {
+		for (int p = 0; p < 4; ++p) {
 			std::vector<uint32_t> got(visibleOut.begin() + binsOut.offsets[p],
 				visibleOut.begin() + binsOut.offsets[p] + binsOut.counts[p]);
 			std::vector<uint32_t> want = expected[p];
@@ -1004,18 +1024,25 @@ int main()
 		// ---- the indirect commands. ----
 		PlacementIndirectCmd cmds[8];
 		ok = rm.DownloadDataFromBuffer(vis.indirect, cmds,
-			kPlacementIndirectStride * 3);
+			kPlacementIndirectStride * 4);
 		Check(ok, "gpu.vis-indirect-readback");
 		bool cmdsOk = true;
-		for (int p = 0; p < 3; ++p) {
+		for (int p = 0; p < 4; ++p) {
 			if (cmds[p].indexCount != 300 || cmds[p].firstIndex != uint32_t(p) * 64
 				|| cmds[p].vertexOffset != 0)
-				cmdsOk = false; // the CPU-seeded immutable halves stand
+				cmdsOk = false; // the push-carried table halves, WRITTEN
+			                    // BY THE KERNEL (compute-owned complete)
 			if (cmds[p].instanceCount != binsOut.counts[p]
 				|| cmds[p].firstInstance != binsOut.offsets[p])
-				cmdsOk = false; // the GPU-written dynamic halves
+				cmdsOk = false; // the bins-derived dynamic halves
 		}
 		Check(cmdsOk, "gpu.vis-indirect-commands-parity");
+		// The ZERO-VISIBLE command: bin 3 draws nothing, but its command
+		// is COMPLETE (the full static table + instanceCount 0) - never
+		// garbage, never a stale leftover.
+		Check(cmds[3].indexCount == 300 && cmds[3].firstIndex == 192
+			&& cmds[3].vertexOffset == 0 && cmds[3].instanceCount == 0,
+			"gpu.vis-zero-visible-command-complete");
 		// Nonzero firstInstance occurs for later bins (the VS contract
 		// walks them via SV_InstanceID).
 		Check(binsOut.offsets[1] > 0 || binsOut.offsets[2] > 0,
@@ -1767,13 +1794,24 @@ const auto zIs = [](int32_t z) {
 			dbp.bins = mp.BinsAddress(rm);
 			dbp.indirect = mp.IndirectAddress(rm);
 			dbp.protoCount = 2;
-			// The immutable indirect halves (fake geometry: 300 idx/bin).
-			if (f == 0) {
-				smvk::placement::PlacementIndirectCmd seeds[2] = {};
-				seeds[0].indexCount = 300; seeds[0].firstIndex = 0;
-				seeds[1].indexCount = 300; seeds[1].firstIndex = 64;
-				Check(mp.SeedIndirect(rm, seeds, 2), "gpu.mp-seed-indirect");
+			// The prototype table (fake geometry: 300 idx/bin) rides the
+			// push EVERY frame - the shared drawbuild kernel owns the
+			// COMPLETE command (SeedIndirect is the metadata
+			// registration; there is no seed upload anywhere).
+			smvk::placement::PlacementIndirectCmd seeds[2] = {};
+			seeds[0].indexCount = 300; seeds[0].firstIndex = 0;
+			seeds[1].indexCount = 300; seeds[1].firstIndex = 64;
+			for (uint32_t i = 0; i < smvk::placement::kPlacementMaxProtos;
+				++i) {
+				const auto& s = i < 2
+					? seeds[i]
+					: smvk::placement::PlacementIndirectCmd{};
+				dbp.indexCount[i] = s.indexCount;
+				dbp.firstIndex[i] = s.firstIndex;
+				dbp.vertexOffset[i] = s.vertexOffset;
 			}
+			if (f == 0)
+				Check(mp.SeedIndirect(rm, seeds, 2), "gpu.mp-seed-indirect");
 			host.RunFrame([&](smvk::RenderGraph& g) {
 				smvk::RenderPass& emit = mp.AddEmitPass(g);
 				emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
@@ -1991,7 +2029,9 @@ const auto zIs = [](int32_t z) {
 	//    DrawIndexedIndirect per bin through the placement VS + the
 	//    diagnostic unlit PS, into an external color target whose
 	//    readback COUNTS the rasterized pixels. Instances -> commands ->
-	//    pixels, end to end on device.
+	//    pixels, end to end on device, ON THE FIRST ELIGIBLE FRAME (the
+	//    publish frame's own draw - the stranded-upload-write class is
+	//    gone by construction; the resolved note below).
 	// =====================================================================
 	std::fprintf(stderr, "[place-gpu] stage: the draw\n");
 	{
@@ -2183,12 +2223,11 @@ const auto zIs = [](int32_t z) {
 				"placement draw target view");
 		Check(!targetLogical.empty(), "gpu.draw-target-logical");
 
-		// The immutable indirect halves: the SAME quad mesh for the three
-		// prototype bins (indexCount 6, the heap's firstIndex/baseVertex).
-		// Seeding must happen when the tile is PUBLISHED (the runtime's
-		// SeedIndirect walks the published slots — before that it is a
-		// no-op), so the seed call lives INSIDE the draw-frame record
-		// below, right after the publish is observed.
+		// The prototype table (the static command halves): the SAME quad
+		// mesh for the three prototype bins (indexCount 6, the heap's
+		// firstIndex/baseVertex). Registered as METADATA before the first
+		// chain records (SeedIndirect caches it; draw-build push-carries
+		// it — no GPU seed upload exists).
 		const auto fillSeeds = [&](PlacementIndirectCmd* seeds) {
 			for (int p = 0; p < 3; ++p) {
 				seeds[p].indexCount = uint32_t(up.indices.size());
@@ -2215,16 +2254,10 @@ const auto zIs = [](int32_t z) {
 		bool seeded = false;
 		const auto recordDrawFrame = [&](smvk::RenderGraph& g) {
 			rt->BeginFrame(rm, g, interest, 1, deps);
-			rt->RecordCullChain(rm, g, 0, drawSlabL,
-				rm.GetBufferDeviceAddress(drawSlab), 0,
-				glm::vec3(eye), kPlacementCullFrustum);
-			for (size_t s = 0; s < rt->active.size(); ++s)
-				if (rt->active[s].published) { drawSlot = int32_t(s); break; }
-			if (drawSlot < 0)
-				return;
-			// THE RUNTIME CONTRACT: seed the published visible sets once
-			// per prototype table — the frame that observes the publish
-			// is the earliest the seed can exist.
+			// REGISTER THE PROTOTYPE METADATA BEFORE the chain records:
+			// draw-build's push captures the table BY VALUE at recording
+			// time, so the earliest recording must already see it. Pure
+			// metadata (no GPU write) - publishing needs no seed event.
 			if (!seeded) {
 				PlacementIndirectCmd seeds[3];
 				fillSeeds(seeds);
@@ -2232,6 +2265,13 @@ const auto zIs = [](int32_t z) {
 					"gpu.draw-seed-indirect");
 				seeded = true;
 			}
+			rt->RecordCullChain(rm, g, 0, drawSlabL,
+				rm.GetBufferDeviceAddress(drawSlab), 0,
+				glm::vec3(eye), kPlacementCullFrustum);
+			for (size_t s = 0; s < rt->active.size(); ++s)
+				if (rt->active[s].published) { drawSlot = int32_t(s); break; }
+			if (drawSlot < 0)
+				return;
 			const PlacementVisibleSet* vs = rt->VisSet(drawSlot);
 			smvk::RenderPass& draw = g.AddPass("PlacementDraw");
 			draw.SetOffset(0, 0);
@@ -2240,15 +2280,30 @@ const auto zIs = [](int32_t z) {
 				smvk::AttachmentLoadOp::Clear, smvk::AttachmentStoreOp::Store,
 				smvk::ClearColor(0.1f, 0.2f, 0.3f, 1.0f));
 			// The ordering edges: the draw reads the chain's outputs.
-			smvk::BufferSyncRequest read{};
-			read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead
-				| smvk::AccessFlags::IndirectCommandRead;
-			read.barrierMasks.stageMask = smvk::PipelineStageBit_AllGraphics;
-			draw.AddBufferHint(rt->pass.instanceLogicals[size_t(drawSlot)], read);
-			draw.AddBufferHint(vs->maskL, read);
-			draw.AddBufferHint(vs->binsL, read);
-			draw.AddBufferHint(vs->visibleL, read);
-			draw.AddBufferHint(vs->indirectL, read);
+			// TWO hint shapes (the production pairing rule, gfx_filter's
+			// AddConsumeHints): the indirect COMMAND fetch runs at the
+			// fixed-function DRAW_INDIRECT stage — the engine's
+			// AllGraphics maps to the SHADER-stage union only and NEVER
+			// includes it, so IndirectCommandRead MUST pair with
+			// PipelineStageBit_DrawIndirect (an AllGraphics hint here
+			// leaves the command fetch unsynchronized: the first frame's
+			// draw reads a stale instanceCount and silently no-ops until
+			// the next frame's ALL_COMMANDS timeline wait heals it — the
+			// residual one-frame lag caught here). The VS's BDA fetches
+			// (visible + instances) are plain shader reads.
+			smvk::BufferSyncRequest shaderRead{};
+			shaderRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			shaderRead.barrierMasks.stageMask = smvk::PipelineStageBit_AllGraphics;
+			draw.AddBufferHint(rt->pass.instanceLogicals[size_t(drawSlot)], shaderRead);
+			draw.AddBufferHint(vs->maskL, shaderRead);
+			draw.AddBufferHint(vs->binsL, shaderRead);
+			draw.AddBufferHint(vs->visibleL, shaderRead);
+			smvk::BufferSyncRequest indirectRead{};
+			indirectRead.barrierMasks.accessMask =
+				smvk::AccessFlags::IndirectCommandRead;
+			indirectRead.barrierMasks.stageMask =
+				smvk::PipelineStageBit_DrawIndirect;
+			draw.AddBufferHint(vs->indirectL, indirectRead);
 			const PlacementVsPush tail{
 				vs->VisibleAddress(rm),
 				rt->pass.TileInstancesAddress(rm, uint32_t(drawSlot)),
@@ -2268,7 +2323,7 @@ const auto zIs = [](int32_t z) {
 				smvk::CommandBuffer& cmd) {
 				cmd.BindStaticVertexFmt();
 				cmd.BindRenderPipeline(*program,
-					smvk::VertexFormat::StaticVertexFormat,
+					smvk::VertexLayoutId::Static,
 					smvk::DepthSettings{ .depthFunc = smvk::CompareOp::Always,
 						.writeEnable = false, .depthTestEnable = false },
 					smvk::StencilSettings{}, smvk::BlendSettings{},
@@ -2284,77 +2339,62 @@ const auto zIs = [](int32_t z) {
 						kPlacementIndirectStride);
 			});
 		};
-		// TWO draw frames — the FIRST is the publish frame (BeginFrame
-		// observes the activation token, the visible set is created, the
-		// host seeds the immutable indirect halves) and the SECOND is the
-		// first frame the draw can rasterize. This is NOT a workaround for
-		// test timing — it pins a REAL rendergraph sync sharp edge, caught
-		// on device right here:
+		// ONE draw frame IS the whole proof now. The tile published in
+		// frame 1; THIS frame's draw-build writes the COMPLETE commands
+		// (the prototype table rides its push — no seed upload exists
+		// anywhere) and the draw rasterizes IN THE SAME FRAME.
 		//
-		//   THE STRANDED-UPLOAD WRITE. The seed is an UploadDataToBuffer
-		//   (a TRANSFER-scoped write). In the SAME frame, drawbuild
-		//   re-writes the buffer's dynamic halves with a COMPUTE-scoped
-		//   write, and the draw pass then reads the buffer at
-		//   DRAW_INDIRECT. The graph's per-buffer sync state tracks only
-		//   the LAST write's scope, so the barrier it emits before the
-		//   draw carries src = COMPUTE only. Vulkan memory dependencies
-		//   are NOT transitive: the seed's TRANSFER_WRITE was made visible
-		//   to drawbuild's COMPUTE scope, but nothing ever delivers it to
-		//   the DRAW_INDIRECT read — so the publish frame's draw reads the
-		//   PRE-seed indexCount (the creation-zero 0) and the indirect
-		//   command is a SILENT no-op draw (0 indices — no fault, no
-		//   pixels; the post-frame readback of the very same buffer shows
-		//   the seeded indexCount 6 + drawbuild's instanceCount 69).
-		//   The next frame's submit waits the previous frame's timeline at
-		//   ALL_COMMANDS, which makes every prior write (including the
-		//   stranded upload) visible to the whole command buffer — and the
-		//   draw works.
-		//
-		//   CONSUMER RULE until the graph unions per-resource write
-		//   scopes (the durable fix is for drawbuild to own the FULL
-		//   command — writing the immutable halves from its push — so the
-		//   indirect buffer is single-scope-written per frame): never let
-		//   a draw depend on bytes an UPLOAD wrote to a buffer that a
-		//   kernel re-writes in the same frame. Accept the one-frame lag
-		//   (a pop-in, benign for streaming tiles) or rewrite the bytes in
-		//   the kernel's scope.
-		host.RunFrame(recordDrawFrame);
-		rm.FlushUploads();
-		rm.WaitForUploads();
-		if (drawSlot >= 0) {
-			// The publish frame's observed state: the buffer HOLDS the
-			// seeded immutable halves + drawbuild's dynamic halves, yet the
-			// frame rasterized nothing (the stranded-write note above).
-			const PlacementVisibleSet* vs = rt->VisSet(size_t(drawSlot));
-			PlacementIndirectCmd cmds[3];
-			std::vector<uint8_t> px(size_t(targetW) * targetH * 4, 0);
-			if (rm.DownloadDataFromBuffer(vs->indirect, cmds,
-					kPlacementIndirectStride * 3)
-				&& rm.DownloadDataFromImage(target,
-					smvk::ImageLayout::ColorAttachmentOptimal, px.data(),
-					px.size())) {
-				size_t lit = 0;
-				for (size_t i = 0; i + 3 < px.size(); i += 4)
-					if (px[i] > 100) ++lit;
-				std::fprintf(stderr, "[place-gpu] draw publish frame: "
-					"cmd0 {idx=%u inst=%u fi=%u}, %zu px lit\n",
-					cmds[0].indexCount, cmds[0].instanceCount,
-					cmds[0].firstInstance, lit);
-			}
-		}
+		//   RESOLVED (the stranded-upload write): the pre-PR1 shape —
+		//   a TRANSFER-scoped seed UPLOAD feeding a buffer drawbuild
+		//   re-wrote at COMPUTE scope in the same frame — left the
+		//   upload's write scope stranded from the draw's barrier (the
+		//   graph's per-buffer state tracks only the LAST write's
+		//   scope; memory dependencies are not transitive), so the
+		//   publish frame's draw read a stale indexCount and silently
+		//   no-op'd; only the NEXT frame's timeline wait healed it.
+		//   Drawbuild now owns the FULL command (single-scope COMPUTE
+		//   writer, complete barrier by construction) — see todo.txt.
+		//   THE FIRST-FRAME PIXELS BELOW ARE THE REGRESSION: any return
+		//   of split ownership re-introduces the one-frame lag here.
 		host.RunFrame(recordDrawFrame);
 		rm.FlushUploads();
 		rm.WaitForUploads();
 
 		Check(drawSlot >= 0, "gpu.draw-tile-published");
 
-		// ---- the readback: COUNT the rasterized pixels. ----
+		// ---- the readback: the commands + the rasterized pixels. ----
 		if (drawSlot >= 0) {
-			const PlacementVisibleSet* vs = rt->VisSet(drawSlot);
+			const PlacementVisibleSet* vs = rt->VisSet(size_t(drawSlot));
 			PlacementBinsGpu bins;
 			ok = rm.DownloadDataFromBuffer(vs->bins, &bins, sizeof(bins));
 			Check(ok, "gpu.draw-bins-readback");
 			Check(bins.total > 0, "gpu.draw-visible-nonempty");
+			// The FIRST-ELIGIBLE-FRAME commands: every bin's command is
+			// COMPLETE — the static halves from the push-carried table
+			// (the known fixture: the quad's 6 indices at the heap's
+			// firstIndex/baseVertex) + the dynamic halves from this
+			// frame's bins.
+			PlacementIndirectCmd cmds[3];
+			ok = rm.DownloadDataFromBuffer(vs->indirect, cmds,
+				kPlacementIndirectStride * 3);
+			Check(ok, "gpu.draw-cmd-readback");
+			Check(up.indices.size() == 6, "gpu.draw-fixture-quad-6idx");
+			bool cmdsOk = true;
+			for (int p = 0; p < 3; ++p) {
+				if (cmds[p].indexCount != up.indices.size()
+					|| cmds[p].firstIndex != surf.firstIndex
+					|| cmds[p].vertexOffset != surf.baseVertex)
+					cmdsOk = false; // the push-carried prototype table
+				if (cmds[p].instanceCount != bins.counts[p]
+					|| cmds[p].firstInstance != bins.offsets[p])
+					cmdsOk = false; // this frame's bins (cull + prefix)
+			}
+			Check(cmdsOk, "gpu.draw-first-frame-commands-complete");
+			std::fprintf(stderr, "[place-gpu] draw first frame: "
+				"cmd0 {idx=%u inst=%u fi=%u vo=%d firstInstance=%u}\n",
+				cmds[0].indexCount, cmds[0].instanceCount,
+				cmds[0].firstIndex, cmds[0].vertexOffset,
+				cmds[0].firstInstance);
 			std::vector<uint8_t> px(size_t(targetW) * targetH * 4, 0);
 			ok = rm.DownloadDataFromImage(target,
 				smvk::ImageLayout::ColorAttachmentOptimal, px.data(), px.size());
@@ -2368,7 +2408,7 @@ const auto zIs = [](int32_t z) {
 					if (firstLit == SIZE_MAX) firstLit = i;
 				}
 			}
-			Check(lit > 100, "gpu.draw-pixels-rasterized");
+			Check(lit > 100, "gpu.draw-first-frame-pixels");
 			if (lit > 0)
 				std::fprintf(stderr, "[place-gpu] draw: %zu/%zu pixels lit"
 					" (bins %u+%u+%u, first rgb %u,%u,%u)\n", lit,
@@ -2383,6 +2423,43 @@ const auto zIs = [](int32_t z) {
 			Check(bins.counts[0] + bins.counts[1] + bins.counts[2]
 					== bins.total,
 				"gpu.draw-bin-sum-parity");
+		}
+
+		// ---- THE CHANGED-PROTOTYPE-TABLE regression: re-registering the
+		// metadata reaches the NEXT recorded frame (the push capture is
+		// by value at recording time; an already-recorded frame is
+		// immune by design). The changed value stays a VALID heap
+		// addressing (firstIndex + 1 on proto 1: the quad's indices
+		// 1..6 instead of 0..5 — different triangles, same heap).
+		if (drawSlot >= 0) {
+			PlacementIndirectCmd seeds2[3];
+			fillSeeds(seeds2);
+			seeds2[1].firstIndex = surf.firstIndex + 1;
+			Check(rt->SeedIndirect(rm, 0, seeds2, 3),
+				"gpu.draw-table-reregistered");
+			host.RunFrame(recordDrawFrame);
+			rm.FlushUploads();
+			rm.WaitForUploads();
+			const PlacementVisibleSet* vs = rt->VisSet(size_t(drawSlot));
+			PlacementIndirectCmd cmds[3];
+			ok = rm.DownloadDataFromBuffer(vs->indirect, cmds,
+				kPlacementIndirectStride * 3);
+			Check(ok, "gpu.draw-changed-table-readback");
+			Check(cmds[0].firstIndex == surf.firstIndex
+				&& cmds[1].firstIndex == surf.firstIndex + 1
+				&& cmds[2].firstIndex == surf.firstIndex
+				&& cmds[1].indexCount == up.indices.size(),
+				"gpu.draw-changed-table-seen");
+			// Stability: the frame after the change still rasterizes.
+			std::vector<uint8_t> px(size_t(targetW) * targetH * 4, 0);
+			if (rm.DownloadDataFromImage(target,
+					smvk::ImageLayout::ColorAttachmentOptimal, px.data(),
+					px.size())) {
+				size_t lit = 0;
+				for (size_t i = 0; i + 3 < px.size(); i += 4)
+					if (px[i] > 100) ++lit;
+				Check(lit > 100, "gpu.draw-changed-table-pixels");
+			}
 		}
 		rt->Destroy(rg);
 	}

@@ -194,6 +194,19 @@ SpirvReflection ReflectSpirv(std::span<const uint32_t> words)
 					continue;
 				SpirvStageInput in{};
 				in.location = v->location;
+				// The input's vector width (1 for scalars — the traits
+				// leave vector.component_count at 0 for scalar types).
+				// Consumed by the pipeline builder's format-
+				// compatibility check.
+				if (v->type_description) {
+					const uint32_t comps =
+						v->type_description->traits.numeric.vector
+						.component_count;
+					in.componentCount = comps ? comps : 1u;
+				}
+				else {
+					in.componentCount = 1u;
+				}
 				if (v->name)
 					in.name = v->name;
 				out.stageInputs.push_back(std::move(in));

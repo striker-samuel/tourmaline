@@ -67,7 +67,7 @@ struct VSIn
     [[vk::location(4)]] uint tangentPacked : TANGENT;
     // No TexCoord1/ChartId (locations 5/6): placement draws are dynamic and
     // never lightmapped (the outputs below carry the unlightmapped
-    // sentinel), and StaticVertexFormat no longer binds the second UV
+    // sentinel), and StaticLayout no longer binds the second UV
     // channel anyway (lightmaps deprecated — see mesh.h).
     // NOTE: via SPIR-V, SV_InstanceID maps to InstanceIndex, which already
     // includes the indirect command's firstInstance (= the proto bin's

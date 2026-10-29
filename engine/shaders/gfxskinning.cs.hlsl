@@ -6,12 +6,12 @@
 //   palette  - the per-frame joint matrices (the "GPU bone animation"
 //              box's output; the CPU driver builds it per frame - see
 //              Cluster::SampleAnimation),
-//   skin     - the static per-vertex VertexSkin pairs (mesh.h binding-2
+//   skin     - the static per-vertex PackedSkinInfluences pairs (mesh.h binding-2
 //              data: RGBA8_UInt joint ids + RGBA8_UNorm weights, top-4),
 //   posHeap  - the BIND-POSE positions (the v4 fast-load heap - stays
 //              the bind pose forever, the pass's eternal input),
 //   shadeHeap- the bind-pose shading words (normal/tangent at words
-//              3/4 of each 6-word record);
+//              2/3 of each 4-word PackedVertexShading record);
 // and WRITES the deformed buffer: 5 words per vertex
 //   [0..2] deformed position (asuint floats),
 //   [3] deformed packed normal, [4] deformed packed tangent.
@@ -46,7 +46,7 @@ struct SkinStreamGpu { uint2 pair[SKIN_STREAM_MAX]; };
 struct SkinRangesGpu { uint4 row[SKIN_RANGES_MAX]; }; // (heapBase, count, skinBase, pad)
 struct SkinDeformedGpu { uint word[SKIN_DEFORMED_MAX]; }; // 5 words/vertex
 struct SkinPosHeapGpu { uint word[SKIN_POS_HEAP_MAX]; };  // 3 words/vertex
-struct SkinShadeHeapGpu { uint word[SKIN_SHADE_HEAP_MAX]; }; // 6 words/vertex
+struct SkinShadeHeapGpu { uint word[SKIN_SHADE_HEAP_MAX]; }; // 4 words/vertex
 
 // Mirrors smvk::skinning::SkinningPush (Rendergraph/skinning.h).
 struct SkinningPush
@@ -174,9 +174,9 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)
         const float3 deformedPos =
             mul(m, float4(bindPos, 1.0f)).xyz;
 
-        // Bind-pose normal/tangent (words 3/4 of the 6-word record).
-        const uint nW = pcS.shadeHeap.Get().word[vi * 6 + 3];
-        const uint tW = pcS.shadeHeap.Get().word[vi * 6 + 4];
+        // Bind-pose normal/tangent (words 2/3 of the 4-word PackedVertexShading).
+        const uint nW = pcS.shadeHeap.Get().word[vi * 4 + 2];
+        const uint tW = pcS.shadeHeap.Get().word[vi * 4 + 3];
         float3 n = OctDecodeNormal(nW);
         float4 t = OctDecodeTangent(tW);
         const float3x3 m3 = (float3x3)m;

@@ -1706,7 +1706,13 @@ void TestDrawFeed() {
 		&& offsetof(PlacementCullPush, camPos) == 224,
 		"place.draw.cull-push-tail");
 	Check(sizeof(PlacementScatterVisPush) == 48, "place.draw.scatter-vis-48B");
-	Check(sizeof(PlacementDrawBuildPush) == 32, "place.draw.build-push-32B");
+	// The push-carried prototype table (PR1: draw-build owns the
+	// COMPLETE command - the immutable halves ride the push).
+	Check(sizeof(PlacementDrawBuildPush) == 128, "place.draw.build-push-128B");
+	Check(offsetof(PlacementDrawBuildPush, indexCount) == 32
+		&& offsetof(PlacementDrawBuildPush, firstIndex) == 64
+		&& offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
+		"place.draw.build-push-table-offsets");
 	// FillCullPush: the cooked-mesh bounds -> conservative spheres, the
 	// species distances, the layer's scale bound.
 	{
@@ -1852,7 +1858,7 @@ void TestTerrainUpload() {	using namespace smvk::placement;
 	Check(up.aabbMin.y >= 0.0f && up.aabbMax.y <= 5.0f, "place.terr.height-range");
 	// Normals unit, indices in range, UVs in [0,1].
 	bool blobOk = true;
-	for (const smvk::StaticVertex& v : up.vertices) {
+	for (const smvk::ImportStaticVertex& v : up.vertices) {
 		if (std::abs(glm::length(v.normal) - 1.0f) > 1e-4f) { blobOk = false; break; }
 		if (v.texCoord.x < 0.0f || v.texCoord.x > 1.0f
 			|| v.texCoord.y < 0.0f || v.texCoord.y > 1.0f) { blobOk = false; break; }
@@ -1883,7 +1889,7 @@ void TestTerrainUpload() {	using namespace smvk::placement;
 	bool match = true;
 	for (uint32_t z = 0; z + 1 < 9; ++z)
 		for (uint32_t x = 0; x + 1 < 9; ++x) {
-			const smvk::StaticVertex& v = up.vertices[z * 9 + x];
+			const smvk::ImportStaticVertex& v = up.vertices[z * 9 + x];
 			const float h = hf.sampleHeight(10.0f + v.pos.x, 20.0f + v.pos.z);
 			if (std::abs(h - v.pos.y) > 1e-4f) { match = false; break; }
 		}

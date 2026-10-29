@@ -1,0 +1,6 @@
+# golden screenshot hashes: <pak-stem>.bench<N>.cap<M>=sha256
+# sha256 over DECODED PIXELS (the PNG writer's deflate
+# stream is nondeterministic; file bytes flake - see the
+# pixel_digest note in golden_capture.py).
+# GPU/driver-sensitive: one baseline per (scene, GPU).
+sponza.bench64.cap48=365230fbf044a20e0bf67a1fc57f81ca9648f0ca7e46ce84bfe04a57ca03f267

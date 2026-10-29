@@ -9,6 +9,7 @@
 // PASS/FAIL, the process exits nonzero on any failure.
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _MSC_VER
@@ -31,6 +33,8 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/platform.h> // readFile (exe-relative shader loads)
+#include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
@@ -456,6 +460,262 @@ void TestPakAppend() {
 	fs::remove_all(dir, ec);
 }
 
+// ---------------------------------------------------------------------------
+// Malformed-range rejection (the bounds-contract regression): every
+// case builds a pak whose CRC is RECOMPUTED over the tampered fields -
+// a CRC only proves the bytes are as-authored, so these isolate the
+// RANGE checks from the corruption detector. The adversarial shapes
+// are the unsigned-overflow class: `offset + size` and
+// `off + kTocEntryFixed` WRAP and can sail through an additive `>`
+// compare (the pre-fix checks did exactly that, and Payload() then
+// handed subspan() an out-of-range pair).
+// ---------------------------------------------------------------------------
+
+// Hand-rolled minimal pak image (the fuzz corpus needs field-level
+// control PakWriter does not expose): header | 16B payload | TOC(1
+// entry, path "a") | footer, all little-endian. Mutators patch fields
+// and recompute the CRC so the reader's CRC gate always passes.
+struct RawPak {
+	std::vector<uint8_t> bytes;
+	size_t tocOffset = 0;
+	size_t entryOff = 0;
+	size_t footerOff = 0;
+
+	void Put32(size_t at, uint32_t v) { memcpy(&bytes[at], &v, 4); }
+	void Put64(size_t at, uint64_t v) { memcpy(&bytes[at], &v, 8); }
+
+	// Recompute the footer CRC over [0, footerOff + 16).
+	void Reseat() {
+		const uint32_t crc =
+			smvk::PakCrc32(bytes.data(), footerOff + 16);
+		Put32(footerOff + 16, crc);
+	}
+};
+
+RawPak BuildRawPak(uint64_t entryOffset, uint64_t entrySize) {
+	RawPak p;
+	const std::string path = "a";
+	const size_t payloadOff = 32, payloadLen = 16;
+	p.tocOffset = payloadOff + payloadLen; // 48
+	p.entryOff = p.tocOffset;
+	p.footerOff = p.tocOffset + 36 + path.size();
+	p.bytes.assign(p.footerOff + 24, 0);
+	p.Put32(0, smvk::kPakMagic);
+	p.Put64(12, p.tocOffset);
+	p.Put64(20, 1); // tocCount
+	for (size_t i = 0; i < payloadLen; ++i)
+		p.bytes[payloadOff + i] = static_cast<uint8_t>(i);
+	p.Put64(p.entryOff + 0, smvk::PakHashPath(path));
+	p.Put32(p.entryOff + 8, static_cast<uint32_t>(smvk::PakAssetKind::Texture));
+	p.Put32(p.entryOff + 12, 0); // flags
+	p.Put64(p.entryOff + 16, entryOffset);
+	p.Put64(p.entryOff + 24, entrySize);
+	p.Put32(p.entryOff + 32, static_cast<uint32_t>(path.size()));
+	memcpy(&p.bytes[p.entryOff + 36], path.data(), path.size());
+	p.Put64(p.footerOff + 0, p.tocOffset);
+	p.Put64(p.footerOff + 8, 1);
+	p.Put32(p.footerOff + 20, smvk::kPakFooterMagic);
+	p.Reseat();
+	return p;
+}
+
+// Patch tocOffset in header + footer together (the reader requires
+// them to agree), then reseat the CRC.
+void SetTocOffset(RawPak& p, uint64_t v) {
+	p.Put64(12, v);
+	p.Put64(p.footerOff + 0, v);
+	p.Reseat();
+}
+
+bool OpenRaw(const RawPak& p) {
+	std::string err;
+	return smvk::PakReader::Open(
+		std::span<const uint8_t>(p.bytes), err).has_value();
+}
+
+void TestPakMalformedBounds() {
+	// Baseline: the well-formed shape opens (the rejects below are
+	// the SAME image with one field bent).
+	{
+		RawPak p = BuildRawPak(32, 16);
+		Check(OpenRaw(p), "pak.bounds.baseline.opens");
+		std::string err;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(p.bytes), err);
+		if (r) {
+			const auto* e = r->Find(smvk::PakAssetKind::Texture, "a");
+			Check(e != nullptr && r->Payload(*e).size() == 16,
+				"pak.bounds.baseline.payload");
+		}
+	}
+	// offset = UINT64_MAX, size = 1: the classic wrap - the old
+	// additive `offset + size > tocOffset` saw 0 and PASSED, then
+	// Payload() subspan(SIZE_MAX, 1) read wild memory.
+	{
+		RawPak p = BuildRawPak(UINT64_MAX, 1);
+		Check(!OpenRaw(p), "pak.bounds.offset.wrap.rejected");
+	}
+	// offset near the wrap point, size completing it:
+	// (UINT64_MAX - 47) + 48 == 0 <= tocOffset under the old check.
+	{
+		RawPak p = BuildRawPak(UINT64_MAX - 47, 48);
+		Check(!OpenRaw(p), "pak.bounds.offset.wrap2.rejected");
+	}
+	// size = UINT64_MAX from a valid offset: 40 + UINT64_MAX wraps to
+	// 39 <= 48 under the old additive check.
+	{
+		RawPak p = BuildRawPak(40, UINT64_MAX);
+		Check(!OpenRaw(p), "pak.bounds.size.wrap.rejected");
+	}
+	// Blob pointing INSIDE the header (offset 0, 8 bytes): in-bounds
+	// for the image but outside the payload region - rejected.
+	{
+		RawPak p = BuildRawPak(0, 8);
+		Check(!OpenRaw(p), "pak.bounds.offset.below.header.rejected");
+	}
+	// Blob range ending past the TOC start (unwrapped, plain overrun).
+	{
+		RawPak p = BuildRawPak(44, 8); // 44 + 8 = 52 > 48
+		Check(!OpenRaw(p), "pak.bounds.overrun.rejected");
+	}
+	// Blob AT the TOC start with nonzero size.
+	{
+		RawPak p = BuildRawPak(48, 8); // == tocOffset
+		Check(!OpenRaw(p), "pak.bounds.at.toc.rejected");
+	}
+	// tocOffset = UINT64_MAX (header/footer agree, CRC valid): the TOC
+	// region gate rejects before any parsing.
+	{
+		RawPak p = BuildRawPak(32, 16);
+		SetTocOffset(p, UINT64_MAX);
+		Check(!OpenRaw(p), "pak.bounds.toc.offset.wrap.rejected");
+	}
+	// tocOffset inside the header (payloads always follow the 32-byte
+	// header).
+	{
+		RawPak p = BuildRawPak(32, 16);
+		SetTocOffset(p, 8);
+		Check(!OpenRaw(p), "pak.bounds.toc.offset.below.header.rejected");
+	}
+	// tocOffset so the 36-byte fixed entry cannot fit before the
+	// footer (an 8-byte gap): the entry-level subtraction check
+	// rejects (the old `off + kTocEntryFixed > image.size()` accepted
+	// - the region between fOff and image.size() was parseable).
+	{
+		RawPak p = BuildRawPak(32, 16);
+		SetTocOffset(p, p.footerOff - 8);
+		Check(!OpenRaw(p), "pak.bounds.toc.entry.overruns.footer.rejected");
+	}
+	// tocCount far past what the TOC region can hold (2^40): the
+	// parse's first out-of-region entry rejects (bounded work - the
+	// loop dies on the first overrun, never on tocCount iterations).
+	{
+		RawPak p = BuildRawPak(32, 16);
+		p.Put64(20, 1ull << 40);
+		p.Put64(p.footerOff + 8, 1ull << 40);
+		p.Reseat();
+		Check(!OpenRaw(p), "pak.bounds.toc.count.oversized.rejected");
+	}
+	// Zero-length path with its matching hash: accepted today (a
+	// harmless row - Find() only ever queries normalized non-empty
+	// paths); pinned so a future tightening is a deliberate change.
+	{
+		RawPak p = BuildRawPak(32, 16);
+		p.Put32(p.entryOff + 32, 0);
+		p.Put64(p.entryOff + 0, smvk::PakHashPath(""));
+		p.Reseat();
+		std::string err;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(p.bytes), err);
+		Check(r.has_value(), "pak.bounds.zero.pathlen.accepted");
+		if (r)
+			Check(r->EntryCount() == 1, "pak.bounds.zero.pathlen.entry");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent first-use appends (the CRC-table race regression): every
+// append streams Crc32FeedFile + Crc32FeedBytes - the OLD mutable
+// function-static tables initialized through an unsynchronized
+// `static bool init` raced exactly here. Threads append to DISTINCT
+// pak files (no cross-file contention) so any failure is the shared
+// table, not the files. Registered FIRST in main(): the table's
+// first-use window is process-wide, and any earlier pak CRC would
+// spend it before the threads arrive. Best-effort as a functional
+// test; run a TSan build of this binary to make the race loud.
+// ---------------------------------------------------------------------------
+void TestPakAppendConcurrentFirstUse() {
+	namespace fs = std::filesystem;
+	constexpr int kThreads = 8;
+	constexpr int kAppendsPerThread = 4;
+	const auto dir = fs::temp_directory_path() / "tourmaline_pak_concurrent";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+
+	std::atomic<int> failures = 0;
+	std::atomic<bool> go = false;
+	std::vector<std::thread> threads;
+	threads.reserve(kThreads);
+	for (int t = 0; t < kThreads; ++t) {
+		threads.emplace_back([&, t] {
+			// Spin until every thread is parked at the start line so
+			// the first appends overlap maximally.
+			while (!go.load(std::memory_order_acquire))
+				std::this_thread::yield();
+			const std::string pakPath =
+				(dir / ("thr" + std::to_string(t) + ".pak")).string();
+			for (int a = 0; a < kAppendsPerThread; ++a) {
+				const std::vector<uint8_t> payload(64,
+					static_cast<uint8_t>(t * 16 + a));
+				std::vector<std::pair<std::string,
+					std::span<const uint8_t>>> blobs = {
+					{ "textures/t" + std::to_string(t)
+						+ "_" + std::to_string(a) + ".bin", payload } };
+				std::vector<smvk::PakAppendInfo> infos;
+				std::string err;
+				if (!smvk::AppendPakBlobs(pakPath,
+						smvk::PakAssetKind::Texture, blobs, infos, err))
+					++failures;
+			}
+		});
+	}
+	go.store(true, std::memory_order_release);
+	for (auto& th : threads)
+		th.join();
+	Check(failures.load() == 0, "pak.append.concurrent.success");
+
+	// Every thread's pak must be openable with the exact appended
+	// entries intact (the CRC the concurrent appends computed must be
+	// the true image CRC - a raced table fill would have written a
+	// wrong footer CRC).
+	int opened = 0, entries = 0;
+	for (int t = 0; t < kThreads; ++t) {
+		const std::string pakPath =
+			(dir / ("thr" + std::to_string(t) + ".pak")).string();
+		std::ifstream f(pakPath, std::ios::binary);
+		if (!f)
+			continue;
+		std::vector<uint8_t> img;
+		f.seekg(0, std::ios::end);
+		img.resize(size_t(f.tellg()));
+		f.seekg(0);
+		f.read(reinterpret_cast<char*>(img.data()),
+			std::streamsize(img.size()));
+		std::string err;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), err);
+		if (r) {
+			++opened;
+			entries += int(r->EntryCount());
+		}
+	}
+	Check(opened == kThreads, "pak.append.concurrent.all.open");
+	Check(entries == kThreads * kAppendsPerThread,
+		"pak.append.concurrent.entry.count");
+	fs::remove_all(dir, ec);
+}
+
 void TestLz4Codec() {
 	// Highly compressible data round-trips.
 	std::vector<uint8_t> raw(64 * 1024, 0xAB);
@@ -577,7 +837,7 @@ void TestPakBackendServesTextures() {
 smvk::StaticMeshUpload MakeQuad() {
 	smvk::StaticMeshUpload u;
 	for (int i = 0; i < 4; ++i) {
-		smvk::StaticVertex v{};
+		smvk::ImportStaticVertex v{};
 		v.pos = { (i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f };
 		v.color = { 1, 1, 1, 1 };
 		v.texCoord = { v.pos.x, v.pos.y };
@@ -603,7 +863,7 @@ smvk::StaticMeshUpload MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
 	chartOf.clear();
 	smvk::StaticMeshUpload u;
 	auto vert = [&](float x, float y, uint32_t chart, float cu, float cv) {
-		smvk::StaticVertex v{};
+		smvk::ImportStaticVertex v{};
 		v.pos = { x, y, 0.0f };
 		v.color = { 1, 1, 1, 1 };
 		v.texCoord = { x * 0.5f, y * 0.5f };
@@ -694,7 +954,7 @@ void TestSmoothNormalRepair() {
 	// the sun, the GI SH samples the dark lobe).
 	smvk::StaticMeshUpload u;
 	auto vert = [&](float x, float y, float z) {
-		smvk::StaticVertex v{};
+		smvk::ImportStaticVertex v{};
 		v.pos = { x, y, z };
 		v.color = { 1, 1, 1, 1 };
 		v.texCoord = { x, y };
@@ -732,7 +992,7 @@ void TestSmoothNormalRepair() {
 	// accumulation, repair must not fire (exact +Z preserved).
 	smvk::StaticMeshUpload q;
 	for (int i = 0; i < 4; ++i) {
-		smvk::StaticVertex v{};
+		smvk::ImportStaticVertex v{};
 		v.pos = { (i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f };
 		v.color = { 1, 1, 1, 1 };
 		v.texCoord = { v.pos.x, v.pos.y };
@@ -753,7 +1013,7 @@ smvk::StaticMeshUpload MakeGrid(int n) {
 	smvk::StaticMeshUpload u;
 	for (int iy = 0; iy <= n; ++iy)
 		for (int ix = 0; ix <= n; ++ix) {
-			smvk::StaticVertex v{};
+			smvk::ImportStaticVertex v{};
 			v.pos = { (float)ix, (float)iy, 0.1f * sinf((float)ix * 0.7f) * cosf((float)iy * 0.7f) };
 			v.color = { 1, 1, 1, 1 };
 			v.texCoord = { (float)ix / n, (float)iy / n };
@@ -779,7 +1039,7 @@ smvk::StaticMeshUpload MakeCheckerGrid(int n) {
 	smvk::StaticMeshUpload u;
 	for (int iy = 0; iy <= n; ++iy)
 		for (int ix = 0; ix <= n; ++ix) {
-			smvk::StaticVertex v{};
+			smvk::ImportStaticVertex v{};
 			v.pos = { (float)ix, (float)iy, 0.0f };
 			v.color = { 1, 1, 1, 1 };
 			const float c = ((ix + iy) & 1) ? 1.0f : 0.0f;
@@ -1464,9 +1724,9 @@ void TestCookLodSiblingsLightmap() {
 		bool anyUv = false;
 		if (up) {
 			for (size_t t = 0; t + 2 < up->indices.size() / 3; ++t) {
-				const StaticVertex& va = up->vertices[up->indices[t * 3 + 0]];
-				const StaticVertex& vb = up->vertices[up->indices[t * 3 + 1]];
-				const StaticVertex& vc = up->vertices[up->indices[t * 3 + 2]];
+				const ImportStaticVertex& va = up->vertices[up->indices[t * 3 + 0]];
+				const ImportStaticVertex& vb = up->vertices[up->indices[t * 3 + 1]];
+				const ImportStaticVertex& vc = up->vertices[up->indices[t * 3 + 2]];
 				// Core invariant: no sibling triangle mixes charts.
 				if (va.chartId != vb.chartId || va.chartId != vc.chartId) {
 					chartsOk = false;
@@ -1598,7 +1858,7 @@ void TestLightmapChartTable() {
 	// CPU mirror of the VS unpack (atlasUv = chartUv * xy + zw) lands
 	// inside the owning chart's rect for a stamped vertex.
 	{
-		const StaticVertex& v = gridA.vertices[6]; // chart 1 corner
+		const ImportStaticVertex& v = gridA.vertices[6]; // chart 1 corner
 		const glm::vec4& xf = world.lmChartTable[baseA + v.chartId];
 		const glm::vec2 atlas = v.texCoord2 * glm::vec2(xf.x, xf.y)
 			+ glm::vec2(xf.z, xf.w);
@@ -1849,8 +2109,10 @@ void TestClusterSerializeCook() {
 			"cook.pak.tex.bytes");
 	}
 
-	// Mesh blob carries the v4 fast-load payload: packed-SoA streams (the
+	// Mesh blob carries the v5 fast-load payload: packed-SoA streams (the
 	// exact GPU heap layout) addressed by recorded blob-relative offsets.
+	// Chart data rides the SEPARATE lightmap stream (the uncharted quad is
+	// lmOff = 0 here).
 	const auto meshes = reader->BlobsOfKind(PakAssetKind::Mesh);
 	Check(!meshes.empty(), "cook.pak.mesh.find");
 	if (!meshes.empty()) {
@@ -1858,21 +2120,24 @@ void TestClusterSerializeCook() {
 		// Header: uri len+bytes, counts(3), surfaces(0 entries), aabb(24),
 		// sphere, topology, lod(7 fields), lmChunk, lmXformCount(0 here).
 		const size_t header = 4 + meshUri.size() + 12 + 24 + 4 + 4 + 28 + 8;
-		Check(pay.size() > header + 28, "cook.pak.mesh.v4.section");
+		Check(pay.size() > header + 36, "cook.pak.mesh.v4.section");
 		uint32_t marker = 0;
 		memcpy(&marker, pay.data() + header, 4);
-		Check(marker == 1u, "cook.pak.mesh.v4.marker");
-		uint64_t posOff = 0, shadeOff = 0, idxOff = 0;
+		Check(marker == 2u, "cook.pak.mesh.v4.marker");
+		uint64_t posOff = 0, shadeOff = 0, lmOff = 0, idxOff = 0;
 		memcpy(&posOff, pay.data() + header + 4, 8);
 		memcpy(&shadeOff, pay.data() + header + 12, 8);
-		memcpy(&idxOff, pay.data() + header + 20, 8);
-		const size_t posBytes = 4 * sizeof(VertexPos);
-		const size_t shadeBytes = 4 * sizeof(VertexShading);
+		memcpy(&lmOff, pay.data() + header + 20, 8);
+		memcpy(&idxOff, pay.data() + header + 28, 8);
+		const size_t posBytes = 4 * sizeof(PackedVertexPosition);
+		const size_t shadeBytes = 4 * sizeof(PackedVertexShading);
 		const size_t idxBytes = 6 * sizeof(uint32_t);
 		// Stream starts: marker section end aligned up to 16, then the
-		// three streams back-to-back, then the meshlet trailer (count 0).
-		Check(posOff == ((header + 28 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
-		Check(shadeOff == posOff + posBytes && idxOff == shadeOff + shadeBytes,
+		// streams back-to-back (the uncharted quad skips the lightmap
+		// stream entirely), then the meshlet trailer (count 0).
+		Check(posOff == ((header + 36 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
+		Check(lmOff == 0 && shadeOff == posOff + posBytes
+			&& idxOff == shadeOff + shadeBytes,
 			"cook.pak.mesh.v4.streamoffs");
 		Check(posOff + posBytes + shadeBytes + idxBytes + 12 + 4 == pay.size(),
 			"cook.pak.mesh.v4.exactend");
@@ -1884,14 +2149,15 @@ void TestClusterSerializeCook() {
 		// vertices + the raw index buffer.
 		bool streamsOk = true;
 		for (uint32_t v = 0; v < 4; ++v) {
-			VertexPos pos{};
-			VertexShading shade{};
-			PackStaticVertex(quad.vertices[v], pos, shade);
+			PackedVertexPosition pos{};
+			PackedVertexShading shade{};
+			PackedVertexLightmap lm{};
+			PackStaticVertex(quad.vertices[v], pos, shade, lm);
 			streamsOk = streamsOk
-				&& memcmp(pay.data() + posOff + v * sizeof(VertexPos),
-					&pos, sizeof(VertexPos)) == 0
-				&& memcmp(pay.data() + shadeOff + v * sizeof(VertexShading),
-					&shade, sizeof(VertexShading)) == 0;
+				&& memcmp(pay.data() + posOff + v * sizeof(PackedVertexPosition),
+					&pos, sizeof(PackedVertexPosition)) == 0
+				&& memcmp(pay.data() + shadeOff + v * sizeof(PackedVertexShading),
+					&shade, sizeof(PackedVertexShading)) == 0;
 		}
 		for (uint32_t i = 0; i < 6; ++i) {
 			uint32_t idx = 0;
@@ -1976,7 +2242,7 @@ void TestMeshlets() {
 		const int N = 8;
 		for (int iy = 0; iy <= N; ++iy)
 			for (int ix = 0; ix <= N; ++ix) {
-				smvk::StaticVertex v{};
+				smvk::ImportStaticVertex v{};
 				v.pos = { (float)ix, (float)iy, 0.0f };
 				u.vertices.push_back(v);
 			}
@@ -1988,9 +2254,9 @@ void TestMeshlets() {
 			}
 		// Long sliver: two verts in the grid, one 60 units away.
 		uint32_t s0 = (uint32_t)u.vertices.size();
-		smvk::StaticVertex a{}; a.pos = { 0.0f, 0.0f, 0.0f };
-		smvk::StaticVertex b{}; b.pos = { 0.5f, 0.0f, 0.0f };
-		smvk::StaticVertex c{}; c.pos = { 60.0f, 0.5f, 0.0f };
+		smvk::ImportStaticVertex a{}; a.pos = { 0.0f, 0.0f, 0.0f };
+		smvk::ImportStaticVertex b{}; b.pos = { 0.5f, 0.0f, 0.0f };
+		smvk::ImportStaticVertex c{}; c.pos = { 60.0f, 0.5f, 0.0f };
 		u.vertices.push_back(a); u.vertices.push_back(b); u.vertices.push_back(c);
 		u.indices.insert(u.indices.end(), { s0, s0 + 1, s0 + 2 });
 		smvk::MeshletConfig sc = cfg;
@@ -2024,17 +2290,22 @@ void TestVertexPack() {
 	using namespace smvk;
 	using namespace smvk::vertexpack;
 
-	// Packed shading stream: 24 bytes, fixed member offsets (the Vulkan
-	// attribute table in mesh.h mirrors these: location 2 fetches uv as
-	// RG16_Float, location 5 fetches chartUv as RG16_UNorm, location 6
-	// fetches chart as R32_UInt).
-	Check(sizeof(VertexShading) == 24, "vpack.sizeof");
-	Check(offsetof(VertexShading, color) == 0 &&
-		offsetof(VertexShading, uv) == 4 &&
-		offsetof(VertexShading, chartUv) == 8 &&
-		offsetof(VertexShading, normal) == 12 &&
-		offsetof(VertexShading, tangent) == 16 &&
-		offsetof(VertexShading, chart) == 20, "vpack.offsets");
+	// Packed shading stream: 16 bytes + the separate OPTIONAL lightmap
+	// stream (8 bytes, chart data only), fixed member offsets (the Vulkan
+	// attribute tables in mesh.h mirror these: StaticLayout/SkinnedLayout
+	// bind color at 0/uv at 4/normal at 8/tangent at 12; the lightmapped
+	// layout's binding 2 fetches chartUv as RG16_UNorm and chart as
+	// R32_UInt from its own stream).
+	Check(sizeof(PackedVertexShading) == 16, "vpack.sizeof");
+	Check(offsetof(PackedVertexShading, color) == 0 &&
+		offsetof(PackedVertexShading, uv) == 4 &&
+		offsetof(PackedVertexShading, normal) == 8 &&
+		offsetof(PackedVertexShading, tangent) == 12, "vpack.offsets");
+	Check(sizeof(PackedVertexLightmap) == 8, "vpack.lm.sizeof");
+	Check(offsetof(PackedVertexLightmap, chartUv) == 0 &&
+		offsetof(PackedVertexLightmap, chartId) == 4, "vpack.lm.offsets");
+	// Default record = the uncharted sentinel (never carves a stream).
+	Check(PackedVertexLightmap{}.chartId == 0xFFFFFFFFu, "vpack.lm.uncharted");
 
 	// Normal oct round-trip: axes, diagonals, skewed, degenerate zero.
 	const glm::vec3 normalCases[] = {
@@ -2065,7 +2336,15 @@ void TestVertexPack() {
 	};
 	for (const auto& t : tangentCases) {
 		const glm::vec4 out = UnpackTangentOct(PackTangentOct(glm::vec3(t), t.w));
-		const glm::vec3 ref = glm::normalize(glm::vec3(t));
+		// The degenerate input's expectation is the DOCUMENTED +X
+		// fallback (vertex_pack.h / vertex_pack.hlsli), never
+		// glm::normalize of the zero vector — normalize(0) is NaN, and
+		// NaN < threshold is false, so the old form passed the
+		// degenerate case vacuously without ever checking the
+		// fallback (the normal loop above already had the right shape).
+		const glm::vec3 ref = (glm::dot(glm::vec3(t), glm::vec3(t)) > 1e-24f)
+			? glm::normalize(glm::vec3(t))
+			: glm::vec3(1.0f, 0.0f, 0.0f);
 		const float refW = (t.w < 0.0f) ? -1.0f : 1.0f;
 		if (glm::dot(glm::vec3(out), ref) < 0.999f)
 			tangentsOk = false;
@@ -2087,6 +2366,140 @@ void TestVertexPack() {
 			uvOk = false;
 	}
 	Check(uvOk, "vpack.uv.roundtrip");
+}
+
+// ---------------------------------------------------------------------------
+// The vertex-layout <-> shader ABI (the explicit-location contract):
+// every CONSUMED vertex-shader input (reflected off the COMPILED
+// SPIR-V — not the HLSL text) must find a matching attribute in the
+// pipeline's layout at the SAME location with ENOUGH components; and
+// every registered layout must satisfy the structural validator
+// (unique locations, formats inside their binding strides). This is
+// the CPU-side twin of the pipeline builder's build-time check — a
+// reorder of either side fails HERE first.
+// ---------------------------------------------------------------------------
+void TestVertexLayoutShaderAbi() {
+	using namespace smvk;
+
+	// ---- 1) every registered layout passes the structural validator.
+	{
+		const std::pair<const VertexLayoutDesc*, const char*> layouts[] = {
+			{ &StaticLayout, "Static" },
+			{ &StaticLightmappedLayout, "StaticLightmapped" },
+			{ &SkinnedLayout, "Skinned" },
+			{ &DebugLineLayout, "DebugLine" },
+			{ &TerrainFullLayout, "TerrainFull" },
+			{ &TerrainReducedLayout, "TerrainLow" },
+			{ &TerrainFarLayout, "TerrainFar" },
+		};
+		bool allValid = true;
+		for (const auto& [desc, name] : layouts) {
+			std::string err;
+			if (!ValidateVertexLayout(*desc, &err)) {
+				allValid = false;
+				std::cout << "  layout '" << name << "': " << err << "\n";
+			}
+		}
+		Check(allValid, "vabi.layouts.structural");
+	}
+
+	// ---- 2) the validator REJECTS the bad shapes (not vacuously
+	// passing): duplicate locations, attribute overruns, unaligned
+	// offsets, unusable formats.
+	{
+		VertexLayoutDesc d{};
+		d.bindings.push_back({ .binding = 0, .stride = 12,
+			.attributes = {
+				{ .semantic = VertexSemantic::Position, .location = 0,
+					.format = Format::RGB32_Float, .offset = 0 },
+				{ .semantic = VertexSemantic::Normal, .location = 0,
+					.format = Format::R32_UInt, .offset = 12 } } });
+		std::string err;
+		Check(!ValidateVertexLayout(d, &err)
+			&& err.find("duplicate") != std::string::npos,
+			"vabi.reject.duplicate-location");
+		d.bindings[0].attributes[1].location = 1;
+		err.clear();
+		Check(!ValidateVertexLayout(d, &err)
+			&& err.find("stride") != std::string::npos,
+			"vabi.reject.stride-overrun");
+		d.bindings[0].attributes[1].offset = 9; // unaligned to R32
+		d.bindings[0].stride = 24;
+		err.clear();
+		Check(!ValidateVertexLayout(d, &err)
+			&& err.find("align") != std::string::npos,
+			"vabi.reject.offset-align");
+	}
+
+	// ---- 3) the compiled-SPIR-V pairing: every consumed VS input has
+	// a same-location attribute with enough components.
+	{
+		const std::pair<const char*, const VertexLayoutDesc*> pairs[] = {
+			{ "content/shaders/default.vert.hlsl.spv", &StaticLayout },
+			{ "content/shaders/gfxfiltered.vert.hlsl.spv", &StaticLayout },
+			{ "content/shaders/shadow.vert.hlsl.spv", &StaticLayout },
+			{ "content/shaders/motionvector.vert.hlsl.spv", &StaticLayout },
+			{ "content/shaders/meshdebug.vert.hlsl.spv", &StaticLayout },
+			{ "content/shaders/meshparticles_draw.vert.hlsl.spv",
+				&StaticLayout },
+			{ "content/shaders/placement_instanced.vert.hlsl.spv",
+				&StaticLayout },
+			// The direct VS also carries the SKIN tail (locations 5/6):
+			// the skinned layout must cover it.
+			{ "content/shaders/default.vert.hlsl.spv", &SkinnedLayout },
+			{ "content/shaders/gfxfiltered.vert.hlsl.spv", &SkinnedLayout },
+			{ "content/shaders/terrain.vert.hlsl.spv", &TerrainFullLayout },
+			{ "content/shaders/terrainfar.vert.hlsl.spv", &TerrainFarLayout },
+			{ "content/shaders/debugline.vert.hlsl.spv", &DebugLineLayout },
+		};
+		bool abiOk = true;
+		int reflected = 0;
+		for (const auto& [spvPath, layout] : pairs) {
+			const std::vector<char> code = readFile(spvPath);
+			if (code.empty()) {
+				std::cout << "  missing shader: " << spvPath << "\n";
+				abiOk = false;
+				continue;
+			}
+			const SpirvReflection refl = ReflectSpirvBytes(
+				std::span<const char>(code));
+			if (!refl.valid) {
+				std::cout << "  reflection failed: " << spvPath << "\n";
+				abiOk = false;
+				continue;
+			}
+			for (const SpirvStageInput& in : refl.stageInputs) {
+				++reflected;
+				const VertexAttribute* match = nullptr;
+				for (const VertexBinding& b : layout->bindings)
+					for (const VertexAttribute& a : b.attributes)
+						if (a.location == in.location) {
+							match = &a;
+							break;
+						}
+				if (!match) {
+					std::cout << "  " << spvPath << ": input location "
+						<< in.location << " ('" << in.name
+						<< "') has no attribute in the layout\n";
+					abiOk = false;
+					continue;
+				}
+				if (in.componentCount
+					> GetFormatComponentCount(match->format)) {
+					std::cout << "  " << spvPath << ": input location "
+						<< in.location << " ('" << in.name << "') wants "
+						<< in.componentCount << " components, the format"
+						<< " provides "
+						<< GetFormatComponentCount(match->format) << "\n";
+					abiOk = false;
+				}
+			}
+		}
+		Check(abiOk, "vabi.spirv.pairing");
+		// The pairs actually exercised the ABI (the reflection saw
+		// real inputs — guards against a silently-empty spv glob).
+		Check(reflected > 20, "vabi.spirv.inputs-seen");
+	}
 }
 
 void TestStaticCollapse() {
@@ -2283,6 +2696,10 @@ int main() {
 		std::cerr << "[test] " << name << std::endl;
 		fn();
 	};
+	// FIRST, before any pak CRC: the concurrent append test needs the
+	// CRC table's process-wide first-use window intact (every later
+	// test would initialize it single-threaded and spend the window).
+	run("TestPakAppendConcurrentFirstUse", TestPakAppendConcurrentFirstUse);
 	run("TestVfsNormalize", TestVfsNormalize);
 	run("TestOverlayMem", TestOverlayMem);
 	run("TestAssetUris", TestAssetUris);
@@ -2291,6 +2708,7 @@ int main() {
 	run("TestPakCrcParallel", TestPakCrcParallel);
 	run("TestPakTextureDigest", TestPakTextureDigest);
 	run("TestPakAppend", TestPakAppend);
+	run("TestPakMalformedBounds", TestPakMalformedBounds);
 	run("TestLz4Codec", TestLz4Codec);
 	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
 	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
@@ -2302,6 +2720,7 @@ int main() {
 	run("TestCookLodSiblingsLightmap", TestCookLodSiblingsLightmap);
 	run("TestLightmapChartTable", TestLightmapChartTable);
 	run("TestVertexPack", TestVertexPack);
+	run("TestVertexLayoutShaderAbi", TestVertexLayoutShaderAbi);
 	run("TestClusterSerializeCook", TestClusterSerializeCook);
 	run("TestMultiSceneSerialize", TestMultiSceneSerialize);
 	run("TestStaticSubtrees", TestStaticSubtrees);

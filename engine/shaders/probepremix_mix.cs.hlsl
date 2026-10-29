@@ -50,12 +50,20 @@ struct MixPush
 [[vk::push_constant]]
 ConstantBuffer<MixPush> pc;
 
-// Bindless storage image array (set 0, binding 2): the same declaration
-// evsm_resolve/spd_downsample use (one unified bindless index space).
-// float4 matches the RGBA16F blended cubemap (format pairing must
-// agree - see evsm_blur.hlsli).
+// Bindless storage image ARRAY (set 0, binding 2): the same
+// declaration space evsm_resolve/spd_downsample use (one unified
+// bindless index space). Indexed by pc.dstIndex - THIS dispatch's mip
+// 2D-array view (6 face layers). dstIndex is a dispatch-uniform push
+// constant, so no NonUniformResourceIndex (the evsm_resolve rule:
+// push constants are uniform across the dispatch). float4 matches
+// the RGBA16F blended cubemap (format pairing must agree - see
+// evsm_blur.hlsli). A SINGULAR declaration here would consume
+// descriptor element 0 of the array (whatever view registered there -
+// bloom/evsm, NOT this mip's view) and every mip's blend would land
+// in it: the per-mip dispatches must INDEX the array, never address a
+// single binding.
 [[vk::binding(2, 0)]]
-RWTexture2DArray<float4> premixStorage;
+RWTexture2DArray<float4> premixStorage[];
 
 // FaceUvToDirection (cubemap.h) in HLSL: texel-center uv in [0,1] ->
 // the cubemap direction. Face order = CubemapFace: Px, Nx, Py, Ny,
@@ -97,6 +105,6 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
         acc += sel.weights[s]
             * cube.SampleLevel(smp, dir, float(pc.mip)).rgb;
     }
-    premixStorage[int3(int(tid.x), int(tid.y), int(tid.z))] =
-        float4(acc, 1.0f);
+    premixStorage[pc.dstIndex][
+        int3(int(tid.x), int(tid.y), int(tid.z))] = float4(acc, 1.0f);
 }

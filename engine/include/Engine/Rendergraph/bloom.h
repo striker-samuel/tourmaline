@@ -392,7 +392,7 @@ struct BloomChain {
 			pass.SetRecordingFunc([downProg, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					downProg,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Opaque(),
@@ -433,7 +433,7 @@ struct BloomChain {
 			pass.SetRecordingFunc([upProg, push](CommandBuffer& cmd) mutable {
 				cmd.BindRenderPipeline(
 					upProg,
-					VertexFormat::Empty,
+					VertexLayoutId::Empty,
 					DepthSettings::Disabled(),
 					StencilSettings::DefaultDisabled(),
 					BlendSettings::Add(), // src ONE + dst ONE

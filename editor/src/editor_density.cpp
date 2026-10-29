@@ -100,7 +100,7 @@ void EditorApp::RefreshCubemapDensity() {
 				continue;
 			const glm::mat4& g = scene.globalTransform[node];
 			const uint32_t base = uint32_t(soupPos.size());
-			for (const smvk::StaticVertex& v : up->vertices)
+			for (const smvk::ImportStaticVertex& v : up->vertices)
 				soupPos.push_back(glm::vec3(g * glm::vec4(v.pos, 1.0f)));
 			for (uint32_t k : up->indices)
 				soupIdx.push_back(base + k);

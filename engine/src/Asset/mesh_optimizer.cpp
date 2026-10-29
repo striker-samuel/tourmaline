@@ -34,11 +34,11 @@ float ComputeAcmr(const uint32_t* indices, size_t indexCount, size_t vertexCount
 }
 
 float ComputeOverdraw(
-	const uint32_t* indices, size_t indexCount, const StaticVertex* vertices, size_t vertexCount) {
+	const uint32_t* indices, size_t indexCount, const ImportStaticVertex* vertices, size_t vertexCount) {
 	if (indexCount < 3 || vertexCount == 0)
 		return 1.0f;
 	const meshopt_OverdrawStatistics stats = meshopt_analyzeOverdraw(
-		indices, indexCount, &vertices[0].pos.x, vertexCount, sizeof(StaticVertex));
+		indices, indexCount, &vertices[0].pos.x, vertexCount, sizeof(ImportStaticVertex));
 	return stats.overdraw;
 }
 
@@ -221,11 +221,11 @@ bool OptimizeStaticMeshUpload(
 	if (!config.enabled || vcount == 0 || icount < 3 || (icount % 3) != 0)
 		return finish(false);
 
-	// StaticVertex must be bit-comparable for the weld (no padding bytes).
+	// ImportStaticVertex must be bit-comparable for the weld (no padding bytes).
 	// chartId rides the weld key: seam twins (identical but for chart)
 	// never merge — the split the stamp created survives optimization.
-	static_assert(sizeof(StaticVertex) == 76, "StaticVertex layout changed; update weld assumptions");
-	static_assert(alignof(StaticVertex) <= 4, "StaticVertex alignment changed");
+	static_assert(sizeof(ImportStaticVertex) == 76, "ImportStaticVertex layout changed; update weld assumptions");
+	static_assert(alignof(ImportStaticVertex) <= 4, "ImportStaticVertex alignment changed");
 
 	stats.acmrBefore = ComputeAcmr(upload.indices.data(), icount, vcount);
 	stats.overdrawBefore = ComputeOverdraw(upload.indices.data(), icount, upload.vertices.data(), vcount);
@@ -242,14 +242,14 @@ bool OptimizeStaticMeshUpload(
 		std::vector<unsigned int> remap(vcount);
 		// Skin-aware identity: welding must never merge two vertices that
 		// carry different joints/weights (a skinning seam), so the
-		// VertexSkin row rides the hash too.
+		// PackedSkinInfluences row rides the hash too.
 		const bool hasSkin = !upload.skin.empty()
 			&& upload.skin.size() == vcount;
 		size_t uniqueCount = 0;
 		if (hasSkin) {
 			const meshopt_Stream streams[2] = {
-				{ upload.vertices.data(), sizeof(StaticVertex), sizeof(StaticVertex) },
-				{ upload.skin.data(), sizeof(VertexSkin), sizeof(VertexSkin) },
+				{ upload.vertices.data(), sizeof(ImportStaticVertex), sizeof(ImportStaticVertex) },
+				{ upload.skin.data(), sizeof(PackedSkinInfluences), sizeof(PackedSkinInfluences) },
 			};
 			uniqueCount = meshopt_generateVertexRemapMulti(
 				remap.data(), indices.data(), icount, vcount, streams, 2);
@@ -258,17 +258,17 @@ bool OptimizeStaticMeshUpload(
 			uniqueCount = meshopt_generateVertexRemap(
 				remap.data(),
 				indices.data(), icount,
-				upload.vertices.data(), vcount, sizeof(StaticVertex));
+				upload.vertices.data(), vcount, sizeof(ImportStaticVertex));
 		}
 		if (uniqueCount > 0 && uniqueCount < vcount) {
-			std::vector<StaticVertex> welded(uniqueCount);
+			std::vector<ImportStaticVertex> welded(uniqueCount);
 			meshopt_remapVertexBuffer(
-				welded.data(), upload.vertices.data(), vcount, sizeof(StaticVertex), remap.data());
+				welded.data(), upload.vertices.data(), vcount, sizeof(ImportStaticVertex), remap.data());
 			upload.vertices = std::move(welded);
 			if (hasSkin) {
-				std::vector<VertexSkin> weldedSkin(uniqueCount);
+				std::vector<PackedSkinInfluences> weldedSkin(uniqueCount);
 				meshopt_remapVertexBuffer(
-					weldedSkin.data(), upload.skin.data(), vcount, sizeof(VertexSkin), remap.data());
+					weldedSkin.data(), upload.skin.data(), vcount, sizeof(PackedSkinInfluences), remap.data());
 				upload.skin = std::move(weldedSkin);
 			}
 		}
@@ -292,13 +292,13 @@ bool OptimizeStaticMeshUpload(
 	}
 
 	// 3. Overdraw optimization. Needs float3 positions at offset 0, which
-	// StaticVertex guarantees (pos is the first member).
+	// ImportStaticVertex guarantees (pos is the first member).
 	if (config.overdraw) {
 		std::vector<uint32_t> optimized(icount);
 		meshopt_optimizeOverdraw(
 			reinterpret_cast<unsigned int*>(optimized.data()),
 			reinterpret_cast<const unsigned int*>(indices.data()), icount,
-			&upload.vertices[0].pos.x, nvcount, sizeof(StaticVertex),
+			&upload.vertices[0].pos.x, nvcount, sizeof(ImportStaticVertex),
 			config.overdrawThreshold);
 		indices = std::move(optimized);
 	}
@@ -308,15 +308,15 @@ bool OptimizeStaticMeshUpload(
 		std::vector<unsigned int> remap(nvcount);
 		meshopt_optimizeVertexFetchRemap(
 			remap.data(), reinterpret_cast<const unsigned int*>(indices.data()), icount, nvcount);
-		std::vector<StaticVertex> reordered(nvcount);
+		std::vector<ImportStaticVertex> reordered(nvcount);
 		meshopt_remapVertexBuffer(
-			reordered.data(), upload.vertices.data(), nvcount, sizeof(StaticVertex), remap.data());
+			reordered.data(), upload.vertices.data(), nvcount, sizeof(ImportStaticVertex), remap.data());
 		const bool hasSkin = !upload.skin.empty() && upload.skin.size() == nvcount;
-		std::vector<VertexSkin> reorderedSkin;
+		std::vector<PackedSkinInfluences> reorderedSkin;
 		if (hasSkin) {
 			reorderedSkin.resize(nvcount);
 			meshopt_remapVertexBuffer(
-				reorderedSkin.data(), upload.skin.data(), nvcount, sizeof(VertexSkin), remap.data());
+				reorderedSkin.data(), upload.skin.data(), nvcount, sizeof(PackedSkinInfluences), remap.data());
 		}
 		std::vector<uint32_t> reorderedIdx(icount);
 		meshopt_remapIndexBuffer(
@@ -359,9 +359,9 @@ bool BuildLodChainForUpload(
 	if (!config.generateLods || config.lodRatios.empty())
 		return true; // valid input, no candidates requested
 
-	static_assert(offsetof(StaticVertex, pos) == 0, "pos must be first for meshopt");
+	static_assert(offsetof(ImportStaticVertex, pos) == 0, "pos must be first for meshopt");
 	const float* positions = &lod0.vertices[0].pos.x;
-	const float localScale = meshopt_simplifyScale(positions, vcount, sizeof(StaticVertex));
+	const float localScale = meshopt_simplifyScale(positions, vcount, sizeof(ImportStaticVertex));
 	if (!(localScale > 0.0f) || !std::isfinite(localScale))
 		return true; // degenerate extents: nothing sensible to simplify
 
@@ -443,7 +443,7 @@ bool BuildLodChainForUpload(
 			std::vector<uint32_t> byPos(vcount);
 			for (uint32_t i = 0; i < vcount; ++i)
 				byPos[i] = i;
-			const StaticVertex* verts = lod0.vertices.data();
+			const ImportStaticVertex* verts = lod0.vertices.data();
 			std::sort(byPos.begin(), byPos.end(),
 				[verts](uint32_t a, uint32_t b) {
 					return std::memcmp(&verts[a].pos, &verts[b].pos, 12) < 0;
@@ -498,7 +498,7 @@ bool BuildLodChainForUpload(
 			resultCount = meshopt_simplifyWithAttributes(
 				dest.data(),
 				lod0.indices.data(), icount,
-				positions, vcount, sizeof(StaticVertex),
+				positions, vcount, sizeof(ImportStaticVertex),
 				cutoutAttrPtr, sizeof(float) * 2,
 				cutoutWeights, 2, nullptr,
 				targetIndices, targetError, options,
@@ -511,7 +511,7 @@ bool BuildLodChainForUpload(
 			resultCount = meshopt_simplifyWithAttributes(
 				dest.data(),
 				lod0.indices.data(), icount,
-				positions, vcount, sizeof(StaticVertex),
+				positions, vcount, sizeof(ImportStaticVertex),
 				lmAttrs.data(), sizeof(float) * 3,
 				kLmAttrWeights, 3, lmLockPtr,
 				targetIndices, targetError, config.lodSimplifyOptions,
@@ -526,7 +526,7 @@ bool BuildLodChainForUpload(
 			resultCount = meshopt_simplifyWithAttributes(
 				dest.data(),
 				lod0.indices.data(), icount,
-				positions, vcount, sizeof(StaticVertex),
+				positions, vcount, sizeof(ImportStaticVertex),
 				uvAttrs.data(), sizeof(float) * 2,
 				kUvAttrWeights, 2, nullptr,
 				targetIndices, targetError, config.lodSimplifyOptions,
@@ -536,7 +536,7 @@ bool BuildLodChainForUpload(
 			resultCount = meshopt_simplify(
 				dest.data(),
 				lod0.indices.data(), icount,
-				positions, vcount, sizeof(StaticVertex),
+				positions, vcount, sizeof(ImportStaticVertex),
 				targetIndices, targetError, config.lodSimplifyOptions,
 				&relativeError);
 		}
@@ -560,7 +560,7 @@ bool BuildLodChainForUpload(
 			const size_t probeCount = meshopt_simplify(
 				probe.data(),
 				lod0.indices.data(), icount,
-				positions, vcount, sizeof(StaticVertex),
+				positions, vcount, sizeof(ImportStaticVertex),
 				targetIndices, targetError,
 				config.lodSimplifyOptions, &probeErr);
 			if (probeCount >= 3 && std::isfinite(probeErr)
@@ -601,9 +601,9 @@ bool BuildLodChainForUpload(
 		meshopt_optimizeVertexFetchRemap(
 			remap.data(), reinterpret_cast<const unsigned int*>(indices.data()),
 			resultCount, vcount);
-		std::vector<StaticVertex> verts(vcount);
+		std::vector<ImportStaticVertex> verts(vcount);
 		meshopt_remapVertexBuffer(
-			verts.data(), lod0.vertices.data(), vcount, sizeof(StaticVertex), remap.data());
+			verts.data(), lod0.vertices.data(), vcount, sizeof(ImportStaticVertex), remap.data());
 		std::vector<uint32_t> remapped(resultCount);
 		meshopt_remapIndexBuffer(
 			reinterpret_cast<unsigned int*>(remapped.data()),
@@ -723,7 +723,7 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
 		return false;
 
 	// Chart-local -> atlas-space (same math as the VS unpack).
-	auto resolveAtlas = [&chartXforms](const StaticVertex& v) {
+	auto resolveAtlas = [&chartXforms](const ImportStaticVertex& v) {
 		if (v.chartId != 0xFFFFFFFFu && v.chartId < chartXforms.size()) {
 			const glm::vec4& xf = chartXforms[v.chartId];
 			return v.texCoord2 * glm::vec2(xf.x, xf.y)
@@ -736,9 +736,9 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
 	// atlas corners sweep more than one chart rect — smears the whole
 	// atlas between them. No texel number can describe that.
 	auto uv2Span = [&sibling, &resolveAtlas](size_t t) {
-		const StaticVertex& va = sibling.vertices[sibling.indices[t * 3 + 0]];
-		const StaticVertex& vb = sibling.vertices[sibling.indices[t * 3 + 1]];
-		const StaticVertex& vc = sibling.vertices[sibling.indices[t * 3 + 2]];
+		const ImportStaticVertex& va = sibling.vertices[sibling.indices[t * 3 + 0]];
+		const ImportStaticVertex& vb = sibling.vertices[sibling.indices[t * 3 + 1]];
+		const ImportStaticVertex& vc = sibling.vertices[sibling.indices[t * 3 + 2]];
 		if (va.chartId != vb.chartId || va.chartId != vc.chartId)
 			return 1e30f; // chart-id mismatch: cross-chart by construction
 		const glm::vec2 a = resolveAtlas(va);
@@ -770,7 +770,7 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
 		glm::vec3 wp[3];
 		glm::vec2 uv[3];
 		for (int k = 0; k < 3; ++k) {
-			const StaticVertex& v = sibling.vertices[sibling.indices[t * 3 + k]];
+			const ImportStaticVertex& v = sibling.vertices[sibling.indices[t * 3 + k]];
 			wp[k] = glm::vec3(world * glm::vec4(v.pos, 1.0f));
 			uv[k] = resolveAtlas(v);
 		}

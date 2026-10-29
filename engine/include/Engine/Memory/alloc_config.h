@@ -58,12 +58,16 @@ inline constexpr size_t kFrameReserve = 256 * kMiB;
 inline constexpr size_t kTransientReserve = 1 * kGiB;
 
 // -- Static geometry heaps (GPU, Renderer/mesh.cpp) --------------------------
-// Three eternal device-local buffers: two vertex heaps (position + shading)
-// and one index monoblock. Allocated once in WorldRenderer::onAttach before
-// any scene upload; the pak loader carves them via VmaVirtualBlock. This is
-// 1.5 GiB of the process's VRAM by default — THE largest static GPU cost.
+// The eternal device-local monoblocks: the position + shading vertex
+// heaps, the OPTIONAL lightmap vertex stream, and the index monoblock.
+// Allocated once in WorldRenderer::onAttach before any scene upload; the
+// pak loader carves them via VmaVirtualBlock. The two main vertex heaps +
+// indices are 1.5 GiB of the process's VRAM by default — THE largest
+// static GPU cost; the lightmap heap is deliberately small (lightmaps
+// are deprecated — the stream is usually empty).
 inline constexpr size_t kStaticVertexHeap = 512 * kMiB;
 inline constexpr size_t kStaticIndexHeap = 512 * kMiB;
+inline constexpr size_t kStaticLightmapHeap = 64 * kMiB;
 
 // -- Transient target heap blocks (GPU, rendergraph design-B targets) --------
 // Graph-owned VkDeviceMemory blocks carve packed attachment ranges. A new
@@ -144,6 +148,7 @@ inline constexpr size_t kDefaultAlign = 16;
 //   TOURMALINE_MEM_THREAD_SLOTS         threadPoolQueueSlots
 //   TOURMALINE_MEM_STATIC_VERTEX_MB     staticVertexHeap (GPU, each of 2)
 //   TOURMALINE_MEM_STATIC_INDEX_MB      staticIndexHeap (GPU)
+//   TOURMALINE_MEM_STATIC_LIGHTMAP_MB   staticLightmapHeap (GPU, optional)
 //   TOURMALINE_MEM_TARGET_BLOCK_MB      targetHeapBlock (GPU graph targets)
 struct RuntimeConfig {
 	size_t appArenaBlock = kAppArenaBlock;
@@ -166,6 +171,13 @@ struct RuntimeConfig {
 
 	size_t staticVertexHeap = kStaticVertexHeap;
 	size_t staticIndexHeap = kStaticIndexHeap;
+	// OPTIONAL lightmap vertex stream (8 B/vertex, carved only for
+	// meshes with chart data — lightmaps deprecated, usually empty).
+	// 64 MiB = 8M lightmapped vertices; the worst case (every vertex of
+	// a maxed pos/shading heap lightmapped) would be kStaticVertexHeap/2
+	// at the 16-byte shading stride — raise via the env override when a
+	// real lightmap reactivation needs it.
+	size_t staticLightmapHeap = kStaticLightmapHeap;
 	size_t targetHeapBlock = kTargetHeapBlock;
 };
 

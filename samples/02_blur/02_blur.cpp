@@ -480,7 +480,7 @@ private:
 					.SetInputImages({ m_source.logical })
 					.SetColor({ m_blurA.logical }, smvk::AttachmentLoadOp::DontCare, smvk::AttachmentStoreOp::Store)
 					.SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
-						cmd.BindRenderPipeline(m_program, smvk::VertexFormat::Empty,
+						cmd.BindRenderPipeline(m_program, smvk::VertexLayoutId::Empty,
 							smvk::DepthSettings::Disabled(), smvk::StencilSettings::DefaultDisabled(),
 							smvk::BlendSettings::Opaque(), smvk::MSAASettings::Count1(),
 							smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
@@ -509,7 +509,7 @@ private:
 					.SetInputImages({ curView })
 					.SetColor({ dst.logical }, smvk::AttachmentLoadOp::DontCare, smvk::AttachmentStoreOp::Store)
 					.SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
-						cmd.BindRenderPipeline(m_program, smvk::VertexFormat::Empty,
+						cmd.BindRenderPipeline(m_program, smvk::VertexLayoutId::Empty,
 							smvk::DepthSettings::Disabled(), smvk::StencilSettings::DefaultDisabled(),
 							smvk::BlendSettings::Opaque(), smvk::MSAASettings::Count1(),
 							smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
@@ -540,7 +540,7 @@ private:
 				.SetInputImages({ finalView })
 				.SetColor({ swapView }, smvk::AttachmentLoadOp::DontCare, smvk::AttachmentStoreOp::Store)
 				.SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
-					cmd.BindRenderPipeline(m_program, smvk::VertexFormat::Empty,
+					cmd.BindRenderPipeline(m_program, smvk::VertexLayoutId::Empty,
 						smvk::DepthSettings::Disabled(), smvk::StencilSettings::DefaultDisabled(),
 						smvk::BlendSettings::Opaque(), smvk::MSAASettings::Count1(),
 						smvk::RasterSettings{ .cullMode = smvk::CullMode::None });

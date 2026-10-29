@@ -1376,7 +1376,7 @@ void TestLightmapCurvatureScale() {
 		for (uint32_t j = 0; j <= segs; ++j) {
 			const float a = float(j) * step;
 			for (int y = 0; y <= 1; ++y) {
-				StaticVertex v{};
+				ImportStaticVertex v{};
 				v.pos = { r * std::cos(a), float(y), r * std::sin(a) };
 				v.color = { 1, 1, 1, 1 };
 				v.normal = { -std::cos(a), 0.0f, -std::sin(a) };
@@ -1424,7 +1424,7 @@ void TestLightmapCurvatureScale() {
 		StaticMeshUpload flat;
 		for (int y = 0; y <= 2; ++y)
 			for (int x = 0; x <= 2; ++x) {
-				StaticVertex v{};
+				ImportStaticVertex v{};
 				v.pos = { float(x), float(y), 0.0f };
 				v.color = { 1, 1, 1, 1 };
 				v.normal = { 0, 0, 1 };
@@ -1446,7 +1446,7 @@ void TestLightmapCurvatureScale() {
 			{ 0, 1, 0 }, { 1, 1, 0 }, { 1, 1, 1 }, { 0, 1, 1 },
 		};
 		for (const glm::vec3& v : p) {
-			StaticVertex sv{};
+			ImportStaticVertex sv{};
 			sv.pos = v;
 			sv.color = { 1, 1, 1, 1 };
 			box.vertices.push_back(sv);
@@ -1487,7 +1487,7 @@ void TestLmXatlasCharts() {
 		// seen from +Y.
 		StaticMeshUpload u;
 		auto vert = [y](float x, float z) {
-			StaticVertex v{};
+			ImportStaticVertex v{};
 			v.pos = { x, y, z };
 			v.color = { 1, 1, 1, 1 };
 			v.normal = { 0.0f, 1.0f, 0.0f };
@@ -1576,7 +1576,7 @@ void TestLmXatlasCharts() {
 			{ -1, 0, -1 }, { 0, 0, -1 }, { 0, 0, 0 }, { -1, 0, 0 },
 		};
 		for (const glm::vec3& v : p) {
-			StaticVertex sv{};
+			ImportStaticVertex sv{};
 			sv.pos = v;
 			sv.color = { 1, 1, 1, 1 };
 			cube.vertices.push_back(sv);
@@ -1649,7 +1649,7 @@ void TestLmDeferRasterize() {
 	StaticMeshUpload quad;
 	{
 		auto vert = [](float x, float z) {
-			StaticVertex v{};
+			ImportStaticVertex v{};
 			v.pos = { x, 0.0f, z };
 			v.color = { 1, 1, 1, 1 };
 			v.normal = { 0.0f, 1.0f, 0.0f };
@@ -1944,7 +1944,7 @@ void TestLmChartTransfer() {
 		// CCW seen from +Y.
 		for (uint32_t j = 0; j <= segs; ++j)
 			for (uint32_t i = 0; i <= segs; ++i) {
-				StaticVertex v{};
+				ImportStaticVertex v{};
 				v.pos = { x0 + (x1 - x0) * float(i) / float(segs), y,
 					z0 + (z1 - z0) * float(j) / float(segs) };
 				v.color = { 1, 1, 1, 1 };

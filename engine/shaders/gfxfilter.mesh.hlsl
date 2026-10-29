@@ -195,7 +195,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
     GfxDraw draw;
     draw.model = float4x4(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     draw.misc = uint4(0, 0, 0, 0);
-    draw.misc2 = uint4(0, 0, 0, 0);
+    draw.misc2 = uint4(0, 0, 0, 0xFFFFFFFFu); // misc2.w lm sentinel
     bool gated = true;
     uint triBase = 0;
     uint halfTris = 0;
@@ -299,9 +299,9 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
             // SKINNED draws fetch pos + the deformed normal/tangent
             // words from the DEFORMED heap (5 words/vertex at
             // (vi - deformedBase) * 5; the skinning pass's output);
-            // the color/uv/chart words stay on the bind-pose shading
+            // the color/uv words stay on the bind-pose shading
             // heap (skinning never touches them).
-            uint sbase = vi * 6;
+            uint sbase = vi * 4;
             uint cW, uvW, chUW, nW, tW, chW;
             float3 p;
             if (skinned) {
@@ -312,10 +312,8 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
                     asfloat(P.deformed.Get().word[d + 2]));
                 cW = P.shading.Get().words[sbase + 0];
                 uvW = P.shading.Get().words[sbase + 1];
-                chUW = P.shading.Get().words[sbase + 2];
                 nW = P.deformed.Get().word[d + 3];
                 tW = P.deformed.Get().word[d + 4];
-                chW = P.shading.Get().words[sbase + 5];
             } else {
                 p = float3(
                     asfloat(P.positions.Get().words[wbase + 0]),
@@ -323,10 +321,22 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
                     asfloat(P.positions.Get().words[wbase + 2]));
                 cW = P.shading.Get().words[sbase + 0];
                 uvW = P.shading.Get().words[sbase + 1];
-                chUW = P.shading.Get().words[sbase + 2];
-                nW = P.shading.Get().words[sbase + 3];
-                tW = P.shading.Get().words[sbase + 4];
-                chW = P.shading.Get().words[sbase + 5];
+                nW = P.shading.Get().words[sbase + 2];
+                tW = P.shading.Get().words[sbase + 3];
+            }
+            // The OPTIONAL lightmap stream (chartUv + chartId, 2 words per
+            // LIGHTMAPMED vertex — unlightmapped meshes carry NO stream):
+            // fetched through the per-draw additive delta
+            // (GfxDraw.misc2.w = lightmapBase - meshVertexBase; 0xFFFFFFFF
+            // = none), guarded ALSO by draw.misc.w (the chunk gate — the
+            // FS falls back to probe/grid ambient with it).
+            if (draw.misc.w != 0xFFFFFFFFu && draw.misc2.w != 0xFFFFFFFFu) {
+                uint lb = (vi + draw.misc2.w) * 2;
+                chUW = P.lightmap.Get().words[lb + 0];
+                chW  = P.lightmap.Get().words[lb + 1];
+            } else {
+                chUW = 0;
+                chW = 0xFFFFFFFFu;
             }
 
             MeshVert v;

@@ -221,6 +221,15 @@ struct ProbePremix {
 	std::vector<Holder<BindlessImageHandle>> mipStorageBindless;
 	std::vector<LogicalImageViewHandle> mipLogical; // graph barrier handles
 	std::vector<uint32_t> mipStorageIndex;         // push dstIndex values
+	// Graph barrier handle for the SAMPLED cube view (the material's
+	// single fetch through frame.probePremixIndex): the Main pass hints
+	// a fragment ShaderRead on it, which pairs with the per-mip storage
+	// writes below (CollectPassUsages keys sync on the resolved
+	// PHYSICAL image - both view families alias blendedImage) to build
+	// the mix-write -> Main-read edge + the General ->
+	// ShaderReadOnlyOptimal transition the bindless fetch alone never
+	// produces.
+	LogicalImageViewHandle cubeLogical;
 	uint32_t cubeBindlessIndex = UINT32_MAX;       // FrameUniforms field
 	uint32_t size = 0;
 	uint32_t mipCount = 0;
@@ -228,6 +237,13 @@ struct ProbePremix {
 	// Selection buffer (GPU-owned, rewritten by the weights pass each frame).
 	Holder<BufferHandle> selectionBuffer;
 	uint64_t selectionBda = 0;
+	// Graph barrier handle for the selection buffer. Minted ONCE in
+	// Ensure and reused by BOTH AppendPasses hints - re-minting per
+	// call allocated a fresh logical buffer per pass per frame
+	// (NewFrame clears passes_ only, never the logical pools: two live
+	// entries per frame until the 8192-entry pool cap, then
+	// AddExternalBuffer hands back empty handles).
+	LogicalBufferHandle selectionLogical;
 
 	Holder<ShaderModuleHandle> weightsModule;
 	Holder<ShaderModuleHandle> mixModule;

@@ -21,7 +21,7 @@
 // scratch — the placement-instanced precedent). The 256B scene push
 // stays intact for the fragment shader, so all existing fragment
 // shaders work unchanged.
-#define PLACEMENT_INSTANCED_PASS // the StaticVertexFormat input contract
+#define PLACEMENT_INSTANCED_PASS // the StaticLayout input contract
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "meshparticles.hlsli"

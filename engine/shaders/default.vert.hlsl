@@ -75,10 +75,10 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Lightmaps are deprecated: StaticVertexFormat no longer binds the
+    // Lightmaps are deprecated: StaticLayout no longer binds the
     // second UV channel (TexCoord1/ChartId would be locations 5/6), so
     // this VS declares neither (a bound-format/pipeline mismatch would
-    // fail validation). The gated-off LightmappedStaticVertexFormat
+    // fail validation). The gated-off StaticLightmappedLayout
     // keeps the option; a future chart-unpack VS pairs with it. The
     // lightmapUv output below is a constant zero and lmChunk stays the
     // unlightmapped sentinel, so the FS lightmap paths gate off.
@@ -157,7 +157,7 @@ VSOut mainVS(VSIn IN)
     // Lightmaps deprecated: no chart UV rides this format (see VSIn) and
     // direct draws are never lightmapped — the constant sentinel pair
     // (uv 0, chunk none) keeps the FS interpolant contract alive for the
-    // gated-off LightmappedStaticVertexFormat option. The chart tail
+    // gated-off StaticLightmappedLayout option. The chart tail
     // words in the push (hasXforms/chartOffset/lmXforms at 192..208) stay
     // declared for layout identity with the C++ mirror; nothing reads
     // them here.

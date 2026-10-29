@@ -205,7 +205,7 @@ bool ProbeBallVisual::AppendPass(RenderGraph& rg,
 		};
 		cmd.BindRenderPipeline(
 			program,
-			VertexFormat::TerrainVertexFormat,
+			VertexLayoutId::TerrainFull,
 			depth,
 			StencilSettings{},
 			BlendSettings::Opaque(),

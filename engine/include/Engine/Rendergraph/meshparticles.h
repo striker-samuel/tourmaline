@@ -350,10 +350,13 @@ struct MeshParticles {
 		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
 		read.barrierMasks.stageMask = PipelineStageBit_Compute;
 		rp.AddBufferHint(binsLogical, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
-		rp.AddBufferHint(indirectLogical, rw);
+		// WRITE: the shared placement_drawbuild kernel owns the COMPLETE
+		// command (the prototype table rides its push) — it overwrites
+		// every active command and never reads prior contents.
+		BufferSyncRequest write{};
+		write.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+		write.barrierMasks.stageMask = PipelineStageBit_Compute;
+		rp.AddBufferHint(indirectLogical, write);
 		return rp;
 	}
 
@@ -449,26 +452,29 @@ struct MeshParticles {
 		ctx.UploadDataToBuffer(binsBuffer, &zeroBins, sizeof(zeroBins),
 			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
 	}
-	// Seeds the immutable indirect halves ONCE per mesh table (the
-	// drawbuild pass rewrites instanceCount/firstInstance per frame).
-	// Pointer + count (cmdCount <= kMeshParticlesMaxBins).
-	bool SeedIndirect(ResourceManager& ctx,
-		const placement::PlacementIndirectCmd* seeds, uint32_t cmdCount) const {
+	// Registers the prototype draw-command table ONCE per mesh table.
+	// Pointer + count (cmdCount <= kMeshParticlesMaxBins). Pure
+	// METADATA: the table rides the draw-build push (the shared
+	// placement_drawbuild kernel owns the COMPLETE command — this
+	// object's caller captures the cache into its push fill); the old
+	// GPU upload seeded bytes the same-frame kernel rewrote (the
+	// stranded-upload-write class, see todo.txt) and is gone.
+	bool SeedIndirect(ResourceManager& /*ctx*/,
+		const placement::PlacementIndirectCmd* seeds, uint32_t cmdCount) {
 		assert(Valid());
 		if (!seeds || cmdCount == 0 || cmdCount > kMeshParticlesMaxBins)
 			return false;
-		std::vector<placement::PlacementIndirectCmd> slab(
-			kMeshParticlesMaxBins, placement::PlacementIndirectCmd{});
-		for (uint32_t i = 0; i < cmdCount; ++i) {
-			slab[i].indexCount = seeds[i].indexCount;
-			slab[i].firstIndex = seeds[i].firstIndex;
-			slab[i].vertexOffset = seeds[i].vertexOffset;
-		}
-		ctx.UploadDataToBuffer(indirectBuffer, slab.data(),
-			placement::kPlacementIndirectStride * kMeshParticlesMaxBins,
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+		for (uint32_t i = 0; i < cmdCount; ++i)
+			protoSeeds[i] = seeds[i];
+		protoSeedCount = cmdCount;
 		return true;
 	}
+	// The cached table (SeedIndirect): the caller's push fill reads this
+	// (RecordCullChain's placement twin documents the capture
+	// discipline — by value, at recording time).
+	placement::PlacementIndirectCmd
+		protoSeeds[kMeshParticlesMaxBins] = {};
+	uint32_t protoSeedCount = 0;
 };
 
 // ---- lifecycle (out-of-line bodies; header-only repo convention) --------

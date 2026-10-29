@@ -543,7 +543,7 @@ bool SerializeClusters(
 		return fail("no clusters to serialize");
 	// The trailing skin-section writer's static fallback (a null retained
 	// upload writes count 0).
-	static const std::vector<VertexSkin> kEmptySkinStream{};
+	static const std::vector<PackedSkinInfluences> kEmptySkinStream{};
 	for (size_t ci = 0; ci < clusters.size(); ++ci)
 		if (!clusters[ci])
 			return fail("null cluster #" + std::to_string(ci));
@@ -651,37 +651,61 @@ bool SerializeClusters(
 			PutF32(blob, xf.z);
 			PutF32(blob, xf.w);
 		}
-		// Payload: PACKED SoA STREAMS (v4) — the exact GPU heap layout
-		// (VertexPos[] + VertexShading[] + u32[]), one layout marker +
+		// Payload: PACKED SoA STREAMS (v5) — the exact GPU heap layout
+		// (PackedVertexPosition[] + PackedVertexShading[16B] +
+		// PackedVertexLightmap[8B, OPTIONAL] + u32[]), one layout marker +
 		// blob-relative offsets. Stored UNCOMPRESSED (AddBlob flag below)
 		// so the payload bytes are direct pak-image subspans and the
 		// loader stages them with pure offset math (no AoS parse, no
 		// per-vertex conversion, BulkCopyBuffer content = the pak image).
-		static_assert(sizeof(VertexPos) == 12, "VertexPos layout changed");
-		static_assert(sizeof(VertexShading) == 24, "VertexShading layout changed");
+		// Marker 2 = the split lightmap stream (the 16-byte shading
+		// repack); marker-1 blobs (the interleaved 24-byte shading)
+		// fail closed on load — recook from zero per the no-conversion
+		// policy.
+		static_assert(sizeof(PackedVertexPosition) == 12, "PackedVertexPosition layout changed");
+		static_assert(sizeof(PackedVertexShading) == 16, "PackedVertexShading layout changed");
+		static_assert(sizeof(PackedVertexLightmap) == 8, "PackedVertexLightmap layout changed");
 		static_assert(sizeof(uint32_t) == 4, "index stream layout changed");
-		std::vector<VertexPos> positions(upload->vertices.size());
-		std::vector<VertexShading> shading(upload->vertices.size());
-		for (size_t v = 0; v < upload->vertices.size(); ++v)
-			PackStaticVertex(upload->vertices[v], positions[v], shading[v]);
-		PutU32(blob, 1u); // layout: 1 = packed SoA (v4; v1-v3 blobs have no marker)
-		// Align the stream start PAST the three u64 offsets still to be
-		// written below (+24) — blob.size() here is header + marker only.
-		const uint64_t posOff = AlignUp16(blob.size() + 24);
+		std::vector<PackedVertexPosition> positions(upload->vertices.size());
+		std::vector<PackedVertexShading> shading(upload->vertices.size());
+		std::vector<PackedVertexLightmap> lightmap(upload->vertices.size());
+		bool charted = false;
+		for (size_t v = 0; v < upload->vertices.size(); ++v) {
+			PackStaticVertex(upload->vertices[v], positions[v],
+				shading[v], lightmap[v]);
+			if (upload->vertices[v].chartId != 0xFFFFFFFFu)
+				charted = true;
+		}
+		PutU32(blob, 2u); // layout: 2 = split lightmap stream (v5)
+		// Align the stream start PAST the FOUR u64 offsets still to be
+		// written below (+32) — blob.size() here is header + marker only.
+		const uint64_t posOff = AlignUp16(blob.size() + 32);
 		PutU64(blob, posOff);
-		const uint64_t shadeOff = posOff + positions.size() * sizeof(VertexPos);
+		const uint64_t shadeOff = posOff + positions.size() * sizeof(PackedVertexPosition);
 		PutU64(blob, shadeOff);
-		const uint64_t idxOff = shadeOff + shading.size() * sizeof(VertexShading);
+		// The OPTIONAL lightmap stream: its section exists only for
+		// charted meshes (lmOff != 0); uncharted meshes store 0 and the
+		// loader skips the lightmap carve entirely.
+		const uint64_t lmOff = charted
+			? shadeOff + shading.size() * sizeof(PackedVertexShading)
+			: 0;
+		PutU64(blob, lmOff);
+		const uint64_t idxOff = (charted
+			? lmOff : shadeOff + shading.size() * sizeof(PackedVertexShading));
 		PutU64(blob, idxOff);
 		{
 			const size_t padA = size_t(posOff) - blob.size();
 			blob.insert(blob.end(), padA, 0);
 			blob.insert(blob.end(),
 				reinterpret_cast<const uint8_t*>(positions.data()),
-				reinterpret_cast<const uint8_t*>(positions.data()) + positions.size() * sizeof(VertexPos));
+				reinterpret_cast<const uint8_t*>(positions.data()) + positions.size() * sizeof(PackedVertexPosition));
 			blob.insert(blob.end(),
 				reinterpret_cast<const uint8_t*>(shading.data()),
-				reinterpret_cast<const uint8_t*>(shading.data()) + shading.size() * sizeof(VertexShading));
+				reinterpret_cast<const uint8_t*>(shading.data()) + shading.size() * sizeof(PackedVertexShading));
+			if (charted)
+				blob.insert(blob.end(),
+					reinterpret_cast<const uint8_t*>(lightmap.data()),
+					reinterpret_cast<const uint8_t*>(lightmap.data()) + lightmap.size() * sizeof(PackedVertexLightmap));
 			blob.insert(blob.end(),
 				reinterpret_cast<const uint8_t*>(upload->indices.data()),
 				reinterpret_cast<const uint8_t*>(upload->indices.data()) +
@@ -716,7 +740,7 @@ bool SerializeClusters(
 			}
 		}
 		// Trailing skin-stream section (the Northlight data path): u32
-		// count + count * 8 raw VertexSkin bytes (mesh.h binding 2: RGBA8
+		// count + count * 8 raw PackedSkinInfluences bytes (mesh.h binding 2: RGBA8
 		// joint ids + RGBA8 weights, top-4 normalized). ALWAYS written
 		// (possibly count 0) so the layout is uniform; the LOAD side
 		// accepts an absent section (pre-skin paks) as a static mesh.
@@ -724,14 +748,14 @@ bool SerializeClusters(
 		// fills it - GltfToSceneImporter::BuildSkinData).
 		{
 			const StaticMeshUpload* up = cluster.GetRetainedUpload(h);
-			const std::vector<VertexSkin>& skin =
+			const std::vector<PackedSkinInfluences>& skin =
 				up ? up->skin : kEmptySkinStream;
 			PutU32(blob, static_cast<uint32_t>(skin.size()));
 			if (!skin.empty())
 				blob.insert(blob.end(),
 					reinterpret_cast<const uint8_t*>(skin.data()),
 					reinterpret_cast<const uint8_t*>(skin.data())
-						+ skin.size() * sizeof(VertexSkin));
+						+ skin.size() * sizeof(PackedSkinInfluences));
 		}
 
 		// v4 fast-load layout: packed-SoA mesh streams stored uncompressed
@@ -1249,7 +1273,7 @@ bool SerializeClusters(
 		// written (possibly hasSkeleton 0) so the layout is uniform; the
 		// LOAD side accepts an absent section (pre-skin paks) as no
 		// skeleton. The Skeleton's joint table is what the per-mesh
-		// VertexSkin streams (the mesh blob's trailing skin section)
+		// PackedSkinInfluences streams (the mesh blob's trailing skin section)
 		// index.
 		{
 			PutU32(blob, cluster.hasSkeleton ? 1u : 0u);
@@ -1370,7 +1394,7 @@ struct SceneLinkMaps {
 // handles; without (ListPakScenes), only structure + names come out.
 // skeletonOut/hasSkeletonOut (v14, appended last so existing callers keep
 // compiling): the trailing CLUSTER-SKELETON section (the joint table the
-// per-mesh VertexSkin streams index; the writer always writes it). Null =
+// per-mesh PackedSkinInfluences streams index; the writer always writes it). Null =
 // skip (structure-only callers). An ABSENT section (a pre-skin pak) leaves
 // *hasSkeletonOut false.
 bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
@@ -2167,7 +2191,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		std::vector<glm::vec4> lmXforms;
 		LodInfo lod;
 		CookedMeshlets meshlets;
-		std::vector<VertexSkin> skin;
+		std::vector<PackedSkinInfluences> skin;
 	};
 	std::vector<Cluster::StaticMeshDirectSource> directs;
 	std::vector<MeshMeta> meshMetas;
@@ -2225,38 +2249,48 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		}
 		if (!c.ok)
 			return fail("truncated mesh metadata: " + e->path);
-		// Packed-SoA payload: the exact GPU heap streams (VertexPos[] +
-		// VertexShading[] + u32[]) addressed by blob-relative offsets. NO
-		// vertices are materialized here — the upload phase passes the
-		// offsets straight to UploadStaticMeshesDirect (pure offset math
-		// into the pak image). Strict: a blob without the layout marker is
-		// a stale pak — hard fail (magic-gated, recook from zero).
+		// Packed-SoA payload: the exact GPU heap streams (PackedVertexPosition[] +
+		// PackedVertexShading[] + optional PackedVertexLightmap[] + u32[])
+		// addressed by blob-relative offsets. NO vertices are materialized
+		// here — the upload phase passes the offsets straight to
+		// UploadStaticMeshesDirect (pure offset math into the pak image).
+		// Strict: a blob without a KNOWN layout marker is a stale pak —
+		// hard fail (magic-gated, recook from zero; marker 1 = the old
+		// interleaved 24-byte shading, marker 2 = the split lightmap
+		// stream).
 		const uint32_t layout = c.u32();
-		if (!c.ok || layout != 1u)
+		if (!c.ok || layout != 2u)
 			return fail("unsupported mesh blob layout (stale pak - "
 				"recook from zero): " + e->path);
 		const uint64_t posOff = c.u64();
 		const uint64_t shadeOff = c.u64();
+		const uint64_t lmOff = c.u64();
 		const uint64_t idxOff = c.u64();
+		if (!c.ok)
+			return fail("truncated mesh payload header: " + e->path);
 		// Direct addressing: the streams must be pak-image subspans —
 		// the cooker stores mesh blobs uncompressed.
 		if (e->flags & PakEntryFlag_Lz4)
 			return fail("mesh blob compressed (recook from zero): "
 				+ e->path);
 		const size_t posBytes =
-			static_cast<size_t>(vertexCount) * sizeof(VertexPos);
+			static_cast<size_t>(vertexCount) * sizeof(PackedVertexPosition);
 		const size_t shadeBytes =
-			static_cast<size_t>(vertexCount) * sizeof(VertexShading);
+			static_cast<size_t>(vertexCount) * sizeof(PackedVertexShading);
+		const size_t lmBytes = lmOff != 0
+			? static_cast<size_t>(vertexCount) * sizeof(PackedVertexLightmap)
+			: 0;
 		const size_t idxBytes =
 			static_cast<size_t>(indexCount) * sizeof(uint32_t);
 		if (posOff + posBytes > e->size || shadeOff + shadeBytes > e->size
-			|| idxOff + idxBytes > e->size)
+			|| lmOff + lmBytes > e->size || idxOff + idxBytes > e->size)
 			return fail("mesh stream ranges overrun blob: " + e->path);
 		// The meshlet trailer follows the index stream.
 		c.off = static_cast<size_t>(idxOff) + idxBytes;
 		directs.push_back(Cluster::StaticMeshDirectSource{
 			e->offset + posOff,
 			e->offset + shadeOff,
+			e->offset + lmOff,
 			e->offset + idxOff,
 			vertexCount,
 			indexCount,
@@ -2315,21 +2349,21 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		}
 		// Trailing skin-stream section (the Northlight data path; the
 		// writer ALWAYS writes it after the meshlet trailer): u32 count +
-		// count * 8 raw VertexSkin bytes. An ABSENT section (a pre-skin
+		// count * 8 raw PackedSkinInfluences bytes. An ABSENT section (a pre-skin
 		// pak, blob ends right after the meshlets) = a static mesh; a
 		// present section must end the blob exactly.
-		std::vector<VertexSkin> skin;
+		std::vector<PackedSkinInfluences> skin;
 		if (c.off < c.img.size()) {
 			const uint32_t skinCount = c.u32();
 			if (!c.ok || skinCount > 16 * 1024 * 1024
-				|| c.off + uint64_t(skinCount) * sizeof(VertexSkin)
+				|| c.off + uint64_t(skinCount) * sizeof(PackedSkinInfluences)
 					> c.img.size())
 				return fail("corrupt mesh skin section: " + e->path);
 			skin.assign(
-				reinterpret_cast<const VertexSkin*>(c.img.data() + c.off),
-				reinterpret_cast<const VertexSkin*>(c.img.data() + c.off)
+				reinterpret_cast<const PackedSkinInfluences*>(c.img.data() + c.off),
+				reinterpret_cast<const PackedSkinInfluences*>(c.img.data() + c.off)
 					+ skinCount);
-			c.off += size_t(skinCount) * sizeof(VertexSkin);
+			c.off += size_t(skinCount) * sizeof(PackedSkinInfluences);
 			if (c.off != c.img.size())
 				return fail("mesh skin section does not end the blob: "
 					+ e->path);
@@ -2551,7 +2585,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			std::cerr << "DeserializeCluster: scene[" << sceneIndex
 				<< "] '" << sceneName << "'\n";
 		// The skeleton (the knight's joint table + inverse binds) landed
-		// on the cluster - the per-mesh VertexSkin streams (the mesh
+		// on the cluster - the per-mesh PackedSkinInfluences streams (the mesh
 		// blobs' trailing sections, loaded above into
 		// SetMeshSkinStream) index it. The palette build
 		// (touranim::BuildSkinPalette) evaluates it per frame.

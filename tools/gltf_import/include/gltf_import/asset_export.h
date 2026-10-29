@@ -170,7 +170,7 @@ bool SaveTextureAsset(const std::filesystem::path& path,
 // Everything the world build needs: the hierarchy (RAW locals as the glTF
 // authored them — the coordFix basis rides the scene root at load, same
 // contract as the live import), the packed SoA geometry blobs (the GPU
-// heap layout: VertexPos[] + VertexShading[] + u32[]), and the per-node
+// heap layout: PackedVertexPosition[] + PackedVertexShading[] + u32[]), and the per-node
 // bindings: geometry instances (each with its MATERIAL ASSET GUID) +
 // light/camera definitions.
 struct MeshAsset {
@@ -200,8 +200,13 @@ struct MeshAsset {
 	};
 	std::vector<CameraDef> cameras;
 	struct Geometry {
-		std::vector<smvk::VertexPos> positions;
-		std::vector<smvk::VertexShading> shading;
+		std::vector<smvk::PackedVertexPosition> positions;
+		std::vector<smvk::PackedVertexShading> shading;
+		// OPTIONAL lightmap stream parallel to positions/shading — the
+		// split-packed SoA (the engine blob's marker 2): chartUv/chartId
+		// words for every vertex; empty when the geometry is uncharted
+		// (lightmaps deprecated — usually empty).
+		std::vector<smvk::PackedVertexLightmap> lightmap;
 		std::vector<uint32_t> indices;
 		std::vector<smvk::Surface> surfaces;
 		glm::vec3 aabbMin{ 0.0f };
@@ -222,12 +227,12 @@ struct MeshAsset {
 		uint32_t lmChunk = 0xFFFFFFFFu;
 		std::vector<glm::vec4> lmChartXforms;
 		// glTF skin stream (the Northlight data path), parallel to
-		// positions/shading: the packed VertexSkin per vertex (mesh.h
+		// positions/shading: the packed PackedSkinInfluences per vertex (mesh.h
 		// binding 2). The BASE blobs carry it (the import post pass
 		// filled the retained upload); LOD siblings stay static for now
 		// (the runtime skinning slice owns per-LOD skin propagation).
 		// Empty = a static mesh.
-		std::vector<smvk::VertexSkin> skin;
+		std::vector<smvk::PackedSkinInfluences> skin;
 	};
 	std::vector<Geometry> geometry;
 	// The cluster's skeletal skin (the FIRST glTF skin won; the import
