@@ -845,6 +845,16 @@ uint decalCount;                                         // 776 0 = decals off
     float4 fogShadowRect;                                          // 2128 xy origin + zw size
     float fogShadowBias;                                           // 2144 NDC depth bias
     uint fogShadowEnabled;                                         // 2148
+    // ---- Sun contact shadows (Engine/Rendergraph/contact_shadow.h,
+    // the pre-Main depth raymarch): the visibility texture's bindless
+    // index, sampled by the lit body's sun block
+    // (default_lit_body.hlsli, min'd with the CSM/EVSM factor).
+    // UINT32_MAX = the pass didn't run this frame (the publish gate
+    // mirrors the emission gate exactly - the probe-premix lesson).
+    // APPEND-ONLY into the old 8-byte tail pad: fields end 2156, the
+    // remaining 4 pad to the unchanged 2160 total - NO size churn, no
+    // later offset moves. ----
+    uint contactShadowIndex;                                        // 2152 (bindless visibility)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
@@ -875,7 +885,7 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_LIT_SPECULAR)]] const uint litSpecular = 1;   // 0=Lambert-only far shading, 1=full GGX specular
 [[vk::constant_id(SPEC_LIT_NORMALMAP)]] const uint litNormalMap = 1; // 0=geometric normal, 1=tangent-space normal fetch
 
-#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(VOLUMETRIC_COMPOSITE_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(SHADOW_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS) && !defined(GFXSKINBOUNDS_PASS) && !defined(GFXCONEDEBUG_PASS) && !defined(TERRAIN_NOPC) && !defined(PROBEPREMIX_WEIGHTS_PASS) && !defined(PROBEPREMIX_MIX_PASS) && !defined(GFXSKINNING_PASS) && !defined(MATBALL_PASS) && !defined(SSGI_DIFFUSE_PASS) && !defined(GODRAYS_PASS)
+#if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(VOLUMETRIC_COMPOSITE_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(SHADOW_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS) && !defined(GFXSKINBOUNDS_PASS) && !defined(GFXSKINNING_PASS) && !defined(GFXCONEDEBUG_PASS) && !defined(TERRAIN_NOPC) && !defined(PROBEPREMIX_WEIGHTS_PASS) && !defined(PROBEPREMIX_MIX_PASS) && !defined(GFXSKINNING_PASS) && !defined(MATBALL_PASS) && !defined(SSGI_DIFFUSE_PASS) && !defined(GODRAYS_PASS) && !defined(CONTACT_SHADOW_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
 // constants. Passes with their own push layout (FORWARDPLUS/HZB/DS/...)
 // leave it undefined so headers can guard pc-dependent helpers (see

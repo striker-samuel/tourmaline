@@ -77,6 +77,9 @@ int main() {
 	SetVar("TOURMALINE_BLOOM_THRESHOLD", "400");
 	SetVar("TOURMALINE_AUTO_EXPOSURE", "0");
 	SetVar("TOURMALINE_CUBEMAP", "0");
+	SetVar("TOURMALINE_CONTACT_SHADOWS", "0");
+	SetVar("TOURMALINE_CONTACT_SHADOWS_STEPS", "24");
+	SetVar("TOURMALINE_CONTACT_SHADOWS_RES", "1");
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(c.aa.has_value() && *c.aa == engine::AaPin::Msaa2x,
@@ -99,6 +102,12 @@ int main() {
 		Check(c.autoExposure.has_value() && !*c.autoExposure,
 			"runconfig.parse-autoexp-pin");
 		Check(c.cubemap.has_value() && !*c.cubemap, "runconfig.parse-cubemap-kill");
+		Check(c.contactShadows.has_value() && *c.contactShadows == engine::OnOffPin::Off,
+			"runconfig.parse-contact-pin");
+		Check(c.contactShadowSteps.has_value() && *c.contactShadowSteps == 24,
+			"runconfig.parse-contact-steps");
+		Check(c.contactShadowRes.has_value() && *c.contactShadowRes == 1,
+			"runconfig.parse-contact-res");
 	}
 	for (const char* n : kTouched)
 		UnsetVar(n);
@@ -109,6 +118,27 @@ int main() {
 	UnsetVar("TOURMALINE_BLOOM_THRESHOLD");
 	UnsetVar("TOURMALINE_AUTO_EXPOSURE");
 	UnsetVar("TOURMALINE_CUBEMAP");
+
+	// Contact-shadow pins: bad/out-of-range values warn and leave the
+	// authored scene winning (RES only takes 1 full | 2 half).
+	SetVar("TOURMALINE_CONTACT_SHADOWS", "maybe");
+	SetVar("TOURMALINE_CONTACT_SHADOWS_STEPS", "99");
+	SetVar("TOURMALINE_CONTACT_SHADOWS_DIST", "0.001");
+	SetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS", "5.0");
+	SetVar("TOURMALINE_CONTACT_SHADOWS_RES", "3");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(!c.contactShadows.has_value(), "runconfig.invalid-contact-unset");
+		Check(!c.contactShadowSteps.has_value(), "runconfig.invalid-contact-steps-unset");
+		Check(!c.contactShadowDist.has_value(), "runconfig.invalid-contact-dist-unset");
+		Check(!c.contactShadowThickness.has_value(), "runconfig.invalid-contact-thickness-unset");
+		Check(!c.contactShadowRes.has_value(), "runconfig.invalid-contact-res-unset");
+	}
+	UnsetVar("TOURMALINE_CONTACT_SHADOWS");
+	UnsetVar("TOURMALINE_CONTACT_SHADOWS_STEPS");
+	UnsetVar("TOURMALINE_CONTACT_SHADOWS_DIST");
+	UnsetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS");
+	UnsetVar("TOURMALINE_CONTACT_SHADOWS_RES");
 
 	// Invalid pins warn (stderr) and leave the authored scene winning.
 	SetVar("TOURMALINE_AA", "bogus");

@@ -384,6 +384,46 @@ RunConfig RunConfig::Parse() {
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_PROBE_PREMIX (want 1|on|0|off): %s\n", v);
 	}
+	// Sun contact shadows (contact_shadow.h - the pre-Main depth
+	// raymarch toward the sun, min'd with the CSM/EVSM factor in the
+	// lit body). The on/off + steps + full/half-resolution pins: the
+	// headless A/B family for the tuning table (distance/thickness/bias
+	// stay panel sliders).
+	if ((v = Get("TOURMALINE_CONTACT_SHADOWS")) != nullptr) {
+		bool on = false;
+		if (IsOnOff(Trimmed(v), on))
+			c.contactShadows = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_CONTACT_SHADOWS (want 1|on|0|off): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_CONTACT_SHADOWS_STEPS")) != nullptr) {
+		const int css = std::atoi(v);
+		if (css >= 4 && css <= 32)
+			c.contactShadowSteps = css;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_CONTACT_SHADOWS_STEPS out of range (4..32): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_CONTACT_SHADOWS_DIST")) != nullptr) {
+		const float csd = std::atof(v);
+		if (csd >= 0.05f && csd <= 2.0f)
+			c.contactShadowDist = csd;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_CONTACT_SHADOWS_DIST out of range (0.05..2): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_CONTACT_SHADOWS_THICKNESS")) != nullptr) {
+		const float cst = std::atof(v);
+		if (cst >= 0.005f && cst <= 0.2f)
+			c.contactShadowThickness = cst;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_CONTACT_SHADOWS_THICKNESS out of range (0.005..0.2): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_CONTACT_SHADOWS_RES")) != nullptr) {
+		const int csr = std::atoi(v);
+		if (csr == 1 || csr == 2)
+			c.contactShadowRes = csr;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_CONTACT_SHADOWS_RES (want 1 full | 2 half): %s\n", v);
+	}
 	// JHFAA-style shading-normal validity correction (shading_normal_fix.hlsli;
 	// docs/jhfaa_normal_fix.md). Default OFF while under evaluation — the pin
 	// exists so headless captures A/B the baseline against the corrected image.
@@ -544,6 +584,16 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " LIGHTMAP=%s", onOffStr(*lightmap));
 	if (probePremix)
 		std::fprintf(stderr, " PROBE_PREMIX=%s", onOffStr(*probePremix));
+	if (contactShadows)
+		std::fprintf(stderr, " CONTACT_SHADOWS=%s", onOffStr(*contactShadows));
+	if (contactShadowSteps)
+		std::fprintf(stderr, " CONTACT_SHADOWS_STEPS=%d", *contactShadowSteps);
+	if (contactShadowDist)
+		std::fprintf(stderr, " CONTACT_SHADOWS_DIST=%g", *contactShadowDist);
+	if (contactShadowThickness)
+		std::fprintf(stderr, " CONTACT_SHADOWS_THICKNESS=%g", *contactShadowThickness);
+	if (contactShadowRes)
+		std::fprintf(stderr, " CONTACT_SHADOWS_RES=%d", *contactShadowRes);
 	if (normalFix)
 		std::fprintf(stderr, " NORMAL_FIX=%s", onOffStr(*normalFix));
 	if (normalFixDebug)
@@ -601,7 +651,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_DS_VIZ", "TOURMALINE_CAPTURE", "TOURMALINE_DECALS",
 		"TOURMALINE_DECAL_AUTOSPLAT", "TOURMALINE_EVSM", "TOURMALINE_EVSM_SOFT",
 		"TOURMALINE_SDSM", "TOURMALINE_EVSM_DUMP", "TOURMALINE_SSR_DUMP",
-		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
+		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_CONTACT_SHADOWS", "TOURMALINE_CONTACT_SHADOWS_STEPS", "TOURMALINE_CONTACT_SHADOWS_DIST", "TOURMALINE_CONTACT_SHADOWS_THICKNESS", "TOURMALINE_CONTACT_SHADOWS_RES", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
 		"TOURMALINE_GI", "TOURMALINE_GI_DEBUG", "TOURMALINE_GI_DEBUG_LEVEL",
 		"TOURMALINE_GI_INTENSITY",
 		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",

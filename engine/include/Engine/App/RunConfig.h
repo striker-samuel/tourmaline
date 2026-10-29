@@ -123,6 +123,24 @@ struct RunConfig {
 	// shaft structure pixel-visible in A/B diffs even against blown
 	// sky).
 	std::optional<float> godraysIntensity;
+	// ---- sun contact shadows (the pre-Main depth raymarch, ----
+	// ---- contact_shadow.h; the contact-hardening detail the CSM ----
+	// ---- texel size cannot resolve) ----
+	// contactShadows: 1|on|0|off (unset = default wins)
+	std::optional<OnOffPin> contactShadows;
+	// contactShadowSteps: 4..32 march samples (unset = default wins)
+	std::optional<int> contactShadowSteps;
+	// contactShadowDist: 0.05..2 m march length (unset = default wins) -
+	// the panel slider's headless twin, so scene-scale tuning can be
+	// A/B'd in captures without the UI.
+	std::optional<float> contactShadowDist;
+	// contactShadowThickness: 0.005..0.2 m thin-occluder acceptance
+	// band (unset = default wins) - same reasoning as _DIST.
+	std::optional<float> contactShadowThickness;
+	// contactShadowRes: 1 = full | 2 = half visibility resolution
+	// (unset = default wins) - the A/B the tuning plan asks to
+	// benchmark rather than assume.
+	std::optional<int> contactShadowRes;
 	// fogCsm: 0|off = no fog sun shadowing, 1|on|csm (default) = the
 	// march's per-segment CSM tap, 2|coarse = the dedicated volumetric
 	// shadow tile (the marked-large-occluder pass; works under EVSM).

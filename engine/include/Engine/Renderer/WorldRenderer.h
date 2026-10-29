@@ -83,6 +83,7 @@
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Rendergraph/godrays.h>
+#include <Engine/Rendergraph/contact_shadow.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/App/Element.h>
@@ -107,6 +108,7 @@ struct WorldRendererConfig {
 	bool dof = true;                // depth-of-field (low single-pass / HQ bokeh)
 	bool ssr = true;                // screen-space reflections (depth-reconstructed)
 	bool volumetric = true;         // raymarched GI-probe volumetric fog (HDR composite)
+	bool contactShadows = true;     // sun contact shadows (pre-Main depth raymarch, min'd with the CSM in the lit body)
 	bool ssao = true;               // AO master switch (SSAO/GTAO/SAO per AoMode)
 	bool ssgiDiffuse = true;        // diffuse screen-space GI master switch (the runtime
 	                                 // enable is m_ssgiDiffuseEnabled — MSAA scenes gate
@@ -136,6 +138,7 @@ struct WorldRendererConfig {
 		c.dof = false;
 		c.ssr = false;
 		c.volumetric = false;
+		c.contactShadows = false;
 		c.ssao = false;
 		c.ssgiDiffuse = false;
 		c.bloom = false;
@@ -859,6 +862,17 @@ struct FrameUniforms
 	glm::vec4 fogShadowRect{};       // 2128
 	float fogShadowBias = 0.0f;      // 2144
 	uint32_t fogShadowEnabled = 0;   // 2148
+	// ---- Sun contact shadows (Engine/Rendergraph/contact_shadow.h,
+	// the pre-Main depth raymarch): the visibility texture's bindless
+	// index, sampled by the lit body's sun block
+	// (default_lit_body.hlsli, min'd with the CSM/EVSM factor).
+	// UINT32_MAX = the pass didn't run this frame (the publish gate
+	// mirrors the emission gate exactly - the probe-premix lesson: the
+	// two disagreeing means Main samples a stale/unwritten texture).
+	// APPEND-ONLY into the old 8-byte tail pad: fields end at 2156, the
+	// remaining 4 bytes pad to the UNCHANGED 2160 total - zero size
+	// churn, no later offset moves, HLSL mirror at the same offset. ----
+	uint32_t contactShadowIndex = UINT32_MAX; // 2152 (bindless visibility)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -920,7 +934,8 @@ static_assert(offsetof(FrameUniforms, fogShadowVP) == 2064, "fogShadowVP offset:
 static_assert(offsetof(FrameUniforms, fogShadowRect) == 2128, "fogShadowRect offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, fogShadowBias) == 2144, "fogShadowBias offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148, "fogShadowEnabled offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 2160, "FrameUniforms size: HLSL mirror (2152 of fields + the 16-align tail pad)");
+static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152, "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
+static_assert(sizeof(FrameUniforms) == 2160, "FrameUniforms size: HLSL mirror (2156 of fields + the 16-align tail pad - the contactShadow append lands in the old pad, zero size churn)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -1149,6 +1164,7 @@ struct ViewportResources {
 	smvk::Ssgi ssgi; // SSGI post chain: shared MAX-HZB + AO raw/blur/compose + Main's aoTerm MRT targets
 	smvk::ScreenSpaceDiffuseGi ssgiDiffuse; // diffuse SSGI chain: half-res cosine trace + blur/temporal + the ambient-replacement compose (Engine/Rendergraph/ssgi_diffuse.h)
 	smvk::ScreenSpaceGodRays godrays; // Dishonored-style screen-space sun occlusion + radial scattering (quarter/1-16/full res chain, Engine/Rendergraph/godrays.h) - ADDITIVE over the CSM fog shadowing, and the fog sun-occlusion FALLBACK under EVSM
+	smvk::SunContactShadows contactShadows; // the pre-Main depth raymarch toward the sun + the R32F visibility target (Engine/Rendergraph/contact_shadow.h) - the lit body min()s it with the CSM factor
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
@@ -2379,6 +2395,20 @@ public:
 			&& m_viewportResources.evsmSpot.Valid()
 			&& m_viewportResources.evsmSpot.ShadersValid();
 	}
+	// Sun contact shadows: THE shared frame-uniform-publish + pass-emission
+	// gate. Both sites must call this same predicate - the probe-premix
+	// lesson: if the publish (frame.contactShadowIndex) and the emission
+	// disagree, Main's lit body samples a stale or never-written
+	// visibility texture. frameUniformsAddress is asserted at AddPass
+	// instead (it is computed after the uniform fill).
+	bool ContactShadowsActive() const {
+		return m_passes.contactShadows
+			&& m_contactShadowsEnabled
+			&& m_viewportResources.contactShadows.Valid()
+			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
+			&& !m_viewportResources.renderDepth.logicalView.empty()
+			&& !DebugVisualizationActive();
+	}
 	// Direct-path EVSM moment recording: depth-only 2x MSAA through the
 	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) —
 	// the per-sample resolve (evsm_resolve.cs.hlsl) reconstructs the
@@ -3006,6 +3036,18 @@ public:
 	float m_godraysDecay = 0.97f; // the per-sample illumination decay
 	float m_godraysGlowOuter = 0.12f; // the mask's sun glow radius (uv)
 	float m_godraysReach = 1.0f; // the march length (fraction of the sun distance)
+	// ---- (3) Sun contact shadows (contact_shadow.h - the pre-Main
+	// depth raymarch toward the sun, min'd with the CSM/EVSM factor in
+	// the lit body). The initial tuning table's values: 0.35 m / 12
+	// steps / 0.03 m thickness / 0.01 m bias / HALF resolution - every
+	// knob is live (the panel sliders + the TOURMALINE_CONTACT_SHADOWS*
+	// env pins), these are starting points, not authority. ----
+	bool m_contactShadowsEnabled = true;
+	float m_contactShadowMaxDistance = 0.35f; // march length (m)
+	float m_contactShadowThickness = 0.03f; // thin-occluder acceptance band (m)
+	float m_contactShadowStartBias = 0.01f; // ray start + self-hit floor (m)
+	int m_contactShadowSteps = 12; // march samples 4..32
+	int m_contactShadowResolutionDivisor = 2; // 1 full | 2 half (benchmark both)
 	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
 	// virtual world volume system). World-space (NOT viewport-scoped):
 	// follows the frame's camera (PrepareFrame's interest point),

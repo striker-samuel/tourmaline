@@ -802,6 +802,19 @@ namespace engine {
 			m_godraysEnabled = (*pins.godrays == OnOffPin::On);
 		if (pins.godraysIntensity.has_value())
 			m_godraysIntensity = *pins.godraysIntensity;
+		// Sun contact shadows (the pre-Main depth raymarch): the on/off
+		// + the two A/B pins (steps, full/half resolution) for headless
+		// capture benches - the same layering as the god rays pair.
+		if (pins.contactShadows.has_value())
+			m_contactShadowsEnabled = (*pins.contactShadows == OnOffPin::On);
+		if (pins.contactShadowSteps.has_value())
+			m_contactShadowSteps = *pins.contactShadowSteps;
+		if (pins.contactShadowDist.has_value())
+			m_contactShadowMaxDistance = *pins.contactShadowDist;
+		if (pins.contactShadowThickness.has_value())
+			m_contactShadowThickness = *pins.contactShadowThickness;
+		if (pins.contactShadowRes.has_value())
+			m_contactShadowResolutionDivisor = *pins.contactShadowRes;
 		// The fog sun-shadow mode (0 off / 1 CSM / 2 the coarse tile).
 		if (pins.fogCsm.has_value())
 			m_fogSunShadowMode = std::clamp(*pins.fogCsm, 0, 2);
@@ -2747,6 +2760,7 @@ namespace engine {
 		m_viewportResources.ssgiDiffuse.Destroy(*m_rendergraph);
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.godrays.Destroy(*m_rendergraph);
+		m_viewportResources.contactShadows.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
@@ -4556,6 +4570,17 @@ namespace engine {
 			}
 		}
 
+		// Sun contact shadows (Engine/Rendergraph/contact_shadow.h):
+		// the lit body's bindless fetch index. THE gate is
+		// ContactShadowsActive() - the SAME predicate the pass-emission
+		// site calls (the probe-premix lesson: a publish the emission
+		// disagrees with makes Main sample a stale/unwritten
+		// visibility). UINT32_MAX publishes whenever the pass will not
+		// run this frame; the lit body's index guard turns that into a
+		// no-op.
+		data.contactShadowIndex = ContactShadowsActive()
+			? m_viewportResources.contactShadows.OutputIndex()
+			: UINT32_MAX;
 
 		m_context->UploadDataToBuffer(
 			m_resources.frameUniforms,
@@ -9056,6 +9081,24 @@ namespace engine {
 				m_viewportResources.godrays.Ensure(*m_context, *m_rendergraph,
 					renderExtent, frameGrDesc);
 			}
+			{
+				// Sun contact shadows: the same Ensure-every-frame pattern
+				// (extent/divisor drift recreates; the tuning knobs live-
+				// update through the desc at the emission site). Created
+				// unconditionally like the god-rays pair - the EMISSION
+				// gate (ContactShadowsActive) decides whether the pass
+				// runs and whether the frame uniform publishes the index.
+				smvk::ContactShadowDesc frameCsDesc{};
+				frameCsDesc.maxDistance = m_contactShadowMaxDistance;
+				frameCsDesc.thickness = m_contactShadowThickness;
+				frameCsDesc.startBias = m_contactShadowStartBias;
+				frameCsDesc.steps = (uint32_t)std::clamp(
+					m_contactShadowSteps, 4, 32);
+				frameCsDesc.resolutionDivisor = (m_contactShadowResolutionDivisor == 1)
+					? 1u : 2u;
+				m_viewportResources.contactShadows.Ensure(*m_context,
+					*m_rendergraph, renderExtent, frameCsDesc);
+			}
 			smvk::UiDesc frameUiDesc{};
 			frameUiDesc.format = LdrUnormSibling(fb);
 			m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, frameUiDesc);
@@ -11078,6 +11121,39 @@ namespace engine {
 		// particles pass.
 		// ---------------------------------------------------------------------
 
+		// ---------------------------------------------------------------------
+		// Sun contact shadows (Engine/Rendergraph/contact_shadow.h): the
+		// pre-Main depth raymarch toward the sun - the short-range sun
+		// occlusion the CSM texel size cannot resolve, min'd with the
+		// cascade/EVSM factor in default_lit_body.hlsli's sun block.
+		//
+		// PLACEMENT: here - AFTER the final opaque depth (prepass + HZB +
+		// filter + motion-vector legs are all done above; in 1x mode Main
+		// only READS renderDepth) and BEFORE AddPass("Main") whose lit
+		// body samples the visibility (frame.contactShadowIndex). The 1x
+		// prepass depth is read in BOTH MSAA modes - the motion-vector
+		// argument: MSAA Main writes its own transient 2x target,
+		// renderDepth is the same opaque scene. The gate is the SHARED
+		// ContactShadowsActive() (identical to the frame-uniform publish
+		// a few hundred lines above).
+		// ---------------------------------------------------------------------
+		const bool contactShadowsOn = ContactShadowsActive();
+		if (contactShadowsOn) {
+			smvk::ContactShadowDesc csDesc{};
+			csDesc.maxDistance = m_contactShadowMaxDistance;
+			csDesc.thickness = m_contactShadowThickness;
+			csDesc.startBias = m_contactShadowStartBias;
+			csDesc.steps = (uint32_t)std::clamp(m_contactShadowSteps, 4, 32);
+			csDesc.resolutionDivisor = (m_contactShadowResolutionDivisor == 1)
+				? 1u : 2u;
+			m_viewportResources.contactShadows.AddPass(*m_rendergraph,
+				m_viewportResources.renderDepth.logicalView,
+				m_viewportResources.renderDepth.bindlessIndex,
+				frameUniformsAddress,
+				pointSampler,
+				csDesc);
+		}
+
 		// useMsaa is hoisted above the fc fill (the stencil layer gate + the
 		// pane layer below + Main's attachments here all key on it).
 		std::vector<smvk::LogicalImageViewHandle> mainInputs;
@@ -11089,6 +11165,22 @@ namespace engine {
 			.SetOffset(0, 0)
 			.SetInputImages(mainInputs)
 			.SetExtent(renderExtent);
+		// Sun contact shadows: the paired READ half of the write->read
+		// edge (the probe-premix pattern). CollectPassUsages sees only
+		// attachments and explicit hints - Main's lit body fetches the
+		// visibility through the bindless array (frame.contactShadowIndex),
+		// invisible to it. Without this hint Main could sort and execute
+		// BEFORE this frame's raymarch and sample last frame's (or
+		// garbage) visibility; the hint pair also drives the
+		// General -> ShaderReadOnlyOptimal transition of the write.
+		if (contactShadowsOn) {
+			smvk::ImageSyncRequest csRead{};
+			csRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			csRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+			csRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+			mainPass.AddImageHint(
+				m_viewportResources.contactShadows.OutputLogical(), csRead);
+		}
 		// The GPU-written cone debug lines (vertex-attribute read by the
 		// overlay draw below): the vertex-stage read pairs with
 		// GfxConeDebug's compute write — the rendergraph's cross-stage
@@ -14224,6 +14316,25 @@ namespace engine {
 							};
 							ImGui::Combo("Blur mode", &m_ssrBlurMode, blurModes, 2);
 						}
+						// Sun contact shadows (contact_shadow.h): the
+						// pre-Main depth raymarch toward the sun, min'd
+						// with the CSM/EVSM factor in the lit body - the
+						// contact-hardening detail the cascades cannot
+						// resolve. The full/half resolution combo is the
+						// A/B the tuning plan asks to benchmark (half
+						// saves the tracing but can lose thin occluders,
+						// which are the effect's point).
+						ImGui::Checkbox("Sun contact shadows", &m_contactShadowsEnabled);
+						if (m_contactShadowsEnabled) {
+							ImGui::SliderFloat("Contact distance (m)", &m_contactShadowMaxDistance, 0.05f, 2.0f);
+							ImGui::SliderFloat("Contact thickness (m)", &m_contactShadowThickness, 0.005f, 0.2f);
+							ImGui::SliderFloat("Contact start bias (m)", &m_contactShadowStartBias, 0.0f, 0.05f);
+							ImGui::SliderInt("Contact steps", &m_contactShadowSteps, 4, 32);
+							const char* contactRes[2] = { "Full", "Half" };
+							int contactResIdx = (m_contactShadowResolutionDivisor == 1) ? 0 : 1;
+							if (ImGui::Combo("Contact resolution", &contactResIdx, contactRes, 2))
+								m_contactShadowResolutionDivisor = (contactResIdx == 0) ? 1 : 2;
+						}
 						// Diffuse screen-space GI (see ssgi_diffuse.h): one
 						// cosine-hemisphere bounce that REPLACES the diffuse
 						// ambient slice (never an additive stack over the
@@ -17038,6 +17149,73 @@ namespace engine {
 				else {
 					std::fprintf(stderr,
 						"[FogTileDump] download FAILED (TransferSrc missing on the atlas?)\n");
+				}
+			}
+		}
+		// TOURMALINE_CONTACT_SHADOWS_DUMP=<frame>: one-shot post-Execute
+		// download of the sun-contact VISIBILITY texture (the
+		// FOG_TILE_DUMP family: stats + an ASCII occlusion map - the
+		// ground-truth diagnostic for the effect's coverage). The target
+		// gets TransferSrc via DebugImageDumpArmed at creation. Sync
+		// downloads stall - debug runs only.
+		{
+			static const int csDumpFrame = [] {
+				const char* e = std::getenv("TOURMALINE_CONTACT_SHADOWS_DUMP");
+				return e ? std::atoi(e) : -1;
+			}();
+			static bool csDumpDone = false;
+			if (csDumpFrame >= 0 && !csDumpDone
+				&& (int)m_frameCounter >= csDumpFrame
+				&& m_viewportResources.contactShadows.Valid()) {
+				csDumpDone = true;
+				const auto& cs = m_viewportResources.contactShadows;
+				const uint32_t vw = cs.visExtent.width;
+				const uint32_t vh = cs.visExtent.height;
+				std::vector<float> px(size_t(vw) * vh);
+				// Last use this frame: Main's sampled read hint ->
+				// ShaderReadOnlyOptimal.
+				if (m_context->DownloadDataFromImage(cs.visibility.image,
+						smvk::ImageLayout::ShaderReadOnlyOptimal,
+						px.data(), px.size() * sizeof(float))) {
+					float mn = 1e30f, mx = -1e30f;
+					double sum = 0;
+					size_t lit = 0, occluded = 0, partial = 0;
+					for (float v : px) {
+						mn = (std::min)(mn, v);
+						mx = (std::max)(mx, v);
+						sum += v;
+						if (v >= 0.995f) ++lit;          // 1.0: lit/sky/untestable
+						else if (v <= 0.005f) ++occluded; // 0.0: a march hit
+						else ++partial;                   // (v1 writes binary)
+					}
+					const size_t total = px.size();
+					std::fprintf(stderr,
+						"[ContactShadowDump] %ux%u: min=%.3f max=%.3f mean=%.3f\n",
+						vw, vh, mn, mx, sum / (double)total);
+					std::fprintf(stderr,
+						"[ContactShadowDump] texels: lit=%zu (%.1f%%) occluded=%zu (%.3f%%) partial=%zu\n",
+						lit, 100.0 * (double)lit / (double)total,
+						occluded, 100.0 * (double)occluded / (double)total,
+						partial);
+					for (uint32_t ry = 0; ry < 16; ++ry) {
+						std::string row;
+						for (uint32_t rx = 0; rx < 32; ++rx) {
+							size_t hits = 0, n = 0;
+							for (uint32_t y = ry * vh / 16; y < (ry + 1) * vh / 16; ++y)
+								for (uint32_t x = rx * vw / 32; x < (rx + 1) * vw / 32; ++x) {
+									if (px[y * vw + x] <= 0.005f) ++hits;
+									++n;
+								}
+							const float c = n ? float(hits) / float(n) : 0.0f;
+							row += (c < 0.02f) ? '.'
+								: (c < 0.25f ? '-' : (c < 0.5f ? '+' : 'X'));
+						}
+						std::fprintf(stderr, "[ContactShadowDump] %s\n", row.c_str());
+					}
+				}
+				else {
+					std::fprintf(stderr,
+						"[ContactShadowDump] download FAILED (TransferSrc missing? arm the env at target creation)\n");
 				}
 			}
 		}

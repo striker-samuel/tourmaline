@@ -1021,6 +1021,26 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         //     shadow = GetShadowFactor(1, IN.worldPos, light);
     }
 
+    // Sun contact shadows (Engine/Rendergraph/contact_shadow.h - the
+    // pre-Main depth raymarch): short-range screen-space sun occlusion
+    // the CSM texel size cannot resolve, min'd with the cascade factor
+    // - NOT multiplied: both are partial-visibility estimates of the
+    // SAME light, a product would double-darken the penumbra overlap
+    // (the artistic-approximation union, not a physically exact one).
+    // frame.contactShadowIndex is the frame-uniform publish whose gate
+    // mirrors the emission gate exactly, so the tap never reads a
+    // stale/unwritten texture. Sampler 0 = linear (the EVSM moments'
+    // slot): the half-res target bilinearly upsamples, full-res is
+    // 1:1. Runs identically over the PCF and EVSM branches above.
+    if (frame.contactShadowIndex != 0xffffffffu)
+    {
+        float2 csUv = clipPos.xy * frame.invViewportSize;
+        float contactVisibility = textures[
+            NonUniformResourceIndex(frame.contactShadowIndex)]
+            .Sample(samplers[0], csUv).r;
+        shadow = min(shadow, saturate(contactVisibility));
+    }
+
     // Cook-Torrance BRDF
     float D = DistributionGGX(N, H, shadingRoughness);
     float G = GeometrySmith(N, V, L, shadingRoughness);

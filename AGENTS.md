@@ -111,6 +111,18 @@ $env:TOURMALINE_CAPTURE='48'
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
   forced off - uncapped immediate present; an explicit `--present <mode>`
   wins)
+- `TOURMALINE_CONTACT_SHADOWS=0|1` pins the sun contact shadows on/off
+  headless (contact_shadow.h - the pre-Main depth raymarch toward the
+  sun, min'd with the CSM/EVSM factor in the lit body; the panel
+  checkbox stays live). `TOURMALINE_CONTACT_SHADOWS_STEPS=<4..32>` pins
+  the march samples; `_DIST=<0.05..2>` the march length (m);
+  `_THICKNESS=<0.005..0.2>` the acceptance band (m); `_RES=1|2` the
+  visibility resolution (1 full, 2 half - the A/B to benchmark, half
+  saves tracing but can lose thin occluders). Defaults: 0.35 m /
+  0.03 m thickness / 0.01 m bias, 12 steps, half-res.
+  `TOURMALINE_CONTACT_SHADOWS_DUMP=<frame>` one-shot dumps the visibility
+  texture's stats + an ASCII occlusion map to stderr (the FOG_TILE_DUMP
+  discipline - sync download, debug runs only)
 
 ## Tests
 
