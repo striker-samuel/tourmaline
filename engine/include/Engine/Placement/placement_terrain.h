@@ -68,11 +68,26 @@ struct TerrainGroupData {
 void TerrainTileRange(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 	uint32_t& x0, uint32_t& x1, uint32_t& z0, uint32_t& z1);
 
-// Builds one tile's mesh. Local space: [0, tileW] x [0, tileH] (tileW/H =
-// size/tiles), y from the global grid. The caller positions the tile node
-// at groupOrigin + (tx*tileW, 0, tz*tileH). Returns false on degenerate
-// params. UVs are per-tile [0,1] (tile-local planar, standard for
-// per-tile material/layer assignment).
+// The tile's group-local XZ position: its ACTUAL first sample,
+// (x0 * spacing, z0 * spacing). The tile node transform MUST be
+// groupOrigin + this offset — NOT the even metric split
+// tx * (size / tilesX): the integer sample split and the even metric
+// split only agree when tilesX divides the interval count exactly.
+// (64 samples over 64 m, 4 tiles: tile 0 ends at sample 15 = 15.238 m
+// while the even split puts tile 1 at 16 m — a 0.76 m GAP. Positioning
+// by first sample makes tile tx's last column coincide EXACTLY with
+// tile tx+1's first column: x1 * spacing == (tx+1)'s x0 * spacing.)
+glm::vec2 TerrainTileOrigin(const TerrainGroupData& g, uint32_t tx, uint32_t tz);
+
+// Builds one tile's mesh. Local space: [0, (x1-x0)*spacing] x
+// [0, (z1-z0)*spacing] (the tile's sample span), y from the global grid.
+// The caller positions the tile node at groupOrigin + TerrainTileOrigin
+// (see above — the seam-correct offset). Returns false on degenerate
+// params: res < 2, an out-of-range tile index, or a tile split finer
+// than one sample interval per axis (tilesX > res-1 / tilesZ > res-1 —
+// a one-sample tile would divide by w-1 == 0 for its UVs). UVs are
+// per-tile [0,1] (tile-local planar, standard for per-tile
+// material/layer assignment).
 bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 	StaticMeshUpload& out);
 

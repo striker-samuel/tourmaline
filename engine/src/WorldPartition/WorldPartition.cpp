@@ -31,8 +31,8 @@ void WorldPartition::SetInterests(const StreamingInterest* interests, size_t cou
 StreamRequestSink WorldPartition::MakeSink()
 {
 	if (requestBuffer_.empty())
-		requestBuffer_.resize(256); // gather scratch grows on demand
-	return StreamRequestSink(requestBuffer_.data(), requestBuffer_.size());
+		requestBuffer_.resize(kStreamRequestInitialCapacity);
+	return StreamRequestSink(requestBuffer_, kStreamRequestHardCap);
 }
 
 void WorldPartition::UpdateFrame(uint64_t frameIndex)
@@ -44,13 +44,17 @@ void WorldPartition::UpdateFrame(uint64_t frameIndex)
 
 	// (3) gather + resolve (v1: recorded sorted; the dedupe/priority/
 	//     dependency engine grows on this exact seam with the terrain
-	//     client — see docs/world_partition.md).
+	//     client — see docs/world_partition.md). The sink grows the
+	//     gather scratch on demand: every provider request is recorded,
+	//     never silently truncated.
 	requestCount_ = 0;
+	requestDrops_ = 0;
 	if (!providers_.empty()) {
 		StreamRequestSink sink = MakeSink();
 		for (IWorldStreamProvider* p : providers_)
 			p->GatherRequests(&sink, frameIndex);
 		requestCount_ = sink.Count();
+		requestDrops_ = sink.Dropped();
 		std::stable_sort(requestBuffer_.begin(),
 			requestBuffer_.begin() + requestCount_,
 			[](const StreamRequest& a, const StreamRequest& b) {

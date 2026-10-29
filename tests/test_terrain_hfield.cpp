@@ -168,6 +168,21 @@ int main() {
 		Check(ParseTerrainJson(trailing, m, err), "hfield.json-trailing-ws-ok");
 		Check(!ParseTerrainJson(std::string(good) + "x", m, err),
 			"hfield.json-reject-trailing");
+		// Layout invariants: the cooked format is EXACTLY a 4x4 H-tile
+		// grid (16 min/max entries) + a 16x16 S-tile grid — anything the
+		// runtime's tilesPerAxis() math cannot address must fail closed.
+		const char* badHGrid = "{\"baseY\": -40.0, \"range\": 420.0, "
+			"\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
+			"\"hTileSize\": 2048.0, \"hRes\": 1024, \"gBlock\": 256.0, "
+			"\"packing\": \"rg16\"}"; // 2x2 H-tiles
+		Check(!ParseTerrainJson(badHGrid, m, err),
+			"hfield.json-reject-hgrid-not-4x4");
+		const char* badSGrid = "{\"baseY\": -40.0, \"range\": 420.0, "
+			"\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
+			"\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 512.0, "
+			"\"packing\": \"rg16\"}"; // 8x8 S-tiles
+		Check(!ParseTerrainJson(badSGrid, m, err),
+			"hfield.json-reject-sgrid-not-16x16");
 	}
 	// Naming helpers match the generator.
 	Check(HTileName(0, 0) == "h_00_00", "hfield.name-h");
@@ -204,6 +219,21 @@ int main() {
 		blob[0] ^= 0xFF; // corrupt magic
 		Check(!ParseTerrainMetaBlob(blob, back, mmBack),
 			"hfield.metablob-reject-magic");
+		// The SAME layout invariants on the runtime blob (the runtime
+		// never sees the json — the blob parse is its only gate).
+		{
+			TerrainMeta bad = m;
+			bad.hTileSize = 2048.0f; // 2x2 H-tiles: not addressable
+			std::vector<uint8_t> badBlob;
+			SerializeTerrainMeta(bad, mm, badBlob);
+			Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
+				"hfield.metablob-reject-hgrid-not-4x4");
+			bad = m;
+			bad.gBlock = 512.0f; // 8x8 S-tiles
+			SerializeTerrainMeta(bad, mm, badBlob);
+			Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
+				"hfield.metablob-reject-sgrid-not-16x16");
+		}
 	}
 
 	// Pak layer: SMP6 Terrain round-trip + the SMP5 legacy-empty hack.

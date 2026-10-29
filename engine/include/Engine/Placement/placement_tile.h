@@ -183,6 +183,10 @@ public:
 	// halo carries the cross-boundary influence — a min-spacing winner
 	// or a central-difference normal sample reading a neighbouring
 	// tile's edge data. Bounded by the layer's world placement.
+	// GENERATING tiles under the region are invalidated TOO: their
+	// in-flight token is retired (the delayed publish refuses; the next
+	// residency tick regenerates against the edited terrain) — a paint
+	// under an in-flight tile must never publish the stale result.
 	void InvalidateRegion(uint64_t programId, float tileSize,
 		const glm::vec2& rectMin, const glm::vec2& rectMax,
 		float haloMeters);
@@ -228,6 +232,11 @@ public:
 	}
 
 private:
+	// Shared invalidation step (invalidateLayer/invalidateAll/
+	// InvalidateRegion): Resident -> Dirty; Generating -> token retired
+	// + Dirty (see the .cpp contract block).
+	void InvalidateTileInFlight(PlacementTile& tile);
+
 	std::unordered_map<uint64_t, LayerBinding> layers_;
 	std::unordered_map<TileKey, PlacementTile, TileKeyHash> tiles_;
 	uint64_t tick_ = 0;

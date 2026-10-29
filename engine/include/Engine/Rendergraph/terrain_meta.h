@@ -248,6 +248,21 @@ inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
 		err = "terrain.json: range/worldSize/hTileSize/gBlock must be > 0";
 		return false;
 	}
+	// Layout invariants (v1): the cooked binary format carries EXACTLY
+	// 16 tile min/max entries (a 4x4 H-tile grid) and TerrainHField
+	// derives its tile count as worldSize/hTileSize — the two must agree
+	// or the runtime would index tiles the meta never described. Same
+	// for the 16x16 S-tile grid over gBlock (the cooker enforces both;
+	// the parser must not accept what the cooker would refuse).
+	if (uint32_t(worldSize / hTileSize + 0.5) != 4) {
+		err = "terrain.json: v1 supports exactly 4x4 H-tiles "
+			"(worldSize/hTileSize)";
+		return false;
+	}
+	if (uint32_t(worldSize / gBlock + 0.5) != 16) {
+		err = "terrain.json: v1 expects 16x16 S-tiles (worldSize/gBlock)";
+		return false;
+	}
 	meta.baseY = static_cast<float>(baseY);
 	meta.range = static_cast<float>(range);
 	meta.worldSize = static_cast<float>(worldSize);
@@ -312,6 +327,16 @@ inline void SerializeTerrainMeta(const TerrainMeta& meta,
 	meta.packingRg16 = true;
 	if (!(meta.range > 0.0f) || !(meta.worldSize > 0.0f)
 		|| !(meta.hTileSize > 0.0f) || !(meta.gBlock > 0.0f))
+		return false;
+	// Layout invariants (v1) — the SAME pair the JSON parser enforces:
+	// the blob carries exactly 16 tile min/max entries (a 4x4 H-tile
+	// grid, what TerrainHField::tilesPerAxis() derives from
+	// worldSize/hTileSize) and the S-tile grid is 16x16 over gBlock. A
+	// blob with any other layout would index tiles the min/max table
+	// never described — refuse rather than silently mis-address.
+	if (uint32_t(meta.worldSize / meta.hTileSize + 0.5f) != 4)
+		return false;
+	if (uint32_t(meta.worldSize / meta.gBlock + 0.5f) != 16)
 		return false;
 	for (int i = 0; i < 16; ++i) {
 		tileMinMax[i][0] = getF(36 + size_t(i) * 8);

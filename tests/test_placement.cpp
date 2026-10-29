@@ -1940,6 +1940,154 @@ void TestTerrainGroups() {
 	Check(BuildTerrainTileUpload(g, 1, 1, t11), "place.tgroup.upload11");
 	Check(BuildTerrainUpload(g.params, single), "place.tgroup.single-ok");
 	Check(single.vertices.size() == 65u * 65u, "place.tgroup.single-verts");
+
+	// ---- the NON-DIVISIBLE split: 64 samples / 64 m / 4x4 tiles ----
+	// 63 intervals do NOT divide by 4: the integer sample split puts
+	// tile 0's edge at sample 15 (= 15.238 m) while the even metric
+	// split would put tile 1 at 16 m — a 0.76 m GAP. TerrainTileOrigin
+	// (position by actual first sample) must seam every border exactly.
+	TerrainGroupData g4;
+	g4.params.origin = glm::vec2(10, 20);
+	g4.params.size = 64.0f;
+	g4.params.res = 64;
+	g4.params.height = 5.0f;
+	g4.params.freq = 0.05f;
+	g4.params.seed = 43;
+	g4.tilesX = 4;
+	g4.tilesZ = 4;
+	g4.heights = BuildTerrainHeights(g4.params);
+	const float sp4 = g4.heights.spacing.x; // 64/63
+	TerrainTileRange(g4, 0, 0, x0, x1, z0, z1);
+	Check(x0 == 0 && x1 == 15, "place.tgroup.nondiv-range0"); // 63/4=15
+	TerrainTileRange(g4, 1, 0, x0, x1, z0, z1);
+	Check(x0 == 15 && x1 == 31, "place.tgroup.nondiv-range1"); // 126/4=31
+	TerrainTileRange(g4, 3, 3, x0, x1, z0, z1);
+	Check(x0 == 47 && x1 == 63 && z0 == 47 && z1 == 63,
+		"place.tgroup.nondiv-range3");
+	const uint32_t hz4 = 15u - 0u + 1u; // every tz=0 tile spans z [0..15]
+	// World-space seam contract: for every internal border, tile tx's
+	// RIGHT edge coincides EXACTLY with tile tx+1's LEFT edge (no gap,
+	// no overlap), and the shared boundary VERTICES match (height +
+	// normal + world XZ). Vertex world pos = groupOrigin + tileOrigin
+	// + local — the caller positioning contract.
+	{
+		smvk::StaticMeshUpload t[4];
+		glm::vec2 org[4];
+		uint32_t w[4];
+		bool built = true;
+		for (uint32_t tx = 0; tx < 4; ++tx) {
+			built = built && BuildTerrainTileUpload(g4, tx, 0, t[tx]);
+			org[tx] = TerrainTileOrigin(g4, tx, 0);
+			uint32_t rx0, rx1, rz0, rz1;
+			TerrainTileRange(g4, tx, 0, rx0, rx1, rz0, rz1);
+			w[tx] = rx1 - rx0 + 1;
+		}
+		Check(built, "place.tgroup.nondiv-builds");
+		Check(org[0] == glm::vec2(0.0f, 0.0f), "place.tgroup.nondiv-origin0");
+		// The seam-gap regression: the even split would be 16 m; the
+		// sample-true offset is 15 * 64/63 ~= 15.238 m.
+		Check(std::abs(org[1].x - 15.0f * sp4) < 1e-5f
+			&& std::abs(org[1].x - 16.0f) > 0.5f,
+			"place.tgroup.nondiv-origin-sample-true");
+		bool seam = true;
+		for (uint32_t tx = 0; tx + 1 < 4 && seam; ++tx) {
+			// Edge coincidence: prev tile's max X == next tile's origin.
+			if (std::abs((org[tx].x + t[tx].aabbMax.x) - org[tx + 1].x)
+				> 1e-5f) {
+				seam = false; break;
+			}
+			// Boundary vertices: prev's last column vs next's first
+			// column (same global samples -> identical heights/normals,
+			// identical world XZ after the origin offset).
+			for (uint32_t k = 0; k < hz4; ++k) {
+				const auto& a = t[tx].vertices[size_t(k) * w[tx] + w[tx] - 1];
+				const auto& b = t[tx + 1].vertices[size_t(k) * w[tx + 1]];
+				if (a.pos.y != b.pos.y || a.normal != b.normal
+					|| std::abs((org[tx].x + a.pos.x)
+						- (org[tx + 1].x + b.pos.x)) > 1e-5f) {
+					seam = false; break;
+				}
+			}
+		}
+		Check(seam, "place.tgroup.nondiv-x-seam");
+		// Same contract along Z (tiles (0,tz) vs (0,tz+1)).
+		bool seamZ = true;
+		for (uint32_t tz = 0; tz + 1 < 4 && seamZ; ++tz) {
+			smvk::StaticMeshUpload za, zb;
+			if (!BuildTerrainTileUpload(g4, 0, tz, za)
+				|| !BuildTerrainTileUpload(g4, 0, tz + 1, zb)) {
+				seamZ = false; break;
+			}
+			const glm::vec2 oa = TerrainTileOrigin(g4, 0, tz);
+			const glm::vec2 ob = TerrainTileOrigin(g4, 0, tz + 1);
+			if (std::abs((oa.y + za.aabbMax.z) - ob.y) > 1e-5f) {
+				seamZ = false; break;
+			}
+		}
+		Check(seamZ, "place.tgroup.nondiv-z-seam");
+		// The full group span is covered exactly: [0, size] on both axes.
+		smvk::StaticMeshUpload last;
+		Check(BuildTerrainTileUpload(g4, 3, 3, last), "place.tgroup.nondiv-last");
+		const glm::vec2 lastOrg = TerrainTileOrigin(g4, 3, 3);
+		Check(std::abs(lastOrg.x + last.aabbMax.x - 64.0f) < 1e-4f
+			&& std::abs(lastOrg.y + last.aabbMax.z - 64.0f) < 1e-4f,
+			"place.tgroup.nondiv-full-span");
+	}
+
+	// ---- UNEQUAL X/Z tile counts: 2x3 over 65 samples ----
+	{
+		TerrainGroupData gu;
+		gu.params = g.params; // 64 m, 65 samples, seed 42
+		gu.heights = BuildTerrainHeights(gu.params);
+		gu.tilesX = 2; // 64/2 = 32 (divisible)
+		gu.tilesZ = 3; // 64/3 -> 21|21|22 intervals (NOT divisible)
+		bool seam = true;
+		for (uint32_t tz = 0; tz + 1 < 3 && seam; ++tz) {
+			smvk::StaticMeshUpload za, zb;
+			if (!BuildTerrainTileUpload(gu, 0, tz, za)
+				|| !BuildTerrainTileUpload(gu, 0, tz + 1, zb)) {
+				seam = false; break;
+			}
+			const glm::vec2 oa = TerrainTileOrigin(gu, 0, tz);
+			const glm::vec2 ob = TerrainTileOrigin(gu, 0, tz + 1);
+			if (std::abs((oa.y + za.aabbMax.z) - ob.y) > 1e-5f)
+				seam = false;
+		}
+		Check(seam, "place.tgroup.unequal-z-seam");
+	}
+
+	// ---- MINIMUM resolutions: degenerate splits are rejected ----
+	{
+		TerrainGroupData gm;
+		gm.params.size = 64.0f;
+		gm.params.res = 2; // ONE interval: only a 1x1 split is valid
+		gm.heights = BuildTerrainHeights(gm.params);
+		smvk::StaticMeshUpload up;
+		gm.tilesX = 1; gm.tilesZ = 1;
+		Check(BuildTerrainTileUpload(gm, 0, 0, up)
+			&& up.vertices.size() == 4u, "place.tgroup.min-res-1x1");
+		Check(up.vertices[0].texCoord == glm::vec2(0.0f, 0.0f)
+			&& up.vertices[3].texCoord == glm::vec2(1.0f, 1.0f),
+			"place.tgroup.min-res-uvs");
+		gm.tilesX = 2; // 2 tiles > 1 interval
+		Check(!BuildTerrainTileUpload(gm, 0, 0, up),
+			"place.tgroup.min-res-reject-2x");
+		gm.tilesX = 1; gm.tilesZ = 2;
+		Check(!BuildTerrainTileUpload(gm, 0, 0, up),
+			"place.tgroup.min-res-reject-2z");
+		// 16 tiles need >= 16 intervals: res 16 (15) rejects, res 17 fits.
+		TerrainGroupData g16;
+		g16.params.size = 64.0f;
+		g16.params.res = 16;
+		g16.heights = BuildTerrainHeights(g16.params);
+		g16.tilesX = 16; g16.tilesZ = 1;
+		Check(!BuildTerrainTileUpload(g16, 0, 0, up),
+			"place.tgroup.tiles-exceed-intervals");
+		g16.params.res = 17;
+		g16.heights = BuildTerrainHeights(g16.params);
+		Check(BuildTerrainTileUpload(g16, 0, 0, up),
+			"place.tgroup.tiles-fit-intervals");
+	}
 }
 
 void TestTerrainBrush() {
@@ -2025,6 +2173,38 @@ void TestTerrainRaycast() {
 	// Origin below the surface: immediate hit at t=0.
 	Check(TerrainRaycast(hf, glm::vec3(32, 1, 32), glm::vec3(0, 1, 0),
 		100.0f, t) && t == 0.0f, "place.raycast.start-under");
+	// ---- the domain-clip regressions ----
+	// Origin OUTSIDE horizontally but BELOW the boundary height: the
+	// clamped sampler used to fabricate a hit at t=0 (the boundary wall
+	// extruded to infinity). The XZ-domain clip must refuse.
+	Check(!TerrainRaycast(hf, glm::vec3(100.0f, 1.0f, 32.0f),
+		glm::vec3(0, -1, 0), 10.0f, t), "place.raycast.no-false-hit-outside");
+	Check(!TerrainRaycast(hf, glm::vec3(-500.0f, 1.0f, 32.0f),
+		glm::vec3(1, 0, 0), 10.0f, t),
+		"place.raycast.outside-march-misses");
+	// A ray that never enters the domain sideways: miss.
+	Check(!TerrainRaycast(hf, glm::vec3(-10.0f, 6.0f, 32.0f),
+		glm::vec3(-1, 0, 0), 50.0f, t), "place.raycast.never-enters");
+	// A ray ENTERING the domain from outside: the march starts at the
+	// entry param (hit t stays along the original ray). This ray enters
+	// at x=0 (t=10) already below the plateau -> hit exactly at entry.
+	Check(TerrainRaycast(hf, glm::vec3(-10.0f, 5.5f, 32.0f),
+		glm::vec3(1.0f, -0.1f, 0.0f), 100.0f, t)
+		&& std::abs(t - 10.0f) < 1e-3f, "place.raycast.entry-clip");
+	// ---- the endpoint regressions ----
+	// SHORT ray (maxDist < one step, step = 0.5): the final endpoint is
+	// still evaluated (the old loop broke on ti > maxDist before ever
+	// sampling it). From 5.2 down 0.3 -> 4.9 crosses the plateau at 0.2.
+	Check(TerrainRaycast(hf, glm::vec3(32, 5.2f, 32), glm::vec3(0, -1, 0),
+		0.3f, t) && std::abs(t - 0.2f) < 0.05f,
+		"place.raycast.short-ray-endpoint");
+	Check(!TerrainRaycast(hf, glm::vec3(32, 6.0f, 32), glm::vec3(0, -1, 0),
+		0.3f, t), "place.raycast.short-ray-clean-miss");
+	// maxDist NOT a step multiple (2.25 vs step 0.5): the crossing in
+	// the final partial interval [2.0, 2.25] is found.
+	Check(TerrainRaycast(hf, glm::vec3(32, 7.2f, 32), glm::vec3(0, -1, 0),
+		2.25f, t) && std::abs(t - 2.2f) < 0.05f,
+		"place.raycast.partial-step-endpoint");
 }
 
 // ---------------------------------------------------------------------------
@@ -2287,6 +2467,45 @@ void TestWorldResidency() {
 				sys.GenerateTilePending(101, a.key.tile, deps4, g);
 				sys.PublishActivation(a.key, g);
 			}
+	}
+
+	// THE EDIT-DURING-GENERATION SEQUENCE (the height-paint regression):
+	// request tile -> edit terrain (region invalidation while the job is
+	// in flight, deps UNCHANGED) -> finish the old request -> the stale
+	// result must be REFUSED and the tile re-requested with a fresh
+	// token. UpdateResidency keeps a Generating tile's token when the
+	// deps match, so the invalidation itself must retire it.
+	{
+		PlacementSystem sysE;
+		GridDomain gridE;
+		gridE.extent = glm::vec2(64.0f, 64.0f);
+		gridE.cellsX = 16; gridE.cellsZ = 16;
+		sysE.registerLayer(MakeGridLayer(gridE, 0.5f, 512));
+		const glm::vec4 rectE[1] = { glm::vec4(0.0f, 0.0f, 64.0f, 64.0f) };
+		std::vector<PlacementSystem::ActivationRequest> actsE;
+		sysE.UpdateResidency(101, 64.0f, rectE, 1, deps, 16, actsE);
+		Check(actsE.size() == 1, "place.res.edits-setup");
+		const uint64_t inFlightGen = actsE[0].generation;
+		// The terrain edit lands while the job runs (deps stay EQUAL —
+		// the invalidation, not a version bump, is what must stale it).
+		sysE.InvalidateRegion(101, 64.0f, glm::vec2(30.0f, 30.0f),
+			glm::vec2(34.0f, 34.0f), 4.0f);
+		// The next tick re-activates with a NEW token (the old code kept
+		// the in-flight claim — the stale result would publish as fresh).
+		sysE.UpdateResidency(101, 64.0f, rectE, 1, deps, 16, actsE);
+		Check(actsE.size() == 1 && actsE[0].regenerate
+			&& actsE[0].generation > inFlightGen,
+			"place.res.edits-retires-inflight-token");
+		// The delayed OLD job's publish refuses.
+		Check(!sysE.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 },
+			inFlightGen), "place.res.edits-stale-publish-refused");
+		// The fresh flow completes and the tile serves.
+		uint64_t genE = 0;
+		Check(sysE.GenerateTilePending(101, TileID{ 0, 0, 0 }, deps, genE)
+			&& genE == actsE[0].generation, "place.res.edits-new-pending");
+		Check(sysE.PublishActivation(TileKey{ TileID{ 0, 0, 0 }, 101 }, genE),
+			"place.res.edits-new-publish");
+		Check(sysE.residentTileCount() == 1, "place.res.edits-resident");
 	}
 
 	// Region invalidation + the neighbor HALO: a stamp at the exact

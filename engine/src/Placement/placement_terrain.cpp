@@ -62,6 +62,17 @@ void TerrainTileRange(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 	z1 = (tz + 1 == tZ) ? res - 1 : (tz + 1) * (res - 1) / tZ;
 }
 
+glm::vec2 TerrainTileOrigin(const TerrainGroupData& g, uint32_t tx, uint32_t tz) {
+	uint32_t x0, x1, z0, z1;
+	TerrainTileRange(g, tx, tz, x0, x1, z0, z1);
+	// The tile's group-local XZ offset: its actual first sample (NOT the
+	// even metric split — see the header contract). Uses the same
+	// per-axis spacing as BuildTerrainTileUpload so tile tx's last column
+	// lands exactly on tile tx+1's first column.
+	return glm::vec2(float(x0) * g.heights.spacing.x,
+		float(z0) * g.heights.spacing.y);
+}
+
 bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 	StaticMeshUpload& out) {
 	out = StaticMeshUpload{};
@@ -73,11 +84,24 @@ bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 	const uint32_t tZ = std::max(1u, g.tilesZ);
 	if (tx >= tX || tz >= tZ)
 		return false;
+	// A tile needs >= TWO samples per axis (one interval): a finer split
+	// divides by w-1 == 0 for the UVs below. The interval split
+	// guarantees every tile spans >= 1 interval exactly when
+	// tiles <= intervals per axis.
+	if (tX > res - 1 || tZ > res - 1)
+		return false;
 	uint32_t x0, x1, z0, z1;
 	TerrainTileRange(g, tx, tz, x0, x1, z0, z1);
 	const uint32_t w = x1 - x0 + 1;
 	const uint32_t h = z1 - z0 + 1;
-	const float sp = hf.spacing.x; // global sample spacing
+	// Belt-and-braces: never emit a one-sample tile even if the split
+	// math above ever drifts.
+	if (w < 2 || h < 2)
+		return false;
+	// Per-axis spacing (equal for every producer today; kept per-axis so
+	// non-square spacing would still seam correctly).
+	const float spx = hf.spacing.x;
+	const float spz = hf.spacing.y;
 	const float invW = 1.0f / float(w - 1);
 	const float invH = 1.0f / float(h - 1);
 	out.vertices.reserve((size_t)w * h);
@@ -86,12 +110,12 @@ bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz,
 	for (uint32_t z = 0; z < h; ++z) {
 		for (uint32_t x = 0; x < w; ++x) {
 			const uint32_t gx = x0 + x, gz = z0 + z;
-			const float lx = float(x) * sp;
-			const float lz = float(z) * sp;
+			const float lx = float(x) * spx;
+			const float lz = float(z) * spz;
 			// Normals sample the GLOBAL field so edge verts match across
 			// neighbouring tiles (same absolute XZ -> same central diff).
-			const float wx = hf.origin.x + float(gx) * sp;
-			const float wz = hf.origin.z + float(gz) * sp;
+			const float wx = hf.origin.x + float(gx) * spx;
+			const float wz = hf.origin.z + float(gz) * spz;
 			const float hgt = hf.heights[(size_t)gz * res + gx];
 			const glm::vec3 n = hf.sampleNormal(wx, wz);
 			glm::vec3 t = glm::cross(glm::vec3(0, 1, 0), n);
@@ -241,46 +265,70 @@ void TerrainBrushTouchedTiles(uint32_t x0, uint32_t x1, uint32_t z0,
 
 bool TerrainRaycast(const HeightfieldData& hf,
 	const glm::vec3& o, const glm::vec3& d, float maxDist, float& t) {
-	if (!hf.valid())
+	if (!hf.valid() || !(maxDist > 0.0f))
 		return false;
-	const float sp = hf.spacing.x;
-	// March in ~half-sample steps (terrain detail scale), then refine by
-	// bisection. Misses cleanly when the ray never dips under the field.
-	const float step = std::max(sp * 0.5f, 0.1f);
-	const uint32_t steps = uint32_t(std::max(maxDist / step, 1.0f));
-	auto heightAt = [&](float x, float z) {
-		return hf.sampleHeight(x, z);
-	};
-	float tPrev = 0.0f;
-	float dPrev = o.y - heightAt(o.x, o.z);
-	if (dPrev <= 0.0f) {
-		t = 0.0f;
-		return true; // starts at/below the surface
+	// Clip the segment [0, maxDist] to the heightfield's XZ domain FIRST.
+	// sampleHeight() edge-clamps OUTSIDE reads, so an unclipped march
+	// would hit the boundary wall extruded to infinity — a ray starting
+	// outside and below the boundary height would report a false t = 0.
+	// Hits only exist inside the domain.
+	const float minX = hf.origin.x;
+	const float maxX = hf.origin.x + float(hf.width - 1) * hf.spacing.x;
+	const float minZ = hf.origin.z;
+	const float maxZ = hf.origin.z + float(hf.height - 1) * hf.spacing.y;
+	float sLo = 0.0f;
+	float sHi = maxDist;
+	const float pos[2] = { o.x, o.z };
+	const float dir[2] = { d.x, d.z };
+	const float lo[2] = { minX, minZ };
+	const float hi[2] = { maxX, maxZ };
+	for (int a = 0; a < 2; ++a) {
+		if (std::abs(dir[a]) < 1e-9f) {
+			if (pos[a] < lo[a] || pos[a] > hi[a])
+				return false; // parallel to this wall + outside: never over
+			continue;
+		}
+		float ta0 = (lo[a] - pos[a]) / dir[a];
+		float ta1 = (hi[a] - pos[a]) / dir[a];
+		if (ta0 > ta1)
+			std::swap(ta0, ta1);
+		sLo = std::max(sLo, ta0);
+		sHi = std::min(sHi, ta1);
+		if (sLo > sHi)
+			return false; // the segment never enters the domain
 	}
+	// March in ~half-sample steps (terrain detail scale), then refine by
+	// bisection. The LAST sample lands exactly on the clipped segment end
+	// (the domain exit or maxDist, whichever comes first) so the endpoint
+	// is ALWAYS evaluated — a ray shorter than one step, or a maxDist
+	// that is not a step multiple, still tests its full length.
+	const float step = std::max(hf.spacing.x * 0.5f, 0.1f);
+	const glm::vec3 p0 = o + d * sLo;
+	float tPrev = sLo;
+	if (p0.y - hf.sampleHeight(p0.x, p0.z) <= 0.0f) {
+		t = sLo;
+		return true; // enters the domain at/below the surface
+	}
+	const uint32_t steps = uint32_t(std::max((sHi - sLo) / step, 1.0f));
 	for (uint32_t i = 1; i <= steps; ++i) {
-		const float ti = float(i) * step;
-		if (ti > maxDist)
-			break;
+		const float ti = (i == steps) ? sHi : sLo + float(i) * step;
 		const glm::vec3 p = o + d * ti;
-		const float di = p.y - heightAt(p.x, p.z);
-		if (di <= 0.0f) {
+		if (p.y - hf.sampleHeight(p.x, p.z) <= 0.0f) {
 			// Bisection refine between tPrev (above) and ti (below).
-			float lo = tPrev, hi = ti;
+			float lo2 = tPrev, hi2 = ti;
 			for (int k = 0; k < 12; ++k) {
-				const float mid = 0.5f * (lo + hi);
+				const float mid = 0.5f * (lo2 + hi2);
 				const glm::vec3 pm = o + d * mid;
-				if (pm.y - heightAt(pm.x, pm.z) <= 0.0f)
-					hi = mid;
+				if (pm.y - hf.sampleHeight(pm.x, pm.z) <= 0.0f)
+					hi2 = mid;
 				else
-					lo = mid;
+					lo2 = mid;
 			}
-			t = hi;
+			t = hi2;
 			return true;
 		}
 		tPrev = ti;
-		dPrev = di;
 	}
-	(void)dPrev;
 	return false;
 }
 

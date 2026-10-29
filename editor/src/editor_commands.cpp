@@ -5477,23 +5477,39 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 		uint32_t(std::max((c.node2 >> 16) & 0xFFFFu, 1u)),
 		1u, smvk::placement::kTerrainMaxTiles);
 	g.data.heights = smvk::placement::BuildTerrainHeights(g.data.params);
+	// Tile split clamp: every tile needs >= one sample interval per axis
+	// (BuildTerrainTileUpload rejects finer splits — a one-sample tile
+	// cannot tile UVs). Clamping HERE (not just rejecting the mesh) keeps
+	// the group creation atomic: every tile node gets its mesh. The tour
+	// replay clamps identically, so editor and cook agree by construction.
+	const uint32_t maxTiles = std::min(smvk::placement::kTerrainMaxTiles,
+		g.data.params.res - 1u);
+	g.data.tilesX = std::clamp(uint32_t(std::max(c.node2 & 0xFFFFu, 1u)),
+		1u, maxTiles);
+	g.data.tilesZ = std::clamp(
+		uint32_t(std::max((c.node2 >> 16) & 0xFFFFu, 1u)),
+		1u, maxTiles);
 	g.tileNodes.resize(size_t(g.data.tilesX) * g.data.tilesZ);
 	const uint32_t material = (c.material != UINT32_MAX
 		&& c.material < m_world->materialLocations.size())
 		? c.material : EnsureDefaultMaterial();
-	const float tileW = g.data.params.size / float(g.data.tilesX);
-	const float tileH = g.data.params.size / float(g.data.tilesZ);
 	smvk::Cluster* cl = m_world->clusters[0].get();
 	// Tile children: node + mesh + world wiring + draw entry each.
+	// Tile position = its ACTUAL first sample (TerrainTileOrigin — the
+	// integer sample split does not align with the even metric split
+	// unless tiles divide the interval count; see the seam contract in
+	// placement_terrain.h).
 	for (uint32_t tz = 0; tz < g.data.tilesZ; ++tz)
 		for (uint32_t tx = 0; tx < g.data.tilesX; ++tx) {
 			const int tileId = addNode(scene, group, level + 1);
 			if (tileId < 0)
 				return;
 			const uint32_t t = uint32_t(tileId);
+			const glm::vec2 tileOrigin =
+				smvk::placement::TerrainTileOrigin(g.data, tx, tz);
 			scene.localTransform[size_t(t)] = glm::translate(
 				glm::mat4(1.0f),
-				glm::vec3(float(tx) * tileW, 0.0f, float(tz) * tileH));
+				glm::vec3(tileOrigin.x, 0.0f, tileOrigin.y));
 			const uint32_t tName = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.afterText + "_" + std::to_string(tx)
 				+ "_" + std::to_string(tz));

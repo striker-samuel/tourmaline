@@ -3224,10 +3224,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			tg.params.height = std::max(c.vec4.z, 0.0f);
 			tg.params.freq = std::max(c.vec4.w, 1e-4f);
 			tg.params.seed = c.number < 0.0 ? 0ULL : uint64_t(c.number);
-			tg.tilesX = std::clamp(uint32_t(std::max(c.node2 & 0xFFFFu, 1u)),
-				1u, smvk::placement::kTerrainMaxTiles);
-			tg.tilesZ = std::clamp(uint32_t(std::max((c.node2 >> 16) & 0xFFFFu, 1u)),
-				1u, smvk::placement::kTerrainMaxTiles);
+			// (tilesX/tilesZ clamp happens post-move below — it needs res,
+			// and the editor's ExecCreateTerrain clamps identically.)
 			tg.heights = smvk::placement::BuildTerrainHeights(tg.params);
 			// Group node (no mesh; the transform carries the origin).
 			const int level = scene.hierarchy[parent].level + 1;
@@ -3251,12 +3249,20 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			state.data = std::move(tg);
 			state.groupNode = uint32_t(newId);
 			state.material = material;
+			// Tile split clamp: every tile needs >= one sample interval
+			// per axis (BuildTerrainTileUpload rejects finer splits).
+			// The editor's ExecCreateTerrain clamps identically, so the
+			// replayed scene matches the live one by construction.
+			const uint32_t maxTiles = std::min(
+				smvk::placement::kTerrainMaxTiles,
+				state.data.params.res - 1u);
+			state.data.tilesX = std::clamp(
+				uint32_t(std::max(c.node2 & 0xFFFFu, 1u)), 1u, maxTiles);
+			state.data.tilesZ = std::clamp(
+				uint32_t(std::max((c.node2 >> 16) & 0xFFFFu, 1u)),
+				1u, maxTiles);
 			state.tileNodes.resize(size_t(state.data.tilesX)
 				* state.data.tilesZ);
-			const float tileW = state.data.params.size
-				/ float(state.data.tilesX);
-			const float tileH = state.data.params.size
-				/ float(state.data.tilesZ);
 			const int tileLevel = level + 1;
 			for (uint32_t tz = 0; tz < state.data.tilesZ; ++tz)
 				for (uint32_t tx = 0; tx < state.data.tilesX; ++tx) {
@@ -3268,9 +3274,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 							return false;
 						break;
 					}
+					// The tile's ACTUAL first sample (the seam-correct
+					// offset — see TerrainTileOrigin's contract).
+					const glm::vec2 tileOrigin =
+						smvk::placement::TerrainTileOrigin(state.data, tx, tz);
 					scene.localTransform[size_t(tileId)] = glm::translate(
 						glm::mat4(1.0f),
-						glm::vec3(float(tx) * tileW, 0.0f, float(tz) * tileH));
+						glm::vec3(tileOrigin.x, 0.0f, tileOrigin.y));
 					const uint32_t tileNameId = uint32_t(scene.nodeNames.size());
 					scene.nodeNames.push_back(c.text + "_" + std::to_string(tx)
 						+ "_" + std::to_string(tz));

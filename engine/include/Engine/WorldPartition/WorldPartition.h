@@ -55,6 +55,7 @@
 // first live client, terrain/ecology/scene follow.
 // ============================================================================
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <vector>
@@ -211,30 +212,55 @@ struct StreamRequest
 	uint64_t frameRequested = 0;
 };
 
-// Request sink handed to GatherRequests (pointer+count in, fixed
-// capacity — the partition pre-sized buffer; overflow is a provider bug
-// and asserts).
+// Request sink handed to GatherRequests. The partition owns the backing
+// buffer and the sink GROWS it on demand (the sink borrows the owner's
+// storage for the gather loop — an internal collaborator, not an export
+// boundary; providers only ever see Push/Requests/Count through it).
+// Providers never silently truncate: a dropped terrain-streaming
+// request is undiagnosable at runtime. kStreamRequestHardCap is the
+// loud provider-bug ceiling: Push past it asserts (debug) and counts
+// into Dropped() so release builds still surface the over-production
+// in diagnostics.
+inline constexpr size_t kStreamRequestInitialCapacity = 256;
+inline constexpr size_t kStreamRequestHardCap = size_t(1) << 16;
+
 class StreamRequestSink
 {
 public:
-	explicit StreamRequestSink(StreamRequest* storage, size_t capacity)
-		: storage_(storage), capacity_(capacity)
+	StreamRequestSink(std::vector<StreamRequest>& storage, size_t hardCap)
+		: storage_(&storage), hardCap_(hardCap)
 	{
 	}
 	void Push(const StreamRequest& r)
 	{
-		assert(count_ < capacity_ && "StreamRequestSink overflow (provider over-produced)");
-		if (count_ < capacity_)
-			storage_[count_++] = r;
+		// Grow the owner's buffer when full (the partition's gather
+		// scratch; requestBuffer_ keeps the capacity for later frames).
+		if (count_ == storage_->size() && count_ < hardCap_) {
+			const size_t grow = std::min(hardCap_,
+				std::max<size_t>(storage_->size() * 2,
+					kStreamRequestInitialCapacity));
+			storage_->resize(grow);
+		}
+		if (count_ < storage_->size()) {
+			(*storage_)[count_++] = r;
+		} else {
+			assert(count_ < hardCap_
+				&& "StreamRequestSink hard-cap overflow (provider bug)");
+			++dropped_;
+		}
 	}
-	const StreamRequest* Requests() const { return storage_; }
+	const StreamRequest* Requests() const { return storage_->data(); }
 	size_t Count() const { return count_; }
-	void Clear() { count_ = 0; }
+	// Requests dropped past the hard cap this gather (0 in any healthy
+	// frame; a nonzero value is a provider over-producing).
+	size_t Dropped() const { return dropped_; }
+	void Clear() { count_ = 0; dropped_ = 0; }
 
 private:
-	StreamRequest* storage_ = nullptr;
-	size_t capacity_ = 0;
+	std::vector<StreamRequest>* storage_ = nullptr; // owner's gather scratch
+	size_t hardCap_ = 0;
 	size_t count_ = 0;
+	size_t dropped_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -307,6 +333,9 @@ public:
 	size_t InterestCount() const { return interests_.size(); }
 	const StreamRequest* Requests() const { return requestBuffer_.data(); }
 	size_t RequestCount() const { return requestCount_; }
+	// Diagnostics: requests dropped past the sink's hard cap in the last
+	// UpdateFrame (0 in any healthy frame; nonzero = a provider bug).
+	size_t DroppedRequestCount() const { return requestDrops_; }
 	// Diagnostics: the distinct active root cells across all interests'
 	// radii (the editor's residency-map backing data grows from here).
 	size_t ActiveCellCount() const;
@@ -316,6 +345,7 @@ private:
 	std::vector<StreamingInterest> interests_; // sorted priority-first
 	std::vector<StreamRequest> requestBuffer_; // gather scratch (grows)
 	size_t requestCount_ = 0;
+	size_t requestDrops_ = 0;
 	StreamRequestSink MakeSink();
 };
 

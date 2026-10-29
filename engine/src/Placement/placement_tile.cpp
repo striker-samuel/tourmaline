@@ -68,15 +68,32 @@ bool PlacementSystem::GenerateTilePending(uint64_t programId, TileID tile,
 }
 
 void PlacementSystem::invalidateLayer(uint64_t programId) {
-	for (auto& [key, tile] : tiles_)
-		if (key.programId == programId && tile.state == TileState::Resident)
-			tile.state = TileState::Dirty;
+	for (auto& [key, tile] : tiles_) {
+		if (key.programId != programId)
+			continue;
+		InvalidateTileInFlight(tile);
+	}
 }
 
 void PlacementSystem::invalidateAll() {
 	for (auto& [key, tile] : tiles_)
-		if (tile.state == TileState::Resident)
-			tile.state = TileState::Dirty;
+		InvalidateTileInFlight(tile);
+}
+
+// Shared invalidation step. Resident tiles just go Dirty. GENERATING
+// tiles need their in-flight activation token RETIRED as well: the
+// running job evaluated the pre-edit state, and UpdateResidency keeps a
+// Generating tile's token when the deps are unchanged — without the
+// retire, the stale result would publish as fresh. Retiring (bump the
+// token + mark Dirty) makes the delayed publish refuse (state/generation
+// mismatch) and the next residency tick re-activate with a new token.
+void PlacementSystem::InvalidateTileInFlight(PlacementTile& tile) {
+	if (tile.state == TileState::Resident) {
+		tile.state = TileState::Dirty;
+	} else if (tile.state == TileState::Generating) {
+		tile.generation = ++tick_;
+		tile.state = TileState::Dirty;
+	}
 }
 
 void PlacementSystem::evictBeyond(size_t maxResident, const std::vector<TileKey>& keep) {
@@ -181,8 +198,10 @@ void PlacementSystem::UpdateResidency(uint64_t programId, float tileSize,
 
 	// 1) Fresh interests enter Generating; stale residents (deps changed
 	// OR region-invalidated Dirty) regenerate with a NEW token; tiles
-	// already Generating keep their in-flight claim (a deps change
-	// under them re-activates — the older result's publish refuses).
+	// already Generating keep their in-flight claim (a deps change OR a
+	// region invalidation under them retires the claim via
+	// InvalidateTileInFlight + re-activates — the older result's publish
+	// refuses).
 	for (const TileID& tile : wanted) {
 		const TileKey key{ tile, programId };
 		auto it = tiles_.find(key);
@@ -296,8 +315,8 @@ void PlacementSystem::InvalidateRegion(uint64_t programId, float tileSize,
 	for (int32_t tz = tz0; tz <= tz1; ++tz)
 		for (int32_t tx = tx0; tx <= tx1; ++tx) {
 			auto it = tiles_.find(TileKey{ TileID{ tx, 0, tz }, programId });
-			if (it != tiles_.end() && it->second.state == TileState::Resident)
-				it->second.state = TileState::Dirty;
+			if (it != tiles_.end())
+				InvalidateTileInFlight(it->second);
 		}
 }
 

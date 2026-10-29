@@ -79,6 +79,32 @@ struct RecordingProvider final : wp::IWorldStreamProvider
 	}
 };
 
+// A fixed-burst provider (the request-capacity regression driver): pushes
+// `count` distinct-priority requests per frame.
+struct BurstProvider final : wp::IWorldStreamProvider
+{
+	size_t count = 0;
+	size_t gatherCalls = 0;
+
+	const char* ProviderName() const override { return "Burst"; }
+	void OnStreamingInterests(const wp::StreamingInterest*,
+		size_t) override {}
+	size_t GatherRequests(wp::StreamRequestSink* sink,
+		uint64_t frameIndex) override
+	{
+		++gatherCalls;
+		for (size_t i = 0; i < count; ++i) {
+			wp::StreamRequest r{};
+			r.frameRequested = frameIndex;
+			r.priority = float(i); // distinct: the sort is verifiable
+			sink->Push(r);
+		}
+		return count;
+	}
+	void CommitFrame(uint64_t) override {}
+	void RetireFrame(uint64_t) override {}
+};
+
 } // namespace
 
 int main()
@@ -159,6 +185,34 @@ int main()
 		Check(p.RequestCount() == 1, "frame.requests-recorded");
 		Check(p.Requests()[0].frameRequested == 8,
 			"frame.request-carries-frame");
+	}
+
+	// ---- request recording GROWS past the initial 256-slot scratch ----
+	// (the silent-truncation regression: providers collectively pushing
+	// more than the initial capacity must have EVERY request recorded —
+	// a dropped terrain-streaming request is undiagnosable at runtime).
+	{
+		wp::WorldPartition p;
+		BurstProvider burst;
+		burst.count = 289; // 17x17 root cells: just past the 256 scratch
+		p.AddProvider(&burst);
+		wp::StreamingInterest in;
+		in.priority = 1.0f;
+		p.SetInterests(&in, 1);
+		p.UpdateFrame(1);
+		Check(p.RequestCount() == 289, "frame.requests-grow-past-256");
+		Check(p.DroppedRequestCount() == 0, "frame.requests-none-dropped");
+		// The sorted recording contract survives the growth (priority
+		// descending) and the LAST request is present, not just the
+		// first 256.
+		Check(p.Requests()[0].priority == 288.0f
+			&& p.Requests()[288].priority == 0.0f
+			&& p.Requests()[288].frameRequested == 1,
+			"frame.requests-recorded-to-the-end");
+		// A second frame reuses the grown scratch (still complete).
+		p.UpdateFrame(2);
+		Check(p.RequestCount() == 289 && burst.gatherCalls == 2,
+			"frame.requests-reuse-scratch");
 	}
 
 	// ---- active-cell coverage ----
