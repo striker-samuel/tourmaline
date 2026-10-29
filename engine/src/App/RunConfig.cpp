@@ -325,6 +325,26 @@ RunConfig RunConfig::Parse() {
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_PROBE_PREMIX (want 1|on|0|off): %s\n", v);
 	}
+	// JHFAA-style shading-normal validity correction (shading_normal_fix.hlsli;
+	// docs/jhfaa_normal_fix.md). Default OFF while under evaluation — the pin
+	// exists so headless captures A/B the baseline against the corrected image.
+	if ((v = Get("TOURMALINE_NORMAL_FIX")) != nullptr) {
+		bool on = false;
+		if (IsOnOff(Trimmed(v), on))
+			c.normalFix = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_NORMAL_FIX (want 1|on|0|off): %s\n", v);
+	}
+	// The violation overlay (red = back-facing shading normal, orange =
+	// reflection below the geometric horizon): independent of the correction
+	// pin so the baseline extent and the corrected residue can be compared.
+	if ((v = Get("TOURMALINE_NORMAL_FIX_DEBUG")) != nullptr) {
+		bool on = false;
+		if (IsOnOff(Trimmed(v), on))
+			c.normalFixDebug = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_NORMAL_FIX_DEBUG (want 1|on|0|off): %s\n", v);
+	}
 	c.giDebug = ToInt(Get("TOURMALINE_GI_DEBUG"), -1);
 	c.giDebugLevel = ToInt(Get("TOURMALINE_GI_DEBUG_LEVEL"), -1);
 	if ((v = Get("TOURMALINE_GI_POINTS")) != nullptr)
@@ -465,6 +485,10 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " LIGHTMAP=%s", onOffStr(*lightmap));
 	if (probePremix)
 		std::fprintf(stderr, " PROBE_PREMIX=%s", onOffStr(*probePremix));
+	if (normalFix)
+		std::fprintf(stderr, " NORMAL_FIX=%s", onOffStr(*normalFix));
+	if (normalFixDebug)
+		std::fprintf(stderr, " NORMAL_FIX_DEBUG=%s", onOffStr(*normalFixDebug));
 	opt(ambient, "AMBIENT");
 	if (capture >= 0)
 		std::fprintf(stderr, " CAPTURE=%d", capture);
@@ -520,6 +544,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_GI_INTENSITY",
 		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",
 		"TOURMALINE_LIGHTMAP", "TOURMALINE_GI_VOLUMES", "TOURMALINE_HITCH_LOG",
+		"TOURMALINE_NORMAL_FIX", "TOURMALINE_NORMAL_FIX_DEBUG",
 		"TOURMALINE_MATERIAL_CENSUS", "TOURMALINE_SSR_STENCILVIEW",
 		"TOURMALINE_SSR_DEBUG",
 		// SSR blur-filter pin (0 = 2D baseline, 1 = separable H+V): seeds

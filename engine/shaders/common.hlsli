@@ -527,6 +527,13 @@ struct DsVizParams
 // WorldRenderer.h). Lets shaders skip off-by-default payloads without a
 // BDA chase. Scalar-constructor spelling (no integer-suffix reliance).
 #define DS_FLAG_VIZ (uint64_t(1))
+// JHFAA-style shading-normal validity correction (shading_normal_fix.hlsli;
+// docs/jhfaa_normal_fix.md). bit1 = apply the correction (TOURMALINE_NORMAL_
+// FIX pin, default off while under evaluation); bit2 = the red/orange
+// violation overlay view (TOURMALINE_NORMAL_FIX_DEBUG — independent of bit1
+// so the disease and the medicine can be inspected apart).
+#define FRAME_FLAG_NORMAL_FIX (uint64_t(2))
+#define FRAME_FLAG_NORMAL_FIX_DEBUG (uint64_t(4))
 
 // World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
 // rework of the old OBB-volume zone system): the zone LOOK records (48 B

@@ -509,6 +509,15 @@ static_assert(sizeof(DsVizParams) == 32, "DsVizParams must stay 32 bytes (HLSL m
 // DS_FLAG_VIZ in common.hlsli). Lets the shader skip payload dereferences
 // for off-by-default features without changing the struct layout.
 static constexpr uint64_t kFrameFlagDsViz = 1ull << 0; // DS viz overlay active this view
+// JHFAA-style shading-normal validity correction active this view
+// (shading_normal_fix.hlsli; TOURMALINE_NORMAL_FIX pin — experimental,
+// default off while under evaluation, see docs/jhfaa_normal_fix.md).
+static constexpr uint64_t kFrameFlagNormalFix = 1ull << 1;
+// Violation-overlay debug view (TOURMALINE_NORMAL_FIX_DEBUG=1): flat
+// red/orange palette from the UN-corrected normal test — independent of
+// the correction bit so the disease (off) and the residue (on) can be
+// viewed apart.
+static constexpr uint64_t kFrameFlagNormalFixDebug = 1ull << 2;
 
 struct FrameUniforms
 {
@@ -1979,6 +1988,17 @@ public:
 	// empty - the fallback is the zero-regression contract).
 	bool m_probePremixEnabled = true;
 	smvk::probepremix::ProbePremix m_probePremix{};
+	// ---- JHFAA-style shading-normal validity correction ----------------
+	// (shading_normal_fix.hlsli + docs/jhfaa_normal_fix.md; the
+	// TOURMALINE_NORMAL_FIX / TOURMALINE_NORMAL_FIX_DEBUG pins). The
+	// correction constrains the final shading normal (and therefore every
+	// reflection vector derived from it) to physically valid directions
+	// at silhouette pixels — the frame flags are the only consumer state.
+	// Experimental: OFF by default while the A/B evaluation runs; the
+	// pins exist so headless captures can compare the baseline and the
+	// corrected image under identical conditions.
+	bool m_normalFixEnabled = false;
+	bool m_normalFixDebug = false;
 	// GPU SKINNING (the Northlight compute box; Rendergraph/skinning.h):
 	// the compute shader + the per-flight palette buffers. The driver
 	// (the skinning block near the probe pre-mix append) runs per frame

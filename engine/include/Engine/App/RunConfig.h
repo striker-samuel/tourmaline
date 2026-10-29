@@ -124,6 +124,13 @@ struct RunConfig {
 	std::optional<float> giIntensity;
 	// lightmap: 1|on|0|off proxy lightmap branch (unset = default wins)
 	std::optional<OnOffPin> lightmap;
+	// normalFix: 1|on|0|off JHFAA-style shading-normal validity correction
+	// (unset = default OFF wins — experimental, docs/jhfaa_normal_fix.md)
+	std::optional<OnOffPin> normalFix;
+	// normalFixDebug: 1|on|0|off the red/orange violation overlay view
+	// (unset = off). Independent of normalFix so violations can be viewed
+	// with the correction off (baseline extent) or on (residue).
+	std::optional<OnOffPin> normalFixDebug;
 	// probePremix: 1|on|0|off GPU probe pre-mix (unset = default wins)
 	std::optional<OnOffPin> probePremix;
 	int giDebug = -1; // 0..4

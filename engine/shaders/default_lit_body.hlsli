@@ -78,6 +78,9 @@ struct PSOut
 
 // Must be defined after common.hlsli symbols
 #include "shadows.hlsli"
+// JHFAA-style shading-normal validity correction (experimental, frame-
+// flag gated — see the file header + docs/jhfaa_normal_fix.md).
+#include "shading_normal_fix.hlsli"
 
 static const float PI = 3.14159265359f;
 
@@ -931,6 +934,45 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         baseColor, N, metallic, roughness, emissive);
 
     float3 V = normalize(hot.cameraPos - IN.worldPos);
+
+    // ---------------------------------------------------------------
+    // JHFAA-style shading-normal validity correction (experimental —
+    // shading_normal_fix.hlsli; TOURMALINE_NORMAL_FIX pin, default off).
+    //
+    // Runs AFTER decals + normal mapping (the final shading normal) and
+    // BEFORE every consumer below: NdotV, SpecularAARoughness, the sun
+    // lobe, the forward+ lights, the env/probe reflection vector and the
+    // GI specular crossovers all key off the ONE corrected normal, so
+    // direct specular, probes and SSR's replaced env slice never disagree
+    // about the reflection direction (the seams a correction applied to
+    // only one consumer would open).
+    //
+    // The geometric face normal comes from SCREEN-SPACE derivatives of
+    // the world position — the actual rasterized triangle's plane — not
+    // the interpolated vertex normal (geomN): the interpolated normal is
+    // exactly what disagrees with the real geometry at smooth-shaded
+    // silhouettes. Derivative placement follows the SpecularAARoughness
+    // precedent (uniform-flow reads after the alpha-test discards; helper
+    // invocations keep the quad derivatives defined).
+    //
+    // The debug overlay bit is independent of the correction bit: it
+    // paints violations of the UN-corrected normal so the baseline
+    // extent (correction off) and the residue (on) can be compared.
+    // ---------------------------------------------------------------
+    float3 normalFixViz = float3(0.0f, 0.0f, 0.0f);
+    {
+        const uint64_t nfFlags = frame.flags
+            & (FRAME_FLAG_NORMAL_FIX | FRAME_FLAG_NORMAL_FIX_DEBUG);
+        if (nfFlags != uint64_t(0))
+        {
+            float3 faceN = ScreenSpaceFaceNormal(IN.worldPos, V, geomN);
+            if ((nfFlags & FRAME_FLAG_NORMAL_FIX_DEBUG) != uint64_t(0))
+                normalFixViz = ShadingNormalViolationColor(N, faceN, V);
+            if ((nfFlags & FRAME_FLAG_NORMAL_FIX) != uint64_t(0))
+                N = CorrectShadingNormal(N, faceN, V);
+        }
+    }
+
     float NdotV = max(dot(N, V), 0.0f);
 
     // F0 for dielectrics 0.04, lerped to baseColor for metals
@@ -1439,6 +1481,25 @@ float envVis = 1.0f;
     {
         float3 fogHdr = frame.env.fogColor.rgb * max(frame.env.fogColor.w, 0.0f);
         color = lerp(color, fogHdr, fogF);
+    }
+
+    // ---------------------------------------------------------------
+    // JHFAA violation overlay (TOURMALINE_NORMAL_FIX_DEBUG=1): flat
+    // palette replacement like the GI debug views — red = back-facing
+    // shading normal, orange = reflection below the geometric horizon
+    // (see ShadingNormalViolationColor). MRT targets 1/2 write 0: the
+    // palette carries no AO-sensitive lighting and SSR is gated off
+    // under debug views anyway. Pre-scaled 1/exposure so the flat
+    // readout survives the physical-units HDR + ACES chain (the shared
+    // debug-view convention, see the exposure note in UpdateFrameUniforms).
+    // ---------------------------------------------------------------
+    if ((frame.flags & FRAME_FLAG_NORMAL_FIX_DEBUG) != uint64_t(0))
+    {
+        OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        OUT.outColor = float4(SanitizeHdr(normalFixViz
+            * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
+        return OUT;
     }
 
 #if defined(DS_DEBUG_VIZ)

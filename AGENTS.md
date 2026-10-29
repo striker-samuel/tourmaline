@@ -72,6 +72,12 @@ $env:TOURMALINE_CAPTURE='48'
 - `TOURMALINE_GI_INTENSITY=<0..2>` pins the GI intensity slider headless
   (scales the baked-GI ambient and the Sky IBL fallback; 0 leaves direct
   sun only, 1 is authored, 2 doubles it)
+- `TOURMALINE_NORMAL_FIX=0|1` pins the JHFAA-style shading-normal validity
+  correction headless (experimental, default off — the silhouette
+  reflection-vector constraint; docs/jhfaa_normal_fix.md);
+  `TOURMALINE_NORMAL_FIX_DEBUG=1` is the red/orange violation overlay
+  (red = back-facing shading normal, orange = reflection below the
+  geometric horizon — works with the correction on or off)
 - `TOURMALINE_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
   (scene fog settings lose); `TOURMALINE_VOLUMETRIC_STEPS=<4..128>` pins the
   march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_GI_VOLUMES=0` is the

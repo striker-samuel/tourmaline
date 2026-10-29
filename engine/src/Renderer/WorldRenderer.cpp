@@ -587,6 +587,16 @@ namespace engine {
 				std::cerr << "[WorldRenderer] bad TOURMALINE_TEXTURE_FILTER (want "
 				"trilinear|2x|4x|8x|16x): " << *run.textureFilter << "\n";
 		}
+		// JHFAA-style shading-normal validity correction (shading_normal_fix.hlsli
+		// + docs/jhfaa_normal_fix.md): experimental, default OFF. The pin exists
+		// for the headless A/B matrix; the frame flags published in
+		// UpdateFrameUniforms are the only consumer state (the lit FS family
+		// reads them off FrameUniforms::flags). The debug overlay pin is
+		// independent so violations can be viewed with the correction off.
+		m_normalFixEnabled =
+			run.normalFix.has_value() && *run.normalFix == OnOffPin::On;
+		m_normalFixDebug =
+			run.normalFixDebug.has_value() && *run.normalFixDebug == OnOffPin::On;
 		// Headless terrain override (same discipline as TOURMALINE_VOLUMETRIC
 		// / TOURMALINE_SSR): TOURMALINE_TERRAIN=0/1 pins the terrain pass
 		// for headless A/B runs (the UI checkbox / combo stays live).
@@ -4020,6 +4030,18 @@ namespace engine {
 			data.probePremixMips = m_probePremix.mipCount;
 			data.probePremixSel = m_probePremix.selectionBda;
 		}
+
+		// JHFAA-style shading-normal validity correction (experimental,
+		// TOURMALINE_NORMAL_FIX / TOURMALINE_NORMAL_FIX_DEBUG; see
+		// shading_normal_fix.hlsli + docs/jhfaa_normal_fix.md): frame-flag
+		// gates read by the lit FS family (default_lit_body.hlsli, the a2c
+		// and mesh twins included). The debug bit rides independently so
+		// the violation overlay works with the correction off (the
+		// baseline extent) and on (the residue).
+		if (m_normalFixEnabled)
+			data.flags |= kFrameFlagNormalFix;
+		if (m_normalFixDebug)
+			data.flags |= kFrameFlagNormalFixDebug;
 
 		// Deferred shadows: consumer-side BDAs + the frame's on/off flag.
 		// DsActive() is the single gate shared with the phase-1 upload and

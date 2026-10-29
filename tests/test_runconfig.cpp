@@ -203,6 +203,35 @@ int main() {
 	UnsetVar("TOURMALINE_AMBIENT");
 	UnsetVar("TOURMALINE_GI");
 
+	// (4) JHFAA-style shading-normal validity correction pins: default
+	// unset (experimental, OFF), valid on/off parse, invalid warns and
+	// stays unset. The debug overlay pin parses independently of the
+	// correction pin (the overlay must work with the correction off).
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(!c.normalFix.has_value(), "runconfig.default-normal-fix-unset");
+		Check(!c.normalFixDebug.has_value(), "runconfig.default-normal-fix-debug-unset");
+	}
+	SetVar("TOURMALINE_NORMAL_FIX", "1");
+	SetVar("TOURMALINE_NORMAL_FIX_DEBUG", "on");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.normalFix.has_value() && *c.normalFix == engine::OnOffPin::On,
+			"runconfig.parse-normal-fix-on");
+		Check(c.normalFixDebug.has_value() && *c.normalFixDebug == engine::OnOffPin::On,
+			"runconfig.parse-normal-fix-debug-on");
+	}
+	SetVar("TOURMALINE_NORMAL_FIX", "maybe");
+	SetVar("TOURMALINE_NORMAL_FIX_DEBUG", "0");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(!c.normalFix.has_value(), "runconfig.invalid-normal-fix-unset");
+		Check(c.normalFixDebug.has_value() && *c.normalFixDebug == engine::OnOffPin::Off,
+			"runconfig.parse-normal-fix-debug-off");
+	}
+	UnsetVar("TOURMALINE_NORMAL_FIX");
+	UnsetVar("TOURMALINE_NORMAL_FIX_DEBUG");
+
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }
