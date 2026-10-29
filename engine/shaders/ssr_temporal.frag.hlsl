@@ -4,6 +4,7 @@
 #define SSR_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "ssr_compute.hlsli"
 
 // SSR temporal: motion-vector-reprojected accumulation of the half-res
 // reflection layer (rgb = reflected x fresnel x intensity, a = confidence).
@@ -11,12 +12,23 @@
 // later in the composite), so a rejection simply falls back to the current
 // frame's spatially-blurred tap.
 //
-// Reprojection: the motion buffer holds prevUV - currUV in UV units and
-// INCLUDES the T2x/DLSS jitter (prevViewProj is jittered), while the SSR
-// trace runs on the same jittered proj — so the history fetch uses the RAW
-// vector (prevUv = uv + motion). The DEJITTERED vector (motion -
-// jitterDelta) drives only the blend attenuation, same discipline as
-// motionblur.frag.hlsl and the SMAA neighborhood pass.
+// Reprojection is RECEIVER-ALIGNED: motion is Loaded at the selected
+// receiver's own full-res pixel (the block's nearest-valid tap — a
+// block-center sample is a different surface at silhouettes) and applied
+// to the receiver's own UV. The motion buffer holds prevUV - currUV in
+// UV units and INCLUDES the T2x/DLSS jitter (prevViewProj is jittered),
+// while the SSR trace runs on the same jittered proj — so the history
+// fetch uses the RAW vector (prevUv = receiverUv + motion). The
+// DEJITTERED vector (motion - jitterDelta) drives only the blend
+// attenuation, same discipline as motionblur.frag.hlsl and the SMAA
+// neighborhood pass.
+//
+// Disocclusion is a PREVIOUS-FRAME test on both sides: the receiver is
+// projected into the previous camera (invView -> world ->
+// prevViewProj) and its expected previous depth is compared against
+// the previous record's depth mirror (ssr_depth_history.frag.hlsl) at
+// the reprojected coordinate — camera motion cancels exactly instead
+// of riding the tolerance (see the disocclusion block's note).
 
 struct PSIn
 {
@@ -98,17 +110,27 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     }
 
     float2 invDepthSize = float2(tp.invDepthW, tp.invDepthH);
-    float2 ndcC = float2((float(fullPxC.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
-                         (float(fullPxC.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
-    float centerDist = DofViewDist(dCenter, ndcC, frame.invProj);
+    float nearPlane = max(frame.nearPlane, 1e-4f);
+    // The receiver's own UV + view position (the block's nearest-valid
+    // tap — the same selection the classify/intersect use; the ray
+    // chain is receiver-consistent, the temporal chain now is too).
+    float2 receiverUv = (float2(fullPxC) + 0.5f) * invDepthSize;
+    float2 ndcC = receiverUv * 2.0f - 1.0f;
+    float3 viewPos = SsrUnprojectView(ndcC, dCenter, frame.invProj);
 
-    // Reproject with the RAW (jitter-inclusive) motion: history was
-    // rendered under the previous record's jitter, current under this
-    // record's, so the jitter component is part of the exact mapping.
-    float2 motionRaw = motionTex.Sample(smp, IN.uv).rg;
+    // RECEIVER-ALIGNED MOTION (the silhouette fix): the motion comes
+    // from the SELECTED receiver's own full-res pixel — the old
+    // block-center Sample was a different surface at silhouettes, so
+    // the reprojection followed the WRONG world point's trajectory.
+    // RAW (jitter-inclusive) vector, same contract as before: history
+    // was rendered under the previous record's jitter, current under
+    // this record's, so the jitter component is part of the exact
+    // mapping (the DEJITTERED vector still drives only the blend
+    // attenuation below).
+    float2 motionRaw = motionTex.Load(int3(fullPxC, 0)).rg;
     if (!isfinite(motionRaw.x + motionRaw.y))
         motionRaw = float2(0.0f, 0.0f);
-    float2 prevUv = IN.uv + motionRaw;
+    float2 prevUv = receiverUv + motionRaw;
     if (prevUv.x < 0.0f || prevUv.x > 1.0f || prevUv.y < 0.0f || prevUv.y > 1.0f)
     {
         OUT.outColor = curr;
@@ -155,46 +177,52 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         ? hRgbAcc / hConfAcc
         : float3(0.0f, 0.0f, 0.0f);
 
-    // Disocclusion: the reprojected location's depth from the
-    // PREVIOUS record's depth mirror (the SSRDepthHistory copy this
-    // chain keeps per temporal record) against the center distance —
-    // the depth of the surface the HISTORY reflected, at a
-    // last-frame coordinate. The old test sampled the CURRENT depth
-    // at the previous frame's coordinate: two cameras' geometry mixed
-    // (under camera motion the current depth at prevUv is a different
-    // world location — the test measured screen-space depth variation
-    // instead of surface identity and randomly rejected/accepted
-    // history). The prev-frame value linearizes with the same near/d
-    // form (near is frame-stable), so the relative-threshold
-    // comparison keeps its meaning; a STATIC surface's camera-motion
-    // parallax is absorbed by the tolerance + the motion-attenuated
-    // blend below. prevDepthTextureIndex = MAX = the current-depth
-    // approximation (the old behavior — a host without the mirror).
+    // Disocclusion — BOTH SIDES IN THE PREVIOUS FRAME'S PROJECTION:
+    // project THIS frame's receiver into the previous camera
+    // (invView -> world, prevViewProj — the same matrix the motion
+    // pass used) and compare that expected previous depth against the
+    // depth the history's surface recorded (prevDepth at prevUv, the
+    // previous record's mirror). The same surface matches; a
+    // disocclusion (the history's surface other than / behind the
+    // receiver) mismatches. The earlier forms mixed cameras: the
+    // original compared the CURRENT depth at a previous-frame
+    // coordinate, and the first mirror fix compared a current-frame
+    // receiver distance against a prev-frame linearization — both
+    // left camera motion inside the comparison. The near/d
+    // linearization is projection-stable (near is frame-stable), so
+    // the relative threshold keeps its scale, and a static scene's
+    // expected-vs-sampled pair is EXACTLY equal (no tolerance eaten by
+    // parallax).
+    if (tp.prevDepthTextureIndex == 0xffffffffu)
+    {
+        // No mirror bound (a misconfigured host — the chain always
+        // creates + binds it): REJECT the history rather than
+        // approximate with the wrong frame's depth.
+        OUT.outColor = curr;
+        return OUT;
+    }
+    Texture2D prevDepthTex =
+        textures[NonUniformResourceIndex(tp.prevDepthTextureIndex)];
+    float4 worldPos = mul(frame.invView, float4(viewPos, 1.0f));
+    float4 prevClip = mul(frame.prevViewProj, worldPos);
+    if (prevClip.w <= 0.0f)
+    {
+        // The receiver was behind the previous camera (the camera
+        // moved past it): no previous-frame visibility — disoccluded.
+        OUT.outColor = curr;
+        return OUT;
+    }
+    float expectedPrevD = prevClip.z / prevClip.w;
+    float expectedDist = nearPlane / max(expectedPrevD, 1e-6f);
     float2 fullExtent = float2(1.0f / max(invDepthSize.x, 1e-9f),
                                1.0f / max(invDepthSize.y, 1e-9f));
     int2 tapFull = clamp(int2(prevUv * fullExtent),
                          int2(0, 0), int2(max(fullExtent - 1.0f, float2(1.0f, 1.0f))));
-    float tapD;
-    if (tp.prevDepthTextureIndex != 0xffffffffu)
-    {
-        Texture2D prevDepthTex =
-            textures[NonUniformResourceIndex(tp.prevDepthTextureIndex)];
-        tapD = prevDepthTex.Load(int3(tapFull, 0)).r;
-    }
-    else
-    {
-        tapD = depthTex.Load(int3(tapFull, 0)).r;
-    }
-    float tapDist;
-    if (DofIsBackgroundOrGarbage(tapD))
-        tapDist = 1e5; // sky sentinel (matches dof.hlsli scale)
-    else
-    {
-        float2 tapNdc = float2((float(tapFull.x) + 0.5f) * invDepthSize.x * 2.0f - 1.0f,
-                               (float(tapFull.y) + 0.5f) * invDepthSize.y * 2.0f - 1.0f);
-        tapDist = DofViewDist(tapD, tapNdc, frame.invProj);
-    }
-    float depthDiff = abs(tapDist - centerDist) / max(centerDist, 1e-3f);
+    float tapD = prevDepthTex.Load(int3(tapFull, 0)).r;
+    float sampledDist = DofIsBackgroundOrGarbage(tapD)
+        ? 1e5 // sky sentinel (matches dof.hlsli scale)
+        : nearPlane / max(tapD, 1e-6f);
+    float depthDiff = abs(sampledDist - expectedDist) / max(expectedDist, 1e-3f);
     float depthW = exp(-depthDiff * max(tp.sharpness, 0.0f));
     if (depthW < 1e-3f)
     {
