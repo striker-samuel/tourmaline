@@ -186,6 +186,12 @@ namespace engine {
 		if (m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE)
 			|| m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE_ALT)) {
 			keybind::CycleGiDebug(m_renderer.m_giDebug);
+			// The GI debug views render through the LIT fragment shader:
+			// snap the base view back to Lit when one activates, or the
+			// cycle is invisible under a flat mode (F2 Unlit, F3
+			// Meshlets...). Cycling back to 0 leaves the base view alone.
+			if (m_renderer.m_giDebug != 0)
+				m_renderer.m_debugView = ViewMode::Lit;
 		}
 		if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
 			m_renderer.m_skyEnabled = !m_renderer.m_skyEnabled;
@@ -223,37 +229,40 @@ namespace engine {
 			m_renderer.m_captureQueued = true;
 		}
 		// F1..F6, F9..F11: the debug view modes (the panel's Debug tab
-		// documents each). Lit is the full PBR reference.
+		// documents each). Lit is the full PBR reference. SetDebugView
+		// makes the direct selection TAKE OVER: the cycled overlay views
+		// (R/F8 GI debug, Y DS viz) clear, or they would keep masking
+		// the selected view through the lit shader.
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LIT)) {
-			m_renderer.m_debugView = ViewMode::Lit;
+			m_renderer.SetDebugView(ViewMode::Lit);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UNLIT)) {
-			m_renderer.m_debugView = ViewMode::Unlit;
+			m_renderer.SetDebugView(ViewMode::Unlit);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_MESHLETS)) {
-			m_renderer.m_debugView = ViewMode::Meshlets;
+			m_renderer.SetDebugView(ViewMode::Meshlets);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CASCADES)) {
-			m_renderer.m_debugView = ViewMode::Cascades;
+			m_renderer.SetDebugView(ViewMode::Cascades);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_LODS)) {
-			m_renderer.m_debugView = ViewMode::Lods;
+			m_renderer.SetDebugView(ViewMode::Lods);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_VERTEXCOLORS)) {
-			m_renderer.m_debugView = ViewMode::VertexColors;
+			m_renderer.SetDebugView(ViewMode::VertexColors);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_UV0)) {
-			m_renderer.m_debugView = ViewMode::Uv0;
+			m_renderer.SetDebugView(ViewMode::Uv0);
 		}
 		// F10 (reused from the lightmap-UV view): the cubemap-only IBL
 		// view - the filtered lit path with the frame's cubemapDebug
 		// pinned to 1 (raw probe radiance). Uv1 lost its key here; it
 		// stays reachable via the Debug combo + TOURMALINE_DEBUGVIEW=uv1.
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_CUBEMAP)) {
-			m_renderer.m_debugView = ViewMode::Cubemap;
+			m_renderer.SetDebugView(ViewMode::Cubemap);
 		}
 		if (m_input.isKeyPressed(keybind::DEBUG_VIEW_POM)) {
-			m_renderer.m_debugView = ViewMode::Pom;
+			m_renderer.SetDebugView(ViewMode::Pom);
 		}
 		// P toggles wireframe (PolygonMode::Line, Cull None) over the
 		// active debug view — a raster override, not a shading swap, so
@@ -292,6 +301,11 @@ namespace engine {
 			m_renderer.m_dsDebugMode = static_cast<DsDebugViz>(
 				(static_cast<int>(m_renderer.m_dsDebugMode) + 1)
 				% (static_cast<int>(DsDebugViz::LightVis) + 1));
+			// Same snap as the GI cycle: the DS visualizers render
+			// through the lit fragment shader — invisible under a flat
+			// view mode.
+			if (m_renderer.m_dsDebugMode != DsDebugViz::Off)
+				m_renderer.m_debugView = ViewMode::Lit;
 		}
 #endif
 	}

@@ -13353,8 +13353,10 @@ namespace engine {
 						for (int i = 0; i < 12; ++i)
 							if (kComboViews[i] == m_debugView)
 								view = i;
+						// SetDebugView: the direct selection takes over
+						// (clears the R/F8 + Y overlay views).
 						if (ImGui::Combo("Debug view", &view, viewNames, 12))
-							m_debugView = kComboViews[view];
+							SetDebugView(kComboViews[view]);
 						const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
 						ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
 						if (ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones)) {
@@ -13390,11 +13392,17 @@ namespace engine {
 						if (m_regLoaded || m_giVolumesLoaded) {
 							// GI debug views (R / F8 cycle): 0 off, 1 baked
 							// irradiance, 2 source palette, 3 probe distance.
+							// They render through the LIT shader: selecting
+							// one snaps the base view to Lit (invisible
+							// under a flat mode otherwise).
 							const char* dbgNames[4] = { "Off", "Baked irradiance",
 								"GI source", "Probe distance" };
 							int dbgIdx = m_giDebug;
-							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 4))
+							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 4)) {
 								m_giDebug = std::clamp(dbgIdx, 0, 3);
+								if (m_giDebug != 0)
+									m_debugView = ViewMode::Lit;
+							}
 							if (m_giVolumesLoaded)
 								ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
 						}
@@ -13558,8 +13566,13 @@ namespace engine {
 							"Light visibility (light)",
 						};
 						int viz = static_cast<int>(m_dsDebugMode);
-						if (ImGui::Combo("Visualizer", &viz, vizNames, 8))
+						if (ImGui::Combo("Visualizer", &viz, vizNames, 8)) {
 							m_dsDebugMode = static_cast<DsDebugViz>(viz);
+							// Same snap as the GI combo: the visualizers
+							// render through the lit shader.
+							if (m_dsDebugMode != DsDebugViz::Off)
+								m_debugView = ViewMode::Lit;
+						}
 						const bool vizOn = m_dsDebugMode != DsDebugViz::Off;
 						const bool lightScoped = vizOn && m_dsDebugMode >= DsDebugViz::CullStep;
 						if (vizOn && !DsActive())

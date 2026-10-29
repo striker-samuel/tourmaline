@@ -1231,7 +1231,26 @@ public:
 	// acquire); it stalls (device idle) and exports the PNG only on the
 	// pending frame.
 	void PollCaptureReadback();
-	void SetDebugView(ViewMode v) { m_debugView = v; }
+	// Direct debug-view selection (the F1..F6/F9..F11 keys, the Debug
+	// tab's view combo, the editor): a direct selection TAKES OVER —
+	// the cycled overlay views (the GI debug views R/F8, the DS
+	// visualizers Y) render through the lit fragment shader and would
+	// otherwise keep masking the freshly selected view (F8 ->
+	// irradiance, then F1 still showed irradiance: m_debugView was Lit
+	// but m_giDebug stayed 1). Clears the overlays; selecting Lit
+	// through this path returns to the full PBR reference. The
+	// env-parse pin (TOURMALINE_DEBUGVIEW) assigns the member raw —
+	// startup, no overlays exist yet.
+	void SetDebugView(ViewMode v) {
+		m_debugView = v;
+		m_giDebug = 0;
+#if defined(DS_DEBUG_VIZ)
+		m_dsDebugMode = DsDebugViz::Off;
+#endif
+	}
+	// The GI debug views (R/F8) render through the LIT shader: callers
+	// activating one (the cycle keybinds, the combo) snap the base view
+	// to Lit or the overlay is invisible under a flat mode.
 	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	void SetAaMode(AaMode m) { m_aaMode = m; }
