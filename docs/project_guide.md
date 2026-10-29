@@ -9,14 +9,18 @@ front page) and `docs/editor_tour_and_context.md` (tour v1 spec);
 C++20 Vulkan 1.3 renderer + toy engine (`ENGINE_BACKEND=Vulkan` only).
 
 ```
-Loose glTF/KTX2 -> gltf_import -> PakCooker(+GiBaker/cubemap/lightmap) -> *.pak
+Loose glTF/KTX2 -> Project.exe init (gltf_import: import + LOD/meshlets)
+  -> Project.exe build (Cook + GiBaker/cubemap + Pak, freshness-gated) -> *.pak
   -> App.exe pak-viewer (app/) / Editor.exe DG (editor/) -> engine static lib
   -> RHI ResourceManager + RenderGraph -> DXC SPIR-V -> swapchain
 ```
 
-Targets: `engine`, `App`, `Editor`, `PakCooker/GiBaker/CubemapBaker/gltf_import/
-artifact_cache`, `01_triangle/02_blur`, `EngineScene_shaders/EngineRes_shaders`
-(ALL), 27 plain-exe tests (no gtest) via ctest.
+Targets: `engine`, `App`, `Editor`/`EditorLauncher`, `Project`,
+`Import`, `Cook`/`Pak`/`GiBaker`/`CubemapBaker`, libs
+`gltf_import`/`project_pipeline`/`artifact_cache`,
+`01_triangle/02_blur/03_fuzz`, `EngineScene_shaders` (ALL), 44 plain-exe
+tests (no gtest) via ctest (5 of them GPU-window tests - excluded on
+hosted CI runners, see `.github/workflows/tests.yml`).
 
 God objects are INTENTIONAL (owner decision): `WorldRenderer.cpp` (~14k lines)
 and `Vulkan/impl.cpp` (~12k lines) stay whole. Do not propose splitting them
@@ -31,8 +35,9 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 ```
 
 - Never the VS generator (configure-time guard enforces this); mismatch means
-  deleting `out/build/<config>` and reconfiguring. `cl.exe` needs `vcvarsall`
-  from a plain shell (see `AGENTS.md`, `build_app.bat`).
+  deleting `out/build/<config>` and reconfiguring. `cl.exe` needs an MSVC
+  environment: the Developer PowerShell for VS, `build.bat` (reuses it or
+  discovers VS via vswhere), or your install's `vcvarsall` (see `AGENTS.md`).
 - Shaders: `engine/shaders/*.vert|frag|cs.hlsl` -> `mainVS/mainPS/mainCS` via
   `cmake/CompileShaders.cmake` (DXC `-spirv -fspv-target-env=vulkan1.3
   -fvk-use-dx-layout`) -> `out/build/<cfg>/content/shaders/*.spv`, synced next
@@ -42,7 +47,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 - Run CWD = `out/build/<cfg>`; `--bench N` = 10 warmup + N measured then exit.
   `TOURMALINE_CAPTURE` must land INSIDE the bench budget.
 - Headless matrix: `TOURMALINE_SSR/AA/AUTO_EXPOSURE/CAM_POS/CAM_FWD/CAPTURE`,
-  `AO=off|ssao|sao`, `EVSM`, `VOLUMETRIC[_STEPS][_CVOL]`, `MESH=0`,
+  `AO=off|ssao|sao`, `EVSM`, `VOLUMETRIC[_STEPS][_GI_VOLUMES]`, `MESH=0`,
   `CULLFLAGS=0`, `ASYNC_COMPUTE=0`, `NO_VALIDATION=1` — all declared in
   `engine/include/Engine/App/RunConfig.h`.
 - Redirect `*.log` output to `out/logs/` (root is for sources, not logs).
@@ -61,7 +66,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
 | GPU-driven filter | `engine/Renderer/gfx_filter.h` | filtered main view ALWAYS ON (no runtime off; the legacy direct-draws A/B path is gone - the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh`/`GpuCullEnabled` stay setup-time; kills: `TOURMALINE_MESH=0` (whole pipeline), `TOURMALINE_CULLFLAGS=0` (cull bits); `MeshDrawEligible` truth table in contract tests |
-| Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, CI fails on mismatch (per-GPU baselines) |
+| Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, a mismatch fails the run — LOCAL/dev-GPU tooling (per-GPU baselines; CI never runs it - hosted runners have no GPU) |
 
 Data flow per frame: `DrawFrame` fills `AppFrameContext` -> `GfxRenderer`
 (seed/HZB/filter) -> `ForwardPlus` (prepass+cull) -> shadow atlases

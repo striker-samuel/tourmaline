@@ -22,10 +22,14 @@ not match the generator used previously". If a `CMakeCache.txt` mismatch ever
 appears, delete the offending `out/build/<config>` directory and reconfigure
 with Ninja.
 
-MSVC environment: `cl.exe` needs `vcvarsall` when building from a plain shell:
+MSVC environment: build from the "Developer PowerShell for Visual Studio"
+(already initialized), or use `build.bat` (reuses an initialized shell,
+else finds VS via vswhere and calls its vcvarsall). From any other plain
+shell, call YOUR install's vcvarsall first — no path is universal, adjust
+the version/edition to the machine:
 
 ```powershell
-cmd /c "`"C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && cmake --build out/build/x64-Release --target App"
+cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && cmake --build out/build/x64-Release --target App"
 ```
 
 ## Submodules
@@ -247,7 +251,7 @@ operational conditions like pool exhaustion.
 ## Linux compatibility
 
 The tree builds and passes ctest on Linux (Ubuntu 24.04 + GCC 14 verified in
-WSL; 35/35 test parity with Windows). Conventions:
+WSL; full test parity with Windows). Conventions:
 
 - `install_dependencies.sh` is the Linux installer: it carries the
   platform-specific pins (SDL3 3.4.16 SOURCE zip - the root CMakeLists
