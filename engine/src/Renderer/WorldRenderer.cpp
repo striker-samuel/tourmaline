@@ -13954,7 +13954,18 @@ namespace engine {
 							if (ImGui::SliderInt("March steps", &m_volumetricSteps, 4, 128))
 								m_volumetricQuality = smvk::VolumetricQuality::Custom;
 							ImGui::SliderFloat("Fog max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
-							ImGui::SliderFloat("Density (1/m)", &m_volumetricDensity, 0.0f, 0.1f, "%.4f");
+							// NO density slider on purpose: with a
+							// published env-tile bake the zone system's
+							// BASE record (the scene env's authored
+							// volumetricDensity) REPLACES the pass
+							// density at weight 1 everywhere outside
+							// node zones (EnvZoneVolumetrics), so the
+							// control was dead — verified headlessly
+							// (pass density 0.01 vs 0.09 = zero image
+							// difference). Authored content owns the
+							// fog density (the editor's env panel /
+							// volDensity); node-zone records still
+							// carry their own absolute values.
 							ImGui::SliderFloat("Scattering intensity", &m_volumetricIntensity, 0.0f, 4.0f);
 							ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
 							ImGui::SliderFloat("Sun strength", &m_volumetricSun, 0.0f, 4.0f);
@@ -14160,7 +14171,7 @@ namespace engine {
 							ImGui::SliderFloat("Overlay point size (px)", &m_lightPointSize, 2.0f, 16.0f);
 							ImGui::SliderInt("Overlay max labels", &m_maxLightLabels, 0, 1024);
 						}
-						ImGui::Checkbox("Probe points (3D coplanarity check)", &m_giShowProbes);
+						ImGui::Checkbox("Probe points", &m_giShowProbes);
 						if (m_giShowProbes)
 							ImGui::SliderFloat("Probe overlay distance (m)",
 								&m_giProbePointMaxDist, 5.0f, 300.0f, "%.0f m");
@@ -14640,11 +14651,16 @@ namespace engine {
 						if (!m_viewportResources.volumetric.Valid())
 							ImGui::TextDisabled("Volumetric target/shaders missing - no fog");
 						else
-							ImGui::TextDisabled("Volumetric: %s %s %u steps dens %.4f int %.2f",
+							// No "dens" readout: the density is AUTHORED
+							// content (the env table's base zone record
+							// replaces the pass value; the panel slider is
+							// gone) — the live panel knobs are steps +
+							// intensity.
+							ImGui::TextDisabled("Volumetric: %s %s %u steps int %.2f (dens authored)",
 								m_volumetricEnabled ? "ON" : "off",
 								smvk::VolumetricQualityName(m_volumetricQuality),
 								(uint32_t)std::clamp(m_volumetricSteps, 4, 128),
-								m_volumetricDensity, m_volumetricIntensity);
+								m_volumetricIntensity);
 					}
 
 					ImGui::SeparatorText("GI + environment");

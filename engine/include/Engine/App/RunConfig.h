@@ -91,7 +91,10 @@ struct RunConfig {
 	std::optional<OnOffPin> volumetric;
 	// volumetricSteps: 4..128 march steps (unset = authored wins)
 	std::optional<int> volumetricSteps;
-	// volumetricDensity: 0..2 extinction (unset = authored wins)
+	// volumetricDensity: 0..2 extinction (unset = authored wins). NOTE:
+	// a published env-tile bake's base record REPLACES the pass density
+	// at weight 1 (EnvZoneVolumetrics), so this pin only reads on the
+	// zone-off path — authored content owns the density otherwise.
 	std::optional<float> volumetricDensity;
 	// volumetricIntensity: 0..4 scattering intensity (unset = authored
 	// wins) — the density pin's sibling; a fogless-authored scene needs

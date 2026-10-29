@@ -232,7 +232,11 @@ float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
 //     GetOrientedBias's 30%+70% split — tuned from visible artifacts).
 //   - NO PCF: Texture2D.Load gives one texel (the surface path pays a
 //     3x3 SampleLevel kernel; the march pays it per SEGMENT, so the
-//     single tap is the budget).
+//     single tap is the budget). Edge softness comes from the DEPTH
+//     DELTA instead — the stored depth value drives a smooth penumbra
+//     ramp (see the compare below), which for a MEDIUM is the better
+//     filter anyway: the medium itself blurs, and there is no per-tap
+//     noise to accumulate.
 //   - NO receiver normal-bias: no surface to bias along.
 //   - NO cascade blending: fallthrough pops at tile seams are accepted
 //     for v1 (add blending later if seams read; the surface path's
@@ -286,8 +290,32 @@ float SampleFogSunCSM(float3 wpos, float4x4 view, uint2 atlasSize)
         // the header note): bias the receiver TOWARD the light.
         float bias =
             vp.cascadeBuffer.Get().dir.cascades[k].bias * 0.3;
+        float receiver = ndc.z - bias;
 
-        return ndc.z - bias <= storedDepth ? 1.0 : 0.0;
+        // DEPTH-DELTA soft visibility: the stored DEPTH VALUE drives a
+        // smooth ramp instead of the hard binary compare —
+        // delta = stored - receiver: >= +soft fully lit, <= -soft fully
+        // shadowed, the band between is the penumbra. A homogeneous
+        // medium blurs its shadows with the blocker distance (the
+        // media formulation): near-surface samples soften toward half,
+        // samples deep behind a blocker go fully dark, thin occluders
+        // thinner than the band read as partial blockers — no aliasing
+        // at shaft edges, no per-tap noise to filter.
+        // The ramp width rides the per-cascade bias (the NDC depth of
+        // ~half a shadow texel — self-scaling: near cascades sharp, far
+        // ones soft, exactly the detail the map can resolve);
+        // kFogSunSoften is the artistic width multiplier. The physical
+        // alternative (the sun's angular radius, pad2_[0] carries
+        // depthRange/orthoW * tanSun for the tile-UV form the EVSM soft
+        // path uses) would need the depth range the meta does not
+        // expose; a few texels of depth is the PCF-equivalent proxy at
+        // ONE tap.
+        static const float kFogSunSoften = 16.0;
+        float soft = max(
+            vp.cascadeBuffer.Get().dir.cascades[k].bias * kFogSunSoften,
+            1e-6);
+        float delta = storedDepth - receiver;
+        return saturate(delta / soft + 0.5);
     }
 
     return 1.0;
