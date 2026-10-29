@@ -3,6 +3,7 @@
 
 #define VOLUMETRIC_PASS
 #include "common.hlsli"
+#include "shadows.hlsli" // SelectCascadeGpu + the cascade meta reads (pc-free guards)
 #include "environment.hlsli"
 #include "sggi.hlsli"
 #include "sg_regular.hlsli"
@@ -21,7 +22,13 @@ struct PSOut
     float4 outColor : SV_Target0;
 };
 
-// Must match Engine/Rendergraph/volumetric.h VolumetricPush (128 bytes).
+// Must match Engine/Rendergraph/volumetric.h VolumetricPush (132 bytes
+// of members; the C++ side pads the tail to 136). Three slots are
+// REPURPOSED dead fields (the no-enlargement contract — see the C++
+// struct's header note): cascadeBuffer replaces the unused output
+// texelSize, shadowDepthIndex replaces the retired octree useGi slot,
+// numCascades replaces the never-read time (the march dither is
+// deliberately static).
 struct VolumetricPush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
@@ -29,7 +36,9 @@ struct VolumetricPush
     uint depthTextureIndex;
     uint samplerIndex;
     uint steps;
-    float2 texelSize;       // output texel (1/outputExtent)
+    // The CSM cascade buffer (the god-ray leg): SelectCascadeGpu's
+    // splitEnd walk + the selected tile's lightVP/uv*/bias reads.
+    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer; // 0 = off
     float2 depthTexelSize;  // full-res depth texel (1/depthExtent)
     float maxDistance;
     float density;
@@ -37,7 +46,8 @@ struct VolumetricPush
     float anisotropy;
     float sunScale;
     float giScale;
-    uint pad0;              // was useGi (the octree probes toggle — retired with .sggi; layout tail)
+    uint shadowDepthIndex;  // RAW CSM depth atlas (never the EVSM
+                            // moments); 0xffffffff = unshadowed sun leg
     uint useSun;
     uint useGiVolumes;     // 1 = the convex GI volumes stack into the fog
                            //     GI (0 = the quality bypass: NO volume
@@ -46,7 +56,7 @@ struct VolumetricPush
     float jitterStrength;
     float heightFalloff;
     float heightBase;
-    float time;
+    uint numCascades;      // 0 = no CSM fog shadowing (the unshadowed leg)
     uint fogGiSource;      // 0=worldfield (default), [1 retired], 2=sky-only; was pad1
     // Forward+ light feed for fog in-scatter (the forward tiled lights
     // contribute to the march, not just the surfaces): the DEDICATED fog
@@ -61,7 +71,9 @@ struct VolumetricPush
     uint fogGiDebug;        // 0 = off, 1 = the coverage debug view
                            //     (grayscale), 2 = the TRANSMITTANCE view
                            //     (throughput.xxx — the optical-density
-                           //     diagnostic: white = no extinction)
+                           //     diagnostic: white = no extinction),
+                           //     3 = the GOD-RAY sun-visibility view (the
+                           //     march's mean CSM tap result)
 };
 
 [[vk::push_constant]]
@@ -208,6 +220,79 @@ float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
     return acc;
 }
 
+// ---------------------------------------------------------------------------
+// CSM fog sun shadowing (the god-ray leg): ONE unfiltered depth tap per
+// active fog segment against the RAW CSM atlas. Same projection, atlas
+// UV math, depth convention (standard-Z: stored >= receiver = lit —
+// PCFShadowAtlas's `currentDepth <= d`) and cascade fallthrough as the
+// surface path (GetShadowFactorCascaded), deliberately simplified:
+//   - NO surface normal: fog is a medium — no NDotL slope term for the
+//     oriented bias, just a small constant fraction (0.3x) of the
+//     per-cascade NDC bias (the facing-surface share of
+//     GetOrientedBias's 30%+70% split — tuned from visible artifacts).
+//   - NO PCF: Texture2D.Load gives one texel (the surface path pays a
+//     3x3 SampleLevel kernel; the march pays it per SEGMENT, so the
+//     single tap is the budget).
+//   - NO receiver normal-bias: no surface to bias along.
+//   - NO cascade blending: fallthrough pops at tile seams are accepted
+//     for v1 (add blending later if seams read; the surface path's
+//     blend note explains the tradeoff).
+// Returns 1.0 (lit) when no cascade covers the sample — an uncovered
+// segment must never read as shadowed.
+// ---------------------------------------------------------------------------
+float SampleFogSunCSM(float3 wpos, float4x4 view, uint2 atlasSize)
+{
+    // Cascade selection: view-space depth, the SelectCascadeGpu splitEnd
+    // walk over the BDA (narrow loads, no aggregate — see its note).
+    float viewDepth = max(-mul(view, float4(wpos, 1.0)).z, 0.0);
+    int first = SelectCascadeGpu(viewDepth, vp.cascadeBuffer, vp.numCascades);
+
+    // First VALID cascade at/after the selection — the same fallthrough
+    // as the surface path (removes the fully-shadowed -> barely-shadowed
+    // pop when a sample sits outside the selected tile's light bounds).
+    [loop]
+    for (int k = first; k < int(vp.numCascades); ++k)
+    {
+        float4 clip = mul(
+            vp.cascadeBuffer.Get().dir.cascades[k].lightVP,
+            float4(wpos, 1.0));
+
+        if (clip.w <= 0.0)
+            continue;
+
+        float3 ndc = clip.xyz / clip.w;
+        float2 uv = ndc.xy * 0.5 + 0.5;
+
+        if (ndc.z <= 0.0 || ndc.z >= 1.0 ||
+            any(uv < 0.0) || any(uv > 1.0))
+            continue;
+
+        float2 atlasUV =
+            uv * vp.cascadeBuffer.Get().dir.cascades[k].uvScale +
+            vp.cascadeBuffer.Get().dir.cascades[k].uvBias;
+        atlasUV = clamp(
+            atlasUV,
+            vp.cascadeBuffer.Get().dir.cascades[k].uvClampMin,
+            vp.cascadeBuffer.Get().dir.cascades[k].uvClampMax);
+
+        uint2 texel = min(
+            uint2(atlasUV * float2(atlasSize)),
+            atlasSize - 1u);
+
+        float storedDepth = textures[vp.shadowDepthIndex]
+            .Load(int3(texel, 0)).r;
+
+        // The constant facing-share of the per-cascade NDC bias (see
+        // the header note): bias the receiver TOWARD the light.
+        float bias =
+            vp.cascadeBuffer.Get().dir.cascades[k].bias * 0.3;
+
+        return ndc.z - bias <= storedDepth ? 1.0 : 0.0;
+    }
+
+    return 1.0;
+}
+
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -294,6 +379,20 @@ PSOut mainPS(PSIn IN)
     float cosSun = dot(rayDir, sunDir);
     float phase = VolPhaseHg(cosSun, vp.anisotropy) * 0.0795775; // /4pi
     float giStrength = max(frame.giIntensity, 0.0f) * max(vp.giScale, 0.0f);
+
+    // ---- CSM god-ray prep (loop-invariant): the raw atlas extents,
+    // resolved ONCE per pixel (GetDimensions on the bindless texture —
+    // PCFShadow's pattern). shadowSun = every god-ray input bound (the
+    // count, the cascade buffer, the raw atlas index); useSun is the
+    // artistic master (off = no sun leg at all, so no taps either).
+    // ----
+    const bool shadowSun =
+        vp.numCascades > 0u &&
+        vp.shadowDepthIndex != 0xFFFFFFFFu &&
+        vp.useSun != 0u;
+    uint2 atlasSize = uint2(1, 1);
+    if (shadowSun)
+        textures[vp.shadowDepthIndex].GetDimensions(atlasSize.x, atlasSize.y);
 
     // ---- Loop-invariant GI bases (the old body re-evaluated the sky
     // ambient every segment; these are pixel-constants) ----
@@ -410,6 +509,12 @@ PSOut mainPS(PSIn IN)
     // three identical components alive through the whole march).
     float throughput = 1.0;
     float3 scatter = float3(0.0, 0.0, 0.0);
+    // The god-ray leg's visibility accumulator (fogGiDebug==3: the
+    // march's mean CSM sun visibility — the ground-truth instrument
+    // for the tap coverage/compare; white = every tapped segment lit,
+    // black = every tap shadowed, mid grays = the shaft structure).
+    float visSum = 0.0;
+    uint visCount = 0u;
 
     [loop]
     for (uint i = 0; i < 128; ++i)
@@ -555,17 +660,33 @@ PSOut mainPS(PSIn IN)
         }
 
         float3 source = ambient + lightsHeld;
-        // ---- The sun leg is UNSHADOWED (an architectural limitation,
-        // not a coding bug): no terrain/geometry occlusion runs for the
-        // medium — an enclosed room still takes the full directional
-        // sun in-scatter, and the strong directionality can exaggerate
-        // the fog's apparent anisotropy. Shadowing the medium costs a
-        // shadow-map tap (or a march) per segment; the surface lights'
-        // shadowing does not transfer. Same discipline as the
-        // local-light leg (single scattering, no shadowing) —
-        // documented, deliberate. ----
+        // ---- The sun leg, CSM-SHADOWED (the god-ray leg): ONE raw
+        // depth tap per ACTIVE segment (SampleFogSunCSM — the surface
+        // path's projection/atlas/fallthrough math, single-tap, no
+        // PCF, no normal). The tap runs only for segments that
+        // actually scatter (sigma/segIntensity > 0 — a pass-through
+        // or zone-off segment never pays it). A BLOCKED segment is
+        // NOT skipped: the fog still extinguishes the background and
+        // still receives the ambient GI + local-light in-scatter
+        // (visibility gates ONLY the directional sun term — under a
+        // roof the sun shaft dies, the ambient fog stays). Same
+        // single-scattering discipline as the local-light leg: no
+        // occlusion for the ambient/local legs (their shadowing does
+        // not transfer; a proper multiple-scatter approximation would
+        // be a separate feature).
+        // ----
         if (sunOn > 0.5)
-            source += sunHdr * (phase * max(vp.sunScale, 0.0f));
+        {
+            float visibility = 1.0;
+            if (shadowSun && sigma > 1e-6 && segIntensity > 1e-6)
+            {
+                visibility = SampleFogSunCSM(wpos, frame.view, atlasSize);
+                // The fogGiDebug==3 view's accumulator (see below).
+                visSum += visibility;
+                visCount += 1u;
+            }
+            source += sunHdr * (phase * max(vp.sunScale, 0.0f)) * visibility;
+        }
         // Quarantine: a non-finite baked probe amplitude (NaN/Inf) must cost
         // one segment's scatter, never a poisoned pixel (NaN out stores NaN
         // -> downstream sanitize -> black; Inf -> white block).
@@ -620,6 +741,24 @@ PSOut mainPS(PSIn IN)
     // the sampled extinction, and the reconstructed ray distance.
     if (vp.fogGiDebug == 2u) {
         OUT.outColor = float4(throughput.xxx, 1.0f);
+        return OUT;
+    }
+    // ---- The GOD-RAY visibility view (TOURMALINE_FOG_GI_DEBUG=3): the
+    // march's mean SampleFogSunCSM result over the segments that
+    // actually tapped — the ground-truth instrument for the CSM fog
+    // shadowing (coverage, compare direction, bias). White = all taps
+    // lit (or the gate off — no taps), black = all taps shadowed, the
+    // mid grays are the shaft structure. Replaces the composite.
+    // ----
+    if (vp.fogGiDebug == 3u) {
+        const float meanVis = visCount > 0u
+            ? visSum / float(visCount) : 1.0;
+        // The dbgGain pre-scale (Main's flat-debug-view trick: 1/
+        // exposure — the 0..1 range tonemaps to black under the
+        // physical-units manual exposure; verified the hard way: the
+        // gate-off run (meanVis exactly 1) read pure black without it).
+        const float dbgGain = 1.0 / max(frame.exposure, 1e-6);
+        OUT.outColor = float4((meanVis * dbgGain).xxx, 1.0f);
         return OUT;
     }
 

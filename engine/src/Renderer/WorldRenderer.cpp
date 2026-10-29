@@ -13028,6 +13028,27 @@ namespace engine {
 					volFogTileIndices =
 						m_viewportResources.forwardPlus.FogTileIndicesAddress(*m_context);
 				}
+				// ---- The CSM god-ray feed (volumetric.h's trailing args):
+				// the RAW D32 depth atlas + the scene push's cascade
+				// buffer/count (fc.pc — the same slice the surface
+				// shadows read). TWO hard rules:
+				//   1. NEVER light.shadow_map_index: it flips to the
+				//      blurred EVSM MOMENTS when EVSM is on, and the
+				//      fog's single-tap depth compare needs raw tile
+				//      values.
+				//   2. PCF mode only: under EVSM the caster passes render
+				//      moments INTO THE EVSM ATLAS and the raw depth
+				//      passes are SKIPPED (the AddMomentPass continue in
+				//      the shadow block) — the raw atlas holds stale
+				//      data, so the fog's god-rays gate off and the sun
+				//      leg keeps its original unshadowed behavior (the
+				//      plan's own "PCF/EVSM: disabled for fog" setting;
+				//      EVSM fog shadowing would need a moment evaluation
+				//      — a separate feature).
+				const bool volSunShadows = m_passes.directionalShadows
+					&& !EvsmActive()
+					&& m_viewportResources.directionalShadows.Valid()
+					&& fc.pc.cascadeBuffer != 0;
 				auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
 					*m_rendergraph,
 					sceneHdrView,
@@ -13048,7 +13069,19 @@ namespace engine {
 					// cullPC.maxFogPerTile = desc.maxFogPerTile) — the fog
 					// consumer derives its row stride from this value, so it
 					// must match what the producer wrote with.
-					m_viewportResources.forwardPlus.desc.maxFogPerTile);
+					m_viewportResources.forwardPlus.desc.maxFogPerTile,
+					// The god-ray feed (see volSunShadows' note): the raw
+					// atlas view also rides SetInputImages, so the graph
+					// orders the last cascade write before this read.
+					volSunShadows ? fc.pc.cascadeBuffer : 0,
+					volSunShadows ? fc.pc.numCascades : 0u,
+					volSunShadows
+					? m_viewportResources.directionalShadows.logicalView
+					: smvk::LogicalImageViewHandle{},
+					volSunShadows
+					? m_context->GetBindlessIndex(
+						m_viewportResources.directionalShadows.bindless)
+					: UINT32_MAX);
 				// Convex-volume tile masks: the fog march reads the per-tile
 				// volume bitmask (fragment) after the tile cull wrote it
 				// (compute) - order the edge (same freshness contract as the

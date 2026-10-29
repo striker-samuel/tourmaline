@@ -113,15 +113,29 @@ inline void ApplyVolumetricQuality(VolumetricDesc& d, VolumetricQuality q) {
 	d.resolutionDivisor = 1;
 }
 
-// Must match volumetric.frag.hlsl VolumetricPush (128 bytes).
+// Must match volumetric.frag.hlsl VolumetricPush (132 B of members +
+// 4 B tail alignment). The three repurposed slots were DEAD fields the
+// shader never read (the plan's no-enlargement rule):
+//   - texelX/texelY (24): the output texel — the shader derives its
+//     sizes from depthTexelSize; the outputs are 1:1 anyway (divisor
+//     pinned to 1) -> the CSM cascade-buffer BDA (8-aligned, mid-
+//     struct like the fogTile* BDAs below).
+//   - useGi (64): the octree probes toggle, retired with .sggi (the
+//     HLSL side already carried it as pad0) -> the raw CSM depth
+//     atlas bindless index. VolumetricDesc::useGi STAYS (the desc
+//     field other code reads); only the push slot is repurposed.
+//   - time (88): the march dither is deliberately static (see the
+//     shader's jitter note) -> the cascade count (0 = no CSM fog
+//     shadowing: the unshadowed sun leg, the original behavior).
 struct VolumetricPush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice
 	uint32_t hdrTextureIndex = UINT32_MAX;
 	uint32_t depthTextureIndex = UINT32_MAX;
 	uint32_t samplerIndex = 0;
 	uint32_t steps = 16;
-	float texelX = 0.0f;        // output texel (1/outputExtent)
-	float texelY = 0.0f;
+	// The CSM cascade buffer (GpuDirectionalLightDescription slice) —
+	// the god-ray leg's SelectCascadeGpu/lightVP/uv*/bias source.
+	uint64_t cascadeBuffer = 0;
 	float depthTexelX = 0.0f;   // full-res depth texel (1/depthExtent)
 	float depthTexelY = 0.0f;
 	float maxDistance = 80.0f;
@@ -130,13 +144,16 @@ struct VolumetricPush {
 	float anisotropy = 0.4f;
 	float sunScale = 1.0f;
 	float giScale = 1.0f;
-	uint32_t useGi = 1;
+	// The RAW CSM depth atlas (NEVER the EVSM blurred moments — see
+	// the call site's note). UINT32_MAX = no fog sun shadowing.
+	uint32_t shadowDepthIndex = UINT32_MAX;
 	uint32_t useSun = 1;
 	uint32_t useGiVolumes = 1; // 1 = GI volumes stack into the fog GI
 	float jitterStrength = 1.0f;
 	float heightFalloff = 0.0f;
 	float heightBase = 0.0f;
-	float time = 0.0f;
+	// 0 = the sun leg stays unshadowed (no CSM / shadows off).
+	uint32_t numCascades = 0;
 	uint32_t fogGiSource = 0; // 0=worldfield (default), 1=octree (A/B), 2=sky-only
 	// Forward+ light feed for fog in-scatter (the forward tiled lights
 	// contribute to the march, not just the surfaces): the DEDICATED fog
@@ -154,11 +171,22 @@ struct VolumetricPush {
 	uint32_t fpLightCount = 0;   // lights-only bound (probes sort after)
 	uint32_t fogMaxPerTile = 16; // fog list stride (matches the cull push)
 	uint32_t fogGiDebug = 0;     // 0 = off, 1 = the BC4 coverage view, 2 = the
-	                              //     transmittance view (throughput.xxx)
+	                              //     transmittance view (throughput.xxx),
+	                              //     3 = the god-ray sun-visibility view
 };
 // 132 B of members + 4 B tail alignment (the uint64_t BDAs): the HLSL
 // push block reads through 132; the padded C++ tail is dead bytes.
 static_assert(sizeof(VolumetricPush) == 136);
+// The repurposed slots (the no-enlargement contract): the cascade BDA
+// lands on the old texelSize float2, the atlas index on the retired
+// useGi, the count on the dead time — all three 8/4-aligned exactly as
+// the HLSL mirror packs them (see the struct's header note).
+static_assert(offsetof(VolumetricPush, cascadeBuffer) == 24,
+	"VolumetricPush cascadeBuffer mirror drift (was texelSize)");
+static_assert(offsetof(VolumetricPush, shadowDepthIndex) == 64,
+	"VolumetricPush shadowDepthIndex mirror drift (was useGi)");
+static_assert(offsetof(VolumetricPush, numCascades) == 88,
+	"VolumetricPush numCascades mirror drift (was time)");
 
 // Default SPVs (fullscreen-triangle VS shared with tonemap + volumetric PS).
 inline constexpr const char* kVolumetricVsPath = "content/shaders/tonemap.vert.hlsl.spv";
@@ -321,6 +349,16 @@ struct VolumetricFog {
 	// Emits the HDR -> HDR volumetric composite. Captures only copyable
 	// handles/indices, so the pass is safe once this call returns.
 	// depthExtent = full-res depth size (for .Load mapping when divisor > 1).
+	// The four trailing args are the CSM god-ray feed (appended to
+	// preserve existing callers; defaults = the original unshadowed sun
+	// leg): cascadeBufferAddr = the GpuDirectionalLightDescription
+	// slice BDA (the scene push's pc.cascadeBuffer), numCascadesIn =
+	// pc.numCascades (0 disables), shadowDepthView/Index = the RAW CSM
+	// depth atlas — NEVER the EVSM blurred moments (light.shadow_map_
+	// index flips to those when EVSM is on, but the fog's single-tap
+	// depth compare needs the raw D32 tile values). The atlas rides
+	// SetInputImages so the graph orders the last shadow write before
+	// this read.
 	RenderPass& AddVolumetricPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -340,12 +378,18 @@ struct VolumetricFog {
 		uint64_t fogTileIndicesAddr = 0,
 		uint64_t fpLightsAddr = 0,
 		uint32_t fpLightCountIn = 0,
-		uint32_t fogMaxPerTileIn = 16) const {
+		uint32_t fogMaxPerTileIn = 16,
+		// The CSM god-ray feed (see the signature note above).
+		uint64_t cascadeBufferAddr = 0,
+		uint32_t numCascadesIn = 0,
+		LogicalImageViewHandle shadowDepthView = LogicalImageViewHandle{},
+		uint32_t shadowDepthBindlessIndex = UINT32_MAX) const {
 		assert(Valid());
 		assert(!hdrView.empty() && hdrBindlessIndex != UINT32_MAX);
 		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
 		assert(frameUniformsAddr != 0);
 		assert(extent.width != 0 && extent.height != 0);
+		(void)frameTime; // signature stability (the time slot is numCascades now)
 
 		VolumetricPush push{};
 		push.frameUniforms = frameUniformsAddr;
@@ -353,8 +397,7 @@ struct VolumetricFog {
 		push.depthTextureIndex = depthBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
 		push.steps = std::clamp(overrideDesc.steps, 4u, 128u);
-		push.texelX = 1.0f / static_cast<float>(extent.width);
-		push.texelY = 1.0f / static_cast<float>(extent.height);
+		push.cascadeBuffer = cascadeBufferAddr;
 		push.depthTexelX = 1.0f / static_cast<float>(std::max(1u, depthExtent.width));
 		push.depthTexelY = 1.0f / static_cast<float>(std::max(1u, depthExtent.height));
 		push.maxDistance = (std::max)(1.0f, overrideDesc.maxDistance);
@@ -363,7 +406,18 @@ struct VolumetricFog {
 		push.anisotropy = std::clamp(overrideDesc.anisotropy, -0.9f, 0.9f);
 		push.sunScale = (std::max)(0.0f, overrideDesc.sunScale);
 		push.giScale = (std::max)(0.0f, overrideDesc.giScale);
-		push.useGi = overrideDesc.useGi ? 1u : 0u;
+		// The god-ray gate: everything must be bound (count, buffer,
+		// atlas index AND view — the view is what orders the last CSM
+		// write before this read; an index alone would race the shadow
+		// pass). useSun stays the artistic master (off = no sun leg,
+		// so no taps either).
+		const bool sunShadowsEnabled = numCascadesIn > 0
+			&& cascadeBufferAddr != 0
+			&& shadowDepthBindlessIndex != UINT32_MAX
+			&& !shadowDepthView.empty();
+		push.shadowDepthIndex = sunShadowsEnabled
+			? shadowDepthBindlessIndex : UINT32_MAX;
+		push.numCascades = sunShadowsEnabled ? numCascadesIn : 0u;
 		push.useSun = overrideDesc.useSun ? 1u : 0u;
 		push.useGiVolumes = overrideDesc.useGiVolumes ? 1u : 0u;
 		push.fogTileCounts = fogTileCountsAddr;
@@ -374,7 +428,9 @@ struct VolumetricFog {
 		push.jitterStrength = std::clamp(overrideDesc.jitterStrength, 0.0f, 1.0f);
 		push.heightFalloff = (std::max)(0.0f, overrideDesc.heightFalloff);
 		push.heightBase = overrideDesc.heightBase;
-		push.time = frameTime;
+		// (frameTime stays a parameter for signature stability; the old
+		// push.time slot it fed is repurposed as numCascades — the march
+		// dither is deliberately static, see the shader's jitter note.)
 		// The fog-GI A/B source toggle (TOURMALINE_FOG_GI_SOURCE):
 		// 0/unset = worldfield (the default BC6H mean field — the shader
 		// falls to the sky mean wherever the field is not resident, so
@@ -397,14 +453,21 @@ struct VolumetricFog {
 		// review's prescribed density probe, replacing the composite).
 		push.fogGiDebug = [] {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_DEBUG");
-			return e ? uint32_t(std::clamp(std::atoi(e), 0, 2)) : 0u;
+			return e ? uint32_t(std::clamp(std::atoi(e), 0, 3)) : 0u;
 		}();
 
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");
 		pass.SetOffset(0, 0)
-			.SetExtent(extent)
-			.SetInputImages({ hdrView, depthView })
-			.SetColor({ logicalView },
+			.SetExtent(extent);
+		// The raw CSM depth atlas is a sampled input only while the
+		// god-ray leg runs (the graph owns the last-shadow-write ->
+		// this-read ordering through the logical view; the Main pass
+		// binds the same view for its surface shadows).
+		if (sunShadowsEnabled)
+			pass.SetInputImages({ hdrView, depthView, shadowDepthView });
+		else
+			pass.SetInputImages({ hdrView, depthView });
+		pass.SetColor({ logicalView },
 				AttachmentLoadOp::DontCare,
 				AttachmentStoreOp::Store);
 		ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
@@ -433,9 +496,15 @@ struct VolumetricFog {
 		uint32_t linearSamplerIndex,
 		Extent2D depthExtent,
 		float frameTime,
-		const char* name = nullptr) const {
+		const char* name = nullptr,
+		uint64_t cascadeBufferAddr = 0,
+		uint32_t numCascadesIn = 0,
+		LogicalImageViewHandle shadowDepthView = LogicalImageViewHandle{},
+		uint32_t shadowDepthBindlessIndex = UINT32_MAX) const {
 		return AddVolumetricPass(rg, hdrView, hdrBindlessIndex, depthView, depthBindlessIndex,
-			frameUniformsAddr, linearSamplerIndex, depthExtent, frameTime, desc, name);
+			frameUniformsAddr, linearSamplerIndex, depthExtent, frameTime, desc, name,
+			0, 0, 0, 0, 16, cascadeBufferAddr, numCascadesIn,
+			shadowDepthView, shadowDepthBindlessIndex);
 	}
 };
 
