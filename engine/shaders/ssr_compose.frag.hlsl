@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "hzb.hlsli"
+#include "ssr_receiver.hlsli"
 
 // SSR composite: depth-guided bilateral upsample of the half-res blurred
 // reflection layer onto the FULL-res base HDR (additive).
@@ -46,12 +47,19 @@ struct PSOut
 };
 #endif
 
-// Must match Engine/Rendergraph/ssr.h SsrComposePush (64 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrComposePush (80 bytes).
 // uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
+// receiverData: the classify's packed receiver metadata (the half-res
+// tap normals for the upsample's normal agreement); gbufferTextureIndex:
+// the FULL-res thin G-buffer (the center normal's source — the center
+// must be the pixel's OWN normal, not a block representative, or edge
+// detection weakens exactly where upsampling needs it). 0xffffffff on
+// either = depth-only (the MSAA/no-G-buffer fallback).
 struct SsrComposePush
 {
     vk::BufferPointer<FrameUniforms> frameUniforms;
     vk::BufferPointer<HzbBuffer> hzb; // MAX-HZB: mip0 center, mip1 reps
+    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
     uint blurTextureIndex;  // half-res blurred reflection (rgb, confidence)
     uint hdrTextureIndex;   // full-res base HDR
     uint samplerIndex;      // linear clamp (HDR + reflection taps)
@@ -68,6 +76,8 @@ struct SsrComposePush
     uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
     uint hzbMip1Stride; // mip1 row stride (floats)
     float vignetteWidth; // NDC edge fade width (outer % of NDC range)
+    uint gbufferTextureIndex; // full-res thin G-buffer (center normal)
+    uint pad0;
 };
 
 [[vk::push_constant]]
@@ -107,6 +117,18 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                          (float(fullPx.y) + 0.5f) * cp.invDepthH * 2.0f - 1.0f);
     float centerDist = DofViewDist(d, ndcC, frame.invProj);
 
+    // Center normal: the pixel's OWN full-res G-buffer normal (not a
+    // half-res block representative — a representative would weaken
+    // edge detection exactly where the upsample needs it). World-space
+    // oct, same domain as the receiver metadata's tap normals.
+    bool haveNormals = cp.gbufferTextureIndex != 0xffffffffu;
+    float3 centerN = float3(0.0f, 0.0f, 1.0f);
+    if (haveNormals)
+    {
+        Texture2D gbTex = textures[NonUniformResourceIndex(cp.gbufferTextureIndex)];
+        centerN = SsrOctDecode(gbTex.Load(int3(fullPx, 0)).xy);
+    }
+
     // Half-res reflection extent derived from the full-res depth extent
     // (max(1, floor(n / 2)), same as Ssao::HalfExtentFor).
     float2 halfExtent = max(
@@ -142,6 +164,17 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             float2 halfUv = (float2(hp) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
             float4 tap = blurTex.Sample(smp, halfUv);
             float w = SsrUpEdgeWeight(bDist, centerDist, cp.sharpness);
+            // Normal agreement: the tap's RECEIVER normal (the block's
+            // selected surface) against the pixel's own full-res
+            // normal — same-depth surfaces with different orientations
+            // (wall meets floor) stop bleeding halos into each other.
+            // Gated: no G-buffer = the old depth-only weights.
+            if (haveNormals)
+            {
+                float4 repGb = SsrUnpackReceiver(cp.receiverData.Get().v[
+                    (uint) hp.y * (uint) halfExtent.x + (uint) hp.x]);
+                w *= SsrNormalWeight(centerN, SsrOctDecode(repGb.xy));
+            }
             accRgb += tap.rgb * w;
             accA += tap.a * w;
             wSum += w;

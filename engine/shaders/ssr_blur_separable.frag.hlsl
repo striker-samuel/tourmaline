@@ -137,12 +137,16 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // -> radius 2.
     float roughness = 0.0f;
     bool metal = false;
+    bool haveNormals = false;
+    float3 centerN = float3(0.0f, 0.0f, 1.0f);
     if (bp.gbufferTextureIndex != 0xffffffffu)
     {
         float4 gb = SsrUnpackReceiver(bp.receiverData.Get().v[
             (uint) halfPx.y * bp.halfW + (uint) halfPx.x]);
         roughness = saturate(gb.b);
         metal = gb.a >= 0.5f;
+        centerN = SsrOctDecode(gb.xy);
+        haveNormals = true;
     }
     const int radius = (metal && roughness >= 0.35f)
         ? (roughness < 0.7f ? 3 : 4)
@@ -180,6 +184,17 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 
         float w = SsrAxisWeight(k)
             * SsrEdgeWeight(tapDist, centerDist, bp.sharpness);
+        // Normal agreement (the receiver metadata's oct normals, world
+        // space both sides — the 2D shader's note): separates
+        // same-depth surfaces the depth weight cannot tell apart.
+        // Gated so the no-G-buffer fallback keeps the old depth-only
+        // weights.
+        if (haveNormals)
+        {
+            float4 tapGb = SsrUnpackReceiver(bp.receiverData.Get().v[
+                (uint) thp.y * bp.halfW + (uint) thp.x]);
+            w *= SsrNormalWeight(centerN, SsrOctDecode(tapGb.xy));
+        }
         acc += tap * w;
         wSum += w;
     }

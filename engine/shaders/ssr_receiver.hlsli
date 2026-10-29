@@ -80,6 +80,23 @@ float4 SsrUnpackReceiver(uint packed)
 static const uint kSsrReceiverNoData =
     128u | (128u << 8) | (255u << 16) | (0u << 24); // 0x00FF8080
 
+// Normal-similarity weight for the bilateral filters (the blur's taps
+// + the composite's upsample): ~1 for similarly oriented surfaces,
+// falling to 0 as orientations diverge — two surfaces at nearly the
+// SAME depth but different normals (a wall meeting a floor, a step's
+// riser vs its tread) stay separated, where the depth weight alone
+// cannot tell them apart. Both normals must be in the SAME space: the
+// packed receivers are WORLD-space oct (the thin G-buffer's domain) —
+// decode both, never rotate just one into view space. The 0.75..0.98
+// smoothstep band is a tuning value, not a physical constant (raise
+// the floor for tighter rejection if reflections bleed across creases;
+// lower it if smooth curved surfaces tear apart).
+float SsrNormalWeight(float3 centerN, float3 tapN)
+{
+    float nd = saturate(dot(centerN, tapN));
+    return smoothstep(0.75f, 0.98f, nd);
+}
+
 // Octahedral decode of the G-buffer RG (the inverse of
 // gbuffer.frag.hlsl OctEncodeNormal; same fold/sign as
 // vertex_pack.hlsli OctDecodeNormal). Lived in ssr_compute.hlsli

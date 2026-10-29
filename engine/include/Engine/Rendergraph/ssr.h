@@ -349,14 +349,19 @@ struct SsrSeparableBlurPush {
 };
 static_assert(sizeof(SsrSeparableBlurPush) == 72);
 
-// Must match ssr_compose.frag.hlsl SsrComposePush (64 bytes).
+// Must match ssr_compose.frag.hlsl SsrComposePush (80 bytes).
 // SSGI shared-HZB rework: center depth from HZB mip0 (the exact 1:1
 // depth copy), each tap block's representative from mip1
 // (nearest-of-2x2 = the exact value the old per-tap 4-load quad max
 // derived). No depthTextureIndex, no depth image input; hzb* REQUIRED.
+// receiverData: the classify's packed receiver metadata (the upsample's
+// tap normals) — REQUIRED while gbufferTextureIndex is bound.
+// gbufferTextureIndex: the FULL-res thin G-buffer (the center normal).
+// UINT32_MAX on either = depth-only (the MSAA/no-G-buffer fallback).
 struct SsrComposePush {
 	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
 	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip0/mip1 reads)
+	uint64_t receiverData = 0; // BDA of the packed receiver metadata (tap normals)
 	uint32_t blurTextureIndex = UINT32_MAX; // half-res blurred reflection
 	uint32_t hdrTextureIndex = UINT32_MAX; // full-res base HDR
 	uint32_t samplerIndex = 0; // linear clamp (HDR + reflection taps)
@@ -375,8 +380,10 @@ struct SsrComposePush {
 	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
 	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
 	float vignetteWidth = 0.15f; // NDC edge fade width (outer % of NDC range)
+	uint32_t gbufferTextureIndex = UINT32_MAX; // full-res thin G-buffer (center normal)
+	uint32_t pad0 = 0;
 };
-static_assert(sizeof(SsrComposePush) == 64);
+static_assert(sizeof(SsrComposePush) == 80);
 
 // Temporal (TAA) state for the SSR reflection layer: one per renderer,
 // advanced once per recorded frame (record cadence, never per-image —
@@ -1569,6 +1576,7 @@ ShaderProgram progCopy = copyProgram;
 		SsrComposePush push{};
 		push.frameUniforms = frameUniformsAddr;
 		push.hzb = hzbAddr;
+		push.receiverData = receiverDataAddr;
 		push.blurTextureIndex = blurred.bindlessIndex;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
@@ -1587,8 +1595,13 @@ ShaderProgram progCopy = copyProgram;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
 		push.vignetteWidth = overrideDesc.vignetteWidth;
+		// The upsample's normal agreement: the full-res center normal
+		// (the thin G-buffer) + the tap normals (the receiver metadata).
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { blurred.logical, hdrView };
+		if (gbufferOn)
+			composeInputs.push_back(gbufferView); // the center normal
 		if (!envSpecView.empty() && envSpecBindlessIndex != UINT32_MAX)
 			composeInputs.push_back(envSpecView);
 		// Contribution debug (desc.debugContrib): bind the .dbg twin (the
@@ -1613,6 +1626,12 @@ ShaderProgram progCopy = copyProgram;
 			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
 			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 			pass.AddBufferHint(hzbLogical, hzbRead);
+			// Receiver metadata read (the tap normals): barrier the
+			// classify's compute writes.
+			BufferSyncRequest recvRead{};
+			recvRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(receiverData.logical, recvRead);
 		}
 		ShaderProgram progCopy = contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
@@ -1957,6 +1976,7 @@ push.frameUniforms = frameUniformsAddr;
 		SsrComposePush push{};
 		push.frameUniforms = frameUniformsAddr;
 		push.hzb = hzbAddr;
+		push.receiverData = receiverDataAddr;
 		push.blurTextureIndex = histCurr.bindlessIndex;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.samplerIndex = linearSamplerIndex;
@@ -1974,8 +1994,13 @@ push.frameUniforms = frameUniformsAddr;
 		push.fullH = extent.height;
 		push.hzbMip1Offset = hzbMip1Offset;
 		push.hzbMip1Stride = hzbMip1Stride;
+		// The upsample's normal agreement (the spatial variant's pair):
+		// the full-res center normal + the tap normals.
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
 
 		std::vector<LogicalImageViewHandle> composeInputs = { histCurr.logical, hdrView };
+		if (gbufferOn)
+			composeInputs.push_back(gbufferView); // the center normal
 		if (!envSpecView.empty() && envSpecBindlessIndex != UINT32_MAX)
 			composeInputs.push_back(envSpecView);
 		// Contribution debug (desc.debugContrib): bind the .dbg twin (the
@@ -1999,6 +2024,12 @@ push.frameUniforms = frameUniformsAddr;
 			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
 			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
 			pass.AddBufferHint(hzbLogical, hzbRead);
+			// Receiver metadata read (the tap normals): barrier the
+			// classify's compute writes.
+			BufferSyncRequest recvRead{};
+			recvRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(receiverData.logical, recvRead);
 		}
 		ShaderProgram progCopy = contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
 			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
