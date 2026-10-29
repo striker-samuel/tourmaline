@@ -32,9 +32,12 @@
 //     nearest-surface per block) in the BDA HzbBuffer with manual mip
 //     offsets (mirroring gfx_filter.h's HzbMipCount layout byte-for
 //     byte) — NOT a texture chain.
-// The miss case writes nothing (the classify zeroed every non-ray
-// pixel's radiance; the miss-silence keeps the analytic sky IBL the
-// sole sky contributor — no envmap double-count).
+// The miss case: the ray's OWN radiance slot is zeroed at the top of
+// mainCS (the early rejects return before any other write — see the
+// SLOT OWNERSHIP note there) and every reject path past the traversal
+// writes SSR_MISS; the classify zeroes the non-ray pixels (the
+// miss-silence keeps the analytic sky IBL the sole sky contributor —
+// no envmap double-count).
 
 // Must match Engine/Rendergraph/ssr.h SsrIntersectPush (120 bytes).
 // uint64 BDAs lead (see ssr.h — scalars never precede a BDA).
@@ -201,8 +204,22 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     bool copyH, copyV, copyD;
     SsrUnpackRayCoords(packed, coords, copyH, copyV, copyD);
 
+    // SLOT OWNERSHIP, part 1 (the stale-radiance fix): the classify
+    // zeroes only NON-ray pixels; this ray's OWN slot is the
+    // intersect's to write — and the early rejects below (the stale
+    // ray, the matte re-check, the degenerate direction) return before
+    // the SSR_MISS macro is even defined, so they used to leave the
+    // slot holding LAST FRAME's radiance in the reused buffer (moving
+    // cuts parked ghosts). Zero it IMMEDIATELY after the unpack —
+    // every later path overwrites it (the hit sample or SSR_MISS),
+    // so the early rejects fall through safe. The quad-COPY siblings
+    // stay the late writes' job (only the final sample knows the copy
+    // semantics — and the copy flags are packed false today:
+    // is_base_ray = true).
+    sp.radiance.Get().v[coords.y * sp.halfW + coords.x] =
+        float4(0.0f, 0.0f, 0.0f, 0.0f);
+
     FrameUniforms frame = sp.frameUniforms.Get();
-    float2 halfExtent = float2(sp.halfW, sp.halfH);
     float2 fullExtent = float2(1.0f / max(sp.invDepthW, 1e-9f),
                                1.0f / max(sp.invDepthH, 1e-9f));
 
@@ -237,7 +254,19 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         return;
     bool is_mirror = SsrIsMirrorReflection(roughness);
 
-    float2 uv = (float2(coords) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
+    // RAY-ORIGIN CONSISTENCY (the two-origins fix): viewPos
+    // unprojects the SELECTED receiver (fullPxC + dBest — the block's
+    // nearest valid texel), but the screen-space ray used to start
+    // from the half-res pixel CENTER (coords + 0.5) — a different
+    // point, up to half a full-res texel away per axis, and across a
+    // depth edge a DIFFERENT surface's pixel. The march then treated
+    // screenOrigin and viewPos as the same projected ray. One
+    // coordinate system now: the screen origin IS the receiver's own
+    // full-res pixel (the exact point viewPos unprojects; the
+    // self-intersection check below compares against it too). coords
+    // remain the radiance SLOT domain only.
+    float2 receiverUv = (float2(fullPxC) + 0.5f)
+        * float2(sp.invDepthW, sp.invDepthH);
     float3 viewPos = SsrUnprojectView(SsrFullNdc(fullPxC), dBest, frame.invProj);
     float3 V = -viewPos / max(length(viewPos), 1e-6f);
     // SPACE FIX: the G-buffer oct normal is WORLD space (gbuffer.frag
@@ -265,10 +294,11 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     // surface-to-camera below (the Fresnel ndv).
     float3 Rview = SsrSampleReflectionVector(
         normalize(viewPos), N, roughness, rnd.x, rnd.y);
-    float3 screenOrigin = float3(uv, dBest);
+    float3 screenOrigin = float3(receiverUv, dBest);
     float3 screenDir = SsrProjectDirection(viewPos, Rview, screenOrigin, frame.proj);
     // Behind-camera rays never hit (the SDK relies on the frustum
-    // reject below; guard the degenerate direction explicitly).
+    // reject below; guard the degenerate direction explicitly). Safe
+    // as a bare return: the slot was zeroed at the top.
     if (length(screenDir.xy) <= 1e-9f)
         return;
 
@@ -335,6 +365,19 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         if (!outOfRange)
         {
             curMip += skipped ? 1 : -1;
+            // BOUNDS BEFORE THE TABLE READS (the OOB fix): a successful
+            // refine past the finest mip is the traversal's HIT exit —
+            // mirror rays (finestMip 0) drove curMip to -1 and the reads
+            // below touched hzbW[-1] before the while condition caught
+            // it (dead values, the compiler may drop them, but the
+            // source read was out of bounds). Leaving the TOP of the
+            // pyramid is the miss-side belt (the outOfRange guard above
+            // normally catches that first). validHit below keeps its
+            // meaning: ONLY the refined-past-finest exit is a hit; the
+            // budget-exhaustion, occupancy, and out-of-pyramid exits
+            // stay misses.
+            if (curMip < finestMip || curMip >= mipCount)
+                break;
             // EXACT per-mip resolution (the old *0.5/2.0 drift): the HZB
             // halves with ceiling ((w+1)>>1 - a 15-wide mip becomes 8,
             // not 7.5), so the traversal's hand-scaled mipRes silently
@@ -383,7 +426,12 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         SSR_MISS()
     if (!(hit.x >= 0.0f && hit.y >= 0.0f && hit.x <= 1.0f && hit.y <= 1.0f))
         SSR_MISS()
-    float2 manhattan = abs(hit.xy - uv);
+    // Self-intersection: the 2px manhattan radius is measured from the
+    // RECEIVER's own pixel (the ray's actual origin — the two-origins
+    // fix; the old half-res block center could sit a texel away from
+    // the receiver and shrink/grow the reject window around the wrong
+    // point).
+    float2 manhattan = abs(hit.xy - receiverUv);
     if (manhattan.x < (2.0f / fullExtent.x) && manhattan.y < (2.0f / fullExtent.y))
         SSR_MISS()
     int2 hitPx = int2(clamp(hit.xy * fullExtent,
