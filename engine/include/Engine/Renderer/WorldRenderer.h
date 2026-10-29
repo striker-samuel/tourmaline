@@ -2714,6 +2714,22 @@ public:
 	float m_ssrIntensity = 1.0f; // reflection strength
 	float m_ssrF0 = 0.04f; // dielectric base reflectance (glass)
 	float m_ssrBlurSharpness = 10.0f; // bilateral depth edge weight (higher = tighter)
+	// Blur filter (see smvk::SsrBlurMode): 0 = the original 2D bilateral
+	// (quality baseline), 1 = the separable H+V candidate (same bilateral
+	// weights as two 1D passes through the ssrBlurTemp intermediate).
+	// Per-recording — no target rebuild on a flip; the temporal history
+	// invalidates instead (m_ssrLastBlurMode below).
+	int m_ssrBlurMode = 0;
+	int m_ssrLastBlurMode = 0; // live-switch detector -> SSR TAA history reset
+	// ---- Debug material override (the SSR blur-bucket test rig) ----
+	// Overwrites EVERY uploaded material's metallic/roughness (UpdateMaterials:
+	// params.y/z + the metallicRoughness texture slot disabled so the
+	// slider IS the final value). One knob re-skins the whole scene — the
+	// lit path, the thin G-buffer and the SSR blur radius buckets
+	// (metal + 0.35/0.7 roughness thresholds) all read the same table.
+	bool m_debugMaterialOverride = false;
+	float m_debugMaterialRoughness = 0.5f;
+	float m_debugMaterialMetallic = 0.0f;
 	// ---- SSR temporal filter (TAA of the reflection layer only) ----
 	// Motion-vector-reprojected accumulation of the half-res reflection
 	// layer (see SsrTaaState in ssr.h). The base HDR is never filtered.

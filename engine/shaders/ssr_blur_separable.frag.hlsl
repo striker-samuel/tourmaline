@@ -1,0 +1,180 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#define SSR_PASS
+#include "common.hlsli"
+#include "dof.hlsli"
+#include "hzb.hlsli"
+
+// SSR separable blur: the H+V twin of ssr_blur.frag.hlsl (the 2D
+// bilateral stays the quality baseline — SsrBlurMode::Bilateral2D).
+// The 2D pass costs (2r+1)^2 taps/px (25/49/81 at the radius 2/3/4
+// buckets); this shader runs the SAME bilateral weights as two 1D
+// passes (H then V, selected by bp.axis) for 2*(2r+1) taps/px across
+// both (10/14/18) — the intermediate lands in ssrBlurTemp, the V pass
+// writes the same ssrBlur target the temporal/composite chain already
+// consumes.
+//
+// Depth discipline (the correctness-critical part): BOTH passes weight
+// their taps against the ORIGINAL scene HZB mip1 depths, never against
+// the intermediate image — the H pass already spreads color+confidence
+// across boundaries the bilateral depth weight would have rejected, and
+// a V pass weighting against filtered data could not undo that. Reading
+// the raw scene depth in V keeps the cross-surface rejection the 2D
+// kernel had; the residual difference is that H-crossed values at a
+// SAME-depth V tap survive (a small bright-edge bleed vs the 2D pass —
+// raise SsrDesc.blurSharpness if it reads).
+//
+// Everything else is the 2D shader verbatim: the center mip1 quad-max
+// read + background rejection, the infinite reversed-Z near/d view
+// distance, the receiver roughness/metal radius buckets (2/3/4 rings,
+// metals only — dielectrics keep the 5x5-equivalent radius 2), the
+// {6,4,1}+halving axis weights, and the whole-float4 accumulation so
+// rgb and the alpha confidence stay premultiplied-consistent.
+
+struct PSIn
+{
+    float2 uv : TEXCOORD0;
+};
+
+struct PSOut
+{
+    float4 outColor : SV_Target0; // RGBA16F blurred reflection layer
+};
+
+// Must match Engine/Rendergraph/ssr.h SsrSeparableBlurPush (64 bytes).
+// Field order is SsrBlurPush verbatim through gbufferTextureIndex, then
+// the axis selector + pad (the H and V passes share ONE compiled
+// program — axis is a push constant, not a shader variant). All-scalar
+// layout on purpose (see SsrBlurPush's straddling-vector comment).
+struct SsrSeparableBlurPush
+{
+    vk::BufferPointer<FrameUniforms> frameUniforms;
+    vk::BufferPointer<HzbBuffer> hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
+    uint reflTextureIndex;  // half-res source (raw for H, blurTemp for V)
+    uint samplerIndex;      // linear clamp (reflection taps only)
+    float sharpness; // depth edge weight (higher = tighter)
+    float texelX;    // 1 / half-res width
+    float texelY;    // 1 / half-res height
+    uint hzbMip1Offset; // float offset of mip1 in the HZB buffer
+    uint hzbMip1Stride; // mip1 row stride (floats)
+    uint halfW;    // half-res extent (BDA tap clamp domain)
+    uint halfH;
+    uint gbufferTextureIndex; // thin G-buffer (RGBA8: receiver roughness
+                              // -> radius bucket); 0xffffffff = legacy
+                              // mirror (no G-buffer -> radius 2)
+    uint axis;  // 0 = horizontal (raw -> blurTemp), 1 = vertical (blurTemp -> blurred)
+    uint pad0;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<SsrSeparableBlurPush> bp;
+
+// Relative-depth edge weight: 1 on the same surface, ~0 across a
+// discontinuity. Background taps carry the sky sentinel distance, so a
+// geometry|sky step collapses the weight to ~0 at worst.
+float SsrEdgeWeight(float tapDist, float centerDist, float sharpness)
+{
+    float depthDiff = abs(tapDist - centerDist) / max(centerDist, 1e-3f);
+    return exp(-depthDiff * max(sharpness, 0.0f));
+}
+
+// Axis weight: the 5x5's {6,4,1} table kept EXACT for radius 2 (the
+// validated smooth look, bit-identical); wider radii continue the
+// falloff (halving per ring past 2 — the tail spreads the rough lobe,
+// the bilateral depth weights still own the seams).
+float SsrAxisWeight(int k)
+{
+    const int a = abs(k);
+    if (a == 0) return 6.0f;
+    if (a == 1) return 4.0f;
+    if (a == 2) return 1.0f;
+    return exp2(-(float)(a - 2)); // |k| 3 -> 0.5, 4 -> 0.25
+}
+
+PSOut mainPS(float4 pos : SV_Position, PSIn IN)
+{
+    PSOut OUT;
+    FrameUniforms frame = bp.frameUniforms.Get();
+    Texture2D reflTex = textures[NonUniformResourceIndex(bp.reflTextureIndex)];
+    SamplerState smp = samplers[NonUniformResourceIndex(bp.samplerIndex)];
+    float nearPlane = max(frame.nearPlane, 1e-4f);
+
+    int2 halfPx = int2(pos.xy);
+
+    // Center 2x2 block: HZB mip1 IS the block's quad MAX — the nearest
+    // valid tap (reverse-Z: max depth; sky writes 0 so the max ignores
+    // it; an all-background block reads 0) — the exact value the old
+    // 4-load quad max derived, as ONE BDA scalar.
+    float dCenter = bp.hzb.Get().texels[
+        bp.hzbMip1Offset + (uint) halfPx.y * bp.hzbMip1Stride + (uint) halfPx.x];
+    if (DofIsBackgroundOrGarbage(dCenter))
+    {
+        OUT.outColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return OUT;
+    }
+    // Infinite reversed-Z: view distance = near / d (exact for this
+    // projection; the old code unprojected the winning tap's texel
+    // center — a sub-texel NDC placement difference only).
+    float centerDist = nearPlane / max(dCenter, 1e-6f);
+
+    // Receiver roughness + metal -> kernel radius bucket (the 2D
+    // shader's comment verbatim): metals keep full trace energy in the
+    // trace, so the blur owns their lobe spread — for metals only;
+    // dielectrics keep BOTH the (1-r)^2 fade and the radius-2 kernel
+    // (bit-identical to the old fixed 5x5). The radius is a coarse
+    // per-material knob: the receiver block's top-left full-res texel
+    // stands in for the receiver (a material-edge block borrows a
+    // neighbor's bucket — the depth bilateral weights already guard
+    // those seams). No G-buffer = the legacy mirror path: radius 2.
+    float roughness = 0.0f;
+    bool metal = false;
+    if (bp.gbufferTextureIndex != 0xffffffffu)
+    {
+        Texture2D gbTex = textures[NonUniformResourceIndex(bp.gbufferTextureIndex)];
+        float4 gb = gbTex.Load(int3(halfPx * 2, 0));
+        roughness = saturate(gb.b);
+        metal = gb.a >= 0.5f;
+    }
+    const int radius = (metal && roughness >= 0.35f)
+        ? (roughness < 0.7f ? 3 : 4)
+        : 2;
+
+    // The pass direction: one compiled program, axis via push constant.
+    const int2 dir = (bp.axis == 0u) ? int2(1, 0) : int2(0, 1);
+
+    // 1D bilateral along dir. rgb and confidence share the same
+    // bilateral weights so the layer stays premultiplied-consistent.
+    float4 acc = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float wSum = 0.0f;
+    [loop]
+    for (int k = -radius; k <= radius; ++k)
+    {
+        const int2 offset = k * dir;
+        float2 tapUv = IN.uv + float2(float(offset.x) * bp.texelX,
+                                      float(offset.y) * bp.texelY);
+        float4 tap = reflTex.Sample(smp, tapUv);
+
+        // Tap rep depth: ORIGINAL scene mip1 at the tap's half-res
+        // coords (never the intermediate image's depth — see the header
+        // note). The reflection TAPS are edge-clamped (the linear-clamp
+        // sampler); clamping the rep the same way pairs them
+        // consistently (border-ring taps survive with the edge rep).
+        int2 thp = clamp(
+            halfPx + offset,
+            int2(0, 0),
+            int2((int) bp.halfW - 1, (int) bp.halfH - 1));
+        float tapD = bp.hzb.Get().texels[
+            bp.hzbMip1Offset + (uint) thp.y * bp.hzbMip1Stride + (uint) thp.x];
+        float tapDist = DofIsBackgroundOrGarbage(tapD)
+            ? 1e5 // sky sentinel (matches dof.hlsli scale)
+            : nearPlane / max(tapD, 1e-6f);
+
+        float w = SsrAxisWeight(k)
+            * SsrEdgeWeight(tapDist, centerDist, bp.sharpness);
+        acc += tap * w;
+        wSum += w;
+    }
+    OUT.outColor = (wSum > 1e-5f) ? acc / wSum : float4(0.0f, 0.0f, 0.0f, 0.0f);
+    return OUT;
+}

@@ -1119,6 +1119,16 @@ namespace engine {
 		if (const char* ssrDbgEnv = std::getenv("TOURMALINE_SSR_DEBUG")) {
 			m_debugSsr = std::atoi(ssrDbgEnv) != 0;
 		}
+		// SSR blur-filter pin (TOURMALINE_SSR_BLUR=0|1): 0 = the 2D
+		// bilateral baseline (default), 1 = the separable H+V candidate
+		// (SSRBlurH + SSRBlurV through the ssrBlurTemp intermediate).
+		// Read at startup like TOURMALINE_SSR_DEBUG so the A/B bench
+		// matrix (TOURMALINE_SSR / _EVSM / _TRANSPARENCY / _AO) can pin
+		// the blur headless; the UI combo still wins interactively (this
+		// only seeds m_ssrBlurMode).
+		if (const char* ssrBlurEnv = std::getenv("TOURMALINE_SSR_BLUR")) {
+			m_ssrBlurMode = std::atoi(ssrBlurEnv) != 0 ? 1 : 0;
+		}
 
 		if (const char* iblEnv = std::getenv("TOURMALINE_IBL")) {
 			// Mute the analytic sky ambient (any ambient mode -> off;
@@ -4683,6 +4693,22 @@ namespace engine {
 				mats[i].textures.z = remapSlot(mat->values.textures.z);
 				mats[i].textures.w = remapSlot(mat->values.textures.w);
 				mats[i].textures2.x = remapSlot(mat->values.textures2.x);
+				// Debug material override (the SSR blur-bucket test rig,
+				// see the SSR UI panel): overwrite metallic/roughness for
+				// EVERY material — params.y/z — and disable the
+				// metallicRoughness texture slot so the slider IS the
+				// final value (the glTF factor x texel convention would
+				// otherwise keep the baked texels in charge). The lit
+				// path, the thin G-buffer (receiver classification) and
+				// the SSR blur radius buckets all read this one table,
+				// so the whole scene re-skins from two sliders.
+				if (m_debugMaterialOverride) {
+					mats[i].params.y =
+						std::clamp(m_debugMaterialMetallic, 0.0f, 1.0f);
+					mats[i].params.z =
+						std::clamp(m_debugMaterialRoughness, 0.0f, 1.0f);
+					mats[i].textures.y = -1;
+				}
 			}
 		}
 
@@ -8475,6 +8501,16 @@ namespace engine {
 			// reprojects exactly - warm the temporal chain up again.
 			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 		}
+		// SSR blur-mode live switch: the history was accumulated from the
+		// OTHER filter's output. Blending it against the new mode's result
+		// ghosts/smears across the switch AND hides the A/B quality
+		// difference (the old filter's tail dominates the blend for many
+		// frames). Reset so the first post-switch record warms up from the
+		// new mode's own blurred tap.
+		if (m_ssrBlurMode != m_ssrLastBlurMode) {
+			m_ssrLastBlurMode = m_ssrBlurMode;
+			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+		}
 		// Global T2x snapshot for this record: the jitter below, the
 		// history slot + subsample indices of the SMAA chain and the overlay
 		// all read this one snapshot so they always agree. Evaluated after
@@ -11813,6 +11849,12 @@ namespace engine {
 			ssrDesc.intensity = m_ssrIntensity;
 			ssrDesc.f0 = m_ssrF0;
 			ssrDesc.blurSharpness = m_ssrBlurSharpness;
+			// Blur filter (see SsrBlurMode): per-recording — the targets
+			// (incl. blurTemp) exist in both modes, so a live flip is just
+			// this field + the temporal-history reset at the frame head.
+			ssrDesc.blurMode = (m_ssrBlurMode == 1)
+				? smvk::SsrBlurMode::SeparableHV
+				: smvk::SsrBlurMode::Bilateral2D;
 			const bool ssrOn = m_passes.ssr && m_ssrEnabled
 				&& m_viewportResources.ssr.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
@@ -13250,6 +13292,36 @@ namespace engine {
 								ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
 								ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
 								ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
+								// Blur filter A/B (see smvk::SsrBlurMode): the 2D
+								// baseline vs the separable H+V candidate. The GPU
+								// timeline reads SSRBlur vs SSRBlurH + SSRBlurV.
+								// A live flip resets the temporal history (the
+								// frame-head m_ssrLastBlurMode check).
+								const char* blurModes[2] = {
+									"2D bilateral (baseline)",
+									"Separable H+V (fast)"
+								};
+								ImGui::Combo("Blur mode", &m_ssrBlurMode, blurModes, 2);
+							}
+							// Debug material override (the blur-bucket test
+							// rig): overwrite every uploaded material's
+							// metallic/roughness - the whole scene re-skins
+							// (lit + G-buffer + the SSR radius buckets 2/3/4
+							// at the 0.35/0.7 roughness thresholds) from two
+							// sliders. MetallicRoughness TEXTURES are bypassed
+							// so the slider value is the final value.
+							ImGui::Checkbox("Debug: override material roughness/metallic",
+								&m_debugMaterialOverride);
+							if (m_debugMaterialOverride) {
+								ImGui::SliderFloat("Debug roughness",
+									&m_debugMaterialRoughness, 0.0f, 1.0f);
+								ImGui::SliderFloat("Debug metallic",
+									&m_debugMaterialMetallic, 0.0f, 1.0f);
+								ImGui::TextDisabled("Applies at material upload (UpdateMaterials): every\n"
+									"material gets these params.y/z values and its metallicRoughness\n"
+									"texture slot disabled. Metallic >= 0.5 flips the G-buffer metal\n"
+									"flag; roughness 0.35/0.7 are the blur radius 3/4 bucket\n"
+									"thresholds (radius 2 below, dielectric or smooth metal).");
 							}
 							// Temporal (TAA) accumulation is parked: taaUsable is
 							// hard-false in the record while the smear diagnosis is
@@ -14346,12 +14418,13 @@ namespace engine {
 								m_ssrEnabled ? "ON" : "off",
 								(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity);
 						else
-							ImGui::TextDisabled("SSGI reflections: %s %u steps intensity %.2f hzb:shared %ux%u %u mips",
+							ImGui::TextDisabled("SSGI reflections: %s %u steps intensity %.2f hzb:shared %ux%u %u mips blur:%s",
 								m_ssrEnabled ? "ON" : "off",
 								(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
 								m_viewportResources.ssgi.hzb.width,
 								m_viewportResources.ssgi.hzb.height,
-								m_viewportResources.ssgi.hzb.mipCount);
+								m_viewportResources.ssgi.hzb.mipCount,
+								m_ssrBlurMode == 1 ? "separable H+V" : "2D");
 						if (!m_viewportResources.volumetric.Valid())
 							ImGui::TextDisabled("Volumetric target/shaders missing - no fog");
 						else

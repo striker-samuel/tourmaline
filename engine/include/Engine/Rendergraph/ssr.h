@@ -126,6 +126,20 @@
 
 namespace smvk {
 
+// Blur-filter selection for the half-res reflection layer. The 2D
+// bilateral (ssr_blur.frag.hlsl) is the quality baseline; the separable
+// twin (ssr_blur_separable.frag.hlsl, H then V) is the performance
+// candidate — 2*(2r+1) taps/px across two passes vs the 2D kernel's
+// (2r+1)^2 (10/14/18 vs 25/49/81 at the radius 2/3/4 buckets). Both
+// write the same blurred target, so the temporal/composite chain is
+// mode-agnostic. blurTemp (the H-pass intermediate) is allocated in
+// BOTH modes — live switching needs no resource rebuild.
+enum class SsrBlurMode : uint32_t
+{
+	Bilateral2D = 0,
+	SeparableHV = 1,
+};
+
 struct SsrDesc {
 	Format format = Format::RGBA16_Float; // must match the HDR target
 	uint32_t steps = 32;                 // raymarch steps, 1..128
@@ -148,6 +162,11 @@ struct SsrDesc {
 	float glossThreshold = 0.94f;        // classify: rays wanted for roughness < this (mirrors < 0.0001 always shoot)
 	float vignetteWidth = 0.15f;         // composite: NDC edge fade width (outer % of NDC range)
 	float temporalBlend = 0.9f;          // TAA history weight, 0..0.98 (before attenuation)
+	// Blur filter (see SsrBlurMode): the 2D baseline or the separable
+	// H+V candidate. Per-recording (overrideDesc) — no resource rebuild
+	// on a live flip (blurTemp exists in both modes); the app owns the
+	// temporal-history invalidation on a mode switch.
+	SsrBlurMode blurMode = SsrBlurMode::Bilateral2D;
 	// SSR contribution debug attachment (the compose .dbg variant +
 	// ssrContrib target): the composite writes its EXACT add term to a
 	// second attachment so the contribution is directly visible (the
@@ -295,6 +314,34 @@ struct SsrBlurPush {
 };
 static_assert(sizeof(SsrBlurPush) == 56);
 
+// Must match ssr_blur_separable.frag.hlsl SsrSeparableBlurPush (64
+// bytes) — the H+V twin of SsrBlurPush: identical field order through
+// gbufferTextureIndex, then the axis selector + pad. One compiled
+// program serves both passes (axis is a push constant, not a shader
+// variant). All-scalar layout on purpose (same straddling-vector
+// hazard as SsrBlurPush).
+struct SsrSeparableBlurPush {
+	uint64_t frameUniforms = 0; // BDA of the FrameUniforms slice (nearPlane)
+	uint64_t hzb = 0; // BDA of the MAX-reduce trace Hi-Z (mip1 reads)
+	uint32_t reflTextureIndex = UINT32_MAX; // half-res source (raw for H, blurTemp for V)
+	uint32_t samplerIndex = 0; // linear clamp (reflection taps only)
+	float sharpness = 10.0f;
+	float texelX = 0.0f; // 1 / half-res width
+	float texelY = 0.0f; // 1 / half-res height
+	uint32_t hzbMip1Offset = 0; // float offset of mip1 in the HZB buffer
+	uint32_t hzbMip1Stride = 0; // mip1 row stride (floats)
+	uint32_t halfW = 0; // half-res extent (BDA tap clamp domain)
+	uint32_t halfH = 0;
+	// Thin G-buffer (RGBA8): the receiver roughness picks the kernel
+	// radius bucket (2/3/4 rings). UINT32_MAX = no G-buffer (legacy
+	// mirror path): radius 2, the old 5x5 exactly.
+	uint32_t gbufferTextureIndex = UINT32_MAX;
+	// 0 = horizontal (raw -> blurTemp), 1 = vertical (blurTemp -> blurred)
+	uint32_t axis = 0;
+	uint32_t pad0 = 0;
+};
+static_assert(sizeof(SsrSeparableBlurPush) == 64);
+
 // Must match ssr_compose.frag.hlsl SsrComposePush (64 bytes).
 // SSGI shared-HZB rework: center depth from HZB mip0 (the exact 1:1
 // depth copy), each tap block's representative from mip1
@@ -397,6 +444,10 @@ static_assert(sizeof(SsrTemporalPush) == 64);
 // trio; the trace FS is GONE — replaced by the compute chain below).
 inline constexpr const char* kSsrVsPath = "content/shaders/tonemap.vert.hlsl.spv";
 inline constexpr const char* kSsrBlurPsPath = "content/shaders/ssr_blur.frag.hlsl.spv";
+// The separable H+V twin (SsrBlurMode::SeparableHV): one program, the
+// axis via push constant (see SsrSeparableBlurPush).
+inline constexpr const char* kSsrSeparableBlurPsPath =
+	"content/shaders/ssr_blur_separable.frag.hlsl.spv";
 inline constexpr const char* kSsrTemporalPsPath = "content/shaders/ssr_temporal.frag.hlsl.spv";
 inline constexpr const char* kSsrComposePsPath = "content/shaders/ssr_compose.frag.hlsl.spv";
 // Debug twin of the compose PS (SSR_DEBUG_CONTRIB): writes the exact add
@@ -431,6 +482,12 @@ struct ScreenSpaceReflections {
 
 	Target raw; // half-res trace output (rgb = refl x fresnel x intensity, a = confidence)
 	Target blurred; // half-res bilateral blur of raw
+	// The separable-blur intermediate (SsrBlurMode::SeparableHV):
+	// SSRBlurH writes it, SSRBlurV reads it and writes blurred. Same
+	// half-res RGBA16F layout as raw/blurred. Allocated in BOTH modes —
+	// a live mode flip needs no resource rebuild (the Ensure gate does
+	// not watch blurMode), ~4 MiB at 1080p.
+	Target blurTemp;
 	// SSSR-style thin G-buffer (see gbuffer.frag.hlsl): full-res RGBA8
 	// (RG = octahedral world normal, B = roughness, A = metal), written
 	// by the APP's Forward+ depth prepass (the G-buffer FS pair rides a
@@ -486,6 +543,7 @@ struct ScreenSpaceReflections {
 
 	Holder<ShaderModuleHandle> vsModule;
 	Holder<ShaderModuleHandle> blurFragModule;
+	Holder<ShaderModuleHandle> separableBlurFragModule; // the H+V twin (axis via push)
 	Holder<ShaderModuleHandle> temporalFragModule;
 	Holder<ShaderModuleHandle> composeFragModule;
 	Holder<ShaderModuleHandle> composeDbgFragModule; // the .dbg twin (optional)
@@ -494,6 +552,7 @@ struct ScreenSpaceReflections {
 	Holder<ShaderModuleHandle> intersectModule;
 	Holder<ShaderModuleHandle> copyFragModule;
 	ShaderProgram blurProgram{};
+	ShaderProgram separableBlurProgram{}; // H+V twin (one program, axis via push)
 	ShaderProgram temporalProgram{};
 	ShaderProgram composeProgram{};
 	ShaderProgram composeDbgProgram{}; // optional (missing .dbg.spv -> empty)
@@ -506,7 +565,8 @@ struct ScreenSpaceReflections {
 	[[nodiscard]] bool TargetsValid() const {
 		// gbuffer2 rides the gbuffer family's lifecycle (created beside it
 		// in Create, cascade-destroyed together) - no separate optionality.
-		return raw.Valid() && blurred.Valid() && gbuffer.Valid() &&
+		return raw.Valid() && blurred.Valid() && blurTemp.Valid() &&
+			gbuffer.Valid() &&
 			gbuffer2.Valid() &&
 			history[0].Valid() && history[1].Valid() &&
 			rayList.Valid() && rayCounter.Valid() && indirectArgs.Valid() &&
@@ -516,11 +576,11 @@ struct ScreenSpaceReflections {
 	[[nodiscard]] bool ShadersValid() const {
 		return classifyProgram.shaderCount != 0 && indirectProgram.shaderCount != 0 &&
 			intersectProgram.shaderCount != 0 && copyProgram.shaderCount != 0 &&
-			blurProgram.shaderCount != 0 &&
+			blurProgram.shaderCount != 0 && separableBlurProgram.shaderCount != 0 &&
 			temporalProgram.shaderCount != 0 && composeProgram.shaderCount != 0 &&
 			!vsModule.empty() && !classifyModule.empty() && !indirectModule.empty() &&
 			!intersectModule.empty() && !copyFragModule.empty() &&
-			!blurFragModule.empty() &&
+			!blurFragModule.empty() && !separableBlurFragModule.empty() &&
 			!temporalFragModule.empty() && !composeFragModule.empty();
 		// (composeDbgProgram deliberately excluded: it is the OPTIONAL
 		// debug twin - a missing .dbg.spv must not kill the chain; the
@@ -562,6 +622,12 @@ struct ScreenSpaceReflections {
 				vsModule = ctx.CreateShaderModule(readFile(vs), "ssrVert");
 			if (blurFragModule.empty())
 				blurFragModule = ctx.CreateShaderModule(readFile(blur), "ssrBlurFrag");
+			// Separable H+V twin: loaded from the fixed path (no parameter
+			// churn — same discipline as the compose .dbg twin) in BOTH
+			// modes so a live mode flip never needs a shader load.
+			if (separableBlurFragModule.empty())
+				separableBlurFragModule =
+					ctx.CreateShaderModule(readFile(kSsrSeparableBlurPsPath), "ssrSeparableBlurFrag");
 			if (temporalFragModule.empty())
 				temporalFragModule = ctx.CreateShaderModule(readFile(temporal), "ssrTemporalFrag");
 			if (composeFragModule.empty())
@@ -592,12 +658,14 @@ struct ScreenSpaceReflections {
 			return false;
 		}
 		if (vsModule.empty() || blurFragModule.empty() ||
+			separableBlurFragModule.empty() ||
 			temporalFragModule.empty() || composeFragModule.empty() ||
 			classifyModule.empty() || indirectModule.empty() ||
 			intersectModule.empty() || copyFragModule.empty())
 			return false;
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
 		Shader blurPS{ .module = blurFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		Shader separableBlurPS{ .module = separableBlurFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader temporalPS{ .module = temporalFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader composePS{ .module = composeFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		Shader classifyCS{ .module = classifyModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
@@ -605,6 +673,7 @@ struct ScreenSpaceReflections {
 		Shader intersectCS{ .module = intersectModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		Shader copyPS{ .module = copyFragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
 		blurProgram = { .shaders = { vs, blurPS }, .shaderCount = 2 };
+		separableBlurProgram = { .shaders = { vs, separableBlurPS }, .shaderCount = 2 };
 		temporalProgram = { .shaders = { vs, temporalPS }, .shaderCount = 2 };
 		composeProgram = { .shaders = { vs, composePS }, .shaderCount = 2 };
 		if (!composeDbgFragModule.empty()) {
@@ -620,6 +689,7 @@ struct ScreenSpaceReflections {
 
 	void DestroyShaders() {
 		blurProgram = ShaderProgram();
+		separableBlurProgram = ShaderProgram();
 		temporalProgram = ShaderProgram();
 		composeProgram = ShaderProgram();
 		composeDbgProgram = ShaderProgram();
@@ -629,6 +699,7 @@ struct ScreenSpaceReflections {
 		copyProgram = ShaderProgram();
 		vsModule = {};
 		blurFragModule = {};
+		separableBlurFragModule = {};
 		temporalFragModule = {};
 		composeFragModule = {};
 		composeDbgFragModule = {};
@@ -951,8 +1022,30 @@ struct ScreenSpaceReflections {
 			DestroyBuffer(rg, newIndirectArgs);
 			return false;
 		}
+		// Separable-blur intermediate (see the blurTemp field comment):
+		// created LAST so every earlier failure block stays untouched —
+		// one new failure block instead of one per earlier resource.
+		// Allocated in BOTH blur modes (a live mode flip must not
+		// rebuild the targets).
+		Target newBlurTemp;
+		if (!CreateTarget(ctx, rg, half, d.format, "ssrBlurTemp", newBlurTemp)) {
+			DestroyTarget(rg, newRaw);
+			DestroyTarget(rg, newBlur);
+			DestroyTarget(rg, newGbuffer);
+			DestroyTarget(rg, newGbuffer2);
+			DestroyTarget(rg, newHist0);
+			DestroyTarget(rg, newHist1);
+			DestroyTarget(rg);
+			DestroyTarget(rg, newContrib);
+			DestroyBuffer(rg, newRayList);
+			DestroyBuffer(rg, newRayCounter);
+			DestroyBuffer(rg, newIndirectArgs);
+			DestroyBuffer(rg, newRadiance);
+			return false;
+		}
 		raw = std::move(newRaw);
 		blurred = std::move(newBlur);
+		blurTemp = std::move(newBlurTemp);
 		gbuffer = std::move(newGbuffer);
 		gbuffer2 = std::move(newGbuffer2);
 		history[0] = std::move(newHist0);
@@ -972,6 +1065,7 @@ struct ScreenSpaceReflections {
 	void DestroyTargets(RenderGraph& rg) {
 		DestroyTarget(rg, raw);
 		DestroyTarget(rg, blurred);
+		DestroyTarget(rg, blurTemp);
 		DestroyTarget(rg, gbuffer);
 		DestroyTarget(rg, gbuffer2);
 		DestroyTarget(rg, history[0]);
@@ -1014,6 +1108,143 @@ struct ScreenSpaceReflections {
 		DestroyBuffers(rg);
 		DestroyShaders();
 	}
+
+// Blur-pass emission shared by the spatial + temporal recording paths
+// (they used to carry two identical copies of this block — one fix now
+// lands in both). Bilateral2D keeps the original single-pass SSRBlur
+// (raw -> blurred) EXACTLY as before. SeparableHV runs the same
+// bilateral weights as two 1D passes — SSRBlurH (raw -> blurTemp) then
+// SSRBlurV (blurTemp -> blurred): 2*(2r+1) taps/px across both vs the
+// 2D kernel's (2r+1)^2 (10/14/18 vs 25/49/81 at the radius 2/3/4
+// buckets). Both 1D passes weight their taps against the ORIGINAL
+// scene HZB mip1 depths (never the intermediate image's — see the
+// shader header), and both carry the HZB buffer-read hint the 2D pass
+// has (BDA reads are invisible to the graph without it). The V pass
+// reads blurTemp as an input image so the graph owns the
+// color-attachment-write -> shader-read transition. Names stay the
+// fixed SSRBlurH/SSRBlurV in the separable branch (GPU-timeline A/B
+// readability); blurName only names the 2D baseline pass.
+void AddSsrBlurPasses(RenderGraph& rg,
+	LogicalImageViewHandle gbufferView,
+	uint32_t gbufferBindlessIndex,
+	uint64_t hzbAddr,
+	LogicalBufferHandle hzbLogical,
+	uint32_t hzbMip1Offset,
+	uint32_t hzbMip1Stride,
+	uint64_t frameUniformsAddr,
+	uint32_t linearSamplerIndex,
+	const SsrDesc& overrideDesc,
+	const char* blurName) const {
+	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
+	const float halfW = static_cast<float>(std::max(1u, halfExtent.width));
+	const float halfH = static_cast<float>(std::max(1u, halfExtent.height));
+
+	if (overrideDesc.blurMode == SsrBlurMode::SeparableHV) {
+		for (uint32_t axis = 0; axis < 2; ++axis) {
+			const bool horizontal = (axis == 0u);
+			const Target& source = horizontal ? raw : blurTemp;
+			const Target& destination = horizontal ? blurTemp : blurred;
+
+			SsrSeparableBlurPush push{};
+			push.frameUniforms = frameUniformsAddr;
+			push.hzb = hzbAddr;
+			push.reflTextureIndex = source.bindlessIndex;
+			push.samplerIndex = linearSamplerIndex;
+			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
+			push.texelX = 1.0f / halfW;
+			push.texelY = 1.0f / halfH;
+			push.hzbMip1Offset = hzbMip1Offset;
+			push.hzbMip1Stride = hzbMip1Stride;
+			push.halfW = halfExtent.width;
+			push.halfH = halfExtent.height;
+			push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+			push.axis = axis;
+
+			RenderPass& pass = rg.AddPass(horizontal ? "SSRBlurH" : "SSRBlurV");
+			std::vector<LogicalImageViewHandle> blurInputs = { source.logical };
+			if (gbufferOn)
+				blurInputs.push_back(gbufferView); // receiver roughness -> radius
+			pass.SetOffset(0, 0)
+				.SetExtent(halfExtent)
+				.SetInputImages(blurInputs)
+				.SetColor({ destination.logical },
+					AttachmentLoadOp::DontCare,
+					AttachmentStoreOp::Store);
+			{
+				// HZB buffer read (the mip1 reps — the SAME original-scene
+				// depths in both passes): barrier the SsrHzb compute
+				// writes before these fragment reads.
+				BufferSyncRequest hzbRead{};
+				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+				hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+				pass.AddBufferHint(hzbLogical, hzbRead);
+			}
+			ShaderProgram progCopy = separableBlurProgram; // copyable (handles only)
+			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
+				cmd.BindRenderPipeline(
+					progCopy,
+					VertexLayoutId::Empty,
+					DepthSettings::Disabled(),
+					StencilSettings::DefaultDisabled(),
+					BlendSettings::Opaque(),
+					MSAASettings::Count1(),
+					RasterSettings{ .cullMode = CullMode::None });
+				cmd.PushConstants(0, sizeof(SsrSeparableBlurPush), &push, ShaderStage::All);
+				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+			});
+		}
+		return;
+	}
+
+	// ---- Original 2D bilateral (the quality baseline, unchanged) ----
+	{
+		SsrBlurPush push{};
+		push.frameUniforms = frameUniformsAddr;
+		push.hzb = hzbAddr;
+		push.reflTextureIndex = raw.bindlessIndex;
+		push.samplerIndex = linearSamplerIndex;
+		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
+		push.texelX = 1.0f / halfW;
+		push.texelY = 1.0f / halfH;
+		push.hzbMip1Offset = hzbMip1Offset;
+		push.hzbMip1Stride = hzbMip1Stride;
+		push.halfW = halfExtent.width;
+		push.halfH = halfExtent.height;
+		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
+
+		RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
+		std::vector<LogicalImageViewHandle> blurInputs = { raw.logical };
+		if (gbufferOn)
+			blurInputs.push_back(gbufferView); // receiver roughness -> radius
+		pass.SetOffset(0, 0)
+			.SetExtent(halfExtent)
+			.SetInputImages(blurInputs)
+			.SetColor({ blurred.logical },
+				AttachmentLoadOp::DontCare,
+				AttachmentStoreOp::Store);
+		{
+			// HZB buffer read (the mip1 reps): the SsrHzb compute writes
+			// must be barriered before these fragment reads.
+			BufferSyncRequest hzbRead{};
+			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
+			pass.AddBufferHint(hzbLogical, hzbRead);
+		}
+		ShaderProgram progCopy = blurProgram; // copyable (handles only)
+		pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
+			cmd.BindRenderPipeline(
+				progCopy,
+				VertexLayoutId::Empty,
+				DepthSettings::Disabled(),
+				StencilSettings::DefaultDisabled(),
+				BlendSettings::Opaque(),
+				MSAASettings::Count1(),
+				RasterSettings{ .cullMode = CullMode::None });
+			cmd.PushConstants(0, sizeof(SsrBlurPush), &push, ShaderStage::All);
+			cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+		});
+	}
+}
 
 // Emits trace (HDR + full-res depth [+ stencil] -> half-res reflection)
 // + blur (half-res reflection + full-res depth -> half-res) + composite
@@ -1260,54 +1491,12 @@ ShaderProgram progCopy = copyProgram;
 		});
 	}
 
-	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1) ----
-	{
-		SsrBlurPush push{};
-		push.frameUniforms = frameUniformsAddr;
-		push.hzb = hzbAddr;
-		push.reflTextureIndex = raw.bindlessIndex;
-		push.samplerIndex = linearSamplerIndex;
-		push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-		push.texelX = 1.0f / halfW;
-		push.texelY = 1.0f / halfH;
-		push.hzbMip1Offset = hzbMip1Offset;
-		push.hzbMip1Stride = hzbMip1Stride;
-		push.halfW = halfExtent.width;
-		push.halfH = halfExtent.height;
-		push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
-
-		RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
-		std::vector<LogicalImageViewHandle> blurInputs = { raw.logical };
-		if (gbufferOn)
-			blurInputs.push_back(gbufferView); // receiver roughness -> radius
-		pass.SetOffset(0, 0)
-			.SetExtent(halfExtent)
-			.SetInputImages(blurInputs)
-			.SetColor({ blurred.logical },
-				AttachmentLoadOp::DontCare,
-				AttachmentStoreOp::Store);
-		{
-			// HZB buffer read (the mip1 reps): the SsrHzb compute writes
-			// must be barriered before these fragment reads.
-			BufferSyncRequest hzbRead{};
-			hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
-			hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
-			pass.AddBufferHint(hzbLogical, hzbRead);
-		}
-		ShaderProgram progCopy = blurProgram; // copyable (handles only)
-			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(
-					progCopy,
-					VertexLayoutId::Empty,
-					DepthSettings::Disabled(),
-					StencilSettings::DefaultDisabled(),
-					BlendSettings::Opaque(),
-					MSAASettings::Count1(),
-					RasterSettings{ .cullMode = CullMode::None });
-				cmd.PushConstants(0, sizeof(SsrBlurPush), &push, ShaderStage::All);
-				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-			});
-		}
+	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1).
+	// Mode-dependent (AddSsrBlurPasses): the original single-pass 2D
+	// bilateral, or the separable H+V pair through blurTemp.
+	AddSsrBlurPasses(rg, gbufferView, gbufferBindlessIndex,
+		hzbAddr, hzbLogical, hzbMip1Offset, hzbMip1Stride,
+		frameUniformsAddr, linearSamplerIndex, overrideDesc, blurName);
 
 	// ---- Composite: blurred half-res + HZB depth authority + HDR ----
 	// -> HDR. The depth reads (center from mip0, tap reps from mip1) come
@@ -1633,54 +1822,15 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 		});
 	}
 
-	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1) ----
-	{
-			SsrBlurPush push{};
-			push.frameUniforms = frameUniformsAddr;
-			push.hzb = hzbAddr;
-			push.reflTextureIndex = raw.bindlessIndex;
-			push.samplerIndex = linearSamplerIndex;
-			push.sharpness = (std::max)(0.0f, overrideDesc.blurSharpness);
-			push.texelX = 1.0f / halfW;
-			push.texelY = 1.0f / halfH;
-			push.hzbMip1Offset = hzbMip1Offset;
-			push.hzbMip1Stride = hzbMip1Stride;
-			push.halfW = halfExtent.width;
-			push.halfH = halfExtent.height;
-			push.gbufferTextureIndex = gbufferOn ? gbufferBindlessIndex : UINT32_MAX;
-
-			RenderPass& pass = rg.AddPass(blurName ? blurName : "SSRBlur");
-			std::vector<LogicalImageViewHandle> blurInputs = { raw.logical };
-			if (gbufferOn)
-				blurInputs.push_back(gbufferView); // receiver roughness -> radius
-			pass.SetOffset(0, 0)
-				.SetExtent(halfExtent)
-				.SetInputImages(blurInputs)
-				.SetColor({ blurred.logical },
-					AttachmentLoadOp::DontCare,
-					AttachmentStoreOp::Store);
-			{
-				// HZB buffer read (the mip1 reps): barrier the SsrHzb
-				// compute writes before these fragment reads.
-				BufferSyncRequest hzbRead{};
-				hzbRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
-				hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
-				pass.AddBufferHint(hzbLogical, hzbRead);
-			}
-			ShaderProgram progCopy = blurProgram; // copyable (handles only)
-			pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-				cmd.BindRenderPipeline(
-					progCopy,
-					VertexLayoutId::Empty,
-					DepthSettings::Disabled(),
-					StencilSettings::DefaultDisabled(),
-					BlendSettings::Opaque(),
-					MSAASettings::Count1(),
-					RasterSettings{ .cullMode = CullMode::None });
-				cmd.PushConstants(0, sizeof(SsrBlurPush), &push, ShaderStage::All);
-				cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-			});
-		}
+	// ---- Blur: raw reflection -> blurred (depth edges via HZB mip1).
+	// Mode-dependent (AddSsrBlurPasses): the original single-pass 2D
+	// bilateral, or the separable H+V pair through blurTemp — the same
+	// emission as the spatial path (the shared helper is the
+	// temporal-path repair's second half: the two copies can no longer
+	// drift).
+		AddSsrBlurPasses(rg, gbufferView, gbufferBindlessIndex,
+			hzbAddr, hzbLogical, hzbMip1Offset, hzbMip1Stride,
+			frameUniformsAddr, linearSamplerIndex, overrideDesc, blurName);
 
 		// ---- Temporal: blurred + history[parity^1] + motion + depth ----
 		// -> history[parity]. The base HDR is not an input here: only
