@@ -1555,6 +1555,12 @@ protected:
 	// Stats tab + panel header); the panel keeps controls, explanations
 	// and detail breakdowns.
 	void DrawHudOverlay();
+	// Debug-view hint (auto-visible while a debug visualization is
+	// active): a small top-center textbox naming the active view and its
+	// COLOR CODING — the compact replacement for the per-view
+	// explanation blocks the old Debug tab carried (the legends live
+	// where the view is, not four tabs away). NoInputs: pure annotation.
+	void DrawDebugViewHint();
 
 	// (The per-frame CONTROL block — Update()/HandleShortcuts(): keybind
 	// polling, feature toggles, decal autosplat, camera-drive gating,

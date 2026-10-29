@@ -7287,6 +7287,161 @@ namespace engine {
 		}
 	}
 
+	// Debug-view hint (see the header note): names the active view + its
+	// color coding. Precedence: the DS visualizers and the GI debug
+	// views imply m_debugView == Lit (SetDebugView's take-over + the
+	// cycle snaps), so exactly one layer is named at a time.
+	void WorldRenderer::DrawDebugViewHint() {
+		if (!DebugVisualizationActive())
+			return;
+		// Resolve the title + the legend lines for the active layer.
+		const char* title = nullptr;
+		const char* lines[3] = { nullptr, nullptr, nullptr };
+#if defined(DS_DEBUG_VIZ)
+		if (m_dsDebugMode != DsDebugViz::Off) {
+			switch (m_dsDebugMode) {
+			case DsDebugViz::CountApprox:
+			case DsDebugViz::CountAccurate:
+			case DsDebugViz::CountFinal:
+			case DsDebugViz::CountDiff:
+				title = "DS visualizer: light-count heat";
+				lines[0] = "black = 0 lights -> blue/cyan/green/yellow -> red at the ceiling.";
+				lines[1] = "8px Shadow Tiles; faint grid = 64px TileGroups.";
+				break;
+			case DsDebugViz::CullStep:
+				title = "DS visualizer: cull step (per light)";
+				lines[0] = "RED ph1 mask / ORANGE ph2 zBin (on lit pixels = ERRONEOUS CULL),";
+				lines[1] = "BLUE ph4 all-shadow drop, GREEN full pass (brightness = visibility).";
+				break;
+			case DsDebugViz::LightList:
+				title = "DS visualizer: light list";
+				lines[0] = "RED = no list / ORANGE mask-only (erroneous) / YELLOW early-only";
+				lines[1] = "(shadow-dropped) / GREEN final list (brightness = visibility).";
+				break;
+			default:
+				title = "DS visualizer: light visibility";
+				lines[0] = "WHITE lit -> BLACK shadowed; dark blue = not in the final list.";
+				break;
+			}
+		}
+		else
+#endif
+		if (m_giDebug != 0) {
+			switch (m_giDebug) {
+			case 1:
+				title = "GI debug: baked irradiance (R/F8)";
+				lines[0] = "flat irradiance of the active ambient source (N isolates it);";
+				lines[1] = "magenta = no source at this pixel.";
+				break;
+			case 2:
+				title = "GI debug: source palette (R/F8)";
+				lines[0] = "red = lightmap (deprecated), green = regular grid (legacy),";
+				lines[1] = "cyan = convex volume blended, magenta = none.";
+				break;
+			default:
+				title = "GI debug: probe distance (R/F8)";
+				lines[0] = "nearest probe's obstacle distance: red = on/in a surface,";
+				lines[1] = "yellow = near (< 1 m), green = open.";
+				break;
+			}
+		}
+		else {
+			switch (m_debugView) {
+			case ViewMode::Unlit:
+				title = "F2 Unlit";
+				lines[0] = "base color only (albedo x vertex tint) - no lighting.";
+				break;
+			case ViewMode::Meshlets:
+				if (m_debugMeshletMode == 0) {
+					title = "F3 Meshlets (random)";
+					lines[0] = "random hue per meshlet; culled clusters stay visible";
+					lines[1] = "(every registered cluster is colored).";
+				}
+				else {
+					title = "F3 Meshlets (cone heat)";
+					lines[0] = "red = degenerate cone (never culls), green = tight cone.";
+				}
+				break;
+			case ViewMode::Cascades:
+				title = "F4 Cascades";
+				lines[0] = "cascade 0 red, 1 green, 2 blue, 3 yellow, beyond magenta;";
+				lines[1] = "brightness = shadow factor (dark = shadowed).";
+				break;
+			case ViewMode::Lods:
+				title = "F5 LODs";
+				lines[0] = "LOD0 green, 1 yellow, 2 orange, 3 red, 4+ magenta.";
+				break;
+			case ViewMode::VertexColors:
+				title = "F6 Vertex Colors";
+				lines[0] = "layered materials: R/G/B/Y = layer 0..3 blend weights;";
+				lines[1] = "legacy materials: raw vertex tint.";
+				break;
+			case ViewMode::Uv0:
+				title = "F9 UV0 (base)";
+				lines[0] = "base TEXCOORD0 checkers; magenta glow = huge uv";
+				lines[1] = "screen-derivative (a chart corner in the wrong rect).";
+				break;
+			case ViewMode::Uv1:
+				title = "UV1 (lightmap atlas)";
+				lines[0] = "atlas uv (chart uv + id); magenta stripes when the uv";
+				lines[1] = "leaves [0,1] (transform bug).";
+				break;
+			case ViewMode::Cubemap:
+				title = "F10 Cubemap (IBL raw)";
+				lines[0] = "raw probe radiance, no Fresnel/roughness weighting -";
+				lines[1] = "shows which probe serves each pixel.";
+				break;
+			case ViewMode::Pom:
+				title = "F11 POM";
+				lines[0] = "parallax-marched uv + sun self-shadow;";
+				lines[1] = "no occlusion map = plain sampling.";
+				break;
+			case ViewMode::SsrMask:
+				title = "SSR mask (receivers)";
+				lines[0] = "green = smooth dielectric, blue = smooth metal,";
+				lines[1] = "black = matte (skipped), dimmed = Blend.";
+				break;
+			case ViewMode::Normals:
+				title = "Normals (world space)";
+				lines[0] = "world normal as color (n*0.5+0.5): +X red, +Y green, +Z blue.";
+				lines[1] = "geometric normal only - no normal-map perturbation.";
+				break;
+			case ViewMode::SsrContribution:
+				title = "SSR contribution";
+				lines[0] = "the reflection layer's exact add term.";
+				break;
+			default:
+				return; // Lit with no overlays - nothing to hint
+			}
+		}
+		// Top-center, semi-transparent, click-through: pure annotation
+		// (never steals input from the scene). Fixed narrow width so the
+		// legends wrap at a readable measure.
+		const ImVec2 disp = ImGui::GetIO().DisplaySize;
+		ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, 10.0f),
+			ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+		ImGui::SetNextWindowBgAlpha(0.60f);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+		if (!ImGui::Begin("##tourmaline_dbgview_hint", nullptr,
+				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
+				| ImGuiWindowFlags_NoSavedSettings
+				| ImGuiWindowFlags_NoFocusOnAppearing
+				| ImGuiWindowFlags_NoInputs
+				| ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::End();
+			ImGui::PopStyleVar();
+			return;
+		}
+		ImGui::TextColored(ImVec4(0.62f, 0.90f, 0.66f, 1.0f), "%s", title);
+		for (const char* l : lines) {
+			if (!l)
+				break;
+			ImGui::TextDisabled("%s", l);
+		}
+		ImGui::End();
+		ImGui::PopStyleVar();
+	}
+
 	void WorldRenderer::DrawHudOverlay() {
 		if (!m_showHud)
 			return;
@@ -14074,6 +14229,10 @@ namespace engine {
 			// the panel; the panel is a fixed Right side bar, so the two
 			// never overlap.
 			DrawHudOverlay();
+
+			// Debug-view hint (top-center, auto): the active view's name +
+			// its color coding while a debug visualization is on.
+			DrawDebugViewHint();
 
 			// Frame-time histogram (F12): SEPARATE UI from the debug panel -
 			// a full-width bottom strip (see profiler::DrawFrameHistogramUi).
