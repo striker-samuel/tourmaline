@@ -110,7 +110,46 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         OUT.outColor = curr;
         return OUT;
     }
-    float4 hist = histTex.Sample(smp, prevUv);
+
+    // History fetch: FOUR-TEXEL CONFIDENCE-WEIGHTED bilinear (the raw
+    // Sample interpolated UNPREMULTIPLIED rgb across the footprint — an
+    // invalid texel's rgb poisoned its valid neighbors' rgb before the
+    // blend ever saw them). Same convention as the blur/compose: rgb
+    // weighted by confidence x the bilinear factor, normalized by the
+    // confidence mass; out-of-footprint border texels are SKIPPED (the
+    // normalization absorbs them) instead of clamped into duplicates.
+    float2 halfExtentF = float2(1.0f / max(tp.texelX, 1e-9f),
+                                1.0f / max(tp.texelY, 1e-9f));
+    int2 halfExtentI = int2(halfExtentF);
+    float2 prevPx = prevUv * halfExtentF - 0.5f;
+    int2 p0 = int2(floor(prevPx));
+    float2 f = frac(prevPx);
+    float3 hRgbAcc = float3(0.0f, 0.0f, 0.0f);
+    float hConfAcc = 0.0f;
+    float hW = 0.0f;
+    [loop]
+    for (int hy = 0; hy < 2; ++hy)
+    {
+        [loop]
+        for (int hx = 0; hx < 2; ++hx)
+        {
+            int2 hp = p0 + int2(hx, hy);
+            if (hp.x < 0 || hp.y < 0 || hp.x >= halfExtentI.x || hp.y >= halfExtentI.y)
+                continue;
+            float bw = (hx ? f.x : 1.0f - f.x) * (hy ? f.y : 1.0f - f.y);
+            float2 hUv = (float2(hp) + 0.5f) / halfExtentF;
+            float4 t = histTex.Sample(smp, hUv);
+            float c = saturate(t.a);
+            hRgbAcc += t.rgb * c * bw;
+            hConfAcc += c * bw;
+            hW += bw;
+        }
+    }
+    float4 hist = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    hist.a = (hW > 1e-5f) ? saturate(hConfAcc / hW) : 0.0f;
+    hist.rgb = (hConfAcc > 1e-5f)
+        ? hRgbAcc / hConfAcc
+        : float3(0.0f, 0.0f, 0.0f);
 
     // Disocclusion: compare the reprojected location's representative
     // depth against the center distance. Background or a surface step
@@ -167,8 +206,18 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     if (curr.a <= 1e-4f)
         effBlend *= 0.35f;
 
-    float3 outRgb = lerp(histClamped, curr.rgb, 1.0f - effBlend);
-    float outA = lerp(hist.a, curr.a, 1.0f - effBlend);
+    // Confidence-aware blend in the PREMULTIPLIED domain (rgb x conf),
+    // output unpremultiplied: the old independent rgb/alpha lerps let a
+    // stale history rgb survive under a faded confidence (and a fresh
+    // rgb ride an inflated one) — the premultiplied lerp ties rgb to
+    // the confidence that actually carried it.
+    float3 currPremul = curr.rgb * saturate(curr.a);
+    float3 histPremul = histClamped * saturate(hist.a);
+    float3 outPremul = lerp(currPremul, histPremul, effBlend);
+    float outA = lerp(saturate(curr.a), saturate(hist.a), effBlend);
+    float3 outRgb = (outA > 1e-5f)
+        ? outPremul / outA
+        : float3(0.0f, 0.0f, 0.0f);
     OUT.outColor = float4(SanitizeHdr(outRgb), outA);
     return OUT;
 }

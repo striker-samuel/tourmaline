@@ -155,9 +155,15 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // The pass direction: one compiled program, axis via push constant.
     const int2 dir = (bp.axis == 0u) ? int2(1, 0) : int2(0, 1);
 
-    // 1D bilateral along dir. rgb and confidence share the same
-    // bilateral weights so the layer stays premultiplied-consistent.
-    float4 acc = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    // Confidence-aware 1D accumulation (the 2D shader's note verbatim:
+    // rgb weighted by confidence x bilateral weight, normalized by the
+    // confidence mass — a miss no longer dilutes valid radiance).
+    // BOTH axes run this convention: the H pass OUTPUTS unpremultiplied
+    // rgb + reconstructed confidence, the V pass consumes and re-emits
+    // the same pair — an H axis that averaged independently would
+    // poison the V axis's confidence weighting at the source.
+    float3 rgbAcc = float3(0.0f, 0.0f, 0.0f);
+    float confAcc = 0.0f;
     float wSum = 0.0f;
     [loop]
     for (int k = -radius; k <= radius; ++k)
@@ -195,9 +201,17 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                 (uint) thp.y * bp.halfW + (uint) thp.x]);
             w *= SsrNormalWeight(centerN, SsrOctDecode(tapGb.xy));
         }
-        acc += tap * w;
+        float confidence = saturate(tap.a);
+        rgbAcc += tap.rgb * confidence * w;
+        confAcc += confidence * w;
         wSum += w;
     }
-    OUT.outColor = (wSum > 1e-5f) ? acc / wSum : float4(0.0f, 0.0f, 0.0f, 0.0f);
+    // Reconstructed confidence + confidence-weighted radiance mean (the
+    // 2D shader's tail note verbatim).
+    float outConf = (wSum > 1e-5f) ? saturate(confAcc / wSum) : 0.0f;
+    float3 outRgb = (confAcc > 1e-5f)
+        ? rgbAcc / confAcc
+        : float3(0.0f, 0.0f, 0.0f);
+    OUT.outColor = float4(SanitizeHdr(outRgb), outConf);
     return OUT;
 }

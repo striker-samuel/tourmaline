@@ -175,8 +175,13 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                     (uint) hp.y * (uint) halfExtent.x + (uint) hp.x]);
                 w *= SsrNormalWeight(centerN, SsrOctDecode(repGb.xy));
             }
-            accRgb += tap.rgb * w;
-            accA += tap.a * w;
+            // Confidence-aware accumulation (the blur's convention): rgb
+            // weighted by the tap's confidence x upsample weight, the
+            // confidence mass accumulated separately — a low-conf tap
+            // stops diluting its neighbors' valid reflection rgb.
+            float confidence = saturate(tap.a);
+            accRgb += tap.rgb * confidence * w;
+            accA += confidence * w;
             wSum += w;
         }
     }
@@ -201,11 +206,18 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     }
     float3 outColor = base;
     if (wSum > 1e-4f) {
-        const float3 layer = (accRgb / wSum);
-        const float conf = (accA / wSum);
+        // Confidence-aware reconstruction (the blur's convention):
+        // conf = the confidence mass's weighted mean, layer = the
+        // confidence-weighted radiance mean — a valid reflection keeps
+        // its radiance under a partially confident neighborhood instead
+        // of being averaged toward the misses' zero.
+        const float conf = saturate(accA / wSum);
+        const float3 layer = (accA > 1e-5f)
+            ? accRgb / accA
+            : float3(0.0f, 0.0f, 0.0f);
         outColor += envSpecOn
             ? conf * (layer - envSpec)
-            : layer * conf; // the additive fallback (no export bound)
+            : conf * layer; // the additive fallback (no export bound)
     }
     // NDC vignette: fade reflections near screen edges using the target
     // pixel's NDC coordinates. max(|ndc|) ramps from 0 (center) to 1

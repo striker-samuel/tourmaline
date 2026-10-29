@@ -149,10 +149,18 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         ? (roughness < 0.7f ? 3 : 4)
         : 2;
 
-    // Gaussian-ish bilateral blur (radius-scaled), depth-rejected
-    // across discontinuities. rgb and confidence share the same
-    // bilateral weights so the layer stays premultiplied-consistent.
-    float4 acc = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    // Confidence-aware bilateral accumulation: rgb is weighted by the
+    // tap's CONFIDENCE as well as the bilateral weight, and normalized
+    // by the confidence mass (not the plain weight sum) — a miss
+    // (conf 0) no longer dilutes its neighbors' valid reflection rgb
+    // (the old independent float4 average halved a bright 1.0-conf
+    // reflection sitting next to a miss; the confidence-weighted mean
+    // preserves it). Boundary contract unchanged: rgb =
+    // UNPREMULTIPLIED reconstructed radiance, a = reconstructed
+    // confidence; rgb x a = the effective contribution (what the
+    // composite's replacement formula consumes).
+    float3 rgbAcc = float3(0.0f, 0.0f, 0.0f);
+    float confAcc = 0.0f;
     float wSum = 0.0f;
     [loop]
     for (int y = -radius; y <= radius; ++y)
@@ -193,10 +201,21 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                     (uint) thp.y * bp.halfW + (uint) thp.x]);
                 w *= SsrNormalWeight(centerN, SsrOctDecode(tapGb.xy));
             }
-            acc += tap * w;
+            float confidence = saturate(tap.a);
+            rgbAcc += tap.rgb * confidence * w;
+            confAcc += confidence * w;
             wSum += w;
         }
     }
-    OUT.outColor = (wSum > 1e-5f) ? acc / wSum : float4(0.0f, 0.0f, 0.0f, 0.0f);
+    // Reconstructed confidence = the confidence mass's weighted mean;
+    // reconstructed rgb = the confidence-weighted radiance mean (the
+    // confidence-weighted domain's own normalization — a neighborhood
+    // of pure misses reads (0, 0), a lone valid tap keeps its full
+    // radiance at its diluted confidence).
+    float outConf = (wSum > 1e-5f) ? saturate(confAcc / wSum) : 0.0f;
+    float3 outRgb = (confAcc > 1e-5f)
+        ? rgbAcc / confAcc
+        : float3(0.0f, 0.0f, 0.0f);
+    OUT.outColor = float4(SanitizeHdr(outRgb), outConf);
     return OUT;
 }
