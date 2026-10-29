@@ -295,11 +295,19 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     float3 Rview = SsrSampleReflectionVector(
         normalize(viewPos), N, roughness, rnd.x, rnd.y);
     float3 screenOrigin = float3(receiverUv, dBest);
-    float3 screenDir = SsrProjectDirection(viewPos, Rview, screenOrigin, frame.proj);
-    // Behind-camera rays never hit (the SDK relies on the frustum
-    // reject below; guard the degenerate direction explicitly). Safe
-    // as a bare return: the slot was zeroed at the top.
-    if (length(screenDir.xy) <= 1e-9f)
+    // NEAR-PLANE CLAMP (the behind-camera projection fix): reflections
+    // fired toward the camera cross the near plane — projecting the
+    // raw endpoint divided a nonpositive clip w into enormous screen
+    // directions (the wedge artifacts). SsrProjectDirection now
+    // advances the endpoint only to the plane.
+    float3 screenDir = SsrProjectDirection(viewPos, Rview, screenOrigin,
+        frame.proj, frame.nearPlane);
+    // Behind-camera/degenerate guard: the clamp bounds the
+    // toward-camera projections, but a degenerate projection can still
+    // come out non-finite — reject before the march (the SDK relies on
+    // the frustum reject below; safe as a bare return, the slot was
+    // zeroed at the top).
+    if (!isfinite(screenDir.x + screenDir.y) || length(screenDir.xy) <= 1e-9f)
         return;
 
     // ---- The classic Hi-Z traversal (the SDK's

@@ -145,7 +145,10 @@ PSOut mainPS(PSIn IN)
                                1.0f / max(sp.invDepthH, 1e-9f));
     float2 uv = (float2(halfPx) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
     float3 screenOrigin = float3(uv, dBest);
-    float3 screenDir = SsrProjectDirection(viewPos, R, screenOrigin, frame.proj);
+    // The near-plane clamp rides inside SsrProjectDirection (the
+    // behind-camera endpoint fix — see its note in ssr_compute.hlsli).
+    float3 screenDir = SsrProjectDirection(viewPos, R, screenOrigin,
+        frame.proj, frame.nearPlane);
 
     if (length(screenDir.xy) <= 1e-9f)
     {

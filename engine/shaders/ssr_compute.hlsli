@@ -238,9 +238,34 @@ float3 SsrProjectPosition(float3 origin, float4x4 proj)
 
 // Screen-space ray direction from the view-space origin + direction
 // (projects origin+direction and subtracts the origin's screen point).
-float3 SsrProjectDirection(float3 origin, float3 direction, float3 screen_origin, float4x4 proj)
+// NEAR-PLANE CLAMP: a reflection fired toward the camera crosses the
+// near plane before its far end — the raw endpoint has clip w <= 0,
+// and SsrProjectPosition's divide by a tiny positive constant
+// fabricates enormous/flipped screen coordinates from it (the
+// wedge-shaped reflection artifacts). View space is right-handed
+// looking down -Z (camera at the origin, clip w = -viewZ): advance the
+// endpoint only to the visible side of the plane, then let the
+// caller's degenerate/frustum guards finish the job. NOT abs(w): that
+// would hide the sign and project behind-camera points onto the wrong
+// side of the image.
+float3 SsrProjectDirection(float3 origin, float3 direction,
+    float3 screen_origin, float4x4 proj, float nearPlane)
 {
-    float3 screen_pos = SsrProjectPosition(origin + direction, proj);
+    float3 end = origin + direction;
+    const float zNear = -max(nearPlane, 1e-4f);
+    if (end.z > zNear)
+    {
+        // The endpoint sits behind the near plane (or on it). From a
+        // visible origin (origin.z < zNear) that implies direction.z >
+        // 0; t = the crossing parameter, clamped into the segment (a
+        // garbage origin behind the plane clamps to t = 0 -> a ~zero
+        // screen direction the caller rejects).
+        float dz = max(direction.z, 1e-9f);
+        float t = saturate((zNear - origin.z) / dz);
+        end = origin + t * direction;
+        end.z = min(end.z, zNear); // the parallel/degenerate tail guard
+    }
+    float3 screen_pos = SsrProjectPosition(end, proj);
     return screen_pos - screen_origin;
 }
 
