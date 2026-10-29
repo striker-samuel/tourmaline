@@ -206,6 +206,13 @@ struct RunConfig {
 	// parse time what defers - this field only carries the log/known-
 	// list plumbing) ----
 	std::optional<OnOffPin> geometryStreaming;
+	// geometryBudgetMb: the promoted working-set ceiling (small values
+	// force eviction churn for headless testing; read directly by
+	// GeometryStreamingRuntimeConfig).
+	std::optional<uint32_t> geometryBudgetMb;
+	// geometryEvictIdle: frames a promoted sibling must stay untouched
+	// (neither drawn nor demanded) before it is eviction-eligible.
+	std::optional<uint32_t> geometryEvictIdle;
 
 	// ---- capture / audit ----
 	int audit = -1;

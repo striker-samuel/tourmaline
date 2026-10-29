@@ -1028,6 +1028,18 @@ namespace smvk {
 									// keep walking the prefetch window:
 									// the finest miss wins the entry
 								}
+								else if (lodTouchTracking_) {
+									// RESIDENT but desired (typically the
+									// promoted level the hysteresis band
+									// has not switched the draws to yet):
+									// TOUCH it - the eviction idle clock
+									// must never expire a level the camera
+									// still wants (the evict/re-promote
+									// ping-pong otherwise cycles it every
+									// idleFrames frames for nothing).
+									lodDrawnSet_.insert(
+										(uint64_t(worldMesh) << 32) | l);
+								}
 							}
 						}
 					}
@@ -1049,6 +1061,14 @@ namespace smvk {
 			if (nodeLod_[n] > 0)
 				++lodStatSwitched_;
 		}
+		// Geometry streaming: record the SERVED level (computed or
+		// cache-served) as a touch - the streamer's promote registry
+		// only evicts what nothing drew AND nothing demanded within the
+		// idle window. Packed mesh<<32|level; the set drains between
+		// frames. Zero cost when streaming is off (tracking unarmed).
+		if (lodTouchTracking_)
+			lodDrawnSet_.insert(
+				(uint64_t(worldMesh) << 32) | nodeLod_[n]);
 		return nodeLod_[n];
 	}
 
@@ -1210,9 +1230,26 @@ namespace smvk {
 		lodDemand_.clear();
 	}
 
+	void World::ConsumeLodDrawn(
+		std::vector<std::pair<uint32_t, uint32_t>>& out) {
+		out.clear();
+		out.reserve(lodDrawnSet_.size());
+		for (const uint64_t k : lodDrawnSet_)
+			out.emplace_back(uint32_t(k >> 32), uint32_t(k & 0xFFFFFFFFu));
+		lodDrawnSet_.clear();
+	}
+
 	bool World::HasDeferredLods() const {
 		for (const auto& clusterPtr : clusters) {
 			if (clusterPtr && clusterPtr->DeferredLodCount() > 0)
+				return true;
+		}
+		return false;
+	}
+
+	bool World::HasLodRecords() const {
+		for (const auto& clusterPtr : clusters) {
+			if (clusterPtr && clusterPtr->HasLodRecords())
 				return true;
 		}
 		return false;
@@ -1245,6 +1282,35 @@ namespace smvk {
 				return r;
 		}
 		return std::nullopt;
+	}
+
+	uint64_t World::EvictLodLevel(uint32_t meshIndex, uint32_t lodIndex) {
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size() || meshIndex >= meshLocations.size())
+			return 0;
+		const LodChain& chain = lodChains[meshIndex];
+		// Only PROMOTED siblings evict (never the LOD0 base - it is the
+		// scene's referenced mesh and the chain's level 0; the pinned
+		// coarsest fallback has no streaming record at all, so it is
+		// structurally safe too).
+		if (lodIndex == 0 || lodIndex >= chain.levels.size()
+			|| !chain.levels[lodIndex].resident)
+			return 0;
+		const MeshLocation& lod0 = meshLocations[meshIndex];
+		if (lod0.cluster == nullptr || !lod0.handle.valid())
+			return 0;
+		const StringViewT base =
+			BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
+		if (base.empty())
+			return 0;
+		const StringViewT uri = LodSiblingUri(base, lodIndex);
+		for (const auto& clusterPtr : clusters) {
+			if (!clusterPtr)
+				continue;
+			if (const uint64_t bytes = clusterPtr->EvictMeshLod(uri))
+				return bytes;
+		}
+		return 0;
 	}
 
 	// Scene-wide lightmap chart transform table: every StaticMesh's

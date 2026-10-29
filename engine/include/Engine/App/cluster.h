@@ -477,6 +477,10 @@ namespace smvk {
 	// replay the exact upload + registration sequence later (the
 	// metadata-survives-eviction requirement - only the PAYLOAD is
 	// absent, never the identity).
+	// Records PERSIST through promote (promotedHandle set) so EVICTION
+	// can restore them: evict moves the mesh's runtime fields back into
+	// the record, destroys the pool mesh, and clears promotedHandle -
+	// the sibling is deferred again, re-promotable byte-identically.
 	struct DeferredMeshLod {
 		std::string uri;
 		StaticMeshDirectSource src;  // pak-image offsets/counts/aabb
@@ -486,6 +490,10 @@ namespace smvk {
 		LodInfo lod;
 		CookedMeshlets meshlets;
 		uint64_t payloadBytes = 0;   // vertex+index bytes (budget/throttle)
+		// Valid while the sibling is PROMOTED (resident): the pool
+		// handle EvictMeshLod destroys. The record's payload fields are
+		// MOVED OUT on promote and MOVED BACK on evict.
+		ClusterStaticMeshHandle promotedHandle{};
 	};
 	// Park a sibling as deferred (the deserializer's streaming path).
 	// Returns the accounted payload bytes (the load census).
@@ -494,25 +502,32 @@ namespace smvk {
 		StringViewT uri) const;
 	// Promote: re-run the direct upload (one source, from the pinned pak
 	// image) + the full registration the deserializer performed for
-	// load-time meshes, then drop the deferred record. Returns the fresh
-	// handle + the payload bytes (the streamer's budget accounting) or
-	// nullopt (not deferred / no pinned image / upload failed). Render
-	// thread, between frames (the arena carve allocates fresh ranges -
-	// nothing is freed, so the retirement discipline is not exercised).
+	// load-time meshes; the record STAYS (promotedHandle set) for the
+	// evict path. Returns the fresh handle + the payload bytes (the
+	// streamer's budget accounting) or nullopt (not deferred / no
+	// pinned image / upload failed). Render thread, between frames.
 	struct PromotedLod {
 		ClusterStaticMeshHandle handle{};
 		uint64_t payloadBytes = 0;
 	};
 	[[nodiscard]] std::optional<PromotedLod> PromoteDeferredMeshLod(
 		StringViewT uri);
-	[[nodiscard]] size_t DeferredLodCount() const {
-		return deferredLods_.size();
-	}
-	[[nodiscard]] uint64_t DeferredLodBytes() const {
-		uint64_t b = 0;
-		for (const DeferredMeshLod& d : deferredLods_)
-			b += d.payloadBytes;
-		return b;
+	// Evict: the inverse of promote - the promoted sibling's runtime
+	// fields move back into its record, the pool mesh + heap ranges
+	// retire (DestroyMesh - the range frees ride DeferDestroyTask, so
+	// in-flight frames drawing the ranges stay safe), the mesh URI
+	// unregisters (FindMeshByUri misses again - the chain sees the
+	// sibling as deferred) while the LodInfo metadata STAYS. Returns
+	// the freed payload bytes, 0 when the uri is not currently
+	// promoted. Render thread, between frames.
+	[[nodiscard]] uint64_t EvictMeshLod(StringViewT uri);
+	[[nodiscard]] size_t DeferredLodCount() const;
+	[[nodiscard]] uint64_t DeferredLodBytes() const;
+	// ANY streaming record (deferred OR promoted) - the streamer tick's
+	// active gate: with eviction on, the tick must keep running (touch
+	// tracking + budget enforcement) even after everything promoted.
+	[[nodiscard]] bool HasLodRecords() const {
+		return !deferredLods_.empty();
 	}
 
 	private:

@@ -408,6 +408,20 @@ RunConfig RunConfig::Parse() {
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_GEOMETRY_STREAMING (want 1|on|0|off): %s\n", v);
 	}
+	if ((v = Get("TOURMALINE_GEOMETRY_BUDGET_MB")) != nullptr) {
+		const long mb = std::atol(v);
+		if (mb > 0 && mb <= 4096)
+			c.geometryBudgetMb = uint32_t(mb);
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_GEOMETRY_BUDGET_MB out of range (1..4096): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_GEOMETRY_EVICT_IDLE")) != nullptr) {
+		const long f = std::atol(v);
+		if (f >= 0 && f <= 100000)
+			c.geometryEvictIdle = uint32_t(f);
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_GEOMETRY_EVICT_IDLE out of range (0..100000): %s\n", v);
+	}
 	if ((v = Get("TOURMALINE_CONTACT_SHADOWS_STEPS")) != nullptr) {
 		const int css = std::atoi(v);
 		if (css >= 4 && css <= 32)
@@ -608,6 +622,10 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " CONTACT_SHADOWS_RES=%d", *contactShadowRes);
 	if (geometryStreaming)
 		std::fprintf(stderr, " GEO_STREAMING=%s", onOffStr(*geometryStreaming));
+	if (geometryBudgetMb)
+		std::fprintf(stderr, " GEO_BUDGET=%uMB", *geometryBudgetMb);
+	if (geometryEvictIdle)
+		std::fprintf(stderr, " GEO_EVICT_IDLE=%u", *geometryEvictIdle);
 	if (normalFix)
 		std::fprintf(stderr, " NORMAL_FIX=%s", onOffStr(*normalFix));
 	if (normalFixDebug)
@@ -665,7 +683,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_DS_VIZ", "TOURMALINE_CAPTURE", "TOURMALINE_DECALS",
 		"TOURMALINE_DECAL_AUTOSPLAT", "TOURMALINE_EVSM", "TOURMALINE_EVSM_SOFT",
 		"TOURMALINE_SDSM", "TOURMALINE_EVSM_DUMP", "TOURMALINE_SSR_DUMP",
-		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_CONTACT_SHADOWS", "TOURMALINE_CONTACT_SHADOWS_STEPS", "TOURMALINE_CONTACT_SHADOWS_DIST", "TOURMALINE_CONTACT_SHADOWS_THICKNESS", "TOURMALINE_CONTACT_SHADOWS_RES", "TOURMALINE_GEOMETRY_STREAMING", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
+		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_CONTACT_SHADOWS", "TOURMALINE_CONTACT_SHADOWS_STEPS", "TOURMALINE_CONTACT_SHADOWS_DIST", "TOURMALINE_CONTACT_SHADOWS_THICKNESS", "TOURMALINE_CONTACT_SHADOWS_RES", "TOURMALINE_GEOMETRY_STREAMING", "TOURMALINE_GEOMETRY_BUDGET_MB", "TOURMALINE_GEOMETRY_EVICT_IDLE", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
 		"TOURMALINE_GI", "TOURMALINE_GI_DEBUG", "TOURMALINE_GI_DEBUG_LEVEL",
 		"TOURMALINE_GI_INTENSITY",
 		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",

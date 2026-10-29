@@ -143,19 +143,33 @@ int main() {
 	// Geometry-streaming pin: parse + log plumbing only (the serializer
 	// reads the env directly - see the field's note).
 	SetVar("TOURMALINE_GEOMETRY_STREAMING", "on");
+	SetVar("TOURMALINE_GEOMETRY_BUDGET_MB", "8");
+	SetVar("TOURMALINE_GEOMETRY_EVICT_IDLE", "16");
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(c.geometryStreaming.has_value()
 			&& *c.geometryStreaming == engine::OnOffPin::On,
 			"runconfig.parse-geo-streaming");
+		Check(c.geometryBudgetMb.has_value() && *c.geometryBudgetMb == 8,
+			"runconfig.parse-geo-budget");
+		Check(c.geometryEvictIdle.has_value() && *c.geometryEvictIdle == 16,
+			"runconfig.parse-geo-evict-idle");
 	}
 	SetVar("TOURMALINE_GEOMETRY_STREAMING", "maybe");
+	SetVar("TOURMALINE_GEOMETRY_BUDGET_MB", "0");
+	SetVar("TOURMALINE_GEOMETRY_EVICT_IDLE", "-4");
 	{
 		engine::RunConfig c = engine::RunConfig::Parse();
 		Check(!c.geometryStreaming.has_value(),
 			"runconfig.invalid-geo-streaming-unset");
+		Check(!c.geometryBudgetMb.has_value(),
+			"runconfig.invalid-geo-budget-unset");
+		Check(!c.geometryEvictIdle.has_value(),
+			"runconfig.invalid-geo-evict-idle-unset");
 	}
 	UnsetVar("TOURMALINE_GEOMETRY_STREAMING");
+	UnsetVar("TOURMALINE_GEOMETRY_BUDGET_MB");
+	UnsetVar("TOURMALINE_GEOMETRY_EVICT_IDLE");
 
 	// Invalid pins warn (stderr) and leave the authored scene winning.
 	SetVar("TOURMALINE_AA", "bogus");

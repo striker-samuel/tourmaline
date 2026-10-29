@@ -2450,9 +2450,14 @@ namespace engine {
 				// Geometry LOD streaming census: the cluster loads
 				// deferred their middle LOD siblings (the serializer's
 				// stderr line carries the per-cluster numbers); arm the
-				// per-frame tick while any remain. Pinned coarsest
-				// fallbacks + bases are already resident - the tick only
-				// promotes demand-misses.
+				// per-frame tick + the touch tracking while any streaming
+				// record exists (deferred OR promoted - with eviction on,
+				// the tick keeps enforcing the budget after everything
+				// promoted). Pinned coarsest fallbacks + bases are
+				// already resident.
+				m_geometryStreamer = smvk::GeometryStreamer{};
+				m_geometryStreamer.config =
+					smvk::GeometryStreamingRuntimeConfig();
 				m_geometryStreamer.stats.deferredAtLoad = 0;
 				m_geometryStreamer.stats.deferredBytesAtLoad = 0;
 				for (const auto& clusterPtr : m_world->clusters) {
@@ -2463,8 +2468,8 @@ namespace engine {
 					m_geometryStreamer.stats.deferredBytesAtLoad +=
 						clusterPtr->DeferredLodBytes();
 				}
-				m_geometryStreamingActive =
-					m_geometryStreamer.stats.deferredAtLoad > 0;
+				m_geometryStreamingActive = m_world->HasLodRecords();
+				m_world->SetLodTouchTracking(m_geometryStreamingActive);
 				std::cerr << "[Scene] gfx clusters="
 					<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
 				if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
@@ -5158,27 +5163,39 @@ namespace engine {
 	}
 
 	void WorldRenderer::UpdateGeometryStreaming() {
-		// The promote tick (geometry_streamer.h): drain the demand the
-		// LOD picker accumulated this frame, promote what the camera
-		// wants within the byte/count throttle, then rebuild the
-		// LOD chains + the gfx mesh tables. Runs in RenderFrame's update
-		// section - BEFORE any pass is appended this frame, so the
-		// frame's recording sees the new tables; in-flight frames keep
-		// the old buffers/regions through the deferred retirement
-		// (DeferFreeIndexRegion + the Holder drops + the RHI margin).
+		// The promote/evict tick (geometry_streamer.h): drain the demand
+		// the LOD picker accumulated this frame + the drawn-level
+		// touches, promote what the camera wants within the byte/count
+		// throttle, evict the idlest over-budget siblings, then rebuild
+		// the LOD chains + the gfx mesh tables. Runs in RenderFrame's
+		// update section - BEFORE any pass is appended this frame, so
+		// the frame's recording sees the new tables; in-flight frames
+		// keep the old buffers/regions through the deferred retirement
+		// (DeferFreeIndexRegion + DestroyMesh's range retirement + the
+		// Holder drops + the RHI margin).
 		if (!m_geometryStreamingActive || !m_world)
 			return;
 		SMVK_PROFILE_STREAM("GeoStreamingUpdate");
+		const uint64_t frame = m_frameCounter;
 		m_geometryStreamer.BeginUpdate();
+
+		// Touches first: everything served this frame is idle-clock
+		// fresh (a level in use never evicts).
+		{
+			std::vector<std::pair<uint32_t, uint32_t>> drawn;
+			m_world->ConsumeLodDrawn(drawn);
+			for (const auto& [mesh, level] : drawn)
+				m_geometryStreamer.NoteTouch(mesh, level, frame);
+		}
+
 		std::vector<std::pair<uint32_t, uint32_t>> demand;
 		m_world->ConsumeLodDemand(demand);
-		if (demand.empty())
-			return;
+		bool dirty = false;
 		uint64_t bytesThisFrame = 0;
 		uint32_t promotes = 0;
-		bool dirty = false;
 		for (const auto& [mesh, level] : demand) {
 			++m_geometryStreamer.stats.demandMisses;
+			m_geometryStreamer.NoteTouch(mesh, level, frame);
 			if (!m_geometryStreamer.CanPromoteThisFrame(bytesThisFrame,
 					promotes))
 				break; // throttle: the rest re-demands next frame
@@ -5187,7 +5204,8 @@ namespace engine {
 				continue; // not deferred anymore (promoted / mistaken)
 			bytesThisFrame += r->payloadBytes;
 			++promotes;
-			m_geometryStreamer.NotePromote(r->payloadBytes);
+			m_geometryStreamer.NotePromote(mesh, level, r->payloadBytes,
+				frame);
 			dirty = true;
 			std::fprintf(stderr,
 				"[GeometryStreaming] promoted worldMesh=%u lod=%u "
@@ -5195,14 +5213,41 @@ namespace engine {
 				mesh, level, double(r->payloadBytes) / 1024.0,
 				promotes, m_geometryStreamer.config.maxPromotesPerFrame);
 		}
+
+		// Budget enforcement: over gpuBudgetBytes, return the IDLEST
+		// past-the-window siblings to deferred (oldest touch first, one
+		// per frame keeps the rebuild churn bounded; the freed arena
+		// ranges retire behind the in-flight frames).
+		{
+			uint64_t key = 0, bytes = 0;
+			if (m_geometryStreamer.FindEvictCandidate(frame, key, bytes)) {
+				const uint32_t mesh = uint32_t(key >> 32);
+				const uint32_t level = uint32_t(key & 0xFFFFFFFFu);
+				if (const uint64_t freed = m_world->EvictLodLevel(mesh,
+						level)) {
+					m_geometryStreamer.NoteEvict(mesh, level, freed);
+					dirty = true;
+					std::fprintf(stderr,
+						"[GeometryStreaming] EVICTED worldMesh=%u lod=%u "
+						"(%.0f KiB freed, working set %.2f MiB / %.2f MiB)\n",
+						mesh, level, double(freed) / 1024.0,
+						double(m_geometryStreamer.stats.promotedBytes)
+							/ (1024.0 * 1024.0),
+						double(m_geometryStreamer.config.gpuBudgetBytes)
+							/ (1024.0 * 1024.0));
+				}
+			}
+		}
+
 		if (dirty) {
-			// The chains pick up the promoted levels (the sparse
-			// resident set widens); the lightmap chart table gains the
-			// promoted siblings' charts; the gfx tables rebuild from
-			// scratch (ResetStaticRegistrations + the dedup'd re-register
-			// - there is no incremental GPU mesh-table update, the
-			// full rebuild IS the mechanism, and it is in-flight-safe
-			// since the index-region rework).
+			// The chains re-derive (promoted levels join, evicted levels
+			// return to deferred); the lightmap chart table follows; the
+			// gfx tables rebuild from scratch (ResetStaticRegistrations
+			// + the dedup'd re-register - the re-register walk SKIPS
+			// destroyed pool entries, which is the per-mesh removal
+			// mechanism; there is no incremental GPU mesh-table update,
+			// the full rebuild IS the mechanism, and it is in-flight-
+			// safe since the index-region rework).
 			m_world->RebuildLodChains();
 			m_world->RebuildLightmapChartTable();
 			if (m_gfxFilterAvailable) {
@@ -5211,8 +5256,6 @@ namespace engine {
 				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
 			}
 			m_context->FlushUploads();
-			// The tick retires when the last deferred sibling promoted.
-			m_geometryStreamingActive = m_world->HasDeferredLods();
 		}
 	}
 

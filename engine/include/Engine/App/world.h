@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -361,6 +362,14 @@ namespace smvk {
 		// chain has deferred siblings.
 		void ConsumeLodDemand(
 			std::vector<std::pair<uint32_t, uint32_t>>& out);
+		// Drawn-level touches (the eviction idle clock's other half):
+		// while touch tracking is on, LodIndexForNode records every
+		// SERVED (mesh, level) - the streamer's promote registry decays
+		// entries nothing has drawn or demanded within
+		// idleFramesBeforeEvict. Drain between frames like the demand.
+		void SetLodTouchTracking(bool on) { lodTouchTracking_ = on; }
+		void ConsumeLodDrawn(
+			std::vector<std::pair<uint32_t, uint32_t>>& out);
 		// Promote one deferred sibling to resident: locate its deferred
 		// record on the owning cluster and replay the upload +
 		// registration (Cluster::PromoteDeferredMeshLod). Returns the
@@ -369,9 +378,22 @@ namespace smvk {
 		// caller rebuilds the chains + the gfx tables afterwards.
 		[[nodiscard]] std::optional<Cluster::PromotedLod> PromoteLodLevel(
 			uint32_t meshIndex, uint32_t lodIndex);
+		// Evict a PROMOTED sibling back to deferred (the budget
+		// enforcement path): Cluster::EvictMeshLod destroys the pool
+		// mesh (heap ranges retire deferred), the record returns to the
+		// deferred state. Returns the freed payload bytes, 0 when the
+		// level is not currently promoted (or is the never-evictable
+		// LOD0 base).
+		[[nodiscard]] uint64_t EvictLodLevel(
+			uint32_t meshIndex, uint32_t lodIndex);
 		// Any cluster still holding deferred siblings (the streamer's
-		// active gate + census).
+		// census).
 		[[nodiscard]] bool HasDeferredLods() const;
+		// Any cluster holding LOD streaming records at all - deferred
+		// OR promoted (the tick's active gate: with eviction on, the
+		// tick keeps running for touch tracking + budget enforcement
+		// even after everything promoted).
+		[[nodiscard]] bool HasLodRecords() const;
 
 		// Cached LOD chains parallel to meshLocations (see RebuildLodChains).
 		// Mutable so const hot paths (LodChainLength/SelectLodIndex) can
@@ -471,6 +493,12 @@ namespace smvk {
 		// filled by LodIndexForNode's full-chain selection, drained by
 		// the streamer tick between frames.
 		mutable std::unordered_map<uint32_t, uint32_t> lodDemand_;
+		// Geometry streaming: every SERVED (mesh, level) since the last
+		// ConsumeLodDrawn (packed mesh<<32|level) - the eviction idle
+		// clock. Only accumulated while lodTouchTracking_ (the streamer
+		// arms it when streaming is live).
+		mutable std::unordered_set<uint64_t> lodDrawnSet_;
+		mutable bool lodTouchTracking_ = false;
 
 		// First-hit URI resolution across clusters in registration order
 		// (mirrors the VFS overlay rule). Used for cross-pak references.

@@ -130,17 +130,22 @@ $env:TOURMALINE_CAPTURE='48'
   dim blue = NdotL<=0 (inert), magenta = the pass not running. The
   contact pass stays LIVE under this view (it samples the real march)
 - `TOURMALINE_GEOMETRY_STREAMING=1` gates GPU geometry LOD streaming
-  (geometry_streamer.h - v1 stages 1-3, DEFAULT OFF): cluster load
-  defers the middle LOD siblings (LOD0 bases + each group's coarsest
-  fallback stay resident; skinned siblings never defer), the LOD picker
-  selects over the RESIDENT subset only (a missing middle LOD degrades
-  to the resident neighbor in error budget - the drawn level), and the
-  per-frame tick promotes demand-missed siblings (throttled: 16 MiB +
-  4 promotes/frame) with a full gfx-table rebuild between frames
-  (in-flight-safe: the index region retires deferred). Stage 4
-  (physical sparse backing + eviction) is NOT in: promotion grows the
-  working set until it equals full residency; the config's
-  budget/eviction fields are the policy surface for that stage
+  (geometry_streamer.h - v1 stages 1-3 + logical stage-4 eviction,
+  DEFAULT OFF): cluster load defers the middle LOD siblings (LOD0 bases
+  + each group's coarsest fallback stay resident; skinned siblings
+  never defer), the LOD picker selects over the RESIDENT subset only (a
+  missing middle LOD degrades to the resident neighbor in error budget
+  - the drawn level), and the per-frame tick promotes demand-missed
+  siblings (throttled: 16 MiB + 4 promotes/frame) and EVICTS the idlest
+  over-budget siblings back to deferred (nothing drawn or demanded
+  within the idle window; a level touched this frame never evicts) -
+  every rebuild between frames is in-flight-safe (deferred retirement).
+  `TOURMALINE_GEOMETRY_BUDGET_MB` pins the promoted working-set ceiling,
+  `TOURMALINE_GEOMETRY_EVICT_IDLE` the idle window in frames (the
+  headless churn-test pair - small budgets force evict/re-promote
+  cycling). Physical sparse backing (actual page release) stays out:
+  eviction frees arena RANGES for reuse, the monoblocks keep their
+  committed size
 
 ## Tests
 

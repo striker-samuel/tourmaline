@@ -40,30 +40,32 @@
 //        between deferred), stage 2 (demand-driven promote of
 //        individual LODs), stage 3 (residency-aware selection - every
 //        submitted draw references only resident geometry BY
-//        CONSTRUCTION: the picker never selects a deferred level).
-//   OUT: stage 4 (physical sparse VkBuffer backing - eviction frees
-//        RANGES for reuse, the monoblocks keep their committed size;
-//        enableEviction is OFF because the gfx filter has NO per-mesh
-//        removal path today - RegisterWorldMeshes is append/dedup and
-//        gfx::UploadStaticData is a full rebuild, so an evicted mesh
-//        would leave a live gfx entry pointing at a freed range - the
-//        classic stale-reference hazard the plan warns about), stage 5
-//        (cascade-specific demand - cascades keep sharing the camera
-//        chain), stage 6 (disk streaming - the pak image stays pinned;
-//        promotes are pure offset math into it), skinned siblings
-//        (always resident - the deformed-heap parity math must not see
-//        ranges disappear).
+//        CONSTRUCTION: the picker never selects a deferred level), and
+//        the LOGICAL half of stage 4: eviction back to deferred when
+//        the promoted working set exceeds gpuBudgetBytes (the idlest
+//        sibling past idleFramesBeforeEvict; a level touched this
+//        frame - drawn or demanded - never evicts). Eviction frees
+//        ARENA RANGES for reuse (DestroyMesh's deferred retirement) -
+//        the monoblocks keep their committed size, which is the plan's
+//        option 1; option 2 (sparse VkBuffer backing, physical page
+//        release) stays out.
+//   OUT: stage 5 (cascade-specific demand - cascades keep sharing the
+//        camera chain), stage 6 (disk streaming - the pak image stays
+//        pinned; promotes are pure offset math into it), skinned
+//        siblings (always resident - the deformed-heap parity math
+//        must not see ranges disappear), physical sparse backing.
 //
-// The promote path is timeline-safe by construction: UploadStaticMeshes
-// Direct allocates FRESH arena ranges and copies through the RHI upload
-// streamer (retired by its batch); nothing is freed in v1, so the
-// DeferFreeStaticMeshRanges retirement discipline is not yet exercised
-// - it becomes load-bearing when eviction lands.
+// The promote/evict paths are timeline-safe by construction: promotes
+// allocate FRESH arena ranges; evicts ride DestroyMesh's
+// DeferFreeStaticMeshRanges (the +MaxFramesInFlight retirement margin)
+// - an in-flight frame drawing an evicted sibling's ranges finishes
+// before the range returns to the free list.
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 namespace smvk {
 
@@ -103,9 +105,9 @@ struct GeometryStreamingConfig {
 	// per-promote registration work + the gfx table rebuild cadence).
 	uint32_t maxPromotesPerFrame = 4;
 
-	// Idle frames before a demand-loaded sibling is EVICTION-ELIGIBLE.
-	// INERT in v1 (enableEviction false) - tracked here so the policy
-	// constants ship with the accounting.
+	// Idle frames before a demand-loaded sibling is EVICTION-ELIGIBLE
+	// (nothing drawn or demanded it within the window). 0 = evictable
+	// the frame after its last touch. Pins: TOURMALINE_GEOMETRY_EVICT_IDLE.
 	uint32_t idleFramesBeforeEvict = 60;
 	// Levels finer than the desired one to prefetch (hides the promote
 	// latency when the camera approaches). 0 = demand only. v1-live:
@@ -118,8 +120,13 @@ struct GeometryStreamingConfig {
 	// beyond LOD0 exists).
 	bool pinCoarsestLod = true;
 
-	// Stage-4+ surfaces - INERT in v1 (see the file header).
-	bool enableEviction = false;
+	// Eviction ON: the promoted working set is bounded by gpuBudgetBytes
+	// (the idlest siblings past idleFramesBeforeEvict return to
+	// deferred). The gfx-table rebuild (ResetStaticRegistrations + the
+	// re-register walk skips destroyed pool entries) is the per-mesh
+	// removal mechanism.
+	bool enableEviction = true;
+	// Stage-4's physical half - INERT in v1 (see the file header).
 	bool enableSparseBacking = false;
 };
 
@@ -128,19 +135,31 @@ struct GeometryStreamingConfig {
 struct GeometryStreamingStats {
 	uint64_t promotedCount = 0;      // siblings promoted since load
 	uint64_t promotedBytes = 0;      // their payload bytes (vert+index)
+	uint64_t evictedCount = 0;       // siblings evicted back to deferred
+	uint64_t evictedBytes = 0;       // their freed payload bytes
 	uint64_t deferredAtLoad = 0;     // the load-time census
 	uint64_t deferredBytesAtLoad = 0; // payload bytes NOT uploaded at load
 	uint64_t promotesLastUpdate = 0; // this tick's promotes
+	uint64_t evictionsLastUpdate = 0; // this tick's evictions
 	uint64_t demandMisses = 0;       // cumulative (mesh, level) demands
 	                                 // that were not resident
 };
 
-// The streamer state the WorldRenderer ticks (the promote machinery
-// itself lives on Cluster::PromoteDeferredMeshLod / World::PromoteLodLevel
-// - the asset owns its payload; this struct owns POLICY).
+// One entry per PROMOTED sibling (the eviction candidates): the payload
+// accounting + the idle clock. Key = worldMesh<<32 | lodIndex.
+struct PromotedLodEntry {
+	uint64_t payloadBytes = 0;
+	uint64_t lastTouchFrame = 0;   // last drawn OR demanded frame
+};
+
+// The streamer state the WorldRenderer ticks (the promote/evict
+// machinery itself lives on Cluster::Promote/EvictDeferredMeshLod +
+// World::Promote/EvictLodLevel - the asset owns its payload; this
+// struct owns POLICY).
 struct GeometryStreamer {
 	GeometryStreamingConfig config{};
 	GeometryStreamingStats stats{};
+	std::unordered_map<uint64_t, PromotedLodEntry> promoted;
 
 	// Budget/throttle decisions for one promote candidate.
 	[[nodiscard]] bool CanPromoteThisFrame(uint64_t bytesThisFrame,
@@ -154,13 +173,91 @@ struct GeometryStreamer {
 		return true;
 	}
 
-	void NotePromote(uint64_t payloadBytes) {
+	void NotePromote(uint32_t mesh, uint32_t lod, uint64_t payloadBytes,
+		uint64_t frame) {
 		++stats.promotedCount;
 		stats.promotedBytes += payloadBytes;
 		++stats.promotesLastUpdate;
+		promoted[(uint64_t(mesh) << 32) | lod] =
+			PromotedLodEntry{ payloadBytes, frame };
 	}
 
-	void BeginUpdate() { stats.promotesLastUpdate = 0; }
+	void NoteTouch(uint32_t mesh, uint32_t lod, uint64_t frame) {
+		auto it = promoted.find((uint64_t(mesh) << 32) | lod);
+		if (it != promoted.end())
+			it->second.lastTouchFrame = frame;
+	}
+
+	void NoteEvict(uint32_t mesh, uint32_t lod, uint64_t payloadBytes) {
+		++stats.evictedCount;
+		stats.evictedBytes += payloadBytes;
+		++stats.evictionsLastUpdate;
+		stats.promotedBytes -= (stats.promotedBytes >= payloadBytes)
+			? payloadBytes : stats.promotedBytes;
+		promoted.erase((uint64_t(mesh) << 32) | lod);
+	}
+
+	void BeginUpdate() {
+		stats.promotesLastUpdate = 0;
+		stats.evictionsLastUpdate = 0;
+	}
+
+	// The eviction candidate search: over budget, the IDLEST promoted
+	// sibling (oldest touch) past the idle window. keyOut/bytesOut
+	// filled on hit. A sibling touched THIS frame is never evictable
+	// (it is currently drawn or demanded - the invariant that a level
+	// in use stays resident).
+	[[nodiscard]] bool FindEvictCandidate(uint64_t frame,
+		uint64_t& keyOut, uint64_t& bytesOut) const {
+		if (!config.enableEviction)
+			return false;
+		if (stats.promotedBytes <= config.gpuBudgetBytes)
+			return false;
+		uint64_t bestKey = 0;
+		uint64_t bestBytes = 0;
+		uint64_t bestTouch = ~uint64_t(0);
+		for (const auto& [key, e] : promoted) {
+			if (frame <= e.lastTouchFrame)
+				continue; // touched this very frame
+			if (frame - e.lastTouchFrame < config.idleFramesBeforeEvict)
+				continue; // inside the idle window
+			if (e.lastTouchFrame < bestTouch) {
+				bestTouch = e.lastTouchFrame;
+				bestKey = key;
+				bestBytes = e.payloadBytes;
+			}
+		}
+		if (bestTouch == ~uint64_t(0))
+			return false;
+		keyOut = bestKey;
+		bytesOut = bestBytes;
+		return true;
+	}
 };
+
+// The config with the env overrides (the DebugImageDumpArmed pattern:
+// static-cached, read once; the headless A/B pins for the eviction
+// policy). TOURMALINE_GEOMETRY_BUDGET_MB clamps the working-set ceiling
+// (small values force eviction churn for testing);
+// TOURMALINE_GEOMETRY_EVICT_IDLE pins the idle window in frames (0 =
+// evictable the frame after its last touch).
+[[nodiscard]] inline const GeometryStreamingConfig&
+GeometryStreamingRuntimeConfig() {
+	static const GeometryStreamingConfig cfg = [] {
+		GeometryStreamingConfig c{};
+		if (const char* e = std::getenv("TOURMALINE_GEOMETRY_BUDGET_MB")) {
+			const long mb = std::atol(e);
+			if (mb > 0)
+				c.gpuBudgetBytes = uint64_t(mb) << 20;
+		}
+		if (const char* e = std::getenv("TOURMALINE_GEOMETRY_EVICT_IDLE")) {
+			const long f = std::atol(e);
+			if (f >= 0)
+				c.idleFramesBeforeEvict = uint32_t(f);
+		}
+		return c;
+	}();
+	return cfg;
+}
 
 } // namespace smvk

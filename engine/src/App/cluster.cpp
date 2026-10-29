@@ -1110,23 +1110,42 @@ const smvk::Cluster::DeferredMeshLod* smvk::Cluster::FindDeferredMeshLod(
 	return nullptr;
 }
 
+size_t smvk::Cluster::DeferredLodCount() const {
+	size_t n = 0;
+	for (const DeferredMeshLod& d : deferredLods_)
+		if (!d.promotedHandle.valid())
+			++n;
+	return n;
+}
+
+uint64_t smvk::Cluster::DeferredLodBytes() const {
+	uint64_t b = 0;
+	for (const DeferredMeshLod& d : deferredLods_)
+		if (!d.promotedHandle.valid())
+			b += d.payloadBytes;
+	return b;
+}
+
 std::optional<smvk::Cluster::PromotedLod>
 smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
 {
-	auto it = std::find_if(deferredLods_.begin(), deferredLods_.end(),
-		[&](const DeferredMeshLod& d) { return uri == d.uri; });
-	if (it == deferredLods_.end())
+	DeferredMeshLod* rec = nullptr;
+	for (DeferredMeshLod& d : deferredLods_) {
+		if (uri != d.uri)
+			continue;
+		if (!d.promotedHandle.valid())
+			rec = &d;
+		break; // one record per uri; skip already-promoted ones
+	}
+	if (rec == nullptr)
 		return std::nullopt;
 	if (!pakImagePin_ || pakImagePin_->empty())
 		return std::nullopt; // no payload source: cannot promote
-	DeferredMeshLod d = std::move(*it);
-	deferredLods_.erase(it);
-	const uint64_t payloadBytes = d.payloadBytes;
 
 	// One direct upload from the pinned pak image (the deserializer's
 	// batch path with a single source - fresh arena ranges, table-driven
 	// copies through the RHI upload streamer).
-	const StaticMeshDirectSource srcs[1] = { d.src };
+	const StaticMeshDirectSource srcs[1] = { rec->src };
 	const std::vector<ClusterStaticMeshHandle> handles =
 		UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
 	if (handles.size() != 1 || !handles[0].valid())
@@ -1136,25 +1155,74 @@ smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
 	// The deserializer's meta re-attach (cluster_serializer.cpp's
 	// post-upload block, verbatim): sphere + lightmap chunk/xforms +
 	// cooked meshlets. Skinned never defers (the v1 exclusion), so
-	// skinned stays false here.
+	// skinned stays false here. The fields MOVE OUT of the record (the
+	// evict path moves them back).
 	if (StaticMesh* m = staticMeshes.get(h)) {
-		m->geometry.sphereRadius = d.sphere;
-		m->lmChunk = d.lmChunk;
-		m->lmChartXforms = std::move(d.lmXforms);
-		if (!d.meshlets.meshlets.empty())
-			m->meshlets = std::move(d.meshlets);
+		m->geometry.sphereRadius = rec->sphere;
+		m->lmChunk = rec->lmChunk;
+		m->lmChartXforms = std::move(rec->lmXforms);
+		if (!rec->meshlets.meshlets.empty())
+			m->meshlets = std::move(rec->meshlets);
 		m->skinned = false;
 	}
-	RegisterMeshUri(d.uri, h);
+	RegisterMeshUri(rec->uri, h);
 	// LodInfo was registered at DEFER time (RebuildLodChains needed it
 	// to see the full chain) - re-registering is an idempotent refresh.
-	RegisterMeshLod(d.uri, d.lod);
+	RegisterMeshLod(rec->uri, rec->lod);
 	if (const StaticMesh* m = staticMeshes.get(h)) {
 		if (m->meshlets && !m->meshlets->empty())
-			RegisterMeshMeshlets(d.uri, *m->meshlets);
+			RegisterMeshMeshlets(rec->uri, *m->meshlets);
 	}
+	// The record STAYS with promotedHandle set - the evict path's
+	// source. Its payload fields are spent (moved into the mesh); evict
+	// re-fills them from the mesh before destroying it.
+	rec->promotedHandle = h;
 
-	return PromotedLod{ h, payloadBytes };
+	return PromotedLod{ h, rec->payloadBytes };
+}
+
+uint64_t smvk::Cluster::EvictMeshLod(StringViewT uri)
+{
+	DeferredMeshLod* rec = nullptr;
+	for (DeferredMeshLod& d : deferredLods_) {
+		if (uri != d.uri)
+			continue;
+		if (d.promotedHandle.valid())
+			rec = &d;
+		break;
+	}
+	if (rec == nullptr)
+		return 0;
+	const ClusterStaticMeshHandle h = rec->promotedHandle;
+
+	// Move the mesh's runtime fields back into the record BEFORE the
+	// destroy (the pool entry dies with them otherwise) - a re-promote
+	// is then byte-identical to the first one.
+	if (StaticMesh* m = staticMeshes.get(h)) {
+		rec->sphere = m->geometry.sphereRadius;
+		rec->lmChunk = m->lmChunk;
+		rec->lmXforms = std::move(m->lmChartXforms);
+		if (m->meshlets)
+			rec->meshlets = std::move(*m->meshlets);
+	}
+	rec->promotedHandle = {};
+
+	// The mesh URI must MISS again (RebuildLodChains' deferred
+	// detection = GetMeshLod hit + FindMeshByUri miss). NOT
+	// UnregisterUri() - that erases meshLods_/meshMeshlets_ too, and
+	// the LodInfo metadata is exactly what must SURVIVE eviction (the
+	// chain builder + the next promote both need it). The targeted
+	// erase keeps every other registry row intact.
+	meshByUri_.Erase(uri);
+	meshMeshlets_.Erase(uri);
+
+	// DestroyMesh: pool entry + bookkeeping now, the heap ranges retire
+	// DEFERRED (DeferFreeStaticMeshRanges - in-flight frames may still
+	// be drawing this sibling's ranges; the arena hands them back only
+	// after the +MaxFramesInFlight margin).
+	DestroyMesh(h);
+
+	return rec->payloadBytes;
 }
 
 // -----------------------------------------------------------------------------
