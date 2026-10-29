@@ -121,6 +121,21 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 #endif
         return OUT;
     }
+    // DIAGNOSTIC H (ClearFillCoverage): the shader's half of the
+    // load-op test — the pass CLEARED this attachment to magenta (a
+    // real Clear load op, armed from the recording side when this mode
+    // is selected) and the shader fills cyan. All cyan = the draw
+    // covers the image; a magenta region = the draw never touched it
+    // (viewport/scissor/extent); anything else = the attachment or a
+    // later pass. Scene-domain pedestal (see mode G's note).
+    if (cp.debugMode == 8u)
+    {
+        OUT.outColor = float4(0.0f, 300.0f, 300.0f, 1.0f);
+#ifdef SSR_DEBUG_CONTRIB
+        OUT.outContrib = float4(0.0f, 300.0f, 300.0f, 1.0f);
+#endif
+        return OUT;
+    }
     FrameUniforms frame = cp.frameUniforms.Get();
     Texture2D blurTex = textures[NonUniformResourceIndex(cp.blurTextureIndex)];
     Texture2D hdrTex = textures[NonUniformResourceIndex(cp.hdrTextureIndex)];
@@ -194,11 +209,27 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                                     roughness));
     }
 
-    // Half-res reflection extent derived from the full-res depth extent
-    // (max(1, floor(n / 2)), same as Ssao::HalfExtentFor).
-    float2 halfExtent = max(
-        floor(float2(1.0f / cp.invDepthW, 1.0f / cp.invDepthH) * 0.5f),
-        float2(1.0f, 1.0f));
+    // Half-res reflection extent: EXACT integer math from the push's
+    // uint dimensions — max(1, n/2), identical to HalfExtentFor (which
+    // sized the targets AND the classify's receiver-buffer stride).
+    //
+    // THE DARK-TRIANGLE ROOT CAUSE (the "fixed itself on window
+    // maximize" report): the old form reconstructed the extent in
+    // floats, floor((1/invDepthW) * 0.5) — the reciprocal of a
+    // non-power-of-two-friendly width rounds LOW (1920 -> 959.9999 ->
+    // floor 959; 960 and 3840 likewise, while 1280/1600/2560 round
+    // exact), and the value doubled as the RECEIVER BUFFER'S ROW
+    // STRIDE (hp.y * halfExtent.x + hp.x). A 959 stride reading a
+    // 960-stride buffer shifts every row's receiver entries by y: the
+    // eligibility + normal gates consumed wrong-pixel material data in
+    // a growing per-row shear — a large diagonal cutoff through the
+    // gates that vanished the moment the window hit a width whose
+    // reciprocal rounds exact (maximize). The blur never had it (its
+    // push carries the exact uint halfW).
+    const uint2 halfExtentU = max(uint2(1u, 1u),
+        uint2(cp.fullW / 2u, cp.fullH / 2u));
+    const int2 halfExtentI = int2(halfExtentU);
+    const float2 halfExtentF = float2(halfExtentU);
 
     // 2x2 nearest half-res texels around this full-res pixel, weighted
     // by depth agreement (the same discipline as the SSGI AO compose,
@@ -219,7 +250,6 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // the wSum branch below — base HDR + env reflection untouched
     // rather than an unrelated reflection injected.
     int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
-    int2 halfExtentI = int2(halfExtent);
     float2 fullCenter = float2(fullPx) + 0.5f;
     float3 accRgb = float3(0.0f, 0.0f, 0.0f);
     float accA = 0.0f;
@@ -246,7 +276,7 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             float bDist = DofIsBackgroundOrGarbage(bd)
                 ? 1e5
                 : nearPlane / max(bd, 1e-6f);
-            float2 halfUv = (float2(hp) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
+            float2 halfUv = (float2(hp) + 0.5f) / halfExtentF;
             float4 tap = blurTex.Sample(smp, halfUv);
             // Tent/bilinear spatial factor: the tap block's center (in
             // full-res units) against this pixel's center, scaled to
@@ -268,8 +298,11 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             // from the depth/spatial weights.
             if (haveNormals && cp.debugMode != 3u)
             {
+                // Receiver index: the EXACT uint extent's stride (the
+                // classify's write stride — see the halfExtentU note for
+                // the off-by-one the old float reconstruction caused).
                 float4 repGb = SsrUnpackReceiver(cp.receiverData.Get().v[
-                    (uint) hp.y * (uint) halfExtent.x + (uint) hp.x]);
+                    (uint) hp.y * halfExtentU.x + (uint) hp.x]);
                 w *= SsrNormalWeight(centerN, SsrOctDecode(repGb.xy));
             }
             // Confidence-aware accumulation (the blur's convention): rgb

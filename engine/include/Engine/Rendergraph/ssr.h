@@ -166,6 +166,14 @@ enum class SsrComposeDebug : uint32_t
 	ConfView = 5,       // E: R=conf G=eligibility B=conf*eligibility
 	DeltaView = 6,      // F: red=darkening green=brightening (4x scaled)
 	MagentaFill = 7,    // G: constant magenta (raster coverage check)
+	// H: the LOAD-OP coverage check — the composite attachment is
+	// CLEARED to magenta (a real Clear load op, not DontCare) and the
+	// shader fills cyan: all-cyan = the draw covers the image (any
+	// artifact is then shader inputs/gates); a MAGENTA region = the
+	// draw never touched it (viewport/scissor/extent smaller than the
+	// attachment — the straight-cutoff signature); anything else =
+	// attachment sizing or a later pass.
+	ClearFillCoverage = 8,
 };
 
 struct SsrDesc {
@@ -1211,6 +1219,13 @@ struct ScreenSpaceReflections {
 		halfExtent = half;
 		format = d.format;
 		desc = d;
+		// Extent log (the dark-triangle hunt's dimension checklist):
+		// one line per (re)creation — a resize recreates, so the broken
+		// window size prints its numbers here. Eyeball against the
+		// [exposure]/[Scene] extent lines: full must equal the HDR/depth
+		// extent, half must equal max(1, full/2) exactly.
+		std::fprintf(stderr, "[SSR] targets: full %ux%u -> half %ux%u (%s)\n",
+			full.width, full.height, half.width, half.height, d.name);
 		return EnsureShaders(ctx, vsPath, blurPath, temporalPath, composePath,
 			classifyPath, indirectPath, intersectPath, copyPath);
 	}
@@ -1478,6 +1493,11 @@ void AddSsrPasses(RenderGraph& rg,
 	assert(frameUniformsAddr != 0);
 	assert(extent.width != 0 && extent.height != 0);
 	assert(halfExtent.width != 0 && halfExtent.height != 0);
+	// EXTENT INVARIANTS (the dark-triangle hunt — see the temporal
+	// variant's pair for the reasoning).
+	assert(halfExtent.width == std::max(1u, extent.width / 2u));
+	assert(halfExtent.height == std::max(1u, extent.height / 2u));
+	assert(hzbMip1Stride >= halfExtent.width);
 
  	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
 	const bool gbuffer2On = !gbuffer2View.empty()
@@ -1726,6 +1746,12 @@ ShaderProgram progCopy = copyProgram;
 		// single-attachment program when the twin or the target is missing.
 		const bool contribDbgOn = overrideDesc.debugContrib &&
 			composeDbgProgram.shaderCount != 0 && contrib.Valid();
+		// DIAGNOSTIC H (ClearFillCoverage): a REAL Clear load op
+		// (magenta, scene-domain) on the composite attachment — the
+		// shader fills cyan; any magenta left visible is a region the
+		// fullscreen draw never covered (viewport/scissor/extent).
+		const bool clearFillCoverage =
+			overrideDesc.composeDebug == SsrComposeDebug::ClearFillCoverage;
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
@@ -1733,8 +1759,11 @@ ShaderProgram progCopy = copyProgram;
 				.SetColor(contribDbgOn
 					? std::vector<LogicalImageViewHandle>{ logicalView, contrib.logical }
 					: std::vector<LogicalImageViewHandle>{ logicalView },
-					AttachmentLoadOp::DontCare,
-					AttachmentStoreOp::Store);
+					clearFillCoverage ? AttachmentLoadOp::Clear : AttachmentLoadOp::DontCare,
+					AttachmentStoreOp::Store,
+					clearFillCoverage
+						? ClearColor{ 300.0f, 0.0f, 300.0f, 1.0f }
+						: ClearColor{});
 		{
 			// HZB buffer read (mip0 center + mip1 reps): barrier the
 			// SsrHzb compute writes before these fragment reads.
@@ -1827,6 +1856,15 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 	assert(extent.width != 0 && extent.height != 0);
 	assert(halfExtent.width != 0 && halfExtent.height != 0);
 	assert(parity < 2);
+	// EXTENT INVARIANTS (the dark-triangle hunt): the half extent is
+	// the exact integer halving (the classify's receiver-buffer stride
+	// and the blur/compose tap domain), and the HZB mip1 row stride
+	// must cover the half-extent column domain (mip1 = ceil(full/2) >=
+	// half by construction — a violation means the pyramid and the SSR
+	// targets disagree about the render extent).
+	assert(halfExtent.width == std::max(1u, extent.width / 2u));
+	assert(halfExtent.height == std::max(1u, extent.height / 2u));
+	assert(hzbMip1Stride >= halfExtent.width);
 
  	const bool gbufferOn = !gbufferView.empty() && gbufferBindlessIndex != UINT32_MAX;
 	const bool gbuffer2On = !gbuffer2View.empty()
@@ -2143,6 +2181,12 @@ push.frameUniforms = frameUniformsAddr;
 		// single-attachment program when the twin or the target is missing.
 		const bool contribDbgOn = overrideDesc.debugContrib &&
 			composeDbgProgram.shaderCount != 0 && contrib.Valid();
+		// DIAGNOSTIC H (ClearFillCoverage): a REAL Clear load op
+		// (magenta, scene-domain) on the composite attachment — the
+		// shader fills cyan; any magenta left visible is a region the
+		// fullscreen draw never covered (viewport/scissor/extent).
+		const bool clearFillCoverage =
+			overrideDesc.composeDebug == SsrComposeDebug::ClearFillCoverage;
 		RenderPass& pass = rg.AddPass(composeName ? composeName : "SSRComposite");
 			pass.SetOffset(0, 0)
 				.SetExtent(extent)
@@ -2150,8 +2194,11 @@ push.frameUniforms = frameUniformsAddr;
 				.SetColor(contribDbgOn
 					? std::vector<LogicalImageViewHandle>{ logicalView, contrib.logical }
 					: std::vector<LogicalImageViewHandle>{ logicalView },
-					AttachmentLoadOp::DontCare,
-					AttachmentStoreOp::Store);
+					clearFillCoverage ? AttachmentLoadOp::Clear : AttachmentLoadOp::DontCare,
+					AttachmentStoreOp::Store,
+					clearFillCoverage
+						? ClearColor{ 300.0f, 0.0f, 300.0f, 1.0f }
+						: ClearColor{});
 		{
 			// HZB buffer read (mip0 center + mip1 reps).
 			BufferSyncRequest hzbRead{};

@@ -1129,13 +1129,13 @@ namespace engine {
 		if (const char* ssrBlurEnv = std::getenv("TOURMALINE_SSR_BLUR")) {
 			m_ssrBlurMode = std::atoi(ssrBlurEnv) != 0 ? 1 : 0;
 		}
-		// SSR composite diagnostic pin (TOURMALINE_SSR_COMPOSE_DEBUG=0..7,
+		// SSR composite diagnostic pin (TOURMALINE_SSR_COMPOSE_DEBUG=0..8,
 		// see smvk::SsrComposeDebug): the dark-triangle hunt's A/B switches
 		// headless — pairs with TOURMALINE_CAM_POS/FWD + TOURMALINE_CAPTURE
 		// to compare every mode from the same frozen camera. Seeds
 		// m_ssrComposeDebug; the UI combo still wins interactively.
 		if (const char* composeDbgEnv = std::getenv("TOURMALINE_SSR_COMPOSE_DEBUG")) {
-			m_ssrComposeDebug = std::clamp(std::atoi(composeDbgEnv), 0, 7);
+			m_ssrComposeDebug = std::clamp(std::atoi(composeDbgEnv), 0, 8);
 		}
 
 		if (const char* iblEnv = std::getenv("TOURMALINE_IBL")) {
@@ -11866,7 +11866,7 @@ namespace engine {
 			// Composite diagnostic mode (see SsrComposeDebug): the
 			// dark-triangle hunt's live A/B switch.
 			ssrDesc.composeDebug = static_cast<smvk::SsrComposeDebug>(
-				std::clamp(m_ssrComposeDebug, 0, 7));
+				std::clamp(m_ssrComposeDebug, 0, 8));
 			const bool ssrOn = m_passes.ssr && m_ssrEnabled
 				&& m_viewportResources.ssr.Valid()
 				&& !m_viewportResources.renderDepth.logicalView.empty()
@@ -13327,7 +13327,7 @@ namespace engine {
 								// hunt): live A/B switches, each isolating one
 								// suspected contribution. Park the camera,
 								// flip through the modes.
-								const char* composeDbg[8] = {
+								const char* composeDbg[9] = {
 									"Off (normal composite)",
 									"A: bypass SSR (base only)",
 									"B: additive only (no envSpec swap)",
@@ -13335,9 +13335,10 @@ namespace engine {
 									"D: no material eligibility",
 									"E: gates view (R conf / G elig / B add)",
 									"F: +/- contribution (red = darkening)",
-									"G: magenta fill (coverage check)"
+									"G: magenta fill (coverage check)",
+									"H: clear magenta / fill cyan (load-op)"
 								};
-								ImGui::Combo("Compose debug", &m_ssrComposeDebug, composeDbg, 8);
+								ImGui::Combo("Compose debug", &m_ssrComposeDebug, composeDbg, 9);
 								if (m_ssrComposeDebug != 0) {
 									ImGui::TextDisabled(
 										"A kills it -> SSR composition. B -> the envSpec replacement\n"
@@ -13346,7 +13347,9 @@ namespace engine {
 										"comparison. D -> the material gate. E shows the add's gates\n"
 										"(R = the confidence the compositor eats - the TEMPORAL alpha\n"
 										"when TAA is on). F: red = pixels SSR darkens, green = brightens.\n"
-										"G not covering the image -> raster/viewport/scissor/later passes.");
+										"G not covering the image -> raster/viewport/scissor/later passes.\n"
+										"H: cyan everywhere = the draw covers; MAGENTA left visible = a\n"
+										"region the draw never touched (viewport/scissor vs attachment).");
 								}
 							}
 							// Debug material override (the blur-bucket test
