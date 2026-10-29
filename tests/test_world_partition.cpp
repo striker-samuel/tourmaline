@@ -131,6 +131,38 @@ int main()
 		Check(c.x == 1 && c.z == 2, "cell.exact-positive-boundary");
 	}
 	{
+		// ---- env-zone march cache: the tile-key invalidation predicate ----
+		// The C++ MIRROR of environment.hlsli EnvZoneSegment's cell-level
+		// gate — `!cache.live || any(cache.cell != cellKey)` — kept in
+		// lockstep with the shader (the EnvTileCell mirror discipline).
+		// The 425a6ec review's regression cases: the old all() form
+		// only invalidated when BOTH X and Z differed, so an X-only or
+		// Z-only tile crossing kept the previous tile's cell + record
+		// (the wrong zone's fog density across tile borders — the exact
+		// per-tile inconsistency the per-segment rework exists to
+		// remove); only the diagonal crossing ever invalidated.
+		const glm::ivec2 kEnvZoneCellOutOfGrid(0x7fffffff, 0x7fffffff);
+		const auto tileChanged = [](glm::ivec2 a, glm::ivec2 b) {
+			return (a.x != b.x) || (a.y != b.y); // any(a != b), the HLSL form
+		};
+		Check(tileChanged(glm::ivec2(0, 0), glm::ivec2(1, 0)),
+			"envzone.tile-cache-x-only-crossing-invalidates");
+		Check(tileChanged(glm::ivec2(1, 0), glm::ivec2(1, 1)),
+			"envzone.tile-cache-z-only-crossing-invalidates");
+		Check(tileChanged(glm::ivec2(0, 0), glm::ivec2(1, 1)),
+			"envzone.tile-cache-diagonal-crossing-invalidates");
+		Check(!tileChanged(glm::ivec2(2, 3), glm::ivec2(2, 3)),
+			"envzone.tile-cache-same-tile-keeps-cache");
+		Check(tileChanged(glm::ivec2(2, 3), kEnvZoneCellOutOfGrid)
+			&& tileChanged(kEnvZoneCellOutOfGrid, glm::ivec2(2, 3)),
+			"envzone.tile-cache-in-out-of-grid-transitions-invalidate");
+		// The out-of-grid sentinel CANONICALIZES every miss to one cell
+		// (environment.hlsli's note) — marching outside the grid must
+		// not refetch per step.
+		Check(!tileChanged(kEnvZoneCellOutOfGrid, kEnvZoneCellOutOfGrid),
+			"envzone.tile-cache-out-of-grid-sentinel-caches");
+	}
+	{
 		// Bounds math: cell (-1,-1) spans [-256,0) x [-256,0).
 		glm::dvec3 mn(0.0), mx(0.0);
 		wp::WorldCellBounds(wp::WorldCellKey{ -1, -1 }, 256.0, mn, mx);

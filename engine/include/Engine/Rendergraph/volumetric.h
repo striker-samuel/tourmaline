@@ -38,15 +38,19 @@
 namespace smvk {
 
 // ---------------------------------------------------------------------------
-// Quality presets. Custom = user edited steps/divisor by hand (UI sets this
-// automatically when a slider diverges from the preset).
+// Quality presets — STEP COUNTS ONLY: the composite always runs at
+// full resolution (ApplyVolumetricQuality pins resolutionDivisor to 1
+// regardless of the preset; see the desc's MUST-stay-1 note and the
+// header's half-res-history note — the old half-res presets are gone).
+// Custom = a hand-edited step count (the UI sets this automatically
+// when the steps slider diverges from a preset).
 // ---------------------------------------------------------------------------
 enum class VolumetricQuality : int {
-	Low = 0,     // 8 steps, half-res
-	Medium = 1,  // 16 steps, half-res
-	High = 2,    // 32 steps, full-res
-	Ultra = 3,   // 64 steps, full-res
-	Custom = 4,  // hand-tuned steps/divisor
+	Low = 0,     // 8 steps
+	Medium = 1,  // 16 steps
+	High = 2,    // 32 steps
+	Ultra = 3,   // 64 steps
+	Custom = 4,  // hand-tuned step count
 };
 
 inline const char* VolumetricQualityName(VolumetricQuality q) {
@@ -383,13 +387,13 @@ struct VolumetricFog {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_SOURCE");
 			return e ? uint32_t(std::clamp(std::atoi(e), 0, 2)) : 0u;
 		}();
-		// The fog-GI coverage debug view (TOURMALINE_FOG_GI_DEBUG):
-		// 1 = the BC4 coverage field at each pixel's depth point as
-		// grayscale (red = no radiance brick, green = the coverage
-		// pair still streaming) — the readable map of what the fog's
-		// GI base consumes; 2 = the TRANSMITTANCE view (the march's
-		// surviving throughput as grayscale — the optical-density
-		// diagnostic: white = no extinction, black = complete; the
+		// The fog-GI coverage debug view (TOURMALINE_FOG_GI_DEBUG).
+		// Mode 1 (coverage): resident data displays in GRAYSCALE —
+		// red marks a missing radiance brick, green marks coverage
+		// data that is still streaming (the readable map of what the
+		// fog's GI base consumes). Mode 2 (transmittance): the march's
+		// surviving throughput in grayscale — the optical-density
+		// diagnostic: white = no extinction, black = complete (the
 		// review's prescribed density probe, replacing the composite).
 		push.fogGiDebug = [] {
 			const char* e = std::getenv("TOURMALINE_FOG_GI_DEBUG");

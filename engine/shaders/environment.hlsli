@@ -724,8 +724,15 @@ bool EnvZoneSegment(float3 p, FrameUniforms frame,
         || any(cellI >= int2(frame.envTileDimX, frame.envTileDimZ)))
         cellKey = kEnvZoneCellOutOfGrid;
 
-    // CELL level: re-read the cell only at a tile-key change.
-    if (!cache.live || all(cache.cell != cellKey))
+    // CELL level: re-read the cell only at a tile-key change — ANY
+    // component change (any(), NOT all(): all() only fired when BOTH
+    // X and Z differed, so an X-only or Z-only tile crossing kept the
+    // previous tile's cell + record — the wrong zone's fog density
+    // across tile borders, the exact per-tile inconsistency the
+    // per-segment rework exists to remove; the diagonal crossing was
+    // the only one that ever invalidated. Regression cases mirrored
+    // in test_world_partition.cpp's env-zone tile-cache block.)
+    if (!cache.live || any(cache.cell != cellKey))
     {
         if (all(cellKey == kEnvZoneCellOutOfGrid))
         {

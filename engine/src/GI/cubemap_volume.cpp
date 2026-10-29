@@ -837,11 +837,17 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	// Jacobi scheme as the regular-volume bake: nearest-valid values
 	// spread over the holes so facade-adjacent trilinear taps see
 	// facade-like lighting instead of black). SAME-SIDE ONLY since the
-	// visibility bake: a neighbor participates only when the pair is
-	// MUTUALLY OPEN, so the fill can no longer average ACROSS a wall —
-	// the old unconditional fill bridged thin walls with the mean of
-	// both rooms (leak path one). The valid array is the hoisted one
-	// (no recomputation here).
+	// visibility bake: a neighbor participates only if the VALID SOURCE
+	// probe has sufficient obstacle-free visibility toward the target
+	// (sameSide above — the source's check only). The TARGET's own
+	// visibility is deliberately NOT required: invalid targets are
+	// blocked by definition (all-zero visibility), so a mutual-open
+	// gate could never fill them — the fill would be a no-op. The
+	// one-sided gate still cannot average ACROSS a wall (the wall
+	// blocks the source's view of the far target) — the old
+	// unconditional fill bridged thin walls with the mean of both
+	// rooms (leak path one). The valid array is the hoisted one (no
+	// recomputation here).
 	{
 		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
 			nz = outVolume.dims[2];

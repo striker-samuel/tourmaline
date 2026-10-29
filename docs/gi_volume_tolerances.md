@@ -32,8 +32,11 @@ to contribute to a sample position, per-axis.
   hard black shadows.
 
 **Why 0.5:** at 0.5 m probe spacing, a wall pixel is typically
-0.2–0.3 m from the nearest valid probe. A reach of 0.5 units
-(0.25 m) covers this. Lower (0.3) leaves black bands; higher (0.7)
+0.2–0.3 m from the nearest valid probe. The 0.25 m reach gives those
+samples FULL contribution inside 0.25 m; samples between 0.25 m and
+0.4 m ride the rejection ramp (section 1b — 0.15 m at near-wall
+probes) with progressively attenuated contribution rather than a hard
+cutoff. Lower (0.3) leaves black bands past the ramp; higher (0.7)
 lets through-wall probes dilute the blend too broadly.
 
 **Known limitation:** the floor spans thin walls (~0.2–0.3 m).
@@ -115,9 +118,13 @@ obstacle distance toward `v` is at least `spacing - 0.35 * spacing`
 any wall between them.
 
 **Why 0.35 × spacing:** paired with the runtime factor's slack
-design — the same proportional band. At 0.5 m spacing, the gate
-is 0.325 m: neighbors within 0.325 m of each other (with no
-obstacle between) are considered same-side.
+design — the same proportional band. At 0.5 m probe spacing, the gate
+is 0.325 m of unobstructed VISIBILITY: the valid source probe must
+see at least 0.325 m along the axis toward its adjacent target, which
+is one full 0.5 m spacing away. The gate is on the SOURCE's obstacle
+distance (section 2b), not on the pair's separation — adjacent probes
+are always 0.5 m apart, so a "within 0.325 m of each other" reading
+would make the gate unsatisfiable by construction.
 
 ### 2c. The Laplacian SMOOTHING — 3 passes, lambda 0.4
 
