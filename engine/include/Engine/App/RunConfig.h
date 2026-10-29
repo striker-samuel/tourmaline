@@ -107,6 +107,20 @@ struct RunConfig {
 	std::optional<float> volumetricGi;
 	// volumetricGiVolumes: fog-GI GI-volume walk on/off (unset = authored wins)
 	std::optional<OnOffPin> volumetricGiVolumes;
+	// godrays: 1|on|0|off (unset = authored wins) - the SCREEN-SPACE sun
+	// occlusion + radial scattering (godrays.h). Independent of the CSM
+	// fog shadows and of EVSM (it reads only the scene depth - the fog
+	// sun-occlusion fallback under EVSM).
+	std::optional<OnOffPin> godrays;
+	// godraysIntensity: 0..4 (unset = authored wins) - the additive
+	// strength (the panel slider's headless twin; heavy values make the
+	// shaft structure pixel-visible in A/B diffs even against blown
+	// sky).
+	std::optional<float> godraysIntensity;
+	// fogCsm: 1|on|0|off (unset = authored wins) - the volumetric
+	// march's per-segment CSM sun shadowing (PCF mode only: under EVSM
+	// the raw atlas is not written and the leg gates off).
+	std::optional<OnOffPin> fogCsm;
 
 	// ---- shadows ----
 	// ds: 1|on|0|off (empty = default)

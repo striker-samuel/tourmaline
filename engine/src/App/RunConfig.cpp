@@ -273,6 +273,35 @@ RunConfig RunConfig::Parse() {
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_VOLUMETRIC_GI_VOLUMES "
 				"(want 1|on|0|off): %s\n", v);
 	}
+	// The fog sun-occlusion A/B pair: the SCREEN-SPACE god rays
+	// (depth-only - runs in PCF and EVSM modes alike, the fallback
+	// under EVSM) and the march's per-segment CSM tap. Independent
+	// toggles so CSM-only / screen-space-only / combined are all
+	// capturable headlessly.
+	if ((v = Get("TOURMALINE_GODRAYS")) != nullptr) {
+		bool on = true;
+		if (IsOnOff(Trimmed(v), on))
+			c.godrays = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_GODRAYS "
+				"(want 1|on|0|off): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_GODRAYS_INTENSITY")) != nullptr) {
+		const float gi = static_cast<float>(std::strtod(v, nullptr));
+		if (gi >= 0.0f && gi <= 4.0f)
+			c.godraysIntensity = gi;
+		else
+			std::fprintf(stderr, "[RunConfig] TOURMALINE_GODRAYS_INTENSITY out of range "
+				"(0..4): %s\n", v);
+	}
+	if ((v = Get("TOURMALINE_FOG_CSM")) != nullptr) {
+		bool on = true;
+		if (IsOnOff(Trimmed(v), on))
+			c.fogCsm = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_FOG_CSM "
+				"(want 1|on|0|off): %s\n", v);
+	}
 
 	// Shadows / capture (WorldRenderer.cpp:925..1000).
 	if ((v = Get("TOURMALINE_DS")) != nullptr)
@@ -528,6 +557,8 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
 		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",
 		"TOURMALINE_VOLUMETRIC", "TOURMALINE_VOLUMETRIC_STEPS", "TOURMALINE_VOLUMETRIC_DENSITY",
+		"TOURMALINE_GODRAYS", "TOURMALINE_FOG_CSM", "TOURMALINE_GODRAYS_DEBUG",
+		"TOURMALINE_GODRAYS_INTENSITY",
 		"TOURMALINE_VOLUMETRIC_INTENSITY", "TOURMALINE_FOG_GI_DEBUG",
 		"TOURMALINE_VOLUMETRIC_SUN", "TOURMALINE_VOLUMETRIC_GI",
 		// WorldFields/WorldPartition (the atlas-backed voxel-field system +

@@ -285,6 +285,34 @@ static smvk::VolumetricDesc MakeVolumetricDesc() {
 }
 
 // -----------------------------------------------------------------------------
+// Screen-space god rays config (Engine/Rendergraph/godrays.h - the
+// Dishonored-style sun occlusion + radial scattering): 32 samples,
+// decay 0.97, a broad sun glow radius (the radial gather needs
+// illuminated area to work with), SUBTLE intensity (an approximation
+// stacked ADDITIVELY over the CSM-shadowed fog - never multiplied by
+// it). Runs after the volumetric composite, before the HDR tail.
+// -----------------------------------------------------------------------------
+static constexpr float GODRAYS_INTENSITY = 0.5f;
+static constexpr float GODRAYS_DECAY = 0.97f;
+static constexpr float GODRAYS_REACH = 1.0f;
+static constexpr float GODRAYS_GLOW_INNER = 0.01f;
+static constexpr float GODRAYS_GLOW_OUTER = 0.12f;
+static constexpr uint32_t GODRAYS_SAMPLES = 32;
+
+static smvk::GodraysDesc MakeGodraysDesc() {
+	smvk::GodraysDesc d{};
+	d.format = smvk::Format::RGBA16_Float; // must match the HDR target
+	d.intensity = GODRAYS_INTENSITY;
+	d.decay = GODRAYS_DECAY;
+	d.reach = GODRAYS_REACH;
+	d.glowInner = GODRAYS_GLOW_INNER;
+	d.glowOuter = GODRAYS_GLOW_OUTER;
+	d.sampleCount = GODRAYS_SAMPLES;
+	d.name = "godrays";
+	return d;
+}
+
+// -----------------------------------------------------------------------------
 // SSGI AO config (the post-Main AO chain, see Engine/Rendergraph/ssgi.h).
 // Runs AFTER Main: Main exports the AO-sensitive lighting through an
 // aoTerm MRT target, the compose subtracts aoTerm*(1-aoEff) from the HDR
@@ -754,6 +782,15 @@ namespace engine {
 		// pure-octree fog cost measurements).
 		if (pins.volumetricGiVolumes.has_value())
 			m_volumetricUseGiVolumes = (*pins.volumetricGiVolumes == OnOffPin::On);
+		// The fog sun-occlusion A/B pair (see the parse block's note):
+		// screen-space god rays on/off + the march's CSM tap on/off -
+		// CSM-only / screen-space-only / combined are all capturable.
+		if (pins.godrays.has_value())
+			m_godraysEnabled = (*pins.godrays == OnOffPin::On);
+		if (pins.godraysIntensity.has_value())
+			m_godraysIntensity = *pins.godraysIntensity;
+		if (pins.fogCsm.has_value())
+			m_fogCsmEnabled = (*pins.fogCsm == OnOffPin::On);
 	}
 
 	// Ambient-source pin mapping: ONE spelling set shared by the onAttach
@@ -2618,6 +2655,15 @@ namespace engine {
 				std::cerr << "[WorldRenderer] Volumetric target unavailable (HDR "
 					<< renderExtent.width << "x" << renderExtent.height << ")\n";
 			}
+			{
+				smvk::GodraysDesc grDesc = MakeGodraysDesc();
+				grDesc.intensity = m_godraysIntensity;
+				if (!m_viewportResources.godrays.Ensure(*m_context,
+						*m_rendergraph, renderExtent, grDesc)) {
+					std::cerr << "[WorldRenderer] god-rays chain unavailable (HDR "
+						<< renderExtent.width << "x" << renderExtent.height << ")\n";
+				}
+			}
 			smvk::UiDesc uiDesc{};
 			uiDesc.format = LdrUnormSibling();
 			if (!m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, uiDesc)) {
@@ -2686,6 +2732,7 @@ namespace engine {
 		m_viewportResources.ssr.Destroy(*m_rendergraph);
 		m_viewportResources.ssgiDiffuse.Destroy(*m_rendergraph);
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
+		m_viewportResources.godrays.Destroy(*m_rendergraph);
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
@@ -7932,6 +7979,12 @@ namespace engine {
 			rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
 			m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildVolDesc);
 		}
+		{
+			smvk::GodraysDesc rebuildGrDesc = MakeGodraysDesc();
+			rebuildGrDesc.intensity = m_godraysIntensity;
+			m_viewportResources.godrays.Ensure(*m_context, *m_rendergraph,
+				renderExtent, rebuildGrDesc);
+		}
 		smvk::UiDesc rebuildUiDesc{};
 		rebuildUiDesc.format = LdrUnormSibling();
 		m_viewportResources.ui.Ensure(*m_context, *m_rendergraph, uiExtent, rebuildUiDesc);
@@ -8795,6 +8848,20 @@ namespace engine {
 				smvk::VolumetricDesc rebuildVolDesc = MakeVolumetricDesc();
 				rebuildVolDesc.steps = (uint32_t)std::clamp(m_volumetricSteps, 4, 128);
 				m_viewportResources.volumetric.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildVolDesc);
+			}
+			{
+				// The god-rays chain follows the volumetric pattern
+				// (extent drift recreates; the quality knobs live-update
+				// through the desc at the emission site).
+				smvk::GodraysDesc frameGrDesc = MakeGodraysDesc();
+				frameGrDesc.intensity = m_godraysIntensity;
+				frameGrDesc.decay = m_godraysDecay;
+				frameGrDesc.reach = m_godraysReach;
+				frameGrDesc.glowOuter = m_godraysGlowOuter;
+				frameGrDesc.sampleCount = (uint32_t)std::clamp(
+					m_godraysSamples, 4, 64);
+				m_viewportResources.godrays.Ensure(*m_context, *m_rendergraph,
+					renderExtent, frameGrDesc);
 			}
 			smvk::UiDesc frameUiDesc{};
 			frameUiDesc.format = LdrUnormSibling(fb);
@@ -13045,7 +13112,8 @@ namespace engine {
 				//      plan's own "PCF/EVSM: disabled for fog" setting;
 				//      EVSM fog shadowing would need a moment evaluation
 				//      — a separate feature).
-				const bool volSunShadows = m_passes.directionalShadows
+				const bool volSunShadows = m_fogCsmEnabled
+					&& m_passes.directionalShadows
 					&& !EvsmActive()
 					&& m_viewportResources.directionalShadows.Valid()
 					&& fc.pc.cascadeBuffer != 0;
@@ -13101,6 +13169,82 @@ namespace engine {
 			sceneHdrBindless = m_viewportResources.volumetric.OutputBindless();
 			volumetricEmitted = true;
 		}
+		}
+
+		// ---------------------------------------------------------------------
+		// Screen-space god rays (Engine/Rendergraph/godrays.h - the
+		// Dishonored-2-style sun occlusion + radial scattering): an
+		// ADDITIONAL, view-dependent sun term on top of the CSM fog
+		// shadowing, never a replacement - the CSM leg occludes the
+		// march's per-segment sun scatter, this chain adds a separate
+		// screen-space scattering approximation, and the two stay
+		// independently toggleable (multiplying the visibility forms
+		// would darken the fog twice; the composite is additive).
+		//
+		// PLACEMENT: immediately after the volumetric composite re-points
+		// the scene HDR, before the HDR-tail overlays and the exposure
+		// histogram - the rays participate in bloom/tonemap exactly like
+		// the fog beneath them.
+		//
+		// The chain is FOG SCATTERING: it runs only when the fog ran
+		// (volumetricEmitted) and its sun leg is on. It reads ONLY the
+		// scene depth - never the CSM atlas - so it runs IDENTICALLY in
+		// PCF and EVSM modes: under EVSM the CSM fog gate closes (the
+		// raw atlas is not written) and this chain is the fog
+		// sun-occlusion FALLBACK.
+		// ---------------------------------------------------------------------
+		{
+			SMVK_PROFILE_CATEGORY("Godrays", Optick::Category::Rendering);
+			smvk::ScreenSpaceGodRays& gr = m_viewportResources.godrays;
+			const bool godraysOn = m_godraysEnabled
+				&& m_passes.volumetric
+				&& volumetricEmitted
+				&& m_volumetricUseSun
+				&& gr.Valid()
+				&& !DebugVisualizationActive();
+			if (godraysOn) {
+				// The AUTHORED base-zone extinction (the env table owns
+				// the fog look - the retired panel slider's lesson): the
+				// composite's fog-in-front modulation consumes it.
+				const float authoredFogDensity = m_world
+					? m_world->scene.defaultEnvironment.volumetricDensity
+					: 0.015f;
+				// The debug-view selector (TOURMALINE_GODRAYS_DEBUG,
+				// env-only - the FOG_GI_DEBUG discipline): 1 the raw
+				// mask, 2 the unfiltered radial rays, 3 the filtered
+				// fog-shadow field, 4 the final contribution term; each
+				// replaces the composite (the view IS the diagnostic).
+				const uint32_t godraysDebugMode = [] {
+					const char* e = std::getenv("TOURMALINE_GODRAYS_DEBUG");
+					return e
+						? uint32_t(std::clamp(std::atoi(e), 0, 4)) : 0u;
+				}();
+				smvk::GodraysDesc grDesc = MakeGodraysDesc();
+				grDesc.intensity = m_godraysIntensity;
+				grDesc.decay = m_godraysDecay;
+				grDesc.reach = m_godraysReach;
+				grDesc.glowOuter = m_godraysGlowOuter;
+				grDesc.sampleCount = (uint32_t)std::clamp(
+					m_godraysSamples, 4, 64);
+				gr.AddPasses(
+					*m_rendergraph,
+					sceneHdrView,
+					sceneHdrBindless,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress,
+					linearSampler,
+					authoredFogDensity,
+					m_volumetricMaxDistance,
+					m_volumetricUseSun ? 1u : 0u,
+					grDesc,
+					godraysDebugMode);
+				// The scene HDR pointer moves: the HDR tail (probe balls,
+				// exposure, bloom, tonemap) consumes the ray-composited
+				// HDR.
+				sceneHdrView = gr.OutputView();
+				sceneHdrBindless = gr.OutputBindless();
+			}
 		}
 
 		// ---------------------------------------------------------------------
@@ -13976,6 +14120,25 @@ namespace engine {
 							ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
 							if (m_volumetricHeightFalloff > 0.0f)
 								ImGui::SliderFloat("Height base (m)", &m_volumetricHeightBase, -10.0f, 30.0f);
+							ImGui::Separator();
+							// Sun occlusion for the fog - the TWO INDEPENDENT
+							// toggles (the A/B matrix: CSM only / screen-space
+							// only / combined). The screen-space leg composites
+							// ADDITIVELY (multiplying the two visibility forms
+							// would darken the fog twice).
+							ImGui::Checkbox("CSM fog sun shadows", &m_fogCsmEnabled);
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("The volumetric march's per-segment CSM tap (SampleFogSunCSM). PCF mode only - under EVSM the raw atlas is not written and this leg gates off.");
+							ImGui::Checkbox("Screen-space god rays (Dishonored)", &m_godraysEnabled);
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("Sun occlusion mask + radial scattering over the scene depth - additive over the CSM leg, and the fog sun-occlusion fallback under EVSM. Debug views: TOURMALINE_GODRAYS_DEBUG=1..4.");
+							if (m_godraysEnabled) {
+								ImGui::SliderFloat("God rays intensity", &m_godraysIntensity, 0.0f, 2.0f);
+								ImGui::SliderInt("God rays samples", &m_godraysSamples, 4, 64);
+								ImGui::SliderFloat("God rays decay", &m_godraysDecay, 0.85f, 1.0f, "%.3f");
+								ImGui::SliderFloat("God rays glow radius", &m_godraysGlowOuter, 0.02f, 0.4f);
+								ImGui::SliderFloat("God rays march reach", &m_godraysReach, 0.2f, 1.0f);
+							}
 						}
 					}
 

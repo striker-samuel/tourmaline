@@ -82,6 +82,7 @@
 
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
+#include <Engine/Rendergraph/godrays.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/App/Element.h>
@@ -1118,6 +1119,7 @@ struct ViewportResources {
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssgi ssgi; // SSGI post chain: shared MAX-HZB + AO raw/blur/compose + Main's aoTerm MRT targets
 	smvk::ScreenSpaceDiffuseGi ssgiDiffuse; // diffuse SSGI chain: half-res cosine trace + blur/temporal + the ambient-replacement compose (Engine/Rendergraph/ssgi_diffuse.h)
+	smvk::ScreenSpaceGodRays godrays; // Dishonored-style screen-space sun occlusion + radial scattering (quarter/1-16/full res chain, Engine/Rendergraph/godrays.h) - ADDITIVE over the CSM fog shadowing, and the fog sun-occlusion FALLBACK under EVSM
 	smvk::UiTarget ui; // separated UI pass target (ui scale) + Ensure
 	smvk::UiComposite uiComposite; // UI -> swapchain alpha composite program + pass
 	smvk::Smaa smaa; // LDR target + edges/weights/history + LUTs + programs (see smaa.h)
@@ -2926,6 +2928,24 @@ public:
 	float m_volumetricJitter = 1.0f; // IGN dither 0..1 (banding guard)
 	float m_volumetricHeightFalloff = 0.0f; // extra height falloff (1/m, 0=off)
 	float m_volumetricHeightBase = 0.0f; // reference height (m)
+	// ---- Sun occlusion for the fog: TWO INDEPENDENT toggles (the A/B
+	// matrix - CSM only / screen-space only / combined; multiplying the
+	// two visibility forms would darken the fog twice, so the
+	// screen-space leg composites ADDITIVELY instead).
+	// (1) The CSM fog sun shadows (SampleFogSunCSM inside the march -
+	// PCF mode only: under EVSM the raw atlas is not written).
+	bool m_fogCsmEnabled = true;
+	// (2) The screen-space god rays (godrays.h - the Dishonored-style
+	// sun occlusion mask + radial scatter). Reads ONLY the scene depth,
+	// so it runs in PCF and EVSM modes alike - the fog sun-occlusion
+	// FALLBACK under EVSM. Subtle intensity by design (an
+	// approximation stacked over the fog). ----
+	bool m_godraysEnabled = true;
+	float m_godraysIntensity = 0.5f; // the additive strength
+	int m_godraysSamples = 32; // the radial kernel length 4..64
+	float m_godraysDecay = 0.97f; // the per-sample illumination decay
+	float m_godraysGlowOuter = 0.12f; // the mask's sun glow radius (uv)
+	float m_godraysReach = 1.0f; // the march length (fraction of the sun distance)
 	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
 	// virtual world volume system). World-space (NOT viewport-scoped):
 	// follows the frame's camera (PrepareFrame's interest point),
