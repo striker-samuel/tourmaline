@@ -106,6 +106,18 @@ static const float SSR_MAX_REFLECTED = 8192.0f; // firefly cap (same as the old 
 // the measured contribution ~50x (ssr_contrib mean 0.26 -> 14, max
 // 126 -> 1156) - proof the marcher and the hit validation were right
 // all along and the sampler body was the defect.
+//
+// SECOND PORT FIX (the projected-area remap): the replacement above
+// carried Heitz's Sections 3.2/4.1/3.3 but SAMPLED THE PLAIN SPHERICAL
+// CAP (P on the disc, no Section 4.3/4.4 remap) - the correct listing
+// warps t2 by the view-dependent stretch s = 0.5*(1+Vh.z) BEFORE
+// rebuilding the hemisphere point. Without it the sampled-normal
+// distribution is NOT D_Ve: it is wrong exactly at grazing Vh (the
+// far-lobe undersampled, near-lobe oversampled), which reads as
+// mis-distributed reflected directions and excess variance on rough
+// surfaces. The alpha convention (alpha = roughness, NOT roughness^2)
+// is UNCHANGED on purpose - a separate BRDF-convention decision that
+// must not ride along with this distribution fix.
 float3 SsrSampleGGXVNDF(float3 Ve, float alpha_x, float alpha_y, float U1, float U2)
 {
     // Section 3.2: transform the view direction to the hemisphere
@@ -120,13 +132,19 @@ float3 SsrSampleGGXVNDF(float3 Ve, float alpha_x, float alpha_y, float U1, float
     // Section 2.3: warp the uniform (U1, U2) onto the spherical cap.
     float r = sqrt(U1);
     float phi = 2.0f * SSR_PI * U2;
-    float3 P = float3(r * cos(phi), r * sin(phi), sqrt(max(0.0f, 1.0f - U1)));
-    // Section 4.3: sphere point to hemisphere (reorient toward Ve's
-    // hemisphere - the visible-normal domain).
-    float3 Nne = P.x * T1 + P.y * T2 + P.z * Vh;
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    // Section 4.3: stretch the sphere sample by the view-dependent
+    // projected-area blend (s = 0.5*(1+Vh.z) - the quarter-disc term
+    // dominates at grazing Vh, the warped sample at normal incidence).
+    float s = 0.5f * (1.0f + Vh.z);
+    t2 = (1.0f - s) * sqrt(max(0.0f, 1.0f - t1 * t1)) + s * t2;
+    // Section 4.4: compute the hemisphere point about Vh.
+    float3 Nh = t1 * T1 + t2 * T2
+        + sqrt(max(0.0f, 1.0f - t1 * t1 - t2 * t2)) * Vh;
     // Section 3.3: transform the normal back to the ellipsoid
     // configuration (the inverse of the Section 3.2 stretch).
-    return normalize(float3(alpha_x * Nne.x, alpha_y * Nne.y, max(0.0f, Nne.z)));
+    return normalize(float3(alpha_x * Nh.x, alpha_y * Nh.y, max(0.0f, Nh.z)));
 }
 
 float GeometrySchlickGGX(float NdotV, float roughness)
