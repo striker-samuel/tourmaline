@@ -912,6 +912,20 @@ struct TemporalView {
 	// immediately, and a single shared pyramid would be clobbered by the
 	// next frame while the current one still reads it).
 	HizResources hiz[smvk::limits::MaxFramesInFlight];
+	// SPD completion-counter ring (hzb_spd .min): ONE buffer per view,
+	// 16-byte slices per frame in flight (the ssgi HzB counter's rule —
+	// builds that could overlap in flight never share a word). Extent-
+	// independent, created lazily by EnsureHiz while SPD or its verify
+	// is on; creation-zero-filled (the GPU-counter convention) and reset
+	// by the shader's last group after the tail.
+	Holder<BufferHandle> hizSpdCounter;
+	LogicalBufferHandle hizSpdCounterLogical{};
+	// SPD verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin of
+	// hiz[f], per flight, built from the same seed depth while the
+	// per-mip path feeds the cull chain; VerifyHizSpd compares the two
+	// post-Execute. Debug scaffolding — only maintained while the verify
+	// switch is on.
+	HizResources hizVerify[smvk::limits::MaxFramesInFlight];
 	// CPU snapshot (headless-testable; GPU mirror below is uploaded by
 	// UploadVisible into the frameIndex ring slice).
 	std::vector<Batch> prevBatches; // surviving (cluster, draw) pairs
@@ -1118,6 +1132,25 @@ struct State {
 	ShaderProgram filterProgram{};
 	Holder<ShaderModuleHandle> hizModule;
 	ShaderProgram hizProgram{};
+	// SPD twin (hzb_spd.cs.hlsl .min — HZB_REDUCE_MAX=0, the MIN-reduced
+	// culling pyramid in ONE dispatch; same BDA buffer + mip layout +
+	// clamped footprints as the per-mip hizProgram path). A/B + verify
+	// switches (env, set ONCE via SetHizSpd from GfxRenderer::Ensure):
+	//   hizSpd       — TOURMALINE_HIZ_SPD=1: SPD feeds the cull chain
+	//                  (default OFF until validated, like the ssgi twin).
+	//   hizSpdVerify — TOURMALINE_HIZ_SPD_VERIFY=1: per-mip feeds the
+	//                  chain, SPD builds the hizVerify shadow from the
+	//                  same depth, VerifyHizSpd byte-compares post-
+	//                  Execute (stalls; 0 mismatching texels is the
+	//                  contract — a wrong MIN pyramid makes geometry
+	//                  disappear, so this gate stays until it is green).
+	Holder<ShaderModuleHandle> hizSpdModule;
+	ShaderProgram hizSpdProgram{};
+	bool hizSpd = false;
+	bool hizSpdVerify = false;
+	bool hizSpdVerifyArmed = false; // this frame built both pyramids
+	uint64_t hizSpdVerifyFrames = 0; // running compare stats (report)
+	uint64_t hizSpdVerifyMismatches = 0;
 	// Task-less mesh path (main-leg opaque only): mesh module + base-lit
 	// twin program { mesh, gfxmesh_lit FS }. Per-flight params blob +
 	// rendergraph aliases (uploaded per mesh dispatch).
@@ -1146,6 +1179,9 @@ struct State {
 inline constexpr const char* kGfxFilterCsPath = "content/shaders/gfxfilter.cs.hlsl.spv";
 inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gfxfiltered.vert.hlsl.spv";
 inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
+// The .min variant twin (CMake VARIANTS: HZB_REDUCE_MAX=0 — the culling
+// MIN pyramid; the base .spv is the ssgi MAX build).
+inline constexpr const char* kHizSpdCsPath = "content/shaders/hzb_spd.cs.hlsl.min.spv";
 inline constexpr const char* kGfxBatchCullCsPath = "content/shaders/gfxbatchcull.cs.hlsl.spv";
 inline constexpr const char* kGfxDrawCullCsPath = "content/shaders/gfxdrawcull.cs.hlsl.spv";
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
@@ -1451,6 +1487,36 @@ RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
 // depthBindlessIndex is consumed only for dstMip 0 (UINT32_MAX otherwise).
 void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	uint32_t view, uint32_t dstMip, uint32_t depthBindlessIndex = UINT32_MAX);
+// ---- single-dispatch SPD HZB (hzb_spd .min; the culling twin of the
+// per-mip pair above — see HizResources' counter-ring comment and the
+// shader header for the tile geometry + last-group protocol) ----
+// Env-switch setter (call ONCE at startup; GfxRenderer::Ensure reads
+// TOURMALINE_HIZ_SPD / TOURMALINE_HIZ_SPD_VERIFY).
+void SetHizSpd(State& s, bool live, bool verify);
+// Best-effort module load (gfx::Ensure calls it like the cull-chain
+// programs; failure keeps the per-mip path).
+bool EnsureHizSpdShaders(State& s, ResourceManager& ctx,
+	const char* csPath = kHizSpdCsPath);
+// Compute pass shell for the ONE-dispatch build: the whole pyramid in a
+// single pass (caller sets the recording func to PushAndDispatchHizSpd).
+// shadow=true targets the verify twin (t.hizVerify[frameIndex], the
+// hizVerify "GfxHizSpdVerify" node) instead of the live pyramid.
+// REQUIRES EnsureHiz to have built the view's counter ring (the caller
+// gates on it — an absent ring falls back to the per-mip path).
+RenderPass& AddHizSpdPass(State& s, RenderGraph& rg, uint32_t view,
+	LogicalImageViewHandle depthLogical,
+	const char* passName = "GfxHizSpd", bool shadow = false);
+// Recording helper: pushes HzbSpdPush and dispatches the whole build
+// (one workgroup per 64x64 mip-0 tile; groupCount rides the push).
+// depthBindlessIndex feeds the mip-0 copy (UINT32_MAX = undefined mip 0,
+// same over-cull warning as the per-mip path).
+void PushAndDispatchHizSpd(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view, uint32_t depthBindlessIndex, bool shadow = false);
+// Verify compare (TOURMALINE_HIZ_SPD_VERIFY; post-Execute, STALLS):
+// downloads the live per-mip pyramid + the SPD shadow of this flight
+// and byte-compares every mip (exact equality expected — deterministic
+// MIN over identical finite inputs). Prints per-frame + running totals.
+void VerifyHizSpd(State& s, ResourceManager& ctx, uint32_t view);
 // BDA of the view's HZB buffer (0 when unallocated; T4 skips occlusion then).
 uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view);
 // DEBUG: Download and print HZB buffer contents for inspection.

@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -67,6 +69,23 @@ namespace engine {
 		const char* vsPath = smvk::gfx::kGfxFilteredVsPath;
 		if (!smvk::gfx::Ensure(gfx, ctx, rg))
 			return false;
+		// HZB SPD A/B + verify switches (TOURMALINE_HIZ_SPD /
+		// TOURMALINE_HIZ_SPD_VERIFY — the TOURMALINE_HIZ family names the
+		// CULLING pyramid; the SSGI MAX twin is TOURMALINE_HZB_SPD_*).
+		// Read ONCE here so the headless bench matrix can pin them; both
+		// default OFF (per-mip) until the verify gate runs green — a wrong
+		// MIN pyramid over-culls, geometry disappears.
+		{
+			bool live = false, verify = false;
+			if (const char* e = std::getenv("TOURMALINE_HIZ_SPD"))
+				live = std::atoi(e) != 0;
+			if (const char* e = std::getenv("TOURMALINE_HIZ_SPD_VERIFY"))
+				verify = std::atoi(e) != 0;
+			smvk::gfx::SetHizSpd(gfx, live, verify);
+			if (live || verify)
+				std::cerr << "[GfxRenderer] HZB SPD (culling): live="
+					<< live << " verify=" << verify << "\n";
+		}
 		if (filteredProgram.shaderCount == 0 || filteredVsModule.empty()) {
 			try {
 				if (filteredVsModule.empty())
@@ -958,29 +977,87 @@ namespace engine {
 
 		GfxRenderer* self = this;
 		smvk::ResourceManager* ctx = fc.ctx;
-		for (uint32_t m = 0; m < t.hiz[fc.frameIndex].mipCount; ++m) {
-			const bool fromDepth = (m == 0);
-			smvk::RenderPass& hizPass = smvk::gfx::AddHizPass(gfx, *fc.rg, slot, m,
-				fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
-				passName ? passName : "GfxHiz");
-			hizPass.SetRecordingFunc([self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd)
+		// SPD path selection (hzb_spd .min — the single-dispatch twin).
+		// Extents beyond 4096 exceed the tested 64x64-tile upper-level
+		// capacity (AMD SPD's documented limit) — always the per-mip path.
+		// Verify mode forces the CULL CHAIN onto the proven per-mip
+		// pyramid and runs SPD into the hizVerify shadow: a wrong MIN
+		// pyramid must not eat geometry while it is being validated.
+		const uint32_t hizW = t.hiz[fc.frameIndex].width;
+		const uint32_t hizH = t.hiz[fc.frameIndex].height;
+		const bool spdExtentOk = hizW <= 4096u && hizH <= 4096u;
+		const bool spdProgramOk = gfx.hizSpdProgram.shaderCount == 1;
+		const bool spdCounterOk = !t.hizSpdCounter.empty()
+			&& !t.hizSpdCounterLogical.empty();
+		const bool spdLive = gfx.hizSpd && !gfx.hizSpdVerify
+			&& spdProgramOk && spdExtentOk && spdCounterOk;
+		if (spdLive) {
+			// ONE dispatch replaces the per-mip loop; the node keeps the
+			// caller's name (GfxHiz / GfxHizRefresh) so the two build
+			// sites stay distinguishable — the NODE COUNT (1 vs ~12) is
+			// the A/B signal in framegraph timings.
+			smvk::RenderPass& spdPass = smvk::gfx::AddHizSpdPass(gfx, *fc.rg,
+				slot, depthLogical, passName ? passName : "GfxHiz");
+			spdPass.SetRecordingFunc(
+				[self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd)
 			{
-				// Per-mip GPU scope (the pass-level scope uses the shared
-				// "GfxHiz" name). Static literals: Optick stores the name
-				// pointer, so run-time names must have static storage.
-				static const char* const kHizMipGpuNames[16] = {
-					"GfxHizMip0", "GfxHizMip1", "GfxHizMip2", "GfxHizMip3",
-					"GfxHizMip4", "GfxHizMip5", "GfxHizMip6", "GfxHizMip7",
-					"GfxHizMip8", "GfxHizMip9", "GfxHizMip10", "GfxHizMip11",
-					"GfxHizMip12", "GfxHizMip13", "GfxHizMip14", "GfxHizMip15",
-				};
-				::smvk::profiler::GpuPassScope hizMipScope(
-					kHizMipGpuNames[m < 16 ? m : 15], __FILE__, __LINE__);
-				SMVK_PROFILE_TAG("mip", m);
-				smvk::gfx::PushAndDispatchHiz(self->gfx, cmd, *ctx, slot, m,
-					fromDepth ? depthBindlessIndex : UINT32_MAX);
+				::smvk::profiler::GpuPassScope hizSpdScope(
+					"GfxHizSpd", __FILE__, __LINE__);
+				SMVK_PROFILE_TAG("spd", 1);
+				smvk::gfx::PushAndDispatchHizSpd(self->gfx, cmd, *ctx, slot,
+					depthBindlessIndex, /*shadow=*/false);
 			});
 		}
+		else {
+			for (uint32_t m = 0; m < t.hiz[fc.frameIndex].mipCount; ++m) {
+				const bool fromDepth = (m == 0);
+				smvk::RenderPass& hizPass = smvk::gfx::AddHizPass(gfx, *fc.rg, slot, m,
+					fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
+					passName ? passName : "GfxHiz");
+				hizPass.SetRecordingFunc([self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd)
+				{
+					// Per-mip GPU scope (the pass-level scope uses the shared
+					// "GfxHiz" name). Static literals: Optick stores the name
+					// pointer, so run-time names must have static storage.
+					static const char* const kHizMipGpuNames[16] = {
+						"GfxHizMip0", "GfxHizMip1", "GfxHizMip2", "GfxHizMip3",
+						"GfxHizMip4", "GfxHizMip5", "GfxHizMip6", "GfxHizMip7",
+						"GfxHizMip8", "GfxHizMip9", "GfxHizMip10", "GfxHizMip11",
+						"GfxHizMip12", "GfxHizMip13", "GfxHizMip14", "GfxHizMip15",
+					};
+					::smvk::profiler::GpuPassScope hizMipScope(
+						kHizMipGpuNames[m < 16 ? m : 15], __FILE__, __LINE__);
+					SMVK_PROFILE_TAG("mip", m);
+					smvk::gfx::PushAndDispatchHiz(self->gfx, cmd, *ctx, slot, m,
+						fromDepth ? depthBindlessIndex : UINT32_MAX);
+				});
+			}
+		}
+		// Verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin into
+		// this flight's hizVerify slice from the SAME seed depth the
+		// per-mip path above consumed; gfx::VerifyHizSpd byte-compares
+		// the two post-Execute. Both builds read the depth view and
+		// write disjoint buffers — the graph orders them freely.
+		if (gfx.hizSpdVerify && spdProgramOk && spdExtentOk && spdCounterOk
+			&& t.hizVerify[fc.frameIndex].mipCount != 0) {
+			smvk::RenderPass& vPass = smvk::gfx::AddHizSpdPass(gfx, *fc.rg,
+				slot, depthLogical, "GfxHizSpdVerify", /*shadow=*/true);
+			vPass.SetRecordingFunc(
+				[self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd)
+			{
+				::smvk::profiler::GpuPassScope hizSpdVScope(
+					"GfxHizSpdVerify", __FILE__, __LINE__);
+				smvk::gfx::PushAndDispatchHizSpd(self->gfx, cmd, *ctx, slot,
+					depthBindlessIndex, /*shadow=*/true);
+			});
+			gfx.hizSpdVerifyArmed = true;
+		}
+	}
+
+	void GfxRenderer::VerifyHizSpd(smvk::ResourceManager& ctx) {
+		if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
+			return;
+		smvk::gfx::VerifyHizSpd(gfx, ctx, lastSlot_);
 	}
 
 	void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {

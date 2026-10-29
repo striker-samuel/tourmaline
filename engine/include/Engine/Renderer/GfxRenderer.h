@@ -191,6 +191,14 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	void AppendHizPasses(smvk::FrameContext& fc,
 		smvk::LogicalImageViewHandle depthLogical, uint32_t depthBindlessIndex,
 		const char* passName = "GfxHiz");
+	// SPD-vs-per-mip culling HZB verification (TOURMALINE_HIZ_SPD_VERIFY):
+	// AppendHizPasses arms this when the frame recorded BOTH the per-mip
+	// live pyramid and the SPD shadow; the host consumes it post-Execute
+	// (ClearHizSpdVerifyArmed + WaitForDeviceIdle + VerifyHizSpd — the
+	// compare stalls by design, debug only).
+	[[nodiscard]] bool HizSpdVerifyArmed() const { return gfx.hizSpdVerifyArmed; }
+	void ClearHizSpdVerifyArmed() { gfx.hizSpdVerifyArmed = false; }
+	void VerifyHizSpd(smvk::ResourceManager& ctx); // stalls (downloads both pyramids)
 	// Filter compute dispatch (call after AppendHizPasses: the CS reads the
 	// HZB built this frame; dispatching earlier would read last frame's or
 	// uninitialized memory). CPU expansion stays in AppendPasses.

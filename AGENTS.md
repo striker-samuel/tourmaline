@@ -93,6 +93,11 @@ $env:TOURMALINE_CAPTURE='48'
   (per-mip live + SPD shadow) and byte-compares every mip post-Execute
   (stalls; the validation harness — 0 mismatching texels is the
   contract). Extents > 4096 always fall back to the per-mip path
+- `TOURMALINE_HIZ_SPD=0|1` / `TOURMALINE_HIZ_SPD_VERIFY=1` are the same
+  A/B + verify pair for the gfx filter's CULLING MIN-HZB (the
+  TOURMALINE_HIZ family; the `.min` twin of hzb_spd.cs.hlsl, per-view
+  per-flight counter ring). The verify compare reports as
+  [GfxHizSpdVerify]; both pyramids build from the same seed depth
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
   forced off - uncapped immediate present; an explicit `--present <mode>`
   wins)

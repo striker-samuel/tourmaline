@@ -16372,6 +16372,14 @@ namespace engine {
 			m_host.WaitForDeviceIdle();
 			CompareHzbSpdVerify();
 		}
+		// The culling pyramid's twin (TOURMALINE_HIZ_SPD_VERIFY — the
+		// gfx filter's MIN HZB over the seed depth): same contract, the
+		// compare lives in gfx::VerifyHizSpd (GfxRenderer::VerifyHizSpd).
+		if (m_gfxRenderer.HizSpdVerifyArmed()) {
+			m_gfxRenderer.ClearHizSpdVerifyArmed();
+			m_host.WaitForDeviceIdle();
+			m_gfxRenderer.VerifyHizSpd(*m_context);
+		}
 		// Opt-in deferred-shadow dump (TOURMALINE_DS_DUMP=<frame>): one
 		// shot after Execute with the phase results final. Stalls
 		// (device-idle wait), so it stays off unless explicitly enabled.

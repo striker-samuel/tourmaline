@@ -234,6 +234,10 @@ bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg, const char* csPath)
 	// silently-uncalled geometry).
 	(void)EnsureBatchCullShaders(s, ctx);
 	(void)EnsureDrawCullShaders(s, ctx);
+	// SPD HZB twin (hzb_spd .min): best effort too — a missing module
+	// keeps the per-mip culling build (the A/B switch falls back at
+	// AppendHizPasses record time).
+	(void)EnsureHizSpdShaders(s, ctx);
 	return true;
 }
 
@@ -336,6 +340,29 @@ bool EnsureHizShaders(State& s, ResourceManager& ctx, const char* csPath) {
 	return true;
 }
 
+void SetHizSpd(State& s, bool live, bool verify) {
+	s.hizSpd = live;
+	s.hizSpdVerify = verify;
+}
+
+bool EnsureHizSpdShaders(State& s, ResourceManager& ctx, const char* csPath) {
+	if (s.hizSpdProgram.shaderCount != 0 && !s.hizSpdModule.empty())
+		return true;
+	try {
+		if (s.hizSpdModule.empty())
+			s.hizSpdModule = ctx.CreateShaderModule(
+				readFile(csPath ? csPath : kHizSpdCsPath), "hizSpdBuildCS");
+	}
+	catch (...) {
+		return false;
+	}
+	if (s.hizSpdModule.empty())
+		return false;
+	Shader cs{ .module = s.hizSpdModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+	s.hizSpdProgram = { .shaders = { cs }, .shaderCount = 1 };
+	return true;
+}
+
 static void RollbackTemporalBuffers(RenderGraph& rg, TemporalView& t, uint32_t doneFrames) {
 	for (uint32_t f = 0; f < doneFrames; ++f) {
 		if (!t.visClusterLogicals[f].empty()) rg.FreeBuffer(t.visClusterLogicals[f]);
@@ -404,7 +431,15 @@ void Destroy(State& s, RenderGraph& rg) {
 			if (!t.hiz[f].logical.empty()) rg.FreeBuffer(t.hiz[f].logical);
 			t.hiz[f].logical = {};
 			t.hiz[f].buffer = {};
+			// The SPD verify shadow (same Holder/logical split) + the
+			// view's counter ring (extent-independent, one logical).
+			if (!t.hizVerify[f].logical.empty()) rg.FreeBuffer(t.hizVerify[f].logical);
+			t.hizVerify[f].logical = {};
+			t.hizVerify[f].buffer = {};
 		}
+		if (!t.hizSpdCounterLogical.empty()) rg.FreeBuffer(t.hizSpdCounterLogical);
+		t.hizSpdCounterLogical = {};
+		t.hizSpdCounter = {};
 	}
 	for (auto& sv : s.shadowViews) {
 		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
@@ -652,24 +687,17 @@ bool HzbOccluded(const float* hzb, uint32_t w, uint32_t h, uint32_t mips,
 	return occluded;
 }
 
-bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
-	uint32_t view, uint32_t w, uint32_t h) {
-	TemporalView& t = Temporal(s, view);
-	assert(view < s.views.size());
-	HizResources& hz = t.hiz[s.views[view].frameIndex];
-	if (w == 0 || h == 0) {
-		t.historyValid = false;
-		return false;
-	}
+// (Re)builds ONE HizResources slice for w/h: frees the old logical,
+// zero-fills the fresh buffer (0 = far under reversed-Z: keep-safe, no
+// garbage MIN-reducing into a 1-frame over-cull pop), registers it.
+// Shared by the live pyramid and the SPD verify shadow. Returns false on
+// allocation failure (the slice is left with mips=0 — callers gate on it).
+static bool RebuildHizSlice(ResourceManager& ctx, RenderGraph& rg,
+	HizResources& hz, uint32_t w, uint32_t h, const char* name) {
 	const uint32_t wantMips = HzbMipCount(w, h);
-	if (hz.width == w && hz.height == h && hz.mipCount == wantMips
-		&& !hz.buffer.empty() && !hz.logical.empty())
-		return true; // steady state: keep history
-	// Size drift: rebuild + disarm (stale seed extent).
 	if (!hz.logical.empty()) rg.FreeBuffer(hz.logical);
 	hz.logical = {};
 	hz.buffer = {};
-	t.historyValid = false;
 	hz.width = w;
 	hz.height = h;
 	hz.mipCount = wantMips;
@@ -688,7 +716,7 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 	}
 	hz.buffer = ctx.CreateBuffer(
 		(size_t)HzbTotalFloats(w, h) * sizeof(float),
-		BufferType_Storage, "gfx hiz");
+		BufferType_Storage, name);
 	if (hz.buffer.empty()) {
 		// Leave no half-built pyramid behind: the shader gates on mips.
 		hz.width = hz.height = hz.mipCount = 0;
@@ -707,10 +735,74 @@ bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
 				AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
 		}
 	}
-	hz.logical = rg.AddExternalBuffer(hz.buffer, "gfx hiz");
+	hz.logical = rg.AddExternalBuffer(hz.buffer, name);
 	if (hz.logical.empty()) {
 		hz.buffer = {};
+		hz.width = hz.height = hz.mipCount = 0;
 		return false;
+	}
+	return true;
+}
+
+// SPD counter slice stride (mirrors Ssgi::Hzb::kHzbCounterSliceBytes —
+// one 16-byte word set per frame in flight).
+static constexpr uint32_t kHizSpdCounterSliceBytes = 16;
+
+bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
+	uint32_t view, uint32_t w, uint32_t h) {
+	TemporalView& t = Temporal(s, view);
+	assert(view < s.views.size());
+	const uint32_t flight = s.views[view].frameIndex;
+	HizResources& hz = t.hiz[flight];
+	if (w == 0 || h == 0) {
+		t.historyValid = false;
+		return false;
+	}
+	// SPD completion-counter ring: extent-independent, one buffer per
+	// view, created lazily while SPD (or its verify) is armed. Creation-
+	// zero-filled per the GPU-counter convention (a recycled garbage
+	// count breaks the last-group test and leaves the tail mips stale);
+	// the shader's last group resets the slice after its bump. Failure
+	// is non-fatal: the ring stays empty and AppendHizPasses falls back
+	// to the per-mip path at record time.
+	if ((s.hizSpd || s.hizSpdVerify) && t.hizSpdCounter.empty()) {
+		const size_t counterBytes =
+			(size_t)kHizSpdCounterSliceBytes * smvk::limits::MaxFramesInFlight;
+		t.hizSpdCounter = ctx.CreateBuffer(counterBytes,
+			BufferType_Storage, "gfx hizSpd counter");
+		if (!t.hizSpdCounter.empty()) {
+			std::vector<uint8_t> zeros(counterBytes, 0);
+			ctx.UploadDataToBuffer(t.hizSpdCounter, zeros.data(), zeros.size(),
+				PipelineStage(PipelineStageBit_Compute),
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+			t.hizSpdCounterLogical = rg.AddExternalBuffer(t.hizSpdCounter,
+				"gfx hizSpd counter");
+			if (t.hizSpdCounterLogical.empty())
+				t.hizSpdCounter = {};
+		}
+	}
+	const uint32_t wantMips = HzbMipCount(w, h);
+	const bool hzOk = hz.width == w && hz.height == h && hz.mipCount == wantMips
+		&& !hz.buffer.empty() && !hz.logical.empty();
+	// The verify shadow only exists while the switch is on; toggling it
+	// off just orphans the old slice (freed on the next rebuild/destroy).
+	HizResources& hzV = t.hizVerify[flight];
+	const bool verifyOn = s.hizSpdVerify;
+	const bool hzVOk = !verifyOn || (hzV.width == w && hzV.height == h
+		&& hzV.mipCount == wantMips && !hzV.buffer.empty()
+		&& !hzV.logical.empty());
+	if (hzOk && hzVOk)
+		return true; // steady state: keep history
+	if (!hzOk) {
+		// Size drift: rebuild + disarm (stale seed extent).
+		t.historyValid = false;
+		if (!RebuildHizSlice(ctx, rg, hz, w, h, "gfx hiz"))
+			return false;
+	}
+	if (verifyOn && !hzVOk) {
+		// Shadow failure is non-fatal (verify just stays unarmed — the
+		// record-time gate checks the slice); the live pyramid stands.
+		(void)RebuildHizSlice(ctx, rg, hzV, w, h, "gfx hizVerify");
 	}
 	return true;
 }
@@ -853,6 +945,197 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 	cmd.BindComputePipeline(s.hizProgram);
 	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
 	cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
+}
+
+RenderPass& AddHizSpdPass(State& s, RenderGraph& rg, uint32_t view,
+	LogicalImageViewHandle depthLogical, const char* passName, bool shadow) {
+	assert(view < s.temporals.size());
+	assert(view < s.views.size());
+	TemporalView& t = s.temporals[view];
+	const uint32_t flight = s.views[view].frameIndex;
+	HizResources& hz = shadow ? t.hizVerify[flight] : t.hiz[flight];
+	assert(hz.mipCount != 0 && !hz.logical.empty());
+	assert(!t.hizSpdCounterLogical.empty()); // caller gates on the ring
+
+	SMVK_PROFILE_RENDER("GfxAddHizSpdPass");
+	SMVK_PROFILE_TAG("mipCount", hz.mipCount);
+	SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
+
+	RenderPass& pass = rg.AddComputePass(passName ? passName : "GfxHizSpd");
+	{
+		// The pyramid: read (footprints) + write (every level) within the
+		// same dispatch — the same RW hint the per-mip passes carry.
+		BufferSyncRequest hizRW{};
+		hizRW.barrierMasks.accessMask =
+			AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		hizRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+		pass.AddBufferHint(hz.logical, hizRW);
+	}
+	{
+		// The completion counter: InterlockedAdd/Exchange from every
+		// group (read-modify-write — atomics need the RW hint).
+		BufferSyncRequest counterRW{};
+		counterRW.barrierMasks.accessMask =
+			AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		counterRW.barrierMasks.stageMask = PipelineStageBit_Compute;
+		pass.AddBufferHint(t.hizSpdCounterLogical, counterRW);
+	}
+	{
+		// The single dispatch ALWAYS reads the depth for its mip-0 copy
+		// (DepthStencilReadOnlyOptimal matches the bindless descriptor
+		// layout — the same note as AddHizPass).
+		ImageSyncRequest depthReq{};
+		depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+		depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
+		if (!depthLogical.empty())
+			pass.AddImageHint(depthLogical, depthReq);
+	}
+	return pass;
+}
+
+void PushAndDispatchHizSpd(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+	uint32_t view, uint32_t depthBindlessIndex, bool shadow) {
+	assert(view < s.temporals.size());
+	assert(view < s.views.size());
+	TemporalView& t = s.temporals[view];
+	const uint32_t flight = s.views[view].frameIndex;
+	HizResources& hz = shadow ? t.hizVerify[flight] : t.hiz[flight];
+	if (hz.mipCount == 0 || hz.width == 0 || hz.height == 0)
+		return;
+	if (t.hizSpdCounter.empty() || t.hizSpdCounterLogical.empty()) {
+		// No counter ring (EnsureHiz allocation failure): refuse the
+		// dispatch — the caller's fallback should have routed per-mip,
+		// this is the belt-and-suspenders guard.
+		static uint64_t s_spdNoCounterWarns = 0;
+		if ((s_spdNoCounterWarns++ % 300) == 0)
+			std::fprintf(stderr,
+				"[GfxHizSpd] refusing dispatch: no counter ring (view %u).\n",
+				view);
+		return;
+	}
+
+	SMVK_PROFILE_SCOPE("GfxPushAndDispatchHizSpd");
+	SMVK_PROFILE_TAG("mipCount", hz.mipCount);
+	SMVK_PROFILE_TAG("shadow", shadow ? 1 : 0);
+
+	const uint64_t addr = ctx.GetBufferDeviceAddress(hz.buffer);
+	// Null-BDA guard (the same device-lost lesson as PushAndDispatchHiz).
+	if (addr == 0) {
+		static uint64_t s_spdNullWarns = 0;
+		if ((s_spdNullWarns++ % 300) == 0)
+			std::fprintf(stderr,
+				"[GfxHizSpd] refusing dispatch: null HZB address (view %u).\n",
+				view);
+		return;
+	}
+	if (depthBindlessIndex == UINT32_MAX) {
+		static uint64_t s_spdDepthWarns = 0;
+		if ((s_spdDepthWarns++ % 300) == 0)
+			std::fprintf(stderr,
+				"[GfxHizSpd] dispatch with invalid depth bindless (view %u): "
+				"mip 0 content undefined, expect over-cull.\n",
+				view);
+	}
+	const uint64_t counterAddr =
+		ctx.GetBufferDeviceAddress(t.hizSpdCounter)
+		+ (uint64_t)flight * kHizSpdCounterSliceBytes;
+	const uint32_t groupX = (hz.width + 63u) / 64u;
+	const uint32_t groupY = (hz.height + 63u) / 64u;
+
+	HzbSpdPush push{};
+	push.hzb = addr;
+	push.counter = counterAddr;
+	push.width = hz.width;
+	push.height = hz.height;
+	push.mipCount = hz.mipCount;
+	push.depthTextureIndex = depthBindlessIndex;
+	for (uint32_t k = 0; k < kHizMaxMips; ++k)
+		push.mipOffsets[k] = hz.mipOffsets[k];
+	push.groupCount = groupX * groupY;
+
+	static uint64_t s_spdDispatchCount = 0;
+	if ((s_spdDispatchCount++ % 60) == 0) {
+		SMVK_DEBUG_LOG(
+			"[GfxHizSpd] Dispatch view=%u shadow=%d %ux%u mips=%u "
+			"groups=%ux%u depthIdx=%u BDA=0x%llx counter=0x%llx\n",
+			view, shadow ? 1 : 0, hz.width, hz.height, hz.mipCount,
+			groupX, groupY, depthBindlessIndex,
+			(unsigned long long)addr, (unsigned long long)counterAddr);
+	}
+
+	cmd.BindComputePipeline(s.hizSpdProgram);
+	cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+	cmd.Dispatch(groupX, groupY, 1);
+}
+
+void VerifyHizSpd(State& s, ResourceManager& ctx, uint32_t view) {
+	if (view >= s.temporals.size() || view >= s.views.size())
+		return;
+	TemporalView& t = s.temporals[view];
+	const uint32_t flight = s.views[view].frameIndex;
+	const HizResources& hz = t.hiz[flight];
+	const HizResources& hzV = t.hizVerify[flight];
+	if (hz.mipCount == 0 || hzV.mipCount == 0 || hz.width != hzV.width
+		|| hz.height != hzV.height || hz.mipCount != hzV.mipCount) {
+		std::fprintf(stderr, "[GfxHizSpdVerify] pyramids unavailable or "
+			"drifted - skipped\n");
+		return;
+	}
+	const uint32_t w = hz.width;
+	const uint32_t h = hz.height;
+	const uint32_t mips = hz.mipCount;
+	const size_t floats = (size_t)HzbTotalFloats(w, h);
+	std::vector<float> perMip(floats, 0.0f);
+	std::vector<float> spd(floats, 0.0f);
+	if (!ctx.DownloadDataFromBuffer(hz.buffer, perMip.data(),
+			floats * sizeof(float))
+		|| !ctx.DownloadDataFromBuffer(hzV.buffer, spd.data(),
+			floats * sizeof(float))) {
+		std::fprintf(stderr, "[GfxHizSpdVerify] download failed - skipped\n");
+		return;
+	}
+	uint64_t mismatches = 0;
+	uint32_t mismatchedMips = 0;
+	uint32_t printed = 0;
+	constexpr uint32_t kPrintLimit = 8;
+	for (uint32_t m = 0; m < mips; ++m) {
+		uint32_t mw = 0, mh = 0;
+		HzbMipDims(w, h, m, mw, mh);
+		const uint32_t off = hz.mipOffsets[m];
+		uint64_t mipMismatch = 0;
+		for (uint32_t y = 0; y < mh; ++y) {
+			for (uint32_t x = 0; x < mw; ++x) {
+				const size_t i = (size_t)off + y * mw + x;
+				if (perMip[i] != spd[i]) {
+					++mipMismatch;
+					if (printed < kPrintLimit) {
+						++printed;
+						std::fprintf(stderr,
+							"[GfxHizSpdVerify]   mip %u (%u,%u): per-mip=%.6g spd=%.6g\n",
+							m, x, y, perMip[i], spd[i]);
+					}
+				}
+			}
+		}
+		if (mipMismatch != 0) {
+			++mismatchedMips;
+			mismatches += mipMismatch;
+			std::fprintf(stderr,
+				"[GfxHizSpdVerify]   mip %u (%ux%u): %llu mismatching texels\n",
+				m, mw, mh, (unsigned long long)mipMismatch);
+		}
+	}
+	++s.hizSpdVerifyFrames;
+	s.hizSpdVerifyMismatches += mismatches;
+	std::fprintf(stderr,
+		"[GfxHizSpdVerify] view %u %ux%u mips=%u: %s"
+		" (%llu mismatching texels across %u mips; running: %llu over %llu frames)\n",
+		view, w, h, mips,
+		mismatches == 0 ? "MATCH" : "MISMATCH",
+		(unsigned long long)mismatches, mismatchedMips,
+		(unsigned long long)s.hizSpdVerifyMismatches,
+		(unsigned long long)s.hizSpdVerifyFrames);
 }
 
 // ---------------------------------------------------------------------------
