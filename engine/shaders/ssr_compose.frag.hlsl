@@ -7,8 +7,13 @@
 #include "hzb.hlsli"
 #include "ssr_receiver.hlsli"
 
-// SSR composite: depth-guided bilateral upsample of the half-res blurred
-// reflection layer onto the FULL-res base HDR (additive).
+// SSR composite: joint-bilateral upsample of the half-res blurred
+// reflection layer onto the FULL-res base HDR (additive) — depth
+// agreement (HZB mip0 center vs mip1 block reps) x normal agreement
+// (the pixel's own G-buffer normal vs the tap's receiver normal) x a
+// tent spatial factor (the tap block's center distance), with
+// confidence-aware accumulation (rgb weighted by the tap confidence,
+// normalized by the confidence mass).
 // Runs in its own pass so the full-res depth is only ever a barriered
 // sampled input here; downstream passes then sample plain HDR.
 //
@@ -135,19 +140,39 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         floor(float2(1.0f / cp.invDepthW, 1.0f / cp.invDepthH) * 0.5f),
         float2(1.0f, 1.0f));
 
-    // 2x2 nearest half-res texels around this full-res pixel, weighted by
-    // depth agreement with the pixel's own depth — the same discipline as
-    // the SSGI AO compose, so reflection never bleeds across silhouettes.
+    // 2x2 nearest half-res texels around this full-res pixel, weighted
+    // by depth agreement (the same discipline as the SSGI AO compose,
+    // so reflection never bleeds across silhouettes) + normal
+    // agreement + a TENT SPATIAL factor favoring the blocks whose
+    // centers sit nearer this pixel (the old depth-only weights treated
+    // the DIAGONAL neighbor block exactly like the block containing
+    // the pixel — the blocky half-res transition, sharpest on diagonal
+    // edges and subpixel detail).
+    //
+    // BORDER: out-of-range candidates are SKIPPED before the fetch —
+    // the old clamp duplicated a border texel into multiple candidates
+    // (a double-counted far tap under the spatial factor would outvote
+    // the one near tap); the weight normalization absorbs the skips.
+    // The block CONTAINING the pixel is always a candidate and always
+    // in range, so a valid pixel never loses every tap; an
+    // all-rejected neighborhood (every depth/normal weight ~0) falls to
+    // the wSum branch below — base HDR + env reflection untouched
+    // rather than an unrelated reflection injected.
     int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
-    int2 halfMax = int2(halfExtent) - 1;
+    int2 halfExtentI = int2(halfExtent);
+    float2 fullCenter = float2(fullPx) + 0.5f;
     float3 accRgb = float3(0.0f, 0.0f, 0.0f);
     float accA = 0.0f;
     float wSum = 0.0f;
+    [loop]
     for (int ty = 0; ty < 2; ++ty)
     {
+        [loop]
         for (int tx = 0; tx < 2; ++tx)
         {
-            int2 hp = clamp(halfMin + int2(tx, ty), int2(0, 0), halfMax);
+            int2 hp = halfMin + int2(tx, ty);
+            if (hp.x < 0 || hp.y < 0 || hp.x >= halfExtentI.x || hp.y >= halfExtentI.y)
+                continue; // border candidate: skip, the normalization absorbs it
             // Representative depth of the tapped block: HZB mip1 = MAX
             // (nearest valid tap) of the block's 2x2 — the EXACT value
             // the old 4-load quad max derived, as one BDA scalar (sky
@@ -163,7 +188,16 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
                 : nearPlane / max(bd, 1e-6f);
             float2 halfUv = (float2(hp) + 0.5f) / max(halfExtent, float2(1.0f, 1.0f));
             float4 tap = blurTex.Sample(smp, halfUv);
-            float w = SsrUpEdgeWeight(bDist, centerDist, cp.sharpness);
+            // Tent/bilinear spatial factor: the tap block's center (in
+            // full-res units) against this pixel's center, scaled to
+            // half-res pixel units — the containing block carries ~0.56,
+            // edge neighbors ~0.19, the diagonal ~0.06.
+            float2 tapCenterFull = float2(hp) * 2.0f + 1.0f;
+            float2 delta = abs(fullCenter - tapCenterFull) * 0.5f;
+            float2 axisWeight = saturate(1.0f - delta);
+            float spatialWeight = axisWeight.x * axisWeight.y;
+            float w = spatialWeight
+                * SsrUpEdgeWeight(bDist, centerDist, cp.sharpness);
             // Normal agreement: the tap's RECEIVER normal (the block's
             // selected surface) against the pixel's own full-res
             // normal — same-depth surfaces with different orientations
