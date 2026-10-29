@@ -57,11 +57,11 @@ namespace smvk {
 // Hard cap on SPOT tiles per frame (selection budget + the EVSM spot
 // moment atlas size). The descriptor buffer / HLSL SpotShadowBuffer are
 // sized for the combined total below, not this alone.
-static constexpr uint32_t kMaxSpotShadows = 8;
+static constexpr uint32_t kMaxSpotShadows = 16;
 // Shadowed point lights per frame: each claims SIX atlas tiles (one per
 // cube face), so 2 lights = 12 tiles. Kept small on purpose - the
-// RenderView budget (kMaxRenderViews 64: 1 main + 4 cascades + 8 spot
-// tiles + 12 faces = 25) and the raster cost (6 depth passes per light)
+// RenderView budget (kMaxRenderViews 64: 1 main + 4 cascades + 16 spot
+// tiles + 12 faces = 33) and the raster cost (6 depth passes per light)
 // both scale with it.
 static constexpr uint32_t kMaxPointShadowLights = 2;
 static constexpr uint32_t kPointShadowFaceCount = 6;

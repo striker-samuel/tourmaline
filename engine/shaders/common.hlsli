@@ -328,11 +328,11 @@ struct ForwardPlusLight
     float functionScale; // 92 modulation depth / pattern scale
 };
 
-// Local-light shadow tiles: 8 spot tiles + 6 cube-face tiles per shadowed
+// Local-light shadow tiles: 16 spot tiles + 6 cube-face tiles per shadowed
 // point light (2 max). MUST match C++ kMaxSpotShadows / kMaxPointShadowLights
 // / kMaxLocalShadowTiles (spotshadow.h) - both sides size the per-frame
 // descriptor ring off these.
-#define MAX_SPOT_SHADOWS 8
+#define MAX_SPOT_SHADOWS 16
 #define MAX_POINT_SHADOW_LIGHTS 2
 #define MAX_LOCAL_SHADOW_TILES (MAX_SPOT_SHADOWS + 6 * MAX_POINT_SHADOW_LIGHTS)
 

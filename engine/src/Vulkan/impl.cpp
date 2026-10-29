@@ -119,6 +119,11 @@ static bool g_deviceFaultSupported = false;
 // mesh-shader gfx filter path (DrawMeshTasks); the compute+indexed CPU
 // fallback stays otherwise.
 static bool g_meshShaderSupported = false;
+// The ACTIVE physical device's name (captured at the device pick from
+// the real VkPhysicalDeviceProperties — never guessed, never hardcoded;
+// the single-device engine makes the process-global the honest scope).
+// Serves smvk::ActiveDeviceName() (the stats HUD's GPU line).
+static char g_activeDeviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = "unknown";
 struct QueueMutex { VkQueue queue = VK_NULL_HANDLE; std::mutex mutex; };
 static QueueMutex graphicsQueueMutex;
 static QueueMutex presentQueueMutex;
@@ -2367,6 +2372,11 @@ bool smvk::VulkanCore::Init() {
 
 		vkGetPhysicalDeviceFeatures2(physicalDevice_, &vkFeatures10_);
 		vkGetPhysicalDeviceProperties2(physicalDevice_, &vkPhysicalDeviceProperties2_);
+		// Capture the selected device's name for smvk::ActiveDeviceName()
+		// (the stats HUD's GPU line) — straight off the properties query
+		// above, the ACTUAL picked device.
+		std::snprintf(g_activeDeviceName, sizeof(g_activeDeviceName), "%s",
+			vkPhysicalDeviceProperties2_.properties.deviceName);
 
 		// Create Logical Device
 		{
@@ -14406,6 +14416,7 @@ VkInstance smvk::GetVkInstance() { return instance_; }
 VkDevice smvk::GetVkDevice() { return device_; }
 bool smvk::SupportsMultiDrawIndirect() { return g_multiDrawIndirect; }
 bool smvk::SupportsMeshShaders() { return g_meshShaderSupported; }
+const char* smvk::ActiveDeviceName() { return g_activeDeviceName; }
 VkPhysicalDevice smvk::GetVkPhysicalDevice() { return physicalDevice_; }
 VkQueue smvk::GetVkGraphicsQueue() { return graphicsQueue_; }
 VkQueue smvk::GetVkPresentQueue() { return presentQueue_; }

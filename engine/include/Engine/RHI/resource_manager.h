@@ -31,6 +31,12 @@ bool DebugImageDumpArmed();
 // otherwise. Also settable off at device level via TOURMALINE_MESH=0.
 bool SupportsMeshShaders();
 
+// The ACTIVE Vulkan physical device's name (captured at the device pick
+// from the real VkPhysicalDeviceProperties — never guessed). Serves the
+// stats HUD's GPU line and any diagnostics that want to name the GPU.
+// "unknown" before device creation.
+const char* ActiveDeviceName();
+
 class ResourceManager {
 public:
     // Creates Vulkan core + allocator. window is currently REQUIRED (the

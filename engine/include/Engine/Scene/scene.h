@@ -393,7 +393,7 @@ struct SceneRenderSettings {
 	// knee derives at 0.25x threshold, as the baker always assumed).
 	bool bloomEnabled = true;
 	float bloomIntensity = 0.6f;   // tonemap bloom-add scale
-	float bloomThreshold = 400.0f; // pre-exposure HDR trigger
+	float bloomThreshold = 800.0f; // pre-exposure HDR trigger
 	// Tonemap operator: 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7.
 	uint32_t tonemapMode = 3;
 	// Exposure (histogram meter + eye adaptation): auto flag, manual

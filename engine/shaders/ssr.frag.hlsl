@@ -75,7 +75,7 @@ ConstantBuffer<SsrTracePush> sp;
 // reflections at defaults top out around the sun disc (~5000). Past the
 // cap lives only aliasing spikes (a noisy normal + dithered origin
 // striking the disc for a single pixel) and half-overflow garbage —
-// exactly what blooms (threshold 400) and the exposure top bin would
+// exactly what blooms (threshold 800) and the exposure top bin would
 // otherwise amplify. The intensity knob stays the artistic gate below it.
 static const float kSsrMaxReflected = 8192.0f;
 

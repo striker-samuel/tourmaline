@@ -117,7 +117,7 @@ static constexpr uint32_t BLOOM_BASE_DIVISOR = 2; // base = hdr / 2 (half-res)
 // not-clipped zone of the GT7 curve (sky/windows/sun-lit walls, with
 // the knee rolling in from ~0.15). The old 1000 (1.0 post) sat above
 // GT7's shoulder start, so ONLY sun/sky ever bloomed.
-static constexpr float BLOOM_THRESHOLD = 400.0f;
+static constexpr float BLOOM_THRESHOLD = 800.0f;
 static constexpr float BLOOM_KNEE = 100.0f;        // keeps soft ratio knee/threshold = 0.25
 static constexpr float BLOOM_INTENSITY = 0.6f;
 static constexpr float BLOOM_UPSAMPLE_RADIUS = 1.0f;
@@ -7300,6 +7300,10 @@ namespace engine {
 			ImGui::End();
 			return;
 		}
+		// GPU: the ACTIVE Vulkan device's name (captured at the device
+		// pick — smvk::ActiveDeviceName(); never hardcoded/guessed), above
+		// the perf lines so the hardware context leads the readout.
+		ImGui::Text("GPU: %s", smvk::ActiveDeviceName());
 		// Frame rate + CPU/GPU times (same sources as the old panel header).
 		const float fps = ImGui::GetIO().Framerate;
 		if (m_gpuTimingValid)
@@ -9202,8 +9206,10 @@ namespace engine {
 		// vector never grows while the cooperative builds are in flight.
 		if (spotPassesOn) {
 			const uint32_t spotCount = spotSlotCount;
-			const char* spotNames[8] = { "SpotShadow0", "SpotShadow1", "SpotShadow2", "SpotShadow3",
-				"SpotShadow4", "SpotShadow5", "SpotShadow6", "SpotShadow7" };
+			const char* spotNames[16] = { "SpotShadow0", "SpotShadow1", "SpotShadow2", "SpotShadow3",
+				"SpotShadow4", "SpotShadow5", "SpotShadow6", "SpotShadow7",
+				"SpotShadow8", "SpotShadow9", "SpotShadow10", "SpotShadow11",
+				"SpotShadow12", "SpotShadow13", "SpotShadow14", "SpotShadow15" };
 			static_assert(sizeof(spotNames) / sizeof(spotNames[0]) >= smvk::kMaxSpotShadows);
 
 			SMVK_PROFILE_CATEGORY("SpotShadows", Optick::Category::Rendering);
@@ -12874,815 +12880,408 @@ namespace engine {
 			}
 			if (ImGui::BeginTabBar("TourmalineTabs")) {
 				// ---------------------------------------------------------
-				// Quality: every setting that changes the image. No readback
-				// here besides the control itself (numbers live in Stats).
+				// Quality: every setting that changes the image, in FLAT
+				// sections (Display / Shadows / Lighting / Post Processing
+				// / Atmosphere / Scene & Geometry) — no nested dropdowns,
+				// no readbacks (numbers live in Stats; views in Debug).
 				// ---------------------------------------------------------
 				if (ImGui::BeginTabItem("Quality")) {
-					// Group by rendering concern instead of implementation/pass order.
-					// Environment owns world lighting/transport: sky, GI/SSGI, reflections and fog.
-					if (ImGui::CollapsingHeader("Display & Image Quality", ImGuiTreeNodeFlags_DefaultOpen)) {
-						if (ImGui::CollapsingHeader("Presentation & Resolution", ImGuiTreeNodeFlags_DefaultOpen)) {
-							// VSync / presentation mode. Applies on the next frame
-							// via the HOST's rebuild check (App::SetPresentMode ->
-							// the DrawFrame pump recreates); the active mode may
-							// fall back when the driver lacks the requested one.
-							// FIFO is strict (missed 16.6ms -> 30fps lock); Mailbox
-							// stays tear-free at 60Hz; FIFO relaxed vsyncs on time
-							// and never locks to half rate.
-							const char* modeNames[] = { "VSync FIFO (strict)", "VSync Mailbox (smooth)",
-								"Uncapped Immediate", "VSync FIFO relaxed (no 30fps lock)" };
-							int modeIdx = static_cast<int>(m_host.GetPresentMode());
-							if (ImGui::Combo("Present mode", &modeIdx, modeNames, 4))
-								SetPresentMode(static_cast<smvk::PresentMode>(modeIdx));
-							ImGui::SliderFloat("Render scale", &m_renderScale,
-								RENDER_SCALE_MIN, RENDER_SCALE_MAX, "%.2fx");
-							ImGui::SliderFloat("UI res scale", &m_uiScale,
-								UI_SCALE_MIN, UI_SCALE_MAX, "%.2fx");
-							ImGui::SliderFloat("UI DPI scale", &m_uiDpiScale,
-								UI_DPI_MIN, UI_DPI_MAX, "%.2fx");
-							if (ImGui::IsItemEdited() && m_imgui)
-								m_imgui->ApplyDpiScale(m_uiDpiScale);
-							ImGui::TextDisabled("Render scale resizes HDR/MSAA/bloom/depth + tonemap upscales to swap.\n"
-								"UI renders into its own target and composites over the swapchain.");
+					// ---- Display: presentation, resolution, upscaling,
+					// AA and sampling.
+					ImGui::SeparatorText("Display");
+					{
+						const char* modeNames[] = { "VSync FIFO (strict)", "VSync Mailbox (smooth)",
+							"Uncapped Immediate", "VSync FIFO relaxed (no 30fps lock)" };
+						int modeIdx = static_cast<int>(m_host.GetPresentMode());
+						if (ImGui::Combo("Present mode", &modeIdx, modeNames, 4))
+							SetPresentMode(static_cast<smvk::PresentMode>(modeIdx));
+						ImGui::SliderFloat("Render scale", &m_renderScale,
+							RENDER_SCALE_MIN, RENDER_SCALE_MAX, "%.2fx");
+						ImGui::SliderFloat("UI res scale", &m_uiScale,
+							UI_SCALE_MIN, UI_SCALE_MAX, "%.2fx");
+						ImGui::SliderFloat("UI DPI scale", &m_uiDpiScale,
+							UI_DPI_MIN, UI_DPI_MAX, "%.2fx");
+						if (ImGui::IsItemEdited() && m_imgui)
+							m_imgui->ApplyDpiScale(m_uiDpiScale);
+						// Conventional order for the combo; indices remap to the
+						// sl-aligned DlssMode enum values.
+						const char* dlssNames[] = { "Off", "Ultra Performance", "Performance",
+							"Balanced", "Quality", "Ultra Quality", "DLAA" };
+						const int dlssEnumOf[] = {
+							static_cast<int>(smvk::DlssMode::Off),
+							static_cast<int>(smvk::DlssMode::UltraPerformance),
+							static_cast<int>(smvk::DlssMode::MaxPerformance),
+							static_cast<int>(smvk::DlssMode::Balanced),
+							static_cast<int>(smvk::DlssMode::MaxQuality),
+							static_cast<int>(smvk::DlssMode::UltraQuality),
+							static_cast<int>(smvk::DlssMode::DLAA),
+						};
+						int dlssSel = 0;
+						for (int i = 0; i < 7; ++i)
+							if (dlssEnumOf[i] == static_cast<int>(m_dlssMode))
+								dlssSel = i;
+						if (ImGui::Combo("DLSS mode", &dlssSel, dlssNames, 7))
+							m_dlssMode = static_cast<smvk::DlssMode>(dlssEnumOf[dlssSel]);
+						if (m_dlssFrameActive)
+							ImGui::Text("DLSS active: scene %ux%u -> swap %ux%u (phase %u/%u)",
+								renderExtent.width, renderExtent.height,
+								swapExtent.width, swapExtent.height,
+								m_dlssPhase, m_dlssPhaseCount);
+						else if (DlssRequested()) {
+							// Why the requested mode is not running (one line).
+							if (!smvk::DlssAvailable())
+								ImGui::Text("DLSS inactive: Streamline runtime not loaded");
+							else if (!m_dlssSupported)
+								ImGui::Text("DLSS inactive: unsupported adapter");
+							else if (!m_passes.motionVectors)
+								ImGui::Text("DLSS inactive: needs the motion-vector pass");
 						}
-						if (ImGui::CollapsingHeader("Upscaling - DLSS (Streamline)")) {
-							// Conventional order for the combo; indices remap to the
-							// sl-aligned DlssMode enum values.
-							const char* dlssNames[] = { "Off", "Ultra Performance", "Performance",
-								"Balanced", "Quality", "Ultra Quality", "DLAA" };
-							const int dlssEnumOf[] = {
-								static_cast<int>(smvk::DlssMode::Off),
-								static_cast<int>(smvk::DlssMode::UltraPerformance),
-								static_cast<int>(smvk::DlssMode::MaxPerformance),
-								static_cast<int>(smvk::DlssMode::Balanced),
-								static_cast<int>(smvk::DlssMode::MaxQuality),
-								static_cast<int>(smvk::DlssMode::UltraQuality),
-								static_cast<int>(smvk::DlssMode::DLAA),
-							};
-							int dlssSel = 0;
-							for (int i = 0; i < 7; ++i)
-								if (dlssEnumOf[i] == static_cast<int>(m_dlssMode))
-									dlssSel = i;
-							if (ImGui::Combo("DLSS mode", &dlssSel, dlssNames, 7))
-								m_dlssMode = static_cast<smvk::DlssMode>(dlssEnumOf[dlssSel]);
-							if (m_dlssFrameActive) {
-								ImGui::Text("Active: scene %ux%u -> DLSS -> swap %ux%u",
-									renderExtent.width, renderExtent.height,
-									swapExtent.width, swapExtent.height);
-								ImGui::Text("Halton jitter phase %u / %u", m_dlssPhase, m_dlssPhaseCount);
-								ImGui::TextDisabled("DLSS replaces the AA modes and the render-scale slider\n"
-									"(HDR upscaled before tonemap; UI composites after).");
-							}
-							else if (DlssRequested()) {
-								// Why the requested mode is not running.
-								if (!smvk::DlssAvailable())
-									ImGui::TextDisabled("Streamline runtime (sl.interposer.dll) not loaded.");
-								else if (!m_dlssSupported)
-									ImGui::TextDisabled("DLSS not supported on this adapter (NVIDIA GPU + up-to-date driver).");
-								else if (!m_passes.motionVectors)
-									ImGui::TextDisabled("Requires the motion-vector pass (ScenePassConfig).");
-								else
-									ImGui::TextDisabled("Warming up / options pending this frame.");
-							}
-							else {
-								ImGui::TextDisabled("Off: render scale slider drives the internal resolution\n"
-									"(tonemap upscales bilinearly).");
-							}
-						}
-						if (ImGui::CollapsingHeader("Antialiasing, Transparency & Filtering")) {
-							// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x). msaaEnabled
-							// is derived from the mode every frame (see the Ensure block), so
-							// the combo is the single source of truth. DLSS replaces all
-							// AA when active.
-							const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
-							int aaIdx = static_cast<int>(m_aaMode);
-							ImGui::BeginDisabled(m_dlssFrameActive);
-							if (ImGui::Combo("Antialiasing (Z / 1-4)", &aaIdx, aaNames, 4))
-								m_aaMode = static_cast<AaMode>(aaIdx);
-							ImGui::EndDisabled();
-							if (m_dlssFrameActive)
-								ImGui::TextDisabled("AA bypassed while DLSS is active.");
-							// Transparency technique for Blend materials (default:
-							// dithered screen-door, opaque state; optional blend).
-							const char* transpModes[] = { "Dithered (default)", "Alpha blend" };
-							int transpIdx = (m_transparentMode == smvk::TransparentMode::Blended) ? 1 : 0;
-							if (ImGui::Combo("Transparency", &transpIdx, transpModes, 2))
-								m_transparentMode = (transpIdx == 1)
-								? smvk::TransparentMode::Blended
-								: smvk::TransparentMode::Dithered;
-							if (transpIdx == 0)
-								ImGui::TextDisabled("Screen-door: depth-writing, order-independent (SMAA T2x integrates it).");
-							else
-								ImGui::TextDisabled("Classic back-to-front blend: no depth write, sorted.");
-							// Texture filtering (renderer state): trilinear is the
-							// lowest option; aniso Nx adds anisotropic filtering
-							// (maxAnisotropy N, clamped to the device limit).
-							// Applies to the bindless texture samplers (slots 0 + 2)
-							// via in-place recreate.
-							{
-								const char* filtNames[] = { "Trilinear", "Anisotropic 2x",
-									"Anisotropic 4x", "Anisotropic 8x", "Anisotropic 16x" };
-								int filtIdx = static_cast<int>(m_textureFiltering);
-								if (ImGui::Combo("Texture filtering", &filtIdx, filtNames, 5))
-									SetTextureFiltering(static_cast<TextureFiltering>(
-										std::clamp(filtIdx, 0, 4)));
-								if (filtIdx == 0)
-									ImGui::TextDisabled("Trilinear: smooth mip blends (lowest option).");
-								else
-									ImGui::TextDisabled("Anisotropic: sharper textures at grazing angles.");
-							}
-						}
+						// AA mode combo (Off / MSAA 2x / SMAA 1x / SMAA T2x);
+						// msaaEnabled derives from the mode every frame, so the
+						// combo is the single source of truth. DLSS replaces AA.
+						const char* aaNames[] = { "Off", "MSAA 2x", "SMAA 1x", "SMAA T2x" };
+						int aaIdx = static_cast<int>(m_aaMode);
+						ImGui::BeginDisabled(m_dlssFrameActive);
+						if (ImGui::Combo("Antialiasing (Z / 1-4)", &aaIdx, aaNames, 4))
+							m_aaMode = static_cast<AaMode>(aaIdx);
+						ImGui::EndDisabled();
+						// Transparency technique for Blend materials.
+						const char* transpModes[] = { "Dithered (default)", "Alpha blend" };
+						int transpIdx = (m_transparentMode == smvk::TransparentMode::Blended) ? 1 : 0;
+						if (ImGui::Combo("Transparency", &transpIdx, transpModes, 2))
+							m_transparentMode = (transpIdx == 1)
+							? smvk::TransparentMode::Blended
+							: smvk::TransparentMode::Dithered;
+						// Texture filtering: applies to the bindless samplers
+						// (slots 0 + 2) via in-place recreate.
+						const char* filtNames[] = { "Trilinear", "Anisotropic 2x",
+							"Anisotropic 4x", "Anisotropic 8x", "Anisotropic 16x" };
+						int filtIdx = static_cast<int>(m_textureFiltering);
+						if (ImGui::Combo("Texture filtering", &filtIdx, filtNames, 5))
+							SetTextureFiltering(static_cast<TextureFiltering>(
+								std::clamp(filtIdx, 0, 4)));
 					}
-					if (ImGui::CollapsingHeader("Environment", ImGuiTreeNodeFlags_DefaultOpen)) {
-						if (ImGui::CollapsingHeader("Sky & Sun", ImGuiTreeNodeFlags_DefaultOpen)) {
-							ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
-							ImGui::TextDisabled("Ambient source: %s (N cycles; GI section)",
-								AmbientModeName(m_ambientMode));
-					// ---- World env tiles (Engine/WorldPartition/
-						// WorldEnvTiles.h - the runtime rework of the old
-						// OBB-volume zone system): the zone tables BAKE
-						// onto the 64 m world-tile grid on change (a dirty
-						// hash, not a per-frame pack) and the terrain/
-						// volumetric shaders resolve a zone by TILE
-						// ADDRESS. ALWAYS ON - the base record (the
-						// default environment) is the weight-1 fallback.
-						if (ImGui::CollapsingHeader("Zones (world tiles)")) {
-							ImGui::TextDisabled("Always on: zones bake to "
-								"64 m world tiles; record 0 is the base "
-								"(the default env).");
-							if (!m_envTilesPublished) {
-								ImGui::TextDisabled("No tiles baked this frame - "
-									"the plain env path renders.");
-							}
-							else {
-								ImGui::TextDisabled("Baked %u x %u tiles @64 m, "
-									"%u record(s). Grid @ (%.0f, %.0f).",
-									(unsigned)m_envTiles.DimX(),
-									(unsigned)m_envTiles.DimZ(),
-									(unsigned)m_envTiles.RecordCount(),
-									m_envTiles.GridMin().x,
-									m_envTiles.GridMin().y);
-							}
-							if (m_world) {
-								size_t zoneCount = 0;
-								for (const auto& [node, env]
-									: m_world->scene.envForNode) {
-									(void)node;
-									(void)env;
-									++zoneCount;
-								}
-								ImGui::TextDisabled("Zone entities: %u (the bake "
-									"input; edits rebuild on the dirty hash).",
-									(unsigned)zoneCount);
-							}
-						}
-							if (!m_world) {
-								ImGui::TextDisabled("No world - nothing to author.");
-							}
-							else {
-								SceneEnv& se = m_world->scene.environment;
-								auto authored = [&]() { m_world->scene.envAuthored = true; };
-								ImGui::ColorEdit3("Sky color", &se.skyColor.x);
-								ImGui::DragFloat("Sky intensity (lux)", &se.skyIntensity,
-									5.0f, 0.0f, 10000.0f, "%.0f");
-								if (ImGui::IsItemHovered())
-									ImGui::SetTooltip("Lux-native scene environment (no conversions).");
-								ImGui::Separator();
-								ImGui::Text("Sun (drives direct light + sky disc)");
-								if (ImGui::SliderFloat("Azimuth", &se.sunAzimuth, 0.0f, 360.0f)) authored();
-								if (ImGui::SliderFloat("Elevation", &se.sunElevation, 0.0f, 90.0f)) authored();
-								if (ImGui::ColorEdit3("Sun color", &se.sunColor.x)) authored();
-								ImGui::DragFloat("Sun intensity (lux)", &se.sunIntensity,
-									10.0f, 0.0f, 2e5f, "%.0f");
-							}
-							if (!m_skydome.ShadersValid())
-								ImGui::TextDisabled("Sky program missing - dome skipped");
-						}
-						if (ImGui::CollapsingHeader("Global Illumination + SSGI / AO", ImGuiTreeNodeFlags_DefaultOpen)) {
-							ImGui::TextDisabled("Ambient source: %s (N cycles)", AmbientModeName(m_ambientMode));
-							ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
-							if (!m_regLoaded && !m_giVolumesLoaded)
-								ImGui::TextDisabled("No baked GI: no .givolume set loaded");
-							// Lightmaps: proxy-baked .sglm atlas content (cook
-							// --lightmap: one voxel-remesh proxy bake,
-							// UV-transferred to the real meshes). Off until
-							// opted in per view (default off).
-							if (m_lmLoaded) {
-								ImGui::Checkbox("Lightmaps", &m_lmEnabled);
-							}
 
-							ImGui::Separator();
-							ImGui::Text("Screen-space ambient occlusion / SSGI chain");
-							{
-								static const char* const kAoNames[3] = { "No AO", "SSAO", "SAO" };
-								int aoIdx = static_cast<int>(m_aoMode);
-								if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 3))
-									m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 2));
-								ImGui::TextDisabled("O cycles AO: %s (half-res; post-Main SSGI chain)",
-									kAoNames[static_cast<int>(m_aoMode)]);
-							}
-							if (m_aoMode != AoMode::None) {
-								ImGui::SliderFloat("AO radius (m)", &m_ssaoRadius, 0.05f, 2.0f);
-								ImGui::SliderFloat("AO bias", &m_ssaoBias, 0.0f, 0.1f);
-								ImGui::SliderFloat("AO intensity", &m_ssaoIntensity, 0.0f, 2.0f);
-								ImGui::SliderFloat("AO max distance (m)", &m_ssaoMaxDistance, 2.0f, 100.0f);
-								ImGui::SliderFloat("AO blur sharpness", &m_ssaoBlurSharpness, 0.0f, 32.0f);
-								if (m_aoMode == AoMode::Ssao) {
-									ImGui::SliderInt("SSAO samples", &m_ssaoSamples, 1, 32);
-								}
-								else {
-									ImGui::SliderInt("SAO samples", &m_saoSamples, 1, 32);
-									ImGui::SliderInt("SAO spiral turns", &m_saoSpiralTurns, 1, 16);
-								}
-							}
-						}
-						if (ImGui::CollapsingHeader("Reflection Probes / Cubemaps")) {
-							ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
-							ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
-							ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
-								ImGui::Checkbox("Capture locations overlay", &m_cubemapShowProbes);
-							if (m_cubemapShowProbes)
-								ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
-							ImGui::Checkbox("Probe preview (mirror spheres)", &m_cubemapShowBalls);
-							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip(
-									"One lit chrome sphere per loaded baked capture,\n"
-									"sampling ITS OWN cubemap in the reflection direction\n"
-									"(radius reads the influence at a glance). Render-pass\n"
-									"visual - no scene nodes, never picked, never cooked.n");
-							{
-								static const char* const kCubeDbgNames[3] = {
-									"Off", "Cubemap only (no Fresnel)", "Probe weight heat",
-								};
-								int dbgIdx = std::clamp(m_cubemapDebug, 0, 2);
-								if (ImGui::Combo("Cubemap debug", &dbgIdx, kCubeDbgNames, 3))
-									m_cubemapDebug = std::clamp(dbgIdx, 0, 2);
-							}
-							size_t bakedCount = 0, procCount = 0;
-							for (const auto& [name, entry] : m_cubemaps.entries) {
-								if (entry.bindless >= 0 && !entry.texture.empty())
-									(entry.baked ? bakedCount : procCount)++;
-							}
-							size_t streamResident = 0, streamOut = 0, streamFailed = 0;
-							for (const CubemapRow& row : m_cubemapRows) {
-								if (row.failed)
-									++streamFailed;
-								else if (m_cubemaps.Find(row.entryName))
-									++streamResident;
-								else
-									++streamOut;
-							}
-							ImGui::Text("Cubemaps: %u resident / %u rows (baked %u, procedural %u)  Probes: %u (light tail)  Sampler: %u",
-								(unsigned)m_cubemaps.entries.size(),
-								(unsigned)m_cubemapRows.size(),
-								(unsigned)bakedCount, (unsigned)procCount,
-								(unsigned)ProbeEntryCount(), m_cubemapSampler);
-							if (!m_cubemapRows.empty()) {
-								int streamBudget = int(m_cubemapStreamBudget);
-								if (ImGui::SliderInt("Stream budget (nearest rows)",
-									&streamBudget, 0, 64))
-									m_cubemapStreamBudget =
-									uint32_t(std::clamp(streamBudget, 0, 64));
-								ImGui::TextDisabled("Probe textures stream by camera distance"
-									" (nearest-N + covering + pinned stay resident);"
-									" failed rows never retry.");
-								if (streamFailed > 0)
-									ImGui::TextDisabled("stream failed rows: %u (see [Cubemap] log)",
-										(unsigned)streamFailed);
-								size_t listedOut = 0;
-								for (const CubemapRow& row : m_cubemapRows) {
-									if (listedOut >= 8)
-										break;
-									if (row.failed || m_cubemaps.Find(row.entryName))
-										continue;
-									ImGui::BulletText("streamed out: %s", row.entryName.c_str());
-									++listedOut;
-								}
-								if (streamOut > listedOut)
-									ImGui::TextDisabled("... +%u more streamed out",
-										(unsigned)(streamOut - listedOut));
-							}
-							{
-								const bool tiled = ProbeTileListsWanted();
-								ImGui::Text("Tiled probes: %s (stride %u shared, tiles %ux%u)",
-									tiled ? "fresh" : "stale (global cubemap)",
-									m_viewportResources.forwardPlus.desc.maxLightsPerTile,
-									m_viewportResources.forwardPlus.tileCountX,
-									m_viewportResources.forwardPlus.tileCountY);
-								ImGui::TextDisabled("Probes ride the FP light buffer tail (type 2); pixels"
-									" filter them out of the same tile walk the lights use."
-									" Stale lists fall back to the global cubemap.");
-							}
-							{
-								// The pre-mix selection readout (the plan's Phase 3
-								// observability item). Recomputed on the CPU via
-								// ComputeNdfWeights - the SAME math the weights pass
-								// runs (probepremix_weights.cs.hlsl) over the SAME
-								// inputs (the m_cubemapProbes tail source + the
-								// camera POI). Display only: the render path stays
-								// GPU-owned end to end (no readback, no CPU
-								// classification feeding rendering).
-								ImGui::Text("Pre-mix: %s (NDF weights, K=4)",
-									m_probePremixEnabled ? "on" : "off (per-pixel walk)");
-								ImGui::TextDisabled(
-									"box: weight-lerped across the selected set (corner lerp -"
-									" no pop when the dominant slot swaps)");
-								if (m_probePremixEnabled) {
-									constexpr uint32_t kTailCap =
-										smvk::kForwardPlusMaxProbes;
-									const uint32_t n =
-										std::min(ProbeEntryCount(), kTailCap);
-									smvk::probepremix::NdfCandidate cands[kTailCap];
-									const glm::vec3 poi =
-										m_cameraPositioner.cameraPosition_;
-									uint32_t m = 0;
-									for (uint32_t i = 0; i < n; ++i) {
-										const CubemapProbeGpu& pr = m_cubemapProbes[i];
-										const float influence =
-											std::max(pr.posInfluence.w, 0.0f);
-										const float fade =
-											std::max(pr.fadeCubemap.x, 0.0f);
-										const float dist = glm::distance(poi,
-											glm::vec3(pr.posInfluence));
-										float ndf = 1.0f;
-										if (dist <= influence)
-											ndf = 0.0f;
-										else if (fade > 0.0f
-											&& dist <= influence + fade)
-											ndf = (dist - influence) / fade;
-										if (ndf >= 1.0f)
-											continue;
-										cands[m].cubemap =
-											static_cast<uint32_t>(pr.fadeCubemap.y);
-										cands[m].ndf = ndf;
-										cands[m].influence = influence;
-										++m;
-									}
-									float w[kTailCap];
-									smvk::probepremix::ComputeNdfWeights(cands, m, w,
-										kTailCap);
-									// The readout mirrors the GPU selection's slot
-									// order (weight desc, ties: influence, index).
-									struct SlotReadout {
-										float w; uint32_t cube, i;
-									} slots[kTailCap];
-									for (uint32_t i = 0; i < m; ++i)
-										slots[i] = { w[i], cands[i].cubemap, i };
-									std::sort(slots, slots + m,
-										[&](const SlotReadout& a, const SlotReadout& b) {
-											if (a.w != b.w)
-												return a.w > b.w;
-											if (cands[a.i].influence
-												!= cands[b.i].influence)
-												return cands[a.i].influence
-													> cands[b.i].influence;
-											return a.cube < b.cube;
-										});
-									if (m == 0) {
-										ImGui::TextDisabled(
-											"selection: 0 candidates (material falls"
-											" back to the per-pixel walk)");
-									}
-									// The GPU selection re-normalizes over the
-									// TOP-K set (K=4) - the readout matches it
-									// (ComputeNdfWeights normalizes over all n).
-									const uint32_t k = std::min(m, 4u);
-									float sumK = 0.0f;
-									for (uint32_t s = 0; s < k; ++s)
-										sumK += slots[s].w;
-									const float invK = sumK > 1e-6f
-										? 1.0f / sumK : 0.0f;
-									for (uint32_t s = 0; s < k && invK > 0.0f; ++s) {
-										const bool inner =
-											cands[slots[s].i].ndf <= 0.0f;
-										ImGui::BulletText(
-											"slot %u: cubemap %u  w=%.3f  d=%.2f%s",
-											(unsigned)s, (unsigned)slots[s].cube,
-											slots[s].w * invK,
-											cands[slots[s].i].ndf,
-											inner ? "  (INNER - exclusive)" : "");
-									}
-								}
-							}
-							for (const auto& [name, entry] : m_cubemaps.entries) {
-								ImGui::BulletText("%s: %upx mips=%u bindless=%d %s",
-									name.c_str(), entry.size, entry.mipLevels, entry.bindless,
-									entry.baked ? "(baked)" : "(PROCEDURAL test pattern)");
-							}
-							for (size_t i = 0; i < m_cubemapProbes.size() && i < 32; ++i) {
-								const auto& p = m_cubemapProbes[i];
-								ImGui::BulletText("probe %u: pos=(%.1f,%.1f,%.1f) r=%.1f fade=%.1f cube=%d mips=%.0f",
-									(unsigned)i,
-									p.posInfluence.x, p.posInfluence.y, p.posInfluence.z,
-									p.posInfluence.w, p.fadeCubemap.x,
-									(int)p.fadeCubemap.y, (double)p.fadeCubemap.z);
-							}
-							if (procCount > 0)
-								ImGui::TextDisabled("PROCEDURAL entries are the neon test pattern (face-orientation check),"
-									" not a bake - expect wrong specular until cooked.");
-							if (m_cubemaps.entries.empty())
-								ImGui::TextDisabled("No cubemap: specular IBL uses the analytic sky."
-									" Bake with PakCooker --cubemap on (grid writes a .cubemanifest).");
-							ImGui::TextDisabled("Specular IBL is independent of the ambient-source isolation"
-								" (N cycles isolate diffuse only). Baked cubemaps are TRUE radiance scaled"
-								" only by this panel's intensity (mirrors match the sun-lit scene); the"
-								" Environment IBL intensity scales the analytic-sky fallback only.");
-							ImGui::TextDisabled("Probe textures stream by distance (see [Cubemap] log lines);"
-								" rows/intensity/debug/LOD apply instantly.");
-						}
-						if (ImGui::CollapsingHeader("Screen-Space Reflections (SSR)")) {
-							ImGui::Checkbox("Screen-space reflections (SSR)", &m_ssrEnabled);
-							if (m_ssrEnabled) {
-								ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
-								ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
-								ImGui::SliderFloat("Max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
-								ImGui::SliderFloat("Thickness (m)", &m_ssrThickness, 0.01f, 2.0f);
-								ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
-								ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
-								ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
-								// Blur filter A/B (see smvk::SsrBlurMode): the 2D
-								// baseline vs the separable H+V candidate. The GPU
-								// timeline reads SSRBlur vs SSRBlurH + SSRBlurV.
-								// A live flip resets the temporal history (the
-								// frame-head m_ssrLastBlurMode check).
-								const char* blurModes[2] = {
-									"2D bilateral (baseline)",
-									"Separable H+V (fast)"
-								};
-								ImGui::Combo("Blur mode", &m_ssrBlurMode, blurModes, 2);
-							}
-							// Debug material override (the blur-bucket test
-							// rig): overwrite every uploaded material's
-							// metallic/roughness - the whole scene re-skins
-							// (lit + G-buffer + the SSR radius buckets 2/3/4
-							// at the 0.35/0.7 roughness thresholds) from two
-							// sliders. MetallicRoughness TEXTURES are bypassed
-							// so the slider value is the final value.
-							ImGui::Checkbox("Debug: override material roughness/metallic",
-								&m_debugMaterialOverride);
-							if (m_debugMaterialOverride) {
-								ImGui::SliderFloat("Debug roughness",
-									&m_debugMaterialRoughness, 0.0f, 1.0f);
-								ImGui::SliderFloat("Debug metallic",
-									&m_debugMaterialMetallic, 0.0f, 1.0f);
-								ImGui::TextDisabled("Applies at material upload (UpdateMaterials): every\n"
-									"material gets these params.y/z values and its metallicRoughness\n"
-									"texture slot disabled. Metallic >= 0.5 flips the G-buffer metal\n"
-									"flag; roughness 0.35/0.7 are the blur radius 3/4 bucket\n"
-									"thresholds (radius 2 below, dielectric or smooth metal).");
-							}
-							// Temporal (TAA) accumulation is parked: taaUsable is
-							// hard-false in the record while the smear diagnosis is
-							// open, so no widgets - the state machine + programs stay
-							// for the re-enable (flip taaUsable back).
-							ImGui::TextDisabled("Half-res trace + bilateral blur + full-res composite. All depth\n"
-								"reads (trace skip, blur/composite block reps) go through the shared\n"
-								"final-depth MAX-HZB the SSGI block builds; the pyramid is required -\n"
-								"frames without it skip reflections. Bistro shopfront glass at grazing\n"
-								"angles is the test case.");
-						}
-						if (ImGui::CollapsingHeader("Fog & Volumetrics", ImGuiTreeNodeFlags_DefaultOpen)) {
-							bool volumetricSelected = false;
-							if (!m_world) {
-								ImGui::TextDisabled("No world - fog mode cannot be authored.");
-								m_volumetricEnabled = false;
-							}
-							else {
-								SceneEnv& se = m_world->scene.environment;
-								auto authored = [&]() { m_world->scene.envAuthored = true; };
-								const char* tiers[3] = {
-									"Off", "Analytic (exp2, fallback)", "Volumetric (raymarched GI-lit)"
-								};
-								if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3))
-									authored();
-
-								// Fog mode is the single source of truth for the active path.
-								volumetricSelected = se.fogQuality == 2;
-								// Headless override wins (TOURMALINE_VOLUMETRIC): the
-								// AGENTS.md contract is "scene fog settings lose" -
-								// without this the env force-on/off dies here on
-								// every frame (tier mismatch with the override).
-								// Cached: the env cannot change mid-process.
-								static const bool sVolumetricEnvPinned =
-									std::getenv("TOURMALINE_VOLUMETRIC") != nullptr;
-								if (!sVolumetricEnvPinned)
-									m_volumetricEnabled = volumetricSelected;
-
-								if (se.fogQuality == 1) {
-									if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
-									if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();
-								}
-							}
-
-							if (volumetricSelected) {
-								static const char* const kVolNames[5] = {
-									"Low (8 steps)", "Medium (16 steps)", "High (32 steps)",
-									"Ultra (64 steps)", "Custom"
-								};
-								int volQ = static_cast<int>(m_volumetricQuality);
-								if (ImGui::Combo("Quality preset", &volQ, kVolNames, 5)) {
-									m_volumetricQuality = static_cast<smvk::VolumetricQuality>(std::clamp(volQ, 0, 4));
-									if (m_volumetricQuality != smvk::VolumetricQuality::Custom) {
-										smvk::VolumetricDesc qd = MakeVolumetricDesc();
-										smvk::ApplyVolumetricQuality(qd, m_volumetricQuality);
-										m_volumetricSteps = (int)qd.steps;
-									}
-								}
-								if (ImGui::SliderInt("March steps", &m_volumetricSteps, 4, 128))
-									m_volumetricQuality = smvk::VolumetricQuality::Custom;
-								ImGui::SliderFloat("Fog max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
-								ImGui::SliderFloat("Density (1/m)", &m_volumetricDensity, 0.0f, 0.1f, "%.4f");
-								ImGui::SliderFloat("Scattering intensity", &m_volumetricIntensity, 0.0f, 4.0f);
-								ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
-								ImGui::SliderFloat("Sun strength", &m_volumetricSun, 0.0f, 4.0f);
-								ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);
-								ImGui::Checkbox("Sun single-scatter", &m_volumetricUseSun);
-								ImGui::Checkbox("Convex volumes in fog GI", &m_volumetricUseGiVolumes);
-								ImGui::SliderFloat("Dither (banding guard)", &m_volumetricJitter, 0.0f, 1.0f);
-								ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
-								if (m_volumetricHeightFalloff > 0.0f)
-									ImGui::SliderFloat("Height base (m)", &m_volumetricHeightBase, -10.0f, 30.0f);
-								ImGui::TextDisabled("Volumes carry sky+sun bounce; sun adds HG forward scatter.");
-								ImGui::TextDisabled("No .givolume set: the fog ambient falls back to sky IBL.");
-							}
-						}
-					}
-					if (ImGui::CollapsingHeader("Lighting & Shadows")) {
-						if (ImGui::CollapsingHeader("Forward+ Lights", ImGuiTreeNodeFlags_DefaultOpen)) {
-							// The scene's authored lights always render when
-							// present (no enable toggle): the Forward+ set is
-							// whatever the resolved KHR_lights_punctual pack
-							// carries, static placement. The sun always
-							// exists: the env carries default values that a
-							// resolved directional overwrites at bind time.
-							const SceneEnv& sunEnv = m_world
-								? m_world->scene.environment
-								: SceneEnv{};
-							ImGui::TextDisabled("%u point/spot, sun az %.0f el %.0f",
-								m_fpLightCount,
-								sunEnv.sunAzimuth, sunEnv.sunElevation);
-						}
-						if (ImGui::CollapsingHeader("Directional Shadows (CSM)")) {
-							// Tile resolution (depth + EVSM moment atlases recreate once
-							// on change via the per-frame Ensure; one-time hitch).
-							{
-								const uint32_t resOptions[] = { 512, 1024, 2048, 4096 };
-								const char* resNames[] = { "512", "1024", "2048", "4096" };
-								int resIdx = 1; // canon = 1024 (PS5-quality base)
-								for (int i = 0; i < 4; ++i)
-									if (resOptions[i] == m_cascadeResolution)
-										resIdx = i;
-								if (ImGui::Combo("Cascade resolution", &resIdx, resNames, 4))
-									m_cascadeResolution = resOptions[std::clamp(resIdx, 0, 3)];
-								const auto tile = CascadeTileExtent();
-								ImGui::TextDisabled("Live tile %ux%u (atlas %ux%u). Canon = 1024 (PS5).",
-									tile.width, tile.height,
-									m_viewportResources.directionalShadows.atlasExtent.width,
-									m_viewportResources.directionalShadows.atlasExtent.height);
-							}
+					// ---- Shadows: directional cascades, local-light tiles
+					// and the filtering mode.
+					ImGui::SeparatorText("Shadows");
+					{
+						// Tile resolutions (atlases recreate once on change via
+						// the per-frame Ensure; one-time hitch).
+						const uint32_t resOptions[] = { 512, 1024, 2048, 4096 };
+						const char* resNames[] = { "512", "1024", "2048", "4096" };
+						int resIdx = 1; // canon = 1024
+						for (int i = 0; i < 4; ++i)
+							if (resOptions[i] == m_cascadeResolution)
+								resIdx = i;
+						if (ImGui::Combo("Cascade resolution", &resIdx, resNames, 4))
+							m_cascadeResolution = resOptions[std::clamp(resIdx, 0, 3)];
 						// Local-light tile resolution (the SHARED spot + point
-						// atlas; PCF depth + the EVSM spot moment twin).
-						{
-							const uint32_t spotOptions[] = { 256, 512, 1024 };
-							const char* spotNames[] = { "256", "512 (PS5)", "1024" };
-							int spotIdx = 1; // canon = 512 (PS5-quality base)
-							for (int i = 0; i < 3; ++i)
-								if (spotOptions[i] == m_spotShadowResolution)
-									spotIdx = i;
-							if (ImGui::Combo("Spot/point tile resolution", &spotIdx, spotNames, 3))
-								m_spotShadowResolution = spotOptions[std::clamp(spotIdx, 0, 2)];
-							ImGui::TextDisabled("PCF + EVSM spot atlases recreate on change.\n"
-								"Point cube faces share the spot tile resolution\n"
-								"(PCF depth, or the EVSM moments under EVSM - one grid).");
+						// atlas; PCF depth + the EVSM moment twin).
+						const uint32_t spotOptions[] = { 256, 512, 1024 };
+						const char* spotNames[] = { "256", "512 (PS5)", "1024" };
+						int spotIdx = 1; // canon = 512
+						for (int i = 0; i < 3; ++i)
+							if (spotOptions[i] == m_spotShadowResolution)
+								spotIdx = i;
+						if (ImGui::Combo("Spot/point tile resolution", &spotIdx, spotNames, 3))
+							m_spotShadowResolution = spotOptions[std::clamp(spotIdx, 0, 2)];
+						ImGui::SliderFloat("Split lambda", &m_cascadeLambda, 0.0f, 1.0f, "%.2f");
+						ImGui::Checkbox("SDSM (fit splits to measured depth)", &m_sdsmEnabled);
+						ImGui::SliderFloat("Shadow distance (m, 0 = scene far)", &m_cascadeMaxDistance, 0.0f, 500.0f, "%.0f");
+						ImGui::Text("Effective far: %.1f m (scene far %.1f m)",
+							(double)CascadeFar(), (double)m_sceneFarClip);
+						ImGui::SliderFloat("Depth bias scale", &m_cascadeDepthBiasScale, 0.0f, 4.0f, "%.2f");
+						ImGui::SliderFloat("Normal bias scale", &m_cascadeNormalBiasScale, 0.0f, 4.0f, "%.2f");
+						ImGui::Separator();
+						ImGui::Checkbox("Spot shadows (per-light flag)", &m_spotShadowsEnabled);
+						int spotMax = m_spotShadowMax;
+						if (ImGui::SliderInt("Shadow spots max", &spotMax, 0, (int)smvk::kMaxSpotShadows))
+							m_spotShadowMax = spotMax;
+						ImGui::SliderFloat("Shadow max distance (m)", &m_spotShadowMaxDistance, 5.0f, 120.0f);
+						// Point lights: six cube-face tiles per selected light in
+						// the SAME atlas (PCF or the EVSM moments).
+						ImGui::Checkbox("Point shadows (per-light flag)", &m_pointShadowsEnabled);
+						int pointMax = m_pointShadowMax;
+						if (ImGui::SliderInt("Shadow points max", &pointMax, 0, (int)smvk::kMaxPointShadowLights))
+							m_pointShadowMax = pointMax;
+						ImGui::SliderFloat("Point shadow max distance (m)", &m_pointShadowMaxDistance, 5.0f, 120.0f);
+						ImGui::Separator();
+						// EVSM: RGBA32F 2xMSAA moments + async separable blur,
+						// 1-frame-lag pipelined. Off = PCF depth atlases.
+						ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
+						ImGui::SameLine();
+						ImGui::TextDisabled(EvsmActive() ? "(active)" : "(PCF fallback)");
+						int evsmPipe = (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
+						if (ImGui::Combo("Pipeline", &evsmPipe, "One-frame lag\0Same-frame\0")) {
+							m_evsmPipeline = (evsmPipe == 1)
+								? smvk::EvsmPipelineMode::SameFrame
+								: smvk::EvsmPipelineMode::OneFrameLag;
 						}
-							ImGui::SliderFloat("Split lambda", &m_cascadeLambda, 0.0f, 1.0f, "%.2f");
-							ImGui::TextDisabled("0 = linear splits, 1 = logarithmic (starves the far cascade).");
-							ImGui::Checkbox("SDSM (fit splits to measured depth)", &m_sdsmEnabled);
-							ImGui::TextDisabled("GPU depth stats (min/max + 64-bin log histogram, decimated)\n"
-								"every frame; own async readback -> 1-frame latency; 1%%/99%% percentile\n"
-								"range + hysteresis (instant expand, slow contract) + 0.25 m quantization.\n"
-								"Camera teleports discard history (heuristic cooldown 2 frames).");
-							if (m_sdsmEnabled && m_sdsmStatsValid) {
-								ImGui::TextDisabled("measured %.2f..%.2f m (pct %.2f..%.2f) -> applied %.2f..%.2f m%s",
-									m_sdsmMin, m_sdsmMax, m_sdsmPctMin, m_sdsmPctMax,
-									m_sdsmAppliedValid ? m_sdsmAppliedMin : 0.0f,
-									m_sdsmAppliedValid ? m_sdsmAppliedMax : 0.0f,
-									m_sdsmCutCooldown > 0 ? " (cut cooldown: heuristic)" : "");
-							}
-							ImGui::SliderFloat("Shadow distance (m, 0 = scene far)", &m_cascadeMaxDistance, 0.0f, 500.0f, "%.0f");
-							ImGui::Text("Effective far: %.1f m (scene far %.1f m)",
-								(double)CascadeFar(), (double)m_sceneFarClip);
-							ImGui::SliderFloat("Depth bias scale", &m_cascadeDepthBiasScale, 0.0f, 4.0f, "%.2f");
-							ImGui::SliderFloat("Normal bias scale", &m_cascadeNormalBiasScale, 0.0f, 4.0f, "%.2f");
-							ImGui::TextDisabled("Scales the texel-sized per-cascade auto bias "
-								"(up = fewer acne, more peter-panning).");
-							for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
-								ImGui::Text(" cascade %u: [%.2f .. %.2f] depthBias %.5f normalBias %.4f",
-									i, (double)m_cascadeSplitsDbg[i], (double)m_cascadeSplitsDbg[i + 1],
-									(double)m_cascadeBiasDbg[i], (double)m_cascadeNormalBiasDbg[i]);
+						ImGui::SliderFloat("Softness", &m_evsmSoftness, 0.0f, 3.0f);
+						ImGui::SliderFloat("Local light size (m)", &m_evsmSpotLightSize, 0.0f, 2.0f);
+					}
+
+					// ---- Lighting: ambient/GI, AO, specular IBL, SSR.
+					ImGui::SeparatorText("Lighting");
+					{
+						ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
+						if (m_lmLoaded)
+							ImGui::Checkbox("Lightmaps", &m_lmEnabled);
+						// Screen-space ambient occlusion / SSGI chain.
+						static const char* const kAoNames[3] = { "No AO", "SSAO", "SAO" };
+						int aoIdx = static_cast<int>(m_aoMode);
+						if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 3))
+							m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 2));
+						if (m_aoMode != AoMode::None) {
+							ImGui::SliderFloat("AO radius (m)", &m_ssaoRadius, 0.05f, 2.0f);
+							ImGui::SliderFloat("AO bias", &m_ssaoBias, 0.0f, 0.1f);
+							ImGui::SliderFloat("AO intensity", &m_ssaoIntensity, 0.0f, 2.0f);
+							ImGui::SliderFloat("AO max distance (m)", &m_ssaoMaxDistance, 2.0f, 100.0f);
+							ImGui::SliderFloat("AO blur sharpness", &m_ssaoBlurSharpness, 0.0f, 32.0f);
+							if (m_aoMode == AoMode::Ssao)
+								ImGui::SliderInt("SSAO samples", &m_ssaoSamples, 1, 32);
+							else {
+								ImGui::SliderInt("SAO samples", &m_saoSamples, 1, 32);
+								ImGui::SliderInt("SAO spiral turns", &m_saoSpiralTurns, 1, 16);
 							}
 						}
-						if (ImGui::CollapsingHeader("Spot Shadows")) {
-							ImGui::Checkbox("Spot shadows (per-light flag)", &m_spotShadowsEnabled);
-							int spotMax = m_spotShadowMax;
-							if (ImGui::SliderInt("Shadow spots max", &spotMax, 0, (int)smvk::kMaxSpotShadows))
-								m_spotShadowMax = spotMax;
-							ImGui::SliderFloat("Shadow max distance (m)", &m_spotShadowMaxDistance, 5.0f, 120.0f);
-							ImGui::Separator();
-							// Point lights: six cube-face tiles per selected
-							// light in the SAME atlas. PCF (depth compare)
-							// or the prefiltered EVSM moments whenever EVSM
-							// is enabled - the tiles ride either atlas kind
-							// through their per-light index (one combined
-							// grid serves both representations).
-							ImGui::Checkbox("Point shadows (per-light flag)", &m_pointShadowsEnabled);
-							int pointMax = m_pointShadowMax;
-							if (ImGui::SliderInt("Shadow points max", &pointMax, 0, (int)smvk::kMaxPointShadowLights))
-								m_pointShadowMax = pointMax;
-							ImGui::SliderFloat("Point shadow max distance (m)", &m_pointShadowMaxDistance, 5.0f, 120.0f);
-							ImGui::TextDisabled("Each shadowed point renders SIX faces per frame\n"
-								"(one atlas tile each, shared resolution with spots);\n"
-								"spots take one tile each.");
+						ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
+						ImGui::SliderFloat("Cubemap intensity", &m_cubemapIntensity, 0.0f, 4.0f, "%.2f");
+						ImGui::SliderFloat("Cubemap LOD bias", &m_cubemapLodBias, -2.0f, 4.0f, "%.2f");
+						if (!m_cubemapRows.empty()) {
+							int streamBudget = int(m_cubemapStreamBudget);
+							if (ImGui::SliderInt("Stream budget (nearest rows)",
+								&streamBudget, 0, 64))
+								m_cubemapStreamBudget =
+								uint32_t(std::clamp(streamBudget, 0, 64));
 						}
-						if (ImGui::CollapsingHeader("Shadow Filtering (EVSM)")) {
-							// EVSM (Exponential Variance Shadow Maps): RGBA32F 2xMSAA
-							// moments (M1/M2 of both exponential warps) + async separable
-							// blur, 1-frame-lag pipelined. Off = PCF depth atlases.
-							// Needs RGBA32F 2xMSAA + linear-filter support.
-							ImGui::Checkbox("EVSM enabled", &m_evsmEnabled);
-							ImGui::SameLine();
-							ImGui::TextDisabled(EvsmActive() ? "(active)" : "(PCF fallback)");
-							int evsmPipe = (m_evsmPipeline == smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
-							if (ImGui::Combo("Pipeline", &evsmPipe, "One-frame lag\0Same-frame\0")) {
-								m_evsmPipeline = (evsmPipe == 1)
-									? smvk::EvsmPipelineMode::SameFrame
-									: smvk::EvsmPipelineMode::OneFrameLag;
-							}
-							ImGui::SliderFloat("Softness", &m_evsmSoftness, 0.0f, 3.0f);
-							ImGui::SliderFloat("Local light size (m)", &m_evsmSpotLightSize, 0.0f, 2.0f);
-							ImGui::TextDisabled("RGBA32F 2xMSAA moments (dual Cantelli), 9-tap Gaussian H+V (async);\n"
-								"soft = moment-blocker PCSS (solar angle / light size).\n"
-								"Spots AND shadowed points ride the moment atlas\n"
-								"(the points penumbra through each face's 90-degree half angle).");
+						ImGui::Checkbox("Screen-space reflections (SSR)", &m_ssrEnabled);
+						if (m_ssrEnabled) {
+							ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
+							ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
+							ImGui::SliderFloat("Max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);
+							ImGui::SliderFloat("Thickness (m)", &m_ssrThickness, 0.01f, 2.0f);
+							ImGui::SliderFloat("Intensity", &m_ssrIntensity, 0.0f, 4.0f);
+							ImGui::SliderFloat("F0 (glass 0.04)", &m_ssrF0, 0.0f, 1.0f);
+							ImGui::SliderFloat("Bilateral sharpness", &m_ssrBlurSharpness, 0.0f, 32.0f);
+							// Blur filter A/B (see smvk::SsrBlurMode): the 2D
+							// baseline vs the separable H+V candidate. A live
+							// flip resets the temporal history.
+							const char* blurModes[2] = {
+								"2D bilateral (baseline)",
+								"Separable H+V (fast)"
+							};
+							ImGui::Combo("Blur mode", &m_ssrBlurMode, blurModes, 2);
 						}
 					}
-					if (ImGui::CollapsingHeader("Post Processing")) {
-						if (ImGui::CollapsingHeader("Exposure & Tonemapping", ImGuiTreeNodeFlags_DefaultOpen)) {
-							ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
-							{
-								static const char* const kTonemapNames[4] =
-								{ "Reinhard", "ACES", "Uncharted2", "GT7" };
-								int tonemapIdx = std::clamp(static_cast<int>(m_tonemapMode), 0, 3);
-								if (ImGui::Combo("Tonemap operator", &tonemapIdx, kTonemapNames, 4)) {
-									m_tonemapMode = static_cast<uint32_t>(std::clamp(tonemapIdx, 0, 3));
-									m_viewportResources.tonemap.desc.tonemapMode = m_tonemapMode;
+
+					// ---- Post Processing: exposure, tonemap, bloom, motion
+					// blur, DOF, LUT.
+					ImGui::SeparatorText("Post Processing");
+					{
+						ImGui::Checkbox("Auto-exposure (X)", &m_autoExposureEnabled);
+						{
+							static const char* const kTonemapNames[4] =
+							{ "Reinhard", "ACES", "Uncharted2", "GT7" };
+							int tonemapIdx = std::clamp(static_cast<int>(m_tonemapMode), 0, 3);
+							if (ImGui::Combo("Tonemap operator", &tonemapIdx, kTonemapNames, 4)) {
+								m_tonemapMode = static_cast<uint32_t>(std::clamp(tonemapIdx, 0, 3));
+								m_viewportResources.tonemap.desc.tonemapMode = m_tonemapMode;
+							}
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("GT7: Polyphony Digital SDR (250-nit paper white, ICtCp chroma preserve).");
+						}
+						ImGui::SliderFloat("Manual exposure", &m_manualExposure,
+							0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
+						ImGui::SliderFloat("EV bias", &m_exposureEvBias, -4.0f, 4.0f, "%.1f");
+						ImGui::SliderFloat("Adapt to dark (/s)", &m_exposureSpeedToDark, 0.1f, 8.0f, "%.2f");
+						ImGui::SliderFloat("Adapt to bright (/s)", &m_exposureSpeedToBright, 0.1f, 8.0f, "%.2f");
+						ImGui::SliderFloat("Min exposure", &m_exposureMin,
+							0.000001f, 0.001f, "%.6f", ImGuiSliderFlags_Logarithmic);
+						ImGui::SliderFloat("Max exposure", &m_exposureMax,
+							0.005f, 0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
+						if (m_exposureMin > m_exposureMax)
+							std::swap(m_exposureMin, m_exposureMax);
+						ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
+						if (m_bloomEnabled) {
+							ImGui::SliderFloat("Bloom intensity", &m_bloomIntensity, 0.0f, 2.0f, "%.2f");
+							ImGui::SliderFloat("Bloom threshold (HDR)", &m_bloomThreshold, 0.0f, 8000.0f, "%.0f");
+							if (ImGui::IsItemHovered())
+								ImGui::SetTooltip("Pre-exposure HDR (sun-lit diffuse spans ~0-1600);\n"
+									"knee tracks at 0.25x. Lower until highlights glow.");
+						}
+						ImGui::Checkbox("Motion blur (M)", &m_motionBlurEnabled);
+						if (m_motionBlurEnabled) {
+							ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
+							ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
+							ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
+							ImGui::Checkbox("Tile dilation (16px tiles, 5x5)", &m_motionBlurTileDilation);
+						}
+						ImGui::Checkbox("Depth of field", &m_dofEnabled);
+						if (m_dofEnabled) {
+							ImGui::Checkbox("HQ bokeh (48-tap hex gather)", &m_dofHqBokeh);
+							ImGui::SliderFloat("Focus distance (m)", &m_dofFocusDistance, 0.5f, 100.0f);
+							ImGui::SliderFloat("Focus range (m)", &m_dofFocusRange, 0.0f, 20.0f);
+							ImGui::SliderFloat("Low max radius (px)", &m_dofMaxRadius, 0.0f, 64.0f);
+							ImGui::SliderFloat("Bokeh max radius (px)", &m_dofBokehMaxRadius, 0.0f, 64.0f);
+							ImGui::SliderFloat("Highlight boost", &m_dofHighlightBoost, 1.0f, 4.0f);
+							ImGui::SliderFloat("Highlight threshold", &m_dofHighlightThreshold, 0.0f, 8.0f);
+						}
+						// Color grading / LUT.
+						const char* current = m_lutFile.empty() ? "Off" : m_lutFile.c_str();
+						if (ImGui::BeginCombo("Color LUT", current)) {
+							if (ImGui::Selectable("Off", m_lutFile.empty())) {
+								m_lutFile.clear();
+								m_lutTexture = {};
+								m_lutBindless = UINT32_MAX;
+							}
+							for (const std::string& f : m_lutFiles) {
+								const bool selected = (m_lutFile == f);
+								if (ImGui::Selectable(f.c_str(), selected))
+									LoadLut(f);
+							}
+							ImGui::EndCombo();
+						}
+						if (!m_lutFile.empty())
+							ImGui::SliderFloat("LUT intensity", &m_lutIntensity, 0.0f, 1.0f, "%.2f");
+						ImGui::SameLine();
+						if (ImGui::Button("Rescan"))
+							ScanLutFiles();
+					}
+
+					// ---- Atmosphere: sky, sun, zones, fog.
+					ImGui::SeparatorText("Atmosphere");
+					{
+						ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
+						if (m_world) {
+							SceneEnv& se = m_world->scene.environment;
+							auto authored = [&]() { m_world->scene.envAuthored = true; };
+							ImGui::ColorEdit3("Sky color", &se.skyColor.x);
+							ImGui::DragFloat("Sky intensity (lux)", &se.skyIntensity,
+								5.0f, 0.0f, 10000.0f, "%.0f");
+							ImGui::Separator();
+							if (ImGui::SliderFloat("Sun azimuth", &se.sunAzimuth, 0.0f, 360.0f)) authored();
+							if (ImGui::SliderFloat("Sun elevation", &se.sunElevation, 0.0f, 90.0f)) authored();
+							if (ImGui::ColorEdit3("Sun color", &se.sunColor.x)) authored();
+							ImGui::DragFloat("Sun intensity (lux)", &se.sunIntensity,
+								10.0f, 0.0f, 2e5f, "%.0f");
+							ImGui::Separator();
+							// Fog: the combo is the single source of truth for the
+							// active path (tier 2 = the raymarched volumetrics).
+							const char* tiers[3] = {
+								"Off", "Analytic (exp2, fallback)", "Volumetric (raymarched GI-lit)"
+							};
+							if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3))
+								authored();
+							// Headless override wins (TOURMALINE_VOLUMETRIC): the
+							// AGENTS.md contract is "scene fog settings lose".
+							static const bool sVolumetricEnvPinned =
+								std::getenv("TOURMALINE_VOLUMETRIC") != nullptr;
+							if (!sVolumetricEnvPinned)
+								m_volumetricEnabled = (se.fogQuality == 2);
+							if (se.fogQuality == 1) {
+								if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
+								if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();
+							}
+						}
+						else {
+							m_volumetricEnabled = false;
+						}
+						if (m_world && m_world->scene.environment.fogQuality == 2) {
+							static const char* const kVolNames[5] = {
+								"Low (8 steps)", "Medium (16 steps)", "High (32 steps)",
+								"Ultra (64 steps)", "Custom"
+							};
+							int volQ = static_cast<int>(m_volumetricQuality);
+							if (ImGui::Combo("Quality preset", &volQ, kVolNames, 5)) {
+								m_volumetricQuality = static_cast<smvk::VolumetricQuality>(std::clamp(volQ, 0, 4));
+								if (m_volumetricQuality != smvk::VolumetricQuality::Custom) {
+									smvk::VolumetricDesc qd = MakeVolumetricDesc();
+									smvk::ApplyVolumetricQuality(qd, m_volumetricQuality);
+									m_volumetricSteps = (int)qd.steps;
 								}
-								ImGui::TextDisabled("GT7: Polyphony Digital SDR (250-nit paper white, ICtCp chroma preserve).");
 							}
-							ImGui::SliderFloat("Manual exposure", &m_manualExposure,
-								0.00005f, 0.02f, "%.5f", ImGuiSliderFlags_Logarithmic);
-							ImGui::SliderFloat("EV bias", &m_exposureEvBias, -4.0f, 4.0f, "%.1f");
-							ImGui::SliderFloat("Adapt to dark (/s)", &m_exposureSpeedToDark, 0.1f, 8.0f, "%.2f");
-							ImGui::SliderFloat("Adapt to bright (/s)", &m_exposureSpeedToBright, 0.1f, 8.0f, "%.2f");
-							ImGui::SliderFloat("Min exposure", &m_exposureMin,
-								0.000001f, 0.001f, "%.6f", ImGuiSliderFlags_Logarithmic);
-							ImGui::SliderFloat("Max exposure", &m_exposureMax,
-								0.005f, 0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
-							if (m_exposureMin > m_exposureMax)
-								std::swap(m_exposureMin, m_exposureMax);
+							if (ImGui::SliderInt("March steps", &m_volumetricSteps, 4, 128))
+								m_volumetricQuality = smvk::VolumetricQuality::Custom;
+							ImGui::SliderFloat("Fog max distance (m)", &m_volumetricMaxDistance, 5.0f, 200.0f);
+							ImGui::SliderFloat("Density (1/m)", &m_volumetricDensity, 0.0f, 0.1f, "%.4f");
+							ImGui::SliderFloat("Scattering intensity", &m_volumetricIntensity, 0.0f, 4.0f);
+							ImGui::SliderFloat("Anisotropy g", &m_volumetricAnisotropy, -0.9f, 0.9f);
+							ImGui::SliderFloat("Sun strength", &m_volumetricSun, 0.0f, 4.0f);
+							ImGui::SliderFloat("GI strength", &m_volumetricGi, 0.0f, 4.0f);
+							ImGui::Checkbox("Sun single-scatter", &m_volumetricUseSun);
+							ImGui::Checkbox("Convex volumes in fog GI", &m_volumetricUseGiVolumes);
+							ImGui::SliderFloat("Dither (banding guard)", &m_volumetricJitter, 0.0f, 1.0f);
+							ImGui::SliderFloat("Height falloff (1/m)", &m_volumetricHeightFalloff, 0.0f, 1.0f, "%.3f");
+							if (m_volumetricHeightFalloff > 0.0f)
+								ImGui::SliderFloat("Height base (m)", &m_volumetricHeightBase, -10.0f, 30.0f);
 						}
-						if (ImGui::CollapsingHeader("Bloom", ImGuiTreeNodeFlags_DefaultOpen)) {
-							ImGui::Checkbox("Bloom (B)", &m_bloomEnabled);
-							if (m_bloomEnabled) {
-								ImGui::SliderFloat("Bloom intensity", &m_bloomIntensity, 0.0f, 2.0f, "%.2f");
-								ImGui::SliderFloat("Bloom threshold (HDR)", &m_bloomThreshold, 0.0f, 4000.0f, "%.0f");
-								ImGui::TextDisabled("Threshold is pre-exposure HDR (sun-lit diffuse spans\n"
-									"~0-1600); knee tracks at 0.25x. Lower it until highlights glow.");
-							}
-						}
-						if (ImGui::CollapsingHeader("Motion Blur")) {
-							ImGui::Checkbox("Motion blur (M) (HDR velocity gather)", &m_motionBlurEnabled);
-							if (m_motionBlurEnabled) {
-								ImGui::SliderInt("Blur samples", &m_motionBlurSamples, 1, 32);
-								ImGui::SliderFloat("Blur max radius (px)", &m_motionBlurMaxRadius, 0.0f, 64.0f);
-								ImGui::SliderFloat("Blur strength", &m_motionBlurStrength, 0.0f, 2.0f);
-								ImGui::Checkbox("Tile dilation (16px tiles, 5x5)", &m_motionBlurTileDilation);
-								ImGui::TextDisabled("IGN-jittered taps (CoD:AW); dilation streaks\n"
-									"revealed background with the foreground that vacated it.");
-							}
-						}
-						if (ImGui::CollapsingHeader("Depth of Field")) {
-							ImGui::Checkbox("Depth of field (HDR CoC blur)", &m_dofEnabled);
-							if (m_dofEnabled) {
-								ImGui::Checkbox("HQ bokeh (CoC + 48-tap hex gather)", &m_dofHqBokeh);
-								ImGui::SliderFloat("Focus distance (m)", &m_dofFocusDistance, 0.5f, 100.0f);
-								ImGui::SliderFloat("Focus range (m)", &m_dofFocusRange, 0.0f, 20.0f);
-								ImGui::SliderFloat("Low max radius (px)", &m_dofMaxRadius, 0.0f, 64.0f);
-								ImGui::SliderFloat("Bokeh max radius (px)", &m_dofBokehMaxRadius, 0.0f, 64.0f);
-								ImGui::SliderFloat("Highlight boost", &m_dofHighlightBoost, 1.0f, 4.0f);
-								ImGui::SliderFloat("Highlight threshold", &m_dofHighlightThreshold, 0.0f, 8.0f);
-								ImGui::TextDisabled(m_dofHqBokeh
-									? "HQ: CoC prepass + hex bokeh (foreground-weighted)."
-									: "Low: single-pass 12-tap Poisson (bleeds at silhouettes).");
-							}
-						}
-						if (ImGui::CollapsingHeader("Color Grading / LUT")) {
-							const char* current = m_lutFile.empty() ? "Off" : m_lutFile.c_str();
-							if (ImGui::BeginCombo("Color LUT", current)) {
-								if (ImGui::Selectable("Off", m_lutFile.empty())) {
-									m_lutFile.clear();
-									m_lutTexture = {};
-									m_lutBindless = UINT32_MAX;
-								}
-								for (const std::string& f : m_lutFiles) {
-									const bool selected = (m_lutFile == f);
-									if (ImGui::Selectable(f.c_str(), selected))
-										LoadLut(f);
+					}
+
+					// ---- Scene: particles + decals (the live scene tools).
+					ImGui::SeparatorText("Scene Effects");
+					{
+						ImGui::Checkbox("Enable particles (F)", &m_particlesEnabled);
+						ImGui::SameLine();
+						ImGui::TextDisabled(ParticlesActive() ? "(active)" : "(off)");
+						ImGui::SliderFloat("Gravity Y (m/s^2)", &m_particleDemo.gravityY, -20.0f, 5.0f);
+						const int emitterCount = (int)m_particleDemo.emitters.size();
+						if (emitterCount > 0) {
+							m_particleDemo.selected = std::min(
+								std::max(m_particleDemo.selected, 0), emitterCount - 1);
+							if (ImGui::BeginCombo("Edit emitter", std::to_string(
+								m_particleDemo.selected).c_str())) {
+								for (int i = 0; i < emitterCount; ++i) {
+									const bool sel = (i == m_particleDemo.selected);
+									if (ImGui::Selectable(std::to_string(i).c_str(), sel))
+										m_particleDemo.selected = i;
+									if (sel)
+										ImGui::SetItemDefaultFocus();
 								}
 								ImGui::EndCombo();
 							}
-							if (!m_lutFile.empty())
-								ImGui::SliderFloat("LUT intensity", &m_lutIntensity, 0.0f, 1.0f, "%.2f");
-							ImGui::SameLine();
-							if (ImGui::Button("Rescan"))
-								ScanLutFiles();
-							ImGui::TextDisabled("F7: export neutral strip + screenshot to exports/.\n"
-								"PS: grade the 1024x32 strip, save PNG into content/luts/.");
+							auto& e = m_particleDemo.emitters[m_particleDemo.selected];
+							ImGui::SliderFloat3("Position", &e.position.x, -25.0f, 25.0f);
+							ImGui::SliderFloat("Spawn radius (m)", &e.position.w, 0.0f, 8.0f);
+							ImGui::SliderFloat3("Axis", &e.direction.x, -1.0f, 1.0f);
+							ImGui::SliderFloat("Spread (rad)", &e.direction.w, 0.0f, 3.14f);
+							ImGui::ColorEdit3("Color", &e.color.x);
+							ImGui::SliderFloat("Emissive intensity", &e.color.w, 0.0f, 20.0f);
+							ImGui::SliderFloat("Speed min", &e.velocity.x, 0.0f, 10.0f);
+							ImGui::SliderFloat("Speed max", &e.velocity.y, 0.0f, 10.0f);
+							ImGui::SliderFloat("Drag (1/s)", &e.velocity.z, 0.0f, 4.0f);
+							ImGui::SliderFloat("Gravity scale", &e.velocity.w, -2.0f, 2.0f);
+							ImGui::SliderFloat("Size start (m)", &e.size.x, 0.001f, 0.3f, "%.3f");
+							ImGui::SliderFloat("Size end (m)", &e.size.y, 0.001f, 0.5f, "%.3f");
+							ImGui::SliderFloat("Spin (rad/s)", &e.size.z, 0.0f, 8.0f);
+							ImGui::SliderFloat("Rate (/s)", &e.life.z, 0.0f, 500.0f);
+							ImGui::SliderFloat("Life min (s)", &e.life.x, 0.1f, 10.0f);
+							ImGui::SliderFloat("Life max (s)", &e.life.y, 0.1f, 10.0f);
+							ImGui::SliderFloat("Fade in", &e.fade.x, 0.0f, 0.5f);
+							ImGui::SliderFloat("Fade out", &e.fade.y, 0.0f, 0.9f);
+							ImGui::SliderFloat("Color jitter", &e.fade.z, 0.0f, 1.0f);
+							ImGui::SliderFloat("Camera-box wrap (m)", &e.fade.w, 0.0f, 20.0f,
+								"%.1f  (0 = world emitter)");
+							const char* shapes[] = { "Cone", "Sphere", "Point" };
+							int shape = (int)e.life.w;
+							if (ImGui::Combo("Shape", &shape, shapes, 3))
+								e.life.w = (float)shape;
 						}
-					}
-					if (ImGui::CollapsingHeader("Scene Effects")) {
-						if (ImGui::CollapsingHeader("Particles (GPU Emitters)", ImGuiTreeNodeFlags_DefaultOpen)) {
-							ImGui::Checkbox("Enable particles (F)", &m_particlesEnabled);
-							ImGui::SameLine();
-							ImGui::TextDisabled(ParticlesActive() ? "(active)" : "(off)");
-							if (m_passes.deferredShadows)
-								ImGui::TextDisabled("(deferred shadows own the lights: "
-									"tile lists bypassed, capped light loop)");
-							ImGui::SliderFloat("Gravity Y (m/s^2)", &m_particleDemo.gravityY, -20.0f, 5.0f);
-							ImGui::Text("Emitters: %u / %u   steady-state ~%.0f particles",
-								(unsigned)m_particleDemo.emitters.size(), PARTICLE_MAX_EMITTERS,
-								m_particleDemo.SteadyStateCount());
-							const int emitterCount = (int)m_particleDemo.emitters.size();
-							if (emitterCount > 0) {
-								m_particleDemo.selected = std::min(
-									std::max(m_particleDemo.selected, 0), emitterCount - 1);
-								if (ImGui::BeginCombo("Edit emitter", std::to_string(
-									m_particleDemo.selected).c_str())) {
-									for (int i = 0; i < emitterCount; ++i) {
-										const bool sel = (i == m_particleDemo.selected);
-										if (ImGui::Selectable(std::to_string(i).c_str(), sel))
-											m_particleDemo.selected = i;
-										if (sel)
-											ImGui::SetItemDefaultFocus();
-									}
-									ImGui::EndCombo();
-								}
-								auto& e = m_particleDemo.emitters[m_particleDemo.selected];
-								ImGui::SliderFloat3("Position", &e.position.x, -25.0f, 25.0f);
-								ImGui::SliderFloat("Spawn radius (m)", &e.position.w, 0.0f, 8.0f);
-								ImGui::SliderFloat3("Axis", &e.direction.x, -1.0f, 1.0f);
-								ImGui::SliderFloat("Spread (rad)", &e.direction.w, 0.0f, 3.14f);
-								ImGui::ColorEdit3("Color", &e.color.x);
-								ImGui::SliderFloat("Emissive intensity", &e.color.w, 0.0f, 20.0f);
-								ImGui::SliderFloat("Speed min", &e.velocity.x, 0.0f, 10.0f);
-								ImGui::SliderFloat("Speed max", &e.velocity.y, 0.0f, 10.0f);
-								ImGui::SliderFloat("Drag (1/s)", &e.velocity.z, 0.0f, 4.0f);
-								ImGui::SliderFloat("Gravity scale", &e.velocity.w, -2.0f, 2.0f);
-								ImGui::SliderFloat("Size start (m)", &e.size.x, 0.001f, 0.3f, "%.3f");
-								ImGui::SliderFloat("Size end (m)", &e.size.y, 0.001f, 0.5f, "%.3f");
-								ImGui::SliderFloat("Spin (rad/s)", &e.size.z, 0.0f, 8.0f);
-								ImGui::SliderFloat("Rate (/s)", &e.life.z, 0.0f, 500.0f);
-								ImGui::SliderFloat("Life min (s)", &e.life.x, 0.1f, 10.0f);
-								ImGui::SliderFloat("Life max (s)", &e.life.y, 0.1f, 10.0f);
-								ImGui::SliderFloat("Fade in", &e.fade.x, 0.0f, 0.5f);
-								ImGui::SliderFloat("Fade out", &e.fade.y, 0.0f, 0.9f);
-								ImGui::SliderFloat("Color jitter", &e.fade.z, 0.0f, 1.0f);
-								ImGui::SliderFloat("Camera-box wrap (m)", &e.fade.w, 0.0f, 20.0f,
-									"%.1f  (0 = world emitter)");
-								ImGui::TextDisabled("wrap > 0: AMBIENT - the spawn volume follows the "
-									"camera and the sim wraps particles toroidally into the box "
-									"(dust/rain); the Position slider above is the volume's home.");
-								const char* shapes[] = { "Cone", "Sphere", "Point" };
-								int shape = (int)e.life.w;
-								if (ImGui::Combo("Shape", &shape, shapes, 3))
-									e.life.w = (float)shape;
-								ImGui::TextDisabled("CPU owns only these parameters: spawn carry, "
-									"simulation and drawing are all GPU-side.");
-							}
-							if (ImGui::Button("Add emitter") &&
-								m_particleDemo.emitters.size() < PARTICLE_MAX_EMITTERS) {
-								m_particleDemo.emitters.push_back(smvk::ParticleEmitterGpu{});
-								m_particleDemo.selected = (int)m_particleDemo.emitters.size() - 1;
-							}
-							ImGui::SameLine();
+						if (ImGui::Button("Add emitter") &&
+							m_particleDemo.emitters.size() < PARTICLE_MAX_EMITTERS) {
+							m_particleDemo.emitters.push_back(smvk::ParticleEmitterGpu{});
+							m_particleDemo.selected = (int)m_particleDemo.emitters.size() - 1;
+						}
+						ImGui::SameLine();
 						if (ImGui::Button("Remove") && !m_particleDemo.emitters.empty()) {
 							m_particleDemo.emitters.erase(
 								m_particleDemo.emitters.begin() + m_particleDemo.selected);
 							m_particleDemo.selected = std::max(0, m_particleDemo.selected - 1);
 						}
-						// Ambient presets (camera-box emitters, see SeedParticleEmitters):
-						// the toggle swaps the emitter's rate 0 <-> preset.
-						// TOURMALINE_DUST / TOURMALINE_RAIN do the same headless.
+						// Ambient presets (camera-box emitters): the toggle swaps
+						// the emitter's rate 0 <-> preset. TOURMALINE_DUST / RAIN
+						// do the same headless.
 						{
 							auto presetToggle = [this](const char* label, size_t idx, float rate) {
 								if (idx >= m_particleDemo.emitters.size())
@@ -13691,421 +13290,295 @@ namespace engine {
 								bool on = e.life.z > 0.0f;
 								if (ImGui::Checkbox(label, &on))
 									e.life.z = on ? rate : 0.0f;
-								ImGui::SameLine();
-								ImGui::TextDisabled(on ? "(on)" : "(off)");
 							};
 							presetToggle("Camera dust", 2, 120.0f);
+							ImGui::SameLine();
 							presetToggle("World rain", 3, 900.0f);
 						}
-						ImGui::TextDisabled("Pool %u particles, emit+sim+draw all compute/GPU "
-							"resident (dead slots collapse in the VS).",
-							(unsigned)PARTICLE_MAX);
+						ImGui::Separator();
+						ImGui::Checkbox("Show decals", &m_decalsEnabled);
+						ImGui::SameLine();
+						ImGui::TextDisabled(DecalsActive() ? "(active)" : "(off)");
+						if (ImGui::Button("Splat at crosshair (J)"))
+							SpawnDecalAtCrosshair();
+					}
+
+					// ---- Geometry & streaming: LODs + texture streaming.
+					ImGui::SeparatorText("Geometry & Streaming");
+					{
+						ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
+						ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
+						ImGui::Checkbox("Full-rate LOD updates", &m_lodFullRate);
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip("On: every node re-evaluates every frame.\n"
+								"Off: halfrate refresh - decisions up to 1 frame stale.\n"
+								"Selection is hysteretic either way.");
+						ImGui::Checkbox("Vertex-lit farthest LOD (shader LODs)", &m_lodShaderEnabled);
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip("The farthest LOD shades vertex-lit (sun + ambient,\n"
+								"no shadows/point lights/specular/textures). F5 shows it.");
+						ImGui::Checkbox("Texture streaming (applies to next scene load)", &m_textureStreamingEnabled);
+					}
+					ImGui::EndTabItem();
+				}
+				// ---------------------------------------------------------
+				// Debug: views, overlays, technical/experimental tools and
+				// one-shot diagnostics. Nothing here changes the frame
+				// permanently; toggles are for bisection.
+				// ---------------------------------------------------------
+				if (ImGui::BeginTabItem("Debug")) {
+					ImGui::SeparatorText("Debug views (F1..F6, F9..F11)");
+					{
+						const char* viewNames[] = {
+							"F1 Lit", "F2 Unlit", "F3 Meshlets",
+							"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
+							"F9 UV0 (base)", "UV1 (lightmap atlas)",
+							"F10 Cubemap (IBL raw)",
+							"F11 POM (parallax occlusion)",
+							"SSR mask (receivers)",
+							"Normals (world-space)",
+						};
+						// Combo index <-> ViewMode mapping (SsrContribution stays
+						// env-only; UV1 and Normals are combo/env only).
+						static const ViewMode kComboViews[] = {
+							ViewMode::Lit, ViewMode::Unlit,
+							ViewMode::Meshlets, ViewMode::Cascades,
+							ViewMode::Lods, ViewMode::VertexColors,
+							ViewMode::Uv0, ViewMode::Uv1,
+							ViewMode::Cubemap,
+							ViewMode::Pom, ViewMode::SsrMask,
+							ViewMode::Normals,
+						};
+						int view = 0;
+						for (int i = 0; i < 12; ++i)
+							if (kComboViews[i] == m_debugView)
+								view = i;
+						if (ImGui::Combo("Debug view", &view, viewNames, 12))
+							m_debugView = kComboViews[view];
+						const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
+						ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
+						if (ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones)) {
+							// Arm/disarm the GPU leg (SetConeDebug lazily creates
+							// the module + the shared line buffer on first arm).
+							smvk::gfx::SetConeDebug(m_gfxRenderer.State(),
+								*m_context, *m_rendergraph, m_debugCones);
 						}
-						if (ImGui::CollapsingHeader("Light Crowd (Forward+ stress)")) {
-							// The light spawner: the Forward+ tile-list stress
-							// tool (see LightDemo). A dense spiral of point
-							// lights saturates the per-tile light budget and
-							// the fallback brute-force loop - watch the
-							// perf lines while sliding the count.
-							ImGui::Checkbox("Enable crowd", &m_lightDemo.enabled);
-							ImGui::SameLine();
-							ImGui::TextDisabled(m_lightCrowdCount > 0
-								? "(spawned)" : "(off)");
-							ImGui::SliderInt("Count", &m_lightDemo.count, 0, 96);
-							ImGui::SliderFloat3("Center", &m_lightDemo.center.x, -30.0f, 30.0f);
-							ImGui::SliderFloat("Spiral radius (m)", &m_lightDemo.radius, 0.5f, 30.0f);
-							ImGui::SliderFloat("Height (m)", &m_lightDemo.height, 0.0f, 12.0f);
-							ImGui::SliderFloat("Bob (m)", &m_lightDemo.bob, 0.0f, 4.0f);
-							ImGui::SliderFloat("Cutoff range (m)", &m_lightDemo.range, 0.5f, 20.0f);
-							// Candela is physical: a 24 cd bulb next to a
-							// 10000 lux sun is ~1e-5 of the direct term and
-							// reads as "no lights spawned". The range
-							// reaches sunlit-scene visibility.
-							ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200000.0f, "%.0f");
-							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip("Sunlit scenes (sun = 10000 lux) need ~20000+ cd to read "
-									"against the direct term; night scenes need far less.");
-							ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
-							ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
-							ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);
-							// Shadow casters (opt-in): the first `shadowCount`
-							// crowd lights stride-spread across the spiral ride
-							// the cast-shadow request, so the same point-shadow
-							// selection + six-face tile atlas picks them up
-							// against the scene's own requesting lights (the
-							// global Shadow points max still caps the tile
-							// budget - a 96-light crowd cannot own the atlas).
-							ImGui::Checkbox("Cast shadows (crowd)", &m_lightDemo.castShadows);
-							if (m_lightDemo.castShadows) {
-								const int crowdlights = std::max(m_lightDemo.count, 1);
-								const int shadowCap = std::min((int)smvk::kMaxPointShadowLights, crowdlights);
-								int crowdShadows = std::min(m_lightDemo.shadowCount, shadowCap);
-								if (ImGui::SliderInt("Shadow casters (of count)",
-										&crowdShadows, 0, shadowCap))
-									m_lightDemo.shadowCount = crowdShadows;
-								ImGui::TextDisabled("%u point shadow lights live "
-									"after selection (six cube faces each)",
-									m_pointShadowLightCount);
-							}
-							ImGui::TextDisabled("TOURMALINE_LIGHT_CROWD=<n> pins the crowd "
-								"headless (the UI stays live). Deterministic spiral; "
-								"the animation rides the fixed-dt frame time.");
+						ImGui::Checkbox("Wireframe (P)", &m_wireframe);
+						ImGui::Checkbox("Hide transparent (bisect blending)", &m_hideTransparent);
+						if (!m_gfxRenderer.DebugProgramsValid())
+							ImGui::TextDisabled("Debug programs missing - views disabled");
+					}
+
+					ImGui::SeparatorText("Overlays");
+					{
+						if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
+							ImGui::Checkbox("Show motion vectors (V)", &m_showMotionDebug);
+							if (m_showMotionDebug)
+								ImGui::SliderFloat("Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
 						}
-						if (ImGui::CollapsingHeader("Decals (Splats)", ImGuiTreeNodeFlags_DefaultOpen)) {
-							// Forward+ tiled decals: per-tile lists refreshed by the
-							// same cull dispatch as the lights; splats re-derive
-							// every frame so these sliders retouch live decals.
-							ImGui::Checkbox("Show decals", &m_decalsEnabled);
-							ImGui::SameLine();
-							ImGui::TextDisabled(DecalsActive() ? "(active)" : "(off)");
-							ImGui::Text("Decals: %u", m_decalFrameCount);
-							if (ImGui::Button("Splat at crosshair (J)"))
-								SpawnDecalAtCrosshair();
-							ImGui::TextDisabled("J raycasts the crosshair (pick BVH builds once,"
-								" %s)", m_decalPickState == 1 ? "ready"
-								: m_decalPickState == 0 ? "first press builds it"
-								: "unavailable for this scene");
-							ImGui::TextDisabled("Decals are WORLD entities (cluster pools); looks"
-								" are per-decal, authored with the entity.");
+						ImGui::Checkbox("Light points overlay", &m_showLightPoints);
+						ImGui::Checkbox("Light numbers overlay", &m_showLightNumbers);
+						if (m_showLightPoints || m_showLightNumbers) {
+							ImGui::SliderFloat("Overlay point size (px)", &m_lightPointSize, 2.0f, 16.0f);
+							ImGui::SliderInt("Overlay max labels", &m_maxLightLabels, 0, 1024);
+						}
+						ImGui::Checkbox("Probe points (3D coplanarity check)", &m_giShowProbes);
+						if (m_giShowProbes)
+							ImGui::SliderFloat("Probe overlay distance (m)",
+								&m_giProbePointMaxDist, 5.0f, 300.0f, "%.0f m");
+						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
+						if (m_regLoaded || m_giVolumesLoaded) {
+							// GI debug views (R / F8 cycle): 0 off, 1 baked
+							// irradiance, 2 source palette, 3 probe distance.
+							const char* dbgNames[4] = { "Off", "Baked irradiance",
+								"GI source", "Probe distance" };
+							int dbgIdx = m_giDebug;
+							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 4))
+								m_giDebug = std::clamp(dbgIdx, 0, 3);
+							if (m_giVolumesLoaded)
+								ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
+						}
+						ImGui::Checkbox("Capture locations overlay", &m_cubemapShowProbes);
+						if (m_cubemapShowProbes)
+							ImGui::SliderFloat("Overlay max dist (m)", &m_cubemapOverlayMaxDist, 5.0f, 300.0f, "%.0f");
+						ImGui::Checkbox("Probe preview (mirror spheres)", &m_cubemapShowBalls);
+						{
+							static const char* const kCubeDbgNames[3] = {
+								"Off", "Cubemap only (no Fresnel)", "Probe weight heat",
+							};
+							int dbgIdx = std::clamp(m_cubemapDebug, 0, 2);
+							if (ImGui::Combo("Cubemap debug", &dbgIdx, kCubeDbgNames, 3))
+								m_cubemapDebug = std::clamp(dbgIdx, 0, 2);
 						}
 					}
-					if (ImGui::CollapsingHeader("Renderer & Streaming")) {
-						if (ImGui::CollapsingHeader("Direct Lighting Path")) {
-							// Deferred direct lighting (Square-Enix-style tiled/zBin pipeline):
-							// this switches the WHOLE direct-light path, not just shadow
-							// filtering - on = shade from the deferred per-tile light lists,
-							// off = legacy inline forward+ path (tile cull + per-pixel loop).
-							// A/B the two against each other; the counters below are the
-							// retired-slice peaks (~2 frames old, see Stats).
-							ImGui::Checkbox("Enable (H)", &m_dsEnabled);
-							ImGui::SameLine();
-							ImGui::TextDisabled(m_passes.deferredShadows ? "" : "(pass disabled)");
-							ImGui::TextDisabled(DsActive()
-								? "shading from the deferred lists (forward tile light leg idle)"
-								: "shading inline forward+ (deferred phases skipped)");
-						}
-						if (ImGui::CollapsingHeader("GPU Culling / GfxFilter")) {
-							// The filtered main view is always on (the old
-							// runtime A/B toggle + its legacy direct-draws off
-							// path are gone); only the pass config
-							// (--without gfxFilter / Minimal) or a setup
-							// failure can drop the leg.
-							ImGui::TextDisabled("filtered main view: always on");
-							ImGui::Checkbox("Enable filtered motion vectors", &m_useFilteredMotion);
-							// Task-less mesh-shader main leg: SETUP-TIME only
-							// (TOURMALINE_MESH=0/1 at startup + device support;
-							// no live toggle — the leg is canonical, not an
-						// A/B switch). Opaque base FS; without
-						// device mesh shaders the indexed multi-draws stay.
-							ImGui::TextDisabled(smvk::SupportsMeshShaders()
-								? (m_useGfxMesh ? "mesh-shader main leg: on (setup)"
-									: "mesh-shader main leg: off (TOURMALINE_MESH=0)")
-								: "mesh-shader main leg: unavailable (no device mesh shaders)");
-							// Cull-flag toggles write straight into the renderer config
-							// (takes effect next frame). FlipWinding default-off is
-							// pinned by gfxfilter_tests (det>0 == back, exactly).
-							bool b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Degenerate) != 0;
-							if (ImGui::Checkbox("Cull degenerate", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Degenerate
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Degenerate;
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Backface) != 0;
-							if (ImGui::Checkbox("Cull backface", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Backface
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Backface;
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Frustum) != 0;
-							if (ImGui::Checkbox("Cull frustum", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Frustum
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Frustum;
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_SmallPrim) != 0;
-							if (ImGui::Checkbox("Cull small prims", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_SmallPrim
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_SmallPrim;
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_FlipWinding) != 0;
-							if (ImGui::Checkbox("Flip winding (debug)", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_FlipWinding
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_FlipWinding;
+
+					ImGui::SeparatorText("Culling");
+					{
+						ImGui::Checkbox("Freeze culling view (Ctrl+F)", &m_freezeCullingView);
+						if (ImGui::Button("Dump indirect audit (stderr, stalls)"))
+							m_dumpIndirectAudit = true;
+						ImGui::SameLine();
+						if (ImGui::Button("Dump HZB (stderr, stalls)"))
+							m_debugDumpHzb = true;
+						ImGui::Separator();
+						// Cull-flag toggles write straight into the renderer
+						// config (takes effect next frame). FlipWinding
+						// default-off is pinned by gfxfilter_tests.
+						bool b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Degenerate) != 0;
+						if (ImGui::Checkbox("Cull degenerate", &b))
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Degenerate
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Degenerate;
+						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Backface) != 0;
+						if (ImGui::Checkbox("Cull backface", &b))
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Backface
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Backface;
+						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Frustum) != 0;
+						if (ImGui::Checkbox("Cull frustum", &b))
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Frustum
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Frustum;
+						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_SmallPrim) != 0;
+						if (ImGui::Checkbox("Cull small prims", &b))
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_SmallPrim
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_SmallPrim;
+						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_FlipWinding) != 0;
+						if (ImGui::Checkbox("Flip winding (debug)", &b))
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_FlipWinding
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_FlipWinding;
 						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_HzbSkipMasked) != 0;
 						if (ImGui::Checkbox("Exclude MASK from HZB test", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
-							// HZB occlusion CULL toggle: the occluder-depth
-						// fill + the pyramid are a FIXED COST (always
-						// built over hizDepth); the flag only gates the
-						// filter's occlusion TEST. TOURMALINE_HIZ=0 / the
-						// TOURMALINE_CULLFLAGS override are the headless
-						// forms.
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_HzbSkipMasked
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_HzbSkipMasked;
+						// HZB occlusion CULL toggle: the occluder-depth fill +
+						// the pyramid are a FIXED COST; the flag gates only the
+						// filter's occlusion TEST.
 						{
 							bool occ = (m_gfxRenderer.config.cullFlags
 								& smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
-							if (ImGui::Checkbox("HZB occlusion cull (the occluder-depth fill + pyramid are a fixed cost)", &occ))
+							if (ImGui::Checkbox("HZB occlusion cull", &occ))
 								m_gfxRenderer.config.cullFlags = occ
 									? (m_gfxRenderer.config.cullFlags
 										| smvk::gfx::CullFlagBit_HzbOcclusion)
 									: (m_gfxRenderer.config.cullFlags
 										& ~smvk::gfx::CullFlagBit_HzbOcclusion);
 						}
-						// Memory-aliasing master gate (default off; env
-						// TOURMALINE_ALIASING=1 pins on). Affects FUTURE
-						// claims: existing packed ranges stand until
-						// their targets rebuild (extent changes).
 						static bool s_aliasingOn = smvk::TargetHeapAliasingEnabled();
-						if (ImGui::Checkbox("Target-heap memory aliasing (next target rebuild)", &s_aliasingOn))
+						if (ImGui::Checkbox("Target-heap memory aliasing (next rebuild)", &s_aliasingOn))
 							smvk::SetTargetHeapAliasing(s_aliasingOn);
-							ImGui::SliderFloat("Occluder min px", &m_hizOccluderMinPixels, 0.0f, 128.0f);
-							ImGui::SliderFloat("Occluder min radius m", &m_hizOccluderMinRadius, 0.0f, 5.0f);
-							b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Contribution) != 0;
-							if (ImGui::Checkbox("Contribution cull (T4)", &b))
-								m_gfxRenderer.config.cullFlags = b
-								? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Contribution
-								: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Contribution;
-							{
-								float mc = m_gfxRenderer.MinContribution();
-								if (ImGui::SliderFloat("Min contribution px^2", &mc, 0.0f, 16.0f))
-									m_gfxRenderer.SetMinContribution(mc);
-							}
-						}
-						if (ImGui::CollapsingHeader("Geometry LOD")) {
-							ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
-							ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
-							ImGui::Checkbox("Full-rate LOD updates", &m_lodFullRate);
-							ImGui::SameLine();
-							ImGui::TextDisabled("(?)");
-							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip(
-									"On (default): every node re-evaluates its LOD every frame.\n"
-									"Off: halfrate refresh - half the nodes per frame, decisions\n"
-									"up to 1 frame stale (the old default). Selection is hysteretic\n"
-									"around the pixel budget either way, so levels don't flip-flop\n"
-									"at switch distances.");
-							ImGui::Checkbox("Vertex-lit farthest LOD (shader LODs)", &m_lodShaderEnabled);
-							ImGui::SameLine();
-							ImGui::TextDisabled("(?)");
-							if (ImGui::IsItemHovered())
-								ImGui::SetTooltip(
-									"The farthest LOD level keeps its coarse geometry but shades\n"
-									"with the vertex-lit program: lighting is computed per vertex\n"
-									"(sun + ambient, no shadows/point lights/specular/textures).\n"
-									"Other levels stay full PBR. F5 shows the level in white.");
-						}
-						if (ImGui::CollapsingHeader("Texture Streaming")) {
-							ImGui::Checkbox("Texture streaming (applies to next scene load)", &m_textureStreamingEnabled);
-						}
-					}
-					ImGui::EndTabItem();
-				}
-				// ---------------------------------------------------------
-				// Debug: views, overlays and one-shot diagnostics. Nothing here
-				// changes the frame permanently; toggles are for bisection.
-				// ---------------------------------------------------------
-				if (ImGui::BeginTabItem("Debug")) {
-					if (ImGui::CollapsingHeader("Debug views (F1..F6, F9..F11; FS swaps bypass GPU cull)", ImGuiTreeNodeFlags_DefaultOpen)) {
+						ImGui::SliderFloat("Occluder min px", &m_hizOccluderMinPixels, 0.0f, 128.0f);
+						ImGui::SliderFloat("Occluder min radius m", &m_hizOccluderMinRadius, 0.0f, 5.0f);
+						b = (m_gfxRenderer.config.cullFlags & smvk::gfx::CullFlagBit_Contribution) != 0;
+						if (ImGui::Checkbox("Contribution cull (T4)", &b))
+							m_gfxRenderer.config.cullFlags = b
+							? m_gfxRenderer.config.cullFlags | smvk::gfx::CullFlagBit_Contribution
+							: m_gfxRenderer.config.cullFlags & ~smvk::gfx::CullFlagBit_Contribution;
 						{
-							const char* viewNames[] = {
-								"F1 Lit", "F2 Unlit", "F3 Meshlets",
-								"F4 Cascades", "F5 LODs", "F6 Vertex Colors",
-								"F9 UV0 (base)", "UV1 (lightmap atlas)",
-								"F10 Cubemap (IBL raw)",
-								"F11 POM (parallax occlusion)",
-								"SSR mask (receivers)",
-								"Normals (world-space)",
-							};
-							// Combo index <-> ViewMode mapping (SsrContribution has
-							// no combo entry: it stays env-only; the combo
-							// jumps over it so indices never alias views). UV1
-							// (lightmap atlas) and Normals have no F-key either -
-							// F10 was reassigned to the Cubemap view, F7/F8 are
-							// taken (capture / GI-debug) - both stay combo/env
-							// only.
-							static const ViewMode kComboViews[] = {
-								ViewMode::Lit, ViewMode::Unlit,
-								ViewMode::Meshlets, ViewMode::Cascades,
-								ViewMode::Lods, ViewMode::VertexColors,
-								ViewMode::Uv0, ViewMode::Uv1,
-								ViewMode::Cubemap,
-								ViewMode::Pom, ViewMode::SsrMask,
-								ViewMode::Normals,
-							};
-							int view = 0;
-							for (int i = 0; i < 12; ++i)
-								if (kComboViews[i] == m_debugView)
-									view = i;
-							if (ImGui::Combo("Debug view", &view, viewNames, 12))
-								m_debugView = kComboViews[view];
+							float mc = m_gfxRenderer.MinContribution();
+							if (ImGui::SliderFloat("Min contribution px^2", &mc, 0.0f, 16.0f))
+								m_gfxRenderer.SetMinContribution(mc);
 						}
-						ImGui::TextDisabled("SSR mask: per-material receiver class mirroring the thin G-buffer writer +\n"
-							"the trace matte gate (roughness < 0.94 marches): green smooth dielectric, blue smooth\n"
-							"metal, black matte (skipped), dimmed Blend (never writes the G-buffer the trace reads).");
-						ImGui::TextDisabled("Normals (combo/env only): the interpolated world-space geometric normal as false\n"
-							"color, (n*0.5+0.5) -> RGB (+X red, +Y green, +Z blue). Geometry readout only - no\n"
-							"normal-map perturbation (the POM view owns mapped normals); rides the GPU-driven\n"
-							"path like every shading view (same culls, same skinned fetch).");
-						ImGui::TextDisabled("F6 vertex colors: layered materials show normalized weights as R/G/B/Y per layer 0..3;\n"
-							"legacy materials show the raw vertex tint.");
-						ImGui::TextDisabled("F9 + UV1 checkers (UV1: combo/env only - F10 moved to the cubemap view):\n"
-							"base TEXCOORD0 vs lightmap atlas uv (chart uv + chart id,\n"
-							"unpacked in the VS via the draw's chart offset). Magenta glow = huge uv\n"
-							"screen-derivative (a chart corner landing in the wrong atlas rect).\n"
-							"UV1 stripes magenta when the atlas uv leaves [0,1] (transform bug).");
-						ImGui::TextDisabled("F10 Cubemap (IBL raw): the filtered lit path with the env specular\n"
-							"term pinned to the cubemaps panel's \"Cubemap only (no Fresnel)\" mode -\n"
-							"raw probe radiance, no Fresnel/roughness weighting (which probe serves\n"
-							"each pixel). Not a fragment swap: GPU culling runs exactly as in Lit;\n"
-							"the panel's own cubemap-debug selection resumes when the view is left.");
-						ImGui::TextDisabled("F11 POM: ray-marched parallax uv through the occlusion-map heightfield\n"
-							"(AO 1 = surface, 0 = cavity) + sun self-shadowing. Sun/sky shading at the displaced\n"
-							"uv; baked GI / decals / forward+ off so the only delta vs F1 is the technique itself.\n"
-							"AO-neutral (the SSGI chain owns AO application; debug views export no aoTerm).\n"
-							"Materials without an occlusion map degenerate to plain sampling.");
-						ImGui::TextDisabled("GI bisection: N isolates the ambient source (All -> Lightmaps -> Probes ->\n"
-							"SkyIbl -> Off); R / F8 cycle the GI debug views (flat irradiance, source palette).\n"
-							"Both work in every ambient mode.");
-						const char* meshletModes[] = { "Random per meshlet", "Cone-cutoff heat" };
-						ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
-						if (ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones)) {
-							// Arm/disarm the GPU leg (SetConeDebug lazily
-							// creates the module + the shared line buffer
-							// on the first arm; re-arm is free).
-							smvk::gfx::SetConeDebug(m_gfxRenderer.State(),
-								*m_context, *m_rendergraph, m_debugCones);
-						}
-						ImGui::Checkbox("Wireframe (P, Line polygon mode)", &m_wireframe);
-						ImGui::Checkbox("Hide transparent (debug, bisect blending)", &m_hideTransparent);
-						if (!m_gfxRenderer.DebugProgramsValid())
-							ImGui::TextDisabled("Debug programs missing - views disabled");
-						ImGui::TextDisabled("Colors: every registered cluster direct; culled ones stay visible here.\n"
-							"Heat: red = degenerate cone (never culls), green = tight cone.");
-						ImGui::TextDisabled("Bisect: disable flags top-down (degen/backface/frustum/small), then bypass.");
 					}
-					if (ImGui::CollapsingHeader("Culling freeze + dumps", ImGuiTreeNodeFlags_DefaultOpen)) {
-						ImGui::Checkbox("Freeze culling view (Ctrl+F, debug)", &m_freezeCullingView);
-						ImGui::TextDisabled("Holds frustum/eye/HZB; render camera stays live.\n"
-							"Move the camera to inspect what the frozen view culled.");
-						if (ImGui::Button("Dump indirect audit (stderr, stalls)"))
-							m_dumpIndirectAudit = true;
+
+					ImGui::SeparatorText("Lighting path");
+					{
+						// Deferred direct lighting (tiled/zBin pipeline): switches
+						// the WHOLE direct-light path — on = shade from the
+						// deferred per-tile light lists, off = legacy inline
+						// forward+ path. A/B against each other (counters in
+						// Stats, ~2 frames old).
+						ImGui::Checkbox("Deferred shadows (H)", &m_dsEnabled);
 						ImGui::SameLine();
-						if (ImGui::Button("Dump HZB (stderr, stalls)"))
-							m_debugDumpHzb = true;
+						ImGui::TextDisabled(m_passes.deferredShadows
+							? (DsActive() ? "(deferred)" : "(inline forward+)")
+							: "(pass disabled)");
 					}
-					if (ImGui::CollapsingHeader("Motion + light overlays", ImGuiTreeNodeFlags_DefaultOpen)) {
-						if (m_passes.motionVectors && m_viewportResources.motionVectors.Valid()) {
-							ImGui::Checkbox("Show motion vectors (V)", &m_showMotionDebug);
-							if (m_showMotionDebug) {
-								ImGui::SliderFloat("Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
-								ImGui::TextDisabled("Direction -> hue, magnitude -> brightness");
-							}
+
+					ImGui::SeparatorText("Tools");
+					{
+						// Material override (the SSR blur-bucket test rig):
+						// overwrite every uploaded material's metallic/roughness.
+						ImGui::Checkbox("Override material roughness/metallic",
+							&m_debugMaterialOverride);
+						if (m_debugMaterialOverride) {
+							ImGui::SliderFloat("Roughness", &m_debugMaterialRoughness, 0.0f, 1.0f);
+							ImGui::SliderFloat("Metallic", &m_debugMaterialMetallic, 0.0f, 1.0f);
+							ImGui::TextDisabled("applies at material upload (UpdateMaterials)");
 						}
-						else {
-							ImGui::TextDisabled("Motion vectors: target/shaders missing");
-						}
-							ImGui::Checkbox("Light points overlay", &m_showLightPoints);
-							ImGui::Checkbox("Light numbers overlay", &m_showLightNumbers);
-						if (m_showLightPoints || m_showLightNumbers) {
-							ImGui::SliderFloat("Overlay point size (px)", &m_lightPointSize, 2.0f, 16.0f);
-							ImGui::SliderInt("Overlay max labels", &m_maxLightLabels, 0, 1024);
-						}
-						ImGui::TextDisabled("Lights draw in the UI pass (points = light color, spots diamond);\n"
-							"no depth test: occluded lights stay visible (debug intent)");
-						ImGui::Checkbox("Probe points (3D coplanarity check)", &m_giShowProbes);
-						if (m_giShowProbes) {
-							ImGui::SliderFloat("Probe overlay distance (m)",
-								&m_giProbePointMaxDist, 5.0f, 300.0f, "%.0f m");
-							ImGui::TextDisabled("red = blocked  yellow = near (< 1 m)  green = open\nno depth test: behind-wall probes visible");
-						}
-						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
-						if (m_giShowVolumeBounds) {
-							ImGui::TextDisabled("regular OBBs (green) + convex grid AABBs\n"
-								"(priority hue); no depth test, drawn over the view");
-						}
-						if (m_regLoaded || m_giVolumesLoaded) {
-							// GI debug views (R / F8 cycle): 0 off, 1 baked
-							// irradiance, 2 source palette, 3 the probe-
-							// distance view (the coplanarity check — the
-							// nearest probe's min 6-axis obstacle distance:
-							// red = on/in a surface, yellow = near, green
-							// = open). (The octree's dominant-level view
-							// 4 is retired with the walker.)
-							const char* dbgNames[4] = { "Off", "Baked irradiance",
-								"GI source", "Probe distance" };
-							int dbgIdx = m_giDebug;
-							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 4))
-								m_giDebug = std::clamp(dbgIdx, 0, 3);
-							if (m_giDebug == 1) {
-								ImGui::TextDisabled("flat irradiance of the active source "
-									"(lightmap/grid/volumes); magenta = none\n"
-									"works in EVERY ambient mode (N): isolate the source "
-									"with N, then read it here");
-							}
-							else if (m_giDebug == 2) {
-								ImGui::TextDisabled("source palette: red = lightmap (deprecated), "
-									"green = regular grid (legacy), cyan = convex volume "
-									"blended, magenta = none");
-							}
-							if (m_giVolumesLoaded) {
-								ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
-								ImGui::TextDisabled("stacked probe volumes blend over the "
-									"sky base by priority (gi/<scene>.cvmanifest)");
-							}
+						ImGui::Separator();
+						// Light crowd: the Forward+ tile-list stress tool.
+						ImGui::Checkbox("Enable light crowd", &m_lightDemo.enabled);
+						ImGui::SameLine();
+						ImGui::TextDisabled(m_lightCrowdCount > 0 ? "(spawned)" : "(off)");
+						ImGui::SliderInt("Count", &m_lightDemo.count, 0, 96);
+						ImGui::SliderFloat3("Center", &m_lightDemo.center.x, -30.0f, 30.0f);
+						ImGui::SliderFloat("Spiral radius (m)", &m_lightDemo.radius, 0.5f, 30.0f);
+						ImGui::SliderFloat("Height (m)", &m_lightDemo.height, 0.0f, 12.0f);
+						ImGui::SliderFloat("Bob (m)", &m_lightDemo.bob, 0.0f, 4.0f);
+						ImGui::SliderFloat("Cutoff range (m)", &m_lightDemo.range, 0.5f, 20.0f);
+						// Candela is physical: sunlit scenes need ~20000+ cd to
+						// read against the direct term.
+						ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200000.0f, "%.0f");
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip("Sunlit scenes (sun = 10000 lux) need ~20000+ cd to read\n"
+								"against the direct term; night scenes need far less.");
+						ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
+						ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
+						ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);
+						// Shadow casters: the first `shadowCount` crowd lights
+						// ride the cast-shadow request against the scene's own
+						// requesting lights.
+						ImGui::Checkbox("Cast shadows (crowd)", &m_lightDemo.castShadows);
+						if (m_lightDemo.castShadows) {
+							const int crowdlights = std::max(m_lightDemo.count, 1);
+							const int shadowCap = std::min((int)smvk::kMaxPointShadowLights, crowdlights);
+							int crowdShadows = std::min(m_lightDemo.shadowCount, shadowCap);
+							if (ImGui::SliderInt("Shadow casters (of count)",
+									&crowdShadows, 0, shadowCap))
+								m_lightDemo.shadowCount = crowdShadows;
 						}
 					}
 #if defined(DS_DEBUG_VIZ)
 					// ---- Deferred-shadow debug visualizers (paper 5.3/5.4).
 					// Debug builds only (DS_DEBUG_VIZ): Y cycles the combo. ----
-					if (ImGui::CollapsingHeader("DS visualizers (Y cycles)", ImGuiTreeNodeFlags_DefaultOpen)) {
-						ImGui::Text("DS visualizers (Y cycles)");
-						{
-							const char* vizNames[] = {
-								"Off",
-								"Light count approx (ph2)",
-								"Light count accurate (ph3)",
-								"Light count final (ph4)",
-								"Count diff approx-accurate",
-								"Cull step (light)",
-								"Light list (light)",
-								"Light visibility (light)",
-							};
-							int viz = static_cast<int>(m_dsDebugMode);
-							if (ImGui::Combo("Visualizer", &viz, vizNames, 8))
-								m_dsDebugMode = static_cast<DsDebugViz>(viz);
-							const bool vizOn = m_dsDebugMode != DsDebugViz::Off;
-							const bool lightScoped = vizOn && m_dsDebugMode >= DsDebugViz::CullStep;
-							if (vizOn && !DsActive())
-								ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
-									"Pipeline off: enable deferred shadows (H) first");
-							if (vizOn)
-								ImGui::Checkbox("Overlay over lit", &m_dsDebugOverlay);
-							if (m_dsDebugMode >= DsDebugViz::CountApprox
-								&& m_dsDebugMode <= DsDebugViz::CountDiff) {
-								ImGui::SliderInt("Heat ceiling (lights)",
-									&m_dsDebugCountCeil, 1, (int)smvk::kDsMaxLightsPerTile);
-								ImGui::TextDisabled("Heat: 0=black, blue/cyan/green/yellow -> red at ceiling.\n"
-									"8px Shadow Tiles, faint grid = 64px TileGroups.");
-							}
-							if (lightScoped) {
-								const int maxLight = std::max(0, (int)m_dsLightCount - 1);
-								ImGui::SliderInt("Debug light (sorted idx)", &m_dsDebugLight,
-									0, maxLight);
-								if (m_dsDebugLightValid) {
-									ImGui::Text("Light %d: %s  range %.1f m", m_dsDebugLight,
-										m_dsDebugLightType == (int)smvk::kForwardPlusSpot ? "spot" : "point",
-										m_dsDebugLightRange);
-								}
-								if (m_dsDebugMode == DsDebugViz::CullStep)
-									ImGui::TextDisabled("Last step passed: RED ph1 mask / ORANGE ph2 zBin-froxel\n"
-										"(on lit pixels = ERRONEOUS CULL), BLUE ph4 all-shadow drop,\n"
-										"GREEN full pass (brightness = visibility).");
-								else if (m_dsDebugMode == DsDebugViz::LightList)
-									ImGui::TextDisabled("RED in no list / ORANGE ph1 mask only (erroneous),\n"
-										"YELLOW early only (shadow-dropped), GREEN final list\n"
-										"(brightness = visibility, dim = sibling-pixel coverage).");
-								else
-									ImGui::TextDisabled("WHITE lit -> BLACK shadowed (precomputed byte);\n"
-										"dark blue = not in the final list.");
+					ImGui::SeparatorText("DS visualizers (Y cycles)");
+					{
+						const char* vizNames[] = {
+							"Off",
+							"Light count approx (ph2)",
+							"Light count accurate (ph3)",
+							"Light count final (ph4)",
+							"Count diff approx-accurate",
+							"Cull step (light)",
+							"Light list (light)",
+							"Light visibility (light)",
+						};
+						int viz = static_cast<int>(m_dsDebugMode);
+						if (ImGui::Combo("Visualizer", &viz, vizNames, 8))
+							m_dsDebugMode = static_cast<DsDebugViz>(viz);
+						const bool vizOn = m_dsDebugMode != DsDebugViz::Off;
+						const bool lightScoped = vizOn && m_dsDebugMode >= DsDebugViz::CullStep;
+						if (vizOn && !DsActive())
+							ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
+								"Pipeline off: enable deferred shadows (H) first");
+						if (vizOn)
+							ImGui::Checkbox("Overlay over lit", &m_dsDebugOverlay);
+						if (m_dsDebugMode >= DsDebugViz::CountApprox
+							&& m_dsDebugMode <= DsDebugViz::CountDiff)
+							ImGui::SliderInt("Heat ceiling (lights)",
+								&m_dsDebugCountCeil, 1, (int)smvk::kDsMaxLightsPerTile);
+						if (lightScoped) {
+							const int maxLight = std::max(0, (int)m_dsLightCount - 1);
+							ImGui::SliderInt("Debug light (sorted idx)", &m_dsDebugLight,
+								0, maxLight);
+							if (m_dsDebugLightValid) {
+								ImGui::Text("Light %d: %s  range %.1f m", m_dsDebugLight,
+									m_dsDebugLightType == (int)smvk::kForwardPlusSpot ? "spot" : "point",
+									m_dsDebugLightRange);
 							}
 						}
 					}
@@ -14113,15 +13586,16 @@ namespace engine {
 					ImGui::EndTabItem();
 				}
 				// ---------------------------------------------------------
-				// Stats: read-only readback. Retired-slice counters lag ~2
-				// frames (same lag as the exposure meter).
+				// Stats: read-only readback + the technical diagnostics
+				// (everything that reports state rather than setting it).
+				// Retired-slice counters lag ~2 frames.
 				// ---------------------------------------------------------
 				if (ImGui::BeginTabItem("Stats")) {
-					if (ImGui::CollapsingHeader("Shadow GPU stages (timestamp queries, ~1 frame lag)", ImGuiTreeNodeFlags_DefaultOpen)) {
-						// Both shadow representations instrumented (see
-						// GpuStageTimer): exactly one side is live per run
-						// (PCF vs EVSM are mutually exclusive); "(off)" marks
-						// the inactive representation + stages that never ran.
+					ImGui::SeparatorText("GPU + frame");
+					{
+						ImGui::Text("GPU: %s", smvk::ActiveDeviceName());
+						// Shadow GPU stages (timestamp queries, ~1 frame lag);
+						// exactly one representation is live per run.
 						if (m_stageGpuTimingsSupported) {
 							ImGui::Text("PCF raster:    %s", m_stageGpuValid[smvk::kGpuStagePcfRaster]
 								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStagePcfRaster]) + " ms (smooth)").c_str() : "(off)");
@@ -14133,21 +13607,25 @@ namespace engine {
 								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmBlur]) + " ms (smooth)").c_str() : "(off)");
 						}
 						else {
-							ImGui::TextDisabled("(unavailable: device lacks cross-queue timestamps)");
+							ImGui::TextDisabled("(stage timings unavailable: no cross-queue timestamps)");
 						}
-					}
-					if (ImGui::CollapsingHeader("Camera + swapchain", ImGuiTreeNodeFlags_DefaultOpen)) {
-						// Live pos/fwd readouts live in the text HUD (Ctrl+T).
+						ImGui::Separator();
 						{
-							const glm::vec3 euler = m_cameraPositioner.getEulerDegrees(); // x=pitch, y=yaw, z=roll
+							const glm::vec3 euler = m_cameraPositioner.getEulerDegrees();
 							const glm::quat q = m_cameraPositioner.getOrientation();
-							ImGui::Text("Camera rot yaw: %.1f pitch: %.1f roll: %.1f (deg)", euler.y, euler.x, euler.z);
-							ImGui::TextDisabled("Camera quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
+							ImGui::Text("Camera yaw %.1f pitch %.1f roll %.1f (deg)", euler.y, euler.x, euler.z);
+							ImGui::TextDisabled("quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
 						}
-						// Controller status: name + live stick state, or "none".
-						// (m_inputUi: the ELEMENT's input back-pointer — pure
-						// status/config widgets; this class never polls input
-						// for control.)
+						ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
+							fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
+						ImGui::Text("Scene: %ux%u (%.0f%%) -> swap %ux%u",
+							renderExtent.width, renderExtent.height, m_renderScale * 100.0f,
+							swapExtent.width, swapExtent.height);
+						ImGui::Text("UI pass: %ux%u (%.0f%%)",
+							uiExtent.width, uiExtent.height, m_uiScale * 100.0f);
+						const smvk::PresentMode active = fb.swapchain->GetActivePresentMode();
+						ImGui::TextDisabled("Present: %s%s", smvk::ToString(active),
+							active != m_host.GetPresentMode() ? " (requested unavailable?)" : "");
 						if (m_inputUi && m_inputUi->hasGamepad()) {
 							ImGui::Text("Gamepad: %s", m_inputUi->gamepadName(0).c_str());
 							ImGui::TextDisabled("LX %+.2f LY %+.2f  RX %+.2f RY %+.2f",
@@ -14155,12 +13633,6 @@ namespace engine {
 								m_inputUi->gamepadAxis(0, input::GamepadAxis::LeftY),
 								m_inputUi->gamepadAxis(0, input::GamepadAxis::RightX),
 								m_inputUi->gamepadAxis(0, input::GamepadAxis::RightY));
-							ImGui::TextDisabled("Left stick move, right stick look, LT/RT down/up, RB sprint, Start UI");
-						}
-						else {
-							ImGui::TextDisabled("Gamepad: none connected");
-						}
-						if (m_inputUi) {
 							float dzMove = m_inputUi->stickDeadzone();
 							float dzLook = m_inputUi->lookDeadzone();
 							float dzTrig = m_inputUi->triggerDeadzone();
@@ -14171,26 +13643,15 @@ namespace engine {
 							if (ImGui::SliderFloat("Trigger deadzone", &dzTrig, 0.0f, 0.5f))
 								m_inputUi->setTriggerDeadzone(dzTrig);
 						}
-						ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
-							fb.swapchain->GetExtent().width, fb.swapchain->GetExtent().height, fb.swapchain->framesInFlight());
-						ImGui::Text("Scene: %ux%u (%.0f%%) -> swap %ux%u",
-							renderExtent.width, renderExtent.height, m_renderScale * 100.0f,
-							swapExtent.width, swapExtent.height);
-						ImGui::Text("UI pass: %ux%u (%.0f%%)",
-							uiExtent.width, uiExtent.height, m_uiScale * 100.0f);
-						const smvk::PresentMode active = fb.swapchain->GetActivePresentMode();
-						if (active != m_host.GetPresentMode())
-							ImGui::TextDisabled("Active: %s (requested unavailable?)", smvk::ToString(active));
-						else
-							ImGui::TextDisabled("Active: %s", smvk::ToString(active));
+						else {
+							ImGui::TextDisabled("Gamepad: none connected");
+						}
 					}
-					if (ImGui::CollapsingHeader("GPU memory + streaming", ImGuiTreeNodeFlags_DefaultOpen)) {
-						// ---- GPU memory (VMA budgets, VK_EXT_memory_budget) ----
-						// Throttled to 1 Hz (see RefreshGpuMemoryStats).
-						// Totals live in the text HUD (Ctrl+T); this section
-						// keeps the controls + the per-heap breakdown below.
-						// Query cost is shown so a slow driver budget query
-						// can't hide behind this UI.
+
+					ImGui::SeparatorText("Memory + streaming");
+					{
+						// GPU memory (VMA budgets, VK_EXT_memory_budget),
+						// throttled to 1 Hz (see RefreshGpuMemoryStats).
 						RefreshGpuMemoryStats(false);
 						auto fmtMiB = [](uint64_t bytes, char* out, size_t n) {
 							const double mib = (double)bytes / (1024.0 * 1024.0);
@@ -14200,8 +13661,6 @@ namespace engine {
 								snprintf(out, n, "%.0f MiB", mib);
 						};
 						if (!m_gpuMemHeaps.empty()) {
-							// Per-heap breakdown (collapsed by default: VRAM heap only
-							// matters on most discrete GPUs; integrated shows host).
 							if (ImGui::SmallButton(m_gpuMemShowAllHeaps ? "heaps: all [-]" : "heaps: details [+]"))
 								m_gpuMemShowAllHeaps = !m_gpuMemShowAllHeaps;
 							ImGui::SameLine();
@@ -14209,11 +13668,9 @@ namespace engine {
 								LogGpuMemoryToConsole();
 							ImGui::SameLine();
 							ImGui::Checkbox("auto-log 10s", &m_gpuMemConsoleAutoLog);
-							ImGui::TextDisabled("query %.0f us @1Hz%s", m_gpuMemQueryUs,
-								m_gpuMemConsoleAutoLog ? "" : " (console auto-log off)");
+							ImGui::TextDisabled("query %.0f us @1Hz", m_gpuMemQueryUs);
 							const size_t showCount = m_gpuMemShowAllHeaps ? m_gpuMemHeaps.size() : 1;
 							for (size_t i = 0; i < m_gpuMemHeaps.size() && i < showCount; ++i) {
-								// Default view: the first DEVICE_LOCAL heap (VRAM).
 								size_t idx = i;
 								if (!m_gpuMemShowAllHeaps) {
 									idx = 0;
@@ -14239,13 +13696,12 @@ namespace engine {
 						else {
 							ImGui::TextDisabled("GPU memory: no heap data");
 						}
-						// Texture streaming residency lives in the text HUD
-						// (Ctrl+T); nothing else to show here.
-						if (!m_textureStreamer) {
+						if (!m_textureStreamer)
 							ImGui::TextDisabled("Streaming: off (full-resident)");
-						}
 					}
-					if (ImGui::CollapsingHeader("Shadows - CSM + spots + deferred", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+					ImGui::SeparatorText("Shadows");
+					{
 						const auto& atlas = m_viewportResources.directionalShadows;
 						ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u  lambda %.2f  far %.1fm",
 							NUM_CASCADES, CascadeTileExtent().width, CascadeTileExtent().height,
@@ -14256,37 +13712,41 @@ namespace engine {
 								i, (double)m_cascadeSplitsDbg[i], (double)m_cascadeSplitsDbg[i + 1],
 								(double)m_cascadeBiasDbg[i], (double)m_cascadeNormalBiasDbg[i]);
 						}
+						if (m_sdsmEnabled && m_sdsmStatsValid) {
+							ImGui::TextDisabled("SDSM measured %.2f..%.2f m (pct %.2f..%.2f) -> applied %.2f..%.2f m%s",
+								m_sdsmMin, m_sdsmMax, m_sdsmPctMin, m_sdsmPctMax,
+								m_sdsmAppliedValid ? m_sdsmAppliedMin : 0.0f,
+								m_sdsmAppliedValid ? m_sdsmAppliedMax : 0.0f,
+								m_sdsmCutCooldown > 0 ? " (cut cooldown: heuristic)" : "");
+						}
 						const glm::vec3 toSunDbg = frameEnv.SunDirectionToSun();
-						ImGui::Text(" sun toSun: %.2f %.2f %.2f  int %.0f lux",
+						ImGui::Text("sun toSun: %.2f %.2f %.2f  int %.0f lux",
 							toSunDbg.x, toSunDbg.y, toSunDbg.z, frameEnv.sunIntensity);
 						ImGui::Text("RenderViews: %u allocated (main=%u, CSM @%u, spots @%u, point faces @%u)",
 							m_renderViews.Count(), m_renderViews.MainViewIndex(),
 							cascadeViewBase, spotViewBase, pointViewBase);
-						ImGui::Separator();
-						ImGui::Text("Spot shadows: %u / %u tiles  atlas %ux%u",
-							m_spotShadowCount, smvk::kMaxSpotShadows,
+						ImGui::Text("Spot shadows: %u / %u (budget %d)  atlas %ux%u",
+							m_spotShadowCount, smvk::kMaxSpotShadows, m_spotShadowMax,
 							m_viewportResources.spotShadows.atlasExtent.width,
 							m_viewportResources.spotShadows.atlasExtent.height);
 						ImGui::Text("Point shadows: %u lights / %u (%u face tiles, 6 each)",
 							m_pointShadowLightCount, smvk::kMaxPointShadowLights,
 							m_pointShadowTileCount);
-						ImGui::TextDisabled("Select: intensity*cone*coverage/dist^2 (spots),\n"
-							"intensity*coverage/dist^2 (points); NDC-box + distance culled");
 						if (!m_viewportResources.spotShadows.Valid())
 							ImGui::TextDisabled("Spot atlas: MISSING (spots run unshadowed)");
 						ImGui::Separator();
-						// Deferred shadows (tiled/zBin): counters are retired-slice
-						// peaks (~2 frames old).
+						// Deferred shadows (tiled/zBin): counters are
+						// retired-slice peaks (~2 frames old).
 						const smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
 						if (ds.Valid()) {
 							ImGui::Text("Shadow tiles: %ux%u (8px)  TileGroups: %ux%u (64px)",
 								ds.tileCountX, ds.tileCountY, ds.groupCountX, ds.groupCountY);
 							ImGui::Text("Light list: %u / %u uints (%.1f MB used)",
 								m_dsStats.listSlots, smvk::kDsMaxListUInts,
-								float(m_dsStats.listSlots) * 4.0f / (1024.0f * 1024.0f));
+								float(m_dsStats.listSlots) * 4.0f / (1024.0 * 1024.0));
 							ImGui::Text("Visibility: %u / %u slots x 64B (%.1f MB used)",
 								m_dsStats.visSlots, smvk::kDsMaxVisSlots,
-								float(m_dsStats.visSlots) * 64.0f / (1024.0f * 1024.0f));
+								float(m_dsStats.visSlots) * 64.0f / (1024.0 * 1024.0));
 							if (m_dsStats.listSlots >= smvk::kDsMaxListUInts)
 								ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f),
 									"Light list SATURATED: tiles clamp (lights drop to fully lit)");
@@ -14295,50 +13755,27 @@ namespace engine {
 									"Visibility SATURATED: partial shadows degrade to fully lit");
 						}
 						else {
-							ImGui::TextDisabled("Buffers/shaders missing (extent cap?); pipeline off");
+							ImGui::TextDisabled("Deferred buffers/shaders missing (extent cap?); pipeline off");
 						}
-						ImGui::TextDisabled("CPU phase 1: zBins (1024) + 64px tile masks; GPU phases:\n"
-							"2 approx froxel cull, 3 per-pixel narrow, 4 PCF visibility\n"
-							"(%s path active)", DsActive() ? "deferred" : "inline forward+");
 					}
-					if (ImGui::CollapsingHeader("Bloom + exposure meter", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+					ImGui::SeparatorText("Post + AA state");
+					{
 						const auto& bloom = m_viewportResources.bloom;
 						if (bloom.Valid() && m_bloomEnabled) {
 							ImGui::Text("Bloom: %u mips  base %ux%u  thr %.2f knee %.2f int %.2f",
 								bloom.MipCount(),
 								bloom.MipExtent(0).width, bloom.MipExtent(0).height,
 								bloom.desc.threshold, bloom.desc.knee, bloom.desc.intensity);
-							for (uint32_t i = 0; i < bloom.MipCount(); ++i)
-								ImGui::Text(" mip %u: %ux%u", i, bloom.MipExtent(i).width, bloom.MipExtent(i).height);
 						}
 						else {
 							ImGui::TextDisabled("Bloom: OFF");
 						}
-						// Live exposure numbers live in the text HUD (Ctrl+T).
 						float histPeak = 1.0f;
 						for (float v : m_exposureBinsUi)
 							histPeak = std::max(histPeak, v);
 						ImGui::PlotHistogram("##expHist", m_exposureBinsUi,
 							(int)smvk::kExposureBinCount, 0, nullptr, 0.0f, histPeak, ImVec2(0, 48));
-						if (!m_viewportResources.exposure.Valid())
-							ImGui::TextDisabled("Meter missing manual exposure only");
-						else
-							ImGui::TextDisabled("Bloom threshold scales with 1/exposure (ref %.4f); percentile %.0f%%, key %.2f",
-								TONEMAP_EXPOSURE, m_viewportResources.exposure.desc.percentile * 100.0f,
-								m_viewportResources.exposure.desc.keyValue);
-					}
-					if (ImGui::CollapsingHeader("GI volume", ImGuiTreeNodeFlags_DefaultOpen)) {
-						// The .sggi octree stats are RETIRED with the loader;
-						// the honest counts are the loaded convex + regular
-						// GI volumes (the World Map (C) draws the convex
-						// lattices + reports the lattice-site totals).
-						ImGui::Text("Convex GI volumes: %u  regular grids: %u",
-							(unsigned)m_giVolumes.size(),
-							(unsigned)m_regVolumes.size());
-						ImGui::TextDisabled("the legacy .sggi octree is retired — "
-							"convex .givolume bakes + sky IBL carry the ambient");
-					}
-					if (ImGui::CollapsingHeader("AA + motion + AO state", ImGuiTreeNodeFlags_DefaultOpen)) {
 						if (m_aaMode == AaMode::Msaa2x) {
 							if (!m_context->SupportsMSAA2x())
 								ImGui::TextDisabled("MSAA 2x unsupported - running 1x");
@@ -14352,7 +13789,7 @@ namespace engine {
 							else if (!(m_passes.motionVectors && m_viewportResources.motionVectors.Valid()))
 								ImGui::TextDisabled("SMAA needs the motion-vector pass - disabled");
 							else if (m_aaMode == AaMode::SmaaT2x)
-								ImGui::TextDisabled("SMAA T2x: quarter-pixel jitter + temporal resolve%s [img=%u par=%u]",
+								ImGui::TextDisabled("SMAA T2x: jitter + temporal resolve%s [img=%u par=%u]",
 									m_smaaFrameParams.historyValid ? "" : " (history warming up)",
 									fb.imageIndex, m_smaaFrameParams.parity);
 							else
@@ -14362,8 +13799,6 @@ namespace engine {
 							ImGui::TextDisabled("AA: off");
 						}
 						{
-							// DLSS line: availability, active state and the reset
-							// history flag (one-record visibility for warmup).
 							const char* dlssModeName[] = { "off", "performance", "balanced",
 								"quality", "ultra performance", "ultra quality", "DLAA" };
 							const int modeIdx = static_cast<int>(m_dlssMode);
@@ -14384,34 +13819,6 @@ namespace engine {
 						}
 						if (!m_viewportResources.motionBlur.Valid())
 							ImGui::TextDisabled("Motion blur target/shaders missing - sharp HDR");
-						else
-							ImGui::TextDisabled("Motion blur: gather along motion vectors, pre-tonemap HDR");
-						const auto& ssgi = m_viewportResources.ssgi;
-						{
-							static const char* const kAoNames[3] =
-							{ "No AO", "SSAO", "SAO" };
-							ImGui::TextDisabled("AO mode: %s (post-Main SSGI chain)",
-								kAoNames[static_cast<int>(m_aoMode)]);
-						}
-						if (m_aoMode != AoMode::None) {
-							if (!ssgi.Valid())
-								ImGui::TextDisabled("SSGI targets/shaders missing - no AO");
-							else if (!ssgi.hzb.Valid())
-								ImGui::TextDisabled("SSGI AO: targets up but the shared HZB is missing - chain skips");
-							else {
-								ImGui::Text("SSGI AO: half %ux%u (full %ux%u) hzb %ux%u (%u mips)",
-									ssgi.halfExtent.width, ssgi.halfExtent.height,
-									ssgi.fullExtent.width, ssgi.fullExtent.height,
-									ssgi.hzb.width, ssgi.hzb.height, ssgi.hzb.mipCount);
-								ImGui::TextDisabled("  compose: joint bilateral depth+normal (repDist in the AO triple);\n"
-									"  normal source: %s",
-									m_viewportResources.msaaEnabled
-									? "none (MSAA frame - the prepass writes no G-buffer; depth-only weights)"
-									: (m_viewportResources.ssr.gbuffer.Valid()
-										? "shared thin G-buffer (oct normal)"
-										: "none (G-buffer target missing - depth-only weights)"));
-							}
-						}
 						if (!m_viewportResources.dof.Valid())
 							ImGui::TextDisabled("DOF targets/shaders missing - sharp HDR");
 						else
@@ -14422,11 +13829,11 @@ namespace engine {
 						if (!m_viewportResources.ssr.Valid())
 							ImGui::TextDisabled("Reflection target/shaders missing - no reflections");
 						else if (!m_viewportResources.ssgi.hzb.Valid())
-							ImGui::TextDisabled("SSGI reflections: %s %u steps intensity %.2f hzb:MISSING (chain skips)",
+							ImGui::TextDisabled("SSR: %s %u steps intensity %.2f hzb:MISSING (chain skips)",
 								m_ssrEnabled ? "ON" : "off",
 								(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity);
 						else
-							ImGui::TextDisabled("SSGI reflections: %s %u steps intensity %.2f hzb:shared %ux%u %u mips blur:%s",
+							ImGui::TextDisabled("SSR: %s %u steps intensity %.2f hzb:shared %ux%u %u mips blur:%s",
 								m_ssrEnabled ? "ON" : "off",
 								(uint32_t)std::clamp(m_ssrSteps, 1, 128), m_ssrIntensity,
 								m_viewportResources.ssgi.hzb.width,
@@ -14442,28 +13849,152 @@ namespace engine {
 								(uint32_t)std::clamp(m_volumetricSteps, 4, 128),
 								m_volumetricDensity, m_volumetricIntensity);
 					}
-					if (ImGui::CollapsingHeader("Forward+ tiles + GfxFilter", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+					ImGui::SeparatorText("GI + environment");
+					{
+						ImGui::Text("Ambient source: %s (N cycles)", AmbientModeName(m_ambientMode));
+						ImGui::Text("Convex GI volumes: %u  regular grids: %u",
+							(unsigned)m_giVolumes.size(),
+							(unsigned)m_regVolumes.size());
+						const auto& ssgi = m_viewportResources.ssgi;
+						if (m_aoMode != AoMode::None) {
+							if (!ssgi.Valid())
+								ImGui::TextDisabled("SSGI targets/shaders missing - no AO");
+							else if (!ssgi.hzb.Valid())
+								ImGui::TextDisabled("SSGI AO: targets up but the shared HZB is missing - chain skips");
+							else {
+								ImGui::Text("SSGI AO: half %ux%u (full %ux%u) hzb %ux%u (%u mips)",
+									ssgi.halfExtent.width, ssgi.halfExtent.height,
+									ssgi.fullExtent.width, ssgi.fullExtent.height,
+									ssgi.hzb.width, ssgi.hzb.height, ssgi.hzb.mipCount);
+							}
+						}
+						// World env tiles (zones): always on; the readout.
+						ImGui::Text("Zones: baked %u x %u tiles @64 m, %u record(s), grid @ (%.0f, %.0f)%s",
+							(unsigned)m_envTiles.DimX(),
+							(unsigned)m_envTiles.DimZ(),
+							(unsigned)m_envTiles.RecordCount(),
+							m_envTiles.GridMin().x,
+							m_envTiles.GridMin().y,
+							m_envTilesPublished ? "" : " (none this frame - plain env path)");
+						// Cubemap / probe residency.
+						size_t bakedCount = 0, procCount = 0;
+						for (const auto& [name, entry] : m_cubemaps.entries) {
+							if (entry.bindless >= 0 && !entry.texture.empty())
+								(entry.baked ? bakedCount : procCount)++;
+						}
+						size_t streamResident = 0, streamOut = 0, streamFailed = 0;
+						for (const CubemapRow& row : m_cubemapRows) {
+							if (row.failed)
+								++streamFailed;
+							else if (m_cubemaps.Find(row.entryName))
+								++streamResident;
+							else
+								++streamOut;
+						}
+						ImGui::Text("Cubemaps: %u resident / %u rows (baked %u, procedural %u)  Probes: %u (light tail)",
+							(unsigned)m_cubemaps.entries.size(),
+							(unsigned)m_cubemapRows.size(),
+							(unsigned)bakedCount, (unsigned)procCount,
+							(unsigned)ProbeEntryCount());
+						if (streamFailed > 0)
+							ImGui::TextDisabled("stream failed rows: %u (see [Cubemap] log)",
+								(unsigned)streamFailed);
+						{
+							const bool tiled = ProbeTileListsWanted();
+							ImGui::Text("Tiled probes: %s (stride %u shared, tiles %ux%u)",
+								tiled ? "fresh" : "stale (global cubemap)",
+								m_viewportResources.forwardPlus.desc.maxLightsPerTile,
+								m_viewportResources.forwardPlus.tileCountX,
+								m_viewportResources.forwardPlus.tileCountY);
+						}
+						// The pre-mix selection readout (the plan's Phase 3
+						// observability item; recomputed on the CPU via the SAME
+						// math the weights pass runs).
+						ImGui::Text("Pre-mix: %s (NDF weights, K=4)",
+							m_probePremixEnabled ? "on" : "off (per-pixel walk)");
+						if (m_probePremixEnabled) {
+							constexpr uint32_t kTailCap =
+								smvk::kForwardPlusMaxProbes;
+							const uint32_t n =
+								std::min(ProbeEntryCount(), kTailCap);
+							smvk::probepremix::NdfCandidate cands[kTailCap];
+							const glm::vec3 poi =
+								m_cameraPositioner.cameraPosition_;
+							uint32_t m = 0;
+							for (uint32_t i = 0; i < n; ++i) {
+								const CubemapProbeGpu& pr = m_cubemapProbes[i];
+								const float influence =
+									std::max(pr.posInfluence.w, 0.0f);
+								const float fade =
+									std::max(pr.fadeCubemap.x, 0.0f);
+								const float dist = glm::distance(poi,
+									glm::vec3(pr.posInfluence));
+								float ndf = 1.0f;
+								if (dist <= influence)
+									ndf = 0.0f;
+								else if (fade > 0.0f
+									&& dist <= influence + fade)
+									ndf = (dist - influence) / fade;
+								if (ndf >= 1.0f)
+									continue;
+								cands[m].cubemap =
+									static_cast<uint32_t>(pr.fadeCubemap.y);
+								cands[m].ndf = ndf;
+								cands[m].influence = influence;
+								++m;
+							}
+							float w[kTailCap];
+							smvk::probepremix::ComputeNdfWeights(cands, m, w,
+								kTailCap);
+							struct SlotReadout {
+								float w; uint32_t cube, i;
+							} slots[kTailCap];
+							for (uint32_t i = 0; i < m; ++i)
+								slots[i] = { w[i], cands[i].cubemap, i };
+							std::sort(slots, slots + m,
+								[&](const SlotReadout& a, const SlotReadout& b) {
+									if (a.w != b.w)
+										return a.w > b.w;
+									if (cands[a.i].influence
+										!= cands[b.i].influence)
+										return cands[a.i].influence
+											> cands[b.i].influence;
+									return a.cube < b.cube;
+								});
+							const uint32_t k = std::min(m, 4u);
+							float sumK = 0.0f;
+							for (uint32_t s = 0; s < k; ++s)
+								sumK += slots[s].w;
+							const float invK = sumK > 1e-6f
+								? 1.0f / sumK : 0.0f;
+							for (uint32_t s = 0; s < k && invK > 0.0f; ++s) {
+								const bool inner =
+									cands[slots[s].i].ndf <= 0.0f;
+								ImGui::BulletText(
+									"slot %u: cubemap %u  w=%.3f  d=%.2f%s",
+									(unsigned)s, (unsigned)slots[s].cube,
+									slots[s].w * invK,
+									cands[slots[s].i].ndf,
+									inner ? "  (INNER - exclusive)" : "");
+							}
+						}
+					}
+
+					ImGui::SeparatorText("Culling + LODs");
+					{
 						const auto& fwd = m_viewportResources.forwardPlus;
 						ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 							fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
 							FP_TILE_SIZE, fwd.desc.maxLightsPerTile);
 						ImGui::Text("Lights: %u / %u%s", m_fpLightCount, FP_MAX_LIGHTS,
 							m_fpLightCount > FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
-						ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
-							fwd.desc.maxLightsPerTile);
 						ImGui::Text("Decals: %u / %u (cap %u/tile)%s", m_decalFrameCount,
 							FP_MAX_DECALS, FP_MAX_DECALS_PER_TILE,
 							DecalsActive() ? "" : "  (off)");
-						ImGui::TextDisabled("Decal lists refresh in the same cull dispatch as lights (also under deferred shadows)");
-						if (fwd.depthBindlessIndex == UINT32_MAX)
-							ImGui::TextDisabled("Depth bindless: MISSING (cull falls back to empty)");
-						ImGui::Separator();
 						const smvk::gfx::Stats gs = m_gfxRenderer.LastStats();
-						// The cull runs in compute (the CPU stat counts
-						// nothing now — always 0); the kept count lands via
-						// the async counter-word readback (see
-						// UpdateReadbacks), culled = candidates - kept. See
-						// the HUD filter line too.
+						// The cull runs in compute; the kept count lands via the
+						// async counter-word readback (see UpdateReadbacks).
 						const bool gpuKept = m_gfxKeptValid;
 						uint32_t kept = gs.clustersProcessed - gs.clustersCulled;
 						if (gpuKept)
@@ -14475,12 +14006,6 @@ namespace engine {
 						ImGui::Text("materials: %u ranges  batches: %u",
 							(unsigned)m_gfxRenderer.LastMaterialRangeCount(),
 							(unsigned)m_gfxRenderer.LastBatchCount());
-						// HZB occlusion status: the CPU "clusters culled" line above
-						// never moves for GPU occlusion kills (those stay batches
-						// with indexCount 0), so surface the HZB inputs here. Any
-						// "OFF/empty/INVALID" below means the filter's occlusion
-						// test is silently disabled - use Dump HZB + Dump indirect
-						// audit (stderr, Debug tab) to confirm what the GPU saw.
 						{
 							const bool occOn = (m_gfxRenderer.config.cullFlags
 								& smvk::gfx::CullFlagBit_HzbOcclusion) != 0;
@@ -14491,51 +14016,30 @@ namespace engine {
 									smvk::gfx::Hiz(m_gfxRenderer.State(), gfxSlot);
 								hw = hz.width; hh = hz.height; hm = hz.mipCount;
 							}
-						// HZB source is FIXED (hizDepth - the always-on
-						// occluder fill; see the fc.hizDepthView note); the
-						// cull-flag lever gates only the occlusion TEST.
-						const bool depthOk =
-							m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX;
-						ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s (src: occluder fill, fixed)",
-							hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
-							cullingFrozen ? "FROZEN" : "live");
-						if (!occOn)
-							ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
-						else if (hm == 0)
-							ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
-						else if (!depthOk)
-							ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
-							if ((m_gfxRenderer.config.cullFlags
-								& smvk::gfx::CullFlagBit_HzbSkipMasked) != 0)
-								ImGui::TextDisabled("MASK draws excluded from the HZB test (cutout poison guard).");
+							const bool depthOk =
+								m_viewportResources.hizDepth.bindlessIndex != UINT32_MAX;
+							ImGui::Text("hzb: %ux%u/%u mips depthIdx=%s occ=%s cull=%s",
+								hw, hh, hm, depthOk ? "ok" : "INVALID", occOn ? "on" : "OFF",
+								cullingFrozen ? "FROZEN" : "live");
+							if (!occOn)
+								ImGui::TextDisabled("HZB flag OFF: no occlusion culls possible.");
+							else if (hm == 0)
+								ImGui::TextDisabled("HZB empty: occlusion test disabled (extent 0?).");
+							else if (!depthOk)
+								ImGui::TextDisabled("Depth bindless INVALID: HZB reads garbage.");
 						}
-					}
-					if (ImGui::CollapsingHeader("LODs", ImGuiTreeNodeFlags_DefaultOpen)) {
-						// Per-frame draws/switched/far-shaded live in the text
-						// HUD (Ctrl+T); the cooked counts stay here.
-						ImGui::Text("Cooked: %u meshes / %u siblings",
-							m_lodChainMeshes, m_lodChainLods);
-						ImGui::TextDisabled("Transition = projected simplifier error (world err * H / "
-							"(2*tan(fov/2)*dist) <= budget), hysteretic around the budget. "
-							"Every level registers its own gfx mesh: the selected LOD draws "
-							"through the HZB-culled indirect ranges.");
-						ImGui::TextDisabled("Refresh: %s (TOURMALINE_LODFULL=0 restores halfrate).",
-							m_lodFullRate ? "full-rate, every node per frame"
-							: "halfrate parity split");
-						ImGui::TextDisabled("Shader LODs: farthest level shades vertex-lit (F5: white).");
-						if (!m_lodEnabled)
-							ImGui::TextDisabled("LODs OFF - always LOD0.");
-						else if (m_lodChainMeshes == 0)
+						ImGui::Separator();
+						ImGui::Text("LODs: %u meshes / %u siblings cooked%s",
+							m_lodChainMeshes, m_lodChainLods,
+							m_lodEnabled ? "" : "  (OFF - always LOD0)");
+						if (m_lodEnabled && m_lodChainMeshes == 0)
 							ImGui::TextDisabled("No cooked LOD chain in this scene - cook with --lods on.");
-						else if (!ShaderLodActive())
-							ImGui::TextDisabled("Shader LODs OFF (toggle or missing program) - every level full-lit.");
+						if (!ShaderLodActive())
+							ImGui::TextDisabled("Shader LODs OFF - every level full-lit.");
 					}
-					ImGui::Separator();
-						ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiModeHint ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
-					if (m_inputUi && m_inputUi->hasGamepad())
-						ImGui::TextDisabled("[Gamepad] %s connected (Start = UI)", m_inputUi->gamepadName(0).c_str());
-					else
-						ImGui::TextDisabled("[Gamepad] none connected");
+
+					ImGui::SeparatorText("Keys");
+					ImGui::TextDisabled("[I] %s  [ESC] quit", m_uiModeHint ? "UI (NORMAL) -> press I for FPS" : "FPS (DISABLED) -> press I for UI");
 					ImGui::TextDisabled("Keys (toggles): TAB debug panel  M blur  O AO(No/SSAO/SAO)  B bloom  X exposure  V vectors  C map");
 					ImGui::TextDisabled("      L LODs  F particles  Ctrl+F freeze cull  G filter  K sky  H shadows  T terrain");
 					ImGui::TextDisabled("      J blood splat at crosshair  TOURMALINE_DECALS=0/1");

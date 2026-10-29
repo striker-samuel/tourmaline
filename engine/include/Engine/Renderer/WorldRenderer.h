@@ -1822,7 +1822,7 @@ public:
 	// ranks requesters by the screenspace/distance heuristic and uploads
 	// the top-N atlas tiles (upper limit + hard camera-distance cutoff).
 	bool m_spotShadowsEnabled = true;
-	int m_spotShadowMax = 4;               // upper limit, clamped to kMaxSpotShadows
+	int m_spotShadowMax = 8;               // upper limit, clamped to kMaxSpotShadows (16)
 	float m_spotShadowMaxDistance = 45.0f; // hard cutoff on camera->light distance (m)
 	// Point-shadow selection (same shape, six tiles per light): the
 	// per-light opt-in is the same authored cast-shadow flag; each selected
@@ -3053,7 +3053,7 @@ public:
 	// ---- Bloom chain (HDR down/up, see bloom.h) ----
 	bool m_bloomEnabled = true; // runs before Tonemap; gated with m_passes.bloom (B)
 	float m_bloomIntensity = 0.6f; // tonemap bloom-add scale (== BLOOM_INTENSITY)
-	float m_bloomThreshold = 400.0f; // pre-exposure HDR at the manual-exposure reference (== BLOOM_THRESHOLD; knee tracks at 0.25x; exposure-aware scaling inverts to 1/exposure)
+	float m_bloomThreshold = 800.0f; // pre-exposure HDR at the manual-exposure reference (== BLOOM_THRESHOLD; knee tracks at 0.25x; exposure-aware scaling inverts to 1/exposure)
 	// ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
