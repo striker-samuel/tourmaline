@@ -409,9 +409,33 @@ void SgGiVolumeRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
         // region — a miss is an exact weight-0 verdict for the whole
         // ray). Division by a ~0 ray component yields ±inf, which the
         // min/max below propagate correctly (parallel axis: no
-        // constraint when inside, reject when outside).
-        const float3 t0 = (vol.aabbMin.xyz - camPos) / rayDir;
-        const float3 t1 = (vol.aabbMax.xyz - camPos) / rayDir;
+        // constraint when inside, reject when outside) — EXCEPT the
+        // 0/0 corner: an origin exactly ON a slab plane with a zero
+        // direction component divides 0/0 -> NaN, and NaN survives the
+        // min/max chain (NaN comparisons are false on this hardware,
+        // so enter/exit go unpredictable — same class as the
+        // SpecularAARoughness NaN guard). Resolve degenerate axes
+        // explicitly the way the ±inf arithmetic intends: inside ->
+        // unbounded, outside -> reject. ±1e30 stands in for ±inf (the
+        // later min/max stays finite); the 1e-8 threshold only
+        // reclassifies rays whose axis interval is beyond |t| ~1e8 —
+        // far past any march range, i.e. the same verdict.
+        float3 t0 = (vol.aabbMin.xyz - camPos) / rayDir;
+        float3 t1 = (vol.aabbMax.xyz - camPos) / rayDir;
+        [unroll]
+        for (int a = 0; a < 3; ++a)
+        {
+            if (abs(rayDir[a]) < 1e-8f)
+            {
+                const bool inside = camPos[a] >= vol.aabbMin[a]
+                    && camPos[a] <= vol.aabbMax[a];
+                // inside: (-inf, +inf) — the axis constrains nothing.
+                // outside: (+inf, +inf) — tmin = +inf drives enter past
+                // any exit, rejecting the volume for the whole ray.
+                t0[a] = inside ? -1e30f : 1e30f;
+                t1[a] = 1e30f;
+            }
+        }
         const float3 tmin = min(t0, t1);
         const float3 tmax = max(t0, t1);
         const float enter = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));

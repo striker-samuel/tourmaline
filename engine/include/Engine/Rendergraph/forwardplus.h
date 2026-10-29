@@ -136,6 +136,19 @@ static constexpr uint32_t kForwardPlusMaxProbes = 64;
 // Must stay in sync with common.hlsli.
 static constexpr uint32_t kForwardPlusProbeTileSlots = 8;
 
+// Relevance-sort capacity of the cull's tile lists (shader
+// MAX_FP_TILE_SORT_SLOTS in common.hlsli): the surface light-list and
+// fog-list row strides clamp to it in the shader, so a desc configured
+// beyond it would allocate C++ rows the GPU never addresses — Create()
+// rejects instead (the shader-side FpTileLightSlots clamp stays as
+// defense in depth). Must stay in sync with common.hlsli.
+static constexpr uint32_t kForwardPlusMaxTileSortSlots = 32;
+// Per-tile decal-list WRITE gate (shader MAX_FP_DECALS_PER_TILE): the
+// cull writes at most this many entries per tile row; the row STRIDE is
+// the desc's maxDecalsPerTile on both the producer and the consumer.
+// Must stay in sync with common.hlsli.
+static constexpr uint32_t kForwardPlusMaxDecalsPerTile = 16;
+
 // Builds a probe entry for the upload tail (upload order stays
 // widest-influence-first so tile overflow keeps the widest probes).
 // boxMin/boxMax = the depth-fitted proxy volume (manifest "box" group);
@@ -279,17 +292,20 @@ struct ForwardPlusDesc {
 	// sorted by the cull (nearest reach first; spots pinned ahead of
 	// points — see forwardplus.cs.hlsl). Overflow pops the FARTHEST
 	// candidates, so the pop is a graceful distance fade, not the
-	// first-come hard edge that showed as tile seams.
+	// first-come hard edge that showed as tile seams. Capped at
+	// kForwardPlusMaxTileSortSlots (the shader's sort capacity) —
+	// Create() rejects anything beyond.
 	uint32_t maxLightsPerTile = 16;
 	// Per-tile FOG list cap (separate lists for the volumetric march —
 	// ForwardPlusCullPush::fogTile*; march-range candidacy, no slab cuts).
-	// Must stay in sync with the shader MAX_FP_FOG_TILE_SLOTS sort-array
-	// size.
+	// Capped at kForwardPlusMaxTileSortSlots like the surface list
+	// (same sorted-insertion capacity) — Create() rejects beyond.
 	uint32_t maxFogPerTile = 16;
 	// Decals share the light tiling (same tile size / tile counts): the
 	// cull pass fills parallel per-tile decal index lists in the same
-	// dispatch. Must stay in sync with the shader MAX_FP_DECALS /
-	// MAX_FP_DECALS_PER_TILE defines.
+	// dispatch. maxDecalsPerTile is the ROW STRIDE (the write gate is
+	// the shader's MAX_FP_DECALS_PER_TILE); capped at
+	// kForwardPlusMaxDecalsPerTile — Create() rejects beyond.
 	uint32_t maxDecals = 256;
 	uint32_t maxDecalsPerTile = 16;
 	const char* name = "forwardplus";
@@ -438,6 +454,19 @@ struct ForwardPlus {
 		// Fog row stride 0 would allocate a zero-size buffer and an
 		// invalid BDA for the cull's fog stores — reject like the others.
 		if (d.maxFogPerTile == 0)
+			return false;
+		// Shader-capacity contract: the cull's sorted insertion tracks at
+		// most kForwardPlusMaxTileSortSlots entries per tile and the decal
+		// write gate is kForwardPlusMaxDecalsPerTile. A desc beyond either
+		// would clamp in the shader while the C++ allocation kept the desc
+		// rows — producer and consumer would address different rows of the
+		// same buffer. Reject here; the shader-side clamps (FpTileLightSlots
+		// + the decal min) stay as defense in depth.
+		if (d.maxLightsPerTile > kForwardPlusMaxTileSortSlots)
+			return false;
+		if (d.maxFogPerTile > kForwardPlusMaxTileSortSlots)
+			return false;
+		if (d.maxDecalsPerTile == 0 || d.maxDecalsPerTile > kForwardPlusMaxDecalsPerTile)
 			return false;
 		Destroy(rg);
 

@@ -180,11 +180,13 @@ float3 LinearToSRGB(float3 c)
 // rejects, Frostbite windowed falloff, cookie + light function and
 // Cook-Torrance. Only the shadow factor source differs: sampled inline
 // (useInlineShadow, A/B path) or precomputed visibility from the
-// deferred-shadow pipeline (vis).
+// deferred-shadow pipeline (vis). Takes baseColor + metallic (NOT a
+// precomputed diffuse): the diffuse Fresnel complement must come from
+// THIS light's half-vector (see the kD note at the tail of the body).
 void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     float3 geomN, float3 N, float3 V, float3 F0, float roughness,
-    float3 diffuse, float NdotV, bool useInlineShadow, float vis,
-    float2 pix, float time, inout float3 direct)
+    float3 baseColor, float metallic, float NdotV, bool useInlineShadow,
+    float vis, float2 pix, float time, inout float3 direct)
 {
     // Cheapest reject first: squared distance vs squared range.
     // No sqrt / division until the light survives this test.
@@ -212,9 +214,14 @@ void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
         if (cosA < cosOuter)
             return;
         angular = smoothstep(cosOuter, cosInner, cosA);
-        // Cone UV for the cookie / spatial light functions
-        // (same projection as the spot-shadow tiles).
-        spotUV = SpotConeUV(axis, -Lp, pl.outerAngle);
+        // Cone UV for the cookie / spatial light functions (same
+        // projection as the spot-shadow tiles). LAZY: only the cookie
+        // and the spatial band function (type 3) consume it — the
+        // projection basis (normalize/cross/tan/divide) is per-pixel
+        // per-light ALU the plain cone falloff never needs, so compute
+        // it only when a consumer actually exists.
+        if (pl.cookieIndex >= 0 || pl.functionType == 3)
+            spotUV = SpotConeUV(axis, -Lp, pl.outerAngle);
     }
 
     // Frostbite-style windowed falloff, candela convention:
@@ -288,8 +295,16 @@ plColor *= EvaluateLightFunction(
     if (shadowFactor <= 0.0f)
         return;
 
+    // Per-light diffuse Fresnel: the complement uses THIS light's
+    // half-vector, mirroring the sun lobe's kD = (1 - F) * (1 -
+    // metallic). The old code reused the SUN's kD (passed in
+    // precomputed) for every point/spot — moving the sun direction
+    // perturbed the diffuse term of otherwise unchanged local lights
+    // while their own specular lobe correctly used Fp.
     // (Same far-LOD gate as the sun lobe above: no per-light specular
-    // when the material programs simplified far shading.)
+    // when the material programs simplified far shading — and the
+    // diffuse drops the Fresnel complement, pure Lambert.)
+    float3 diffuseP = (1.0f - metallic) * baseColor / PI;
     float3 specP = float3(0.0f, 0.0f, 0.0f);
     if (litSpecular != 0u)
     {
@@ -298,9 +313,10 @@ plColor *= EvaluateLightFunction(
         float Gp = GeometrySmith(N, V, Lp, roughness);
         float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
         specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
+        diffuseP *= 1.0f - Fp;
     }
 
-    direct += (diffuse + specP) * plColor * (NdotLp * atten * angular * shadowFactor);
+    direct += (diffuseP + specP) * plColor * (NdotLp * atten * angular * shadowFactor);
 }
 
 // -------------------------------------------------------------------------
@@ -343,6 +359,11 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
     if (tileIdx >= (uint) MAX_FP_TILES)
         return;
 
+    // perTile (clamped to the shader capacity) only bounds the walk; the
+    // ROW STRIDE is the desc's decalMaxPerTile — the same value the C++
+    // allocation and the cull's decal writeback index with (see
+    // forwardplus.cs.hlsl), so producer and consumer always agree on the
+    // row layout whatever the configured maximum.
     const uint perTile = min(frame.decalMaxPerTile, (uint) MAX_FP_DECALS_PER_TILE);
     const uint stride = max(frame.decalMaxPerTile, 1u);
     const uint listCount = min(frame.decalTileCounts.Get().counts[tileIdx], perTile);
@@ -1036,7 +1057,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 if (li >= nlights)
                     continue;
                 EvaluateForwardPlusLight(fpLightsBuf.Get().lights[li],
-                    IN.worldPos, geomN, N, V, F0, shadingRoughness, diffuse, NdotV,
+                    IN.worldPos, geomN, N, V, F0, shadingRoughness,
+                    baseColor, metallic, NdotV,
                     false, vis, clipPos.xy, hot.time, direct);
             }
         }

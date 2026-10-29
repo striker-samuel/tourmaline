@@ -125,7 +125,11 @@ float4 mainPS(ParticleVsOut IN) : SV_Target
             if (tx < pcDraw.fpTileCountX)
             {
                 uint tileIdx = ty * pcDraw.fpTileCountX + tx;
-                uint perTile = min(pcDraw.fpMaxPerTile, (uint)MAX_FP_PER_TILE);
+                // Shared effective capacity (common.hlsli FpTileLightSlots):
+                // the cull producer clamps identically, so both sides
+                // address the same rows whatever the configured
+                // maxLightsPerTile (see the contract comment there).
+                uint perTile = FpTileLightSlots(pcDraw.fpMaxPerTile);
                 uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
                 // counts packs lights (low 16) + probes (high 16, dedicated
                 // tail slots) — particles shade lights only, so mask.

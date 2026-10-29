@@ -386,6 +386,25 @@ struct ForwardPlusTileIndexBuffer
 // follow), so list addressing can never leave the allocated rows.
 #define MAX_FP_TILE_SORT_SLOTS 32
 
+// Effective per-tile light-slot capacity — the ONE clamp chain the cull
+// PRODUCER (forwardplus.cs.hlsl) and EVERY surface-list consumer
+// (environment.hlsli's probe walk, particles_draw.frag.hlsl's light walk)
+// must share to address the same rows of the tile index buffer. The
+// producer's sorted insertion can only track MAX_FP_TILE_SORT_SLOTS
+// entries, so the configured maxLightsPerTile clamps to it; the consumers
+// used to clamp only against MAX_FP_PER_TILE (128), so any configured
+// value in (32, 128] made the two sides compute DIFFERENT row strides
+// (producer 32+8 vs consumer 64+8) and read garbage rows. The C++
+// allocation + both push values come from the same desc field, and
+// ForwardPlus::Create rejects a desc beyond the capacity — this clamp is
+// the GPU-side defense in depth that keeps producer/consumer addressing
+// identical whatever arrives in the pushes.
+uint FpTileLightSlots(uint maxPerTile)
+{
+    return min(min(maxPerTile, (uint) MAX_FP_PER_TILE),
+        (uint) MAX_FP_TILE_SORT_SLOTS);
+}
+
 // Per-tile FOG lists (the volumetric march's light candidates): SEPARATE
 // buffers from the surface lists because their candidacy ignores the tile
 // depth slab — march samples live in front of the nearest opaque surface,

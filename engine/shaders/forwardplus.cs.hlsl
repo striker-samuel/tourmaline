@@ -168,11 +168,13 @@ void mainCS(uint3 groupId : SV_GroupID)
     // counts: low 16 = SORTED light list length (never beyond the
     // written entries), high 16 = TRUE (unclamped) probe count.
     uint lightCount = min(pcCull.lightCount, (uint)MAX_FP_LIGHTS);
-    uint maxPerTile = min(pcCull.maxLightsPerTile, (uint)MAX_FP_PER_TILE);
-    // Sort capacity: the sorted insertion can only track
-    // MAX_FP_TILE_SORT_SLOTS entries; a desc raise beyond it clamps here
-    // and the stored count follows (see common.hlsli). 16 today.
-    maxPerTile = min(maxPerTile, (uint)MAX_FP_TILE_SORT_SLOTS);
+    // Effective slot capacity via the SHARED clamp chain
+    // (common.hlsli FpTileLightSlots): every surface-list consumer
+    // derives its row stride from the same function, so producer and
+    // consumer always address the same rows whatever the configured
+    // maxLightsPerTile. A desc raise beyond the sort capacity clamps
+    // here and the stored count follows.
+    const uint maxPerTile = FpTileLightSlots(pcCull.maxLightsPerTile);
     const uint stride = maxPerTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
     // Fog row stride: the pushed desc value clamped to the same sort
     // capacity (the volumetric consumer clamps identically, so both
@@ -335,7 +337,17 @@ void mainCS(uint3 groupId : SV_GroupID)
     // probes need no leg of their own: they ride the light leg above as
     // type-2 entries (position = center, range = influence + fade).
     uint decalCount = min(frame.decalCount, (uint)MAX_FP_DECALS);
+    // decalPerTile is the WRITE gate (the shader-side per-tile capacity,
+    // MAX_FP_DECALS_PER_TILE). The ROW STRIDE is the desc's
+    // decalMaxPerTile — the SAME value the C++ allocation
+    // (tiles * maxDecalsPerTile) and the shading consumer
+    // (default_lit_body.hlsli ApplyForwardPlusDecals) index with, so
+    // producer and consumer address the same rows whatever the desc.
+    // (The old code used the CLAMPED value here while the consumer used
+    // the raw one — a desc beyond 16 made the two sides read different
+    // rows.)
     uint decalPerTile = min(frame.decalMaxPerTile, (uint)MAX_FP_DECALS_PER_TILE);
+    const uint decalStride = max(frame.decalMaxPerTile, 1u);
     uint dcount = 0;
     for (uint di = 0; di < decalCount; ++di)
     {
@@ -365,10 +377,12 @@ void mainCS(uint3 groupId : SV_GroupID)
         if (dOutside)
             continue;
 
-        // Stride is frame.decalMaxPerTile (matches the builder's
-        // tiles * maxDecalsPerTile allocation).
+        // Row stride is the desc's decalMaxPerTile (matches the
+        // builder's tiles * maxDecalsPerTile allocation and the
+        // consumer); decalPerTile only gates how many entries are
+        // written into the row.
         if (dcount < decalPerTile)
-            frame.decalTileIndices.Get().indices[tileIdx * decalPerTile + dcount] = di;
+            frame.decalTileIndices.Get().indices[tileIdx * decalStride + dcount] = di;
         dcount++;
     }
     frame.decalTileCounts.Get().counts[tileIdx] = dcount;

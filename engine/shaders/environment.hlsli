@@ -355,7 +355,13 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     bool tileFresh = useBaked && tileIdx != 0xffffffffu && tileIdx < (uint)MAX_FP_TILES
         && frame.probeTileFresh != 0u && entryTotal > 0u;
     if (tileFresh) {
-        uint perTile = min(fpMaxPerTile, (uint)MAX_FP_PER_TILE);
+        // Shared effective capacity (common.hlsli FpTileLightSlots): the
+        // cull producer derives its row stride from the SAME clamp chain,
+        // so both sides address the same rows whatever the configured
+        // maxLightsPerTile. The old consumer-only clamp against
+        // MAX_FP_PER_TILE (128) read wrong rows the moment the desc
+        // exceeded the producer's sort capacity (32).
+        uint perTile = FpTileLightSlots(fpMaxPerTile);
         uint stride = perTile + (uint)MAX_FP_PROBE_TILE_SLOTS;
         // Probes pack the dedicated tail slots (immune to light saturation
         // — a packed light budget must never flip specular to the global

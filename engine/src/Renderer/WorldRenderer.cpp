@@ -8767,7 +8767,15 @@ namespace engine {
 			.fpTileCountX = fpTileCountX,
 			.fpLightCount = fpLightCount,
 			.fpTileSize = FP_TILE_SIZE,
-			.fpMaxPerTile = FP_MAX_PER_TILE,
+			// The SAME desc field the cull push carries
+			// (AppendTileCull: cullPC.maxLightsPerTile = desc.maxLight-
+			// PerTile) — the surface-list consumers (probe walk in
+			// environment.hlsli, particles_draw) derive their row stride
+			// from this value, so it must never drift from what the
+			// producer wrote with (the old hardcoded FP_MAX_PER_TILE
+			// happened to equal it; a desc change alone would have
+			// desynced every consumer).
+			.fpMaxPerTile = fp.desc.maxLightsPerTile,
 			.spotShadowBuffer = spotShadowBufferAddress,
 			.spotShadowMapIndex = m_spotShadowMapIndex >= 0 ? (uint32_t)m_spotShadowMapIndex : UINT32_MAX,
 			// Frame TOTAL (spot tiles + point faces) - the bound every
@@ -11509,7 +11517,9 @@ namespace engine {
 			drawPush.fpTileCountX = particleTilesUsable ? fpTileCountX : 0u;
 			drawPush.fpLightCount = fpLightCount;
 			drawPush.fpTileSize = FP_TILE_SIZE;
-			drawPush.fpMaxPerTile = FP_MAX_PER_TILE;
+			// Same desc field as the scene push + the cull push (the
+			// consumer stride contract — see the scene push comment).
+			drawPush.fpMaxPerTile = m_viewportResources.forwardPlus.desc.maxLightsPerTile;
 			drawPush.maxParticles = PARTICLE_MAX;
 			particlePass.SetRecordingFunc([this, drawPush](smvk::CommandBuffer& cmd) {
 				cmd.BindRenderPipeline(
@@ -12258,7 +12268,11 @@ namespace engine {
 					volFogTileIndices,
 					fpLightsAddress,
 					fpLightCount,
-					FP_FOG_PER_TILE);
+					// Same desc field the cull push carries (AppendTileCull:
+					// cullPC.maxFogPerTile = desc.maxFogPerTile) — the fog
+					// consumer derives its row stride from this value, so it
+					// must match what the producer wrote with.
+					m_viewportResources.forwardPlus.desc.maxFogPerTile);
 				// Convex-volume tile masks: the fog march reads the per-tile
 				// volume bitmask (fragment) after the tile cull wrote it
 				// (compute) - order the edge (same freshness contract as the
@@ -13073,7 +13087,7 @@ namespace engine {
 								const bool tiled = ProbeTileListsWanted();
 								ImGui::Text("Tiled probes: %s (stride %u shared, tiles %ux%u)",
 									tiled ? "fresh" : "stale (global cubemap)",
-									FP_MAX_PER_TILE,
+									m_viewportResources.forwardPlus.desc.maxLightsPerTile,
 									m_viewportResources.forwardPlus.tileCountX,
 									m_viewportResources.forwardPlus.tileCountY);
 								ImGui::TextDisabled("Probes ride the FP light buffer tail (type 2); pixels"
@@ -14322,11 +14336,11 @@ namespace engine {
 						const auto& fwd = m_viewportResources.forwardPlus;
 						ImGui::Text("Forward+: %ux%u tiles (%u)  tile %u  max/tile %u",
 							fwd.tileCountX, fwd.tileCountY, fwd.tileCount,
-							FP_TILE_SIZE, FP_MAX_PER_TILE);
+							FP_TILE_SIZE, fwd.desc.maxLightsPerTile);
 						ImGui::Text("Lights: %u / %u%s", m_fpLightCount, FP_MAX_LIGHTS,
 							m_fpLightCount > FP_MAX_LIGHTS ? "  (CLAMPED!)" : "");
 						ImGui::TextDisabled("Tiles cap at %u lights: overflow pops (spots win slots, written first)",
-							FP_MAX_PER_TILE);
+							fwd.desc.maxLightsPerTile);
 						ImGui::Text("Decals: %u / %u (cap %u/tile)%s", m_decalFrameCount,
 							FP_MAX_DECALS, FP_MAX_DECALS_PER_TILE,
 							DecalsActive() ? "" : "  (off)");

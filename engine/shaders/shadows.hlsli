@@ -103,6 +103,14 @@ float PCFShadow(
         {
             float2 offset = float2(x, y) * texelSize;
 
+            // SampleCmpLevelZero returns the COMPARISON result (1 = the
+            // stored depth passed the compare against currentDepth,
+            // 0 = occluded) — NOT the stored depth. The old
+            // `currentDepth <= d` re-compared the receiver depth against
+            // that 0/1 result, which only ever lit fully-lit taps
+            // (dormant: this helper is off the live paths — the atlas
+            // helpers below do manual SampleLevel compares; kept for the
+            // parked single-map path). Accumulate the result directly.
             float d = textures[shadowIdx]
             .SampleCmpLevelZero(
                 comparisonSamplers[samplerId],
@@ -110,7 +118,7 @@ float PCFShadow(
                 currentDepth
             );
 
-            sum += (currentDepth <= d) ? 1.0f : 0.0f;
+            sum += d;
             samples++;
         }
     }
