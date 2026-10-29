@@ -425,13 +425,14 @@ static smvk::CascadedShadowMapDesc MakeShadowDesc(uint32_t resolution, float lam
 	smvk::CascadedShadowMapDesc d{};
 	d.cascadeCount = NUM_CASCADES;
 	d.cascadeResolution = resolution;
-	// The coarse VOLUMETRIC shadow tile (the fog god-ray pass): a
-	// 512-class tile appended below the cascade grid - ALWAYS allocated
-	// (a live mode flip to Coarse never recreates the atlas; +8 MB of
-	// D32 at 2048-class cascades). Invisible to every cascade consumer
-	// (the descriptors normalize against the grid extent - see
-	// BuildDirectionalLight's EVSM-safety note).
-	d.fogShadowResolution = 512;
+	// The coarse VOLUMETRIC shadow atlas (the fog god-ray pass): a
+	// DEDICATED second D32 image at HALF the cascade resolution -
+	// ALWAYS allocated (a live mode flip to Coarse never recreates
+	// anything; 4 MB at 2048-class cascades). The main cascade atlas
+	// keeps its exact pre-volumetric grid extent (zero layout change
+	// for every existing consumer), and the dedicated atlas carries its
+	// own bindless index + graph view the fog march consumes.
+	d.fogShadowResolution = std::max(256u, resolution / 2);
 	d.format = SHADOW_FORMAT;
 	d.lambda = lambda;
 	d.zPadding = CASCADE_Z_PADDING;
@@ -4439,18 +4440,18 @@ namespace engine {
 		// fill/upload below targets the same slice).
 		data.dsVizParams = m_context->GetBufferDeviceAddress(m_resources.dsVizParamsBuffer)
 			+ size_t(currentFrame) * sizeof(DsVizParams);
-		// ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass -
+		// ---- The coarse VOLUMETRIC shadow atlas (the fog god-ray pass -
 		// the perf plan item 5): build the sun-oriented ortho over the
 		// camera's FOG frustum (near..min(far, the fog max distance))
 		// with the UPSTREAM-caster bounds (GetDirectionalLightOrthoVP's
 		// casterFit mechanism - off-screen buildings behind the camera
-		// still cast shafts INTO the view), texel-snapped at the 512
-		// tile res. Independent of the SDSM cascade splits by
-		// construction (a fresh fit, never the splits table). The
-		// casters = the CastVolumetricShadow-marked walk (large
-		// occluders only); zero eligible casters -> enabled=0 (the fog
-		// sun leg falls back to the CSM tap / fully lit, the plan's
-		// skip rule).
+		// still cast shafts INTO the view), texel-snapped at the
+		// dedicated atlas's res (half the cascade res). Independent of
+		// the SDSM cascade splits by construction (a fresh fit, never
+		// the splits table). The casters = the CastVolumetricShadow-
+		// marked walk (large occluders only); zero eligible casters ->
+		// enabled=0 (the fog sun leg falls back to the CSM tap / fully
+		// lit, the plan's skip rule).
 		{
 			const bool coarseActive = m_fogSunShadowMode == 2
 				&& m_passes.directionalShadows
@@ -7638,8 +7639,7 @@ namespace engine {
 			smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
 			if (!meshDesc)
 				return;
-			IRenderer::PushConstants objectPC{};
-			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+			IRenderer::PushConstants objectPC{};			std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 			// No dither fade on the marked large occluders (the fade
 			// subtree is a closeup-camera effect; push 0 so a stale
 			// partial-range flag never leaks between draws - the
@@ -9929,18 +9929,23 @@ namespace engine {
 			}
 		}
 
-		// ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass -
-		// the perf plan item 5): ONE depth-only pass into the atlas's
-		// appended row with ONLY the CastVolumetricShadow-marked large
-		// occluders. Its own RAW tile - it renders in PCF AND EVSM
-		// modes alike (never the EVSM moment path), which makes it the
-		// fog sun-occlusion FALLBACK under EVSM. The projection rides
+		// ---- The coarse VOLUMETRIC shadow atlas (the fog god-ray pass -
+		// the perf plan item 5): ONE depth-only pass into the DEDICATED
+		// second D32 atlas (half the cascade res - its own image, its
+		// own bindless index; the main cascade atlas is untouched) with
+		// ONLY the CastVolumetricShadow-marked large occluders. Its own
+		// RAW atlas - it renders in PCF AND EVSM modes alike (never the
+		// EVSM moment path), which makes it the fog sun-occlusion
+		// FALLBACK under EVSM. The projection rides
 		// FrameUniforms::fogShadow* (built in UpdateFrameUniforms - the
 		// sun-oriented ortho over the camera fog frustum + the
-		// upstream-caster bounds, texel-snapped at the tile res).
-		// Skipped when the mode is off, the tile is absent, or NO
+		// upstream-caster bounds, texel-snapped at the atlas res).
+		// Skipped when the mode is off, the atlas is absent, or NO
 		// marked casters exist (enabled=0 -> the fog sun leg falls back
-		// to the CSM tap / fully lit).
+		// to the CSM tap / fully lit). The volumetric pass's coarse
+		// FEED gate (volCoarseFeed at the AddVolumetricPass call)
+		// matches this emission gate exactly - the march never samples
+		// an unemitted/stale tile.
 		if (m_fogSunShadowMode == 2
 			&& m_viewportResources.directionalShadows.Valid()
 			&& m_viewportResources.directionalShadows.fogTileExtent.width != 0
@@ -13341,28 +13346,48 @@ namespace engine {
 					volFogTileIndices =
 						m_viewportResources.forwardPlus.FogTileIndicesAddress(*m_context);
 				}
-				// ---- The CSM god-ray feed (volumetric.h's trailing args):
-				// the RAW D32 depth atlas + the scene push's cascade
-				// buffer/count (fc.pc — the same slice the surface
-				// shadows read). TWO hard rules:
-				//   1. NEVER light.shadow_map_index: it flips to the
-				//      blurred EVSM MOMENTS when EVSM is on, and the
-				//      fog's single-tap depth compare needs raw tile
-				//      values.
-				//   2. PCF mode only: under EVSM the caster passes render
-				//      moments INTO THE EVSM ATLAS and the raw depth
-				//      passes are SKIPPED (the AddMomentPass continue in
-				//      the shadow block) — the raw atlas holds stale
-				//      data, so the fog's god-rays gate off and the sun
-				//      leg keeps its original unshadowed behavior (the
-				//      plan's own "PCF/EVSM: disabled for fog" setting;
-				//      EVSM fog shadowing would need a moment evaluation
-				//      — a separate feature).
-				const bool volSunShadows = (m_fogSunShadowMode == 1)
+				// ---- The fog sun-shadow feed (volumetric.h's trailing
+				// args): the scene push's cascade buffer/count (fc.pc —
+				// the same slice the surface shadows read) + the depth
+				// atlas view, PER MODE (the shader picks one leg —
+				// never both; multiplying two occlusion forms would
+				// darken the fog twice):
+				//   mode 1 (CSM tap): the RAW main D32 atlas. TWO hard
+				//     rules:
+				//     1. NEVER light.shadow_map_index: it flips to the
+				//        blurred EVSM MOMENTS when EVSM is on, and the
+				//        fog's single-tap depth compare needs raw tile
+				//        values.
+				//     2. PCF mode only: under EVSM the caster passes
+				//        render moments INTO THE EVSM ATLAS and the raw
+				//        depth passes are SKIPPED — the raw atlas holds
+				//        stale data, so this leg gates off (the plan's
+				//        own "PCF/EVSM: disabled for fog" setting).
+				//   mode 2 (coarse): the DEDICATED volumetric atlas —
+				//     its own raw depth pass renders under PCF AND EVSM
+				//     alike, which makes this feed the EVSM fallback.
+				//     The gate matches the tile pass's emission gate
+				//     exactly (m_fogShadowCasterCount > 0): the view
+				//     rides SetInputImages so the graph orders the tile
+				//     write before this read, and a non-emitted tile
+				//     never feeds the march (no stale-atlas reads, no
+				//     out-of-range texture indices — the shader's
+				//     coarse leg re-checks the index too, but the FEED
+				//     is the contract; the pre-split wiring fed
+				//     UINT32_MAX here and the march sampled an
+				//     out-of-bounds descriptor — the "jumping fog
+				//     shadows" root cause).
+				const bool volCsmFeed = (m_fogSunShadowMode == 1)
 					&& m_passes.directionalShadows
 					&& !EvsmActive()
 					&& m_viewportResources.directionalShadows.Valid()
 					&& fc.pc.cascadeBuffer != 0;
+				const bool volCoarseFeed = (m_fogSunShadowMode == 2)
+					&& m_passes.directionalShadows
+					&& m_viewportResources.directionalShadows.Valid()
+					&& m_viewportResources.directionalShadows.fogTileExtent.width != 0
+					&& !m_viewportResources.directionalShadows.fogLogicalView.empty()
+					&& m_fogShadowCasterCount > 0;
 				auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
 					*m_rendergraph,
 					sceneHdrView,
@@ -13384,18 +13409,25 @@ namespace engine {
 					// consumer derives its row stride from this value, so it
 					// must match what the producer wrote with.
 					m_viewportResources.forwardPlus.desc.maxFogPerTile,
-					// The god-ray feed (see volSunShadows' note): the raw
-					// atlas view also rides SetInputImages, so the graph
-					// orders the last cascade write before this read.
-					volSunShadows ? fc.pc.cascadeBuffer : 0,
-					volSunShadows ? fc.pc.numCascades : 0u,
-					volSunShadows
+					// The sun-shadow feed (see the per-mode note above):
+					// the raw MAIN atlas for the CSM tap, the DEDICATED
+					// fog atlas for the coarse leg — the view rides
+					// SetInputImages either way, so the graph orders the
+					// last shadow write before this read.
+					volCsmFeed ? fc.pc.cascadeBuffer : 0,
+					volCsmFeed ? fc.pc.numCascades : 0u,
+					volCsmFeed
 					? m_viewportResources.directionalShadows.logicalView
-					: smvk::LogicalImageViewHandle{},
-					volSunShadows
+					: (volCoarseFeed
+						? m_viewportResources.directionalShadows.fogLogicalView
+						: smvk::LogicalImageViewHandle{}),
+					volCsmFeed
 					? m_context->GetBindlessIndex(
 						m_viewportResources.directionalShadows.bindless)
-					: UINT32_MAX);
+					: (volCoarseFeed
+						? m_context->GetBindlessIndex(
+							m_viewportResources.directionalShadows.fogBindless)
+						: UINT32_MAX));
 				// Convex-volume tile masks: the fog march reads the per-tile
 				// volume bitmask (fragment) after the tile cull wrote it
 				// (compute) - order the edge (same freshness contract as the
@@ -14939,7 +14971,7 @@ namespace engine {
 						const auto& atlas = m_viewportResources.directionalShadows;
 						ImGui::Text("CSM: %u cascades  tile %ux%u  atlas %ux%u  lambda %.2f  far %.1fm",
 							NUM_CASCADES, CascadeTileExtent().width, CascadeTileExtent().height,
-							atlas.atlasExtent.width, atlas.atlasExtent.height,
+							atlas.gridExtent.width, atlas.gridExtent.height,
 							(double)m_cascadeLambda, (double)CascadeFar());
 						for (uint32_t i = 0; i < NUM_CASCADES; ++i) {
 							ImGui::Text(" cascade %u: [%.2f .. %.2f] depthBias %.5f normalBias %.4f",
@@ -16949,6 +16981,66 @@ namespace engine {
 		// visible to everything recorded below.
 		m_context->UpdateDescriptors();
 		m_rendergraph->Execute(fb);
+		// TOURMALINE_FOG_TILE_DUMP=<frame>: one-shot post-Execute
+		// download of the DEDICATED volumetric shadow atlas (the coarse
+		// fog tile's ground truth - stats + an ASCII content map, the
+		// EVSM_DUMP family's stderr sibling; the atlas gets TransferSrc
+		// via DebugImageDumpArmed at creation). Sync downloads stall -
+		// debug runs only.
+		{
+			static const int fogDumpFrame = [] {
+				const char* e = std::getenv("TOURMALINE_FOG_TILE_DUMP");
+				return e ? std::atoi(e) : -1;
+			}();
+			static bool fogDumpDone = false;
+			if (fogDumpFrame >= 0 && !fogDumpDone
+				&& (int)m_frameCounter >= fogDumpFrame
+				&& m_viewportResources.directionalShadows.fogTileExtent.width != 0) {
+				fogDumpDone = true;
+				const auto& fogAtlas = m_viewportResources.directionalShadows;
+				const uint32_t fw = fogAtlas.fogTileExtent.width;
+				const uint32_t fh = fogAtlas.fogTileExtent.height;
+				std::vector<float> px(size_t(fw) * fh);
+				if (m_context->DownloadDataFromImage(fogAtlas.fogImage,
+						smvk::ImageLayout::DepthReadOnlyOptimal,
+						px.data(), px.size() * sizeof(float))) {
+					float mn = 1e30f, mx = -1e30f;
+					double sum = 0;
+					size_t drawn = 0; // texels below the clear value
+					for (float v : px) {
+						mn = (std::min)(mn, v);
+						mx = (std::max)(mx, v);
+						sum += v;
+						if (v < 0.999f)
+							++drawn;
+					}
+					std::fprintf(stderr,
+						"[FogTileDump] %ux%u: min=%.3f max=%.3f mean=%.3f texels<0.999=%zu (%.1f%%)\n",
+						fw, fh, mn, mx, sum / (double)px.size(),
+						drawn, 100.0 * (double)drawn / (double)px.size());
+					for (uint32_t ry = 0; ry < 16; ++ry) {
+						std::string row;
+						for (uint32_t rx = 0; rx < 32; ++rx) {
+							double cell = 0;
+							size_t n = 0;
+							for (uint32_t y = ry * fh / 16; y < (ry + 1) * fh / 16; ++y)
+								for (uint32_t x = rx * fw / 32; x < (rx + 1) * fw / 32; ++x) {
+									cell += px[y * fw + x];
+									++n;
+								}
+							const float c = n ? float(cell / (double)n) : 1.0f;
+							row += (c >= 0.999f) ? '.'
+								: (c > 0.75f ? '-' : (c > 0.5f ? '+' : 'X'));
+						}
+						std::fprintf(stderr, "[FogTileDump] %s\n", row.c_str());
+					}
+				}
+				else {
+					std::fprintf(stderr,
+						"[FogTileDump] download FAILED (TransferSrc missing on the atlas?)\n");
+				}
+			}
+		}
 		// TMP-DIAG (TOURMALINE_SKINBOUNDS_DUMP=<frame>): one-shot post-Execute
 		// sanity dump of (a) the frame's deformed heap half and (b) the
 		// skinBounds cone table (the skinned draws' slot ranges + the

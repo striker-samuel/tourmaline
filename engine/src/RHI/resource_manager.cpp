@@ -25,7 +25,9 @@ bool DebugImageDumpArmed() {
     static const bool armed = [] {
         const char* ssr = std::getenv("TOURMALINE_SSR_DUMP");
         const char* evsm = std::getenv("TOURMALINE_EVSM_DUMP");
-        return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0);
+        const char* fogTile = std::getenv("TOURMALINE_FOG_TILE_DUMP");
+        return (ssr && std::atoi(ssr) >= 0) || (evsm && std::atoi(evsm) >= 0)
+            || (fogTile && std::atoi(fogTile) >= 0);
     }();
     return armed;
 }

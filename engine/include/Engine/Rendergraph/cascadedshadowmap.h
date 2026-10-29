@@ -38,15 +38,17 @@ static constexpr uint32_t kMaxCascades = 4;
 struct CascadedShadowMapDesc {
 	uint32_t cascadeCount = 4;
 	uint32_t cascadeResolution = 2048; // per-cascade tile, square
-	// The coarse VOLUMETRIC shadow tile (the fog god-ray pass, see
-	// WorldRenderer's fog sun-shadow block): 0 = no tile (the plain
-	// NxN grid atlas); >0 appends ONE extra row below the cascade grid
-	// (the tile spans the full grid width... no - a square tile of this
-	// resolution at the grid's bottom-left) reserved for the fog
-	// pass. The SURFACE cascade descriptors normalize UVs against the
-	// GRID extent (not the full atlas) so the appended row is
-	// invisible to every existing consumer - the EVSM moment atlas
-	// keeps the original 2x2 layout contract untouched.
+	// The coarse VOLUMETRIC shadow atlas (the fog god-ray pass, see
+	// WorldRenderer's fog sun-shadow block): 0 = none; >0 creates a
+	// SECOND, DEDICATED square D32 atlas of this resolution, fully
+	// separate from the cascade grid atlas. The split is deliberate:
+	// the main atlas keeps its exact grid extent (every existing
+	// consumer - surface PCF, EVSM moments, the fog CSM tap - sees
+	// ZERO layout change), and the coarse tile gets its own image the
+	// volumetric pass owns end-to-end (its own bindless index + graph
+	// view). The dedicated atlas is HALF the cascade resolution at the
+	// WorldRenderer call site (a coarse occluder map - 4 MB at
+	// 2048-class cascades).
 	uint32_t fogShadowResolution = 0;
 	Format format = Format::D32_Float; // depth-only atlas, stencil dropped
 	float lambda = 0.8f;               // 0 = linear splits, 1 = pure logarithmic (starves far cascade)
@@ -101,15 +103,23 @@ struct CascadedShadowAtlas {
 	Holder<BindlessImageHandle> bindless;
 	LogicalImageViewHandle logicalView; // rendergraph alias of sampledView
 
+	// The DEDICATED coarse volumetric atlas (fogShadowResolution > 0):
+	// a second square D32 image + its own bindless index and graph
+	// view. Empty handles = no volumetric tile (fogTileExtent 0x0).
+	Holder<ImageHandle> fogImage;
+	Holder<ImageViewHandle> fogAttachmentView;
+	Holder<ImageViewHandle> fogSampledView;
+	Holder<BindlessImageHandle> fogBindless;
+	LogicalImageViewHandle fogLogicalView;
+
 	// Default depth-only program (shadow.vert, mainVS). Created by
 	// EnsureShaders/Create/Ensure so apps don't own shadow modules.
 	Holder<ShaderModuleHandle> vsModule;
 	ShaderProgram program{};
 
-	Extent2D atlasExtent{ 0, 0 };  // the PHYSICAL image (grid + the fog row)
-	Extent2D gridExtent{ 0, 0 };   // the cascade grid (the UV-normalization base)
+	Extent2D gridExtent{ 0, 0 };   // the cascade grid == the main atlas extent
 	Extent2D tileExtent{ 0, 0 };
-	Extent2D fogTileExtent{ 0, 0 }; // 0x0 = no volumetric tile
+	Extent2D fogTileExtent{ 0, 0 }; // the DEDICATED atlas's extent (0x0 = none)
 	Format format = Format::D32_Float;
 	uint32_t cascadeCount = 0;
 
@@ -133,12 +143,13 @@ struct CascadedShadowAtlas {
 		outY = static_cast<int32_t>((index / cols) * tileExtent.height);
 	}
 
-	// The volumetric tile's origin in texels (the extra row below the
-	// cascade grid; only when fogShadowResolution > 0).
+	// The volumetric atlas's origin in texels (its own image - the
+	// origin is trivially (0,0); kept for the pass/rect helpers' single
+	// source).
 	void FogTileOrigin(int32_t& outX, int32_t& outY) const {
 		assert(fogTileExtent.width != 0);
 		outX = 0;
-		outY = static_cast<int32_t>(gridExtent.height);
+		outY = 0;
 	}
 
 	// Idempotent default program creation (shadow.vert, mainVS).
@@ -164,7 +175,8 @@ struct CascadedShadowAtlas {
 		vsModule = {};
 	}
 
-	// Frees the atlas images/views (shaders survive – they are size-independent).
+	// Frees both atlas images/views (shaders survive – they are
+	// size-independent).
 	void Destroy(RenderGraph& rg) {
 		if (!logicalView.empty())
 			rg.FreeImageView(logicalView);
@@ -173,15 +185,21 @@ struct CascadedShadowAtlas {
 		sampledView = {};
 		attachmentView = {};
 		image = {};
-		atlasExtent = { 0, 0 };
+		if (!fogLogicalView.empty())
+			rg.FreeImageView(fogLogicalView);
+		fogLogicalView = {};
+		fogBindless = {};
+		fogSampledView = {};
+		fogAttachmentView = {};
+		fogImage = {};
 		gridExtent = { 0, 0 };
 		tileExtent = { 0, 0 };
 		fogTileExtent = { 0, 0 };
 		cascadeCount = 0;
 	}
 
-	// Creates the physical atlas (image + depth/sampled views + bindless)
-	// and registers the sampled view with the rendergraph.
+	// Creates the physical atlases (image + depth/sampled views +
+	// bindless) and registers the sampled views with the rendergraph.
 	// Also ensures the default shader program. Returns false when the
 	// descriptor is invalid or shaders fail to load.
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
@@ -191,17 +209,14 @@ struct CascadedShadowAtlas {
 		if (desc.cascadeResolution == 0)
 			return false;
 
+		// The main atlas is EXACTLY the cascade grid (the pre-volumetric
+		// layout - every existing consumer sees zero change; the coarse
+		// tile lives in its own dedicated atlas below).
 		const Extent2D grid = CascadedShadowAtlasExtent(desc.cascadeResolution, desc.cascadeCount);
-		// The volumetric tile appends one row below the grid (only when
-		// the desc asks for it): atlas = grid + the extra height.
-		const Extent2D atlas = (desc.fogShadowResolution > 0)
-			? Extent2D{ grid.width,
-				grid.height + std::max(1u, desc.fogShadowResolution) }
-			: grid;
 
 		ImageCreateInfo imageCI{};
 		imageCI.format = desc.format;
-		imageCI.extent = { atlas.width, atlas.height, 1u };
+		imageCI.extent = { grid.width, grid.height, 1u };
 		imageCI.mipLevels = 1u;
 		imageCI.arrayLayers = 1u;
 		imageCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
@@ -253,25 +268,101 @@ struct CascadedShadowAtlas {
 		if (newLogical.empty())
 			return false;
 
+		// ---- The DEDICATED coarse volumetric atlas (fogShadowResolution
+		// > 0): a second square D32 image with its own bindless index +
+		// graph view. All-or-nothing like the main views above (a failed
+		// fog atlas fails Create - the caller logs and disables the
+		// shadow passes; no half-created state survives).
+		Holder<ImageHandle> newFogImage;
+		Holder<ImageViewHandle> newFogAttachment;
+		Holder<ImageViewHandle> newFogSampled;
+		Holder<BindlessImageHandle> newFogBindless;
+		LogicalImageViewHandle newFogLogical;
+		const Extent2D fogTile = (desc.fogShadowResolution > 0)
+			? Extent2D{ std::max(1u, desc.fogShadowResolution),
+				std::max(1u, desc.fogShadowResolution) }
+			: Extent2D{ 0, 0 };
+		if (fogTile.width != 0) {
+			ImageCreateInfo fogCI{};
+			fogCI.format = desc.format;
+			fogCI.extent = { fogTile.width, fogTile.height, 1u };
+			fogCI.mipLevels = 1u;
+			fogCI.arrayLayers = 1u;
+			fogCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
+			// TransferSrc: debug stage dumps (TOURMALINE_FOG_TILE_DUMP) —
+			// armed dumps only (DownloadDataFromImage needs it on the
+			// source image).
+			if (DebugImageDumpArmed())
+				fogCI.usage |= ImageUsage::TransferSrc;
+			fogCI.name = "volumetricShadowAtlas";
+
+			newFogImage = ctx.CreateImage(fogCI, nullptr);
+			if (newFogImage.empty())
+				return false;
+
+			ImageViewCreateInfo fogAttachmentCI{};
+			fogAttachmentCI.viewType = ImageViewType::View2D;
+			fogAttachmentCI.format = Format::Undefined; // inherit
+			fogAttachmentCI.subresourceRange = {
+				.aspect = ImageAspect::Depth,
+				.baseMipLevel = 0,
+				.mipLevelCount = 1,
+				.baseArrayLayer = 0,
+				.arrayLayerCount = 1,
+			};
+			fogAttachmentCI.name = "volumetric shadow attachment";
+
+			newFogAttachment = ctx.CreateImageView(newFogImage, fogAttachmentCI);
+			if (newFogAttachment.empty())
+				return false;
+
+			ImageViewCreateInfo fogSampledCI{};
+			fogSampledCI.viewType = ImageViewType::View2D;
+			fogSampledCI.format = Format::Undefined; // inherit
+			fogSampledCI.subresourceRange = {
+				.aspect = ImageAspect::Depth,
+				.baseMipLevel = 0,
+				.mipLevelCount = 1,
+				.baseArrayLayer = 0,
+				.arrayLayerCount = 1,
+			};
+			fogSampledCI.name = "volumetric shadow sampled";
+
+			newFogSampled = ctx.CreateImageView(newFogImage, fogSampledCI);
+			if (newFogSampled.empty())
+				return false;
+
+			newFogBindless = ctx.CreateBindlessImage(newFogSampled,
+				ImageLayout::DepthReadOnlyOptimal);
+			if (newFogBindless.empty())
+				return false;
+
+			newFogLogical = rg.AddExternalImageView(newFogSampled, desc.format,
+				"volumetricShadowMapView");
+			if (newFogLogical.empty())
+				return false;
+		}
+
 		image = std::move(newImage);
 		attachmentView = std::move(newAttachment);
 		sampledView = std::move(newSampled);
 		bindless = std::move(newBindless);
 		logicalView = newLogical;
-		atlasExtent = atlas;
+		fogImage = std::move(newFogImage);
+		fogAttachmentView = std::move(newFogAttachment);
+		fogSampledView = std::move(newFogSampled);
+		fogBindless = std::move(newFogBindless);
+		fogLogicalView = newFogLogical;
 		gridExtent = grid;
 		tileExtent = { desc.cascadeResolution, desc.cascadeResolution };
-		fogTileExtent = (desc.fogShadowResolution > 0)
-			? Extent2D{ std::max(1u, desc.fogShadowResolution),
-				std::max(1u, desc.fogShadowResolution) }
-			: Extent2D{ 0, 0 };
+		fogTileExtent = fogTile;
 		format = desc.format;
 		cascadeCount = desc.cascadeCount;
 		return EnsureShaders(ctx, vsPath);
 	}
 
 	// Recreate only when cascadeCount / resolution / format / the fog
-	// tile drift.
+	// atlas drift.
 	// Also internalizes EnsureShaders – one call keeps resources + program valid.
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
 		const char* vsPath = kCascadedShadowVsPath) {
@@ -279,13 +370,21 @@ struct CascadedShadowAtlas {
 			? Extent2D{ std::max(1u, desc.fogShadowResolution),
 				std::max(1u, desc.fogShadowResolution) }
 			: Extent2D{ 0, 0 };
-		if (Valid() &&
-			cascadeCount == desc.cascadeCount &&
-			tileExtent.width == desc.cascadeResolution &&
-			tileExtent.height == desc.cascadeResolution &&
-			fogTileExtent.width == wantFog.width &&
-			fogTileExtent.height == wantFog.height &&
-			format == desc.format) {
+		// The fog atlas's handles must agree with the wanted extent (the
+		// belt-and-braces twin of the extent compare - a half-created
+		// state can never masquerade as valid).
+		const bool fogHandlesOk = (wantFog.width == 0)
+			? (fogImage.empty() && fogLogicalView.empty())
+			: (!fogImage.empty() && !fogBindless.empty()
+				&& !fogLogicalView.empty());
+		if (Valid()
+			&& fogHandlesOk
+			&& cascadeCount == desc.cascadeCount
+			&& tileExtent.width == desc.cascadeResolution
+			&& tileExtent.height == desc.cascadeResolution
+			&& fogTileExtent.width == wantFog.width
+			&& fogTileExtent.height == wantFog.height
+			&& format == desc.format) {
 			return EnsureShaders(ctx, vsPath);
 		}
 		Destroy(rg);
@@ -331,15 +430,13 @@ struct CascadedShadowAtlas {
 
 		const float invAtlasW = 1.0f / static_cast<float>(gridExtent.width);
 		const float invAtlasH = 1.0f / static_cast<float>(gridExtent.height);
-		// EVSM-SAFETY NOTE: the descriptors normalize against the GRID
-		// extent, NOT the physical atlas - the appended volumetric row
-		// (fogShadowResolution) is INVISIBLE to every cascade consumer.
-		// The EVSM moment atlas keeps the original 2x2 grid layout
-		// contract (its own image is grid-sized); the raw-atlas readers
-		// (the surface PCF path, the fog's CSM tap) sample with
-		// normalized UVs, which resolve to the same texels inside the
-		// grid region of the taller image. The volumetric tile's own
-		// rect is carried separately (FogTileUvRect).
+		// LAYOUT NOTE: the main atlas IS the grid (the coarse volumetric
+		// tile lives in its own dedicated image - see the desc's split
+		// note), so grid normalization is atlas normalization: every
+		// consumer (surface PCF, EVSM moments, the fog CSM tap) reads
+		// the exact pre-volumetric-tile texels. The coarse tile's own
+		// rect is carried separately (FogTileUvRect - identity over its
+		// dedicated atlas).
 		const uint32_t cols = Columns();
 
 		for (uint32_t i = 0; i < cascadeCount; ++i) {
@@ -442,43 +539,32 @@ struct CascadedShadowAtlas {
 		return pass;
 	}
 
-	// The volumetric tile's normalized atlas rect: xy = the origin, zw =
-	// the size (UV units against the FULL physical atlas - the only
-	// consumer that normalizes against atlasExtent; every cascade
-	// consumer normalizes against the grid, see the EVSM-safety note).
-	// Returns zw = 0 when no tile exists (the caller disables the
-	// lookup).
+	// The volumetric atlas's normalized rect: xy = the origin, zw = the
+	// size (UV units against its OWN dedicated image - the identity
+	// (0,0,1,1); kept as a rect so the shader-side mapping stays
+	// source-agnostic). Returns zw = 0 when no atlas exists (the
+	// caller disables the lookup).
 	glm::vec4 FogTileUvRect() const {
-		if (fogTileExtent.width == 0 || atlasExtent.width == 0
-			|| atlasExtent.height == 0)
+		if (fogTileExtent.width == 0 || fogTileExtent.height == 0)
 			return glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
-		int32_t ox = 0, oy = 0;
-		FogTileOrigin(ox, oy);
-		return glm::vec4(
-			static_cast<float>(ox) / static_cast<float>(atlasExtent.width),
-			static_cast<float>(oy) / static_cast<float>(atlasExtent.height),
-			static_cast<float>(fogTileExtent.width)
-				/ static_cast<float>(atlasExtent.width),
-			static_cast<float>(fogTileExtent.height)
-				/ static_cast<float>(atlasExtent.height));
+		return glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
 	}
 
-	// The dedicated coarse VOLUMETRIC shadow pass (the fog god-ray tile):
-	// one depth-only pass into the appended row, same clear/area
-	// contract as the cascade passes. The caller's recording function
-	// draws ONLY the CastVolumetricShadow-marked casters (the scene
-	// flag's walk - never the full surface caster set).
+	// The dedicated coarse VOLUMETRIC shadow pass (the fog god-ray
+	// atlas): one depth-only pass into the dedicated image, same
+	// clear/area contract as the cascade passes. The caller's recording
+	// function draws ONLY the CastVolumetricShadow-marked casters (the
+	// scene flag's walk - never the full surface caster set).
 	RenderPass& AddVolumetricShadowPass(RenderGraph& rg,
 		const char* name = "VolumetricShadow") const {
 		assert(Valid());
 		assert(fogTileExtent.width != 0);
-		int32_t offX = 0, offY = 0;
-		FogTileOrigin(offX, offY);
+		assert(!fogLogicalView.empty());
 		RenderPass& pass = rg.AddPass(name);
-		pass.SetOffset(offX, offY)
+		pass.SetOffset(0, 0)
 			.SetExtent(fogTileExtent)
 			.SetDepth(
-				logicalView,
+				fogLogicalView,
 				AttachmentLoadOp::Clear,
 				AttachmentStoreOp::Store,
 				ClearDepthStencil(1.0f, 0));

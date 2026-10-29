@@ -152,8 +152,12 @@ struct VolumetricPush {
 	float anisotropy = 0.4f;
 	float sunScale = 1.0f;
 	float giScale = 1.0f;
-	// The RAW CSM depth atlas (NEVER the EVSM blurred moments — see
-	// the call site's note). UINT32_MAX = no fog sun shadowing.
+	// The fog sun-shadow depth atlas (whichever leg's - the raw MAIN CSM
+	// atlas for the cascade tap, or the DEDICATED volumetric atlas for
+	// the coarse tile; NEVER the EVSM blurred moments). UINT32_MAX = no
+	// fog sun shadowing (the coarse leg MUST re-check this before
+	// sampling - an unbound feed must never read an out-of-range
+	// descriptor: undefined garbage that can change per frame).
 	uint32_t shadowDepthIndex = UINT32_MAX;
 	uint32_t useSun = 1;
 	uint32_t useGiVolumes = 1; // 1 = GI volumes stack into the fog GI
@@ -559,16 +563,23 @@ struct VolumetricFog {
 	// Emits the HDR -> HDR volumetric composite. Captures only copyable
 	// handles/indices, so the pass is safe once this call returns.
 	// depthExtent = full-res depth size (for .Load mapping when divisor > 1).
-	// The four trailing args are the CSM god-ray feed (appended to
+	// The four trailing args are the fog sun-shadow feed (appended to
 	// preserve existing callers; defaults = the original unshadowed sun
-	// leg): cascadeBufferAddr = the GpuDirectionalLightDescription
-	// slice BDA (the scene push's pc.cascadeBuffer), numCascadesIn =
-	// pc.numCascades (0 disables), shadowDepthView/Index = the RAW CSM
-	// depth atlas — NEVER the EVSM blurred moments (light.shadow_map_
-	// index flips to those when EVSM is on, but the fog's single-tap
-	// depth compare needs the raw D32 tile values). The atlas rides
-	// SetInputImages so the graph orders the last shadow write before
-	// this read.
+	// leg), PER MODE (the shader picks ONE leg - coarse tile or CSM
+	// tap, never both): cascadeBufferAddr = the
+	// GpuDirectionalLightDescription slice BDA (the scene push's
+	// pc.cascadeBuffer) + numCascadesIn = pc.numCascades feed the CSM
+	// TAP leg (PCF mode only - under EVSM the raw atlas holds stale
+	// data, callers gate this off); shadowDepthView/Index = the depth
+	// atlas the march samples - the RAW main atlas for the CSM tap, or
+	// the DEDICATED coarse volumetric atlas for the tile leg (mode 2 -
+	// its own raw pass renders under EVSM too, making that leg the EVSM
+	// fallback). numCascades = 0 with a bound view+index is the coarse
+	// mode's shape: the CSM leg is off, the tile leg runs. NEVER the
+	// EVSM blurred moments (light.shadow_map_index flips to those when
+	// EVSM is on, but the fog's single-tap depth compare needs raw D32
+	// values). The atlas rides SetInputImages so the graph orders the
+	// last shadow write before this read.
 	RenderPass& AddVolumetricPass(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -616,18 +627,25 @@ struct VolumetricFog {
 		push.anisotropy = std::clamp(overrideDesc.anisotropy, -0.9f, 0.9f);
 		push.sunScale = (std::max)(0.0f, overrideDesc.sunScale);
 		push.giScale = (std::max)(0.0f, overrideDesc.giScale);
-		// The god-ray gate: everything must be bound (count, buffer,
-		// atlas index AND view — the view is what orders the last CSM
-		// write before this read; an index alone would race the shadow
-		// pass). useSun stays the artistic master (off = no sun leg,
-		// so no taps either).
-		const bool sunShadowsEnabled = numCascadesIn > 0
-			&& cascadeBufferAddr != 0
-			&& shadowDepthBindlessIndex != UINT32_MAX
+		// The sun-shadow FEED gate: the atlas view + index must be bound
+		// (the view is what orders the last shadow write before this
+		// read; an index alone would race the shadow pass) — for EITHER
+		// leg. The CSM leg ADDITIONALLY needs the cascade count + buffer
+		// (numCascades = 0 with a bound atlas = the coarse tile's
+		// shape: the CSM loop never runs, SampleVolumetricShadow does).
+		// useSun stays the artistic master (off = no sun leg, so no
+		// taps either). A caller that binds NOTHING gets the original
+		// unshadowed sun leg (index stays UINT32_MAX — the shader's
+		// coarse gate re-checks it; an unbound feed must never sample
+		// an out-of-range descriptor).
+		const bool shadowFeedBound = shadowDepthBindlessIndex != UINT32_MAX
 			&& !shadowDepthView.empty();
-		push.shadowDepthIndex = sunShadowsEnabled
+		const bool csmLegEnabled = shadowFeedBound
+			&& numCascadesIn > 0
+			&& cascadeBufferAddr != 0;
+		push.shadowDepthIndex = shadowFeedBound
 			? shadowDepthBindlessIndex : UINT32_MAX;
-		push.numCascades = sunShadowsEnabled ? numCascadesIn : 0u;
+		push.numCascades = csmLegEnabled ? numCascadesIn : 0u;
 		push.useSun = overrideDesc.useSun ? 1u : 0u;
 		push.useGiVolumes = overrideDesc.useGiVolumes ? 1u : 0u;
 		push.fogTileCounts = fogTileCountsAddr;
@@ -678,11 +696,12 @@ struct VolumetricFog {
 		RenderPass& pass = rg.AddPass(name ? name : "Volumetric");
 		pass.SetOffset(0, 0)
 			.SetExtent(halfExtent);
-		// The raw CSM depth atlas is a sampled input only while the
-		// god-ray leg runs (the graph owns the last-shadow-write ->
+		// The shadow atlas (whichever leg's - the main raw CSM atlas or
+		// the dedicated volumetric atlas) is a sampled input only while
+		// the feed is bound (the graph owns the last-shadow-write ->
 		// this-read ordering through the logical view; the Main pass
 		// binds the same view for its surface shadows).
-		if (sunShadowsEnabled)
+		if (shadowFeedBound)
 			pass.SetInputImages({ depthView, shadowDepthView });
 		else
 			pass.SetInputImages({ depthView });

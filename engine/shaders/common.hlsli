@@ -830,10 +830,17 @@ uint decalCount;                                         // 776 0 = decals off
     uint giVolumeVisLayers[16];                                    // 1992 8 volumes x 2 vis layer slots
     // ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass):
     // the dedicated sun-oriented ortho + the tile's normalized atlas
-    // rect (against the FULL atlas - the only full-atlas-normalized
-    // consumer; every cascade normalizes against the grid). APPEND-ONLY
+    // rect (the identity (0,0,1,1) over its OWN dedicated atlas - kept
+    // as a rect so the mapping stays source-agnostic). APPEND-ONLY
     // tail. enabled = 0 -> the fog sun leg falls back to the CSM tap
     // or fully lit. ----
+    // The EXPLICIT pad is load-bearing: DXC's BufferPointer layout
+    // does NOT implicitly 16-align a float4x4 following a uint array -
+    // without this member the shader's matrix reads 8 bytes early (the
+    // C++ pad + a shifted matrix: garbage clip.w, the coarse leg's
+    // "empty tile" root cause). The C++ mirror is FrameUniforms::
+    // fogShadowPad_ (WorldRenderer.h). ----
+    float2 fogShadowPad_;                                           // 2056 (the mat4 16-align pad, explicit)
     float4x4 fogShadowVP;                                          // 2064
     float4 fogShadowRect;                                          // 2128 xy origin + zw size
     float fogShadowBias;                                           // 2144 NDC depth bias

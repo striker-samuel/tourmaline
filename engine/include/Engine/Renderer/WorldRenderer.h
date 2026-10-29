@@ -835,18 +835,25 @@ struct FrameUniforms
 	// the plain hardware trilerp). APPEND-ONLY tail (after
 	// worldFieldsPad_): every pinned offset above stays put. ----
 	uint32_t giVolumeVisLayers[16] = {}; // 1992 8 volumes x 2 vis slots
-	// ---- The coarse VOLUMETRIC shadow tile (the fog god-ray pass - the
-	// dedicated 512-class tile appended to the raw CSM atlas, see the
-	// fog sun-shadow block + cascadedshadowmap.h's FogTileUvRect).
+	// ---- The coarse VOLUMETRIC shadow atlas (the fog god-ray pass - the
+	// dedicated half-res D32 image, see the fog sun-shadow block +
+	// cascadedshadowmap.h's FogTileUvRect).
 	// APPEND-ONLY tail (after giVolumeVisLayers): lightVP = the
 	// sun-oriented ortho over the camera fog frustum + the upstream
-	// caster bounds; rect = the tile's normalized atlas rect (xy origin
-	// + zw size, against the FULL atlas); bias = the NDC depth bias;
-	// enabled = 0 when the tile is absent/disabled/no marked casters
+	// caster bounds; rect = the atlas's normalized rect (the identity
+	// (0,0,1,1) over its OWN dedicated image - kept as a rect so the
+	// mapping stays source-agnostic); bias = the NDC depth bias;
+	// enabled = 0 when the atlas is absent/disabled/no marked casters
 	// (the sun leg falls back to the CSM tap or fully lit). The pad
 	// mirrors HLSL's float4x4 16-byte alignment (glm::mat4 is UNALIGNED
 	// in this build and packs at 2056 - the mirror contract needs
 	// 2064).
+	// The EXPLICIT pad is load-bearing on BOTH sides: DXC's
+	// BufferPointer layout does NOT implicitly 16-align a float4x4
+	// following a uint array - the HLSL mirror carries its own
+	// float2 fogShadowPad_ (common.hlsli), without which the shader's
+	// matrix reads 8 bytes early (garbage clip.w, an always-"behind"
+	// projection - the coarse leg's original empty-tile root cause).
 	uint32_t fogShadowPad_[2] = {};  // 2056 (the HLSL mat4 align gap)
 	glm::mat4 fogShadowVP{};         // 2064
 	glm::vec4 fogShadowRect{};       // 2128

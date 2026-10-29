@@ -80,8 +80,11 @@ struct VolumetricPush
     float anisotropy;
     float sunScale;
     float giScale;
-    uint shadowDepthIndex;  // RAW CSM depth atlas (never the EVSM
-                            // moments); 0xffffffff = unshadowed sun leg
+    uint shadowDepthIndex;  // the fog sun-shadow depth atlas - the raw
+                            // MAIN CSM atlas (cascade tap) or the
+                            // DEDICATED volumetric atlas (coarse tile;
+                            // never the EVSM moments);
+                            // 0xffffffff = unshadowed sun leg
     uint useSun;
     uint useGiVolumes;     // 1 = the convex GI volumes stack into the fog
                            //     GI (0 = the quality bypass: NO volume
@@ -223,12 +226,10 @@ float3 VolForwardPlusLights(FrameUniforms frame, float3 pos, float3 rayDir,
 // tap per active fog segment against the RAW CSM atlas (see the former
 // volumetric.frag.hlsl header - the surface path's conventions, the
 // depth-delta soft penumbra, the fallthrough).
-// ATLAS-SHAPE NOTE: the coarse volumetric tile appends a row below the
-// cascade grid, so the physical atlas is TALLER than the grid the
-// cascade descriptors normalize against - the tap therefore samples
-// with NORMALIZED atlas UV (SampleLevel, PCFShadowAtlas's form), never
-// a texel Load scaled by the physical dims (that would smear the
-// grid-normalized y across the taller image).
+// FORM NOTE: the tap samples with NORMALIZED atlas UV (SampleLevel,
+// PCFShadowAtlas's form), never a texel Load scaled by physical dims -
+// the descriptors carry uvScale/uvBias/clamps and the normalized form
+// respects them exactly (a texel form would re-derive them and drift).
 // ---------------------------------------------------------------------------
 float SampleFogSunCSM(float3 wpos, float4x4 view)
 {
@@ -280,20 +281,22 @@ float SampleFogSunCSM(float3 wpos, float4x4 view)
 }
 
 // ---------------------------------------------------------------------------
-// The COARSE volumetric shadow tile (the perf plan item 5): the
+// The COARSE volumetric shadow atlas (the perf plan item 5): the
 // dedicated sun-oriented ortho over the camera fog frustum with ONLY
-// the marked large occluders rendered (RecordVolumetricShadowCasters).
-// ONE depth fetch, NO cascade selection loop, NO PCF - the depth-delta
-// soft ramp (the CSM tap's twin, on the fog tile's own bias). The
-// tile's rect normalizes against the FULL atlas (the only such
-// consumer - every cascade normalizes against the grid). enabled = 0
-// (no tile / no marked casters / mode off) returns fully lit.
-// Works under EVSM: the tile renders through its own RAW depth pass,
-// never the EVSM moment path.
+// the marked large occluders rendered (RecordVolumetricShadowCasters)
+// into its OWN half-res D32 image (fogShadowRect = the identity
+// (0,0,1,1) over that atlas - kept as a rect so the mapping stays
+// source-agnostic). ONE depth fetch, NO cascade selection loop, NO
+// PCF - the depth-delta soft ramp (the CSM tap's twin, on the atlas's
+// own bias). enabled = 0 OR an unbound feed index (no atlas / no
+// marked casters / mode off) returns fully lit - never sample an
+// out-of-range descriptor. Works under EVSM: the atlas renders through
+// its own RAW depth pass, never the EVSM moment path.
 // ---------------------------------------------------------------------------
 float SampleVolumetricShadow(float3 wpos, FrameUniforms frame)
 {
-    if (frame.fogShadowEnabled == 0u)
+    if (frame.fogShadowEnabled == 0u
+        || vp.shadowDepthIndex == 0xFFFFFFFFu)
         return 1.0;
 
     float4 clip = mul(frame.fogShadowVP, float4(wpos, 1.0));
@@ -433,14 +436,19 @@ PSOut mainPS(PSIn IN)
     float phase = VolPhaseHg(cosSun, vp.anisotropy) * 0.0795775; // /4pi
     float giStrength = max(frame.giIntensity, 0.0f) * max(vp.giScale, 0.0f);
 
-    // ---- CSM god-ray prep (loop-invariant): the shadow atlas index
+    // ---- Fog sun-shadow prep (loop-invariant): the shadow atlas index
     // bound. Two lookup forms, SELECTABLE (never combined - the fog
     // sun-shadow mode): the COARSE tile (frame.fogShadowEnabled, the
-    // dedicated marked-caster pass - works under EVSM) takes priority;
+    // dedicated marked-caster atlas - works under EVSM) takes priority;
     // the CSM cascade tap (vp.numCascades, PCF mode only) is the
-    // fallback; neither bound = the unshadowed sun leg.
+    // fallback; neither bound = the unshadowed sun leg. BOTH legs
+    // require the atlas index: an unbound feed (0xffffffff) must NEVER
+    // sample - an out-of-range descriptor fetch is undefined garbage
+    // that can change per frame (the pre-feed-wiring coarse leg did
+    // exactly that: visibly "jumping" fog shadows).
     // ----
-    const bool coarseShadowSun = frame.fogShadowEnabled != 0u;
+    const bool coarseShadowSun = frame.fogShadowEnabled != 0u
+        && vp.shadowDepthIndex != 0xFFFFFFFFu;
     const bool csmShadowSun =
         !coarseShadowSun
         && vp.numCascades > 0u
@@ -693,16 +701,17 @@ PSOut mainPS(PSIn IN)
         OUT.outDepth = float4(repDist, 0.0, 0.0, 1.0);
         return OUT;
     }
-    // ---- The COARSE-TILE views (fogGiDebug==4/5 - the perf plan
-    // item 5's diagnostics): 4 = the raw tile DEPTH at each pixel's
-    // fog-shadow projection (the tile's own content; the standard-Z
+    // ---- The COARSE-ATLAS views (fogGiDebug==4/5 - the perf plan
+    // item 5's diagnostics): 4 = the raw atlas DEPTH at each pixel's
+    // fog-shadow projection (the atlas's own content; the standard-Z
     // stored value, bright = far/lit), 5 = the coarse fog-shadow
     // VISIBILITY (the march's mean SampleVolumetricShadow - the
-    // mode-3 twin for the tile).
+    // mode-3 twin for the atlas).
     if (vp.fogGiDebug == 4u) {
         const float dbgGain = 1.0 / max(frame.exposure, 1e-6);
         float dbg = 1.0;
-        if (frame.fogShadowEnabled != 0u) {
+        if (frame.fogShadowEnabled != 0u
+            && vp.shadowDepthIndex != 0xFFFFFFFFu) {
             float4 clip = mul(frame.fogShadowVP,
                 float4(camPos + rayDir * rayLen, 1.0));
             if (clip.w > 0.0) {
