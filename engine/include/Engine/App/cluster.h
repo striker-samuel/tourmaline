@@ -469,6 +469,52 @@ namespace smvk {
 		// registration) is satisfied while the cluster lives.
 		void PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image);
 
+	// ---- Geometry LOD streaming (Renderer/geometry_streamer.h) ----------
+	// A DEFERRED LOD sibling: cooked, metadata-registered (GetMeshLod
+	// resolves it - RebuildLodChains sees the full chain), but WITHOUT a
+	// pool mesh or heap payload - not in VRAM. The record retains
+	// everything the deserializer knew so PromoteDeferredMeshLod can
+	// replay the exact upload + registration sequence later (the
+	// metadata-survives-eviction requirement - only the PAYLOAD is
+	// absent, never the identity).
+	struct DeferredMeshLod {
+		std::string uri;
+		StaticMeshDirectSource src;  // pak-image offsets/counts/aabb
+		float sphere = 0.0f;
+		uint32_t lmChunk = 0;
+		std::vector<glm::vec4> lmXforms;
+		LodInfo lod;
+		CookedMeshlets meshlets;
+		uint64_t payloadBytes = 0;   // vertex+index bytes (budget/throttle)
+	};
+	// Park a sibling as deferred (the deserializer's streaming path).
+	// Returns the accounted payload bytes (the load census).
+	uint64_t DeferMeshLod(DeferredMeshLod&& d);
+	[[nodiscard]] const DeferredMeshLod* FindDeferredMeshLod(
+		StringViewT uri) const;
+	// Promote: re-run the direct upload (one source, from the pinned pak
+	// image) + the full registration the deserializer performed for
+	// load-time meshes, then drop the deferred record. Returns the fresh
+	// handle + the payload bytes (the streamer's budget accounting) or
+	// nullopt (not deferred / no pinned image / upload failed). Render
+	// thread, between frames (the arena carve allocates fresh ranges -
+	// nothing is freed, so the retirement discipline is not exercised).
+	struct PromotedLod {
+		ClusterStaticMeshHandle handle{};
+		uint64_t payloadBytes = 0;
+	};
+	[[nodiscard]] std::optional<PromotedLod> PromoteDeferredMeshLod(
+		StringViewT uri);
+	[[nodiscard]] size_t DeferredLodCount() const {
+		return deferredLods_.size();
+	}
+	[[nodiscard]] uint64_t DeferredLodBytes() const {
+		uint64_t b = 0;
+		for (const DeferredMeshLod& d : deferredLods_)
+			b += d.payloadBytes;
+		return b;
+	}
+
 	private:
 		// Owned URI key storage for all maps below; freed wholesale with
 		// the Cluster (see asset_registry.cpp registration flow).
@@ -494,6 +540,10 @@ namespace smvk {
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
 		// pool index (pool indices are only unique within one Cluster).
 		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;
+		// Geometry-LOD streaming: deferred siblings by uri (see the
+		// public block). Linear scan - the promote path touches one per
+		// demand miss, the census counts them once.
+		std::vector<DeferredMeshLod> deferredLods_;
 		// Per-mesh skin streams (binding-2 data), keyed by mesh pool
 		// index: the import post pass + the deserializer fill these (see
 		// GetMeshSkinStream); the GPU allocation comes with the skinning

@@ -201,6 +201,11 @@ struct RunConfig {
 	bool meshSet = false; // renderer-level pin (WorldRenderer.cpp:909)
 	bool mesh = true;
 	bool streamingKilled = false; // STREAMING=0 full-resident
+	// ---- geometry LOD streaming (geometry_streamer.h; the serializer
+	// reads the env DIRECTLY at cluster load - the gate must decide at
+	// parse time what defers - this field only carries the log/known-
+	// list plumbing) ----
+	std::optional<OnOffPin> geometryStreaming;
 
 	// ---- capture / audit ----
 	int audit = -1;

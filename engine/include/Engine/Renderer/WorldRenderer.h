@@ -42,6 +42,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Rendergraph/bloom.h>
@@ -3568,6 +3569,13 @@ public:
 	// by the host's world source; digest-less pak blobs stay
 	// full-resident, the pre-v4 behavior).
 	bool m_textureStreamingEnabled = true;
+	// Geometry LOD streaming (Renderer/geometry_streamer.h): the env
+	// gate arms it at cluster load (what defers); this active flag is
+	// the per-frame tick gate - set at scene registration when the
+	// world still holds deferred siblings, cleared when the last one
+	// promotes.
+	bool m_geometryStreamingActive = false;
+	smvk::GeometryStreamer m_geometryStreamer{};
 	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
 	// ---- Async readback ticket (exposure histogram + deferred-shadow
 	// counters) ----
@@ -3623,6 +3631,7 @@ public:
 	// CPU demand + budget tick. streamFrame must be monotonic (NOT the
 	// swapchain slot); call once per RenderFrame after UpdateMaterials.
 	void UpdateTextureStreaming(const FrameUniforms& frameData, smvk::Extent2D renderExtent);
+	void UpdateGeometryStreaming();
 	// Gfx-filter demand wiring (once per frame, before AppendPasses records
 	// the filter): this frame's materials BDA slice + mip bias into the
 	// gfx state, and the per-slot meta table when the streamer's epoch

@@ -19,6 +19,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Utils/ktx_error_texture.h>
 #include <Engine/Utils/texture_loader.h>
@@ -2227,9 +2228,15 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	std::vector<Cluster::StaticMeshDirectSource> directs;
 	std::vector<MeshMeta> meshMetas;
 	std::vector<ClusterStaticMeshHandle> meshByPakId;
+	// Geometry-LOD streaming (geometry_streamer.h): the pak id -> uri
+	// table for DEFERRED siblings (empty string where the pak id
+	// uploaded). Kept pak-id-aligned with meshByPakId so the scene-link
+	// self-heal below can patch handles after a promote.
+	std::vector<std::string> deferredByPakId;
 	directs.reserve(meshEntries.size());
 	meshMetas.reserve(meshEntries.size());
 	meshByPakId.reserve(meshEntries.size());
+	deferredByPakId.reserve(meshEntries.size());
 	for (const PakTocEntry* e : meshEntries) {
 		Cursor c{ reader.Payload(*e), 0 };
 		const std::string uri = c.str();
@@ -2403,15 +2410,79 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			std::move(lmXforms), lod, std::move(cooked), std::move(skin) });
 	}
 	{
-		std::vector<ClusterStaticMeshHandle> handles =
-			cluster->UploadStaticMeshesDirect(reader.ImageData(),
-				std::span<const Cluster::StaticMeshDirectSource>(directs));
-		if (handles.empty() && !directs.empty())
-			return fail("UploadStaticMeshesDirect failed (degenerate mesh "
-				"or full heap): " + meshMetas.front().uri);
-		for (size_t i = 0; i < handles.size(); ++i) {
-			const ClusterStaticMeshHandle h = handles[i];
+		// ---- Geometry LOD streaming split (Renderer/geometry_streamer.h).
+		// Streaming OFF: one batch over every parsed source - byte for
+		// byte the historical path. Streaming ON: a sibling (lodIndex >
+		// 0, no skin stream, not its group's PINNED coarsest fallback)
+		// is DEFERRED - its LodInfo registers (RebuildLodChains must see
+		// the full chain) but the payload does not upload; the promote
+		// record parks on the cluster. Bases (lodIndex 0 - what scenes
+		// reference) and skinned siblings (the v1 exclusion: the
+		// deformed-heap parity math must not see ranges disappear)
+		// always upload.
+		const bool geoStream = smvk::GeometryStreamingEnabled();
+		std::vector<bool> defer(meshMetas.size(), false);
+		if (geoStream) {
+			std::unordered_map<uint32_t, uint32_t> coarsestOfGroup;
+			for (size_t i = 0; i < meshMetas.size(); ++i) {
+				const LodInfo& li = meshMetas[i].lod;
+				if (li.lodIndex == 0 || !meshMetas[i].skin.empty())
+					continue;
+				auto it = coarsestOfGroup.find(li.groupId);
+				if (it == coarsestOfGroup.end() || li.lodIndex > it->second)
+					coarsestOfGroup[li.groupId] = li.lodIndex;
+			}
+			for (size_t i = 0; i < meshMetas.size(); ++i) {
+				const LodInfo& li = meshMetas[i].lod;
+				if (li.lodIndex == 0 || !meshMetas[i].skin.empty())
+					continue;
+				auto it = coarsestOfGroup.find(li.groupId);
+				const bool isPinnedCoarsest = it != coarsestOfGroup.end()
+					&& li.lodIndex >= it->second;
+				if (!isPinnedCoarsest)
+					defer[i] = true;
+			}
+		}
+		std::vector<Cluster::StaticMeshDirectSource> uploadSrcs;
+		std::vector<ClusterStaticMeshHandle> handles;
+		uploadSrcs.reserve(meshMetas.size());
+		for (size_t i = 0; i < meshMetas.size(); ++i)
+			if (!defer[i])
+				uploadSrcs.push_back(directs[i]);
+		if (!uploadSrcs.empty()) {
+			handles = cluster->UploadStaticMeshesDirect(reader.ImageData(),
+				std::span<const Cluster::StaticMeshDirectSource>(uploadSrcs));
+			if (handles.empty())
+				return fail("UploadStaticMeshesDirect failed (degenerate mesh "
+					"or full heap): " + meshMetas.front().uri);
+		}
+		size_t up = 0; // cursor into handles (upload order == pak order)
+		uint64_t deferredBytes = 0;
+		size_t deferredCount = 0;
+		for (size_t i = 0; i < meshMetas.size(); ++i) {
 			MeshMeta& meta = meshMetas[i];
+			if (defer[i]) {
+				Cluster::DeferredMeshLod d;
+				d.uri = std::move(meta.uri);
+				d.src = directs[i];
+				d.sphere = meta.sphere;
+				d.lmChunk = meta.lmChunk;
+				d.lmXforms = std::move(meta.lmXforms);
+				d.lod = meta.lod;
+				d.meshlets = std::move(meta.meshlets);
+				deferredByPakId.push_back(d.uri);
+				deferredBytes += cluster->DeferMeshLod(std::move(d));
+				++deferredCount;
+				// Metadata-only registration: the chain builder sees this
+				// sibling (GetMeshLod), the payload lookup does not
+				// (FindMeshByUri misses) - the deferred state, exactly.
+				cluster->RegisterMeshLod(deferredByPakId.back(),
+					meta.lod);
+				meshByPakId.push_back(ClusterStaticMeshHandle{});
+				continue;
+			}
+			deferredByPakId.emplace_back();
+			const ClusterStaticMeshHandle h = handles[up++];
 			// UploadStaticMeshes fills AABB only; restore the cooked sphere
 			// and the lightmap chunk (rides the draw ring to the lit
 			// fragment).
@@ -2437,6 +2508,12 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				cluster->SetMeshSkinStream(h, std::move(meta.skin));
 			meshByPakId.push_back(h);
 		}
+		if (deferredCount > 0)
+			std::fprintf(stderr,
+				"[GeometryStreaming] cluster load: %zu meshes resident, "
+				"%zu LOD siblings deferred (%.2f MiB payload held back)\n",
+				handles.size(), deferredCount,
+				double(deferredBytes) / (1024.0 * 1024.0));
 	}
 
 	// --- Lights (definitions; the Scene blob links nodes to pak ids) -------
@@ -2610,8 +2687,44 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		std::string sceneName, perr;
 		if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
 				cluster->scene, sceneName, &maps, perr,
-				&cluster->skeleton, &cluster->hasSkeleton))
-			return fail(perr);
+				&cluster->skeleton, &cluster->hasSkeleton)) {
+			// SELF-HEAL (geometry streaming only): ParseSceneBlob hard-
+			// fails on an invalid mesh pak id - with streaming on, a
+			// DEFERRED sibling sits invalid in meshByPakId. Cooked scenes
+			// reference LOD0 bases only, so this is the hand-authored
+			// "scene names <base>/lodN directly" anomaly. Promote every
+			// deferred sibling (the anomaly is rare; all-in is fine),
+			// patch the pak id table, reparse ONCE on a fresh Scene.
+			bool healed = false;
+			size_t healedCount = 0;
+			for (size_t pid = 0; pid < deferredByPakId.size(); ++pid) {
+				if (deferredByPakId[pid].empty())
+					continue;
+				if (auto r = cluster->PromoteDeferredMeshLod(
+						deferredByPakId[pid])) {
+					meshByPakId[pid] = r->handle;
+					deferredByPakId[pid].clear();
+					++healedCount;
+					healed = true;
+				}
+			}
+			if (healed) {
+				std::fprintf(stderr,
+					"[GeometryStreaming] scene referenced %zu deferred "
+					"sibling(s) - promoted at link time\n", healedCount);
+				cluster->scene = Scene{};
+				cluster->skeleton = {};
+				cluster->hasSkeleton = false;
+				sceneName.clear();
+				perr.clear();
+				healed = ParseSceneBlob(
+					reader.Payload(*sceneEntries[sceneIndex]),
+					cluster->scene, sceneName, &maps, perr,
+					&cluster->skeleton, &cluster->hasSkeleton);
+			}
+			if (!healed)
+				return fail(perr);
+		}
 		if (!sceneName.empty())
 			std::cerr << "DeserializeCluster: scene[" << sceneIndex
 				<< "] '" << sceneName << "'\n";

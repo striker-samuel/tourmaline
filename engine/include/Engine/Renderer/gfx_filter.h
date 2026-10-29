@@ -1295,6 +1295,17 @@ uint32_t RegisterMeshFromCooked(State& s, const CookedMeshlets& cooked,
 // Bakes filterIndices/clusters into GPU buffers (call once after all
 // Register* calls). Re-uploads on every call; load-time only.
 void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg);
+
+// Clears the LOAD-TIME registration state (filterIndices/clusters/
+// meshes/meshBounds) so a RegisterWorldMeshes re-run REBUILDS the
+// tables instead of appending duplicates onto them (the load-once
+// design never needed this; the geometry-streaming promote path
+// re-registers between frames after new LODs upload - the CPU vectors
+// rebuild deterministically, UploadStaticData then rebuilds the GPU
+// mirrors, and the OLD GPU buffers/index region retire deferred behind
+// the in-flight frames). Does NOT touch the per-frame view state, the
+// draw rings, or the demand machinery.
+void ResetStaticRegistrations(State& s);
 [[nodiscard]] inline uint32_t MeshCount(const State& s) {
 	return (uint32_t)s.meshes.size();
 }

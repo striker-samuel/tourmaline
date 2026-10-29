@@ -295,8 +295,21 @@ namespace smvk {
 			struct Level {
 				MeshLocation mesh;  // geometry sibling for this level
 				float error;        // world-space simplifier error (0 for LOD0)
+				// Geometry streaming (geometry_streamer.h): false = the
+				// sibling is KNOWN (LodInfo registered - the metadata
+				// chain includes it) but its payload is NOT resident
+				// (no pool mesh). mesh is invalid for such levels; the
+				// picker never selects them (World::SelectLodIndex
+				// compacts the resident subset), the demand pass reports
+				// them, GetLodMesh would fall back to LOD0 if anything
+				// ever asked (defense in depth - nothing should).
+				bool resident = true;
 			};
 			std::vector<Level> levels;
+			// True when any level is deferred: gates the desired-LOD
+			// demand computation (chains without deferred siblings skip
+			// it - their hot path is unchanged).
+			bool anyDeferred = false;
 		};
 		uint32_t LodChainLength(uint32_t meshIndex) const;
 		std::optional<MeshLocation> ResolveLodMesh(uint32_t meshIndex, uint32_t lodIndex) const;
@@ -339,6 +352,26 @@ namespace smvk {
 		uint32_t SelectLodIndex(uint32_t meshIndex, float distance,
 			float viewportHeightPx, float fovYRadians, float maxPixelError,
 			uint32_t currentLod = 0, float instanceWorldScale = 1.0f) const;
+
+		// ---- Geometry LOD streaming (Renderer/geometry_streamer.h) ------
+		// Consume the accumulated per-frame DEMAND: (world mesh, level)
+		// pairs the camera wanted but that are not resident (the full-
+		// chain selection vs the resident selection). Sharpest (lowest)
+		// level per mesh wins; the map clears on consume. Empty when no
+		// chain has deferred siblings.
+		void ConsumeLodDemand(
+			std::vector<std::pair<uint32_t, uint32_t>>& out);
+		// Promote one deferred sibling to resident: locate its deferred
+		// record on the owning cluster and replay the upload +
+		// registration (Cluster::PromoteDeferredMeshLod). Returns the
+		// fresh handle + payload bytes for the streamer's accounting, or
+		// nullopt when the level is not deferred/already promoted. The
+		// caller rebuilds the chains + the gfx tables afterwards.
+		[[nodiscard]] std::optional<Cluster::PromotedLod> PromoteLodLevel(
+			uint32_t meshIndex, uint32_t lodIndex);
+		// Any cluster still holding deferred siblings (the streamer's
+		// active gate + census).
+		[[nodiscard]] bool HasDeferredLods() const;
 
 		// Cached LOD chains parallel to meshLocations (see RebuildLodChains).
 		// Mutable so const hot paths (LodChainLength/SelectLodIndex) can
@@ -433,6 +466,11 @@ namespace smvk {
 		mutable uint64_t lodTick_ = 0;               // parity source
 		mutable uint64_t lodLastFrameId_ = ~uint64_t(0);
 		mutable LodFrameInputs lodInputs_{};
+		// Geometry streaming: accumulated (world mesh -> sharpest
+		// non-resident level) demand since the last ConsumeLodDemand -
+		// filled by LodIndexForNode's full-chain selection, drained by
+		// the streamer tick between frames.
+		mutable std::unordered_map<uint32_t, uint32_t> lodDemand_;
 
 		// First-hit URI resolution across clusters in registration order
 		// (mirrors the VFS overlay rule). Used for cross-pak references.

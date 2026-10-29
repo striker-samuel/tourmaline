@@ -1080,6 +1080,84 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 
 
 // -----------------------------------------------------------------------------
+// Geometry LOD streaming (Renderer/geometry_streamer.h): the deferred
+// sibling record + the promote path (see the header block). The promote
+// replays EXACTLY the deserializer's post-upload sequence - a promoted
+// sibling is indistinguishable from a load-time one.
+// -----------------------------------------------------------------------------
+
+uint64_t smvk::Cluster::DeferMeshLod(DeferredMeshLod&& d) {
+	// Payload accounting: the pos + shading streams are interleaved in
+	// the vertex block (VERTEX units - the arena counts vertices, the
+	// bytes are the physical cost) + the index bytes. Both matter to
+	// the streamer's budget, so account the physical bytes: vertices
+	// cost ~28-32 B each (pos3 + shading stream), indices 4 B.
+	const uint64_t vertexBytes =
+		uint64_t(d.src.vertexCount) * 32ull; // upper bound (pos+shade+pad)
+	const uint64_t indexBytes =
+		uint64_t(d.src.indexCount) * sizeof(uint32_t);
+	d.payloadBytes = vertexBytes + indexBytes;
+	deferredLods_.push_back(std::move(d));
+	return vertexBytes + indexBytes;
+}
+
+const smvk::Cluster::DeferredMeshLod* smvk::Cluster::FindDeferredMeshLod(
+	StringViewT uri) const
+{
+	for (const DeferredMeshLod& d : deferredLods_)
+		if (uri == d.uri)
+			return &d;
+	return nullptr;
+}
+
+std::optional<smvk::Cluster::PromotedLod>
+smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
+{
+	auto it = std::find_if(deferredLods_.begin(), deferredLods_.end(),
+		[&](const DeferredMeshLod& d) { return uri == d.uri; });
+	if (it == deferredLods_.end())
+		return std::nullopt;
+	if (!pakImagePin_ || pakImagePin_->empty())
+		return std::nullopt; // no payload source: cannot promote
+	DeferredMeshLod d = std::move(*it);
+	deferredLods_.erase(it);
+	const uint64_t payloadBytes = d.payloadBytes;
+
+	// One direct upload from the pinned pak image (the deserializer's
+	// batch path with a single source - fresh arena ranges, table-driven
+	// copies through the RHI upload streamer).
+	const StaticMeshDirectSource srcs[1] = { d.src };
+	const std::vector<ClusterStaticMeshHandle> handles =
+		UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
+	if (handles.size() != 1 || !handles[0].valid())
+		return std::nullopt;
+	const ClusterStaticMeshHandle h = handles[0];
+
+	// The deserializer's meta re-attach (cluster_serializer.cpp's
+	// post-upload block, verbatim): sphere + lightmap chunk/xforms +
+	// cooked meshlets. Skinned never defers (the v1 exclusion), so
+	// skinned stays false here.
+	if (StaticMesh* m = staticMeshes.get(h)) {
+		m->geometry.sphereRadius = d.sphere;
+		m->lmChunk = d.lmChunk;
+		m->lmChartXforms = std::move(d.lmXforms);
+		if (!d.meshlets.meshlets.empty())
+			m->meshlets = std::move(d.meshlets);
+		m->skinned = false;
+	}
+	RegisterMeshUri(d.uri, h);
+	// LodInfo was registered at DEFER time (RebuildLodChains needed it
+	// to see the full chain) - re-registering is an idempotent refresh.
+	RegisterMeshLod(d.uri, d.lod);
+	if (const StaticMesh* m = staticMeshes.get(h)) {
+		if (m->meshlets && !m->meshlets->empty())
+			RegisterMeshMeshlets(d.uri, *m->meshlets);
+	}
+
+	return PromotedLod{ h, payloadBytes };
+}
+
+// -----------------------------------------------------------------------------
 // Mesh destruction
 // -----------------------------------------------------------------------------
 

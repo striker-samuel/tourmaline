@@ -916,9 +916,21 @@ namespace smvk {
 					break;
 				auto meshHit = ResolveMeshAcrossClusters(uri);
 				if (!meshHit || meshHit->cluster == nullptr ||
-					!meshHit->handle.valid())
-					break;
-				chain.levels.push_back(LodChain::Level{ *meshHit, err });
+					!meshHit->handle.valid()) {
+					// Geometry streaming: metadata registered but no
+					// pool mesh - a DEFERRED sibling. The old code broke
+					// the chain here, which would strand every RESIDENT
+					// level beyond the gap (LOD0 + pinned LOD3 with
+					// LOD1/LOD2 deferred would leave LOD3 unreachable).
+					// Append the deferred level (invalid mesh,
+					// resident=false) and CONTINUE - the picker compacts
+					// the resident subset, the demand pass sees the
+					// full chain.
+					chain.levels.push_back(LodChain::Level{ MeshLocation{}, err, false });
+					chain.anyDeferred = true;
+					continue;
+				}
+				chain.levels.push_back(LodChain::Level{ *meshHit, err, true });
 			}
 		}
 	}
@@ -979,6 +991,47 @@ namespace smvk {
 					lodInputs_.viewportHeight, lodInputs_.fovY,
 					lodInputs_.pixelBudget, nodeLod_[n], instanceScale));
 				nodeLodStamp_[n] = inputs.frameId;
+				// Geometry streaming (the DESIRED half of the
+				// desired/resident/drawn triad): over chains with
+				// deferred siblings, run the SAME selection over the
+				// FULL chain (deferred levels included) and record every
+				// non-resident level the camera actually wants. This is
+				// the streamer's entire demand signal - the sharpest
+				// (lowest) miss per mesh wins, drained between frames by
+				// ConsumeLodDemand. Chains without deferred siblings
+				// skip this entirely (their hot path is unchanged).
+				if (worldMesh < lodChains.size()
+					&& lodChains[worldMesh].anyDeferred) {
+					const LodChain& chain = lodChains[worldMesh];
+					const uint32_t nl = (uint32_t)std::min<size_t>(
+						chain.levels.size(), 16);
+					if (nl > 1) {
+						float allErrors[16];
+						for (uint32_t l = 0; l < nl; ++l)
+							allErrors[l] = chain.levels[l].error * instanceScale;
+						const float dist =
+							LodDistanceForNode(node, worldMesh, lodInputs_.eye);
+						if (dist > 0.0f && lodInputs_.pixelBudget >= 0.0f) {
+							const uint32_t desired =
+								SelectLodIndexForDistance(allErrors, nl, dist,
+									lodInputs_.viewportHeight, lodInputs_.fovY,
+									lodInputs_.pixelBudget, nodeLod_[n],
+									kLodSelectHysteresis);
+							for (uint32_t l =
+									(desired > kLodDemandPrefetchLevels
+										? desired - kLodDemandPrefetchLevels : 0);
+								l <= desired; ++l) {
+								if (!chain.levels[l].resident) {
+									auto it = lodDemand_.find(worldMesh);
+									if (it == lodDemand_.end() || l < it->second)
+										lodDemand_[worldMesh] = l;
+									// keep walking the prefetch window:
+									// the finest miss wins the entry
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 		// Per-frame decision stats: count the node ONCE per frame (the
@@ -1113,13 +1166,85 @@ namespace smvk {
 		// coarsest LOD centimeters from the camera).
 		const float scale = (instanceWorldScale > 0.0f
 			&& std::isfinite(instanceWorldScale)) ? instanceWorldScale : 1.0f;
+		// Geometry streaming: select over the RESIDENT subset only - a
+		// deferred middle sibling degrades to whichever resident
+		// neighbor is in error budget (the DRAWN level of the
+		// desired/resident/drawn triad; a deferred level can never be
+		// selected, so every submitted draw references resident geometry
+		// by construction). levelIdx maps the compacted slot back to the
+		// true level index, and the hysteresis anchor (currentLod, a
+		// true index - the drawn level is always resident) maps forward
+		// to its compacted slot.
 		float errors[16];
+		uint32_t levelIdx[16];
+		uint32_t nr = 0;
+		uint32_t anchorSlot = 0;
 		const uint32_t n = (uint32_t)std::min<size_t>(chain.levels.size(), 16);
-		for (uint32_t i = 0; i < n; ++i)
-			errors[i] = chain.levels[i].error * scale;
-		return SelectLodIndexForDistance(errors, n, distance,
-			viewportHeightPx, fovYRadians, maxPixelError, currentLod,
-			kLodSelectHysteresis);
+		for (uint32_t i = 0; i < n; ++i) {
+			if (!chain.levels[i].resident)
+				continue;
+			errors[nr] = chain.levels[i].error * scale;
+			levelIdx[nr] = i;
+			if (i == currentLod)
+				anchorSlot = nr;
+			++nr;
+		}
+		if (nr <= 1)
+			return 0;
+		return levelIdx[SelectLodIndexForDistance(errors, nr, distance,
+			viewportHeightPx, fovYRadians, maxPixelError, anchorSlot,
+			kLodSelectHysteresis)];
+	}
+
+	// ---------------------------------------------------------------------------
+	// Geometry LOD streaming (Renderer/geometry_streamer.h): the demand
+	// drain + the promote orchestration. See the world.h block.
+	// ---------------------------------------------------------------------------
+
+	void World::ConsumeLodDemand(
+		std::vector<std::pair<uint32_t, uint32_t>>& out) {
+		out.clear();
+		out.reserve(lodDemand_.size());
+		for (const auto& [mesh, level] : lodDemand_)
+			out.emplace_back(mesh, level);
+		lodDemand_.clear();
+	}
+
+	bool World::HasDeferredLods() const {
+		for (const auto& clusterPtr : clusters) {
+			if (clusterPtr && clusterPtr->DeferredLodCount() > 0)
+				return true;
+		}
+		return false;
+	}
+
+	std::optional<Cluster::PromotedLod> World::PromoteLodLevel(
+		uint32_t meshIndex, uint32_t lodIndex) {
+		EnsureLodChainsCached(*this);
+		if (meshIndex >= lodChains.size() || meshIndex >= meshLocations.size())
+			return std::nullopt;
+		const LodChain& chain = lodChains[meshIndex];
+		if (lodIndex >= chain.levels.size() || chain.levels[lodIndex].resident)
+			return std::nullopt; // not deferred (or already promoted)
+		// The sibling's uri derives from the LOD0 base exactly like
+		// RebuildLodChains does (the "<base>/lodN" convention).
+		const MeshLocation& lod0 = meshLocations[meshIndex];
+		if (lod0.cluster == nullptr || !lod0.handle.valid())
+			return std::nullopt;
+		const StringViewT base =
+			BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
+		if (base.empty())
+			return std::nullopt;
+		const StringViewT uri = LodSiblingUri(base, lodIndex);
+		// Any cluster may hold the deferred record (the overlay rule) -
+		// walk in registration order like ResolveMeshAcrossClusters.
+		for (const auto& clusterPtr : clusters) {
+			if (!clusterPtr)
+				continue;
+			if (auto r = clusterPtr->PromoteDeferredMeshLod(uri))
+				return r;
+		}
+		return std::nullopt;
 	}
 
 	// Scene-wide lightmap chart transform table: every StaticMesh's

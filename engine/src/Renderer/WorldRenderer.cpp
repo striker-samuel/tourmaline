@@ -2447,6 +2447,24 @@ namespace engine {
 			else {
 				m_gfxRenderer.RegisterWorldMeshes(*m_world);
 				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+				// Geometry LOD streaming census: the cluster loads
+				// deferred their middle LOD siblings (the serializer's
+				// stderr line carries the per-cluster numbers); arm the
+				// per-frame tick while any remain. Pinned coarsest
+				// fallbacks + bases are already resident - the tick only
+				// promotes demand-misses.
+				m_geometryStreamer.stats.deferredAtLoad = 0;
+				m_geometryStreamer.stats.deferredBytesAtLoad = 0;
+				for (const auto& clusterPtr : m_world->clusters) {
+					if (!clusterPtr)
+						continue;
+					m_geometryStreamer.stats.deferredAtLoad +=
+						clusterPtr->DeferredLodCount();
+					m_geometryStreamer.stats.deferredBytesAtLoad +=
+						clusterPtr->DeferredLodBytes();
+				}
+				m_geometryStreamingActive =
+					m_geometryStreamer.stats.deferredAtLoad > 0;
 				std::cerr << "[Scene] gfx clusters="
 					<< smvk::gfx::ClusterCount(m_gfxRenderer.State()) << std::endl;
 				if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
@@ -5136,6 +5154,65 @@ namespace engine {
 		if (stats.upgradesLastUpdate > 0 || stats.downgradesLastUpdate > 0) {
 			SMVK_PROFILE_STREAM("TexStreamingFlushUploads");
 			m_context->FlushUploads();
+		}
+	}
+
+	void WorldRenderer::UpdateGeometryStreaming() {
+		// The promote tick (geometry_streamer.h): drain the demand the
+		// LOD picker accumulated this frame, promote what the camera
+		// wants within the byte/count throttle, then rebuild the
+		// LOD chains + the gfx mesh tables. Runs in RenderFrame's update
+		// section - BEFORE any pass is appended this frame, so the
+		// frame's recording sees the new tables; in-flight frames keep
+		// the old buffers/regions through the deferred retirement
+		// (DeferFreeIndexRegion + the Holder drops + the RHI margin).
+		if (!m_geometryStreamingActive || !m_world)
+			return;
+		SMVK_PROFILE_STREAM("GeoStreamingUpdate");
+		m_geometryStreamer.BeginUpdate();
+		std::vector<std::pair<uint32_t, uint32_t>> demand;
+		m_world->ConsumeLodDemand(demand);
+		if (demand.empty())
+			return;
+		uint64_t bytesThisFrame = 0;
+		uint32_t promotes = 0;
+		bool dirty = false;
+		for (const auto& [mesh, level] : demand) {
+			++m_geometryStreamer.stats.demandMisses;
+			if (!m_geometryStreamer.CanPromoteThisFrame(bytesThisFrame,
+					promotes))
+				break; // throttle: the rest re-demands next frame
+			auto r = m_world->PromoteLodLevel(mesh, level);
+			if (!r)
+				continue; // not deferred anymore (promoted / mistaken)
+			bytesThisFrame += r->payloadBytes;
+			++promotes;
+			m_geometryStreamer.NotePromote(r->payloadBytes);
+			dirty = true;
+			std::fprintf(stderr,
+				"[GeometryStreaming] promoted worldMesh=%u lod=%u "
+				"(%.0f KiB, %u/%u this frame)\n",
+				mesh, level, double(r->payloadBytes) / 1024.0,
+				promotes, m_geometryStreamer.config.maxPromotesPerFrame);
+		}
+		if (dirty) {
+			// The chains pick up the promoted levels (the sparse
+			// resident set widens); the lightmap chart table gains the
+			// promoted siblings' charts; the gfx tables rebuild from
+			// scratch (ResetStaticRegistrations + the dedup'd re-register
+			// - there is no incremental GPU mesh-table update, the
+			// full rebuild IS the mechanism, and it is in-flight-safe
+			// since the index-region rework).
+			m_world->RebuildLodChains();
+			m_world->RebuildLightmapChartTable();
+			if (m_gfxFilterAvailable) {
+				smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
+				m_gfxRenderer.RegisterWorldMeshes(*m_world);
+				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+			}
+			m_context->FlushUploads();
+			// The tick retires when the last deferred sibling promoted.
+			m_geometryStreamingActive = m_world->HasDeferredLods();
 		}
 	}
 
@@ -9389,6 +9466,7 @@ namespace engine {
 		UpdateMaterials(fb.frameIndex);
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
+		UpdateGeometryStreaming();
 		// Probe residency for this frame's eye (throttled inside; the
 		// FP upload below reads the rebuilt rows - see m_cubemapRows).
 		UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);

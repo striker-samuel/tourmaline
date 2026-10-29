@@ -296,6 +296,13 @@ inline float LodSwitchDistance(float simplifyErrorWorld, float viewportHeightPx,
 // foliage, whose coarse levels lose alpha coverage). 0 = plain threshold.
 inline constexpr float kLodSelectHysteresis = 0.2f;
 
+// Geometry streaming (Renderer/geometry_streamer.h): the demand window
+// extends prefetchLevels FINER than the desired level (hides the
+// promote latency while the camera approaches). Mirrors
+// GeometryStreamingConfig::prefetchLevels's v1 default - a single
+// constant until the config grows a runtime override path.
+inline constexpr uint32_t kLodDemandPrefetchLevels = 1;
+
 // Pick the coarsest LOD whose projected error is within budget.
 // `errorsByLod` is ordered LOD0..N (LOD0 error must be 0); entries with
 // non-finite/negative error are treated as unusable (skipped, never picked

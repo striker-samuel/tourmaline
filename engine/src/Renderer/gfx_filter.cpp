@@ -118,6 +118,31 @@ static void FreeIndexRegion(uint64_t& allocBits) {
 	allocBits = 0;
 }
 
+// Retire-ordered index-region free (cluster.cpp's
+// DeferFreeStaticMeshRanges discipline): the arena free rides
+// DeferDestroyTask, so the range returns to the free list only after
+// every in-flight frame's reads have retired (margin
+// +MaxFramesInFlight - see VulkanResourceManager::DeferDestroy). The
+// LOAD-TIME UploadStaticData call has nothing in flight, where the
+// deferral is a harmless delay; the GEOMETRY-STREAMING promote path
+// rebuilds these tables BETWEEN frames with live flights, and an
+// in-place free would hand the old region to the new filterIndices
+// upload while an in-flight cull still reads the old table through the
+// old base (garbage draws for a frame - the suballoc-vs-frames-in-
+// flight hazard the mesh heap frees already document).
+static void DeferFreeIndexRegion(ResourceManager& ctx, uint64_t& allocBits) {
+	if (allocBits == 0)
+		return;
+	const uint64_t bits = allocBits;
+	allocBits = 0;
+	StaticHeapArena* block = &staticVertexFmtHeap.m_staticIndexBlock;
+	ctx.DeferDestroyTask(std::packaged_task<void()>(
+		[block, bits] {
+			if (bits)
+				block->Free((StaticHeapArena::AllocId)bits);
+		}));
+}
+
 static void RollbackSlotBuffers(RenderGraph& rg, View& v, uint32_t doneFrames) {
 	for (uint32_t f = 0; f < doneFrames; ++f) {
 		if (!v.batchLogicals[f].empty()) rg.FreeBuffer(v.batchLogicals[f]);
@@ -1317,6 +1342,16 @@ uint32_t RegisterMeshFromCooked(State& s, const CookedMeshlets& cooked,
 	return FinishMesh(s, clusterStart);
 }
 
+void ResetStaticRegistrations(State& s) {
+	s.filterIndices.clear();
+	s.clusters.clear();
+	s.meshes.clear();
+	s.meshBounds.clear();
+	// clusterIndexBase/AllocBits + the three table buffers stay - they
+	// are UploadStaticData's to retire/replace (alloc-new-first, the
+	// old region frees deferred).
+}
+
 void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 	if (!s.clusterLogical.empty()) rg.FreeBuffer(s.clusterLogical);
 	s.clusterLogical = {};
@@ -1324,25 +1359,44 @@ void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg) {
 	if (!s.meshBoundsLogical.empty()) rg.FreeBuffer(s.meshBoundsLogical);
 	s.meshBoundsLogical = {};
 	s.meshBoundsBuffer = {};
-	FreeIndexRegion(s.clusterIndexAllocBits);
-	s.clusterIndexBase = 0;
-	// One rendergraph logical for the static index monoblock (mesh +
-	// cluster-ordered + filtered regions share one VkBuffer, so one hint
-	// covers every index stream). The heap outlives filter data; keep the
-	// logical for the State lifetime.
+	// The cluster-index region: the NEW region allocates FIRST and the
+	// old one retires DEFERRED (DeferFreeIndexRegion) - never free-then-
+	// realloc in place. The streaming promote path rebuilds between
+	// frames with up to MaxFramesInFlight flights still reading the old
+	// region through the old clusterIndexBase; alloc-first also means a
+	// failed re-allocation keeps the OLD region live instead of losing
+	// it (the pre-streaming code freed first and dropped the range on
+	// the exhaustion path).
 	if (s.indexHeapLogical.empty())
 		s.indexHeapLogical = rg.AddExternalBuffer(
 			staticVertexFmtHeap.m_staticIndexBuffer, "static index monoblock");
-	if (s.filterIndices.empty() || s.clusters.empty())
-		return;
-	if (!AllocIndexRegion((uint32_t)s.filterIndices.size(),
-		s.clusterIndexBase, s.clusterIndexAllocBits)) {
+	uint32_t newIndexBase = 0;
+	uint64_t newIndexBits = 0;
+	if (!s.filterIndices.empty() && !s.clusters.empty()
+		&& AllocIndexRegion((uint32_t)s.filterIndices.size(),
+			newIndexBase, newIndexBits)) {
+		DeferFreeIndexRegion(ctx, s.clusterIndexAllocBits);
+		s.clusterIndexBase = newIndexBase;
+		s.clusterIndexAllocBits = newIndexBits;
+	}
+	else if (s.filterIndices.empty() || s.clusters.empty()) {
+		// Nothing to upload: retire the old region too (deferred).
+		DeferFreeIndexRegion(ctx, s.clusterIndexAllocBits);
+		s.clusterIndexBase = 0;
+	}
+	else {
+		// Region exhausted: KEEP the old region (it still backs the
+		// previous content - the tables below were already cleared, so
+		// the filter reports unavailable, same failure mode as before,
+		// but the range is not leaked).
 		std::fprintf(stderr,
 			"[GfxFilter] cluster index region exhausted the static index "
 			"monoblock (%u indices): increase the reservation.\n",
 			(unsigned)s.filterIndices.size());
 		return;
 	}
+	if (s.filterIndices.empty() || s.clusters.empty())
+		return;
 	std::vector<ClusterConstants> table(s.clusters.size());
 	for (size_t i = 0; i < s.clusters.size(); ++i) {
 		table[i].indexOffset = s.clusters[i].indexOffset;

@@ -396,6 +396,18 @@ RunConfig RunConfig::Parse() {
 		else
 			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_CONTACT_SHADOWS (want 1|on|0|off): %s\n", v);
 	}
+	// Geometry LOD streaming: parsed for the log line only - the
+	// SERIALIZER reads the env directly (the defer decision happens at
+	// cluster parse, before any renderer state exists; the
+	// GeometryStreamingEnabled() static - the DebugImageDumpArmed
+	// pattern).
+	if ((v = Get("TOURMALINE_GEOMETRY_STREAMING")) != nullptr) {
+		bool on = false;
+		if (IsOnOff(Trimmed(v), on))
+			c.geometryStreaming = on ? OnOffPin::On : OnOffPin::Off;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_GEOMETRY_STREAMING (want 1|on|0|off): %s\n", v);
+	}
 	if ((v = Get("TOURMALINE_CONTACT_SHADOWS_STEPS")) != nullptr) {
 		const int css = std::atoi(v);
 		if (css >= 4 && css <= 32)
@@ -594,6 +606,8 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " CONTACT_SHADOWS_THICKNESS=%g", *contactShadowThickness);
 	if (contactShadowRes)
 		std::fprintf(stderr, " CONTACT_SHADOWS_RES=%d", *contactShadowRes);
+	if (geometryStreaming)
+		std::fprintf(stderr, " GEO_STREAMING=%s", onOffStr(*geometryStreaming));
 	if (normalFix)
 		std::fprintf(stderr, " NORMAL_FIX=%s", onOffStr(*normalFix));
 	if (normalFixDebug)
@@ -651,7 +665,7 @@ void RunConfig::WarnUnknown() {
 		"TOURMALINE_DS_VIZ", "TOURMALINE_CAPTURE", "TOURMALINE_DECALS",
 		"TOURMALINE_DECAL_AUTOSPLAT", "TOURMALINE_EVSM", "TOURMALINE_EVSM_SOFT",
 		"TOURMALINE_SDSM", "TOURMALINE_EVSM_DUMP", "TOURMALINE_SSR_DUMP",
-		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_CONTACT_SHADOWS", "TOURMALINE_CONTACT_SHADOWS_STEPS", "TOURMALINE_CONTACT_SHADOWS_DIST", "TOURMALINE_CONTACT_SHADOWS_THICKNESS", "TOURMALINE_CONTACT_SHADOWS_RES", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
+		"TOURMALINE_IBL", "TOURMALINE_CUBEMAP_DEBUG", "TOURMALINE_CUBEMAP_BALLS", "TOURMALINE_PROBE_PREMIX", "TOURMALINE_CONTACT_SHADOWS", "TOURMALINE_CONTACT_SHADOWS_STEPS", "TOURMALINE_CONTACT_SHADOWS_DIST", "TOURMALINE_CONTACT_SHADOWS_THICKNESS", "TOURMALINE_CONTACT_SHADOWS_RES", "TOURMALINE_GEOMETRY_STREAMING", "TOURMALINE_LIGHT_CROWD", "TOURMALINE_DUST", "TOURMALINE_RAIN", "TOURMALINE_AMBIENT",
 		"TOURMALINE_GI", "TOURMALINE_GI_DEBUG", "TOURMALINE_GI_DEBUG_LEVEL",
 		"TOURMALINE_GI_INTENSITY",
 		"TOURMALINE_GI_POINTS", "TOURMALINE_GI_OCCLUDE", "TOURMALINE_STREAMING",

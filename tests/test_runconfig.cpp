@@ -140,6 +140,23 @@ int main() {
 	UnsetVar("TOURMALINE_CONTACT_SHADOWS_THICKNESS");
 	UnsetVar("TOURMALINE_CONTACT_SHADOWS_RES");
 
+	// Geometry-streaming pin: parse + log plumbing only (the serializer
+	// reads the env directly - see the field's note).
+	SetVar("TOURMALINE_GEOMETRY_STREAMING", "on");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.geometryStreaming.has_value()
+			&& *c.geometryStreaming == engine::OnOffPin::On,
+			"runconfig.parse-geo-streaming");
+	}
+	SetVar("TOURMALINE_GEOMETRY_STREAMING", "maybe");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(!c.geometryStreaming.has_value(),
+			"runconfig.invalid-geo-streaming-unset");
+	}
+	UnsetVar("TOURMALINE_GEOMETRY_STREAMING");
+
 	// Invalid pins warn (stderr) and leave the authored scene winning.
 	SetVar("TOURMALINE_AA", "bogus");
 	SetVar("TOURMALINE_SSR", "maybe");
