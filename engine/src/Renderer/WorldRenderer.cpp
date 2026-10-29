@@ -1102,6 +1102,10 @@ namespace engine {
 			else if (dv == "ssgi_layer" || dv == "ssgi_temporal") m_debugView = ViewMode::SsgiLayer;
 			else if (dv == "ssgi_baseline" || dv == "ssgi_ambient") m_debugView = ViewMode::SsgiBaseline;
 			else if (dv == "ssgi_contribution") m_debugView = ViewMode::SsgiContribution;
+			// Sun contact-shadow contribution (the contact march's
+			// visibility against the CSM/EVSM factor, channel-coded).
+			else if (dv == "contact" || dv == "contact_shadows" || dv == "contactshadows")
+				m_debugView = ViewMode::ContactShadows;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
@@ -1766,6 +1770,14 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_normals_mapped_debug unavailable - Mapped normals view falls back to Lit\n";
 		}
+		try {
+			auto contactCode = readFile("content/shaders/default_contact_debug.frag.hlsl.spv");
+			m_resources.fragContactDebugShader =
+				m_context->CreateShaderModule(contactCode, "fragContactDebug");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_contact_debug unavailable - Contact shadows view falls back to Lit\n";
+		}
 		// Shading debug-view program pairs: ONE pairing rule for every
 		// flat FS — the direct twin (default.vert + FS) rides the direct
 		// fallback leg, the filtered twin (gfxfiltered.vert + FS, via
@@ -1810,6 +1822,7 @@ namespace engine {
 				{ DebugFs::SsrMask, m_resources.fragSsrMaskDebugShader },
 				{ DebugFs::Normals, m_resources.fragNormalsDebugShader },
 				{ DebugFs::NormalsMapped, m_resources.fragNormalsMappedDebugShader },
+				{ DebugFs::ContactShadows, m_resources.fragContactDebugShader },
 			};
 			for (const auto& [slot, frag] : slots) {
 				auto& pair = m_resources.debugPrograms[size_t(slot)];
@@ -7922,6 +7935,12 @@ namespace engine {
 			case ViewMode::SsrContribution:
 				title = "SSR contribution";
 				lines[0] = "the reflection layer's exact add term.";
+				break;
+			case ViewMode::ContactShadows:
+				title = "Sun contact shadows: contribution";
+				lines[0] = "R = contact march, G = CSM/EVSM; green = the march's";
+				lines[1] = "contribution (cascade missed it), red = the march";
+				lines[2] = "missed (tune thickness/res); magenta = not running.";
 				break;
 			case ViewMode::SsgiConfidence:
 				title = "SSGI diffuse: confidence";
@@ -14673,6 +14692,7 @@ namespace engine {
 							"SSGI diffuse: contribution",
 							"Normals (mapped, world-space)",
 							"Motion vectors (V)",
+							"Sun contact shadows (contribution)",
 						};
 						// Combo index <-> ViewMode mapping (SsrContribution stays
 						// env-only; UV1 and Normals are combo/env only; the
@@ -14692,14 +14712,15 @@ namespace engine {
 							ViewMode::SsgiLayer, ViewMode::SsgiBaseline,
 							ViewMode::SsgiContribution,
 							ViewMode::NormalsMapped, ViewMode::MotionVectors,
+							ViewMode::ContactShadows,
 						};
 						int view = 0;
-						for (int i = 0; i < 19; ++i)
+						for (int i = 0; i < 20; ++i)
 							if (kComboViews[i] == m_debugView)
 								view = i;
 						// SetDebugView: the direct selection takes over
 						// (clears the R/F8 + Y overlay views).
-						if (ImGui::Combo("Debug view", &view, viewNames, 19))
+						if (ImGui::Combo("Debug view", &view, viewNames, 20))
 							SetDebugView(kComboViews[view]);
 						// Motion vectors (V): the tonemap's debug view —
 						// direction -> hue, magnitude -> intensity, jitter

@@ -122,7 +122,13 @@ $env:TOURMALINE_CAPTURE='48'
   0.03 m thickness / 0.01 m bias, 12 steps, half-res.
   `TOURMALINE_CONTACT_SHADOWS_DUMP=<frame>` one-shot dumps the visibility
   texture's stats + an ASCII occlusion map to stderr (the FOG_TILE_DUMP
-  discipline - sync download, debug runs only)
+  discipline - sync download, debug runs only).
+  `TOURMALINE_DEBUGVIEW=contact` selects the contribution view (the
+  Debug-view combo's "Sun contact shadows (contribution)"): R = the
+  contact march's visibility, G = the CSM/EVSM factor - green = the
+  march's contribution, red = the march missed what the cascade caught,
+  dim blue = NdotL<=0 (inert), magenta = the pass not running. The
+  contact pass stays LIVE under this view (it samples the real march)
 
 ## Tests
 

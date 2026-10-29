@@ -427,6 +427,17 @@ enum class ViewMode : int {
 	// checkbox reclassified: a debug view owns the pixel, it does not
 	// stack over the scene). Needs the motion-vector pass on.
 	MotionVectors = 19,
+	// Sun contact-shadow CONTRIBUTION view (combo/env only):
+	// default_contact_debug - the contact march's visibility (R) against
+	// the CSM/EVSM factor (G). YELLOW = sun-lit untouched; GREEN = the
+	// contact march's contribution (an occluder the cascade missed);
+	// RED = the march missed what the cascade caught (the
+	// thin-occluder/resolution tuning signal); dim blue = NdotL <= 0
+	// (the contact value inert); MAGENTA = the visibility not published
+	// (the pass gated off). The contact pass is EXEMPT from its own
+	// debug-view gate (ContactShadowsActive) so the readout samples the
+	// real march output instead of re-tracing.
+	ContactShadows = 20,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -480,6 +491,7 @@ enum class DebugFs : int {
 	SsrMask,      // default_ssrmask_debug
 	Normals,      // default_normals_debug (combo/env only)
 	NormalsMapped, // default_normals_mapped_debug (combo/env only)
+	ContactShadows, // default_contact_debug (combo/env only)
 	Count
 };
 
@@ -496,6 +508,7 @@ enum class DebugFs : int {
 	case ViewMode::SsrMask: return DebugFs::SsrMask;
 	case ViewMode::Normals: return DebugFs::Normals;
 	case ViewMode::NormalsMapped: return DebugFs::NormalsMapped;
+	case ViewMode::ContactShadows: return DebugFs::ContactShadows;
 	default: return std::nullopt;
 	}
 }
@@ -1084,6 +1097,11 @@ struct AppResources {
 	// body's tangent-space math verbatim (default_normals_mapped_debug.
 	// frag.hlsl; layered materials fall back to the geometric normal).
 	smvk::Holder<smvk::ShaderModuleHandle> fragNormalsMappedDebugShader;
+	// Sun contact-shadow CONTRIBUTION debug view (combo/env only): the
+	// march's visibility (R) against the CSM/EVSM factor (G) in one
+	// channel-coded readout (default_contact_debug.frag.hlsl). Missing
+	// module keeps shaderCount 0 and the view falls back to Lit.
+	smvk::Holder<smvk::ShaderModuleHandle> fragContactDebugShader;
 	// Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
@@ -2401,13 +2419,19 @@ public:
 	// disagree, Main's lit body samples a stale or never-written
 	// visibility texture. frameUniformsAddress is asserted at AddPass
 	// instead (it is computed after the uniform fill).
+	// The debug-view term: the OTHER views replace Main's lit FS (the
+	// march's output would be unwritten cargo), but THIS effect's own
+	// contribution view SAMPLES the visibility - the pass stays live
+	// under it (the Ssgi-views-keep-their-inputs pattern; the SSR
+	// contribution view chose re-tracing instead - this is cheaper).
 	bool ContactShadowsActive() const {
 		return m_passes.contactShadows
 			&& m_contactShadowsEnabled
 			&& m_viewportResources.contactShadows.Valid()
 			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
 			&& !m_viewportResources.renderDepth.logicalView.empty()
-			&& !DebugVisualizationActive();
+			&& (!DebugVisualizationActive()
+				|| m_debugView == ViewMode::ContactShadows);
 	}
 	// Direct-path EVSM moment recording: depth-only 2x MSAA through the
 	// PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) —
