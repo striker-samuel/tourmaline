@@ -31,6 +31,11 @@
 // Unlike the geometric sibling this FS READS the material table
 // (pc.bMats + pc.materialId, the gbuffer.frag pattern) + the uv +
 // tangent VS outputs.
+//
+// MASK cutout + closeup dither mirror default_unlit.frag.hlsl (and the
+// geometric sibling's matching block): masked surfaces must keep their
+// authored silhouette in the readout or their transparent texels draw
+// as solid false color - flicker the lit/unlit paths discard.
 
 struct PSIn
 {
@@ -60,6 +65,40 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     const bool layered = (mat.layerMaterials.w > 1);
     int normalIdx = mat.tex.z;
     float normalScale = mat.params2.y;
+
+    // Match the lit path's closeup dissolve (default_unlit's block,
+    // verbatim): a flagged subtree must screen-door away here too or it
+    // renders SOLID in this view while it dissolves in lit.
+    if (IN.ditherCloseup != 0u)
+    {
+        FrameUniforms frameEarly = pc.frameUniforms.Get();
+        FramePSHot hotEarly = frameEarly.frameHot.Get();
+
+        if (!CloseupDitherKeep(
+                IN.worldPos, hotEarly.cameraPos, clipPos.xy))
+            discard;
+    }
+
+    // Single-layer MASK material (matches lit/unlit): discard below the
+    // alpha cutoff so masked cutouts keep their authored silhouette
+    // instead of drawing transparent texels as false color. Layered
+    // materials keep the lit body's weight-blended alpha as its own
+    // domain (same convention as the mapped-normal fallback below).
+    if (mat.params.w == 2.0f)
+    {
+        float alpha = mat.diffuse.a;
+        int baseColorIdx = mat.tex.x;
+
+        if (baseColorIdx >= 0)
+        {
+            alpha *= textures[
+                NonUniformResourceIndex((uint)baseColorIdx)]
+                .Sample(samplers[0], IN.uv).a;
+        }
+
+        if (alpha < mat.params.x)
+            discard;
+    }
 
     float3 N = normalize(IN.normal);
     // Degenerate-interpolation guard (the lit body's bistro-glass

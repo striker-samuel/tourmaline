@@ -6,10 +6,12 @@
 // World-space normals debug view (combo/env only - no free F-key; see
 // ViewMode::Normals): the interpolated GEOMETRIC normal as false color,
 // (n * 0.5 + 0.5) -> RGB (up = green+..., +X red, +Y green, +Z blue).
-// Geometry readout only - no material fetch, no normal-map perturbation
-// (the POM view owns mapped normals), no cutout/dither: flat readouts
-// stay solid on purpose (silhouette agreement is the unlit view's job;
-// see default_unlit.frag.hlsl's note). Pairs with the family contract:
+// Geometry readout only - no normal-map perturbation (the POM view owns
+// mapped normals). MASK cutout + closeup dither DO run here (mirrored
+// from default_unlit.frag.hlsl, the family's silhouette keeper): masked
+// leaf cards otherwise draw their transparent texels as solid false
+// color, which reads as flicker/overlapping polygons on authored masked
+// geometry that lit and unlit discard. Pairs with the family contract:
 // same PSIn as default_unlit over default.vert (direct fallback leg) and
 // gfxfiltered.vert (GPU-driven leg) - see AppResources::debugPrograms.
 //
@@ -44,6 +46,40 @@ struct PSOut
 PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
+
+    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+
+    // Match the lit path's closeup dissolve (default_unlit's block,
+    // verbatim): a flagged subtree must screen-door away here too or it
+    // renders SOLID in this view while it dissolves in lit.
+    if (IN.ditherCloseup != 0u)
+    {
+        FrameUniforms frameEarly = pc.frameUniforms.Get();
+        FramePSHot hotEarly = frameEarly.frameHot.Get();
+
+        if (!CloseupDitherKeep(
+                IN.worldPos, hotEarly.cameraPos, clipPos.xy))
+            discard;
+    }
+
+    // Single-layer MASK material (matches lit/unlit): discard below the
+    // alpha cutoff so masked cutouts keep their authored silhouette
+    // instead of drawing transparent texels as false color.
+    if (mat.params.w == 2.0f)
+    {
+        float alpha = mat.diffuse.a;
+        int baseColorIdx = mat.tex.x;
+
+        if (baseColorIdx >= 0)
+        {
+            alpha *= textures[
+                NonUniformResourceIndex((uint)baseColorIdx)]
+                .Sample(samplers[0], IN.uv).a;
+        }
+
+        if (alpha < mat.params.x)
+            discard;
+    }
 
     // Interpolated world-space geometric normal -> false color. The
     // pipeline is always back-face cull, so isFrontFace is constant true
