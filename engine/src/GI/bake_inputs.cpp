@@ -387,6 +387,12 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 	hs.feedPod(cfg.captureSpacing);
 	hs.feedPod(cfg.smoothingPasses);
 	hs.feedPod(cfg.maskTransmission);
+	// The firefly clamp + the trace-scene albedo mode (the review-found
+	// gaps: changing --clamp or --uniform-albedo re-traces everything,
+	// so stale records must refuse).
+	hs.feedPod(cfg.clampRatio);
+	hs.feedPod(cfg.albedoUniform);
+	hs.feedPod(cfg.albedoValue);
 	hs.feed(BakeRegionHash(grid, mn, mx));
 	return hs.str();
 }
@@ -414,6 +420,12 @@ std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
 	hs.feedPod(cfg.rays);
 	hs.feedPod(cfg.spp);
 	hs.feedPod(cfg.maskTransmission);
+	// The transport depth + the trace-scene albedo mode (the same
+	// review-found gap class: a --cubemap-bounces or albedo change must
+	// refuse stale captures).
+	hs.feedPod(cfg.maxBounces);
+	hs.feedPod(cfg.albedoUniform);
+	hs.feedPod(cfg.albedoValue);
 	// The OBSERVED reach: the recorded cells' CURRENT grid hashes (a
 	// cell now absent = empty geometry = the stable empty marker). This
 	// closes both directions — a changed seen cell, and new content in a

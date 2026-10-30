@@ -24,6 +24,13 @@ struct Args {
 	std::string out;      // non-empty => Run() refuses (exit 2)
 	uint32_t rays = 1024;  // regular-bake rays/probe (convex bakes per-probe
 	uint32_t bounces = 3;  // transport depth (regular + convex + lm chains)
+	// Firefly clamp for the volume bakes (the two-pass per-probe cap at
+	// clampRatio x the probe's own finite-sample mean, pre-SG-fit):
+	// "off" disables it — the energy A/B; a number sets the ratio.
+	// Default "8" (the historical value). Either way the bake logs the
+	// discarded-energy fraction (clampedEnergyRatio), and a change
+	// re-traces (the invalidation hash folds the ratio).
+	std::string clamp = "8";
 	uint32_t threads = 0;  // 0 = hardware concurrency
 	// (The oct-bake-only knobs — errorRays/root/minBrick/maxProbes/
 	// tolerance/nearFactor/waves/diffusion/smoothingPasses/support — are

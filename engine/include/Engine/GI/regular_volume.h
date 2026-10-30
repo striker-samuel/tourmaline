@@ -96,12 +96,17 @@ struct SgRegularBakeConfig {
 	uint32_t maxBounces = 3;     // diffuse path depth after the first hit
 	uint32_t threadCount = 0;    // 0 = hardware concurrency
 	uint32_t seed = 1;
+	// Firefly clamp (GiVolumeBakeConfig::clampRatio's twin — 0 = OFF,
+	// the energy A/B; the stats log the discarded fraction).
+	float clampRatio = 8.0f;
 };
 
 struct SgRegularBakeStats {
 	uint64_t voxelsBaked = 0;
 	uint64_t pathsTraced = 0;
 	uint64_t samplesClamped = 0;
+	// The clamp's energy ledger (GiVolumeBakeStats::clampedEnergyRatio).
+	double clampedEnergyRatio = 0.0;
 	double seconds = 0.0;
 };
 

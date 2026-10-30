@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <thread>
 
 #include <Engine/Asset/compression.h>
@@ -1223,6 +1224,10 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 		ThreadPool pool(threadCount ? threadCount : 1);
 		std::atomic<uint64_t> invalid{ 0 };
 		std::atomic<uint64_t> clamped{ 0 };
+		// The clamp's energy ledger (pre/post-clamp luminance sums —
+		// stats.clampedEnergyRatio's inputs).
+		std::atomic<double> energyBefore{ 0.0 };
+		std::atomic<double> energyAfter{ 0.0 };
 		constexpr size_t kBatch = 128;
 		for (uint64_t base = 0; base < n; base += kBatch) {
 			const uint64_t end = std::min(base + kBatch, n);
@@ -1254,24 +1259,39 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 						for (uint32_t i = 0; i < N; ++i)
 							rad[i] = scene.TraceIncoming(pos, dirs[i],
 								rng, cfg.maxBounces, nullptr);
-						// Two-pass firefly clamp (same policy as every
-						// other bake: 8x the probe's own finite-sample
-						// mean).
+						// Two-pass firefly clamp (clampRatio x the probe's
+						// own finite-sample mean; 0 = off — the energy
+						// A/B). The ENERGY LEDGER feeds
+						// stats.clampedEnergyRatio: how much luminance
+						// the clamp discarded, the metric that tells a
+						// variance-taming trim (near-zero) from a
+						// systematic loss of legitimate indirect energy
+						// (a few bright samples carrying real light).
 						double meanLum = 0.0;
-						for (const glm::vec3& L : rad)
-							meanLum += Luminance(L);
+						double sumBefore = 0.0;
+						for (const glm::vec3& L : rad) {
+							const double l = Luminance(L);
+							meanLum += l;
+							sumBefore += l;
+						}
 						meanLum /= double(N);
-						const float p8 =
-							std::max(float(meanLum) * 8.0f, 1e-6f);
+						const float cap = (cfg.clampRatio > 0.0f)
+							? std::max(float(meanLum) * cfg.clampRatio,
+								1e-6f)
+							: std::numeric_limits<float>::max();
 						uint64_t localClamped = 0;
+						double sumAfter = 0.0;
 						for (glm::vec3& L : rad) {
 							const float l = Luminance(L);
-							if (l > p8 && l > 0.0f) {
-								L *= p8 / l;
+							if (l > cap && l > 0.0f) {
+								L *= cap / l;
 								++localClamped;
 							}
+							sumAfter += Luminance(L);
 						}
 						clamped += localClamped;
+						energyBefore += sumBefore;
+						energyAfter += sumAfter;
 						for (uint32_t i = 0; i < N; ++i)
 							acc.AddSample(dirs[i], rad[i],
 								texelSolidAngle);
@@ -1311,6 +1331,11 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 		}
 		stats.probesInvalid = invalid.load();
 		stats.samplesClamped = clamped.load();
+		// The discarded-energy fraction (the A/B metric; 0 when the
+		// clamp is off or trims nothing).
+		const double eb = energyBefore.load();
+		stats.clampedEnergyRatio = (eb > 1e-12)
+			? (eb - energyAfter.load()) / eb : 0.0;
 	}
 
 	
@@ -1529,12 +1554,15 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 		char line[224];
 		std::snprintf(line, sizeof(line),
 			"givolume bake: done: %llu probes (per-probe direct trace) "
-			"in %.1fs (%.1f MiB GPU, %llu invalid, %llu clamped, "
+			"in %.1fs (%.1f MiB GPU, %llu invalid, %llu clamped "
+			"[-%.1f%% energy], clamp=%.3g, "
 			"vis: %llu blocked / %llu clean cells)\n",
 			(unsigned long long)n,
 			stats.seconds, double(outVolume.GpuBytes()) / (1024.0 * 1024.0),
 			(unsigned long long)stats.probesInvalid,
 			(unsigned long long)stats.samplesClamped,
+			stats.clampedEnergyRatio * 100.0,
+			double(cfg.clampRatio),
 			(unsigned long long)visBlocked,
 			(unsigned long long)visCleanCells);
 		say(line);

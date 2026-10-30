@@ -3311,6 +3311,13 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	cfgHash.rays = args.cubemapRays;
 	cfgHash.spp = args.cubemapSpp;
 	cfgHash.maskTransmission = args.maskTransmission;
+	// The transport depth + the trace-scene albedo mode (the review-found
+	// gap: --cubemap-bounces changed captures without invalidating them;
+	// the albedo pair keeps the capture hash honest about white-world
+	// experiments — captures bake textured by design).
+	cfgHash.maxBounces = args.cubemapBounces;
+	cfgHash.albedoUniform = false; // the capture scene bakes textured
+	cfgHash.albedoValue = glm::vec3(0.7f);
 	tool::err() << "  [CUBE] invalidation state: oldRows="
 		<< oldRows.size() << " oldReach=" << oldReach.entries.size()
 		<< " gridCells=" << grid.cells.size()

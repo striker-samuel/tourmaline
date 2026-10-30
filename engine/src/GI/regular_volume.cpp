@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <thread>
 
 #include <Engine/Asset/compression.h>
@@ -310,6 +311,9 @@ bool BakeSgRegularVolume(const GiTraceScene& scene, const SgRegularObb& obb,
 	const uint32_t threadCount = cfg.threadCount ? cfg.threadCount : std::thread::hardware_concurrency();
 	ThreadPool pool(threadCount ? threadCount : 1);
 	std::atomic<uint64_t> clamped{ 0 };
+	// The clamp's energy ledger (GiVolumeBakeStats::clampedEnergyRatio).
+	std::atomic<double> energyBefore{ 0.0 };
+	std::atomic<double> energyAfter{ 0.0 };
 
 	// Fixed lattice positions: NEVER relocated. Voxels inside solid
 	// geometry bake whatever the tracer sees from there (padding); volume
@@ -340,19 +344,28 @@ bool BakeSgRegularVolume(const GiTraceScene& scene, const SgRegularObb& obb,
 					meanLum += Luminance(L);
 				}
 				meanLum /= double(std::max<size_t>(fibDirs.size(), 1));
-				const float cap = std::max(float(meanLum) * 8.0f, 1e-6f);
+				// clampRatio x the probe mean (0 = off — the energy
+				// A/B); the ledger feeds stats.clampedEnergyRatio.
+				double sumBefore = 0.0, sumAfter = 0.0;
+				const float cap = (cfg.clampRatio > 0.0f)
+					? std::max(float(meanLum) * cfg.clampRatio, 1e-6f)
+					: std::numeric_limits<float>::max();
 				SgFitAccumulator acc;
 				uint64_t localClamped = 0;
 				for (const RaySample& s : samples) {
 					glm::vec3 L = s.L;
 					const float l = Luminance(L);
+					sumBefore += l;
 					if (l > cap && l > 0.0f) {
 						L *= cap / l;
 						++localClamped;
 					}
+					sumAfter += Luminance(L);
 					acc.AddSample(s.dir, L, weight);
 				}
 				clamped += localClamped;
+				energyBefore += sumBefore;
+				energyAfter += sumAfter;
 				glm::vec3 amps[kSgLobeCount];
 				acc.Solve(amps); // diagonal projection (production path)
 				for (uint32_t i = 0; i < kSgLobeCount; ++i)
@@ -440,15 +453,23 @@ bool BakeSgRegularVolume(const GiTraceScene& scene, const SgRegularObb& obb,
 	stats.voxelsBaked = n;
 	stats.pathsTraced = n * cfg.raysPerProbe;
 	stats.samplesClamped = clamped.load();
+	// The discarded-energy fraction (GiVolumeBakeStats's twin metric).
+	{
+		const double eb = energyBefore.load();
+		stats.clampedEnergyRatio = (eb > 1e-12)
+			? (eb - energyAfter.load()) / eb : 0.0;
+	}
 	const auto t1 = std::chrono::steady_clock::now();
 	stats.seconds = std::chrono::duration<double>(t1 - t0).count();
 	{
 		char line[192];
 		std::snprintf(line, sizeof(line),
-			"regular bake: done: %llu voxels in %.1fs (%.1f MiB GPU, %llu clamped)\n",
+			"regular bake: done: %llu voxels in %.1fs (%.1f MiB GPU, %llu clamped [-%.1f%% energy], clamp=%.3g)\n",
 			(unsigned long long)n, stats.seconds,
 			double(outVolume.GpuBytes()) / (1024.0 * 1024.0),
-			(unsigned long long)stats.samplesClamped);
+			(unsigned long long)stats.samplesClamped,
+			stats.clampedEnergyRatio * 100.0,
+			double(cfg.clampRatio));
 		say(line);
 	}
 	return true;

@@ -156,6 +156,18 @@ struct GiVolumeBakeConfigHashInputs {
 	float captureSpacing = 0.0f; // 0 = auto (spec-derived)
 	uint32_t smoothingPasses = 0;
 	bool maskTransmission = false;
+	// The firefly clamp ratio (GiVolumeBakeConfig::clampRatio — MUST
+	// mirror the bake default so an unset input hashes like a default
+	// bake). 0 = the off A/B.
+	float clampRatio = 8.0f;
+	// The trace scene's albedo mode (GiSceneBuildOptions): the
+	// --uniform-albedo white-world override changes every traced value,
+	// so it must refuse stale records (the gap the commit review found:
+	// a 0.7 <-> off flip kept matching old volumes — the A/B silently
+	// compared a stale white-world bake). Defaults mirror the canonical
+	// un-flagged GiBaker run (Args.uniformAlbedo = "0.7").
+	bool albedoUniform = true;
+	glm::vec3 albedoValue{ 0.7f };
 };
 std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 	const Cluster& cluster, const SceneGiVolume& def,
@@ -173,6 +185,15 @@ struct CubemapBakeConfigHashInputs {
 	uint32_t rays = 128;
 	uint32_t spp = 32; // transport paths per texel (bumping this re-captures)
 	bool maskTransmission = false;
+	// The capture transport depth (--cubemap-bounces; the review-found
+	// gap: the fold missed it, so a bounce change left stale captures).
+	// Default = the cook's capture-stage default.
+	uint32_t maxBounces = 5;
+	// The trace scene's albedo mode (GiVolumeBakeConfigHashInputs's
+	// twin; the capture bake bakes TEXTURED by design — the canonical
+	// value is false).
+	bool albedoUniform = false;
+	glm::vec3 albedoValue{ 0.7f };
 };
 using CellId = std::array<int32_t, 3>;
 std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
@@ -226,9 +247,9 @@ bool ParseCaptureReach(const uint8_t* data, size_t size,
 // (author the exportSettings node instead; the mask/transmission node
 // field is the authoring surface).
 
-// The GI-volume bake config an un-flagged GiBaker run uses (Args defaults:
-// 1536 capture dirs, 3 bounces, auto capture spacing, 3 smoothing
-// passes).
+// The GI-volume bake config an un-flagged GiBaker run uses (Args
+// defaults: 1536 capture dirs, 3 bounces, auto capture spacing, 3
+// smoothing passes, clamp 8x, white-world 0.7 — the SG-fit convention).
 inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
 	bool maskTransmission) {
 	GiVolumeBakeConfigHashInputs c{};
@@ -237,6 +258,9 @@ inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
 	c.captureSpacing = 0.0f;
 	c.smoothingPasses = 3;
 	c.maskTransmission = maskTransmission;
+	c.clampRatio = 8.0f;
+	c.albedoUniform = true;   // Args.uniformAlbedo = "0.7" (the tool default)
+	c.albedoValue = glm::vec3(0.7f);
 	return c;
 }
 
@@ -246,13 +270,17 @@ inline GiVolumeBakeConfigHashInputs CanonicalGiVolumeCfgHash(
 
 // The cubemap capture config — node-derived (the exportSettings'
 // cubemapSize/cubemapRays are the authoring surface; the cook's capture
-// stage bakes with the merged node values).
+// stage bakes with the merged node values). Bounces + albedo are the
+// capture-stage defaults (textured transport, --cubemap-bounces 5).
 inline CubemapBakeConfigHashInputs CanonicalCubemapCfgHash(
 	const SceneExportSettings& es) {
 	CubemapBakeConfigHashInputs c{};
 	c.size = es.cubemapSize;
 	c.rays = es.cubemapRays;
 	c.maskTransmission = es.maskTransmission;
+	c.maxBounces = 5;
+	c.albedoUniform = false; // captures bake textured (the cook's design)
+	c.albedoValue = glm::vec3(0.7f);
 	return c;
 }
 

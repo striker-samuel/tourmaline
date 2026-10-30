@@ -286,6 +286,17 @@ struct GiVolumeBakeConfig {
 	                              // construction; independent per-probe
 	                              // estimates are not) and it softens the
 	                              // dilation's near-surface seams.
+	// Firefly clamp: each probe's samples clamp at clampRatio x the
+	// probe's own finite-sample mean luminance before the SG fit (the
+	// fit is variance-sensitive — sun pools run ~1e4 contrast and a
+	// lone bright sample drags a lobe into a hard-edged dot). The
+	// clamp is ALSO a systematic energy loss on spiky distributions
+	// (a probe whose sky/sun contribution lands in a few percent of
+	// its directions loses most of that energy to the mean-scaled
+	// cap), so it is A/B-able: 0 = OFF, and the bake stats log the
+	// discarded fraction (clampedEnergyRatio) either way. 8 is the
+	// tuned default (the historical value).
+	float clampRatio = 8.0f;
 	float smoothingLambda = 0.4f; // per-pass step (0..1)
 	float probeMinClearance = 0.05f;  // probe validity (m, to geometry)
 	float captureMinClearance = 0.10f; // INERT (was capture validity)
@@ -302,7 +313,15 @@ struct GiVolumeBakeConfig {
 struct GiVolumeBakeStats {
 	uint64_t probes = 0;        // dense grid nodes
 	uint64_t probesInvalid = 0; // inside solid geometry (dilated)
-	uint64_t samplesClamped = 0; // firefly clamps (8x per-probe mean)
+	uint64_t samplesClamped = 0; // firefly clamps (clampRatio x per-probe mean)
+	// The clamp's ENERGY LEDGER (the A/B metric): 1 - (post-clamp
+	// luminance / pre-clamp luminance) over every valid probe's sample
+	// set. A large ratio with a small samplesClamped fraction is the
+	// systematic-loss signature (a few bright, legitimate samples
+	// carrying real indirect energy); near-zero means the clamp only
+	// trimmed true outliers. 0 when clampRatio = 0 (off) or nothing
+	// clamped.
+	double clampedEnergyRatio = 0.0;
 	double seconds = 0.0;
 	// ---- Automatic grid layout (ChooseGiVolumeGridLayout; valid when
 	// layoutSearched): the chosen layout + its scoring diagnostics, so

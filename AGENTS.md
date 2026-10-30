@@ -354,9 +354,22 @@ ICD).
   `GiTraceScene::AlbedoAt`, bilinear REPEAT over decoded texel data capped at
   `kGiBakeTexelMaxDim` 512); the GI fields (.sggi octree + GI volumes) bake
   white-world 0.7 by convention (the 9-lobe SG fit cannot represent per-material
-  chroma — verified on Sponza). Sponza GI flow: `tools/cook/cook_sponza.bat`
+  chroma — verified on Sponza). `--uniform-albedo off` (GiBaker) opts into the
+  textured transport for the volume bakes; the invalidation hashes fold the
+  albedo MODE + value, so the flip re-traces (stale records refuse). Sponza GI
+  flow: `tools/cook/cook_sponza.bat`
   runs Cook → GiBaker (the convex volumes + the global octree from
   `F:/content/models/sponza/Sponza.tour`) → Pak
+- GI firefly clamp (GiBaker `--clamp 8|off`, both volume bakers): the two-pass
+  per-probe cap at clampRatio x the probe's own finite-sample mean luminance,
+  pre-SG-fit. The clamp is ALSO a systematic energy loss on spiky distributions
+  (a probe whose sky/sun contribution lands in a few percent of its directions
+  loses most of that energy — the GI-bake review's finding), so every bake log
+  carries the discarded-energy fraction (`clampedEnergyRatio`, "[-N.N% energy]")
+  and `--clamp off` is the ready A/B (the invalidation hashes fold the ratio).
+  Known transport limitation (deferred, the review's #2): skylight is evaluated
+  ON MISS ONLY — no explicit sky sampling with visibility at diffuse vertices,
+  so partially-enclosed scenes (Sponza) need deep paths to find openings.
 - Ambient closure (`--cubemap-ambient-closure`, default OFF): captures + the
   GI stack both carrying the ambient double-counts every mirror-like surface
   (the chrome probe ball, gold trim reflect ~2x). ON only for stack-less

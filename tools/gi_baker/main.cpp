@@ -105,6 +105,7 @@ bool ParseArgs(int argc, char** argv, Args& out) {
 		else if (a == "--out") { if (!need(out.out, i)) return false; } // RETIRED: parses so old scripts reach Run()'s loud refusal
 		else if (a == "--rays") { if (!needU(out.rays, i)) return false; }
 		else if (a == "--bounces") { if (!needU(out.bounces, i)) return false; }
+		else if (a == "--clamp") { if (!need(out.clamp, i)) return false; }
 		else if (a == "--threads") { if (!needU(out.threads, i)) return false; }
 		else if (a == "--sun-azimuth") { if (!needF(out.sunAzimuth, i)) return false; }
 		else if (a == "--sun-elevation") { if (!needF(out.sunElevation, i)) return false; }
@@ -189,7 +190,7 @@ void Usage() {
 		<< "         gi/<scene>_<name>.givolume + the manifests\n"
 		<< "         gi/<scene>.givolumemanifest / gi/<scene>.regmanifest (rows\n"
 		<< "         are bare VFS paths))\n"
-		<< "         [--rays 1024] [--bounces 3] [--threads 0]\n"
+		<< "         [--rays 1024] [--bounces 3] [--clamp 8|off] [--threads 0]\n"
 		<< "         [--sun-azimuth 30] [--sun-elevation 55] [--sun-intensity 10000]\n"
 		<< "         [--sky-intensity 600] [--textures on|off] [--emissive on|off]\n"
 		<< "         [--verify on|off] [--uniform-albedo off|0.7|r,g,b]\n"
@@ -1055,6 +1056,20 @@ int Run(Args& args) {
 		buildOpts.uniformAlbedoValue = uv;
 		tool::out() << "  uniform albedo: (" << uv.x << "," << uv.y << "," << uv.z << ")\n";
 	}
+	// The firefly clamp ratio ("off" = 0 = the energy A/B; the bake logs
+	// the discarded-energy fraction either way — clampedEnergyRatio).
+	float clampRatio = 8.0f;
+	if (!args.clamp.empty()) {
+		if (args.clamp == "off")
+			clampRatio = 0.0f;
+		else {
+			clampRatio = std::stof(args.clamp);
+			if (!(clampRatio >= 0.0f && clampRatio <= 1000.0f)) {
+				tool::err() << "--clamp wants off or a ratio in [0,1000]\n";
+				return 2;
+			}
+		}
+	}
 
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
@@ -1276,6 +1291,7 @@ int Run(Args& args) {
 		rcfg.raysPerProbe = args.rays;
 		rcfg.maxBounces = args.bounces;
 		rcfg.threadCount = args.threads;
+		rcfg.clampRatio = clampRatio;
 		smvk::gi::SgRegularVolume rvol;
 		smvk::gi::SgRegularBakeStats rstats;
 		if (!smvk::gi::BakeSgRegularVolume(traceScene, obb, rcfg, rvol, rstats,
@@ -1387,6 +1403,7 @@ int Run(Args& args) {
 			smvk::gi::GiVolumeBakeConfig cfg{};
 			cfg.captureDirs = std::max(args.giVolumeDirs, 64u);
 			cfg.maxBounces = args.bounces;
+			cfg.clampRatio = clampRatio;
 			cfg.captureSpacing = args.giVolumeCaptureSpacing > 0.0f
 				? args.giVolumeCaptureSpacing : spec.captureSpacing;
 			cfg.smoothingPasses = args.giVolumeSmoothing;
@@ -1408,6 +1425,12 @@ int Run(Args& args) {
 					hc.captureSpacing = 0.0f; // the auto lattice (inert CLI)
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
+					// The clamp ratio + the trace-scene albedo mode (the
+					// review-found gaps: a --clamp/--uniform-albedo
+					// change must refuse stale volumes).
+					hc.clampRatio = cfg.clampRatio;
+					hc.albedoUniform = buildOpts.uniformAlbedo;
+					hc.albedoValue = buildOpts.uniformAlbedoValue;
 				const std::string fresh = smvk::gi::GiVolumeBakeUnitHash(
 					bakeGrid, *cluster, cvIt->volume,
 					cluster->scene.globalTransform[spec.node], hc);
@@ -1517,6 +1540,9 @@ int Run(Args& args) {
 					hc.captureSpacing = 0.0f;
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
+					hc.clampRatio = cfg.clampRatio;
+					hc.albedoUniform = buildOpts.uniformAlbedo;
+					hc.albedoValue = buildOpts.uniformAlbedoValue;
 					cvIt->volume.bakeInputHash =
 						smvk::gi::GiVolumeBakeUnitHash(bakeGrid, *cluster,
 							cvIt->volume,

@@ -3167,6 +3167,75 @@ void TestGiVolumeBc6hRoundTrip() {
 	}
 }
 
+// The freshness contract (the GI-bake review's finding): every
+// bake-relevant CONFIG input must change the unit hash — a knob that
+// changes the bake but not the hash silently serves stale artifacts
+// (the --uniform-albedo / --clamp / --cubemap-bounces gaps were exactly
+// this: flipping the white-world override or the firefly clamp kept
+// matching old records, so the A/B compared a stale bake).
+void TestBakeInputHashFolds() {
+	// HEAP-constructed (the world-entity-tests convention): Cluster is
+	// far too large for a stack frame — a by-value instance overflowed
+	// the stack at the function prologue (0xC00000FD before the first
+	// statement executed).
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	addNode(cluster->scene, -1, 0);
+	SceneGiVolume def{};
+	def.spacing = 1.0f;
+	smvk::gi::BakeCellGrid grid = smvk::gi::BuildBakeCellGrid(*cluster);
+	const glm::mat4 nodeGlobal =
+		glm::translate(glm::mat4(1.0f), glm::vec3(0.0f));
+
+	smvk::gi::GiVolumeBakeConfigHashInputs a{};
+	a.captureDirs = 1536;
+	a.maxBounces = 3;
+	a.smoothingPasses = 3;
+	a.clampRatio = 8.0f;
+	a.albedoUniform = true;
+	a.albedoValue = glm::vec3(0.7f);
+	const auto volHash = [&](const smvk::gi::GiVolumeBakeConfigHashInputs& c) {
+		return smvk::gi::GiVolumeBakeUnitHash(
+			grid, *cluster, def, nodeGlobal, c);
+	};
+	smvk::gi::GiVolumeBakeConfigHashInputs b = a;
+	Check(volHash(a) == volHash(b), "bakehash volume identical stable");
+	b = a; b.clampRatio = 0.0f;
+	Check(volHash(a) != volHash(b), "bakehash clamp ratio folds");
+	b = a; b.albedoUniform = false;
+	Check(volHash(a) != volHash(b), "bakehash albedo mode folds");
+	b = a; b.albedoValue = glm::vec3(0.5f);
+	Check(volHash(a) != volHash(b), "bakehash albedo value folds");
+	// The canonical derivation must mirror the un-flagged GiBaker run
+	// (Args defaults: clamp 8, white-world 0.7) — the pak gate
+	// recomputes with it, so a mismatch here refuses EVERY un-flagged
+	// bake's records.
+	const smvk::gi::GiVolumeBakeConfigHashInputs canon =
+		smvk::gi::CanonicalGiVolumeCfgHash(false);
+	Check(canon.clampRatio == 8.0f && canon.albedoUniform
+		&& canon.albedoValue == glm::vec3(0.7f),
+		"bakehash canonical mirrors un-flagged defaults");
+
+	// The capture fold: the transport depth (the --cubemap-bounces gap)
+	// + the albedo mode, same contract.
+	smvk::gi::CubemapBakeConfigHashInputs ca{};
+	ca.size = 128;
+	ca.rays = 128;
+	ca.spp = 32;
+	ca.maxBounces = 5;
+	const auto capHash = [&](const smvk::gi::CubemapBakeConfigHashInputs& c) {
+		return smvk::gi::CubemapBakeUnitHash(grid, *cluster,
+			glm::vec3(0.0f), 4.0f, 8.0f, glm::vec3(-1.0f), glm::vec3(1.0f),
+			false, c, {});
+	};
+	smvk::gi::CubemapBakeConfigHashInputs cb = ca;
+	Check(capHash(ca) == capHash(cb), "bakehash capture identical stable");
+	cb = ca; cb.maxBounces = 8;
+	Check(capHash(ca) != capHash(cb), "bakehash capture bounces fold");
+	cb = ca; cb.albedoUniform = true;
+	Check(capHash(ca) != capHash(cb), "bakehash capture albedo folds");
+}
+
 int main() {
 	smvk::gi::TestSgBasis();
 	smvk::gi::TestSgSelfEnergy();
@@ -3198,6 +3267,7 @@ int main() {
 	TestGiGridLayoutOptimizer();
 	TestTraceSceneFromWorld();
 	TestGiVolumeBc6hRoundTrip();
+	TestBakeInputHashFolds();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";
