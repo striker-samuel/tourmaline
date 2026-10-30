@@ -32,6 +32,7 @@
 #include <Engine/GI/regular_volume.h>
 #include <Engine/GI/sg.h>
 #include <Engine/GI/triangle_bvh.h>
+#include <Engine/GI/cubemap_volume.h> // ChooseGiVolumeGridLayout (already via giprobe.h; explicit)
 #include <Engine/Renderer/mesh.h> // StaticMeshUpload (curvature test)
 #include <Engine/Rendergraph/giprobe.h> // BuildGiProbeLatticeRows (pre-bake preview)
 
@@ -2820,6 +2821,108 @@ void TestGiProbeLatticeRows() {
 	}
 }
 
+// ---- Automatic grid layout optimization (ChooseGiVolumeGridLayout) ----
+// A synthetic room: an axis-aligned closed box of triangles around the
+// origin, a volume covering it. The optimizer must return a layout
+// within the gates whose dims cover the bounds, and — the contract's
+// core — coverage must dominate: a candidate whose probes land inside
+// the walls loses to one that misses them.
+void TestGiGridLayoutOptimizer() {
+	using smvk::gi::TriangleBvh;
+	// The room: a 4x4x4 closed box (12 tris) centered at origin, walls
+	// 0.1 m thick (an inner box at +-2 and an outer at +-2.1: 24 tris).
+	std::vector<glm::vec3> pos;
+	std::vector<uint32_t> idx;
+	const auto addBox = [&](float h) {
+		const uint32_t b = uint32_t(pos.size());
+		const float v[8][3] = {
+			{ -h, -h, -h }, { h, -h, -h }, { h, h, -h }, { -h, h, -h },
+			{ -h, -h,  h }, { h, -h,  h }, { h, h,  h }, { -h, h,  h },
+		};
+		for (const auto& p : v)
+			pos.push_back(glm::vec3(p[0], p[1], p[2]));
+		// 12 faces (two-sided BVH: one triangle per face suffices).
+		static const uint32_t f[12][3] = {
+			{ 0, 2, 1 }, { 0, 3, 2 }, // z-min, z-max
+			{ 4, 5, 6 }, { 4, 6, 7 },
+			{ 0, 1, 5 }, { 0, 5, 4 }, // y-min, y-max
+			{ 3, 7, 6 }, { 3, 6, 2 },
+			{ 0, 4, 7 }, { 0, 7, 3 }, // x-min, x-max
+			{ 1, 2, 6 }, { 1, 6, 5 },
+		};
+		for (const auto& t : f) {
+			idx.push_back(b + t[0]);
+			idx.push_back(b + t[1]);
+			idx.push_back(b + t[2]);
+		}
+	};
+	addBox(2.0f);
+	TriangleBvh bvh;
+	bvh.Build(pos, idx);
+	Check(bvh.TriangleCount() == 12, "glayout.room-bvh");
+
+	smvk::gi::GiVolumeDef def;
+	def.planes = smvk::gi::GiVolumeBoxPlanesRotated(glm::vec3(0.0f),
+		glm::mat3(1.0f), glm::vec3(2.5f)); // a margin around the room
+	// Gates [0.9, 1.1]: dims ~ (5..6)^3 -> dozens of candidates.
+	{
+		smvk::gi::GiGridLayoutResult r;
+		std::string err;
+		smvk::gi::GiGridLayoutOptions opts{};
+		opts.surfaceSamples = 64; // small room: enough witnesses
+		const bool ok = smvk::gi::ChooseGiVolumeGridLayout(bvh, def,
+			0.9f, 1.1f, opts, r, &err);
+		Check(ok, "glayout.returns");
+		if (ok) {
+			Check(r.spacing >= 0.9f * 0.999f && r.spacing <= 1.1f * 1.001f,
+				"glayout.spacing-in-gates");
+			// The COVERAGE CONTRACT (not a fixed dim count: the phase
+			// shifts the lattice start, legitimately shrinking dims):
+			// gridMin + dims * spacing must reach the bounds max on
+			// every axis, and gridMin must sit at/after the bounds min.
+			{
+				glm::vec3 bMin, bMax;
+				Check(def.Bounds(bMin, bMax), "glayout.bounds");
+				const glm::vec3 gMin(
+					r.gridMin.x, r.gridMin.y, r.gridMin.z);
+				Check(glm::all(glm::greaterThanEqual(gMin, bMin - 1e-4f)),
+					"glayout.gridmin-at-bounds");
+				bool covered = true;
+				for (int a = 0; a < 3; ++a)
+					if (gMin[a] + float(r.dims[a]) * r.spacing
+						< bMax[a] - 1e-4f)
+						covered = false;
+				Check(covered, "glayout.dims-cover-bounds");
+				Check(r.dims[0] >= 4 && r.dims[0] <= 6, "glayout.dims-sane");
+			}
+			Check(r.probes > 0, "glayout.probes-positive");
+			Check(r.coverage > 0.5, "glayout.coverage-room"); // open room
+			// The room's interior probes are all valid (clearance to
+			// the +-2 walls: the probes sit >= 0.5 m inside at these
+			// spacings; only the boundary band can graze).
+			Check(r.invalid <= r.probes / 2, "glayout.invalid-minority");
+			Check(r.score >= 0.0, "glayout.score-positive");
+		}
+	}
+	// Bad gates refuse.
+	{
+		smvk::gi::GiGridLayoutResult r;
+		std::string err;
+		Check(!smvk::gi::ChooseGiVolumeGridLayout(bvh, def, 0.0f, 1.0f,
+				smvk::gi::GiGridLayoutOptions{}, r, &err),
+			"glayout.bad-gates-refuse");
+	}
+	// A gate range that cannot fit the cap refuses (a 2.5 m half volume
+	// at 0.03 m spacing -> 167^3 dims: within 256... push denser).
+	{
+		smvk::gi::GiGridLayoutResult r;
+		std::string err;
+		Check(!smvk::gi::ChooseGiVolumeGridLayout(bvh, def, 0.005f, 0.006f,
+				smvk::gi::GiGridLayoutOptions{}, r, &err),
+			"glayout.cap-refuses");
+	}
+}
+
 int main() {
 	smvk::gi::TestSgBasis();
 	smvk::gi::TestSgSelfEnergy();
@@ -2848,6 +2951,7 @@ int main() {
 	smvk::gi::TestBc6hCodec();
 	smvk::gi::TestCaptureReachTraversal();
 	TestGiProbeLatticeRows();
+	TestGiGridLayoutOptimizer();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

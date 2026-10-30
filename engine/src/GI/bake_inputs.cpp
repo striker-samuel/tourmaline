@@ -371,6 +371,15 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 	hs.feedPod(def.spacing);
 	hs.feedPod(def.insideFade);
 	hs.feedPod(def.outsideFade);
+	// Layout-selection inputs (the grid optimizer contract): any gate or
+	// seed change must invalidate the stale bake — the chosen lattice
+	// moved, so the recorded hash must refuse to match.
+	hs.feedPod(def.spacingLow);
+	hs.feedPod(def.spacingHigh);
+	hs.feedPod(def.optSpacing);
+	hs.feedPod(def.optPhase[0]);
+	hs.feedPod(def.optPhase[1]);
+	hs.feedPod(def.optPhase[2]);
 	hs.feedPod(cfg.captureDirs);
 	hs.feedPod(cfg.maxBounces);
 	hs.feedPod(cfg.captureSpacing);

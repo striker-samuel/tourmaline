@@ -1340,9 +1340,16 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
 			glm::mat3 axes;
 			if (!GiVolumeOBB(node, center, axes, half))
 				continue;
+			const ::SceneGiVolume& cvg =
+				m_world->scene.giVolumeForNode[node];
+			// The SEEDED layout previews exactly what the bake builds.
 			const float spacing = std::max(
-				m_world->scene.giVolumeForNode[node].spacing, 0.01f);
-			BuildGiProbeLatticeRows(center, axes, half, spacing, lattice);
+				cvg.optSpacing > 0.0f ? cvg.optSpacing : cvg.spacing,
+				0.01f);
+			const float* phase =
+				cvg.optSpacing > 0.0f ? cvg.optPhase : nullptr;
+			BuildGiProbeLatticeRows(center, axes, half, spacing, lattice,
+				smvk::giprobe::kGiProbeMaxInstances, phase);
 			if (lattice.empty())
 				continue;
 			if (m_giProbeDraftBuf[ni].empty()) {

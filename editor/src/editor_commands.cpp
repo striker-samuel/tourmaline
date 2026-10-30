@@ -2504,6 +2504,15 @@ bool EditorApp::ReadNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 		num = double(def.priority);
 	} else if (attr == "spacing") {
 		num = double(def.spacing);
+	} else if (attr == "spacinglow") {
+		num = double(def.spacingLow);
+	} else if (attr == "spacinghigh") {
+		num = double(def.spacingHigh);
+	} else if (attr == "optlayout") {
+		// The optimizer's seed: number = spacing, vec4.xyz = phase.
+		num = double(def.optSpacing);
+		v4 = glm::vec4(def.optPhase[0], def.optPhase[1], def.optPhase[2],
+			0.0f);
 	} else if (attr == "inside") {
 		num = double(def.insideFade);
 	} else if (attr == "outside") {
@@ -2535,6 +2544,17 @@ bool EditorApp::WriteNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 		def.priority = uint32_t(std::max(num, 0.0));
 	} else if (attr == "spacing") {
 		def.spacing = std::max(float(num), 1e-3f);
+	} else if (attr == "spacinglow") {
+		def.spacingLow = std::max(float(num), 0.0f);
+	} else if (attr == "spacinghigh") {
+		def.spacingHigh = std::max(float(num), 0.0f);
+	} else if (attr == "optlayout") {
+		// The optimizer's seed (one undoable step: number = spacing,
+		// vec4.xyz = phase; spacing 0 = cleared).
+		def.optSpacing = std::max(float(num), 0.0f);
+		def.optPhase[0] = v4.x;
+		def.optPhase[1] = v4.y;
+		def.optPhase[2] = v4.z;
 	} else if (attr == "inside") {
 		def.insideFade = std::max(float(num), 0.0f);
 	} else if (attr == "outside") {
@@ -3593,6 +3613,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			out.vec4 = c.vec4;
 		} else if (c.giVolumeAttr == "name") {
 			out.name = c.afterText;
+		} else if (c.giVolumeAttr == "optlayout") {
+			// The seed rides BOTH channels: number = spacing,
+			// vec4.xyz = phase (one verb, one undo step).
+			out.vec4 = c.vec4;
+			out.number = c.number;
 		} else {
 			out.number = c.number;
 		}

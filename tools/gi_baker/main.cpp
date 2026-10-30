@@ -1440,9 +1440,30 @@ int Run(Args& args) {
 				<< " planes=" << spec.def.planes.size() << "\n";
 			smvk::gi::GiVolume vol;
 			smvk::gi::GiVolumeBakeStats stats;
+			// Layout selection (the cook's contract): the editor's SEEDED
+			// result wins, else the density-gates search, else the legacy
+			// fixed spacing. Authored tour volumes carry the fields on
+			// their SceneGiVolume (cvIt above); hand-written specs stay
+			// legacy.
+			smvk::gi::GiVolumeLayoutSeed seed{};
+			float spacingLow = 0.0f, spacingHigh = 0.0f;
+			const smvk::gi::GiVolumeLayoutSeed* seedPtr = nullptr;
+			if (spec.node != UINT32_MAX) {
+				auto cvIt2 = cluster->scene.giVolumeForNode.find(spec.node);
+				if (cvIt2 != cluster->scene.giVolumeForNode.end()) {
+					seed.spacing = cvIt2->second.optSpacing;
+					seed.phase[0] = cvIt2->second.optPhase[0];
+					seed.phase[1] = cvIt2->second.optPhase[1];
+					seed.phase[2] = cvIt2->second.optPhase[2];
+					seedPtr = cvIt2->second.optSpacing > 0.0f ? &seed : nullptr;
+					spacingLow = cvIt2->second.spacingLow;
+					spacingHigh = cvIt2->second.spacingHigh;
+				}
+			}
 			if (!smvk::gi::BakeGiVolume(traceScene, spec.def, spec.spacing,
 					cfg, vol, stats,
-					[](const char* line) { tool::out() << line; })) {
+					[](const char* line) { tool::out() << line; },
+					seedPtr, spacingLow, spacingHigh)) {
 				tool::err() << "Convex bake failed for '" << spec.def.name
 					<< "'\n";
 				return 1;

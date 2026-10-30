@@ -175,9 +175,20 @@ inline glm::mat4 DecalNodeFrame(const glm::vec3& center, glm::vec3 axisZ,
 // globalTransform[node] at use so parenting applies like meshes.
 struct SceneGiVolume {
 	uint32_t priority = 0;   // higher = composited later = wins
-	float spacing = 0.5f;    // dense probe grid spacing (m)
+	float spacing = 0.5f;    // preferred dense probe grid spacing (m;
+	                         // the LEGACY fixed layout bakes this when
+	                         // neither gates nor a seed are authored)
 	float insideFade = 0.1f; // blend width inside each face (m)
 	float outsideFade = 0.1f;// blend width outside each face (m)
+	// ---- Automatic grid layout (ChooseGiVolumeGridLayout; all default
+	// OFF so every pre-optimization volume bakes bit-exact). The GATES
+	// bound the bake-time density search; the SEED is the editor's
+	// "Optimize grid layout" result (persisted so rebakes are
+	// deterministic and the artist can hand-tune). Seed wins over gates.
+	float spacingLow = 0.0f;  // density gate low (m; 0 = gates off)
+	float spacingHigh = 0.0f; // density gate high (m; 0 = gates off)
+	float optSpacing = 0.0f;  // seeded layout spacing (m; 0 = no seed)
+	float optPhase[3] = { 0.0f, 0.0f, 0.0f }; // seeded lattice phase
 	// The BAKED ARTIFACT binding (the mesh-reference convention applied
 	// to bakes): the .givolume this definition's bake produced, recorded by
 	// the bake owner at bake time (tour giAsset kind GiVolume). Empty =

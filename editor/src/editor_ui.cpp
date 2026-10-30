@@ -1890,6 +1890,31 @@ namespace editor {
 			m_pending.cmd.number = double(spacing);
 		}
 		endGiVolumeDrag("spacing");
+		ImGui::TextDisabled("preferred density; the bake uses the seeded "
+			"layout (below) or the gate search, else this fixed spacing");
+		// ---- Density gates (the optimizer's search bounds; 0 = off,
+		// the search then defaults to +-20%% around the spacing above).
+		float low = def.spacingLow;
+		if (ImGui::DragFloat("Density gate low (m)", &low, 0.01f, 0.0f,
+			4.0f, "%.2f")) {
+			low = std::clamp(low, 0.0f, def.spacingHigh > 0.0f
+				? def.spacingHigh : 4.0f);
+			beginGiVolumeDrag("spacinglow");
+			WriteNodeGiVolumeAttr(node, "spacinglow", glm::vec4(0),
+				double(low), {});
+			m_pending.cmd.number = double(low);
+		}
+		endGiVolumeDrag("spacinglow");
+		float high = def.spacingHigh;
+		if (ImGui::DragFloat("Density gate high (m)", &high, 0.01f, 0.0f,
+			4.0f, "%.2f")) {
+			high = std::clamp(high, std::max(def.spacingLow, 0.01f), 4.0f);
+			beginGiVolumeDrag("spacinghigh");
+			WriteNodeGiVolumeAttr(node, "spacinghigh", glm::vec4(0),
+				double(high), {});
+			m_pending.cmd.number = double(high);
+		}
+		endGiVolumeDrag("spacinghigh");
 		float inside = def.insideFade;
 		if (ImGui::DragFloat("Inside fade (m)", &inside, 0.01f, 0.0f,
 			4.0f, "%.2f")) {
@@ -1908,8 +1933,46 @@ namespace editor {
 			m_pending.cmd.number = double(outside);
 		}
 		endGiVolumeDrag("outside");
+		// ---- Automatic grid layout: the optimizer's seeded result
+		// (what the bake will build) + the inspector button.
+		ImGui::SeparatorText("Grid layout");
+		if (def.optSpacing > 0.0f) {
+			ImGui::TextDisabled("SEEDED: spacing %.3f m, phase "
+				"(%.2f, %.2f, %.2f) - rebakes use this verbatim",
+				def.optSpacing, def.optPhase[0], def.optPhase[1],
+				def.optPhase[2]);
+			if (m_giLayoutLast.valid && m_giLayoutLast.node == node) {
+				const auto& r = m_giLayoutLast.result;
+				ImGui::TextDisabled("  probes %llu, invalid %llu "
+					"(inside-solid %llu), coverage %.1f%%, score %.3f",
+					(unsigned long long)r.probes,
+					(unsigned long long)r.invalid,
+					(unsigned long long)r.insideSolid,
+					100.0 * r.coverage, r.score);
+			}
+			if (ImGui::Button("Clear seeded layout")) {
+				// Undoable clear (spacing 0 = search/legacy takes over).
+				beginGiVolumeDrag("optlayout");
+				WriteNodeGiVolumeAttr(node, "optlayout", glm::vec4(0), 0.0,
+					{});
+				m_pending.cmd.number = 0.0;
+				FinalizePending();
+			}
+		}
+		else {
+			ImGui::TextDisabled("no seed - the bake runs the gate search "
+				"(or the fixed spacing when the gates are off)");
+		}
+		if (m_giLayoutRunning) {
+			ImGui::BeginDisabled();
+			ImGui::Button("Optimizing...");
+			ImGui::EndDisabled();
+		}
+		else if (ImGui::Button("Optimize grid layout")) {
+			RunGiLayoutOptimizer(node);
+		}
 		ImGui::TextDisabled("bake: a future gi_baker --tour pass harvests "
-			"these (priority/spacing/fades) + the box");
+			"these (priority/spacing/fades/gates/seed) + the box");
 	}
 
 	void EditorApp::DrawExportSettingsSection(uint32_t node) {

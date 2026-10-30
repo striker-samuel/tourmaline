@@ -3512,6 +3512,21 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		else if (c.text == "spacing") {
 			def.spacing = std::max(float(c.number), 1e-3f);
 		}
+		else if (c.text == "spacinglow") {
+			def.spacingLow = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "spacinghigh") {
+			def.spacingHigh = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "optlayout") {
+			// The optimizer's SEED, one verb: number = spacing,
+			// vec4.xyz = the lattice phase (fractions of the spacing);
+			// spacing 0 = cleared (search/legacy takes over).
+			def.optSpacing = std::max(float(c.number), 0.0f);
+			def.optPhase[0] = c.vec4.x;
+			def.optPhase[1] = c.vec4.y;
+			def.optPhase[2] = c.vec4.z;
+		}
 		else if (c.text == "inside") {
 			def.insideFade = std::max(float(c.number), 0.0f);
 		}

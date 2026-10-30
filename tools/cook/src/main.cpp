@@ -654,12 +654,21 @@ namespace cooktool {
 					<< " planes=" << def.planes.size() << "\n" << std::flush;
 				// Engine defaults (1536 capture dirs, 3 bounces, auto
 				// capture lattice, HW threads): GiBaker stays the tuning
-				// tool for anything finer.
+				// tool for anything finer. Layout selection: the editor's
+				// SEEDED result wins, else the density-gates search, else
+				// the legacy fixed spacing.
 				GiVolumeBakeConfig cfg{};
 				GiVolume vol;
 				GiVolumeBakeStats stats;
+				GiVolumeLayoutSeed seed{};
+				seed.spacing = cv.optSpacing;
+				seed.phase[0] = cv.optPhase[0];
+				seed.phase[1] = cv.optPhase[1];
+				seed.phase[2] = cv.optPhase[2];
 				if (!BakeGiVolume(traceScene, def, cv.spacing, cfg, vol,
-					stats, [](const char* line) { tool::out() << line; })) {
+					stats, [](const char* line) { tool::out() << line; },
+					cv.optSpacing > 0.0f ? &seed : nullptr,
+					cv.spacingLow, cv.spacingHigh)) {
 					tool::err() << "[GIV] bake failed for '" << def.name
 						<< "'\n";
 					return false;

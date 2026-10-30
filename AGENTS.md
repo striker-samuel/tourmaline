@@ -183,6 +183,30 @@ $env:TOURMALINE_CAPTURE='48'
   instance cull in the VS. Gates on (m_giVolumesLoaded &&
   m_giVolumesEnabled) - the same condition the FrameUniforms
   giVolumeLayers slots publish under
+- AUTOMATIC GI PROBE-GRID LAYOUT OPTIMIZATION (cubemap_volume.h/.cpp:
+  ChooseGiVolumeGridLayout): a BVH-only candidate search (NO path
+  tracing) over spacings x lattice phases, scored on invalid probes
+  (clearance + a ray-parity SOLID-INTERIOR test - ClosestDistance is
+  unsigned and cannot tell inside-solid from near-surface), visibility-
+  aware surface coverage (area-weighted surface witnesses need a valid,
+  UNOCCLUDED probe among their cell's 8 corners - coverage weighted 10x
+  heavier than invalid probes per the contract), and probe count/
+  memory. Candidates exceeding kGiVolumeMaxDim are REJECTED, never
+  silently truncated. Authored on the volume (SceneGiVolume + the
+  editor's inspector, all persisted as setGiVolumeAttr tour verbs):
+  `spacingLow`/`spacingHigh` DENSITY GATES bound the bake-time search
+  (0 = off, the default +-20% around the preferred spacing when the
+  editor button runs), and the `optlayout` SEED (one verb: number =
+  spacing + vec4.xyz = phase) is the editor's "Optimize grid layout"
+  button result - committed as ONE undoable step and consumed verbatim
+  by BakeGiVolume (seed > gate search > the LEGACY fixed layout, so
+  every pre-optimization volume bakes bit-exact). The button runs
+  bake-parity geometry (tour snapshot -> offline cluster replay ->
+  BuildTraceSceneFromCluster, the GiBaker path) on the fibers lane;
+  the chosen layout also drives the J lattice preview (the seeded
+  preview is exactly what the bake builds). The bake-input hash folds
+  the gates + seed (stale bakes refuse). Unit-tested in test_gi.cpp
+  (glayout.*: gates, cap refusal, coverage contract, parity)
 - The probe spheres have three COLOR MODES (the Debug panel's "Probe
   color mode" combo or `TOURMALINE_GI_PROBE_MODE=0|1|2`): 0 = baked GI
   (the white-Lambertian answer E * giIntensity / PI - physical

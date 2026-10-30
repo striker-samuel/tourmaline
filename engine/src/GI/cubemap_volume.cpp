@@ -598,9 +598,289 @@ bool GiVolume::ReadFile(const std::string& path, GiVolume& out, std::string& err
 // Laplacian -> 6-axis visibility + the clean-cell flags
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Automatic grid layout optimization (see the header contract). BVH-only
+// candidate scoring: no path tracing, no lighting — geometry topology
+// decides where the lattice should sit.
+// ---------------------------------------------------------------------------
+
+// Robust solid-interior test (the header contract: ClosestDistance is
+// UNSIGNED and cannot tell inside-solid from near-surface-outside).
+// Ray-parity along +X: two-sided BVH, count crossings up to a cap; odd
+// = inside. Degenerate-safe: a miss ends the walk (parity of the hits
+// seen so far decides).
+namespace {
+bool BvhPointInsideSolid(const TriangleBvh& bvh, const glm::vec3& p)
+{
+	constexpr uint32_t kMaxHits = 64;
+	constexpr float kSpan = 1e5f; // effectively unbounded
+	const glm::vec3 dir(1.0f, 0.0f, 0.0f);
+	glm::vec3 o = p;
+	uint32_t hits = 0;
+	for (uint32_t i = 0; i < kMaxHits; ++i) {
+		TriangleBvh::Hit h;
+		if (!bvh.Raycast(o, dir, kSpan, h))
+			break;
+		++hits;
+		// Step past the hit (epsilon relative to the distance so huge
+		// scenes don't stall at the same texel).
+		o = o + dir * std::max(h.t, 1e-4f) + dir * 1e-4f;
+	}
+	return (hits & 1u) != 0;
+}
+} // namespace
+
+bool ChooseGiVolumeGridLayout(const TriangleBvh& bvh, const GiVolumeDef& def,
+	float spacingLow, float spacingHigh, const GiGridLayoutOptions& opts,
+	GiGridLayoutResult& out, std::string* err)
+{
+	out = GiGridLayoutResult{};
+	if (!(spacingLow > 0.0f) || !(spacingHigh >= spacingLow)) {
+		if (err)
+			*err = "grid layout: bad density gates (want 0 < low <= high)";
+		return false;
+	}
+	glm::vec3 bMin, bMax;
+	if (!def.Bounds(bMin, bMax)) {
+		if (err)
+			*err = "grid layout: planes do not bound a closed region";
+		return false;
+	}
+	const glm::vec3 ext = bMax - bMin;
+	if (!(glm::dot(ext, ext) > 0.0f)) {
+		if (err)
+			*err = "grid layout: degenerate bounds";
+		return false;
+	}
+
+	// ---- Surface samples (the coverage witnesses) ----
+	// Area-weighted, deterministic (a fixed low-discrepancy barycentric
+	// sequence — no RNG): every triangle inside the (mildly expanded)
+	// bounds contributes samples proportional to its area, capped at
+	// opts.surfaceSamples total. Each sample: a point ON a real surface
+	// the GI must light.
+	std::vector<glm::vec3> surf;
+	{
+		surf.reserve(opts.surfaceSamples);
+		// Pass 1: areas of the in-bounds triangles.
+		struct Tri { glm::vec3 v0, v1, v2; float area; };
+		std::vector<Tri> tris;
+		double totalArea = 0.0;
+		const glm::vec3 pad = glm::vec3(0.5f * spacingHigh);
+		const glm::vec3 sMin = bMin - pad, sMax = bMax + pad;
+		const uint32_t triCount = bvh.TriangleCount();
+		for (uint32_t k = 0; k < triCount; ++k) {
+			glm::vec3 v0, v1, v2;
+			bvh.TriangleVertices(k, v0, v1, v2);
+			// Cheap reject: any vertex inside the padded box (triangles
+			// crossing the region keep their in-region part sampled —
+			// the sample points below clamp into the box).
+			const auto inside = [&](const glm::vec3& v) {
+				return glm::all(glm::greaterThanEqual(v, sMin))
+					&& glm::all(glm::lessThanEqual(v, sMax));
+			};
+			if (!inside(v0) && !inside(v1) && !inside(v2))
+				continue;
+			const float a = 0.5f * glm::length(glm::cross(v1 - v0, v2 - v0));
+			if (!(a > 1e-10f))
+				continue;
+			tris.push_back({ v0, v1, v2, a });
+			totalArea += double(a);
+		}
+		if (tris.empty() || totalArea <= 0.0) {
+			if (err)
+				*err = "grid layout: no scene surfaces inside the volume";
+			return false;
+		}
+		// Pass 2: per-triangle count ~ area share (largest-remainder
+		//-free: accumulate fractional counts, emit on integer steps).
+		double acc = 0.0;
+		for (const Tri& t : tris) {
+			acc += double(opts.surfaceSamples) * (double(t.area) / totalArea);
+			while (acc >= 1.0 && surf.size() < opts.surfaceSamples) {
+				acc -= 1.0;
+				// Fixed barycentric sequence (Halton-ish 2/3 bases) so
+				// the samples are deterministic and well spread.
+				const uint32_t i = uint32_t(surf.size());
+				float u = 0.0f, v = 0.0f;
+				{
+					// radical inverse bases 2 and 3.
+					uint32_t x = i + 1u;
+					float f = 0.5f; u = 0.0f;
+					while (x) { u += f * float(x & 1u); x >>= 1; f *= 0.5f; }
+					x = i + 1u; float g = 1.0f / 3.0f; v = 0.0f;
+					while (x) { v += g * float(x % 3u); x /= 3; g *= 1.0f / 3.0f; }
+				}
+				if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
+				glm::vec3 p = t.v0
+					+ u * (t.v1 - t.v0) + v * (t.v2 - t.v0);
+				// Keep the witness inside the region (a crossing
+				// triangle's outside part is not this volume's to cover).
+				p = glm::clamp(p, bMin, bMax);
+				surf.push_back(p);
+			}
+		}
+	}
+	if (surf.empty()) {
+		if (err)
+			*err = "grid layout: surface sampling produced no witnesses";
+		return false;
+	}
+
+	// ---- Candidate sweep ----
+	const uint32_t nSpace = std::max<uint32_t>(opts.spacingSteps, 1);
+	const uint32_t nPhase = std::max<uint32_t>(opts.phaseSteps, 1);
+	bool any = false;
+	double bestScore = 1e30;
+	GiGridLayoutResult best{};
+	uint64_t rejectedCap = 0;
+
+	// Candidate memory model (the weight's normalizer): the RGBA16F
+	// coefficient set the runtime uploads today — 7 layers x 8 B/probe.
+	auto candidateProbes = [&](float s, const float ph[3],
+			uint32_t dims[3], glm::vec3& gridMin) -> uint64_t {
+		gridMin = bMin + glm::vec3(ph[0], ph[1], ph[2]) * s;
+		uint64_t n = 1;
+		for (int a = 0; a < 3; ++a) {
+			const float span = (bMax[a] - gridMin[a]);
+			dims[a] = std::max(1u, uint32_t(std::ceil(span / s)));
+			if (dims[a] > kGiVolumeMaxDim)
+				return 0; // REJECTED, never truncated (the contract)
+			n *= dims[a];
+		}
+		return n;
+	};
+
+	for (uint32_t si = 0; si < nSpace; ++si) {
+		// Geometric sweep across the gates (density is a ratio knob).
+		const float t = nSpace == 1 ? 0.0f
+			: float(si) / float(nSpace - 1);
+		const float s = spacingLow * std::pow(spacingHigh / spacingLow, t);
+		for (uint32_t pi = 0; pi < nPhase * nPhase * nPhase; ++pi) {
+			float ph[3] = {
+				float(pi % nPhase) / float(nPhase),
+				float((pi / nPhase) % nPhase) / float(nPhase),
+				float(pi / (nPhase * nPhase)) / float(nPhase),
+			};
+			uint32_t dims[3] = { 1, 1, 1 };
+			glm::vec3 gridMin;
+			const uint64_t n = candidateProbes(s, ph, dims, gridMin);
+			if (n == 0) {
+				++rejectedCap;
+				continue;
+			}
+			any = true;
+			// Probe validity: clearance + the parity-classified interior.
+			uint64_t invalid = 0, insideSolid = 0;
+			{
+				const uint32_t nx = dims[0], ny = dims[1];
+				for (uint64_t v = 0; v < n; ++v) {
+					const glm::vec3 pos = gridMin
+						+ (glm::vec3(uint32_t(v % nx),
+							uint32_t((v / nx) % ny),
+							uint32_t(v / (uint64_t(nx) * ny)))
+							+ 0.5f) * s;
+					const float clear = bvh.ClosestDistance(pos);
+					if (clear >= opts.probeMinClearance)
+						continue; // comfortably valid
+					++invalid;
+					// LOW clearance: classify. Inside-solid (parity) is
+					// structurally unusable; near-surface-outside is
+					// merely suboptimal (the runtime vis factor handles
+					// it) — only the former is weighted full.
+					if (BvhPointInsideSolid(bvh, pos))
+						++insideSolid;
+				}
+			}
+			// Coverage: every surface witness needs a VALID,
+			// UNOCCLUDED probe among its cell's 8 corners (probe ->
+			// surface occlusion through the real geometry).
+			uint64_t covered = 0;
+			{
+				const uint32_t nx = dims[0], ny = dims[1],
+					nz = dims[2];
+				for (const glm::vec3& p : surf) {
+					const glm::vec3 rel = (p - gridMin) / s - 0.5f;
+					const int bx = int(glm::floor(rel.x));
+					const int by = int(glm::floor(rel.y));
+					const int bz = int(glm::floor(rel.z));
+					bool ok = false;
+					for (uint32_t c = 0; c < 8 && !ok; ++c) {
+						const int ix = bx + int(c & 1 ? 1 : 0);
+						const int iy = by + int(c & 2 ? 1 : 0);
+						const int iz = bz + int(c & 4 ? 1 : 0);
+						if (ix < 0 || iy < 0 || iz < 0
+							|| uint32_t(ix) >= nx || uint32_t(iy) >= ny
+							|| uint32_t(iz) >= nz)
+							continue;
+						const glm::vec3 probe = gridMin
+							+ (glm::vec3(ix, iy, iz) + 0.5f) * s;
+						if (bvh.ClosestDistance(probe) < opts.probeMinClearance)
+							continue; // invalid probe can't witness
+						const glm::vec3 d = probe - p;
+						const float dist = glm::length(d);
+						if (dist < 1e-4f) { ok = true; break; }
+						// Occlusion: anything between the witness and
+						// its probe blocks the tap (the runtime's
+						// through-wall rejection in miniature). Nudge
+						// the origin off the surface.
+						if (!bvh.AnyHit(p + glm::normalize(d) * 1e-3f,
+								glm::normalize(d), dist - 2e-3f))
+							ok = true;
+					}
+					if (ok)
+						++covered;
+				}
+			}
+			const double coverage = double(covered) / double(surf.size());
+			// The score: coverage dominates (the contract), invalid
+			// probes second (inside-solid weighted double — those are
+			// structurally dead), memory a tie-breaker.
+			const double invalidFrac =
+				(double(invalid) + double(insideSolid)) / double(n);
+			const double memFrac =
+				double(n * 56ull) / 1048576.0; // bytes vs 1 MiB scale
+			const double score = opts.coverageWeight * (1.0 - coverage)
+				+ opts.invalidWeight * invalidFrac
+				+ opts.memoryWeight * memFrac;
+			if (score < bestScore) {
+				bestScore = score;
+				best.spacing = s;
+				best.phase[0] = ph[0];
+				best.phase[1] = ph[1];
+				best.phase[2] = ph[2];
+				best.dims[0] = dims[0];
+				best.dims[1] = dims[1];
+				best.dims[2] = dims[2];
+				best.gridMin = gridMin;
+				best.probes = n;
+				best.invalid = invalid;
+				best.insideSolid = insideSolid;
+				best.coverage = coverage;
+				best.score = score;
+			}
+		}
+	}
+	if (!any) {
+		if (err)
+			*err = "grid layout: every candidate exceeds kGiVolumeMaxDim "
+				"(lower the density)";
+		return false;
+	}
+	out = best;
+	// The cap rejections are diagnostics, not failures (the surviving
+	// set is what could legally bake).
+	(void)rejectedCap;
+	return true;
+}
+
+
+// Bakes the volume's dense grid (see the header for the layout-selection
+// contract: seed > search-by-gates > legacy fixed).
 bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	float spacing, const GiVolumeBakeConfig& configIn, GiVolume& outVolume,
-	GiVolumeBakeStats& stats, GiBakeProgress progress) {
+	GiVolumeBakeStats& stats, GiBakeProgress progress,
+	const GiVolumeLayoutSeed* seed, float spacingLow, float spacingHigh) {
 	const auto t0 = std::chrono::steady_clock::now();
 	GiVolumeBakeConfig cfg = configIn;
 	auto say = [&](const char* line) {
@@ -623,12 +903,90 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	}
 
 	outVolume.def = def;
-	outVolume.spacing = spacing;
-	outVolume.gridMin = bMin;
-	const glm::vec3 ext = bMax - bMin;
-	for (int a = 0; a < 3; ++a) {
-		outVolume.dims[a] = std::max(1u, uint32_t(std::ceil(ext[a] / spacing)));
-		outVolume.dims[a] = std::min(outVolume.dims[a], kGiVolumeMaxDim);
+	// ---- Layout selection (the header contract) ----
+	// seed > gates-search > legacy fixed. The chosen layout's gridMin
+	// carries the PHASE (bMin + phase * spacing); dims cover the bounds
+	// exactly (ceil) and are VALIDATED against the cap — a seed or
+	// search result that cannot fit fails LOUD, never silently
+	// truncates (a truncated grid would cover less than the volume).
+	float chosenPhase[3] = { 0.0f, 0.0f, 0.0f };
+	if (seed && seed->spacing > 0.0f) {
+		spacing = std::max(seed->spacing, 0.01f);
+		chosenPhase[0] = seed->phase[0];
+		chosenPhase[1] = seed->phase[1];
+		chosenPhase[2] = seed->phase[2];
+		outVolume.spacing = spacing;
+		outVolume.gridMin = bMin
+			+ glm::vec3(chosenPhase[0], chosenPhase[1], chosenPhase[2])
+				* spacing;
+		for (int a = 0; a < 3; ++a) {
+			outVolume.dims[a] = std::max(1u, uint32_t(std::ceil(
+				(bMax[a] - outVolume.gridMin[a]) / spacing)));
+			if (outVolume.dims[a] > kGiVolumeMaxDim) {
+				say("givolume bake: SEEDED layout exceeds the per-axis "
+					"grid cap — refusing (re-run the optimizer with "
+					"lower density gates)\n");
+				return false;
+			}
+		}
+		say("givolume bake: layout SEEDED (editor-optimized)\n");
+	}
+	else if (spacingLow > 0.0f && spacingHigh >= spacingLow) {
+		GiGridLayoutResult lay;
+		std::string lerr;
+		GiGridLayoutOptions lopts{};
+		lopts.probeMinClearance = cfg.probeMinClearance;
+		if (!ChooseGiVolumeGridLayout(scene.Bvh(), def, spacingLow,
+				spacingHigh, lopts, lay, &lerr)) {
+			say(("givolume bake: grid layout search failed - "
+				+ lerr + "\n").c_str());
+			return false;
+		}
+		spacing = lay.spacing;
+		chosenPhase[0] = lay.phase[0];
+		chosenPhase[1] = lay.phase[1];
+		chosenPhase[2] = lay.phase[2];
+		outVolume.spacing = spacing;
+		outVolume.gridMin = lay.gridMin;
+		outVolume.dims[0] = lay.dims[0];
+		outVolume.dims[1] = lay.dims[1];
+		outVolume.dims[2] = lay.dims[2];
+		stats.layoutSearched = true;
+		stats.layoutSpacing = lay.spacing;
+		stats.layoutPhase[0] = lay.phase[0];
+		stats.layoutPhase[1] = lay.phase[1];
+		stats.layoutPhase[2] = lay.phase[2];
+		stats.layoutDims[0] = lay.dims[0];
+		stats.layoutDims[1] = lay.dims[1];
+		stats.layoutDims[2] = lay.dims[2];
+		stats.layoutInvalid = lay.invalid;
+		stats.layoutInsideSolid = lay.insideSolid;
+		stats.layoutCoverage = lay.coverage;
+		stats.layoutScore = lay.score;
+		{
+			char line[192];
+			std::snprintf(line, sizeof(line),
+				"givolume bake: layout OPTIMIZED spacing=%.3f m "
+				"phase=(%.2f,%.2f,%.2f) dims=%ux%ux%u probes=%llu "
+				"invalid=%llu coverage=%.1f%%\n",
+				lay.spacing, lay.phase[0], lay.phase[1], lay.phase[2],
+				lay.dims[0], lay.dims[1], lay.dims[2],
+				(unsigned long long)lay.probes,
+				(unsigned long long)lay.invalid,
+				100.0 * lay.coverage);
+			say(line);
+		}
+	}
+	else {
+		// LEGACY fixed layout: every pre-optimization bake stays
+		// bit-exact (gridMin = bMin, phase 0).
+		const glm::vec3 ext = bMax - bMin;
+		outVolume.spacing = spacing;
+		outVolume.gridMin = bMin;
+		for (int a = 0; a < 3; ++a) {
+			outVolume.dims[a] = std::max(1u, uint32_t(std::ceil(ext[a] / spacing)));
+			outVolume.dims[a] = std::min(outVolume.dims[a], kGiVolumeMaxDim);
+		}
 	}
 	const uint64_t n = outVolume.VoxelCount();
 	if (n > uint64_t(kGiVolumeMaxDim) * kGiVolumeMaxDim * kGiVolumeMaxDim) {

@@ -16,10 +16,15 @@
 #include <iterator>
 #include <sstream>
 
+#include <Engine/App/cluster.h>
 #include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/GI/bake.h>
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
+#include <gltf_import/gltf.h>
 
 #include "gi_baker.h"
 #include "cook_tool.h"
@@ -476,6 +481,192 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 			// The cook panel shows its own progress + result line (no auto
 			// close: the tab stays put, the Console keeps the record).
 			m_cookJustFinished = true;
+		});
+}
+
+// The inspector's "Optimize grid layout" button (see editor_app.h):
+// bake-parity geometry (tour snapshot -> offline cluster replay -> the
+// trace scene — the GiBaker path verbatim, so the optimizer sees
+// EXACTLY what the bake will see), then ChooseGiVolumeGridLayout on the
+// fibers lane; the completion commits the chosen layout as ONE
+// undoable "optlayout" edit (spacing + phase in a single step).
+void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
+	if (m_giLayoutRunning)
+		return;
+	if (m_bakeRunning || m_cookRunning) {
+		Log("Optimize grid: a cook/bake is running - wait for it.");
+		return;
+	}
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return;
+	auto it = m_world->scene.giVolumeForNode.find(node);
+	if (it == m_world->scene.giVolumeForNode.end())
+		return;
+	const ::SceneGiVolume& cv = it->second;
+	// The gates; authored, else the contract default (+-20% around the
+	// preferred spacing).
+	float low = cv.spacingLow;
+	float high = cv.spacingHigh;
+	if (!(low > 0.0f)) {
+		low = cv.spacing * 0.8f;
+		high = cv.spacing * 1.2f;
+	}
+	low = std::max(low, 0.01f);
+	high = std::max(high, low);
+	// The bake-parity content root (the bake's derivation).
+	if (m_cook.outPak.empty()) {
+		Log("Optimize grid: no cook target - cook once first "
+			"(the optimizer resolves geometry through the same "
+			"content root the bake does).");
+		return;
+	}
+	const std::string contentRoot = std::filesystem::absolute(
+		std::filesystem::path(m_cook.outPak).parent_path() / "..")
+		.lexically_normal().string();
+	std::string tempTour, defHash;
+	if (!SnapshotTourForProcess("GiLayoutOpt", tempTour, defHash))
+		return;
+	m_giLayoutRunning = true;
+	TaskWindowBegin("Optimize grid",
+		"Optimizing GI probe grid layout (tour replay + BVH search)...");
+	Log("Optimize grid: gates " + std::to_string(low) + ".."
+		+ std::to_string(high) + " m (snapshot replay)");
+	auto result = std::make_shared<smvk::gi::GiGridLayoutResult>();
+	auto okFlag = std::make_shared<bool>(false);
+	auto errStr = std::make_shared<std::string>();
+	m_fibers.Post("gi-layout-opt",
+		[this, node, contentRoot, tempTour = std::move(tempTour), low,
+			high, result, okFlag, errStr]() {
+			bool ok = false;
+			std::string err;
+			do {
+				// The GiBaker cluster replay (offline, GPU-free, the
+				// deterministic node ids the editor bakes with).
+				auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+				cluster->SetOfflineMode(true);
+				smvk::tour::Doc tour;
+				std::string terr;
+				std::vector<std::string> twarn;
+				if (!smvk::tour::LoadTour(tempTour, tour, terr, &twarn)) {
+					err = "tour load: " + terr;
+					break;
+				}
+				try {
+					::addNode(cluster->scene, -1, 0); // empty root
+					if (!tour.references.empty())
+						::ApplySceneReferences(*cluster, tour,
+							smvk::vfs::BaseDir(
+								tour.references[0].source),
+							nullptr, nullptr, nullptr,
+							smvk::MeshOptConfig{}, smvk::MeshletConfig{},
+							0, nullptr, nullptr, nullptr,
+							true, nullptr, nullptr, nullptr, nullptr,
+							contentRoot);
+					std::vector<std::string> rwarn;
+					std::string rerr;
+					if (!smvk::tour::ApplyTourToCluster(*cluster, tour,
+							&rwarn, &rerr, true, nullptr)) {
+						err = "tour replay: " + rerr;
+						break;
+					}
+					// The def from the REPLAYED node (id parity with the
+					// live scene — the cook's OBB decode).
+					auto cvIt = cluster->scene.giVolumeForNode.find(node);
+					if (cvIt == cluster->scene.giVolumeForNode.end()
+							|| node >= cluster->scene.globalTransform.size()) {
+						err = "the replayed tour lost the volume node";
+						break;
+					}
+					const glm::mat4& g =
+						cluster->scene.globalTransform[node];
+					const glm::vec3 c(g[3]);
+					glm::vec3 half;
+					glm::mat3 axes;
+					for (int i = 0; i < 3; ++i) {
+						const float len = glm::length(g[i]);
+						half[i] = 0.5f * len;
+						axes[i] = (len > 1e-6f)
+							? glm::vec3(g[i]) / len : glm::vec3(0.0f);
+					}
+					smvk::gi::GiVolumeDef def;
+					def.planes = smvk::gi::GiVolumeBoxPlanesRotated(
+						c, axes, half, cvIt->second.insideFade,
+						cvIt->second.outsideFade);
+					def.priority = cvIt->second.priority;
+					// Geometry only — the trace scene's static soup.
+					smvk::gi::GiSceneBuildOptions buildOpts{};
+					smvk::gi::GiTraceScene traceScene;
+					smvk::gi::BuildTraceSceneFromCluster(*cluster,
+						buildOpts, traceScene, err);
+					if (!err.empty())
+						break;
+					smvk::gi::GiGridLayoutOptions opts{};
+					if (!smvk::gi::ChooseGiVolumeGridLayout(
+							traceScene.Bvh(), def, low, high, opts,
+							*result, &err))
+						break;
+					ok = true;
+				} catch (const std::exception& e) {
+					err = std::string("layout job: ") + e.what();
+				}
+			} while (false);
+			*okFlag = ok;
+			*errStr = err;
+			std::error_code ec;
+			std::filesystem::remove(tempTour, ec);
+		},
+		[this, node, result, okFlag, errStr](
+				const editor::FiberBackend::Completion& c) {
+			m_giLayoutRunning = false;
+			if (!c.ok) {
+				Log("Optimize grid: job error: " + c.error);
+				TaskWindowFinish(false,
+					"Optimize grid FAILED (job error)");
+				return;
+			}
+			if (!*okFlag) {
+				Log("Optimize grid failed: " + *errStr);
+				TaskWindowFinish(false,
+					("Optimize grid FAILED (" + *errStr + ")").c_str());
+				return;
+			}
+			const smvk::gi::GiGridLayoutResult& r = *result;
+			// ONE undoable "optlayout" commit (spacing + phase).
+			{
+				// beginGiVolumeDrag's pattern, inline (editor_ui.cpp owns
+				// the lambda; this is the same pending machinery).
+				if (m_pending.active)
+					FinalizePending();
+				m_pending.active = true;
+				m_pending.cmd = EditCmd{};
+				m_pending.cmd.verb = EditVerb::SetGiVolumeAttr;
+				m_pending.cmd.node = node;
+				m_pending.cmd.giVolumeAttr = "optlayout";
+				ReadNodeGiVolumeAttr(node, "optlayout",
+					m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum,
+					m_pending.cmd.beforeText);
+				WriteNodeGiVolumeAttr(node, "optlayout",
+					glm::vec4(r.phase[0], r.phase[1], r.phase[2], 0.0f),
+					double(r.spacing), {});
+				m_pending.cmd.vec4 = glm::vec4(r.phase[0], r.phase[1],
+					r.phase[2], 0.0f);
+				m_pending.cmd.number = double(r.spacing);
+				FinalizePending();
+			}
+			m_giLayoutLast.node = node;
+			m_giLayoutLast.valid = true;
+			m_giLayoutLast.result = r;
+			char buf[256];
+			std::snprintf(buf, sizeof(buf),
+				"Optimize grid: spacing %.3f m, phase (%.2f,%.2f,%.2f), "
+				"dims %ux%ux%u, probes %llu, invalid %llu, "
+				"coverage %.1f%% (seeded - rebakes use it)",
+				r.spacing, r.phase[0], r.phase[1], r.phase[2],
+				r.dims[0], r.dims[1], r.dims[2],
+				(unsigned long long)r.probes,
+				(unsigned long long)r.invalid, 100.0 * r.coverage);
+			Log(buf);
+			TaskWindowFinish(true, buf);
 		});
 }
 

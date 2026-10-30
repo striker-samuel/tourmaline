@@ -1250,6 +1250,20 @@ private:
 	// Inspector "GI volume" section for GI volume nodes (priority /
 	// spacing / fades via undoable SetGiVolumeAttr; shape via the transform).
 	void DrawGiVolumeSection(uint32_t node);
+	// The inspector's "Optimize grid layout" button (GI volume section):
+	// runs ChooseGiVolumeGridLayout against the bake-parity geometry
+	// (tour snapshot -> offline cluster replay -> the trace scene, the
+	// GiBaker path) on the fibers lane, then commits the chosen layout
+	// as ONE undoable "optlayout" edit (spacing + phase) so rebakes are
+	// deterministic and the J lattice preview shows the real grid.
+	void RunGiLayoutOptimizer(uint32_t node);
+	bool m_giLayoutRunning = false;
+	struct GiLayoutLast {
+		uint32_t node = UINT32_MAX;   // the node the run addressed
+		bool valid = false;
+		smvk::gi::GiGridLayoutResult result{};
+	};
+	GiLayoutLast m_giLayoutLast; // the section's diagnostics display
 	// Inspector "Cubemap capture" section for capture nodes (radius
 	// via undoable SetCubemapAttr; position via the transform).
 	void DrawCubemapSection(uint32_t node);

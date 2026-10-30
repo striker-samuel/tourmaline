@@ -149,23 +149,34 @@ struct GiProbeVisual {
 // source - grid coords are filled for shape parity but the lattice VS
 // never fetches textures (no bake exists). Returns the row count
 // (0 = degenerate/unbounded planes).
+// `phase` (optional, fractions of the spacing): the lattice origin
+// shifts to bMin + phase * spacing — the OPTIMIZER's chosen offset (a
+// seeded volume's preview matches its bake exactly). Null = phase 0
+// (the legacy layout).
 [[nodiscard]] inline uint32_t BuildGiProbeLatticeRows(
 	const glm::vec3& center, const glm::mat3& axes,
 	const glm::vec3& half, float spacing,
 	std::vector<GiProbeInstance>& out,
-	uint32_t cap = kGiProbeMaxInstances)
+	uint32_t cap = kGiProbeMaxInstances,
+	const float phase[3] = nullptr)
 {
 	out.clear();
 	spacing = std::max(spacing, 0.01f);
+	const float ph[3] = {
+		phase ? phase[0] : 0.0f,
+		phase ? phase[1] : 0.0f,
+		phase ? phase[2] : 0.0f,
+	};
 	smvk::gi::GiVolumeDef def;
 	def.planes = smvk::gi::GiVolumeBoxPlanesRotated(center, axes, half);
 	glm::vec3 bMin, bMax;
 	if (!def.Bounds(bMin, bMax))
 		return 0;
+	const glm::vec3 gridMin = bMin + glm::vec3(ph[0], ph[1], ph[2]) * spacing;
 	uint32_t dims[3] = { 1, 1, 1 };
 	for (int a = 0; a < 3; ++a) {
 		dims[a] = std::min(
-			std::max(1u, uint32_t(std::ceil((bMax[a] - bMin[a]) / spacing))),
+			std::max(1u, uint32_t(std::ceil((bMax[a] - gridMin[a]) / spacing))),
 			smvk::gi::kGiVolumeMaxDim);
 	}
 	const uint64_t n = uint64_t(dims[0]) * dims[1] * dims[2];
@@ -176,7 +187,7 @@ struct GiProbeVisual {
 		const uint32_t iz =
 			uint32_t(v / (uint64_t(dims[0]) * dims[1]));
 		GiProbeInstance row{};
-		row.pos = bMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing;
+		row.pos = gridMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing;
 		row.grid[0] = ix;
 		row.grid[1] = iy;
 		row.grid[2] = iz;

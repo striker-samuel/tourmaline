@@ -14055,10 +14055,18 @@ namespace engine {
 								? glm::vec3(g[i]) / len
 								: glm::vec3(0.0f);
 						}
+						const ::SceneGiVolume& cvg =
+							m_world->scene.giVolumeForNode[node];
+						// The SEEDED layout (the editor's optimized props)
+						// previews exactly what the bake will build; no
+						// seed = the preferred spacing, phase 0.
 						const float spacing = std::max(
-							m_world->scene.giVolumeForNode[node].spacing,
-							0.01f);
-						BuildGiProbeLatticeRows(c, axes, half, spacing, rows);
+							cvg.optSpacing > 0.0f
+								? cvg.optSpacing : cvg.spacing, 0.01f);
+						const float* phase =
+							cvg.optSpacing > 0.0f ? cvg.optPhase : nullptr;
+						BuildGiProbeLatticeRows(c, axes, half, spacing, rows,
+							smvk::giprobe::kGiProbeMaxInstances, phase);
 						if (rows.empty())
 							continue;
 						if (m_giProbeDraftBuf[ni].empty()) {

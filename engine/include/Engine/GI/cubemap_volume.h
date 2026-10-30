@@ -273,17 +273,89 @@ struct GiVolumeBakeStats {
 	uint64_t probesInvalid = 0; // inside solid geometry (dilated)
 	uint64_t samplesClamped = 0; // firefly clamps (8x per-probe mean)
 	double seconds = 0.0;
+	// ---- Automatic grid layout (ChooseGiVolumeGridLayout; valid when
+	// layoutSearched): the chosen layout + its scoring diagnostics, so
+	// bakes/cooks log what the search decided.
+	bool layoutSearched = false;
+	float layoutSpacing = 0.0f;
+	float layoutPhase[3] = { 0.0f, 0.0f, 0.0f };
+	uint32_t layoutDims[3] = { 1, 1, 1 };
+	uint64_t layoutInvalid = 0;     // low-clearance + inside-solid probes
+	uint64_t layoutInsideSolid = 0; // the parity-classified subset
+	double layoutCoverage = 0.0;    // visibility-aware surface coverage
+	double layoutScore = 0.0;
 };
 
 class GiTraceScene;
 using GiBakeProgress = void (*)(const char* line);
 
+// ---------------------------------------------------------------------------
+// Automatic grid layout optimization (the probe lattice search). The
+// authored density gates bound the search; candidates = spacings x lattice
+// phases, scored BVH-only (NO path tracing): invalid probes (clearance +
+// solid-interior parity), visibility-aware surface coverage (probe ->
+// surface occlusion via AnyHit), and probe count / memory. Coverage is
+// weighted HEAVIER than invalid probes (a hole in the field reads worse
+// than a few wasted probes). Candidates whose dims exceed
+// kGiVolumeMaxDim are REJECTED, never silently truncated.
+// ---------------------------------------------------------------------------
+struct GiGridLayoutOptions {
+	uint32_t spacingSteps = 5;  // candidates across [low, high] (geometric)
+	uint32_t phaseSteps = 4;    // phases per axis: {0, 1/n, .., (n-1)/n}
+	uint32_t surfaceSamples = 256; // coverage samples (area-weighted)
+	float probeMinClearance = 0.05f; // the bake cfg's validity gate (m)
+	float coverageWeight = 10.0f;  // the heavy term (per the contract)
+	float invalidWeight = 1.0f;
+	float memoryWeight = 0.05f;
+};
+
+struct GiGridLayoutResult {
+	float spacing = 0.0f;
+	float phase[3] = { 0.0f, 0.0f, 0.0f };
+	uint32_t dims[3] = { 1, 1, 1 };
+	glm::vec3 gridMin{};
+	uint64_t probes = 0;
+	uint64_t invalid = 0;
+	uint64_t insideSolid = 0;
+	double coverage = 0.0;
+	double score = 0.0;
+};
+
+// A pre-optimized layout the editor seeds (the "Optimize grid layout"
+// button's output persisted as volume properties): the bake consumes it
+// directly instead of re-running the search (deterministic rebakes; the
+// artist can hand-tune the result).
+struct GiVolumeLayoutSeed {
+	float spacing = 0.0f;          // 0 = no seed (search or legacy)
+	float phase[3] = { 0, 0, 0 };  // lattice phase (fractions of spacing)
+};
+
+// Searches the layout. spacingLow/High bound the density (both > 0 and
+// low <= high); returns false when NO candidate fits the per-axis cap
+// (err carries the reason). The BVH only — cheap enough for an editor
+// button.
+[[nodiscard]] bool ChooseGiVolumeGridLayout(const class TriangleBvh& bvh,
+	const GiVolumeDef& def, float spacingLow, float spacingHigh,
+	const GiGridLayoutOptions& opts, GiGridLayoutResult& out,
+	std::string* err = nullptr);
+
+
 // Bakes the volume's dense grid with a DIRECT per-probe path trace
 // (see the file banner). The AABB grid covers def.Bounds() plus the
 // fade band; probes outside the convex still bake (their runtime weight
 // is zero but trilinear taps near the boundary read them).
+// Layout selection (all independently toggleable, per the contract):
+//   seed                -> use it verbatim (the editor's optimized props;
+//                         validated against the cap, never truncated).
+//   spacingLow/High > 0 -> run ChooseGiVolumeGridLayout over the gates
+//                         (stats.layout* carry the choice).
+//   neither             -> the LEGACY fixed layout (gridMin = bMin,
+//                         phase 0, `spacing` as authored) — every
+//                         pre-optimization bake/test stays bit-exact.
 bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	float spacing, const GiVolumeBakeConfig& config, GiVolume& outVolume,
-	GiVolumeBakeStats& stats, GiBakeProgress progress = nullptr);
+	GiVolumeBakeStats& stats, GiBakeProgress progress = nullptr,
+	const GiVolumeLayoutSeed* seed = nullptr,
+	float spacingLow = 0.0f, float spacingHigh = 0.0f);
 
 } // namespace smvk::gi
