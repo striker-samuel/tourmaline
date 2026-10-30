@@ -9,18 +9,22 @@
 // per-volume GPU instance table (probe position + integer grid coords);
 // the VERTEX shader fetches the probe's EXACT texel (Texture3D.Load —
 // never the filtered Sample) from the volume's 7 SG layers, unpacks the
-// 9 lobe amplitudes (SgRegularUnpack) and evaluates
-// SgGiDiffuseIrradiance(amps, sphereDirection) as the vertex color —
-// each sphere becomes a tiny irradiance ball showing what the baked
-// field answers in every direction around that probe. The fragment
-// shader is a pure pass-through into HDR (no lighting, no sampling).
+// 9 lobe amplitudes (SgRegularUnpack) and evaluates the
+// WHITE-LAMBERTIAN probe answer — SgGiDiffuseIrradiance(amps, dir) *
+// giIntensity / PI, albedo 1 — the same quantity a matte white surface
+// renders as ambient there (the lit body's kD * baseColor * E/PI with
+// baseColor = 1), so each sphere reads as a tiny scene surface showing
+// the baked field's directional answer, not raw radiance (which washed
+// out ~PI x too white). The fragment shader is a pure pass-through into
+// HDR (no lighting, no sampling).
 //
-// The probeball.h pattern verbatim: a DEDICATED rendergraph pass (own
-// push block, NO scene pc) on the 1x HDR target (load/store) with the
-// scene depth TEST-ONLY (GreaterEqual reversed-Z, no write — occluded
-// probes hide behind geometry, the depth the post-Main consumers march
-// stays untouched). One DrawIndexed INSTANCED call per volume (the
-// shared geometry, SV_InstanceID-indexed rows through a BDA).
+// The probeball.h pattern with ONE divergence: the depth attachment is
+// tested AND WRITTEN (GreaterEqual reversed-Z) — the write is
+// load-bearing for sphere-vs-sphere occlusion (a lattice of overlapping
+// instanced spheres needs it; probeball's few balls got away with
+// test-only), and it is safe at this slot: nothing after the HDR tail
+// reads depth. One DrawIndexed INSTANCED call per volume (the shared
+// geometry, SV_InstanceID-indexed rows through a BDA).
 //
 // The old ImGui overlay's filters live on: the camera-distance filter
 // (m_giProbePointMaxDist) runs GPU-side in the VS (every vertex of an

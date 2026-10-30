@@ -107,10 +107,16 @@ VSOut mainVS(VSIn IN, uint instanceIndex : SV_InstanceID)
     SgRegularUnpack(layers, amps);
 
     // The unit sphere direction IS the shading normal (pos == normal on
-    // the icosphere): the vertex color shows what the baked field
-    // answers for a surface facing that way AT the probe. Interpolation
-    // across each triangle = the directional sweep.
-    OUT.color = SgGiDiffuseIrradiance(amps, normalize(IN.position));
+    // the icosphere). The color is the WHITE-LAMBERTIAN probe answer —
+    // E(n) * giScale / PI, albedo 1 — the same quantity a matte white
+    // surface at the probe's position renders as ambient (the lit body's
+    // kD * baseColor * (E * giScale / PI) with baseColor = 1): the
+    // spheres read as scene surfaces, not raw radiance (the first cut
+    // showed E directly and the balls washed out ~PI x too white through
+    // the tonemap - "too white, darker zones only grayer").
+    // Interpolation across each triangle = the directional sweep.
+    OUT.color = SgGiDiffuseIrradiance(amps, normalize(IN.position))
+        * (max(frame.giIntensity, 0.0f) / 3.14159265f);
     OUT.pos = mul(pb.viewProj, float4(worldPos, 1.0));
     return OUT;
 }

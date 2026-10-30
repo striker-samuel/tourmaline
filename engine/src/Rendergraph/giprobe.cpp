@@ -206,11 +206,18 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
 	pass.SetRecordingFunc([this, viewProj, eye, maxDist,
 			frameUniformsAddress,
 			drawRows = std::move(drawRows)](CommandBuffer& cmd) mutable {
-		// TEST-ONLY depth (GreaterEqual reversed-Z): the probes occlude
-		// against the scene depth but never write it.
+		// Depth test AND write (GreaterEqual reversed-Z): the test hides
+		// probes behind scene geometry like probeball's TEST-ONLY — but
+		// the WRITE is load-bearing here: 1120+ overlapping spheres in
+		// one instanced draw need sphere-vs-sphere occlusion, and without
+		// writes the draw order decides (the see-through-probes bug — a
+		// far sphere painted over a near one). Safe at this slot: nothing
+		// AFTER the HDR tail (exposure / bloom / tonemap / capture / SMAA
+		// / UI) reads depth — the depth-marching consumers (godrays,
+		// volumetrics) all run BEFORE it.
 		const DepthSettings depth{
 			.depthFunc = CompareOp::GreaterEqual,
-			.writeEnable = false,
+			.writeEnable = true,
 			.depthTestEnable = true,
 		};
 		cmd.BindRenderPipeline(
