@@ -1581,15 +1581,18 @@ int Run(Args& args) {
 		std::vector<SgLightmapXatlasMeshInput> xins;
 		std::vector<uint32_t> keys;
 		uint32_t count = 0;
-		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
+		for (const MeshRow& row : cluster->scene.tables.meshes) {
+			const NodeId node = row.node;
+			const uint32_t meshIdx = row.mesh;
 			if (count >= args.lmProbe)
 				break;
 			if (!IsVisibleNode(cluster->scene, int(node)))
 				continue; // hidden override: not charted
-			auto matIt = cluster->scene.materialForNode.find(node);
-			if (matIt == cluster->scene.materialForNode.end())
+			const MaterialRow* matRow =
+				FindMaterial(cluster->scene, node);
+			if (!matRow)
 				continue;
-			const smvk::ClusterMaterialHandle mh = cluster->materials.getHandle(matIt->second);
+			const smvk::ClusterMaterialHandle mh = cluster->materials.getHandle(matRow->material);
 			if (!mh.valid())
 				continue;
 			const smvk::Material* mat = cluster->materials.get(mh);

@@ -85,10 +85,10 @@ const smvk::StaticMeshUpload* EditorApp::NodeMeshUpload(
 	uint32_t node) const {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return nullptr;
-	const auto it = m_world->scene.meshForNode.find(node);
-	if (it == m_world->scene.meshForNode.end())
+	const MeshRow* row = FindMesh(m_world->scene, node);
+	if (!row)
 		return nullptr;
-	return MeshUploadOf(it->second);
+	return MeshUploadOf(row->mesh);
 }
 
 glm::vec2 EditorApp::UvToFlatNdc(glm::vec2 uv, float zoom, glm::vec2 pan) const {
@@ -435,7 +435,9 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 		const float v = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / d;
 		return u >= -1e-4f && v >= -1e-4f && (u + v) <= 1.0f + 1e-4f;
 	};
-	for (const auto& [node, meshIdx] : m_world->scene.meshForNode) {
+	for (const MeshRow& row : m_world->scene.tables.meshes) {
+		const uint32_t node = row.node;
+		const uint32_t meshIdx = row.mesh;
 		if (useSubtree && !subtree.contains(node))
 			continue;
 		const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);

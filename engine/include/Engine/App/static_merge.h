@@ -7,7 +7,7 @@
 // them into per-material mega-mesh blocks.
 //
 // Why per-material (not one mesh for everything)? The current renderer binds
-// one material per node (`materialForNode`) and draws every surface in the
+// one material per node (the material table) and draws every surface in the
 // mesh with it, so a single multi-material mesh would render wrong today.
 // One block per material keeps the draw path correct while still collapsing
 // N static draws into (number of distinct materials) draws. When there is a
@@ -49,7 +49,7 @@ struct StaticMergeResult {
 	uint32_t srcNodesConsumed = 0;
 };
 
-// Collects renderable static nodes (staticNode != 0 && meshForNode present).
+// Collects renderable static nodes (staticNode != 0 && a mesh row present).
 // NOTE: Scene lives in the global namespace (see Scene/scene.h).
 std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene);
 

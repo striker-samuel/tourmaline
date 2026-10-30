@@ -1039,7 +1039,7 @@ private:
 	void ExecCreateTransform(EditCmd& c);
 	void ExecUncreateTransform(EditCmd& c);
 	// Delete execution (ExecCmd cases): remove/restore a node from the
-	// live scene. Links (meshForNode/materialForNode/lightForNode) and
+	// live scene. Links (the mesh/material tables/lightForNode) and
 	// draw entries drop; the node id joins/leaves m_deletedNodes; ids
 	// stay stable and pool resources are never reclaimed. Captured
 	// state (light index, map links, draw entries at their positions)

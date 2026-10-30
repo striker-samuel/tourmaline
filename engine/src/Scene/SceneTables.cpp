@@ -60,6 +60,16 @@ void RebuildNodeRows(Scene& scene)
 		scene.rowsForNode[row.node].mesh = RowId(i);
 		++i;
 	}
+	for (size_t i = 0; i < scene.tables.materials.size();) {
+		MaterialRow& row = scene.tables.materials[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = scene.tables.materials.back();
+			scene.tables.materials.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].material = RowId(i);
+		++i;
+	}
 	for (size_t i = 0; i < scene.tables.lights.size();) {
 		LightRow& row = scene.tables.lights[i];
 		if (!NodeInRange(scene, row.node)) {
@@ -116,7 +126,7 @@ const MeshRow* FindMesh(const Scene& scene, NodeId node)
 	return &scene.tables.meshes[rid];
 }
 
-bool SetMesh(Scene& scene, NodeId node, uint32_t mesh, uint32_t material)
+bool SetMesh(Scene& scene, NodeId node, uint32_t mesh)
 {
 	if (!NodeInRange(scene, node))
 		return false;
@@ -125,10 +135,9 @@ bool SetMesh(Scene& scene, NodeId node, uint32_t mesh, uint32_t material)
 	// replacement semantics — the map-insert-overwrite behavior).
 	if (MeshRow* row = FindMesh(scene, node)) {
 		row->mesh = mesh;
-		row->material = material;
 		return true;
 	}
-	scene.tables.meshes.push_back(MeshRow{ node, mesh, material });
+	scene.tables.meshes.push_back(MeshRow{ node, mesh });
 	scene.rowsForNode[node].mesh = RowId(scene.tables.meshes.size() - 1);
 	return true;
 }
@@ -150,6 +159,61 @@ bool RemoveMesh(Scene& scene, NodeId node)
 		scene.rowsForNode[moved].mesh = rid;
 	}
 	scene.rowsForNode[node].mesh = InvalidRow;
+	return true;
+}
+
+// ---- material (independent of the mesh row — see scene_tables.h) ----
+
+MaterialRow* FindMaterial(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].material;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.materials.size());
+	return &scene.tables.materials[rid];
+}
+
+const MaterialRow* FindMaterial(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].material;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.materials.size());
+	return &scene.tables.materials[rid];
+}
+
+bool SetMaterial(Scene& scene, NodeId node, uint32_t material)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (MaterialRow* row = FindMaterial(scene, node)) {
+		row->material = material;
+		return true;
+	}
+	scene.tables.materials.push_back(MaterialRow{ node, material });
+	scene.rowsForNode[node].material = RowId(scene.tables.materials.size() - 1);
+	return true;
+}
+
+bool RemoveMaterial(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].material;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.materials[rid] = scene.tables.materials.back();
+	scene.tables.materials.pop_back();
+	if (size_t(rid) < scene.tables.materials.size()) {
+		const NodeId moved = scene.tables.materials[rid].node;
+		scene.rowsForNode[moved].material = rid;
+	}
+	scene.rowsForNode[node].material = InvalidRow;
 	return true;
 }
 
@@ -325,6 +389,7 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 {
 	bool removed = false;
 	removed |= RemoveMesh(scene, node);
+	removed |= RemoveMaterial(scene, node);
 	removed |= RemoveLight(scene, node);
 	removed |= RemoveCamera(scene, node);
 	removed |= RemoveDecal(scene, node);

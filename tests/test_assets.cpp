@@ -1360,14 +1360,14 @@ void TestLodSelection() {
 		cluster->RegisterMeshLod(uri1, lod1);
 		const int root = addNode(cluster->scene, -1, 0);
 		const int n1 = addNode(cluster->scene, root, 1);
-		cluster->scene.meshForNode[n1] = mh.index();
+		SetMesh(cluster->scene, uint32_t(n1), mh.index());
 		// Explicit opt-in: the ShaderLodPolicy default is vertex-lit OFF
 		// (the derivation only stamps it when DeriveConfig::shaderLods
 		// is set), so this test material programs it on by hand.
 		MaterialCreateInfo shaderLodCi{};
 		shaderLodCi.allowFarVertexLit = true;
 		const auto shaderLodMatH = cluster->CreateMaterial(shaderLodCi);
-		cluster->scene.materialForNode[n1] = shaderLodMatH.index();
+		SetMaterial(cluster->scene, uint32_t(n1), shaderLodMatH.index());
 		cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
 		markAsChanged(cluster->scene, root);
 		recalculateGlobalTransforms(cluster->scene);
@@ -1467,8 +1467,8 @@ void TestLodSelection() {
 		// the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
 		// -> LOD0 (err 1.5 projects ~19.5px).
 		NodeId rn = 0;
-		for (auto& [nd, midx] : world.scene.meshForNode)
-			rn = nd; // the single renderable node
+		for (const MeshRow& row : world.scene.tables.meshes)
+			rn = row.node; // the single renderable node
 		LodFrameInputs in{};
 		in.viewportHeight = h;
 		in.fovY = fov;
@@ -1556,7 +1556,7 @@ void TestLodSelection() {
 			const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
 			c.RegisterMeshUri(uri2, h2);
 			const int n2 = addNode(c.scene, 0, 2);
-			c.scene.meshForNode[n2] = h2.index();
+			SetMesh(c.scene, uint32_t(n2), h2.index());
 			markAsChanged(c.scene, 0);
 			recalculateGlobalTransforms(c.scene);
 			world.ResolveAndFixup_clusters();
@@ -1685,8 +1685,8 @@ void TestCookLodSiblingsLightmap() {
 	const auto matH = cluster->CreateMaterial(ci);
 	const int root = addNode(cluster->scene, -1, 0);
 	const int n1 = addNode(cluster->scene, root, 1);
-	cluster->scene.meshForNode[n1] = mh.index();
-	cluster->scene.materialForNode[n1] = matH.index();
+	SetMesh(cluster->scene, uint32_t(n1), mh.index());
+	SetMaterial(cluster->scene, uint32_t(n1), matH.index());
 	markAsChanged(cluster->scene, root);
 	recalculateGlobalTransforms(cluster->scene);
 
@@ -1768,8 +1768,8 @@ void TestCookLodSiblingsLightmap() {
 	const std::string uri2 = "models/lm.gltf#mesh.1/prim.0";
 	cluster->RegisterMeshUri(uri2, mh2);
 	const int n2 = addNode(cluster->scene, root, 1);
-	cluster->scene.meshForNode[n2] = mh2.index();
-	cluster->scene.materialForNode[n2] = matH.index();
+	SetMesh(cluster->scene, uint32_t(n2), mh2.index());
+	SetMaterial(cluster->scene, uint32_t(n2), matH.index());
 	markAsChanged(cluster->scene, root);
 	recalculateGlobalTransforms(cluster->scene);
 	Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook2.ok");
@@ -1812,12 +1812,12 @@ void TestLightmapChartTable() {
 	const int nA = addNode(cluster->scene, root, 1);
 	const int nB = addNode(cluster->scene, root, 1);
 	const int nC = addNode(cluster->scene, root, 1);
-	cluster->scene.meshForNode[nA] = mhA.index();
-	cluster->scene.meshForNode[nB] = mhB.index();
-	cluster->scene.meshForNode[nC] = mhC.index();
-	cluster->scene.materialForNode[nA] = matH.index();
-	cluster->scene.materialForNode[nB] = matH.index();
-	cluster->scene.materialForNode[nC] = matH.index();
+	SetMesh(cluster->scene, uint32_t(nA), mhA.index());
+	SetMesh(cluster->scene, uint32_t(nB), mhB.index());
+	SetMesh(cluster->scene, uint32_t(nC), mhC.index());
+	SetMaterial(cluster->scene, uint32_t(nA), matH.index());
+	SetMaterial(cluster->scene, uint32_t(nB), matH.index());
+	SetMaterial(cluster->scene, uint32_t(nC), matH.index());
 	markAsChanged(cluster->scene, root);
 	recalculateGlobalTransforms(cluster->scene);
 
@@ -1825,8 +1825,8 @@ void TestLightmapChartTable() {
 	world.RegisterCluster(std::move(cluster));
 	world.ResolveAndFixup_clusters();
 	Check(world.meshLocations.size() == 3, "lmchart.meshes");
-	// World mesh indices follow unordered_map iteration order — look
-	// them up by pool handle.
+	// World mesh indices follow table row order — look them up by pool
+	// handle.
 	auto worldIndexOf = [&](uint32_t poolIdx) -> uint32_t {
 		for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i)
 			if (world.meshLocations[i].handle.index() == poolIdx)
@@ -1930,8 +1930,8 @@ void TestClusterSerializeCook() {
 	// Scene: root + one renderable node.
 	const int root = addNode(cluster->scene, -1, 0);
 	const int child = addNode(cluster->scene, root, 1);
-	cluster->scene.meshForNode[child] = mh.index();
-	cluster->scene.materialForNode[child] = math.index();
+	SetMesh(cluster->scene, uint32_t(child), mh.index());
+	SetMaterial(cluster->scene, uint32_t(child), math.index());
 	setNodeName(cluster->scene, child, "QuadNode");
 	// Explicit animation references (the scene blob's trailing v16
 	// section — the self-contained anim pipeline): the cooked asset
@@ -2532,10 +2532,10 @@ void TestStaticCollapse() {
 	const int n2 = addNode(cluster->scene, root, 1);
 	const ClusterStaticMeshHandle h1 = cluster->UploadStaticMesh(q1);
 	const ClusterStaticMeshHandle h2 = cluster->UploadStaticMesh(q2);
-	cluster->scene.meshForNode[n1] = h1.index();
-	cluster->scene.meshForNode[n2] = h2.index();
-	cluster->scene.materialForNode[n1] = matIdx;
-	cluster->scene.materialForNode[n2] = matIdx;
+	SetMesh(cluster->scene, uint32_t(n1), h1.index());
+	SetMesh(cluster->scene, uint32_t(n2), h2.index());
+	SetMaterial(cluster->scene, uint32_t(n1), matIdx);
+	SetMaterial(cluster->scene, uint32_t(n2), matIdx);
 	cluster->scene.localTransform[n2] = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 	MarkSubtreeStatic(cluster->scene, n1);
 	MarkSubtreeStatic(cluster->scene, n2);
@@ -2582,8 +2582,8 @@ void TestMultiSceneSerialize() {
 		cluster->RegisterMaterialUri(matUri, math);
 		const int root = addNode(cluster->scene, -1, 0);
 		const int n = addNode(cluster->scene, root, 1);
-		cluster->scene.meshForNode[n] = mh.index();
-		cluster->scene.materialForNode[n] = math.index();
+		SetMesh(cluster->scene, uint32_t(n), mh.index());
+		SetMaterial(cluster->scene, uint32_t(n), math.index());
 		setNodeName(cluster->scene, n, nodeName);
 		return cluster;
 	};

@@ -60,8 +60,12 @@ Two consequences the plan must respect:
 Serialization today: the legacy `saveScene` (unversioned positional
 FILE*) and the pak scene blob (trailing-section appends with an
 exact-end rejection check; the pak container has NO version field —
-**the magic IS the version**, currently `SMP6`/`KPM6`). Epoch 7 bumps
-to `SMP7`/`KPM7` per the house no-conversions policy.
+**the magic IS the version**). **The magic bumped to `SMP7`/`KPM7` AT
+EPOCH 4** (the owner's rule: no old-pak support, no versioning, no
+compatibility layers — ONE canonical path; the reader accepts exactly
+one magic and the SMP6-era legacy-terrain acceptance hack is deleted).
+Epoch 7's chunked scene redesign bumps again whenever it changes the
+container/blob contract — bumps are free, conversions are forbidden.
 
 ## Locked design decisions (pre-Phase-I review)
 
@@ -183,6 +187,34 @@ deltas are marked.
     contract. `NodeRows.body` reserved for Epoch 10. The maps remain
     authoritative — nothing populates the tables yet except tests.
 - 4 — `refactor(scene): migrate mesh and material associations`.
+  - **Record**: the epoch's open question answered — material
+    associations exist WITHOUT meshes (tour assignMaterial on bare
+    nodes, pinned by test_tour's "replay assign"; gltf instancing
+    sets mesh-without-material) → MaterialRow is a SEPARATE table
+    (MeshRow lost its material field; one owner per fact). The
+    migration is semantics-preserving: every meshForNode/
+    materialForNode site (111 + 101 across engine/tools/editor/app/
+    tests) now goes through tables.meshes/tables.materials +
+    Find/Set/Remove, and the MAPS ARE DELETED from Scene.
+    Serialization went CANONICAL, not compatible (the owner's rule —
+    no old-pak support, no compat layers, one canonical path): the pak
+    magic bumped SMP6/KPM6 → **SMP7/KPM7** (the scene-tables break),
+    the reader accepts EXACTLY ONE magic, the SMP6-era legacy-terrain
+    acceptance hack is DELETED (terrain_hfield now pins forged
+    SMP6/SMP5 images failing closed), and the legacy .scene
+    association sections went row-native (u32 rowCount + pairs — no
+    saveMap emulation). The pak scene blob's link-section layout is
+    itself unchanged this epoch (rows sorted by node = the old
+    sorted-pairs order); Epoch 7's chunk redesign replaces it. The
+    resolve (ResolveAndFixup) remaps rows into the world scene through
+    the mutators; deleteSceneNodes remaps row nodes through the
+    compaction index (shiftMeshRowNodes/shiftMaterialRowNodes —
+    order-preserving) and rebuilds the derived index once;
+    ParseSceneBlob rebuilds it after the bulk row push. Validation:
+    Windows tests 46/46 (tour replay, pak round-trips, world entity
+    resolve/merge all table-based; the old-pak gate pinned by the
+    forged-magic checks). All existing paks are stale by design —
+    recook from zero (the owner recooks).
 - 5 — `refactor(scene): migrate remaining node associations`
   (all twelve maps; `nameForNode`+`uuidForNode` fold into dense
   `NodeMetadata`; env/envVolume inline rows are already POD —
@@ -206,10 +238,12 @@ deltas are marked.
   keeps the authoritative copy in the dynamic cluster and a
   throwaway mirror in the merged scene.)
 - 7 — `feat(pak): introduce versioned scene table chunks`
-  (`SMP7`/`KPM7`; NODS/XFRM/MESH/LGHT/CAMR/DECL/ENVS/RBOD/COLL/META +
-  STRS string-arena chunk; per-node association table uses 0=absent;
-  giVolume/cubemap/uuid serialized for the first time; export rows
-  stay cook-side only).
+  (the CHUNKED scene payload — NODS/XFRM/MESH/LGHT/CAMR/DECL/ENVS/
+  RBOD/COLL/META + STRS string-arena chunk; per-node association
+  table uses 0=absent; giVolume/cubemap/uuid serialized for the first
+  time; export rows stay cook-side only). The container magic is
+  already `SMP7` (bumped at Epoch 4); another bump only if the
+  chunk redesign changes the container contract.
 - 8 — `refactor(cook): serialize and load typed scene tables`.
 - 9 — `refactor(editor): migrate typed authoring and tour commands`
   (the main-architecture gate; .tour verbs keep working, implemented

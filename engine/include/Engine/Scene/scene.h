@@ -466,22 +466,19 @@ struct Scene {
 
 	// ---- typed association tables (the xForNode migration target,
 	// Epoch 3+, docs/scene_tables_migration.md) ----
-	// INTRODUCED but NOT YET AUTHORITATIVE: the maps below remain the
-	// source of truth until each kind's consumers migrate (Epochs 4-5)
-	// and the maps die. Nothing populates the tables yet except tests
-	// and (from Epoch 4 on) the migrated write paths.
+	// AUTHORITATIVE for mesh/material since Epoch 4: the old
+	// meshForNode/materialForNode maps are GONE — every consumer reads
+	// tables.meshes / tables.materials through scene_tables.h.
 	SceneTables tables;
 	// Derived per-node index over `tables` — maintained by the
 	// scene_tables.h mutators, rebuilt by RebuildNodeRows, never
 	// serialized, never a second source of truth.
 	std::vector<NodeRows> rowsForNode;
 
-	std::unordered_map<NodeId, uint32_t> meshForNode;
-	std::unordered_map<NodeId, uint32_t> materialForNode;
 	std::unordered_map<NodeId, uint32_t> nameForNode;
 	// Node -> Cluster light pool index (cooked KHR_lights_punctual). The
 	// definition lives in the owning Cluster's lights pool — the same
-	// indirection meshForNode uses — and the world transform resolves
+	// indirection the mesh table uses — and the world transform resolves
 	// from globalTransform[node] at use time.
 	std::unordered_map<NodeId, uint32_t> lightForNode;
 	// Node -> Cluster camera pool index (authored camera node). The lens

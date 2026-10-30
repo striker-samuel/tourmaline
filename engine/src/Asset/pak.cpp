@@ -741,17 +741,12 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 	memcpy(&magic, image.data() + 0, 4);
 	memcpy(&tocOffset, image.data() + 12, 8);
 	memcpy(&tocCount, image.data() + 20, 8);
-	bool legacyEpoch = false;
+	// ONE CANONICAL PATH: exactly one accepted magic. Any older epoch
+	// (SMP5/SMP6) fails closed here — content recooks from zero, never
+	// migrates (the SMP6-era legacy-terrain-empty acceptance is gone).
 	if (magic != kPakMagic) {
-		if (magic != kPakMagicSmp5) {
-			outError = "bad pak magic (stale pak - recook from zero)";
-			return std::nullopt;
-		}
-		// LEGACY HACK (SMP5 without terrain): old bistro/sponza paks keep
-		// loading with empty terrain. The footer + per-entry validation
-		// below run unchanged; after the TOC parse any Terrain blob fails
-		// closed (an SMP5 image must never claim terrain payloads).
-		legacyEpoch = true;
+		outError = "bad pak magic (stale pak - recook from zero)";
+		return std::nullopt;
 	}
 
 	// Footer check.
@@ -762,8 +757,7 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 	memcpy(&fTocCount, image.data() + fOff + 8, 8);
 	memcpy(&fCrc, image.data() + fOff + 16, 4);
 	memcpy(&fMagic, image.data() + fOff + 20, 4);
-	const uint32_t wantFooter = legacyEpoch ? kPakFooterMagicKpm5 : kPakFooterMagic;
-	if (fMagic != wantFooter) {
+	if (fMagic != kPakFooterMagic) {
 		outError = "bad pak footer magic";
 		return std::nullopt;
 	}
@@ -843,14 +837,6 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 			return std::nullopt;
 		}
 		r.entries_.push_back(std::move(e));
-	}
-	if (legacyEpoch) {
-		for (const auto& e : r.entries_) {
-			if (e.kind == PakAssetKind::Terrain) {
-				outError = "legacy SMP5 pak claims Terrain blobs (recook from zero)";
-				return std::nullopt;
-			}
-		}
 	}
 	// LAZY LZ4 decompression (finding #18): Open only parses + CRCs the
 	// image — compressed entries decompress on FIRST Payload() access

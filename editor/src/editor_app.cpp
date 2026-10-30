@@ -113,7 +113,7 @@ bool EditorApp::SceneEmpty() const {
 	// opens gone (paks run in the App), every non-empty editor scene is
 	// definition-backed by construction.
 	return !m_world
-		|| (m_world->scene.meshForNode.empty()
+		|| (m_world->scene.tables.meshes.empty()
 			&& m_world->scene.lightForNode.empty()
 			&& m_world->scene.cameraForNode.empty());
 }
@@ -1637,10 +1637,10 @@ bool EditorApp::SelectionBounds(glm::vec3& outCenter, float& outRadius) {
 		for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
 			c = m_world->scene.hierarchy[c].nextSibling)
 			stack.push_back(uint32_t(c));
-		auto mit = m_world->scene.meshForNode.find(n);
-		if (mit == m_world->scene.meshForNode.end())
+		const MeshRow* meshRow = FindMesh(m_world->scene, n);
+		if (!meshRow)
 			continue;
-		smvk::StaticMesh* mesh = m_world->GetMesh(mit->second);
+		smvk::StaticMesh* mesh = m_world->GetMesh(meshRow->mesh);
 		if (!mesh)
 			continue;
 		const glm::mat4& model = m_world->scene.globalTransform[n];
@@ -1719,10 +1719,10 @@ bool EditorApp::SelectionPivotCenter(glm::vec3& outCenter) {
 				c != -1;
 				c = m_world->scene.hierarchy[c].nextSibling)
 				stack.push_back(uint32_t(c));
-			auto mit = m_world->scene.meshForNode.find(n);
-			if (mit == m_world->scene.meshForNode.end())
+			const MeshRow* meshRow = FindMesh(m_world->scene, n);
+			if (!meshRow)
 				continue;
-			smvk::StaticMesh* mesh = m_world->GetMesh(mit->second);
+			smvk::StaticMesh* mesh = m_world->GetMesh(meshRow->mesh);
 			if (!mesh)
 				continue;
 			const glm::mat4& model =

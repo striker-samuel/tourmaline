@@ -62,7 +62,7 @@ ctest --test-dir out/build/x64-Release --output-on-failure
 | Run config | `engine/App/RunConfig.h+.cpp` | `Parse()` once in `main`, `Log()`, `WarnUnknown()`; new knobs go here first |
 | Rendergraph | `engine/Rendergraph/*.h`, impl in `engine/src/Vulkan/impl.cpp` | `Add*Hints` barrier discipline; `RendergraphContractTests` |
 | GPU scene | `engine/App/world.h+cluster.h`, `engine/Scene/scene.h` | `ResolveAndFixup_clusters` rebuilds `drawItems/flagLists/lodChains` |
-| Cook/pak | `engine/Asset/pak.h`, `tools/pak_cooker/main.cpp` | `SMP5/KPM5` magic-bump only, no version field; `PakBackend` serves textures |
+| Cook/pak | `engine/Asset/pak.h`, `tools/pak_cooker/main.cpp` | `SMP7/KPM7` magic-bump only, no version field, ONE accepted magic (no legacy epochs); `PakBackend` serves textures |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
 | GPU-driven filter | `engine/Renderer/gfx_filter.h` | filtered main view ALWAYS ON (no runtime off; the legacy direct-draws A/B path is gone - the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh`/`GpuCullEnabled` stay setup-time; kills: `TOURMALINE_MESH=0` (whole pipeline), `TOURMALINE_CULLFLAGS=0` (cull bits); `MeshDrawEligible` truth table in contract tests |

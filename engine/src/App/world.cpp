@@ -295,7 +295,7 @@ namespace smvk {
 		decalLocations.clear();
 		meshLodInfos.clear();
 		flags.clear();
-		// World material dedup (see the materialForNode remap below).
+		// World material dedup (see the material-table remap below).
 		std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat;
 		uint32_t clusterOrdinal = 0;
 		// Authored-environment first-wins (see the per-cluster block):
@@ -472,21 +472,23 @@ namespace smvk {
 				scene.nameForNode[node + nodeOffset] = nameIdx + nameOffset;
 			}
 
-			// Remap meshForNode: cluster-local handle index -> world mesh index.
-			for (auto& [node, meshIdx] : cs.meshForNode) {
-				const uint32_t worldNode = node + nodeOffset;
+			// Remap the mesh table: cluster-local handle index -> world
+			// mesh index (one location slot per row — mesh slots stay
+			// per-node, CPU-side only).
+			for (const MeshRow& row : cs.tables.meshes) {
+				const uint32_t worldNode = row.node + nodeOffset;
 				const uint32_t worldMeshIdx =
 					static_cast<uint32_t>(meshLocations.size());
 
 				ClusterStaticMeshHandle handle =
-					cluster.staticMeshes.getHandle(meshIdx);
+					cluster.staticMeshes.getHandle(row.mesh);
 
 				meshLocations.push_back(
 					MeshLocation{ .cluster = &cluster, .handle = handle }
 				);
 				// Cook-time LOD marker (LOD0; siblings resolve via SelectLodIndex).
 				LodInfo lod;
-				lod.groupId = meshIdx;
+				lod.groupId = row.mesh;
 				if (const StringViewT uri = cluster.GetMeshUri(handle);
 					!uri.empty()) {
 					if (auto hit = cluster.GetMeshLod(uri))
@@ -495,38 +497,39 @@ namespace smvk {
 				if (const StaticMesh* m = cluster.staticMeshes.get(handle))
 					lod.triCount = m->geometry.indexCount / 3;
 				meshLodInfos.push_back(lod);
-				scene.meshForNode[worldNode] = worldMeshIdx;
+				SetMesh(scene, worldNode, worldMeshIdx);
 			}
 
-			// Remap materialForNode: cluster-local handle index -> world mat idx.
-			// Deduplicated by (cluster, cluster-local material): instanced
-			// scenes share a handful of materials across hundreds of thousands
-			// of nodes (scanlands: 96 materials over 374k instances). One slot
-			// per instance overflows the GPU materials buffer (renderer
-			// limits: engine::renderer::limits::MaxMaterials)
-			// and shaders read OOB past it (GPU fault / device loss on heavy
-			// views). Mesh slots stay per-node (CPU-side only); material slots
-			// are GPU-indexed by materialId, so they must stay addressable.
-			for (auto& [node, matIdx] : cs.materialForNode) {
-				const uint32_t worldNode = node + nodeOffset;
+			// Remap the material table: cluster-local handle index ->
+			// world mat idx, deduplicated by (cluster, cluster-local
+			// material): instanced scenes share a handful of materials
+			// across hundreds of thousands of nodes (scanlands: 96
+			// materials over 374k instances). One slot per instance
+			// overflows the GPU materials buffer (renderer limits:
+			// engine::renderer::limits::MaxMaterials) and shaders read
+			// OOB past it (GPU fault / device loss on heavy views).
+			// Material slots are GPU-indexed by materialId, so they
+			// must stay addressable.
+			for (const MaterialRow& row : cs.tables.materials) {
+				const uint32_t worldNode = row.node + nodeOffset;
 				const uint64_t matKey =
-					(static_cast<uint64_t>(clusterOrdinal) << 32) | matIdx;
+					(static_cast<uint64_t>(clusterOrdinal) << 32) | row.material;
 				auto matHit = worldMatByClusterMat.find(matKey);
 				if (matHit != worldMatByClusterMat.end()) {
-					scene.materialForNode[worldNode] = matHit->second;
+					SetMaterial(scene, worldNode, matHit->second);
 					continue;
 				}
 				const uint32_t worldMatIdx =
 					static_cast<uint32_t>(materialLocations.size());
 
 				ClusterMaterialHandle handle =
-					cluster.materials.getHandle(matIdx);
+					cluster.materials.getHandle(row.material);
 
 				materialLocations.push_back(
 					MaterialLocation{ .cluster = &cluster, .handle = handle }
 				);
 				worldMatByClusterMat[matKey] = worldMatIdx;
-				scene.materialForNode[worldNode] = worldMatIdx;
+				SetMaterial(scene, worldNode, worldMatIdx);
 			}
 
 			// Remap lightForNode: cluster-local light pool index -> world
@@ -720,7 +723,8 @@ namespace smvk {
 			return e && std::atoi(e) != 0;
 		}();
 		flags.assign(scene.hierarchy.size(), IteratorFlagBit_None);
-		for (auto& [node, meshIdx] : scene.meshForNode) {
+		for (const MeshRow& row : scene.tables.meshes) {
+			const NodeId node = row.node;
 			if (node >= flags.size())
 				continue;
 			if (!IsVisibleNode(scene, int(node)))
@@ -740,16 +744,14 @@ namespace smvk {
 			// opaque surface caster as a volumetric caster too.
 			if (IsCastsVolumetricShadowNode(scene, int(node))
 				|| (sFogShadowMarkAllTestRig
-					&& scene.materialForNode.find(node)
-						!= scene.materialForNode.end()))
+					&& FindMaterial(scene, node) != nullptr))
 				f |= static_cast<IteratorFlags>(
 					IteratorFlagBit_CastVolumetricShadow);
 
 			// Material-driven classification. Falls back to Opaque if node has
 			// no material (e.g. default).
-			auto matIt = scene.materialForNode.find(node);
-			if (matIt != scene.materialForNode.end()) {
-				uint32_t matIdx = matIt->second;
+			if (const MaterialRow* matRow = FindMaterial(scene, node)) {
+				uint32_t matIdx = matRow->material;
 				if (matIdx < materialLocations.size()) {
 					const MaterialLocation& loc = materialLocations[matIdx];
 					if (loc.cluster && loc.handle.valid()) {
@@ -802,19 +804,19 @@ namespace smvk {
 		// phase splits happen once per material per pass instead of per
 		// node. stable_sort keeps hierarchy order within a material.
 		drawItems.clear();
-		drawItems.reserve(scene.meshForNode.size());
+		drawItems.reserve(scene.tables.meshes.size());
 		flagLists.clear();
-		for (auto& [node, meshIdx] : scene.meshForNode) {
+		for (const MeshRow& row : scene.tables.meshes) {
+			const NodeId node = row.node;
 			if (node >= flags.size())
 				continue;
 			if (!IsVisibleNode(scene, int(node)))
 				continue; // hidden override: not drawn, not picked, not baked-listed
-			const auto matIt = scene.materialForNode.find(node);
+			const MaterialRow* matRow = FindMaterial(scene, node);
 			drawItems.push_back(RenderItem{
 				.node = node,
-				.mesh = meshIdx,
-				.material = (matIt != scene.materialForNode.end())
-					? matIt->second : kInvalidIndex,
+				.mesh = row.mesh,
+				.material = matRow ? matRow->material : kInvalidIndex,
 				.flags = flags[node],
 				});
 		}
@@ -1442,20 +1444,21 @@ namespace smvk {
 		InvalidateStaticBvh();
 		EnsureLodChainsCached(*this);
 		std::vector<::Partition> prims;
-		prims.reserve(scene.meshForNode.size());
-		for (const auto& [node, worldMeshIdx] : scene.meshForNode) {
+		prims.reserve(scene.tables.meshes.size());
+		for (const MeshRow& row : scene.tables.meshes) {
+			const NodeId node = row.node;
 			if (!IsStaticNode(scene, (int)node))
 				continue;
-			if (worldMeshIdx >= meshLocations.size())
+			if (row.mesh >= meshLocations.size())
 				continue;
-			StaticMesh* base = GetMesh(worldMeshIdx);
+			StaticMesh* base = GetMesh(row.mesh);
 			if (!base)
 				continue;
 			const glm::mat4& model = scene.globalTransform[node];
 			::Aabb bounds = WorldAabbForMesh(base, model);
 			// LOD-chain union: any LodIndexForNode selection stays inside.
-			if (worldMeshIdx < lodChains.size()) {
-				const LodChain& chain = lodChains[worldMeshIdx];
+			if (row.mesh < lodChains.size()) {
+				const LodChain& chain = lodChains[row.mesh];
 				for (size_t li = 1; li < chain.levels.size(); ++li) {
 					const MeshLocation& loc = chain.levels[li].mesh;
 					if (!loc.cluster || !loc.handle.valid())
@@ -1485,18 +1488,18 @@ namespace smvk {
 
 	::Aabb World::ComputeSceneBounds() const {
 		::Aabb out = ::Aabb::empty();
-		for (const auto& [node, worldMeshIdx] : scene.meshForNode) {
-			if (worldMeshIdx >= meshLocations.size())
+		for (const MeshRow& row : scene.tables.meshes) {
+			if (row.mesh >= meshLocations.size())
 				continue;
-			const MeshLocation& loc = meshLocations[worldMeshIdx];
+			const MeshLocation& loc = meshLocations[row.mesh];
 			if (loc.cluster == nullptr || !loc.handle.valid())
 				continue;
 			const StaticMesh* base = loc.cluster->staticMeshes.get(loc.handle);
 			if (!base)
 				continue;
-			if (node >= scene.globalTransform.size())
+			if (row.node >= scene.globalTransform.size())
 				continue;
-			out.expand(WorldAabbForMesh(base, scene.globalTransform[node]));
+			out.expand(WorldAabbForMesh(base, scene.globalTransform[row.node]));
 		}
 		return out;
 	}

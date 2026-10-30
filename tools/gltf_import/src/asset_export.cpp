@@ -1462,8 +1462,12 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		// node-sorted instance list (deterministic; the load order
 		// matches the live import's pool order closely enough for the
 		// .tour replay contract: node ids, not pool ids, address nodes).
-		std::vector<std::pair<uint32_t, uint32_t>> meshPairs(
-			scene.meshForNode.begin(), scene.meshForNode.end());
+		// Deterministic order: the mesh table's rows are unordered, so
+		// the (node, mesh) pair list is sorted by node before use.
+		std::vector<std::pair<uint32_t, uint32_t>> meshPairs;
+		meshPairs.reserve(scene.tables.meshes.size());
+		for (const MeshRow& r : scene.tables.meshes)
+			meshPairs.emplace_back(r.node, r.mesh);
 		std::sort(meshPairs.begin(), meshPairs.end());
 		std::unordered_map<uint32_t, uint32_t> blobOf;
 		for (const auto& [node, poolIdx] : meshPairs) {
@@ -1583,11 +1587,11 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 			inst.geometry = blob;
 			// Material GUID: the cluster material URI fragment
 			// "#mat.<gltf index>" -> the manifest entry.
-			const auto mIt = scene.materialForNode.find(node);
-			if (mIt != scene.materialForNode.end()) {
+			const MaterialRow* mRow = FindMaterial(scene, node);
+			if (mRow) {
 				const smvk::StringViewT uri =
 					cluster->GetMaterialUri(
-						smvk::ClusterMaterialHandle::Mint(mIt->second));
+						smvk::ClusterMaterialHandle::Mint(mRow->material));
 				const std::string u = uri.Str();
 				const size_t at = u.rfind("#mat.");
 				if (at != std::string::npos) {

@@ -191,13 +191,15 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
 			th.feed("<no-source>");
 		textureFp[uint32_t(handle.index())] = th.str();
 	}
-	// Per-cell member lists first (unordered iteration of meshForNode is
-	// order-nondeterministic — sorted members make the fold stable).
+	// Per-cell member lists first (table row order is the merge/append
+	// order — deterministic per cluster, but sorted members make the
+	// fold stable across cluster sets).
 	std::map<CellId, std::vector<std::string>> members;
 	grid.meshCount = 0;
-	for (const auto& [node, meshIdx] : scene.meshForNode) {
+	for (const MeshRow& row : scene.tables.meshes) {
+		const NodeId node = row.node;
 		const ClusterStaticMeshHandle meshHandle =
-			cluster.staticMeshes.getHandle(meshIdx);
+			cluster.staticMeshes.getHandle(row.mesh);
 		if (!meshHandle.valid())
 			continue;
 		const StaticMeshUpload* upload =
@@ -205,11 +207,11 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
 		if (!upload || upload->vertices.empty()
 				|| upload->indices.empty())
 			continue;
-		auto matIt = scene.materialForNode.find(node);
-		if (matIt == scene.materialForNode.end())
+		const MaterialRow* matRow = FindMaterial(scene, node);
+		if (!matRow)
 			continue;
 		const ClusterMaterialHandle matHandle =
-			cluster.materials.getHandle(matIt->second);
+			cluster.materials.getHandle(matRow->material);
 		if (!matHandle.valid())
 			continue;
 		const Material* mat = cluster.materials.get(matHandle);

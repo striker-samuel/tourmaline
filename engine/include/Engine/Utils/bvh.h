@@ -219,11 +219,11 @@ inline BvhTree treeFromScene(
 		if (filter && !filter((uint32_t)i))
 			continue;
 
-		auto it = scene.meshForNode.find(i);
-		if (it == scene.meshForNode.end())
+		const MeshRow* meshRow = FindMesh(scene, NodeId(i));
+		if (!meshRow)
 			continue;
 
-		uint32_t m = it->second;
+		uint32_t m = meshRow->mesh;
 		smvk::StaticMesh mesh = meshFromMeshIndex(m);
 		const glm::mat4& glob = scene.globalTransform[i];
 		const glm::vec3 localMin = mesh.geometry.aabbMin;

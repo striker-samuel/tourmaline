@@ -1044,30 +1044,40 @@ bool SerializeClusters(
 			for (int i = 0; i < 16; ++i)
 				PutF32(blob, p[i]);
 		}
-		// meshForNode/materialForNode reference pool handle indices;
-		// translate to pak-local ids.
-		PutU32(blob, static_cast<uint32_t>(scene.meshForNode.size()));
-		// Deterministic order for byte-stable paks.
-		std::vector<std::pair<uint32_t, uint32_t>> meshPairs(
-			scene.meshForNode.begin(), scene.meshForNode.end());
-		std::sort(meshPairs.begin(), meshPairs.end());
-		for (const auto& [node, localIdx] : meshPairs) {
-			const auto it = local.mesh.find(localIdx);
-			if (it == local.mesh.end())
-				return fail("scene references unknown mesh pool index " + std::to_string(localIdx));
-			PutU32(blob, node);
-			PutU32(blob, it->second);
+		// Typed tables (meshes/materials): rows reference pool handle
+		// indices; translate to pak-local ids. Sorted by node for
+		// byte-stable paks (the table itself is unordered).
+		{
+			std::vector<const MeshRow*> meshRows;
+			meshRows.reserve(scene.tables.meshes.size());
+			for (const MeshRow& row : scene.tables.meshes)
+				meshRows.push_back(&row);
+			std::sort(meshRows.begin(), meshRows.end(),
+				[](const MeshRow* a, const MeshRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(meshRows.size()));
+			for (const MeshRow* row : meshRows) {
+				const auto it = local.mesh.find(row->mesh);
+				if (it == local.mesh.end())
+					return fail("scene references unknown mesh pool index " + std::to_string(row->mesh));
+				PutU32(blob, row->node);
+				PutU32(blob, it->second);
+			}
 		}
-		PutU32(blob, static_cast<uint32_t>(scene.materialForNode.size()));
-		std::vector<std::pair<uint32_t, uint32_t>> matPairs(
-			scene.materialForNode.begin(), scene.materialForNode.end());
-		std::sort(matPairs.begin(), matPairs.end());
-		for (const auto& [node, localIdx] : matPairs) {
-			const auto it = local.mat.find(localIdx);
-			if (it == local.mat.end())
-				return fail("scene references unknown material pool index " + std::to_string(localIdx));
-			PutU32(blob, node);
-			PutU32(blob, it->second);
+		{
+			std::vector<const MaterialRow*> matRows;
+			matRows.reserve(scene.tables.materials.size());
+			for (const MaterialRow& row : scene.tables.materials)
+				matRows.push_back(&row);
+			std::sort(matRows.begin(), matRows.end(),
+				[](const MaterialRow* a, const MaterialRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(matRows.size()));
+			for (const MaterialRow* row : matRows) {
+				const auto it = local.mat.find(row->material);
+				if (it == local.mat.end())
+					return fail("scene references unknown material pool index " + std::to_string(row->material));
+				PutU32(blob, row->node);
+				PutU32(blob, it->second);
+			}
 		}
 		PutU32(blob, static_cast<uint32_t>(scene.nameForNode.size()));
 		std::vector<std::pair<uint32_t, uint32_t>> namePairs(
@@ -1468,7 +1478,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			const auto h = (*maps->meshes)[pakId];
 			if (!h.valid())
 				return fail("scene references invalid mesh pak id");
-			scene.meshForNode[node] = h.index();
+			scene.tables.meshes.push_back(MeshRow{ node, h.index() });
 		}
 	}
 	const uint32_t matPairCount = c.u32();
@@ -1480,7 +1490,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		if (maps && maps->materials) {
 			if (pakId >= maps->materials->size())
 				return fail("bad scene material mapping");
-			scene.materialForNode[node] = (*maps->materials)[pakId].index();
+			scene.tables.materials.push_back(MaterialRow{ node, (*maps->materials)[pakId].index() });
 		}
 	}
 	const uint32_t namePairCount = c.u32();
@@ -1854,6 +1864,9 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	if (scene.castsVolumetricShadow.empty())
 		scene.castsVolumetricShadow.assign(nodeCount, 0);
 	RebuildStaticCache(scene);
+	// The blob parse pushed table rows directly (bulk load) — build
+	// the derived per-node index once here.
+	RebuildNodeRows(scene);
 	MarkAllRootsChanged(scene);
 	recalculateGlobalTransforms(scene);
 	return true;

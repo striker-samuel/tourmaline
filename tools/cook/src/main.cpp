@@ -2174,8 +2174,8 @@ bool NodeChainMatchesKeywords(const Scene& scene, uint32_t node,
 // a failed clone keeps the shared mapping (bake skips it as before).
 uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 	std::map<uint32_t, std::vector<uint32_t>> refs;
-	for (const auto& [node, meshIdx] : cluster.scene.meshForNode)
-		refs[meshIdx].push_back(node);
+	for (const MeshRow& row : cluster.scene.tables.meshes)
+		refs[row.mesh].push_back(row.node);
 	uint32_t clones = 0;
 	for (auto& [meshIdx, nodes] : refs) {
 		if (nodes.size() < 2)
@@ -2201,7 +2201,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 				cluster.UploadStaticMesh(*origUp);
 			if (!ch.valid())
 				continue;
-			cluster.scene.meshForNode[node] = ch.index();
+			SetMesh(cluster.scene, node, ch.index());
 			if (!origUri.empty()) {
 				const std::string cloneUri =
 					origUri + "/inst" + std::to_string(node);
@@ -2787,9 +2787,9 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 		// Diagnostic: the alphaMode histogram over the NODE-REFERENCED
 		// cluster materials (what the trace soup can intern at all).
 		uint32_t nOpaque = 0, nMask = 0, nBlend = 0, nNodes = 0;
-		for (const auto& [node, matIdx] : cluster.scene.materialForNode) {
+		for (const MaterialRow& row : cluster.scene.tables.materials) {
 			const smvk::ClusterMaterialHandle mh =
-				cluster.materials.getHandle(matIdx);
+				cluster.materials.getHandle(row.material);
 			if (!mh.valid())
 				continue;
 			const smvk::Material* mat = cluster.materials.get(mh);
@@ -3937,16 +3937,16 @@ bool WriteCookedArtifactsBack(const Args& args,
 	for (auto& sc : sceneClusters) {
 		smvk::Cluster& c = *sc;
 		std::unordered_set<uint32_t> seen;
-		for (const auto& [node, meshIdx] : c.scene.meshForNode) {
-			if (!seen.insert(meshIdx).second)
+		for (const MeshRow& row : c.scene.tables.meshes) {
+			if (!seen.insert(row.mesh).second)
 				continue; // still-shared: one set per upload
 			const smvk::ClusterStaticMeshHandle h =
-				c.staticMeshes.getHandle(meshIdx);
+				c.staticMeshes.getHandle(row.mesh);
 			if (!h.valid())
 				continue;
 			const smvk::StringViewT uri = c.GetMeshUri(h);
 			if (uri.empty()) {
-				err = "cooked mesh " + std::to_string(meshIdx)
+				err = "cooked mesh " + std::to_string(row.mesh)
 					+ " carries no URI (cannot map back to an artifact)";
 				return false;
 			}
@@ -5243,7 +5243,9 @@ int Run(const CookArgs& c) {
 			<< "\n" << std::flush;
 		std::vector<LmWork> work;
 		uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0, skipExcluded = 0, skipSmall = 0, skipNoLm = 0, skipHidden = 0;
-		for (const auto& [node, meshIdx] : cluster->scene.meshForNode) {
+		for (const MeshRow& row : cluster->scene.tables.meshes) {
+			const NodeId node = row.node;
+			const uint32_t meshIdx = row.mesh;
 			// Visibility overrides: hidden subtrees are not rendered, so
 			// they take no lightmap charts (they still occlude/cast in
 			// the trace scene like noLM exclusions).
@@ -5251,13 +5253,14 @@ int Run(const CookArgs& c) {
 				++skipHidden;
 				continue;
 			}
-			auto matIt = cluster->scene.materialForNode.find(node);
-			if (matIt == cluster->scene.materialForNode.end()) {
+			const MaterialRow* matRow =
+				FindMaterial(cluster->scene, node);
+			if (!matRow) {
 				++skipNoMat;
 				continue;
 			}
 			const smvk::ClusterMaterialHandle matHandle =
-				cluster->materials.getHandle(matIt->second);
+				cluster->materials.getHandle(matRow->material);
 			if (!matHandle.valid())
 				continue;
 			const smvk::Material* mat = cluster->materials.get(matHandle);
@@ -5276,8 +5279,8 @@ int Run(const CookArgs& c) {
 			// 1:1, but degenerate clones keep the shared mapping — one
 			// lightmap position per instance is still unsupported, skip.
 			uint32_t refs = 0;
-			for (const auto& [n2, m2] : cluster->scene.meshForNode)
-				if (m2 == meshIdx)
+			for (const MeshRow& r2 : cluster->scene.tables.meshes)
+				if (r2.mesh == meshIdx)
 					++refs;
 			if (refs != 1) {
 				++skipInstanced;
@@ -6845,7 +6848,7 @@ int Run(const CookArgs& c) {
 	// WITHOUT meshlets (the runtime draws the classic indexed path) —
 	// never stale ones referencing a pre-stamp vertex layout. Covers
 	// every scene cluster and every drawable mesh (de-instanced clones
-	// and merged blocks rebind their nodes in meshForNode); meshes
+	// and merged blocks rebind their nodes in the mesh table); meshes
 	// still shared by several nodes are deduped by pool index (one
 	// meshlet set per upload). Sibling meshes ("<base>/lodN") are NOT
 	// node-referenced, so the sibling pass below covers them from the
@@ -6883,9 +6886,9 @@ int Run(const CookArgs& c) {
 		for (auto& sc : sceneClusters) {
 			smvk::Cluster& c = *sc;
 			std::unordered_set<uint32_t> seen;
-			seen.reserve(c.scene.meshForNode.size() * 2);
-			for (const auto& nodeMesh : c.scene.meshForNode) {
-				const uint32_t meshIdx = nodeMesh.second;
+			seen.reserve(c.scene.tables.meshes.size() * 2);
+			for (const MeshRow& row : c.scene.tables.meshes) {
+				const uint32_t meshIdx = row.mesh;
 				if (!seen.insert(meshIdx).second)
 					continue; // still-shared mesh: one meshlet set per upload
 				const smvk::ClusterStaticMeshHandle h =

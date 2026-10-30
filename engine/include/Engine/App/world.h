@@ -117,7 +117,7 @@ namespace smvk {
 		// once, sorted by material so per-material pipeline binds run
 		// once per material per pass. Node id + world-level mesh/material
 		// indices are precomputed here: iterating this list replaces the
-		// per-node scene.meshForNode / materialForNode hash lookups and
+		// per-node scene.tables hash-free row lookups and
 		// the full hierarchy scan of forEachNode (which every pass used
 		// to repeat, ~20-30 times per frame).
 		// material == kInvalidIndex marks a mesh node with no material;
@@ -199,8 +199,8 @@ namespace smvk {
 			Cluster* cluster;
 			ClusterDecalHandle handle;
 		};
-		// Indexed by the mesh/material index stored in scene.meshForNode /
-		// scene.materialForNode. Each entry points back to the owning
+		// Indexed by the mesh/material index stored in the scene's
+		// tables (tables.meshes / tables.materials). Each entry points back to the owning
 		// Cluster so resources stay owned by clusters.
 		std::vector<MeshLocation> meshLocations;
 		std::vector<MaterialLocation> materialLocations;

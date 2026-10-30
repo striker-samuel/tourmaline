@@ -241,6 +241,32 @@ void loadMap(FILE* f, std::unordered_map<uint32_t, uint32_t>& map)
     map[ms[i * 2 + 0]] = ms[i * 2 + 1];
 }
 
+// Typed-table readers (the saveMeshRows/saveMaterialRows mirror):
+// u32 rowCount + pairs, routed through the table mutators (which
+// validate node range — a corrupt file's out-of-range rows drop
+// instead of materializing as garbage entries).
+void loadMeshRows(FILE* f, Scene& scene)
+{
+  std::vector<uint32_t> ms;
+  uint32_t count = 0;
+  fread(&count, 1, sizeof(count), f);
+  ms.resize(size_t(count) * 2);
+  fread(ms.data(), sizeof(uint32_t), ms.size(), f);
+  for (size_t i = 0; i < count; ++i)
+    SetMesh(scene, ms[i * 2 + 0], ms[i * 2 + 1]);
+}
+
+void loadMaterialRows(FILE* f, Scene& scene)
+{
+  std::vector<uint32_t> ms;
+  uint32_t count = 0;
+  fread(&count, 1, sizeof(count), f);
+  ms.resize(size_t(count) * 2);
+  fread(ms.data(), sizeof(uint32_t), ms.size(), f);
+  for (size_t i = 0; i < count; ++i)
+    SetMaterial(scene, ms[i * 2 + 0], ms[i * 2 + 1]);
+}
+
 // Authored-environment record I/O (see SceneEnv): kSceneEnvFloatCount
 // floats in fixed order + a length-prefixed NUL-terminated string
 // (saveStringList encoding). Returns false on any short read (caller
@@ -379,15 +405,21 @@ void loadScene(const char* fileName, Scene& scene)
   scene.castsVolumetricShadow.assign(sz, 0);
   scene.ditherCloseup.assign(sz, 0);
   scene.lightForNode.clear();
+  // Typed tables + the derived index start clean (the scene may be a
+  // recycled object; stale rowsForNode entries would otherwise alias
+  // the newly loaded rows).
+  scene.tables = {};
+  scene.rowsForNode.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
   fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
   fread(scene.globalTransform.data(), sizeof(glm::mat4), sz, f);
   fread(scene.hierarchy.data(), sizeof(Hierarchy), sz, f);
 
-  // MeshData for node [index to some list of buffers]
-  loadMap(f, scene.materialForNode);
-  loadMap(f, scene.meshForNode);
+  // Mesh/material associations (the typed tables — row-native
+  // sections; material first like always).
+  loadMaterialRows(f, scene);
+  loadMeshRows(f, scene);
 
   if (!feof(f)) {
     loadMap(f, scene.nameForNode);
@@ -541,6 +573,30 @@ void saveMap(FILE* f, const std::unordered_map<uint32_t, uint32_t>& map)
   fwrite(ms.data(), sizeof(uint32_t), ms.size(), f);
 }
 
+// Typed-table sections (row-native: u32 rowCount + (node, value)
+// pairs in TABLE order — the canonical association format; the old
+// saveMap layout is gone with the maps, old .scene files fail loudly,
+// content re-saves).
+void saveMeshRows(FILE* f, const Scene& scene)
+{
+  const uint32_t count = static_cast<uint32_t>(scene.tables.meshes.size());
+  fwrite(&count, sizeof(count), 1, f);
+  for (const MeshRow& row : scene.tables.meshes) {
+    fwrite(&row.node, sizeof(uint32_t), 1, f);
+    fwrite(&row.mesh, sizeof(uint32_t), 1, f);
+  }
+}
+
+void saveMaterialRows(FILE* f, const Scene& scene)
+{
+  const uint32_t count = static_cast<uint32_t>(scene.tables.materials.size());
+  fwrite(&count, sizeof(count), 1, f);
+  for (const MaterialRow& row : scene.tables.materials) {
+    fwrite(&row.node, sizeof(uint32_t), 1, f);
+    fwrite(&row.material, sizeof(uint32_t), 1, f);
+  }
+}
+
 void saveScene(const char* fileName, const Scene& scene)
 {
   FILE* f = fopen(fileName, "wb");
@@ -552,9 +608,10 @@ void saveScene(const char* fileName, const Scene& scene)
   fwrite(scene.globalTransform.data(), sizeof(glm::mat4), sz, f);
   fwrite(scene.hierarchy.data(), sizeof(Hierarchy), sz, f);
 
-  // MeshData for node [index to some list of buffers]
-  saveMap(f, scene.materialForNode);
-  saveMap(f, scene.meshForNode);
+  // Mesh/material associations (the typed tables; material section
+  // first, matching the historical order).
+  saveMaterialRows(f, scene);
+  saveMeshRows(f, scene);
 
   if (!scene.nodeNames.empty() && !scene.nameForNode.empty()) {
     saveMap(f, scene.nameForNode);
@@ -990,8 +1047,15 @@ void mergeScenes(
 
     shiftNodes(scene, offs, nodeCount, offs);
 
-    mergeMaps(scene.meshForNode, s->meshForNode, offs, mergeMeshes ? meshOffs : 0);
-    mergeMaps(scene.materialForNode, s->materialForNode, offs, mergeMaterials ? materialOfs : 0);
+    // Typed tables: append the source rows with node + resource
+    // offsets (the mergeMaps semantics, one row at a time — SetMesh/
+    // SetMaterial keep the derived index correct as we go).
+    for (const MeshRow& row : s->tables.meshes)
+      SetMesh(scene, row.node + offs,
+        row.mesh + (mergeMeshes ? uint32_t(meshOffs) : 0u));
+    for (const MaterialRow& row : s->tables.materials)
+      SetMaterial(scene, row.node + offs,
+        row.material + (mergeMaterials ? uint32_t(materialOfs) : 0u));
     mergeMaps(scene.nameForNode, s->nameForNode, offs, nameOffs);
     // Per-node authored env blocks: node keys shift like the other maps;
     // values are inline structs (no pool indirection, no value offset).
@@ -1125,6 +1189,34 @@ void shiftMapIndices(std::unordered_map<uint32_t, uint32_t>& items, const std::v
   items = newItems;
 }
 
+// Row-table variants (the typed-tables migration): remap row.node
+// through the compaction's newIndices, dropping rows whose node died.
+// Dense order is preserved (a compact rebuild, not swap-and-pop —
+// deletion storms keep stable iteration order mid-algorithm).
+void shiftMeshRowNodes(std::vector<MeshRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<MeshRow> out;
+  out.reserve(rows.size());
+  for (const MeshRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1)
+      out.push_back(MeshRow{ NodeId(newIndex), row.mesh });
+  }
+  rows = std::move(out);
+}
+
+void shiftMaterialRowNodes(std::vector<MaterialRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<MaterialRow> out;
+  out.reserve(rows.size());
+  for (const MaterialRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1)
+      out.push_back(MaterialRow{ NodeId(newIndex), row.material });
+  }
+  rows = std::move(out);
+}
+
 // Struct-value variant (per-node authored blocks like SceneEnv): keys
 // remap like the index maps above; values ride unchanged (no pool).
 void shiftEnvMapIndices(std::unordered_map<uint32_t, SceneEnv>& items, const std::vector<int>& newIndices)
@@ -1210,8 +1302,11 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   RebuildStaticCache(scene);
 
   // 4b) All the perFrame should change the key values with the newIndices[] array
-  shiftMapIndices(scene.meshForNode, newIndices);
-  shiftMapIndices(scene.materialForNode, newIndices);
+  // Typed tables: remap each row's node through newIndices (rows of
+  // deleted nodes drop), then rebuild the derived index once at the
+  // end (the scene shrank).
+  shiftMeshRowNodes(scene.tables.meshes, newIndices);
+  shiftMaterialRowNodes(scene.tables.materials, newIndices);
   shiftMapIndices(scene.nameForNode, newIndices);
   shiftMapIndices(scene.lightForNode, newIndices);
   // Orphaned light definitions (no node left referencing them) are kept:
@@ -1220,6 +1315,10 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   // Per-node authored env blocks follow their nodes (dropped with them);
   // the scene-global resolved/default blocks are node-independent.
   shiftEnvMapIndices(scene.envForNode, newIndices);
+
+  // The row remap above bypassed the mutators — reconcile the derived
+  // index once (exact resize: the node count shrank with the deletion).
+  RebuildNodeRows(scene);
 
   // 5) scene node names list is not modified, but in principle it can be (remove all non-used items and adjust the nameForNode_ map)
   // 6) Material names list is not modified also, but if some materials fell out of use

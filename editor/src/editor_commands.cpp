@@ -253,7 +253,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 		break;
 	}
 	case EditVerb::AssignMaterial: {
-		scene.materialForNode[c.node] = forward ? c.material : c.beforeMaterial;
+		SetMaterial(scene, c.node, forward ? c.material : c.beforeMaterial);
 		RefreshNodeDrawState(c.node);
 		break;
 	}
@@ -927,7 +927,7 @@ bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
 	// the meshes) — see TerrainGroupOf for the distinction when needed.
 	if (node >= scene.hierarchy.size())
 		return false;
-	if (scene.meshForNode.contains(node))
+	if (FindMesh(scene, node) != nullptr)
 		return false;
 	if (scene.lightForNode.contains(node))
 		return false;
@@ -1804,7 +1804,7 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 
 // ---------------------------------------------------------------------------
 // Delete (Del key / Edit menu, Maya delete): remove a node from the LIVE
-// scene. Links drop — meshForNode/materialForNode (draw state), lightForNode
+// scene. Links drop — the mesh/material tables (draw state), lightForNode
 // (light census/gizmos/cook), drawItems (draws/picks/box-select) — and the
 // node id joins m_deletedNodes so the outliner filters it. NO hiding, NO
 // renumbering: ids stay stable (later commands still address the node) and
@@ -1838,15 +1838,13 @@ void EditorApp::ExecDelete(EditCmd& c) {
 	if (c.delNodeMaps.empty()) {
 		auto captureMaps = [&](uint32_t id) {
 			uint32_t hasMesh = 0, mesh = 0, hasMat = 0, mat = 0;
-			auto m = scene.meshForNode.find(id);
-			if (m != scene.meshForNode.end()) {
+			if (const MeshRow* m = FindMesh(scene, id)) {
 				hasMesh = 1;
-				mesh = m->second;
+				mesh = m->mesh;
 			}
-			auto a = scene.materialForNode.find(id);
-			if (a != scene.materialForNode.end()) {
+			if (const MaterialRow* a = FindMaterial(scene, id)) {
 				hasMat = 1;
-				mat = a->second;
+				mat = a->material;
 			}
 			c.delNodeMaps.insert(c.delNodeMaps.end(),
 				{ id, hasMesh, mesh, hasMat, mat });
@@ -1905,8 +1903,8 @@ void EditorApp::ExecDelete(EditCmd& c) {
 				? UINT32_MAX : m_selection.back();
 	};
 	for (uint32_t id : nodes) {
-		scene.meshForNode.erase(id);
-		scene.materialForNode.erase(id);
+		RemoveMesh(scene, id);
+		RemoveMaterial(scene, id);
 		scene.giVolumeForNode.erase(id);
 		scene.cubemapForNode.erase(id);
 		scene.cameraForNode.erase(id);
@@ -1933,17 +1931,24 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	// Restore the captured links (order-free): mesh/material maps and
+	// Restore the captured links (order-free): mesh/material tables and
 	// deleted-set membership per node, the light link, then the draw
 	// entries at their ORIGINAL positions in ascending order (every
 	// earlier reinsert already restored its shift, so each index lands
 	// exactly where it was).
 	for (size_t k = 0; k + 4 < c.delNodeMaps.size(); k += 5) {
 		const uint32_t id = c.delNodeMaps[k];
+		// The flag branches only wrote back on presence; the else-side
+		// Remove* is a safe no-op (deletion already dropped any row)
+		// and keeps "absent before the delete" ending with NO row.
 		if (c.delNodeMaps[k + 1])
-			scene.meshForNode[id] = c.delNodeMaps[k + 2];
+			SetMesh(scene, id, c.delNodeMaps[k + 2]);
+		else
+			RemoveMesh(scene, id);
 		if (c.delNodeMaps[k + 3])
-			scene.materialForNode[id] = c.delNodeMaps[k + 4];
+			SetMaterial(scene, id, c.delNodeMaps[k + 4]);
+		else
+			RemoveMaterial(scene, id);
 		m_deletedNodes.erase(id);
 	}
 	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
@@ -2163,7 +2168,7 @@ void EditorApp::DuplicateSelection() {
 		}
 		// Cluster-backed mesh nodes own no create verb (imported
 		// geometry — a duplicate needs an instancing system).
-		if (m_world->scene.meshForNode.contains(t)) {
+		if (FindMesh(m_world->scene, t) != nullptr) {
 			++skippedMesh;
 			continue;
 		}
@@ -4432,9 +4437,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			return false;
 		out.verb = EditVerb::AssignMaterial;
 		out.material = uint32_t(wm);
-		auto it = app.m_world->scene.materialForNode.find(node);
-		out.beforeMaterial = (it != app.m_world->scene.materialForNode.end())
-			? it->second : UINT32_MAX;
+		const MaterialRow* row =
+			FindMaterial(app.m_world->scene, node);
+		out.beforeMaterial = row ? row->material : UINT32_MAX;
 		return true;
 	}
 	case smvk::tour::Verb::SetMatAttr: {
@@ -5483,10 +5488,10 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode, uint32_t x0,
 		const uint32_t tx = packed & 0xFFFFu;
 		const uint32_t tz = packed >> 16;
 		const uint32_t tileNode = g.tileNodes[size_t(tz) * g.data.tilesX + tx];
-		auto meshIt = scene.meshForNode.find(tileNode);
-		if (meshIt == scene.meshForNode.end())
+		const MeshRow* meshRow = FindMesh(scene, tileNode);
+		if (!meshRow)
 			continue;
-		const uint32_t worldMeshIdx = meshIt->second;
+		const uint32_t worldMeshIdx = meshRow->mesh;
 		if (worldMeshIdx >= m_world->meshLocations.size())
 			continue;
 		smvk::StaticMeshUpload upload;
@@ -5606,8 +5611,8 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 			const uint32_t worldMeshIdx =
 				uint32_t(m_world->meshLocations.size());
 			m_world->meshLocations.push_back({ cl, mh });
-			scene.meshForNode[t] = worldMeshIdx;
-			scene.materialForNode[t] = material;
+			SetMesh(scene, t, worldMeshIdx);
+			SetMaterial(scene, t, material);
 			if (m_world->flags.size() <= size_t(t))
 				m_world->flags.resize(size_t(t) + 1, 0);
 			m_world->flags[size_t(t)] = smvk::IteratorFlags(
@@ -5649,8 +5654,8 @@ void EditorApp::ExecUncreateTerrain(EditCmd& c) {
 	// Ids stay stable (created-light precedent).
 	MarkHidden(scene, int(n));
 	for (uint32_t t : it->second.tileNodes) {
-		scene.meshForNode.erase(t);
-		scene.materialForNode.erase(t);
+		RemoveMesh(scene, t);
+		RemoveMaterial(scene, t);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == t) {
 				m_world->drawItems.erase(m_world->drawItems.begin()
@@ -5937,14 +5942,14 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
 	c.node = m_selected;
 	c.material = worldIdx;
 	uint32_t before = UINT32_MAX;
-	if (m_world->scene.materialForNode.contains(m_selected))
-		before = m_world->scene.materialForNode[m_selected];
+	if (const MaterialRow* row = FindMaterial(m_world->scene, m_selected))
+		before = row->material;
 	if (before == UINT32_MAX) {
 		// No material on the node: seed a default first so the assign
 		// round-trips (undo restores the default).
 		const uint32_t def = EnsureDefaultMaterial();
 		if (def != UINT32_MAX) {
-			m_world->scene.materialForNode[m_selected] = def;
+			SetMaterial(m_world->scene, m_selected, def);
 			before = def;
 		}
 	}

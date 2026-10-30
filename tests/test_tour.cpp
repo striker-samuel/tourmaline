@@ -412,8 +412,8 @@ void TestReplay() {
 	ci.baseColorFactor = glm::vec4(1.0f);
 	smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
 	smvk::ClusterMaterialHandle m1 = cluster->CreateMaterial(ci);
-	cluster->scene.materialForNode[uint32_t(g0)] = m0.index();
-	cluster->scene.materialForNode[uint32_t(g1)] = m1.index();
+	SetMaterial(cluster->scene, uint32_t(g0), m0.index());
+	SetMaterial(cluster->scene, uint32_t(g1), m1.index());
 	RebuildStaticCache(cluster->scene);
 
 	smvk::tour::Doc doc;
@@ -478,7 +478,8 @@ void TestReplay() {
 	Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
 		"tour replay ok");
 	Check(getNodeName(cluster->scene, g0) == "Shop_Wall", "replay rename");
-	Check(cluster->scene.materialForNode[uint32_t(g0)] == m1.index(),
+	Check(FindMaterial(cluster->scene, uint32_t(g0))
+		&& FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
 		"replay assign");
 	const smvk::Material* mat = cluster->materials.get(m1);
 	Check(mat && mat->values.params.y == 0.75f, "replay mattr");
@@ -495,9 +496,11 @@ void TestReplay() {
 	// Material override ".*": g0 carries a LOCAL AssignMaterial (m1) — the
 	// wide rule must not clobber it (local wins); g1 has no local, so the
 	// rule assigns m0 there.
-	Check(cluster->scene.materialForNode[uint32_t(g0)] == m1.index(),
+	Check(FindMaterial(cluster->scene, uint32_t(g0))
+		&& FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
 		"replay override local-wins");
-	Check(cluster->scene.materialForNode[uint32_t(g1)] == m0.index(),
+	Check(FindMaterial(cluster->scene, uint32_t(g1))
+		&& FindMaterial(cluster->scene, uint32_t(g1))->material == m0.index(),
 		"replay override applies");
 	Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
 		r.attr == smvk::tour::OverrideAttr::Visibility, "override attr parse");
@@ -1610,8 +1613,8 @@ void TestTerrainVerbs() {
 	Check(getNodeName(cluster->scene, int(group)) == "Terrain_1",
 		"terrain replay group name");
 	uint32_t tileMeshes = 0;
-	for (const auto& [n, m] : cluster->scene.meshForNode) {
-		(void)m;
+	for (const MeshRow& row : cluster->scene.tables.meshes) {
+		const uint32_t n = row.node;
 		if (n == group)
 			continue; // the group node carries no mesh
 		if (cluster->scene.hierarchy[n].parent == int(group))
@@ -1620,10 +1623,12 @@ void TestTerrainVerbs() {
 	Check(tileMeshes == 4, "terrain replay 4 tile meshes");
 	// Default material minted: group tiles reference a valid pool id.
 	bool matOk = true;
-	for (const auto& [n, mi] : cluster->scene.meshForNode) {
-		auto it = cluster->scene.materialForNode.find(n);
-		if (it == cluster->scene.materialForNode.end()
-			|| !cluster->materials.get(cluster->materials.getHandle(it->second)))
+	for (const MeshRow& row : cluster->scene.tables.meshes) {
+		const MaterialRow* matRow =
+			FindMaterial(cluster->scene, row.node);
+		if (!matRow
+			|| !cluster->materials.get(
+				cluster->materials.getHandle(matRow->material)))
 			matOk = false;
 	}
 	Check(matOk, "terrain replay default material minted");
@@ -1631,7 +1636,7 @@ void TestTerrainVerbs() {
 	const uint32_t nodes = uint32_t(cluster->scene.hierarchy.size());
 	uint32_t withMesh = 0;
 	for (uint32_t n = 0; n < nodes; ++n)
-		if (cluster->scene.meshForNode.contains(n))
+		if (FindMesh(cluster->scene, n))
 			++withMesh;
 	Check(withMesh == 4, "terrain replay meshes uploaded post-pass");
 
@@ -1686,9 +1691,9 @@ void TestDelete() {
 	smvk::MaterialCreateInfo ci{};
 	ci.baseColorFactor = glm::vec4(1.0f);
 	const smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
-	cluster->scene.meshForNode[uint32_t(g0)] = 0;
-	cluster->scene.materialForNode[uint32_t(g0)] = m0.index();
-	cluster->scene.materialForNode[uint32_t(g1)] = m0.index();
+	SetMesh(cluster->scene, uint32_t(g0), 0);
+	SetMaterial(cluster->scene, uint32_t(g0), m0.index());
+	SetMaterial(cluster->scene, uint32_t(g1), m0.index());
 	::SceneLight def{};
 	def.type = ::SceneLight::Type::Point;
 	def.name = "L";
@@ -1709,15 +1714,17 @@ void TestDelete() {
 	doc2.commands.push_back(r2);
 	Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
 		"delete replay ok");
-	Check(!cluster->scene.meshForNode.contains(uint32_t(g0)),
+	Check(FindMesh(cluster->scene, uint32_t(g0)) == nullptr,
 		"delete drops mesh link");
-	Check(!cluster->scene.materialForNode.contains(uint32_t(g0)),
+	Check(FindMaterial(cluster->scene, uint32_t(g0)) == nullptr,
 		"delete drops material link");
 	Check(!cluster->scene.lightForNode.contains(uint32_t(g0)),
 		"delete drops light link");
 	Check(getNodeName(cluster->scene, g0) == "Deleted_Wall",
 		"delete keeps ids stable");
-	Check(cluster->scene.materialForNode[uint32_t(g1)] == m0.index(),
+	Check(FindMaterial(cluster->scene, uint32_t(g1))
+		&& FindMaterial(cluster->scene, uint32_t(g1))->material
+			== m0.index(),
 		"delete leaves siblings alone");
 
 	smvk::tour::Doc bad;
@@ -1808,7 +1815,7 @@ void TestIdentityLayers() {
 	// AND a renamed node (uuids survive renames and hierarchy moves).
 	{
 		setNodeName(scene, meshA, "RenamedMesh");
-		cluster->scene.meshForNode[uint32_t(meshA)] = 0;
+		SetMesh(cluster->scene, uint32_t(meshA), 0);
 		smvk::tour::Doc doc;
 		smvk::tour::Command d{};
 		d.verb = smvk::tour::Verb::Delete;
@@ -1820,7 +1827,7 @@ void TestIdentityLayers() {
 		std::vector<std::string> warns;
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
 			"uuid delete after rename");
-		Check(!cluster->scene.meshForNode.contains(uint32_t(meshA)),
+		Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
 			"uuid delete unlinks renamed node");
 	}
 }
@@ -1843,8 +1850,8 @@ void TestDeleteAddressing() {
 	setNodeName(cluster->scene, grpB, "grpB");
 	setNodeName(cluster->scene, meshA, "Mesh");
 	setNodeName(cluster->scene, meshB, "Mesh");
-	cluster->scene.meshForNode[uint32_t(meshA)] = 0;
-	cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+	SetMesh(cluster->scene, uint32_t(meshA), 0);
+	SetMesh(cluster->scene, uint32_t(meshB), 0);
 	std::vector<std::string> warns;
 	std::string err;
 
@@ -1875,9 +1882,9 @@ void TestDeleteAddressing() {
 		"uuid replay ok");
 	// meshA unlinked through its uuid (the STALE numeric id 9999 in the
 	// variant below must not matter); meshB untouched.
-	Check(!cluster->scene.meshForNode.contains(uint32_t(meshA)),
+	Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
 		"uuid delete unlinks");
-	Check(cluster->scene.meshForNode.contains(uint32_t(meshB)),
+	Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
 		"uuid delete spares siblings");
 
 	// Stale id + valid uuid: uuid wins even when -n points elsewhere.
@@ -1891,13 +1898,13 @@ void TestDeleteAddressing() {
 		cluster->scene.uuidForNode[uint32_t(meshB)] = d2.uuid;
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
 			"uuid wins over stale id");
-		Check(!cluster->scene.meshForNode.contains(uint32_t(meshB)),
+		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
 			"uuid delete hits by uuid");
 	}
 	// DAG path disambiguates duplicated basenames: grpA/Mesh.
 	{
-		cluster->scene.meshForNode[uint32_t(meshA)] = 0;
-		cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+		SetMesh(cluster->scene, uint32_t(meshA), 0);
+		SetMesh(cluster->scene, uint32_t(meshB), 0);
 		smvk::tour::Doc doc3;
 		smvk::tour::Command d3{};
 		d3.verb = smvk::tour::Verb::Delete;
@@ -1906,9 +1913,9 @@ void TestDeleteAddressing() {
 		doc3.commands.push_back(d3);
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc3, &warns, &err),
 			"path delete ok");
-		Check(!cluster->scene.meshForNode.contains(uint32_t(meshA)),
+		Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
 			"path delete hits right leaf");
-		Check(cluster->scene.meshForNode.contains(uint32_t(meshB)),
+		Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
 			"path delete spares other leaf");
 	}
 	// Unique-name delete (no uuid, no useful id): name resolves.
@@ -1916,7 +1923,7 @@ void TestDeleteAddressing() {
 	// anything but the target's own links.)
 	{
 		setNodeName(cluster->scene, meshB, "Solo");
-		cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+		SetMesh(cluster->scene, uint32_t(meshB), 0);
 		smvk::tour::Doc doc4;
 		smvk::tour::Command d4{};
 		d4.verb = smvk::tour::Verb::Delete;
@@ -1925,12 +1932,12 @@ void TestDeleteAddressing() {
 		doc4.commands.push_back(d4);
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc4, &warns, &err),
 			"name delete ok");
-		Check(!cluster->scene.meshForNode.contains(uint32_t(meshB)),
+		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
 			"name delete unlinks");
 	}
 	// Legacy nameless delete still resolves by id.
 	{
-		cluster->scene.meshForNode[uint32_t(meshB)] = 0;
+		SetMesh(cluster->scene, uint32_t(meshB), 0);
 		smvk::tour::Doc doc5;
 		smvk::tour::Command d5{};
 		d5.verb = smvk::tour::Verb::Delete;
@@ -1938,7 +1945,7 @@ void TestDeleteAddressing() {
 		doc5.commands.push_back(d5);
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc5, &warns, &err),
 			"legacy delete ok");
-		Check(!cluster->scene.meshForNode.contains(uint32_t(meshB)),
+		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
 			"legacy delete unlinks");
 	}
 	// GenerateUuid: 32 lowercase hex, unique across calls.
@@ -2219,7 +2226,7 @@ void TestTextureCacheConsult() {
 			std::make_shared<HostTextureSource>(dir));
 		importer.setArtifactCache(&cache);
 		importer.import(0);
-		return cluster->scene.meshForNode.size() == 1
+		return cluster->scene.tables.meshes.size() == 1
 			&& cluster->textures.numObjects() >= 0;
 	};
 
@@ -2598,7 +2605,7 @@ std::unique_ptr<smvk::Cluster> FreshFuzzCluster() {
 	smvk::MaterialCreateInfo ci{};
 	ci.baseColorFactor = glm::vec4(1.0f);
 	smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
-	cluster->scene.materialForNode[uint32_t(g0)] = m0.index();
+	SetMaterial(cluster->scene, uint32_t(g0), m0.index());
 	RebuildStaticCache(cluster->scene);
 	return cluster;
 }

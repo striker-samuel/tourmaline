@@ -1059,7 +1059,9 @@ namespace editor {
 		size_t tris = 0;
 		// Whole-scene export uses identity (pane nav never affects PNGs).
 		const bool applyNav = !wholeScene;
-		for (const auto& [node, meshIdx] : m_world->scene.meshForNode) {
+		for (const MeshRow& row : m_world->scene.tables.meshes) {
+			const uint32_t node = row.node;
+			const uint32_t meshIdx = row.mesh;
 			if (!wholeScene && !subtree.contains(node))
 				continue;
 			const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);

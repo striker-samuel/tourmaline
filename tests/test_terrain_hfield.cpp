@@ -236,10 +236,11 @@ int main() {
 		}
 	}
 
-	// Pak layer: SMP6 Terrain round-trip + the SMP5 legacy-empty hack.
+	// Pak layer: SMP7 Terrain round-trip + the one-canonical-path gate
+	// (forged SMP6/SMP5 images fail closed).
 	{
 		using namespace smvk;
-		// SMP6 writer with one Terrain blob re-opens with the blob visible.
+		// SMP7 writer with one Terrain blob re-opens with the blob visible.
 		PakWriter w;
 		std::vector<uint8_t> payload(64, 0xAB);
 		Check(w.AddBlob(PakAssetKind::Terrain, "terrain/h_00_00", payload),
@@ -247,43 +248,38 @@ int main() {
 		std::vector<uint8_t> image = w.Finalize();
 		std::string perr;
 		auto reader = PakReader::Open(image, perr);
-		Check(reader.has_value(), "hfield.pak-smp6-open");
+		Check(reader.has_value(), "hfield.pak-smp7-open");
 		if (reader) {
 			Check(reader->BlobsOfKind(PakAssetKind::Terrain).size() == 1,
-				"hfield.pak-smp6-terrain-visible");
+				"hfield.pak-smp7-terrain-visible");
 		}
-		// Forge an SMP5-epoch image (same bytes, old magics, fixed CRC):
-		// with a Terrain blob the legacy hack must fail closed.
-		auto forgeSmp5 = [](const std::vector<uint8_t>& src) {
+		// ONE CANONICAL PATH: forge older-epoch images (SMP6 and SMP5
+		// magics, CRC fixed so the magic gate is the ONLY difference) —
+		// both must fail closed. The SMP6-era legacy-terrain-empty
+		// acceptance is dead; every stale pak recooks from zero.
+		auto forgeEpoch = [](const std::vector<uint8_t>& src,
+			uint32_t magic, uint32_t footerMagic) {
 			std::vector<uint8_t> img = src;
-			memcpy(img.data() + 0, &kPakMagicSmp5, 4);
+			memcpy(img.data() + 0, &magic, 4);
 			const size_t fOff = img.size() - 24;
-			memcpy(img.data() + fOff + 20, &kPakFooterMagicKpm5, 4);
+			memcpy(img.data() + fOff + 20, &footerMagic, 4);
 			const uint32_t crc = PakCrc32(img.data(), fOff + 16);
 			memcpy(img.data() + fOff + 16, &crc, 4);
 			return img;
 		};
 		{
-			std::vector<uint8_t> legacy = forgeSmp5(image);
+			const uint32_t kSmp6 = 0x36504D53; // "SMP6" LE (dead epoch)
+			const uint32_t kKpm6 = 0x364D504B; // "KPM6" LE
 			std::string lerr;
-			Check(!PakReader::Open(legacy, lerr),
-				"hfield.pak-smp5-terrain-rejected");
+			Check(!PakReader::Open(forgeEpoch(image, kSmp6, kKpm6), lerr),
+				"hfield.pak-smp6-rejected");
 		}
-		// Same forge without Terrain blobs: legacy-empty hack accepts.
 		{
-			PakWriter w2;
-			std::vector<uint8_t> tex(32, 0x11);
-			Check(w2.AddBlob(PakAssetKind::Texture, "textures/x.ktx2", tex),
-				"hfield.pak-add-texture");
-			std::vector<uint8_t> img2 = w2.Finalize();
-			std::vector<uint8_t> legacy2 = forgeSmp5(img2);
+			const uint32_t kSmp5 = 0x35504D53; // "SMP5" LE (dead epoch)
+			const uint32_t kKpm5 = 0x354D504B; // "KPM5" LE
 			std::string lerr;
-			auto r2 = PakReader::Open(legacy2, lerr);
-			Check(r2.has_value(), "hfield.pak-smp5-empty-accepted");
-			if (r2) {
-				Check(r2->BlobsOfKind(PakAssetKind::Terrain).empty(),
-					"hfield.pak-smp5-no-terrain");
-			}
+			Check(!PakReader::Open(forgeEpoch(image, kSmp5, kKpm5), lerr),
+				"hfield.pak-smp5-rejected");
 		}
 	}
 

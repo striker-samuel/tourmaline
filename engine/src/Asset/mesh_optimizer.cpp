@@ -863,9 +863,9 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 	// entry; the chain is per MESH — node transforms only matter for the
 	// audit). Sorted for deterministic registration/pool order.
 	std::unordered_map<uint32_t, uint32_t> nodeOfMesh;
-	for (const auto& [node, meshIdx] : scene.meshForNode) {
-		if (!nodeOfMesh.count(meshIdx))
-			nodeOfMesh[meshIdx] = node;
+	for (const MeshRow& row : scene.tables.meshes) {
+		if (!nodeOfMesh.count(row.mesh))
+			nodeOfMesh[row.mesh] = row.node;
 	}
 	std::vector<uint32_t> meshOrder;
 	meshOrder.reserve(nodeOfMesh.size());
@@ -920,10 +920,9 @@ bool CookLodSiblings(Cluster& cluster, const MeshOptConfig& config,
 		// lightmapped, so the two paths never mix).
 		bool preserveCoverage = false;
 		{
-			const auto matIt = scene.materialForNode.find(node);
-			if (matIt != scene.materialForNode.end()) {
+			if (const MaterialRow* matRow = FindMaterial(scene, node)) {
 				const ClusterMaterialHandle mh =
-					cluster.materials.getHandle(matIt->second);
+					cluster.materials.getHandle(matRow->material);
 				if (mh.valid()) {
 					if (const Material* mat = cluster.materials.get(mh))
 						preserveCoverage = (mat->alphaMode == AlphaMode::Mask

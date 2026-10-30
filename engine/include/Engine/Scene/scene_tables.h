@@ -48,16 +48,21 @@ constexpr RowId InvalidRow = 0xFFFFFFFFu;
 // Node -> mesh association. `mesh` is the owning Cluster's
 // ClusterStaticMeshHandle index (cluster scene) or the world
 // meshLocations index (merged world scene) — exactly what
-// meshForNode stores today; the ownership model is unchanged.
-// `material` preserves the materialForNode override semantics
-// (UINT32_MAX = no override; the import path always pairs them).
-// Whether a material association can exist WITHOUT a mesh is an
-// Epoch 4 question — answered against the import/tour code before
-// the maps die; until then MeshRow.material is authoritative ONLY
-// alongside a mesh row (the maps remain authoritative this epoch).
+// meshForNode stored; the ownership model is unchanged.
+// NOTE: material is NOT folded in here. The Epoch 4 audit proved
+// material associations exist WITHOUT meshes (tour assignMaterial on
+// bare nodes — pinned by test_tour's "replay assign" — and gltf's
+// instancing path can set a mesh with no material): two independent
+// maps became two independent tables, one owner per fact.
 struct MeshRow {
 	NodeId node = 0;
 	uint32_t mesh = 0xFFFFFFFFu;
+};
+
+// Node -> material association (the materialForNode override —
+// independent of any mesh row on the same node).
+struct MaterialRow {
+	NodeId node = 0;
 	uint32_t material = 0xFFFFFFFFu;
 };
 
@@ -84,7 +89,8 @@ struct DecalRow {
 // trivially copyable with a static layout — the writer/reader pair
 // pins field order + widths explicitly, and these asserts prove the
 // compiler layout stays the plain data the disk format assumes.
-static_assert(std::is_trivially_copyable_v<MeshRow> && sizeof(MeshRow) == 12);
+static_assert(std::is_trivially_copyable_v<MeshRow> && sizeof(MeshRow) == 8);
+static_assert(std::is_trivially_copyable_v<MaterialRow> && sizeof(MaterialRow) == 8);
 static_assert(std::is_trivially_copyable_v<LightRow> && sizeof(LightRow) == 8);
 static_assert(std::is_trivially_copyable_v<CameraRow> && sizeof(CameraRow) == 8);
 static_assert(std::is_trivially_copyable_v<DecalRow> && sizeof(DecalRow) == 8);
@@ -96,6 +102,7 @@ static_assert(std::is_trivially_copyable_v<DecalRow> && sizeof(DecalRow) == 8);
 // at Epoch 10) — each as its own explicit member + row type.
 struct SceneTables {
 	std::vector<MeshRow> meshes;
+	std::vector<MaterialRow> materials;
 	std::vector<LightRow> lights;
 	std::vector<CameraRow> cameras;
 	std::vector<DecalRow> decals;
@@ -109,6 +116,7 @@ struct SceneTables {
 // stable across the migration).
 struct NodeRows {
 	RowId mesh = InvalidRow;
+	RowId material = InvalidRow;
 	RowId light = InvalidRow;
 	RowId camera = InvalidRow;
 	RowId decal = InvalidRow;
@@ -129,6 +137,8 @@ void RebuildNodeRows(Scene& scene);
 // is out of range).
 MeshRow* FindMesh(Scene& scene, NodeId node);
 const MeshRow* FindMesh(const Scene& scene, NodeId node);
+MaterialRow* FindMaterial(Scene& scene, NodeId node);
+const MaterialRow* FindMaterial(const Scene& scene, NodeId node);
 LightRow* FindLight(Scene& scene, NodeId node);
 const LightRow* FindLight(const Scene& scene, NodeId node);
 CameraRow* FindCamera(Scene& scene, NodeId node);
@@ -140,7 +150,8 @@ const DecalRow* FindDecal(const Scene& scene, NodeId node);
 // the existing row (duplicate rejection with replacement semantics).
 // Returns false when the node index is invalid (>= node count); a Set
 // on a valid node always succeeds.
-bool SetMesh(Scene& scene, NodeId node, uint32_t mesh, uint32_t material);
+bool SetMesh(Scene& scene, NodeId node, uint32_t mesh);
+bool SetMaterial(Scene& scene, NodeId node, uint32_t material);
 bool SetLight(Scene& scene, NodeId node, uint32_t light);
 bool SetCamera(Scene& scene, NodeId node, uint32_t camera);
 bool SetDecal(Scene& scene, NodeId node, uint32_t decal);
@@ -148,6 +159,7 @@ bool SetDecal(Scene& scene, NodeId node, uint32_t decal);
 // Removes the node's row of that kind (swap-and-pop + lookup repair).
 // Returns whether a row existed.
 bool RemoveMesh(Scene& scene, NodeId node);
+bool RemoveMaterial(Scene& scene, NodeId node);
 bool RemoveLight(Scene& scene, NodeId node);
 bool RemoveCamera(Scene& scene, NodeId node);
 bool RemoveDecal(Scene& scene, NodeId node);

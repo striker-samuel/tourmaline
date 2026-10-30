@@ -1886,8 +1886,8 @@ int Run(const PakArgs& c) {
 	if (!args.tour.empty()) {
 		std::unordered_set<std::string> files;
 		for (auto& sc : sceneClusters) {
-			for (const auto& [node, meshIdx] : sc->scene.meshForNode) {
-				const auto h = sc->staticMeshes.getHandle(meshIdx);
+			for (const MeshRow& row : sc->scene.tables.meshes) {
+				const auto h = sc->staticMeshes.getHandle(row.mesh);
 				if (!h.valid())
 					continue;
 				const auto uri = sc->GetMeshUri(h);
@@ -1943,8 +1943,8 @@ int Run(const PakArgs& c) {
 		std::map<std::string, std::vector<smvk::Cluster*>> byArtifact;
 		for (auto& sc : sceneClusters) {
 			std::unordered_set<std::string> files;
-			for (const auto& [node, meshIdx] : sc->scene.meshForNode) {
-				const auto h = sc->staticMeshes.getHandle(meshIdx);
+			for (const MeshRow& row : sc->scene.tables.meshes) {
+				const auto h = sc->staticMeshes.getHandle(row.mesh);
 				if (!h.valid())
 					continue;
 				const auto uri = sc->GetMeshUri(h);

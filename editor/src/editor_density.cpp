@@ -87,7 +87,9 @@ void EditorApp::RefreshCubemapDensity() {
 		if (!clusterPtr)
 			continue;
 		const ::Scene& scene = clusterPtr->scene;
-		for (const auto& [node, meshIdx] : scene.meshForNode) {
+		for (const MeshRow& row : scene.tables.meshes) {
+			const uint32_t node = row.node;
+			const uint32_t meshIdx = row.mesh;
 			if (node >= scene.globalTransform.size())
 				continue;
 			const smvk::ClusterStaticMeshHandle h =

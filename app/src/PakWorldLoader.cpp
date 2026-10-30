@@ -289,7 +289,9 @@ namespace app {
 		}
 		if (std::getenv("TOURMALINE_KD")) {
 			int n = 0;
-			for (auto& [node, meshIdx] : world->scene.meshForNode) {
+			for (const MeshRow& row : world->scene.tables.meshes) {
+				const uint32_t node = row.node;
+				const uint32_t meshIdx = row.mesh;
 				if (meshIdx >= world->meshLocations.size())
 					continue;
 				smvk::Cluster* cl = world->meshLocations[meshIdx].cluster;

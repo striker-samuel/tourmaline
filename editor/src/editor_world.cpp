@@ -47,17 +47,16 @@ void EditorApp::RefreshNodeDrawState(uint32_t node) {
 	if (m_deletedNodes.contains(node))
 		return; // deleted: links stay dropped (no wide-override resurrect)
 	Scene& scene = m_world->scene;
-	if (!scene.meshForNode.contains(node))
+	if (!FindMesh(scene, node))
 		return;
 	smvk::IteratorFlags f = smvk::IteratorFlags(
 		smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_StaticVertexFmt);
 	if (IsCastsVolumetricShadowNode(scene, int(node)))
 		f |= smvk::IteratorFlags(smvk::IteratorFlagBit_CastVolumetricShadow);
-	auto matIt = scene.materialForNode.find(node);
+	const MaterialRow* matRow = FindMaterial(scene, node);
 	uint32_t matIdx = smvk::World::kInvalidIndex;
-	if (matIt != scene.materialForNode.end() &&
-		matIt->second < m_world->materialLocations.size()) {
-		matIdx = matIt->second;
+	if (matRow && matRow->material < m_world->materialLocations.size()) {
+		matIdx = matRow->material;
 		const auto& loc = m_world->materialLocations[matIdx];
 		if (loc.cluster && loc.handle.valid()) {
 			if (auto* mat = loc.cluster->materials.get(loc.handle)) {

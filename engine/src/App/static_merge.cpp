@@ -21,7 +21,7 @@ std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene)
 	for (uint32_t i = 0; i < (uint32_t)scene.hierarchy.size(); ++i) {
 		if (i >= scene.staticNode.size() || scene.staticNode[i] == 0)
 			continue;
-		if (scene.meshForNode.find(i) == scene.meshForNode.end())
+		if (FindMesh(scene, i) == nullptr)
 			continue;
 		out.push_back(i);
 	}
@@ -49,9 +49,8 @@ StaticMergeResult CollapseStaticSubtrees(
 	std::map<uint32_t, std::vector<uint32_t>> groups;
 	for (uint32_t n : nodes) {
 		uint32_t matKey = UINT32_MAX;
-		auto mit = scene.materialForNode.find(n);
-		if (mit != scene.materialForNode.end())
-			matKey = mit->second;
+		if (const MaterialRow* matRow = FindMaterial(scene, n))
+			matKey = matRow->material;
 		groups[matKey].push_back(n);
 	}
 
@@ -76,11 +75,11 @@ StaticMergeResult CollapseStaticSubtrees(
 			-std::numeric_limits<float>::infinity());
 
 		for (uint32_t n : members) {
-			auto meshIt = scene.meshForNode.find(n);
-			if (meshIt == scene.meshForNode.end())
+			const MeshRow* meshRow = FindMesh(scene, n);
+			if (!meshRow)
 				continue;
 			const ClusterStaticMeshHandle h =
-				cluster.staticMeshes.getHandle(meshIt->second);
+				cluster.staticMeshes.getHandle(meshRow->mesh);
 			if (!h.valid()) {
 				result.err = "CollapseStaticSubtrees: stale mesh handle";
 				return result;
@@ -160,9 +159,9 @@ StaticMergeResult CollapseStaticSubtrees(
 			scene.staticRoot.assign(scene.hierarchy.size(), 0);
 			scene.staticNode.assign(scene.hierarchy.size(), 0);
 		}
-		scene.meshForNode[(uint32_t)node] = h.index();
+		SetMesh(scene, (uint32_t)node, h.index());
 		if (g.matKey != UINT32_MAX)
-			scene.materialForNode[(uint32_t)node] = g.matKey;
+			SetMaterial(scene, (uint32_t)node, g.matKey);
 		{
 			const int nameIdx = (int)scene.nodeNames.size();
 			scene.nodeNames.push_back("StaticMerged");
@@ -195,9 +194,9 @@ StaticMergeResult CollapseStaticSubtrees(
 		// Node ids of the new blocks shifted; repair them by URI lookup.
 		for (auto& b : result.blocks) {
 			b.node = -1;
-			for (const auto& [node, meshIdx] : scene.meshForNode) {
-				if (meshIdx == b.meshPoolIndex) {
-					b.node = (int)node;
+			for (const MeshRow& row : scene.tables.meshes) {
+				if (row.mesh == b.meshPoolIndex) {
+					b.node = (int)row.node;
 					break;
 				}
 			}

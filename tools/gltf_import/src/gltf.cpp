@@ -2281,11 +2281,11 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 					primIndex,
 					hasSkin
 				);
-			cluster.scene.meshForNode[primNode] = primMesh.index();
-			cluster.scene.materialForNode[primNode] =
+			SetMesh(cluster.scene, primNode, primMesh.index());
+			SetMaterial(cluster.scene, primNode,
 				getOrCreateMaterial(
 					primitive.material
-				).index();
+				).index());
 			markAsChanged(cluster.scene, primNode);
 			// SKIN RECORD (the Northlight data path): node.skin indexes
 			// the top-level skins array; the JOINTS_0/WEIGHTS_0 streams +
@@ -2987,11 +2987,11 @@ size_t BuildFromMeshAsset(
 			|| inst.geometry >= baseHandles.size())
 			continue;
 		const uint32_t n = uint32_t(mapped[inst.node]);
-		scene.meshForNode[n] = baseHandles[inst.geometry].index();
+		SetMesh(scene, n, baseHandles[inst.geometry].index());
 		smvk::ClusterMaterialHandle mh =
 			materialFor(inst.materialGuid);
 		if (!mh.empty())
-			scene.materialForNode[n] = mh.index();
+			SetMaterial(scene, n, mh.index());
 		markAsChanged(scene, int(n));
 	}
 	for (const auto& l : asset.lights) {

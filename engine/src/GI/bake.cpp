@@ -864,9 +864,10 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 	};
 	std::vector<NodeGeo> geos;
 
-	for (const auto& [node, meshIdx] : scene.meshForNode) {
+	for (const MeshRow& row : scene.tables.meshes) {
+		const NodeId node = row.node;
 		bool stale = false;
-		const StaticMeshUpload* upload = meshAt(node, meshIdx, stale);
+		const StaticMeshUpload* upload = meshAt(node, row.mesh, stale);
 		if (stale) {
 			err = "BuildTraceScene: stale mesh handle";
 			return;
@@ -874,10 +875,10 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 		if (!upload || upload->vertices.empty() || upload->indices.empty())
 			continue;
 
-		auto matIt = scene.materialForNode.find(node);
-		if (matIt == scene.materialForNode.end())
+		const MaterialRow* matRow = FindMaterial(scene, node);
+		if (!matRow)
 			continue;
-		const Material* mat = matAt(node, matIt->second);
+		const Material* mat = matAt(node, matRow->material);
 		if (!mat)
 			continue;
 		if (!opts.includeMaskedCutout && mat->alphaMode == AlphaMode::Mask)

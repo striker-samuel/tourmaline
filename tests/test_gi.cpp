@@ -2979,8 +2979,8 @@ void TestTraceSceneFromWorld() {
 		smvk::ShadingModel::DefaultLit, smvk::AlphaMode::Opaque, 0.5f,
 		true);
 	const int n1 = addNode(cs, root, 1);
-	cs.meshForNode[uint32_t(n1)] = mh.index();
-	cs.materialForNode[uint32_t(n1)] = matH.index();
+	SetMesh(cs, uint32_t(n1), mh.index());
+	SetMaterial(cs, uint32_t(n1), matH.index());
 	glm::mat4 lt(1.0f);
 	lt[3] = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f); // lift the room +1 m
 	cs.localTransform[n1] = lt;

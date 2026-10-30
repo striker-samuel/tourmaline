@@ -24,27 +24,30 @@ namespace smvk {
 //
 // Layout (all integers little-endian, all blobs 16-byte aligned):
 //
-//   Header  (32 B): magic "SMP5", u32 reserved, u32 flags, u64 tocOffset,
+//   Header  (32 B): magic "SMP7", u32 reserved, u32 flags, u64 tocOffset,
 //                   u64 tocCount, u32 reserved
 //   Blobs   : [payload bytes ...] (opaque to this layer; see
 //             Engine/Asset/cluster_serializer.h for Scene/Mesh/Material/
 //             Texture/Light blob encodings)
 //   TOC     : tocCount × { u64 pathHash, u32 kind, u32 flags,
 //                          u64 offset, u64 size, u32 pathLen, path bytes }
-//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM5"
+//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM7"
 //                   (crc covers header+blobs+TOC)
 //
 // NO FORMAT VERSIONS: the magic IS the version. A breaking format change
-// bumps the trailing magic char (SMP5 -> SMP6, KPM5 -> KPM6) and the
-// reader fails closed on mismatch — content is recooked from zero, never
-// migrated. (The reserved header slots stay zero.)
+// bumps the trailing magic char and the reader fails closed on
+// mismatch — content is recooked from zero, never migrated. (The
+// reserved header slots stay zero.) ONE CANONICAL PATH: the reader
+// accepts exactly ONE magic; there are no legacy-epoch acceptances.
 // SMP5 (the decal-entity break): PakAssetKind::Decal blobs + the scene
-// blob's v11 decal-link section.
+//   blob's v11 decal-link section.
 // SMP6 (the tiled-terrain break): PakAssetKind::Terrain blobs (H-tile
-// height/mask payloads + the terrain/meta blob). LEGACY HACK: PakReader
-// accepts SMP5 images that contain ZERO Terrain blobs (old bistro/sponza
-// paks keep loading, terrain simply empty); any SMP5 image carrying
-// Terrain blobs fails closed.
+//   height/mask payloads + the terrain/meta blob).
+// SMP7 (the scene-tables break): the pak scene blob's mesh/material
+//   link sections are sourced from the typed scene tables (and the
+//   legacy .scene format's association sections went row-native).
+//   The SMP6-era legacy-terrain acceptance hack is GONE with this
+//   bump — every older pak fails closed, content recooks from zero.
 //
 // TOC pathHash = FNV-1a64 over the normalized VFS path (textures: the
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
@@ -71,11 +74,8 @@ namespace smvk {
 // blobs (e.g. bakery-appended textures) keep the full-resident path.
 // A breaking change to any of this bumps the magic below (never a
 // version field); content recooks from zero.
-inline constexpr uint32_t kPakMagic = 0x36504D53; // "SMP6" LE
-inline constexpr uint32_t kPakFooterMagic = 0x364D504B; // "KPM6" LE
-// Previous-epoch magics (the legacy-terrain-empty hack in PakReader::Open).
-inline constexpr uint32_t kPakMagicSmp5 = 0x35504D53; // "SMP5" LE
-inline constexpr uint32_t kPakFooterMagicKpm5 = 0x354D504B; // "KPM5" LE
+inline constexpr uint32_t kPakMagic = 0x37504D53; // "SMP7" LE
+inline constexpr uint32_t kPakFooterMagic = 0x374D504B; // "KPM7" LE
 
 enum class PakAssetKind : uint32_t {
 	Scene = 1,

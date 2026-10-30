@@ -1389,7 +1389,7 @@ namespace editor {
 				char label[300];
 				std::snprintf(label, sizeof(label), "%u: %s%s%s%s%s%s%s%s%s%s%s", n,
 					name.empty() ? "(unnamed)" : name.c_str(),
-					m_world->scene.meshForNode.contains(n) ? " [mesh]" : "",
+					FindMesh(m_world->scene, n) != nullptr ? " [mesh]" : "",
 					FindNodeLight(n) ? " [light]" : "",
 					m_world->scene.giVolumeForNode.contains(n) ? " [giv]" : "",
 					m_world->scene.cubemapForNode.contains(n) ? " [cube]" : "",
@@ -1446,7 +1446,7 @@ namespace editor {
 			return; // deleted (Maya delete): out of the live scene
 		m_outlinerOrder.push_back(node); // visible-row order (shift-range)
 		const Scene& scene = m_world->scene;	const std::string name = getNodeName(scene, int(node));
-		const bool hasMesh = scene.meshForNode.contains(node);
+		const bool hasMesh = FindMesh(scene, node) != nullptr;
 		const bool sel = IsSelected(node);
 		ImGui::PushID(int(node));
 		ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
@@ -2445,8 +2445,8 @@ namespace editor {
 		}
 
 		// Mesh info.
-		if (auto mit = scene.meshForNode.find(node); mit != scene.meshForNode.end()) {
-			if (smvk::StaticMesh* mesh = m_world->GetMesh(mit->second)) {
+		if (const MeshRow* meshRow = FindMesh(scene, node)) {
+			if (smvk::StaticMesh* mesh = m_world->GetMesh(meshRow->mesh)) {
 				uint32_t tris = 0;
 				for (auto& s : mesh->geometry.surfaces)
 					tris += s.indexCount / 3;
@@ -2875,10 +2875,10 @@ namespace editor {
 		// Scene reference block (placeholder nodes).
 		DrawReferenceSection(node);
 		// Material reassignment.
-		if (scene.materialForNode.contains(node)) {
+		if (const MaterialRow* matRow = FindMaterial(scene, node)) {
 			ImGui::Separator();
 			ImGui::Text("Material");
-			const uint32_t curMat = scene.materialForNode[node];
+			const uint32_t curMat = matRow->material;
 			std::string preview = "mat." + std::to_string(curMat);
 			if (ImGui::BeginCombo("##mat", preview.c_str())) {
 				const uint32_t count = uint32_t(m_world->materialLocations.size());
@@ -4375,9 +4375,9 @@ namespace editor {
 		{
 			uint32_t selMat = UINT32_MAX;
 			if (m_selected != UINT32_MAX) {
-				auto mit = m_world->scene.materialForNode.find(m_selected);
-				if (mit != m_world->scene.materialForNode.end())
-					selMat = mit->second;
+				if (const MaterialRow* row =
+					FindMaterial(m_world->scene, m_selected))
+					selMat = row->material;
 			}
 			if (selMat != m_matEditorSelFromSel) {
 				m_matEditorSelFromSel = selMat;

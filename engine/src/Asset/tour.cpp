@@ -2872,7 +2872,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
-			scene.materialForNode[target] = c.material;
+			SetMaterial(scene, target, c.material);
 			break;
 		}
 		case Verb::SetMatAttr: {
@@ -2996,8 +2996,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
-			scene.meshForNode.erase(target);
-			scene.materialForNode.erase(target);
+			RemoveMesh(scene, target);
+			RemoveMaterial(scene, target);
 			scene.lightForNode.erase(target);
 			scene.giVolumeForNode.erase(target);
 			scene.cubemapForNode.erase(target);
@@ -3849,8 +3849,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				cluster.RegisterMeshUri("terrain/" + std::to_string(
 					state.groupNode) + "_" + std::to_string(tx) + "_"
 					+ std::to_string(tz), mh);
-				scene.meshForNode[tileNode] = mh.index();
-				scene.materialForNode[tileNode] = state.material;
+				SetMesh(scene, tileNode, mh.index());
+				SetMaterial(scene, tileNode, state.material);
 			}
 	}
 	// GI-asset binding pass (the LAST scene-content pass — the bindings
@@ -4023,7 +4023,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				case OverrideAttr::Material:
 					if (localMat.contains(n))
 						continue;
-					scene.materialForNode[n] = r.material;
+					SetMaterial(scene, n, r.material);
 					break;
 				case OverrideAttr::NoLightmap:
 					if (localNoLM.contains(n))

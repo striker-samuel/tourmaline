@@ -51,23 +51,42 @@ int main() {
 	{
 		// ---- insertion + lookup ----
 		Scene s = MakeScene(4);
-		Check(SetMesh(s, 1, 10, 20), "SetMesh valid node returns true");
+		Check(SetMesh(s, 1, 10), "SetMesh valid node returns true");
+		Check(SetMaterial(s, 1, 20), "SetMaterial valid node returns true");
 		const MeshRow* mr = FindMesh(s, 1);
 		Check(mr != nullptr, "FindMesh finds the row");
-		Check(mr && mr->node == 1 && mr->mesh == 10 && mr->material == 20,
+		Check(mr && mr->node == 1 && mr->mesh == 10,
 			"mesh row payload round-trips");
+		const MaterialRow* matr = FindMaterial(s, 1);
+		Check(matr && matr->material == 20,
+			"material row payload round-trips");
+		// The two rows are INDEPENDENT (tour assignMaterial pins
+		// material-without-mesh; gltf instancing pins mesh-without-
+		// material — one owner per fact).
+		Scene s2 = MakeScene(2);
+		SetMaterial(s2, 0, 7);
+		Check(FindMaterial(s2, 0) && !FindMesh(s2, 0),
+			"material row exists without a mesh row");
+		SetMesh(s2, 1, 8);
+		Check(FindMesh(s2, 1) && !FindMaterial(s2, 1),
+			"mesh row exists without a material row");
+		Check(RemoveMesh(s2, 1) && FindMaterial(s2, 1) == nullptr
+			&& FindMesh(s2, 1) == nullptr,
+			"RemoveMesh leaves other kinds alone");
 		Check(FindMesh(s, 0) == nullptr, "node without a row finds null");
 		Check(FindMesh(s, 999) == nullptr, "out-of-range node finds null");
 
 		// ---- duplicate rejection = replacement ----
-		Check(SetMesh(s, 1, 11, 21), "SetMesh on an associated node succeeds");
+		Check(SetMesh(s, 1, 11), "SetMesh on an associated node succeeds");
 		Check(s.tables.meshes.size() == 1, "re-Set does not add a second row");
 		mr = FindMesh(s, 1);
-		Check(mr && mr->mesh == 11 && mr->material == 21,
-			"re-Set replaces the payload in place");
+		Check(mr && mr->mesh == 11, "re-Set replaces the payload in place");
+		Check(SetMaterial(s, 1, 21) && s.tables.materials.size() == 1
+			&& FindMaterial(s, 1)->material == 21,
+			"re-SetMaterial replaces in place");
 
 		// ---- invalid-node Set is rejected ----
-		Check(!SetMesh(s, 999, 1, 1), "SetMesh out-of-range node returns false");
+		Check(!SetMesh(s, 999, 1), "SetMesh out-of-range node returns false");
 		Check(!SetLight(s, 4, 7), "SetLight node == count returns false");
 
 		// ---- removal + swap-and-pop lookup repair ----
@@ -88,19 +107,20 @@ int main() {
 			"untouched rows are unaffected by the swap");
 
 		// ---- per-kind coexistence on one node ----
-		SetMesh(s, 2, 30, 31);
+		SetMesh(s, 2, 30);
+		SetMaterial(s, 2, 32);
 		SetDecal(s, 2, 40);
 		SetCamera(s, 2, 50);
-		Check(FindMesh(s, 2) && FindDecal(s, 2) && FindCamera(s, 2)
-			&& FindLight(s, 2),
-			"all four kinds coexist on one node");
+		Check(FindMesh(s, 2) && FindMaterial(s, 2) && FindDecal(s, 2)
+			&& FindCamera(s, 2) && FindLight(s, 2),
+			"all five kinds coexist on one node");
 		Check(FindDecal(s, 2)->decal == 40 && FindCamera(s, 2)->camera == 50,
 			"coexisting rows keep their own payloads");
 
 		// ---- RemoveNodeRows drops every kind at once ----
 		Check(RemoveNodeRows(s, 2), "RemoveNodeRows reports removal");
-		Check(!FindMesh(s, 2) && !FindDecal(s, 2) && !FindCamera(s, 2)
-			&& !FindLight(s, 2),
+		Check(!FindMesh(s, 2) && !FindMaterial(s, 2) && !FindDecal(s, 2)
+			&& !FindCamera(s, 2) && !FindLight(s, 2),
 			"RemoveNodeRows cleared all kinds");
 		Check(!RemoveNodeRows(s, 2), "RemoveNodeRows on a bare node is false");
 
@@ -121,8 +141,8 @@ int main() {
 		// the scene) are unreachable and get compacted out by the
 		// rebuild — "a table guarantees valid nodes".
 		Scene s = MakeScene(4);
-		SetMesh(s, 0, 1, 1);
-		SetMesh(s, 3, 3, 3);
+		SetMesh(s, 0, 1);
+		SetMesh(s, 3, 3);
 		SetDecal(s, 3, 9);
 		// Simulate the shrink: two nodes live, rows for 2 and 3 are dead.
 		s.hierarchy.resize(2);
@@ -147,6 +167,7 @@ int main() {
 		RebuildNodeRows(s);
 		Check(s.rowsForNode.size() == 1
 			&& s.rowsForNode[0].mesh == InvalidRow
+			&& s.rowsForNode[0].material == InvalidRow
 			&& s.rowsForNode[0].light == InvalidRow
 			&& s.rowsForNode[0].camera == InvalidRow
 			&& s.rowsForNode[0].decal == InvalidRow

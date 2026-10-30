@@ -186,12 +186,11 @@ namespace editor {
 				break;
 			}
 			case smvk::tour::OverrideAttr::Material: {
-				auto it = scene.materialForNode.find(n);
-				a.beforeMaterial = (it != scene.materialForNode.end())
-					? it->second : UINT32_MAX;
+				const MaterialRow* row = FindMaterial(scene, n);
+				a.beforeMaterial = row ? row->material : UINT32_MAX;
 				if (a.beforeMaterial == r.materialWorld)
 					break;
-				scene.materialForNode[n] = r.materialWorld;
+				SetMaterial(scene, n, r.materialWorld);
 				RefreshNodeDrawState(n);
 				r.applied.push_back(a);
 				++touched;
@@ -272,15 +271,14 @@ namespace editor {
 				break;
 			}
 			case smvk::tour::OverrideAttr::Material: {
-				auto mit = scene.materialForNode.find(n);
-				const uint32_t cur = (mit != scene.materialForNode.end())
-					? mit->second : UINT32_MAX;
+				const MaterialRow* row = FindMaterial(scene, n);
+				const uint32_t cur = row ? row->material : UINT32_MAX;
 				if (cur != r.materialWorld)
 					continue; // overwritten since: keep
 				if (it->beforeMaterial == UINT32_MAX)
-					scene.materialForNode.erase(n);
+					RemoveMaterial(scene, n);
 				else
-					scene.materialForNode[n] = it->beforeMaterial;
+					SetMaterial(scene, n, it->beforeMaterial);
 				RefreshNodeDrawState(n);
 				break;
 			}
@@ -598,12 +596,11 @@ namespace editor {
 				if (r.materialWorld == UINT32_MAX ||
 					r.materialWorld >= m_world->materialLocations.size())
 					break;
-				auto it = scene.materialForNode.find(node);
-				a.beforeMaterial = (it != scene.materialForNode.end())
-					? it->second : UINT32_MAX;
+				const MaterialRow* row = FindMaterial(scene, node);
+				a.beforeMaterial = row ? row->material : UINT32_MAX;
 				if (a.beforeMaterial == r.materialWorld)
 					break;
-				scene.materialForNode[node] = r.materialWorld;
+				SetMaterial(scene, node, r.materialWorld);
 				RefreshNodeDrawState(node);
 				r.applied.push_back(a);
 				break;
@@ -801,9 +798,8 @@ namespace editor {
 		};
 		{
 			char buf[64];
-			auto mit = scene.materialForNode.find(node);
-			if (mit != scene.materialForNode.end())
-				std::snprintf(buf, sizeof(buf), "mat.%u", mit->second);
+			if (const MaterialRow* row = FindMaterial(scene, node))
+				std::snprintf(buf, sizeof(buf), "mat.%u", row->material);
 			else
 				std::snprintf(buf, sizeof(buf), "(none)");
 			statusRow("Material", OverrideAttr::Material, buf);
