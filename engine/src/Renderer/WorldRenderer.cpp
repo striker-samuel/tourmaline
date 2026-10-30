@@ -1423,9 +1423,10 @@ namespace engine {
 			else
 				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..3\n";
 		}
-		// Probe-point 3D overlay for headless runs (same as the panel
-		// checkbox; draws the convex volume lattice colored by probe
-		// status — the coplanarity check).
+		// GI probe spheres for headless runs (the "Probe points" panel
+		// checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
+		// each volume's lattice as 0.12 m icospheres colored by the probe's
+		// own baked directional GI, depth-tested against the scene).
 		if (const char* giPtsEnv = std::getenv("TOURMALINE_GI_POINTS")) {
 			if (std::atoi(giPtsEnv) != 0)
 				m_giShowProbes = true;
@@ -2724,6 +2725,11 @@ namespace engine {
 		// sphere + programs; draws gate on ShadersValid (a missing .spv
 		// only skips the balls).
 		m_probeBalls.Ensure(*m_context);
+		// GI probe spheres (Rendergraph/giprobe.h): the shared icosphere
+		// + programs; the pass gates on ShadersValid (a missing .spv
+		// only skips the spheres). Instance tables build lazily on the
+		// first arm (EnsureGiProbeInstances).
+		m_giProbeVisual.Ensure(*m_context);
 
 		{
 			auto vkExt = m_swapchain->GetExtent();
@@ -3941,6 +3947,70 @@ namespace engine {
 				std::cerr << " name='" << d.name << "'";
 			std::cerr << "\n";
 		}
+	}
+
+	// The probe-sphere instance tables (Rendergraph/giprobe.h): per
+	// volume, the lattice's strided static subset — position + integer
+	// grid coords — uploaded ONCE (probes never move; the old ImGui
+	// overlay rebuilt this walk every frame). The stride keeps each
+	// table within the draw cap (the old 6000-dot ImGui budget, kept as
+	// the GPU budget): ceil-division so an n one over the cap cannot
+	// stride 1 and overflow (n = cap + 1 needs stride 2). The camera
+	// DISTANCE filter is NOT baked here — it is per-frame state and runs
+	// GPU-side in the VS (the degenerate-instance trick).
+	void WorldRenderer::EnsureGiProbeInstances() {
+		if (m_giProbeInstancesBuilt)
+			return;
+		m_giProbeInstancesBuilt = true;
+		constexpr uint32_t kCap = smvk::giprobe::kGiProbeMaxInstances;
+		uint32_t built = 0;
+		for (size_t vi = 0; vi < m_giVolumes.size() && vi < 8; ++vi) {
+			GiVolumeResources& res = m_giVolumes[vi];
+			const smvk::gi::GiVolume& vol = res.volume;
+			if (vol.dims[0] == 0 || vol.dims[1] == 0 || vol.dims[2] == 0)
+				continue;
+			const size_t n = size_t(vol.VoxelCount());
+			const size_t stride =
+				std::max<size_t>(1, (n + kCap - 1) / kCap);
+			std::vector<smvk::giprobe::GiProbeInstance> rows;
+			rows.reserve(n / stride + 1);
+			for (size_t v = 0; v < n; v += stride) {
+				if (rows.size() >= kCap)
+					break; // belt-and-braces (ceil-stride already bounds)
+				const uint32_t ix = uint32_t(v % vol.dims[0]);
+				const uint32_t iy =
+					uint32_t((v / vol.dims[0]) % vol.dims[1]);
+				const uint32_t iz = uint32_t(
+					v / (size_t(vol.dims[0]) * vol.dims[1]));
+				smvk::giprobe::GiProbeInstance row{};
+				row.pos = vol.gridMin
+					+ (glm::vec3(ix, iy, iz) + 0.5f) * vol.spacing;
+				row.grid[0] = ix;
+				row.grid[1] = iy;
+				row.grid[2] = iz;
+				rows.push_back(row);
+			}
+			if (rows.empty())
+				continue;
+			// Fixed cap-sized allocation (one per volume, lives with the
+			// volume resources; the VS indexes rows[instanceIndex] with
+			// instanceIndex < instanceCount <= cap).
+			res.probeInstances = m_context->CreateBuffer(
+				kCap * sizeof(smvk::giprobe::GiProbeInstance),
+				smvk::BufferType_Storage, "gi probe instances");
+			if (res.probeInstances.empty())
+				continue;
+			m_context->UploadDataToBuffer(res.probeInstances, rows.data(),
+				rows.size() * sizeof(rows[0]),
+				smvk::PipelineStageBit_Vertex,
+				smvk::AccessFlags::ShaderRead, 0, 0);
+			res.probeInstancesBda =
+				m_context->GetBufferDeviceAddress(res.probeInstances);
+			res.probeInstanceCount = uint32_t(rows.size());
+			++built;
+		}
+		std::cerr << "[GIV] probe instance tables: " << built
+			<< " volume(s) built\n";
 	}
 
 	void WorldRenderer::DegradeAmbientForMissingSources() {
@@ -13929,6 +13999,61 @@ namespace engine {
 		}
 
 		// ---------------------------------------------------------------------
+		// GI PROBE SPHERES (Rendergraph/giprobe.h — the ImGui probe-dot
+		// overlay's 3D successor): each volume's lattice as instanced
+		// 0.12 m icospheres colored by the probe's OWN baked directional
+		// GI (the VS Loads the probe's exact texel from the 7 SG layers
+		// + evaluates the 9 lobes against the sphere direction). The
+		// probeball slot contract: the HDR tail, scene depth TEST-ONLY
+		// (occluded probes hide behind geometry). The FrameUniforms
+		// giVolumeLayers slots publish under (m_giVolumesLoaded &&
+		// m_giVolumesEnabled) — the pass gates on the SAME condition (a
+		// stale gate would have the VS Load through UINT32_MAX slots).
+		if (m_giShowProbes && m_giVolumesLoaded && m_giVolumesEnabled) {
+			EnsureGiProbeInstances();
+			smvk::giprobe::GiProbeVolumeRow probeRows[8];
+			uint32_t probeRowCount = 0;
+			const uint32_t nVol = std::min<uint32_t>(
+				uint32_t(m_giVolumes.size()), 8u);
+			for (uint32_t v = 0; v < nVol; ++v) {
+				const GiVolumeResources& res = m_giVolumes[v];
+				if (res.probeInstances.empty()
+					|| res.probeInstancesBda == 0
+					|| res.probeInstanceCount == 0)
+					continue;
+				smvk::giprobe::GiProbeVolumeRow& row =
+					probeRows[probeRowCount];
+				row.instances = res.probeInstances;
+				row.instancesBda = res.probeInstancesBda;
+				row.instanceCount = res.probeInstanceCount;
+				row.volumeIndex = v;
+				++probeRowCount;
+			}
+			if (probeRowCount > 0) {
+				const bool appended = m_giProbeVisual.AppendPass(
+					*m_rendergraph,
+					sceneHdrView,
+					m_viewportResources.renderDepth.logicalView,
+					renderExtent,
+					frameData.viewProj,
+					m_cameraPositioner.cameraPosition_,
+					std::max(m_giProbePointMaxDist, 1.0f),
+					probeRows, probeRowCount,
+					frameUniformsAddress);
+				// Heartbeat (the old overlay's cadence): proves the pass
+				// draws with live data on long runs.
+				if (appended && (m_frameCounter % 300) == 0) {
+					uint32_t total = 0;
+					for (uint32_t r = 0; r < probeRowCount; ++r)
+						total += probeRows[r].instanceCount;
+					std::cerr << "[GI] probe spheres: volumes="
+						<< probeRowCount << " instances=" << total
+						<< " maxDist=" << m_giProbePointMaxDist << "\n";
+				}
+			}
+		}
+
+		// ---------------------------------------------------------------------
 		// Exposure histogram
 		//
 		// Log2-luminance meter for the scene HDR (see exposure.h).
@@ -17024,80 +17149,14 @@ namespace engine {
 					}
 				}
 			}
-			// GI PROBE-POINT OVERLAY (the convex volumes' lattice in 3D —
-			// the coplanarity check): each probe drawn as a 3D-projected
-			// dot colored by its 6-axis min obstacle distance (from the
-			// CPU-side vis array). Red = blocked/inside geometry, yellow
-			// = near-surface (< 1 m), green = open. Distance-filtered +
-			// stride-capped so huge volumes stay ImGui-cheap. No depth
-			// test: occluded probes stay visible (debug intent — you want
-			// to see the ones behind walls).
-			if (m_giShowProbes && m_giVolumesLoaded) {
-				ImDrawList* pdl = ImGui::GetForegroundDrawList();
-				const ImVec2 pdisp = ImGui::GetIO().DisplaySize;
-				const glm::vec3 camPos = m_cameraPositioner.cameraPosition_;
-				const float maxDist = std::max(m_giProbePointMaxDist, 1.0f);
-				constexpr uint32_t kProbeCap = 6000;
-				uint32_t drawn = 0, blocked = 0;
-				for (const GiVolumeResources& res : m_giVolumes) {
-					const smvk::gi::GiVolume& vol = res.volume;
-					if (vol.dims[0] == 0 || vol.dims[1] == 0
-						|| vol.dims[2] == 0)
-						continue;
-					const size_t n = size_t(vol.VoxelCount());
-					if (res.volume.vis.size() != n * 6)
-						continue; // no vis data (hand-built)
-					// Stride so the drawn count stays under the cap.
-					const size_t stride =
-						std::max<size_t>(1, n / kProbeCap);
-					for (size_t v = 0; v < n && drawn < kProbeCap;
-						v += stride) {
-						const uint32_t ix = uint32_t(v % vol.dims[0]);
-						const uint32_t iy =
-							uint32_t((v / vol.dims[0]) % vol.dims[1]);
-						const uint32_t iz = uint32_t(
-							v / (size_t(vol.dims[0]) * vol.dims[1]));
-						const glm::vec3 pos = vol.gridMin
-							+ (glm::vec3(ix, iy, iz) + 0.5f)
-								* vol.spacing;
-						const glm::vec3 d = pos - camPos;
-						if (glm::dot(d, d) > maxDist * maxDist)
-							continue;
-						const glm::vec4 clip =
-							m_unjitteredViewProj * glm::vec4(pos, 1.0f);
-						if (clip.w <= 1e-4f)
-							continue; // behind the camera
-						const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-						if (std::abs(ndc.x) > 1.0f
-							|| std::abs(ndc.y) > 1.0f)
-							continue; // off-screen
-						const ImVec2 pt(
-							(ndc.x * 0.5f + 0.5f) * pdisp.x,
-							(ndc.y * 0.5f + 0.5f) * pdisp.y);
-						// The probe's min 6-axis distance (meters).
-						float vm = 1e30f;
-						for (uint32_t k = 0; k < 6; ++k)
-							vm = std::min(vm, vol.vis[v * 6 + k]);
-						const bool isBlocked = vm < 0.05f;
-						if (isBlocked)
-							++blocked;
-						const ImU32 col = isBlocked
-							? IM_COL32(255, 60, 60, 200)
-							: vm < 1.0f
-							? IM_COL32(255, 220, 60, 200)
-							: IM_COL32(90, 230, 90, 140);
-						pdl->AddCircleFilled(pt,
-							isBlocked ? 3.5f : 2.5f, col);
-						++drawn;
-					}
-				}
-				// Heartbeat: proves the overlay draws with live data.
-				if ((m_frameCounter % 300) == 0) {
-					std::cerr << "[GI] probe overlay: drawn=" << drawn
-						<< " blocked=" << blocked
-						<< " maxDist=" << maxDist << "\n";
-				}
-			}
+			// GI PROBE SPHERES: RETIRED HERE — the 3D successor lives in the
+			// rendergraph (Rendergraph/giprobe.h, the GiProbes pass at the HDR
+			// tail — instanced icospheres colored by each probe's baked
+			// directional GI, depth-tested against the scene). The old ImGui
+			// foreground dots (no depth test, colored by obstacle distance)
+			// died with this block; the checkbox + the distance slider below
+			// now drive the pass.
+
 			// GI volume bounding-box wireframe (m_giShowVolumeBounds): AABB/OBB
 			// edges through the UNJITTERED viewProj into the ImGui foreground
 			// list, so they ride on top of the current view with no depth test

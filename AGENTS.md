@@ -165,6 +165,24 @@ $env:TOURMALINE_CAPTURE='48'
   Thresholds: the Debug panel sliders (shadow 0..0.1, highlight 0.9..1.0,
   defaults 0.01/0.99) or the `TOURMALINE_CLIP_DARK=<0..0.1>` /
   `TOURMALINE_CLIP_BRIGHT=<0.9..1>` headless pins
+- `TOURMALINE_GI_POINTS=1` arms the GI PROBE SPHERES (the "Probe
+  points" Debug-panel checkbox's headless twin; Rendergraph/giprobe.h -
+  the ImGui probe-dot overlay's 3D successor): every convex-GI-volume
+  probe renders as an instanced 0.12 m 42-vertex icosphere (one
+  DrawIndexed instanced call per volume over a static per-volume
+  instance table - position + integer grid coords, built once on the
+  first arm, strided to the old 6000-probe ImGui budget) whose VERTEX
+  shader Loads the probe's EXACT texel from the volume's 7 SG layers
+  (Texture3D.Load, never the filtered Sample) and evaluates
+  SgGiDiffuseIrradiance against the sphere direction - each sphere is a
+  tiny irradiance ball showing the baked field's directional answer at
+  that probe (FS = pure HDR pass-through). The probeball slot contract:
+  the HDR tail (bloom/tonemap grade the spheres), scene depth TEST-ONLY
+  (occluded probes hide behind geometry). The camera-distance filter
+  (the old overlay's, slider-adjustable) runs GPU-side as a degenerate-
+  instance cull in the VS. Gates on (m_giVolumesLoaded &&
+  m_giVolumesEnabled) - the same condition the FrameUniforms
+  giVolumeLayers slots publish under
 - `TOURMALINE_GEOMETRY_STREAMING=1` gates GPU geometry LOD streaming
   (geometry_streamer.h - v1 stages 1-3 + logical stage-4 eviction,
   DEFAULT OFF): cluster load defers the middle LOD siblings (LOD0 bases

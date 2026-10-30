@@ -67,6 +67,7 @@
 #include <Engine/Rendergraph/ssr.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Rendergraph/probeball.h>
+#include <Engine/Rendergraph/giprobe.h>
 #include <Engine/Rendergraph/probepremix.h>
 #include <Engine/Rendergraph/skinning.h>
 #include <Engine/Rendergraph/terrain.h>
@@ -2216,6 +2217,13 @@ public:
 	// toggled from the App's panel (off by default: the clean look).
 	bool m_cubemapShowBalls = false;
 	smvk::probeball::ProbeBallVisual m_probeBalls{};
+	// GI probe spheres (Rendergraph/giprobe.h - the ImGui probe-dot
+	// overlay's 3D successor): the hardcoded icosphere + programs; the
+	// pass gates on ShadersValid (a missing .spv only skips the
+	// spheres). The per-volume instance tables are built lazily (see
+	// EnsureGiProbeInstances).
+	smvk::giprobe::GiProbeVisual m_giProbeVisual{};
+	bool m_giProbeInstancesBuilt = false;
 
 	// ---- GPU probe pre-mix (docs/probe_premix_plan.md) ----------------
 	// The Remember Me architecture, GPU-only selection: the weights pass
@@ -2772,8 +2780,10 @@ public:
 	                                // feeds the frame's legacy giDebug byte,
 	                                // always 0)
 	float m_giIntensity = 1.0f;   // ambient scale (FrameUniforms.giIntensity)
-	bool m_giShowProbes = false;  // probe-point 3D overlay (the coplanarity check:
-	                              // red = blocked, yellow = near-surface, green = open)
+	bool m_giShowProbes = false;  // probe-sphere 3D overlay (the coplanarity
+	                              // check's successor: instanced icospheres
+	                              // colored by each probe's baked directional
+	                              // GI - see Rendergraph/giprobe.h)
 	float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
 	bool m_giShowVolumeBounds = false; // GI volume AABB/OBB wireframe overlay
 	                              // (ImGui foreground, on top of the current
@@ -2919,6 +2929,14 @@ public:
 		// GI entirely.
 		smvk::Holder<smvk::TextureHandle> visLayers[2];
 		uint32_t visSlots[2] = { UINT32_MAX, UINT32_MAX };
+		// The probe-sphere instance table (Rendergraph/giprobe.h - the
+		// ImGui probe-dot overlay's 3D successor): the strided static
+		// lattice subset (position + integer grid coords), built once by
+		// EnsureGiProbeInstances on the first arm. The BDA is stable
+		// after the build (probes never move).
+		smvk::Holder<smvk::BufferHandle> probeInstances;
+		uint64_t probeInstancesBda = 0;
+		uint32_t probeInstanceCount = 0;
 	};
 	std::vector<GiVolumeResources> m_giVolumes;
 	smvk::Holder<smvk::BufferHandle> m_giVolumesBuffer;
@@ -2944,6 +2962,9 @@ public:
 			|| ProbeTileListsWanted() || (m_giVolumesLoaded && m_giVolumesEnabled);
 	}
 	void LoadGiVolumes();
+	// The probe-sphere instance tables (one per volume, strided to the
+	// cap, static): built lazily on the first m_giShowProbes arm.
+	void EnsureGiProbeInstances();
 	// Degrades single-source ambient modes whose source did not load
 	// (called once after all three GI loaders at scene init): keeps the
 	// isolation states meaningful instead of silently empty.
