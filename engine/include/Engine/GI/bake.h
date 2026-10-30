@@ -136,6 +136,27 @@ struct GiTraceMaterial {
 	uint32_t transTexId = 0xFFFFFFFFu;
 	glm::vec3 transTexMul{ 1.0f };
 	float transAlphaCutoff = 0.5f;
+	// ---- PBR specular transport (the full-BSDF bake) ----
+	// The bake traces the WHOLE glTF metallic-roughness BSDF, not just
+	// the Lambertian lobe: metals and glossy surfaces REFLECT (a
+	// diffuse-only transport treats metal as black — every specular
+	// bounce absorbed; Sponza's gold trim ate the sun). Per-hit state:
+	// metallic/roughness FACTORS (the flat path folds the MR-texture
+	// AVERAGE like the runtime shader; the textured path multiplies the
+	// MR texel per hit — B = metallic, G = roughness, glTF), the FULL
+	// baseColor (the metal F0 tint — NOT albedo-dimmed), and the
+	// textured spec multiplier (baseTexMul is the diffuse's
+	// base*(1-metallic); the spec color is mix(0.04, baseTexMulFull *
+	// texel, metallic)). White-world overrides baseColor with the
+	// uniform value like it overrides albedo (UNCOLORED PBR: the metal
+	// F0 is white, chroma-free — the SG-fit convention preserved while
+	// the energy hole closes). Roughness floor 0.04 = the runtime's
+	// clamp (a samplable GGX lobe).
+	float metallic = 0.0f;
+	float roughness = 1.0f;
+	glm::vec3 baseColor{ 0.8f };
+	glm::vec3 baseTexMulFull{ 1.0f };
+	uint32_t mrTexId = 0xFFFFFFFFu;
 };
 
 // Static spot light for the bake (NEE at every bounce vertex). Angles in
@@ -271,6 +292,28 @@ public:
 		const GiTraceMaterial& m, const glm::vec3& vertexAlbedo) const;
 	glm::vec3 SampleSun(const glm::vec3& pos, const glm::vec3& n,
 		const GiTraceMaterial& m, const glm::vec3& vertexAlbedo) const;
+
+	// ---- PBR specular transport (the full-BSDF bake) ----
+	// The SPECULAR NEE twins of SampleSun/SampleSpots: the GGX
+	// metallic-roughness BRDF evaluated toward the light (D*G*F, a
+	// shadow ray), for the sun and every static spot. wo = the outgoing
+	// direction BACK along the incoming ray (the previous bounce). A
+	// diffuse-only transport returns zero here — a metal surface
+	// contributed NOTHING to the field (the gold-trim energy hole).
+	glm::vec3 SampleSunSpec(const glm::vec3& pos, const glm::vec3& n,
+		const glm::vec3& wo, const glm::vec3& f0, float roughness) const;
+	glm::vec3 SampleSpotsSpec(const glm::vec3& pos, const glm::vec3& n,
+		const glm::vec3& wo, const glm::vec3& f0, float roughness) const;
+
+	// Per-hit PBR state (the AlbedoAt twins): (metallic, roughness)
+	// from the MR texel's B/G channels when the material carries a
+	// decoded MR texture, else the flat factors; and the FULL base
+	// color (the undimmed texel/flat — the metal F0 tint, NOT the
+	// albedo's base*(1-metallic)).
+	glm::vec2 MetallicRoughnessAt(const GiTraceMaterial& m, uint32_t tri,
+		const glm::vec2& baryUV) const;
+	glm::vec3 BaseColorAt(const GiTraceMaterial& m, uint32_t tri,
+		const glm::vec2& baryUV) const;
 
 	// The VERTEX albedo: the textured path interpolates the hit UV from
 	// the triangle's vertices (baryUV matches TriangleBvh::Hit) and

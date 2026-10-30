@@ -57,6 +57,87 @@ glm::vec3 CosineHemisphere(Pcg32& rng, const glm::vec3& n) {
 	return glm::normalize(t * (r * std::cos(phi)) + n * std::sqrt(1.0f - u.x) + b * (r * std::sin(phi)));
 }
 
+// ---- GGX (Trowbridge-Reitz) metallic-roughness specular ----
+// The standard microfacet terms (Walter et al. / the glTF spec — the
+// same convention the runtime's default_lit_body evaluates, so baked
+// specular agrees with the rendered direct path).
+inline float GgxD(float ndh, float a) {
+	const float a2 = a * a;
+	const float d = ndh * ndh * (a2 - 1.0f) + 1.0f;
+	return a2 / (kPi * d * d);
+}
+// Smith G1 (separable shadowing-masking; the height-correlated form's
+// cheaper sibling — the common bake-side approximation).
+inline float GgxG1(float ndv, float a) {
+	const float a2 = a * a;
+	return 2.0f * ndv / (ndv + std::sqrt(a2 + (1.0f - a2) * ndv * ndv));
+}
+inline glm::vec3 FresnelSchlick(float vdh, const glm::vec3& f0) {
+	const float m = std::clamp(1.0f - vdh, 0.0f, 1.0f);
+	return f0 + (glm::vec3(1.0f) - f0) * (m * m * m * m * m);
+}
+
+// ---- The full-BSDF transport sampler ----
+// One-sample MIS (balance) over the two lobes of the glTF
+// metallic-roughness model: Lambertian diffuse (rhoD) + GGX specular
+// (F0, roughness). The next path direction + the ESTIMATOR WEIGHT
+// (brdf * cos / mixture pdf) — the throughput multiplier IS the
+// weight, so any lobe-probability split is unbiased; the split below
+// (the F0 luminance) just minimizes wasted lobe samples: metals are
+// mostly-specular, white dielectrics mostly-diffuse.
+struct BsdfSample {
+	glm::vec3 dir;
+	glm::vec3 weight;
+};
+BsdfSample SampleFullBsdf(Pcg32& rng, const glm::vec3& n, const glm::vec3& wo,
+	const glm::vec3& rhoD, const glm::vec3& f0, float roughness) {
+	const float a = std::max(roughness * roughness, 1e-4f);
+	const float ndo = glm::dot(n, wo);
+	const float pSpec = std::clamp(Luminance(f0), 0.02f, 0.9f);
+	if (rng.Float() < pSpec) {
+		// GGX half-vector sampling (Walter et al.): pdf_h = D(h)(h.n),
+		// wi = reflect(wo, h), pdf_wi = pdf_h / (4 (wo.h)).
+		const glm::vec2 u = rng.Float2();
+		const float phi = 2.0f * kPi * u.x;
+		const float tan2 = (a * a) * u.y / std::max(1.0f - u.y, 1e-6f);
+		const float ch = 1.0f / std::sqrt(1.0f + tan2);
+		const float sh = ch * std::sqrt(tan2);
+		glm::vec3 t, b;
+		Onb(n, t, b);
+		const glm::vec3 h =
+			normalize(t * (sh * std::cos(phi)) + n * ch + b * (sh * std::sin(phi)));
+		const float woh = glm::dot(wo, h);
+		const glm::vec3 wi = 2.0f * woh * h - wo;
+		const float ndl = glm::dot(n, wi);
+		if (woh <= 0.0f || ndl <= 0.0f)
+			return BsdfSample{ wi, glm::vec3(0.0f) }; // below the surface: f = 0
+		const float ndh = glm::dot(n, h);
+		const float D = GgxD(ndh, a);
+		const float pdfSpec = D * ndh / (4.0f * woh);
+		const float pdfDiff = ndl / kPi;
+		const float G = GgxG1(ndo, a) * GgxG1(ndl, a);
+		const glm::vec3 F = FresnelSchlick(woh, f0);
+		// fr_spec * ndl = D*G*F/(4 * ndo) — the ndl cancels.
+		const glm::vec3 fCos = (D * G / (4.0f * ndo)) * F;
+		return BsdfSample{ wi,
+			fCos / (pSpec * pdfSpec + (1.0f - pSpec) * pdfDiff) };
+	}
+	// Diffuse lobe: cosine-hemisphere sampling (pdf = ndl/pi), the
+	// specular pdf evaluated at the sampled direction for the balance
+	// denominator.
+	const glm::vec3 wi = CosineHemisphere(rng, n);
+	const float ndl = glm::dot(n, wi);
+	const float pdfDiff = ndl / kPi;
+	const glm::vec3 h = glm::normalize(wi + wo);
+	const float woh = glm::dot(wo, h);
+	const float ndh = glm::dot(n, h);
+	const float pdfSpec = (woh > 1e-4f && ndh > 0.0f)
+		? GgxD(ndh, a) * ndh / (4.0f * woh) : 0.0f;
+	const glm::vec3 fCos = rhoD * (ndl / kPi);
+	return BsdfSample{ wi,
+		fCos / ((1.0f - pSpec) * pdfDiff + pSpec * pdfSpec) };
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -272,6 +353,80 @@ glm::vec3 GiTraceScene::SampleSpots(const glm::vec3& pos, const glm::vec3& n,
 	return sum * vertexAlbedo * (1.0f / kPi);
 }
 
+glm::vec3 GiTraceScene::SampleSunSpec(const glm::vec3& pos, const glm::vec3& n,
+	const glm::vec3& wo, const glm::vec3& f0, float roughness) const {
+	// The specular NEE twin of SampleSun: the GGX BRDF evaluated toward
+	// the sun, a shadow ray. fr = D*G*F/(4 ndl ndo); the reflected term
+	// is fr * E with E = sunColor * I * ndl — the ndl cancels:
+	// sunColor * I * D*G*F / (4 * ndo).
+	const float ndl = glm::dot(n, sunDirection);
+	if (ndl <= 0.0f)
+		return glm::vec3(0.0f);
+	const float ndo = glm::dot(n, wo);
+	if (ndo <= 0.0f)
+		return glm::vec3(0.0f);
+	if (bvh_.AnyHit(pos + n * kSurfEps, sunDirection, kMaxRayDist))
+		return glm::vec3(0.0f);
+	const float a = std::max(roughness * roughness, 1e-4f);
+	const glm::vec3 h = glm::normalize(sunDirection + wo);
+	const float ndh = glm::dot(n, h);
+	if (ndh <= 0.0f)
+		return glm::vec3(0.0f);
+	const float D = GgxD(ndh, a);
+	const float G = GgxG1(ndo, a) * GgxG1(ndl, a);
+	const glm::vec3 F = FresnelSchlick(glm::dot(wo, h), f0);
+	return sunColor * (sunIntensity / (4.0f * ndo)) * (D * G) * F;
+}
+
+glm::vec3 GiTraceScene::SampleSpotsSpec(const glm::vec3& pos, const glm::vec3& n,
+	const glm::vec3& wo, const glm::vec3& f0, float roughness) const {
+	// The specular NEE twin of SampleSpots (same Frostbite falloff
+	// cones + shadow rays): per spot, s.color * (ndl * atten * ang) *
+	// fr with fr = D*G*F/(4 ndl ndo) — the ndl cancels again.
+	if (spots.empty())
+		return glm::vec3(0.0f);
+	const float ndo = glm::dot(n, wo);
+	if (ndo <= 0.0f)
+		return glm::vec3(0.0f);
+	const float a = std::max(roughness * roughness, 1e-4f);
+	glm::vec3 sum(0.0f);
+	for (const GiTraceSpot& s : spots) {
+		glm::vec3 toLight = s.position - pos;
+		const float dist2 = glm::dot(toLight, toLight);
+		if (s.range > 0.0f && dist2 > s.range * s.range)
+			continue;
+		const float dist = std::sqrt(dist2);
+		const glm::vec3 dirTo = toLight / std::max(dist, 1e-6f);
+		const float ndl = glm::dot(n, dirTo);
+		if (ndl <= 0.0f)
+			continue;
+		const float cosA = glm::dot(-dirTo, glm::normalize(s.direction));
+		if (cosA < s.cosOuter)
+			continue;
+		const float t = std::clamp(
+			(cosA - s.cosOuter) / std::max(s.cosInner - s.cosOuter, 1e-6f),
+			0.0f, 1.0f);
+		const float ang = t * t * (3.0f - 2.0f * t);
+		float window_ = 1.0f;
+		if (s.range > 0.0f) {
+			const float x = dist / s.range;
+			window_ = std::pow(std::clamp(1.0f - x * x * x * x, 0.0f, 1.0f), 2.0f);
+		}
+		const float atten = window_ / std::max(4.0f * kPi * dist2, 1e-2f);
+		if (bvh_.AnyHit(pos + n * kSurfEps, dirTo, dist - 2.0f * kSurfEps))
+			continue;
+		const glm::vec3 h = glm::normalize(dirTo + wo);
+		const float ndh = glm::dot(n, h);
+		if (ndh <= 0.0f)
+			continue;
+		const float D = GgxD(ndh, a);
+		const float G = GgxG1(ndo, a) * GgxG1(ndl, a);
+		const glm::vec3 F = FresnelSchlick(glm::dot(wo, h), f0);
+		sum += s.color * (atten * ang) * ((D * G) / (4.0f * ndo)) * F;
+	}
+	return sum;
+}
+
 glm::vec3 GiTraceScene::AlbedoAt(const GiTraceMaterial& m, uint32_t tri,
 	const glm::vec2& baryUV) const {
 	// Textured path: the material carries a decoded baseColor texture AND
@@ -304,6 +459,42 @@ glm::vec3 GiTraceScene::TransmissionAt(const GiTraceMaterial& m, uint32_t tri,
 	if (t.w < m.transAlphaCutoff)
 		return glm::vec3(1.0f);
 	return m.transTexMul * glm::vec3(t);
+}
+
+glm::vec2 GiTraceScene::MetallicRoughnessAt(const GiTraceMaterial& m,
+	uint32_t tri, const glm::vec2& baryUV) const {
+	// Textured MR (glTF): metallic = factor * texel.B, roughness =
+	// factor * texel.G. The struct's flat factors already fold the MR
+	// AVERAGE when no decoded texture exists (the intern mirrors the
+	// runtime shader's average path). Roughness floor 0.04 = the
+	// runtime's clamp.
+	const float rFloor = std::max(m.roughness, 0.04f);
+	if (m.mrTexId == 0xFFFFFFFFu)
+		return glm::vec2(m.metallic, rFloor);
+	const GiTraceTexelData* data = nullptr;
+	glm::vec2 uv(0.0f);
+	if (!ResolveTexelAndUv(m.mrTexId, tri, baryUV, data, uv))
+		return glm::vec2(m.metallic, rFloor);
+	const glm::vec4 t = SampleTexelBilinear(*data, uv);
+	return glm::vec2(
+		std::clamp(m.metallic * t.b, 0.0f, 1.0f),
+		std::clamp(std::max(m.roughness * t.g, 0.04f), 0.0f, 1.0f));
+}
+
+glm::vec3 GiTraceScene::BaseColorAt(const GiTraceMaterial& m, uint32_t tri,
+	const glm::vec2& baryUV) const {
+	// The FULL (undimmed) base color at the hit: the metal F0 tint.
+	// Textured: baseTexMulFull * texel (the SAME baseColor texture the
+	// diffuse path samples — one fetch serves both lobes in the
+	// transport). Flat: m.baseColor.
+	if (m.baseTexId == 0xFFFFFFFFu)
+		return m.baseColor;
+	const GiTraceTexelData* data = nullptr;
+	glm::vec2 uv(0.0f);
+	if (!ResolveTexelAndUv(m.baseTexId, tri, baryUV, data, uv))
+		return m.baseColor;
+	const glm::vec4 t = SampleTexelBilinear(*data, uv);
+	return m.baseTexMulFull * glm::vec3(t);
 }
 
 bool GiTraceScene::ResolveTexelAndUv(uint32_t texId, uint32_t tri,
@@ -382,10 +573,15 @@ glm::vec3 GiTraceScene::SkyAmbient() const {
 glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 	Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist,
 	glm::vec3* outFirstAlbedo) const {
-	// Baked field: sun + static spot NEE at every diffuse vertex
-	// (including the primary hit — the light a lit surface reflects toward
-	// the probe IS indirect at the probe), plus the analytic sky on miss
-	// (SkyRadiance, gradient only, NO sun disc). Baking the sky makes
+	// Baked field: the FULL glTF metallic-roughness BSDF transport —
+	// sun + static spot NEE at every vertex on BOTH lobes (the
+	// Lambertian diffuse with the vertex albedo, including the primary
+	// hit — the light a lit surface reflects toward the probe IS
+	// indirect at the probe; and the GGX specular with the vertex's
+	// metallic/roughness/F0 — metals reflect instead of absorbing),
+	// one-sample-MIS lobe sampling for the bounce hop, plus the
+	// analytic sky on miss (SkyRadiance, gradient only, NO sun disc).
+	// Baking the sky makes
 	// every baked source the COMPLETE ambient for its covered pixels —
 	// the runtime gate (default_lit_body.hlsli) never adds the analytic
 	// sky diffuse on top of a covered pixel (it is the fallback for
@@ -461,16 +657,37 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 			continue;
 		}
 
-		// Diffuse vertex: sun + spot NEE (both carry the vertex albedo
-		// and the Lambertian 1/pi; the runtime shader re-applies its local
-		// albedo for the lightmap diffuse, matching the probe path).
+		// BSDF vertex (the PBR transport): sun + spot NEE on BOTH
+		// lobes. The diffuse terms carry the vertex albedo + the
+		// Lambertian 1/pi (unchanged semantics — the runtime shader
+		// re-applies its local albedo for the lightmap diffuse,
+		// matching the probe path); the SPECULAR terms evaluate the
+		// GGX BRDF toward the light with the vertex's metallic/
+		// roughness/F0 — a diffuse-only transport returned zero here,
+		// so METALS contributed nothing to the field (every specular
+		// bounce absorbed: the gold-trim energy hole).
+		const glm::vec2 mr = MetallicRoughnessAt(m, h.tri, h.baryUV);
+		const float metal = mr.x;
+		const float rough = mr.y;
+		const glm::vec3 baseFull = BaseColorAt(m, h.tri, h.baryUV);
+		const glm::vec3 f0 = glm::mix(glm::vec3(0.04f), baseFull, metal);
+		const glm::vec3 wo = -d;
 		L += throughput * (SampleSun(pos, n, m, vertexAlbedo)
-			+ SampleSpots(pos, n, m, vertexAlbedo));
+			+ SampleSpots(pos, n, m, vertexAlbedo)
+			+ SampleSunSpec(pos, n, wo, f0, rough)
+			+ SampleSpotsSpec(pos, n, wo, f0, rough));
 
-		throughput *= vertexAlbedo;
+		// Next hop: one-sample MIS over the diffuse + GGX lobes (the
+		// estimator weight rides the throughput). White-world runs the
+		// SAME machinery with its uniform colors — uncolored PBR (the
+		// metal F0 is the uniform white): the SG chroma convention
+		// stands while the metal absorption hole closes.
+		const BsdfSample bs = SampleFullBsdf(rng, n, wo,
+			vertexAlbedo, f0, rough);
+		throughput *= bs.weight;
 		if (Luminance(throughput) < 1e-4f)
 			break;
-		d = CosineHemisphere(rng, n);
+		d = bs.dir;
 		p = pos + n * kSurfEps;
 	}
 	return L;
@@ -744,16 +961,22 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 	// Node-material pairs first so materials vector indices are stable.
 	auto internMaterial = [&](const Material& mat) -> uint32_t {
 		GiTraceMaterial gm{};
-		// metallic = factor * MR-texture B (the runtime shader
-		// convention: glTF metallicFactor defaults to 1 with the real
-		// value in the metallicRoughness texture's blue channel).
+		// metallic = factor * MR-texture B, roughness = factor *
+		// MR-texture G (the runtime shader convention: glTF factors
+		// default to 1 with the real values in the metallicRoughness
+		// texture's B/G channels; the flat path folds the AVERAGES, the
+		// per-hit path multiplies the texel — see MetallicRoughnessAt).
 		float metallic = std::clamp(mat.values.params.y, 0.0f, 1.0f);
+		float roughness = std::clamp(mat.values.params.z, 0.04f, 1.0f);
 		if (mat.values.textures.y >= 0) {
 			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.y));
-				it != opts.texelAvg.end())
+				it != opts.texelAvg.end()) {
 				metallic *= it->second.b;
+				roughness *= it->second.g;
+			}
 		}
 		metallic = std::clamp(metallic, 0.0f, 1.0f);
+		roughness = std::clamp(roughness, 0.04f, 1.0f);
 		glm::vec3 base = glm::vec3(mat.values.diffuse);
 		if (mat.values.textures.x >= 0) {
 			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.x));
@@ -784,6 +1007,18 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 			gm.emissive = glm::vec3(0.0f);
 		} else {
 			gm.albedo = base * (1.0f - metallic);
+			// The PBR specular state (the full-BSDF transport): the
+			// undimmed FULL base (the metal F0 tint) + the per-hit
+			// metallic/roughness. The MR TEXEL slot rides in BOTH
+			// modes (white-world keeps METALLIC — uncolored PBR, the
+			// metal F0 is the uniform white).
+			gm.baseColor = base;
+			gm.metallic = metallic;
+			gm.roughness = roughness;
+			if (mat.values.textures.y >= 0
+				&& opts.texelData.find(uint32_t(mat.values.textures.y))
+					!= opts.texelData.end())
+				gm.mrTexId = uint32_t(mat.values.textures.y);
 			gm.emissive = opts.includeEmissive
 				? glm::vec3(mat.values.emissiveFactor) * mat.values.params2.z
 				: glm::vec3(0.0f);
@@ -802,6 +1037,9 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 				gm.baseTexId = baseTexId;
 				gm.baseTexMul = glm::vec3(mat.values.diffuse)
 					* (1.0f - metallic);
+				// The spec twin: undimmed (baseTexMulFull * texel is
+				// the FULL base at the hit — the metal F0 tint).
+				gm.baseTexMulFull = glm::vec3(mat.values.diffuse);
 			}
 			if (weaveCloth) {
 				// Weave-transmissive cloth (MASK + maskTransmissive): the
@@ -825,13 +1063,17 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 		}
 		if (opts.uniformAlbedo) {
 			// White-world mode: one known diffuse albedo everywhere, no
-			// emissive. Analytically checkable transport (debug) — but
-			// the TRANSMISSION tint stays REAL (the glass's tint, the
-			// cloth's weave tint: the tint through a surface is the
-			// visible effect the bake wants, not its diffuse albedo;
-			// whitening it would grey the tinted light pools).
+			// emissive — and the metal F0 is the uniform WHITE (uncolored
+			// PBR: metallic surfaces keep the full-BSDF transport, the
+			// chroma-free form of the SG convention). Analytically
+			// checkable transport (debug) — but the TRANSMISSION tint
+			// stays REAL (the glass's tint, the cloth's weave tint: the
+			// tint through a surface is the visible effect the bake
+			// wants, not its diffuse albedo; whitening it would grey the
+			// tinted light pools).
 			if (!blendGlass) {
 				gm.albedo = opts.uniformAlbedoValue;
+				gm.baseColor = opts.uniformAlbedoValue;
 				gm.emissive = glm::vec3(0.0f);
 			}
 		}
@@ -849,7 +1091,12 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 				&& glm::all(glm::equal(o.baseTexMul, gm.baseTexMul))
 				&& o.transTexId == gm.transTexId
 				&& glm::all(glm::equal(o.transTexMul, gm.transTexMul))
-				&& o.transAlphaCutoff == gm.transAlphaCutoff)
+				&& o.transAlphaCutoff == gm.transAlphaCutoff
+				&& o.metallic == gm.metallic
+				&& o.roughness == gm.roughness
+				&& glm::all(glm::equal(o.baseColor, gm.baseColor))
+				&& glm::all(glm::equal(o.baseTexMulFull, gm.baseTexMulFull))
+				&& o.mrTexId == gm.mrTexId)
 				return i;
 		}
 		out.materials.push_back(gm);

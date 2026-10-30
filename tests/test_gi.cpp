@@ -299,8 +299,14 @@ void TestGiPrimarySunIncluded() {
 	// bounces allowed returns EXACTLY the sunlit-surface term: the light
 	// a sunlit surface reflects toward the probe is one-bounce indirect
 	// at the probe (the runtime shadow maps evaluate direct sun at the
-	// shaded surface itself, so nothing double-counts).
-	// Expected: sunColor * (I * ndl) * albedo / pi, ndl = 1 here.
+	// shaded surface itself, so nothing double-counts). BOTH lobes
+	// since the full-BSDF transport: the Lambertian diffuse
+	//   sunColor * (I * ndl) * albedo / pi
+	// + the GGX specular NEE (rough 1, metallic 0 → F0 = 0.04):
+	//   sunColor * I * D*G*F / (4 * ndo)
+	// with ndl = ndo = ndh = wo.h = 1 (the ray, normal and sun all +Z):
+	// D(1, a=1) = 1/pi, G = 1, F(1) = 0.04 → the spec term is
+	// sunColor * I * 0.04 / (4 pi) — total (0.7 + 0.01) * I / pi.
 	std::vector<glm::vec3> pos = {
 		{ -10, -10, 0 }, { 10, -10, 0 }, { 0, 10, 0 },
 	};
@@ -310,9 +316,74 @@ void TestGiPrimarySunIncluded() {
 	const glm::vec3 L = scene.TraceIncoming(
 		glm::vec3(0, 0, 1), glm::vec3(0, 0, -1), rng, 0);
 	const glm::vec3 expect = glm::vec3(1.0f, 0.95f, 0.90f)
-		* (10000.0f * 0.7f / kPi);
+		* (10000.0f * (0.7f + 0.04f / 4.0f) / kPi);
 	Check(glm::length(L - expect) / glm::length(expect) < 1e-5f,
 		"gi primary vertex includes one-bounce sun exactly");
+}
+
+void TestGiPbrTransport() {
+	// The full-BSDF transport pin: a 45-degree METAL mirror redirects a
+	// grazing-horizontal sun DOWN onto an otherwise-dark floor (the sun
+	// at (1,0,0) has ndl = 0 on the horizontal floor — no diffuse term
+	// anywhere; sky = 0). A diffuse-only transport returned ZERO here
+	// (the metal's diffuse albedo is base*(1-metallic) = 0 — every
+	// specular bounce absorbed, the gold-trim energy hole in miniature):
+	// the ENTIRE floor illumination is the GGX specular NEE + the
+	// spec-sampled bounce paths.
+	GiTraceScene scene;
+	scene.sunDirection = glm::normalize(glm::vec3(1.0f, 0.0f, 0.0f));
+	scene.sunColor = glm::vec3(1.0f, 0.95f, 0.90f);
+	scene.sunIntensity = 10000.0f;
+	scene.skyIntensity = 0.0f;
+	GiTraceMaterial floorMt{};
+	floorMt.albedo = glm::vec3(0.5f); // plain dielectric
+	GiTraceMaterial mirrorMt{};
+	mirrorMt.albedo = glm::vec3(0.0f); // metallic: the diffuse lobe is 0
+	mirrorMt.metallic = 1.0f;
+	mirrorMt.roughness = 0.15f;
+	mirrorMt.baseColor = glm::vec3(1.0f); // a white metal (white-world's form)
+	scene.materials = { floorMt, mirrorMt };
+	std::vector<glm::vec3> pos;
+	std::vector<uint32_t> idx;
+	std::vector<uint32_t> triMat;
+	// Double-sided quad helper (both windings — the transport flips the
+	// shading normal to face the ray, orientation is not the subject).
+	auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+		uint32_t mat) {
+		const uint32_t b0 = uint32_t(pos.size());
+		pos.insert(pos.end(), { a, b, c, d });
+		idx.insert(idx.end(), { b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3,
+			b0, b0 + 2, b0 + 1, b0, b0 + 3, b0 + 2 });
+		for (int i = 0; i < 4; ++i)
+			triMat.push_back(mat);
+	};
+	// Floor: 20x20 at y = 0 (material 0).
+	quad({ -10, 0, -10 }, { 10, 0, -10 }, { 10, 0, 10 }, { -10, 0, 10 }, 0u);
+	// Mirror: 2x2 centered (0, 3, 0), the plane x - y = -3 (normal
+	// (1,-1,0)/sqrt2 — faces +X and DOWN: ndl = 0.707 against the
+	// horizontal sun, and the reflected travel direction (-1,0,0)
+	// maps to (0,-1,0) — straight down onto the floor spot at the
+	// origin).
+	quad({ 1, 4, -1 }, { 1, 4, 1 }, { -1, 2, 1 }, { -1, 2, -1 }, 1u);
+	scene.positions = pos;
+	scene.indices = idx;
+	scene.triMaterial = triMat;
+	scene.Finalize();
+	Check(scene.Bvh().TriangleCount() == 8, "pbr scene tri count");
+
+	// The probe ON the reflected beam spot vs one 5 m off-beam (which
+	// sees the same mirror at a lobe-off angle — the dark floor is the
+	// only other surface, and it has no light of its own).
+	Pcg32 rngBeam(21), rngOff(22);
+	const glm::vec3 eBeam = scene.TraceIrradiance(
+		glm::vec3(0.0f, 0.05f, 0.0f), glm::vec3(0, 1, 0), rngBeam, 256, 2);
+	const glm::vec3 eOff = scene.TraceIrradiance(
+		glm::vec3(0.0f, 0.05f, 5.0f), glm::vec3(0, 1, 0), rngOff, 256, 2);
+	Check(Luminance(eBeam) > 500.0f,
+		"pbr mirror beam lights the floor (specular transport)");
+	Check(Luminance(eOff) < Luminance(eBeam) / 50.0f,
+		"pbr off-beam floor stays dark (the beam is the reflection law's)");
+	Check(Luminance(eBeam) < 1.0e6f, "pbr mirror energy bounded");
 }
 
 void TestGiEnergyBound() {
@@ -3243,6 +3314,7 @@ int main() {
 	smvk::gi::TestSgFitHighContrast();
 	smvk::gi::TestGiEmptyScene();
 	smvk::gi::TestGiPrimarySunIncluded();
+	smvk::gi::TestGiPbrTransport();
 	smvk::gi::TestGiEnergyBound();
 	smvk::gi::TestGiWeaveTransmission();
 	smvk::gi::TestSgDiffuseAgainstMonteCarlo();

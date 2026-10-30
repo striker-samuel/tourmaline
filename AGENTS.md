@@ -360,6 +360,20 @@ ICD).
   flow: `tools/cook/cook_sponza.bat`
   runs Cook → GiBaker (the convex volumes + the global octree from
   `F:/content/models/sponza/Sponza.tour`) → Pak
+- Bake transport is FULL PBR (`kBakeAlgorithmRevision` 2): every vertex traces
+  the whole glTF metallic-roughness BSDF — the Lambertian diffuse NEE (as
+  before) PLUS the GGX specular NEE toward the sun + static spots
+  (per-hit metallic/roughness from the MR texel's B/G, F0 =
+  mix(0.04, fullBase, metallic)) and one-sample-MIS lobe sampling for the
+  bounce hop. A diffuse-only transport treats METAL as black (every specular
+  bounce absorbed — Sponza's gold trim ate the sun); white-world runs the SAME
+  machinery with its uniform colors (the metal F0 is the uniform WHITE —
+  uncolored PBR, chroma-free, the SG convention preserved while the metal
+  absorption hole closes). Pinned by TestGiPbrTransport (the 45-degree metal
+  mirror redirecting a grazing sun onto a dark floor — zero under a
+  diffuse-only transport) + the exact analytic re-pin in
+  TestGiPrimarySunIncluded (both lobes' closed forms). Emissive stays
+  runtime-only (never baked).
 - GI firefly clamp (GiBaker `--clamp 8|off`, both volume bakers): the two-pass
   per-probe cap at clampRatio x the probe's own finite-sample mean luminance,
   pre-SG-fit. The clamp is ALSO a systematic energy loss on spiky distributions

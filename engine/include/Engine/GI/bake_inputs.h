@@ -90,7 +90,10 @@ inline std::string BakeInputHash(const std::string& s) {
 // refuses the old records wholesale (the no-compat contract — re-bake).
 // It is deliberately NOT an input: it rides the unit definition side so
 // env/light/geometry hashes stay byte-stable for debugging.
-inline constexpr uint32_t kBakeAlgorithmRevision = 1;
+// v2: the FULL-BSDF PBR transport (GGX specular NEE + one-sample-MIS
+// lobe sampling — metals reflect instead of absorbing; every prior
+// bake under-reports indirect near metallic or glossy surfaces).
+inline constexpr uint32_t kBakeAlgorithmRevision = 2;
 
 // ---------------------------------------------------------------------------
 // The geometry merkle
