@@ -57,6 +57,7 @@
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/giprobe.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/tonemap.h>
@@ -2245,7 +2246,20 @@ private:
 	// 0 = off, 1 = wireframe, 2 = wireframe + translucent fill.
 	// Color-coded by PRIORITY (hue = priority * 0.13 mod 1) so stacked
 	// override volumes read at a glance.
+	// LIGHTING 'J' cycle: 0 off, 1 wireframe hull, 2 solid hull,
+	// 3 baked probe dots (needs .givolumemanifest bake files),
+	// 4 the PRE-BAKE 3D lattice (RecordGiProbeLatticePass - the
+	// authored defs' would-be probe grids as instanced spheres; no
+	// bake needed).
 	int m_giVolumePreviewMode = 0;
+	// The pre-bake lattice visual (Engine/Rendergraph/giprobe.h, mode 2:
+	// flat color, no bake data touched) + its per-volume scratch tables
+	// (rows re-uploaded every armed frame - authored volumes move/edit
+	// live in the editor).
+	smvk::giprobe::GiProbeVisual m_giProbeVisual{};
+	smvk::Holder<smvk::BufferHandle> m_giProbeDraftBuf[8]{};
+	uint64_t m_giProbeDraftBda[8] = {};
+	void RecordGiProbeLatticePass(int vpIdx); // editor_render.cpp
 	struct GiVolumePreview {
 		std::string name;    // bake file stem
 		uint32_t priority = 0;

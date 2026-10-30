@@ -771,14 +771,16 @@ namespace editor {
 		ImGui::Separator();
 			{
 				// Convex GI volume preview (LIGHTING 'J'): off/wire/
-				// solid/probes (the probe mode draws the dense bake
-				// lattice — coverage: green = baked nonzero, red =
-				// zero/invalid).
-				const char* cvNames[4] = { "Off", "Wireframe", "Solid",
-					"Probes" };
+				// solid/probes/lattice (the probe mode draws the dense
+				// bake lattice — coverage: green = baked nonzero, red =
+				// zero/invalid; the lattice mode draws the AUTHORED
+				// defs' would-be grids as instanced 3D spheres —
+				// location/density BEFORE any bake).
+				const char* cvNames[5] = { "Off", "Wireframe", "Solid",
+					"Probes", "Lattice (pre-bake)" };
 				if (ImGui::BeginCombo("GI volumes (J)",
 					cvNames[m_giVolumePreviewMode])) {
-					for (int i = 0; i < 4; ++i)
+					for (int i = 0; i < 5; ++i)
 						if (ImGui::Selectable(cvNames[i], m_giVolumePreviewMode == i))
 							m_giVolumePreviewMode = i;
 					ImGui::EndCombo();

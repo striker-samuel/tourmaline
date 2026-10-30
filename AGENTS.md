@@ -183,6 +183,27 @@ $env:TOURMALINE_CAPTURE='48'
   instance cull in the VS. Gates on (m_giVolumesLoaded &&
   m_giVolumesEnabled) - the same condition the FrameUniforms
   giVolumeLayers slots publish under
+- The probe spheres have three COLOR MODES (the Debug panel's "Probe
+  color mode" combo or `TOURMALINE_GI_PROBE_MODE=0|1|2`): 0 = baked GI
+  (the white-Lambertian answer E * giIntensity / PI - physical
+  radiance, never exposure-scaled), 1 = VISIBILITY (the retired ImGui
+  dot overlay's coplanarity check revived in 3D: the probe's min 6-axis
+  obstacle distance from the vis layers, exact texel - RED < 0.05 m
+  blocked/inside, YELLOW < 1 m near-surface, GREEN open, flat gray = no
+  vis data), 2 = the PRE-BAKE LATTICE (a flat marker color, NO bake
+  data read - the AUTHORED volume defs' would-be grids from
+  scene.giVolumeForNode, cook-parity OBB decode + BakeGiVolume's
+  gridMin/dims math via BuildGiProbeLatticeRows; rebuilt every armed
+  frame so live editor moves show). The marker modes' colors are
+  display-authored and pre-scaled by 1/exposure (the flat-view
+  convention - GiProbePush::markerGain); mode 2 needs no FrameUniforms
+  BDA. Modes 0/1 gate on (m_giVolumesLoaded && m_giVolumesEnabled);
+  mode 2 gates on authored nodes existing. The EDITOR's LIGHTING 'J'
+  preview cycle gained a 5th stop ("lattice (pre-bake)") that renders
+  the same 3D spheres per viewport (EditorApp::RecordGiProbeLatticePass,
+  sub-rect AppendPass offsets) - probe location/density inspection
+  before the first bake. BuildGiProbeLatticeRows is unit-tested in
+  test_gi.cpp (bake-parity dims/positions + the cap/degenerate edges)
 - `TOURMALINE_GEOMETRY_STREAMING=1` gates GPU geometry LOD streaming
   (geometry_streamer.h - v1 stages 1-3 + logical stage-4 eviction,
   DEFAULT OFF): cluster load defers the middle LOD siblings (LOD0 bases

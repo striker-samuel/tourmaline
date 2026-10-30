@@ -48,10 +48,12 @@ struct GiProbePush
 {
     float4x4 viewProj;   // 0  the rendering view's VP (reversed-Z, Y-flipped)
     float4 eyeMaxDist;   // 64 xyz camera, w the distance filter (m)
-    vk::BufferPointer<FrameUniforms> frame; // 72 the giVolumeLayers slots
+    vk::BufferPointer<FrameUniforms> frame; // 72 the giVolumeLayers slots (0 = unused in lattice mode)
     vk::BufferPointer<GiProbeInstanceArray> instances; // 80 this volume's rows
     uint volumeIndex;    // 88 the giVolumeLayers row / 7
-    uint pad_[3];        // 92 (16-align tail; 112 total)
+    uint mode;           // 92 0 baked GI, 1 visibility, 2 lattice
+    float markerGain;    // 96 1/exposure for the marker modes (1/2)
+    uint pad_;           // 100 (16-align tail; 112 total)
 };
 
 [[vk::push_constant]]
@@ -91,12 +93,68 @@ VSOut mainVS(VSIn IN, uint instanceIndex : SV_InstanceID)
         }
     }
 
-    // The probe's EXACT texel: 7 point-fetches (Load = OpImageFetch —
+    // ---- Probe color modes (GiProbePush::mode) ----
+    // 2 = LATTICE (pre-bake preview): flat neutral, NO texture fetches -
+    //    the authored volume's would-be grid (location/density), works
+    //    before any bake exists. frame is never dereferenced.
+    if (pb.mode == 2u)
+    {
+        // Display-authored marker color: pre-scale by 1/exposure (the
+        // flat-debug-view convention) or the manual physical exposure
+        // (~0.001) crushes it to black through the tonemap.
+        OUT.color = float3(0.42, 0.47, 0.58) * pb.markerGain;
+        OUT.pos = mul(pb.viewProj, float4(worldPos, 1.0));
+        return OUT;
+    }
+
+    // Modes 0/1 read the frame (the volume layers / vis slots); the
+    // lattice mode returned above WITHOUT touching pb.frame (its BDA
+    // may be 0 - no bake exists to publish).
+    FrameUniforms frame = pb.frame.Get();
+
+    // 1 = VISIBILITY (the retired ImGui dot overlay's coplanarity check,
+    //    revived in 3D): the probe's min 6-axis obstacle distance from
+    //    the volume's vis layers, exact texel - RED = blocked/inside
+    //    (< 0.05 m), YELLOW = near-surface (< 1 m), GREEN = open (the
+    //    old overlay's meter thresholds and palette). Flat gray = the
+    //    volume has no vis data (a pre-visibility bake).
+    if (pb.mode == 1u)
+    {
+        const uint visA_slot = frame.giVolumeVisLayers[pb.volumeIndex * 2u];
+        const uint visB_slot = frame.giVolumeVisLayers[pb.volumeIndex * 2u + 1u];
+        if (visA_slot == 0xffffffffu || visB_slot == 0xffffffffu)
+        {
+            OUT.color = float3(0.18, 0.18, 0.18); // no vis data
+        }
+        else
+        {
+            const float4 visA = volumeTextures[visA_slot].Load(int4(inst.grid, 0));
+            const float4 visB = volumeTextures[visB_slot].Load(int4(inst.grid, 0));
+            // Spacing reconstruction (SgGiVolumeDebugProbeDistance's):
+            // uvwScale = 1 / (spacing * dims), dims.x rides uvwScale.w.
+            const GiVolumeGpu v = frame.giVolumes.Get().volumes[pb.volumeIndex];
+            const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+            const float spacingApprox =
+                1.0 / max(v.uvwScale.x * dims.x, 1e-6);
+            // Storage: spacing units quantized [0, 15] unorm8 -> meters.
+            const float kFull = 15.0;
+            const float mn = min(min(min(visA.x, visA.y), min(visA.z, visA.w)),
+                min(visB.x, visB.y)) * kFull * spacingApprox;
+            // Display-authored palette (the retired overlay's): same
+            // 1/exposure pre-scale as every flat debug color.
+            OUT.color = (mn < 0.05 ? float3(1.0, 0.24, 0.24)
+                : mn < 1.0 ? float3(1.0, 0.86, 0.24)
+                : float3(0.35, 0.9, 0.35)) * pb.markerGain;
+        }
+        OUT.pos = mul(pb.viewProj, float4(worldPos, 1.0));
+        return OUT;
+    }
+
+    // 0 = BAKED GI (default): the probe's EXACT texel: 7 point-fetches (Load = OpImageFetch —
     // no sampler filtering), the same slot math SgGiVolumeSample uses
     // (giVolumeLayers[vol * 7 + t]). The layer index rides a
     // wave-uniform loop counter, so the plain bindless index keeps the
     // descriptor fetch scalar.
-    FrameUniforms frame = pb.frame.Get();
     float4 layers[SG_GI_VOLUME_LAYERS];
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)

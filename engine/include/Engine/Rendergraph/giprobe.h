@@ -37,11 +37,13 @@
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/GI/cubemap_volume.h>
 #include <Engine/platform.h>
 
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <vector>
 
 namespace smvk::giprobe {
 
@@ -84,12 +86,22 @@ struct GiProbeVolumeRow {
 struct alignas(16) GiProbePush {
 	glm::mat4 viewProj;  // 0  the rendering view's VP (reversed-Z, Y-flipped)
 	glm::vec4 eyeMaxDist; // 64 xyz camera, w the distance filter (m)
-	uint64_t frame = 0;     // 72 FrameUniforms BDA
+	uint64_t frame = 0;     // 72 FrameUniforms BDA (0 in lattice mode)
 	uint64_t instances = 0; // 80 the volume's instance-table BDA
 	uint32_t volumeIndex = 0; // 88 the giVolumeLayers row / 7
-	uint32_t pad_[3]{};       // 92 (16-align tail; 112 total)
+	uint32_t mode = 0;        // 92 0 baked GI, 1 visibility, 2 lattice
+	float markerGain = 1.0f;  // 96 1/exposure for the MARKER modes (1/2):
+	                           //    display-authored colors, the flat-view
+	                           //    pre-scale convention (the baked-GI mode
+	                           //    is physical radiance, never scaled)
+	uint32_t pad_{};          // 100 (16-align tail; 112 total)
 };
 static_assert(sizeof(GiProbePush) == 112);
+
+// Probe color modes (GiProbePush::mode; the VS branch selector).
+inline constexpr uint32_t kGiProbeModeBakedGI = 0;
+inline constexpr uint32_t kGiProbeModeVisibility = 1;
+inline constexpr uint32_t kGiProbeModeLattice = 2;
 
 struct GiProbeVisual {
 	Holder<BufferHandle> sphereVB;   // TerrainVertex unit icosphere
@@ -124,7 +136,53 @@ struct GiProbeVisual {
 		LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
 		Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,
 		float maxDist, const GiProbeVolumeRow* rows, uint32_t rowCount,
-		uint64_t frameUniformsAddress);
+		uint64_t frameUniformsAddress,
+		uint32_t colorMode = kGiProbeModeBakedGI,
+		float markerGain = 1.0f,
+		uint32_t offsetX = 0, uint32_t offsetY = 0);
 };
+
+// The PRE-BAKE lattice (cook parity): the authored OBB (center/axes/
+// half) + spacing -> the dense probe grid the bake WOULD build (the
+// BakeGiVolume gridMin/dims math verbatim: def.Bounds -> ceil(extent /
+// spacing), capped per-axis), strided to the draw cap. Mode 2's row
+// source - grid coords are filled for shape parity but the lattice VS
+// never fetches textures (no bake exists). Returns the row count
+// (0 = degenerate/unbounded planes).
+[[nodiscard]] inline uint32_t BuildGiProbeLatticeRows(
+	const glm::vec3& center, const glm::mat3& axes,
+	const glm::vec3& half, float spacing,
+	std::vector<GiProbeInstance>& out,
+	uint32_t cap = kGiProbeMaxInstances)
+{
+	out.clear();
+	spacing = std::max(spacing, 0.01f);
+	smvk::gi::GiVolumeDef def;
+	def.planes = smvk::gi::GiVolumeBoxPlanesRotated(center, axes, half);
+	glm::vec3 bMin, bMax;
+	if (!def.Bounds(bMin, bMax))
+		return 0;
+	uint32_t dims[3] = { 1, 1, 1 };
+	for (int a = 0; a < 3; ++a) {
+		dims[a] = std::min(
+			std::max(1u, uint32_t(std::ceil((bMax[a] - bMin[a]) / spacing))),
+			smvk::gi::kGiVolumeMaxDim);
+	}
+	const uint64_t n = uint64_t(dims[0]) * dims[1] * dims[2];
+	const uint64_t stride = std::max<uint64_t>(1, (n + cap - 1) / cap);
+	for (uint64_t v = 0; v < n && out.size() < cap; v += stride) {
+		const uint32_t ix = uint32_t(v % dims[0]);
+		const uint32_t iy = uint32_t((v / dims[0]) % dims[1]);
+		const uint32_t iz =
+			uint32_t(v / (uint64_t(dims[0]) * dims[1]));
+		GiProbeInstance row{};
+		row.pos = bMin + (glm::vec3(ix, iy, iz) + 0.5f) * spacing;
+		row.grid[0] = ix;
+		row.grid[1] = iy;
+		row.grid[2] = iz;
+		out.push_back(row);
+	}
+	return uint32_t(out.size());
+}
 
 } // namespace smvk::giprobe

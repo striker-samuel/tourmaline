@@ -1305,7 +1305,98 @@ namespace editor {
 			uvMinX, uvMinY, uvMaxX, uvMaxY);
 	}
 
-	void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
+// The PRE-BAKE probe lattice (LIGHTING 'J' cycle mode 4): the AUTHORED
+// GI volume nodes' would-be grids as instanced 3D spheres (the engine's
+// GiProbeVisual, color mode 2 - a flat marker color, NO bake data read,
+// so it works before the first bake exists). Rows are rebuilt on every
+// armed frame (authored volumes move/edit live in the editor) and are
+// viewport-independent - each viewport just records the pass again with
+// its own viewProj/eye/rect.
+void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
+	if (m_mode != EditorMode::Lighting || m_giVolumePreviewMode != 4)
+		return;
+	if (!m_world || m_world->scene.giVolumeForNode.empty())
+		return;
+	// Only the HDR path (the direct-write fallback has no tonemap chain
+	// to composite over - same gate as EditorMain's viaHdr).
+	if (!m_previewTonemap.ShadersValid() || !m_sceneHdr.Valid())
+		return;
+	m_giProbeVisual.Ensure(*m_context); // idempotent (geometry + modules)
+
+	smvk::giprobe::GiProbeVolumeRow rows[8];
+	uint32_t rowCount = 0;
+	{
+		std::vector<uint32_t> nodes;
+		nodes.reserve(m_world->scene.giVolumeForNode.size());
+		for (const auto& [node, cv] : m_world->scene.giVolumeForNode)
+			nodes.push_back(node);
+		std::sort(nodes.begin(), nodes.end());
+		std::vector<smvk::giprobe::GiProbeInstance> lattice;
+		for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
+			const uint32_t node = nodes[ni];
+			// The editor's own OBB decode (GiVolumeOBB - the gizmo
+			// path's tested transform reading).
+			glm::vec3 center, half;
+			glm::mat3 axes;
+			if (!GiVolumeOBB(node, center, axes, half))
+				continue;
+			const float spacing = std::max(
+				m_world->scene.giVolumeForNode[node].spacing, 0.01f);
+			BuildGiProbeLatticeRows(center, axes, half, spacing, lattice);
+			if (lattice.empty())
+				continue;
+			if (m_giProbeDraftBuf[ni].empty()) {
+				m_giProbeDraftBuf[ni] = m_context->CreateBuffer(
+					smvk::giprobe::kGiProbeMaxInstances
+						* sizeof(smvk::giprobe::GiProbeInstance),
+					smvk::BufferType_Storage, "editor gi probe lattice");
+				if (m_giProbeDraftBuf[ni].empty())
+					continue;
+				m_giProbeDraftBda[ni] =
+					m_context->GetBufferDeviceAddress(m_giProbeDraftBuf[ni]);
+			}
+			m_context->UploadDataToBuffer(m_giProbeDraftBuf[ni],
+				lattice.data(), lattice.size() * sizeof(lattice[0]),
+				smvk::PipelineStageBit_Vertex,
+				smvk::AccessFlags::ShaderRead, 0, 0);
+			smvk::giprobe::GiProbeVolumeRow& row = rows[rowCount];
+			row.instances = m_giProbeDraftBuf[ni];
+			row.instancesBda = m_giProbeDraftBda[ni];
+			row.instanceCount = uint32_t(lattice.size());
+			row.volumeIndex = uint32_t(ni); // unused in mode 2
+			++rowCount;
+		}
+	}
+	if (rowCount == 0)
+		return;
+	const ViewportRect& vp = m_viewports[vpIdx].rect;
+	const EditorViewport& evp = m_viewports[vpIdx];
+	// Per-viewport eye (the overlay projection's resolution pattern: the
+	// orbit cam when unbound; the bound-camera case rides the
+	// precomputed viewProj and eye only feeds the distance cull).
+	glm::vec3 eye(0.0f);
+	if (evp.camIdx >= 0 && size_t(evp.camIdx) < m_editorCams.size())
+		eye = EditorCamEye(m_editorCams[size_t(evp.camIdx)]);
+	// Large fixed maxDist: the lattice is an authoring preview - hide
+	// far volumes and the density read breaks mid-inspection.
+	// The marker color's 1/exposure pre-scale (the editor preview's own
+	// exposure chain - PreviewExposure, the same value the tonemap layer
+	// grades this rect with).
+	const float markerGain =
+		1.0f / std::max(PreviewExposure(), 1e-6f);
+	(void)m_giProbeVisual.AppendPass(*m_rendergraph,
+		m_sceneHdr.logicalView,
+		m_depth.logicalView,
+		smvk::Extent2D{ uint32_t(vp.w), uint32_t(vp.h) },
+		evp.viewProj, eye, 500.0f,
+		rows, rowCount,
+		0 /*frame BDA unused in mode 2*/,
+		smvk::giprobe::kGiProbeModeLattice,
+		markerGain,
+		uint32_t(vp.x), uint32_t(vp.y));
+}
+
+void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		uint32_t flight, bool selectedWireOverlay) {
 		const ViewportRect& vp = m_viewports[vpIdx].rect;
 		// View mode is PER VIEWPORT (UV views are panel types too).
@@ -2118,6 +2209,10 @@ namespace editor {
 			if (LiveViewActive() && vpIdx == kLiveViewVp)
 				continue; // panel 0's rect shows the live view's composite
 			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
+			// The pre-bake probe lattice rides every viewport's tail
+			// (own gating inside; no-op unless 'J' mode 4 + authored
+			// volumes).
+			RecordGiProbeLatticePass(vpIdx);
 		}
 		// The gizmo + inset ride the ACTIVE viewport — they skip only
 		// while the ACTIVE one IS the live host (panel 0 in Lit): their

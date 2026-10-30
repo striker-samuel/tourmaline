@@ -33,6 +33,7 @@
 #include <Engine/GI/sg.h>
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Renderer/mesh.h> // StaticMeshUpload (curvature test)
+#include <Engine/Rendergraph/giprobe.h> // BuildGiProbeLatticeRows (pre-bake preview)
 
 namespace {
 
@@ -2735,6 +2736,90 @@ void TestCaptureReachTraversal() {
 
 } // namespace smvk::gi
 
+// The PRE-BAKE probe-lattice builder (Rendergraph/giprobe.h - the
+// editor/App lattice preview's row source): the authored OBB + spacing
+// -> the dense grid the bake WOULD build (BakeGiVolume's gridMin/dims
+// math), strided to the draw cap. Parity checks against the bake's own
+// numbers for a known box + the degenerate/cap edges.
+void TestGiProbeLatticeRows() {
+	std::vector<smvk::giprobe::GiProbeInstance> rows;
+	// Identity box: center 0, axes I, half (2, 1, 0.5), spacing 1 ->
+	// bounds exactly +-half (a box's planes bound it exactly), extents
+	// (4, 2, 1) -> dims (4, 2, 1) = 8 probes at half-spacing offsets.
+	{
+		const uint32_t n = smvk::giprobe::BuildGiProbeLatticeRows(
+			glm::vec3(0.0f), glm::mat3(1.0f),
+			glm::vec3(2.0f, 1.0f, 0.5f), 1.0f, rows);
+		Check(n == 8 && rows.size() == 8, "lattice.box-count-8");
+		if (rows.size() == 8) {
+			// First probe: gridMin (-2,-1,-0.5) + (0.5,0.5,0.5) * 1.
+			Check(glm::all(glm::epsilonEqual(rows[0].pos,
+					glm::vec3(-1.5f, -0.5f, 0.0f), 1e-5f)),
+				"lattice.first-probe-center");
+			// Last (x fastest): grid (3,1,0) -> (-2+3.5, -1+1.5, 0).
+			Check(glm::all(glm::epsilonEqual(rows[7].pos,
+					glm::vec3(1.5f, 0.5f, 0.0f), 1e-5f)),
+				"lattice.last-probe-center");
+			Check(rows[0].grid[0] == 0 && rows[0].grid[1] == 0
+				&& rows[0].grid[2] == 0, "lattice.first-grid-000");
+			Check(rows[1].grid[0] == 1 && rows[1].grid[1] == 0,
+				"lattice.x-fastest-order");
+		}
+	}
+	// Ceil rounding: extents (2.0, 3.1, 1.5) at spacing 1.5 ->
+	// dims (2, 3, 1) (ceil of 1.33/2.07/1.0), 6 probes.
+	{
+		const uint32_t n = smvk::giprobe::BuildGiProbeLatticeRows(
+			glm::vec3(0.0f), glm::mat3(1.0f),
+			glm::vec3(1.0f, 1.55f, 0.75f), 1.5f, rows);
+		Check(n == 2u * 3u * 1u, "lattice.ceil-dims");
+	}
+	// Cap: a dense grid strides down to <= the draw cap.
+	{
+		const uint32_t n = smvk::giprobe::BuildGiProbeLatticeRows(
+			glm::vec3(0.0f), glm::mat3(1.0f),
+			glm::vec3(20.0f, 20.0f, 20.0f), 0.25f, rows);
+		Check(n > 0 && n <= smvk::giprobe::kGiProbeMaxInstances,
+			"lattice.cap-bounded");
+	}
+	// Degenerate OBB (zero half extents on every axis): no closed
+	// region -> no rows.
+	{
+		const uint32_t n = smvk::giprobe::BuildGiProbeLatticeRows(
+			glm::vec3(0.0f), glm::mat3(1.0f),
+			glm::vec3(0.0f), 0.5f, rows);
+		Check(n == 0 && rows.empty(), "lattice.degenerate-empty");
+	}
+	// BAKE PARITY: the builder's grid matches what BakeGiVolume lays
+	// out for the same def - dims + gridMin + the texel-center probe
+	// placement (the (i + 0.5) * spacing convention the runtime's uvw
+	// transform encodes).
+	{
+		smvk::gi::GiVolumeDef def;
+		def.planes = smvk::gi::GiVolumeBoxPlanesRotated(
+			glm::vec3(3.0f, 0.0f, -2.0f), glm::mat3(1.0f),
+			glm::vec3(2.0f, 1.0f, 0.5f));
+		glm::vec3 bMin, bMax;
+		Check(def.Bounds(bMin, bMax), "lattice.parity-bounds");
+		if (!def.Bounds(bMin, bMax))
+			return;
+		// The bake's dims math, verbatim (BakeGiVolume lines 627-632).
+		uint32_t dims[3] = { 1, 1, 1 };
+		for (int a = 0; a < 3; ++a)
+			dims[a] = std::min(
+				std::max(1u, uint32_t(std::ceil((bMax[a] - bMin[a]) / 1.0f))),
+				smvk::gi::kGiVolumeMaxDim);
+		const uint32_t n = smvk::giprobe::BuildGiProbeLatticeRows(
+			glm::vec3(3.0f, 0.0f, -2.0f), glm::mat3(1.0f),
+			glm::vec3(2.0f, 1.0f, 0.5f), 1.0f, rows);
+		Check(n == dims[0] * dims[1] * dims[2], "lattice.parity-count");
+		if (!rows.empty())
+			Check(glm::all(glm::epsilonEqual(rows[0].pos,
+				bMin + glm::vec3(0.5f), 1e-5f)),
+				"lattice.parity-gridmin-halfstep");
+	}
+}
+
 int main() {
 	smvk::gi::TestSgBasis();
 	smvk::gi::TestSgSelfEnergy();
@@ -2762,6 +2847,7 @@ int main() {
 	smvk::gi::TestLightmapAtlasRoundtrip();
 	smvk::gi::TestBc6hCodec();
 	smvk::gi::TestCaptureReachTraversal();
+	TestGiProbeLatticeRows();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

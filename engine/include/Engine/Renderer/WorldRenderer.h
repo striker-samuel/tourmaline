@@ -2785,6 +2785,13 @@ public:
 	                              // colored by each probe's baked directional
 	                              // GI - see Rendergraph/giprobe.h)
 	float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
+	int m_giProbeColorMode = 0; // probe-sphere color: 0 baked GI,
+	                            // 1 visibility (blocked/near/open),
+	                            // 2 the pre-bake lattice preview
+	// Lattice-mode scratch (mode 2): fixed cap-sized buffers, rows
+	// re-uploaded every armed frame (authored volumes move/edit live).
+	smvk::Holder<smvk::BufferHandle> m_giProbeDraftBuf[8]{};
+	uint64_t m_giProbeDraftBda[8] = {};
 	bool m_giShowVolumeBounds = false; // GI volume AABB/OBB wireframe overlay
 	                              // (ImGui foreground, on top of the current
 	                              // view: regular OBBs + convex grid AABBs,

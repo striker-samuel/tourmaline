@@ -543,15 +543,25 @@ void EditorApp::ModalLightGizmosToggle() {
 }
 
 void EditorApp::ModalGiVolumePreviewCycle() {
-	// Off -> wireframe -> wireframe + translucent fill -> probe grid
-	// (the convex GI volumes baked by GiBaker --cv-spec; color-coded by
-	// priority; the probe mode draws the dense bake lattice — green
-	// dots carry radiance, red are zero/invalid voxels: the coverage
-	// answer).
-	static const char* kNames[4] = { "off", "wireframe", "solid",
-		"probes" };
-	m_giVolumePreviewMode = (m_giVolumePreviewMode + 1) % 4;
-	if (m_giVolumePreviews.empty() && m_giVolumePreviewMode != 0) {
+	// Off -> wireframe -> wireframe + translucent fill -> baked probe
+	// grid -> PRE-BAKE LATTICE (the convex GI volumes baked by GiBaker
+	// --cv-spec; color-coded by priority; the probe mode draws the dense
+	// bake lattice — green dots carry radiance, red are zero/invalid
+	// voxels: the coverage answer). Mode 4 needs NO bake files: the
+	// AUTHORED volume nodes' would-be grids as instanced 3D spheres —
+	// probe location/density inspection before the first bake.
+	static const char* kNames[5] = { "off", "wireframe", "solid",
+		"probes", "lattice (pre-bake)" };
+	m_giVolumePreviewMode = (m_giVolumePreviewMode + 1) % 5;
+	if (m_giVolumePreviewMode == 4) {
+		const size_t authored = m_world
+			? m_world->scene.giVolumeForNode.size() : 0;
+		Log(authored
+			? "GI volume preview: lattice (pre-bake) — "
+				+ std::to_string(authored) + " authored volume(s)"
+			: "GI volume preview: lattice (pre-bake) — no authored GI "
+				"volume nodes in the scene (create one in LIGHTING).");
+	} else if (m_giVolumePreviews.empty() && m_giVolumePreviewMode != 0) {
 		Log("GI volume preview: no .givolumemanifest bake files loaded "
 			"(bake GiBaker --cv-spec next to the pak).");
 	} else {

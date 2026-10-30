@@ -1431,6 +1431,16 @@ namespace engine {
 			if (std::atoi(giPtsEnv) != 0)
 				m_giShowProbes = true;
 		}
+		// Probe-sphere color mode (the panel combo's twin): 0 baked GI,
+		// 1 visibility (the coplanarity check, revived in 3D), 2 the
+		// pre-bake lattice preview (authored defs, no bake needed).
+		if (const char* pmEnv = std::getenv("TOURMALINE_GI_PROBE_MODE")) {
+			const int pm = std::atoi(pmEnv);
+			if (pm >= 0 && pm <= 2)
+				m_giProbeColorMode = pm;
+			else
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_PROBE_MODE wants 0..2\n";
+		}
 
 		// Tear-free VSync without the strict-FIFO 30fps lock (see PresentMode);
 		// the overlay combo can change it later (the HOST applies it at the
@@ -14009,27 +14019,111 @@ namespace engine {
 		// giVolumeLayers slots publish under (m_giVolumesLoaded &&
 		// m_giVolumesEnabled) — the pass gates on the SAME condition (a
 		// stale gate would have the VS Load through UINT32_MAX slots).
-		if (m_giShowProbes && m_giVolumesLoaded && m_giVolumesEnabled) {
-			EnsureGiProbeInstances();
+		if (m_giShowProbes) {
 			smvk::giprobe::GiProbeVolumeRow probeRows[8];
 			uint32_t probeRowCount = 0;
-			const uint32_t nVol = std::min<uint32_t>(
-				uint32_t(m_giVolumes.size()), 8u);
-			for (uint32_t v = 0; v < nVol; ++v) {
-				const GiVolumeResources& res = m_giVolumes[v];
-				if (res.probeInstances.empty()
-					|| res.probeInstancesBda == 0
-					|| res.probeInstanceCount == 0)
-					continue;
-				smvk::giprobe::GiProbeVolumeRow& row =
-					probeRows[probeRowCount];
-				row.instances = res.probeInstances;
-				row.instancesBda = res.probeInstancesBda;
-				row.instanceCount = res.probeInstanceCount;
-				row.volumeIndex = v;
-				++probeRowCount;
+			uint32_t probeMode = uint32_t(m_giProbeColorMode);
+			if (probeMode == 2) {
+				// LATTICE (pre-bake preview): the AUTHORED volume defs'
+				// would-be grids (cook-parity OBB decode + the bake's
+				// gridMin/dims math) - location/density inspection BEFORE
+				// any bake exists. Rebuilt EVERY armed frame: the editor
+				// moves/edits volumes live, and the upload is tiny.
+				if (m_world && !m_world->scene.giVolumeForNode.empty()) {					std::vector<uint32_t> nodes;
+					nodes.reserve(m_world->scene.giVolumeForNode.size());
+					for (const auto& [node, cv]
+						: m_world->scene.giVolumeForNode)
+						nodes.push_back(node);
+					std::sort(nodes.begin(), nodes.end());
+					std::vector<smvk::giprobe::GiProbeInstance> rows;
+					for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
+						const uint32_t node = nodes[ni];
+						if (node >= m_world->scene.globalTransform.size())
+							continue;
+						// World OBB decode (GiBaker/cook parity):
+						// translation = center, basis lengths = full
+						// extents, normalized basis = the box axes.
+						const glm::mat4& g =
+							m_world->scene.globalTransform[node];
+						const glm::vec3 c(g[3]);
+						glm::vec3 half;
+						glm::mat3 axes;
+						for (int i = 0; i < 3; ++i) {
+							const float len = glm::length(g[i]);
+							half[i] = 0.5f * len;
+							axes[i] = (len > 1e-6f)
+								? glm::vec3(g[i]) / len
+								: glm::vec3(0.0f);
+						}
+						const float spacing = std::max(
+							m_world->scene.giVolumeForNode[node].spacing,
+							0.01f);
+						BuildGiProbeLatticeRows(c, axes, half, spacing, rows);
+						if (rows.empty())
+							continue;
+						if (m_giProbeDraftBuf[ni].empty()) {
+							m_giProbeDraftBuf[ni] = m_context->CreateBuffer(
+								smvk::giprobe::kGiProbeMaxInstances
+									* sizeof(smvk::giprobe::GiProbeInstance),
+								smvk::BufferType_Storage,
+								"gi probe draft lattice");
+							if (m_giProbeDraftBuf[ni].empty())
+								continue;
+							m_giProbeDraftBda[ni] =
+								m_context->GetBufferDeviceAddress(
+									m_giProbeDraftBuf[ni]);
+						}
+						m_context->UploadDataToBuffer(
+							m_giProbeDraftBuf[ni], rows.data(),
+							rows.size() * sizeof(rows[0]),
+							smvk::PipelineStageBit_Vertex,
+							smvk::AccessFlags::ShaderRead, 0, 0);
+						smvk::giprobe::GiProbeVolumeRow& row =
+							probeRows[probeRowCount];
+						row.instances = m_giProbeDraftBuf[ni];
+						row.instancesBda = m_giProbeDraftBda[ni];
+						row.instanceCount = uint32_t(rows.size());
+						row.volumeIndex = uint32_t(ni); // unused in mode 2
+						++probeRowCount;
+					}
+				}
+				else if ((m_frameCounter % 300) == 0) {
+					// Honest empty-state note (the editor's cycle logs the
+					// same): armed but nothing to draw.
+					std::cerr << "[GI] probe lattice: no authored GI volume"
+						" nodes in the scene\n";
+				}
+			}
+			else if (m_giVolumesLoaded && m_giVolumesEnabled) {
+				// Modes 0/1 need the baked layers/vis slots (the publish
+				// gate's exact condition).
+				EnsureGiProbeInstances();
+				const uint32_t nVol = std::min<uint32_t>(
+					uint32_t(m_giVolumes.size()), 8u);
+				for (uint32_t v = 0; v < nVol; ++v) {
+					const GiVolumeResources& res = m_giVolumes[v];
+					if (res.probeInstances.empty()
+						|| res.probeInstancesBda == 0
+						|| res.probeInstanceCount == 0)
+						continue;
+					smvk::giprobe::GiProbeVolumeRow& row =
+						probeRows[probeRowCount];
+					row.instances = res.probeInstances;
+					row.instancesBda = res.probeInstancesBda;
+					row.instanceCount = res.probeInstanceCount;
+					row.volumeIndex = v;
+					++probeRowCount;
+				}
 			}
 			if (probeRowCount > 0) {
+				// Mode 2 never dereferences the frame BDA (no bake
+				// exists to publish layers) - pass 0 for honesty.
+				// The MARKER modes' (1/2) 1/exposure pre-scale — the
+				// baked-GI mode (0) is physical radiance and stays
+				// exposure-correct by construction (scene lighting's own
+				// convention).
+				const float probeMarkerGain =
+					frameExposure > 1e-9f ? 1.0f / frameExposure : 1.0f;
 				const bool appended = m_giProbeVisual.AppendPass(
 					*m_rendergraph,
 					sceneHdrView,
@@ -14039,7 +14133,9 @@ namespace engine {
 					m_cameraPositioner.cameraPosition_,
 					std::max(m_giProbePointMaxDist, 1.0f),
 					probeRows, probeRowCount,
-					frameUniformsAddress);
+					probeMode == 2 ? 0 : frameUniformsAddress,
+					probeMode,
+					probeMarkerGain);
 				// Heartbeat (the old overlay's cadence): proves the pass
 				// draws with live data on long runs.
 				if (appended && (m_frameCounter % 300) == 0) {
@@ -14048,7 +14144,8 @@ namespace engine {
 						total += probeRows[r].instanceCount;
 					std::cerr << "[GI] probe spheres: volumes="
 						<< probeRowCount << " instances=" << total
-						<< " maxDist=" << m_giProbePointMaxDist << "\n";
+						<< " maxDist=" << m_giProbePointMaxDist
+						<< " mode=" << probeMode << "\n";
 				}
 			}
 		}
@@ -15180,9 +15277,19 @@ namespace engine {
 							ImGui::SliderInt("Overlay max labels", &m_maxLightLabels, 0, 1024);
 						}
 						ImGui::Checkbox("Probe points", &m_giShowProbes);
-						if (m_giShowProbes)
+						if (m_giShowProbes) {
 							ImGui::SliderFloat("Probe overlay distance (m)",
 								&m_giProbePointMaxDist, 5.0f, 300.0f, "%.0f m");
+							const char* probeColorModes[] = {
+								"Baked GI (irradiance)",
+								"Visibility (blocked/near/open)",
+								"Lattice (pre-bake)",
+							};
+							int pcm = m_giProbeColorMode;
+							if (ImGui::Combo("Probe color mode", &pcm,
+									probeColorModes, 3))
+								m_giProbeColorMode = pcm;
+						}
 						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
 						if (m_regLoaded || m_giVolumesLoaded) {
 							// GI debug views (R / F8 cycle, ALL

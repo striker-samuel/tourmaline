@@ -166,7 +166,8 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
 	LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
 	Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,
 	float maxDist, const GiProbeVolumeRow* rows, uint32_t rowCount,
-	uint64_t frameUniformsAddress) {
+	uint64_t frameUniformsAddress, uint32_t colorMode, float markerGain,
+	uint32_t offsetX, uint32_t offsetY) {
 	if (!geometryValid || !ShadersValid() || !rows || rowCount == 0
 		|| hdrView.empty() || depthView.empty())
 		return false;
@@ -187,8 +188,10 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
 	// The pass: HDR load/store + the scene depth TEST-ONLY — the
 	// probeball slot contract (occluded probes hide behind geometry; the
 	// depth the post-Main consumers march stays untouched).
+	// Sub-rect support (the editor's per-viewport rects; full-frame
+	// callers keep 0,0 - the App/probeball convention).
 	RenderPass& pass = rg.AddPass("GiProbes")
-		.SetOffset(0, 0)
+		.SetOffset(offsetX, offsetY)
 		.SetExtent(extent)
 		.SetColor(
 			{ hdrView },
@@ -204,7 +207,7 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
 	// WorldRenderer, which outlives every frame's Execute) + the row
 	// copies (plain values — the caller's tables may mutate after).
 	pass.SetRecordingFunc([this, viewProj, eye, maxDist,
-			frameUniformsAddress,
+			frameUniformsAddress, colorMode, markerGain,
 			drawRows = std::move(drawRows)](CommandBuffer& cmd) mutable {
 		// Depth test AND write (GreaterEqual reversed-Z): the test hides
 		// probes behind scene geometry like probeball's TEST-ONLY — but
@@ -237,6 +240,8 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
 			push.frame = frameUniformsAddress;
 			push.instances = r.instancesBda;
 			push.volumeIndex = r.volumeIndex;
+			push.mode = colorMode;
+			push.markerGain = markerGain;
 			cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
 			// ONE instanced call per volume: the shared icosphere over
 			// this volume's instance rows (SV_InstanceID-indexed).
