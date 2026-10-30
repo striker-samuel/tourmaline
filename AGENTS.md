@@ -129,6 +129,21 @@ $env:TOURMALINE_CAPTURE='48'
   march's contribution, red = the march missed what the cascade caught,
   dim blue = NdotL<=0 (inert), magenta = the pass not running. The
   contact pass stays LIVE under this view (it samples the real march)
+- `TOURMALINE_DEBUGVIEW=pbrhealth|pbrbase|pbrdiffuse|pbrrough|pbrmetal|
+  pbrf0|sss|hair|water` selects the PBR Material Validation Debugger
+  views headless (the Debug-view combo's "PBR / ..." entries): the six
+  validation/readout FSs over the SHARED material evaluator
+  (engine/shaders/material_evaluation.hlsli - the lit body's exact
+  material-input math, raw pre-clamp values retained). Material Health =
+  the combined heatmap (green passes the configured checks, yellow
+  suspicious - albedo luma/dielectric edge, intermediate metallic,
+  roughness below the renderer's 0.04 floor; red out-of-range/NaN input,
+  magenta non-finite in the value views). pbrbase/pbrdiffuse/pbrrough/
+  pbrmetal/pbrf0 are the flat value readouts (the 1/exposure debug
+  pre-scale means intensities are display-only, not numeric). sss/hair/
+  water are NAIVE shading-model previews (development test beds - d'Eon
+  transmission SSS, Kajiya-Kay hair, Fresnel+wave water; sun/sky shaded
+  like the POM view, deliberately first-cut, owner develops further)
 - `TOURMALINE_GEOMETRY_STREAMING=1` gates GPU geometry LOD streaming
   (geometry_streamer.h - v1 stages 1-3 + logical stage-4 eviction,
   DEFAULT OFF): cluster load defers the middle LOD siblings (LOD0 bases
