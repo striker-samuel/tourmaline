@@ -4159,6 +4159,26 @@ namespace editor {
 					c.beforeVec4, c.beforeNum);
 				Do(c);
 			}
+			// Sun contact-shadow receive gate (the emissiveFactor.w flags
+			// word - see mesh.h); a NEW row (the one above is three wide).
+			{
+				const bool recvContact = (smvk::MaterialFlagsFromWord(
+					m->values.emissiveFactor.w)
+					& smvk::kMaterialFlagReceiveContactShadows) != 0;
+				if (attr::Bool("Contact", recvContact,
+						"RECEIVES SUN CONTACT SHADOWS — off excludes this "
+						"material from the contact march's visibility (the "
+						"cascade shadow stays)")) {
+					EditCmd c{};
+					c.verb = EditVerb::SetMatAttr;
+					c.matWorld = mat;
+					c.attr = "contactShadows";
+					c.number = recvContact ? 0.0 : 1.0;
+					ReadSharedMatAttr(mat, "contactShadows",
+						c.beforeVec4, c.beforeNum);
+					Do(c);
+				}
+			}
 			ImGui::SameLine();
 			int alpha = int(m->alphaMode);
 			if (attr::Enum("Alpha", &alpha, "Opaque\0Mask (cutout)\0Blend\0",

@@ -128,7 +128,13 @@ $env:TOURMALINE_CAPTURE='48'
   contact march's visibility, G = the CSM/EVSM factor - green = the
   march's contribution, red = the march missed what the cascade caught,
   dim blue = NdotL<=0 (inert), magenta = the pass not running. The
-  contact pass stays LIVE under this view (it samples the real march)
+  contact pass stays LIVE under this view (it samples the real march).
+  Per-material receive gate: MATERIAL_RECEIVE_CONTACT_SHADOWS (the
+  MaterialValues::emissiveFactor.w flags word, mesh.h kMaterialFlag*): the
+  SMVK_materials_contactShadows glTF extension {"receive": false} opts out
+  at import, the editor material panel's Contact checkbox + the setMatAttr
+  contactShadows tour attr at runtime. OPT-IN bit - paks cooked before the
+  flag read w=0 and receive NOTHING (recook)
 - `TOURMALINE_GEOMETRY_STREAMING=1` gates GPU geometry LOD streaming
   (geometry_streamer.h - v1 stages 1-3 + logical stage-4 eviction,
   DEFAULT OFF): cluster load defers the middle LOD siblings (LOD0 bases

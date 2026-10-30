@@ -2438,7 +2438,9 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 	if (at == "baseColor")
 		mat.values.diffuse = c.vec4;
 	else if (at == "emissive") {
-		mat.values.emissiveFactor = glm::vec4(c.vec4.x, c.vec4.y, c.vec4.z, 0.0f);
+		// w carries the per-material flag bits (mesh.h) - preserve them.
+		mat.values.emissiveFactor = glm::vec4(c.vec4.x, c.vec4.y, c.vec4.z,
+			mat.values.emissiveFactor.w);
 		if (c.vec4.w >= 0.0f)
 			mat.values.params2.z = c.vec4.w; // emissiveStrength rides w
 	}
@@ -2458,6 +2460,11 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
 		mat.doubleSided = (c.number != 0.0);
 	else if (at == "castsShadows")
 		mat.castsShadows = (c.number != 0.0);
+	else if (at == "contactShadows")
+		// The receive-contact-shadows flag bit (the emissiveFactor.w
+		// flags word - see mesh.h); 1 = receive, 0 = opt out.
+		mat.values.emissiveFactor.w = MaterialFlagsToWord(
+			(c.number != 0.0) ? kMaterialFlagReceiveContactShadows : 0u);
 	else if (at == "farVertexLit")
 		mat.shaderLod.allowFarVertexLit = (c.number != 0.0);
 	else if (at == "farSpecular")

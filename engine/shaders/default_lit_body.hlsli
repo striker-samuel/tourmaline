@@ -1032,7 +1032,15 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // stale/unwritten texture. Sampler 0 = linear (the EVSM moments'
     // slot): the half-res target bilinearly upsamples, full-res is
     // 1:1. Runs identically over the PCF and EVSM branches above.
-    if (frame.contactShadowIndex != 0xffffffffu)
+    // Per-material receive gate (MATERIAL_RECEIVE_CONTACT_SHADOWS -
+    // the emissiveFactor.w flags word): a material can opt out of
+    // RECEIVING the march's visibility (mirror-like surfaces,
+    // emissive props); the march itself still runs and the cascade
+    // shadow is untouched. Opt-in bit - paks cooked before the flag
+    // carry w=0 and receive nothing (recook, the no-conversion policy).
+    const bool receiveContactShadows =
+        (asuint(mat.emissiveFactor.w) & MATERIAL_RECEIVE_CONTACT_SHADOWS) != 0u;
+    if (frame.contactShadowIndex != 0xffffffffu && receiveContactShadows)
     {
         float2 csUv = clipPos.xy * frame.invViewportSize;
         float contactVisibility = textures[

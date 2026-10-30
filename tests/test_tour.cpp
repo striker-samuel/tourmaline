@@ -3217,6 +3217,90 @@ void TestSceneFlagTables() {
 	}
 }
 
+// Per-material flag bits (MaterialValues::emissiveFactor.w - mesh.h):
+// the receive-contact-shadows bit through the import create-info write
+// (cluster.cpp), the setMatAttr contactShadows tour attr, and the
+// "emissive" attr's flag PRESERVATION (it used to hard-write w=0 and
+// would silently clear the flags on every emissive edit).
+void TestMaterialContactFlag() {
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	// Import chain: the create-info bit lands in the flags word.
+	smvk::MaterialCreateInfo ciOn{};
+	ciOn.receiveContactShadows = true;
+	const auto mOn = cluster->CreateMaterial(ciOn);
+	smvk::MaterialCreateInfo ciOff{};
+	ciOff.receiveContactShadows = false;
+	const auto mOff = cluster->CreateMaterial(ciOff);
+	const smvk::Material* matOn = cluster->materials.get(mOn);
+	const smvk::Material* matOff = cluster->materials.get(mOff);
+	Check(matOn && matOff, "contactflag materials created");
+	if (matOn && matOff) {
+		Check(smvk::MaterialFlagsFromWord(matOn->values.emissiveFactor.w)
+			== smvk::kMaterialFlagReceiveContactShadows,
+			"contactflag import bit on");
+		Check(smvk::MaterialFlagsFromWord(
+			matOff->values.emissiveFactor.w) == 0u,
+			"contactflag import bit off");
+	}
+	// Tour attr: setMatAttr contactShadows 0 opts out; the emissive
+	// write in the SAME tour must not resurrect or clear anything.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "setMatAttr -m " << mOn.index()
+			<< " -at contactShadows -v 0;\n"
+			"setMatAttr -m " << mOn.index()
+			<< " -at emissive -type \"float4\" -t 1 0.5 0.25 4;\n";
+		f.close();
+		smvk::tour::Doc doc;
+		std::string err;
+		std::vector<std::string> warns;
+		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
+			"contactflag tour parse");
+		std::vector<std::string> rw;
+		std::string rerr;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
+			"contactflag tour replay ok");
+		const smvk::Material* mat = cluster->materials.get(
+			cluster->materials.getHandle(mOn.index()));
+		Check(mat && smvk::MaterialFlagsFromWord(
+			mat->values.emissiveFactor.w) == 0u,
+			"contactflag tour opt-out");
+		Check(mat && mat->values.emissiveFactor.x == 1.0f
+			&& mat->values.emissiveFactor.y == 0.5f
+			&& mat->values.params2.z == 4.0f,
+			"contactflag emissive applied");
+	}
+	// And back on, with another emissive edit in the same tour: the
+	// emissive write must PRESERVE the live flag word (the regression
+	// this test pins - the old w=0 write cleared it).
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "setMatAttr -m " << mOn.index()
+			<< " -at contactShadows -v 1;\n"
+			"setMatAttr -m " << mOn.index()
+			<< " -at emissive -type \"float4\" -t 0 1 0 2;\n";
+		f.close();
+		smvk::tour::Doc doc;
+		std::string err;
+		std::vector<std::string> warns;
+		Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns),
+			"contactflag tour parse 2");
+		std::vector<std::string> rw;
+		std::string rerr;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr),
+			"contactflag tour replay 2");
+		const smvk::Material* mat = cluster->materials.get(
+			cluster->materials.getHandle(mOn.index()));
+		Check(mat && smvk::MaterialFlagsFromWord(
+			mat->values.emissiveFactor.w)
+			== smvk::kMaterialFlagReceiveContactShadows,
+			"contactflag emissive preserves flags");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
 void TestLightmapOptIn() {
 	Scene scene;
 	const int root = addNode(scene, -1, 0);
@@ -3298,6 +3382,7 @@ int main() {
 	TestTourFuzz();
 	TestDitherCloseup();
 	TestSceneFlagTables();
+	TestMaterialContactFlag();
 	TestLightmapOptIn();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;

@@ -76,6 +76,9 @@ namespace {
 		// SMVK_materials_shadows.castShadow (stamped by content cooks,
 		// e.g. decal overlays must not darken the geometry under them).
 		bool castsShadows = true;
+		// SMVK_materials_contactShadows.receive (default receive):
+		// materials that must not pick up the sun contact march.
+		bool receiveContactShadows = true;
 
 	};
 	bool starts_with(const std::string& s, const char* prefix) { return s.rfind(prefix, 0) == 0; }
@@ -1111,6 +1114,20 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 		}
 	}
 
+	// SMVK_materials_contactShadows: receive participation for the sun
+	// contact march ({"receive": false} on mirror-like / emissive
+	// materials). Default receive.
+	if (auto it = m.extensions.find("SMVK_materials_contactShadows");
+		it != m.extensions.end() && it->second.IsObject()) {
+		const auto& obj = it->second.Get<tinygltf::Value::Object>();
+		if (auto f = obj.find("receive");
+			f != obj.end() && (f->second.IsBool() || f->second.IsNumber())) {
+			mat.receiveContactShadows = f->second.IsBool()
+				? f->second.Get<bool>()
+				: f->second.GetNumberAsDouble() != 0.0;
+		}
+	}
+
 	// KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets such as
 	// Bistro: 234/254 materials carry ONLY this extension, no core
 	// pbrMetallicRoughness textures). diffuseTexture/diffuseFactor map onto
@@ -1691,6 +1708,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 	ci.alphaCutoff = static_cast<float>(mat.alphaCutoff);
 	ci.doubleSided = mat.doubleSided;
 	ci.castsShadows = mat.castsShadows;
+	ci.receiveContactShadows = mat.receiveContactShadows;
 	// Far-LOD shading program (see ShaderLodPolicy): DEFAULT OFF — the
 	// derivation only runs when the derive config opts in
 	// (DeriveConfig::shaderLods / setDeriveShaderLods). The cheap
@@ -2811,6 +2829,7 @@ size_t BuildFromMeshAsset(
 		info.alphaCutoff = m.info.alphaCutoff;
 		info.doubleSided = m.info.doubleSided;
 		info.castsShadows = m.info.castsShadows;
+		info.receiveContactShadows = m.info.receiveContactShadows;
 		auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
 				smvk::TextureHandle& slot) {
 			if (t.path.empty())

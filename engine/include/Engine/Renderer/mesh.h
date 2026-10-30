@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -34,7 +35,7 @@ namespace smvk {
 		glm::ivec4 textures2{ -1 };                      // 48 – x=emissive, yzw unused (-1)
 		glm::vec4 params{ 0.5f, 1.0f, 1.0f, 0.0f };       // 64 – x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
 		glm::vec4 params2{ 1.0f, 1.0f, 1.0f, 0.0f };      // 80 – x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
-		glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 0.0f }; // 96 – xyz=emissiveFactor, w=pad
+		glm::vec4 emissiveFactor{ 0.0f, 0.0f, 0.0f, 0.0f }; // 96 – xyz=emissiveFactor, w=material flags (kMaterialFlag*)
 		// Layered materials (vertex-color blending): x/y/z hold the
 		// cluster-local material pool indices of layers 1..3 (the material
 		// itself is layer 0; -1 = no layer). w selects the mode: 0 = legacy
@@ -47,6 +48,25 @@ namespace smvk {
 	};
 	static_assert(sizeof(MaterialValues) % 16 == 0);
 	static_assert(sizeof(MaterialValues) == 128);
+
+	// -------------------------------------------------------------------------
+	// Per-material flag bits (MaterialValues::emissiveFactor.w - the old
+	// pad word; the HLSL mirror is common.hlsli's MATERIAL_* defines).
+	// The bits ride the float word as their raw uint pattern
+	// (MaterialFlagsToWord / MaterialFlagsFromWord) - nothing lerps or
+	// sanitizes .w (the layered material blends consume .rgb only) and
+	// the pak serializer copies the struct verbatim.
+	// -------------------------------------------------------------------------
+	inline constexpr uint32_t kMaterialFlagReceiveContactShadows = 1u << 0;
+	// Receive the sun contact march's visibility (Engine/Rendergraph/
+	// contact_shadow.h): off for materials that must not pick it up
+	// (mirror-like surfaces, emissive props); the cascade shadow is
+	// untouched and the march itself still runs. OPT-IN bit: paks cooked
+	// before the flag carry w=0 and receive nothing (recook per the
+	// no-conversion policy).
+
+	inline float MaterialFlagsToWord(uint32_t flags) { return std::bit_cast<float>(flags); }
+	inline uint32_t MaterialFlagsFromWord(float w) { return std::bit_cast<uint32_t>(w); }
 
 	// -------------------------------------------------------------------------
 	// Shading / raster abstraction
@@ -149,6 +169,11 @@ namespace smvk {
 		// overlay materials opt out at cook/import time; the World flag
 		// build gates IteratorFlagBit_CastShadow on it.
 		bool castsShadows = true;
+		// Sun contact-shadow participation (SMVK_materials_contactShadows.
+		// receive): whether this material RECEIVES the pre-Main contact
+		// march's visibility. Rides the emissiveFactor.w flags word as
+		// kMaterialFlagReceiveContactShadows (see the MaterialValues note).
+		bool receiveContactShadows = true;
 		// Far-LOD shading program (see ShaderLodPolicy): the farthest
 		// cooked level may use the cheap vertex-lit program. DEFAULT
 		// OFF — the glTF importer only derives this when the derive

@@ -80,6 +80,9 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		num = mat->doubleSided ? 1.0 : 0.0;
 	else if (attr == "castsShadows")
 		num = mat->castsShadows ? 1.0 : 0.0;
+	else if (attr == "contactShadows")
+		num = (smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w)
+			& smvk::kMaterialFlagReceiveContactShadows) != 0 ? 1.0 : 0.0;
 	else if (attr == "alphaMode")
 		num = double(int(mat->alphaMode));
 	else if (attr == "layers") {
@@ -115,7 +118,9 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 	if (attr == "baseColor")
 		mat->values.diffuse = v4;
 	else if (attr == "emissive") {
-		mat->values.emissiveFactor = glm::vec4(v4.x, v4.y, v4.z, 0.0f);
+		// w carries the per-material flag bits (mesh.h) - preserve them.
+		mat->values.emissiveFactor = glm::vec4(v4.x, v4.y, v4.z,
+			mat->values.emissiveFactor.w);
 		mat->values.params2.z = v4.w;
 	}
 	else if (attr == "metallic")
@@ -134,6 +139,9 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld, const std::string& attr,
 		mat->doubleSided = (num != 0.0);
 	else if (attr == "castsShadows")
 		mat->castsShadows = (num != 0.0);
+	else if (attr == "contactShadows")
+		mat->values.emissiveFactor.w = smvk::MaterialFlagsToWord(
+			(num != 0.0) ? smvk::kMaterialFlagReceiveContactShadows : 0u);
 	else if (attr == "alphaMode") {
 		mat->alphaMode = (num < 0.5) ? smvk::AlphaMode::Opaque
 			: (num < 1.5) ? smvk::AlphaMode::Mask : smvk::AlphaMode::Blend;

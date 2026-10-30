@@ -245,9 +245,16 @@ struct MaterialValues
     int4 tex2;               // 48 x=emissive, yzw unused (-1)
     float4 params;           // 64 x=alphaCutoff, y=metallic, z=roughness, w=shadingModel
     float4 params2;          // 80 x=occlusionStrength, y=normalScale, z=emissiveStrength, w=alphaMode (0=Opaque,1=Mask,2=Blend)
-    float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=pad
+    float4 emissiveFactor;   // 96 xyz=emissiveFactor, w=material flags (MATERIAL_* defines below)
     int4 layerMaterials;     // 112 x/y/z = layer 1..3 material ids (this material is layer 0; -1 = none), w = layer mode (0 = vertex-color tint, 1..4 = layered with N layers)
 };
+
+// MaterialValues::emissiveFactor.w bit flags (the old pad word; the
+// C++ mirror is mesh.h's kMaterialFlag* + MaterialFlagsToWord/FromWord).
+// The bits ride the float word as their raw uint pattern - nothing
+// lerps or sanitizes .w (the layered material blends consume .rgb
+// only) and the pak serializer copies the struct verbatim.
+#define MATERIAL_RECEIVE_CONTACT_SHADOWS (1u << 0)
 
 struct MaterialsBuffer
 {
