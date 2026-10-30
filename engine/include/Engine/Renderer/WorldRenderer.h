@@ -316,15 +316,21 @@ inline const char* AmbientModeName(AmbientMode m) {
 // ---------------------------------------------------------------------------
 // RENDER QUALITY CONFIG (host-owned, never scene content): HOW the
 // renderer runs — the GI/ambient source, the per-source opt-ins, the
-// probe pre-mix, EVSM shadows. This is machine/session state exactly
-// like render scale or DLSS mode: the editor drives it live from the
+// probe pre-mix, EVSM shadows, and (the editor-parity extension) the
+// full session-quality surface the App's Quality tab drives: display
+// (render scale/DLSS/filtering/transparency), the directional
+// cascades, the local-light shadow budgets, sun contact shadows,
+// diffuse SSGI, the SSR trace detail, and the motion-blur/DOF detail
+// knobs. This is machine/session state exactly
+// like present mode: the editor drives it live from the
 // Render tab (PushRenderQuality, re-applied after every WYSIWYG attach
 // so the session's choices beat the loaders' on-when-baked defaults),
 // the App's panels/keys drive the same members per session, headless
 // runs pin them via TOURMALINE_* (RunConfig). Nothing here rides tours/
 // paks — the scene's SceneRenderSettings owns the LOOK (bloom/tonemap/
-// exposure/AO/SSR/AA/cubemap grades) only. Defaults mirror the
-// engine's unauthored state.
+// exposure/AO/SSR enable+intensity/AA/enables) only. Defaults mirror
+// the engine's unauthored state FIELD FOR FIELD (a session that never
+// touches the panel must render the unauthored default).
 // ---------------------------------------------------------------------------
 struct RenderQualityConfig {
 	int giMode = 0;                  // 0..5 — AmbientMode (All/Lightmaps/
@@ -336,6 +342,79 @@ struct RenderQualityConfig {
 	bool probePremixEnabled = true;  // GPU probe pre-mix (single-fetch path)
 	bool evsmEnabled = false;        // EVSM moment shadows (else PCF)
 	float evsmSoftness = 1.0f;       // EVSM penumbra artistic scale (0 = hard)
+
+	// ---- The SESSION-quality surface beyond the ambient block (the
+	// editor's Render tab parity with the App's Quality tab): every
+	// renderer knob that is NOT scene content and NOT already in the
+	// block above. Defaults are the RENDERER'S OWN member defaults,
+	// mirrored field-for-field — a session that never touches the panel
+	// must render exactly the unauthored engine default (an off-default
+	// default here would silently change the look on every push). The
+	// look halves (SSR enable/intensity, motion-blur/DOF/cubemap
+	// enables, AA) stay in SceneRenderSettings and are deliberately
+	// absent below.
+	// Display.
+	float renderScale = 1.0f;        // 0.25..2 (RENDER_SCALE_MIN/MAX)
+	smvk::DlssMode dlssMode = smvk::DlssMode::Off;
+	smvk::TransparentMode transparentMode = smvk::TransparentMode::Blended;
+	TextureFiltering textureFiltering = TextureFiltering::Trilinear;
+	// Directional cascades.
+	uint32_t cascadeResolution = 1024; // 512/1024/2048/4096
+	float cascadeLambda = 0.8f;
+	bool sdsmEnabled = true;
+	float cascadeMaxDistance = 0.0f;   // 0 = scene far
+	float cascadeDepthBiasScale = 1.0f;
+	float cascadeNormalBiasScale = 1.0f;
+	// Local-light shadow budgets (per-light flags exist on the lights;
+	// these are the frame budgets + cutoffs).
+	bool spotShadowsEnabled = true;
+	int spotShadowMax = 8;
+	float spotShadowMaxDistance = 45.0f;
+	bool pointShadowsEnabled = true;
+	int pointShadowMax = 1;
+	float pointShadowMaxDistance = 45.0f;
+	// EVSM extras (the enable/softness ride the block above).
+	smvk::EvsmPipelineMode evsmPipeline = smvk::EvsmPipelineMode::SameFrame;
+	float evsmSpotLightSize = 0.35f;
+	// Sun contact shadows (contact_shadow.h).
+	bool contactShadowsEnabled = true;
+	float contactShadowMaxDistance = 0.35f;
+	float contactShadowThickness = 0.03f;
+	float contactShadowStartBias = 0.01f;
+	int contactShadowSteps = 12;
+	int contactShadowResolutionDivisor = 2; // 1 full | 2 half
+	// Diffuse screen-space GI (ssgi_diffuse.h; experimental, default off).
+	bool ssgiDiffuseEnabled = false;
+	float ssgiDiffuseIntensity = 1.0f;
+	float ssgiDiffuseMaxDistance = 5.0f;
+	float ssgiDiffuseThickness = 0.3f;
+	float ssgiDiffuseTemporalBlend = 0.9f;
+	float ssgiDiffuseBlurSharpness = 10.0f;
+	int ssgiDiffuseMaxIntersections = 64;
+	bool ssgiDiffuseTaaEnabled = true;
+	// SSR trace detail (the enable + intensity are the scene look).
+	int ssrSteps = 32;
+	int ssrRefineSteps = 4;
+	float ssrMaxDistance = 50.0f;
+	float ssrThickness = 0.3f;
+	float ssrF0 = 0.04f;
+	float ssrBlurSharpness = 10.0f;
+	int ssrBlurMode = 0;             // 0 = 2D bilateral, 1 = separable H+V
+	// Cubemap IBL detail (enable + intensity are the scene look).
+	float cubemapLodBias = 0.0f;
+	uint32_t cubemapStreamBudget = 48;
+	// Motion-blur / DOF detail (the enables are the scene look).
+	int motionBlurSamples = 12;
+	float motionBlurMaxRadius = 24.0f;
+	float motionBlurStrength = 1.0f;
+	bool motionBlurTileDilation = true;
+	bool dofHqBokeh = false;
+	float dofFocusDistance = 8.0f;
+	float dofFocusRange = 2.0f;
+	float dofMaxRadius = 12.0f;
+	float dofBokehMaxRadius = 24.0f;
+	float dofHighlightBoost = 1.5f;
+	float dofHighlightThreshold = 1.0f;
 };
 
 // GI permutation variants (matches SPEC_GI_VARIANT in common.hlsli):
@@ -1587,7 +1666,9 @@ public:
 	// GI/shadow panels and the N key drive. The editor applies its
 	// stored prefs after the WYSIWYG attach (AFTER the GI loaders —
 	// they flip the per-source opt-ins ON for baked content, the
-	// prefs win) and live per panel edit.
+	// prefs win) and live per panel edit. Idempotent per frame by
+	// construction (plain member writes + the early-out setters), so
+	// the per-panel-frame call is free.
 	void PushRenderQuality(const RenderQualityConfig& q) {
 		m_ambientMode = static_cast<AmbientMode>(std::clamp(q.giMode, 0, 5));
 		m_giIntensity = std::clamp(q.giIntensity, 0.0f, 2.0f);
@@ -1597,6 +1678,76 @@ public:
 		m_probePremixEnabled = q.probePremixEnabled;
 		m_evsmEnabled = q.evsmEnabled;
 		m_evsmSoftness = std::max(q.evsmSoftness, 0.0f);
+		// Display.
+		m_renderScale = std::clamp(q.renderScale, 0.25f, 2.0f);
+		m_dlssMode = q.dlssMode;
+		m_transparentMode = q.transparentMode;
+		SetTextureFiltering(q.textureFiltering); // early-outs when same
+		// Cascades.
+		m_cascadeResolution = std::clamp(q.cascadeResolution, 512u, 4096u);
+		m_cascadeLambda = std::clamp(q.cascadeLambda, 0.0f, 1.0f);
+		m_sdsmEnabled = q.sdsmEnabled;
+		m_cascadeMaxDistance = std::max(q.cascadeMaxDistance, 0.0f);
+		m_cascadeDepthBiasScale = std::max(q.cascadeDepthBiasScale, 0.0f);
+		m_cascadeNormalBiasScale = std::max(q.cascadeNormalBiasScale, 0.0f);
+		// Local-light shadow budgets.
+		m_spotShadowsEnabled = q.spotShadowsEnabled;
+		m_spotShadowMax = std::clamp(q.spotShadowMax, 0,
+			int(smvk::kMaxSpotShadows));
+		m_spotShadowMaxDistance = std::max(q.spotShadowMaxDistance, 1.0f);
+		m_pointShadowsEnabled = q.pointShadowsEnabled;
+		m_pointShadowMax = std::clamp(q.pointShadowMax, 0,
+			int(smvk::kMaxPointShadowLights));
+		m_pointShadowMaxDistance = std::max(q.pointShadowMaxDistance, 1.0f);
+		// EVSM extras.
+		m_evsmPipeline = q.evsmPipeline;
+		m_evsmSpotLightSize = std::max(q.evsmSpotLightSize, 0.0f);
+		// Sun contact shadows.
+		m_contactShadowsEnabled = q.contactShadowsEnabled;
+		m_contactShadowMaxDistance = std::clamp(
+			q.contactShadowMaxDistance, 0.05f, 2.0f);
+		m_contactShadowThickness = std::clamp(
+			q.contactShadowThickness, 0.005f, 0.2f);
+		m_contactShadowStartBias = std::clamp(
+			q.contactShadowStartBias, 0.0f, 0.05f);
+		m_contactShadowSteps = std::clamp(q.contactShadowSteps, 4, 32);
+		m_contactShadowResolutionDivisor =
+			(q.contactShadowResolutionDivisor == 1) ? 1 : 2;
+		// Diffuse SSGI.
+		m_ssgiDiffuseEnabled = q.ssgiDiffuseEnabled;
+		m_ssgiDiffuseIntensity = std::clamp(q.ssgiDiffuseIntensity, 0.0f, 4.0f);
+		m_ssgiDiffuseMaxDistance = std::clamp(
+			q.ssgiDiffuseMaxDistance, 0.5f, 50.0f);
+		m_ssgiDiffuseThickness = std::clamp(q.ssgiDiffuseThickness, 0.01f, 2.0f);
+		m_ssgiDiffuseTemporalBlend = std::clamp(
+			q.ssgiDiffuseTemporalBlend, 0.0f, 0.98f);
+		m_ssgiDiffuseBlurSharpness = std::max(q.ssgiDiffuseBlurSharpness, 0.0f);
+		m_ssgiDiffuseMaxIntersections = std::clamp(
+			q.ssgiDiffuseMaxIntersections, 4, 128);
+		m_ssgiDiffuseTaaEnabled = q.ssgiDiffuseTaaEnabled;
+		// SSR detail.
+		m_ssrSteps = std::clamp(q.ssrSteps, 1, 128);
+		m_ssrRefineSteps = std::clamp(q.ssrRefineSteps, 0, 8);
+		m_ssrMaxDistance = std::max(q.ssrMaxDistance, 1.0f);
+		m_ssrThickness = std::clamp(q.ssrThickness, 0.01f, 2.0f);
+		m_ssrF0 = std::clamp(q.ssrF0, 0.0f, 1.0f);
+		m_ssrBlurSharpness = std::max(q.ssrBlurSharpness, 0.0f);
+		m_ssrBlurMode = std::clamp(q.ssrBlurMode, 0, 1);
+		// Cubemap IBL detail.
+		m_cubemapLodBias = std::clamp(q.cubemapLodBias, -2.0f, 4.0f);
+		m_cubemapStreamBudget = std::clamp(q.cubemapStreamBudget, 0u, 64u);
+		// Motion blur / DOF detail.
+		m_motionBlurSamples = std::clamp(q.motionBlurSamples, 1, 32);
+		m_motionBlurMaxRadius = std::max(q.motionBlurMaxRadius, 0.0f);
+		m_motionBlurStrength = std::clamp(q.motionBlurStrength, 0.0f, 2.0f);
+		m_motionBlurTileDilation = q.motionBlurTileDilation;
+		m_dofHqBokeh = q.dofHqBokeh;
+		m_dofFocusDistance = std::max(q.dofFocusDistance, 0.1f);
+		m_dofFocusRange = std::max(q.dofFocusRange, 0.0f);
+		m_dofMaxRadius = std::max(q.dofMaxRadius, 0.0f);
+		m_dofBokehMaxRadius = std::max(q.dofBokehMaxRadius, 0.0f);
+		m_dofHighlightBoost = std::max(q.dofHighlightBoost, 1.0f);
+		m_dofHighlightThreshold = std::max(q.dofHighlightThreshold, 0.0f);
 	}
 	// Headless postfx pins (the Configure snapshot): same "scene settings
 	// lose" contract as the volumetric ones — called at startup Configure

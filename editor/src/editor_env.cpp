@@ -414,14 +414,17 @@ namespace editor {
 	}
 
 	void EditorApp::DrawRenderSettingsPanel() {
-		// RENDER SETTINGS: the renderer options (top — GI/shadow knobs,
-		// live on the WYSIWYG view per edit, session-only) + the postfx
-		// look (SceneRenderSettings — the scene-global grade the tour/
-		// pak/App carry). Numeric/enum rows use the attribute stubs;
-		// switches use native ImGui checkboxes so changes write the
-		// backing bool exactly once. Both halves always show all
-		// parameter rows regardless of whether the corresponding effect
-		// is active; users can edit inactive presets.
+		// RENDER SETTINGS: the renderer QUALITY options (top — the
+		// session-owned surface: the ambient/GI block + the App Quality
+		// tab parity rows, live on the WYSIWYG view per edit, session-
+		// only, never tour/pak content) + the postfx look
+		// (SceneRenderSettings — the scene-global grade the tour/pak/
+		// App carry; edits autosave once per finished edit). Numeric/
+		// enum rows use the attribute stubs; switches use native ImGui
+		// checkboxes so changes write the backing bool exactly once.
+		// Both halves always show all parameter rows regardless of
+		// whether the corresponding effect is active; users can edit
+		// inactive presets.
 		ImGui::Separator();
 		ImGui::Text("Render settings (GI / shadows / bloom / tonemap / exposure / AO / SSR)");
 		{
@@ -465,6 +468,266 @@ namespace editor {
 			attr::Slider("EVSM softness", &q.evsmSoftness, 0.0f, 4.0f, "%.2f",
 				"Scales shadow softness relative to the light's "
 				"physical size (0 = hard).");
+			{
+				// The renderer's whole SESSION-quality surface (the App's
+				// Quality tab parity): display, cascades, local-light
+				// shadow budgets, EVSM extras, contact shadows, SSGI, SSR
+				// trace detail. Everything here is host/session state —
+				// the LOOK halves (SSR enable/intensity, the enables) stay
+				// in the scene-authored block below.
+				ImGui::TextDisabled("Display");
+				attr::Slider("Render scale", &q.renderScale, 0.25f, 2.0f,
+					"%.2fx", "The internal resolution scale (1 = the "
+					"viewport's native extent)");
+				{
+					// Conventional order; indices remap to the sl enum.
+					const char* dlssNames[] = { "Off", "Ultra Performance",
+						"Performance", "Balanced", "Quality", "Ultra Quality",
+						"DLAA" };
+					const int dlssEnumOf[] = {
+						int(smvk::DlssMode::Off),
+						int(smvk::DlssMode::UltraPerformance),
+						int(smvk::DlssMode::MaxPerformance),
+						int(smvk::DlssMode::Balanced),
+						int(smvk::DlssMode::MaxQuality),
+						int(smvk::DlssMode::UltraQuality),
+						int(smvk::DlssMode::DLAA),
+					};
+					int dlssSel = 0;
+					for (int i = 0; i < 7; ++i)
+						if (dlssEnumOf[i] == int(q.dlssMode))
+							dlssSel = i;
+					if (attr::Enum("DLSS mode", &dlssSel,
+							"Off\0Ultra Performance\0Performance\0"
+							"Balanced\0Quality\0Ultra Quality\0DLAA\0",
+							"Streamline DLSS upscaling (Windows-only; "
+							"inactive without the sl runtime)"))
+						q.dlssMode = smvk::DlssMode(dlssEnumOf[dlssSel]);
+				}
+				{
+					int tf = int(q.textureFiltering);
+					if (attr::Enum("Texture filtering", &tf,
+							"Trilinear\0Anisotropic 2x\0Anisotropic 4x\0"
+							"Anisotropic 8x\0Anisotropic 16x\0",
+							"The bindless samplers' filtering (material "
+							"surfaces)"))
+						q.textureFiltering =
+							engine::TextureFiltering(std::clamp(tf, 0, 4));
+				}
+				{
+					int tm = (q.transparentMode
+							== smvk::TransparentMode::Blended) ? 1 : 0;
+					if (attr::Enum("Transparency", &tm,
+							"Dithered\0Alpha blend\0",
+							"The Blend-material technique (dithered keeps "
+							"opaque pipeline state; blended sorts)"))
+						q.transparentMode = (tm == 1)
+							? smvk::TransparentMode::Blended
+							: smvk::TransparentMode::Dithered;
+				}
+				ImGui::TextDisabled("Directional cascades");
+				{
+					const uint32_t resOptions[] = { 512, 1024, 2048, 4096 };
+					int resIdx = 1;
+					for (int i = 0; i < 4; ++i)
+						if (resOptions[i] == q.cascadeResolution)
+							resIdx = i;
+					if (attr::Enum("Cascade resolution", &resIdx,
+							"512\0" "1024\0" "2048\0" "4096\0",
+							"Per-cascade tile resolution (the atlas "
+							"recreates on change - one-time hitch)"))
+						q.cascadeResolution =
+							resOptions[std::clamp(resIdx, 0, 3)];
+				}
+				attr::Slider("Split lambda", &q.cascadeLambda, 0.0f, 1.0f,
+					"%.2f", "The split scheme's near/far weighting");
+				ImGui::Checkbox("SDSM##sdsm", &q.sdsmEnabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Fit the splits to the measured depth "
+						"(sampled distribution shadow maps)");
+				attr::Slider("Shadow distance", &q.cascadeMaxDistance, 0.0f,
+					500.0f, "%.0f", "The cascade far clamp in meters "
+					"(0 = the scene far plane)");
+				attr::Slider("Depth bias scale", &q.cascadeDepthBiasScale,
+					0.0f, 4.0f, "%.2f", "The cascade depth-bias multiplier");
+				attr::Slider("Normal bias scale", &q.cascadeNormalBiasScale,
+					0.0f, 4.0f, "%.2f", "The cascade normal-offset bias "
+					"multiplier");
+				ImGui::TextDisabled("Local-light shadow budgets");
+				ImGui::Checkbox("Spot shadows##spots", &q.spotShadowsEnabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Render the shared spot atlas (the "
+						"per-light flag still gates each light)");
+				{
+					int m = q.spotShadowMax;
+					if (attr::Int("Shadow spots max", &m, 0,
+							int(smvk::kMaxSpotShadows),
+							"The per-frame shadowed-spot budget"))
+						q.spotShadowMax = m;
+				}
+				attr::Slider("Spot shadow max distance",
+					&q.spotShadowMaxDistance, 5.0f, 120.0f, "%.0f",
+					"Hard cutoff on camera->light distance (m)");
+				ImGui::Checkbox("Point shadows##points",
+					&q.pointShadowsEnabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Six cube-face tiles per selected point "
+						"in the shared atlas");
+				{
+					int m = q.pointShadowMax;
+					if (attr::Int("Shadow points max", &m, 0,
+							int(smvk::kMaxPointShadowLights),
+							"The per-frame shadowed-point budget"))
+						q.pointShadowMax = m;
+				}
+				attr::Slider("Point shadow max distance",
+					&q.pointShadowMaxDistance, 5.0f, 120.0f, "%.0f",
+					"Hard cutoff on camera->light distance (m)");
+				ImGui::TextDisabled("EVSM pipeline");
+				{
+					int pipe = (q.evsmPipeline
+							== smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
+					if (attr::Enum("Pipeline", &pipe,
+							"One-frame lag\0Same-frame\0",
+							"The moment atlas' pipelining (lag = the async "
+							"blur wins, same-frame = no lag)"))
+						q.evsmPipeline = (pipe == 1)
+							? smvk::EvsmPipelineMode::SameFrame
+							: smvk::EvsmPipelineMode::OneFrameLag;
+				}
+				attr::Slider("Local light size", &q.evsmSpotLightSize, 0.0f,
+					2.0f, "%.2f", "The spot PCSS light diameter (m; 0 = hard)");
+				ImGui::TextDisabled("Sun contact shadows");
+				ImGui::Checkbox("Contact shadows##contact",
+					&q.contactShadowsEnabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("The pre-Main depth raymarch toward the "
+						"sun (the contact-hardening detail the cascades "
+						"cannot resolve)");
+				attr::Slider("Contact distance", &q.contactShadowMaxDistance,
+					0.05f, 2.0f, "%.2f", "The march length (m)");
+				attr::Slider("Contact thickness", &q.contactShadowThickness,
+					0.005f, 0.2f, "%.3f",
+					"The thin-occluder acceptance band (m)");
+				attr::Slider("Contact start bias", &q.contactShadowStartBias,
+					0.0f, 0.05f, "%.3f", "The ray start + self-hit floor (m)");
+				{
+					int s = q.contactShadowSteps;
+					if (attr::Int("Contact steps", &s, 4, 32,
+							"The march sample count"))
+						q.contactShadowSteps = s;
+				}
+				{
+					int r = (q.contactShadowResolutionDivisor == 1) ? 0 : 1;
+					if (attr::Enum("Contact resolution", &r, "Full\0Half\0",
+							"The visibility texture's resolution (half saves "
+							"tracing but can lose thin occluders)"))
+						q.contactShadowResolutionDivisor = (r == 0) ? 1 : 2;
+				}
+				ImGui::TextDisabled("Diffuse screen-space GI");
+				ImGui::Checkbox("SSGI diffuse##ssgi", &q.ssgiDiffuseEnabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("One cosine-hemisphere bounce that "
+						"REPLACES the diffuse ambient slice (experimental; "
+						"off under MSAA)");
+				attr::Slider("SSGI intensity", &q.ssgiDiffuseIntensity, 0.0f,
+					4.0f, "%.2f", "The replacement strength (0 = off)");
+				attr::Slider("SSGI max distance", &q.ssgiDiffuseMaxDistance,
+					0.5f, 50.0f, "%.1f", "The ray length budget (m) - the "
+					"LOCAL bounce");
+				attr::Slider("SSGI thickness", &q.ssgiDiffuseThickness, 0.01f,
+					2.0f, "%.2f", "The depth acceptance band (m)");
+				attr::Slider("SSGI temporal blend",
+					&q.ssgiDiffuseTemporalBlend, 0.0f, 0.98f, "%.2f",
+					"The history weight (motion-reprojected accumulation)");
+				attr::Slider("SSGI bilateral sharpness",
+					&q.ssgiDiffuseBlurSharpness, 0.0f, 32.0f, "%.1f",
+					"The bilateral depth edge weight");
+				{
+					int s = q.ssgiDiffuseMaxIntersections;
+					if (attr::Int("SSGI traversal steps", &s, 4, 128,
+							"The traversal cap (exhaustion = miss)"))
+						q.ssgiDiffuseMaxIntersections = s;
+				}
+				ImGui::Checkbox("SSGI temporal filter##ssgi_taa",
+					&q.ssgiDiffuseTaaEnabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Temporal accumulation with depth + "
+						"normal rejection; falls back to spatial-only "
+						"without motion vectors");
+				ImGui::TextDisabled("SSR trace detail");
+				{
+					int s = q.ssrSteps;
+					if (attr::Int("SSR ray steps", &s, 1, 128,
+							"The raymarch step count (half-res trace)"))
+						q.ssrSteps = s;
+				}
+				{
+					int s = q.ssrRefineSteps;
+					if (attr::Int("SSR refine steps", &s, 0, 8,
+							"The binary refine iterations"))
+						q.ssrRefineSteps = s;
+				}
+				attr::Slider("SSR max distance", &q.ssrMaxDistance, 1.0f,
+					200.0f, "%.0f", "The ray length (m)");
+				attr::Slider("SSR thickness", &q.ssrThickness, 0.01f, 2.0f,
+					"%.2f", "The depth acceptance band (m)");
+				attr::Slider("SSR F0", &q.ssrF0, 0.0f, 1.0f, "%.2f",
+					"The dielectric base reflectance (glass 0.04)");
+				attr::Slider("SSR bilateral sharpness", &q.ssrBlurSharpness,
+					0.0f, 32.0f, "%.1f", "The bilateral depth edge weight");
+				{
+					int b = q.ssrBlurMode;
+					if (attr::Enum("SSR blur mode", &b,
+							"2D bilateral\0Separable H+V\0",
+							"The blur filter (a live flip resets the "
+							"temporal history)"))
+						q.ssrBlurMode = std::clamp(b, 0, 1);
+				}
+				ImGui::TextDisabled("Cubemap IBL detail");
+				attr::Slider("Cubemap LOD bias", &q.cubemapLodBias, -2.0f,
+					4.0f, "%.2f", "Added to the roughness LOD");
+				{
+					int b = int(q.cubemapStreamBudget);
+					if (attr::Int("Stream budget", &b, 0, 64,
+							"Resident non-pinned rows (nearest first)"))
+						q.cubemapStreamBudget = uint32_t(
+							std::clamp(b, 0, 64));
+				}
+				ImGui::TextDisabled("Motion blur detail");
+				{
+					int s = q.motionBlurSamples;
+					if (attr::Int("Blur samples", &s, 1, 32,
+							"The gather tap count"))
+						q.motionBlurSamples = s;
+				}
+				attr::Slider("Blur max radius", &q.motionBlurMaxRadius, 0.0f,
+					64.0f, "%.0f", "The blur clamp (px)");
+				attr::Slider("Blur strength", &q.motionBlurStrength, 0.0f,
+					2.0f, "%.2f", "The shutter scale");
+				ImGui::Checkbox("Tile dilation##mb_tiles",
+					&q.motionBlurTileDilation);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("CoD:AW tile max + 5x5 dilate "
+						"prepasses (16px tiles)");
+				ImGui::TextDisabled("Depth of field detail");
+				ImGui::Checkbox("HQ bokeh##dof_hq", &q.dofHqBokeh);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("48-tap hex gather (off = the low "
+						"single-pass Poisson)");
+				attr::Slider("Focus distance", &q.dofFocusDistance, 0.5f,
+					100.0f, "%.1f", "The in-focus plane (m, view distance)");
+				attr::Slider("Focus range", &q.dofFocusRange, 0.0f, 20.0f,
+					"%.1f", "The sharp half-depth around the focus (m)");
+				attr::Slider("Low max radius", &q.dofMaxRadius, 0.0f, 64.0f,
+					"%.0f", "The low-pass clamp (px)");
+				attr::Slider("Bokeh max radius", &q.dofBokehMaxRadius, 0.0f,
+					64.0f, "%.0f", "The HQ bokeh clamp (px)");
+				attr::Slider("Highlight boost", &q.dofHighlightBoost, 1.0f,
+					4.0f, "%.2f", "The HQ bright-tap weight multiplier");
+				attr::Slider("Highlight threshold", &q.dofHighlightThreshold,
+					0.0f, 8.0f, "%.1f", "The HQ pre-exposure luminance knee");
+			}
 			ImGui::PopID();
 			// Live push per edit (plain member writes — the same pattern
 			// as the look's PushPostfxEnv at the tail; session-only, and
@@ -823,9 +1086,10 @@ namespace editor {
 			put("render.aaMode", std::to_string(r.aaMode));
 			put("render.cubemapEnabled", r.cubemapEnabled ? "1" : "0");
 			put("render.cubemapIntensity", std::to_string(r.cubemapIntensity));
-			// (The GI/shadow quality knobs never ride render.* keys —
-			// editor.prefs [renderQuality] owns them; see
-			// DrawRenderSettingsPanel's split note.)
+			// (The renderer QUALITY knobs never ride render.* keys —
+			// they are session-only state (LivePrefs' [renderQuality]
+			// section is retired; see DrawRenderSettingsPanel's split
+			// note).)
 		}
 		// Analytic env-zone master switch (scene-level; see
 		// Rendergraph/envzones.h). Absent = the Scene default ON.
@@ -941,7 +1205,7 @@ namespace editor {
 			else if (f == "aaMode") r.aaMode = int(StrFloat(v, float(r.aaMode)));
 			else if (f == "cubemapEnabled") r.cubemapEnabled = StrFloat(v, r.cubemapEnabled ? 1.0f : 0.0f) != 0.0f;
 			else if (f == "cubemapIntensity") r.cubemapIntensity = StrFloat(v, r.cubemapIntensity);
-			// (The GI/shadow quality knobs are editor.prefs state — never
+			// (The renderer QUALITY knobs are session-only state — never
 			// render.* keys; unknown fields fall through ignored.)
 		};
 		SceneRenderSettings render = scene.defaultRenderSettings;
