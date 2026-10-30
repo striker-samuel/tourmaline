@@ -1148,6 +1148,17 @@ namespace engine {
 			m_highlightClipThreshold =
 				std::max(0.9f, std::min(1.0f, float(std::atof(brightEnv))));
 		}
+		// SSGI debug-view diagnostic exposure (the ImGui slider value,
+		// for headless captures without UI interaction): +EV applied as
+		// exp2(EV) to the four HDR views (raw/layer/baseline/
+		// contribution — the confidence view self-normalizes). Clamped
+		// to the slider's range; read regardless of the active view so
+		// the gain can be pinned before the view switches, and the
+		// slider keeps editing live afterwards.
+		if (const char* ssgiEvEnv = std::getenv("TOURMALINE_SSGI_DEBUG_EV")) {
+			m_ssgiDebugEv =
+				std::max(0.0f, std::min(12.0f, float(std::atof(ssgiEvEnv))));
+		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
 		// ApplyHeadlessPostfxOverrides (re-applied after the scene seed).
 		// Texture filtering override for A/B runs without UI interaction
@@ -13528,7 +13539,12 @@ namespace engine {
 					taaParams.parity,
 					taaUsable,
 					dgiDitherEpoch,
-					SsgiDiffuseDebugViewId(m_debugView));
+					SsgiDiffuseDebugViewId(m_debugView),
+					// The HDR views' diagnostic +EV gain (shared across
+					// raw/layer/baseline/contribution; 1.0f = the
+					// confidence view's self-normalized read or view
+					// off — the gain only applies to views 2..5).
+					std::exp2(m_ssgiDebugEv));
 				m_ssgiDiffuseFrameRanTemporal = taaUsable;
 				// The scene HDR pointer moves: downstream (SSR,
 				// MotionBlur, DOF, volumetrics, exposure) consumes the
@@ -15572,6 +15588,15 @@ namespace engine {
 								&m_shadowClipThreshold, 0.0f, 0.1f, "%.3f");
 							ImGui::SliderFloat("Highlight clipping threshold",
 								&m_highlightClipThreshold, 0.9f, 1.0f, "%.3f");
+						}
+						// The HDR SSGI views (raw/layer/baseline/
+						// contribution): one SHARED diagnostic exposure so
+						// switching views preserves relative brightness
+						// (confidence is excluded — its 0..1 read
+						// self-normalizes via 1/exposure).
+						if (IsSsgiHdrDebugView(m_debugView)) {
+							ImGui::SliderFloat("SSGI debug exposure (+EV)",
+								&m_ssgiDebugEv, 0.0f, 12.0f, "%.1f");
 						}
 						// Motion vectors (V): the tonemap's debug view —
 						// direction -> hue, magnitude -> intensity, jitter

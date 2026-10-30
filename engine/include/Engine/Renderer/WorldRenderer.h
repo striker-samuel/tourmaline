@@ -481,8 +481,10 @@ enum class ViewMode : int {
 	// SSR/bloom/fog/motion-blur/DOF) still trips for them — those stack
 	// over the readout, and the SSGI composite REPLACES the pixel with
 	// the visualization (values are raw HDR — exposure holds its last
-	// scene value under a debug view; pair with
-	// TOURMALINE_AUTO_EXPOSURE=0 for readable captures). The chain must
+	// scene value under a debug view; the four HDR views carry a
+	// diagnostic +EV gain — the Debug panel's SSGI debug slider /
+	// TOURMALINE_SSGI_DEBUG_EV — for readable readouts, and background
+	// pixels read black). The chain must
 	// be enabled (TOURMALINE_SSGI=1 / the render-settings checkbox) or
 	// the view silently shows Lit. ----
 	SsgiConfidence = 13,   // hit confidence (grayscale; the smooth
@@ -610,6 +612,15 @@ enum class ViewMode : int {
 	case ViewMode::SsgiContribution: return 5u;
 	default: return 0u;
 	}
+}
+
+// The HDR-scale SSGI views (raw/layer/baseline/contribution) — the
+// ones the diagnostic +EV gain applies to. Confidence is deliberately
+// excluded: it is unitless and normalizes itself via 1/exposure, so a
+// shared gain would distort its 0..1 read.
+[[nodiscard]] inline bool IsSsgiHdrDebugView(ViewMode v) {
+	return v == ViewMode::SsgiRaw || v == ViewMode::SsgiLayer
+		|| v == ViewMode::SsgiBaseline || v == ViewMode::SsgiContribution;
 }
 
 // ---------------------------------------------------------------------------
@@ -3707,6 +3718,15 @@ public:
 	float m_ssgiDiffuseBlurSharpness = 10.0f; // bilateral depth edge weight
 	int m_ssgiDiffuseMaxIntersections = 64;   // traversal cap (exhaustion = miss)
 	bool m_ssgiDiffuseTaaEnabled = true;  // temporal accumulation of the GI layer
+	// Diagnostic exposure for the HDR SSGI debug views (raw/layer/
+	// baseline/contribution — IsSsgiHdrDebugView): +EV, pushed as
+	// exp2(EV) into SsgiDiffuseComposePush::debugGain. Physical-unit
+	// scenes meter at ~0.001 exposure, which tonemaps dim indirect
+	// readouts to near-black; the default +4 EV puts them in a readable
+	// range. Slider in the Debug panel (shown while an HDR view is
+	// active), headless pin TOURMALINE_SSGI_DEBUG_EV. The confidence
+	// view never reads it (it self-normalizes via 1/exposure).
+	float m_ssgiDebugEv = 4.0f;
 	// Record-sequence state (the SsrTaaState discipline): parity picks
 	// the history slot the next temporal record writes; invalidated on
 	// target rebuild and motion-vector loss.

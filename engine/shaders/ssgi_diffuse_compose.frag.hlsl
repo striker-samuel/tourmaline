@@ -57,7 +57,12 @@
 // contribution. The visualization REPLACES the pixel (it still writes
 // the composed target, so the downstream chain stays intact); values
 // are raw HDR — exposure holds its last scene value under a debug
-// view, so pair with TOURMALINE_AUTO_EXPOSURE=0 for readable captures.
+// view. The four HDR views (2..5) carry a DIAGNOSTIC EXPOSURE GAIN
+// (cp.debugGain, exp2(+EV) from the Debug panel's slider /
+// TOURMALINE_SSGI_DEBUG_EV — physical-unit scenes meter at ~0.001
+// exposure, which tonemaps dim indirect readouts to near-black); the
+// confidence view normalizes itself (1/exposure). Background pixels
+// read BLACK under every view — no diagnostic signal exists there.
 
 struct PSIn
 {
@@ -94,7 +99,7 @@ struct SsgiDiffuseComposePush
     uint hzbMip1Offset;        // float offset of mip1 in the HZB buffer
     uint hzbMip1Stride;        // mip1 row stride (floats)
     uint debugView;            // 0 off, 1 conf, 2 raw, 3 layer, 4 baseline, 5 contribution
-    uint pad0;
+    float debugGain;           // views 2..5: diagnostic exposure gain (CPU: exp2(+EV); 1 = none)
     uint pad1;
 };
 
@@ -123,8 +128,13 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     if (DofIsBackgroundOrGarbage(d))
     {
         // Sky: no receiver — the base color stands (the analytic sky
-        // already carries its own ambient).
-        OUT.outColor = float4(base, 1.0f);
+        // already carries its own ambient). Under a DEBUG VIEW the
+        // background reads BLACK instead: no diagnostic signal exists
+        // there, and the ordinary scene color made the readout's range
+        // inconsistent (a bright sky next to gain-boosted GI values).
+        OUT.outColor = (cp.debugView != 0u)
+            ? float4(0.0f, 0.0f, 0.0f, 1.0f)
+            : float4(base, 1.0f);
         return OUT;
     }
     float2 ndcC = float2((float(fullPx.x) + 0.5f) * cp.invDepthW * 2.0f - 1.0f,
@@ -255,8 +265,11 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // pre-scale the flat debug FS views carry (Main's dbgGain = 1/
     // exposure: physical light units put the exposure at ~0.001, and a
     // bare 0..1 lerp tonemaps to black). The scene-HDR-scale views
-    // (raw/layer/baseline/contribution) ride the scene's own exposure
-    // like the base does — no gain.
+    // (raw/layer/baseline/contribution) get their readable range from
+    // the DIAGNOSTIC +EV GAIN below (cp.debugGain — same
+    // physical-units problem, different lever: the values are real
+    // radiance, so the gain is a visualization boost, never a scene
+    // exposure change).
     if (cp.debugView != 0u)
     {
         float3 dbg = base;
@@ -301,15 +314,24 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
             // baked ambient), RED = negative (the local radiance is
             // dimmer than the ambient it replaces - the intended
             // darkening of an over-bright probe ambient), black = no
-            // change. HDR scale (rides the scene exposure like the
-            // base); a bare signed value would clamp the negative half
-            // to black in the HDR target.
+            // change. HDR scale; a bare signed value would clamp the
+            // negative half to black in the HDR target.
             float3 d = saturate(cp.intensity) * delta;
             float s = d.r + d.g + d.b;
             dbg = (s >= 0.0f)
                 ? float3(0.0f, s, 0.0f)
                 : float3(-s, 0.0f, 0.0f);
         }
+        // The four HDR views share ONE diagnostic gain (exp2(+EV),
+        // CPU-supplied — the Debug panel's slider, default +4 EV):
+        // switching between them preserves their relative brightness,
+        // and the confidence view is deliberately excluded (it already
+        // normalizes via 1/exposure). This is a pure visualization
+        // boost — the scene exposure is untouched (the values are real
+        // radiance; the downstream tonemap applies the scene exposure
+        // exactly as before).
+        if (cp.debugView >= 2u && cp.debugView <= 5u)
+            dbg *= cp.debugGain;
         OUT.outColor = float4(SanitizeHdr(dbg), 1.0f);
         return OUT;
     }

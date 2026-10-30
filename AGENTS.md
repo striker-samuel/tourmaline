@@ -130,6 +130,18 @@ $env:TOURMALINE_CAPTURE='48'
   march's contribution, red = the march missed what the cascade caught,
   dim blue = NdotL<=0 (inert), magenta = the pass not running. The
   contact pass stays LIVE under this view (it samples the real march).
+- `TOURMALINE_DEBUGVIEW=ssgi_confidence|ssgi_raw|ssgi_layer|
+  ssgi_baseline|ssgi_contribution` selects the SSGI compose debug views
+  (the ViewMode Ssgi* combo entries; the chain must be on -
+  TOURMALINE_SSGI=1). The four HDR-scale views (raw/layer/baseline/
+  contribution) write real radiance through the frozen scene exposure,
+  so they carry a DIAGNOSTIC +EV GAIN - the Debug panel's "SSGI debug
+  exposure (+EV)" slider, default +4 (x16), headless pin
+  `TOURMALINE_SSGI_DEBUG_EV=<0..12>` (shared across the four so
+  switching preserves relative brightness; the confidence view
+  self-normalizes via 1/exposure and ignores it). Background pixels
+  read BLACK under every SSGI view (no diagnostic signal exists in
+  the sky).
   Per-material receive gate: MATERIAL_RECEIVE_CONTACT_SHADOWS (the
   MaterialValues::emissiveFactor.w flags word, mesh.h kMaterialFlag*): the
   SMVK_materials_contactShadows glTF extension {"receive": false} opts out

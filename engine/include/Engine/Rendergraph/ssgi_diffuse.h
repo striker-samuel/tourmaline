@@ -183,7 +183,13 @@ struct SsgiDiffuseComposePush {
 	// (the ViewMode Ssgi* debug entries — see the compose shader's
 	// header for what each shows).
 	uint32_t debugView = 0;
-	uint32_t pad0 = 0;
+	// Views 2..5: the DIAGNOSTIC EXPOSURE GAIN (exp2(+EV) — the Debug
+	// panel's SSGI debug slider / TOURMALINE_SSGI_DEBUG_EV; 1.0f =
+	// none). Physical-unit scenes meter at ~0.001 exposure and dim
+	// indirect readouts tonemap to near-black; this puts them in a
+	// readable range WITHOUT touching the scene exposure. The
+	// confidence view is excluded (it self-normalizes via 1/exposure).
+	float debugGain = 1.0f;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SsgiDiffuseComposePush) == 104);
@@ -675,6 +681,8 @@ struct ScreenSpaceDiffuseGi {
 	// temporal: false = the spatial-only record (compose samples the
 	// blur; the caller's EndFrame step invalidates the history).
 	// debugView: the compose shader's visualization selector (0 off).
+	// debugGain: the views-2..5 diagnostic exposure gain (exp2(+EV),
+	// 1.0f = none — see SsgiDiffuseComposePush::debugGain).
 	void AddPasses(RenderGraph& rg,
 		LogicalImageViewHandle hdrView,
 		uint32_t hdrBindlessIndex,
@@ -709,6 +717,7 @@ struct ScreenSpaceDiffuseGi {
 		bool temporal,
 		uint32_t frameIndex,
 		uint32_t debugView,
+		float debugGain,
 		const char* traceName = "SsgiDiffuseTrace",
 		const char* blurName = "SsgiDiffuseBlur",
 		const char* temporalName = "SsgiDiffuseTemporal",
@@ -962,7 +971,7 @@ struct ScreenSpaceDiffuseGi {
 			push.hzbMip1Offset = hzbMip1Offset;
 			push.hzbMip1Stride = hzbMip1Stride;
 			push.debugView = debugView;
-			push.pad0 = 0;
+			push.debugGain = debugGain;
 			push.pad1 = 0;
 
 			std::vector<LogicalImageViewHandle> composeInputs =
