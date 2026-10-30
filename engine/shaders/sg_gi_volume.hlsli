@@ -283,14 +283,27 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                 const float wt = wvEff * (t3.x * t3.y * t3.z);
                 if (wt <= 0.0)
                     continue;
-                float4 layers[SG_GI_VOLUME_LAYERS];
-                [unroll]
-                for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
-                    layers[t] = volumeTextures[
-                        frame.giVolumeLayers[vol * 7u + t]]
-                        .Load(int4(cc, 0));
                 float3 corner[SG_GI_LOBES];
-                SgRegularUnpack(layers, corner);
+                if (v.planeCountBase.z == 1u)
+                {
+                    // GV6H: one BC6H fetch per lobe - the amp IS the
+                    // RGB (no unpack). Slots at [vol * 10 + l].
+                    [unroll]
+                    for (uint l = 0; l < SG_GI_LOBES; ++l)
+                        corner[l] = volumeTextures[
+                            frame.giVolumeLayers[vol * 10u + l]]
+                            .Load(int4(cc, 0)).rgb;
+                }
+                else
+                {
+                    float4 layers[SG_GI_VOLUME_LAYERS];
+                    [unroll]
+                    for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
+                        layers[t] = volumeTextures[
+                            frame.giVolumeLayers[vol * 10u + t]]
+                            .Load(int4(cc, 0));
+                    SgRegularUnpack(layers, corner);
+                }
                 [unroll]
                 for (uint l = 0; l < SG_GI_LOBES; ++l)
                     acc[l] += corner[l] * wt;
@@ -318,11 +331,24 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
 
     // FAST PATH: the 7 hardware-trilinear 3D reads + the shared
     // 27-half unpack (the cell is clean — or no vis data: same shape).
+    // The LAYER FORMAT (GiVolumeGpu.planeCountBase.z; slots at
+    // giVolumeLayers[vol * 10 + i]): GV6H = 9 BC6H per-lobe fetches -
+    // the amp IS the RGB, no unpack (the 7 -> 9 fetch increase is the
+    // format's measured cost); a legacy GVOL volume = the 7 RGBA16F
+    // stream + the shared 27-half unpack.
+    if (v.planeCountBase.z == 1u)
+    {
+        [unroll]
+        for (uint l = 0; l < SG_GI_LOBES; ++l)
+            amps[l] = volumeTextures[frame.giVolumeLayers[vol * 10u + l]]
+                .Sample(samplers[2], uvw).rgb;
+        return;
+    }
     float4 layers[SG_GI_VOLUME_LAYERS];
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
     {
-        layers[t] = volumeTextures[frame.giVolumeLayers[vol * 7u + t]]
+        layers[t] = volumeTextures[frame.giVolumeLayers[vol * 10u + t]]
             .Sample(samplers[2], uvw);
     }
     SgRegularUnpack(layers, amps);

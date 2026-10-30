@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/GI/cubemap_volume.h>
+#include <Engine/GI/bc6h.h>
 
 #include <atomic>
 #include <chrono>
@@ -307,6 +308,111 @@ void GiVolume::PackGpuLayers(std::vector<uint16_t> out[7]) const {
 	}
 }
 
+void GiVolume::PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const {
+	// One BC6H_UFloat 3D layer per SG lobe: the lobe's RGB amplitudes,
+	// encoded PER Z SLICE in 4x4 XY blocks (Vulkan 3D BC6H blocks span
+	// 4x4x1). Slice extents pad to multiples of 4 with ZERO amps —
+	// padded texels sit outside dims and no runtime tap reaches them
+	// (uvw saturates inside; the weighted path's corner coords clamp
+	// to dims-2). ~9 bytes/probe vs the RGBA16F pack's 56.
+	const uint32_t nx = dims[0], ny = dims[1], nz = dims[2];
+	const uint32_t w4 = (nx + 3u) / 4u * 4u;
+	const uint32_t h4 = (ny + 3u) / 4u * 4u;
+	const size_t sliceBlocks = size_t(w4 / 4u) * (h4 / 4u) * 16u;
+	const size_t lobeBytes = sliceBlocks * size_t(nz);
+	for (uint32_t l = 0; l < 9; ++l)
+		out[l].clear();
+	if (coeffs.size() != size_t(VoxelCount()) * kSgLobeCount)
+		return; // no field (a blocks-loaded volume re-packs nothing)
+	std::vector<uint16_t> slice(size_t(w4) * h4 * 3, uint16_t(0));
+	std::vector<uint8_t> blocks;
+	for (uint32_t lobe = 0; lobe < 9; ++lobe) {
+		out[lobe].reserve(lobeBytes);
+		for (uint32_t z = 0; z < nz; ++z) {
+			std::fill(slice.begin(), slice.end(), uint16_t(0));
+			for (uint32_t y = 0; y < ny; ++y)
+				for (uint32_t x = 0; x < nx; ++x) {
+					const glm::vec3& a =
+						coeffs[((size_t(z) * ny + y) * nx + x)
+							* kSgLobeCount + lobe];
+					const size_t t = (size_t(y) * w4 + x) * 3;
+					slice[t + 0] = PackHalf(a.r);
+					slice[t + 1] = PackHalf(a.g);
+					slice[t + 2] = PackHalf(a.b);
+				}
+			// PAD PREFILL (the Frostbite discipline, bc6h.h's header):
+			// zero pads expand the endpoint box ([0, max] instead of
+			// the tight valid range) and quantize the VALID texels
+			// worse — boundary blocks dominate at non-multiple-of-4
+			// dims. Each 4x4 block's pad texels take that block's
+			// VALID-texel average per channel.
+			for (uint32_t by = 0; by < h4; by += 4)
+				for (uint32_t bx = 0; bx < w4; bx += 4) {
+					glm::dvec3 sum(0.0);
+					uint32_t valid = 0;
+					for (uint32_t y = by; y < by + 4 && y < ny; ++y)
+						for (uint32_t x = bx; x < bx + 4 && x < nx; ++x) {
+							const size_t t = (size_t(y) * w4 + x) * 3;
+							sum += glm::dvec3(UnpackHalf(slice[t + 0]),
+								UnpackHalf(slice[t + 1]),
+								UnpackHalf(slice[t + 2]));
+							++valid;
+						}
+					if (valid == 0 || valid == 16)
+						continue; // empty or full block: nothing to fill
+					const glm::vec3 avg = glm::vec3(sum / double(valid));
+					for (uint32_t y = by; y < by + 4; ++y)
+						for (uint32_t x = bx; x < bx + 4; ++x) {
+							if (x < nx && y < ny)
+								continue; // a valid texel
+							const size_t t = (size_t(y) * w4 + x) * 3;
+							slice[t + 0] = PackHalf(avg.r);
+							slice[t + 1] = PackHalf(avg.g);
+							slice[t + 2] = PackHalf(avg.b);
+						}
+				}
+			blocks.clear();
+			Bc6hEncodeImage(slice.data(), w4, h4, blocks);
+			out[lobe].insert(out[lobe].end(), blocks.begin(), blocks.end());
+		}
+	}
+}
+
+bool GiVolume::DecodeBc6hCoeffs(std::string& err) {
+	if (!bc6hFormat) {
+		err = "DecodeBc6hCoeffs: the volume carries no BC6H blocks";
+		return false;
+	}
+	const uint32_t nx = dims[0], ny = dims[1], nz = dims[2];
+	const uint32_t w4 = (nx + 3u) / 4u * 4u;
+	const uint32_t h4 = (ny + 3u) / 4u * 4u;
+	const size_t sliceBlocks = size_t(w4 / 4u) * (h4 / 4u) * 16u;
+	coeffs.assign(size_t(VoxelCount()) * kSgLobeCount, glm::vec3(0.0f));
+	std::vector<uint16_t> halves;
+	for (uint32_t lobe = 0; lobe < 9; ++lobe) {
+		if (bc6hLayers[lobe].size() < sliceBlocks * size_t(nz)) {
+			err = "DecodeBc6hCoeffs: short BC6H blob";
+			return false;
+		}
+		for (uint32_t z = 0; z < nz; ++z) {
+			halves.clear();
+			Bc6hDecodeImage(
+				bc6hLayers[lobe].data() + size_t(z) * sliceBlocks,
+				w4, h4, halves);
+			for (uint32_t y = 0; y < ny; ++y)
+				for (uint32_t x = 0; x < nx; ++x) {
+					const size_t t = (size_t(y) * w4 + x) * 3;
+					coeffs[((size_t(z) * ny + y) * nx + x)
+						* kSgLobeCount + lobe] = glm::vec3(
+						UnpackHalf(halves[t + 0]),
+						UnpackHalf(halves[t + 1]),
+						UnpackHalf(halves[t + 2]));
+				}
+		}
+	}
+	return true;
+}
+
 void GiVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
 	// One RGBA16F texel per voxel: rgb = 0.124959 * ╬ú lobes (the
 	// isotropic mean the fog consumes ΓÇö VolGiMean's constant in
@@ -378,12 +484,19 @@ void GiVolume::PackGpuVisLayers(std::vector<uint8_t> out[2]) const {
 }
 
 size_t GiVolume::GpuBytes() const {
-	// 7 RGBA16F layers (56 B) + 2 RGBA8_UNORM vis layers (8 B) per voxel.
-	return size_t(VoxelCount()) * 64;
+	// Resident bytes per voxel: BC6H = 9 (9 lobes x 1 B, 16 B per
+	// 4x4x1 block) + 8 vis (2 x RGBA8) + 8 mean (RGBA16F); the legacy
+	// RGBA16F shape = 56 + 8 + 8. The ~65% total-texture saving (9+16
+	// vs 56+16 per probe) at bake-typical dims.
+	return size_t(VoxelCount()) * (bc6hFormat ? 25u : 64u);
 }
 
 bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const {
 	GiVolumeFileHeader hdr{};
+	// CANON: the GV6H magic (BC6H blobs). Old GVOL content rebakes; the
+	// GVOL reader below stays only as the BC6H-3D-incapable device
+	// fallback's shape.
+	hdr.magic[0] = 'G'; hdr.magic[1] = 'V'; hdr.magic[2] = '6'; hdr.magic[3] = 'H';
 	hdr.planeCount = uint32_t(def.planes.size());
 	hdr.priority = def.priority;
 	hdr.dims[0] = dims[0];
@@ -421,25 +534,37 @@ bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const 
 	const size_t flagBytes = visCellClean.size() == size_t(n)
 		? size_t(n) : 0;
 	const size_t flagTail = (flagBytes + 3u) & ~size_t(3u);
-	std::vector<uint8_t> payload;
-	payload.resize(planeBytes.size()
-		+ size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t)
-		+ visFloats * sizeof(float)
-		+ flagTail);
-	std::memcpy(payload.data(), planeBytes.data(), planeBytes.size());
-	auto* dst = reinterpret_cast<uint16_t*>(payload.data() + planeBytes.size());
-	for (uint64_t v = 0; v < n; ++v)
-		for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe) {
-			const glm::vec3& a = coeffs[size_t(v) * kSgLobeCount + lobe];
-			dst[(size_t(v) * kSgLobeCount + lobe) * 3 + 0] = PackHalf(a.r);
-			dst[(size_t(v) * kSgLobeCount + lobe) * 3 + 1] = PackHalf(a.g);
-			dst[(size_t(v) * kSgLobeCount + lobe) * 3 + 2] = PackHalf(a.b);
+	// The CANONICAL payload ("GV6H"): planes + 9 BC6H lobe blobs (the
+	// cook-time compression — full-precision fp32 coeffs live only in
+	// the bake's memory) + the optional vis/flag blocks. Blob sizes are
+	// DERIVED from dims (per slice (w4/4)*(h4/4) blocks x 16 B, z
+	// slices in order) — the reader needs no extra header fields.
+	std::vector<uint8_t> bc6hOut[9];
+	PackGpuLayersBc6h(bc6hOut);
+	const uint32_t w4 = (dims[0] + 3u) / 4u * 4u;
+	const uint32_t h4 = (dims[1] + 3u) / 4u * 4u;
+	const size_t lobeBlob = size_t(w4 / 4u) * (h4 / 4u) * 16u * dims[2];
+	size_t bc6hBytes = 0;
+	for (uint32_t l = 0; l < 9; ++l) {
+		if (bc6hOut[l].size() != lobeBlob) {
+			err = "GiVolume: BC6H pack size mismatch (incomplete coeffs?)";
+			return false;
 		}
+		bc6hBytes += lobeBlob;
+	}
+	std::vector<uint8_t> payload;
+	payload.resize(planeBytes.size() + bc6hBytes
+		+ visFloats * sizeof(float) + flagTail);
+	std::memcpy(payload.data(), planeBytes.data(), planeBytes.size());
+	size_t off = planeBytes.size();
+	for (uint32_t l = 0; l < 9; ++l) {
+		std::memcpy(payload.data() + off, bc6hOut[l].data(), lobeBlob);
+		off += lobeBlob;
+	}
 	if (visFloats) {
-		float* vdst = reinterpret_cast<float*>(
-			payload.data() + planeBytes.size()
-			+ size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t));
-		std::memcpy(vdst, vis.data(), visFloats * sizeof(float));
+		std::memcpy(payload.data() + off, vis.data(),
+			visFloats * sizeof(float));
+		off += visFloats * sizeof(float);
 	}
 	if (flagBytes)
 		std::memcpy(payload.data() + payload.size() - flagTail,
@@ -484,7 +609,8 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 		return false;
 	}
 	std::memcpy(&hdr, bytes.data(), sizeof(hdr));
-	if (std::memcmp(hdr.magic, "GVOL", 4) != 0) {
+	const bool gv6h = std::memcmp(hdr.magic, "GV6H", 4) == 0;
+	if (!gv6h && std::memcmp(hdr.magic, "GVOL", 4) != 0) {
 		err = "givolume: bad magic (pre-visibility bakes refuse - re-bake)";
 		return false;
 	}
@@ -521,19 +647,23 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 
 	const size_t planeBytes = size_t(hdr.planeCount) * 8 * sizeof(float);
 	const uint64_t n = uint64_t(hdr.dims[0]) * hdr.dims[1] * hdr.dims[2];
-	const size_t coeffBytes = size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t);
-	// Payload shapes (the writer's three cases): coeffs only (a
-	// hand-built volume — no rejection data, the pre-visibility
-	// behavior), coeffs + vis floats, or coeffs + vis + the 4-aligned
-	// flag tail.
 	const size_t visBytes = size_t(n) * 6 * sizeof(float);
 	const size_t flagTail = (size_t(n) + 3u) & ~size_t(3u);
-	const size_t coeffEnd = planeBytes + coeffBytes;
-	const bool hasVis = payload.size() >= coeffEnd + visBytes;
-	const bool hasFlags = payload.size() >= coeffEnd + visBytes + flagTail;
-	if (payload.size() != coeffEnd
-		&& payload.size() != coeffEnd + visBytes
-		&& payload.size() != coeffEnd + visBytes + flagTail) {
+	// The payload base after the planes: GV6H = 9 BC6H blobs (sizes
+	// derived from dims); GVOL = the fp32-coeff halves block.
+	const uint32_t w4r = (hdr.dims[0] + 3u) / 4u * 4u;
+	const uint32_t h4r = (hdr.dims[1] + 3u) / 4u * 4u;
+	const size_t lobeBlobR = size_t(w4r / 4u) * (h4r / 4u) * 16u
+		* hdr.dims[2];
+	const size_t fieldBytes = gv6h
+		? size_t(9) * lobeBlobR
+		: size_t(n) * 3 * kSgLobeCount * sizeof(uint16_t);
+	const size_t fieldEnd = planeBytes + fieldBytes;
+	const bool hasVis = payload.size() >= fieldEnd + visBytes;
+	const bool hasFlags = payload.size() >= fieldEnd + visBytes + flagTail;
+	if (payload.size() != fieldEnd
+		&& payload.size() != fieldEnd + visBytes
+		&& payload.size() != fieldEnd + visBytes + flagTail) {
 		err = "givolume: payload size mismatch";
 		return false;
 	}
@@ -555,14 +685,37 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 	dims[1] = hdr.dims[1];
 	dims[2] = hdr.dims[2];
 
-	coeffs.assign(size_t(n) * kSgLobeCount, glm::vec3(0.0f));
-	const auto* src = reinterpret_cast<const uint16_t*>(payload.data() + planeBytes);
-	for (uint64_t v = 0; v < n; ++v)
-		for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe)
-			coeffs[size_t(v) * kSgLobeCount + lobe] = glm::vec3(
-				UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 0]),
-				UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 1]),
-				UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 2]));
+	// The coefficient field: GV6H carries the BC6H blocks VERBATIM
+	// (coeffs stays EMPTY — the runtime uploads blocks; CPU consumers
+	// call DecodeBc6hCoeffs). GVOL carries the fp32-coeff halves.
+	bc6hFormat = gv6h;
+	coeffs.clear();
+	for (uint32_t l = 0; l < 9; ++l)
+		bc6hLayers[l].clear();
+	if (gv6h) {
+		for (uint32_t l = 0; l < 9; ++l) {
+			bc6hLayers[l].assign(
+				payload.data() + planeBytes + size_t(l) * lobeBlobR,
+				payload.data() + planeBytes + size_t(l + 1) * lobeBlobR);
+		}
+		// Decode the coeff mirror NOW (the lossy inspection decode):
+		// every CPU consumer - the audit, Sample(), the editor's
+		// previews, the round-trip tests - reads coeffs; the GPU keeps
+		// the stored blocks (uploaded verbatim; compression stays
+		// cook-only). A decode failure refuses the file.
+		if (!DecodeBc6hCoeffs(err))
+			return false;
+	} else {
+		coeffs.assign(size_t(n) * kSgLobeCount, glm::vec3(0.0f));
+		const auto* src = reinterpret_cast<const uint16_t*>(
+			payload.data() + planeBytes);
+		for (uint64_t v = 0; v < n; ++v)
+			for (uint32_t lobe = 0; lobe < kSgLobeCount; ++lobe)
+				coeffs[size_t(v) * kSgLobeCount + lobe] = glm::vec3(
+					UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 0]),
+					UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 1]),
+					UnpackHalf(src[(size_t(v) * kSgLobeCount + lobe) * 3 + 2]));
+	}
 
 	// The visibility block: 6 fp32 obstacle distances per voxel +
 	// the cell-clean flags. Absent blocks stay EMPTY — the no-rejection
@@ -572,12 +725,12 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
 	visCellClean.clear();
 	if (hasVis) {
 		const auto* vsrc = reinterpret_cast<const float*>(
-			payload.data() + coeffEnd);
+			payload.data() + fieldEnd);
 		vis.assign(vsrc, vsrc + size_t(n) * 6);
 	}
 	if (hasFlags) {
-		visCellClean.assign(payload.data() + coeffEnd + visBytes,
-			payload.data() + coeffEnd + visBytes + size_t(n));
+		visCellClean.assign(payload.data() + fieldEnd + visBytes,
+			payload.data() + fieldEnd + visBytes + size_t(n));
 	}
 	return true;
 }

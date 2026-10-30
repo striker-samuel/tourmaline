@@ -193,6 +193,17 @@ public:
 	// empty = all clean (paired with the open-vis default above).
 	std::vector<uint8_t> visCellClean;
 
+	// ---- BC6H storage (the CANONICAL cooked format, "GV6H") ----
+	// true when this volume carries the 9 per-lobe BC6H_UFloat block
+	// blobs (ReadFromMemory on a GV6H file, or PackGpuLayersBc6h). When
+	// set, coeffs stays EMPTY on the load path (the runtime uploads the
+	// blocks verbatim - compression happened at cook time); consumers
+	// needing the CPU mirror call DecodeBc6hCoeffs (the lossy
+	// reconstruction - the fallback path on BC6H-3D-incapable devices
+	// and the editor's inspection surfaces).
+	bool bc6hFormat = false;
+	std::vector<uint8_t> bc6hLayers[9];
+
 	uint64_t VoxelCount() const;
 	void Resize(); // allocate coeffs per dims (zeroed)
 
@@ -204,8 +215,21 @@ public:
 	bool Sample(const glm::vec3& p, glm::vec3 outAmps[kSgLobeCount]) const;
 
 	// 7 RGBA16F 3D-texture payloads, byte-identical layout to
-	// SgRegularVolume::PackGpuLayers (matches SgRegularUnpack).
+	// SgRegularVolume::PackGpuLayers (matches SgRegularUnpack). The
+	// LEGACY path: GVOL files and BC6H-3D-incapable devices.
 	void PackGpuLayers(std::vector<uint16_t> out[7]) const;
+	// 9 BC6H_UFloat 3D-texture payloads — one per SG lobe, the lobe's
+	// RGB amplitudes encoded per Z SLICE in 4x4 XY blocks (Vulkan 3D
+	// BC6H blocks span 4x4x1; slice extents pad to multiples of 4 with
+	// zero amps - padded texels are outside dims and never sampled).
+	// ~9 bytes/probe vs RGBA16F's 56 - the canonical cooked format
+	// (WriteToMemory always emits it; "GV6H").
+	void PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const;
+	// Reconstructs coeffs from the BC6H blocks (the lossy decode -
+	// Bc6hDecodeImage per slice). The CPU-mirror bridge for the
+	// RGBA16F fallback and inspection surfaces. False when the volume
+	// does not carry blocks.
+	bool DecodeBc6hCoeffs(std::string& err);
 	// 2 RGBA8_UNORM 3D-texture payloads — the visibility data
 	// (visA = +x,-x,+y,-y; visB = +z,-z,cellClean,spare), each axis
 	// distance quantized unorm8 over [0, 15] SPACING UNITS (15 units
@@ -222,13 +246,20 @@ public:
 	// unpack + lobe-sum path computes, at 1/7 the fetches and none of
 	// the lobe-array register pressure.
 	void PackGpuMeanLayer(std::vector<uint16_t>& out) const;
-	size_t GpuBytes() const; // 64 B/voxel resident (56 + 2 vis layers)
+	// Resident bytes/voxel: BC6H = 9 (9 lobes x 1 B) + 8 vis + 8 mean;
+	// the legacy RGBA16F shape = 56 + 8 + 8.
+	size_t GpuBytes() const;
 
+	// ALWAYS the GV6H format (BC6H blocks — canon; old GVOL content
+	// rebakes). Same bytes as WriteFile, into memory — the pak-embed
+	// path (PakCooker's --gi-volume stage bakes volumes straight into
+	// pak Texture blobs).
 	bool WriteFile(const std::string& path, std::string& err) const;
-	// Same bytes as WriteFile (header + LZ4 half payload), into memory —
-	// the pak-embed path (PakCooker's --gi-volume stage bakes volumes
-	// straight into pak Texture blobs).
 	bool WriteToMemory(std::vector<uint8_t>& out, std::string& err) const;
+	// Reads BOTH magics: GV6H (blocks; coeffs stays empty) and the
+	// legacy GVOL (fp32 coeffs; PackGpuLayers at upload) — the legacy
+	// read is the BC6H-3D-incapable device fallback's shape and costs
+	// nothing to keep.
 	bool ReadFromMemory(std::span<const uint8_t> bytes, std::string& err);
 	static bool ReadFile(const std::string& path, GiVolume& out, std::string& err);
 };

@@ -207,6 +207,29 @@ $env:TOURMALINE_CAPTURE='48'
   preview is exactly what the bake builds). The bake-input hash folds
   the gates + seed (stale bakes refuse). Unit-tested in test_gi.cpp
   (glayout.*: gates, cap refusal, coverage contract, parity)
+- BC6H IS THE CANONICAL GI-volume cooked format ("GV6H" - no flag, no
+  toggle, a HARD ENGINE REQUIREMENT): WriteToMemory always emits 9
+  BC6H_UFloat per-lobe 3D textures (PackGpuLayersBc6h - per-Z-slice
+  4x4 XY blocks, non-multiple-of-4 dims padded with the Frostbite
+  valid-texel-average prefill so zeros never expand the endpoint box;
+  ~9 bytes/probe vs RGBA16F's 56), compressed at cook time only. The
+  device init REFUSES to run without BC6H_UFloat 3D sampled + linear
+  filtering (probed at the exact configuration; no fallback by
+  design). The reader takes GV6H (blocks verbatim + the lossy
+  DecodeBc6hCoeffs mirror for CPU consumers - the audit/Sample/the
+  editor) AND the legacy GVOL (old content rebakes; it is also the
+  RGBA16F reference form for quality comparisons). The shader
+  (sg_gi_volume.hlsli) branches per volume on GiVolumeGpu.
+  planeCountBase.z: BC6H = 9 direct .rgb fetches (the amp IS the RGB,
+  no unpack - the 7->9 fetch increase is the format's measured cost),
+  GVOL = the 7 RGBA16F stream + SgRegularUnpack; slots at
+  giVolumeLayers[vol * 10 + i] (the array's original 8x(9+1) shape).
+  Both the fast trilerp and the 8-corner weighted paths carry the
+  branch. Vis (RGBA8) + the fog mean (RGBA16F) unchanged. On-device
+  sponza A/B: 0.03% differing pixels, ZERO strong deltas vs the
+  RGBA16F reference; the rebaked pak's volume is 25 KB on disk.
+  Round-trip unit-tested (gv6h.* in test_gi.cpp: block math, magic,
+  decode tolerance, GpuBytes)
 - The probe spheres have three COLOR MODES (the Debug panel's "Probe
   color mode" combo or `TOURMALINE_GI_PROBE_MODE=0|1|2`): 0 = baked GI
   (the white-Lambertian answer E * giIntensity / PI - physical

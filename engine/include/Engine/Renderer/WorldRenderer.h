@@ -2920,8 +2920,11 @@ public:
 	bool m_giVolumesEnabled = false;       // UI toggle (confined-volume GI)
 	struct GiVolumeResources {
 		smvk::gi::GiVolume volume;       // CPU mirror (def; coeffs freed)
-		smvk::Holder<smvk::TextureHandle> layers[7]; // RGBA16F 3D
-		uint32_t layerSlots[7] = {};    // bindless slots
+		// 9 BC6H 3D layers (the GV6H canon, one per SG lobe) or 7
+		// RGBA16F (a legacy GVOL file) — the volume's bc6hFormat picks;
+		// unused tail slots stay invalid.
+		smvk::Holder<smvk::TextureHandle> layers[9];
+		uint32_t layerSlots[9] = {};    // bindless slots
 		// Isotropic-mean twin (the volumetric fog's one-fetch path —
 		// PackGpuMeanLayer): created under the same failure discipline
 		// as the 7 layers (a volume publishes only with all 8 up).

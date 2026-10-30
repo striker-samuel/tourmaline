@@ -77,7 +77,11 @@ struct GiVolumeGpu
                            //     lattice math below needs the grid dims)
     float4 uvwScale;       // xyz world->lattice-uvw scale = 1/(spacing*max(dims,1)), w = dims.x
     float4 uvwBias;        // xyz = -gridMin * uvwScale, w = dims.y (uvw = saturate(pos*scale + bias))
-    uint4 planeCountBase;  // x plane count, y first plane in the shared pool below, zw pad
+    uint4 planeCountBase;  // x plane count, y first plane in the shared pool below,
+                           // z LAYER FORMAT (0 = legacy 7 RGBA16F GVOL stream,
+                           //   1 = the canonical 9 BC6H per-lobe GV6H layers -
+                           //   the layer slots live at giVolumeLayers[vol*10 + i]),
+                           // w pad
 };
 
 // One BDA covers headers + the packed plane pool (the volume count rides

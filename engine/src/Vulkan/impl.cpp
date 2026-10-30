@@ -2792,6 +2792,43 @@ bool smvk::VulkanCore::Init() {
 				enableMeshShader ? "supported - enabling (task+mesh gfx filter path)"
 				: meshKilled ? "off (TOURMALINE_MESH=0, compute+indexed CPU fallback)"
 				: "not supported - compute+indexed CPU fallback");
+			// HARD REQUIREMENT: BC6H_UFloat as a sampled, LINEARLY
+			// filtered ImageType 3D — the GI volumes' canonical cooked
+			// format (the GV6H 9-per-lobe layers; the fog-GI world
+			// fields' radiance bricks too). Probed at the EXACT
+			// configuration (format + type + tiling + usage; BC6H 2D
+			// support proves nothing about 3D — the SupportsEvsm
+			// lesson). No fallback, no toggle: a device without it
+			// cannot run this engine's baked-GI content.
+			{
+				VkImageFormatProperties bc6hProps{};
+				const VkImageUsageFlags bc6hUsage =
+					VK_IMAGE_USAGE_SAMPLED_BIT
+					| VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+				const bool bc6h3d =
+					vkGetPhysicalDeviceImageFormatProperties(
+						physicalDevice_, VK_FORMAT_BC6H_UFLOAT_BLOCK,
+						VK_IMAGE_TYPE_3D, VK_IMAGE_TILING_OPTIMAL,
+						bc6hUsage, 0, &bc6hProps) == VK_SUCCESS;
+				VkFormatProperties bc6hFp{};
+				vkGetPhysicalDeviceFormatProperties(physicalDevice_,
+					VK_FORMAT_BC6H_UFLOAT_BLOCK, &bc6hFp);
+				const bool bc6hLinear =
+					(bc6hFp.optimalTilingFeatures
+						& VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
+					!= 0;
+				std::fprintf(stderr,
+					"[Vulkan] BC6H_UFloat 3D sampling %s\n",
+					(bc6h3d && bc6hLinear)
+						? "supported (the GI volumes' GV6H format - required, met)"
+						: "MISSING");
+				if (!bc6h3d || !bc6hLinear)
+					throw std::runtime_error(
+						"this device cannot sample BC6H_UFloat 3D textures "
+						"with linear filtering - a hard engine requirement "
+						"(the GI volumes' cooked format). No fallback exists "
+						"by design.");
+			}
 			if (!g_multiDrawIndirect) {
 				fprintf(stderr,
 					"[Vulkan Warning] multiDrawIndirect not supported by this device; "

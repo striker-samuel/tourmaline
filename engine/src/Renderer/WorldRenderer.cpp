@@ -3720,6 +3720,18 @@ namespace engine {
 				std::cerr << "[GIV] volume rejected: " << verr << "\n";
 				continue;
 			}
+			// GV6H (the canon): decode the lossy coeff mirror once at
+			// load — the mean layer, the audit and the CPU Sample() all
+			// read coeffs (COMPRESSION stays cook-only; this is the
+			// documented inspection decode). The runtime layers upload
+			// the stored blocks verbatim below.
+			if (cv.volume.bc6hFormat && cv.volume.coeffs.empty()) {
+				if (!cv.volume.DecodeBc6hCoeffs(verr)) {
+					std::cerr << "[GIV] BC6H decode failed: " << verr
+						<< " - skipped\n";
+					continue;
+				}
+			}
 			// Bake-content audit (distinguishes an empty bake - all-zero
 			// coeffs claim full weight and black the field - from a
 			// sampling/align bug, which shows nonzero content here).
@@ -3738,28 +3750,59 @@ namespace engine {
 					<< " mean=" << (total ? sum / total : 0.0)
 					<< " max=" << mx << "\n";
 			}
-			// 7 RGBA16F 3D textures (bindless; volumeTextures mirror).
-			std::vector<uint16_t> layers[7];
-			cv.volume.PackGpuLayers(layers);
+			// The coefficient layers (bindless; volumeTextures mirror):
+			// GV6H = 9 BC6H_UFloat 3D textures, one per SG lobe — the
+			// stored blocks upload VERBATIM (the unpadded dims extent
+			// rides the whole-image 3D path's ceil-padded block sizing);
+			// a legacy GVOL file = the 7 RGBA16F stream.
 			bool ok = true;
-			for (uint32_t t = 0; t < 7; ++t) {
-				smvk::ImageCreateInfo ci{};
-				ci.type = smvk::ImageType::Image3D;
-				ci.extent = { cv.volume.dims[0], cv.volume.dims[1],
-					cv.volume.dims[2] };
-				ci.format = smvk::Format::RGBA16_Float;
-				ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
-				ci.mipLevels = 1;
-				ci.arrayLayers = 1;
-				ci.name = "gi volume layer";
-				auto tex = m_context->CreateTexture(ci, layers[t].data());
-				if (tex.empty()) {
-					std::cerr << "[GIV] layer " << t << " creation failed\n";
-					ok = false;
-					break;
+			if (cv.volume.bc6hFormat) {
+				for (uint32_t l = 0; l < 9 && ok; ++l) {
+					smvk::ImageCreateInfo ci{};
+					ci.type = smvk::ImageType::Image3D;
+					ci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+						cv.volume.dims[2] };
+					ci.format = smvk::Format::BC6H_UFloat;
+					ci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "gi volume bc6h lobe";
+					auto tex = m_context->CreateTexture(ci,
+						cv.volume.bc6hLayers[l].data());
+					if (tex.empty()) {
+						std::cerr << "[GIV] bc6h lobe " << l
+							<< " creation failed\n";
+						ok = false;
+						break;
+					}
+					cv.layers[l] = std::move(tex);
+					cv.layerSlots[l] =
+						m_context->GetTextureBindlessIndex(cv.layers[l]);
 				}
-				cv.layers[t] = std::move(tex);
-				cv.layerSlots[t] = m_context->GetTextureBindlessIndex(cv.layers[t]);
+			}
+			else {
+				std::vector<uint16_t> layers[7];
+				cv.volume.PackGpuLayers(layers);
+				for (uint32_t t = 0; t < 7 && ok; ++t) {
+					smvk::ImageCreateInfo ci{};
+					ci.type = smvk::ImageType::Image3D;
+					ci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+						cv.volume.dims[2] };
+					ci.format = smvk::Format::RGBA16_Float;
+					ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "gi volume layer";
+					auto tex = m_context->CreateTexture(ci, layers[t].data());
+					if (tex.empty()) {
+						std::cerr << "[GIV] layer " << t << " creation failed\n";
+						ok = false;
+						break;
+					}
+					cv.layers[t] = std::move(tex);
+					cv.layerSlots[t] = m_context->GetTextureBindlessIndex(cv.layers[t]);
+				}
 			}
 			// Isotropic-mean texture (the volumetric fog's one-fetch path,
 			// PackGpuMeanLayer): same failure discipline as the 7 layers -
@@ -3912,6 +3955,12 @@ namespace engine {
 				uint32_t(vol.def.planes.size()), 16u);
 			g.planeCountBase[0] = planeCount;
 			g.planeCountBase[1] = planeBase;
+			// z = the LAYER FORMAT flag (sg_lightmap_types.hlsli's
+			// mirror): 0 = the legacy 7 RGBA16F stream (GVOL), 1 = the
+			// canonical 9 BC6H per-lobe layers (GV6H). The shader's
+			// layer indexing strides off it (10 slots/volume in
+			// FrameUniforms.giVolumeLayers).
+			g.planeCountBase[2] = vol.bc6hFormat ? 1u : 0u;
 			for (uint32_t p = 0; p < planeCount; ++p) {
 				const smvk::gi::GiVolumePlane& pl = vol.def.planes[p];
 				GiVolumePlaneGpu& pg = descs.planes[planeBase + p];
@@ -4544,8 +4593,19 @@ namespace engine {
 			const uint32_t n = std::min<uint32_t>(
 				uint32_t(m_giVolumes.size()), 8u);
 			for (uint32_t v = 0; v < n; ++v) {
-				for (uint32_t t = 0; t < 7; ++t)
-					data.giVolumeLayers[v * 7u + t] = m_giVolumes[v].layerSlots[t];
+				// The per-volume layer block: 10 slots/volume (the
+				// array's original 8x(9+1) shape) — BC6H volumes fill
+				// 9 (one per lobe), legacy GVOL fills 7; the tail stays
+				// invalid. The shader reads the stride off the volume's
+				// format flag (GiVolumeGpu.planeCountBase.z, set in the
+				// descs pack below).
+				const uint32_t layerCount =
+					m_giVolumes[v].volume.bc6hFormat ? 9u : 7u;
+				for (uint32_t t = 0; t < layerCount; ++t)
+					data.giVolumeLayers[v * 10u + t] =
+						m_giVolumes[v].layerSlots[t];
+				for (uint32_t t = layerCount; t < 10; ++t)
+					data.giVolumeLayers[v * 10u + t] = UINT32_MAX;
 				// Volumetric one-fetch mean slots (fog-only payload).
 				data.giVolumeMeanLayers[v] = m_giVolumes[v].meanSlot;
 				// The through-wall rejection layers (UINT32_MAX = absent ->
