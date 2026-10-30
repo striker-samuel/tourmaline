@@ -1243,6 +1243,99 @@ void TestGiVolumeVerbs() {
 	Check(!smvk::tour::LoadTourFromString(
 		"setGiVolumeAttr -n 0 -at frobnicate -v 1;\n", parseBad, err),
 		"GI volume parser rejects bad attr");
+
+	// The density gates + the optimizer seed parse and round-trip (the
+	// editor writes all three; the parser whitelist used to miss them,
+	// so the editor SAVED TOURS IT COULD NOT RE-OPEN — the 10/30
+	// sponza.tour open failure was exactly this).
+	{
+		smvk::tour::Doc seed;
+		smvk::tour::Command g{};
+		g.verb = smvk::tour::Verb::SetGiVolumeAttr;
+		g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		g.text = "spacinglow";
+		g.number = 0.75;
+		seed.commands.push_back(g);
+		g = smvk::tour::Command{};
+		g.verb = smvk::tour::Verb::SetGiVolumeAttr;
+		g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		g.text = "spacinghigh";
+		g.number = 2.5;
+		seed.commands.push_back(g);
+		g = smvk::tour::Command{};
+		g.verb = smvk::tour::Verb::SetGiVolumeAttr;
+		g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		g.text = "optlayout";
+		g.number = 1.30313;
+		g.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
+		seed.commands.push_back(g);
+		Check(smvk::tour::SaveTour(TempTour(), seed, err),
+			"GI volume gate/seed save");
+		std::ifstream gin(TempTour(), std::ios::binary);
+		std::stringstream gs;
+		gs << gin.rdbuf();
+		gin.close();
+		const std::string gtext = gs.str();
+		Check(gtext.find("setGiVolumeAttr -ref 0 -at spacinglow -v 0.75")
+				!= std::string::npos
+			&& gtext.find("setGiVolumeAttr -ref 0 -at spacinghigh -v 2.5")
+				!= std::string::npos,
+			"GI volume gate lines");
+		Check(gtext.find(
+				"setGiVolumeAttr -ref 0 -at optlayout -v 1.30313 -t 0.25 0.5 0.75")
+				!= std::string::npos,
+			"GI volume seed line carries the phase");
+		smvk::tour::Doc gback;
+		Check(smvk::tour::LoadTour(TempTour(), gback, err, &warns),
+			"GI volume gate/seed load");
+		Check(gback.commands.size() == 3
+			&& gback.commands[0].text == "spacinglow"
+			&& gback.commands[0].number == 0.75
+			&& gback.commands[1].text == "spacinghigh"
+			&& gback.commands[1].number == 2.5,
+			"GI volume gates roundtrip");
+		Check(gback.commands[2].text == "optlayout"
+			&& gback.commands[2].number == 1.30313
+			&& gback.commands[2].vec4.x == 0.25f
+			&& gback.commands[2].vec4.z == 0.75f,
+			"GI volume seed roundtrip (spacing + phase)");
+		// The OLD scalar-only seed shape (what the writer emitted before
+		// the phase rode -t) still parses — phase defaults to zero.
+		smvk::tour::Doc legacy;
+		Check(smvk::tour::LoadTourFromString(
+			"setGiVolumeAttr -n 0 -at optlayout -v 1.30313;\n", legacy, err),
+			"GI volume legacy scalar seed parses");
+		Check(legacy.commands.size() == 1
+			&& legacy.commands[0].text == "optlayout"
+			&& legacy.commands[0].number == 1.30313
+			&& legacy.commands[0].vec4.x == 0.0f,
+			"GI volume legacy scalar seed values");
+		// Replay applies the seed (optSpacing + optPhase on the def).
+		smvk::tour::Doc rd;
+		smvk::tour::Command rc2{};
+		rc2.verb = smvk::tour::Verb::CreateGiVolume;
+		rc2.node = 0;
+		rc2.text = "GIVolume_seed";
+		rc2.vec4 = glm::vec4(1.0f, 1.0f, 0.1f, 0.1f);
+		rd.commands.push_back(rc2);
+		rc2 = smvk::tour::Command{};
+		rc2.verb = smvk::tour::Verb::SetGiVolumeAttr;
+		rc2.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		rc2.text = "optlayout";
+		rc2.number = 1.30313;
+		rc2.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
+		rd.commands.push_back(rc2);
+		auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+		cluster2->SetOfflineMode(true);
+		addNode(cluster2->scene, -1, 0);
+		Check(smvk::tour::ApplyTourToCluster(*cluster2, rd, &warns, &err),
+			"GI volume seed replay ok");
+		const GiVolumeRow* seedRow = FindGiVolume(cluster2->scene, 1u);
+		Check(seedRow != nullptr && seedRow->volume.optSpacing == 1.30313f
+			&& seedRow->volume.optPhase[0] == 0.25f
+			&& seedRow->volume.optPhase[2] == 0.75f,
+			"GI volume seed replay params");
+	}
 	std::error_code ec;
 	std::filesystem::remove(TempTour(), ec);
 }

@@ -4962,11 +4962,24 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		Scene& liveScene = m_world->scene;
 		liveScene.giWorldSource.clear();
 		liveScene.giWorldGuid.clear();
+		liveScene.giWorldInputHash.clear();
+		liveScene.giCapturesSource.clear();
+		liveScene.giCapturesGuid.clear();
+		liveScene.giCapturesHash.clear();
 		for (GiVolumeRow& _row : liveScene.tables.giVolumes) {
 		NodeId node = _row.node; auto& def = _row.volume;
 			def.bakeSource.clear();
 			def.bakeGuid.clear();
+			def.bakeInputHash.clear();
 		}
+		// Mirrors ApplyTourToCluster's giAsset pass EXACTLY (the
+		// tour.cpp loop is the authoritative semantics — World /
+		// Captures / per-volume records; this editor mirror drifted:
+		// the Captures branch was missing entirely, so every captures
+		// record fell into the GI-volume ref check with ref 0 and
+		// dropped with "ref out of range", losing the live scene's
+		// capture-set binding on every tour open; the bake-input
+		// hashes were missing from the other branches the same way).
 		for (const smvk::tour::GiAssetCmd& ga : m_giAssets) {
 			if (ga.source.empty())
 				continue; // half-written record: skip (mirrors the writer)
@@ -4975,6 +4988,15 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 					continue; // duplicate world record: first kept
 				liveScene.giWorldSource = ga.source;
 				liveScene.giWorldGuid = ga.guid;
+				liveScene.giWorldInputHash = ga.bakedHash;
+				continue;
+			}
+			if (ga.kind == smvk::tour::GiAssetCmd::Kind::Captures) {
+				if (!liveScene.giCapturesSource.empty())
+					continue; // duplicate captures record: first kept
+				liveScene.giCapturesSource = ga.source;
+				liveScene.giCapturesGuid = ga.guid;
+				liveScene.giCapturesHash = ga.bakedHash;
 				continue;
 			}
 			const uint32_t k =
@@ -4991,6 +5013,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 				continue;
 			it->volume.bakeSource = ga.source;
 			it->volume.bakeGuid = ga.guid;
+			it->volume.bakeInputHash = ga.bakedHash;
 		}
 	}
 	m_replayingTour = false;

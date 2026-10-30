@@ -421,6 +421,12 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 				<< " " << c.vec4.z;
 		else if (c.text == "name")
 			f << " -type \"string\" -v " << Quote(c.name);
+		else if (c.text == "optlayout")
+			// The optimizer's seed: -v spacing, -t = the lattice phase
+			// (the reader accepts the scalar-only shape too — phase
+			// zero — which is all the pre-phase writer emitted).
+			f << " -v " << c.number << " -t " << c.vec4.x << " "
+				<< c.vec4.y << " " << c.vec4.z;
 		else
 			f << " -v " << c.number;
 		break;
@@ -2140,7 +2146,13 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		}
 	}
 	else if (effVerb == "setGiVolumeAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		// Must mirror Read/WriteNodeGiVolumeAttr + the replay switch
+		// below EXACTLY (the editor can write any attr it can edit —
+		// a missing name here means the editor saves tours it cannot
+		// re-open; the spacinglow/spacinghigh/optlayout gap was exactly
+		// that bug).
 		static const char* kAttrs[] = { "priority", "spacing",
+			"spacinglow", "spacinghigh", "optlayout",
 			"inside", "outside", "position", "rotation", "size",
 			"name" };
 		bool known = false;
@@ -2172,6 +2184,32 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		}
 		else if (fl.at == "name") {
 			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else if (fl.at == "optlayout") {
+			// The optimizer's SEED, one verb: -v = spacing, the -t
+			// triple = the lattice phase (fractions of the spacing).
+			// The scalar-only form (-v spacing, no -t) is the older
+			// writer's shape and still parses — the phase defaults to
+			// ZERO (no offset; the Command default vec4{1} must not
+			// leak in as a phase).
+			const std::string& w = fl.hasV ? fl.v
+				: (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
+			}
+			if (fl.t.size() >= 3) {
+				double x = 0, y = 0, z = 0;
+				if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y)
+					|| !ParseDouble(fl.t[2], z)) {
+					err = "line " + std::to_string(lineNo) + ": bad optlayout phase";
+					return false;
+				}
+				c.vec4 = glm::vec4(float(x), float(y), float(z), 0.0f);
+			}
+			else {
+				c.vec4 = glm::vec4(0.0f);
+			}
 		}
 		else {
 			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
