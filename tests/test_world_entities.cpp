@@ -436,6 +436,70 @@ void TestActiveEnvironmentFirstWins() {
 	}
 }
 
+// Epoch 6: the resolve carries the previously cluster-scene-only
+// tables (giVolume/cubemap/export) + metadata uuids into the world
+// scene, with overlapping cluster-local node numbers remapped apart.
+void TestResolveCarriesInlineTables()
+{
+	smvk::World w;
+	auto c1 = std::make_unique<smvk::Cluster>(nullptr);
+	c1->SetOfflineMode(true);
+	auto c2 = std::make_unique<smvk::Cluster>(nullptr);
+	c2->SetOfflineMode(true);
+	// OVERLAPPING local ids: node 1 in both clusters.
+	for (smvk::Cluster* c : { c1.get(), c2.get() }) {
+		addNode(c->scene, -1, 0);
+		addNode(c->scene, 0, 1);
+	}
+	::SceneGiVolume gv{};
+	gv.priority = 7;
+	SetGiVolume(c1->scene, 1, gv);
+	::SceneCubemap cb{};
+	cb.radius = 9.5f;
+	SetCubemap(c2->scene, 1, cb);
+	::SceneExportSettings es{};
+	es.lodError = 0.25f;
+	SetExport(c2->scene, 1, es);
+	SetNodeUuidRaw(c1->scene, 1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+	w.RegisterCluster(std::move(c1));
+	w.RegisterCluster(std::move(c2));
+	w.ResolveAndFixup_clusters();
+	const ::Scene& s = w.scene;
+	size_t gi = 0, cbm = 0, ex = 0;
+	for (const GiVolumeRow& r : s.tables.giVolumes) {
+		++gi;
+		Check(r.volume.priority == 7, "resolve.givolume-carried");
+	}
+	for (const CubemapRow& r : s.tables.cubemaps) {
+		++cbm;
+		Check(r.cubemap.radius == 9.5f, "resolve.cubemap-carried");
+	}
+	for (const ExportRow& r : s.tables.exports) {
+		++ex;
+		Check(r.settings.lodError == 0.25f, "resolve.export-carried");
+	}
+	Check(gi == 1 && cbm == 1 && ex == 1, "resolve.inline-table-counts");
+	// Overlap remapped apart: both rows live, distinct world nodes,
+	// and the uuid rode the metadata append.
+	const GiVolumeRow* g1 = nullptr;
+	for (const GiVolumeRow& r : s.tables.giVolumes)
+		if (r.volume.priority == 7) g1 = &r;
+	const CubemapRow* k2 = nullptr;
+	for (const CubemapRow& r : s.tables.cubemaps)
+		if (r.cubemap.radius == 9.5f) k2 = &r;
+	Check(g1 && k2 && g1->node != k2->node,
+		"resolve.overlap-remapped-apart");
+	bool uuidFound = false;
+	for (const NodeMetadata& m : s.metadata)
+		if (m.uuid == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+			uuidFound = true;
+	Check(uuidFound, "resolve.uuid-carried");
+	// Rebuild the derived index from scratch: identical answers.
+	RebuildNodeRows(const_cast<::Scene&>(s));
+	Check(FindGiVolume(const_cast<::Scene&>(s), g1->node) != nullptr,
+		"resolve.rebuild-stale-free");
+}
+
 } // namespace
 
 int main() {
@@ -444,6 +508,7 @@ int main() {
 	TestBakePayloadChannel();
 	TestEnvZones();
 	TestActiveEnvironmentFirstWins();
+	TestResolveCarriesInlineTables();
 	std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " ("
 		<< g_checks << " checks)\n";
 	return g_failures == 0 ? 0 : 1;

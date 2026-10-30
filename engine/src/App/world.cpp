@@ -609,6 +609,20 @@ namespace smvk {
 			// no first-wins — coverage/priority resolve at use).
 			for (const EnvVolumeRow& row : cs.tables.envVolumes)
 				SetEnvVolume(scene, row.node + nodeOffset, row.volume);
+			// GI volumes / cubemap pins / export settings ride the
+			// resolve NOW (Epoch 6 — the map era left them
+			// cluster-scene-only with tour replay as the only
+			// transport; the world scene is a complete representation
+			// from here on). Payloads verbatim, nodes offset; export
+			// rows keep their editor/cook-only contract (never packed
+			// into runtime content — the resolve carries them for the
+			// editor's live view, the pak writer still skips them).
+			for (const GiVolumeRow& row : cs.tables.giVolumes)
+				SetGiVolume(scene, row.node + nodeOffset, row.volume);
+			for (const CubemapRow& row : cs.tables.cubemaps)
+				SetCubemap(scene, row.node + nodeOffset, row.cubemap);
+			for (const ExportRow& row : cs.tables.exports)
+				SetExport(scene, row.node + nodeOffset, row.settings);
 			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
 				scene.envAuthored = true;
