@@ -317,4 +317,14 @@ compile_shaders(
         # ssrdump's ssr_contrib stage exports it). Wasteful by design
         # (a second full-res RGBA16F write), debug only.
         "ssr_compose.frag.hlsl|.dbg|SSR_DEBUG_CONTRIB=1"
+        # PBR Material Validation Debugger (default_pbr_debug.frag.hlsl):
+        # the base output IS Material Health (PBR_MODE=0); these five
+        # twins select the readout mode. Output: default_pbr_debug.frag.
+        # hlsl.{base,diffuse,rough,metal,f0}.spv next to the base module
+        # (see the WorldRenderer's PBR debug loader + DebugFs::Pbr*).
+        "default_pbr_debug.frag.hlsl|.base|PBR_MODE=1"
+        "default_pbr_debug.frag.hlsl|.diffuse|PBR_MODE=2"
+        "default_pbr_debug.frag.hlsl|.rough|PBR_MODE=3"
+        "default_pbr_debug.frag.hlsl|.metal|PBR_MODE=4"
+        "default_pbr_debug.frag.hlsl|.f0|PBR_MODE=5"
 )

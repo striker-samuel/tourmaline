@@ -1106,6 +1106,25 @@ namespace engine {
 			// visibility against the CSM/EVSM factor, channel-coded).
 			else if (dv == "contact" || dv == "contact_shadows" || dv == "contactshadows")
 				m_debugView = ViewMode::ContactShadows;
+			// PBR Material Validation Debugger (the six validation/readout
+			// views; green = passes the configured checks, see the ViewMode
+			// block in WorldRenderer.h).
+			else if (dv == "pbrhealth" || dv == "pbr_health" || dv == "materialhealth")
+				m_debugView = ViewMode::PbrHealth;
+			else if (dv == "pbrbase" || dv == "pbr_basecolor" || dv == "basecolor")
+				m_debugView = ViewMode::PbrBaseColor;
+			else if (dv == "pbrdiffuse" || dv == "pbr_diffuse" || dv == "diffuse")
+				m_debugView = ViewMode::PbrDiffuse;
+			else if (dv == "pbrrough" || dv == "pbr_roughness" || dv == "roughness")
+				m_debugView = ViewMode::PbrRoughness;
+			else if (dv == "pbrmetal" || dv == "pbr_metallic" || dv == "metalness")
+				m_debugView = ViewMode::PbrMetallic;
+			else if (dv == "pbrf0" || dv == "pbr_specular" || dv == "f0")
+				m_debugView = ViewMode::PbrF0;
+			// Naive shading-model previews (development test beds).
+			else if (dv == "sss") m_debugView = ViewMode::SssPreview;
+			else if (dv == "hair") m_debugView = ViewMode::HairPreview;
+			else if (dv == "water") m_debugView = ViewMode::WaterPreview;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
@@ -1778,6 +1797,58 @@ namespace engine {
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_contact_debug unavailable - Contact shadows view falls back to Lit\n";
 		}
+		// PBR Material Validation Debugger (combo/env only): the base compile
+		// (Material Health, PBR_MODE=0) + the five PBR_MODE twins. Index order
+		// matches DebugFs::PbrHealth..PbrF0 exactly. Failure per module is
+		// non-fatal (that mode's pair stays shaderCount 0 and falls back to
+		// Lit at record time).
+		{
+			const char* pbrPaths[6] = {
+				"content/shaders/default_pbr_debug.frag.hlsl.spv",        // 0 health
+				"content/shaders/default_pbr_debug.frag.hlsl.base.spv",   // 1 base color
+				"content/shaders/default_pbr_debug.frag.hlsl.diffuse.spv",// 2 diffuse
+				"content/shaders/default_pbr_debug.frag.hlsl.rough.spv",  // 3 roughness
+				"content/shaders/default_pbr_debug.frag.hlsl.metal.spv",  // 4 metalness
+				"content/shaders/default_pbr_debug.frag.hlsl.f0.spv",     // 5 F0
+			};
+			const char* pbrNames[6] = {
+				"fragPbrHealth", "fragPbrBaseColor", "fragPbrDiffuse",
+				"fragPbrRoughness", "fragPbrMetallic", "fragPbrF0",
+			};
+			for (size_t i = 0; i < 6; ++i) {
+				try {
+					m_resources.fragPbrDebugShaders[i] =
+						m_context->CreateShaderModule(readFile(pbrPaths[i]), pbrNames[i]);
+				}
+				catch (...) {
+					std::cerr << "[WorldRenderer] " << pbrPaths[i]
+						<< " unavailable - that PBR view falls back to Lit\n";
+				}
+			}
+		}
+		// Naive shading-model previews (SSS / hair / water - the development
+		// test beds; same non-fatal contract).
+		try {
+			auto sssCode = readFile("content/shaders/default_sss_debug.frag.hlsl.spv");
+			m_resources.fragSssDebugShader = m_context->CreateShaderModule(sssCode, "fragSssDebug");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_sss_debug unavailable - SSS preview falls back to Lit\n";
+		}
+		try {
+			auto hairCode = readFile("content/shaders/default_hair_debug.frag.hlsl.spv");
+			m_resources.fragHairDebugShader = m_context->CreateShaderModule(hairCode, "fragHairDebug");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_hair_debug unavailable - Hair preview falls back to Lit\n";
+		}
+		try {
+			auto waterCode = readFile("content/shaders/default_water_debug.frag.hlsl.spv");
+			m_resources.fragWaterDebugShader = m_context->CreateShaderModule(waterCode, "fragWaterDebug");
+		}
+		catch (...) {
+			std::cerr << "[WorldRenderer] default_water_debug unavailable - Water preview falls back to Lit\n";
+		}
 		// Shading debug-view program pairs: ONE pairing rule for every
 		// flat FS — the direct twin (default.vert + FS) rides the direct
 		// fallback leg, the filtered twin (gfxfiltered.vert + FS, via
@@ -1823,6 +1894,15 @@ namespace engine {
 				{ DebugFs::Normals, m_resources.fragNormalsDebugShader },
 				{ DebugFs::NormalsMapped, m_resources.fragNormalsMappedDebugShader },
 				{ DebugFs::ContactShadows, m_resources.fragContactDebugShader },
+				{ DebugFs::PbrHealth, m_resources.fragPbrDebugShaders[0] },
+				{ DebugFs::PbrBaseColor, m_resources.fragPbrDebugShaders[1] },
+				{ DebugFs::PbrDiffuse, m_resources.fragPbrDebugShaders[2] },
+				{ DebugFs::PbrRoughness, m_resources.fragPbrDebugShaders[3] },
+				{ DebugFs::PbrMetallic, m_resources.fragPbrDebugShaders[4] },
+				{ DebugFs::PbrF0, m_resources.fragPbrDebugShaders[5] },
+				{ DebugFs::Sss, m_resources.fragSssDebugShader },
+				{ DebugFs::Hair, m_resources.fragHairDebugShader },
+				{ DebugFs::Water, m_resources.fragWaterDebugShader },
 			};
 			for (const auto& [slot, frag] : slots) {
 				auto& pair = m_resources.debugPrograms[size_t(slot)];
@@ -14814,6 +14894,15 @@ namespace engine {
 							"Normals (mapped, world-space)",
 							"Motion vectors (V)",
 							"Sun contact shadows (contribution)",
+							"PBR / Material Health",
+							"PBR / Base Color",
+							"PBR / Diffuse Reflectance",
+							"PBR / Roughness",
+							"PBR / Metalness",
+							"PBR / F0 (specular)",
+							"PBR / SSS (naive preview)",
+							"PBR / Hair (naive preview)",
+							"PBR / Water (naive preview)",
 						};
 						// Combo index <-> ViewMode mapping (SsrContribution stays
 						// env-only; UV1 and Normals are combo/env only; the
@@ -14834,14 +14923,27 @@ namespace engine {
 							ViewMode::SsgiContribution,
 							ViewMode::NormalsMapped, ViewMode::MotionVectors,
 							ViewMode::ContactShadows,
+							ViewMode::PbrHealth,
+							ViewMode::PbrBaseColor,
+							ViewMode::PbrDiffuse,
+							ViewMode::PbrRoughness,
+							ViewMode::PbrMetallic,
+							ViewMode::PbrF0,
+							ViewMode::SssPreview,
+							ViewMode::HairPreview,
+							ViewMode::WaterPreview,
 						};
+						// The combo count follows the arrays (the old hardcoded
+						// 20 once left appended modes existing but unselectable).
+						constexpr int viewCount =
+							static_cast<int>(std::size(kComboViews));
 						int view = 0;
-						for (int i = 0; i < 20; ++i)
+						for (int i = 0; i < viewCount; ++i)
 							if (kComboViews[i] == m_debugView)
 								view = i;
 						// SetDebugView: the direct selection takes over
 						// (clears the R/F8 + Y overlay views).
-						if (ImGui::Combo("Debug view", &view, viewNames, 20))
+						if (ImGui::Combo("Debug view", &view, viewNames, viewCount))
 							SetDebugView(kComboViews[view]);
 						// Motion vectors (V): the tonemap's debug view —
 						// direction -> hue, magnitude -> intensity, jitter

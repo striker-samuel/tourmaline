@@ -439,6 +439,29 @@ enum class ViewMode : int {
 	// debug-view gate (ContactShadowsActive) so the readout samples the
 	// real march output instead of re-tracing.
 	ContactShadows = 20,
+	// ---- PBR Material Validation Debugger (combo/env only — no free
+	// F-key): six flat readouts over the EXACT material inputs the lit
+	// path consumes (the shared evaluator, material_evaluation.hlsli).
+	// PbrHealth is the main feature — the combined validation heatmap
+	// (GREEN pass / YELLOW suspicious / RED invalid / MAGENTA NaN).
+	// green means "passes the configured checks", NOT "physically
+	// accurate" — no material classification. The flat-FS swap rides
+	// the same direct/filtered legs as every shading debug view.
+	PbrHealth = 21,    // default_pbr_debug PBR_MODE=0 (combined heatmap)
+	PbrBaseColor = 22, // .base  — raw linear material color, no lighting
+	PbrDiffuse = 23,   // .diffuse — baseColor*(1-metallic) diffuse input
+	PbrRoughness = 24, // .rough — renderer-effective perceptual roughness
+	PbrMetallic = 25,  // .metal — dielectric/metal/transition (blue mark)
+	PbrF0 = 26,        // .f0 — normal-incidence specular reflectance
+	// ---- NAIVE shading-model previews (combo/env only): development
+	// test beds on the same scaffolding — deliberately naive first cuts
+	// ("approximating translucency" SSS, Kajiya-Kay hair, Fresnel+
+	// wave-normal water), sun+sky shaded like the POM view (real HDR,
+	// fog), material inputs from the SAME shared evaluator. Not shipping
+	// quality — the owner develops these further from here.
+	SssPreview = 27,   // default_sss_debug (naive transmission SSS)
+	HairPreview = 28,  // default_hair_debug (naive Kajiya-Kay)
+	WaterPreview = 29, // default_water_debug (naive Fresnel + waves)
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -493,6 +516,18 @@ enum class DebugFs : int {
 	Normals,      // default_normals_debug (combo/env only)
 	NormalsMapped, // default_normals_mapped_debug (combo/env only)
 	ContactShadows, // default_contact_debug (combo/env only)
+	// PBR Material Validation Debugger (default_pbr_debug + the five
+	// PBR_MODE twins — see the ViewMode block above).
+	PbrHealth,    // default_pbr_debug (base compile, PBR_MODE=0)
+	PbrBaseColor, // default_pbr_debug.frag.hlsl.base.spv
+	PbrDiffuse,   // default_pbr_debug.frag.hlsl.diffuse.spv
+	PbrRoughness, // default_pbr_debug.frag.hlsl.rough.spv
+	PbrMetallic,  // default_pbr_debug.frag.hlsl.metal.spv
+	PbrF0,        // default_pbr_debug.frag.hlsl.f0.spv
+	// Naive shading-model previews (same FS family, own modules).
+	Sss,          // default_sss_debug
+	Hair,         // default_hair_debug
+	Water,        // default_water_debug
 	Count
 };
 
@@ -510,6 +545,15 @@ enum class DebugFs : int {
 	case ViewMode::Normals: return DebugFs::Normals;
 	case ViewMode::NormalsMapped: return DebugFs::NormalsMapped;
 	case ViewMode::ContactShadows: return DebugFs::ContactShadows;
+	case ViewMode::PbrHealth: return DebugFs::PbrHealth;
+	case ViewMode::PbrBaseColor: return DebugFs::PbrBaseColor;
+	case ViewMode::PbrDiffuse: return DebugFs::PbrDiffuse;
+	case ViewMode::PbrRoughness: return DebugFs::PbrRoughness;
+	case ViewMode::PbrMetallic: return DebugFs::PbrMetallic;
+	case ViewMode::PbrF0: return DebugFs::PbrF0;
+	case ViewMode::SssPreview: return DebugFs::Sss;
+	case ViewMode::HairPreview: return DebugFs::Hair;
+	case ViewMode::WaterPreview: return DebugFs::Water;
 	default: return std::nullopt;
 	}
 }
@@ -1103,6 +1147,20 @@ struct AppResources {
 	// channel-coded readout (default_contact_debug.frag.hlsl). Missing
 	// module keeps shaderCount 0 and the view falls back to Lit.
 	smvk::Holder<smvk::ShaderModuleHandle> fragContactDebugShader;
+	// PBR Material Validation Debugger (combo/env only): default_pbr_debug
+	// compiled into SIX modules — index 0 is the base compile (Material
+	// Health, PBR_MODE=0), 1..5 the .base/.diffuse/.rough/.metal/.f0
+	// PBR_MODE twins (see the VARIANTS block in engine/CMakeLists.txt).
+	// Index order matches DebugFs::PbrHealth..PbrF0 exactly. Missing
+	// modules leave their pair's shaderCount 0 and the view falls back
+	// to Lit at record time (same contract as the FS family above).
+	smvk::Holder<smvk::ShaderModuleHandle> fragPbrDebugShaders[6];
+	// Naive shading-model previews (combo/env only, the development test
+	// beds — see the ViewMode block): SSS transmission, Kajiya-Kay hair,
+	// Freszel+wave water. Same fallback contract as the family.
+	smvk::Holder<smvk::ShaderModuleHandle> fragSssDebugShader;   // default_sss_debug
+	smvk::Holder<smvk::ShaderModuleHandle> fragHairDebugShader;  // default_hair_debug
+	smvk::Holder<smvk::ShaderModuleHandle> fragWaterDebugShader; // default_water_debug
 	// Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
 	// its own VS computes the lighting per vertex (see
 	// default_vertexlit.vert.hlsl) and the FS is a fog pass-through.
