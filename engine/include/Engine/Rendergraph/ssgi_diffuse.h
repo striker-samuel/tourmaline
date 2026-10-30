@@ -353,10 +353,14 @@ struct ScreenSpaceDiffuseGi {
 	[[nodiscard]] LogicalImageViewHandle OutputView() const { return composed.logical; }
 	[[nodiscard]] uint32_t OutputBindless() const { return composed.bindlessIndex; }
 
+	// Half extent, the CEIL form (n+1)/2 (the odd-extent column/row fix
+	// - see ssgi.h's note; ssgi_diffuse_compose.frag.hlsl's in-shader
+	// twin uses the same ceil form, every other shader receives the
+	// extent via its push).
 	static Extent2D HalfExtentFor(Extent2D full) {
 		return {
-			std::max(1u, full.width / 2),
-			std::max(1u, full.height / 2),
+			std::max(1u, (full.width + 1u) / 2u),
+			std::max(1u, (full.height + 1u) / 2u),
 		};
 	}
 

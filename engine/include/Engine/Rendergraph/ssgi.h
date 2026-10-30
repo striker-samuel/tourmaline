@@ -72,7 +72,9 @@ struct SsaoPush {
 	float maxDistance = 25.0f;
 	float invDepthW = 0.0f; // 1 / full-res depth width
 	float invDepthH = 0.0f; // 1 / full-res depth height
-	uint32_t pad0 = 0;
+	// Shared full-res G-buffer oct normal (UINT32_MAX = none - the raw
+	// pass then falls back to its depth-derived normal; see ssao.frag).
+	uint32_t normalTextureIndex = UINT32_MAX;
 	uint32_t pad1 = 0;
 };
 static_assert(sizeof(SsaoPush) == 48);
@@ -90,7 +92,8 @@ struct SaoPush {
 	float invDepthW = 0.0f;
 	float invDepthH = 0.0f;
 	uint32_t spiralTurns = 7; // 1..16 extra spiral twist
-	uint32_t pad0 = 0;
+	// Shared full-res G-buffer oct normal (UINT32_MAX = none; see SsaoPush).
+	uint32_t normalTextureIndex = UINT32_MAX;
 };
 static_assert(sizeof(SaoPush) == 48);
 
@@ -574,10 +577,16 @@ struct Ssgi {
 	[[nodiscard]] LogicalImageViewHandle OutputView() const { return composed.logical; }
 	[[nodiscard]] uint32_t OutputBindless() const { return composed.bindlessIndex; }
 
+	// Half extent, the CEIL form (n+1)/2: floor division dropped the
+	// final full-res column/row from the AO representation at odd extents
+	// (1921x1081 -> 960x540 instead of 961x541). The raw pass already
+	// treats out-of-bounds depth Loads as background (the odd-extent
+	// border blocks write the unoccluded sentinel - see ssao.frag.hlsl),
+	// and the compose's in-shader extent uses the same ceil form.
 	static Extent2D HalfExtentFor(Extent2D full) {
 		return {
-			std::max(1u, full.width / 2),
-			std::max(1u, full.height / 2),
+			std::max(1u, (full.width + 1u) / 2u),
+			std::max(1u, (full.height + 1u) / 2u),
 		};
 	}
 
@@ -956,9 +965,15 @@ struct Ssgi {
 		// ---- Raw: full-res depth -> half-res (ao, encRepDist, octN) ----
 		{
 			RenderPass& pass = rg.AddPass(rawName ? rawName : "SsgiAo");
+			// The shared G-buffer normal rides along when the chain has one
+			// (the raw pass's primary normal source - see ssao.frag.hlsl);
+			// the barrier set must cover it like any other input.
+			if (normalOn)
+				pass.SetInputImages({ depthView, normalView });
+			else
+				pass.SetInputImages({ depthView });
 			pass.SetOffset(0, 0)
 				.SetExtent(halfExtent)
-				.SetInputImages({ depthView })
 				.SetColor({ raw.logical },
 					AttachmentLoadOp::DontCare,
 					AttachmentStoreOp::Store);
@@ -973,7 +988,8 @@ struct Ssgi {
 				push.maxDistance = (std::max)(1.0f, overrideDesc.maxDistance);
 				push.invDepthW = 1.0f / static_cast<float>(std::max(1u, fullExtent.width));
 				push.invDepthH = 1.0f / static_cast<float>(std::max(1u, fullExtent.height));
-				push.pad0 = 0;
+				push.normalTextureIndex =
+					normalOn ? normalBindlessIndex : UINT32_MAX;
 				push.pad1 = 0;
 				ShaderProgram progCopy = ssaoRawProgram; // copyable (handles only)
 				pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
@@ -1000,7 +1016,8 @@ struct Ssgi {
 				push.invDepthW = 1.0f / static_cast<float>(std::max(1u, fullExtent.width));
 				push.invDepthH = 1.0f / static_cast<float>(std::max(1u, fullExtent.height));
 				push.spiralTurns = std::clamp(overrideDesc.spiralTurns, 1u, 16u);
-				push.pad0 = 0;
+				push.normalTextureIndex =
+					normalOn ? normalBindlessIndex : UINT32_MAX;
 				ShaderProgram progCopy = saoRawProgram; // copyable (handles only)
 				pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
 					cmd.BindRenderPipeline(

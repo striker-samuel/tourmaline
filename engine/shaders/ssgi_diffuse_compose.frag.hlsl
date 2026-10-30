@@ -160,8 +160,11 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // Half-res extent: EXACT integer math from the push's uint
     // dimensions (the dark-triangle float-reconstruction lesson — see
     // ssr_compose.frag.hlsl's halfExtentU note).
+    // CEIL form (n+1)/2 - must equal ssgi_diffuse.h's HalfExtentFor
+    // (the floor form dropped the last full-res column/row at odd
+    // extents; see ssr_compose.frag.hlsl's halfExtentU note).
     const uint2 halfExtentU = max(uint2(1u, 1u),
-        uint2(cp.fullW / 2u, cp.fullH / 2u));
+        uint2((cp.fullW + 1u) / 2u, (cp.fullH + 1u) / 2u));
     const int2 halfExtentI = int2(halfExtentU);
     const float2 halfExtentF = float2(halfExtentU);
 

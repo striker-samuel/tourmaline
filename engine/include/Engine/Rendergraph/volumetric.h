@@ -298,8 +298,12 @@ struct VolumetricFog {
 			std::max(1u, render.height / divisor),
 		};
 	}
+	// Half extent, the CEIL form (n+1)/2 (the odd-extent column/row fix
+	// - see ssgi.h's note; every volumetric shader receives its extents
+	// via pushes, so the single definition stays authoritative).
 	static Extent2D HalfExtentFor(Extent2D render) {
-		return { std::max(1u, render.width / 2), std::max(1u, render.height / 2) };
+		return { std::max(1u, (render.width + 1u) / 2u),
+			std::max(1u, (render.height + 1u) / 2u) };
 	}
 
 	bool EnsureShaders(ResourceManager& ctx,

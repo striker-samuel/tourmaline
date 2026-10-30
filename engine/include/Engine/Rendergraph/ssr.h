@@ -651,10 +651,15 @@ struct ScreenSpaceReflections {
 	[[nodiscard]] LogicalImageViewHandle OutputView() const { return logicalView; }
 	[[nodiscard]] uint32_t OutputBindless() const { return bindlessIndex; }
 
+	// Half extent, the CEIL form (n+1)/2 (the odd-extent column/row fix
+	// - see ssgi.h's note). Every shader in this chain receives the
+	// extent via its push (halfW/halfH), so the single definition stays
+	// authoritative; ssr_compose.frag.hlsl's in-shaper twin uses the
+	// same ceil form.
 	static Extent2D HalfExtentFor(Extent2D full) {
 		return {
-			std::max(1u, full.width / 2),
-			std::max(1u, full.height / 2),
+			std::max(1u, (full.width + 1u) / 2u),
+			std::max(1u, (full.height + 1u) / 2u),
 		};
 	}
 

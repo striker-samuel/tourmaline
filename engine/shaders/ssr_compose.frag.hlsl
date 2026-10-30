@@ -179,8 +179,12 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // gates that vanished the moment the window hit a width whose
     // reciprocal rounds exact (maximize). The blur never had it (its
     // push carries the exact uint halfW).
+    // CEIL form (n+1)/2 - must equal ssr.h's HalfExtentFor, which
+    // sized the targets AND the classify's receiver-buffer stride
+    // (the floor form dropped the last full-res column/row at odd
+    // extents).
     const uint2 halfExtentU = max(uint2(1u, 1u),
-        uint2(cp.fullW / 2u, cp.fullH / 2u));
+        uint2((cp.fullW + 1u) / 2u, (cp.fullH + 1u) / 2u));
     const int2 halfExtentI = int2(halfExtentU);
     const float2 halfExtentF = float2(halfExtentU);
 

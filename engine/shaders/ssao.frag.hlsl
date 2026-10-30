@@ -28,7 +28,9 @@ struct SsaoPush
     float maxDistance; // AO fade-out distance (m)
     float invDepthW; // 1 / full-res depth width
     float invDepthH; // 1 / full-res depth height
-    uint pad0;
+    // Shared full-res G-buffer oct normal (0xffffffff = none - MSAA
+    // frames / legacy chains fall back to the depth-derived normal).
+    uint normalTextureIndex;
     uint pad1;
 };
 
@@ -104,12 +106,10 @@ PSOut mainPS(PSIn IN)
     float3 center = SsaoUnprojectView(ndcXY, dCenter, frame.invProj);
     float centerZ = -center.z; // positive view distance
 
-    // Depth-derived normal from full-res neighbors (one half-res step over).
-    // A background neighbor means this block sits on a silhouette: the old
-    // dCenter substitution fabricated a planar normal across the edge and
-    // the rotated kernel smeared occlusion into the sky (streaks). Stay
-    // unoccluded instead — the consumer's depth-guided upsample keeps the
-    // pure-geo interior fully shaded.
+    // Silhouette guard (unchanged discipline): a background forward
+    // neighbor means this block sits on an edge - stay unoccluded; the
+    // consumer's depth-guided upsample keeps the pure-geo interior
+    // fully shaded.
     float dPx = depthTex.Load(int3(fullBase + int2(2, 0), 0)).r;
     float dPy = depthTex.Load(int3(fullBase + int2(0, 2), 0)).r;
     if (AoIsBackground(dPx) || AoIsBackground(dPy))
@@ -117,11 +117,69 @@ PSOut mainPS(PSIn IN)
         OUT.outColor = kAoSkyBlock;
         return OUT;
     }
-    float2 ndcPx = ndcXY + float2(2.0f * sp.invDepthW * 2.0f, 0.0f);
-    float2 ndcPy = ndcXY + float2(0.0f, 2.0f * sp.invDepthH * 2.0f);
-    float3 posX = SsaoUnprojectView(ndcPx, dPx, frame.invProj);
-    float3 posY = SsaoUnprojectView(ndcPy, dPy, frame.invProj);
-    float3 N = normalize(cross(posX - center, posY - center) + 1e-9f);
+    // Block normal (the review's finding 2). PRIMARY: the shared
+    // full-res G-buffer's INTERPOLATED normal (per-2x2-tap average,
+    // rotated world -> view) - the same replacement the SSR trace made
+    // when its depth-derived normals showed boundary artifacts: a
+    // forward difference stepping onto OTHER geometry fabricates a
+    // normal between the two surfaces (wall edges, nearby geometry),
+    // and that normal steers both the hemisphere kernel and every
+    // blur/compose normal weight. FALLBACK (no G-buffer - MSAA frames
+    // / legacy): the depth cross product WITH DISCONTINUITY REJECTION
+    // - a neighbor whose view distance jumps >50% relative to the
+    // center is other geometry (a legit slope cannot move that far in
+    // one half-res step without being silhouette-edge-on, where the
+    // block is unoccluded anyway); fall back to the in-block 1-texel
+    // differences (half the step, all-geometry by the strict block
+    // classification above), and if those jump too the block straddles
+    // the edge - unoccluded, the silhouette discipline.
+    float3 N;
+    if (sp.normalTextureIndex != 0xffffffffu)
+    {
+        Texture2D normTex = textures[NonUniformResourceIndex(sp.normalTextureIndex)];
+        float3 nAcc = float3(0.0f, 0.0f, 0.0f);
+        [unroll]
+        for (int ny = 0; ny < 2; ++ny)
+        {
+            [unroll]
+            for (int nx = 0; nx < 2; ++nx)
+                nAcc += AoOctDecode(normTex.Load(
+                    int3(fullBase + int2(nx, ny), 0)).xy);
+        }
+        N = normalize(mul((float3x3)frame.view, nAcc));
+    }
+    else
+    {
+        float dPxDist = AoViewDist(dPx, nearPlane);
+        float dPyDist = AoViewDist(dPy, nearPlane);
+        const bool fwdCrossed =
+            abs(dPxDist - centerDist) > 0.5f * centerDist ||
+            abs(dPyDist - centerDist) > 0.5f * centerDist;
+        if (fwdCrossed)
+        {
+            float d10Dist = AoViewDist(d10, nearPlane);
+            float d01Dist = AoViewDist(d01, nearPlane);
+            if (abs(d10Dist - centerDist) > 0.5f * centerDist ||
+                abs(d01Dist - centerDist) > 0.5f * centerDist)
+            {
+                OUT.outColor = kAoSkyBlock;
+                return OUT;
+            }
+            float2 ndcPx1 = ndcXY + float2(sp.invDepthW * 2.0f, 0.0f);
+            float2 ndcPy1 = ndcXY + float2(0.0f, sp.invDepthH * 2.0f);
+            float3 posX = SsaoUnprojectView(ndcPx1, d10, frame.invProj);
+            float3 posY = SsaoUnprojectView(ndcPy1, d01, frame.invProj);
+            N = normalize(cross(posX - center, posY - center) + 1e-9f);
+        }
+        else
+        {
+            float2 ndcPx = ndcXY + float2(2.0f * sp.invDepthW * 2.0f, 0.0f);
+            float2 ndcPy = ndcXY + float2(0.0f, 2.0f * sp.invDepthH * 2.0f);
+            float3 posX = SsaoUnprojectView(ndcPx, dPx, frame.invProj);
+            float3 posY = SsaoUnprojectView(ndcPy, dPy, frame.invProj);
+            N = normalize(cross(posX - center, posY - center) + 1e-9f);
+        }
+    }
     float3 V = -center / max(centerDist, 1e-6f);
     if (dot(N, V) < 0.0f)
         N = -N;

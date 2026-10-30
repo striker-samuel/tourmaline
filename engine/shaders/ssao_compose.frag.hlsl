@@ -172,13 +172,27 @@ PSOut mainPS(PSIn IN)
     if (haveN)
     {
         Texture2D normTex = textures[NonUniformResourceIndex(cp.normalTextureIndex)];
-        centerN = AoOctDecode(normTex.Load(int3(fullPx, 0)).xy);
+        // SPACE CONTRACT (the review's finding 1): the G-buffer stores
+        // WORLD-space oct normals (gbuffer.frag.hlsl) while the AO
+        // chain's tap normals are VIEW-space (the raw pass unprojects
+        // depth into view and encodes that cross-product normal).
+        // Comparing them raw made AoNormalWeight a camera-orientation
+        // accident - the dot product changed as the camera rotated over
+        // unchanged geometry. Rotate the G-buffer normal into the
+        // chain's view space here (the one place the two meet).
+        float3 worldN = AoOctDecode(normTex.Load(int3(fullPx, 0)).xy);
+        centerN = normalize(mul((float3x3)frame.view, worldN));
     }
 
     // 2x2 nearest half-res texels around this full-res pixel (same
     // addressing as the old AoUpsample), jointly weighted by the tap's
     // carried (repDist, repNormal) against the pixel's own (depth, normal).
-    int2 halfExtent = max(int2((int) cp.fullW, (int) cp.fullH) / 2, int2(1, 1));
+    // Half-res extent: the CEIL form (n+1)/2 - must equal
+    // Ssgi::HalfExtentFor, which sizes the AO targets. The old floor
+    // division dropped the last full-res column/row at odd extents
+    // (1921 -> 960 vs the target's 961).
+    int2 halfExtent = max((int2((int) cp.fullW, (int) cp.fullH) + 1) / 2,
+        int2(1, 1));
     int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
     int2 halfMax = halfExtent - 1;
 
