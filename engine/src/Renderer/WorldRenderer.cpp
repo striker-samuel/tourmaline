@@ -1431,6 +1431,18 @@ namespace engine {
 			if (std::atoi(giPtsEnv) != 0)
 				m_giShowProbes = true;
 		}
+		// GI hot-swap headless proof (the editor bake-completion path's
+		// frame-safety regression): at the given frame index, rebuild +
+		// publish the volume generation MID-BENCH - the swap, the old
+		// generation's retirement behind the in-flight frames and the
+		// next frame's publish all run under the bench's steady load.
+		// The old generation must keep rendering until the swap lands.
+		if (const char* hsEnv = std::getenv("TOURMALINE_GI_HOTSWAP")) {
+			m_giHotSwapAtFrame = std::atoi(hsEnv);
+			if (m_giHotSwapAtFrame >= 0)
+				std::cerr << "[GIV] hot-swap armed at frame "
+					<< m_giHotSwapAtFrame << "\n";
+		}
 		// Probe-sphere color mode (the panel combo's twin): 0 baked GI,
 		// 1 visibility (the coplanarity check, revived in 3D), 2 the
 		// pre-bake lattice preview (authored defs, no bake needed).
@@ -3644,12 +3656,17 @@ namespace engine {
 	static_assert(sizeof(GiVolumeGpu) == 80);
 	static_assert(sizeof(GiVolumesGpu) == 8 * 80 + 128 * 16);
 
-	void WorldRenderer::LoadGiVolumes() {
-		m_giVolumesLoaded = false;
-		m_giVolumesEnabled = false;
-		m_giVolumes.clear();
-		m_giVolumesBuffer = {};
-		m_giVolumesAddress = 0;
+	// Builds a COMPLETE volume set into caller-owned locals (the
+	// transactional core behind LoadGiVolumes + ReloadGiVolumesHotSwap:
+	// nothing touches the live members, so a failed build leaves the
+	// active generation untouched). Returns false when no volume
+	// could load (out stays empty).
+	bool WorldRenderer::BuildGiVolumeSet(
+		std::vector<GiVolumeResources>& built,
+		smvk::Holder<smvk::BufferHandle>& buf, uint64_t& addr) {
+		built.clear();
+		buf = {};
+		addr = 0;
 
 		// The volume list: the scene's per-volume GiVolume bindings FIRST
 		// (FULL vfs paths — the tour giAsset hard identification, one
@@ -3673,7 +3690,7 @@ namespace engine {
 				std::cerr << "[GIV] no GI-volume manifest '"
 					<< manifestPath
 					<< "' (bake: GiBaker --cv-spec <file>)\n";
-				return;
+				return false;
 			}
 			// Line-separated .givolume vfs paths (bake-asset rows carry the
 			// payload guid first - see smvk::bake::SplitManifestRow; '#'
@@ -3700,11 +3717,11 @@ namespace engine {
 			std::cerr << "[GIV] no GI-volume binding (bake: GiBaker; "
 				"the bake stamps the tour's giAsset records and the pak "
 				"cooker binds them)\n";
-			return;
+			return false;
 		}
 		constexpr uint32_t kMaxVolumes = 8; // SG_GI_VOLUME_MAX
 		for (const std::string& line : lines) {
-			if (m_giVolumes.size() >= kMaxVolumes) {
+			if (built.size() >= kMaxVolumes) {
 				std::cerr << "[GIV] manifest lists more than " << kMaxVolumes
 					<< " volumes - extra entries ignored\n";
 				break;
@@ -3881,16 +3898,16 @@ namespace engine {
 			// Coefficients are now resident on the GPU; drop the CPU copy.
 			cv.volume.coeffs.clear();
 			cv.volume.coeffs.shrink_to_fit();
-			m_giVolumes.push_back(std::move(cv));
+			built.push_back(std::move(cv));
 		}
-		if (m_giVolumes.empty()) {
+		if (built.empty()) {
 			std::cerr << "[GIV] no volumes loaded\n";
-			return;
+			return false;
 		}
 
 		// Priority sort (stable, LOW first): the shader composites in
 		// upload order, so later entries win - the FOX override rule.
-		std::stable_sort(m_giVolumes.begin(), m_giVolumes.end(),
+		std::stable_sort(built.begin(), built.end(),
 			[](const GiVolumeResources& a, const GiVolumeResources& b) {
 			return a.volume.def.priority < b.volume.def.priority;
 		});
@@ -3901,8 +3918,8 @@ namespace engine {
 		// was dead weight, the order carries it.
 		GiVolumesGpu descs{};
 		uint32_t planeBase = 0;
-		for (size_t v = 0; v < m_giVolumes.size(); ++v) {
-			const smvk::gi::GiVolume& vol = m_giVolumes[v].volume;
+		for (size_t v = 0; v < built.size(); ++v) {
+			const smvk::gi::GiVolume& vol = built[v].volume;
 			GiVolumeGpu& g = descs.volumes[v];
 			// Fade-expanded hull AABB (broad-phase reject): Bounds() is
 			// already a generous superset of the convex hull, grown by the
@@ -3980,12 +3997,31 @@ namespace engine {
 		}
 		constexpr smvk::PipelineStage kCvStages =
 			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
-		m_giVolumesBuffer = m_context->CreateBuffer(
+		buf = m_context->CreateBuffer(
 			sizeof(GiVolumesGpu), smvk::BufferType_Storage, "gi volumes");
-		m_context->UploadDataToBuffer(m_giVolumesBuffer, &descs,
+		m_context->UploadDataToBuffer(buf, &descs,
 			sizeof(GiVolumesGpu), kCvStages, smvk::AccessFlags::ShaderRead);
-		m_giVolumesAddress = m_context->GetBufferDeviceAddress(m_giVolumesBuffer);
+		addr = m_context->GetBufferDeviceAddress(buf);
 
+		return true;
+	}
+
+	// The INIT entry (attach-time): resets the live members, builds,
+	// publishes. A failed build leaves the not-loaded state.
+	void WorldRenderer::LoadGiVolumes() {
+		m_giVolumesLoaded = false;
+		m_giVolumesEnabled = false;
+		m_giVolumes.clear();
+		m_giVolumesBuffer = {};
+		m_giVolumesAddress = 0;
+		std::vector<GiVolumeResources> built;
+		smvk::Holder<smvk::BufferHandle> buf;
+		uint64_t addr = 0;
+		if (!BuildGiVolumeSet(built, buf, addr))
+			return;
+		m_giVolumes = std::move(built);
+		m_giVolumesBuffer = std::move(buf);
+		m_giVolumesAddress = addr;
 		m_giVolumesLoaded = true;
 		m_giVolumesEnabled = true; // on by default when baked; UI can toggle
 		// Headless A/B (same state as the panel checkbox): TOURMALINE_GI_VOLUMES=0
@@ -4006,6 +4042,40 @@ namespace engine {
 				std::cerr << " name='" << d.name << "'";
 			std::cerr << "\n";
 		}
+	}
+
+	// HOT-SWAP the convex GI volumes in the RUNNING renderer (the bake-
+	// completion path - the editor's live view): builds generation N+1
+	// COMPLETELY in separate resources (BuildGiVolumeSet never touches
+	// the live members), then swaps. The old generation's Holders die at
+	// the assignment and retire through the DEFERRED-DESTROY queue -
+	// in-flight frames keep their own per-flight FrameUniforms slabs
+	// (old bindless slots + old giVolumes BDA), so nothing a recording
+	// or executing frame references is destroyed under it; the next
+	// frame's publish picks up the new slots/address. A failed build
+	// returns false with the OLD generation fully intact (last valid GI
+	// keeps rendering - the stale-while-baking contract).
+	bool WorldRenderer::ReloadGiVolumesHotSwap() {
+		std::vector<GiVolumeResources> built;
+		smvk::Holder<smvk::BufferHandle> buf;
+		uint64_t addr = 0;
+		if (!BuildGiVolumeSet(built, buf, addr)) {
+			std::cerr << "[GIV] hot-swap: no volumes could load - the";
+				" previous generation stays\n";
+			return false;
+		}
+		m_giVolumes = std::move(built);
+		m_giVolumesBuffer = std::move(buf);
+		m_giVolumesAddress = addr;
+		m_giVolumesLoaded = true;
+		// The probe-sphere instance tables are grid-shaped - the new
+		// generation's lattices invalidate them (rebuilt lazily on the
+		// next armed frame).
+		m_giProbeInstancesBuilt = false;
+		std::cerr << "[GIV] hot-swap: published " << m_giVolumes.size()
+			<< " volume(s); the previous generation retires behind the";
+			" in-flight frames\n";
+		return true;
 	}
 
 	// The probe-sphere instance tables (Rendergraph/giprobe.h): per
@@ -14523,6 +14593,14 @@ namespace engine {
 			// Env-requested capture (TOURMALINE_CAPTURE=<frame>): F7-less A/B.
 			if (m_captureAtFrame >= 0 && m_frameCounter == (uint64_t)m_captureAtFrame)
 				m_captureQueued = true;
+			// The hot-swap one-shot (TOURMALINE_GI_HOTSWAP=<frame>): the
+			// mid-bench generation swap (between records - this site is
+			// ahead of the graph Execute, so no frame is recording).
+			if (m_giHotSwapAtFrame >= 0
+				&& m_frameCounter == (uint64_t)m_giHotSwapAtFrame) {
+				m_giHotSwapAtFrame = -1;
+				(void)ReloadGiVolumesHotSwap();
+			}
 			if (m_captureQueued) {
 				EnsureCaptureTarget(outExtent);
 				captureThisFrame = !m_captureLogical.empty();

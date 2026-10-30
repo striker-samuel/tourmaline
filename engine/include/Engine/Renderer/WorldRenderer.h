@@ -2917,6 +2917,9 @@ public:
 	// over the sparse octree world field (volumes BLEND by priority —
 	// never cross-interpolated with the octree's neighbors). ----
 	bool m_giVolumesLoaded = false;
+	int m_giHotSwapAtFrame = -1; // TOURMALINE_GI_HOTSWAP=<frame>: the
+	                              // mid-bench generation swap (the
+	                              // frame-safety regression pin)
 	bool m_giVolumesEnabled = false;       // UI toggle (confined-volume GI)
 	struct GiVolumeResources {
 		smvk::gi::GiVolume volume;       // CPU mirror (def; coeffs freed)
@@ -2972,6 +2975,19 @@ public:
 			|| ProbeTileListsWanted() || (m_giVolumesLoaded && m_giVolumesEnabled);
 	}
 	void LoadGiVolumes();
+	// The transactional build core (LoadGiVolumes + the hot swap): the
+	// complete volume set into CALLER-OWNED locals - nothing touches
+	// the live members, so a failed build leaves the active generation
+	// untouched.
+	bool BuildGiVolumeSet(std::vector<GiVolumeResources>& built,
+		smvk::Holder<smvk::BufferHandle>& buf, uint64_t& addr);
+	// HOT-SWAP the GI volumes in the RUNNING renderer (the bake-
+	// completion path): generation N+1 built in separate resources,
+	// published by the member swap; the old generation's Holders retire
+	// through the deferred-destroy queue behind the in-flight frames
+	// (per-flight FrameUniforms slabs keep their own slots/BDA). False
+	// = the old generation stays.
+	bool ReloadGiVolumesHotSwap();
 	// The probe-sphere instance tables (one per volume, strided to the
 	// cap, static): built lazily on the first m_giShowProbes arm.
 	void EnsureGiProbeInstances();

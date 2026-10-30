@@ -207,6 +207,26 @@ $env:TOURMALINE_CAPTURE='48'
   preview is exactly what the bake builds). The bake-input hash folds
   the gates + seed (stale bakes refuse). Unit-tested in test_gi.cpp
   (glayout.*: gates, cap refusal, coverage contract, parity)
+- GI HOT-SWAP (the live-authoring milestone - edit volume -> Bake GI ->
+  the viewport updates WITHOUT recreating the WorldRenderer):
+  LoadGiVolumes is split into the transactional BuildGiVolumeSet (the
+  complete volume set built into CALLER-OWNED locals - a failed build
+  never touches the live members) + two entries: the init load and the
+  public ReloadGiVolumesHotSwap (generation N+1 built in separate
+  resources, published by the member swap; the old generation's Holders
+  retire through the deferred-destroy queue behind the in-flight
+  frames - per-flight FrameUniforms slabs carry their own slots/BDA, so
+  nothing a recording or executing frame references is destroyed under
+  it). The probe-sphere instance tables invalidate with the swap
+  (m_giProbeInstancesBuilt - the grids moved). The editor's bake-
+  completion edge calls the hot swap instead of the WYSIWYG relaunch:
+  the live view keeps its camera/quality/state, the last valid GI
+  renders until the swap lands, and the re-read rides the same bake
+  channel the relaunch used (the world VFS sees the fresh manifest).
+  Headless frame-safety regression: `TOURMALINE_GI_HOTSWAP=<frame>`
+  swaps the generation MID-BENCH (proven on sponza: published at frame
+  8, 24 further frames clean, the post-swap capture identical to the
+  reference within the noise floor)
 - BC6H IS THE CANONICAL GI-volume cooked format ("GV6H" - no flag, no
   toggle, a HARD ENGINE REQUIREMENT): WriteToMemory always emits 9
   BC6H_UFloat per-lobe 3D textures (PackGpuLayersBc6h - per-Z-slice

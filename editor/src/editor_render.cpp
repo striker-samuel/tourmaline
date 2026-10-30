@@ -2379,8 +2379,21 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
 				|| m_wysiwygSceneId != SceneIdForHost()))
 			LaunchWysiwyg();
-		if (m_wysiwygBakeWasRunning && !m_bakeRunning && m_wysiwyg)
-			LaunchWysiwyg(); // bake completion: relaunch to bind the fresh GI
+		if (m_wysiwygBakeWasRunning && !m_bakeRunning && m_wysiwyg) {
+			// Bake completion: HOT-SWAP the GI volumes in the RUNNING
+			// renderer (generation N+1 in separate resources, published
+			// by the member swap, the old generation retiring behind
+			// the in-flight frames) - NO WorldRenderer relaunch: the
+			// viewport keeps its camera/quality/state and the last
+			// valid GI renders until the swap lands. The re-read rides
+			// the same bake channel the relaunch used (the world's
+			// VFS sees the fresh manifest + minted artifacts).
+			if (m_wysiwyg->ReloadGiVolumesHotSwap())
+				Log("Bake GI: hot-swapped into the live view (no relaunch)");
+			else
+				Log("Bake GI: hot-swap found no volumes - the live view "
+					"keeps the previous generation");
+		}
 		m_wysiwygBakeWasRunning = m_bakeRunning;
 		if (!wantLive)
 			return; // PARK: skip the tick/record; keep the renderer + its state
