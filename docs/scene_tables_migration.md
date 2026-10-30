@@ -149,7 +149,10 @@ deltas are marked.
     build clean, `out/build/tests` 44/44. NOTE: `external/box3d` was
     already vendored "for upcoming physics work" (unwired,
     THIRD_PARTY_NOTICES) — superseded by Jolt for the 3D runtime;
-    its fate gets decided at Epoch 15 cleanup.
+    REMOVED from the installers/README/notices ahead of schedule (the
+    owner's call right after Epoch 6 — the fetch entry, the tracked
+    .tourmaline-fetched marker, the notices row and the .gitignore
+    lines are gone; the Epoch 15 cleanup item is closed).
   - **Gates (all closed)**: Windows Release + Debug clean; Linux
     (Ubuntu 24.04 WSL, GCC 14.2, CMake 3.28, ext4 clone provisioned by
     `install_dependencies.sh`) — full tree with Jolt builds, 44/44;

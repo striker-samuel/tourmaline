@@ -46,8 +46,6 @@ bld/
 !/external/stb/.tourmaline-fetched
 /external/tinygltf/**
 !/external/tinygltf/.tourmaline-fetched
-/external/box3d/**
-!/external/box3d/.tourmaline-fetched
 /external/zlib/**
 !/external/zlib/.tourmaline-fetched
 # SQLiteCpp: the tree + the sqlite3 amalgamation are fetched; the tracked
@@ -548,7 +546,7 @@ pipeline_cache*.bin
 /projects/
 
 # ---- demo content releases (paired with the repo; the .pak binaries
-# live on the eleases branch, pushed to the oldpc remote only —
+# live on the eleases branch, pushed to the oldpc remote only ï¿½
 # see releases/README.md). Un-ignore the folder + manifest, keep the
 # big binaries out of master. ----
 !releases/

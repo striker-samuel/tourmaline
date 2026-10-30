@@ -17,7 +17,7 @@
 # Usage:
 #   ./install_dependencies.sh
 #   ./install_dependencies.sh --force
-#   ./install_dependencies.sh --include-unused   # box3d + zlib (not wired in)
+#   ./install_dependencies.sh --include-unused   # zlib (not wired in)
 
 set -euo pipefail
 
@@ -312,16 +312,11 @@ echo "[streamline] skipped (Windows-only DLSS/Reflex runtimes; the engine report
 
 # --- intentionally unused, opt-in ---
 if [ "$INCLUDE_UNUSED" = 1 ]; then
-    install_archive box3d box3d tar \
-        'https://codeload.github.com/erincatto/box3d/tar.gz/954cf879e717334eb96da9a5c255788fdc9f5f87' \
-        d9f15a080708120d4c9dfcc589bfb629f999646402c604fe27d2d4d1f8266504 \
-        '*' '' '' '' '' || fail box3d
     install_archive zlib zlib tar \
         'https://codeload.github.com/madler/zlib/tar.gz/51b2667cb4e02a583a8be55abd995421dccbfec0' \
         bbe3653640497bde28c86c99ca33bbdb38a3b3ef15bd99905b97c8b2863ac80a \
         '*' '' '' '' '' || fail zlib
 else
-    echo "[box3d] skipped (not wired into the build; pass --include-unused)"
     echo "[zlib]  skipped (not wired into the build; pass --include-unused)"
 fi
 

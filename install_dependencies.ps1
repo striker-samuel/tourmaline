@@ -6,8 +6,8 @@
 # pinned upstream archives / raw files, byte-checked by SHA256.
 #
 # Idempotent: re-running skips deps whose .depstamp already matches. Use
-# -Force to re-fetch everything, -IncludeUnused to also fetch the two
-# intentionally-unwired trees (box3d, zlib).
+# -Force to re-fetch everything, -IncludeUnused to also fetch the
+# intentionally-unwired tree (zlib).
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File install_dependencies.ps1
@@ -96,9 +96,6 @@ $Pins = @(
     @{ name='xatlas';     type='tar';  target='xatlas';
        url='https://codeload.github.com/jpcy/xatlas/tar.gz/1f101e2983b0bb91f5cebff80306d0ee8710f11e';
        sha256='5c7c3dfff9e40e32c31f1ecc3e8f6af376545008a03dfdb1fddbf5491f1b4dcb' }
-    @{ name='box3d';      type='tar';  target='box3d'; unused=$true;
-       url='https://codeload.github.com/erincatto/box3d/tar.gz/954cf879e717334eb96da9a5c255788fdc9f5f87';
-       sha256='d9f15a080708120d4c9dfcc589bfb629f999646402c604fe27d2d4d1f8266504' }
     @{ name='zlib';       type='tar';  target='zlib'; unused=$true;
        url='https://codeload.github.com/madler/zlib/tar.gz/51b2667cb4e02a583a8be55abd995421dccbfec0';
        sha256='bbe3653640497bde28c86c99ca33bbdb38a3b3ef15bd99905b97c8b2863ac80a' }

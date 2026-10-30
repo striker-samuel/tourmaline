@@ -44,7 +44,6 @@ a hand-written integration, or are an unpinnable snapshot:
 | [SDL3](https://github.com/libsdl-org/SDL) 3.4.16 | `external/SDL3-3.4.16` | [zlib](external/SDL3-3.4.16/LICENSE.txt) | Windowing/input/audio. Windows: the prebuilt dev package (include/ + lib/ + cmake/); Linux: the source tree (same release), built as a subproject when no system SDL3 exists |
 | [SQLiteCpp](https://github.com/SRombauts/SQLiteCpp) | `external/SQLiteCpp` | [MIT](external/SQLiteCpp/LICENSE.txt) | RAII wrapper over sqlite3 (editor artifact DB). Unpinnable mixed snapshot (content-identical on 25/26 files; LICENSE/README and a few headers at older states) |
 | SQLite3 (amalgamation) | `external/SQLiteCpp/sqlite3` | Public Domain | `sqlite3.{h,c}` |
-| [Box3D](https://github.com/erincatto/box3d) | `external/box3d` | [MIT](external/box3d/LICENSE) | Vendored for upcoming physics work (not yet wired into targets; unpinnable snapshot) |
 | [xatlas](https://github.com/jpcy/xatlas) | `external/xatlas` | [MIT](external/xatlas/LICENSE) | Lightmap UV2 chart+pack; hand-written CMakeLists.txt builds only the self-contained core (bundled OpenFBX license in-tree) |
 | [zlib](https://zlib.net) | `external/zlib` | [zlib](external/zlib/LICENSE) | CRC/reference only (not wired into the build); unpinnable develop-branch snapshot |
 | [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | `external/VulkanMemoryAllocator` | MIT (see header notice) | `vk_mem_alloc.h` |

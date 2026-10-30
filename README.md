@@ -575,10 +575,9 @@ archives/raw files, SHA256-checked, extracted into `external/`):
 (Windows) and **KTX-Software** (both platforms) — see
 [Requirements](#requirements).
 
-**Fetched but intentionally not wired into the build**: **Box3D**
-(upcoming physics work) and **zlib** (CRC/reference only) — pass
-`-IncludeUnused` / `--include-unused` to the installers if you want
-them.
+**Fetched but intentionally not wired into the build**: **zlib**
+(CRC/reference only) — pass `-IncludeUnused` / `--include-unused` to the
+installers if you want it.
 
 ## Architecture and repository layout
 
