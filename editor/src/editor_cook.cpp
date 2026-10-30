@@ -513,16 +513,11 @@ void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
 	}
 	low = std::max(low, 0.01f);
 	high = std::max(high, low);
-	// The bake-parity content root (the bake's derivation).
-	if (m_cook.outPak.empty()) {
-		Log("Optimize grid: no cook target - cook once first "
-			"(the optimizer resolves geometry through the same "
-			"content root the bake does).");
-		return;
-	}
-	const std::string contentRoot = std::filesystem::absolute(
-		std::filesystem::path(m_cook.outPak).parent_path() / "..")
-		.lexically_normal().string();
+	// The content root: the EDITOR's own reference-resolution convention
+	// (m_projectRoot — the same value the definition bind passes
+	// ApplySceneReferences), not a cook target. No cook needed: the
+	// snapshot's tour payload + the project tree resolve all geometry.
+	const std::string contentRoot = m_projectRoot;
 	std::string tempTour, defHash;
 	if (!SnapshotTourForProcess("GiLayoutOpt", tempTour, defHash))
 		return;
