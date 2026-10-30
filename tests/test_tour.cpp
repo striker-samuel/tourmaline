@@ -3115,6 +3115,108 @@ void TestDitherCloseup() {
 	}
 }
 
+// Per-node flag-table bookkeeping regression (the 811b461f review
+// finding): the volumetric-shadow caster commit REPLACED the ditherCloseup
+// bookkeeping at every scene-lifecycle site instead of adding alongside it
+// - addNode/loadScene/mergeScenes/deleteSceneNodes (plus the world cook's
+// cluster carry and the editor's per-node undo pop_backs) stopped
+// growing/carrying/shrinking the dither table, so it desynced from the
+// hierarchy (misaligned flags or stale state after the first scene edit).
+// This pins BOTH tables through create, delete, merge, and the legacy
+// .scene save/load round-trip - any future per-node flag must keep ALL of
+// these sites additive.
+void TestSceneFlagTables() {
+	// --- create: addNode grows BOTH tables with the hierarchy ---
+	Scene scene;
+	const int root = addNode(scene, -1, 0);
+	const int a = addNode(scene, root, 1);
+	const int b = addNode(scene, root, 1);
+	Check(scene.hierarchy.size() == 3, "flagtables create hierarchy");
+	Check(scene.ditherCloseup.size() == 3
+		&& scene.castsVolumetricShadow.size() == 3,
+		"flagtables create both tables grow");
+	MarkDitherCloseup(scene, a);
+	MarkCastsVolumetricShadow(scene, b);
+	Check(IsDitherCloseupNode(scene, a) && !IsDitherCloseupNode(scene, b),
+		"flagtables create dither authored");
+	Check(IsCastsVolumetricShadowNode(scene, b)
+		&& !IsCastsVolumetricShadowNode(scene, a),
+		"flagtables create volumetric authored");
+
+	// --- delete: deleteSceneNodes shrinks BOTH tables, flags follow ---
+	deleteSceneNodes(scene, { (uint32_t)a });
+	Check(scene.hierarchy.size() == 2, "flagtables delete hierarchy shrank");
+	Check(scene.ditherCloseup.size() == 2
+		&& scene.castsVolumetricShadow.size() == 2,
+		"flagtables delete both tables shrink");
+	// b slid from index 2 to 1: the volumetric flag rides the node, and the
+	// deleted node's dither flag is gone (not misaligned onto the survivor).
+	if (scene.castsVolumetricShadow.size() == 2)
+		Check(scene.castsVolumetricShadow[1] != 0
+			&& scene.castsVolumetricShadow[0] == 0,
+			"flagtables delete volumetric followed node");
+	if (scene.ditherCloseup.size() == 2)
+		Check(scene.ditherCloseup[0] == 0 && scene.ditherCloseup[1] == 0,
+			"flagtables delete dither flag gone with node");
+
+	// --- merge: mergeScenes carries BOTH tables across sources ---
+	Scene s0;
+	{
+		const int r = addNode(s0, -1, 0);
+		const int n = addNode(s0, r, 1);
+		MarkDitherCloseup(s0, n);
+		MarkCastsVolumetricShadow(s0, r);
+	}
+	Scene s1;
+	{
+		const int r = addNode(s1, -1, 0);
+		MarkCastsVolumetricShadow(s1, r);
+	}
+	Scene merged;
+	mergeScenes(merged, { &s0, &s1 },
+		{ glm::mat4(1.0f), glm::mat4(1.0f) }, { 0u, 0u }, false, false, false);
+	// Layout: 0 = the merged root, 1..2 = s0 (shifted +1), 3 = s1 (one
+	// node) - four total, every source node keeping its own flags.
+	Check(merged.hierarchy.size() == 4, "flagtables merge hierarchy");
+	Check(merged.ditherCloseup.size() == 4
+		&& merged.castsVolumetricShadow.size() == 4,
+		"flagtables merge both tables carried");
+	if (merged.ditherCloseup.size() == 4)
+		Check(merged.ditherCloseup[2] != 0 && merged.ditherCloseup[1] == 0
+			&& merged.ditherCloseup[3] == 0,
+			"flagtables merge dither position");
+	if (merged.castsVolumetricShadow.size() == 4)
+		Check(merged.castsVolumetricShadow[1] != 0
+			&& merged.castsVolumetricShadow[3] != 0
+			&& merged.castsVolumetricShadow[0] == 0
+			&& merged.castsVolumetricShadow[2] == 0,
+			"flagtables merge volumetric position");
+
+	// --- save/load: the legacy .scene blob round-trips BOTH sections ---
+	MarkDitherCloseup(scene, 1); // both kinds live on the 2-node scene
+	// The names section rides between the mesh maps and the flag
+	// sections: saveScene writes it ONLY when non-empty while loadScene
+	// always consumes it when not at EOF, so a NAMELESS scene misaligns
+	// every later section (a latent legacy-format asymmetry - production
+	// scenes always carry names; this test populates them like real
+	// content so it exercises the flag sections' own bytes).
+	scene.nodeNames.push_back("root");
+	scene.nameForNode[0] = 0;
+	scene.nameForNode[1] = 0;
+	{
+		saveScene(TempTour().c_str(), scene);
+		Scene loaded;
+		loadScene(TempTour().c_str(), loaded);
+		Check(loaded.hierarchy.size() == scene.hierarchy.size(),
+			"flagtables roundtrip hierarchy");
+		Check(loaded.ditherCloseup == scene.ditherCloseup
+			&& loaded.castsVolumetricShadow == scene.castsVolumetricShadow,
+			"flagtables roundtrip both tables");
+		std::error_code ec;
+		std::filesystem::remove(TempTour(), ec);
+	}
+}
+
 void TestLightmapOptIn() {
 	Scene scene;
 	const int root = addNode(scene, -1, 0);
@@ -3195,6 +3297,7 @@ int main() {
 	TestTextureAssets();
 	TestTourFuzz();
 	TestDitherCloseup();
+	TestSceneFlagTables();
 	TestLightmapOptIn();
 	std::cout << g_checks - g_failures << "/" << g_checks << " passed\n";
 	return g_failures == 0 ? 0 : 1;

@@ -325,6 +325,7 @@ namespace smvk {
 		scene.noLightmap.assign(scene.hierarchy.size(), 0);
 		scene.lightmap.assign(scene.hierarchy.size(), 0);
 		scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
+		scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
 		scene.hidden.assign(scene.hierarchy.size(), 0);
 
 		for (auto& clusterPtr : clusters) {
@@ -394,6 +395,18 @@ namespace smvk {
 					scene.lightmap.end(), nodeCount, 0);
 			}
 			// Carry the dither-on-closeup flags (missing == off).
+			if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
+				scene.ditherCloseup.insert(
+					scene.ditherCloseup.end(),
+					cs.ditherCloseup.begin(),
+					cs.ditherCloseup.end()
+				);
+			}
+			else {
+				scene.ditherCloseup.insert(
+					scene.ditherCloseup.end(), nodeCount, 0);
+			}
+			// Carry the volumetric-shadow caster flags (missing == off).
 			if (cs.castsVolumetricShadow.size() == cs.hierarchy.size()) {
 				scene.castsVolumetricShadow.insert(
 					scene.castsVolumetricShadow.end(),

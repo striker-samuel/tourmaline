@@ -1084,6 +1084,8 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 			scene.lightmap.pop_back();
 		if (scene.castsVolumetricShadow.size() == n + 1)
 			scene.castsVolumetricShadow.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1228,6 +1230,8 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 			scene.lightmap.pop_back();
 		if (scene.castsVolumetricShadow.size() == n + 1)
 			scene.castsVolumetricShadow.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1372,6 +1376,8 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 			scene.lightmap.pop_back();
 		if (scene.castsVolumetricShadow.size() == n + 1)
 			scene.castsVolumetricShadow.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1537,6 +1543,8 @@ void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
 			scene.lightmap.pop_back();
 		if (scene.castsVolumetricShadow.size() == n + 1)
 			scene.castsVolumetricShadow.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -1768,6 +1776,8 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 			scene.lightmap.pop_back();
 		if (scene.castsVolumetricShadow.size() == n + 1)
 			scene.castsVolumetricShadow.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);
@@ -2339,6 +2349,8 @@ void EditorApp::ExecUncreateTransform(EditCmd& c) {
 			scene.lightmap.pop_back();
 		if (scene.castsVolumetricShadow.size() == n + 1)
 			scene.castsVolumetricShadow.pop_back();
+		if (scene.ditherCloseup.size() == n + 1)
+			scene.ditherCloseup.pop_back();
 		if (scene.hidden.size() == n + 1)
 			scene.hidden.pop_back();
 		recalculateGlobalTransforms(scene);

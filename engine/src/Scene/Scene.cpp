@@ -32,6 +32,7 @@ int addNode(Scene& scene, int parent, int level)
   scene.noLightmap.push_back(0);
   scene.lightmap.push_back(0);
   scene.castsVolumetricShadow.push_back(0);
+  scene.ditherCloseup.push_back(0);
   scene.hidden.push_back(0);
   }
   scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
@@ -376,6 +377,7 @@ void loadScene(const char* fileName, Scene& scene)
   scene.lightmap.assign(sz, 0);
   scene.hidden.assign(sz, 0);
   scene.castsVolumetricShadow.assign(sz, 0);
+  scene.ditherCloseup.assign(sz, 0);
   scene.lightForNode.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
@@ -922,6 +924,7 @@ void mergeScenes(
   scene.noLightmap.push_back(0);
   scene.lightmap.push_back(0);
   scene.castsVolumetricShadow.push_back(0);
+  scene.ditherCloseup.push_back(0);
   scene.hidden.push_back(0);
   // Cooked punctual lights are Cluster pool assets: their node links
   // (pool indices) cannot shift across scenes here — lights merge via
@@ -974,6 +977,10 @@ void mergeScenes(
       mergeVectors(scene.castsVolumetricShadow, s->castsVolumetricShadow);
     else
       scene.castsVolumetricShadow.insert(scene.castsVolumetricShadow.end(), s->hierarchy.size(), 0);
+    if (s->ditherCloseup.size() == s->hierarchy.size())
+      mergeVectors(scene.ditherCloseup, s->ditherCloseup);
+    else
+      scene.ditherCloseup.insert(scene.ditherCloseup.end(), s->hierarchy.size(), 0);
 
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
@@ -1196,6 +1203,10 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
     eraseSelected(scene.castsVolumetricShadow, indicesToDelete);
   else
     scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
+  if (scene.ditherCloseup.size() == oldSize)
+    eraseSelected(scene.ditherCloseup, indicesToDelete);
+  else
+    scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
   RebuildStaticCache(scene);
 
   // 4b) All the perFrame should change the key values with the newIndices[] array
