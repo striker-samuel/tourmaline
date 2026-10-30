@@ -253,17 +253,6 @@ namespace editor {
 		// while disabled: one flag check.
 		if (smvk::profiler::FrameHistogramEnabled())
 			smvk::profiler::DrawFrameHistogramUi();
-		// THE MODAL CACHE (queried HERE — the imgui frame is ALIVE; the
-		// live view's compose pass (recorded AFTER the imgui pass) reads
-		// the cache — a direct query there tears down the frame (the boot
-		// AV crash). Includes the GENERIC DIALOG (the manual modal isn't
-		// a popup — IsPopupOpen can't see it; DialogUp() covers it).
-		m_imguiModalOpen = DialogUp()
-			|| ImGui::IsPopupOpen("Save tour as")
-			|| ImGui::IsPopupOpen("Recover autosave")
-			|| ImGui::IsPopupOpen("Create Terrain")
-			|| ImGui::IsPopupOpen("Delete asset?")
-			|| ImGui::IsPopupOpen("TaskProgress");
 	}
 
 	// ---- Maya-like bottom status strip (process progress) --------------
@@ -6093,8 +6082,8 @@ namespace editor {
 	}
 
 	// ---- THE GENERIC DIALOG (the ONE modal mechanism — see the header
-	// block): a plain centered window + a dim overlay, gated on a bool —
-	// no popup stack anywhere in the flow. One dialog at a time.
+	// block): a real BeginPopupModal behind the flag (DialogBegin below
+	// owns the open/close). One dialog at a time.
 	void EditorApp::DialogOpen() {
 		m_dialogUp = true;
 	}
@@ -6102,49 +6091,54 @@ namespace editor {
 		m_dialogUp = false;
 	}
 	bool EditorApp::DialogBegin(const char* title, const ImVec2& size) {
-		if (!m_dialogUp)
+		// A REAL ImGui modal now (OpenPopup + BeginPopupModal — the
+		// centralized dialog controller the delete-confirm flows
+		// through): the POPUP STACK owns the layering (every later
+		// ImGui element, and the composite before the UI pass, stays
+		// under it) and the input blocking (windows below go inert —
+		// the old hand-rolled full-screen dimmer + InvisibleButton is
+		// gone), and ImGui's ModalWindowDimBg draws the dim. The popup
+		// id is the TITLE, and OpenPopup + BeginPopupModal sit on
+		// adjacent lines in THIS function — the same id stack by
+		// construction (the popup-depth rule; no intervening statement
+		// can ever shift it again).
+		constexpr ImGuiWindowFlags kDialogFlags =
+			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+			ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_AlwaysAutoResize;
+		// The flag dropped since last frame (DialogClose from OUTSIDE
+		// the popup — the stale-dialog drop or a confirm button): the
+		// popup can still be on the stack; CloseCurrentPopup is the
+		// only public close and must run INSIDE it, so begin it once
+		// more purely to close it.
+		if (!m_dialogUp) {
+			if (ImGui::BeginPopupModal(title, nullptr, kDialogFlags)) {
+				ImGui::CloseCurrentPopup();
+				ImGui::EndPopup();
+			}
 			return false;
-		// The dim behind (a full-viewport transparent window): the modal
-		// read + it swallows clicks (the borderless frame's
-		// InvisibleButton covers the screen).
-		{
-			const ImVec2 vp = ImGui::GetMainViewport()->WorkSize;
-			ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(vp, ImGuiCond_Always);
-			ImGui::PushStyleColor(ImGuiCol_WindowBg,
-				ImVec4(0.0f, 0.0f, 0.0f, 0.45f));
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-			ImGui::Begin("##genericdialogdim", nullptr,
-				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-				ImGuiWindowFlags_NoSavedSettings |
-				ImGuiWindowFlags_NoBringToFrontOnFocus);
-			ImGui::InvisibleButton("##block", vp);
-			ImGui::End();
-			ImGui::PopStyleVar();
-			ImGui::PopStyleColor();
 		}
+		if (!ImGui::IsPopupOpen(title, ImGuiPopupFlags_AnyPopupId))
+			ImGui::OpenPopup(title);
 		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing,
 			ImVec2(0.5f, 0.5f));
 		ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
-		if (!ImGui::Begin(title, nullptr,
-				ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-				ImGuiWindowFlags_NoSavedSettings |
-				ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui::End();
-			return false;
-		}
-		return true;
+		return ImGui::BeginPopupModal(title, nullptr, kDialogFlags);
 	}
 	void EditorApp::DialogEnd() {
-		ImGui::End();
+		ImGui::EndPopup();
 	}
 
 	void EditorApp::DrawAssetDeleteModal() {
-		// Stale dialog without plans: drop it.
+		// Stale dialog without plans: drop it. DialogBegin STILL runs —
+		// its down leg closes the popup from the stack (the confirm
+		// buttons only drop the flag; CloseCurrentPopup must run inside
+		// the popup, one frame later at worst).
 		if (m_assetsDeletePending.empty()) {
 			if (DialogUp())
 				DialogClose();
+			(void)DialogBegin("Delete asset?", ImVec2(460, 0));
 			return;
 		}
 		// The request sets the flag one frame (the menu-close frame);

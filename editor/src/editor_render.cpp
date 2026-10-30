@@ -2255,13 +2255,22 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			DrawUI(extent);
 			// UV editor window canvas retired (see RecordUvWindowPass).
 			//RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
-			m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
-				smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
-			// The WYSIWYG composite LAST: it over-draws the Live tab's
-			// content rect on top of the finished ImGui panels (the tab
-			// body is empty by design; see RecordLiveViewComposePass).
+			// THE WYSIWYG COMPOSITE BEFORE THE IMGUI PASS (the editor's
+			// layer order: scene -> live view -> ImGui panels/popups/
+			// modals). The stage rect is a GAP in the ImGui layout (the
+			// viewport chrome lives on the background draw list), so
+			// nothing ImGui-side paints under the composite; everything
+			// ImGui-side paints OVER it. The old order (composite AFTER
+			// ImGui) painted the live image over any modal/dropdown/
+			// floating window touching the rect, which needed a popup-
+			// name allowlist to hide the view — every new dialog had to
+			// be added to that list or it was obscured. The layer order
+			// replaces the list: popups and modals are ordinary ImGui
+			// windows now, drawn above the image like any other panel.
 			if (m_wysiwygLiveRectFresh)
 				RecordLiveViewComposePass(m_swapViews[fb.imageIndex]);
+			m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
+				smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
 		}
 		// Flush bindless descriptor writes (scene texture views, samplers)
 		// BEFORE Execute records — App does the same (see WorldRenderer).
@@ -2736,20 +2745,14 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 		if (!m_wysiwyg || !m_wysiwygValid
 			|| m_wysiwyg->InlineTargetView().empty())
 			return;
-		// MODALS WIN THE FRAME — but ONLY modals: the composite records
-		// AFTER the imgui pass — it would PAINT OVER any modal dialog
-		// sitting inside the live rect (the delete-confirm over the stage
-		// was "obscured by the live view"). While a BeginPopupModal is
-		// open the composite skips: the modal owns the frame's top layer.
-		// NON-modal popups (the Q radial, every combo dropdown) do NOT
-		// skip it — the first cut keyed on ANY popup and blanked the
-		// stage gray behind every dropdown (the editor scene pass is also
-		// skipped at the live rect, so a skipped composite exposes the
-		// raw frame clear — the "gray live view on Q / render settings"
-		// report). The state rides the DrawUI-tail CACHE (m_imguiModalOpen
-		// — no ImGui queries here: the frame is torn down by now).
-		if (m_imguiModalOpen)
-			return;
+		// LAYER ORDER, not modal detection: the composite is recorded
+		// BEFORE the ImGui pass (see the call site in DrawFrame), so
+		// every ImGui element - panels, floating windows, dropdowns,
+		// tooltips, real modals - draws ON TOP of the live image. The
+		// old post-ImGui composite needed a popup-name allowlist to
+		// avoid covering dialogs; that list was maintenance debt (a new
+		// dialog was obscured until someone remembered to add its name)
+		// and is gone.
 		// The tab's captured rect, clamped into the framebuffer (the
 		// dock can hang past the window edge while a splitter drags).
 		const ImVec2 fbs = ImGui::GetIO().DisplaySize;

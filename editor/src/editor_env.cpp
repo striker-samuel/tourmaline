@@ -478,6 +478,15 @@ namespace editor {
 			return;
 		}
 		SceneRenderSettings& r = m_world->scene.defaultRenderSettings;
+		// PERSISTENCE PARITY with every other authored value: the look
+		// is SCENE state (render.* keys ride the tour), so edits must
+		// mark the doc dirty like a transform edit does — the old panel
+		// wrote the struct silently (a manual save caught it, autosave
+		// never did). The once-per-FINISHED-edit contract (the default
+		// camera's pattern): a drag stays "editing" until the values
+		// settle, a toggle flips for one frame, and the frame the soup
+		// stops changing is the edit's end -> ONE AutosaveTour.
+		const SceneRenderSettings lookBefore = r;
 		// Keep Render controls independent from same-named widgets in other tabs.
 		ImGui::PushID("render_settings_panel");
 		{
@@ -588,6 +597,14 @@ namespace editor {
 		// (the renderer seeds from scene.renderSettings).
 		m_world->scene.renderSettings = r;
 		m_world->scene.hasRenderSettings = true;
+		// The finished-edit edge (see lookBefore above): one autosave
+		// per settled edit, never per drag tick.
+		if (std::memcmp(&lookBefore, &r, sizeof(lookBefore)) != 0)
+			m_renderLookEditing = true;
+		else if (m_renderLookEditing) {
+			m_renderLookEditing = false;
+			AutosaveTour();
+		}
 		// THE LIVE VIEW PUSH: the Lit-mode WYSIWYG renderer seeds once per
 		// scene LOAD (PushPostfxEnv at attach) — panel edits after that never
 		// reached it (the "the live view doesn't get affected by render

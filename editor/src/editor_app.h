@@ -2130,16 +2130,17 @@ private:
 	// Pending confirmed-delete plans (empty = no modal).
 	std::vector<AssetDeletePlan> m_assetsDeletePending;
 	// THE GENERIC DIALOG (the ONE modal mechanism — every confirm/prompt
-	// rides it; the delete confirm is the first consumer): a plain
-	// centered window + a dim overlay, gated on a bool — NO popup stack
-	// (the popup-matching subtleties burned the delete hunt). One
-	// dialog at a time (the modal contract).
+	// rides it; the delete confirm is the first consumer): a REAL
+	// BeginPopupModal behind a bool (DialogBegin owns the popup open/
+	// close — the open + the begin sit on adjacent lines in it, the
+	// same id stack by construction). One dialog at a time (the modal
+	// contract).
 	bool m_dialogUp = false;
 	void DialogOpen();               // raise (idempotent)
 	void DialogClose();              // drop (DialogBegin returns false after)
 	bool DialogUp() const { return m_dialogUp; } // the modal cache feeds this
-	// Draws the dim + the centered dialog window. True while up (call
-	// DialogEnd after the content; Cancel/confirm call DialogClose).
+	// Opens + draws the centered modal. True while up (call DialogEnd
+	// after the content; Cancel/confirm call DialogClose).
 	bool DialogBegin(const char* title, const ImVec2& size);
 	void DialogEnd();
 	// The DEFERRED popup open: RequestAssetDelete records the plans from
@@ -2733,12 +2734,10 @@ private:
 	bool CubeWatchSpec(std::string& dirOut, std::string& baseOut) const;
 	// ---- ui state ----
 	char m_filterBuf[128] = "";
-	// THE MODAL CACHE: true while a BeginPopupModal dialog is up this
-	// frame — queried at the END of DrawUI (the imgui frame alive); the
-	// live view's compose pass (recorded AFTER the imgui pass) reads
-	// the cache — a direct query there tears down the frame (the boot
-	// AV crash).
-	bool m_imguiModalOpen = false;
+	// The Render tab's finished-edit edge (DrawRenderSettingsPanel):
+	// true while the look soup is changing frame to frame (a drag or a
+	// toggle); the first settled frame autosaves ONCE.
+	bool m_renderLookEditing = false;
 	// THE VERB TOAST (the command feedback over the view panels): Do()
 	// records the verb's friendly label + a timestamp; DrawUI paints a
 	// small fading chip centered over the ACTIVE viewport's rect (~1.6s,

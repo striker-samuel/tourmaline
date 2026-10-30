@@ -12,19 +12,62 @@
 //   states, never a negation-named checkbox). Every stub returns true
 //   on the EDIT FRAME (the caller drives the command/undo wiring).
 //
-// IDs: every field's ImGui id is "##<attr name>" — the ## prefix keeps
-// the widget's own label invisible (the name renders in the shared
-// label column) while the name-derived suffix keeps the ids UNIQUE
-// (the first cut's bare "##v" collided every same-typed row in a
-// window).
+// IDs: every stub PushID(name)s around its widget, so the widget id is
+// the PROPERTY NAME regardless of the visible label ("on"/"off" chip
+// text never leaks into the id — the old bare Button("on"/"off")
+// collided every same-state boolean in one id scope, the material
+// inspector's DS/Shadow/Contact chips being the live repro). The ##-
+// suffixed labels stay for the drag/slider fields (invisible labels,
+// name-derived ids).
+//
+// LAYOUT: the label column is MEASURED per window (LabelColumnWidth
+// below) instead of a hardcoded 130 px — the inspector's narrow 370 px
+// starting width made -60 trailing reservations leave dead space and
+// long labels collide. Each helper reserves the column, then the value
+// field takes the REST of the row (-1 width: no hardcoded trailing
+// gap; callers that need a trailing button size it themselves).
 #include <imgui.h>
 #include <cmath>
 #include <string>
 
 namespace editor::attr {
 
-// The label column width (shared: the value fields align across rows).
-inline constexpr float kLabelW = 130.0f;
+// The label column width: MEASURED against the window's content width
+// (42% clamped to [90, 220] px — the two-column property contract at
+// any inspector width/DPI; a long label truncates with a full-text
+// tooltip instead of colliding into the value field).
+inline float LabelColumnWidth() {
+	const float w = ImGui::GetContentRegionAvail().x;
+	return std::clamp(w * 0.42f, 90.0f, 220.0f);
+}
+
+// One property row's label cell: the name CLIPPED to the column (a
+// long label never collides into the value field) with the full text
+// on the tooltip when it clipped; the hint tooltip wins when present.
+inline void LabelCell(const char* name, const char* hint) {
+	const float colW = LabelColumnWidth();
+	const char* shown = name ? name : "";
+	const ImVec2 ts = ImGui::CalcTextSize(shown);
+	const float avail = colW - 10.0f;
+	const bool clipped = ts.x > avail;
+	if (clipped) {
+		// Clip at the column edge (the visual cut IS the column rule);
+		// the tooltip carries the full name.
+		ImVec2 pos = ImGui::GetCursorScreenPos();
+		ImGui::PushClipRect(pos, ImVec2(pos.x + avail, pos.y + ts.y + 2.0f),
+			true);
+		ImGui::TextUnformatted(shown);
+		ImGui::PopClipRect();
+	}
+	else {
+		ImGui::TextUnformatted(shown);
+	}
+	if (hint && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	else if (clipped && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", shown);
+	ImGui::SameLine(colW);
+}
 
 // The unique-but-invisible widget label for an attribute name.
 inline std::string Id(const char* name) {
@@ -32,10 +75,10 @@ inline std::string Id(const char* name) {
 }
 
 // ---- BOOL: the flag chip (on = the selected accent; the hint carries
-// the words) ---------------------------------------------------------------
+// the words). PushID(name): the chip text NEVER forms the id.
 inline bool Bool(const char* name, bool v, const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
+	LabelCell(name, hint);
+	ImGui::PushID(name); // the chip's id IS the property name
 	if (v) {
 		ImGui::PushStyleColor(ImGuiCol_Button,
 			ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
@@ -50,15 +93,15 @@ inline bool Bool(const char* name, bool v, const char* hint) {
 		ImGui::PopStyleColor(3);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
+	ImGui::PopID();
 	return clicked;
 }
 
 // ---- FLOAT: the drag (label column + the field) ---------------------------
 inline bool Float(const char* name, float* v, float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f); // the rest of the row - no dead gap
 	const bool edited = ImGui::DragFloat(Id(name).c_str(), v, speed, mn,
 		mx, fmt ? fmt : "%.3f");
 	if (hint && ImGui::IsItemHovered())
@@ -69,9 +112,8 @@ inline bool Float(const char* name, float* v, float speed, float mn,
 // ---- SLIDER float (bounded look knobs) ------------------------------------
 inline bool Slider(const char* name, float* v, float mn, float mx,
 	const char* fmt, const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::SliderFloat(Id(name).c_str(), v, mn, mx,
 		fmt ? fmt : "%.2f");
 	if (hint && ImGui::IsItemHovered())
@@ -79,12 +121,11 @@ inline bool Slider(const char* name, float* v, float mn, float mx,
 	return edited;
 }
 
-// ---- INT (drag) ------------------------------------------------------------
+// ---- INT (drag; speed 1 = the arrow-key step) ------------------------------
 inline bool Int(const char* name, int* v, int mn, int mx,
 	const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::DragInt(Id(name).c_str(), v, 1, mn, mx);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
@@ -93,9 +134,8 @@ inline bool Int(const char* name, int* v, int mn, int mx,
 
 // ---- VEC3 (the transform rows) ---------------------------------------------
 inline bool Vec3(const char* name, float v[3], float speed, const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::DragFloat3(Id(name).c_str(), v, speed);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
@@ -104,9 +144,8 @@ inline bool Vec3(const char* name, float v[3], float speed, const char* hint) {
 
 // ---- COLOR -----------------------------------------------------------------
 inline bool Color(const char* name, float v[4], const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::ColorEdit4(Id(name).c_str(), v);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
@@ -116,9 +155,8 @@ inline bool Color(const char* name, float v[4], const char* hint) {
 // ---- ENUM (the combo; items = a "A\0B\0\0" list) ----------------------------
 inline bool Enum(const char* name, int* v, const char* items,
 	const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::Combo(Id(name).c_str(), v, items);
 	if (hint && ImGui::IsItemHovered())
 		ImGui::SetTooltip("%s", hint);
@@ -127,9 +165,8 @@ inline bool Enum(const char* name, int* v, const char* items,
 
 // ---- TEXT (the name field) --------------------------------------------------
 inline bool Text(const char* name, char* buf, size_t sz, const char* hint) {
-	ImGui::TextUnformatted(name);
-	ImGui::SameLine(kLabelW);
-	ImGui::SetNextItemWidth(-60.0f);
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::InputText(Id(name).c_str(), buf, sz,
 		ImGuiInputTextFlags_EnterReturnsTrue);
 	if (hint && ImGui::IsItemHovered())
