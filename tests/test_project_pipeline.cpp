@@ -15,14 +15,20 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_recipe.h>
+#include <project_pipeline/recipe_resolver.h>
 
 #include <gltf_import/asset_export.h>
+
+#include <Engine/Asset/tour.h>
 
 namespace {
 
@@ -376,12 +382,505 @@ void TestFingerprint() {
 		"fingerprint.changed-settings-stale");
 }
 
+// ---- the recipe layer (the .tourrecipe spec's M1: PAR + RES) ---------
+
+// The spec's canonical valid recipe (three packages), as a string so
+// every case below is self-contained.
+const char* kValidRecipe =
+	"# Tourmaline Project Recipe v1\n"
+	"\n"
+	"recipe 1\n"
+	"project Sponza\n"
+	"entry content/scenes/Sponza.tour\n"
+	"\n"
+	"bake gi\n"
+	"bake cubemaps\n"
+	"\n"
+	"[pak shared]\n"
+	"output shared.pak\n"
+	"include content/models/shared/**\n"
+	"\n"
+	"[pak world]\n"
+	"output world.pak\n"
+	"scene content/scenes/Sponza.tour\n"
+	"depends shared\n"
+	"dependencies transitive\n"
+	"\n"
+	"[pak props]\n"
+	"output props.pak\n"
+	"include content/models/props/**\n"
+	"depends shared\n";
+
+// PAR-01: the valid three-package recipe parses, with every field
+// landing in the typed structures exactly as authored.
+void TestRecipeParsing() {
+	smvk::project::ProjectRecipe r;
+	smvk::project::RecipeDiagnostic diag;
+	Check(smvk::project::ParseProjectRecipeText(kValidRecipe, r, diag)
+			&& diag.message.empty(),
+		"recipe.parse.valid-three-pak");
+	if (!r.version) {
+		std::cout << "  (diag: " << diag.Format("(text)") << ")\n";
+		return;
+	}
+	Check(r.version == 1 && r.projectName == "Sponza"
+			&& r.entry == "content/scenes/Sponza.tour",
+		"recipe.parse.header-fields");
+	Check(r.bakeGi && r.bakeCubemaps, "recipe.parse.bake-flags");
+	Check(r.paks.size() == 3 && r.paks[0].id == "shared"
+			&& r.paks[1].id == "world" && r.paks[2].id == "props",
+		"recipe.parse.pak-ids-authored-order");
+	Check(r.paks[0].output == "shared.pak"
+			&& r.paks[0].includes.size() == 1
+			&& r.paks[0].includes[0] == "content/models/shared/**"
+			&& r.paks[0].scene.empty() && r.paks[0].depends.empty()
+			&& !r.paks[0].dependenciesTransitive,
+		"recipe.parse.shared-pak");
+	Check(r.paks[1].scene == "content/scenes/Sponza.tour"
+			&& r.paks[1].depends.size() == 1
+			&& r.paks[1].depends[0] == "shared"
+			&& r.paks[1].dependenciesTransitive,
+		"recipe.parse.world-pak");
+	Check(r.paks[2].depends[0] == "shared"
+			&& r.paks[2].includes[0] == "content/models/props/**",
+		"recipe.parse.props-pak");
+	Check(r.FindPak("world") == &r.paks[1]
+			&& r.FindPak("nope") == nullptr,
+		"recipe.parse.find-pak");
+
+	// Line numbers are 1-based physical lines (the [pak world] header
+	// is line 14 in the string above).
+	Check(r.paks[1].line == 14, "recipe.parse.line-numbers");
+
+	// Robustness positives: CRLF, a UTF-8 BOM, quoted paths with
+	// spaces + '#', mid-line comments, backslash normalization,
+	// explicit bake switches, and a Windows-style path.
+	{
+		const std::string text =
+			"\xEF\xBB\xBFrecipe 1\r\n"
+			"project Quoted # the display name\r\n"
+			"entry \"content/scenes/My #Scene.tour\"\r\n"
+			"bake gi off\r\n"
+			"bake cubemaps off\r\n"
+			"[pak a]\r\n"
+			"output a.pak\r\n"
+			"scene \"content/scenes/My #Scene.tour\"\r\n"
+			"include content\\models\\a\\**\r\n"
+			"[pak b]\r\n"
+			"output b.pak\r\n"
+			"include content/models/b/**\r\n"
+			"depends a\r\n"
+			"dependencies none\r\n";
+		smvk::project::ProjectRecipe q;
+		smvk::project::RecipeDiagnostic d;
+		Check(smvk::project::ParseProjectRecipeText(text, q, d),
+			"recipe.parse.crlf-bom-quoted-comments");
+		Check(q.projectName == "Quoted"
+				&& q.entry == "content/scenes/My #Scene.tour"
+				&& !q.bakeGi && !q.bakeCubemaps
+				&& q.paks[0].includes[0] == "content/models/a/**",
+			"recipe.parse.quoted-values-normalized");
+	}
+
+	// The file entry point agrees with the text entry point.
+	{
+		const fs::path tmp = fs::temp_directory_path()
+			/ "tourmaline_pp_recipe";
+		std::error_code ec;
+		fs::create_directories(tmp, ec);
+		const fs::path file = tmp / "valid.tourrecipe";
+		{
+			std::ofstream f(file, std::ios::binary | std::ios::trunc);
+			f << kValidRecipe;
+		}
+		smvk::project::ProjectRecipe a, b;
+		smvk::project::RecipeDiagnostic da, db;
+		Check(smvk::project::ParseProjectRecipe(file.generic_string(), a,
+				da)
+			&& smvk::project::ParseProjectRecipeText(kValidRecipe, b, db)
+			&& a.paks.size() == b.paks.size()
+			&& a.entry == b.entry,
+			"recipe.parse.file-matches-text");
+		smvk::project::RecipeDiagnostic dmiss;
+		smvk::project::ProjectRecipe rmiss;
+		Check(!smvk::project::ParseProjectRecipe(
+				(tmp / "missing.tourrecipe").generic_string(), rmiss,
+				dmiss)
+			&& dmiss.message.find("cannot open") != std::string::npos,
+			"recipe.parse.missing-file");
+	}
+
+	// PAR-02: every malformed recipe fails with a line-specific
+	// diagnostic (line 0 = whole-file complaints: missing directives).
+	struct Bad {
+		const char* name;
+		std::string text;
+		size_t expectLine; // 0 = the error must be line-0; 1 = any >0
+	};
+	const std::string head = "recipe 1\nentry c/s/a.tour\n";
+	const Bad bad[] = {
+		{ "empty", "", 0 },
+		{ "version-not-first", "project X\nrecipe 1\n", 1 },
+		{ "unsupported-version", "recipe 2\n" + head, 1 },
+		{ "version-not-number", "recipe one\n" + head, 1 },
+		{ "missing-entry", "recipe 1\n[pak a]\noutput a.pak\n"
+			"include c/m/a/**\n", 0 },
+		{ "entry-not-tour", "recipe 1\nentry c/s/a.scene\n"
+			"[pak a]\noutput a.pak\nscene c/s/a.scene\n", 2 },
+		{ "entry-not-owned", "recipe 1\nentry c/s/a.tour\n"
+			"[pak a]\noutput a.pak\ninclude c/m/a/**\n", 0 },
+		{ "duplicate-entry", "recipe 1\nentry c/s/a.tour\n"
+			"entry c/s/b.tour\n", 3 },
+		{ "unknown-directive", head + "frobnicate on\n", 3 },
+		{ "unknown-section", head + "[widgets foo]\noutput w.pak\n", 3 },
+		{ "malformed-section", head + "[pak a\noutput a.pak\n", 3 },
+		{ "duplicate-pak-id", head + "[pak a]\noutput a.pak\n"
+			"scene c/s/a.tour\n[pak a]\noutput b.pak\n"
+			"include c/m/**\n", 6 },
+		{ "pak-missing-output", head + "[pak a]\nscene c/s/a.tour\n", 3 },
+		{ "pak-no-content", head + "[pak a]\noutput a.pak\n", 3 },
+		{ "duplicate-output", head + "[pak a]\noutput a.pak\n"
+			"scene c/s/a.tour\n[pak b]\noutput a.pak\n"
+			"include c/m/**\n", 6 },
+		{ "duplicate-scene-owner", head + "[pak a]\noutput a.pak\n"
+			"scene c/s/a.tour\n[pak b]\noutput b.pak\n"
+			"scene c/s/a.tour\n", 6 },
+		{ "absolute-path", "recipe 1\nentry F:/abs/scene.tour\n", 2 },
+		{ "rooted-path", "recipe 1\nentry /abs/scene.tour\n", 2 },
+		{ "dotdot-escape", "recipe 1\nentry ../outside.tour\n", 2 },
+		{ "empty-segment", "recipe 1\nentry c//s/a.tour\n", 2 },
+		{ "wildcard-in-entry", "recipe 1\nentry c/s/*.tour\n", 2 },
+		{ "unterminated-quote", "recipe 1\nentry \"c/s/a.tour\n", 2 },
+		{ "junk-after-quote", "recipe 1\nentry \"c/s/a.tour\" x\n", 2 },
+		{ "unknown-depends", head + "[pak a]\noutput a.pak\n"
+			"scene c/s/a.tour\ndepends ghost\n", 6 },
+		{ "self-depends", head + "[pak a]\noutput a.pak\n"
+			"scene c/s/a.tour\ndepends a\n", 6 },
+		{ "duplicate-depends", head + "[pak a]\noutput a.pak\n"
+			"include c/m/a/**\n[pak b]\noutput b.pak\n"
+			"include c/m/b/**\ndepends a\ndepends a\n", 10 },
+		{ "dependency-cycle", head + "[pak a]\noutput a.pak\n"
+			"scene c/s/a.tour\ndepends b\n[pak b]\noutput b.pak\n"
+			"include c/m/b/**\ndepends a\n", 0 },
+		{ "unknown-bake", "recipe 1\nbake lightmaps\n", 2 },
+		{ "bad-bake-switch", "recipe 1\nbake gi maybe\n", 2 },
+		{ "bad-dependencies-value", head + "[pak a]\noutput a.pak\n"
+			"include c/m/a/**\ndependencies maybe\n", 6 },
+		{ "header-directive-in-section", head + "[pak a]\noutput a.pak\n"
+			"include c/m/a/**\nentry c/s/b.tour\n", 6 },
+		{ "pak-directive-in-header", "recipe 1\noutput a.pak\n", 2 },
+	};
+	for (const Bad& b : bad) {
+		smvk::project::ProjectRecipe r;
+		smvk::project::RecipeDiagnostic d;
+		const bool ok = smvk::project::ParseProjectRecipeText(b.text, r, d);
+		const bool lineOk = b.expectLine == 0 ? d.line == 0 : d.line >= 1;
+		Check(!ok && !d.message.empty() && !d.directive.empty()
+				&& r.version == 0 && r.paks.empty() && lineOk,
+			(std::string("recipe.parse.reject.") + b.name).c_str());
+	}
+}
+
+// Glob matcher unit checks ('**' crosses directories; '*'/'?' do not).
+void TestRecipeGlob() {
+	using smvk::project::RecipeGlobMatch;
+	Check(RecipeGlobMatch("content/a/**", "content/a/x.png"),
+		"recipe.glob.double-star-direct-child");
+	Check(RecipeGlobMatch("content/a/**", "content/a/b/c/x.png"),
+		"recipe.glob.double-star-deep");
+	Check(RecipeGlobMatch("content/**/*.png", "content/x/y.png"),
+		"recipe.glob.double-star-mid-pattern");
+	Check(!RecipeGlobMatch("content/a/*", "content/a/b/x.png"),
+		"recipe.glob.single-star-stays-in-segment");
+	Check(RecipeGlobMatch("content/a/*.png", "content/a/x.png"),
+		"recipe.glob.single-star-suffix");
+	Check(RecipeGlobMatch("content/m?del/**", "content/model/t.png"),
+		"recipe.glob.question-mark");
+	Check(RecipeGlobMatch("content/a/x.png", "content/a/x.png")
+			&& !RecipeGlobMatch("content/a/x.png", "content/a/y.png"),
+		"recipe.glob.exact-path");
+	Check(!RecipeGlobMatch("content/a/**", "content/b/a/x.png"),
+		"recipe.glob.no-prefix-bleed");
+}
+
+// A synthetic recipe project: two imported grid families, a shared
+// texture directory, two authored scene tours. RES-01..04 run here.
+void TestRecipeResolution() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_resolve";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	const fs::path ext = tmp / "external";
+	const fs::path projDir = tmp / "proj";
+	fs::create_directories(ext, ec);
+	{
+		bool created = false;
+		std::string err;
+		smvk::project::Project p = smvk::project::Project::Init(
+			projDir.generic_string(), "ResolveTest", created, err);
+		Check(p.Valid() && created, "resolve.project-created");
+	}
+	smvk::project::Project project;
+	{
+		std::string err;
+		project = smvk::project::Project::Open(projDir.generic_string(),
+			err);
+	}
+	Check(project.Valid(), "resolve.project-open");
+
+	// Two imported families (the canonical import; grids big enough to
+	// derive real LOD chains).
+	const TestSource worldSrc = WriteGridGltf(ext, "world", 8);
+	const TestSource propsSrc = WriteGridGltf(ext, "props", 6);
+	for (const TestSource* src : { &worldSrc, &propsSrc }) {
+		smvk::project::ImportRequest req;
+		req.project = project;
+		req.source = src->gltf;
+		smvk::project::ImportResult res;
+		std::string err;
+		const std::string label = std::string("resolve.import.")
+			+ (src == &worldSrc ? "world" : "props");
+		Check(smvk::project::ImportProjectAsset(req, res, err)
+			&& res.derived, label.c_str());
+	}
+
+	// The shared package's textures (content only — the resolver
+	// classifies by extension, the bytes are irrelevant here). NOTE:
+	// ContentRoot() IS the project root (the project is the content
+	// tree) — "content/..." recipe paths are root-relative.
+	const fs::path sharedTex = fs::path(project.ImportsDir())
+		/ "shared" / "tex";
+	fs::create_directories(sharedTex, ec);
+	for (const char* name : { "stone.png", "wood.png" }) {
+		std::ofstream f(sharedTex / name, std::ios::binary | std::ios::trunc);
+		f << "\x89PNG-not-really-a-png";
+	}
+
+	// Authored scene tours: references[0] = the imported .geometry (the
+	// root-reference contract BuildProject consumes).
+	const auto writeTour = [](const fs::path& path,
+			const std::string& artifact) {
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = artifact;
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		std::string err;
+		if (!smvk::tour::SaveTour(path.generic_string(), doc, err))
+			std::cout << "  (tour save err: " << err << ")\n";
+	};
+	const fs::path scenes = fs::path(project.root) / "content" / "scenes";
+	fs::create_directories(scenes, ec);
+	writeTour(scenes / "world.tour", "content/models/world/world.geometry");
+	writeTour(scenes / "props.tour", "content/models/props/props.geometry");
+
+	const std::string recipeText =
+		"recipe 1\n"
+		"project ResolveTest\n"
+		"entry content/scenes/world.tour\n"
+		"\n"
+		"bake gi\n"
+		"bake cubemaps\n"
+		"\n"
+		"[pak world]\n"
+		"output world.pak\n"
+		"scene content/scenes/world.tour\n"
+		"depends shared\n"
+		"dependencies transitive\n"
+		"\n"
+		"[pak shared]\n"
+		"output shared.pak\n"
+		"include content/models/shared/**\n"
+		"\n"
+		"[pak props]\n"
+		"output props.pak\n"
+		"scene content/scenes/props.tour\n"
+		"depends shared\n";
+	smvk::project::ProjectRecipe recipe;
+	smvk::project::RecipeDiagnostic diag;
+	Check(smvk::project::ParseProjectRecipeText(recipeText, recipe, diag),
+		"resolve.recipe-parses");
+
+	smvk::project::BuildPlan plan;
+	std::string err;
+	Check(smvk::project::ResolveRecipe(project, recipe, plan, err)
+			&& err.empty(),
+		"resolve.valid-plan");
+	if (!err.empty())
+		std::cout << "  (resolve err: " << err << ")\n";
+	if (!plan.entryPak.empty()) {
+		// RES-01: the entry resolves to exactly one cooked scene owner.
+		Check(plan.entryScene == "content/scenes/world.tour"
+				&& plan.entryPak == "world",
+			"resolve.entry-owned-once");
+		// Topological order: shared lands BEFORE its dependents (the
+		// authored order here is world, shared, props — resolution
+		// reorders to shared, world, props; authored order is the
+		// tiebreak between the independent world/props).
+		Check(plan.paks.size() == 3 && plan.paks[0].id == "shared"
+				&& plan.paks[1].id == "world"
+				&& plan.paks[2].id == "props",
+			"resolve.topological-order");
+		const smvk::project::PlanPak* world = plan.FindPak("world");
+		const smvk::project::PlanPak* shared = plan.FindPak("shared");
+		const smvk::project::PlanPak* props = plan.FindPak("props");
+		Check(world && world->scene == "content/scenes/world.tour"
+				&& world->sceneArtifacts.size() == 1
+				&& world->sceneArtifacts[0]
+					== "content/models/world/world.geometry",
+			"resolve.scene-artifacts-root-first");
+		Check(shared && shared->scene.empty()
+				&& shared->sceneArtifacts.empty()
+				&& shared->assets.size() == 2
+				&& shared->assets[0].path
+					== "content/models/shared/tex/stone.png"
+				&& shared->assets[0].kind
+					== smvk::project::PlanAssetKind::Texture
+				&& shared->assets[1].path
+					== "content/models/shared/tex/wood.png",
+			"resolve.asset-only-pak-owned-textures");
+		Check(world && world->assets.size() == 1
+				&& world->assets[0].kind
+					== smvk::project::PlanAssetKind::Geometry,
+			"resolve.scene-pak-owns-geometry");
+		Check(props && props->sceneArtifacts[0]
+				== "content/models/props/props.geometry",
+			"resolve.second-scene-pak");
+		// RES-04: no path is owned by two paks (the world pak does NOT
+		// re-own the shared textures; shared does NOT own the geometry).
+		{
+			std::map<std::string, int> owners;
+			bool unique = true;
+			for (const auto& pak : plan.paks)
+				for (const auto& asset : pak.assets)
+					if (++owners[asset.path] > 1)
+						unique = false;
+			Check(unique, "resolve.one-owner-per-artifact");
+			Check(owners.count("content/models/shared/tex/stone.png") == 1
+				&& owners.count("content/models/world/world.geometry")
+					== 1,
+				"resolve.no-cross-pak-duplicates");
+		}
+		// RES-03: deterministic — the same inputs resolve identically.
+		{
+			smvk::project::BuildPlan again;
+			std::string err2;
+			Check(smvk::project::ResolveRecipe(project, recipe, again,
+					err2)
+				&& again == plan,
+				"resolve.deterministic");
+		}
+	}
+
+	// ---- RES-02: rejection cases (before any stage ever runs) -------
+	const auto resolveFails = [&](const std::string& name,
+			const std::string& text, const char* needle) {
+		smvk::project::ProjectRecipe r;
+		smvk::project::RecipeDiagnostic d;
+		if (!smvk::project::ParseProjectRecipeText(text, r, d)) {
+			Check(d.message.find(needle) != std::string::npos,
+				(std::string("resolve.reject.") + name).c_str());
+			return;
+		}
+		smvk::project::BuildPlan p;
+		std::string e;
+		const bool failed =
+			!smvk::project::ResolveRecipe(project, r, p, e);
+		if (failed && e.find(needle) == std::string::npos)
+			std::cout << "  (" << name << " err: " << e << ")\n";
+		Check(failed && e.find(needle) != std::string::npos,
+			(std::string("resolve.reject.") + name).c_str());
+	};
+	// Missing scene file (entry owned by a pak, file absent).
+	resolveFails("missing-scene",
+		"recipe 1\nentry content/scenes/ghost.tour\n"
+		"[pak a]\noutput a.pak\nscene content/scenes/ghost.tour\n",
+		"not found");
+	// The scene's referenced artifact is missing.
+	{
+		const fs::path gap = scenes / "gap.tour";
+		writeTour(gap, "content/models/world/missing.geometry");
+		resolveFails("missing-artifact",
+			"recipe 1\nentry content/scenes/gap.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/gap.tour\n",
+			"artifact is missing");
+	}
+	// Two paks claiming the same include territory.
+	resolveFails("overlapping-includes",
+		"recipe 1\nentry content/scenes/world.tour\n"
+		"[pak a]\noutput a.pak\n"
+		"include content/models/shared/**\n"
+		"[pak b]\noutput b.pak\n"
+		"include content/models/shared/tex/*\n"
+		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
+		"already owned");
+	// An include glob claiming another pak's scene geometry (the
+	// cluster-internal boundary).
+	resolveFails("include-vs-scene-conflict",
+		"recipe 1\nentry content/scenes/world.tour\n"
+		"[pak hoard]\noutput h.pak\n"
+		"include content/models/world/*.geometry\n"
+		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
+		"cluster-internal");
+	// Two scene paks referencing the same geometry.
+	{
+		const fs::path twin = scenes / "twin.tour";
+		writeTour(twin, "content/models/world/world.geometry");
+		resolveFails("two-scenes-one-geometry",
+			"recipe 1\nentry content/scenes/world.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/world.tour\n"
+			"[pak b]\noutput b.pak\nscene content/scenes/twin.tour\n",
+			"cluster-internal");
+	}
+	// A glob matching nothing (typo'd directory).
+	resolveFails("empty-glob",
+		"recipe 1\nentry content/scenes/world.tour\n"
+		"[pak a]\noutput a.pak\ninclude content/models/nothere/**\n"
+		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
+		"matched no files");
+	// An include hitting only family/support files, on an asset-only
+	// pak (nothing classifiable was claimed).
+	resolveFails("contentless-asset-pak",
+		"recipe 1\nentry content/scenes/world.tour\n"
+		"[pak a]\noutput a.pak\ninclude content/models/world/*.gltf\n"
+		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
+		"owns no content");
+	// A nested scene-reference cycle (a -> b -> a).
+	{
+		writeTour(scenes / "loopA.tour", "content/models/world/world.geometry");
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = "content/models/world/world.geometry";
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		smvk::tour::ReferenceCmd nested;
+		nested.source = "content/scenes/loopB.tour";
+		nested.name = "REF loopB";
+		doc.references.push_back(nested);
+		std::string saveErr;
+		smvk::tour::SaveTour((scenes / "loopA.tour").generic_string(),
+			doc, saveErr);
+		doc.references[1].source = "content/scenes/loopA.tour";
+		smvk::tour::SaveTour((scenes / "loopB.tour").generic_string(),
+			doc, saveErr);
+		resolveFails("nested-reference-cycle",
+			"recipe 1\nentry content/scenes/loopA.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/loopA.tour\n",
+			"cycle");
+	}
+}
+
 } // namespace
 
 int main() {
 	TestProjectModel();
 	TestImportLifecycle();
 	TestFingerprint();
+	TestRecipeParsing();
+	TestRecipeGlob();
+	TestRecipeResolution();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";
