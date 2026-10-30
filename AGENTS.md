@@ -200,10 +200,15 @@ $env:TOURMALINE_CAPTURE='48'
   spacing + vec4.xyz = phase) is the editor's "Optimize grid layout"
   button result - committed as ONE undoable step and consumed verbatim
   by BakeGiVolume (seed > gate search > the LEGACY fixed layout, so
-  every pre-optimization volume bakes bit-exact). The button runs
-  bake-parity geometry (tour snapshot -> offline cluster replay ->
-  BuildTraceSceneFromCluster, the GiBaker path) on the fibers lane;
-  the chosen layout also drives the J lattice preview (the seeded
+  every pre-optimization volume bakes bit-exact). The button runs on
+  the LIVE editor world (NO tour snapshot, NO replay, NO cook:
+  ExtractTraceSceneFromWorld snapshots the geometry from the resident
+  clusters' retained CPU uploads on the main thread - unsaved edits
+  included - then the fibers lane runs Finalize (the BVH) +
+  ChooseGiVolumeGridLayout over the moved soup; BuildTraceSceneFromWorld
+  is the SAME shared assembly as the GiBaker's cluster path, pinned by
+  the trace.world.* parity tests in test_gi.cpp); the chosen layout
+  also drives the J lattice preview (the seeded
   preview is exactly what the bake builds). The bake-input hash folds
   the gates + seed (stale bakes refuse). Unit-tested in test_gi.cpp
   (glayout.*: gates, cap refusal, coverage contract, parity)

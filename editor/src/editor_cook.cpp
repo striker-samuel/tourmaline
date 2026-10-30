@@ -484,12 +484,17 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		});
 }
 
-// The inspector's "Optimize grid layout" button (see editor_app.h):
-// bake-parity geometry (tour snapshot -> offline cluster replay -> the
-// trace scene — the GiBaker path verbatim, so the optimizer sees
-// EXACTLY what the bake will see), then ChooseGiVolumeGridLayout on the
-// fibers lane; the completion commits the chosen layout as ONE
-// undoable "optlayout" edit (spacing + phase in a single step).
+// The inspector's "Optimize grid layout" button (see editor_app.h): the
+// LIVE editor world is the input — no tour snapshot, no tour replay, no
+// cook, no GI rebake. The geometry snapshot comes from the resident
+// clusters' retained CPU uploads (the same mirror the picking paths
+// read, so UNSAVED edits and editor-only nodes are included exactly as
+// they render), the BVH build + the spacing/phase search run on the
+// fibers lane, and the completion commits the chosen layout as ONE
+// undoable "optlayout" edit (spacing + phase in a single step). The
+// cached irradiance is untouched: the volume is marked stale by the
+// command, and the next Bake GI rebakes at the new positions (the
+// editor's hot-swap publishes it without a relaunch).
 void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
 	if (m_giLayoutRunning)
 		return;
@@ -502,7 +507,7 @@ void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
 	auto it = m_world->scene.giVolumeForNode.find(node);
 	if (it == m_world->scene.giVolumeForNode.end())
 		return;
-	const ::SceneGiVolume& cv = it->second;
+	const ::SceneGiVolume cv = it->second;
 	// The gates; authored, else the contract default (+-20% around the
 	// preferred spacing).
 	float low = cv.spacingLow;
@@ -513,102 +518,72 @@ void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
 	}
 	low = std::max(low, 0.01f);
 	high = std::max(high, low);
-	// The content root: the EDITOR's own reference-resolution convention
-	// (m_projectRoot — the same value the definition bind passes
-	// ApplySceneReferences), not a cook target. No cook needed: the
-	// snapshot's tour payload + the project tree resolve all geometry.
-	const std::string contentRoot = m_projectRoot;
-	std::string tempTour, defHash;
-	if (!SnapshotTourForProcess("GiLayoutOpt", tempTour, defHash))
-		return;
-	m_giLayoutRunning = true;
+	// The volume OBB from the LIVE node transform (the definition bind's
+	// own decode: half extents from the basis lengths, the axes
+	// normalized — the same math the cook/GiBaker path applies to the
+	// replayed node, so the optimizer scores the shape that will bake).
+	const glm::mat4& g = m_world->scene.globalTransform[node];
+	const glm::vec3 c(g[3]);
+	glm::vec3 half;
+	glm::mat3 axes;
+	for (int i = 0; i < 3; ++i) {
+		const float len = glm::length(g[i]);
+		half[i] = 0.5f * len;
+		axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len : glm::vec3(0.0f);
+	}
+	smvk::gi::GiVolumeDef def;
+	def.planes = smvk::gi::GiVolumeBoxPlanesRotated(
+		c, axes, half, cv.insideFade, cv.outsideFade);
+	def.priority = cv.priority;
+	// THE GEOMETRY SNAPSHOT (main thread: it walks the world's node +
+	// location tables, which the UI thread owns). The BVH build is the
+	// expensive half and runs on the fiber below — the extraction is a
+	// plain copy of the already-resident vertex/index data.
 	TaskWindowBegin("Optimize grid",
-		"Optimizing GI probe grid layout (tour replay + BVH search)...");
+		"Snapshotting scene geometry (live world - no cook)...");
+	smvk::gi::GiSceneBuildOptions buildOpts{};
+	buildOpts.staticLights = false; // BVH-only consumer: no light harvest
+	auto traceScene = std::make_shared<smvk::gi::GiTraceScene>();
+	std::string snapErr;
+	smvk::gi::ExtractTraceSceneFromWorld(*m_world, buildOpts, *traceScene,
+		snapErr);
+	if (!snapErr.empty()) {
+		Log("Optimize grid failed: " + snapErr);
+		TaskWindowFinish(false, ("Optimize grid FAILED (" + snapErr + ")").c_str());
+		return;
+	}
+	if (traceScene->positions.empty()) {
+		const std::string e =
+			"the live scene has no retained geometry to trace against";
+		Log("Optimize grid failed: " + e);
+		TaskWindowFinish(false, ("Optimize grid FAILED (" + e + ")").c_str());
+		return;
+	}
+	m_giLayoutRunning = true;
+	TaskWindowStage("Optimizing GI probe grid layout (BVH search)...");
 	Log("Optimize grid: gates " + std::to_string(low) + ".."
-		+ std::to_string(high) + " m (snapshot replay)");
+		+ std::to_string(high) + " m (live world snapshot, "
+		+ std::to_string(traceScene->positions.size()) + " verts)");
 	auto result = std::make_shared<smvk::gi::GiGridLayoutResult>();
 	auto okFlag = std::make_shared<bool>(false);
 	auto errStr = std::make_shared<std::string>();
 	m_fibers.Post("gi-layout-opt",
-		[this, node, contentRoot, tempTour = std::move(tempTour), low,
-			high, result, okFlag, errStr]() {
+		[traceScene, def, low, high, result, okFlag, errStr]() {
 			bool ok = false;
 			std::string err;
-			do {
-				// The GiBaker cluster replay (offline, GPU-free, the
-				// deterministic node ids the editor bakes with).
-				auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-				cluster->SetOfflineMode(true);
-				smvk::tour::Doc tour;
-				std::string terr;
-				std::vector<std::string> twarn;
-				if (!smvk::tour::LoadTour(tempTour, tour, terr, &twarn)) {
-					err = "tour load: " + terr;
-					break;
-				}
-				try {
-					::addNode(cluster->scene, -1, 0); // empty root
-					if (!tour.references.empty())
-						::ApplySceneReferences(*cluster, tour,
-							smvk::vfs::BaseDir(
-								tour.references[0].source),
-							nullptr, nullptr, nullptr,
-							smvk::MeshOptConfig{}, smvk::MeshletConfig{},
-							0, nullptr, nullptr, nullptr,
-							true, nullptr, nullptr, nullptr, nullptr,
-							contentRoot);
-					std::vector<std::string> rwarn;
-					std::string rerr;
-					if (!smvk::tour::ApplyTourToCluster(*cluster, tour,
-							&rwarn, &rerr, true, nullptr)) {
-						err = "tour replay: " + rerr;
-						break;
-					}
-					// The def from the REPLAYED node (id parity with the
-					// live scene — the cook's OBB decode).
-					auto cvIt = cluster->scene.giVolumeForNode.find(node);
-					if (cvIt == cluster->scene.giVolumeForNode.end()
-							|| node >= cluster->scene.globalTransform.size()) {
-						err = "the replayed tour lost the volume node";
-						break;
-					}
-					const glm::mat4& g =
-						cluster->scene.globalTransform[node];
-					const glm::vec3 c(g[3]);
-					glm::vec3 half;
-					glm::mat3 axes;
-					for (int i = 0; i < 3; ++i) {
-						const float len = glm::length(g[i]);
-						half[i] = 0.5f * len;
-						axes[i] = (len > 1e-6f)
-							? glm::vec3(g[i]) / len : glm::vec3(0.0f);
-					}
-					smvk::gi::GiVolumeDef def;
-					def.planes = smvk::gi::GiVolumeBoxPlanesRotated(
-						c, axes, half, cvIt->second.insideFade,
-						cvIt->second.outsideFade);
-					def.priority = cvIt->second.priority;
-					// Geometry only — the trace scene's static soup.
-					smvk::gi::GiSceneBuildOptions buildOpts{};
-					smvk::gi::GiTraceScene traceScene;
-					smvk::gi::BuildTraceSceneFromCluster(*cluster,
-						buildOpts, traceScene, err);
-					if (!err.empty())
-						break;
-					smvk::gi::GiGridLayoutOptions opts{};
-					if (!smvk::gi::ChooseGiVolumeGridLayout(
-							traceScene.Bvh(), def, low, high, opts,
-							*result, &err))
-						break;
-					ok = true;
-				} catch (const std::exception& e) {
-					err = std::string("layout job: ") + e.what();
-				}
-			} while (false);
+			try {
+				// The BVH build (the snapshot's Finalize) + the search.
+				// Both are pure functions of the moved soup: no live
+				// world access on this thread.
+				traceScene->Finalize();
+				smvk::gi::GiGridLayoutOptions opts{};
+				ok = smvk::gi::ChooseGiVolumeGridLayout(
+					traceScene->Bvh(), def, low, high, opts, *result, &err);
+			} catch (const std::exception& e) {
+				err = std::string("layout job: ") + e.what();
+			}
 			*okFlag = ok;
 			*errStr = err;
-			std::error_code ec;
-			std::filesystem::remove(tempTour, ec);
 		},
 		[this, node, result, okFlag, errStr](
 				const editor::FiberBackend::Completion& c) {

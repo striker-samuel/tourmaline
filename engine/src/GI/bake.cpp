@@ -14,6 +14,7 @@
 #include <thread>
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Utils/thread_pool.h>
 
@@ -617,9 +618,17 @@ std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
 	return out;
 }
 
-GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out,
-	const glm::vec3& aimAxis) {
-	const ::Scene& scene = cluster.scene;
+namespace {
+
+// The LIGHT half of the trace-source abstraction (CollectStaticBakeLights
+// and the live-world BuildTraceSceneFromWorld share it): lightAt answers
+// a merged-scene node's light slot with a SceneLight* (nullptr = skip).
+// Everything below - the deterministic node order, the static-only
+// gate, the sun/spot/point mapping - is source-agnostic, so a cook
+// replay and a live editor snapshot treat lights identically.
+template <typename LightFn>
+GiStaticLightCounts CollectStaticBakeLightsImpl(const ::Scene& scene,
+	LightFn&& lightAt, GiTraceScene& out, const glm::vec3& aimAxis) {
 	GiStaticLightCounts counts{};
 
 	// Deterministic node order (hash-map iteration is not).
@@ -635,10 +644,7 @@ GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene
 			continue;
 		if (node >= scene.globalTransform.size())
 			continue;
-		const ClusterLightHandle handle = cluster.lights.getHandle(lit->second);
-		if (!handle.valid())
-			continue;
-		const SceneLight* lp = cluster.lights.get(handle);
+		const SceneLight* lp = lightAt(node, lit->second);
 		if (!lp || (lp->flags & SceneLight::kSceneLightFlag_Static) == 0)
 			continue; // runtime-only light: never baked
 		const SceneLight& L = *lp;
@@ -696,11 +702,40 @@ GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene
 	return counts;
 }
 
-void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
-	GiTraceScene& out, std::string& err) {
-	::Scene& scene = cluster.scene;
-	recalculateGlobalTransforms(scene);
+} // namespace
 
+GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene& out,
+	const glm::vec3& aimAxis) {
+	return CollectStaticBakeLightsImpl(cluster.scene,
+		[&cluster](uint32_t, uint32_t lightIdx) -> const SceneLight* {
+			const ClusterLightHandle handle = cluster.lights.getHandle(lightIdx);
+			if (!handle.valid())
+				return nullptr;
+			return cluster.lights.get(handle);
+		},
+		out, aimAxis);
+}
+
+namespace {
+
+// THE SHARED TRACE-SCENE ASSEMBLY (BuildTraceSceneFromCluster + the
+// editor's live-world ExtractTraceSceneFromWorld): everything EXCEPT how
+// a merged-scene node resolves to its owning cluster's resources. The
+// two callers answer that with the small lambdas below (mesh/material/
+// light slot -> CPU geometry/material/light), so material interning, the
+// textured-UV/texel plumbing, the triangle soup and the environment
+// seeding are ONE implementation - identical input scenes produce
+// identical trace scenes through either path (the bake-parity contract
+// the editor's layout optimizer and a future live bake both rest on).
+//
+// MeshFn  (node, meshIdx, stale) -> const StaticMeshUpload*  (stale=true
+//   on a dead handle: a cook-mode world that has lost its cluster).
+// MatFn   (node, matIdx)         -> const Material*
+// LightFn (node, lightIdx)       -> const SceneLight*
+template <typename MeshFn, typename MatFn, typename LightFn>
+void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
+	GiTraceScene& out, std::string& err, MeshFn&& meshAt, MatFn&& matAt,
+	LightFn&& lightAt) {
 	out.positions.clear();
 	out.indices.clear();
 	out.materials.clear();
@@ -830,22 +865,19 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	std::vector<NodeGeo> geos;
 
 	for (const auto& [node, meshIdx] : scene.meshForNode) {
-		const ClusterStaticMeshHandle meshHandle = cluster.staticMeshes.getHandle(meshIdx);
-		if (!meshHandle.valid()) {
-			err = "BuildTraceSceneFromCluster: stale mesh handle";
+		bool stale = false;
+		const StaticMeshUpload* upload = meshAt(node, meshIdx, stale);
+		if (stale) {
+			err = "BuildTraceScene: stale mesh handle";
 			return;
 		}
-		const StaticMeshUpload* upload = cluster.GetRetainedUpload(meshHandle);
 		if (!upload || upload->vertices.empty() || upload->indices.empty())
 			continue;
 
 		auto matIt = scene.materialForNode.find(node);
 		if (matIt == scene.materialForNode.end())
 			continue;
-		const ClusterMaterialHandle matHandle = cluster.materials.getHandle(matIt->second);
-		if (!matHandle.valid())
-			continue;
-		const Material* mat = cluster.materials.get(matHandle);
+		const Material* mat = matAt(node, matIt->second);
 		if (!mat)
 			continue;
 		if (!opts.includeMaskedCutout && mat->alphaMode == AlphaMode::Mask)
@@ -930,10 +962,88 @@ void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opt
 	// directional overrides the env-seeded sun. Callers (PakCooker /
 	// GiBaker) append their CLI spots AFTER this, so both sets bake.
 	if (opts.staticLights)
-		CollectStaticBakeLights(cluster, out, opts.punctualAimAxis);
+		CollectStaticBakeLightsImpl(scene, lightAt, out, opts.punctualAimAxis);
 
 	out.SetTraceBackend(opts.traceBackendEmbree ? TraceBackend::Embree : TraceBackend::Builtin);
+}
+
+} // namespace
+
+void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
+	GiTraceScene& out, std::string& err) {
+	::Scene& scene = cluster.scene;
+	recalculateGlobalTransforms(scene);
+	AssembleTraceScene(scene, opts, out, err,
+		[&cluster](uint32_t, uint32_t meshIdx,
+				bool& stale) -> const StaticMeshUpload* {
+			const ClusterStaticMeshHandle h =
+				cluster.staticMeshes.getHandle(meshIdx);
+			if (!h.valid()) {
+				stale = true;
+				return nullptr;
+			}
+			return cluster.GetRetainedUpload(h);
+		},
+		[&cluster](uint32_t, uint32_t matIdx) -> const Material* {
+			const ClusterMaterialHandle h = cluster.materials.getHandle(matIdx);
+			if (!h.valid())
+				return nullptr;
+			return cluster.materials.get(h);
+		},
+		[&cluster](uint32_t, uint32_t lightIdx) -> const SceneLight* {
+			const ClusterLightHandle h = cluster.lights.getHandle(lightIdx);
+			if (!h.valid())
+				return nullptr;
+			return cluster.lights.get(h);
+		});
 	out.Finalize();
+}
+
+void ExtractTraceSceneFromWorld(World& world, const GiSceneBuildOptions& opts,
+	GiTraceScene& out, std::string& err) {
+	::Scene& scene = world.scene;
+	// The merged scene's globals are the authoritative node transforms
+	// (the editor keeps them current, but a snapshot must never trust an
+	// incremental update it did not observe) - the same call the cook
+	// path makes.
+	recalculateGlobalTransforms(scene);
+	AssembleTraceScene(scene, opts, out, err,
+		[&world](uint32_t, uint32_t meshIdx,
+				bool& stale) -> const StaticMeshUpload* {
+			// The merged world's LOCATION table: mesh slots index
+			// world.meshLocations, each resolving to the owning cluster
+			// + its retained CPU upload (the editor's picking mirror -
+			// Cluster::SetRetainUploads(true) at world bind).
+			if (meshIdx >= world.meshLocations.size()) {
+				stale = true;
+				return nullptr;
+			}
+			const World::MeshLocation& loc = world.meshLocations[meshIdx];
+			if (!loc.cluster || !loc.handle.valid()) {
+				stale = true;
+				return nullptr;
+			}
+			return loc.cluster->GetRetainedUpload(loc.handle);
+		},
+		[&world](uint32_t, uint32_t matIdx) -> const Material* {
+			return world.GetMaterial(matIdx);
+		},
+		[&world](uint32_t, uint32_t lightIdx) -> const SceneLight* {
+			if (lightIdx >= world.lightLocations.size())
+				return nullptr;
+			const World::LightLocation& loc = world.lightLocations[lightIdx];
+			if (!loc.cluster || !loc.handle.valid())
+				return nullptr;
+			return loc.cluster->lights.get(loc.handle);
+		});
+}
+
+void BuildTraceSceneFromWorld(World& world, const GiSceneBuildOptions& opts,
+	GiTraceScene& out, std::string& err) {
+	ExtractTraceSceneFromWorld(world, opts, out, err);
+	if (!err.empty())
+		return;
+	out.Finalize(); // the BVH build
 }
 
 

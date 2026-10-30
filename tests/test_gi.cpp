@@ -23,6 +23,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h> // Cluster (static-bake-light harvest test)
+#include <Engine/App/world.h> // World (live-world trace-scene test)
 #include <Engine/Asset/compression.h> // Lz4Compress (payload fixtures)
 #include <Engine/GI/bake.h>
 #include <Engine/GI/bake_inputs.h> // RecordCaptureReach (the reach sweep)
@@ -2932,6 +2933,134 @@ void TestGiGridLayoutOptimizer() {
 	}
 }
 
+// ---- The LIVE-WORLD trace scene (BuildTraceSceneFromWorld) ----
+// The editor's layout-optimizer input: the merged World (node tables +
+// the mesh/material/light LOCATION tables back into the owning
+// cluster's retained uploads) must produce the SAME trace soup as the
+// cook/GiBaker cluster replay of the identical scene, and the
+// extract-on-main / finalize-on-worker split (RunGiLayoutOptimizer's
+// threading contract) must compose into a BVH the grid search accepts.
+void TestTraceSceneFromWorld() {
+	using namespace smvk::gi;
+	// One offline cluster: the 4x4x4 closed room (the optimizer test's
+	// box, lifted +1 m by the node transform so a local/global-transform
+	// mixup cannot pass silently) on a mesh node + a static sun.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true); // retained uploads (the editor keeps
+	                               // them ONLINE via SetRetainUploads -
+	                               // same CPU mirror either way)
+	::Scene& cs = cluster->scene;
+	const int root = addNode(cs, -1, 0);
+	smvk::StaticMeshUpload u;
+	const float h = 2.0f;
+	const float v[8][3] = {
+		{ -h, -h, -h }, { h, -h, -h }, { h, h, -h }, { -h, h, -h },
+		{ -h, -h,  h }, { h, -h,  h }, { h, h,  h }, { -h, h,  h },
+	};
+	for (const auto& p : v) {
+		smvk::ImportStaticVertex iv{};
+		iv.pos = glm::vec3(p[0], p[1], p[2]);
+		iv.color = { 1, 1, 1, 1 };
+		u.vertices.push_back(iv);
+	}
+	static const uint32_t f[12][3] = {
+		{ 0, 2, 1 }, { 0, 3, 2 }, { 4, 5, 6 }, { 4, 6, 7 },
+		{ 0, 1, 5 }, { 0, 5, 4 }, { 3, 7, 6 }, { 3, 6, 2 },
+		{ 0, 4, 7 }, { 0, 7, 3 }, { 1, 2, 6 }, { 1, 6, 5 },
+	};
+	for (const auto& t : f)
+		u.indices.insert(u.indices.end(), { t[0], t[1], t[2] });
+	u.aabbMin = glm::vec3(-h);
+	u.aabbMax = glm::vec3(h);
+	const auto mh = cluster->UploadStaticMesh(u);
+	smvk::MaterialValues vals{};
+	vals.diffuse = glm::vec4(0.7f, 0.7f, 0.7f, 1.0f);
+	const auto matH = cluster->CreateMaterialFromValues(vals,
+		smvk::ShadingModel::DefaultLit, smvk::AlphaMode::Opaque, 0.5f,
+		true);
+	const int n1 = addNode(cs, root, 1);
+	cs.meshForNode[uint32_t(n1)] = mh.index();
+	cs.materialForNode[uint32_t(n1)] = matH.index();
+	glm::mat4 lt(1.0f);
+	lt[3] = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f); // lift the room +1 m
+	cs.localTransform[n1] = lt;
+	// A static directional sun (the light-location parity leg).
+	SceneLight sunDef;
+	sunDef.type = SceneLight::Type::Directional;
+	sunDef.color = glm::vec3(1.0f, 0.95f, 0.9f);
+	sunDef.intensity = 20000.0f;
+	sunDef.flags = SceneLight::kSceneLightFlag_Static;
+	const auto lh = cluster->CreateLight(sunDef);
+	const int n2 = addNode(cs, root, 1);
+	cs.lightForNode[uint32_t(n2)] = lh.index();
+	markAsChanged(cs, root);
+	recalculateGlobalTransforms(cs);
+
+	// The CLUSTER path (cook/GiBaker replay) — before the ownership move.
+	GiSceneBuildOptions opts{};
+	GiTraceScene tsCluster;
+	std::string errC;
+	BuildTraceSceneFromCluster(*cluster, opts, tsCluster, errC);
+	Check(errC.empty() && tsCluster.positions.size() == 8
+		&& tsCluster.indices.size() == 36,
+		"trace.world.cluster-ok");
+
+	// The WORLD path (the editor's live merged graph).
+	smvk::World world;
+	world.RegisterCluster(std::move(cluster));
+	world.ResolveAndFixup_clusters();
+	GiTraceScene tsWorld;
+	std::string errW;
+	BuildTraceSceneFromWorld(world, opts, tsWorld, errW);
+	Check(errW.empty(), "trace.world.ok");
+	// EXACT soup parity (one mesh node: deterministic assembly order).
+	Check(tsWorld.positions == tsCluster.positions,
+		"trace.world.positions");
+	Check(tsWorld.indices == tsCluster.indices, "trace.world.indices");
+	Check(tsWorld.triMaterial == tsCluster.triMaterial,
+		"trace.world.trimaterial");
+	Check(tsWorld.materials.size() == tsCluster.materials.size()
+		&& !tsWorld.materials.empty()
+		&& glm::all(glm::equal(tsWorld.materials[0].albedo,
+			tsCluster.materials[0].albedo)),
+		"trace.world.materials");
+	Check(tsWorld.spots.size() == tsCluster.spots.size(),
+		"trace.world.spots");
+	Check(tsWorld.sunDirection == tsCluster.sunDirection
+		&& tsWorld.sunIntensity == tsCluster.sunIntensity,
+		"trace.world.sun");
+	// The node transform rode BOTH paths: vertex 0 (-2,-2,-2) lifted
+	// +1 m reads (-2,-1,-2) — the GLOBAL transform, not the identity
+	// local the upload carries.
+	Check(!tsWorld.positions.empty()
+		&& std::abs(tsWorld.positions[0].x - -2.0f) < 1e-4f
+		&& std::abs(tsWorld.positions[0].y - -1.0f) < 1e-4f
+		&& std::abs(tsWorld.positions[0].z - -2.0f) < 1e-4f,
+		"trace.world.transform-applied");
+
+	// The EDITOR flow: extract on the "main thread", Finalize (the BVH
+	// build) + the search on the "worker" — RunGiLayoutOptimizer's
+	// split. The room's lifted center is (0,1,0).
+	GiTraceScene snap;
+	std::string errE;
+	ExtractTraceSceneFromWorld(world, GiSceneBuildOptions{}, snap, errE);
+	Check(errE.empty(), "trace.world.extract-ok");
+	snap.Finalize();
+	Check(snap.Bvh().TriangleCount() == 12, "trace.world.extract-bvh");
+	GiVolumeDef def;
+	def.planes = GiVolumeBoxPlanesRotated(glm::vec3(0.0f, 1.0f, 0.0f),
+		glm::mat3(1.0f), glm::vec3(2.5f));
+	GiGridLayoutResult r;
+	std::string errS;
+	GiGridLayoutOptions gopts{};
+	gopts.surfaceSamples = 64;
+	Check(ChooseGiVolumeGridLayout(snap.Bvh(), def, 0.9f, 1.1f, gopts, r,
+			&errS),
+		"trace.world.search-ok");
+	Check(r.spacing >= 0.9f * 0.999f && r.spacing <= 1.1f * 1.001f,
+		"trace.world.search-spacing");
+}
+
 // ---- The GV6H canon: the BC6H round trip (cubemap_volume) ----
 // A synthetic volume with NON-block-multiple dims (5x7x3 - the padded
 // slice math) + smooth per-lobe fields: WriteToMemory emits the GV6H
@@ -3067,6 +3196,7 @@ int main() {
 	smvk::gi::TestCaptureReachTraversal();
 	TestGiProbeLatticeRows();
 	TestGiGridLayoutOptimizer();
+	TestTraceSceneFromWorld();
 	TestGiVolumeBc6hRoundTrip();
 
 	std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks

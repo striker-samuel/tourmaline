@@ -65,6 +65,7 @@
 namespace smvk {
 
 struct Cluster;
+struct World;
 
 } // namespace smvk
 
@@ -444,6 +445,26 @@ GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster, GiTraceScene
 // GiTraceScene::TraceIncoming and GiSceneBuildOptions.
 // Non-const: global transforms are recalculated before the walk.
 void BuildTraceSceneFromCluster(Cluster& cluster, const GiSceneBuildOptions& opts,
+	GiTraceScene& out, std::string& err);
+
+// The LIVE-WORLD variants (the editor's own scene graph — unsaved edits
+// included, no tour serialization, no cook): walk the MERGED world
+// (world.scene's node tables + the mesh/material/light LOCATION tables
+// back to the owning clusters) instead of one imported cluster's scene.
+// Geometry comes from the clusters' RETAINED CPU uploads — the same
+// mirror the editor's picking/UV paths use (SetRetainUploads(true) at
+// world bind), so no GPU or cook-mode cluster is required. Materials,
+// env seeding and static-light harvesting are the SAME shared assembly
+// as BuildTraceSceneFromCluster: identical scenes produce identical
+// trace scenes through either path.
+//
+// ExtractTraceSceneFromWorld stops before Finalize(): the soup + BVH are
+// the expensive half, so a caller may snapshot the geometry on its main
+// thread and run Finalize() (the BVH build) on a worker over the moved
+// result. BuildTraceSceneFromWorld is Extract + Finalize.
+void ExtractTraceSceneFromWorld(World& world, const GiSceneBuildOptions& opts,
+	GiTraceScene& out, std::string& err);
+void BuildTraceSceneFromWorld(World& world, const GiSceneBuildOptions& opts,
 	GiTraceScene& out, std::string& err);
 
 // Average linear texel color of a KTX2 payload (decoded on the CPU,
