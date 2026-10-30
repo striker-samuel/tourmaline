@@ -638,6 +638,45 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 
 
 	// ============================================================
+	// Pass-usage table + the sorter core (public test seam)
+	// ============================================================
+	// The per-pass usage table the sorter + the transient-heap packer
+	// consume (RESOLVED PHYSICAL handles - see CollectPassUsages).
+	// Namespace-level + public so the sorter's contracts are unit-
+	// testable without a device (RendergraphContractTests).
+	struct PassUsage {
+		std::vector<std::pair<ImageHandle, ImageSyncRequest>> images; // resolved physical
+		std::vector<std::pair<BufferHandle, BufferSyncRequest>> buffers;
+	};
+
+	// The sorter's persistent scratch (RenderGraph keeps one reused
+	// across frames; tests mint their own).
+	struct TopoSortScratch {
+		std::vector<size_t> sorted;
+		std::vector<size_t> heap;
+		std::vector<std::vector<size_t>> adj;
+		std::vector<int> indeg;
+		std::unordered_map<uint64_t, size_t> lastWriterImage;
+		std::unordered_map<uint64_t, std::vector<size_t>> lastReadersImage;
+		std::unordered_map<uint64_t, size_t> lastWriterBuffer;
+		std::unordered_map<uint64_t, std::vector<size_t>> lastReadersBuffer;
+		// Cycle diagnostics: the sorter's contract is a DAG over DISTINCT
+		// passes - a true here is a BUG (self-edges from same-physical
+		// aliasing inside one pass were the review finding this seam was
+		// extracted to pin), never a legitimate input state. The fallback
+		// still emits insertion order + asserts.
+		bool hadCycle = false;
+	};
+	// The sorter core (impl.cpp): edges connect DISTINCT passes only -
+	// each pass's declarations are combined BY PHYSICAL RESOURCE first
+	// (write wins), and every edge insert carries a self-edge guard
+	// (defense in depth). Returns the scratch's internally-owned order;
+	// check scratch.hadCycle for the insertion-order fallback.
+	const std::vector<size_t>& TopologicalSortUsages(
+		const std::vector<PassUsage>& usages, TopoSortScratch& s);
+
+
+	// ============================================================
 	// Render graph
 	// ============================================================
 
@@ -939,11 +978,8 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		// sibling in-flight flights never see each other's descriptor rewrites.
 		uint32_t flightSlot_ = 0;
 
-		// Collect per-pass physical image/buffer usage with derived layout/access.
-		struct PassUsage {
-			std::vector<std::pair<ImageHandle, ImageSyncRequest>> images; // resolved physical
-			std::vector<std::pair<BufferHandle, BufferSyncRequest>> buffers;
-		};
+		// Collect per-pass physical image/buffer usage with derived layout/access
+		// (the NAMESPACE-LEVEL smvk::PassUsage - hoisted for testability).
 		std::vector<PassUsage> CollectPassUsages() const;
 		static bool IsWriteImage(const ImageSyncRequest& r) { return IsWriteAccess(r.barrierMasks.accessMask); }
 		static bool IsWriteBuffer(const BufferSyncRequest& r) { return IsWriteAccess(r.barrierMasks.accessMask); }
@@ -954,15 +990,10 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		const std::vector<size_t>& TopologicalSort(const std::vector<PassUsage>& usages) const;
 		void EmitBarriers(void* cmdOpaque, const std::vector<size_t>& sortedOrder, const std::vector<PassUsage>& usages);
 
-		// TopologicalSort scratch (mutable: reused across frames).
-		mutable std::vector<size_t> topoSorted_;
-		mutable std::vector<size_t> topoHeap_;
-		mutable std::vector<std::vector<size_t>> topoAdj_;
-		mutable std::vector<int> topoIndeg_;
-		mutable std::unordered_map<uint64_t, size_t> topoLastWriterImage_;
-		mutable std::unordered_map<uint64_t, std::vector<size_t>> topoLastReadersImage_;
-		mutable std::unordered_map<uint64_t, size_t> topoLastWriterBuffer_;
-		mutable std::unordered_map<uint64_t, std::vector<size_t>> topoLastReadersBuffer_;
+		// TopologicalSort scratch (mutable: reused across frames). One
+		// TopoSortScratch (the same shape the free sorter core takes -
+		// see TopologicalSortUsages) instead of the eight loose fields.
+		mutable TopoSortScratch topo_{};
 
 	public:
 

@@ -27,7 +27,12 @@
 //          stress without the editor).
 //
 // Knobs (env): FUZZ_FRAMES (600), FUZZ_EVERY (1 = recreate every frame,
-// the hardest), FUZZ_SWAP_EVERY (0 = off), FUZZ_MODE (rhi|graph|swap|all).
+// the hardest), FUZZ_SWAP_EVERY (0 = off), FUZZ_MODE (rhi|graph|swap|all),
+// FUZZ_SAME_SHAPE (0; 1 = the graph target recreates at the SAME extent -
+// the identity-churn epoch hole, not the shape-churn path),
+// FUZZ_TWO_GRAPH (0; 1 = a second graph candidate recreated at odd frames
+// while the primary's placement stands - the epoch check is the only
+// repack detector there).
 //
 // Verdict: the engine's own loud paths report failure (DEVICE_LOST at a
 // submit, the [TargetHeap] abort); a clean exit prints [FUZZ] PASS.
@@ -164,9 +169,16 @@ private:
 	// re-created at a toggling extent -> the packed-set epoch changes ->
 	// detonate + repack -> [TargetHeap] claims + deferred frees.)
 	bool EnsureGraphTarget(uint32_t w, uint32_t h) {
-		if (m_graphExtent.width == w && m_graphExtent.height == h
+		// FUZZ_SAME_SHAPE=1: the forced recreate keeps the SAME extent -
+		// identical shape + lifetime, a NEW logical identity (the epoch
+		// fingerprint's identity hole: pre-fix, destroy-A/create-B at the
+		// same shape kept the epoch and the steady-state return stood on
+		// stale placements - the new image never bound).
+		if (!m_forceGraphRecreate
+			&& m_graphExtent.width == w && m_graphExtent.height == h
 			&& !m_graphView.empty())
 			return true;
+		m_forceGraphRecreate = false;
 		if (!m_graphView.empty())
 			m_rendergraph->FreeImageView(m_graphView);
 		if (!m_graphImage.empty())
@@ -187,6 +199,40 @@ private:
 		if (m_graphView.empty())
 			return false;
 		m_graphExtent = { w, h };
+		return true;
+	}
+
+	// ---- candidate #2 (FUZZ_TWO_GRAPH=1): an independent graph target
+	// recreated on the ODD cadence (one frame offset from the primary) so
+	// a free never empties the placements map - the epoch check is the
+	// ONLY repack detector in this regime, exercising the reviewer's
+	// destroy-A/create-B identity hole directly.
+	smvk::LogicalImageHandle m_graphImage2{};
+	smvk::LogicalImageViewHandle m_graphView2{};
+	bool m_twoGraph = false;
+	bool EnsureGraphTarget2(uint32_t w, uint32_t h) {
+		if (m_graphExtent2.width == w && m_graphExtent2.height == h
+			&& !m_graphView2.empty())
+			return true;
+		if (!m_graphView2.empty())
+			m_rendergraph->FreeImageView(m_graphView2);
+		if (!m_graphImage2.empty())
+			m_rendergraph->FreeImage(m_graphImage2);
+		smvk::ImageCreateInfo ci{};
+		ci.extent = { w, h, 1 };
+		ci.format = m_swapchain->GetSurfaceFormat();
+		ci.usage = smvk::ImageUsage::ColorAttachment;
+		ci.mipLevels = 1;
+		ci.arrayLayers = 1;
+		m_graphImage2 = m_rendergraph->AddImage(ci, "fuzzGraphTarget2");
+		if (m_graphImage2.empty())
+			return false;
+		m_graphView2 = m_rendergraph->AddImageView(m_graphImage2,
+			smvk::ImageViewType::View2D, smvk::Format::Undefined, {},
+			"fuzzGraphTarget2View");
+		if (m_graphView2.empty())
+			return false;
+		m_graphExtent2 = { w, h };
 		return true;
 	}
 
@@ -429,15 +475,47 @@ private:
 		// ---- the extent toggle: every FUZZ_EVERY frames the targets
 		// swap shape (A <-> B) — a NEW heap shape each recreate, the
 		// monotone-offset driver.
-		if (m_every > 0 && m_frame % uint32_t(m_every) == 0)
-			m_toggle = !m_toggle;
+		if (m_every > 0 && m_frame % uint32_t(m_every) == 0) {
+			if (m_sameShape)
+				m_forceGraphRecreate = true; // same shape, new identity
+			else
+				m_toggle = !m_toggle;
+		}
+		if (m_passToggleEvery > 0 && m_frame > 0
+			&& m_frame % uint32_t(m_passToggleEvery) == 0)
+			m_extraPass = !m_extraPass;
 		const uint32_t* e = m_toggle ? kFuzzExtentA : kFuzzExtentB;
 		const uint32_t w = e[0], h = e[1];
 
 		if (m_modeRhi)
 			EnsureRhiTarget(w, h);
-		if (m_modeGraph)
+		if (m_modeGraph) {
 			EnsureGraphTarget(w, h);
+			if (m_twoGraph)
+				EnsureGraphTarget2(w, h);
+		}
+		// the ODD-cadence churn of candidate #2: same shape most frames,
+		// recreated at odd offsets - when it frees, the primary's
+		// placement still stands (placements non-empty at compile).
+		if (m_twoGraph && m_modeGraph && (m_frame & 1) == 1) {
+			if (!m_graphView2.empty())
+				m_rendergraph->FreeImageView(m_graphView2);
+			if (!m_graphImage2.empty())
+				m_rendergraph->FreeImage(m_graphImage2);
+			smvk::ImageCreateInfo ci2{};
+			ci2.extent = { w, h, 1 };
+			ci2.format = m_swapchain->GetSurfaceFormat();
+			ci2.usage = smvk::ImageUsage::ColorAttachment;
+			ci2.mipLevels = 1;
+			ci2.arrayLayers = 1;
+			m_graphImage2 = m_rendergraph->AddImage(ci2,
+				"fuzzGraphTarget2");
+			if (!m_graphImage2.empty())
+				m_graphView2 = m_rendergraph->AddImageView(m_graphImage2,
+					smvk::ImageViewType::View2D, smvk::Format::Undefined, {},
+					"fuzzGraphTarget2View");
+			m_graphExtent2 = { w, h };
+		}
 		if (m_modeClaims) {
 			EnsureClaimTarget(w, h);
 			if (m_claimBufferCount > 0)
@@ -501,6 +579,25 @@ private:
 					.SetRecordingFunc([](smvk::CommandBuffer& cmd) {
 						(void)cmd;
 					});
+				// FUZZ_PASS_TOGGLE: a SECOND clear pass over the SAME target
+				// on alternate cadences - the pass count + the target's use
+				// interval change while its placement stays alive, which is
+				// the in-compile DETONATION branch (the repack-with-
+				// live-placements path; the extent toggle never hits it - it
+				// frees the target first, so placements are empty at
+				// compile). Watch stderr for the "repacked" tags.
+				if (m_extraPass) {
+					m_rendergraph->AddPass("FuzzGraphClear2")
+						.SetOffset(0, 0)
+						.SetExtent(smvk::Extent2D{ w, h })
+						.SetColor({ m_graphView },
+							smvk::AttachmentLoadOp::Load,
+							smvk::AttachmentStoreOp::Store,
+							smvk::ClearColor(0.3f, 0.2f, 0.1f, 1.0f))
+						.SetRecordingFunc([](smvk::CommandBuffer& cmd) {
+							(void)cmd;
+						});
+				}
 			}
 			if (!m_swapViews.empty() && fb.imageIndex < m_swapViews.size()
 				&& !m_graphOnly) {
@@ -547,6 +644,10 @@ private:
 	uint32_t m_resizeBaseW = 1280, m_resizeBaseH = 720;   // captured at init
 	uint32_t m_resizeAltW = 1600, m_resizeAltH = 900;     // maximized-ish alternate
 	bool m_graphOnly = false; // FUZZ_GRAPH_ONLY=1: no swap pass (bisect knob)
+	bool m_sameShape = false; // FUZZ_SAME_SHAPE=1: recreate at the SAME extent (identity churn)
+	bool m_forceGraphRecreate = false;
+	int m_passToggleEvery = 0; // FUZZ_PASS_TOGGLE: flip an extra pass every N frames (the detonation branch)
+	bool m_extraPass = false;
 	bool m_attachRhi = false; // FUZZ_ATTACH_RHI=1: the external RHI target as the attachment (the control)
 	bool m_hostTransfer = false; // FUZZ_HOST_TRANSFER=1: the graph target on the VMA path (the control)
 
@@ -566,6 +667,7 @@ private:
 	smvk::LogicalImageHandle m_graphImage{};
 	smvk::LogicalImageViewHandle m_graphView{};
 	smvk::Extent2D m_graphExtent{ 0, 0 };
+	smvk::Extent2D m_graphExtent2{ 0, 0 };
 
 	std::vector<smvk::LogicalImageViewHandle> m_swapViews;
 
@@ -582,6 +684,9 @@ public:
 		m_readbackEvery = uint32_t(
 			EnvInt("FUZZ_READBACK", 0));
 		m_graphOnly = EnvInt("FUZZ_GRAPH_ONLY", 0) != 0;
+		m_sameShape = EnvInt("FUZZ_SAME_SHAPE", 0) != 0;
+		m_passToggleEvery = EnvInt("FUZZ_PASS_TOGGLE", 0);
+		m_twoGraph = EnvInt("FUZZ_TWO_GRAPH", 0) != 0;
 		m_attachRhi = EnvInt("FUZZ_ATTACH_RHI", 0) != 0;
 		m_hostTransfer = EnvInt("FUZZ_HOST_TRANSFER", 0) != 0;
 		if (const char* mode = std::getenv("FUZZ_MODE"))

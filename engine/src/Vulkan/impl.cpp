@@ -12517,17 +12517,37 @@ bool smvk::RenderGraph::CompileTransientHeap(
 	}
 
 	// ---- 3. Layout fingerprint: the pass count + every candidate's
-	// (shape, interval). Unchanged -> steady state: the packed images +
-	// placements stand, zero churn. ----
+	// (identity, shape, interval). Unchanged -> steady state: the packed
+	// images + placements stand, zero churn. ----
 	uint64_t epoch = 1099511628211ull * (candidates.size() + 1)
 		+ sorted.size();
 	for (const CandInfo& ci : infos) {
+		// The LOGICAL IDENTITY rides the fingerprint (the review's
+		// finding): shape + interval alone let a destroy-A/create-B swap
+		// with identical shape and lifetime keep the epoch unchanged -
+		// the steady-state early return then stood on STALE placements
+		// (A's, while B never got bound). Index + generation make every
+		// identity change repack.
+		epoch = (epoch ^ ci.handle.index()) * 1099511628211ull;
+		epoch = (epoch ^ ci.handle.gen()) * 1099511628211ull;
 		epoch = (epoch ^ ci.shape) * 1099511628211ull;
 		epoch = (epoch ^ ci.firstUse) * 1099511628211ull;
 		epoch = (epoch ^ ci.lastUse) * 1099511628211ull;
 	}
-	if (!heap.placements.empty() && epoch == heap.packedEpoch)
-		return false;
+	if (!heap.placements.empty() && epoch == heap.packedEpoch) {
+		// Defense in depth (the same finding): even an epoch collision
+		// must never stand on stale placements - every candidate must
+		// ALSO hold a live placement for the steady-state return.
+		bool allPlaced = true;
+		for (const CandInfo& ci : infos) {
+			if (!heap.placements.count(RgLogicalImageKey(ci.handle))) {
+				allPlaced = false;
+				break;
+			}
+		}
+		if (allPlaced)
+			return false;
+	}
 
 	// ---- 4. Layout change (or first pack). Detonate the packed set: the
 	// views first (FIFO retire: views before their images), then every
@@ -12560,11 +12580,17 @@ bool smvk::RenderGraph::CompileTransientHeap(
 			ReleaseTransientPlacement(h);
 	}
 
-	// ---- 5. (Re)create unresolved transients (unbound heap images) +
-	// their views (fresh handles after a detonation). ----
+	// ---- 5. (Re)create unresolved transients (unbound heap images). ----
+	// Views resolve ONLY in Execute, AFTER this pack binds every image
+	// (the bind-before-view contract - the 03_fuzz DEVICE_LOST fix; see
+	// Execute's ResolveImageViews note). The old detonated-path early
+	// ResolveImageViews() here created views over the freshly recreated
+	// UNBOUND images - the exact pre-bind-view class that fix retired,
+	// re-entering on every repack (the initial pack never had it; only
+	// the detonated path did). Nothing inside the packer reads views
+	// (steps 6-7 touch images only), and Execute's post-pack
+	// ResolveImageViews recreates the detonated views.
 	ResolveImages();
-	if (detonated)
-		ResolveImageViews();
 	for (CandInfo& ci : infos) {
 		ci.image = images_.get(ci.handle);
 		if (!ci.image || ci.image->resolvedImageHandle.empty())
@@ -12778,7 +12804,7 @@ void smvk::RenderGraph::ResolveBuffers()
 // ============================================================================
 // Sync helpers – collect usages, topological sort, barrier emission
 // ============================================================================
-std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages() const
+std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const
 {
 	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
 	std::vector<PassUsage> out;
@@ -12899,49 +12925,87 @@ std::vector<smvk::RenderGraph::PassUsage> smvk::RenderGraph::CollectPassUsages()
 	return out;
 }
 
-const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<PassUsage>& usages) const
+const std::vector<size_t>& smvk::TopologicalSortUsages(
+	const std::vector<PassUsage>& usages, TopoSortScratch& s)
 {
-	size_t n = usages.size();
-	topoSorted_.clear();
+	const size_t n = usages.size();
+	s.sorted.clear();
+	s.hadCycle = false;
 	if (n <= 1) {
-		topoSorted_.reserve(n);
-		for (size_t i = 0; i < n; ++i) topoSorted_.push_back(i);
-		return topoSorted_;
+		s.sorted.reserve(n);
+		for (size_t i = 0; i < n; ++i) s.sorted.push_back(i);
+		return s.sorted;
 	}
-	// Reused scratch (mutable members): adjacency/indegree/frontier and
-	// the resource bookkeeping maps used to be rebuilt from scratch every
-	// Execute. clear() keeps the maps' bucket arrays and the adjacency
-	// rows' capacity.
-	if (topoAdj_.size() < n) topoAdj_.resize(n);
-	for (size_t i = 0; i < n; ++i) topoAdj_[i].clear();
-	topoIndeg_.assign(n, 0);
-	topoLastWriterImage_.clear();
-	topoLastReadersImage_.clear();
-	topoLastWriterBuffer_.clear();
-	topoLastReadersBuffer_.clear();
+	// Reused scratch (the caller's TopoSortScratch): adjacency/indegree/
+	// frontier and the resource bookkeeping maps used to be rebuilt from
+	// scratch every Execute. clear() keeps the maps' bucket arrays and
+	// the adjacency rows' capacity.
+	if (s.adj.size() < n) s.adj.resize(n);
+	for (size_t i = 0; i < n; ++i) s.adj[i].clear();
+	s.indeg.assign(n, 0);
+	s.lastWriterImage.clear();
+	s.lastReadersImage.clear();
+	s.lastWriterBuffer.clear();
+	s.lastReadersBuffer.clear();
 	// Map resource -> last writer / readers tracking for edge generation
 	// We preserve insertion order hazard: iterate passes in order, for each resource add edge from previous access that hazards
-	auto& lastWriterImage = topoLastWriterImage_;
-	auto& lastReadersImage = topoLastReadersImage_;
-	auto& lastWriterBuffer = topoLastWriterBuffer_;
-	auto& lastReadersBuffer = topoLastReadersBuffer_;
+	auto& lastWriterImage = s.lastWriterImage;
+	auto& lastReadersImage = s.lastReadersImage;
+	auto& lastWriterBuffer = s.lastWriterBuffer;
+	auto& lastReadersBuffer = s.lastReadersBuffer;
 	auto keyFor = [](auto h) { return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32)); };
+	// Per-PASS combine BY PHYSICAL RESOURCE (the review's finding): a
+	// single pass can declare the same physical buffer through several
+	// logical handles (two external logicals over one resolved buffer)
+	// or the same physical image twice (aliased attachments) - PassUsage
+	// carries a VECTOR, not a map, so nothing deduplicates them. Edges
+	// must connect DISTINCT passes: collapse this pass's declarations
+	// to one (key, isWrite) pair first - WRITE WINS (the write's
+	// WAW/WAR edges order the whole pass after everything its read
+	// cared about; intra-pass read-vs-write ordering is the pass's own
+	// business - render-pass self-dependencies). With same-pass entries
+	// collapsed, a self-edge is impossible by construction; the src != i
+	// guards below stay as defense in depth.
+	std::vector<std::pair<uint64_t, bool>> imgKeys, bufKeys;
+	auto combine = [&keyFor](const auto& entries, auto& out) {
+		for (const auto& p : entries) {
+			const uint64_t k = keyFor(p.first);
+			const bool w = IsWriteAccess(p.second.barrierMasks.accessMask);
+			bool merged = false;
+			for (auto& c : out) {
+				if (c.first == k) {
+					c.second = c.second || w;
+					merged = true;
+					break;
+				}
+			}
+			if (!merged)
+				out.emplace_back(k, w);
+		}
+	};
 	for (size_t i = 0; i < n; ++i) {
 		const auto& pu = usages[i];
-		for (auto& p : pu.images) {
-			uint64_t k = keyFor(p.first);
-			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
+		imgKeys.clear();
+		bufKeys.clear();
+		combine(pu.images, imgKeys);
+		combine(pu.buffers, bufKeys);
+		for (const auto& [k, isWrite] : imgKeys) {
 			if (isWrite) {
 				// WAW: last writer -> this
 				auto itW = lastWriterImage.find(k);
-				if (itW != lastWriterImage.end()) {
-					size_t src = itW->second;
-					if (src != i) { topoAdj_[src].push_back(i); topoIndeg_[i]++; }
+				if (itW != lastWriterImage.end() && itW->second != i) {
+					s.adj[itW->second].push_back(i);
+				s.indeg[i]++;
 				}
 				// WAR: last readers -> this
 				auto itR = lastReadersImage.find(k);
 				if (itR != lastReadersImage.end()) {
-					for (size_t r : itR->second) { topoAdj_[r].push_back(i); topoIndeg_[i]++; }
+					for (size_t r : itR->second) {
+						if (r != i) {
+							s.adj[r].push_back(i);
+							s.indeg[i]++;
+						}
+					}
 					itR->second.clear();
 				}
 				lastWriterImage[k] = i;
@@ -12949,29 +13013,38 @@ const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<
 			else {
 				// RAW: last writer -> this
 				auto itW = lastWriterImage.find(k);
-				if (itW != lastWriterImage.end()) {
-					size_t src = itW->second;
-					topoAdj_[src].push_back(i); topoIndeg_[i]++;
+				if (itW != lastWriterImage.end() && itW->second != i) {
+					s.adj[itW->second].push_back(i);
+					s.indeg[i]++;
 				}
 				lastReadersImage[k].push_back(i);
 			}
 		}
-		for (auto& p : pu.buffers) {
-			uint64_t k = keyFor(p.first);
-			bool isWrite = IsWriteAccess(p.second.barrierMasks.accessMask);
+		for (const auto& [k, isWrite] : bufKeys) {
 			if (isWrite) {
 				auto itW = lastWriterBuffer.find(k);
-				if (itW != lastWriterBuffer.end()) { topoAdj_[itW->second].push_back(i); topoIndeg_[i]++; }
+				if (itW != lastWriterBuffer.end() && itW->second != i) {
+					s.adj[itW->second].push_back(i);
+					s.indeg[i]++;
+				}
 				auto itR = lastReadersBuffer.find(k);
 				if (itR != lastReadersBuffer.end()) {
-					for (size_t r : itR->second) { topoAdj_[r].push_back(i); topoIndeg_[i]++; }
+					for (size_t r : itR->second) {
+						if (r != i) {
+							s.adj[r].push_back(i);
+							s.indeg[i]++;
+						}
+					}
 					itR->second.clear();
 				}
 				lastWriterBuffer[k] = i;
 			}
 			else {
 				auto itW = lastWriterBuffer.find(k);
-				if (itW != lastWriterBuffer.end()) { topoAdj_[itW->second].push_back(i); topoIndeg_[i]++; }
+				if (itW != lastWriterBuffer.end() && itW->second != i) {
+					s.adj[itW->second].push_back(i);
+					s.indeg[i]++;
+				}
 				lastReadersBuffer[k].push_back(i);
 			}
 		}
@@ -12979,29 +13052,40 @@ const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<
 	// Kahn over a min-heap (stable: prefer lower original index). The
 	// old code kept the ready set in a vector and re-sorted ALL of it
 	// after every release — O(n^2 log n) per Execute.
-	auto& zero = topoHeap_;
+	auto& zero = s.heap;
 	zero.clear();
-	topoSorted_.reserve(n);
-	for (size_t i = 0; i < n; ++i) if (topoIndeg_[i] == 0) zero.push_back(i);
+	s.sorted.reserve(n);
+	for (size_t i = 0; i < n; ++i) if (s.indeg[i] == 0) zero.push_back(i);
 	std::make_heap(zero.begin(), zero.end(), std::greater<size_t>());
 	while (!zero.empty()) {
 		std::pop_heap(zero.begin(), zero.end(), std::greater<size_t>());
 		size_t u = zero.back(); zero.pop_back();
-		topoSorted_.push_back(u);
-		for (size_t v : topoAdj_[u]) {
-			if (--topoIndeg_[v] == 0) {
+		s.sorted.push_back(u);
+		for (size_t v : s.adj[u]) {
+			if (--s.indeg[v] == 0) {
 				zero.push_back(v);
 				std::push_heap(zero.begin(), zero.end(), std::greater<size_t>());
 			}
 		}
 	}
-	if (topoSorted_.size() != n) {
-		// Cycle – fall back to insertion order and assert
+	if (s.sorted.size() != n) {
+		// Cycle – fall back to insertion order, flag it, and assert.
+		// With edges only ever connecting distinct passes this is a bug,
+		// never a legitimate input state (the flag lets the unit tests
+		// assert the contract without aborting).
+		s.hadCycle = true;
 		assert(false && "RenderGraph cycle detected in pass dependencies");
-		topoSorted_.clear();
-		for (size_t i = 0; i < n; ++i) topoSorted_.push_back(i);
+		s.sorted.clear();
+		for (size_t i = 0; i < n; ++i) s.sorted.push_back(i);
 	}
-	return topoSorted_;
+	return s.sorted;
+}
+
+const std::vector<size_t>& smvk::RenderGraph::TopologicalSort(const std::vector<PassUsage>& usages) const
+{
+	// Thin wrapper (the core lives in TopologicalSortUsages so the
+	// cycle/self-edge contracts are unit-testable without a device).
+	return TopologicalSortUsages(usages, topo_);
 }
 
 void smvk::RenderGraph::EmitBarriers(void* cmdOpaque, const std::vector<size_t>& sortedOrder, const std::vector<PassUsage>& usages)

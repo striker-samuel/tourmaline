@@ -29,6 +29,7 @@
 
 #include <Engine/App/RunConfig.h>
 #include <Engine/Placement/placement_draw.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/gfx_filter.h>
 
@@ -47,6 +48,120 @@ void Check(bool cond, const char* name) {
 }
 
 } // namespace
+
+// 5. TopologicalSortUsages self-edge contracts (the review's finding):
+// pass-dependency edges connect DISTINCT passes only. A single pass can
+// declare the same PHYSICAL resource several times (two logical handles
+// over one resolved buffer, aliased attachments) - PassUsage is a
+// vector, nothing deduplicates it - and the old per-physical edge
+// generation inserted src == i self-edges on every branch except image
+// WAW, tripping the cycle fallback (the debug assert + a silent
+// insertion-order sort). The core now combines each pass's declarations
+// by physical resource (write wins) and guards every insert.
+void TestTopoSortSelfEdges() {
+	using smvk::PassUsage;
+	// Fabricated PHYSICAL handles (Handle::Mint - the cook-only
+	// fabricator; the sorter only reads index/gen, never a pool).
+	const auto physBuf = smvk::BufferHandle::Mint(7, 1);
+	const auto physImg = smvk::ImageHandle::Mint(9, 1);
+	smvk::BufferSyncRequest bufRead{}, bufWrite{};
+	bufRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+	bufWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+	smvk::ImageSyncRequest imgRead{}, imgWrite{};
+	imgRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+	imgWrite.barrierMasks.accessMask = smvk::AccessFlags::ColorAttachmentWrite;
+	auto orderIsIdentity = [](const std::vector<size_t>& o) {
+		for (size_t i = 0; i < o.size(); ++i)
+			if (o[i] != i) return false;
+		return true;
+	};
+	// (a) the reviewer's exact scenario: buffer read + write of ONE
+	// physical through two logical handles in a single pass, plus a
+	// later reader (the pass-0 write must order before the pass-1
+	// read - identity order, no cycle).
+	{
+		smvk::TopoSortScratch s;
+		std::vector<PassUsage> u(2);
+		u[0].buffers.emplace_back(physBuf, bufRead);  // logical A
+		u[0].buffers.emplace_back(physBuf, bufWrite); // logical B, same physical
+		u[1].buffers.emplace_back(physBuf, bufRead);
+		const auto& order = smvk::TopologicalSortUsages(u, s);
+		Check(!s.hadCycle, "topo.alias-buf-read-write-no-cycle");
+		Check(order.size() == 2 && orderIsIdentity(order),
+			"topo.alias-buf-order");
+	}
+	// (b) buffer write + write of one physical in one pass (the WAW
+	// self-edge class).
+	{
+		smvk::TopoSortScratch s;
+		std::vector<PassUsage> u(2);
+		u[0].buffers.emplace_back(physBuf, bufWrite);
+		u[0].buffers.emplace_back(physBuf, bufWrite);
+		u[1].buffers.emplace_back(physBuf, bufRead);
+		const auto& order = smvk::TopologicalSortUsages(u, s);
+		Check(!s.hadCycle, "topo.alias-buf-write-write-no-cycle");
+		Check(order.size() == 2 && orderIsIdentity(order),
+			"topo.alias-buf-ww-order");
+	}
+	// (c) image read + write of one physical in one pass (the WAR
+	// readers-loop class), plus a later writer + reader chain.
+	{
+		smvk::TopoSortScratch s;
+		std::vector<PassUsage> u(3);
+		u[0].images.emplace_back(physImg, imgRead);
+		u[0].images.emplace_back(physImg, imgWrite);
+		u[1].images.emplace_back(physImg, imgRead);
+		u[2].images.emplace_back(physImg, imgWrite);
+		const auto& order = smvk::TopologicalSortUsages(u, s);
+		Check(!s.hadCycle, "topo.alias-img-read-write-no-cycle");
+		Check(order.size() == 3 && orderIsIdentity(order),
+			"topo.alias-img-order");
+	}
+	// (d) image write then read of one physical in one pass (the RAW
+	// class).
+	{
+		smvk::TopoSortScratch s;
+		std::vector<PassUsage> u(2);
+		u[0].images.emplace_back(physImg, imgWrite);
+		u[0].images.emplace_back(physImg, imgRead);
+		u[1].images.emplace_back(physImg, imgRead);
+		const auto& order = smvk::TopologicalSortUsages(u, s);
+		Check(!s.hadCycle, "topo.alias-img-write-read-no-cycle");
+		Check(order.size() == 2 && orderIsIdentity(order),
+			"topo.alias-img-wr-order");
+	}
+	// (e) sanity: an ordinary write -> read chain across passes sorts
+	// every pass, no cycle, writer first.
+	{
+		smvk::TopoSortScratch s;
+		std::vector<PassUsage> u(3);
+		u[1].buffers.emplace_back(physBuf, bufWrite);
+		u[2].buffers.emplace_back(physBuf, bufRead);
+		const auto& order = smvk::TopologicalSortUsages(u, s);
+		Check(!s.hadCycle, "topo.chain-no-cycle");
+		Check(order.size() == 3, "topo.chain-covers-all");
+		// pass 1 (writer) before pass 2 (reader).
+		size_t pos1 = SIZE_MAX, pos2 = SIZE_MAX;
+		for (size_t i = 0; i < order.size(); ++i) {
+			if (order[i] == 1) pos1 = i;
+			if (order[i] == 2) pos2 = i;
+		}
+		Check(pos1 < pos2, "topo.chain-writer-first");
+	}
+	// (f) distinct physical resources in one pass: no false edges, the
+	// insertion order stands.
+	{
+		smvk::TopoSortScratch s;
+		std::vector<PassUsage> u(2);
+		u[0].buffers.emplace_back(smvk::BufferHandle::Mint(1, 1), bufWrite);
+		u[0].buffers.emplace_back(smvk::BufferHandle::Mint(2, 1), bufRead);
+		u[1].buffers.emplace_back(smvk::BufferHandle::Mint(3, 1), bufRead);
+		const auto& order = smvk::TopologicalSortUsages(u, s);
+		Check(!s.hadCycle, "topo.distinct-no-cycle");
+		Check(order.size() == 2 && orderIsIdentity(order),
+			"topo.distinct-order");
+	}
+}
 
 int main() {
 	using PC = engine::IRenderer::PushConstants;
@@ -114,6 +229,9 @@ int main() {
 	// Scratch invariant anchor: shared fields end exactly at 192.
 	Check(offsetof(PC, prevModel) == kScratchStart, "contract.scratch-starts-192");
 	Check(sizeof(PC) == kScratchEnd, "contract.push-ends-256");
+
+	// 5. The sorter's self-edge contracts.
+	TestTopoSortSelfEdges();
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
