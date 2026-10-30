@@ -150,6 +150,21 @@ $env:TOURMALINE_CAPTURE='48'
   water are NAIVE shading-model previews (development test beds - d'Eon
   transmission SSS, Kajiya-Kay hair, Fresnel+wave water; sun/sky shaded
   like the POM view, deliberately first-cut, owner develops further)
+- `TOURMALINE_DEBUGVIEW=clipping|clipdark|clipbright` selects the
+  CLIPPING views (ViewMode 30..32, combo entries "Clipping ..."):
+  IMAGE-LEVEL diagnostics in the tonemap pass (tonemap.frag.hlsl's
+  debugView 2..4 branch) - the FINAL mapped+graded image (after
+  exposure/bloom/tonemap/LUT) is annotated, BLUE = display-encoded SDR
+  luma at/below the shadow threshold (crushed shadows), RED = at/above
+  the highlight threshold (clipped highlights), in-range pixels keep
+  their normal color. A NEAR-CLIPPING warning, not proof of irreversible
+  loss (legitimately black/white surfaces flag the same). The post-fx
+  chain + exposure metering stay LIVE under these views (the
+  DebugVisualizationActive/ExposureMeteringActive exclusions) - otherwise
+  the view would inspect a different image than the player sees.
+  Thresholds: the Debug panel sliders (shadow 0..0.1, highlight 0.9..1.0,
+  defaults 0.01/0.99) or the `TOURMALINE_CLIP_DARK=<0..0.1>` /
+  `TOURMALINE_CLIP_BRIGHT=<0.9..1>` headless pins
 - `TOURMALINE_GEOMETRY_STREAMING=1` gates GPU geometry LOD streaming
   (geometry_streamer.h - v1 stages 1-3 + logical stage-4 eviction,
   DEFAULT OFF): cluster load defers the middle LOD siblings (LOD0 bases

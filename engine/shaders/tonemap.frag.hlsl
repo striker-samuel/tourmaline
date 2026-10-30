@@ -37,6 +37,11 @@ struct TonemapPush
     // (possibly larger) HDR image - the render-area 0..1 uv remaps into
     // this window before every sample. (0,0,1,1) = full image (identity).
     float4 srcUvWindow;
+    // Clipping debug views (debugView 2..4): display-encoded SDR luma
+    // thresholds (C++ mirror: tonemap.h TonemapPush - layout-identical
+    // appended tail, 88 bytes total).
+    float shadowClipThreshold;
+    float highlightClipThreshold;
 };
 
 [[vk::push_constant]]
@@ -260,6 +265,37 @@ PSOut mainPS(PSIn IN)
     float3 mapped = Tonemap(hdr * exposure, mode);
     if (tp.lutTextureIndex != 0xffffffff && tp.lutTextureIndex < 100000 && tp.lutIntensity > 0.0f)
         mapped = lerp(mapped, SampleLut(mapped), saturate(tp.lutIntensity));
+
+    // Clipping debug views (2 = combined, 3 = shadows, 4 = highlights):
+    // inspect the FINAL image — after exposure, bloom, tonemap AND LUT
+    // grading, the exact pixels the player sees. The comparison runs in
+    // display-encoded SDR space (sRGB luma) so the thresholds correspond
+    // approximately to VISIBLE brightness. BLUE flags luma at/below the
+    // shadow threshold (crushed shadows), RED at/above the highlight
+    // threshold (clipped highlights); everything else keeps its normal
+    // color. This is a NEAR-CLIPPING WARNING, not a proof of irreversible
+    // loss: a legitimately black surface flags blue and a legitimately
+    // white one flags red (hard pre-saturate channel clipping could be
+    // flagged separately if ever needed).
+    if (tp.debugView >= 2u && tp.debugView <= 4u)
+    {
+        float3 displayRgb = SrgbEncode(saturate(mapped));
+        float luma = dot(displayRgb, float3(0.2126f, 0.7152f, 0.0722f));
+        bool dark = luma <= tp.shadowClipThreshold;
+        bool bright = luma >= tp.highlightClipThreshold;
+        float3 result = saturate(mapped);
+        if (dark && tp.debugView != 4u)
+            result = float3(0.0f, 0.0f, 1.0f); // blue = crushed shadows
+        if (bright && tp.debugView != 3u)
+            result = float3(1.0f, 0.0f, 0.0f); // red = clipped highlights
+        // Same encode convention as the scene path below (linearity is
+        // irrelevant for the flat markers, but the in-range pixels keep
+        // their exact normal output).
+        OUT.outColor = float4(
+            tp.gammaEncode ? SrgbEncode(result) : result, 1.0f);
+        return OUT;
+    }
+
     // sRGB swapchain: store linear, the hardware encodes. Only the UNORM
     // SMAA ldr target (gammaEncode) needs the curve applied here.
     float3 ldr = tp.gammaEncode ? SrgbEncode(mapped) : saturate(mapped);

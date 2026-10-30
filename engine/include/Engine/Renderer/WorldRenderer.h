@@ -462,6 +462,21 @@ enum class ViewMode : int {
 	SssPreview = 27,   // default_sss_debug (naive transmission SSS)
 	HairPreview = 28,  // default_hair_debug (naive Kajiya-Kay)
 	WaterPreview = 29, // default_water_debug (naive Fresnel + waves)
+	// ---- CLIPPING views (combo/env only): IMAGE-LEVEL diagnostics in the
+	// tonemap pass (tonemap.frag.hlsl's debugView 2..4 branch) — the final
+	// mapped+graded image is inspected AFTER exposure/bloom/tonemap/LUT,
+	// so unlike every view above they do NOT swap the shading path. Blue
+	// flags display-luma at/below the shadow threshold (crushed shadows),
+	// red at/above the highlight threshold (clipped highlights); the rest
+	// of the image keeps its normal color. A NEAR-CLIPPING warning, not a
+	// proof of irreversible loss (a legitimately black/white surface
+	// flags the same). The scene post-fx chain stays LIVE under them (the
+	// DebugVisualizationActive/ExposureMeteringActive exclusions) —
+	// otherwise the view would inspect a different image than the player
+	// sees.
+	ClippingCombined = 30,   // blue shadows + red highlights in one view
+	ClippingShadows = 31,    // blue shadows only (rest keeps the image)
+	ClippingHighlights = 32, // red highlights only (rest keeps the image)
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -478,6 +493,29 @@ enum class ViewMode : int {
 		return true;
 	default:
 		return false;
+	}
+}
+
+// The clipping views (see the ViewMode block): image-level tonemap-pass
+// diagnostics — the post-fx chain must stay live under them, so
+// DebugVisualizationActive and ExposureMeteringActive both exclude them
+// (the IsSsgiDiffuseDebugView precedent: these annotate the image, they
+// do not replace it).
+[[nodiscard]] inline bool IsClippingDebugView(ViewMode v) {
+	return v == ViewMode::ClippingCombined
+		|| v == ViewMode::ClippingShadows
+		|| v == ViewMode::ClippingHighlights;
+}
+
+// The tonemap pass's debugView push value for a view (0 = the normal
+// composite; 1 = motion vectors — see tonemap.frag.hlsl's branches).
+[[nodiscard]] inline uint32_t TonemapDebugViewId(ViewMode v) {
+	switch (v) {
+	case ViewMode::MotionVectors: return 1u;
+	case ViewMode::ClippingCombined: return 2u;
+	case ViewMode::ClippingShadows: return 3u;
+	case ViewMode::ClippingHighlights: return 4u;
+	default: return 0u;
 	}
 }
 
@@ -3432,6 +3470,12 @@ public:
 	// 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
 	// Exposure section; applied per-frame onto the tonemapDesc push.
 	uint32_t m_tonemapMode = smvk::kTonemapGT7;
+
+	// Clipping-view thresholds (IsClippingDebugView; display-encoded SDR
+	// luma, ImGui sliders in the Debug panel): shadow at/below, highlight
+	// at/above. Defaults 0.01/0.99 over the sRGB-encoded 0..1 range.
+	float m_shadowClipThreshold = 0.01f;
+	float m_highlightClipThreshold = 0.99f;
 	// ---- AO (the SSGI post chain — Engine/Rendergraph/ssgi.h; GTAO is
 	// deprecated and removed). Runs AFTER Main (Main exports the
 	// AO-sensitive lighting through an aoTerm MRT target, the compose

@@ -72,8 +72,13 @@ struct TonemapPush {
 	float srcUvMinY = 0.0f;
 	float srcUvMaxX = 1.0f;
 	float srcUvMaxY = 1.0f;
+	// Clipping debug views (debugView 2..4): the display-encoded SDR luma
+	// thresholds — shadow at/below, highlight at/above. Must stay
+	// layout-identical to the HLSL mirror (the appended tail).
+	float shadowClipThreshold = 0.01f;
+	float highlightClipThreshold = 0.99f;
 };
-static_assert(sizeof(TonemapPush) == 80);
+static_assert(sizeof(TonemapPush) == 88);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -83,6 +88,10 @@ inline constexpr uint32_t kTonemapGT7 = 3;
 struct TonemapDesc {
 	float exposure = 0.02f;
 	uint32_t tonemapMode = kTonemapACES;
+	// Clipping debug views (debugView 2..4): display-encoded SDR luma
+	// thresholds, carried into the push by AddTonemapPass.
+	float shadowClipThreshold = 0.01f;
+	float highlightClipThreshold = 0.99f;
 	const char* name = "Tonemap";
 };
 
@@ -144,7 +153,12 @@ struct Tonemapper {
 	// handles/indices, so the pass is safe once this call returns.
 	// bloomView may be empty (or bloomBindless UINT32_MAX) to disable bloom.
 	// debugView 1 samples motionView/motionBindless instead of compositing
-	// the scene (motion vector debug visualization).
+	// the scene (motion vector debug visualization). debugView 2..4 are the
+	// CLIPPING views: the scene composites NORMALLY (exposure/bloom/
+	// tonemap/LUT all live) and the final mapped color is annotated —
+	// 2 = combined (blue shadows + red highlights), 3 = shadows only,
+	// 4 = highlights only; the thresholds ride the desc. Modes 2..4 need
+	// NO motion texture (only mode 1 validates against it).
 	// gammaEncodeOutput: set when the color targets are NOT hardware-sRGB
 	// (the SMAA ldr intermediate, or a non-sRGB surface fallback) - the
 	// shader then writes sRGB-encoded bytes itself.
@@ -201,7 +215,11 @@ struct Tonemapper {
 		assert(!swapViews.empty());
 
 		const bool bloomOn = !bloomView.empty() && bloomBindlessIndex != UINT32_MAX && bloomIntensity > 0.0f;
-		const bool motionDebugOn = debugView != 0 &&
+		// Mode-specific validation: ONLY the motion view (1) needs a motion
+		// texture. The clipping views (2..4) annotate the normal composite
+		// and must stay armed without one (the old any-nonzero-mode check
+		// silently disabled them whenever motion vectors were absent).
+		const bool motionDebugOn = debugView == 1 &&
 			!motionView.empty() && motionBindlessIndex != UINT32_MAX;
 		const bool aoOn = !aoView.empty() && aoBindlessIndex != UINT32_MAX && aoIntensity > 0.0f;
 		TonemapPush push{};
@@ -211,7 +229,10 @@ struct Tonemapper {
 		push.tonemapMode = overrideDesc.tonemapMode;
 		push.bloomTextureIndex = bloomOn ? bloomBindlessIndex : UINT32_MAX;
 		push.bloomIntensity = bloomOn ? bloomIntensity : 0.0f;
-		push.debugView = motionDebugOn ? debugView : 0;
+		// Mode 1 without a valid motion texture falls back to the scene
+		// (the old any-mode safety, narrowed to the mode that needs it);
+		// the clipping views (2..4) pass through unconditionally.
+		push.debugView = (debugView == 1u && !motionDebugOn) ? 0u : debugView;
 		push.motionTextureIndex = motionDebugOn ? motionBindlessIndex : UINT32_MAX;
 		push.motionDebugScale = motionDebugScale;
 		push.gammaEncode = gammaEncodeOutput ? 1u : 0u;
@@ -226,6 +247,8 @@ struct Tonemapper {
 		push.srcUvMinY = srcUvMinY;
 		push.srcUvMaxX = srcUvMaxX;
 		push.srcUvMaxY = srcUvMaxY;
+		push.shadowClipThreshold = overrideDesc.shadowClipThreshold;
+		push.highlightClipThreshold = overrideDesc.highlightClipThreshold;
 
 		std::vector<LogicalImageViewHandle> inputs;
 		inputs.reserve((bloomOn ? 1 : 0) + (motionDebugOn ? 1 : 0) + (aoOn ? 1 : 0) + 1);

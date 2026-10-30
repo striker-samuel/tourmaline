@@ -1125,7 +1125,28 @@ namespace engine {
 			else if (dv == "sss") m_debugView = ViewMode::SssPreview;
 			else if (dv == "hair") m_debugView = ViewMode::HairPreview;
 			else if (dv == "water") m_debugView = ViewMode::WaterPreview;
+			// Clipping views (tonemap-pass image diagnostics): combined /
+			// shadows-only / highlights-only.
+			else if (dv == "clipping" || dv == "clip" || dv == "clippingcombined")
+				m_debugView = ViewMode::ClippingCombined;
+			else if (dv == "clipdark" || dv == "clippingshadows" || dv == "shadowclip")
+				m_debugView = ViewMode::ClippingShadows;
+			else if (dv == "clipbright" || dv == "clippinghighlights" || dv == "highlightclip")
+				m_debugView = ViewMode::ClippingHighlights;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
+		}
+		// Clipping-threshold headless pins (the ImGui slider values, for A/B
+		// sweeps without UI interaction): display-encoded SDR luma, clamped
+		// to the sliders' ranges. Read regardless of the active view so a
+		// threshold can be pinned before the view switches; the sliders
+		// keep editing live afterwards.
+		if (const char* darkEnv = std::getenv("TOURMALINE_CLIP_DARK")) {
+			m_shadowClipThreshold =
+				std::max(0.0f, std::min(0.1f, float(std::atof(darkEnv))));
+		}
+		if (const char* brightEnv = std::getenv("TOURMALINE_CLIP_BRIGHT")) {
+			m_highlightClipThreshold =
+				std::max(0.9f, std::min(1.0f, float(std::atof(brightEnv))));
 		}
 		// Postfx headless pins (AA/SSR/bloom/AO/exposure/cubemap) live in
 		// ApplyHeadlessPostfxOverrides (re-applied after the scene seed).
@@ -5401,7 +5422,11 @@ namespace engine {
 		// lit HDR the same way, so any active mode freezes adaptation at
 		// the pre-switch value too; turning the view/mode off resumes
 		// adapting from the held exposure.
-		if (m_debugView != ViewMode::Lit)
+		// The clipping views are EXCLUDED: they annotate the real scene
+		// image (the tonemap's debug branch), so adaptation must keep
+		// running — freezing it would change the image being inspected.
+		if (m_debugView != ViewMode::Lit
+			&& !IsClippingDebugView(m_debugView))
 			return false;
 #if defined(DS_DEBUG_VIZ)
 		if (m_dsDebugMode != DsDebugViz::Off)
@@ -5426,7 +5451,12 @@ namespace engine {
 		// effects must stay off their readout exactly like the flat
 		// views'); their LIT-PATH inputs stay live via
 		// FlatDebugViewActive (see its header note).
-		if (m_debugView != ViewMode::Lit)
+		// The clipping views are EXCLUDED: they inspect the FINAL image
+		// in the tonemap pass — SSR, volumetric fog, bloom and friends
+		// must stay live or the view would inspect a different image than
+		// the player sees (the IsSsgiDiffuseDebugView precedent).
+		if (m_debugView != ViewMode::Lit
+			&& !IsClippingDebugView(m_debugView))
 			return true;
 		if (m_giDebug != 0)
 			return true;
@@ -7995,7 +8025,8 @@ namespace engine {
 		// DebugVisualizationActive (their chain must stay live to have
 		// something to visualize), so they pass the gate below too.
 		if (!DebugVisualizationActive()
-			&& !IsSsgiDiffuseDebugView(m_debugView))
+			&& !IsSsgiDiffuseDebugView(m_debugView)
+			&& !IsClippingDebugView(m_debugView))
 			return;
 		// Resolve the title + the legend lines for the active layer.
 		const char* title = nullptr;
@@ -8167,6 +8198,16 @@ namespace engine {
 				lines[0] = "the SIGNED s x (ssgi - baseline) delta:";
 				lines[1] = "green = brightens, red = dimmer than the baked";
 				lines[2] = "ambient it replaces, black = no change.";
+				break;
+			case ViewMode::ClippingCombined:
+			case ViewMode::ClippingShadows:
+			case ViewMode::ClippingHighlights:
+				title = m_debugView == ViewMode::ClippingShadows
+					? "Clipping: shadows" : m_debugView == ViewMode::ClippingHighlights
+					? "Clipping: highlights" : "Clipping: shadows + highlights";
+				lines[0] = "BLUE = display luma at/below the shadow threshold,";
+				lines[1] = "RED = at/above the highlight threshold (sliders in";
+				lines[2] = "the Debug panel; in-range pixels keep their color).";
 				break;
 			default:
 				return; // Lit with no overlays - nothing to hint
@@ -14199,6 +14240,14 @@ namespace engine {
 			smvk::TonemapDesc tonemapDesc = m_viewportResources.tonemap.desc;
 			tonemapDesc.exposure = frameExposure;
 			tonemapDesc.tonemapMode = m_tonemapMode;
+			// The clipping views' thresholds (debugView 2..4 reads them;
+			// harmless zeros for every other mode).
+			tonemapDesc.shadowClipThreshold = m_shadowClipThreshold;
+			tonemapDesc.highlightClipThreshold = m_highlightClipThreshold;
+			// The tonemap's debug branch id: 1 = motion vectors (the old
+			// overlay, reclassified), 2..4 = the clipping views (both ride
+			// the same push word; see TonemapDebugViewId).
+			const uint32_t tonemapDebugView = TonemapDebugViewId(m_debugView);
 			// Layer write: confined to the element's rect (Load preserves
 			// sibling layers for sub-rects; full-swap keeps Clear).
 			auto& tonemapPass = m_viewportResources.tonemap.AddTonemapPass(
@@ -14215,11 +14264,12 @@ namespace engine {
 				"Tonemap",
 				motionView,
 				motionBindless,
-				// The motion-vector DEBUG VIEW (ViewMode::MotionVectors —
-				// the old m_showMotionDebug overlay, reclassified): the
-				// tonemap's debug branch replaces the scene composite
-				// entirely while a view is active.
-				(m_debugView == ViewMode::MotionVectors) ? 1u : 0u,
+				// The tonemap's DEBUG VIEW id (1 = the motion vectors —
+				// the old m_showMotionDebug overlay, reclassified — which
+				// replaces the scene composite; 2..4 = the clipping views,
+				// which annotate the normal composite; see
+				// TonemapDebugViewId).
+				tonemapDebugView,
 				m_motionDebugScale,
 				{},
 				UINT32_MAX,
@@ -14248,7 +14298,10 @@ namespace engine {
 					"TonemapCapture",
 					motionView,
 					motionBindless,
-					(m_debugView == ViewMode::MotionVectors) ? 1u : 0u,
+					// The capture grades the same image the player sees —
+					// clipping annotations included (TonemapCapture pairs
+					// with the Tonemap call's debug id above).
+					tonemapDebugView,
 					m_motionDebugScale,
 					{},
 					UINT32_MAX,
@@ -14903,6 +14956,9 @@ namespace engine {
 							"PBR / SSS (naive preview)",
 							"PBR / Hair (naive preview)",
 							"PBR / Water (naive preview)",
+							"Clipping (shadows + highlights)",
+							"Clipping (shadows only)",
+							"Clipping (highlights only)",
 						};
 						// Combo index <-> ViewMode mapping (SsrContribution stays
 						// env-only; UV1 and Normals are combo/env only; the
@@ -14932,6 +14988,11 @@ namespace engine {
 							ViewMode::SssPreview,
 							ViewMode::HairPreview,
 							ViewMode::WaterPreview,
+							// Clipping views: tonemap-pass annotations (the
+							// post-fx chain stays live under them).
+							ViewMode::ClippingCombined,
+							ViewMode::ClippingShadows,
+							ViewMode::ClippingHighlights,
 						};
 						// The combo count follows the arrays (the old hardcoded
 						// 20 once left appended modes existing but unselectable).
@@ -14945,6 +15006,15 @@ namespace engine {
 						// (clears the R/F8 + Y overlay views).
 						if (ImGui::Combo("Debug view", &view, viewNames, viewCount))
 							SetDebugView(kComboViews[view]);
+						// Clipping-view thresholds (display-encoded SDR
+						// luma): the sliders only show while a clipping
+						// view is active.
+						if (IsClippingDebugView(m_debugView)) {
+							ImGui::SliderFloat("Shadow clipping threshold",
+								&m_shadowClipThreshold, 0.0f, 0.1f, "%.3f");
+							ImGui::SliderFloat("Highlight clipping threshold",
+								&m_highlightClipThreshold, 0.9f, 1.0f, "%.3f");
+						}
 						// Motion vectors (V): the tonemap's debug view —
 						// direction -> hue, magnitude -> intensity, jitter
 						// stripped (TRUE motion). Gated on the motion pass
