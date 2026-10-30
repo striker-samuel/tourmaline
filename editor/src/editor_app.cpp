@@ -114,8 +114,8 @@ bool EditorApp::SceneEmpty() const {
 	// definition-backed by construction.
 	return !m_world
 		|| (m_world->scene.tables.meshes.empty()
-			&& m_world->scene.lightForNode.empty()
-			&& m_world->scene.cameraForNode.empty());
+			&& m_world->scene.tables.lights.empty()
+			&& m_world->scene.tables.cameras.empty());
 }
 
 bool EditorApp::OpenScene(const std::string& path) {
@@ -1141,11 +1141,12 @@ bool EditorApp::TryLoadGiVolumes() {
 		std::string path;
 	};
 	std::vector<Bound> bound;
-	for (const auto& [node, def] : m_world->scene.giVolumeForNode)
-		if (!def.bakeSource.empty())
-			bound.push_back({ node, def.bakeSource });
+	for (const GiVolumeRow& row : m_world->scene.tables.giVolumes)
+		if (!row.volume.bakeSource.empty())
+			bound.push_back({ row.node, row.volume.bakeSource });
 	if (bound.empty()) {
-		const bool hasGiVolumes = !m_world->scene.giVolumeForNode.empty();
+		const bool hasGiVolumes =
+			!m_world->scene.tables.giVolumes.empty();
 		Log(hasGiVolumes
 			? "Convex GI volumes: authored but none baked (bake via "
 			  "Bake GI / the cook; the bake stamps the tour's giAsset "

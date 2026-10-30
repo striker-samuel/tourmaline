@@ -1391,10 +1391,10 @@ namespace editor {
 					name.empty() ? "(unnamed)" : name.c_str(),
 					FindMesh(m_world->scene, n) != nullptr ? " [mesh]" : "",
 					FindNodeLight(n) ? " [light]" : "",
-					m_world->scene.giVolumeForNode.contains(n) ? " [giv]" : "",
-					m_world->scene.cubemapForNode.contains(n) ? " [cube]" : "",
-					m_world->scene.cameraForNode.contains(n) ? " [camera]" : "",
-					m_world->scene.exportForNode.contains(n) ? " [export]" : "",
+					(FindGiVolume(m_world->scene, n) != nullptr) ? " [giv]" : "",
+					(FindCubemap(m_world->scene, n) != nullptr) ? " [cube]" : "",
+					(FindCamera(m_world->scene, n) != nullptr) ? " [camera]" : "",
+					(FindExport(m_world->scene, n) != nullptr) ? " [export]" : "",
 					IsEnvNode(n) ? " [env]" : "",
 					(IsLocatorNode(m_world->scene, n) && !IsRefPlaceholder(n))
 						? " [locator]" : "",
@@ -1468,10 +1468,10 @@ namespace editor {
 		std::snprintf(label, sizeof(label), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 			name.empty() ? "(node)" : name.c_str(),
 			hasMesh ? " [mesh]" : "", lightTag,
-			scene.giVolumeForNode.contains(node) ? " [giv]" : "",
-			scene.cubemapForNode.contains(node) ? " [cube]" : "",
-			scene.cameraForNode.contains(node) ? " [camera]" : "",
-			scene.exportForNode.contains(node) ? " [export]" : "",
+			(FindGiVolume(scene, node) != nullptr) ? " [giv]" : "",
+			(FindCubemap(scene, node) != nullptr) ? " [cube]" : "",
+			(FindCamera(scene, node) != nullptr) ? " [camera]" : "",
+			(FindExport(scene, node) != nullptr) ? " [export]" : "",
 			IsNoLightmapNode(scene, int(node)) ? " [noLM]" : "",
 			IsLightmapNode(scene, int(node)) ? " [LM]" : "",
 			IsDitherCloseupNode(scene, int(node)) ? " [dither]" : "",
@@ -1828,10 +1828,10 @@ namespace editor {
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
 		Scene& scene = m_world->scene;
-		auto it = scene.giVolumeForNode.find(node);
-		if (it == scene.giVolumeForNode.end())
+		auto it = FindGiVolume(scene, node);
+		if (!it)
 			return;
-		::SceneGiVolume& def = it->second;
+		::SceneGiVolume& def = it->volume;
 		ImGui::Separator();
 		ImGui::Text("Convex volume: '%s'",
 			getNodeName(scene, int(node)).c_str());
@@ -1976,8 +1976,8 @@ namespace editor {
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
 		Scene& scene = m_world->scene;
-		auto it = scene.exportForNode.find(node);
-		if (it == scene.exportForNode.end())
+		auto it = FindExport(scene, node);
+		if (!it)
 			return;
 		ImGui::Separator();
 		ImGui::Text("Export settings: '%s'",
@@ -2042,7 +2042,7 @@ namespace editor {
 			endDrag(attr);
 		};
 
-		const SceneExportSettings& es = it->second;
+		const SceneExportSettings& es = it->settings;
 		setBool("MeshOpt (meshoptimizer)", "meshopt", es.meshopt,
 			"Reorder vertices/indices for GPU cache efficiency.");
 		setBool("Generate LODs", "lods", es.lods,
@@ -2140,10 +2140,10 @@ namespace editor {
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
 		Scene& scene = m_world->scene;
-		auto it = scene.cubemapForNode.find(node);
-		if (it == scene.cubemapForNode.end())
+		auto it = FindCubemap(scene, node);
+		if (!it)
 			return;
-		::SceneCubemap& def = it->second;
+		::SceneCubemap& def = it->cubemap;
 		ImGui::Separator();
 		ImGui::Text("Cubemap capture: '%s'",
 			getNodeName(scene, int(node)).c_str());
@@ -2191,7 +2191,7 @@ namespace editor {
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
 		Scene& scene = m_world->scene;
-		if (!scene.cameraForNode.contains(node))
+		if (!(FindCamera(scene, node) != nullptr))
 			return;
 		ImGui::Separator();
 		ImGui::Text("Camera: '%s'",
@@ -3520,7 +3520,7 @@ namespace editor {
 			rows.size(), m_probeDrawnLast);
 		if (m_world) {
 			ImGui::Text("Authored pins: %zu node(s)",
-				m_world->scene.cubemapForNode.size());
+				m_world->scene.tables.cubemaps.size());
 		}
 		legendSwatch(IM_COL32(80, 255, 120, 230));
 		ImGui::TextUnformatted("camera inside influence (full weight)");
@@ -3588,7 +3588,7 @@ namespace editor {
 		ImGui::Separator();
 		ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
 		ImGui::TextDisabled("%u GI volume node(s) authored in this scene",
-			m_world ? uint32_t(m_world->scene.giVolumeForNode.size()) : 0u);
+			m_world ? uint32_t(m_world->scene.tables.giVolumes.size()) : 0u);
 		ImGui::TextDisabled("bake selectors (giVolumes) live on the "
 			"ExportSettings node (the world-field selector is retired "
 			"with the octree)");
@@ -3649,13 +3649,14 @@ namespace editor {
 		// shares the overlay's match, so the readout and the balls agree —
 		// black balls with "0/N baked" means no baked cubemap is loaded for
 		// these pins (bake + rebind first), not a display bug.
-		if (m_world && !m_world->scene.cubemapForNode.empty()) {
+		if (m_world && !m_world->scene.tables.cubemaps.empty()) {
 			size_t bakedCount = 0, totalCount = 0;
 			CaptureBakeState(bakedCount, totalCount);
 			ImGui::TextDisabled("captures (click to select): %zu/%zu baked",
 				bakedCount, totalCount);
 			int shown = 0;
-			for (const auto& [node, def] : m_world->scene.cubemapForNode) {
+			for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+		const NodeId node = _row.node; const auto& def = _row.cubemap;
 				if (shown++ >= 12)
 					break;
 				(void)def;
@@ -6373,3 +6374,4 @@ namespace editor {
 	}
 
 } // namespace editor
+

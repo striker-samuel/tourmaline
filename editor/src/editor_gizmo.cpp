@@ -290,9 +290,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// Flat-UV wires live in the UV editor window (its own record pass
 	// with the window's zoom/pan) — never in viewport gizmo batches.
 	if (lightSetVisible && m_showLightGizmos
-		&& !m_world->scene.lightForNode.empty()) {
+		&& !m_world->scene.tables.lights.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
-		for (const auto& [node, li] : m_world->scene.lightForNode) {
+		for (const LightRow& _row : m_world->scene.tables.lights) {
+		const NodeId node = _row.node; const auto& li = _row.light;
 			if (node >= m_world->scene.hierarchy.size() ||
 				node >= m_world->scene.globalTransform.size())
 				continue;
@@ -399,7 +400,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// selection draws bright. LIGHTING mode only — GI volume nodes carry
 	// no mesh to click.
 	if (lightSetVisible && m_showGiVolumeGizmos
-		&& !m_world->scene.giVolumeForNode.empty()) {
+		&& !m_world->scene.tables.giVolumes.empty()) {
 		const auto priorityRgb = [](uint32_t priority) {
 			// HSV(h, 0.7, 1.0) with h = priority * 0.13 mod 1 (same
 			// hue as DrawGiVolumePreviewOverlay's priorityColor).
@@ -419,7 +420,8 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			else { r = c; b = x; }
 			return glm::vec3(r + m, g + m, b + m);
 		};
-		for (const auto& [node, def] : m_world->scene.giVolumeForNode) {
+		for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+		const NodeId node = _row.node; const auto& def = _row.volume;
 			glm::vec3 corners[8];
 			if (!GiVolumeBoxCorners(node, corners))
 				continue;
@@ -458,9 +460,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// renders it inside Main with the scene's depth/IBL.
 	// LIGHTING mode only, like the rest of the light set.
 	if (lightSetVisible && m_showCubemapGizmos
-		&& !m_world->scene.cubemapForNode.empty()) {
+		&& !m_world->scene.tables.cubemaps.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
-		for (const auto& [node, def] : m_world->scene.cubemapForNode) {
+		for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+		const NodeId node = _row.node; const auto& def = _row.cubemap;
 			if (node >= m_world->scene.hierarchy.size()
 				|| node >= m_world->scene.globalTransform.size())
 				continue;
@@ -491,11 +494,12 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 	// follows the active viewport (schematic when panels disagree).
 	// LIGHTING mode steps these aside (the light set owns the viewport).
 	if (m_showCameraGizmos && !lightingFocus
-		&& !m_world->scene.cameraForNode.empty()) {
+		&& !m_world->scene.tables.cameras.empty()) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		const ViewportRect& ar = m_viewports[m_activeVp].rect;
 		const float aspect = ar.h > 0.0f ? ar.w / ar.h : 16.0f / 9.0f;
-		for (const auto& [node, ci] : m_world->scene.cameraForNode) {
+		for (const CameraRow& _row : m_world->scene.tables.cameras) {
+		const NodeId node = _row.node; const auto& ci = _row.camera;
 			const ::SceneCamera* C = FindNodeCamera(node);
 			if (!C || node >= m_world->scene.hierarchy.size()
 				|| node >= m_world->scene.globalTransform.size())

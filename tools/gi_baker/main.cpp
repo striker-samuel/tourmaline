@@ -932,7 +932,9 @@ int Run(Args& args) {
 	// probe lattice stays axis-aligned over the OBB's AABB (Bounds);
 	// the plane weights carve the rotated hull.
 	std::vector<GiVolumeSpecVolume> tourGiVolumes;
-	for (const auto& [node, def] : cluster->scene.giVolumeForNode) {
+	for (const GiVolumeRow& row : cluster->scene.tables.giVolumes) {
+		const NodeId node = row.node;
+		const SceneGiVolume& def = row.volume;
 		if (node >= cluster->scene.globalTransform.size())
 			continue;
 		GiVolumeSpecVolume v{};
@@ -1396,9 +1398,8 @@ int Run(Args& args) {
 			// is the editor's partial-bake path: an edit far outside a
 			// volume's reach never re-traces it.
 			if (spec.node != UINT32_MAX) {
-				auto cvIt = cluster->scene.giVolumeForNode.find(spec.node);
-				if (cvIt != cluster->scene.giVolumeForNode.end()
-						&& !cvIt->second.bakeSource.empty()
+				auto cvIt = FindGiVolume(cluster->scene, spec.node);
+				if (cvIt && !cvIt->volume.bakeSource.empty()
 						&& spec.node
 							< cluster->scene.globalTransform.size()) {
 					smvk::gi::GiVolumeBakeConfigHashInputs hc{};
@@ -1408,7 +1409,7 @@ int Run(Args& args) {
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
 				const std::string fresh = smvk::gi::GiVolumeBakeUnitHash(
-					bakeGrid, *cluster, cvIt->second,
+					bakeGrid, *cluster, cvIt->volume,
 					cluster->scene.globalTransform[spec.node], hc);
 				// The skip requires the bound ARTIFACT to exist (a fresh
 				// project checkout/relocation carries the tour but not
@@ -1417,18 +1418,18 @@ int Run(Args& args) {
 				// record).
 				std::error_code skipEc;
 				const bool boundExists =
-					!cvIt->second.bakeSource.empty()
+					!cvIt->volume.bakeSource.empty()
 					&& std::filesystem::is_regular_file(
 						std::filesystem::path(args.contentDir)
 						/ std::filesystem::path(
-							cvIt->second.bakeSource), skipEc);
-				if (fresh == cvIt->second.bakeInputHash && boundExists) {
+							cvIt->volume.bakeSource), skipEc);
+				if (fresh == cvIt->volume.bakeInputHash && boundExists) {
 					tool::out() << "  [GIV] volume '" << spec.def.name
 						<< "': inputs unchanged — SKIPPED (the bound "
 						"bake stands)\n";
 					continue;
 				}
-				if (fresh == cvIt->second.bakeInputHash && !boundExists)
+				if (fresh == cvIt->volume.bakeInputHash && !boundExists)
 					tool::out() << "  [GIV] volume '" << spec.def.name
 						<< "': inputs unchanged but the bound bake is"
 						" missing — baking (fresh project/relocation"
@@ -1449,15 +1450,15 @@ int Run(Args& args) {
 			float spacingLow = 0.0f, spacingHigh = 0.0f;
 			const smvk::gi::GiVolumeLayoutSeed* seedPtr = nullptr;
 			if (spec.node != UINT32_MAX) {
-				auto cvIt2 = cluster->scene.giVolumeForNode.find(spec.node);
-				if (cvIt2 != cluster->scene.giVolumeForNode.end()) {
-					seed.spacing = cvIt2->second.optSpacing;
-					seed.phase[0] = cvIt2->second.optPhase[0];
-					seed.phase[1] = cvIt2->second.optPhase[1];
-					seed.phase[2] = cvIt2->second.optPhase[2];
-					seedPtr = cvIt2->second.optSpacing > 0.0f ? &seed : nullptr;
-					spacingLow = cvIt2->second.spacingLow;
-					spacingHigh = cvIt2->second.spacingHigh;
+				auto cvIt2 = FindGiVolume(cluster->scene, spec.node);
+				if (cvIt2) {
+					seed.spacing = cvIt2->volume.optSpacing;
+					seed.phase[0] = cvIt2->volume.optPhase[0];
+					seed.phase[1] = cvIt2->volume.optPhase[1];
+					seed.phase[2] = cvIt2->volume.optPhase[2];
+					seedPtr = cvIt2->volume.optSpacing > 0.0f ? &seed : nullptr;
+					spacingLow = cvIt2->volume.spacingLow;
+					spacingHigh = cvIt2->volume.spacingHigh;
 				}
 			}
 			if (!smvk::gi::BakeGiVolume(traceScene, spec.def, spec.spacing,
@@ -1497,16 +1498,16 @@ int Run(Args& args) {
 			// extras carry no node and stay unbound (the pak embeds
 			// exactly what the scene binds).
 			if (spec.node != UINT32_MAX) {
-				auto cvIt = cluster->scene.giVolumeForNode.find(spec.node);
-				if (cvIt == cluster->scene.giVolumeForNode.end()) {
+				auto cvIt = FindGiVolume(cluster->scene, spec.node);
+				if (!cvIt) {
 					tool::err() << "baked volume's node "
 						<< spec.node << " not in the replayed scene — "
 						"binding dropped\n";
 					return 1;
 				}
-				cvIt->second.bakeSource =
+				cvIt->volume.bakeSource =
 					VfsRelPath(args.contentDir, outPath);
-				cvIt->second.bakeGuid.clear();
+				cvIt->volume.bakeGuid.clear();
 				// The bake-input hash AT BAKE TIME (the pak gate's
 				// freshness check + the next run's skip).
 				if (spec.node < cluster->scene.globalTransform.size()) {
@@ -1516,14 +1517,14 @@ int Run(Args& args) {
 					hc.captureSpacing = 0.0f;
 					hc.smoothingPasses = cfg.smoothingPasses;
 					hc.maskTransmission = maskTransmission;
-					cvIt->second.bakeInputHash =
+					cvIt->volume.bakeInputHash =
 						smvk::gi::GiVolumeBakeUnitHash(bakeGrid, *cluster,
-							cvIt->second,
+							cvIt->volume,
 							cluster->scene.globalTransform[spec.node],
 							hc);
 				}
 				else
-					cvIt->second.bakeInputHash.clear();
+					cvIt->volume.bakeInputHash.clear();
 			}
 			else {
 				tool::out() << "  (unbound: no authored node for '"
@@ -1793,3 +1794,4 @@ int main(int argc, char** argv) {
 	return gibaker::Run(args);
 }
 #endif
+

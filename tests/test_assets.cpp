@@ -1962,7 +1962,7 @@ void TestClusterSerializeCook() {
 	Check(lh.valid(), "cook.light.handle");
 	Check(cluster->RegisterLightUri("models/q.gltf#light.0", lh), "cook.light.uri");
 	const int lightNode = addNode(cluster->scene, root, 1);
-	cluster->scene.lightForNode[(uint32_t)lightNode] = lh.index();
+	SetLight(cluster->scene, NodeId(lightNode), lh.index());
 	setNodeName(cluster->scene, lightNode, "LampNode");
 
 	PakWriter writer;

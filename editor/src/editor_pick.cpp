@@ -281,7 +281,8 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 		found = true;
 	};
 	if (m_showLightGizmos) {
-		for (const auto& [node, li] : scene.lightForNode) {
+		for (const LightRow& _row : scene.tables.lights) {
+		const NodeId node = _row.node; const auto& li = _row.light;
 			(void)li;
 			if (node >= scene.globalTransform.size())
 				continue;
@@ -289,7 +290,8 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 		}
 	}
 	if (m_showGiVolumeGizmos) {
-		for (const auto& [node, def] : scene.giVolumeForNode) {
+		for (const GiVolumeRow& _row : scene.tables.giVolumes) {
+		const NodeId node = _row.node; const auto& def = _row.volume;
 			(void)def;
 			glm::vec3 mn, mx;
 			if (!GiVolumeBox(node, mn, mx))
@@ -298,7 +300,8 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 		}
 	}
 	if (m_showCubemapGizmos) {
-		for (const auto& [node, def] : scene.cubemapForNode) {
+		for (const CubemapRow& _row : scene.tables.cubemaps) {
+		const NodeId node = _row.node; const auto& def = _row.cubemap;
 			(void)def;
 			if (node >= scene.globalTransform.size())
 				continue;

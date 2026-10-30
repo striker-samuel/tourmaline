@@ -165,7 +165,7 @@ StaticMergeResult CollapseStaticSubtrees(
 		{
 			const int nameIdx = (int)scene.nodeNames.size();
 			scene.nodeNames.push_back("StaticMerged");
-			scene.nameForNode[(uint32_t)node] = (uint32_t)nameIdx;
+			SetNodeNameIndex(scene, (uint32_t)node, (uint32_t)nameIdx);
 		}
 		// Merged blocks are frozen by construction.
 		scene.staticRoot[(size_t)node] = 1;

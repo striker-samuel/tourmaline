@@ -266,7 +266,7 @@ namespace paktool {
 		if (!h.valid())
 			return;
 		cluster.RegisterLightUri("sun/world", h);
-		cluster.scene.lightForNode[uint32_t(node)] = h.index();
+		SetLight(cluster.scene, uint32_t(node), h.index());
 		tool::out() << "World sun synthesized (env block): az=" << be.sunAzimuth
 			<< " el=" << be.sunElevation << " I=" << be.sunIntensity
 			<< " rgb=(" << be.sunColor.x << "," << be.sunColor.y
@@ -1872,7 +1872,7 @@ int Run(const PakArgs& c) {
 					<< cluster->lights.numObjects() << " lights"
 					<< " (dir=" << nDir << " point=" << nPoint
 					<< " spot=" << nSpot << ", links="
-					<< cluster->scene.lightForNode.size() << ")\n";
+					<< cluster->scene.tables.lights.size() << ")\n";
 			}
 			tool::out() << "Cooking artifact: '" << inVfs << "'\n";
 			sceneNames.push_back("");
@@ -2155,7 +2155,9 @@ int Run(const PakArgs& c) {
 						" runtime — not embedded, not freshness-gated)\n";
 			}
 			// ---- GI volumes (giAsset kind givolume) ----
-			for (const auto& [node, def] : sn.giVolumeForNode) {
+			for (const GiVolumeRow& row : sn.tables.giVolumes) {
+				const NodeId node = row.node;
+				const SceneGiVolume& def = row.volume;
 				if (def.bakeSource.empty())
 					continue; // authored but never baked: embeds nothing
 				const std::string fresh =
@@ -2381,23 +2383,23 @@ int Run(const PakArgs& c) {
 		glm::vec3 sunColor(0.0f);
 		float sunLux = 0.0f;
 		bool hasSun = false;
-		// Deterministic node order (hash-map iteration is not); the
-		// aim axis after the coordFix basis change (the same plain
-		// read as ResolveSceneLights / CollectStaticBakeLights).
+		// Deterministic node order (the table's row storage order is
+		// not); the aim axis after the coordFix basis change (the same
+		// plain read as ResolveSceneLights / CollectStaticBakeLights).
 		std::vector<uint32_t> nodes;
-		nodes.reserve(scene.lightForNode.size());
-		for (const auto& [node, lightIdx] : scene.lightForNode)
-			nodes.push_back(node);
+		nodes.reserve(scene.tables.lights.size());
+		for (const LightRow& row : scene.tables.lights)
+			nodes.push_back(row.node);
 		std::sort(nodes.begin(), nodes.end());
 		const glm::vec3 aimAxis = GltfPunctualAimAxis(0);
 		for (uint32_t node : nodes) {
 			if (node >= scene.globalTransform.size())
 				continue;
-			const auto lit = scene.lightForNode.find(node);
-			if (lit == scene.lightForNode.end())
+			const LightRow* lit = FindLight(scene, node);
+			if (!lit)
 				continue;
 			const smvk::ClusterLightHandle handle =
-				sc->lights.getHandle(lit->second);
+				sc->lights.getHandle(lit->light);
 			if (!handle.valid())
 				continue;
 			const SceneLight* L = sc->lights.get(handle);

@@ -555,7 +555,7 @@ void EditorApp::ModalGiVolumePreviewCycle() {
 	m_giVolumePreviewMode = (m_giVolumePreviewMode + 1) % 5;
 	if (m_giVolumePreviewMode == 4) {
 		const size_t authored = m_world
-			? m_world->scene.giVolumeForNode.size() : 0;
+			? m_world->scene.tables.giVolumes.size() : 0;
 		Log(authored
 			? "GI volume preview: lattice (pre-bake) — "
 				+ std::to_string(authored) + " authored volume(s)"

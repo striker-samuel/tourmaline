@@ -120,17 +120,20 @@ void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
 	// subtree. (Displacement placeholders themselves always live at
 	// root, so they never qualify.)
 	std::vector<uint32_t> displaced;
-	for (const auto& [n, li] : m_world->scene.lightForNode) {
+	for (const LightRow& _row : m_world->scene.tables.lights) {
+		const NodeId n = _row.node; const auto& li = _row.light;
 		(void)li;
 		if (CreatedLightIndex(n) >= 0 && underRef(n))
 			displaced.push_back(n);
 	}
-	for (const auto& [n, cv] : m_world->scene.giVolumeForNode) {
+	for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+		const NodeId n = _row.node; const auto& cv = _row.volume;
 		(void)cv;
 		if (CreatedGiVolumeIndex(n) >= 0 && underRef(n))
 			displaced.push_back(n);
 	}
-	for (const auto& [n, cm] : m_world->scene.cubemapForNode) {
+	for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+		const NodeId n = _row.node; const auto& cm = _row.cubemap;
 		(void)cm;
 		if (CreatedCubemapIndex(n) >= 0 && underRef(n))
 			displaced.push_back(n);

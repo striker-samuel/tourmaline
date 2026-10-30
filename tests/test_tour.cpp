@@ -956,11 +956,11 @@ void TestTourReferences() {
 	Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 4,
 		"tourref created light with offset parent");
 	const uint32_t lightNode = 4;
-	auto lit = cluster->scene.lightForNode.find(lightNode);
-	Check(lit != cluster->scene.lightForNode.end(), "tourref light link");
-	if (lit != cluster->scene.lightForNode.end()) {
+	const LightRow* lit = FindLight(cluster->scene, lightNode);
+	Check(lit != nullptr, "tourref light link");
+	if (lit != nullptr) {
 		const ::SceneLight* L = cluster->lights.get(
-			cluster->lights.getHandle(lit->second));
+			cluster->lights.getHandle(lit->light));
 		Check(L && L->type == ::SceneLight::Type::Spot
 			&& L->intensity == 200.0f
 			&& (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0,
@@ -1075,10 +1075,10 @@ void TestLightVerbs() {
 		"light replay parent");
 	Check(getNodeName(cluster->scene, int(newNode)) == "Key Spot",
 		"light replay name");
-	auto lit = cluster->scene.lightForNode.find(newNode);
-	Check(lit != cluster->scene.lightForNode.end(), "light replay link");
+	const LightRow* lit = FindLight(cluster->scene, newNode);
+	Check(lit != nullptr, "light replay link");
 	const ::SceneLight* L = cluster->lights.get(
-		cluster->lights.getHandle(lit->second));
+		cluster->lights.getHandle(lit->light));
 	bool params = L && L->type == ::SceneLight::Type::Spot
 		&& L->intensity == 2000.0f && L->range == 25.0f
 		&& std::abs(L->innerConeAngle - glm::radians(20.0f)) < 1e-4f
@@ -1182,13 +1182,13 @@ void TestGiVolumeVerbs() {
 		"GI volume replay parent");
 	Check(getNodeName(cluster->scene, int(newNode)) == "GIVolume_1",
 		"GI volume replay name");
-	auto cvit = cluster->scene.giVolumeForNode.find(newNode);
-	Check(cvit != cluster->scene.giVolumeForNode.end(), "GI volume replay link");
-	Check(cvit != cluster->scene.giVolumeForNode.end()
-		&& cvit->second.priority == 2u
-		&& cvit->second.spacing == 0.25f
-		&& cvit->second.insideFade == 0.1f
-		&& cvit->second.outsideFade == 0.2f,
+	const GiVolumeRow* cvit = FindGiVolume(cluster->scene, newNode);
+	Check(cvit != nullptr, "GI volume replay link");
+	Check(cvit != nullptr
+		&& cvit->volume.priority == 2u
+		&& cvit->volume.spacing == 0.25f
+		&& cvit->volume.insideFade == 0.1f
+		&& cvit->volume.outsideFade == 0.2f,
 		"GI volume replay params (-ref spacing applied)");
 	Check(cluster->scene.localTransform[newNode][3].x == 1.0f
 		&& cluster->scene.localTransform[newNode][3].y == 2.0f,
@@ -1226,7 +1226,7 @@ void TestGiVolumeVerbs() {
 	del.commands.push_back(dc);
 	Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
 		"GI volume delete replay ok");
-	Check(!cluster->scene.giVolumeForNode.contains(newNode),
+	Check(FindGiVolume(cluster->scene, newNode) == nullptr,
 		"GI volume delete drops def");
 
 	// Out-of-range -ref fails loudly; unknown attr fails at parse.
@@ -1279,10 +1279,10 @@ void TestCreateParentSentinel() {
 		std::string err;
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
 			"sentinel parent replays (legacy -p 4294967295)");
-		Check(cluster->scene.cubemapForNode.size() == 1,
+		Check(cluster->scene.tables.cubemaps.size() == 1,
 			"sentinel-parent cubemap def created");
-		if (cluster->scene.cubemapForNode.size() == 1) {
-			const uint32_t created = cluster->scene.cubemapForNode.begin()->first;
+		if (cluster->scene.tables.cubemaps.size() == 1) {
+			const uint32_t created = cluster->scene.tables.cubemaps.begin()->node;
 			Check(cluster->scene.hierarchy[created].parent == root,
 				"sentinel parent lands at the cluster root");
 		}
@@ -1388,10 +1388,10 @@ void TestCubemapVerbs() {
 	const uint32_t newNode = uint32_t(beforeNodes);
 	Check(getNodeName(cluster->scene, int(newNode)) == "Cube_1",
 		"cube replay name");
-	auto cmit = cluster->scene.cubemapForNode.find(newNode);
-	Check(cmit != cluster->scene.cubemapForNode.end(), "cube replay link");
-	Check(cmit != cluster->scene.cubemapForNode.end()
-		&& cmit->second.radius == 2.5f,
+	const CubemapRow* cmit = FindCubemap(cluster->scene, newNode);
+	Check(cmit != nullptr, "cube replay link");
+	Check(cmit != nullptr
+		&& cmit->cubemap.radius == 2.5f,
 		"cube replay params (-ref radius applied)");
 	Check(cluster->scene.localTransform[newNode][3].y == 2.0f,
 		"cube replay position");
@@ -1420,7 +1420,7 @@ void TestCubemapVerbs() {
 	del.commands.push_back(dc);
 	Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
 		"cube delete replay ok");
-	Check(!cluster->scene.cubemapForNode.contains(newNode),
+	Check(FindCubemap(cluster->scene, newNode) == nullptr,
 		"cube delete drops def");
 
 	// Out-of-range -ref fails loudly; unknown attr fails at parse.
@@ -1526,7 +1526,7 @@ void TestCreateNode() {
 	addNode(cluster->scene, -1, 0);
 	Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err),
 		"createnode replay ok");
-	Check(cluster->scene.lightForNode.size() == 1,
+	Check(cluster->scene.tables.lights.size() == 1,
 		"createnode replay creates light");
 	Check(!warns.empty(), "createnode system replay reported");
 	// Unknown -at fails the file loudly.
@@ -1699,7 +1699,7 @@ void TestDelete() {
 	def.name = "L";
 	const uint32_t lIdx =
 		cluster->lights.create(std::move(def)).index();
-	cluster->scene.lightForNode[uint32_t(g0)] = lIdx;
+	SetLight(cluster->scene, uint32_t(g0), lIdx);
 
 	smvk::tour::Doc doc2;
 	smvk::tour::Command d{};
@@ -1718,7 +1718,7 @@ void TestDelete() {
 		"delete drops mesh link");
 	Check(FindMaterial(cluster->scene, uint32_t(g0)) == nullptr,
 		"delete drops material link");
-	Check(!cluster->scene.lightForNode.contains(uint32_t(g0)),
+	Check(FindLight(cluster->scene, uint32_t(g0)) == nullptr,
 		"delete drops light link");
 	Check(getNodeName(cluster->scene, g0) == "Deleted_Wall",
 		"delete keeps ids stable");
@@ -1783,7 +1783,7 @@ void TestIdentityLayers() {
 		"uuid same-holder idempotent");
 	Check(!smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexA),
 		"uuid duplicate rejected");
-	Check(scene.uuidForNode[uint32_t(meshA)] == hexA,
+	Check(GetNodeUuid(scene, uint32_t(meshA)) == hexA,
 		"uuid holder keeps identity");
 	Check(smvk::tour::SetNodeUuid(scene, uint32_t(meshB), hexB),
 		"uuid other node ok");
@@ -1895,7 +1895,7 @@ void TestDeleteAddressing() {
 		d2.node = 9999;
 		d2.uuid = "fedcba9876543210fedcba9876543210";
 		doc2.commands.push_back(d2);
-		cluster->scene.uuidForNode[uint32_t(meshB)] = d2.uuid;
+		SetNodeUuidRaw(cluster->scene, uint32_t(meshB), d2.uuid);
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
 			"uuid wins over stale id");
 		Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr,
@@ -2119,11 +2119,11 @@ void TestCamera() {
 		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
 			"camera replay ok");
 		Check(cluster->scene.hierarchy.size() == 2, "camera replay node");
-		const auto it = cluster->scene.cameraForNode.find(1);
-		Check(it != cluster->scene.cameraForNode.end(), "camera replay link");
-		if (it != cluster->scene.cameraForNode.end()) {
+		const CameraRow* it = FindCamera(cluster->scene, 1);
+		Check(it != nullptr, "camera replay link");
+		if (it != nullptr) {
 			const smvk::ClusterCameraHandle h =
-				cluster->cameras.getHandle(it->second);
+				cluster->cameras.getHandle(it->camera);
 			const SceneCamera* def = cluster->cameras.get(h);
 			Check(def && def->fovYDeg == 40.0f
 				&& def->projection == SceneCamera::Projection::Perspective
@@ -3208,8 +3208,8 @@ void TestSceneFlagTables() {
 	// scenes always carry names; this test populates them like real
 	// content so it exercises the flag sections' own bytes).
 	scene.nodeNames.push_back("root");
-	scene.nameForNode[0] = 0;
-	scene.nameForNode[1] = 0;
+	SetNodeNameIndex(scene, 0, 0);
+	SetNodeNameIndex(scene, 1, 0);
 	{
 		saveScene(TempTour().c_str(), scene);
 		Scene loaded;

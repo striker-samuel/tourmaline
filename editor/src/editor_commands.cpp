@@ -228,7 +228,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 		const std::string& name = forward ? c.afterText : c.beforeText;
 		const uint32_t id = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(name);
-		scene.nameForNode[c.node] = id;
+		SetNodeNameIndex(scene, c.node, id);
 		break;
 	}
 	case EditVerb::Translate:
@@ -468,8 +468,8 @@ std::string EditorApp::UniqueLightName(bool spot) const {
 	const char* base = spot ? "Spot" : "Point";
 	int n = 1;
 	if (m_world)
-		for (const auto& [node, li] : m_world->scene.lightForNode) {
-			const ::SceneLight* L = FindNodeLight(node, nullptr);
+		for (const LightRow& row : m_world->scene.tables.lights) {
+			const ::SceneLight* L = FindNodeLight(row.node, nullptr);
 			if (L && (L->type == ::SceneLight::Type::Spot) == spot)
 				++n;
 		}
@@ -490,7 +490,7 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateLight)
 			continue;
-		if (!m_world || !m_world->scene.lightForNode.contains(h.node))
+		if (!m_world || FindLight(m_world->scene, h.node) == nullptr)
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
@@ -512,7 +512,7 @@ int EditorApp::CreatedGiVolumeIndex(uint32_t worldNode) const {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateGiVolume)
 			continue;
-		if (!m_world || !m_world->scene.giVolumeForNode.contains(h.node))
+		if (!m_world || FindGiVolume(m_world->scene, h.node) == nullptr)
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
@@ -548,7 +548,7 @@ int EditorApp::CreatedCubemapIndex(uint32_t worldNode) const {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateCubemap)
 			continue;
-		if (!m_world || !m_world->scene.cubemapForNode.contains(h.node))
+		if (!m_world || FindCubemap(m_world->scene, h.node) == nullptr)
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
@@ -586,7 +586,7 @@ int EditorApp::CreatedCameraIndex(uint32_t worldNode) const {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateCamera)
 			continue;
-		if (!m_world || !m_world->scene.cameraForNode.contains(h.node))
+		if (!m_world || FindCamera(m_world->scene, h.node) == nullptr)
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
@@ -723,12 +723,12 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 		break;
 	}
 	case EditVerb::CreateGiVolume: {
-		if (!scene.giVolumeForNode.contains(created))
+		if (FindGiVolume(scene, created) == nullptr)
 			return false; // detached (tombstoned)
 		break;
 	}
 	case EditVerb::CreateCubemap: {
-		if (!scene.cubemapForNode.contains(created))
+		if (FindCubemap(scene, created) == nullptr)
 			return false; // detached (tombstoned)
 		break;
 	}
@@ -738,7 +738,7 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 		break;
 	}
 	case EditVerb::CreateExportSettings: {
-		if (!scene.exportForNode.contains(created))
+		if (FindExport(scene, created) == nullptr)
 			return false; // detached (tombstoned)
 		break;
 	}
@@ -929,21 +929,21 @@ bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
 		return false;
 	if (FindMesh(scene, node) != nullptr)
 		return false;
-	if (scene.lightForNode.contains(node))
+	if (FindLight(scene, node) != nullptr)
 		return false;
-	if (scene.cameraForNode.contains(node))
+	if (FindCamera(scene, node) != nullptr)
 		return false;
-	if (scene.decalForNode.contains(node))
+	if (FindDecal(scene, node) != nullptr)
 		return false;
-	if (scene.giVolumeForNode.contains(node))
+	if (FindGiVolume(scene, node) != nullptr)
 		return false;
-	if (scene.cubemapForNode.contains(node))
+	if (FindCubemap(scene, node) != nullptr)
 		return false;
-	if (scene.exportForNode.contains(node))
+	if (FindExport(scene, node) != nullptr)
 		return false;
-	if (scene.envForNode.contains(node))
+	if (FindEnv(scene, node) != nullptr)
 		return false;
-	if (scene.envVolumeForNode.contains(node))
+	if (FindEnvVolume(scene, node) != nullptr)
 		return false;
 	return true;
 }
@@ -995,7 +995,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	// Name (the nodeNames pool is grow-only, like Rename).
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	// Pool definition on the DYNAMIC cluster (World::EnsureDynamicCluster):
 	// runtime-created entities live there, never in the scene's cluster —
 	// pak unloads leave them alone and the scene cluster stays pure cooked
@@ -1018,7 +1018,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	auto handle = cl->lights.create(std::move(def));
 	const uint32_t worldLightIdx = uint32_t(m_world->lightLocations.size());
 	m_world->lightLocations.push_back({ cl, handle });
-	scene.lightForNode[uint32_t(created)] = worldLightIdx;
+	SetLight(scene, uint32_t(created), worldLightIdx);
 	if (m_replayingTour)
 		m_tourCreatedNodes.push_back(uint32_t(created));
 	markAsChanged(scene, created);
@@ -1040,23 +1040,23 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 		return;
 	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
-	auto lit = scene.lightForNode.find(n);
-	const bool lightTail = lit != scene.lightForNode.end()
-		&& lit->second + 1 == m_world->lightLocations.size();
+	const LightRow* lit = FindLight(scene, n);
+	const bool lightTail = lit != nullptr
+		&& lit->light + 1 == m_world->lightLocations.size();
 	if (tail && childless) {
 		// Physical removal: pop every vector addNode grew (flag arrays
 		// only when they are exactly node-sized — empty/mismatched
 		// means "default", which needs no entry).
-		if (lit != scene.lightForNode.end()) {
+		if (lit != nullptr) {
 			if (lightTail) {
-				const auto& loc = m_world->lightLocations[lit->second];
+				const auto& loc = m_world->lightLocations[lit->light];
 				if (loc.cluster)
 					loc.cluster->lights.destroy(loc.handle);
 				m_world->lightLocations.pop_back();
 			}
-			scene.lightForNode.erase(n);
+			RemoveLight(scene, n);
 		}
-		scene.nameForNode.erase(n);
+		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
 			auto& hp = scene.hierarchy[size_t(p)];
@@ -1104,7 +1104,7 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 		// Non-tail (or parented) node: keep ids stable — hide the node
 		// and detach the light instead of shifting the world.
 		MarkHidden(scene, int(n));
-		scene.lightForNode.erase(n);
+		RemoveLight(scene, n);
 		Log("Undid light creation (#" + std::to_string(n) +
 		 "): hidden, ids kept stable (pool entry retained).");
 	}
@@ -1146,7 +1146,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 	// Name (the nodeNames pool is grow-only, like Rename).
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	// Lens definition on the DYNAMIC cluster (World::EnsureDynamicCluster:
 	// runtime-created entities live there — see ExecCreateLight).
 	// FindNodeCamera resolves world cameras through cameraLocations ->
@@ -1164,7 +1164,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 	auto handle = cl->cameras.create(std::move(def));
 	const uint32_t worldCamIdx = uint32_t(m_world->cameraLocations.size());
 	m_world->cameraLocations.push_back({ cl, handle });
-	scene.cameraForNode[uint32_t(created)] = worldCamIdx;
+	SetCamera(scene, uint32_t(created), worldCamIdx);
 	if (m_replayingTour)
 		m_tourCreatedCameraNodes.push_back(uint32_t(created));
 	markAsChanged(scene, created);
@@ -1186,23 +1186,23 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 		return;
 	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
-	auto cit = scene.cameraForNode.find(n);
-	const bool camTail = cit != scene.cameraForNode.end()
-		&& cit->second + 1 == m_world->cameraLocations.size();
+	const CameraRow* cit = FindCamera(scene, n);
+	const bool camTail = cit != nullptr
+		&& cit->camera + 1 == m_world->cameraLocations.size();
 	if (tail && childless) {
 		// Physical removal: pop every vector addNode grew (flag arrays
 		// only when they are exactly node-sized — empty/mismatched
 		// means "default", which needs no entry).
-		if (cit != scene.cameraForNode.end()) {
+		if (cit != nullptr) {
 			if (camTail) {
-				const auto& loc = m_world->cameraLocations[cit->second];
+				const auto& loc = m_world->cameraLocations[cit->camera];
 				if (loc.cluster)
 					loc.cluster->cameras.destroy(loc.handle);
 				m_world->cameraLocations.pop_back();
 			}
-			scene.cameraForNode.erase(n);
+			RemoveCamera(scene, n);
 		}
-		scene.nameForNode.erase(n);
+		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
 			auto& hp = scene.hierarchy[size_t(p)];
@@ -1250,7 +1250,7 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 		// Non-tail (or parented) node: keep ids stable — hide the node
 		// and detach the camera instead of shifting the world.
 		MarkHidden(scene, int(n));
-		scene.cameraForNode.erase(n);
+		RemoveCamera(scene, n);
 		Log("Undid camera creation (#" + std::to_string(n) +
 		 "): hidden, ids kept stable (pool entry retained).");
 	}
@@ -1261,7 +1261,8 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 //
 // A created GI volume is a WORLD transform node (translate = box center,
 // scale = full extents, axis-aligned — rotation ignored by design) plus
-// a node-local SceneGiVolume definition in scene.giVolumeForNode — so gizmos,
+// a node-local SceneGiVolume definition in the scene's GI-volume
+// table — so gizmos,
 // the inspector, the outliner and the tour all pick it up with no
 // special cases. Undo removes the node when it is still the childless
 // tail (ids stay stable); otherwise the node is tombstoned (hidden +
@@ -1317,13 +1318,13 @@ void EditorApp::ExecCreateGiVolume(EditCmd& c) {
 			std::max(c.svec.z, 1e-3f)));
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	::SceneGiVolume def{};
 	def.priority = c.giVolumePriority;
 	def.spacing = std::max(c.giVolumeSpacing, 1e-3f);
 	def.insideFade = std::max(c.giVolumeInsideFade, 0.0f);
 	def.outsideFade = std::max(c.giVolumeOutsideFade, 0.0f);
-	scene.giVolumeForNode[uint32_t(created)] = def;
+	SetGiVolume(scene, uint32_t(created), def);
 	if (m_replayingTour)
 		m_tourCreatedGiVolumeNodes.push_back(uint32_t(created));
 	markAsChanged(scene, created);
@@ -1348,8 +1349,8 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 		// Physical removal: pop every vector addNode grew (flag arrays
 		// only when they are exactly node-sized — empty/mismatched
 		// means "default", which needs no entry).
-		scene.giVolumeForNode.erase(n);
-		scene.nameForNode.erase(n);
+		RemoveGiVolume(scene, n);
+		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
 			auto& hp = scene.hierarchy[size_t(p)];
@@ -1396,7 +1397,7 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 		// Non-tail (or parented) node: keep ids stable — hide the node
 		// and detach the def instead of shifting the world.
 		MarkHidden(scene, int(n));
-		scene.giVolumeForNode.erase(n);
+		RemoveGiVolume(scene, n);
 		Log("Undid GI volume creation (#" + std::to_string(n) +
 			"): hidden, ids kept stable (def retained in the command).");
 	}
@@ -1423,7 +1424,8 @@ uint32_t EditorApp::FindExportSettingsNode() const {
 	// auto-seed keeps it at exactly one — duplicates only via hand
 	// edits or referenced scenes, first wins like every consumer).
 	uint32_t best = UINT32_MAX;
-	for (const auto& [n, def] : scene.exportForNode) {
+	for (const ExportRow& _row : scene.tables.exports) {
+		const NodeId n = _row.node; const auto& def = _row.settings;
 		(void)def;
 		if (n < scene.hierarchy.size() && n < best)
 			best = n;
@@ -1442,8 +1444,8 @@ const SceneExportSettings& EditorApp::ExportCfg() const {
 	const uint32_t n = FindExportSettingsNode();
 	if (n == UINT32_MAX)
 		return kDefaults;
-	auto it = scene.exportForNode.find(n);
-	return it != scene.exportForNode.end() ? it->second : kDefaults;
+	auto it = FindExport(scene, n);
+	return it ? it->settings : kDefaults;
 }
 
 void EditorApp::EnsureExportSettingsNode() {
@@ -1491,8 +1493,8 @@ void EditorApp::ExecCreateExportSettings(EditCmd& c) {
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(
 		c.afterText.empty() ? "ExportSettings" : c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
-	scene.exportForNode[uint32_t(created)] = SceneExportSettings{};
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
+	SetExport(scene, uint32_t(created), SceneExportSettings{});
 	if (m_replayingTour)
 		m_tourCreatedExportNodes.push_back(uint32_t(created));
 	markAsChanged(scene, created);
@@ -1515,8 +1517,8 @@ void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
 	if (tail && childless) {
 		// Physical removal (the ExecUncreateGiVolume pattern: pop every
 		// vector addNode grew, unlink from the parent's child list).
-		scene.exportForNode.erase(n);
-		scene.nameForNode.erase(n);
+		RemoveExport(scene, n);
+		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
 			auto& hp = scene.hierarchy[size_t(p)];
@@ -1563,7 +1565,7 @@ void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
 		// Non-tail (or parented) node: keep ids stable — hide the node
 		// and detach the payload instead of shifting the world.
 		MarkHidden(scene, int(n));
-		scene.exportForNode.erase(n);
+		RemoveExport(scene, n);
 		Log("Undid exportSettings creation (#" + std::to_string(n) +
 			"): hidden, ids kept stable (payload retained in the command).");
 	}
@@ -1577,10 +1579,10 @@ bool EditorApp::ReadNodeExportAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
-	auto it = scene.exportForNode.find(node);
-	if (it == scene.exportForNode.end())
+	auto it = FindExport(scene, node);
+	if (!it)
 		return false;
-	const SceneExportSettings& es = it->second;
+	const SceneExportSettings& es = it->settings;
 	if (attr == "meshopt") flag = es.meshopt;
 	else if (attr == "lods") flag = es.lods;
 	else if (attr == "lodRatios") text = es.lodRatios;
@@ -1620,8 +1622,8 @@ bool EditorApp::WriteNodeExportAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	Scene& scene = m_world->scene;
-	auto it = scene.exportForNode.find(node);
-	if (it == scene.exportForNode.end())
+	auto it = FindExport(scene, node);
+	if (!it)
 		return false;
 	// The ONE mapping runs through the shared ApplyExportAttr (the same
 	// code the tour replay + Cook.exe run — no drift by construction).
@@ -1631,7 +1633,7 @@ bool EditorApp::WriteNodeExportAttr(uint32_t node, const std::string& attr,
 	tc.number = num;
 	tc.flag = flag;
 	tc.name = text;
-	(void)smvk::tour::ApplyExportAttr(it->second, tc, nullptr);
+	(void)smvk::tour::ApplyExportAttr(it->settings, tc, nullptr);
 	return true;
 }
 
@@ -1656,7 +1658,7 @@ int EditorApp::CreatedExportIndex(uint32_t worldNode) const {
 		const EditCmd& h = m_history[i];
 		if (h.verb != EditVerb::CreateExportSettings)
 			continue;
-		if (!m_world || !m_world->scene.exportForNode.contains(h.node))
+		if (!m_world || !(FindExport(m_world->scene, h.node) != nullptr))
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
@@ -1720,10 +1722,10 @@ void EditorApp::ExecCreateCubemap(EditCmd& c) {
 		glm::translate(glm::mat4(1.0f), c.afterVec);
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	::SceneCubemap def{};
 	def.radius = std::max(c.cubemapRadius, 1e-2f);
-	scene.cubemapForNode[uint32_t(created)] = def;
+	SetCubemap(scene, uint32_t(created), def);
 	if (m_replayingTour)
 		m_tourCreatedCubemapNodes.push_back(uint32_t(created));
 	markAsChanged(scene, created);
@@ -1748,8 +1750,8 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 		// Physical removal: pop every vector addNode grew (flag arrays
 		// only when they are exactly node-sized — empty/mismatched
 		// means "default", which needs no entry).
-		scene.cubemapForNode.erase(n);
-		scene.nameForNode.erase(n);
+		RemoveCubemap(scene, n);
+		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
 			auto& hp = scene.hierarchy[size_t(p)];
@@ -1796,7 +1798,7 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 		// Non-tail (or parented) node: keep ids stable — hide the node
 		// and detach the def instead of shifting the world.
 		MarkHidden(scene, int(n));
-		scene.cubemapForNode.erase(n);
+		RemoveCubemap(scene, n);
 		Log("Undid cubemap creation (#" + std::to_string(n) +
 			"): hidden, ids kept stable (def retained in the command).");
 	}
@@ -1855,33 +1857,33 @@ void EditorApp::ExecDelete(EditCmd& c) {
 				captureMaps(t);
 		// Light link (created or imported): the world index rides the
 		// command (-1 = none); the pool entry itself stays alive.
-		auto lit = scene.lightForNode.find(n);
-		c.number = (lit != scene.lightForNode.end())
-			? double(lit->second) : -1.0;
+		auto lit = FindLight(scene, n);
+		c.number = (lit)
+			? double(lit->light) : -1.0;
 		// GI-volume def (created or replayed): node-local floats ride
 		// beforeVec4 (priority, spacing, inside, outside) + presence
 		// rides beforeFlag — the light-index precedent for the exact
 		// undo below.
-		auto cvit = scene.giVolumeForNode.find(n);
-		c.beforeFlag = (cvit != scene.giVolumeForNode.end());
+		auto cvit = FindGiVolume(scene, n);
+		c.beforeFlag = (cvit);
 		if (c.beforeFlag)
-			c.beforeVec4 = glm::vec4(float(cvit->second.priority),
-				cvit->second.spacing, cvit->second.insideFade,
-				cvit->second.outsideFade);
+			c.beforeVec4 = glm::vec4(float(cvit->volume.priority),
+				cvit->volume.spacing, cvit->volume.insideFade,
+				cvit->volume.outsideFade);
 		// Cubemap capture def (created or replayed): presence rides
 		// beforeCubemap, the radius rides beforeNum (the light index
 		// in c.number above is exclusive — a capture node has no
 		// light; a light node has no capture).
-		auto cmit = scene.cubemapForNode.find(n);
-		c.beforeCubemap = (cmit != scene.cubemapForNode.end());
+		auto cmit = FindCubemap(scene, n);
+		c.beforeCubemap = (cmit);
 		if (c.beforeCubemap)
-			c.beforeNum = double(cmit->second.radius);
+			c.beforeNum = double(cmit->cubemap.radius);
 		// Camera def (created or replayed): world camera index rides
 		// beforeCamIdx + presence rides beforeCamera; the pool entry
 		// itself stays alive like lights (links only).
-		auto camit = scene.cameraForNode.find(n);
-		c.beforeCamera = (camit != scene.cameraForNode.end());
-		c.beforeCamIdx = c.beforeCamera ? double(camit->second) : -1.0;
+		auto camit = FindCamera(scene, n);
+		c.beforeCamera = (camit);
+		c.beforeCamIdx = c.beforeCamera ? double(camit->camera) : -1.0;
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -1905,9 +1907,9 @@ void EditorApp::ExecDelete(EditCmd& c) {
 	for (uint32_t id : nodes) {
 		RemoveMesh(scene, id);
 		RemoveMaterial(scene, id);
-		scene.giVolumeForNode.erase(id);
-		scene.cubemapForNode.erase(id);
-		scene.cameraForNode.erase(id);
+		RemoveGiVolume(scene, id);
+		RemoveCubemap(scene, id);
+		RemoveCamera(scene, id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -1918,7 +1920,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			}
 		dropSelected(id);
 	}
-	scene.lightForNode.erase(n);
+	RemoveLight(scene, n);
 	m_world->flagLists.clear();
 	Log("Deleted '" + getNodeName(scene, int(n)) + "' (#" +
 		std::to_string(n) + ") — Ctrl+Z restores it.");
@@ -1952,16 +1954,15 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 		m_deletedNodes.erase(id);
 	}
 	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
-		scene.lightForNode[n] = uint32_t(c.number);
+		SetLight(scene, n, uint32_t(c.number));
 	if (c.beforeFlag)
-		scene.giVolumeForNode[n] = ::SceneGiVolume{ uint32_t(c.beforeVec4.x),
-			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w };
+		SetGiVolume(scene, n, ::SceneGiVolume{ uint32_t(c.beforeVec4.x),
+			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w });
 	if (c.beforeCubemap)
-		scene.cubemapForNode[n] =
-			::SceneCubemap{ float(c.beforeNum) };
+		SetCubemap(scene, n, ::SceneCubemap{ float(c.beforeNum) });
 	if (c.beforeCamera && c.beforeCamIdx >= 0.0
 		&& c.beforeCamIdx < double(m_world->cameraLocations.size()))
-		scene.cameraForNode[n] = uint32_t(c.beforeCamIdx);
+		SetCamera(scene, n, uint32_t(c.beforeCamIdx));
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -2209,25 +2210,23 @@ void EditorApp::DuplicateSelection() {
 			c.camFar = C->farClip;
 			c.camOrthoHalfH = C->orthoHalfH;
 		}
-		else if (auto cmit = m_world->scene.cubemapForNode.find(t);
-			cmit != m_world->scene.cubemapForNode.end()) {
+		else if (const CubemapRow* cmit = FindCubemap(m_world->scene, t)) {
 			c.verb = EditVerb::CreateCubemap;
 			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
 			c.afterText = name;
 			c.afterVec = tr;
-			c.cubemapRadius = cmit->second.radius;
+			c.cubemapRadius = cmit->cubemap.radius;
 		}
-		else if (auto cvit = m_world->scene.giVolumeForNode.find(t);
-			cvit != m_world->scene.giVolumeForNode.end()) {
+		else if (const GiVolumeRow* cvit = FindGiVolume(m_world->scene, t)) {
 			c.verb = EditVerb::CreateGiVolume;
 			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
 			c.afterText = name;
 			c.afterVec = tr;
 			c.svec = sc;
-			c.giVolumePriority = cvit->second.priority;
-			c.giVolumeSpacing = cvit->second.spacing;
-			c.giVolumeInsideFade = cvit->second.insideFade;
-			c.giVolumeOutsideFade = cvit->second.outsideFade;
+			c.giVolumePriority = cvit->volume.priority;
+			c.giVolumeSpacing = cvit->volume.spacing;
+			c.giVolumeInsideFade = cvit->volume.insideFade;
+			c.giVolumeOutsideFade = cvit->volume.outsideFade;
 		}
 		else {
 			// Plain transform: created transforms AND imported empty
@@ -2306,7 +2305,7 @@ void EditorApp::ExecCreateTransform(EditCmd& c) {
 	scene.localTransform[size_t(created)] = m;
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(created)] = nameId;
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	markAsChanged(scene, created);
 	recalculateGlobalTransforms(scene);
 	m_selected = uint32_t(created);
@@ -2327,7 +2326,7 @@ void EditorApp::ExecUncreateTransform(EditCmd& c) {
 	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
 	if (tail && childless) {
-		scene.nameForNode.erase(n);
+		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
 		const int p = scene.hierarchy[n].parent;
 		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
 			auto& hp = scene.hierarchy[size_t(p)];
@@ -2428,11 +2427,11 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	if (!m_world)
 		return false;
 	Scene& scene = m_world->scene;
-	auto lit = scene.lightForNode.find(node);
-	if (lit == scene.lightForNode.end()
-		|| lit->second >= m_world->lightLocations.size())
+	auto lit = FindLight(scene, node);
+	if (!lit
+		|| lit->light >= m_world->lightLocations.size())
 		return false;
-	const auto& loc = m_world->lightLocations[lit->second];
+	const auto& loc = m_world->lightLocations[lit->light];
 	if (!loc.cluster)
 		return false;
 	::SceneLight* L = loc.cluster->lights.get(loc.handle);
@@ -2462,7 +2461,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 		L->name = text;
 		const uint32_t id = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(text);
-		scene.nameForNode[node] = id;
+		SetNodeNameIndex(scene, node, id);
 	} else if (attr == "cookie") {
 		// Spot gobo ref: the string persists verbatim (the light build
 		// resolves it to the bindless index; empty = none). Unresolved
@@ -2501,10 +2500,10 @@ bool EditorApp::ReadNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
-	auto it = scene.giVolumeForNode.find(node);
-	if (it == scene.giVolumeForNode.end())
+	auto it = FindGiVolume(scene, node);
+	if (!it)
 		return false;
-	const ::SceneGiVolume& def = it->second;
+	const ::SceneGiVolume& def = it->volume;
 	if (attr == "priority") {
 		num = double(def.priority);
 	} else if (attr == "spacing") {
@@ -2541,10 +2540,10 @@ bool EditorApp::WriteNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	Scene& scene = m_world->scene;
-	auto it = scene.giVolumeForNode.find(node);
-	if (it == scene.giVolumeForNode.end())
+	auto it = FindGiVolume(scene, node);
+	if (!it)
 		return false;
-	::SceneGiVolume& def = it->second;
+	::SceneGiVolume& def = it->volume;
 	if (attr == "priority") {
 		def.priority = uint32_t(std::max(num, 0.0));
 	} else if (attr == "spacing") {
@@ -2567,7 +2566,7 @@ bool EditorApp::WriteNodeGiVolumeAttr(uint32_t node, const std::string& attr,
 	} else if (attr == "name") {
 		const uint32_t id = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(text);
-		scene.nameForNode[node] = id;
+		SetNodeNameIndex(scene, node, id);
 	} else if (attr == "position" || attr == "rotation"
 		|| attr == "size") {
 		glm::vec3 t, r, s;
@@ -2593,7 +2592,7 @@ bool EditorApp::GiVolumeOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
-	if (!scene.giVolumeForNode.contains(node))
+	if (!FindGiVolume(scene, node))
 		return false;
 	if (node >= scene.globalTransform.size())
 		return false;
@@ -2654,10 +2653,10 @@ bool EditorApp::ReadNodeCubemapAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	const Scene& scene = m_world->scene;
-	auto it = scene.cubemapForNode.find(node);
-	if (it == scene.cubemapForNode.end())
+	auto it = FindCubemap(scene, node);
+	if (!it)
 		return false;
-	const ::SceneCubemap& def = it->second;
+	const ::SceneCubemap& def = it->cubemap;
 	if (attr == "radius") {
 		num = double(def.radius);
 	} else if (attr == "name") {
@@ -2677,16 +2676,16 @@ bool EditorApp::WriteNodeCubemapAttr(uint32_t node, const std::string& attr,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return false;
 	Scene& scene = m_world->scene;
-	auto it = scene.cubemapForNode.find(node);
-	if (it == scene.cubemapForNode.end())
+	auto it = FindCubemap(scene, node);
+	if (!it)
 		return false;
-	::SceneCubemap& def = it->second;
+	::SceneCubemap& def = it->cubemap;
 	if (attr == "radius") {
 		def.radius = std::max(float(num), 1e-2f);
 	} else if (attr == "name") {
 		const uint32_t id = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(text);
-		scene.nameForNode[node] = id;
+		SetNodeNameIndex(scene, node, id);
 	} else if (attr == "position") {
 		glm::vec3 t, r, s;
 		ReadLocalTRS(node, t, r, s);
@@ -2738,11 +2737,11 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node, const std::string& attr,
 	if (!m_world)
 		return false;
 	Scene& scene = m_world->scene;
-	auto cit = scene.cameraForNode.find(node);
-	if (cit == scene.cameraForNode.end()
-		|| cit->second >= m_world->cameraLocations.size())
+	auto cit = FindCamera(scene, node);
+	if (!cit
+		|| cit->camera >= m_world->cameraLocations.size())
 		return false;
-	const auto& loc = m_world->cameraLocations[cit->second];
+	const auto& loc = m_world->cameraLocations[cit->camera];
 	if (!loc.cluster)
 		return false;
 	::SceneCamera* C = loc.cluster->cameras.get(loc.handle);
@@ -2765,7 +2764,7 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node, const std::string& attr,
 		C->name = text;
 		const uint32_t id = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(text);
-		scene.nameForNode[node] = id;
+		SetNodeNameIndex(scene, node, id);
 	} else if (attr == "position" || attr == "rotation") {
 		if (node >= scene.hierarchy.size())
 			return false;
@@ -3186,9 +3185,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			if (!p.empty())
 				return p;
 		}
-		auto it = scene.uuidForNode.find(worldParent);
-		if (it != scene.uuidForNode.end())
-			return it->second;
+		if (worldParent < scene.metadata.size()
+			&& !scene.metadata[worldParent].uuid.empty())
+			return scene.metadata[worldParent].uuid;
 		return std::string();
 	};
 	switch (c.verb) {
@@ -3572,8 +3571,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
-		auto cvit = app.m_world->scene.giVolumeForNode.find(created);
-		if (cvit == app.m_world->scene.giVolumeForNode.end())
+		auto cvit = FindGiVolume(app.m_world->scene, created);
+		if (!cvit)
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
@@ -3599,9 +3598,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.vec = t;
 		out.svec = glm::vec3(std::max(s.x, 1e-3f),
 			std::max(s.y, 1e-3f), std::max(s.z, 1e-3f));
-		out.vec4 = glm::vec4(float(cvit->second.priority),
-			cvit->second.spacing, cvit->second.insideFade,
-			cvit->second.outsideFade);
+		out.vec4 = glm::vec4(float(cvit->volume.priority),
+			cvit->volume.spacing, cvit->volume.insideFade,
+			cvit->volume.outsideFade);
 		return true;
 	}
 	case EditVerb::SetGiVolumeAttr: {
@@ -3636,8 +3635,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
-		auto cmit = app.m_world->scene.cubemapForNode.find(created);
-		if (cmit == app.m_world->scene.cubemapForNode.end())
+		auto cmit = FindCubemap(app.m_world->scene, created);
+		if (!cmit)
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
@@ -3666,7 +3665,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.parentRef = parentRefFor(liveParent);
 		out.text = getNodeName(app.m_world->scene, int(created));
 		out.vec = t;
-		out.number = double(cmit->second.radius);
+		out.number = double(cmit->cubemap.radius);
 		return true;
 	}
 	case EditVerb::SetCubemapAttr: {
@@ -3755,7 +3754,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
-		if (!app.m_world->scene.exportForNode.contains(created))
+		if (!FindExport(app.m_world->scene, created))
 			return false; // detached (tombstoned): nothing to persist
 		if (app.m_deletedNodes.contains(created))
 			return false;
@@ -3817,9 +3816,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		out.verb = smvk::tour::Verb::Delete;
-		auto uit = app.m_world->scene.uuidForNode.find(c.node);
-		if (uit != app.m_world->scene.uuidForNode.end())
-			out.uuid = uit->second;
+		const std::string& u = GetNodeUuid(app.m_world->scene, c.node);
+		if (!u.empty())
+			out.uuid = u;
 		return true;
 	}
 	}
@@ -4117,9 +4116,11 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// resolve by name and need nothing.
 	Scene& scene = m_world->scene;
 	auto held = [&](const std::string& hex, uint32_t except) {
-		for (const auto& [n, u] : scene.uuidForNode)
-			if (u == hex && n != except)
+		for (uint32_t n = 0; n < scene.metadata.size(); ++n) {
+			const std::string& u = scene.metadata[n].uuid;
+			if (!u.empty() && u == hex && n != except)
 				return true;
+		}
 		return false;
 	};
 	auto ensureUuid = [&](uint32_t wnode) {
@@ -4129,7 +4130,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		// UNNAMED targets need a recorded uuid to stay addressable.
 		if (!getNodeName(scene, int(wnode)).empty())
 			return;
-		if (scene.uuidForNode.contains(wnode))
+		if ((!GetNodeUuid(scene, wnode).empty()))
 			return;
 		if (WorldToCluster(wnode) < 0)
 			return; // editor-created: nothing to address
@@ -4140,7 +4141,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		do {
 			hex = smvk::tour::GenerateUuid();
 		} while (held(hex, wnode));
-		scene.uuidForNode[wnode] = hex;
+		SetNodeUuidRaw(scene, wnode, hex);
 	};
 	for (size_t i : CoalescedSaveIndices()) {
 		const EditCmd& c = m_history[i];
@@ -4148,9 +4149,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			const int cn = WorldToCluster(c.node);
 			if (cn < 0)
 				continue; // editor-created: dropped via live-state emission
-			auto uit = scene.uuidForNode.find(c.node);
-			if (uit != scene.uuidForNode.end()
-				&& !held(uit->second, c.node))
+			const std::string& u = GetNodeUuid(scene, c.node);
+			if (!u.empty() && !held(u, c.node))
 				continue; // file-stable identity already in place
 			ensureUuid(c.node);
 			continue;
@@ -4179,7 +4179,10 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// next save mints fresh ones (uuid churn: -uuid links would never
 	// match twice).
 	std::vector<uint32_t> uuidNodes;
-	for (const auto& [wnode, hex] : scene.uuidForNode) {
+	for (uint32_t wnode = 0; wnode < scene.metadata.size(); ++wnode) {
+		const std::string& hex = scene.metadata[wnode].uuid;
+		if (hex.empty())
+			continue;
 		if (wnode >= scene.hierarchy.size())
 			continue;
 		if (WorldToCluster(wnode) < 0)
@@ -4191,7 +4194,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		smvk::tour::Command u{};
 		u.verb = smvk::tour::Verb::SetUuid;
 		u.node = uint32_t(WorldToCluster(wnode));
-		u.uuid = scene.uuidForNode[wnode];
+		u.uuid = GetNodeUuid(scene, wnode);
 		u.name = getNodeName(scene, int(wnode));
 		doc.commands.push_back(std::move(u));
 	}
@@ -4865,7 +4868,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		if (!app.m_world->scene.giVolumeForNode.contains(target))
+		if (!(FindGiVolume(app.m_world->scene, target) != nullptr))
 			return false; // not a GI volume: orphan, preserved verbatim
 		out.verb = EditVerb::SetGiVolumeAttr;
 		out.node = target;
@@ -4897,7 +4900,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		if (!app.m_world->scene.cubemapForNode.contains(target))
+		if (!(FindCubemap(app.m_world->scene, target) != nullptr))
 			return false; // not a capture: orphan, preserved verbatim
 		out.verb = EditVerb::SetCubemapAttr;
 		out.node = target;
@@ -4959,7 +4962,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		if (!app.m_world->scene.exportForNode.contains(target))
+		if (!(FindExport(app.m_world->scene, target) != nullptr))
 			return false; // not the exportSettings node: orphan
 		out.verb = EditVerb::SetExportAttr;
 		out.node = target;
@@ -5172,7 +5175,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		Scene& liveScene = m_world->scene;
 		liveScene.giWorldSource.clear();
 		liveScene.giWorldGuid.clear();
-		for (auto& [node, def] : liveScene.giVolumeForNode) {
+		for (GiVolumeRow& _row : liveScene.tables.giVolumes) {
+		NodeId node = _row.node; auto& def = _row.volume;
 			def.bakeSource.clear();
 			def.bakeGuid.clear();
 		}
@@ -5194,12 +5198,12 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 					+ ga.source + "')");
 				continue;
 			}
-			auto it = liveScene.giVolumeForNode.find(
+			GiVolumeRow* it = FindGiVolume(liveScene,
 				m_tourCreatedGiVolumeNodes[k]);
-			if (it == liveScene.giVolumeForNode.end())
+			if (!it)
 				continue;
-			it->second.bakeSource = ga.source;
-			it->second.bakeGuid = ga.guid;
+			it->volume.bakeSource = ga.source;
+			it->volume.bakeGuid = ga.guid;
 		}
 	}
 	m_replayingTour = false;
@@ -5541,7 +5545,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 		glm::translate(glm::mat4(1.0f), c.afterVec);
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
-	scene.nameForNode[uint32_t(group)] = nameId;
+	SetNodeNameIndex(scene, uint32_t(group), nameId);
 	// Group state: global grid from the params; tiles as children.
 	TerrainGroup& g = m_terrainGroups[uint32_t(group)];
 	g.deleted = false; // (re)creation: alive even when redoing over a tombstone
@@ -5594,7 +5598,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 			const uint32_t tName = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.afterText + "_" + std::to_string(tx)
 				+ "_" + std::to_string(tz));
-			scene.nameForNode[t] = tName;
+			SetNodeNameIndex(scene, t, tName);
 			smvk::StaticMeshUpload upload;
 			if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz,
 					upload)) {
@@ -6035,3 +6039,4 @@ bool EditorApp::PaintTerrainAt(const glm::vec3& origin, const glm::vec3& dir) {
 }
 
 } // namespace editor
+

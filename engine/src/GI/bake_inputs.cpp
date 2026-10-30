@@ -112,22 +112,22 @@ std::string BakeLightsHash(const Cluster& cluster) {
 	// position/direction ride the transform) + the cookie uri. Non-static
 	// lights are runtime-only — never bake inputs.
 	const ::Scene& scene = cluster.scene;
-	if (scene.lightForNode.empty())
+	if (scene.tables.lights.empty())
 		return BakeInputHash(std::string("lights-none"));
 	std::vector<uint32_t> nodes;
-	nodes.reserve(scene.lightForNode.size());
-	for (const auto& [node, idx] : scene.lightForNode)
-		nodes.push_back(node);
+	nodes.reserve(scene.tables.lights.size());
+	for (const LightRow& row : scene.tables.lights)
+		nodes.push_back(row.node);
 	std::sort(nodes.begin(), nodes.end());
 	Hasher hs;
 	hs.feed("lights");
 	size_t count = 0;
 	for (uint32_t node : nodes) {
-		auto it = scene.lightForNode.find(node);
-		if (it == scene.lightForNode.end())
+		const LightRow* it = FindLight(scene, node);
+		if (!it)
 			continue;
 		const ClusterLightHandle handle =
-			cluster.lights.getHandle(it->second);
+			cluster.lights.getHandle(it->light);
 		if (!handle.valid())
 			continue;
 		const SceneLight* L = cluster.lights.get(handle);

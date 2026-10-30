@@ -2191,7 +2191,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 	{
 		const int nameIndex = (int)cluster.scene.nodeNames.size();
 		cluster.scene.nodeNames.push_back(gltfNode.name.empty() ? "Node" : gltfNode.name);
-		cluster.scene.nameForNode[groupNode] = nameIndex;
+		SetNodeNameIndex(cluster.scene, groupNode, nameIndex);
 	}
 
 	// RAW local (as authored). The TOP node of each imported chain
@@ -2260,7 +2260,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 		const smvk::ClusterLightHandle h =
 			getOrCreateLight(gltfNodeLight, GltfExtrasStaticLight(gltfNode.extras));
 		if (h.valid())
-			cluster.scene.lightForNode[(uint32_t)groupNode] = h.index();
+			SetLight(cluster.scene, (uint32_t)groupNode, h.index());
 	}
 
 	// Unroll primitives into separate meshes (your current approach).
@@ -2999,16 +2999,14 @@ size_t BuildFromMeshAsset(
 			continue;
 		smvk::ClusterLightHandle h = cluster.CreateLight(l.def);
 		if (!h.empty())
-			scene.lightForNode[uint32_t(mapped[l.node])] =
-				h.index();
+			SetLight(scene, uint32_t(mapped[l.node]), h.index());
 	}
 	for (const auto& c : asset.cameras) {
 		if (c.node == 0 || c.node >= asset.nodes.size())
 			continue;
 		smvk::ClusterCameraHandle h = cluster.CreateCamera(c.def);
 		if (!h.empty())
-			scene.cameraForNode[uint32_t(mapped[c.node])] =
-				h.index();
+			SetCamera(scene, uint32_t(mapped[c.node]), h.index());
 	}
 	return asset.nodes.size() - 1;
 }

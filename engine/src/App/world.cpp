@@ -174,14 +174,14 @@ namespace smvk {
 		if (!def.name.empty()) {
 			const uint32_t cnameId = uint32_t(dyn.scene.nodeNames.size());
 			dyn.scene.nodeNames.push_back(def.name);
-			dyn.scene.nameForNode[uint32_t(cnode)] = cnameId;
+			SetNodeNameIndex(dyn.scene, uint32_t(cnode), cnameId);
 		}
 		const ClusterDecalHandle handle = dyn.CreateDecal(std::move(def));
 		if (!handle.valid())
 			return UINT32_MAX;
 		// Cluster-local pool index — the resolve remap rewrites it to a
 		// world decalLocations index (same as cooked links).
-		dyn.scene.decalForNode[uint32_t(cnode)] = handle.index();
+		SetDecal(dyn.scene, uint32_t(cnode), handle.index());
 
 		// Merged-scene mirror for IMMEDIATE visibility (no resolve ran):
 		// same frame + name, linked to the same pool entry through a
@@ -192,18 +192,18 @@ namespace smvk {
 			return UINT32_MAX;
 		scene.localTransform[size_t(mnode)] = frame;
 		scene.globalTransform[size_t(mnode)] = frame;
-		if (!dyn.scene.nameForNode.empty()) {
-			const auto nit = dyn.scene.nameForNode.find(uint32_t(cnode));
-			if (nit != dyn.scene.nameForNode.end()) {
+		{
+			const uint32_t cnameIdx =
+				GetNodeNameIndex(dyn.scene, uint32_t(cnode));
+			if (cnameIdx != 0xFFFFFFFFu) {
 				const uint32_t nameId = uint32_t(scene.nodeNames.size());
-				scene.nodeNames.push_back(
-					dyn.scene.nodeNames[nit->second]);
-				scene.nameForNode[uint32_t(mnode)] = nameId;
+				scene.nodeNames.push_back(dyn.scene.nodeNames[cnameIdx]);
+				SetNodeNameIndex(scene, uint32_t(mnode), nameId);
 			}
 		}
 		const uint32_t worldDecalIdx = uint32_t(decalLocations.size());
 		decalLocations.push_back({ &dyn, handle });
-		scene.decalForNode[uint32_t(mnode)] = worldDecalIdx;
+		SetDecal(scene, uint32_t(mnode), worldDecalIdx);
 		markAsChanged(scene, mnode);
 		return uint32_t(mnode);
 	}
@@ -467,9 +467,21 @@ namespace smvk {
 				scene.hierarchy[clusterRootNode].level += 1;
 			}
 
-			// Remap nameForNode indices (they index into nodeNames).
-			for (auto& [node, nameIdx] : cs.nameForNode) {
-				scene.nameForNode[node + nodeOffset] = nameIdx + nameOffset;
+			// Remap node metadata (names index into nodeNames; uuids
+			// ride unchanged): dense append with the node + name-pool
+			// offsets.
+			{
+				EnsureNodeMetadata(scene);
+				const size_t base = scene.metadata.size();
+				scene.metadata.resize(base + cs.hierarchy.size());
+				for (size_t i = 0; i < cs.hierarchy.size(); ++i) {
+					NodeMetadata& dst = scene.metadata[base + i];
+					if (i < cs.metadata.size()) {
+						dst.name = (cs.metadata[i].name != 0xFFFFFFFFu)
+							? cs.metadata[i].name + nameOffset : 0xFFFFFFFFu;
+						dst.uuid = cs.metadata[i].uuid;
+					}
+				}
 			}
 
 			// Remap the mesh table: cluster-local handle index -> world
@@ -532,69 +544,71 @@ namespace smvk {
 				SetMaterial(scene, worldNode, worldMatIdx);
 			}
 
-			// Remap lightForNode: cluster-local light pool index -> world
-			// light index. lightLocations resolves back to Cluster + handle
-			// exactly like meshLocations (cooked lights are pool assets).
-			for (auto& [node, lightIdx] : cs.lightForNode) {
-				const uint32_t worldNode = node + nodeOffset;
+			// Remap the light table: cluster-local light pool index ->
+			// world light index. lightLocations resolves back to Cluster +
+			// handle exactly like meshLocations (cooked lights are pool
+			// assets).
+			for (const LightRow& row : cs.tables.lights) {
+				const uint32_t worldNode = row.node + nodeOffset;
 				const uint32_t worldLightIdx =
 					static_cast<uint32_t>(lightLocations.size());
 
 				ClusterLightHandle handle =
-					cluster.lights.getHandle(lightIdx);
+					cluster.lights.getHandle(row.light);
 
 				lightLocations.push_back(
 					LightLocation{ .cluster = &cluster, .handle = handle }
 				);
-				scene.lightForNode[worldNode] = worldLightIdx;
+				SetLight(scene, worldNode, worldLightIdx);
 			}
 
-			// Remap cameraForNode: cluster-local camera pool index -> world
-			// camera index. cameraLocations resolves back to Cluster + handle
-			// exactly like lightLocations (authored cameras are pool assets).
-			for (auto& [node, camIdx] : cs.cameraForNode) {
-				const uint32_t worldNode = node + nodeOffset;
+			// Remap the camera table: cluster-local camera pool index ->
+			// world camera index. cameraLocations resolves back to Cluster
+			// + handle exactly like lightLocations (authored cameras are
+			// pool assets).
+			for (const CameraRow& row : cs.tables.cameras) {
+				const uint32_t worldNode = row.node + nodeOffset;
 				const uint32_t worldCamIdx =
 					static_cast<uint32_t>(cameraLocations.size());
 
 				ClusterCameraHandle handle =
-					cluster.cameras.getHandle(camIdx);
+					cluster.cameras.getHandle(row.camera);
 
 				cameraLocations.push_back(
 					CameraLocation{ .cluster = &cluster, .handle = handle }
 				);
-				scene.cameraForNode[worldNode] = worldCamIdx;
+				SetCamera(scene, worldNode, worldCamIdx);
 			}
 
-			// Remap decalForNode: cluster-local decal pool index -> world
-			// decal index. decalLocations resolves back to Cluster + handle
-			// exactly like lightLocations (authored/runtime decals are pool
-			// assets; the shape rides the node transform).
-			for (auto& [node, decIdx] : cs.decalForNode) {
-				const uint32_t worldNode = node + nodeOffset;
+			// Remap the decal table: cluster-local decal pool index ->
+			// world decal index. decalLocations resolves back to Cluster +
+			// handle exactly like lightLocations (authored/runtime decals
+			// are pool assets; the shape rides the node transform).
+			for (const DecalRow& row : cs.tables.decals) {
+				const uint32_t worldNode = row.node + nodeOffset;
 				const uint32_t worldDecalIdx =
 					static_cast<uint32_t>(decalLocations.size());
 
 				ClusterDecalHandle handle =
-					cluster.decals.getHandle(decIdx);
+					cluster.decals.getHandle(row.decal);
 
 				decalLocations.push_back(
 					DecalLocation{ .cluster = &cluster, .handle = handle }
 				);
-				scene.decalForNode[worldNode] = worldDecalIdx;
+				SetDecal(scene, worldNode, worldDecalIdx);
 			}
 
-			// Authored environment: per-node blocks offset-merge like the
-			// other node maps (values are inline structs — direct copy);
+			// Authored environment: per-node rows offset-merge like the
+			// other tables (values are inline structs — direct copy);
 			// the resolved look + default block ride first-wins across
 			// clusters (registration order: the owning scene first), so an
 			// unauthored default never shadows another scene's authored look.
-			for (auto& [node, env] : cs.envForNode)
-				scene.envForNode[node + nodeOffset] = env;
+			for (const EnvRow& row : cs.tables.envs)
+				SetEnv(scene, row.node + nodeOffset, row.environment);
 			// Volume settings ride the same remap (every block coexists;
 			// no first-wins — coverage/priority resolve at use).
-			for (auto& [node, vol] : cs.envVolumeForNode)
-				scene.envVolumeForNode[node + nodeOffset] = vol;
+			for (const EnvVolumeRow& row : cs.tables.envVolumes)
+				SetEnvVolume(scene, row.node + nodeOffset, row.volume);
 			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
 				scene.envAuthored = true;
@@ -646,10 +660,9 @@ namespace smvk {
 		// Falls back to the first-wins authored/default copy above when
 		// no scene selected a block (or the target went stale).
 		if (scene.activeEnvironment != UINT32_MAX) {
-			const auto it =
-				scene.envForNode.find(scene.activeEnvironment);
-			if (it != scene.envForNode.end()) {
-				scene.environment = it->second;
+			if (const EnvRow* row =
+					FindEnv(scene, scene.activeEnvironment)) {
+				scene.environment = row->environment;
 				scene.envAuthored = true;
 			}
 			else

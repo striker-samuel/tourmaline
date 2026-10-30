@@ -2125,7 +2125,7 @@ void TestStaticBakeLights() {
 		scene.localTransform[n] = g;
 		scene.globalTransform[n] = g;
 		const smvk::ClusterLightHandle h = cluster->CreateLight(def);
-		scene.lightForNode[(uint32_t)n] = h.index();
+		SetLight(scene, NodeId(n), h.index());
 		return n;
 	};
 
@@ -2225,14 +2225,14 @@ void TestStaticBakeLights() {
 			scene2.localTransform[n] = g;
 			scene2.globalTransform[n] = g;
 			const smvk::ClusterLightHandle h = cluster2->CreateLight(spotDef);
-			scene2.lightForNode[(uint32_t)n] = h.index();
+			SetLight(scene2, NodeId(n), h.index());
 		}
 		{
 			const int n = addNode(scene2, 0, 1);
 			scene2.localTransform[n] = g;
 			scene2.globalTransform[n] = g;
 			const smvk::ClusterLightHandle h = cluster2->CreateLight(sunDef);
-			scene2.lightForNode[(uint32_t)n] = h.index();
+			SetLight(scene2, NodeId(n), h.index());
 		}
 		gi::GiTraceScene tsA, tsB;
 		CollectStaticBakeLights(*cluster2, tsA); // engine-space default axis
@@ -2992,7 +2992,7 @@ void TestTraceSceneFromWorld() {
 	sunDef.flags = SceneLight::kSceneLightFlag_Static;
 	const auto lh = cluster->CreateLight(sunDef);
 	const int n2 = addNode(cs, root, 1);
-	cs.lightForNode[uint32_t(n2)] = lh.index();
+	SetLight(cs, NodeId(n2), lh.index());
 	markAsChanged(cs, root);
 	recalculateGlobalTransforms(cs);
 

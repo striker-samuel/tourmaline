@@ -504,10 +504,10 @@ void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
 	}
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return;
-	auto it = m_world->scene.giVolumeForNode.find(node);
-	if (it == m_world->scene.giVolumeForNode.end())
+	const GiVolumeRow* it = FindGiVolume(m_world->scene, node);
+	if (!it)
 		return;
-	const ::SceneGiVolume cv = it->second;
+	const ::SceneGiVolume cv = it->volume;
 	// The gates; authored, else the contract default (+-20% around the
 	// preferred spacing).
 	float low = cv.spacingLow;
@@ -714,7 +714,7 @@ void EditorApp::BakeGI() {
 		return;
 	}
 	// What to bake comes from the same flags the cook dialog shows.
-	const bool giHasGiVolumes = !m_world->scene.giVolumeForNode.empty();
+	const bool giHasGiVolumes = !m_world->scene.tables.giVolumes.empty();
 	const bool wantGiVolumes = ExportCfg().giVolumes && giHasGiVolumes;
 	if (!wantGiVolumes) {
 		Log("Bake GI: nothing requested — enable GI volumes in the cook "

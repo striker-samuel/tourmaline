@@ -467,9 +467,9 @@ namespace editor {
 		if (!m_world)
 			return fallback;
 		if (m_envCurrent != UINT32_MAX) {
-			auto it = m_world->scene.envForNode.find(m_envCurrent);
-			if (it != m_world->scene.envForNode.end())
-				return it->second;
+			auto it = FindEnv(m_world->scene, m_envCurrent);
+			if (it)
+				return it->environment;
 			m_envCurrent = UINT32_MAX;
 		}
 		return m_world->scene.defaultEnvironment;
@@ -480,9 +480,9 @@ namespace editor {
 		if (!m_world)
 			return fallback;
 		if (m_envCurrent != UINT32_MAX) {
-			auto it = m_world->scene.envForNode.find(m_envCurrent);
-			if (it != m_world->scene.envForNode.end())
-				return it->second;
+			auto it = FindEnv(m_world->scene, m_envCurrent);
+			if (it)
+				return it->environment;
 		}
 		return m_world->scene.defaultEnvironment;
 	}
@@ -1318,7 +1318,7 @@ namespace editor {
 void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
 	if (m_mode != EditorMode::Lighting || m_giVolumePreviewMode != 4)
 		return;
-	if (!m_world || m_world->scene.giVolumeForNode.empty())
+	if (!m_world || m_world->scene.tables.giVolumes.empty())
 		return;
 	// Only the HDR path (the direct-write fallback has no tonemap chain
 	// to composite over - same gate as EditorMain's viaHdr).
@@ -1330,9 +1330,11 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
 	uint32_t rowCount = 0;
 	{
 		std::vector<uint32_t> nodes;
-		nodes.reserve(m_world->scene.giVolumeForNode.size());
-		for (const auto& [node, cv] : m_world->scene.giVolumeForNode)
+		nodes.reserve(m_world->scene.tables.giVolumes.size());
+		for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+			const NodeId node = _row.node;
 			nodes.push_back(node);
+		}
 		std::sort(nodes.begin(), nodes.end());
 		std::vector<smvk::giprobe::GiProbeInstance> lattice;
 		for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
@@ -1343,8 +1345,7 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
 			glm::mat3 axes;
 			if (!GiVolumeOBB(node, center, axes, half))
 				continue;
-			const ::SceneGiVolume& cvg =
-				m_world->scene.giVolumeForNode[node];
+			const ::SceneGiVolume& cvg = FindGiVolume(m_world->scene, node)->volume;
 			// The SEEDED layout previews exactly what the bake builds.
 			const float spacing = std::max(
 				cvg.optSpacing > 0.0f ? cvg.optSpacing : cvg.spacing,
@@ -2835,3 +2836,4 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 	}
 
 } // namespace editor
+

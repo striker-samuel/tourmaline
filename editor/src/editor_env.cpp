@@ -48,9 +48,8 @@ namespace editor {
 	void EditorApp::MarkEnvNode(uint32_t node) {
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
-		auto& table = m_world->scene.envForNode;
-		if (!table.contains(node)) {
-			table[node] = CurrentEnv(); // start from the current source
+		if (!FindEnv(m_world->scene, node)) {
+			SetEnv(m_world->scene, node, CurrentEnv()); // start from the current source // start from the current source
 			Log("Node " + std::to_string(node) + " marked as Environment.");
 		}
 		ResolveSceneEnv();
@@ -59,7 +58,7 @@ namespace editor {
 	void EditorApp::UnmarkEnvNode(uint32_t node) {
 		if (!m_world)
 			return;
-		if (m_world->scene.envForNode.erase(node) > 0 && m_envCurrent == node)
+		if (RemoveEnv(m_world->scene, node) && m_envCurrent == node)
 			m_envCurrent = UINT32_MAX; // fall back to the editor default
 		ResolveSceneEnv();
 	}
@@ -73,9 +72,9 @@ namespace editor {
 			return;
 		const SceneEnv* src = &m_world->scene.defaultEnvironment;
 		if (m_envCurrent != UINT32_MAX) {
-			auto it = m_world->scene.envForNode.find(m_envCurrent);
-			if (it != m_world->scene.envForNode.end())
-				src = &it->second;
+			auto it = FindEnv(m_world->scene, m_envCurrent);
+			if (it)
+				src = &it->environment;
 			else
 				m_envCurrent = UINT32_MAX;
 		}
@@ -116,7 +115,8 @@ namespace editor {
 		if (ImGui::BeginCombo("Source##env", curLabel.c_str())) {
 			if (ImGui::Selectable("Editor default", m_envCurrent == UINT32_MAX))
 				m_envCurrent = UINT32_MAX;
-			for (const auto& [node, env] : m_world->scene.envForNode) {
+			for (const EnvRow& _row : m_world->scene.tables.envs) {
+		const NodeId node = _row.node; const auto& env = _row.environment;
 				const std::string label = "Node " + std::to_string(node);
 				if (ImGui::Selectable(label.c_str(), m_envCurrent == node))
 					m_envCurrent = node;
@@ -144,10 +144,9 @@ namespace editor {
 			// (inheriting the look's priority, so legacy zones don't jump);
 			// absent = legacy zone behavior.
 			auto& scene = m_world->scene;
-			const auto vit =
-				scene.envVolumeForNode.find(m_envCurrent);
-			const bool hasEntry = vit != scene.envVolumeForNode.end();
-			EnvVolume tmp = hasEntry ? vit->second : EnvVolume{};
+			const EnvVolumeRow* vit = FindEnvVolume(scene, m_envCurrent);
+			const bool hasEntry = vit != nullptr;
+			EnvVolume tmp = hasEntry ? vit->volume : EnvVolume{};
 			bool volChanged = false;
 			bool priEdited = false;
 			if (attr::Check("Volume enabled", &tmp.enabled,
@@ -205,7 +204,7 @@ namespace editor {
 					std::clamp(tmp.blendWeight, 0.0f, 1.0f);
 				if (!(tmp.blendRadius >= 0.0f))
 					tmp.blendRadius = 0.0f;
-				scene.envVolumeForNode[m_envCurrent] = tmp;
+				SetEnvVolume(scene, m_envCurrent, tmp);
 			}
 		}
 		// ---- sun: scene light (content — only when a directional node exists) ----
@@ -867,8 +866,10 @@ namespace editor {
 		{
 			std::vector<uint32_t> cams;
 			if (m_world) {
-				for (const auto& [n, idx] : m_world->scene.cameraForNode)
+				for (const CameraRow& _row : m_world->scene.tables.cameras) {
+					const NodeId n = _row.node;
 					cams.push_back(n);
+				}
 				std::sort(cams.begin(), cams.end());
 			}
 			// Dangling selection (camera deleted/detached) reads as none.
@@ -876,8 +877,7 @@ namespace editor {
 				&& (!m_world
 					|| m_defaultCameraNode
 					>= m_world->scene.hierarchy.size()
-					|| !m_world->scene.cameraForNode.contains(
-						m_defaultCameraNode)))
+					|| !FindCamera(m_world->scene, m_defaultCameraNode)))
 				m_defaultCameraNode = UINT32_MAX;
 			const std::string none = "None (generic framing)";
 			std::string cur = (m_defaultCameraNode == UINT32_MAX)
@@ -979,36 +979,40 @@ namespace editor {
 		// Sort env nodes for deterministic files.
 		std::vector<uint32_t> nodes;
 		if (m_world) {
-			for (const auto& [n, e] : m_world->scene.envForNode)
+			for (const EnvRow& _row : m_world->scene.tables.envs) {
+				const NodeId n = _row.node;
 				nodes.push_back(n);
-		}
-		std::sort(nodes.begin(), nodes.end());
-		for (uint32_t n : nodes) {
-			const int cn = WorldToCluster(n);
-			if (cn < 0)
-				continue; // unmapped node: keep the file loadable
-			saveEnv("env.n", uint32_t(cn), m_world->scene.envForNode.at(n));
+			}
+			std::sort(nodes.begin(), nodes.end());
+			for (uint32_t n : nodes) {
+				const int cn = WorldToCluster(n);
+				if (cn < 0)
+					continue; // unmapped node: keep the file loadable
+				saveEnv("env.n", uint32_t(cn), (*FindEnv(m_world->scene, n)).environment);
+			}
 		}
 		// Env-volume settings (envvol.n groups, one per node carrying an
 		// entry; see EnvVolume). Sorted + cluster-remapped like env.n above.
 		{
 			std::vector<uint32_t> vnodes;
 			if (m_world) {
-				for (const auto& [n, v] : m_world->scene.envVolumeForNode)
+				for (const EnvVolumeRow& _row : m_world->scene.tables.envVolumes) {
+					const NodeId n = _row.node;
 					vnodes.push_back(n);
-			}
-			std::sort(vnodes.begin(), vnodes.end());
-			for (uint32_t n : vnodes) {
-				const int cn = WorldToCluster(n);
-				if (cn < 0)
-					continue; // unmapped node: keep the file loadable
-				const EnvVolume& v = m_world->scene.envVolumeForNode.at(n);
-				put("envvol.n.node", std::to_string(uint32_t(cn)));
-				put("envvol.n.mask", std::to_string(v.infMask & 63u));
-				put("envvol.n.priority", std::to_string(v.priority));
-				put("envvol.n.weight", std::to_string(v.blendWeight));
-				put("envvol.n.radius", std::to_string(v.blendRadius));
-				put("envvol.n.enabled", v.enabled ? "1" : "0");
+				}
+				std::sort(vnodes.begin(), vnodes.end());
+				for (uint32_t n : vnodes) {
+					const int cn = WorldToCluster(n);
+					if (cn < 0)
+						continue; // unmapped node: keep the file loadable
+					const EnvVolume& v = (*FindEnvVolume(m_world->scene, n)).volume;
+					put("envvol.n.node", std::to_string(uint32_t(cn)));
+					put("envvol.n.mask", std::to_string(v.infMask & 63u));
+					put("envvol.n.priority", std::to_string(v.priority));
+					put("envvol.n.weight", std::to_string(v.blendWeight));
+					put("envvol.n.radius", std::to_string(v.blendRadius));
+					put("envvol.n.enabled", v.enabled ? "1" : "0");
+				}
 			}
 		}
 		// RENDER SETTINGS (the split postfx look — SceneRenderSettings):
@@ -1078,7 +1082,7 @@ namespace editor {
 		if (!m_world)
 			return;
 		auto& scene = m_world->scene;
-		scene.envForNode.clear();
+		scene.tables.envs.clear();
 		scene.envZonesEnabled = true; // absent key = auto-on (Scene default)
 		m_envCurrent = UINT32_MAX;
 		EditorEnv def = scene.defaultEnvironment;
@@ -1249,7 +1253,7 @@ namespace editor {
 		for (const auto& [cn, env] : nodeEnvs) {
 			const uint32_t wn = ClusterToWorld(cn);
 			if (wn != UINT32_MAX && wn < scene.hierarchy.size())
-				scene.envForNode[wn] = env;
+				SetEnv(scene, wn, env);
 		}
 		for (const auto& entry : nodeVols) {
 			const uint32_t wn = ClusterToWorld(entry.node);
@@ -1259,17 +1263,17 @@ namespace editor {
 			vol.blendWeight = std::clamp(vol.blendWeight, 0.0f, 1.0f);
 			if (!(vol.blendRadius >= 0.0f))
 				vol.blendRadius = 0.0f;
-			scene.envVolumeForNode[wn] = vol;
+			SetEnvVolume(scene, wn, vol);
 		}
 		if (haveCurrent) {
 			const uint32_t wn = ClusterToWorld(currentCluster);
-			if (wn != UINT32_MAX && scene.envForNode.contains(wn))
+			if (wn != UINT32_MAX && FindEnv(scene, wn))
 				m_envCurrent = wn;
 		}
 		// Publish the loaded selection into the rendered look.
 		ResolveSceneEnv();
-		if (!scene.envForNode.empty())
-			Log("tour: restored " + std::to_string(scene.envForNode.size()) +
+		if (!scene.tables.envs.empty())
+			Log("tour: restored " + std::to_string(scene.tables.envs.size()) +
 				" environment node(s) + editor default IBL.");
 	}
 
@@ -1283,7 +1287,7 @@ namespace editor {
 		if (m_defaultCameraNode == UINT32_MAX || !m_world)
 			return;
 		if (m_defaultCameraNode >= m_world->scene.hierarchy.size()
-			|| !m_world->scene.cameraForNode.contains(m_defaultCameraNode))
+			|| !(FindCamera(m_world->scene, m_defaultCameraNode) != nullptr))
 			return; // dangling (deleted/detached camera): save as none
 		const int k = CreatedCameraIndex(m_defaultCameraNode);
 		std::string val;
@@ -1336,7 +1340,7 @@ namespace editor {
 				target = ClusterToWorld(cn);
 			}
 			if (target == UINT32_MAX || target >= scene.hierarchy.size()
-				|| !scene.cameraForNode.contains(target)) {
+				|| !(FindCamera(scene, target) != nullptr)) {
 				Log("tour: camera.default target does not resolve: '" + val
 					+ "' (none stands).");
 				continue;
@@ -1346,3 +1350,4 @@ namespace editor {
 	}
 
 } // namespace editor
+

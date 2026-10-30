@@ -631,20 +631,20 @@ GiStaticLightCounts CollectStaticBakeLightsImpl(const ::Scene& scene,
 	LightFn&& lightAt, GiTraceScene& out, const glm::vec3& aimAxis) {
 	GiStaticLightCounts counts{};
 
-	// Deterministic node order (hash-map iteration is not).
+	// Deterministic node order (the table's row storage order is not).
 	std::vector<uint32_t> nodes;
-	nodes.reserve(scene.lightForNode.size());
-	for (const auto& [node, lightIdx] : scene.lightForNode)
-		nodes.push_back(node);
+	nodes.reserve(scene.tables.lights.size());
+	for (const LightRow& row : scene.tables.lights)
+		nodes.push_back(row.node);
 	std::sort(nodes.begin(), nodes.end());
 
 	for (uint32_t node : nodes) {
-		const auto lit = scene.lightForNode.find(node);
-		if (lit == scene.lightForNode.end())
+		const LightRow* lit = FindLight(scene, node);
+		if (!lit)
 			continue;
 		if (node >= scene.globalTransform.size())
 			continue;
-		const SceneLight* lp = lightAt(node, lit->second);
+		const SceneLight* lp = lightAt(node, lit->light);
 		if (!lp || (lp->flags & SceneLight::kSceneLightFlag_Static) == 0)
 			continue; // runtime-only light: never baked
 		const SceneLight& L = *lp;

@@ -211,9 +211,9 @@ std::string EditorApp::CreateGivolumeAsset(const std::string& dir,
 	uint32_t useNode = node;
 	uint32_t priority = 0;
 	if (m_world && useNode != UINT32_MAX) {
-		auto it = m_world->scene.giVolumeForNode.find(useNode);
-		if (it != m_world->scene.giVolumeForNode.end())
-			priority = it->second.priority;
+		auto it = FindGiVolume(m_world->scene, useNode);
+		if (it)
+			priority = it->volume.priority;
 	}
 	smvk::cook::GivolumeAsset a = smvk::cook::DefaultGivolumeAsset(
 		path.stem().string(), scene, useNode);
@@ -456,13 +456,14 @@ void EditorApp::RecordBakeAssetsFromCook() {
 	// ---- GI-volume assets (one typed .givolume per authored node) ----
 	// Each GI volume node owns its bake pointer; the cook refreshes the
 	// settings snapshot + baked hash (payload e.g. gi/<scene>_<i>.givolume).
-	if (m_world && !m_world->scene.giVolumeForNode.empty()) {
+	if (m_world && !m_world->scene.tables.giVolumes.empty()) {
 		const fs::path giDir = m_projectRoot.empty()
 			? fs::path("content") / "gi"
 			: fs::path(m_projectRoot) / "content" / "gi";
 		std::error_code gec;
 		fs::create_directories(giDir, gec);
-		for (const auto& [node, def] : m_world->scene.giVolumeForNode) {
+		for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+		const NodeId node = _row.node; const auto& def = _row.volume;
 			const std::string stem =
 				scene + "_givolume" + std::to_string(node);
 			const fs::path cvPath =
@@ -515,3 +516,4 @@ void EditorApp::RecordBakeAssetsFromCook() {
 }
 
 } // namespace editor
+

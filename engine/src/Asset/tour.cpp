@@ -2845,7 +2845,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
-			scene.nameForNode[target] = id;
+			SetNodeNameIndex(scene, target, id);
 			break;
 		}
 		case Verb::SetTranslate:
@@ -2998,10 +2998,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			RemoveMesh(scene, target);
 			RemoveMaterial(scene, target);
-			scene.lightForNode.erase(target);
-			scene.giVolumeForNode.erase(target);
-			scene.cubemapForNode.erase(target);
-			scene.exportForNode.erase(target);
+			RemoveLight(scene, target);
+			RemoveGiVolume(scene, target);
+			RemoveCubemap(scene, target);
+			RemoveExport(scene, target);
 			break;
 		}
 		case Verb::SetUuid: {
@@ -3052,7 +3052,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.localTransform[size_t(newId)] = m;
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
-			scene.nameForNode[uint32_t(newId)] = nameId;
+			SetNodeNameIndex(scene, uint32_t(newId), nameId);
 			break;
 		}
 		case Verb::CreateLight: {
@@ -3094,8 +3094,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				cluster.lights.create(std::move(def)).index();
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
-			scene.nameForNode[uint32_t(newId)] = nameId;
-		scene.lightForNode[uint32_t(newId)] = poolIdx;
+			SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		SetLight(scene, uint32_t(newId), poolIdx);
 		createdLights.push_back(uint32_t(newId));
 		break;
 	}
@@ -3131,10 +3131,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		def.spacing = std::max(c.vec4.y, 1e-3f);
 		def.insideFade = std::max(c.vec4.z, 0.0f);
 		def.outsideFade = std::max(c.vec4.w, 0.0f);
-		scene.giVolumeForNode[uint32_t(newId)] = def;
+		SetGiVolume(scene, uint32_t(newId), def);
 		const uint32_t nameId = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(c.text);
-		scene.nameForNode[uint32_t(newId)] = nameId;
+		SetNodeNameIndex(scene, uint32_t(newId), nameId);
 		createdGiVolumes.push_back(uint32_t(newId));
 		break;
 	}
@@ -3163,10 +3163,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			glm::translate(glm::mat4(1.0f), c.vec);
 		SceneCubemap def{};
 		def.radius = std::max(float(c.number), 1e-2f);
-		scene.cubemapForNode[uint32_t(newId)] = def;
+		SetCubemap(scene, uint32_t(newId), def);
 		const uint32_t nameId = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(c.text);
-		scene.nameForNode[uint32_t(newId)] = nameId;
+		SetNodeNameIndex(scene, uint32_t(newId), nameId);
 		createdCubemaps.push_back(uint32_t(newId));
 		break;
 	}
@@ -3211,8 +3211,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			cluster.cameras.create(std::move(def)).index();
 		const uint32_t nameId = uint32_t(scene.nodeNames.size());
 		scene.nodeNames.push_back(c.text);
-		scene.nameForNode[uint32_t(newId)] = nameId;
-		scene.cameraForNode[uint32_t(newId)] = poolIdx;
+		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		SetCamera(scene, uint32_t(newId), poolIdx);
 		createdCameras.push_back(uint32_t(newId));
 		break;
 	}
@@ -3270,7 +3270,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				glm::translate(glm::mat4(1.0f), c.vec);
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
-			scene.nameForNode[uint32_t(newId)] = nameId;
+			SetNodeNameIndex(scene, uint32_t(newId), nameId);
 			createdTerrains.push_back(uint32_t(newId));
 			// Tile child nodes (positioned by their grid offset).
 			TourTerrainGroup& state = terrainGroups.emplace_back();
@@ -3312,7 +3312,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					const uint32_t tileNameId = uint32_t(scene.nodeNames.size());
 					scene.nodeNames.push_back(c.text + "_" + std::to_string(tx)
 						+ "_" + std::to_string(tz));
-					scene.nameForNode[uint32_t(tileId)] = tileNameId;
+					SetNodeNameIndex(scene, uint32_t(tileId), tileNameId);
 					state.tileNodes[size_t(tz) * state.data.tilesX + tx] =
 						uint32_t(tileId);
 				}
@@ -3380,8 +3380,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
-			auto lit = scene.lightForNode.find(target);
-			if (lit == scene.lightForNode.end()) {
+			const LightRow* lit = FindLight(scene, target);
+			if (!lit) {
 				if (err)
 					*err = "tour: setLightAttr on non-light node " +
 						std::to_string(target);
@@ -3390,7 +3390,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				break;
 			}
 			SceneLight* def = cluster.lights.get(
-				cluster.lights.getHandle(lit->second));
+				cluster.lights.getHandle(lit->light));
 			if (!def) {
 				if (err)
 					*err = "tour: setLightAttr bad light pool index";
@@ -3431,7 +3431,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			def->name = c.name;
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.name);
-			scene.nameForNode[target] = id;
+			SetNodeNameIndex(scene, target, id);
 		}
 		else if (c.text == "cookie") {
 			// Spot gobo ref (a .texture path or image URI; the light
@@ -3496,8 +3496,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		auto cvit = scene.giVolumeForNode.find(target);
-		if (cvit == scene.giVolumeForNode.end()) {
+		GiVolumeRow* cvit = FindGiVolume(scene, target);
+		if (!cvit) {
 			if (err)
 				*err = "tour: setGiVolumeAttr on non-GI-volume node " +
 					std::to_string(target);
@@ -3505,7 +3505,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		SceneGiVolume& def = cvit->second;
+		SceneGiVolume& def = cvit->volume;
 		if (c.text == "priority") {
 			def.priority = uint32_t(std::max(c.number, 0.0));
 		}
@@ -3536,7 +3536,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		else if (c.text == "name") {
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.name);
-			scene.nameForNode[target] = id;
+			SetNodeNameIndex(scene, target, id);
 		}
 		else if (c.text == "position" || c.text == "rotation"
 			|| c.text == "size") {
@@ -3589,8 +3589,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		auto cmit = scene.cubemapForNode.find(target);
-		if (cmit == scene.cubemapForNode.end()) {
+		CubemapRow* cmit = FindCubemap(scene, target);
+		if (!cmit) {
 			if (err)
 				*err = "tour: setCubemapAttr on non-cubemap node " +
 					std::to_string(target);
@@ -3598,14 +3598,14 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		SceneCubemap& def = cmit->second;
+		SceneCubemap& def = cmit->cubemap;
 		if (c.text == "radius") {
 			def.radius = std::max(float(c.number), 1e-2f);
 		}
 		else if (c.text == "name") {
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.name);
-			scene.nameForNode[target] = id;
+			SetNodeNameIndex(scene, target, id);
 		}
 		else if (c.text == "position") {
 			// Rebuild the node's local TRS with the translate channel
@@ -3649,8 +3649,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		auto lit = scene.cameraForNode.find(target);
-		if (lit == scene.cameraForNode.end()) {
+		const CameraRow* lit = FindCamera(scene, target);
+		if (!lit) {
 			if (err)
 				*err = "tour: setCamAttr on non-camera node " +
 					std::to_string(target);
@@ -3659,7 +3659,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			break;
 		}
 		SceneCamera* def = cluster.cameras.get(
-			cluster.cameras.getHandle(lit->second));
+			cluster.cameras.getHandle(lit->camera));
 		if (!def) {
 			if (err)
 				*err = "tour: setCamAttr bad camera pool index";
@@ -3671,7 +3671,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			def->name = c.name;
 			const uint32_t id = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.name);
-			scene.nameForNode[target] = id;
+			SetNodeNameIndex(scene, target, id);
 		}
 		else if (c.text == "position" || c.text == "rotation") {
 			// Rebuild the node's local TRS with one channel replaced
@@ -3742,8 +3742,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		auto eit = scene.exportForNode.find(target);
-		if (eit == scene.exportForNode.end()) {
+		ExportRow* eit = FindExport(scene, target);
+		if (!eit) {
 			if (err)
 				*err = "tour: setExportAttr on non-exportSettings node "
 					+ std::to_string(target);
@@ -3751,7 +3751,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				return false;
 			break;
 		}
-		SceneExportSettings& es = eit->second;
+		SceneExportSettings& es = eit->settings;
 		if (!ApplyExportAttr(es, c, nullptr)) {
 			warn("tour: unknown exportSettings attr '" + c.text
 				+ "' (skipped)");
@@ -3787,11 +3787,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				scene.localTransform[size_t(newId)] = glm::mat4(1.0f);
 				// Identity transform (a config node — no shape), default
 				// payload (attrs below override field by field).
-				scene.exportForNode[uint32_t(newId)] = SceneExportSettings{};
+				SetExport(scene, uint32_t(newId), SceneExportSettings{});
 				const uint32_t nameId = uint32_t(scene.nodeNames.size());
 				scene.nodeNames.push_back(
 					c.text.empty() ? "ExportSettings" : c.text);
-				scene.nameForNode[uint32_t(newId)] = nameId;
+				SetNodeNameIndex(scene, uint32_t(newId), nameId);
 				createdExports.push_back(uint32_t(newId));
 				if (createdExports.size() > 1)
 					warn("tour: duplicate exportSettings node '"
@@ -3895,15 +3895,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				+ " (dropped — '" + ga.source + "')");
 			continue;
 		}
-		auto it = scene.giVolumeForNode.find(createdGiVolumes[k]);
-		if (it == scene.giVolumeForNode.end()) {
+		GiVolumeRow* it = FindGiVolume(scene, createdGiVolumes[k]);
+		if (!it) {
 			warn("tour: giAsset GI-volume target is not a GI volume (dropped — '"
 				+ ga.source + "')");
 			continue;
 		}
-		it->second.bakeSource = ga.source;
-		it->second.bakeGuid = ga.guid;
-		it->second.bakeInputHash = ga.bakedHash;
+		it->volume.bakeSource = ga.source;
+		it->volume.bakeGuid = ga.guid;
+		it->volume.bakeInputHash = ga.bakedHash;
 	}
 	if (createdGiVolumesOut)
 		*createdGiVolumesOut = createdGiVolumes;
@@ -4069,10 +4069,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		(void)eb.zonesEnabled;
 		scene.envZonesEnabled = true;
 		if (eb.hasBlocks) {
-			std::unordered_map<uint32_t, SceneEnv> table;
+			// Bulk-load into the env table (rows directly — the
+			// ParseSceneBlob discipline; the derived index rebuilds at
+			// the replay's end).
+			std::vector<EnvRow> rows;
 			for (const auto& [n, e] : eb.nodeEnvs) {
 				if (n < scene.hierarchy.size())
-					table[n] = e;
+					rows.push_back(EnvRow{ n, e });
 				else
 					warn("tour: env node block #" + std::to_string(n) +
 						" out of range (dropped)");
@@ -4080,9 +4083,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			SceneEnv active = eb.def;
 			uint32_t activeNode = UINT32_MAX;
 			if (eb.haveCurrent) {
-				auto it = table.find(eb.currentCluster);
-				if (it != table.end()) {
-					active = it->second;
+				auto it = std::find_if(rows.begin(), rows.end(),
+					[&](const EnvRow& r) { return r.node == eb.currentCluster; });
+				if (it != rows.end()) {
+					active = it->environment;
 					activeNode = eb.currentCluster;
 				}
 				else
@@ -4094,7 +4098,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.envAuthored = true;
 			scene.activeEnvironment = activeNode;
 			scene.defaultEnvironment = eb.def;
-			scene.envForNode = std::move(table);
+			// SetEnv (not a bulk push): the envvol pass below resolves
+			// each volume's default priority through FindEnv — the
+			// derived index must be live by then.
+			for (EnvRow& row : rows)
+				SetEnv(scene, row.node, std::move(row.environment));
 		}
 		// Env-volume settings (envvol.n entries): independent of the
 		// look blocks above (a volumes-only doc must not fake-author
@@ -4110,15 +4118,14 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				}
 				EnvVolume vol = entry.vol;
 				if (!entry.sawPriority) {
-					const auto lit = scene.envForNode.find(n);
-					if (lit != scene.envForNode.end())
-						vol.priority = lit->second.zonePriority;
+					if (const EnvRow* lit = FindEnv(scene, n))
+						vol.priority = lit->environment.zonePriority;
 				}
 				vol.blendWeight =
 					std::clamp(vol.blendWeight, 0.0f, 1.0f);
 				if (!(vol.blendRadius >= 0.0f))
 					vol.blendRadius = 0.0f;
-				scene.envVolumeForNode[n] = vol;
+				SetEnvVolume(scene, n, vol);
 			}
 		}
 	// Render settings (render.* keys — the scene-level postfx look,
@@ -4165,8 +4172,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				}
 				target = n;
 			}
-			if (scene.cameraForNode.find(target)
-				== scene.cameraForNode.end()) {
+			if (!FindCamera(scene, target)) {
 				warn("tour: camera.default target #" +
 					std::to_string(target) + " carries no camera (dropped)");
 				continue;
@@ -4205,14 +4211,13 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 	// says "no convex-volume binding" honestly.
 	for (uint32_t k = 0; k < createdGiVolumes.size(); ++k) {
 		const uint32_t node = createdGiVolumes[k];
-		auto it = scene.giVolumeForNode.find(node);
-		if (it == scene.giVolumeForNode.end()
-				|| it->second.bakeSource.empty())
+		const GiVolumeRow* it = FindGiVolume(scene, node);
+		if (!it || it->volume.bakeSource.empty())
 			continue;
 		doc.giAssets.push_back(GiAssetCmd{
 			GiAssetCmd::Kind::GiVolume,
-			kCreateGiVolumeRefBase | k, it->second.bakeSource,
-			it->second.bakeGuid, it->second.bakeInputHash });
+			kCreateGiVolumeRefBase | k, it->volume.bakeSource,
+			it->volume.bakeGuid, it->volume.bakeInputHash });
 	}
 	// The capture set last (one record; the per-capture hashes ride the
 	// manifest rows — this is the set-level fold the gate fast-paths).
@@ -4223,10 +4228,10 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 	// Hand-injected volumes (a binding on a node with no tour create —
 	// impossible from the bake owners, possible from hand-edited
 	// scenes): warn + skip (the record cannot address them).
-	for (const auto& [node, def] : scene.giVolumeForNode) {
-		if (!def.bakeSource.empty() && !familyOf.count(node)) {
+	for (const GiVolumeRow& row : scene.tables.giVolumes) {
+		if (!row.volume.bakeSource.empty() && !familyOf.count(row.node)) {
 			std::cerr << "tour: StampGiAssets: GI-volume node "
-				<< node << " ('" << def.bakeSource
+				<< row.node << " ('" << row.volume.bakeSource
 				<< "') carries no createGiVolume family ref (skipped)\n";
 		}
 	}
@@ -4436,13 +4441,15 @@ bool SetNodeUuid(Scene& scene, uint32_t node, const std::string& uuid) {
 		return false;
 	// Maya setUuid parity: reject a uuid already held by ANOTHER live
 	// node. Re-setting the holder's own uuid is a no-op true.
-	for (const auto& [n, u] : scene.uuidForNode)
-		if (u == uuid) {
+	for (uint32_t n = 0; n < scene.metadata.size(); ++n) {
+		const std::string& u = scene.metadata[n].uuid;
+		if (!u.empty() && u == uuid) {
 			if (n == node)
 				return true;
 			return false;
 		}
-	scene.uuidForNode[node] = uuid;
+	}
+	SetNodeUuidRaw(scene, node, uuid);
 	return true;
 }
 
@@ -4573,11 +4580,13 @@ bool ResolveParentTarget(const Scene& scene, const std::string& ref,
 			std::string lower = ref;
 			for (char& ch : lower)
 				ch = char(std::tolower((unsigned char)ch));
-			for (const auto& [n, u] : scene.uuidForNode)
+			for (uint32_t n = 0; n < scene.metadata.size(); ++n) {
+				const std::string& u = scene.metadata[n].uuid;
 				if (u == lower && n < scene.hierarchy.size()) {
 					out = n;
 					return true;
 				}
+			}
 		}
 	}
 	// Name, then DAG path (both directions share the delete resolver's
@@ -4589,11 +4598,13 @@ bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
 	const std::string& name, uint32_t idFallback, uint32_t& out) {
 	// 1. UUID: exact match (file-stable identity across re-imports).
 	if (!uuid.empty()) {
-		for (const auto& [n, u] : scene.uuidForNode)
+		for (uint32_t n = 0; n < scene.metadata.size(); ++n) {
+			const std::string& u = scene.metadata[n].uuid;
 			if (u == uuid && n < scene.hierarchy.size()) {
 				out = n;
 				return true;
 			}
+		}
 	}
 	// 2. NAME: unique full-name match; else a DAG path suffix.
 	if (!name.empty()) {

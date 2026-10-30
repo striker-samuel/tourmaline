@@ -1443,8 +1443,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		}
 		mesh.names.resize(nodeCount);
 		for (size_t i = 0; i < nodeCount; ++i) {
-			int id = scene.nameForNode.contains(int(i))
-				? scene.nameForNode.at(int(i)) : -1;
+			const uint32_t nameIdx = GetNodeNameIndex(scene, NodeId(i));
+			int id = (nameIdx != 0xFFFFFFFFu) ? int(nameIdx) : -1;
 			mesh.names[i] = (id >= 0 && id < int(scene.nodeNames.size()))
 				? scene.nodeNames[size_t(id)] : std::string();
 		}
@@ -1605,7 +1605,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 			++stats.instances;
 		}
 		// Lights (the pool defs + node links).
-		for (const auto& [node, poolIdx] : scene.lightForNode) {
+		for (const LightRow& _row : scene.tables.lights) {
+		const NodeId node = _row.node; const auto& poolIdx = _row.light;
 			if (auto* l = cluster->lights.get(
 					smvk::ClusterLightHandle::Mint(poolIdx))) {
 				MeshAsset::LightDef d{};

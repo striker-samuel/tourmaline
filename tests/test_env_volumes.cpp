@@ -44,8 +44,20 @@ uint32_t MakeZone(::Scene& s, const glm::vec3& half) {
 	s.globalTransform[size_t(n)] =
 		glm::scale(glm::mat4(1.0f), half);
 	SceneEnv e{};
-	s.envForNode[uint32_t(n)] = e;
+	SetEnv(s, NodeId(n), e);
 	return uint32_t(n);
+}
+
+// Create-or-mutate an env-volume row (the old volume-map operator[]
+// semantics: default-construct when absent, apply the field
+// write, store back through the table mutator).
+template <typename Fn>
+void MutateEnvVolume(::Scene& s, uint32_t node, Fn&& fn) {
+	EnvVolume v{};
+	if (const EnvVolumeRow* row = FindEnvVolume(s, node))
+		v = row->volume;
+	fn(v);
+	SetEnvVolume(s, node, v);
 }
 
 } // namespace
@@ -55,7 +67,9 @@ int main() {
 	{
 		::Scene s;
 		const uint32_t z = MakeZone(s, glm::vec3(10, 10, 10));
-		s.envVolumeForNode[z].infMask = kEnvInfNegY; // covers y <= +10
+		MutateEnvVolume(s, z, [](EnvVolume& v) {
+			v.infMask = kEnvInfNegY; // covers y <= +10
+		});
 		Check(ZoneCovers(s, z, glm::vec3(0, -100, 0)),
 			"envvol.neginf-covers-below");
 		Check(!ZoneCovers(s, z, glm::vec3(0, 100, 0)),
@@ -68,7 +82,9 @@ int main() {
 	{
 		::Scene s;
 		const uint32_t z = MakeZone(s, glm::vec3(10, 2, 10));
-		s.envVolumeForNode[z].infMask = kEnvInfPosY; // covers y >= -2
+		MutateEnvVolume(s, z, [](EnvVolume& v) {
+			v.infMask = kEnvInfPosY; // covers y >= -2
+		});
 		Check(ZoneCovers(s, z, glm::vec3(0, 100, 0)),
 			"envvol.posinf-covers-above");
 		Check(!ZoneCovers(s, z, glm::vec3(0, -100, 0)),
@@ -78,10 +94,10 @@ int main() {
 	{
 		::Scene s;
 		const uint32_t z = MakeZone(s, glm::vec3(10, 10, 10));
-		s.envVolumeForNode[z].infMask = 63u;
+		MutateEnvVolume(s, z, [](EnvVolume& v) { v.infMask = 63u; });
 		Check(ZoneCovers(s, z, glm::vec3(1e6f, -1e6f, 1e6f)),
 			"envvol.allinf-covers");
-		s.envVolumeForNode[z].enabled = false;
+		MutateEnvVolume(s, z, [](EnvVolume& v) { v.enabled = false; });
 		Check(!ZoneCovers(s, z, glm::vec3(0, 0, 0)),
 			"envvol.disabled-covers-nothing");
 		Check(ZoneAtPosition(s, glm::vec3(0, 0, 0)) == UINT32_MAX,
@@ -103,12 +119,16 @@ int main() {
 		::Scene s;
 		const uint32_t a = MakeZone(s, glm::vec3(100, 100, 100));
 		const uint32_t b = MakeZone(s, glm::vec3(10, 10, 10));
-		s.envForNode[a].zonePriority = 5.0f;
-		s.envForNode[b].zonePriority = 1.0f;
-		s.envVolumeForNode[b].priority = 9.0f;
-		Check(ZonePriority(s, a, s.envForNode[a]) == 5.0f,
+		if (EnvRow* row = FindEnv(s, a))
+			row->environment.zonePriority = 5.0f;
+		if (EnvRow* row = FindEnv(s, b))
+			row->environment.zonePriority = 1.0f;
+		MutateEnvVolume(s, b, [](EnvVolume& v) { v.priority = 9.0f; });
+		const EnvRow* rowA = FindEnv(s, a);
+		const EnvRow* rowB = FindEnv(s, b);
+		Check(rowA && ZonePriority(s, a, rowA->environment) == 5.0f,
 			"envvol.priority-fallback");
-		Check(ZonePriority(s, b, s.envForNode[b]) == 9.0f,
+		Check(rowB && ZonePriority(s, b, rowB->environment) == 9.0f,
 			"envvol.priority-volume-wins");
 		Check(ZoneAtPosition(s, glm::vec3(0, 0, 0)) == b,
 			"envvol.resolve-volume-priority");
@@ -136,20 +156,19 @@ int main() {
 		std::string err;
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
 			"envvol.replay-ok");
-		const auto it = cluster->scene.envVolumeForNode.find(1);
-		Check(it != cluster->scene.envVolumeForNode.end(),
+		const EnvVolumeRow* it = FindEnvVolume(cluster->scene, 1);
+		Check(it != nullptr,
 			"envvol.replay-stored");
-		if (it != cluster->scene.envVolumeForNode.end()) {
-			Check(it->second.infMask == 12u, "envvol.replay-mask");
-			Check(it->second.priority == 5.0f,
+		if (it != nullptr) {
+			Check(it->volume.infMask == 12u, "envvol.replay-mask");
+			Check(it->volume.priority == 5.0f,
 				"envvol.replay-priority-from-look");
-			Check(std::abs(it->second.blendWeight - 0.5f) < 1e-6f,
+			Check(std::abs(it->volume.blendWeight - 0.5f) < 1e-6f,
 				"envvol.replay-weight");
-			Check(it->second.blendRadius == 4.0f, "envvol.replay-radius");
-			Check(it->second.enabled, "envvol.replay-enabled");
+			Check(it->volume.blendRadius == 4.0f, "envvol.replay-radius");
+			Check(it->volume.enabled, "envvol.replay-enabled");
 		}
-		Check(cluster->scene.envVolumeForNode.find(99)
-			== cluster->scene.envVolumeForNode.end(),
+		Check(FindEnvVolume(cluster->scene, 99) == nullptr,
 			"envvol.replay-dangling-dropped");
 	}
 	{
@@ -167,9 +186,8 @@ int main() {
 		std::string err;
 		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
 			"envvol.volsonly-ok");
-		const auto it = cluster->scene.envVolumeForNode.find(1);
-		Check(it != cluster->scene.envVolumeForNode.end()
-			&& it->second.priority == 7.0f,
+		const EnvVolumeRow* it = FindEnvVolume(cluster->scene, 1);
+		Check(it != nullptr && it->volume.priority == 7.0f,
 			"envvol.volsonly-explicit-priority");
 		Check(!cluster->scene.envAuthored, "envvol.volsonly-no-fake-author");
 	}
@@ -295,7 +313,7 @@ int main() {
 			SceneEnv e{};
 			e.fogColor = fog; // the look: distinct per zone = record identity
 			e.zonePriority = priority;
-			s.envForNode[uint32_t(n)] = e;
+			SetEnv(s, NodeId(n), e);
 			return uint32_t(n);
 		};
 		const auto recOf = [](const WorldEnvTiles& t, const glm::vec3& fog) {
@@ -385,7 +403,9 @@ int main() {
 			::Scene s;
 			const uint32_t z = makeTileZone(s, glm::vec3(32, 8, 32),
 				glm::vec3(32, 8, 32), glm::vec3(0.5f, 0.5f, 0.1f), 5.0f);
-			s.envVolumeForNode[z].infMask = kEnvInfNegY; // covers y <= 16
+			MutateEnvVolume(s, z, [](EnvVolume& v) {
+				v.infMask = kEnvInfNegY; // covers y <= 16
+			});
 			WorldEnvTiles t;
 			Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
 				"envtile.halfspace-build");
@@ -427,7 +447,8 @@ int main() {
 				s.defaultEnvironment.volumetricDensity = 0.0f;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
 					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
-				s.envForNode[z].volumetricDensity = 0.0f;
+				if (EnvRow* row = FindEnv(s, z))
+					row->environment.volumetricDensity = 0.0f;
 				WorldEnvTiles t;
 				Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
 					"envtile.fogscan-none-build");
@@ -442,7 +463,8 @@ int main() {
 				s.defaultEnvironment.volumetricDensity = 0.0f;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
 					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
-				s.envForNode[z].volumetricDensity = 0.02f;
+				if (EnvRow* row = FindEnv(s, z))
+					row->environment.volumetricDensity = 0.02f;
 				WorldEnvTiles t;
 				Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f),
 					"envtile.fogscan-zone-build");
@@ -489,7 +511,9 @@ int main() {
 				::Scene s;
 				const uint32_t z = makeTileZone(s, glm::vec3(1, 1, 1),
 					glm::vec3(0.0f), glm::vec3(0, 1, 0), 5.0f);
-				s.envVolumeForNode[z].infMask = 63u; // every face infinite
+				MutateEnvVolume(s, z, [](EnvVolume& v) {
+					v.infMask = 63u; // every face infinite
+				});
 				const auto e = ComputeEnvGridExtent(s, EnvGridBounds{
 					glm::vec3(-32.0f), glm::vec3(32.0f) });
 				Check(e.dimX == kEnvTileMaxDim && e.dimZ == kEnvTileMaxDim,
@@ -504,7 +528,9 @@ int main() {
 				::Scene s;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 8, 32),
 					glm::vec3(0.0f, 8.0f, 0.0f), glm::vec3(0, 1, 0), 5.0f);
-				s.envVolumeForNode[z].infMask = kEnvInfNegY;
+				MutateEnvVolume(s, z, [](EnvVolume& v) {
+					v.infMask = kEnvInfNegY;
+				});
 				const auto e = ComputeEnvGridExtent(s, EnvGridBounds{
 					glm::vec3(-32.0f, -16.0f, -32.0f),
 					glm::vec3(32.0f, 48.0f, 32.0f) });

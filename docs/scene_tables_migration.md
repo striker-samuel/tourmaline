@@ -219,6 +219,34 @@ deltas are marked.
   (all twelve maps; `nameForNode`+`uuidForNode` fold into dense
   `NodeMetadata`; env/envVolume inline rows are already POD —
   giVolume/cubemap/export rows take `StringRef`s).
+# Epoch 5 record (append to the Epoch 5 bullet)
+
+  - **5 — `refactor(scene): migrate remaining node associations`**
+    - **Record**: ALL TEN maps deleted (light/camera/decal/
+      giVolume/cubemap/export/env/envVolume → typed tables with
+      inline payloads; nameForNode+uuidForNode → dense NodeMetadata
+      array). scene_payloads.h extracted (the payload structs moved
+      out of scene.h so the rows can reference them without a
+      cycle). Inline-payload rows are copyable-not-trivial (strings
+      live in the authoring structs; the COOKED StringRef layout is
+      Epoch 7's). findNodeByName/getNodeName/setNodeName re-targeted
+      to metadata; mergeScenes clears all tables with the fresh-root
+      reset and appends metadata with name-offset remap; the resolve
+      remaps every table + metadata; deleteSceneNodes shifts every
+      table + metadata (shiftNodeMetadata). Pak writers sorted by
+      node (byte-stable); readers bulk-push + one RebuildNodeRows.
+      Two migration-war stories recorded for posterity: the
+      envvol-priority default needs the derived index LIVE between
+      passes (the env bulk push became SetEnv calls — FindEnv in the
+      envvol pass missed index-less rows); and a nested-regex
+      collision mangled asset_export's name-index ternary (empty
+      asset names — every namespaced-reference test caught it).
+      Validation: Windows tests 46/46 (incl. tour replay, env
+      volumes, world entities); editor smoke clean. The mechanical
+      bulk migration was scripted (regex transforms + a
+      compiler-error-driven fix loop) — 500+ sites, zero remaining
+      live references.
+
 - 6 — `refactor(world): support table remapping and merging` —
   targets `ResolveAndFixup_clusters`, NOT `mergeScenes`; the four
   never-carried maps start riding the resolve here.

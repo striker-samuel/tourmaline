@@ -1079,13 +1079,18 @@ bool SerializeClusters(
 				PutU32(blob, it->second);
 			}
 		}
-		PutU32(blob, static_cast<uint32_t>(scene.nameForNode.size()));
-		std::vector<std::pair<uint32_t, uint32_t>> namePairs(
-			scene.nameForNode.begin(), scene.nameForNode.end());
-		std::sort(namePairs.begin(), namePairs.end());
-		for (const auto& [node, nameIdx] : namePairs) {
-			PutU32(blob, node);
-			PutU32(blob, nameIdx);
+		// Node names via the dense metadata (node-ordered, byte-stable).
+		{
+			std::vector<std::pair<uint32_t, uint32_t>> namePairs;
+			for (uint32_t n = 0; n < scene.metadata.size(); ++n)
+				if (scene.metadata[n].name != 0xFFFFFFFFu)
+					namePairs.emplace_back(n, scene.metadata[n].name);
+			std::sort(namePairs.begin(), namePairs.end());
+			PutU32(blob, static_cast<uint32_t>(namePairs.size()));
+			for (const auto& [node, nameIdx] : namePairs) {
+				PutU32(blob, node);
+				PutU32(blob, nameIdx);
+			}
 		}
 		PutU32(blob, static_cast<uint32_t>(scene.nodeNames.size()));
 		for (const auto& n : scene.nodeNames)
@@ -1128,16 +1133,19 @@ bool SerializeClusters(
 		// written (possibly empty) so the layout is uniform; v3 paks end
 		// after the lightmap section (no lights).
 		{
-			std::vector<std::pair<uint32_t, uint32_t>> lightPairs(
-				scene.lightForNode.begin(), scene.lightForNode.end());
-			std::sort(lightPairs.begin(), lightPairs.end());
-			PutU32(blob, static_cast<uint32_t>(lightPairs.size()));
-			for (const auto& [node, localIdx] : lightPairs) {
-				const auto it = local.light.find(localIdx);
+			std::vector<const LightRow*> lightRows;
+			lightRows.reserve(scene.tables.lights.size());
+			for (const LightRow& row : scene.tables.lights)
+				lightRows.push_back(&row);
+			std::sort(lightRows.begin(), lightRows.end(),
+				[](const LightRow* a, const LightRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(lightRows.size()));
+			for (const LightRow* row : lightRows) {
+				const auto it = local.light.find(row->light);
 				if (it == local.light.end())
 					return fail("scene references unknown light pool index " +
-						std::to_string(localIdx));
-				PutU32(blob, node);
+						std::to_string(row->light));
+				PutU32(blob, row->node);
 				PutU32(blob, it->second);
 			}
 		}
@@ -1177,16 +1185,19 @@ bool SerializeClusters(
 		// order — the same pak-id indirection the lights section uses.
 		// Always written (possibly empty) so the layout is uniform.
 		{
-			std::vector<std::pair<uint32_t, uint32_t>> camPairs(
-				scene.cameraForNode.begin(), scene.cameraForNode.end());
-			std::sort(camPairs.begin(), camPairs.end());
-			PutU32(blob, static_cast<uint32_t>(camPairs.size()));
-			for (const auto& [node, localIdx] : camPairs) {
-				const auto it = local.camera.find(localIdx);
+			std::vector<const CameraRow*> camRows;
+			camRows.reserve(scene.tables.cameras.size());
+			for (const CameraRow& row : scene.tables.cameras)
+				camRows.push_back(&row);
+			std::sort(camRows.begin(), camRows.end(),
+				[](const CameraRow* a, const CameraRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(camRows.size()));
+			for (const CameraRow* row : camRows) {
+				const auto it = local.camera.find(row->camera);
 				if (it == local.camera.end())
 					return fail("scene references unknown camera pool index " +
-						std::to_string(localIdx));
-				PutU32(blob, node);
+						std::to_string(row->camera));
+				PutU32(blob, row->node);
 				PutU32(blob, it->second);
 			}
 		}
@@ -1200,14 +1211,16 @@ bool SerializeClusters(
 			PutU32(blob, scene.envAuthored ? 1u : 0u);
 			PutSceneEnv(blob, scene.environment);
 			PutSceneEnv(blob, scene.defaultEnvironment);
-			std::vector<std::pair<uint32_t, SceneEnv>> envPairs(
-				scene.envForNode.begin(), scene.envForNode.end());
-			std::sort(envPairs.begin(), envPairs.end(),
-				[](const auto& a, const auto& b) { return a.first < b.first; });
-			PutU32(blob, static_cast<uint32_t>(envPairs.size()));
-			for (const auto& [node, env] : envPairs) {
-				PutU32(blob, node);
-				PutSceneEnv(blob, env);
+			std::vector<const EnvRow*> envRows;
+			envRows.reserve(scene.tables.envs.size());
+			for (const EnvRow& row : scene.tables.envs)
+				envRows.push_back(&row);
+			std::sort(envRows.begin(), envRows.end(),
+				[](const EnvRow* a, const EnvRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(envRows.size()));
+			for (const EnvRow* row : envRows) {
+				PutU32(blob, row->node);
+				PutSceneEnv(blob, row->environment);
 			}
 		}
 		// Render settings (the postfx look — see SceneRenderSettings):
@@ -1234,16 +1247,19 @@ bool SerializeClusters(
 		// cameras sections use. Always written (possibly empty) so the
 		// layout is uniform.
 		{
-			std::vector<std::pair<uint32_t, uint32_t>> decalPairs(
-				scene.decalForNode.begin(), scene.decalForNode.end());
-			std::sort(decalPairs.begin(), decalPairs.end());
-			PutU32(blob, static_cast<uint32_t>(decalPairs.size()));
-			for (const auto& [node, localIdx] : decalPairs) {
-				const auto it = local.decal.find(localIdx);
+			std::vector<const DecalRow*> decalRows;
+			decalRows.reserve(scene.tables.decals.size());
+			for (const DecalRow& row : scene.tables.decals)
+				decalRows.push_back(&row);
+			std::sort(decalRows.begin(), decalRows.end(),
+				[](const DecalRow* a, const DecalRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(decalRows.size()));
+			for (const DecalRow* row : decalRows) {
+				const auto it = local.decal.find(row->decal);
 				if (it == local.decal.end())
 					return fail("scene references unknown decal pool index " +
-						std::to_string(localIdx));
-				PutU32(blob, node);
+						std::to_string(row->decal));
+				PutU32(blob, row->node);
 				PutU32(blob, it->second);
 			}
 		}
@@ -1262,20 +1278,20 @@ bool SerializeClusters(
 		// so the layout is uniform; old readers fail the trailing-bytes
 		// check on v13 blobs (the sanctioned break - no conversions).
 		{
-			std::vector<uint32_t> volNodes;
-			volNodes.reserve(scene.envVolumeForNode.size());
-			for (const auto& [node, vol] : scene.envVolumeForNode)
-				volNodes.push_back(node);
-			std::sort(volNodes.begin(), volNodes.end());
-			PutU32(blob, static_cast<uint32_t>(volNodes.size()));
-			for (const uint32_t node : volNodes) {
-				const EnvVolume& vol = scene.envVolumeForNode.at(node);
-				PutU32(blob, node);
-				PutU32(blob, vol.infMask);
-				PutF32(blob, vol.priority);
-				PutF32(blob, vol.blendWeight);
-				PutF32(blob, vol.blendRadius);
-				PutU32(blob, vol.enabled ? 1u : 0u);
+			std::vector<const EnvVolumeRow*> volRows;
+			volRows.reserve(scene.tables.envVolumes.size());
+			for (const EnvVolumeRow& row : scene.tables.envVolumes)
+				volRows.push_back(&row);
+			std::sort(volRows.begin(), volRows.end(),
+				[](const EnvVolumeRow* a, const EnvVolumeRow* b) { return a->node < b->node; });
+			PutU32(blob, static_cast<uint32_t>(volRows.size()));
+			for (const EnvVolumeRow* row : volRows) {
+				PutU32(blob, row->node);
+				PutU32(blob, row->volume.infMask);
+				PutF32(blob, row->volume.priority);
+				PutF32(blob, row->volume.blendWeight);
+				PutF32(blob, row->volume.blendRadius);
+				PutU32(blob, row->volume.enabled ? 1u : 0u);
 			}
 		}
 		// Cluster skeleton (v14; v13 blobs end after the env-volume
@@ -1499,7 +1515,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		const uint32_t nameIdx = c.u32();
 		if (!c.ok)
 			return fail("bad scene name mapping");
-		scene.nameForNode[node] = nameIdx;
+		SetNodeNameIndex(scene, node, nameIdx);
 	}
 	const uint32_t nodeNameCount = c.u32();
 	for (uint32_t i = 0; i < nodeNameCount; ++i)
@@ -1565,7 +1581,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				const ClusterLightHandle h = (*maps->lights)[pakId];
 				if (!h.valid())
 					return fail("scene references invalid light pak id");
-				scene.lightForNode[node] = h.index();
+				scene.tables.lights.push_back(LightRow{ node, h.index() });
 			}
 		}
 		if (!c.ok)
@@ -1628,7 +1644,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 					const ClusterCameraHandle h = (*maps->cameras)[pakId];
 					if (!h.valid())
 						return fail("scene references invalid camera pak id");
-					scene.cameraForNode[node] = h.index();
+					scene.tables.cameras.push_back(CameraRow{ node, h.index() });
 				}
 			}
 			if (!c.ok)
@@ -1645,20 +1661,22 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			const uint32_t envPairCount = c.u32();
 			if (!c.ok || envPairCount > 1024 * 1024)
 				return fail("bad scene environment section");
-			std::unordered_map<NodeId, SceneEnv> table;
+			std::vector<EnvRow> rows;
+			rows.reserve(envPairCount);
 			for (uint32_t i = 0; i < envPairCount; ++i) {
 				const uint32_t node = c.u32();
 				SceneEnv block = c.sceneEnv();
 				if (!c.ok || node >= nodeCount)
 					return fail("bad scene environment section");
-				table[node] = block;
+				rows.push_back(EnvRow{ node, std::move(block) });
 			}
 			if (!c.ok)
 				return fail("truncated scene environment section");
 			scene.environment = resolved;
 			scene.envAuthored = envFlag != 0;
 			scene.defaultEnvironment = def;
-			scene.envForNode = std::move(table);
+			for (EnvRow& row : rows)
+				scene.tables.envs.push_back(std::move(row));
 		}
 		// Render settings (the postfx look): u32 authored flag + ONE
 		// record. Blobs from before the split end after the env section —
@@ -1702,7 +1720,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 					const ClusterDecalHandle h = (*maps->decals)[pakId];
 					if (!h.valid())
 						return fail("scene references invalid decal pak id");
-					scene.decalForNode[node] = h.index();
+					scene.tables.decals.push_back(DecalRow{ node, h.index() });
 				}
 			}
 			if (!c.ok)
@@ -1741,7 +1759,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 				vol.blendRadius =
 					(radius >= 0.0f && std::isfinite(radius)) ? radius : 0.0f;
 				vol.enabled = enabled != 0u;
-				scene.envVolumeForNode[node] = vol;
+				scene.tables.envVolumes.push_back(EnvVolumeRow{ node, vol });
 			}
 			if (!c.ok)
 				return fail("truncated scene env-volume section");

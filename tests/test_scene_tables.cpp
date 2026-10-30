@@ -79,8 +79,8 @@ int main() {
 		// ---- duplicate rejection = replacement ----
 		Check(SetMesh(s, 1, 11), "SetMesh on an associated node succeeds");
 		Check(s.tables.meshes.size() == 1, "re-Set does not add a second row");
-		mr = FindMesh(s, 1);
-		Check(mr && mr->mesh == 11, "re-Set replaces the payload in place");
+		auto mr2 = FindMesh(s, 1);
+		Check(mr2 && mr2->mesh == 11, "re-Set replaces the payload in place");
 		Check(SetMaterial(s, 1, 21) && s.tables.materials.size() == 1
 			&& FindMaterial(s, 1)->material == 21,
 			"re-SetMaterial replaces in place");

@@ -2362,17 +2362,20 @@ namespace engine {
 					// (the FPS camera has no ortho path - the pose still
 					// applies).
 					const ::Scene* fs = &m_world->scene;
-					auto camIt = fs->cameraForNode.find(
-						fs->defaultCameraNode);
 					const ::SceneCamera* defCam = nullptr;
-					if (fs->defaultCameraNode < fs->hierarchy.size()
-						&& camIt != fs->cameraForNode.end()
-						&& camIt->second
-						< m_world->cameraLocations.size()) {
-						const auto& loc =
-							m_world->cameraLocations[camIt->second];
-						if (loc.cluster && loc.handle.valid())
-							defCam = loc.cluster->cameras.get(loc.handle);
+					if (fs->defaultCameraNode < fs->hierarchy.size()) {
+						// The camera table row on the default-camera
+						// node (a missing row = no authored lens).
+						const CameraRow* camRow = FindCamera(
+							*fs, fs->defaultCameraNode);
+						if (camRow
+							&& camRow->camera
+							< m_world->cameraLocations.size()) {
+							const auto& loc =
+								m_world->cameraLocations[camRow->camera];
+							if (loc.cluster && loc.handle.valid())
+								defCam = loc.cluster->cameras.get(loc.handle);
+						}
 					}
 					bool framed = false;
 					if (defCam) {
@@ -6540,17 +6543,17 @@ namespace engine {
 		m_sceneLights.clear();
 		const ::Scene& scene = m_world->scene;
 		const auto& lightLocs = m_world->lightLocations;
-		if (lightLocs.empty() || scene.lightForNode.empty()) {
+		if (lightLocs.empty() || scene.tables.lights.empty()) {
 			if (log)
 				std::cerr << "[Scene] no resolved lights (Forward+ set empty)\n";
 			return;
 		}
 		// Deterministic node order (pak order is already sorted, but the
-		// world map is a hash - sort the node ids).
+		// world table's row order is not - sort the node ids).
 		std::vector<uint32_t> nodes;
-		nodes.reserve(scene.lightForNode.size());
-		for (const auto& [node, li] : scene.lightForNode)
-			nodes.push_back(node);
+		nodes.reserve(scene.tables.lights.size());
+		for (const LightRow& row : scene.tables.lights)
+			nodes.push_back(row.node);
 		std::sort(nodes.begin(), nodes.end());
 		std::vector<smvk::ForwardPlusLight> spots, points;
 		// Elected-sun locals: seed a sceneless env below (bind time) and
@@ -6566,12 +6569,12 @@ namespace engine {
 		// seeded the env underground).
 		const glm::vec3 aimAxis = GltfPunctualAimAxis(0);
 		for (uint32_t node : nodes) {
-			auto lit = scene.lightForNode.find(node);
-			if (lit == scene.lightForNode.end())
+			const LightRow* lit = FindLight(scene, node);
+			if (!lit)
 				continue;
-			if (lit->second >= lightLocs.size() || node >= scene.globalTransform.size())
+			if (lit->light >= lightLocs.size() || node >= scene.globalTransform.size())
 				continue;
-			const auto& loc = lightLocs[lit->second];
+			const auto& loc = lightLocs[lit->light];
 			if (!loc.cluster || !loc.handle.valid())
 				continue;
 			const ::SceneLight* Lp = loc.cluster->lights.get(loc.handle);
@@ -7193,16 +7196,21 @@ namespace engine {
 			return bindless;
 		};
 
-		// Node-ordered walk (deterministic frame to frame; unordered_map
-		// iteration is not) capped at FP_MAX_DECALS.
-		std::vector<std::pair<NodeId, uint32_t>> decalPairs(
-			m_world->scene.decalForNode.begin(),
-			m_world->scene.decalForNode.end());
-		std::sort(decalPairs.begin(), decalPairs.end());
+		// Node-ordered walk (deterministic frame to frame; the table's
+		// row storage order is not) capped at FP_MAX_DECALS.
+		std::vector<DecalRow> decalRows(
+			m_world->scene.tables.decals.begin(),
+			m_world->scene.tables.decals.end());
+		std::sort(decalRows.begin(), decalRows.end(),
+			[](const DecalRow& a, const DecalRow& b) {
+				return a.node < b.node; // one row per node: node is total
+			});
 
 		std::vector<smvk::ForwardPlusDecal> gpu;
-		gpu.reserve(std::min<size_t>(decalPairs.size(), FP_MAX_DECALS));
-		for (const auto& [node, worldIdx] : decalPairs) {
+		gpu.reserve(std::min<size_t>(decalRows.size(), FP_MAX_DECALS));
+		for (const DecalRow& row : decalRows) {
+			const NodeId node = row.node;
+			const uint32_t worldIdx = row.decal;
 			if (gpu.size() >= FP_MAX_DECALS)
 				break;
 			if (node >= m_world->scene.globalTransform.size()
@@ -9357,8 +9365,9 @@ namespace engine {
 	}
 
 	// Analytic env-zone packing (per frame, see Rendergraph/envzones.h):
-	// DERIVES the GPU records from the world's zone entities - scene.envForNode
-	// nodes whose transforms define coverage (translation/rotation = placement,
+	// DERIVES the GPU records from the world's zone entities - the env
+	// table rows (scene.tables.envs) - nodes whose transforms define
+	// coverage (translation/rotation = placement,
 	// column lengths = half extents, an INFINITE column or an EnvVolume
 	// inf-mask face = an unbounded slab/half-space). Unlike the removed map
 	// there is no world extent, texel grid or 4-zone cap: the OBB is exact 3D,
@@ -9413,22 +9422,23 @@ namespace engine {
 			mixEnv(scene.environment);
 			mixEnv(scene.defaultEnvironment);
 			mixU32(scene.envAuthored ? 1u : 0u);
-			for (const auto& [node, env] : scene.envForNode) {
+			for (const EnvRow& envRow : scene.tables.envs) {
+				const NodeId node = envRow.node;
 				mixU32(node);
-				mixEnv(env);
+				mixEnv(envRow.environment);
 				// The OBB shape: the node's transform (position/rotation/
 				// scale all matter — column lengths are the half extents).
 				if (node < scene.globalTransform.size())
 					for (int c = 0; c < 4; ++c)
 						for (int r = 0; r < 4; ++r)
 							mixF(scene.globalTransform[node][c][r]);
-				const auto vit = scene.envVolumeForNode.find(node);
-				if (vit != scene.envVolumeForNode.end()) {
-					mixU32(vit->second.infMask);
-					mixF(vit->second.priority);
-					mixF(vit->second.blendWeight);
-					mixF(vit->second.blendRadius);
-					mixU32(vit->second.enabled ? 1u : 0u);
+				if (const EnvVolumeRow* vit =
+					FindEnvVolume(scene, node)) {
+					mixU32(vit->volume.infMask);
+					mixF(vit->volume.priority);
+					mixF(vit->volume.blendWeight);
+					mixF(vit->volume.blendRadius);
+					mixU32(vit->volume.enabled ? 1u : 0u);
 				}
 			}
 			// The scene bounds frame the grid extent + the vertical split
@@ -14332,11 +14342,13 @@ namespace engine {
 				// gridMin/dims math) - location/density inspection BEFORE
 				// any bake exists. Rebuilt EVERY armed frame: the editor
 				// moves/edits volumes live, and the upload is tiny.
-				if (m_world && !m_world->scene.giVolumeForNode.empty()) {					std::vector<uint32_t> nodes;
-					nodes.reserve(m_world->scene.giVolumeForNode.size());
-					for (const auto& [node, cv]
-						: m_world->scene.giVolumeForNode)
-						nodes.push_back(node);
+				if (m_world
+					&& !m_world->scene.tables.giVolumes.empty()) {
+					std::vector<uint32_t> nodes;
+					nodes.reserve(m_world->scene.tables.giVolumes.size());
+					for (const GiVolumeRow& row
+						: m_world->scene.tables.giVolumes)
+						nodes.push_back(row.node);
 					std::sort(nodes.begin(), nodes.end());
 					std::vector<smvk::giprobe::GiProbeInstance> rows;
 					for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
@@ -14358,8 +14370,13 @@ namespace engine {
 								? glm::vec3(g[i]) / len
 								: glm::vec3(0.0f);
 						}
-						const ::SceneGiVolume& cvg =
-							m_world->scene.giVolumeForNode[node];
+						// The volume's authored def (the giVolume
+						// table row on this node).
+						const GiVolumeRow* cvRow =
+							FindGiVolume(m_world->scene, node);
+						if (!cvRow)
+							continue;
+						const ::SceneGiVolume& cvg = cvRow->volume;
 						// The SEEDED layout (the editor's optimized props)
 						// previews exactly what the bake will build; no
 						// seed = the preferred spacing, phase 0.
@@ -19338,7 +19355,9 @@ namespace engine {
 		// ---- Env volumes: OBB XZ footprints + inf-face arrows ---------
 		if (m_worldMapEnvVolumes && m_world) {
 			const ::Scene& scene = m_world->scene;
-			for (const auto& [node, env] : scene.envForNode) {
+			for (const EnvRow& envRow : scene.tables.envs) {
+				const NodeId node = envRow.node;
+				const SceneEnv& env = envRow.environment;
 				if (node >= scene.globalTransform.size())
 					continue;
 				++nZones;
@@ -19348,10 +19367,10 @@ namespace engine {
 				const glm::vec2 az(g[2].x, g[2].z);
 				uint32_t infMask = 0u;
 				bool volDisabled = false;
-				if (const auto vit = scene.envVolumeForNode.find(node);
-					vit != scene.envVolumeForNode.end()) {
-					infMask = vit->second.infMask;
-					volDisabled = !vit->second.enabled;
+				if (const EnvVolumeRow* vit =
+					FindEnvVolume(scene, node)) {
+					infMask = vit->volume.infMask;
+					volDisabled = !vit->volume.enabled;
 				}
 				if (volDisabled)
 					++nZonesOff;
@@ -19411,8 +19430,8 @@ namespace engine {
 		// ---- GI volumes -----------------------------------------------
 		if (m_worldMapGiVolumes && m_world) {
 			const ::Scene& scene = m_world->scene;
-			for (const auto& [node, cv] : scene.giVolumeForNode) {
-				(void)cv;
+			for (const GiVolumeRow& giRow : scene.tables.giVolumes) {
+				const NodeId node = giRow.node;
 				if (node >= scene.globalTransform.size())
 					continue;
 				++nGiVolumes;
@@ -19612,7 +19631,9 @@ namespace engine {
 			}
 			if (m_world) {
 				uint32_t dd = 0;
-				for (const auto& [node, worldIdx] : m_world->scene.decalForNode) {
+				for (const DecalRow& decalRow :
+					m_world->scene.tables.decals) {
+					const NodeId node = decalRow.node;
 					if (++dd > 256)
 						break;
 					if (node >= m_world->scene.globalTransform.size())

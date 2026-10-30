@@ -36,10 +36,12 @@
 // rules, docs/scene_tables_migration.md).
 
 #include <cstdint>
+#include <string>
 #include <type_traits>
 #include <vector>
 
 #include <Engine/Scene/scene_node_id.h>
+#include <Engine/Scene/scene_payloads.h>
 
 // Row index into a SceneTables member vector. InvalidRow = no row.
 using RowId = uint32_t;
@@ -85,6 +87,47 @@ struct DecalRow {
 	uint32_t decal = 0xFFFFFFFFu;
 };
 
+// ---- inline-payload rows (Epoch 5) ----
+// These carry the AUTHORED PAYLOAD VALUE itself (no pool indirection —
+// the definitions are node-local). The indirection rows above are
+// trivially copyable; these are plain copyable structs whose payloads
+// may hold std::string (the AUTHORING-side structs, see
+// scene_payloads.h) — the COOKED representation (Epoch 7) is a
+// separate field-wise layout with StringRefs into a string arena,
+// never these objects as bytes. Same one-row-per-node contract.
+
+// Node -> authored GI volume (was giVolumeForNode).
+struct GiVolumeRow {
+	NodeId node = 0;
+	SceneGiVolume volume{};
+};
+
+// Node -> authored cubemap capture pin (was cubemapForNode).
+struct CubemapRow {
+	NodeId node = 0;
+	SceneCubemap cubemap{};
+};
+
+// Node -> export/cook settings (was exportForNode; deliberately
+// editor/cook-only — never packed into runtime content, preserved
+// behavior from the map era).
+struct ExportRow {
+	NodeId node = 0;
+	SceneExportSettings settings{};
+};
+
+// Node -> authored environment look block (was envForNode).
+struct EnvRow {
+	NodeId node = 0;
+	SceneEnv environment{};
+};
+
+// Node -> authored env-volume shape (was envVolumeForNode).
+struct EnvVolumeRow {
+	NodeId node = 0;
+	EnvVolume volume{};
+};
+
 // The row contract for the future pak chunks (Epoch 7): every row is
 // trivially copyable with a static layout — the writer/reader pair
 // pins field order + widths explicitly, and these asserts prove the
@@ -94,6 +137,9 @@ static_assert(std::is_trivially_copyable_v<MaterialRow> && sizeof(MaterialRow) =
 static_assert(std::is_trivially_copyable_v<LightRow> && sizeof(LightRow) == 8);
 static_assert(std::is_trivially_copyable_v<CameraRow> && sizeof(CameraRow) == 8);
 static_assert(std::is_trivially_copyable_v<DecalRow> && sizeof(DecalRow) == 8);
+// (The inline-payload rows are intentionally NOT trivially copyable —
+// their payloads own strings. The triviality contract is the
+// indirection rows', which the pak writes as literal row arrays.)
 
 // All authored association tables. One vector per kind; rows are
 // unordered (node order is a COOK-time property, see the header).
@@ -106,6 +152,12 @@ struct SceneTables {
 	std::vector<LightRow> lights;
 	std::vector<CameraRow> cameras;
 	std::vector<DecalRow> decals;
+	std::vector<GiVolumeRow> giVolumes;
+	std::vector<CubemapRow> cubemaps;
+	std::vector<ExportRow> exports;
+	std::vector<EnvRow> envs;
+	std::vector<EnvVolumeRow> envVolumes;
+	// Rigid bodies + colliders arrive at Epoch 10.
 };
 
 // Derived per-node index over SceneTables — resized to the node count,
@@ -120,7 +172,24 @@ struct NodeRows {
 	RowId light = InvalidRow;
 	RowId camera = InvalidRow;
 	RowId decal = InvalidRow;
+	RowId giVolume = InvalidRow;
+	RowId cubemap = InvalidRow;
+	RowId exportSettings = InvalidRow;
+	RowId env = InvalidRow;
+	RowId envVolume = InvalidRow;
 	RowId body = InvalidRow;
+};
+
+// Dense per-node IDENTITY metadata (Epoch 5: replaced nameForNode +
+// uuidForNode). Names are near-universal and uuids are node identity,
+// not associations — a dense array indexed by node (like the flag
+// tables), NOT an optional table. `name` indexes Scene::nodeNames
+// (UINT32_MAX = unnamed); `uuid` is the 32-hex tour UUID ("" = none).
+// NOT trivially copyable (uuid owns a string); the cooked META chunk
+// (Epoch 7) serializes it field-wise.
+struct NodeMetadata {
+	uint32_t name = 0xFFFFFFFFu;
+	std::string uuid;
 };
 
 struct Scene;
@@ -145,6 +214,16 @@ CameraRow* FindCamera(Scene& scene, NodeId node);
 const CameraRow* FindCamera(const Scene& scene, NodeId node);
 DecalRow* FindDecal(Scene& scene, NodeId node);
 const DecalRow* FindDecal(const Scene& scene, NodeId node);
+GiVolumeRow* FindGiVolume(Scene& scene, NodeId node);
+const GiVolumeRow* FindGiVolume(const Scene& scene, NodeId node);
+CubemapRow* FindCubemap(Scene& scene, NodeId node);
+const CubemapRow* FindCubemap(const Scene& scene, NodeId node);
+ExportRow* FindExport(Scene& scene, NodeId node);
+const ExportRow* FindExport(const Scene& scene, NodeId node);
+EnvRow* FindEnv(Scene& scene, NodeId node);
+const EnvRow* FindEnv(const Scene& scene, NodeId node);
+EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node);
+const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node);
 
 // Association mutators. At most one row per node per kind: Set REPLACES
 // the existing row (duplicate rejection with replacement semantics).
@@ -155,6 +234,11 @@ bool SetMaterial(Scene& scene, NodeId node, uint32_t material);
 bool SetLight(Scene& scene, NodeId node, uint32_t light);
 bool SetCamera(Scene& scene, NodeId node, uint32_t camera);
 bool SetDecal(Scene& scene, NodeId node, uint32_t decal);
+bool SetGiVolume(Scene& scene, NodeId node, const SceneGiVolume& volume);
+bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap);
+bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings);
+bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment);
+bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
 
 // Removes the node's row of that kind (swap-and-pop + lookup repair).
 // Returns whether a row existed.
@@ -163,6 +247,22 @@ bool RemoveMaterial(Scene& scene, NodeId node);
 bool RemoveLight(Scene& scene, NodeId node);
 bool RemoveCamera(Scene& scene, NodeId node);
 bool RemoveDecal(Scene& scene, NodeId node);
+bool RemoveGiVolume(Scene& scene, NodeId node);
+bool RemoveCubemap(Scene& scene, NodeId node);
+bool RemoveExport(Scene& scene, NodeId node);
+bool RemoveEnv(Scene& scene, NodeId node);
+bool RemoveEnvVolume(Scene& scene, NodeId node);
+
+// ---- dense node metadata (name/uuid; see NodeMetadata) ----
+// Grows scene.metadata to the node count on demand (addNode does not
+// touch it — same lazy contract as rowsForNode).
+void EnsureNodeMetadata(Scene& scene);
+// Name access (index into Scene::nodeNames; UINT32_MAX = unnamed).
+uint32_t GetNodeNameIndex(const Scene& scene, NodeId node);
+void SetNodeNameIndex(Scene& scene, NodeId node, uint32_t nameIndex);
+// Uuid access ("" = none).
+const std::string& GetNodeUuid(const Scene& scene, NodeId node);
+void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid);
 
 // Drops EVERY row the node holds (all kinds at once — the node-
 // deletion hook the editor/tour paths adopt in Epoch 5). Returns

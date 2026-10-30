@@ -399,7 +399,8 @@ void EditorApp::SelectWorldNode() {
 uint32_t EditorApp::FindSunNode() const {
 	if (!m_world)
 		return UINT32_MAX;
-	for (const auto& [node, li] : m_world->scene.lightForNode) {
+	for (const LightRow& _row : m_world->scene.tables.lights) {
+		const NodeId node = _row.node; const auto& li = _row.light;
 		(void)li;
 		if (const ::SceneLight* L = FindNodeLight(node))
 			if (L->type == ::SceneLight::Type::Directional)
@@ -598,10 +599,11 @@ void EditorApp::DrawViewportChrome() {
 	//					vp.boundNode = -1;
 	//				}
 	//			// Scene cameras (hierarchy order, stable list).
-	//			if (m_world && !m_world->scene.cameraForNode.empty()) {
+	//			if (m_world && !m_world->scene.tables.cameras.empty()) {
 	//				ImGui::Separator();
 	//				std::vector<uint32_t> camNodes;
-	//				for (const auto& [n, ci] : m_world->scene.cameraForNode) {
+	//				for (const CameraRow& _row : m_world->scene.tables.cameras) {
+	//				const NodeId n = _row.node; (void)ci;
 	//					(void)ci;
 	//					if (n < m_world->scene.hierarchy.size()
 	//						&& !m_deletedNodes.contains(n))
@@ -707,7 +709,7 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 	const bool showBaked = m_giVolumePreviewMode != 0
 		&& !m_giVolumePreviews.empty();
 	const bool showAuthored = m_showGiVolumeGizmos && m_world
-		&& !m_world->scene.giVolumeForNode.empty();
+		&& !m_world->scene.tables.giVolumes.empty();
 	if (!showBaked && !showAuthored)
 		return;
 	ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -839,7 +841,8 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
 			// overlay contributes the name/priority tag at the box
 			// center (same priority hue both places).
 			const Scene& scene = m_world->scene;
-			for (const auto& [node, def] : scene.giVolumeForNode) {
+			for (const GiVolumeRow& _row : scene.tables.giVolumes) {
+		const NodeId node = _row.node; const auto& def = _row.volume;
 				glm::vec3 mn, mx;
 				if (!GiVolumeBox(node, mn, mx))
 					continue;
@@ -889,7 +892,8 @@ void EditorApp::UpdateOctreePreview() {
 			any = true;
 		}
 	}
-	for (const auto& [node, def] : scene.giVolumeForNode) {
+	for (const GiVolumeRow& _row : scene.tables.giVolumes) {
+		const NodeId node = _row.node; const auto& def = _row.volume;
 		glm::vec3 bmn, bmx;
 			if (!GiVolumeBox(node, bmn, bmx))
 			continue;
@@ -1042,13 +1046,14 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
 	totalOut = 0;
 	if (!m_world)
 		return;
-	totalOut = m_world->scene.cubemapForNode.size();
+	totalOut = m_world->scene.tables.cubemaps.size();
 	if (totalOut == 0)
 		return;
 	std::vector<CubemapProbeRow> rows;
 	if (!CubemapProbeRowsFromFile(rows))
 		return;
-	for (const auto& [node, def] : m_world->scene.cubemapForNode) {
+	for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+		const NodeId node = _row.node; const auto& def = _row.cubemap;
 		(void)def;
 		if (node >= m_world->scene.globalTransform.size())
 			continue;
@@ -1146,7 +1151,7 @@ void EditorApp::DrawCaptureBallOverlay() {
 	std::vector<CubemapProbeRow> rows;
 	CubemapProbeRowsFromFile(rows);
 	const bool showPins = m_showCubemapGizmos
-		&& !m_world->scene.cubemapForNode.empty();
+		&& !m_world->scene.tables.cubemaps.empty();
 	if (!m_showProbeOverlay && !showPins)
 		return;
 	const auto pinBaked = [&](const glm::vec3& p) {
@@ -1275,7 +1280,8 @@ void EditorApp::DrawCaptureBallOverlay() {
 		}
 		// ---- half 2: authored pins with no loaded probe: black balls ----
 		if (showPins) {
-			for (const auto& [node, def] : scene.cubemapForNode) {
+			for (const CubemapRow& _row : scene.tables.cubemaps) {
+		const NodeId node = _row.node; const auto& def = _row.cubemap;
 				(void)def;
 				if (node >= scene.globalTransform.size())
 					continue;

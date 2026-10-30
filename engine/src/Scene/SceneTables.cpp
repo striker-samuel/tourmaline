@@ -12,6 +12,7 @@
 // consumers. Nothing here reads or writes the maps.
 
 #include <cassert>
+#include <string>
 
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
@@ -47,9 +48,9 @@ void RebuildNodeRows(Scene& scene)
 	// (the node count shrank past them — a compacting deletion) and
 	// get compacted out here: they are unreachable through the index
 	// by construction, and "a table guarantees valid nodes" is one of
-	// the migration invariants. NOTE: node-id REMAPPING on compaction
-	// (deleteSceneNodes shifts every later node) is Epoch 6's contract
-	// — this epoch never compacts nodes under live tables.
+	// the migration invariants. Node-id REMAPPING on compaction is the
+	// shift*RowNodes helpers' job (deleteSceneNodes); this rebuild is
+	// the reconciliation for everything else.
 	for (size_t i = 0; i < scene.tables.meshes.size();) {
 		MeshRow& row = scene.tables.meshes[i];
 		if (!NodeInRange(scene, row.node)) {
@@ -98,6 +99,56 @@ void RebuildNodeRows(Scene& scene)
 			continue;
 		}
 		scene.rowsForNode[row.node].decal = RowId(i);
+		++i;
+	}
+	for (size_t i = 0; i < scene.tables.giVolumes.size();) {
+		GiVolumeRow& row = scene.tables.giVolumes[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = scene.tables.giVolumes.back();
+			scene.tables.giVolumes.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].giVolume = RowId(i);
+		++i;
+	}
+	for (size_t i = 0; i < scene.tables.cubemaps.size();) {
+		CubemapRow& row = scene.tables.cubemaps[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = scene.tables.cubemaps.back();
+			scene.tables.cubemaps.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].cubemap = RowId(i);
+		++i;
+	}
+	for (size_t i = 0; i < scene.tables.exports.size();) {
+		ExportRow& row = scene.tables.exports[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = scene.tables.exports.back();
+			scene.tables.exports.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].exportSettings = RowId(i);
+		++i;
+	}
+	for (size_t i = 0; i < scene.tables.envs.size();) {
+		EnvRow& row = scene.tables.envs[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = scene.tables.envs.back();
+			scene.tables.envs.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].env = RowId(i);
+		++i;
+	}
+	for (size_t i = 0; i < scene.tables.envVolumes.size();) {
+		EnvVolumeRow& row = scene.tables.envVolumes[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = scene.tables.envVolumes.back();
+			scene.tables.envVolumes.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].envVolume = RowId(i);
 		++i;
 	}
 }
@@ -382,6 +433,333 @@ bool RemoveDecal(Scene& scene, NodeId node)
 	return true;
 }
 
+// ---- gi volume (inline payload) ----
+
+GiVolumeRow* FindGiVolume(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].giVolume;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.giVolumes.size());
+	return &scene.tables.giVolumes[rid];
+}
+
+const GiVolumeRow* FindGiVolume(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].giVolume;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.giVolumes.size());
+	return &scene.tables.giVolumes[rid];
+}
+
+bool SetGiVolume(Scene& scene, NodeId node, const SceneGiVolume& volume)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (GiVolumeRow* row = FindGiVolume(scene, node)) {
+		row->volume = volume;
+		return true;
+	}
+	GiVolumeRow row{};
+	row.node = node;
+	row.volume = volume;
+	scene.tables.giVolumes.push_back(row);
+	scene.rowsForNode[node].giVolume = RowId(scene.tables.giVolumes.size() - 1);
+	return true;
+}
+
+bool RemoveGiVolume(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].giVolume;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.giVolumes[rid] = scene.tables.giVolumes.back();
+	scene.tables.giVolumes.pop_back();
+	if (size_t(rid) < scene.tables.giVolumes.size()) {
+		const NodeId moved = scene.tables.giVolumes[rid].node;
+		scene.rowsForNode[moved].giVolume = rid;
+	}
+	scene.rowsForNode[node].giVolume = InvalidRow;
+	return true;
+}
+
+// ---- cubemap pin (inline payload) ----
+
+CubemapRow* FindCubemap(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].cubemap;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.cubemaps.size());
+	return &scene.tables.cubemaps[rid];
+}
+
+const CubemapRow* FindCubemap(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].cubemap;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.cubemaps.size());
+	return &scene.tables.cubemaps[rid];
+}
+
+bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (CubemapRow* row = FindCubemap(scene, node)) {
+		row->cubemap = cubemap;
+		return true;
+	}
+	CubemapRow row{};
+	row.node = node;
+	row.cubemap = cubemap;
+	scene.tables.cubemaps.push_back(row);
+	scene.rowsForNode[node].cubemap = RowId(scene.tables.cubemaps.size() - 1);
+	return true;
+}
+
+bool RemoveCubemap(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].cubemap;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.cubemaps[rid] = scene.tables.cubemaps.back();
+	scene.tables.cubemaps.pop_back();
+	if (size_t(rid) < scene.tables.cubemaps.size()) {
+		const NodeId moved = scene.tables.cubemaps[rid].node;
+		scene.rowsForNode[moved].cubemap = rid;
+	}
+	scene.rowsForNode[node].cubemap = InvalidRow;
+	return true;
+}
+
+// ---- export settings (inline payload) ----
+
+ExportRow* FindExport(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].exportSettings;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.exports.size());
+	return &scene.tables.exports[rid];
+}
+
+const ExportRow* FindExport(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].exportSettings;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.exports.size());
+	return &scene.tables.exports[rid];
+}
+
+bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (ExportRow* row = FindExport(scene, node)) {
+		row->settings = settings;
+		return true;
+	}
+	ExportRow row{};
+	row.node = node;
+	row.settings = settings;
+	scene.tables.exports.push_back(row);
+	scene.rowsForNode[node].exportSettings = RowId(scene.tables.exports.size() - 1);
+	return true;
+}
+
+bool RemoveExport(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].exportSettings;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.exports[rid] = scene.tables.exports.back();
+	scene.tables.exports.pop_back();
+	if (size_t(rid) < scene.tables.exports.size()) {
+		const NodeId moved = scene.tables.exports[rid].node;
+		scene.rowsForNode[moved].exportSettings = rid;
+	}
+	scene.rowsForNode[node].exportSettings = InvalidRow;
+	return true;
+}
+
+// ---- environment block (inline payload) ----
+
+EnvRow* FindEnv(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].env;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.envs.size());
+	return &scene.tables.envs[rid];
+}
+
+const EnvRow* FindEnv(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].env;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.envs.size());
+	return &scene.tables.envs[rid];
+}
+
+bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (EnvRow* row = FindEnv(scene, node)) {
+		row->environment = environment;
+		return true;
+	}
+	EnvRow row{};
+	row.node = node;
+	row.environment = environment;
+	scene.tables.envs.push_back(row);
+	scene.rowsForNode[node].env = RowId(scene.tables.envs.size() - 1);
+	return true;
+}
+
+bool RemoveEnv(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].env;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.envs[rid] = scene.tables.envs.back();
+	scene.tables.envs.pop_back();
+	if (size_t(rid) < scene.tables.envs.size()) {
+		const NodeId moved = scene.tables.envs[rid].node;
+		scene.rowsForNode[moved].env = rid;
+	}
+	scene.rowsForNode[node].env = InvalidRow;
+	return true;
+}
+
+// ---- env volume (inline payload) ----
+
+EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].envVolume;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.envVolumes.size());
+	return &scene.tables.envVolumes[rid];
+}
+
+const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].envVolume;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.envVolumes.size());
+	return &scene.tables.envVolumes[rid];
+}
+
+bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (EnvVolumeRow* row = FindEnvVolume(scene, node)) {
+		row->volume = volume;
+		return true;
+	}
+	EnvVolumeRow row{};
+	row.node = node;
+	row.volume = volume;
+	scene.tables.envVolumes.push_back(row);
+	scene.rowsForNode[node].envVolume = RowId(scene.tables.envVolumes.size() - 1);
+	return true;
+}
+
+bool RemoveEnvVolume(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].envVolume;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.envVolumes[rid] = scene.tables.envVolumes.back();
+	scene.tables.envVolumes.pop_back();
+	if (size_t(rid) < scene.tables.envVolumes.size()) {
+		const NodeId moved = scene.tables.envVolumes[rid].node;
+		scene.rowsForNode[moved].envVolume = rid;
+	}
+	scene.rowsForNode[node].envVolume = InvalidRow;
+	return true;
+}
+// ---- dense node metadata (name/uuid) ----
+
+void EnsureNodeMetadata(Scene& scene)
+{
+	if (scene.metadata.size() < scene.hierarchy.size())
+		scene.metadata.resize(scene.hierarchy.size());
+}
+
+uint32_t GetNodeNameIndex(const Scene& scene, NodeId node)
+{
+	if (node >= scene.metadata.size())
+		return 0xFFFFFFFFu;
+	return scene.metadata[node].name;
+}
+
+void SetNodeNameIndex(Scene& scene, NodeId node, uint32_t nameIndex)
+{
+	if (size_t(node) >= scene.hierarchy.size())
+		return;
+	EnsureNodeMetadata(scene);
+	scene.metadata[node].name = nameIndex;
+}
+
+const std::string& GetNodeUuid(const Scene& scene, NodeId node)
+{
+	static const std::string kEmpty;
+	if (node >= scene.metadata.size())
+		return kEmpty;
+	return scene.metadata[node].uuid;
+}
+
+void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid)
+{
+	if (size_t(node) >= scene.hierarchy.size())
+		return;
+	EnsureNodeMetadata(scene);
+	scene.metadata[node].uuid = uuid;
+}
 // ---- all kinds at once (the node-deletion hook the editor/tour paths
 // adopt in Epoch 5) ----
 
@@ -393,5 +771,10 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 	removed |= RemoveLight(scene, node);
 	removed |= RemoveCamera(scene, node);
 	removed |= RemoveDecal(scene, node);
+	removed |= RemoveGiVolume(scene, node);
+	removed |= RemoveCubemap(scene, node);
+	removed |= RemoveExport(scene, node);
+	removed |= RemoveEnv(scene, node);
+	removed |= RemoveEnvVolume(scene, node);
 	return removed;
 }

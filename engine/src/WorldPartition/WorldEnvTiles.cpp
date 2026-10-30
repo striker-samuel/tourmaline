@@ -34,17 +34,19 @@ EnvGridExtent ComputeEnvGridExtent(const Scene& scene,
 	// The infinite-axis stand-in: half the max grid edge — the grid then
 	// spans the full 16 km on that axis after the margin + dim clamp.
 	const float infExtent = 0.5f * float(kEnvTileMaxDim) * kEnvTileSize;
-	for (const auto& [node, env] : scene.envForNode) {
+	// The env rows' LOOK blocks are irrelevant to the extent - only
+	// each node's zone shape (transform + volume knobs) is.
+	for (const EnvRow& envRow : scene.tables.envs) {
+		const NodeId node = envRow.node;
 		if (node >= scene.globalTransform.size())
 			continue;
 		uint32_t infMask = 0;
 		float blendWeight = 1.0f;
 		bool enabled = true;
-		if (const auto vit = scene.envVolumeForNode.find(node);
-			vit != scene.envVolumeForNode.end()) {
-			infMask = vit->second.infMask;
-			blendWeight = vit->second.blendWeight;
-			enabled = vit->second.enabled;
+		if (const EnvVolumeRow* vit = FindEnvVolume(scene, node)) {
+			infMask = vit->volume.infMask;
+			blendWeight = vit->volume.blendWeight;
+			enabled = vit->volume.enabled;
 		}
 		if (!enabled || blendWeight <= 0.0f)
 			continue; // the bake skips it: no bounds contribution
@@ -172,23 +174,24 @@ bool WorldEnvTiles::Build(const Scene& scene, glm::vec2 gridMin,
 			uint32_t nodeId = 0;
 		};
 		std::vector<NodeZone> nodeZones;
-		nodeZones.reserve(scene.envForNode.size());
-		for (const auto& [node, env] : scene.envForNode) {
+		nodeZones.reserve(scene.tables.envs.size());
+		for (const EnvRow& envRow : scene.tables.envs) {
+			const NodeId node = envRow.node;
+			const SceneEnv& env = envRow.environment;
 			if (node >= scene.globalTransform.size())
 				continue;
-			// EnvVolume shape knobs (absent entry = the legacy defaults).
+			// EnvVolume shape knobs (absent row = the legacy defaults).
 			uint32_t infMask = 0;
 			float priority = env.zonePriority;
 			float blendWeight = 1.0f;
 			float blendRadius = 0.0f;
 			bool enabled = true;
-			if (const auto vit = scene.envVolumeForNode.find(node);
-				vit != scene.envVolumeForNode.end()) {
-				infMask = vit->second.infMask;
-				priority = vit->second.priority; // volume entry wins
-				blendWeight = vit->second.blendWeight;
-				blendRadius = vit->second.blendRadius;
-				enabled = vit->second.enabled;
+			if (const EnvVolumeRow* vit = FindEnvVolume(scene, node)) {
+				infMask = vit->volume.infMask;
+				priority = vit->volume.priority; // volume row wins
+				blendWeight = vit->volume.blendWeight;
+				blendRadius = vit->volume.blendRadius;
+				enabled = vit->volume.enabled;
 			}
 			if (!enabled || blendWeight <= 0.0f)
 				continue;

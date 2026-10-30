@@ -23,7 +23,7 @@ void EditorApp::RenameNode(uint32_t node, const std::string& name) {
 		return;
 	const uint32_t id = uint32_t(m_world->scene.nodeNames.size());
 	m_world->scene.nodeNames.push_back(name);
-	m_world->scene.nameForNode[node] = id;
+	SetNodeNameIndex(m_world->scene, node, id);
 }
 
 void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
@@ -118,11 +118,11 @@ const ::SceneLight* EditorApp::FindNodeLight(uint32_t node,
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return nullptr;
 	const Scene& scene = m_world->scene;
-	auto lit = scene.lightForNode.find(node);
-	if (lit == scene.lightForNode.end() ||
-		lit->second >= m_world->lightLocations.size())
+	auto lit = FindLight(scene, node);
+	if (!lit ||
+		lit->light >= m_world->lightLocations.size())
 		return nullptr;
-	const auto& loc = m_world->lightLocations[lit->second];
+	const auto& loc = m_world->lightLocations[lit->light];
 	if (!loc.cluster || !loc.handle.valid())
 		return nullptr;
 	const ::SceneLight* l = loc.cluster->lights.get(loc.handle);
@@ -147,11 +147,11 @@ const ::SceneCamera* EditorApp::FindNodeCamera(uint32_t node) const {
 	if (!m_world || node >= m_world->scene.hierarchy.size())
 		return nullptr;
 	const Scene& scene = m_world->scene;
-	auto cit = scene.cameraForNode.find(node);
-	if (cit == scene.cameraForNode.end() ||
-		cit->second >= m_world->cameraLocations.size())
+	auto cit = FindCamera(scene, node);
+	if (!cit ||
+		cit->camera >= m_world->cameraLocations.size())
 		return nullptr;
-	const auto& loc = m_world->cameraLocations[cit->second];
+	const auto& loc = m_world->cameraLocations[cit->camera];
 	if (!loc.cluster || !loc.handle.valid())
 		return nullptr;
 	return loc.cluster->cameras.get(loc.handle);
@@ -162,7 +162,8 @@ uint32_t EditorApp::FindCameraNode() const {
 	if (!m_world)
 		return UINT32_MAX;
 	uint32_t best = UINT32_MAX;
-	for (const auto& [node, ci] : m_world->scene.cameraForNode) {
+	for (const CameraRow& _row : m_world->scene.tables.cameras) {
+		const NodeId node = _row.node; const auto& ci = _row.camera;
 		(void)ci;
 		if (node < m_world->scene.hierarchy.size()
 			&& (best == UINT32_MAX || node < best))
@@ -184,14 +185,16 @@ void EditorApp::RebuildCookedLights() {
 	if (!m_world)
 		return;
 	const Scene& scene = m_world->scene;
-	if (scene.lightForNode.empty()) {
+	if (scene.tables.lights.empty()) {
 		Log("Cooked lights: none (viewport sun default).");
 		return;
 	}
 	std::vector<uint32_t> nodes;
-	nodes.reserve(scene.lightForNode.size());
-	for (const auto& [n, li] : scene.lightForNode)
+	nodes.reserve(scene.tables.lights.size());
+	for (const LightRow& _row : scene.tables.lights) {
+		const NodeId n = _row.node; const auto& li = _row.light;
 		nodes.push_back(n);
+	}
 	std::sort(nodes.begin(), nodes.end());
 	bool sunTaken = false;
 	for (uint32_t node : nodes) {
@@ -250,3 +253,4 @@ void EditorApp::RebuildCookedLights() {
 }
 
 } // namespace editor
+

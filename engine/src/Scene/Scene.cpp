@@ -145,13 +145,12 @@ int findNodeByName(const Scene& scene, const std::string& name)
   // Extremely simple linear search without any hierarchy reference
   // To support DFS/BFS searches separate traversal routines are needed
 
-  for (size_t i = 0; i < scene.localTransform.size(); i++)
-    if (scene.nameForNode.contains(i)) {
-      int strID = scene.nameForNode.at(i);
-      if (strID > -1)
-        if (scene.nodeNames[strID] == name)
-          return (int)i;
-    }
+  for (size_t i = 0; i < scene.localTransform.size(); i++) {
+    const uint32_t strID = GetNodeNameIndex(scene, NodeId(i));
+    if (strID != 0xFFFFFFFFu)
+      if (scene.nodeNames[strID] == name)
+        return (int)i;
+  }
 
   return -1;
 }
@@ -227,19 +226,6 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
   return wasUpdated;
 }
 
-void loadMap(FILE* f, std::unordered_map<uint32_t, uint32_t>& map)
-{
-  std::vector<uint32_t> ms;
-
-  uint32_t sz = 0;
-  fread(&sz, 1, sizeof(sz), f);
-
-  ms.resize(sz);
-  fread(ms.data(), sizeof(uint32_t), sz, f);
-
-  for (size_t i = 0; i < (sz / 2); i++)
-    map[ms[i * 2 + 0]] = ms[i * 2 + 1];
-}
 
 // Typed-table readers (the saveMeshRows/saveMaterialRows mirror):
 // u32 rowCount + pairs, routed through the table mutators (which
@@ -265,6 +251,18 @@ void loadMaterialRows(FILE* f, Scene& scene)
   fread(ms.data(), sizeof(uint32_t), ms.size(), f);
   for (size_t i = 0; i < count; ++i)
     SetMaterial(scene, ms[i * 2 + 0], ms[i * 2 + 1]);
+}
+
+// The saveNameRows mirror (out-of-range nodes drop via the mutators).
+void loadNameRows(FILE* f, Scene& scene)
+{
+  std::vector<uint32_t> ms;
+  uint32_t count = 0;
+  fread(&count, 1, sizeof(count), f);
+  ms.resize(size_t(count) * 2);
+  fread(ms.data(), sizeof(uint32_t), ms.size(), f);
+  for (size_t i = 0; i < count; ++i)
+    SetNodeNameIndex(scene, ms[i * 2 + 0], ms[i * 2 + 1]);
 }
 
 // Authored-environment record I/O (see SceneEnv): kSceneEnvFloatCount
@@ -404,12 +402,9 @@ void loadScene(const char* fileName, Scene& scene)
   scene.hidden.assign(sz, 0);
   scene.castsVolumetricShadow.assign(sz, 0);
   scene.ditherCloseup.assign(sz, 0);
-  scene.lightForNode.clear();
-  // Typed tables + the derived index start clean (the scene may be a
-  // recycled object; stale rowsForNode entries would otherwise alias
-  // the newly loaded rows).
   scene.tables = {};
   scene.rowsForNode.clear();
+  scene.metadata.clear();
   // TODO: check > -1
   // TODO: recalculate changedAtThisLevel() - find max depth of a node [or save scene.maxLevel]
   fread(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
@@ -422,7 +417,7 @@ void loadScene(const char* fileName, Scene& scene)
   loadMeshRows(f, scene);
 
   if (!feof(f)) {
-    loadMap(f, scene.nameForNode);
+    loadNameRows(f, scene);
     loadStringList(f, scene.nodeNames);
     loadStringList(f, scene.materialNames);
   }
@@ -495,12 +490,15 @@ void loadScene(const char* fileName, Scene& scene)
       bool ok = loadEnvFloats(f, resolved) && loadEnvFloats(f, def);
       if (ok && fread(&nodeCount, sizeof(nodeCount), 1, f) == 1 &&
           nodeCount <= 1024 * 1024) {
-        std::unordered_map<NodeId, SceneEnv> table;
+        // All-or-nothing like the map era: a truncated pair list
+        // discards the whole section (globals + rows together).
+        std::vector<std::pair<uint32_t, SceneEnv>> rows;
+        rows.reserve(nodeCount);
         for (uint32_t i = 0; i < nodeCount && ok; ++i) {
           uint32_t node = 0;
           SceneEnv block{};
           if (fread(&node, sizeof(node), 1, f) == 1 && loadEnvFloats(f, block))
-            table[node] = block;
+            rows.emplace_back(node, block);
           else
             ok = false;
         }
@@ -508,7 +506,8 @@ void loadScene(const char* fileName, Scene& scene)
           scene.environment = resolved;
           scene.envAuthored = envFlag != 0;
           scene.defaultEnvironment = def;
-          scene.envForNode = std::move(table);
+          for (const auto& [node, block] : rows)
+            SetEnv(scene, node, block);
         }
       }
     }
@@ -551,7 +550,7 @@ void loadScene(const char* fileName, Scene& scene)
     }
   }
   // Cooked punctual lights are NOT carried in this legacy format: they
-  // are Cluster pool assets (see Scene::lightForNode) and round-trip
+  // are Cluster pool assets (see the light table) and round-trip
   // through paks only.
 
   fclose(f);
@@ -560,18 +559,6 @@ void loadScene(const char* fileName, Scene& scene)
   recalculateGlobalTransforms(scene);
 }
 
-void saveMap(FILE* f, const std::unordered_map<uint32_t, uint32_t>& map)
-{
-  std::vector<uint32_t> ms;
-  ms.reserve(map.size() * 2);
-  for (const auto& m : map) {
-    ms.push_back(m.first);
-    ms.push_back(m.second);
-  }
-  const uint32_t sz = static_cast<uint32_t>(ms.size());
-  fwrite(&sz, sizeof(sz), 1, f);
-  fwrite(ms.data(), sizeof(uint32_t), ms.size(), f);
-}
 
 // Typed-table sections (row-native: u32 rowCount + (node, value)
 // pairs in TABLE order — the canonical association format; the old
@@ -597,6 +584,24 @@ void saveMaterialRows(FILE* f, const Scene& scene)
   }
 }
 
+// Node-name section (row-native, node-sorted for byte-stable saves):
+// u32 rowCount + (node, nodeNames index) pairs; UINT32_MAX name = skip
+// (should not occur — named nodes only).
+void saveNameRows(FILE* f, const Scene& scene)
+{
+  std::vector<std::pair<uint32_t, uint32_t>> pairs;
+  for (uint32_t n = 0; n < scene.metadata.size(); ++n)
+    if (scene.metadata[n].name != 0xFFFFFFFFu)
+      pairs.emplace_back(n, scene.metadata[n].name);
+  std::sort(pairs.begin(), pairs.end());
+  const uint32_t count = static_cast<uint32_t>(pairs.size());
+  fwrite(&count, sizeof(count), 1, f);
+  for (const auto& [node, nameIdx] : pairs) {
+    fwrite(&node, sizeof(uint32_t), 1, f);
+    fwrite(&nameIdx, sizeof(uint32_t), 1, f);
+  }
+}
+
 void saveScene(const char* fileName, const Scene& scene)
 {
   FILE* f = fopen(fileName, "wb");
@@ -613,8 +618,11 @@ void saveScene(const char* fileName, const Scene& scene)
   saveMaterialRows(f, scene);
   saveMeshRows(f, scene);
 
-  if (!scene.nodeNames.empty() && !scene.nameForNode.empty()) {
-    saveMap(f, scene.nameForNode);
+  const bool anyNamed = !scene.nodeNames.empty() && scene.metadata.end()
+    != std::find_if(scene.metadata.begin(), scene.metadata.end(),
+      [](const NodeMetadata& m) { return m.name != 0xFFFFFFFFu; });
+  if (anyNamed) {
+    saveNameRows(f, scene);
     saveStringList(f, scene.nodeNames);
     saveStringList(f, scene.materialNames);
   }
@@ -682,15 +690,17 @@ void saveScene(const char* fileName, const Scene& scene)
     fwrite(&envFlag, sizeof(envFlag), 1, f);
     saveEnvFloats(f, scene.environment);
     saveEnvFloats(f, scene.defaultEnvironment);
-    std::vector<std::pair<uint32_t, SceneEnv>> pairs(
-      scene.envForNode.begin(), scene.envForNode.end());
-    std::sort(pairs.begin(), pairs.end(),
-      [](const auto& a, const auto& b) { return a.first < b.first; });
-    const uint32_t n = (uint32_t)pairs.size();
+    std::vector<const EnvRow*> rows;
+    rows.reserve(scene.tables.envs.size());
+    for (const EnvRow& row : scene.tables.envs)
+      rows.push_back(&row);
+    std::sort(rows.begin(), rows.end(),
+      [](const EnvRow* a, const EnvRow* b) { return a->node < b->node; });
+    const uint32_t n = (uint32_t)rows.size();
     fwrite(&n, sizeof(n), 1, f);
-    for (const auto& [node, env] : pairs) {
-      fwrite(&node, sizeof(node), 1, f);
-      saveEnvFloats(f, env);
+    for (const EnvRow* row : rows) {
+      fwrite(&row->node, sizeof(row->node), 1, f);
+      saveEnvFloats(f, row->environment);
     }
   }
   // Render-settings section (old loaders stop after the env section —
@@ -762,11 +772,11 @@ bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p)
   if (zone >= scene.globalTransform.size())
     return false;
   // Disabled volumes cover nothing (Unreal bEnabled).
-  const auto vit = scene.envVolumeForNode.find(zone);
-  const bool hasVol = vit != scene.envVolumeForNode.end();
-  if (hasVol && !vit->second.enabled)
+  const EnvVolumeRow* volRow = FindEnvVolume(scene, zone);
+  const bool hasVol = volRow != nullptr;
+  if (hasVol && !volRow->volume.enabled)
     return false;
-  const uint32_t infMask = hasVol ? vit->second.infMask : 0u;
+  const uint32_t infMask = hasVol ? volRow->volume.infMask : 0u;
   const uint32_t negBit[3] = { kEnvInfNegX, kEnvInfNegY, kEnvInfNegZ };
   const uint32_t posBit[3] = { kEnvInfPosX, kEnvInfPosY, kEnvInfPosZ };
   const glm::mat4& g = scene.globalTransform[zone];
@@ -822,9 +832,8 @@ bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p)
 
 float ZonePriority(const Scene& scene, NodeId zone, const SceneEnv& env)
 {
-  const auto it = scene.envVolumeForNode.find(zone);
-  if (it != scene.envVolumeForNode.end())
-    return it->second.priority;
+  if (const EnvVolumeRow* volRow = FindEnvVolume(scene, zone))
+    return volRow->volume.priority;
   return env.zonePriority;
 }
 
@@ -833,7 +842,9 @@ NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p)
   NodeId best = UINT32_MAX;
   float bestPriority = 0.0f;
   double bestVolume = 0.0;
-  for (const auto& [node, env] : scene.envForNode) {
+  for (const EnvRow& row : scene.tables.envs) {
+    const NodeId node = row.node;
+    const SceneEnv& env = row.environment;
     if (!ZoneCovers(scene, node, p))
       continue;
     // Bounded volume = the product of the finite half extents; a
@@ -843,9 +854,8 @@ NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p)
     float half[3];
     ZoneHalfExtents(scene, node, half);
     uint32_t infMask = 0u;
-    if (const auto vit = scene.envVolumeForNode.find(node);
-      vit != scene.envVolumeForNode.end())
-      infMask = vit->second.infMask;
+    if (const EnvVolumeRow* volRow = FindEnvVolume(scene, node))
+      infMask = volRow->volume.infMask;
     const uint32_t faceBits[3] = { kEnvInfNegX | kEnvInfPosX,
       kEnvInfNegY | kEnvInfPosY, kEnvInfNegZ | kEnvInfPosZ };
     double volume = 1.0;
@@ -934,14 +944,6 @@ void shiftNodes(Scene& scene, int startOffset, int nodeCount, int shiftAmount)
     shiftNode(scene.hierarchy[i + startOffset]);
 }
 
-using ItemMap = std::unordered_map<uint32_t, uint32_t>;
-
-// Add the items from otherMap shifting indices and values along the way
-void mergeMaps(ItemMap& m, const ItemMap& otherMap, int indexOffset, int itemOffset)
-{
-  for (const auto& i : otherMap)
-    m[i.first + indexOffset] = i.second + itemOffset;
-}
 
 /**
   There are different use cases for scene merging.
@@ -971,7 +973,7 @@ void mergeScenes(
   };
 
   // I dont care about names for now at least.
-  //scene.nameForNode[0] = 0;
+  //scene.metadata[0].name = 0;
   //scene.nodeNames      = { "NewRoot" };
 
   scene.localTransform.push_back(glm::mat4(1.f));
@@ -983,10 +985,14 @@ void mergeScenes(
   scene.castsVolumetricShadow.push_back(0);
   scene.ditherCloseup.push_back(0);
   scene.hidden.push_back(0);
-  // Cooked punctual lights are Cluster pool assets: their node links
-  // (pool indices) cannot shift across scenes here — lights merge via
-  // World::ResolveAndFixup_clusters instead.
-  scene.lightForNode.clear();
+  // The hierarchy reset above makes EVERY prior association row dead
+  // (node ids no longer resolve) — clear all tables with it. Lights
+  // especially: cooked punctual lights are Cluster pool assets (pool
+  // indices cannot shift across scenes here — lights merge via
+  // World::ResolveAndFixup_clusters instead).
+  scene.tables = {};
+  scene.rowsForNode.clear();
+  scene.metadata.clear();
 
   if (scenes.empty())
     return;
@@ -1056,13 +1062,25 @@ void mergeScenes(
     for (const MaterialRow& row : s->tables.materials)
       SetMaterial(scene, row.node + offs,
         row.material + (mergeMaterials ? uint32_t(materialOfs) : 0u));
-    mergeMaps(scene.nameForNode, s->nameForNode, offs, nameOffs);
-    // Per-node authored env blocks: node keys shift like the other maps;
+    // Node metadata: append with the node + name-pool offsets (the
+    // mergeMaps semantics for the dense array).
+    {
+      EnsureNodeMetadata(scene);
+      const size_t base = scene.metadata.size();
+      scene.metadata.resize(base + s->hierarchy.size());
+      for (size_t i = 0; i < s->hierarchy.size(); ++i)
+        scene.metadata[base + i] = (i < s->metadata.size())
+          ? NodeMetadata{ (s->metadata[i].name != 0xFFFFFFFFu)
+              ? s->metadata[i].name + nameOffs : 0xFFFFFFFFu,
+            s->metadata[i].uuid }
+          : NodeMetadata{};
+    }
+    // Per-node authored env blocks: node keys shift like the tables;
     // values are inline structs (no pool indirection, no value offset).
-    for (const auto& [node, env] : s->envForNode)
-      scene.envForNode[node + offs] = env;
-    for (const auto& [node, vol] : s->envVolumeForNode)
-      scene.envVolumeForNode[node + offs] = vol;
+    for (const EnvRow& row : s->tables.envs)
+      SetEnv(scene, row.node + offs, row.environment);
+    for (const EnvVolumeRow& row : s->tables.envVolumes)
+      SetEnvVolume(scene, row.node + offs, row.volume);
     if (!envTaken && s->envAuthored) {
       scene.environment = s->environment;
       scene.envAuthored = true;
@@ -1124,8 +1142,8 @@ void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited)
   for (size_t i = 0; i < scene.globalTransform.size(); i++) {
     std::string name  = "";
     std::string extra = "";
-    if (scene.nameForNode.contains(i)) {
-      int strID = scene.nameForNode.at(i);
+    if (const uint32_t strID = GetNodeNameIndex(scene, NodeId(i));
+      strID != 0xFFFFFFFFu) {
       name      = scene.nodeNames[strID];
     }
     if (visited) {
@@ -1178,16 +1196,6 @@ int findLastNonDeletedItem(const Scene& scene, const std::vector<int>& newIndice
   return (newIndices[node] == -1) ? findLastNonDeletedItem(scene, newIndices, scene.hierarchy[node].nextSibling) : newIndices[node];
 }
 
-void shiftMapIndices(std::unordered_map<uint32_t, uint32_t>& items, const std::vector<int>& newIndices)
-{
-  std::unordered_map<uint32_t, uint32_t> newItems;
-  for (const auto& m : items) {
-    int newIndex = newIndices[m.first];
-    if (newIndex != -1)
-      newItems[newIndex] = m.second;
-  }
-  items = newItems;
-}
 
 // Row-table variants (the typed-tables migration): remap row.node
 // through the compaction's newIndices, dropping rows whose node died.
@@ -1217,18 +1225,125 @@ void shiftMaterialRowNodes(std::vector<MaterialRow>& rows, const std::vector<int
   rows = std::move(out);
 }
 
-// Struct-value variant (per-node authored blocks like SceneEnv): keys
-// remap like the index maps above; values ride unchanged (no pool).
-void shiftEnvMapIndices(std::unordered_map<uint32_t, SceneEnv>& items, const std::vector<int>& newIndices)
+// The remaining kinds (Epoch 5): same contract. The indirection kinds
+// rebuild the row in place; the inline-payload kinds copy the payload
+// through (the strings ride the copy).
+void shiftLightRowNodes(std::vector<LightRow>& rows, const std::vector<int>& newIndices)
 {
-  std::unordered_map<uint32_t, SceneEnv> newItems;
-  for (const auto& m : items) {
-    int newIndex = newIndices[m.first];
+  std::vector<LightRow> out;
+  out.reserve(rows.size());
+  for (const LightRow& row : rows) {
+    const int newIndex = newIndices[row.node];
     if (newIndex != -1)
-      newItems[newIndex] = m.second;
+      out.push_back(LightRow{ NodeId(newIndex), row.light });
   }
-  items = newItems;
+  rows = std::move(out);
 }
+
+void shiftCameraRowNodes(std::vector<CameraRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<CameraRow> out;
+  out.reserve(rows.size());
+  for (const CameraRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1)
+      out.push_back(CameraRow{ NodeId(newIndex), row.camera });
+  }
+  rows = std::move(out);
+}
+
+void shiftDecalRowNodes(std::vector<DecalRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<DecalRow> out;
+  out.reserve(rows.size());
+  for (const DecalRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1)
+      out.push_back(DecalRow{ NodeId(newIndex), row.decal });
+  }
+  rows = std::move(out);
+}
+
+void shiftGiVolumeRowNodes(std::vector<GiVolumeRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<GiVolumeRow> out;
+  out.reserve(rows.size());
+  for (const GiVolumeRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1) {
+      GiVolumeRow r{ NodeId(newIndex), row.volume };
+      out.push_back(std::move(r));
+    }
+  }
+  rows = std::move(out);
+}
+
+void shiftCubemapRowNodes(std::vector<CubemapRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<CubemapRow> out;
+  out.reserve(rows.size());
+  for (const CubemapRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1)
+      out.push_back(CubemapRow{ NodeId(newIndex), row.cubemap });
+  }
+  rows = std::move(out);
+}
+
+void shiftExportRowNodes(std::vector<ExportRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<ExportRow> out;
+  out.reserve(rows.size());
+  for (const ExportRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1) {
+      ExportRow r{ NodeId(newIndex), row.settings };
+      out.push_back(std::move(r));
+    }
+  }
+  rows = std::move(out);
+}
+
+void shiftEnvRowNodes(std::vector<EnvRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<EnvRow> out;
+  out.reserve(rows.size());
+  for (const EnvRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1) {
+      EnvRow r{ NodeId(newIndex), row.environment };
+      out.push_back(std::move(r));
+    }
+  }
+  rows = std::move(out);
+}
+
+void shiftEnvVolumeRowNodes(std::vector<EnvVolumeRow>& rows, const std::vector<int>& newIndices)
+{
+  std::vector<EnvVolumeRow> out;
+  out.reserve(rows.size());
+  for (const EnvVolumeRow& row : rows) {
+    const int newIndex = newIndices[row.node];
+    if (newIndex != -1)
+      out.push_back(EnvVolumeRow{ NodeId(newIndex), row.volume });
+  }
+  rows = std::move(out);
+}
+
+// Dense metadata variant: entries of deleted nodes drop, survivors
+// re-index (the flag tables' eraseSelected semantics, kept in order).
+void shiftNodeMetadata(std::vector<NodeMetadata>& metadata, const std::vector<int>& newIndices)
+{
+  std::vector<NodeMetadata> out;
+  out.reserve(metadata.size());
+  for (size_t n = 0; n < metadata.size(); ++n) {
+    const int newIndex = newIndices[n];
+    if (newIndex != -1)
+      out.push_back(std::move(metadata[n]));
+  }
+  metadata = std::move(out);
+}
+
 
 // Approximately an O ( N * Log(N) * Log(M)) algorithm (N = scene.size, M = nodesToDelete.size) to delete a collection of nodes from scene
 // graph
@@ -1307,14 +1422,18 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   // end (the scene shrank).
   shiftMeshRowNodes(scene.tables.meshes, newIndices);
   shiftMaterialRowNodes(scene.tables.materials, newIndices);
-  shiftMapIndices(scene.nameForNode, newIndices);
-  shiftMapIndices(scene.lightForNode, newIndices);
+  shiftLightRowNodes(scene.tables.lights, newIndices);
+  shiftCameraRowNodes(scene.tables.cameras, newIndices);
+  shiftDecalRowNodes(scene.tables.decals, newIndices);
+  shiftGiVolumeRowNodes(scene.tables.giVolumes, newIndices);
+  shiftCubemapRowNodes(scene.tables.cubemaps, newIndices);
+  shiftExportRowNodes(scene.tables.exports, newIndices);
+  shiftEnvRowNodes(scene.tables.envs, newIndices);
+  shiftEnvVolumeRowNodes(scene.tables.envVolumes, newIndices);
+  shiftNodeMetadata(scene.metadata, newIndices);
   // Orphaned light definitions (no node left referencing them) are kept:
   // they are small and dropping them would require remapping the surviving
-  // lightForNode values.
-  // Per-node authored env blocks follow their nodes (dropped with them);
-  // the scene-global resolved/default blocks are node-independent.
-  shiftEnvMapIndices(scene.envForNode, newIndices);
+  // light-table values.
 
   // The row remap above bypassed the mutators — reconcile the derived
   // index once (exact resize: the node count shrank with the deletion).

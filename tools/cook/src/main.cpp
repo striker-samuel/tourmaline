@@ -476,7 +476,7 @@ namespace cooktool {
 		if (!h.valid())
 			return;
 		cluster.RegisterLightUri("sun/world", h);
-		cluster.scene.lightForNode[uint32_t(node)] = h.index();
+		SetLight(cluster.scene, uint32_t(node), h.index());
 		tool::out() << "World sun synthesized (env block): az=" << be.sunAzimuth
 			<< " el=" << be.sunElevation << " I=" << be.sunIntensity
 			<< " rgb=(" << be.sunColor.x << "," << be.sunColor.y
@@ -565,7 +565,7 @@ namespace cooktool {
 		std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
 		using namespace smvk::gi;
 		for (auto& sc : sceneClusters) {
-			if (!sc || sc->scene.giVolumeForNode.empty())
+			if (!sc || sc->scene.tables.giVolumes.empty())
 				continue;
 			// Trace scene per cluster: bake inputs mirror the lightmap/
 			// cubemap stages (texture-averaged albedo, cooked-punctual aim
@@ -615,18 +615,22 @@ namespace cooktool {
 				<< traceScene.Bvh().TriangleCount() << " tris ("
 				<< averaged << " averaged, " << textured
 				<< " decoded textures)\n" << std::flush;
-			// Deterministic node order (hash-map iteration is not).
+			// Deterministic node order (the table's row storage order
+			// is not).
 			std::vector<uint32_t> nodes;
-			nodes.reserve(sc->scene.giVolumeForNode.size());
-			for (const auto& [node, def] : sc->scene.giVolumeForNode)
-				nodes.push_back(node);
+			nodes.reserve(sc->scene.tables.giVolumes.size());
+			for (const GiVolumeRow& row : sc->scene.tables.giVolumes)
+				nodes.push_back(row.node);
 			std::sort(nodes.begin(), nodes.end());
 			for (uint32_t node : nodes) {
 				if (node >= sc->scene.globalTransform.size())
 					continue;
-				// The binding target (a reference, not a copy — the
-				// binding update below lands on the scene).
-				SceneGiVolume& cv = sc->scene.giVolumeForNode[node];
+				// The binding target (the row's payload, a reference not
+				// a copy — the binding update below lands on the scene).
+				GiVolumeRow* cvRow = FindGiVolume(sc->scene, node);
+				if (!cvRow)
+					continue;
+				SceneGiVolume& cv = cvRow->volume;
 				// World box decode (GiBaker parity): translation = center,
 				// basis lengths = full extents, normalized basis = the box
 				// axes (an OBB — six planes, GiVolumeBoxPlanesRotated).
@@ -3199,7 +3203,9 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster, Args& args,
 	// = the node's world transform, influence = the node-local radius
 	// (fade = radius/2, the CLI pin rule). Appended after the CLI
 	// --cubemap-extra-pos pins, same manifest semantics.
-	for (const auto& [node, def] : cluster.scene.cubemapForNode) {
+	for (const CubemapRow& row : cluster.scene.tables.cubemaps) {
+		const NodeId node = row.node;
+		const SceneCubemap& def = row.cubemap;
 		if (node >= cluster.scene.globalTransform.size())
 			continue;
 		const glm::vec3 p(cluster.scene.globalTransform[node][3]);
@@ -4795,7 +4801,7 @@ int Run(const CookArgs& c) {
 					<< cluster->lights.numObjects() << " lights"
 					<< " (dir=" << nDir << " point=" << nPoint
 					<< " spot=" << nSpot << ", links="
-					<< cluster->scene.lightForNode.size() << ")\n";
+					<< cluster->scene.tables.lights.size() << ")\n";
 			}
 			tool::out() << "Cooking artifact: '" << inVfs << "'\n";
 			sceneNames.push_back("");
@@ -4890,23 +4896,23 @@ int Run(const CookArgs& c) {
 		glm::vec3 sunColor(0.0f);
 		float sunLux = 0.0f;
 		bool hasSun = false;
-		// Deterministic node order (hash-map iteration is not); the
-		// aim axis after the coordFix basis change (the same plain
-		// read as ResolveSceneLights / CollectStaticBakeLights).
+		// Deterministic node order (the table's row storage order is
+		// not); the aim axis after the coordFix basis change (the same
+		// plain read as ResolveSceneLights / CollectStaticBakeLights).
 		std::vector<uint32_t> nodes;
-		nodes.reserve(scene.lightForNode.size());
-		for (const auto& [node, lightIdx] : scene.lightForNode)
-			nodes.push_back(node);
+		nodes.reserve(scene.tables.lights.size());
+		for (const LightRow& row : scene.tables.lights)
+			nodes.push_back(row.node);
 		std::sort(nodes.begin(), nodes.end());
 		const glm::vec3 aimAxis = GltfPunctualAimAxis(0);
 		for (uint32_t node : nodes) {
 			if (node >= scene.globalTransform.size())
 				continue;
-			const auto lit = scene.lightForNode.find(node);
-			if (lit == scene.lightForNode.end())
+			const LightRow* lit = FindLight(scene, node);
+			if (!lit)
 				continue;
 			const smvk::ClusterLightHandle handle =
-				sc->lights.getHandle(lit->second);
+				sc->lights.getHandle(lit->light);
 			if (!handle.valid())
 				continue;
 			const SceneLight* L = sc->lights.get(handle);
@@ -4951,17 +4957,17 @@ int Run(const CookArgs& c) {
 	// wins (same definition, hand-tunable) and the pak embeds by
 	// binding. Baked before collapse/LODs: identical bake inputs to
 	// GiBaker's definition bake (the tour cluster as replayed), and
-	// giVolumeForNode node ids are still valid (collapse consumes static
-	// subtrees later). The baked volumes bind to their definitions on
-	// the cluster scene + the tour stamp below writes the giAsset
+	// the giVolume table's node ids are still valid (collapse consumes
+	// static subtrees later). The baked volumes bind to their definitions
+	// on the cluster scene + the tour stamp below writes the giAsset
 	// records (the manifest round-trip is retired with the stems).
 	if (args.giVolume) {
 		bool anyBoundVolume = false;
 		for (const auto& sc : sceneClusters) {
 			if (!sc)
 				continue;
-			for (const auto& [node, def] : sc->scene.giVolumeForNode)
-				if (!def.bakeSource.empty()) {
+			for (const GiVolumeRow& row : sc->scene.tables.giVolumes)
+				if (!row.volume.bakeSource.empty()) {
 					anyBoundVolume = true;
 					break;
 				}

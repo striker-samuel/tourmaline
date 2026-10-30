@@ -39,8 +39,8 @@ void Check(bool cond, const char* name) {
 
 // A point light + a root node carrying it, both in the CLUSTER's own scene
 // (the honest route: a later ResolveAndFixup folds them into the merged
-// world — cluster-scene lightForNode stores the CLUSTER-LOCAL pool index,
-// the resolve remap rewrites it to the world lightLocations index).
+// world — the cluster-scene light table stores the CLUSTER-LOCAL pool
+// index, the resolve remap rewrites it to the world lightLocations index).
 smvk::ClusterLightHandle AddLight(smvk::Cluster& cl, const char* name,
 	float intensity) {
 	::SceneLight def{};
@@ -49,7 +49,7 @@ smvk::ClusterLightHandle AddLight(smvk::Cluster& cl, const char* name,
 	def.name = name;
 	auto handle = cl.CreateLight(def);
 	const int node = addNode(cl.scene, -1, 0);
-	cl.scene.lightForNode[uint32_t(node)] = handle.index();
+	SetLight(cl.scene, uint32_t(node), handle.index());
 	return handle;
 }
 
@@ -97,10 +97,10 @@ void TestUnloadAndDynamicCluster() {
 		"unload.survivors");
 
 	// The merged scene no longer links any node to a light of the unloaded
-	// cluster: every lightForNode entry resolves into the surviving table.
+	// cluster: every light-table row resolves into the surviving table.
 	bool linksOk = true;
-	for (const auto& [node, idx] : w.scene.lightForNode)
-		linksOk = linksOk && idx < w.lightLocations.size();
+	for (const LightRow& row : w.scene.tables.lights)
+		linksOk = linksOk && row.light < w.lightLocations.size();
 	Check(linksOk, "unload.links.remap");
 
 	// Unloading the dynamic cluster is refused (runtime state).
@@ -138,7 +138,7 @@ void TestDecalEntities() {
 		def.name = "cooked_splat";
 		const auto h = a->CreateDecal(std::move(def));
 		const int node = addNode(a->scene, -1, 0);
-		a->scene.decalForNode[uint32_t(node)] = h.index();
+		SetDecal(a->scene, uint32_t(node), h.index());
 	}
 	w.RegisterCluster(std::move(a));
 	w.ResolveAndFixup_clusters();
@@ -158,10 +158,12 @@ void TestDecalEntities() {
 	const NodeId node = w.CreateDecalAt(frame, std::move(rt));
 	Check(node != UINT32_MAX, "decal.create.node");
 	Check(w.decalLocations.size() == 2, "decal.create.count");
-	Check(w.scene.decalForNode.count(node) == 1, "decal.create.link");
-	Check(w.decalLocations[w.scene.decalForNode[node]].cluster != nullptr
-		&& w.decalLocations[w.scene.decalForNode[node]]
-			.cluster->isDynamic, "decal.create.dynamic");
+	const DecalRow* drow = FindDecal(w.scene, node);
+	Check(drow != nullptr, "decal.create.link");
+	Check(drow != nullptr
+		&& w.decalLocations[drow->decal].cluster != nullptr
+		&& w.decalLocations[drow->decal].cluster->isDynamic,
+		"decal.create.dynamic");
 	// The frame IS the node transform (CreateDecalAt contract).
 	Check(w.scene.localTransform[node] == frame, "decal.create.frame");
 
@@ -183,13 +185,13 @@ void TestDecalEntities() {
 	Check(w.decalLocations.size() == 1, "decal.unload.count");
 	Check(w.decalLocations[0].cluster->isDynamic, "decal.unload.survivor");
 	bool foldedLink = false;
-	for (const auto& [n, idx] : w.scene.decalForNode)
-		foldedLink = foldedLink || idx < w.decalLocations.size();
+	for (const DecalRow& row : w.scene.tables.decals)
+		foldedLink = foldedLink || row.decal < w.decalLocations.size();
 	Check(foldedLink, "decal.unload.folded.link");
 	// The folded node carries the same placement frame (cluster-scene
 	// original, not the merged-scene mirror).
-	for (const auto& [n, idx] : w.scene.decalForNode) {
-		const glm::mat4& fg = w.scene.globalTransform[n];
+	for (const DecalRow& row : w.scene.tables.decals) {
+		const glm::mat4& fg = w.scene.globalTransform[row.node];
 		Check(glm::length(glm::vec3(fg[3]) - glm::vec3(1.0f, 0.5f, 2.0f))
 			< 1e-5f, "decal.unload.folded.frame");
 		break;
@@ -246,7 +248,7 @@ void TestEnvZones() {
 		m[2] = glm::vec4(0.0f, 0.0f, 10.0f, 0.0f);
 		scene.localTransform[size_t(n)] = m;
 		::SceneEnv envA{};
-		scene.envForNode[uint32_t(n)] = envA;
+		SetEnv(scene, uint32_t(n), envA);
 		zoneA = uint32_t(n);
 		markAsChanged(scene, n);
 	}
@@ -268,7 +270,7 @@ void TestEnvZones() {
 		m[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 		scene.localTransform[size_t(n)] = m;
 		::SceneEnv envB{};
-		scene.envForNode[uint32_t(n)] = envB;
+		SetEnv(scene, uint32_t(n), envB);
 		zoneB = uint32_t(n);
 		markAsChanged(scene, n);
 	}
@@ -287,7 +289,7 @@ void TestEnvZones() {
 		scene.localTransform[size_t(n)] = m;
 		::SceneEnv envC{};
 		envC.zonePriority = 5.0f;
-		scene.envForNode[uint32_t(n)] = envC;
+		SetEnv(scene, uint32_t(n), envC);
 		zoneC = uint32_t(n);
 		markAsChanged(scene, n);
 	}
@@ -315,7 +317,7 @@ void TestEnvZones() {
 		m[3] = glm::vec4(0.0f, 5.0f, 0.0f, 1.0f);
 		scene.localTransform[size_t(n)] = m;
 		::SceneEnv envD{};
-		scene.envForNode[uint32_t(n)] = envD;
+		SetEnv(scene, uint32_t(n), envD);
 		zoneD = uint32_t(n);
 		markAsChanged(scene, n);
 	}
@@ -348,11 +350,11 @@ void TestEnvZones() {
 		c->scene = scene;
 		w.RegisterCluster(std::move(c));
 		w.ResolveAndFixup_clusters();
-		Check(w.scene.envForNode.size() == 4, "zone.world.merged");
+		Check(w.scene.tables.envs.size() == 4, "zone.world.merged");
 		const NodeId worldB = w.zoneAtPosition(
 			glm::vec3(2.5f, 0.5f, 0.5f));
 		Check(worldB != UINT32_MAX
-			&& w.scene.envForNode.count(worldB) == 1,
+			&& FindEnv(w.scene, worldB) != nullptr,
 			"zone.world.resolve");
 	}
 }
@@ -364,7 +366,7 @@ void TestActiveEnvironmentFirstWins() {
 		const int n = addNode(cl.scene, parent, 0);
 		SceneEnv e{};
 		e.sunElevation = sunEl;
-		cl.scene.envForNode[uint32_t(n)] = e;
+		SetEnv(cl.scene, uint32_t(n), e);
 		return n;
 	};
 	// First scene loaded wins: A selects el 20, B selects el 30.
@@ -388,11 +390,11 @@ void TestActiveEnvironmentFirstWins() {
 		w.RegisterCluster(std::move(b));
 		w.ResolveAndFixup_clusters();
 		Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.kept");
-		const auto it =
-			w.scene.envForNode.find(w.scene.activeEnvironment);
-		Check(it != w.scene.envForNode.end(), "actenv.in-table");
-		Check(it != w.scene.envForNode.end()
-			&& it->second.sunElevation == 20.0f, "actenv.first-wins");
+		const EnvRow* it =
+			FindEnv(w.scene, w.scene.activeEnvironment);
+		Check(it != nullptr, "actenv.in-table");
+		Check(it != nullptr
+			&& it->environment.sunElevation == 20.0f, "actenv.first-wins");
 		Check(w.scene.environment.sunElevation == 20.0f,
 			"actenv.resolved-over-stale");
 		Check(w.scene.envAuthored, "actenv.authored");

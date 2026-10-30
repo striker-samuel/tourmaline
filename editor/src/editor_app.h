@@ -1039,10 +1039,10 @@ private:
 	void ExecCreateTransform(EditCmd& c);
 	void ExecUncreateTransform(EditCmd& c);
 	// Delete execution (ExecCmd cases): remove/restore a node from the
-	// live scene. Links (the mesh/material tables/lightForNode) and
+	// live scene. Links (the mesh/material/light tables) and
 	// draw entries drop; the node id joins/leaves m_deletedNodes; ids
 	// stay stable and pool resources are never reclaimed. Captured
-	// state (light index, map links, draw entries at their positions)
+	// state (light index, table rows, draw entries at their positions)
 	// rides c.number / c.delNodeMaps / c.delDrawItems for the exact
 	// undo. Terrain groups cascade over their tiles.
 	void ExecDelete(EditCmd& c);
@@ -1800,7 +1800,7 @@ private:
 	// The authored look lives in the SCENE (smvk::SceneEnv, see
 	// Engine/Scene/scene.h): the resolved ACTIVE block in
 	// scene.environment, the default block in scene.defaultEnvironment
-	// and the per-node alternatives in scene.envForNode — saved to the
+	// and the per-node alternatives in the env table — saved to the
 	// tour with the same env.* keys as before, cooked into paks through
 	// the cluster scenes, and consumed by every renderer straight from
 	// the scene. The editor keeps ONLY the selection (which block
@@ -1815,7 +1815,7 @@ private:
 	// The scene's render look (the split postfx settings): the resolved
 	// block when a scene stands, defaults otherwise (sceneless-safe).
 	const SceneRenderSettings& RenderLook() const;
-	bool IsEnvNode(uint32_t node) const { return m_world && m_world->scene.envForNode.contains(node); }
+	bool IsEnvNode(uint32_t node) const { return m_world && FindEnv(m_world->scene, node) != nullptr; }
 	void MarkEnvNode(uint32_t node);     // flag node + copy current settings
 	void UnmarkEnvNode(uint32_t node);
 	// Resolve the current selection (default block or selected node
