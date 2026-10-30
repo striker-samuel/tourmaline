@@ -41,8 +41,11 @@
 #include <cstdio>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
+
+#include <Engine/Profile/profile.h>
 
 namespace editor {
 
@@ -76,6 +79,11 @@ struct FiberBackend::Impl {
 	// guard page; the fiber-era stack-overflow saga in the file header):
 	// run the job under try/catch, park the completion record.
 	static void runJob(Impl* impl, Submission sub) {
+		// Optick: the JOB's OWN name as a dynamic scope — imports,
+		// cooks and bakes each show under their submitted name on the
+		// worker lane (the scope lives for the whole record build, i.e.
+		// the job's execution).
+		SMVK_PROFILE_SCOPE_DYNAMIC(sub.name.c_str());
 		Record rec;
 		rec.name = sub.name;
 		try {
@@ -101,6 +109,13 @@ struct FiberBackend::Impl {
 	// a poll interval, not a scheduling yield — nothing else shares the
 	// thread.
 	void workerLoop() {
+		// Optick: name the worker lane (unique per worker so the two
+		// editor lanes stay distinguishable in the timeline; the string
+		// outlives the ThreadScope registration).
+		static std::atomic<unsigned> s_workerSeq{ 0u };
+		const std::string threadName =
+			"EditorWorker" + std::to_string(s_workerSeq.fetch_add(1u));
+		SMVK_PROFILE_THREAD(threadName.c_str());
 		while (running.load(std::memory_order_relaxed)
 			|| inFlight.load(std::memory_order_relaxed) != 0u) {
 			std::deque<Submission> taken;
@@ -164,17 +179,24 @@ bool FiberBackend::Post(const std::string& name, Job job,
 }
 
 void FiberBackend::Pump() {
+	// Optick: the main-thread completion delivery — a completed
+	// background job applying its result (cook/bake finish logic) is a
+	// classic main-thread hitch source, and each callback carries the
+	// job's own name as a dynamic scope.
+	SMVK_PROFILE_SCOPE("Editor_FibersPump");
 	std::deque<Impl::Record> ready;
 	{
 		std::lock_guard<std::mutex> lk(impl_->doneMx);
 		ready.swap(impl_->done);
 	}
+	SMVK_PROFILE_TAG("completions", ready.size());
 	for (Impl::Record& rec : ready) {
 		if (rec.onMain) {
 			Completion c;
 			c.name = rec.name;
 			c.ok = rec.ok;
 			c.error = rec.error;
+			SMVK_PROFILE_SCOPE_DYNAMIC(rec.name.c_str());
 			rec.onMain(c);
 		}
 	}

@@ -11,6 +11,7 @@
 #include <Engine/App/world.h>
 #include <Engine/Asset/cluster_serializer.h> // ListPakScenes (scene discovery)
 #include <Engine/Asset/pak.h>
+#include <Engine/Profile/profile.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Scene/scene.h>
@@ -157,6 +158,9 @@ namespace app {
 		smvk::OverlayVfs& contentVfs,
 		smvk::TextureStreamer* sceneStreamer
 	) {
+		// Optick: the synchronous scene-load path (startup / scene-switch
+		// latency, not steady frame cost) — stage scopes below.
+		SMVK_PROFILE_IO("PakWorld_Load");
 		if (!pre.backend) {
 			std::cerr << "[App] pak preload failed: " << pre.error << "\n";
 			return nullptr;
@@ -166,7 +170,11 @@ namespace app {
 		std::cerr << "[App] pak parsed (" << reader.EntryCount() << " entries)\n";
 		// Scene discovery: list, default to index 0.
 		std::string lerr;
-		auto scenes = smvk::ListPakScenes(reader, &lerr);
+		auto scenes = [&] {
+			SMVK_PROFILE_IO("PakWorld_DiscoverScenes");
+			return smvk::ListPakScenes(reader, &lerr);
+		}();
+		SMVK_PROFILE_TAG("scenes", scenes.size());
 		if (scenes.empty()) {
 			// Terrain-only pak (no scenes, Terrain blobs present): an empty
 			// world carrying just the harvested terrain. The renderer bakes
@@ -200,16 +208,22 @@ namespace app {
 		std::cerr << "[App] loading scene[" << sceneIndex << "] '"
 			<< scenes[size_t(sceneIndex)].name << "'...\n";
 		auto world = smvk::mem::MakeProcess<smvk::World>();
-		try {
-			world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex),
-				sceneStreamer, pre.image);
-		}
-		catch (const std::exception& e) {
-			// DeserializeCluster drains its own staged uploads on failure;
-			// drain anything queued since, then fail the load.
-			std::cerr << "[App] pak load failed: " << e.what() << "\n";
-			ctx.WaitForUploads();
-			return nullptr;
+		{
+			// The cluster deserialize + GPU uploads (meshes, materials,
+			// textures staged through the streamer) — the dominant
+			// scene-switch cost.
+			SMVK_PROFILE_IO("PakWorld_LoadCluster");
+			try {
+				world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex),
+					sceneStreamer, pre.image);
+			}
+			catch (const std::exception& e) {
+				// DeserializeCluster drains its own staged uploads on failure;
+				// drain anything queued since, then fail the load.
+				std::cerr << "[App] pak load failed: " << e.what() << "\n";
+				ctx.WaitForUploads();
+				return nullptr;
+			}
 		}
 		std::cerr << "[App] pak cluster loaded\n";
 		// Mount the pak backend NOW — BEFORE the anim resolution — so the
@@ -219,12 +233,15 @@ namespace app {
 		contentVfs.Mount(pre.backend, 10, pre.scenePak);
 		// THE SKINNING CLIP: attach to the first cluster carrying a
 		// skeleton (ONE for now — the driver's cap).
-		for (auto& clusterPtr : world->clusters) {
-			smvk::Cluster* c = clusterPtr.get();
-			if (!c || !c->hasSkeleton)
-				continue;
-			AttachClips(*c, StemOf(pre.scenePak), contentVfs);
-			break;
+		{
+			SMVK_PROFILE_IO("PakWorld_AttachClips");
+			for (auto& clusterPtr : world->clusters) {
+				smvk::Cluster* c = clusterPtr.get();
+				if (!c || !c->hasSkeleton)
+					continue;
+				AttachClips(*c, StemOf(pre.scenePak), contentVfs);
+				break;
+			}
 		}
 		// STATIC FLAGS come from the COOKED marks now (the pak's
 		// staticRoot bits — authored in the editor/cooker, preserved by
@@ -234,8 +251,12 @@ namespace app {
 		// (runtime-moved) cluster as frozen. The viewer-side freeze now
 		// fires ONLY as the loud compat fallback for clusters whose scene
 		// blob carried NO static section (pre-v2 paks).
-		ApplyCookedStaticFlags(*world, pre.scenePak);
-		world->ResolveAndFixup_clusters();
+		{
+			// Cooked static flags + the node hierarchy resolve/fixup tail.
+			SMVK_PROFILE_IO("PakWorld_Fixup");
+			ApplyCookedStaticFlags(*world, pre.scenePak);
+			world->ResolveAndFixup_clusters();
+		}
 		// SSR wax (test amplification, TOURMALINE_SSR_WAX=1; the sponza
 		// check scene is the target): every opaque lit material's roughness
 		// -> 0.04 (the shader-side clamp floor - a dielectric mirror). The

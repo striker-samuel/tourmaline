@@ -3316,6 +3316,9 @@ namespace engine {
 	// blocks. Probe data rides the FP light buffer as type-2 entries,
 	// appended post-selection in UpdateForwardPlusLights.
 	void WorldRenderer::RebuildCubemapProbeRows() {
+		// Optick: the probe-row rebuild rides every residency change
+		// (stream loads/evicts + the init-time load path).
+		SMVK_PROFILE_STREAM("CubemapStreaming_RebuildRows");
 		m_cubemapProbes.clear();
 		if (m_cubemapRows.empty())
 			return;
@@ -3379,22 +3382,36 @@ namespace engine {
 		else if ((static_cast<uint32_t>(m_frameCounter) & 3u) != 0u) {
 			return; // throttle like texture streaming (loads hitch)
 		}
+		// Optick: the streaming tick (rank -> throttled loads -> evict ->
+		// row rebuild). Zero instrumentation before: the KTX decode +
+		// read are synchronous on the render thread, exactly the loading
+		// hitch this exposes.
+		SMVK_PROFILE_STREAM("CubemapStreaming_Update");
+		SMVK_PROFILE_TAG("rows", m_cubemapRows.size());
+		SMVK_PROFILE_TAG("priming", priming ? 1u : 0u);
 		// Rank non-pinned, non-failed rows by camera distance.
+		// (Rank + the vectors live at function scope: the loads and
+		// evict loops below consume them after the rank scope closes.)
 		struct Rank { size_t row; float dist; };
 		std::vector<Rank> ranks;
-		ranks.reserve(m_cubemapRows.size());
-		std::vector<size_t> rankOf(m_cubemapRows.size(), SIZE_MAX);
-		for (size_t i = 0; i < m_cubemapRows.size(); ++i) {
-			const CubemapRow& row = m_cubemapRows[i];
-			if (row.pinned || row.failed)
-				continue;
-			rankOf[i] = ranks.size();
-			ranks.push_back(Rank{ i, glm::distance(eye, row.position) });
+		std::vector<size_t> rankOf;
+		{
+			SMVK_PROFILE_STREAM("CubemapStreaming_Rank");
+			ranks.reserve(m_cubemapRows.size());
+			rankOf.assign(m_cubemapRows.size(), SIZE_MAX);
+			for (size_t i = 0; i < m_cubemapRows.size(); ++i) {
+				const CubemapRow& row = m_cubemapRows[i];
+				if (row.pinned || row.failed)
+					continue;
+				rankOf[i] = ranks.size();
+				ranks.push_back(Rank{ i, glm::distance(eye, row.position) });
+			}
+			std::sort(ranks.begin(), ranks.end(),
+				[](const Rank& a, const Rank& b) { return a.dist < b.dist; });
+			for (size_t r = 0; r < ranks.size(); ++r)
+				rankOf[ranks[r].row] = r;
+			SMVK_PROFILE_TAG("ranked", ranks.size());
 		}
-		std::sort(ranks.begin(), ranks.end(),
-			[](const Rank& a, const Rank& b) { return a.dist < b.dist; });
-		for (size_t r = 0; r < ranks.size(); ++r)
-			rankOf[ranks[r].row] = r;
 		auto isResident = [&](const CubemapRow& row) {
 			const auto* entry = m_cubemaps.Find(row.entryName);
 			return entry && entry->bindless >= 0 && entry->baked;
@@ -3402,45 +3419,58 @@ namespace engine {
 		bool changed = false;
 		uint32_t loadsDone = 0, evictsDone = 0;
 		// Loads: nearest-K + covering (throttled past the priming fill).
-		uint32_t loadsLeft = priming ? UINT32_MAX : m_cubemapStreamLoadsPerUpdate;
-		for (const Rank& r : ranks) {
-			CubemapRow& row = m_cubemapRows[r.row];
-			if (isResident(row))
-				continue;
-			const bool inBudget =
-				rankOf[r.row] < size_t(budget);
-			const bool covering =
-				r.dist < row.influenceRadius + row.fadeRadius;
-			if (!inBudget && !covering)
-				continue;
-			if (loadsLeft == 0)
-				continue;
-			--loadsLeft;
-			const std::span<const uint8_t> bytes = ReadBakeBytes(row.vfsPath);
-			if (bytes.empty()) {
-				std::cerr << "[Cubemap] stream row missing: "
-					<< row.vfsPath << " - skipped\n";
-				row.failed = true;
-				continue;
+		{
+			SMVK_PROFILE_STREAM("CubemapStreaming_Load");
+			uint32_t loadsLeft = priming ? UINT32_MAX : m_cubemapStreamLoadsPerUpdate;
+			for (const Rank& r : ranks) {
+				CubemapRow& row = m_cubemapRows[r.row];
+				if (isResident(row))
+					continue;
+				const bool inBudget =
+					rankOf[r.row] < size_t(budget);
+				const bool covering =
+					r.dist < row.influenceRadius + row.fadeRadius;
+				if (!inBudget && !covering)
+					continue;
+				if (loadsLeft == 0)
+					continue;
+				--loadsLeft;
+				std::span<const uint8_t> bytes{};
+				{
+					// The baked-payload read (VFS fetch + LZ4 decompress
+					// for pak-backed rows) split from the KTX decode +
+					// GPU upload below.
+					SMVK_PROFILE_STREAM("CubemapStreaming_Read");
+					bytes = ReadBakeBytes(row.vfsPath);
+				}
+				if (bytes.empty()) {
+					std::cerr << "[Cubemap] stream row missing: "
+						<< row.vfsPath << " - skipped\n";
+					row.failed = true;
+					continue;
+				}
+				if (!m_cubemaps.Load(*m_context, row.entryName, bytes)) {
+					std::cerr << "[Cubemap] stream row load failed: "
+						<< row.vfsPath << " - skipped\n";
+					row.failed = true;
+					continue;
+				}
+				const auto* entry = m_cubemaps.Find(row.entryName);
+				if (!entry || entry->bindless < 0 || !entry->baked) {
+					if (entry && !entry->baked)
+						m_cubemaps.entries.erase(row.entryName);
+					row.failed = true;
+					continue;
+				}
+				++loadsDone;
+				changed = true;
 			}
-			if (!m_cubemaps.Load(*m_context, row.entryName, bytes)) {
-				std::cerr << "[Cubemap] stream row load failed: "
-					<< row.vfsPath << " - skipped\n";
-				row.failed = true;
-				continue;
-			}
-			const auto* entry = m_cubemaps.Find(row.entryName);
-			if (!entry || entry->bindless < 0 || !entry->baked) {
-				if (entry && !entry->baked)
-					m_cubemaps.entries.erase(row.entryName);
-				row.failed = true;
-				continue;
-			}
-			++loadsDone;
-			changed = true;
+			SMVK_PROFILE_TAG("loads", loadsDone);
 		}
+
 		// Evictions (hysteresis: rank slack + range margin past fade).
 		if (!priming) {
+			SMVK_PROFILE_STREAM("CubemapStreaming_Evict");
 			for (const Rank& r : ranks) {
 				CubemapRow& row = m_cubemapRows[r.row];
 				if (!isResident(row))
@@ -3456,8 +3486,11 @@ namespace engine {
 					changed = true;
 				}
 			}
+			SMVK_PROFILE_TAG("evicts", evictsDone);
 		}
 		if (changed) {
+			// RebuildCubemapProbeRows carries its own scope
+			// (CubemapStreaming_RebuildRows — shared with the init path).
 			RebuildCubemapProbeRows();
 			std::cerr << "[Cubemap] streaming: +" << loadsDone << "/-"
 				<< evictsDone << " -> " << m_cubemapProbes.size()
@@ -5504,25 +5537,34 @@ namespace engine {
 		bool dirty = false;
 		uint64_t bytesThisFrame = 0;
 		uint32_t promotes = 0;
-		for (const auto& [mesh, level] : demand) {
-			++m_geometryStreamer.stats.demandMisses;
-			m_geometryStreamer.NoteTouch(mesh, level, frame);
-			if (!m_geometryStreamer.CanPromoteThisFrame(bytesThisFrame,
-					promotes))
-				break; // throttle: the rest re-demands next frame
-			auto r = m_world->PromoteLodLevel(mesh, level);
-			if (!r)
-				continue; // not deferred anymore (promoted / mistaken)
-			bytesThisFrame += r->payloadBytes;
-			++promotes;
-			m_geometryStreamer.NotePromote(mesh, level, r->payloadBytes,
-				frame);
-			dirty = true;
-			std::fprintf(stderr,
-				"[GeometryStreaming] promoted worldMesh=%u lod=%u "
-				"(%.0f KiB, %u/%u this frame)\n",
-				mesh, level, double(r->payloadBytes) / 1024.0,
-				promotes, m_geometryStreamer.config.maxPromotesPerFrame);
+		{
+			// Optick: the PROMOTE half (demand drain + the throttled
+			// arena re-promotes) — the intermittent hitch half that the
+			// single GeoStreamingUpdate scope could not explain.
+			SMVK_PROFILE_STREAM("GeoStreaming_Promote");
+			SMVK_PROFILE_TAG("demand", demand.size());
+			for (const auto& [mesh, level] : demand) {
+				++m_geometryStreamer.stats.demandMisses;
+				m_geometryStreamer.NoteTouch(mesh, level, frame);
+				if (!m_geometryStreamer.CanPromoteThisFrame(bytesThisFrame,
+						promotes))
+					break; // throttle: the rest re-demands next frame
+				auto r = m_world->PromoteLodLevel(mesh, level);
+				if (!r)
+					continue; // not deferred anymore (promoted / mistaken)
+				bytesThisFrame += r->payloadBytes;
+				++promotes;
+				m_geometryStreamer.NotePromote(mesh, level, r->payloadBytes,
+					frame);
+				dirty = true;
+				std::fprintf(stderr,
+					"[GeometryStreaming] promoted worldMesh=%u lod=%u "
+					"(%.0f KiB, %u/%u this frame)\n",
+					mesh, level, double(r->payloadBytes) / 1024.0,
+					promotes, m_geometryStreamer.config.maxPromotesPerFrame);
+			}
+			SMVK_PROFILE_TAG("promotes", promotes);
+			SMVK_PROFILE_TAG("promotedKB", (bytesThisFrame + 1023) / 1024);
 		}
 
 		// Budget enforcement: over gpuBudgetBytes, return the IDLEST
@@ -5530,6 +5572,7 @@ namespace engine {
 		// per frame keeps the rebuild churn bounded; the freed arena
 		// ranges retire behind the in-flight frames).
 		{
+			SMVK_PROFILE_STREAM("GeoStreaming_Evict");
 			uint64_t key = 0, bytes = 0;
 			if (m_geometryStreamer.FindEvictCandidate(frame, key, bytes)) {
 				const uint32_t mesh = uint32_t(key >> 32);
@@ -5538,6 +5581,8 @@ namespace engine {
 						level)) {
 					m_geometryStreamer.NoteEvict(mesh, level, freed);
 					dirty = true;
+					SMVK_PROFILE_TAG("evicted", 1u);
+					SMVK_PROFILE_TAG("freedKB", (freed + 1023) / 1024);
 					std::fprintf(stderr,
 						"[GeometryStreaming] EVICTED worldMesh=%u lod=%u "
 						"(%.0f KiB freed, working set %.2f MiB / %.2f MiB)\n",
@@ -5559,14 +5604,32 @@ namespace engine {
 			// mechanism; there is no incremental GPU mesh-table update,
 			// the full rebuild IS the mechanism, and it is in-flight-
 			// safe since the index-region rework).
-			m_world->RebuildLodChains();
-			m_world->RebuildLightmapChartTable();
-			if (m_gfxFilterAvailable) {
-				smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
-				m_gfxRenderer.RegisterWorldMeshes(*m_world);
-				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+			{
+				// Optick: the LOD-chain + chart re-derive — pure CPU
+				// bookkeeping over the whole mesh set on every dirty
+				// (promote/evict) frame.
+				SMVK_PROFILE_STREAM("GeoStreaming_RebuildLodChains");
+				m_world->RebuildLodChains();
+				m_world->RebuildLightmapChartTable();
 			}
-			m_context->FlushUploads();
+			if (m_gfxFilterAvailable) {
+				{
+					// The from-scratch gfx mesh re-registration (the
+					// full rebuild IS the per-mesh removal mechanism).
+					SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
+					smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
+					m_gfxRenderer.RegisterWorldMeshes(*m_world);
+				}
+				{
+					// Static vertex/index table upload staging.
+					SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
+					m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+				}
+			}
+			{
+				SMVK_PROFILE_STREAM("GeoStreaming_FlushUploads");
+				m_context->FlushUploads();
+			}
 		}
 	}
 
@@ -5593,6 +5656,11 @@ namespace engine {
 		const uint64_t epoch = m_textureStreamer->SlotMetaEpoch();
 		if (epoch == m_gfxMetaEpochUploaded)
 			return;
+		// Optick: the epoch-gated slot-meta rebuild + upload (streamer
+		// register/unregister churn — the gfx side's view of the slot
+		// table). Near-zero most frames; nonzero after streaming or
+		// scene edits.
+		SMVK_PROFILE_STREAM("TextureMeta_RebuildUpload");
 		// Typed copy (streamer -> gfx layouts are deliberately decoupled;
 		// the loop is the trust boundary).
 		const std::vector<smvk::TextureStreamer::TextureSlotMeta> slots =
@@ -5605,6 +5673,7 @@ namespace engine {
 		if (smvk::gfx::UploadTextureMeta(gfx, *m_context, epoch,
 			meta.data(), meta.size()))
 			m_gfxMetaEpochUploaded = epoch;
+		SMVK_PROFILE_TAG("slots", meta.size());
 		// Upload failure: the gfx-cached epoch stays stale, so this
 		// re-attempts next frame.
 	}
@@ -6672,18 +6741,25 @@ namespace engine {
 	// m_pointShadow{LightCount,TileCount} for the frame's passes.
 	// ---------------------------------------------------------------------
 	uint32_t WorldRenderer::UpdateForwardPlusLights(uint32_t currentFrame, const FrameUniforms& frame) {
+		// Optick: the phase scopes below mirror the bench's gen/up/ds
+		// split so a capture shows the same breakdown the [perf] line
+		// accumulates (the chrono timestamps stay — they feed --bench).
+		SMVK_PROFILE_RENDER("ForwardPlusLights_Update");
 		using fp_clk = std::chrono::steady_clock;
 		const bool fpBench = m_host.BenchMeasuring();
 		const auto fpT0 = fp_clk::now();
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
 		m_debugLights.clear();
-		for (const auto& cl : m_sceneLights.forwardPlusLights) {
-			if (lights.size() >= FP_MAX_BUILD_LIGHTS)
-				break;
-			lights.push_back(cl);
-			m_debugLights.push_back({ glm::vec3(cl.position),
-				glm::vec3(cl.color), (int)cl.type });
+		{
+			SMVK_PROFILE_RENDER("Lights_Build");
+			for (const auto& cl : m_sceneLights.forwardPlusLights) {
+				if (lights.size() >= FP_MAX_BUILD_LIGHTS)
+					break;
+				lights.push_back(cl);
+				m_debugLights.push_back({ glm::vec3(cl.position),
+					glm::vec3(cl.color), (int)cl.type });
+			}
 		}
 		// ---- Light crowd (the Forward+ stress tool; see LightDemo) ----
 		// Appended after the scene lights: every crowd light rides the
@@ -6693,6 +6769,9 @@ namespace engine {
 		// headless -> byte-identical captures).
 		m_lightCrowdCount = 0;
 		if (m_lightDemo.enabled && m_lightDemo.count > 0) {
+			// Optick: the crowd generation is pure CPU synthesis — its
+			// cost scales with the demo count, not the scene.
+			SMVK_PROFILE_RENDER("Lights_Crowd");
 			const float t = frame.time;
 			const float invN = 1.0f / (float)m_lightDemo.count;
 			for (int i = 0; i < m_lightDemo.count; ++i) {
@@ -6752,6 +6831,7 @@ namespace engine {
 		m_spotShadowMapIndex = -1;
 		m_spotShadowTiles.clear();
 		if (m_passes.spotShadows && m_spotShadowsEnabled && m_viewportResources.spotShadows.Valid() && !lights.empty()) {
+			SMVK_PROFILE_RENDER("Shadows_SelectSpot");
 			const uint32_t wantMax = (uint32_t)std::clamp(m_spotShadowMax, 0, (int)smvk::kMaxSpotShadows);
 			const uint32_t budget = std::min(wantMax, m_viewportResources.spotShadows.slotCount);
 			if (budget > 0) {
@@ -6817,6 +6897,7 @@ namespace engine {
 				);
 				m_spotShadowCount = (uint32_t)selected.size();
 				m_spotShadowMapIndex = sampleIdx;
+				SMVK_PROFILE_TAG("spotTiles", m_spotShadowCount);
 				// Keep the tiles for the per-frame spot RenderViews.
 				m_spotShadowTiles = std::move(tiles);
 			}
@@ -6840,6 +6921,7 @@ namespace engine {
 		m_pointShadowTiles.clear();
 		if (m_passes.spotShadows && m_pointShadowsEnabled
 			&& m_viewportResources.spotShadows.Valid() && !lights.empty()) {
+			SMVK_PROFILE_RENDER("Shadows_SelectPoint");
 			const uint32_t wantMax =
 				(uint32_t)std::clamp(m_pointShadowMax, 0, (int)smvk::kMaxPointShadowLights);
 			// Tile headroom: the spots already claimed m_spotShadowCount of
@@ -6902,6 +6984,8 @@ namespace engine {
 					);
 					m_pointShadowLightCount = (uint32_t)selected.size();
 					m_pointShadowTileCount = (uint32_t)tiles.size();
+					SMVK_PROFILE_TAG("pointLights", m_pointShadowLightCount);
+					SMVK_PROFILE_TAG("pointFaceTiles", m_pointShadowTileCount);
 					m_pointShadowTiles = std::move(tiles);
 				}
 			}
@@ -6914,6 +6998,7 @@ namespace engine {
 		// fields travel with their lights. (When the pipeline is off, keep
 		// the spots-first order the capped forward+ list relies on.)
 		if (DsActive() && !lights.empty()) {
+			SMVK_PROFILE_RENDER("DeferredShadows_SortLights");
 			smvk::DsSortLightsByNearDistance(lights, frame.view);
 #if defined(DS_DEBUG_VIZ)
 			// Sorted-buffer snapshot for the visualizer UI: the light count
@@ -6940,6 +7025,8 @@ namespace engine {
 		constexpr size_t FP_FRAME_STRIDE = sizeof(smvk::ForwardPlusLight) * FP_MAX_LIGHTS;
 		const auto fpT1 = fp_clk::now();
 		if (!lights.empty()) {
+			SMVK_PROFILE_RENDER("Lights_Upload");
+			SMVK_PROFILE_TAG("lights", lights.size());
 			m_context->UploadDataToBuffer(
 				m_resources.fpLightsBuffer,
 				lights.data(),
@@ -6962,6 +7049,8 @@ namespace engine {
 			const uint32_t probeEntries = ProbeEntryCount();
 			if (probeEntries > 0
 				&& lights.size() + probeEntries <= FP_MAX_LIGHTS) {
+				SMVK_PROFILE_RENDER("Lights_UploadProbes");
+				SMVK_PROFILE_TAG("probes", probeEntries);
 				std::vector<smvk::ForwardPlusLight> gpu;
 				gpu.reserve(probeEntries);
 				for (uint32_t i = 0; i < probeEntries; ++i) {
@@ -6992,6 +7081,8 @@ namespace engine {
 		// the consumer iterates nothing (no stale-data path exists).
 		const auto fpT2 = fp_clk::now();
 		if (DsActive()) {
+			SMVK_PROFILE_RENDER("DeferredShadows_Build");
+			SMVK_PROFILE_TAG("dsLights", (uint32_t)lights.size());
 			smvk::DeferredShadows& ds = m_viewportResources.deferredShadows;
 			// Stats readback of the RETIRED slice moved to UpdateReadbacks
 			// (async ticket, exposure pattern): the old synchronous
@@ -7007,31 +7098,46 @@ namespace engine {
 			// the copy ahead of this zero (download-before-zero, same
 			// ordering the exposure histogram relies on).
 			static constexpr uint32_t kZeroCounters[smvk::kDsCounterCount] = {};
-			m_context->UploadDataToBuffer(ds.CounterBuffer(currentFrame),
-				kZeroCounters, sizeof(kZeroCounters),
-				smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite,
-				0, 0);
+			{
+				SMVK_PROFILE_RENDER("DeferredShadows_ZeroCounters");
+				m_context->UploadDataToBuffer(ds.CounterBuffer(currentFrame),
+					kZeroCounters, sizeof(kZeroCounters),
+					smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite,
+					0, 0);
+			}
 			// zBins (min/max + ranged min/max per depth bin, sorted indices).
-			smvk::DsBuildZBins(lights, frame.view, frame.nearPlane, frame.farPlane,
-				m_dsZBinStaging);
-			m_context->UploadDataToBuffer(ds.ZBinsBuffer(currentFrame),
-				m_dsZBinStaging.data(),
-				std::min(m_dsZBinStaging.size() * sizeof(uint32_t), smvk::kDsZBinBytes),
-				smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
-				0, 0);
+			{
+				// CPU zBin build: cost scales with the sorted light count
+				// (one ranged min/max pass over the list per bin row).
+				SMVK_PROFILE_RENDER("DeferredShadows_BuildZBins");
+				smvk::DsBuildZBins(lights, frame.view, frame.nearPlane, frame.farPlane,
+					m_dsZBinStaging);
+				m_context->UploadDataToBuffer(ds.ZBinsBuffer(currentFrame),
+					m_dsZBinStaging.data(),
+					std::min(m_dsZBinStaging.size() * sizeof(uint32_t), smvk::kDsZBinBytes),
+					smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
+					0, 0);
+			}
 			// Tile Light Masks (64x64px TileGroup granularity, figure 4). The
 			// builder derives the same group grid from the same extent, so the
 			// staging layout matches the GPU buffers exactly.
-			uint32_t maskGX = 0, maskGY = 0;
-			smvk::DsBuildTileMasks(lights, frame.view, frame.proj,
-				(uint32_t)frame.viewportSize.x, (uint32_t)frame.viewportSize.y,
-				m_dsMaskStaging, maskGX, maskGY);
-			assert(maskGX == ds.groupCountX && maskGY == ds.groupCountY);
-			m_context->UploadDataToBuffer(ds.TileMasksBuffer(currentFrame),
-				m_dsMaskStaging.data(),
-				std::min(m_dsMaskStaging.size() * sizeof(uint32_t), smvk::kDsTileMaskBytes),
-				smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
-				0, 0);
+			{
+				// CPU tile-mask build: the heaviest DS phase — every light
+				// projected against the group grid (scales with lights x
+				// screen coverage).
+				SMVK_PROFILE_RENDER("DeferredShadows_BuildTileMasks");
+				uint32_t maskGX = 0, maskGY = 0;
+				smvk::DsBuildTileMasks(lights, frame.view, frame.proj,
+					(uint32_t)frame.viewportSize.x, (uint32_t)frame.viewportSize.y,
+					m_dsMaskStaging, maskGX, maskGY);
+				assert(maskGX == ds.groupCountX && maskGY == ds.groupCountY);
+				SMVK_PROFILE_TAG("maskGroups", maskGX * maskGY);
+				m_context->UploadDataToBuffer(ds.TileMasksBuffer(currentFrame),
+					m_dsMaskStaging.data(),
+					std::min(m_dsMaskStaging.size() * sizeof(uint32_t), smvk::kDsTileMaskBytes),
+					smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
+					0, 0);
+			}
 		}
 		if (fpBench) {
 			using msd = std::chrono::duration<double, std::milli>;
@@ -7055,6 +7161,10 @@ namespace engine {
 		m_decalFrameCount = 0;
 		if (!DecalsActive())
 			return 0;
+		// Optick: the per-frame decal re-derivation (URI resolution,
+		// the node-ordered walk, the record upload) — bounded but was
+		// entirely unprofiled.
+		SMVK_PROFILE_RENDER("Decals_BuildUpload");
 
 		// Texture URI -> bindless cache for this frame (decal counts are
 		// small; the cache avoids re-walking clusters per decal when they
@@ -7157,6 +7267,7 @@ namespace engine {
 			);
 		}
 		m_decalFrameCount = (uint32_t)gpu.size();
+		SMVK_PROFILE_TAG("decals", m_decalFrameCount);
 		return m_decalFrameCount;
 	}
 
@@ -7265,6 +7376,12 @@ namespace engine {
 			return 0;
 		if (m_particleDemo.emitters.empty() && m_particleBursts.empty())
 			return 0;
+		// Optick: the CPU emitter update (ambient recentering, burst
+		// aging, the emitter-row upload) — the GPU sim passes are
+		// graph-profiled already.
+		SMVK_PROFILE_RENDER("Particles_UpdateEmitters");
+		SMVK_PROFILE_TAG("emitters", m_particleDemo.emitters.size());
+		SMVK_PROFILE_TAG("bursts", m_particleBursts.size());
 		// Every frame, like the decal ring: sliders retouch live emitters
 		// immediately and every flight slice stays fresh. The GPU's own
 		// fractional-rate carry lives in the separate emitterState buffer,
@@ -9094,6 +9211,22 @@ namespace engine {
 					m_stageGpuValid[smvk::kGpuStageEvsmBlur]
 					? (std::to_string(s_benchStageMs[smvk::kGpuStageEvsmBlur] / sn) + " ms").c_str() : "(off)",
 					(unsigned long long)s_benchStageFrames);
+				// Per-async-pass split of the C stream (EVSM: pass 0 = the
+				// H blur leg, pass 1 = the V leg): the SUM of the legs
+				// against the aggregate blur stage above exposes the queue
+				// handoff + timeline-sync overhead (aggregate minus legs).
+				// Stages stay "(off)" on the emulated single-queue path
+				// (no per-pass queries written — the inline passes are
+				// covered by the per-pass Optick GPU scopes instead) and
+				// past the kGpuAsyncPassMaxTimers cap.
+				std::printf("[perf] async blur legs");
+				for (uint32_t i = 0; i < smvk::kGpuAsyncPassMaxTimers; ++i) {
+					const uint32_t s = smvk::kGpuStageAsyncPassBase + i;
+					std::printf(" %s",
+						m_stageGpuValid[s]
+						? (std::to_string(s_benchStageMs[s] / sn) + "ms").c_str() : "(off)");
+				}
+				std::printf(" (per-pass avg ms; sum vs the blur stage = handoff/sync)\n");
 			}
 			else {
 				std::printf("[perf] shadow GPU stage timings unavailable (no cross-queue timestamps)\n");
@@ -9259,45 +9392,57 @@ namespace engine {
 
 		// ---- The dirty fingerprint: everything Build() reads. ----
 		uint64_t hash = 2166136261u;
-		const auto mixU32 = [&hash](uint32_t v) {
-			hash ^= v; hash *= 16777619ull;
-		};
-		const auto mixF = [&hash](float f) {
-			hash ^= std::hash<float>{}(f); hash *= 16777619ull;
-		};
-		const auto mixEnv = [&](const SceneEnv& e) {
-			for (int c = 0; c < 3; ++c) { mixF(e.skyColor[c]); mixF(e.fogColor[c]); }
-			mixF(e.skyIntensity); mixF(e.fogDensity); mixF(e.volumetrics);
-			mixF(e.volumetricDensity); mixF(e.zonePriority);
-		};
-		mixEnv(scene.environment);
-		mixEnv(scene.defaultEnvironment);
-		mixU32(scene.envAuthored ? 1u : 0u);
-		for (const auto& [node, env] : scene.envForNode) {
-			mixU32(node);
-			mixEnv(env);
-			// The OBB shape: the node's transform (position/rotation/
-			// scale all matter — column lengths are the half extents).
-			if (node < scene.globalTransform.size())
-				for (int c = 0; c < 4; ++c)
-					for (int r = 0; r < 4; ++r)
-						mixF(scene.globalTransform[node][c][r]);
-			const auto vit = scene.envVolumeForNode.find(node);
-			if (vit != scene.envVolumeForNode.end()) {
-				mixU32(vit->second.infMask);
-				mixF(vit->second.priority);
-				mixF(vit->second.blendWeight);
-				mixF(vit->second.blendRadius);
-				mixU32(vit->second.enabled ? 1u : 0u);
+		::Aabb bounds{};
+		{
+			// Optick: the per-frame change check (the full input walk +
+			// scene-bounds recompute) — cheap but nonzero every frame,
+			// and the gate that decides whether the expensive Build
+			// below runs.
+			SMVK_PROFILE_RENDER("EnvTiles_CheckDirty");
+			const auto mixU32 = [&hash](uint32_t v) {
+				hash ^= v; hash *= 16777619ull;
+			};
+			const auto mixF = [&hash](float f) {
+				hash ^= std::hash<float>{}(f); hash *= 16777619ull;
+			};
+			const auto mixEnv = [&](const SceneEnv& e) {
+				for (int c = 0; c < 3; ++c) { mixF(e.skyColor[c]); mixF(e.fogColor[c]); }
+				mixF(e.skyIntensity); mixF(e.fogDensity); mixF(e.volumetrics);
+				mixF(e.volumetricDensity); mixF(e.zonePriority);
+			};
+			mixEnv(scene.environment);
+			mixEnv(scene.defaultEnvironment);
+			mixU32(scene.envAuthored ? 1u : 0u);
+			for (const auto& [node, env] : scene.envForNode) {
+				mixU32(node);
+				mixEnv(env);
+				// The OBB shape: the node's transform (position/rotation/
+				// scale all matter — column lengths are the half extents).
+				if (node < scene.globalTransform.size())
+					for (int c = 0; c < 4; ++c)
+						for (int r = 0; r < 4; ++r)
+							mixF(scene.globalTransform[node][c][r]);
+				const auto vit = scene.envVolumeForNode.find(node);
+				if (vit != scene.envVolumeForNode.end()) {
+					mixU32(vit->second.infMask);
+					mixF(vit->second.priority);
+					mixF(vit->second.blendWeight);
+					mixF(vit->second.blendRadius);
+					mixU32(vit->second.enabled ? 1u : 0u);
+				}
 			}
+			// The scene bounds frame the grid extent + the vertical split
+			// search — include them so an edit that moves the world re-grids.
+			bounds = m_world->ComputeSceneBounds();
+			mixF(bounds.mn.x); mixF(bounds.mn.y); mixF(bounds.mn.z);
+			mixF(bounds.mx.x); mixF(bounds.mx.y); mixF(bounds.mx.z);
 		}
-		// The scene bounds frame the grid extent + the vertical split
-		// search — include them so an edit that moves the world re-grids.
-		const ::Aabb bounds = m_world->ComputeSceneBounds();
-		mixF(bounds.mn.x); mixF(bounds.mn.y); mixF(bounds.mn.z);
-		mixF(bounds.mx.x); mixF(bounds.mx.y); mixF(bounds.mx.z);
 
 		if (hash != m_envTilesDirtyHash || !m_envTilesPublished) {
+			// Optick: the change-triggered bake (grid extent + the tile
+			// Build + record/cell uploads) — the edit-hitch investigation
+			// point; steady frames never enter this block.
+			SMVK_PROFILE_RENDER("EnvTiles_Build");
 			m_envTilesDirtyHash = hash;
 			m_envTilesPublished = false;
 
@@ -9315,34 +9460,39 @@ namespace engine {
 			if (m_envTiles.Build(scene, ext.gridMin, ext.dimX, ext.dimZ,
 					ext.yMin, ext.yMax)
 				&& !m_resources.envTileRecordsBuffer.empty()) {
+				SMVK_PROFILE_TAG("tiles", ext.dimX * ext.dimZ);
+				SMVK_PROFILE_TAG("records", m_envTiles.RecordCount());
 				// Records: fixed buffer, upload the used prefix.
-				m_context->UploadDataToBuffer(
-					m_resources.envTileRecordsBuffer,
-					m_envTiles.Records(),
-					sizeof(worldpartition::EnvTileRecord) * m_envTiles.RecordCount(),
-					smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-					smvk::AccessFlags::ShaderRead);
-				// Cells: recreate when the grid extent changed (the BDA
-				// re-reads fresh each frame; the old holder retires through
-				// the deferred queue while in-flight frames still read it).
-				const size_t cellBytes = sizeof(worldpartition::EnvTileCell)
-					* m_envTiles.CellCount();
-				if (m_resources.envTileCellsBuffer.empty()
-					|| m_envTileCellBytes != cellBytes) {
-					m_resources.envTileCellsBuffer = m_context->CreateBuffer(
-						cellBytes, smvk::BufferType_Storage, "env tile cells");
-					m_envTileCellBytes = m_resources.envTileCellsBuffer.empty()
-						? 0 : cellBytes;
-					if (m_resources.envTileCellsBuffer.empty()) {
-						smvk::OnResourceExhaustion("env tile cells");
-						return; // count 0 -> the plain env path, retried next frame
+				{
+					SMVK_PROFILE_RENDER("EnvTiles_Upload");
+					m_context->UploadDataToBuffer(
+						m_resources.envTileRecordsBuffer,
+						m_envTiles.Records(),
+						sizeof(worldpartition::EnvTileRecord) * m_envTiles.RecordCount(),
+						smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+						smvk::AccessFlags::ShaderRead);
+					// Cells: recreate when the grid extent changed (the BDA
+					// re-reads fresh each frame; the old holder retires through
+					// the deferred queue while in-flight frames still read it).
+					const size_t cellBytes = sizeof(worldpartition::EnvTileCell)
+						* m_envTiles.CellCount();
+					if (m_resources.envTileCellsBuffer.empty()
+						|| m_envTileCellBytes != cellBytes) {
+						m_resources.envTileCellsBuffer = m_context->CreateBuffer(
+							cellBytes, smvk::BufferType_Storage, "env tile cells");
+						m_envTileCellBytes = m_resources.envTileCellsBuffer.empty()
+							? 0 : cellBytes;
+						if (m_resources.envTileCellsBuffer.empty()) {
+							smvk::OnResourceExhaustion("env tile cells");
+							return; // count 0 -> the plain env path, retried next frame
+						}
 					}
+					m_context->UploadDataToBuffer(
+						m_resources.envTileCellsBuffer,
+						m_envTiles.Cells(), cellBytes,
+						smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+						smvk::AccessFlags::ShaderRead);
 				}
-				m_context->UploadDataToBuffer(
-					m_resources.envTileCellsBuffer,
-					m_envTiles.Cells(), cellBytes,
-					smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-					smvk::AccessFlags::ShaderRead);
 				m_envTilesPublished = true;
 				// One-time diagnostic (the bake replaced the per-frame pack).
 				if (m_envTileZoneCount == UINT32_MAX) {
@@ -10139,6 +10289,11 @@ namespace engine {
 		// Cluster::SetAnimClip. m_deltaTime = the sim dt (the bench pins
 		// it at 60Hz - deterministic playback).
 		if (m_world) {
+			// Optick: the CPU half of the skinning box (static-data
+			// ensure, bone eval, palette build, the compute-pass append)
+			// — the GPU deformation itself is graph-profiled, this splits
+			// what feeds it.
+			SMVK_PROFILE_RENDER("Skinning_Update");
 			smvk::gfx::State& gfx = m_gfxRenderer.State();
 			// PREV-half capture (BEFORE the reset consumes the old cur):
 			// the deformed buffer is a parity DOUBLE buffer — last
@@ -10159,15 +10314,27 @@ namespace engine {
 				smvk::Cluster* c = clusterPtr.get();
 				if (!c || !c->hasSkeleton)
 					continue;
-				if (!c->EnsureSkinnedGpuData(*m_context))
-					continue;
+				{
+					// First-use static GPU data (the skinned stream +
+					// deformed heap + ranges table) — one-time per
+					// cluster, the first-frame cost.
+					SMVK_PROFILE_RENDER("Skinning_EnsureGpuData");
+					if (!c->EnsureSkinnedGpuData(*m_context))
+						continue;
+				}
 				std::vector<glm::mat4> palette;
-				if (!c->SampleAnimation(m_deltaTime, palette)) {
-					// No clip attached: the bind-pose palette (the loaded
-					// globals ARE the bind pose) - the deformed heap
-					// exists, the fetch swap works, nothing moves.
-					smvk::touranim::BuildSkinPalette(
-						c->scene, c->skeleton, palette);
+				{
+					// The CPU bone-eval box: track samples -> joint
+					// locals -> the global walk -> the palette (or the
+					// bind-pose fallback when no clip is attached).
+					SMVK_PROFILE_RENDER("Skinning_SampleAnimation");
+					if (!c->SampleAnimation(m_deltaTime, palette)) {
+						// No clip attached: the bind-pose palette (the loaded
+						// globals ARE the bind pose) - the deformed heap
+						// exists, the fetch swap works, nothing moves.
+						smvk::touranim::BuildSkinPalette(
+							c->scene, c->skeleton, palette);
+					}
 				}
 				smvk::skinning::SkinPush push{};
 				push.skin = m_context->GetBufferDeviceAddress(
@@ -10191,9 +10358,15 @@ namespace engine {
 						smvk::skinning::kSkinPaletteMax);
 				push.rangeCount =
 					uint32_t(c->GetSkinnedRanges().size());
-				const bool ok = m_skinning.Ensure(*m_context)
-					&& m_skinning.AppendPass(*m_context,
-						*m_rendergraph, fb.frameIndex, push, palette);
+				bool ok = false;
+				{
+					SMVK_PROFILE_RENDER("Skinning_AppendPass");
+					SMVK_PROFILE_TAG("paletteJoints", push.paletteCount);
+					SMVK_PROFILE_TAG("skinnedRanges", push.rangeCount);
+					ok = m_skinning.Ensure(*m_context)
+						&& m_skinning.AppendPass(*m_context,
+							*m_rendergraph, fb.frameIndex, push, palette);
+				}
 				if (std::getenv("TOURMALINE_KD")) {
 					static uint32_t s_c = 0;
 					if (s_c++ < 6)
@@ -15674,6 +15847,14 @@ namespace engine {
 								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmResolve]) + " ms (smooth)").c_str() : "(off)");
 							ImGui::Text("EVSM blur:     %s", m_stageGpuValid[smvk::kGpuStageEvsmBlur]
 								? (std::to_string(m_stageGpuMsSmooth[smvk::kGpuStageEvsmBlur]) + " ms (smooth)").c_str() : "(off)");
+							// Per-async-pass C-stream split (EVSM: 0 = the H
+							// blur leg, 1 = the V leg); the gap between the
+							// legs = the queue handoff/sync cost.
+							for (uint32_t i = 0; i < smvk::kGpuAsyncPassMaxTimers; ++i) {
+								const uint32_t s = smvk::kGpuStageAsyncPassBase + i;
+								ImGui::Text("Async pass %u:   %s", i, m_stageGpuValid[s]
+									? (std::to_string(m_stageGpuMsSmooth[s]) + " ms (smooth)").c_str() : "(off)");
+							}
 						}
 						else {
 							ImGui::TextDisabled("(stage timings unavailable: no cross-queue timestamps)");
@@ -17716,7 +17897,13 @@ namespace engine {
 		// GPU-AV: "Descriptor index 3 is uninitialized" - with the draw
 		// sampling through garbage. Update-after-bind keeps these writes
 		// visible to everything recorded below.
-		m_context->UpdateDescriptors();
+		{
+			// Optick: the bindless descriptor flush split from the graph
+			// Execute it precedes (resource-binding churn indicator,
+			// especially after streaming or scene edits).
+			SMVK_PROFILE_RENDER("UpdateDescriptors");
+			m_context->UpdateDescriptors();
+		}
 		m_rendergraph->Execute(fb);
 		// TOURMALINE_FOG_TILE_DUMP=<frame>: one-shot post-Execute
 		// download of the DEDICATED volumetric shadow atlas (the coarse

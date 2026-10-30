@@ -13,6 +13,8 @@
 #include <fstream>
 #include <iostream>
 
+#include <Engine/Profile/profile.h>
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -77,6 +79,11 @@ std::string ResolvePakOpenPath(const std::string& scenePak) {
 
 std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 	return std::async(std::launch::async, [pakPath]() {
+		// Optick: the async preload thread's own scope (auto-registered
+		// by Optick on its first event — a transient std::async thread,
+		// named only by its events). Startup latency work, not steady
+		// frame cost.
+		SMVK_PROFILE_IO("PakPreload");
 		const auto t0 = std::chrono::steady_clock::now();
 		PakPreload p;
 		p.scenePak = pakPath;
@@ -86,25 +93,32 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 				+ "' (tried as-is, CWD-relative and exe-relative)";
 			return p;
 		}
-		std::ifstream pakFile(p.openPath, std::ios::binary | std::ios::ate);
-		if (!pakFile) {
-			p.error = "pak open failed: '" + p.openPath + "'";
-			return p;
+		{
+			// Stage 1: the whole-file read (disk I/O — the dominant
+			// cost on big archives, overlapping renderer init by
+			// design).
+			SMVK_PROFILE_IO("PakPreload_Read");
+			std::ifstream pakFile(p.openPath, std::ios::binary | std::ios::ate);
+			if (!pakFile) {
+				p.error = "pak open failed: '" + p.openPath + "'";
+				return p;
+			}
+			const auto pakEnd = pakFile.tellg();
+			if (pakEnd == std::ifstream::pos_type(-1)) {
+				p.error = "pak unreadable: '" + p.openPath + "'";
+				return p;
+			}
+			pakFile.seekg(0);
+			auto image = std::make_shared<std::vector<uint8_t>>(
+				static_cast<size_t>(pakEnd));
+			if (!pakFile.read(reinterpret_cast<char*>(image->data()),
+					static_cast<std::streamsize>(image->size()))) {
+				p.error = "pak read failed: '" + p.openPath + "'";
+				return p;
+			}
+			p.image = std::move(image);
+			SMVK_PROFILE_TAG("imageMB", p.image->size() / (1024 * 1024));
 		}
-		const auto pakEnd = pakFile.tellg();
-		if (pakEnd == std::ifstream::pos_type(-1)) {
-			p.error = "pak unreadable: '" + p.openPath + "'";
-			return p;
-		}
-		pakFile.seekg(0);
-		auto image = std::make_shared<std::vector<uint8_t>>(
-			static_cast<size_t>(pakEnd));
-		if (!pakFile.read(reinterpret_cast<char*>(image->data()),
-				static_cast<std::streamsize>(image->size()))) {
-			p.error = "pak read failed: '" + p.openPath + "'";
-			return p;
-		}
-		p.image = std::move(image);
 		const auto t1 = std::chrono::steady_clock::now();
 		// ONE open covers everything: PakBackend::Open parses + verifies
 		// the CRC (chunk-parallel on big images). LZ4 entries decompress
@@ -113,19 +127,23 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
 		// actually loaded, not the whole archive. Its Reader() serves
 		// scene discovery + the cluster load; the old path opened the
 		// reader twice (double CRC + double decompress).
-		std::string pakErr;
-		p.backend = smvk::PakBackend::Open(p.image, p.scenePak, pakErr);
-		const auto t2 = std::chrono::steady_clock::now();
-		if (!p.backend) {
-			p.image.reset();
-			p.error = "pak parse failed: " + pakErr;
-			return p;
+		{
+			// Stage 2: parse + CRC verification (CPU, chunk-parallel).
+			SMVK_PROFILE_IO("PakPreload_Open");
+			std::string pakErr;
+			p.backend = smvk::PakBackend::Open(p.image, p.scenePak, pakErr);
+			const auto t2 = std::chrono::steady_clock::now();
+			if (!p.backend) {
+				p.image.reset();
+				p.error = "pak parse failed: " + pakErr;
+				return p;
+			}
+			std::cerr << "[App] pak preloaded (read "
+				<< std::chrono::duration<double>(t1 - t0).count() << "s, open "
+				<< std::chrono::duration<double>(t2 - t1).count() << "s): "
+				<< p.backend->Reader().EntryCount() << " entries, "
+				<< p.image->size() / (1024 * 1024) << " MB\n";
 		}
-		std::cerr << "[App] pak preloaded (read "
-			<< std::chrono::duration<double>(t1 - t0).count() << "s, open "
-			<< std::chrono::duration<double>(t2 - t1).count() << "s): "
-			<< p.backend->Reader().EntryCount() << " entries, "
-			<< p.image->size() / (1024 * 1024) << " MB\n";
 		return p;
 	});
 }

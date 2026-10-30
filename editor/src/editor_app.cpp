@@ -1767,12 +1767,21 @@ void EditorApp::FrameAll() {
 }
 
 void EditorApp::DrawFrame() {
+	// Optick: the editor frame's own orchestration split (update /
+	// acquire / render / present / boundary wait / job pump) — the host
+	// App::MainLoop owns the frame marker; these scopes break the
+	// editor frame's CPU cost apart. The boundary wait especially: a
+	// large spike that has nothing to do with rendering.
+	SMVK_PROFILE_FUNCTION();
 	// Frame-arena + dt live in the HOST loop (App::MainLoop resets the
 	// arena + advances the clock every frame — see app.cpp).
 	// Frame-time histogram hook (View menu / F12; zero cost while
 	// disabled): the single record per editor frame.
 	smvk::profiler::RecordFrameTime(double(delta_time_s) * 1000.0);
-	Update();
+	{
+		SMVK_PROFILE_SCOPE("Editor_Update");
+		Update();
+	}
 	// Dev crash-repro vehicle (TOURMALINE_EDITOR_OPEN_AT=
 	// "<frame>:<file>[;<frame>:<file>...]"): opens scene files MID-LOOP at
 	// the given frame indices — the exact open-DIALOG timing (the open
@@ -1934,6 +1943,7 @@ void EditorApp::DrawFrame() {
 	// below then drains the frames that were submitted under the old
 	// swap before the next frame's chain re-ensure.
 	if (m_swapchain->FramebufferResized()) {
+		SMVK_PROFILE_SCOPE_COLOR("Editor_SwapchainRecreate", Optick::Color::OrangeRed);
 		m_swapchain->Recreate();
 		m_swapchain->ClearFramebufferResized();
 		if (m_worldLayer) {
@@ -1941,10 +1951,20 @@ void EditorApp::DrawFrame() {
 			m_worldLayer->onResize(ext);
 		}
 	}
-	auto fb = m_swapchain->AcquireFramebuffer();
-	if (fb.imageIndex >= 0)
-		RenderFrame(fb);
-	m_swapchain->EndAndPresentFramebuffer(fb);
+	smvk::Framebuffer fb{};
+	{
+		SMVK_PROFILE_SCOPE_COLOR("Editor_Acquire", Optick::Color::SteelBlue);
+		fb = m_swapchain->AcquireFramebuffer();
+	}
+	{
+		SMVK_PROFILE_RENDER("Editor_Render");
+		if (fb.imageIndex >= 0)
+			RenderFrame(fb);
+	}
+	{
+		SMVK_PROFILE_SCOPE_COLOR("Editor_Present", Optick::Color::SteelBlue);
+		m_swapchain->EndAndPresentFramebuffer(fb);
+	}
 	// BOUNDARY QUIESCE (the frame-boundary-aware extent-change wait):
 	// any frame that recreated (or queued a recreate of) the world
 	// layer's inline target — the boundary half's extent drift, the
@@ -1958,14 +1978,20 @@ void EditorApp::DrawFrame() {
 	// conservative guard (the death needed more than this — see the
 	// hunt record in docs/target_heap_packing.md).
 	if (m_wysiwygBoundaryQuiesce) {
+		// The frame-boundary device-idle drain — its own scope because
+		// it can produce a large spike unrelated to actual rendering.
+		SMVK_PROFILE_SCOPE_COLOR("Editor_BoundaryWait", Optick::Color::Red);
 		m_wysiwygBoundaryQuiesce = false;
 		WaitForDeviceIdle();
 	}
 	// Fibers pump (main thread): deliver job completions (cook/bake
 	// finish logic runs here, after the frame is presented).
-	m_fibers.Pump();
-	PollCookProcess();
-	PollBakeProcess();
+	{
+		SMVK_PROFILE_SCOPE("Editor_Pump");
+		m_fibers.Pump();
+		PollCookProcess();
+		PollBakeProcess();
+	}
 }
 
 void EditorApp::Log(const std::string& s) {

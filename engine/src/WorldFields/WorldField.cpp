@@ -286,6 +286,12 @@ void WorldFieldSystem::PrepareFrameInterests(smvk::ResourceManager* ctx, uint64_
 
 void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 {
+	// Optick: the whole residency state machine under one Streaming
+	// scope, its phases split below (collect/sort, proactive evict, the
+	// async drain, the budget'd generation, the table rebuild) — the
+	// worker/main-thread split this system lives on is exactly the kind
+	// of cost profile that is invisible without explicit events.
+	SMVK_PROFILE_STREAM("WorldField_Residency");
 	frame_ = frame;
 	statEvictions_ = 0;
 	statRequestsSkipped_ = 0;
@@ -307,7 +313,9 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 	}
 
 	// ---- windows + in-window refresh + request collection ----
-	requestScratch_.clear();
+	{
+		SMVK_PROFILE_STREAM("WorldField_CollectRequests");
+		requestScratch_.clear();
 	for (uint32_t fi = 0; fi < fields_.size(); ++fi) {
 		FieldSlot& f = fields_[fi];
 		if (!f.alive)
@@ -350,16 +358,22 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 		}
 	}
 
-	// Nearest-first, cross-field comparable (metres).
-	std::sort(requestScratch_.begin(), requestScratch_.end(),
-		[](const RequestQ& a, const RequestQ& b) {
-			if (a.distSq != b.distSq)
-				return a.distSq < b.distSq;
-			return a.key.fieldId < b.key.fieldId; // tie-break: deterministic
-		});
+		// Nearest-first, cross-field comparable (metres).
+		std::sort(requestScratch_.begin(), requestScratch_.end(),
+			[](const RequestQ& a, const RequestQ& b) {
+				if (a.distSq != b.distSq)
+					return a.distSq < b.distSq;
+				return a.key.fieldId < b.key.fieldId; // tie-break: deterministic
+			});
+		SMVK_PROFILE_TAG("fields", aliveCount_);
+		SMVK_PROFILE_TAG("missingBricks", requestScratch_.size());
+	}
 
 	// ---- proactive eviction (aged residents; protected LODs skipped) ----
-	ProactiveEvict(frame);
+	{
+		SMVK_PROFILE_STREAM("WorldField_ProactiveEvict");
+		ProactiveEvict(frame);
+	}
 
 	// ---- drain completed async generations FIRST (render thread) ----
 	// Publishing frees slots + turns requests non-pending before the
@@ -370,8 +384,11 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 	// Gate: non-empty jobs — NOT workPool_ (draining is pool-independent;
 	// an owner uninstalling the pool with jobs outstanding still gets
 	// them published; only DISPATCHING needs the pool).
-	if (!inFlight_.empty())
+	if (!inFlight_.empty()) {
+		SMVK_PROFILE_STREAM("WorldField_DrainJobs");
+		SMVK_PROFILE_TAG("outstanding", inFlight_.size());
 		DrainInFlight(frame);
+	}
 
 	// ---- request processing under budget ----
 	{
@@ -387,8 +404,13 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 			* maxPayload);
 	}
 
-	uint32_t processed = 0;
-	for (size_t ri = 0; ri < requestScratch_.size(); ++ri) {
+	{
+		// The budget'd generation pass: async dispatch (the pool path —
+		// enqueue cost only here, the worker lambda carries its own
+		// scope) or the inline sync generate+publish.
+		SMVK_PROFILE_STREAM("WorldField_GenerateBricks");
+		uint32_t processed = 0;
+		for (size_t ri = 0; ri < requestScratch_.size(); ++ri) {
 		if (processed >= policy_.maxBrickLoadsPerFrame) {
 			statRequestsSkipped_ += uint32_t(requestScratch_.size() - ri);
 			break;
@@ -429,6 +451,9 @@ void WorldFieldSystem::ComputeResidency(glm::vec3 interestPoint, uint64_t frame)
 			continue;
 		}
 		(void)PublishBrick(key, f, brickScratch_.data(), payloadBytes, frame);
+		}
+		SMVK_PROFILE_TAG("processed", processed);
+		SMVK_PROFILE_TAG("skipped", statRequestsSkipped_);
 	}
 
 	if (tableDirty_)
@@ -457,6 +482,14 @@ bool WorldFieldSystem::DispatchBrickJob(const WorldBrickKey& key, const FieldSlo
 		// is an owner bug, but degrading to a skip beats crashing.
 		fut = workPool_->enqueue([desc, source, lod, bx, by, bz, payloadBytes]
 			() -> std::vector<std::byte> {
+			// Optick: scope the WORKER lambda itself, not the enqueue —
+			// the generation cost lands on a pool thread (auto-registered
+			// by Optick on its first event), so a slow-brick frame shows
+			// the actual GenerateBrick time instead of main-thread enqueue
+			// microseconds.
+			SMVK_PROFILE_STREAM("WorldField_GenerateBrick");
+			SMVK_PROFILE_TAG("payloadKB", (payloadBytes + 1023) / 1024);
+			SMVK_PROFILE_TAG("lod", lod);
 			// Value-init then fill: the memset is accepted (a memset of
 			// 307 KB is ~10us against a generation pass in the hundreds).
 			std::vector<std::byte> payload(payloadBytes, std::byte{});
@@ -687,6 +720,10 @@ size_t WorldFieldSystem::ComputeTableCapacityBytes() const
 
 void WorldFieldSystem::RebuildTable()
 {
+	// Optick: the CPU staging refresh (layout pass + the toroidal page
+	// writes) — this runs on every tableDirty_ frame, i.e. whenever a
+	// window moved or a brick published/evicted.
+	SMVK_PROFILE_STREAM("WorldField_RebuildTable");
 	// Layout: header | fields[] (compact, registration order) | pages[]
 	// (levels in field-then-LOD order; each level's page array is
 	// dimX*dimY*dimZ entries, toroidal cell -> linear index z-major).
@@ -837,6 +874,10 @@ bool WorldFieldSystem::EnsureTableGpu(smvk::ResourceManager& ctx)
 
 void WorldFieldSystem::PublishGpu(smvk::ResourceManager& ctx)
 {
+	// Optick: the publication point (atlas creation, the batched region
+	// uploads, the table buffer upload) — tags carry this frame's upload
+	// pressure so a streaming-heavy frame is attributable.
+	SMVK_PROFILE_STREAM("WorldField_PublishGpu");
 	if (aliveCount_ == 0) {
 		DropPendingGpuWork();
 		return;
@@ -873,6 +914,9 @@ void WorldFieldSystem::PublishGpu(smvk::ResourceManager& ctx)
 	// onto the group's own [min, maxEnd) span (a span may interleave
 	// other pools' payloads — those stage too, no copy reads them).
 	if (!pendingUploads_.empty()) {
+		SMVK_PROFILE_STREAM("WorldField_UploadRegions");
+		SMVK_PROFILE_TAG("uploads", pendingUploads_.size());
+		SMVK_PROFILE_TAG("uploadKB", (pendingArena_.size() + 1023) / 1024);
 		struct Group
 		{
 			smvk::ImageHandle image{};
@@ -902,6 +946,7 @@ void WorldFieldSystem::PublishGpu(smvk::ResourceManager& ctx)
 		}
 		for (uint32_t gi = 0; gi < groupCount; ++gi) {
 			const Group& g = groups[gi];
+			SMVK_PROFILE_TAG("atlasGroups", groupCount);
 			batchCopies_.clear();
 			batchCopies_.reserve(g.count);
 			for (const WorldFieldRegionUpload& u : pendingUploads_) {
@@ -923,6 +968,7 @@ void WorldFieldSystem::PublishGpu(smvk::ResourceManager& ctx)
 		}
 	}
 	if (tableDirty_) {
+		SMVK_PROFILE_TAG("tableKB", (tableUsedBytes_ + 1023) / 1024);
 		ctx.UploadDataToBuffer(tableBuffer_, table_.data(), tableUsedBytes_,
 			kFieldUploadStages, smvk::AccessFlags::ShaderRead);
 		tableDirty_ = false; // the GPU copy now matches the staging

@@ -2152,16 +2152,29 @@ namespace {
 	{
 		if (g_diskPipelineCache == VK_NULL_HANDLE)
 			return;
+		// Optick: every call here is a FRESH compile (a disk-cache miss
+		// — the create calls only invoke this on the miss path), so the
+		// scope itself is the miss marker; the hitch logger's
+		// pipeline-creation frames now line up with actual create costs.
+		SMVK_PROFILE_RENDER("Pipeline_Compiled");
 		std::lock_guard<std::mutex> lock(g_diskPipelineCacheMutex);
 		if (++g_diskPipelineCacheCompilesSinceSave >= kPipelineCacheSaveBatch) {
 			g_diskPipelineCacheCompilesSinceSave = 0;
-			SaveDiskPipelineCache(/*force=*/false);
+			{
+				// The batched disk save (vkGetPipelineCacheData + file
+				// write) — the synchronous stall inside a traversal frame.
+				SMVK_PROFILE_RENDER("Pipeline_CacheSave");
+				SaveDiskPipelineCache(/*force=*/false);
+			}
 		}
 	}
 
 } // namespace
 
 void static CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPipeline& pipeline) {
+	// Optick: the driver compile itself (disk-cache hit or miss — the
+	// miss path additionally emits Pipeline_Compiled at NotePipelineCompiled).
+	SMVK_PROFILE_RENDER("Pipeline_CreateGraphics");
 	assert(!pipeline);
 	if (vkCreateGraphicsPipelines(device_, g_diskPipelineCache, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
@@ -2172,6 +2185,7 @@ void static CreateGraphicsPipeline(VkGraphicsPipelineCreateInfo createInfo, VkPi
 }
 void static CreateComputePipeline(VkComputePipelineCreateInfo createInfo, VkPipeline& pipeline)
 {
+	SMVK_PROFILE_RENDER("Pipeline_CreateCompute");
 	assert(!pipeline);
 	if (vkCreateComputePipelines(device_, g_diskPipelineCache, 1, &createInfo,
 		nullptr, &pipeline) != VK_SUCCESS)
@@ -13292,8 +13306,18 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	const uint32_t flight = fb.frameIndex % smvk::limits::MaxFramesInFlight;
 	flightSlot_ = flight;
 
-	ResolveImages();
-	ResolveBuffers();
+	// Optick: the graph's PREPARATION phases get their own scopes — the
+	// per-pass scopes below cover recording, so without these a
+	// CPU-heavy Execute frame showed no split between resource/heap
+	// management and the pass recording itself.
+	{
+		SMVK_PROFILE_RENDER("RG_ResolveImages");
+		ResolveImages();
+	}
+	{
+		SMVK_PROFILE_RENDER("RG_ResolveBuffers");
+		ResolveBuffers();
+	}
 
 	// Design B compile (see the transient-heap contract on the class):
 	// the FIRST usages+sort feed the interval analysis; a layout change
@@ -13301,13 +13325,30 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	// usages/sort/snapshot the frame proceeds on are recomputed after.
 	// Steady state (unchanged fingerprint): the analysis pass only - the
 	// second collect+sort is skipped.
-	auto usages = CollectPassUsages();
-	const std::vector<size_t>* sortedPtr = &TopologicalSort(usages);
-	if (CompileTransientHeap(usages, *sortedPtr)) {
+	std::vector<smvk::PassUsage> usages;
+	const std::vector<size_t>* sortedPtr = nullptr;
+	{
+		SMVK_PROFILE_RENDER("RG_CollectUsages");
 		usages = CollectPassUsages();
+	}
+	{
+		SMVK_PROFILE_RENDER("RG_TopologicalSort");
 		sortedPtr = &TopologicalSort(usages);
 	}
+	{
+		// CompileTransientHeap owns the packed-target memory analysis;
+		// the relayout tag marks the frames it detonated + recreated the
+		// packed set (the expensive, churn-driven outcome).
+		SMVK_PROFILE_RENDER("RG_CompileTransientHeap");
+		const bool relayout = CompileTransientHeap(usages, *sortedPtr);
+		SMVK_PROFILE_TAG("relayout", relayout ? 1u : 0u);
+		if (relayout) {
+			usages = CollectPassUsages();
+			sortedPtr = &TopologicalSort(usages);
+		}
+	}
 	const std::vector<size_t>& sorted = *sortedPtr;
+	SMVK_PROFILE_TAG("passes", sorted.size());
 
 	// Views resolve AFTER the transient pack (the 03_fuzz DEVICE_LOST
 	// fix): CompileTransientHeap BINDS the heap images to their packed
@@ -13320,13 +13361,22 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 	// only reads the logical views' backing IMAGES (never the resolved
 	// view handles), so the usages+sort above do not need views; the
 	// recording below does — and now gets post-bind views only.
-	ResolveImageViews();
+	{
+		SMVK_PROFILE_RENDER("RG_ResolveImageViews");
+		ResolveImageViews();
+	}
 
 	VkCommandBuffer cmd =
 		reinterpret_cast<VkCommandBuffer>(fb.commandBufferOpaque);
 	VulkanResourceManager& vctx = *static_cast<VulkanResourceManager*>(ctx_.GetVulkanOpaque());
-	auto imageStates = vctx.SnapshotImageSyncStates();
-	auto bufferStates = vctx.SnapshotBufferSyncStates();
+	auto imageStates = [&] {
+		SMVK_PROFILE_RENDER("RG_SnapshotSyncStates");
+		return vctx.SnapshotImageSyncStates();
+	}();
+	auto bufferStates = [&] {
+		SMVK_PROFILE_RENDER("RG_SnapshotSyncStates");
+		return vctx.SnapshotBufferSyncStates();
+	}();
 
 	StageTimerCtx stageTimerCtx{};
 	if (fb.swapchain) {
@@ -13511,13 +13561,27 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				VkCommandBufferBeginInfo beginCI{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 				beginCI.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 				VK_CHECK(vkBeginCommandBuffer(dstCmd, &beginCI));
-				// GPU stage timer, async-stream stage (GpuStageTimer): begin
-				// at the FIRST C-stream CB's start — the whole chained blur
-				// stream is one stage (the timeline chain serializes the
-				// passes, so first-CB-start..last-CB-end IS its GPU cost).
-				if (asyncChainIdx == 0 && stageTimerCtxPtr != nullptr)
-					vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-						stageTimerCtx.pool, 2 + 2 * kGpuStageEvsmBlur);
+				// GPU stage timers, async stream (GpuStageTimer): the
+				// AGGREGATE blur stage begins at the FIRST C-stream CB's
+				// start — the whole chained stream is one stage (the
+				// timeline chain serializes the passes, so first-CB-start..
+				// last-CB-end IS its GPU cost) — and every pass gets its
+				// OWN pair (kGpuStageAsyncPassBase + i, capped at
+				// kGpuAsyncPassMaxTimers) so the H/V blur legs measure
+				// individually: leg cost = the pass's own pair, queue
+				// handoff + semaphore sync = the gap between leg k's end
+				// and leg k+1's begin. BOTTOM_OF_PIPE is compute-queue-
+				// legal (the Optick ALL_GRAPHICS restriction applies to
+				// Optick GPU events, not to these queries).
+				if (stageTimerCtxPtr != nullptr) {
+					if (asyncChainIdx == 0)
+						vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+							stageTimerCtx.pool, 2 + 2 * kGpuStageEvsmBlur);
+					if (asyncChainIdx < kGpuAsyncPassMaxTimers)
+						vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+							stageTimerCtx.pool,
+							2 + 2 * (kGpuStageAsyncPassBase + asyncChainIdx));
+				}
 			}
 			else
 				dstCmd = splitCB;
@@ -13632,6 +13696,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		}
 		// Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
 		{
+			// Optick: barrier generation + the pass's attachment-info prep,
+			// split from the pass scope so a graph-heavy frame shows how
+			// much of each pass's CPU cost is sync-state bookkeeping vs
+			// the recording callback itself.
+			SMVK_PROFILE_RENDER("RG_Barriers");
 			if (traceRg) {
 				const char* streamName = !useAsyncCompute ? "MAIN"
 					: (passIsAsync ? "C" : (dstCmd == splitCB ? "G2" : "G1"));
@@ -13968,11 +14037,18 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 				// sorted order, same thread) keeps every wait
 				// signal-before-wait legal.
 				const bool lastAsync = (asyncChainIdx + 1 == asyncPassCount);
-				// GPU stage timer, async-stream stage: end at the LAST
-				// C-stream CB's end (see the begin at the first CB above).
-				if (lastAsync && stageTimerCtxPtr != nullptr)
-					vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-						stageTimerCtx.pool, 3 + 2 * kGpuStageEvsmBlur);
+				// GPU stage timers, async stream: the AGGREGATE stage ends
+				// at the LAST C-stream CB's end (see the begin at the first
+				// CB above); this pass's OWN pair ends here (cap-guarded).
+				if (stageTimerCtxPtr != nullptr) {
+					if (lastAsync)
+						vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+							stageTimerCtx.pool, 3 + 2 * kGpuStageEvsmBlur);
+					if (asyncChainIdx < kGpuAsyncPassMaxTimers)
+						vkCmdWriteTimestamp(dstCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+							stageTimerCtx.pool,
+							3 + 2 * (kGpuStageAsyncPassBase + asyncChainIdx));
+				}
 				VK_CHECK(vkEndCommandBuffer(dstCmd));
 				VkSemaphoreSubmitInfo pWait{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
 				pWait.semaphore = vkSwap->asyncG2C_[flight];

@@ -37,6 +37,14 @@ StreamRequestSink WorldPartition::MakeSink()
 
 void WorldPartition::UpdateFrame(uint64_t frameIndex)
 {
+	// Optick: the whole partition tick under one Streaming scope (the
+	// per-frame residency driver), tags for the demand it resolved.
+	// Sub-phases below get their own scopes so a partition-heavy frame
+	// shows WHICH half cost the time (request plumbing vs the providers'
+	// commit work — the WorldFields system does its real work there).
+	SMVK_PROFILE_STREAM("WorldPartition_UpdateFrame");
+	SMVK_PROFILE_TAG("providers", providers_.size());
+	SMVK_PROFILE_TAG("interests", interests_.size());
 	// (1) interests are already set (SetInterests, pre-frame).
 	// (2) providers respond to the resolved interest set.
 	for (IWorldStreamProvider* p : providers_)
@@ -47,27 +55,38 @@ void WorldPartition::UpdateFrame(uint64_t frameIndex)
 	//     client — see docs/world_partition.md). The sink grows the
 	//     gather scratch on demand: every provider request is recorded,
 	//     never silently truncated.
-	requestCount_ = 0;
-	requestDrops_ = 0;
-	if (!providers_.empty()) {
-		StreamRequestSink sink = MakeSink();
-		for (IWorldStreamProvider* p : providers_)
-			p->GatherRequests(&sink, frameIndex);
-		requestCount_ = sink.Count();
-		requestDrops_ = sink.Dropped();
-		std::stable_sort(requestBuffer_.begin(),
-			requestBuffer_.begin() + requestCount_,
-			[](const StreamRequest& a, const StreamRequest& b) {
-				return a.priority > b.priority;
-			});
+	{
+		SMVK_PROFILE_STREAM("WorldPartition_GatherRequests");
+		requestCount_ = 0;
+		requestDrops_ = 0;
+		if (!providers_.empty()) {
+			StreamRequestSink sink = MakeSink();
+			for (IWorldStreamProvider* p : providers_)
+				p->GatherRequests(&sink, frameIndex);
+			requestCount_ = sink.Count();
+			requestDrops_ = sink.Dropped();
+			std::stable_sort(requestBuffer_.begin(),
+				requestBuffer_.begin() + requestCount_,
+				[](const StreamRequest& a, const StreamRequest& b) {
+					return a.priority > b.priority;
+				});
+		}
+		SMVK_PROFILE_TAG("requests", requestCount_);
+		SMVK_PROFILE_TAG("requestDrops", requestDrops_);
 	}
 
 	// (4) dispatch within budgets — provider-internal in v1 (the
 	//     WorldFields provider owns its worker dispatch/upload budget;
 	//     the shared I/O + upload throttling lands with terrain).
 	// (5) publish only completed, safe-to-use resources.
-	for (IWorldStreamProvider* p : providers_)
-		p->CommitFrame(frameIndex);
+	{
+		// CommitFrame is where a provider does its per-frame work (the
+		// WorldFields residency + GPU publish ride this call), so the
+		// commit loop is the interesting half of the partition tick.
+		SMVK_PROFILE_STREAM("WorldPartition_CommitFrame");
+		for (IWorldStreamProvider* p : providers_)
+			p->CommitFrame(frameIndex);
+	}
 
 	// (6) retire, respecting in-flight GPU references.
 	for (IWorldStreamProvider* p : providers_)

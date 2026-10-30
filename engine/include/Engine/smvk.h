@@ -1391,12 +1391,27 @@ void OnResourceExhaustion(const char* site);
 	// the per-stage ms of the last retired frame (Swapchain::
 	// GetGpuStageTimings). A stage that never ran stays invalid (queries
 	// reset, never written — per-pair NOT_READY), not zero.
+	//
+	// Per-async-pass timers (kGpuStageAsyncPassBase + i): true-async
+	// compute pass i (sorted order) gets its own timestamp pair, written
+	// BOTTOM_OF_PIPE on the compute queue — a stage that is legal there,
+	// unlike the ALL_GRAPHICS stage the Optick Vulkan backend uses (the
+	// reason async passes get CPU-only Optick scopes). The pair measures
+	// the pass's own GPU cost; the GAP between pass k's end and pass k+1's
+	// begin is the queue handoff + timeline-semaphore sync overhead.
+	// EVSM's H->V blur chain is the canonical 2-pass user. Frames with
+	// more async passes than slots keep the aggregate kGpuStageEvsmBlur
+	// (only the first kGpuAsyncPassMaxTimers passes get pairs); the
+	// emulated (single-queue) path writes none of them — the inline
+	// passes are covered by the ordinary per-pass Optick GPU scopes.
+	static constexpr uint32_t kGpuAsyncPassMaxTimers = 4;
 	enum GpuStageTimer : uint32_t {
 		kGpuStagePcfRaster = 0, // PCF shadow raster (cascade + spot tiles)
 		kGpuStageEvsmCasters,  // EVSM moment (depth-only caster) passes
 		kGpuStageEvsmResolve,  // EVSM per-sample MSAA depth -> moments resolve
 		kGpuStageEvsmBlur,     // EVSM async blur stream (the whole C chain)
-		kGpuStageCount
+		kGpuStageAsyncPassBase, // per-pass C-stream pairs start here
+		kGpuStageCount = kGpuStageAsyncPassBase + kGpuAsyncPassMaxTimers
 	};
 
 	enum Bindings {

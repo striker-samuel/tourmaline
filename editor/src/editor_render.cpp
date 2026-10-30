@@ -30,6 +30,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <Engine/Camera/camera.h>
+#include <Engine/Profile/profile.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/RendererLimits.h>
@@ -1935,6 +1936,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	}
 
 	void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
+		// Optick: the editor render frame — the two graph rounds + the
+		// WYSIWYG world renderer between them each get their own scope
+		// (the per-PASS scopes come from RenderGraph::Execute itself;
+		// these cover each round's record + execute as a unit).
+		SMVK_PROFILE_FUNCTION();
 		const auto vkExt = m_swapchain->GetExtent();
 		const smvk::Extent2D extent{ vkExt.width, vkExt.height };
 		if (extent.width == 0 || extent.height == 0)
@@ -2155,6 +2161,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// against the previous round's writes).
 		m_rendergraph->NewFrame();
 		{
+			// Optick: graph round 1 — the window + HDR backdrop clears.
+			SMVK_PROFILE_RENDER("Editor_Round1Backdrop");
 			// Window chrome backdrop: neutral mid grey (no blue tint — the
 			// old 0.07/0.07/0.09 read blue next to the scene). Shows
 			// through the gaps between panels + viewports.
@@ -2197,7 +2205,12 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// merely must precede round 2's Execute, whose ImGui pass
 		// samples the target (cross-round ordering rides the
 		// context-global sync-state tables, same as every round).
-		RenderWysiwygLayer(fb, extent);
+		{
+			// Optick: the full WYSIWYG world renderer record (the engine
+			// WorldRenderer's whole update + pass append + Execute).
+			SMVK_PROFILE_RENDER("Editor_Wysiwyg");
+			RenderWysiwygLayer(fb, extent);
+		}
 
 		// ---- scene passes (per viewport) + overlay ---------------------
 		// THE LIVE VIEW IS THE LIT VIEW MODE now (no toggle, no vp0
@@ -2212,82 +2225,96 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// pass that no longer ran; drawing them over the game frame
 		// would be authoring chrome over WYSIWYG output).
 		m_rendergraph->NewFrame();
-		for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-			if (LiveViewActive() && vpIdx == kLiveViewVp)
-				continue; // panel 0's rect shows the live view's composite
-			RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
-			// The pre-bake probe lattice rides every viewport's tail
-			// (own gating inside; no-op unless 'J' mode 4 + authored
-			// volumes).
-			RecordGiProbeLatticePass(vpIdx);
-		}
-		// The gizmo + inset ride the ACTIVE viewport — they skip only
-		// while the ACTIVE one IS the live host (panel 0 in Lit): their
-		// depth comes from the scene pass that no longer ran there.
-		if (!(LiveViewActive() && m_activeVp == kLiveViewVp)) {
-			RecordInsetPass(m_swapViews[fb.imageIndex], flight);
-			RecordGizmoPass(m_swapViews[fb.imageIndex]);
-		}
-		// One-shot lightmap PNG export: renders the offscreen target this
-		// frame, then reads it back after the submit (button in Bake panel).
-		const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
-			m_lmGpu && m_sglm.width > 0 && m_sglm.height > 0;
-		if (lmExportThisFrame) {
-			EnsureLightmapExportTarget(
-				smvk::Extent2D{ m_sglm.width, m_sglm.height });
-			if (!m_lmExportLogical.empty())
-				RecordLightmapExportPass(flight);
-			else
-				Log("Lightmap export: offscreen target creation failed.");
-			m_lmExportQueued = false;
-		}
-		// One-shot MATERIAL BALL sidecar (the same export pattern): the
-		// queued material's offscreen ball records into this frame's
-		// graph; the post-submit wait + readback + PNG write land the
-		// sidecar next to the source .material asset.
-		const bool matBallThisFrame = m_matBallQueuedMat != UINT32_MAX
-			&& EnsureMatBallResources();
-		if (matBallThisFrame)
-			RecordMatBallPass();
+		{
+			// Optick: graph round 2 — the per-viewport scene passes, the
+			// overlays, the one-shot exports and the ImGui UI, through
+			// the round's Execute.
+			SMVK_PROFILE_RENDER("Editor_Round2Scene");
+			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
+				if (LiveViewActive() && vpIdx == kLiveViewVp)
+					continue; // panel 0's rect shows the live view's composite
+				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
+				// The pre-bake probe lattice rides every viewport's tail
+				// (own gating inside; no-op unless 'J' mode 4 + authored
+				// volumes).
+				RecordGiProbeLatticePass(vpIdx);
+			}
+			// The gizmo + inset ride the ACTIVE viewport — they skip only
+			// while the ACTIVE one IS the live host (panel 0 in Lit): their
+			// depth comes from the scene pass that no longer ran there.
+			if (!(LiveViewActive() && m_activeVp == kLiveViewVp)) {
+				RecordInsetPass(m_swapViews[fb.imageIndex], flight);
+				RecordGizmoPass(m_swapViews[fb.imageIndex]);
+			}
+			// One-shot lightmap PNG export: renders the offscreen target this
+			// frame, then reads it back after the submit (button in Bake panel).
+			const bool lmExportThisFrame = m_lmExportQueued && m_hasSglm &&
+				m_lmGpu && m_sglm.width > 0 && m_sglm.height > 0;
+			if (lmExportThisFrame) {
+				EnsureLightmapExportTarget(
+					smvk::Extent2D{ m_sglm.width, m_sglm.height });
+				if (!m_lmExportLogical.empty())
+					RecordLightmapExportPass(flight);
+				else
+					Log("Lightmap export: offscreen target creation failed.");
+				m_lmExportQueued = false;
+			}
+			// One-shot MATERIAL BALL sidecar (the same export pattern): the
+			// queued material's offscreen ball records into this frame's
+			// graph; the post-submit wait + readback + PNG write land the
+			// sidecar next to the source .material asset.
+			const bool matBallThisFrame = m_matBallQueuedMat != UINT32_MAX
+				&& EnsureMatBallResources();
+			if (matBallThisFrame)
+				RecordMatBallPass();
 
-		if (m_imgui && m_imgui->IsInitialized()) {
-			m_imgui->NewFrame(extent);
-			DrawUI(extent);
-			// UV editor window canvas retired (see RecordUvWindowPass).
-			//RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
-			// THE WYSIWYG COMPOSITE BEFORE THE IMGUI PASS (the editor's
-			// layer order: scene -> live view -> ImGui panels/popups/
-			// modals). The stage rect is a GAP in the ImGui layout (the
-			// viewport chrome lives on the background draw list), so
-			// nothing ImGui-side paints under the composite; everything
-			// ImGui-side paints OVER it. The old order (composite AFTER
-			// ImGui) painted the live image over any modal/dropdown/
-			// floating window touching the rect, which needed a popup-
-			// name allowlist to hide the view — every new dialog had to
-			// be added to that list or it was obscured. The layer order
-			// replaces the list: popups and modals are ordinary ImGui
-			// windows now, drawn above the image like any other panel.
-			if (m_wysiwygLiveRectFresh)
-				RecordLiveViewComposePass(m_swapViews[fb.imageIndex]);
-			m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
-				smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
-		}
-		// Flush bindless descriptor writes (scene texture views, samplers)
-		// BEFORE Execute records — App does the same (see WorldRenderer).
-		// Without this the textures[] array stays uninitialized and the
-		// viewport samples garbage (gray) no matter the residency or slots.
-		m_context->UpdateDescriptors();
-		m_rendergraph->Execute(fb);
-		m_context->ProcessDeferredTasks();
-		if (lmExportThisFrame) {
-			// The export pass ran in this submit: read it back + write PNG.
-			WaitForDeviceIdle();
-			ExportLightmapPng();
-		}
-		if (matBallThisFrame) {
-			WaitForDeviceIdle();
-			ExportMatBallPng();
-		}
+			if (m_imgui && m_imgui->IsInitialized()) {
+				// Optick: the ImGui build + record (NewFrame through the
+				// composite + AddPass).
+				SMVK_PROFILE_UI("Editor_UI");
+				m_imgui->NewFrame(extent);
+				DrawUI(extent);
+				// UV editor window canvas retired (see RecordUvWindowPass).
+				//RecordUvWindowPass(m_swapViews[fb.imageIndex], flight);
+				// THE WYSIWYG COMPOSITE BEFORE THE IMGUI PASS (the editor's
+				// layer order: scene -> live view -> ImGui panels/popups/
+				// modals). The stage rect is a GAP in the ImGui layout (the
+				// viewport chrome lives on the background draw list), so
+				// nothing ImGui-side paints under the composite; everything
+				// ImGui-side paints OVER it. The old order (composite AFTER
+				// ImGui) painted the live image over any modal/dropdown/
+				// floating window touching the rect, which needed a popup-
+				// name allowlist to hide the view — every new dialog had to
+				// be added to that list or it was obscured. The layer order
+				// replaces the list: popups and modals are ordinary ImGui
+				// windows now, drawn above the image like any other panel.
+				if (m_wysiwygLiveRectFresh)
+					RecordLiveViewComposePass(m_swapViews[fb.imageIndex]);
+				m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
+					smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
+			}
+			// Flush bindless descriptor writes (scene texture views, samplers)
+			// BEFORE Execute records — App does the same (see WorldRenderer).
+			// Without this the textures[] array stays uninitialized and the
+			// viewport samples garbage (gray) no matter the residency or slots.
+			{
+				// Optick: the bindless flush split from the graph Execute it
+				// precedes (resource-binding churn indicator).
+				SMVK_PROFILE_RENDER("Editor_UpdateDescriptors");
+				m_context->UpdateDescriptors();
+			}
+			m_rendergraph->Execute(fb);
+			m_context->ProcessDeferredTasks();
+			if (lmExportThisFrame) {
+				// The export pass ran in this submit: read it back + write PNG.
+				WaitForDeviceIdle();
+				ExportLightmapPng();
+			}
+			if (matBallThisFrame) {
+				WaitForDeviceIdle();
+				ExportMatBallPng();
+			}
+		} // Editor_Round2Scene
 		++m_frameCounter;
 	}
 
