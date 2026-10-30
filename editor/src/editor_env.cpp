@@ -101,17 +101,12 @@ namespace editor {
 		// GI/lightmap/cubemap bakes, the synthesized pak directional and the
 		// App. A scene DIRECTIONAL light node (content) still wins when one
 		// exists — the sub-block below edits it (SetLightAttr commands).
-		ImGui::Separator();
-		ImGui::Text("Environment (scene definition)");
-		ImGui::TextDisabled(
-			"Scene-attached look — every view renders it straight from the "
-			"scene. The sun/sky rows are LUX-NATIVE and drive everything: "
-			"the viewport, every bake, the pak directional and the App.");
+		ImGui::SeparatorText("Environment (scene definition)");
 		// Cook flows live in the BottomDock Cook tab (File > Export...),
 		// not here: this panel owns the look inputs, the tab owns the
 		// product step (full cook + quick bakes + cubemap refresh).
 		if (!m_world) {
-			ImGui::TextDisabled("No scene — open a scene to author the look.");
+			ImGui::Text("No scene - open a scene to author the look.");
 			return;
 		}
 		// Source combo: editor default + every env node.
@@ -138,13 +133,12 @@ namespace editor {
 		// built-in infinite one).
 		if (m_envCurrent != UINT32_MAX) {
 			EditorEnv& e = CurrentEnv();
-			ImGui::DragFloat("Zone priority##envzone", &e.zonePriority, 0.25f,
-				0.0f, 100.0f, "%.0f");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip(
-					"Legacy zone priority (the look block's): applies while the\n"
-					"node has no volume entry below (the volume priority wins\n"
-					"when present). Overlap: higher wins; ties go innermost.");
+			attr::Float("Zone priority", &e.zonePriority, 0.25f, 0.0f,
+				100.0f, "%.0f",
+				"Legacy zone priority (the look block's): applies while "
+				"the node has no volume entry below (the volume priority "
+				"wins when present). Overlap: higher wins; ties go "
+				"innermost.");
 			// VOLUME settings (Unreal-style bounds + blending over the
 			// transform box; see EnvVolume). Created on first edit below
 			// (inheriting the look's priority, so legacy zones don't jump);
@@ -156,23 +150,29 @@ namespace editor {
 			EnvVolume tmp = hasEntry ? vit->second : EnvVolume{};
 			bool volChanged = false;
 			bool priEdited = false;
-			volChanged |= ImGui::Checkbox("Volume enabled##envvol",
-				&tmp.enabled);
+			if (attr::Check("Volume enabled", &tmp.enabled,
+					"The Unreal-style volume bounds + blending over the "
+					"node's transform box"))
+				volChanged = true;
 			// Per-face infinity: a set face pushes that box face to
 			// -/+infinity (half-spaces and slabs; all six = infinite
 			// everywhere, the Unreal unbound equivalent).
 			{
 				struct FaceBit { const char* label; uint32_t bit; };
-				const FaceBit faces[6] = { { "X-##envvol", kEnvInfNegX },
-					{ "X+##envvol", kEnvInfPosX },{ "Y-##envvol", kEnvInfNegY },
-					{ "Y+##envvol", kEnvInfPosY },{ "Z-##envvol", kEnvInfNegZ },
-					{ "Z+##envvol", kEnvInfPosZ } };
-				ImGui::TextDisabled("Infinite faces (box face -> +/-inf):");
+				const FaceBit faces[6] = { { "X-", kEnvInfNegX },
+					{ "X+", kEnvInfPosX }, { "Y-", kEnvInfNegY },
+					{ "Y+", kEnvInfPosY }, { "Z-", kEnvInfNegZ },
+					{ "Z+", kEnvInfPosZ } };
+				ImGui::SeparatorText("Infinite faces");
 				for (int i = 0; i < 6; ++i) {
-					if (i > 0)
-						ImGui::SameLine();
 					bool set = (tmp.infMask & faces[i].bit) != 0;
-					if (ImGui::Checkbox(faces[i].label, &set)) {
+					if (attr::Check(faces[i].label, &set,
+							"A set face pushes that box face to -/+inf: "
+							"Y- + box top at y=0 covers y <= 0 (underwater), "
+							"Y+ + box bottom at y=50 covers y >= 50 (high "
+							"haze); all six = infinite everywhere. Coverage "
+							"is analytic 3D, so Y-varying zones work "
+							"exactly.")) {
 						if (set)
 							tmp.infMask |= faces[i].bit;
 						else
@@ -180,25 +180,21 @@ namespace editor {
 						volChanged = true;
 					}
 				}
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip(
-						"Y- + box top at y=0 covers y <= 0 (underwater);\n"
-						"Y+ + box bottom at y=50 covers y >= 50 (high haze).\n"
-						"All six = infinite everywhere. Coverage is analytic\n"
-						"3D, so Y-varying zones work exactly.");
 			}
-			priEdited = ImGui::DragFloat("Volume priority##envvol",
-				&tmp.priority, 0.25f, 0.0f, 100.0f, "%.0f");
+			if (attr::Float("Volume priority", &tmp.priority, 0.25f, 0.0f,
+					100.0f, "%.0f",
+					"The volume's own priority (wins over the legacy zone "
+					"priority above)"))
+				priEdited = true;
 			volChanged |= priEdited;
-			volChanged |= ImGui::DragFloat("Blend weight##envvol",
-				&tmp.blendWeight, 0.01f, 0.0f, 1.0f, "%.2f");
-			volChanged |= ImGui::DragFloat("Blend radius (m)##envvol",
-				&tmp.blendRadius, 0.1f, 0.0f, 64.0f, "%.1f");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip(
-					"Unreal-style blending: weight scales the whole zone;\n"
-					"radius softens the edge OUTSIDE the box (3D distance).\n"
-					"Both apply per pixel in the terrain + volumetric fog.");
+			if (attr::Float("Blend weight", &tmp.blendWeight, 0.01f, 0.0f,
+					1.0f, "%.2f", "Scales the whole zone"))
+				volChanged = true;
+			if (attr::Float("Blend radius", &tmp.blendRadius, 0.1f, 0.0f,
+					64.0f, "%.1f",
+					"Softens the edge OUTSIDE the box (3D distance) - "
+					"applies per pixel in the terrain + volumetric fog"))
+				volChanged = true;
 			if (volChanged) {
 				if (!hasEntry && !priEdited) {
 					// Inherit the look's priority so creating the entry
@@ -222,10 +218,8 @@ namespace editor {
 			// the cooker synthesizes the pak's WorldSun directional from it,
 			// every bake reads it (EnvForBake) and the App renders it. One
 			// authored sun, no duplicates.
-			ImGui::TextDisabled("No scene directional light: the environment "
-				"sun below drives the pak, every bake and the App (the "
-				"cooker synthesizes its WorldSun from it). Import a KHR "
-				"punctual directional for a per-node scene light instead.");
+			ImGui::Text("No scene directional - the environment sun below "
+				"is THE sun (drives the pak, every bake and the App).");
 		}
 		else if (glm::vec3 aimWs(0.0f);
 			const ::SceneLight * li = FindNodeLight(sun, &aimWs)) {
@@ -233,12 +227,17 @@ namespace editor {
 			ImGui::SameLine();
 			if (ImGui::Button("Select node##sun"))
 				SetSelection(sun);
-			ImGui::TextDisabled("toSun=(%.2f,%.2f,%.2f)%s", -aimWs.x,
-				-aimWs.y, -aimWs.z,
-				m_hasCookedSun && m_cookedSunName == li->name
-				? " — seeds the editor IBL default" : "");
+			{
+				char toSun[128];
+				std::snprintf(toSun, sizeof(toSun), "(%.2f, %.2f, %.2f)%s",
+					-aimWs.x, -aimWs.y, -aimWs.z,
+					m_hasCookedSun && m_cookedSunName == li->name
+					? " - seeds the editor IBL default" : "");
+				attr::Readonly("toSun", toSun);
+			}
 			if ((li->flags & ::SceneLight::kSceneLightFlag_Static) != 0)
-				ImGui::TextDisabled("STATIC: bake-only (excluded from runtime)");
+				attr::Readonly("Bake light",
+					"STATIC - bake-only (excluded from runtime)");
 			// Same coalesced-drag SetLightAttr pattern as the node inspector
 			// (lux units for directionals), so cooks replay the edits.
 			auto beginSunDrag = [&](const char* attr) {
@@ -285,9 +284,11 @@ namespace editor {
 			}
 			endSunDrag("intensity");
 			bool sstatic = (li->flags & ::SceneLight::kSceneLightFlag_Static) != 0;
-			// Checkbox edits the proposed new value; persist it as an undoable
-			// light command rather than mutating the scene light directly.
-			if (ImGui::Checkbox("Static##scene_sun_static", &sstatic)) {
+			// The checkbox edits the proposed new value; persist it as an
+			// undoable light command rather than mutating the scene light
+			// directly.
+			if (attr::Check("Static", &sstatic,
+					"STATIC: bake-only (excluded from runtime Forward+)")) {
 				EditCmd c{};
 				c.verb = EditVerb::SetLightAttr;
 				c.node = sun;
@@ -297,8 +298,6 @@ namespace editor {
 					c.beforeFlag, c.beforeText);
 				Do(c);
 			}
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("STATIC: bake-only (excluded from runtime Forward+)");
 		}
 		ImGui::PopID();
 
@@ -342,14 +341,14 @@ namespace editor {
 			attr::Enum("Fog", &e.fogQuality,
 				"Off\0Analytic (exp2, fallback)\0Volumetric (raymarched GI-lit)\0",
 				"Select the rendered fog tier; all fog parameters remain editable.");
-			ImGui::TextDisabled("Analytic fog parameters");
+			ImGui::SeparatorText("Analytic fog parameters");
 			attr::Slider("Fog density", &e.fogDensity, 0.0f, 1.0f, "%.3f",
 				"The exp2 distance fog density");
 			float fc4[4] = { e.fogColor.x, e.fogColor.y, e.fogColor.z, 1.0f };
 			if (attr::Color("Fog color", fc4, "The analytic fog tint"))
 				e.fogColor = glm::vec3(fc4[0], fc4[1], fc4[2]);
 
-			ImGui::TextDisabled("Volumetric fog parameters");
+			ImGui::SeparatorText("Volumetric fog parameters");
 			attr::Float("Volumetrics", &e.volumetrics, 0.01f, 0.0f, 4.0f,
 				"%.2f", "The scattering intensity (0 = analytic fallback)");
 			ImGui::Indent();
@@ -369,12 +368,10 @@ namespace editor {
 				"%.2f", "The sun single-scatter strength");
 			attr::Slider("GI strength", &e.volumetricGi, 0.0f, 4.0f,
 				"%.2f", "The probe ambient scatter strength");
-			ImGui::Checkbox("Sample GI probes##vol_gi", &e.volumetricUseGi);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("On: sample SG-GI probes; off: sky IBL");
-			ImGui::Checkbox("Sun scatter##vol_sun", &e.volumetricUseSun);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Enable analytic sun scattering");
+			attr::Check("Sample GI probes", &e.volumetricUseGi,
+				"On: sample SG-GI probes; off: sky IBL");
+			attr::Check("Sun scatter", &e.volumetricUseSun,
+				"Enable analytic sun scattering");
 			attr::Slider("Dither", &e.volumetricJitter, 0.0f, 1.0f,
 				"%.2f", "The IGN dither (banding guard)");
 			attr::Slider("Height falloff", &e.volumetricHeightFalloff,
@@ -389,18 +386,14 @@ namespace editor {
 		{
 			char skybox[512];
 			std::snprintf(skybox, sizeof(skybox), "%s", e.skyboxUri.c_str());
-			if (ImGui::InputText("Skybox URI", skybox, sizeof(skybox),
-				ImGuiInputTextFlags_EnterReturnsTrue))
+			if (attr::Text("Skybox URI", skybox, sizeof(skybox),
+					"A skybox texture reference (sampling is TODO; stored "
+					"with the environment)"))
 				e.skyboxUri = skybox;
 		}
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip(
-				"Skybox texture reference (sampling is TODO; stored with the "
-				"environment).");
 		if (m_envCurrent != UINT32_MAX) {
-			ImGui::TextDisabled(
-				"Env node %u: position = node translate, size = node scale "
-				"(convex volume support comes later).", m_envCurrent);
+			ImGui::Text("Env node %u: position = node translate, "
+				"size = node scale.", m_envCurrent);
 			if (ImGui::Button("Stop using this node##env"))
 				m_envCurrent = UINT32_MAX;
 			ImGui::SameLine();
@@ -430,7 +423,7 @@ namespace editor {
 		{
 			engine::RenderQualityConfig& q = m_renderQuality;
 			ImGui::PushID("render_quality");
-			ImGui::TextDisabled("Global illumination");
+			ImGui::SeparatorText("Global illumination");
 			int gi = std::clamp(q.giMode, 0, 5);
 			if (attr::Enum("GI mode", &gi,
 				"All (baked GI; sky fallback)\0Lightmaps only\0"
@@ -444,26 +437,21 @@ namespace editor {
 			attr::Slider("GI intensity", &q.giIntensity, 0.0f, 2.0f, "%.2f",
 				"The baked-GI + sky-IBL ambient scale (0 = direct sun "
 				"only, 1 = authored, 2 = double)");
-			ImGui::Checkbox("Lightmaps##gi_lm", &q.lightmapsEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Baked 2D lightmap branch (static "
+			attr::Check("Lightmaps", &q.lightmapsEnabled,
+				"Baked 2D lightmap branch (static "
 					"geometry; needs a --lightmap bake)");
-			ImGui::Checkbox("Regular probe volumes##gi_reg", &q.regProbesEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Baked regular probe grids "
+			attr::Check("Regular probe volumes", &q.regProbesEnabled,
+				"Baked regular probe grids "
 					"(dynamic-object GI)");
-			ImGui::Checkbox("Convex GI volumes##gi_cv", &q.giVolumesEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Confined-space dense probe volumes, "
+			attr::Check("Convex GI volumes", &q.giVolumesEnabled,
+				"Confined-space dense probe volumes, "
 					"composited over the octree field by priority");
-			ImGui::Checkbox("Probe pre-mix##gi_premix", &q.probePremixEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("GPU pre-mixed probe blend (one cubemap "
+			attr::Check("Probe pre-mix", &q.probePremixEnabled,
+				"GPU pre-mixed probe blend (one cubemap "
 					"fetch per pixel); off = the per-pixel probe walk");
-			ImGui::TextDisabled("Shadows");
-			ImGui::Checkbox("EVSM moment shadows##evsm", &q.evsmEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("EVSM moment shadow maps (soft shadows; "
+			ImGui::SeparatorText("Shadows");
+			attr::Check("EVSM moment shadows", &q.evsmEnabled,
+				"EVSM moment shadow maps (soft shadows; "
 					"falls back to PCF when unsupported)");
 			attr::Slider("EVSM softness", &q.evsmSoftness, 0.0f, 4.0f, "%.2f",
 				"Scales shadow softness relative to the light's "
@@ -475,7 +463,7 @@ namespace editor {
 				// trace detail. Everything here is host/session state —
 				// the LOOK halves (SSR enable/intensity, the enables) stay
 				// in the scene-authored block below.
-				ImGui::TextDisabled("Display");
+				ImGui::SeparatorText("Display");
 				attr::Slider("Render scale", &q.renderScale, 0.25f, 2.0f,
 					"%.2fx", "The internal resolution scale (1 = the "
 					"viewport's native extent)");
@@ -525,7 +513,7 @@ namespace editor {
 							? smvk::TransparentMode::Blended
 							: smvk::TransparentMode::Dithered;
 				}
-				ImGui::TextDisabled("Directional cascades");
+				ImGui::SeparatorText("Directional cascades");
 				{
 					const uint32_t resOptions[] = { 512, 1024, 2048, 4096 };
 					int resIdx = 1;
@@ -541,9 +529,8 @@ namespace editor {
 				}
 				attr::Slider("Split lambda", &q.cascadeLambda, 0.0f, 1.0f,
 					"%.2f", "The split scheme's near/far weighting");
-				ImGui::Checkbox("SDSM##sdsm", &q.sdsmEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Fit the splits to the measured depth "
+				attr::Check("SDSM", &q.sdsmEnabled,
+					"Fit the splits to the measured depth "
 						"(sampled distribution shadow maps)");
 				attr::Slider("Shadow distance", &q.cascadeMaxDistance, 0.0f,
 					500.0f, "%.0f", "The cascade far clamp in meters "
@@ -553,10 +540,9 @@ namespace editor {
 				attr::Slider("Normal bias scale", &q.cascadeNormalBiasScale,
 					0.0f, 4.0f, "%.2f", "The cascade normal-offset bias "
 					"multiplier");
-				ImGui::TextDisabled("Local-light shadow budgets");
-				ImGui::Checkbox("Spot shadows##spots", &q.spotShadowsEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Render the shared spot atlas (the "
+				ImGui::SeparatorText("Local-light shadow budgets");
+				attr::Check("Spot shadows", &q.spotShadowsEnabled,
+					"Render the shared spot atlas (the "
 						"per-light flag still gates each light)");
 				{
 					int m = q.spotShadowMax;
@@ -568,10 +554,8 @@ namespace editor {
 				attr::Slider("Spot shadow max distance",
 					&q.spotShadowMaxDistance, 5.0f, 120.0f, "%.0f",
 					"Hard cutoff on camera->light distance (m)");
-				ImGui::Checkbox("Point shadows##points",
-					&q.pointShadowsEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Six cube-face tiles per selected point "
+				attr::Check("Point shadows", &q.pointShadowsEnabled,
+					"Six cube-face tiles per selected point "
 						"in the shared atlas");
 				{
 					int m = q.pointShadowMax;
@@ -583,7 +567,7 @@ namespace editor {
 				attr::Slider("Point shadow max distance",
 					&q.pointShadowMaxDistance, 5.0f, 120.0f, "%.0f",
 					"Hard cutoff on camera->light distance (m)");
-				ImGui::TextDisabled("EVSM pipeline");
+				ImGui::SeparatorText("EVSM pipeline");
 				{
 					int pipe = (q.evsmPipeline
 							== smvk::EvsmPipelineMode::SameFrame) ? 1 : 0;
@@ -597,11 +581,9 @@ namespace editor {
 				}
 				attr::Slider("Local light size", &q.evsmSpotLightSize, 0.0f,
 					2.0f, "%.2f", "The spot PCSS light diameter (m; 0 = hard)");
-				ImGui::TextDisabled("Sun contact shadows");
-				ImGui::Checkbox("Contact shadows##contact",
-					&q.contactShadowsEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("The pre-Main depth raymarch toward the "
+				ImGui::SeparatorText("Sun contact shadows");
+				attr::Check("Contact shadows", &q.contactShadowsEnabled,
+					"The pre-Main depth raymarch toward the "
 						"sun (the contact-hardening detail the cascades "
 						"cannot resolve)");
 				attr::Slider("Contact distance", &q.contactShadowMaxDistance,
@@ -624,10 +606,9 @@ namespace editor {
 							"tracing but can lose thin occluders)"))
 						q.contactShadowResolutionDivisor = (r == 0) ? 1 : 2;
 				}
-				ImGui::TextDisabled("Diffuse screen-space GI");
-				ImGui::Checkbox("SSGI diffuse##ssgi", &q.ssgiDiffuseEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("One cosine-hemisphere bounce that "
+				ImGui::SeparatorText("Diffuse screen-space GI");
+				attr::Check("SSGI diffuse", &q.ssgiDiffuseEnabled,
+					"One cosine-hemisphere bounce that "
 						"REPLACES the diffuse ambient slice (experimental; "
 						"off under MSAA)");
 				attr::Slider("SSGI intensity", &q.ssgiDiffuseIntensity, 0.0f,
@@ -649,13 +630,11 @@ namespace editor {
 							"The traversal cap (exhaustion = miss)"))
 						q.ssgiDiffuseMaxIntersections = s;
 				}
-				ImGui::Checkbox("SSGI temporal filter##ssgi_taa",
-					&q.ssgiDiffuseTaaEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Temporal accumulation with depth + "
+				attr::Check("SSGI temporal filter", &q.ssgiDiffuseTaaEnabled,
+					"Temporal accumulation with depth + "
 						"normal rejection; falls back to spatial-only "
 						"without motion vectors");
-				ImGui::TextDisabled("SSR trace detail");
+				ImGui::SeparatorText("SSR trace detail");
 				{
 					int s = q.ssrSteps;
 					if (attr::Int("SSR ray steps", &s, 1, 128,
@@ -684,7 +663,7 @@ namespace editor {
 							"temporal history)"))
 						q.ssrBlurMode = std::clamp(b, 0, 1);
 				}
-				ImGui::TextDisabled("Cubemap IBL detail");
+				ImGui::SeparatorText("Cubemap IBL detail");
 				attr::Slider("Cubemap LOD bias", &q.cubemapLodBias, -2.0f,
 					4.0f, "%.2f", "Added to the roughness LOD");
 				{
@@ -694,7 +673,7 @@ namespace editor {
 						q.cubemapStreamBudget = uint32_t(
 							std::clamp(b, 0, 64));
 				}
-				ImGui::TextDisabled("Motion blur detail");
+				ImGui::SeparatorText("Motion blur detail");
 				{
 					int s = q.motionBlurSamples;
 					if (attr::Int("Blur samples", &s, 1, 32,
@@ -705,15 +684,12 @@ namespace editor {
 					64.0f, "%.0f", "The blur clamp (px)");
 				attr::Slider("Blur strength", &q.motionBlurStrength, 0.0f,
 					2.0f, "%.2f", "The shutter scale");
-				ImGui::Checkbox("Tile dilation##mb_tiles",
-					&q.motionBlurTileDilation);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("CoD:AW tile max + 5x5 dilate "
+				attr::Check("Tile dilation", &q.motionBlurTileDilation,
+					"CoD:AW tile max + 5x5 dilate "
 						"prepasses (16px tiles)");
-				ImGui::TextDisabled("Depth of field detail");
-				ImGui::Checkbox("HQ bokeh##dof_hq", &q.dofHqBokeh);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("48-tap hex gather (off = the low "
+				ImGui::SeparatorText("Depth of field detail");
+				attr::Check("HQ bokeh", &q.dofHqBokeh,
+					"48-tap hex gather (off = the low "
 						"single-pass Poisson)");
 				attr::Slider("Focus distance", &q.dofFocusDistance, 0.5f,
 					100.0f, "%.1f", "The in-focus plane (m, view distance)");
@@ -737,7 +713,7 @@ namespace editor {
 				m_wysiwyg->PushRenderQuality(q);
 		}
 		if (!m_world) {
-			ImGui::TextDisabled("No scene — open a scene to author the look.");
+			ImGui::Text("No scene - open a scene to author the look.");
 			return;
 		}
 		SceneRenderSettings& r = m_world->scene.defaultRenderSettings;
@@ -753,39 +729,30 @@ namespace editor {
 		// Keep Render controls independent from same-named widgets in other tabs.
 		ImGui::PushID("render_settings_panel");
 		{
-			// Native ImGui controls here avoid relying on the attr::Bool stub's
-			// click/toggle semantics. The section is ID-scoped, and the ## suffixes
-			// keep the visible labels while guaranteeing unique control IDs.
-			ImGui::Separator();
-			ImGui::TextDisabled("Post-processing look");
-			ImGui::PushID("bloom");
-			ImGui::Checkbox("Bloom##enabled", &r.bloomEnabled);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Enable the HDR bright-pass bloom effect");
+			// Every row rides the attr stubs (name left, value right -
+			// the panel-wide convention); the section is ID-scoped and
+			// the stubs PushID their own names.
+			ImGui::SeparatorText("Post-processing look");
+			attr::Check("Bloom", &r.bloomEnabled,
+				"Enable the HDR bright-pass bloom effect");
 			// Keep the editable parameters visible even when Bloom is disabled.
 			r.bloomIntensity = std::clamp(r.bloomIntensity, 0.0f, 2.0f);
 			r.bloomThreshold = std::clamp(r.bloomThreshold, 0.0f, 16000.0f);
-			ImGui::SliderFloat("Bloom intensity##intensity", &r.bloomIntensity,
-				0.0f, 2.0f, "%.2f");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Bloom contribution (0..2)");
-			ImGui::DragFloat("Bloom threshold##threshold", &r.bloomThreshold,
-				0.05f, 0.0f, 16000.0f, "%.2f");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Pre-exposure HDR bright-pass threshold. "
-					"Ctrl-click to enter a precise value.");
-			ImGui::PopID();
+			attr::Slider("Bloom intensity", &r.bloomIntensity, 0.0f, 2.0f,
+				"%.2f", "Bloom contribution (0..2)");
+			attr::Float("Bloom threshold", &r.bloomThreshold, 0.05f, 0.0f,
+				16000.0f, "%.2f", "Pre-exposure HDR bright-pass threshold. "
+				"Ctrl-click to enter a precise value.");
 			int tm = int(std::min(r.tonemapMode, 3u));
 			if (attr::Enum("Tonemap", &tm,
 				"Reinhard\0ACES\0Uncharted2\0GT7\0",
 				"The HDR->LDR operator"))
 				r.tonemapMode = uint32_t(tm);
-			ImGui::Checkbox("Auto exposure##enabled", &r.autoExposure);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Auto: histogram metering and eye adaptation. "
+			attr::Check("Auto exposure", &r.autoExposure,
+				"Auto: histogram metering and eye adaptation. "
 					"Off: use manual exposure.");
 			// Both auto and manual parameters are always visible and editable.
-			ImGui::TextDisabled("Auto exposure parameters");
+			ImGui::SeparatorText("Auto exposure parameters");
 			attr::Slider("EV bias", &r.exposureEvBias, -4.0f, 4.0f, "%.2f",
 				"The metered target's exposure bias (stops)");
 			attr::Float("Adapt to dark", &r.exposureSpeedToDark, 0.05f,
@@ -796,7 +763,7 @@ namespace editor {
 				0.000001f, 1.0f, "%.6f", "The adaptation clamp floor");
 			attr::Float("Exposure max", &r.exposureMax, 0.0005f, 0.00001f,
 				1.0f, "%.5f", "The adaptation clamp ceiling");
-			ImGui::TextDisabled("Manual exposure parameter");
+			ImGui::SeparatorText("Manual exposure parameter");
 			attr::Float("Manual exposure", &r.manualExposure, 0.00005f,
 				0.00001f, 0.05f, "%.5f", "The fixed exposure multiplier");
 			int am = std::clamp(r.aoMode, 0, 2);
@@ -813,14 +780,14 @@ namespace editor {
 				"The occlusion darkening scale");
 			attr::Slider("AO max distance", &r.aoMaxDistance, 2.0f, 100.0f,
 				"%.0f", "The sample distance clamp (m)");
-			ImGui::TextDisabled("SSAO parameters");
+			ImGui::SeparatorText("SSAO parameters");
 			int ssaoSamples = r.aoSsaoSamples;
 			if (attr::Int("SSAO samples", &ssaoSamples, 1, 32,
 				"The per-pixel sample count"))
 				r.aoSsaoSamples = ssaoSamples;
 			attr::Slider("Blur sharpness", &r.aoBlurSharpness, 0.0f,
 				32.0f, "%.1f", "The bilateral blur edge preservation");
-			ImGui::TextDisabled("SAO parameters");
+			ImGui::SeparatorText("SAO parameters");
 			int saoSamples = r.aoSaoSamples;
 			if (attr::Int("SAO samples", &saoSamples, 1, 32,
 				"The per-pixel sample count"))
@@ -830,27 +797,23 @@ namespace editor {
 				"The spiral sampling turns"))
 				r.aoSaoSpiralTurns = saoTurns;
 			{
-				ImGui::Checkbox("SSR##enabled", &r.ssrEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Screen-space reflections");
+				attr::Check("SSR", &r.ssrEnabled,
+					"Screen-space reflections");
 				attr::Slider("SSR intensity", &r.ssrIntensity, 0.0f, 4.0f,
 					"%.2f", "The reflection blend scale");
 			}
 			{
-				ImGui::Checkbox("Motion blur##enabled", &r.motionBlurEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Camera motion blur (M)");
-				ImGui::Checkbox("Depth of field##enabled", &r.dofEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Bokeh depth of field");
+				attr::Check("Motion blur", &r.motionBlurEnabled,
+					"Camera motion blur (M)");
+				attr::Check("Depth of field", &r.dofEnabled,
+					"Bokeh depth of field");
 				int aam = std::clamp(r.aaMode, 0, 3);
 				if (attr::Enum("Anti-aliasing", &aam,
 					"Off\0MSAA 2x\0SMAA 1x\0SMAA T2x\0",
 					"The edge AA strategy"))
 					r.aaMode = aam;
-				ImGui::Checkbox("Cubemap IBL##enabled", &r.cubemapEnabled);
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Baked cubemap specular ambient");
+				attr::Check("Cubemap IBL", &r.cubemapEnabled,
+					"Baked cubemap specular ambient");
 				attr::Slider("Cubemap intensity", &r.cubemapIntensity,
 					0.0f, 4.0f, "%.2f", "The specular ambient scale");
 			}
@@ -880,14 +843,10 @@ namespace editor {
 	}
 
 	void EditorApp::DrawWorldPanel() {
-		ImGui::Text("World");
-		ImGui::TextDisabled(
-			"Not a scene node: global settings. No transform, no "
-			"reparent, no delete. The sun + environment (and their "
-			"layered zones) live in the Environment section below — "
-			"scene-light sun edits are undoable light commands; the "
-			"render grade lives in the Inspector's Render tab; both "
-			"ride editorSet tour lines.");
+		ImGui::SeparatorText("World");
+		ImGui::Text("Global settings - no transform, no reparent, no "
+			"delete. The sun + environment live in the section below; "
+			"the render grade lives in the Inspector's Render tab.");
 		// ---- sun + environment + atmosphere: ONE section ----
 		// This used to be a separate "Sun (directional)" block above the
 		// environment rows — the two sun halves doubled the display and

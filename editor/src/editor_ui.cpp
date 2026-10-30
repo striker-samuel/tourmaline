@@ -1863,29 +1863,30 @@ namespace editor {
 				FinishDrag();
 		};
 		int prio = int(def.priority);
-		if (ImGui::DragInt("Priority (higher wins)", &prio, 0.2f, 0, 16)) {
-			prio = std::clamp(prio, 0, 255);
+		if (attr::Int("Priority", &prio, 0, 255,
+				"Higher wins (the FOX override rule: later entries "
+				"composite over earlier)")) {
 			beginGiVolumeDrag("priority");
 			WriteNodeGiVolumeAttr(node, "priority", glm::vec4(0), double(prio), {});
 			m_pending.cmd.number = double(prio);
 		}
 		endGiVolumeDrag("priority");
 		float spacing = def.spacing;
-		if (ImGui::DragFloat("Probe spacing (m)", &spacing, 0.01f, 0.05f,
-			4.0f, "%.2f")) {
+		if (attr::Float("Probe spacing", &spacing, 0.01f, 0.05f, 4.0f, "%.2f",
+				"The PREFERRED density (m): the bake uses the seeded "
+				"layout below, else the gate search, else this fixed "
+				"spacing")) {
 			beginGiVolumeDrag("spacing");
 			WriteNodeGiVolumeAttr(node, "spacing", glm::vec4(0), double(spacing),
 				{});
 			m_pending.cmd.number = double(spacing);
 		}
 		endGiVolumeDrag("spacing");
-		ImGui::TextDisabled("preferred density; the bake uses the seeded "
-			"layout (below) or the gate search, else this fixed spacing");
 		// ---- Density gates (the optimizer's search bounds; 0 = off,
 		// the search then defaults to +-20%% around the spacing above).
 		float low = def.spacingLow;
-		if (ImGui::DragFloat("Density gate low (m)", &low, 0.01f, 0.0f,
-			4.0f, "%.2f")) {
+		if (attr::Float("Density gate low", &low, 0.01f, 0.0f, 4.0f, "%.2f",
+				"The optimizer's lower spacing bound (m; 0 = off)")) {
 			low = std::clamp(low, 0.0f, def.spacingHigh > 0.0f
 				? def.spacingHigh : 4.0f);
 			beginGiVolumeDrag("spacinglow");
@@ -1895,8 +1896,8 @@ namespace editor {
 		}
 		endGiVolumeDrag("spacinglow");
 		float high = def.spacingHigh;
-		if (ImGui::DragFloat("Density gate high (m)", &high, 0.01f, 0.0f,
-			4.0f, "%.2f")) {
+		if (attr::Float("Density gate high", &high, 0.01f, 0.0f, 4.0f, "%.2f",
+				"The optimizer's upper spacing bound (m; 0 = off)")) {
 			high = std::clamp(high, std::max(def.spacingLow, 0.01f), 4.0f);
 			beginGiVolumeDrag("spacinghigh");
 			WriteNodeGiVolumeAttr(node, "spacinghigh", glm::vec4(0),
@@ -1905,8 +1906,8 @@ namespace editor {
 		}
 		endGiVolumeDrag("spacinghigh");
 		float inside = def.insideFade;
-		if (ImGui::DragFloat("Inside fade (m)", &inside, 0.01f, 0.0f,
-			4.0f, "%.2f")) {
+		if (attr::Float("Inside fade", &inside, 0.01f, 0.0f, 4.0f, "%.2f",
+				"The interior weight fade band (m)")) {
 			beginGiVolumeDrag("inside");
 			WriteNodeGiVolumeAttr(node, "inside", glm::vec4(0), double(inside),
 				{});
@@ -1914,8 +1915,8 @@ namespace editor {
 		}
 		endGiVolumeDrag("inside");
 		float outside = def.outsideFade;
-		if (ImGui::DragFloat("Outside fade (m)", &outside, 0.01f, 0.0f,
-			4.0f, "%.2f")) {
+		if (attr::Float("Outside fade", &outside, 0.01f, 0.0f, 4.0f, "%.2f",
+				"The exterior falloff band beyond the volume (m)")) {
 			beginGiVolumeDrag("outside");
 			WriteNodeGiVolumeAttr(node, "outside", glm::vec4(0), double(outside),
 				{});
@@ -1926,18 +1927,21 @@ namespace editor {
 		// (what the bake will build) + the inspector button.
 		ImGui::SeparatorText("Grid layout");
 		if (def.optSpacing > 0.0f) {
-			ImGui::TextDisabled("SEEDED: spacing %.3f m, phase "
+			char buf[160];
+			std::snprintf(buf, sizeof(buf), "spacing %.3f m, phase "
 				"(%.2f, %.2f, %.2f) - rebakes use this verbatim",
 				def.optSpacing, def.optPhase[0], def.optPhase[1],
 				def.optPhase[2]);
+			attr::Readonly("Seeded layout", buf);
 			if (m_giLayoutLast.valid && m_giLayoutLast.node == node) {
 				const auto& r = m_giLayoutLast.result;
-				ImGui::TextDisabled("  probes %llu, invalid %llu "
+				std::snprintf(buf, sizeof(buf), "probes %llu, invalid %llu "
 					"(inside-solid %llu), coverage %.1f%%, score %.3f",
 					(unsigned long long)r.probes,
 					(unsigned long long)r.invalid,
 					(unsigned long long)r.insideSolid,
 					100.0 * r.coverage, r.score);
+				attr::Readonly("Last search", buf);
 			}
 			if (ImGui::Button("Clear seeded layout")) {
 				// Undoable clear (spacing 0 = search/legacy takes over).
@@ -1949,8 +1953,9 @@ namespace editor {
 			}
 		}
 		else {
-			ImGui::TextDisabled("no seed - the bake runs the gate search "
-				"(or the fixed spacing when the gates are off)");
+			attr::Readonly("Seeded layout", "none - the bake runs the "
+				"gate search (or the fixed spacing when the gates are "
+				"off)");
 		}
 		if (m_giLayoutRunning) {
 			ImGui::BeginDisabled();
@@ -1960,8 +1965,6 @@ namespace editor {
 		else if (ImGui::Button("Optimize grid layout")) {
 			RunGiLayoutOptimizer(node);
 		}
-		ImGui::TextDisabled("bake: a future gi_baker --tour pass harvests "
-			"these (priority/spacing/fades/gates/seed) + the box");
 	}
 
 	void EditorApp::DrawExportSettingsSection(uint32_t node) {
@@ -2005,18 +2008,21 @@ namespace editor {
 				&& m_pending.cmd.exportAttr == attr)
 				FinishDrag();
 		};
+		// The row layer: every export row rides the attr stubs (name
+		// left, value right - the panel-wide convention). endDrag's
+		// IsItemDeactivatedAfterEdit still sees the drag as the last
+		// item (the stubs add nothing after the widget).
 		auto setBool = [&](const char* label, const char* attr, bool v,
 			const char* tip) {
 			bool val = v;
-			if (ImGui::Checkbox(label, &val))
+			if (attr::Check(label, &val, tip))
 				PushExportAttr(node, attr, 0.0, val, "");
-			if (tip && ImGui::IsItemHovered())
-				ImGui::SetTooltip("%s", tip);
 		};
 		auto dragInt = [&](const char* label, const char* attr, int v,
 			float speed, int lo, int hi) {
+			(void)speed; // the stub's drag step is 1 (every caller's)
 			int val = v;
-			if (ImGui::DragInt(label, &val, speed, lo, hi)) {
+			if (attr::Int(label, &val, lo, hi, nullptr)) {
 				val = std::clamp(val, lo, hi);
 				beginDrag(attr);
 				WriteNodeExportAttr(node, attr, double(val), false, {});
@@ -2027,7 +2033,7 @@ namespace editor {
 		auto dragFloat = [&](const char* label, const char* attr, float v,
 			float speed, float lo, float hi, const char* fmt) {
 			float val = v;
-			if (ImGui::DragFloat(label, &val, speed, lo, hi, fmt)) {
+			if (attr::Float(label, &val, speed, lo, hi, fmt, nullptr)) {
 				val = std::clamp(val, lo, hi);
 				beginDrag(attr);
 				WriteNodeExportAttr(node, attr, double(val), false, {});
@@ -2046,10 +2052,9 @@ namespace editor {
 			char ratios[64];
 			std::snprintf(ratios, sizeof(ratios), "%s",
 				es.lodRatios.c_str());
-			ImGui::Text("LOD ratios (csv):");
-			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::InputText("##lodRatios", ratios, sizeof(ratios),
-				ImGuiInputTextFlags_EnterReturnsTrue))
+			if (attr::Text("LOD ratios", ratios, sizeof(ratios),
+					"The LOD chain's simplify ratios (csv, e.g. "
+					"\"0.5,0.25\")"))
 				PushExportAttr(node, "lodRatios", 0.0, false, ratios);
 			dragFloat("LOD error", "lodError", es.lodError, 0.001f,
 				0.0f, 1.0f, "%.3f");
@@ -2165,16 +2170,17 @@ namespace editor {
 				FinishDrag();
 		};
 		float radius = def.radius;
-		if (ImGui::DragFloat("Influence radius (m)", &radius, 0.05f,
-			0.05f, 100.0f, "%.2f")) {
+		if (attr::Float("Influence radius", &radius, 0.05f, 0.05f,
+				100.0f, "%.2f",
+				"The probe's full-weight radius (the fade ring is "
+				"radius/2); position = node translate (gizmo); bake: "
+				"Cook panel > Cubemap captures (pinned rows)")) {
 			beginCubeDrag("radius");
 			WriteNodeCubemapAttr(node, "radius", glm::vec4(0),
 				double(radius), {});
 			m_pending.cmd.number = double(radius);
 		}
 		endCubeDrag("radius");
-		ImGui::TextDisabled("fade = radius/2; position = node translate "
-			"(gizmo); bake: Cook panel > Cubemap captures (pinned rows)");
 	}
 
 	void EditorApp::DrawCamSection(uint32_t node) {
@@ -2217,8 +2223,8 @@ namespace editor {
 		};
 		int proj = (C->projection
 			== ::SceneCamera::Projection::Orthographic) ? 1 : 0;
-		if (ImGui::Combo("Projection", &proj,
-			"Perspective\0Orthographic\0")) {
+		if (attr::Enum("Projection", &proj,
+				"Perspective\0Orthographic\0", "The lens projection")) {
 			EditCmd c{};
 			c.verb = EditVerb::SetCamAttr;
 			c.node = node;
@@ -2230,8 +2236,8 @@ namespace editor {
 		}
 		if (proj == 0) {
 			float fov = C->fovYDeg;
-			if (ImGui::DragFloat("FOV (deg)", &fov, 1.0f, 1.0f, 179.0f,
-				"%.0f")) {
+			if (attr::Float("FOV", &fov, 1.0f, 1.0f, 179.0f, "%.0f",
+					"The vertical field of view (deg)")) {
 				beginCamDrag("fovY");
 				WriteNodeCameraAttr(node, "fovY", glm::vec4(0),
 					double(fov), {});
@@ -2241,8 +2247,9 @@ namespace editor {
 		}
 		else {
 			float hh = C->orthoHalfH;
-			if (ImGui::DragFloat("Ortho half-height (m)", &hh, 0.25f,
-				0.01f, 100000.0f)) {
+			if (attr::Float("Ortho half-height", &hh, 0.25f, 0.01f,
+					100000.0f, "%.1f", "The orthographic vertical "
+					"half-extent (m)")) {
 				beginCamDrag("orthoHalfH");
 				WriteNodeCameraAttr(node, "orthoHalfH", glm::vec4(0),
 					double(hh), {});
@@ -2251,16 +2258,16 @@ namespace editor {
 			endCamDrag("orthoHalfH");
 		}
 		float nc = C->nearClip;
-		if (ImGui::DragFloat("Near clip", &nc, 0.005f, 0.0001f, 50.0f,
-			"%.4f")) {
+		if (attr::Float("Near clip", &nc, 0.005f, 0.0001f, 50.0f,
+				"%.4f", "The near plane (m)")) {
 			beginCamDrag("near");
 			WriteNodeCameraAttr(node, "near", glm::vec4(0), double(nc), {});
 			m_pending.cmd.number = double(nc);
 		}
 		endCamDrag("near");
 		float fc = C->farClip;
-		if (ImGui::DragFloat("Far clip", &fc, 5.0f, 0.01f, 1000000.0f,
-			"%.0f")) {
+		if (attr::Float("Far clip", &fc, 5.0f, 0.01f, 1000000.0f,
+				"%.0f", "The far plane (m)")) {
 			beginCamDrag("far");
 			WriteNodeCameraAttr(node, "far", glm::vec4(0), double(fc), {});
 			m_pending.cmd.number = double(fc);
@@ -2351,7 +2358,7 @@ namespace editor {
 					m_selVertNode, m_selVertIdx,
 					m_selVertPos.x, m_selVertPos.y, m_selVertPos.z);
 			else
-				ImGui::TextDisabled("vertex: none (click near a vertex)");
+				ImGui::Text("vertex: none (click near a vertex)");
 		}
 
 		// Name.
@@ -2359,8 +2366,9 @@ namespace editor {
 			char buf[256];
 			const std::string cur = getNodeName(scene, int(node));
 			std::snprintf(buf, sizeof(buf), "%s", cur.c_str());
-			if (ImGui::InputText("Name", buf, sizeof(buf),
-				ImGuiInputTextFlags_EnterReturnsTrue)) {
+			if (attr::Text("Name", buf, sizeof(buf),
+					"The node's display name (Enter commits the "
+					"undoable rename)")) {
 				EditCmd c{};
 				c.verb = EditVerb::Rename;
 				c.node = node;
@@ -2591,12 +2599,17 @@ namespace editor {
 					// light build resolves to the bindless index (empty = none).
 					// Browse imports the picked image as a .texture beside the
 					// asset tree in one click (see CreateTextureAsset).
-					ImGui::Separator();
-					ImGui::TextDisabled("Cookie (spot gobo)");
+					ImGui::SeparatorText("Cookie (spot gobo)");
 					char cookieBuf[512] = {};
 					std::snprintf(cookieBuf, sizeof(cookieBuf), "%s",
 						li->cookieUri.c_str());
-					ImGui::SetNextItemWidth(-90.0f);
+					attr::LabelCell("Cookie",
+						"The .texture (or image) projected through the cone "
+						"as a gobo. Empty = none. Unresolvable refs warn at "
+						"the light build and drop (the light renders "
+						"unmodified).");
+					ImGui::SetNextItemWidth(
+						ImGui::GetContentRegionAvail().x - 92.0f);
 					if (ImGui::InputText("##lightcookie", cookieBuf,
 						sizeof(cookieBuf),
 						ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -2637,25 +2650,19 @@ namespace editor {
 							}
 						}
 					}
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("The .texture (or image) projected "
-							"through the cone as a gobo. Empty = none. "
-							"Unresolvable refs warn at the light build and "
-							"drop (the light renders unmodified).");
 				}
 				// Procedural light FUNCTION (points + spots): per-pixel intensity
 				// modulation — flicker (candle-like time noise), pulse (sine
 				// breathing), bands (moving diagonal bands across the cone;
 				// points fall back to pulse). Speed scales time, scale is the
 				// modulation depth (1 = dips to black). See light.hlsli.
-				ImGui::Separator();
-				ImGui::TextDisabled("Light function (procedural)");
+				ImGui::SeparatorText("Light function (procedural)");
 				{
-					const char* items[] = { "none", "flicker", "pulse",
-						"bands" };
 					int fn = int(std::clamp(li->functionType, 0u, 3u));
-					ImGui::SetNextItemWidth(-1.0f);
-					if (ImGui::Combo("##lightfunction", &fn, items, 4)) {
+					if (attr::Enum("Function", &fn,
+							"none\0flicker\0pulse\0bands\0",
+							"Per-pixel intensity modulation (points fall "
+							"back to pulse)")) {
 						EditCmd c{};
 						c.verb = EditVerb::SetLightAttr;
 						c.node = node;
@@ -2666,9 +2673,8 @@ namespace editor {
 						Do(c);
 					}
 					float fnspeed = li->functionSpeed;
-					ImGui::SetNextItemWidth(-1.0f);
-					if (ImGui::DragFloat("speed##lightfunction", &fnspeed,
-						0.01f, 0.01f, 10.0f, "%.2f")) {
+					if (attr::Float("Speed", &fnspeed, 0.01f, 0.01f,
+							10.0f, "%.2f", "Scales time")) {
 						beginLightDrag("functionSpeed");
 						WriteNodeLightAttr(node, "functionSpeed", glm::vec4(0),
 							fnspeed, false, {});
@@ -2676,9 +2682,9 @@ namespace editor {
 					}
 					endLightDrag("functionSpeed");
 					float fnscale = li->functionScale;
-					ImGui::SetNextItemWidth(-1.0f);
-					if (ImGui::DragFloat("depth##lightfunction", &fnscale,
-						0.01f, 0.0f, 1.0f, "%.2f")) {
+					if (attr::Float("Depth", &fnscale, 0.01f, 0.0f, 1.0f,
+							"%.2f", "The modulation depth (1 = dips to "
+							"black)")) {
 						beginLightDrag("functionScale");
 						WriteNodeLightAttr(node, "functionScale", glm::vec4(0),
 							fnscale, false, {});
@@ -2707,7 +2713,10 @@ namespace editor {
 			const bool inherited = IsStaticNode(scene, int(node));
 			bool self = node < scene.staticRoot.size()
 				&& scene.staticRoot[node] != 0;
-			if (ImGui::Checkbox("Static (whole subtree)", &self)) {
+			if (attr::Check("Static (whole subtree)", &self,
+					"Transforms freeze after the initial build (skip "
+					"per-frame updates + BVH rebuilds); cook may collapse "
+					"the subtree into one block")) {
 				EditCmd c{};
 				c.verb = EditVerb::SetStatic;
 				c.node = node;
@@ -2715,9 +2724,7 @@ namespace editor {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			ImGui::TextDisabled("effective: %s (transforms freeze after the "
-				"build; cook may collapse the subtree into one block)",
-				inherited ? "static" : "dynamic");
+			attr::Readonly("Effective", inherited ? "static" : "dynamic");
 		}
 
 		// Lightmap participation: opt-IN (default off) + legacy opt-out.
@@ -2726,7 +2733,9 @@ namespace editor {
 			ImGui::Separator();
 			const bool optedIn = IsLightmapNode(scene, int(node));
 			bool self = node < scene.lightmap.size() && scene.lightmap[node] != 0;
-			if (ImGui::Checkbox("Bake lightmaps (subtree, opt-in)", &self)) {
+			if (attr::Check("Bake lightmaps (subtree, opt-in)", &self,
+					"A mesh charts only when opted in here AND not "
+					"excluded below")) {
 				EditCmd c{};
 				c.verb = EditVerb::SetLightmap;
 				c.node = node;
@@ -2734,14 +2743,17 @@ namespace editor {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			ImGui::TextDisabled("effective: %s (cook --lightmap charts it)",
-				optedIn ? "opted in" : "skipped");
+			attr::Readonly("Effective",
+				optedIn ? "opted in (cook --lightmap charts it)"
+				: "skipped");
 		}
 		{
 			ImGui::Separator();
 			const bool inherited = IsNoLightmapNode(scene, int(node));
 			bool self = node < scene.noLightmap.size() && scene.noLightmap[node] != 0;
-			if (ImGui::Checkbox("Exclude from lightmaps (subtree)", &self)) {
+			if (attr::Check("Exclude from lightmaps (subtree)", &self,
+					"The legacy opt-out; the opt-in above is still "
+					"required")) {
 				EditCmd c{};
 				c.verb = EditVerb::SetNoLightmap;
 				c.node = node;
@@ -2749,7 +2761,7 @@ namespace editor {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			ImGui::TextDisabled("effective: %s (legacy opt-out; opt-in above still required)",
+			attr::Readonly("Effective",
 				inherited ? "excluded" : "not excluded");
 		}
 
@@ -2760,7 +2772,9 @@ namespace editor {
 			ImGui::Separator();
 			const bool inherited = IsDitherCloseupNode(scene, int(node));
 			bool self = node < scene.ditherCloseup.size() && scene.ditherCloseup[node] != 0;
-			if (ImGui::Checkbox("Dither on camera closeup (subtree)", &self)) {
+			if (attr::Check("Dither on camera closeup (subtree)", &self,
+					"1 m fully hidden .. 8 m solid, screen-door fade from "
+					"the subtree anchor; LIVE per frame (no rebake)")) {
 				EditCmd c{};
 				c.verb = EditVerb::SetDitherCloseup;
 				c.node = node;
@@ -2768,9 +2782,7 @@ namespace editor {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			ImGui::TextDisabled("effective: %s (1 m fully hidden .. 8 m solid,\n"
-				"screen-door fade from the subtree anchor; live per frame)",
-				inherited ? "dithered" : "off");
+			attr::Readonly("Effective", inherited ? "dithered" : "off");
 		}
 
 		// Volumetric-shadow caster mark (SELF flag - the coarse fog tile):
@@ -2780,7 +2792,11 @@ namespace editor {
 		{
 			ImGui::Separator();
 			bool self = IsCastsVolumetricShadowNode(scene, int(node));
-			if (ImGui::Checkbox("Casts volumetric shadow", &self)) {
+			if (attr::Check("Casts volumetric shadow", &self,
+					"Large occluders only (buildings, roofs, walls, "
+					"cliffs): the coarse fog-shadow tile; small props and "
+					"foliage belong to the surface CSM's detail. LIVE per "
+					"frame.")) {
 				EditCmd c{};
 				c.verb = EditVerb::SetCastsVolumetricShadow;
 				c.node = node;
@@ -2788,9 +2804,6 @@ namespace editor {
 				c.beforeFlag = !self;
 				Do(c);
 			}
-			ImGui::TextDisabled("large occluders only (buildings, roofs,\n"
-				"walls, cliffs): the coarse fog-shadow tile; small props\n"
-				"and foliage belong to the surface CSM's detail");
 		}
 
 		// Terrain group/tile: height paint controls (editor paint mode).
@@ -2801,28 +2814,31 @@ namespace editor {
 				ImGui::Text("Terrain '%s'  (%ux%u tiles)",
 					getNodeName(scene, int(group)).c_str(),
 					it->second.data.tilesX, it->second.data.tilesZ);
-				ImGui::TextDisabled("%u x %u samples, %.0f m, group #%u",
-					it->second.data.heights.width,
-					it->second.data.heights.height,
-					it->second.data.params.size, group);
-				static const char* kOps[] = { "Raise", "Lower", "Flatten",
-					"Smooth" };
-				ImGui::Combo("Brush", &m_paintOp, kOps, 4);
-				ImGui::DragFloat("Radius (m)", &m_paintRadius, 0.25f, 0.5f,
-					256.0f);
-				ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f,
-					64.0f, "%.2f");
-			if (ImGui::Checkbox("Paint mode (LMB paints this terrain)",
-				&m_paintTerrain)) {
-				// (The old "surface the Terrain toolbar tab" hint went
-				// with the tabs — the paint cluster is ALWAYS in the top
-				// toolbar's Terrain section now.)
-			}
-				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("While on, LMB in a 3D viewport paints "
-						"the selected terrain instead of picking. Each stamp "
+				{
+					char hm[96];
+					std::snprintf(hm, sizeof(hm),
+						"%u x %u samples, %.0f m, group #%u",
+						it->second.data.heights.width,
+						it->second.data.heights.height,
+						it->second.data.params.size, group);
+					attr::Readonly("Heightmap", hm);
+				}
+				attr::Enum("Brush", &m_paintOp,
+					"Raise\0Lower\0Flatten\0Smooth\0",
+					"The height paint operation");
+				attr::Float("Radius", &m_paintRadius, 0.25f, 0.5f, 256.0f,
+					"%.1f", "The brush radius (m)");
+				attr::Float("Strength", &m_paintStrength, 0.01f, 0.01f,
+					64.0f, "%.2f", "The per-stamp height delta scale");
+				if (attr::Check("Paint mode", &m_paintTerrain,
+						"While on, LMB in a 3D viewport paints the "
+						"selected terrain instead of picking. Each stamp "
 						"is one undoable command; paint persists as tour "
-						"terrainPaint verbs (deterministic replay).");
+						"terrainPaint verbs (deterministic replay).")) {
+					// (The old "surface the Terrain toolbar tab" hint went
+					// with the tabs — the paint cluster is ALWAYS in the
+					// top toolbar's Terrain section now.)
+				}
 			}
 		}
 
@@ -2913,8 +2929,8 @@ namespace editor {
 			return;
 		EditorCam& cam = m_editorCams[m_viewports[m_activeVp].camIdx];
 		int type = int(cam.type);
-		if (ImGui::Combo("Projection", &type,
-			"Perspective\0Orthographic\0")) {
+		if (attr::Enum("Projection", &type,
+				"Perspective\0Orthographic\0", "The lens projection")) {
 			cam.type = EditorCam::Type(type);
 			// Switching projection modes: give the ortho a sensible extent
 			// from the current framing distance.
@@ -2922,14 +2938,17 @@ namespace editor {
 				cam.orthoHalfH = std::max(cam.dist * 0.25f, 1.0f);
 		}
 		if (cam.type == EditorCam::Type::Perspective) {
-			ImGui::SliderFloat("FOV (deg)", &cam.fovYDeg, 10.0f, 120.0f, "%.0f");
+			attr::Slider("FOV", &cam.fovYDeg, 10.0f, 120.0f, "%.0f",
+				"The vertical field of view (deg)");
 		}
 		else {
-			ImGui::DragFloat("Ortho half-height (m)", &cam.orthoHalfH,
-				0.25f, 0.1f, 5000.0f);
+			attr::Float("Ortho half-height", &cam.orthoHalfH, 0.25f, 0.1f,
+				5000.0f, "%.1f", "The orthographic vertical half-extent (m)");
 		}
-		ImGui::DragFloat("Near clip", &cam.nearClip, 0.005f, 0.001f, 50.0f, "%.3f");
-		ImGui::DragFloat("Far clip", &cam.farClip, 5.0f, 10.0f, 100000.0f, "%.0f");
+		attr::Float("Near clip", &cam.nearClip, 0.005f, 0.001f, 50.0f,
+			"%.3f", "The near plane (m)");
+		attr::Float("Far clip", &cam.farClip, 5.0f, 10.0f, 100000.0f,
+			"%.0f", "The far plane (m)");
 		if (cam.farClip <= cam.nearClip * 1.1f)
 			cam.farClip = cam.nearClip * 1.1f + 10.0f;
 	}

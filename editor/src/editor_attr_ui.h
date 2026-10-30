@@ -97,6 +97,28 @@ inline bool Bool(const char* name, bool v, const char* hint) {
 	return clicked;
 }
 
+// ---- CHECK: a real checkbox in the VALUE column (the native
+// Checkbox draws the square LEFT of its label — the opposite of the
+// row convention). The hint rides the mouse-over like every row.
+inline bool Check(const char* name, bool* v, const char* hint) {
+	LabelCell(name, hint);
+	ImGui::PushID(name);
+	const bool toggled = ImGui::Checkbox("##check", v);
+	if (hint && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	ImGui::PopID();
+	return toggled;
+}
+
+// ---- READONLY: a read-only value row (name left, the value right,
+// NORMAL text color — the replacement for the old dim TextDisabled
+// readout/prose lines: readouts that are properties render as
+// properties).
+inline void Readonly(const char* name, const char* value) {
+	LabelCell(name, nullptr);
+	ImGui::TextUnformatted(value ? value : "");
+}
+
 // ---- FLOAT: the drag (label column + the field) ---------------------------
 inline bool Float(const char* name, float* v, float speed, float mn,
 	float mx, const char* fmt, const char* hint) {
@@ -165,6 +187,10 @@ inline Vec3Result Vec3(const char* name, float v[3], float speed,
 		static const char* kAxes[3] = { "X", "Y", "Z" };
 		const float colW = LabelColumnWidth();
 		for (int i = 0; i < 3; ++i) {
+			ImGui::PushID(i); // the axis row's id: X/Y/Z must not
+			                  // collide (a bare "##axis" gave all three
+			                  // the SAME id - the scale/translate XYZ
+			                  // misbehavior)
 			ImGui::Indent(colW); // align under the value column
 			ImGui::SetNextItemWidth(
 				ImGui::GetContentRegionAvail().x - 16.0f);
@@ -178,10 +204,36 @@ inline Vec3Result Vec3(const char* name, float v[3], float speed,
 			ImGui::SameLine();
 			ImGui::TextDisabled("%s", kAxes[i]);
 			ImGui::Unindent(colW);
+			ImGui::PopID();
 		}
 	}
 	ImGui::PopID();
 	return r;
+}
+
+// ---- VEC2 compact (the two-component row) ----------------------------------
+inline bool Vec2(const char* name, float v[2], float speed, float mn,
+	float mx, const char* fmt, const char* hint) {
+	LabelCell(name, hint);
+	ImGui::SetNextItemWidth(-1.0f);
+	const bool edited = ImGui::DragFloat2(Id(name).c_str(), v, speed, mn,
+		mx, fmt ? fmt : "%.3f");
+	if (hint && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	return edited;
+}
+
+// ---- INT BOX (typed integer input with steppers — ids/indices where a
+// drag's clamps and step would fight typing) -------------------------------
+inline bool IntBox(const char* name, int* v, const char* hint) {
+	LabelCell(name, hint);
+	ImGui::PushID(name);
+	ImGui::SetNextItemWidth(-1.0f);
+	const bool edited = ImGui::InputInt("##v", v);
+	if (hint && ImGui::IsItemHovered())
+		ImGui::SetTooltip("%s", hint);
+	ImGui::PopID();
+	return edited;
 }
 
 // ---- VEC3 compact (the single-row DragFloat3; for wide hosts where

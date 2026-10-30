@@ -7,6 +7,7 @@
 
 #include "editor_app.h"
 #include "editor_placement.h"
+#include "editor_attr_ui.h" // the attribute-widget stubs (attr::Float/...)
 
 #include <cmath>
 #include <cstdio>
@@ -94,7 +95,6 @@ void EditorApp::DirtyPlacementOnEdit() {
 
 void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 	ImGui::Text("%s  (#%u)", NodeKindName(n.kind), n.id);
-	ImGui::TextDisabled("%s node", NodeKindCategory(n.kind));
 	ImGui::Separator();
 	auto& F = n.f;
 	switch (n.kind) {
@@ -102,17 +102,22 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		if (F.size() < 7) F.resize(7, 0);
 		float o[3] = { F[0], F[1], F[2] };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragFloat3("Origin", o, 0.5f)) { F[0] = o[0]; F[1] = o[1]; F[2] = o[2]; }
+		if (attr::Vec3Compact("Origin", o, 0.5f,
+				"The grid's world origin (m)")) {
+			F[0] = o[0]; F[1] = o[1]; F[2] = o[2];
+		}
 		DirtyPlacementOnEdit();
 		float e[2] = { F[3], F[4] };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragFloat2("Extent XZ", e, 0.5f, 1.0f, 512.0f)) {
+		if (attr::Vec2("Extent XZ", e, 0.5f, 1.0f, 512.0f, "%.1f",
+				"The grid's X/Z extents (m)")) {
 			F[3] = e[0]; F[4] = e[1];
 		}
 		DirtyPlacementOnEdit();
 		float c[2] = { F[5], F[6] };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragFloat2("Cells XZ", c, 1.0f, 1.0f, 64.0f, "%.0f")) {
+		if (attr::Vec2("Cells XZ", c, 1.0f, 1.0f, 64.0f, "%.0f",
+				"The cell counts per axis")) {
 			F[5] = std::floor(c[0]); F[6] = std::floor(c[1]);
 		}
 		DirtyPlacementOnEdit();
@@ -122,20 +127,25 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		if (n.i.empty()) n.i = { -1 };
 		int node = n.i[0];
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::InputInt("Scene node", &node)) n.i[0] = node;
+		if (attr::IntBox("Scene node", &node,
+				"The scene node whose glTF primitive is extracted at "
+				"compile"))
+			n.i[0] = node;
 		DirtyPlacementOnEdit();
 		if (ImGui::Button("Use selected")) {
 			m_placement.pushUndo();
 			n.i[0] = (m_selected == UINT32_MAX) ? -1 : (int)m_selected;
 			MarkPlacementDirty();
 		}
-		ImGui::SameLine();
-		ImGui::TextDisabled("sel: %s",
-			m_selected == UINT32_MAX ? "-" : std::to_string(m_selected).c_str());
+		{
+			char selb[32];
+			std::snprintf(selb, sizeof(selb), "%s",
+				m_selected == UINT32_MAX
+				? "-" : std::to_string(m_selected).c_str());
+			attr::Readonly("Selected", selb);
+		}
 		if (n.i[0] < 0)
 			ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "No scene node bound.");
-		else
-			ImGui::TextDisabled("Extracts the node's glTF primitive at compile.");
 		break;
 	}
 	case NodeKind::Terrain: {
@@ -143,25 +153,33 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		if (n.i.empty()) n.i = { 1 };
 		float o[2] = { F[0], F[1] };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragFloat2("Origin XZ", o, 0.5f)) { F[0] = o[0]; F[1] = o[1]; }
+		if (attr::Vec2("Origin XZ", o, 0.5f, 0.0f, 0.0f, "%.1f",
+				"The terrain's world X/Z origin (m)"))
+			{ F[0] = o[0]; F[1] = o[1]; }
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragFloat("Size (m)", &F[2], 0.5f, 1.0f, 1024.0f)) {}
+		attr::Float("Size", &F[2], 0.5f, 1.0f, 1024.0f, "%.1f",
+			"The terrain extent (m)");
 		DirtyPlacementOnEdit();
 		float res = F[3];
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragFloat("Resolution", &res, 1.0f, 8.0f, 256.0f, "%.0f"))
+		if (attr::Float("Resolution", &res, 1.0f, 8.0f, 256.0f, "%.0f",
+				"Samples per axis"))
 			F[3] = std::floor(res);
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Hill height (m)", &F[4], 0.1f, 0.0f, 128.0f);
+		attr::Float("Hill height", &F[4], 0.1f, 0.0f, 128.0f, "%.1f",
+			"The analytic hill amplitude (m)");
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Hill frequency", &F[5], 0.002f, 0.0005f, 1.0f, "%.4f");
+		attr::Float("Hill frequency", &F[5], 0.002f, 0.0005f, 1.0f, "%.4f",
+			"The analytic hill frequency");
 		DirtyPlacementOnEdit();
 		int seed = n.i[0];
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::InputInt("Noise seed", &seed)) n.i[0] = seed;
+		if (attr::IntBox("Noise seed", &seed,
+				"The value-noise seed (analytic hills)"))
+			n.i[0] = seed;
 		DirtyPlacementOnEdit();
 		// Live terrain binding: scatter over a CREATED (painted) terrain
 		// group instead of the analytic hills.
@@ -169,8 +187,8 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		ImGui::Separator();
 		if (n.i[1] >= 0 && m_terrainGroups.contains((uint32_t)n.i[1])) {
 			ImGui::Text("Bound to live terrain group #%u", (uint32_t)n.i[1]);
-			ImGui::TextDisabled("Previews and scatter sample the PAINTED "
-				"heights; painting marks this preview dirty.");
+			ImGui::Text("Previews and scatter sample the PAINTED heights; "
+				"painting marks this preview dirty.");
 			if (ImGui::Button("Unbind (analytic)")) {
 				PushPlacementUndo();
 				n.i[1] = -1;
@@ -178,7 +196,7 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 			}
 		}
 		else {
-			ImGui::TextDisabled("Unbound: analytic hills (two value-noise "
+			ImGui::Text("Unbound: analytic hills (two value-noise "
 				"octaves, no scene geometry).");
 			if (ImGui::Button("Use selected (bind live terrain)")) {
 				const uint32_t group = TerrainGroupOf(m_selected);
@@ -195,27 +213,32 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 	case NodeKind::Density: {
 		if (F.empty()) F = { 0.5f };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::SliderFloat("Density", &F[0], 0.0f, 1.0f);
+		attr::Slider("Density", &F[0], 0.0f, 1.0f, "%.2f",
+			"The per-cell spawn probability");
 		DirtyPlacementOnEdit();
 		break;
 	}
 	case NodeKind::Noise: {
 		if (F.size() < 3) F = { 0.02f, 0, 0 };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Frequency", &F[0], 0.002f, 0.0005f, 1.0f, "%.4f");
+		attr::Float("Frequency", &F[0], 0.002f, 0.0005f, 1.0f, "%.4f",
+			"The value-noise frequency");
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat2("Offset", &F[1], 0.5f);
+		attr::Vec2("Offset", &F[1], 0.5f, 0.0f, 0.0f, "%.1f",
+			"The noise coordinate offset");
 		DirtyPlacementOnEdit();
 		break;
 	}
 	case NodeKind::Slope: {
 		if (F.size() < 2) F = { 0, 40 };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Flat deg", &F[0], 0.5f, 0.0f, 90.0f);
+		attr::Float("Flat deg", &F[0], 0.5f, 0.0f, 90.0f, "%.0f",
+			"Slope below this passes fully");
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Steep deg", &F[1], 0.5f, 0.0f, 90.0f);
+		attr::Float("Steep deg", &F[1], 0.5f, 0.0f, 90.0f, "%.0f",
+			"Slope above this rejects fully");
 		DirtyPlacementOnEdit();
 		break;
 	}
@@ -224,7 +247,8 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		const char* labels[4] = { "Lo in", "Lo full", "Hi full", "Hi out" };
 		for (int k = 0; k < 4; ++k) {
 			if (ImGui::IsItemActivated()) PushPlacementUndo();
-			ImGui::DragFloat(labels[k], &F[k], 0.5f);
+			attr::Float(labels[k], &F[k], 0.5f, 0.0f, 0.0f, "%.1f",
+				"The altitude band edge (m)");
 			DirtyPlacementOnEdit();
 		}
 		break;
@@ -234,7 +258,8 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		const char* labels[4] = { "In min", "In max", "Out min", "Out max" };
 		for (int k = 0; k < 4; ++k) {
 			if (ImGui::IsItemActivated()) PushPlacementUndo();
-			ImGui::DragFloat(labels[k], &F[k], 0.05f);
+			attr::Float(labels[k], &F[k], 0.05f, 0.0f, 0.0f, "%.3f",
+				"The remap range edge");
 			DirtyPlacementOnEdit();
 		}
 		break;
@@ -242,33 +267,39 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 	case NodeKind::Smoothstep: {
 		if (F.size() < 2) F = { 0, 1 };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat2("Edges", &F[0], 0.05f);
+		attr::Vec2("Edges", &F[0], 0.05f, 0.0f, 0.0f, "%.3f",
+			"The smoothstep edge0/edge1 pair");
 		DirtyPlacementOnEdit();
 		break;
 	}
 	case NodeKind::Power: {
 		if (F.empty()) F = { 2 };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Exponent", &F[0], 0.05f, 0.01f, 8.0f);
+		attr::Float("Exponent", &F[0], 0.05f, 0.01f, 8.0f, "%.2f",
+			"The power curve exponent");
 		DirtyPlacementOnEdit();
 		break;
 	}
 	case NodeKind::Accept: {
 		if (F.empty()) F = { 1.0f };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::SliderFloat("Scale", &F[0], 0.0f, 2.0f);
+		attr::Slider("Scale", &F[0], 0.0f, 2.0f, "%.2f",
+			"Stochastic accept: raising density reveals new stable "
+			"instances");
 		DirtyPlacementOnEdit();
-		ImGui::TextDisabled("Stochastic accept: raising density reveals new stable instances.");
 		break;
 	}
 	case NodeKind::Prototypes: {
 		if (F.size() < 2) F = { 0, 35 };
 		bool rock = F[0] != 0.0f;
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::Checkbox("Slope to rock", &rock)) F[0] = rock ? 1.0f : 0.0f;
+		if (attr::Check("Slope to rock", &rock,
+				"Flip to the rock prototype above this slope"))
+			F[0] = rock ? 1.0f : 0.0f;
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Rock over deg", &F[1], 0.5f, 0.0f, 90.0f);
+		attr::Float("Rock over deg", &F[1], 0.5f, 0.0f, 90.0f, "%.0f",
+			"The slope threshold (deg)");
 		DirtyPlacementOnEdit();
 		const size_t rows = n.s.size();
 		for (size_t r = 0; r < rows; ++r) {
@@ -276,16 +307,19 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 			char uri[256];
 			std::snprintf(uri, sizeof(uri), "%s", n.s[r].c_str());
 			if (ImGui::IsItemActivated()) PushPlacementUndo();
-			if (ImGui::InputText("URI", uri, sizeof(uri),
-				ImGuiInputTextFlags_EnterReturnsTrue))
+			if (attr::Text("URI", uri, sizeof(uri),
+					"Resolves to a scene mesh at runtime (first cluster "
+					"match wins)"))
 				n.s[r] = uri;
 			DirtyPlacementOnEdit();
 			if (F.size() < 2 + 2 * (r + 1)) F.resize(2 + 2 * (r + 1), 0.5f);
 			if (ImGui::IsItemActivated()) PushPlacementUndo();
-			ImGui::DragFloat("Weight", &F[2 + 2 * r], 0.05f, 0.0f, 100.0f);
+			attr::Float("Weight", &F[2 + 2 * r], 0.05f, 0.0f, 100.0f,
+				"%.2f", "The prototype's pick share");
 			DirtyPlacementOnEdit();
 			if (ImGui::IsItemActivated()) PushPlacementUndo();
-			ImGui::DragFloat("Radius", &F[2 + 2 * r + 1], 0.05f, 0.05f, 32.0f);
+			attr::Float("Radius", &F[2 + 2 * r + 1], 0.05f, 0.05f, 32.0f,
+				"%.2f", "The prototype's spacing radius (m)");
 			DirtyPlacementOnEdit();
 			if (ImGui::Button("Remove row") && rows > 1) {
 				m_placement.pushUndo();
@@ -305,25 +339,31 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 			n.f.push_back(0.5f);
 			MarkPlacementDirty();
 		}
-		ImGui::TextDisabled("%u rows (GPU kernel limit: 8).", (unsigned)n.s.size());
-		ImGui::TextDisabled("URIs resolve to scene meshes at runtime "
-			"(first cluster match wins); weight = pick share, radius = spacing.");
+		{
+			char rowsb[48];
+			std::snprintf(rowsb, sizeof(rowsb), "%u (GPU kernel limit: 8)",
+				(unsigned)n.s.size());
+			attr::Readonly("Rows", rowsb);
+		}
 		break;
 	}
 	case NodeKind::Transform: {
 		if (F.size() < 2) F = { 0.8f, 1.2f };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Min scale", &F[0], 0.02f, 0.01f, 32.0f);
+		attr::Float("Min scale", &F[0], 0.02f, 0.01f, 32.0f, "%.2f",
+			"The instance scale range floor");
 		DirtyPlacementOnEdit();
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Max scale", &F[1], 0.02f, 0.01f, 32.0f);
+		attr::Float("Max scale", &F[1], 0.02f, 0.01f, 32.0f, "%.2f",
+			"The instance scale range ceiling");
 		DirtyPlacementOnEdit();
 		break;
 	}
 	case NodeKind::Spacing: {
 		if (F.empty()) F = { 0.0f };
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		ImGui::DragFloat("Min spacing (0=off)", &F[0], 0.1f, 0.0f, 64.0f);
+		attr::Float("Min spacing", &F[0], 0.1f, 0.0f, 64.0f, "%.1f",
+			"The spacing solver radius (m; 0 = off)");
 		DirtyPlacementOnEdit();
 		break;
 	}
@@ -331,21 +371,23 @@ void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
 		if (F.empty()) F = { 4096 };
 		int cands = (int)F[0];
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::DragInt("Candidates", &cands, 64.0f, 64, 65536)) F[0] = (float)cands;
+		if (attr::Int("Candidates", &cands, 64, 65536,
+				"The per-tile candidate cap"))
+			F[0] = (float)cands;
 		DirtyPlacementOnEdit();
 		if (n.s.empty()) n.s = { "1234" };
 		char seed[64];
 		std::snprintf(seed, sizeof(seed), "%s", n.s[0].c_str());
 		if (ImGui::IsItemActivated()) PushPlacementUndo();
-		if (ImGui::InputText("Seed (uint64)", seed, sizeof(seed),
-			ImGuiInputTextFlags_EnterReturnsTrue))
+		if (attr::Text("Seed", seed, sizeof(seed),
+				"Stable IDs derive from seed+tile+index: streaming order "
+				"never reshuffles"))
 			n.s[0] = seed;
 		DirtyPlacementOnEdit();
-		ImGui::TextDisabled("Stable IDs derive from seed+tile+index: streaming order never reshuffles.");
 		break;
 	}
 	default:
-		ImGui::TextDisabled("No parameters (wire inputs).");
+		ImGui::Text("No parameters (wire inputs).");
 		break;
 	}
 }
