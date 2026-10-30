@@ -132,8 +132,62 @@ inline bool Int(const char* name, int* v, int mn, int mx,
 	return edited;
 }
 
-// ---- VEC3 (the transform rows) ---------------------------------------------
-inline bool Vec3(const char* name, float v[3], float speed, const char* hint) {
+// ---- VEC3 (the transform rows): EXPANDABLE per-axis drags. A
+// DragFloat3 crams three sub-fields into one row's remainder — at the
+// inspector's narrow widths each axis gets a sliver. The row shows the
+// compact "(x, y, z)" summary + a disclosure chip; expanded (the
+// default) draws three FULL-WIDTH axis drags aligned under the value
+// column. The item state the undo wiring needs (IsItemActivated /
+// IsItemDeactivatedAfterEdit) is AGGREGATED across the axis rows into
+// the result — a multi-item widget cannot leave "the item" on the last
+// axis drawn.
+struct Vec3Result {
+	bool edited = false;     // any axis changed this frame
+	bool activated = false;  // any axis drag started this frame
+	bool finished = false;   // an edited axis released this frame
+};
+inline Vec3Result Vec3(const char* name, float v[3], float speed,
+	const char* hint) {
+	Vec3Result r;
+	LabelCell(name, hint);
+	ImGui::PushID(name);
+	// The disclosure state: the window's storage, keyed by the property
+	// id (survives frames; per-window like every ImGui open state).
+	const ImGuiID openId = ImGui::GetID("vec3open");
+	bool open = ImGui::GetStateStorage()->GetBool(openId, true);
+	if (ImGui::Button(open ? "-##vec3" : "+##vec3", ImVec2(18.0f, 0.0f))) {
+		open = !open;
+		ImGui::GetStateStorage()->SetBool(openId, open);
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("%.2f, %.2f, %.2f", v[0], v[1], v[2]);
+	if (open) {
+		static const char* kAxes[3] = { "X", "Y", "Z" };
+		const float colW = LabelColumnWidth();
+		for (int i = 0; i < 3; ++i) {
+			ImGui::Indent(colW); // align under the value column
+			ImGui::SetNextItemWidth(
+				ImGui::GetContentRegionAvail().x - 16.0f);
+			if (ImGui::DragFloat("##axis", &v[i], speed, 0.0f, 0.0f,
+					"%.3f"))
+				r.edited = true;
+			if (ImGui::IsItemActivated())
+				r.activated = true;
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				r.finished = true;
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s", kAxes[i]);
+			ImGui::Unindent(colW);
+		}
+	}
+	ImGui::PopID();
+	return r;
+}
+
+// ---- VEC3 compact (the single-row DragFloat3; for wide hosts where
+// three sub-fields still read well) ---------------------------------------
+inline bool Vec3Compact(const char* name, float v[3], float speed,
+	const char* hint) {
 	LabelCell(name, hint);
 	ImGui::SetNextItemWidth(-1.0f);
 	const bool edited = ImGui::DragFloat3(Id(name).c_str(), v, speed);

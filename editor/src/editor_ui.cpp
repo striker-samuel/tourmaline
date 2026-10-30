@@ -82,8 +82,8 @@ namespace editor {
 	}
 
 	bool EditorApp::TrackDrag(EditVerb verb, uint32_t node,
-		const glm::mat4& beforeMat) {
-		if (ImGui::IsItemActivated()) {
+		const glm::mat4& beforeMat, bool activated) {
+		if (activated) {
 			if (m_pending.active && (m_pending.cmd.verb != verb ||
 				m_pending.cmd.node != node))
 				FinalizePending(); // switching controls mid-gesture
@@ -2370,39 +2370,45 @@ namespace editor {
 			}
 		}
 
-		// Transform (coalesced drags: one command per gesture).
+		// Transform (coalesced drags: one command per gesture). The
+		// per-axis rows (attr::Vec3, expandable) AGGREGATE the item
+		// state; the activation feeds TrackDrag, the finish edge closes
+		// the gesture.
 		{
 			glm::vec3 t, r, s;
 			ReadLocalTRS(node, t, r, s);
 			float ts[3] = { t.x, t.y, t.z };
 			float rs[3] = { r.x, r.y, r.z };
 			float ss[3] = { s.x, s.y, s.z };
-			ImGui::DragFloat3("Translate", ts, 0.05f);
+			const attr::Vec3Result tv = attr::Vec3("Translate", ts, 0.05f,
+				"The node's local translation (m)");
 			const bool tOwn = TrackDrag(EditVerb::Translate, node,
-				scene.localTransform[node]);
+				scene.localTransform[node], tv.activated);
 			if (tOwn) {
 				WriteLocalTRS(node, glm::vec3(ts[0], ts[1], ts[2]), r, s);
-				if (ImGui::IsItemDeactivatedAfterEdit()) {
+				if (tv.finished) {
 					m_pending.cmd.afterVec = glm::vec3(ts[0], ts[1], ts[2]);
 					FinishDrag();
 				}
 			}
-			ImGui::DragFloat3("Rotate (deg)", rs, 0.5f);
+			const attr::Vec3Result rv = attr::Vec3("Rotate (deg)", rs, 0.5f,
+				"The node's local Euler rotation (degrees)");
 			const bool rOwn = TrackDrag(EditVerb::Rotate, node,
-				scene.localTransform[node]);
+				scene.localTransform[node], rv.activated);
 			if (rOwn) {
 				WriteLocalTRS(node, t, glm::vec3(rs[0], rs[1], rs[2]), s);
-				if (ImGui::IsItemDeactivatedAfterEdit()) {
+				if (rv.finished) {
 					m_pending.cmd.afterVec = glm::vec3(rs[0], rs[1], rs[2]);
 					FinishDrag();
 				}
 			}
-			ImGui::DragFloat3("Scale", ss, 0.02f);
+			const attr::Vec3Result sv = attr::Vec3("Scale", ss, 0.02f,
+				"The node's local scale (uniform per axis)");
 			const bool sOwn = TrackDrag(EditVerb::Scale, node,
-				scene.localTransform[node]);
+				scene.localTransform[node], sv.activated);
 			if (sOwn) {
 				WriteLocalTRS(node, t, r, glm::vec3(ss[0], ss[1], ss[2]));
-				if (ImGui::IsItemDeactivatedAfterEdit()) {
+				if (sv.finished) {
 					m_pending.cmd.afterVec = glm::vec3(ss[0], ss[1], ss[2]);
 					FinishDrag();
 				}

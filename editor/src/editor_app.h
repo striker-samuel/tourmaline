@@ -1070,7 +1070,10 @@ private:
 	};
 	PendingCmd m_pending;
 	void FinalizePending(); // complete m_pending from live state + push
-	bool TrackDrag(EditVerb verb, uint32_t node, const glm::mat4& beforeMat);
+	bool TrackDrag(EditVerb verb, uint32_t node, const glm::mat4& beforeMat,
+		bool activated); // editor_ui.cpp (the caller passes the widget's
+		                 // aggregated IsItemActivated - a multi-item
+		                 // widget cannot leave it on the last item)
 	void FinishDrag(); // PushDone(m_pending.cmd) + clear
 	// Tour persistence (the stack IS the document).
 	std::string TourPath() const; // default <stem>.tour next to the source
