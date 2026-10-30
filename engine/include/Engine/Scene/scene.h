@@ -18,6 +18,9 @@
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
 
+#include <Engine/Scene/scene_node_id.h>
+#include <Engine/Scene/scene_tables.h>
+
 using glm::mat4;
 constexpr const int MAX_NODE_LEVEL = 16;
 
@@ -36,7 +39,7 @@ struct Hierarchy {
 	int level = 0;
 };
 
-using NodeId = uint32_t;
+// NodeId: engine/include/Engine/Scene/scene_node_id.h (included above)
 // Cooked punctual light (KHR_lights_punctual import). Definitions live in
 // the owning Cluster's lights pool (like meshes); the definition itself is
 // node-local (color/intensity/range/cones) and world position/direction
@@ -460,6 +463,19 @@ struct Scene {
 	std::vector<NodeId> changedAtThisFrame[MAX_NODE_LEVEL];
 
 	std::vector<Hierarchy> hierarchy;
+
+	// ---- typed association tables (the xForNode migration target,
+	// Epoch 3+, docs/scene_tables_migration.md) ----
+	// INTRODUCED but NOT YET AUTHORITATIVE: the maps below remain the
+	// source of truth until each kind's consumers migrate (Epochs 4-5)
+	// and the maps die. Nothing populates the tables yet except tests
+	// and (from Epoch 4 on) the migrated write paths.
+	SceneTables tables;
+	// Derived per-node index over `tables` — maintained by the
+	// scene_tables.h mutators, rebuilt by RebuildNodeRows, never
+	// serialized, never a second source of truth.
+	std::vector<NodeRows> rowsForNode;
+
 	std::unordered_map<NodeId, uint32_t> meshForNode;
 	std::unordered_map<NodeId, uint32_t> materialForNode;
 	std::unordered_map<NodeId, uint32_t> nameForNode;

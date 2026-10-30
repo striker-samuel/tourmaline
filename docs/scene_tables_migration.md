@@ -171,6 +171,17 @@ deltas are marked.
   `rowsForNode` derived lookup + handwritten Set/Find/Remove; rows
   carry `StringRef`s from the start; `UINT32_MAX` invalid-row
   in-memory).
+  - **Record**: `scene_node_id.h` extracted (NodeId was inline in
+    scene.h; the tables header needs it without a cycle — and it is
+    the ONE definition the stable-slot epochs 6b/6c will change).
+    Four kinds this epoch (mesh/light/camera/decal — the pool-index
+    indirections); swap-and-pop + lookup repair chosen as the
+    deletion policy; `RebuildNodeRows` does an EXACT resize (grows
+    AND shrinks — the first test run caught the grow-only gap) and
+    compacts out dead rows (node out of range after a compacting
+    deletion). Node-id remapping on compaction stays Epoch 6's
+    contract. `NodeRows.body` reserved for Epoch 10. The maps remain
+    authoritative — nothing populates the tables yet except tests.
 - 4 — `refactor(scene): migrate mesh and material associations`.
 - 5 — `refactor(scene): migrate remaining node associations`
   (all twelve maps; `nameForNode`+`uuidForNode` fold into dense

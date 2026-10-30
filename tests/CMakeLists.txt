@@ -378,6 +378,22 @@ set_target_properties(PhysicsJoltTests PROPERTIES
 
 add_test(NAME physics_jolt_tests COMMAND PhysicsJoltTests)
 
+# Typed scene-table maintenance contract (scene-tables migration
+# Epoch 3): insertion/lookup/replacement/removal/swap-and-pop repair/
+# rebuild compaction — GPU-less, pure value scenes.
+add_executable(SceneTableTests test_scene_tables.cpp)
+
+target_link_libraries(SceneTableTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(SceneTableTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME scene_table_tests COMMAND SceneTableTests)
+
 add_executable(PlacementTests test_placement.cpp)
 
 target_link_libraries(PlacementTests
