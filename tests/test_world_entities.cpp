@@ -461,6 +461,7 @@ void TestResolveCarriesInlineTables()
 	es.lodError = 0.25f;
 	SetExport(c2->scene, 1, es);
 	SetNodeUuidRaw(c1->scene, 1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+	setNodeName(c1->scene, 1, "GIV_a");
 	w.RegisterCluster(std::move(c1));
 	w.RegisterCluster(std::move(c2));
 	w.ResolveAndFixup_clusters();
@@ -479,25 +480,41 @@ void TestResolveCarriesInlineTables()
 		Check(r.settings.lodError == 0.25f, "resolve.export-carried");
 	}
 	Check(gi == 1 && cbm == 1 && ex == 1, "resolve.inline-table-counts");
-	// Overlap remapped apart: both rows live, distinct world nodes,
-	// and the uuid rode the metadata append.
+	// Metadata never OVER-allocates past the slot count (the pre-6b
+	// resolve's base-offset append double-allocated a phantom second
+	// region — 7 entries for 5 nodes). It may legitimately LAG the
+	// node count: the lazy contract (addNode doesn't grow it;
+	// entries beyond read as unnamed).
+	Check(s.metadata.size() <= s.hierarchy.size(),
+		"resolve.metadata-bounded");
+	// Overlap remapped apart: both rows live at distinct world nodes.
 	const GiVolumeRow* g1 = nullptr;
 	for (const GiVolumeRow& r : s.tables.giVolumes)
 		if (r.volume.priority == 7) g1 = &r;
 	const CubemapRow* k2 = nullptr;
 	for (const CubemapRow& r : s.tables.cubemaps)
 		if (r.cubemap.radius == 9.5f) k2 = &r;
-	Check(g1 && k2 && g1->node != k2->node,
-		"resolve.overlap-remapped-apart");
-	bool uuidFound = false;
-	for (const NodeMetadata& m : s.metadata)
-		if (m.uuid == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-			uuidFound = true;
-	Check(uuidFound, "resolve.uuid-carried");
+	Check(g1 != nullptr, "resolve.givolume-row-found");
+	Check(k2 != nullptr, "resolve.cubemap-row-found");
+	// Identity AT THE ROW'S OWN NODE (the whole-array uuid search this
+	// test used before masked a real indexing bug: the pre-6b resolve
+	// wrote names/uuids past the appended nodes, so the uuid existed
+	// SOMEWHERE and the weak check passed while getNodeName/GetNodeUuid
+	// answered empty at the actual node). Name AND uuid must land on
+	// the exact node that carries the row.
+	if (g1 && k2) {
+		Check(g1->node != k2->node, "resolve.overlap-remapped-apart");
+		Check(GetNodeUuid(s, g1->node)
+			== "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"resolve.uuid-at-row-node");
+		Check(getNodeName(s, int(g1->node)) == "GIV_a",
+			"resolve.name-at-row-node");
+	}
 	// Rebuild the derived index from scratch: identical answers.
-	RebuildNodeRows(const_cast<::Scene&>(s));
-	Check(FindGiVolume(const_cast<::Scene&>(s), g1->node) != nullptr,
-		"resolve.rebuild-stale-free");
+	RebuildNodeRows(w.scene);
+	if (g1)
+		Check(FindGiVolume(w.scene, g1->node) != nullptr,
+			"resolve.rebuild-stale-free");
 }
 
 // Epoch 6b: the resolve's SLOT-ASSOCIATION map — a cluster scene with

@@ -173,11 +173,9 @@ deltas are marked.
     volume — and the contact solver ejected the cube UPWARD (the
     step-trace caught it: rise to 10.48, sleep). Floor centered at
     -20 (top at y=0) as intended.
-- 2 — `test: add Jolt physics smoke test`.
 - 3 — `refactor(scene): introduce typed data tables` (rows +
-  `rowsForNode` derived lookup + handwritten Set/Find/Remove; rows
-  carry `StringRef`s from the start; `UINT32_MAX` invalid-row
-  in-memory).
+  `rowsForNode` derived lookup + handwritten Set/Find/Remove;
+  `UINT32_MAX` invalid-row in-memory).
   - **Record**: `scene_node_id.h` extracted (NodeId was inline in
     scene.h; the tables header needs it without a cycle — and it is
     the ONE definition the stable-slot epochs 6b/6c will change).
@@ -221,34 +219,50 @@ deltas are marked.
 - 5 — `refactor(scene): migrate remaining node associations`
   (all twelve maps; `nameForNode`+`uuidForNode` fold into dense
   `NodeMetadata`; env/envVolume inline rows are already POD —
-  giVolume/cubemap/export rows take `StringRef`s).
-# Epoch 5 record (append to the Epoch 5 bullet)
-
-  - **5 — `refactor(scene): migrate remaining node associations`**
-    - **Record**: ALL TEN maps deleted (light/camera/decal/
-      giVolume/cubemap/export/env/envVolume → typed tables with
-      inline payloads; nameForNode+uuidForNode → dense NodeMetadata
-      array). scene_payloads.h extracted (the payload structs moved
-      out of scene.h so the rows can reference them without a
-      cycle). Inline-payload rows are copyable-not-trivial (strings
-      live in the authoring structs; the COOKED StringRef layout is
-      Epoch 7's). findNodeByName/getNodeName/setNodeName re-targeted
-      to metadata; mergeScenes clears all tables with the fresh-root
-      reset and appends metadata with name-offset remap; the resolve
-      remaps every table + metadata; deleteSceneNodes shifts every
-      table + metadata (shiftNodeMetadata). Pak writers sorted by
-      node (byte-stable); readers bulk-push + one RebuildNodeRows.
-      Two migration-war stories recorded for posterity: the
-      envvol-priority default needs the derived index LIVE between
-      passes (the env bulk push became SetEnv calls — FindEnv in the
-      envvol pass missed index-less rows); and a nested-regex
-      collision mangled asset_export's name-index ternary (empty
-      asset names — every namespaced-reference test caught it).
-      Validation: Windows tests 46/46 (incl. tour replay, env
-      volumes, world entities); editor smoke clean. The mechanical
-      bulk migration was scripted (regex transforms + a
-      compiler-error-driven fix loop) — 500+ sites, zero remaining
-      live references.
+  giVolume/cubemap/export rows keep the authoring structs' strings;
+  the COOKED StringRef arena is Epoch 7's).
+  - **Record**: ALL TEN maps deleted (light/camera/decal/
+    giVolume/cubemap/export/env/envVolume → typed tables with
+    inline payloads; nameForNode+uuidForNode → dense NodeMetadata
+    array). scene_payloads.h extracted (the payload structs moved
+    out of scene.h so the rows can reference them without a
+    cycle). Inline-payload rows are copyable-not-trivial (strings
+    live in the authoring structs; the COOKED StringRef layout is
+    Epoch 7's). findNodeByName/getNodeName/setNodeName re-targeted
+    to metadata; mergeScenes clears all tables with the fresh-root
+    reset and appends metadata with name-offset remap; the resolve
+    remaps the Epoch-5 kinds (the four never-carried kinds —
+    giVolume/cubemap/export/uuid — ride the resolve from EPOCH 6,
+    not this one); deleteSceneNodes shifts every
+    table + metadata (shiftNodeMetadata). Pak writers sorted by
+    node (byte-stable); readers bulk-push + one RebuildNodeRows.
+    Two migration-war stories recorded for posterity: the
+    envvol-priority default needs the derived index LIVE between
+    passes (the env bulk push became SetEnv calls — FindEnv in the
+    envvol pass missed index-less rows); and a nested-regex
+    collision mangled asset_export's name-index ternary (empty
+    asset names — every namespaced-reference test caught it).
+    Validation: Windows tests 46/46 (incl. tour replay, env
+    volumes, world entities); editor smoke clean. The mechanical
+    bulk migration was scripted (regex transforms + a
+    compiler-error-driven fix loop) — 500+ sites, zero remaining
+    live references.
+    - **Commit-review findings** (the 10/30 review of 3e6bea6 +
+      7a8a1858): CRITICAL — the resolve's metadata append wrote
+      names/uuids PAST the appended nodes (EnsureNodeMetadata had
+      already grown to the new node count, so `base = size()` was
+      past them and the copy landed in a phantom second region —
+      double-sized allocation, empty names/uuids at the real nodes).
+      It survived every test because the uuid check searched the
+      whole metadata array instead of the row's own node. Fixed by
+      6b's nodeMap metadata copy (SetNodeNameIndex/SetNodeUuidRaw at
+      nodeMap[s] — no offset arithmetic) and pinned per-node in
+      TestResolveCarriesInlineTables. Also noted: NodeMetadata's
+      mixed name-index + std::string uuid footprint is a cache-
+      locality concern — deferred to Epoch 7's string arena (the
+      locked plan) unless profiling says otherwise; the payload
+      setters/removers now move rows instead of copying (the
+      string-owning kinds).
 
 - 6 — `refactor(world): support table remapping and merging` —
   targets `ResolveAndFixup_clusters`, NOT `mergeScenes`; the four
@@ -256,8 +270,7 @@ deltas are marked.
 - **6b — `refactor(world): stable node slots and generations`**
   (inserted): handles survive node deletion without renumbering;
   the dense-index remap contract becomes a slot-association contract.
-  - **6b — `refactor(world): stable node slots and generations`**
-    - **Record**: NodeId became a STABLE SLOT INDEX (the epoch's
+  - **Record**: NodeId became a STABLE SLOT INDEX (the epoch's
       representation change lives in scene_node_id.h + Scene's two new
       members: nodeGeneration — bit31 alive + 12-bit generation per
       slot, may lag hierarchy.size() with untracked slots reading live

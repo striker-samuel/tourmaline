@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <string>
+#include <utility>
 
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
@@ -473,7 +474,7 @@ bool SetGiVolume(Scene& scene, NodeId node, const SceneGiVolume& volume)
 	GiVolumeRow row{};
 	row.node = node;
 	row.volume = volume;
-	scene.tables.giVolumes.push_back(row);
+	scene.tables.giVolumes.push_back(std::move(row));
 	scene.rowsForNode[node].giVolume = RowId(scene.tables.giVolumes.size() - 1);
 	return true;
 }
@@ -485,7 +486,10 @@ bool RemoveGiVolume(Scene& scene, NodeId node)
 	const RowId rid = scene.rowsForNode[node].giVolume;
 	if (rid == InvalidRow)
 		return false;
-	scene.tables.giVolumes[rid] = scene.tables.giVolumes.back();
+	// The payload rows own strings — move the back row in (the source
+	// is popped right after; the indirection rows above are POD where
+	// a move IS the copy).
+	scene.tables.giVolumes[rid] = std::move(scene.tables.giVolumes.back());
 	scene.tables.giVolumes.pop_back();
 	if (size_t(rid) < scene.tables.giVolumes.size()) {
 		const NodeId moved = scene.tables.giVolumes[rid].node;
@@ -531,7 +535,7 @@ bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap)
 	CubemapRow row{};
 	row.node = node;
 	row.cubemap = cubemap;
-	scene.tables.cubemaps.push_back(row);
+	scene.tables.cubemaps.push_back(std::move(row));
 	scene.rowsForNode[node].cubemap = RowId(scene.tables.cubemaps.size() - 1);
 	return true;
 }
@@ -543,7 +547,7 @@ bool RemoveCubemap(Scene& scene, NodeId node)
 	const RowId rid = scene.rowsForNode[node].cubemap;
 	if (rid == InvalidRow)
 		return false;
-	scene.tables.cubemaps[rid] = scene.tables.cubemaps.back();
+	scene.tables.cubemaps[rid] = std::move(scene.tables.cubemaps.back());
 	scene.tables.cubemaps.pop_back();
 	if (size_t(rid) < scene.tables.cubemaps.size()) {
 		const NodeId moved = scene.tables.cubemaps[rid].node;
@@ -589,7 +593,7 @@ bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings)
 	ExportRow row{};
 	row.node = node;
 	row.settings = settings;
-	scene.tables.exports.push_back(row);
+	scene.tables.exports.push_back(std::move(row));
 	scene.rowsForNode[node].exportSettings = RowId(scene.tables.exports.size() - 1);
 	return true;
 }
@@ -601,7 +605,7 @@ bool RemoveExport(Scene& scene, NodeId node)
 	const RowId rid = scene.rowsForNode[node].exportSettings;
 	if (rid == InvalidRow)
 		return false;
-	scene.tables.exports[rid] = scene.tables.exports.back();
+	scene.tables.exports[rid] = std::move(scene.tables.exports.back());
 	scene.tables.exports.pop_back();
 	if (size_t(rid) < scene.tables.exports.size()) {
 		const NodeId moved = scene.tables.exports[rid].node;
@@ -647,7 +651,7 @@ bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment)
 	EnvRow row{};
 	row.node = node;
 	row.environment = environment;
-	scene.tables.envs.push_back(row);
+	scene.tables.envs.push_back(std::move(row));
 	scene.rowsForNode[node].env = RowId(scene.tables.envs.size() - 1);
 	return true;
 }
@@ -659,7 +663,7 @@ bool RemoveEnv(Scene& scene, NodeId node)
 	const RowId rid = scene.rowsForNode[node].env;
 	if (rid == InvalidRow)
 		return false;
-	scene.tables.envs[rid] = scene.tables.envs.back();
+	scene.tables.envs[rid] = std::move(scene.tables.envs.back());
 	scene.tables.envs.pop_back();
 	if (size_t(rid) < scene.tables.envs.size()) {
 		const NodeId moved = scene.tables.envs[rid].node;
@@ -705,7 +709,7 @@ bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume)
 	EnvVolumeRow row{};
 	row.node = node;
 	row.volume = volume;
-	scene.tables.envVolumes.push_back(row);
+	scene.tables.envVolumes.push_back(std::move(row));
 	scene.rowsForNode[node].envVolume = RowId(scene.tables.envVolumes.size() - 1);
 	return true;
 }
@@ -717,7 +721,7 @@ bool RemoveEnvVolume(Scene& scene, NodeId node)
 	const RowId rid = scene.rowsForNode[node].envVolume;
 	if (rid == InvalidRow)
 		return false;
-	scene.tables.envVolumes[rid] = scene.tables.envVolumes.back();
+	scene.tables.envVolumes[rid] = std::move(scene.tables.envVolumes.back());
 	scene.tables.envVolumes.pop_back();
 	if (size_t(rid) < scene.tables.envVolumes.size()) {
 		const NodeId moved = scene.tables.envVolumes[rid].node;

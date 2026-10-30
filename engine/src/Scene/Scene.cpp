@@ -1230,8 +1230,8 @@ void mergeScenes(
     srcRoots.push_back(srcRoot);
 
     // Typed tables: append the source rows through the map with the
-    // resource offsets (the mergeMaps semantics, one row at a time —
-    // SetMesh/SetMaterial keep the derived index correct as we go).
+    // resource offsets (one row at a time — SetMesh/SetMaterial keep
+    // the derived index correct as we go).
     // Dead rows (a hole where a row still points — a tampered scene)
     // drop silently like every other row validator.
     for (const MeshRow& row : s->tables.meshes)
