@@ -370,6 +370,14 @@ ICD).
   Known transport limitation (deferred, the review's #2): skylight is evaluated
   ON MISS ONLY — no explicit sky sampling with visibility at diffuse vertices,
   so partially-enclosed scenes (Sponza) need deep paths to find openings.
+- Bake ray-tracing backend: EMBREE is THE backend (the GiBaker default and the
+  engine's GiSceneBuildOptions default). The builtin binned-SAH BVH TRANSPORT
+  is DEPRECATED and marked for deletion — `--backend builtin` still works
+  (GiBaker prints a loud deprecation warning) and an Embree device/scene
+  failure still falls back to it automatically until the removal; the COLD
+  non-transport paths (TriangleBvh::ClosestDistance, the placement density
+  picks) stay builtin by design. Bakes are reproducible per backend; the two
+  backends agree within Monte-Carlo noise.
 - Ambient closure (`--cubemap-ambient-closure`, default OFF): captures + the
   GI stack both carrying the ambient double-counts every mirror-like surface
   (the chrome probe ball, gold trim reflect ~2x). ON only for stack-less

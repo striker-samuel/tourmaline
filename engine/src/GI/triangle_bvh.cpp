@@ -182,7 +182,9 @@ void TriangleBvh::Build(std::span<const glm::vec3> positions, std::span<const ui
 		return;
 	// Embree is the production backend (vendored, always compiled in) —
 	// the only fallback left is a runtime device/scene failure (driver
-	// trouble), which keeps the builtin traversal live.
+	// trouble), which keeps the builtin traversal live UNTIL ITS
+	// DELETION PASS (the builtin TRANSPORT is deprecated — the fallback
+	// and the cold non-transport paths are its remaining roles).
 	auto ctx = std::make_unique<EmbreeContext>();
 	ctx->device = rtcNewDevice(nullptr);
 	if (ctx->device == nullptr || rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE) {

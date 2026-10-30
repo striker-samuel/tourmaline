@@ -28,11 +28,13 @@ namespace smvk::gi {
 
 // Ray-tracing backend for the bake transport (primary/shadow rays): the
 // vendored Embree (external/embree, packet/SIMD traversal over the same
-// triangle soup — the fast production backend) or the builtin binned-SAH
-// BVH (the deterministic reference; also owns ClosestDistance, which
-// stays builtin either way — cold placement/relocation path).
+// triangle soup — the fast production backend, THE backend: the builtin
+// transport is DEPRECATED and marked for deletion) or the builtin
+// binned-SAH BVH (the deterministic reference — deprecated for transport;
+// it also owns ClosestDistance, which stays builtin either way — cold
+// placement/relocation path).
 enum class TraceBackend {
-	Builtin,
+	Builtin, // DEPRECATED for the bake transport (deletion target)
 	Embree,
 };
 

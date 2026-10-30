@@ -1074,6 +1074,11 @@ int Run(Args& args) {
 	smvk::gi::GiTraceScene traceScene;
 	std::string err;
 	buildOpts.traceBackendEmbree = (args.backend == "embree");
+	if (!buildOpts.traceBackendEmbree)
+		tool::err() << "  DEPRECATED: the builtin BVH bake transport is"
+			" marked for deletion (Embree is the backend; results agree"
+			" within Monte-Carlo noise) — rebake before the removal or"
+			" your reference outputs die with it\n";
 	// Weave-transmissive cloth (the effective maskTransmission — the
 	// node-authored value unless the CLI overrode it, resolved above):
 	// the GI field sees the tinted light pools behind the banners; the

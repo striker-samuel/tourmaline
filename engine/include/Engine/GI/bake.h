@@ -299,15 +299,21 @@ public:
 	glm::vec3 TransmissionAt(const GiTraceMaterial& m, uint32_t tri,
 		const glm::vec2& baryUV) const;
 
-	// Ray-tracing backend for the bake transport (see TriangleBvh): the
-	// builtin BVH by default (deterministic reference); Embree (the
-	// vendored production backend) when requested. Set BEFORE Finalize
-	// (which builds the BVH); BuildTraceSceneFromCluster wires it from
-	// GiSceneBuildOptions::traceBackendEmbree.
+	// Ray-tracing backend for the bake transport (see TriangleBvh):
+	// EMBREE (the vendored production backend) is the default — the
+	// builtin BVH transport is DEPRECATED and marked for deletion
+	// (10/30, the owner's call): keep it only as the Embree-failure
+	// fallback + for the cold non-transport paths (ClosestDistance,
+	// the placement picks) until the deletion pass. Set BEFORE
+	// Finalize (which builds the BVH); BuildTraceSceneFromCluster
+	// wires it from GiSceneBuildOptions::traceBackendEmbree.
 	void SetTraceBackend(TraceBackend backend) { traceBackend_ = backend; }
 	TraceBackend GetTraceBackend() const { return traceBackend_; }
 
 private:
+	// Builtin until the deletion pass: direct constructions (tests +
+	// the cold paths) keep the deterministic reference; every BAKE
+	// owner goes through GiSceneBuildOptions, whose default is Embree.
 	TraceBackend traceBackend_ = TraceBackend::Builtin;
 	TriangleBvh bvh_;
 	struct EmissiveTri {
@@ -402,13 +408,17 @@ struct GiSceneBuildOptions {
 	// engine-space scenes (no coordFix); cook imports at coordFix 0 pass
 	// (0,0,+1) or the Bistro sun bakes underground / spots aim backwards.
 	glm::vec3 punctualAimAxis{ 0.0f, 0.0f, -1.0f };
-	// Ray-tracing backend for the bake transport (see TriangleBvh): the
-	// builtin binned-SAH BVH by default (deterministic reference output);
-	// Embree (vendored external/embree — packet/SIMD traversal, the
-	// production bake backend) when true — much faster on big scenes,
-	// results agree within Monte-Carlo noise. A runtime device/scene
-	// failure falls back to builtin with a warning.
-	bool traceBackendEmbree = false;
+	// DEPRECATED — MARKED FOR DELETION (10/30, the owner's call): the
+	// builtin BVH BAKE TRANSPORT retires with the deletion pass; Embree
+	// (vendored external/embree — packet/SIMD traversal, much faster on
+	// big scenes, results agree within Monte-Carlo noise) is the DEFAULT
+	// and the only long-term backend. Until the deletion: `false`
+	// selects the builtin transport (a loud deprecation warning from the
+	// tools), and an Embree device/scene FAILURE still falls back to
+	// builtin automatically (the safety net that keeps a bake alive).
+	// The COLD non-transport paths (ClosestDistance, the placement
+	// picks) stay builtin BY DESIGN regardless of this flag.
+	bool traceBackendEmbree = true;
 };
 
 // Harvest result: how many authored lights joined the bake light set.
