@@ -340,8 +340,12 @@ deltas are marked.
       (verified by stash-rebuild on the pre-6b tree — /Od float
       determinism, no scene involvement); editor smoke clean
       (--project F:/projects/game boots to ready, no faults). Linux
-      stays PENDING with the Epoch 5/6 gate (WSL boot-refusal, machine
-      resource pressure — rerun when free).
+      CLOSED (the pending Epoch 5/6 gate with it — WSL recovered):
+      Ubuntu 24.04 + GCC 14, the linux_epoch4.sh pull-build-ctest
+      cycle over the branch at d21fb435 — full tree clean, 46/46
+      (tour/scene-table/world-entity/gi/pak-host all green;
+      camera_tests passes on GCC, pinning the Windows-Debug mouselook
+      failures as an MSVC-/Od-only artifact).
 
 - **6c — `refactor(world): incremental cluster append/remove`**
   (inserted): cluster load/unload stops wiping + rebuilding
