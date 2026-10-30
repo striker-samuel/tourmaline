@@ -83,9 +83,14 @@ namespace smvk {
 
 static constexpr uint32_t kDsShadowTilePx = 8;     // Shadow Tile = 8x8 px
 static constexpr uint32_t kDsTileGroupTiles = 8;   // TileGroup = 8x8 tiles
-static constexpr uint32_t kDsTileGroupPx = 64;     // 8 * 8
-static constexpr uint32_t kDsZBinCount = 1024;
-static constexpr uint32_t kDsMaxLightGroups = 32;  // MAX_FP_LIGHTS / 32
+// The three FORMAT constants below are aliases of the forwardplus.h
+// single source (kFp*): the zBin + tile-mask layout is shared phase-1
+// infrastructure — the DEFAULT forward+ tile cull consumes the same
+// artifacts this pipeline does, so the two consumers can never disagree
+// on bin counts, group-word counts, or the group pixel pitch.
+static constexpr uint32_t kDsTileGroupPx = kFpTileGroupPx;       // 8 * 8
+static constexpr uint32_t kDsZBinCount = kFpZBinCount;
+static constexpr uint32_t kDsMaxLightGroups = kFpMaxLightGroups; // MAX_FP_LIGHTS / 32
 static constexpr uint32_t kDsMaxTileGroups = 4096; // 64x64px groups (4K)
 static constexpr uint32_t kDsMaxTiles = 131072;    // 8px tiles (4K)
 static constexpr uint32_t kDsMaxListUInts = 4u << 20;  // 16 MB

@@ -149,6 +149,43 @@ static constexpr uint32_t kForwardPlusMaxTileSortSlots = 32;
 // Must stay in sync with common.hlsli.
 static constexpr uint32_t kForwardPlusMaxDecalsPerTile = 16;
 
+// ---------------------------------------------------------------------------
+// Hierarchical tile-light culling (Final Fantasy XVI "Shadow Techniques",
+// sections 2.1-2.3): the shared PHASE-1 artifact format. The classic
+// forward+ cull scans every light per tile; the hierarchical path first
+// builds, once per frame:
+//   - zBins: kFpZBinCount view-distance bins over [near, far]; each bin
+//     carries {minIdx, maxIdx, rangedMin, rangedMax} over the SORTED
+//     light buffer (DsSortLightsByNearDistance order — nearest first).
+//     A tile's depth interval resolves to a conservative sorted-index
+//     window with TWO lookups via the ranged variants (figure 2b).
+//   - coarse tile masks ("Light Mask Entry", figure 4): per
+//     kFpTileGroupPx screen TileGroup, 1 uint of 32-light group bits +
+//     kFpMaxLightGroups uints of 32-light bitmasks — 132 bytes per group,
+//     1024 light bits. Conservative: a set bit is a NECESSARY condition
+//     for the light to reach any pixel of the group (near-plane crossers
+//     fall back to the whole grid), never a sufficient one.
+// The tile cull then intersects the coarse mask with the zBin window at
+// the 32-bit word level (DsWindowMask) and runs the EXACT per-light
+// tests (side planes + depth slab) only on surviving bits. The zBin
+// windows are conservative supersets of the exact depth cuts; each
+// coarse-mask reject (group plane or projected rect) proves zero
+// contribution to the group's pixels, so no light that reaches any
+// pixel of a tile is ever dropped — the lists differ from the linear
+// scan's only by that scan's own zero-contribution false positives.
+// The CPU builders live in deferredshadow.h (DsBuildZBins /
+// DsBuildTileMasks — pure math, differential-tested in
+// test_deferredshadow.cpp); the per-flight GPU buffers are owned HERE so
+// the DEFAULT forward+ path consumes them without the deferred-shadow
+// pipeline active. deferredshadow.h aliases these as kDs* (single source
+// of truth — the two consumers must never disagree on the format).
+// ---------------------------------------------------------------------------
+static constexpr uint32_t kFpZBinCount = 1024;
+static constexpr uint32_t kFpMaxLightGroups = 32; // MAX_FP_LIGHTS / 32
+static constexpr uint32_t kFpTileGroupPx = 64;    // coarse mask grid pitch
+static constexpr size_t kFpZBinBytes = sizeof(uint32_t) * 4 * kFpZBinCount;
+static constexpr uint32_t kFpTileMaskWords = 1 + kFpMaxLightGroups;
+
 // Builds a probe entry for the upload tail (upload order stays
 // widest-influence-first so tile overflow keeps the widest probes).
 // boxMin/boxMax = the depth-fitted proxy volume (manifest "box" group);
@@ -311,7 +348,7 @@ struct ForwardPlusDesc {
 	const char* name = "forwardplus";
 };
 
-// Must match forwardplus.cs.hlsl ForwardPlusCullPush (88 bytes).
+// Must match forwardplus.cs.hlsl ForwardPlusCullPush (120 bytes).
 struct ForwardPlusCullPush {
 	uint64_t frameUniforms = 0;
 	uint64_t lights = 0;
@@ -349,8 +386,31 @@ struct ForwardPlusCullPush {
 	// sorted insertion per tile is real work, not free dead stores).
 	// 1 = build the fog lists (the volumetric pass will run).
 	uint32_t fogListsWanted = 0;
+	// ---- Hierarchical culling phase-1 artifacts (FFXVI 2.1-2.3) ----
+	// Both zero = no phase-1 upload this frame (deferred shadows owns the
+	// light lists, the toggle is off, or a resize frame raced the upload)
+	// -> the cull falls back to the linear scan over all lights. The
+	// fallback is also the A/B reference (TOURMALINE_FP_MASKS=0 pins it
+	// headless): the mask/zBin gates never drop a light that reaches any
+	// pixel of the tile (each coarse-mask reject is a proof of zero
+	// contribution), so the mask path's image matches the reference —
+	// except in SATURATED tiles, where it keeps a SUPERSET of the
+	// reference's true contributors (the reference's sorted insertion
+	// can waste slots on zero-contribution false positives).
+	uint64_t zbins = 0;      // DsZBinBuffer flight slice
+	uint64_t tileMasks = 0;  // DsTileLightMaskBuffer flight slice
+	// Lights-only count: the phase-1 builders ran over the light vector
+	// BEFORE the probe tail was appended, so the masks/zBins cover
+	// [0, maskLightCount) and the cull walks the probe tail
+	// [maskLightCount, lightCount) linearly (probes are <= 64 entries —
+	// the tail scan is cheaper than extending the phase-1 format for
+	// them).
+	uint32_t maskLightCount = 0;
+	// Coarse-mask grid width in groups (ceil(extent / kFpTileGroupPx));
+	// the shader needs it for the groupIdx = gy * countX + gx layout.
+	uint32_t maskGroupCountX = 0;
 };
-static_assert(sizeof(ForwardPlusCullPush) == 96);
+static_assert(sizeof(ForwardPlusCullPush) == 120);
 
 inline constexpr const char* kForwardPlusCsPath = "content/shaders/forwardplus.cs.hlsl.spv";
 inline constexpr const char* kForwardPlusDepthVsPath = "content/shaders/default.vert.hlsl.spv";
@@ -386,6 +446,31 @@ struct ForwardPlus {
 	// packs a <=8-bit survivor bitmask per tile — see sg_gi_volume.hlsli).
 	Holder<BufferHandle> volumeTileMasksBuffer;
 	LogicalBufferHandle volumeTileMasksLogical{};
+	// ---- Hierarchical phase-1 rings (zbins + coarse tile masks) ----
+	// PER-FLIGHT, unlike the tile buffers above: these are CPU-uploaded
+	// at record time (UpdateForwardPlusLights runs before Execute), so a
+	// single shared buffer would let frame N+1's upload clobber frame N's
+	// still-executing cull — the same ringing rationale as
+	// DeferredShadows. Sizing: zBins is FIXED (kFpZBinBytes); the mask
+	// buffer is dynamic (groupCount * kFpTileMaskWords uints — no
+	// kDsMaxTileGroups-style cap; the 32768-tile gate above bounds the
+	// extent harder).
+	Holder<BufferHandle> zBins[smvk::limits::MaxFramesInFlight]{};
+	Holder<BufferHandle> tileMasks[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle zBinsLogical[smvk::limits::MaxFramesInFlight]{};
+	LogicalBufferHandle tileMasksLogical[smvk::limits::MaxFramesInFlight]{};
+	// Coarse-mask grid (ceil(extent / kFpTileGroupPx)); the CPU builder
+	// (DsBuildTileMasks) derives the identical grid from the same extent.
+	uint32_t maskGroupCountX = 0;
+	uint32_t maskGroupCountY = 0;
+
+	[[nodiscard]] bool MasksValid() const {
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+			if (zBins[f].empty() || tileMasks[f].empty())
+				return false;
+		}
+		return maskGroupCountX != 0 && maskGroupCountY != 0;
+	}
 
 	// Depth bindless (sampled D32 as float in compute). Rebuilt when the
 	// depth view handle changes (swapchain recreate).
@@ -410,6 +495,11 @@ struct ForwardPlus {
 	static uint32_t TileCountFor(uint32_t dim, uint32_t tileSize) {
 		tileSize = tileSize == 0 ? 16 : tileSize;
 		return (dim + tileSize - 1) / tileSize;
+	}
+	// Coarse-mask grid pitch (kFpTileGroupPx): the same ceil-div the CPU
+	// mask builder (DsBuildTileMasks) applies to the same extent.
+	static uint32_t TileGroupCountFor(uint32_t dim) {
+		return (dim + kFpTileGroupPx - 1) / kFpTileGroupPx;
 	}
 
 	bool EnsureShaders(ResourceManager& ctx,
@@ -554,6 +644,36 @@ struct ForwardPlus {
 			return false;
 		}
 
+		// ---- Hierarchical phase-1 rings (zbins + coarse tile masks, one
+		// pair per flight). Allocated LAST and assigned straight to the
+		// members: Create opened with Destroy(rg) so the members are
+		// empty, which makes the failure path below a plain Destroy(rg)
+		// — it frees exactly the partial ring set and re-zeroes, no
+		// hand-rolled cascade for 2 * MaxFramesInFlight more handles. ----
+		const uint32_t mgx = TileGroupCountFor(swapExtent.width);
+		const uint32_t mgy = TileGroupCountFor(swapExtent.height);
+		const uint32_t groups = mgx * mgy;
+		const size_t maskBytes =
+			sizeof(uint32_t) * size_t(groups) * kFpTileMaskWords;
+		bool ringsOk = groups != 0;
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight && ringsOk; ++f) {
+			zBins[f] = ctx.CreateBuffer(kFpZBinBytes, BufferType_Storage,
+				"forwardplus zbins");
+			tileMasks[f] = ctx.CreateBuffer(maskBytes, BufferType_Storage,
+				"forwardplus tileLightMasks");
+			zBinsLogical[f] = rg.AddExternalBuffer(zBins[f], "forwardplus zbins");
+			tileMasksLogical[f] =
+				rg.AddExternalBuffer(tileMasks[f], "forwardplus tileLightMasks");
+			ringsOk = !zBins[f].empty() && !tileMasks[f].empty()
+				&& !zBinsLogical[f].empty() && !tileMasksLogical[f].empty();
+		}
+		if (!ringsOk) {
+			Destroy(rg);
+			return false;
+		}
+		maskGroupCountX = mgx;
+		maskGroupCountY = mgy;
+
 		desc = d;
 		extent = swapExtent;
 		tileCountX = tcx;
@@ -601,6 +721,17 @@ struct ForwardPlus {
 			rg.FreeBuffer(fogTileIndicesLogical);
 		if (!volumeTileMasksLogical.empty())
 			rg.FreeBuffer(volumeTileMasksLogical);
+		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
+			if (!zBinsLogical[f].empty())
+				rg.FreeBuffer(zBinsLogical[f]);
+			if (!tileMasksLogical[f].empty())
+				rg.FreeBuffer(tileMasksLogical[f]);
+			zBinsLogical[f] = {};
+			tileMasksLogical[f] = {};
+			zBins[f] = {};
+			tileMasks[f] = {};
+		}
+		maskGroupCountX = maskGroupCountY = 0;
 		tileCountsLogical = {};
 		tileIndicesLogical = {};
 		decalTileCountsLogical = {};
@@ -631,13 +762,15 @@ struct ForwardPlus {
 		const char* depthVsPath = kForwardPlusDepthVsPath) {
 		const uint32_t wantX = TileCountFor(swapExtent.width, d.tileSize);
 		const uint32_t wantY = TileCountFor(swapExtent.height, d.tileSize);
-		const bool shapeOk = Valid() &&
+		const bool shapeOk = Valid() && MasksValid() &&
 			extent.width == swapExtent.width && extent.height == swapExtent.height &&
 			desc.tileSize == d.tileSize && desc.maxLights == d.maxLights &&
 			desc.maxLightsPerTile == d.maxLightsPerTile &&
 			desc.maxFogPerTile == d.maxFogPerTile &&
 			desc.maxDecals == d.maxDecals && desc.maxDecalsPerTile == d.maxDecalsPerTile &&
-			tileCountX == wantX && tileCountY == wantY;
+			tileCountX == wantX && tileCountY == wantY &&
+			maskGroupCountX == TileGroupCountFor(swapExtent.width) &&
+			maskGroupCountY == TileGroupCountFor(swapExtent.height);
 		if (shapeOk) {
 			desc = d;
 			if (depthView != depthViewHandle && !depthView.empty()) {
@@ -668,6 +801,16 @@ struct ForwardPlus {
 	}
 	uint64_t FogTileIndicesAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(fogTileIndicesBuffer);
+	}
+	// ---- Phase-1 ring addresses (per flight). Zero when the rings are
+	// absent — the app publishes exactly these into the cull push and the
+	// shader treats 0 as "no masks this frame, linear scan". ----
+	uint64_t ZBinsAddress(ResourceManager& ctx, uint32_t f) const {
+		return zBins[f].empty() ? 0 : ctx.GetBufferDeviceAddress(zBins[f]);
+	}
+	uint64_t TileMasksAddress(ResourceManager& ctx, uint32_t f) const {
+		return tileMasks[f].empty()
+			? 0 : ctx.GetBufferDeviceAddress(tileMasks[f]);
 	}
 	uint64_t VolumeTileMasksAddress(ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(volumeTileMasksBuffer);
@@ -738,12 +881,17 @@ struct ForwardPlus {
 	// Caller binds cullProgram, pushes ForwardPlusCullPush, dispatches
 	// (tileCountX, tileCountY, 1). decalsLogical (optional): the per-frame
 	// decal upload buffer read by the decal leg of the cull (pass an empty
-	// handle when the frame has no decal data buffer).
+	// handle when the frame has no decal data buffer). flight: the
+	// frame-in-flight index selecting this frame's phase-1 zBin/mask ring
+	// slice (read hints only — the upload happened outside the graph with
+	// its own transfer->compute barrier declared at upload time, the DS
+	// phase-2 pattern).
 	RenderPass& AddCullPass(RenderGraph& rg,
 		LogicalImageViewHandle depthLogical,
 		LogicalBufferHandle lightsLogical,
 		const char* name = "ForwardPlusCull",
-		LogicalBufferHandle decalsLogical = LogicalBufferHandle{}) const {
+		LogicalBufferHandle decalsLogical = LogicalBufferHandle{},
+		uint32_t flight = 0) const {
 		assert(Valid());
 		RenderPass& pass = rg.AddComputePass(name);
 		// Depth sampled in compute.
@@ -763,6 +911,18 @@ struct ForwardPlus {
 			decalsReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
 			decalsReq.barrierMasks.stageMask = PipelineStageBit_Compute;
 			pass.AddBufferHint(decalsLogical, decalsReq);
+		}
+		// Phase-1 zBins + coarse tile masks (CPU upload -> compute read;
+		// the rings exist whenever the builder is Valid — a frame that
+		// skipped the upload still gets harmless ordering-only hints).
+		if (flight < smvk::limits::MaxFramesInFlight) {
+			BufferSyncRequest phase1Read{};
+			phase1Read.barrierMasks.accessMask = AccessFlags::ShaderRead;
+			phase1Read.barrierMasks.stageMask = PipelineStageBit_Compute;
+			if (!zBinsLogical[flight].empty())
+				pass.AddBufferHint(zBinsLogical[flight], phase1Read);
+			if (!tileMasksLogical[flight].empty())
+				pass.AddBufferHint(tileMasksLogical[flight], phase1Read);
 		}
 		// Tile buffers write in compute, read in fragment.
 		BufferSyncRequest tileWrite{};

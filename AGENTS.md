@@ -97,6 +97,32 @@ $env:TOURMALINE_CAPTURE='48'
   does ONE fetch + dominant-box parallax), `0` = the per-pixel walk
   fallback (≤8 fetches + per-pixel box parallax). `0.00%` differing pixels
   is the A/B contract between the two
+- `TOURMALINE_FP_MASKS=0|1` pins the Forward+ HIERARCHICAL TILE-LIGHT
+  CULLING (FFXVI "Shadow Techniques" 2.1–2.3; default on): `1` = the
+  DEFAULT forward+ tile cull consumes the phase-1 artifacts — lights
+  CPU-sorted by near distance (DsSortLightsByNearDistance, now run for
+  the F+ path too, not just DS), zBins (ranged min/max, two-lookup depth
+  windows) + 64×64px coarse tile masks (132 B/group, 1024 light bits)
+  uploaded per flight to the ForwardPlus builder's own rings
+  (forwardplus.h kFp*; kDs* alias the same constants); the cull
+  intersects coarse mask × zBin window at the 32-bit word level
+  (DsWindowMask) and runs the exact side-plane/slab tests only on
+  surviving bits. `0` = the linear scan fallback (the A/B reference).
+  NO-MISSING-CONTRIBUTOR is the A/B contract (the paper's own
+  invariant): the zBin windows are conservative supersets of the exact
+  depth cuts, and each coarse-mask reject (group plane / projected rect)
+  PROVES zero contribution to the tile's pixels — so captures match the
+  reference except in SATURATED tiles, where the mask path keeps a
+  superset of the reference's true contributors (the reference's sorted
+  insertion can waste slots on the linear scan's zero-contribution false
+  positives — center-based -range side-plane tests do not compose across
+  nested wedges for behind-camera centers). The fog track uses its own
+  zBin window ([0, fogMaxDistance] — march samples live outside the
+  surface slab; the slab window would drop fog lights). Probes ride a
+  linear tail (the phase-1 builders run lights-only). Invariant
+  unit-tested in test_forwardplus_masks.cpp. Under deferred shadows the
+  F+ cull keeps the linear scan (the DS ring owns the artifacts; the F+
+  light leg is dead work there)
 - `TOURMALINE_HZB_SPD=0|1` A/Bs the SSGI MAX-HZB build (default 0 =
   the per-mip dispatches): `1` = the single-dispatch SPD build
   (hzb_spd.cs.hlsl — same BDA buffer, same mip offsets, byte-identical

@@ -251,6 +251,25 @@ set_target_properties(DeferredShadowTests PROPERTIES
 
 add_test(NAME deferredshadow_tests COMMAND DeferredShadowTests)
 
+# Forward+ hierarchical culling (FFXVI tiled/zBin phase-1 artifacts on the
+# DEFAULT forward+ path): the no-missing-contributor contract — the zBin
+# windows are conservative supersets of the cull's exact depth cuts, and no
+# light that reaches any point a shaded surface / march sample can occupy
+# may lack its coarse-mask bit (the paper's invariant: no missing lights,
+# false positives acceptable). Pure CPU.
+add_executable(ForwardPlusMaskTests test_forwardplus_masks.cpp)
+
+target_link_libraries(ForwardPlusMaskTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(ForwardPlusMaskTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME forwardplus_mask_tests COMMAND ForwardPlusMaskTests)
+
 add_executable(CubemapTests test_cubemap.cpp)
 
 target_link_libraries(CubemapTests
@@ -774,6 +793,7 @@ tourmaline_stage_sdl3(SsrTaaTests)
 tourmaline_stage_sdl3(GiTests)
 tourmaline_stage_sdl3(StreamingTests)
 tourmaline_stage_sdl3(DeferredShadowTests)
+tourmaline_stage_sdl3(ForwardPlusMaskTests)
 tourmaline_stage_sdl3(CubemapTests)
 tourmaline_stage_sdl3(ParticlesTests)
 tourmaline_stage_sdl3(MotionBlurTests)

@@ -1218,6 +1218,22 @@ namespace engine {
 			else if (ds == "0" || ds == "off") m_dsEnabled = false;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_DS value: " << ds << "\n";
 		}
+		// Hierarchical forward+ culling A/B pin (1 | 0, default ON): 0
+		// zeroes the phase-1 zBin/tile-mask addresses the cull would read,
+		// demoting the light leg to the original linear scan — the A/B
+		// reference. The contract with the masks on: no light that reaches
+		// any pixel of a tile may go missing (each coarse-mask reject is a
+		// proof of zero contribution; the zBin windows are conservative
+		// supersets of the exact depth cuts) — captures match except in
+		// saturated tiles, where the mask path keeps a superset of the
+		// reference's true contributors. Read once at startup so the
+		// bench matrix can pin it.
+		if (const char* fmEnv = std::getenv("TOURMALINE_FP_MASKS")) {
+			const std::string_view fm = trimEnv(fmEnv);
+			if (fm == "1" || fm == "on") m_fpMasksEnabled = true;
+			else if (fm == "0" || fm == "off") m_fpMasksEnabled = false;
+			else std::cerr << "[WorldRenderer] unknown TOURMALINE_FP_MASKS value: " << fm << "\n";
+		}
 		// One-shot deferred-shadow buffer dump after frame <n> Execute
 		// (stalls like the HZB dump; see DumpDeferredShadows). Frame 0 is
 		// warmup (seed/targets), so steady-state frames are the useful ones.
@@ -6764,15 +6780,16 @@ namespace engine {
 		const auto fpT0 = fp_clk::now();
 		std::vector<smvk::ForwardPlusLight> lights;
 		lights.reserve(FP_MAX_LIGHTS);
-		m_debugLights.clear();
+		// NOTE: m_debugLights is filled AFTER the phase-1 sort below (the
+		// marker list then matches the GPU buffer order — labels read as
+		// buffer indices, the DS debug-viz convention; the content is
+		// identical either way).
 		{
 			SMVK_PROFILE_RENDER("Lights_Build");
 			for (const auto& cl : m_sceneLights.forwardPlusLights) {
 				if (lights.size() >= FP_MAX_BUILD_LIGHTS)
 					break;
 				lights.push_back(cl);
-				m_debugLights.push_back({ glm::vec3(cl.position),
-					glm::vec3(cl.color), (int)cl.type });
 			}
 		}
 		// ---- Light crowd (the Forward+ stress tool; see LightDemo) ----
@@ -6831,14 +6848,32 @@ namespace engine {
 						L.flags |= smvk::kForwardPlusFlag_CastShadow;
 				}
 				lights.push_back(L);
-				m_debugLights.push_back({ glm::vec3(L.position),
-					glm::vec3(L.color), (int)L.type });
 				++m_lightCrowdCount;
 			}
 		}
 		// ONE live count: the scene's forward+ set (which the spawner
 		// appended to above) - the single number every readout shows.
 		m_fpLightCount = (uint32_t)lights.size();
+
+		// ---- Forward+ hierarchical masks: this frame's phase-1 freshness
+		// (the single gate the sort + the ring uploads + the fc publish
+		// all consume). Requirements: the toggle on, deferred shadows OFF
+		// (the DS ring owns the light lists then — its phase-1 block below
+		// uploads instead, and the F+ light leg is dead work by design),
+		// the tile-cull dispatch actually running (TileCullWillRun; when
+		// DS is off that is just the forwardPlusCull pass flag), and the
+		// ForwardPlus builder valid AT THIS FRAME'S EXTENT (EnsureSized
+		// ran at frame-top, so a mismatch only happens on a torn resize —
+		// the masks are skipped for one frame and the cull's linear
+		// fallback covers it, never stale data).
+		const bool fpMasksFresh = m_fpMasksEnabled && !DsActive()
+			&& TileCullWillRun()
+			&& m_viewportResources.forwardPlus.Valid()
+			&& m_viewportResources.forwardPlus.MasksValid()
+			&& m_viewportResources.forwardPlus.extent.width
+				== (uint32_t)frame.viewportSize.x
+			&& m_viewportResources.forwardPlus.extent.height
+				== (uint32_t)frame.viewportSize.y;
 
 		// ---- Spot-shadow caster selection (upper limit + heuristic) ----
 		m_spotShadowCount = 0;
@@ -7005,19 +7040,34 @@ namespace engine {
 			}
 		}
 
-		// ---- Deferred shadows, phase 1 (CPU Prepare, paper 2.1) ----
-		// Sort by closest distance to the near plane BEFORE the upload: the
-		// GPU light buffer and every zBin index refer to this order. Runs
-		// after the spot/point shadow selections so patched shadowTile
-		// fields travel with their lights. (When the pipeline is off, keep
-		// the spots-first order the capped forward+ list relies on.)
-		if (DsActive() && !lights.empty()) {
-			SMVK_PROFILE_RENDER("DeferredShadows_SortLights");
+		// ---- Light sort by closest near-plane distance (the shared
+		// PHASE-1 contract: every zBin index and tile-mask bit refers to
+		// this order — an unsorted buffer degenerates every zBin window
+		// to [0, n)). Runs when EITHER consumer needs it: the
+		// deferred-shadow pipeline (as before) or the forward+
+		// hierarchical masks (the DEFAULT light path, above). Runs after
+		// the spot/point shadow selections so patched shadowTile fields
+		// travel with their lights. When neither is active the
+		// spots-first build order stands (the capped build list relies on
+		// it). ----
+		const bool sortLights = (DsActive() || fpMasksFresh) && !lights.empty();
+		if (sortLights) {
+			SMVK_PROFILE_RENDER("ForwardPlus_SortLights");
 			smvk::DsSortLightsByNearDistance(lights, frame.view);
+		}
+		// Debug overlay copy, filled POST-SORT (see the build note): the
+		// marker list matches the GPU light-buffer order.
+		m_debugLights.clear();
+		m_debugLights.reserve(lights.size());
+		for (const auto& L : lights)
+			m_debugLights.push_back({ glm::vec3(L.position),
+				glm::vec3(L.color), (int)L.type });
 #if defined(DS_DEBUG_VIZ)
-			// Sorted-buffer snapshot for the visualizer UI: the light count
-			// (slider clamp) + the selected light's post-sort identity for
-			// the ImGui marker. Indices in dsDebugLight refer to THIS order.
+		// Sorted-buffer snapshot for the visualizer UI: the light count
+		// (slider clamp) + the selected light's post-sort identity for
+		// the ImGui marker. Indices in dsDebugLight refer to THIS order
+		// (the F+ masks path sorts too, but the viz stays DS-scoped).
+		if (DsActive() && !lights.empty()) {
 			m_dsLightCount = (uint32_t)lights.size();
 			const uint32_t li = std::min((uint32_t)std::max(0, m_dsDebugLight),
 				m_dsLightCount - 1);
@@ -7027,9 +7077,7 @@ namespace engine {
 			m_dsDebugLightType = (int)L.type;
 			m_dsDebugLightRange = L.range;
 			m_dsDebugLightValid = true;
-#endif
 		}
-#if defined(DS_DEBUG_VIZ)
 		else {
 			m_dsLightCount = 0;
 			m_dsDebugLightValid = false;
@@ -7152,6 +7200,77 @@ namespace engine {
 					smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
 					0, 0);
 			}
+		}
+		// ---- Forward+ hierarchical phase-1 (the DEFAULT light path) ----
+		// The SAME builders the DS pipeline uses above (bit-identical
+		// formats — kFp*/kDs* alias one set of constants), uploaded to
+		// the ForwardPlus builder's per-flight rings instead of the DS
+		// ring. Under DS this is skipped (the block above owns the
+		// artifacts and the F+ light leg is dead work by design). Zero-
+		// light frames still upload: the rings stay freshly zeroed (no
+		// stale-data path exists), and the cull's maskLightCount-0 push
+		// then demotes to the linear scan — which files only the probe
+		// tail, the same output the mask path would give (an empty
+		// candidate set either way).
+		else if (fpMasksFresh) {
+			smvk::ForwardPlus& fp = m_viewportResources.forwardPlus;
+			{
+				// CPU zBin build: cost scales with the sorted light count
+				// (one ranged min/max pass over the list per bin row).
+				SMVK_PROFILE_RENDER("ForwardPlus_BuildZBins");
+				smvk::DsBuildZBins(lights, frame.view, frame.nearPlane, frame.farPlane,
+					m_dsZBinStaging);
+				m_context->UploadDataToBuffer(fp.zBins[currentFrame],
+					m_dsZBinStaging.data(),
+					std::min(m_dsZBinStaging.size() * sizeof(uint32_t),
+						smvk::kFpZBinBytes),
+					smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
+					0, 0);
+			}
+			{
+				// CPU tile-mask build: the heaviest phase-1 step — every
+				// light projected against the 64px group grid (scales
+				// with lights x screen coverage; the group-plane cache
+				// inside makes static-camera frames near-free).
+				SMVK_PROFILE_RENDER("ForwardPlus_BuildTileMasks");
+				uint32_t maskGX = 0, maskGY = 0;
+				smvk::DsBuildTileMasks(lights, frame.view, frame.proj,
+					(uint32_t)frame.viewportSize.x, (uint32_t)frame.viewportSize.y,
+					m_dsMaskStaging, maskGX, maskGY);
+				// The freshness gate matched the builder extent to this
+				// frame's viewport, so the derived grids must agree (the
+				// min() clamp below keeps a torn frame in-bounds anyway).
+				assert(maskGX == fp.maskGroupCountX && maskGY == fp.maskGroupCountY);
+				SMVK_PROFILE_TAG("maskGroups", maskGX * maskGY);
+				const size_t maskBytes = std::min(
+					m_dsMaskStaging.size() * sizeof(uint32_t),
+					sizeof(uint32_t) * size_t(fp.maskGroupCountX)
+						* size_t(fp.maskGroupCountY) * smvk::kFpTileMaskWords);
+				m_context->UploadDataToBuffer(fp.tileMasks[currentFrame],
+					m_dsMaskStaging.data(), maskBytes,
+					smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead,
+					0, 0);
+			}
+			// Publish the frame's artifact set as ONE group (the members
+			// the fc fill + AppendTileCull consume; see WorldRenderer.h).
+			// lights.size() is the LIGHTS-ONLY count here — the probe
+			// tail is appended to the GPU buffer further below, after
+			// every phase-1 consumer, so the masks cover exactly
+			// [0, this count).
+			m_fpMaskZBins = fp.ZBinsAddress(*m_context, currentFrame);
+			m_fpMaskTileMasks = fp.TileMasksAddress(*m_context, currentFrame);
+			m_fpMaskLightCount = (uint32_t)lights.size();
+			m_fpMaskGroupCountX = fp.maskGroupCountX;
+		}
+		// Not fresh this frame (DS owns the lists, toggle off, cull pass
+		// off, torn resize): NEVER publish stale artifacts — lights move
+		// every frame, so last frame's masks would read as false
+		// negatives. All-zero demotes the cull to its linear fallback.
+		else {
+			m_fpMaskZBins = 0;
+			m_fpMaskTileMasks = 0;
+			m_fpMaskLightCount = 0;
+			m_fpMaskGroupCountX = 0;
 		}
 		if (fpBench) {
 			using msd = std::chrono::duration<double, std::milli>;
@@ -11000,6 +11119,12 @@ namespace engine {
 		m_fpRenderer.occluderMinRadius = m_hizOccluderMinRadius;
 		fc.fpLights = m_resources.fpLightsLogical;
 		fc.fpLightCount = fpLightCount;
+		// Hierarchical phase-1 publish (one group; all-zero = linear
+		// fallback — see UpdateForwardPlusLights).
+		fc.fpZBins = m_fpMaskZBins;
+		fc.fpTileMasks = m_fpMaskTileMasks;
+		fc.fpMaskLightCount = m_fpMaskLightCount;
+		fc.fpMaskGroupCountX = m_fpMaskGroupCountX;
 		fc.decals = m_resources.decalsLogical;
 		fc.decalCount = m_decalFrameCount;
 

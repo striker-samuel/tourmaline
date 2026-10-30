@@ -224,3 +224,48 @@ no shadow views. Four scoped gaps, in dependency order:
     the octree retirement's merge record is the working example).
 
 
+
+(Engine, future) Forward+ hierarchical tile-light culling (TOURMALINE_FP_MASKS,
+default ON) - the FFXVI phase-1 artifacts now feed the DEFAULT forward+ tile
+cull (lights CPU-sorted by near distance + zBins + 64px coarse tile masks,
+reusing the DS pipeline's builders verbatim; the cull intersects mask x zBin
+window at the 32-bit word level and runs the exact side-plane/slab tests only
+on surviving bits). Validated: 47/47 ctest, the invariant suite
+(test_forwardplus_masks.cpp: 10.9M exact-test survivors window-checked, 9.4M
+true contributors bit-checked), and a byte-identical sponza A/B capture
+(TOURMALINE_FP_MASKS=0|1, 96-light crowd, TOURMALINE_DS=0). Deferred follow-ups:
+
+  - GPU-side phase-1: the sort + DsBuildZBins + DsBuildTileMasks run on the
+    CPU every frame (~0.15 ms at 96 lights / 1080p, group-plane cached - the
+    [perf] fp/ds bucket). If heavy-dynamic scenes push that past ~0.5 ms,
+    move the zBin/mask BUILD to compute (the paper does phase 1 on GPU; the
+    light sort itself can stay CPU-side since the upload is CPU-owned - the
+    builder order is the zBin index space).
+  - Occupancy batching: forwardplus.cs.hlsl still dispatches [1,1,1]
+    workgroups (one lane per tile). Batching 8x8 tiles per workgroup (64
+    lanes, the guide's stage-C shape) is mechanical (per-thread tileId
+    mapping; no shared state - each tile owns its lists) and should pay on
+    the depth-preload + candidate walk; keep the [1,1,1] shape as the A/B
+    reference.
+  - Compact per-tile arena lists (the guide's stage D): deliberately NOT
+    ported - the fixed-stride rows (maxLightsPerTile + probe slots) with
+    count-gated consumers ARE the guide's ""fixed capacity first version"",
+    and compaction (offset/count + pooled arena, one atomic per tile group)
+    would touch every surface-list consumer for a marginal sparse-tile win.
+    Revisit only if a profile pins list-read bandwidth in the lit body.
+  - Under DS the F+ light leg stays linear (dead work by design - the DS
+    lists own the lights; the decal/probe/volume legs still run). If that
+    dead work ever shows in a profile, the DS ring's phase-1 artifacts are
+    byte-compatible - feeding them to the F+ cull is a wire-up, not a port.
+
+NOTE the active-path caveat: m_dsEnabled defaults TRUE, so the engine's
+default lighting lists are the DS pipeline's - the masks pay on the DS-off
+path (the H toggle / TOURMALINE_DS=0, the classic forward+ A/B path) until
+DS flips default-off. The mask path's contract is NO-MISSING-CONTRIBUTOR
+(the paper's invariant, not bit-identical lists): center-based -range
+side-plane tests do not compose across nested wedges for behind-camera
+centers, so the mask may drop the linear scan's own zero-contribution false
+positives - captures match except in SATURATED tiles where the mask path
+keeps a superset of the reference's true contributors (its sorted insertion
+wastes no slots on the dead entries). See forwardplus.cs.hlsl's header for
+the per-reject proofs.

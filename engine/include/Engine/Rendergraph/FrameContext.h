@@ -30,6 +30,16 @@ struct AppFrameContext : public smvk::FrameContext {
 	uint32_t hizDepthBindless = UINT32_MAX;
 	smvk::LogicalBufferHandle fpLights{};     // per-frame light buffer
 	uint32_t fpLightCount = 0;
+	// Hierarchical phase-1 artifacts for the forward+ tile cull (FFXVI
+	// tiled/zBin masks; see forwardplus.h). Set as ONE group by the
+	// WorldRenderer: fpMaskLightCount > 0 iff the zBin + tile-mask flight
+	// slices were uploaded this frame AND both addresses are valid. All
+	// zero (the common case under deferred shadows, or TOURMALINE_FP_MASKS
+	// =0, or a resize-frame race) -> the cull's linear fallback.
+	uint64_t fpZBins = 0;
+	uint64_t fpTileMasks = 0;
+	uint32_t fpMaskLightCount = 0;
+	uint32_t fpMaskGroupCountX = 0;
 	// Decal ring (per-frame ForwardPlusDecal upload; hints ride the tile
 	// cull + Main passes like fpLights).
 	smvk::LogicalBufferHandle decals{};

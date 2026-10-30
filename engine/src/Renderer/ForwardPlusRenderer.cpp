@@ -603,8 +603,20 @@ void ForwardPlusRenderer::AppendTileCull(smvk::FrameContext& base,
 		cullPC.fogMaxDistance = (std::max)(1.0f, fogMaxDistance);
 		cullPC.maxFogPerTile = desc.maxFogPerTile;
 		cullPC.fogListsWanted = fogListsWanted ? 1u : 0u;
+		// Hierarchical phase-1 artifacts: all four fields arrive as one
+		// group from the frame context. Enforce the address<->count
+		// consistency HERE (the single push site) so a torn state can
+		// never reach the shader: any zero address demotes the whole set
+		// to the linear fallback (maskLightCount 0).
+		const bool masksOk = fc.fpMaskLightCount > 0
+			&& fc.fpZBins != 0 && fc.fpTileMasks != 0
+			&& fc.fpMaskGroupCountX > 0;
+		cullPC.zbins = masksOk ? fc.fpZBins : 0;
+		cullPC.tileMasks = masksOk ? fc.fpTileMasks : 0;
+		cullPC.maskLightCount = masksOk ? fc.fpMaskLightCount : 0;
+		cullPC.maskGroupCountX = masksOk ? fc.fpMaskGroupCountX : 0;
 		auto& cullPass = fp->AddCullPass(rg, fc.depthView, fc.fpLights,
-			"ForwardPlusCull", fc.decals);
+			"ForwardPlusCull", fc.decals, fc.frameIndex);
 		cullPass.SetRecordingFunc([this, cullPC, tileCountX = fp->tileCountX, tileCountY = fp->tileCountY](smvk::CommandBuffer& cmd) mutable
 		{
 			// GPU context + pass scope come from RenderGraph::Execute.

@@ -10,12 +10,43 @@
 // generic sphere leg below culls them with zero special cases, and the
 // lit shader's type filter picks them back out of the same tile lists.
 //
+// LIGHT CANDIDACY runs through the hierarchical phase-1 artifacts when
+// they are present (FFXVI "Shadow Techniques" 2.1-2.3; the same CPU
+// builders the deferred-shadow pipeline uses — see forwardplus.h):
+//   1. the coarse Tile Light Mask (64x64px groups, one bit per light)
+//      gates the per-light work at the 32-bit word level,
+//   2. the zBin window (two ranged lookups over the sorted light buffer)
+//      cuts whole words by depth — one window for the SURFACE track (the
+//      tile's depth slab) and a different one for the FOG track ([0,
+//      fogMaxDistance] — march samples live outside the slab, so the
+//      surface window must NOT gate the fog track),
+//   3. survivors run the EXACT per-light tests (side planes + slab /
+//      march-range cut) and the relevance-sorted insertion, unchanged.
+// The zBin gates are conservative supersets of the exact depth cuts, so
+// a light the exact tests keep is always inside the window. The coarse
+// mask's two rejects are each PROOF of zero contribution (a group-plane
+// reject puts every point of the group's pyramid beyond the light's
+// range; a projected-rect miss means no sphere point projects into the
+// group) — so the mask path never drops a light that reaches any pixel
+// of the tile. What it MAY drop is the plane test's own zero-
+// contribution false positives (center-based -range side-plane tests do
+// not compose across nested wedges for far-side, typically behind-
+// camera, centers): the lists differ from the linear fallback only by
+// those dead entries, the image is identical — except in SATURATED
+// tiles, where the mask path keeps a SUPERSET of the linear path's true
+// contributors (the linear path's sorted insertion can waste slots on
+// the dead entries and evict real lights). No-missing-contributor is
+// the contract; TOURMALINE_FP_MASKS=0 is the reference path.
+// Probes are NOT covered by the phase-1 builders (they append to the
+// light buffer after the sort/zBins/masks ran): the probe tail walks
+// linearly (<= 64 entries).
+//
 // One thread group per tile ([1,1,1], dispatched tileCountX x tileCountY).
 // Each tile:
 //   1. loads its 16x16 depth texels, tracks NDC min/max (reversed-Z:
 //      1 = near, 0 = far/sky),
 //   2. unprojects tile corners via invProj -> view-space side planes,
-//   3. sphere-tests every light against the 4 tile side planes,
+//   3. sphere-tests every candidate light against the 4 tile side planes,
 //   4. SURFACE list: lights passing the side planes AND the tile depth
 //      slab are RELEVANCE-SORTED (key = distance from the light center
 //      to the slab; spots pinned ahead of points) and the best
@@ -72,9 +103,18 @@ struct ForwardPlusCullPush
     float fogMaxDistance;   // march-range far cut
     uint maxFogPerTile;     // fog row stride (matches the volumetric push)
     uint fogListsWanted;    // 0 = skip the fog track (vol pass off — no consumer)
+    // ---- Hierarchical phase-1 artifacts (C++ mirror: forwardplus.h;
+    // 120 bytes total). maskLightCount > 0 is the app CONTRACT that this
+    // frame's zBin + tile-mask flight slices are uploaded and both
+    // addresses valid (all four fields are set as one group — 0 = the
+    // linear fallback, also the TOURMALINE_FP_MASKS=0 A/B reference). ----
+    GPU_PTR_READ(DsZBinBuffer) zbins;
+    GPU_PTR_READ(DsTileLightMaskBuffer) tileLightMasks;
+    uint maskLightCount;    // lights-only count covered by the masks
+    uint maskGroupCountX;   // coarse mask groups per row
 };
 // NOTE: no static_assert here – this DXC (HLSL 2018 mode) rejects it at
-// global scope. Size is checked on the C++ side (88 bytes).
+// global scope. Size is checked on the C++ side (120 bytes).
 
 GPU_PUSH(ForwardPlusCullPush, pcCull);
 
@@ -83,6 +123,51 @@ float3 UnprojectView(float2 ndcXY, float ndcZ, float4x4 invProj)
 {
     float4 v = mul(invProj, float4(ndcXY, ndcZ, 1.0f));
     return v.xyz / max(v.w, 1e-9f);
+}
+
+// ---- Shared candidate legs: the hierarchical mask iteration and the
+// linear fallback below call the SAME helpers so the two paths produce
+// identical tile lists (the mask/zBin gates only SKIP provably-rejected
+// lights; they never change a test). ----
+
+// Side-plane test (origin planes, inward normals; a sphere is outside
+// iff dot(n, center) < -radius). Shared by every track and both paths.
+bool FpOutsideSidePlanes(float3 planes[4], float3 cView, float range)
+{
+    [unroll]
+    for (int p = 0; p < 4; ++p)
+    {
+        if (dot(planes[p], cView) < -range)
+            return true;
+    }
+    return false;
+}
+
+// Relevance-sorted insertion (the overflow pop discipline): append while
+// free, else evict the WORST (largest key) when the candidate beats it.
+// Strict '<' = stable ties (buffer order among equals — spots pinned
+// first via the key). cap <= MAX_FP_TILE_SORT_SLOTS by the shared clamp
+// chain (FpTileLightSlots / the fog stride min).
+void FpInsertSorted(uint li, float key, uint cap,
+    inout uint idx[MAX_FP_TILE_SORT_SLOTS],
+    inout float keys[MAX_FP_TILE_SORT_SLOTS], inout uint count)
+{
+    if (count < cap) {
+        idx[count] = li;
+        keys[count] = key;
+        count += 1u;
+    } else {
+        float worst = keys[0];
+        uint worstI = 0u;
+        [loop]
+        for (uint w = 1u; w < cap; ++w) {
+            if (keys[w] > worst) { worst = keys[w]; worstI = w; }
+        }
+        if (key < worst) {
+            idx[worstI] = li;
+            keys[worstI] = key;
+        }
+    }
 }
 
 [numthreads(1, 1, 1)]
@@ -204,36 +289,166 @@ void mainCS(uint3 groupId : SV_GroupID)
     const float kSpotPin = 1e6;
 
     float4x4 view = frame.view;
-    for (uint li = 0; li < lightCount; ++li)
-    {
-        ForwardPlusLight L = pcCull.lights.Get().lights[li];
-        float range = L.range <= 0.0f ? 1e6f : L.range;
 
-        // View-space center. Skip lights behind the camera:
-        // view z positive = behind (camera looks down -z).
-        float3 cView = mul(view, float4(L.position, 1.0f)).xyz;
-        if (cView.z > range)
-            continue;
+    // ---- Hierarchical phase-1 gate ----
+    // maskCount > 0 is the app contract that this frame's zBins + coarse
+    // tile masks are uploaded and addressable (all four push fields are
+    // set as one group — see ForwardPlusRenderer::AppendTileCull). The
+    // masks cover [0, maskCount): the phase-1 builders ran over the
+    // LIGHTS-ONLY vector, before the probe tail was appended to the
+    // light buffer. The zBin windows are conservative supersets of the
+    // exact depth cuts; the coarse mask's rejects each prove zero
+    // contribution to the tile's pixels (see the header) — no
+    // contributing light is ever skipped. Candidate walks visit indices
+    // in ascending order (group word, then firstbitlow within it).
+    const uint maskCount = min(pcCull.maskLightCount, lightCount);
+    const bool useMasks = maskCount > 0u && pcCull.maskGroupCountX > 0u;
 
-        // Side planes (origin planes, outward normals) — shared by the
-        // surface and fog tracks below.
-        bool outside = false;
-        [unroll]
-        for (int p = 0; p < 4; ++p)
-        {
-            if (dot(planes[p], cView) < -range)
-            {
-                outside = true;
-                break;
+    if (useMasks) {
+        // ---- Tile pixel rect -> coarse group rect (64px groups; the
+        // CPU mask builder derives the same grid from the same extent).
+        // A tileSize-pitch tile sits inside ONE group when tileSize
+        // divides 64 (16 today); a tile LARGER than the group pitch ORs
+        // every group it overlaps — a light reaches the tile's frustum
+        // iff it reaches some overlapped group's sub-pyramid (the
+        // sub-pyramids partition the tile's), and the per-group mask is
+        // a necessary condition for that.
+        const uint mgx0 = px0 / DS_TILE_GROUP_PX;
+        const uint mgx1 = (px1 - 1u) / DS_TILE_GROUP_PX;
+        const uint mgy0 = py0 / DS_TILE_GROUP_PX;
+        const uint mgy1 = (py1 - 1u) / DS_TILE_GROUP_PX;
+        const uint groupCountX = pcCull.maskGroupCountX;
+        // Group-bits word: OR over the rect (lazy per-group word fetch
+        // below only touches groups with a set bit).
+        uint groupBits = 0u;
+        for (uint gy = mgy0; gy <= mgy1; ++gy) {
+            for (uint gx = mgx0; gx <= mgx1; ++gx) {
+                groupBits |= pcCull.tileLightMasks.Get().masks[
+                    DsGroupMaskAddress(gy * groupCountX + gx)];
             }
         }
-        if (outside)
-            continue;
 
-        const float d = -cView.z; // light center view distance
-        const float spotPin = (L.type == 1) ? -kSpotPin : 0.0f;
+        // ---- SURFACE track: coarse mask AND the zBin window over the
+        // tile's depth slab, intersected at the 32-bit word level. The
+        // bin mapping (DsBinFromDist) is the SAME weakly-monotone
+        // function the CPU builder binned lights with, so every light
+        // whose [d-range, d+range] interval overlaps the slab lands in
+        // [zLo..zHi]; the exact slab test still runs on each survivor
+        // (it is strictly tighter — the window only skips whole words of
+        // provably-rejected lights).
+        uint zLo = 1u; uint zHi = 0u;
+        DsZBinRange(pcCull.zbins,
+            DsBinFromDist(nearestDist, nearP, frame.farPlane),
+            DsBinFromDist(farthestDist, nearP, frame.farPlane),
+            maskCount, zLo, zHi);
 
-        if (L.type == kForwardPlusProbe) {
+        uint scan = groupBits;
+        while (scan != 0u) {
+            const uint grp = firstbitlow(scan);
+            scan ^= 1u << grp;
+            uint word = 0u;
+            for (uint gy = mgy0; gy <= mgy1; ++gy) {
+                for (uint gx = mgx0; gx <= mgx1; ++gx) {
+                    word |= pcCull.tileLightMasks.Get().masks[
+                        DsGroupEntryAddress(gy * groupCountX + gx, grp)];
+                }
+            }
+            word &= DsWindowMask(grp, zLo, zHi);
+            while (word != 0u) {
+                const uint bit = firstbitlow(word);
+                word ^= 1u << bit;
+                const uint li = grp * 32u + bit;
+                if (li >= maskCount)
+                    continue;
+                ForwardPlusLight L = pcCull.lights.Get().lights[li];
+                if (L.type == kForwardPlusProbe)
+                    continue; // lights only under the mask (defense)
+                float range = L.range <= 0.0f ? 1e6f : L.range;
+                // View-space center; behind-camera skip (the CPU mask
+                // already excluded fully-behind spheres — defense).
+                float3 cView = mul(view, float4(L.position, 1.0f)).xyz;
+                if (cView.z > range)
+                    continue;
+                if (FpOutsideSidePlanes(planes, cView, range))
+                    continue;
+                const float d = -cView.z;
+                const float spotPin = (L.type == 1) ? -kSpotPin : 0.0f;
+                // Exact slab candidacy + relevance-sorted insertion (the
+                // shared leg — see FpInsertSorted).
+                if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
+                    const float key = max(max(nearestDist - d, d - farthestDist), 0.0f) + spotPin;
+                    FpInsertSorted(li, key, maxPerTile, sIdx, sKey, lcount);
+                }
+            }
+        }
+
+        // ---- FOG track: coarse mask AND the zBin window over the MARCH
+        // interval [0, fogMaxDistance] — deliberately NOT the surface
+        // window (march samples live in front of the nearest surface;
+        // the slab window would drop lights the fog needs, the exact bug
+        // the dedicated fog lists exist to avoid). The exact march-range
+        // cut still runs on each survivor.
+        if (fogLists) {
+            uint fLo = 1u; uint fHi = 0u;
+            DsZBinRange(pcCull.zbins, 0u,
+                DsBinFromDist(pcCull.fogMaxDistance, nearP, frame.farPlane),
+                maskCount, fLo, fHi);
+            uint fscan = groupBits;
+            while (fscan != 0u) {
+                const uint grp = firstbitlow(fscan);
+                fscan ^= 1u << grp;
+                uint word = 0u;
+                for (uint gy = mgy0; gy <= mgy1; ++gy) {
+                    for (uint gx = mgx0; gx <= mgx1; ++gx) {
+                        word |= pcCull.tileLightMasks.Get().masks[
+                            DsGroupEntryAddress(gy * groupCountX + gx, grp)];
+                    }
+                }
+                word &= DsWindowMask(grp, fLo, fHi);
+                while (word != 0u) {
+                    const uint bit = firstbitlow(word);
+                    word ^= 1u << bit;
+                    const uint li = grp * 32u + bit;
+                    if (li >= maskCount)
+                        continue;
+                    ForwardPlusLight L = pcCull.lights.Get().lights[li];
+                    if (L.type == kForwardPlusProbe)
+                        continue; // probes never ride the fog lists
+                    float range = L.range <= 0.0f ? 1e6f : L.range;
+                    float3 cView = mul(view, float4(L.position, 1.0f)).xyz;
+                    if (cView.z > range)
+                        continue;
+                    if (FpOutsideSidePlanes(planes, cView, range))
+                        continue;
+                    const float d = -cView.z;
+                    const float spotPin = (L.type == 1) ? -kSpotPin : 0.0f;
+                    if (d - range <= pcCull.fogMaxDistance) {
+                        const float key = max(max(-d, d - pcCull.fogMaxDistance), 0.0f) + spotPin;
+                        FpInsertSorted(li, key, fogStride, fIdx, fKey, fcount);
+                    }
+                }
+            }
+        }
+
+        // ---- Probe tail (linear): the phase-1 builders never saw the
+        // probe entries (the app appends them to the light buffer AFTER
+        // the sort/zBins/masks ran), so the tail [maskCount, lightCount)
+        // walks linearly — <= kForwardPlusMaxProbes entries, far cheaper
+        // than extending the phase-1 format for them, and the ascending
+        // walk keeps the combined (lights, probes) visit order identical
+        // to the linear path's (the probe tail is contiguous in the
+        // buffer by the upload contract). The type guard is defense in
+        // depth: only probes live past maskCount.
+        for (uint li = maskCount; li < lightCount; ++li) {
+            ForwardPlusLight L = pcCull.lights.Get().lights[li];
+            if (L.type != kForwardPlusProbe)
+                continue;
+            float range = L.range <= 0.0f ? 1e6f : L.range;
+            float3 cView = mul(view, float4(L.position, 1.0f)).xyz;
+            if (cView.z > range)
+                continue;
+            if (FpOutsideSidePlanes(planes, cView, range))
+                continue;
             // Probes: surface specular IBL only — slab candidacy, plain
             // first-come packing (their own tail slots).
             if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
@@ -241,69 +456,71 @@ void mainCS(uint3 groupId : SV_GroupID)
                     pcCull.tileIndices.Get().indices[tileIdx * stride + maxPerTile + pcount] = li;
                 pcount++;
             }
-            continue;
         }
+    }
+    else {
+        // ---- Linear fallback: the original full scan over every entry.
+        // Runs when the phase-1 artifacts are absent (deferred shadows
+        // owns the light lists, TOURMALINE_FP_MASKS=0, or a resize frame
+        // raced the upload). The reference path for the A/B harness: the
+        // mask path keeps every light this one keeps except zero-
+        // contribution plane-test false positives (header).
+        for (uint li = 0; li < lightCount; ++li)
+        {
+            ForwardPlusLight L = pcCull.lights.Get().lights[li];
+            float range = L.range <= 0.0f ? 1e6f : L.range;
 
-        // ---- Surface track (slab candidacy + sorted insertion) ----
-        // The slab cuts are conservative for every OPAQUE pixel of the
-        // tile (pixels live inside the slab by construction), unchanged
-        // from the classic cull. Relevance key = distance from the light
-        // CENTER to the slab interval: 0 = the center sits inside the
-        // slab (the tile's pixels pass right by the light); larger = the
-        // light only reaches in from farther out, so it pops first.
-        if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
-            const float key = max(max(nearestDist - d, d - farthestDist), 0.0f) + spotPin;
-            // Insert: append while free, else evict the worst (largest
-            // key) when this candidate beats it. Strict '<' = stable ties
-            // (buffer order among equals — spots first).
-            if (lcount < maxPerTile) {
-                sIdx[lcount] = li;
-                sKey[lcount] = key;
-                lcount++;
-            } else {
-                float worst = sKey[0];
-                uint worstI = 0u;
-                [loop]
-                for (uint w = 1u; w < maxPerTile; ++w) {
-                    if (sKey[w] > worst) { worst = sKey[w]; worstI = w; }
+            // View-space center. Skip lights behind the camera:
+            // view z positive = behind (camera looks down -z).
+            float3 cView = mul(view, float4(L.position, 1.0f)).xyz;
+            if (cView.z > range)
+                continue;
+
+            if (FpOutsideSidePlanes(planes, cView, range))
+                continue;
+
+            const float d = -cView.z; // light center view distance
+            const float spotPin = (L.type == 1) ? -kSpotPin : 0.0f;
+
+            if (L.type == kForwardPlusProbe) {
+                // Probes: surface specular IBL only — slab candidacy, plain
+                // first-come packing (their own tail slots).
+                if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
+                    if (pcount < (uint)MAX_FP_PROBE_TILE_SLOTS)
+                        pcCull.tileIndices.Get().indices[tileIdx * stride + maxPerTile + pcount] = li;
+                    pcount++;
                 }
-                if (key < worst) {
-                    sIdx[worstI] = li;
-                    sKey[worstI] = key;
-                }
+                continue;
             }
-        }
 
-        // ---- Fog track (march-range candidacy + sorted insertion) ----
-        // NO slab cuts: a march sample lives outside the slab whenever
-        // it is in the air between the camera and the tile's nearest
-        // surface, and a light sitting entirely in front of that surface
-        // still lights that air. Cutting on the slab split the fog on the
-        // tile grid at depth discontinuities (neighboring tiles' slabs
-        // disagree). The single cut: the light's nearest face beyond the
-        // march range (fogMaxDistance) can never reach a sample in
-        // [0, fogMaxDistance]. Relevance key = distance from the center
-        // to the march interval [0, fogMaxDistance] — same shape as the
-        // surface key. GATED on fogListsWanted: the volumetric pass's
-        // consumer gate (the per-light fog candidacy + sorted insertion
-        // is real work per tile, not free dead stores when fog is off).
-        if (fogLists && d - range <= pcCull.fogMaxDistance) {
-            const float key = max(max(-d, d - pcCull.fogMaxDistance), 0.0f) + spotPin;
-            if (fcount < fogStride) {
-                fIdx[fcount] = li;
-                fKey[fcount] = key;
-                fcount++;
-            } else {
-                float worst = fKey[0];
-                uint worstI = 0u;
-                [loop]
-                for (uint w = 1u; w < fogStride; ++w) {
-                    if (fKey[w] > worst) { worst = fKey[w]; worstI = w; }
-                }
-                if (key < worst) {
-                    fIdx[worstI] = li;
-                    fKey[worstI] = key;
-                }
+            // ---- Surface track (slab candidacy + sorted insertion) ----
+            // The slab cuts are conservative for every OPAQUE pixel of the
+            // tile (pixels live inside the slab by construction), unchanged
+            // from the classic cull. Relevance key = distance from the light
+            // CENTER to the slab interval: 0 = the center sits inside the
+            // slab (the tile's pixels pass right by the light); larger = the
+            // light only reaches in from farther out, so it pops first.
+            if (-cView.z + range >= nearestDist && -cView.z - range <= farthestDist) {
+                const float key = max(max(nearestDist - d, d - farthestDist), 0.0f) + spotPin;
+                FpInsertSorted(li, key, maxPerTile, sIdx, sKey, lcount);
+            }
+
+            // ---- Fog track (march-range candidacy + sorted insertion) ----
+            // NO slab cuts: a march sample lives outside the slab whenever
+            // it is in the air between the camera and the tile's nearest
+            // surface, and a light sitting entirely in front of that surface
+            // still lights that air. Cutting on the slab split the fog on the
+            // tile grid at depth discontinuities (neighboring tiles' slabs
+            // disagree). The single cut: the light's nearest face beyond the
+            // march range (fogMaxDistance) can never reach a sample in
+            // [0, fogMaxDistance]. Relevance key = distance from the center
+            // to the march interval [0, fogMaxDistance] — same shape as the
+            // surface key. GATED on fogListsWanted: the volumetric pass's
+            // consumer gate (the per-light fog candidacy + sorted insertion
+            // is real work per tile, not free dead stores when fog is off).
+            if (fogLists && d - range <= pcCull.fogMaxDistance) {
+                const float key = max(max(-d, d - pcCull.fogMaxDistance), 0.0f) + spotPin;
+                FpInsertSorted(li, key, fogStride, fIdx, fKey, fcount);
             }
         }
     }

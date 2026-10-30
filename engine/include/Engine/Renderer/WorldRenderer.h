@@ -2924,6 +2924,21 @@ public:
 	glm::vec3 m_frozenEye{ 0.0f };
 	smvk::Extent2D m_frozenExtent{ 0, 0 };
 	engine::ForwardPlusRenderer m_fpRenderer{};
+	// ---- Hierarchical forward+ culling (FFXVI tiled/zBin masks on the
+	// DEFAULT forward+ path; see forwardplus.h). m_fpMasksEnabled is the
+	// live toggle (TOURMALINE_FP_MASKS=0 pins it off headless for the A/B
+	// contract: no light that reaches any pixel of a tile may go missing
+	// with the masks on — each coarse-mask reject proves zero
+	// contribution). The four m_fpMask* members below are the PER-FRAME
+	// publish set — written as one group in UpdateForwardPlusLights (all
+	// zero = not fresh this frame), copied into the frame context for
+	// AppendTileCull. Stale addresses must never publish: lights move
+	// every frame, last frame's masks would read as false negatives. ----
+	bool m_fpMasksEnabled = true;
+	uint64_t m_fpMaskZBins = 0;
+	uint64_t m_fpMaskTileMasks = 0;
+	uint32_t m_fpMaskLightCount = 0;
+	uint32_t m_fpMaskGroupCountX = 0;
 	// ---- Deferred shadows (tiled/zBin pipeline; H toggles) ----
 	bool m_dsEnabled = true;
 	// ---- SG-GI baked probe volume (tools/gi_baker output, see
