@@ -146,6 +146,26 @@ deltas are marked.
     already vendored "for upcoming physics work" (unwired,
     THIRD_PARTY_NOTICES) — superseded by Jolt for the 3D runtime;
     its fate gets decided at Epoch 15 cleanup.
+  - **Gates (all closed)**: Windows Release + Debug clean; Linux
+    (Ubuntu 24.04 WSL, GCC 14.2, CMake 3.28, ext4 clone provisioned by
+    `install_dependencies.sh`) — full tree with Jolt builds, 44/44;
+    the subproject-host path verified with a simulated game repo
+    (`add_subdirectory` of this tree — `TOURMALINE_IS_TOP_LEVEL`
+    FALSE: no tools/editor/tests, engine + Jolt link into the host
+    exe through the PRIVATE link-only interface). One note for real
+    game hosts: their OWN TUs must compile at C++20 (the engine's
+    public headers use inline variables) — the simulation hit that
+    first, any host that already links the engine knows it.
+- 2 — `test: add Jolt physics smoke test`.
+  - **Gates**: Windows 45/45; Linux — the smoke test pulled into the
+    WSL clone, built, **all 7 checks pass** on GCC 14 too. Two v5.6
+    API spellings pinned by the compile: `JobSystemThreadPool` (not
+    JobThreadPool), `Quat::sIdentity` (not RQuat); and one physics
+    lesson recorded in the test: the first draft centered the 20 m
+    floor box at y=-10, putting its TOP at y=+10 — inside the drop
+    volume — and the contact solver ejected the cube UPWARD (the
+    step-trace caught it: rise to 10.48, sleep). Floor centered at
+    -20 (top at y=0) as intended.
 - 2 — `test: add Jolt physics smoke test`.
 - 3 — `refactor(scene): introduce typed data tables` (rows +
   `rowsForNode` derived lookup + handwritten Set/Find/Remove; rows
