@@ -90,8 +90,9 @@ What is actually verified, and what is not:
   separate
   [Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)
   workflow, with the five GPU-window tests excluded on hosted runners
-  (no display / Vulkan ICD — see [Testing](#testing)). Linux test parity
-  with Windows is verified on Ubuntu 24.04 + GCC 14 (WSL).
+  (no display / Vulkan ICD — see [Testing](#testing)). The same test
+  suite is registered on Windows and Linux; verified passing on Ubuntu
+  24.04 + GCC 14 (WSL).
 - **Runtime rendering** requires a **real Vulkan GPU** and is verified on
   the author's Windows machines. A successful build + CPU test pass does
   **not** guarantee working rendering on any given machine. The lavapipe
@@ -131,7 +132,8 @@ Vulkan SDK or KTX; those stay manual.
 Steps 1–2 run from any shell; steps 3–6 need the MSVC environment, so
 use the **Developer PowerShell for Visual Studio** (Start menu — it
 opens PowerShell with `cl.exe`, `cmake` and `ninja` already on PATH).
-Steps 1–4 are one-time setup. Commands prefixed `PS>` are PowerShell.
+Steps 1–4 are one-time setup. Commands are PowerShell unless a block
+says otherwise.
 
 **Prerequisites**: Visual Studio 2022 or newer with the
 *Desktop development with C++* workload (this also provides CMake and
@@ -142,8 +144,8 @@ this; verify with `Test-Path "$env:VULKAN_SDK\Bin\dxc.exe"`).
 ### 1. Clone with submodules
 
 ```powershell
-PS> git clone --recursive https://github.com/striker-samuel/tourmaline.git
-PS> cd tourmaline
+git clone --recursive https://github.com/striker-samuel/tourmaline.git
+cd tourmaline
 # (already cloned? just: git submodule update --init --recursive)
 ```
 
@@ -154,7 +156,7 @@ Downloads the vendored source trees and Windows binary packages
 Idempotent — re-run is a no-op.
 
 ```powershell
-PS> powershell -NoProfile -ExecutionPolicy Bypass -File .\install_dependencies.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install_dependencies.ps1
 ```
 
 This does **not** fetch the Vulkan SDK (install it yourself, above) or
@@ -169,13 +171,13 @@ shell with the MSVC compiler already initialized); any install prefix
 works, this example uses `%USERPROFILE%\ktx`:
 
 ```powershell
-PS> git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software $env:USERPROFILE\ktx-src
-PS> cmake -S $env:USERPROFILE\ktx-src -B $env:USERPROFILE\ktx-build -G Ninja `
+git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software $env:USERPROFILE\ktx-src
+cmake -S $env:USERPROFILE\ktx-src -B $env:USERPROFILE\ktx-build -G Ninja `
        -DCMAKE_BUILD_TYPE=Release `
        -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF `
        -DCMAKE_INSTALL_PREFIX=$env:USERPROFILE\ktx
-PS> cmake --build $env:USERPROFILE\ktx-build
-PS> cmake --install $env:USERPROFILE\ktx-build
+cmake --build $env:USERPROFILE\ktx-build
+cmake --install $env:USERPROFILE\ktx-build
 ```
 
 ### 4. Get the prebuilt Embree package (recommended)
@@ -186,12 +188,12 @@ uses), extract it anywhere you like — this example uses
 `%USERPROFILE%\embree-4.4.1`:
 
 ```powershell
-PS> curl.exe -L -o $env:TEMP\embree.zip `
+curl.exe -L -o $env:TEMP\embree.zip `
        https://github.com/embree/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip
-PS> $hash = (Get-FileHash $env:TEMP\embree.zip -Algorithm SHA256).Hash.ToLower()
-PS> if ($hash -ne '5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f') { throw "embree zip sha mismatch: $hash" }
-PS> Expand-Archive $env:TEMP\embree.zip -DestinationPath $env:TEMP\embree-x
-PS> Move-Item "$env:TEMP\embree-x\embree-4.4.1.x64.windows" $env:USERPROFILE\embree-4.4.1
+$hash = (Get-FileHash $env:TEMP\embree.zip -Algorithm SHA256).Hash.ToLower()
+if ($hash -ne '5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f') { throw "embree zip sha mismatch: $hash" }
+Expand-Archive $env:TEMP\embree.zip -DestinationPath $env:TEMP\embree-x
+Move-Item "$env:TEMP\embree-x\embree-4.4.1.x64.windows" $env:USERPROFILE\embree-4.4.1
 ```
 
 Without a prebuilt package the configure falls back to building the
@@ -205,15 +207,15 @@ Open the **Developer PowerShell for Visual Studio** (Start menu) — it has
 `cl.exe`, `cmake` and `ninja` on PATH — and `cd` into the repo.
 
 ```powershell
-PS> $env:KTX_ROOT = "$env:USERPROFILE\ktx"
-PS> cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release `
+$env:KTX_ROOT = "$env:USERPROFILE\ktx"
+cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release `
        -DEMBREE_PREBUILT_DIR="$env:USERPROFILE\embree-4.4.1" .
 
 # Build what you need:
-PS> cmake --build out/build/x64-Release --target App       # the pak-viewer host
-PS> cmake --build out/build/x64-Release --target Editor    # the world editor
-PS> cmake --build out/build/x64-Release --target Project   # the content-pipeline CLI
-PS> cmake --build out/build/x64-Release                    # everything (tools, samples, tests)
+cmake --build out/build/x64-Release --target App       # the pak-viewer host
+cmake --build out/build/x64-Release --target Editor    # the world editor
+cmake --build out/build/x64-Release --target Project   # the content-pipeline CLI
+cmake --build out/build/x64-Release                    # everything (tools, samples, tests)
 ```
 
 `EMBREE_PREBUILT_DIR` must be the extracted package root (the directory
@@ -235,7 +237,7 @@ build_app.bat             == build.bat App
 ### 6. Test
 
 ```powershell
-PS> ctest --test-dir out/build/x64-Release --output-on-failure
+ctest --test-dir out/build/x64-Release --output-on-failure
 ```
 
 See [Testing](#testing) for the GPU-test caveats.
@@ -246,8 +248,8 @@ Executables run **from their build directory** and load `content/`
 relative to the CWD:
 
 ```powershell
-PS> cd out\build\x64-Release
-PS> .\App.exe --pak content\paks\Sponza.pak
+cd out\build\x64-Release
+.\App.exe --pak content\paks\Sponza.pak
 ```
 
 `--pak` is **required** — and the pak does not exist yet on a fresh
@@ -258,8 +260,8 @@ The editor needs a project directory (it never picks one itself —
 `EditorLauncher.exe` is the picker):
 
 ```powershell
-PS> .\EditorLauncher.exe                  # the launcher: recents + New/Browse
-PS> .\Editor.exe --project <project-dir>  # direct (the launcher spawns this)
+.\EditorLauncher.exe                  # the launcher: recents + New/Browse
+.\Editor.exe --project <project-dir>  # direct (the launcher spawns this)
 ```
 
 ## Quick start — Linux
@@ -313,7 +315,8 @@ applies identically).
 
 ### Linux notes
 
-- **GCC 14+ required-ish.** GCC 13 works for most of the tree but hits
+- **GCC 14 is required for the verified build.** GCC 13 compiles most
+  of the tree but hits
   two compiler bugs in the engine (`gimplify` ICEs on array-NSDMI
   aggregates; see the NOTE at `struct ShaderProgram` in
   `engine/include/Engine/smvk.h`). Clang is expected to work but is not
@@ -372,7 +375,7 @@ device — `retirement_fuzz_tests`, `world_fields_gpu_tests`,
 `placement_gpu_tests`, `probepremix_gpu_tests`,
 `rhi_upload_barriers_gpu_tests` — and need a desktop session with a
 working Vulkan driver. They run in dev environments and are excluded in
-CI; everything else is pure CPU and runs anywhere.
+CI; the remaining 39 tests are pure CPU and run anywhere.
 
 ### CI and the Tests workflow
 
@@ -432,8 +435,8 @@ app is a pak viewer — `--pak <path>` is **required**, and content is
 cooked separately through the project pipeline:
 
 ```powershell
-PS> cd out\build\x64-Release
-PS> .\App.exe --pak content\paks\Sponza.pak    # built by the pipeline (below)
+cd out\build\x64-Release
+.\App.exe --pak content\paks\Sponza.pak    # built by the pipeline (below)
 ```
 
 Headless deterministic capture / benchmarking — env vars pin features
@@ -441,10 +444,10 @@ for A/B benches (the full set is parsed in
 `engine/src/App/RunConfig.cpp`; `AGENTS.md` carries the annotated list):
 
 ```powershell
-PS> $env:TOURMALINE_SSR='1'; $env:TOURMALINE_AA='off'; $env:TOURMALINE_AUTO_EXPOSURE='0'
-PS> $env:TOURMALINE_CAM_POS='24.26,1.82,-9.52'; $env:TOURMALINE_CAM_FWD='-0.947,-0.022,-0.321'
-PS> $env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must be < bench)
-PS> .\App.exe --pak content\paks\Sponza.pak --disable_control --bench 64
+$env:TOURMALINE_SSR='1'; $env:TOURMALINE_AA='off'; $env:TOURMALINE_AUTO_EXPOSURE='0'
+$env:TOURMALINE_CAM_POS='24.26,1.82,-9.52'; $env:TOURMALINE_CAM_FWD='-0.947,-0.022,-0.321'
+$env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must be < bench)
+.\App.exe --pak content\paks\Sponza.pak --disable_control --bench 64
 ```
 
 - `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
@@ -503,16 +506,16 @@ are incremental (unchanged content reimports and bakes nothing):
 ```powershell
 # Your content store root — must contain models\sponza\Sponza.gltf +
 # Sponza.bin + the textures + the authored Sponza.tour:
-PS> $env:TOURMALINE_CONTENT_DIR = 'D:\my-content-store'
+$env:TOURMALINE_CONTENT_DIR = 'D:\my-content-store'
 
-PS> tools\cook\cook_sponza.bat        # or the explicit commands:
+tools\cook\cook_sponza.bat        # or the explicit commands:
 #   Project.exe init  --project <dir> --from-gltf <store>\models\sponza\Sponza.gltf `
 #                       --from-scene <store>\models\sponza\Sponza.tour
 #   Project.exe build --project <dir> --output <dir>\paks\Sponza.pak
 #   Project.exe status --project <dir>     # explains staleness per source
 
-PS> cd out\build\x64-Release
-PS> .\App.exe --pak content\paks\Sponza.pak
+cd out\build\x64-Release
+.\App.exe --pak content\paks\Sponza.pak
 ```
 
 The project defaults to your **user Documents** —

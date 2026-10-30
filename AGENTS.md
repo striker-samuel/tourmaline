@@ -294,7 +294,7 @@ operational conditions like pool exhaustion.
 ## Linux compatibility
 
 The tree builds and passes ctest on Linux (Ubuntu 24.04 + GCC 14 verified in
-WSL; full test parity with Windows). Conventions:
+WSL; the same test suite as Windows is registered, passing on both). Conventions:
 
 - `install_dependencies.sh` is the Linux installer: it carries the
   platform-specific pins (SDL3 3.4.16 SOURCE zip - the root CMakeLists
@@ -302,7 +302,7 @@ WSL; full test parity with Windows). Conventions:
   linux package; Vulkan-Headers 1.4.357 - distro libvulkan-dev headers are
   too old; DirectX-Headers + DirectXMath + the dotnet-PAL sal.h for
   DirectXTex's non-Win32 path). Windows equivalents live in the .ps1.
-- Toolchain: **GCC 14+**. GCC 13 ICEs in `gimplify` on the engine's
+- Toolchain: **GCC 14** (required for the verified build). GCC 13 ICEs in `gimplify` on the engine's
   array-NSDMI aggregates (see the NOTE at `struct ShaderProgram` in
   engine/include/Engine/smvk.h) - never write `x = ShaderProgram{}` or
   `ShaderProgram p{};` for that type; use the paren/default forms.
