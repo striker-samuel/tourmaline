@@ -361,6 +361,23 @@ set_target_properties(WorldEntityTests PROPERTIES
 
 add_test(NAME world_entity_tests COMMAND WorldEntityTests)
 
+# Jolt physics smoke test (scene-tables migration Epoch 2): the vendored
+# library simulating STANDALONE — links ONLY Jolt, no engine/renderer/
+# editor/pak/Scene dependency (the acceptance gate). Stays as the
+# permanent headless physics regression when the integration lands.
+add_executable(PhysicsJoltTests test_physics_jolt.cpp)
+
+target_link_libraries(PhysicsJoltTests
+    PRIVATE
+        Jolt
+)
+
+set_target_properties(PhysicsJoltTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME physics_jolt_tests COMMAND PhysicsJoltTests)
+
 add_executable(PlacementTests test_placement.cpp)
 
 target_link_libraries(PlacementTests
