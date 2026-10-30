@@ -236,6 +236,21 @@ struct Scene {
 
 	std::vector<Hierarchy> hierarchy;
 
+	// ---- stable node slots (Epoch 6b, docs/scene_tables_migration.md) ----
+	// The hierarchy/transform/flag/metadata vectors above are SLOT
+	// arrays: deletion retires a slot (free list + generation bump)
+	// instead of compacting, so every surviving node's id stays put.
+	// nodeGeneration: one word per slot — bit 31 = alive, low 12 bits
+	// = the slot's generation (see scene_node_id.h). It may LAG
+	// hierarchy.size(): a slot at or beyond its size was created by a
+	// wholesale resize (loaders, hand-built rigs) and reads as LIVE —
+	// only RetireNodeSlot ever marks dead, and it sizes the array
+	// first. nodeFreeList: LIFO of retired slots; addNode pops it
+	// before appending (a fresh scene allocates 0,1,2,... exactly like
+	// the old dense ids).
+	std::vector<uint32_t> nodeGeneration;
+	std::vector<uint32_t> nodeFreeList;
+
 	// ---- typed association tables (the xForNode migration target,
 	// Epoch 3+, docs/scene_tables_migration.md) ----
 	// AUTHORITATIVE for EVERY node association since Epoch 5: the old
@@ -423,6 +438,76 @@ struct Scene {
 	// above.
 	std::vector<uint8_t> castsVolumetricShadow;
 };
+
+// ---- stable node slots (Epoch 6b) ----------------------------------------
+// Alive-word layout: bit 31 = alive, low 12 bits = generation.
+inline constexpr uint32_t kNodeSlotAliveBit = 0x80000000u;
+
+// A slot beyond nodeGeneration.size() was created by a wholesale
+// resize and is live (see the Scene member comment).
+inline bool IsLiveSlot(const Scene& scene, uint32_t slot)
+{
+	return slot < scene.hierarchy.size()
+		&& (slot >= scene.nodeGeneration.size()
+			|| (scene.nodeGeneration[slot] & kNodeSlotAliveBit) != 0);
+}
+// Node-id validity: range + alive (a retired/reused slot answers false
+// even though the index is in bounds — the whole point of 6b).
+inline bool IsNodeAlive(const Scene& scene, NodeId node)
+{
+	return IsLiveSlot(scene, node);
+}
+// The slot's current generation (0 when untracked — matches a fresh slot).
+inline uint32_t NodeGenerationOf(const Scene& scene, NodeId node)
+{
+	return (node < scene.nodeGeneration.size())
+		? (scene.nodeGeneration[node] & kNodeGenMask) : 0u;
+}
+// Live node count (slots minus holes; O(n) — writers/validators, not
+// hot paths).
+uint32_t LiveNodeCount(const Scene& scene);
+
+// Generational handle for LONG-LIVED references: the slot plus the
+// generation it was minted at. Valid until the node retires — and
+// STAYS invalid after the slot is reused (the ABA guard the bare id
+// cannot give). See scene_node_id.h for the packing.
+inline NodeHandle MakeNodeHandle(const Scene& scene, NodeId node)
+{
+	if (!IsNodeAlive(scene, node))
+		return kNodeInvalidHandle;
+	return PackNodeHandle(node, NodeGenerationOf(scene, node));
+}
+inline bool NodeHandleValid(const Scene& scene, NodeHandle handle)
+{
+	if (handle == kNodeInvalidHandle)
+		return false;
+	const uint32_t slot = NodeHandleSlot(handle);
+	return IsLiveSlot(scene, slot)
+		&& NodeGenerationOf(scene, slot) == NodeHandleGen(handle);
+}
+
+// Slot-id compaction map for the serializers (the cooked format stays
+// DENSE by the locked decision): slotToDense[liveSlot] = its position
+// among the live slots in ascending slot order, UINT32_MAX for holes.
+// Ascending-slot == the old stable_partition compaction order, so a
+// never-deleted scene writes byte-identical bytes to the pre-6b
+// serializer.
+std::vector<uint32_t> BuildSlotToDenseMap(const Scene& scene);
+
+// Detach one node from its parent's child list (sibling links repaired,
+// the node's parent/nextSibling cleared). No-op for root nodes. The
+// retirement pair: UnlinkNodeFromParent then RetireNodeSlot.
+void UnlinkNodeFromParent(Scene& scene, int node);
+
+// Retire one node's slot: drops every association row (the rows-never-
+// outlive-nodes discipline), clears the slot's per-node state (flags,
+// metadata, transforms reset to identity, hierarchy entry reset), bumps
+// the generation and pushes the slot to the free list. The node must
+// already be detached (or doomed inside a deleted subtree). Ids of
+// every OTHER node are untouched. Does NOT touch World-level caches
+// (drawItems/flags/lod chains) — those are the caller's contract
+// (re-resolve, or clean the entries like the editor's uncreate paths).
+void RetireNodeSlot(Scene& scene, NodeId node);
 
 int addNode(Scene& scene, int parent, int level);
 
@@ -735,7 +820,12 @@ void mergeScenes(
 	bool mergeLigths = true
 );
 
-// Delete a collection of nodes from a scenegraph
+// Delete a collection of nodes (their whole subtrees) from a scene
+// graph. Epoch 6b: deletion RETIRES slots — the arrays keep their
+// length, every surviving node's id stays put, the freed slots re-enter
+// circulation through addNode with a bumped generation. Rows of the
+// deleted nodes drop; rows of survivors keep their node ids verbatim
+// (no remap, no shift helpers — those died with the compaction).
 void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete);
 
 

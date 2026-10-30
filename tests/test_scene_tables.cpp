@@ -7,9 +7,9 @@
 // (replace semantics), removal with swap-and-pop lookup repair,
 // dead-row compaction on rebuild, per-kind coexistence, and the
 // derived rowsForNode index staying consistent with the tables.
-//
-// The tables are not yet authoritative (the maps are, until Epochs
-// 4-5) — nothing here touches the maps.
+// Since Epoch 6b: the STABLE-SLOT contract — retirement without
+// renumbering, rows addressing live slots only, clean reuse, and the
+// generational NodeHandle ABA guard.
 //
 // Hand-rolled runner (the house convention): each check prints
 // PASS/FAIL, the process exits nonzero on any failure.
@@ -173,6 +173,80 @@ int main() {
 			&& s.rowsForNode[0].decal == InvalidRow
 			&& s.rowsForNode[0].body == InvalidRow,
 			"NodeRows defaults are all InvalidRow (body reserved for Epoch 10)");
+	}
+
+	{
+		// ---- Epoch 6b: stable node slots + generations ----
+		// (docs/scene_tables_migration.md) Handles survive deletion
+		// without renumbering; rows only address LIVE slots; reuse
+		// starts clean; the generational NodeHandle guards the ABA case
+		// (a stale handle must NOT resurrect across slot reuse).
+		Scene s;
+		const int root = addNode(s, -1, 0);
+		const int a = addNode(s, root, 1);
+		const int b = addNode(s, root, 1);
+		const int aChild = addNode(s, a, 2);
+		SetMesh(s, (uint32_t)a, 5);
+		SetLight(s, (uint32_t)b, 6);
+		SetDecal(s, (uint32_t)aChild, 7);
+		SetNodeUuidRaw(s, (uint32_t)a, "aabbccdd00112233");
+		const NodeHandle ha = MakeNodeHandle(s, (uint32_t)a);
+		Check(NodeHandleValid(s, ha), "handle valid at mint");
+
+		// ---- delete a subtree: retire, NO renumber ----
+		deleteSceneNodes(s, { (uint32_t)a });
+		Check(s.hierarchy.size() == 4, "retirement keeps the slot count");
+		Check(LiveNodeCount(s) == 2, "live count drops by the subtree");
+		Check(!IsNodeAlive(s, (uint32_t)a) && !IsNodeAlive(s, (uint32_t)aChild),
+			"the whole subtree retired");
+		Check(IsNodeAlive(s, (uint32_t)root) && IsNodeAlive(s, (uint32_t)b),
+			"survivors stay alive at their ids");
+		Check(FindMesh(s, (uint32_t)a) == nullptr
+			&& FindDecal(s, (uint32_t)aChild) == nullptr,
+			"rows of retired nodes dropped");
+		Check(FindLight(s, (uint32_t)b) && FindLight(s, (uint32_t)b)->light == 6,
+			"survivor's row keeps its node id verbatim");
+		Check(s.hierarchy[size_t(root)].firstChild == b
+			&& s.hierarchy[size_t(b)].nextSibling == -1,
+			"survivor's sibling links repaired");
+		Check(!NodeHandleValid(s, ha), "handle invalid after retirement");
+		Check(MakeNodeHandle(s, (uint32_t)a) == kNodeInvalidHandle,
+			"no handle mints for a dead slot");
+
+		// ---- reuse: the freed slots return with bumped generations ----
+		// (LIFO: the subtree's highest-retired slot pops first.)
+		const int d1 = addNode(s, root, 1);
+		Check(d1 == aChild, "addNode reuses freed slots (LIFO free list)");
+		const int d = addNode(s, root, 1);
+		Check(d == a, "the subtree root's slot returns next");
+		Check(NodeHandleValid(s, MakeNodeHandle(s, (uint32_t)d)),
+			"the reused slot mints a fresh handle");
+		Check(!NodeHandleValid(s, ha),
+			"the OLD handle stays invalid across reuse (ABA guard)");
+		Check(FindMesh(s, (uint32_t)d) == nullptr,
+			"reuse starts row-clean");
+		Check(SetMesh(s, (uint32_t)d, 8) && FindMesh(s, (uint32_t)d)->mesh == 8,
+			"the reused slot carries new rows");
+		Check(GetNodeUuid(s, (uint32_t)d).empty(),
+			"reuse clears the old life's metadata");
+
+		// ---- mutators reject retired slots ----
+		const int e = addNode(s, root, 1);
+		UnlinkNodeFromParent(s, e);
+		RetireNodeSlot(s, (uint32_t)e);
+		Check(!IsNodeAlive(s, (uint32_t)e), "explicit retire marks dead");
+		Check(!SetMesh(s, (uint32_t)e, 9) && !SetLight(s, (uint32_t)e, 9),
+			"SetX on a retired slot is rejected");
+
+		// ---- RebuildNodeRows drops rows still pointing at dead slots ----
+		// (the discipline backstop — a hand-pushed stale row compacts out.)
+		s.tables.meshes.push_back(MeshRow{ (uint32_t)e, 99 });
+		RebuildNodeRows(s);
+		bool staleRow = false;
+		for (const MeshRow& row : s.tables.meshes)
+			if (row.node == (uint32_t)e)
+				staleRow = true;
+		Check(!staleRow, "rebuild compacts rows of retired slots");
 	}
 
 	if (g_failures > 0) {

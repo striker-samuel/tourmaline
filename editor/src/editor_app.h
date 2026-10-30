@@ -1033,6 +1033,17 @@ private:
 	// back into the command (c.node).
 	void ExecCreateLight(EditCmd& c);
 	void ExecUncreateLight(EditCmd& c);
+	// Create-undo retirement (Epoch 6b, shared by every ExecUncreate*
+	// path): unlink + retire the created node's SLOT — the generation
+	// bumps, every OTHER node id stays put, and the freed slot re-enters
+	// circulation (a redo re-creates at the same slot id). Replaces the
+	// old tail-pop/tombstone split: retirement works anywhere in the
+	// graph, so mid-graph uncreates no longer leave hidden zombie
+	// nodes. Also scrubs the World draw caches (flags/drawItems — the
+	// arrays no longer shrink past the node) and the selection. The
+	// caller owns the per-kind POOL cleanup (definition destroy +
+	// location pop) before calling.
+	void RetireCreatedNode(uint32_t n);
 	// CreateTransform execution (ExecCmd cases): append/remove a plain
 	// transform node. ExecCreateTransform records the assigned id back
 	// into the command (c.node).

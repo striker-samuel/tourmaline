@@ -364,6 +364,8 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 		const glm::vec3 eye = EditorCamEye(ActiveCam());
 		const Scene& scene = m_world->scene;
 		for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
+			if (!IsNodeAlive(scene, node))
+				continue; // retired slot (Epoch 6b): a hole, not a locator
 			if (!IsLocatorNode(scene, node))
 				continue;
 			if (node >= scene.globalTransform.size())

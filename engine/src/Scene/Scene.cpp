@@ -21,21 +21,66 @@
 int addNode(Scene& scene, int parent, int level)
 {
   const int nodeCount = (int)scene.hierarchy.size();
-  assert(parent == -1 || (parent >= 0 && parent < nodeCount));
-  const int node = (int)scene.hierarchy.size();
-  {
-    // TODO: resize aux arrays (local/global etc.)
-    scene.localTransform.push_back(glm::mat4(1.0f));
-    scene.globalTransform.push_back(glm::mat4(1.0f));
-  scene.staticRoot.push_back(0);
-  scene.staticNode.push_back(0);
-  scene.noLightmap.push_back(0);
-  scene.lightmap.push_back(0);
-  scene.castsVolumetricShadow.push_back(0);
-  scene.ditherCloseup.push_back(0);
-  scene.hidden.push_back(0);
+  // Parent must be a LIVE slot (not just in range): a retired slot is
+  // a hole — linking into it orphans the node silently in release.
+  assert(parent == -1
+    || (parent >= 0 && parent < nodeCount
+      && IsLiveSlot(scene, uint32_t(parent))));
+  int node;
+  if (!scene.nodeFreeList.empty()) {
+    // Reuse a retired slot: everything the old life wrote is reset
+    // here (the "addNode keeps every parallel array in sync" invariant
+    // extends to reuse — the flag tables only where they cover the
+    // slot, the lazy metadata/rowsForNode arrays likewise).
+    node = (int)scene.nodeFreeList.back();
+    scene.nodeFreeList.pop_back();
+    assert(node >= 0 && node < nodeCount);
+    scene.localTransform[size_t(node)] = glm::mat4(1.0f);
+    scene.globalTransform[size_t(node)] = glm::mat4(1.0f);
+    if (scene.staticRoot.size() > size_t(node)) scene.staticRoot[size_t(node)] = 0;
+    if (scene.staticNode.size() > size_t(node)) scene.staticNode[size_t(node)] = 0;
+    if (scene.noLightmap.size() > size_t(node)) scene.noLightmap[size_t(node)] = 0;
+    if (scene.lightmap.size() > size_t(node)) scene.lightmap[size_t(node)] = 0;
+    if (scene.castsVolumetricShadow.size() > size_t(node)) scene.castsVolumetricShadow[size_t(node)] = 0;
+    if (scene.ditherCloseup.size() > size_t(node)) scene.ditherCloseup[size_t(node)] = 0;
+    if (scene.hidden.size() > size_t(node)) scene.hidden[size_t(node)] = 0;
+    scene.hierarchy[size_t(node)] = Hierarchy{};
+    if (scene.metadata.size() > size_t(node)) scene.metadata[size_t(node)] = NodeMetadata{};
+    if (scene.rowsForNode.size() > size_t(node)) scene.rowsForNode[size_t(node)] = NodeRows{};
+    // The generation survived retirement (bumped there) — re-mark alive.
+    scene.nodeGeneration[size_t(node)] |= kNodeSlotAliveBit;
+  } else {
+    // Append a fresh slot (the pre-6b dense path: a scene that never
+    // deletes allocates 0,1,2,... — bit-identical ids).
+    assert(nodeCount < int(kNodeSlotCountMax - 1) && "node slot space exhausted (2^20)");
+    node = nodeCount;
+    {
+      // TODO: resize aux arrays (local/global etc.)
+      scene.localTransform.push_back(glm::mat4(1.0f));
+      scene.globalTransform.push_back(glm::mat4(1.0f));
+      scene.staticRoot.push_back(0);
+      scene.staticNode.push_back(0);
+      scene.noLightmap.push_back(0);
+      scene.lightmap.push_back(0);
+      scene.castsVolumetricShadow.push_back(0);
+      scene.ditherCloseup.push_back(0);
+      scene.hidden.push_back(0);
+    }
+    // Generation word: grow-with-alive so a lagging array (wholesale
+    // resizes never touched it) keeps its untracked slots LIVE.
+    if (scene.nodeGeneration.size() < scene.hierarchy.size()) {
+      const size_t base = scene.nodeGeneration.size();
+      scene.nodeGeneration.resize(scene.hierarchy.size());
+      for (size_t i = base; i < scene.nodeGeneration.size(); ++i)
+        scene.nodeGeneration[i] = kNodeSlotAliveBit;
+    }
+    scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
   }
-  scene.hierarchy.push_back({ .parent = parent, .lastSibling = -1 });
+  // The linking block below only mutates the PARENT's entry (and
+  // siblings'); the node's own .parent is set HERE for both branches
+  // (the append branch's push_back initializer already carries it —
+  // the reuse branch reset the entry to defaults above).
+  scene.hierarchy[size_t(node)].parent = parent;
   if (parent > -1) {
     // find first item (sibling)
     const int s = scene.hierarchy[parent].firstChild;
@@ -59,6 +104,95 @@ int addNode(Scene& scene, int parent, int level)
   return node;
 }
 
+// ---- stable node slots (Epoch 6b) ----------------------------------------
+
+uint32_t LiveNodeCount(const Scene& scene)
+{
+  uint32_t live = 0;
+  for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
+    if (IsLiveSlot(scene, s))
+      ++live;
+  return live;
+}
+
+std::vector<uint32_t> BuildSlotToDenseMap(const Scene& scene)
+{
+  std::vector<uint32_t> map(scene.hierarchy.size(), UINT32_MAX);
+  uint32_t dense = 0;
+  for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
+    if (IsLiveSlot(scene, s))
+      map[s] = dense++;
+  return map;
+}
+
+void UnlinkNodeFromParent(Scene& scene, int node)
+{
+  if (node < 0 || (size_t)node >= scene.hierarchy.size())
+    return;
+  Hierarchy& h = scene.hierarchy[size_t(node)];
+  const int p = h.parent;
+  if (p < 0 || (size_t)p >= scene.hierarchy.size()) {
+    h.parent = -1;
+    return;
+  }
+  Hierarchy& hp = scene.hierarchy[size_t(p)];
+  if (hp.firstChild == node) {
+    hp.firstChild = h.nextSibling;
+  } else {
+    int prev = hp.firstChild;
+    while (prev >= 0 && scene.hierarchy[size_t(prev)].nextSibling != node)
+      prev = scene.hierarchy[size_t(prev)].nextSibling;
+    if (prev >= 0)
+      scene.hierarchy[size_t(prev)].nextSibling = h.nextSibling;
+  }
+  // Refresh the cached tail on the (possibly new) first child.
+  if (hp.firstChild >= 0) {
+    int tailId = -1;
+    for (int s = hp.firstChild; s >= 0; s = scene.hierarchy[size_t(s)].nextSibling)
+      tailId = s;
+    scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
+  }
+  h.parent = -1;
+  h.nextSibling = -1;
+}
+
+void RetireNodeSlot(Scene& scene, NodeId node)
+{
+  if (!IsNodeAlive(scene, node))
+    return; // already retired (or never was): idempotent
+  // Rows never outlive their node (the deletion discipline): drop every
+  // association the slot holds. Survivors' rows keep their ids verbatim.
+  RemoveNodeRows(scene, node);
+  if (scene.metadata.size() > size_t(node)) scene.metadata[size_t(node)] = NodeMetadata{};
+  if (scene.rowsForNode.size() > size_t(node)) scene.rowsForNode[size_t(node)] = NodeRows{};
+  if (scene.staticRoot.size() > size_t(node)) scene.staticRoot[size_t(node)] = 0;
+  if (scene.staticNode.size() > size_t(node)) scene.staticNode[size_t(node)] = 0;
+  if (scene.noLightmap.size() > size_t(node)) scene.noLightmap[size_t(node)] = 0;
+  if (scene.lightmap.size() > size_t(node)) scene.lightmap[size_t(node)] = 0;
+  if (scene.castsVolumetricShadow.size() > size_t(node)) scene.castsVolumetricShadow[size_t(node)] = 0;
+  if (scene.ditherCloseup.size() > size_t(node)) scene.ditherCloseup[size_t(node)] = 0;
+  if (scene.hidden.size() > size_t(node)) scene.hidden[size_t(node)] = 0;
+  scene.localTransform[size_t(node)] = glm::mat4(1.0f);
+  scene.globalTransform[size_t(node)] = glm::mat4(1.0f);
+  // level = -1 marks the hole for debug dumps (tree walks can't reach
+  // it — it is unlinked — but flat iteration reads it as "not a node").
+  scene.hierarchy[size_t(node)] = Hierarchy{ .parent = -1, .level = -1 };
+  // Bump the generation (handles minted against the old life die here)
+  // and push the slot to the free list. 12 bits: 4,096 lives per slot
+  // before the counter wraps — see scene_node_id.h.
+  if (scene.nodeGeneration.size() < scene.hierarchy.size()) {
+    const size_t base = scene.nodeGeneration.size();
+    scene.nodeGeneration.resize(scene.hierarchy.size());
+    for (size_t i = base; i < scene.nodeGeneration.size(); ++i)
+      scene.nodeGeneration[i] = kNodeSlotAliveBit;
+  }
+  uint32_t& g = scene.nodeGeneration[size_t(node)];
+  // +1 bumps the generation; the kNodeGenMask also strips the alive bit.
+  g = (g + 1u) & kNodeGenMask;
+  scene.nodeFreeList.push_back(node);
+}
+
+
 void markAsChanged(Scene& scene, int node)
 {
   const int level = scene.hierarchy[node].level;
@@ -73,8 +207,11 @@ void markAsChanged(Scene& scene, int node)
 void MarkAllRootsChanged(Scene& scene)
 {
   // See the header contract: every ROOT (parent == -1), not just node 0.
+  // Retired slots reset to parent == -1 — they are holes, NOT roots; a
+  // dead slot in the dirty set would be skipped by recalculate anyway,
+  // but keeping them out keeps the lists honest.
   for (size_t n = 0; n < scene.hierarchy.size(); ++n) {
-    if (scene.hierarchy[n].parent == -1)
+    if (scene.hierarchy[n].parent == -1 && IsLiveSlot(scene, uint32_t(n)))
       markAsChanged(scene, (int)n);
   }
 }
@@ -166,7 +303,11 @@ bool recalculateGlobalTransforms(Scene& scene)
   // Level 0: process EVERY changed entry (the old code took only [0] -
   // single-root assumption; a scene with several level-0 roots left the
   // rest identity). Root nodes: global = local (no parent to fold).
+  // Retired slots (a deletion between mark and recalc) drop out here —
+  // their transform data is reset but nobody may read it.
   for (int c : scene.changedAtThisFrame[0]) {
+    if (!IsLiveSlot(scene, uint32_t(c)))
+      continue;
     scene.globalTransform[c] = scene.localTransform[c];
     wasUpdated = true;
   }
@@ -174,6 +315,8 @@ bool recalculateGlobalTransforms(Scene& scene)
 
   for (int i = 1; i < MAX_NODE_LEVEL; i++) {
     for (int c : scene.changedAtThisFrame[i]) {
+      if (!IsLiveSlot(scene, uint32_t(c)))
+        continue;
       const int p = scene.hierarchy[c].parent;
       // Root-level nodes at a deeper level (the cooker's WorldSun is
       // addNode(scene, -1, 1) - a deliberate root, see EnsureWorldSun):
@@ -213,6 +356,8 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
 
   for (int i = 1; i < MAX_NODE_LEVEL; i++) {
     for (int c : scene.changedAtThisFrame[i]) {
+      if (!IsLiveSlot(scene, uint32_t(c)))
+        continue; // retired mid-frame: nothing to update
       const bool isStatic = (size_t)c < scene.staticNode.size() && scene.staticNode[(size_t)c] != 0;
       if (isStatic)
         continue;
@@ -402,6 +547,12 @@ void loadScene(const char* fileName, Scene& scene)
   scene.hidden.assign(sz, 0);
   scene.castsVolumetricShadow.assign(sz, 0);
   scene.ditherCloseup.assign(sz, 0);
+  // Epoch 6b: the file is DENSE (the writer compacts) — the loaded
+  // scene's slots are 0..sz-1, all alive at generation 0, free list
+  // empty. A stale free list would hand addNode recycled slots whose
+  // parallel-array entries belong to the pre-load graph.
+  scene.nodeGeneration.assign(sz, kNodeSlotAliveBit);
+  scene.nodeFreeList.clear();
   scene.tables = {};
   scene.rowsForNode.clear();
   scene.metadata.clear();
@@ -563,23 +714,38 @@ void loadScene(const char* fileName, Scene& scene)
 // Typed-table sections (row-native: u32 rowCount + (node, value)
 // pairs in TABLE order — the canonical association format; the old
 // saveMap layout is gone with the maps, old .scene files fail loudly,
-// content re-saves).
-void saveMeshRows(FILE* f, const Scene& scene)
+// content re-saves). Epoch 6b: nodes go through the slot->dense
+// compaction map (the file stays DENSE — see BuildSlotToDenseMap);
+// rows pointing at retired slots drop (they cannot exist through the
+// mutators — belt and suspenders for hand-tampered scenes).
+void saveMeshRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slotToDense)
 {
-  const uint32_t count = static_cast<uint32_t>(scene.tables.meshes.size());
+  uint32_t count = 0;
+  for (const MeshRow& row : scene.tables.meshes)
+    if (row.node < slotToDense.size() && slotToDense[row.node] != UINT32_MAX)
+      ++count;
   fwrite(&count, sizeof(count), 1, f);
   for (const MeshRow& row : scene.tables.meshes) {
-    fwrite(&row.node, sizeof(uint32_t), 1, f);
+    if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
+      continue;
+    const uint32_t node = slotToDense[row.node];
+    fwrite(&node, sizeof(uint32_t), 1, f);
     fwrite(&row.mesh, sizeof(uint32_t), 1, f);
   }
 }
 
-void saveMaterialRows(FILE* f, const Scene& scene)
+void saveMaterialRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slotToDense)
 {
-  const uint32_t count = static_cast<uint32_t>(scene.tables.materials.size());
+  uint32_t count = 0;
+  for (const MaterialRow& row : scene.tables.materials)
+    if (row.node < slotToDense.size() && slotToDense[row.node] != UINT32_MAX)
+      ++count;
   fwrite(&count, sizeof(count), 1, f);
   for (const MaterialRow& row : scene.tables.materials) {
-    fwrite(&row.node, sizeof(uint32_t), 1, f);
+    if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
+      continue;
+    const uint32_t node = slotToDense[row.node];
+    fwrite(&node, sizeof(uint32_t), 1, f);
     fwrite(&row.material, sizeof(uint32_t), 1, f);
   }
 }
@@ -587,12 +753,13 @@ void saveMaterialRows(FILE* f, const Scene& scene)
 // Node-name section (row-native, node-sorted for byte-stable saves):
 // u32 rowCount + (node, nodeNames index) pairs; UINT32_MAX name = skip
 // (should not occur — named nodes only).
-void saveNameRows(FILE* f, const Scene& scene)
+void saveNameRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slotToDense)
 {
   std::vector<std::pair<uint32_t, uint32_t>> pairs;
   for (uint32_t n = 0; n < scene.metadata.size(); ++n)
-    if (scene.metadata[n].name != 0xFFFFFFFFu)
-      pairs.emplace_back(n, scene.metadata[n].name);
+    if (scene.metadata[n].name != 0xFFFFFFFFu
+        && n < slotToDense.size() && slotToDense[n] != UINT32_MAX)
+      pairs.emplace_back(slotToDense[n], scene.metadata[n].name);
   std::sort(pairs.begin(), pairs.end());
   const uint32_t count = static_cast<uint32_t>(pairs.size());
   fwrite(&count, sizeof(count), 1, f);
@@ -606,81 +773,90 @@ void saveScene(const char* fileName, const Scene& scene)
 {
   FILE* f = fopen(fileName, "wb");
 
-  const uint32_t sz = (uint32_t)scene.hierarchy.size();
+  // Epoch 6b: the file stays DENSE — live slots compact in ascending
+  // slot order (a never-deleted scene is byte-identical to the pre-6b
+  // save: ascending-slot == the old array order). Holes never
+  // serialize; a save/load round trip renumbers ids densely (stable
+  // identity across a round trip is the uuid's job, never the id's).
+  const std::vector<uint32_t> slotToDense = BuildSlotToDenseMap(scene);
+  const uint32_t sz = LiveNodeCount(scene);
   fwrite(&sz, sizeof(sz), 1, f);
 
-  fwrite(scene.localTransform.data(), sizeof(glm::mat4), sz, f);
-  fwrite(scene.globalTransform.data(), sizeof(glm::mat4), sz, f);
-  fwrite(scene.hierarchy.data(), sizeof(Hierarchy), sz, f);
+  // Transforms + hierarchy, compacted; links remap through the map (a
+  // live node's links point at live nodes by the deletion discipline).
+  {
+    std::vector<glm::mat4> local;
+    std::vector<glm::mat4> global;
+    std::vector<Hierarchy> hierarchy;
+    local.reserve(sz);
+    global.reserve(sz);
+    hierarchy.reserve(sz);
+    const auto mapLink = [&slotToDense](int link) -> int {
+      if (link < 0 || size_t(link) >= slotToDense.size())
+        return -1;
+      const uint32_t d = slotToDense[size_t(link)];
+      return (d != UINT32_MAX) ? int(d) : -1;
+    };
+    for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
+      if (slotToDense[s] == UINT32_MAX)
+        continue;
+      local.push_back(scene.localTransform[s]);
+      global.push_back(scene.globalTransform[s]);
+      const Hierarchy& h = scene.hierarchy[s];
+      hierarchy.push_back(Hierarchy{
+        .parent      = mapLink(h.parent),
+        .firstChild  = mapLink(h.firstChild),
+        .nextSibling = mapLink(h.nextSibling),
+        .lastSibling = mapLink(h.lastSibling),
+        .level       = h.level,
+        });
+    }
+    if (sz > 0) {
+      fwrite(local.data(), sizeof(glm::mat4), sz, f);
+      fwrite(global.data(), sizeof(glm::mat4), sz, f);
+      fwrite(hierarchy.data(), sizeof(Hierarchy), sz, f);
+    }
+  }
 
   // Mesh/material associations (the typed tables; material section
   // first, matching the historical order).
-  saveMaterialRows(f, scene);
-  saveMeshRows(f, scene);
+  saveMaterialRows(f, scene, slotToDense);
+  saveMeshRows(f, scene, slotToDense);
 
   const bool anyNamed = !scene.nodeNames.empty() && scene.metadata.end()
     != std::find_if(scene.metadata.begin(), scene.metadata.end(),
       [](const NodeMetadata& m) { return m.name != 0xFFFFFFFFu; });
   if (anyNamed) {
-    saveNameRows(f, scene);
+    saveNameRows(f, scene, slotToDense);
     saveStringList(f, scene.nodeNames);
     saveStringList(f, scene.materialNames);
   }
+  // Per-node byte section writer (the flag tables): live slots only,
+  // compacted through the map, zeros where the source table was short
+  // (the "missing == default" contract unchanged).
+  const auto saveFlagBytes = [&f, &scene, &slotToDense, sz](const std::vector<uint8_t>& flags) {
+    fwrite(&sz, sizeof(sz), 1, f);
+    if (sz == 0)
+      return;
+    std::vector<uint8_t> bytes;
+    bytes.reserve(sz);
+    for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
+      if (slotToDense[s] != UINT32_MAX)
+        bytes.push_back(flags.size() > s ? flags[s] : uint8_t(0));
+    fwrite(bytes.data(), 1, sz, f);
+  };
+
   // Static-subtree section: always written (possibly all-zero) so new
   // loaders can rely on its presence; old loaders ignore trailing bytes.
-  {
-    const uint32_t staticCount = (uint32_t)scene.hierarchy.size();
-    fwrite(&staticCount, sizeof(staticCount), 1, f);
-    if (staticCount > 0) {
-      if (scene.staticRoot.size() == scene.hierarchy.size()) {
-        fwrite(scene.staticRoot.data(), 1, staticCount, f);
-      } else {
-        std::vector<uint8_t> zeros(staticCount, 0);
-        fwrite(zeros.data(), 1, staticCount, f);
-      }
-    }
-  }
-  // Lightmap-exclusion section (v3): u32 count + count bytes, all-zero when
-  // no exclusions. Old loaders stop after the static section; new loaders
-  // treat a missing tail as "no exclusions".
-  {
-    const uint32_t lmCount = (uint32_t)scene.hierarchy.size();
-    fwrite(&lmCount, sizeof(lmCount), 1, f);
-    if (lmCount > 0) {
-      if (scene.noLightmap.size() == scene.hierarchy.size()) {
-        fwrite(scene.noLightmap.data(), 1, lmCount, f);
-      } else {
-        std::vector<uint8_t> zeros(lmCount, 0);
-        fwrite(zeros.data(), 1, lmCount, f);
-      }
-    }
-  }
+  saveFlagBytes(scene.staticRoot);
+  // Lightmap-exclusion section (v3): all-zero when no exclusions. Old
+  // loaders stop after the static section; new loaders treat a missing
+  // tail as "no exclusions".
+  saveFlagBytes(scene.noLightmap);
   // Visibility section (v4): hidden flags, all-zero (visible) when unset.
-  {
-    const uint32_t hidCount = (uint32_t)scene.hierarchy.size();
-    fwrite(&hidCount, sizeof(hidCount), 1, f);
-    if (hidCount > 0) {
-      if (scene.hidden.size() == scene.hierarchy.size()) {
-        fwrite(scene.hidden.data(), 1, hidCount, f);
-      } else {
-        std::vector<uint8_t> zeros(hidCount, 0);
-        fwrite(zeros.data(), 1, hidCount, f);
-      }
-    }
-  }
+  saveFlagBytes(scene.hidden);
   // Dither-on-closeup section (v5): all-zero when unused.
-  {
-    const uint32_t dCount = (uint32_t)scene.hierarchy.size();
-    fwrite(&dCount, sizeof(dCount), 1, f);
-    if (dCount > 0) {
-      if (scene.ditherCloseup.size() == scene.hierarchy.size()) {
-        fwrite(scene.ditherCloseup.data(), 1, dCount, f);
-      } else {
-        std::vector<uint8_t> zeros(dCount, 0);
-        fwrite(zeros.data(), 1, dCount, f);
-      }
-    }
-  }
+  saveFlagBytes(scene.ditherCloseup);
   // Authored environment section (v6): u32 authored flag + resolved look
   // + default block + per-node blocks (u32 count + node-ordered (node,
   // record) pairs). Always written; old loaders stop after the dither
@@ -690,16 +866,19 @@ void saveScene(const char* fileName, const Scene& scene)
     fwrite(&envFlag, sizeof(envFlag), 1, f);
     saveEnvFloats(f, scene.environment);
     saveEnvFloats(f, scene.defaultEnvironment);
-    std::vector<const EnvRow*> rows;
+    // Node-ordered (byte-stable) through the compaction map; rows of
+    // retired slots drop (cannot exist through the mutators).
+    std::vector<std::pair<uint32_t, const EnvRow*>> rows;
     rows.reserve(scene.tables.envs.size());
     for (const EnvRow& row : scene.tables.envs)
-      rows.push_back(&row);
+      if (row.node < slotToDense.size() && slotToDense[row.node] != UINT32_MAX)
+        rows.emplace_back(slotToDense[row.node], &row);
     std::sort(rows.begin(), rows.end(),
-      [](const EnvRow* a, const EnvRow* b) { return a->node < b->node; });
+      [](const auto& a, const auto& b) { return a.first < b.first; });
     const uint32_t n = (uint32_t)rows.size();
     fwrite(&n, sizeof(n), 1, f);
-    for (const EnvRow* row : rows) {
-      fwrite(&row->node, sizeof(row->node), 1, f);
+    for (const auto& [node, row] : rows) {
+      fwrite(&node, sizeof(node), 1, f);
       saveEnvFloats(f, row->environment);
     }
   }
@@ -715,21 +894,10 @@ void saveScene(const char* fileName, const Scene& scene)
     const uint32_t zonesOn = scene.envZonesEnabled ? 1u : 0u;
     fwrite(&zonesOn, sizeof(zonesOn), 1, f);
   }
-  // Volumetric-shadow caster section (appended LAST): u32 count + count
+  // Volumetric-shadow caster section (appended LAST): count + count
   // bytes, all-zero when unused. Old loaders stop earlier - trailing
   // bytes ignored.
-  {
-    const uint32_t vCount = (uint32_t)scene.hierarchy.size();
-    fwrite(&vCount, sizeof(vCount), 1, f);
-    if (vCount > 0) {
-      if (scene.castsVolumetricShadow.size() == scene.hierarchy.size()) {
-        fwrite(scene.castsVolumetricShadow.data(), 1, vCount, f);
-      } else {
-        std::vector<uint8_t> zeros(vCount, 0);
-        fwrite(zeros.data(), 1, vCount, f);
-      }
-    }
-  }
+  saveFlagBytes(scene.castsVolumetricShadow);
   fclose(f);
 }
 
@@ -917,32 +1085,9 @@ void printChangedNodes(const Scene& scene)
   }
 }
 
-// Shift all hierarchy components in the nodes
-void shiftNodes(Scene& scene, int startOffset, int nodeCount, int shiftAmount)
-{
-  auto shiftNode = [shiftAmount](Hierarchy& node) {
-    if (node.parent > -1)
-      node.parent += shiftAmount;
-    if (node.firstChild > -1)
-      node.firstChild += shiftAmount;
-    if (node.nextSibling > -1)
-      node.nextSibling += shiftAmount;
-    if (node.lastSibling > -1)
-      node.lastSibling += shiftAmount;
-    // node->level does not require to be shifted
-  };
-
-  // If there are too many nodes, we can use std::execution::par with std::transform:
-  //	 std::transform(scene.hierarchy_.begin() + startOffset,
-  //                  scene.hierarchy_.begin() + nodeCount,
-  //                  scene.hierarchy_.begin() + startOffset,
-  //                  shiftNode);
-  //	 for (auto i = scene.hierarchy_.begin() + startOffset ; i != scene.hierarchy_.begin() + nodeCount ; i++)
-  //		 shiftNode(*i);
-
-  for (int i = 0; i < nodeCount; i++)
-    shiftNode(scene.hierarchy[i + startOffset]);
-}
+// (shiftNodes died with Epoch 6b: the merge path remaps through explicit
+// slot-association maps now — see mergeScenes — and deletion retires
+// slots instead of compacting, so there is nothing left to shift.)
 
 
 /**
@@ -961,30 +1106,33 @@ void mergeScenes(
     bool mergeLights
 )
 {
-  // Create new root node
-  scene.hierarchy = {
-    {
-     .parent      = -1,
-     .firstChild  = 1,
-     .nextSibling = -1,
-     .lastSibling = -1,
-     .level       = 0,
-     }
-  };
+  // Create new root node (slot 0 of the reset destination).
+  scene.hierarchy.assign(1, Hierarchy{
+      .parent      = -1,
+      .firstChild  = -1,
+      .nextSibling = -1,
+      .lastSibling = -1,
+      .level       = 0,
+      });
+  // The fresh-root reset also resets the slot machinery (Epoch 6b): a
+  // stale free list would hand addNode recycled slots whose parallel-
+  // array entries belong to the pre-reset graph.
+  scene.nodeGeneration.assign(1, kNodeSlotAliveBit);
+  scene.nodeFreeList.clear();
 
   // I dont care about names for now at least.
   //scene.metadata[0].name = 0;
   //scene.nodeNames      = { "NewRoot" };
 
-  scene.localTransform.push_back(glm::mat4(1.f));
-  scene.globalTransform.push_back(glm::mat4(1.f));
-  scene.staticRoot.push_back(0);
-  scene.staticNode.push_back(0);
-  scene.noLightmap.push_back(0);
-  scene.lightmap.push_back(0);
-  scene.castsVolumetricShadow.push_back(0);
-  scene.ditherCloseup.push_back(0);
-  scene.hidden.push_back(0);
+  scene.localTransform.assign(1, glm::mat4(1.f));
+  scene.globalTransform.assign(1, glm::mat4(1.f));
+  scene.staticRoot.assign(1, 0);
+  scene.staticNode.assign(1, 0);
+  scene.noLightmap.assign(1, 0);
+  scene.lightmap.assign(1, 0);
+  scene.castsVolumetricShadow.assign(1, 0);
+  scene.ditherCloseup.assign(1, 0);
+  scene.hidden.assign(1, 0);
   // The hierarchy reset above makes EVERY prior association row dead
   // (node ids no longer resolve) — clear all tables with it. Lights
   // especially: cooked punctual lights are Cluster pool assets (pool
@@ -997,7 +1145,6 @@ void mergeScenes(
   if (scenes.empty())
     return;
 
-  int offs        = 1;
   int meshOffs    = 0;
   int nameOffs    = (int)scene.nodeNames.size();
   int materialOfs = 0;
@@ -1010,77 +1157,110 @@ void mergeScenes(
   // Authored environment: first authored scene wins (resolved look +
   // default block travel together; per-node blocks offset-merge).
   bool envTaken = false;
+  // Per-source slot-association map (Epoch 6b: the dense +offset remap
+  // became an explicit map — correct for holed sources, numerically
+  // identical for dense ones). srcSlot -> dst NodeId, UINT32_MAX = hole.
+  std::vector<NodeId> nodeMap;
+  // Each source's root in the DESTINATION (its first live slot — slot 0
+  // for a dense source, matching the old offs arithmetic exactly).
+  std::vector<NodeId> srcRoots;
+  srcRoots.reserve(scenes.size());
   for (const Scene* s : scenes) {
-    mergeVectors(scene.localTransform, s->localTransform);
-    mergeVectors(scene.globalTransform, s->globalTransform);
+    const uint32_t srcSlotCount = (uint32_t)s->hierarchy.size();
+    nodeMap.assign(srcSlotCount, UINT32_MAX);
 
-    mergeVectors(scene.hierarchy, s->hierarchy);
+    // Pass 1: allocate a destination slot per LIVE source node (level
+    // +1: everything sits one rung lower under the merged root) and
+    // copy its payload. Links stay default; pass 2 maps them.
+    for (uint32_t src = 0; src < srcSlotCount; ++src) {
+      if (!IsLiveSlot(*s, src))
+        continue;
+      const int dst = addNode(scene, -1, s->hierarchy[src].level + 1);
+      assert(dst >= 0);
+      nodeMap[src] = (NodeId)dst;
+      scene.localTransform[size_t(dst)] = s->localTransform[src];
+      scene.globalTransform[size_t(dst)] = s->globalTransform[src];
+      if (s->staticRoot.size() > size_t(src))
+        scene.staticRoot[size_t(dst)] = s->staticRoot[src];
+      if (s->noLightmap.size() > size_t(src))
+        scene.noLightmap[size_t(dst)] = s->noLightmap[src];
+      if (s->lightmap.size() > size_t(src))
+        scene.lightmap[size_t(dst)] = s->lightmap[src];
+      if (s->hidden.size() > size_t(src))
+        scene.hidden[size_t(dst)] = s->hidden[src];
+      if (s->castsVolumetricShadow.size() > size_t(src))
+        scene.castsVolumetricShadow[size_t(dst)] = s->castsVolumetricShadow[src];
+      if (s->ditherCloseup.size() > size_t(src))
+        scene.ditherCloseup[size_t(dst)] = s->ditherCloseup[src];
+    }
 
-    if (s->staticRoot.size() == s->hierarchy.size())
-      mergeVectors(scene.staticRoot, s->staticRoot);
-    else
-      scene.staticRoot.insert(scene.staticRoot.end(), s->hierarchy.size(), 0);
+    // Pass 2: hierarchy links through the map (a live node's links point
+    // at live nodes by the deletion discipline; UINT32_MAX falls back to
+    // -1 for safety).
+    auto mapLink = [&nodeMap](int link) -> int {
+      if (link < 0 || size_t(link) >= nodeMap.size())
+        return -1;
+      const NodeId mapped = nodeMap[size_t(link)];
+      return (mapped != UINT32_MAX) ? int(mapped) : -1;
+    };
+    for (uint32_t src = 0; src < srcSlotCount; ++src) {
+      if (nodeMap[src] == UINT32_MAX)
+        continue;
+      Hierarchy& h = scene.hierarchy[nodeMap[src]];
+      const Hierarchy& sh = s->hierarchy[src];
+      h.parent      = mapLink(sh.parent);
+      h.firstChild  = mapLink(sh.firstChild);
+      h.nextSibling = mapLink(sh.nextSibling);
+      h.lastSibling = mapLink(sh.lastSibling);
+    }
 
-    if (s->noLightmap.size() == s->hierarchy.size())
-      mergeVectors(scene.noLightmap, s->noLightmap);
-    else
-      scene.noLightmap.insert(scene.noLightmap.end(), s->hierarchy.size(), 0);
-
-    if (s->lightmap.size() == s->hierarchy.size())
-      mergeVectors(scene.lightmap, s->lightmap);
-    else
-      scene.lightmap.insert(scene.lightmap.end(), s->hierarchy.size(), 0);
-
-    if (s->hidden.size() == s->hierarchy.size())
-      mergeVectors(scene.hidden, s->hidden);
-    else
-      scene.hidden.insert(scene.hidden.end(), s->hierarchy.size(), 0);
-
-    if (s->castsVolumetricShadow.size() == s->hierarchy.size())
-      mergeVectors(scene.castsVolumetricShadow, s->castsVolumetricShadow);
-    else
-      scene.castsVolumetricShadow.insert(scene.castsVolumetricShadow.end(), s->hierarchy.size(), 0);
-    if (s->ditherCloseup.size() == s->hierarchy.size())
-      mergeVectors(scene.ditherCloseup, s->ditherCloseup);
-    else
-      scene.ditherCloseup.insert(scene.ditherCloseup.end(), s->hierarchy.size(), 0);
-
+    // Name pool first (metadata offsets into it below).
     mergeVectors(scene.nodeNames, s->nodeNames);
     if (mergeMaterials)
       mergeVectors(scene.materialNames, s->materialNames);
 
-    const int nodeCount = (int)s->hierarchy.size();
+    // The source's root for the relink pass: first live slot (slot 0 of
+    // a dense source — the old code's `offs` node).
+    NodeId srcRoot = UINT32_MAX;
+    for (uint32_t src = 0; src < srcSlotCount; ++src)
+      if (nodeMap[src] != UINT32_MAX) {
+        srcRoot = nodeMap[src];
+        break;
+      }
+    srcRoots.push_back(srcRoot);
 
-    shiftNodes(scene, offs, nodeCount, offs);
-
-    // Typed tables: append the source rows with node + resource
-    // offsets (the mergeMaps semantics, one row at a time — SetMesh/
-    // SetMaterial keep the derived index correct as we go).
+    // Typed tables: append the source rows through the map with the
+    // resource offsets (the mergeMaps semantics, one row at a time —
+    // SetMesh/SetMaterial keep the derived index correct as we go).
+    // Dead rows (a hole where a row still points — a tampered scene)
+    // drop silently like every other row validator.
     for (const MeshRow& row : s->tables.meshes)
-      SetMesh(scene, row.node + offs,
-        row.mesh + (mergeMeshes ? uint32_t(meshOffs) : 0u));
+      if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+        SetMesh(scene, nodeMap[row.node],
+          row.mesh + (mergeMeshes ? uint32_t(meshOffs) : 0u));
     for (const MaterialRow& row : s->tables.materials)
-      SetMaterial(scene, row.node + offs,
-        row.material + (mergeMaterials ? uint32_t(materialOfs) : 0u));
-    // Node metadata: append with the node + name-pool offsets (the
-    // mergeMaps semantics for the dense array).
-    {
-      EnsureNodeMetadata(scene);
-      const size_t base = scene.metadata.size();
-      scene.metadata.resize(base + s->hierarchy.size());
-      for (size_t i = 0; i < s->hierarchy.size(); ++i)
-        scene.metadata[base + i] = (i < s->metadata.size())
-          ? NodeMetadata{ (s->metadata[i].name != 0xFFFFFFFFu)
-              ? s->metadata[i].name + nameOffs : 0xFFFFFFFFu,
-            s->metadata[i].uuid }
-          : NodeMetadata{};
+      if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+        SetMaterial(scene, nodeMap[row.node],
+          row.material + (mergeMaterials ? uint32_t(materialOfs) : 0u));
+    // Node metadata: names offset into the merged pool, uuids verbatim.
+    for (uint32_t src = 0; src < srcSlotCount; ++src) {
+      if (nodeMap[src] == UINT32_MAX)
+        continue;
+      if (src < s->metadata.size()) {
+        if (s->metadata[src].name != 0xFFFFFFFFu)
+          SetNodeNameIndex(scene, nodeMap[src],
+            s->metadata[src].name + uint32_t(nameOffs));
+        SetNodeUuidRaw(scene, nodeMap[src], s->metadata[src].uuid);
+      }
     }
-    // Per-node authored env blocks: node keys shift like the tables;
+    // Per-node authored env blocks: node keys map like the tables;
     // values are inline structs (no pool indirection, no value offset).
     for (const EnvRow& row : s->tables.envs)
-      SetEnv(scene, row.node + offs, row.environment);
+      if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+        SetEnv(scene, nodeMap[row.node], row.environment);
     for (const EnvVolumeRow& row : s->tables.envVolumes)
-      SetEnvVolume(scene, row.node + offs, row.volume);
+      if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+        SetEnvVolume(scene, nodeMap[row.node], row.volume);
     if (!envTaken && s->envAuthored) {
       scene.environment = s->environment;
       scene.envAuthored = true;
@@ -1095,8 +1275,6 @@ void mergeScenes(
       scene.hasRenderSettings = true;
     }
 
-    offs += nodeCount;
-
     materialOfs += (int)s->materialNames.size();
     nameOffs += (int)s->nodeNames.size();
 
@@ -1106,30 +1284,30 @@ void mergeScenes(
     }
   }
 
-  // fixing 'nextSibling' fields in the old roots (zero-index in all the scenes)
-  offs    = 1;
-  int idx = 0;
-  for (const Scene* s : scenes) {
-    const int nodeCount = (int)s->hierarchy.size();
-    const bool isLast   = (idx == scenes.size() - 1);
-    // calculate new next sibling for the old scene roots
-    const int next = isLast ? -1 : offs + nodeCount;
-
-    scene.hierarchy[offs].nextSibling = next;
-    // attach to new root
-    scene.hierarchy[offs].parent = 0;
-
-    // transform old root nodes, if the transforms are given
-    if (!rootTransforms.empty())
-      scene.localTransform[offs] = rootTransforms[idx] * scene.localTransform[offs];
-
-    offs += nodeCount;
-    idx++;
+  // Attach each source's root under the merged root (the old
+  // 'fixing nextSibling of the old roots' pass, map-based): a chain in
+  // source order, rootTransforms pre-multiplied onto the roots.
+  {
+    NodeId prevRoot = UINT32_MAX;
+    for (size_t idx = 0; idx < scenes.size(); ++idx) {
+      const NodeId root = srcRoots[idx];
+      if (root == UINT32_MAX)
+        continue; // empty source: contributes no hierarchy
+      scene.hierarchy[root].parent = 0;
+      if (!rootTransforms.empty())
+        scene.localTransform[root] =
+          rootTransforms[idx] * scene.localTransform[root];
+      if (prevRoot == UINT32_MAX)
+        scene.hierarchy[0].firstChild = int(root);
+      else
+        scene.hierarchy[prevRoot].nextSibling = int(root);
+      prevRoot = root;
+    }
+    if (prevRoot != UINT32_MAX)
+      scene.hierarchy[prevRoot].nextSibling = -1;
+    else
+      scene.hierarchy[0].firstChild = -1; // no live nodes at all
   }
-
-  // now, shift levels of all nodes below the root
-  for (auto i = scene.hierarchy.begin() + 1; i != scene.hierarchy.end(); i++)
-    i->level++;
 
   scene.staticNode.assign(scene.hierarchy.size(), 0);
   RebuildStaticCache(scene);
@@ -1140,6 +1318,8 @@ void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited)
   FILE* f = fopen(fileName, "w");
   fprintf(f, "digraph G\n{\n");
   for (size_t i = 0; i < scene.globalTransform.size(); i++) {
+    if (!IsLiveSlot(scene, uint32_t(i)))
+      continue; // retired slot (Epoch 6b): a hole, not a node
     std::string name  = "";
     std::string extra = "";
     if (const uint32_t strID = GetNodeNameIndex(scene, NodeId(i));
@@ -1167,7 +1347,14 @@ int getNodeLevel(const Scene& scene, int n) {
   return level;
 }
 
-// A rather long algorithm (and the auxiliary routines) to delete a number of scene nodes from the hierarchy
+// ---- node deletion (Epoch 6b: RETIREMENT, not compaction) ----------------
+// The pre-6b compaction machinery — the newIndices remap table,
+// findLastNonDeletedItem, the ten shift*RowNodes helpers,
+// shiftNodeMetadata, eraseSelected over the parallel arrays — is
+// DELETED: retirement keeps every survivor's id put, so there is no
+// remap to build and nothing to shift. What replaces it lives above:
+// UnlinkNodeFromParent + RetireNodeSlot (O(1) per slot), plus this
+// O(N) subtree collect.
 
 // Add an index to a sorted index array
 static void addUniqueIdx(std::vector<uint32_t>& v, uint32_t index)
@@ -1185,260 +1372,54 @@ static void collectNodesToDelete(const Scene& scene, int node, std::vector<uint3
   }
 }
 
-int findLastNonDeletedItem(const Scene& scene, const std::vector<int>& newIndices, int node)
-{
-  // we have to be more subtle:
-  //   if the (newIndices[firstChild_] == -1), we should follow the link and extract the last non-removed item
-  //   ..
-  if (node == -1)
-    return -1;
-
-  return (newIndices[node] == -1) ? findLastNonDeletedItem(scene, newIndices, scene.hierarchy[node].nextSibling) : newIndices[node];
-}
-
-
-// Row-table variants (the typed-tables migration): remap row.node
-// through the compaction's newIndices, dropping rows whose node died.
-// Dense order is preserved (a compact rebuild, not swap-and-pop —
-// deletion storms keep stable iteration order mid-algorithm).
-void shiftMeshRowNodes(std::vector<MeshRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<MeshRow> out;
-  out.reserve(rows.size());
-  for (const MeshRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(MeshRow{ NodeId(newIndex), row.mesh });
-  }
-  rows = std::move(out);
-}
-
-void shiftMaterialRowNodes(std::vector<MaterialRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<MaterialRow> out;
-  out.reserve(rows.size());
-  for (const MaterialRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(MaterialRow{ NodeId(newIndex), row.material });
-  }
-  rows = std::move(out);
-}
-
-// The remaining kinds (Epoch 5): same contract. The indirection kinds
-// rebuild the row in place; the inline-payload kinds copy the payload
-// through (the strings ride the copy).
-void shiftLightRowNodes(std::vector<LightRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<LightRow> out;
-  out.reserve(rows.size());
-  for (const LightRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(LightRow{ NodeId(newIndex), row.light });
-  }
-  rows = std::move(out);
-}
-
-void shiftCameraRowNodes(std::vector<CameraRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<CameraRow> out;
-  out.reserve(rows.size());
-  for (const CameraRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(CameraRow{ NodeId(newIndex), row.camera });
-  }
-  rows = std::move(out);
-}
-
-void shiftDecalRowNodes(std::vector<DecalRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<DecalRow> out;
-  out.reserve(rows.size());
-  for (const DecalRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(DecalRow{ NodeId(newIndex), row.decal });
-  }
-  rows = std::move(out);
-}
-
-void shiftGiVolumeRowNodes(std::vector<GiVolumeRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<GiVolumeRow> out;
-  out.reserve(rows.size());
-  for (const GiVolumeRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1) {
-      GiVolumeRow r{ NodeId(newIndex), row.volume };
-      out.push_back(std::move(r));
-    }
-  }
-  rows = std::move(out);
-}
-
-void shiftCubemapRowNodes(std::vector<CubemapRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<CubemapRow> out;
-  out.reserve(rows.size());
-  for (const CubemapRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(CubemapRow{ NodeId(newIndex), row.cubemap });
-  }
-  rows = std::move(out);
-}
-
-void shiftExportRowNodes(std::vector<ExportRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<ExportRow> out;
-  out.reserve(rows.size());
-  for (const ExportRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1) {
-      ExportRow r{ NodeId(newIndex), row.settings };
-      out.push_back(std::move(r));
-    }
-  }
-  rows = std::move(out);
-}
-
-void shiftEnvRowNodes(std::vector<EnvRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<EnvRow> out;
-  out.reserve(rows.size());
-  for (const EnvRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1) {
-      EnvRow r{ NodeId(newIndex), row.environment };
-      out.push_back(std::move(r));
-    }
-  }
-  rows = std::move(out);
-}
-
-void shiftEnvVolumeRowNodes(std::vector<EnvVolumeRow>& rows, const std::vector<int>& newIndices)
-{
-  std::vector<EnvVolumeRow> out;
-  out.reserve(rows.size());
-  for (const EnvVolumeRow& row : rows) {
-    const int newIndex = newIndices[row.node];
-    if (newIndex != -1)
-      out.push_back(EnvVolumeRow{ NodeId(newIndex), row.volume });
-  }
-  rows = std::move(out);
-}
-
-// Dense metadata variant: entries of deleted nodes drop, survivors
-// re-index (the flag tables' eraseSelected semantics, kept in order).
-void shiftNodeMetadata(std::vector<NodeMetadata>& metadata, const std::vector<int>& newIndices)
-{
-  std::vector<NodeMetadata> out;
-  out.reserve(metadata.size());
-  for (size_t n = 0; n < metadata.size(); ++n) {
-    const int newIndex = newIndices[n];
-    if (newIndex != -1)
-      out.push_back(std::move(metadata[n]));
-  }
-  metadata = std::move(out);
-}
-
-
-// Approximately an O ( N * Log(N) * Log(M)) algorithm (N = scene.size, M = nodesToDelete.size) to delete a collection of nodes from scene
-// graph
 void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
 {
-  // 0) Add all the nodes down below in the hierarchy
+  // 0) Collect every subtree under the requested roots. The input is
+  // normalized FIRST (sorted-unique — addUniqueIdx's binary_search and
+  // the doomed-parent skip below both need it; the old code trusted
+  // callers to hand it sorted) and again after collection (DFS pushes
+  // are not order-guaranteed on hand-built graphs).
   auto indicesToDelete = nodesToDelete;
+  std::sort(indicesToDelete.begin(), indicesToDelete.end());
+  indicesToDelete.erase(std::unique(indicesToDelete.begin(), indicesToDelete.end()), indicesToDelete.end());
   for (uint32_t i : indicesToDelete)
-    collectNodesToDelete(scene, i, indicesToDelete);
+    if (i < scene.hierarchy.size() && IsLiveSlot(scene, i))
+      collectNodesToDelete(scene, int(i), indicesToDelete);
+  std::sort(indicesToDelete.begin(), indicesToDelete.end());
+  indicesToDelete.erase(std::unique(indicesToDelete.begin(), indicesToDelete.end()), indicesToDelete.end());
 
-  // aux array with node indices to keep track of the moved ones [moved = [](node) { return (node != nodes[node]); ]
-  std::vector<int> nodes(scene.hierarchy.size());
-  std::iota(nodes.begin(), nodes.end(), 0);
+  // 1) Detach each deleted node whose parent SURVIVES (a node doomed
+  // together with its parent takes its links to the grave — the
+  // parent's child list dies with it). Surviving parents' sibling
+  // lists are repaired inside UnlinkNodeFromParent
+  // (firstChild/nextSibling/lastSibling surgery).
+  for (uint32_t n : indicesToDelete) {
+    if (n >= scene.hierarchy.size() || !IsLiveSlot(scene, n))
+      continue; // stale input id or already retired: no-op
+    const int p = scene.hierarchy[n].parent;
+    if (p < 0)
+      continue; // root: nothing to detach from
+    if (std::binary_search(indicesToDelete.begin(), indicesToDelete.end(), uint32_t(p)))
+      continue; // the parent dies too: its child list is moot
+    UnlinkNodeFromParent(scene, int(n));
+  }
 
-  // 1.a) Move all the indicesToDelete to the end of 'nodes' array (and cut them off, a variation of swap'n'pop for multiple elements)
-  const size_t oldSize = nodes.size();
-  eraseSelected(nodes, indicesToDelete);
+  // 2) Retire each slot: every association row drops, the slot's
+  // per-node state resets, the generation bumps (handles minted
+  // against the old life die here), and the slot re-enters
+  // circulation through addNode. Every OTHER node's id stays put —
+  // that is the whole epoch.
+  for (uint32_t n : indicesToDelete)
+    RetireNodeSlot(scene, n);
 
-  // 1.b) Make a newIndices[oldIndex] mapping table
-  std::vector<int> newIndices(oldSize, -1);
-  for (int i = 0; i < nodes.size(); i++)
-    newIndices[nodes[i]] = i;
-
-  // 2) Replace all non-null parent/firstChild/nextSibling pointers in all the nodes by new positions
-  auto nodeMover = [&scene, &newIndices](Hierarchy& h) {
-    return Hierarchy{
-      .parent      = (h.parent != -1) ? newIndices[h.parent] : -1,
-      .firstChild  = findLastNonDeletedItem(scene, newIndices, h.firstChild),
-      .nextSibling = findLastNonDeletedItem(scene, newIndices, h.nextSibling),
-      .lastSibling = findLastNonDeletedItem(scene, newIndices, h.lastSibling),
-    };
-  };
-  std::transform(scene.hierarchy.begin(), scene.hierarchy.end(), scene.hierarchy.begin(), nodeMover);
-
-  // 3) Finally throw away the hierarchy items
-  eraseSelected(scene.hierarchy, indicesToDelete);
-
-  // 4) As in mergeScenes() routine we also have to adjust all the "components" (i.e., meshes, materials, names and transformations)
-
-  // 4a) Transformations are stored in arrays, so we just erase the items as we did with the scene.hierarchy_
-  eraseSelected(scene.localTransform, indicesToDelete);
-  eraseSelected(scene.globalTransform, indicesToDelete);
-  if (scene.staticRoot.size() == oldSize)
-    eraseSelected(scene.staticRoot, indicesToDelete);
-  else
-    scene.staticRoot.assign(scene.hierarchy.size(), 0);
-  if (scene.staticNode.size() == oldSize)
-    eraseSelected(scene.staticNode, indicesToDelete);
-  else
-    scene.staticNode.assign(scene.hierarchy.size(), 0);
-  if (scene.noLightmap.size() == oldSize)
-    eraseSelected(scene.noLightmap, indicesToDelete);
-  else
-    scene.noLightmap.assign(scene.hierarchy.size(), 0);
-  if (scene.lightmap.size() == oldSize)
-    eraseSelected(scene.lightmap, indicesToDelete);
-  else
-    scene.lightmap.assign(scene.hierarchy.size(), 0);
-  if (scene.hidden.size() == oldSize)
-    eraseSelected(scene.hidden, indicesToDelete);
-  else
-    scene.hidden.assign(scene.hierarchy.size(), 0);
-  if (scene.castsVolumetricShadow.size() == oldSize)
-    eraseSelected(scene.castsVolumetricShadow, indicesToDelete);
-  else
-    scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
-  if (scene.ditherCloseup.size() == oldSize)
-    eraseSelected(scene.ditherCloseup, indicesToDelete);
-  else
-    scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
-  RebuildStaticCache(scene);
-
-  // 4b) All the perFrame should change the key values with the newIndices[] array
-  // Typed tables: remap each row's node through newIndices (rows of
-  // deleted nodes drop), then rebuild the derived index once at the
-  // end (the scene shrank).
-  shiftMeshRowNodes(scene.tables.meshes, newIndices);
-  shiftMaterialRowNodes(scene.tables.materials, newIndices);
-  shiftLightRowNodes(scene.tables.lights, newIndices);
-  shiftCameraRowNodes(scene.tables.cameras, newIndices);
-  shiftDecalRowNodes(scene.tables.decals, newIndices);
-  shiftGiVolumeRowNodes(scene.tables.giVolumes, newIndices);
-  shiftCubemapRowNodes(scene.tables.cubemaps, newIndices);
-  shiftExportRowNodes(scene.tables.exports, newIndices);
-  shiftEnvRowNodes(scene.tables.envs, newIndices);
-  shiftEnvVolumeRowNodes(scene.tables.envVolumes, newIndices);
-  shiftNodeMetadata(scene.metadata, newIndices);
-  // Orphaned light definitions (no node left referencing them) are kept:
-  // they are small and dropping them would require remapping the surviving
-  // light-table values.
-
-  // The row remap above bypassed the mutators — reconcile the derived
-  // index once (exact resize: the node count shrank with the deletion).
+  // 3) Reconcile the derived index once (RetireNodeSlot cleared the
+  // retired slots' entries and dropped their rows; the rebuild is the
+  // discipline backstop — it also compacts out any row that still
+  // points at a dead slot).
   RebuildNodeRows(scene);
 
-  // 5) scene node names list is not modified, but in principle it can be (remove all non-used items and adjust the nameForNode_ map)
-  // 6) Material names list is not modified also, but if some materials fell out of use
+  RebuildStaticCache(scene);
+  // Orphaned light/camera/decal pool definitions are kept (pre-6b
+  // behavior): they are small and dropping them would require remapping
+  // the surviving table values' pool indices.
 }

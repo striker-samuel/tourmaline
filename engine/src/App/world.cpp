@@ -332,128 +332,82 @@ namespace smvk {
 			Cluster& cluster = *clusterPtr.get();
 			Scene& cs = cluster.scene;
 
-			const uint32_t nodeOffset = static_cast<uint32_t>(scene.hierarchy.size());
 			const uint32_t nameOffset = static_cast<uint32_t>(scene.nodeNames.size());
 
-			// Append the cluster's hierarchy, transforms and names.
-			scene.hierarchy.insert(
-				scene.hierarchy.end(),
-				cs.hierarchy.begin(),
-				cs.hierarchy.end()
-			);
-			scene.localTransform.insert(
-				scene.localTransform.end(),
-				cs.localTransform.begin(),
-				cs.localTransform.end()
-			);
-			scene.globalTransform.insert(
-				scene.globalTransform.end(),
-				cs.globalTransform.begin(),
-				cs.globalTransform.end()
-			);
-			scene.nodeNames.insert(
-				scene.nodeNames.end(),
-				cs.nodeNames.begin(),
-				cs.nodeNames.end()
-			);
-			const uint32_t nodeCount =
+			// Slot-association map (Epoch 6b): cluster slot -> world
+			// NodeId, UINT32_MAX for holes. The dense-era +nodeOffset
+			// arithmetic became this explicit map — numerically
+			// identical for a dense cluster scene (fresh imports/loads
+			// allocate slots 0,1,2,...), correct when the cluster scene
+			// carries holes (a cook-time static-merge retirement).
+			const uint32_t clusterSlotCount =
 				static_cast<uint32_t>(cs.hierarchy.size());
-			// Carry the static-subtree spec (missing == all dynamic).
-			if (cs.staticRoot.size() == cs.hierarchy.size()) {
-				scene.staticRoot.insert(
-					scene.staticRoot.end(),
-					cs.staticRoot.begin(),
-					cs.staticRoot.end()
-				);
-			}
-			else {
-				scene.staticRoot.insert(
-					scene.staticRoot.end(), nodeCount, 0);
-			}
-			// Carry the lightmap-exclusion flags (missing == bake everything).
-			if (cs.noLightmap.size() == cs.hierarchy.size()) {
-				scene.noLightmap.insert(
-					scene.noLightmap.end(),
-					cs.noLightmap.begin(),
-					cs.noLightmap.end()
-				);
-			}
-			else {
-				scene.noLightmap.insert(
-					scene.noLightmap.end(), nodeCount, 0);
-			}
-			// Carry the lightmap opt-in flags (missing == skip everything).
-			if (cs.lightmap.size() == cs.hierarchy.size()) {
-				scene.lightmap.insert(
-					scene.lightmap.end(),
-					cs.lightmap.begin(),
-					cs.lightmap.end()
-				);
-			}
-			else {
-				scene.lightmap.insert(
-					scene.lightmap.end(), nodeCount, 0);
-			}
-			// Carry the dither-on-closeup flags (missing == off).
-			if (cs.ditherCloseup.size() == cs.hierarchy.size()) {
-				scene.ditherCloseup.insert(
-					scene.ditherCloseup.end(),
-					cs.ditherCloseup.begin(),
-					cs.ditherCloseup.end()
-				);
-			}
-			else {
-				scene.ditherCloseup.insert(
-					scene.ditherCloseup.end(), nodeCount, 0);
-			}
-			// Carry the volumetric-shadow caster flags (missing == off).
-			if (cs.castsVolumetricShadow.size() == cs.hierarchy.size()) {
-				scene.castsVolumetricShadow.insert(
-					scene.castsVolumetricShadow.end(),
-					cs.castsVolumetricShadow.begin(),
-					cs.castsVolumetricShadow.end()
-				);
-			}
-			else {
-				scene.castsVolumetricShadow.insert(
-					scene.castsVolumetricShadow.end(), nodeCount, 0);
-			}
-			// Carry visibility (hidden) flags (missing == all visible).
-			if (cs.hidden.size() == cs.hierarchy.size()) {
-				scene.hidden.insert(
-					scene.hidden.end(),
-					cs.hidden.begin(),
-					cs.hidden.end()
-				);
-			}
-			else {
-				scene.hidden.insert(
-					scene.hidden.end(), nodeCount, 0);
-			}
-			scene.staticNode.insert(scene.staticNode.end(), nodeCount, 0);
+			std::vector<NodeId> nodeMap(clusterSlotCount, UINT32_MAX);
 
-			// Shift parent/firstChild/nextSibling/lastSibling indices so they
-			// point into the world node array. The cluster root's parent (which
-			// was -1) gets reparented under the world root.
-			for (uint32_t i = 0; i < nodeCount; ++i) {
-				Hierarchy& h = scene.hierarchy[nodeOffset + i];
-				if (h.parent > -1)
-					h.parent = h.parent + nodeOffset;
-				if (h.firstChild > -1)
-					h.firstChild = h.firstChild + nodeOffset;
-				if (h.nextSibling > -1)
-					h.nextSibling = h.nextSibling + nodeOffset;
-				if (h.lastSibling > -1)
-					h.lastSibling = h.lastSibling + nodeOffset;
+			// Pass 1: allocate a world slot per LIVE cluster node and
+			// copy its payload (level as-is; links stay default until
+			// pass 2). addNode appends sequentially on the freshly
+			// wiped scene, so world ids match the old dense layout
+			// exactly until the world scene itself grows holes.
+			for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+				if (!IsLiveSlot(cs, s))
+					continue;
+				const int dst = addNode(scene, -1, cs.hierarchy[s].level);
+				assert(dst >= 0);
+				nodeMap[s] = static_cast<NodeId>(dst);
+				scene.localTransform[size_t(dst)] = cs.localTransform[s];
+				scene.globalTransform[size_t(dst)] = cs.globalTransform[s];
+				// Flag tables: per-slot guarded copies (missing table ==
+				// defaults; addNode already pushed zeros). staticNode is
+				// rebuilt wholesale by RebuildStaticCache below.
+				if (cs.staticRoot.size() > s)
+					scene.staticRoot[size_t(dst)] = cs.staticRoot[s];
+				if (cs.noLightmap.size() > s)
+					scene.noLightmap[size_t(dst)] = cs.noLightmap[s];
+				if (cs.lightmap.size() > s)
+					scene.lightmap[size_t(dst)] = cs.lightmap[s];
+				if (cs.ditherCloseup.size() > s)
+					scene.ditherCloseup[size_t(dst)] = cs.ditherCloseup[s];
+				if (cs.castsVolumetricShadow.size() > s)
+					scene.castsVolumetricShadow[size_t(dst)] =
+						cs.castsVolumetricShadow[s];
+				if (cs.hidden.size() > s)
+					scene.hidden[size_t(dst)] = cs.hidden[s];
 			}
 
-			// Reparent the cluster root under the world root. EMPTY
-			// cluster scenes (a payload-only dynamic cluster, a cook
-			// cluster with assets but no nodes) contribute no hierarchy:
-			// nodeOffset points past the merge — skip (nothing to
-			// reparent or dirty below).
-			const uint32_t clusterRootNode = nodeOffset;
-			if (!cs.hierarchy.empty()) {
+			// Pass 2: hierarchy links through the map. A live node's
+			// links point at live nodes by the deletion discipline;
+			// UINT32_MAX (or a stale link) falls back to -1.
+			const auto mapLink = [&nodeMap](int link) -> int {
+				if (link < 0 || size_t(link) >= nodeMap.size())
+					return -1;
+				const NodeId mapped = nodeMap[size_t(link)];
+				return (mapped != UINT32_MAX) ? int(mapped) : -1;
+			};
+			for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+				if (nodeMap[s] == UINT32_MAX)
+					continue;
+				const Hierarchy& sh = cs.hierarchy[s];
+				Hierarchy& h = scene.hierarchy[nodeMap[s]];
+				h.parent = mapLink(sh.parent);
+				h.firstChild = mapLink(sh.firstChild);
+				h.nextSibling = mapLink(sh.nextSibling);
+				h.lastSibling = mapLink(sh.lastSibling);
+			}
+
+			// Reparent the cluster root under the world root. The root
+			// is the cluster's FIRST LIVE slot (slot 0 of a dense scene
+			// — the old nodeOffset node). EMPTY cluster scenes (a
+			// payload-only dynamic cluster, a cook cluster with assets
+			// but no nodes) contribute no hierarchy: every map entry is
+			// UINT32_MAX — skip (nothing to reparent or dirty below).
+			NodeId clusterRootNode = UINT32_MAX;
+			for (uint32_t s = 0; s < clusterSlotCount; ++s)
+				if (nodeMap[s] != UINT32_MAX) {
+					clusterRootNode = nodeMap[s];
+					break;
+				}
+			if (clusterRootNode != UINT32_MAX) {
 				scene.hierarchy[clusterRootNode].parent = root;
 				if (scene.hierarchy[root].firstChild == -1) {
 					scene.hierarchy[root].firstChild = clusterRootNode;
@@ -467,28 +421,31 @@ namespace smvk {
 				scene.hierarchy[clusterRootNode].level += 1;
 			}
 
-			// Remap node metadata (names index into nodeNames; uuids
-			// ride unchanged): dense append with the node + name-pool
-			// offsets.
-			{
-				EnsureNodeMetadata(scene);
-				const size_t base = scene.metadata.size();
-				scene.metadata.resize(base + cs.hierarchy.size());
-				for (size_t i = 0; i < cs.hierarchy.size(); ++i) {
-					NodeMetadata& dst = scene.metadata[base + i];
-					if (i < cs.metadata.size()) {
-						dst.name = (cs.metadata[i].name != 0xFFFFFFFFu)
-							? cs.metadata[i].name + nameOffset : 0xFFFFFFFFu;
-						dst.uuid = cs.metadata[i].uuid;
-					}
-				}
+			// Remap node metadata (names index into nodeNames after the
+			// bulk pool append; uuids ride unchanged) per live slot.
+			scene.nodeNames.insert(
+				scene.nodeNames.end(),
+				cs.nodeNames.begin(),
+				cs.nodeNames.end()
+			);
+			for (uint32_t s = 0; s < clusterSlotCount; ++s) {
+				if (nodeMap[s] == UINT32_MAX || s >= cs.metadata.size())
+					continue;
+				if (cs.metadata[s].name != 0xFFFFFFFFu)
+					SetNodeNameIndex(scene, nodeMap[s],
+						cs.metadata[s].name + nameOffset);
+				SetNodeUuidRaw(scene, nodeMap[s], cs.metadata[s].uuid);
 			}
 
 			// Remap the mesh table: cluster-local handle index -> world
 			// mesh index (one location slot per row — mesh slots stay
-			// per-node, CPU-side only).
+			// per-node, CPU-side only). Rows of retired slots cannot
+			// exist through the mutators; the map guard is the backstop.
 			for (const MeshRow& row : cs.tables.meshes) {
-				const uint32_t worldNode = row.node + nodeOffset;
+				if (row.node >= nodeMap.size()
+					|| nodeMap[row.node] == UINT32_MAX)
+					continue;
+				const uint32_t worldNode = nodeMap[row.node];
 				const uint32_t worldMeshIdx =
 					static_cast<uint32_t>(meshLocations.size());
 
@@ -523,7 +480,10 @@ namespace smvk {
 			// Material slots are GPU-indexed by materialId, so they
 			// must stay addressable.
 			for (const MaterialRow& row : cs.tables.materials) {
-				const uint32_t worldNode = row.node + nodeOffset;
+				if (row.node >= nodeMap.size()
+					|| nodeMap[row.node] == UINT32_MAX)
+					continue;
+				const uint32_t worldNode = nodeMap[row.node];
 				const uint64_t matKey =
 					(static_cast<uint64_t>(clusterOrdinal) << 32) | row.material;
 				auto matHit = worldMatByClusterMat.find(matKey);
@@ -549,7 +509,10 @@ namespace smvk {
 			// handle exactly like meshLocations (cooked lights are pool
 			// assets).
 			for (const LightRow& row : cs.tables.lights) {
-				const uint32_t worldNode = row.node + nodeOffset;
+				if (row.node >= nodeMap.size()
+					|| nodeMap[row.node] == UINT32_MAX)
+					continue;
+				const uint32_t worldNode = nodeMap[row.node];
 				const uint32_t worldLightIdx =
 					static_cast<uint32_t>(lightLocations.size());
 
@@ -567,7 +530,10 @@ namespace smvk {
 			// + handle exactly like lightLocations (authored cameras are
 			// pool assets).
 			for (const CameraRow& row : cs.tables.cameras) {
-				const uint32_t worldNode = row.node + nodeOffset;
+				if (row.node >= nodeMap.size()
+					|| nodeMap[row.node] == UINT32_MAX)
+					continue;
+				const uint32_t worldNode = nodeMap[row.node];
 				const uint32_t worldCamIdx =
 					static_cast<uint32_t>(cameraLocations.size());
 
@@ -585,7 +551,10 @@ namespace smvk {
 			// handle exactly like lightLocations (authored/runtime decals
 			// are pool assets; the shape rides the node transform).
 			for (const DecalRow& row : cs.tables.decals) {
-				const uint32_t worldNode = row.node + nodeOffset;
+				if (row.node >= nodeMap.size()
+					|| nodeMap[row.node] == UINT32_MAX)
+					continue;
+				const uint32_t worldNode = nodeMap[row.node];
 				const uint32_t worldDecalIdx =
 					static_cast<uint32_t>(decalLocations.size());
 
@@ -604,25 +573,31 @@ namespace smvk {
 			// clusters (registration order: the owning scene first), so an
 			// unauthored default never shadows another scene's authored look.
 			for (const EnvRow& row : cs.tables.envs)
-				SetEnv(scene, row.node + nodeOffset, row.environment);
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetEnv(scene, nodeMap[row.node], row.environment);
 			// Volume settings ride the same remap (every block coexists;
 			// no first-wins — coverage/priority resolve at use).
 			for (const EnvVolumeRow& row : cs.tables.envVolumes)
-				SetEnvVolume(scene, row.node + nodeOffset, row.volume);
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetEnvVolume(scene, nodeMap[row.node], row.volume);
 			// GI volumes / cubemap pins / export settings ride the
 			// resolve NOW (Epoch 6 — the map era left them
 			// cluster-scene-only with tour replay as the only
 			// transport; the world scene is a complete representation
-			// from here on). Payloads verbatim, nodes offset; export
-			// rows keep their editor/cook-only contract (never packed
-			// into runtime content — the resolve carries them for the
-			// editor's live view, the pak writer still skips them).
+			// from here on). Payloads verbatim, nodes through the map;
+			// export rows keep their editor/cook-only contract (never
+			// packed into runtime content — the resolve carries them
+			// for the editor's live view, the pak writer still skips
+			// them).
 			for (const GiVolumeRow& row : cs.tables.giVolumes)
-				SetGiVolume(scene, row.node + nodeOffset, row.volume);
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetGiVolume(scene, nodeMap[row.node], row.volume);
 			for (const CubemapRow& row : cs.tables.cubemaps)
-				SetCubemap(scene, row.node + nodeOffset, row.cubemap);
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetCubemap(scene, nodeMap[row.node], row.cubemap);
 			for (const ExportRow& row : cs.tables.exports)
-				SetExport(scene, row.node + nodeOffset, row.settings);
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetExport(scene, nodeMap[row.node], row.settings);
 			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
 				scene.envAuthored = true;
@@ -645,27 +620,27 @@ namespace smvk {
 				renderTaken = true;
 			}
 			// Default camera (world settings' typed camera.default field):
-			// cluster-space -> world-space offset remap, first-wins across
-			// clusters like the resolved env (the owning scene's default
-			// stands; UINT32_MAX = none is a no-op).
+			// cluster slot -> world slot through the map, first-wins
+			// across clusters like the resolved env (the owning scene's
+			// default stands; UINT32_MAX = none is a no-op).
 			if (!defaultCamTaken && cs.defaultCameraNode != UINT32_MAX
-				&& cs.defaultCameraNode < cs.hierarchy.size()) {
-				scene.defaultCameraNode =
-					cs.defaultCameraNode + nodeOffset;
+				&& cs.defaultCameraNode < clusterSlotCount
+				&& nodeMap[cs.defaultCameraNode] != UINT32_MAX) {
+				scene.defaultCameraNode = nodeMap[cs.defaultCameraNode];
 				defaultCamTaken = true;
 			}
 			// Active environment (tour env.current / editor selection):
 			// same first-wins remap. The merged look resolves from the
 			// winning id after the loop (see below); UINT32_MAX = none.
 			if (!activeEnvTaken && cs.activeEnvironment != UINT32_MAX
-				&& cs.activeEnvironment < cs.hierarchy.size()) {
-				scene.activeEnvironment =
-					cs.activeEnvironment + nodeOffset;
+				&& cs.activeEnvironment < clusterSlotCount
+				&& nodeMap[cs.activeEnvironment] != UINT32_MAX) {
+				scene.activeEnvironment = nodeMap[cs.activeEnvironment];
 				activeEnvTaken = true;
 			}
 
-			if (!cs.hierarchy.empty())
-				markAsChanged(scene, clusterRootNode);
+			if (clusterRootNode != UINT32_MAX)
+				markAsChanged(scene, int(clusterRootNode));
 			++clusterOrdinal;
 		}
 

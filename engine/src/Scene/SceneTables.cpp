@@ -7,9 +7,10 @@
 // migration rules: explicit code over infrastructure — a FindRow<T>
 // would be the first step toward a framework).
 //
-// The tables are INTRODUCED but not yet authoritative — the
-// xForNode maps stay the source of truth until Epochs 4-5 migrate the
-// consumers. Nothing here reads or writes the maps.
+// AUTHORITATIVE since Epochs 4-5 (every xForNode map is gone). Since
+// Epoch 6b rows address STABLE SLOTS: a row's node must be a live
+// slot (NodeInRange checks range + liveness), deletion retires slots
+// and drops their rows, and ids never renumber.
 
 #include <cassert>
 #include <string>
@@ -28,29 +29,32 @@ void EnsureNodeRows(Scene& scene)
 		scene.rowsForNode.resize(scene.hierarchy.size());
 }
 
+// Slot liveness for the association mutators (Epoch 6b): a row may
+// only ever point at a LIVE slot — range alone is not validity
+// anymore (a retired slot is in range but dead; SetX on it would
+// mint a row nothing can address once the slot is reused).
 bool NodeInRange(const Scene& scene, NodeId node)
 {
-	return size_t(node) < scene.hierarchy.size();
+	return size_t(node) < scene.hierarchy.size() && IsLiveSlot(scene, node);
 }
 
 } // namespace
 
 void RebuildNodeRows(Scene& scene)
 {
-	// EXACT resize — grows AND shrinks: the derived index always
-	// matches the live node count after a rebuild (the mutators'
-	// EnsureNodeRows is grow-only by design; a rebuild is the full
-	// reconciliation, including after compacting node deletions).
+	// EXACT resize — grows AND shrinks to the SLOT count (hierarchy
+	// size; retirement keeps holes, so this is capacity, not the live
+	// node count). The mutators' EnsureNodeRows is grow-only by
+	// design; a rebuild is the full reconciliation.
 	scene.rowsForNode.resize(scene.hierarchy.size());
 	for (NodeRows& rows : scene.rowsForNode)
 		rows = NodeRows{};
-	// One pass per table. Rows whose node is out of range are DEAD
-	// (the node count shrank past them — a compacting deletion) and
-	// get compacted out here: they are unreachable through the index
-	// by construction, and "a table guarantees valid nodes" is one of
-	// the migration invariants. Node-id REMAPPING on compaction is the
-	// shift*RowNodes helpers' job (deleteSceneNodes); this rebuild is
-	// the reconciliation for everything else.
+	// One pass per table. Rows whose node is dead (retired —
+	// NodeInRange checks liveness, Epoch 6b) are unreachable through
+	// the index by construction and get compacted out here: "a table
+	// guarantees live nodes" is one of the migration invariants. The
+	// retirement paths drop rows themselves (RemoveNodeRows); this
+	// rebuild is the backstop for everything else.
 	for (size_t i = 0; i < scene.tables.meshes.size();) {
 		MeshRow& row = scene.tables.meshes[i];
 		if (!NodeInRange(scene, row.node)) {

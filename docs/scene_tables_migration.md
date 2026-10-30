@@ -256,6 +256,93 @@ deltas are marked.
 - **6b — `refactor(world): stable node slots and generations`**
   (inserted): handles survive node deletion without renumbering;
   the dense-index remap contract becomes a slot-association contract.
+  - **6b — `refactor(world): stable node slots and generations`**
+    - **Record**: NodeId became a STABLE SLOT INDEX (the epoch's
+      representation change lives in scene_node_id.h + Scene's two new
+      members: nodeGeneration — bit31 alive + 12-bit generation per
+      slot, may lag hierarchy.size() with untracked slots reading live
+      — and nodeFreeList, LIFO). PACKING THE GENERATION INTO NodeId
+      ITSELF was rejected against the audit: ~500 sites index the
+      parallel arrays by NodeId directly (predicates, gizmos, resolve
+      internals) and a packed handle would silently corrupt every site
+      that doesn't decode — instead NodeId stays directly indexable,
+      arrays grow HOLES, and generations are a PARALLEL guard exposed
+      as the packed NodeHandle vocabulary (20-bit slot | 12-bit gen,
+      scene_node_id.h — the slot ceiling 2^20 matches the pak reader's
+      node-count guard; 4,096 lives per slot before wrap). Handles are
+      the LONG-LIVED-reference type: MakeNodeHandle/NodeHandleValid,
+      unit-pinned for the ABA case (a stale handle stays invalid across
+      slot reuse). 6c adopts them at the editor surfaces where cluster
+      unloads make mid-session retirement real; 6b's own retirement
+      sites (static_merge's cook delete, editor uncreate) are covered
+      by slot stability alone. DELETION RETIRES: deleteSceneNodes
+      collects the subtree, unlinks roots from SURVIVING parents
+      (UnlinkNodeFromParent — firstChild/nextSibling/lastSibling
+      surgery), and RetireNodeSlot frees each slot (drop rows via
+      RemoveNodeRows — the rows-never-outlive-nodes discipline — clear
+      flags/metadata/transforms, reset the hierarchy entry with
+      level=-1, bump the generation, push the freelist). The whole
+      pre-6b compaction machinery DIED with it: the newIndices remap,
+      findLastNonDeletedItem, eraseSelected over the parallel arrays,
+      shiftNodes, and the ten shift*RowNodes + shiftNodeMetadata
+      helpers (deleteSceneNodes was their only caller; eraseSelected
+      survives as an unused scene_utils utility). addNode pops the
+      freelist (resetting EVERY parallel array entry for the reused
+      slot — the touranim "addNode keeps every array in sync" invariant
+      extended to reuse, parent re-asserted LIVE not just in range) or
+      appends sequentially (a never-deleted scene is bit-identical to
+      the dense era). THE REMAP CONTRACT: ResolveAndFixup_clusters and
+      mergeScenes swapped +nodeOffset arithmetic for explicit
+      nodeMap[clusterSlot] -> worldSlot tables (numerically identical
+      on dense scenes, correct on holed ones — the resolve allocates
+      world slots via addNode per live node, maps links/rows/metadata/
+      uuids/defaultCameraNode/activeEnvironment through the map; the
+      cluster root is the FIRST LIVE slot). COOKED STAYS DENSE (the
+      locked decision): both serializers compact ascending-live-slot
+      through BuildSlotToDenseMap — byte-identical output to the pre-6b
+      writers for never-deleted scenes (ascending-slot == the old
+      stable_partition order), holes never serialize; the pak writer
+      FAILS loudly on any row/joint still pointing at a retired slot
+      (invariant violation), the .scene loaders drop such rows (the
+      lenient-format convention); readers expand dense files to fresh
+      gen-0 slots (the pak reader already built via addNode on a fresh
+      scene — naturally compatible; loadScene resets the slot arrays).
+      SCENE_TABLES: NodeInRange gained liveness (SetX/FindX reject
+      retired slots — a row can never point at a hole), RebuildNodeRows
+      compacts rows of dead slots as the discipline backstop. FLAT
+      ITERATION gained alive checks where the per-node predicates
+      couldn't reject holes: MarkAllRootsChanged (parent==-1 defaults
+      would masquerade as roots), recalculateGlobalTransforms(+Dynamic)
+      (dirty-list entries can outlive a mid-frame retire),
+      forEachNode, the editor locator loops (a bare-hole reads as a
+      locator without the guard), dumpSceneToDot. EDITOR: the six
+      uncreate sites (light/camera/givolume/cubemap/export/transform)
+      dropped the tail-pop/tombstone split for a shared
+      RetireCreatedNode (unlink + retire + World draw-cache scrub
+      flags/drawItems/itemFlags + selection scrub) — physical
+      retirement now works ANYWHERE (mid-graph uncreates no longer
+      leave hidden zombie nodes), the childless gate kept only where
+      children live under the node (tombstone). Editor delete STAYS
+      tombstone (already stable-id semantics; dissolves with 6d).
+      static_merge's post-delete URI-lookup repair DELETED (ids no
+      longer shift — the dangling-id pain this epoch removes).
+      Terrain uncreate was already tombstone-only — untouched.
+      PINS: SceneTableTests +22 (retirement keeps slot count/live
+      count, survivor rows verbatim, sibling repair, handle ABA across
+      reuse, clean reuse, mutators reject dead slots, rebuild drops
+      dead rows), WorldEntityTests +7 (TestResolveHoledCluster — the
+      holed-cluster resolve through the map), TourTests' flag-table
+      pin REWRITTEN from "the survivor's flag slid with the compacted
+      index" to "the survivor KEPT its id" + slot-reuse + the holed
+      save/load compaction round-trip (409/409). Validation: Windows
+      Release 46/46 + full tree clean; Debug full tree clean with
+      camera_tests' 3 mouselook dt-invariance failures PRE-EXISTING
+      (verified by stash-rebuild on the pre-6b tree — /Od float
+      determinism, no scene involvement); editor smoke clean
+      (--project F:/projects/game boots to ready, no faults). Linux
+      stays PENDING with the Epoch 5/6 gate (WSL boot-refusal, machine
+      resource pressure — rerun when free).
+
 - **6c — `refactor(world): incremental cluster append/remove`**
   (inserted): cluster load/unload stops wiping + rebuilding
   `World::scene`; dynamically created nodes survive streaming. This is

@@ -1031,6 +1031,45 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	Log(buf);
 }
 
+// Shared create-undo retirement (Epoch 6b — see the header contract):
+// the childless case physically frees the slot; every OTHER node id
+// stays put and a redo re-creates at the same slot id (the freelist
+// pops LIFO). World draw caches + selection scrub for the retired
+// node — the scene arrays no longer shrink past it the way the old
+// pop-back did by accident.
+void EditorApp::RetireCreatedNode(uint32_t n) {
+	if (!m_world || n == UINT32_MAX || n >= m_world->scene.hierarchy.size())
+		return;
+	Scene& scene = m_world->scene;
+	if (!IsNodeAlive(scene, n))
+		return; // already retired (double undo): no-op
+	const int p = scene.hierarchy[n].parent;
+	UnlinkNodeFromParent(scene, int(n));
+	RetireNodeSlot(scene, n);
+	// World draw caches (the ExecDelete discipline): the retired slot
+	// keeps its flags[]/drawItems entries otherwise — flat iteration
+	// must never see it again.
+	if (n < m_world->flags.size())
+		m_world->flags[n] = smvk::IteratorFlags(smvk::IteratorFlagBit_None);
+	for (size_t i = m_world->drawItems.size(); i-- > 0;)
+		if (m_world->drawItems[i].node == n) {
+			m_world->drawItems.erase(m_world->drawItems.begin()
+				+ ptrdiff_t(i));
+			m_world->itemFlags.erase(m_world->itemFlags.begin()
+				+ ptrdiff_t(i));
+		}
+	m_world->flagLists.clear();
+	recalculateGlobalTransforms(scene);
+	// Selection scrub: a retired id must not stay selected.
+	for (size_t i = m_selection.size(); i-- > 0;)
+		if (m_selection[i] == n)
+			m_selection.erase(m_selection.begin() + ptrdiff_t(i));
+	if (m_selected == n)
+		m_selected = (p >= 0 && IsNodeAlive(scene, uint32_t(p)))
+			? uint32_t(p)
+			: (m_selection.empty() ? UINT32_MAX : m_selection.back());
+}
+
 void EditorApp::ExecUncreateLight(EditCmd& c) {
 	if (!m_world)
 		return;
@@ -1038,15 +1077,15 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
 	const LightRow* lit = FindLight(scene, n);
 	const bool lightTail = lit != nullptr
 		&& lit->light + 1 == m_world->lightLocations.size();
-	if (tail && childless) {
-		// Physical removal: pop every vector addNode grew (flag arrays
-		// only when they are exactly node-sized — empty/mismatched
-		// means "default", which needs no entry).
+	if (childless) {
+		// Epoch 6b: physical RETIREMENT anywhere in the graph (the old
+		// tail-pop only worked on the childless tail; mid-graph uncreates
+		// left hidden zombies). The pool definition + location row pop
+		// when the def is the pool tail (unchanged).
 		if (lit != nullptr) {
 			if (lightTail) {
 				const auto& loc = m_world->lightLocations[lit->light];
@@ -1056,57 +1095,16 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 			}
 			RemoveLight(scene, n);
 		}
-		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
-			}
-			// Refresh the cached tail on the (possibly new) first child.
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.lightmap.size() == n + 1)
-			scene.lightmap.pop_back();
-		if (scene.castsVolumetricShadow.size() == n + 1)
-			scene.castsVolumetricShadow.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid light creation (#" + std::to_string(n) + ").");
+		RetireCreatedNode(n);
+		Log("Undid light creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
 	} else {
-		// Non-tail (or parented) node: keep ids stable — hide the node
-		// and detach the light instead of shifting the world.
+		// Children live under the node: the slot must stay alive for
+		// them — tombstone (hide + detach) as before.
 		MarkHidden(scene, int(n));
 		RemoveLight(scene, n);
-		Log("Undid light creation (#" + std::to_string(n) +
-		 "): hidden, ids kept stable (pool entry retained).");
+		Log("Undid light creation (#" + std::to_string(n)
+		 + "): hidden, ids kept stable (pool entry retained).");
 	}
 }
 
@@ -1184,15 +1182,14 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
 	const CameraRow* cit = FindCamera(scene, n);
 	const bool camTail = cit != nullptr
 		&& cit->camera + 1 == m_world->cameraLocations.size();
-	if (tail && childless) {
-		// Physical removal: pop every vector addNode grew (flag arrays
-		// only when they are exactly node-sized — empty/mismatched
-		// means "default", which needs no entry).
+	if (childless) {
+		// Epoch 6b retirement (see ExecUncreateLight): the slot frees
+		// anywhere in the graph; the pool def + location row pop when
+		// the def is the pool tail (unchanged).
 		if (cit != nullptr) {
 			if (camTail) {
 				const auto& loc = m_world->cameraLocations[cit->camera];
@@ -1202,53 +1199,11 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 			}
 			RemoveCamera(scene, n);
 		}
-		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
-			}
-			// Refresh the cached tail on the (possibly new) first child.
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.lightmap.size() == n + 1)
-			scene.lightmap.pop_back();
-		if (scene.castsVolumetricShadow.size() == n + 1)
-			scene.castsVolumetricShadow.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid camera creation (#" + std::to_string(n) + ").");
+		RetireCreatedNode(n);
+		Log("Undid camera creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
 	} else {
-		// Non-tail (or parented) node: keep ids stable — hide the node
-		// and detach the camera instead of shifting the world.
+		// Children live under the node: tombstone (hide + detach).
 		MarkHidden(scene, int(n));
 		RemoveCamera(scene, n);
 		Log("Undid camera creation (#" + std::to_string(n) +
@@ -1343,59 +1298,16 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
-	if (tail && childless) {
-		// Physical removal: pop every vector addNode grew (flag arrays
-		// only when they are exactly node-sized — empty/mismatched
-		// means "default", which needs no entry).
+	if (childless) {
+		// Epoch 6b retirement (see ExecUncreateLight): the slot frees
+		// anywhere in the graph, every other id stays put.
 		RemoveGiVolume(scene, n);
-		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
-			}
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.lightmap.size() == n + 1)
-			scene.lightmap.pop_back();
-		if (scene.castsVolumetricShadow.size() == n + 1)
-			scene.castsVolumetricShadow.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid GI volume creation (#" + std::to_string(n) + ").");
+		RetireCreatedNode(n);
+		Log("Undid GI volume creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
 	} else {
-		// Non-tail (or parented) node: keep ids stable — hide the node
-		// and detach the def instead of shifting the world.
+		// Children live under the node: tombstone (hide + detach).
 		MarkHidden(scene, int(n));
 		RemoveGiVolume(scene, n);
 		Log("Undid GI volume creation (#" + std::to_string(n) +
@@ -1512,58 +1424,16 @@ void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
-	if (tail && childless) {
-		// Physical removal (the ExecUncreateGiVolume pattern: pop every
-		// vector addNode grew, unlink from the parent's child list).
+	if (childless) {
+		// Epoch 6b retirement (the ExecUncreateGiVolume pattern): the
+		// slot frees anywhere in the graph, every other id stays put.
 		RemoveExport(scene, n);
-		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
-			}
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.lightmap.size() == n + 1)
-			scene.lightmap.pop_back();
-		if (scene.castsVolumetricShadow.size() == n + 1)
-			scene.castsVolumetricShadow.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid exportSettings creation (#" + std::to_string(n) + ").");
+		RetireCreatedNode(n);
+		Log("Undid exportSettings creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
 	} else {
-		// Non-tail (or parented) node: keep ids stable — hide the node
-		// and detach the payload instead of shifting the world.
+		// Children live under the node: tombstone (hide + detach).
 		MarkHidden(scene, int(n));
 		RemoveExport(scene, n);
 		Log("Undid exportSettings creation (#" + std::to_string(n) +
@@ -1744,59 +1614,16 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
 	const bool childless = scene.hierarchy[n].firstChild < 0;
-	if (tail && childless) {
-		// Physical removal: pop every vector addNode grew (flag arrays
-		// only when they are exactly node-sized — empty/mismatched
-		// means "default", which needs no entry).
+	if (childless) {
+		// Epoch 6b retirement (see ExecUncreateLight): the slot frees
+		// anywhere in the graph, every other id stays put.
 		RemoveCubemap(scene, n);
-		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
-			}
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.lightmap.size() == n + 1)
-			scene.lightmap.pop_back();
-		if (scene.castsVolumetricShadow.size() == n + 1)
-			scene.castsVolumetricShadow.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid cubemap creation (#" + std::to_string(n) + ").");
+		RetireCreatedNode(n);
+		Log("Undid cubemap creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
 	} else {
-		// Non-tail (or parented) node: keep ids stable — hide the node
-		// and detach the def instead of shifting the world.
+		// Children live under the node: tombstone (hide + detach).
 		MarkHidden(scene, int(n));
 		RemoveCubemap(scene, n);
 		Log("Undid cubemap creation (#" + std::to_string(n) +
@@ -2320,55 +2147,15 @@ void EditorApp::ExecUncreateTransform(EditCmd& c) {
 	const uint32_t n = c.node;
 	if (n == UINT32_MAX || n >= scene.hierarchy.size())
 		return;
-	// A transform node carries no links: physical pop when it is still
-	// the childless tail (created-light precedent), else hide with ids
-	// kept stable.
-	const bool tail = (n + 1 == uint32_t(scene.hierarchy.size()));
+	// A transform node carries no links. Epoch 6b: the slot RETIRES
+	// anywhere in the graph (the old physical path only worked on the
+	// childless tail); a parented-into node keeps its slot for the
+	// children under it (hide — the created-light tombstone precedent).
 	const bool childless = scene.hierarchy[n].firstChild < 0;
-	if (tail && childless) {
-		SetNodeNameIndex(scene, n, 0xFFFFFFFFu);
-		const int p = scene.hierarchy[n].parent;
-		if (p >= 0 && size_t(p) < scene.hierarchy.size()) {
-			auto& hp = scene.hierarchy[size_t(p)];
-			if (hp.firstChild == int(n)) {
-				hp.firstChild = scene.hierarchy[n].nextSibling;
-			} else {
-				int prev = hp.firstChild;
-				while (prev >= 0
-					&& scene.hierarchy[size_t(prev)].nextSibling != int(n))
-					prev = scene.hierarchy[size_t(prev)].nextSibling;
-				if (prev >= 0)
-					scene.hierarchy[size_t(prev)].nextSibling =
-						scene.hierarchy[n].nextSibling;
-			}
-			int tailId = -1;
-			for (int s = hp.firstChild; s >= 0;
-				s = scene.hierarchy[size_t(s)].nextSibling)
-				tailId = s;
-			if (hp.firstChild >= 0)
-				scene.hierarchy[size_t(hp.firstChild)].lastSibling = tailId;
-		}
-		scene.localTransform.pop_back();
-		scene.globalTransform.pop_back();
-		scene.hierarchy.pop_back();
-		if (scene.staticRoot.size() == n + 1)
-			scene.staticRoot.pop_back();
-		if (scene.staticNode.size() == n + 1)
-			scene.staticNode.pop_back();
-		if (scene.noLightmap.size() == n + 1)
-			scene.noLightmap.pop_back();
-		if (scene.lightmap.size() == n + 1)
-			scene.lightmap.pop_back();
-		if (scene.castsVolumetricShadow.size() == n + 1)
-			scene.castsVolumetricShadow.pop_back();
-		if (scene.ditherCloseup.size() == n + 1)
-			scene.ditherCloseup.pop_back();
-		if (scene.hidden.size() == n + 1)
-			scene.hidden.pop_back();
-		recalculateGlobalTransforms(scene);
-		if (m_selected == n)
-			m_selected = (p >= 0) ? uint32_t(p) : UINT32_MAX;
-		Log("Undid transform creation (#" + std::to_string(n) + ").");
+	if (childless) {
+		RetireCreatedNode(n);
+		Log("Undid transform creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
 	} else {
 		MarkHidden(scene, int(n));
 		Log("Undid transform creation (#" + std::to_string(n)

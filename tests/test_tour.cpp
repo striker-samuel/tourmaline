@@ -3126,12 +3126,13 @@ void TestDitherCloseup() {
 // finding): the volumetric-shadow caster commit REPLACED the ditherCloseup
 // bookkeeping at every scene-lifecycle site instead of adding alongside it
 // - addNode/loadScene/mergeScenes/deleteSceneNodes (plus the world cook's
-// cluster carry and the editor's per-node undo pop_backs) stopped
-// growing/carrying/shrinking the dither table, so it desynced from the
+// cluster carry and the editor's per-node undo retirement) stopped
+// growing/carrying/clearing the dither table, so it desynced from the
 // hierarchy (misaligned flags or stale state after the first scene edit).
-// This pins BOTH tables through create, delete, merge, and the legacy
-// .scene save/load round-trip - any future per-node flag must keep ALL of
-// these sites additive.
+// This pins BOTH tables through create, delete (Epoch 6b: SLOT RETIREMENT
+// - ids stay put, holes carry cleared flags, reuse starts clean), merge,
+// and the legacy .scene save/load round-trip (dense compaction) - any
+// future per-node flag must keep ALL of these sites additive.
 void TestSceneFlagTables() {
 	// --- create: addNode grows BOTH tables with the hierarchy ---
 	Scene scene;
@@ -3150,21 +3151,37 @@ void TestSceneFlagTables() {
 		&& !IsCastsVolumetricShadowNode(scene, a),
 		"flagtables create volumetric authored");
 
-	// --- delete: deleteSceneNodes shrinks BOTH tables, flags follow ---
+	// --- delete (Epoch 6b): deleteSceneNodes RETIRES the slot — the
+	// arrays keep their length, every survivor's id stays put, the
+	// retired slot's flags clear, and the freed slot re-enters
+	// circulation through addNode (generation bumped). ---
 	deleteSceneNodes(scene, { (uint32_t)a });
-	Check(scene.hierarchy.size() == 2, "flagtables delete hierarchy shrank");
-	Check(scene.ditherCloseup.size() == 2
-		&& scene.castsVolumetricShadow.size() == 2,
-		"flagtables delete both tables shrink");
-	// b slid from index 2 to 1: the volumetric flag rides the node, and the
-	// deleted node's dither flag is gone (not misaligned onto the survivor).
-	if (scene.castsVolumetricShadow.size() == 2)
-		Check(scene.castsVolumetricShadow[1] != 0
-			&& scene.castsVolumetricShadow[0] == 0,
-			"flagtables delete volumetric followed node");
-	if (scene.ditherCloseup.size() == 2)
-		Check(scene.ditherCloseup[0] == 0 && scene.ditherCloseup[1] == 0,
-			"flagtables delete dither flag gone with node");
+	Check(scene.hierarchy.size() == 3, "flagtables delete hierarchy unchanged");
+	Check(scene.ditherCloseup.size() == 3
+		&& scene.castsVolumetricShadow.size() == 3,
+		"flagtables delete both tables unchanged");
+	Check(LiveNodeCount(scene) == 2, "flagtables delete live count");
+	// b KEPT id 2: the volumetric flag is exactly where it was authored
+	// (no slide onto another node — the pre-6b compaction moved b to 1).
+	Check(scene.castsVolumetricShadow[2] != 0
+		&& scene.castsVolumetricShadow[0] == 0
+		&& scene.castsVolumetricShadow[1] == 0,
+		"flagtables delete volumetric kept id");
+	// The retired slot's dither flag cleared with the node.
+	Check(scene.ditherCloseup[1] == 0,
+		"flagtables delete dither flag gone with node");
+	Check(!IsNodeAlive(scene, (uint32_t)a) && IsNodeAlive(scene, (uint32_t)b),
+		"flagtables delete liveness");
+	// Reuse: addNode pops the freed slot (LIFO free list) with CLEAN
+	// per-node state — the old life's flags/links must not leak.
+	const int c = addNode(scene, root, 1);
+	Check(c == a, "flagtables delete slot reused");
+	Check(scene.ditherCloseup[size_t(c)] == 0
+		&& scene.castsVolumetricShadow[size_t(c)] == 0,
+		"flagtables reuse clean flags");
+	Check(scene.hierarchy[size_t(c)].parent == root
+		&& scene.hierarchy[size_t(c)].firstChild == -1,
+		"flagtables reuse relinked under root");
 
 	// --- merge: mergeScenes carries BOTH tables across sources ---
 	Scene s0;
@@ -3200,7 +3217,12 @@ void TestSceneFlagTables() {
 			"flagtables merge volumetric position");
 
 	// --- save/load: the legacy .scene blob round-trips BOTH sections ---
-	MarkDitherCloseup(scene, 1); // both kinds live on the 2-node scene
+	// (Epoch 6b: the FILE stays dense — a holed scene compacts on write,
+	// so the round trip renumbers ids; the flag bytes ride the
+	// compaction map and land on the same NODES.) Retire the reused
+	// slot first so the round trip actually crosses a hole.
+	deleteSceneNodes(scene, { (uint32_t)c });
+	MarkDitherCloseup(scene, b); // both kinds live on the 3-slot/2-live scene
 	// The names section rides between the mesh maps and the flag
 	// sections: saveScene writes it ONLY when non-empty while loadScene
 	// always consumes it when not at EOF, so a NAMELESS scene misaligns
@@ -3209,16 +3231,23 @@ void TestSceneFlagTables() {
 	// content so it exercises the flag sections' own bytes).
 	scene.nodeNames.push_back("root");
 	SetNodeNameIndex(scene, 0, 0);
-	SetNodeNameIndex(scene, 1, 0);
+	SetNodeNameIndex(scene, 2, 0);
 	{
 		saveScene(TempTour().c_str(), scene);
 		Scene loaded;
 		loadScene(TempTour().c_str(), loaded);
-		Check(loaded.hierarchy.size() == scene.hierarchy.size(),
-			"flagtables roundtrip hierarchy");
-		Check(loaded.ditherCloseup == scene.ditherCloseup
-			&& loaded.castsVolumetricShadow == scene.castsVolumetricShadow,
-			"flagtables roundtrip both tables");
+		Check(loaded.hierarchy.size() == 2 && LiveNodeCount(loaded) == 2,
+			"flagtables roundtrip compacts to dense");
+		// b (scene slot 2) loads as dense node 1 with BOTH its flags.
+		Check(loaded.ditherCloseup.size() == 2
+			&& loaded.ditherCloseup[0] == 0 && loaded.ditherCloseup[1] != 0,
+			"flagtables roundtrip dither table");
+		Check(loaded.castsVolumetricShadow.size() == 2
+			&& loaded.castsVolumetricShadow[0] == 0
+			&& loaded.castsVolumetricShadow[1] != 0,
+			"flagtables roundtrip volumetric table");
+		Check(getNodeName(loaded, 1) == "root",
+			"flagtables roundtrip name rides compaction");
 		std::error_code ec;
 		std::filesystem::remove(TempTour(), ec);
 	}

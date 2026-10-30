@@ -1030,52 +1030,84 @@ bool SerializeClusters(
 	{
 		const Scene& scene = cluster.scene;
 		std::vector<uint8_t> blob;
-		const uint32_t nodeCount = static_cast<uint32_t>(scene.hierarchy.size());
+		// Epoch 6b: the cooked scene stays DENSE (the locked decision —
+		// a cooked scene needs no free list). Live slots compact in
+		// ASCENDING slot order, which is byte-identical to the pre-6b
+		// writer for a never-deleted scene (and for the cook paths that
+		// DO delete — static-merge source retirement — ascending-slot
+		// compacts exactly like the old stable_partition erase did).
+		const std::vector<uint32_t> slotToDense = BuildSlotToDenseMap(scene);
+		const uint32_t nodeCount = LiveNodeCount(scene);
+		const auto denseLink = [&slotToDense](int link) -> int32_t {
+			if (link < 0 || size_t(link) >= slotToDense.size())
+				return -1;
+			const uint32_t d = slotToDense[size_t(link)];
+			return (d != UINT32_MAX) ? int32_t(d) : -1;
+		};
 		PutU32(blob, nodeCount);
-		for (const Hierarchy& h : scene.hierarchy) {
-			PutI32(blob, h.parent);
-			PutI32(blob, h.firstChild);
-			PutI32(blob, h.nextSibling);
-			PutI32(blob, h.lastSibling);
+		for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
+			if (slotToDense[s] == UINT32_MAX)
+				continue;
+			const Hierarchy& h = scene.hierarchy[s];
+			PutI32(blob, denseLink(h.parent));
+			PutI32(blob, denseLink(h.firstChild));
+			PutI32(blob, denseLink(h.nextSibling));
+			PutI32(blob, denseLink(h.lastSibling));
 			PutI32(blob, h.level);
 		}
-		for (const glm::mat4& m : scene.localTransform) {
-			const float* p = glm::value_ptr(m);
+		for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
+			if (slotToDense[s] == UINT32_MAX)
+				continue;
+			const float* p = glm::value_ptr(scene.localTransform[s]);
 			for (int i = 0; i < 16; ++i)
 				PutF32(blob, p[i]);
 		}
 		// Typed tables (meshes/materials): rows reference pool handle
-		// indices; translate to pak-local ids. Sorted by node for
-		// byte-stable paks (the table itself is unordered).
+		// indices; translate to pak-local ids. Sorted by (dense) node
+		// for byte-stable paks (the table itself is unordered). A row
+		// on a retired slot cannot exist through the mutators — fail
+		// loudly if one does (this is a validated format).
 		{
 			std::vector<const MeshRow*> meshRows;
 			meshRows.reserve(scene.tables.meshes.size());
-			for (const MeshRow& row : scene.tables.meshes)
+			for (const MeshRow& row : scene.tables.meshes) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene mesh row references retired node slot "
+						+ std::to_string(row.node));
 				meshRows.push_back(&row);
+			}
 			std::sort(meshRows.begin(), meshRows.end(),
-				[](const MeshRow* a, const MeshRow* b) { return a->node < b->node; });
+				[&](const MeshRow* a, const MeshRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node]; });
 			PutU32(blob, static_cast<uint32_t>(meshRows.size()));
 			for (const MeshRow* row : meshRows) {
 				const auto it = local.mesh.find(row->mesh);
 				if (it == local.mesh.end())
 					return fail("scene references unknown mesh pool index " + std::to_string(row->mesh));
-				PutU32(blob, row->node);
+				PutU32(blob, slotToDense[row->node]);
 				PutU32(blob, it->second);
 			}
 		}
 		{
 			std::vector<const MaterialRow*> matRows;
 			matRows.reserve(scene.tables.materials.size());
-			for (const MaterialRow& row : scene.tables.materials)
+			for (const MaterialRow& row : scene.tables.materials) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene material row references retired node slot "
+						+ std::to_string(row.node));
 				matRows.push_back(&row);
+			}
 			std::sort(matRows.begin(), matRows.end(),
-				[](const MaterialRow* a, const MaterialRow* b) { return a->node < b->node; });
+				[&](const MaterialRow* a, const MaterialRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node]; });
 			PutU32(blob, static_cast<uint32_t>(matRows.size()));
 			for (const MaterialRow* row : matRows) {
 				const auto it = local.mat.find(row->material);
 				if (it == local.mat.end())
 					return fail("scene references unknown material pool index " + std::to_string(row->material));
-				PutU32(blob, row->node);
+				PutU32(blob, slotToDense[row->node]);
 				PutU32(blob, it->second);
 			}
 		}
@@ -1083,8 +1115,11 @@ bool SerializeClusters(
 		{
 			std::vector<std::pair<uint32_t, uint32_t>> namePairs;
 			for (uint32_t n = 0; n < scene.metadata.size(); ++n)
-				if (scene.metadata[n].name != 0xFFFFFFFFu)
-					namePairs.emplace_back(n, scene.metadata[n].name);
+				if (scene.metadata[n].name != 0xFFFFFFFFu) {
+					if (n >= slotToDense.size() || slotToDense[n] == UINT32_MAX)
+						continue; // retired slot: no node, no name
+					namePairs.emplace_back(slotToDense[n], scene.metadata[n].name);
+				}
 			std::sort(namePairs.begin(), namePairs.end());
 			PutU32(blob, static_cast<uint32_t>(namePairs.size()));
 			for (const auto& [node, nameIdx] : namePairs) {
@@ -1098,19 +1133,29 @@ bool SerializeClusters(
 		PutU32(blob, static_cast<uint32_t>(scene.materialNames.size()));
 		for (const auto& n : scene.materialNames)
 			PutStr(blob, n);
-		// Trailing static-subtree section (v2; v1 blobs end here).
-		{
+		// Per-node byte section writer (the flag tables): live slots
+		// only, compacted through the map; a short/missing source table
+		// writes zeros (the "missing == default" read contract). The
+		// section COUNT is always the dense node count.
+		const auto putFlagBytes = [&blob, &scene, &slotToDense, nodeCount](const std::vector<uint8_t>& flags) {
 			PutU32(blob, nodeCount);
-			if (scene.staticRoot.size() == scene.hierarchy.size()) {
-				blob.insert(blob.end(), scene.staticRoot.begin(), scene.staticRoot.end());
-				if (stats) {
-					for (uint8_t v : scene.staticRoot)
-						if (v)
-							stats->staticRoots++;
-				}
+			if (flags.size() == scene.hierarchy.size()) {
+				for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
+					if (slotToDense[s] != UINT32_MAX)
+						blob.push_back(flags[s]);
 			}
 			else {
 				blob.insert(blob.end(), nodeCount, 0);
+			}
+		};
+		// Trailing static-subtree section (v2; v1 blobs end here).
+		{
+			putFlagBytes(scene.staticRoot);
+			if (stats) {
+				for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
+					if (slotToDense[s] != UINT32_MAX
+						&& s < scene.staticRoot.size() && scene.staticRoot[s])
+						stats->staticRoots++;
 			}
 		}
 		// Trailing lightmap-exclusion section (v3; v2 blobs end above).
@@ -1118,13 +1163,7 @@ bool SerializeClusters(
 		// (trailing-bytes check) — App/Editor ship together, so paks and
 		// readers always move in lockstep.
 		{
-			PutU32(blob, nodeCount);
-			if (scene.noLightmap.size() == scene.hierarchy.size()) {
-				blob.insert(blob.end(), scene.noLightmap.begin(), scene.noLightmap.end());
-			}
-			else {
-				blob.insert(blob.end(), nodeCount, 0);
-			}
+			putFlagBytes(scene.noLightmap);
 		}
 		// Trailing cooked-lights section (v4; v3 blobs end above).
 		// Definitions are PakAssetKind::Light blobs; this section carries
@@ -1135,17 +1174,23 @@ bool SerializeClusters(
 		{
 			std::vector<const LightRow*> lightRows;
 			lightRows.reserve(scene.tables.lights.size());
-			for (const LightRow& row : scene.tables.lights)
+			for (const LightRow& row : scene.tables.lights) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene light row references retired node slot "
+						+ std::to_string(row.node));
 				lightRows.push_back(&row);
+			}
 			std::sort(lightRows.begin(), lightRows.end(),
-				[](const LightRow* a, const LightRow* b) { return a->node < b->node; });
+				[&](const LightRow* a, const LightRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node]; });
 			PutU32(blob, static_cast<uint32_t>(lightRows.size()));
 			for (const LightRow* row : lightRows) {
 				const auto it = local.light.find(row->light);
 				if (it == local.light.end())
 					return fail("scene references unknown light pool index " +
 						std::to_string(row->light));
-				PutU32(blob, row->node);
+				PutU32(blob, slotToDense[row->node]);
 				PutU32(blob, it->second);
 			}
 		}
@@ -1157,27 +1202,13 @@ bool SerializeClusters(
 		// Per-node dither-on-closeup section (v6; v5 blobs end after the
 		// name). All-zero when unused; missing == off on read.
 		{
-			PutU32(blob, nodeCount);
-			if (scene.ditherCloseup.size() == scene.hierarchy.size()) {
-				blob.insert(blob.end(), scene.ditherCloseup.begin(),
-					scene.ditherCloseup.end());
-			}
-			else {
-				blob.insert(blob.end(), nodeCount, 0);
-			}
+			putFlagBytes(scene.ditherCloseup);
 		}
 		// Per-node visibility section (v7; v6 blobs end after dither).
 		// hidden flags (1 = hidden subtree root); all-zero == visible.
 		// Missing == visible on read.
 		{
-			PutU32(blob, nodeCount);
-			if (scene.hidden.size() == scene.hierarchy.size()) {
-				blob.insert(blob.end(), scene.hidden.begin(),
-					scene.hidden.end());
-			}
-			else {
-				blob.insert(blob.end(), nodeCount, 0);
-			}
+			putFlagBytes(scene.hidden);
 		}
 		// Per-node camera links (v8; v7 blobs end after visibility).
 		// Definitions are PakAssetKind::Camera blobs; this section
@@ -1187,17 +1218,23 @@ bool SerializeClusters(
 		{
 			std::vector<const CameraRow*> camRows;
 			camRows.reserve(scene.tables.cameras.size());
-			for (const CameraRow& row : scene.tables.cameras)
+			for (const CameraRow& row : scene.tables.cameras) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene camera row references retired node slot "
+						+ std::to_string(row.node));
 				camRows.push_back(&row);
+			}
 			std::sort(camRows.begin(), camRows.end(),
-				[](const CameraRow* a, const CameraRow* b) { return a->node < b->node; });
+				[&](const CameraRow* a, const CameraRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node]; });
 			PutU32(blob, static_cast<uint32_t>(camRows.size()));
 			for (const CameraRow* row : camRows) {
 				const auto it = local.camera.find(row->camera);
 				if (it == local.camera.end())
 					return fail("scene references unknown camera pool index " +
 						std::to_string(row->camera));
-				PutU32(blob, row->node);
+				PutU32(blob, slotToDense[row->node]);
 				PutU32(blob, it->second);
 			}
 		}
@@ -1211,15 +1248,20 @@ bool SerializeClusters(
 			PutU32(blob, scene.envAuthored ? 1u : 0u);
 			PutSceneEnv(blob, scene.environment);
 			PutSceneEnv(blob, scene.defaultEnvironment);
-			std::vector<const EnvRow*> envRows;
+			std::vector<std::pair<uint32_t, const EnvRow*>> envRows;
 			envRows.reserve(scene.tables.envs.size());
-			for (const EnvRow& row : scene.tables.envs)
-				envRows.push_back(&row);
+			for (const EnvRow& row : scene.tables.envs) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene env row references retired node slot "
+						+ std::to_string(row.node));
+				envRows.emplace_back(slotToDense[row.node], &row);
+			}
 			std::sort(envRows.begin(), envRows.end(),
-				[](const EnvRow* a, const EnvRow* b) { return a->node < b->node; });
+				[](const auto& a, const auto& b) { return a.first < b.first; });
 			PutU32(blob, static_cast<uint32_t>(envRows.size()));
-			for (const EnvRow* row : envRows) {
-				PutU32(blob, row->node);
+			for (const auto& [node, row] : envRows) {
+				PutU32(blob, node);
 				PutSceneEnv(blob, row->environment);
 			}
 		}
@@ -1234,11 +1276,13 @@ bool SerializeClusters(
 		// Default camera (v10; v9 blobs end after the env section): the
 		// authored camera node the runtime App spawns at (world settings'
 		// typed camera.default field — see Scene::defaultCameraNode).
-		// One u32 node id (UINT32_MAX = none). Always written so the
-		// layout is uniform; old readers fail the trailing-bytes check
-		// on v10 blobs (the sanctioned break — no conversions).
+		// One u32 node id, cluster-DENSE through the map (UINT32_MAX =
+		// none). Always written so the layout is uniform; old readers
+		// fail the trailing-bytes check on v10 blobs (the sanctioned
+		// break — no conversions).
 		{
-			PutU32(blob, scene.defaultCameraNode);
+			PutU32(blob, (scene.defaultCameraNode < slotToDense.size())
+				? slotToDense[scene.defaultCameraNode] : UINT32_MAX);
 		}
 		// Per-node decal links (v11; v10 blobs end after the default
 		// camera). Definitions are PakAssetKind::Decal blobs; this
@@ -1249,28 +1293,35 @@ bool SerializeClusters(
 		{
 			std::vector<const DecalRow*> decalRows;
 			decalRows.reserve(scene.tables.decals.size());
-			for (const DecalRow& row : scene.tables.decals)
+			for (const DecalRow& row : scene.tables.decals) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene decal row references retired node slot "
+						+ std::to_string(row.node));
 				decalRows.push_back(&row);
+			}
 			std::sort(decalRows.begin(), decalRows.end(),
-				[](const DecalRow* a, const DecalRow* b) { return a->node < b->node; });
+				[&](const DecalRow* a, const DecalRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node]; });
 			PutU32(blob, static_cast<uint32_t>(decalRows.size()));
 			for (const DecalRow* row : decalRows) {
 				const auto it = local.decal.find(row->decal);
 				if (it == local.decal.end())
 					return fail("scene references unknown decal pool index " +
 						std::to_string(row->decal));
-				PutU32(blob, row->node);
+				PutU32(blob, slotToDense[row->node]);
 				PutU32(blob, it->second);
 			}
 		}
 		// Active environment (v12; v11 blobs end after the decal links):
 		// the selected env block node (see Scene::activeEnvironment). One
-		// u32 node id (UINT32_MAX = none, the default block renders).
-		// Always written so the layout is uniform; old readers fail the
-		// trailing-bytes check on v12 blobs (the sanctioned break — no
-		// conversions).
+		// u32 node id, cluster-DENSE through the map (UINT32_MAX = none,
+		// the default block renders). Always written so the layout is
+		// uniform; old readers fail the trailing-bytes check on v12 blobs
+		// (the sanctioned break — no conversions).
 		{
-			PutU32(blob, scene.activeEnvironment);
+			PutU32(blob, (scene.activeEnvironment < slotToDense.size())
+				? slotToDense[scene.activeEnvironment] : UINT32_MAX);
 		}
 		// Env-volume settings (v13; v12 blobs end after the active
 		// environment): node-ordered (node, mask, priority, weight,
@@ -1278,15 +1329,20 @@ bool SerializeClusters(
 		// so the layout is uniform; old readers fail the trailing-bytes
 		// check on v13 blobs (the sanctioned break - no conversions).
 		{
-			std::vector<const EnvVolumeRow*> volRows;
+			std::vector<std::pair<uint32_t, const EnvVolumeRow*>> volRows;
 			volRows.reserve(scene.tables.envVolumes.size());
-			for (const EnvVolumeRow& row : scene.tables.envVolumes)
-				volRows.push_back(&row);
+			for (const EnvVolumeRow& row : scene.tables.envVolumes) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene env-volume row references retired node slot "
+						+ std::to_string(row.node));
+				volRows.emplace_back(slotToDense[row.node], &row);
+			}
 			std::sort(volRows.begin(), volRows.end(),
-				[](const EnvVolumeRow* a, const EnvVolumeRow* b) { return a->node < b->node; });
+				[](const auto& a, const auto& b) { return a.first < b.first; });
 			PutU32(blob, static_cast<uint32_t>(volRows.size()));
-			for (const EnvVolumeRow* row : volRows) {
-				PutU32(blob, row->node);
+			for (const auto& [node, row] : volRows) {
+				PutU32(blob, node);
 				PutU32(blob, row->volume.infMask);
 				PutF32(blob, row->volume.priority);
 				PutF32(blob, row->volume.blendWeight);
@@ -1301,20 +1357,30 @@ bool SerializeClusters(
 		// LOAD side accepts an absent section (pre-skin paks) as no
 		// skeleton. The Skeleton's joint table is what the per-mesh
 		// PackedSkinInfluences streams (the mesh blob's trailing skin section)
-		// index.
+		// index. Joint ids + root are cluster node SLOTS — they go
+		// through the compaction map like every other node reference
+		// (a joint on a retired slot fails the cook loudly: a skinned
+		// cluster must keep its joint nodes).
 		{
 			PutU32(blob, cluster.hasSkeleton ? 1u : 0u);
 			if (cluster.hasSkeleton) {
 				const smvk::touranim::Skeleton& sk = cluster.skeleton;
+				for (uint32_t j : sk.joints)
+					if (j >= slotToDense.size() || slotToDense[j] == UINT32_MAX)
+						return fail("cluster skeleton joint references retired node slot "
+							+ std::to_string(j));
 				PutU32(blob, static_cast<uint32_t>(sk.joints.size()));
 				for (uint32_t j : sk.joints)
-					PutU32(blob, j);
+					PutU32(blob, slotToDense[j]);
 				for (const glm::mat4& m : sk.inverseBind) {
 					for (int c = 0; c < 4; ++c)
 						for (int r = 0; r < 4; ++r)
 							PutF32(blob, m[c][r]);
 				}
-				PutU32(blob, sk.root);
+				if (sk.root >= slotToDense.size() || slotToDense[sk.root] == UINT32_MAX)
+					return fail("cluster skeleton root references retired node slot "
+						+ std::to_string(sk.root));
+				PutU32(blob, slotToDense[sk.root]);
 			}
 		}
 		// Analytic env-zone master switch (v15; v14 blobs end after the
@@ -1343,14 +1409,7 @@ bool SerializeClusters(
 		// marks, see Scene::castsVolumetricShadow). All-zero when unused;
 		// missing == off on read (pre-v17 paks).
 		{
-			PutU32(blob, nodeCount);
-			if (scene.castsVolumetricShadow.size() == scene.hierarchy.size()) {
-				blob.insert(blob.end(), scene.castsVolumetricShadow.begin(),
-					scene.castsVolumetricShadow.end());
-			}
-			else {
-				blob.insert(blob.end(), nodeCount, 0);
-			}
+			putFlagBytes(scene.castsVolumetricShadow);
 		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,

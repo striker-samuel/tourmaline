@@ -500,6 +500,45 @@ void TestResolveCarriesInlineTables()
 		"resolve.rebuild-stale-free");
 }
 
+// Epoch 6b: the resolve's SLOT-ASSOCIATION map — a cluster scene with
+// a retired slot (a hole) resolves correctly: live nodes land with
+// intact links, the hole never enters the world scene, and node-id
+// refs (defaultCameraNode) ride the map instead of +offset arithmetic.
+void TestResolveHoledCluster()
+{
+	smvk::World w;
+	auto c = std::make_unique<smvk::Cluster>(nullptr);
+	c->SetOfflineMode(true);
+	::Scene& cs = c->scene;
+	const int root = addNode(cs, -1, 0);
+	const int a = addNode(cs, root, 1);
+	const int b = addNode(cs, root, 1);
+	SetNodeUuidRaw(cs, uint32_t(b), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+	// The cook-time static-merge shape: retire a MIDDLE subtree.
+	deleteSceneNodes(cs, { (uint32_t)a });
+	Check(LiveNodeCount(cs) == 2 && cs.hierarchy.size() == 3,
+		"holedresolve.cluster-hole");
+	cs.defaultCameraNode = uint32_t(b);
+	w.RegisterCluster(std::move(c));
+	w.ResolveAndFixup_clusters();
+	const ::Scene& s = w.scene;
+	// The world scene is freshly wiped — always dense here.
+	Check(s.hierarchy.size() == 3 && LiveNodeCount(s) == 3,
+		"holedresolve.world-dense");
+	// Layout: 0 = world root, 1 = cluster root, 2 = b. The hole never
+	// entered; b links under the cluster root with no sibling ghosts.
+	Check(s.hierarchy[0].firstChild == 1 && s.hierarchy[1].parent == 0,
+		"holedresolve.cluster-root-reparented");
+	Check(s.hierarchy[1].firstChild == 2 && s.hierarchy[2].parent == 1
+		&& s.hierarchy[2].nextSibling == -1 && s.hierarchy[1].nextSibling == -1,
+		"holedresolve.links-skipped-hole");
+	Check(s.metadata.size() > 2
+		&& s.metadata[2].uuid == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"holedresolve.uuid-through-map");
+	Check(s.defaultCameraNode == 2,
+		"holedresolve.default-camera-through-map");
+}
+
 } // namespace
 
 int main() {
@@ -509,6 +548,7 @@ int main() {
 	TestEnvZones();
 	TestActiveEnvironmentFirstWins();
 	TestResolveCarriesInlineTables();
+	TestResolveHoledCluster();
 	std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " ("
 		<< g_checks << " checks)\n";
 	return g_failures == 0 ? 0 : 1;

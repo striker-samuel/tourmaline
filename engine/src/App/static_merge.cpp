@@ -185,22 +185,15 @@ StaticMergeResult CollapseStaticSubtrees(
 	RebuildStaticCache(scene);
 
 	if (opts.deleteSources) {
-		// Delete *after* all uploads: node indices in `nodes` are still
-		// valid until the erase. New block nodes sort after every source
-		// (addNode appends), so they are never in the delete set.
+		// Delete *after* all uploads: new block nodes sort after every
+		// source (addNode appends), so they are never in the delete set.
 		std::vector<uint32_t> doomed = nodes;
 		std::sort(doomed.begin(), doomed.end());
 		deleteSceneNodes(scene, doomed);
-		// Node ids of the new blocks shifted; repair them by URI lookup.
-		for (auto& b : result.blocks) {
-			b.node = -1;
-			for (const MeshRow& row : scene.tables.meshes) {
-				if (row.mesh == b.meshPoolIndex) {
-					b.node = (int)row.node;
-					break;
-				}
-			}
-		}
+		// Epoch 6b: the retired source slots leave every surviving id
+		// put — the block nodes' ids in `result.blocks` are still valid
+		// (the old URI-lookup repair existed because the compaction
+		// renumbered everything under the delete; retirement doesn't).
 		RebuildStaticCache(scene);
 	}
 

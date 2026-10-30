@@ -312,6 +312,8 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 	// pass — see IsLocatorNode). Click-to-select like the light
 	// markers; the 14 px threshold matches.
 	for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
+		if (!IsNodeAlive(scene, node))
+			continue; // retired slot (Epoch 6b): a hole, not a locator
 		if (!IsLocatorNode(scene, node))
 			continue;
 		if (node >= scene.globalTransform.size())

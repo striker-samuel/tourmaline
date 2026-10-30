@@ -566,6 +566,10 @@ namespace smvk {
 		void forEachNode(IteratorFlags requiredFlags, Func&& func)
 		{
 			for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
+				// Epoch 6b: retired slots are holes — the flags vector
+				// may still carry a pre-retirement entry for them.
+				if (!IsLiveSlot(scene, i))
+					continue;
 				const IteratorFlags nf =
 					(i < flags.size()) ? flags[i]
 					: static_cast<IteratorFlags>(IteratorFlagBit_None);
