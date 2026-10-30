@@ -1865,6 +1865,83 @@ struct ImageCreateInfo
 		return PipelineStageBit_Fragment;
 	}
 
+	// ---------------------------------------------------------------------
+	// (stage x access) pairing contract - debug validation.
+	//
+	// Vulkan requires every access bit in a barrier to be SUPPORTED by at
+	// least one stage in the same barrier's stage mask (the VUIDs reject
+	// e.g. INDIRECT_COMMAND_READ under any shader stage - it needs
+	// DRAW_INDIRECT). The engine's translators make this sharp:
+	// PipelineStageBit_AllGraphics maps to the SHADER-stage union ONLY
+	// (ToVkStage never emits VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT), so
+	// AccessFlags::IndirectCommandRead paired with AllGraphics (or any
+	// shader stage) compiles into a barrier whose dst stage EXCLUDES the
+	// fixed-function command fetch - the fetch runs unsynchronized no
+	// matter who wrote the buffer (the stranded-upload investigation's
+	// second defect; see todo.txt). DerivePipelineStage produces valid
+	// pairs by construction; the DANGER is hand-written stage masks, so
+	// the rendergraph's hint ingestion asserts every declared pair.
+	//
+	// SupportingStagesFor: the engine stage bits whose Vk translation
+	// supports ONE access bit. 0 = the engine stage set cannot express
+	// that access's stages (Host/CommandPreprocess/ConditionalRendering/
+	// TransformFeedback/... - never validatable here, never used through
+	// graph hints). MemoryRead/MemoryWrite are stage-agnostic and skip
+	// validation on purpose.
+	// ---------------------------------------------------------------------
+	constexpr PipelineStage SupportingStagesFor(AccessFlags access) {
+		switch (access) {
+		case AccessFlags::IndirectCommandRead:
+			return PipelineStageBit_DrawIndirect;
+		case AccessFlags::IndexRead:
+		case AccessFlags::VertexAttributeRead:
+			// The Vertex bit expands VERTEX_SHADER|VERTEX_INPUT in both Vk
+			// translators (VUID-03901 - see DerivePipelineStage's note).
+			return PipelineStageBit_Vertex;
+		case AccessFlags::InputAttachmentRead:
+		case AccessFlags::ColorAttachmentRead:
+		case AccessFlags::ColorAttachmentWrite:
+		case AccessFlags::DepthStencilAttachmentRead:
+		case AccessFlags::DepthStencilAttachmentWrite:
+			return PipelineStageBit_Fragment;
+		case AccessFlags::UniformRead:
+		case AccessFlags::ShaderRead:
+		case AccessFlags::ShaderWrite:
+			return PipelineStageBit_AllGraphics | PipelineStageBit_Compute
+				| PipelineStageBit_AllRayTracing;
+		case AccessFlags::TransferRead:
+		case AccessFlags::TransferWrite:
+			return PipelineStageBit_Transfer;
+		case AccessFlags::AccelerationStructureRead:
+		case AccessFlags::AccelerationStructureWrite:
+			return PipelineStageBit_AllRayTracing | PipelineStageBit_Compute;
+		default:
+			return 0;
+		}
+	}
+
+	// Fires when `stage` supports NONE of one of `access`'s bits - the
+	// declared barrier would be invalid Vulkan (or, for the indirect
+	// case, silently leave the fixed-function fetch unsynchronized).
+	// Debug builds only (NDEBUG ships it out); the site string rides the
+	// assert expression so the report names the declaring call site.
+	inline void AssertStageAccessSupported(PipelineStage stage,
+		AccessFlags access, const char* site) {
+		uint32_t remaining = static_cast<uint32_t>(access);
+		while (remaining != 0) {
+			const uint32_t bit = remaining & (0u - remaining);
+			remaining ^= bit;
+			const PipelineStage support =
+				SupportingStagesFor(static_cast<AccessFlags>(bit));
+			if (support == 0)
+				continue; // not expressible in the engine stage set
+			assert((stage & support) != 0
+				&& "stage mask supports none of this access bit's stages"
+				&& site);
+		}
+	}
+
+
 
 	[[nodiscard]] constexpr ImageAspect DefaultViewAspect(Format format)
 	{

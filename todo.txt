@@ -64,52 +64,57 @@ data. Revisit if the editor ever runs the skinning preview / the gfx filter
 chain (it would then get the same GfxSkinBounds table; until then the
 editor overlay is honest only for static meshes).
 
-(Engine, RESOLVED by PR1 — the placement indirect-command ownership) THE
-STRANDED-UPLOAD WRITE — a rendergraph sync sharp edge where an UPLOAD's
-bytes can become permanently invisible to a draw that reads them in the
-same frame, even though the frame's submit waits for the upload. Caught
-on device by PlacementGpuTests' section 10 (the end-to-end
-pixels-on-device draw proof, commit 370798dd): the publish frame's
-DrawIndexedIndirect read indexCount == 0 (a SILENT no-op draw — no fault,
-no pixels) while the POST-FRAME READBACK OF THE VERY SAME BUFFER showed
-the seeded indexCount == 6 + the kernel's instanceCount == 69. The
-mechanism, end to end:
+(Engine, RESOLVED) THE STRANDED-UPLOAD WRITE — a rendergraph sync sharp
+edge where an UPLOAD's bytes were read by a draw in the same frame, even
+though the frame's submit waits for the upload. Caught on device by
+PlacementGpuTests' section 10 (the end-to-end pixels-on-device draw
+proof, commit 370798dd): the publish frame's DrawIndexedIndirect read
+indexCount == 0 (a SILENT no-op draw — no fault, no pixels) while the
+POST-FRAME READBACK OF THE VERY SAME BUFFER showed the seeded
+indexCount == 6 + the kernel's instanceCount == 69, with a reliable
+one-frame lag (benign pop-in for streaming tiles, pinned as a contract
+by the test).
 
-  1. PlacementWorldRuntime::BeginFrame publishes a world tile; the host
-     seeds the immutable indirect halves via
-     PlacementVisibleSet::SeedIndirect (engine/include/Engine/
-     Rendergraph/placement_pass.h ~691) — an UploadDataToBuffer, i.e. a
-     TRANSFER-scoped write (a copy on the upload timeline; the frame's
-     submit DOES wait for it at ALL_COMMANDS — execution is ordered, the
-     problem is purely memory VISIBILITY, not the semaphore).
-  2. The SAME frame's PlacementDrawBuild pass (AddDrawBuildPass,
-     placement_pass.h ~831; placement_drawbuild.cs.hlsl) rewrites the same
-     buffer's dynamic halves — a COMPUTE-scoped write. The graph emits
-     TRANSFER -> COMPUTE before drawbuild, so drawbuild ITSELF correctly
-     sees the seed.
-  3. The draw pass then reads the buffer at DRAW_INDIRECT. The graph's
-     per-resource sync state tracks only the LAST write's scope — the
-     pass-walk state update REPLACES the masks with the newest pass's
-     request (engine/src/Vulkan/impl.cpp line 13608: bufferStates[k] =
-     dstState; the image twin at line 13542) — so the barrier it emits
-     before the draw (the VkBufferMemoryBarrier2 fill at line 13581, src
-     straight from that tracked state) carries src = COMPUTE ONLY.
-  4. Vulkan memory dependencies are NOT transitive: the seed's
-     TRANSFER_WRITE was made visible to drawbuild's COMPUTE scope, but NO
-     barrier ever delivers it to the DRAW_INDIRECT read — so the draw
-     fetches a stale indexCount (the creation-zero 0) and no-ops. The
-     NEXT frame draws correctly because EndAndPresentFramebuffer's submit
-     waits the previous frame's timeline at ALL_COMMANDS, which makes
-     every prior write (including the stranded upload) visible to the
-     whole command buffer — hence a RELIABLE one-frame lag (a benign
-     pop-in for streaming tiles, pinned as a contract by the test).
+ROOT CAUSE (the hint defect): the section-10 draw pass hinted the
+indirect buffer with IndirectCommandRead @ PipelineStageBit_AllGraphics
+— but the engine's AllGraphics maps to the SHADER-stage union ONLY
+(ToVkStage, impl.cpp ~1511: Vertex|Fragment|Geometry|Tess|Task|Mesh ->
+VERTEX_INPUT|VERTEX|...|TASK|MESH — never
+VK_PIPELINE_STAGE_2_DRAW_INDIRECT). The barrier's dst stage therefore
+EXCLUDED the fixed-function stage that fetches the command, so the fetch
+was unsynchronized no matter who wrote the buffer. The production
+pairing rule (gfx_filter's AddConsumeHints: "Engine helper covers
+IndexRead@Vertex and IndirectCommandRead@DrawIndirect") is the contract:
+IndirectCommandRead MUST pair with PipelineStageBit_DrawIndirect. The
+test's hint is fixed; every hand-written indirect-draw hint must follow
+that shape — now ENFORCED (see below).
 
-RESOLUTION (PR1, the todo's preferred local fix): draw-build owns the
-COMPLETE command. PlacementDrawBuildPush grew 32 -> 128 bytes (the
-prototype table's indexCount/firstIndex/vertexOffset[8] ride the push as
-two uint4 lanes per field); placement_drawbuild.cs.hlsl writes all five
-fields; PlacementWorldRuntime::SeedIndirect is pure metadata (cache +
-push capture at RecordCullChain; no GPU write); the publication-time seed
+  Historical barrier evidence (TOURMALINE_BARRIER_TRACE, pre-fix — note
+  the dstStage=1807fc on the draw line: the missing 0x2 DRAW_INDIRECT
+  bit WAS the defect):
+
+    [RG] pass 'PlacementDrawBuild' ... barrier buf h=78:
+        srcStage=1000(TRANSFER) srcAcc=1000 -> dstStage=800(COMPUTE)
+    [RG] pass 'PlacementDraw'     ... barrier buf h=78:
+        srcStage=800(COMPUTE)  srcAcc=60  -> dstStage=1807fc dstAcc=21
+
+NOTE (the retired theory): the investigation's first explanation — that
+the rendergraph loses upload visibility because its per-resource sync
+state tracks only the LAST write's scope (the draw-build COMPUTE
+re-write shadowing the TRANSFER seed, so no barrier ever delivered the
+seed to the draw) — was DISPROVEN on device by PR2's reproducer: the
+frame submit's transfer-timeline wait already establishes the memory
+dependency to the whole waiting submission, so the narrowed graph-local
+barrier src is NOT a visibility bug. The last-writer tracking, the
+upload timeline semaphore, and the single-writer placement are all sound
+as-is; no synchronization machinery change is needed or wanted.
+
+PR1 (the placement-side hardening, merged): draw-build owns the COMPLETE
+command. PlacementDrawBuildPush grew 32 -> 128 bytes (the prototype
+table's indexCount/firstIndex/vertexOffset[8] ride the push as two uint4
+lanes per field); placement_drawbuild.cs.hlsl writes all five fields;
+PlacementWorldRuntime::SeedIndirect is pure metadata (cache + push
+capture at RecordCullChain; no GPU write); the publication-time seed
 upload is gone; the draw-build pass's indirect hint is now ShaderWrite
 (single-scope COMPUTE writer per frame — the draw's compute-write ->
 indirect-read barrier is complete BY CONSTRUCTION). MeshParticles shares
@@ -118,26 +123,7 @@ asserts the FIRST eligible frame's pixels (22896/65536 lit, bins
 69+65+61) + full command parity + the zero-visible bin + a changed
 prototype table reaching the next recorded frame.
 
-  SECOND DEFECT THE SAME INVESTIGATION PINNED (it was masking half the
-  lag): the section-10 draw pass hinted the indirect buffer with
-  IndirectCommandRead @ PipelineStageBit_AllGraphics — but the engine's
-  AllGraphics maps to the SHADER-stage union ONLY (ToVkStage,
-  impl.cpp ~1511: Vertex|Fragment|Geometry|Tess|Task|Mesh -> VERTEX_INPUT
-  |VERTEX|...|TASK|MESH — never VK_PIPELINE_STAGE_2_DRAW_INDIRECT). The
-  barrier's dst stage therefore EXCLUDED the fixed-function stage that
-  fetches the command, so the fetch was unsynchronized no matter who
-  wrote the buffer. The production pairing rule (gfx_filter's
-  AddConsumeHints: "Engine helper covers IndexRead@Vertex and
-  IndirectCommandRead@DrawIndirect") is the contract: IndirectCommandRead
-  MUST pair with PipelineStageBit_DrawIndirect. The test's hint is fixed;
-  every hand-written indirect-draw hint must follow that shape.
-
-PR2 (the RHI-level follow-up) keeps an INTENTIONAL split-writer
-reproducer (upload static halves + same-frame compute dynamic halves +
-indirect draw) as an engine-wide regression so the class cannot quietly
-return through some other producer — see the PR2 notes below.
-
-(Engine, PR2 VERDICT — the RHI upload-synchronization regression)
+PR2 (the RHI-level regression, merged):
 tests/test_rhi_upload_barriers_gpu.cpp reproduces the split writer at
 the RHI level, independent of the placement renderer: a
 BufferType_Indirect command whose STATIC halves come from
@@ -147,50 +133,42 @@ DYNAMIC halves a same-frame compute pass rewrites, feeding an immediate
 DrawIndexedIndirect with the CORRECT hint pairing (IndirectCommandRead @
 PipelineStageBit_DrawIndirect). ON-DEVICE EVIDENCE: the FIRST frame
 draws the complete command (23762/65536 px lit, stable on frame 2) —
-the frame's synchronization (the upload streamer's acquire barrier to
-its declared consumer scope + the frame submit's transfer-timeline
-wait, whose semaphore wait establishes the memory dependency to the
-whole waiting submission) delivers the UPLOADED bytes to the
-DRAW_INDIRECT fetch. CONCLUSION: the historical "stranded upload"
-failure was the HINT DEFECT alone (the DrawIndirect-stage miss pinned
-above), NOT the upload/semaphore machinery — no engine change
-required. The reproducer stays as the regression pin (it fails if the
-hint pairing regresses OR the upload handoff breaks). Evidence rule
-(the Vulkan constraint): a timeline-semaphore wait already establishes
-a memory dependency between its signal and wait scopes — the absence
-of TRANSFER_WRITE from a later graph-local barrier src is NOT by
-itself a visibility bug; the failing dependency must be demonstrated on
-device before any synchronization change. It was not demonstrated —
-because it does not fail. The sharing-policy audit
+the upload machinery delivers the UPLOADED bytes to the DRAW_INDIRECT
+fetch. The reproducer stays as the regression pin (it fails if the hint
+pairing regresses OR the upload handoff breaks). Evidence rule (the
+Vulkan constraint): a timeline-semaphore wait already establishes a
+memory dependency between its signal and wait scopes — the absence of
+TRANSFER_WRITE from a later graph-local barrier src is NOT by itself a
+visibility bug; the failing dependency must be demonstrated on device
+before any synchronization change. The sharing-policy audit
 (BufferType_Indirect's exclusion from concurrent sharing in
 CreateBuffer) stays UNTOUCHED pending a real failure; do not switch
 sharing modes speculatively.
 
-Historical barrier evidence (TOURMALINE_BARRIER_TRACE, pre-PR1 — note
-the dstStage=1807fc on the draw line: the missing 0x2 DRAW_INDIRECT bit
-was the second defect, pinned above):
+ENFORCEMENT (the pairing rule is now assert-checked): smvk's
+AssertStageAccessSupported / SupportingStagesFor (smvk.h, next to
+DerivePipelineStage) debug-assert every (stage x access) pair at the
+rendergraph's hint-ingestion choke points (RenderPass::AddImageHint /
+AddBufferHint) and at CollectPassUsages' convergence — a hand-written
+IndirectCommandRead hint under AllGraphics (or any stage mask without
+the DrawIndirect bit) aborts Debug builds at the declaring site, and the
+decision table itself is pinned CPU-side by RendergraphContractTests
+(the pair.* checks). The class of defect cannot silently return.
 
-  [RG] pass 'PlacementDrawBuild' ... barrier buf h=78:
-      srcStage=1000(TRANSFER) srcAcc=1000 -> dstStage=800(COMPUTE)
-  [RG] pass 'PlacementDraw'     ... barrier buf h=78:
-      srcStage=800(COMPUTE)  srcAcc=60   -> dstStage=1807fc dstAcc=21
-
-The TRANSFER write never reappears in any draw-side src — that was the
-upload half of the bug in two trace lines.
-
-The CONSUMER RULE ("never let a draw depend on bytes an UPLOAD wrote to a
-buffer that a KERNEL re-writes in the same frame") is RETIRED for
+The CONSUMER RULE ("never let a draw depend on bytes an UPLOAD wrote to
+a buffer that a KERNEL re-writes in the same frame") is RETIRED for
 placement (single-scope writer by construction); the write-debt union
 alternative stays UNRESOLVED BY DESIGN — do NOT take the naive union
 blindly:
   - A naive `state.masks |= req.barrierMasks` prototype was tried and
-    BROKE OTHER PASSES: accumulated READ scopes produced access bits whose
-    supporting stages were not in the mask (e.g. IndirectCommandRead with
-    no DrawIndirect stage) — invalid (stage x access) pairings. Any union
-    approach must track WRITE (stage, access) PAIRS only, never read
-    scopes, and the debt must survive read passes until the buffer dies
-    (a barrier delivers only to its own dst scope; later readers with a
-    different scope each need their own delivery).
+    BROKE OTHER PASSES: accumulated READ scopes produced access bits
+    whose supporting stages were not in the mask (e.g. IndirectCommandRead
+    with no DrawIndirect stage) — invalid (stage x access) pairings, the
+    exact class the ingestion assert now rejects. Any union approach
+    must track WRITE (stage, access) PAIRS only, never read scopes, and
+    the debt must survive read passes until the buffer dies (a barrier
+    delivers only to its own dst scope; later readers with a different
+    scope each need their own delivery).
 
 (Engine, next-PR) PR07 — THE PLACEMENT SHADOW-VIEWS + OCCLUSION/LOD +
 THE PERF/GOLDEN CONTRACT. PR01-PR06 left the chain MAIN-VIEW-ONLY and

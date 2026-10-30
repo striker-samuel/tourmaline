@@ -12886,6 +12886,12 @@ std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const
 			ImageSyncRequest req = h.request;
 			if (req.barrierMasks.stageMask == PipelineStageBit_None)
 				req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+			// The convergence check: every (stage x access) pair that reaches
+			// the sorter + barrier emission must be valid (the ingestion
+			// asserts already cover the hint paths - this also catches any
+			// future producer that builds usages directly).
+			AssertStageAccessSupported(req.barrierMasks.stageMask,
+				req.barrierMasks.accessMask, "CollectPassUsages.imageHint");
 			// Depth sampled fixup: if image is depth format and hint requests ShaderReadOnly, promote to DepthReadOnly for correctness
 			{
 				auto* img = vctx.images_.get(phys);
@@ -12915,6 +12921,8 @@ std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const
 			BufferSyncRequest req = h.request;
 			if (req.barrierMasks.stageMask == PipelineStageBit_None)
 				req.barrierMasks.stageMask = DerivePipelineStage(req.barrierMasks.accessMask);
+			AssertStageAccessSupported(req.barrierMasks.stageMask,
+				req.barrierMasks.accessMask, "CollectPassUsages.bufferHint");
 			pu.buffers.emplace_back(phys, req);
 		}
 		out.push_back(std::move(pu));

@@ -490,6 +490,15 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 			assert(!view.empty());
 			if (request.barrierMasks.stageMask == PipelineStageBit_None)
 				request.barrierMasks.stageMask = DerivePipelineStage(request.barrierMasks.accessMask);
+			// Every hand-written (stage x access) pair gets debug-validated
+			// here - the ingestion choke point every hint path funnels
+			// through (AddImageHints batches route through this too). The
+			// class this pins: IndirectCommandRead under a stage mask
+			// without the DrawIndirect bit (AllGraphics is the SHADER union
+			// only - the barrier would leave the fixed-function command
+			// fetch unsynchronized; see AssertStageAccessSupported).
+			AssertStageAccessSupported(request.barrierMasks.stageMask,
+				request.barrierMasks.accessMask, "RenderGraph.AddImageHint");
 			// deduplicate – replace if exists
 			for (auto &h : imageHints_) if (h.view == view) { h.request = request; return *this; }
 			imageHints_.push_back({ view, request });
@@ -500,6 +509,12 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 			assert(!buffer.empty());
 			if (request.barrierMasks.stageMask == PipelineStageBit_None)
 				request.barrierMasks.stageMask = DerivePipelineStage(request.barrierMasks.accessMask);
+			// Same (stage x access) contract as AddImageHint - the buffer
+			// twin of the ingestion choke point (the indirect-draw hints are
+			// the classic offender: IndirectCommandRead @ DrawIndirect, see
+			// AssertStageAccessSupported).
+			AssertStageAccessSupported(request.barrierMasks.stageMask,
+				request.barrierMasks.accessMask, "RenderGraph.AddBufferHint");
 			for (auto &h : bufferHints_) if (h.buffer == buffer) { h.request = request; return *this; }
 			bufferHints_.push_back({ buffer, request });
 			return *this;

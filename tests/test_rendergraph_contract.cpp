@@ -163,6 +163,67 @@ void TestTopoSortSelfEdges() {
 	}
 }
 
+// 6. The (stage x access) pairing contract (the stranded-upload
+// investigation's second defect): every access bit a barrier declares
+// must be supported by at least one stage in the same barrier's stage
+// mask. The engine-specific sharp edge: AllGraphics maps to the
+// SHADER-stage union ONLY (never DRAW_INDIRECT), so IndirectCommandRead
+// @ AllGraphics leaves the fixed-function indirect-command fetch
+// unsynchronized - the renderer's rule is IndirectCommandRead @
+// PipelineStageBit_DrawIndirect (the ingestion choke points assert it
+// via AssertStageAccessSupported; these checks pin the DECISION TABLE
+// the assert consults, CPU-testable in every build config).
+void TestStageAccessContract() {
+	const auto drawIndirect = smvk::SupportingStagesFor(
+		smvk::AccessFlags::IndirectCommandRead);
+	Check(drawIndirect == smvk::PipelineStageBit_DrawIndirect,
+		"pair.indirect-requires-drawindirect");
+	// THE hole itself: the shader-stage union supports nothing about the
+	// indirect fetch (an AllGraphics pairing asserts in Debug builds).
+	Check((smvk::PipelineStageBit_AllGraphics & drawIndirect) == 0,
+		"pair.allgraphics-excludes-indirect");
+	// The legal indirect pairings: DrawIndirect alone, or unioned with a
+	// shader stage for the mesh-shader storage read of the same buffer
+	// (GfxRenderer's Main-pass hint shape).
+	Check((smvk::PipelineStageBit_DrawIndirect & drawIndirect) != 0,
+		"pair.drawindirect-supports-indirect");
+	Check(((smvk::PipelineStageBit_Mesh | smvk::PipelineStageBit_DrawIndirect)
+		& drawIndirect) != 0,
+		"pair.mesh-plus-drawindirect-supports-indirect");
+	// IndexRead/VertexAttributeRead: the Vertex bit expands to
+	// VERTEX_INPUT in the translators, so AllGraphics covers them (the
+	// terrain/probeball hints are the shipped shape).
+	const auto vtx = smvk::SupportingStagesFor(smvk::AccessFlags::IndexRead);
+	Check((smvk::PipelineStageBit_AllGraphics & vtx) != 0,
+		"pair.allgraphics-supports-indexread");
+	Check((smvk::PipelineStageBit_Vertex
+		& smvk::SupportingStagesFor(smvk::AccessFlags::VertexAttributeRead)) != 0,
+		"pair.vertex-supports-vbattrib");
+	// ShaderRead/Write: any shader/compute/RT stage (the broad union).
+	const auto shader = smvk::SupportingStagesFor(smvk::AccessFlags::ShaderRead);
+	Check((smvk::PipelineStageBit_All & shader) == shader,
+		"pair.all-supports-shaderread");
+	// Transfer + attachment classes.
+	Check(smvk::SupportingStagesFor(smvk::AccessFlags::TransferWrite)
+		== smvk::PipelineStageBit_Transfer,
+		"pair.transfer-requires-transfer-stage");
+	Check((smvk::PipelineStageBit_Fragment
+		& smvk::SupportingStagesFor(smvk::AccessFlags::ColorAttachmentWrite)) != 0,
+		"pair.fragment-supports-colorattach");
+	// Stage-agnostic / inexpressible bits skip validation (0 = no
+	// engine stage set to check against).
+	Check(smvk::SupportingStagesFor(smvk::AccessFlags::MemoryRead) == 0,
+		"pair.memoryread-skips-validation");
+	Check(smvk::SupportingStagesFor(smvk::AccessFlags::HostRead) == 0,
+		"pair.hostread-not-expressible");
+	// The assert's no-fire path (live in Debug test builds): a valid
+	// hand-written union must pass silently.
+	smvk::AssertStageAccessSupported(
+		smvk::PipelineStageBit_Mesh | smvk::PipelineStageBit_DrawIndirect,
+		smvk::AccessFlags::ShaderRead | smvk::AccessFlags::IndirectCommandRead,
+		"RendergraphContractTests");
+}
+
 int main() {
 	using PC = engine::IRenderer::PushConstants;
 	constexpr size_t kScratchStart = 192;
@@ -232,6 +293,9 @@ int main() {
 
 	// 5. The sorter's self-edge contracts.
 	TestTopoSortSelfEdges();
+
+	// 6. The (stage x access) pairing contract.
+	TestStageAccessContract();
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
