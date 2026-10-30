@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-cmake_minimum_required(VERSION 3.17)
+cmake_minimum_required(VERSION 3.20)
 # Build hygiene (see docs/project_guide.md): this repo is Ninja-only and
 # out-of-source. In-source configures pollute the tree (CMakeCache.txt,
 # *.vcxproj, Testing/, Debug/ next to the sources) and the Visual Studio
@@ -388,6 +388,54 @@ target_include_directories(spirv_reflect PUBLIC
 )
 set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 
+# Jolt Physics (pinned git submodule, v5.6.0) — the CPU rigid-body backend
+# for the scene-tables migration (docs/scene_tables_migration.md). Initial
+# integration: CPU simulation ONLY — no GPU compute/hair (the v5.6
+# JPH_USE_* compute backends stay off), none of Jolt's own
+# samples/tests/viewer targets, no object-stream RTTI serialization, no
+# install rules, no debug renderer / built-in profiler (the engine draws
+# colliders with its own line renderer and profiles with Optick; an
+# Optick<->JPH_PROFILE bridge can come later as a measured decision).
+# Every option is FORCE-pinned in the cache so no host configuration can
+# silently flip the engine's physics build.
+set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)              # keep OUR CMAKE_CXX_FLAGS_* (Jolt replaces them when ON, its default)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)    # no LTO policy change from a vendored lib
+set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "" FORCE)             # Jolt's default treats warnings as errors; not enforced on vendored TUs
+set(ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(ENABLE_OBJECT_STREAM OFF CACHE BOOL "" FORCE)            # Jolt's RTTI attribute serialization — unused by the engine
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE) # match the app's dynamic MSVC CRT (/MD)
+set(JPH_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)           # static lib inside the engine
+set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)                # single-precision world (the renderer/GPU side is float)
+set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE) # Jolt's test machinery; a vendored lib never flips FPE state
+# CPU-only: the v5.6 GPU compute/hair backends stay off.
+set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
+set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
+set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
+# Jolt's own targets (all default ON) — never part of the embed.
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+# Debug renderer + built-in profiler (both default ON in Debug/Release):
+# the engine draws colliders with its own line renderer and profiles with
+# Optick; Jolt's versions would be dead weight (an Optick<->JPH_PROFILE
+# bridge via JPH_USE_EXTERNAL_PROFILE can come later, measured).
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)
+# Portability baseline: the SSE4.2 floor like the engine's own TUs (no
+# /arch: change from a vendored lib). Jolt's AVX/AVX2/FMA paths exist and
+# can be re-enabled later as a MEASURED decision.
+set(USE_AVX OFF CACHE BOOL "" FORCE)
+set(USE_AVX2 OFF CACHE BOOL "" FORCE)
+set(USE_AVX512 OFF CACHE BOOL "" FORCE)
+set(USE_F16C OFF CACHE BOOL "" FORCE)
+set(USE_FMADD OFF CACHE BOOL "" FORCE)
+set(USE_LZCNT OFF CACHE BOOL "" FORCE)
+set(USE_TZCNT OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/JoltPhysics/Build)
+
 add_subdirectory(external/imgui)
 add_subdirectory(engine)
 # Embree backend wiring (see the options block above): the engine links
@@ -395,6 +443,11 @@ add_subdirectory(engine)
 # the builtin stays as the deterministic reference backend + the
 # ClosestDistance path).
 target_link_libraries(engine PRIVATE embree)
+# Jolt: PRIVATE — the engine's public API exposes only Tourmaline-owned
+# physics handles/descriptions (the migration's hard constraint: no JPH
+# types in scene data or public headers); Jolt stays an implementation
+# detail of the engine's physics subsystem.
+target_link_libraries(engine PRIVATE Jolt)
 add_subdirectory(tools/gltf_import)
 add_subdirectory(tools/project_pipeline) # the canonical project pipeline (Project.exe + the editor use it)
 # gltf_import is the ONLY tool every host builds (the viewer app + the

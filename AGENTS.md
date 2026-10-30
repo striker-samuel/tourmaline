@@ -35,7 +35,8 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
 ## Submodules
 
 Unmodified upstream deps are pinned git submodules under `external/`
-(nanosvg, volk, SPIRV-Reflect, glm, meshoptimizer, DirectXTex, json). After
+(nanosvg, volk, SPIRV-Reflect, glm, meshoptimizer, DirectXTex, json,
+JoltPhysics). After
 cloning or pulling: `git submodule update --init --recursive` (or clone with
 `--recursive`). The rest of `external/` is vendored content (trimmed/patched
 trees, binary packages — see `THIRD_PARTY_NOTICES.md`).

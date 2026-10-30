@@ -128,6 +128,24 @@ deltas are marked.
   names; Jolt 5.6 requires CMake ≥ the version pinned in its Build
   tree — bump the root `cmake_minimum_required` if it exceeds 3.17 and
   note it here).
+  - **Record**: pin `e77f175` (tag v5.6.0). Root CMake bumped
+    3.17 → 3.20 (Jolt's Build minimum; local CMake 4.4.2). Flag audit
+    against the built ninja rules: Jolt TUs compile `-std:c++17`,
+    `/MD` (dynamic CRT — the `USE_STATIC_MSVC_RUNTIME_LIBRARY OFF`
+    pin), NO `/arch:` (the SSE4.2 floor pin worked), with Jolt's own
+    `/fp:fast` + `/GR-` contained to its TUs (valid: a no-RTTI
+    static lib links into RTTI engine code). All five of Jolt's own
+    targets (unit tests / hello world / perf test / samples / viewer,
+    ALL default ON) are forced OFF — the external plan's snippet
+    missed them entirely. `DEBUG_RENDERER_IN_DEBUG_AND_RELEASE` +
+    `PROFILER_IN_DEBUG_AND_RELEASE` forced OFF after the first
+    configure audit caught `JPH_DEBUG_RENDERER`/`JPH_PROFILE_ENABLED`
+    still defined (the pins were missing, not ineffective).
+    `ENABLE_OBJECT_STREAM` OFF. Windows: Release + Debug App/engine
+    build clean, `out/build/tests` 44/44. NOTE: `external/box3d` was
+    already vendored "for upcoming physics work" (unwired,
+    THIRD_PARTY_NOTICES) — superseded by Jolt for the 3D runtime;
+    its fate gets decided at Epoch 15 cleanup.
 - 2 — `test: add Jolt physics smoke test`.
 - 3 — `refactor(scene): introduce typed data tables` (rows +
   `rowsForNode` derived lookup + handwritten Set/Find/Remove; rows

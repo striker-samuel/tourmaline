@@ -27,6 +27,7 @@ code is linked, vendored or submoduled.
 | [DirectXTex](https://github.com/microsoft/DirectXTex) | `external/DirectXTex` | [MIT](external/DirectXTex/LICENSE) | `868198cb` | Only the BC block codec TUs compile (BC6H/BC7 payload) |
 | [volk](https://github.com/zeux/volk) | `external/volk` | [MIT](external/volk/LICENSE.md) | `eaa61418` | Vulkan loader |
 | [SPIRV-Reflect](https://github.com/KhronosGroup/SPIRV-Reflect) | `external/SPIRV-Reflect` | [Apache-2.0](external/SPIRV-Reflect/LICENSE) | `e489e162` | CPU reflection for push/spec readback |
+| [JoltPhysics](https://github.com/jrouwe/JoltPhysics) | `external/JoltPhysics` | [MIT](external/JoltPhysics/LICENSE) | `e77f175` (v5.6.0) | CPU rigid-body physics (the scene-tables migration's runtime backend; CPU-only build — no GPU compute/hair, no object stream, no samples/tests) |
 | [nanosvg](https://github.com/memononen/nanosvg) | `external/nanosvg` | [zlib](external/nanosvg/LICENSE.txt) | `239e102e` | Editor SVG icons |
 
 ## Vendored libraries (compiled into the build)
