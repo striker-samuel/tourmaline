@@ -47,10 +47,13 @@ if errorlevel 1 (
 
 rem The Embree prebuilt preference (computed OUTSIDE the configure block:
 rem plain %VAR% expands at parse time, so anything set inside the same
-rem parenthesized block would read empty here).
-set "EMBREE_FLAGS="
-if defined EMBREE_PREBUILT_DIR set "EMBREE_FLAGS=-DEMBREE_PREBUILT_DIR=%EMBREE_PREBUILT_DIR%"
-if not defined EMBREE_FLAGS if exist "C:\embree\lib\cmake" set "EMBREE_FLAGS=-DEMBREE_PREBUILT_DIR=C:/embree"
+rem parenthesized block would read empty here). Stored as the DIR ONLY -
+rem the -D is assembled and quoted at the call site: the old unquoted
+rem %EMBREE_FLAGS% fragment split on spaces (EMBREE_PREBUILT_DIR=C:\Program
+rem Files\Embree became two arguments) and cmake saw a bogus bare one.
+set "EMBREE_DIR="
+if defined EMBREE_PREBUILT_DIR set "EMBREE_DIR=%EMBREE_PREBUILT_DIR%"
+if not defined EMBREE_DIR if exist "C:\embree\lib\cmake" set "EMBREE_DIR=C:/embree"
 
 rem Auto-configure a missing build dir (fresh clone / wiped out/).
 rem CMAKE_BUILD_TYPE derives from the config dir name (x64-Release ->
@@ -116,8 +119,15 @@ exit /b 0
 
 :configure
 echo build.bat: configuring out\build\%CONFIG% (Ninja, %TYPE%^)
-if defined EMBREE_FLAGS echo build.bat: Embree prebuilt route %EMBREE_FLAGS%
-cmake -B out/build/%CONFIG% -G Ninja -DCMAKE_BUILD_TYPE=%TYPE% %EMBREE_FLAGS% .
+if not defined EMBREE_DIR goto configure_plain
+echo build.bat: Embree prebuilt route %EMBREE_DIR%
+rem The -D rides ONE quoted argument so a path with spaces stays whole;
+rem the goto split (not a parenthesized if/else) keeps a path containing
+rem a ")" from closing the block.
+cmake -B out/build/%CONFIG% -G Ninja -DCMAKE_BUILD_TYPE=%TYPE% "-DEMBREE_PREBUILT_DIR=%EMBREE_DIR%" .
+exit /b %errorlevel%
+:configure_plain
+cmake -B out/build/%CONFIG% -G Ninja -DCMAKE_BUILD_TYPE=%TYPE% .
 exit /b %errorlevel%
 
 :failcfg
