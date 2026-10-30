@@ -37,9 +37,9 @@
 #define GFXFILTER_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<GfxFilterPush> pcF;
+GPU_PUSH(GfxFilterPush, pcF);
 
 groupshared uint gLocalCount;
 groupshared uint gClusterCull; // T4: 1 = whole cluster dropped (occlusion/contribution)

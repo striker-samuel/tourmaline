@@ -16,6 +16,7 @@
 #define MATBALL_PASS
 #include "common.hlsli"
 #include "environment.hlsli"
+#include "gpu_platform.hlsli"
 
 // Mirrors editor::MatBallPush (editor_app.h) exactly — layout-identical,
 // check the static_assert(sizeof(...)) there.
@@ -33,8 +34,7 @@ struct MatBallPush
     uint occlTex;           // 140 (applied as a diffuse multiplier)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MatBallPush> mb;
+GPU_PUSH(MatBallPush, mb);
 
 struct VSIn
 {

@@ -4,6 +4,7 @@
 #define DOF_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -19,7 +20,7 @@ struct PSOut
 // Must match Engine/Rendergraph/dof.h DofCocPush (48 bytes).
 struct DofCocPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint depthTextureIndex;
     uint pad0;
     float focusDistance;
@@ -32,8 +33,7 @@ struct DofCocPush
     uint pad3;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<DofCocPush> cp;
+GPU_PUSH(DofCocPush, cp);
 
 PSOut mainPS(PSIn IN)
 {

@@ -58,13 +58,16 @@ def parse_cpp_asserts(path: Path):
 
 def parse_hlsl_fields(path: Path):
     # Field order as declared in struct PushConstants { ... }; names normalized
-    # (bLights->lightsBuffer, bMats->materialsBuffer for comparison).
+    # (bLights->lightsBuffer, bMats->materialsBuffer for comparison). The
+    # pointer fields use the gpu_platform.hlsli declaration macros
+    # (GPU_PTR_READ(T) etc.) — the vk::BufferPointer spelling is kept as a
+    # fallback alternative so the checker also accepts pre-migration mirrors.
     text = path.read_text()
     m = re.search(r"struct PushConstants\s*\{(.*?)\};", text, re.S)
     if not m:
         return []
     body = m.group(1)
-    names = re.findall(r"(?:uint|float|float4x4|float3x4|uint4|vk::BufferPointer<[^>]+>)\s+(\w+)\s*;", body)
+    names = re.findall(r"(?:uint|float|float4x4|float3x4|uint4|GPU_PTR\w*\([^)]+\)|vk::BufferPointer<[^>]+>)\s+(\w+)\s*;", body)
     norm = {"bLights": "lightsBuffer", "bMats": "materialsBuffer", "padEnd": "padEnd_"}
     return [norm.get(n, n) for n in names]
 

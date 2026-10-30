@@ -3,6 +3,8 @@
 
 // Meshlet debug view fragment: flat push color, no lighting/textures.
 // C++ mirror: app::MeshDebugPush (144 bytes).
+#include "gpu_platform.hlsli"
+
 struct MeshDebugPush
 {
     float4x4 model;
@@ -10,8 +12,7 @@ struct MeshDebugPush
     float4 color;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MeshDebugPush> pcD;
+GPU_PUSH(MeshDebugPush, pcD);
 
 struct PSIn
 {

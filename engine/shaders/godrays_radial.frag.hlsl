@@ -4,6 +4,7 @@
 #define GODRAYS_PASS
 #include "common.hlsli"
 #include "godrays_common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Screen-space god rays, stage 2 - the RADIAL SCATTER (1/16 res): per
 // destination pixel, march TOWARD the projected sun gathering the
@@ -41,7 +42,7 @@ struct PSOut
 // straddling-vector hazard).
 struct GodraysRadialPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms; // the sun Uv
+    GPU_PTR_READ(FrameUniforms) frameUniforms; // the sun Uv
     uint maskTextureIndex; // the quarter-res occlusion mask
     uint samplerIndex;     // linear clamp (the march taps)
     uint sampleCount;      // the kernel length, 4..64
@@ -53,8 +54,7 @@ struct GodraysRadialPush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<GodraysRadialPush> rp;
+GPU_PUSH(GodraysRadialPush, rp);
 
 static const uint kGodraysMaxSamples = 64;
 

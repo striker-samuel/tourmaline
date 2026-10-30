@@ -41,6 +41,7 @@
 
 #define SDSM_STATS_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match kSdsmGroups / kSdsmBins on the C++ side.
 #define SDSM_GROUPS 256
@@ -60,7 +61,7 @@ struct SdsmStatsOut
 
 struct SdsmStatsPush
 {
-    vk::BufferPointer<SdsmStatsOut> stats; // BDA (C++ mirror: uint64_t)
+    GPU_PTR_WRITE(SdsmStatsOut) stats; // BDA (C++ mirror: uint64_t)
     uint depthIndex;   // bindless textures[] index of the main render depth
     float zNear;       // main-view near clip (reversed-Z inversion)
     float zFar;        // histogram ceiling (the cascade far cap)
@@ -70,8 +71,7 @@ struct SdsmStatsPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SdsmStatsPush> pcS;
+GPU_PUSH(SdsmStatsPush, pcS);
 
 groupshared float2 gsMinMax[256];
 groupshared uint gsBins[SDSM_BINS];

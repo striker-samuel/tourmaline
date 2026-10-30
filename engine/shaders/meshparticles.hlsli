@@ -21,6 +21,7 @@
 
 #include "particles.hlsli"
 #include "placement_cull.hlsli"
+#include "gpu_platform.hlsli"
 
 #define MESHPARTICLE_MAX 65536
 #define MESHPARTICLE_MAX_BINS 8
@@ -82,10 +83,10 @@ struct MeshParticleEmitterBuffer {
 // machinery, a different pool.
 struct MeshParticlesEmitPush
 {
-    vk::BufferPointer<MeshParticleEmitterBuffer> emitters;   // 0
-    vk::BufferPointer<ParticleEmitterStateBuffer> emitterState; // 8
-    vk::BufferPointer<MeshParticleBuffer> particles;         // 16
-    vk::BufferPointer<ParticleFreeListBuffer> freeList;     // 24
+    GPU_PTR_READ(MeshParticleEmitterBuffer) emitters;   // 0
+    GPU_PTR(ParticleEmitterStateBuffer) emitterState; // 8
+    GPU_PTR_WRITE(MeshParticleBuffer) particles;         // 16
+    GPU_PTR(ParticleFreeListBuffer) freeList;     // 24
     uint emitterCount;  // 32 live emitters this frame
     uint maxParticles;  // 36 pool bound
     float dt;           // 40
@@ -95,8 +96,8 @@ struct MeshParticlesEmitPush
 // Must match C++ MeshParticlesSimPush (48 bytes).
 struct MeshParticlesSimPush
 {
-    vk::BufferPointer<MeshParticleBuffer> particles;         // 0
-    vk::BufferPointer<ParticleFreeListBuffer> freeList;     // 8
+    GPU_PTR(MeshParticleBuffer) particles;         // 0
+    GPU_PTR(ParticleFreeListBuffer) freeList;     // 8
     float gravityX;     // 16 global gravity (m/s^2)
     float gravityY;     // 20
     float gravityZ;     // 24
@@ -115,10 +116,10 @@ struct MeshParticlesSimPush
 // slots early-out on posLife.w <= 0.
 struct MeshParticlesCullPush
 {
-    vk::BufferPointer<MeshParticleBuffer> particles;        // 0
-    vk::BufferPointer<PlacementMaskBuffer> mask;          // 8
-    vk::BufferPointer<PlacementBinsBuffer> bins;          // 16
-    vk::BufferPointer<RenderViewBuffer> renderViews;       // 24
+    GPU_PTR_READ(MeshParticleBuffer) particles;        // 0
+    GPU_PTR_WRITE(PlacementMaskBuffer) mask;          // 8
+    GPU_PTR_WRITE(PlacementBinsBuffer) bins;          // 16
+    GPU_PTR_READ(RenderViewBuffer) renderViews;       // 24
     uint renderViewIndex; // 32
     uint cullFlags;       // 36 (the PLACEMENT_CULL_* bits)
     uint binCount;        // 40 <= MESHPARTICLE_MAX_BINS
@@ -135,10 +136,10 @@ struct MeshParticlesCullPush
 // Must match C++ MeshParticlesScatterPush (48 bytes).
 struct MeshParticlesScatterPush
 {
-    vk::BufferPointer<MeshParticleBuffer> particles;        // 0
-    vk::BufferPointer<PlacementMaskBuffer> mask;          // 8
-    vk::BufferPointer<PlacementBinsBuffer> bins;          // 16
-    vk::BufferPointer<PlacementVisibleBuffer> visible;     // 24
+    GPU_PTR_READ(MeshParticleBuffer) particles;        // 0
+    GPU_PTR_READ(PlacementMaskBuffer) mask;          // 8
+    GPU_PTR(PlacementBinsBuffer) bins;          // 16
+    GPU_PTR_WRITE(PlacementVisibleBuffer) visible;     // 24
     uint binCount;      // 32
     uint maxParticles;  // 36 the pool bound (the dispatch width)
     uint pad0;          // 40

@@ -35,6 +35,7 @@
 #include "vertex_pack.hlsli"
 #include "placement_common.hlsli"
 #include "placement_cull.hlsli"
+#include "gpu_platform.hlsli"
 
 // VS debug re-test bit (PlacementVsPush.cullFlags): re-run the legacy
 // guard-based frustum test and collapse failures (compare switch only).
@@ -48,15 +49,14 @@ struct PlacementVsMainPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    vk::BufferPointer<PlacementVisibleBuffer> visible;     // 192
-    vk::BufferPointer<PlacementInstanceBuffer> instances;   // 200
-    vk::BufferPointer<RenderViewBuffer> renderViews;       // 208
+    GPU_PTR_READ(PlacementVisibleBuffer) visible;     // 192
+    GPU_PTR_READ(PlacementInstanceBuffer) instances;   // 200
+    GPU_PTR_READ(RenderViewBuffer) renderViews;       // 208
     uint renderViewIndex;  // 216
     uint cullFlags;        // 220 (debug re-test switch; 0 = trust the chain)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<PlacementVsMainPush> pcPV;
+GPU_PUSH(PlacementVsMainPush, pcPV);
 
 struct VSIn
 {

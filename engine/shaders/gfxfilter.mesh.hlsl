@@ -30,6 +30,7 @@
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "gfxmesh.hlsli"
+#include "gpu_platform.hlsli"
 
 // Single push block [0, 240): the full scene push head (192B,
 // preserved) + the SAME 32B tail the indexed VS takes at byte 192
@@ -41,20 +42,19 @@ struct GfxMeshPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    vk::BufferPointer<GfxDraws> draws;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint renderViewIndex;
     uint pad;
-    vk::BufferPointer<GfxChartXforms> lmXforms;
-    vk::BufferPointer<GfxMeshParamsData> params;
+    GPU_PTR_READ(GfxChartXforms) lmXforms;
+    GPU_PTR_READ(GfxMeshParamsData) params;
     // Mesh tail at byte 224 (record pushes 16B after the VS tail):
     // shared params address + this dispatch's list slice.
     uint listBase;
     uint listCount;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<GfxMeshPush> pcM;
+GPU_PUSH(GfxMeshPush, pcM);
 
 // Mesh outputs: SV_Position + VSOut locations 0..6 verbatim.
 struct MeshVert

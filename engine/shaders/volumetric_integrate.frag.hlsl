@@ -10,6 +10,7 @@
 #include "sg_gi_volume.hlsli"
 #include "dof.hlsli"
 #include "world_field.hlsli"
+#include "gpu_platform.hlsli"
 
 // Volumetric fog INTEGRATION (the half-resolution half of the perf
 // split - see Engine/Rendergraph/volumetric.h): the raymarch ONLY,
@@ -65,14 +66,14 @@ struct PSOut
 // the two tail floats are NEW (giRefreshDist + fieldCadence).
 struct VolumetricPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint hdrTextureIndex;    // DEAD (the composite owns the HDR read)
     uint depthTextureIndex;
     uint samplerIndex;
     uint steps;
     // The CSM cascade buffer (the god-ray leg): SelectCascadeGpu's
     // splitEnd walk + the selected tile's lightVP/uv*/bias reads.
-    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer; // 0 = off
+    GPU_PTR_READ(DirectionalCascadeBuffer) cascadeBuffer; // 0 = off
     float2 depthTexelSize;  // full-res depth texel (1/depthExtent)
     float maxDistance;
     float density;
@@ -95,9 +96,9 @@ struct VolumetricPush
     float heightBase;
     uint numCascades;      // 0 = no CSM fog shadowing (the unshadowed leg)
     uint fogGiSource;      // 0=worldfield (default), [1 retired], 2=sky-only
-    vk::BufferPointer<ForwardPlusFogTileCountBuffer> fogTileCounts; // 0 = stale
-    vk::BufferPointer<ForwardPlusFogTileIndexBuffer> fogTileIndices; // 0 = stale
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
+    GPU_PTR_READ(ForwardPlusFogTileCountBuffer) fogTileCounts; // 0 = stale
+    GPU_PTR_READ(ForwardPlusFogTileIndexBuffer) fogTileIndices; // 0 = stale
+    GPU_PTR_READ(ForwardPlusLightBuffer) fpLights;
     uint fpLightCount;      // lights-only bound (probes sort after)
     uint fogMaxPerTile;     // fog list stride (matches the cull push)
     uint fogGiDebug;        // 0 = off, 1 = the coverage debug view
@@ -112,8 +113,7 @@ struct VolumetricPush
                             //     segment - extinction-grade accuracy)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<VolumetricPush> vp;
+GPU_PUSH(VolumetricPush, vp);
 
 // Interleaved gradient noise: march-origin dither against banding.
 float VolIgn(float2 px)

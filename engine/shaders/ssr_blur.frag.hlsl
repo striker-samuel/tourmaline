@@ -6,6 +6,7 @@
 #include "dof.hlsli"
 #include "hzb.hlsli"
 #include "ssr_receiver.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR blur: depth-aware bilateral blur of the half-res reflection
 // layer (rgb = reflected x fresnel x intensity, a = confidence), with
@@ -48,9 +49,9 @@ struct PSOut
 // borrowed a neighbor's radius bucket).
 struct SsrBlurPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<HzbBuffer> hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
-    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(HzbBuffer) hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
+    GPU_PTR_READ(SsrReceiverData) receiverData; // packed receiver per half-res pixel
     uint reflTextureIndex;  // half-res raw reflection
     uint samplerIndex;      // linear clamp (reflection taps only)
     float sharpness; // depth edge weight (higher = tighter)
@@ -67,8 +68,7 @@ struct SsrBlurPush
                               // no longer sampled by this pass
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrBlurPush> bp;
+GPU_PUSH(SsrBlurPush, bp);
 
 // Relative-depth edge weight: 1 on the same surface, ~0 across a
 // discontinuity. Background taps carry the sky sentinel distance, so a

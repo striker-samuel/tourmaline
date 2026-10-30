@@ -12,9 +12,9 @@
 // their MESH bin's count (atomics) — the PR03 chain's shapes.
 
 #include "meshparticles.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<MeshParticlesCullPush> pc;
+GPU_PUSH(MeshParticlesCullPush, pc);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)

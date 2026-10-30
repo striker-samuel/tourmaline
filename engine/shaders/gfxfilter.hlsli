@@ -29,6 +29,7 @@
 #include "hzb.hlsli"
 // Shared CPU/HLSL limits (single source — see the file's header comment).
 #include "engine_limits.hlsli"
+#include "gpu_platform.hlsli"
 
 #define GFX_THREADS_PER_CLUSTER 128
 #define GFX_MAX_DRAWS 4096
@@ -169,7 +170,7 @@ struct GfxChartXforms { float4 xform[GFX_MAX_CHART_XFORMS]; };
 // 0xFFFFFFFF (uncharted) yields 0 — the fragment gates on the draw's
 // lobe count anyway, so the sample lands in the atlas margin.
 float2 GfxLightmapUv(float2 chartUv, uint chartId, uint chartOffset,
-    vk::BufferPointer<GfxChartXforms> xforms)
+    GPU_PTR(GfxChartXforms) xforms)
 {
     if (chartId == 0xFFFFFFFFu)
         return float2(0.0f, 0.0f);
@@ -359,7 +360,7 @@ struct GfxHzbCtx
     uint width;
     uint height;
     uint mips;
-    vk::BufferPointer<HzbBuffer> hzb;
+    GPU_PTR_READ(HzbBuffer) hzb;
 };
 
 // Conservative interval for n / w when:
@@ -635,13 +636,13 @@ struct GfxDemand { uint demand[GFX_MAX_TEXTURES]; };
 
 struct GfxFilterPush
 {
-    vk::BufferPointer<GfxPositions> positions;
-    vk::BufferPointer<GfxIndices>   indices;
-    vk::BufferPointer<GfxClusters>  clusters;
-    vk::BufferPointer<GfxBatches>   batches;
-    vk::BufferPointer<GfxDraws>      draws;
-    vk::BufferPointer<GfxFiltered>   filtered;
-    vk::BufferPointer<GfxIndirect>   indirect;
+    GPU_PTR_READ(GfxPositions) positions;
+    GPU_PTR_READ(GfxIndices) indices;
+    GPU_PTR_READ(GfxClusters) clusters;
+    GPU_PTR_READ(GfxBatches) batches;
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_WRITE(GfxFiltered) filtered;
+    GPU_PTR_WRITE(GfxIndirect) indirect;
     // Deformed per-cluster bounds + per-draw deformed union tail
     // (GfxSkinBounds output, one GfxSkinBoundsTable per flight). Skinned
     // draws cull against THIS table's cluster[] region instead of the
@@ -651,7 +652,7 @@ struct GfxFilterPush
     // instead of the static meshBounds unions (the same containment, on
     // the deformed pose). skinBoundsValid = 0 (no skinned cluster this
     // frame) leaves every draw on the static tables.
-    vk::BufferPointer<GfxSkinBoundsTable> skinBounds;
+    GPU_PTR_READ(GfxSkinBoundsTable) skinBounds;
     float4x4 viewProj;
     float3 eye;
     float pad1;
@@ -664,7 +665,7 @@ struct GfxFilterPush
     uint keptParity;
     uint skinBoundsValid;
     // T4 occlusion/contribution inputs (0/empty disables the tests).
-    vk::BufferPointer<HzbBuffer> hzb;
+    GPU_PTR_READ(HzbBuffer) hzb;
     uint hizWidth;
     uint hizHeight;
     uint hizMips;
@@ -678,10 +679,10 @@ struct GfxFilterPush
     // Draw-level texture-demand inputs (0/empty disables the publisher in
     // the shader; PushAndDispatch zero-gates the whole set on any null
     // BDA — same belt-and-braces rule as the HZB inputs above).
-    vk::BufferPointer<GfxMeshBounds> meshBounds;      // per-mesh union bounds
-    vk::BufferPointer<MaterialsBuffer> materials;    // THIS frame's slice
-    vk::BufferPointer<GfxTextureMetaTable> textureMeta; // per-bindless-slot meta
-    vk::BufferPointer<GfxDemand> textureDemand;      // this flight's ring slice
+    GPU_PTR_READ(GfxMeshBounds) meshBounds;      // per-mesh union bounds
+    GPU_PTR_READ(MaterialsBuffer) materials;    // THIS frame's slice
+    GPU_PTR_READ(GfxTextureMetaTable) textureMeta; // per-bindless-slot meta
+    GPU_PTR_WRITE(GfxDemand) textureDemand;      // this flight's ring slice
     uint textureMetaCount; // live slot count (upper bound for slots/atomics)
     float mipBias;        // mirrors TextureStreamerConfig::mipBias
     // Cull chain inputs (always the kept-bit region + cullState):
@@ -691,8 +692,8 @@ struct GfxFilterPush
     //   cullState — draw verdicts (gfxdrawcull) + the filtered-offset
     //               counter (word GFX_CULL_STATE_COUNTER) this dispatch
     //               allocates through atomically
-    vk::BufferPointer<GfxKeptBits> kept;
-    vk::BufferPointer<GfxCullState> cullState;
+    GPU_PTR_READ(GfxKeptBits) kept;
+    GPU_PTR(GfxCullState) cullState;
 };
 //static_assert(sizeof(GfxFilterPush) == 256);
 
@@ -710,16 +711,16 @@ struct GfxFilterPush
 // kept bits (current parity region).
 struct GfxBatchCullPush
 {
-    vk::BufferPointer<GfxDraws> draws;        // this frame (misc2.z = candidate slot base)
-    vk::BufferPointer<GfxMeshes> meshes;       // static per-mesh cluster ranges
-    vk::BufferPointer<GfxClusters> clusters;   // static (bounds + cones)
-    vk::BufferPointer<GfxMeshBounds> meshBounds; // static (draw-level gate)
-    vk::BufferPointer<GfxBatches> batches;     // out
-    vk::BufferPointer<GfxIndirect> indirect;   // out (static parts)
-    vk::BufferPointer<GfxSeedCmds> seedCmds;   // out
-    vk::BufferPointer<GfxSeedCmds> remCmds;    // out
-    vk::BufferPointer<GfxKeptBits> kept;       // out (parity region) + in (prev region)
-    vk::BufferPointer<GfxCullState> cullState; // out: offset-counter zero (group 0)
+    GPU_PTR_READ(GfxDraws) draws;        // this frame (misc2.z = candidate slot base)
+    GPU_PTR_READ(GfxMeshes) meshes;       // static per-mesh cluster ranges
+    GPU_PTR_READ(GfxClusters) clusters;   // static (bounds + cones)
+    GPU_PTR_READ(GfxMeshBounds) meshBounds; // static (draw-level gate)
+    GPU_PTR_WRITE(GfxBatches) batches;     // out
+    GPU_PTR_WRITE(GfxIndirect) indirect;   // out (static parts)
+    GPU_PTR_WRITE(GfxSeedCmds) seedCmds;   // out
+    GPU_PTR_WRITE(GfxSeedCmds) remCmds;    // out
+    GPU_PTR(GfxKeptBits) kept;       // out (parity region) + in (prev region)
+    GPU_PTR_WRITE(GfxCullState) cullState; // out: offset-counter zero (group 0)
     float4x4 viewProj;   // LIVE view (seed/remainder semantics)
     float3 eye;
     float pad1;
@@ -738,7 +739,7 @@ struct GfxBatchCullPush
     // mesh union (a whole-mesh pose swing outside the bind-pose union
     // would otherwise drop every slot of the draw). skinBoundsValid = 0
     // leaves every draw on the static tables.
-    vk::BufferPointer<GfxSkinBoundsTable> skinBounds;
+    GPU_PTR_READ(GfxSkinBoundsTable) skinBounds;
     uint skinBoundsValid;
     // 1 = the cone test runs for SKINNED clusters too (TOURMALINE_SKIN_CONE=1
     // — default 0: skinned clusters cull conservative, sphere+frustum only;
@@ -760,12 +761,12 @@ struct GfxBatchCullPush
 // fit) / gfx_filter.cpp PushAndDispatchSkinBounds.
 struct GfxSkinBoundsPush
 {
-    vk::BufferPointer<GfxDraws> draws;      // this frame (misc2.z = slot base)
-    vk::BufferPointer<GfxMeshes> meshes;    // static per-mesh cluster ranges
-    vk::BufferPointer<GfxClusters> clusters; // static (bind-pose a/b/c/d)
-    vk::BufferPointer<GfxIndices> indices;  // cluster-ordered global ids (clusterIndexBase baked in)
-    vk::BufferPointer<GfxSkinDeformedHeap> deformed; // this frame's deformed heap
-    vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // out (slots + drawBound tail)
+    GPU_PTR_READ(GfxDraws) draws;      // this frame (misc2.z = slot base)
+    GPU_PTR_READ(GfxMeshes) meshes;    // static per-mesh cluster ranges
+    GPU_PTR_READ(GfxClusters) clusters; // static (bind-pose a/b/c/d)
+    GPU_PTR_READ(GfxIndices) indices;  // cluster-ordered global ids (clusterIndexBase baked in)
+    GPU_PTR_READ(GfxSkinDeformedHeap) deformed; // this frame's deformed heap
+    GPU_PTR_WRITE(GfxSkinBoundsTable) skinBounds; // out (slots + drawBound tail)
     uint deformedBase;  // 0xFFFFFFFF = none
     uint drawCount;
     uint coneEnabled;   // 0 = degenerate cones (TOURMALINE_SKIN_CONE=0 A/B)
@@ -785,11 +786,11 @@ struct GfxSkinBoundsPush
 // (ConeDebugPush).
 struct GfxConeDebugPush
 {
-    vk::BufferPointer<GfxDraws> draws;        // this frame (misc2.z = slot base)
-    vk::BufferPointer<GfxMeshes> meshes;      // static per-mesh cluster ranges
-    vk::BufferPointer<GfxClusters> clusters; // static (baked bind-pose cones)
-    vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // deformed (this frame)
-    vk::BufferPointer<GfxConeDebugLines> lines; // out (2 verts per slot)
+    GPU_PTR_READ(GfxDraws) draws;        // this frame (misc2.z = slot base)
+    GPU_PTR_READ(GfxMeshes) meshes;      // static per-mesh cluster ranges
+    GPU_PTR_READ(GfxClusters) clusters; // static (baked bind-pose cones)
+    GPU_PTR_READ(GfxSkinBoundsTable) skinBounds; // deformed (this frame)
+    GPU_PTR_WRITE(GfxConeDebugLines) lines; // out (2 verts per slot)
     uint skinBoundsValid; // 0: every draw reads the static table
     uint drawCount;
     uint2 pad;
@@ -811,11 +812,11 @@ struct GfxConeDebugPush
 // Runs after GfxHiz, before the filter dispatch.
 struct GfxDrawCullPush
 {
-    vk::BufferPointer<GfxDraws> draws;
-    vk::BufferPointer<GfxMeshBounds> meshBounds; // static (object-space union bounds)
-    vk::BufferPointer<GfxCullState> cullState;   // out: verdict words [0, drawCount)
-    vk::BufferPointer<HzbBuffer> hzb;
-    vk::BufferPointer<GfxSkinBoundsTable> skinBounds; // deformed unions (skinned draws)
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_READ(GfxMeshBounds) meshBounds; // static (object-space union bounds)
+    GPU_PTR_WRITE(GfxCullState) cullState;   // out: verdict words [0, drawCount)
+    GPU_PTR_READ(HzbBuffer) hzb;
+    GPU_PTR_READ(GfxSkinBoundsTable) skinBounds; // deformed unions (skinned draws)
     float4x4 viewProj;  // FROZEN view (the gfx view record matrix)
     float3 eye;
     float pad1;

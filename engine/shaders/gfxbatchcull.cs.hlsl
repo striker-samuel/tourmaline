@@ -40,9 +40,9 @@
 #define GFXBATCHCULL_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<GfxBatchCullPush> pcB;
+GPU_PUSH(GfxBatchCullPush, pcB);
 
 groupshared float4 gsPlanes[6];
 groupshared bool gsDrawVisible;

@@ -12,6 +12,7 @@
 #include "placement_common.hlsli"
 #include "placement_constraint.hlsli"
 #include "renderview.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match C++ kPlacementMaxProtos.
 #define PLACEMENT_MAX_PROTOS 8
@@ -62,12 +63,12 @@ struct PlacementIndirectBuffer { PlacementIndirectCmd c[PLACEMENT_MAX_PROTOS]; }
 // Must match C++ PlacementCullPush (232 bytes, dx-layout).
 struct PlacementCullPush
 {
-    vk::BufferPointer<PlacementInstanceBuffer> instances; // 0
-    vk::BufferPointer<PlacementCountBuffer> count;        // 8
-    vk::BufferPointer<PlacementMaskBuffer> mask;          // 16
-    vk::BufferPointer<PlacementBinsBuffer> bins;          // 24 (flat word view)
-    vk::BufferPointer<PlacementFlag2Buffer> alive;       // 32 (0 = skip)
-    vk::BufferPointer<RenderViewBuffer> renderViews;      // 40
+    GPU_PTR_READ(PlacementInstanceBuffer) instances; // 0
+    GPU_PTR(PlacementCountBuffer) count;        // 8
+    GPU_PTR_WRITE(PlacementMaskBuffer) mask;          // 16
+    GPU_PTR_WRITE(PlacementBinsBuffer) bins;          // 24 (flat word view)
+    GPU_PTR_READ(PlacementFlag2Buffer) alive;       // 32 (0 = skip)
+    GPU_PTR_READ(RenderViewBuffer) renderViews;      // 40
     uint renderViewIndex;  // 48
     uint cullFlags;         // 52
     uint protoCount;        // 56
@@ -91,7 +92,7 @@ struct PlacementCullPush
 // structs with BufferPointer members as value parameters.
 // ---------------------------------------------------------------------------
 bool PlacementSphereVisible(
-    vk::BufferPointer<RenderViewBuffer> renderViews, uint view,
+    GPU_PTR(RenderViewBuffer) renderViews, uint view,
     uint cullFlags, float4 protoBound, float protoMaxDist, float3 camPos,
     float3 pos, float3 scale)
 {

@@ -20,6 +20,7 @@
 #include "sg_lightmap_types.hlsli" // SG_GI_VOLUME_LAYERS (7)
 #include "sg_regular.hlsli"        // SgRegularUnpack
 #include "sggi.hlsli"              // SgGiDiffuseIrradiance + SG_GI_AXES
+#include "gpu_platform.hlsli"
 // (GIPROBE_PASS also gates common.hlsli's scene-pc block — this pass
 // pushes its OWN GiProbePush, the probeball convention.)
 
@@ -48,16 +49,15 @@ struct GiProbePush
 {
     float4x4 viewProj;   // 0  the rendering view's VP (reversed-Z, Y-flipped)
     float4 eyeMaxDist;   // 64 xyz camera, w the distance filter (m)
-    vk::BufferPointer<FrameUniforms> frame; // 72 the giVolumeLayers slots (0 = unused in lattice mode)
-    vk::BufferPointer<GiProbeInstanceArray> instances; // 80 this volume's rows
+    GPU_PTR_READ(FrameUniforms) frame; // 72 the giVolumeLayers slots (0 = unused in lattice mode)
+    GPU_PTR_READ(GiProbeInstanceArray) instances; // 80 this volume's rows
     uint volumeIndex;    // 88 the giVolumeLayers row / 7
     uint mode;           // 92 0 baked GI, 1 visibility, 2 lattice
     float markerGain;    // 96 1/exposure for the marker modes (1/2)
     uint pad_;           // 100 (16-align tail; 112 total)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<GiProbePush> pb;
+GPU_PUSH(GiProbePush, pb);
 
 struct VSIn
 {

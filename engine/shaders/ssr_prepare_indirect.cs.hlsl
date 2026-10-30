@@ -4,6 +4,7 @@
 #define SSR_PASS
 #include "common.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR indirect-args builder (SSSR prepare_indirect_args port — see
 // FidelityFX-SDK-v1.1.4
@@ -17,12 +18,11 @@
 // Must match Engine/Rendergraph/ssr.h SsrIndirectPush (16 bytes).
 struct SsrIndirectPush
 {
-    vk::BufferPointer<SsrRayCounter> rayCounter; // [0] = the classify's count (reset here)
-    vk::BufferPointer<SsrIndirectArgs> indirectArgs; // VkDispatchIndirectCommand (3 uints)
+    GPU_PTR(SsrRayCounter) rayCounter; // [0] = the classify's count (reset here)
+    GPU_PTR_WRITE(SsrIndirectArgs) indirectArgs; // VkDispatchIndirectCommand (3 uints)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrIndirectPush> sp;
+GPU_PUSH(SsrIndirectPush, sp);
 
 [numthreads(1, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)

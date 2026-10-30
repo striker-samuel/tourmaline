@@ -3,6 +3,7 @@
 
 #define BLOOM_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -26,8 +27,7 @@ struct BloomDownPush
     uint pad;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<BloomDownPush> bp;
+GPU_PUSH(BloomDownPush, bp);
 
 float BloomLuma(float3 c)
 {

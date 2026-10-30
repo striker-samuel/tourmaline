@@ -45,6 +45,7 @@
 #define EVSM_RESOLVE_PASS
 #include "common.hlsli"
 #include "evsm.hlsli"
+#include "gpu_platform.hlsli"
 
 // Bindless storage image array (set 0, binding 2) — same declaration as
 // evsm_blur.hlsli (the other storage-writing TU). float4 MUST match the
@@ -61,8 +62,7 @@ struct EvsmResolvePush
     uint atlasHeight;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<EvsmResolvePush> pcResolve;
+GPU_PUSH(EvsmResolvePush, pcResolve);
 
 [numthreads(8, 8, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)

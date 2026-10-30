@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 // EVSM separable Gaussian prefilter — shared H/V kernel body.
 //
 // One dispatch per tile per leg (caller loops tiles; the rendergraph gets
@@ -87,8 +89,7 @@ struct EvsmBlurPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<EvsmBlurPush> pcBlur;
+GPU_PUSH(EvsmBlurPush, pcBlur);
 
 // Bindless storage image array (set 0, binding 2). Declared here — the
 // only TUs that write storage images are the two blur legs — so no other

@@ -6,6 +6,7 @@
 #include "dof.hlsli"
 #include "hzb.hlsli"
 #include "ssr_receiver.hlsli"
+#include "gpu_platform.hlsli"
 
 // Diffuse SSGI blur: edge-aware bilateral of the half-res raw GI layer
 // (rgb = raw incoming radiance, a = hit confidence), structured on
@@ -44,9 +45,9 @@ struct PSOut
 // "improperly straddling vector" hazard — see SsrBlurPush's note).
 struct SsgiDiffuseBlurPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms; // nearPlane
-    vk::BufferPointer<HzbBuffer> hzb; // MAX-HZB: mip1 (nearest-of-2x2) reads
-    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
+    GPU_PTR_READ(FrameUniforms) frameUniforms; // nearPlane
+    GPU_PTR_READ(HzbBuffer) hzb; // MAX-HZB: mip1 (nearest-of-2x2) reads
+    GPU_PTR_READ(SsrReceiverData) receiverData; // packed receiver per half-res pixel
     uint giTextureIndex;   // half-res raw GI layer
     uint samplerIndex;     // linear clamp (radiance taps only)
     float sharpness;       // depth edge weight (higher = tighter)
@@ -59,8 +60,7 @@ struct SsgiDiffuseBlurPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiDiffuseBlurPush> bp;
+GPU_PUSH(SsgiDiffuseBlurPush, bp);
 
 // Relative-depth edge weight (ssr_blur's twin): 1 on the same surface,
 // ~0 across a discontinuity; background taps carry the sky sentinel.

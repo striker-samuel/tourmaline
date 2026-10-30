@@ -17,6 +17,7 @@
 #include "vertex_pack.hlsli"
 #include "gfxfilter.hlsli"
 #include "gfxmesh.hlsli"
+#include "gpu_platform.hlsli"
 
 struct FilteredVsMainPush
 {
@@ -29,8 +30,8 @@ struct FilteredVsMainPush
     // Offsets mirror C++ smvk::gfx::FilteredVsPush exactly (32B tail;
     // the trailing lmXforms keeps the 24B prefix identical to the motion
     // VS tail, whose own FrameUniforms BDA lands at 216).
-    vk::BufferPointer<GfxDraws> draws;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint renderViewIndex;
     // paramsValid (byte 212, the old pad): 1 = the vsDeformed BDA below is
     // live (the filler sets it with the BDA; the skinned fetch gates on it
@@ -42,18 +43,17 @@ struct FilteredVsMainPush
     // and read vsDeformed as vsDeformedBase|vsPad = 0x00000000FFFFFFFF,
     // a wild BDA the skinned draw fetched from -> GPU fault.
     uint paramsValid;
-    vk::BufferPointer<GfxChartXforms> lmXforms;
+    GPU_PTR_READ(GfxChartXforms) lmXforms;
     // VS-skin input (bytes 224..240), carried DIRECTLY (one modest
     // pointer - see the C++ FilteredVsPush comment for the wedge
     // history): the frame's deformed heap at (vertexID - vsDeformedBase)
     // * 5.
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed;
+    GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed;
     uint vsDeformedBase;
     uint vsPad;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<FilteredVsMainPush> pcFV;
+GPU_PUSH(FilteredVsMainPush, pcFV);
 
 struct VSIn
 {

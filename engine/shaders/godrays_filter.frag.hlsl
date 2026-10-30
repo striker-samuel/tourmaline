@@ -3,6 +3,7 @@
 
 #define GODRAYS_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Screen-space god rays, stage 3 - the FOG-SHADOW SMOOTHING (1/16,
 // same extent as the radial stage): a SMALL 5x5 Gaussian ({6,4,1} axis
@@ -36,8 +37,7 @@ struct GodraysFilterPush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<GodraysFilterPush> fp;
+GPU_PUSH(GodraysFilterPush, fp);
 
 float GodraysAxisWeight(int k)
 {

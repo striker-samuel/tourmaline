@@ -7,9 +7,9 @@
 #define GFXSEED_PASS
 #include "common.hlsli"
 #include "gfxseed.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<SeedVsMainPush> pcSeed;
+GPU_PUSH(SeedVsMainPush, pcSeed);
 
 SeedVSOut mainVS(SeedVSIn IN)
 {

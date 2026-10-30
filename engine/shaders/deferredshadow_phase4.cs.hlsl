@@ -31,9 +31,9 @@
 #define DS_PASS
 #include "common.hlsli"
 #include "shadows.hlsli" // GetSpotShadowFactorTile (pc-free)
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<DsPhasePush> pcDS;
+GPU_PUSH(DsPhasePush, pcDS);
 
 groupshared uint gsLitAcc[2];   // AND of per-wave all-lit votes (double-buffered
 groupshared uint gsShadowAcc[2]; // by light parity: lane 0 resets slot (e+1)&1

@@ -50,22 +50,23 @@
 //     the two lists safely share one region.
 
 #include "deferredshadow_types.hlsli"
+#include "gpu_platform.hlsli"
 
 // ---- Shared push constants for the three GPU phases (C++ mirror:
 // smvk::DsPhasePush, 120 bytes) ----
 
 struct DsPhasePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<ForwardPlusLightBuffer> lights; // sorted (phase 1)
-    vk::BufferPointer<DsZBinBuffer> zbins;
-    vk::BufferPointer<DsTileLightMaskBuffer> tileMasks;      // CPU (2 in)
-    vk::BufferPointer<DsTileLightMaskBuffer> tileGroupMasks; // GPU (2/3)
-    vk::BufferPointer<DsTileStateBuffer> tileState;
-    vk::BufferPointer<DsLightListBuffer> lightList;
-    vk::BufferPointer<DsVisibilityBuffer> visibility;
-    vk::BufferPointer<DsCounters> counters;
-    vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(ForwardPlusLightBuffer) lights; // sorted (phase 1)
+    GPU_PTR(DsZBinBuffer) zbins;
+    GPU_PTR_READ(DsTileLightMaskBuffer) tileMasks;      // CPU (2 in)
+    GPU_PTR(DsTileLightMaskBuffer) tileGroupMasks; // GPU (2/3)
+    GPU_PTR(DsTileStateBuffer) tileState;
+    GPU_PTR(DsLightListBuffer) lightList;
+    GPU_PTR(DsVisibilityBuffer) visibility;
+    GPU_PTR(DsCounters) counters;
+    GPU_PTR_READ(SpotShadowBuffer) spotShadowBuffer;
     uint spotShadowMapIndex;
     uint spotShadowCount;
     uint lightCount;
@@ -107,7 +108,7 @@ uint DsWindowMask(uint lightGroup, uint lo, uint hi)
 // contiguous bins use the standard zBin (tighter); wider ranges use
 // zBin(ranged) (prefix-min at the far bin, suffix-max at the near bin).
 // Empty windows return lo > hi.
-void DsZBinRange(vk::BufferPointer<DsZBinBuffer> zbins, uint bin0, uint bin1,
+void DsZBinRange(GPU_PTR(DsZBinBuffer) zbins, uint bin0, uint bin1,
     uint lightCount, out uint lo, out uint hi)
 {
     bin0 = min(bin0, DS_ZBIN_COUNT - 1u);
@@ -191,7 +192,7 @@ uint DsPackLightIndex(uint packed, uint lightIdx, uint count)
 // One visibility byte: slot k occupies bytes [k*64 .. k*64+63]; the pixel
 // index inside the tile (0..63) matches phase 4's SV_GroupIndex mapping
 // (x + y*8). Out-of-range slots (stale/garbage) read as fully lit.
-float DsLoadVisibility(vk::BufferPointer<DsVisibilityBuffer> vis, uint slot, uint localIdx)
+float DsLoadVisibility(GPU_PTR(DsVisibilityBuffer) vis, uint slot, uint localIdx)
 {
     if (slot >= DS_MAX_VIS_SLOTS)
         return 1.0f;
@@ -240,8 +241,8 @@ float3 DsCountHeat(uint count, uint ceiling)
 // Final-list lookup for one light (figure 7b entries). Returns
 // 0xFFFFFFFF when absent, DS_SLOT_ALL_LIT for a fully-lit entry, else
 // the VisibilityBuffer slot ID.
-uint DsFinalListFind(vk::BufferPointer<DsTileStateBuffer> tileState,
-    vk::BufferPointer<DsLightListBuffer> lightList,
+uint DsFinalListFind(GPU_PTR(DsTileStateBuffer) tileState,
+    GPU_PTR(DsLightListBuffer) lightList,
     uint tileIdx, uint lightIdx)
 {
     const uint slot = tileState.Get().states[tileIdx * 4u];
@@ -259,7 +260,7 @@ uint DsFinalListFind(vk::BufferPointer<DsTileStateBuffer> tileState,
 
 // Tile-group light-mask membership (phase-1 CPU / phase-2 GPU buffers share
 // the "Light Mask Entry" layout, figure 4).
-bool DsMaskHasLight(vk::BufferPointer<DsTileLightMaskBuffer> masks,
+bool DsMaskHasLight(GPU_PTR(DsTileLightMaskBuffer) masks,
     uint groupIdx, uint lightIdx)
 {
     if (lightIdx >= DS_MAX_LIGHT_GROUPS * 32u)
@@ -274,7 +275,7 @@ bool DsMaskHasLight(vk::BufferPointer<DsTileLightMaskBuffer> masks,
 // worldPos: the shaded fragment's world position (ground truth bounds
 // tests re-run per pixel, exactly like phase 3).
 float3 DsVisualize(FrameUniforms frame, DsVizParams viz,
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights, uint lightCount,
+    GPU_PTR(ForwardPlusLightBuffer) fpLights, uint lightCount,
     float3 worldPos, uint2 pix, uint mode, uint lightIdx)
 {
     if (mode == DS_VIZ_OFF || frame.dsTileCountX == 0u)

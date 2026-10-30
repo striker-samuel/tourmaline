@@ -18,6 +18,7 @@
 
 #define MOTIONBLUR_TILEDILATE_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Bindless storage image array (set 0, binding 2) — see
 // motionblur_tiles.cs.hlsl / VulkanResourceManager::UpdateDescriptors.
@@ -34,8 +35,7 @@ struct MotionBlurTileDilatePush
     uint tileCountY;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MotionBlurTileDilatePush> pcDilate;
+GPU_PUSH(MotionBlurTileDilatePush, pcDilate);
 
 [numthreads(8, 8, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)

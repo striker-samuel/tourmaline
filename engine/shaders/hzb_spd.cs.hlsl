@@ -86,9 +86,9 @@
 #define HZB_PASS
 #include "common.hlsli"
 #include "hzb.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<HzbSpdPush> pcS;
+GPU_PUSH(HzbSpdPush, pcS);
 
 // ---- tile geometry ------------------------------------------------------
 

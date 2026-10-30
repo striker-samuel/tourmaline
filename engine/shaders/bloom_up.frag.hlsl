@@ -3,6 +3,7 @@
 
 #define BLOOM_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -26,8 +27,7 @@ struct BloomUpPush
     uint pad2;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<BloomUpPush> bp;
+GPU_PUSH(BloomUpPush, bp);
 
 // 9-tap tent upsample of the coarser mip. Output is ADDITIVELY blended
 // onto the finer mip (Blend::Add), so alpha stays 0.

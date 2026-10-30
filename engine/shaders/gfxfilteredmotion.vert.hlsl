@@ -40,6 +40,7 @@
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
 #include "gfxmesh.hlsli"
+#include "gpu_platform.hlsli"
 
 struct FilteredMotionPush
 {
@@ -50,8 +51,8 @@ struct FilteredMotionPush
     float4x4 _pad1;
     float4x4 _pad2;
     // --- FilteredVsPush prefix (192..216, PushViewConstants) ---
-    vk::BufferPointer<GfxDraws> draws;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint renderViewIndex;
     // paramsValid (FilteredVsPush byte 212): 1 = the vsDeformed BDA below
     // is live (the filler sets it with the BDA; the skinned fetch gates on
@@ -60,22 +61,21 @@ struct FilteredMotionPush
     // Extra: FrameUniforms BDA pushed at byte offset 216 (the FilteredVsPush
     // lmXforms slot - the motion FS never reads prevModel, overwriting it
     // is safe).
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     // --- FilteredVsPush VS-skin tail (224..240, PushViewConstants) ---
     // The frame's cur deformed half (5 words per vertex at
     // (vertexID - vsDeformedBase) * 5).
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed;
+    GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed;
     uint vsDeformedBase;
     uint vsPad;
     // --- Motion-only PREV tail (240..256, FilteredMotionPrevTail -
     // PushMotionViewConstants; C++ mirror gfx_filter.h) ---
-    vk::BufferPointer<GfxSkinDeformedHeap> vsPrevDeformed;
+    GPU_PTR_READ(GfxSkinDeformedHeap) vsPrevDeformed;
     uint vsPrevValid; // 1 = the prev half holds last frame's pose
     uint vsPad2;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<FilteredMotionPush> pcFM;
+GPU_PUSH(FilteredMotionPush, pcFM);
 
 struct VSIn
 {

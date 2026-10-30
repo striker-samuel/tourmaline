@@ -7,6 +7,7 @@
 #include "environment.hlsli"
 #include "vertex_pack.hlsli"
 #include "hzb.hlsli" // HzbBuffer (the trace Hi-Z BDA block)
+#include "gpu_platform.hlsli"
 
 // SSR trace (half res): full-res depth + the SSSR-style thin G-buffer ->
 // half-res reflection layer.
@@ -44,7 +45,7 @@ struct PSOut
 // aligned; pad0/pad1 land the block on a multiple of 8).
 struct SsrTracePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint hdrTextureIndex;
     uint depthTextureIndex;
     uint samplerIndex;
@@ -61,13 +62,12 @@ struct SsrTracePush
                      // to its mean instead of parking a static pattern)
     uint gbufferTextureIndex; // thin G-buffer (RGBA8), 0xffffffff = legacy mirror
     uint gbuffer2TextureIndex; // F0-chroma layer 2, 0xffffffff = flat F0 (see ssr_intersect.cs.hlsl)
-    vk::BufferPointer<HzbBuffer> ssrHzb; // MAX-reduce trace Hi-Z (nearest-surface), null = linear march
+    GPU_PTR_READ(HzbBuffer) ssrHzb; // MAX-reduce trace Hi-Z (nearest-surface), null = linear march
     uint ssrHzbMipCount;                 // mips in the pyramid, 0 = linear march
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrTracePush> sp;
+GPU_PUSH(SsrTracePush, sp);
 
 // Firefly cap: upper bound on the reflected HDR the trace may emit.
 // Struck radiance is unbounded in practice (sun disc = full sun lux,

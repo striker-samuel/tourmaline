@@ -39,9 +39,9 @@
 #define GFXCONEDEBUG_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<GfxConeDebugPush> pcG;
+GPU_PUSH(GfxConeDebugPush, pcG);
 
 [numthreads(128, 1, 1)]
 void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID)

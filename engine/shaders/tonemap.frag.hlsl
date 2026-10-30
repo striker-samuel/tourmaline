@@ -3,6 +3,7 @@
 
 #define TONEMAP_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -44,8 +45,7 @@ struct TonemapPush
     float highlightClipThreshold;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<TonemapPush> tp;
+GPU_PUSH(TonemapPush, tp);
 
 // ----- helpers -----
 float3 Reinhard(float3 c)

@@ -13,6 +13,8 @@
 // so no ID buffer is needed. candidateIndex also serves as the
 // tie-break, matching the CPU (accept order preserves candidate order).
 
+#include "gpu_platform.hlsli"
+
 #ifndef PLACEMENT_CONSTRAINT_HLSLI
 #define PLACEMENT_CONSTRAINT_HLSLI
 
@@ -50,12 +52,12 @@ struct PlacementFlag2Buffer { uint2 v[PLACEMENT_CON_MAX_INSTANCES]; };
 // head + next + flag2.x, writes flag2.y.
 struct PlacementConPush
 {
-    vk::BufferPointer<PlacementInstanceBuffer> instances; // 0
-    vk::BufferPointer<PlacementHeadBuffer> head;          // 8
-    vk::BufferPointer<PlacementFlagBuffer> next;          // 16
-    vk::BufferPointer<PlacementFlag2Buffer> flag2;        // 24
-    vk::BufferPointer<PlacementConParams> prm;            // 32
-    vk::BufferPointer<PlacementCountBuffer> countBuf;     // 40
+    GPU_PTR(PlacementInstanceBuffer) instances; // 0
+    GPU_PTR(PlacementHeadBuffer) head;          // 8
+    GPU_PTR(PlacementFlagBuffer) next;          // 16
+    GPU_PTR(PlacementFlag2Buffer) flag2;        // 24
+    GPU_PTR_READ(PlacementConParams) prm;            // 32
+    GPU_PTR(PlacementCountBuffer) countBuf;     // 40
     uint pad0;  // 48
     uint pad1;  // 52
     uint pad2;  // 56

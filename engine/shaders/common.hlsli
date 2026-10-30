@@ -41,9 +41,11 @@
 // (uintTextures / comparisonSamplers) keep the compile-time-fiction
 // trick working: same register, different fetch type.
 // The DXIL build passes -DTOURMALINE_DXIL=1 (CompileShaders.cmake).
-// NOTE: this shim only covers the RESOURCE arrays. vk::BufferPointer
-// (SPIR-V-only, 52 files) is the remaining DXIL rework — see the
-// porting notes' shader-milestone plan.
+// NOTE: this shim only covers the RESOURCE arrays. The push-block BDA
+// pointers (GPU_PTR, gpu_platform.hlsli — today vk::BufferPointer,
+// SPIR-V-only) are the remaining DXIL rework — see the porting notes'
+// shader-milestone plan (the declaration layer is centralized in
+// gpu_platform.hlsli; the rework redefines the macros once).
 // ---------------------------------------------------------------------------
 Texture2D textures[MAX_TEXTURES] : register(t0);
 Texture2D<uint4> uintTextures[MAX_TEXTURES] : register(t0); // alias, same slots
@@ -230,6 +232,7 @@ struct EnvironmentFrameData
 // FrameUniforms can carry typed pointers; helpers live in
 // sg_lightmap.hlsli / sg_regular.hlsli.
 #include "sg_lightmap_types.hlsli"
+#include "gpu_platform.hlsli"
 
 struct LightBuffer
 {
@@ -522,8 +525,8 @@ struct FramePSHot
 // (DsVisualize in deferredshadow.hlsli) are DS_DEBUG_VIZ-gated.
 struct DsVizParams
 {
-    vk::BufferPointer<DsTileLightMaskBuffer> tileMasks;  // phase-1 CPU masks (viz)
-    vk::BufferPointer<DsTileLightMaskBuffer> tileGroupMasks; // phase-2 GPU masks (viz)
+    GPU_PTR_READ(DsTileLightMaskBuffer) tileMasks;  // phase-1 CPU masks (viz)
+    GPU_PTR_READ(DsTileLightMaskBuffer) tileGroupMasks; // phase-2 GPU masks (viz)
     uint mode;       // DS_VIZ_* (0 = off)
     uint light;      // selected light (sorted index)
     uint flags;      // bit0 = blend over lit
@@ -652,9 +655,9 @@ struct FrameUniforms
     // ---- Deferred shadows (tiled/zBin pipeline, see deferredshadow*.hlsli).
     // Consumer-side view of this frame's per-flight buffers; the app
     // flips dsEnabled per frame (A/B against the inline forward+ path).
-    vk::BufferPointer<DsTileStateBuffer> dsTileState;  // 672 {slot,count,approx,early}/tile
-    vk::BufferPointer<DsLightListBuffer> dsLightList;  // 680 final entries
-    vk::BufferPointer<DsVisibilityBuffer> dsVisibility; // 688 64B slots
+    GPU_PTR_READ(DsTileStateBuffer) dsTileState;  // 672 {slot,count,approx,early}/tile
+    GPU_PTR_READ(DsLightListBuffer) dsLightList;  // 680 final entries
+    GPU_PTR_READ(DsVisibilityBuffer) dsVisibility; // 688 64B slots
     uint dsTileCountX;                                 // 696 8px tiles/row
     uint dsEnabled;                                    // 700 1 = consume lists
     // ---- SG-GI LEGACY PROBE-VOLUME frame fields (the .sggi octree —
@@ -663,10 +666,10 @@ struct FrameUniforms
     // layout is a shared C++/HLSL ABI contract with static_asserts on
     // both sides — removing them would renumber every later field. The
     // live GI rides giVolumes*/lm*/reg* below + the sky IBL.
-    vk::BufferPointer<SgGiProbesBuffer> giProbes;   // 704 probe array (96 B each)
-    vk::BufferPointer<SgGiGrid> giGrid;            // 712 level descriptors
-    vk::BufferPointer<SgGiCellsBuffer> giCells;    // 720 uint2 (start,count)/cell
-    vk::BufferPointer<SgGiIndexBuffer> giIndices;   // 728 u32 probe index list
+    GPU_PTR_READ(SgGiProbesBuffer) giProbes;   // 704 probe array (96 B each)
+    GPU_PTR_READ(SgGiGrid) giGrid;            // 712 level descriptors
+    GPU_PTR_READ(SgGiCellsBuffer) giCells;    // 720 uint2 (start,count)/cell
+    GPU_PTR_READ(SgGiIndexBuffer) giIndices;   // 728 u32 probe index list
     uint giEnabled;                                 // 736 (always 0 — legacy)
     float giIntensity;                              // 740 ambient scale
     uint giDebug;                                    // 744 0 off, 1 irradiance view
@@ -680,9 +683,9 @@ struct FrameUniforms
     // every tile even with no decals, so the shading pass never sees
     // stale lists). decalMaxPerTile is the list stride (matches the
     // builder allocation).
-    vk::BufferPointer<ForwardPlusDecalBuffer> decals;        // 752
-    vk::BufferPointer<ForwardPlusDecalTileCountBuffer> decalTileCounts; // 760
-    vk::BufferPointer<ForwardPlusDecalTileIndexBuffer> decalTileIndices; // 768
+    GPU_PTR_READ(ForwardPlusDecalBuffer) decals;        // 752
+    GPU_PTR_READ(ForwardPlusDecalTileCountBuffer) decalTileCounts; // 760
+    GPU_PTR_READ(ForwardPlusDecalTileIndexBuffer) decalTileIndices; // 768
 uint decalCount;                                         // 776 0 = decals off
     uint decalMaxPerTile;                                    // 780 list stride
 #if 0 // Lightmaps deprecated - SG 2D lightmaps (STATIC geometry; Engine/GI/lightmap.h).
@@ -704,7 +707,7 @@ uint decalCount;                                         // 776 0 = decals off
     // grids, Engine/GI/regular_volume.h). Hand-placed artist OBBs with
     // density params, baked per volume; 7 RGBA16F 3D textures each,
     // hardware trilinear filtering between neighboring probes. ----
-    vk::BufferPointer<SgRegularObbBuffer> regObbs;           // 784 OBB array
+    GPU_PTR_READ(SgRegularObbBuffer) regObbs;           // 784 OBB array
     uint regLayers[56];                                       // 792 8 volumes x 7 layer slots
     uint regCount;                                             // 1016 active volumes
     uint regEnabled;                                           // 1020 1 = grid branch active
@@ -721,7 +724,7 @@ uint decalCount;                                         // 776 0 = decals off
     // a weight-1 volume zeroes the transmittance and the base gather is
     // skipped entirely; density levels never share interpolation
     // neighbors. ----
-    vk::BufferPointer<GiVolumesBuffer> giVolumes;               // 1040 headers + packed plane pool
+    GPU_PTR_READ(GiVolumesBuffer) giVolumes;               // 1040 headers + packed plane pool
     uint giVolumeLayers[56];                                    // 1048 8 volumes x 7 layer slots
     uint giVolumeCount;                                         // 1272 active volumes
     uint giVolumesEnabled;                                      // 1276 1 = GI-volume branch active
@@ -734,7 +737,7 @@ uint decalCount;                                         // 776 0 = decals off
     // masks this view/frame — the shader then walks every volume (the
     // per-volume AABB reject in SgGiVolumeWeight keeps that path correct).
     // Same grid as the light/decal tiles (pc.fpTileSize/fpTileCountX). ----
-    vk::BufferPointer<GiVolumeTileMaskBuffer> giVolumeTileMasks; // 1280 per-tile volume bitmask
+    GPU_PTR_READ(GiVolumeTileMaskBuffer) giVolumeTileMasks; // 1280 per-tile volume bitmask
     uint giVolumeTileCountX;                                     // 1288 tile grid width (0 = no mask)
     uint giVolumeTileSize;                                       // 1292 tile size (16)
     // ---- FramePSHot slab (FS-only hot struct, see FramePSHot below): the
@@ -743,7 +746,7 @@ uint decalCount;                                         // 776 0 = decals off
     // shifted every sub-192 pc field and broke the HLSL mirror structs
     // (the 10/1 device-loss crash; see Engine/Renderer/Renderer.h). Filled per
     // view slab by the app (UpdateFrameUniforms/BuildSecondaryFrameUniforms).
-    vk::BufferPointer<FramePSHot> frameHot;                   // 1296 this view's hot slab
+    GPU_PTR_READ(FramePSHot) frameHot;                   // 1296 this view's hot slab
     // ---- Deferred-shadow visualizer params (paper 5.3/5.4): BDA of this
     // view's DsVizParams slice (standalone 32 B payload, per-flight ring +
     // zero slice — see deferredshadow.hlsli). Deliberately a BDA, not
@@ -751,7 +754,7 @@ uint decalCount;                                         // 776 0 = decals off
     // CPU/GPU layout config-dependent. This field is UNCONDITIONAL (same
     // offset/size in every build); only its fill (app) and read
     // (DsVisualize) are DS_DEBUG_VIZ-gated. ----
-    vk::BufferPointer<DsVizParams> dsVizParams;               // 1304 (zero slice = viz off)
+    GPU_PTR_READ(DsVizParams) dsVizParams;               // 1304 (zero slice = viz off)
     // ---- Per-frame feature flags (bitmask; upper bits reserved). Lets
     // shaders skip off-by-default payloads (like dsVizParams above)
     // without a BDA chase. Unconditional like every other field. ----
@@ -898,6 +901,5 @@ uint decalCount;                                         // 776 0 = decals off
 // leave it undefined so headers can guard pc-dependent helpers (see
 // shadows.hlsli FromPC wrappers).
 #define ENGINE_HAS_PC
-[[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+GPU_PUSH(PushConstants, pc);
 #endif

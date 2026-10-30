@@ -3,6 +3,7 @@
 
 #define SSR_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR temporal depth history: a 1:1 R32F mirror of the final
 // renderDepth, copied once per TEMPORAL record (emitted by
@@ -33,8 +34,7 @@ struct SsrDepthHistoryPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrDepthHistoryPush> dp;
+GPU_PUSH(SsrDepthHistoryPush, dp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

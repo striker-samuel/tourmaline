@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 // Terrain push block: DXC allows a SINGLE push_constant block per entry, so
 // terrain shaders that need the per-draw tail declare ONE block here.
 // Bytes 0..192 mirror the scene PushConstants EXACTLY (same field order as
@@ -17,27 +19,27 @@
 struct TerrainPushBlock
 {
     float4x4 model;
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<LightBuffer> bLights;
-    vk::BufferPointer<MaterialsBuffer> bMats;
-    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(LightBuffer) bLights;
+    GPU_PTR_READ(MaterialsBuffer) bMats;
+    GPU_PTR_READ(DirectionalCascadeBuffer) cascadeBuffer;
     uint materialId;
     uint comparisonSamplerId;
     uint numCascades;
     uint cascadeIndex;
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
-    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts;
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices;
+    GPU_PTR_READ(ForwardPlusLightBuffer) fpLights;
+    GPU_PTR_READ(ForwardPlusTileCountBuffer) fpTileCounts;
+    GPU_PTR_READ(ForwardPlusTileIndexBuffer) fpTileIndices;
     uint fpTileCountX;
     uint fpLightCount;
     uint fpTileSize;
     uint fpMaxPerTile;
-    vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer;
+    GPU_PTR_READ(SpotShadowBuffer) spotShadowBuffer;
     uint spotShadowMapIndex;
     uint spotShadowCount;
     uint spotIndex;
     uint pad_pc;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint mainRenderView;
     uint renderViewIndex;
     // Terrain tail (C++ TerrainBlockPush words).
@@ -51,5 +53,4 @@ struct TerrainPushBlock
     int hfSteps;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<TerrainPushBlock> pcT;
+GPU_PUSH(TerrainPushBlock, pcT);

@@ -9,6 +9,7 @@
 // they are simply not fetched).
 #define PROBEBALL_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Mirrors smvk::probeball::ProbeBallPush (C++, probeball.h) exactly.
 struct ProbeBallPush
@@ -18,11 +19,10 @@ struct ProbeBallPush
     float4 xform;       // 80 xyz ball center, w radius
     float4 probe;       // 96 x cubemap index (float, cast), y mips,
                         //    z intensity, w sampler slot
-    vk::BufferPointer<FrameUniforms> frame; // 112 the env sun fields (FS)
+    GPU_PTR_READ(FrameUniforms) frame; // 112 the env sun fields (FS)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<ProbeBallPush> pb;
+GPU_PUSH(ProbeBallPush, pb);
 
 struct VSIn
 {

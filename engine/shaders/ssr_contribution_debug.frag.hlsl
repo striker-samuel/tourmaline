@@ -22,11 +22,12 @@
 #include "environment.hlsli"
 #include "hzb.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match Engine/Rendergraph/ssr.h SsrContributionDebugPush (64 bytes).
 struct SsrContributionDebugPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint hdrTextureIndex;
     uint depthTextureIndex;
     uint samplerIndex;
@@ -46,8 +47,7 @@ struct SsrContributionDebugPush
     uint ssrHzbMipCount;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrContributionDebugPush> sp;
+GPU_PUSH(SsrContributionDebugPush, sp);
 
 struct PSIn
 {

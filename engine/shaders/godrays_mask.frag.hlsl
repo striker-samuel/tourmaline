@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "godrays_common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Screen-space god rays, stage 1 - the SUN OCCLUSION MASK (quarter
 // res): where the sun's glow region is VISIBLE SKY. Per pixel:
@@ -38,7 +39,7 @@ struct PSOut
 // Must match Engine/Rendergraph/godrays.h GodraysMaskPush (32 bytes).
 struct GodraysMaskPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint depthTextureIndex; // full-res scene depth (sky detection)
     float invDepthW;        // 1 / full-res depth extent
     float invDepthH;
@@ -47,8 +48,7 @@ struct GodraysMaskPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<GodraysMaskPush> mp;
+GPU_PUSH(GodraysMaskPush, mp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

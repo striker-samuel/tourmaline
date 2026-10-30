@@ -33,9 +33,9 @@
 #define GFXDRAWCULL_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<GfxDrawCullPush> pcD;
+GPU_PUSH(GfxDrawCullPush, pcD);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)

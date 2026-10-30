@@ -8,9 +8,9 @@
 // and a sizeStart->sizeEnd uniform-scale envelope.
 
 #include "meshparticles.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<MeshParticlesEmitPush> pcEmit;
+GPU_PUSH(MeshParticlesEmitPush, pcEmit);
 
 // Pop one slot off the free-list stack; false when the pool is exhausted
 // (the transient underflow restores itself — the billboard kernel's

@@ -16,18 +16,19 @@
 // Flat 20-byte VkDrawIndexedIndirectCommand view (word indices):
 //   [0] indexCount  [1] instanceCount  [2] firstIndex
 //   [3] vertexOffset [4] firstInstance
+#include "gpu_platform.hlsli"
+
 struct RhiTestIndirectBuffer { uint v[5]; };
 
 // Mirrors the test's RhiTestIndirectWritePush (16 bytes).
 struct RhiTestIndirectWritePush
 {
-    vk::BufferPointer<RhiTestIndirectBuffer> indirect; // 0
+    GPU_PTR_WRITE(RhiTestIndirectBuffer) indirect; // 0
     uint instanceCount;                                 // 8
     uint firstInstance;                                 // 12
 };
 
-[[vk::push_constant]]
-ConstantBuffer<RhiTestIndirectWritePush> pc;
+GPU_PUSH(RhiTestIndirectWritePush, pc);
 
 [numthreads(1, 1, 1)]
 void mainCS()

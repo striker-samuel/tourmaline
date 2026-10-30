@@ -7,11 +7,12 @@
 // PlacementBinsBuffer shape (flat words with named offsets).
 
 #include "meshparticles.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match C++ MeshParticlesPrefixPush (32 bytes).
 struct MeshParticlesPrefixPush
 {
-    vk::BufferPointer<PlacementBinsBuffer> bins; // 0
+    GPU_PTR(PlacementBinsBuffer) bins; // 0
     uint binCount; // 8 <= MESHPARTICLE_MAX_BINS
     uint pad0;     // 12
     uint pad1;     // 16
@@ -20,8 +21,7 @@ struct MeshParticlesPrefixPush
     uint pad4;     // 28
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MeshParticlesPrefixPush> pc;
+GPU_PUSH(MeshParticlesPrefixPush, pc);
 
 [numthreads(1, 1, 1)]
 void mainCS()

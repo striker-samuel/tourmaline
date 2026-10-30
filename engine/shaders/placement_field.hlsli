@@ -9,6 +9,8 @@
 // absorbed by PlacementQuantizeDensity before every accept decision).
 // 32-bit integer math only. DXC-2018 compatible.
 
+#include "gpu_platform.hlsli"
+
 #ifndef PLACEMENT_FIELD_HLSLI
 #define PLACEMENT_FIELD_HLSLI
 
@@ -58,7 +60,7 @@ struct PlacementInstrBuffer
 struct PlacementEcoBuffer { float w[1048576]; }; // 4M floats max (16MB)
 struct PlacementEcoMask
 {
-    vk::BufferPointer<PlacementEcoBuffer> weights; // 0
+    GPU_PTR_READ(PlacementEcoBuffer) weights; // 0
     uint channels; // 8
     uint w;        // 12
     uint h;        // 16
@@ -136,7 +138,7 @@ float PlacementSmoothstepF(float e0, float e1, float x) {
 //   keep = Random01(id, Density) < q).
 // ---------------------------------------------------------------------------
 float PlacementEvaluateField(
-    vk::BufferPointer<PlacementInstrBuffer> instrs,
+    GPU_PTR(PlacementInstrBuffer) instrs,
     uint instrCount, uint acceptIndex,
     float3 p, float3 n, uint seedLo, uint seedHi,
     PlacementEcoMask eco)

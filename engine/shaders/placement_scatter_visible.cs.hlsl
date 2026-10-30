@@ -15,6 +15,7 @@
 
 #include "placement_common.hlsli"
 #include "placement_cull.hlsli"
+#include "gpu_platform.hlsli"
 
 // The scatter-visible push (48 bytes). Must match C++
 // PlacementScatterVisPush. The kernels SELF-BOUND from the count
@@ -22,17 +23,16 @@
 // capacity upper bound; no count readback on the frame path.
 struct PlacementScatterVisPush
 {
-    vk::BufferPointer<PlacementInstanceBuffer> instances; // 0
-    vk::BufferPointer<PlacementCountBuffer> count;        // 8
-    vk::BufferPointer<PlacementMaskBuffer> mask;          // 16
-    vk::BufferPointer<PlacementBinsBuffer> bins;        // 24
-    vk::BufferPointer<PlacementVisibleBuffer> visible;   // 32
+    GPU_PTR_READ(PlacementInstanceBuffer) instances; // 0
+    GPU_PTR_READ(PlacementCountBuffer) count;        // 8
+    GPU_PTR_READ(PlacementMaskBuffer) mask;          // 16
+    GPU_PTR(PlacementBinsBuffer) bins;        // 24
+    GPU_PTR_WRITE(PlacementVisibleBuffer) visible;   // 32
     uint protoCount;  // 40 (chain parity; unused here)
     uint pad0;        // 44
 };
 
-[[vk::push_constant]]
-ConstantBuffer<PlacementScatterVisPush> pc;
+GPU_PUSH(PlacementScatterVisPush, pc);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)

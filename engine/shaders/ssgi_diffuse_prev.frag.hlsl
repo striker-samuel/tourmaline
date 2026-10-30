@@ -3,6 +3,7 @@
 
 #define SSGI_DIFFUSE_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Diffuse SSGI history mirror: 1:1 copies of the final renderDepth
 // (R32F) and the thin G-buffer's oct world normal (RGBA8, .xy only),
@@ -45,8 +46,7 @@ struct SsgiDiffusePrevPush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiDiffusePrevPush> pp;
+GPU_PUSH(SsgiDiffusePrevPush, pp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

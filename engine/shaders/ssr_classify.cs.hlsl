@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR classify (SSSR classify-tiles port — see FidelityFX-SDK-v1.1.4
 // sdk/include/FidelityFX/gpu/sssr/ffx_sssr_classify_tiles.h): full
@@ -36,11 +37,11 @@
 // uint64 BDAs lead (see ssr.h — scalars never precede a BDA).
 struct SsrClassifyPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<SsrRayList> rayList;   // packed uint per ray (halfW*halfH capacity)
-    vk::BufferPointer<SsrRayCounter> rayCounter; // [0] = the count (reset by the args pass)
-    vk::BufferPointer<SsrRadiance> radiance; // float4 per half-res pixel (0 for non-rays)
-    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_WRITE(SsrRayList) rayList;   // packed uint per ray (halfW*halfH capacity)
+    GPU_PTR(SsrRayCounter) rayCounter; // [0] = the count (reset by the args pass)
+    GPU_PTR_WRITE(SsrRadiance) radiance; // float4 per half-res pixel (0 for non-rays)
+    GPU_PTR_WRITE(SsrReceiverData) receiverData; // packed receiver per half-res pixel
     uint gbufferTextureIndex; // thin G-buffer (RGBA8: oct normal + roughness + metal)
     uint depthTextureIndex;  // full-res depth (validity + receiver selection)
     float glossThreshold; // rays wanted for roughness < this (mirrors < 0.0001 always shoot)
@@ -51,8 +52,7 @@ struct SsrClassifyPush
     uint pad2;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrClassifyPush> sp;
+GPU_PUSH(SsrClassifyPush, sp);
 
 // Mirror reflections (roughness < 0.0001) always shoot a full ray and
 // never reduce (same rule as FidelityFX SSSR IsMirrorReflection).

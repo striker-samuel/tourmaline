@@ -4,6 +4,7 @@
 #define CONTACT_SHADOW_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "gpu_platform.hlsli"
 
 // Sun contact shadows (Engine/Rendergraph/contact_shadow.h): the pre-Main
 // compute raymarch through the FINAL opaque depth toward the sun, writing
@@ -66,7 +67,7 @@ RWTexture2D<float> contactStorage[];
 // straddling-vector hazard discipline).
 struct ContactShadowPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint depthTextureIndex;  // full-res opaque depth (the prepass target)
     uint outImageIndex;      // bindless storage index of the visibility
     uint outWidth;           // visibility extent (the dispatch domain)
@@ -81,8 +82,7 @@ struct ContactShadowPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<ContactShadowPush> sp;
+GPU_PUSH(ContactShadowPush, sp);
 
 [numthreads(8, 8, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)

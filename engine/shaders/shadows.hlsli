@@ -10,6 +10,7 @@
 
 #define Epsilon 1
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct CascadeMeta
 {
@@ -50,7 +51,7 @@ int SelectCascade(float viewDepth, CascadeMeta cascades[NUM_CASCADES])
 // the fallback.
 int SelectCascadeGpu(
     float viewDepth,
-    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    GPU_PTR(DirectionalCascadeBuffer) cb,
     uint numCascades)
 {
     int selected = int(numCascades) - 1;
@@ -193,7 +194,7 @@ float GetOrientedBias(float3 faceNormal,
 // only the fields actually used cross the BDA boundary and no aggregate
 // is ever built.
 float SampleCascadeTile(
-    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    GPU_PTR(DirectionalCascadeBuffer) cb,
     uint cascadeIndex,
     float3 worldPos,
     float3 faceNormal,
@@ -287,8 +288,7 @@ float GetShadowFactorCascaded(
     int shadowMapIndex,
     uint numCascades,
     float4x4 view,
-    vk::BufferPointer<DirectionalCascadeBuffer> cb
-)
+    GPU_PTR(DirectionalCascadeBuffer) cb)
 {
     if (
         shadowMapIndex < 0 ||
@@ -666,7 +666,7 @@ float GetPointShadowFactorTile(
     float3 worldPos,
     float3 faceNormal,
     float3 lightPosition,
-    vk::BufferPointer<SpotShadowBuffer> tiles,
+    GPU_PTR(SpotShadowBuffer) tiles,
     uint tileBase,        // light.shadowTile: FIRST face tile index
     uint tileCount,       // frame total (spot tiles + point faces)
     uint atlasIdx         // bindless D32 atlas (light.shadowMapIndex)
@@ -785,7 +785,7 @@ float GetPointShadowFactorEvsmTile(
     float3 worldPos,
     float3 faceNormal,
     float3 lightPosition,
-    vk::BufferPointer<SpotShadowBuffer> tiles,
+    GPU_PTR(SpotShadowBuffer) tiles,
     uint tileBase,        // light.shadowTile: FIRST face tile index
     uint tileCount,       // frame total (spot tiles + point faces)
     uint momentsIdx,      // bindless blurred-moment atlas (light.shadowMapIndex)
@@ -915,7 +915,7 @@ float GetShadowFactorEvsmCascaded(
     int shadowMapIndex,
     uint numCascades,
     float4x4 view,
-    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    GPU_PTR(DirectionalCascadeBuffer) cb,
     uint evsmAtlasIdx,
     float exponent,
     float2 pix)

@@ -21,9 +21,9 @@
 
 #define DS_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<DsPhasePush> pcDS;
+GPU_PUSH(DsPhasePush, pcDS);
 
 // Vote bits: ordinal k = the k-th candidate light walked by the (uniform)
 // iteration below; bit set when ANY pixel of the tile passes its bounds.

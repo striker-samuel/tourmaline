@@ -44,6 +44,7 @@
 
 #define PROBEPREMIX_WEIGHTS_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Mirrors smvk::probepremix::BlendSelectionGpu (probepremix.h).
 struct BlendSelectionGpu
@@ -61,8 +62,8 @@ struct BlendSelectionGpu
 // Mirrors smvk::probepremix::WeightsPush (probepremix.h).
 struct WeightsPush
 {
-    vk::BufferPointer<ForwardPlusLightBuffer> lights; // 0
-    vk::BufferPointer<BlendSelectionGpu> selection;   // 8
+    GPU_PTR_READ(ForwardPlusLightBuffer) lights; // 0
+    GPU_PTR_WRITE(BlendSelectionGpu) selection;   // 8
     float poiX;                                       // 16
     float poiY;                                       // 20
     float poiZ;                                        // 24
@@ -72,8 +73,7 @@ struct WeightsPush
     uint pad1;                                         // 40
 };
 
-[[vk::push_constant]]
-ConstantBuffer<WeightsPush> pc;
+GPU_PUSH(WeightsPush, pc);
 
 // Gathered candidate (in-influence only; NDF in [0, 1)). The tail cap:
 // kForwardPlusMaxProbes (64, the resident budget) - the walk never sees

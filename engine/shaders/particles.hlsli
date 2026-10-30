@@ -6,6 +6,8 @@
 // Must match the C++ mirrors in Engine/Rendergraph/particles.h (sizes are
 // asserted there; this DXC rejects global static_assert).
 
+#include "gpu_platform.hlsli"
+
 #define MAX_PARTICLES 65536
 #define MAX_PARTICLE_EMITTERS 16
 
@@ -72,10 +74,10 @@ struct ParticleFreeListBuffer
 // particles_emit.cs.hlsl (48 bytes).
 struct ParticlesEmitPush
 {
-    vk::BufferPointer<ParticleEmitterBuffer> emitters;      // 0
-    vk::BufferPointer<ParticleEmitterStateBuffer> emitterState; // 8
-    vk::BufferPointer<ParticlesBuffer> particles;           // 16
-    vk::BufferPointer<ParticleFreeListBuffer> freeList;     // 24
+    GPU_PTR_READ(ParticleEmitterBuffer) emitters;      // 0
+    GPU_PTR(ParticleEmitterStateBuffer) emitterState; // 8
+    GPU_PTR_WRITE(ParticlesBuffer) particles;           // 16
+    GPU_PTR(ParticleFreeListBuffer) freeList;     // 24
     uint emitterCount;                                      // 32
     uint maxParticles;                                      // 36
     float dt;                                               // 40
@@ -87,9 +89,9 @@ struct ParticlesEmitPush
 // straddle a 16-byte row and HLSL packs it away from the C++ offsets.
 struct ParticlesSimPush
 {
-    vk::BufferPointer<ParticlesBuffer> particles; // 0
-    vk::BufferPointer<ParticleFreeListBuffer> freeList; // 8
-    vk::BufferPointer<ParticleEmitterBuffer> emitters;  // 16
+    GPU_PTR(ParticlesBuffer) particles; // 0
+    GPU_PTR(ParticleFreeListBuffer) freeList; // 8
+    GPU_PTR_READ(ParticleEmitterBuffer) emitters;  // 16
     float gravityX;                               // 24
     float gravityY;                               // 28
     float gravityZ;                               // 32
@@ -110,12 +112,12 @@ struct ParticlesSimPush
 #if defined(PARTICLES_DRAW_TYPES)
 struct ParticlesDrawPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;         // 0
-    vk::BufferPointer<ParticlesBuffer> particles;           // 8
-    vk::BufferPointer<ParticleEmitterBuffer> emitters;      // 16
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;     // 24
-    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts;  // 32
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices; // 40
+    GPU_PTR_READ(FrameUniforms) frameUniforms;         // 0
+    GPU_PTR_READ(ParticlesBuffer) particles;           // 8
+    GPU_PTR_READ(ParticleEmitterBuffer) emitters;      // 16
+    GPU_PTR_READ(ForwardPlusLightBuffer) fpLights;     // 24
+    GPU_PTR_READ(ForwardPlusTileCountBuffer) fpTileCounts;  // 32
+    GPU_PTR_READ(ForwardPlusTileIndexBuffer) fpTileIndices; // 40
     uint fpTileCountX;  // 48 0 = brute-force light fallback
     uint fpLightCount;  // 52
     uint fpTileSize;    // 56

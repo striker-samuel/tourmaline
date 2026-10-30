@@ -3,6 +3,7 @@
 
 #define SSR_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Ground-truth depth view (TOURMALINE_SSR_DUMP): samples the depth image
 // EXACTLY the way the SSR trace does — same bindless textures[] slot,
@@ -31,8 +32,7 @@ struct SsrDepthViewPush
     uint pad2;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrDepthViewPush> dp;
+GPU_PUSH(SsrDepthViewPush, dp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

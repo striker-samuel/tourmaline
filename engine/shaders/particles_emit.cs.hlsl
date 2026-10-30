@@ -18,9 +18,9 @@
 // emit -> sim barrier from the pass hints (particles + freeList RW).
 
 #include "particles.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<ParticlesEmitPush> pcEmit;
+GPU_PUSH(ParticlesEmitPush, pcEmit);
 
 // Pop one slot off the free-list stack; false when the pool is exhausted.
 // The transient count underflow is benign: every failing thread restores

@@ -3,6 +3,7 @@
 
 #define MOTIONBLUR_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -32,8 +33,7 @@ struct MotionBlurPush
     float2 tileScale; // tile-map texel count (xy): pixel -> tile point lookup
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MotionBlurPush> mp;
+GPU_PUSH(MotionBlurPush, mp);
 
 // Interleaved gradient noise (Jimenez 2014, "Next Generation Post
 // Processing in Call of Duty: Advanced Warfare"): a 0-cost analytic hash

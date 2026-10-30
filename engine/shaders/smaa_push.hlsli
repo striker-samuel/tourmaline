@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 //--------------------------------------------------------------------------------------------------
 // SMAA passes share one push layout (every pass binds the same block, each
 // filling only the fields it reads; unused indices stay 0xffffffff).
@@ -42,5 +44,4 @@ struct SmaaPush
                             //   resolve attenuation sees true motion only
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SmaaPush> sp;
+GPU_PUSH(SmaaPush, sp);

@@ -22,6 +22,7 @@
 #pragma once
 
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
 // Mesh workgroup geometry: 32 threads (ONE wave — WavePrefixCountBits
 // is wave-scoped, so a 64-lane group would restart compaction mid-group
@@ -72,20 +73,20 @@ struct GfxMeshParamsData
     // vs C++ packing — the static_assert below guards the whole blob).
     float4x4 viewProj;
     float4x4 outViewProj;
-    vk::BufferPointer<GfxDraws> draws;
-    vk::BufferPointer<GfxClusters> clusters;
-    vk::BufferPointer<GfxBatches> batches;
-    vk::BufferPointer<GfxPositions> positions;
-    vk::BufferPointer<GfxShadingHeap> shading;
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_READ(GfxClusters) clusters;
+    GPU_PTR_READ(GfxBatches) batches;
+    GPU_PTR_READ(GfxPositions) positions;
+    GPU_PTR_READ(GfxShadingHeap) shading;
     // The OPTIONAL lightmap stream (PackedVertexLightmap, 2 words/vertex,
     // INDEPENDENTLY packed windows): fetched as
     //   lm words[(vi + draw.misc2.w) * 2]
     // where misc2.w carries the per-draw additive delta (lightmapBase -
     // meshVertexBase; 0xFFFFFFFF = the draw's mesh carries no lightmap).
-    vk::BufferPointer<GfxLightmapHeap> lightmap;
-    vk::BufferPointer<GfxIndices> indices;
-    vk::BufferPointer<GfxChartXforms> lmXforms;
-    vk::BufferPointer<GfxMeshBatchList> batchList;
+    GPU_PTR_READ(GfxLightmapHeap) lightmap;
+    GPU_PTR_READ(GfxIndices) indices;
+    GPU_PTR_READ(GfxChartXforms) lmXforms;
+    GPU_PTR_READ(GfxMeshBatchList) batchList;
     // This flight's indirect command array (written by the filter CS this
     // frame, before Main): cmds[batch].indexCount == 0 marks a cluster the
     // filter fully dropped (per-triangle cull OR the T4 whole-cluster
@@ -93,7 +94,7 @@ struct GfxMeshParamsData
     // duplicate). Gating on it keeps mesh/indexed picture parity EXACT —
     // including under the debug culling freeze, where the held HZB drops
     // clusters the live view sees.
-    vk::BufferPointer<GfxIndirect> indirect;
+    GPU_PTR_READ(GfxIndirect) indirect;
     uint cullFlags;
     uint width;
     uint height;
@@ -103,7 +104,7 @@ struct GfxMeshParamsData
     // (GFX_DRAW_SKINNED) fetch pos/normal/tangent words from it (indexed
     // vi - deformedBase), everything else from the bind-pose heaps.
     // 0 = static fetches (no skinned cluster this frame).
-    vk::BufferPointer<GfxSkinDeformedHeap> deformed;
+    GPU_PTR_READ(GfxSkinDeformedHeap) deformed;
     uint deformedBase; // 0xFFFFFFFF = no skinned cluster
     uint pad0;
 };

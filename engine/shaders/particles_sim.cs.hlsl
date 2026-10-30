@@ -15,9 +15,9 @@
 // collapses dead slots to degenerate quads instead).
 
 #include "particles.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<ParticlesSimPush> pcSim;
+GPU_PUSH(ParticlesSimPush, pcSim);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 dispatchId : SV_DispatchThreadID)

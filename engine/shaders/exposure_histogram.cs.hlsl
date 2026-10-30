@@ -19,6 +19,7 @@
 
 #define EXPOSURE_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 #define EXPOSURE_BINS 64
 
@@ -30,7 +31,7 @@ struct ExposureHistogramBuffer
 // Must match Engine/Rendergraph/exposure.h ExposureHistogramPush (40 bytes).
 struct ExposureHistogramPush
 {
-    vk::BufferPointer<ExposureHistogramBuffer> histogram;
+    GPU_PTR_WRITE(ExposureHistogramBuffer) histogram;
     uint hdrTextureIndex;
     uint width;
     uint height;
@@ -43,8 +44,7 @@ struct ExposureHistogramPush
 // NOTE: no static_assert here – this DXC (HLSL 2018 mode) rejects it at
 // global scope. Size is checked on the C++ side (40 bytes).
 
-[[vk::push_constant]]
-ConstantBuffer<ExposureHistogramPush> pcExp;
+GPU_PUSH(ExposureHistogramPush, pcExp);
 
 groupshared uint tileBins[EXPOSURE_BINS];
 

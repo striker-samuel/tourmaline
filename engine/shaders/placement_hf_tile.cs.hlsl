@@ -9,13 +9,14 @@
 #include "placement_common.hlsli"
 #include "placement_field.hlsli"
 #include "placement_domains.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match C++ PlacementScatterPush (64 bytes).
 struct PlacementScatterPush
 {
-    vk::BufferPointer<PlacementInstanceBuffer> outInstances; // 0
-    vk::BufferPointer<PlacementCountBuffer> outCount;        // 8
-    vk::BufferPointer<PlacementDomainParams> prm;            // 16
+    GPU_PTR_WRITE(PlacementInstanceBuffer) outInstances; // 0
+    GPU_PTR_WRITE(PlacementCountBuffer) outCount;        // 8
+    GPU_PTR_READ(PlacementDomainParams) prm;            // 16
     uint64_t pad0;                                           // 24
     uint seedLo;      // 32
     uint seedHi;      // 36
@@ -25,8 +26,7 @@ struct PlacementScatterPush
     uint flags;       // 60
 };
 
-[[vk::push_constant]]
-ConstantBuffer<PlacementScatterPush> pc;
+GPU_PUSH(PlacementScatterPush, pc);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)

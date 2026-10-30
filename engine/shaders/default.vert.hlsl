@@ -16,38 +16,39 @@
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
 struct DefaultVsPush
 {
     float4x4 model;
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<LightBuffer> bLights;
-    vk::BufferPointer<MaterialsBuffer> bMats;
-    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(LightBuffer) bLights;
+    GPU_PTR_READ(MaterialsBuffer) bMats;
+    GPU_PTR_READ(DirectionalCascadeBuffer) cascadeBuffer;
     uint materialId;
     uint comparisonSamplerId;
     uint numCascades;
     uint cascadeIndex;
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
-    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts;
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices;
+    GPU_PTR_READ(ForwardPlusLightBuffer) fpLights;
+    GPU_PTR_READ(ForwardPlusTileCountBuffer) fpTileCounts;
+    GPU_PTR_READ(ForwardPlusTileIndexBuffer) fpTileIndices;
     uint fpTileCountX;
     uint fpLightCount;
     uint fpTileSize;
     uint fpMaxPerTile;
-    vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer;
+    GPU_PTR_READ(SpotShadowBuffer) spotShadowBuffer;
     uint spotShadowMapIndex;
     uint spotShadowCount;
     uint spotIndex;
     uint pad_pc;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint mainRenderView;
     uint renderViewIndex;
     // Per-mesh chart tail (pushed at byte 192 per mesh; hasXforms == 0,
     // the zeroed-scratch default, selects the passthrough below).
     uint hasXforms;
     uint chartOffset;
-    vk::BufferPointer<GfxChartXforms> lmXforms;
+    GPU_PTR_READ(GfxChartXforms) lmXforms;
     // Byte 240 = PushConstants::padEnd_.x (the per-draw overlay scratch's
     // last word; the motion tail 192..240 stops short of it): the DIRECT
     // legs' per-draw dither-on-closeup flag (Scene::ditherCloseup — the
@@ -60,13 +61,12 @@ struct DefaultVsPush
     // Mirrors C++ DepthSkinTail (32 bytes, byte-exact).
     uint skinned;      // 208: 1 = fetch from the deformed heap
     uint deformedBase; // 212: the skinned span's heap-id base
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed; // 216: the frame's deformed heap
+    GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed; // 216: the frame's deformed heap
     uint4 _padSkin;    // 224..240: layout filler
     uint ditherCloseup; // 240
 };
 
-[[vk::push_constant]]
-ConstantBuffer<DefaultVsPush> pcDB;
+GPU_PUSH(DefaultVsPush, pcDB);
 
 struct VSIn
 {

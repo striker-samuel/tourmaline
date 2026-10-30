@@ -3,6 +3,7 @@
 
 #define SSR_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Ground-truth stencil view (TOURMALINE_SSR_DUMP +
 // TOURMALINE_SSR_STENCILVIEW=<src>): debug probe for the receiver-material
@@ -44,8 +45,7 @@ struct SsrStencilViewPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrStencilViewPush> sp;
+GPU_PUSH(SsrStencilViewPush, sp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

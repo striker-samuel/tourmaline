@@ -22,14 +22,15 @@
 
 #include "placement_common.hlsli"
 #include "placement_cull.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match C++ PlacementDrawBuildPush (128 bytes): the 32-byte header
 // (BDAs + protoCount + pads) + the prototype table's three fields, each
 // packed as two uint4 lanes over protos 0..7.
 struct PlacementDrawBuildPush
 {
-    vk::BufferPointer<PlacementBinsBuffer> bins;               // 0
-    vk::BufferPointer<PlacementIndirectBuffer> indirect;     // 8
+    GPU_PTR_READ(PlacementBinsBuffer) bins;               // 0
+    GPU_PTR_WRITE(PlacementIndirectBuffer) indirect;     // 8
     uint protoCount; // 16
     uint pad0;        // 20
     uint pad1;        // 24
@@ -42,8 +43,7 @@ struct PlacementDrawBuildPush
     int4 vertexOffset4567;  // 112
 };
 
-[[vk::push_constant]]
-ConstantBuffer<PlacementDrawBuildPush> pc;
+GPU_PUSH(PlacementDrawBuildPush, pc);
 
 [numthreads(8, 1, 1)]
 void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)

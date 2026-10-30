@@ -7,6 +7,8 @@
 // as float4 arrays (explicit padding — never float3, whose HLSL array
 // stride is layout-dependent). DXC-2018 compatible.
 
+#include "gpu_platform.hlsli"
+
 #ifndef PLACEMENT_DOMAINS_HLSLI
 #define PLACEMENT_DOMAINS_HLSLI
 
@@ -49,13 +51,13 @@ struct PlacementDomainParams
     uint triCount;    // 68
     uint vertCount;   // 72
     uint flags;       // 76 bit0 normals, bit1 uvs
-    vk::BufferPointer<PlacementPosBuffer> pos;     // 80
-    vk::BufferPointer<PlacementNrmBuffer> nrm;     // 88
-    vk::BufferPointer<PlacementUVBuffer> uv;       // 96
-    vk::BufferPointer<PlacementIndexBuffer> idx;   // 104
-    vk::BufferPointer<PlacementProbBuffer> prob;   // 112
-    vk::BufferPointer<PlacementAliasBuffer> alias; // 120
-    vk::BufferPointer<PlacementHeightBuffer> heights; // 128
+    GPU_PTR_READ(PlacementPosBuffer) pos;     // 80
+    GPU_PTR_READ(PlacementNrmBuffer) nrm;     // 88
+    GPU_PTR_READ(PlacementUVBuffer) uv;       // 96
+    GPU_PTR_READ(PlacementIndexBuffer) idx;   // 104
+    GPU_PTR_READ(PlacementProbBuffer) prob;   // 112
+    GPU_PTR_READ(PlacementAliasBuffer) alias; // 120
+    GPU_PTR_READ(PlacementHeightBuffer) heights; // 128
     uint hfW;         // 136
     uint hfH;         // 140
     float hfOX;       // 144
@@ -67,11 +69,11 @@ struct PlacementDomainParams
     float extMaxX;    // 168
     float extMaxZ;    // 172
     // ---- the program tail (PR02: the graph SSA) ----
-    vk::BufferPointer<PlacementInstrBuffer> instrs; // 176
+    GPU_PTR_READ(PlacementInstrBuffer) instrs; // 176
     uint instrCount;   // 184
     uint acceptIndex;  // 188
     // ---- the ecotope-mask tail (PR04: the painted layer) ----
-    vk::BufferPointer<PlacementEcoBuffer> eco; // 192 (0 = none)
+    GPU_PTR_READ(PlacementEcoBuffer) eco; // 192 (0 = none)
     uint ecoW;         // 200
     uint ecoH;         // 204
     uint ecoChannels;  // 208

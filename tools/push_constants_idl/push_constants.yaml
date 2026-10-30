@@ -12,27 +12,27 @@ total_size: 256
 scratch_start: 192
 fields:
   - { name: model, cpp: "float model[16]", hlsl: "float4x4 model", offset: 0, size: 64 }
-  - { name: frameUniforms, cpp: "uint64_t frameUniforms", hlsl: "vk::BufferPointer<FrameUniforms> frameUniforms", offset: 64, size: 8 }
-  - { name: lightsBuffer, cpp: "uint64_t lightsBuffer", hlsl: "vk::BufferPointer<LightBuffer> bLights", offset: 72, size: 8 }
-  - { name: materialsBuffer, cpp: "uint64_t materialsBuffer", hlsl: "vk::BufferPointer<MaterialsBuffer> bMats", offset: 80, size: 8 }
-  - { name: cascadeBuffer, cpp: "uint64_t cascadeBuffer", hlsl: "vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer", offset: 88, size: 8 }
+  - { name: frameUniforms, cpp: "uint64_t frameUniforms", hlsl: "GPU_PTR_READ(FrameUniforms) frameUniforms", offset: 64, size: 8 }
+  - { name: lightsBuffer, cpp: "uint64_t lightsBuffer", hlsl: "GPU_PTR_READ(LightBuffer) bLights", offset: 72, size: 8 }
+  - { name: materialsBuffer, cpp: "uint64_t materialsBuffer", hlsl: "GPU_PTR_READ(MaterialsBuffer) bMats", offset: 80, size: 8 }
+  - { name: cascadeBuffer, cpp: "uint64_t cascadeBuffer", hlsl: "GPU_PTR_READ(DirectionalCascadeBuffer) cascadeBuffer", offset: 88, size: 8 }
   - { name: materialId, cpp: "uint32_t materialId", hlsl: "uint materialId", offset: 96, size: 4 }
   - { name: comparisonSamplerId, cpp: "uint32_t comparisonSamplerId", hlsl: "uint comparisonSamplerId", offset: 100, size: 4 }
   - { name: numCascades, cpp: "uint32_t numCascades", hlsl: "uint numCascades", offset: 104, size: 4 }
   - { name: cascadeIndex, cpp: "uint32_t cascadeIndex", hlsl: "uint cascadeIndex", offset: 108, size: 4 }
-  - { name: fpLights, cpp: "uint64_t fpLights", hlsl: "vk::BufferPointer<ForwardPlusLightBuffer> fpLights", offset: 112, size: 8 }
-  - { name: fpTileCounts, cpp: "uint64_t fpTileCounts", hlsl: "vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts", offset: 120, size: 8 }
-  - { name: fpTileIndices, cpp: "uint64_t fpTileIndices", hlsl: "vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices", offset: 128, size: 8 }
+  - { name: fpLights, cpp: "uint64_t fpLights", hlsl: "GPU_PTR_READ(ForwardPlusLightBuffer) fpLights", offset: 112, size: 8 }
+  - { name: fpTileCounts, cpp: "uint64_t fpTileCounts", hlsl: "GPU_PTR_READ(ForwardPlusTileCountBuffer) fpTileCounts", offset: 120, size: 8 }
+  - { name: fpTileIndices, cpp: "uint64_t fpTileIndices", hlsl: "GPU_PTR_READ(ForwardPlusTileIndexBuffer) fpTileIndices", offset: 128, size: 8 }
   - { name: fpTileCountX, cpp: "uint32_t fpTileCountX", hlsl: "uint fpTileCountX", offset: 136, size: 4 }
   - { name: fpLightCount, cpp: "uint32_t fpLightCount", hlsl: "uint fpLightCount", offset: 140, size: 4 }
   - { name: fpTileSize, cpp: "uint32_t fpTileSize", hlsl: "uint fpTileSize", offset: 144, size: 4 }
   - { name: fpMaxPerTile, cpp: "uint32_t fpMaxPerTile", hlsl: "uint fpMaxPerTile", offset: 148, size: 4 }
-  - { name: spotShadowBuffer, cpp: "uint64_t spotShadowBuffer", hlsl: "vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer", offset: 152, size: 8 }
+  - { name: spotShadowBuffer, cpp: "uint64_t spotShadowBuffer", hlsl: "GPU_PTR_READ(SpotShadowBuffer) spotShadowBuffer", offset: 152, size: 8 }
   - { name: spotShadowMapIndex, cpp: "uint32_t spotShadowMapIndex", hlsl: "uint spotShadowMapIndex", offset: 160, size: 4 }
   - { name: spotShadowCount, cpp: "uint32_t spotShadowCount", hlsl: "uint spotShadowCount", offset: 164, size: 4 }
   - { name: spotIndex, cpp: "uint32_t spotIndex", hlsl: "uint spotIndex", offset: 168, size: 4 }
   - { name: pad_pc, cpp: "uint32_t pad_pc", hlsl: "uint pad_pc", offset: 172, size: 4 }
-  - { name: renderViews, cpp: "uint64_t renderViews", hlsl: "vk::BufferPointer<RenderViewBuffer> renderViews", offset: 176, size: 8 }
+  - { name: renderViews, cpp: "uint64_t renderViews", hlsl: "GPU_PTR_READ(RenderViewBuffer) renderViews", offset: 176, size: 8 }
   - { name: mainRenderView, cpp: "uint32_t mainRenderView", hlsl: "uint mainRenderView", offset: 184, size: 4 }
   - { name: renderViewIndex, cpp: "uint32_t renderViewIndex", hlsl: "uint renderViewIndex", offset: 188, size: 4 }
   - { name: prevModel, cpp: "float prevModel[12]", hlsl: "float3x4 prevModel", offset: 192, size: 48 }

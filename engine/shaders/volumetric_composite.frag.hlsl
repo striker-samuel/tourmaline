@@ -4,6 +4,7 @@
 #define VOLUMETRIC_COMPOSITE_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "gpu_platform.hlsli"
 
 // Volumetric fog COMPOSITE (the full-resolution half of the perf
 // split): the depth-aware bilateral upsample of the half-res
@@ -43,7 +44,7 @@ struct PSOut
 // (48 bytes). uint64 BDA leads; scalars after.
 struct VolumetricCompositePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms; // invProj (view dist)
+    GPU_PTR_READ(FrameUniforms) frameUniforms; // invProj (view dist)
     uint hdrTextureIndex;      // the FROZEN scene HDR (pre-fog)
     uint fogTextureIndex;      // half-res (scatter.rgb, throughput.a)
     uint fogDepthTextureIndex; // half-res rep view distance (R32F)
@@ -58,8 +59,7 @@ struct VolumetricCompositePush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<VolumetricCompositePush> cp;
+GPU_PUSH(VolumetricCompositePush, cp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

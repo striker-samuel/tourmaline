@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 // EVSM (Exponential Variance Shadow Maps) shared helpers.
 //
 // Moments (RGBA32F, see Rendergraph/evsm.h) — first AND second moments of
@@ -301,7 +303,7 @@ float2x2 EvsmRotate2x2(float a)
 // materialized, so the dynamically-indexed walk never stages scratch
 // copies ("Local Memory" stalls).
 float SampleEvsmTileSoft(
-    vk::BufferPointer<DirectionalCascadeBuffer> cb,
+    GPU_PTR(DirectionalCascadeBuffer) cb,
     uint cascadeIndex,
     float3 worldPos,
     float3 faceNormal,

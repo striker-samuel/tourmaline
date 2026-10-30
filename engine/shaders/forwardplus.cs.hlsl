@@ -47,13 +47,14 @@
 
 #define FORWARDPLUS_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct ForwardPlusCullPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<ForwardPlusLightBuffer> lights;
-    vk::BufferPointer<ForwardPlusTileCountBuffer> tileCounts;
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> tileIndices;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(ForwardPlusLightBuffer) lights;
+    GPU_PTR_WRITE(ForwardPlusTileCountBuffer) tileCounts;
+    GPU_PTR_WRITE(ForwardPlusTileIndexBuffer) tileIndices;
     uint depthTextureIndex;
     uint tileCountX;
     uint tileCountY;
@@ -62,12 +63,12 @@ struct ForwardPlusCullPush
     uint maxLightsPerTile;
     // Per-tile convex-volume bitmask output (the tail slot keeps every
     // field offset identical to the old pad0/pad1 layout).
-    vk::BufferPointer<GiVolumeTileMaskBuffer> volumeMasks;
+    GPU_PTR_READ(GiVolumeTileMaskBuffer) volumeMasks;
     // Per-tile FOG lists (see the header + the C++ mirror in
     // Engine/Rendergraph/forwardplus.h): march-range candidacy for the
     // volumetric pass, separate buffers from the surface lists.
-    vk::BufferPointer<ForwardPlusFogTileCountBuffer> fogTileCounts;
-    vk::BufferPointer<ForwardPlusFogTileIndexBuffer> fogTileIndices;
+    GPU_PTR_WRITE(ForwardPlusFogTileCountBuffer) fogTileCounts;
+    GPU_PTR_WRITE(ForwardPlusFogTileIndexBuffer) fogTileIndices;
     float fogMaxDistance;   // march-range far cut
     uint maxFogPerTile;     // fog row stride (matches the volumetric push)
     uint fogListsWanted;    // 0 = skip the fog track (vol pass off — no consumer)
@@ -75,8 +76,7 @@ struct ForwardPlusCullPush
 // NOTE: no static_assert here – this DXC (HLSL 2018 mode) rejects it at
 // global scope. Size is checked on the C++ side (88 bytes).
 
-[[vk::push_constant]]
-ConstantBuffer<ForwardPlusCullPush> pcCull;
+GPU_PUSH(ForwardPlusCullPush, pcCull);
 
 // Unproject NDC -> view space (exact, flip/reversed-Z agnostic).
 float3 UnprojectView(float2 ndcXY, float ndcZ, float4x4 invProj)

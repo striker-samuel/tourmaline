@@ -31,6 +31,7 @@
 #define GFXSKINNING_PASS
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
+#include "gpu_platform.hlsli"
 
 // Generous declared capacities (the BDA-pointer pattern: the structs
 // size the pointer math; the loads stay within the real heaps).
@@ -51,20 +52,19 @@ struct SkinShadeHeapGpu { uint word[SKIN_SHADE_HEAP_MAX]; }; // 4 words/vertex
 // Mirrors smvk::skinning::SkinningPush (Rendergraph/skinning.h).
 struct SkinningPush
 {
-    vk::BufferPointer<SkinPaletteGpu> palette;   // 0
-    vk::BufferPointer<SkinStreamGpu> skin;        // 8
-    vk::BufferPointer<SkinRangesGpu> ranges;       // 16
-    vk::BufferPointer<SkinDeformedGpu> deformed;  // 24
-    vk::BufferPointer<SkinPosHeapGpu> posHeap;     // 32
-    vk::BufferPointer<SkinShadeHeapGpu> shadeHeap; // 40
+    GPU_PTR_READ(SkinPaletteGpu) palette;   // 0
+    GPU_PTR_READ(SkinStreamGpu) skin;        // 8
+    GPU_PTR_READ(SkinRangesGpu) ranges;       // 16
+    GPU_PTR_WRITE(SkinDeformedGpu) deformed;  // 24
+    GPU_PTR_WRITE(SkinPosHeapGpu) posHeap;     // 32
+    GPU_PTR_WRITE(SkinShadeHeapGpu) shadeHeap; // 40
     uint deformedBase; // 48 the skinned span's heap-id base
     uint paletteCount;  // 52
     uint rangeCount;    // 56
     uint pad0;          // 60
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SkinningPush> pcS;
+GPU_PUSH(SkinningPush, pcS);
 
 // ---------------------------------------------------------------------------
 // Octahedral ENCODE (the CPU vertexpack::Pack* port - vertex_pack.hlsli

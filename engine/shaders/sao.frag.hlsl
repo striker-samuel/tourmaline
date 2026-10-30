@@ -4,6 +4,7 @@
 #define SAO_PASS
 #include "common.hlsli"
 #include "ao.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -19,7 +20,7 @@ struct PSOut
 // Must match Engine/Rendergraph/sao.h SaoPush (48 bytes).
 struct SaoPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint depthTextureIndex;
     uint sampleCount; // 1..32 spiral taps
     float radius; // view-space spiral extent (m)
@@ -34,8 +35,7 @@ struct SaoPush
     uint normalTextureIndex;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SaoPush> sp;
+GPU_PUSH(SaoPush, sp);
 
 // Unproject NDC -> view space (exact, flip/reversed-Z agnostic).
 float3 SaoUnprojectView(float2 ndcXY, float ndcZ, float4x4 invProj)

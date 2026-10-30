@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // Diffuse SSGI temporal: motion-vector-reprojected accumulation of the
 // half-res GI layer (rgb = raw incoming radiance, a = hit confidence).
@@ -40,7 +41,7 @@ struct PSOut
 // "improperly straddling vector" hazard).
 struct SsgiDiffuseTemporalPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint currTextureIndex;      // half-res blurred GI (this frame)
     uint historyTextureIndex;   // half-res temporal history (previous record)
     uint motionTextureIndex;    // render-extent RG16F motion (prevUV - currUV)
@@ -61,8 +62,7 @@ struct SsgiDiffuseTemporalPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiDiffuseTemporalPush> tp;
+GPU_PUSH(SsgiDiffuseTemporalPush, tp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

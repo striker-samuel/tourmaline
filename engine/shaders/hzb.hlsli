@@ -15,6 +15,8 @@
 //     the 2x2 footprint below (clamped at edges).
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 
 // Depth-texture source selector for HzbPush.srcMip (mip 0 build).
 #define HZB_SRC_DEPTH 0xFFFFFFFFu
@@ -25,7 +27,7 @@ struct HzbBuffer { float texels[HZB_MAX_FLOATS]; };
 
 struct HzbPush
 {
-    vk::BufferPointer<HzbBuffer> hzb;
+    GPU_PTR_WRITE(HzbBuffer) hzb;
     uint srcMip; // HZB_SRC_DEPTH = copy from depth texture (mip 0 build)
     uint dstMip;
     uint srcWidth;
@@ -57,8 +59,8 @@ struct HzbSpdCounter
 // dispatch's total workgroups (gx*gy) for the last-group test.
 struct HzbSpdPush
 {
-    vk::BufferPointer<HzbBuffer> hzb;
-    vk::BufferPointer<HzbSpdCounter> counter; // this flight's slice
+    GPU_PTR_WRITE(HzbBuffer) hzb;
+    GPU_PTR(HzbSpdCounter) counter; // this flight's slice
     uint width; // mip 0 extent (== depth extent)
     uint height;
     uint mipCount; // total levels (1..16)

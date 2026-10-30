@@ -13,9 +13,9 @@
 
 #include "placement_common.hlsli"
 #include "placement_cull.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<PlacementCullPush> pc;
+GPU_PUSH(PlacementCullPush, pc);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)

@@ -17,9 +17,9 @@
 #define PARTICLES_PASS // keep the scene-wide pc push out of scope
 #include "common.hlsli"
 #include "particles.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<ParticlesDrawPush> pcDraw;
+GPU_PUSH(ParticlesDrawPush, pcDraw);
 
 struct ParticleVsOut
 {

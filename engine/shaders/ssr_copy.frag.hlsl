@@ -4,6 +4,7 @@
 #define SSR_PASS
 #include "common.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR copy: blits the compute-chain radiance buffer (float4 per
 // half-res pixel: rgb = reflected HDR x Fresnel x fade x intensity,
@@ -14,15 +15,14 @@
 // Must match Engine/Rendergraph/ssr.h SsrCopyPush (32 bytes).
 struct SsrCopyPush
 {
-    vk::BufferPointer<SsrRadiance> radiance;
+    GPU_PTR_READ(SsrRadiance) radiance;
     uint halfW;
     uint halfH;
     uint pad0;
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrCopyPush> sp;
+GPU_PUSH(SsrCopyPush, sp);
 
 struct PSOut
 {

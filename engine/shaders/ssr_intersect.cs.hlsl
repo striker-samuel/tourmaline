@@ -8,6 +8,7 @@
 #include "vertex_pack.hlsli"
 #include "hzb.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR intersect (SSSR intersect port — see FidelityFX-SDK-v1.1.4
 // sdk/include/FidelityFX/gpu/sssr/ffx_sssr_intersect.h): indirect
@@ -43,11 +44,11 @@
 // uint64 BDAs lead (see ssr.h — scalars never precede a BDA).
 struct SsrIntersectPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<SsrRayList> rayList;
-    vk::BufferPointer<SsrRayCounter> rayCounter; // [1] = the frozen count (early-out bound)
-    vk::BufferPointer<SsrRadiance> radiance;
-    vk::BufferPointer<HzbBuffer> ssrHzb;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(SsrRayList) rayList;
+    GPU_PTR_READ(SsrRayCounter) rayCounter; // [1] = the frozen count (early-out bound)
+    GPU_PTR_WRITE(SsrRadiance) radiance;
+    GPU_PTR_READ(HzbBuffer) ssrHzb;
     uint hdrTextureIndex;
     uint depthTextureIndex;
     uint samplerIndex;
@@ -70,8 +71,7 @@ struct SsrIntersectPush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrIntersectPush> sp;
+GPU_PUSH(SsrIntersectPush, sp);
 
 
 static const float kSsrMaxReflected = 8192.0f; // firefly cap (same as the old trace)

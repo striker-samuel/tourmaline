@@ -35,9 +35,9 @@
 
 #define DS_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<DsPhasePush> pcDS;
+GPU_PUSH(DsPhasePush, pcDS);
 
 groupshared uint gsGrpMasks[DS_MAX_LIGHT_GROUPS]; // per-group OR over 64 tiles
 groupshared uint gsCounts[64];                    // reservation per tile (uints)

@@ -25,6 +25,7 @@
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
 #ifndef UVFLAT_CHANNEL
 #define UVFLAT_CHANNEL 0
@@ -40,10 +41,9 @@ struct UvFlatVsPush
     // reads hasXforms == 0 and falls back to raw chart uvs).
     uint hasXforms;
     uint chartOffset;
-    vk::BufferPointer<GfxChartXforms> lmXforms;
+    GPU_PTR_READ(GfxChartXforms) lmXforms;
 };
-[[vk::push_constant]]
-ConstantBuffer<UvFlatVsPush> pcUV;
+GPU_PUSH(UvFlatVsPush, pcUV);
 #endif
 
 struct VSIn

@@ -34,6 +34,7 @@
 
 #define SPD_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // 16x16 threads; cascade depths for a 5-level bloom chain.
 #define SPD_BLOCK 16u
@@ -63,8 +64,7 @@ struct SpdPush
     float knee;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SpdPush> spd;
+GPU_PUSH(SpdPush, spd);
 
 // Bindless storage-image array (set 0, binding 2) — the same descriptor
 // array evsmStorage[] addresses (one unified bindless index space, so the

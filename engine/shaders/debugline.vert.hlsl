@@ -4,14 +4,15 @@
 // Cone-axis debug lines: pos-only stream, flat push color.
 // Used with VertexLayoutId::DebugLine + PrimitiveTopology::LineList.
 // C++ mirror: app::LineDebugPush (80 bytes).
+#include "gpu_platform.hlsli"
+
 struct LineDebugPush
 {
     float4x4 viewProj;
     float4 color;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<LineDebugPush> pcL;
+GPU_PUSH(LineDebugPush, pcL);
 
 struct VSIn
 {

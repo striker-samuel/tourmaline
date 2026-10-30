@@ -21,6 +21,7 @@
 
 #define PROBEPREMIX_MIX_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Mirrors smvk::probepremix::BlendSelectionGpu (probepremix.h).
 struct BlendSelectionGpu
@@ -38,7 +39,7 @@ struct BlendSelectionGpu
 // Mirrors smvk::probepremix::MixPush (probepremix.h).
 struct MixPush
 {
-    vk::BufferPointer<BlendSelectionGpu> selection; // 0
+    GPU_PTR_READ(BlendSelectionGpu) selection; // 0
     uint dstIndex;                                 // 8  this mip's storage view
     uint mip;                                      // 12
     uint faceSize;                                 // 16
@@ -47,8 +48,7 @@ struct MixPush
     uint pad0;                                     // 28
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MixPush> pc;
+GPU_PUSH(MixPush, pc);
 
 // Bindless storage image ARRAY (set 0, binding 2): the same
 // declaration space evsm_resolve/spd_downsample use (one unified

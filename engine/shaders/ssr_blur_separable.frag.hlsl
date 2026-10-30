@@ -6,6 +6,7 @@
 #include "dof.hlsli"
 #include "hzb.hlsli"
 #include "ssr_receiver.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR separable blur: the H+V twin of ssr_blur.frag.hlsl (the 2D
 // bilateral stays the quality baseline — SsrBlurMode::Bilateral2D).
@@ -53,9 +54,9 @@ struct PSOut
 // the old top-left-texel G-buffer Load.
 struct SsrSeparableBlurPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<HzbBuffer> hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
-    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(HzbBuffer) hzb;  // MAX-HZB: mip1 (nearest-of-2x2) reads
+    GPU_PTR_READ(SsrReceiverData) receiverData; // packed receiver per half-res pixel
     uint reflTextureIndex;  // half-res source (raw for H, blurTemp for V)
     uint samplerIndex;      // linear clamp (reflection taps only)
     float sharpness; // depth edge weight (higher = tighter)
@@ -74,8 +75,7 @@ struct SsrSeparableBlurPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrSeparableBlurPush> bp;
+GPU_PUSH(SsrSeparableBlurPush, bp);
 
 // Relative-depth edge weight: 1 on the same surface, ~0 across a
 // discontinuity. Background taps carry the sky sentinel distance, so a

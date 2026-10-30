@@ -3,14 +3,15 @@
 
 // Cone-axis debug line fragment: flat push color.
 // C++ mirror: app::LineDebugPush (80 bytes).
+#include "gpu_platform.hlsli"
+
 struct LineDebugPush
 {
     float4x4 viewProj;
     float4 color;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<LineDebugPush> pcL;
+GPU_PUSH(LineDebugPush, pcL);
 
 struct PSIn
 {

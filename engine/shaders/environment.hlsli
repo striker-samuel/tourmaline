@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 // Shared skydome IBL + fog evaluation. Included after common.hlsli so
 // FrameUniforms / EnvironmentFrameData are visible. All colors are linear;
 // intensities convert the 0..1 UI colors to pre-exposure HDR radiance.
@@ -55,7 +57,7 @@ float3 EvaluateSkyColor(float3 dir, EnvironmentFrameData env)
 // (shadows.hlsli GetShadowFactorCascadedFromPC). dir must be normalized;
 // sunDirection.xyz is documented normalized (common.hlsli), so only it
 // keeps a defensive normalize — the per-pixel normalize(dir) is dropped.
-float3 EvaluateSkyGradientFromFrame(float3 dir, vk::BufferPointer<FrameUniforms> framePtr)
+float3 EvaluateSkyGradientFromFrame(float3 dir, GPU_PTR(FrameUniforms) framePtr)
 {
     float4 skyZenith = framePtr.Get().env.skyZenith;
     float4 skyHorizon = framePtr.Get().env.skyHorizon;
@@ -72,7 +74,7 @@ float3 EvaluateSkyGradientFromFrame(float3 dir, vk::BufferPointer<FrameUniforms>
     return sky;
 }
 
-float3 EvaluateSkyColorFromFrame(float3 dir, vk::BufferPointer<FrameUniforms> framePtr)
+float3 EvaluateSkyColorFromFrame(float3 dir, GPU_PTR(FrameUniforms) framePtr)
 {
     float skyMode = framePtr.Get().env.fogEndAndFlags.y;
     if (skyMode < 0.5f)
@@ -230,9 +232,9 @@ float EnvSpecFade(float gloss, float metallic)
 float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrameData env,
     float3 worldPos, FrameUniforms frame, uint tileIdx,
     uint fpLightCount, uint fpMaxPerTile,
-    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts,
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices,
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights, float metallic)
+    GPU_PTR(ForwardPlusTileCountBuffer) fpTileCounts,
+    GPU_PTR(ForwardPlusTileIndexBuffer) fpTileIndices,
+    GPU_PTR(ForwardPlusLightBuffer) fpLights, float metallic)
 {
     // Intensity split: iblIntensity (ground.w) is the ANALYTIC fallback's
     // intensity only. Baked samples are TRUE radiance (physical units,
@@ -268,7 +270,7 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     // unchanged - the zero-regression contract.
     if (useBaked && frame.probePremixIndex != 0xffffffffu) {
         const ProbePremixSelection sel =
-            vk::BufferPointer<ProbePremixSelection>(frame.probePremixSel).Get();
+            GPU_PTR(ProbePremixSelection)(frame.probePremixSel).Get();
         if (sel.count > 0u) {
             TextureCube blend =
                 cubemaps[NonUniformResourceIndex(frame.probePremixIndex)];
@@ -629,7 +631,7 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     if (any(cellI < int2(0, 0)) || any(cellI >= int2(frame.envTileDimX, frame.envTileDimZ)))
     {
         const EnvTileRecord base =
-            vk::BufferPointer<EnvTileRecord>(frame.envZones).Get();
+            GPU_PTR(EnvTileRecord)(frame.envZones).Get();
         EnvTileUnpack(base, z);
         weight = 1.0;
         return true;
@@ -637,7 +639,7 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
 
     // The cell: up to three records — the mid band (the enclosed room)
     // first, else the splitY half-spaces.
-    const EnvTileCell c = vk::BufferPointer<EnvTileCell>(
+    const EnvTileCell c = GPU_PTR(EnvTileCell)(
         frame.envTileCells
         + uint64_t(uint(cellI.y) * frame.envTileDimX + uint(cellI.x)) * 32u
     ).Get();
@@ -655,7 +657,7 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     }
     if (rec >= n)
         return false; // stale/corrupt index: the plain path, never garbage
-    const EnvTileRecord r = vk::BufferPointer<EnvTileRecord>(
+    const EnvTileRecord r = GPU_PTR(EnvTileRecord)(
         frame.envZones + uint64_t(rec) * 48u).Get();
     EnvTileUnpack(r, z);
     weight = w;
@@ -749,7 +751,7 @@ bool EnvZoneSegment(float3 p, FrameUniforms frame,
         }
         else
         {
-            cache.c = vk::BufferPointer<EnvTileCell>(
+            cache.c = GPU_PTR(EnvTileCell)(
                 frame.envTileCells
                 + uint64_t(uint(cellI.y) * frame.envTileDimX
                     + uint(cellI.x)) * 32u
@@ -786,7 +788,7 @@ bool EnvZoneSegment(float3 p, FrameUniforms frame,
         cache.weight = w;
         if (rec < n)
         {
-            const EnvTileRecord r = vk::BufferPointer<EnvTileRecord>(
+            const EnvTileRecord r = GPU_PTR(EnvTileRecord)(
                 frame.envZones + uint64_t(rec) * 48u).Get();
             EnvTileUnpack(r, cache.look);
             cache.usable = w > 0.0;

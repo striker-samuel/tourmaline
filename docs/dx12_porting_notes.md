@@ -515,16 +515,20 @@ the same HLSL through the same DXC (no -spirv), SM 6_5 (the box's
 HighestShaderModel), `-DTOURMALINE_DXIL=1` flips common.hlsli's binding
 block to the bounded-register form (the five 8192-wide regions matching
 the root signature's tables). The `vk::` ATTRIBUTES pass DXC un-ignored
-(warnings). BUT `vk::BufferPointer` (the engine's BDA constants model —
-FrameUniforms/lights/materials/renderViews/... in the push blocks) is
+(warnings). BUT the BDA pointer model — `GPU_PTR` in the push blocks
+(engine/shaders/gpu_platform.hlsli, today expanding to `vk::BufferPointer`;
+FrameUniforms/lights/materials/renderViews/...) is
 SPIR-V-ONLY: 108/111 stage shaders fail on it (measured; 3 debug
 shaders without it are the live allowlist, `HLSL_DXIL_OK_FILES`). The
 remaining rework: push blocks carry OFFSETS into bound
 ByteAddressBuffers instead of raw BDAs — the root signature gains a few
 constant-buffer table slots (one BAB per engine buffer table) and the
-push shims from address to (slot, offset). That is the real per-shader
-mountain (52 files carry BufferPointer types) — the build plumbing, the
-binding shim, and the measurement are done; the rework is the milestone.
+push shims from address to (slot, offset). The declaration layer is
+ALREADY centralized (the 2026-10 GPU_PTR/GPU_PUSH migration: every
+shader declares through gpu_platform.hlsli, verified byte-identical
+SPIR-V), so the DXIL rework redefines the macros ONCE instead of
+touching ~120 shader files; the per-shader mountain that remains is the
+.Get() ACCESS layer (slot+offset arithmetic per fetch site).
 
 ## 11. The missing-steps inventory (the handoff before D3D12 integration)
 
@@ -532,7 +536,8 @@ The backend runs the sponza gate deterministic + the full barrier model +
 real compute dispatches. What is MISSING before the backend could integrate:
 
 1. **The BDA rework (THE blocker for engine compute passes)** -
-   `vk::BufferPointer` (52 files, the push-block address model) is
+   the push-block address model (`GPU_PTR`, gpu_platform.hlsli, today
+   `vk::BufferPointer`) is
    SPIR-V-only, 108/111 stage shaders fail DXIL. The rework: push blocks
    carry (slot, byte-offset) pairs into bounded ByteAddressBuffer arrays
    (the u0/t0 regions - see 10's ITEM 4) + a buffer-bindless registration

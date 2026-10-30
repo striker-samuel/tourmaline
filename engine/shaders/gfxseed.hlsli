@@ -20,6 +20,7 @@
 
 #include "gfxfilter.hlsli"
 #include "gfxmesh.hlsli"
+#include "gpu_platform.hlsli"
 
 struct SeedVsMainPush
 {
@@ -33,18 +34,18 @@ struct SeedVsMainPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    vk::BufferPointer<GfxDraws> draws;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(GfxDraws) draws;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint renderViewIndex;
     // paramsValid (byte 212): 1 = vsDeformed is live (the same null-check
     // flag the filtered VS reads - the skinned fetch gates on it).
     uint paramsValid;
-    vk::BufferPointer<GfxChartXforms> lmXforms;
+    GPU_PTR_READ(GfxChartXforms) lmXforms;
     // The frame's DEFORMED heap (the skinning pass output): skinned draws
     // fetch pos at (vertexID - vsDeformedBase) * 5 so the depth legs write
     // the ANIMATED pose (not the bind pose) - the depth/Main parity the
     // Northlight order requires.
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed;
+    GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed;
     uint vsDeformedBase;
     uint vsPad;
 };
@@ -87,8 +88,8 @@ struct SeedVSOut
 // PLACE (never bind the 256MB heap to a local - the NV pipeline compiler
 // wedges; see gfxfiltered.vert.hlsl).
 float3 SeedSkinPos(float3 position, uint instanceID, uint vertexID,
-    vk::BufferPointer<GfxDraws> draws,
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed,
+    GPU_PTR(GfxDraws) draws,
+    GPU_PTR(GfxSkinDeformedHeap) vsDeformed,
     uint vsDeformedBase, uint paramsValid)
 {
     if ((draws.Get().draws[instanceID].misc.y & GFX_DRAW_SKINNED) != 0
@@ -103,10 +104,10 @@ float3 SeedSkinPos(float3 position, uint instanceID, uint vertexID,
 }
 
 float4 SeedClipPos(float3 position, uint instanceID, uint vertexID,
-    vk::BufferPointer<GfxDraws> draws,
-    vk::BufferPointer<RenderViewBuffer> renderViews,
+    GPU_PTR(GfxDraws) draws,
+    GPU_PTR(RenderViewBuffer) renderViews,
     uint renderViewIndex,
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed,
+    GPU_PTR(GfxSkinDeformedHeap) vsDeformed,
     uint vsDeformedBase, uint paramsValid)
 {
     float3 p = SeedSkinPos(position, instanceID, vertexID, draws,
@@ -123,8 +124,8 @@ float4 SeedClipPos(float3 position, uint instanceID, uint vertexID,
 // the draw record is re-read). Skinned draws use the deformed pose too so
 // the screen-door distance tracks the animated position.
 float3 SeedWorldPos(float3 position, uint instanceID, uint vertexID,
-    vk::BufferPointer<GfxDraws> draws,
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed,
+    GPU_PTR(GfxDraws) draws,
+    GPU_PTR(GfxSkinDeformedHeap) vsDeformed,
     uint vsDeformedBase, uint paramsValid)
 {
     float3 p = SeedSkinPos(position, instanceID, vertexID, draws,
@@ -136,7 +137,7 @@ float3 SeedWorldPos(float3 position, uint instanceID, uint vertexID,
 // Per-draw dither-on-closeup flag from the Draw ring (misc.y bit 1 —
 // GFX_DRAW_DITHER_CLOSEUP; set at PushDraw time together with the MASKED
 // bucket routing that lands the draw in these alpha-tested twins).
-uint SeedDitherCloseup(uint instanceID, vk::BufferPointer<GfxDraws> draws)
+uint SeedDitherCloseup(uint instanceID, GPU_PTR(GfxDraws) draws)
 {
     return (draws.Get().draws[instanceID].misc.y
         & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;

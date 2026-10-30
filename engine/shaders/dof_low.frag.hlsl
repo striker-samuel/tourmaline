@@ -4,6 +4,7 @@
 #define DOF_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -19,7 +20,7 @@ struct PSOut
 // Must match Engine/Rendergraph/dof.h DofLowPush (56 bytes).
 struct DofLowPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint hdrTextureIndex;
     uint depthTextureIndex;
     uint samplerIndex;
@@ -33,8 +34,7 @@ struct DofLowPush
     uint pad3;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<DofLowPush> dp;
+GPU_PUSH(DofLowPush, dp);
 
 // 12-tap Poisson disc (unit radius).
 static const float2 kPoisson12[12] = {

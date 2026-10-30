@@ -23,6 +23,7 @@
 
 #define MOTIONBLUR_TILES_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 // Bindless storage image array (set 0, binding 2, GENERAL layout —
 // mirrors binding 0 for Storage-usage images, see
@@ -44,8 +45,7 @@ struct MotionBlurTilesPush
     float pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MotionBlurTilesPush> pcTiles;
+GPU_PUSH(MotionBlurTilesPush, pcTiles);
 
 groupshared float gsLen2[256];
 groupshared float2 gsVel[256];

@@ -4,6 +4,7 @@
 #define SHADOW_DIRECT_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
 // Direct shadow VS: mirrors PushConstants bytes 0..192 field-for-field,
 // then overlays the unused prevModel scratch (192..240) with the direct
@@ -13,27 +14,27 @@
 struct ShadowVsPush
 {
     float4x4 model;
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<LightBuffer> bLights;
-    vk::BufferPointer<MaterialsBuffer> bMats;
-    vk::BufferPointer<DirectionalCascadeBuffer> cascadeBuffer;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(LightBuffer) bLights;
+    GPU_PTR_READ(MaterialsBuffer) bMats;
+    GPU_PTR_READ(DirectionalCascadeBuffer) cascadeBuffer;
     uint materialId;
     uint comparisonSamplerId;
     uint numCascades;
     uint cascadeIndex;
-    vk::BufferPointer<ForwardPlusLightBuffer> fpLights;
-    vk::BufferPointer<ForwardPlusTileCountBuffer> fpTileCounts;
-    vk::BufferPointer<ForwardPlusTileIndexBuffer> fpTileIndices;
+    GPU_PTR_READ(ForwardPlusLightBuffer) fpLights;
+    GPU_PTR_READ(ForwardPlusTileCountBuffer) fpTileCounts;
+    GPU_PTR_READ(ForwardPlusTileIndexBuffer) fpTileIndices;
     uint fpTileCountX;
     uint fpLightCount;
     uint fpTileSize;
     uint fpMaxPerTile;
-    vk::BufferPointer<SpotShadowBuffer> spotShadowBuffer;
+    GPU_PTR_READ(SpotShadowBuffer) spotShadowBuffer;
     uint spotShadowMapIndex;
     uint spotShadowCount;
     uint spotIndex;
     uint pad_pc;
-    vk::BufferPointer<RenderViewBuffer> renderViews;
+    GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint mainRenderView;
     uint renderViewIndex;
     // 192..208: unused prevModel scratch (shadow.vert never reads it).
@@ -44,15 +45,14 @@ struct ShadowVsPush
     // position only, never normals/tangents).
     uint skinned;      // 208: 1 = fetch from the deformed heap
     uint deformedBase; // 212: the skinned span's heap-id base
-    vk::BufferPointer<GfxSkinDeformedHeap> vsDeformed; // 216
+    GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed; // 216
     uint4 _padSkin;    // 224..240: layout filler
     // 240..256: the per-draw dither-on-closeup flag lives in .x; y..w
     // stay scratch.
     uint4 padEnd;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<ShadowVsPush> pcS;
+GPU_PUSH(ShadowVsPush, pcS);
 
 struct VSIn
 {

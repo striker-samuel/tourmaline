@@ -4,6 +4,7 @@
 #define SSAO_PASS
 #include "common.hlsli"
 #include "ao.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -19,7 +20,7 @@ struct PSOut
 // Must match Engine/Rendergraph/ssao.h SsaoPush (48 bytes).
 struct SsaoPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint depthTextureIndex;
     uint sampleCount; // 1..32 hemisphere taps
     float radius; // view-space sample radius (m)
@@ -34,8 +35,7 @@ struct SsaoPush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsaoPush> sp;
+GPU_PUSH(SsaoPush, sp);
 
 // Unproject NDC -> view space (exact, flip/reversed-Z agnostic).
 float3 SsaoUnprojectView(float2 ndcXY, float ndcZ, float4x4 invProj)

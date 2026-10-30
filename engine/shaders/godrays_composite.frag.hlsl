@@ -4,6 +4,7 @@
 #define GODRAYS_PASS
 #include "common.hlsli"
 #include "dof.hlsli"
+#include "gpu_platform.hlsli"
 
 // Screen-space god rays, stage 4 - the HDR COMPOSITE (full res): the
 // filtered screen-space rays added ADDITIVELY over the scene HDR,
@@ -53,7 +54,7 @@ struct PSOut
 // (64 bytes). uint64 BDA leads; scalars after.
 struct GodraysCompositePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint hdrTextureIndex;     // the scene HDR to composite over
     uint depthTextureIndex;   // full-res scene depth (fogFront)
     uint raysTextureIndex;    // the FILTERED 1/16 rays
@@ -70,8 +71,7 @@ struct GodraysCompositePush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<GodraysCompositePush> cp;
+GPU_PUSH(GodraysCompositePush, cp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

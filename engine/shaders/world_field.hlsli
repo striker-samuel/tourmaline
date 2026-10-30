@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "gpu_platform.hlsli"
+
 // WorldFields — the ONE shared world-space voxel-field sampler.
 // Included AFTER common.hlsli (FrameUniforms carries the table BDA;
 // volumeTextures[] + samplers[] are the bindless arrays).
@@ -101,18 +103,18 @@ struct WorldFieldTableHeader
 
 WorldFieldTableHeader WorldFieldLoadHeader(uint64_t tableBda)
 {
-    return vk::BufferPointer<WorldFieldTableHeader>(tableBda).Get();
+    return GPU_PTR(WorldFieldTableHeader)(tableBda).Get();
 }
 
 WorldFieldGpu WorldFieldLoadField(uint64_t tableBda, uint fieldId, uint fieldStride)
 {
-    return vk::BufferPointer<WorldFieldGpu>(
+    return GPU_PTR(WorldFieldGpu)(
         tableBda + uint64_t(16u + fieldId * fieldStride)).Get();
 }
 
 WorldPageGpu WorldFieldLoadPage(uint64_t tableBda, uint pageTableOffset, uint byteIndex)
 {
-    return vk::BufferPointer<WorldPageGpu>(tableBda + uint64_t(pageTableOffset + byteIndex)).Get();
+    return GPU_PTR(WorldPageGpu)(tableBda + uint64_t(pageTableOffset + byteIndex)).Get();
 }
 
 // Encoded texel -> attribute. Called AFTER interpolation: hardware

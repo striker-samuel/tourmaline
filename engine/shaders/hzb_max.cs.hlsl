@@ -28,9 +28,9 @@
 #define HZB_PASS
 #include "common.hlsli"
 #include "hzb.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<HzbPush> pcH;
+GPU_PUSH(HzbPush, pcH);
 
 [numthreads(8, 8, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)

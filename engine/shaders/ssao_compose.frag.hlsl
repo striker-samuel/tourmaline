@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "ao.hlsli"
 #include "hzb.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSGI AO compose: joint-bilateral (depth + normal) upsample of the
 // half-res blurred AO to FULL res, then the HDR AO reconstruction.
@@ -93,8 +94,8 @@ struct PSOut
 // 8. uint64 BDAs lead (see SsrClassifyPush's note); scalars after.
 struct SsgiAoComposePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms; // nearPlane (center dist)
-    vk::BufferPointer<HzbBuffer> hzb; // MAX-HZB: mip0 center depth, mip1 reps
+    GPU_PTR_READ(FrameUniforms) frameUniforms; // nearPlane (center dist)
+    GPU_PTR_READ(HzbBuffer) hzb; // MAX-HZB: mip0 center depth, mip1 reps
     uint aoTextureIndex; // half-res blurred (ao, encDist, octN)
     uint normalTextureIndex; // shared full-res oct normal (0xffffffff = depth-only)
     uint aoTermTextureIndex; // Main MRT export (pre-AO ambient term)
@@ -111,8 +112,7 @@ struct SsgiAoComposePush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiAoComposePush> cp;
+GPU_PUSH(SsgiAoComposePush, cp);
 
 PSOut mainPS(PSIn IN)
 {

@@ -81,6 +81,7 @@ struct PSOut
 // JHFAA-style shading-normal validity correction (experimental, frame-
 // flag gated — see the file header + docs/jhfaa_normal_fix.md).
 #include "shading_normal_fix.hlsli"
+#include "gpu_platform.hlsli"
 
 static const float PI = 3.14159265359f;
 
@@ -349,8 +350,8 @@ void ApplyForwardPlusDecals(FrameUniforms frame, float2 pix, float3 worldPos,
 
     // Hoist buffer pointers out of the loop — keeps descriptors in registers,
     // avoids repeated address calculations, reduces register pressure.
-    vk::BufferPointer < ForwardPlusDecalTileIndexBuffer > decalTileIdxBuf = frame.decalTileIndices;
-    vk::BufferPointer < ForwardPlusDecalBuffer > decalBuf = frame.decals;
+    GPU_PTR(ForwardPlusDecalTileIndexBuffer) decalTileIdxBuf= frame.decalTileIndices;
+    GPU_PTR(ForwardPlusDecalBuffer) decalBuf= frame.decals;
 
     // Tile lookup (same 16px tiling as the forward+ light lists).
     uint fpTileSizeD = max(pc.fpTileSize, 1u);
@@ -1100,7 +1101,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     
     // Hoist buffer pointers — keeps descriptors in registers, reduces
     // address calculation overhead inside the hot loops.
-    vk::BufferPointer < ForwardPlusLightBuffer > fpLightsBuf = pc.fpLights;
+    GPU_PTR(ForwardPlusLightBuffer) fpLightsBuf= pc.fpLights;
 
     if (hot.dsEnabled != 0u && hot.dsTileCountX > 0u)
     {

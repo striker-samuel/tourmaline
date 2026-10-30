@@ -6,6 +6,7 @@
 #include "dof.hlsli"
 #include "hzb.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // Diffuse SSGI trace (Engine/Rendergraph/ssgi_diffuse.h): ONE
 // cosine-weighted hemisphere ray per half-res pixel per frame, marched
@@ -67,10 +68,10 @@
 // discipline as every SSR push).
 struct SsgiDiffuseTracePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<SsrRadiance> radiance;      // float4 per half-res pixel
-    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
-    vk::BufferPointer<HzbBuffer> hzb;             // the shared final-depth MAX pyramid
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_WRITE(SsrRadiance) radiance;      // float4 per half-res pixel
+    GPU_PTR_READ(SsrReceiverData) receiverData; // packed receiver per half-res pixel
+    GPU_PTR_READ(HzbBuffer) hzb;             // the shared final-depth MAX pyramid
     uint hdrTextureIndex;       // the FROZEN pre-compose HDR (radiance source)
     uint depthTextureIndex;     // full-res final depth
     uint gbufferTextureIndex;   // thin G-buffer (oct world normal + rough + metal)
@@ -91,8 +92,7 @@ struct SsgiDiffuseTracePush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiDiffuseTracePush> sp;
+GPU_PUSH(SsgiDiffuseTracePush, sp);
 
 static const float SSGI_PI = 3.14159265359f;
 // Firefly cap (SSR's kSsrMaxReflected twin): GI fireflies are WORSE

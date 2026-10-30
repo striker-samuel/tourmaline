@@ -64,9 +64,9 @@
 #define GFXSKINBOUNDS_PASS
 #include "common.hlsli"
 #include "gfxfilter.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<GfxSkinBoundsPush> pcS;
+GPU_PUSH(GfxSkinBoundsPush, pcS);
 
 groupshared float3 gsUnionMin[128];
 groupshared float3 gsUnionMax[128];

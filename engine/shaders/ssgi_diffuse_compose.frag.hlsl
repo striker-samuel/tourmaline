@@ -6,6 +6,7 @@
 #include "dof.hlsli"
 #include "hzb.hlsli"
 #include "ssr_receiver.hlsli"
+#include "gpu_platform.hlsli"
 
 // Diffuse SSGI compose: the energy-conserving integration of the GI
 // layer into the FULL-res HDR. This is the chain's reason to exist —
@@ -72,9 +73,9 @@ struct PSOut
 // (104 bytes). uint64 BDAs lead; scalars after.
 struct SsgiDiffuseComposePush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
-    vk::BufferPointer<HzbBuffer> hzb; // MAX-HZB: mip0 center, mip1 reps
-    vk::BufferPointer<SsrReceiverData> receiverData; // packed receiver per half-res pixel
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
+    GPU_PTR_READ(HzbBuffer) hzb; // MAX-HZB: mip0 center, mip1 reps
+    GPU_PTR_READ(SsrReceiverData) receiverData; // packed receiver per half-res pixel
     uint giTextureIndex;       // half-res GI layer (temporal slot or blurred)
     uint hdrTextureIndex;      // full-res base HDR (the FROZEN pre-compose source)
     uint samplerIndex;         // linear clamp
@@ -97,8 +98,7 @@ struct SsgiDiffuseComposePush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiDiffuseComposePush> cp;
+GPU_PUSH(SsgiDiffuseComposePush, cp);
 
 float SsgiUpEdgeWeight(float tapDist, float centerDist, float sharpness)
 {

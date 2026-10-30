@@ -5,6 +5,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 #include "ssr_compute.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSR temporal: motion-vector-reprojected accumulation of the half-res
 // reflection layer (rgb = reflected x fresnel x intensity, a = confidence).
@@ -46,7 +47,7 @@ struct PSOut
 // vector"), see SsrBlurPush in ssr_blur.frag.hlsl.
 struct SsrTemporalPush
 {
-    vk::BufferPointer<FrameUniforms> frameUniforms;
+    GPU_PTR_READ(FrameUniforms) frameUniforms;
     uint currTextureIndex;    // half-res blurred reflection (this frame)
     uint historyTextureIndex; // half-res temporal history (previous record)
     uint motionTextureIndex;  // render-extent RG16F motion (prevUV - currUV)
@@ -67,8 +68,7 @@ struct SsrTemporalPush
     uint pad0;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsrTemporalPush> tp;
+GPU_PUSH(SsrTemporalPush, tp);
 
 PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {

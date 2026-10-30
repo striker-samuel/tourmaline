@@ -4,6 +4,7 @@
 #define SSAO_PASS
 #include "common.hlsli"
 #include "ao.hlsli"
+#include "gpu_platform.hlsli"
 
 // SSGI AO blur: 5x5 bilateral of the half-res raw AO over the SELF-CARRIED
 // (ao, repDist, repNormal) triple — ZERO depth loads (the old pass did 29
@@ -39,8 +40,7 @@ struct SsgiAoBlurPush
     float texelY; // 1 / half-res height
 };
 
-[[vk::push_constant]]
-ConstantBuffer<SsgiAoBlurPush> bp;
+GPU_PUSH(SsgiAoBlurPush, bp);
 
 PSOut mainPS(PSIn IN)
 {

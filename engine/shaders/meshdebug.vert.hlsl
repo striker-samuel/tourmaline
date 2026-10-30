@@ -17,6 +17,8 @@
 // include: gfxfilter.hlsli expects its includer's declarations
 // (MaterialsBuffer) and this debug VS is standalone. Same generous
 // declared capacity (the BDA-pointer pattern — loads stay in bounds).
+#include "gpu_platform.hlsli"
+
 struct MeshDebugDeformedHeap { uint word[64 * 1024 * 1024]; };
 
 struct MeshDebugPush
@@ -31,13 +33,12 @@ struct MeshDebugPush
     // Skin tail (bytes 192..208, mirrors C++ MeshDebugSkinTail at
     // kMeshDebugSkinTailOffset): deformed heap BDA + the skinned span's
     // global base + the swap flag.
-    vk::BufferPointer<MeshDebugDeformedHeap> deformed;
+    GPU_PTR_READ(MeshDebugDeformedHeap) deformed;
     uint deformedBase;
     uint skinned;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MeshDebugPush> pcD;
+GPU_PUSH(MeshDebugPush, pcD);
 
 struct VSIn
 {

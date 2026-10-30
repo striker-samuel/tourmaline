@@ -23,9 +23,9 @@
 // never fetches one.
 
 #include "meshparticles.hlsli"
+#include "gpu_platform.hlsli"
 
-[[vk::push_constant]]
-ConstantBuffer<MeshParticlesSimPush> pcSim;
+GPU_PUSH(MeshParticlesSimPush, pcSim);
 
 [numthreads(64, 1, 1)]
 void mainCS(uint3 dispatchId : SV_DispatchThreadID)

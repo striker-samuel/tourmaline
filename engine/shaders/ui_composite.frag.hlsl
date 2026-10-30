@@ -3,6 +3,7 @@
 
 #define UI_PASS
 #include "common.hlsli"
+#include "gpu_platform.hlsli"
 
 struct PSIn
 {
@@ -23,8 +24,7 @@ struct UiCompositePush
     uint pad1;
 };
 
-[[vk::push_constant]]
-ConstantBuffer<UiCompositePush> up;
+GPU_PUSH(UiCompositePush, up);
 
 // Straight-alpha composite: the fixed-function blend state (srcAlpha /
 // oneMinusSrcAlpha) applied by the pipeline does

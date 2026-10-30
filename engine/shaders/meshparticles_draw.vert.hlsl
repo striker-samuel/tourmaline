@@ -25,6 +25,7 @@
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
 #include "meshparticles.hlsli"
+#include "gpu_platform.hlsli"
 
 struct MeshParticlesVsPush
 {
@@ -33,15 +34,14 @@ struct MeshParticlesVsPush
     float4x4 _pad0;
     float4x4 _pad1;
     float4x4 _pad2;
-    vk::BufferPointer<PlacementVisibleBuffer> visible;    // 192
-    vk::BufferPointer<MeshParticleBuffer> particles;       // 200
-    vk::BufferPointer<RenderViewBuffer> renderViews;       // 208
+    GPU_PTR_READ(PlacementVisibleBuffer) visible;    // 192
+    GPU_PTR_READ(MeshParticleBuffer) particles;       // 200
+    GPU_PTR_READ(RenderViewBuffer) renderViews;       // 208
     uint renderViewIndex; // 216
     uint flags;           // 220 (reserved; 0)
 };
 
-[[vk::push_constant]]
-ConstantBuffer<MeshParticlesVsPush> pcMP;
+GPU_PUSH(MeshParticlesVsPush, pcMP);
 
 struct VSIn
 {

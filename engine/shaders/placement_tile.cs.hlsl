@@ -15,12 +15,13 @@
 
 #include "placement_common.hlsli"
 #include "placement_field.hlsli"
+#include "gpu_platform.hlsli"
 
 // Must match C++ PlacementTilePush (168 bytes).
 struct PlacementTilePush
 {
-    vk::BufferPointer<PlacementInstanceBuffer> outInstances; // 0
-    vk::BufferPointer<PlacementCountBuffer> outCount;        // 8
+    GPU_PTR_WRITE(PlacementInstanceBuffer) outInstances; // 0
+    GPU_PTR_WRITE(PlacementCountBuffer) outCount;        // 8
     uint seedLo;      // 16
     uint seedHi;      // 20
     uint nodeId;      // 24
@@ -43,13 +44,13 @@ struct PlacementTilePush
     float4 weightsA;  // 112
     float4 weightsB;  // 128
     // ---- the program tail (PR02: the graph SSA) ----
-    vk::BufferPointer<PlacementInstrBuffer> instrs; // 144
+    GPU_PTR_READ(PlacementInstrBuffer) instrs; // 144
     uint instrCount;   // 152
     uint acceptIndex;  // 156
     uint pad4;         // 160
     uint pad5;         // 164
     // ---- the ecotope-mask tail (PR04: the painted layer) ----
-    vk::BufferPointer<PlacementEcoBuffer> eco; // 168 (0 = none)
+    GPU_PTR_READ(PlacementEcoBuffer) eco; // 168 (0 = none)
     uint ecoW;         // 176
     uint ecoH;         // 180
     uint ecoChannels;  // 184
@@ -60,8 +61,7 @@ struct PlacementTilePush
     float ecoSZ;       // 204
 };
 
-[[vk::push_constant]]
-ConstantBuffer<PlacementTilePush> pc;
+GPU_PUSH(PlacementTilePush, pc);
 
 uint PlacementSelectProto(float r, uint count, float4 wA, float4 wB)
 {
