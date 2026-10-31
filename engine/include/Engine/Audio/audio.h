@@ -28,7 +28,7 @@
 #include <string>
 #include <vector>
 
-namespace smvk::audio {
+namespace tour::audio {
 
 struct Config {
     int sampleRate = 48000;
@@ -158,4 +158,17 @@ int PinCurrentThreadToCore(int core);
 /// Logical CPU count (wraps SDL_GetNumLogicalCPUCores without needing SDL headers).
 int LogicalCoreCount();
 
-} // namespace smvk::audio
+} // namespace tour::audio
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the audio
+// subsystem is ENGINE-OWNED and lives in tour::audio; these smvk::
+// aliases keep the existing call sites compiling through the consumer
+// migration. RETIRE them as call sites move to tour::audio.
+namespace smvk::audio {
+	using ::tour::audio::Config;
+	using ::tour::audio::ClipHandle;
+	using ::tour::audio::VoiceHandle;
+	using ::tour::audio::AudioEngine;
+	using ::tour::audio::PinCurrentThreadToCore;
+	using ::tour::audio::LogicalCoreCount;
+}

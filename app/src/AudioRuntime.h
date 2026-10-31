@@ -32,7 +32,7 @@
 //     unloads or a spawned emitter is destroyed); StopSound stops it.
 //     PrefetchSound warms + pins a clip.
 //
-// The mixer itself stays non-positional (smvk::audio::AudioEngine +
+// The mixer itself stays non-positional (tour::audio::AudioEngine +
 // the per-voice pan this layer added); ALL spatial reasoning lives
 // here, above it. The LISTENER is explicit: SetListener pins a pose,
 // or the layer follows the renderer's active camera (the default).
@@ -56,11 +56,13 @@
 
 #include <glm/glm.hpp>
 
+namespace tour {
+	namespace audio { class AudioEngine; struct VoiceHandle; }
+}
 namespace smvk {
 	class App;
 	struct World;
 	class ResourceManager;
-	namespace audio { class AudioEngine; struct VoiceHandle; }
 }
 
 namespace engine {
@@ -100,11 +102,11 @@ bool ReleaseSound(uint64_t soundId);
 // emitter's volume (1 = authored). The voice stops with the emitter's
 // scene/spawn lifetime. Returns the mixer voice handle (invalid +
 // err on an unknown node/clip).
-smvk::audio::VoiceHandle PlaySound(smvk::World& world,
+tour::audio::VoiceHandle PlaySound(smvk::World& world,
 	uint32_t emitterNode, uint64_t soundId, float gain = 1.0f,
 	std::string* err = nullptr);
 // Stops a voice started by PlaySound (the mixer handle).
-void StopSound(smvk::audio::VoiceHandle voice);
+void StopSound(tour::audio::VoiceHandle voice);
 // Sets an emitter's master volume (both row copies — the merged scene
 // row the renderer world carries + the owning cluster's durable row —
 // so a later resolve keeps the edit). False when the node carries no

@@ -13,7 +13,7 @@
 #include <cstring>
 #include <limits>
 
-namespace smvk::mem {
+namespace tour::mem {
 
 namespace {
 
@@ -175,4 +175,4 @@ void DumpStats(std::FILE* out) {
 	std::fflush(out);
 }
 
-} // namespace smvk::mem
+} // namespace tour::mem

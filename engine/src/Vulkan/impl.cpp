@@ -14660,7 +14660,7 @@ bool smvk::HasDedicatedComputeQueue() {
 // machinery — device/queue getters + Optick's Vulkan dispatch table +
 // OPTICK_GPU_INIT_VULKAN. The gates (GpuEnabled, one-shot) live in the
 // neutral profile.cpp wrapper.
-void smvk::profiler::InitBackendGpuTimelinesImpl() {
+void tour::profiler::InitBackendGpuTimelinesImpl() {
 #if USE_OPTICK
 	if (!GpuEnabled())
 		return;

@@ -28,7 +28,7 @@
 
 #include <Engine/Memory/linear_allocator.h>
 
-namespace smvk::mem {
+namespace tour::mem {
 
 template<typename T>
 struct LinearAllocatorSTL {
@@ -74,4 +74,13 @@ using TransientVector = std::vector<T, LinearAllocatorSTL<T>>;
 template<typename T>
 using UploadInFlightVector = std::vector<T, LinearAllocatorSTL<T>>;
 
-} // namespace smvk::mem
+} // namespace tour::mem
+// COMPAT (the boundary audit): LinearAllocatorSTL + the arena vectors
+// live in tour::mem; the smvk aliases keep call sites compiling.
+namespace smvk::mem {
+	using ::tour::mem::LinearAllocatorSTL;
+	using ::tour::mem::ProcessVector;
+	using ::tour::mem::FrameVector;
+	using ::tour::mem::TransientVector;
+	using ::tour::mem::UploadInFlightVector;
+}

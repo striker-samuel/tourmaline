@@ -27,7 +27,7 @@
 
 #include <Engine/Memory/alloc_config.h>
 
-namespace smvk::mem {
+namespace tour::mem {
 
 // Logs "OOM in <name>: requested X, used Y / reserved Z" to stderr,
 // flushes, then aborts. [[noreturn]] — there is no recovery path.
@@ -118,4 +118,10 @@ private:
 	bool reserveFailed_ = false;
 };
 
-} // namespace smvk::mem
+} // namespace tour::mem
+// COMPAT (the boundary audit): LinearAllocator lives in tour::mem; the
+// smvk aliases keep call sites compiling through the migration.
+namespace smvk::mem {
+	using ::tour::mem::LinearAllocator;
+	using ::tour::mem::LinearStats;
+}

@@ -24,7 +24,7 @@
 #include <sys/mman.h> // mmap/mprotect/munmap (the VirtualAlloc-equivalent)
 #endif
 
-namespace smvk::mem {
+namespace tour::mem {
 
 [[noreturn]] void ReportOomAndCrash(std::string_view allocatorName,
 	size_t requested, size_t used, size_t reserved) {
@@ -155,4 +155,4 @@ void LinearAllocator::Reset(size_t mark) noexcept {
 	offset_.store(mark, std::memory_order_relaxed);
 }
 
-} // namespace smvk::mem
+} // namespace tour::mem

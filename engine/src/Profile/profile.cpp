@@ -10,7 +10,7 @@
 #include <optick.h>
 #endif
 
-namespace smvk::profiler {
+namespace tour::profiler {
 
 namespace {
 
@@ -130,4 +130,4 @@ void Shutdown() {
 #endif
 }
 
-} // namespace smvk::profiler
+} // namespace tour::profiler

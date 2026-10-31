@@ -51,19 +51,19 @@ struct EmitterKeyHash {
 
 struct EmitterState {
 	bool autoplayed = false;          // playOnLoad fired for this scene life
-	smvk::audio::VoiceHandle autoplayVoice{};
+	tour::audio::VoiceHandle autoplayVoice{};
 	float lastVolume = -1.0f;         // change detection (mixer commands
 	float lastPan = 0.0f;             // only on real changes)
 	bool warnedUnresolved = false;    // one log per dead sound id
 };
 
 struct CachedClip {
-	smvk::audio::ClipHandle clip{};
+	tour::audio::ClipHandle clip{};
 	bool pinned = false;              // an explicit PrefetchSound pin
 };
 
 struct ActiveVoice {
-	smvk::audio::VoiceHandle voice{};
+	tour::audio::VoiceHandle voice{};
 	EmitterKey emitter{};             // stops when the emitter dies
 	float gainMul = 1.0f;             // PlaySound's gain multiplier
 };
@@ -238,7 +238,7 @@ public:
 		return true;
 	}
 
-	smvk::audio::VoiceHandle Play(smvk::World& world,
+	tour::audio::VoiceHandle Play(smvk::World& world,
 		uint32_t mergedNode, uint64_t soundId, float gain,
 		std::string* err) {
 		// Resolve the emitter: any live row whose merged node matches
@@ -270,7 +270,7 @@ public:
 			err->clear();
 		const float vol = std::clamp(row->source.volume * gain, 0.0f,
 			1.0f);
-		smvk::audio::VoiceHandle voice = m_host.m_audio.Play(
+		tour::audio::VoiceHandle voice = m_host.m_audio.Play(
 			cached.clip, vol, false, 1.0f);
 		if (voice.valid())
 			m_voices.push_back(
@@ -278,7 +278,7 @@ public:
 		return voice;
 	}
 
-	void Stop(smvk::audio::VoiceHandle voice) {
+	void Stop(tour::audio::VoiceHandle voice) {
 		if (!voice.valid())
 			return;
 		m_host.m_audio.Stop(voice);
@@ -351,7 +351,7 @@ private:
 	// Sound bytes -> a mixer clip (the pak's Sound blob through the
 	// runtime façade). Cached by id; failures leave the cache empty so
 	// the next play retries.
-	bool DecodeClip(uint64_t soundId, smvk::audio::ClipHandle& out,
+	bool DecodeClip(uint64_t soundId, tour::audio::ClipHandle& out,
 		std::string& err) {
 		std::string rErr;
 		auto bytes = m_scenes->Runtime().ReadAsset(soundId, rErr);
@@ -467,7 +467,7 @@ private:
 		}
 		// Change-detected mixer commands (no per-frame command spam
 		// when nothing moved).
-		auto apply = [&](smvk::audio::VoiceHandle voice, float mul) {
+		auto apply = [&](tour::audio::VoiceHandle voice, float mul) {
 			if (!voice.valid())
 				return;
 			const float v = std::clamp(vol * mul, 0.0f, 1.0f);
@@ -570,16 +570,16 @@ bool ReleaseSound(uint64_t soundId) {
 	return inst ? inst->Release(soundId) : false;
 }
 
-smvk::audio::VoiceHandle PlaySound(smvk::World& world,
+tour::audio::VoiceHandle PlaySound(smvk::World& world,
 	uint32_t emitterNode, uint64_t soundId, float gain,
 	std::string* err) {
 	std::lock_guard<std::mutex> lock(AudioRuntimeElement::SingletonMutex());
 	AudioRuntimeElement* inst = AudioRuntimeElement::Instance();
 	return inst ? inst->Play(world, emitterNode, soundId, gain, err)
-		: smvk::audio::VoiceHandle{};
+		: tour::audio::VoiceHandle{};
 }
 
-void StopSound(smvk::audio::VoiceHandle voice) {
+void StopSound(tour::audio::VoiceHandle voice) {
 	std::lock_guard<std::mutex> lock(AudioRuntimeElement::SingletonMutex());
 	AudioRuntimeElement* inst = AudioRuntimeElement::Instance();
 	if (inst)

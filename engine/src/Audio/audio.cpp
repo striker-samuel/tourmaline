@@ -23,7 +23,7 @@
 #include <sched.h>
 #endif
 
-namespace smvk::audio {
+namespace tour::audio {
 
 int LogicalCoreCount() {
     int n = SDL_GetNumLogicalCPUCores();
@@ -627,4 +627,4 @@ void RunMixerLoop(AudioEngine* engine) {
     engine->MixerLoop();
 }
 
-} // namespace smvk::audio
+} // namespace tour::audio

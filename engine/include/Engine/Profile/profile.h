@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 #pragma once
@@ -78,7 +78,7 @@
 #define SMVK_PROFILE_GPU_SHADOW(NAME)  OPTICK_GPU_EVENT(NAME)
 #define SMVK_PROFILE_GPU_POSTFX(NAME)  OPTICK_GPU_EVENT(NAME)
 
-namespace smvk::profiler {
+namespace tour::profiler {
 
 // One-shot GPU timeline init after the device + queues exist. Backend
 // seam: implemented by the LINKED engine backend (the Vulkan facade
@@ -156,7 +156,29 @@ struct GpuPassScope {
 };
 #endif
 
-} // namespace smvk::profiler
+} // namespace tour::profiler
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the
+// profiler is ENGINE-OWNED and lives in tour::profiler; these smvk::
+// aliases keep the existing call sites (incl. the macros below, which
+// spell ::smvk::profiler::) compiling through the consumer migration.
+namespace smvk::profiler {
+	using ::tour::profiler::InitBackendGpuTimelines;
+	using ::tour::profiler::InitBackendGpuTimelinesImpl;
+	using ::tour::profiler::InitVulkanGPU;
+	using ::tour::profiler::Shutdown;
+	using ::tour::profiler::SetEnabled;
+	using ::tour::profiler::Enabled;
+	using ::tour::profiler::SetGpuEnabled;
+	using ::tour::profiler::GpuEnabled;
+	using ::tour::profiler::SetFrameHistogramEnabled;
+	using ::tour::profiler::FrameHistogramEnabled;
+	using ::tour::profiler::RecordFrameTime;
+	using ::tour::profiler::GetFrameHistogramData;
+	using ::tour::profiler::FrameHistogramData;
+	using ::tour::profiler::DrawFrameHistogramUi;
+	using ::tour::profiler::GpuPassScope;
+}
 
 // Dynamic CPU+GPU scope for run-time strings (rendergraph pass names, ...).
 // Safe when Optick is disabled (expands to a no-op scope object).

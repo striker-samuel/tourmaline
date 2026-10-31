@@ -37,7 +37,7 @@
 
 #include <cstddef>
 
-namespace smvk::mem::config {
+namespace tour::mem::config {
 
 inline constexpr size_t kKiB = size_t(1) << 10;
 inline constexpr size_t kMiB = size_t(1) << 20;
@@ -186,4 +186,37 @@ struct RuntimeConfig {
 // Never mutated after this function returns — callers hold a const ref.
 const RuntimeConfig& Runtime();
 
-} // namespace smvk::mem::config
+} // namespace tour::mem::config
+
+// COMPAT (the boundary audit): the allocator CONFIG block is engine-
+// owned and lives in tour::mem::config; the smvk aliases keep the
+// existing call sites compiling through the migration.
+namespace smvk::mem::config {
+	using ::tour::mem::config::kKiB;
+	using ::tour::mem::config::kMiB;
+	using ::tour::mem::config::kGiB;
+	using ::tour::mem::config::kAppArenaBlock;
+	using ::tour::mem::config::kFrameArenaBlock;
+	using ::tour::mem::config::kProcessReserve;
+	using ::tour::mem::config::kFrameReserve;
+	using ::tour::mem::config::kTransientReserve;
+	using ::tour::mem::config::kStaticVertexHeap;
+	using ::tour::mem::config::kStaticIndexHeap;
+	using ::tour::mem::config::kStaticLightmapHeap;
+	using ::tour::mem::config::kTargetHeapBlock;
+	using ::tour::mem::config::kReadbackStagingMin;
+	using ::tour::mem::config::kReadbackStagingMax;
+	using ::tour::mem::config::kStreamerTotalBudget;
+	using ::tour::mem::config::kUploadFlushThreshold;
+	using ::tour::mem::config::kStagingRingPerThread;
+	using ::tour::mem::config::kBulkRingCapacity;
+	using ::tour::mem::config::kNumPoolShards;
+	using ::tour::mem::config::kShardCapacity;
+	using ::tour::mem::config::kShardedMaxSize;
+	using ::tour::mem::config::kThreadPoolQueueSlots;
+	using ::tour::mem::config::kMaxThreadPoolQueueSlots;
+	using ::tour::mem::config::kCommitQuantum;
+	using ::tour::mem::config::kDefaultAlign;
+	using ::tour::mem::config::RuntimeConfig;
+	using ::tour::mem::config::Runtime;
+}

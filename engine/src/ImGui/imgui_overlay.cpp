@@ -350,7 +350,7 @@ void ImGuiOverlay::ApplyDpiScale(float scale) {
 // once per UI pass). Call only while the histogram is enabled — the call
 // sites gate on FrameHistogramEnabled(), so the feature costs nothing
 // while off.
-namespace smvk::profiler {
+namespace tour::profiler {
 
 void DrawFrameHistogramUi() {
     const FrameHistogramData d = GetFrameHistogramData();
@@ -424,4 +424,4 @@ void DrawFrameHistogramUi() {
     ImGui::End();
 }
 
-} // namespace smvk::profiler
+} // namespace tour::profiler

@@ -38,7 +38,7 @@
 #include <memory>
 #include <utility>
 
-namespace smvk::mem {
+namespace tour::mem {
 
 LinearAllocator& ProcessAllocator();
 LinearAllocator& FrameAllocator();
@@ -81,4 +81,21 @@ template<typename T, typename... Args>
 	return MakeLinear<T>(ProcessAllocator(), std::forward<Args>(args)...);
 }
 
-} // namespace smvk::mem
+} // namespace tour::mem
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the memory
+// subsystem is ENGINE-OWNED and lives in tour::mem; these smvk::mem
+// aliases keep the existing call sites compiling through the consumer
+// migration. RETIRE them as call sites move to tour::mem.
+namespace smvk::mem {
+	using ::tour::mem::InitMemory;
+	using ::tour::mem::ShutdownMemory;
+	using ::tour::mem::DumpStats;
+	using ::tour::mem::LinearDeleter;
+	using ::tour::mem::LinearPtr;
+	using ::tour::mem::MakeLinear;
+	using ::tour::mem::MakeProcess;
+	using ::tour::mem::ProcessAllocator;
+	using ::tour::mem::FrameAllocator;
+	using ::tour::mem::TransientAllocator;
+}
