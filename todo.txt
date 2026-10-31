@@ -269,3 +269,91 @@ positives - captures match except in SATURATED tiles where the mask path
 keeps a superset of the reference's true contributors (its sorted insertion
 wastes no slots on the dead entries). See forwardplus.cs.hlsl's header for
 the per-reject proofs.
+(Entity model, next) THE PER-DRAW PALETTE TABLE - one rendered POSE per
+cluster today (World::Update flushes the FIRST animator per target
+cluster; every animator's STATE is already independent + exact). The
+renderer generalization: a palette per DRAW, not per cluster - the
+skinning pass grows a palette table (per-entity ranges keyed by draw),
+SkinPush gains the per-draw palette index, and GFX_DRAW_SKINNED fetches
+its own palette. Unblocks N knight entities sharing one cluster with
+independent poses. See docs/entities_and_animators.md (v1 limits).
+
+(Entity model, next) THE ASSET-MANAGER SURFACE: SpawnMesh(MeshKey) +
+LoadMesh/LoadSkeleton/LoadAnimation. Needs (a) the key->loaded-mesh
+join - the appmanifest gains the mesh's OWNING SCENE + mesh-URI rows
+(meshes ship inside their scene's cluster, the v1 pak boundary; the
+app layer resolves MeshKey -> owning scene id -> ProjectScenes
+ensures-loaded -> the world mesh row), and (b) the AnimationClipKey +
+SkeletonKey CATALOG BUCKETS (0x5xxx ranges: .anim classification in
+recipes, the asset-db kind, the bucket emission, the [ids] rows - the
+.anim blobs already embed as Texture-kind at VFS paths so ReadAsset
+serves the text; LoadTourAnimText parses). Clips today pass as loaded
+touranim::Clip values. Also: one skeleton per cluster (the importer's
+first-skin-wins contract) - a mesh-keyed skeleton table is the deeper
+unblock for multi-character clusters.
+
+(Audio, future) Spatial audio v1 scope upgrades: cones/occlusion,
+emitter orientation (nodes are omnidirectional today), compressed +
+streaming formats (WAV/SDL only), more than the first autoplay slot,
+and the audio layer's per-process pak-image cost note (the shared
+apphost->game runtime seam - RunPakApp handing its preloaded backends
+to the AudioRuntime's ProjectRuntime).
+
+(Namespace/RHI boundary audit, staged) THE tour::/smvk:: SPLIT - the
+audit's confirmed findings + the migration plan (feature branch
+feature/namespace-rhi-boundary):
+  TARGET: tour:: = the public engine API (apps, scenes, assets, camera,
+  world, audio, gi, placement, mem, profiler); smvk:: = the RHI ONLY
+  (ResourceManager, handles, descriptor limits, swapchain, command
+  recording); smvk::detail::vulkan = the private impl (Vk*, VMA, Volk,
+  device/queue ownership). A namespace is not an architectural
+  boundary by itself - the P0 interface fixes below are the real ones.
+  STAGES, each compiling + 47/47 ctest green:
+  1. smvk::detail::vulkan for the impl classes (VulkanSwapchain/
+     VulkanFrameBuffer/VulkanPipeline, vulkan_impl.h:72-112) - private
+     headers, contained.
+  2. The CMake Vulkan leak: engine/CMakeLists.txt links
+     vulkan_headers_iface PUBLIC - Vulkan headers propagate to every
+     engine consumer. Flip PRIVATE; downstream targets that genuinely
+     use the RHI opt in. Longer term: split the single engine static
+     lib (all of engine/src incl. the Vulkan impl) into engine +
+     backend targets so the boundary is BUILD-enforced.
+  3. The GLOBAL-namespace cleanup: NodeId/NodeHandle (scene_node_id.h),
+     the scene tables/payloads (RowId, MeshRow..., SceneGiVolume...),
+     Camera + the positioners (camera.h - which also includes core.h,
+     pulling the RHI into camera consumers), and Input/TOUR_* ->
+     tour::(scene::) with compat aliases at the old scopes while
+     consumers migrate.
+  4. THE PRIMARY MIGRATION: engine-owned definitions OUT of smvk:: ->
+     tour:: (App/app.h, App/world.h, App/cluster.h -> tour::(scene);
+     Asset/pak.h + Asset/tour.h's smvk::tour -> tour::asset;
+     smvk::audio -> tour::audio; smvk::gi -> tour::gi;
+     smvk::placement -> tour::placement; smvk::mem -> tour::mem;
+     smvk::profiler -> tour::profiler) - smvk:: keeps the legitimate
+     RHI (ResourceManager, handles, limits, swapchain). Compat
+     using-aliases in smvk:: keep the tree compiling; retire them as
+     call sites migrate.
+  5. P0 INTERFACE REDESIGNS (the real boundary work):
+     - smvk::App exposes GetResourceManager/GetSwapchain/GetRendergraph
+       + stores RHI members (app.h:113-142) -> tour::App owns the app;
+       the concrete rendering context moves behind an impl/bridge.
+     - engine::ElementFrame carries smvk::Framebuffer*/Extent2D
+       (Element.h:61-94) -> a tour::RenderFrame hiding swapchain +
+       command ownership.
+     - GfxRenderer publicly inherits smvk::IFrameRenderer + exposes
+       shader programs/handles (GfxRenderer.h:75-84); WorldRenderer.h
+       ~4000 lines including dozens of rendergraph components ->
+       a compact public renderer API vs private pass state.
+     - engine/core.h: the umbrella header including the RHI resource
+       manager + swapchain + rendergraph - split it.
+  6. P1s: WorldField's smvk::Format/ImageHandle/ImageRegion3D exposure
+     (CPU field description vs GPU upload split); dlss.cpp's direct
+     VkFormat/VkImage/VkPhysicalDevice use (Streamline adaptation ->
+     a backend file, settings/orchestration stay neutral); RHI's
+     SetImageViewVkView opaque-pointer API + swapchain GetImpl()/
+     GetVulkanOpaque() -> internal backend accessors.
+  7. Downstream: Host.h's callback mixes smvk::App/World +
+     engine::WorldRenderer; editor_app.h includes everything;
+     01_triangle derives smvk::App directly (fine as a DELIBERATE
+     low-level RHI sample, but opt in explicitly); 04_project_game
+     should demonstrate the engine-only surface.
