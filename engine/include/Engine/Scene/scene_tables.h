@@ -43,6 +43,9 @@
 #include <Engine/Scene/scene_node_id.h>
 #include <Engine/Scene/scene_payloads.h>
 
+struct Scene;	// the GLOBAL Scene (the graph - moves with scene.h)
+namespace tour::scene {
+
 // Row index into a SceneTables member vector. InvalidRow = no row.
 using RowId = uint32_t;
 constexpr RowId InvalidRow = 0xFFFFFFFFu;
@@ -203,7 +206,6 @@ struct NodeMetadata {
 	std::string uuid;
 };
 
-struct Scene;
 
 // ---- handwritten maintenance (no FindRow<T> — one explicit set per
 // kind; the duplication is the design, see the header) ----
@@ -284,3 +286,65 @@ void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid);
 // deletion hook the editor/tour paths adopt in Epoch 5). Returns
 // whether anything was removed.
 bool RemoveNodeRows(Scene& scene, NodeId node);
+
+} // namespace tour::scene
+
+// GLOBAL compat aliases (the migration bridge - retire with the call
+// sites; the boundary scanner guards against NEW globals, these are
+// the tracked pre-existing set).
+using RowId = tour::scene::RowId;
+using tour::scene::InvalidRow;
+using tour::scene::MeshRow;
+using tour::scene::MaterialRow;
+using tour::scene::LightRow;
+using tour::scene::CameraRow;
+using tour::scene::DecalRow;
+using tour::scene::GiVolumeRow;
+using tour::scene::CubemapRow;
+using tour::scene::ExportRow;
+using tour::scene::EnvRow;
+using tour::scene::EnvVolumeRow;
+using tour::scene::AudioSourceRow;
+using tour::scene::SceneTables;
+using tour::scene::NodeRows;
+using tour::scene::NodeMetadata;
+using tour::scene::RebuildNodeRows;
+using tour::scene::RemoveNodeRows;
+using tour::scene::EnsureNodeMetadata;
+using tour::scene::GetNodeNameIndex;
+using tour::scene::SetNodeNameIndex;
+using tour::scene::GetNodeUuid;
+using tour::scene::SetNodeUuidRaw;
+using tour::scene::FindMesh;
+using tour::scene::SetMesh;
+using tour::scene::RemoveMesh;
+using tour::scene::FindMaterial;
+using tour::scene::SetMaterial;
+using tour::scene::RemoveMaterial;
+using tour::scene::FindLight;
+using tour::scene::SetLight;
+using tour::scene::RemoveLight;
+using tour::scene::FindCamera;
+using tour::scene::SetCamera;
+using tour::scene::RemoveCamera;
+using tour::scene::FindDecal;
+using tour::scene::SetDecal;
+using tour::scene::RemoveDecal;
+using tour::scene::FindGiVolume;
+using tour::scene::SetGiVolume;
+using tour::scene::RemoveGiVolume;
+using tour::scene::FindCubemap;
+using tour::scene::SetCubemap;
+using tour::scene::RemoveCubemap;
+using tour::scene::FindExport;
+using tour::scene::SetExport;
+using tour::scene::RemoveExport;
+using tour::scene::FindEnv;
+using tour::scene::SetEnv;
+using tour::scene::RemoveEnv;
+using tour::scene::FindEnvVolume;
+using tour::scene::SetEnvVolume;
+using tour::scene::RemoveEnvVolume;
+using tour::scene::FindAudioSource;
+using tour::scene::SetAudioSource;
+using tour::scene::RemoveAudioSource;

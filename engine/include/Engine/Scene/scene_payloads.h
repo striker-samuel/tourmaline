@@ -25,6 +25,9 @@
 // box planes, CvBoxPlanesRotated); this carries the bake params.
 // Node-local like SceneLight (no pool); resolved against
 // globalTransform[node] at use so parenting applies like meshes.
+
+namespace tour::scene {
+
 struct SceneGiVolume {
 	uint32_t priority = 0;   // higher = composited later = wins
 	float spacing = 0.5f;    // preferred dense probe grid spacing (m;
@@ -281,3 +284,22 @@ struct SceneEnv {
 // Booleans are stored as 0/1 floats; enum values are stored numerically.
 inline constexpr int kSceneEnvFloatCount = 17;
 
+} // namespace tour::scene
+
+// GLOBAL compat aliases (the migration bridge - retire with the call
+// sites; the boundary scanner guards against NEW globals, these are
+// the tracked pre-existing set).
+using tour::scene::SceneGiVolume;
+using tour::scene::SceneExportSettings;
+using tour::scene::kEnvInfNegX;
+using tour::scene::kEnvInfPosX;
+using tour::scene::kEnvInfNegY;
+using tour::scene::kEnvInfPosY;
+using tour::scene::kEnvInfNegZ;
+using tour::scene::kEnvInfPosZ;
+using tour::scene::EnvVolume;
+using tour::scene::SceneCubemap;
+using tour::scene::SceneEnv;
+using tour::scene::kSceneEnvFloatCount;
+using tour::scene::SceneAudioSource;
+using tour::scene::AudioSoundRef;

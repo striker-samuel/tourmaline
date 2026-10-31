@@ -19,6 +19,8 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
 
+namespace tour::scene {
+
 namespace {
 
 // rowsForNode must cover every live node. Lazily grown (addNode does
@@ -861,3 +863,5 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 	removed |= RemoveAudioSource(scene, node);
 	return removed;
 }
+
+} // namespace tour::scene
