@@ -25,7 +25,7 @@
 #include <utility>
 #include <vector>
 
-namespace input {
+namespace tour::input {
 
 // Physical key ids: USB HID usage page 0x07 (SDL scancode numbering).
 // Only the keys the engine names are listed; any other scancode value in
@@ -140,7 +140,10 @@ struct Event {
     std::string text;
 };
 
-} // namespace input
+} // namespace tour::input
+
+namespace tour::input {
+
 
 // --- Engine key aliases ---
 // Short, engine-owned names for the physical key ids. These are NOT a
@@ -694,3 +697,131 @@ private:
     float triggerDeadzone_ = 0.05f;  // triggers (0..1 cut + rescale)
     std::array<std::vector<int>, static_cast<size_t>(Action::Count)> actionKeys_;
 };
+
+} // namespace tour::input
+
+
+// GLOBAL compat aliases (the migration bridge - retire with the call
+// sites; the boundary scanner guards against NEW globals, these are
+// the tracked pre-existing set).
+namespace input = tour::input;
+using tour::input::TOUR_KEY_UNKNOWN;
+using tour::input::TOUR_KEY_SPACE;
+using tour::input::TOUR_KEY_APOSTROPHE;
+using tour::input::TOUR_KEY_COMMA;
+using tour::input::TOUR_KEY_MINUS;
+using tour::input::TOUR_KEY_PERIOD;
+using tour::input::TOUR_KEY_SLASH;
+using tour::input::TOUR_KEY_0;
+using tour::input::TOUR_KEY_1;
+using tour::input::TOUR_KEY_2;
+using tour::input::TOUR_KEY_3;
+using tour::input::TOUR_KEY_4;
+using tour::input::TOUR_KEY_5;
+using tour::input::TOUR_KEY_6;
+using tour::input::TOUR_KEY_7;
+using tour::input::TOUR_KEY_8;
+using tour::input::TOUR_KEY_9;
+using tour::input::TOUR_KEY_SEMICOLON;
+using tour::input::TOUR_KEY_EQUAL;
+using tour::input::TOUR_KEY_A;
+using tour::input::TOUR_KEY_B;
+using tour::input::TOUR_KEY_C;
+using tour::input::TOUR_KEY_D;
+using tour::input::TOUR_KEY_E;
+using tour::input::TOUR_KEY_F;
+using tour::input::TOUR_KEY_G;
+using tour::input::TOUR_KEY_H;
+using tour::input::TOUR_KEY_I;
+using tour::input::TOUR_KEY_J;
+using tour::input::TOUR_KEY_K;
+using tour::input::TOUR_KEY_L;
+using tour::input::TOUR_KEY_M;
+using tour::input::TOUR_KEY_N;
+using tour::input::TOUR_KEY_O;
+using tour::input::TOUR_KEY_P;
+using tour::input::TOUR_KEY_Q;
+using tour::input::TOUR_KEY_R;
+using tour::input::TOUR_KEY_S;
+using tour::input::TOUR_KEY_T;
+using tour::input::TOUR_KEY_U;
+using tour::input::TOUR_KEY_V;
+using tour::input::TOUR_KEY_W;
+using tour::input::TOUR_KEY_X;
+using tour::input::TOUR_KEY_Y;
+using tour::input::TOUR_KEY_Z;
+using tour::input::TOUR_KEY_LEFT_BRACKET;
+using tour::input::TOUR_KEY_BACKSLASH;
+using tour::input::TOUR_KEY_RIGHT_BRACKET;
+using tour::input::TOUR_KEY_GRAVE_ACCENT;
+using tour::input::TOUR_KEY_ESCAPE;
+using tour::input::TOUR_KEY_ENTER;
+using tour::input::TOUR_KEY_TAB;
+using tour::input::TOUR_KEY_BACKSPACE;
+using tour::input::TOUR_KEY_INSERT;
+using tour::input::TOUR_KEY_DELETE;
+using tour::input::TOUR_KEY_RIGHT;
+using tour::input::TOUR_KEY_LEFT;
+using tour::input::TOUR_KEY_DOWN;
+using tour::input::TOUR_KEY_UP;
+using tour::input::TOUR_KEY_PAGE_UP;
+using tour::input::TOUR_KEY_PAGE_DOWN;
+using tour::input::TOUR_KEY_HOME;
+using tour::input::TOUR_KEY_END;
+using tour::input::TOUR_KEY_CAPS_LOCK;
+using tour::input::TOUR_KEY_SCROLL_LOCK;
+using tour::input::TOUR_KEY_NUM_LOCK;
+using tour::input::TOUR_KEY_PRINT_SCREEN;
+using tour::input::TOUR_KEY_PAUSE;
+using tour::input::TOUR_KEY_F1;
+using tour::input::TOUR_KEY_F2;
+using tour::input::TOUR_KEY_F3;
+using tour::input::TOUR_KEY_F4;
+using tour::input::TOUR_KEY_F5;
+using tour::input::TOUR_KEY_F6;
+using tour::input::TOUR_KEY_F7;
+using tour::input::TOUR_KEY_F8;
+using tour::input::TOUR_KEY_F9;
+using tour::input::TOUR_KEY_F10;
+using tour::input::TOUR_KEY_F11;
+using tour::input::TOUR_KEY_F12;
+using tour::input::TOUR_KEY_KP_0;
+using tour::input::TOUR_KEY_KP_1;
+using tour::input::TOUR_KEY_KP_2;
+using tour::input::TOUR_KEY_KP_3;
+using tour::input::TOUR_KEY_KP_4;
+using tour::input::TOUR_KEY_KP_5;
+using tour::input::TOUR_KEY_KP_6;
+using tour::input::TOUR_KEY_KP_7;
+using tour::input::TOUR_KEY_KP_8;
+using tour::input::TOUR_KEY_KP_9;
+using tour::input::TOUR_KEY_KP_DECIMAL;
+using tour::input::TOUR_KEY_KP_DIVIDE;
+using tour::input::TOUR_KEY_KP_MULTIPLY;
+using tour::input::TOUR_KEY_KP_SUBTRACT;
+using tour::input::TOUR_KEY_KP_ADD;
+using tour::input::TOUR_KEY_KP_ENTER;
+using tour::input::TOUR_KEY_KP_EQUAL;
+using tour::input::TOUR_KEY_LEFT_SHIFT;
+using tour::input::TOUR_KEY_LEFT_CONTROL;
+using tour::input::TOUR_KEY_LEFT_ALT;
+using tour::input::TOUR_KEY_LEFT_SUPER;
+using tour::input::TOUR_KEY_RIGHT_SHIFT;
+using tour::input::TOUR_KEY_RIGHT_CONTROL;
+using tour::input::TOUR_KEY_RIGHT_ALT;
+using tour::input::TOUR_KEY_RIGHT_SUPER;
+using tour::input::TOUR_KEY_MENU;
+using tour::input::TOUR_KEY_LAST;
+using tour::input::TOUR_MOUSE_BUTTON_1;
+using tour::input::TOUR_MOUSE_BUTTON_2;
+using tour::input::TOUR_MOUSE_BUTTON_3;
+using tour::input::TOUR_MOUSE_BUTTON_4;
+using tour::input::TOUR_MOUSE_BUTTON_5;
+using tour::input::TOUR_MOUSE_BUTTON_6;
+using tour::input::TOUR_MOUSE_BUTTON_7;
+using tour::input::TOUR_MOUSE_BUTTON_8;
+using tour::input::TOUR_MOUSE_BUTTON_LAST;
+using tour::input::TOUR_MOUSE_BUTTON_LEFT;
+using tour::input::TOUR_MOUSE_BUTTON_RIGHT;
+using tour::input::TOUR_MOUSE_BUTTON_MIDDLE;
+using tour::input::Input;
