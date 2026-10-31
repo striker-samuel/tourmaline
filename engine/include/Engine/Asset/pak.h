@@ -17,7 +17,11 @@
 
 #include <mutex>
 
-namespace smvk {
+namespace tour::asset {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified (VfsPath, TextureStreamMeta, ResourceManager...);
+// qualify as call sites migrate, then drop this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // .pak container: a mountable mini-filesystem for cooked clusters.
@@ -367,4 +371,35 @@ private:
 	std::string name_;
 };
 
-} // namespace smvk
+} // namespace tour::asset
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the pak
+// format is ENGINE-OWNED and lives in tour::asset; the smvk aliases
+// keep the existing call sites compiling through the consumer
+// migration.
+namespace smvk {
+	using ::tour::asset::PakAssetKind;
+	using ::tour::asset::PakEntryFlags;
+	using ::tour::asset::PakTocEntry;
+	using ::tour::asset::PakHashPath;
+	using ::tour::asset::PakCrc32;
+	using ::tour::asset::PakCrc32Combine;
+	using ::tour::asset::PakCrc32Parallel;
+	using ::tour::asset::PakAppendInfo;
+	using ::tour::asset::PakTexturePayload;
+	using ::tour::asset::PakWriter;
+	using ::tour::asset::PakReader;
+	using ::tour::asset::PakBackend;
+	using ::tour::asset::kPakMagic;
+	using ::tour::asset::kPakFooterMagic;
+	using ::tour::asset::PakEntryFlag_None;
+	using ::tour::asset::PakEntryFlag_Lz4;
+	using ::tour::asset::BuildTexturePayload;
+	using ::tour::asset::ParseTexturePayload;
+	using ::tour::asset::BuildTexturePayloadV4;
+	using ::tour::asset::ParseTexturePayloadV4;
+	using ::tour::asset::BuildTextureDigest;
+	using ::tour::asset::ParseTextureDigest;
+	using ::tour::asset::AppendPakBlobs;
+}

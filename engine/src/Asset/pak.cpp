@@ -16,7 +16,7 @@
 #include <Engine/Asset/compression.h>
 #include <Engine/Utils/thread_pool.h>
 
-namespace smvk {
+namespace tour::asset {
 namespace {
 
 static_assert(std::endian::native == std::endian::little,
@@ -1026,4 +1026,4 @@ std::optional<VfsStat> PakBackend::Stat(const VfsPath& path) const {
 	return std::nullopt;
 }
 
-} // namespace smvk
+} // namespace tour::asset
