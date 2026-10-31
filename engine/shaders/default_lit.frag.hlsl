@@ -7,12 +7,6 @@
 // The STANDARD no-op hook family (StandardLit): a project lit family
 // includes its own hook library here instead — same body, same seam
 // (docs/shader_library_design.md).
-#include "light.hlsli"
-#include "common.hlsli"
-#include "environment.hlsli"
-#include "sggi.hlsli"
-#include "sg_lightmap.hlsli"
-#include "sg_regular.hlsli"
-#include "sg_gi_volume.hlsli"
+#include "lit_dependencies.hlsli"
 #include "lit_hooks_default.hlsli"
 #include "default_lit_body.hlsli"

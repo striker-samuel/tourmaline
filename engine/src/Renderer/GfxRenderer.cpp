@@ -162,6 +162,53 @@ namespace engine {
 				filteredProgramGiStd_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
 			}
 		}
+		// PROJECT-LIT family twins (the project-authored lit FS modules
+		// the app configured — the same modules the direct draws bind as
+		// the mainProject* family programs). Built only for configured
+		// modules; the family picks fall back to the stock picks when a
+		// twin is missing (a project that compiled no family at all).
+		if (filteredProjectProgram.shaderCount == 0
+			&& !filteredVsModule.empty() && !projectFrag_.empty()) {
+			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = projectFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			filteredProjectProgram = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+		if (filteredProjectProgramA2C.shaderCount == 0
+			&& !filteredVsModule.empty() && !projectA2CFrag_.empty()) {
+			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = projectA2CFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			filteredProjectProgramA2C = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+		for (uint32_t li = 0; li < 4; ++li) {
+			if (filteredProjectLitSg_[li].shaderCount == 0
+				&& !filteredVsModule.empty() && !projectLitFragSgModules_[li].empty()) {
+				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+				smvk::Shader fs{ .module = projectLitFragSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				filteredProjectLitSg_[li] = { .shaders = { vs, fs }, .shaderCount = 2 };
+			}
+		}
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (filteredProjectProgramGi_[gi].shaderCount == 0
+				&& !filteredVsModule.empty() && !projectLitFragGiModules_[gi].empty()) {
+				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+				smvk::Shader fs{ .module = projectLitFragGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				filteredProjectProgramGi_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
+			}
+		}
+		if (filteredProjectProgramStd.shaderCount == 0
+			&& !filteredVsModule.empty() && !projectFragStd_.empty()) {
+			smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+			smvk::Shader fs{ .module = projectFragStd_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+			filteredProjectProgramStd = { .shaders = { vs, fs }, .shaderCount = 2 };
+		}
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (filteredProjectProgramGiStd_[gi].shaderCount == 0
+				&& !filteredVsModule.empty() && !projectLitFragGiStdModules_[gi].empty()) {
+				smvk::Shader vs{ .module = filteredVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+				smvk::Shader fs{ .module = projectLitFragGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+				filteredProjectProgramGiStd_[gi] = { .shaders = { vs, fs }, .shaderCount = 2 };
+			}
+		}
 		// Seed-depth programs (T3). One SPIR-V per phase (the shader build
 		// emits a single entry point per file). Missing seed frag
 		// (ConfigureSeedFrag not called) disables seeding but leaves the
@@ -355,11 +402,130 @@ namespace engine {
 				meshProgramGiStd_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
 			}
 		}
+		// PROJECT-LIT family mesh twins (gfxmesh_project_lit.*.spv):
+		// same permutation scheme on the family's mesh FS. Best-effort —
+		// a missing family BASE leaves MeshProjectProgramsValid() false
+		// and every ProjectLit range indexed-drawn (the design §9
+		// fallback); missing VARIANTS fall back inside the family.
+		{
+			const std::string familyBase = std::string(smvk::gfx::kProjectMeshFsPath);
+			const std::string familyStem =
+				familyBase.substr(0, familyBase.size() - 4);
+			if (meshProjectProgram.shaderCount == 0 && !meshMsModule.empty()) {
+				try {
+					meshProjectFsModule = ctx.CreateShaderModule(
+						smvk::shaders::Read(familyBase), "gfxMeshProjectFS");
+				}
+				catch (...) {
+				}
+				if (!meshProjectFsModule.empty()) {
+					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+					smvk::Shader fs{ .module = meshProjectFsModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+					meshProjectProgram = { .shaders = { ms, fs }, .shaderCount = 2 };
+				}
+			}
+			static const char* kSgSuffixF[4] = { ".sg5", ".sg6", ".sg9", ".sg12" };
+			for (uint32_t li = 0; li < 4; ++li) {
+				if (meshProjectLitSg_[li].shaderCount != 0
+						|| meshMsModule.empty() || meshProjectFsModule.empty())
+					continue;
+				try {
+					meshProjectFsSgModules_[li] = ctx.CreateShaderModule(
+						smvk::shaders::Read(familyStem + kSgSuffixF[li] + ".spv"),
+						"gfxMeshProjectFsSg");
+				}
+				catch (...) {
+				}
+				if (!meshProjectFsSgModules_[li].empty()) {
+					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+					smvk::Shader fs{ .module = meshProjectFsSgModules_[li], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+					meshProjectLitSg_[li] = { .shaders = { ms, fs }, .shaderCount = 2 };
+				}
+			}
+			for (uint32_t gi = 0; gi < 4; ++gi) {
+				if (meshProjectProgramGi_[gi].shaderCount != 0
+						|| meshMsModule.empty() || meshProjectFsModule.empty())
+					continue;
+				try {
+					meshProjectFsGiModules_[gi] = ctx.CreateShaderModule(
+						smvk::shaders::Read(familyStem + ".gi" + std::to_string(gi) + ".spv"),
+						"gfxMeshProjectFsGi");
+				}
+				catch (...) {
+				}
+				if (!meshProjectFsGiModules_[gi].empty()) {
+					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+					smvk::Shader fs{ .module = meshProjectFsGiModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+					meshProjectProgramGi_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
+				}
+			}
+			if (meshProjectProgramStd.shaderCount == 0
+					&& !meshMsModule.empty() && !meshProjectFsModule.empty()) {
+				try {
+					meshProjectFsStdModule = ctx.CreateShaderModule(
+						smvk::shaders::Read(familyStem + ".std.spv"), "gfxMeshProjectFsStd");
+				}
+				catch (...) {
+				}
+				if (!meshProjectFsStdModule.empty()) {
+					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+					smvk::Shader fs{ .module = meshProjectFsStdModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+					meshProjectProgramStd = { .shaders = { ms, fs }, .shaderCount = 2 };
+				}
+			}
+			for (uint32_t gi = 0; gi < 4; ++gi) {
+				if (meshProjectProgramGiStd_[gi].shaderCount != 0
+						|| meshMsModule.empty() || meshProjectFsModule.empty())
+					continue;
+				try {
+					meshProjectFsGiStdModules_[gi] = ctx.CreateShaderModule(
+						smvk::shaders::Read(familyStem + ".gi" + std::to_string(gi) + "std.spv"),
+						"gfxMeshProjectFsGiStd");
+				}
+				catch (...) {
+				}
+				if (!meshProjectFsGiStdModules_[gi].empty()) {
+					smvk::Shader ms{ .module = meshMsModule, .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh };
+					smvk::Shader fs{ .module = meshProjectFsGiStdModules_[gi], .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
+					meshProjectProgramGiStd_[gi] = { .shaders = { ms, fs }, .shaderCount = 2 };
+				}
+			}
+		}
 		smvk::gfx::EnsureMeshParams(gfx, ctx, rg);
 	}
 
 	smvk::ShaderProgram* GfxRenderer::MeshProgramFor(bool giActive,
-		uint32_t giVariant, uint32_t lobeCount, bool layered) {
+		uint32_t giVariant, uint32_t lobeCount, bool layered,
+		bool projectLit) {
+		// The PROJECT-LIT family leg: the family's own mesh twins only.
+		// A missing family mesh BASE is not mesh-eligible (null) — the
+		// indexed leg draws the range with the family's indexed program
+		// (design §9: never the stock mesh FS, never a lost effect).
+		// Missing family VARIANTS fall back inside the family exactly
+		// like the stock picks below fall back inside theirs.
+		if (projectLit) {
+			if (!MeshProjectProgramsValid())
+				return nullptr;
+			if (giActive) {
+				if (giVariant <= 3u
+						&& meshProjectProgramGi_[giVariant].shaderCount == 2) {
+					if (!layered
+							&& meshProjectProgramGiStd_[giVariant].shaderCount == 2)
+						return &meshProjectProgramGiStd_[giVariant];
+					return &meshProjectProgramGi_[giVariant];
+				}
+				if (!layered && meshProjectProgramStd.shaderCount == 2)
+					return &meshProjectProgramStd;
+				return &meshProjectProgram;
+			}
+			const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
+				: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
+			if (li <= 3 && meshProjectLitSg_[li].shaderCount == 2)
+				return &meshProjectLitSg_[li];
+			if (!layered && meshProjectProgramStd.shaderCount == 2)
+				return &meshProjectProgramStd;
+			return &meshProjectProgram;
+		}
 		if (!MeshProgramsValid())
 			return nullptr;
 		// Mirrors the indexed leg's program selection exactly (GI twin
@@ -399,9 +565,12 @@ namespace engine {
 			return false;
 		// A mesh twin must exist for the range's variant (same selection
 		// as the indexed bind would use; the std twin exists whenever the
-		// base does, so layered-ness cannot flip eligibility).
+		// base does, so layered-ness cannot flip eligibility). ProjectLit
+		// ranges need the FAMILY mesh twins — a missing family base makes
+		// them not mesh-eligible (the indexed family program draws them).
 		if (MeshProgramFor(giActive, giVariant, r.lobeCount,
-				MaterialLayered(r.material)) == nullptr)
+				MaterialLayered(r.material),
+				MaterialProjectFamily(r.material)) == nullptr)
 			return false;
 		// Every batch's draw opaque (a mixed range stays
 		// fully indexed, never split — the record partitions exactly the
@@ -480,7 +649,8 @@ namespace engine {
 			if (!RangeMeshEligible(slot, ri, giActive, giVariant))
 				continue;
 			smvk::ShaderProgram* prog = MeshProgramFor(giActive, giVariant,
-				ranges[ri].lobeCount, MaterialLayered(ranges[ri].material));
+				ranges[ri].lobeCount, MaterialLayered(ranges[ri].material),
+				MaterialProjectFamily(ranges[ri].material));
 			if (prog == nullptr || ranges[ri].commandCount == 0)
 				continue; // belt (eligibility already resolved the program)
 			Span sp{ prog, (uint32_t)list.size(), ranges[ri].commandCount };

@@ -660,6 +660,29 @@ using namespace ::smvk;
 		return MaterialUserData(item.material);
 	}
 
+	bool World::SetMaterialShaderFamily(uint32_t materialIndex,
+		smvk::MaterialShaderFamily family)
+	{
+		if (materialIndex >= materialLocations.size())
+			return false;
+		if (materialShaderFamily.size() < materialLocations.size())
+			materialShaderFamily.assign(materialLocations.size(),
+				uint8_t(smvk::MaterialShaderFamily::StandardLit));
+		materialShaderFamily[materialIndex] = uint8_t(family);
+		return true;
+	}
+
+	smvk::MaterialShaderFamily World::ShaderFamilyOf(
+		uint32_t materialIndex) const
+	{
+		const uint8_t raw = materialIndex < materialShaderFamily.size()
+			? materialShaderFamily[materialIndex]
+			: uint8_t(smvk::MaterialShaderFamily::StandardLit);
+		return raw == uint8_t(smvk::MaterialShaderFamily::ProjectLit)
+			? smvk::MaterialShaderFamily::ProjectLit
+			: smvk::MaterialShaderFamily::StandardLit;
+	}
+
 	Animator World::AddAnimator(MeshEntityHandle mesh,
 		touranim::Clip initialClip)
 	{
@@ -932,6 +955,26 @@ using namespace ::smvk;
 				if (loc.cluster && loc.handle.valid())
 					oldMaterialUserData.emplace_back(loc.cluster,
 						loc.handle, materialUserData[i]);
+			}
+		}
+		// MATERIAL SHADER-FAMILY RE-KEY CAPTURE (same stable-key shape —
+		// the Phase B family lane rides the userdata lane's capture
+		// discipline; only ProjectLit rows need carrying, StandardLit is
+		// the zero default).
+		std::vector<std::tuple<Cluster*, ClusterMaterialHandle, uint8_t>>
+			oldMaterialShaderFamily;
+		{
+			const size_t n = std::min(materialLocations.size(),
+				materialShaderFamily.size());
+			oldMaterialShaderFamily.reserve(n);
+			for (size_t i = 0; i < n; ++i) {
+				if (materialShaderFamily[i]
+						== uint8_t(smvk::MaterialShaderFamily::ProjectLit)) {
+					const MaterialLocation& loc = materialLocations[i];
+					if (loc.cluster && loc.handle.valid())
+						oldMaterialShaderFamily.emplace_back(loc.cluster,
+							loc.handle, materialShaderFamily[i]);
+				}
 			}
 		}
 		scene = Scene{};
@@ -1386,6 +1429,24 @@ using namespace ::smvk;
 			for (const auto& [c, h, v] : oldMaterialUserData) {
 				if (c == loc.cluster && h == loc.handle) {
 					materialUserData[i] = v;
+					break;
+				}
+			}
+		}
+
+		// MATERIAL SHADER-FAMILY RE-KEY (same shape as the userdata
+		// re-key above — the family assignments survive the rebuild
+		// keyed by the stable (owner, handle) pair; unset entries read
+		// StandardLit, the fail-safe stock pick).
+		materialShaderFamily.assign(materialLocations.size(),
+			uint8_t(smvk::MaterialShaderFamily::StandardLit));
+		for (size_t i = 0; i < materialLocations.size(); ++i) {
+			const MaterialLocation& loc = materialLocations[i];
+			if (!loc.cluster || !loc.handle.valid())
+				continue;
+			for (const auto& [c, h, v] : oldMaterialShaderFamily) {
+				if (c == loc.cluster && h == loc.handle) {
+					materialShaderFamily[i] = v;
 					break;
 				}
 			}
@@ -1939,6 +2000,18 @@ using namespace ::smvk;
 		// elsewhere, and default keeps every consumer on the base path).
 		const Material* mat = GetMaterial(materialIndex);
 		if (!mat)
+			return out;
+		// ProjectLit materials stay FULL-LIT at every level (design §9
+		// "LOD"): both far-shading mechanisms shade through STOCK
+		// modules — the cheap vertex-lit FS never executes the lit body
+		// (the hooks would silently vanish at distance), and the
+		// quality-specialized twins are the standard family's programs
+		// (the family's own spec twins do not exist). Default keeps the
+		// far level on the family's lit program (the direct pick
+		// consults the family), so the effect survives to the farthest
+		// LOD — the documented v1 cost.
+		if (ShaderFamilyOf(materialIndex)
+				== smvk::MaterialShaderFamily::ProjectLit)
 			return out;
 		if (mat->shaderLod.allowFarVertexLit) {
 			out.vertexLit = true;

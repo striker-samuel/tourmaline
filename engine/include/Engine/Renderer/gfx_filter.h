@@ -500,6 +500,23 @@ static_assert(sizeof(FilteredVsPush) == 48);
 inline constexpr const char* kGfxMeshMsPath = "content/shaders/gfxfilter.mesh.hlsl.spv";
 inline constexpr const char* kGfxMeshFsPath = "content/shaders/gfxmesh_lit.frag.hlsl.spv";
 
+// THE PROJECT-LIT FAMILY (docs/shader_library_design.md Phase B): the
+// project-authored lit FS namespace — the project's
+// lit_hooks_project.hlsli compiled against the SAME shared lit body
+// (see samples/04_project_game/project/content/shaders). These are
+// NOT engine build outputs (never in engine-shaders.pak): a project
+// compiles them through compile_shaders + tourmaline_project_lit_variants
+// and serves them through the shader library's dev tree or a project
+// shader pak. Best-effort at load: absent modules leave every material
+// on StandardLit (the fail-safe stock pick, reported loudly at the
+// WorldRenderer's family consult).
+inline constexpr const char* kProjectLitFsPath =
+	"content/shaders/project_lit.frag.hlsl.spv";
+inline constexpr const char* kProjectLitA2CFsPath =
+	"content/shaders/project_lit_a2c.frag.hlsl.spv";
+inline constexpr const char* kProjectMeshFsPath =
+	"content/shaders/gfxmesh_project_lit.frag.hlsl.spv";
+
 // Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
 // (two matrices first for 16-alignment, then 10 BDAs, 4 uints, the
 // deformed BDA + 2 uints = 240B).

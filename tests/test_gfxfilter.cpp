@@ -27,6 +27,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/debug_log.h>
 // Detail diagnostics (winding/cull/spawn/mirror traces) print in debug
 // builds only; PASS/FAIL lines and the final summary always print.
@@ -2602,6 +2603,116 @@ void TestUserData() {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// The PROJECT-LIT family program tables (docs/shader_library_design.md
+// Phase B): the GfxRenderer family pickers' fallback ladders + the mesh
+// eligibility contract, forged WITHOUT a GPU (ShaderProgram is a plain
+// aggregate — shaderCount 2 fakes a built twin; every Holder stays
+// empty exactly like a project that compiled no family).
+// ---------------------------------------------------------------------------
+
+void TestMaterialFamilyPrograms() {
+	engine::GfxRenderer r;
+	using namespace smvk;
+
+	// Nothing forged at all: the family pickers fall back to the STOCK
+	// picks (a project that compiled no family — the fail-safe leg the
+	// WorldRenderer's consult reports loudly).
+	r.filteredProgram.shaderCount = 2;
+	Check(&r.FilteredProjectProgramGi(2, true) == &r.FilteredProgramGi(2, true),
+		"gfx.family-empty-gi-falls-to-stock");
+	Check(&r.FilteredProjectLitProgram(6, true)
+			== &r.FilteredLitProgram(6, true),
+		"gfx.family-empty-lobe-falls-to-stock");
+	Check(r.FilteredProjectProgramA2C().shaderCount == 0,
+		"gfx.family-empty-a2c-invalid");
+
+	// The family base + variants forged: the family pick mirrors the
+	// stock ladder over the family twins (GI twin > family std for
+	// non-layered > family base; missing family GI variant -> family
+	// base, NEVER the stock module while the family base exists).
+	r.filteredProjectProgram.shaderCount = 2;
+	r.filteredProjectProgramStd.shaderCount = 2;
+	r.filteredProjectProgramGi_[2].shaderCount = 2;
+	r.filteredProjectProgramGiStd_[2].shaderCount = 2;
+	Check(&r.FilteredProjectProgramGi(2, true) == &r.filteredProjectProgramGi_[2],
+		"gfx.family-gi-picks-family-gi");
+	Check(&r.FilteredProjectProgramGi(2, false)
+			== &r.filteredProjectProgramGiStd_[2],
+		"gfx.family-gi-std-refinement");
+	Check(&r.FilteredProjectProgramGi(0, true) == &r.filteredProjectProgram,
+		"gfx.family-missing-gi-variant-falls-to-family-base");
+	Check(&r.FilteredProjectProgramGi(0, false) == &r.filteredProjectProgramStd,
+		"gfx.family-missing-gi-variant-std");
+	// The lobe-count pick: the family sg twin when built, else the
+	// family base/std (never stock while the family base exists).
+	r.filteredProjectLitSg_[1].shaderCount = 2; // lobe count 6
+	Check(&r.FilteredProjectLitProgram(6, true) == &r.filteredProjectLitSg_[1],
+		"gfx.family-lobe-picks-family-sg");
+	Check(&r.FilteredProjectLitProgram(5, true) == &r.filteredProjectProgram,
+		"gfx.family-missing-lobe-falls-to-family-base");
+	Check(&r.FilteredProjectLitProgram(5, false)
+			== &r.filteredProjectProgramStd,
+		"gfx.family-missing-lobe-std");
+
+	// The resolver: unset = StandardLit; set = per-material.
+	Check(!r.MaterialProjectFamily(7), "gfx.family-resolver-unset-standard");
+	bool asked = false;
+	r.ConfigureMaterialFamily([&asked](uint32_t) {
+		asked = true;
+		return true;
+	});
+	Check(r.MaterialProjectFamily(7), "gfx.family-resolver-set-project");
+	Check(asked, "gfx.family-resolver-consulted");
+
+	// The mesh eligibility contract (design §9): a MISSING family mesh
+	// base makes the family leg return NULL — the range stays INDEXED
+	// (drawn by the family's indexed program), never a stock mesh FS.
+	// Holders forged with the cook-only Mint + a null ResourceManager
+	// ctx (the dtor no-ops on a null ctx — nothing to destroy, the
+	// test owns no GPU state; the deleter still needs the real destroy
+	// overload, hence the typed null).
+	{
+		using ModH = smvk::Holder<smvk::ShaderModuleHandle>;
+		auto forged = []() -> ModH {
+			return ModH(static_cast<smvk::ResourceManager*>(nullptr),
+				smvk::ShaderModuleHandle::Mint(1));
+		};
+		r.meshProgram.shaderCount = 2; // the stock mesh system is up
+		r.meshMsModule = forged();
+		r.meshFsModule = forged();
+		Check(r.MeshProgramFor(false, 0, 6, true, true) == nullptr,
+			"gfx.family-mesh-missing-base-not-eligible");
+		Check(r.MeshProgramFor(false, 0, 6, true, false) != nullptr,
+			"gfx.stock-mesh-still-eligible");
+		// The family mesh base forged: the family leg picks the family
+		// twins (base when no variant matches), never the stock mesh FS.
+		r.meshProjectProgram.shaderCount = 2;
+		r.meshProjectFsModule = forged();
+		Check(r.MeshProgramFor(false, 0, 6, true, true)
+				== &r.meshProjectProgram,
+			"gfx.family-mesh-picks-family-base");
+		r.meshProjectProgramGi_[3].shaderCount = 2;
+		Check(r.MeshProgramFor(true, 3, 6, true, true)
+				== &r.meshProjectProgramGi_[3],
+			"gfx.family-mesh-gi-twin");
+		Check(r.MeshProgramFor(true, 3, 6, false, true)
+				== &r.meshProjectProgramGi_[3],
+			"gfx.family-mesh-gi-missing-std-falls-to-gi-twin");
+		Check(r.MeshProgramFor(true, 0, 6, true, true)
+				== &r.meshProjectProgram,
+			"gfx.family-mesh-gi-missing-variant-falls-to-base");
+	}
+	// IsFilteredLitProgram covers the family twins (the wireframe
+	// override resolves them to the flat twin, not the shaded FS).
+	Check(r.IsFilteredLitProgram(r.filteredProjectProgram),
+		"gfx.family-wire-twin-identity-base");
+	Check(r.IsFilteredLitProgram(r.filteredProjectProgramA2C),
+		"gfx.family-wire-twin-identity-a2c");
+	Check(r.IsFilteredLitProgram(r.filteredProjectProgramGi_[2]),
+		"gfx.family-wire-twin-identity-gi");
+}
+
 int main() {
 	TestWindingSign();
 	TestRegistration();
@@ -2627,6 +2738,7 @@ int main() {
 	TestShadowMeshGate();
 	TestCasterContributionView();
 	TestUserData();
+	TestMaterialFamilyPrograms();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

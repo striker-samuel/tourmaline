@@ -99,6 +99,25 @@ namespace smvk {
 		BlendSettings blend{};
 	};
 
+	// ---- Shader family (per base material) --------------------------
+	// CODE IDENTITY for the lit FS (docs/shader_library_design.md §5):
+	// which compiled lit implementation a material's draws bind.
+	// StandardLit = the engine's no-op hook family (default);
+	// ProjectLit = the project-authored hook family (the project's
+	// lit_hooks_project.hlsli compiled into the project_lit.*.spv
+	// namespace). This is CPU pipeline-selection state — NEVER a
+	// fragment branch in MaterialValues, never per-instance (instances
+	// inherit the base material's family; only the 32-bit userdata is
+	// per-instance). Stored beside the world's material table (see
+	// World::SetMaterialShaderFamily), keyed by base material at the
+	// same granularity as draw batching — a family switch is a
+	// pipeline change for every draw of the material, but NEVER a
+	// batch split (the material stays the sort key).
+	enum class MaterialShaderFamily : uint8_t {
+		StandardLit = 0,
+		ProjectLit = 1,
+	};
+
 	// ---- Shader-LOD policy (per material) ---------------------------
 	// Replaces the old hardcoded LodShader enum: each material declares
 	// how its farthest cooked LOD level shades. Two mechanisms, both

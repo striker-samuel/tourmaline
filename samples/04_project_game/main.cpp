@@ -19,12 +19,16 @@
 
 #include "project.h"
 
+#include <Engine/App/Element.h>
 #include <Engine/App/RunConfig.h>
+#include <Engine/App/world.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,6 +39,106 @@
 #else
 #include <unistd.h> // readlink (/proc/self/exe)
 #endif
+
+// ---- THE PROJECT LIT FAMILY DEMO (docs/shader_library_design.md
+// Phase B) -----------------------------------------------
+// The two worked-example effects — enemy damage flash (worked example
+// A) and runtime wetness (worked example B) — shipped as the sample's
+// demonstration material: the scene's first opaque material opts into
+// the ProjectLit family (the project-authored lit_hooks_project.hlsli
+// compiled into project_lit.*.spv) and a per-frame pulse drives both
+// userdata bit fields through the family's hooks. No shader recompile,
+// no reupload, no batch split — a family switch is a pipeline pick,
+// a userdata change is a CPU write.
+//
+// The element COMPOSES with the audio runtime (RunPakApp carries one
+// extraElement slot): lifecycle forwards to the nested element, the
+// demo work rides onUpdate beside it.
+class ProjectLitDemo final : public engine::IAppElement {
+public:
+	ProjectLitDemo(std::shared_ptr<engine::IAppElement> audio,
+		std::shared_ptr<smvk::World*> worldHandle)
+		: m_audio(std::move(audio))
+		, m_worldHandle(std::move(worldHandle)) {}
+
+	const char* ElementName() const override { return "GameProjectDemo"; }
+
+	bool onAttach() override {
+		// The host stacks this element AFTER the renderer's attach (the
+		// world source ran), so the scene's materials exist here.
+		AdoptMaterial();
+		return m_audio ? m_audio->onAttach() : true;
+	}
+	void onDetach() override { if (m_audio) m_audio->onDetach(); }
+	void onResize(smvk::Extent2D e) override { if (m_audio) m_audio->onResize(e); }
+	void onUpdate(float dt) override {
+		if (m_audio)
+			m_audio->onUpdate(dt);
+		Pulse(dt);
+	}
+	void onUIMenu() override { if (m_audio) m_audio->onUIMenu(); }
+	void onUIRender() override { if (m_audio) m_audio->onUIRender(); }
+	void onPreRender(engine::ElementFrame& f) override {
+		if (m_audio) m_audio->onPreRender(f);
+	}
+	void onRender(engine::ElementFrame& f) override {
+		if (m_audio) m_audio->onRender(f);
+	}
+
+private:
+	// Picks the scene's first opaque material and opts it into the
+	// family. A missing family (engine-only deployment, no
+	// project_lit.*.spv) is NOT an error: the renderer's consult
+	// reports the StandardLit fallback loudly and the demo simply has
+	// no effect to drive.
+	void AdoptMaterial() {
+		smvk::World* world = m_worldHandle ? *m_worldHandle : nullptr;
+		if (!world)
+			return;
+		world->forEachRenderItem(
+			smvk::IteratorFlagBit_Renderable
+			| smvk::IteratorFlagBit_Opaque
+			| smvk::IteratorFlagBit_StaticVertexFmt,
+			[&](const smvk::World::RenderItem& item) {
+			if (m_material != smvk::World::kInvalidIndex)
+				return;
+			if (item.material == smvk::World::kInvalidIndex)
+				return;
+			m_material = item.material;
+		});
+		if (m_material == smvk::World::kInvalidIndex)
+			return;
+		world->SetMaterialShaderFamily(m_material,
+			smvk::MaterialShaderFamily::ProjectLit);
+		std::printf("[GameProject] ProjectLit family: material %u opts in"
+			" (damage+wetness pulse through the hooks)\n", m_material);
+	}
+	// The userdata bit layout the hooks read (lit_hooks_project.hlsli):
+	// bits 0..7 damage, 8..15 wetness. Two slow out-of-phase pulses so
+	// both effects are visible; a plain CPU write per frame.
+	void Pulse(float dt) {
+		smvk::World* world = m_worldHandle ? *m_worldHandle : nullptr;
+		if (!world || m_material == smvk::World::kInvalidIndex)
+			return;
+		m_time += dt;
+		const auto quant = [](float v) -> uint32_t {
+			if (!(v > 0.0f))
+				return 0u;
+			if (v >= 1.0f)
+				return 255u;
+			return uint32_t(v * 255.0f);
+		};
+		const float damage = 0.5f + 0.5f * std::sin(m_time * 1.7f);
+		const float wet = 0.5f + 0.5f * std::sin(m_time * 0.6f + 2.1f);
+		world->SetMaterialUserData(m_material,
+			quant(damage) | (quant(wet) << 8));
+	}
+
+	std::shared_ptr<engine::IAppElement> m_audio;
+	std::shared_ptr<smvk::World*> m_worldHandle;
+	uint32_t m_material = smvk::World::kInvalidIndex;
+	float m_time = 0.0f;
+};
 
 int main(int argc, const char* argv[]) {
 	// COMPILE-TIME content proofs: the catalog is real C++ — the entry
@@ -191,8 +295,15 @@ int main(int argc, const char* argv[]) {
 				engine::WorldRenderer& renderer,
 				std::shared_ptr<smvk::World*> worldHandle)
 			-> std::shared_ptr<engine::IAppElement> {
-			return app::MakeAudioRuntime(host, audioTapp,
-				std::move(worldHandle), &renderer);
+			// The audio runtime + the ProjectLit family demo, composed
+			// into ONE element (RunPakApp carries a single extraElement
+			// slot; the demo forwards every lifecycle call to the audio
+			// leg it wraps).
+			std::shared_ptr<smvk::World*> worldForDemo = worldHandle;
+			return std::make_shared<ProjectLitDemo>(
+				app::MakeAudioRuntime(host, audioTapp,
+					std::move(worldHandle), &renderer),
+				std::move(worldForDemo));
 		};
 	}
 	return app::RunPakApp(cfg);

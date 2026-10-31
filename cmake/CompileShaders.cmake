@@ -105,7 +105,7 @@ endfunction()
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   set(options)
   set(oneValueArgs)
-  set(multiValueArgs INCLUDE_DIRS VARIANTS)
+  set(multiValueArgs INCLUDE_DIRS VARIANTS HEADER_DIRS)
   cmake_parse_arguments(CS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
   # Per-file -O3 pins for Debug builds (file names, no directory):
   #   set(HLSL_FORCE_O3_FILES "foo.cs.hlsl;bar.frag.hlsl")
@@ -170,10 +170,29 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   # could include it. Critical for common.hlsli struct layouts (FrameUniforms
   # / PushConstants C++-HLSL mirrors): stale SPIR-V silently reads shifted
   # offsets while the freshly-recompiled shaders use the new layout.
+  # HEADER_DIRS (optional): EXTRA directories whose .hlsli/.hlsl.h files join
+  # the dependency set. A compile whose sources live in one tree but whose
+  # includes resolve from ANOTHER (the project lit family: wrapper sources in
+  # the project's content/shaders, the shared body + deps from engine/shaders
+  # via -I) must list the other tree here — the design doc's §7 dependency
+  # gap: without it, editing default_lit_body.hlsli would NOT rebuild the
+  # project's project_lit.*.spv, and a stale family would silently shade
+  # against a shifted layout.
   file(GLOB_RECURSE SHADER_HEADERS CONFIGURE_DEPENDS
     "${NORM_SOURCE_DIR}/*.hlsli"
     "${NORM_SOURCE_DIR}/*.hlsl.h"
   )
+  foreach(_HD ${CS_HEADER_DIRS})
+    file(TO_CMAKE_PATH "${_HD}" _NORM_HD)
+    if(NOT EXISTS "${_NORM_HD}")
+      message(FATAL_ERROR "[Shaders] HEADER_DIRS entry does not exist: ${_NORM_HD}")
+    endif()
+    file(GLOB_RECURSE _EXTRA_HEADERS CONFIGURE_DEPENDS
+      "${_NORM_HD}/*.hlsli"
+      "${_NORM_HD}/*.hlsl.h"
+    )
+    list(APPEND SHADER_HEADERS ${_EXTRA_HEADERS})
+  endforeach()
 
   if(NOT SHADERS)
     message(WARNING "[Shaders] No shaders found to compile in: ${NORM_SOURCE_DIR}")
@@ -373,4 +392,62 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
 
     add_custom_target(${TARGET_NAME}_shaders ALL DEPENDS ${COMPILED_SHADERS})
     set(COMPILED_SHADER_OUTPUTS ${COMPILED_SHADERS} PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# tourmaline_project_lit_variants(<out-var>)
+#
+# THE PROJECT LIT FAMILY'S VARIANT MATRIX (docs/shader_library_design.md
+# Phase B, plan item 7): the permutation list a project passes as
+# compile_shaders' VARIANTS when it compiles the family wrappers. It is
+# the EXACT mirror of the engine's default_lit/gfxmesh_lit rows in
+# engine/CMakeLists.txt (SG lobe counts, GI permutations, MAT_STANDARD
+# twins; the .gi1 octree ID stays retired/reserved), carried in ONE
+# helper so a project cannot drift from the engine's compiled set — a
+# family module the engine's program selection expects but the project
+# never built is a silent StandardLit fallback at draw time.
+#
+# The wrapper SOURCES live in the project's own content/shaders tree
+# (project_lit.frag.hlsl / project_lit_a2c.frag.hlsl /
+# gfxmesh_project_lit.frag.hlsl + lit_hooks_project.hlsli); compile with
+# INCLUDE_DIRS = (the project shaders dir FIRST, then engine/shaders) so
+# lit_hooks_project.hlsli resolves from the project and everything else
+# from the engine, and HEADER_DIRS = both trees (the cross-tree include
+# dependency gap, see compile_shaders above).
+#
+# Outputs land in the project's own namespace — project_lit.*.spv,
+# never the engine's default_lit.* names — and are NOT part of the
+# engine-shaders.pak feed (only compile_shaders' caller decides what
+# lists it exports; the engine's COMPILED_SHADER_OUTPUTS never sees
+# the project target's outputs).
+# ---------------------------------------------------------------------------
+function(tourmaline_project_lit_variants OUT_VAR)
+    set(_V
+        "project_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
+        "project_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
+        "project_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
+        "project_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
+        "project_lit.frag.hlsl|.gi0|GI_NONE=1"
+        "project_lit.frag.hlsl|.gi2|GI_REGULAR=1"
+        "project_lit.frag.hlsl|.gi3|GI_VOLUMES=1"
+        "project_lit.frag.hlsl|.std|MAT_STANDARD=1"
+        "project_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
+        "project_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
+        "project_lit.frag.hlsl|.gi3std|GI_VOLUMES=1|MAT_STANDARD=1"
+        "gfxmesh_project_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
+        "gfxmesh_project_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
+        "gfxmesh_project_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
+        "gfxmesh_project_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
+        "gfxmesh_project_lit.frag.hlsl|.gi0|GI_NONE=1"
+        "gfxmesh_project_lit.frag.hlsl|.gi2|GI_REGULAR=1"
+        "gfxmesh_project_lit.frag.hlsl|.gi3|GI_VOLUMES=1"
+        "gfxmesh_project_lit.frag.hlsl|.std|MAT_STANDARD=1"
+        "gfxmesh_project_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
+        "gfxmesh_project_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
+        "gfxmesh_project_lit.frag.hlsl|.gi3std|GI_VOLUMES=1|MAT_STANDARD=1"
+    )
+    # The A2C twin compiles base-only (the engine's default_lit_a2c has no
+    # variant rows either — the A2C bind is a whole-frame MSAA decision,
+    # never a lobe/GI/std refinement).
+    set(${OUT_VAR} ${_V} PARENT_SCOPE)
 endfunction()

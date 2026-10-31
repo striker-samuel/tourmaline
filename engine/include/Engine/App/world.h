@@ -303,6 +303,16 @@ using namespace ::smvk;
 		// MaterialValues (the GPU 128B row): a value change is a CPU
 		// write, nothing more.
 		std::vector<uint32_t> materialUserData;
+		// Per-MATERIAL shader family (MaterialShaderFamily, packed in
+		// uint8_t rows), parallel to materialLocations + re-keyed by
+		// the same (owner, handle) capture as materialUserData — the
+		// Phase B lane over the userdata lane (the family is CODE
+		// identity: which compiled lit FS the material's draws bind;
+		// the userdata is the runtime VALUE the family's hooks read).
+		// NEVER inside MaterialValues (CPU pipeline-selection state,
+		// design §5) and NEVER per-instance (instances inherit the
+		// base family; only userdata overrides per instance).
+		std::vector<uint8_t> materialShaderFamily;
 		// Animator registry (the AnimatorState payloads + generational
 		// slots — see animator.h; meshEntitySlot back-references the
 		// attached entity for the DestroyMesh cleanup).
@@ -480,6 +490,18 @@ using namespace ::smvk;
 		// the direct legs' per-draw push).
 		[[nodiscard]] uint32_t ResolvedItemUserData(
 			const RenderItem& item) const;
+		// ---- the SHADER FAMILY lane (Phase B, design §5) -----------
+		// Sets the base material's lit shader family (the compiled
+		// ProjectLit hook family vs the engine's StandardLit no-ops).
+		// Every draw of the material (and every material INSTANCE —
+		// families inherit, never override) binds the family's FS
+		// twins from the next frame build. False on a bad index.
+		bool SetMaterialShaderFamily(uint32_t materialIndex,
+			smvk::MaterialShaderFamily family);
+		// The material's family (StandardLit when never set / bad
+		// index — the fail-safe stock pick).
+		[[nodiscard]] smvk::MaterialShaderFamily ShaderFamilyOf(
+			uint32_t materialIndex) const;
 
 		// ---- the ANIMATOR component (Engine/App/animator.h —
 		// per-entity playback state, the explicit Option-B surface) ----

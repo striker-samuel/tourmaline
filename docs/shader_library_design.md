@@ -2,8 +2,11 @@
 
 **Status:** Phase A (the baseline userdata transport + the no-op
 StandardLit hook family) is implemented on `master` — see AGENTS.md
-"The lit-hook seam + the 32-bit userdata lane". Phases B/C below remain
-proposals.  
+"The lit-hook seam + the 32-bit userdata lane". **Phase B (the
+ProjectLit family) is ALSO implemented** — see AGENTS.md's Phase B
+block and `samples/04_project_game` (the project wrapper + hook
+authoring shape + the damage/wetness demo). Phase C below remains
+proposal.  
 **Target:** Tourmaline `master`, reviewed October 2026  
 **Design principle:** Extend existing shaders with HLSL functions, not generated shader source.
 
@@ -312,10 +315,10 @@ Both effects run within one compiled `ProjectLit` family; the low 8 and next 8 u
 
 **Phase B — project shader library/family**
 
-6. Extract the small include glue needed for entry wrappers; do not refactor the PBR implementation at the same time.
-7. Add project shader compilation with explicit engine+project `-I` paths and dependency tracking. Produce uniquely named SPIR-V files.
-8. Add a bounded `MaterialShaderFamily` selector on base materials and module loading/program lookup in `WorldRenderer` / `GfxRenderer`, including indexed, mesh, A2C, GI and SG variants.
-9. Verify family-by-material-range program binding, fallback behavior, material load/unload, and LOD selection. Ship the two examples above as small demonstration materials.
+6. Extract the small include glue needed for entry wrappers; do not refactor the PBR implementation at the same time. **DONE** — `engine/shaders/lit_dependencies.hlsli` (the 7 shared includes) + `engine/shaders/gfxmesh_lit_decl.hlsli` (the mesh FS PSin/linkage block); the three engine wrappers use them, so a project family wrapper is a THREE-LINE file.
+7. Add project shader compilation with explicit engine+project `-I` paths and dependency tracking. Produce uniquely named SPIR-V files. **DONE** — `compile_shaders` grew a `HEADER_DIRS` arg (cross-tree .hlsli dependency tracking — the §7 gap), `tourmaline_project_lit_variants()` carries the engine-mirrored variant matrix, and `samples/04_project_game` compiles the family into `project_lit.*.spv` / `gfxmesh_project_lit.*.spv` (26 modules, own namespace, never engine-shaders.pak).
+8. Add a bounded `MaterialShaderFamily` selector on base materials and module loading/program lookup in `WorldRenderer` / `GfxRenderer`, including indexed, mesh, A2C, GI and SG variants. **DONE** — `World::SetMaterialShaderFamily` / `ShaderFamilyOf` (the (owner,handle) re-key lane beside `materialUserData`), the family module load + `MainLitProgramFor`/direct/filtered/mesh consults, `ConfigureMaterialFamily` (the lazy resolver injection mirroring `ConfigureMaterialLayered`), and the family pickers with the stock-fallback ladders. The mesh-leg contract: a MISSING family mesh base makes the range NOT mesh-eligible — the indexed family program draws it (never a stock mesh FS). Far-LOD: ProjectLit materials opt out of BOTH the vertex-lit shortcut and the stock quality-spec twins (`FarShadingAt` returns default) — the effect survives to the farthest LOD.
+9. Verify family-by-material-range program binding, fallback behavior, material load/unload, and LOD selection. Ship the two examples above as small demonstration materials. **DONE** — `family.*` (test_world_entities.cpp: state lane + re-key + instance inheritance + the FarShading gate) and `gfx.family-*` (test_gfxfilter.cpp: the picker ladders + the mesh eligibility contract, forged program tables, no GPU). The demo: `samples/04_project_game`'s `ProjectLitDemo` element (composed with the audio runtime) — headless A/B verified (`TOURMALINE_EXTRA_ELEMENT_BENCH=1 TOURMALINE_CAPTURE=12 --bench 16`: 12.97% differing pixels vs the stock run, one material tinted).
 
 **Phase C — optional later functionality**
 

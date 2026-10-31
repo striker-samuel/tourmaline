@@ -600,6 +600,28 @@ namespace engine {
 			const smvk::Material* mat = m_world->GetMaterial(materialId);
 			return mat ? (mat->values.layerMaterials.w > 1) : true;
 		}();
+		// ProjectLit family first (design §9: the SAME hook code on
+		// every leg): the stock chain mirrored over the family twins.
+		// Missing family VARIANTS fall back inside the family exactly
+		// like the stock variants fall back inside theirs; a missing
+		// family BASE never reaches here (MaterialUsesProjectLit gates).
+		if (MaterialUsesProjectLit(materialId)) {
+			const bool familyStdReady = !layered
+				&& m_resources.mainProjectProgramStd.shaderCount == 2;
+			if (giVar != GIVariant::None) {
+				smvk::ShaderProgram& gi = m_resources.mainProjectProgramGi[gv];
+				if (gi.shaderCount == 2) {
+					if (!layered
+							&& m_resources.mainProjectProgramGiStd[gv].shaderCount == 2)
+						return m_resources.mainProjectProgramGiStd[gv];
+					return gi;
+				}
+				return familyStdReady ? m_resources.mainProjectProgramStd
+					: m_resources.mainProjectProgram;
+			}
+			return familyStdReady ? m_resources.mainProjectProgramStd
+				: m_resources.mainProjectProgram;
+		}
 		const bool stdReady = !layered
 			&& m_resources.mainProgramStd.shaderCount == 2;
 		if (giVar != GIVariant::None) {
@@ -612,6 +634,28 @@ namespace engine {
 			return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
 		}
 		return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
+	}
+
+	bool WorldRenderer::MaterialUsesProjectLit(uint32_t materialId) {
+		if (!m_world
+				|| m_world->ShaderFamilyOf(materialId)
+					!= smvk::MaterialShaderFamily::ProjectLit)
+			return false;
+		if (m_resources.mainProjectProgram.shaderCount == 2)
+			return true;
+		// The family was requested but the modules never loaded (a
+		// project that compiled no family, or a deployment missing its
+		// project shader pak): report ONCE, render StandardLit. The
+		// effect never silently drops (design §9's failure-handling
+		// contract).
+		if (!m_projectLitFallbackWarned) {
+			m_projectLitFallbackWarned = true;
+			std::cerr << "[WorldRenderer] ProjectLit family set on material "
+				<< materialId << " but no project lit modules loaded - the"
+				" material renders StandardLit (compile the project shader"
+				" family / deploy its pak)\n";
+		}
+		return false;
 	}
 
 	void WorldRenderer::Configure(WorldRendererConfig passes) {
@@ -1771,6 +1815,120 @@ namespace engine {
 			};
 		}
 
+		// PROJECT-LIT FAMILY (docs/shader_library_design.md Phase B):
+		// the project-authored lit FS twins (project_lit.*.spv — the
+		// project's lit_hooks_project.hlsli compiled against the shared
+		// body; see samples/04_project_game). Best-effort: an
+		// engine-only deployment has NO family modules and every
+		// material simply stays StandardLit (quiet — the expected
+		// state); a project family with MISSING VARIANTS is the anomaly
+		// and reports per variant (those draws fall back inside the
+		// family). The modules feed BOTH the direct family programs
+		// here and GfxRenderer's filtered twins via the
+		// ConfigureProject* calls below.
+		{
+			auto tryLoadModule = [this](const std::string& path,
+				const char* debugName)
+				-> smvk::Holder<smvk::ShaderModuleHandle> {
+				try {
+					return m_context->CreateShaderModule(
+						smvk::shaders::Read(path), debugName);
+				}
+				catch (...) {
+					return {};
+				}
+			};
+			m_resources.fragProjectLitModule = tryLoadModule(
+				smvk::gfx::kProjectLitFsPath, "fragProjectLit");
+			if (!m_resources.fragProjectLitModule.empty()) {
+				smvk::Shader vertP{
+					.module = m_resources.vertShader,
+					.entryPoint = "mainVS",
+					.stage = smvk::ShaderStage::Vertex
+				};
+				auto familyProgram =
+					[&](const smvk::Holder<smvk::ShaderModuleHandle>& frag)
+					-> smvk::ShaderProgram {
+					return {
+						.shaders = {
+							vertP,
+							smvk::Shader{
+								.module = frag,
+								.entryPoint = "mainPS",
+								.stage = smvk::ShaderStage::Fragment
+							}
+						},
+						.shaderCount = 2
+					};
+				};
+				m_resources.mainProjectProgram =
+					familyProgram(m_resources.fragProjectLitModule);
+				// A2C twin (base-only, same as the stock A2C set).
+				m_resources.fragProjectLitA2CModule = tryLoadModule(
+					smvk::gfx::kProjectLitA2CFsPath, "fragProjectLitA2C");
+				if (!m_resources.fragProjectLitA2CModule.empty())
+					m_resources.mainProjectProgramA2C =
+						familyProgram(m_resources.fragProjectLitA2CModule);
+				// SG lobe-count twins (the filtered leg's modules).
+				for (uint32_t li = 0;
+						li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
+					m_resources.fragProjectLitSgModules[li] = tryLoadModule(
+						std::string(smvk::gfx::kProjectLitFsPath).substr(
+							0, strlen(smvk::gfx::kProjectLitFsPath) - 4)
+						+ ".sg"
+						+ std::to_string(
+							engine::GfxRenderer::LitSgVariantLobes(li))
+						+ ".spv",
+						"fragProjectLitSg");
+					if (m_resources.fragProjectLitSgModules[li].empty())
+						std::cerr << "[WorldRenderer] ProjectLit SG lobe-count"
+							" variant " << li << " unavailable - that count"
+							" falls back inside the family\n";
+				}
+				// GI permutation twins (index 1 = the retired octree ID).
+				for (uint32_t gi = 0; gi < 4; ++gi) {
+					if (gi == 1u)
+						continue;
+					m_resources.fragProjectLitGiModules[gi] = tryLoadModule(
+						std::string(smvk::gfx::kProjectLitFsPath).substr(
+							0, strlen(smvk::gfx::kProjectLitFsPath) - 4)
+						+ ".gi" + std::to_string(gi) + ".spv",
+						"fragProjectLitGi");
+					if (!m_resources.fragProjectLitGiModules[gi].empty())
+						m_resources.mainProjectProgramGi[gi] =
+							familyProgram(m_resources.fragProjectLitGiModules[gi]);
+					else
+						std::cerr << "[WorldRenderer] ProjectLit GI variant "
+							<< gi << " unavailable - falls back inside the"
+							" family\n";
+				}
+				// Standard-material twins.
+				m_resources.fragProjectLitStdModule = tryLoadModule(
+					std::string(smvk::gfx::kProjectLitFsPath).substr(
+						0, strlen(smvk::gfx::kProjectLitFsPath) - 4)
+					+ ".std.spv",
+					"fragProjectLitStd");
+				if (!m_resources.fragProjectLitStdModule.empty())
+					m_resources.mainProjectProgramStd =
+						familyProgram(m_resources.fragProjectLitStdModule);
+				for (uint32_t gi = 0; gi < 4; ++gi) {
+					if (gi == 1u)
+						continue;
+					m_resources.fragProjectLitGiStdModules[gi] = tryLoadModule(
+						std::string(smvk::gfx::kProjectLitFsPath).substr(
+							0, strlen(smvk::gfx::kProjectLitFsPath) - 4)
+						+ ".gi" + std::to_string(gi) + "std.spv",
+						"fragProjectLitGiStd");
+					if (!m_resources.fragProjectLitGiStdModules[gi].empty())
+						m_resources.mainProjectProgramGiStd[gi] =
+							familyProgram(m_resources.fragProjectLitGiStdModules[gi]);
+				}
+				std::cerr << "[WorldRenderer] ProjectLit family loaded -"
+					" SetMaterialShaderFamily(id, ProjectLit) opts materials"
+					" in\n";
+			}
+		}
+
 		// Debug-view fragments (F2 unlit, F4 cascade coverage, F6 vertex
 		// colors): same VS as main. Failure is non-fatal (program stays at
 		// shaderCount 0 and the view falls back to Lit at record time).
@@ -2567,6 +2725,37 @@ namespace engine {
 					return true;
 				const smvk::Material* mat = m_world->GetMaterial(materialId);
 				return mat ? (mat->values.layerMaterials.w > 1) : true;
+			});
+			// PROJECT-LIT family: the same modules the direct family
+			// programs bind, paired with the filtered VS as the
+			// filteredProject* twins; plus the family resolver (the
+			// filtered/mesh range walks consult it per material - same
+			// lazy-resolve pattern as the layered resolver above; unknown
+			// material = StandardLit, fail-safe).
+			if (!m_resources.fragProjectLitModule.empty()) {
+				m_gfxRenderer.ConfigureProjectFrag(m_resources.fragProjectLitModule);
+				m_gfxRenderer.ConfigureProjectFragA2C(
+					m_resources.fragProjectLitA2CModule);
+				for (uint32_t li = 0;
+						li < engine::GfxRenderer::LitSgVariantCount(); ++li)
+					m_gfxRenderer.ConfigureProjectLitFragSg(li,
+						m_resources.fragProjectLitSgModules[li]);
+				for (uint32_t gi = 0;
+						gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+					m_gfxRenderer.ConfigureProjectLitFragGi(gi,
+						m_resources.fragProjectLitGiModules[gi]);
+				m_gfxRenderer.ConfigureProjectFragStd(
+					m_resources.fragProjectLitStdModule);
+				for (uint32_t gi = 0;
+						gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+					m_gfxRenderer.ConfigureProjectLitFragGiStd(gi,
+						m_resources.fragProjectLitGiStdModules[gi]);
+			}
+			m_gfxRenderer.ConfigureMaterialFamily(
+				[this](uint32_t materialId) -> bool {
+				return m_world
+					&& m_world->ShaderFamilyOf(materialId)
+						== smvk::MaterialShaderFamily::ProjectLit;
 			});
 			// Main-view seed masked phase is reversed-Z: prefer the
 			// conservative shadow_rev module (falls back to the normal-Z
@@ -12182,6 +12371,10 @@ namespace engine {
 					return prog;
 				if (&prog == &m_resources.mainProgram
 					|| &prog == &m_resources.mainProgramA2C
+					// The project-lit family's direct twins shade through
+					// the same lit FS body — the same flat wire twin.
+					|| &prog == &m_resources.mainProjectProgram
+					|| &prog == &m_resources.mainProjectProgramA2C
 					|| IsFarSpecProgram(prog)) {
 					return m_resources.mainWireProgram.shaderCount == 2
 						? m_resources.mainWireProgram : prog;
@@ -12713,13 +12906,29 @@ namespace engine {
 				// refinement — the debug FS doesn't vary) and keep the
 				// direct-style no-A2C pick (no debug A2C twins exist).
 				const bool rangeLayered = m_gfxRenderer.MaterialLayered(materialId);
+				// ProjectLit ranges pick the family's filtered twins (the
+				// same hook code as the direct leg - design §9; missing
+				// family twins fall back to the stock picks inside the
+				// family pickers, and a family that never loaded was
+				// reported at the consult). A2C: the family's own A2C
+				// twin ONLY - shaderCount 0 keeps Masked family ranges on
+				// the family's discard variant, never the stock A2C
+				// program (whose hooks are the no-ops).
+				const bool rangeProjectLit =
+					m_gfxRenderer.MaterialProjectFamily(materialId);
 				smvk::ShaderProgram& litProg = shadingDbg
 					? m_resources.debugPrograms[size_t(*shadingDbgFs)].filtered
+					: rangeProjectLit
+					? (giVar != engine::GIVariant::None
+						? m_gfxRenderer.FilteredProjectProgramGi(uint32_t(giVar), rangeLayered)
+						: m_gfxRenderer.FilteredProjectLitProgram(gfxRanges[ri].lobeCount, rangeLayered))
 					: giVar != engine::GIVariant::None
 					? m_gfxRenderer.FilteredProgramGi(uint32_t(giVar), rangeLayered)
 					: m_gfxRenderer.FilteredLitProgram(gfxRanges[ri].lobeCount, rangeLayered);
 				bindForMaterial(materialId, litProg,
-					shadingDbg ? noA2CProgram : m_gfxRenderer.FilteredProgramA2C(),
+					shadingDbg ? noA2CProgram
+					: rangeProjectLit ? m_gfxRenderer.FilteredProjectProgramA2C()
+					: m_gfxRenderer.FilteredProgramA2C(),
 					opaqueDepth);
 					IRenderer::PushConstants matPC{};
 					matPC.materialId = materialId;
@@ -12814,17 +13023,30 @@ namespace engine {
 				// (the same flat FS the GPU-driven ranges shade with); the
 				// shader-LOD substitution is Lit-only, so far-level
 				// instances keep drawing direct — just debug-shaded.
+				// ProjectLit materials (never vertex-lit, never farSpec —
+				// FarShadingAt opts them out) bind the family's base
+				// program: monolith-level parity with the stock direct
+				// pick (this leg's GI/std refinement is the transparent
+				// leg's MainLitProgramFor, unchanged shape).
+				const uint32_t materialId = item.material;
+				const bool itemProjectLit = !shadingDbg && !vertexLitLevel
+					&& MaterialUsesProjectLit(materialId);
 				smvk::ShaderProgram& prog = shadingDbg
 					? m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
 					: vertexLitLevel
 					? m_resources.vertexLitProgram
 					: (farSpec && farSpec->main.shaderCount == 2)
-					? farSpec->main : m_resources.mainProgram;
+					? farSpec->main
+					: itemProjectLit
+					? m_resources.mainProjectProgram
+					: m_resources.mainProgram;
 				smvk::ShaderProgram& progA2c = (shadingDbg || vertexLitLevel)
 					? noA2CProgram
 					: (farSpec && farSpec->a2c.shaderCount == 2)
-					? farSpec->a2c : m_resources.mainProgramA2C;
-				const uint32_t materialId = item.material;
+					? farSpec->a2c
+					: itemProjectLit
+					? m_resources.mainProjectProgramA2C
+					: m_resources.mainProgramA2C;
 				if (materialId != boundMaterial
 					|| (&prog != boundProgram && &progA2c != boundProgram)) {
 					smvk::ShaderProgram& bound =

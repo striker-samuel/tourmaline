@@ -9,13 +9,7 @@
 // early-reject; +6ms on the bistro foliage bench). Pipelines pair this with
 // MSAASettings::Count2A2C().
 #define ALPHA_TO_COVERAGE 1
-#include "light.hlsli"
-#include "common.hlsli"
-#include "environment.hlsli"
-#include "sggi.hlsli"
-#include "sg_lightmap.hlsli"
-#include "sg_regular.hlsli"
-#include "sg_gi_volume.hlsli"
+#include "lit_dependencies.hlsli"
 // The STANDARD no-op hook family (a project lit family includes its own
 // hook library here instead — same body, same seam).
 #include "lit_hooks_default.hlsli"

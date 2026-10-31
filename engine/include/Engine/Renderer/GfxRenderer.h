@@ -107,6 +107,22 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// leave shaderCount 0 and the picks fall back to the monolith twins.
 	smvk::ShaderProgram filteredProgramStd{};
 	smvk::ShaderProgram filteredProgramGiStd_[4]{};
+	// PROJECT-LIT FAMILY twins (docs/shader_library_design.md Phase B):
+	// the project-authored lit FS (project_lit.*.spv — the project's
+	// lit_hooks_project.hlsli compiled against the shared body) paired
+	// with the same filtered VS, one twin per stock permutation. Built
+	// only for the modules the WorldRenderer configured (a project that
+	// never compiles the family leaves every twin at shaderCount 0 and
+	// every material on StandardLit — the family pickers fall back to
+	// the stock picks and the WorldRenderer's consult reports the
+	// fallback LOUDLY, never a silent effect drop). Same members below
+	// for the mesh leg (gfxmesh_project_lit.*.spv).
+	smvk::ShaderProgram filteredProjectProgram{};
+	smvk::ShaderProgram filteredProjectProgramA2C{};
+	smvk::ShaderProgram filteredProjectLitSg_[4]{};
+	smvk::ShaderProgram filteredProjectProgramGi_[4]{};
+	smvk::ShaderProgram filteredProjectProgramStd{};
+	smvk::ShaderProgram filteredProjectProgramGiStd_[4]{};
 	// Wireframe (P) twin of filteredProgram (same VS + default_wire.frag):
 	// Main binds it instead of the lit A2C/filtered programs while the
 	// wireframe raster override is on, so line pixels skip the heavy lit
@@ -142,6 +158,22 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	smvk::ShaderProgram meshProgramStd{};
 	smvk::Holder<smvk::ShaderModuleHandle> meshFsGiStdModules_[4]{};
 	smvk::ShaderProgram meshProgramGiStd_[4]{};
+	// PROJECT-LIT mesh twins (gfxmesh_project_lit.*.spv): best-effort,
+	// loaded in EnsureMeshPrograms. A MISSING family mesh base makes
+	// ProjectLit ranges NOT mesh-eligible (MeshProgramFor returns null)
+	// — the indexed leg then draws them with the family's indexed
+	// program, the design §9 fallback that never loses the effect; the
+	// family never silently renders through a stock mesh FS.
+	smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsModule;
+	smvk::ShaderProgram meshProjectProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsSgModules_[4]{};
+	smvk::ShaderProgram meshProjectLitSg_[4]{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsGiModules_[4]{};
+	smvk::ShaderProgram meshProjectProgramGi_[4]{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsStdModule;
+	smvk::ShaderProgram meshProjectProgramStd{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshProjectFsGiStdModules_[4]{};
+	smvk::ShaderProgram meshProjectProgramGiStd_[4]{};
 	// Seed-depth programs (T3): draw the previous frame's visible clusters
 	// straight from the cluster-ordered index heap to prime depth.
 	smvk::Holder<smvk::ShaderModuleHandle> seedVsModule;
@@ -308,6 +340,40 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 			return materialDepth_(materialId);
 		return { smvk::CullMode::Back, true };
 	}
+	// ---- the PROJECT-LIT family (Phase B, design §5/§9) -------------
+	// Project-authored lit FS modules (project_lit.*.spv), configured by
+	// the WorldRenderer at init exactly like the stock twins above (the
+	// modules are shared with the direct leg's family programs). A
+	// project that never compiled the family leaves every handle empty:
+	// the family pickers fall back to the STOCK picks and the
+	// WorldRenderer's family consult reports the fallback loudly (never
+	// a silent effect drop).
+	void ConfigureProjectFrag(smvk::ShaderModuleHandle frag) { projectFrag_ = frag; }
+	void ConfigureProjectFragA2C(smvk::ShaderModuleHandle frag) { projectA2CFrag_ = frag; }
+	void ConfigureProjectLitFragSg(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
+		if (variantIndex < 4)
+			projectLitFragSgModules_[variantIndex] = frag;
+	}
+	void ConfigureProjectLitFragGi(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
+		if (variantIndex < 4)
+			projectLitFragGiModules_[variantIndex] = frag;
+	}
+	void ConfigureProjectFragStd(smvk::ShaderModuleHandle frag) { projectFragStd_ = frag; }
+	void ConfigureProjectLitFragGiStd(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
+		if (variantIndex < 4)
+			projectLitFragGiStdModules_[variantIndex] = frag;
+	}
+	// Material family resolver (the ProjectLit pick): same lazy-resolve
+	// pattern as ConfigureMaterialLayered — the GfxRenderer walks
+	// material ranges without the app's World, so the app injects "is
+	// this world material ProjectLit". Unset resolver = every material
+	// StandardLit (today's behavior, fail-safe).
+	void ConfigureMaterialFamily(std::function<bool(uint32_t)> projectLit) {
+		materialProjectLit_ = std::move(projectLit);
+	}
+	[[nodiscard]] bool MaterialProjectFamily(uint32_t materialId) const {
+		return materialProjectLit_ && materialProjectLit_(materialId);
+	}
 	// Idempotent filtered-motion program creation (VS + motion frag).
 	// Returns true when the program is ready to bind.
 	bool EnsureFilteredMotion(smvk::ResourceManager& ctx,
@@ -373,6 +439,12 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 		return meshProgram.shaderCount == 2
 			&& !meshMsModule.empty() && !meshFsModule.empty();
 	}
+	// The family twins' base check (see MeshProgramFor's projectLit
+	// contract): false makes every ProjectLit range indexed-drawn.
+	[[nodiscard]] bool MeshProjectProgramsValid() const {
+		return meshProjectProgram.shaderCount == 2
+			&& !meshProjectFsModule.empty();
+	}
 	// Bitmask of built sg twins for the mesh eligibility predicate.
 	[[nodiscard]] uint32_t MeshSgTwinMask() const {
 		uint32_t m = 0;
@@ -386,8 +458,14 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// for the lobe count, else the generic mesh program; the std twins
 	// replace the generic/gi picks for non-layered materials). Null
 	// when the mesh system itself is down (base program invalid).
+	// projectLit picks the FAMILY mesh twins; when the family's mesh
+	// base is missing this returns NULL — the design §9 contract: the
+	// range is not mesh-eligible and the indexed leg draws it with the
+	// family's indexed program (the effect is never silently lost, and
+	// the family never renders through a stock mesh FS).
 	[[nodiscard]] smvk::ShaderProgram* MeshProgramFor(bool giActive,
-		uint32_t giVariant, uint32_t lobeCount, bool layered);
+		uint32_t giVariant, uint32_t lobeCount, bool layered,
+		bool projectLit = false);
 	// CPU side of the mesh eligibility contract: a mesh twin exists for
 	// the range's variant and every batch's draw is opaque.
 	// The indexed loop skips exactly these ranges; the record partitions
@@ -461,6 +539,49 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 			return filteredLitSg_[li];
 		return filteredProgram;
 	}
+	// ---- the PROJECT-LIT family picks (mirror the stock picks above;
+	// reached only for materials the family resolver marks ProjectLit) --
+	// The GI pick: the family's .giN twin when built (with the .giNstd
+	// refinement for non-layered materials), else the family base/.std,
+	// else the STOCK pick (the family modules were never compiled — the
+	// WorldRenderer's consult already reported the fallback loudly).
+	[[nodiscard]] smvk::ShaderProgram& FilteredProjectProgramGi(
+		uint32_t giVariant, bool layered = true) {
+		if (giVariant <= 3u && filteredProjectProgramGi_[giVariant].shaderCount == 2) {
+			if (!layered && filteredProjectProgramGiStd_[giVariant].shaderCount == 2)
+				return filteredProjectProgramGiStd_[giVariant];
+			return filteredProjectProgramGi_[giVariant];
+		}
+		if (filteredProjectProgram.shaderCount == 2) {
+			if (!layered && filteredProjectProgramStd.shaderCount == 2)
+				return filteredProjectProgramStd;
+			return filteredProjectProgram;
+		}
+		return FilteredProgramGi(giVariant, layered);
+	}
+	// The lobe-count pick (no-GI scenes): the family's .sgN twin when
+	// built (monolith family only — same stock rule), else the family
+	// base/.std, else the STOCK pick.
+	[[nodiscard]] smvk::ShaderProgram& FilteredProjectLitProgram(
+		uint32_t lobeCount, bool layered = true) {
+		const uint32_t li = lobeCount == 5u ? 0u : lobeCount == 6u ? 1u
+			: lobeCount == 9u ? 2u : lobeCount == 12u ? 3u : UINT32_MAX;
+		if (li <= 3 && filteredProjectLitSg_[li].shaderCount == 2)
+			return filteredProjectLitSg_[li];
+		if (filteredProjectProgram.shaderCount == 2) {
+			if (!layered && filteredProjectProgramStd.shaderCount == 2)
+				return filteredProjectProgramStd;
+			return filteredProjectProgram;
+		}
+		return FilteredLitProgram(lobeCount, layered);
+	}
+	// The family A2C twin (project_lit_a2c + the filtered VS): invalid
+	// when the family was never compiled — bindForMaterial's useA2c
+	// check then keeps Masked ProjectLit ranges on the family's DISCARD
+	// variant (never the stock A2C program, whose hooks are the no-ops).
+	[[nodiscard]] smvk::ShaderProgram& FilteredProjectProgramA2C() {
+		return filteredProjectProgramA2C;
+	}
 	// True for the generic lit program, its A2C twin, every built lobe-count
 	// twin and every std twin — the wireframe override resolves all of them
 	// to the flat twin (wireTwinOf in the Main pass).
@@ -475,6 +596,22 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 			if (&prog == &filteredProgramGi_[gi])
 				return true;
 			if (&prog == &filteredProgramGiStd_[gi])
+				return true;
+		}
+		// The project-lit family twins shade through the same lit FS
+		// body (the hooks only edit surface/color) — the wireframe
+		// override resolves them to the same flat twin.
+		if (&prog == &filteredProjectProgram
+			|| &prog == &filteredProjectProgramA2C
+			|| &prog == &filteredProjectProgramStd)
+			return true;
+		for (uint32_t li = 0; li < 4; ++li)
+			if (&prog == &filteredProjectLitSg_[li])
+				return true;
+		for (uint32_t gi = 0; gi < 4; ++gi) {
+			if (&prog == &filteredProjectProgramGi_[gi])
+				return true;
+			if (&prog == &filteredProjectProgramGiStd_[gi])
 				return true;
 		}
 		return false;
@@ -679,6 +816,15 @@ private:
 	smvk::ShaderModuleHandle mainFragStd_{};
 	smvk::ShaderModuleHandle litFragGiStdModules_[4]{};
 	std::function<bool(uint32_t)> materialLayered_{};
+	// PROJECT-LIT family FS modules + the family resolver (see the
+	// ConfigureProject*/ConfigureMaterialFamily block above).
+	smvk::ShaderModuleHandle projectFrag_{};
+	smvk::ShaderModuleHandle projectA2CFrag_{};
+	smvk::ShaderModuleHandle projectLitFragSgModules_[4]{};
+	smvk::ShaderModuleHandle projectLitFragGiModules_[4]{};
+	smvk::ShaderModuleHandle projectFragStd_{};
+	smvk::ShaderModuleHandle projectLitFragGiStdModules_[4]{};
+	std::function<bool(uint32_t)> materialProjectLit_{};
 	// Lightmap chart transform GPU mirror (see EnsureChartXforms).
 	smvk::Holder<smvk::BufferHandle> lmXformsBuf_;
 	uint64_t lmXformsAddr_ = 0;

@@ -20,6 +20,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
 #include <Engine/App/animator.h>
+#include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/touranim.h>
 #include <Engine/Scene/scene.h>
 
@@ -538,6 +539,97 @@ void TestMaterialInstances() {
 	(void)ap;
 }
 
+// ---------------------------------------------------------------------------
+// The shader-family lane (docs/shader_library_design.md Phase B): the
+// per-base-material ProjectLit opt-in — set/read/refusal, the re-key
+// survival through resolves (the same (owner, handle) capture as the
+// userdata lane), instances staying a VALUE-only lane over a family
+// material, and the FarShadingAt opt-out (ProjectLit materials never
+// substitute the cheap vertex-lit program at the farthest cooked LOD —
+// the hooks would silently vanish at distance).
+// ---------------------------------------------------------------------------
+
+void TestMaterialShaderFamily() {
+	using namespace smvk;
+	World w;
+	// One cluster, one material (allowFarVertexLit ON so the far gate is
+	// observable), and a TWO-LEVEL LOD chain (LOD0 + a /lod1 sibling
+	// with a LOD marker) so FarShadingAt has a farthest level to read.
+	auto a = std::make_unique<smvk::Cluster>(nullptr);
+	a->SetOfflineMode(true);
+	const int meshNode = addNode(a->scene, -1, 0);
+	const auto mh = a->staticMeshes.create(StaticMesh{});
+	a->RegisterMeshUri("assets://rock", mh);
+	SetMesh(a->scene, NodeId(meshNode), mh.index());
+	Material matDef{};
+	matDef.shaderLod.allowFarVertexLit = true;
+	matDef.rebuildPipeline();
+	const auto math = a->materials.create(std::move(matDef));
+	SetMaterial(a->scene, NodeId(meshNode), math.index());
+	const auto mh1 = a->staticMeshes.create(StaticMesh{});
+	a->RegisterMeshUri("assets://rock/lod1", mh1);
+	LodInfo lod1{};
+	lod1.lodIndex = 1;
+	lod1.candidateCount = 2;
+	lod1.simplifyError = 0.5f;
+	a->RegisterMeshLod("assets://rock/lod1", lod1);
+	w.RegisterCluster(std::move(a));
+	w.ResolveAndFixup_clusters();
+
+	uint32_t materialIdx = UINT32_MAX;
+	for (const MeshRow& row : w.scene.tables.meshes) {
+		const MaterialRow* mr = FindMaterial(w.scene, row.node);
+		if (mr)
+			materialIdx = mr->material;
+	}
+	Check(materialIdx != UINT32_MAX, "family.source-found");
+
+	// Default family: StandardLit everywhere (never-set + bad index).
+	Check(w.ShaderFamilyOf(materialIdx)
+			== MaterialShaderFamily::StandardLit,
+		"family.default-standard");
+	Check(w.ShaderFamilyOf(UINT32_MAX)
+			== MaterialShaderFamily::StandardLit,
+		"family.bad-index-reads-standard");
+	// Set + read + refusal.
+	Check(w.SetMaterialShaderFamily(materialIdx,
+			MaterialShaderFamily::ProjectLit),
+		"family.set");
+	Check(!w.SetMaterialShaderFamily(UINT32_MAX,
+			MaterialShaderFamily::ProjectLit),
+		"family.bad-index-refused");
+	Check(w.ShaderFamilyOf(materialIdx)
+			== MaterialShaderFamily::ProjectLit,
+		"family.reads");
+	// The re-key capture: the family assignment survives resolves (the
+	// stable (owner, handle) pair re-emits into the new index layout).
+	w.ResolveAndFixup_clusters();
+	Check(w.ShaderFamilyOf(materialIdx)
+			== MaterialShaderFamily::ProjectLit,
+		"family.survives-resolve");
+	// Instances over a family material are the VALUE lane only — the
+	// family inherits from the base, nothing per-instance exists.
+	const MaterialInstanceHandle inst = w.CreateMaterialInstance(materialIdx);
+	Check(bool(inst) && w.IsMaterialInstanceAlive(inst),
+		"family.instance-over-family-material");
+	Check(w.SetMaterialInstanceUserData(inst, 0x0000FF00u),
+		"family.instance-override-still-works");
+	// FarShadingAt: ProjectLit materials stay FULL-LIT at the farthest
+	// level (default{} — no vertex-lit substitution, no quality spec),
+	// while the same material with the family off goes vertex-lit.
+	const uint32_t meshIdx = 0; // the single registered LOD0 mesh
+	Check(w.FarShadingAt(meshIdx, 1, materialIdx).vertexLit == false,
+		"family.far-stays-lit");
+	Check(w.FarShadingAt(meshIdx, 1, materialIdx).isDefault(),
+		"family.far-no-spec");
+	Check(w.FarShadingAt(meshIdx, 0, materialIdx).vertexLit == false,
+		"family.near-stays-lit");
+	w.SetMaterialShaderFamily(materialIdx,
+		MaterialShaderFamily::StandardLit);
+	Check(w.FarShadingAt(meshIdx, 1, materialIdx).vertexLit == true,
+		"family.standard-far-vertex-lit");
+}
+
 void TestDecalEntities() {
 	smvk::World w;
 
@@ -980,6 +1072,7 @@ int main() {
 	TestAudioSourceEntities();
 	TestMeshEntitiesAndAnimators();
 	TestMaterialInstances();
+	TestMaterialShaderFamily();
 	TestBakePayloadChannel();
 	TestEnvZones();
 	TestActiveEnvironmentFirstWins();

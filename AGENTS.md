@@ -340,10 +340,11 @@ trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
 
 ### The lit-hook seam + the 32-bit userdata lane (Phase A landed)
 
-**docs/shader_library_design.md** is the design record; its Phase A
+docs/shader_library_design.md is the design record; its Phase A
 (the baseline userdata transport + the no-op StandardLit hook family)
-is IMPLEMENTED; Phase B (the ProjectLit family + project shader
-compilation) is the follow-up.
+is IMPLEMENTED; Phase B (the ProjectLit family) is ALSO IMPLEMENTED
+(see the next block); Phase C (coverage hooks, richer overrides) is
+the follow-up.
 
 - **The seam**: `engine/shaders/lit_hooks_api.hlsli` (typed
   `TMLitInput`/`TMSurface` + prototypes) + `lit_hooks_default.hlsli`
@@ -391,6 +392,76 @@ compilation) is the follow-up.
 - Tests: `gfx.userdata.*` (test_gfxfilter.cpp),
   `matinst.*` (test_world_entities.cpp), the 112B stride +
   motion-tail + padEnd pins (test_rendergraph_contract.cpp).
+
+### The ProjectLit family (Phase B landed)
+
+The project-authored lit FS family — a project's hook implementation
+compiled against the SAME shared lit body and selected per base
+material. Everything above (the seam, the transport, the instances)
+is the family-neutral base; this block is the family layer.
+
+- **The authoring shape**: a project owns ONE hook file
+  (`lit_hooks_project.hlsli` + its `effects/` includes — see
+  `samples/04_project_game/project/content/shaders`) plus THREE-LINE
+  entry wrappers (`project_lit.frag.hlsl` / `project_lit_a2c.frag.hlsl`
+  / `gfxmesh_project_lit.frag.hlsl`) over the engine's extracted glue:
+  `engine/shaders/lit_dependencies.hlsli` (the 7 shared includes) +
+  `engine/shaders/gfxmesh_lit_decl.hlsli` (the mesh FS PSin/linkage
+  block — a project wrapper can never drift the linked locations).
+  The compile puts the project's shader dir FIRST on `-I` so its hook
+  file wins; `compile_shaders`' new `HEADER_DIRS` arg tracks
+  .hlsli dependencies ACROSS the include boundary (the §7 gap —
+  editing default_lit_body.hlsli rebuilds the family), and
+  `tourmaline_project_lit_variants()` (cmake/CompileShaders.cmake)
+  carries the engine-mirrored variant matrix (sg5/6/9/12, gi0/2/3,
+  std, giNstd — 26 modules) so a project cannot drift from the
+  engine's compiled set. Outputs are the project's OWN namespace
+  (`project_lit.*.spv`, `gfxmesh_project_lit.*.spv`), NEVER
+  engine-shaders.pak; served through the shader library's dev tree
+  (a project pak via `smvk::shaders::MountPak` is the production
+  lane).
+- **The runtime state**: `MaterialShaderFamily` (mesh.h —
+  StandardLit/ProjectLit, CPU pipeline-selection state, NEVER in
+  MaterialValues) with `World::SetMaterialShaderFamily` /
+  `ShaderFamilyOf` — a `materialShaderFamily` table beside
+  `materialUserData`, re-keyed through the same (owner, handle)
+  capture. Family is BASE-MATERIAL granularity (instances inherit;
+  only userdata is per-instance) so it can never split a batch.
+- **The renderer consults**: `WorldRenderer::MaterialUsesProjectLit`
+  (family + programs-loaded, ONE loud fallback report per session
+  when the modules are missing — never a silent effect drop) feeds
+  `MainLitProgramFor` (the transparent leg's full gi/std chain over
+  the family twins), the direct opaque pick (family base program,
+  monolith-level parity with that leg's stock shape) and its A2C
+  pick (the family A2C twin ONLY — shaderCount 0 keeps Masked family
+  draws on the family's discard variant, never the stock A2C); the
+  filtered ranges consult `GfxRenderer::MaterialProjectFamily` (the
+  `ConfigureMaterialFamily` lazy resolver, mirroring
+  ConfigureMaterialLayered) → `FilteredProjectProgramGi` /
+  `FilteredProjectLitProgram` / `FilteredProjectProgramA2C`; the mesh
+  leg's `MeshProgramFor(..., projectLit)` picks the family mesh twins
+  and returns NULL when the family mesh base is missing — the range
+  is NOT mesh-eligible and the indexed family program draws it (the
+  design §9 fallback, never a stock mesh FS). Wireframe resolves the
+  family twins through IsFilteredLitProgram like every lit program.
+- **LOD**: ProjectLit materials opt out of BOTH far-shading
+  mechanisms (`World::FarShadingAt` returns default{}) — the cheap
+  vertex-lit FS never runs the hooks and the quality-spec twins are
+  stock programs — so the effect survives to the farthest cooked LOD
+  (staying on the family's lit program; the documented v1 cost).
+- **The demo** (`samples/04_project_game`): the `ProjectLitDemo`
+  element (composed with the audio runtime — RunPakApp has ONE
+  extraElement slot) adopts the scene's first opaque material and
+  pulses the damage (bits 0..7) + wetness (bits 8..15) fields through
+  `SetMaterialUserData`. Headless A/B:
+  `TOURMALINE_EXTRA_ELEMENT_BENCH=1 TOURMALINE_CAPTURE=12 --bench 16`
+  (the new PakApp pin that stacks the host extension element on bench
+  runs — the extension-driven-effect A/B lane; 12.97% differing
+  pixels vs the stock run, one material tinted).
+- Tests: `family.*` (test_world_entities.cpp — the state lane,
+  re-key survival, instance inheritance, the FarShading gate) and
+  `gfx.family-*` (test_gfxfilter.cpp — the picker fallback ladders +
+  the mesh eligibility contract over forged program tables, no GPU).
 
 ## Running
 

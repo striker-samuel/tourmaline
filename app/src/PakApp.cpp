@@ -23,6 +23,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -404,9 +405,20 @@ namespace app {
 			// AFTER the renderer element — attach order guarantees the world is
 			// loaded (the renderer's onAttach ran the world source) before the
 			// extension looks for it. Bench runs never stack it (the extension
-			// animates every frame — capture determinism).
+			// animates every frame — capture determinism), unless the explicit
+			// TOURMALINE_EXTRA_ELEMENT_BENCH=1 pin opts in: the headless A/B
+			// lane for extension-driven effects (the ProjectLit family demo's
+			// capture, e.g. TOURMALINE_CAPTURE=12 --bench 24 with the pin).
 			const bool extraOn = static_cast<bool>(cfg.extraElement)
-				&& cfg.cli.benchFrames <= 0 && cfg.cli.benchMoveSpeed <= 0.0f;
+				&& (cfg.cli.benchFrames <= 0 && cfg.cli.benchMoveSpeed <= 0.0f
+					|| [] {
+						static const bool pin = [] {
+							const char* e =
+								std::getenv("TOURMALINE_EXTRA_ELEMENT_BENCH");
+							return e && std::strcmp(e, "1") == 0;
+						}();
+						return pin;
+					}());
 			if (extraOn && cfg.extraOwnsCamera)
 				element->SetDisableControl(true); // the extension owns the camera
 			// Attach the element to the host's stack and DROP the host-side

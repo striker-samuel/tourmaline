@@ -1228,6 +1228,27 @@ struct AppResources {
 	// same VS + per-permutation GI path. Missing modules leave the base
 	// mainProgram as fallback. See SPEC_GI_VARIANT in common.hlsli.
 	smvk::Holder<smvk::ShaderModuleHandle> fragLitGiModules[4];
+	// PROJECT-LIT FAMILY (docs/shader_library_design.md Phase B): the
+	// project-authored lit FS twins (project_lit.*.spv — the project's
+	// lit_hooks_project.hlsli against the shared body) with the same
+	// permutation scheme as the stock programs above. Best-effort load:
+	// a project that compiled no family leaves every member empty and
+	// every material on StandardLit (the consult reports the fallback
+	// LOUDLY — never a silent effect drop). Selected per base material
+	// through World::ShaderFamilyOf (MainLitProgramFor + the direct and
+	// filtered legs); the same modules feed GfxRenderer's
+	// filteredProject* twins through the ConfigureProject* setters.
+	smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitModule;
+	smvk::ShaderProgram mainProjectProgram;
+	smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitA2CModule;
+	smvk::ShaderProgram mainProjectProgramA2C;
+	smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitSgModules[4];
+	smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitGiModules[4];
+	smvk::ShaderProgram mainProjectProgramGi[4];
+	smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitStdModule;
+	smvk::ShaderProgram mainProjectProgramStd;
+	smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitGiStdModules[4];
+	smvk::ShaderProgram mainProjectProgramGiStd[4];
 	// Shading debug-view program PAIRS (F2/F4/F6/F9/F10/F11 + SsrMask):
 	// one entry per DebugFs slot — direct (default.vert + FS) for the
 	// direct fallback leg, filtered (gfxfiltered.vert + FS, via
@@ -1565,7 +1586,16 @@ public:
 	//
 	// Mirrors the filtered path's GfxRenderer::FilteredProgramGi and
 	// GfxRenderer::FilteredLitProgram selection logic.
+	// ProjectLit materials (World::ShaderFamilyOf) first take the SAME
+	// chain over the project family's twins (design §9: the same hook
+	// code on every leg).
 	[[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
+	// The family consult every lit leg shares: true only when the
+	// material's family is ProjectLit AND the family programs loaded.
+	// A ProjectLit material with no loaded family reports ONCE (a loud
+	// fallback diagnostic — the effect never silently drops to the
+	// stock hooks) and renders StandardLit.
+	[[nodiscard]] bool MaterialUsesProjectLit(uint32_t materialId);
 
 	// One-shot capture readback (TOURMALINE_CAPTURE): the last rendered
 	// frame's TonemapCapture wrote m_captureImage and the submit landed
@@ -2753,6 +2783,10 @@ public:
 	// filter leg for the session (gfxSlot stays invalid; everything draws
 	// direct - graceful skip, never fatal). Never user-toggled.
 	bool m_gfxFilterAvailable = true;
+	// ProjectLit family fallback diagnostic (see MaterialUsesProjectLit):
+	// the "family modules not loaded" report fires once per session, not
+	// per material per frame.
+	bool m_projectLitFallbackWarned = false;
 	// Task-less mesh-shader main leg (opaque ranges, mesh
 	// FS twins for base/sg/gi variants). False or unsupported device =
 	// indexed multi-draws (CPU fallback).
