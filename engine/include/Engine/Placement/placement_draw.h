@@ -36,7 +36,7 @@
 #include <Engine/Placement/placement_point.h>
 #include <Engine/Placement/placement_tile.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 // VS tail push offset: the main pass' unused prevModel scratch
 // (bytes 192..224), same overlay precedent as gfx::kFilteredVsPushOffset.
@@ -128,4 +128,19 @@ void CollectTileDrawSets(const PlacementSystem& sys, uint64_t programId,
 	const std::function<bool(const glm::vec3&, float)>& frustumTest,
 	std::vector<TileDrawSet>& out);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::CollectTileDrawSets;
+	using ::tour::placement::ComposeInstanceMatrix;
+	using ::tour::placement::kPlacementCullDebugRetest;
+	using ::tour::placement::kPlacementVsPushOffset;
+	using ::tour::placement::PlacementVsPush;
+	using ::tour::placement::ProtoRun;
+	using ::tour::placement::TileDrawSet;
+}

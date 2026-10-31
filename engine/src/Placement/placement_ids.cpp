@@ -3,7 +3,8 @@
 
 #include <Engine/Placement/placement_ids.h>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 StableID MakeStableID(uint64_t graphSeed, uint32_t nodeId, TileID tile,
 	uint32_t primitiveId, uint32_t candidateIndex) {
@@ -60,4 +61,4 @@ ChannelHash HashChannel(StableID id, RandomChannel channel) {
 	return ChannelHash{ lo, hi };
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

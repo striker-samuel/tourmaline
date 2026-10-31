@@ -13,7 +13,7 @@
 #include <Engine/Placement/placement_ids.h>
 #include <Engine/Placement/placement_point.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 inline constexpr uint32_t kPlacementCacheMagic = 0x504C4348u; // 'PLCH'
 inline constexpr uint32_t kPlacementCacheVersion = 1;
@@ -48,4 +48,19 @@ bool DeserializeCache(const uint8_t* data, size_t size, uint64_t graphHash,
 // Cache key ingredient: FNV-style fold over program bytes + dep versions.
 uint64_t HashCombine64(uint64_t acc, uint64_t lane);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::CachedInstance;
+	using ::tour::placement::DeserializeCache;
+	using ::tour::placement::HashCombine64;
+	using ::tour::placement::kPlacementCacheMagic;
+	using ::tour::placement::kPlacementCacheVersion;
+	using ::tour::placement::PlacementCacheHeader;
+	using ::tour::placement::SerializeCache;
+}

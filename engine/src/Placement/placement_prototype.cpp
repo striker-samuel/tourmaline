@@ -3,7 +3,8 @@
 
 #include <Engine/Placement/placement_prototype.h>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 void PrototypeTable::add(Prototype p) {
 	if (p.weight < 0.0f) p.weight = 0.0f;
@@ -33,4 +34,4 @@ uint32_t SelectBySlope(const PrototypeTable& table, float slopeDeg, float thresh
 	return pick < table.size() ? pick : 0;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

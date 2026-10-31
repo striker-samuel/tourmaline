@@ -15,7 +15,7 @@
 
 #include <Engine/Placement/placement_ids.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 // CPU authoring/bake representation. Parallel arrays, same length.
 struct PlacementPoints {
@@ -68,4 +68,15 @@ struct PlacementRef {
 	float tileSize = 64.0f;   // world meters per runtime tile
 };
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::PlacementPoints;
+	using ::tour::placement::PlacementRef;
+	using ::tour::placement::RenderInstance;
+}

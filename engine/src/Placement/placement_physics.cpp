@@ -5,7 +5,8 @@
 
 #include <algorithm>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 namespace {
 
 float InstanceRadius(const PlacementQuerySource& src, size_t i) {
@@ -110,4 +111,4 @@ void PromotionRegistry::clear() {
 	entityToId_.clear();
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

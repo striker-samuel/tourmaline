@@ -5,7 +5,8 @@
 
 #include <cmath>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 void CollectTileDrawSets(const PlacementSystem& sys, uint64_t programId,
 	const std::function<bool(const glm::vec3&, float)>& frustumTest,
@@ -37,4 +38,4 @@ void CollectTileDrawSets(const PlacementSystem& sys, uint64_t programId,
 	});
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

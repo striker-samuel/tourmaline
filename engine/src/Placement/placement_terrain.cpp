@@ -7,7 +7,8 @@
 #include <algorithm>
 #include <cmath>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 HeightfieldData BuildTerrainHeights(const TerrainParams& params) {
 	HeightfieldData hf;
@@ -497,4 +498,4 @@ bool BuildWorldTileDomain(const smvk::terrain::TerrainHField& field,
 	return true;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

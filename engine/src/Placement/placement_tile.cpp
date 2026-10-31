@@ -7,7 +7,8 @@
 #include <cmath>
 #include <unordered_map>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 namespace {
 
 // Model matrix for transient draws is built by the caller; yaw-only here.
@@ -594,4 +595,4 @@ void ComputeTileBounds(PlacementTile& tile) {
 	tile.boundsMax = mx;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

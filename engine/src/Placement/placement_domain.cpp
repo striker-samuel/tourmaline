@@ -6,7 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 DomainSample GridDomain::sample(StableID id, uint32_t candidateIndex) const {
 	DomainSample s;
@@ -162,4 +163,4 @@ DomainSample HeightfieldDomain::sample(StableID id) const {
 	return s;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

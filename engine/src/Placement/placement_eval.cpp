@@ -6,7 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 float ValueNoise2D(float x, float z, uint64_t seed) {
 	// Integer lattice, hash-based gradient-free value noise (32-bit lanes).
@@ -95,4 +96,4 @@ std::vector<float> EvaluateProgram(const PlacementProgram& prog, const DomainSam
 	return v;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

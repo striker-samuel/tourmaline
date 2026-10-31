@@ -19,7 +19,7 @@
 #include <Engine/Placement/placement_ids.h>
 #include <Engine/Placement/placement_point.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 struct StableIDHash {
 	size_t operator()(const StableID& id) const {
@@ -135,4 +135,19 @@ struct ExclusionDisc {
 size_t ApplyExclusions(std::vector<RenderInstance>& instances, std::vector<StableID>& ids,
 	const std::vector<ExclusionDisc>& discs);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::ApplyExclusions;
+	using ::tour::placement::ExclusionDisc;
+	using ::tour::placement::NodeOverride;
+	using ::tour::placement::OverrideLayer;
+	using ::tour::placement::OverrideScope;
+	using ::tour::placement::PlacementOverride;
+	using ::tour::placement::StableIDHash;
+}

@@ -29,7 +29,7 @@
 #include <Engine/Placement/placement_point.h>
 #include <Engine/Placement/placement_prototype.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 using EntityId = uint64_t;
 inline constexpr EntityId kInvalidEntity = 0;
@@ -78,4 +78,19 @@ private:
 	std::unordered_map<EntityId, StableID> entityToId_;
 };
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::EntityId;
+	using ::tour::placement::kInvalidEntity;
+	using ::tour::placement::PlacementHit;
+	using ::tour::placement::PlacementQuerySource;
+	using ::tour::placement::PromotionRegistry;
+	using ::tour::placement::QueryPlacementsAABB;
+	using ::tour::placement::RaycastPlacements;
+}

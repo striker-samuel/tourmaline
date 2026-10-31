@@ -3,7 +3,8 @@
 
 #include <Engine/Placement/placement_override.h>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 namespace {
 
 // Shared payload application (exact and bulk rules carry the same
@@ -83,4 +84,4 @@ size_t ApplyExclusions(std::vector<RenderInstance>& instances, std::vector<Stabl
 	return w;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

@@ -21,7 +21,11 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
 
-namespace smvk::placement {
+namespace tour::placement {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 struct TerrainParams {
 	glm::vec2 origin{ 0.0f, 0.0f }; // world XZ of texel (0,0)
@@ -213,4 +217,33 @@ bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
 	const glm::vec2& rectMin, const glm::vec2& rectMax,
 	EcotopeMaskData& out);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::BuildTerrainHeights;
+	using ::tour::placement::BuildTerrainTileUpload;
+	using ::tour::placement::BuildTerrainUpload;
+	using ::tour::placement::BuildWorldTileDomain;
+	using ::tour::placement::HarvestWorldEcotope;
+	using ::tour::placement::HarvestWorldHeightfield;
+	using ::tour::placement::kTerrainMaxTiles;
+	using ::tour::placement::TerrainBrushBox;
+	using ::tour::placement::TerrainBrushOp;
+	using ::tour::placement::TerrainBrushStamp;
+	using ::tour::placement::TerrainBrushTouchedTiles;
+	using ::tour::placement::TerrainCopyBox;
+	using ::tour::placement::TerrainGroupData;
+	using ::tour::placement::TerrainParams;
+	using ::tour::placement::TerrainRaycast;
+	using ::tour::placement::TerrainTileOrigin;
+	using ::tour::placement::TerrainTileRange;
+	using ::tour::placement::TerrainWriteBox;
+	using ::tour::placement::WorldMaskGrid;
+	using ::tour::placement::WorldTileData;
+	using ::tour::placement::WorldTileHaloMeters;
+}

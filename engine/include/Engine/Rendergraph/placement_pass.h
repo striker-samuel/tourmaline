@@ -38,7 +38,7 @@
 #include <cstring>
 #include <vector>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 struct PlacementPassDesc {
 	uint32_t maxInstancesPerTile = 65536; // per-slot append bound (capacity);
@@ -2063,4 +2063,28 @@ struct PlacementWorldRuntime {
 	}
 };
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+// COMPAT (the namespace/RHI boundary audit): this rendergraph-side
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling.
+namespace smvk::placement {
+	using ::tour::placement::PlacementPassDesc;
+	using ::tour::placement::PlacementPass;
+	using ::tour::placement::PlacementConstraint;
+	using ::tour::placement::PlacementCullPrograms;
+	using ::tour::placement::PlacementDrawPrograms;
+	using ::tour::placement::PlacementEcoMaskGpu;
+	using ::tour::placement::PlacementGpuTiles;
+	using ::tour::placement::PlacementGpuTileSlot;
+	using ::tour::placement::PlacementHeightfieldGpu;
+	using ::tour::placement::PlacementMeshGpu;
+	using ::tour::placement::PlacementParamsGpu;
+	using ::tour::placement::PlacementPass;
+	using ::tour::placement::PlacementPassDesc;
+	using ::tour::placement::PlacementProgramGpu;
+	using ::tour::placement::PlacementScatterPrograms;
+	using ::tour::placement::PlacementVisibleSet;
+	using ::tour::placement::PlacementWorldRuntime;
+	using ::tour::placement::ScatterBDAs;
+}

@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 // Keep in sync with placement_field.hlsli (same numeric values).
 enum class FieldOp : uint32_t {
@@ -73,4 +73,21 @@ inline FieldInstr OpConst(float v) { FieldInstr i; i.op = FieldOp::Const; i.para
 inline FieldInstr OpAdd(uint32_t a, uint32_t b) { FieldInstr i; i.op = FieldOp::Add; i.a = a; i.b = b; return i; }
 inline FieldInstr OpMul(uint32_t a, uint32_t b) { FieldInstr i; i.op = FieldOp::Mul; i.a = a; i.b = b; return i; }
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::FieldInstr;
+	using ::tour::placement::PlacementCapability_CPU;
+	using ::tour::placement::PlacementCapability_GPU;
+	using ::tour::placement::PlacementCapability_BakeOnly;
+	using ::tour::placement::FieldOp;
+	using ::tour::placement::OpConst;
+	using ::tour::placement::OpAdd;
+	using ::tour::placement::OpMul;
+	using ::tour::placement::PlacementProgram;
+}

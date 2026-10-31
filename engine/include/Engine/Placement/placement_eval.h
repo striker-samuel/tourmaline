@@ -13,7 +13,7 @@
 
 #include <glm/glm.hpp>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 // Evaluates the field program at one domain sample. Returns values[] parallel
 // to program.instrs; density = values[program.acceptIndex]. The ecotope
@@ -52,4 +52,18 @@ inline float UniformScaleFromId(StableID id, float minS, float maxS) {
 // Pure integer lattice hash — safe to mirror in HLSL.
 float ValueNoise2D(float x, float z, uint64_t seed);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::AcceptCandidate;
+	using ::tour::placement::EvaluateProgram;
+	using ::tour::placement::QuantizeDensity;
+	using ::tour::placement::UniformScaleFromId;
+	using ::tour::placement::ValueNoise2D;
+	using ::tour::placement::YawFromId;
+}

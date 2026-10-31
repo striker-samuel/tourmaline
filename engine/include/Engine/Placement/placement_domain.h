@@ -14,7 +14,7 @@
 
 #include <Engine/Placement/placement_ids.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 enum class DomainKind : uint32_t { Grid = 0, MeshSurface = 1, Heightfield = 2 };
 
@@ -120,4 +120,22 @@ struct HeightfieldDomain {
 	DomainSample sample(StableID id) const;
 };
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::BuildMeshAliasTable;
+	using ::tour::placement::DomainKind;
+	using ::tour::placement::DomainSample;
+	using ::tour::placement::EcotopeMaskData;
+	using ::tour::placement::GridDomain;
+	using ::tour::placement::HeightfieldData;
+	using ::tour::placement::HeightfieldDomain;
+	using ::tour::placement::PlacementMeshData;
+	using ::tour::placement::SampleMeshSurface;
+	using ::tour::placement::TriangleArea;
+}

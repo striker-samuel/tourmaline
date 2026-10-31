@@ -12,7 +12,7 @@
 
 #include <cstdint>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 // Random channels derived from one StableID. Separate channels so e.g.
 // changing rotation variation never reshuffles prototype selection.
@@ -92,4 +92,24 @@ inline uint64_t PriorityOf(StableID id) {
 	return (static_cast<uint64_t>(h.hi) << 32) | h.lo;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::ChannelHash;
+	using ::tour::placement::HashChannel;
+	using ::tour::placement::HashMix32;
+	using ::tour::placement::MakeStableID;
+	using ::tour::placement::PriorityOf;
+	using ::tour::placement::Random01;
+	using ::tour::placement::Random02;
+	using ::tour::placement::Random02Of;
+	using ::tour::placement::RandomChannel;
+	using ::tour::placement::SplitMix32;
+	using ::tour::placement::StableID;
+	using ::tour::placement::TileID;
+}

@@ -24,7 +24,7 @@
 #include <Engine/Placement/placement_point.h>
 #include <Engine/Placement/placement_prototype.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 enum class TileState : uint8_t {
 	Unloaded = 0,
@@ -295,4 +295,26 @@ void ApplyMinDistance(std::vector<RenderInstance>& instances,
 // CPU constraint — see PlacementConstraint::VolumeFitsGpu).
 ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& layer);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::ApplyMinDistance;
+	using ::tour::placement::ComputeTileBounds;
+	using ::tour::placement::ConstraintVolume;
+	using ::tour::placement::ConstraintVolumeForLayer;
+	using ::tour::placement::DependencyVersions;
+	using ::tour::placement::EvaluateTile;
+	using ::tour::placement::PlacementSystem;
+	using ::tour::placement::PlacementTile;
+	using ::tour::placement::SortInstancesForDraw;
+	using ::tour::placement::TileGenConfig;
+	using ::tour::placement::TileKey;
+	using ::tour::placement::TileKeyHash;
+	using ::tour::placement::TileState;
+	using ::tour::placement::TransientDraw;
+}

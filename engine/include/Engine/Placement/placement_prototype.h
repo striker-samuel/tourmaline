@@ -13,7 +13,7 @@
 
 #include <glm/glm.hpp>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 struct Prototype {
 	std::string assetUri;          // resolves via World::meshLocations / Cluster URIs
@@ -53,4 +53,15 @@ private:
 uint32_t SelectBySlope(const PrototypeTable& table, float slopeDeg, float thresholdDeg,
 	uint32_t vegProto, uint32_t rockProto);
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::Prototype;
+	using ::tour::placement::PrototypeTable;
+	using ::tour::placement::SelectBySlope;
+}

@@ -5,7 +5,8 @@
 
 #include <cstring>
 
-namespace smvk::placement {
+namespace tour::placement {
+using namespace ::smvk;
 
 uint64_t HashCombine64(uint64_t acc, uint64_t lane) {
 	acc ^= lane + 0x9e3779b97f4a7c15ull + (acc << 6) + (acc >> 2);
@@ -55,4 +56,4 @@ bool DeserializeCache(const uint8_t* data, size_t size, uint64_t graphHash,
 	return true;
 }
 
-} // namespace smvk::placement
+} // namespace tour::placement

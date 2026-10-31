@@ -18,7 +18,7 @@
 
 #include <Engine/Placement/placement_point.h>
 
-namespace smvk::placement {
+namespace tour::placement {
 
 // Output buffer views (HLSL: vk::BufferPointer, see placement_tile.cs.hlsl).
 struct PlacementInstanceBuffer {
@@ -478,4 +478,47 @@ static_assert(offsetof(PlacementDrawBuildPush, indexCount) == 32
 	&& offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
 	"PlacementDrawBuildPush array offsets moved — update the HLSL mirror");
 
-} // namespace smvk::placement
+} // namespace tour::placement
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this
+// placement header's declarations live in tour::placement; the smvk::
+// placement aliases keep the existing call sites compiling through the
+// consumer migration.
+namespace smvk::placement {
+	using ::tour::placement::kPlacementConMaxCells;
+	using ::tour::placement::kPlacementConMaxInstances;
+	using ::tour::placement::kPlacementCullAlive;
+	using ::tour::placement::kPlacementCullDistance;
+	using ::tour::placement::kPlacementCullFrustum;
+	using ::tour::placement::kPlacementFlag_HasNormals;
+	using ::tour::placement::kPlacementFlag_HasUVs;
+	using ::tour::placement::kPlacementIndirectStride;
+	using ::tour::placement::kPlacementMaxFieldInstrs;
+	using ::tour::placement::kPlacementMaxProtos;
+	using ::tour::placement::kPlacementMaxTileInstances;
+	using ::tour::placement::kPlacementScatterDomain_Heightfield;
+	using ::tour::placement::kPlacementScatterDomain_Mesh;
+	using ::tour::placement::kPlacementTileThreads;
+	using ::tour::placement::PlacementBinsGpu;
+	using ::tour::placement::PlacementConParams;
+	using ::tour::placement::PlacementConPush;
+	using ::tour::placement::PlacementCountGpu;
+	using ::tour::placement::PlacementCullPush;
+	using ::tour::placement::PlacementDispatchGroups;
+	using ::tour::placement::PlacementDomainParams;
+	using ::tour::placement::PlacementDrawBuildPush;
+	using ::tour::placement::PlacementEcoView;
+	using ::tour::placement::PlacementIndirectCmd;
+	using ::tour::placement::PlacementInstanceBuffer;
+	using ::tour::placement::PlacementProgramView;
+	using ::tour::placement::PlacementScatterPush;
+	using ::tour::placement::PlacementScatterVisPush;
+	using ::tour::placement::PlacementTilePush;
+	using ::tour::placement::kPlacementTileCsPath;
+	using ::tour::placement::kPlacementDrawBuildCsPath;
+	using ::tour::placement::GpuFieldInstr;
+	using ::tour::placement::ProgramIsGpuEvaluable;
+	using ::tour::placement::ProgramUsesEcotopeMask;
+	using ::tour::placement::ValidateProgramForGpu;
+}
