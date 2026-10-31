@@ -50,11 +50,12 @@ namespace smvk {
 
 	Cluster& World::LoadClusterFromPak(ResourceManager& ctx, const PakReader& reader,
 		uint32_t sceneIndex, TextureStreamer* streamer,
-		std::shared_ptr<const std::vector<uint8_t>> imagePin)
+		std::shared_ptr<const std::vector<uint8_t>> imagePin,
+		const ExternalTextureResolver* externalTexture)
 	{
 		std::string err;
 		auto cluster = DeserializeCluster(ctx, reader, &err, sceneIndex,
-			streamer, std::move(imagePin));
+			streamer, std::move(imagePin), externalTexture);
 		if (!cluster)
 			throw std::runtime_error("LoadClusterFromPak failed: " + err);
 		Cluster& ref = *cluster;

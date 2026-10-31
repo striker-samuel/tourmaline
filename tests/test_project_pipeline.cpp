@@ -29,6 +29,7 @@
 
 #include <gltf_import/asset_export.h>
 
+#include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
@@ -884,14 +885,14 @@ void TestRecipeResolution() {
 		"[pak a]\noutput a.pak\ninclude content/models/world/*.gltf\n"
 		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
 		"owns no content");
-	// An include claiming geometry for a scene-less pak: meshes are
-	// cluster-internal — dead content in an asset-only pak.
+	// An include claiming geometry for a pak whose scene doesn't
+	// reference it (or a scene-less pak): meshes are cluster-internal.
 	resolveFails("geometry-without-scene",
 		"recipe 1\nentry content/scenes/world.tour\n"
 		"[pak hoard]\noutput h.pak\n"
 		"include content/models/world/*.geometry\n"
 		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
-		"owns no scene");
+		"cluster-internal");
 	// A nested scene-reference cycle (a -> b -> a).
 	{
 		writeTour(scenes / "loopA.tour", "content/models/world/world.geometry");
@@ -918,7 +919,122 @@ void TestRecipeResolution() {
 	}
 }
 
+// ---- the appmanifest (.tapp) module + the executor's publish ---------
+
+void TestAppManifest() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_tapp";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+	// Round-trip: write -> read -> identical.
+	{
+		smvk::AppManifest m;
+		m.version = smvk::kAppManifestVersion;
+		m.entryPak = "world.pak";
+		m.entryScene = "scene";
+		m.paks = { "shared.pak", "world.pak" };
+		const fs::path file = tmp / "sponza.tapp";
+		std::string err;
+		Check(smvk::SaveAppManifest(file.generic_string(), m, err),
+			"tapp.save-ok");
+		smvk::AppManifest back;
+		Check(smvk::LoadAppManifest(file.generic_string(), back, err)
+			&& back.version == m.version && back.entryPak == m.entryPak
+			&& back.entryScene == m.entryScene && back.paks == m.paks,
+			"tapp.round-trip");
+		// The written text carries the format markers.
+		{
+			std::ifstream f(file, std::ios::binary);
+			std::stringstream ss;
+			ss << f.rdbuf();
+			const std::string text = ss.str();
+			Check(text.find("appmanifest 1") != std::string::npos
+				&& text.find("entry world.pak scene")
+					!= std::string::npos
+				&& text.find("[paks]") != std::string::npos,
+				"tapp.format-markers");
+		}
+	}
+	// Validation rejections (both directions share ValidateAppManifest).
+	{
+		struct Bad {
+			const char* name;
+			std::string text;
+		};
+		const Bad bad[] = {
+			{ "no-version", "# c\nentry a.pak scene\n[paks]\na.pak\n" },
+			{ "bad-version", "appmanifest 2\nentry a.pak scene\n"
+				"[paks]\na.pak\n" },
+			{ "no-entry", "appmanifest 1\n[paks]\na.pak\n" },
+			{ "entry-not-listed", "appmanifest 1\nentry b.pak scene\n"
+				"[paks]\na.pak\n" },
+			{ "no-paks", "appmanifest 1\nentry a.pak scene\n[paks]\n" },
+			{ "absolute-pak", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\nC:/abs/a.pak\n" },
+			{ "escaping-pak", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\n../a.pak\n" },
+			{ "duplicate-pak", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\na.pak\n" },
+			{ "unknown-directive", "appmanifest 1\nfrobnicate x\n"
+				"entry a.pak scene\n[paks]\na.pak\n" },
+			{ "unknown-section", "appmanifest 1\nentry a.pak scene\n"
+				"[recipes]\na.pak\n" },
+			{ "bad-entry-arity", "appmanifest 1\nentry a.pak\n"
+				"[paks]\na.pak\n" },
+			{ "empty-scene-name", "appmanifest 1\nentry a.pak \"\"\n"
+				"[paks]\na.pak\n" },
+		};
+		for (const Bad& b : bad) {
+			smvk::AppManifest m;
+			std::string err;
+			Check(!smvk::LoadAppManifestText(b.text, m, err)
+				&& !err.empty(),
+			(std::string("tapp.reject.") + b.name).c_str());
+		}
+		// Save refuses an invalid manifest too.
+		{
+			smvk::AppManifest m;
+			m.version = smvk::kAppManifestVersion;
+			m.entryPak = "notlisted.pak";
+			m.entryScene = "scene";
+			m.paks = { "a.pak" };
+			std::string err;
+			Check(!smvk::SaveAppManifest((tmp / "bad.tapp").generic_string(),
+					m, err)
+				&& err.find("not listed") != std::string::npos,
+				"tapp.save-rejects-invalid");
+		}
+	}
+}
+
 // ---- the shared executor (M2: one plan, adapter-invoked stages) ------
+
+// A minimal VALID scene blob (the v1 shape: one root node, identity
+// transform, empty tables) so ListPakScenes accepts the recording
+// adapter's fake paks — the executor's manifest step parses the entry
+// pak's scenes after a successful stage.
+std::vector<uint8_t> MinimalSceneBlob() {
+	std::vector<uint8_t> b;
+	const auto u32 = [&b](uint32_t v) {
+		for (int i = 0; i < 4; ++i)
+			b.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+	};
+	const auto i32 = [&u32](int32_t v) { u32(uint32_t(v)); };
+	u32(1); // node count
+	i32(-1); i32(-1); i32(-1); i32(-1); i32(0); // hierarchy[0]
+	for (float v : { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }) {
+		uint32_t bits = 0;
+		std::memcpy(&bits, &v, 4);
+		u32(bits);
+	}
+	u32(0); // mesh pairs
+	u32(0); // material pairs
+	u32(0); // node-name pairs
+	u32(0); // node names
+	u32(0); // material names
+	return b;
+}
 
 // A recording adapter: captures every stage invocation WITHOUT running
 // anything — the sequencing + args contract, checked pure-CPU.
@@ -954,17 +1070,17 @@ public:
 			v.push_back("exclude:" + e);
 		calls.push_back({ "Pak", v });
 		if (pakRc == 0) {
-			// The executor verifies the stage's output EXISTS and
-			// POLICES it through PakReader after a success — the
-			// recording adapter fakes a REAL minimal pak (one Scene
-			// blob; policing only inspects Texture entries, so a
-			// scene-blob-only pak passes it by construction).
+			// The executor verifies the stage's output EXISTS, POLICES
+			// it through PakReader, and lists the entry pak's SCENES for
+			// the manifest — the recording adapter fakes a REAL minimal
+			// pak (one valid v1 scene blob; policing only inspects
+			// Texture entries, so a scene-blob-only pak passes it by
+			// construction).
 			std::error_code ec;
 			fs::create_directories(fs::path(a.outPak).parent_path(), ec);
 			smvk::PakWriter w;
-			const std::vector<uint8_t> fake{ 1, 2, 3 };
 			w.AddBlob(smvk::PakAssetKind::Scene, "recording/fake",
-				std::vector<uint8_t>(fake));
+				MinimalSceneBlob());
 			const std::vector<uint8_t> image = w.Finalize();
 			std::ofstream f(a.outPak, std::ios::binary | std::ios::trunc);
 			f.write(reinterpret_cast<const char*>(image.data()),
@@ -1239,6 +1355,51 @@ void TestBuildPlanExecutor() {
 			if (!e3.empty())
 				std::cout << "  (two-pak err: " << e3 << ")\n";
 			if (rep.paks.size() == 2) {
+				// The manifest published last: parses, names the entry
+				// pak + cooked scene identity, lists the paks in plan
+				// (mount) order, and every listed pak exists beside it.
+				smvk::AppManifest manifest;
+				std::string mErr;
+				Check(!rep.manifest.empty()
+					&& smvk::LoadAppManifest(rep.manifest, manifest,
+						mErr),
+					"executor.manifest-published");
+				Check(manifest.entryPak == "world.pak"
+					&& !manifest.entryScene.empty()
+					&& manifest.paks.size() == 2
+					&& manifest.paks[0] == "shared.pak"
+					&& manifest.paks[1] == "world.pak",
+					"executor.manifest-content");
+				bool paksExist = true;
+				for (const std::string& pak : manifest.paks)
+					if (!fs::is_regular_file(
+							fs::path(rep.manifest).parent_path()
+								/ pak, ec))
+						paksExist = false;
+				Check(paksExist, "executor.manifest-paks-exist");
+				// RUN-04: a MOVED build directory keeps resolving —
+				// copy the whole publish tree elsewhere, reload the
+				// manifest there, every pak still exists beside it.
+				{
+					const fs::path moved = tmp / "publish4-moved";
+					fs::remove_all(moved, ec);
+					fs::copy(fs::path(rep.manifest).parent_path(), moved,
+						fs::copy_options::recursive, ec);
+					smvk::AppManifest movedM;
+					std::string movedErr;
+					Check(smvk::LoadAppManifest(
+							(moved / "world.tapp").generic_string(),
+							movedM, movedErr),
+						"executor.manifest-moved-loads");
+					bool movedPaks = true;
+					for (const std::string& pak : movedM.paks)
+						if (!fs::is_regular_file(moved / pak, ec))
+							movedPaks = false;
+					Check(movedPaks,
+						"executor.manifest-moved-paks-resolve");
+				}
+			}
+			if (rep.paks.size() == 2) {
 				const auto open = [](const std::string& p) {
 					std::ifstream in(p, std::ios::binary);
 					std::vector<uint8_t> image(
@@ -1347,6 +1508,7 @@ int main() {
 	TestRecipeParsing();
 	TestRecipeGlob();
 	TestRecipeResolution();
+	TestAppManifest();
 	TestBuildPlanExecutor();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks

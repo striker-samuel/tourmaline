@@ -22,6 +22,7 @@
 //
 // Usage:
 //   App [--pak <path.pak>] [--scene-index N] [--no-vfs]
+//   App --project <path.tapp> [--no-vfs]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
 //   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>]
 //   [--disable_control] [--no-dlss] [--capture] [--use_optick] [--use_optick_gpu]
@@ -84,6 +85,14 @@ struct ViewerOptions {
 	// silently covered by loose bake files. Engine resources (shaders,
 	// fonts, LUTs) load exe-relative, never through the VFS.
 	bool noVfs = false;
+	// --project <path.tapp>: the GENERATED appmanifest launch — parse
+	// + validate the manifest BEFORE Vulkan startup, mount every listed
+	// pak (manifest-relative paths, listed order), and load the entry
+	// scene BY IDENTITY (the manifest's entry pak + scene name — never
+	// a scene index, never the source .tour). Mutually exclusive with
+	// --pak and --scene-index (the legacy single-pak surface stands
+	// unchanged beside it).
+	std::string project;
 	// Scene id (GI bake stem + check-scene gating). Empty = pak stem.
 	std::string sceneId;
 };

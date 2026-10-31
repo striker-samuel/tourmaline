@@ -9,6 +9,13 @@
 //   Project.exe import --project <dir> --source <glTF|GLB>
 //                      [--no-lods] [--no-meshlets] [--lod-ratios 0.75,0.5,0.3]
 //                      [--lod-error 0.01] [--force]
+//   Project.exe validate --project <dir> --recipe <file.tourrecipe>
+//                      (parse + resolve; prints the plan, no stages run)
+//   Project.exe build  --project <dir> --recipe <file.tourrecipe>
+//                      [--publish <dir>] [--manifest-name <name>]
+//                      (the recipe build: resolve -> import -> cook ->
+//                       bake -> pak per plan -> the appmanifest LAST)
+//       or the legacy  --project <dir> --output <pak> [--scene <tour>]
 //   Project.exe status --project <dir>        (the staleness report)
 //
 // Exit codes: 0 success, 1 pipeline failure, 2 usage.
@@ -23,8 +30,11 @@
 #include <vector>
 
 #include <project_pipeline/build_pipeline.h>
+#include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_recipe.h>
+#include <project_pipeline/recipe_resolver.h>
 
 namespace {
 
@@ -39,11 +49,16 @@ int Usage(const char* prog) {
 		<< "         [--lod-error 0.01] [--shader-lods] [--force]\n"
 		<< "         copy the source into the project + derive the native\n"
 		<< "         artifact family (idempotent: unchanged = no-op)\n"
-		<< "  build  --project <dir> --output <pak>\n"
-		<< "         [--scene content/scenes/<scene>.tour]\n"
-		<< "         reimport stale sources -> Cook -> GiBaker -> Pak (the\n"
-		<< "         bake-freshness gate refuses stale bakes; a failed\n"
-		<< "         build never replaces the last valid pak)\n"
+		<< "  validate --project <dir> --recipe <file.tourrecipe>\n"
+		<< "         parse + resolve the recipe and print the plan (paks,\n"
+		<< "         ownership, mount order) — NO stage runs\n"
+		<< "  build  --project <dir> --recipe <file.tourrecipe>\n"
+		<< "         [--publish <dir>] [--manifest-name <name>]\n"
+		<< "         the RECIPE build: resolve -> import freshness -> Cook\n"
+		<< "         -> GiBaker -> Pak per plan (verified + policed) -> the\n"
+		<< "         appmanifest (.tapp) publishes LAST\n"
+		<< "      or --project <dir> --output <pak> [--scene <tour>] (the\n"
+		<< "         legacy single-scene build — unchanged)\n"
 		<< "  status --project <dir>\n"
 		<< "         report every imported source: current, or why not\n";
 	return 2;
@@ -76,7 +91,7 @@ int main(int argc, const char* argv[]) {
 
 	// Shared flag scan.
 	std::string projectDir, source, name, ratiosCsv, scene, output,
-		fromScene;
+		fromScene, recipeFile, publishDir, manifestName;
 	bool fromGltf = false, force = false;
 	bool noLods = false, noMeshlets = false, shaderLods = false;
 	bool ratiosSet = false, errorSet = false;
@@ -87,6 +102,18 @@ int main(int argc, const char* argv[]) {
 			projectDir = argv[++i];
 		else if (std::strncmp(a, "--project=", 10) == 0)
 			projectDir = a + 10;
+		else if ((std::strcmp(a, "--recipe") == 0) && i + 1 < argc)
+			recipeFile = argv[++i];
+		else if (std::strncmp(a, "--recipe=", 9) == 0)
+			recipeFile = a + 9;
+		else if ((std::strcmp(a, "--publish") == 0) && i + 1 < argc)
+			publishDir = argv[++i];
+		else if (std::strncmp(a, "--publish=", 10) == 0)
+			publishDir = a + 10;
+		else if ((std::strcmp(a, "--manifest-name") == 0) && i + 1 < argc)
+			manifestName = argv[++i];
+		else if (std::strncmp(a, "--manifest-name=", 16) == 0)
+			manifestName = a + 16;
 		else if ((std::strcmp(a, "--source") == 0
 				|| std::strcmp(a, "--from-gltf") == 0) && i + 1 < argc) {
 			source = argv[++i];
@@ -255,9 +282,125 @@ int main(int argc, const char* argv[]) {
 		return 0;
 	}
 
+	// ---- validate + the recipe build ----------------------------------
+	// Shared: open the project, locate the recipe, parse + resolve.
+	const auto resolveRecipe =
+		[&](smvk::project::Project& p, smvk::project::ProjectRecipe& r,
+			std::string& err) -> std::string {
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		fs::path path(recipeFile);
+		if (!fs::is_regular_file(path, ec)) {
+			// project-relative fallback (the common authoring form)
+			path = fs::path(p.root) / path;
+			if (!fs::is_regular_file(path, ec)) {
+				err = "recipe not found: " + recipeFile;
+				return {};
+			}
+		}
+		smvk::project::RecipeDiagnostic diag;
+		if (!smvk::project::ParseProjectRecipe(path.generic_string(), r,
+				diag)) {
+			err = diag.Format(path.generic_string());
+			return {};
+		}
+		return path.lexically_normal().generic_string();
+	};
+
+	if (cmd == "validate") {
+		if (recipeFile.empty()) {
+			std::cerr << "--recipe <file.tourrecipe> is required.\n";
+			return Usage(argv[0]);
+		}
+		std::string err;
+		smvk::project::Project p =
+			smvk::project::Project::Open(projectDir, err);
+		if (!p.Valid()) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		smvk::project::ProjectRecipe recipe;
+		const std::string path = resolveRecipe(p, recipe, err);
+		if (path.empty()) {
+			std::cerr << "recipe rejected: " << err << "\n";
+			return 1;
+		}
+		smvk::project::BuildPlan plan;
+		if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+			std::cerr << "resolve failed: " << err << "\n";
+			return 1;
+		}
+		std::cout << "Recipe OK: " << path << "\n"
+			<< "  project: "
+			<< (recipe.projectName.empty() ? p.name
+				: recipe.projectName) << "\n"
+			<< "  entry: " << plan.entryScene << " (pak '"
+			<< plan.entryPak << "')\n"
+			<< "  bake: gi=" << (plan.bakeGi ? "on" : "off")
+			<< " cubemaps=" << (plan.bakeCubemaps ? "on" : "off")
+			<< "\n"
+			<< "  paks (mount order):\n";
+		for (const smvk::project::PlanPak& pak : plan.paks) {
+			std::cout << "    [" << pak.id << "] -> " << pak.output
+				<< (pak.scene.empty() ? " (asset-only)" : " scene")
+				<< ", " << pak.assets.size() << " owned asset(s)";
+			if (!pak.depends.empty()) {
+				std::cout << ", depends";
+				for (const std::string& d : pak.depends)
+					std::cout << " " << d;
+			}
+			std::cout << "\n";
+		}
+		return 0;
+	}
+
 	if (cmd == "build") {
+		if (!recipeFile.empty()) {
+			// The RECIPE build: resolve -> the shared executor (the same
+			// plan the editor will drive) -> verified + policed paks ->
+			// the appmanifest published last.
+			std::string err;
+			smvk::project::Project p =
+				smvk::project::Project::Open(projectDir, err);
+			if (!p.Valid()) {
+				std::cerr << err << "\n";
+				return 1;
+			}
+			smvk::project::ProjectRecipe recipe;
+			const std::string path = resolveRecipe(p, recipe, err);
+			if (path.empty()) {
+				std::cerr << "recipe rejected: " << err << "\n";
+				return 1;
+			}
+			smvk::project::BuildPlan plan;
+			if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+				std::cerr << "resolve failed: " << err << "\n";
+				return 1;
+			}
+			if (!manifestName.empty())
+				manifestName = std::filesystem::path(recipeFile)
+					.stem().generic_string();
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = publishDir;
+			opts.manifestName = manifestName;
+			auto adapter = smvk::project::MakeSubprocessStageAdapter();
+			smvk::project::BuildPlanReport report;
+			if (!smvk::project::ExecuteBuildPlan(p, plan, *adapter, opts,
+					report, err)) {
+				std::cerr << "build failed: " << err << "\n";
+				return 1;
+			}
+			std::cout << "Built " << report.paks.size() << " pak(s):\n";
+			for (const auto& pak : report.paks)
+				std::cout << "  [" << pak.id << "] " << pak.output
+					<< (pak.scene.empty() ? " (asset-only)" : "")
+					<< (pak.reimported ? " (reimported)" : "") << "\n";
+			std::cout << "  appmanifest: " << report.manifest << "\n";
+			return 0;
+		}
 		if (output.empty()) {
-			std::cerr << "--output <pak> is required.\n";
+			std::cerr << "--output <pak> (or --recipe <file>) is"
+				" required.\n";
 			return Usage(argv[0]);
 		}
 		std::string err;

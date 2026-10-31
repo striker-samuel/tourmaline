@@ -103,6 +103,29 @@ void TestCliParse() {
 		Check(ParseFails({ "App", "--pak", "x.pak", "--gltf" }, ec)
 			&& ec != 0, "cli.gltf-removed-refused");
 	}
+	// ---- the --project launch (the appmanifest surface) -------------
+	Check(ParseOk({ "App", "--project", "build/sponza.tapp" }, opts)
+		&& opts.project == "build/sponza.tapp",
+		"cli.project.value");
+	Check(ParseOk({ "App", "--project=world.tapp", "--no-vfs" }, opts)
+		&& opts.project == "world.tapp" && opts.noVfs,
+		"cli.project.equals-form");
+	// --project satisfies the entry-point gate on its own.
+	Check(ParseOk({ "App", "--project", "sponza.tapp" }, opts),
+		"cli.project.solo-runs");
+	// Mutual exclusion: the appmanifest owns the entry point.
+	{
+		int ec = 0;
+		Check(ParseFails({ "App", "--project", "s.tapp", "--pak",
+				"x.pak" }, ec)
+			&& ec != 0, "cli.project.pak-exclusive");
+	}
+	{
+		int ec = 0;
+		Check(ParseFails({ "App", "--project", "s.tapp",
+				"--scene-index", "1" }, ec)
+			&& ec != 0, "cli.project.scene-index-exclusive");
+	}
 	// ---- Validated numerics (finding #11): malformed values REFUSE the
 	// launch instead of silently mapping to zero. The old atoi/atof
 	// accepted all of these as 0 — and a zero bench budget silently

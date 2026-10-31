@@ -21,6 +21,8 @@
 #include <system_error>
 #include <vector>
 
+#include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
@@ -403,17 +405,11 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					return false;
 				}
 			stage.inVfs = pak.sceneArtifacts[0];
-			for (size_t i = 1; i < pak.sceneArtifacts.size(); ++i)
-				stage.extraArtifacts.push_back(pak.sceneArtifacts[i]);
-			// Owned geometry the scene's own reference walk did NOT
-			// list (an include-claimed .geometry) packs as additional
-			// cluster artifacts.
-			for (const PlanAsset& asset : pak.assets)
-				if (asset.kind == PlanAssetKind::Geometry
-						&& std::find(pak.sceneArtifacts.begin(),
-							pak.sceneArtifacts.end(), asset.path)
-							== pak.sceneArtifacts.end())
-					stage.extraArtifacts.push_back(asset.path);
+			// Non-root references are INLINED by the tour replay (the
+			// packer's tour mode builds ONE cluster from the whole
+			// reference walk) — positionals are identity only, so the
+			// root artifact is the whole story (legacy parity: BakeStems
+			// keys bake discovery on these stems).
 			stage.tour = (projectRoot / fs::path(pak.scene))
 				.lexically_normal().generic_string();
 			// The cross-pak excludes: every VFS-addressable asset owned
@@ -493,6 +489,80 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				break;
 			}
 		out.paks.push_back(std::move(rep));
+	}
+
+	// ---- 4) publish the appmanifest (LAST, after every pak verified) --
+	// The manifest names the entry pak + the entry scene's cooked
+	// identity + the ordered pak list (mount order = plan order). Every
+	// pak reopened + policed above; only now does the manifest land, so
+	// a failure anywhere above leaves the PREVIOUS manifest + its paks
+	// standing (the publish-last contract).
+	{
+		const PlanPak* entryPak = plan.FindPak(plan.entryPak);
+		const std::string entryOut = entryPak
+			? (publish / fs::path(entryPak->output)).lexically_normal()
+				.generic_string()
+			: std::string();
+		if (entryOut.empty() || !fs::is_regular_file(entryOut, ec)) {
+			err = "the entry pak '" + plan.entryPak
+				+ "' did not build (cannot publish the manifest)";
+			return false;
+		}
+		// The cooked entry-scene identity: list the entry pak's scenes
+		// and record the tour scene's NAME (tour-built paks carry one
+		// scene; the runtime resolves by name, never by index).
+		std::string entrySceneName;
+		{
+			std::ifstream in(entryOut, std::ios::binary);
+			std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)),
+				std::istreambuf_iterator<char>());
+			std::string rerr;
+			auto reader = smvk::PakReader::Open(
+				std::span<const uint8_t>(image), rerr);
+			if (!reader) {
+				err = "the entry pak failed to reopen for the manifest: "
+					+ rerr;
+				return false;
+			}
+			std::string lerr;
+			const std::vector<smvk::PakSceneInfo> scenes =
+				smvk::ListPakScenes(*reader, &lerr);
+			if (scenes.empty()) {
+				err = "the entry pak carries no scenes: " + lerr;
+				return false;
+			}
+			entrySceneName = scenes[0].name;
+			if (scenes.size() > 1)
+				std::printf("[build] entry pak carries %zu scenes;"
+					" recording scene[0] '%s' as the entry\n",
+					scenes.size(), entrySceneName.c_str());
+		}
+		if (entrySceneName.empty())
+			entrySceneName = "scene"; // the packer's tour-scene name
+		smvk::AppManifest manifest;
+		manifest.version = smvk::kAppManifestVersion;
+		manifest.entryPak = entryPak->output;
+		manifest.entryScene = entrySceneName;
+		for (const PlanPak& pak : plan.paks)
+			manifest.paks.push_back(pak.output);
+		std::string manifestName = options.manifestName;
+		if (manifestName.empty()) {
+			manifestName = fs::path(entryPak->output).stem()
+				.generic_string();
+		}
+		const fs::path manifestPath =
+			publish / (manifestName + ".tapp");
+		std::string mErr;
+		if (!smvk::SaveAppManifest(manifestPath.generic_string(),
+				manifest, mErr)) {
+			err = "the appmanifest publish failed: " + mErr;
+			return false;
+		}
+		out.manifest = manifestPath.lexically_normal().generic_string();
+		std::printf("[build] published appmanifest: %s (entry %s:%s,"
+			" %zu pak(s))\n", out.manifest.c_str(),
+			manifest.entryPak.c_str(), manifest.entryScene.c_str(),
+			manifest.paks.size());
 	}
 	return true;
 }

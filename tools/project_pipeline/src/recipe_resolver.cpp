@@ -310,16 +310,22 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 			const PlanAssetKind kind = ClassifyAsset(rel, known);
 			if (!known)
 				continue; // family/support file — the stages' discovery
-			if (kind == PlanAssetKind::Geometry && pak.scene.empty()) {
-				// Meshes are cluster-internal: a .geometry in a
-				// scene-less pak is unreachable content (nothing loads
-				// it — meshes are not VFS-addressable). The scene's pak
-				// owns its geometry; an asset-only pak carries
-				// VFS-addressable content only.
+			if (kind == PlanAssetKind::Geometry) {
+				// Meshes are CLUSTER-INTERNAL: geometry enters a pak
+				// only through its scene's reference walk (the packer's
+				// tour mode inlines the whole walk into one cluster).
+				// An include glob matching our OWN scene's artifact is a
+				// redundant claim (fine); anything else — another pak's
+				// scene artifact or an unreferenced .geometry — is not
+				// packable content in v1.
+				auto own = owned.find(rel);
+				if (own != owned.end() && own->second.pak == pak.id)
+					continue;
 				err = "[pak " + pak.id + "] include claims the geometry '"
-					+ rel + "' but owns no scene — meshes are"
-						" cluster-internal (v1): give the pak the scene"
-						" that uses it, or share textures instead";
+					+ rel + "' — meshes are cluster-internal and only"
+						" enter a pak through its scene's references"
+						" (v1): drop the claim, or give this pak the"
+						" scene that uses it";
 				return false;
 			}
 			auto it = owned.find(rel);

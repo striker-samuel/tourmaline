@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Asset/cluster_serializer.h> // ExternalTextureResolver
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Utils/bvh.h>
@@ -19,7 +20,6 @@
 
 namespace smvk {
 
-	class PakReader;
 	class TextureStreamer;
 
 	// Tiled-terrain source payload (CPU side): harvested from a pak's
@@ -224,7 +224,8 @@ namespace smvk {
 		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader,
 			uint32_t sceneIndex = 0,
 			struct TextureStreamer* streamer = nullptr,
-			std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
+			std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
+			const ExternalTextureResolver* externalTexture = nullptr);
 		// Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
 		// into terrainSource (byte copies; the reader may die after). Also
 		// called by LoadClusterFromPak (non-fatal: scene loads even when

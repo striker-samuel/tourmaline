@@ -116,6 +116,9 @@ struct BuildPlanOptions {
 	// Where the paks (and the appmanifest) publish. Absolute or
 	// project-relative; empty = <root>/build.
 	std::string publishDir;
+	// The manifest's name (sponza.tourrecipe -> "sponza" publishes
+	// sponza.tapp). Empty = the entry pak's stem.
+	std::string manifestName;
 };
 
 struct BuildPlanReport {
@@ -126,6 +129,10 @@ struct BuildPlanReport {
 		bool reimported = false;
 	};
 	std::vector<Pak> paks; // plan order (topological — mount order)
+	// The published appmanifest (.tapp; empty until M4's writer ran).
+	// Written LAST: every pak verified + policed first, so a failed
+	// build leaves the previous manifest + its paks intact.
+	std::string manifest;
 };
 
 // Execute a resolved plan end to end:
