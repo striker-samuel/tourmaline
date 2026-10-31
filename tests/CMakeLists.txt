@@ -402,6 +402,18 @@ add_test(NAME physics_jolt_tests COMMAND PhysicsJoltTests)
 # rebuild compaction — GPU-less, pure value scenes.
 add_executable(SceneTableTests test_scene_tables.cpp)
 
+# The namespace/RHI BOUNDARY SCANNER (todo item 8, section 8c - the
+# regex early-warning v1): walks the engine's public headers, GPU-free
+# and source-tree-only, failing on NEW boundary violations (Vulkan
+# includes, private-impl includes, typed Vk handles in public code).
+# Deliberately does NOT flag the audit's confirmed pre-existing
+# findings (the P0/P1 redesign list, todo 8.5-8.6) - those are tracked
+# work; this test keeps the boundary from getting WORSE while they
+# land. Runs everywhere CI does (no GPU, no window).
+add_executable(ArchitectureTests test_architecture.cpp)
+target_compile_definitions(ArchitectureTests PRIVATE
+    TOURMALINE_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+
 target_link_libraries(SceneTableTests
     PRIVATE
         engine
@@ -412,6 +424,10 @@ set_target_properties(SceneTableTests PROPERTIES
 )
 
 add_test(NAME scene_table_tests COMMAND SceneTableTests)
+
+# The boundary scanner: a CI architecture check (todo 8.8c) - GPU-free,
+# so it runs on every matrix runner the suite does.
+add_test(NAME architecture_tests COMMAND ArchitectureTests)
 
 add_executable(PlacementTests test_placement.cpp)
 
