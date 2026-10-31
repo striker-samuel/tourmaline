@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 #pragma once
@@ -26,9 +26,11 @@
 // SDL3 windowing (forward-declared; .cpp includes <SDL3/SDL_video.h>).
 struct SDL_Window;
 
+namespace tour { class World; }
+
 namespace smvk
 {
-	class World;
+	using ::tour::World;
 	class RenderGraph;
 
 class SdlInputBackend;

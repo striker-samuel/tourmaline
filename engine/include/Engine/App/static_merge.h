@@ -21,9 +21,9 @@
 
 #include <Engine/Scene/scene.h>
 
+namespace tour { struct Cluster; }
 namespace smvk {
-
-struct Cluster;
+	using ::tour::Cluster;
 
 struct StaticMergeOptions {
 	// Remove the source static nodes after baking (their geometry lives on

@@ -14,9 +14,10 @@
 #include <Engine/Memory/string_view.h>
 #include <Engine/Renderer/mesh.h>
 
+namespace tour { struct Cluster; }
 namespace smvk {
+	using ::tour::Cluster;
 
-struct Cluster;
 struct MeshletConfig;
 
 // ---------------------------------------------------------------------------

@@ -62,9 +62,8 @@
 #include <Engine/Asset/meshlet.h> // kMeshletMaxVertices/Triangles (the engine meshlet canon)
 #include <Engine/Scene/scene.h> // SceneExportSettings (the export-settings node payload)
 
-namespace smvk {
-struct Cluster;
-} // namespace smvk
+namespace tour { struct Cluster; }
+namespace smvk { using ::tour::Cluster; } // namespace smvk
 
 struct Scene;
 

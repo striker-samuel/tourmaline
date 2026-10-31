@@ -46,7 +46,10 @@
 #include <Engine/Asset/touranim.h> // Clip/Track/Skeleton
 #include <Engine/Scene/entity_handle.h>
 
-namespace smvk {
+namespace tour {
+// (migration compat) the animator references the World + handle types
+// unqualified; qualify as call sites migrate, then drop this.
+using namespace ::smvk;
 
 struct World;
 
@@ -129,4 +132,16 @@ private:
 	AnimatorHandle m_handle{};
 };
 
-} // namespace smvk
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit): the animator component is
+// ENGINE-OWNED and lives in tour; the smvk aliases keep the existing
+// call sites compiling through the consumer migration.
+namespace smvk {
+	using ::tour::AnimatorLayer;
+	using ::tour::AnimatorState;
+	using ::tour::AdvanceAnimator;
+	using ::tour::AnimatorPlay;
+	using ::tour::AnimatorCrossFade;
+	using ::tour::Animator;
+}

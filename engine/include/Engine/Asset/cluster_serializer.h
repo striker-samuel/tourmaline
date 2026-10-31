@@ -12,10 +12,11 @@
 
 #include <Engine/Asset/pak.h>
 
+namespace tour { struct Cluster; struct GiBinding; }
 namespace smvk {
+	using ::tour::Cluster;
 
-struct Cluster;
-struct GiBinding;
+using ::tour::GiBinding;
 class TextureStreamer;
 class ResourceManager;
 

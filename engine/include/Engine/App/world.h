@@ -20,7 +20,11 @@
 #include <Engine/Scene/entity_handle.h> // AudioSourceHandle (typed)
 #include <Engine/Scene/scene.h>
 
-namespace smvk {
+namespace tour {
+// (migration compat) the moved block still spells the RHI/engine smvk
+// types unqualified (ResourceManager, TextureStreamer, Cluster...);
+// qualify as call sites migrate, then drop this directive.
+using namespace ::smvk;
 
 	class TextureStreamer;
 
@@ -277,7 +281,7 @@ namespace smvk {
 		// image) must then be given to pin the borrowed payloads.
 		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader,
 			uint32_t sceneIndex = 0,
-			struct TextureStreamer* streamer = nullptr,
+			::smvk::TextureStreamer* streamer = nullptr,
 			std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
 			const ExternalTextureResolver* externalTexture = nullptr);
 		// Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
@@ -737,4 +741,27 @@ namespace smvk {
 
 	};
 
-};
+} // namespace tour
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the World is
+// ENGINE-OWNED and lives in tour; the smvk aliases keep the existing
+// call sites compiling through the consumer migration.
+namespace smvk {
+	using ::tour::World;
+	using ::tour::LodFrameInputs;
+	using ::tour::TerrainSource;
+	using ::tour::IteratorFlagBits;
+	using ::tour::IteratorFlags;
+	using ::tour::IteratorFlagBit_CastShadow;
+	using ::tour::IteratorFlagBit_CastVolumetricShadow;
+	using ::tour::IteratorFlagBit_LightDirectional;
+	using ::tour::IteratorFlagBit_LightPoint;
+	using ::tour::IteratorFlagBit_LightSpot;
+	using ::tour::IteratorFlagBit_Masked;
+	using ::tour::IteratorFlagBit_None;
+	using ::tour::IteratorFlagBit_Opaque;
+	using ::tour::IteratorFlagBit_PassedCullTest;
+	using ::tour::IteratorFlagBit_Renderable;
+	using ::tour::IteratorFlagBit_Static;
+	using ::tour::IteratorFlagBit_StaticVertexFmt;
+	using ::tour::IteratorFlagBit_Transparent;
+}

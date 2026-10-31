@@ -16,11 +16,12 @@
 #include <string>
 #include <vector>
 
+namespace tour { struct World; }
 namespace smvk {
 	class OverlayVfs;
 	class ResourceManager;
 	class TextureStreamer;
-	struct World;
+	using ::tour::World;
 }
 
 namespace app {

@@ -33,9 +33,10 @@
 
 #include <Engine/App/RunConfig.h>
 
+namespace tour { struct World; }
 namespace smvk {
 	class ResourceManager;
-	struct World;
+	using ::tour::World;
 	class App;
 }
 

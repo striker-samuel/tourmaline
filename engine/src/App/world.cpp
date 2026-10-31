@@ -26,7 +26,10 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 
-namespace smvk {
+namespace tour {
+// (migration compat) the impl still spells the RHI/engine smvk
+// types unqualified; qualify as call sites migrate, then drop this.
+using namespace ::smvk;
 
 	// Cluster ctor lives here so the App module owns the Cluster lifecycle
 	// (its Scene + resource pools). The mesh upload/destroy methods and the
@@ -49,7 +52,7 @@ namespace smvk {
 	}
 
 	Cluster& World::LoadClusterFromPak(ResourceManager& ctx, const PakReader& reader,
-		uint32_t sceneIndex, TextureStreamer* streamer,
+		uint32_t sceneIndex, ::smvk::TextureStreamer* streamer,
 		std::shared_ptr<const std::vector<uint8_t>> imagePin,
 		const ExternalTextureResolver* externalTexture)
 	{

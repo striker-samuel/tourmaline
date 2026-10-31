@@ -59,9 +59,10 @@
 namespace tour {
 	namespace audio { class AudioEngine; struct VoiceHandle; }
 }
+namespace tour { struct World; }
 namespace smvk {
 	class App;
-	struct World;
+	using ::tour::World;
 	class ResourceManager;
 }
 

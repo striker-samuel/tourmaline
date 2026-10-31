@@ -23,7 +23,11 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/touranim.h>
 
-namespace smvk {
+namespace tour {
+// (migration compat) the moved block still spells the RHI/engine smvk
+// types unqualified (ResourceManager, TextureHandle, Material...);
+// qualify as call sites migrate, then drop this directive.
+using namespace ::smvk;
 
 	struct World;
 
@@ -32,7 +36,6 @@ namespace smvk {
 
 	// Backend-defined record of a static mesh's renderer allocations
 	// (opaque here; complete type lives in the Vulkan detail header).
-	struct StaticMeshAllocation;
 
 	using ClusterStaticMeshHandle = Handle<StaticMesh>;
 	using ClusterMaterialHandle = Handle<Material>;
@@ -651,7 +654,18 @@ struct AssetRef {
 		(void)ref;
 		return false;
 	}
+} // namespace tour
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the Cluster is
+// ENGINE-OWNED and lives in tour; the smvk aliases keep the existing
+// call sites compiling through the consumer migration.
+namespace smvk {
+	using ::tour::Cluster;
+	using ::tour::ClusterStaticMeshHandle;
+	using ::tour::ClusterMaterialHandle;
+	using ::tour::ClusterTextureHandle;
+	using ::tour::ClusterLightHandle;
+	using ::tour::ClusterCameraHandle;
+	using ::tour::ClusterDecalHandle;
+	using ::tour::AssetRef;
+	using ::tour::GiBinding;
 }
-
-
-

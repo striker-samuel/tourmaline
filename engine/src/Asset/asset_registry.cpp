@@ -12,7 +12,8 @@
 #include <cstring>
 #include <vector>
 
-namespace smvk {
+namespace tour {
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // Asset URI normalization (view-based; see asset_registry.h for semantics).
@@ -23,7 +24,11 @@ namespace smvk {
 // round-tripping std::string.
 // ---------------------------------------------------------------------------
 
-StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
+} // namespace tour
+namespace smvk {
+// (smvk-scope: the asset-registry free functions stay in smvk - the
+// header declares them there; only the Cluster members are tour::)
+smvk::StringViewT smvk::NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	if (uri.empty())
 		return {};
 	if (UriAlreadyNormalized(uri))
@@ -82,6 +87,10 @@ StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	buf[off] = '\0';
 	return StringViewT(buf, off);
 }
+} // namespace smvk
+
+namespace tour {
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // Cluster URI registry: registration normalizes into the cluster-owned
@@ -442,4 +451,4 @@ std::vector<std::pair<StringViewT, TextureHandle>> Cluster::ListTextureUris() co
 	return out;
 }
 
-} // namespace smvk
+} // namespace tour

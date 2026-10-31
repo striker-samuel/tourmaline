@@ -62,11 +62,15 @@
 #include <Engine/Memory/pool.h>
 #include <Engine/Rendergraph/environment.h>
 
-namespace smvk {
+namespace tour {
 
 struct Cluster;
 struct World;
 
+} // namespace tour
+namespace smvk {
+	using ::tour::Cluster;
+	using ::tour::World;
 } // namespace smvk
 
 namespace tour::gi {

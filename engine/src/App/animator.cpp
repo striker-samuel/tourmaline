@@ -17,7 +17,8 @@
 #include <algorithm>
 #include <cmath>
 
-namespace smvk {
+namespace tour {
+using namespace ::smvk;
 
 namespace {
 
@@ -254,4 +255,4 @@ bool Animator::Playing() const {
 	return s && s->playing && !s->paused;
 }
 
-} // namespace smvk
+} // namespace tour

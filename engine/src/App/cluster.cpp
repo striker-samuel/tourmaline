@@ -9,7 +9,10 @@
 
 #include <cstdio>
 
-namespace smvk {
+namespace tour {
+// (migration compat) the impl still spells the RHI/engine smvk
+// types unqualified; qualify as call sites migrate, then drop this.
+using namespace ::smvk;
 // -----------------------------------------------------------------------------
 // Mesh heap-range retirement (the deferred-destruction contract — the
 // facade's DeferDestroyTask, the Vulkan VulkanResourceManager::DeferDestroy
