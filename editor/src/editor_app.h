@@ -114,9 +114,11 @@ private:
 	class EditorApp* m_app = nullptr;
 };
 
-// Menu-bar gem mark (editor_branding.cpp): vector twin of
-// tourmaline_logo.png, drawn straight into the given draw list.
-void DrawTourmalineGem(ImDrawList* dl, const ImVec2& p, float h);
+// Menu-bar crystal mark (editor_branding.cpp): vector twin of the
+// branding mark (branding/tourmaline-icon.svg), drawn straight into the
+// given draw list. Returns the drawn width (the mark is wider than it
+// is tall — Dummy() exactly that next to it).
+float DrawTourmalineGem(ImDrawList* dl, const ImVec2& p, float h);
 
 // The shared GI probe marker (editor_viewports.cpp): a regular octahedron
 // ortho-projected from a fixed 3/4 view, painter-sorted + Lambert-shaded -
@@ -1840,9 +1842,11 @@ private:
 	int m_pathFilter = 0; // 0 all, 1 missing only
 
 	// ---- Tourmaline branding (editor_branding.cpp) ----
-	// Window title + SDL window icon (tourmaline_logo.png, generated on
-	// first run if absent) + the menu-bar gem mark. The logo lives next
-	// to the exe / in content and is editor chrome only.
+	// Window title + SDL window icon (tourmaline_logo.png — the checked-in
+	// branding raster synced next to the exe by editor/CMakeLists.txt; a
+	// fallback is generated on first run only when it is absent) + the
+	// menu-bar crystal mark. The logo lives next to the exe / in content
+	// and is editor chrome only.
 	void ApplyTourmalineBranding();
 
 	// ---- camera ----

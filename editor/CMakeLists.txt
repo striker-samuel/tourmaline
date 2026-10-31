@@ -110,6 +110,19 @@ add_custom_command(TARGET Editor POST_BUILD
     COMMENT "Syncing SVG icons next to Editor.exe"
 )
 
+# Branding: the checked-in logo raster (the 256px crystal mark,
+# branding/tourmaline-icon-256.png — also tracked as the repo-root
+# tourmaline_logo.png) staged next to Editor.exe as
+# tourmaline_logo.png: the editor loads it as the SDL window icon
+# (editor_branding.cpp). The hand-rasterized fallback only fires when
+# this sync is absent (standalone/source-tree runs).
+add_custom_command(TARGET Editor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/tourmaline_logo.png"
+            "$<TARGET_FILE_DIR:Editor>/tourmaline_logo.png"
+    COMMENT "Syncing the Tourmaline logo next to Editor.exe"
+)
+
 tourmaline_stage_sdl3(Editor)
 
 # ---------------------------------------------------------------------------

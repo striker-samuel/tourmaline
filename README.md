@@ -3,633 +3,248 @@
 [![CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)
 [![Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)
 
-A C++20 toy engine and renderer for learning real-time graphics on Vulkan 1.3 —
-a personal project by Samuel Martin, built from scratch (RHI, render graph,
-GPU-driven culling, content pipeline and editor included).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="branding/tourmaline-logo-horizontal-dark.png">
+  <img src="branding/tourmaline-logo-horizontal.png" width="420" alt="Tourmaline logo">
+</picture>
 
-Windows (MSVC) and Linux (GCC 14, verified on Ubuntu 24.04) both build the
-full tree and pass the CPU test suite. Everything is Ninja-driven and
-shader-hot: HLSL sources compile to SPIR-V at build time and load next to
-the executable. The runtime render loop needs a real Vulkan GPU (see
-[Platform support](#platform-support)).
+**A rendering and content framework for C++20 applications, built on Vulkan 1.3.**
 
-**Heads-up:** this repository contains **no ready-to-run scene content**.
-The viewer (`App.exe`) loads cooked `*.pak` archives; building the demo
-Sponza pak requires an external content store and the project pipeline
-(see [Content pipeline and sample scene](#content-pipeline-and-sample-scene)).
+Tourmaline provides an opinionated GPU-driven renderer, a scene and asset pipeline, and the runtime infrastructure needed to bring authored content into native applications.
+
+**Bring your own code.** Tourmaline doesn't prescribe a gameplay framework, ECS, scripting language, or application architecture. Write your application logic in C++, own your objects and their lifetimes, and use the parts of Tourmaline that make sense for your project.
+
+Scenes are authored through a human-readable `.tour` command format with references and non-destructive overrides. Project recipes cook source assets into packaged `.pak` archives and generate a C++ `project.h` catalog, allowing applications to reference content through stable, typed identities rather than hardcoded file paths.
+
+Tourmaline includes a Vulkan render graph, GPU-driven mesh rendering, clustered Forward+ lighting, animation and audio runtime services, content tooling, and an experimental editor.
+
+The framework is under active development. APIs and asset formats are evolving, and several subsystems remain experimental.
+
+## Highlights
+
+- **Vulkan renderer:** Custom resource management, bindless descriptors, render graph, GPU synchronization, and HLSL shaders compiled to SPIR-V with DXC.
+- **GPU-driven geometry:** Hierarchical-Z occlusion, GPU culling/filtering, meshlets, LOD chains, skinning, and geometry/texture streaming paths.
+- **Lighting and effects:** Clustered Forward+ lighting; directional, spot, EVSM, and experimental deferred shadows; SSR, ambient occlusion, volumetrics, exposure, bloom, depth of field, motion blur, and SMAA. Optional DLSS-SR/Reflex integration is available on supported Windows/NVIDIA setups.
+- **Authored worlds:** A Maya-inspired, text-based `.tour` scene overlay with references, overrides, editable nodes, and replayable operations. `.tourAnim` provides skeletal clips.
+- **Content as code:** `Project.exe` resolves `.tourrecipe` builds, cooks and verifies multiple `.pak` files, publishes a `.tapp` runtime manifest, and generates a typed, `constexpr` `project.h` catalog of persistent asset IDs.
+- **C++-first runtime:** Scene loading by asset ID, additive scene instances, asset prefetch, typed generational handles for mesh instances/animators/audio emitters, and scene-aware spatial audio. Game code owns the gameplay objects.
+- **Editor and offline tools:** An ImGui scene editor plus command-line import, cooking, GI baking, packaging, asset inspection, and debugging tools. Jolt Physics is vendored and tested; engine-level rigid-body/collider integration is still in progress.
 
 ## Screenshots
 
-GPU meshlet clusters, false-colored per cluster over the Sponza interior, with
-the debug HUD and View menu open:
+GPU-driven meshlet debug view:
 
-![GPU meshlet clusters](docs/images/meshlets_showing.png)
+![GPU meshlet clusters shown in Sponza](docs/images/meshlets_showing.png)
 
-Debug tooling: the texture viewer (including the BC5 normal maps), the VRAM
-usage breakdown and the Tourmaline Debug panel:
+Renderer inspection and debugging panels:
 
-![Debug menus and VRAM usage](docs/images/debug_menus.png)
+![Tourmaline debug panels](docs/images/debug_menus.png)
 
-## Current features
+*These captures use external demonstration assets. The full Sponza scene is not shipped in this repository.*
 
-- **Custom Vulkan 1.3 RHI** — bindless descriptor pools, render graph with
-  automatic barrier placement, staging uploads, GPU timeline semaphores.
-- **GPU-driven rendering** — HZB occlusion culling, GPU mesh filter with
-  LOD chains, clustered Forward+ lighting, GPU-indexed draws.
-- **GPU skinning** — glTF skeletal animation: `.anim` clips, joint-palette
-  skinning in the mesh pipeline, animated-pose shadows/occluders, and
-  conservative culling bounds for deformed meshes.
-- **Shadows** — cascaded sun + per-spot shadow atlases, EVSM soft shadows,
-  deferred shadow maps (DPS) with debug visualizers, a coarse volumetric
-  shadow tile for fog sun-occlusion.
-- **Lighting & GI** — analytic lights, SSR, raymarched volumetric fog with
-  fog-GI sampling, SSAO / SAO, cubemap GI bakes + convex probe volumes and
-  dense regular grids (Embree ray tracing) cooked offline into the content
-  packs. Lightmaps are baked but deprecated (the runtime loader stays for
-  existing content).
-- **Post-processing** — auto exposure, bloom, GT7-style tonemap, DoF,
-  motion blur, SMAA (1x/T2x), optional NVIDIA DLSS-SR / Reflex via the
-  Streamline interposer (Windows only; the engine falls back to its native
-  render-scale path when absent).
-- **Content pipeline** — loose glTF/KTX2 assets are imported, cooked and
-  packed into LZ4-compressed `*.pak` archives, served through a VFS +
-  artifact DB. `Project.exe` is the one CLI entry point for the whole flow.
-- **Editor** — ImGui-based world editor with gizmos, asset registry
-  (SQLite), threaded job pool, command system with recordable tours.
-- **Profiling** — Optick CPU/GPU instrumentation, headless deterministic
-  bench/capture modes, golden-image regression tooling (dev machines).
+## How it fits together
 
-## Experimental status and known limitations
+Tourmaline separates **authoring**, **content builds**, and **game execution**. Content does not need to be cooked by launching the editor.
 
-Personal learning project ("toy" is the operative word) — APIs and data
-formats are not stable and will break without notice. Format versions are
-magic-bumped instead of carrying compat shims, by design.
-
-**Work in progress, and pretty broken.** The following subsystems are active
-experiments: they compile and run for the scenes they were developed
-against, but expect gaps, visual artifacts, stale bakes and API churn.
-
-- **Terrain** — procedural tiles, height painting and LOD stitching are
-  unfinished; seams, missing tiles and unstable edits are known.
-- **GI (global illumination)** — probe cubemaps, convex GI volumes,
-  dense regular grids, and lightmap baking are preview-quality; bakes
-  may be stale, incomplete or visibly wrong outside the scenes they were
-  authored for. (The legacy world-field octree is retired — its runtime,
-  bake machinery, serializer and analyzer are deleted.)
-
-Treat both as preview-quality, not production features.
-
-## Platform support
-
-What is actually verified, and what is not:
-
-- **Build verification**: both platforms compile the full tree in CI
-  ([CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)
-  — build-only, `-DBUILD_TESTING=OFF`).
-- **CPU tests**: 44 plain-executable tests run per platform in the
-  separate
-  [Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)
-  workflow, with the five GPU-window tests excluded on hosted runners
-  (no display / Vulkan ICD — see [Testing](#testing)). The same test
-  suite is registered on Windows and Linux; verified passing on Ubuntu
-  24.04 + GCC 14 (WSL).
-- **Runtime rendering** requires a **real Vulkan GPU** and is verified on
-  the author's Windows machines. A successful build + CPU test pass does
-  **not** guarantee working rendering on any given machine. The lavapipe
-  software rasterizer boots and loads, but crashes inside its
-  compute-pipeline compiler on the engine's BDA-heavy shaders — do not
-  report that as a port bug without a GPU-verified repro.
-- Clang is expected to work on Linux but is not exercised in CI. Other
-  distributions/compilers are unverified.
-
-## Requirements
-
-- **Windows 10/11 x64** or **Ubuntu 24.04-class Linux x64**.
-- **CMake 3.17+** and **Ninja** — the repo is Ninja-only and
-  out-of-source-only (the Visual Studio *generator* is rejected at
-  configure time; the VS IDE itself is fine — see
-  [Visual Studio IDE](#visual-studio-ide)).
-- **Git** — the tree pins unmodified upstream libraries as git submodules
-  (clone with `--recursive`).
-
-Installed by you, per platform:
-
-| Dependency | Windows | Linux | Notes |
-|---|---|---|---|
-| Visual Studio 2022+ | required | — | MSVC + the "Desktop development with C++" workload (includes CMake + Ninja) |
-| GCC 14 | — | required | `gcc-14`/`g++-14` packages; see the [toolchain note](#linux-notes) |
-| Vulkan SDK | required | optional | Windows: provides `dxc.exe` (HLSL→SPIR-V at build time); `VULKAN_SDK` env var must point at it. Linux: the installer fetches the official DXC package, a full SDK is not needed |
-| KTX-Software 4.4.2 | required | required | No distro package — build/install once (commands in both quick starts) |
-| Embree 4.4.1 prebuilt | recommended | — | Windows: the vendored Embree **source** build ICEs MSVC (C1001 on the AVX curve-intersector TUs) — use the official prebuilt package. Linux: the vendored source build is the normal route |
-
-Everything else is fetched by the repo's installer script
-(`install_dependencies.ps1` / `install_dependencies.sh`) — see
-[Dependencies](#dependencies). The installers do **not** install the
-Vulkan SDK or KTX; those stay manual.
-
-## Quick start — Windows
-
-Steps 1–2 run from any shell; steps 3–6 need the MSVC environment, so
-use the **Developer PowerShell for Visual Studio** (Start menu — it
-opens PowerShell with `cl.exe`, `cmake` and `ninja` already on PATH).
-Steps 1–4 are one-time setup. Commands are PowerShell unless a block
-says otherwise.
-
-**Prerequisites**: Visual Studio 2022 or newer with the
-*Desktop development with C++* workload (this also provides CMake and
-Ninja), Git, and the [Vulkan SDK](https://vulkan.lunarg.com/) installed
-with its `VULKAN_SDK` environment variable set (the SDK installer does
-this; verify with `Test-Path "$env:VULKAN_SDK\Bin\dxc.exe"`).
-
-### 1. Clone with submodules
-
-```powershell
-git clone --recursive https://github.com/striker-samuel/tourmaline.git
-cd tourmaline
-# (already cloned? just: git submodule update --init --recursive)
+```text
+Source assets (glTF / textures / WAV)     Scene edits (.tour / .tourAnim)
+                    \                      /
+                     v                    v
+                     Import / asset database
+                               |
+                  Project.exe + .tourrecipe
+                  (resolve, cook, bake, pack)
+                               |
+                   +-----------+-----------+
+                   |                       |
+            project.h                  .tapp + .pak
+       typed C++ asset IDs       manifest + cooked archives
+                   |                       |
+                   +-----------+-----------+
+                               |
+                   Native C++ game / App host
+                               |
+                      Vulkan renderer
 ```
 
-### 2. Fetch the pinned dependencies
+A checked-in `.tourrecipe` declares entry scenes, package ownership, cross-pak dependencies, and GI/cubemap bake switches. The pipeline resolves those dependencies, validates outputs, and publishes content-addressed pak files with a runtime manifest. Stable content IDs come from the project's asset database and asset GUIDs, rather than being derived from paths.
 
-Downloads the vendored source trees and Windows binary packages
-(see [Dependencies](#dependencies)) into `external/`, SHA256-checked.
-Idempotent — re-run is a no-op.
+The generated `project.h` contains typed asset keys, a compile-time asset table, a catalog fingerprint, and generation metadata. The catalog and deployed manifest can be checked for identity mismatches. Catalog refresh, forced restamping, content cooking, and executable compilation are separate build operations.
+
+### Example: code refers to assets, not filenames
+
+```cpp
+#include "project.h"
+
+static_assert(project::Contains(project::EntryScene));
+static_assert(project::Contains(project::textures::stone));
+
+const auto scene = project::EntryScene;    // typed, stable asset key
+```
+
+For a complete, compilable example with multi-pak textures and scene-authored audio, see [`samples/04_project_game`](samples/04_project_game). `ProjectScenes` provides ID-based scene replace/additive-load/remove operations; the application host maps those keys to published pak content.
+
+## Getting started
+
+### Requirements
+
+- **Windows x64:** Visual Studio 2022+ with MSVC C++ tools, the Vulkan SDK, CMake, Ninja, and Git.
+- **Linux x64:** Ubuntu 24.04 with GCC 14 is the verified configuration, plus the required Vulkan/SDL development libraries, CMake, Ninja, and Git.
+- **Both:** KTX-Software **4.4.2** installed separately. The dependency installers do **not** install KTX-Software or the Windows Vulkan SDK.
+- **Windows recommendation:** Use the official **Embree 4.4.1 prebuilt package**; compiling the vendored Embree source with MSVC has triggered compiler internal errors in the tested configuration.
+
+The detailed OS package lists, KTX build/install commands, and Embree setup are in [the existing build guide](AGENTS.md) and the repository's [CI workflow](.github/workflows/ci.yml).
+
+### 1. Clone and install pinned dependencies
+
+```bash
+git clone --recursive https://github.com/striker-samuel/tourmaline.git
+cd tourmaline
+```
+
+Windows (PowerShell):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install_dependencies.ps1
 ```
 
-This does **not** fetch the Vulkan SDK (install it yourself, above) or
-KTX (next step).
+Linux:
 
-### 3. Build and install KTX-Software 4.4.2
-
-There is no Windows package for KTX-Software — build and install it
-once from the same source configuration CI uses. **Run this from the
-"Developer PowerShell for Visual Studio"** (Start menu — it opens a
-shell with the MSVC compiler already initialized); any install prefix
-works, this example uses `%USERPROFILE%\ktx`:
-
-```powershell
-git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software $env:USERPROFILE\ktx-src
-cmake -S $env:USERPROFILE\ktx-src -B $env:USERPROFILE\ktx-build -G Ninja `
-       -DCMAKE_BUILD_TYPE=Release `
-       -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF `
-       -DCMAKE_INSTALL_PREFIX=$env:USERPROFILE\ktx
-cmake --build $env:USERPROFILE\ktx-build
-cmake --install $env:USERPROFILE\ktx-build
+```bash
+./install_dependencies.sh
 ```
 
-### 4. Get the prebuilt Embree package (recommended)
+The scripts fetch the separately pinned/vendored dependencies into `external/`. Install KTX-Software first or before configuring; on Windows, install the Vulkan SDK and obtain prebuilt Embree as described above.
 
-The official Embree 4.4.1 Windows package avoids the MSVC ICE in the
-vendored source build. Download it, verify the checksum (the same pin CI
-uses), extract it anywhere you like — this example uses
-`%USERPROFILE%\embree-4.4.1`:
+### 2. Configure and build
 
-```powershell
-curl.exe -L -o $env:TEMP\embree.zip `
-       https://github.com/embree/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip
-$hash = (Get-FileHash $env:TEMP\embree.zip -Algorithm SHA256).Hash.ToLower()
-if ($hash -ne '5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f') { throw "embree zip sha mismatch: $hash" }
-Expand-Archive $env:TEMP\embree.zip -DestinationPath $env:TEMP\embree-x
-Move-Item "$env:TEMP\embree-x\embree-4.4.1.x64.windows" $env:USERPROFILE\embree-4.4.1
-```
-
-Without a prebuilt package the configure falls back to building the
-vendored Embree source — which currently **crashes the MSVC compiler**
-(C1001 + 0xC0000005 on the AVX curve-intersector TUs) on the author's
-toolchain, so the prebuilt route is strongly recommended on Windows.
-
-### 5. Configure and build
-
-Open the **Developer PowerShell for Visual Studio** (Start menu) — it has
-`cl.exe`, `cmake` and `ninja` on PATH — and `cd` into the repo.
+**Windows — Developer PowerShell for Visual Studio:**
 
 ```powershell
 $env:KTX_ROOT = "$env:USERPROFILE\ktx"
 cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release `
-       -DEMBREE_PREBUILT_DIR="$env:USERPROFILE\embree-4.4.1" .
-
-# Build what you need:
-cmake --build out/build/x64-Release --target App       # the pak-viewer host
-cmake --build out/build/x64-Release --target Editor    # the world editor
-cmake --build out/build/x64-Release --target Project   # the content-pipeline CLI
-cmake --build out/build/x64-Release                    # everything (tools, samples, tests)
+  -DEMBREE_PREBUILT_DIR="$env:USERPROFILE\embree-4.4.1" .
+cmake --build out/build/x64-Release --target App Editor EditorLauncher Project
 ```
 
-`EMBREE_PREBUILT_DIR` must be the extracted package root (the directory
-containing `lib\cmake`). Debug builds are the same commands with
-`-DCMAKE_BUILD_TYPE=Debug` and the `out/build/x64-Debug` directory.
+Paths are examples; set `KTX_ROOT` and `EMBREE_PREBUILT_DIR` to your installations. The Visual Studio **IDE** can use the Ninja configuration, but the Visual Studio **CMake generator** is intentionally unsupported.
 
-`build.bat` (from any shell, including a plain one — it finds MSVC via
-`vswhere` or reuses an initialized environment, auto-configures missing
-build dirs, and honors the `EMBREE_PREBUILT_DIR` env var) and its
-`build_app.bat` shortcut wrap the common cases:
-
-```bat
-build.bat                 full tree, x64-Release
-build.bat App             one target
-build.bat App x64-Debug   target + config
-build_app.bat             == build.bat App
-```
-
-### 6. Test
-
-```powershell
-ctest --test-dir out/build/x64-Release --output-on-failure
-```
-
-See [Testing](#testing) for the GPU-test caveats.
-
-### 7. Run
-
-Executables run **from their build directory** and load `content/`
-relative to the CWD:
-
-```powershell
-cd out\build\x64-Release
-.\App.exe --pak content\paks\Sponza.pak
-```
-
-`--pak` is **required** — and the pak does not exist yet on a fresh
-checkout. Build it through the project pipeline first (see
-[Content pipeline and sample scene](#content-pipeline-and-sample-scene)).
-
-The editor needs a project directory (it never picks one itself —
-`EditorLauncher.exe` is the picker):
-
-```powershell
-.\EditorLauncher.exe                  # the launcher: recents + New/Browse
-.\Editor.exe --project <project-dir>  # direct (the launcher spawns this)
-```
-
-## Quick start — Linux
-
-Verified configuration: **Ubuntu 24.04 + GCC 14**. Other distributions
-are unverified. Run from bash in your clone.
+**Linux — Ubuntu 24.04/GCC 14 (after installing system packages and KTX):**
 
 ```bash
-# 1. System packages FIRST (curl etc. must exist before the dependency
-#    installer runs; gcc-14/g++-14 are REQUIRED - see the toolchain note):
-sudo apt update
-sudo apt install -y build-essential gcc-14 g++-14 cmake ninja-build git curl unzip \
-  pkg-config glslang-tools libvulkan-dev zlib1g-dev \
-  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxinerama-dev \
-  libxi-dev libxfixes-dev libxss-dev libxtst-dev libxkbcommon-dev \
-  libxkbcommon-x11-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
-  libasound2-dev libpulse-dev libdbus-1-dev libudev-dev libunwind-dev \
-  libpipewire-0.3-dev libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev \
-  libinput-dev
-
-# 2. Submodules (or clone with --recursive):
-git clone --recursive https://github.com/striker-samuel/tourmaline.git
-cd tourmaline
-
-# 3. Fetched deps: SDL3 3.4.16 source, the official DXC linux package,
-#    full Vulkan-Headers 1.4.357, DirectX-Headers/DirectXMath (DirectXTex):
-./install_dependencies.sh
-
-# 4. KTX-Software (no distro package; build/install once):
-git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software
-cmake -S KTX-Software -B KTX-Software/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF
-cmake --build KTX-Software/build && sudo cmake --install KTX-Software/build
-# (a user-local prefix works too: add -DCMAKE_INSTALL_PREFIX=$HOME/ktx and
-#  pass -DKTX_ROOT=$HOME/ktx at the engine configure instead of sudo)
-
-# 5. Configure + build (GCC 14; see the toolchain note):
 CC=gcc-14 CXX=g++-14 cmake -B out/build/linux-Release -G Ninja \
   -DCMAKE_BUILD_TYPE=Release .
-cmake --build out/build/linux-Release --target App
-
-# 6. Test:
-ctest --test-dir out/build/linux-Release --output-on-failure
+cmake --build out/build/linux-Release --target App Editor EditorLauncher Project
 ```
 
-Embree here builds from the vendored source (fetched by step 3) — the
-normal route on Linux. To run: `cd out/build/linux-Release && ./App --pak ...`
-(see [Running](#running-the-viewer-and-editor) — the pak requirement
-applies identically).
+All builds are out-of-source and use **Ninja**.
 
-### Linux notes
+### 3. Cook and run the bundled C++ game sample
 
-- **GCC 14 is required for the verified build.** GCC 13 compiles most
-  of the tree but hits
-  two compiler bugs in the engine (`gimplify` ICEs on array-NSDMI
-  aggregates; see the NOTE at `struct ShaderProgram` in
-  `engine/include/Engine/smvk.h`). Clang is expected to work but is not
-  exercised in CI.
-- **The PCH is an MSVC/Clang feature.** GCC gets pch.h force-included
-  as a plain `-include` instead (GCC's `.gch` does not carry
-  `#pragma once` state; see `engine/CMakeLists.txt`).
-- **Vulkan headers**: distro `libvulkan-dev` packages ship older
-  trimmed headers (Ubuntu 24.04: 1.3.275, missing 1.4-era symbols the
-  engine uses), so the build pins the full Vulkan-Headers 1.4.357 (the
-  same set the Windows SDK uses) ahead of the system headers. The
-  loader stays the system's.
-- **SDL3**: a system/distro SDL3 install wins (`find_package`); when
-  absent, the 3.4.16 source tree fetched by `install_dependencies.sh`
-  is built as a subproject.
-- **DLSS/Streamline stays unavailable on Linux** (the runtime set is
-  Windows-only; the engine falls back to the renderScale/bilinear path
-  and logs a one-time notice).
-- **Runtime needs a real GPU** — see [Platform support](#platform-support).
+The repository includes a small project with checked-in glTF geometry, a texture, a WAV sound, a `.tour` scene, and a `.tourrecipe`. Unlike the larger Sponza demo, it does **not** require an external content store.
 
-## Building and testing
+```bash
+# Replace <build-dir> with out/build/x64-Release or out/build/linux-Release.
+cmake --build <build-dir> --target GameProject_paks  # cook + publish content
+cmake --build <build-dir> --target GameProject       # compile the game and catalog
+```
 
-### Build targets
+Run the resulting `GameProject.exe` (Windows) or `GameProject` (Linux) from the build output directory. The sample finds its `.tapp` manifest alongside the executable and loads the published paks. The content build is explicitly **on demand**, not an implicit side effect of compiling a game.
 
-| Target | What it is |
+The standalone viewer can also launch a cooked archive or project manifest:
+
+```text
+App --pak <path-to-file.pak>
+App --project <path-to-file.tapp>
+```
+
+The viewer requires cooked content; there is no ready-to-run Sponza pak in a fresh checkout.
+
+### 4. Open the editor
+
+```text
+EditorLauncher                 # project picker
+Editor --project <project-dir> # direct launch
+```
+
+The editor supports scene inspection, authored `.tour` changes, references and overrides, gizmos, material/light editing, audio-source nodes, and cook operations. It is actively evolving and uses a simpler preview renderer than the main application path.
+
+### 5. Run tests
+
+```bash
+cmake --build <build-dir>
+ctest --test-dir <build-dir> --output-on-failure
+```
+
+The CMake suite currently registers **52 tests**. Five tests create a Vulkan device/window and need a working local graphics setup; hosted CI excludes those five while running the CPU-capable tests on Windows/MSVC and Ubuntu 24.04/GCC 14. Building on Linux is CI-tested, but interactive rendering is primarily verified on the author's Windows GPU configurations.
+
+## Engine and gameplay boundary
+
+Tourmaline is opinionated about its **rendering and content infrastructure**, not about how games must organize their gameplay code. It does not mandate an ECS or scripting language.
+
+- **Assets** are shared, persistent resources addressed by generated catalog keys.
+- **World-owned runtime objects** use typed generational handles, including mesh instances, animators, and audio sources.
+- **Gameplay objects** are ordinary application-owned C++ structures or whatever higher-level architecture the game chooses.
+
+An animator can play, crossfade, pause, resume, and adjust speed on a loaded skeletal clip. Current limitations include one rendered skeletal pose per owning cluster even when multiple animator states exist. Likewise, Jolt is present as a pinned dependency and standalone physics test; full authored rigid-body integration is not yet a finished game feature.
+
+## Content and authoring formats
+
+| Format | Purpose |
 |---|---|
-| `App` | the pak-viewer host (`app/`) |
-| `Editor` / `EditorLauncher` | the world editor + its project picker (`editor/`) |
-| `Project` | the content-pipeline CLI (`tools/project`) |
-| `Import` | the raw glTF→engine-format converter CLI (`tools/import`) |
-| `Cook`, `Pak`, `GiBaker`, `CubemapBaker` | the cook/bake/pak stage executables (`tools/`) |
-| `01_triangle`, `02_blur`, `03_fuzz` | minimal Vulkan samples (`samples/`) |
-| *(no target)* | `cmake --build <dir>` builds everything, tests included |
+| `.tour` | Human-readable scene edits layered on source content: references, node changes, overrides, and authoring state |
+| `.tourAnim` | Skeletal animation clips with joint/channel tracks |
+| `.tourrecipe` | Entry scene, bake policy, pak ownership, dependency edges |
+| `project.h` | Generated, typed C++ content IDs and build/catalog metadata |
+| `.tapp` | Generated runtime manifest for published paks, entry scene, and content IDs |
+| `.pak` | Verified, compressed or directly packed runtime resources |
 
-### Testing
+The importer handles glTF/GLB and derives optimized geometry, LOD chains, meshlets, materials, and animation data. Cook/bake stages produce renderer-specific assets, while package assembly publishes relocatable content-addressed archives. Sound assets can be referenced through persistent IDs and used by authored or dynamically spawned audio emitters.
 
-44 plain-executable tests (no gtest): hand-rolled `Check()` runners with
-`checks=/failures=` summaries, wired through `ctest`. They are gated
-behind CMake's standard `BUILD_TESTING` (ON by default):
+See [`docs/project_scenes.md`](docs/project_scenes.md), [`docs/audio_source.md`](docs/audio_source.md), and [`docs/entities_and_animators.md`](docs/entities_and_animators.md) for the implemented runtime model.
 
-```powershell
-# Normal configs include the tests - run them directly:
-ctest --test-dir out/build/x64-Release --output-on-failure
+## Current limitations
 
-# A dedicated tests tree keeps them out of working configs:
-cmake -B out/build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON .
-cmake --build out/build/tests
-ctest --test-dir out/build/tests --output-on-failure
+Tourmaline is still a research-and-development engine. In particular:
 
-# Or exclude the test targets entirely:
-cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF .
+- **No API or asset-format stability guarantee.** Breaking changes can require recooking assets; legacy format readers are not a standing commitment.
+- **Terrain and GI are experimental.** Heightfields, placement, baked probes, and volume GI work for development scenes but are not production-hardened; visual defects or incomplete bakes are possible.
+- **The editor is not a complete DCC replacement.** It has custom scene-authoring workflows, but its viewport is not identical to the full game renderer.
+- **Runtime systems are intentionally scoped.** Some asset kinds remain scene/cluster-internal; multiple independent animated instances do not yet have independent rendered palettes within one cluster.
+- **Jolt integration is incomplete.** The dependency and isolated simulation tests are present, not a full scene-driven physics runtime.
+- **USD/Omniverse integration, renderer-pairing remasters, and a cinematic timeline format** are architectural ideas, **not shipped features** of this repository.
+
+If you need a stable, fully supported production engine today, treat Tourmaline as experimental.
+
+## Repository map
+
+```text
+engine/     Vulkan renderer, RHI, render graph, scene/runtime data, shaders
+app/        Host application, runtime project/scene/audio facades, pak viewer
+editor/     ImGui world editor and launcher
+tools/      Import, Project, Cook, Pak, GI baker, artifact database, utilities
+samples/    Rendering samples and the standalone GameProject example
+tests/      CTest suites (CPU and GPU-dependent)
+branding/   Logo and icon assets (editable SVG sources + raster exports)
+cmake/      Shader compilation and project/host CMake helpers
+docs/       System notes, contracts, migration records, build guidance
+external/   Pinned submodules and fetched third-party dependencies
 ```
 
-Five of the 44 create a real (hidden) SDL window + offscreen Vulkan
-device — `retirement_fuzz_tests`, `world_fields_gpu_tests`,
-`placement_gpu_tests`, `probepremix_gpu_tests`,
-`rhi_upload_barriers_gpu_tests` — and need a desktop session with a
-working Vulkan driver. They run in dev environments and are excluded in
-CI; the remaining 39 tests are pure CPU and run anywhere.
+## Documentation
 
-### CI and the Tests workflow
+- [`AGENTS.md`](AGENTS.md) — build/test commands and development conventions.
+- [`docs/project_guide.md`](docs/project_guide.md) — architecture overview and extension seams.
+- [`docs/editor_tour_and_context.md`](docs/editor_tour_and_context.md) — `.tour` authoring and replay model.
+- [`docs/project_scenes.md`](docs/project_scenes.md) — ID-based scene loading and asset ownership.
+- [`docs/entities_and_animators.md`](docs/entities_and_animators.md) — typed runtime handles and animation.
+- [`docs/audio_source.md`](docs/audio_source.md) — authored audio sources and sound content.
+- [`docs/shader_library_design.md`](docs/shader_library_design.md) — design proposal: project HLSL shader libraries, material instances, and 32-bit userdata (not yet implemented).
+- [`docs/artifact-db-funnel.md`](docs/artifact-db-funnel.md) — ongoing artifact pipeline redesign notes (not all sections are implemented).
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored dependencies and redistribution notices.
 
-Two independent GitHub workflows, deliberately decoupled (a test failure
-cannot fail the build check and vice versa):
+## Development and licensing
 
-- **[CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)**
-  — build verification only: full-tree compile on Ubuntu 24.04/GCC 14 and
-  Windows/MSVC, `-DBUILD_TESTING=OFF`, nothing executed.
-- **[Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)**
-  — the suite: builds with `-DBUILD_TESTING=ON` on both platforms and
-  runs ctest with the five GPU-window tests excluded (hosted runners
-  have no display / Vulkan ICD). Manually launchable
-  (*workflow_dispatch*), own concurrency group.
+Tourmaline is developed as a personal project. Development has been assisted by AI coding tools for implementation, debugging, tests, and documentation; architectural review and final decisions remain with the project author.
 
-### How it's built
-
-- **CMake + Ninja, out-of-source only.** In-source configures and the
-  Visual Studio generator are hard-rejected at configure time (they
-  pollute the tree with `.vcxproj`/`Testing/` junk and fight the Ninja
-  build dirs).
-- **Shaders are build products.** `engine/shaders/*.vert|frag|cs.hlsl`
-  (entry points `mainVS`/`mainPS`/`mainCS`) compile through
-  `cmake/CompileShaders.cmake` with DXC (`-spirv
-  -fspv-target-env=vulkan1.3 -fvk-use-dx-layout`) into
-  `out/build/<config>/content/shaders/*.spv`, synced next to the
-  executables by the `EngineScene_shaders` target. Debug compiles `-Od`
-  (a few files pinned `-O3` — see `HLSL_FORCE_O3_FILES`); Release
-  compiles `-O3` and strips debug info. Rebuild the `App` target after
-  editing any shader.
-- **Push-constant contract.** C++ structs
-  (`engine/include/Engine/Rendergraph/`) and their HLSL mirrors stay
-  layout-identical, guarded by `static_assert(sizeof(...))` and contract
-  tests.
-- **KTX discovery**: CMake accepts `-DKtx_DIR=<prefix>/lib/cmake/ktx`,
-  `-DCMAKE_PREFIX_PATH=<prefix>`, or the `KTX_ROOT` env var (translated
-  to `CMAKE_PREFIX_PATH`). Note the capital-K package name — KTX-Software
-  ships `KtxConfig.cmake`.
-
-### Visual Studio IDE
-
-The **Visual Studio IDE works with the Ninja configuration**: open the
-repo folder (File → Open → Folder) and the checked-in
-`CMakeSettings.json` picks up the `x64-Debug` / `x64-Release` (+
-DSViz / ShaderDebug) Ninja configurations with the MSVC environment
-inherited. The **Visual Studio CMake generator** (`-G "Visual Studio
-..."`) is unsupported and rejected at configure time — never switch a
-build directory to it; if a `CMakeCache.txt` mismatch ever appears,
-delete the offending `out/build/<config>` directory and reconfigure
-with Ninja.
-
-## Running the viewer and editor
-
-Executables run from their build directory (e.g.
-`out/build/x64-Release`) and load `content/` relative to the CWD. The
-app is a pak viewer — `--pak <path>` is **required**, and content is
-cooked separately through the project pipeline:
-
-```powershell
-cd out\build\x64-Release
-.\App.exe --pak content\paks\Sponza.pak    # built by the pipeline (below)
-```
-
-Headless deterministic capture / benchmarking — env vars pin features
-for A/B benches (the full set is parsed in
-`engine/src/App/RunConfig.cpp`; `AGENTS.md` carries the annotated list):
-
-```powershell
-$env:TOURMALINE_SSR='1'; $env:TOURMALINE_AA='off'; $env:TOURMALINE_AUTO_EXPOSURE='0'
-$env:TOURMALINE_CAM_POS='24.26,1.82,-9.52'; $env:TOURMALINE_CAM_FWD='-0.947,-0.022,-0.321'
-$env:TOURMALINE_CAPTURE='48'    # frame to export exports/screenshot_*.png (must be < bench)
-.\App.exe --pak content\paks\Sponza.pak --disable_control --bench 64
-```
-
-- `--bench <n>` runs 10 warmup + n measured frames, then exits (vsync
-  forced off — uncapped immediate present; `--present <mode>` wins).
-- Other pins in the same family: `TOURMALINE_AO=off|ssao|sao`,
-  `TOURMALINE_EVSM`, `TOURMALINE_TRANSPARENCY`,
-  `TOURMALINE_VOLUMETRIC` (+`_STEPS`, `_GI_VOLUMES`),
-  `TOURMALINE_MESH`, `TOURMALINE_CULLFLAGS`,
-  `TOURMALINE_ASYNC_COMPUTE`, `TOURMALINE_PROBE_PREMIX=0|1`,
-  `TOURMALINE_GI_INTENSITY`, `TOURMALINE_NORMAL_FIX` — and many more
-  (Linux: same variables exported, `./App` instead of `.\App.exe`).
-
-The editor: `Editor.exe --project <dir>` (the flag is required — the
-editor never picks a project itself) or `EditorLauncher.exe` for the
-picker UI (recents + New/Browse). The editor drives the same content
-pipeline in-process as the CLI tools.
-
-## Content pipeline and sample scene
-
-**The demo scene (Sponza) is not in this repository.** Large scene
-binaries live in an external content store; the repo ships only the
-engine, tools and small runtime resources (fonts, LUTs). To get a
-runnable pak you either point the pipeline at your own content store,
-or copy an already-built project directory from somewhere else.
-
-One project → one importer → one geometry preprocessing stage → one
-scene cooker → one packager. `Project.exe` is the entry point; the
-editor and the batch scripts use the same implementation — there is no
-alternate path that derives different geometry from the same source.
-
-```
-glTF / GLB source          (NOT in git — an external content store)
-  |
-  |  Project.exe init/import      the ONE importer (gltf_import):
-  |                               copy the source + deps INTO the project,
-  |                               derive the .geometry family — the LOD
-  |                               chains + meshlets bake AT IMPORT
-  v
-Project assets             (renderer-ready .geometry + .material + .anim
-  |                         + the import manifest with its fingerprint)
-  |  Project.exe build
-  |     -> Cook                 scene-dependent bakes (cubemap captures);
-  |     |                       consumes the imported .geometry, never
-  |     |                       regenerates or rewrites it
-  |     -> GiBaker              the GI volumes + world fields
-  |     -> Pak                  assembly + the bake-freshness gate + verify
-  v
-*.pak                      -> App.exe / Editor.exe (VFS + artifact DB)
-```
-
-**The demo (Sponza).** One command creates the project, imports the
-source, seeds the authored scene, cooks, bakes, paks (the freshness gate
-accepts only fresh bakes) and syncs the pak next to `App.exe`; later runs
-are incremental (unchanged content reimports and bakes nothing):
-
-```powershell
-# Your content store root — must contain models\sponza\Sponza.gltf +
-# Sponza.bin + the textures + the authored Sponza.tour:
-$env:TOURMALINE_CONTENT_DIR = 'D:\my-content-store'
-
-tools\cook\cook_sponza.bat        # or the explicit commands:
-#   Project.exe init  --project <dir> --from-gltf <store>\models\sponza\Sponza.gltf `
-#                       --from-scene <store>\models\sponza\Sponza.tour
-#   Project.exe build --project <dir> --output <dir>\paks\Sponza.pak
-#   Project.exe status --project <dir>     # explains staleness per source
-
-cd out\build\x64-Release
-.\App.exe --pak content\paks\Sponza.pak
-```
-
-The project defaults to your **user Documents** —
-`%USERPROFILE%\Documents\Tourmaline\Sponza` on Windows
-(`~/Documents/Tourmaline/Sponza` elsewhere), never the repo tree — and
-`TOURMALINE_PROJECT_DIR` overrides it. It is **self-contained**: after
-the first successful build it rebuilds with no external content store
-present at all — the imported copies are the source of record, and a
-project directory can be copied to another machine and built there
-as-is.
-
-Every bake stage records content fingerprints the pak gate re-verifies:
-stale bakes are refused, never silently embedded.
-
-## Dependencies
-
-Third-party code lives under `external/`. The full license audit is in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-**Pinned git submodules** (in git, unmodified upstream — clone with
-`--recursive`):
-
-- **GLM** — math
-- **nlohmann/json** — JSON (required by tinygltf)
-- **meshoptimizer** — LOD simplification, meshlets, vertex-cache/fetch
-  optimization
-- **DirectXTex** — BC6H/BC7 block codecs (GI volume + lightmap payload
-  encoding, cubemap compression)
-- **volk** — Vulkan loader
-- **SPIRV-Reflect** — CPU reflection for push/spec readback
-- **nanosvg** — editor SVG icon rasterization
-
-**Fetched by the installer scripts** (not in git — pinned
-archives/raw files, SHA256-checked, extracted into `external/`):
-
-- Vendored source trees, built by the normal build: **Embree**
-  (ray tracing for the GI bakes — the prebuilt-package route on Windows
-  is recommended instead, see the quick start), **Dear ImGui**,
-  **xatlas** (lightmap UV2 charting + packing), **LZ4** (block codec for
-  cooked pak blobs), **SQLiteCpp** + the sqlite3 amalgamation (the
-  editor's artifact cache), **Optick** (profiler, `ENABLE_OPTICK` on by
-  default).
-- Header-only: **tinygltf** (glTF parsing, used by `tools/gltf_import`),
-  **stb** (`stb_image.h` / `stb_image_write.h`),
-  **VulkanMemoryAllocator** (`vk_mem_alloc.h`).
-- Windows binary packages: **SDL3** 3.4.16 prebuilt dev package,
-  **DXC** (the in-process `dxcompiler` the engine links for runtime
-  HLSL→SPIR-V; build-time compiles use the Vulkan SDK's `dxc.exe`),
-  **Streamline** 2.14.1 (the optional DLSS-SR / Reflex interposer —
-  no hard dependency, the engine falls back when absent).
-- Linux-only fetches: **SDL3** 3.4.16 source (built as a subproject when
-  no system SDL3 exists), the official **DXC** Linux package, full
-  **Vulkan-Headers** 1.4.357 (ahead of older distro headers), and
-  **DirectX-Headers / DirectXMath** (DirectXTex's non-Windows path).
-
-**Installed manually by you** (never fetched): the **Vulkan SDK**
-(Windows) and **KTX-Software** (both platforms) — see
-[Requirements](#requirements).
-
-**Fetched but intentionally not wired into the build**: **zlib**
-(CRC/reference only) — pass `-IncludeUnused` / `--include-unused` to the
-installers if you want it.
-
-## Architecture and repository layout
-
-```
-engine/      engine static lib (RHI, render graph, renderers, assets, shaders)
-editor/      the ImGui-based editor + its launcher
-app/         App.exe — the pak-viewer host shell
-tools/       import (Import.exe), gltf_import (the importer lib),
-             project (Project.exe) + project_pipeline (the shared lib),
-             cook (Cook.exe + cook_sponza.bat), pak_cooker (Pak.exe),
-             gi_baker, cubemap_baker, artifact_cache (lib),
-             deps (installer pin manifests), push_constants_idl (codegen),
-             python helpers (golden capture, shader -Od retry)
-samples/     minimal Vulkan samples (01_triangle, 02_blur, 03_fuzz)
-tests/       44 plain-exe test executables (ctest)
-external/    third-party: pinned git submodules + installer-fetched trees
-             (see THIRD_PARTY_NOTICES.md)
-docs/        project guide + per-system documentation
-```
-
-Frame data flow: `DrawFrame` fills the frame context → GPU-driven filter
-(seed/HZB/mesh filter) → Forward+ (prepass + light culling) → shadow
-atlases (CSM/spot/EVSM/deferred/coarse fog tile) → main forward pass →
-motion/DoF/SSR/volumetric/exposure/bloom/tonemap/SMAA/UI → swapchain.
-The GPU-driven filtered path is always on (the direct-draw leg remains
-only as the unfilterable/LOD-far fallback).
-
-## Related documentation
-
-- `AGENTS.md` — build/run/test quick reference for humans and agents.
-- `docs/project_guide.md` — systems, seams, and where to extend things.
-- `docs/editor_tour_and_context.md` — the editor tour system.
-- `docs/target_heap_packing.md`, `docs/probe_premix_plan.md`,
-  `docs/dx12_porting_notes.md`, `docs/world_partition.md` — per-system
-  deep dives.
-- `THIRD_PARTY_NOTICES.md` — the full third-party license audit.
-
-## AI disclosure
-
-Development of Tourmaline was assisted by AI coding agents: **Muse Spark
-1.3** and **GLM 5.3** (Z.ai, driven through the opencode CLI). They
-contributed to implementation, debugging, testing and documentation
-across the codebase; the architecture, review and final decisions are
-the author's.
-
-## License
-
-Copyright (c) 2026 Samuel Martin. Released under the **MIT License** — see
-[LICENSE](LICENSE). Third-party components keep their own licenses, see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-The scene format is derived from the scene description format in
-[Mastering Graphics Programming with Vulkan](https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan)
-(Castorino & Portociampo, Packt, MIT) — see the third-party notice in
-[LICENSE](LICENSE).
+**Current repository license: [MIT](LICENSE).** Third-party components retain their own licenses; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The project currently includes code derived from *Mastering Graphics Programming with Vulkan* under its original MIT attribution. Any contemplated future Community/Commercial licensing model is **not** the license currently published in this repository.

@@ -107,13 +107,14 @@ namespace editor {
 	void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
 		(void)targetExtent;
 		if (ImGui::BeginMainMenuBar()) {
-			// Tourmaline gem + name (branding; PNG lives as the window icon).
+			// Tourmaline crystal mark + name (branding; the PNG raster
+			// lives as the window icon).
 			{
 				const float h = ImGui::GetTextLineHeight() + 2.0f;
 				ImDrawList* dl = ImGui::GetWindowDrawList();
 				const ImVec2 p = ImGui::GetCursorScreenPos();
-				DrawTourmalineGem(dl, p, h);
-				ImGui::Dummy(ImVec2(h * 0.62f + 6.0f, h));
+				const float markW = DrawTourmalineGem(dl, p, h);
+				ImGui::Dummy(ImVec2(markW + 6.0f, h));
 				ImGui::TextUnformatted("Tourmaline Editor");
 				ImGui::Separator();
 			}

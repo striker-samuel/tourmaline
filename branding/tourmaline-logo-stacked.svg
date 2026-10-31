@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="635" viewBox="0 0 760 635" role="img" aria-labelledby="title desc">
+<title id="title">Tourmaline — stacked crystal logo</title>
+<desc id="desc">Editable vector mark for Tourmaline, a Vulkan renderer. A teal frame meets an orange-to-magenta-to-violet faceted mineral.</desc>
+<defs>
+  <linearGradient id="teal" x1="142" y1="245" x2="370" y2="35" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#00A99B"/>
+    <stop offset="0.55" stop-color="#00AC9F"/>
+    <stop offset="1" stop-color="#00B8AD"/>
+  </linearGradient>
+  <linearGradient id="stone" x1="420" y1="61" x2="276" y2="285" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#FF940D"/>
+    <stop offset="0.20" stop-color="#FF7515"/>
+    <stop offset="0.46" stop-color="#EA306A"/>
+    <stop offset="0.70" stop-color="#8C187E"/>
+    <stop offset="1" stop-color="#360960"/>
+  </linearGradient>
+  <linearGradient id="crown" x1="329" y1="139" x2="404" y2="60" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#FF8B30"/>
+    <stop offset="0.62" stop-color="#FFC05C"/>
+    <stop offset="1" stop-color="#FFD777"/>
+  </linearGradient>
+  <linearGradient id="middle" x1="345" y1="122" x2="339" y2="222" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#FF7238"/>
+    <stop offset="0.55" stop-color="#E73B70"/>
+    <stop offset="1" stop-color="#B01B84"/>
+  </linearGradient>
+  <linearGradient id="leftFacet" x1="235" y1="168" x2="288" y2="252" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#A51C85"/>
+    <stop offset="1" stop-color="#4C086F"/>
+  </linearGradient>
+  <linearGradient id="baseFacet" x1="295" y1="237" x2="295" y2="285" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#5D0A75"/>
+    <stop offset="1" stop-color="#36085E"/>
+  </linearGradient>
+  <linearGradient id="sideFacet" x1="422" y1="110" x2="405" y2="260" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#E84822"/>
+    <stop offset="0.48" stop-color="#B22960"/>
+    <stop offset="1" stop-color="#6A0D74"/>
+  </linearGradient>
+  <clipPath id="stone-clip">
+    <path d="M428 56 C374 75 294 122 245 164 C204 199 184 231 191 252 C200 275 259 282 312 279 C354 277 392 270 415 260 C436 231 449 185 449 147 C449 111 441 59 428 56 Z"/>
+  </clipPath>
+</defs>
+<g transform="translate(-16 39) scale(1.40)"><g id="mark" aria-label="Tourmaline crystal mark">
+  <!-- Rounded mineral frame: a single smooth, editable shape -->
+  <path id="teal-frame" fill="url(#teal)" d="M385 60 C358 32 317 29 269 32 C226 33 178 44 158 59 C145 70 139 99 134 132 C127 175 132 222 143 241 C150 254 162 258 186 255 L188 229 C171 230 168 218 164 199 C159 169 162 122 174 91 C180 76 220 65 267 58 C312 51 346 58 363 78 Z"/>
+  <!-- Smooth tourmaline silhouette; all additional facets remain inside this shape -->
+  <path id="gemstone" fill="url(#stone)" d="M428 56 C374 75 294 122 245 164 C204 199 184 231 191 252 C200 275 259 282 312 279 C354 277 392 270 415 260 C436 231 449 185 449 147 C449 111 441 59 428 56 Z"/>
+  <g id="crystal-facets" clip-path="url(#stone-clip)">
+    <!-- Crown facets make the logo read as a polished cut mineral -->
+    <path id="top-orange-rim" fill="#FF8420" d="M244 165 C288 124 377 72 428 56 L407 115 L261 163 Z"/>
+    <path id="light-facet" fill="url(#crown)" d="M261 163 L428 56 L407 115 Z"/>
+    <path id="center-facet" fill="url(#middle)" d="M261 163 L407 114 L380 230 Z"/>
+    <path id="left-facet" fill="url(#leftFacet)" d="M261 162 L380 230 L190 253 Z"/>
+    <path id="front-left-facet" fill="#791078" opacity=".66" d="M244 164 L261 163 L190 253 C190 233 210 198 244 164 Z"/>
+    <path id="side-facet" fill="url(#sideFacet)" d="M428 56 L451 146 L415 261 L380 230 L407 114 Z"/>
+    <path id="base-facet" fill="url(#baseFacet)" d="M190 253 L380 230 L415 260 C379 279 262 296 190 253 Z"/>
+    <!-- Tiny upper right plane to brighten the mineral's sharp corner -->
+    <path id="tip-highlight" fill="#FFA126" opacity=".70" d="M428 56 L407 115 L450 145 C449 107 442 66 428 56 Z"/>
+  </g>
+</g></g>
+<g id="tourmaline-wordmark" fill="#1B2230" transform="translate(119 570) scale(0.0571289 -0.0571289)"><path d="M45 1226H497V0H805V1226H1256V1490H45Z" transform="translate(0.00,0)"/><path d="M594 -24C915 -24 1131 196 1131 527C1131 858 915 1080 594 1080C274 1080 58 858 58 527C58 196 274 -24 594 -24ZM594 215C451 215 355 331 355 527C355 724 452 841 594 841C737 841 834 724 834 527C834 331 738 215 594 215Z" transform="translate(1301.00,0)"/><path d="M475 -22C627 -22 734 46 805 166V0H1094V1056H800V469C800 305 715 232 593 232C470 232 399 307 399 449V1056H104V395C104 128 250 -22 475 -22Z" transform="translate(2490.00,0)"/><path d="M104 0H399V572C399 731 488 815 609 815C659 815 714 811 736 810V1061C712 1062 683 1063 649 1063C510 1063 430 1003 391 876H388V1056H104Z" transform="translate(3689.00,0)"/><path d="M104 0H399V623C399 759 483 835 588 835C691 835 763 764 763 654V0H1047V636C1047 754 1118 835 1232 835C1333 835 1411 773 1411 646V0H1705V700C1705 942 1554 1078 1351 1078C1198 1078 1068 1001 1013 872C969 1001 850 1078 708 1078C574 1078 451 1009 388 866V1056H104Z" transform="translate(4453.00,0)"/><path d="M427 -18C589 -18 680 46 736 149H740V0H1028V716C1028 942 862 1078 573 1078C283 1078 111 940 98 722H375C382 803 454 859 564 859C672 859 737 805 737 727V720C737 652 669 643 476 624C256 604 64 536 64 298C64 87 216 -18 427 -18ZM509 187C410 187 346 231 346 306C346 390 426 429 527 444C622 459 705 473 739 492V386C739 272 651 187 509 187Z" transform="translate(6263.00,0)"/><path d="M399 1490H104V0H399Z" transform="translate(7395.00,0)"/><path d="M104 0H399V1056H104ZM251 1189C348 1189 419 1256 419 1346C419 1436 348 1503 251 1503C154 1503 83 1436 83 1346C83 1256 154 1189 251 1189Z" transform="translate(7898.00,0)"/><path d="M399 587C399 751 484 824 606 824C729 824 800 749 800 607V0H1094V661C1094 928 949 1078 724 1078C572 1078 465 1010 394 890V1056H104V0H399Z" transform="translate(8401.00,0)"/><path d="M586 -24C842 -24 1046 122 1085 332H816C789 250 710 197 595 197C440 197 350 298 345 454H1096V533C1096 855 887 1080 576 1080C273 1080 58 849 58 527C58 206 266 -24 586 -24ZM347 642C363 774 450 856 582 856C715 856 803 774 818 642Z" transform="translate(9600.00,0)"/></g>
+</svg>

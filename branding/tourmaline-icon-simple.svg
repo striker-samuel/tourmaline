@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+<title id="title">Tourmaline — simplified icon</title>
+<desc id="desc">Editable vector mark for Tourmaline, a Vulkan renderer. A teal frame meets an orange-to-magenta-to-violet faceted mineral.</desc>
+<defs>
+ <linearGradient id="teal" x1="120" y1="245" x2="380" y2="42" gradientUnits="userSpaceOnUse"><stop stop-color="#00A99B"/><stop offset="1" stop-color="#00B7A8"/></linearGradient>
+ <linearGradient id="stone" x1="407" y1="73" x2="272" y2="286" gradientUnits="userSpaceOnUse"><stop stop-color="#FF920A"/><stop offset="0.26" stop-color="#FA622C"/><stop offset=".52" stop-color="#D52D7F"/><stop offset="1" stop-color="#39075F"/></linearGradient>
+</defs>
+<g transform="translate(-122.2 61.4) scale(1.31)"><g id="mark"><path id="frame" fill="url(#teal)" d="M385 60 C358 32 317 29 269 32 C226 33 178 44 158 59 C145 70 139 99 134 132 C127 175 132 222 143 241 C150 254 162 258 186 255 L188 229 C171 230 168 218 164 199 C159 169 162 122 174 91 C180 76 220 65 267 58 C312 51 346 58 363 78 Z"/><path id="gem" fill="url(#stone)" d="M428 56 C374 75 294 122 245 164 C204 199 184 231 191 252 C200 275 259 282 312 279 C354 277 392 270 415 260 C436 231 449 185 449 147 C449 111 441 59 428 56 Z"/></g></g>
+</svg>
