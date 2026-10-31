@@ -12,7 +12,11 @@
 #include <limits>
 #include <sstream>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // The hash primitive
@@ -597,4 +601,4 @@ bool ParseCaptureReach(const uint8_t* data, size_t size,
 	return p == end;
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi

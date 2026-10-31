@@ -32,7 +32,11 @@
 
 #include <xatlas/xatlas.h>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 namespace {
 
@@ -3548,4 +3552,4 @@ bool BakeSgLightmapChunk(const GiTraceScene& scene, uint32_t lobeCount,
 	}
 	return true;
 }
-} // namespace smvk::gi
+} // namespace tour::gi

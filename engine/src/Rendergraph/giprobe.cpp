@@ -252,4 +252,4 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
 	return true;
 }
 
-} // namespace smvk::giprobe
+} // namespace tour::giprobe

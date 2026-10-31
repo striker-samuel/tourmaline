@@ -24,7 +24,11 @@
 
 #include <glm/glm.hpp>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // Ray-tracing backend for the bake transport (primary/shadow rays): the
 // vendored Embree (external/embree, packet/SIMD traversal over the same
@@ -140,4 +144,13 @@ private:
 	TraceBackend backend_ = TraceBackend::Builtin;
 };
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::TriangleBvh;
+	using ::tour::gi::TraceBackend;
+}

@@ -69,7 +69,11 @@ struct World;
 
 } // namespace smvk
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // Trace scene
@@ -547,4 +551,26 @@ std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
 // ---------------------------------------------------------------------------
 
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::BuildTraceSceneFromCluster;
+	using ::tour::gi::BuildTraceSceneFromWorld;
+	using ::tour::gi::CollectStaticBakeLights;
+	using ::tour::gi::ExtractTraceSceneFromWorld;
+	using ::tour::gi::GiAverageKtxTexel;
+	using ::tour::gi::GiDecodeKtxTexelData;
+	using ::tour::gi::GiSceneBuildOptions;
+	using ::tour::gi::GiStaticLightCounts;
+	using ::tour::gi::GiTraceMaterial;
+	using ::tour::gi::GiTraceScene;
+	using ::tour::gi::GiTraceSpot;
+	using ::tour::gi::GiTraceTexelData;
+	using ::tour::gi::Pcg32;
+	using ::tour::gi::kGiBakeTexelMaxDim;
+	using ::tour::gi::kMaskWeaveTransmittance;
+}

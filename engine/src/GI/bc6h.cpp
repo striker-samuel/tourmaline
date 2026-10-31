@@ -9,7 +9,11 @@
 
 #include <Engine/GI/sg.h> // UnpackHalf
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 namespace {
 
 constexpr size_t kBlockBytes = 16;
@@ -76,4 +80,4 @@ void Bc6hDecodeImage(const uint8_t* blocks, uint32_t w, uint32_t h,
 	}
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi

@@ -69,7 +69,11 @@
 #include <string>
 #include <vector>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // FNV-1a 64 with a length finish (the artifact-cache grade, 16 lowercase
 // hex). Self-contained: the engine does not link the cache tool lib.
@@ -287,4 +291,29 @@ inline CubemapBakeConfigHashInputs CanonicalCubemapCfgHash(
 	return c;
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::BakeCellGrid;
+	using ::tour::gi::BakeEnvHash;
+	using ::tour::gi::BakeInputHash;
+	using ::tour::gi::BakeLightsHash;
+	using ::tour::gi::BakeRegionHash;
+	using ::tour::gi::BuildBakeCellGrid;
+	using ::tour::gi::CanonicalCubemapCfgHash;
+	using ::tour::gi::CanonicalGiVolumeCfgHash;
+	using ::tour::gi::CaptureReachFile;
+	using ::tour::gi::CellId;
+	using ::tour::gi::CubemapBakeConfigHashInputs;
+	using ::tour::gi::CubemapBakeUnitHash;
+	using ::tour::gi::GiVolumeBakeConfigHashInputs;
+	using ::tour::gi::GiVolumeBakeUnitHash;
+	using ::tour::gi::kBakeAlgorithmRevision;
+	using ::tour::gi::ParseCaptureReach;
+	using ::tour::gi::RecordCaptureReach;
+	using ::tour::gi::SerializeCaptureReach;
+}

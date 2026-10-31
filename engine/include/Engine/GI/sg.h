@@ -37,7 +37,11 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // Fixed SG basis
@@ -244,4 +248,32 @@ inline float SgProbeUnpackVis(const SgProbeGpu& p, uint32_t k) {
 	return UnpackHalf(uint16_t(p.vis[k >> 1] >> ((k & 1) * 16)));
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::kSgBasis;
+	using ::tour::gi::kSgChebTermCount;
+	using ::tour::gi::kSgCosCheb;
+	using ::tour::gi::kSgLobeCount;
+	using ::tour::gi::kSgProbeFlagValid;
+	using ::tour::gi::kSgSharpness;
+	using ::tour::gi::PackHalf;
+	using ::tour::gi::SgBasisValue;
+	using ::tour::gi::SgDiffuseIrradiance;
+	using ::tour::gi::SgEvaluate;
+	using ::tour::gi::SgProbeGpu;
+	using ::tour::gi::SgFitAccumulator;
+	using ::tour::gi::SgFitLobes;
+	using ::tour::gi::SgKernelProduct;
+	using ::tour::gi::SgProbePackAmps;
+	using ::tour::gi::SgProbePackVis;
+	using ::tour::gi::SgProbeUnpackAmp;
+	using ::tour::gi::SgProbeUnpackVis;
+	using ::tour::gi::SgSelfEnergy;
+	using ::tour::gi::SgSpecular;
+	using ::tour::gi::UnpackHalf;
+}

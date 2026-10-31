@@ -7,7 +7,11 @@
 #include <cmath>
 #include <limits>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 namespace {
 
@@ -183,4 +187,4 @@ void SgFitLobes(std::span<const glm::vec3> dirs, std::span<const glm::vec3> radi
 	acc.Solve(outAmps);
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi

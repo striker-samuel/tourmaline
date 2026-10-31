@@ -18,7 +18,11 @@
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/platform.h>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 namespace {
 
@@ -1570,4 +1574,4 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	return true;
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi

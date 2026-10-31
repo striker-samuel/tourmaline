@@ -58,7 +58,11 @@ namespace smvk {
 struct StaticMeshUpload; // Engine/Renderer/mesh.h
 }
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // Fixed per-count SG bases
@@ -567,4 +571,47 @@ float LightmapCurvatureScale(const StaticMeshUpload& upload,
 	float localTexelsPerUnit, float targetDegreesPerTexel,
 	float maxScale);
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::AppendXatlasLevelToAtlas;
+	using ::tour::gi::BakeSgLightmapChunk;
+	using ::tour::gi::BakeSgLightmapChunks;
+	using ::tour::gi::CheckAtlasChunksForOverlap;
+	using ::tour::gi::CheckXatlasLevelRectsForOverlap;
+	using ::tour::gi::GenerateLightmapChartsXatlas;
+	using ::tour::gi::GiBakeProgress;
+	using ::tour::gi::kLightmapBc6hTextureCount;
+	using ::tour::gi::kLightmapLayerCount;
+	using ::tour::gi::kLightmapMaxLobes;
+	using ::tour::gi::LightmapAxis;
+	using ::tour::gi::LightmapCurvatureScale;
+	using ::tour::gi::LightmapLobeCountValid;
+	using ::tour::gi::LightmapSharpness;
+	using ::tour::gi::RasterizeLightmapPackTexels;
+	using ::tour::gi::RepackXatlasLevel;
+	using ::tour::gi::SgLightmapCompression;
+	using ::tour::gi::RepackStatus;
+	using ::tour::gi::SgLightmapAtlas;
+	using ::tour::gi::SgLightmapBakeConfig;
+	using ::tour::gi::SgLightmapBakeStats;
+	using ::tour::gi::SgLightmapChartResult;
+	using ::tour::gi::SgLightmapChunk;
+	using ::tour::gi::SgLightmapChunkBatch;
+	using ::tour::gi::SgLightmapDiffuse;
+	using ::tour::gi::SgLightmapFitAccumulator;
+	using ::tour::gi::SgLightmapIrradianceFitted;
+	using ::tour::gi::SgLightmapSpecular;
+	using ::tour::gi::SgLightmapTexel;
+	using ::tour::gi::SgLightmapTransferStats;
+	using ::tour::gi::SgLightmapXatlasLevel;
+	using ::tour::gi::SgLightmapXatlasMeshInput;
+	using ::tour::gi::SgLightmapXatlasMeshOutput;
+	using ::tour::gi::SgLightmapXatlasOptions;
+	using ::tour::gi::StitchSgLightmapSeams;
+	using ::tour::gi::TransferLightmapCharts;
+}

@@ -11,7 +11,11 @@
 
 #include <embree4/rtcore.h>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 namespace {
 
@@ -548,4 +552,4 @@ float TriangleBvh::ClosestDistance(const glm::vec3& point, glm::vec3* outClosest
 	return SafeSqrt(bestDistSq);
 }
 
-} // namespace smvk::gi
+} // namespace tour::gi

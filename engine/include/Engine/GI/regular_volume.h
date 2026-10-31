@@ -35,7 +35,11 @@
 
 #include <Engine/GI/sg.h>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // OBB descriptor (axis-aligned is orientation == identity)
@@ -122,4 +126,17 @@ bool BakeSgRegularVolume(const GiTraceScene& scene, const SgRegularObb& obb,
 	const SgRegularBakeConfig& config, SgRegularVolume& outVolume,
 	SgRegularBakeStats& stats, GiBakeProgress progress = nullptr);
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::BakeSgRegularVolume;
+	using ::tour::gi::GiBakeProgress;
+	using ::tour::gi::SgRegularBakeConfig;
+	using ::tour::gi::SgRegularBakeStats;
+	using ::tour::gi::SgRegularObb;
+	using ::tour::gi::SgRegularVolume;
+}

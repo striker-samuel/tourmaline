@@ -70,7 +70,11 @@
 
 #include <Engine/GI/sg.h>
 
-namespace smvk::gi {
+namespace tour::gi {
+// (migration compat) the moved block still spells the engine's smvk
+// types unqualified; qualify them as call sites migrate, then drop
+// this directive.
+using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
 // Convex definition (authored)
@@ -408,4 +412,28 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	const GiVolumeLayoutSeed* seed = nullptr,
 	float spacingLow = 0.0f, float spacingHigh = 0.0f);
 
-} // namespace smvk::gi
+} // namespace tour::gi
+
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this GI
+// header's declarations live in tour::gi; the smvk::gi aliases keep the
+// existing call sites compiling through the consumer migration.
+namespace smvk::gi {
+	using ::tour::gi::BakeGiVolume;
+	using ::tour::gi::ChooseGiVolumeGridLayout;
+	using ::tour::gi::GiBakeProgress;
+	using ::tour::gi::GiGridLayoutOptions;
+	using ::tour::gi::GiGridLayoutResult;
+	using ::tour::gi::GiVolume;
+	using ::tour::gi::GiVolumeBakeConfig;
+	using ::tour::gi::GiVolumeBakeStats;
+	using ::tour::gi::GiVolumeBoxPlanes;
+	using ::tour::gi::GiVolumeBoxPlanesRotated;
+	using ::tour::gi::GiVolumeDef;
+	using ::tour::gi::GiVolumeLayoutSeed;
+	using ::tour::gi::GiVolumePlane;
+	using ::tour::gi::GiVolumePlaneWeight;
+	using ::tour::gi::GiVolumeSmoothStep;
+	using ::tour::gi::kGiVolumeMaxDim;
+	using ::tour::gi::kGiVolumeMaxPlanes;
+}
