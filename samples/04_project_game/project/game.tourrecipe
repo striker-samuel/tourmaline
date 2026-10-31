@@ -1,0 +1,18 @@
+# Tourmaline Project Recipe v1
+#
+# The GameProject sample (samples/04_project_game): one scene pak from
+# the checked-in raw sources. `cmake --build --target GameProject`
+# generates project.h (the content ids from the project's asset db);
+# `cmake --build --target GameProject_paks` cooks the paks + appmanifest
+# next to the exe on demand.
+
+recipe 1
+project GameProject
+entry content/scenes/game.tour
+
+bake gi
+bake cubemaps off
+
+[pak world]
+output game.pak
+scene content/scenes/game.tour

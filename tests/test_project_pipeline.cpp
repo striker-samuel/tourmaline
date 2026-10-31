@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -24,8 +25,12 @@
 #include <project_pipeline/build_pipeline.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_catalog.h>
 #include <project_pipeline/project_recipe.h>
 #include <project_pipeline/recipe_resolver.h>
+
+#include <artifact_cache/assetdb.h>
+#include <artifact_cache/artifact_cache.h>
 
 #include <gltf_import/asset_export.h>
 
@@ -1604,6 +1609,219 @@ void TestBuildPlanExecutor() {
 	}
 }
 
+// ---- the content-id registry + the generated project.h ---------------
+
+void TestProjectCatalog() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_catalog";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+
+	// The registry: assets.db under the project's derived-data home.
+	smvk::cache::AssetDatabase db;
+	{
+		const fs::path dd = tmp / "proj" / ".tourmaline";
+		bool created = false;
+		std::string err;
+		smvk::project::Project p = smvk::project::Project::Init(
+			(tmp / "proj").generic_string(), "CatalogTest", created, err);
+		Check(p.Valid() && created, "catalog.project-created");
+		const std::string root =
+			smvk::cache::EnsureRegistryRoot(dd.generic_string());
+		Check(!root.empty() && db.Open(root, p.root, err),
+			"catalog.db-opens");
+	}
+	// Stability: ensure -> re-ensure -> rename keeps id + symbol.
+	{
+		uint64_t id = 0, id2 = 0;
+		std::string sym, sym2, err;
+		Check(db.EnsureContentId(
+				"11111111111111111111111111111111", "scene",
+				"content/scenes/a.tour", id, sym, err)
+			&& id >= 0x1000 && id <= 0x1FFF && sym == "a",
+			"catalog.ensure-allocates");
+		Check(db.EnsureContentId(
+				"11111111111111111111111111111111", "scene",
+				"content/scenes/a.tour", id2, sym2, err)
+			&& id2 == id && sym2 == "a",
+			"catalog.ensure-idempotent");
+		Check(db.EnsureContentId(
+				"11111111111111111111111111111111", "scene",
+				"content/scenes/renamed.tour", id2, sym2, err)
+			&& id2 == id && sym2 == "a",
+			"catalog.rename-keeps-id-and-symbol");
+	}
+	// Collision: the same stem in one kind suffixes (_2), stably.
+	{
+		uint64_t id = 0, id2 = 0;
+		std::string sym, sym2, err;
+		Check(db.EnsureContentId(
+				"22222222222222222222222222222222", "texture",
+				"content/t/a.png", id, sym, err)
+			&& sym == "a",
+			"catalog.collision-first");
+		Check(db.EnsureContentId(
+				"33333333333333333333333333333333", "texture",
+				"content/other/a.png", id2, sym2, err)
+			&& sym2 == "a_2" && id2 > id,
+			"catalog.collision-suffixed");
+	}
+	// Tombstones: deactivate -> the id is RESERVED (a new asset never
+	// takes it) -> re-ensure re-activates with the same identity.
+	{
+		std::string err;
+		Check(db.SetContentIdActive(
+				"33333333333333333333333333333333", false, err),
+			"catalog.tombstone");
+		std::vector<smvk::cache::ContentIdRecord> rows;
+		Check(db.ListContentIds(rows, err)
+			&& std::any_of(rows.begin(), rows.end(),
+				[](const smvk::cache::ContentIdRecord& r) {
+					return r.guid == "33333333333333333333333333333333"
+						&& !r.active;
+				}),
+			"catalog.tombstone-listed");
+		uint64_t id = 0, idNew = 0;
+		std::string s, sNew;
+		Check(db.EnsureContentId(
+				"33333333333333333333333333333333", "texture",
+				"content/other/a.png", id, s, err)
+			&& s == "a_2",
+			"catalog.tombstone-id-kept");
+		Check(db.EnsureContentId(
+				"44444444444444444444444444444444", "texture",
+				"content/t/b.png", idNew, sNew, err)
+			&& idNew != id && idNew > id,
+			"catalog.tombstone-id-never-reused");
+	}
+
+	// ---- the catalog generation on a mini project ---------------------
+	smvk::project::Project project;
+	{
+		std::string err;
+		project = smvk::project::Project::Open(
+			(tmp / "proj").generic_string(), err);
+	}
+	const fs::path models = fs::path(project.root) / "content" / "models"
+		/ "thing";
+	const fs::path scenes = fs::path(project.root) / "content" / "scenes";
+	fs::create_directories(models, ec);
+	fs::create_directories(scenes, ec);
+	{ // a dummy .geometry (existence is all the resolver needs) + a
+	  // texture (content only — the ids path never decodes it)
+		std::ofstream f(models / "thing.geometry",
+			std::ios::binary | std::ios::trunc);
+		f << "geo";
+		std::ofstream t(models / "stone.png",
+			std::ios::binary | std::ios::trunc);
+		t << "png";
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = "content/models/thing/thing.geometry";
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		std::string err;
+		Check(smvk::tour::SaveTour(
+				(scenes / "thing.tour").generic_string(), doc, err),
+			"catalog.tour-saved");
+	}
+	const std::string recipeText =
+		"recipe 1\n"
+		"project CatalogTest\n"
+		"entry content/scenes/thing.tour\n"
+		"[pak world]\n"
+		"output thing.pak\n"
+		"scene content/scenes/thing.tour\n";
+	smvk::project::ProjectRecipe recipe;
+	smvk::project::RecipeDiagnostic diag;
+	Check(smvk::project::ParseProjectRecipeText(recipeText, recipe, diag),
+		"catalog.recipe-parses");
+	smvk::project::BuildPlan plan;
+	std::string err;
+	Check(smvk::project::ResolveRecipe(project, recipe, plan, err),
+		"catalog.plan-resolves");
+
+	smvk::project::ProjectCatalog catalog;
+	std::vector<std::string> deps;
+	Check(smvk::project::GenerateProjectCatalog(project, plan, db,
+			catalog, deps, err),
+		"catalog.generates");
+	Check(catalog.scenes.size() == 1 && catalog.meshes.size() == 1
+			&& catalog.textures.empty() // no includes in this recipe
+			&& catalog.entryScene == catalog.scenes[0].id
+			&& catalog.scenes[0].id >= 0x1000
+			&& catalog.meshes[0].id >= 0x3000,
+		"catalog.namespaces");
+	// (the texture namespace fills from the include-claiming plan below)
+
+	const std::string header =
+		smvk::project::EmitProjectHeader(catalog);
+	Check(header.find("namespace scenes") != std::string::npos
+			&& header.find("EntryScene = scenes::thing")
+				!= std::string::npos
+			&& header.find("namespace meshes") != std::string::npos
+			&& header.find("Catalog = {") != std::string::npos
+			&& header.find("thing.pak") != std::string::npos,
+		"catalog.header-content");
+	// Deterministic + write-only-on-change.
+	{
+		const std::string again =
+			smvk::project::EmitProjectHeader(catalog);
+		Check(again == header, "catalog.header-deterministic");
+		const fs::path file = tmp / "project.h";
+		bool wrote = false;
+		Check(smvk::project::WriteProjectHeaderIfChanged(
+				file.generic_string(), header, wrote, err)
+			&& wrote,
+			"catalog.header-writes");
+		wrote = true;
+		Check(smvk::project::WriteProjectHeaderIfChanged(
+				file.generic_string(), header, wrote, err)
+			&& !wrote,
+			"catalog.header-unchanged-skip");
+	}
+	// The tombstone sweep: a plan WITHOUT the mesh (the recipe drops
+	// the scene) tombstones its row; re-adding re-activates the SAME
+	// id (the header text returns identical).
+	{
+		smvk::project::ProjectCatalog shrunk;
+		std::vector<std::string> deps2;
+		// A texture-only recipe (the include claims the png; no scene
+		// pak): the scene + mesh rows tombstone.
+		const std::string textOnly =
+			"recipe 1\n"
+			"project CatalogTest\n"
+			"entry content/scenes/thing.tour\n"
+			"[pak shared]\n"
+			"output shared.pak\n"
+			"include content/models/thing/*.png\n"
+			"[pak world]\n"
+			"output thing.pak\n"
+			"scene content/scenes/thing.tour\n";
+		smvk::project::ProjectRecipe r2;
+		smvk::project::RecipeDiagnostic d2;
+		smvk::project::BuildPlan p2;
+		Check(smvk::project::ParseProjectRecipeText(textOnly, r2, d2)
+			&& smvk::project::ResolveRecipe(project, r2, p2, err),
+			"catalog.texture-plan-resolves");
+		Check(smvk::project::GenerateProjectCatalog(project, p2, db,
+				shrunk, deps2, err),
+			"catalog.texture-plan-generates");
+		Check(shrunk.textures.size() == 1 && shrunk.meshes.size() == 1,
+			"catalog.texture-plan-namespaces");
+		// Regenerate the ORIGINAL plan: every row re-activates with the
+		// SAME ids (the header text is identical).
+		smvk::project::ProjectCatalog round;
+		std::vector<std::string> deps3;
+		Check(smvk::project::GenerateProjectCatalog(project, plan, db,
+				round, deps3, err)
+			&& smvk::project::EmitProjectHeader(round) == header,
+			"catalog.reactivate-same-ids");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -1620,6 +1838,7 @@ int main() {
 	TestRecipeGlob();
 	TestRecipeResolution();
 	TestAppManifest();
+	TestProjectCatalog();
 	TestBuildPlanExecutor();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks

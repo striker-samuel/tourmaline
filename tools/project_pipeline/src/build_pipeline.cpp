@@ -262,34 +262,20 @@ std::unique_ptr<StageAdapter> MakeSubprocessStageAdapter() {
 	return std::make_unique<SubprocessStageAdapter>();
 }
 
-bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
-	StageAdapter& adapter, const BuildPlanOptions& options,
-	BuildPlanReport& out, std::string& err) {
+bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
+	std::set<std::string>* reimportedFamilies, std::string& err) {
 	err.clear();
-	out = BuildPlanReport{};
+	if (reimportedFamilies)
+		reimportedFamilies->clear();
 	if (!project.Valid()) {
 		err = "invalid project (open/init first)";
 		return false;
 	}
-	if (plan.paks.empty() || plan.entryPak.empty()) {
-		err = "the plan is empty (resolve a recipe first)";
-		return false;
-	}
 	std::error_code ec;
 	const fs::path projectRoot(project.root);
-
-	// ---- 0) the publish directory --------------------------------------
-	fs::path publish = options.publishDir.empty()
-		? projectRoot / "build"
-		: fs::path(options.publishDir);
-	if (publish.is_relative())
-		publish = projectRoot / publish;
-	fs::create_directories(publish, ec);
-
-	// ---- 1) import freshness (in-process, every family the plan packs) -
-	// The legacy path covered the root reference only; the plan walks
-	// every geometry family it will pack (scene artifacts + owned
-	// Geometry assets). Stale -> the canonical ImportProjectAsset.
+	// Every family the plan packs: scene artifacts + owned Geometry
+	// assets. The legacy path covered the root reference only; the plan
+	// walks them all. Stale -> the canonical ImportProjectAsset.
 	std::set<std::string> families;
 	for (const PlanPak& pak : plan.paks) {
 		for (const std::string& a : pak.sceneArtifacts)
@@ -298,7 +284,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			if (asset.kind == PlanAssetKind::Geometry)
 				families.insert(asset.path);
 	}
-	std::set<std::string> reimportedFamilies;
+	std::set<std::string> reimported;
 	for (const std::string& artifact : families) {
 		const fs::path artifactAbs = projectRoot / fs::path(artifact);
 		// The family's source glTF/GLB: beside a .geometry artifact, or
@@ -329,7 +315,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					return false;
 				}
 				if (result.derived) {
-					reimportedFamilies.insert(artifact);
+					reimported.insert(artifact);
 					std::printf("[build] reimported: %s\n",
 						result.geometry.generic_string().c_str());
 				}
@@ -337,6 +323,39 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			break; // one family per artifact (the first existing source)
 		}
 	}
+	if (reimportedFamilies)
+		*reimportedFamilies = std::move(reimported);
+	return true;
+}
+
+bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
+	StageAdapter& adapter, const BuildPlanOptions& options,
+	BuildPlanReport& out, std::string& err) {
+	err.clear();
+	out = BuildPlanReport{};
+	if (!project.Valid()) {
+		err = "invalid project (open/init first)";
+		return false;
+	}
+	if (plan.paks.empty() || plan.entryPak.empty()) {
+		err = "the plan is empty (resolve a recipe first)";
+		return false;
+	}
+	std::error_code ec;
+	const fs::path projectRoot(project.root);
+
+	// ---- 0) the publish directory --------------------------------------
+	fs::path publish = options.publishDir.empty()
+		? projectRoot / "build"
+		: fs::path(options.publishDir);
+	if (publish.is_relative())
+		publish = projectRoot / publish;
+	fs::create_directories(publish, ec);
+
+	// ---- 1) import freshness (in-process, every family the plan packs) -
+	std::set<std::string> reimportedFamilies;
+	if (!RefreshPlanImports(project, plan, &reimportedFamilies, err))
+		return false;
 
 	// ---- 2) per scene pak: Cook + GiBaker (plan order) ------------------
 	// The bake flags come from the RECIPE (the plan), never

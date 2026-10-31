@@ -23,6 +23,7 @@ add_library(project_pipeline STATIC
     src/project_recipe.cpp
     src/build_plan.cpp
     src/recipe_resolver.cpp
+    src/project_catalog.cpp
 )
 
 target_include_directories(project_pipeline
@@ -34,4 +35,5 @@ target_link_libraries(project_pipeline
     PUBLIC
         gltf_import
         engine
+        artifact_cache
 )

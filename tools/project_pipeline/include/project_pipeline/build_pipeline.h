@@ -25,6 +25,7 @@
 // the batch script never duplicates them.
 
 #include <memory>
+#include <set>
 #include <string>
 
 #include "build_plan.h"
@@ -170,5 +171,14 @@ struct BuildPlanReport {
 bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	StageAdapter& adapter, const BuildPlanOptions& options,
 	BuildPlanReport& out, std::string& err);
+
+// The import-freshness half alone (the executor's step 1, shared with
+// the content-id generation — `Project.exe ids` imports so a project
+// of RAW SOURCES resolves + catalogs on first run): every family the
+// plan packs (scene artifacts + owned geometry), stale -> the
+// canonical ImportProjectAsset. `reimportedFamilies` (optional)
+// receives the artifact paths that re-derived.
+bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
+	std::set<std::string>* reimportedFamilies, std::string& err);
 
 } // namespace smvk::project

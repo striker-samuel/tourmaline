@@ -33,8 +33,14 @@
 #include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_catalog.h>
 #include <project_pipeline/project_recipe.h>
 #include <project_pipeline/recipe_resolver.h>
+
+#include <artifact_cache/assetdb.h>
+#include <artifact_cache/artifact_cache.h>
+
+#include <Engine/Asset/tour.h>
 
 namespace {
 
@@ -52,6 +58,12 @@ int Usage(const char* prog) {
 		<< "  validate --project <dir> --recipe <file.tourrecipe>\n"
 		<< "         parse + resolve the recipe and print the plan (paks,\n"
 		<< "         ownership, mount order) — NO stage runs\n"
+		<< "  ids    --project <dir> --recipe <file.tourrecipe>\n"
+		<< "         [--header <out>] [--deps <depfile>]\n"
+		<< "         the content-as-code generation: ensure the content\n"
+		<< "         ids in the ASSET DATABASE (assets.db — the one\n"
+		<< "         identity store) + regenerate project.h only-on-change\n"
+		<< "         (the CMake layer's form; no stage runs)\n"
 		<< "  build  --project <dir> --recipe <file.tourrecipe>\n"
 		<< "         [--publish <dir>] [--manifest-name <name>]\n"
 		<< "         the RECIPE build: resolve -> import freshness -> Cook\n"
@@ -91,7 +103,8 @@ int main(int argc, const char* argv[]) {
 
 	// Shared flag scan.
 	std::string projectDir, source, name, ratiosCsv, scene, output,
-		fromScene, recipeFile, publishDir, manifestName;
+		fromScene, recipeFile, publishDir, manifestName, headerOut,
+		depsOut;
 	bool fromGltf = false, force = false;
 	bool noLods = false, noMeshlets = false, shaderLods = false;
 	bool ratiosSet = false, errorSet = false;
@@ -114,6 +127,14 @@ int main(int argc, const char* argv[]) {
 			manifestName = argv[++i];
 		else if (std::strncmp(a, "--manifest-name=", 16) == 0)
 			manifestName = a + 16;
+		else if ((std::strcmp(a, "--header") == 0) && i + 1 < argc)
+			headerOut = argv[++i];
+		else if (std::strncmp(a, "--header=", 9) == 0)
+			headerOut = a + 9;
+		else if ((std::strcmp(a, "--deps") == 0) && i + 1 < argc)
+			depsOut = argv[++i];
+		else if (std::strncmp(a, "--deps=", 7) == 0)
+			depsOut = a + 7;
 		else if ((std::strcmp(a, "--source") == 0
 				|| std::strcmp(a, "--from-gltf") == 0) && i + 1 < argc) {
 			source = argv[++i];
@@ -351,6 +372,152 @@ int main(int argc, const char* argv[]) {
 			}
 			std::cout << "\n";
 		}
+		return 0;
+	}
+
+	if (cmd == "ids") {
+		// The content-as-code generation (the CMake layer's form):
+		// resolve the plan, ensure the content ids in the ASSET
+		// DATABASE (assets.db — the one identity store), regenerate
+		// project.h only-on-change. NO stage runs, no pak is written.
+		if (recipeFile.empty()) {
+			std::cerr << "--recipe <file.tourrecipe> is required.\n";
+			return Usage(argv[0]);
+		}
+		std::string err;
+		smvk::project::Project p =
+			smvk::project::Project::Open(projectDir, err);
+		if (!p.Valid()) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		smvk::project::ProjectRecipe recipe;
+		const std::string path = resolveRecipe(p, recipe, err);
+		if (path.empty()) {
+			std::cerr << "recipe rejected: " << err << "\n";
+			return 1;
+		}
+		// The RAW-SOURCE pre-pass: a project of authored sources (no
+		// import yet) must resolve + catalog on the FIRST run — import
+		// every scene pak's ROOT family before the plan needs the
+		// artifacts (stale families re-derive; unchanged = no-op).
+		for (const smvk::project::RecipePak& pak : recipe.paks) {
+			if (pak.scene.empty())
+				continue;
+			smvk::tour::Doc doc;
+			std::string tErr;
+			if (!smvk::tour::LoadTour(
+					(std::filesystem::path(p.root) / pak.scene)
+						.generic_string(),
+					doc, tErr))
+				continue; // the resolve below reports it properly
+			if (doc.references.empty())
+				continue;
+			std::string srcRel = doc.references[0].source;
+			std::string ext =
+				std::filesystem::path(srcRel).extension().generic_string();
+			if (ext == ".geometry") {
+				// The canonical form: the imported family beside the
+				// artifact (SeedProjectScene's re-pointed reference).
+				std::filesystem::path sibling =
+					std::filesystem::path(srcRel);
+				for (const char* e : { ".gltf", ".glb" }) {
+					sibling.replace_extension(e);
+					if (std::filesystem::is_regular_file(
+							std::filesystem::path(p.root) / sibling))
+						break;
+					sibling = std::filesystem::path(srcRel);
+				}
+				if (sibling.extension().generic_string() == ".geometry")
+					continue; // no source family found — resolve reports
+				srcRel = sibling.generic_string();
+				ext = std::filesystem::path(srcRel).extension()
+					.generic_string();
+			}
+			if (ext != ".gltf" && ext != ".glb")
+				continue;
+			smvk::project::ImportRequest req;
+			req.project = p;
+			req.source = std::filesystem::path(p.root) / srcRel;
+			smvk::project::ImportResult res;
+			std::string iErr;
+			if (!smvk::project::ImportProjectAsset(req, res, iErr)) {
+				std::cerr << "pre-pass import failed: " << iErr << "\n";
+				return 1;
+			}
+		}
+		smvk::project::BuildPlan plan;
+		if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+			std::cerr << "resolve failed: " << err << "\n";
+			return 1;
+		}
+		// The plan's own freshness (nested references + owned geometry
+		// the pre-pass above did not see).
+		if (!smvk::project::RefreshPlanImports(p, plan, nullptr, err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		// The registry: assets.db under the project's .tourmaline (the
+		// ONE identity store — no separate id file by design).
+		smvk::cache::AssetDatabase db;
+		{
+			const std::string registryRoot =
+				smvk::cache::EnsureRegistryRoot(p.DerivedDataDir());
+			if (registryRoot.empty() || !db.Open(registryRoot, p.root,
+					err)) {
+				std::cerr << "asset db open failed: " << err << "\n";
+				return 1;
+			}
+		}
+		smvk::project::ProjectCatalog catalog;
+		std::vector<std::string> deps;
+		if (!smvk::project::GenerateProjectCatalog(p, plan, db, catalog,
+				deps, err)) {
+			std::cerr << "catalog generation failed: " << err << "\n";
+			return 1;
+		}
+		const std::string header = headerOut.empty()
+			? (std::filesystem::path(p.root) / "project.h")
+				.generic_string()
+			: headerOut;
+		bool wrote = false;
+		const std::string text =
+			smvk::project::EmitProjectHeader(catalog);
+		if (!smvk::project::WriteProjectHeaderIfChanged(header, text,
+				wrote, err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		// The depfile (the CMake/Ninja rebuild trigger): the header
+		// depends on the recipe, every content file the resolution
+		// touched, and the registry itself (an id allocation anywhere
+		// regenerates).
+		if (!depsOut.empty()) {
+			std::ofstream d(depsOut, std::ios::binary | std::ios::trunc);
+			// Ninja depfile escapes: spaces only. Drive-letter colons
+			// stay bare — ninja's separator is ": " (colon + space) and
+			// a "$:" escape MANGLES the drive letter (FindFirstFileExA
+			// on ":/REPOS/...").
+			auto esc = [](const std::string& s) {
+				std::string o;
+				for (char c : s) {
+					if (c == ' ' || c == '$')
+						o += '$';
+					o += c;
+				}
+				return o;
+			};
+			d << esc(header) << ": " << esc(path);
+			for (const std::string& dep : deps)
+				d << " \\\n  " << esc(dep);
+			d << " \\\n  " << esc(p.DerivedDataDir() + "/assets.db");
+			d << "\n";
+		}
+		std::cout << "Content ids: " << catalog.scenes.size()
+			<< " scene(s), " << catalog.textures.size()
+			<< " texture(s), " << catalog.meshes.size() << " mesh(es)\n"
+			<< "  project.h: " << header
+			<< (wrote ? " (written)" : " (unchanged)") << "\n";
 		return 0;
 	}
 
