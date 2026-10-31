@@ -299,7 +299,7 @@ and the audio layer's per-process pak-image cost note (the shared
 apphost->game runtime seam - RunPakApp handing its preloaded backends
 to the AudioRuntime's ProjectRuntime).
 
-(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi). REMAINING) THE tour::/smvk:: SPLIT - the
+(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi), stage 4c (tour::placement - all 13 headers + placement_pass.h), the flattened typed catalog + the fingerprint contract (114068d8). REMAINING) THE tour::/smvk:: SPLIT - the
 audit's confirmed findings + the migration plan (feature branch
 feature/namespace-rhi-boundary):
   TARGET: tour:: = the public engine API (apps, scenes, assets, camera,
@@ -415,3 +415,22 @@ order: placement (13 headers, the same shape as gi); the global-
 namespace cleanup (NodeId/scene tables/payloads/Camera/Input ->
 tour::(scene)); the giants (App/world/cluster -> tour::, pak+tour.h ->
 tour::asset); then the P0 interface redesigns + the build split.
+(Content-as-code, landed) THE FLATTENED TYPED CATALOG (the review'"'"'s
+middle option, 114068d8): project.h is AUTHORITATIVE for asset
+identity - the flat Assets[] POD table (id, AssetKind, pakIndex into
+the LOGICAL Paks, path; sceneName reserved, cooked-scene identity
+stays deployment-side) + constexpr Find + CatalogFingerprint (the
+shared fold, appmanifest.h'"'"'s ComputeCatalogFingerprint - id, kind
+byte, pakIndex, path in emission order; NOT the published pak
+filename). The .tapp carries the same fold on a `catalog 0x...` line;
+ProjectRuntime::AttachCompiledCatalog proves the compiled table
+against the deployment manifest (the fingerprint gate + row-by-row:
+id/kind/path + the pakIndex mount-order alignment; pre-contract
+manifests degrade to row-by-row with a warning). The mirror
+CompiledAssetDesc is layout-pinned by static_asserts. Gameplay never
+sees a .tapp row, a TOC entry, or a pak filename. Follow-ups: the
+tour::Project runtime facade (app.assets()/app.scenes() over the
+attached table), reducing the .tapp further (the logical->published
+pak map + the cooked scene names + the fingerprint is the END STATE -
+today it still carries the full [ids] rows as the compatibility
+surface), and gameplay-config PODs as typed generated structs.
