@@ -3,7 +3,7 @@
 
 // Project abstraction (Unity/Unreal style): a project folder owns
 // everything the editor needs for one body of work —
-//   <root>/project.tourproj   marker (name + version)
+//   <root>/project.tourproj   marker (name + guid + version)
 //   <root>/content/            sources (models/<stem>/*.gltf, scenes/*.tour)
 //   <root>/paks/               cooked outputs (<stem>.pak)
 //   <root>/gi/                 loose bake files (written by the cooker next
@@ -21,6 +21,9 @@
 #include "editor_app.h"
 
 #include <artifact_cache/artifact_kind.h>
+#include <artifact_cache/assetdb.h>
+
+#include <Engine/Asset/tour.h>
 
 #include <cctype>
 #include <filesystem>
@@ -29,7 +32,9 @@
 namespace editor {
 namespace {
 constexpr const char* kProjMarker = "project.tourproj";
-constexpr const char* kProjVersion = "1";
+// v2: the required `guid=` identity row (no v1 reader — OpenProject
+// rejects guid-less markers with the recreate/re-init instructions).
+constexpr const char* kProjVersion = "2";
 // CookSettings' baked-in default: still meaning "user never chose".
 constexpr const char* kLegacyOutPak = "content/paks/edited.pak";
 
@@ -130,6 +135,24 @@ std::string EditorApp::ReadProjectName(const std::string& dir) {
 	return {};
 }
 
+std::string EditorApp::ReadProjectGuid(const std::string& dir) {
+	// The persistent identity row (the pipeline's Project::Open agrees
+	// on the same parse — the marker format is shared contract).
+	std::ifstream in(
+		std::filesystem::path(dir) / kProjMarker, std::ios::binary);
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos)
+			continue;
+		if (line.substr(0, eq) == "guid")
+			return line.substr(eq + 1);
+	}
+	return {};
+}
+
 void EditorApp::PushRecentProject(const std::string& dir) {
 	// Most-recent-first, deduped, capped (the startup dialog lists it).
 	auto it = std::find(m_recentProjects.begin(), m_recentProjects.end(),
@@ -147,6 +170,23 @@ bool EditorApp::OpenProject(const std::string& dir) {
 		Log("Not a project (no " + std::string(kProjMarker) + "): "
 			+ root);
 		return false;
+	}
+	// The identity contract (current-format policy — the pipeline's
+	// Project::Open enforces the same row): no valid guid, no project.
+	// Actionable, never a silent name-derived fallback.
+	{
+		const std::string guid = ReadProjectGuid(root);
+		if (guid.empty()
+				|| !smvk::cache::IsValidAssetGuid(guid)) {
+			Log("Project '" + root + "' has no valid identity"
+				" (guid= row missing or malformed in "
+				+ std::string(kProjMarker) + ") — the current"
+				" project format requires one. Recreate the"
+				" project (or run 'Project.exe init' on it once)"
+				" to mint its identity.");
+			return false;
+		}
+		m_projectGuid = guid;
 	}
 	PushRecentProject(root);
 	if (root == m_projectRoot) {
@@ -240,8 +280,13 @@ bool EditorApp::NewProjectOrOpen(const std::string& dir) {
 				+ " in '" + root + "'.");
 			return false;
 		}
-		out << "# Tourmaline project (name + format version)\n";
+		// The identity is minted ONCE here (creation); every later
+		// open just reads it (OpenProject's rejection is the
+		// actionable gate for pre-identity markers).
+		const std::string guid = smvk::tour::GenerateUuid();
+		out << "# Tourmaline project (name + identity + format version)\n";
 		out << "name=" << fs::path(root).filename().string() << "\n";
+		out << "guid=" << guid << "\n";
 		out << "version=" << kProjVersion << "\n";
 	}
 	return OpenProject(root);

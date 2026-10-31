@@ -1973,6 +1973,8 @@ private:
 	// UUID + project-relative path, saves stay inside the project.
 	std::string m_projectRoot; // normalized, has project.tourproj
 	std::string m_projectName; // display name (marker or folder name)
+	std::string m_projectGuid; // the marker's guid row — the PERSISTENT
+	                           // identity (empty when no project open)
 	// Opens (or validates) <dir> as the project: closes the live
 	// scene, repoints the artifact cache at <dir>/artifacts, persists.
 	// False + log when <dir> has no project.tourproj marker.
@@ -2220,6 +2222,10 @@ private:
 	void PrimeProjectCookDefaults();
 	static bool IsProjectDir(const std::string& dir);
 	static std::string ReadProjectName(const std::string& dir);
+	// The marker's guid row ("" when absent — OpenProject rejects those
+	// with the recreate/re-init instructions; the pipeline's
+	// Project::Open parses the same row).
+	static std::string ReadProjectGuid(const std::string& dir);
 	// ---- project artifact cache (no global disk) ----
 	// The project OWNS its artifact cache (<root>/.tourmaline/: cache.db
 	// SQLite registry + pak/ per-class paks + assets.db GUID

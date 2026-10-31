@@ -374,7 +374,15 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	}
 	out.projectName = plan.projectName.empty()
 		? project.name : plan.projectName;
-	out.projectId = 0xA1000000ULL | (Fnv(out.projectName.c_str()) & 0xFFFF);
+	// The stable id comes from the PERSISTENT identity (the marker's
+	// guid — see project.h), never the name or the path: a rename or
+	// a root move keeps every compiled-in project::ProjectId valid.
+	if (!smvk::cache::IsValidAssetGuid(project.guid)) {
+		err = "the project carries no valid identity (guid) — re-init"
+			" the project ('Project.exe init <dir>') or recreate it";
+		return false;
+	}
+	out.projectId = DeriveProjectId(project.guid);
 	for (const PlanPak& pak : plan.paks)
 		out.paks.emplace_back(pak.id, pak.output);
 
@@ -877,8 +885,8 @@ bool StatFile(const std::string& absPath, int64_t& mtime,
 }
 
 bool FingerprintFile(const std::string& absPath,
-	const std::string& prevHash, int64_t prevMtime, uint64_t prevSize,
-	int64_t& mtime, uint64_t& size, std::string& hash, std::string& err) {
+	int64_t& mtime, uint64_t& size, std::string& hash,
+	std::string& err) {
 	err.clear();
 	hash.clear();
 	mtime = -1;
@@ -887,10 +895,11 @@ bool FingerprintFile(const std::string& absPath,
 		return false;
 	if (mtime < 0)
 		return true; // missing: -1/0/""
-	if (prevMtime == mtime && prevSize == size && !prevHash.empty()) {
-		hash = prevHash; // the carry: mtime+size won, no rehash
-		return true;
-	}
+	// ALWAYS hash from bytes: a matching size + mtime is NEVER proof
+	// of unchanged content (preserved-timestamp and backdated
+	// same-size edits are exactly the lie this refuses). The mtime/
+	// size ride the EOF records as diagnostics + the demotion-only
+	// cook-state hints — not as freshness.
 	std::ifstream in(absPath, std::ios::binary);
 	if (!in) {
 		err = "cannot open for hashing: " + absPath;
@@ -908,7 +917,7 @@ bool FingerprintFile(const std::string& absPath,
 }
 
 bool CollectAssetFingerprints(const Project& project,
-	const ProjectCatalog& catalog, const HeaderMetadata& prev,
+	const ProjectCatalog& catalog,
 	std::vector<AssetFingerprint>& out, std::string& err) {
 	err.clear();
 	out.clear();
@@ -918,19 +927,11 @@ bool CollectAssetFingerprints(const Project& project,
 			f.id = e.id;
 			f.path = e.path;
 			f.pak = e.pak;
-			const auto pa = prev.assets.find(e.id);
-			const std::string pHash =
-				pa != prev.assets.end() ? pa->second.hash
-					: std::string();
-			const int64_t pMtime =
-				pa != prev.assets.end() ? pa->second.mtime : -1;
-			const uint64_t pSize =
-				pa != prev.assets.end() ? pa->second.size : 0;
 			const fs::path abs = (fs::path(project.root)
 				/ fs::path(e.path)).lexically_normal();
 			std::string fErr;
-			if (!FingerprintFile(abs.generic_string(), pHash,
-					pMtime, pSize, f.mtime, f.size, f.hash, fErr)) {
+			if (!FingerprintFile(abs.generic_string(),
+					f.mtime, f.size, f.hash, fErr)) {
 				err = "fingerprint failed for '" + e.path + "': "
 					+ fErr;
 				return false;
@@ -983,8 +984,9 @@ bool DiscoverPakFingerprints(const std::string& pakDir,
 	for (const AssetFingerprint& f : assets)
 		byPak[f.pak].push_back(&f);
 	// 2) per catalog pak (plan order — deterministic): resolve the
-	//    published file, fingerprint it (hash-carry against prev),
-	//    decide the cook state.
+	//    published file, fingerprint it (ALWAYS from bytes — the pak's
+	//    content hash backs the state claim, never an mtime+size
+	//    carry), decide the cook state.
 	for (const auto& [pakId, outputFile] : catalog.paks) {
 		PakFingerprint f;
 		for (const AssetFingerprint* a : byPak[pakId]) {
@@ -1006,15 +1008,10 @@ bool DiscoverPakFingerprints(const std::string& pakDir,
 			out.push_back(std::move(f));
 			continue;
 		}
-		const auto pp = prev.paks.find(f.file);
 		std::string fErr;
 		if (!FingerprintFile(
 				(fs::path(pakDir) / fs::path(f.file)).lexically_normal()
 					.generic_string(),
-				pp != prev.paks.end() ? pp->second.hash
-					: std::string(),
-				pp != prev.paks.end() ? pp->second.mtime : -1,
-				pp != prev.paks.end() ? pp->second.size : 0,
 				f.mtime, f.size, f.hash, fErr)) {
 			err = "pak fingerprint failed for '" + f.file + "': "
 				+ fErr;

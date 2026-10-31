@@ -72,10 +72,12 @@ struct ProjectCatalog {
 // (the compiler's) and, appended after the C++ section, a
 // machine-readable COMMENT block (TOURMALINE-METADATA-BEGIN/END — the
 // tools'). The comment is never coded against; it carries the
-// generation stamp + the last generation's file fingerprints, so the
-// NEXT generation needs no side cache: the generator re-reads the
-// previous header, sees which sources moved (mtime+size first, a hash
-// only on a real change), and rehashes just those.
+// generation stamp + the last generation's file fingerprints. The
+// fingerprints are the VERIFIED content hashes (every source hashed
+// from bytes on every run — the previous records are the staleness
+// witness for the cook-state rules and the byte-equality the no-op
+// probe compares, NEVER a carry that skips rehashing: metadata hints
+// do not prove byte equality).
 struct GenerationStamp {
 	uint64_t generation = 0; // 1-based; increments every generation event
 	uint64_t timestamp = 0;  // unix seconds of the generation event
@@ -112,10 +114,13 @@ struct PakFingerprint {
 	std::string state;  // verified | stale | missing
 };
 
-// The previous header's EOF metadata (the generator's incremental
-// cache). `present` is false for a missing file, a pre-stamp header,
-// or an UNKNOWN metadata version — every one of those reads as
-// "cache empty, scan fresh" (never an unsafe reuse).
+// The previous header's EOF metadata (the generator's generation
+// ledger + the cook-state witness). `present` is false for a missing
+// file, a pre-stamp header, or an UNKNOWN metadata version — every
+// one of those reads as "cache empty, scan fresh" (never an unsafe
+// reuse). NOTE: the asset records are DIAGNOSTICS + staleness
+// witnesses, never freshness proof — freshness is the CONTENT HASH
+// (see FingerprintFile), recomputed from bytes on every run.
 struct HeaderMetadata {
 	bool present = false;
 	uint64_t generation = 0;
@@ -168,19 +173,21 @@ bool ReadProjectHeaderMetadata(const std::string& path,
 bool StatFile(const std::string& absPath, int64_t& mtime,
 	uint64_t& size, std::string& err);
 
-// stat + hash one file with the mtime/size carry: a matching
-// mtime+size carries `prevHash` forward (the cheap first stage — a
-// git checkout that restores identical bytes re-hashes once, then
-// settles); a real move re-hashes. A missing file is not an error
-// (mtime=-1, size=0, hash empty).
+// stat + hash one file: the VERIFIED content fingerprint. The hash is
+// ALWAYS computed from the file's bytes — matching size + mtime is
+// NEVER accepted as proof of unchanged content (a preserved-timestamp
+// or backdated same-size edit must be detected; mtime/size ride the
+// EOF records as diagnostics and demotion hints only, never as
+// freshness). A missing file is not an error (mtime=-1, size=0, hash
+// empty).
 bool FingerprintFile(const std::string& absPath,
-	const std::string& prevHash, int64_t prevMtime, uint64_t prevSize,
-	int64_t& mtime, uint64_t& size, std::string& hash, std::string& err);
+	int64_t& mtime, uint64_t& size, std::string& hash,
+	std::string& err);
 
 // The catalog's asset fingerprints (kind order, id-sorted — the
-// emission order), hash-carry against `prev`.
+// emission order), every source hashed from bytes.
 bool CollectAssetFingerprints(const Project& project,
-	const ProjectCatalog& catalog, const HeaderMetadata& prev,
+	const ProjectCatalog& catalog,
 	std::vector<AssetFingerprint>& out, std::string& err);
 
 // The ids pass's pak discovery in `pakDir` (the publish dir): the

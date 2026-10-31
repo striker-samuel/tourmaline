@@ -8,6 +8,10 @@
 
 #include <project_pipeline/project.h>
 
+#include <artifact_cache/assetdb.h>
+
+#include <Engine/Asset/tour.h>
+
 #include <cstdio>
 #include <fstream>
 
@@ -24,21 +28,21 @@ std::string Normalized(const std::string& p) {
 	return abs.lexically_normal().generic_string();
 }
 
-bool HasModelExtension(const std::string& path) {
-	auto lowerTail = [&](size_t n) {
-		if (path.size() < n)
-			return std::string();
-		std::string t = path.substr(path.size() - n);
-		for (char& c : t)
-			c = char(std::tolower((unsigned char)c));
-		return t;
-	};
-	return lowerTail(4) == ".glb" || lowerTail(5) == ".gltf";
+// FNV-1a 64 (the repo's stable hash shape — same constants the
+// catalog generator folds with).
+uint64_t Fnv(const char* s) {
+	uint64_t h = 1469598103934665603ULL;
+	while (*s) {
+		h ^= uint64_t(uint8_t(*s++));
+		h *= 1099511628211ULL;
+	}
+	return h;
 }
 
 // The marker rows (name=value lines; "#"-prefixed comments).
 struct Marker {
 	std::string name;
+	std::string guid;
 	bool parsed = false;
 };
 
@@ -57,11 +61,42 @@ Marker ReadMarker(const std::filesystem::path& dir) {
 			continue;
 		if (line.substr(0, eq) == "name")
 			out.name = line.substr(eq + 1);
+		else if (line.substr(0, eq) == "guid")
+			out.guid = line.substr(eq + 1);
 	}
 	return out;
 }
 
+// Write the marker ATOMICALLY-ENOUGH for identity (write fresh text,
+// preserve the existing name row on the upgrade path). `guid` must
+// already be validated by the caller.
+bool WriteMarker(const std::filesystem::path& markerPath,
+	const std::string& name, const std::string& guid,
+	std::string& err) {
+	std::ofstream out(markerPath, std::ios::binary | std::ios::trunc);
+	if (!out) {
+		err = "cannot write '" + markerPath.generic_string() + "'";
+		return false;
+	}
+	out << "# Tourmaline project marker\n"
+		<< "name=" << name << "\n"
+		<< "guid=" << guid << "\n"
+		<< "version=" << kProjectMarkerVersion << "\n";
+	if (!out.good()) {
+		err = "failed writing '" + markerPath.generic_string() + "'";
+		return false;
+	}
+	return true;
+}
+
 } // namespace
+
+uint64_t DeriveProjectId(const std::string& guid) {
+	// The 0xA1000000 family the generated project.h has always carried
+	// (the high marker byte), now keyed on the PERSISTENT identity —
+	// a rename or a root move can never move the id.
+	return 0xA1000000ULL | (Fnv(guid.c_str()) & 0xFFFF);
+}
 
 Project Project::Open(const std::string& dir, std::string& err) {
 	Project p;
@@ -83,9 +118,24 @@ Project Project::Open(const std::string& dir, std::string& err) {
 		return p;
 	}
 	const Marker m = ReadMarker(abs);
+	// The identity contract (current-format policy — no v1 reader, no
+	// name-derived fallback): a marker without a VALID guid row is
+	// incompatible. The error is actionable: init adopts the project
+	// and mints the identity exactly once.
+	if (m.guid.empty() || !smvk::cache::IsValidAssetGuid(m.guid)) {
+		err = std::string(kProjectMarker) + " in "
+			+ abs.lexically_normal().generic_string()
+			+ " has no valid project identity (guid= row missing or"
+				" malformed) — the current project format requires"
+				" one. Run 'Project.exe init <dir>' to adopt the"
+				" project and mint its identity, or recreate the"
+				" project";
+		return p;
+	}
 	p.root = abs.lexically_normal().generic_string();
 	p.name = m.name.empty()
 		? abs.filename().generic_string() : m.name;
+	p.guid = m.guid;
 	return p;
 }
 
@@ -110,26 +160,42 @@ Project Project::Init(const std::string& dir, const std::string& name,
 			".tourmaline", "paks" })
 		fs::create_directories(abs / sub, ec);
 	const fs::path marker = abs / kProjectMarker;
-	if (fs::is_regular_file(marker, ec)) {
-		// Adopt: an existing project opens (never rewrites its name row).
-		return Open(abs.generic_string(), err);
-	}
 	const std::string finalName =
 		name.empty() ? abs.filename().generic_string() : name;
-	{
-		std::ofstream out(marker, std::ios::binary | std::ios::trunc);
-		if (!out) {
-			err = "cannot write '" + marker.generic_string() + "'";
+	if (fs::is_regular_file(marker, ec)) {
+		// Adopt: an existing project opens (never rewrites its name
+		// row). The ONE identity repair lives here and here only: a
+		// marker too old to carry a guid gets its identity MINTED
+		// (once — the row is never re-minted afterwards) and the
+		// marker rewritten with the name preserved. Open's rejection
+		// points here; everything else fails loud.
+		const Marker m = ReadMarker(abs);
+		if (!m.guid.empty()) {
+			Project adopted = Open(abs.generic_string(), err);
+			if (adopted.Valid())
+				adopted.name = m.name.empty()
+					? adopted.name : m.name;
+			return adopted;
+		}
+		const std::string minted = smvk::tour::GenerateUuid();
+		if (!smvk::cache::IsValidAssetGuid(minted)) {
+			err = "uuid minting failed for '" + marker.generic_string()
+				+ "'";
 			return p;
 		}
-		out << "# Tourmaline project marker\n"
-			<< "name=" << finalName << "\n"
-			<< "version=1\n";
-		if (!out.good()) {
-			err = "failed writing '" + marker.generic_string() + "'";
+		const std::string keptName = m.name.empty()
+			? finalName : m.name;
+		if (!WriteMarker(marker, keptName, minted, err))
 			return p;
-		}
+		std::printf("[project] identity MINTED for '%s' (guid %s)"
+			" — the marker was pre-identity format\n",
+			abs.lexically_normal().generic_string().c_str(),
+			minted.c_str());
+		return Open(abs.generic_string(), err);
 	}
+	if (!WriteMarker(marker, finalName, smvk::tour::GenerateUuid(),
+			err))
+		return p;
 	created = true;
 	return Open(abs.generic_string(), err);
 }

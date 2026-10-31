@@ -509,9 +509,10 @@ int main(int argc, const char* argv[]) {
 			? (std::filesystem::path(p.root) / "build")
 				.generic_string()
 			: pakDir;
-		// The previous generation's EOF metadata (the incremental
-		// cache — the fingerprints carry forward, nothing rehashes
-		// unless mtime+size moved).
+		// The previous generation's EOF metadata (the stamp ledger +
+		// the cook-state witness — the no-op probe compares against
+		// it. It is NOT a freshness cache: every source below is
+		// hashed from bytes on every run).
 		smvk::project::HeaderMetadata prev;
 		{
 			std::string mErr;
@@ -523,7 +524,7 @@ int main(int argc, const char* argv[]) {
 		}
 		std::vector<smvk::project::AssetFingerprint> assetPrints;
 		if (!smvk::project::CollectAssetFingerprints(p, catalog,
-				prev, assetPrints, err)) {
+				assetPrints, err)) {
 			std::cerr << err << "\n";
 			return 1;
 		}

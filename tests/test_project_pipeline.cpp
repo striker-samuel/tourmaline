@@ -210,11 +210,15 @@ void TestProjectModel() {
 			tmp.generic_string(), "ModelTest", created, err);
 		Check(p.Valid() && created, "proj.init-creates");
 		Check(err.empty(), "proj.init-clean");
+		Check(smvk::cache::IsValidAssetGuid(p.guid),
+			"proj.init-mints-identity");
 		bool adopted = true;
 		smvk::project::Project again = smvk::project::Project::Init(
 			tmp.generic_string(), "Other", adopted, err);
 		Check(again.Valid() && !adopted && again.name == "ModelTest",
 			"proj.init-adopts-keeps-name");
+		// Adoption NEVER re-mints: the identity is once-at-creation.
+		Check(again.guid == p.guid, "proj.init-adopts-keeps-guid");
 	}
 	// Open now works; the paths + RelativeTo behave.
 	{
@@ -226,6 +230,78 @@ void TestProjectModel() {
 			"proj.relative-to");
 		Check(p.RelativeTo((fs::path(tmp) / "..").generic_string())
 			.empty(), "proj.relative-to-rejects-escape");
+	}
+	// The persistent identity: a NAME change (or a dir move) never
+	// moves the derived ProjectId — the id is GUID-keyed, not
+	// name/path-keyed (the pre-identity behavior this replaces).
+	{
+		std::string err;
+		const smvk::project::Project before = smvk::project::Project::Open(
+			tmp.generic_string(), err);
+		const uint64_t idBefore =
+			smvk::project::DeriveProjectId(before.guid);
+		{
+			std::ofstream m(fs::path(tmp) / "project.tourproj",
+				std::ios::binary | std::ios::trunc);
+			m << "# renamed\nname=RenamedTest\nguid=" << before.guid
+				<< "\nversion=2\n";
+		}
+		const smvk::project::Project after = smvk::project::Project::Open(
+			tmp.generic_string(), err);
+		Check(after.Valid() && after.name == "RenamedTest"
+			&& after.guid == before.guid
+			&& smvk::project::DeriveProjectId(after.guid) == idBefore,
+			"proj.rename-keeps-guid-and-id");
+		// A same-named DIFFERENT project is a different identity.
+		const uint64_t otherId = smvk::project::DeriveProjectId(
+			"0123456789abcdef0123456789abcdef");
+		Check(otherId != idBefore, "proj.id-depends-on-guid-not-name");
+	}
+	// Current-format policy: a pre-identity marker (no guid row) is
+	// INCOMPATIBLE — Open rejects with the actionable error; Init is
+	// the one explicit mint-and-adopt path; Open works after.
+	{
+		const fs::path legacy = fs::temp_directory_path()
+			/ "tourmaline_pp_model_legacy";
+		fs::remove_all(legacy, ec);
+		fs::create_directories(legacy, ec);
+		{
+			std::ofstream m(legacy / "project.tourproj",
+				std::ios::binary | std::ios::trunc);
+			m << "name=OldProject\nversion=1\n";
+		}
+		std::string err;
+		smvk::project::Project p = smvk::project::Project::Open(
+			legacy.generic_string(), err);
+		Check(!p.Valid() && err.find("guid") != std::string::npos,
+			"proj.open-rejects-identity-less-marker");
+		bool created = true;
+		smvk::project::Project adopted = smvk::project::Project::Init(
+			legacy.generic_string(), "Whatever", created, err);
+		Check(adopted.Valid() && !created && adopted.name == "OldProject"
+			&& smvk::cache::IsValidAssetGuid(adopted.guid),
+			"proj.init-adopts-and-mints-identity");
+		smvk::project::Project ok = smvk::project::Project::Open(
+			legacy.generic_string(), err);
+		Check(ok.Valid() && ok.guid == adopted.guid,
+			"proj.open-works-after-identity-mint");
+	}
+	// A MALFORMED guid row is rejected too (never auto-repaired).
+	{
+		const fs::path bad = fs::temp_directory_path()
+			/ "tourmaline_pp_model_badguid";
+		fs::remove_all(bad, ec);
+		fs::create_directories(bad, ec);
+		{
+			std::ofstream m(bad / "project.tourproj",
+				std::ios::binary | std::ios::trunc);
+			m << "name=Bad\nguid=NOT-A-GUID\nversion=2\n";
+		}
+		std::string err;
+		smvk::project::Project p = smvk::project::Project::Open(
+			bad.generic_string(), err);
+		Check(!p.Valid() && err.find("guid") != std::string::npos,
+			"proj.open-rejects-malformed-guid");
 	}
 }
 
@@ -2544,7 +2620,8 @@ void TestProjectCatalog() {
 // trip, the bump policy (ComposeProjectHeader — the split-events
 // contract: unchanged = byte-identical no-op, any change or --stamp =
 // a new generation, fingerprint-only changes keep the content hash),
-// FingerprintFile's mtime+size carry, and the pak cook-state rules.
+// FingerprintFile's VERIFIED content hashes (metadata never proves
+// byte equality), and the pak cook-state rules.
 void TestProjectHeaderStamp() {
 	const fs::path tmp = fs::temp_directory_path()
 		/ "tourmaline_pp_stamp";
@@ -2731,7 +2808,7 @@ void TestProjectHeaderStamp() {
 			&& st.contentHash != stamp.contentHash,
 		"stamp.content-change-moves-hash");
 
-	// ---- FingerprintFile: the carry + the missing -------------------
+	// ---- FingerprintFile: VERIFIED content hashes -------------------
 	{
 		const fs::path src = tmp / "fingerprint.bin";
 		{
@@ -2741,30 +2818,49 @@ void TestProjectHeaderStamp() {
 		int64_t m = -1;
 		uint64_t sz = 0;
 		std::string h, fErr;
-		Check(smvk::project::FingerprintFile(src.generic_string(), "",
-				-1, 0, m, sz, h, fErr)
+		Check(smvk::project::FingerprintFile(src.generic_string(),
+				m, sz, h, fErr)
 			&& m > 0 && sz == 11
 			&& h.find("fnv1a64:") == 0,
 			"stamp.fingerprint-hashes");
 		const std::string h1 = h;
 		const int64_t m1 = m;
 		const uint64_t sz1 = sz;
+		const auto t1 = fs::last_write_time(src, ec);
+		// Unchanged bytes: the recomputed hash matches (determinism).
 		std::string h2;
-		Check(smvk::project::FingerprintFile(src.generic_string(), h1,
-				m1, sz1, m, sz, h2, fErr)
+		Check(smvk::project::FingerprintFile(src.generic_string(),
+				m, sz, h2, fErr)
 			&& h2 == h1,
-			"stamp.fingerprint-carries");
+			"stamp.fingerprint-stable");
+		// THE PRESERVED-TIMESTAMP SAME-SIZE EDIT: different bytes, the
+		// SAME size, the mtime RESTORED to the byte — matching
+		// metadata must NEVER read as unchanged bytes (the mtime+size
+		// carry this replaces would have carried h1 forward here).
+		{
+			std::ofstream f(src, std::ios::binary | std::ios::trunc);
+			f << "hellp stamp"; // 11 bytes again, one byte differs
+		}
+		fs::last_write_time(src, t1, ec);
+		Check(smvk::project::FingerprintFile(src.generic_string(),
+				m, sz, h2, fErr)
+			&& m == m1 && sz == sz1 && h2 != h1,
+			"stamp.fingerprint-detects-preserved-timestamp-edit");
+		// A backdated different-size edit: detected too (trivially —
+		// the hash is always from bytes).
 		{
 			std::ofstream f(src, std::ios::binary | std::ios::trunc);
 			f << "hello stamp!";
 		}
-		Check(smvk::project::FingerprintFile(src.generic_string(), h1,
-				m1, sz1, m, sz, h2, fErr)
-			&& h2 != h1 && sz == 12,
-			"stamp.fingerprint-rehashes");
+		fs::last_write_time(src,
+			fs::file_time_type::clock::now()
+				- std::chrono::seconds(10000), ec);
+		Check(smvk::project::FingerprintFile(src.generic_string(),
+				m, sz, h2, fErr)
+			&& m < m1 && sz == 12 && h2 != h1,
+			"stamp.fingerprint-detects-backdated-edit");
 		Check(smvk::project::FingerprintFile(
-				(tmp / "nope.bin").generic_string(), "", -1, 0, m, sz,
-				h2, fErr)
+				(tmp / "nope.bin").generic_string(), m, sz, h2, fErr)
 			&& m == -1 && sz == 0 && h2.empty(),
 			"stamp.fingerprint-missing");
 	}
@@ -2800,8 +2896,8 @@ void TestProjectHeaderStamp() {
 		{
 			std::string fErr;
 			Check(smvk::project::FingerprintFile(
-					src.generic_string(), "", -1, 0, cur.mtime,
-					cur.size, cur.hash, fErr),
+					src.generic_string(), cur.mtime, cur.size, cur.hash,
+					fErr),
 				"stamp.pak-source-fingerprinted");
 		}
 		const std::vector<smvk::project::AssetFingerprint> curs =
@@ -2895,7 +2991,7 @@ void TestProjectHeaderStamp() {
 				f << "tour2"; // mtime = now > the backdated pak
 				std::string fErr;
 				Check(smvk::project::FingerprintFile(
-						src.generic_string(), "", -1, 0, touched.mtime,
+						src.generic_string(), touched.mtime,
 						touched.size, touched.hash, fErr),
 					"stamp.pak-touched-refingerprinted");
 			}

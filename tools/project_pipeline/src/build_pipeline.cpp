@@ -974,7 +974,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			std::vector<PakFingerprint> pakPrints;
 			if (ReadProjectHeaderMetadata(options.projectHeaderPath,
 					prev, hErr)
-				&& CollectAssetFingerprints(project, catalog, prev,
+				&& CollectAssetFingerprints(project, catalog,
 					assetPrints, hErr)) {
 				for (size_t i = 0; i < plan.paks.size()
 						&& i < finalPaths.size(); ++i) {

@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -39,7 +40,9 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr const char* kProjMarker = "project.tourproj";
-constexpr const char* kProjVersion = "1";
+// v2: the required `guid=` identity row (mirrored from
+// editor_project.cpp — the marker format is shared contract).
+constexpr const char* kProjVersion = "2";
 
 // The shared prefs path (the editor's LoadPrefs/SavePrefs contract:
 // <Documents>/tourmalineEditor/editor.prefs). USERPROFILE-based (the
@@ -134,8 +137,26 @@ bool IsProjectDir(const std::string& dir) {
 	return !dir.empty() && fs::is_regular_file(fs::path(dir) / kProjMarker, ec);
 }
 
+// A zero-dep 32-hex GUID mint (the launcher links nothing — the
+// editor's smvk::tour::GenerateUuid shape, satisfied locally: 16
+// random bytes from random_device, lowercase hex). Minted ONCE at
+// scaffold; every later open just reads the row.
+std::string MintGuid() {
+	static constexpr char kHex[] = "0123456789abcdef";
+	std::string guid;
+	guid.reserve(32);
+	std::random_device rd;
+	for (int i = 0; i < 16; ++i) {
+		const unsigned b = rd() & 0xFFu;
+		guid.push_back(kHex[b >> 4]);
+		guid.push_back(kHex[b & 0xFu]);
+	}
+	return guid;
+}
+
 // NewProjectOrOpen's scaffold, mirrored: the Unity-style tree + the
-// marker. An existing project just opens (true).
+// marker (name + identity + version). An existing project just opens
+// (true) — its identity validity is the EDITOR's gate (OpenProject).
 bool ScaffoldProject(const std::string& dir) {
 	std::error_code ec;
 	fs::path root(dir);
@@ -156,8 +177,9 @@ bool ScaffoldProject(const std::string& dir) {
 				<< "'.\n";
 			return false;
 		}
-		out << "# Tourmaline project (name + format version)\n";
+		out << "# Tourmaline project (name + identity + format version)\n";
 		out << "name=" << root.filename().string() << "\n";
+		out << "guid=" << MintGuid() << "\n";
 		out << "version=" << kProjVersion << "\n";
 	}
 	return true;
