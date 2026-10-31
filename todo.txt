@@ -299,7 +299,7 @@ and the audio layer's per-process pak-image cost note (the shared
 apphost->game runtime seam - RunPakApp handing its preloaded backends
 to the AudioRuntime's ProjectRuntime).
 
-(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi), stage 4c (tour::placement), the flattened typed catalog + the fingerprint contract (114068d8), the COMPLETE global-namespace cleanup (NodeId/scene payloads/tables/scene.h/Camera/Input), World + Cluster + Animator -> tour, the tour-doc + touranim + pak models -> tour::asset (THE NAME COLLISION DISSOLVED), App -> tour, the CI battery's R4 (the RHI upward-dependency rule) + the header smoke test (fe784c73 - 8 self-sufficiency bugs caught + fixed on its first run; 49/49 ctest). REMAINING) THE tour::/smvk:: SPLIT - the
+(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi), stage 4c (tour::placement), the flattened typed catalog + the fingerprint contract (114068d8), the COMPLETE global-namespace cleanup (NodeId/scene payloads/tables/scene.h/Camera/Input), World + Cluster + Animator -> tour, the tour-doc + touranim + pak models -> tour::asset (THE NAME COLLISION DISSOLVED), App -> tour, the CI battery's R4 (direct) + R5 (TRANSITIVE - with the vacuous-pass fix the seeded-leak proof caught) + the header smoke test (in the DEFAULT build - 8 self-sufficiency bugs caught + fixed; the ctest-spawns-a-compiler flake fixed), the DLSS Vulkan adapter split (f9de7ded - the P1; dlss.cpp's orchestration spells no VkFormat). REMAINING) THE tour::/smvk:: SPLIT - the
 audit's confirmed findings + the migration plan (feature branch
 feature/namespace-rhi-boundary):
   TARGET: tour:: = the public engine API (apps, scenes, assets, camera,
@@ -434,3 +434,23 @@ attached table), reducing the .tapp further (the logical->published
 pak map + the cooked scene names + the fingerprint is the END STATE -
 today it still carries the full [ids] rows as the compatibility
 surface), and gameplay-config PODs as typed generated structs.
+
+(Boundary audit, honest ledger) The remaining items and WHY they are
+genuinely separate projects, not unfinished rename work:
+  - The P0 INTERFACE REDESIGNS (App RHI ownership behind an impl bridge,
+    ElementFrame -> tour::RenderFrame, the renderer facade split):
+    impl.cpp's App::Initialize BOOTS the whole renderer (window/
+    swapchain/rendergraph/world) - moving that behind a bridge is a
+    rearchitecture of the 14k-line backend file, sequenced next.
+  - core.h: audited - all six remaining consumers (app/editor/render/
+    WorldRenderer/svg_icons/gltf) legitimately use the RHI surface;
+    decomposing is per-consumer include-list churn with no structural
+    win until the renderer split. The camera.h/core.h finding (the one
+    real excess) is fixed.
+  - The three-target build split: blocked on impl.cpp's App coupling
+    (above) + the spirv_reflection upward edge (the R4/R5 baseline).
+  - The null/mock backend test + the signature-walking scanner: the
+    compile-level CI battery (R1-R5 + header smoke) is in; these two
+    are the deeper follow-ups.
+  - Bridge retirement: migrating call sites off the smvk::/global
+    aliases - mechanical, unlimited scope, best done opportunistically.
