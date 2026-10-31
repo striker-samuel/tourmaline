@@ -3369,6 +3369,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		out.node = uint32_t(cn);
 		out.name = getNodeName(app.m_world->scene, int(c.node));
+		// The LOGICAL TARGET KEY (Item 6): record the node's uuid when
+		// it holds one (the save-time pre-pass mints them for
+		// ambiguous/unnamed targets; the identity map emits the uuid
+		// lines, so the cook replay can resolve it).
+		out.uuid = GetNodeUuid(app.m_world->scene, c.node);
 		return true;
 	};
 	// Symbolic -p form for a parent (world id): recorded uuid hex when
@@ -3434,6 +3439,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			return false;
 		out.verb = smvk::tour::Verb::Rename;
 		out.text = c.afterText;
+		// The -name KEY must name the node AS THE FRESH IMPORT KNOWS
+		// it — the name BEFORE this rename (the replay resolves keys
+		// against the pre-command state; the current name is the thing
+		// this command CHANGES). beforeText is exactly that.
+		if (!c.beforeText.empty())
+			out.name = c.beforeText;
 		return true;
 	}
 	case EditVerb::Translate:
@@ -4426,6 +4437,34 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		} while (held(hex, wnode));
 		SetNodeUuidRaw(scene, wnode, hex);
 	};
+	// NODE-VERB TARGET KEYS (the Item-6 layer): a target whose name is
+	// empty or AMBIGUOUS cannot ride the -name key — mint its uuid so
+	// the recorded command carries the strong key (named-unique targets
+	// resolve by name; the numeric -n stays the disambiguator either
+	// way). The identity map below persists the minted uuid as a uuid
+	// line, so the cook replay can resolve it.
+	auto ensureUuidKeyed = [&](uint32_t wnode) {
+		if (wnode >= scene.hierarchy.size())
+			return;
+		if (!GetNodeUuid(scene, wnode).empty())
+			return; // already keyed
+		if (WorldToCluster(wnode) < 0)
+			return; // editor-created: nothing to address
+		const std::string nm = getNodeName(scene, int(wnode));
+		if (!nm.empty()) {
+			size_t hits = 0;
+			for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
+				if (getNodeName(scene, int(n)) == nm)
+					++hits;
+			if (hits <= 1)
+				return; // unique name: the -name key resolves it
+		}
+		std::string hex;
+		do {
+			hex = smvk::tour::GenerateUuid();
+		} while (held(hex, wnode));
+		SetNodeUuidRaw(scene, wnode, hex);
+	};
 	for (size_t i : CoalescedSaveIndices()) {
 		const EditCmd& c = m_history[i];
 		if (c.verb == EditVerb::Delete) {
@@ -4442,10 +4481,29 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		// the -p slot can carry them (named ones ride names/paths).
 		// Creates emit their LIVE parent (see CreateEmitParent), so
 		// the uuid pass follows the live hierarchy, not the recorded
-		// creation-time parent.
+		// creation-time parent. The CHILD of a Parent command is a
+		// node-verb target (ensureUuidKeyed): its logical key needs
+		// the uuid when its name cannot carry it.
 		if (c.verb == EditVerb::Parent) {
-			ensureUuid(c.node);
+			ensureUuidKeyed(c.node);
 			ensureUuid(c.node2);
+		}
+		// Node-verb targets (the Item-6 logical keys): mint the uuid
+		// when the -name key cannot carry the target (empty or
+		// ambiguous names). The commands record it via CmdToTour's
+		// needNode; the identity map persists it for the replay.
+		else if (c.verb == EditVerb::Rename
+			|| c.verb == EditVerb::Translate
+			|| c.verb == EditVerb::Rotate
+			|| c.verb == EditVerb::Scale
+			|| c.verb == EditVerb::AssignMaterial
+			|| c.verb == EditVerb::SetNoLightmap
+			|| c.verb == EditVerb::SetLightmap
+			|| c.verb == EditVerb::SetDitherCloseup
+			|| c.verb == EditVerb::SetCastsVolumetricShadow
+			|| c.verb == EditVerb::SetStatic
+			|| c.verb == EditVerb::SetVisibility) {
+			ensureUuidKeyed(c.node);
 		}
 		else if (c.verb == EditVerb::CreateLight
 			|| c.verb == EditVerb::CreateTerrain
@@ -4692,8 +4750,33 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		worldNode = w;
 		return true;
 	};
+	// LOGICAL TARGET KEYS (the Item-6 layer): the COMMAND target may
+	// carry -uuid/-name keys — uuid exact, then unique name / DAG
+	// path, against the LIVE world scene (the same chain the cook
+	// replay runs on the cluster side; a stale numeric id under a key
+	// must NOT win — the whole point is surviving id shifts). The
+	// PARENT slot (Verb::Parent's node2) never resolves through the
+	// command's keys: they describe the CHILD (its symbolic parent
+	// lane is tc.parentRef).
+	auto resolveTarget = [&](const smvk::tour::Command& tc,
+			uint32_t& worldNode) -> bool {
+		if (!tc.uuid.empty()) {
+			const Scene& ws = app.m_world->scene;
+			for (uint32_t n = 0; n < ws.metadata.size(); ++n)
+				if (n < ws.hierarchy.size()
+						&& ws.metadata[n].uuid == tc.uuid) {
+					worldNode = n;
+					return true;
+				}
+		}
+		if (!tc.name.empty()
+				&& smvk::tour::ResolveDagPath(app.m_world->scene,
+					tc.name, worldNode))
+			return true;
+		return resolveRef(tc.node, worldNode);
+	};
 	uint32_t node = UINT32_MAX;
-	(void)resolveRef(tc.node, node); // UINT32_MAX on miss; needNode rejects
+	(void)resolveTarget(tc, node); // UINT32_MAX on miss; needNode rejects
 	auto needNode = [&]() -> bool {
 		if (node == UINT32_MAX || node >= app.m_world->scene.hierarchy.size())
 			return false;

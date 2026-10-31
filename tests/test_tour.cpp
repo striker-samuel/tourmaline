@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1384,14 +1385,17 @@ void TestCreateParentSentinel() {
 	// 2. Garbage node (UINT32_MAX) on a GENERIC verb: fails with an
 	// honest node error — never the terrain-ref misattribution (the
 	// sentinel carries every create-family base bit, so the old
-	// single-bit test read it as a terrain ref).
+	// single-bit test read it as a terrain ref). Name key updated for
+	// the Item-6 logical-target layer: a name that RESOLVES is no
+	// longer garbage (the old fixture name "Wall" made this a valid
+	// logical-only rename) — an unresolvable key keeps the intent.
 	{
 		smvk::tour::Doc doc;
 		smvk::tour::Command c{};
 		c.verb = smvk::tour::Verb::Rename;
 		c.node = UINT32_MAX;
 		c.text = "Nope";
-		c.name = "Wall";
+		c.name = "NoSuchNodeAnywhere";
 		doc.commands.push_back(c);
 		std::vector<std::string> warns;
 		std::string err;
@@ -2050,6 +2054,234 @@ void TestDeleteAddressing() {
 			hex = hex && ((ch >= '0' && ch <= '9')
 				|| (ch >= 'a' && ch <= 'f'));
 		Check(hex && a != b, "uuid generates unique hex");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
+// ---------------------------------------------------------------------------
+// LOGICAL NODE TARGETS (the Item-6 resolution layer): the generic node
+// verbs carry -uuid/-name keys alongside (or instead of) the bare -n,
+// resolved uuid-exact -> unique name -> DAG path -> the id as the
+// disambiguator — the Delete discipline generalized, so node verbs
+// survive re-imports that shift cluster ids.
+// ---------------------------------------------------------------------------
+
+void TestLogicalNodeTargets() {
+	auto freshCluster = []() {
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetOfflineMode(true);
+		addNode(cluster->scene, -1, 0); // root (unnamed)
+		return cluster;
+	};
+	auto cluster = freshCluster();
+	// root/grpA + root/grpB, each with a "Mesh" child (duplicated name
+	// — the ambiguity that forces uuid/path keys).
+	const int grpA = addNode(cluster->scene, 0, 1);
+	const int grpB = addNode(cluster->scene, 0, 1);
+	const int meshA = addNode(cluster->scene, grpA, 2);
+	const int meshB = addNode(cluster->scene, grpB, 2);
+	setNodeName(cluster->scene, grpA, "grpA");
+	setNodeName(cluster->scene, grpB, "grpB");
+	setNodeName(cluster->scene, meshA, "Mesh");
+	setNodeName(cluster->scene, meshB, "Mesh");
+	SetMesh(cluster->scene, uint32_t(meshA), 0);
+	SetMesh(cluster->scene, uint32_t(meshB), 0);
+	std::vector<std::string> warns;
+	std::string err;
+	const std::string hexA = "0123456789abcdef0123456789abcdef";
+
+	// ROUND-TRIP: keys + payload survive save/load verbatim, and the
+	// logical-only form (no -n) round-trips with the no-id sentinel.
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetVisibility;
+		v.node = uint32_t(meshA);
+		v.uuid = hexA;
+		v.name = "Mesh";
+		v.flag = true;
+		doc.commands.push_back(v);
+		smvk::tour::Command t{};
+		t.verb = smvk::tour::Verb::SetTranslate;
+		t.node = UINT32_MAX; // logical-only: no numeric target
+		t.uuid = hexA;
+		t.vec = glm::vec3(1.5f, 2.5f, 3.5f);
+		doc.commands.push_back(t);
+		Check(smvk::tour::SaveTour(TempTour(), doc, err),
+			"logical save");
+		smvk::tour::Doc back;
+		Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+			"logical load");
+		Check(back.commands.size() == 2
+			&& back.commands[0].verb == smvk::tour::Verb::SetVisibility
+			&& back.commands[0].uuid == hexA
+			&& back.commands[0].name == "Mesh"
+			&& back.commands[0].flag
+			&& back.commands[1].verb == smvk::tour::Verb::SetTranslate
+			&& back.commands[1].uuid == hexA
+			&& back.commands[1].node == UINT32_MAX
+			&& back.commands[1].vec == t.vec, "logical round-trip");
+	}
+
+	// UUID KEY + STALE ID: the recorded uuid wins over a -n that no
+	// longer names the node (the id-shift survival — the point).
+	{
+		SetNodeUuidRaw(cluster->scene, uint32_t(meshA), hexA);
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetVisibility;
+		v.node = 9999; // stale on purpose
+		v.uuid = hexA;
+		v.flag = true;
+		doc.commands.push_back(v);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical uuid replay ok");
+		Check(cluster->scene.hidden[size_t(meshA)] != 0
+			&& cluster->scene.hidden[size_t(meshB)] == 0,
+			"logical uuid hits the uuid node only");
+	}
+
+	// UUID-ONLY LINE (no -n at all): resolves through the key.
+	{
+		cluster->scene.hidden[size_t(meshA)] = 0;
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetVisibility;
+		v.node = UINT32_MAX;
+		v.uuid = hexA;
+		v.flag = true;
+		doc.commands.push_back(v);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical uuid-only ok");
+		Check(cluster->scene.hidden[size_t(meshA)] != 0,
+			"logical uuid-only hits");
+	}
+
+	// PATH KEY over duplicated basenames: grpA/Mesh picks the right
+	// leaf, the sibling stays untouched.
+	{
+		cluster->scene.hidden[size_t(meshA)] = 0;
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetTranslate;
+		v.node = 9999; // stale
+		v.name = "grpA/Mesh";
+		v.vec = glm::vec3(7.0f, 0.0f, 0.0f);
+		doc.commands.push_back(v);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical path replay ok");
+		Check(cluster->scene.localTransform[size_t(meshA)][3]
+			== glm::vec4(7.0f, 0.0f, 0.0f, 1.0f), "logical path hits");
+		Check(cluster->scene.localTransform[size_t(meshB)][3]
+			== glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+			"logical path spares sibling");
+	}
+
+	// RENAME's name key is the PRE-rename name (the fresh import's
+	// state): resolve by the original, apply the new.
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command r{};
+		r.verb = smvk::tour::Verb::Rename;
+		r.node = 9999;
+		r.name = "grpB/Mesh"; // the ORIGINAL name (path: duplicated base)
+		r.text = "RenamedLeaf";
+		doc.commands.push_back(r);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical rename ok");
+		Check(getNodeName(cluster->scene, meshB) == "RenamedLeaf",
+			"logical rename hits");
+		Check(getNodeName(cluster->scene, meshA) == "Mesh",
+			"logical rename spares sibling");
+	}
+
+	// UNIQUE-NAME key (no uuid, stale id).
+	{
+		setNodeName(cluster->scene, grpA, "Solo");
+		smvk::tour::Doc doc;
+		smvk::tour::Command s{};
+		s.verb = smvk::tour::Verb::SetStatic;
+		s.node = 9999;
+		s.name = "Solo";
+		s.flag = true;
+		doc.commands.push_back(s);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical unique-name ok");
+		Check(cluster->scene.staticRoot[size_t(grpA)] != 0,
+			"logical unique-name hits");
+	}
+
+	// UNRESOLVED key: strict replay FAILS loud (never a silent skip).
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetVisibility;
+		v.node = UINT32_MAX;
+		v.uuid = "ffffffffffffffffffffffffffffffff"; // nobody holds it
+		v.flag = true;
+		doc.commands.push_back(v);
+		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical unresolved fails strict");
+	}
+
+	// KEYLESS (legacy) lines keep the numeric path: valid id applies,
+	// nothing to verify (no key, no warn).
+	{
+		warns.clear();
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetVisibility;
+		v.node = uint32_t(meshB);
+		v.flag = true;
+		doc.commands.push_back(v);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"legacy numeric ok");
+		Check(cluster->scene.hidden[size_t(meshB)] != 0,
+			"legacy numeric applies by id");
+	}
+
+	// HARD-KEY DISCIPLINE (the Delete contract): a carried key that
+	// does not resolve FAILS the strict replay — a wrong name is an
+	// error, never a silent numeric apply (a recorded identity that
+	// matches nothing means the node is gone; the numeric id under it
+	// may name a DIFFERENT node after a re-import).
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::Command v{};
+		v.verb = smvk::tour::Verb::SetVisibility;
+		v.node = uint32_t(meshB); // valid id, but the key is wrong
+		v.name = "NoSuchNodeKey";
+		v.flag = true;
+		doc.commands.push_back(v);
+		Check(!smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
+			"logical wrong-key fails strict");
+	}
+
+	// REFERENCE REPLAY (strict=false): an unresolved key skips with a
+	// warning instead of aborting the rest of the referenced edits.
+	{
+		std::vector<std::string> refWarns;
+		smvk::tour::Doc doc;
+		smvk::tour::Command bad{};
+		bad.verb = smvk::tour::Verb::SetVisibility;
+		bad.node = UINT32_MAX;
+		bad.uuid = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+		bad.flag = true;
+		doc.commands.push_back(bad);
+		smvk::tour::Command good{};
+		good.verb = smvk::tour::Verb::SetStatic;
+		good.node = uint32_t(grpB);
+		good.flag = true;
+		doc.commands.push_back(good);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &refWarns,
+			&err, /*strict=*/false), "logical reference replay ok");
+		Check(cluster->scene.staticRoot[size_t(grpB)] != 0,
+			"logical reference skip spares the rest");
+		Check(std::any_of(refWarns.begin(), refWarns.end(),
+			[](const std::string& w) {
+				return w.find("skipped") != std::string::npos;
+			}), "logical reference warns the skip");
 	}
 	std::error_code ec;
 	std::filesystem::remove(TempTour(), ec);
@@ -3030,7 +3262,11 @@ void TestTourFuzz() {
 		c.verb = smvk::tour::Verb::Rename;
 		c.node = 9999;
 		c.text = "Ghost";
-		c.name = "Wall";
+		// (Name updated for the Item-6 logical-target layer: the old
+		// fixture name "Wall" RESOLVED, turning the orphan into a
+		// valid logical rename. An absent name keeps this a true
+		// orphan — the check's intent.)
+		c.name = "NoSuchGhost";
 		doc.commands.push_back(c);
 		std::vector<std::string> warns;
 		std::string err;
@@ -3661,6 +3897,7 @@ int main() {
 	TestReparent();
 	TestDelete();
 	TestDeleteAddressing();
+	TestLogicalNodeTargets();
 	TestIdentityLayers();
 	TestReplay();
 	TestReferences();

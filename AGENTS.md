@@ -2,6 +2,28 @@
 
 ## Runtime layers (app/src — the project façade stack)
 
+- **THE .TOUR LOGICAL TARGET LAYER (landed)**: the generic node verbs
+  (rename/setAttr/assignMaterial/the flag verbs/parent) and the
+  cluster-id form of the typed attr verbs accept `-uuid <hex>` /
+  `-name "<name>"` alongside or INSTEAD OF the bare `-n <cluster id>`
+  — replay resolves the Delete chain (uuid exact -> unique full name
+  -> DAG path suffix -> the numeric id as the disambiguator), so node
+  commands survive re-imports that shift cluster ids. HARD keys: a
+  carried key that resolves to nothing fails the strict replay (a
+  wrong key is an error, never a silent numeric apply — the numeric
+  id under a dead key may name a DIFFERENT node post-re-import);
+  reference replay (strict=false) warn-skips. Attr-verb lines take
+  -uuid only (their -name token is the payload). Excluded: Delete
+  (own path), SetUuid (ASSIGNS the identity), the create verbs (the
+  symbolic -p parentRef lane), the -ref create-family forms. The
+  editor leg: CmdToTour records the uuid (pre-pass mints one for
+  node-verb targets whose names are empty/ambiguous; the identity map
+  emits the uuid lines so the cook-side cluster scene carries them),
+  a rename's -name key is the PRE-rename name (the fresh import's
+  state), TourToCmd resolves keys against the live world scene.
+  Keyless lines keep the numeric path bit-identical. Pinned by
+  TestLogicalNodeTargets in test_tour.cpp (464 checks).
+
 - **ProjectRuntime** (the façade): stable ids → appmanifest [ids] rows →
   pak bytes. `ReadAsset(id)` serves TEXTURE, SOUND and SHADER payloads
   (the three VFS-addressable pak kinds); scenes load by identity, meshes

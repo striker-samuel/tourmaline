@@ -49,8 +49,17 @@
 //
 // Node/material ids are CLUSTER-space: the importer builds clusters
 // deterministically from the source file, so the same source always yields
-// the same ids on both sides. Recorded node names are verify-only (warn on
-// mismatch, apply by id anyway). Unknown verbs warn-and-skip (forward
+// the same ids on both sides. LOGICAL TARGET KEYS ride on top (the
+// Item-6 resolution layer): the generic node verbs (rename/setAttr/
+// assignMaterial/the flag verbs/parent) and the cluster-id form of the
+// typed attr verbs accept `-uuid <hex>` / `-name "<name>"` alongside or
+// INSTEAD OF the bare -n — replay resolves uuid-exact -> unique full
+// name -> DAG path suffix -> the numeric id as the disambiguator (the
+// Delete discipline, generalized: commands survive re-imports that
+// shift cluster ids). Attr-verb lines take -uuid only (their -name
+// token is the payload); Delete/SetUuid/the create verbs keep their
+// own addressing. Keyless commands apply by id with the verify-only
+// name warn, exactly as before. Unknown verbs warn-and-skip (forward
 // compatibility = edit compatibility across versions).
 
 #include <cstdint>
@@ -424,11 +433,20 @@ struct Command {
 	                       // SetDitherCloseup value;
 	                       // CreateLight: static bake-only;
 	                       // SetLightAttr static/shadow value
-	std::string name;      // recorded node name (verify-only);
-	                       // SetLightAttr "name": the NEW name
-	                       // Delete: secondary addressing key
-	std::string uuid;      // SetUuid: the recorded 32-hex identity;
-	                       // Delete: its PRIMARY addressing key
+	std::string name;      // recorded node name: a LOGICAL TARGET KEY
+	                       // on the generic node verbs (uuid/name/id
+	                       // resolution, see the header); the attr
+	                       // verbs' PAYLOAD instead (SetLightAttr
+	                       // "name"/"cookie": the NEW name; Add/
+	                       // RemoveAudioSound: the slot id); Delete:
+	                       // secondary addressing key; SetUuid + the
+	                       // creates: recorded name (trailing comment)
+	std::string uuid;      // the LOGICAL TARGET KEY (the strongest: a
+	                       // 32-hex file-stable identity) on the
+	                       // logical-target verbs; SetUuid: the
+	                       // identity being ASSIGNED (payload — its
+	                       // target stays numeric); Delete: its PRIMARY
+	                       // addressing key
  	std::string nodeType;  // createNode -at type ("transform",
   	                       // "pointLight", "spotLight", "terrain",
   	                       // "givolume", "cubemap", "camera",

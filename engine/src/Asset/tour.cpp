@@ -114,27 +114,97 @@ const char* FlagVal(bool b) { return b ? "1" : "0"; }
 // explicit -type — double3/float4/string/bool/enum; plain scalars stay
 // bare). `indent` prefixes the line: "" top-level, "\t" for -ref
 // properties tabulated under their create.
+
+// LOGICAL TARGET KEYS (the Item-6 resolution layer): emitted after the
+// -n token when the command carries them — the recorded uuid (the
+// strongest key, file-stable across re-imports that shift numeric ids)
+// and/or the recorded node name. Replay resolves uuid-exact -> unique
+// name -> DAG path suffix -> the numeric id as the disambiguator (the
+// Delete discipline, generalized). withName=false on the ATTR verbs:
+// their c.name is the attr payload ("name"/"cookie"/string values),
+// never a target key. Absent keys + a valid id keep the legacy line
+// shape byte-identical.
+static void WriteTargetKeys(std::ostream& f, const Command& c,
+	bool withName) {
+	if (!c.uuid.empty())
+		f << " -uuid " << c.uuid;
+	if (withName && !c.name.empty())
+		f << " -name " << Quote(c.name);
+}
+// The -n token: emitted only when the command carries a numeric target
+// (logical-only lines — uuid/name keys, no id — omit it; the parse
+// accepts both).
+static void WriteNodeToken(std::ostream& f, const Command& c) {
+	if (c.node != UINT32_MAX)
+		f << " -n " << c.node;
+}
+
+// THE LOGICAL-TARGET VERB SET (the Item-6 resolution layer): commands
+// whose node slot may be addressed by -uuid <hex> / -name "<name>"
+// instead of (or alongside) the bare -n <cluster id>. The replay
+// resolves the Delete chain — uuid exact -> unique full name -> DAG
+// path suffix -> the numeric id as the disambiguator. Split in two:
+// the GENERIC node verbs (rename/setAttr/assignMaterial/the flag
+// verbs/parent) take BOTH keys; the typed ATTR verbs keep c.name as
+// their PAYLOAD (attr "name"/"cookie"/string values) and take uuid
+// only. Excluded by design: Delete (own logical path), SetUuid (it
+// ASSIGNS the identity — numeric target only), the create verbs (the
+// symbolic -p parentRef form is their logical lane) and the -ref
+// create-family addressing (creation-order stable within a file).
+static bool IsGenericNodeVerb(Verb v) {
+	return v == Verb::Rename || v == Verb::SetTranslate
+		|| v == Verb::SetRotate || v == Verb::SetScale
+		|| v == Verb::AssignMaterial || v == Verb::SetNoLightmap
+		|| v == Verb::SetLightmap || v == Verb::SetDitherCloseup
+		|| v == Verb::SetCastsVolumetricShadow || v == Verb::SetStatic
+		|| v == Verb::SetVisibility || v == Verb::Parent;
+}
+static bool IsAttrNodeVerb(Verb v) {
+	return v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
+		|| v == Verb::SetCubemapAttr || v == Verb::SetCamAttr
+		|| v == Verb::SetAudioAttr || v == Verb::AddAudioSound
+		|| v == Verb::RemoveAudioSound;
+}
+static bool IsLogicalNodeVerb(Verb v) {
+	return IsGenericNodeVerb(v) || IsAttrNodeVerb(v);
+}
+
 static void WriteCommandLine(std::ostream& f, const Command& c,
 	const char* indent) {
 	f << indent;
 	switch (c.verb) {
 	case Verb::Rename:
-		f << "rename -n " << c.node << " " << Quote(c.text);
+		f << "rename";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " " << Quote(c.text);
 		break;
 	case Verb::SetTranslate:
-		f << "setAttr -n " << c.node << " -at translate -type \"double3\" -t "
+		f << "setAttr";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -at translate -type \"double3\" -t "
 			<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
 		break;
 	case Verb::SetRotate:
-		f << "setAttr -n " << c.node << " -at rotate -type \"double3\" -t "
+		f << "setAttr";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -at rotate -type \"double3\" -t "
 			<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
 		break;
 	case Verb::SetScale:
-		f << "setAttr -n " << c.node << " -at scale -type \"double3\" -t "
+		f << "setAttr";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -at scale -type \"double3\" -t "
 			<< c.vec.x << " " << c.vec.y << " " << c.vec.z;
 		break;
 	case Verb::AssignMaterial:
-		f << "assignMaterial -n " << c.node << " -m " << c.material;
+		f << "assignMaterial";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -m " << c.material;
 		break;
 	case Verb::SetMatAttr:
 		f << "setMatAttr -m " << c.material << " -at " << c.text;
@@ -149,28 +219,40 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			f << " -v " << c.number;
 		break;
 	case Verb::SetNoLightmap:
-		f << "setNoLightmap -n " << c.node << " -type \"bool\" -v "
-			<< FlagVal(c.flag);
+		f << "setNoLightmap";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -type \"bool\" -v " << FlagVal(c.flag);
 		break;
 	case Verb::SetLightmap:
-		f << "setLightmap -n " << c.node << " -type \"bool\" -v "
-			<< FlagVal(c.flag);
+		f << "setLightmap";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -type \"bool\" -v " << FlagVal(c.flag);
 		break;
 	case Verb::SetDitherCloseup:
-		f << "setDitherCloseup -n " << c.node << " -type \"bool\" -v "
-			<< FlagVal(c.flag);
+		f << "setDitherCloseup";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -type \"bool\" -v " << FlagVal(c.flag);
 		break;
 	case Verb::SetCastsVolumetricShadow:
-		f << "setCastsVolumetricShadow -n " << c.node
-			<< " -type \"bool\" -v " << FlagVal(c.flag);
+		f << "setCastsVolumetricShadow";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -type \"bool\" -v " << FlagVal(c.flag);
 		break;
 	case Verb::SetVisibility:
-		f << "setVisibility -n " << c.node << " -type \"bool\" -v "
-			<< FlagVal(c.flag);
+		f << "setVisibility";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -type \"bool\" -v " << FlagVal(c.flag);
 		break;
 	case Verb::SetStatic:
-		f << "setStatic -n " << c.node << " -type \"bool\" -v "
-			<< FlagVal(c.flag);
+		f << "setStatic";
+		WriteNodeToken(f, c);
+		WriteTargetKeys(f, c, true);
+		f << " -type \"bool\" -v " << FlagVal(c.flag);
 		break;
 	case Verb::Delete:
 		f << "delete";
@@ -262,7 +344,9 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			break;
 		}
 		case Verb::Parent:
-			f << "parent -n " << c.node;
+			f << "parent";
+			WriteNodeToken(f, c);
+			WriteTargetKeys(f, c, true);
 			if (!c.parentRef.empty())
 				f << " -p " << Quote(c.parentRef);
 			else
@@ -359,10 +443,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		// createCamera, else -n cluster id). Scalars ride -v; name
 		// rides -v as a string; projection rides -v as 0/1.
 		f << "setCamAttr ";
-		if ((c.node & kCreateCameraRefBase) != 0)
+		if ((c.node & kCreateCameraRefBase) != 0 && c.node != UINT32_MAX)
 			f << "-ref " << (c.node & ~kCreateCameraRefBase);
-		else
+		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
 		f << " -at " << c.text;
 		if (c.text == "name")
 			f << " -type \"string\" -v " << Quote(c.name);
@@ -397,10 +482,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		// ride -type "bool" -v on|off; name rides -v as a string;
 		// position rides -t as a triple; scalars ride -v.
 		f << "setAudioAttr ";
-		if ((c.node & kCreateAudioSourceRefBase) != 0)
+		if ((c.node & kCreateAudioSourceRefBase) != 0 && c.node != UINT32_MAX)
 			f << "-ref " << (c.node & ~kCreateAudioSourceRefBase);
-		else
+		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
 		f << " -at " << c.text;
 		if (c.text == "name")
 			f << " -type \"string\" -v " << Quote(c.name);
@@ -419,10 +505,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		// slot's loop default (always emitted — the explicit, exact
 		// round-trip form).
 		f << "addAudioSound ";
-		if ((c.node & kCreateAudioSourceRefBase) != 0)
+		if ((c.node & kCreateAudioSourceRefBase) != 0 && c.node != UINT32_MAX)
 			f << "-ref " << (c.node & ~kCreateAudioSourceRefBase);
-		else
+		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
 		f << " -name " << Quote(c.text)
 			<< " -source " << Quote(c.name)
 			<< " -v " << c.number
@@ -431,10 +518,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 	}
 	case Verb::RemoveAudioSound: {
 		f << "removeAudioSound ";
-		if ((c.node & kCreateAudioSourceRefBase) != 0)
+		if ((c.node & kCreateAudioSourceRefBase) != 0 && c.node != UINT32_MAX)
 			f << "-ref " << (c.node & ~kCreateAudioSourceRefBase);
-		else
+		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
 		f << " -name " << Quote(c.text);
 		break;
 	}
@@ -450,10 +538,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 	}
 	case Verb::SetLightAttr: {
 		f << "setLightAttr ";
-		if ((c.node & kCreateLightRefBase) != 0)
+		if ((c.node & kCreateLightRefBase) != 0 && c.node != UINT32_MAX)
 			f << "-ref " << (c.node & ~kCreateLightRefBase);
-		else
+		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
 		f << " -at " << c.text;
 		if (c.text == "color" || c.text == "position"
 			|| c.text == "rotation")
@@ -473,10 +562,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		// rotation-deg, size) ride -t; name rides -v as a string;
 		// scalars (priority, spacing, inside, outside) ride -v.
 		f << "setGiVolumeAttr ";
-		if ((c.node & kCreateGiVolumeRefBase) != 0)
+		if ((c.node & kCreateGiVolumeRefBase) != 0 && c.node != UINT32_MAX)
 			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase);
-		else
+		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
 		f << " -at " << c.text;
 		if (c.text == "position" || c.text == "rotation"
 			|| c.text == "size")
@@ -539,7 +629,11 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		break;
 	}
 	}
-	if (!c.name.empty())
+	// The recorded name rides the -name TARGET KEY on the generic node
+	// verbs (a real flag since the logical-target layer); the trailing
+	// comment stays for every other carrier (the attr-verb payloads,
+	// SetUuid's recorded name, the creates).
+	if (!c.name.empty() && !IsGenericNodeVerb(c.verb))
 		f << " // " << c.name;
 	f << ";\n";
 }
@@ -1734,12 +1828,14 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			if (fl.at == "spotLight")
 				fl.at = "spot";
 		}
-		if (effVerb == "rename" && fl.hasN && !fl.t.empty()) {
+		if (effVerb == "rename" && (fl.hasN || fl.hasUuid || fl.hasName)
+				&& !fl.t.empty()) {
 			c.verb = Verb::Rename;
 			c.node = fl.n;
 			c.text = fl.t[0];
 		}
-		else if (effVerb == "setAttr" && fl.hasN && fl.hasAt && fl.t.size() >= 3) {
+		else if (effVerb == "setAttr" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasAt && fl.t.size() >= 3) {
 			double x = 0, y = 0, z = 0;
 			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
 				!ParseDouble(fl.t[2], z)) {
@@ -1760,7 +1856,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				continue;
 			}
 		}
-		else if (effVerb == "assignMaterial" && fl.hasN && fl.hasM) {
+		else if (effVerb == "assignMaterial" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasM) {
 			c.verb = Verb::AssignMaterial;
 			c.node = fl.n;
 			c.material = fl.m;
@@ -1795,32 +1892,38 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				}
 			}
 		}
-		else if (effVerb == "setNoLightmap" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setNoLightmap" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasV) {
 			c.verb = Verb::SetNoLightmap;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (effVerb == "setLightmap" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setLightmap" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasV) {
 			c.verb = Verb::SetLightmap;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (effVerb == "setDitherCloseup" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setDitherCloseup" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasV) {
 			c.verb = Verb::SetDitherCloseup;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (effVerb == "setCastsVolumetricShadow" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setCastsVolumetricShadow" && (fl.hasN
+				|| fl.hasUuid || fl.hasName) && fl.hasV) {
 			c.verb = Verb::SetCastsVolumetricShadow;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (effVerb == "setStatic" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setStatic" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasV) {
 			c.verb = Verb::SetStatic;
 			c.node = fl.n;
 			c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
 		}
-		else if (effVerb == "setVisibility" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setVisibility" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasV) {
 			bool b = false;
 			if (!ParseFlagWord(fl.v, b)) {
 				err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
@@ -1831,7 +1934,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.flag = b;
 		}
 		// setHidden is the legacy alias for setVisibility (hidden flag).
-		else if (effVerb == "setHidden" && fl.hasN && fl.hasV) {
+		else if (effVerb == "setHidden" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && fl.hasV) {
 			bool b = false;
 			if (!ParseFlagWord(fl.v, b)) {
 				err = "line " + std::to_string(lineNo) + ": bad flag '" + fl.v + "'";
@@ -1924,7 +2028,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			doc.references.push_back(std::move(r));
 			continue;
 		}
-		else if (effVerb == "parent" && fl.hasN && (fl.hasP || fl.hasPStr)) {
+		else if (effVerb == "parent" && (fl.hasN || fl.hasUuid
+				|| fl.hasName) && (fl.hasP || fl.hasPStr)) {
 			c.verb = Verb::Parent;
 			c.node = fl.n;
 			c.node2 = fl.hasP ? fl.p : 0;
@@ -2182,7 +2287,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			c.vec4 = glm::vec4(float(v[0]), float(v[1]), float(v[2]), float(v[3]));
 			c.number = strength;
 		}
-	else if (effVerb == "setLightAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+	else if (effVerb == "setLightAttr" && (fl.hasN || fl.hasRef
+			|| fl.hasUuid) && fl.hasAt) {
 		static const char* kAttrs[] = { "color", "intensity", "range",
 			"inner", "outer", "static", "shadow", "name", "position",
 			"rotation", "cookie", "function", "functionSpeed",
@@ -2234,7 +2340,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
-	else if (effVerb == "setGiVolumeAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+	else if (effVerb == "setGiVolumeAttr" && (fl.hasN || fl.hasRef
+			|| fl.hasUuid) && fl.hasAt) {
 		// Must mirror Read/WriteNodeGiVolumeAttr + the replay switch
 		// below EXACTLY (the editor can write any attr it can edit —
 		// a missing name here means the editor saves tours it cannot
@@ -2308,7 +2415,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
-	else if (effVerb == "setCubemapAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+	else if (effVerb == "setCubemapAttr" && (fl.hasN || fl.hasRef
+			|| fl.hasUuid) && fl.hasAt) {
 		static const char* kAttrs[] = { "position", "radius", "name" };
 		bool known = false;
 		for (const char* a : kAttrs)
@@ -2347,7 +2455,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
-	else if (effVerb == "setCamAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+	else if (effVerb == "setCamAttr" && (fl.hasN || fl.hasRef
+			|| fl.hasUuid) && fl.hasAt) {
 		static const char* kAttrs[] = { "projection", "fovY",
 			"orthoHalfH", "near", "far", "name", "position", "rotation" };
 		bool known = false;
@@ -2425,7 +2534,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.text = fl.name;
 		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 	}
-	else if (effVerb == "setAudioAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+	else if (effVerb == "setAudioAttr" && (fl.hasN || fl.hasRef
+			|| fl.hasUuid) && fl.hasAt) {
 		static const char* kAttrs[] = { "volume", "spatial",
 			"playOnLoad", "minDistance", "maxDistance", "name",
 			"position" };
@@ -2494,9 +2604,10 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		// slot name at replay. Shape errors are LOUD (a mistyped
 		// sound line must fail the load, never warn-skip: the emitter
 		// would silently lose its clip).
-		if (!(fl.hasN || fl.hasRef) || !fl.hasName || !fl.hasSource) {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid) || !fl.hasName
+				|| !fl.hasSource) {
 			err = "line " + std::to_string(lineNo)
-				+ ": addAudioSound wants (-n <id> | -ref <k>)"
+				+ ": addAudioSound wants (-n <id> | -ref <k> | -uuid <hex>)"
 				" -name <slot> -source <asset>";
 			return false;
 		}
@@ -2518,10 +2629,10 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.flag = fl.hasLoop && fl.loop;
 	}
 	else if (effVerb == "removeAudioSound") {
-		if (!(fl.hasN || fl.hasRef) || !fl.hasName) {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid) || !fl.hasName) {
 			err = "line " + std::to_string(lineNo)
-				+ ": removeAudioSound wants (-n <id> | -ref <k>)"
-				" -name <slot>";
+				+ ": removeAudioSound wants (-n <id> | -ref <k>"
+				" | -uuid <hex>) -name <slot>";
 			return false;
 		}
 		c.verb = Verb::RemoveAudioSound;
@@ -2593,6 +2704,26 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				verb + "' (skipped)");
 			continue;
 		}
+		// LOGICAL TARGET KEYS (the Item-6 resolution layer): stamp the
+		// parsed -uuid/-name onto the verbs that resolve through them
+		// (IsGenericNodeVerb takes both keys; the attr verbs take uuid
+		// only — their c.name is the attr payload, set above). A line
+		// with neither -n nor a create-family -ref carries NO numeric
+		// target: node reads the no-id sentinel so the replay's logical
+		// chain owns it (and the writer omits the -n token).
+		if (IsGenericNodeVerb(c.verb)) {
+			if (fl.hasUuid)
+				c.uuid = fl.uuid;
+			if (fl.hasName)
+				c.name = fl.name;
+		}
+		else if (IsAttrNodeVerb(c.verb)) {
+			if (fl.hasUuid)
+				c.uuid = fl.uuid;
+		}
+		if (IsLogicalNodeVerb(c.verb) && !fl.hasN && !fl.hasRef
+				&& (c.node & kCreateRefFamilyMask) == 0)
+			c.node = UINT32_MAX;
 		doc.commands.push_back(std::move(c));
 	}
 	return true;
@@ -2988,7 +3119,31 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		return true;
 	};
 	Scene& scene = cluster.scene;
-	auto checkNode = [&](uint32_t n, const Command& c) {
+	// LOGICAL TARGET RESOLUTION (the Item-6 layer): a command carrying
+	// uuid/name keys resolves through the Delete chain — uuid exact ->
+	// unique full name -> DAG path suffix -> the numeric id as the
+	// disambiguator — so node verbs survive re-imports that shift
+	// cluster ids. The keys are read ONLY on the logical-target verbs
+	// (SetUuid's c.uuid is its PAYLOAD; Delete owns its own resolution
+	// below; the create-family -ref forms own theirs). Keyless
+	// commands keep the numeric path bit-identical, verify-warn
+	// included. In-out: the resolved id replaces the numeric target.
+	auto checkNode = [&](uint32_t& n, const Command& c) {
+		if (IsLogicalNodeVerb(c.verb)
+				&& (!c.uuid.empty() || !c.name.empty())) {
+			uint32_t resolved = 0;
+			if (!ResolveDeleteTarget(scene, c.uuid, c.name, n, resolved)) {
+				if (err)
+					*err = "tour: logical target unresolved (uuid '"
+						+ c.uuid + "', name '" + c.name + "')";
+				return false;
+			}
+			// The identity WAS the resolution — no verify warn (the
+			// name key matched by construction, or the uuid outranked
+			// a stale one).
+			n = resolved;
+			return true;
+		}
 		if (n >= scene.hierarchy.size()) {
 			if (err)
 				*err = "tour: node id out of range: " + std::to_string(n);
