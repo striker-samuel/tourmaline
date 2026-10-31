@@ -10,6 +10,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 // InfiniteReversedZ projection. For better precission up close and no cutoff
+
+namespace tour {
+
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear);
 
 // Finite reversed-Z projection (Vulkan ZO, right-handed): maps
@@ -165,4 +168,15 @@ public:
 	glm::vec3 starting_up;
 };
 
+} // namespace tour
 
+// GLOBAL compat aliases (the migration bridge - retire with the call
+// sites; the boundary scanner guards against NEW globals, these are
+// the tracked pre-existing set).
+using tour::Camera;
+using tour::CameraPositioner_FirstPerson;
+using tour::CameraPositionerInterface;
+using tour::MakeInfReversedZProjRH;
+using tour::MakeReversedZProjRH;
+using tour::ResolveLookAtUp;
+using tour::SafeLookAt;

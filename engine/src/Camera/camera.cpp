@@ -6,6 +6,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+namespace tour {
+
 glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
 {
 	float f = 1.0f / tan(fovY_radians / 2.0f);
@@ -188,3 +190,5 @@ void CameraPositioner_FirstPerson::reset() {
 	// drifting away from the just-restored pose.
 	moveSpeed_ = glm::vec3(0.0f);
 }
+
+} // namespace tour
