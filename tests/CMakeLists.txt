@@ -877,6 +877,24 @@ set_target_properties(ProjectPipelineTests PROPERTIES
 
 add_test(NAME project_pipeline_tests COMMAND ProjectPipelineTests)
 
+# The project-scoped native filesystem watcher (Engine/Utils/
+# file_watcher): the ignore policy (generated artifacts invisible
+# wherever they sit), debounce/settle, add/remove/modify, atomic-save
+# renames, reconcile recovery, single-file roots. CPU-only (threads +
+# the OS event APIs; no GPU, no window).
+add_executable(FileWatcherTests test_file_watcher.cpp)
+
+target_link_libraries(FileWatcherTests
+	PRIVATE
+		engine
+)
+
+set_target_properties(FileWatcherTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME file_watcher_tests COMMAND FileWatcherTests)
+
 # The executor's parity leg shells out to the stage exes beside this
 # exe (the shared build root): legacy BuildProject vs ExecuteBuildPlan
 # through the subprocess adapter, byte-compared. They are build
