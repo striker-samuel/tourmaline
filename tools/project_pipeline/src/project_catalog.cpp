@@ -18,6 +18,8 @@
 
 #include <Engine/Asset/tour.h>
 
+#include <gltf_import/asset_export.h>
+
 namespace smvk::project {
 
 namespace {
@@ -34,18 +36,59 @@ uint64_t Fnv(const char* s) {
 	return h;
 }
 
-// The entity's GUID: the sidecar when one exists, else a FRESH mint
-// written beside the file (the sidecar travels with it — renames keep
-// the identity) + adopted into the asset directory.
-bool GuidForAsset(const std::string& absPath, const std::string& kind,
-	std::string& outGuid, std::string& err) {
+// C++ string-literal escaping for the emitted header (the generator is
+// a compiler front end: a path or pak name carrying a quote or a
+// backslash must never break the emitted code).
+std::string CppStr(const std::string& s) {
+	std::string o;
+	for (char c : s) {
+		if (c == '\\' || c == '"')
+			o += '\\';
+		o += c;
+	}
+	return o;
+}
+
+// THE ONE identity-acquisition point (every catalog entity goes through
+// here, in this order):
+//   1. a VALID sidecar GUID wins — and the row is ADOPTED into the
+//      asset directory (the `assets` table: GUID -> path/kind), so the
+//      source-asset registry and the content-id registry NEVER
+//      disagree about an entity (one database, both tables, one
+//      acquisition path);
+//   2. a MISSING sidecar mints a fresh GUID + writes it (the sidecar
+//      travels with the file — renames keep the identity) + adopts;
+//   3. an INVALID sidecar GUID (corrupt/unparseable — the identity was
+//      already unusable) re-mints + rewrites + adopts, with `note`
+//      carrying the loud replacement record (never a silent repair).
+// `sidecarOut` (optional) receives the sidecar path (the depfile feed —
+// identity inputs belong with the content deps).
+bool AcquireAssetIdentity(smvk::cache::AssetDatabase& db,
+	const std::string& absPath, const std::string& kind,
+	std::string& outGuid, std::string& sidecarOut, std::string& note,
+	std::string& err) {
+	outGuid.clear();
+	note.clear();
+	sidecarOut = smvk::cache::MetaPathFor(absPath);
+	std::string guid;
 	std::string metaErr;
-	if (smvk::cache::ReadAssetMeta(absPath, outGuid, metaErr))
+	if (smvk::cache::ReadAssetMeta(absPath, guid, metaErr)) {
+		if (!db.AdoptFile(absPath, guid, kind, err))
+			return false;
+		outGuid = guid;
 		return true;
+	}
+	// Missing ("no .meta") or invalid ("invalid guid ..."): mint.
 	outGuid = smvk::tour::GenerateUuid();
 	if (!smvk::cache::WriteAssetMeta(absPath, outGuid, "content-id",
 			err))
 		return false;
+	if (!db.AdoptFile(absPath, outGuid, kind, err))
+		return false;
+	if (metaErr.find("invalid guid") != std::string::npos)
+		note = "sidecar guid was invalid (" + metaErr
+			+ ") — identity REPLACED with a fresh mint at '"
+			+ sidecarOut + "'";
 	return true;
 }
 
@@ -75,14 +118,34 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::set<std::string> liveGuids;
 	const auto ensureAsset =
 		[&](const std::string& projectRel, const std::string& kind,
-			const std::string& pakId, const std::string& guidKindOverride,
+			const std::string& pakId, const std::string& guidOverride,
 			std::vector<CatalogEntry>& bucket) -> bool {
 		const fs::path abs = fs::path(project.root) / fs::path(projectRel);
 		std::string guid;
-		if (!guidKindOverride.empty())
-			guid = guidKindOverride;
-		else if (!GuidForAsset(abs.generic_string(), kind, guid, err))
-			return false;
+		if (!guidOverride.empty()) {
+			// The identity was resolved elsewhere (the mesh's DERIVED
+			// manifest GUID): ADOPT it into the asset directory so both
+			// tables agree, then ensure the content id.
+			guid = guidOverride;
+			std::string aErr;
+			if (!db.AdoptFile(abs.lexically_normal().generic_string(),
+					guid, kind, aErr)) {
+				err = "adopt failed for '" + projectRel + "': " + aErr;
+				return false;
+			}
+		}
+		else {
+			std::string sidecar, note;
+			if (!AcquireAssetIdentity(db,
+					abs.lexically_normal().generic_string(), kind, guid,
+					sidecar, note, err))
+				return false;
+			if (!note.empty())
+				std::printf("[ids] %s\n", note.c_str());
+			// Identity inputs belong with the content deps: a sidecar
+			// GUID change regenerates (the depfile feed).
+			contentDeps.push_back(sidecar);
+		}
 		uint64_t id = 0;
 		std::string symbol;
 		if (!db.EnsureContentId(guid, kind, projectRel, id, symbol, err))
@@ -102,9 +165,13 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 			return false;
 		if (pak.id == plan.entryPak)
 			out.entryScene = out.scenes.back().id;
-		// The scene's geometry families: the SIBLING .gltf's manifest
-		// GUID (SourceAssetGuid — the family's stable identity, the
-		// importer's own sidecar doubles as it).
+		// The scene's geometry families: the manifest's DERIVED
+		// .geometry entry GUID is the MESH's canonical identity — the
+		// SAME GUID the asset directory registers the derived blob
+		// under, so the runtime content id, the source-asset registry
+		// and the import manifest agree on ONE identity (the source
+		// glTF's own GUID stays the SOURCE model's identity; keying the
+		// mesh row on it was the identity split this fixes).
 		for (const std::string& artifact : pak.sceneArtifacts) {
 			const std::string ext =
 				fs::path(artifact).extension().generic_string();
@@ -122,14 +189,37 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 				}
 				familySource = src.generic_string();
 			}
-			std::string guid;
+			smvk::assets::AssetManifest man;
 			std::string mErr;
-			if (smvk::cache::ReadAssetMeta(
+			if (smvk::assets::LoadAssetManifest(
 					(fs::path(project.root) / fs::path(familySource))
-						.generic_string(),
-					guid, mErr))
-				meshGuidByPath[artifact] = guid;
-			// (No manifest: the mesh pass below mints its own sidecar.)
+						.lexically_normal().generic_string(),
+					man, mErr)) {
+				const std::string want =
+					fs::path(artifact).filename().generic_string();
+				std::string derived;
+				for (const auto& e : man.entries)
+					if (e.file == want) {
+						derived = e.guid;
+						break;
+					}
+				if (derived.empty())
+					for (const auto& e : man.entries)
+						if (e.kind == smvk::assets::AssetKind::Geometry) {
+							derived = e.guid;
+							break;
+						}
+				if (!derived.empty())
+					meshGuidByPath[artifact] = derived;
+				// The manifest IS an identity input — a dep.
+				contentDeps.push_back(
+					smvk::cache::MetaPathFor(
+						(fs::path(project.root)
+							/ fs::path(familySource))
+							.lexically_normal().generic_string()));
+			}
+			// (No manifest: the mesh pass below mints its own sidecar
+			// identity through AcquireAssetIdentity.)
 		}
 	}
 	// Owned assets: meshes (geometry) + textures; BakeFiles are bake
@@ -198,7 +288,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 		<< "inline constexpr Id ProjectId = 0x" << std::hex
 		<< c.projectId << std::dec << "ULL;\n"
 		<< "inline constexpr std::string_view Name = \""
-		<< c.projectName << "\";\n\n";
+		<< CppStr(c.projectName) << "\";\n\n";
 	const auto emitNamespace = [&](const char* name,
 			const std::vector<CatalogEntry>& entries) {
 		os << "namespace " << name << " {\n";
@@ -217,7 +307,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 		<< "};\n\n"
 		<< "inline constexpr std::array Paks = {\n";
 	for (const auto& [id, file] : c.paks)
-		os << "    Pak{\"" << id << "\", \"" << file << "\"},\n";
+		os << "    Pak{\"" << CppStr(id) << "\", \""
+			<< CppStr(file) << "\"},\n";
 	os << "};\n\n"
 		<< "// The complete cooked content catalog (id -> path -> owner).\n"
 		<< "struct Asset {\n"
@@ -230,7 +321,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 			const char* ns) {
 		for (const CatalogEntry& e : entries)
 			os << "    Asset{" << ns << "::" << e.symbol << ", \""
-				<< e.path << "\", \"" << e.pak << "\"},\n";
+				<< CppStr(e.path) << "\", \"" << CppStr(e.pak)
+				<< "\"},\n";
 	};
 	emitRows(c.scenes, "scenes");
 	emitRows(c.textures, "textures");

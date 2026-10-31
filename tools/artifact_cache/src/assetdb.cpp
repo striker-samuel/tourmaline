@@ -781,9 +781,30 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 }
 
 // A valid C++ identifier from the path's stem: [A-Za-z0-9_], invalid
-// chars fold to '_', a leading digit takes an '_' prefix. The stem at
-// FIRST registration only — renames later keep the assigned symbol.
+// chars fold to '_', a leading digit takes an '_' prefix, and C++
+// KEYWORDS take an '_' prefix too (a legitimate 'class.png' must never
+// emit the invalid 'project::textures::class' — the generator is a
+// compiler front end for the catalog; it safely-transforms before any
+// code is emitted). The stem at FIRST registration only — renames
+// later keep the assigned symbol.
 std::string SymbolFromPath(const std::string& projectRelPath) {
+	static const char* kKeywords[] = {
+		"alignas", "alignof", "and", "asm", "auto", "bool", "break",
+		"case", "catch", "char", "class", "co_await", "co_return",
+		"co_yield", "concept", "const", "consteval", "constexpr",
+		"constinit", "const_cast", "continue", "decltype", "default",
+		"delete", "do", "double", "dynamic_cast", "else", "enum",
+		"explicit", "export", "extern", "false", "float", "for",
+		"friend", "goto", "if", "inline", "int", "long", "mutable",
+		"namespace", "new", "noexcept", "not", "nullptr", "operator",
+		"or", "private", "protected", "public", "register",
+		"reinterpret_cast", "requires", "return", "short", "signed",
+		"sizeof", "static", "static_assert", "static_cast", "struct",
+		"switch", "template", "this", "thread_local", "throw", "true",
+		"try", "typedef", "typeid", "typename", "union", "unsigned",
+		"using", "virtual", "void", "volatile", "wchar_t", "while",
+		"xor",
+	};
 	std::string stem = fs::path(projectRelPath).stem().generic_string();
 	std::string sym;
 	for (char c : stem) {
@@ -791,8 +812,15 @@ std::string SymbolFromPath(const std::string& projectRelPath) {
 			|| (c >= '0' && c <= '9') || c == '_';
 		sym += ok ? c : '_';
 	}
-	if (sym.empty() || (sym[0] >= '0' && sym[0] <= '9'))
+	if (sym.empty())
+		sym = "_";
+	if (sym[0] >= '0' && sym[0] <= '9')
 		sym = "_" + sym;
+	for (const char* kw : kKeywords)
+		if (sym == kw) {
+			sym = "_" + sym;
+			break;
+		}
 	return sym;
 }
 
@@ -819,15 +847,30 @@ bool AssetDatabase::EnsureContentId(const std::string& guid,
 	try {
 		// Existing row: return its id+symbol verbatim (a tombstone
 		// re-activates; the symbol NEVER re-derives — renames keep it).
+		// The stored KIND must match the request: one GUID identifying
+		// two kinds is an IDENTITY INVARIANT violation (a scene and a
+		// mesh sharing a GUID) — it fails loudly, never silently
+		// cross-namespaces.
 		{
 			SQLite::Statement q(*m_impl->db,
-				"SELECT id, symbol, active FROM content_ids "
-				"WHERE guid = ?");
+				"SELECT id, symbol, kind, path, active "
+				"FROM content_ids WHERE guid = ?");
 			q.bind(1, guid);
 			if (q.executeStep()) {
+				if (q.getColumn(2).getString() != kind) {
+					err = "guid " + guid + " is registered as a '"
+						+ q.getColumn(2).getString()
+						+ "' but requested as a '" + kind
+						+ "' — an identity inconsistency (the asset"
+							" and its sidecar disagree); fix the"
+							" sidecar, never the registry";
+					return false;
+				}
 				outId = uint64_t(q.getColumn(0).getInt64());
 				outSymbol = q.getColumn(1).getString();
-				const bool active = q.getColumn(2).getInt() != 0;
+				const std::string storedPath =
+					q.getColumn(3).getString();
+				const bool active = q.getColumn(4).getInt() != 0;
 				if (!active) {
 					SQLite::Statement u(*m_impl->db,
 						"UPDATE content_ids SET active = 1, path = ? "
@@ -836,7 +879,7 @@ bool AssetDatabase::EnsureContentId(const std::string& guid,
 					u.bind(2, guid);
 					u.exec();
 				}
-				else if (q.getColumn(1).getString() != projectRelPath) {
+				else if (storedPath != projectRelPath) {
 					// path refresh (informational only)
 					SQLite::Statement u(*m_impl->db,
 						"UPDATE content_ids SET path = ? WHERE guid = ?");

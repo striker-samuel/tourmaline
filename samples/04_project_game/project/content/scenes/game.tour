@@ -1,7 +1,7 @@
 //Name: game.tour
-//Last modified: Sat, Oct 31, 2026 11:39:31 AM
+//Last modified: Sat, Oct 31, 2026 12:10:55 PM
 reference -root -n 0 -source "content/models/game/game.geometry" -name "ROOT";
-fileInfo -k "application" -v "tourmaline-tour;;";
-fileInfo -k "product" -v "Tourmaline;;";
-fileInfo -k "version" -v "1;;";
+fileInfo -k "application" -v "tourmaline-tour;;;";
+fileInfo -k "product" -v "Tourmaline;;;";
+fileInfo -k "version" -v "1;;;";
 materialAsset -default -name "default";

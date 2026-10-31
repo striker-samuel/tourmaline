@@ -544,7 +544,12 @@ int main(int argc, const char* argv[]) {
 				std::cerr << "resolve failed: " << err << "\n";
 				return 1;
 			}
-			if (!manifestName.empty())
+			// The manifest name: the explicit --manifest-name wins;
+			// the default is the RECIPE stem (sponza.tourrecipe ->
+			// sponza.tapp). (This condition was inverted at first
+			// landing — a supplied name was silently overwritten; the
+			// commit review caught it.)
+			if (manifestName.empty())
 				manifestName = std::filesystem::path(recipeFile)
 					.stem().generic_string();
 			smvk::project::BuildPlanOptions opts;

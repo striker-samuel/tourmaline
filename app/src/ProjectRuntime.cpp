@@ -57,6 +57,23 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 		err = "unknown content id 0x" + std::to_string(id);
 		return std::nullopt;
 	}
+	// KIND DISPATCH (the honest channel per kind — the pak's VFS
+	// surface serves TEXTURE blobs only; meshes and scenes are
+	// cluster-internal payloads with no VFS address):
+	//   texture -> the embedded .ktx2 bytes (what every loader in the
+	//              tree consumes — the v1 LoadTexture form);
+	//   scene   -> scenes load BY IDENTITY through the apphost's world
+	//              loading (the appmanifest entry / the pak's scene
+	//              list), never as raw bytes;
+	//   mesh    -> meshes ship INSIDE their scene's cluster (the v1
+	//              pak-format boundary) — load the owning scene.
+	if (row->kind != "texture") {
+		err = "content id 0x" + std::to_string(id) + " is a '"
+			+ row->kind + "' — only TEXTURE payloads are VFS-addressed"
+				" bytes (scenes load by identity through the world"
+				" loader; meshes ship inside their scene's cluster)";
+		return std::nullopt;
+	}
 	// The row's pak, preloaded + opened once, cached for the runtime's
 	// lifetime (the PakBackend owns the image; reads borrow it).
 	auto cached = m_backends.find(row->pak);

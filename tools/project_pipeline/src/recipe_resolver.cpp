@@ -117,19 +117,27 @@ bool ExpandPattern(const fs::path& root, const std::string& pattern,
 // to nested references): the tour loads, has a root reference, the
 // root is project-relative and its artifact exists. Non-root
 // references contribute their geometry (.geometry/.gltf/.glb) to the
-// SAME pak; nested .tour references recurse (cycle-guarded) — a
-// referenced scene's content is part of the referencing scene's
-// cluster, so it ships with it.
+// SAME pak; nested .tour references recurse — a referenced scene's
+// content is part of the referencing scene's cluster, so it ships with
+// it. The recursion guard is a proper DFS: an ACTIVE set (the current
+// path — only a back-edge onto it is a cycle) plus a DONE set (fully
+// processed subtrees — skipped, so a shared subtree referenced twice
+// (A -> B -> D and A -> C -> D, a valid DAG) walks ONCE and never
+// reports as a cycle).
 bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 	std::vector<std::string>& artifacts, std::string& err,
-	std::set<std::string>& visited) {
+	std::set<std::string>& active, std::set<std::string>& done) {
 	std::error_code ec;
 	const fs::path tourAbs = fs::path(project.root) / fs::path(scene);
+	const std::string tourKey =
+		tourAbs.lexically_normal().generic_string();
+	if (done.count(tourKey))
+		return true; // already walked (a shared subtree — not a cycle)
 	if (!fs::is_regular_file(tourAbs, ec)) {
 		err = "scene tour not found: " + scene;
 		return false;
 	}
-	if (!visited.insert(tourAbs.lexically_normal().generic_string()).second) {
+	if (!active.insert(tourKey).second) {
 		err = "nested scene reference cycle through: " + scene;
 		return false;
 	}
@@ -172,8 +180,8 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 		const std::string ext = LowerExt(ref.source);
 		if (ext == ".tour") {
 			// Nested scene: its content joins THIS pak's cluster.
-			if (!CollectSceneArtifacts(project, ref.source, artifacts, err,
-					visited))
+			if (!CollectSceneArtifacts(project, ref.source, artifacts,
+					err, active, done))
 				return false;
 		}
 		else if (ext == ".geometry" || ext == ".gltf" || ext == ".glb") {
@@ -192,6 +200,11 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 			return false;
 		}
 	}
+	// Completed subtree: off the active path, into done (a second
+	// reference to this scene later in the walk is a SHARE, not a
+	// cycle).
+	active.erase(tourKey);
+	done.insert(tourKey);
 	return true;
 }
 
@@ -256,9 +269,9 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 		if (pak.scene.empty())
 			continue;
 		std::vector<std::string> artifacts;
-		std::set<std::string> visited;
+		std::set<std::string> active, done;
 		if (!CollectSceneArtifacts(project, pak.scene, artifacts, err,
-				visited))
+				active, done))
 			return false;
 		// order-preserving dedupe (a nested tour may share a reference
 		// with the parent)

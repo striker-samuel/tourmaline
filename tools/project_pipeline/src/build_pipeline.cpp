@@ -419,11 +419,45 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					|| asset.kind == PlanAssetKind::BakeFile)
 				vfsOwner[asset.path] = pak.id;
 
+	// The staged set (see the loop's STAGED PUBLICATION note): the
+	// destructor removes every un-committed staging file, so ANY early
+	// return below leaves the previous generation intact.
+	struct StagedSet {
+		std::vector<std::pair<fs::path, fs::path>> files; // (staged, final)
+		bool committed = false;
+		~StagedSet() {
+			if (committed)
+				return;
+			std::error_code ec;
+			for (const auto& [stagedPath, finalPath] : files)
+				fs::remove(stagedPath, ec);
+		}
+	} staged;
+
+	// The per-pak reports land in a LOCAL first: they describe PUBLISHED
+	// outputs, and a mid-set failure rolls the whole set back — the
+	// report must never claim a publication that was undone.
+	std::vector<BuildPlanReport::Pak> reps;
+
 	for (const PlanPak& pak : plan.paks) {
 		PakStageArgs stage;
 		stage.contentDir = project.root;
-		stage.outPak = (publish / fs::path(pak.output))
-			.lexically_normal().generic_string();
+		const fs::path finalPath =
+			(publish / fs::path(pak.output)).lexically_normal();
+		fs::path stagedPath = finalPath;
+		stagedPath += ".staged";
+		// STAGED PUBLICATION: every pak writes to a STAGING name; only
+		// after the WHOLE set verified + policed do the renames land
+		// (per-file atomic on one volume), and only then does the
+		// manifest publish. A failure anywhere — a failed stage, a
+		// failed verify, a failed police, even a failed rename —
+		// destroys the staged set on scope exit and leaves the
+		// PREVIOUS generation's paks + manifest untouched (the old
+		// manifest never references a mixed generation: the manifest is
+		// the atomic commit point and the paks under it flip as one
+		// set).
+		stage.outPak = stagedPath.generic_string();
+		staged.files.emplace_back(stagedPath, finalPath);
 		stage.verify = true;
 		if (pak.scene.empty()) {
 			// ASSET-ONLY pak (the recipe spec's shared package): the
@@ -527,15 +561,38 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		}
 		BuildPlanReport::Pak rep;
 		rep.id = pak.id;
-		rep.output = stage.outPak;
+		rep.output = finalPath.lexically_normal().generic_string();
 		rep.scene = pak.scene;
 		for (const std::string& a : pak.sceneArtifacts)
 			if (reimportedFamilies.count(a)) {
 				rep.reimported = true;
 				break;
 			}
-		out.paks.push_back(std::move(rep));
+		reps.push_back(std::move(rep));
 	}
+
+	// ---- the atomic publish: every staged pak verified + policed, now
+	// the renames land (per-file atomic on one volume, the whole set
+	// before any manifest write). A rename failure rolls the set back
+	// where it can (the destructor cleans what remains staged).
+	for (const auto& [stagedPath, finalPath] : staged.files) {
+		std::error_code renEc;
+		fs::rename(stagedPath, finalPath, renEc);
+		if (renEc) {
+			err = "the publish rename failed: "
+				+ stagedPath.generic_string() + " -> "
+				+ finalPath.generic_string() + " ("
+				+ renEc.message() + ")";
+			return false;
+		}
+	}
+	staged.committed = true;
+	// The set is live: the reports describe genuinely published paks
+	// from here on (a manifest-write failure below leaves the paks on
+	// disk with the PREVIOUS manifest standing — the documented
+	// residual window; the full fix is versioned pak filenames, noted
+	// as the follow-up).
+	out.paks = std::move(reps);
 
 	// ---- 4) publish the appmanifest (LAST, after every pak verified) --
 	// The manifest names the entry pak + the entry scene's cooked

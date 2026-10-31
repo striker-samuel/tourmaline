@@ -41,19 +41,22 @@ function(tourmaline_add_project NAME)
 		message(FATAL_ERROR
 			"tourmaline_add_project(${NAME}): RECIPE is required")
 	endif()
-	if(NOT TP_PROJECT)
-		get_filename_component(TP_PROJECT "${TP_RECIPE}" DIRECTORY)
-	endif()
+	# Absolutize the recipe FIRST — the default PROJECT derives from the
+	# RESOLVED recipe path (deriving before absolutizing turned a
+	# relative recipe into a wrong --project argument; the commit
+	# review caught it).
 	get_filename_component(TP_RECIPE "${TP_RECIPE}" ABSOLUTE)
 	if(NOT EXISTS "${TP_RECIPE}")
 		message(FATAL_ERROR
 			"tourmaline_add_project(${NAME}): recipe not found: ${TP_RECIPE}")
 	endif()
+	if(NOT TP_PROJECT)
+		get_filename_component(TP_PROJECT "${TP_RECIPE}" DIRECTORY)
+	endif()
 	if(NOT TP_HEADER_DIR)
 		set(TP_HEADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/${NAME}")
 	endif()
 	set(TP_HEADER "${TP_HEADER_DIR}/project.h")
-	set(TP_DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/${NAME}_ids.d")
 
 	if(NOT TARGET Project)
 		message(FATAL_ERROR
@@ -62,19 +65,24 @@ function(tourmaline_add_project NAME)
 			"content-id generation)")
 	endif()
 
-	add_custom_command(OUTPUT "${TP_HEADER}"
+	# The generation runs on EVERY build (a custom target's command is
+	# never skipped): a depfile could not see a NEWLY CREATED file
+	# matching a recipe glob (it was absent when the deps were written)
+	# or a sidecar GUID change — the always-run + the generator's
+	# WRITE-ONLY-ON-CHANGE emission give the correct incrementality
+	# instead: the scan is cheap, an unchanged catalog never touches
+	# project.h's mtime, and nothing that includes it recompiles.
+	add_custom_target(${NAME}_ids
 		COMMAND $<TARGET_FILE:Project>
 			ids
 			--project "${TP_PROJECT}"
 			--recipe "${TP_RECIPE}"
 			--header "${TP_HEADER}"
-			--deps "${TP_DEPFILE}"
-		DEPFILE "${TP_DEPFILE}"
+		BYPRODUCTS "${TP_HEADER}"
 		DEPENDS Project "${TP_RECIPE}"
 		COMMENT "Generating ${NAME} project.h (content ids from the asset db)"
 		VERBATIM
 	)
-	add_custom_target(${NAME}_ids DEPENDS "${TP_HEADER}")
 
 	set_property(GLOBAL PROPERTY
 		TOURMALINE_PROJECT_${NAME}_INCLUDE_DIR "${TP_HEADER_DIR}")

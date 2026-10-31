@@ -912,6 +912,59 @@ void TestRecipeResolution() {
 		"include content/models/world/*.geometry\n"
 		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
 		"cluster-internal");
+	// A SHARED nested subtree is a DAG, not a cycle: A -> B -> D and
+	// A -> C -> D must resolve (the old never-cleared visited set
+	// false-positived exactly this as a cycle — the commit review
+	// caught it).
+	{
+		const auto writeTourWithRefs =
+			[&](const fs::path& path,
+				const std::vector<std::string>& nested) {
+			smvk::tour::Doc doc;
+			smvk::tour::ReferenceCmd root;
+			root.source = "content/models/world/world.geometry";
+			root.name = "ROOT";
+			root.root = true;
+			doc.references.push_back(root);
+			for (const std::string& n : nested) {
+				smvk::tour::ReferenceCmd ref;
+				ref.source = n;
+				ref.name = "REF " + n;
+				doc.references.push_back(ref);
+			}
+			std::string sErr;
+			smvk::tour::SaveTour(path.generic_string(), doc, sErr);
+		};
+		writeTourWithRefs(scenes / "dagD.tour", {});
+		writeTourWithRefs(scenes / "dagB.tour",
+			{ "content/scenes/dagD.tour" });
+		writeTourWithRefs(scenes / "dagC.tour",
+			{ "content/scenes/dagD.tour" });
+		writeTourWithRefs(scenes / "dagA.tour",
+			{ "content/scenes/dagB.tour", "content/scenes/dagC.tour" });
+		smvk::project::ProjectRecipe r;
+		smvk::project::RecipeDiagnostic d;
+		smvk::project::BuildPlan p;
+		std::string e;
+		const std::string dag =
+			"recipe 1\n"
+			"entry content/scenes/dagA.tour\n"
+			"[pak a]\noutput a.pak\nscene content/scenes/dagA.tour\n";
+		Check(smvk::project::ParseProjectRecipeText(dag, r, d)
+			&& smvk::project::ResolveRecipe(project, r, p, e),
+			"resolve.shared-subtree-dag-ok");
+		// The shared subtree's artifact appears ONCE (the dedupe), and
+		// a real back-edge (D -> A) still rejects as a cycle.
+		Check(e.empty() && p.paks[0].sceneArtifacts.size() == 1,
+			"resolve.shared-subtree-walks-once");
+		writeTourWithRefs(scenes / "dagD.tour",
+			{ "content/scenes/dagA.tour" });
+		smvk::project::BuildPlan p2;
+		std::string e2;
+		Check(!smvk::project::ResolveRecipe(project, r, p2, e2)
+			&& e2.find("cycle") != std::string::npos,
+			"resolve.real-back-edge-still-cycle");
+	}
 	// A nested scene-reference cycle (a -> b -> a).
 	{
 		writeTour(scenes / "loopA.tour", "content/models/world/world.geometry");
@@ -1107,6 +1160,8 @@ public:
 	};
 	std::vector<Call> calls;
 	int cookRc = 0, giRc = 0, pakRc = 0;
+	int failPakCall = -1;    // 0-based Pak-call index to fail (-1 never)
+	int pakCallCount = 0;
 	int Cook(const smvk::project::CookStageArgs& a,
 		std::string&) override {
 		calls.push_back({ "Cook", { a.contentDir, a.tour,
@@ -1130,6 +1185,10 @@ public:
 		for (const std::string& e : a.excludeVfs)
 			v.push_back("exclude:" + e);
 		calls.push_back({ "Pak", v });
+		// The staged-publication regression control: fail ONE pak call
+		// (0-based; -1 = never) so a mid-set failure can be exercised.
+		if (failPakCall == int(pakCallCount++))
+			return 1;
 		if (pakRc == 0) {
 			// The executor verifies the stage's output EXISTS, POLICES
 			// it through PakReader, and lists the entry pak's SCENES for
@@ -1302,8 +1361,8 @@ void TestBuildPlanExecutor() {
 					== (scenes / "grid.tour").lexically_normal()
 						.generic_string()
 				&& rec.calls[2].args[3]
-					== (tmp / "publish" / "grid.pak").lexically_normal()
-						.generic_string()
+					== (tmp / "publish" / "grid.pak.staged")
+						.lexically_normal().generic_string()
 				&& rec.calls[2].args[4] == "verify:on",
 				"executor.pak-args");
 		}
@@ -1439,6 +1498,47 @@ void TestBuildPlanExecutor() {
 					"executor.world-exclude-args");
 			}
 		}
+		// ---- the staged-publication regression (the commit review's
+		// #5): a pak failing MID-SET never touches the published
+		// generation — the finals stand byte-identical and no staging
+		// file lingers.
+		{
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (tmp / "publish5").generic_string();
+			smvk::project::BuildPlanReport ok1;
+			std::string e1;
+			RecordingAdapter rec1;
+			Check(smvk::project::ExecuteBuildPlan(project, p2, rec1,
+					opts, ok1, e1)
+				&& ok1.paks.size() == 2,
+				"executor.staged-generation-builds");
+			const std::vector<char> sharedBefore =
+				ReadAllBytes(ok1.paks[0].output);
+			const std::vector<char> worldBefore =
+				ReadAllBytes(ok1.paks[1].output);
+			// The rebuild: the SECOND pak call (world, plan order
+			// shared->world) FAILS after shared staged successfully —
+			// the whole generation must roll back.
+			RecordingAdapter rec2;
+			rec2.failPakCall = 1;
+			smvk::project::BuildPlanReport fail;
+			std::string e2;
+			Check(!smvk::project::ExecuteBuildPlan(project, p2, rec2,
+					opts, fail, e2)
+				&& e2.find("the Pak stage failed") != std::string::npos
+				&& fail.paks.empty(),
+				"executor.staged-midset-failure-fails");
+			Check(ReadAllBytes(ok1.paks[0].output) == sharedBefore
+				&& ReadAllBytes(ok1.paks[1].output) == worldBefore,
+				"executor.staged-previous-generation-untouched");
+			bool stagingLingers = false;
+			for (const fs::directory_entry& e :
+					fs::directory_iterator(tmp / "publish5", ec))
+				if (e.path().extension() == ".staged")
+					stagingLingers = true;
+			Check(!stagingLingers,
+				"executor.staged-no-staging-leftovers");
+		}
 		// The real leg: build through the subprocess adapter, then
 		// inspect BOTH paks (BLD-02 verify + BLD-07 asset-only + the
 		// ownership police's contract).
@@ -1493,6 +1593,48 @@ void TestBuildPlanExecutor() {
 						&& mesh->path
 							== "content/models/grid/grid.geometry",
 						"executor.manifest-id-table");
+				}
+				// The mesh id keys the DERIVED .geometry manifest guid
+				// (the one identity the asset directory registers the
+				// blob under — NOT the source glTF's guid; the commit
+				// review's identity-split finding).
+				{
+					smvk::cache::AssetDatabase db;
+					std::string dErr;
+					const std::string regRoot =
+						smvk::cache::EnsureRegistryRoot(
+							project.DerivedDataDir());
+					Check(db.Open(regRoot, project.root, dErr),
+						"executor.ids-db-opens");
+					if (db.IsOpen()) {
+						smvk::assets::AssetManifest man;
+						std::string mErr;
+						Check(smvk::assets::LoadAssetManifest(
+								(fs::path(project.root) / "content"
+									/ "models" / "grid" / "grid.gltf")
+									.lexically_normal()
+									.generic_string(),
+								man, mErr),
+							"executor.mesh-manifest-reads");
+						std::string derived;
+						for (const auto& e : man.entries)
+							if (e.file == "grid.geometry") {
+								derived = e.guid;
+								break;
+							}
+						Check(!derived.empty(),
+							"executor.mesh-derived-guid-found");
+						if (!derived.empty()) {
+							uint64_t id = 0;
+							std::string sym;
+							Check(db.EnsureContentId(derived, "mesh",
+									"content/models/grid/grid.geometry",
+									id, sym, dErr)
+								&& manifest.FindAsset(0x3000)
+								&& id == manifest.FindAsset(0x3000)->id,
+								"executor.mesh-id-keys-derived-guid");
+						}
+					}
 				}
 				bool paksExist = true;
 				for (const std::string& pak : manifest.paks)
@@ -1878,14 +2020,70 @@ void TestProjectCatalog() {
 			"catalog.texture-plan-generates");
 		Check(shrunk.textures.size() == 1 && shrunk.meshes.size() == 1,
 			"catalog.texture-plan-namespaces");
-		// Regenerate the ORIGINAL plan: every row re-activates with the
-		// SAME ids (the header text is identical).
+		// Regenerate the ORIGINAL plan (no includes): the texture row
+		// tombstones, every other row re-activates with the SAME ids —
+		// the header text returns identical.
 		smvk::project::ProjectCatalog round;
 		std::vector<std::string> deps3;
 		Check(smvk::project::GenerateProjectCatalog(project, plan, db,
 				round, deps3, err)
 			&& smvk::project::EmitProjectHeader(round) == header,
 			"catalog.reactivate-same-ids");
+	}
+
+	// ---- the commit-review regressions (identity + symbol safety) ---
+	// A guid identifying two kinds is an IDENTITY INVARIANT violation —
+	// loud, never a silent cross-namespace id.
+	{
+		uint64_t id = 0;
+		std::string sym, err2;
+		Check(db.EnsureContentId(
+				"55555555555555555555555555555555", "texture",
+				"content/t/x.png", id, sym, err2),
+			"catalog.kind-mismatch-setup");
+		Check(!db.EnsureContentId(
+				"55555555555555555555555555555555", "mesh",
+				"content/m/x.geometry", id, sym, err2)
+			&& err2.find("identity inconsistency")
+				!= std::string::npos,
+			"catalog.kind-mismatch-rejected");
+	}
+	// C++ keywords get a safe '_' prefix (class.png -> _class, never
+	// the invalid project::textures::class).
+	{
+		uint64_t id = 0;
+		std::string sym, err2;
+		Check(db.EnsureContentId(
+				"66666666666666666666666666666666", "texture",
+				"content/t/class.png", id, sym, err2)
+			&& sym == "_class",
+			"catalog.keyword-symbol-safe");
+	}
+	// Identity acquisition ADOPTS: the guid has a row in the ASSET
+	// DIRECTORY too (one database, both tables agree — the mint never
+	// leaves content_ids without an assets row).
+	{
+		std::string found;
+		Check(db.GuidForPath(
+				(fs::path(project.root) / "content" / "models" / "thing"
+					/ "thing.geometry").lexically_normal()
+					.generic_string(),
+				found)
+			&& !found.empty(),
+			"catalog.identity-adopted");
+	}
+	// String-literal escaping: quotes/backslashes in names/paths never
+	// break the emitted header.
+	{
+		smvk::project::ProjectCatalog c;
+		c.projectName = "We\"ird";
+		c.paks = { { "wo\"rld", "wor\\ld.pak" } };
+		const std::string text =
+			smvk::project::EmitProjectHeader(c);
+		Check(text.find("Name = \"We\\\"ird\"") != std::string::npos
+			&& text.find("Pak{\"wo\\\"rld\", \"wor\\\\ld.pak\"}")
+				!= std::string::npos,
+			"catalog.header-escapes-literals");
 	}
 }
 

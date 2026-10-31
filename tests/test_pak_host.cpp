@@ -444,14 +444,16 @@ void TestProjectRuntime() {
 			<< "entry shared.pak scene\n"
 			<< "\n[paks]\nshared.pak\n"
 			<< "\n[ids]\n"
-			<< "0x2000 texture shared.pak " << vfsPath << "\n";
+			<< "0x2000 texture shared.pak " << vfsPath << "\n"
+			<< "0x3000 mesh shared.pak content/models/s/rock.geometry\n"
+			<< "0x1000 scene shared.pak content/scenes/s.tour\n";
 	}
 	std::string err;
 	auto rt = app::ProjectRuntime::Load(tapp.generic_string(), err);
 	Check(bool(rt) && err.empty(), "prt.load");
 	if (rt) {
 		Check(rt->Manifest().paks.size() == 1
-			&& rt->Manifest().assets.size() == 1,
+			&& rt->Manifest().assets.size() == 3,
 			"prt.manifest-parsed");
 		const smvk::AppManifestAsset* row = rt->Asset(0x2000);
 		Check(row && row->kind == "texture"
@@ -468,6 +470,19 @@ void TestProjectRuntime() {
 		std::string badErr;
 		Check(!rt->ReadAsset(0x9999, badErr) && !badErr.empty(),
 			"prt.unknown-id-fails");
+		// Non-texture kinds refuse HONESTLY (the commit review's #4:
+		// meshes/scenes are cluster-internal, not VFS bytes — the error
+		// must say so, never the misleading "pak does not serve").
+		{
+			std::string meshErr;
+			Check(!rt->ReadAsset(0x3000, meshErr)
+				&& meshErr.find("cluster") != std::string::npos,
+				"prt.mesh-read-honest-refusal");
+			std::string sceneErr;
+			Check(!rt->ReadAsset(0x1000, sceneErr)
+				&& sceneErr.find("identity") != std::string::npos,
+				"prt.scene-read-honest-refusal");
+		}
 		// A manifest-relative pak resolution: move the whole tree, the
 		// runtime still resolves (RUN-04's contract through the façade).
 		const fs::path moved = tmp / "moved";
