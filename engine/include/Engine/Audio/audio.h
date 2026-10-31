@@ -77,7 +77,22 @@ public:
     void Stop(VoiceHandle voice);
     void StopAll();
     void SetVoiceVolume(VoiceHandle voice, float volume);
+    // SPATIAL playback control (the scene-aware audio layer feeds
+    // these per frame): pan in [-1, +1] (full-left .. full-right,
+    // constant-power equal-loudness at the extremes; 0 = center — the
+    // pre-pan behavior), and the combined pan+volume set. The mixer
+    // clamps pan to [-1,1]. Stereo engine configs only: mono configs
+    // apply the volume and drop the pan.
+    void SetVoicePan(VoiceHandle voice, float pan);
+    void SetVoiceSpatial(VoiceHandle voice, float volume, float pan);
     bool IsVoicePlaying(VoiceHandle voice) const;
+
+    // The constant-power stereo pan pair for a pan value in [-1,+1]
+    // (left, right gains). Equal-loudness at the extremes (unlike
+    // linear pan, which attenuates -3dB at center and audibly dips
+    // moving sounds). Pure math, exposed for the spatial layer +
+    // tests.
+    static void ConstantPowerPan(float pan, float& left, float& right);
 
     void SetMasterVolume(float v);
     float GetMasterVolume() const { return config_.masterVolume; }
@@ -96,15 +111,18 @@ private:
         uint32_t clipIndex = UINT32_MAX;
         double cursor = 0.0; // fractional frame position
         float volume = 1.0f;
+        float pan = 0.0f;    // -1 full-left .. +1 full-right
         float pitch = 1.0f;
         bool loop = false;
         bool playing = false;
     };
     struct Command {
-        enum class Type { Play, Stop, StopAll, SetVolume, SetMaster, SetPaused } type;
+        enum class Type { Play, Stop, StopAll, SetVolume, SetPan,
+            SetSpatial, SetMaster, SetPaused } type;
         uint32_t voiceId = 0;
         uint32_t clipIndex = UINT32_MAX;
         float volume = 1.0f;
+        float pan = 0.0f;
         float pitch = 1.0f;
         bool loop = false;
         bool paused = false;

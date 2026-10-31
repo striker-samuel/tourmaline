@@ -375,6 +375,69 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			f << " -v " << c.number;
 		break;
 	}
+	case Verb::CreateAudioSource: {
+		// -t packs local position (x y z); -at echoes "audioSource"
+		// (unified createNode form). -p is the parent: bare id
+		// (legacy) or quoted name/path/uuid. The payload rides
+		// setAudioAttr / addAudioSound lines (the exportSettings
+		// pattern), so nothing else lives here.
+		f << "createAudioSource -p ";
+		if (!c.parentRef.empty())
+			f << Quote(c.parentRef);
+		else
+			f << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -at audioSource"
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z;
+		break;
+	}
+	case Verb::SetAudioAttr: {
+		// Same addressing shape as the other typed attr verbs (-ref k
+		// of the k-th createAudioSource, else -n cluster id). Bools
+		// ride -type "bool" -v on|off; name rides -v as a string;
+		// position rides -t as a triple; scalars ride -v.
+		f << "setAudioAttr ";
+		if ((c.node & kCreateAudioSourceRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateAudioSourceRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -at " << c.text;
+		if (c.text == "name")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else if (c.text == "position")
+			f << " -type \"double3\" -t " << c.vec4.x << " " << c.vec4.y
+				<< " " << c.vec4.z;
+		else if (c.text == "spatial" || c.text == "playOnLoad")
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		else
+			f << " -v " << c.number;
+		break;
+	}
+	case Verb::AddAudioSound: {
+		// -name is the slot's stable identifier; -source the
+		// authoring-time asset reference; -v the slot gain; -loop the
+		// slot's loop default (always emitted — the explicit, exact
+		// round-trip form).
+		f << "addAudioSound ";
+		if ((c.node & kCreateAudioSourceRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateAudioSourceRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -source " << Quote(c.name)
+			<< " -v " << c.number
+			<< " -loop " << (c.flag ? "on" : "off");
+		break;
+	}
+	case Verb::RemoveAudioSound: {
+		f << "removeAudioSound ";
+		if ((c.node & kCreateAudioSourceRefBase) != 0)
+			f << "-ref " << (c.node & ~kCreateAudioSourceRefBase);
+		else
+			f << "-n " << c.node;
+		f << " -name " << Quote(c.text);
+		break;
+	}
 	case Verb::TerrainPaint: {
 		// -t packs: worldX worldZ radius flattenTarget (4 values);
 		// -v carries strength; -ref names the k-th createTerrain.
@@ -857,6 +920,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			return 3;
 		if (c.verb == Verb::CreateCamera)
 			return 4;
+		if (c.verb == Verb::CreateAudioSource)
+			return 6;
 		if (c.verb == Verb::CreateNode) {
 			if (c.nodeType == "pointLight" || c.nodeType == "spotLight")
 				return 0;
@@ -870,6 +935,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				return 4;
 			if (c.nodeType == "exportSettings")
 				return 5;
+			if (c.nodeType == "audioSource")
+				return 6;
 		}
 		return -1;
 	};
@@ -909,7 +976,13 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				&& (d.node & ~kCreateCameraRefBase) == k)
 			|| (family == 5 && d.verb == Verb::SetExportAttr
 				&& (d.node & kCreateExportRefBase) != 0
-				&& (d.node & ~kCreateExportRefBase) == k);
+				&& (d.node & ~kCreateExportRefBase) == k)
+			|| (family == 6
+				&& (d.verb == Verb::SetAudioAttr
+					|| d.verb == Verb::AddAudioSound
+					|| d.verb == Verb::RemoveAudioSound)
+				&& (d.node & kCreateAudioSourceRefBase) != 0
+				&& (d.node & ~kCreateAudioSourceRefBase) == k);
 			if (child) {
 				WriteCommandLine(f, d, "\t");
 				cmdConsumed[j] = 1;
@@ -984,6 +1057,8 @@ struct Flags {
 	bool hasKind = false;
 	std::string hash;      // -hash <hex> (giAsset bake-input hashes)
 	bool hasHash = false;
+	bool loop = false;     // -loop on|off (addAudioSound slot default)
+	bool hasLoop = false;
 };
 
 static bool ParseFlagWord(const std::string& w, bool& out) {
@@ -1057,7 +1132,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root" || w == "-kind" || w == "-hash";
+					w == "-type" || w == "-root" || w == "-kind" || w == "-hash" || w == "-loop";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1080,7 +1155,7 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 					w == "-pattern" || w == "-enabled" ||
 					w == "-fingerprint" || w == "-ref" ||
 					w == "-uuid" || w == "-source" || w == "-name" ||
-					w == "-type" || w == "-root" || w == "-kind" || w == "-hash";
+					w == "-type" || w == "-root" || w == "-kind" || w == "-hash" || w == "-loop";
 			};
 			while (i < toks.size() && !isFlag(toks[i])) {
 				std::string v = toks[i];
@@ -1180,6 +1255,17 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			f.hash = w;
 			i += 2;
 		}
+		else if (k == "-loop" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			bool b = false;
+			if (ParseFlagWord(w, b)) {
+				f.hasLoop = true;
+				f.loop = b;
+			}
+			i += 2;
+		}
 		else if (k == "-type" && i + 1 < toks.size()) {
 			// Value datatype (Maya -type flavor: double3/float4/
 			// string/bool/enum) — informational for now: the values
@@ -1219,6 +1305,7 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "givolume", CreateNodeKind::Dag },
 	{ "cubemap", CreateNodeKind::Dag },
 	{ "camera", CreateNodeKind::Dag },
+	{ "audioSource", CreateNodeKind::Dag },
 	{ "exportSettings", CreateNodeKind::Dag },
 	{ "material", CreateNodeKind::System },
 	{ "file", CreateNodeKind::System },
@@ -1637,6 +1724,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			effVerb = "createCubemap";
 		else if (tn == "camera")
 			effVerb = "createCamera";
+		else if (tn == "audioSource")
+			effVerb = "createAudioSource";
 		else
 			effVerb = "createLight"; // pointLight | spotLight
 			// Legacy light -at vocabulary for the shared branch below.
@@ -2312,6 +2401,133 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			}
 		}
 	}
+	else if (effVerb == "createAudioSource" && (fl.hasP || fl.hasPStr)
+		&& fl.hasName && (fl.t.size() == 0 || fl.t.size() == 3)) {
+		// -t packs local position (x y z) — optional (defaults to the
+		// parent's origin). -at must read "audioSource" when present
+		// (unified createNode form echo). The payload rides
+		// setAudioAttr / addAudioSound lines (the exportSettings
+		// pattern — nothing audio lives on the create line).
+		if (fl.hasAt && fl.at != "audioSource") {
+			err = "line " + std::to_string(lineNo) + ": createAudioSource wants -at audioSource";
+			return false;
+		}
+		double v[3] = {};
+		for (size_t k = 0; k < fl.t.size(); ++k)
+			if (!ParseDouble(fl.t[k], v[k])) {
+				err = "line " + std::to_string(lineNo) + ": bad createAudioSource value";
+				return false;
+			}
+		c.verb = Verb::CreateAudioSource;
+		c.node = fl.hasP ? fl.p : 0;
+		if (fl.hasPStr)
+			c.parentRef = fl.pStr;
+		c.text = fl.name;
+		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+	}
+	else if (effVerb == "setAudioAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
+		static const char* kAttrs[] = { "volume", "spatial",
+			"playOnLoad", "minDistance", "maxDistance", "name",
+			"position" };
+		bool known = false;
+		for (const char* a : kAttrs)
+			if (fl.at == a) {
+				known = true;
+				break;
+			}
+		if (!known) {
+			err = "line " + std::to_string(lineNo) + ": bad audio attr '" + fl.at + "'";
+			return false;
+		}
+		c.verb = Verb::SetAudioAttr;
+		c.node = fl.hasRef ? (kCreateAudioSourceRefBase | fl.ref) : fl.n;
+		c.text = fl.at;
+		if (fl.at == "name") {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else if (fl.at == "position") {
+			if (fl.t.size() < 3) {
+				err = "line " + std::to_string(lineNo) + ": audio triple wants 3 values";
+				return false;
+			}
+			double x = 0, y = 0, z = 0;
+			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+				!ParseDouble(fl.t[2], z)) {
+				err = "line " + std::to_string(lineNo) + ": bad audio triple";
+				return false;
+			}
+			c.vec4 = glm::vec4(float(x), float(y), float(z), 1.0f);
+		}
+		else if (fl.at == "spatial" || fl.at == "playOnLoad") {
+			bool on = false;
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseFlagWord(w, on)) {
+				err = "line " + std::to_string(lineNo) + ": bad flag '" + w + "'";
+				return false;
+			}
+			c.flag = on;
+		}
+		else {
+			const std::string& w = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad value '" + w + "'";
+				return false;
+			}
+			// Range gates (the emitter contract): volume >= 0,
+			// minDistance >= 0, maxDistance > 0.
+			if ((fl.at == "volume" || fl.at == "minDistance")
+					&& c.number < 0.0) {
+				err = "line " + std::to_string(lineNo) + ": " + fl.at
+					+ " wants >= 0";
+				return false;
+			}
+			if (fl.at == "maxDistance" && c.number <= 0.0) {
+				err = "line " + std::to_string(lineNo) + ": maxDistance wants > 0";
+				return false;
+			}
+		}
+	}
+	else if (effVerb == "addAudioSound") {
+		// One SOUND SLOT: -name is the slot's stable identifier,
+		// -source the authoring-time asset reference; -v the slot
+		// gain (default 1), -loop the slot's loop default. Upsert by
+		// slot name at replay. Shape errors are LOUD (a mistyped
+		// sound line must fail the load, never warn-skip: the emitter
+		// would silently lose its clip).
+		if (!(fl.hasN || fl.hasRef) || !fl.hasName || !fl.hasSource) {
+			err = "line " + std::to_string(lineNo)
+				+ ": addAudioSound wants (-n <id> | -ref <k>)"
+				" -name <slot> -source <asset>";
+			return false;
+		}
+		c.verb = Verb::AddAudioSound;
+		c.node = fl.hasRef ? (kCreateAudioSourceRefBase | fl.ref) : fl.n;
+		c.text = fl.name;
+		c.name = fl.source;
+		c.number = 1.0;
+		if (fl.hasV) {
+			if (!ParseDouble(fl.v, c.number)) {
+				err = "line " + std::to_string(lineNo) + ": bad gain '" + fl.v + "'";
+				return false;
+			}
+			if (c.number < 0.0 || c.number > 16.0) {
+				err = "line " + std::to_string(lineNo) + ": gain wants 0..16";
+				return false;
+			}
+		}
+		c.flag = fl.hasLoop && fl.loop;
+	}
+	else if (effVerb == "removeAudioSound") {
+		if (!(fl.hasN || fl.hasRef) || !fl.hasName) {
+			err = "line " + std::to_string(lineNo)
+				+ ": removeAudioSound wants (-n <id> | -ref <k>)"
+				" -name <slot>";
+			return false;
+		}
+		c.verb = Verb::RemoveAudioSound;
+		c.node = fl.hasRef ? (kCreateAudioSourceRefBase | fl.ref) : fl.n;
+		c.text = fl.name;
+	}
 	else if (effVerb == "setExportAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
 		// The exportSettings node's payload lines (one per field —
 		// SceneExportSettings). Addressing: -ref k of the k-th
@@ -2795,6 +3011,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Same scheme for created cameras (kCreateCameraRefBase | k),
 	// resolved by SetCamAttr below.
 	std::vector<uint32_t> createdCameras;
+	// Same scheme for created audio sources (kCreateAudioSourceRefBase |
+	// k), resolved by SetAudioAttr / AddAudioSound / RemoveAudioSound
+	// below.
+	std::vector<uint32_t> createdAudioSources;
 	// Same scheme for the created exportSettings node
 	// (kCreateExportRefBase | k), resolved by SetExportAttr below. The
 	// singleton semantic is authoring-side: the FIRST create wins the
@@ -3252,6 +3472,201 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		SetNodeNameIndex(scene, uint32_t(newId), nameId);
 		SetCamera(scene, uint32_t(newId), poolIdx);
 		createdCameras.push_back(uint32_t(newId));
+		break;
+	}
+	case Verb::CreateAudioSource: {
+		// Authored audio-source node (the emitter association): append
+		// a node under the recorded parent (TRS = translate) + the
+		// DEFAULT SceneAudioSource payload — the properties + sound
+		// slots ride setAudioAttr / addAudioSound lines. The emitter
+		// POSE resolves from the node's global transform at use (the
+		// audio manager reads it per frame), so moving the parent
+		// moves the emitter.
+		uint32_t parent = 0;
+		if (!resolveParent(c, "createAudioSource", c.node, parent)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		const int level = scene.hierarchy[parent].level + 1;
+		const int newId = addNode(scene, int(parent), level);
+		if (newId < 0) {
+			if (err)
+				*err = "tour: createAudioSource failed under parent "
+					+ std::to_string(parent);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		scene.localTransform[size_t(newId)] =
+			glm::translate(glm::mat4(1.0f), c.vec);
+		SetAudioSource(scene, uint32_t(newId), SceneAudioSource{});
+		const uint32_t nameId = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(c.text);
+		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		createdAudioSources.push_back(uint32_t(newId));
+		break;
+	}
+	case Verb::SetAudioAttr: {
+		// The audio-source payload's property lines (one attr per
+		// line — SceneAudioSource). Addressing: -ref k of the k-th
+		// createAudioSource, or -n cluster id.
+		uint32_t target = 0;
+		if ((c.node & kCreateAudioSourceRefBase) != 0) {
+			const uint32_t k = c.node & ~kCreateAudioSourceRefBase;
+			if (k >= createdAudioSources.size()) {
+				if (err)
+					*err = "tour: setAudioAttr ref out of range: "
+						+ std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdAudioSources[k];
+		}
+		else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		AudioSourceRow* row = FindAudioSource(scene, target);
+		if (!row) {
+			if (err)
+				*err = "tour: setAudioAttr on non-audio node "
+					+ std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		SceneAudioSource& def = row->source;
+		if (c.text == "name") {
+			// The NODE's name (the payload carries none): rename +
+			// re-index like the camera path.
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.name);
+			SetNodeNameIndex(scene, target, id);
+		}
+		else if (c.text == "position") {
+			// Rebuild the node's local TRS with the translate replaced
+			// (editor TRS convention; mirrors the camera/cubemap path).
+			glm::vec3 skew, t, s;
+			glm::vec4 persp;
+			glm::quat q;
+			glm::decompose(scene.localTransform[target], s, q, t,
+				skew, persp);
+			glm::vec3 e = glm::degrees(glm::eulerAngles(q));
+			t = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, t);
+			m = glm::rotate(m, glm::radians(e.z), glm::vec3(0, 0, 1));
+			m = glm::rotate(m, glm::radians(e.y), glm::vec3(0, 1, 0));
+			m = glm::rotate(m, glm::radians(e.x), glm::vec3(1, 0, 0));
+			m = glm::scale(m, s);
+			scene.localTransform[target] = m;
+		}
+		else if (c.text == "volume") {
+			def.volume = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "spatial") {
+			def.spatial = c.flag;
+		}
+		else if (c.text == "playOnLoad") {
+			def.playOnLoad = c.flag;
+		}
+		else if (c.text == "minDistance") {
+			def.minDistance = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "maxDistance") {
+			def.maxDistance = std::max(float(c.number), 1e-3f);
+		}
+		else {
+			warn("tour: unknown audio attr '" + c.text + "' (skipped)");
+		}
+		break;
+	}
+	case Verb::AddAudioSound: {
+		// One sound SLOT upsert (by the slot's stable name — the
+		// editor's undo/history + future references survive
+		// reordering). The slot is an ASSET REFERENCE, never a playing
+		// voice.
+		uint32_t target = 0;
+		if ((c.node & kCreateAudioSourceRefBase) != 0) {
+			const uint32_t k = c.node & ~kCreateAudioSourceRefBase;
+			if (k >= createdAudioSources.size()) {
+				if (err)
+					*err = "tour: addAudioSound ref out of range: "
+						+ std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdAudioSources[k];
+		}
+		else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		AudioSourceRow* row = FindAudioSource(scene, target);
+		if (!row) {
+			if (err)
+				*err = "tour: addAudioSound on non-audio node "
+					+ std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		AudioSoundRef slot;
+		slot.name = c.text;
+		slot.assetPath = c.name;
+		slot.gain = float(std::clamp(c.number, 0.0, 16.0));
+		slot.loop = c.flag;
+		bool replaced = false;
+		for (AudioSoundRef& s : row->source.sounds)
+			if (s.name == slot.name) {
+				s = slot;
+				replaced = true;
+				break;
+			}
+		if (!replaced)
+			row->source.sounds.push_back(std::move(slot));
+		break;
+	}
+	case Verb::RemoveAudioSound: {
+		uint32_t target = 0;
+		if ((c.node & kCreateAudioSourceRefBase) != 0) {
+			const uint32_t k = c.node & ~kCreateAudioSourceRefBase;
+			if (k >= createdAudioSources.size()) {
+				if (err)
+					*err = "tour: removeAudioSound ref out of range: "
+						+ std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdAudioSources[k];
+		}
+		else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		AudioSourceRow* row = FindAudioSource(scene, target);
+		if (!row) {
+			if (err)
+				*err = "tour: removeAudioSound on non-audio node "
+					+ std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		auto& slots = row->source.sounds;
+		auto it = slots.begin();
+		while (it != slots.end())
+			if (it->name == c.text)
+				it = slots.erase(it);
+			else
+				++it;
 		break;
 	}
 		case Verb::CreateTerrain: {
@@ -4393,6 +4808,39 @@ std::string Describe(const Command& c) {
 		else
 			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
 		std::snprintf(buf, sizeof(buf), "cam.%s.%s", tgt, c.text.c_str());
+		break;
+	}
+	case Verb::CreateAudioSource:
+		std::snprintf(buf, sizeof(buf),
+			"createAudioSource '%s' under #%u", c.text.c_str(), c.node);
+		break;
+	case Verb::SetAudioAttr: {
+		char tgt[32];
+		if ((c.node & kCreateAudioSourceRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateAudioSourceRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "audio.%s.%s", tgt, c.text.c_str());
+		break;
+	}
+	case Verb::AddAudioSound: {
+		char tgt[32];
+		if ((c.node & kCreateAudioSourceRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateAudioSourceRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "addAudioSound %s '%s'",
+			tgt, c.text.c_str());
+		break;
+	}
+	case Verb::RemoveAudioSound: {
+		char tgt[32];
+		if ((c.node & kCreateAudioSourceRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateAudioSourceRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "removeAudioSound %s '%s'",
+			tgt, c.text.c_str());
 		break;
 	}
 	case Verb::SetCubemapAttr: {

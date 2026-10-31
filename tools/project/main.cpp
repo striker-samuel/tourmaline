@@ -515,7 +515,8 @@ int main(int argc, const char* argv[]) {
 		}
 		std::cout << "Content ids: " << catalog.scenes.size()
 			<< " scene(s), " << catalog.textures.size()
-			<< " texture(s), " << catalog.meshes.size() << " mesh(es)\n"
+			<< " texture(s), " << catalog.meshes.size() << " mesh(es), "
+			<< catalog.sounds.size() << " sound(s)\n"
 			<< "  project.h: " << header
 			<< (wrote ? " (written)" : " (unchanged)") << "\n";
 		return 0;

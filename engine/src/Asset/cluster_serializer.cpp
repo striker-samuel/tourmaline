@@ -535,7 +535,10 @@ bool SerializeClusters(
 	ClusterSerializeStats* stats,
 	std::string* err,
 	const std::string* excludeTextureVfsPaths,
-	size_t excludeTextureVfsCount) {
+	size_t excludeTextureVfsCount,
+	const std::string* soundIdPaths,
+	const uint64_t* soundIds,
+	size_t soundIdCount) {
 	auto fail = [&](const std::string& msg) {
 		if (err)
 			*err = msg;
@@ -556,6 +559,20 @@ bool SerializeClusters(
 			if (excludeTextureVfsPaths[i] == filePart)
 				return true;
 		return false;
+	};
+	// The sound-id map (the cooker's --sound-id list): authored
+	// assetPath -> stable 0x4xxx content id, stamped into the scene
+	// blob's v18 audio section. EMPTY map = a bare, non-project cook
+	// (sounds stamp 0 = unresolved — the cooker warns per sound); a
+	// NON-EMPTY map with an unresolved path FAILS (the project
+	// contract: never silently omit a referenced sound).
+	auto soundIdOf = [&](const std::string& assetPath) -> uint64_t {
+		if (!soundIdPaths || assetPath.empty())
+			return 0;
+		for (size_t i = 0; i < soundIdCount; ++i)
+			if (soundIdPaths[i] == assetPath)
+				return soundIds[i];
+		return 0;
 	};
 	// The trailing skin-section writer's static fallback (a null retained
 	// upload writes count 0).
@@ -1431,6 +1448,64 @@ bool SerializeClusters(
 		{
 			putFlagBytes(scene.castsVolumetricShadow);
 		}
+		// Per-node audio sources (v18; v17 blobs end after the
+		// volumetric casters): u32 rowCount + (denseNode, volume,
+		// flags, minDist, maxDist, soundCount, per-sound (u64 soundId,
+		// f32 gain, u32 loop)) rows — the cooked emitter association.
+		// Sounds serialize as STABLE CONTENT IDS (0x4xxx — the
+		// appmanifest's [ids] join), never paths: soundIdOf resolves
+		// the authored assetPath (the empty-map / unresolved contract
+		// is on the lambda above). The slot NAME stays authoring-side
+		// (tour metadata — the runtime addresses sounds by id).
+		// Always written (possibly zero rows) so the layout is uniform;
+		// old readers fail the trailing-bytes check on v18 blobs (the
+		// sanctioned break - no conversions).
+		{
+			std::vector<const AudioSourceRow*> audioRows;
+			audioRows.reserve(scene.tables.audioSources.size());
+			for (const AudioSourceRow& row : scene.tables.audioSources) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene audio-source row references"
+						" retired node slot "
+						+ std::to_string(row.node));
+				audioRows.push_back(&row);
+			}
+			std::sort(audioRows.begin(), audioRows.end(),
+				[&](const AudioSourceRow* a, const AudioSourceRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node];
+				});
+			PutU32(blob, static_cast<uint32_t>(audioRows.size()));
+			for (const AudioSourceRow* row : audioRows) {
+				PutU32(blob, slotToDense[row->node]);
+				PutF32(blob, row->source.volume);
+				PutU32(blob, (row->source.spatial ? 1u : 0u)
+					| (row->source.playOnLoad ? 2u : 0u));
+				PutF32(blob, row->source.minDistance);
+				PutF32(blob, row->source.maxDistance);
+				PutU32(blob,
+					static_cast<uint32_t>(row->source.sounds.size()));
+				for (const AudioSoundRef& s : row->source.sounds) {
+					uint64_t id = s.soundId;
+					if (id == 0 && !s.assetPath.empty()) {
+						id = soundIdOf(s.assetPath);
+						if (id == 0 && soundIdCount != 0)
+							return fail("the audio source's sound '"
+								+ s.name + "' (" + s.assetPath
+								+ ") has no content id — the asset is"
+								" not in the project registry (add the"
+								" .wav to the recipe / rebuild the"
+								" project ids)");
+					}
+					PutU64(blob, id);
+					PutF32(blob, s.gain);
+					PutU32(blob, s.loop ? 1u : 0u);
+				}
+			}
+			if (stats)
+				stats->audioSources +=
+					static_cast<uint32_t>(audioRows.size());
+		}
 
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
@@ -1949,6 +2024,52 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			scene.castsVolumetricShadow.assign(
 				c.img.data() + c.off, c.img.data() + c.off + volCasterCount);
 			c.off += volCasterCount;
+		}
+		// Per-node audio sources (v18; v17 blobs end after the
+		// volumetric casters): u32 rowCount + (denseNode, volume,
+		// flags, minDist, maxDist, soundCount, per-sound (u64 soundId,
+		// f32 gain, u32 loop)) rows — the cooked emitter association.
+		// Sound ids are the STABLE 0x4xxx content ids (the
+		// appmanifest's [ids] join resolves them to pak+path bytes at
+		// runtime); 0 = unresolved at cook (a bare, non-project cook —
+		// the emitter exists, plays nothing). Missing == none
+		// (pre-v18 paks); present must end the blob exactly (the
+		// shared trailing-bytes check below).
+		if (c.off < c.img.size()) {
+			const uint32_t rowCount = c.u32();
+			if (!c.ok || rowCount > 1024 * 1024)
+				return fail("bad scene audio-source section");
+			for (uint32_t i = 0; i < rowCount; ++i) {
+				const uint32_t node = c.u32();
+				const float volume = c.f32();
+				const uint32_t flags = c.u32();
+				const float minD = c.f32();
+				const float maxD = c.f32();
+				const uint32_t soundCount = c.u32();
+				if (!c.ok || node >= nodeCount || soundCount > 1024)
+					return fail("bad scene audio-source section");
+				SceneAudioSource src{};
+				src.volume = std::max(volume, 0.0f);
+				src.spatial = (flags & 1u) != 0;
+				src.playOnLoad = (flags & 2u) != 0;
+				src.minDistance = std::max(minD, 0.0f);
+				src.maxDistance = std::max(maxD, 1e-3f);
+				src.sounds.resize(soundCount);
+				for (AudioSoundRef& s : src.sounds) {
+					s.soundId = c.u64();
+					const float gain = c.f32();
+					const uint32_t loop = c.u32();
+					if (!c.ok)
+						return fail("truncated scene audio-source"
+							" sounds");
+					s.gain = std::clamp(gain, 0.0f, 16.0f);
+					s.loop = loop != 0u;
+				}
+				scene.tables.audioSources.push_back(
+					AudioSourceRow{ node, std::move(src) });
+			}
+			if (!c.ok)
+				return fail("truncated scene audio-source section");
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

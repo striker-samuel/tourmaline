@@ -91,13 +91,13 @@ struct AssetRecord {
 // drops out of the generated catalog).
 //
 // Id ranges (the generated header's namespaces): scenes 0x1000..0x1FFF,
-// textures 0x2000..0x2FFF, meshes 0x3000..0x3FFF.
+// textures 0x2000..0x2FFF, meshes 0x3000..0x3FFF, sounds 0x4000..0x4FFF.
 // ---------------------------------------------------------------------------
 struct ContentIdRecord {
 	std::string guid;   // the asset identity (sidecar/manifest GUID)
 	uint64_t id = 0;    // the stable project-local id (kind-namespaced)
 	std::string symbol; // the C++ identifier (stable from first assign)
-	std::string kind;   // "scene" | "texture" | "mesh"
+	std::string kind;   // "scene" | "texture" | "mesh" | "sound"
 	std::string path;   // last-known project-relative path (informational
 	                    // ONLY — never the identity)
 	bool active = true; // false = tombstone (reserved, not cataloged)

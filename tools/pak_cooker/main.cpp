@@ -172,6 +172,13 @@ namespace paktool {
 		// runtime resolves cross-pak. Empty = embed everything (the
 		// single-pak default, byte-identical).
 		std::vector<std::string> excludeVfsPaths;
+		// The SOUND-ID map (the recipe build's [ids] table slice):
+		// authored sound assetPath -> stable 0x4xxx content id, stamped
+		// into the cooked scene's audio section. EMPTY = a bare,
+		// non-project cook (referenced sounds serialize 0 = unresolved,
+		// one loud warning each); NON-EMPTY with an unresolved
+		// referenced path FAILS the cook (never silently omit).
+		std::vector<std::pair<std::string, uint64_t>> soundIds;
 		// Read-only inspection: open an existing pak and print its manifest
 		// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 		std::string dumpPak;
@@ -511,6 +518,25 @@ namespace paktool {
 				std::string v;
 				if (!need(v)) return false;
 				out.excludeVfsPaths.push_back(v);
+			}
+			else if (a == "--sound-id") {
+				// --sound-id <vfs path> <0xhex id> (repeatable): the
+				// recipe build's id table slice for the sounds this
+				// scene references.
+				std::string v;
+				if (!need(v)) return false;
+				std::string idTok;
+				if (!need(idTok)) return false;
+				uint64_t id = 0;
+				try {
+					id = std::stoull(idTok, nullptr, 0);
+				}
+				catch (...) {
+					tool::err() << "bad --sound-id value: " << idTok
+						<< std::endl;
+					return false;
+				}
+				out.soundIds.emplace_back(v, id);
 			}
 			else if (a == "--dump-pak") {
 				if (!need(out.dumpPak)) return false;
@@ -1453,6 +1479,7 @@ int Run(const PakArgs& c) {
 	args.giProbes = c.giProbes;
 	args.contentSet = c.contentSet;
 	args.excludeVfsPaths = c.excludeVfsPaths;
+	args.soundIds = c.soundIds;
 
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
@@ -2505,6 +2532,16 @@ int Run(const PakArgs& c) {
 	std::vector<const smvk::Cluster*> cookPtrs;
 	for (auto& sc : sceneClusters)
 		cookPtrs.push_back(sc.get());
+	// The sound-id map as PARALLEL arrays (the SerializeClusters raw-
+	// pointer convention — a pair array's stride would break the walk).
+	std::vector<std::string> soundIdPaths;
+	std::vector<uint64_t> soundIdVals;
+	soundIdPaths.reserve(args.soundIds.size());
+	soundIdVals.reserve(args.soundIds.size());
+	for (const auto& [p, id] : args.soundIds) {
+		soundIdPaths.push_back(p);
+		soundIdVals.push_back(id);
+	}
 	if (cookPtrs.empty()) {
 		// Terrain-only / ASSET-ONLY pak (no clusters): valid — the
 		// terrain blobs and/or the content-set Texture blobs carry it.
@@ -2519,7 +2556,10 @@ int Run(const PakArgs& c) {
 	else if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err,
 			args.excludeVfsPaths.empty()
 				? nullptr : args.excludeVfsPaths.data(),
-			args.excludeVfsPaths.size())) {
+			args.excludeVfsPaths.size(),
+			soundIdPaths.empty() ? nullptr : soundIdPaths.data(),
+			soundIdVals.empty() ? nullptr : soundIdVals.data(),
+			soundIdVals.size())) {
 		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
@@ -2604,6 +2644,22 @@ int Run(const PakArgs& c) {
 		std::string ext = vfsPath.substr(vfsPath.rfind('.'));
 		for (char& ch : ext)
 			ch = char(std::tolower(static_cast<unsigned char>(ch)));
+		if (ext == ".wav") {
+			// A SOUND asset: raw .wav bytes as a Sound-kind blob (the
+			// second VFS-addressable kind - PakBackend serves it by
+			// path, the runtime decodes via LoadWavFromMemory). Never
+			// transcoded.
+			const size_t wavBytes = bytes->size();
+			if (!writer.AddBlob(smvk::PakAssetKind::Sound, vfsPath,
+					std::move(*bytes))) {
+				tool::err() << "Content-set AddBlob failed: " << vfsPath
+					<< std::endl;
+				return 1;
+			}
+			tool::out() << "Embedded content-set sound " << vfsPath
+				<< " (" << wavBytes << " B wav)\n";
+			continue;
+		}
 		std::vector<uint8_t> embed;
 		if (ext == ".ktx2" || ext == ".cubemanifest"
 				|| ext == ".givolumemanifest" || ext == ".givolume") {
@@ -2630,6 +2686,49 @@ int Run(const PakArgs& c) {
 		}
 		tool::out() << "Embedded content-set " << vfsPath << " ("
 			<< embed.size() << " B ktx2)\n";
+	}
+	// ---- scene-referenced sounds (the emitter association's clips) ----
+	// Every sound the cooked scenes' audio sources reference embeds as
+	// a Sound-kind blob at its VFS path - UNLESS a dependency pak owns
+	// it (excludeVfsPaths, the same ownership exclude as textures): the
+	// scene's ids still stamp, the runtime resolves the bytes through
+	// the mounted backends. The scene blob's audio section already
+	// FAILED (or warned) on unresolved ids above.
+	{
+		std::vector<std::string> soundPaths;
+		for (const auto& sc : sceneClusters)
+			for (const AudioSourceRow& row : sc->scene.tables.audioSources)
+				for (const AudioSoundRef& s : row.source.sounds)
+					if (!s.assetPath.empty())
+						soundPaths.push_back(s.assetPath);
+		std::sort(soundPaths.begin(), soundPaths.end());
+		soundPaths.erase(std::unique(soundPaths.begin(),
+			soundPaths.end()), soundPaths.end());
+		for (const std::string& vfsPath : soundPaths) {
+			bool excluded = false;
+			for (const std::string& ex : args.excludeVfsPaths)
+				if (ex == vfsPath) {
+					excluded = true;
+					break;
+				}
+			if (excluded)
+				continue;
+			auto bytes = vfs.TryRead(vfsPath);
+			if (!bytes || bytes->empty()) {
+				tool::err() << "Sound not found through the VFS: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
+			const size_t wavBytes = bytes->size();
+			if (!writer.AddBlob(smvk::PakAssetKind::Sound, vfsPath,
+					std::move(*bytes))) {
+				tool::err() << "Sound AddBlob failed: " << vfsPath
+					<< std::endl;
+				return 1;
+			}
+			tool::out() << "Embedded sound " << vfsPath << " ("
+				<< wavBytes << " B wav)\n";
+		}
 	}
 	// Tiled terrain (optional, independent of clusters): terrain.json +
 	// H/S PNGs -> Terrain blobs. Runs for mixed and terrain-only paks;
@@ -2892,6 +2991,7 @@ int main(int argc, char** argv) {
 	c.giProbes = args.giProbes;
 	c.contentSet = args.contentSet;
 	c.excludeVfsPaths = args.excludeVfsPaths;
+	c.soundIds = args.soundIds;
 	return paktool::Run(c);
 }
 #endif

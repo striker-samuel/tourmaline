@@ -15,6 +15,7 @@
 
 #include "Host.h"
 #include "ProjectRuntime.h"
+#include "AudioRuntime.h"
 
 #include "project.h"
 
@@ -129,6 +130,26 @@ int main(int argc, const char* argv[]) {
 					" the texture (rebuild GameProject_paks)\n");
 			}
 		}
+	}
+	// ---- THE AUDIO LAYER: the scene-aware runtime over the mixer ----
+	// The AudioRuntime element stacks over the renderer (the host
+	// extension hook): it owns the clip cache (sound ids decoded
+	// through the project's pak), the emitter states (the authored
+	// audio-source nodes — this scene's BellTower, with its playOnLoad
+	// + loop ring on load), and the spatialization (attenuation + pan
+	// against the active camera, per frame). Gameplay code drives it
+	// through the imperative surface: PrefetchSound /
+	// PlaySound(world, node, sound) / StopSound / SetListener.
+	if (!cfg.cli.project.empty()) {
+		std::string audioTapp = cfg.cli.project;
+		cfg.extraElement =
+			[audioTapp](smvk::App& host,
+				engine::WorldRenderer& renderer,
+				std::shared_ptr<smvk::World*> worldHandle)
+			-> std::shared_ptr<engine::IAppElement> {
+			return app::MakeAudioRuntime(host, audioTapp,
+				std::move(worldHandle), &renderer);
+		};
 	}
 	return app::RunPakApp(cfg);
 }

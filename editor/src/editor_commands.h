@@ -18,6 +18,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+// SceneAudioSource (the AudioSourceRow inline payload — the Delete
+// capture + the duplication source need the full authored value here).
+#include <Engine/Scene/scene_payloads.h>
+
 namespace editor {
 
 enum class EditVerb : uint8_t {
@@ -110,6 +114,34 @@ enum class EditVerb : uint8_t {
   	              // camNear, camFar, camOrthoHalfH = lens.
   	SetCamAttr, // camera property edit; c.node = camera node (world),
   	              // camAttr selects the channel (see below).
+  	CreateAudioSource, // append an audio-source node (world): a plain
+  	                  // DAG transform (translate = the emitter pose; the
+  	                  // audio manager resolves the node's GLOBAL
+  	                  // transform at use, so parenting applies like
+  	                  // meshes) + a node-local SceneAudioSource payload
+  	                  // in scene.tables.audioSources (the EnvVolumeRow
+  	                  // inline-payload pattern — NO pool entry). c.node
+  	                  // = CREATED world id once forward-executed
+  	                  // (UINT32_MAX before); c.node2 = parent world id;
+  	                  // afterText = name; afterVec = local position;
+  	                  // audioDupFrom = a live node whose payload
+  	                  // DuplicateSelection copies (UINT32_MAX = the
+  	                  // default payload). Post-creation edits ride
+  	                  // SetAudioAttr/AddAudioSound/RemoveAudioSound
+  	                  // (kCreateAudioSourceRefBase addressing).
+  	SetAudioAttr, // audio-source property edit; c.node = the audio
+  	              // node (world), audioAttr selects the channel (see
+  	              // below).
+  	AddAudioSound, // sound-slot UPSERT (by slot NAME — the stable
+  	               // identifier, reordering never breaks it): c.node =
+  	               // the audio node (world); afterText = slot name;
+  	               // number = gain; afterFlag = loop. The replaced
+  	               // slot's before-state rides beforeText/beforeNum/
+  	               // beforeFlag (see audioSlotHad below).
+  	RemoveAudioSound, // sound-slot removal: c.node = the audio node
+  	                 // (world); afterText = the slot name. The removed
+  	                 // slot's value rides beforeText/beforeNum/
+  	                 // beforeFlag — undo re-adds it EXACTLY.
   	CreateExportSettings, // append the scene's WorldSettings-style
   	              // EXPORT CONFIG node (world): a DAG transform node
   	              // (identity; no shape) + a node-local
@@ -202,6 +234,39 @@ struct EditCmd {
 	// rotation) / afterText (name); before-state rides beforeNum /
 	// beforeVec4 / beforeText.
 	std::string camAttr;
+	// SetAudioAttr channel ("volume","spatial","playOnLoad",
+	// "minDistance","maxDistance","name","position"). Value rides
+	// number (scalars) / afterFlag (spatial/playOnLoad) / afterText
+	// (name — the NODE's; the payload carries none) / vec4 (the
+	// position triple); before-state rides beforeNum / beforeFlag /
+	// beforeText / beforeVec4.
+	std::string audioAttr;
+	// Sound-slot channels (AddAudioSound/RemoveAudioSound): afterText
+	// = the SLOT name (the stable identifier), audioPath = the asset
+	// path (the tour's -source), number = gain, afterFlag = loop. The
+	// exact-inverse before-state of the REPLACED/REMOVED slot rides
+	// beforeText (assetPath), beforeNum (gain), beforeFlag (loop) +
+	// audioSlotHad (true = a slot of that name existed — undo restores
+	// the captured value; false = the add CREATED it, so undo REMOVES
+	// it. RemoveAudioSound reuses the flag: true = a slot was erased).
+	std::string audioPath;
+	bool audioSlotHad = false;
+	// (audioSlotHad is captured on EVERY forward execution — idempotent
+	// under undo/redo: LIFO discipline guarantees the live state is
+	// back to pre-command whenever forward re-runs, so the re-capture
+	// reads the same values.)
+	// CreateAudioSource duplication source (DuplicateSelection): when
+	// != UINT32_MAX, ExecCreateAudioSource copies that node's LIVE
+	// SceneAudioSource payload instead of planting the default — the
+	// camera-duplicate precedent, minus the pool (the payload is
+	// inline, so the copy IS the whole lens-equivalent).
+	uint32_t audioDupFrom = UINT32_MAX;
+	// Delete payload: the audio-source payload's presence + captured
+	// value (the row drops with every other link; undo restores it
+	// EXACTLY — the camera/cubemap capture precedent, minus the pool
+	// index since there is none).
+	bool beforeAudioSource = false;
+	SceneAudioSource beforeAudio{};
 	// SetExportAttr channel — a SceneExportSettings field name
 	// ("meshopt","lods","lodRatios","lodError","lightmap",
 	// "lmMetersPerTexel","lmLobes","lmAtlasWidth","lmRays",

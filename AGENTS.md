@@ -1,5 +1,46 @@
 # AGENTS.md
 
+## Runtime layers (app/src — the project façade stack)
+
+- **ProjectRuntime** (the façade): stable ids → appmanifest [ids] rows →
+  pak bytes. `ReadAsset(id)` serves TEXTURE and SOUND payloads (the two
+  VFS-addressable pak kinds); scenes load by identity, meshes ship
+  inside their scene's cluster. `OpenPak`/`AdoptPakBackend` = the shared
+  lazy backend cache (one image per archive whatever opens it).
+- **ProjectScenes** (docs/project_scenes.md): the scene-INSTANCE layer —
+  `LoadScene`/`LoadSceneAdditive`/`RemoveScene` by NUMERIC id over a
+  live World (SceneHandle = 64-bit generational, same shape as the
+  gameplay handles), the id→cooked-scene join ([ids] scene rows carry
+  the cooked NAME as their 5th token — the build records it), and the
+  OWNERSHIP-AWARE prefetch (Prefetch/Release pins + the per-scene asset
+  registry; `RemoveScene`'s `releasedAssets` out-param reports the
+  dropped ids the decoded-form caches evict). The GPU-less tests drive
+  it through the public `clusterLoader` seam.
+- **AudioRuntime** (docs/audio_source.md): the scene-aware audio layer
+  (an IAppElement) — clip cache keyed by sound id, emitter states keyed
+  by the STABLE (cluster, cluster-node) pair through
+  `World::clusterMergedNodes`, per-frame distance attenuation +
+  constant-power pan, autoplay, scene/spawn lifecycle. The imperative
+  surface (PrefetchSound/PlaySound/StopSound/SetAudioSourceVolume/
+  SetListener) forwards through its singleton. The mixer itself stays
+  amplitude+pan-only (`SetVoiceSpatial`).
+- **Sound assets are a first-class kind**: `PakAssetKind::Sound` (raw
+  .wav at the VFS path, served by PakBackend), 0x4xxx content ids
+  (scenes 0x1xxx / textures 0x2xxx / meshes 0x3xxx / sounds 0x4xxx),
+  and the cooked scene's v18 audio section stores NUMERIC sound ids
+  (the pak cooker's `--sound-id` map resolves paths; a non-empty map
+  with an unresolved referenced path FAILS the cook — never silently
+  omit). The appmanifest's kind gate is `scene|texture|mesh|sound`.
+- **The gameplay-handle model** (engine Engine/Scene/entity_handle.h):
+  NO generic game-entity registry — gameplay structs compose TYPED
+  64-bit generational handles (MeshEntityHandle/AnimatorHandle/
+  AudioSourceHandle, zero = invalid, generation bumps on destroy).
+  The generated project.h carries TYPED KEYS (SceneKey/TextureKey/
+  MeshKey/SoundKey constants — which ASSET; handles name which
+  INSTANCE). `World::SpawnAudioSource`/`DestroyAudioSource` +
+  `World::clusterMergedNodes` are the audio-entity surface today;
+  the mesh/animator registries follow the same shape.
+
 ## Build system
 
 **Always configure and build with the Ninja generator.**

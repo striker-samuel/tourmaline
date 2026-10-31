@@ -67,6 +67,8 @@ PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
 	if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
 			|| ext == ".tga" || ext == ".bmp" || ext == ".ktx2")
 		return PlanAssetKind::Texture;
+	if (ext == ".wav")
+		return PlanAssetKind::Sound;
 	if (ext == ".givolumemanifest" || ext == ".givolume"
 			|| ext == ".cubemanifest")
 		return PlanAssetKind::BakeFile;

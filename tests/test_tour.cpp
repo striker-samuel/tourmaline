@@ -1540,7 +1540,7 @@ void TestCubemapVerbs() {
 void TestCreateNode() {
 	// Type table: DAG vs system knowledge lives on the type.
 	size_t count = 0;
-	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 11,
+	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 12,
 		"createnode table size");
 	const smvk::tour::CreateNodeType* t =
 		smvk::tour::FindCreateNodeType("spotLight");
@@ -2125,8 +2125,174 @@ void TestFileNodes() {
 	std::filesystem::remove(TempTour(), ec);
 }
 
-void TestCamera() {
-	// Hand-built doc: full-lens create + -ref attrs (fov + position).
+void TestAudioSource() {
+	// Hand-built doc: create + -ref property attrs + sound-slot
+	// upserts (the authored-emitter surface — payload via tabulated
+	// lines, the exportSettings pattern).
+	smvk::tour::Doc doc;
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateAudioSource;
+	c.node = 0;
+	c.text = "BellTower";
+	c.vec = glm::vec3(0.0f, 20.0f, 0.0f);
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetAudioAttr;
+	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+	c.text = "volume";
+	c.number = 0.8;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::SetAudioAttr;
+	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+	c.text = "minDistance";
+	c.number = 2.0;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::AddAudioSound;
+	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+	c.text = "Bells";
+	c.name = "content/audio/bells.wav";
+	c.number = 1.0;
+	c.flag = false;
+	doc.commands.push_back(c);
+	c = smvk::tour::Command{};
+	c.verb = smvk::tour::Verb::AddAudioSound;
+	c.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+	c.text = "Wind";
+	c.name = "content/audio/wind.wav";
+	c.number = 0.5;
+	c.flag = true;
+	doc.commands.push_back(c);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "audio save");
+	{
+		std::ifstream in(TempTour(), std::ios::binary);
+		std::stringstream ss;
+		ss << in.rdbuf();
+		const std::string text = ss.str();
+		Check(text.find("createAudioSource -p 0 -name \"BellTower\"")
+				!= std::string::npos,
+			"audio create line");
+		Check(text.find("\tsetAudioAttr -ref 0 -at volume")
+				!= std::string::npos,
+			"audio tabulated ref");
+		Check(text.find("addAudioSound -ref 0 -name \"Bells\""
+				" -source \"content/audio/bells.wav\"")
+				!= std::string::npos,
+			"audio sound line");
+	}
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"audio load");
+	Check(back.commands.size() == 5, "audio command count");
+	if (back.commands.size() == 5) {
+		const auto& cc = back.commands[0];
+		Check(cc.verb == smvk::tour::Verb::CreateAudioSource
+			&& cc.text == "BellTower" && cc.vec.y == 20.0f,
+			"audio create payload");
+		Check(back.commands[1].verb == smvk::tour::Verb::SetAudioAttr
+			&& back.commands[1].text == "volume"
+			&& back.commands[1].number == 0.8, "audio volume attr");
+		const auto& snd = back.commands[4];
+		Check(snd.verb == smvk::tour::Verb::AddAudioSound
+			&& snd.text == "Wind" && snd.name == "content/audio/wind.wav"
+			&& snd.number == 0.5 && snd.flag,
+			"audio wind slot");
+	}
+	// Unified spelling lowers identically.
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "createNode -at audioSource -p 0 -name \"U\" -t 0 4 0;\n";
+		f.close();
+		smvk::tour::Doc u;
+		Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr),
+			"audio unified load");
+		Check(u.commands.size() == 1
+			&& u.commands[0].verb == smvk::tour::Verb::CreateAudioSource
+			&& u.commands[0].vec.y == 4.0f, "audio unified lowers");
+	}
+	// Validation rejects garbage: unknown attr, bad flag, negative
+	// volume, removeAudioSound/addAudioSound without -name/-source.
+	{
+		auto reject = [&](const char* text, const char* name) {
+			std::ofstream f(TempTour(), std::ios::binary
+				| std::ios::trunc);
+			f << text;
+			f.close();
+			smvk::tour::Doc b;
+			Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr),
+				name);
+		};
+		reject("setAudioAttr -n 1 -at tempo -v 2;\n",
+			"audio bad attr rejected");
+		reject("setAudioAttr -n 1 -at spatial -v maybe;\n",
+			"audio bad flag rejected");
+		reject("setAudioAttr -n 1 -at volume -v -1;\n",
+			"audio negative volume rejected");
+		reject("addAudioSound -n 1 -source \"x.wav\";\n",
+			"audio sound without name rejected");
+	}
+	// Replay: node + row link + payload + slots; the remove verb drops
+	// a slot; the upsert replaces by name.
+	{
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetOfflineMode(true);
+		addNode(cluster->scene, -1, 0);
+		std::vector<std::string> rw;
+		std::string rerr;
+		// Add a remove + a re-add to the loaded doc before replay.
+		smvk::tour::Command rm{};
+		rm.verb = smvk::tour::Verb::RemoveAudioSound;
+		rm.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+		rm.text = "Bells";
+		back.commands.push_back(rm);
+		smvk::tour::Command up{};
+		up.verb = smvk::tour::Verb::AddAudioSound;
+		up.node = smvk::tour::kCreateAudioSourceRefBase | 0u;
+		up.text = "Wind";
+		up.name = "content/audio/wind2.wav";
+		up.number = 0.9;
+		up.flag = false;
+		back.commands.push_back(up);
+		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
+			"audio replay ok");
+		Check(cluster->scene.hierarchy.size() == 2, "audio replay node");
+		const AudioSourceRow* it =
+			FindAudioSource(cluster->scene, 1);
+		Check(it != nullptr, "audio replay link");
+		if (it != nullptr) {
+			const SceneAudioSource& def = it->source;
+			Check(def.volume == 0.8f && def.minDistance == 2.0f
+				&& def.spatial && def.maxDistance == 30.0f,
+				"audio replay payload");
+			Check(def.sounds.size() == 1, "audio replay slot count");
+			if (def.sounds.size() == 1) {
+				// "Bells" removed; "Wind" upserted (replaced by name).
+				Check(def.sounds[0].name == "Wind"
+					&& def.sounds[0].assetPath == "content/audio/wind2.wav"
+					&& def.sounds[0].gain == 0.9f
+					&& !def.sounds[0].loop,
+					"audio replay slots");
+			}
+		}
+		// The emitter pose: translate from the create line.
+		const glm::vec3 t(cluster->scene.localTransform[1][3]);
+		Check(std::abs(t.y - 20.0f) < 1e-4f, "audio replay position");
+		// A second replay of the same doc against the same cluster
+		// runs clean too (reference-replay semantics: creates append,
+		// rows upsert — no error path).
+		smvk::tour::Doc second = back;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw,
+				&rerr),
+			"audio replay second ok");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
+void TestCamera() {	// Hand-built doc: full-lens create + -ref attrs (fov + position).
 	smvk::tour::Doc doc;
 	smvk::tour::Command c{};
 	c.verb = smvk::tour::Verb::CreateCamera;
@@ -3488,6 +3654,7 @@ int main() {
 	TestRoundTrip();
 	TestFileNodes();
 	TestCamera();
+	TestAudioSource();
 	TestTextureCacheConsult();
 	TestTourFormat();
 	TestUnknownVerbSkipped();

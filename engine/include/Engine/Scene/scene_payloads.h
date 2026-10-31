@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -178,6 +179,39 @@ struct EnvVolume {
 // the capture exactly at a chrome ball). Node-local like SceneGiVolume.
 struct SceneCubemap {
 	float radius = 5.5f;   // influence radius (m); fade = radius/2
+};
+
+// One SOUND SLOT of an authored audio source (the Sounds list in the
+// inspector). A slot is an ASSET REFERENCE, never a playing voice —
+// clips are shared by many emitters and playback belongs to runtime
+// state (the audio manager's voices). `name` is the slot's display
+// label ("Bells"); `assetPath` is the authoring-time reference (a
+// project-relative .wav path — the COOK resolves it to the stable
+// sound content id 0x4xxx and the cooked scene stores the ID, never
+// the string). The id lands on `soundId` at cook time; authored
+// scenes carry soundId 0 (unresolved — the runtime never sees them).
+struct AudioSoundRef {
+	std::string name;      // "Bells" (display/undo label)
+	std::string assetPath; // "content/audio/bells.wav" (authoring ref)
+	uint64_t soundId = 0;  // cooked content id (0 = not yet resolved)
+	float gain = 1.0f;     // per-slot gain multiplier
+	bool loop = false;     // per-slot loop default
+};
+
+// Authored audio source (the AudioSource node — the emitter
+// association). The EMITTER POSE rides the node's transform (position
+// + orientation from globalTransform[node], exactly like SceneLight/
+// SceneCamera); this carries the emitter's properties + its sound
+// slots. Node-local like SceneGiVolume (an inline-payload row, no
+// pool): sources are per-node definitions, and the SAME clip can back
+// many sources (the sharing lives in the sound assets, not here).
+struct SceneAudioSource {
+	float volume = 1.0f;        // master emitter gain
+	bool spatial = true;        // 3D attenuation + pan (else 2D full-mix)
+	bool playOnLoad = false;    // start the default slot at scene load
+	float minDistance = 1.0f;   // full-volume radius (m)
+	float maxDistance = 30.0f;  // silent radius (m)
+	std::vector<AudioSoundRef> sounds; // the sound slots (asset refs)
 };
 
 // Authored environment block (editor LIGHTING authoring): LUX-NATIVE

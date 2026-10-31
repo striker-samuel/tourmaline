@@ -294,6 +294,32 @@ enum class Verb : uint8_t {
   	              // rotation-deg). Post-creation TRS edits on created
   	              // cameras lower to position/rotation (their cluster
   	              // ids don't exist until replay).
+  CreateAudioSource, // node = PARENT cluster id; text = source name;
+                  // vec = local position. An authored audio-source
+                  // node (the emitter association): a plain transform
+                  // + the DEFAULT SceneAudioSource payload - the
+                  // properties + sound slots ride setAudioAttr /
+                  // addAudioSound lines tabulated under the create
+                  // (the exportSettings pattern; nothing audio lives
+                  // on the create line). The emitter POSE resolves
+                  // from the node's global transform at use.
+  SetAudioAttr,  // node = target cluster id, or a created-source ref
+                  // (kCreateAudioSourceRefBase | k - see below); text
+                  // = attr ("volume","spatial","playOnLoad",
+                  // "minDistance","maxDistance","name","position");
+                  // number = scalar; flag = bool (spatial/playOnLoad);
+                  // name = new name (attr "name" only - the NODE's
+                  // name; the payload has none); vec4 = triple
+                  // (position).
+  AddAudioSound, // node = target cluster id or a created-source ref;
+                  // text = the sound SLOT name ("Bells" - the stable
+                  // slot identifier: reordering the collection never
+                  // breaks it); name = the ASSET PATH (authoring-time
+                  // reference, "content/audio/bells.wav"); number =
+                  // slot gain (default 1); flag = slot loop default.
+                  // Upsert by slot name (a re-add replaces).
+  RemoveAudioSound, // node = target cluster id or a created-source
+                  // ref; text = the slot name to remove.
  };
 
 // Node-type table for createNode -at (Maya node types): whether the
@@ -449,8 +475,14 @@ inline constexpr uint32_t kCreateCameraRefBase = 0x08000000u;
 // warn + first wins). Disjoint from all bases above.
 inline constexpr uint32_t kCreateExportRefBase = 0x04000000u;
 
+// Same scheme for audio sources created by an earlier
+// createNode -at audioSource: SetAudioAttr / AddAudioSound /
+// RemoveAudioSound address them via kCreateAudioSourceRefBase | k (k-th
+// audioSource create in file order). Disjoint from all bases above.
+inline constexpr uint32_t kCreateAudioSourceRefBase = 0x02000000u;
+
 // All create-family ref bases OR'd together: a create-family ref
-// carries EXACTLY ONE base bit plus a small k (< 0x08000000 — the
+// carries EXACTLY ONE base bit plus a small k (< 0x02000000 — the
 // create counts are bounded far below the lowest base). A value with
 // SEVERAL high bits set (a sentinel like UINT32_MAX, or any garbage) is
 // a ref of NO family — ref checks must test the exclusive form
@@ -460,7 +492,7 @@ inline constexpr uint32_t kCreateExportRefBase = 0x04000000u;
 inline constexpr uint32_t kCreateRefFamilyMask =
 	kCreateLightRefBase | kCreateTerrainRefBase | kCreateGiVolumeRefBase
 	| kCreateCubemapRefBase | kCreateCameraRefBase
-	| kCreateExportRefBase;
+	| kCreateExportRefBase | kCreateAudioSourceRefBase;
 
 struct Doc {
 	int version = kTourVersion;

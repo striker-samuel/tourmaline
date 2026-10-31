@@ -238,6 +238,14 @@ public:
 			args.push_back("--exclude-vfs");
 			args.push_back(path);
 		}
+		for (const auto& [path, id] : a.soundIds) {
+			args.push_back("--sound-id");
+			args.push_back(path);
+			char buf[32];
+			std::snprintf(buf, sizeof(buf), "0x%llX",
+				static_cast<unsigned long long>(id));
+			args.push_back(buf);
+		}
 		args.push_back("--out-pak");
 		args.push_back(a.outPak);
 		if (!a.levelName.empty()) {
@@ -409,6 +417,39 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		}
 	}
 
+	// ---- 2.5) the SOUND-ID table (the pre-stage catalog ensure) --------
+	// The cooked scenes' audio sections stamp STABLE 0x4xxx ids, so the
+	// identity pass runs BEFORE the pak stages (idempotent — the
+	// manifest step below re-runs it for the final table; on a FIRST
+	// build THIS is what mints the .wav sidecars + ids the packer
+	// consumes). A plan with no sound assets yields an empty table =
+	// the bare-cook semantic (referenced sounds serialize 0).
+	std::vector<std::pair<std::string, uint64_t>> soundIds;
+	{
+		const std::string registryRoot =
+			smvk::cache::EnsureRegistryRoot(project.DerivedDataDir());
+		smvk::cache::AssetDatabase db;
+		if (!registryRoot.empty()
+				&& db.Open(registryRoot, project.root, err)) {
+			ProjectCatalog catalog;
+			std::vector<std::string> deps;
+			if (GenerateProjectCatalog(project, plan, db, catalog, deps,
+					err)) {
+				for (const CatalogEntry& e : catalog.sounds)
+					soundIds.emplace_back(e.path, e.id);
+			}
+			else {
+				err = "the pre-stage sound-id catalog failed: " + err;
+				return false;
+			}
+		}
+		else {
+			err = "the asset db open failed for the sound-id table: "
+				+ err;
+			return false;
+		}
+	}
+
 	// ---- 3) per pak: Pak (plan order = dependencies first) --------------
 	// The ownership tables the stages + the policing need: which pak owns
 	// which VFS-addressable path (the resolver's one-owner invariant).
@@ -416,7 +457,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	for (const PlanPak& pak : plan.paks)
 		for (const PlanAsset& asset : pak.assets)
 			if (asset.kind == PlanAssetKind::Texture
-					|| asset.kind == PlanAssetKind::BakeFile)
+					|| asset.kind == PlanAssetKind::BakeFile
+					|| asset.kind == PlanAssetKind::Sound)
 				vfsOwner[asset.path] = pak.id;
 
 	// The staged set: every pak writes under publish/.staging/ with its
@@ -494,12 +536,17 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				.lexically_normal().generic_string();
 			stage.levelName = options.levelName;
 			stage.registryDir = options.registryDir;
+			// The sound-id table (the pre-stage catalog ensure above):
+			// the cooker resolves only the paths its scenes reference;
+			// an unresolved referenced path with a NON-empty table
+			// fails the stage (never silently omit a sound).
+			stage.soundIds = soundIds;
 			// The cross-pak excludes: every VFS-addressable asset owned
 			// by a DECLARED dependency pak is not embedded here — the
 			// materials keep their refs, the runtime resolves them
 			// through the dependency's mounted backend (pak.h's
-			// interop contract: PakBackend serves Texture blobs by VFS
-			// path).
+			// interop contract: PakBackend serves Texture/Sound blobs
+			// by VFS path).
 			std::set<std::string> depIds(pak.depends.begin(),
 				pak.depends.end());
 			for (const PlanPak& other : plan.paks) {
@@ -507,7 +554,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					continue;
 				for (const PlanAsset& asset : other.assets)
 					if (asset.kind == PlanAssetKind::Texture
-							|| asset.kind == PlanAssetKind::BakeFile)
+							|| asset.kind == PlanAssetKind::BakeFile
+							|| asset.kind == PlanAssetKind::Sound)
 						stage.excludeVfs.push_back(asset.path);
 			}
 		}
@@ -528,13 +576,13 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			return false;
 		}
 		// ---- OWNERSHIP POLICING (RES-04 at the pack boundary) ----------
-		// Re-open the written pak and verify its Texture-kind TOC never
-		// carries a path another pak owns — with the excludes above a
-		// dependency-owned path cannot embed, so a hit here is an
-		// undeclared cross-pak reference (the author referenced shared
-		// content without the depends edge) or a packer regression.
-		// Either way the build fails BEFORE publication, never ships a
-		// duplicate.
+		// Re-open the written pak and verify its VFS-addressable TOC
+		// (Texture + Sound kinds) never carries a path another pak owns
+		// — with the excludes above a dependency-owned path cannot
+		// embed, so a hit here is an undeclared cross-pak reference (the
+		// author referenced shared content without the depends edge) or
+		// a packer regression. Either way the build fails BEFORE
+		// publication, never ships a duplicate.
 		{
 			std::ifstream in(stage.outPak, std::ios::binary);
 			std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)),
@@ -547,8 +595,10 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					+ perr;
 				return false;
 			}
-			for (const smvk::PakTocEntry* e :
-					reader->BlobsOfKind(smvk::PakAssetKind::Texture)) {
+			const smvk::PakAssetKind policeKinds[2] = {
+				smvk::PakAssetKind::Texture, smvk::PakAssetKind::Sound };
+			for (const smvk::PakAssetKind kind : policeKinds)
+			for (const smvk::PakTocEntry* e : reader->BlobsOfKind(kind)) {
 				auto ownerIt = vfsOwner.find(e->path);
 				if (ownerIt != vfsOwner.end()
 						&& ownerIt->second != pak.id) {
@@ -712,6 +762,65 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					for (size_t i = 0; i < plan.paks.size(); ++i)
 						pakFileById[plan.paks[i].id] =
 							finalPaths[i].filename().generic_string();
+					// The COOKED SCENE NAME per scene id row (the
+					// id->scene join the runtime's LoadScene-by-id
+					// resolves). Same rule as the entry scene above:
+					// reopen the owning pak, list its scenes, record
+					// scene[0]'s name (tour-built paks carry exactly
+					// one; a multi-scene pak warns and records [0] —
+					// the ownership model keeps one tour scene per
+					// pak by construction). Paks not built in THIS
+					// run (a catalog row pointing outside the plan)
+					// leave the name empty: the runtime then infers
+					// from a single-scene pak and refuses multi-scene
+					// paks loudly (recook).
+					std::map<std::string, fs::path> finalPathByFile;
+					for (const fs::path& p : finalPaths)
+						finalPathByFile[p.filename().generic_string()] = p;
+					std::map<std::string, std::string> sceneNameByPak;
+					const auto sceneNameOf =
+						[&](const std::string& pakFile)
+						-> std::string {
+						auto known = sceneNameByPak.find(pakFile);
+						if (known != sceneNameByPak.end())
+							return known->second;
+						std::string name;
+						const auto it = finalPathByFile.find(pakFile);
+						if (it != finalPathByFile.end()) {
+							std::ifstream in(it->second, std::ios::binary);
+							std::vector<uint8_t> image(
+								(std::istreambuf_iterator<char>(in)),
+								std::istreambuf_iterator<char>());
+							std::string rerr;
+							auto reader = smvk::PakReader::Open(
+								std::span<const uint8_t>(image), rerr);
+							std::string lerr;
+							std::vector<smvk::PakSceneInfo> scenes;
+							if (reader)
+								scenes = smvk::ListPakScenes(*reader,
+									&lerr);
+							if (scenes.empty()) {
+								std::printf("[build] scene row pak '%s'"
+									" carries no scenes (%s) — the row"
+									" keeps no cooked name\n",
+									pakFile.c_str(),
+									(reader ? lerr : rerr).c_str());
+							}
+							else {
+								name = scenes[0].name;
+								if (name.empty())
+									name = "scene"; // the packer's default
+								if (scenes.size() > 1)
+									std::printf("[build] scene row pak"
+										" '%s' carries %zu scenes;"
+										" recording scene[0] '%s'\n",
+										pakFile.c_str(), scenes.size(),
+										name.c_str());
+							}
+						}
+						sceneNameByPak[pakFile] = name;
+						return name;
+					};
 					const auto addRows =
 						[&](const std::vector<CatalogEntry>& entries,
 							const char* kind) {
@@ -722,6 +831,11 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 								row.pak = pakFileById.count(e.pak)
 									? pakFileById[e.pak] : e.pak;
 								row.path = e.path;
+								// Scene rows: the cooked scene name
+								// (the optional 5th [ids] token — see
+								// appmanifest.h).
+								if (std::string_view(kind) == "scene")
+									row.name = sceneNameOf(row.pak);
 								manifest.assets.push_back(
 									std::move(row));
 							}
@@ -729,6 +843,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					addRows(catalog.scenes, "scene");
 					addRows(catalog.textures, "texture");
 					addRows(catalog.meshes, "mesh");
+					addRows(catalog.sounds, "sound");
 				}
 				else {
 					// The manifest's id table is part of the build's

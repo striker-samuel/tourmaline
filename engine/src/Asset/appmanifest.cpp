@@ -171,8 +171,8 @@ bool ValidateAppManifest(const AppManifest& m, std::string& err) {
 			err = "duplicate content id 0x" + Hex(a.id);
 			return false;
 		}
-		if (a.kind != "scene" && a.kind != "texture"
-				&& a.kind != "mesh") {
+		if (a.kind != "scene" && a.kind != "texture" && a.kind != "mesh"
+				&& a.kind != "sound") {
 			err = "unknown content kind '" + a.kind + "' (row 0x"
 				+ Hex(a.id) + ")";
 			return false;
@@ -190,6 +190,22 @@ bool ValidateAppManifest(const AppManifest& m, std::string& err) {
 		if (!ValidRelativePath(a.path, why)) {
 			err = "content row path '" + a.path + "': " + why;
 			return false;
+		}
+		// The cooked scene name: scene-rows-only, and never empty when
+		// present (an empty 5th token is a malformed row, not "unknown"
+		// — unknown is the 4-token form).
+		if (!a.name.empty()) {
+			if (a.kind != "scene") {
+				err = "content row 0x" + Hex(a.id) + " (kind '"
+					+ a.kind + "') carries a scene name — only scene"
+					" rows take the cooked-name token";
+				return false;
+			}
+			if (a.name.find_first_of(" \t\"") != std::string::npos) {
+				err = "content row 0x" + Hex(a.id) + " scene name '"
+					+ a.name + "' has whitespace/quotes (malformed)";
+				return false;
+			}
 		}
 	}
 	return true;
@@ -252,7 +268,10 @@ bool LoadAppManifestText(const std::string& text, AppManifest& out,
 		}
 		if (inIds) {
 			// id rows: <0xId> <kind> <pak-file> <path> (the last two
-			// may be quoted — paths with spaces).
+			// may be quoted — paths with spaces). Scene rows take an
+			// OPTIONAL 5th token: the cooked scene's NAME inside the
+			// pak (the id->scene join the runtime's LoadScene-by-id
+			// resolves; the build records what ListPakScenes reported).
 			std::vector<std::string> toks;
 			size_t i = 0;
 			while (i < content.size()) {
@@ -276,9 +295,10 @@ bool LoadAppManifestText(const std::string& text, AppManifest& out,
 					i = j;
 				}
 			}
-			if (toks.size() != 4) {
+			if (toks.size() != 4 && toks.size() != 5) {
 				err = where + "an id row is"
-					" '<0xId> <scene|texture|mesh> <pak> <path>'";
+					" '<0xId> <scene|texture|mesh|sound> <pak> <path>'"
+					" (scene rows may add the cooked scene name)";
 				return false;
 			}
 			AppManifestAsset row;
@@ -289,6 +309,12 @@ bool LoadAppManifestText(const std::string& text, AppManifest& out,
 			row.kind = toks[1];
 			row.pak = toks[2];
 			row.path = toks[3];
+			if (toks.size() == 5) {
+				// The 5th token is scene-rows-only (validation below
+				// rejects it on any other kind — parse permissively,
+				// reject loudly).
+				row.name = toks[4];
+			}
 			out.assets.push_back(std::move(row));
 			continue;
 		}
@@ -415,9 +441,16 @@ bool SaveAppManifest(const std::string& path, const AppManifest& m,
 		os << pak << "\n";
 	if (!m.assets.empty()) {
 		os << "\n[ids]\n";
-		for (const AppManifestAsset& a : m.assets)
+		for (const AppManifestAsset& a : m.assets) {
 			os << Hex(a.id) << " " << a.kind << " " << a.pak << " "
-				<< a.path << "\n";
+				<< a.path;
+			// Scene rows: the cooked scene name (the id->scene join).
+			// Validation guarantees it is scene-rows-only and carries
+			// no whitespace, so it needs no quoting.
+			if (!a.name.empty())
+				os << " " << a.name;
+			os << "\n";
+		}
 	}
 	std::ofstream f(path, std::ios::binary | std::ios::trunc);
 	if (!f) {

@@ -940,7 +940,10 @@ bool PakBackend::Exists(const VfsPath& path) const {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty() || !reader_)
 		return false;
-	return reader_->Find(PakAssetKind::Texture, n) != nullptr;
+	// The two VFS-addressable kinds (pak.h's interop contract): texture
+	// blobs (embedded .ktx2) + sound blobs (raw .wav).
+	return reader_->Find(PakAssetKind::Texture, n) != nullptr
+		|| reader_->Find(PakAssetKind::Sound, n) != nullptr;
 }
 
 std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) const {
@@ -948,14 +951,22 @@ std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) con
 	if (n.empty() || !reader_)
 		return std::nullopt;
 	const PakTocEntry* e = reader_->Find(PakAssetKind::Texture, n);
-	if (!e)
-		return std::nullopt;
-	PakTexturePayload payload;
-	if (!ParseTexturePayload(reader_->Payload(*e), payload)) {
-		std::cerr << "PakBackend: malformed texture payload: " << n << std::endl;
-		return std::nullopt;
+	if (e) {
+		PakTexturePayload payload;
+		if (!ParseTexturePayload(reader_->Payload(*e), payload)) {
+			std::cerr << "PakBackend: malformed texture payload: " << n << std::endl;
+			return std::nullopt;
+		}
+		return std::vector<uint8_t>(payload.ktxBytes.begin(), payload.ktxBytes.end());
 	}
-	return std::vector<uint8_t>(payload.ktxBytes.begin(), payload.ktxBytes.end());
+	// SOUND blobs: the payload IS the raw .wav bytes (no header
+	// wrapper — LoadWavFromMemory consumes them verbatim).
+	e = reader_->Find(PakAssetKind::Sound, n);
+	if (e) {
+		const std::span<const uint8_t> wav = reader_->Payload(*e);
+		return std::vector<uint8_t>(wav.begin(), wav.end());
+	}
+	return std::nullopt;
 }
 
 std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
@@ -964,7 +975,15 @@ std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
 		return out;
 	const VfsPath n = vfs::Normalize(dir);
 	const std::string prefix = n.empty() ? std::string{} : n + "/";
-	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Texture)) {
+	// Both VFS-addressable kinds list (the overlay's union view).
+	std::vector<const PakTocEntry*> all;
+	all.reserve(reader_->BlobsOfKind(PakAssetKind::Texture).size()
+		+ reader_->BlobsOfKind(PakAssetKind::Sound).size());
+	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Texture))
+		all.push_back(e);
+	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Sound))
+		all.push_back(e);
+	for (const PakTocEntry* e : all) {
 		const std::string& p = e->path;
 		if (n.empty()) {
 			const size_t slash = p.find('/');
@@ -986,16 +1005,25 @@ std::optional<VfsStat> PakBackend::Stat(const VfsPath& path) const {
 	if (n.empty() || !reader_)
 		return std::nullopt;
 	const PakTocEntry* e = reader_->Find(PakAssetKind::Texture, n);
-	if (!e)
-		return std::nullopt;
-	PakTexturePayload payload;
-	if (!ParseTexturePayload(reader_->Payload(*e), payload))
-		return std::nullopt;
-	VfsStat s;
-	s.size = static_cast<uint64_t>(payload.ktxBytes.size());
-	s.backend = Name();
-	s.source = name_ + ":" + n;
-	return s;
+	if (e) {
+		PakTexturePayload payload;
+		if (!ParseTexturePayload(reader_->Payload(*e), payload))
+			return std::nullopt;
+		VfsStat s;
+		s.size = static_cast<uint64_t>(payload.ktxBytes.size());
+		s.backend = Name();
+		s.source = name_ + ":" + n;
+		return s;
+	}
+	e = reader_->Find(PakAssetKind::Sound, n);
+	if (e) {
+		VfsStat s;
+		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());
+		s.backend = Name();
+		s.source = name_ + ":" + n;
+		return s;
+	}
+	return std::nullopt;
 }
 
 } // namespace smvk

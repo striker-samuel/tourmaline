@@ -63,4 +63,13 @@ smvk::mem::LinearPtr<smvk::World> LoadProjectWorld(
 // + no skeleton). `pakName` labels the fallback log.
 void ApplyCookedStaticFlags(smvk::World& world, const std::string& pakName);
 
+// The POST-LOAD TAIL shared by the world loaders and the runtime scene
+// layer (ProjectScenes): anim-clip attach (the first skinned cluster),
+// cooked static flags, the resolve/fixup that folds the loaded clusters
+// into the merged world scene, and the env-gated scene-prep diagnostics.
+// Public so additive scene loads run the SAME tail as the entry load.
+// `pakStem` is the anim fallback's stem (the loading pak's).
+void PostLoadTail(smvk::World& world, const std::string& pakStem,
+	smvk::OverlayVfs& contentVfs);
+
 } // namespace app

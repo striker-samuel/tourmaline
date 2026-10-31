@@ -1,7 +1,14 @@
 //Name: game.tour
-//Last modified: Sat, Oct 31, 2026 12:50:15 PM
+//Last modified: Sat, Oct 31, 2026 02:21:25 PM
 reference -root -n 0 -source "content/models/game/game.geometry" -name "ROOT";
-fileInfo -k "application" -v "tourmaline-tour;;;;";
-fileInfo -k "product" -v "Tourmaline;;;;";
-fileInfo -k "version" -v "1;;;;";
+fileInfo -k "application" -v "tourmaline-tour;;;;;;;";
+fileInfo -k "product" -v "Tourmaline;;;;;;;";
+fileInfo -k "version" -v "1;;;;;;;";
 materialAsset -default -name "default";
+createAudioSource -p 0 -name "BellTower" -at audioSource -t 0 3 0;
+	setAudioAttr -ref 0 -at volume -v 0.8;
+	setAudioAttr -ref 0 -at spatial -type "bool" -v on;
+	setAudioAttr -ref 0 -at playOnLoad -type "bool" -v on;
+	setAudioAttr -ref 0 -at minDistance -v 2;
+	setAudioAttr -ref 0 -at maxDistance -v 30;
+	addAudioSound -ref 0 -name "Bells" -source "content/audio/bells.wav" -v 1 -loop on // content/audio/bells.wav;

@@ -49,6 +49,38 @@ std::string ProjectRuntime::PakPath(const std::string& pakFile) const {
 	return p.lexically_normal().generic_string();
 }
 
+std::shared_ptr<smvk::PakBackend> ProjectRuntime::OpenPak(
+	const std::string& pakFile, std::string& err) {
+	err.clear();
+	// The pak, preloaded + opened once, cached for the runtime's
+	// lifetime (the PakBackend owns the image; reads borrow it). The
+	// first open blocks on the preload future — see the header's
+	// thread note.
+	auto cached = m_backends.find(pakFile);
+	if (cached == m_backends.end()) {
+		const std::string pakPath = PakPath(pakFile);
+		PakPreload pre = KickPakPreload(pakPath).get();
+		if (!pre.backend) {
+			err = "the content pak '" + pakFile + "' failed: "
+				+ pre.error;
+			return nullptr;
+		}
+		cached = m_backends.emplace(pakFile,
+			std::move(pre.backend)).first;
+	}
+	return cached->second;
+}
+
+void ProjectRuntime::AdoptPakBackend(const std::string& pakFile,
+	std::shared_ptr<smvk::PakBackend> backend) {
+	if (pakFile.empty() || !backend)
+		return;
+	// First writer wins; a present entry stays untouched (the cache's
+	// own OpenPak result and an adopted host backend are the same
+	// archive by contract).
+	m_backends.emplace(pakFile, std::move(backend));
+}
+
 std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 	uint64_t id, std::string& err) {
 	err.clear();
@@ -58,36 +90,32 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 		return std::nullopt;
 	}
 	// KIND DISPATCH (the honest channel per kind — the pak's VFS
-	// surface serves TEXTURE blobs only; meshes and scenes are
+	// surface serves TEXTURE and SOUND blobs; meshes and scenes are
 	// cluster-internal payloads with no VFS address):
 	//   texture -> the embedded .ktx2 bytes (what every loader in the
 	//              tree consumes — the v1 LoadTexture form);
+	//   sound   -> the raw .wav bytes (AudioEngine::LoadWavFromMemory
+	//              consumes them verbatim);
 	//   scene   -> scenes load BY IDENTITY through the apphost's world
 	//              loading (the appmanifest entry / the pak's scene
 	//              list), never as raw bytes;
 	//   mesh    -> meshes ship INSIDE their scene's cluster (the v1
 	//              pak-format boundary) — load the owning scene.
-	if (row->kind != "texture") {
+	if (row->kind != "texture" && row->kind != "sound") {
 		err = "content id 0x" + std::to_string(id) + " is a '"
-			+ row->kind + "' — only TEXTURE payloads are VFS-addressed"
-				" bytes (scenes load by identity through the world"
-				" loader; meshes ship inside their scene's cluster)";
+			+ row->kind + "' — only TEXTURE and SOUND payloads are"
+				" VFS-addressed bytes (scenes load by identity through"
+				" the world loader; meshes ship inside their scene's"
+				" cluster)";
 		return std::nullopt;
 	}
-	// The row's pak, preloaded + opened once, cached for the runtime's
-	// lifetime (the PakBackend owns the image; reads borrow it).
-	auto cached = m_backends.find(row->pak);
-	if (cached == m_backends.end()) {
-		const std::string pakPath = PakPath(row->pak);
-		PakPreload pre = KickPakPreload(pakPath).get();
-		if (!pre.backend) {
-			err = "the content pak failed: " + pre.error;
-			return std::nullopt;
-		}
-		cached = m_backends.emplace(row->pak,
-			std::move(pre.backend)).first;
-	}
-	auto bytes = cached->second->TryRead(row->path);
+	// The row's pak through the SHARED lazy backend cache (see
+	// OpenPak — one preload + open per archive, kept for the runtime's
+	// lifetime).
+	std::shared_ptr<smvk::PakBackend> backend = OpenPak(row->pak, err);
+	if (!backend)
+		return std::nullopt;
+	auto bytes = backend->TryRead(row->path);
 	if (!bytes || bytes->empty()) {
 		err = "the pak '" + row->pak + "' does not serve '"
 			+ row->path + "' (content id 0x" + std::to_string(id)

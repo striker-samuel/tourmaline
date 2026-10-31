@@ -33,12 +33,16 @@
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
+#include "ProjectScenes.h"
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Scene/scene_tables.h>
+#include <Engine/Vfs/vfs.h>
 
 namespace {
 
@@ -509,6 +513,289 @@ void TestProjectRuntime() {
 	}
 }
 
+// ---- ProjectScenes (the scene-instance layer over the façade) --------
+// GPU-less end-to-end: the pak->cluster seam is replaced with a
+// hand-built offline cluster (the test_world_entities recipe), so the
+// whole LoadScene/LoadSceneAdditive/RemoveScene + ownership-prefetch
+// machinery runs headless — the id->scene join, the instance table's
+// stale-handle guarantee, and the ownership registry's pin semantics
+// are the contracts under test. The default clusterLoader (the real
+// DeserializeCluster) needs a GPU and is exercised by every cooked
+// project launch instead.
+
+// A minimal scene blob carrying a NAME (the v5 trailing name section —
+// see ParseSceneBlob's trailing-section grammar): the v1 core + the
+// v2 static / v3 lightmap marker sections + a zero-pair v4 lights
+// section + the name. This is what ListPakScenes reports for the
+// id->scene join.
+std::vector<uint8_t> NamedSceneBlob(const std::string& name) {
+	std::vector<uint8_t> b;
+	const auto u32 = [&b](uint32_t v) {
+		for (int i = 0; i < 4; ++i)
+			b.push_back(uint8_t((v >> (8 * i)) & 0xFF));
+	};
+	const auto i32 = [&u32](int32_t v) { u32(uint32_t(v)); };
+	u32(1); // node count
+	i32(-1); i32(-1); i32(-1); i32(-1); i32(0); // hierarchy[0]
+	for (float v : { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }) {
+		uint32_t bits = 0;
+		std::memcpy(&bits, &v, 4);
+		u32(bits);
+	}
+	u32(0); // mesh pairs
+	u32(0); // material pairs
+	u32(0); // node-name pairs
+	u32(0); // node names
+	u32(0); // material names
+	u32(1); b.push_back(0); // static section (v2): nodeCount bytes
+	u32(1); b.push_back(0); // lightmap section (v3): nodeCount bytes
+	u32(0);                 // lights section (v4): zero pairs
+	u32(uint32_t(name.size())); // scene name (v5)
+	b.insert(b.end(), name.begin(), name.end());
+	return b;
+}
+
+void TestProjectScenes() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pscenes";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+	const std::string texPath = "content/models/s/stone.png";
+	const std::vector<uint8_t> ktx = { 0xAB, 'K', 'T', 'X', ' ', '2',
+		'0', 0x0D, 0x0A, 7, 7, 7, 7 };
+	// A sound asset (the raw .wav bytes — Sound-kind blobs ride the
+	// same VFS surface as textures; the façade's ReadAsset serves
+	// them and the audio manager decodes them).
+	const std::string wavPath = "content/audio/bells.wav";
+	const std::vector<uint8_t> wav = { 'R', 'I', 'F', 'F', 0x18, 0, 0, 0,
+		'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 0x10, 0, 0, 0, 1, 0,
+		1, 0, 0x80, 0xBB, 0, 0, 0, 0x77, 0xA1, 0, 0, 2, 0, 0x10, 0,
+		'd', 'a', 't', 'a', 4, 0, 0, 0, 1, 2, 3, 4 };
+	// one.pak: a single named scene ("Church") + a texture + a sound.
+	// two.pak: TWO scenes — the multi-scene refusal without a recorded
+	// name.
+	{
+		smvk::PakWriter w;
+		w.AddBlob(smvk::PakAssetKind::Scene, "recording/one",
+			NamedSceneBlob("Church"));
+		w.AddBlob(smvk::PakAssetKind::Texture, texPath,
+			smvk::BuildTexturePayload(texPath, -1, -1, -1, -1,
+				std::span<const uint8_t>(ktx)));
+		w.AddBlob(smvk::PakAssetKind::Sound, wavPath, wav);
+		const std::vector<uint8_t> image = w.Finalize();
+		std::ofstream f(tmp / "one.pak", std::ios::binary
+			| std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(image.data()),
+			std::streamsize(image.size()));
+	}
+	{
+		smvk::PakWriter w;
+		w.AddBlob(smvk::PakAssetKind::Scene, "recording/two-a",
+			NamedSceneBlob("Alpha"));
+		w.AddBlob(smvk::PakAssetKind::Scene, "recording/two-b",
+			NamedSceneBlob("Beta"));
+		const std::vector<uint8_t> image = w.Finalize();
+		std::ofstream f(tmp / "two.pak", std::ios::binary
+			| std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(image.data()),
+			std::streamsize(image.size()));
+	}
+	const fs::path tapp = tmp / "game.tapp";
+	{
+		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		f << "# Tourmaline Runtime Project\n"
+			<< "appmanifest 1\n"
+			<< "entry one.pak Church\n"
+			<< "\n[paks]\none.pak\ntwo.pak\n"
+			<< "\n[ids]\n"
+			// The recorded cooked name: the id->scene join.
+			<< "0x1000 scene one.pak content/scenes/church.tour Church\n"
+			// No recorded name: a multi-scene pak must refuse loudly.
+			<< "0x1001 scene two.pak content/scenes/two.tour\n"
+			<< "0x2000 texture one.pak " << texPath << "\n"
+			<< "0x4000 sound one.pak " << wavPath << "\n";
+	}
+	std::string err;
+	auto rtOpt = app::ProjectRuntime::Load(tapp.generic_string(), err);
+	Check(bool(rtOpt) && err.empty(), "pscenes.load-manifest");
+	if (!rtOpt) {
+		Check(false, "pscenes.ctor");
+		Check(false, "pscenes.target-recorded-name");
+		Check(false, "pscenes.load-additive");
+		return;
+	}
+	app::ProjectRuntime& rt = *rtOpt;
+	smvk::OverlayVfs vfs;
+	app::ProjectScenes scenes(rt, vfs);
+	Check(scenes.Valid() && vfs.Mounts().size() == 2,
+		"pscenes.ctor");
+	// The façade's reads serve through the SAME adopted backends (the
+	// ctor's adopt-or-open pass — one image per pak whatever opens it).
+	{
+		std::string rErr;
+		auto bytes = rt.ReadAsset(0x2000, rErr);
+		Check(bytes && *bytes == ktx && rErr.empty(),
+			"pscenes.facade-reads-through-shared-cache");
+		// The SOUND kind: raw .wav bytes through the same channel (the
+		// audio manager's PrefetchSound/PlaySound feed).
+		std::string sErr;
+		auto wavBytes = rt.ReadAsset(0x4000, sErr);
+		Check(wavBytes && *wavBytes == wav && sErr.empty(),
+			"pscenes.facade-reads-sound-bytes");
+	}
+
+	// --- the id->scene join ---
+	{
+		std::string tErr;
+		auto t = scenes.ResolveSceneTarget(0x1000, tErr);
+		Check(t && tErr.empty() && t->pak == "one.pak"
+			&& t->sceneName == "Church" && t->sceneIndex == 0,
+			"pscenes.target-recorded-name");
+	}
+	{
+		std::string tErr;
+		auto t = scenes.ResolveSceneTarget(0x2000, tErr);
+		Check(!t && tErr.find("SCENE") != std::string::npos,
+			"pscenes.target-kind-refusal");
+	}
+	{
+		std::string tErr;
+		Check(!scenes.ResolveSceneTarget(0x9999, tErr) && !tErr.empty(),
+			"pscenes.target-unknown");
+	}
+	{
+		// A multi-scene pak without a recorded name refuses loudly
+		// (recook) — never "whatever scene sits at index 0".
+		std::string tErr;
+		auto t = scenes.ResolveSceneTarget(0x1001, tErr);
+		Check(!t && tErr.find("recook") != std::string::npos,
+			"pscenes.target-multiscene-refusal");
+	}
+
+	// --- loads (the GPU-less offline cluster seam) ---
+	scenes.clusterLoader =
+		[](smvk::World& world, smvk::ResourceManager* ctx,
+			const smvk::PakReader& reader, uint32_t sceneIndex,
+			smvk::TextureStreamer* streamer,
+			std::shared_ptr<const std::vector<uint8_t>> imagePin,
+			const smvk::ExternalTextureResolver* externalTexture,
+			std::string& loadErr) -> smvk::Cluster* {
+		(void)ctx; (void)reader; (void)sceneIndex; (void)streamer;
+		(void)imagePin; (void)externalTexture; (void)loadErr;
+		// The test_world_entities recipe: an offline cluster with one
+		// root node + one light, registered into the world — the
+		// resolve folds it into the merged scene and the light table
+		// proves the fold happened.
+		auto c = std::make_unique<smvk::Cluster>(nullptr);
+		::SceneLight def{};
+		def.type = ::SceneLight::Type::Point;
+		def.intensity = 100.0f;
+		def.name = "test_light";
+		auto handle = c->CreateLight(def);
+		const int node = addNode(c->scene, -1, 0);
+		SetLight(c->scene, uint32_t(node), handle.index());
+		smvk::Cluster* raw = c.get();
+		world.RegisterCluster(std::move(c));
+		return raw;
+	};
+	smvk::World world;
+	app::SceneHandle h1 = scenes.LoadSceneAdditive(world, nullptr,
+		nullptr, 0x1000, err);
+	Check(bool(h1) && err.empty(), "pscenes.load-additive");
+	Check(scenes.LoadedSceneCount() == 1, "pscenes.count-1");
+	Check(scenes.SceneCluster(h1) != nullptr
+		&& scenes.SceneContentId(h1) == 0x1000,
+		"pscenes.instance-row");
+	Check(world.lightLocations.size() == 1,
+		"pscenes.world-light-folded");
+	// Two instances of the SAME scene (two churches): distinct handles,
+	// both alive.
+	app::SceneHandle h2 = scenes.LoadSceneAdditive(world, nullptr,
+		nullptr, 0x1000, err);
+	Check(bool(h2) && h2 != h1 && scenes.LoadedSceneCount() == 2
+		&& world.lightLocations.size() == 2,
+		"pscenes.second-instance");
+
+	// --- remove + the stale-handle guarantee ---
+	{
+		std::vector<uint64_t> released;
+		std::string rErr;
+		Check(scenes.RemoveScene(h1, world, rErr, &released)
+			&& rErr.empty(), "pscenes.remove");
+		Check(!scenes.IsLoaded(h1) && scenes.LoadedSceneCount() == 1
+			&& world.lightLocations.size() == 1,
+			"pscenes.removed-folds-away");
+		std::string staleErr;
+		Check(!scenes.RemoveScene(h1, world, staleErr)
+			&& !staleErr.empty(),
+			"pscenes.stale-remove-refused");
+	}
+
+	// --- ownership-aware prefetch ---
+	scenes.SceneAcquireAsset(h2, 0x2000);
+	scenes.SceneAcquireAsset(h2, 0x2000); // idempotent per scene
+	Check(scenes.IsHeld(0x2000), "pscenes.held-by-scene");
+	Check(scenes.Prefetch(0x2000, err), "pscenes.prefetch");
+	Check(scenes.IsPinned(0x2000) && scenes.IsHeld(0x2000),
+		"pscenes.pinned");
+	{
+		std::vector<uint64_t> released;
+		std::string rErr;
+		Check(scenes.RemoveScene(h2, world, rErr, &released),
+			"pscenes.remove-2");
+		// The pin survives the scene's removal: the texture id is NOT
+		// reported as dropped and stays held.
+		Check(released.empty() && scenes.IsHeld(0x2000),
+			"pscenes.pin-survives-removal");
+		Check(scenes.Release(0x2000) && !scenes.IsHeld(0x2000),
+			"pscenes.fully-released");
+		Check(!scenes.Release(0x2000),
+			"pscenes.release-unpinned-refused");
+	}
+	{
+		std::string pErr;
+		Check(!scenes.Prefetch(0x9999, pErr) && !pErr.empty(),
+			"pscenes.prefetch-unknown");
+	}
+	// The unpinned drop list: a scene-owned id with NO pin is reported
+	// exactly once, on the LAST owner's removal.
+	{
+		app::SceneHandle a = scenes.LoadSceneAdditive(world, nullptr,
+			nullptr, 0x1000, err);
+		app::SceneHandle b = scenes.LoadSceneAdditive(world, nullptr,
+			nullptr, 0x1000, err);
+		Check(bool(a) && bool(b), "pscenes.reload-for-ownership");
+		scenes.SceneAcquireAsset(a, 0x2000);
+		scenes.SceneAcquireAsset(b, 0x2000);
+		std::vector<uint64_t> releasedA;
+		std::string rErrA;
+		scenes.RemoveScene(a, world, rErrA, &releasedA);
+		std::vector<uint64_t> releasedB;
+		std::string rErrB;
+		scenes.RemoveScene(b, world, rErrB, &releasedB);
+		Check(releasedA.empty() && releasedB.size() == 1
+			&& releasedB[0] == 0x2000,
+			"pscenes.drop-reported-on-last-owner");
+	}
+
+	// --- replace semantics ---
+	{
+		app::SceneHandle a = scenes.LoadSceneAdditive(world, nullptr,
+			nullptr, 0x1000, err);
+		app::SceneHandle b = scenes.LoadSceneAdditive(world, nullptr,
+			nullptr, 0x1000, err);
+		Check(bool(a) && bool(b) && scenes.LoadedSceneCount() == 2,
+			"pscenes.pre-replace");
+		app::SceneHandle c = scenes.LoadScene(world, nullptr, nullptr,
+			0x1000, err);
+		Check(bool(c) && scenes.LoadedSceneCount() == 1
+			&& !scenes.IsLoaded(a) && !scenes.IsLoaded(b),
+			"pscenes.replace-unloads-all");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -518,6 +805,7 @@ int main() {
 	TestPakCorruption();
 	TestStaticFlagApplication();
 	TestProjectRuntime();
+	TestProjectScenes();
 	std::cout << "pak_host_tests: " << (g_checks - g_failures) << "/"
 		<< g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;

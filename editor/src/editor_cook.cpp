@@ -80,6 +80,13 @@ public:
 		args.verify = a.verify;
 		args.levelName = a.levelName;
 		args.registryDir = a.registryDir;
+		// The multi-pak ownership + sound-id surfaces (the CLI adapter
+		// passes these flag-for-flag; the in-process adapter MUST map
+		// them too or editor plan builds silently drop the ownership
+		// excludes + the scene's stamped sound ids).
+		args.contentSet = a.contentSet;
+		args.excludeVfsPaths = a.excludeVfs;
+		args.soundIds = a.soundIds;
 		return paktool::Run(args);
 	}
 };

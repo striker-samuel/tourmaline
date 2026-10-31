@@ -2022,6 +2022,11 @@ void TestClusterSerializeCook() {
 			putU32(uint32_t(cluster->scene.hierarchy.size()));
 			expect.insert(expect.end(),
 				cluster->scene.hierarchy.size(), uint8_t(0));
+			// The v18 audio-source section trails the caster bytes
+			// (u32 rowCount — this scene carries no audio sources, so
+			// the writer emits the zero-row form; see the dedicated
+			// TestAudioSceneSection for the populated encoding).
+			putU32(0);
 			const size_t at = p.size() - expect.size();
 			bool tailOk = p.size() >= expect.size();
 			for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -2685,6 +2690,137 @@ void TestMultiSceneSerialize() {
 	}
 }
 
+// The scene blob's trailing v18 AUDIO-SOURCE section (the cooked
+// emitter association): sounds serialize as STABLE 0x4xxx content ids
+// resolved through the cooker's sound-id map. Pinned here CPU-only:
+// the exact byte encoding (node-sorted rows), the structure parse
+// (ListPakScenes accepts a populated section), the unresolved-path
+// FAILURE (the project contract: never silently omit a referenced
+// sound), and the bare-cook semantic (an EMPTY map stamps 0).
+void TestAudioSceneSection() {
+	using namespace smvk;
+	auto mkCluster = []() {
+		auto c = std::make_unique<smvk::Cluster>(nullptr);
+		c->SetOfflineMode(true);
+		addNode(c->scene, -1, 0); // root (slot 0)
+		const int emitter = addNode(c->scene, 0, 1); // slot 1
+		SceneAudioSource src;
+		src.volume = 0.8f;
+		src.spatial = true;
+		src.playOnLoad = true;
+		src.minDistance = 2.0f;
+		src.maxDistance = 30.0f;
+		AudioSoundRef bells;
+		bells.name = "Bells";
+		bells.assetPath = "content/audio/bells.wav";
+		bells.gain = 1.5f;
+		bells.loop = true;
+		src.sounds.push_back(bells);
+		SetAudioSource(c->scene, NodeId(emitter), src);
+		return c;
+	};
+	const std::string paths[1] = { "content/audio/bells.wav" };
+	const uint64_t ids[1] = { 0x4000 };
+	// (a) The resolved map: exact byte tail (v18 is the LAST section —
+	// u32 rowCount + per-row fields + per-sound (u64 id, f32 gain,
+	// u32 loop)).
+	{
+		auto c = mkCluster();
+		PakWriter w;
+		std::string err;
+		ClusterSerializeStats stats;
+		Check(SerializeClusters({ c.get() }, { "Audio" }, w, &stats,
+				&err, nullptr, 0, paths, ids, 1),
+			"audio.serialize.resolved-ok");
+		Check(stats.audioSources == 1, "audio.serialize.stats");
+		std::vector<uint8_t> img = w.Finalize();
+		std::string openErr;
+		auto reader = PakReader::Open(
+			std::span<const uint8_t>(img), openErr);
+		Check(reader.has_value(), "audio.pak.open");
+		if (reader) {
+			const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+			Check(scenes.size() == 1, "audio.pak.scene1");
+			if (scenes.size() == 1) {
+				const std::span<const uint8_t> p =
+					reader->Payload(*scenes[0]);
+				std::vector<uint8_t> expect;
+				auto putU32 = [&](uint32_t v) {
+					for (int i = 0; i < 4; ++i)
+						expect.push_back(
+							uint8_t((v >> (8 * i)) & 0xFF));
+				};
+				auto putU64 = [&](uint64_t v) {
+					for (int i = 0; i < 8; ++i)
+						expect.push_back(
+							uint8_t((v >> (8 * i)) & 0xFF));
+				};
+				auto putF32 = [&](float f) {
+					uint32_t v = 0;
+					memcpy(&v, &f, 4);
+					putU32(v);
+				};
+				putU32(1);          // rowCount
+				putU32(1);          // denseNode (slot 1 -> dense 1)
+				putF32(0.8f);       // volume
+				putU32(3u);         // flags: spatial | playOnLoad
+				putF32(2.0f);       // minDistance
+				putF32(30.0f);      // maxDistance
+				putU32(1);          // soundCount
+				putU64(0x4000);     // the STABLE content id
+				putF32(1.5f);       // gain
+				putU32(1);          // loop
+				const size_t at = p.size() - expect.size();
+				bool tailOk = p.size() >= expect.size();
+				for (size_t i = 0; tailOk && i < expect.size(); ++i)
+					tailOk = p[at + i] == expect[i];
+				Check(tailOk, "audio.pak.scene.section-tail");
+				// The structure parse (ListPakScenes shares
+				// ParseSceneBlob) consumes the populated section.
+				std::string lerr;
+				auto listed = ListPakScenes(*reader, &lerr);
+				Check(listed.size() == 1 && lerr.empty()
+					&& listed[0].nodes == 2,
+					"audio.pak.scene.list-parses");
+			}
+		}
+	}
+	// (b) A NON-empty map that does not cover the referenced path
+	// FAILS (the project contract — the error names the sound).
+	{
+		auto c = mkCluster();
+		PakWriter w;
+		std::string err;
+		const std::string otherPaths[1] = { "content/audio/other.wav" };
+		const uint64_t otherIds[1] = { 0x4001 };
+		Check(!SerializeClusters({ c.get() }, { "Audio" }, w, nullptr,
+				&err, nullptr, 0, otherPaths, otherIds, 1)
+			&& err.find("no content id") != std::string::npos
+			&& err.find("content/audio/bells.wav")
+				!= std::string::npos,
+			"audio.serialize.unresolved-fails");
+	}
+	// (c) The EMPTY map (a bare, non-project cook): succeeds, the ids
+	// stamp 0 (= unresolved — the emitter exists, plays nothing).
+	{
+		auto c = mkCluster();
+		PakWriter w;
+		std::string err;
+		Check(SerializeClusters({ c.get() }, { "Audio" }, w, nullptr,
+				&err, nullptr, 0, nullptr, nullptr, 0),
+			"audio.serialize.bare-cook-ok");
+		std::vector<uint8_t> img = w.Finalize();
+		std::string openErr;
+		auto reader = PakReader::Open(
+			std::span<const uint8_t>(img), openErr);
+		if (reader) {
+			std::string lerr;
+			auto listed = ListPakScenes(*reader, &lerr);
+			Check(listed.size() == 1, "audio.bare.list-parses");
+		}
+	}
+}
+
 } // namespace
 
 int main() {
@@ -2736,6 +2872,7 @@ int main() {
 	run("TestVertexLayoutShaderAbi", TestVertexLayoutShaderAbi);
 	run("TestClusterSerializeCook", TestClusterSerializeCook);
 	run("TestMultiSceneSerialize", TestMultiSceneSerialize);
+	run("TestAudioSceneSection", TestAudioSceneSection);
 	run("TestStaticSubtrees", TestStaticSubtrees);
 	run("TestMeshlets", TestMeshlets);
 	run("TestStaticCollapse", TestStaticCollapse);

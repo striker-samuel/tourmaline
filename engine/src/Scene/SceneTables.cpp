@@ -156,6 +156,16 @@ void RebuildNodeRows(Scene& scene)
 		scene.rowsForNode[row.node].envVolume = RowId(i);
 		++i;
 	}
+	for (size_t i = 0; i < scene.tables.audioSources.size();) {
+		AudioSourceRow& row = scene.tables.audioSources[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = std::move(scene.tables.audioSources.back());
+			scene.tables.audioSources.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].audioSource = RowId(i);
+		++i;
+	}
 }
 
 // ---- mesh ----
@@ -730,6 +740,70 @@ bool RemoveEnvVolume(Scene& scene, NodeId node)
 	scene.rowsForNode[node].envVolume = InvalidRow;
 	return true;
 }
+
+// ---- audioSource (the emitter association; inline payload with a
+// string-carrying sounds list — the move-not-copy convention, see
+// SetGiVolume) ----
+
+AudioSourceRow* FindAudioSource(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].audioSource;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.audioSources.size());
+	return &scene.tables.audioSources[rid];
+}
+
+const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].audioSource;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.audioSources.size());
+	return &scene.tables.audioSources[rid];
+}
+
+bool SetAudioSource(Scene& scene, NodeId node,
+	const SceneAudioSource& source)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (AudioSourceRow* row = FindAudioSource(scene, node)) {
+		row->source = source;
+		return true;
+	}
+	AudioSourceRow row{};
+	row.node = node;
+	row.source = source;
+	scene.tables.audioSources.push_back(std::move(row));
+	scene.rowsForNode[node].audioSource =
+		RowId(scene.tables.audioSources.size() - 1);
+	return true;
+}
+
+bool RemoveAudioSource(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].audioSource;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.audioSources[rid] =
+		std::move(scene.tables.audioSources.back());
+	scene.tables.audioSources.pop_back();
+	if (size_t(rid) < scene.tables.audioSources.size()) {
+		const NodeId moved = scene.tables.audioSources[rid].node;
+		scene.rowsForNode[moved].audioSource = rid;
+	}
+	scene.rowsForNode[node].audioSource = InvalidRow;
+	return true;
+}
+
 // ---- dense node metadata (name/uuid) ----
 
 void EnsureNodeMetadata(Scene& scene)
@@ -784,5 +858,6 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 	removed |= RemoveExport(scene, node);
 	removed |= RemoveEnv(scene, node);
 	removed |= RemoveEnvVolume(scene, node);
+	removed |= RemoveAudioSource(scene, node);
 	return removed;
 }

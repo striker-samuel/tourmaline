@@ -1071,6 +1071,16 @@ void TestAppManifest() {
 				"[paks]\na.pak\n[ids]\n0x10 scene a.pak\n" },
 			{ "id-zero", "appmanifest 1\nentry a.pak scene\n"
 				"[paks]\na.pak\n[ids]\n0x0 scene a.pak c/a.tour\n" },
+			// The scene-name token (the id->scene join): 5th token is
+			// scene-rows-only, and whitespace in it is malformed.
+			{ "id-name-on-nonscene", "appmanifest 1\nentry a.pak"
+				" scene\n[paks]\na.pak\n[ids]\n0x10 texture a.pak"
+				" c/a.png Church\n" },
+			{ "id-name-whitespace", "appmanifest 1\nentry a.pak"
+				" scene\n[paks]\na.pak\n[ids]\n0x10 scene a.pak"
+				" c/a.tour \"Two Words\"\n" },
+			{ "id-bad-arity-6", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\n0x10 scene a.pak c/a.tour x y\n" },
 		};
 		for (const Bad& b : bad) {
 			smvk::AppManifest m;
@@ -1101,10 +1111,18 @@ void TestAppManifest() {
 		m.entryScene = "scene";
 		m.paks = { "shared.pak", "world.pak" };
 		m.assets = {
-			{ 0x1000, "scene", "world.pak", "content/scenes/w.tour" },
+			{ 0x1000, "scene", "world.pak", "content/scenes/w.tour",
+				"Church" },
+			// A scene row WITHOUT a name (pre-name manifests) stays
+			// 4-token — the runtime infers from a single-scene pak.
+			{ 0x1001, "scene", "shared.pak", "content/scenes/o.tour" },
 			{ 0x2000, "texture", "shared.pak",
 				"content/models/s/stone.png" },
 			{ 0x3000, "mesh", "world.pak", "content/models/w/w.geometry" },
+			// The sound kind (0x4xxx rows — VFS-addressable .wav
+			// assets, the second byte-readable kind).
+			{ 0x4000, "sound", "shared.pak",
+				"content/audio/bells.wav" },
 		};
 		const fs::path file = tmp / "ids.tapp";
 		std::string err;
@@ -1112,14 +1130,39 @@ void TestAppManifest() {
 			"tapp.ids-save-ok");
 		smvk::AppManifest back;
 		Check(smvk::LoadAppManifest(file.generic_string(), back, err)
-			&& back.assets.size() == 3
-			&& back.assets[1].id == 0x2000
-			&& back.assets[1].kind == "texture"
-			&& back.assets[1].pak == "shared.pak"
-			&& back.assets[1].path == "content/models/s/stone.png"
-			&& back.FindAsset(0x3000) == &back.assets[2]
+			&& back.assets.size() == 5
+			&& back.assets[0].name == "Church"
+			&& back.assets[1].name.empty()
+			&& back.assets[2].id == 0x2000
+			&& back.assets[2].kind == "texture"
+			&& back.assets[2].pak == "shared.pak"
+			&& back.assets[2].path == "content/models/s/stone.png"
+			&& back.assets[2].name.empty()
+			&& back.assets[3].id == 0x3000
+			&& back.assets[3].kind == "mesh"
+			&& back.assets[4].id == 0x4000
+			&& back.assets[4].kind == "sound"
+			&& back.assets[4].pak == "shared.pak"
+			&& back.assets[4].path == "content/audio/bells.wav"
+			&& back.FindAsset(0x3000) == &back.assets[3]
+			&& back.FindAsset(0x4000) == &back.assets[4]
 			&& back.FindAsset(0x9999) == nullptr,
 			"tapp.ids-round-trip");
+		// The written text carries the scene-name token only where it
+		// exists (the 5th [ids] token — scene rows only).
+		{
+			std::ifstream f(file, std::ios::binary);
+			std::stringstream ss;
+			ss << f.rdbuf();
+			const std::string text = ss.str();
+			Check(text.find(
+					"0x1000 scene world.pak content/scenes/w.tour Church")
+					!= std::string::npos
+				&& text.find(
+					"0x1001 scene shared.pak content/scenes/o.tour\n")
+					!= std::string::npos,
+				"tapp.ids-scene-name-token");
+		}
 	}
 }
 
@@ -2255,8 +2298,11 @@ void TestProjectCatalog() {
 			"world" });
 		const std::string text =
 			smvk::project::EmitProjectHeader(c);
+		// The typed-key declarations (SceneKey/TextureKey/... beside
+		// the raw Id ProjectId) — the symbol is the SECOND token.
 		const std::regex symLine(
-			"\\s*inline constexpr Id ([A-Za-z_][A-Za-z0-9_]*) =");
+			"\\s*inline constexpr (?:Id|SceneKey|TextureKey|MeshKey|"
+			"SoundKey) ([A-Za-z_][A-Za-z0-9_]*)[ ={]");
 		std::smatch match;
 		std::string::const_iterator at = text.begin();
 		int symbols = 0, valid = 0;

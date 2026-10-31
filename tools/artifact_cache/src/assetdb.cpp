@@ -786,6 +786,13 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 	else if (kind == "mesh") {
 		base = 0x3000;
 	}
+	else if (kind == "sound") {
+		// Sounds (the audio asset kind — .wav sources): VFS-addressable
+		// pak blobs (PakAssetKind::Sound) + the [ids] rows the runtime
+		// facade + the audio manager resolve. The 0x4xxx range — the next
+		// free after meshes.
+		base = 0x4000;
+	}
 	else
 		return false;
 	last = base + 0xFFF;
@@ -871,7 +878,7 @@ bool AssetDatabase::EnsureContentId(const std::string& guid,
 	}
 	uint64_t base = 0, last = 0;
 	if (!IdRangeForKind(kind, base, last)) {
-		err = "unknown content kind '" + kind + "' (scene|texture|mesh)";
+		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound)";
 		return false;
 	}
 	try {

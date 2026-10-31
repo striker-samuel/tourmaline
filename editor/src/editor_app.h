@@ -876,6 +876,11 @@ private:
 	// order): setCamAttr -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedCameraNodes;
+	// Same scheme for history-created audio sources (tour
+	// CreateAudioSource file order): setAudioAttr/addAudioSound/
+	// removeAudioSound -ref addressing. Rebuilt on every replay
+	// alongside m_tourCreatedNodes.
+	std::vector<uint32_t> m_tourCreatedAudioNodes;
 	// Same scheme for history-created exportSettings nodes (tour
 	// createNode -at exportSettings file order): setExportAttr -ref
 	// addressing. Rebuilt on every replay alongside m_tourCreatedNodes
@@ -946,6 +951,10 @@ private:
 	int CreatedTerrainIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created camera, same contract.
 	int CreatedCameraIndex(uint32_t worldNode) const;
+	// Creation-order index of a live created audio source, same
+	// contract (alive + emitting creates only — the family -ref space
+	// setAudioAttr/addAudioSound/removeAudioSound address).
+	int CreatedAudioSourceIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created exportSettings node, same
 	// contract (the singleton semantic keeps it at 0 or -1).
 	int CreatedExportIndex(uint32_t worldNode) const;
@@ -1336,6 +1345,49 @@ private:
 	// Create menu: camera at the active camera target (perspective,
 	// 50 deg, 0.1/1000 m).
 	void DraftCreateCamera();
+	// AudioSource property channels ("volume","spatial","playOnLoad",
+	// "minDistance","maxDistance","name","position") — the inspector's
+	// before-state + live-write path for SetAudioAttr. The payload is
+	// INLINE in the scene.tables.audioSources row (the EnvVolumeRow
+	// pattern — NO pool indirection, unlike the camera lens); "name"
+	// renames the NODE (the payload carries none), "position" rebuilds
+	// the local TRS translate. False when the node is not an audio
+	// source / the attr is unknown.
+	bool ReadNodeAudioSourceAttr(uint32_t node, const std::string& attr,
+		glm::vec4& v4, double& num, bool& flag, std::string& text) const;
+	bool WriteNodeAudioSourceAttr(uint32_t node, const std::string& attr,
+		const glm::vec4& v4, double num, bool flag,
+		const std::string& text);
+	// Sound-slot live writes (the AddAudioSound/RemoveAudioSound
+	// workhorses): UPSERT by slot NAME (a re-add replaces — the tour
+	// addAudioSound contract), erase by slot NAME. RemoveNodeAudioSound
+	// fills removedOut with the erased slot's captured value (the
+	// undo path re-adds it EXACTLY) and returns false when no such
+	// slot existed.
+	void AddNodeAudioSound(uint32_t node, const std::string& slotName,
+		const std::string& assetPath, float gain, bool loop);
+	bool RemoveNodeAudioSound(uint32_t node, const std::string& slotName,
+		AudioSoundRef& removedOut);
+	// Next free "AudioSource_N" over live node names (1-based) — the
+	// UniqueCameraName pattern.
+	std::string UniqueAudioSourceName() const;
+	// Inspector "Audio source" section for audio-source nodes (payload
+	// knobs + the sound-slot list via undoable SetAudioAttr/
+	// AddAudioSound/RemoveAudioSound; pose via the transform gizmo).
+	void DrawAudioSection(uint32_t node);
+	// Created-audio-source execution (ExecCmd cases): append/remove the
+	// world node + the node-local SceneAudioSource row (inline payload,
+	// NO pool — simpler than the camera create). ExecCreateAudioSource
+	// records the assigned id back into the command (c.node), copies
+	// audioDupFrom's live payload when set (DuplicateSelection), and
+	// registers the node into m_tourCreatedAudioNodes while a tour
+	// replays (the -ref addressing backing).
+	void ExecCreateAudioSource(EditCmd& c);
+	void ExecUncreateAudioSource(EditCmd& c);
+	// Create menu: audio source at the active camera target (the
+	// DEFAULT SceneAudioSource payload — spatial, 1/30 m distances;
+	// properties + sound slots edit in the inspector).
+	void DraftCreateAudioSource();
 	// Create menu: locator — a NAMED bare transform (no mesh, no light,
 	// no pool entry — a game-code anchor; spawn points, trigger zones,
 	// patrol markers, music regions). The tour verb is CreateTransform

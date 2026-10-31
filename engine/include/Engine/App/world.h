@@ -16,6 +16,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Utils/bvh.h>
+#include <Engine/Scene/entity_handle.h> // AudioSourceHandle (typed)
 #include <Engine/Scene/scene.h>
 
 namespace smvk {
@@ -208,6 +209,28 @@ namespace smvk {
 		std::vector<LightLocation> lightLocations;
 		std::vector<CameraLocation> cameraLocations;
 		std::vector<DecalLocation> decalLocations;
+		// Cluster-slot -> MERGED-scene node id, parallel to `clusters`
+		// (filled by ResolveAndFixup; UINT32_MAX = hole/retired). The
+		// retained mapping is what lets the entity layers key state by
+		// the STABLE (cluster, cluster-local node) pair while reading
+		// positions from the merged global transforms — merged node
+		// ids themselves are rebuilt on every resolve (unstable).
+		std::vector<std::vector<NodeId>> clusterMergedNodes;
+		// Runtime audio-source entity registry (the AudioSourceHandle
+		// slots — see SpawnAudioSource). Keyed by handle index; the
+		// generation is the stale-handle guarantee. `owner` +
+		// `clusterNode` are the DURABLE identity (the dynamic cluster
+		// + its own scene's node); `mergedNode` is the resolved/mirrored
+		// merged-scene node (rebuilt by resolve/mirror).
+		struct AudioSourceEntity {
+			uint32_t generation = 1;
+			bool alive = false;
+			Cluster* owner = nullptr;
+			NodeId clusterNode = 0;
+			NodeId mergedNode = 0;
+		};
+		std::vector<AudioSourceEntity> audioEntities;
+		std::vector<uint32_t> audioEntityFree;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).
@@ -254,6 +277,38 @@ namespace smvk {
 		// folds in). Returns the merged-scene node id (UINT32_MAX on
 		// failure).
 		NodeId CreateDecalAt(const glm::mat4& frame, SceneDecal def);
+
+		// ---- runtime audio-source entities (the gameplay-handle
+		// surface — see Engine/Scene/entity_handle.h) ----
+		// Spawns a runtime audio-source EMITTER: a transform node (the
+		// durable home is the dynamic cluster's own scene, so the
+		// entity survives pak-cluster unloads + resolves — the
+		// CreateDecalAt pattern) + the SceneAudioSource payload row +
+		// a registry slot keyed by the returned AudioSourceHandle. A
+		// MIRROR row lands in the merged scene for immediate
+		// visibility. Gameplay code holds the handle and destroys it
+		// EXPLICITLY (World::DestroyAudioSource); authored .tour
+		// sources carry no handle (they die with their scene).
+		// `parent` (optional, UINT32_MAX = the world root) parents
+		// the durable node — the emitter pose resolves from the node's
+		// GLOBAL transform at use, so parenting applies like meshes.
+		AudioSourceHandle SpawnAudioSource(const glm::mat4& localFrame,
+			NodeId parent, const SceneAudioSource& def);
+		// Destroys the spawned emitter (its rows + nodes drop, its
+		// registry generation advances — every stale copy of the
+		// handle fails validation forever). False on a stale/unknown
+		// handle. The VOICES keyed to it stop: the audio manager
+		// validates its emitters against IsAudioSourceAlive each
+		// update (nothing here reaches the mixer).
+		bool DestroyAudioSource(AudioSourceHandle handle);
+		[[nodiscard]] bool IsAudioSourceAlive(AudioSourceHandle handle)
+			const;
+		// The emitter's MERGED-scene node (UINT32_MAX = stale handle
+		// or not-yet-resolved). Unstable across resolves — the durable
+		// identity is the handle; use this only for same-frame reads
+		// (FindAudioSource on the merged row, gizmo selection...).
+		[[nodiscard]] NodeId AudioSourceNode(AudioSourceHandle handle)
+			const;
 		// Erases the cluster and REBUILDS the world: after the erase the
 		// merged scene + every location table still point into the
 		// destroyed cluster, so a full ResolveAndFixup_clusters() runs

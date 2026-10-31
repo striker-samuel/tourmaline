@@ -40,11 +40,15 @@ struct ClusterSerializeStats {
 	// Cooked punctual lights (KHR_lights_punctual) persisted as
 	// PakAssetKind::Light blobs (one per light, URI-keyed); the Scene
 	// blob carries the node links as (node, pakId) pairs.
-	uint32_t lights = 0;
+		uint32_t lights = 0;
 	// Authored cameras persisted as PakAssetKind::Camera blobs (one per
 	// camera, URI-keyed); the Scene blob carries the node links as
 	// (node, pakId) pairs.
 	uint32_t cameras = 0;
+	// Authored audio sources persisted in the Scene blob's v18 section
+	// (inline emitter payloads — no separate blobs; the referenced
+	// sounds ship as PakAssetKind::Sound blobs keyed by VFS path).
+	uint32_t audioSources = 0;
 };
 
 // One scene entry of a pak (TOC order = scene index; index 0 is the
@@ -82,7 +86,16 @@ bool SerializeClusters(
 	ClusterSerializeStats* stats = nullptr,
 	std::string* err = nullptr,
 	const std::string* excludeTextureVfsPaths = nullptr,
-	size_t excludeTextureVfsCount = 0);
+	size_t excludeTextureVfsCount = 0,
+	// The sound-id map (the cooker's --sound-id list): authored sound
+	// assetPath -> stable 0x4xxx content id, stamped into the scene
+	// blob's audio section. Null/0 = a bare, non-project cook (sounds
+	// serialize as 0 = unresolved, the cooker warns); a non-empty map
+	// with an unresolved referenced path FAILS the serialize (the
+	// project contract: never silently omit a referenced sound).
+	const std::string* soundIdPaths = nullptr,
+	const uint64_t* soundIds = nullptr,
+	size_t soundIdCount = 0);
 
 // Single-scene form (identical layout: index-0 scene blob).
 bool SerializeCluster(

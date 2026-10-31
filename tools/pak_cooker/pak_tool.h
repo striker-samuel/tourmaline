@@ -78,6 +78,12 @@ struct PakArgs {
 	// cross-pak through the mounted backends. Empty = embed everything
 	// (the single-pak default, byte-identical).
 	std::vector<std::string> excludeVfsPaths;
+	// The SOUND-ID map (the recipe build's [ids] table slice):
+	// authored sound assetPath -> stable 0x4xxx content id, stamped
+	// into the cooked scene's audio section. EMPTY = a bare,
+	// non-project cook (referenced sounds serialize 0 = unresolved);
+	// NON-EMPTY with an unresolved referenced path FAILS the cook.
+	std::vector<std::pair<std::string, uint64_t>> soundIds;
 };
 
 // Byte-identical to the CLI run (same return codes). Prints go through

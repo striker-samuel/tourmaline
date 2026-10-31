@@ -372,6 +372,43 @@ void AudioEngine::SetVoiceVolume(VoiceHandle voice, float volume) {
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
 }
 
+void AudioEngine::SetVoicePan(VoiceHandle voice, float pan) {
+    if (!voice.valid() || !mutex_)
+        return;
+    Command c{};
+    c.type = Command::Type::SetPan;
+    c.voiceId = voice.id;
+    c.pan = std::clamp(pan, -1.0f, 1.0f);
+    SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
+    pending_.push_back(c);
+    SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
+}
+
+void AudioEngine::SetVoiceSpatial(VoiceHandle voice, float volume,
+    float pan) {
+    if (!voice.valid() || !mutex_)
+        return;
+    Command c{};
+    c.type = Command::Type::SetSpatial;
+    c.voiceId = voice.id;
+    c.volume = std::clamp(volume, 0.0f, 1.0f);
+    c.pan = std::clamp(pan, -1.0f, 1.0f);
+    SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
+    pending_.push_back(c);
+    SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
+}
+
+void AudioEngine::ConstantPowerPan(float pan, float& left,
+    float& right) {
+    // Equal-loudness (constant power) pan: theta sweeps the quadrant
+    // 0..pi/2 as pan goes -1..+1; cos/sin keep the summed power at 1
+    // (linear pan's -6dB center dip audibly attenuates moving sounds).
+    const float t = std::clamp(pan, -1.0f, 1.0f) * 0.5f + 0.5f;
+    const float theta = t * (3.14159265358979323846f * 0.5f);
+    left = std::cos(theta);
+    right = std::sin(theta);
+}
+
 bool AudioEngine::IsVoicePlaying(VoiceHandle voice) const {
     if (!voice.valid() || !mutex_)
         return false;
@@ -447,6 +484,7 @@ void AudioEngine::DrainCommands() {
                 slot->clipIndex = c.clipIndex;
                 slot->cursor = 0.0;
                 slot->volume = c.volume;
+                slot->pan = c.pan;
                 slot->pitch = c.pitch;
                 slot->loop = c.loop;
                 slot->playing = true;
@@ -466,6 +504,18 @@ void AudioEngine::DrainCommands() {
             for (auto& v : voices_)
                 if (v.id == c.voiceId)
                     v.volume = c.volume;
+            break;
+        case Command::Type::SetPan:
+            for (auto& v : voices_)
+                if (v.id == c.voiceId)
+                    v.pan = c.pan;
+            break;
+        case Command::Type::SetSpatial:
+            for (auto& v : voices_)
+                if (v.id == c.voiceId) {
+                    v.volume = c.volume;
+                    v.pan = c.pan;
+                }
             break;
         case Command::Type::SetMaster:
             config_.masterVolume = c.volume;
@@ -506,6 +556,15 @@ void AudioEngine::MixChunk(float* out, int frames) {
             continue;
         }
         const float gain = v.volume * config_.masterVolume;
+        // The per-voice stereo pan (constant power; mono configs drop
+        // the pan — channel 0 keeps full gain).
+        float chanGain[2] = { gain, gain };
+        if (ch == 2) {
+            float lg = 1.0f, rg = 1.0f;
+            ConstantPowerPan(v.pan, lg, rg);
+            chanGain[0] = gain * lg;
+            chanGain[1] = gain * rg;
+        }
         for (int f = 0; f < frames; ++f) {
             if (v.cursor >= static_cast<double>(totalFrames)) {
                 if (v.loop) {
@@ -521,7 +580,8 @@ void AudioEngine::MixChunk(float* out, int frames) {
             for (int c = 0; c < ch; ++c) {
                 float a = s[i0 * ch + c];
                 float b = s[i1 * ch + c];
-                out[f * ch + c] += (a + (b - a) * frac) * gain;
+                out[f * ch + c] += (a + (b - a) * frac)
+                    * chanGain[c < 2 ? c : 0];
             }
             v.cursor += v.pitch;
         }

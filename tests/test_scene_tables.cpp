@@ -111,16 +111,51 @@ int main() {
 		SetMaterial(s, 2, 32);
 		SetDecal(s, 2, 40);
 		SetCamera(s, 2, 50);
+		SceneAudioSource audio;
+		audio.volume = 0.8f;
+		audio.minDistance = 2.0f;
+		audio.sounds.push_back(AudioSoundRef{ "Bells",
+			"content/audio/bells.wav", 0, 1.0f, true });
+		SetAudioSource(s, 2, audio);
 		Check(FindMesh(s, 2) && FindMaterial(s, 2) && FindDecal(s, 2)
-			&& FindCamera(s, 2) && FindLight(s, 2),
-			"all five kinds coexist on one node");
+			&& FindCamera(s, 2) && FindLight(s, 2)
+			&& FindAudioSource(s, 2),
+			"all six kinds coexist on one node");
 		Check(FindDecal(s, 2)->decal == 40 && FindCamera(s, 2)->camera == 50,
 			"coexisting rows keep their own payloads");
+		{
+			const AudioSourceRow* ar = FindAudioSource(s, 2);
+			Check(ar && ar->source.volume == 0.8f
+				&& ar->source.sounds.size() == 1
+				&& ar->source.sounds[0].name == "Bells",
+				"audio row payload round-trips");
+			// Inline-payload replacement in place (string-carrying —
+			// the move-not-copy convention).
+			SceneAudioSource audio2;
+			audio2.volume = 0.5f;
+			Check(SetAudioSource(s, 2, audio2)
+				&& s.tables.audioSources.size() == 1
+				&& FindAudioSource(s, 2)->source.volume == 0.5f
+				&& FindAudioSource(s, 2)->source.sounds.empty(),
+				"re-SetAudioSource replaces in place");
+			// Swap-and-pop keeps the payload whole (the moved row keeps
+			// its strings).
+			SceneAudioSource audio3;
+			audio3.sounds.push_back(AudioSoundRef{ "Wind",
+				"content/audio/wind.wav", 0, 0.5f, false });
+			SetAudioSource(s, 3, audio3);
+			Check(RemoveAudioSource(s, 2) && FindAudioSource(s, 3)
+				&& FindAudioSource(s, 3)->source.sounds[0].name == "Wind",
+				"audio swap-and-pop keeps the payload");
+			Check(!RemoveAudioSource(s, 2), "re-Remove returns false");
+			RemoveAudioSource(s, 3);
+		}
 
 		// ---- RemoveNodeRows drops every kind at once ----
 		Check(RemoveNodeRows(s, 2), "RemoveNodeRows reports removal");
 		Check(!FindMesh(s, 2) && !FindMaterial(s, 2) && !FindDecal(s, 2)
-			&& !FindCamera(s, 2) && !FindLight(s, 2),
+			&& !FindCamera(s, 2) && !FindLight(s, 2)
+			&& !FindAudioSource(s, 2),
 			"RemoveNodeRows cleared all kinds");
 		Check(!RemoveNodeRows(s, 2), "RemoveNodeRows on a bare node is false");
 

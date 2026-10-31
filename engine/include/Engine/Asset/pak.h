@@ -53,10 +53,11 @@ namespace smvk {
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
 // kept in the TOC for debugging and collision-safe lookup.
 //
-// VFS interop: PakBackend serves *texture* entries through the IVfsBackend
-// interface (returns the embedded .ktx2 bytes for the original VFS path),
-// so materials in one pak can reference textures stored in another pak via
-// plain VFS paths. Scene/Mesh/Material blobs are cluster-internal and are
+// VFS interop: PakBackend serves *texture* and *sound* entries through
+// the IVfsBackend interface (returns the embedded .ktx2 / raw .wav bytes
+// for the original VFS path), so materials in one pak can reference
+// textures stored in another pak via plain VFS paths — and emitters the
+// same for sounds. Scene/Mesh/Material blobs are cluster-internal and are
 // consumed through PakReader by the cluster deserializer, not via VFS
 // file reads.
 // ---------------------------------------------------------------------------
@@ -115,6 +116,17 @@ enum class PakAssetKind : uint32_t {
 	// levels/<name>.level); the scene-stem bake-file association dies at
 	// the pak level. See Asset/level.h for the blob format + accessors.
 	Level = 10,
+	// SOUND (the audio asset kind): one blob per .wav sound asset,
+	// keyed by its original VFS path, payload = the raw .wav bytes
+	// (LoadWavFromMemory decodes whatever SDL accepts — any rate/
+	// channel count/bit depth, converted at load). The SECOND VFS-
+	// addressable kind (with Texture): PakBackend serves Sound blobs
+	// by path so cross-pak sound resolution + the runtime façade's
+	// ReadAsset(project::sounds::*) flow exactly like textures. The
+	// COOKED SCENE references sounds by their stable numeric content
+	// id (the scene blob's audio section) — never by path — and the
+	// appmanifest's [ids] table carries the id -> (pak, path) join.
+	Sound = 11,
 };
 
 enum PakEntryFlags : uint32_t {
@@ -341,6 +353,13 @@ public:
 	std::vector<VfsPath> ListDir(const VfsPath& dir) const override;
 	std::optional<VfsStat> Stat(const VfsPath& path) const override;
 	const PakReader& Reader() const { return *reader_; }
+	// The shared pak image (the reader borrows it; cluster loads pin it
+	// so tail-borrowed payloads outlive the backend). Never null on a
+	// successfully opened backend.
+	[[nodiscard]] std::shared_ptr<const std::vector<uint8_t>> Image()
+		const {
+		return image_;
+	}
 
 private:
 	std::shared_ptr<const std::vector<uint8_t>> image_;

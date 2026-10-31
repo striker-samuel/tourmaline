@@ -232,8 +232,8 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 			// identity through AcquireAssetIdentity.)
 		}
 	}
-	// Owned assets: meshes (geometry) + textures; BakeFiles are bake
-	// plumbing (no game-loadable identity in v1 — documented).
+	// Owned assets: meshes (geometry) + textures + sounds; BakeFiles
+	// are bake plumbing (no game-loadable identity in v1 — documented).
 	for (const PlanPak& pak : plan.paks) {
 		for (const PlanAsset& asset : pak.assets) {
 			if (asset.kind == PlanAssetKind::Geometry) {
@@ -246,6 +246,14 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 			else if (asset.kind == PlanAssetKind::Texture) {
 				if (!ensureAsset(asset.path, "texture", pak.id, {},
 						out.textures))
+					return false;
+			}
+			else if (asset.kind == PlanAssetKind::Sound) {
+				// Sounds: the .wav's own .meta sidecar identity (the
+				// texture form — AcquireAssetIdentity mints it when
+				// absent), ids in the 0x4xxx range.
+				if (!ensureAsset(asset.path, "sound", pak.id, {},
+						out.sounds))
 					return false;
 			}
 		}
@@ -280,6 +288,7 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::sort(out.scenes.begin(), out.scenes.end(), byId);
 	std::sort(out.textures.begin(), out.textures.end(), byId);
 	std::sort(out.meshes.begin(), out.meshes.end(), byId);
+	std::sort(out.sounds.begin(), out.sounds.end(), byId);
 	return true;
 }
 
@@ -295,21 +304,50 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 			"#include <string_view>\n\n"
 		<< "namespace project {\n\n"
 		<< "using Id = std::uint64_t;\n\n"
+
+		<< "// TYPED KEYS (which ASSET - stable catalog identities; the\n"
+		<< "// RUNTIME INSTANCE handles World::SpawnMesh & co. return\n"
+		<< "// are a different thing entirely - Engine/Scene/entity_handle.h).\n"
+		<< "// Implicit Id() conversion keeps the raw-id call sites\n"
+		<< "// working; the types make cross-kind misuse a compile error.\n"
+		<< "struct SceneKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "struct TextureKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "struct MeshKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "struct SoundKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "// (SkeletonKey / AnimationClipKey arrive with their catalog"
+		<< "// buckets - the .anim asset identity kinds; the HANDLE types"
+		<< "// they pair with are already in entity_handle.h.)\n"
+		<< "struct SkeletonKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "struct AnimationClipKey { Id id = 0;"
+		<< " constexpr operator Id() const { return id; } };\n\n"
 		<< "inline constexpr Id ProjectId = 0x" << std::hex
 		<< c.projectId << std::dec << "ULL;\n"
 		<< "inline constexpr std::string_view Name = \""
 		<< CppStr(c.projectName) << "\";\n\n";
+
 	const auto emitNamespace = [&](const char* name,
-			const std::vector<CatalogEntry>& entries) {
+			const std::vector<CatalogEntry>& entries,
+			const char* keyType) {
+		// The typed-key constants: each namespace's entries become
+		// typed keys (SceneKey/TextureKey/MeshKey/SoundKey) - game
+		// code writes `MeshKey mesh = project::meshes::Knight;` and
+		// the zero value reads as "no key".
 		os << "namespace " << name << " {\n";
 		for (const CatalogEntry& e : entries)
-			os << "    inline constexpr Id " << e.symbol << " = 0x"
-				<< std::hex << e.id << std::dec << "ULL;\n";
+			os << "    inline constexpr " << keyType << " "
+				<< e.symbol << "{0x"
+				<< std::hex << e.id << std::dec << "ULL};\n";
 		os << "}\n\n";
 	};
-	emitNamespace("scenes", c.scenes);
-	emitNamespace("textures", c.textures);
-	emitNamespace("meshes", c.meshes);
+	emitNamespace("scenes", c.scenes, "SceneKey");
+	emitNamespace("textures", c.textures, "TextureKey");
+	emitNamespace("meshes", c.meshes, "MeshKey");
+	emitNamespace("sounds", c.sounds, "SoundKey");
 	os << "// Runtime packages (plan/mount order).\n"
 		<< "struct Pak {\n"
 		<< "    std::string_view name;\n"
@@ -337,6 +375,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 	emitRows(c.scenes, "scenes");
 	emitRows(c.textures, "textures");
 	emitRows(c.meshes, "meshes");
+	emitRows(c.sounds, "sounds");
 	os << "};\n\n";
 	if (c.entryScene) {
 		// The entry scene's symbol (the catalog's scenes bucket is

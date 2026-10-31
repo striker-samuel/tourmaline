@@ -25,3 +25,4 @@ depends shared
 [pak shared]
 output shared.pak
 include content/models/game/shared/**
+include content/audio/*.wav

@@ -8,8 +8,8 @@
 // by the build from the same asset-db registry) mirrors them at run
 // time. This class bridges the two: resolve a stable id to its catalog
 // row (kind/pak/path) and read the asset's bytes through its pak (the
-// preloaded backend serves Texture-kind blobs by VFS path — the same
-// channel the cross-pak texture resolution uses).
+// preloaded backend serves Texture + Sound-kind blobs by VFS path —
+// the same channel the cross-pak texture resolution uses).
 //
 // The v1 shape of the epoch-2 spec's illustrative APIs:
 //   const auto* row = runtime.Asset(project::textures::Stone);
@@ -67,6 +67,30 @@ public:
 	// or the path is not served by it (err filled).
 	std::optional<std::vector<uint8_t>> ReadAsset(uint64_t id,
 		std::string& err);
+
+	// The pak's OPENED backend (the shared lazy cache ReadAsset uses —
+	// one background preload + open per archive, kept for the runtime's
+	// lifetime). The scene-instance layer (ProjectScenes) and any asset
+	// cache resolve pak files through this; null + err on a missing or
+	// corrupt archive. Thread note: the first open of a pak blocks on
+	// its preload future — kick every pak you will need up front (see
+	// ProjectScenes' constructor) if you want the reads overlapped.
+	[[nodiscard]] std::shared_ptr<smvk::PakBackend> OpenPak(
+		const std::string& pakFile, std::string& err);
+	// Cheap cache presence (no open, no block).
+	[[nodiscard]] bool HasPak(const std::string& pakFile) const {
+		return m_backends.count(pakFile) != 0;
+	}
+	// Registers an ALREADY-OPENED backend under its pak file. The
+	// apphost's --project launch preloads + mounts the manifest's paks
+	// on its own; a runtime façade (or ProjectScenes) built alongside
+	// that flow ADOPTS those backends instead of re-reading the
+	// archives — one image per pak in memory, whatever constructs
+	// first. No-op when the cache already carries the pak. The backend
+	// must be a PakBackend opened over the pak the manifest names
+	// (the caller's mount of that name guarantees it).
+	void AdoptPakBackend(const std::string& pakFile,
+		std::shared_ptr<smvk::PakBackend> backend);
 
 	// Convenience: the manifest-relative (or absolute) pak path for a
 	// row's pak file.

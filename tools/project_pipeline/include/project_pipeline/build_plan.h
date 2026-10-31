@@ -36,6 +36,12 @@ enum class PlanAssetKind : uint8_t {
 	// VFS-addressable bake products (GI volume manifests + payloads,
 	// cubemap captures): the same cross-pak contract as Texture.
 	BakeFile,
+	// VFS-addressable SOUND assets (.wav sources): the same cross-pak
+	// contract as Texture — PakAssetKind::Sound blobs served by the
+	// mounted pak backends, referenced by authored audio sources and
+	// resolved by the runtime audio manager through the stable 0x4xxx
+	// content ids.
+	Sound,
 };
 
 struct PlanAsset {

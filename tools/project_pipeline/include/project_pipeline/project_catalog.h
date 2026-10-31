@@ -48,10 +48,12 @@ struct ProjectCatalog {
 	std::string projectName;
 	uint64_t projectId = 0; // stable from the project identity
 	// The namespaces (the registry's kind ranges): scenes 0x1xxx,
-	// textures 0x2xxx, meshes 0x3xxx — sorted by id, deterministic.
+	// textures 0x2xxx, meshes 0x3xxx, sounds 0x4xxx — sorted by id,
+	// deterministic.
 	std::vector<CatalogEntry> scenes;
 	std::vector<CatalogEntry> textures;
 	std::vector<CatalogEntry> meshes;
+	std::vector<CatalogEntry> sounds;
 	// (id, file) in plan (mount) order — paks are named entities, not
 	// id carriers: renaming a package updates this table; asset ids
 	// stay.

@@ -26,6 +26,8 @@ add_library(tourmaline_apphost STATIC
     src/PakPreload.cpp
     src/PakWorldLoader.cpp
     src/ProjectRuntime.cpp
+    src/ProjectScenes.cpp
+    src/AudioRuntime.cpp
 )
 
 target_include_directories(tourmaline_apphost

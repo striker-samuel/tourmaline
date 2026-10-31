@@ -419,6 +419,81 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 				c.beforeNum, c.beforeText);
 		break;
 	}
+	case EditVerb::CreateAudioSource: {
+		if (forward)
+			ExecCreateAudioSource(c);
+		else
+			ExecUncreateAudioSource(c);
+		break;
+	}
+	case EditVerb::SetAudioAttr: {
+		// The payload row's property channels (the camera shape, plus
+		// the bool channels the camera lacks — spatial/playOnLoad ride
+		// the flag slots).
+		const std::string& attr = c.audioAttr;
+		if (forward)
+			WriteNodeAudioSourceAttr(c.node, attr, c.vec4, c.number,
+				c.afterFlag, c.afterText);
+		else
+			WriteNodeAudioSourceAttr(c.node, attr, c.beforeVec4,
+				c.beforeNum, c.beforeFlag, c.beforeText);
+		break;
+	}
+	case EditVerb::AddAudioSound: {
+		if (forward) {
+			// Before-state capture on EVERY forward run (idempotent —
+			// see the EditCmd::audioSlotHad note): a REPLACED slot
+			// keeps its captured value for the exact undo, a CREATED
+			// slot marks absent so undo REMOVES it.
+			c.audioSlotHad = false;
+			if (const AudioSourceRow* arow = FindAudioSource(scene, c.node))
+				for (const AudioSoundRef& s : arow->source.sounds)
+					if (s.name == c.afterText) {
+						c.audioSlotHad = true;
+						c.beforeText = s.assetPath;
+						c.beforeNum = double(s.gain);
+						c.beforeFlag = s.loop;
+						break;
+					}
+			AddNodeAudioSound(c.node, c.afterText, c.audioPath,
+				float(c.number), c.afterFlag);
+		} else {
+			// Exact inverse: restore the replaced slot's captured
+			// value (the upsert finds the slot by name, in place), or
+			// remove the slot the add created.
+			if (c.audioSlotHad)
+				AddNodeAudioSound(c.node, c.afterText, c.beforeText,
+					float(c.beforeNum), c.beforeFlag);
+			else {
+				AudioSoundRef discarded{}; // (absent-add undo: nothing to keep)
+				RemoveNodeAudioSound(c.node, c.afterText, discarded);
+			}
+		}
+		break;
+	}
+	case EditVerb::RemoveAudioSound: {
+		if (forward) {
+			// Capture the erased slot's value (idempotent under redo —
+			// the undo restored it right before); audioSlotHad marks
+			// whether anything was erased at all, so a remove of a
+			// nonexistent slot is a NO-OP both directions.
+			c.audioSlotHad = false;
+			AudioSoundRef removed{};
+			if (RemoveNodeAudioSound(c.node, c.afterText, removed)) {
+				c.audioSlotHad = true;
+				c.beforeText = removed.assetPath;
+				c.beforeNum = double(removed.gain);
+				c.beforeFlag = removed.loop;
+			}
+		} else if (c.audioSlotHad) {
+			// Undo re-adds the captured slot EXACTLY (appended at the
+			// end — slots are NAME-addressed, so the order change is
+			// cosmetic, never a reference break).
+			AddNodeAudioSound(c.node, c.afterText, c.beforeText,
+				float(c.beforeNum), c.beforeFlag);
+		}
+		break;
+	}
 	case EditVerb::CreateExportSettings: {
 		if (forward)
 			ExecCreateExportSettings(c);
@@ -614,6 +689,49 @@ std::string EditorApp::UniqueCameraName() const {
 	return "Camera_" + std::to_string(n);
 }
 
+int EditorApp::CreatedAudioSourceIndex(uint32_t worldNode) const {
+	// Same contract as CreatedLightIndex, for the audio-source family:
+	// alive + emitting creates only (a deleted source's
+	// CreateAudioSource is dropped from the tour, so the file's -ref
+	// space — which setAudioAttr/addAudioSound/removeAudioSound address
+	// — spans the survivors).
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateAudioSource)
+			continue;
+		if (!m_world || FindAudioSource(m_world->scene, h.node) == nullptr)
+			continue; // deleted (tombstoned): not in the file's ref space
+		if (!CreateCmdEmitsInTour(*this, h))
+			continue; // emission dropped (parent unresolvable)
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+std::string EditorApp::UniqueAudioSourceName() const {
+	// Next free "AudioSource"/"AudioSource2"/... over live node names
+	// (the first is bare — no index; the camera pattern's 1-based
+	// sequence with an unnumbered head).
+	int n = 1;
+	if (m_world) {
+		for (;;) {
+			const std::string want = n == 1
+				? std::string("AudioSource")
+				: "AudioSource" + std::to_string(n);
+			bool taken = false;
+			for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
+				taken = getNodeName(m_world->scene, int(i)) == want;
+			if (!taken)
+				return want;
+			++n;
+		}
+	}
+	return "AudioSource";
+}
+
 std::string EditorApp::UniqueLocatorName() const {
 	// Next free "Locator_N" over live node names (1-based).
 	int n = 1;
@@ -737,6 +855,11 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
 			return false; // detached (tombstoned)
 		break;
 	}
+	case EditVerb::CreateAudioSource: {
+		if (FindAudioSource(scene, created) == nullptr)
+			return false; // detached (tombstoned)
+		break;
+	}
 	case EditVerb::CreateExportSettings: {
 		if (FindExport(scene, created) == nullptr)
 			return false; // detached (tombstoned)
@@ -786,6 +909,7 @@ bool EditorApp::IsCreatedChild(const EditorApp& app,
 			|| h.verb == EditVerb::CreateGiVolume
 			|| h.verb == EditVerb::CreateCubemap
 			|| h.verb == EditVerb::CreateCamera
+			|| h.verb == EditVerb::CreateAudioSource
 			|| h.verb == EditVerb::CreateTransform
 			|| h.verb == EditVerb::CreateTerrain
 			|| h.verb == EditVerb::CreateExportSettings)
@@ -831,6 +955,7 @@ bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) 
 			|| h.verb == EditVerb::CreateGiVolume
 			|| h.verb == EditVerb::CreateCubemap
 			|| h.verb == EditVerb::CreateCamera
+			|| h.verb == EditVerb::CreateAudioSource
 			|| h.verb == EditVerb::CreateTransform
 			|| h.verb == EditVerb::CreateTerrain
 			|| h.verb == EditVerb::CreateExportSettings)
@@ -917,6 +1042,26 @@ void EditorApp::DraftCreateCamera() {
 	Do(c);
 }
 
+void EditorApp::DraftCreateAudioSource() {
+	if (!m_world) {
+		Log("Create audio source: no scene open.");
+		return;
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateAudioSource;
+	c.node = UINT32_MAX; // assigned at forward execution
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = UniqueAudioSourceName();
+	// Spawn at the active camera target (what you're looking at — the
+	// emitter is a world-placement authoring act). The payload plants
+	// DEFAULT (spatial, 1/30 m distances, no slots); the properties +
+	// sound slots edit in the inspector right after.
+	c.afterVec = ActiveCam().target;
+	Do(c);
+}
+
 bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
 	// The "locator" definition: a bare transform — no type link of any
 	// kind. This is the INVERSE of the contains-chain the outliner uses
@@ -933,6 +1078,8 @@ bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
 		return false;
 	if (FindCamera(scene, node) != nullptr)
 		return false;
+	if (FindAudioSource(scene, node) != nullptr)
+		return false; // a typed audio-source node, not a bare anchor
 	if (FindDecal(scene, node) != nullptr)
 		return false;
 	if (FindGiVolume(scene, node) != nullptr)
@@ -1208,6 +1355,98 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 		RemoveCamera(scene, n);
 		Log("Undid camera creation (#" + std::to_string(n) +
 		 "): hidden, ids kept stable (pool entry retained).");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Created audio sources.
+//
+// A created audio source is a WORLD transform node (translate = the
+// emitter pose; the audio manager resolves the node's GLOBAL transform
+// at use, so parenting applies like meshes) plus a node-local
+// SceneAudioSource row in scene.tables.audioSources — the EnvVolumeRow
+// inline-payload pattern, so the inspector (FindAudioSource), the
+// outliner tags and the tour all pick it up with no special cases. NO
+// pool entry (unlike cameras): the payload IS the row. Undo removes
+// the node when it is childless (ids stay stable — Epoch 6b
+// retirement); otherwise the row is tombstoned (hidden + detached).
+// Tour persistence: CreateAudioSource carries the creation (CmdToTour
+// emits the LIVE pose + name, so post-creation moves/renames ride
+// along); the PAYLOAD (properties + sound slots) rides the later
+// SetAudioAttr/AddAudioSound/RemoveAudioSound commands, which address
+// later creates via kCreateAudioSourceRefBase (creation order) — the
+// exportSettings pattern.
+// ---------------------------------------------------------------------------
+void EditorApp::ExecCreateAudioSource(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	uint32_t parent = c.node2;
+	if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
+		parent = DefaultCreateParent();
+	if (parent != UINT32_MAX && parent >= scene.hierarchy.size())
+		return;
+	const int level = (parent == UINT32_MAX) ? 0
+		: scene.hierarchy[parent].level + 1;
+	const int created = addNode(scene,
+		parent == UINT32_MAX ? -1 : int(parent), level);
+	if (created < 0)
+		return;
+	c.node = uint32_t(created);
+	// TRS = translate only (the emitter pose; rotation/scale carry no
+	// meaning for a point emitter — the cubemap-capture precedent).
+	scene.localTransform[size_t(created)] =
+		glm::translate(glm::mat4(1.0f), c.afterVec);
+	// Name (the nodeNames pool is grow-only, like Rename).
+	const uint32_t nameId = uint32_t(scene.nodeNames.size());
+	scene.nodeNames.push_back(c.afterText);
+	SetNodeNameIndex(scene, uint32_t(created), nameId);
+	// Inline payload: the DEFAULT SceneAudioSource, or — when
+	// DuplicateSelection seeded audioDupFrom — the source node's LIVE
+	// payload (the camera-duplicate precedent, minus the pool: the
+	// payload is inline, so the copy IS the whole state).
+	SceneAudioSource payload{};
+	if (c.audioDupFrom != UINT32_MAX
+		&& c.audioDupFrom < scene.hierarchy.size()) {
+		if (const AudioSourceRow* src =
+				FindAudioSource(scene, c.audioDupFrom))
+			payload = src->source;
+	}
+	SetAudioSource(scene, uint32_t(created), payload);
+	if (m_replayingTour)
+		m_tourCreatedAudioNodes.push_back(uint32_t(created));
+	markAsChanged(scene, created);
+	recalculateGlobalTransforms(scene);
+	m_selected = uint32_t(created);
+	char buf[160];
+	std::snprintf(buf, sizeof(buf), "Created audio source '%s' (#%u)",
+		c.afterText.c_str(), uint32_t(created));
+	Log(buf);
+}
+
+void EditorApp::ExecUncreateAudioSource(EditCmd& c) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	const uint32_t n = c.node;
+	if (n == UINT32_MAX || n >= scene.hierarchy.size())
+		return;
+	const bool childless = scene.hierarchy[n].firstChild < 0;
+	if (childless) {
+		// Epoch 6b retirement (see ExecUncreateLight): the slot frees
+		// anywhere in the graph, every other id stays put. Any
+		// post-creation payload edits were already undone (LIFO), so
+		// replanting the DEFAULT on redo is exact.
+		RemoveAudioSource(scene, n);
+		RetireCreatedNode(n);
+		Log("Undid audio source creation (#" + std::to_string(n)
+			+ "; slot retired, ids stable).");
+	} else {
+		// Children live under the node: tombstone (hide + detach).
+		MarkHidden(scene, int(n));
+		RemoveAudioSource(scene, n);
+		Log("Undid audio source creation (#" + std::to_string(n) +
+			"): hidden, ids kept stable (payload retained in the command).");
 	}
 }
 
@@ -1711,6 +1950,15 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		auto camit = FindCamera(scene, n);
 		c.beforeCamera = (camit);
 		c.beforeCamIdx = c.beforeCamera ? double(camit->camera) : -1.0;
+		// Audio-source payload (created or replayed): the row's WHOLE
+		// inline payload rides beforeAudio + presence rides
+		// beforeAudioSource — the camera precedent minus the pool
+		// index (there is none: the payload IS the row, so the capture
+		// is the value itself).
+		auto auit = FindAudioSource(scene, n);
+		c.beforeAudioSource = (auit != nullptr);
+		if (c.beforeAudioSource)
+			c.beforeAudio = auit->source;
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -1737,6 +1985,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		RemoveGiVolume(scene, id);
 		RemoveCubemap(scene, id);
 		RemoveCamera(scene, id);
+		RemoveAudioSource(scene, id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -1790,6 +2039,10 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	if (c.beforeCamera && c.beforeCamIdx >= 0.0
 		&& c.beforeCamIdx < double(m_world->cameraLocations.size()))
 		SetCamera(scene, n, uint32_t(c.beforeCamIdx));
+	// Audio-source payload: restored EXACTLY from the captured value
+	// (no pool to rebind — the row is the payload).
+	if (c.beforeAudioSource)
+		SetAudioSource(scene, n, c.beforeAudio);
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -2036,6 +2289,18 @@ void EditorApp::DuplicateSelection() {
 			c.camNear = C->nearClip;
 			c.camFar = C->farClip;
 			c.camOrthoHalfH = C->orthoHalfH;
+		}
+		else if (FindAudioSource(m_world->scene, t) != nullptr) {
+			// Audio source: the payload is INLINE (no pool), so
+			// duplication seeds audioDupFrom — ExecCreateAudioSource
+			// copies the source node's LIVE row, and post-creation
+			// property/slot edits ride along exactly like the camera
+			// duplicate's live lens.
+			c.verb = EditVerb::CreateAudioSource;
+			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
+			c.afterText = name;
+			c.afterVec = tr;
+			c.audioDupFrom = t;
 		}
 		else if (const CubemapRow* cmit = FindCubemap(m_world->scene, t)) {
 			c.verb = EditVerb::CreateCubemap;
@@ -2570,6 +2835,137 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node, const std::string& attr,
 	return true;
 }
 
+bool EditorApp::ReadNodeAudioSourceAttr(uint32_t node,
+	const std::string& attr, glm::vec4& v4, double& num, bool& flag,
+	std::string& text) const {
+	// The audio-source payload's property channels — the camera-attr
+	// shape plus the bool channels (spatial/playOnLoad). The payload
+	// is INLINE in the audioSources row (the EnvVolumeRow pattern): no
+	// pool indirection, FindAudioSource IS the whole resolution.
+	v4 = glm::vec4(0.0f);
+	num = 0.0;
+	flag = false;
+	text.clear();
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	const Scene& scene = m_world->scene;
+	const AudioSourceRow* row = FindAudioSource(scene, node);
+	if (!row)
+		return false;
+	const SceneAudioSource& def = row->source;
+	if (attr == "volume") {
+		num = double(def.volume);
+	} else if (attr == "spatial") {
+		flag = def.spatial;
+	} else if (attr == "playOnLoad") {
+		flag = def.playOnLoad;
+	} else if (attr == "minDistance") {
+		num = double(def.minDistance);
+	} else if (attr == "maxDistance") {
+		num = double(def.maxDistance);
+	} else if (attr == "name") {
+		// The NODE's name (the payload carries none) — the camera
+		// pattern: the rename re-indexes nodeNames on write.
+		text = getNodeName(scene, int(node));
+	} else if (attr == "position") {
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		v4 = glm::vec4(t, 1.0f);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+bool EditorApp::WriteNodeAudioSourceAttr(uint32_t node,
+	const std::string& attr, const glm::vec4& v4, double num, bool flag,
+	const std::string& text) {
+	if (!m_world || node >= m_world->scene.hierarchy.size())
+		return false;
+	Scene& scene = m_world->scene;
+	AudioSourceRow* row = FindAudioSource(scene, node);
+	if (!row)
+		return false;
+	SceneAudioSource& def = row->source;
+	if (attr == "volume") {
+		// Emitter contract gates (the tour parser enforces the same):
+		// volume >= 0.
+		def.volume = std::max(float(num), 0.0f);
+	} else if (attr == "spatial") {
+		def.spatial = flag;
+	} else if (attr == "playOnLoad") {
+		def.playOnLoad = flag;
+	} else if (attr == "minDistance") {
+		def.minDistance = std::max(float(num), 0.0f);
+	} else if (attr == "maxDistance") {
+		// maxDistance > 0 (a zero window would silence the emitter).
+		def.maxDistance = std::max(float(num), 1e-3f);
+	} else if (attr == "name") {
+		const uint32_t id = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(text);
+		SetNodeNameIndex(scene, node, id);
+	} else if (attr == "position") {
+		// Rebuild the local TRS with the translate replaced (editor TRS
+		// convention; the camera/cubemap path).
+		glm::vec3 t, r, s;
+		ReadLocalTRS(node, t, r, s);
+		t = glm::vec3(v4.x, v4.y, v4.z);
+		scene.localTransform[node] = LocalMatrixFromTRS(t, r, s);
+		markAsChanged(scene, int(node));
+		recalculateGlobalTransforms(scene);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+void EditorApp::AddNodeAudioSound(uint32_t node,
+	const std::string& slotName, const std::string& assetPath,
+	float gain, bool loop) {
+	// UPSERT by slot NAME (the tour addAudioSound contract: the slot
+	// identifier is stable — reordering the collection never breaks
+	// addressing). Gain clamps into the emitter contract's 0..16
+	// window (the tour parser enforces the same).
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	AudioSourceRow* row = FindAudioSource(scene, node);
+	if (!row)
+		return;
+	AudioSoundRef slot;
+	slot.name = slotName;
+	slot.assetPath = assetPath;
+	slot.gain = std::clamp(gain, 0.0f, 16.0f);
+	slot.loop = loop;
+	for (AudioSoundRef& s : row->source.sounds)
+		if (s.name == slotName) {
+			s = slot; // in place: replaced slots keep their position
+			return;
+		}
+	row->source.sounds.push_back(std::move(slot));
+}
+
+bool EditorApp::RemoveNodeAudioSound(uint32_t node,
+	const std::string& slotName, AudioSoundRef& removedOut) {
+	// Erase by slot NAME; removedOut carries the erased slot's captured
+	// value back for the undo path (the caller re-adds it EXACTLY).
+	// False when no such slot existed (a no-op remove).
+	if (!m_world)
+		return false;
+	Scene& scene = m_world->scene;
+	AudioSourceRow* row = FindAudioSource(scene, node);
+	if (!row)
+		return false;
+	auto& slots = row->source.sounds;
+	for (size_t i = 0; i < slots.size(); ++i)
+		if (slots[i].name == slotName) {
+			removedOut = slots[i];
+			slots.erase(slots.begin() + ptrdiff_t(i));
+			return true;
+		}
+	return false;
+}
+
 void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
 	// THE VERB TOAST: a minimal popup message over the view panels'
@@ -2699,6 +3095,9 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 		case EditVerb::SetCamAttr:
 			lastByAttr[{ int(c.verb), c.node, c.camAttr }] = i;
 			break;
+		case EditVerb::SetAudioAttr:
+			lastByAttr[{ int(c.verb), c.node, c.audioAttr }] = i;
+			break;
 		default:
 			break;
 		}
@@ -2743,6 +3142,10 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.camAttr }] != i;
 			break;
+		case EditVerb::SetAudioAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.audioAttr }] != i;
+			break;
 		default:
 			break;
 		}
@@ -2778,6 +3181,7 @@ size_t EditorApp::CoalesceHistory() {
 	//   (SetLightAttr, node, attr) light property edits
 	//   (SetGiVolumeAttr, node, attr)  convex-volume property edits
 	//   (SetCamAttr, node, attr)   camera property edits
+	//   (SetAudioAttr, node, attr)  audio-source property edits
 	std::map<std::pair<int, uint32_t>, size_t> lastByNode;
 	std::map<std::tuple<int, uint32_t, std::string>, size_t> lastByAttr;
 	for (size_t i = 0; i < m_historyCursor; ++i) {
@@ -2811,6 +3215,9 @@ size_t EditorApp::CoalesceHistory() {
 			break;
 		case EditVerb::SetCamAttr:
 			lastByAttr[{ int(c.verb), c.node, c.camAttr }] = i;
+			break;
+		case EditVerb::SetAudioAttr:
+			lastByAttr[{ int(c.verb), c.node, c.audioAttr }] = i;
 			break;
 		default:
 			break; // Create*/TerrainPaint: always keep
@@ -2856,6 +3263,10 @@ size_t EditorApp::CoalesceHistory() {
 		case EditVerb::SetCamAttr:
 			superseded =
 				lastByAttr[{ int(c.verb), c.node, c.camAttr }] != i;
+			break;
+		case EditVerb::SetAudioAttr:
+			superseded =
+				lastByAttr[{ int(c.verb), c.node, c.audioAttr }] != i;
 			break;
 		default:
 			break;
@@ -2906,6 +3317,10 @@ static std::string VerbName(editor::EditVerb v) {
 	case editor::EditVerb::SetCubemapAttr: return "cubemap edit";
 	case editor::EditVerb::CreateCamera: return "create camera";
 	case editor::EditVerb::SetCamAttr: return "camera edit";
+	case editor::EditVerb::CreateAudioSource: return "create audio source";
+	case editor::EditVerb::SetAudioAttr: return "audio edit";
+	case editor::EditVerb::AddAudioSound: return "add sound";
+	case editor::EditVerb::RemoveAudioSound: return "remove sound";
 	case editor::EditVerb::CreateExportSettings: return "create exportSettings";
 	case editor::EditVerb::SetExportAttr: return "export setting";
 	}
@@ -3532,6 +3947,87 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::CreateAudioSource: {
+		// Emit the LIVE create state: the node may have moved and been
+		// renamed after creation (the create line carries the live
+		// translate + name, so post-creation pose/name edits ride
+		// along); the PAYLOAD (properties + sound slots) rides the
+		// later SetAudioAttr/AddAudioSound/RemoveAudioSound commands,
+		// which re-emit idempotently — the exportSettings pattern.
+		const uint32_t created = c.node;
+		if (created == UINT32_MAX
+			|| created >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (FindAudioSource(app.m_world->scene, created) == nullptr)
+			return false; // detached (tombstoned): nothing to persist
+		if (app.m_deletedNodes.contains(created))
+			return false;
+		// Parent = the LIVE parent (see CreateEmitParent).
+		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
+		int pp = createParentClusterId(liveParent);
+		if (pp < 0 && liveParent != 0) {
+			// Editor-created parent: symbolic -p emission (see the
+			// CreateLight case) — never drop the create silently.
+			if (!parentRefFor(liveParent).empty()
+				&& EditorApp::ParentResolvesInTour(app, liveParent))
+				pp = 0; // numeric fallback unused (writer prefers -pStr)
+			else
+				return false;
+		}
+		glm::vec3 t, r, s;
+		app.ReadLocalTRS(created, t, r, s);
+		out.verb = smvk::tour::Verb::CreateAudioSource;
+		out.node = uint32_t(pp);
+		out.parentRef = parentRefFor(liveParent);
+		out.text = getNodeName(app.m_world->scene, int(created));
+		out.vec = t;
+		return true;
+	}
+	case EditVerb::SetAudioAttr: {
+		const int k = app.CreatedAudioSourceIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateAudioSourceRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::SetAudioAttr;
+		out.text = c.audioAttr;
+		if (c.audioAttr == "position") {
+			out.vec4 = c.vec4;
+		} else if (c.audioAttr == "name") {
+			out.name = c.afterText;
+		} else if (c.audioAttr == "spatial" || c.audioAttr == "playOnLoad") {
+			out.flag = c.afterFlag;
+		} else {
+			out.number = c.number;
+		}
+		return true;
+	}
+	case EditVerb::AddAudioSound: {
+		const int k = app.CreatedAudioSourceIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateAudioSourceRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::AddAudioSound;
+		out.text = c.afterText;  // the slot's stable name
+		out.name = c.audioPath;  // the asset path (-source)
+		out.number = c.number;   // the slot gain
+		out.flag = c.afterFlag;  // the slot loop default
+		return true;
+	}
+	case EditVerb::RemoveAudioSound: {
+		const int k = app.CreatedAudioSourceIndex(c.node);
+		if (k >= 0) {
+			out.node = smvk::tour::kCreateAudioSourceRefBase | uint32_t(k);
+		} else if (!needNode()) {
+			return false;
+		}
+		out.verb = smvk::tour::Verb::RemoveAudioSound;
+		out.text = c.afterText; // the slot name to remove
+		return true;
+	}
 	case EditVerb::CreateExportSettings: {
 		// The scene's export config node: a plain createNode -at
 		// exportSettings line (parent + name; identity transform). The
@@ -3956,7 +4452,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			|| c.verb == EditVerb::CreateTransform
 			|| c.verb == EditVerb::CreateGiVolume
 			|| c.verb == EditVerb::CreateCubemap
-			|| c.verb == EditVerb::CreateCamera) {
+			|| c.verb == EditVerb::CreateCamera
+			|| c.verb == EditVerb::CreateAudioSource) {
 			ensureUuid(CreateEmitParent(*this, c));
 		}
 	}
@@ -4027,7 +4524,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// their nodes come back. A reference round-trip must never erase
 	// edits from the file. EXCEPT family-ref attr orphans pointing past
 	// the create set this save emits (setLightAttr/setGiVolumeAttr/
-	// setCubemapAttr/setCamAttr/terrainPaint with -ref k >= the
+	// setCubemapAttr/setCamAttr/setAudioAttr/addAudioSound/
+	// removeAudioSound/terrainPaint with -ref k >= the
 	// family's emitted creates): a create set is fixed per file, so a
 	// past-the-end -ref can never resolve again — re-emitting it only
 	// poisons every cook with "ref out of range" (the strict replay
@@ -4048,6 +4546,12 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 						return smvk::tour::kCreateCameraRefBase;
 					case Verb::TerrainPaint:
 						return smvk::tour::kCreateTerrainRefBase;
+					// The audio family: all three slot/attr verbs
+					// address the same kCreateAudioSourceRefBase space.
+					case Verb::SetAudioAttr:
+					case Verb::AddAudioSound:
+					case Verb::RemoveAudioSound:
+						return smvk::tour::kCreateAudioSourceRefBase;
 					default:
 						return 0;
 					}
@@ -4069,7 +4573,13 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 						|| (tc.verb == Verb::SetCamAttr
 							&& ev == EditVerb::CreateCamera)
 						|| (tc.verb == Verb::TerrainPaint
-							&& ev == EditVerb::CreateTerrain)) {
+							&& ev == EditVerb::CreateTerrain)
+						// The audio family: every attr/slot verb counts
+						// the same CreateAudioSource set.
+						|| ((tc.verb == Verb::SetAudioAttr
+								|| tc.verb == Verb::AddAudioSound
+								|| tc.verb == Verb::RemoveAudioSound)
+							&& ev == EditVerb::CreateAudioSource)) {
 						if (CreateCmdEmitsInTour(*this, m_history[i]))
 							++emitted;
 					}
@@ -4736,6 +5246,114 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::CreateAudioSource: {
+		uint32_t wp = UINT32_MAX;
+		if (!tc.parentRef.empty()) {
+			if (!smvk::tour::ResolveParentTarget(app.m_world->scene,
+					tc.parentRef, wp))
+				return false;
+		}
+		else {
+			wp = app.ClusterToWorld(tc.node);
+			if (wp == UINT32_MAX
+				|| wp >= app.m_world->scene.hierarchy.size())
+				return false;
+		}
+		// The payload plants DEFAULT (the exportSettings pattern): the
+		// properties + sound slots ride the tabulated setAudioAttr/
+		// addAudioSound lines that follow. The created node joins
+		// m_tourCreatedAudioNodes at forward execution (ExecCmd ->
+		// ExecCreateAudioSource, the m_replayingTour gate) — the same
+		// place camera creates register.
+		out.verb = EditVerb::CreateAudioSource;
+		out.node = UINT32_MAX; // assigned at forward execution
+		out.node2 = wp;        // parent (world)
+		out.afterText = tc.text;
+		out.afterVec = tc.vec;
+		return true;
+	}
+	case smvk::tour::Verb::SetAudioAttr: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateAudioSourceRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateAudioSourceRefBase;
+			if (k >= app.m_tourCreatedAudioNodes.size())
+				return false;
+			target = app.m_tourCreatedAudioNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!(FindAudioSource(app.m_world->scene, target) != nullptr))
+			return false; // not an audio source: orphan, preserved verbatim
+		out.verb = EditVerb::SetAudioAttr;
+		out.node = target;
+		out.audioAttr = tc.text;
+		// Before-state from the live world (exact undo).
+		if (!app.ReadNodeAudioSourceAttr(target, tc.text, out.beforeVec4,
+				out.beforeNum, out.beforeFlag, out.beforeText))
+			return false;
+		if (tc.text == "position") {
+			out.vec4 = tc.vec4;
+		} else if (tc.text == "name") {
+			out.afterText = tc.name;
+		} else if (tc.text == "spatial" || tc.text == "playOnLoad") {
+			out.afterFlag = tc.flag;
+		} else {
+			out.number = tc.number;
+		}
+		return true;
+	}
+	case smvk::tour::Verb::AddAudioSound: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateAudioSourceRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateAudioSourceRefBase;
+			if (k >= app.m_tourCreatedAudioNodes.size())
+				return false;
+			target = app.m_tourCreatedAudioNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!(FindAudioSource(app.m_world->scene, target) != nullptr))
+			return false; // not an audio source: orphan, preserved verbatim
+		out.verb = EditVerb::AddAudioSound;
+		out.node = target;
+		out.afterText = tc.text; // the slot's stable name
+		out.audioPath = tc.name; // the asset path (-source)
+		out.number = tc.number;  // the slot gain
+		out.afterFlag = tc.flag; // the slot loop default
+		// (The slot before-state — audioSlotHad/beforeText/beforeNum/
+		// beforeFlag — is captured at FORWARD EXECUTION: ExecCmd reads
+		// the live slot right before the upsert, idempotently under
+		// redo. Nothing to pre-read here.)
+		return true;
+	}
+	case smvk::tour::Verb::RemoveAudioSound: {
+		uint32_t target = UINT32_MAX;
+		if ((tc.node & smvk::tour::kCreateAudioSourceRefBase) != 0) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateAudioSourceRefBase;
+			if (k >= app.m_tourCreatedAudioNodes.size())
+				return false;
+			target = app.m_tourCreatedAudioNodes[k];
+		} else {
+			target = app.ClusterToWorld(tc.node);
+		}
+		if (target == UINT32_MAX
+			|| target >= app.m_world->scene.hierarchy.size())
+			return false;
+		if (!(FindAudioSource(app.m_world->scene, target) != nullptr))
+			return false; // not an audio source: orphan, preserved verbatim
+		out.verb = EditVerb::RemoveAudioSound;
+		out.node = target;
+		out.afterText = tc.text; // the slot name to remove
+		// (The removed slot's before-state is captured at forward
+		// execution — the ExecCmd RemoveAudioSound case.)
+		return true;
+	}
 	case smvk::tour::Verb::SetExportAttr: {
 		uint32_t target = UINT32_MAX;
 		if ((tc.node & smvk::tour::kCreateExportRefBase) != 0) {
@@ -4906,6 +5524,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	m_tourCreatedGiVolumeNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
 	m_tourCreatedCameraNodes.clear();
+	m_tourCreatedAudioNodes.clear();
 	m_tourCreatedExportNodes.clear();
 	// (m_replayingTour armed above, before the materialAsset replay.)
 	ClearHistory();

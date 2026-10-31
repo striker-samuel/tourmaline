@@ -99,12 +99,18 @@ struct PakStageArgs {
 	std::string registryDir;
 	// The multi-pak ownership surface (the resolved plan's tables):
 	// contentSet = the VFS paths an ASSET-ONLY pak embeds directly as
-	// Texture blobs (no scene, no clusters — the shared-texture pak);
-	// excludeVfs = VFS texture paths a DEPENDENCY pak owns (this pak's
-	// serializer skips them; the materials keep their refs and resolve
-	// cross-pak through the mounted backends at runtime).
+	// Texture/Sound blobs (no scene, no clusters — the shared-texture
+	// pak); excludeVfs = VFS texture/sound paths a DEPENDENCY pak owns
+	// (this pak's serializer skips them; the materials keep their refs
+	// and resolve cross-pak through the mounted backends at runtime).
 	std::vector<std::string> contentSet;
 	std::vector<std::string> excludeVfs;
+	// The SOUND-ID map (the [ids] table slice for the sounds the plan
+	// owns): authored sound assetPath -> stable 0x4xxx content id. The
+	// pak stage stamps the ids into the cooked scene's audio section;
+	// an EMPTY map (a plan with no sound assets) is the bare-cook
+	// semantic (referenced sounds serialize 0 = unresolved).
+	std::vector<std::pair<std::string, uint64_t>> soundIds;
 };
 
 struct StageAdapter {

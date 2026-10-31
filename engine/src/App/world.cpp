@@ -209,6 +209,118 @@ namespace smvk {
 		return uint32_t(mnode);
 	}
 
+	// ---- runtime audio-source entities (the gameplay-handle surface)
+
+	AudioSourceHandle World::SpawnAudioSource(const glm::mat4& localFrame,
+		NodeId parent, const SceneAudioSource& def)
+	{
+		Cluster& dyn = EnsureDynamicCluster(nullptr);
+		// Durable home: the dynamic cluster's own scene (survives pak
+		// unloads + resolves — the CreateDecalAt pattern). `parent`
+		// (a MERGED node id) resolves to the durable side only when it
+		// lives in the dynamic cluster itself; a foreign parent is a
+		// same-frame convenience for the mirror below (the durable
+		// node roots at the cluster root — reparenting across cluster
+		// scenes is not a thing; the resolved hierarchy owns it).
+		const int cnode = addNode(dyn.scene, -1, 0);
+		if (cnode < 0)
+			return {};
+		dyn.scene.localTransform[size_t(cnode)] = localFrame;
+		dyn.scene.globalTransform[size_t(cnode)] = localFrame;
+		SetAudioSource(dyn.scene, NodeId(cnode), def);
+		// Merged-scene mirror for immediate visibility (dies at the
+		// next resolve; the durable row above folds back in).
+		const int mnode = addNode(scene, -1, 0);
+		NodeId merged = UINT32_MAX;
+		if (mnode >= 0) {
+			scene.localTransform[size_t(mnode)] = localFrame;
+			scene.globalTransform[size_t(mnode)] = localFrame;
+			SetAudioSource(scene, NodeId(mnode), def);
+			markAsChanged(scene, mnode);
+			merged = NodeId(mnode);
+		}
+		// The registry slot (generation 1 on a fresh slot; a reused
+		// slot mints its bumped generation — the stale-handle
+		// guarantee, see entity_handle.h).
+		uint32_t index;
+		uint32_t generation;
+		if (!audioEntityFree.empty()) {
+			index = audioEntityFree.back();
+			audioEntityFree.pop_back();
+			generation = audioEntities[index].generation;
+		}
+		else {
+			index = uint32_t(audioEntities.size());
+			audioEntities.emplace_back();
+			generation = audioEntities.back().generation;
+		}
+		AudioSourceEntity& e = audioEntities[index];
+		e.alive = true;
+		e.owner = &dyn;
+		e.clusterNode = NodeId(cnode);
+		e.mergedNode = merged;
+		return MakeEntityHandle<AudioSourceTag>(index, generation);
+	}
+
+	bool World::DestroyAudioSource(AudioSourceHandle handle)
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= audioEntities.size())
+			return false;
+		AudioSourceEntity& e = audioEntities[idx];
+		if (!e.alive || e.generation != handle.Generation())
+			return false;
+		// Drop the rows (durable + the current mirror) + retire the
+		// nodes. The audio manager's voices stop on its NEXT update
+		// (IsAudioSourceAlive fails); nothing here reaches the mixer.
+		if (e.owner) {
+			RemoveAudioSource(e.owner->scene, e.clusterNode);
+			RetireNodeSlot(e.owner->scene, e.clusterNode);
+		}
+		if (e.mergedNode != UINT32_MAX
+				&& e.mergedNode < scene.hierarchy.size()) {
+			RemoveAudioSource(scene, e.mergedNode);
+			RetireNodeSlot(scene, e.mergedNode);
+		}
+		// The generation bump: every stale copy of this handle fails
+		// validation forever; a wrapped generation retires the slot.
+		e.alive = false;
+		e.owner = nullptr;
+		if (e.generation != UINT32_MAX) {
+			++e.generation;
+			if (e.generation != 0)
+				audioEntityFree.push_back(idx);
+			// (a wrap to 0 keeps the slot retired — never reused)
+		}
+		return true;
+	}
+
+	bool World::IsAudioSourceAlive(AudioSourceHandle handle) const
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= audioEntities.size())
+			return false;
+		const AudioSourceEntity& e = audioEntities[idx];
+		return e.alive && e.generation == handle.Generation();
+	}
+
+	NodeId World::AudioSourceNode(AudioSourceHandle handle) const
+	{
+		if (!handle)
+			return UINT32_MAX;
+		const uint32_t idx = handle.Index();
+		if (idx >= audioEntities.size())
+			return UINT32_MAX;
+		const AudioSourceEntity& e = audioEntities[idx];
+		if (!e.alive || e.generation != handle.Generation())
+			return UINT32_MAX;
+		return e.mergedNode;
+	}
+
 	std::span<const uint8_t> World::ReadBakeBytes(
 		const std::string& vfsPath) const
 	{
@@ -296,6 +408,9 @@ namespace smvk {
 		decalLocations.clear();
 		meshLodInfos.clear();
 		flags.clear();
+		// The retained cluster-slot -> merged-node map (stable keys for
+		// the entity layers; rebuilt with the world every resolve).
+		clusterMergedNodes.assign(clusters.size(), {});
 		// World material dedup (see the material-table remap below).
 		std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat;
 		uint32_t clusterOrdinal = 0;
@@ -385,6 +500,16 @@ namespace smvk {
 				const NodeId mapped = nodeMap[size_t(link)];
 				return (mapped != UINT32_MAX) ? int(mapped) : -1;
 			};
+			// Retain the map (the entity layers' stable-key -> merged
+			// node resolution; see World::clusterMergedNodes) + remap
+			// the live audio-source entities' merged nodes — the
+			// HANDLE stays valid across the rebuild, only its internal
+			// node moves (the entity-model contract).
+			clusterMergedNodes[clusterOrdinal] = nodeMap;
+			for (AudioSourceEntity& e : audioEntities)
+				if (e.alive && e.owner == &cluster
+						&& e.clusterNode < nodeMap.size())
+					e.mergedNode = nodeMap[e.clusterNode];
 			for (uint32_t s = 0; s < clusterSlotCount; ++s) {
 				if (nodeMap[s] == UINT32_MAX)
 					continue;
@@ -599,6 +724,14 @@ namespace smvk {
 			for (const ExportRow& row : cs.tables.exports)
 				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
 					SetExport(scene, nodeMap[row.node], row.settings);
+			// Audio sources (the emitter association) ride the same
+			// remap: payloads verbatim (the sounds list is asset
+			// references), nodes through the map — the audio manager
+			// reads the merged table and resolves each sound id/asset
+			// path through the project layer at use.
+			for (const AudioSourceRow& row : cs.tables.audioSources)
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetAudioSource(scene, nodeMap[row.node], row.source);
 			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
 				scene.envAuthored = true;

@@ -122,6 +122,94 @@ void TestUnloadAndDynamicCluster() {
 	Check(w.clusters.size() == 1, "unregister.dyn.count.intact");
 }
 
+// Runtime audio-source entities (the gameplay-handle surface —
+// World::SpawnAudioSource/DestroyAudioSource + the AudioSourceHandle
+// registry; GPU-less, headless): spawn → rows + nodes + a live
+// handle; resolve → the handle STAYS, the internal node remaps
+// (the entity-model contract); destroy → the generation bump
+// invalidates every stale copy; the rows drop.
+void TestAudioSourceEntities() {
+	smvk::World w;
+
+	::SceneAudioSource def{};
+	def.volume = 0.8f;
+	def.minDistance = 2.0f;
+	def.playOnLoad = true;
+	def.sounds.push_back(AudioSoundRef{ "Bells",
+		"content/audio/bells.wav", 0x4000, 1.0f, true });
+
+	const glm::mat4 frame = glm::translate(glm::mat4(1.0f),
+		glm::vec3(3.0f, 4.0f, 5.0f));
+	smvk::AudioSourceHandle h = w.SpawnAudioSource(frame,
+		UINT32_MAX, def);
+	Check(bool(h) && h.Index() == 0 && h.Generation() == 1,
+		"audio.spawn-handle");
+	Check(w.IsAudioSourceAlive(h), "audio.spawn-alive");
+	// The durable row (dynamic cluster's own scene) + the merged
+	// mirror both carry the payload.
+	smvk::Cluster& dyn = w.EnsureDynamicCluster(nullptr);
+	Check(dyn.scene.tables.audioSources.size() == 1
+		&& w.scene.tables.audioSources.size() == 1,
+		"audio.spawn-rows");
+	const uint32_t mergedNode = w.AudioSourceNode(h);
+	Check(mergedNode != UINT32_MAX
+		&& w.scene.tables.audioSources[0].source.volume == 0.8f,
+		"audio.spawn-mirror-payload");
+
+	// A second spawn reuses nothing yet; destroying both then spawning
+	// reuses the freed slot with a BUMPED generation.
+	smvk::AudioSourceHandle h2 =
+		w.SpawnAudioSource(glm::mat4(1.0f), UINT32_MAX, def);
+	Check(bool(h2) && h2 != h, "audio.second-spawn");
+
+	// Resolve: the durable rows fold in; the HANDLE stays valid and
+	// its merged node REMAPS (ids moved).
+	w.ResolveAndFixup_clusters();
+	Check(w.IsAudioSourceAlive(h) && w.IsAudioSourceAlive(h2),
+		"audio.resolve-handles-stay");
+	Check(w.scene.tables.audioSources.size() == 2,
+		"audio.resolve-folds-rows");
+	{
+		const uint32_t remapped = w.AudioSourceNode(h);
+		Check(remapped != UINT32_MAX, "audio.resolve-node-remaps");
+		const AudioSourceRow* row =
+			FindAudioSource(w.scene, remapped);
+		Check(row && row->source.playOnLoad
+			&& row->source.sounds.size() == 1
+			&& row->source.sounds[0].soundId == 0x4000,
+			"audio.resolve-row-payload");
+		// The world POSE survived the fold (the frame's translate).
+		const glm::vec3 t(w.scene.globalTransform[remapped][3]);
+		Check(std::abs(t.x - 3.0f) < 1e-4f
+			&& std::abs(t.y - 4.0f) < 1e-4f
+			&& std::abs(t.z - 5.0f) < 1e-4f,
+			"audio.resolve-pose");
+	}
+
+	// Destroy h: its rows drop, the generation advances — h is dead,
+	// h2 (a different slot) lives.
+	const uint32_t hGen = h.Generation();
+	Check(w.DestroyAudioSource(h), "audio.destroy");
+	Check(!w.IsAudioSourceAlive(h)
+		&& !w.DestroyAudioSource(h), // stale destroy refuses
+		"audio.destroy-stale-invalid");
+	Check(w.IsAudioSourceAlive(h2), "audio.destroy-sibling-lives");
+	Check(w.scene.tables.audioSources.size() == 1,
+		"audio.destroy-rows-drop");
+	// The freed slot re-spawns with the bumped generation.
+	smvk::AudioSourceHandle h3 =
+		w.SpawnAudioSource(glm::mat4(1.0f), UINT32_MAX, def);
+	Check(h3.Index() == h.Index() && h3.Generation() == hGen + 1,
+		"audio.slot-reuse-bumps-generation");
+	Check(w.IsAudioSourceAlive(h3) && !w.IsAudioSourceAlive(h),
+		"audio.slot-reuse-stale-stays-dead");
+	// Foreign/garbage handles never resolve.
+	Check(!w.IsAudioSourceAlive(smvk::AudioSourceHandle{})
+		&& !w.DestroyAudioSource(smvk::MakeEntityHandle<
+			smvk::AudioSourceTag>(9999u, 1u)),
+		"audio.garbage-handle-refused");
+}
+
 void TestDecalEntities() {
 	smvk::World w;
 
@@ -561,6 +649,7 @@ void TestResolveHoledCluster()
 int main() {
 	TestUnloadAndDynamicCluster();
 	TestDecalEntities();
+	TestAudioSourceEntities();
 	TestBakePayloadChannel();
 	TestEnvZones();
 	TestActiveEnvironmentFirstWins();

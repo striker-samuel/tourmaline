@@ -46,15 +46,27 @@ inline constexpr uint32_t kAppManifestVersion = 1;
 // One CONTENT-ID row (the generated project.h's catalog, mirrored into
 // the manifest so the RUNTIME resolves stable ids without the header —
 // the spec's "the cooker uses those exact identifiers in the cooked
-// metadata"). kind: "scene" | "texture" | "mesh"; pak is the FILE
-// (manifest-relative, listed in [paks]); path is the project-relative
-// content path (VFS-addressable for textures/meshes; the scene's tour
-// path for scenes — the runtime pairs it with the pak's scene list).
+// metadata"). kind: "scene" | "texture" | "mesh" | "sound"; pak is the
+// FILE (manifest-relative, listed in [paks]); path is the
+// project-relative content path (VFS-addressable for textures/sounds;
+// the scene's tour path for scenes). Scene rows carry one more field —
+// `name`, the COOKED scene's name inside the pak (what ListPakScenes
+// reports; the build records it the same way it records the entry
+// scene's name). The name is the id->scene JOIN the runtime's
+// numeric-addressed scene loading needs: a scene id resolves to
+// (pak, name), never to "whatever scene sits at index 0". Empty = the
+// row predates the name (or the owning pak was not rebuilt here): the
+// runtime then infers the target from a SINGLE-scene pak and refuses
+// multi-scene paks loudly (recook).
 struct AppManifestAsset {
 	uint64_t id = 0;
 	std::string kind;
 	std::string pak;
 	std::string path;
+	// Scene rows only: the cooked scene's name (see above). Written as
+	// an optional 5th token on the [ids] line; non-scene rows leave it
+	// empty and validation rejects a name on them.
+	std::string name;
 };
 
 struct AppManifest {
