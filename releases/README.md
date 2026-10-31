@@ -12,6 +12,7 @@ LFS move) happens later, on purpose — see "Publishing" below.
 | pak | scene | built from | how to run |
 |---|---|---|---|
 | `paks/sponza.pak` | the Sponza demo (the canonical project: `Project.exe init/build` → Cook → GiBaker → Pak — sun + LOD + meshlets + 131k-probe GI + 8 cubemap captures at spp 32) | the current `master` (see the commit line at the bottom of this file) | `cd out/build/x64-Release && App.exe --pak releases/paks/sponza.pak` (or copy next to App.exe and `--pak content/paks/sponza.pak`) |
+| `paks/sponza.tapp` | the SAME sponza build's appmanifest (the recipe-build form: `Project.exe build --project <dir> --recipe sponza.tourrecipe` → verified pak + the generated `.tapp`, publish-last) | the current `master` (same drop as the pak) | `App.exe --project releases/paks/sponza.tapp` (put the `.tapp` + `.pak` side by side — the manifest resolves paks relative to itself; `--no-vfs` proves self-containment) |
 | `paks/_probe.pak` | the GI probe-ball diagnostic scene (cubemap + SG probe validation view) | an earlier session's cook | `App.exe --pak releases/paks/_probe.pak` |
 
 Numbered variants (`sponza_1.pak`, `sponza_2.pak`, ...) in the build
@@ -21,11 +22,20 @@ they are not carried here.
 ## Refreshing the paks
 
 ```powershell
-# rebuild the demo through the canonical pipeline + sync next to App.exe
-cmd /c "tools\cook\cook_sponza.bat"
-# then copy into the release folder
-Copy-Item out\build\x64-Release\content\paks\sponza.pak releases\paks\
+# The RECIPE build (the canonical path now): resolve -> import
+# freshness -> Cook -> GiBaker -> Pak (verified + policed) -> the
+# appmanifest publishes LAST. Needs the sponza.tourrecipe in the
+# project (see F:/projects/game) + the stage exes beside Project.exe.
+& .\out\build\x64-Release\Project.exe build `
+  --project F:/projects/game `
+  --recipe F:/projects/game/sponza.tourrecipe `
+  --publish F:/projects/game/build --manifest-name sponza
+# then copy the build into the release folder (pak + manifest together)
+Copy-Item F:\projects\game\build\sponza.* releases\paks\
 ```
+
+The legacy one-liner (`tools\cook\cook_sponza.bat`) still works — it
+drives the same stages through the legacy `BuildProject` path.
 
 The pak embeds the GI probes + cubemap captures baked at cook time —
 a code change that alters bake OUTPUT (not bake reading) needs a
