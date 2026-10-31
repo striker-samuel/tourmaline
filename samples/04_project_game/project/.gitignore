@@ -1,0 +1,11 @@
+# The sample project's build-time state (the ids target imports +
+# catalogs into the project's asset db, exactly like a developer run):
+# the registry, the import bookkeeping, the imported/derived families
+# and the minted identity sidecars are all derived state.
+.tourmaline/
+*.meta
+content/models/game/game.geometry
+content/models/game/game.cooked
+content/models/game/*.material
+content/models/game/lod*
+content/models/game/*.meshlet*

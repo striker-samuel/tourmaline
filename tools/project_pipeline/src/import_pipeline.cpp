@@ -207,16 +207,27 @@ bool ImportProjectAsset(const ImportRequest& request,
 		if (IsDerivedFamilyFile(name))
 			fs::remove(e.path(), ec);
 	}
+	// RECURSIVE: dependency copies keep their relative subpaths
+	// (a glTF referencing "shared/stone.png" stages it under
+	// stage/<stem>/shared/ — the old flat iterator silently dropped
+	// every subdirectory dep, leaving the published family with a
+	// missing source dependency: permanently "stale" freshness + a
+	// reimport that refuses on the absent file).
 	for (const fs::directory_entry& e :
-			fs::directory_iterator(stageRoot, ec)) {
+			fs::recursive_directory_iterator(stageRoot, ec)) {
 		if (ec || !e.is_regular_file(ec))
 			continue;
+		const fs::path rel = fs::relative(e.path(), stageRoot, ec);
+		if (ec || rel.empty())
+			continue;
+		const fs::path dest = destDir / rel;
+		fs::create_directories(dest.parent_path(), ec);
 		std::error_code moveEc;
-		fs::rename(e.path(), destDir / e.path().filename(), moveEc);
+		fs::rename(e.path(), dest, moveEc);
 		if (moveEc) {
 			// Cross-device or locked: fall back to copy+remove (per-file;
 			// the stage retains a complete copy until the loop ends).
-			if (!CopyFileTo(e.path(), destDir / e.path().filename(), err))
+			if (!CopyFileTo(e.path(), dest, err))
 				return false;
 			fs::remove(e.path(), moveEc);
 		}

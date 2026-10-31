@@ -9,6 +9,13 @@
 //   Project.exe import --project <dir> --source <glTF|GLB>
 //                      [--no-lods] [--no-meshlets] [--lod-ratios 0.75,0.5,0.3]
 //                      [--lod-error 0.01] [--force]
+//   Project.exe validate --project <dir> --recipe <file.tourrecipe>
+//                      (parse + resolve; prints the plan, no stages run)
+//   Project.exe build  --project <dir> --recipe <file.tourrecipe>
+//                      [--publish <dir>] [--manifest-name <name>]
+//                      (the recipe build: resolve -> import -> cook ->
+//                       bake -> pak per plan -> the appmanifest LAST)
+//       or the legacy  --project <dir> --output <pak> [--scene <tour>]
 //   Project.exe status --project <dir>        (the staleness report)
 //
 // Exit codes: 0 success, 1 pipeline failure, 2 usage.
@@ -23,8 +30,17 @@
 #include <vector>
 
 #include <project_pipeline/build_pipeline.h>
+#include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_catalog.h>
+#include <project_pipeline/project_recipe.h>
+#include <project_pipeline/recipe_resolver.h>
+
+#include <artifact_cache/assetdb.h>
+#include <artifact_cache/artifact_cache.h>
+
+#include <Engine/Asset/tour.h>
 
 namespace {
 
@@ -39,11 +55,22 @@ int Usage(const char* prog) {
 		<< "         [--lod-error 0.01] [--shader-lods] [--force]\n"
 		<< "         copy the source into the project + derive the native\n"
 		<< "         artifact family (idempotent: unchanged = no-op)\n"
-		<< "  build  --project <dir> --output <pak>\n"
-		<< "         [--scene content/scenes/<scene>.tour]\n"
-		<< "         reimport stale sources -> Cook -> GiBaker -> Pak (the\n"
-		<< "         bake-freshness gate refuses stale bakes; a failed\n"
-		<< "         build never replaces the last valid pak)\n"
+		<< "  validate --project <dir> --recipe <file.tourrecipe>\n"
+		<< "         parse + resolve the recipe and print the plan (paks,\n"
+		<< "         ownership, mount order) — NO stage runs\n"
+		<< "  ids    --project <dir> --recipe <file.tourrecipe>\n"
+		<< "         [--header <out>] [--deps <depfile>]\n"
+		<< "         the content-as-code generation: ensure the content\n"
+		<< "         ids in the ASSET DATABASE (assets.db — the one\n"
+		<< "         identity store) + regenerate project.h only-on-change\n"
+		<< "         (the CMake layer's form; no stage runs)\n"
+		<< "  build  --project <dir> --recipe <file.tourrecipe>\n"
+		<< "         [--publish <dir>] [--manifest-name <name>]\n"
+		<< "         the RECIPE build: resolve -> import freshness -> Cook\n"
+		<< "         -> GiBaker -> Pak per plan (verified + policed) -> the\n"
+		<< "         appmanifest (.tapp) publishes LAST\n"
+		<< "      or --project <dir> --output <pak> [--scene <tour>] (the\n"
+		<< "         legacy single-scene build — unchanged)\n"
 		<< "  status --project <dir>\n"
 		<< "         report every imported source: current, or why not\n";
 	return 2;
@@ -76,7 +103,8 @@ int main(int argc, const char* argv[]) {
 
 	// Shared flag scan.
 	std::string projectDir, source, name, ratiosCsv, scene, output,
-		fromScene;
+		fromScene, recipeFile, publishDir, manifestName, headerOut,
+		depsOut;
 	bool fromGltf = false, force = false;
 	bool noLods = false, noMeshlets = false, shaderLods = false;
 	bool ratiosSet = false, errorSet = false;
@@ -87,6 +115,26 @@ int main(int argc, const char* argv[]) {
 			projectDir = argv[++i];
 		else if (std::strncmp(a, "--project=", 10) == 0)
 			projectDir = a + 10;
+		else if ((std::strcmp(a, "--recipe") == 0) && i + 1 < argc)
+			recipeFile = argv[++i];
+		else if (std::strncmp(a, "--recipe=", 9) == 0)
+			recipeFile = a + 9;
+		else if ((std::strcmp(a, "--publish") == 0) && i + 1 < argc)
+			publishDir = argv[++i];
+		else if (std::strncmp(a, "--publish=", 10) == 0)
+			publishDir = a + 10;
+		else if ((std::strcmp(a, "--manifest-name") == 0) && i + 1 < argc)
+			manifestName = argv[++i];
+		else if (std::strncmp(a, "--manifest-name=", 16) == 0)
+			manifestName = a + 16;
+		else if ((std::strcmp(a, "--header") == 0) && i + 1 < argc)
+			headerOut = argv[++i];
+		else if (std::strncmp(a, "--header=", 9) == 0)
+			headerOut = a + 9;
+		else if ((std::strcmp(a, "--deps") == 0) && i + 1 < argc)
+			depsOut = argv[++i];
+		else if (std::strncmp(a, "--deps=", 7) == 0)
+			depsOut = a + 7;
 		else if ((std::strcmp(a, "--source") == 0
 				|| std::strcmp(a, "--from-gltf") == 0) && i + 1 < argc) {
 			source = argv[++i];
@@ -255,9 +303,271 @@ int main(int argc, const char* argv[]) {
 		return 0;
 	}
 
+	// ---- validate + the recipe build ----------------------------------
+	// Shared: open the project, locate the recipe, parse + resolve.
+	const auto resolveRecipe =
+		[&](smvk::project::Project& p, smvk::project::ProjectRecipe& r,
+			std::string& err) -> std::string {
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		fs::path path(recipeFile);
+		if (!fs::is_regular_file(path, ec)) {
+			// project-relative fallback (the common authoring form)
+			path = fs::path(p.root) / path;
+			if (!fs::is_regular_file(path, ec)) {
+				err = "recipe not found: " + recipeFile;
+				return {};
+			}
+		}
+		smvk::project::RecipeDiagnostic diag;
+		if (!smvk::project::ParseProjectRecipe(path.generic_string(), r,
+				diag)) {
+			err = diag.Format(path.generic_string());
+			return {};
+		}
+		return path.lexically_normal().generic_string();
+	};
+
+	if (cmd == "validate") {
+		if (recipeFile.empty()) {
+			std::cerr << "--recipe <file.tourrecipe> is required.\n";
+			return Usage(argv[0]);
+		}
+		std::string err;
+		smvk::project::Project p =
+			smvk::project::Project::Open(projectDir, err);
+		if (!p.Valid()) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		smvk::project::ProjectRecipe recipe;
+		const std::string path = resolveRecipe(p, recipe, err);
+		if (path.empty()) {
+			std::cerr << "recipe rejected: " << err << "\n";
+			return 1;
+		}
+		smvk::project::BuildPlan plan;
+		if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+			std::cerr << "resolve failed: " << err << "\n";
+			return 1;
+		}
+		std::cout << "Recipe OK: " << path << "\n"
+			<< "  project: "
+			<< (recipe.projectName.empty() ? p.name
+				: recipe.projectName) << "\n"
+			<< "  entry: " << plan.entryScene << " (pak '"
+			<< plan.entryPak << "')\n"
+			<< "  bake: gi=" << (plan.bakeGi ? "on" : "off")
+			<< " cubemaps=" << (plan.bakeCubemaps ? "on" : "off")
+			<< "\n"
+			<< "  paks (mount order):\n";
+		for (const smvk::project::PlanPak& pak : plan.paks) {
+			std::cout << "    [" << pak.id << "] -> " << pak.output
+				<< (pak.scene.empty() ? " (asset-only)" : " scene")
+				<< ", " << pak.assets.size() << " owned asset(s)";
+			if (!pak.depends.empty()) {
+				std::cout << ", depends";
+				for (const std::string& d : pak.depends)
+					std::cout << " " << d;
+			}
+			std::cout << "\n";
+		}
+		return 0;
+	}
+
+	if (cmd == "ids") {
+		// The content-as-code generation (the CMake layer's form):
+		// resolve the plan, ensure the content ids in the ASSET
+		// DATABASE (assets.db — the one identity store), regenerate
+		// project.h only-on-change. NO stage runs, no pak is written.
+		if (recipeFile.empty()) {
+			std::cerr << "--recipe <file.tourrecipe> is required.\n";
+			return Usage(argv[0]);
+		}
+		std::string err;
+		smvk::project::Project p =
+			smvk::project::Project::Open(projectDir, err);
+		if (!p.Valid()) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		smvk::project::ProjectRecipe recipe;
+		const std::string path = resolveRecipe(p, recipe, err);
+		if (path.empty()) {
+			std::cerr << "recipe rejected: " << err << "\n";
+			return 1;
+		}
+		// The RAW-SOURCE pre-pass: a project of authored sources (no
+		// import yet) must resolve + catalog on the FIRST run — import
+		// every scene pak's ROOT family before the plan needs the
+		// artifacts (stale families re-derive; unchanged = no-op).
+		for (const smvk::project::RecipePak& pak : recipe.paks) {
+			if (pak.scene.empty())
+				continue;
+			smvk::tour::Doc doc;
+			std::string tErr;
+			if (!smvk::tour::LoadTour(
+					(std::filesystem::path(p.root) / pak.scene)
+						.generic_string(),
+					doc, tErr))
+				continue; // the resolve below reports it properly
+			if (doc.references.empty())
+				continue;
+			std::string srcRel = doc.references[0].source;
+			std::string ext =
+				std::filesystem::path(srcRel).extension().generic_string();
+			if (ext == ".geometry") {
+				// The canonical form: the imported family beside the
+				// artifact (SeedProjectScene's re-pointed reference).
+				std::filesystem::path sibling =
+					std::filesystem::path(srcRel);
+				for (const char* e : { ".gltf", ".glb" }) {
+					sibling.replace_extension(e);
+					if (std::filesystem::is_regular_file(
+							std::filesystem::path(p.root) / sibling))
+						break;
+					sibling = std::filesystem::path(srcRel);
+				}
+				if (sibling.extension().generic_string() == ".geometry")
+					continue; // no source family found — resolve reports
+				srcRel = sibling.generic_string();
+				ext = std::filesystem::path(srcRel).extension()
+					.generic_string();
+			}
+			if (ext != ".gltf" && ext != ".glb")
+				continue;
+			smvk::project::ImportRequest req;
+			req.project = p;
+			req.source = std::filesystem::path(p.root) / srcRel;
+			smvk::project::ImportResult res;
+			std::string iErr;
+			if (!smvk::project::ImportProjectAsset(req, res, iErr)) {
+				std::cerr << "pre-pass import failed: " << iErr << "\n";
+				return 1;
+			}
+		}
+		smvk::project::BuildPlan plan;
+		if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+			std::cerr << "resolve failed: " << err << "\n";
+			return 1;
+		}
+		// The plan's own freshness (nested references + owned geometry
+		// the pre-pass above did not see).
+		if (!smvk::project::RefreshPlanImports(p, plan, nullptr, err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		// The registry: assets.db under the project's .tourmaline (the
+		// ONE identity store — no separate id file by design).
+		smvk::cache::AssetDatabase db;
+		{
+			const std::string registryRoot =
+				smvk::cache::EnsureRegistryRoot(p.DerivedDataDir());
+			if (registryRoot.empty() || !db.Open(registryRoot, p.root,
+					err)) {
+				std::cerr << "asset db open failed: " << err << "\n";
+				return 1;
+			}
+		}
+		smvk::project::ProjectCatalog catalog;
+		std::vector<std::string> deps;
+		if (!smvk::project::GenerateProjectCatalog(p, plan, db, catalog,
+				deps, err)) {
+			std::cerr << "catalog generation failed: " << err << "\n";
+			return 1;
+		}
+		const std::string header = headerOut.empty()
+			? (std::filesystem::path(p.root) / "project.h")
+				.generic_string()
+			: headerOut;
+		bool wrote = false;
+		const std::string text =
+			smvk::project::EmitProjectHeader(catalog);
+		if (!smvk::project::WriteProjectHeaderIfChanged(header, text,
+				wrote, err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		// The depfile (the CMake/Ninja rebuild trigger): the header
+		// depends on the recipe, every content file the resolution
+		// touched, and the registry itself (an id allocation anywhere
+		// regenerates).
+		if (!depsOut.empty()) {
+			std::ofstream d(depsOut, std::ios::binary | std::ios::trunc);
+			// Ninja depfile escapes: spaces only. Drive-letter colons
+			// stay bare — ninja's separator is ": " (colon + space) and
+			// a "$:" escape MANGLES the drive letter (FindFirstFileExA
+			// on ":/REPOS/...").
+			auto esc = [](const std::string& s) {
+				std::string o;
+				for (char c : s) {
+					if (c == ' ' || c == '$')
+						o += '$';
+					o += c;
+				}
+				return o;
+			};
+			d << esc(header) << ": " << esc(path);
+			for (const std::string& dep : deps)
+				d << " \\\n  " << esc(dep);
+			d << " \\\n  " << esc(p.DerivedDataDir() + "/assets.db");
+			d << "\n";
+		}
+		std::cout << "Content ids: " << catalog.scenes.size()
+			<< " scene(s), " << catalog.textures.size()
+			<< " texture(s), " << catalog.meshes.size() << " mesh(es)\n"
+			<< "  project.h: " << header
+			<< (wrote ? " (written)" : " (unchanged)") << "\n";
+		return 0;
+	}
+
 	if (cmd == "build") {
+		if (!recipeFile.empty()) {
+			// The RECIPE build: resolve -> the shared executor (the same
+			// plan the editor will drive) -> verified + policed paks ->
+			// the appmanifest published last.
+			std::string err;
+			smvk::project::Project p =
+				smvk::project::Project::Open(projectDir, err);
+			if (!p.Valid()) {
+				std::cerr << err << "\n";
+				return 1;
+			}
+			smvk::project::ProjectRecipe recipe;
+			const std::string path = resolveRecipe(p, recipe, err);
+			if (path.empty()) {
+				std::cerr << "recipe rejected: " << err << "\n";
+				return 1;
+			}
+			smvk::project::BuildPlan plan;
+			if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+				std::cerr << "resolve failed: " << err << "\n";
+				return 1;
+			}
+			if (!manifestName.empty())
+				manifestName = std::filesystem::path(recipeFile)
+					.stem().generic_string();
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = publishDir;
+			opts.manifestName = manifestName;
+			auto adapter = smvk::project::MakeSubprocessStageAdapter();
+			smvk::project::BuildPlanReport report;
+			if (!smvk::project::ExecuteBuildPlan(p, plan, *adapter, opts,
+					report, err)) {
+				std::cerr << "build failed: " << err << "\n";
+				return 1;
+			}
+			std::cout << "Built " << report.paks.size() << " pak(s):\n";
+			for (const auto& pak : report.paks)
+				std::cout << "  [" << pak.id << "] " << pak.output
+					<< (pak.scene.empty() ? " (asset-only)" : "")
+					<< (pak.reimported ? " (reimported)" : "") << "\n";
+			std::cout << "  appmanifest: " << report.manifest << "\n";
+			return 0;
+		}
 		if (output.empty()) {
-			std::cerr << "--output <pak> is required.\n";
+			std::cerr << "--output <pak> (or --recipe <file>) is"
+				" required.\n";
 			return Usage(argv[0]);
 		}
 		std::string err;

@@ -414,8 +414,26 @@ bool InitAssetSchema(SQLite::Database& db, std::string& err) {
 				")");
 			db.exec("CREATE INDEX IF NOT EXISTS idx_assets_path "
 				"ON assets (path)");
-			db.exec("PRAGMA user_version = 1");
 		}
+		if (version < 2) {
+			// The persistent CONTENT-ID registry (the generated
+			// project.h's stable identities — one and the same
+			// database, the owner's call; see assetdb.h's block).
+			// Tombstones keep their rows: the id+symbol stay reserved,
+			// active=0 drops them from the generated catalogs.
+			db.exec(
+				"CREATE TABLE IF NOT EXISTS content_ids ("
+				"  guid TEXT NOT NULL PRIMARY KEY,"
+				"  id INTEGER NOT NULL UNIQUE,"
+				"  symbol TEXT NOT NULL,"
+				"  kind TEXT NOT NULL,"
+				"  path TEXT NOT NULL DEFAULT '',"
+				"  active INTEGER NOT NULL DEFAULT 1"
+				")");
+			db.exec("CREATE INDEX IF NOT EXISTS idx_content_ids_kind "
+				"ON content_ids (kind)");
+		}
+		db.exec("PRAGMA user_version = 2");
 		return true;
 	}
 	catch (const SQLite::Exception& e) {
@@ -736,6 +754,198 @@ std::string AssetDatabase::ResolvePath(
 	if (storedPath.empty())
 		return {};
 	return FromStoredPath(m_projectRoot, storedPath);
+}
+
+// ---- the content-id registry ---------------------------------------------
+
+namespace {
+
+// The kind's id range (the generated header's namespaces; see
+// assetdb.h). Allocation walks to the range's next free slot and NEVER
+// reuses (tombstones hold theirs forever).
+bool IdRangeForKind(const std::string& kind, uint64_t& base,
+	uint64_t& last) {
+	if (kind == "scene") {
+		base = 0x1000;
+	}
+	else if (kind == "texture") {
+		base = 0x2000;
+	}
+	else if (kind == "mesh") {
+		base = 0x3000;
+	}
+	else
+		return false;
+	last = base + 0xFFF;
+	return true;
+}
+
+// A valid C++ identifier from the path's stem: [A-Za-z0-9_], invalid
+// chars fold to '_', a leading digit takes an '_' prefix. The stem at
+// FIRST registration only — renames later keep the assigned symbol.
+std::string SymbolFromPath(const std::string& projectRelPath) {
+	std::string stem = fs::path(projectRelPath).stem().generic_string();
+	std::string sym;
+	for (char c : stem) {
+		const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+			|| (c >= '0' && c <= '9') || c == '_';
+		sym += ok ? c : '_';
+	}
+	if (sym.empty() || (sym[0] >= '0' && sym[0] <= '9'))
+		sym = "_" + sym;
+	return sym;
+}
+
+} // namespace
+
+bool AssetDatabase::EnsureContentId(const std::string& guid,
+	const std::string& kind, const std::string& projectRelPath,
+	uint64_t& outId, std::string& outSymbol, std::string& err) {
+	outId = 0;
+	outSymbol.clear();
+	if (!m_impl || !m_impl->db) {
+		err = "asset db not open";
+		return false;
+	}
+	if (!IsValidAssetGuid(guid)) {
+		err = "content id needs a valid asset guid";
+		return false;
+	}
+	uint64_t base = 0, last = 0;
+	if (!IdRangeForKind(kind, base, last)) {
+		err = "unknown content kind '" + kind + "' (scene|texture|mesh)";
+		return false;
+	}
+	try {
+		// Existing row: return its id+symbol verbatim (a tombstone
+		// re-activates; the symbol NEVER re-derives — renames keep it).
+		{
+			SQLite::Statement q(*m_impl->db,
+				"SELECT id, symbol, active FROM content_ids "
+				"WHERE guid = ?");
+			q.bind(1, guid);
+			if (q.executeStep()) {
+				outId = uint64_t(q.getColumn(0).getInt64());
+				outSymbol = q.getColumn(1).getString();
+				const bool active = q.getColumn(2).getInt() != 0;
+				if (!active) {
+					SQLite::Statement u(*m_impl->db,
+						"UPDATE content_ids SET active = 1, path = ? "
+						"WHERE guid = ?");
+					u.bind(1, projectRelPath);
+					u.bind(2, guid);
+					u.exec();
+				}
+				else if (q.getColumn(1).getString() != projectRelPath) {
+					// path refresh (informational only)
+					SQLite::Statement u(*m_impl->db,
+						"UPDATE content_ids SET path = ? WHERE guid = ?");
+					u.bind(1, projectRelPath);
+					u.bind(2, guid);
+					u.exec();
+				}
+				return true;
+			}
+		}
+		// Fresh allocation: the kind range's next free id (MAX+1 —
+		// tombstones hold theirs, so no reuse ever).
+		uint64_t next = base;
+		{
+			SQLite::Statement q(*m_impl->db,
+				"SELECT MAX(id) FROM content_ids WHERE id >= ? AND id <= ?");
+			q.bind(1, static_cast<int64_t>(base));
+			q.bind(2, static_cast<int64_t>(last));
+			if (q.executeStep() && !q.isColumnNull(0))
+				next = uint64_t(q.getColumn(0).getInt64()) + 1;
+		}
+		if (next > last) {
+			err = "the '" + kind + "' id range is exhausted (delete"
+				" tombstones you truly no longer need)";
+			return false;
+		}
+		// The symbol: the path stem, collision-suffixed within the kind
+		// (stable once assigned — the suffix stays through renames).
+		const std::string want = SymbolFromPath(projectRelPath);
+		std::string symbol = want;
+		for (uint32_t attempt = 2;; ++attempt) {
+			SQLite::Statement q(*m_impl->db,
+				"SELECT 1 FROM content_ids WHERE kind = ? AND symbol = ?");
+			q.bind(1, kind);
+			q.bind(2, symbol);
+			if (!q.executeStep())
+				break; // free
+			if (attempt > 99) {
+				err = "symbol collision exhaustion for '" + want + "'";
+				return false;
+			}
+			symbol = want + "_" + std::to_string(attempt);
+		}
+		SQLite::Statement q(*m_impl->db,
+			"INSERT INTO content_ids (guid, id, symbol, kind, path,"
+			" active) VALUES (?, ?, ?, ?, ?, 1)");
+		q.bind(1, guid);
+		q.bind(2, static_cast<int64_t>(next));
+		q.bind(3, symbol);
+		q.bind(4, kind);
+		q.bind(5, projectRelPath);
+		q.exec();
+		outId = next;
+		outSymbol = symbol;
+		return true;
+	}
+	catch (const SQLite::Exception& e) {
+		err = e.what();
+		return false;
+	}
+}
+
+bool AssetDatabase::ListContentIds(std::vector<ContentIdRecord>& out,
+	std::string& err) {
+	out.clear();
+	if (!m_impl || !m_impl->db) {
+		err = "asset db not open";
+		return false;
+	}
+	try {
+		SQLite::Statement q(*m_impl->db,
+			"SELECT guid, id, symbol, kind, path, active "
+			"FROM content_ids ORDER BY id");
+		while (q.executeStep()) {
+			ContentIdRecord r;
+			r.guid = q.getColumn(0).getString();
+			r.id = uint64_t(q.getColumn(1).getInt64());
+			r.symbol = q.getColumn(2).getString();
+			r.kind = q.getColumn(3).getString();
+			r.path = q.getColumn(4).getString();
+			r.active = q.getColumn(5).getInt() != 0;
+			out.push_back(std::move(r));
+		}
+		return true;
+	}
+	catch (const SQLite::Exception& e) {
+		err = e.what();
+		return false;
+	}
+}
+
+bool AssetDatabase::SetContentIdActive(const std::string& guid,
+	bool active, std::string& err) {
+	if (!m_impl || !m_impl->db) {
+		err = "asset db not open";
+		return false;
+	}
+	try {
+		SQLite::Statement q(*m_impl->db,
+			"UPDATE content_ids SET active = ? WHERE guid = ?");
+		q.bind(1, active ? 1 : 0);
+		q.bind(2, guid);
+		q.exec();
+		return true;
+	}
+	catch (const SQLite::Exception& e) {
+		err = e.what();
+		return false;
+	}
 }
 
 } // namespace smvk::cache

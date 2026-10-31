@@ -13,6 +13,9 @@
 
 #include <Engine/Memory/memory.h> // mem::LinearPtr
 
+#include <string>
+#include <vector>
+
 namespace smvk {
 	class OverlayVfs;
 	class ResourceManager;
@@ -31,6 +34,22 @@ namespace app {
 smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
 	PakPreload pre,
 	int sceneIndex,
+	smvk::ResourceManager& ctx,
+	smvk::OverlayVfs& contentVfs,
+	smvk::TextureStreamer* sceneStreamer);
+
+// The --project launch (the appmanifest flow): EVERY listed pak
+// preloaded + mounted (manifest order) BEFORE the cluster load —
+// cross-pak textures resolve through the mounted backends via
+// DeserializeCluster's external-texture hook, GI payloads + anim clips
+// the same way — then the entry scene loads BY NAME from the entry
+// pak (identity, never an index). A failed preload of ANY listed pak
+// fails the launch (named, loud — never an unrelated fallback scene).
+// `preloads` is manifest order; `entryPakIndex` indexes into it.
+smvk::mem::LinearPtr<smvk::World> LoadProjectWorld(
+	std::vector<PakPreload> preloads,
+	size_t entryPakIndex,
+	const std::string& entrySceneName,
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
 	smvk::TextureStreamer* sceneStreamer);

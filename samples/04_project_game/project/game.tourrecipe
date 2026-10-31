@@ -1,0 +1,27 @@
+# Tourmaline Project Recipe v1
+#
+# The GameProject sample (samples/04_project_game): a scene pak from
+# the checked-in raw sources + an ASSET-ONLY shared pak carrying the
+# grid material's texture cross-pak (the world pak excludes it — its
+# material resolves the texture through the mounted shared backend;
+# the runtime façade reads the same id from either side).
+#
+#   cmake --build --target GameProject        (exe + the generated project.h)
+#   cmake --build --target GameProject_paks   (the on-demand content cook)
+#   cmake --build --target GameProject_ids    (ids only, if you like)
+
+recipe 1
+project GameProject
+entry content/scenes/game.tour
+
+bake gi
+bake cubemaps off
+
+[pak world]
+output game.pak
+scene content/scenes/game.tour
+depends shared
+
+[pak shared]
+output shared.pak
+include content/models/game/shared/**

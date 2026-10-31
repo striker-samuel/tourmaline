@@ -15,6 +15,7 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Scene/scene.h>
+#include <Engine/Utils/texture_loader.h>
 #include <Engine/Vfs/vfs.h>
 
 #include <algorithm>
@@ -120,6 +121,89 @@ namespace app {
 		}
 
 	} // namespace
+
+	// The post-load tail SHARED by both entry points (--pak's legacy
+	// path and --project): anim-clip attach, cooked static flags, the
+	// resolve/fixup, and the env-gated scene-prep diagnostics.
+	void PostLoadTail(smvk::World& world, const std::string& pakStem,
+		smvk::OverlayVfs& contentVfs) {
+		// THE SKINNING CLIP: attach to the first cluster carrying a
+		// skeleton (ONE for now — the driver's cap).
+		{
+			SMVK_PROFILE_IO("PakWorld_AttachClips");
+			for (auto& clusterPtr : world.clusters) {
+				smvk::Cluster* c = clusterPtr.get();
+				if (!c || !c->hasSkeleton)
+					continue;
+				AttachClips(*c, pakStem, contentVfs);
+				break;
+			}
+		}
+		// STATIC FLAGS come from the COOKED marks now (the pak's
+		// staticRoot bits — authored in the editor/cooker, preserved by
+		// the serializer). The old flow blanket-marked every non-skinned
+		// cluster root static AT RUNTIME — inventing scene metadata the
+		// cooker never wrote, which misclassified any genuinely dynamic
+		// (runtime-moved) cluster as frozen. The viewer-side freeze now
+		// fires ONLY as the loud compat fallback for clusters whose scene
+		// blob carried NO static section (pre-v2 paks).
+		{
+			// Cooked static flags + the node hierarchy resolve/fixup tail.
+			SMVK_PROFILE_IO("PakWorld_Fixup");
+			ApplyCookedStaticFlags(world, pakStem);
+			world.ResolveAndFixup_clusters();
+		}
+		// SSR wax (test amplification, TOURMALINE_SSR_WAX=1; the sponza
+		// check scene is the target): every opaque lit material's roughness
+		// -> 0.04 (the shader-side clamp floor - a dielectric mirror). The
+		// sponza floor's cooked roughness leaves a legitimate but FAINT
+		// dielectric reflection lobe (grazing F0 ~0.04) that is easy to
+		// misread as "SSR contributes nothing"; the wax makes every
+		// receiver - the floor especially, its grazing-angle pillar
+		// reflections - a mirror so the trace's hit/miss + the compose are
+		// plainly visible (the removed chrome probe ball used to be the
+		// calibrated reference; the waxed floor carries that role now).
+		// AFTER ResolveAndFixup (the material location table is the resolve's
+		// product); the mutations flow to the GPU per frame through
+		// UpdateMaterials' world reads.
+		if (const char* waxEnv = std::getenv("TOURMALINE_SSR_WAX");
+			waxEnv && *waxEnv && *waxEnv != '0') {
+			uint32_t waxed = 0, total = 0;
+			for (uint32_t mi = 0;; ++mi) {
+				smvk::Material* m = world.GetMaterial(mi);
+				if (!m)
+					break;
+				++total;
+				if (m->shadingModel != smvk::ShadingModel::DefaultLit
+					|| m->alphaMode != smvk::AlphaMode::Opaque)
+					continue;
+				m->values.params.z = 0.04f; // roughness -> the clamp floor
+				++waxed;
+			}
+			std::cerr << "[Scene] SSR wax: " << waxed << "/" << total
+				<< " opaque lit materials -> roughness 0.04 (mirror)\n";
+		}
+		if (std::getenv("TOURMALINE_KD")) {
+			int n = 0;
+			for (const MeshRow& row : world.scene.tables.meshes) {
+				const uint32_t node = row.node;
+				const uint32_t meshIdx = row.mesh;
+				if (meshIdx >= world.meshLocations.size())
+					continue;
+				smvk::Cluster* cl = world.meshLocations[meshIdx].cluster;
+				if (!cl || !cl->hasSkeleton)
+					continue;
+				const glm::mat4& g = world.scene.globalTransform[node];
+				std::cerr << "[KD] merged meshNode=" << node
+					<< " t=(" << g[3].x << "," << g[3].y << "," << g[3].z
+					<< ") sc=(" << glm::length(glm::vec3(g[0])) << ","
+					<< glm::length(glm::vec3(g[1])) << ","
+					<< glm::length(glm::vec3(g[2])) << ")\n";
+				if (++n > 8) break;
+			}
+			std::cerr << "[KD] skinned draw nodes: " << n << "\n";
+		}
+	}
 
 	// STATIC-FLAG APPLICATION (public seam: PakHostTests drives it on
 	// hand-built value worlds — the loader's decision logic without the
@@ -231,86 +315,130 @@ namespace app {
 		// overrides still win). The old flow mounted only after the clip
 		// hunt, so the hunt could only ever see LOOSE files.
 		contentVfs.Mount(pre.backend, 10, pre.scenePak);
-		// THE SKINNING CLIP: attach to the first cluster carrying a
-		// skeleton (ONE for now — the driver's cap).
-		{
-			SMVK_PROFILE_IO("PakWorld_AttachClips");
-			for (auto& clusterPtr : world->clusters) {
-				smvk::Cluster* c = clusterPtr.get();
-				if (!c || !c->hasSkeleton)
-					continue;
-				AttachClips(*c, StemOf(pre.scenePak), contentVfs);
+		PostLoadTail(*world, StemOf(pre.scenePak), contentVfs);
+		return world;
+	}
+
+	smvk::mem::LinearPtr<smvk::World> LoadProjectWorld(
+		std::vector<PakPreload> preloads,
+		size_t entryPakIndex,
+		const std::string& entrySceneName,
+		smvk::ResourceManager& ctx,
+		smvk::OverlayVfs& contentVfs,
+		smvk::TextureStreamer* sceneStreamer
+	) {
+		SMVK_PROFILE_IO("ProjectWorld_Load");
+		// EVERY listed pak must have preloaded clean — one missing or
+		// corrupt archive fails the launch, NAMED, before anything loads
+		// (never an unrelated fallback scene).
+		for (const PakPreload& p : preloads) {
+			if (!p.backend) {
+				std::cerr << "[App] project pak failed: " << p.scenePak
+					<< " (" << p.error << ")\n";
+				return nullptr;
+			}
+		}
+		if (entryPakIndex >= preloads.size()) {
+			std::cerr << "[App] project entry pak index out of range\n";
+			return nullptr;
+		}
+		// Mount ALL the backends FIRST (manifest order) — BEFORE the
+		// cluster load — so cross-pak content resolves through the
+		// overlay during the load itself: material textures a
+		// dependency pak owns (the ownership exclude kept them out of
+		// the entry pak), GI payloads, anim clips. Loose content still
+		// wins (same priority ladder as the single-pak path).
+		for (const PakPreload& p : preloads)
+			contentVfs.Mount(p.backend, 10, p.scenePak);
+
+		const PakPreload& entry = preloads[entryPakIndex];
+		const smvk::PakReader& reader = entry.backend->Reader();
+		std::cerr << "[App] project: entry pak '" << entry.scenePak
+			<< "' (" << reader.EntryCount() << " entries, "
+			<< preloads.size() << " pak(s) mounted)\n";
+		// Resolve the entry scene BY IDENTITY: the manifest's scene name
+		// against the pak's scene list — never index 0 by default, never
+		// a fallback (a name mismatch is a build/runtime version skew
+		// and fails loudly).
+		std::string lerr;
+		const std::vector<smvk::PakSceneInfo> scenes =
+			smvk::ListPakScenes(reader, &lerr);
+		if (scenes.empty()) {
+			std::cerr << "[App] project: the entry pak carries no scenes: "
+				<< lerr << "\n";
+			return nullptr;
+		}
+		size_t entryIdx = scenes.size();
+		for (size_t i = 0; i < scenes.size(); ++i)
+			if (scenes[i].name == entrySceneName) {
+				entryIdx = i;
 				break;
 			}
+		if (entryIdx == scenes.size()) {
+			std::cerr << "[App] project: the entry scene '" << entrySceneName
+				<< "' is not in the entry pak (scenes:";
+			for (const smvk::PakSceneInfo& s : scenes)
+				std::cerr << " '" << (s.name.empty() ? "<unnamed>" : s.name)
+					<< "'";
+			std::cerr << ") — recook the project\n";
+			return nullptr;
 		}
-		// STATIC FLAGS come from the COOKED marks now (the pak's
-		// staticRoot bits — authored in the editor/cooker, preserved by
-		// the serializer). The old flow blanket-marked every non-skinned
-		// cluster root static AT RUNTIME — inventing scene metadata the
-		// cooker never wrote, which misclassified any genuinely dynamic
-		// (runtime-moved) cluster as frozen. The viewer-side freeze now
-		// fires ONLY as the loud compat fallback for clusters whose scene
-		// blob carried NO static section (pre-v2 paks).
+		std::cerr << "[App] project: loading entry scene[" << entryIdx
+			<< "] '" << scenes[entryIdx].name << "'\n";
+
+		// The cross-pak texture resolver (DeserializeCluster's external
+		// hook): a material URI with no blob in the entry pak is served
+		// from whatever mounted backend carries it — the VFS read gives
+		// the embedded .ktx2 bytes, the standard parallel loader decodes
+		// + uploads, and the texture registers on the cluster under its
+		// original URI. v1 note: the cross-pak path takes the DEFAULT
+		// sampler (the pak-served path's payload filters stay with the
+		// owning pak's own loads).
+		smvk::ExternalTextureResolver resolver =
+			[&ctx, &contentVfs](smvk::Cluster& c,
+				const std::string& uri) -> smvk::TextureHandle {
+			const std::string norm = smvk::NormalizeAssetUri(uri).Str();
+			auto bytes = contentVfs.TryRead(norm.empty() ? uri : norm);
+			if (!bytes || bytes->empty()) {
+				std::cerr << "[App] cross-pak texture unresolved: " << uri
+					<< "\n";
+				return {};
+			}
+			std::vector<smvk::KtxMemoryJob> jobs;
+			jobs.push_back(smvk::KtxMemoryJob{
+				0, bytes->data(), bytes->size(), uri });
+			smvk::ParallelTextureStats stats;
+			auto holders = smvk::LoadKtxTexturesParallelMemory(ctx, jobs,
+				{}, &stats);
+			const auto it = holders.find(0);
+			if (it == holders.end()) {
+				std::cerr << "[App] cross-pak texture decode failed: "
+					<< uri << "\n";
+				return {};
+			}
+			const smvk::TextureHandle th = it->second;
+			c.textures.create(std::move(it->second));
+			c.RegisterTextureUri(uri, th);
+			return th;
+		};
+
+		auto world = smvk::mem::MakeProcess<smvk::World>();
 		{
-			// Cooked static flags + the node hierarchy resolve/fixup tail.
-			SMVK_PROFILE_IO("PakWorld_Fixup");
-			ApplyCookedStaticFlags(*world, pre.scenePak);
-			world->ResolveAndFixup_clusters();
-		}
-		// SSR wax (test amplification, TOURMALINE_SSR_WAX=1; the sponza
-		// check scene is the target): every opaque lit material's roughness
-		// -> 0.04 (the shader-side clamp floor - a dielectric mirror). The
-		// sponza floor's cooked roughness leaves a legitimate but FAINT
-		// dielectric reflection lobe (grazing F0 ~0.04) that is easy to
-		// misread as "SSR contributes nothing"; the wax makes every
-		// receiver - the floor especially, its grazing-angle pillar
-		// reflections - a mirror so the trace's hit/miss + the compose are
-		// plainly visible (the removed chrome probe ball used to be the
-		// calibrated reference; the waxed floor carries that role now).
-		// AFTER ResolveAndFixup (the material location table is the resolve's
-		// product); the mutations flow to the GPU per frame through
-		// UpdateMaterials' world reads.
-		if (const char* waxEnv = std::getenv("TOURMALINE_SSR_WAX");
-			waxEnv && *waxEnv && *waxEnv != '0') {
-			uint32_t waxed = 0, total = 0;
-			for (uint32_t mi = 0;; ++mi) {
-				smvk::Material* m = world->GetMaterial(mi);
-				if (!m)
-					break;
-				++total;
-				if (m->shadingModel != smvk::ShadingModel::DefaultLit
-					|| m->alphaMode != smvk::AlphaMode::Opaque)
-					continue;
-				m->values.params.z = 0.04f; // roughness -> the clamp floor
-				++waxed;
+			SMVK_PROFILE_IO("ProjectWorld_LoadCluster");
+			try {
+				world->LoadClusterFromPak(ctx, reader,
+					uint32_t(entryIdx), sceneStreamer, entry.image,
+					&resolver);
 			}
-			std::cerr << "[Scene] SSR wax: " << waxed << "/" << total
-				<< " opaque lit materials -> roughness 0.04 (mirror)\n";
-		}
-		if (std::getenv("TOURMALINE_KD")) {
-			int n = 0;
-			for (const MeshRow& row : world->scene.tables.meshes) {
-				const uint32_t node = row.node;
-				const uint32_t meshIdx = row.mesh;
-				if (meshIdx >= world->meshLocations.size())
-					continue;
-				smvk::Cluster* cl = world->meshLocations[meshIdx].cluster;
-				if (!cl || !cl->hasSkeleton)
-					continue;
-				const glm::mat4& g = world->scene.globalTransform[node];
-				std::cerr << "[KD] merged meshNode=" << node
-					<< " t=(" << g[3].x << "," << g[3].y << "," << g[3].z
-					<< ") sc=(" << glm::length(glm::vec3(g[0])) << ","
-					<< glm::length(glm::vec3(g[1])) << ","
-					<< glm::length(glm::vec3(g[2])) << ")\n";
-				if (++n > 8) break;
+			catch (const std::exception& e) {
+				std::cerr << "[App] project pak load failed: " << e.what()
+					<< "\n";
+				ctx.WaitForUploads();
+				return nullptr;
 			}
-			std::cerr << "[KD] skinned draw nodes: " << n << "\n";
 		}
-		// (Demo decal seeding — the procedural blood textures + sponza hero
-		// splats — is gone with DecalAssets.cpp: decals resolve from world
-		// content only now. The renderer's own TOURMALINE_DECALS visibility
-		// toggle is untouched.)
+		std::cerr << "[App] project cluster loaded\n";
+		PostLoadTail(*world, StemOf(entry.scenePak), contentVfs);
 		return world;
 	}
 

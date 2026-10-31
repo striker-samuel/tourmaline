@@ -24,14 +24,19 @@ namespace {
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
 		<< " --pak <path.pak> (REQUIRED) [--scene-index N]\n"
+		<< "  " << (prog ? prog : "App")
+		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
-		<< "  --pak runs a cooked pak — REQUIRED, there is no default\n"
-		<< "  (no entry-point pak = the App refuses to run);\n"
+		<< "  --pak runs a cooked pak — REQUIRED (or --project), there is no\n"
+		<< "  default (no entry-point pak = the App refuses to run);\n"
 		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
 		<< "  --scene-index picks another. The App loads OUR format only:\n"
 		<< "  preprocess glTF through the editor (import -> cook).\n"
+		<< "  --project launches a recipe build's appmanifest: every listed\n"
+		<< "  pak mounts (manifest-relative, listed order) and the entry\n"
+		<< "  scene loads by identity — no --scene-index, no source .tour.\n"
 		<< "  --disable_control freezes camera input for deterministic benching\n"
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
@@ -112,6 +117,12 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		}
 		else if (std::strncmp(a, "--pak=", 6) == 0) {
 			opts.pakPath = a + 6;
+		}
+		else if ((std::strcmp(a, "--project") == 0) && i + 1 < argc) {
+			opts.project = argv[++i];
+		}
+		else if (std::strncmp(a, "--project=", 10) == 0) {
+			opts.project = a + 10;
 		}
 		else if (std::strcmp(a, "--gltf") == 0
 			|| std::strncmp(a, "--gltf=", 7) == 0) {
@@ -229,13 +240,27 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			return false;
 		}
 	}
-	// The entry-point pak gate: no --pak, no run. Nothing launches —
-	// the old silent default (content/paks/sponza.pak) ran whatever
-	// stale pak happened to sit at that path, with no hint the user
-	// forgot to name their entry point.
-	if (opts.pakPath.empty()) {
-		std::cerr << "--pak <path.pak> is REQUIRED: no entry-point pak, "
-			"nothing to run.\n";
+	// The entry-point gate: --pak OR --project (one entry point, no
+	// silent defaults). The appmanifest path is exclusive with the
+	// single-pak surface (--pak/--scene-index): identity-based launch
+	// never mixes with index-based.
+	if (!opts.project.empty() && !opts.pakPath.empty()) {
+		std::cerr << "--project and --pak are mutually exclusive: the"
+			" appmanifest names its own entry point.\n";
+		PrintUsage(argv[0]);
+		exitCode = EXIT_FAILURE;
+		return false;
+	}
+	if (!opts.project.empty() && opts.sceneIndex != 0) {
+		std::cerr << "--scene-index has no effect with --project: the"
+			" appmanifest resolves the entry scene by identity.\n";
+		PrintUsage(argv[0]);
+		exitCode = EXIT_FAILURE;
+		return false;
+	}
+	if (opts.pakPath.empty() && opts.project.empty()) {
+		std::cerr << "--pak <path.pak> (or --project <path.tapp>) is"
+			" REQUIRED: no entry point, nothing to run.\n";
 		PrintUsage(argv[0]);
 		exitCode = EXIT_FAILURE;
 		return false;

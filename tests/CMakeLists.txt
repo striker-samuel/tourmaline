@@ -744,6 +744,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/PakAppArgs.cpp
 	../app/src/PakPreload.cpp
 	../app/src/PakWorldLoader.cpp
+	../app/src/ProjectRuntime.cpp
 )
 
 target_include_directories(PakHostTests
@@ -773,6 +774,24 @@ target_link_libraries(ProjectPipelineTests
 		project_pipeline
 		gltf_import
 		engine
+		# The EDT-01 parity leg: the IN-PROCESS stage adapter (the linked
+		# Cook/GiBaker/Pak Runs — exactly what the editor drives) builds
+		# the same plan the subprocess adapter does; the paks must be
+		# byte-identical.
+		CookLib
+		GiBakerLib
+		PakLib
+)
+
+# The stage libs' headers (cook_tool.h/gi_baker.h/pak_tool.h ride their
+# PRIVATE include dirs) + the stb headers the test's impl TU needs.
+target_include_directories(ProjectPipelineTests
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/tools/cook/src
+		${CMAKE_SOURCE_DIR}/tools/gi_baker
+		${CMAKE_SOURCE_DIR}/tools/pak_cooker
+		${CMAKE_SOURCE_DIR}/tools/common
+		${CMAKE_SOURCE_DIR}/external/stb
 )
 
 set_target_properties(ProjectPipelineTests PROPERTIES
@@ -780,6 +799,12 @@ set_target_properties(ProjectPipelineTests PROPERTIES
 )
 
 add_test(NAME project_pipeline_tests COMMAND ProjectPipelineTests)
+
+# The executor's parity leg shells out to the stage exes beside this
+# exe (the shared build root): legacy BuildProject vs ExecuteBuildPlan
+# through the subprocess adapter, byte-compared. They are build
+# prerequisites of the test, not runtime finds.
+add_dependencies(ProjectPipelineTests Cook GiBaker Pak)
 
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)

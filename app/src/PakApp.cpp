@@ -13,6 +13,7 @@
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
 
+#include <Engine/Asset/appmanifest.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Profile/profile.h>
 
@@ -21,10 +22,12 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace app {
 	namespace {
@@ -122,21 +125,75 @@ namespace app {
 			return EXIT_FAILURE;
 		}
 
-		// Entrypoint: a pak file + a scene index (0 = default). The scene
-		// id (GI bake stem + check-scene gating) is the pak stem.
-		std::string sceneId = cfg.cli.sceneId.empty()
-			? StemOf(cfg.cli.pakPath) : cfg.cli.sceneId;
+		// Entrypoint: --pak (single-pak legacy) or --project (the
+		// appmanifest launch). The manifest parses + validates HERE —
+		// before any Vulkan work — and its pak list resolves
+		// MANIFEST-RELATIVE (a moved build directory keeps working);
+		// every listed pak preloads in parallel, mounts in listed
+		// order, and the entry scene loads by identity at attach.
+		std::string sceneId;
+		std::shared_ptr<std::future<PakPreload>> preloadFuture;
+		std::shared_ptr<std::vector<std::future<PakPreload>>>
+			projectFutures;
+		size_t entryPakIndex = 0;
+		std::string entrySceneName;
+		if (!cfg.cli.project.empty()) {
+			smvk::AppManifest manifest;
+			std::string mErr;
+			if (!smvk::LoadAppManifest(cfg.cli.project, manifest, mErr)) {
+				std::cerr << "[App] appmanifest rejected: " << mErr
+					<< "\n";
+				return EXIT_FAILURE;
+			}
+			namespace fs = std::filesystem;
+			const fs::path base =
+				fs::path(cfg.cli.project).lexically_normal()
+					.parent_path();
+			std::vector<std::string> pakPaths;
+			bool entryFound = false;
+			for (size_t i = 0; i < manifest.paks.size(); ++i) {
+				fs::path p(manifest.paks[i]);
+				if (p.is_relative())
+					p = base / p;
+				pakPaths.push_back(p.lexically_normal().generic_string());
+				if (manifest.paks[i] == manifest.entryPak) {
+					entryPakIndex = i;
+					entryFound = true;
+				}
+			}
+			if (!entryFound) { // validation guarantees this; belt+braces
+				std::cerr << "[App] appmanifest entry pak '"
+					<< manifest.entryPak << "' not listed\n";
+				return EXIT_FAILURE;
+			}
+			entrySceneName = manifest.entryScene;
+			sceneId = StemOf(pakPaths[entryPakIndex]);
+			auto futures = std::make_shared<
+				std::vector<std::future<PakPreload>>>();
+			for (const std::string& pak : pakPaths)
+				futures->push_back(KickPakPreload(pak));
+			projectFutures = std::move(futures);
+			std::cerr << "[App] project '" << cfg.cli.project << "': "
+				<< manifest.paks.size() << " pak(s), entry '"
+				<< manifest.entryPak << "' scene '" << entrySceneName
+				<< "'\n";
+			if (cfg.cli.noVfs)
+				std::cerr << "[Scene] --no-vfs: only the project's "
+					<< manifest.paks.size() << " mounted pak(s) serve"
+					<< " scene content\n";
+		}
+		else {
+			// A pak file + a scene index (0 = default). The scene id
+			// (GI bake stem + check-scene gating) is the pak stem.
+			sceneId = cfg.cli.sceneId.empty()
+				? StemOf(cfg.cli.pakPath) : cfg.cli.sceneId;
+			preloadFuture = std::make_shared<std::future<PakPreload>>(
+				KickPakPreload(cfg.cli.pakPath));
+			std::cerr << "Scene: pak '" << cfg.cli.pakPath << "' (id '"
+				<< sceneId << "', index " << cfg.cli.sceneIndex << ")\n";
+		}
 		if (sceneId.empty())
 			sceneId = "pak";
-		std::cerr << "Scene: pak '" << cfg.cli.pakPath << "' (id '" << sceneId
-			<< "', index " << cfg.cli.sceneIndex << ")\n";
-
-		// Pak preload: kick the file read + parse + decompress NOW, before
-		// the app boots, so it overlaps Vulkan init + shader loading. The
-		// future rides a shared_ptr so the copyable WorldSource can hold it
-		// until the renderer calls.
-		auto preloadFuture = std::make_shared<std::future<PakPreload>>(
-			KickPakPreload(cfg.cli.pakPath));
 
 		// App host + WorldRenderer ELEMENT (nvapp-style: the host owns the
 		// window/context/swapchain + the frame sync — the default DrawFrame
@@ -155,7 +212,8 @@ namespace app {
 			// --no-vfs: mute the loose VFS discovery mounts (project root +
 			// content/) so the pak backend mounted at load is the only
 			// scene-content source (proves the pak is self-contained).
-			if (cfg.cli.noVfs) {
+			// (The --project mode printed its own message above.)
+			if (cfg.cli.noVfs && cfg.cli.project.empty()) {
 				renderer.SetNoVfs(true);
 				std::cerr << "[Scene] --no-vfs: only pak '" << cfg.cli.pakPath
 					<< "' serves scene content\n";
@@ -182,17 +240,34 @@ namespace app {
 			// down).
 			auto worldHandle = std::make_shared<smvk::World*>();
 			renderer.SetWorldSource(
-				[preloadFuture, sceneIndex, rendererRaw, worldHandle]
+				[preloadFuture, projectFutures, entryPakIndex,
+					entrySceneName, sceneIndex, rendererRaw, worldHandle]
 				(
 					smvk::ResourceManager& ctx,
 					smvk::OverlayVfs& contentVfs
 					) -> smvk::mem::LinearPtr<smvk::World> {
-				auto world = LoadPakWorld(preloadFuture->get(),
-					sceneIndex,
-					ctx,
-					contentVfs,
-					rendererRaw->GetTextureStreamer()
-					);
+				// --project: every listed pak's preload joins here, the
+				// backends mount in manifest order and the entry scene
+				// loads BY IDENTITY (LoadProjectWorld). --pak: the
+				// legacy single-pak, index-based path.
+				smvk::mem::LinearPtr<smvk::World> world;
+				if (projectFutures) {
+					std::vector<PakPreload> preloads;
+					preloads.reserve(projectFutures->size());
+					for (std::future<PakPreload>& f : *projectFutures)
+						preloads.push_back(f.get());
+					world = LoadProjectWorld(std::move(preloads),
+						entryPakIndex, entrySceneName, ctx, contentVfs,
+						rendererRaw->GetTextureStreamer());
+				}
+				else {
+					world = LoadPakWorld(preloadFuture->get(),
+						sceneIndex,
+						ctx,
+						contentVfs,
+						rendererRaw->GetTextureStreamer()
+						);
+				}
 				*worldHandle = world.get();
 				return world;
 			});

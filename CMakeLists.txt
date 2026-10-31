@@ -368,6 +368,12 @@ include(cmake/CompileShaders.cmake)
 # header in the file).
 include(cmake/HostSetup.cmake)
 
+# Content as code (the recipe pipeline's CMake layer):
+# tourmaline_add_project(<Name> RECIPE ...) + tourmaline_attach_project
+# (<target> <Name>) — the generated project.h (content ids from the
+# asset db) + the on-demand <Name>_paks recipe build.
+include(cmake/TourmalineProject.cmake)
+
 option(TRACE_INCLUDES "Print header include tree while compiling" OFF)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -468,6 +474,7 @@ add_subdirectory(tools/project)            # Project.exe: the project-pipeline C
   add_subdirectory(samples/01_triangle)
   add_subdirectory(samples/02_blur)
   add_subdirectory(samples/03_fuzz) # the target-recreate/deferred-destroy hard fuzzer (see its .cpp header)
+  add_subdirectory(samples/04_project_game) # the content-as-code sample (the generated project.h + the on-demand pak cook)
   include(CTest)
   if(BUILD_TESTING)
     add_subdirectory(tests)

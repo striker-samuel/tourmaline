@@ -80,6 +80,29 @@ struct AssetRecord {
 	int64_t mtime = 0; // seconds since epoch (change token)
 };
 
+// ---------------------------------------------------------------------------
+// THE PERSISTENT CONTENT-ID REGISTRY (the generated project.h's stable
+// identities). ONE AND THE SAME DATABASE as the asset directory — the
+// owner's call: no separate .tourids file, identity lives with identity
+// in assets.db under the project's registry root. IDs belong to ASSETS
+// (GUIDs), never paths: a rename keeps the id + the ORIGINAL symbol.
+// Allocation is monotonic per kind and NEVER reuses — a deleted asset
+// TOMBSTONES (active=0: the id+symbol stay reserved forever, the row
+// drops out of the generated catalog).
+//
+// Id ranges (the generated header's namespaces): scenes 0x1000..0x1FFF,
+// textures 0x2000..0x2FFF, meshes 0x3000..0x3FFF.
+// ---------------------------------------------------------------------------
+struct ContentIdRecord {
+	std::string guid;   // the asset identity (sidecar/manifest GUID)
+	uint64_t id = 0;    // the stable project-local id (kind-namespaced)
+	std::string symbol; // the C++ identifier (stable from first assign)
+	std::string kind;   // "scene" | "texture" | "mesh"
+	std::string path;   // last-known project-relative path (informational
+	                    // ONLY — never the identity)
+	bool active = true; // false = tombstone (reserved, not cataloged)
+};
+
 struct RescanStats {
 	size_t adopted = 0; // new rows for sidecar-carrying files found
 	size_t moved = 0;   // known GUIDs re-pointed at a new path
@@ -126,6 +149,22 @@ public:
 	// Absolute path for a STORED row path ({} when the db is closed).
 	// No existence requirement (the browser marks missing rows).
 	std::string ResolvePath(const std::string& storedPath) const;
+
+	// ---- the content-id registry (see ContentIdRecord) ----------------
+	// Adopt-or-return: the guid's existing id+symbol (re-activating a
+	// tombstone), else a fresh allocation (the kind's next free id + a
+	// collision-free symbol derived from the path's stem at FIRST
+	// registration — renames later keep this original symbol).
+	bool EnsureContentId(const std::string& guid, const std::string& kind,
+		const std::string& projectRelPath, uint64_t& outId,
+		std::string& outSymbol, std::string& err);
+	// Every row, tombstones included (the generator filters active).
+	bool ListContentIds(std::vector<ContentIdRecord>& out,
+		std::string& err);
+	// Tombstone / re-activate by guid (the generation pass marks rows
+	// whose assets vanished from the resolved plan).
+	bool SetContentIdActive(const std::string& guid, bool active,
+		std::string& err);
 
 private:
 	struct Impl;

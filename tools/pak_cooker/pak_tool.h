@@ -64,6 +64,20 @@ struct PakArgs {
 	glm::vec3 sunColor{ 1.0f, 0.95f, 0.90f };
 	// Probe-volume bake files this pak's scenes sample (repeatable).
 	std::vector<std::string> giProbes;
+	// ---- the multi-pak content-set surface (the recipe build) --------
+	// VFS paths to embed directly as Texture-kind blobs (an ASSET-ONLY
+	// pak: no scene, no clusters — e.g. shared textures another pak's
+	// materials resolve cross-pak through the mounted backends).
+	// Source images (.png/.jpg/...) transcode to KTX2 sRGB (authored
+	// color content); .ktx2 + text manifests embed verbatim. Empty =
+	// the normal tour/artifact path.
+	std::vector<std::string> contentSet;
+	// VFS texture paths this pak must NOT embed (owned by a DEPENDENCY
+	// pak — the resolved plan's ownership table): the serializer skips
+	// them, the materials keep their refs, the runtime resolves
+	// cross-pak through the mounted backends. Empty = embed everything
+	// (the single-pak default, byte-identical).
+	std::vector<std::string> excludeVfsPaths;
 };
 
 // Byte-identical to the CLI run (same return codes). Prints go through

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -66,13 +67,22 @@ struct PakSceneInfo {
 // Texture blobs embed the .ktx2 source bytes from Cluster::GetTextureSource
 // — the importer stashes them; a missing payload fails that texture with
 // an error (cooker must fail loudly, never silently drop).
+// excludeTextureVfsPaths/excludeTextureVfsCount (optional, the recipe
+// build's multi-pak ownership surface): VFS texture paths this pak must
+// NOT embed because a DEPENDENCY pak owns them — the materials keep
+// their texture refs and resolve them cross-pak through the mounted pak
+// backends at runtime (pak.h's interop contract: PakBackend serves
+// Texture-kind blobs by VFS path). Null/0 = embed everything (the
+// default, byte-identical to the historical output).
 // Returns false on error (err filled).
 bool SerializeClusters(
 	const std::vector<const Cluster*>& clusters,
 	const std::vector<std::string>& sceneNames, // parallel, may be short
 	PakWriter& writer,
 	ClusterSerializeStats* stats = nullptr,
-	std::string* err = nullptr);
+	std::string* err = nullptr,
+	const std::string* excludeTextureVfsPaths = nullptr,
+	size_t excludeTextureVfsCount = 0);
 
 // Single-scene form (identical layout: index-0 scene blob).
 bool SerializeCluster(
@@ -94,6 +104,19 @@ bool ParseGiRegistryBlob(
 std::vector<PakSceneInfo> ListPakScenes(
 	const PakReader& reader,
 	std::string* err = nullptr);
+
+// Cross-pak texture resolution hook (the multi-pak recipe build): a
+// material's texture URI with NO blob in this pak names a texture a
+// DEPENDENCY pak owns (the serializer's exclude kept it out on
+// purpose — the plan's ownership table). The resolver decodes +
+// uploads through the caller's own channel (typically the mounted pak
+// backends through the content VFS), registers the texture on the
+// cluster and returns the handle; an empty handle leaves the slot
+// empty (the historical behavior). This is what makes pak.h's interop
+// contract — materials in one pak referencing textures stored in
+// another via plain VFS paths — true at load time.
+using ExternalTextureResolver =
+	std::function<TextureHandle(Cluster&, const std::string& uri)>;
 
 // Rebuilds a Cluster from a parsed pak: textures (parallel from embedded
 // .ktx2 bytes) -> materials (texture URIs re-resolved) -> meshes (GPU
@@ -117,6 +140,7 @@ std::vector<PakSceneInfo> ListPakScenes(
 		std::string* err = nullptr,
 		uint32_t sceneIndex = 0,
 		TextureStreamer* streamer = nullptr,
-		std::shared_ptr<const std::vector<uint8_t>> imagePin = {});
+		std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
+		const ExternalTextureResolver* externalTexture = nullptr);
 
 } // namespace smvk
