@@ -33,11 +33,11 @@
 
 #include <Engine/App/RunConfig.h>
 
-namespace tour { struct World; }
+namespace tour { struct World; class App; }
 namespace smvk {
 	class ResourceManager;
 	using ::tour::World;
-	class App;
+	using ::tour::App;
 }
 
 namespace engine {

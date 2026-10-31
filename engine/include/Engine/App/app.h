@@ -28,12 +28,24 @@ struct SDL_Window;
 
 namespace tour { class World; }
 
-namespace smvk
-{
-	using ::tour::World;
+namespace smvk {
 	class RenderGraph;
+	class SdlInputBackend;
+}
 
-class SdlInputBackend;
+// (the namespace/RHI boundary audit) App is ENGINE-OWNED and lives in
+// tour; the smvk alias at the bottom keeps the existing call sites
+// compiling. The RHI members it holds (RenderGraph) stay smvk - the
+// P0 ownership redesign (todo 8.5) moves them behind an impl bridge.
+namespace tour {
+	using ::smvk::RenderGraph;
+	using ::smvk::SdlInputBackend;
+	// (P0 debt, todo 8.5: these RHI surface references move behind an
+	// impl bridge - PresentMode/Swapchain/ResourceManager are the
+	// audit's App-exposes-RHI finding, aliased here as the transit.)
+	using ::smvk::PresentMode;
+	using ::smvk::Swapchain;
+	using ::smvk::ResourceManager;
 
 class App {
 public:
@@ -190,5 +202,12 @@ protected:
 	// — override this instead of duplicating the pump. Default: no-op.
 	virtual void OnInputEvent(const input::Event&) {}
 #pragma endregion
-	};
 };
+
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit): App is ENGINE-OWNED and
+// lives in tour; the smvk alias keeps the existing call sites compiling.
+namespace smvk {
+	using ::tour::App;
+}

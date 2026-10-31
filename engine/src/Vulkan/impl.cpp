@@ -11921,7 +11921,7 @@ void smvk::detail::vulkan::VulkanSamplerCache::Clear() {
 	infos_.clear();
 	map_.clear();
 }
-//void smvk::App::InitializeImGui() {
+//void tour::App::InitializeImGui() {
 //
 //	// Setup Dear ImGui context
 //	IMGUI_CHECKVERSION();
@@ -11983,7 +11983,7 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 	return vctx.imageViews_.get(view->resolvedViewHandle)->vkView;
 }
 
-bool smvk::App::Initialize() {
+bool tour::App::Initialize() {
 	// NVIDIA Streamline (DLSS) — regular (non-manual) integration: slInit
 	// runs before any Vulkan call and volk is pointed at the interposer's
 	// vkGetInstanceProcAddr, so instance/device/swapchain/acquire/present
@@ -12060,7 +12060,7 @@ bool smvk::App::Initialize() {
 	return true;
 
 }
-void smvk::App::WaitForDeviceIdle() {
+void tour::App::WaitForDeviceIdle() {
 	if (device_ == VK_NULL_HANDLE) return;
 	VkResult r = vkDeviceWaitIdle(device_);
 	if (r != VK_SUCCESS && r != VK_ERROR_DEVICE_LOST) {
@@ -12084,13 +12084,13 @@ void smvk::App::WaitForDeviceIdle() {
 	}
 }
 
-void smvk::App::OnFramebufferResized(int width, int height) {
+void tour::App::OnFramebufferResized(int width, int height) {
 	if (m_swapchain) {
 		m_swapchain->SetFramebufferResized(true);
 	}
 }
 
-void smvk::App::Shutdown() {
+void tour::App::Shutdown() {
 	// Called from IApp::Run while object is still fully constructed.
 	// This ensures derived TestApp Holders (e.g. ShadowMap, Buffers) are
 	// still alive and can be destroyed *after* the wait, before the
@@ -12123,9 +12123,9 @@ void smvk::App::Shutdown() {
 
 // Out-of-line: the unique_ptr<SdlInputBackend> member needs the complete
 // backend type for its deleter (the header only forward-declares it).
-smvk::App::App() = default;
+tour::App::App() = default;
 
-smvk::App::~App()
+tour::App::~App()
 {
 	// The pasted-pattern contract: Shutdown detached + destroyed the
 	// element stack while the graphics members were alive. Anything

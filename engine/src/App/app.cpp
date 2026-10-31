@@ -18,7 +18,7 @@
 #include <Engine/Profile/profile.h>
 
 
-bool smvk::App::Run() {
+bool tour::App::Run() {
 	if (!Initialize()) {
 		std::cerr << "[App] initialization failed — exiting\n";
 		Shutdown();
@@ -46,12 +46,12 @@ bool smvk::App::Run() {
 	return true;
 };
 
-void smvk::App::AddElement(const std::shared_ptr<engine::IAppElement>& element) {
+void tour::App::AddElement(const std::shared_ptr<engine::IAppElement>& element) {
 	if (element)
 		m_elements.push_back(element);
 }
 
-void smvk::App::SubmitResourceFree(std::function<void()>&& func) {
+void tour::App::SubmitResourceFree(std::function<void()>&& func) {
 	if (!func)
 		return;
 	// Lazy ring: sized to the live swapchain's flight count on first use.
@@ -61,13 +61,13 @@ void smvk::App::SubmitResourceFree(std::function<void()>&& func) {
 	m_resourceFreeQueue[m_freeQueueRingCurrent].push_back(std::move(func));
 }
 
-void smvk::App::ResetFreeQueue(uint32_t size) {
+void tour::App::ResetFreeQueue(uint32_t size) {
 	m_resourceFreeQueue.clear();
 	m_resourceFreeQueue.resize(size ? size : 1u);
 	m_freeQueueRingCurrent = 0;
 }
 
-void smvk::App::DrainFreeQueue(uint32_t flight) {
+void tour::App::DrainFreeQueue(uint32_t flight) {
 	if (m_resourceFreeQueue.empty())
 		return;
 	if (flight >= m_resourceFreeQueue.size())
@@ -77,7 +77,7 @@ void smvk::App::DrainFreeQueue(uint32_t flight) {
 	m_resourceFreeQueue[flight].clear();
 }
 
-void smvk::App::UpdateDeltaTime() {
+void tour::App::UpdateDeltaTime() {
 
 	static auto lastFrameTime = std::chrono::high_resolution_clock::now();
 	static auto startTime = std::chrono::high_resolution_clock::now();
@@ -106,7 +106,7 @@ void smvk::App::UpdateDeltaTime() {
 		delta_time_s = 1.0f / 60.0f;
 }
 
-void smvk::App::SetRelativeMouseMode(bool enabled) {
+void tour::App::SetRelativeMouseMode(bool enabled) {
 	relativeMouseMode_ = enabled;
 	if (window) {
 		if (!SDL_SetWindowRelativeMouseMode(window, enabled)) {
@@ -116,7 +116,7 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 	}
 }
 
-	bool smvk::App::PollEvents() {
+	bool tour::App::PollEvents() {
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
@@ -145,7 +145,7 @@ void smvk::App::SetRelativeMouseMode(bool enabled) {
 	return !windowShouldClose_;
 }
 
-void smvk::App::DrawFrame() {
+void tour::App::DrawFrame() {
 	// DEFAULT element pump (nvapp-style host frame): sync stays HERE —
 	// present-mode drift + resize rebuilds (elements observe via
 	// onResize), one acquire, the stack's pre-render/render record into
@@ -188,7 +188,7 @@ void smvk::App::DrawFrame() {
 	m_swapchain->EndAndPresentFramebuffer(fb);
 }
 
-void smvk::App::MainLoop() {
+void tour::App::MainLoop() {
 	SMVK_PROFILE_THREAD("MainThread");
 	windowShouldClose_ = false;
 	double benchPollMs = 0.0, benchGameMs = 0.0, benchDrawMs = 0.0;
