@@ -18,6 +18,8 @@
 
 
 
+namespace tour::scene {
+
 int addNode(Scene& scene, int parent, int level)
 {
   const int nodeCount = (int)scene.hierarchy.size();
@@ -1423,3 +1425,5 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete)
   // behavior): they are small and dropping them would require remapping
   // the surviving table values' pool indices.
 }
+
+} // namespace tour::scene

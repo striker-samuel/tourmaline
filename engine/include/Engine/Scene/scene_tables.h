@@ -43,7 +43,7 @@
 #include <Engine/Scene/scene_node_id.h>
 #include <Engine/Scene/scene_payloads.h>
 
-struct Scene;	// the GLOBAL Scene (the graph - moves with scene.h)
+namespace tour::scene { struct Scene; }	// the graph (moved with scene.h)
 namespace tour::scene {
 
 // Row index into a SceneTables member vector. InvalidRow = no row.

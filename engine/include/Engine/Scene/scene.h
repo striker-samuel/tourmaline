@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // Portions Copyright (c) 2022 Packt
@@ -21,6 +21,8 @@
 #include <Engine/Scene/scene_node_id.h>
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Scene/scene_payloads.h>
+
+namespace tour::scene {
 
 using glm::mat4;
 constexpr const int MAX_NODE_LEVEL = 16;
@@ -828,6 +830,75 @@ void mergeScenes(
 // (no remap, no shift helpers — those died with the compaction).
 void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete);
 
+} // namespace tour::scene
 
-
-
+// GLOBAL compat aliases (the migration bridge - retire with the call
+// sites; the boundary scanner guards against NEW globals, these are
+// the tracked pre-existing set).
+using glm::mat4;
+using tour::scene::Hierarchy;
+using tour::scene::Scene;
+using tour::scene::SceneCamera;
+using tour::scene::SceneDecal;
+using tour::scene::SceneLight;
+using tour::scene::SceneRenderSettings;
+using tour::scene::MAX_NODE_LEVEL;
+using tour::scene::kDecalBloodAlbedoUri;
+using tour::scene::kDecalBloodNormalUri;
+using tour::scene::kDitherCloseupHideM;
+using tour::scene::kDitherCloseupSolidM;
+using tour::scene::kNodeSlotAliveBit;
+using tour::scene::kSceneRenderFloatCount;
+using tour::scene::addNode;
+using tour::scene::BuildSlotToDenseMap;
+using tour::scene::ClearCastsVolumetricShadow;
+using tour::scene::ClearDitherCloseup;
+using tour::scene::ClearHidden;
+using tour::scene::ClearLightmap;
+using tour::scene::ClearNoLightmap;
+using tour::scene::ClearSubtreeStatic;
+using tour::scene::DecalNodeFrame;
+using tour::scene::deleteSceneNodes;
+using tour::scene::DitherCloseupState;
+using tour::scene::DitherCloseupStateFor;
+using tour::scene::dumpSceneToDot;
+using tour::scene::dumpTransforms;
+using tour::scene::findNodeByName;
+using tour::scene::getNodeLevel;
+using tour::scene::getNodeName;
+using tour::scene::IsCastsVolumetricShadowNode;
+using tour::scene::IsDitherCloseupNode;
+using tour::scene::IsHiddenNode;
+using tour::scene::IsLightmapNode;
+using tour::scene::IsLiveSlot;
+using tour::scene::IsNodeAlive;
+using tour::scene::IsNoLightmapNode;
+using tour::scene::IsStaticNode;
+using tour::scene::IsStaticSubtreeRoot;
+using tour::scene::IsVisibleNode;
+using tour::scene::LiveNodeCount;
+using tour::scene::loadScene;
+using tour::scene::MakeNodeHandle;
+using tour::scene::MarkAllRootsChanged;
+using tour::scene::markAsChanged;
+using tour::scene::markAsChangedDynamic;
+using tour::scene::MarkCastsVolumetricShadow;
+using tour::scene::MarkDitherCloseup;
+using tour::scene::MarkHidden;
+using tour::scene::MarkLightmap;
+using tour::scene::MarkNoLightmap;
+using tour::scene::MarkSubtreeStatic;
+using tour::scene::mergeScenes;
+using tour::scene::NodeGenerationOf;
+using tour::scene::NodeHandleValid;
+using tour::scene::printChangedNodes;
+using tour::scene::RebuildStaticCache;
+using tour::scene::recalculateGlobalTransforms;
+using tour::scene::recalculateGlobalTransformsDynamic;
+using tour::scene::RetireNodeSlot;
+using tour::scene::saveScene;
+using tour::scene::setNodeName;
+using tour::scene::UnlinkNodeFromParent;
+using tour::scene::ZoneAtPosition;
+using tour::scene::ZoneCovers;
+using tour::scene::ZonePriority;
