@@ -36,10 +36,23 @@
 // Recompiled change touches a module it holds, rebuilds that
 // module+pipeline set at the frame boundary (between submits — a
 // GPU-safe synchronization point) and retires the old handles only
-// after the in-flight frames finish (ResourceManager's
-// DestroyShaderModule + the wait-for-retire discipline). On Failed
+// after the in-flight frames finish (RenderGraph::RetireShaderModule
+// evicts the stale cache entries + defers the VkPipeline destroys;
+// the module destroys ride the same deferred queue). On Failed
 // changes the consumer does NOTHING (the last-known-good pipelines
 // keep rendering).
+//
+// THE LANDED CONSUMER: WorldRenderer::ReloadLitShaders (the
+// RenderFrame boundary) covers the scene lighting set + the
+// GPU-driven legs — default.vert, every default_lit permutation, the
+// project family, gfxfiltered.vert, the mesh MS + both mesh FS
+// families (see WorldRenderer::LiveSwapCovers, pinned by the
+// swap.cover-* tests). The rendergraph builders' OWN modules
+// (bloom/tonemap/forwardplus/shadows/...) still keep their
+// last-known-good on a recompile — their rebuild hooks remain the
+// documented follow-up. The headless frame-safety regression:
+// TOURMALINE_SHADER_SWAP=<frame> forces a full lit-family swap
+// mid-bench (the TOURMALINE_GI_HOTSWAP discipline).
 
 #include <cstdint>
 #include <string>

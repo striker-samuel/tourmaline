@@ -374,6 +374,55 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	[[nodiscard]] bool MaterialProjectFamily(uint32_t materialId) const {
 		return materialProjectLit_ && materialProjectLit_(materialId);
 	}
+	// ---- the SHADER HOT-RELOAD consumer leg (Utils/shader_hot_reload.h) --
+	// Zeros every program twin derived from the configured/self-owned
+	// modules so the next Ensure/EnsureMeshPrograms re-forges them from
+	// the CURRENT module handles (Vulkan modules are immutable — a swap
+	// rebuilds programs; the pipelines follow through the per-RenderGraph
+	// cache: new handles mint new entries, RenderGraph::RetireShaderModule
+	// evicts the stale ones). The Holders are NOT touched here.
+	void InvalidateDerivedPrograms() {
+		// NOTE: the paren default-assign form, not `= {}` — GCC 13 ICEs
+		// on the brace form for this aggregate (see AGENTS.md).
+		filteredProgram = smvk::ShaderProgram();
+		filteredProgramA2C = smvk::ShaderProgram();
+		filteredWireProgram = smvk::ShaderProgram();
+		for (auto& p : filteredLitSg_) p = smvk::ShaderProgram();
+		for (auto& p : filteredProgramGi_) p = smvk::ShaderProgram();
+		filteredProgramStd = smvk::ShaderProgram();
+		for (auto& p : filteredProgramGiStd_) p = smvk::ShaderProgram();
+		filteredProjectProgram = smvk::ShaderProgram();
+		filteredProjectProgramA2C = smvk::ShaderProgram();
+		for (auto& p : filteredProjectLitSg_) p = smvk::ShaderProgram();
+		for (auto& p : filteredProjectProgramGi_) p = smvk::ShaderProgram();
+		filteredProjectProgramStd = smvk::ShaderProgram();
+		for (auto& p : filteredProjectProgramGiStd_) p = smvk::ShaderProgram();
+		meshProgram = smvk::ShaderProgram();
+		for (auto& p : meshLitSg_) p = smvk::ShaderProgram();
+		for (auto& p : meshProgramGi_) p = smvk::ShaderProgram();
+		meshProgramStd = smvk::ShaderProgram();
+		for (auto& p : meshProgramGiStd_) p = smvk::ShaderProgram();
+		meshProjectProgram = smvk::ShaderProgram();
+		for (auto& p : meshProjectLitSg_) p = smvk::ShaderProgram();
+		for (auto& p : meshProjectProgramGi_) p = smvk::ShaderProgram();
+		meshProjectProgramStd = smvk::ShaderProgram();
+		for (auto& p : meshProjectProgramGiStd_) p = smvk::ShaderProgram();
+	}
+	// Which self-owned module sets a swap touches (the caller matched the
+	// changed .spv paths): the filtered VS, the mesh MS, the mesh FS set
+	// (base + every twin). Seed/debug/line modules are NOT in the v1
+	// live-swap set (they keep serving their last-known-good modules).
+	struct SelfModuleSet {
+		bool filteredVs = false;
+		bool meshMs = false;
+		bool meshFs = false; // the mesh FS Holders (base + sg/gi/std/giStd + project twins)
+	};
+	// DETACHES the selected self-owned module Holders (release, no
+	// destroy) and returns the old handles for the caller's retirement
+	// pass (RenderGraph::RetireShaderModule + the deferred queue). The
+	// next Ensure re-creates the modules from the library's fresh bytes.
+	[[nodiscard]] std::vector<smvk::ShaderModuleHandle> ReleaseSelfModules(
+		const SelfModuleSet& which);
 	// Idempotent filtered-motion program creation (VS + motion frag).
 	// Returns true when the program is ready to bind.
 	bool EnsureFilteredMotion(smvk::ResourceManager& ctx,

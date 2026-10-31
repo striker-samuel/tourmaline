@@ -658,6 +658,263 @@ namespace engine {
 		return false;
 	}
 
+	bool WorldRenderer::LiveSwapCovers(std::string_view spvPath) {
+		// The scene lighting set: the direct VS + every default_lit
+		// permutation (base/a2c/sgN/giN/std/giNstd) + the project family
+		// twins. The starts_with matches cover the whole variant matrix
+		// (the .sgN/.giN/.std/.giNstd suffixes ride the same stems).
+		if (spvPath == "content/shaders/default.vert.hlsl.spv")
+			return true;
+		if (spvPath.starts_with("content/shaders/default_lit"))
+			return true;
+		if (spvPath.starts_with("content/shaders/project_lit"))
+			return true;
+		// The GPU-driven legs: the filtered VS, the mesh MS + both mesh
+		// FS families.
+		if (spvPath == "content/shaders/gfxfiltered.vert.hlsl.spv")
+			return true;
+		if (spvPath == "content/shaders/gfxfilter.mesh.hlsl.spv")
+			return true;
+		if (spvPath.starts_with("content/shaders/gfxmesh_lit.frag.hlsl"))
+			return true;
+		if (spvPath.starts_with(
+				"content/shaders/gfxmesh_project_lit.frag.hlsl"))
+			return true;
+		return false;
+	}
+
+	void WorldRenderer::ForgeLitPrograms() {
+		auto forge = [](const smvk::Holder<smvk::ShaderModuleHandle>& vs,
+			const smvk::Holder<smvk::ShaderModuleHandle>& fs)
+			-> smvk::ShaderProgram {
+			if (vs.empty() || fs.empty())
+				return smvk::ShaderProgram();
+			return {
+				.shaders = {
+					smvk::Shader{
+						.module = vs,
+						.entryPoint = "mainVS",
+						.stage = smvk::ShaderStage::Vertex
+					},
+					smvk::Shader{
+						.module = fs,
+						.entryPoint = "mainPS",
+						.stage = smvk::ShaderStage::Fragment
+					}
+				},
+				.shaderCount = 2
+			};
+		};
+		m_resources.mainProgram =
+			forge(m_resources.vertShader, m_resources.fragShader);
+		m_resources.mainProgramA2C =
+			forge(m_resources.vertShader, m_resources.fragA2CShader);
+		for (uint32_t gi = 0; gi < 4; ++gi)
+			m_resources.mainProgramGi[gi] =
+				forge(m_resources.vertShader, m_resources.fragLitGiModules[gi]);
+		m_resources.mainProgramStd =
+			forge(m_resources.vertShader, m_resources.fragStdModule);
+		for (uint32_t gi = 0; gi < 4; ++gi)
+			m_resources.mainProgramGiStd[gi] =
+				forge(m_resources.vertShader, m_resources.fragLitGiStdModules[gi]);
+		m_resources.mainProjectProgram =
+			forge(m_resources.vertShader, m_resources.fragProjectLitModule);
+		m_resources.mainProjectProgramA2C =
+			forge(m_resources.vertShader, m_resources.fragProjectLitA2CModule);
+		for (uint32_t gi = 0; gi < 4; ++gi)
+			m_resources.mainProjectProgramGi[gi] =
+				forge(m_resources.vertShader, m_resources.fragProjectLitGiModules[gi]);
+		m_resources.mainProjectProgramStd =
+			forge(m_resources.vertShader, m_resources.fragProjectLitStdModule);
+		for (uint32_t gi = 0; gi < 4; ++gi)
+			m_resources.mainProjectProgramGiStd[gi] =
+				forge(m_resources.vertShader, m_resources.fragProjectLitGiStdModules[gi]);
+	}
+
+	void WorldRenderer::FeedGfxRendererShaderModules() {
+		m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
+		for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
+			m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
+		for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+			m_gfxRenderer.ConfigureLitFragGi(gi, m_resources.fragLitGiModules[gi]);
+		m_gfxRenderer.ConfigureFragStd(m_resources.fragStdModule);
+		for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+			m_gfxRenderer.ConfigureLitFragGiStd(gi, m_resources.fragLitGiStdModules[gi]);
+		if (!m_resources.fragA2CShader.empty())
+			m_gfxRenderer.ConfigureA2CFrag(m_resources.fragA2CShader);
+		if (!m_resources.fragProjectLitModule.empty()) {
+			m_gfxRenderer.ConfigureProjectFrag(m_resources.fragProjectLitModule);
+			m_gfxRenderer.ConfigureProjectFragA2C(
+				m_resources.fragProjectLitA2CModule);
+			for (uint32_t li = 0;
+					li < engine::GfxRenderer::LitSgVariantCount(); ++li)
+				m_gfxRenderer.ConfigureProjectLitFragSg(li,
+					m_resources.fragProjectLitSgModules[li]);
+			for (uint32_t gi = 0;
+					gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+				m_gfxRenderer.ConfigureProjectLitFragGi(gi,
+					m_resources.fragProjectLitGiModules[gi]);
+			m_gfxRenderer.ConfigureProjectFragStd(
+				m_resources.fragProjectLitStdModule);
+			for (uint32_t gi = 0;
+					gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
+				m_gfxRenderer.ConfigureProjectLitFragGiStd(gi,
+					m_resources.fragProjectLitGiStdModules[gi]);
+		}
+	}
+
+	bool WorldRenderer::ReloadLitShaders(
+		const std::vector<std::string>& recompiled) {
+		// Classify the changed paths into the consumer sets.
+		bool litSet = false, filteredVs = false, meshMs = false, meshFs = false;
+		for (const std::string& p : recompiled) {
+			if (!LiveSwapCovers(p))
+				continue;
+			if (p == "content/shaders/gfxfiltered.vert.hlsl.spv")
+				filteredVs = true;
+			else if (p == "content/shaders/gfxfilter.mesh.hlsl.spv")
+				meshMs = true;
+			else if (p.starts_with("content/shaders/gfxmesh_lit.frag.hlsl")
+				|| p.starts_with(
+					"content/shaders/gfxmesh_project_lit.frag.hlsl"))
+				meshFs = true;
+			else
+				litSet = true;
+		}
+		if (!litSet && !filteredVs && !meshMs && !meshFs)
+			return false;
+		std::vector<smvk::ShaderModuleHandle> retired;
+		auto swapModule = [&](smvk::Holder<smvk::ShaderModuleHandle>& member,
+			const char* path, const char* debugName) -> bool {
+			try {
+				// The shader library serves the dev override tree FIRST —
+				// the recompiled bytes the service landed there win.
+				auto fresh = m_context->CreateShaderModule(
+					smvk::shaders::Read(path), debugName);
+				if (!member.empty())
+					retired.push_back(member.release());
+				member = std::move(fresh);
+				return true;
+			}
+			catch (...) {
+				// Last-known-good per module: a failed read keeps the
+				// previous module (the service already held the
+				// last-known-good FILE; this is the consumer twin).
+				return false;
+			}
+		};
+		const bool familyLoaded = !m_resources.fragProjectLitModule.empty();
+		if (litSet) {
+			swapModule(m_resources.vertShader,
+				"content/shaders/default.vert.hlsl.spv", "vert");
+			swapModule(m_resources.fragShader,
+				"content/shaders/default_lit.frag.hlsl.spv", "fragLit");
+			swapModule(m_resources.fragA2CShader,
+				"content/shaders/default_lit_a2c.frag.hlsl.spv", "fragLitA2C");
+			for (uint32_t li = 0;
+					li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
+				const std::string path =
+					"content/shaders/default_lit.frag.hlsl.sg"
+					+ std::to_string(
+						engine::GfxRenderer::LitSgVariantLobes(li))
+					+ ".spv";
+				swapModule(m_resources.fragLitSgModules[li], path.c_str(),
+					"fragLitSg");
+			}
+			for (uint32_t gi = 0; gi < 4; ++gi) {
+				if (gi == 1u)
+					continue; // the retired octree permutation (ABI-reserved)
+				const std::string giPath =
+					"content/shaders/default_lit.frag.hlsl.gi"
+					+ std::to_string(gi) + ".spv";
+				swapModule(m_resources.fragLitGiModules[gi], giPath.c_str(),
+					"fragLitGi");
+				const std::string giStdPath =
+					"content/shaders/default_lit.frag.hlsl.gi"
+					+ std::to_string(gi) + "std.spv";
+				swapModule(m_resources.fragLitGiStdModules[gi],
+					giStdPath.c_str(), "fragLitGiStd");
+			}
+			swapModule(m_resources.fragStdModule,
+				"content/shaders/default_lit.frag.hlsl.std.spv", "fragLitStd");
+			if (familyLoaded) {
+				swapModule(m_resources.fragProjectLitModule,
+					smvk::gfx::kProjectLitFsPath, "fragProjectLit");
+				swapModule(m_resources.fragProjectLitA2CModule,
+					smvk::gfx::kProjectLitA2CFsPath, "fragProjectLitA2C");
+				const std::string stem =
+					std::string(smvk::gfx::kProjectLitFsPath).substr(
+						0, strlen(smvk::gfx::kProjectLitFsPath) - 4);
+				for (uint32_t li = 0;
+						li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
+					const std::string path = stem + ".sg"
+						+ std::to_string(
+							engine::GfxRenderer::LitSgVariantLobes(li))
+						+ ".spv";
+					swapModule(m_resources.fragProjectLitSgModules[li],
+						path.c_str(), "fragProjectLitSg");
+				}
+				for (uint32_t gi = 0; gi < 4; ++gi) {
+					if (gi == 1u)
+						continue;
+					const std::string path =
+						stem + ".gi" + std::to_string(gi) + ".spv";
+					swapModule(m_resources.fragProjectLitGiModules[gi],
+						path.c_str(), "fragProjectLitGi");
+					const std::string stdPath =
+						stem + ".gi" + std::to_string(gi) + "std.spv";
+					swapModule(m_resources.fragProjectLitGiStdModules[gi],
+						stdPath.c_str(), "fragProjectLitGiStd");
+				}
+				swapModule(m_resources.fragProjectLitStdModule,
+					(stem + ".std.spv").c_str(), "fragProjectLitStd");
+			}
+			ForgeLitPrograms();
+			// The far-quality spec twins cache over the base programs —
+			// init-once assumed a stable module set, so a swap
+			// invalidates it (the next FarSpecProgramsFor re-mints from
+			// the fresh programs).
+			m_farSpecPrograms.clear();
+		}
+		// The GfxRenderer legs: detach the touched self modules (the old
+		// handles join the retire list), re-feed the configured handles,
+		// zero every derived twin, then Ensure re-creates the detached
+		// modules + re-forges all programs from the CURRENT handles.
+		{
+			auto olds = m_gfxRenderer.ReleaseSelfModules(
+				{ filteredVs, meshMs, meshFs });
+			retired.insert(retired.end(), olds.begin(), olds.end());
+			FeedGfxRendererShaderModules();
+			m_gfxRenderer.InvalidateDerivedPrograms();
+			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
+				// Latch the filter leg OFF (the direct draws cover the
+				// frame — the same graceful degradation as an attach-time
+				// Ensure failure; an empty filteredProgram must never
+				// reach a bind).
+				std::cerr << "[shader-reload] GfxFilter Ensure failed"
+					" after the swap - direct draws cover the frame\n";
+				m_gfxFilterAvailable = false;
+			}
+		}
+		// Retirement: evict every cached pipeline built from the old
+		// modules (deferred VkPipeline destroy behind the in-flight
+		// frames) + defer the module destroys themselves. Modules are
+		// technically destroyable once their pipelines exist, but the
+		// deferred queue is the uniform discipline.
+		size_t pipelinesRetired = 0;
+		for (smvk::ShaderModuleHandle old : retired) {
+			pipelinesRetired += m_rendergraph->RetireShaderModule(old);
+			smvk::ResourceManager* ctx = m_context;
+			ctx->DeferDestroyTask(std::packaged_task<void()>(
+				[ctx, old] { ctx->DestroyShaderModule(old); }));
+		}
+		std::fprintf(stderr,
+			"[shader-reload] LIVE SWAP: %zu module(s) rebuilt,"
+			" %zu stale pipeline(s) retired behind the in-flight frames\n",
+			retired.size(), pipelinesRetired);
+		return true;
+	}
+
 	void WorldRenderer::Configure(WorldRendererConfig passes) {
 		// Compat path for hosts that have not migrated to parse-once yet
 		// (editor): parse locally. Prefer Configure(passes, run).
@@ -1515,6 +1772,21 @@ namespace engine {
 			if (m_giHotSwapAtFrame >= 0)
 				std::cerr << "[GIV] hot-swap armed at frame "
 					<< m_giHotSwapAtFrame << "\n";
+		}
+		// Shader hot-swap headless proof (the consumer leg's
+		// frame-safety regression, same discipline): at the given frame
+		// index, run the FULL lit-family live swap MID-BENCH - fresh
+		// modules, re-forged programs, re-Ensured GfxRenderer twins, the
+		// stale pipelines retired behind the in-flight frames. The
+		// capture after the swap must match the reference (same bytes)
+		// and the bench must stay clean.
+		if (const char* ssEnv = std::getenv("TOURMALINE_SHADER_SWAP")) {
+			const int at = std::atoi(ssEnv);
+			if (at >= 0) {
+				m_shaderSwapFrame = at;
+				std::cerr << "[shader-reload] live-swap armed at frame "
+					<< at << "\n";
+			}
 		}
 		// Probe-sphere color mode (the panel combo's twin): 0 baked GI,
 		// 1 visibility (the coplanarity check, revived in 3D), 2 the
@@ -2702,20 +2974,14 @@ namespace engine {
 		// latch below only drops the leg when the filter cannot run at
 		// all (Ensure failure / empty cluster heap).
 		if (m_passes.gfxFilter) {
-			m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
-			for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
-				m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
-			// The GI permutation twins: without these every filtered
-			// batch binds a base FS with the GI branches compiled out -
-			// no GI ambient, no F8 debug views, on the whole clustered
-			// scene (the direct draws select mainProgramGi separately).
-			for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
-				m_gfxRenderer.ConfigureLitFragGi(gi, m_resources.fragLitGiModules[gi]);
-			// Standard-material twins (MAT_STANDARD, layered machinery out):
-			// the filtered/mesh picks use them for layerMaterials.w <= 1.
-			m_gfxRenderer.ConfigureFragStd(m_resources.fragStdModule);
-			for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
-				m_gfxRenderer.ConfigureLitFragGiStd(gi, m_resources.fragLitGiStdModules[gi]);
+			// The shader-module feed (ConfigureFrag/Sg/Gi/Std/A2C/Project*)
+			// lives in FeedGfxRendererShaderModules — the onAttach path and
+			// the hot-reload swap share it, so a swap re-feeds the fresh
+			// module handles exactly like the first build. The GI
+			// permutation twins matter: without them every filtered batch
+			// binds a base FS with the GI branches compiled out — no GI
+			// ambient, no F8 debug views, on the whole clustered scene.
+			FeedGfxRendererShaderModules();
 			// Material layered-ness for the std-twin pick (same lazy-resolve
 			// pattern as ConfigureMaterialDepth - the world's material table
 			// is authoritative; unknown = layered = monolith, fail-safe).
@@ -2732,25 +2998,10 @@ namespace engine {
 			// filtered/mesh range walks consult it per material - same
 			// lazy-resolve pattern as the layered resolver above; unknown
 			// material = StandardLit, fail-safe).
-			if (!m_resources.fragProjectLitModule.empty()) {
-				m_gfxRenderer.ConfigureProjectFrag(m_resources.fragProjectLitModule);
-				m_gfxRenderer.ConfigureProjectFragA2C(
-					m_resources.fragProjectLitA2CModule);
-				for (uint32_t li = 0;
-						li < engine::GfxRenderer::LitSgVariantCount(); ++li)
-					m_gfxRenderer.ConfigureProjectLitFragSg(li,
-						m_resources.fragProjectLitSgModules[li]);
-				for (uint32_t gi = 0;
-						gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
-					m_gfxRenderer.ConfigureProjectLitFragGi(gi,
-						m_resources.fragProjectLitGiModules[gi]);
-				m_gfxRenderer.ConfigureProjectFragStd(
-					m_resources.fragProjectLitStdModule);
-				for (uint32_t gi = 0;
-						gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
-					m_gfxRenderer.ConfigureProjectLitFragGiStd(gi,
-						m_resources.fragProjectLitGiStdModules[gi]);
-			}
+			// PROJECT-LIT family resolver (the filtered/mesh range walks
+			// consult it per material - same lazy-resolve pattern as the
+			// layered resolver above; unknown material = StandardLit,
+			// fail-safe). The family's MODULES ride the shared feed above.
 			m_gfxRenderer.ConfigureMaterialFamily(
 				[this](uint32_t materialId) -> bool {
 				return m_world
@@ -2779,10 +3030,8 @@ namespace engine {
 				return { mat->pipeline.raster.cullMode,
 					mat->shadingModel == smvk::ShadingModel::Masked };
 			});
-			// A2C filtered program for Masked ranges in 2x MSAA Main.
-			if (!m_resources.fragA2CShader.empty())
-				m_gfxRenderer.ConfigureA2CFrag(m_resources.fragA2CShader);
 			// Wireframe twin of the filtered program (flat lines in P).
+			// (The A2C feed rides FeedGfxRendererShaderModules.)
 			if (!m_resources.fragWireShader.empty())
 				m_gfxRenderer.ConfigureWireFrag(m_resources.fragWireShader);
 			if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
@@ -9876,30 +10125,51 @@ namespace engine {
 		// swap contract: Vulkan modules are immutable, so a consumer
 		// rebuilds its module+pipeline set at THIS boundary (between
 		// submits — the GPU-safe point) and retires the old handles
-		// behind the in-flight frames. v1 scope: this tick drains the
-		// change log + surfaces the diagnostics (a Recompiled line
-		// means the next renderer (re)build serves the new bytes; a
-		// Failed line means the last-known-good pipelines KEEP
-		// rendering). The per-builder rebuild hooks are the follow-up
-		// that turns this into a live in-place swap.
+		// behind the in-flight frames. The consumer leg (ReloadLitShaders)
+		// covers the scene lighting set + the GPU-driven legs; the
+		// rendergraph builders' own modules keep their last-known-good
+		// (their rebuild hooks are the documented follow-ups). A Failed
+		// change does NOTHING here (the service already kept the file;
+		// the live pipelines keep rendering).
 		if (smvk::shader_reload::Running()) {
+			std::vector<std::string> recompiled;
 			for (const smvk::shader_reload::Change& c :
 					smvk::shader_reload::ConsumeChanges()) {
 				if (c.status
-						== smvk::shader_reload::Status::Recompiled)
+						== smvk::shader_reload::Status::Recompiled) {
 					std::fprintf(stderr,
 						"[shader-reload] recompiled %s"
 						" (%llu B, from %s)\n",
 						c.spvPath.c_str(),
 						(unsigned long long)c.bytes,
 						c.source.c_str());
-				else
+					recompiled.push_back(c.spvPath);
+				}
+				else {
 					std::fprintf(stderr,
 						"[shader-reload] FAILED %s (kept the last"
 						" known-good): %s\n",
 						c.spvPath.c_str(),
 						c.diagnostic.c_str());
+				}
 			}
+			if (!recompiled.empty())
+				ReloadLitShaders(recompiled);
+		}
+		// HOT-SWAP regression pin (TOURMALINE_SHADER_SWAP=<frame>, the
+		// TOURMALINE_GI_HOTSWAP discipline): force a full lit-family
+		// swap at this frame's boundary — same bytes, fresh module
+		// handles, fresh pipelines — proving the swap's frame safety
+		// headless (clean frames + an unchanged capture after the swap).
+		if (m_shaderSwapFrame >= 0
+				&& int(m_frameCounter) == m_shaderSwapFrame) {
+			std::fprintf(stderr,
+				"[shader-reload] SWAP PIN firing at frame %d\n",
+				m_shaderSwapFrame);
+			ReloadLitShaders({
+				"content/shaders/default.vert.hlsl.spv",
+				"content/shaders/default_lit.frag.hlsl.spv" });
+			m_shaderSwapFrame = -1;
 		}
 
 		m_frameCounter += 1;

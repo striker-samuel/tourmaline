@@ -1567,6 +1567,17 @@ namespace smvk {
 		PipelineBundle GetComputePipeline(
 			ShaderProgram& program);
 		void Clear();
+		// HOT-RELOAD RETIREMENT (the consumer leg, Utils/shader_hot_reload.h):
+		// evicts every cached pipeline whose key references `module` (a
+		// graphics PipelineKey's ShaderProgram carries the module handle in
+		// any stage; a ComputeKey carries it directly) and RETIRES the
+		// VkPipelines through ctx's deferred-destroy queue — in-flight
+		// command buffers that recorded the old pipelines finish first
+		// (the retire-margin contract), and the next bind with a program
+		// over the REPLACEMENT module mints fresh entries. Returns the
+		// number of pipelines retired (diagnostics). Safe on an
+		// empty/unknown handle (0).
+		size_t RetireModule(ShaderModuleHandle module);
 
 		// Population count (graphics pipelines only) — the hitch logger's
 		// warm-up signal: a frame that mints a batch of pipelines while

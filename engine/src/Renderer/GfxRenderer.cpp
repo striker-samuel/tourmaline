@@ -494,10 +494,36 @@ namespace engine {
 		smvk::gfx::EnsureMeshParams(gfx, ctx, rg);
 	}
 
+	std::vector<smvk::ShaderModuleHandle> GfxRenderer::ReleaseSelfModules(
+		const SelfModuleSet& which) {
+		std::vector<smvk::ShaderModuleHandle> retired;
+		auto release =
+			[&retired](smvk::Holder<smvk::ShaderModuleHandle>& holder) {
+			if (!holder.empty())
+				retired.push_back(holder.release());
+		};
+		if (which.filteredVs)
+			release(filteredVsModule);
+		if (which.meshMs)
+			release(meshMsModule);
+		if (which.meshFs) {
+			release(meshFsModule);
+			for (auto& m : meshFsSgModules_) release(m);
+			for (auto& m : meshFsGiModules_) release(m);
+			release(meshFsStdModule);
+			for (auto& m : meshFsGiStdModules_) release(m);
+			release(meshProjectFsModule);
+			for (auto& m : meshProjectFsSgModules_) release(m);
+			for (auto& m : meshProjectFsGiModules_) release(m);
+			release(meshProjectFsStdModule);
+			for (auto& m : meshProjectFsGiStdModules_) release(m);
+		}
+		return retired;
+	}
+
 	smvk::ShaderProgram* GfxRenderer::MeshProgramFor(bool giActive,
 		uint32_t giVariant, uint32_t lobeCount, bool layered,
-		bool projectLit) {
-		// The PROJECT-LIT family leg: the family's own mesh twins only.
+		bool projectLit) {		// The PROJECT-LIT family leg: the family's own mesh twins only.
 		// A missing family mesh BASE is not mesh-eligible (null) — the
 		// indexed leg draws the range with the family's indexed program
 		// (design §9: never the stock mesh FS, never a lost effect).

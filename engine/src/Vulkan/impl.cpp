@@ -11779,6 +11779,54 @@ void smvk::detail::vulkan::VulkanPipelineCache::Clear() {
 	computePipelines_.clear();
 }
 
+size_t smvk::detail::vulkan::VulkanPipelineCache::RetireModule(
+	ShaderModuleHandle module)
+{
+	if (module.empty())
+		return 0;
+	size_t retired = 0;
+	// Graphics: the key's ShaderProgram carries the module handle in
+	// any stage slot.
+	for (auto it = pipelines_.begin(); it != pipelines_.end(); ) {
+		bool refs = false;
+		for (size_t i = 0; i < it->first.program.shaderCount; ++i) {
+			if (it->first.program.shaders[i].module == module) {
+				refs = true;
+				break;
+			}
+		}
+		if (!refs) {
+			++it;
+			continue;
+		}
+		VkPipeline stale = it->second.pipeline;
+		it = pipelines_.erase(it);
+		if (stale != VK_NULL_HANDLE) {
+			++retired;
+			// Retire-ordered: the destroy lands behind the last graphics
+			// submit + the in-flight margin, so command buffers that
+			// recorded this pipeline finish first.
+			ctx_->DeferDestroy(std::packaged_task<void()>(
+				[stale] { DestroyGraphicsPipeline(stale); }));
+		}
+	}
+	// Compute: the key IS the module handle.
+	for (auto it = computePipelines_.begin(); it != computePipelines_.end(); ) {
+		if (!(it->first.module == module)) {
+			++it;
+			continue;
+		}
+		VkPipeline stale = it->second.pipeline;
+		it = computePipelines_.erase(it);
+		if (stale != VK_NULL_HANDLE) {
+			++retired;
+			ctx_->DeferDestroy(std::packaged_task<void()>(
+				[stale] { DestroyGraphicsPipeline(stale); }));
+		}
+	}
+	return retired;
+}
+
 smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::GetComputePipeline(
 	ShaderProgram& program)
 {
@@ -12249,6 +12297,11 @@ smvk::RenderGraph::~RenderGraph() {
 size_t smvk::RenderGraph::PipelineCacheCount() const
 {
 	return pipelineCacheOpaque_->cache.Size();
+}
+
+size_t smvk::RenderGraph::RetireShaderModule(ShaderModuleHandle module)
+{
+	return pipelineCacheOpaque_->cache.RetireModule(module);
 }
 
 void smvk::RenderGraph::ResolveImageViews()

@@ -1067,6 +1067,14 @@ assert(resolveViews.empty() || resolveViews.size() == views.size());
 		// warm-up signal — a hitch frame that also mints a batch of
 		// pipelines is shader compilation, not traversal cost).
 		[[nodiscard]] size_t PipelineCacheCount() const;
+		// HOT-RELOAD RETIREMENT (the consumer leg, Utils/shader_hot_reload.h):
+		// evicts every cached pipeline built from `module` and retires the
+		// VkPipelines behind the in-flight frames (the deferred-destroy
+		// margin). Call at the frame boundary AFTER the consumer rebuilt
+		// its module+program set over the replacement module — the next
+		// bind mints fresh entries. Returns the retired pipeline count
+		// (diagnostics; 0 on an unknown handle).
+		size_t RetireShaderModule(ShaderModuleHandle module);
 	};
 
 

@@ -20,6 +20,9 @@
 
 #include <Engine/Utils/shader_hot_reload.h>
 #include <Engine/Utils/shader_library.h>
+// The consumer leg's coverage set (LiveSwapCovers — a static
+// classifier; including the renderer header pulls no GPU state).
+#include <Engine/Renderer/WorldRenderer.h>
 
 namespace {
 
@@ -294,6 +297,89 @@ void TestWatcher() {
 		"watch.post-stop-quiet");
 }
 
+// ---------------------------------------------------------------------------
+// The CONSUMER-LEG coverage set (the live in-place swap): which changed
+// .spv paths WorldRenderer::ReloadLitShaders rebuilds at the frame
+// boundary. The classification is the contract between the service
+// (which reports every recompiled path) and the consumer (which owns
+// the scene lighting set + the GPU-driven legs): a path the classifier
+// misses would keep serving last-known-good FOREVER (silently), and a
+// path it over-covers costs a needless module rebuild. Pinned here so
+// a new shader family/variant cannot drift the set.
+// ---------------------------------------------------------------------------
+
+void TestLiveSwapCoverage() {
+	using engine::WorldRenderer;
+	// The scene lighting set: the direct VS + every default_lit
+	// permutation + the project family (base/a2c/sg/gi/std/giNstd).
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/default.vert.hlsl.spv"),
+		"swap.cover-vert");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_lit.frag.hlsl.spv"),
+		"swap.cover-lit-base");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_lit_a2c.frag.hlsl.spv"),
+		"swap.cover-lit-a2c");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_lit.frag.hlsl.sg5.spv")
+		&& WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_lit.frag.hlsl.sg12.spv"),
+		"swap.cover-lit-sg-variants");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_lit.frag.hlsl.gi3std.spv")
+		&& WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_lit.frag.hlsl.std.spv"),
+		"swap.cover-lit-gi-std-variants");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/project_lit.frag.hlsl.spv")
+		&& WorldRenderer::LiveSwapCovers(
+			"content/shaders/project_lit_a2c.frag.hlsl.spv")
+		&& WorldRenderer::LiveSwapCovers(
+			"content/shaders/project_lit.frag.hlsl.gi2.spv"),
+		"swap.cover-project-family");
+	// The GPU-driven legs: the filtered VS, the mesh MS + both mesh FS
+	// families (stock + project twins, every variant).
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/gfxfiltered.vert.hlsl.spv"),
+		"swap.cover-filtered-vs");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/gfxfilter.mesh.hlsl.spv"),
+		"swap.cover-mesh-ms");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/gfxmesh_lit.frag.hlsl.spv")
+		&& WorldRenderer::LiveSwapCovers(
+			"content/shaders/gfxmesh_lit.frag.hlsl.sg9.spv"),
+		"swap.cover-mesh-fs");
+	Check(WorldRenderer::LiveSwapCovers(
+			"content/shaders/gfxmesh_project_lit.frag.hlsl.std.spv"),
+		"swap.cover-mesh-project-fs");
+	// The NOT-covered set (keeps last-known-good; the documented
+	// follow-ups): debug FSs, shadow/gbuffer/SSR sets, the gfx compute
+	// chain, post-FX builders, the wire twin.
+	Check(!WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_unlit.frag.hlsl.spv"),
+		"swap.cover-excludes-debug-fs");
+	Check(!WorldRenderer::LiveSwapCovers(
+			"content/shaders/shadow.frag.hlsl.spv"),
+		"swap.cover-excludes-shadow");
+	Check(!WorldRenderer::LiveSwapCovers(
+			"content/shaders/gfxfilter.cs.hlsl.spv")
+		&& !WorldRenderer::LiveSwapCovers(
+			"content/shaders/hzb_spd.cs.hlsl.min.spv"),
+		"swap.cover-excludes-compute-chain");
+	Check(!WorldRenderer::LiveSwapCovers(
+			"content/shaders/tonemap.frag.hlsl.spv")
+		&& !WorldRenderer::LiveSwapCovers(
+			"content/shaders/bloom_down.frag.hlsl.spv")
+		&& !WorldRenderer::LiveSwapCovers(
+			"content/shaders/ssr_compose.frag.hlsl.dbg.spv"),
+		"swap.cover-excludes-postfx-builders");
+	Check(!WorldRenderer::LiveSwapCovers(
+			"content/shaders/default_wire.frag.hlsl.spv"),
+		"swap.cover-excludes-wire");
+}
+
 } // namespace
 
 int main() {
@@ -302,6 +388,7 @@ int main() {
 	std::cout << std::unitbuf;
 	TestRecompile();
 	TestWatcher();
+	TestLiveSwapCoverage();
 	std::cout << "shader_hot_reload_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

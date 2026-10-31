@@ -1596,6 +1596,29 @@ public:
 	// fallback diagnostic — the effect never silently drops to the
 	// stock hooks) and renders StandardLit.
 	[[nodiscard]] bool MaterialUsesProjectLit(uint32_t materialId);
+	// ---- the SHADER HOT-RELOAD consumer leg (Utils/shader_hot_reload.h) --
+	// Which changed .spv paths the LIVE SWAP covers: the scene lighting
+	// set (default.vert + every default_lit variant + the project family)
+	// and the GPU-driven legs (gfxfiltered.vert, the mesh MS + the
+	// gfxmesh_lit/gfxmesh_project_lit FS set). Everything else — the
+	// debug/shadow/gbuffer/SSR FS sets, the gfx compute chain, the
+	// rendergraph builders' own modules — keeps serving its
+	// last-known-good modules (their rebuild legs are documented
+	// follow-ups; the last-known-good contract holds either way).
+	// Public static for the regression test (test_shader_hot_reload).
+	[[nodiscard]] static bool LiveSwapCovers(std::string_view spvPath);
+	// The frame-boundary swap: rebuilds every covered module whose bytes
+	// moved (a failed read keeps that module's last-known-good), re-forges
+	// the dependent programs, re-feeds + rebuilds the GfxRenderer legs,
+	// and retires the old modules + their cached pipelines behind the
+	// in-flight frames. Returns true when anything moved.
+	bool ReloadLitShaders(const std::vector<std::string>& recompiled);
+	// Re-forges the direct-leg lit programs from the CURRENT module
+	// Holders (idempotent; skips pairs whose modules are missing).
+	void ForgeLitPrograms();
+	// The GfxRenderer shader-module feed (ConfigureFrag/Sg/Gi/Std/A2C/
+	// Project*): the onAttach path and the hot swap share it.
+	void FeedGfxRendererShaderModules();
 
 	// One-shot capture readback (TOURMALINE_CAPTURE): the last rendered
 	// frame's TonemapCapture wrote m_captureImage and the submit landed
@@ -2787,6 +2810,11 @@ public:
 	// the "family modules not loaded" report fires once per session, not
 	// per material per frame.
 	bool m_projectLitFallbackWarned = false;
+	// HOT-SWAP regression pin (TOURMALINE_SHADER_SWAP=<frame>): forces a
+	// full lit-family swap at that frame's boundary — same-byte modules,
+	// fresh handles, fresh pipelines — proving the swap's frame safety
+	// headless (the TOURMALINE_GI_HOTSWAP discipline). -1 = off.
+	int m_shaderSwapFrame = -1;
 	// Task-less mesh-shader main leg (opaque ranges, mesh
 	// FS twins for base/sg/gi variants). False or unsupported device =
 	// indexed multi-draws (CPU fallback).
