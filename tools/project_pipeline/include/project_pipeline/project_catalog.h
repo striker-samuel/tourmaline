@@ -140,6 +140,14 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 [[nodiscard]] std::string ComputeCatalogContentHash(
 	const ProjectCatalog& c);
 
+// The catalog IDENTITY fingerprint (the shared fold, appmanifest.h's
+// ComputeCatalogFingerprint): over the entries in emission order,
+// folding (id, kind byte, pakIndex, path) — the SAME value the
+// generated header emits as project::CatalogFingerprint and the
+// published .tapp carries on its `catalog` line. One fold, no drift
+// between the compiled and deployed halves.
+[[nodiscard]] uint64_t CatalogFingerprintOf(const ProjectCatalog& c);
+
 // The header text (pure — the caller decides where it lands): the C++
 // catalog + the stamp + the EOF metadata comment. Byte-deterministic
 // for the same inputs (the timestamp is an INPUT here;

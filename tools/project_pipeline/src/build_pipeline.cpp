@@ -851,6 +851,13 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					addRows(catalog.textures, "texture");
 					addRows(catalog.meshes, "mesh");
 					addRows(catalog.sounds, "sound");
+					// The CATALOG FINGERPRINT (the compiled-catalog contract's
+					// deployment half): the SAME fold the generated project.h
+					// emits as project::CatalogFingerprint (CatalogFingerprintOf -
+					// one implementation, no drift). The runtime compares the two,
+					// so a compiled game and its deployed content can never
+					// silently disagree.
+					manifest.catalogFingerprint = CatalogFingerprintOf(catalog);
 				}
 				else {
 					// The manifest's id table is part of the build's

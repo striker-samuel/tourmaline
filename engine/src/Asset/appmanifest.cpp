@@ -9,6 +9,8 @@
 #include <Engine/Asset/appmanifest.h>
 
 #include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <set>
@@ -218,6 +220,59 @@ const AppManifestAsset* AppManifest::FindAsset(uint64_t id) const {
 	return nullptr;
 }
 
+bool CatalogKindFromString(const std::string& kind, uint8_t& out) {
+	if (kind == "scene") { out = kCatalogKindScene; return true; }
+	if (kind == "texture") { out = kCatalogKindTexture; return true; }
+	if (kind == "mesh") { out = kCatalogKindMesh; return true; }
+	if (kind == "sound") { out = kCatalogKindSound; return true; }
+	return false;
+}
+
+const char* CatalogKindToString(uint8_t kind) {
+	switch (kind) {
+	case kCatalogKindScene: return "scene";
+	case kCatalogKindTexture: return "texture";
+	case kCatalogKindMesh: return "mesh";
+	case kCatalogKindSound: return "sound";
+	default: return "";
+	}
+}
+
+uint64_t ComputeCatalogFingerprint(
+	const uint64_t* ids, const uint8_t* kinds,
+	const uint32_t* pakIndices, const char* const* paths, size_t count) {
+	// FNV-1a64 (the repo's content-addressing convention).
+	uint64_t h = 1469598103934665603ULL;
+	auto fold = [&h](const void* data, size_t bytes) {
+		const uint8_t* p = static_cast<const uint8_t*>(data);
+		for (size_t i = 0; i < bytes; ++i) {
+			h ^= p[i];
+			h *= 1099511628211ULL;
+		}
+	};
+	auto foldU32 = [&fold](uint32_t v) {
+		uint8_t b[4] = { uint8_t(v & 0xFF), uint8_t((v >> 8) & 0xFF),
+			uint8_t((v >> 16) & 0xFF), uint8_t((v >> 24) & 0xFF) };
+		fold(b, 4);
+	};
+	auto foldU64 = [&fold](uint64_t v) {
+		uint8_t b[8];
+		for (int i = 0; i < 8; ++i)
+			b[i] = uint8_t((v >> (8 * i)) & 0xFF);
+		fold(b, 8);
+	};
+	for (size_t i = 0; i < count; ++i) {
+		foldU64(ids[i]);
+		fold(&kinds[i], 1);
+		foldU32(pakIndices[i]);
+		const char* p = paths[i] ? paths[i] : "";
+		fold(p, std::strlen(p));
+		const uint8_t sep = 0;
+		fold(&sep, 1);
+	}
+	return h;
+}
+
 bool LoadAppManifestText(const std::string& text, AppManifest& out,
 	std::string& err) {
 	out = AppManifest{};
@@ -390,6 +445,21 @@ bool LoadAppManifestText(const std::string& text, AppManifest& out,
 			out.entryScene = toks[1];
 			sawEntry = true;
 		}
+		else if (dir == "catalog") {
+			// catalog <0xhex> - the CATALOG FINGERPRINT (the compiled-
+			// catalog contract's deployment half; see appmanifest.h).
+			// Optional + singular.
+			if (out.catalogFingerprint != 0) {
+				err = where + "duplicate 'catalog' line";
+				return false;
+			}
+			uint64_t fp = 0;
+			if (!ParseIdHex(rest, fp)) {
+				err = where + "'" + rest + "' is not a fingerprint (0x hex)";
+				return false;
+			}
+			out.catalogFingerprint = fp;
+		}
 		else {
 			err = where + "unknown directive '" + dir + "'";
 			return false;
@@ -436,6 +506,13 @@ bool SaveAppManifest(const std::string& path, const AppManifest& m,
 	os << "# Tourmaline Runtime Project\n";
 	os << "appmanifest " << kAppManifestVersion << "\n";
 	os << "entry " << m.entryPak << " " << m.entryScene << "\n";
+	// The catalog fingerprint (the compiled-catalog contract; optional -
+	// pre-fingerprint manifests simply carry no line).
+	if (m.catalogFingerprint != 0) {
+		char fp[32];
+		std::snprintf(fp, sizeof(fp), "0x%llx", static_cast<unsigned long long>(m.catalogFingerprint));
+		os << "catalog " << fp << "\n";
+	}
 	os << "\n[paks]\n";
 	for (const std::string& pak : m.paks)
 		os << pak << "\n";

@@ -1165,6 +1165,91 @@ void TestAppManifest() {
 				"tapp.ids-scene-name-token");
 		}
 	}
+	// ---- the compiled-catalog contract ---------------------------------
+	// The fingerprint fold: shared by the generated header and the
+	// manifest (one implementation - smvk::ComputeCatalogFingerprint).
+	// Deterministic, order-sensitive, and INDEPENDENT of the published
+	// pak filenames (content-addressed names change every cook).
+	{
+		const uint64_t ids[3] = { 0x1000, 0x2000, 0x4000 };
+		const uint8_t kinds[3] = { smvk::kCatalogKindScene,
+			smvk::kCatalogKindTexture, smvk::kCatalogKindSound };
+		const uint32_t pakIdx[3] = { 1, 0, 0 };
+		const char* const paths[3] = { "content/scenes/w.tour",
+			"content/models/s/stone.png", "content/audio/bells.wav" };
+		const uint64_t a = smvk::ComputeCatalogFingerprint(
+			ids, kinds, pakIdx, paths, 3);
+		const uint64_t b = smvk::ComputeCatalogFingerprint(
+			ids, kinds, pakIdx, paths, 3);
+		Check(a == b && a != 0, "tapp.fold-deterministic");
+		// Order sensitivity (a swapped row folds differently).
+		{
+			const uint64_t ids2[3] = { ids[1], ids[0], ids[2] };
+			const uint8_t kinds2[3] = { kinds[1], kinds[0], kinds[2] };
+			const uint32_t pakIdx2[3] = { pakIdx[1], pakIdx[0],
+				pakIdx[2] };
+			const char* const paths2[3] = { paths[1], paths[0],
+				paths[2] };
+			Check(smvk::ComputeCatalogFingerprint(ids2, kinds2, pakIdx2,
+					paths2, 3) != a,
+				"tapp.fold-order-sensitive");
+		}
+		// Content sensitivity (a moved path folds differently).
+		{
+			const char* const paths2[3] = { "content/scenes/moved.tour",
+				paths[1], paths[2] };
+			Check(smvk::ComputeCatalogFingerprint(ids, kinds, pakIdx,
+					paths2, 3) != a,
+				"tapp.fold-path-sensitive");
+		}
+		// The kind-string <-> byte mapping (the ABI).
+		{
+			uint8_t k = 0xFF;
+			Check(smvk::CatalogKindFromString("scene", k)
+					&& k == smvk::kCatalogKindScene
+					&& smvk::CatalogKindFromString("sound", k)
+					&& k == smvk::kCatalogKindSound
+					&& !smvk::CatalogKindFromString("widget", k)
+					&& std::string(smvk::CatalogKindToString(
+						smvk::kCatalogKindMesh)) == "mesh",
+				"tapp.fold-kind-mapping");
+		}
+	}
+	// The `catalog` line round-trips (and a bad hex value rejects).
+	{
+		smvk::AppManifest m;
+		m.version = smvk::kAppManifestVersion;
+		m.entryPak = "world.pak";
+		m.entryScene = "scene";
+		m.paks = { "world.pak" };
+		m.catalogFingerprint = 0xDEADBEEF12345678ULL;
+		const fs::path file = tmp / "fp.tapp";
+		std::string err;
+		Check(smvk::SaveAppManifest(file.generic_string(), m, err),
+			"tapp.fingerprint-save-ok");
+		smvk::AppManifest back;
+		Check(smvk::LoadAppManifest(file.generic_string(), back, err)
+			&& back.catalogFingerprint == 0xDEADBEEF12345678ULL,
+			"tapp.fingerprint-round-trip");
+		{
+			std::ifstream f(file, std::ios::binary);
+			std::stringstream ss;
+			ss << f.rdbuf();
+			Check(ss.str().find("catalog 0xdeadbeef12345678")
+					!= std::string::npos,
+				"tapp.fingerprint-line-written");
+		}
+		{
+			const fs::path bad = tmp / "fp_bad.tapp";
+			std::ofstream f(bad, std::ios::binary | std::ios::trunc);
+			f << "appmanifest 1\nentry world.pak scene\n"
+				<< "catalog nothex\n\n[paks]\nworld.pak\n";
+			f.close();
+			smvk::AppManifest b2;
+			Check(!smvk::LoadAppManifest(bad.generic_string(), b2, err),
+				"tapp.fingerprint-bad-hex-rejected");
+		}
+	}
 }
 
 // ---- the shared executor (M2: one plan, adapter-invoked stages) ------
@@ -2165,7 +2250,13 @@ void TestProjectCatalog() {
 			&& header.find("EntryScene = scenes::thing")
 				!= std::string::npos
 			&& header.find("namespace meshes") != std::string::npos
-			&& header.find("Catalog = {") != std::string::npos
+			&& header.find("Assets = {") != std::string::npos
+			&& header.find("AssetKind::Scene") != std::string::npos
+			&& header.find("AssetKind::Mesh") != std::string::npos
+			&& header.find("constexpr const AssetDesc* Find")
+				!= std::string::npos
+			&& header.find("CatalogFingerprint = 0x")
+				!= std::string::npos
 			&& header.find("thing.pak") != std::string::npos,
 		"catalog.header-content");
 	// Deterministic + write-only-on-change.
@@ -2339,6 +2430,36 @@ void TestProjectCatalog() {
 		if (symbols != 4 || valid != 4)
 			std::cout << "  (lexical: symbols=" << symbols
 				<< " valid=" << valid << ")\n";
+		// The FLAT TYPED CATALOG (the compiled-catalog contract): the
+		// AssetKind enum (the ABI values), AssetDesc rows carrying
+		// kind + pakIndex (the LOGICAL package index - not the pak
+		// NAME string the old Catalog array carried), the constexpr
+		// Find, and CatalogFingerprint == the shared fold.
+		{
+			Check(text.find("enum class AssetKind")
+					!= std::string::npos
+				&& text.find("struct AssetDesc")
+					!= std::string::npos
+				&& text.find(
+					"AssetDesc{scenes::_class, AssetKind::Scene, 0,")
+					!= std::string::npos
+				&& text.find(
+					"AssetDesc{textures::_compl, AssetKind::Texture,")
+					!= std::string::npos
+				&& text.find(
+					"constexpr const AssetDesc* Find(Id id)")
+					!= std::string::npos,
+				"catalog.header-flat-table");
+			char fp[40];
+			std::snprintf(fp, sizeof(fp), "0x%llx",
+				static_cast<unsigned long long>(
+					smvk::project::CatalogFingerprintOf(c)));
+			const std::string want =
+				"inline constexpr std::uint64_t CatalogFingerprint = "
+				+ std::string(fp);
+			Check(text.find(want) != std::string::npos,
+				"catalog.header-fingerprint-emitted");
+		}
 	}
 	// Identity acquisition ADOPTS: the guid has a row in the ASSET
 	// DIRECTORY too (one database, both tables agree — the mint never

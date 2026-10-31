@@ -21,6 +21,7 @@
 
 #include <Engine/App/RunConfig.h>
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -50,7 +51,7 @@ int main(int argc, const char* argv[]) {
 		" catalog asset(s)\n",
 		(unsigned long long)project::ProjectId,
 		std::string(project::Name).c_str(),
-		project::Catalog.size());
+		project::Assets.size());
 	for (const auto& pak : project::Paks)
 		std::printf("[GameProject] pak '%s' -> %s\n",
 			std::string(pak.name).c_str(),
@@ -111,6 +112,49 @@ int main(int argc, const char* argv[]) {
 		std::string rtErr;
 		if (auto runtime = app::ProjectRuntime::Load(cfg.cli.project,
 				rtErr)) {
+			// ---- THE COMPILED-CATALOG CONTRACT (the flattened
+			// project.h): the game proves ITSELF against the deployed
+			// content up front — the header's flat Assets table (the
+			// compile-time POD records) + its CatalogFingerprint
+			// validate against the .tapp's [ids] rows + `catalog` line.
+			// After this, the game KNOWS the ids it was compiled with
+			// are the ids the content ships — no runtime discovery, no
+			// .tapp row ever reaches gameplay code.
+			static_assert(sizeof(project::AssetDesc)
+					== sizeof(app::ProjectRuntime::CompiledAssetDesc)
+				&& offsetof(project::AssetDesc, id)
+					== offsetof(app::ProjectRuntime::CompiledAssetDesc,
+						id)
+				&& offsetof(project::AssetDesc, pakIndex)
+					== offsetof(app::ProjectRuntime::CompiledAssetDesc,
+						pakIndex)
+				&& offsetof(project::AssetDesc, path)
+					== offsetof(app::ProjectRuntime::CompiledAssetDesc,
+						path),
+				"the generated AssetDesc and the runtime's mirror must"
+				" stay layout-identical (member order + types)");
+			if (runtime->AttachCompiledCatalog(
+					reinterpret_cast<
+						const app::ProjectRuntime::CompiledAssetDesc*>(
+						project::Assets.data()),
+					project::Assets.size(),
+					project::CatalogFingerprint, rtErr))
+				std::printf("[GameProject] compiled catalog attached +"
+					" validated against the deployment manifest"
+					" (fingerprint 0x%llx, %zu asset(s))\n",
+					(unsigned long long)project::CatalogFingerprint,
+					project::Assets.size());
+			else
+				std::printf("[GameProject] compiled catalog REJECTED:"
+					" %s\n", rtErr.c_str());
+			// The flat table is a first-class compile-time surface:
+			// kind + pakIndex typed queries, no strings.
+			if (const project::AssetDesc* tex =
+					project::Find(project::textures::stone))
+				std::printf("[GameProject] flat table: stone -> kind %u"
+					" pak[%u] '%.*s'\n",
+					unsigned(tex->kind), tex->pakIndex,
+					int(tex->path.size()), tex->path.data());
 			if (const smvk::AppManifestAsset* row =
 					runtime->Asset(project::textures::stone)) {
 				std::printf("[GameProject] id 0x%llx -> %s '%s'\n",

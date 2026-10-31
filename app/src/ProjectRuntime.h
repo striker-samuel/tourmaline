@@ -68,6 +68,43 @@ public:
 	std::optional<std::vector<uint8_t>> ReadAsset(uint64_t id,
 		std::string& err);
 
+	// ---- the compiled-catalog contract (the flattened project.h) ----
+	// The LAYOUT MIRROR of the generated project.h's AssetDesc (the
+	// compiled game includes the generated header; this mirror lets
+	// the runtime validate WITHOUT a header dependency — identical
+	// member order/types, same TU ABI by construction; the sample
+	// static_asserts the sizes agree).
+	struct CompiledAssetDesc {
+		uint64_t id = 0;
+		uint8_t kind = 0;            // smvk::kCatalogKind*
+		uint32_t pakIndex = 0;
+		std::string_view path;
+		std::string_view sceneName;  // reserved (deployment-side)
+	};
+
+	// Attaches the COMPILED catalog (the generated header's Assets
+	// array + CatalogFingerprint — `project::Assets` is
+	// `inline constexpr`, so the game passes a raw pointer + count).
+	// Validates it against the DEPLOYED manifest:
+	//   * the fingerprint line (when present) must equal the compiled
+	//     fold — a mismatch is a version skew between the game binary
+	//     and its content (recook the project or rebuild the game;
+	//     fail loudly, never guess);
+	//   * row-by-row: every compiled row must resolve to a manifest
+	//     [ids] row with the same id, kind and path, and its pakIndex
+	//     must index the manifest's [paks] (the mount-order table both
+	//     sides share) naming the row's pak file.
+	// A manifest with no fingerprint line (pre-contract) degrades to
+	// the row-by-row form. Idempotent (re-attach re-validates).
+	bool AttachCompiledCatalog(const CompiledAssetDesc* assets,
+		size_t assetCount, uint64_t fingerprint, std::string& err);
+
+	// True when AttachCompiledCatalog validated (the compiled catalog
+	// is attached + agrees with the deployment manifest).
+	[[nodiscard]] bool CompiledCatalogAttached() const {
+		return m_compiledCatalogAttached;
+	}
+
 	// The pak's OPENED backend (the shared lazy cache ReadAsset uses —
 	// one background preload + open per archive, kept for the runtime's
 	// lifetime). The scene-instance layer (ProjectScenes) and any asset
@@ -105,6 +142,7 @@ private:
 	// the runtime's lifetime).
 	std::map<std::string, std::shared_ptr<smvk::PakBackend>>
 		m_backends;
+	bool m_compiledCatalogAttached = false;
 };
 
 } // namespace app

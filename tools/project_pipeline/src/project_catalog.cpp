@@ -546,6 +546,41 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	return true;
 }
 
+// The catalog IDENTITY fingerprint (the shared fold, appmanifest.h's
+// ComputeCatalogFingerprint): over the entries in EMISSION order
+// (bucket order: scenes, textures, meshes, sounds; id-sorted within -
+// exactly what the header's Assets array and the manifest's [ids]
+// rows both enumerate), folding (id, kind byte, pakIndex, path).
+// The SAME implementation the manifest writer uses - one fold, no
+// drift between the compiled and deployed halves.
+uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
+	std::vector<uint64_t> ids;
+	std::vector<uint8_t> kinds;
+	std::vector<uint32_t> pakIndices;
+	std::vector<const char*> paths;
+	const auto push = [&](const std::vector<CatalogEntry>& entries,
+			uint8_t kind) {
+		for (const CatalogEntry& e : entries) {
+			uint32_t pakIndex = 0;
+			for (size_t pi = 0; pi < c.paks.size(); ++pi)
+				if (c.paks[pi].first == e.pak) {
+					pakIndex = uint32_t(pi);
+					break;
+				}
+			ids.push_back(e.id);
+			kinds.push_back(kind);
+			pakIndices.push_back(pakIndex);
+			paths.push_back(e.path.c_str());
+		}
+	};
+	push(c.scenes, smvk::kCatalogKindScene);
+	push(c.textures, smvk::kCatalogKindTexture);
+	push(c.meshes, smvk::kCatalogKindMesh);
+	push(c.sounds, smvk::kCatalogKindSound);
+	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
+		pakIndices.data(), paths.data(), ids.size());
+}
+
 std::string EmitProjectHeader(const ProjectCatalog& c,
 	const GenerationStamp& stamp,
 	const std::vector<AssetFingerprint>& assets,
@@ -633,25 +668,72 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		os << "    Pak{\"" << CppStr(id) << "\", \""
 			<< CppStr(file) << "\"},\n";
 	os << "};\n\n"
-		<< "// The complete cooked content catalog (id -> path -> owner).\n"
-		<< "struct Asset {\n"
-		<< "    Id id;\n"
-		<< "    std::string_view path;\n"
-		<< "    std::string_view pak;\n"
+		<< "// The asset KIND enum - the values are an ABI (the runtime's\n"
+		<< "// catalog-fingerprint fold + the .tapp validation agree on\n"
+		<< "// these bytes; do not renumber).\n"
+		<< "enum class AssetKind : std::uint8_t {\n"
+		<< "    Scene = 0,\n"
+		<< "    Texture = 1,\n"
+		<< "    Mesh = 2,\n"
+		<< "    Sound = 3,\n"
 		<< "};\n\n"
-		<< "inline constexpr std::array Catalog = {\n";
-	const auto emitRows = [&](const std::vector<CatalogEntry>& entries,
-			const char* ns) {
-		for (const CatalogEntry& e : entries)
-			os << "    Asset{" << ns << "::" << e.symbol << ", \""
-				<< CppStr(e.path) << "\", \"" << CppStr(e.pak)
-				<< "\"},\n";
+		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
+		<< "// no startup strings, no maps, no runtime discovery table.\n"
+		<< "// pakIndex indexes Paks (the LOGICAL package; the published\n"
+		<< "// content-addressed filename is the DEPLOYMENT manifest's\n"
+		<< "// job - the .tapp maps it). sceneName: the cooked-scene\n"
+		<< "// identity is cook-state, not stable identity, so it stays\n"
+		<< "// deployment-side (the .tapp's scene rows) - the field is\n"
+		<< "// reserved and emitted empty.\n"
+		<< "struct AssetDesc {\n"
+		<< "    Id id;\n"
+		<< "    AssetKind kind;\n"
+		<< "    std::uint32_t pakIndex;\n"
+		<< "    std::string_view path;\n"
+		<< "    std::string_view sceneName;\n"
+		<< "};\n\n"
+		<< "inline constexpr std::array Assets = {\n";
+	const auto emitRows = [&](
+			const std::vector<CatalogEntry>& entries, const char* ns,
+			const char* kind) {
+		for (const CatalogEntry& e : entries) {
+			// The entry's pak is the LOGICAL pak id; its index into
+			// c.paks (plan order) is the compiled reference.
+			uint32_t pakIndex = 0;
+			for (size_t pi = 0; pi < c.paks.size(); ++pi)
+				if (c.paks[pi].first == e.pak) {
+					pakIndex = uint32_t(pi);
+					break;
+				}
+			os << "    AssetDesc{" << ns << "::" << e.symbol
+				<< ", AssetKind::" << kind << ", " << pakIndex
+				<< ", \"" << CppStr(e.path) << "\", \"\"},\n";
+		}
 	};
-	emitRows(c.scenes, "scenes");
-	emitRows(c.textures, "textures");
-	emitRows(c.meshes, "meshes");
-	emitRows(c.sounds, "sounds");
-	os << "};\n\n";
+	emitRows(c.scenes, "scenes", "Scene");
+	emitRows(c.textures, "textures", "Texture");
+	emitRows(c.meshes, "meshes", "Mesh");
+	emitRows(c.sounds, "sounds", "Sound");
+	os << "};\n\n"
+		<< "// The catalog identity fingerprint: FNV-1a64 over the rows'\n"
+		<< "// stable identity in emission order (appmanifest.h's\n"
+		<< "// ComputeCatalogFingerprint - the exact fold). The .tapp\n"
+		<< "// deployment manifest carries the same fold over its [ids]\n"
+		<< "// rows; ProjectRuntime::AttachCompiledCatalog compares them,\n"
+		<< "// so a compiled game and its deployed content can never\n"
+		<< "// silently disagree.\n"
+		<< "inline constexpr std::uint64_t CatalogFingerprint = 0x"
+		<< std::hex << CatalogFingerprintOf(c) << std::dec
+		<< "ULL;\n\n"
+		<< "// Compile-time lookup over the flat table (a constexpr\n"
+		<< "// linear walk - the tables are tiny and the query is\n"
+		<< "// compile-time; no runtime map, no startup strings).\n"
+		<< "constexpr const AssetDesc* Find(Id id) {\n"
+		<< "    for (const AssetDesc& asset : Assets)\n"
+		<< "        if (asset.id == id)\n"
+		<< "            return &asset;\n"
+		<< "    return nullptr;\n"
+		<< "}\n\n";
 	if (c.entryScene) {
 		// The entry scene's symbol (the catalog's scenes bucket is
 		// id-sorted; find it back).
@@ -666,7 +748,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	}
 	os << "// Compile-time content validation.\n"
 		<< "constexpr bool Contains(Id id) {\n"
-		<< "    for (const auto& asset : Catalog)\n"
+		<< "    for (const AssetDesc& asset : Assets)\n"
 		<< "        if (asset.id == id)\n"
 		<< "            return true;\n"
 		<< "    return false;\n"

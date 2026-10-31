@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <mutex>
 
 namespace app {
@@ -79,6 +80,82 @@ void ProjectRuntime::AdoptPakBackend(const std::string& pakFile,
 	// own OpenPak result and an adopted host backend are the same
 	// archive by contract).
 	m_backends.emplace(pakFile, std::move(backend));
+}
+
+bool ProjectRuntime::AttachCompiledCatalog(
+	const CompiledAssetDesc* assets, size_t assetCount,
+	uint64_t fingerprint, std::string& err) {
+	err.clear();
+	m_compiledCatalogAttached = false;
+	if (!assets && assetCount != 0) {
+		err = "the compiled catalog is a null pointer with a nonzero"
+			" count";
+		return false;
+	}
+	// The fast gate: the manifest's fingerprint line (when present)
+	// must equal the compiled fold. The row-by-row pass below is the
+	// proof; this is the loud early answer.
+	if (m_manifest.catalogFingerprint != 0
+			&& m_manifest.catalogFingerprint != fingerprint) {
+		char buf[160];
+		std::snprintf(buf, sizeof(buf),
+			"catalog fingerprint mismatch: the game was compiled"
+			" against 0x%llX, the deployed content carries 0x%llX"
+			" (recook the project or rebuild the game)",
+			static_cast<unsigned long long>(fingerprint),
+			static_cast<unsigned long long>(
+				m_manifest.catalogFingerprint));
+		err = buf;
+		return false;
+	}
+	// The proof: every compiled row resolves through the manifest.
+	for (size_t i = 0; i < assetCount; ++i) {
+		const CompiledAssetDesc& a = assets[i];
+		const smvk::AppManifestAsset* row = m_manifest.FindAsset(a.id);
+		if (!row) {
+			err = "the compiled catalog carries id 0x"
+				+ std::to_string(a.id)
+				+ " but the deployed manifest does not (a version"
+				" skew — recook the project or rebuild the game)";
+			return false;
+		}
+		uint8_t kind = 0;
+		if (!smvk::CatalogKindFromString(row->kind, kind) || kind != a.kind) {
+			err = "the compiled catalog's id 0x" + std::to_string(a.id)
+				+ " is kind " + std::to_string(a.kind)
+				+ " but the deployed manifest says '"
+				+ (row->kind.empty() ? "?" : row->kind) + "'";
+			return false;
+		}
+		if (row->path != a.path) {
+			err = "the compiled catalog's id 0x" + std::to_string(a.id)
+				+ " moved: '" + std::string(a.path) + "' compiled,"
+				" '" + row->path + "' deployed";
+			return false;
+		}
+		if (a.pakIndex >= m_manifest.paks.size()) {
+			err = "the compiled catalog's id 0x" + std::to_string(a.id)
+				+ " names pak index " + std::to_string(a.pakIndex)
+				+ " but the manifest lists only "
+				+ std::to_string(m_manifest.paks.size())
+				+ " pak(s)";
+			return false;
+		}
+		if (row->pak != m_manifest.paks[a.pakIndex]) {
+			err = "the compiled catalog's id 0x" + std::to_string(a.id)
+				+ " names pak '" + m_manifest.paks[a.pakIndex]
+				+ "' (index " + std::to_string(a.pakIndex)
+				+ ") but the manifest serves it from '"
+				+ row->pak + "' (a mount-order skew)";
+			return false;
+		}
+	}
+	if (m_manifest.catalogFingerprint == 0)
+		std::cerr << "[ProjectRuntime] the manifest carries no catalog"
+			" fingerprint line (a pre-contract deployment) - the"
+			" compiled catalog validated row-by-row only\n";
+	m_compiledCatalogAttached = true;
+	return true;
 }
 
 std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(

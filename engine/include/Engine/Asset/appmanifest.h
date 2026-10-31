@@ -78,11 +78,46 @@ struct AppManifest {
 	// catalog mirror carry none; the runtime façade degrades to
 	// path-only). Ids are unique; each row's pak must be listed.
 	std::vector<AppManifestAsset> assets;
+	// The CATALOG FINGERPRINT (the deployment manifest's half of the
+	// compiled-catalog contract): FNV-1a64 over the [ids] rows' STABLE
+	// identity in emission order (see ComputeCatalogFingerprint). The
+	// generated project.h emits the same fold as
+	// project::CatalogFingerprint — the runtime compares them so a
+	// compiled game and its deployed content can never silently
+	// disagree. 0 = the line is absent (a pre-fingerprint manifest —
+	// validation degrades to the row-by-row form).
+	uint64_t catalogFingerprint = 0;
 
 	// The row for a stable id (nullptr = unknown). The runtime façade's
 	// core lookup.
 	[[nodiscard]] const AppManifestAsset* FindAsset(uint64_t id) const;
 };
+
+// The catalog identity KIND BYTES — an ABI shared by three writers:
+// the generated project.h's AssetKind enum values, the manifest's
+// kind strings (mapped at the fold), and the runtime's validation.
+// Do not renumber.
+inline constexpr uint8_t kCatalogKindScene = 0;
+inline constexpr uint8_t kCatalogKindTexture = 1;
+inline constexpr uint8_t kCatalogKindMesh = 2;
+inline constexpr uint8_t kCatalogKindSound = 3;
+// The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound";
+// false for any other spelling).
+[[nodiscard]] bool CatalogKindFromString(const std::string& kind,
+	uint8_t& out);
+[[nodiscard]] const char* CatalogKindToString(uint8_t kind);
+
+// The CATALOG FINGERPRINT fold: FNV-1a64 over the rows in EMISSION
+// order (bucket order: scenes, textures, meshes, sounds; id-sorted
+// within — the generator's exact emission sequence), folding each
+// row's stable identity: id (8 LE bytes), kind byte, pakIndex (4 LE
+// bytes), path bytes + a 0 separator. The published pak FILENAME is
+// deliberately NOT folded — content-addressed names change every
+// cook; the fingerprint proves IDENTITY, not cook state. Raw pointer
+// + count per the public-API convention.
+[[nodiscard]] uint64_t ComputeCatalogFingerprint(
+	const uint64_t* ids, const uint8_t* kinds,
+	const uint32_t* pakIndices, const char* const* paths, size_t count);
 
 // Text round-trip. Save refuses an invalid manifest (no entry, entry
 // pak not listed, empty paks, absolute/escaping paths). Load applies
