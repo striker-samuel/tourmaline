@@ -140,6 +140,13 @@ struct BuildPlanOptions {
 	// default is empty). EDT-01 equivalence holds when both
 	// environments pass the same options.
 	std::string levelName;
+	// The generated project.h to RE-STAMP after the publish (the
+	// <Name>_paks CMake target passes it; empty = no rewrite). This is
+	// the one place a pak's content is actually known — every pak just
+	// passed verify + police — so the EOF metadata's pak records go
+	// state=verified here (a catalog-only refresh never upgrades a
+	// state; it can only preserve or demote to stale).
+	std::string projectHeaderPath;
 	// The artifact-cache store root (the editor's registry; empty = the
 	// CLI convention — derived or off). Acceleration ONLY: the stage
 	// output is byte-identical either way.

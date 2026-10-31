@@ -9,14 +9,25 @@
 #include <project_pipeline/project_catalog.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <set>
 #include <sstream>
+#include <string_view>
+#include <vector>
 
+#include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/tour.h>
+
+#include <artifact_cache/artifact_cache.h>
 
 #include <gltf_import/asset_export.h>
 
@@ -26,6 +37,14 @@ namespace {
 
 namespace fs = std::filesystem;
 
+// The EOF metadata section's format version (both markers carry it; a
+// mismatching version reads as ABSENT — the caller scans fresh, never
+// reuses a cache it cannot understand).
+constexpr int kMetadataVersion = 1;
+
+const char* const kMetadataBegin = "TOURMALINE-METADATA-BEGIN";
+const char* const kMetadataEnd = "TOURMALINE-METADATA-END";
+
 // FNV-1a 64 (the repo's stable hash shape).
 uint64_t Fnv(const char* s) {
 	uint64_t h = 1469598103934665603ULL;
@@ -34,6 +53,15 @@ uint64_t Fnv(const char* s) {
 		h *= 1099511628211ULL;
 	}
 	return h;
+}
+
+// 16 lowercase hex digits (the fingerprint string shape — matches the
+// artifact cache's HashBytes output).
+std::string Hex64(uint64_t v) {
+	char buf[17];
+	std::snprintf(buf, sizeof buf, "%016llx",
+		static_cast<unsigned long long>(v));
+	return std::string(buf);
 }
 
 // C++ string-literal escaping for the emitted header (the generator is
@@ -47,6 +75,232 @@ std::string CppStr(const std::string& s) {
 		o += c;
 	}
 	return o;
+}
+
+// Read a whole (small) text file. A missing file is not an error —
+// `exists` says which.
+bool ReadTextFile(const std::string& path, bool& exists,
+	std::string& out) {
+	out.clear();
+	exists = false;
+	std::error_code ec;
+	if (!fs::exists(fs::path(path), ec))
+		return true;
+	exists = true;
+	std::ifstream in(path, std::ios::binary);
+	if (!in)
+		return false;
+	out.assign((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	return in.good() || in.eof();
+}
+
+// file_time_type -> unix seconds (the EOF stores mtime_s= — explicit
+// unit, explicit epoch). clock_cast is THE C++20 cross-clock
+// conversion (file_time_type::clock::to_sys is not a guaranteed
+// member — MSVC's _File_time_clock doesn't expose it).
+int64_t ToUnixSeconds(const fs::file_time_type& t) {
+	return int64_t(std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::clock_cast<std::chrono::system_clock>(t)
+			.time_since_epoch())
+		.count());
+}
+
+// ---- the EOF metadata text format ----------------------------------
+// Every record line is a `// `-prefixed comment between the versioned
+// markers. Two line shapes:
+//   keyword records:  asset 0x1000 path="..." pak="world"
+//                     pak file="..." state=verified
+//                     generator generation=3 timestamp=...
+//   continuations:      mtime_s=... size=... hash=fnv1a64:...
+// (a continuation attaches to the last record). Values are quoted iff
+// they can carry spaces; the escapes are the CppStr pair (\" and \\).
+struct MetaToken {
+	bool quoted = false;    // the value carried quotes (needs unescape)
+	std::string key;        // "" for a bare word (keyword / hex id)
+	std::string value;
+};
+
+// Tokenize one metadata payload line (the text after "// "). Returns
+// false on a malformed quote (the LINE is skipped, not the parse).
+bool TokenizeMetaLine(const std::string& line,
+	std::vector<MetaToken>& out) {
+	out.clear();
+	size_t i = 0;
+	const size_t n = line.size();
+	while (i < n) {
+		while (i < n && line[i] == ' ')
+			++i;
+		if (i >= n)
+			break;
+		MetaToken tok;
+		if (line[i] == '"') { // a bare quoted word (unused today, kept
+			++i;             // for forward formats)
+			tok.quoted = true;
+			while (i < n && line[i] != '"') {
+				if (line[i] == '\\' && i + 1 < n)
+					++i;
+				tok.value += line[i++];
+			}
+			if (i >= n)
+				return false; // unterminated
+			++i;
+		}
+		else {
+			const size_t start = i;
+			while (i < n && line[i] != ' ')
+				++i;
+			tok.value = line.substr(start, i - start);
+		}
+		const size_t eq = tok.value.find('=');
+		if (eq != std::string::npos && !tok.quoted) {
+			tok.key = tok.value.substr(0, eq);
+			tok.value = tok.value.substr(eq + 1);
+			if (!tok.value.empty() && tok.value.front() == '"') {
+				if (tok.value.back() != '"'
+						|| tok.value.size() < 2)
+					return false;
+				tok.quoted = true;
+				tok.value = tok.value.substr(1,
+					tok.value.size() - 2);
+				std::string unescaped;
+				for (size_t k = 0; k < tok.value.size(); ++k)
+					if (tok.value[k] == '\\'
+							&& k + 1 < tok.value.size())
+						unescaped += tok.value[++k];
+					else
+						unescaped += tok.value[k];
+				tok.value = unescaped;
+			}
+		}
+		out.push_back(std::move(tok));
+	}
+	return true;
+}
+
+// Strip one comment line down to its payload ("" when the line is not
+// a metadata comment).
+std::string MetaPayload(const std::string& raw) {
+	std::string_view v(raw);
+	while (!v.empty() && (v.back() == '\r' || v.back() == '\n'))
+		v.remove_suffix(1);
+	if (v.size() >= 3 && v.substr(0, 3) == "// ")
+		return std::string(v.substr(3));
+	if (v.size() >= 2 && v.substr(0, 2) == "//")
+		return std::string(v.substr(2));
+	return std::string();
+}
+
+// Parse the EOF metadata out of a header's text. Tolerant: unknown
+// keys and malformed lines are SKIPPED (the format may grow); an
+// unknown VERSION or a missing section leaves out.present=false (the
+// caller scans fresh — never an unsafe cache reuse).
+void ParseHeaderMetadataText(const std::string& text,
+	HeaderMetadata& out) {
+	out = HeaderMetadata{};
+	bool inSection = false;
+	int version = -1;
+	// The last record each section appends continuations to.
+	AssetFingerprint* lastAsset = nullptr;
+	PakFingerprint* lastPak = nullptr;
+	std::istringstream in(text);
+	std::string raw;
+	while (std::getline(in, raw)) {
+		const std::string line = MetaPayload(raw);
+		if (line.empty())
+			continue;
+		if (!inSection) {
+			if (line.compare(0, std::strlen(kMetadataBegin),
+					kMetadataBegin) == 0) {
+				version = std::atoi(
+					line.c_str() + std::strlen(kMetadataBegin));
+				inSection = version == kMetadataVersion;
+			}
+			continue;
+		}
+		if (line.compare(0, std::strlen(kMetadataEnd), kMetadataEnd)
+				== 0)
+			break; // a well-formed end; keep what we have
+		std::vector<MetaToken> toks;
+		if (!TokenizeMetaLine(line, toks))
+			continue;
+		if (toks.empty())
+			continue;
+		const auto valueOf = [&](const char* key) -> std::string {
+			for (const MetaToken& t : toks)
+				if (t.key == key)
+					return t.value;
+			return std::string();
+		};
+		if (toks[0].key.empty()) { // a keyword record line
+			const std::string& kw = toks[0].value;
+			if (kw == "[assets]" || kw == "[paks]") {
+				lastAsset = nullptr;
+				lastPak = nullptr;
+				continue;
+			}
+			if (kw == "generator") {
+				out.generation = std::strtoull(
+					valueOf("generation").c_str(), nullptr, 10);
+				out.timestamp = std::strtoull(
+					valueOf("timestamp").c_str(), nullptr, 10);
+				continue;
+			}
+			if (kw == "catalog") {
+				out.contentHash = valueOf("hash");
+				continue;
+			}
+			if (kw == "asset" && toks.size() >= 2
+					&& toks[1].key.empty()) {
+				AssetFingerprint f;
+				f.id = std::strtoull(toks[1].value.c_str(),
+					nullptr, 16);
+				f.path = valueOf("path");
+				f.pak = valueOf("pak");
+				lastPak = nullptr;
+				lastAsset = &out.assets[f.id];
+				*lastAsset = std::move(f);
+				continue;
+			}
+			if (kw == "pak") {
+				PakFingerprint f;
+				f.file = valueOf("file");
+				lastAsset = nullptr;
+				lastPak = &out.paks[f.file];
+				*lastPak = std::move(f);
+				continue;
+			}
+			continue; // an unknown keyword: skip, keep reading
+		}
+		// A continuation: key=value pairs onto the last record.
+		for (const MetaToken& t : toks) {
+			if (t.key.empty())
+				continue;
+			if (lastAsset) {
+				if (t.key == "mtime_s")
+					lastAsset->mtime = std::strtoll(
+						t.value.c_str(), nullptr, 10);
+				else if (t.key == "size")
+					lastAsset->size = std::strtoull(
+						t.value.c_str(), nullptr, 10);
+				else if (t.key == "hash")
+					lastAsset->hash = t.value;
+			}
+			else if (lastPak) {
+				if (t.key == "mtime_s")
+					lastPak->mtime = std::strtoll(
+						t.value.c_str(), nullptr, 10);
+				else if (t.key == "size")
+					lastPak->size = std::strtoull(
+						t.value.c_str(), nullptr, 10);
+				else if (t.key == "hash")
+					lastPak->hash = t.value;
+				else if (t.key == "state")
+					lastPak->state = t.value;
+			}
+		}
+	}
+	out.present = inSection && version == kMetadataVersion;
 }
 
 // THE ONE identity-acquisition point (every catalog entity goes through
@@ -292,13 +546,18 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	return true;
 }
 
-std::string EmitProjectHeader(const ProjectCatalog& c) {
+std::string EmitProjectHeader(const ProjectCatalog& c,
+	const GenerationStamp& stamp,
+	const std::vector<AssetFingerprint>& assets,
+	const std::vector<PakFingerprint>& paks) {
 	std::ostringstream os;
 	os << "// Generated by Tourmaline (Project.exe ids). Do not edit.\n"
 		<< "// The content-as-code catalog: stable ids from the project's\n"
 		<< "// asset database (assets.db - the one identity store); the\n"
-		<< "// same content ships in the paks below. Regenerated by the\n"
-		<< "// build only-on-change.\n"
+		<< "// same content ships in the paks below. GENERATION-STAMPED\n"
+		<< "// (the version block below): the stamp moves only on a\n"
+		<< "// generation event; an unchanged generation re-emits this\n"
+		<< "// file byte-identical (write-only-on-change).\n"
 		<< "#pragma once\n\n"
 		<< "#include <array>\n#include <cstdint>\n"
 			"#include <string_view>\n\n"
@@ -318,8 +577,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 		<< " { return id; } };\n"
 		<< "struct SoundKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
-		<< "// (SkeletonKey / AnimationClipKey arrive with their catalog"
-		<< "// buckets - the .anim asset identity kinds; the HANDLE types"
+		<< "// (SkeletonKey / AnimationClipKey arrive with their catalog\n"
+		<< "// buckets - the .anim asset identity kinds; the HANDLE types\n"
 		<< "// they pair with are already in entity_handle.h.)\n"
 		<< "struct SkeletonKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
@@ -328,7 +587,23 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 		<< "inline constexpr Id ProjectId = 0x" << std::hex
 		<< c.projectId << std::dec << "ULL;\n"
 		<< "inline constexpr std::string_view Name = \""
-		<< CppStr(c.projectName) << "\";\n\n";
+		<< CppStr(c.projectName) << "\";\n\n"
+
+		<< "// The generation stamp (cheap version control for asset\n"
+		<< "// time): the timestamp + generation move ONLY on a\n"
+		<< "// generation event - a catalog/content change, the explicit\n"
+		<< "// <Name>_stamp refresh, or a recipe build that moved the\n"
+		<< "// fingerprints. GeneratedAt is unix seconds. ContentHash is\n"
+		<< "// the catalog SEMANTICS fingerprint (ids, symbols, paths,\n"
+		<< "// paks, entry scene) - a texture repixel keeps it; the EOF\n"
+		<< "// metadata at the bottom of this file carries the new file\n"
+		<< "// hash instead.\n"
+		<< "inline constexpr std::uint64_t Generation = "
+		<< stamp.generation << "ULL;\n"
+		<< "inline constexpr std::uint64_t GeneratedAt = "
+		<< stamp.timestamp << "ULL;\n"
+		<< "inline constexpr std::string_view ContentHash = \""
+		<< CppStr(stamp.contentHash) << "\";\n\n";
 
 	const auto emitNamespace = [&](const char* name,
 			const std::vector<CatalogEntry>& entries,
@@ -396,8 +671,345 @@ std::string EmitProjectHeader(const ProjectCatalog& c) {
 		<< "            return true;\n"
 		<< "    return false;\n"
 		<< "}\n\n"
-		<< "} // namespace project\n";
+		<< "} // namespace project\n\n";
+
+	// ---- the EOF metadata (the tools' half of the file) --------------
+	// A machine-readable COMMENT: the compiler never sees it, nothing
+	// codes against it. It carries the generation stamp + the last
+	// generation's fingerprints (the generator's incremental cache —
+	// no side file) + the paks' cook-state claims. Quoted values use
+	// the CppStr escape pair; records are keyed by stable id / pak
+	// file name; hash algorithms and time units are explicit.
+	const auto q = [](const std::string& s) {
+		return "\"" + CppStr(s) + "\"";
+	};
+	os << "// =====================================================================\n"
+		<< "// " << kMetadataBegin << " " << kMetadataVersion << "\n"
+		<< "//\n"
+		<< "// Machine-readable build metadata - a COMMENT, never coded\n"
+		<< "// against (the compiler ignores it; the Tourmaline tools\n"
+		<< "// read it). The generator's incremental cache: the last\n"
+		<< "// generation's fingerprints live here, so a refresh rehashes\n"
+		<< "// only what mtime+size say moved. An unknown version reads\n"
+		<< "// as absent (a fresh scan, never a stale-cache reuse).\n"
+		<< "//\n"
+		<< "// generator generation=" << stamp.generation
+		<< " timestamp=" << stamp.timestamp << "\n"
+		<< "// catalog hash=" << stamp.contentHash << "\n"
+		<< "//\n"
+		<< "// [assets]\n";
+	for (const AssetFingerprint& f : assets) {
+		os << "// asset 0x" << std::hex << f.id << std::dec
+			<< " path=" << q(f.path) << " pak=" << q(f.pak)
+			<< "\n"
+			<< "//   mtime_s=" << f.mtime << " size=" << f.size;
+		if (!f.hash.empty())
+			os << " hash=" << f.hash;
+		os << "\n";
+	}
+	os << "//\n"
+		<< "// [paks]\n";
+	for (const PakFingerprint& f : paks) {
+		os << "// pak file=" << q(f.file) << "\n"
+			<< "//   mtime_s=" << f.mtime << " size=" << f.size;
+		if (!f.hash.empty())
+			os << " hash=" << f.hash;
+		if (!f.state.empty())
+			os << " state=" << f.state;
+		os << "\n";
+	}
+	os << "//\n"
+		<< "// " << kMetadataEnd << " " << kMetadataVersion << "\n"
+		<< "// =====================================================================\n";
 	return os.str();
+}
+
+std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
+	// The CANONICAL form — exactly what "the catalog" means
+	// semantically, never the emitted header text (that carries the
+	// moving stamp + the fingerprints). Id-sorted buckets keep the
+	// hash stable against plan re-orderings (the emission sorts for
+	// the same reason); the kind tags + field separators make the
+	// serialization unambiguous.
+	std::string canonical;
+	canonical += "tourmaline-catalog-v1\n";
+	canonical += "name " + c.projectName + "\n";
+	canonical += "project 0x" + Hex64(c.projectId) + "\n";
+	canonical += "entry 0x" + Hex64(c.entryScene) + "\n";
+	for (const auto& [id, file] : c.paks)
+		canonical += "pak " + id + " " + file + "\n";
+	const auto addBucket = [&](const char* kind,
+			const std::vector<CatalogEntry>& entries) {
+		std::vector<CatalogEntry> sorted(entries);
+		std::sort(sorted.begin(), sorted.end(),
+			[](const CatalogEntry& a, const CatalogEntry& b) {
+				return a.id < b.id;
+			});
+		canonical += std::string("kind ") + kind + "\n";
+		for (const CatalogEntry& e : sorted)
+			canonical += "asset 0x" + Hex64(e.id) + " " + e.symbol
+				+ " " + e.path + " " + e.pak + "\n";
+	};
+	addBucket("scene", c.scenes);
+	addBucket("texture", c.textures);
+	addBucket("mesh", c.meshes);
+	addBucket("sound", c.sounds);
+	return smvk::cache::HashBytes(canonical.data(), canonical.size());
+}
+
+bool ReadProjectHeaderMetadata(const std::string& path,
+	HeaderMetadata& out, std::string& err) {
+	err.clear();
+	bool exists = false;
+	std::string text;
+	if (!ReadTextFile(path, exists, text)) {
+		err = "the project header exists but cannot be read: " + path;
+		return false;
+	}
+	ParseHeaderMetadataText(text, out);
+	return true;
+}
+
+bool StatFile(const std::string& absPath, int64_t& mtime,
+	uint64_t& size, std::string& err) {
+	err.clear();
+	mtime = -1;
+	size = 0;
+	std::error_code ec;
+	const fs::path p(absPath);
+	if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec))
+		return true; // missing reads as -1/0 — never an error
+	const fs::file_time_type lwt = fs::last_write_time(p, ec);
+	if (ec) {
+		err = "stat failed for '" + absPath + "': " + ec.message();
+		return false;
+	}
+	const uintmax_t bytes = fs::file_size(p, ec);
+	if (ec) {
+		err = "size failed for '" + absPath + "': " + ec.message();
+		return false;
+	}
+	mtime = ToUnixSeconds(lwt);
+	size = uint64_t(bytes);
+	return true;
+}
+
+bool FingerprintFile(const std::string& absPath,
+	const std::string& prevHash, int64_t prevMtime, uint64_t prevSize,
+	int64_t& mtime, uint64_t& size, std::string& hash, std::string& err) {
+	err.clear();
+	hash.clear();
+	mtime = -1;
+	size = 0;
+	if (!StatFile(absPath, mtime, size, err))
+		return false;
+	if (mtime < 0)
+		return true; // missing: -1/0/""
+	if (prevMtime == mtime && prevSize == size && !prevHash.empty()) {
+		hash = prevHash; // the carry: mtime+size won, no rehash
+		return true;
+	}
+	std::ifstream in(absPath, std::ios::binary);
+	if (!in) {
+		err = "cannot open for hashing: " + absPath;
+		return false;
+	}
+	std::string fileBytes((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	if (in.bad()) {
+		err = "failed reading for hashing: " + absPath;
+		return false;
+	}
+	hash = "fnv1a64:" + smvk::cache::HashBytes(fileBytes.data(),
+		fileBytes.size());
+	return true;
+}
+
+bool CollectAssetFingerprints(const Project& project,
+	const ProjectCatalog& catalog, const HeaderMetadata& prev,
+	std::vector<AssetFingerprint>& out, std::string& err) {
+	err.clear();
+	out.clear();
+	const auto add = [&](const std::vector<CatalogEntry>& entries) {
+		for (const CatalogEntry& e : entries) {
+			AssetFingerprint f;
+			f.id = e.id;
+			f.path = e.path;
+			f.pak = e.pak;
+			const auto pa = prev.assets.find(e.id);
+			const std::string pHash =
+				pa != prev.assets.end() ? pa->second.hash
+					: std::string();
+			const int64_t pMtime =
+				pa != prev.assets.end() ? pa->second.mtime : -1;
+			const uint64_t pSize =
+				pa != prev.assets.end() ? pa->second.size : 0;
+			const fs::path abs = (fs::path(project.root)
+				/ fs::path(e.path)).lexically_normal();
+			std::string fErr;
+			if (!FingerprintFile(abs.generic_string(), pHash,
+					pMtime, pSize, f.mtime, f.size, f.hash, fErr)) {
+				err = "fingerprint failed for '" + e.path + "': "
+					+ fErr;
+				return false;
+			}
+			out.push_back(std::move(f));
+		}
+		return true;
+	};
+	return add(catalog.scenes) && add(catalog.textures)
+		&& add(catalog.meshes) && add(catalog.sounds);
+}
+
+bool DiscoverPakFingerprints(const std::string& pakDir,
+	const ProjectCatalog& catalog,
+	const std::vector<AssetFingerprint>& assets,
+	const HeaderMetadata& prev, std::vector<PakFingerprint>& out,
+	std::string& err) {
+	err.clear();
+	out.clear();
+	// 1) the LIVE pak set: every published .tapp in the dir names its
+	//    paks, and the [ids] rows join STABLE asset ids to pak FILES —
+	//    never file-name guessing (the content-addressed names carry
+	//    digests the catalog pass cannot predict). A manifest that
+	//    fails to load names nothing (not ours / corrupt).
+	std::map<uint64_t, std::string> pakFileByAssetId;
+	{
+		std::error_code ec;
+		const fs::path dir(pakDir);
+		if (fs::exists(dir, ec)) {
+			for (const fs::directory_entry& e :
+					fs::directory_iterator(dir, ec)) {
+				std::error_code fileEc;
+				if (!e.is_regular_file(fileEc))
+					continue;
+				if (e.path().extension().generic_string() != ".tapp")
+					continue;
+				smvk::AppManifest manifest;
+				std::string mErr;
+				if (!smvk::LoadAppManifest(
+						e.path().generic_string(), manifest, mErr))
+					continue;
+				for (const smvk::AppManifestAsset& row
+						: manifest.assets)
+					pakFileByAssetId[row.id] = row.pak;
+			}
+		}
+	}
+	// The catalog's assets grouped by pak id (the staleness witness).
+	std::map<std::string, std::vector<const AssetFingerprint*>> byPak;
+	for (const AssetFingerprint& f : assets)
+		byPak[f.pak].push_back(&f);
+	// 2) per catalog pak (plan order — deterministic): resolve the
+	//    published file, fingerprint it (hash-carry against prev),
+	//    decide the cook state.
+	for (const auto& [pakId, outputFile] : catalog.paks) {
+		PakFingerprint f;
+		for (const AssetFingerprint* a : byPak[pakId]) {
+			const auto it = pakFileByAssetId.find(a->id);
+			if (it != pakFileByAssetId.end()) {
+				f.file = it->second;
+				break;
+			}
+		}
+		// Fallback: a pre-content-addressing plain output name.
+		if (f.file.empty() && !outputFile.empty()) {
+			std::error_code ec;
+			if (fs::is_regular_file(
+					fs::path(pakDir) / fs::path(outputFile), ec))
+				f.file = outputFile;
+		}
+		if (f.file.empty()) {
+			f.state = "missing";
+			out.push_back(std::move(f));
+			continue;
+		}
+		const auto pp = prev.paks.find(f.file);
+		std::string fErr;
+		if (!FingerprintFile(
+				(fs::path(pakDir) / fs::path(f.file)).lexically_normal()
+					.generic_string(),
+				pp != prev.paks.end() ? pp->second.hash
+					: std::string(),
+				pp != prev.paks.end() ? pp->second.mtime : -1,
+				pp != prev.paks.end() ? pp->second.size : 0,
+				f.mtime, f.size, f.hash, fErr)) {
+			err = "pak fingerprint failed for '" + f.file + "': "
+				+ fErr;
+			return false;
+		}
+		if (f.mtime < 0) { // vanished between the join and the stat
+			f.state = "missing";
+			out.push_back(std::move(f));
+			continue;
+		}
+		// The cook-state rules (a CLAIM, never a content proof — only
+		// the recipe build's re-stamp says verified from knowledge):
+		//   stale if (a) an asset of the pak is UNPUBLISHED (no
+		//          manifest row — the pak cannot contain it),
+		//          (b) an asset's fingerprint CHANGED since the last
+		//              generation (no previous record counts as
+		//              changed: a first-ever run claims nothing), or
+		//          (c) a source is NEWER than the pak file.
+		bool stale = false;
+		for (const AssetFingerprint* a : byPak[pakId]) {
+			if (!pakFileByAssetId.count(a->id)) {
+				stale = true; // (a)
+				break;
+			}
+			const auto pa = prev.assets.find(a->id);
+			if (pa == prev.assets.end()
+					|| pa->second.hash != a->hash) {
+				stale = true; // (b)
+				break;
+			}
+			if (a->mtime > f.mtime) {
+				stale = true; // (c)
+				break;
+			}
+		}
+		f.state = stale ? "stale" : "verified";
+		out.push_back(std::move(f));
+	}
+	return true;
+}
+
+void ComposeProjectHeader(const ProjectCatalog& c,
+	const std::vector<AssetFingerprint>& assets,
+	const std::vector<PakFingerprint>& paks, const std::string& path,
+	bool forceStamp, std::string& text, GenerationStamp& stamp,
+	bool& changed) {
+	// The no-op probe FIRST: the CURRENT content with the PREVIOUS
+	// stamp — byte-equal to the on-disk file means nothing moved, the
+	// generation stays, and the caller's write-only-on-change never
+	// touches the file (no recompile of anything including it).
+	bool exists = false;
+	std::string existing;
+	ReadTextFile(path, exists, existing); // (a read failure composes
+	                                      // from scratch; the write
+	                                      // below surfaces it)
+	HeaderMetadata prev;
+	ParseHeaderMetadataText(existing, prev);
+	const std::string contentHash = ComputeCatalogContentHash(c);
+	if (!forceStamp && prev.present) {
+		GenerationStamp probe;
+		probe.generation = prev.generation;
+		probe.timestamp = prev.timestamp;
+		probe.contentHash = contentHash;
+		text = EmitProjectHeader(c, probe, assets, paks);
+		if (text == existing) {
+			stamp = probe;
+			changed = false;
+			return;
+		}
+	}
+	// A GENERATION EVENT: the timestamp is the event time, the
+	// generation counts them (a legacy/pre-stamp header restarts at 1).
+	stamp.generation = prev.generation + 1;
+	stamp.timestamp = uint64_t(std::time(nullptr));
+	stamp.contentHash = contentHash;
+	text = EmitProjectHeader(c, stamp, assets, paks);
+	changed = text != existing;
 }
 
 bool WriteProjectHeaderIfChanged(const std::string& path,

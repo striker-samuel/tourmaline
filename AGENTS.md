@@ -73,6 +73,34 @@ the version/edition to the machine:
 cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && cmake --build out/build/x64-Release --target App"
 ```
 
+## The generated project.h (content as code)
+
+- `project.h` (the `tourmaline_add_project`/`tourmaline_attach_project`
+  layer, `cmake/TourmalineProject.cmake`) is a GENERATION-STAMPED,
+  self-contained C++ catalog: `project::Generation` / `GeneratedAt` /
+  `ContentHash` constexpr (cheap version control for asset time) plus
+  an EOF machine-readable COMMENT section (`TOURMALINE-METADATA`,
+  versioned markers) carrying the per-asset/per-pak fingerprints
+  (mtime_s/size/fnv1a64 hash + pak cook-state) — the generator's
+  incremental cache lives IN the header, no side file. Never code
+  against the EOF section; it is tool data.
+- The stamp moves ONLY on a generation EVENT (any change to the
+  emitted text — catalog semantics or fingerprints — or a forced
+  refresh); an unchanged generation re-emits byte-identical text, so
+  the build-time `<Name>_ids` refresh never recompiles includers.
+  `<Name>_stamp` (`--stamp`) forces a new generation every run;
+  `<Name>_paks` cooks content WITHOUT building C++ and re-stamps the
+  header (the recipe build is the one writer that knows pak content —
+  its pak records go `state=verified`; a catalog-only refresh can
+  never upgrade a state, only preserve or demote to `stale`/`missing`).
+  ContentHash covers the catalog SEMANTICS only — a texture repixel
+  keeps it; the EOF asset record carries the new file hash.
+- The three operations are independent: `--target <Name>_ids`
+  (catalog only), `--target <Name>_stamp` (forced generation),
+  `--target <Name>_paks` (cook, no C++), `--target <Game>` (exe + the
+  auto refresh). Unit-tested in test_project_pipeline.cpp
+  (`stamp.*`).
+
 ## Submodules
 
 Unmodified upstream deps are pinned git submodules under `external/`

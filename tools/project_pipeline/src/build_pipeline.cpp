@@ -634,6 +634,10 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	// exists, the staged copy is dropped, the published mtime never
 	// moves.
 	std::vector<fs::path> finalPaths; // plan order
+	// The content-address digests (plan order — the post-publish
+	// project.h re-stamp reuses them as the pak fingerprints' hashes:
+	// the bytes were read exactly once, for the addressing).
+	std::vector<std::string> finalDigests;
 	{
 		std::error_code readEc;
 		for (size_t i = 0; i < plan.paks.size(); ++i) {
@@ -673,6 +677,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				}
 			}
 			finalPaths.push_back(finalPath);
+			finalDigests.push_back(digest);
 			reps[i].output = finalPath.generic_string();
 		}
 	}
@@ -748,13 +753,15 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		// command maintains; ensuring here is idempotent, so a build
 		// alone is sufficient and the manifest always carries the
 		// current catalog.
+		// (Hoisted out of the block below: the post-publish project.h
+		// re-stamp reuses the SAME catalog the manifest mirrored.)
+		ProjectCatalog catalog;
 		{
 			const std::string registryRoot =
 				smvk::cache::EnsureRegistryRoot(project.DerivedDataDir());
 			smvk::cache::AssetDatabase db;
 			if (!registryRoot.empty()
 					&& db.Open(registryRoot, project.root, err)) {
-				ProjectCatalog catalog;
 				std::vector<std::string> deps;
 				if (GenerateProjectCatalog(project, plan, db, catalog,
 						deps, err)) {
@@ -942,6 +949,69 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			" %zu pak(s))\n", out.manifest.c_str(),
 			manifest.entryPak.c_str(), manifest.entryScene.c_str(),
 			manifest.paks.size());
+		// ---- 5) re-stamp the generated project.h -------------------
+		// The recipe build is the ONE writer that knows the paks'
+		// content (verify + police just passed), so the EOF metadata's
+		// pak records go state=verified HERE — a catalog-only refresh
+		// can never upgrade a state, only preserve or demote it. The
+		// stamp follows the SAME policy the ids command runs
+		// (ComposeProjectHeader): a fully unchanged build (dedup'd
+		// paks, untouched sources) re-emits byte-identical text and
+		// never touches the file. Best-effort BY DESIGN: the paks +
+		// the manifest are already committed — a header failure warns
+		// instead of failing a build whose content stands.
+		if (!options.projectHeaderPath.empty()) {
+			HeaderMetadata prev;
+			std::string hErr;
+			std::vector<AssetFingerprint> assetPrints;
+			std::vector<PakFingerprint> pakPrints;
+			if (ReadProjectHeaderMetadata(options.projectHeaderPath,
+					prev, hErr)
+				&& CollectAssetFingerprints(project, catalog, prev,
+					assetPrints, hErr)) {
+				for (size_t i = 0; i < plan.paks.size()
+						&& i < finalPaths.size(); ++i) {
+					PakFingerprint f;
+					f.file = finalPaths[i].filename()
+						.generic_string();
+					// The publish pass content-addressed on this
+					// digest — reuse it as the hash (the pak bytes
+					// are never read a second time).
+					if (i < finalDigests.size())
+						f.hash = "fnv1a64:" + finalDigests[i];
+					std::string sErr;
+					if (!StatFile(finalPaths[i].generic_string(),
+							f.mtime, f.size, sErr)) {
+						hErr = sErr;
+						break;
+					}
+					f.state = f.mtime >= 0 ? "verified" : "missing";
+					pakPrints.push_back(std::move(f));
+				}
+				if (hErr.empty()) {
+					std::string text;
+					GenerationStamp stamp;
+					bool changed = false;
+					ComposeProjectHeader(catalog, assetPrints,
+						pakPrints, options.projectHeaderPath, false,
+						text, stamp, changed);
+					bool wrote = false;
+					if (WriteProjectHeaderIfChanged(
+							options.projectHeaderPath, text, wrote,
+							hErr))
+						std::printf("[build] project.h generation"
+							" %llu (%s)\n",
+							static_cast<unsigned long long>(
+								stamp.generation),
+							wrote ? "re-stamped" : "unchanged");
+				}
+			}
+			if (!hErr.empty())
+				std::printf("[build] WARNING: the project header"
+					" re-stamp failed (%s) — the paks + the manifest"
+					" stand; the next ids refresh re-stamps\n",
+					hErr.c_str());
+		}
 	}
 	return true;
 }

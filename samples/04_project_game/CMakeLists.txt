@@ -6,13 +6,18 @@ project(game_project_sample)
 # ---------------------------------------------------------------------------
 # 04_project_game: the CONTENT-AS-CODE sample — a standalone project exe.
 # The project (raw sources + the recipe) is checked in under project/;
-# the build generates project.h (content ids ensured in the project's
-# asset database by the GameProject_ids target — it IMPORTS + resolves
-# on the first run, so the checked-in tree needs no derived files),
-# and GameProject_paks cooks the full content (recipe build -> verified
-# paks + the appmanifest) next to the exe ON DEMAND.
+# the build generates the GENERATION-STAMPED project.h (content ids
+# ensured in the project's asset database by the GameProject_ids target
+# — it IMPORTS + resolves on the first run, so the checked-in tree
+# needs no derived files), GameProject_stamp forces a new catalog
+# generation on demand, and GameProject_paks cooks the full content
+# (recipe build -> verified paks + the appmanifest + a project.h
+# re-stamp whose pak records go state=verified) next to the exe ON
+# DEMAND.
 #
 #   cmake --build ... --target GameProject        (exe + generated project.h)
+#   cmake --build ... --target GameProject_ids    (refresh the catalog only)
+#   cmake --build ... --target GameProject_stamp  (force a new generation)
 #   cmake --build ... --target GameProject_paks   (the content cook)
 #   .../GameProject.exe                           (runs the entry scene)
 #

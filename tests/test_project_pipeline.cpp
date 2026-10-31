@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -2153,8 +2154,13 @@ void TestProjectCatalog() {
 		"catalog.namespaces");
 	// (the texture namespace fills from the include-claiming plan below)
 
+	smvk::project::GenerationStamp stamp;
+	stamp.generation = 7;
+	stamp.timestamp = 1793451600;
+	stamp.contentHash =
+		smvk::project::ComputeCatalogContentHash(catalog);
 	const std::string header =
-		smvk::project::EmitProjectHeader(catalog);
+		smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
 	Check(header.find("namespace scenes") != std::string::npos
 			&& header.find("EntryScene = scenes::thing")
 				!= std::string::npos
@@ -2165,7 +2171,7 @@ void TestProjectCatalog() {
 	// Deterministic + write-only-on-change.
 	{
 		const std::string again =
-			smvk::project::EmitProjectHeader(catalog);
+			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
 		Check(again == header, "catalog.header-deterministic");
 		const fs::path file = tmp / "project.h";
 		bool wrote = false;
@@ -2215,7 +2221,8 @@ void TestProjectCatalog() {
 		std::vector<std::string> deps3;
 		Check(smvk::project::GenerateProjectCatalog(project, plan, db,
 				round, deps3, err)
-			&& smvk::project::EmitProjectHeader(round) == header,
+			&& smvk::project::EmitProjectHeader(round, stamp, {}, {})
+				== header,
 			"catalog.reactivate-same-ids");
 	}
 
@@ -2296,8 +2303,12 @@ void TestProjectCatalog() {
 			"world" });
 		c.textures.push_back({ 0x2000, "_compl", "content/t/c.png",
 			"world" });
+		smvk::project::GenerationStamp st;
+		st.generation = 1;
+		st.timestamp = 1793451600;
+		st.contentHash = smvk::project::ComputeCatalogContentHash(c);
 		const std::string text =
-			smvk::project::EmitProjectHeader(c);
+			smvk::project::EmitProjectHeader(c, st, {}, {});
 		// The typed-key declarations (SceneKey/TextureKey/... beside
 		// the raw Id ProjectId) — the symbol is the SECOND token.
 		const std::regex symLine(
@@ -2394,12 +2405,430 @@ void TestProjectCatalog() {
 		smvk::project::ProjectCatalog c;
 		c.projectName = "We\"ird";
 		c.paks = { { "wo\"rld", "wor\\ld.pak" } };
+		smvk::project::GenerationStamp st;
+		st.generation = 1;
+		st.timestamp = 1793451600;
+		st.contentHash = smvk::project::ComputeCatalogContentHash(c);
 		const std::string text =
-			smvk::project::EmitProjectHeader(c);
+			smvk::project::EmitProjectHeader(c, st, {}, {});
 		Check(text.find("Name = \"We\\\"ird\"") != std::string::npos
 			&& text.find("Pak{\"wo\\\"rld\", \"wor\\\\ld.pak\"}")
 				!= std::string::npos,
 			"catalog.header-escapes-literals");
+	}
+}
+
+// The GENERATION STAMP + the EOF metadata (project.h as its own build
+// artifact): the stamp constants, the machine-readable comment's round
+// trip, the bump policy (ComposeProjectHeader — the split-events
+// contract: unchanged = byte-identical no-op, any change or --stamp =
+// a new generation, fingerprint-only changes keep the content hash),
+// FingerprintFile's mtime+size carry, and the pak cook-state rules.
+void TestProjectHeaderStamp() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_stamp";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+
+	// ---- a hand-built catalog: stamp + EOF round trip ---------------
+	smvk::project::ProjectCatalog c;
+	c.projectName = "StampTest";
+	c.projectId = 0xA1007777;
+	c.paks = { { "world", "thing.pak" } };
+	c.scenes.push_back({ 0x1000, "thing", "content/scenes/thing.tour",
+		"world" });
+	c.entryScene = 0x1000;
+	std::vector<smvk::project::AssetFingerprint> assets;
+	{
+		smvk::project::AssetFingerprint af;
+		af.id = 0x1000;
+		af.path = "content/scenes/thing.tour";
+		af.pak = "world";
+		af.mtime = 1793451000;
+		af.size = 124892;
+		af.hash = "fnv1a64:5ae71b30deadbee0";
+		assets.push_back(af);
+	}
+	std::vector<smvk::project::PakFingerprint> paks;
+	{
+		smvk::project::PakFingerprint pf;
+		pf.file = "thing-3ac9ef10deadbeef.pak";
+		pf.mtime = 1793451500;
+		pf.size = 48291824;
+		pf.hash = "fnv1a64:3ac9ef10deadbeef";
+		pf.state = "verified";
+		paks.push_back(pf);
+	}
+	smvk::project::GenerationStamp stamp;
+	stamp.generation = 42;
+	stamp.timestamp = 1793451600;
+	stamp.contentHash = smvk::project::ComputeCatalogContentHash(c);
+	const std::string text =
+		smvk::project::EmitProjectHeader(c, stamp, assets, paks);
+	Check(text.find(
+			"inline constexpr std::uint64_t Generation = 42ULL")
+			!= std::string::npos
+		&& text.find("GeneratedAt = 1793451600ULL") != std::string::npos
+		&& text.find("ContentHash = \"" + stamp.contentHash + "\"")
+			!= std::string::npos
+		&& text.find("TOURMALINE-METADATA-BEGIN 1") != std::string::npos
+		&& text.find("TOURMALINE-METADATA-END 1") != std::string::npos
+		&& text.find("state=verified") != std::string::npos
+		&& text.find("mtime_s=1793451000") != std::string::npos,
+		"stamp.header-carries-stamp");
+	Check(smvk::project::EmitProjectHeader(c, stamp, assets, paks)
+			== text,
+		"stamp.header-deterministic");
+	{
+		const fs::path file = tmp / "roundtrip.h";
+		bool wrote = false;
+		std::string err;
+		Check(smvk::project::WriteProjectHeaderIfChanged(
+				file.generic_string(), text, wrote, err)
+			&& wrote,
+			"stamp.roundtrip-writes");
+		smvk::project::HeaderMetadata meta;
+		Check(smvk::project::ReadProjectHeaderMetadata(
+				file.generic_string(), meta, err)
+			&& meta.present && meta.generation == 42
+			&& meta.timestamp == 1793451600
+			&& meta.contentHash == stamp.contentHash,
+			"stamp.roundtrip-stamp");
+		Check(meta.assets.size() == 1 && meta.assets.count(0x1000) == 1
+			&& meta.assets.at(0x1000).hash == assets[0].hash
+			&& meta.assets.at(0x1000).mtime == assets[0].mtime
+			&& meta.assets.at(0x1000).size == assets[0].size
+			&& meta.assets.at(0x1000).path == assets[0].path
+			&& meta.assets.at(0x1000).pak == "world",
+			"stamp.roundtrip-asset");
+		Check(meta.paks.size() == 1
+			&& meta.paks.count(paks[0].file) == 1
+			&& meta.paks.at(paks[0].file).state == "verified"
+			&& meta.paks.at(paks[0].file).hash == paks[0].hash
+			&& meta.paks.at(paks[0].file).mtime == paks[0].mtime,
+			"stamp.roundtrip-pak");
+	}
+	// An unknown metadata version (and a missing file) read as ABSENT —
+	// a fresh scan, never a stale-cache reuse.
+	{
+		smvk::project::HeaderMetadata meta;
+		std::string err;
+		const fs::path v99 = tmp / "v99.h";
+		{
+			std::ofstream f(v99, std::ios::binary | std::ios::trunc);
+			f << "// TOURMALINE-METADATA-BEGIN 99\n"
+				<< "// generator generation=9 timestamp=9\n"
+				<< "// TOURMALINE-METADATA-END 99\n";
+		}
+		Check(smvk::project::ReadProjectHeaderMetadata(
+				v99.generic_string(), meta, err)
+			&& !meta.present && meta.generation == 0,
+			"stamp.unknown-version-reads-absent");
+		Check(smvk::project::ReadProjectHeaderMetadata(
+				(tmp / "none.h").generic_string(), meta, err)
+			&& !meta.present,
+			"stamp.missing-file-reads-absent");
+	}
+
+	// ---- the bump policy (ComposeProjectHeader) ---------------------
+	const fs::path gen = tmp / "gen" / "project.h";
+	fs::create_directories(gen.parent_path(), ec);
+	std::string t;
+	smvk::project::GenerationStamp st;
+	bool changed = false;
+	bool wrote = false;
+	std::string err;
+	// First generation (no previous header): generation 1.
+	smvk::project::ComposeProjectHeader(c, assets, paks,
+		gen.generic_string(), false, t, st, changed);
+	Check(changed && st.generation == 1
+			&& st.contentHash == stamp.contentHash,
+		"stamp.first-generation");
+	Check(smvk::project::WriteProjectHeaderIfChanged(
+			gen.generic_string(), t, wrote, err)
+		&& wrote,
+		"stamp.first-writes");
+	const std::string first = t;
+	// Unchanged re-compose: byte-identical text, generation stays, the
+	// file never moves (the build-incremental contract).
+	smvk::project::ComposeProjectHeader(c, assets, paks,
+		gen.generic_string(), false, t, st, changed);
+	Check(!changed && t == first && st.generation == 1,
+		"stamp.unchanged-noop");
+	wrote = true;
+	Check(smvk::project::WriteProjectHeaderIfChanged(
+			gen.generic_string(), t, wrote, err)
+		&& !wrote,
+		"stamp.unchanged-skip");
+	// Forced (--stamp / the <Name>_stamp target): a NEW generation
+	// every run, changed content or not.
+	smvk::project::ComposeProjectHeader(c, assets, paks,
+		gen.generic_string(), true, t, st, changed);
+	Check(changed && st.generation == 2
+			&& st.contentHash == stamp.contentHash,
+		"stamp.forced-bumps");
+	Check(smvk::project::WriteProjectHeaderIfChanged(
+			gen.generic_string(), t, wrote, err)
+		&& wrote,
+		"stamp.forced-writes");
+	// A fingerprint-only change (the texture repixel): the generation
+	// bumps (the EOF moved) but the CONTENT HASH stays — the catalog
+	// semantics did not change.
+	std::vector<smvk::project::AssetFingerprint> repixel = assets;
+	repixel[0].hash = "fnv1a64:ffffffffffffffff";
+	repixel[0].mtime = 1793451999;
+	repixel[0].size = 124893;
+	smvk::project::ComposeProjectHeader(c, repixel, paks,
+		gen.generic_string(), false, t, st, changed);
+	Check(changed && st.generation == 3
+			&& st.contentHash == stamp.contentHash,
+		"stamp.repixel-keeps-content-hash");
+	Check(smvk::project::WriteProjectHeaderIfChanged(
+			gen.generic_string(), t, wrote, err)
+		&& wrote,
+		"stamp.repixel-writes");
+	// A catalog content change: the generation bumps AND the content
+	// hash moves.
+	smvk::project::ProjectCatalog c2 = c;
+	c2.textures.push_back({ 0x2000, "stone", "content/t/stone.png",
+		"world" });
+	std::vector<smvk::project::AssetFingerprint> assets2 = repixel;
+	{
+		smvk::project::AssetFingerprint af2;
+		af2.id = 0x2000;
+		af2.path = "content/t/stone.png";
+		af2.pak = "world";
+		af2.mtime = 1793451700;
+		af2.size = 819200;
+		af2.hash = "fnv1a64:0123456789abcdef";
+		assets2.push_back(af2);
+	}
+	smvk::project::ComposeProjectHeader(c2, assets2, paks,
+		gen.generic_string(), false, t, st, changed);
+	Check(changed && st.generation == 4
+			&& st.contentHash != stamp.contentHash,
+		"stamp.content-change-moves-hash");
+
+	// ---- FingerprintFile: the carry + the missing -------------------
+	{
+		const fs::path src = tmp / "fingerprint.bin";
+		{
+			std::ofstream f(src, std::ios::binary | std::ios::trunc);
+			f << "hello stamp";
+		}
+		int64_t m = -1;
+		uint64_t sz = 0;
+		std::string h, fErr;
+		Check(smvk::project::FingerprintFile(src.generic_string(), "",
+				-1, 0, m, sz, h, fErr)
+			&& m > 0 && sz == 11
+			&& h.find("fnv1a64:") == 0,
+			"stamp.fingerprint-hashes");
+		const std::string h1 = h;
+		const int64_t m1 = m;
+		const uint64_t sz1 = sz;
+		std::string h2;
+		Check(smvk::project::FingerprintFile(src.generic_string(), h1,
+				m1, sz1, m, sz, h2, fErr)
+			&& h2 == h1,
+			"stamp.fingerprint-carries");
+		{
+			std::ofstream f(src, std::ios::binary | std::ios::trunc);
+			f << "hello stamp!";
+		}
+		Check(smvk::project::FingerprintFile(src.generic_string(), h1,
+				m1, sz1, m, sz, h2, fErr)
+			&& h2 != h1 && sz == 12,
+			"stamp.fingerprint-rehashes");
+		Check(smvk::project::FingerprintFile(
+				(tmp / "nope.bin").generic_string(), "", -1, 0, m, sz,
+				h2, fErr)
+			&& m == -1 && sz == 0 && h2.empty(),
+			"stamp.fingerprint-missing");
+	}
+
+	// ---- DiscoverPakFingerprints: the cook-state rules --------------
+	{
+		const fs::path dir = tmp / "pakdir";
+		fs::create_directories(dir, ec);
+		smvk::project::ProjectCatalog pc;
+		pc.projectName = "PakStateTest";
+		pc.paks = { { "world", "thing.pak" } };
+		pc.scenes.push_back({ 0x1000, "thing",
+			"content/scenes/thing.tour", "world" });
+		pc.entryScene = 0x1000;
+		// The SOURCE: backdated far past the pak (rule (c)'s witness).
+		const fs::path srcRoot = tmp / "srctest";
+		fs::create_directories(srcRoot / "content" / "scenes", ec);
+		const fs::path src =
+			srcRoot / "content" / "scenes" / "thing.tour";
+		{
+			// (The stream CLOSES before the backdate — its destructor
+			// flush would re-stamp the mtime to now.)
+			std::ofstream f(src, std::ios::binary | std::ios::trunc);
+			f << "tour";
+		}
+		fs::last_write_time(src,
+			fs::file_time_type::clock::now()
+				- std::chrono::seconds(10000), ec);
+		smvk::project::AssetFingerprint cur;
+		cur.id = 0x1000;
+		cur.path = "content/scenes/thing.tour";
+		cur.pak = "world";
+		{
+			std::string fErr;
+			Check(smvk::project::FingerprintFile(
+					src.generic_string(), "", -1, 0, cur.mtime,
+					cur.size, cur.hash, fErr),
+				"stamp.pak-source-fingerprinted");
+		}
+		const std::vector<smvk::project::AssetFingerprint> curs =
+			{ cur };
+		// Empty dir: nothing published -> missing.
+		{
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc, curs,
+					smvk::project::HeaderMetadata{}, out, dErr)
+				&& out.size() == 1 && out[0].state == "missing",
+				"stamp.pak-state-missing");
+		}
+		// Publish: the content-addressed pak (backdated, but NEWER
+		// than the source) + the manifest whose [ids] row joins the
+		// stable id to the pak FILE.
+		const std::string pakName = "thing-0123456789abcdef.pak";
+		{
+			// (Close BEFORE the backdate — see the source above.)
+			std::ofstream f(dir / pakName,
+				std::ios::binary | std::ios::trunc);
+			f << "pakbytes";
+		}
+		fs::last_write_time(dir / pakName,
+			fs::file_time_type::clock::now()
+				- std::chrono::seconds(5000), ec);
+		{
+			smvk::AppManifest m;
+			m.version = smvk::kAppManifestVersion;
+			m.entryPak = pakName;
+			m.entryScene = "thing";
+			m.paks.push_back(pakName);
+			smvk::AppManifestAsset row;
+			row.id = 0x1000;
+			row.kind = "scene";
+			row.pak = pakName;
+			row.path = "content/scenes/thing.tour";
+			row.name = "thing";
+			m.assets.push_back(row);
+			std::string mErr;
+			Check(smvk::SaveAppManifest(
+					(dir / "thing.tapp").generic_string(), m, mErr),
+				"stamp.pak-manifest-saved");
+		}
+		// A first-ever run (no previous metadata): stale — it claims
+		// nothing (only the recipe build's re-stamp verifies).
+		{
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc, curs,
+					smvk::project::HeaderMetadata{}, out, dErr)
+				&& out.size() == 1 && out[0].state == "stale"
+				&& out[0].file == pakName
+				&& !out[0].hash.empty(),
+				"stamp.pak-first-run-stale");
+		}
+		// The matching previous record: verified, preserved.
+		{
+			smvk::project::HeaderMetadata prev;
+			prev.present = true;
+			prev.assets[0x1000] = cur;
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc, curs, prev, out, dErr)
+				&& out[0].state == "verified",
+				"stamp.pak-verified-preserved");
+		}
+		// A source hash change vs the previous record: stale.
+		{
+			smvk::project::HeaderMetadata prev;
+			prev.present = true;
+			smvk::project::AssetFingerprint old = cur;
+			old.hash = "fnv1a64:aaaaaaaaaaaaaaaa";
+			prev.assets[0x1000] = old;
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc, curs, prev, out, dErr)
+				&& out[0].state == "stale",
+				"stamp.pak-source-change-stale");
+		}
+		// A source NEWER than the pak: stale (rule (c)) — even with a
+		// MATCHING previous record (the mtime is the witness).
+		{
+			smvk::project::AssetFingerprint touched = cur;
+			{
+				std::ofstream f(src, std::ios::binary | std::ios::trunc);
+				f << "tour2"; // mtime = now > the backdated pak
+				std::string fErr;
+				Check(smvk::project::FingerprintFile(
+						src.generic_string(), "", -1, 0, touched.mtime,
+						touched.size, touched.hash, fErr),
+					"stamp.pak-touched-refingerprinted");
+			}
+			smvk::project::HeaderMetadata prev;
+			prev.present = true;
+			prev.assets[0x1000] = touched;
+			const std::vector<smvk::project::AssetFingerprint> ts =
+				{ touched };
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc, ts, prev, out, dErr)
+				&& out[0].state == "stale",
+				"stamp.pak-source-newer-stale");
+		}
+		// An UNPUBLISHED asset (no manifest row): stale — the pak
+		// cannot contain it.
+		{
+			smvk::project::ProjectCatalog pc2 = pc;
+			pc2.textures.push_back({ 0x2000, "stone",
+				"content/t/stone.png", "world" });
+			smvk::project::AssetFingerprint stone;
+			stone.id = 0x2000;
+			stone.path = "content/t/stone.png";
+			stone.pak = "world";
+			stone.mtime = 1000;
+			stone.size = 8;
+			stone.hash = "fnv1a64:0123456789abcdef";
+			std::vector<smvk::project::AssetFingerprint> both = curs;
+			both.push_back(stone);
+			smvk::project::HeaderMetadata prev;
+			prev.present = true;
+			prev.assets[0x1000] = cur;
+			prev.assets[0x2000] = stone;
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc2, both, prev, out, dErr)
+				&& out.size() == 1 && out[0].state == "stale",
+				"stamp.pak-unpublished-stale");
+		}
+		// The pak file vanished (the manifest still names it): missing.
+		{
+			fs::remove(dir / pakName, ec);
+			smvk::project::HeaderMetadata prev;
+			prev.present = true;
+			prev.assets[0x1000] = cur;
+			std::vector<smvk::project::PakFingerprint> out;
+			std::string dErr;
+			Check(smvk::project::DiscoverPakFingerprints(
+					dir.generic_string(), pc, curs, prev, out, dErr)
+				&& out.size() == 1 && out[0].state == "missing",
+				"stamp.pak-file-vanished-missing");
+		}
 	}
 }
 
@@ -2420,6 +2849,7 @@ int main() {
 	TestRecipeResolution();
 	TestAppManifest();
 	TestProjectCatalog();
+	TestProjectHeaderStamp();
 	TestBuildPlanExecutor();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks

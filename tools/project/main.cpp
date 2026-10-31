@@ -11,10 +11,17 @@
 //                      [--lod-error 0.01] [--force]
 //   Project.exe validate --project <dir> --recipe <file.tourrecipe>
 //                      (parse + resolve; prints the plan, no stages run)
+//   Project.exe ids    --project <dir> --recipe <file.tourrecipe>
+//                      [--header <out>] [--deps <depfile>]
+//                      [--pak-dir <dir>] [--stamp]
+//                      (the content-as-code generation: the ids +
+//                      the GENERATION-STAMPED project.h)
 //   Project.exe build  --project <dir> --recipe <file.tourrecipe>
 //                      [--publish <dir>] [--manifest-name <name>]
+//                      [--header <out>]
 //                      (the recipe build: resolve -> import -> cook ->
-//                       bake -> pak per plan -> the appmanifest LAST)
+//                       bake -> pak per plan -> the appmanifest LAST;
+//                       with --header project.h re-stamps verified)
 //       or the legacy  --project <dir> --output <pak> [--scene <tour>]
 //   Project.exe status --project <dir>        (the staleness report)
 //
@@ -59,16 +66,22 @@ int Usage(const char* prog) {
 		<< "         parse + resolve the recipe and print the plan (paks,\n"
 		<< "         ownership, mount order) — NO stage runs\n"
 		<< "  ids    --project <dir> --recipe <file.tourrecipe>\n"
-		<< "         [--header <out>] [--deps <depfile>]\n"
+		<< "         [--header <out>] [--deps <depfile>] [--pak-dir <dir>]\n"
+		<< "         [--stamp]\n"
 		<< "         the content-as-code generation: ensure the content\n"
 		<< "         ids in the ASSET DATABASE (assets.db — the one\n"
-		<< "         identity store) + regenerate project.h only-on-change\n"
-		<< "         (the CMake layer's form; no stage runs)\n"
+		<< "         identity store) + regenerate the GENERATION-STAMPED\n"
+		<< "         project.h (write-only-on-change; --stamp forces a\n"
+		<< "         new generation every run; --pak-dir fingerprints\n"
+		<< "         that publish dir's paks, default <root>/build)\n"
 		<< "  build  --project <dir> --recipe <file.tourrecipe>\n"
 		<< "         [--publish <dir>] [--manifest-name <name>]\n"
+		<< "         [--header <out>]\n"
 		<< "         the RECIPE build: resolve -> import freshness -> Cook\n"
 		<< "         -> GiBaker -> Pak per plan (verified + policed) -> the\n"
-		<< "         appmanifest (.tapp) publishes LAST\n"
+		<< "         appmanifest (.tapp) publishes LAST (with --header:\n"
+		<< "         project.h re-stamps, its EOF pak records go\n"
+		<< "         state=verified)\n"
 		<< "      or --project <dir> --output <pak> [--scene <tour>] (the\n"
 		<< "         legacy single-scene build — unchanged)\n"
 		<< "  status --project <dir>\n"
@@ -104,8 +117,8 @@ int main(int argc, const char* argv[]) {
 	// Shared flag scan.
 	std::string projectDir, source, name, ratiosCsv, scene, output,
 		fromScene, recipeFile, publishDir, manifestName, headerOut,
-		depsOut;
-	bool fromGltf = false, force = false;
+		depsOut, pakDir;
+	bool fromGltf = false, force = false, stampRefresh = false;
 	bool noLods = false, noMeshlets = false, shaderLods = false;
 	bool ratiosSet = false, errorSet = false;
 	float lodError = 0.01f;
@@ -131,6 +144,12 @@ int main(int argc, const char* argv[]) {
 			headerOut = argv[++i];
 		else if (std::strncmp(a, "--header=", 9) == 0)
 			headerOut = a + 9;
+		else if ((std::strcmp(a, "--pak-dir") == 0) && i + 1 < argc)
+			pakDir = argv[++i];
+		else if (std::strncmp(a, "--pak-dir=", 10) == 0)
+			pakDir = a + 10;
+		else if (std::strcmp(a, "--stamp") == 0)
+			stampRefresh = true;
 		else if ((std::strcmp(a, "--deps") == 0) && i + 1 < argc)
 			depsOut = argv[++i];
 		else if (std::strncmp(a, "--deps=", 7) == 0)
@@ -379,7 +398,10 @@ int main(int argc, const char* argv[]) {
 		// The content-as-code generation (the CMake layer's form):
 		// resolve the plan, ensure the content ids in the ASSET
 		// DATABASE (assets.db — the one identity store), regenerate
-		// project.h only-on-change. NO stage runs, no pak is written.
+		// the GENERATION-STAMPED project.h (the stamp bumps only on a
+		// generation event, or always with --stamp). NO stage runs,
+		// no pak is written — the paks are only fingerprinted for the
+		// EOF metadata (state claims, never cooks).
 		if (recipeFile.empty()) {
 			std::cerr << "--recipe <file.tourrecipe> is required.\n";
 			return Usage(argv[0]);
@@ -480,9 +502,43 @@ int main(int argc, const char* argv[]) {
 			? (std::filesystem::path(p.root) / "project.h")
 				.generic_string()
 			: headerOut;
+		// The pak dir the EOF metadata fingerprints (the publish dir —
+		// the same default the recipe build publishes to; the CMake
+		// layer passes the consuming exe's dir).
+		const std::string effectivePakDir = pakDir.empty()
+			? (std::filesystem::path(p.root) / "build")
+				.generic_string()
+			: pakDir;
+		// The previous generation's EOF metadata (the incremental
+		// cache — the fingerprints carry forward, nothing rehashes
+		// unless mtime+size moved).
+		smvk::project::HeaderMetadata prev;
+		{
+			std::string mErr;
+			if (!smvk::project::ReadProjectHeaderMetadata(header,
+					prev, mErr)) {
+				std::cerr << mErr << "\n";
+				return 1;
+			}
+		}
+		std::vector<smvk::project::AssetFingerprint> assetPrints;
+		if (!smvk::project::CollectAssetFingerprints(p, catalog,
+				prev, assetPrints, err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		std::vector<smvk::project::PakFingerprint> pakPrints;
+		if (!smvk::project::DiscoverPakFingerprints(effectivePakDir,
+				catalog, assetPrints, prev, pakPrints, err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		std::string text;
+		smvk::project::GenerationStamp stamp;
+		bool changed = false;
+		smvk::project::ComposeProjectHeader(catalog, assetPrints,
+			pakPrints, header, stampRefresh, text, stamp, changed);
 		bool wrote = false;
-		const std::string text =
-			smvk::project::EmitProjectHeader(catalog);
 		if (!smvk::project::WriteProjectHeaderIfChanged(header, text,
 				wrote, err)) {
 			std::cerr << err << "\n";
@@ -517,7 +573,14 @@ int main(int argc, const char* argv[]) {
 			<< " scene(s), " << catalog.textures.size()
 			<< " texture(s), " << catalog.meshes.size() << " mesh(es), "
 			<< catalog.sounds.size() << " sound(s)\n"
-			<< "  project.h: " << header
+			<< "  generation " << stamp.generation
+			<< " (content fnv1a64:" << stamp.contentHash << ")"
+			<< (stampRefresh ? " [forced]" : "") << "\n";
+		for (const smvk::project::PakFingerprint& pak : pakPrints)
+			std::cout << "  pak " << (pak.file.empty()
+					? "?" : pak.file)
+				<< ": " << pak.state << "\n";
+		std::cout << "  project.h: " << header
 			<< (wrote ? " (written)" : " (unchanged)") << "\n";
 		return 0;
 	}
@@ -556,6 +619,10 @@ int main(int argc, const char* argv[]) {
 			smvk::project::BuildPlanOptions opts;
 			opts.publishDir = publishDir;
 			opts.manifestName = manifestName;
+			// The generated project.h to re-stamp after the publish
+			// (the <Name>_paks CMake target passes it; empty = the
+			// editor's own flow / plain builds skip the rewrite).
+			opts.projectHeaderPath = headerOut;
 			auto adapter = smvk::project::MakeSubprocessStageAdapter();
 			smvk::project::BuildPlanReport report;
 			if (!smvk::project::ExecuteBuildPlan(p, plan, *adapter, opts,
