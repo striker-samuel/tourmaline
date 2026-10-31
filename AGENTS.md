@@ -136,6 +136,22 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   `--target <Name>_paks` (cook, no C++), `--target <Game>` (exe + the
   auto refresh). Unit-tested in test_project_pipeline.cpp
   (`stamp.*`, `identity.*`, `proj.*`).
+- **The retired asset-ID/tombstone contract**: deleted assets
+  TOMBSTONE in assets.db (active=0 — the id+symbol stay reserved
+  FOREVER, never reused; a new asset at the same path gets a fresh id
+  + collision-suffixed symbol). The generated header emits the
+  RETIRED table: `namespace retired` carries the historical TYPED
+  symbols with their values preserved (stable API compatibility) +
+  `RetiredIds` and the compile-time active-membership queries
+  `IsRetired(Id)` / `IsActive(Id)`; retired entries are excluded from
+  the active namespaces, the Assets array and the published
+  manifests, and a runtime load of a retired id fails explicitly (no
+  compiled row). The retired set is catalog SEMANTICS (Compute-
+  CatalogContentHash folds it — a retire/reactivate is a generation
+  event). RESTORING the original asset GUID re-activates the SAME
+  id+symbol (the identity is the GUID, never the path). Unit-tested
+  in test_project_pipeline.cpp (`catalog.retired-*`,
+  `catalog.reactivate-*`).
 
 ## Source identity + the file watcher (the watched-resource pipeline)
 

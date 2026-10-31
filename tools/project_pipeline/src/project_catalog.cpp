@@ -423,7 +423,8 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 		if (!db.EnsureContentId(guid, kind, projectRel, id, symbol, err))
 			return false;
 		liveGuids.insert(guid);
-		bucket.push_back(CatalogEntry{ id, symbol, projectRel, pakId });
+		bucket.push_back(
+			CatalogEntry{ id, symbol, projectRel, pakId, kind });
 		contentDeps.push_back(abs.lexically_normal().generic_string());
 		return true;
 	};
@@ -530,6 +531,27 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 			err = "registry list failed: " + lErr;
 			return false;
 		}
+		// The RETIRED table (the tombstone contract): the pre-existing
+		// tombstones + the rows this pass tombstones — every inactive
+		// row, none of the re-activated ones (an inactive row whose
+		// guid the plan carries was re-activated by EnsureContentId
+		// above). The header emits the historical typed symbols
+		// (values preserved) + the compile-time IsRetired/IsActive
+		// queries; retired entries stay out of the active namespaces
+		// and the manifests.
+		const auto retireRow = [&](const smvk::cache::ContentIdRecord&
+				row) {
+			CatalogEntry e;
+			e.id = row.id;
+			e.symbol = row.symbol;
+			e.path = row.path;
+			e.kind = row.kind;
+			out.retired.push_back(std::move(e));
+		};
+		for (const auto& row : rows) {
+			if (!row.active && !liveGuids.count(row.guid))
+				retireRow(row); // a tombstone from an earlier run
+		}
 		for (const auto& row : rows) {
 			if (!row.active || liveGuids.count(row.guid))
 				continue;
@@ -538,7 +560,12 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 				err = "tombstone failed: " + sErr;
 				return false;
 			}
+			retireRow(row); // tombstoned by THIS generation
 		}
+		std::sort(out.retired.begin(), out.retired.end(),
+			[](const CatalogEntry& a, const CatalogEntry& b) {
+				return a.id < b.id;
+			});
 	}
 
 	// Deterministic order: id-sorted buckets (EnsureContentId allocated
@@ -760,8 +787,73 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "        if (asset.id == id)\n"
 		<< "            return true;\n"
 		<< "    return false;\n"
-		<< "}\n\n"
-		<< "} // namespace project\n\n";
+		<< "}\n\n";
+
+	// The RETIRED identities (the tombstone contract): deleted assets
+	// whose ids+symbols stay reserved FOREVER (never reused). The
+	// historical TYPED SYMBOLS keep their numeric values for stable
+	// API compatibility; the entries are excluded from the active
+	// namespaces, the Assets array and the published manifests.
+	// IsRetired/IsActive are the COMPILE-TIME active-membership
+	// queries. Re-adding the asset with its original GUID re-activates
+	// the SAME id+symbol. (Emitted AFTER Contains - the queries
+	// reference it.)
+	if (c.retired.empty()) {
+		os << "// No retired assets (the tombstone table is empty).\n"
+			<< "inline constexpr std::array<Id, 0> RetiredIds = {};\n"
+			<< "constexpr bool IsRetired(Id) { return false; }\n"
+			<< "constexpr bool IsActive(Id id) { return Contains(id); }\n"
+			<< "\n";
+	}
+	else {
+		const auto keyTypeOf = [](const std::string& kind) {
+			if (kind == "scene")
+				return "SceneKey";
+			if (kind == "texture")
+				return "TextureKey";
+			if (kind == "mesh")
+				return "MeshKey";
+			if (kind == "sound")
+				return "SoundKey";
+			return "Id"; // an unknown kind degrades to the raw id
+		};
+		os << "// RETIRED assets (tombstones): the historical identities,\n"
+			<< "// typed keys with their values PRESERVED (stable API\n"
+			<< "// compatibility); never in the active namespaces, never\n"
+			<< "// reused. A runtime load of a retired id fails (the\n"
+			<< "// compiled catalog carries no row for it).\n"
+			<< "namespace retired {\n";
+		for (const CatalogEntry& e : c.retired) {
+			const std::string kt = keyTypeOf(e.kind);
+			if (kt == "Id")
+				os << "    inline constexpr Id " << e.symbol
+					<< "{0x" << std::hex << e.id << std::dec
+					<< "ULL};\n";
+			else
+				os << "    inline constexpr " << kt << " "
+					<< e.symbol << "{0x" << std::hex << e.id
+					<< std::dec << "ULL};\n";
+		}
+		os << "}\n\n"
+			<< "inline constexpr std::array RetiredIds = {\n";
+		for (const CatalogEntry& e : c.retired)
+			os << "    0x" << std::hex << e.id << std::dec
+				<< "ULL,\n";
+		os << "};\n"
+			<< "// The compile-time active-membership queries: retired\n"
+			<< "// ids are OUT of the active catalog even if a stale\n"
+			<< "// compiled row ever names one.\n"
+			<< "constexpr bool IsRetired(Id id) {\n"
+			<< "    for (Id r : RetiredIds)\n"
+			<< "        if (r == id) return true;\n"
+			<< "    return false;\n"
+			<< "}\n"
+			<< "constexpr bool IsActive(Id id) {\n"
+			<< "    return Contains(id) && !IsRetired(id);\n"
+			<< "}\n"
+			<< "\n";
+	}
+	os << "} // namespace project\n\n";
 
 	// ---- the EOF metadata (the tools' half of the file) --------------
 	// A machine-readable COMMENT: the compiler never sees it, nothing
@@ -844,6 +936,13 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 	addBucket("texture", c.textures);
 	addBucket("mesh", c.meshes);
 	addBucket("sound", c.sounds);
+	// The retired set is catalog SEMANTICS too: a retire/reactivate
+	// moves the content hash (a generation event), so the compiled
+	// catalog and its hash can never disagree about membership.
+	canonical += "retired\n";
+	for (const CatalogEntry& e : c.retired)
+		canonical += "asset 0x" + Hex64(e.id) + " " + e.symbol + " "
+			+ e.kind + "\n";
 	return smvk::cache::HashBytes(canonical.data(), canonical.size());
 }
 

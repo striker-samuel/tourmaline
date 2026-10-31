@@ -2579,9 +2579,12 @@ void TestProjectCatalog() {
 			&& !wrote,
 			"catalog.header-unchanged-skip");
 	}
-	// The tombstone sweep: a plan WITHOUT the mesh (the recipe drops
-	// the scene) tombstones its row; re-adding re-activates the SAME
-	// id (the header text returns identical).
+	// The tombstone sweep + the RETIRED table (the tombstone contract):
+	// a plan WITHOUT the mesh (the recipe drops the scene) tombstones
+	// its row; the retired table carries the historical identity
+	// (typed symbol + value preserved, the compile-time membership
+	// queries); re-adding re-activates the SAME id and the header
+	// returns to the original text.
 	{
 		smvk::project::ProjectCatalog shrunk;
 		std::vector<std::string> deps2;
@@ -2608,16 +2611,78 @@ void TestProjectCatalog() {
 			"catalog.texture-plan-generates");
 		Check(shrunk.textures.size() == 1 && shrunk.meshes.size() == 1,
 			"catalog.texture-plan-namespaces");
+		const uint64_t textureId = shrunk.textures[0].id;
+		const std::string textureSymbol = shrunk.textures[0].symbol;
+		// The p2-form header (the reactivation round-trip compares
+		// against THIS — both carry the texture active).
+		const std::string shrunkHeader =
+			smvk::project::EmitProjectHeader(shrunk, stamp, {}, {});
 		// Regenerate the ORIGINAL plan (no includes): the texture row
-		// tombstones, every other row re-activates with the SAME ids —
-		// the header text returns identical.
+		// TOMBSTONES — the retired table carries it (kind + symbol +
+		// the historical value), the active namespaces drop it, and
+		// the header's membership queries answer for it.
 		smvk::project::ProjectCatalog round;
 		std::vector<std::string> deps3;
 		Check(smvk::project::GenerateProjectCatalog(project, plan, db,
-				round, deps3, err)
-			&& smvk::project::EmitProjectHeader(round, stamp, {}, {})
-				== header,
-			"catalog.reactivate-same-ids");
+				round, deps3, err),
+			"catalog.regenerate-sweeps");
+		Check(round.textures.empty()
+			&& round.scenes.size() == 1 && round.meshes.size() == 1
+			&& round.scenes[0].id == catalog.scenes[0].id
+			&& round.meshes[0].id == catalog.meshes[0].id,
+			"catalog.swept-active-rows-identical");
+		// The retired table: everything the first generation swept
+		// (the db's non-plan rows) PLUS the texture this sweep just
+		// tombstoned — the historical identity carried verbatim.
+		const size_t baseRetired = catalog.retired.size();
+		const auto findRetired = [&](uint64_t id,
+				const std::string& symbol) {
+			for (const auto& e : round.retired)
+				if (e.id == id && e.symbol == symbol && e.kind == "texture")
+					return true;
+			return false;
+		};
+		Check(round.retired.size() == baseRetired + 1
+			&& findRetired(textureId, textureSymbol),
+			"catalog.retired-table-carries-identity");
+		{
+			const std::string retiredHeader =
+				smvk::project::EmitProjectHeader(round, stamp, {}, {});
+			// The typed key lives ONLY in the retired namespace: the
+			// active namespace may exist (empty) but never carries
+			// the symbol.
+			Check(retiredHeader.find("namespace retired")
+					!= std::string::npos
+				&& retiredHeader.find(
+						"TextureKey " + textureSymbol)
+					!= std::string::npos
+				&& retiredHeader.find("RetiredIds = {") != std::string::npos
+				&& retiredHeader.find("constexpr bool IsRetired")
+					!= std::string::npos
+				&& retiredHeader.find("constexpr bool IsActive")
+					!= std::string::npos
+				&& retiredHeader.find("textures::" + textureSymbol)
+					== std::string::npos,
+				"catalog.retired-header-emits-contract");
+		}
+		// Reactivation: regenerating the texture-carrying plan brings
+		// the row back with the SAME id+symbol, the retired table
+		// returns to its pre-sweep shape, and the header returns to
+		// the p2 FORM (the retire was the only difference).
+		{
+			smvk::project::ProjectCatalog back;
+			std::vector<std::string> deps4;
+			Check(smvk::project::GenerateProjectCatalog(project, p2, db,
+					back, deps4, err)
+				&& back.retired.size() == baseRetired
+				&& back.textures.size() == 1
+				&& back.textures[0].id == textureId
+				&& back.textures[0].symbol == textureSymbol,
+				"catalog.reactivate-same-ids");
+			Check(smvk::project::EmitProjectHeader(back, stamp, {}, {})
+					== shrunkHeader,
+				"catalog.reactivate-header-identical");
+		}
 	}
 
 	// ---- the commit-review regressions (identity + symbol safety) ---
@@ -2902,6 +2967,13 @@ void TestProjectHeaderStamp() {
 		&& text.find("state=verified") != std::string::npos
 		&& text.find("mtime_s=1793451000") != std::string::npos,
 		"stamp.header-carries-stamp");
+	// The tombstone contract's EMPTY form: the stub table + the
+	// compile-time membership queries.
+	Check(text.find("No retired assets") != std::string::npos
+		&& text.find("constexpr bool IsRetired(Id) { return false; }")
+			!= std::string::npos
+		&& text.find("constexpr bool IsActive") != std::string::npos,
+		"stamp.empty-retired-stub");
 	Check(smvk::project::EmitProjectHeader(c, stamp, assets, paks)
 			== text,
 		"stamp.header-deterministic");

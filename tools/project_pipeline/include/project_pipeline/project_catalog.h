@@ -48,6 +48,9 @@ struct CatalogEntry {
 	std::string path;   // project-relative (the plan's identity — the
 	                    // runtime pairs it with the pak + the manifest)
 	std::string pak;    // the owning pak id
+	std::string kind;   // "scene"|"texture"|"mesh"|"sound" (the retired
+	                    // table's typed keys; empty on active rows is
+	                    // NOT valid — the generator always fills it)
 };
 
 struct ProjectCatalog {
@@ -64,6 +67,14 @@ struct ProjectCatalog {
 	// id carriers: renaming a package updates this table; asset ids
 	// stay.
 	std::vector<std::pair<std::string, std::string>> paks;
+	// The TOMBSTONED identities (assets.db rows the plan no longer
+	// carries — deleted assets; active=0, ids+symbols reserved
+	// forever, never reused). The header emits them as the `retired`
+	// namespace (historical typed symbols, values preserved) + the
+	// compile-time IsRetired/IsActive queries; they stay OUT of the
+	// active namespaces and the published manifests. Re-adding the
+	// asset with its original GUID re-activates the SAME id+symbol.
+	std::vector<CatalogEntry> retired;
 	uint64_t entryScene = 0; // the scenes:: namespace id (0 = none)
 };
 
