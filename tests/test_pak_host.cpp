@@ -106,11 +106,13 @@ void TestCliParse() {
 				opts, ec) && ec == 0,
 			"cli.help-success-exit");
 	}
-	// The removed --gltf refuses loudly.
+	// THE REMOVED --gltf (the App never touches glTF — import-only
+	// content, the editor/import.exe own it): with the special-case
+	// handler gone, the flag is exactly any other unknown argument.
 	{
 		int ec = 0;
 		Check(ParseFails({ "App", "--pak", "x.pak", "--gltf" }, ec)
-			&& ec != 0, "cli.gltf-removed-refused");
+			&& ec != 0, "cli.gltf-is-unknown-arg");
 	}
 	// ---- the --project launch (the appmanifest surface) -------------
 	Check(ParseOk({ "App", "--project", "build/sponza.tapp" }, opts)

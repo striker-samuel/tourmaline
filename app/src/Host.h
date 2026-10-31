@@ -127,9 +127,11 @@ struct PakAppConfig {
 
 // Parse argv into `opts` (the dedicated CLI options object — nothing else
 // is read or reset). Returns true on success; on `--help`/unknown args/bad
-// values (or the removed `--gltf`) prints to stdout/stderr and returns
-// false with exitCode set (EXIT_SUCCESS for --help, EXIT_FAILURE
-// otherwise).
+// values prints to stdout/stderr and returns false with exitCode set
+// (EXIT_SUCCESS for --help, EXIT_FAILURE otherwise). glTF never appears on
+// this surface: import-only content (the editor/import.exe own the import;
+// the App loads cooked paks / .tapp manifests exclusively) — a --gltf
+// argument is simply an unknown argument.
 bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 	int& exitCode);
 

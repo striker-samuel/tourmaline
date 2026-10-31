@@ -124,14 +124,6 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		else if (std::strncmp(a, "--project=", 10) == 0) {
 			opts.project = a + 10;
 		}
-		else if (std::strcmp(a, "--gltf") == 0
-			|| std::strncmp(a, "--gltf=", 7) == 0) {
-			std::cerr << "--gltf was removed: the App loads OUR format "
-				"only (cooked paks). Preprocess glTF through the "
-				"editor (import -> cook), then --pak the result.\n";
-			exitCode = EXIT_FAILURE;
-			return false;
-		}
 		else if ((std::strcmp(a, "--scene-index") == 0) && i + 1 < argc) {
 			const char* v = argv[++i];
 			long long n = 0;
