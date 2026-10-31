@@ -299,7 +299,7 @@ and the audio layer's per-process pak-image cost note (the shared
 apphost->game runtime seam - RunPakApp handing its preloaded backends
 to the AudioRuntime's ProjectRuntime).
 
-(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi), stage 4c (tour::placement - all 13 headers + placement_pass.h), the flattened typed catalog + the fingerprint contract (114068d8). REMAINING) THE tour::/smvk:: SPLIT - the
+(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi), stage 4c (tour::placement), the flattened typed catalog + the fingerprint contract (114068d8), the COMPLETE global-namespace cleanup (NodeId/scene payloads/tables/scene.h/Camera/Input), World + Cluster + Animator -> tour, the tour-doc + touranim + pak models -> tour::asset (THE NAME COLLISION DISSOLVED - the smvk::tour namespace alias remains as the last bridge). REMAINING) THE tour::/smvk:: SPLIT - the
 audit's confirmed findings + the migration plan (feature branch
 feature/namespace-rhi-boundary):
   TARGET: tour:: = the public engine API (apps, scenes, assets, camera,
