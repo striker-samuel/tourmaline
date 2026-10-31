@@ -641,6 +641,20 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				// (the session state SaveTourTo writes; the bake owner
 				// stamped the snapshot — the job read them back). The
 				// editor never derives records itself.
+				//
+				// OWNER'S DECISION (the EDT-04 question, settled):
+				// bake bindings are DERIVED state — the bake owner's
+				// records of the artifacts it just wrote — so the
+				// adoption is ONE ATOMIC, SUCCESS-ONLY assignment and
+				// deliberately NOT an undoable edit step. An undo
+				// transaction would revert the doc's bindings toward
+				// bakes that no longer exist on disk (the stamp's
+				// supersede list already retired them by record) — an
+				// inconsistent doc pointing at deleted artifacts. The
+				// safety that matters is EDT-03's contract, which this
+				// fold keeps exactly: on failure nothing changes (the
+				// live doc keeps its last valid bindings verbatim, the
+				// viewport stands, the last valid outputs stand).
 				if (!r.giAssets.empty()) {
 					m_giAssets = std::move(r.giAssets);
 					Log("Cook: tour giAsset bindings updated ("
@@ -1034,6 +1048,10 @@ void EditorApp::BakeGI() {
 		if (r.ok) {
 			// The bake's giAsset records into the LIVE-doc mirror (the
 			// bake owner stamped the snapshot; the job read them back).
+			// Same OWNER'S DECISION as the cook's fold (see the
+			// completion note above): derived state, one atomic
+			// success-only assignment, never an undo step — undo would
+			// re-point the doc at superseded (deleted) bake artifacts.
 			if (!r.giAssets.empty()) {
 				m_giAssets = std::move(r.giAssets);
 				Log("Bake GI: tour giAsset bindings updated ("
