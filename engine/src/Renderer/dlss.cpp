@@ -37,6 +37,11 @@
 #include "sl_consts.h"
 #include "sl_dlss.h"
 #include "sl_pcl.h"
+
+// The Vulkan resource adaptation seam (the boundary audit's P1):
+// ToVkFormat/ToVkUsage/TaggedResource live in the backend adapter;
+// this file owns the settings + orchestration only.
+#include "dlss_vulkan_adapter.h"
 #endif
 
 #ifdef _WIN32
@@ -101,80 +106,7 @@ bool ResolveProc(const char* name, T*& out) {
 	return static_cast<sl::DLSSMode>(static_cast<uint32_t>(mode));
 }
 
-[[nodiscard]] VkFormat ToVkFormat(smvk::Format f) {
-	switch (f) {
-	case smvk::Format::RGBA16_Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
-	case smvk::Format::RG16_Float: return VK_FORMAT_R16G16_SFLOAT;
-	case smvk::Format::R32_Float: return VK_FORMAT_R32_SFLOAT;
-	case smvk::Format::D32_Float: return VK_FORMAT_D32_SFLOAT;
-	// Scene depth is a stencil format (findDepthFormat prefers
-	// D32_SFLOAT_S8_UINT, falls back to D24_UNORM_S8_UINT). The DLSS
-	// plugin validates the tagged depth format — returning UNDEFINED
-	// here trips "Cannot have undefined format" in SL and, in release
-	// (assert compiled out), poisons the evaluate that later aborts
-	// in VK_CHECK on toggle-off. Map the real formats through.
-	case smvk::Format::D32_Float_S8_UInt: return VK_FORMAT_D32_SFLOAT_S8_UINT;
-	case smvk::Format::D24_UNorm_S8_UInt: return VK_FORMAT_D24_UNORM_S8_UINT;
-	case smvk::Format::D16_UNorm: return VK_FORMAT_D16_UNORM;
-	default: break;
-	}
-	assert(false && "ToVkFormat: format not handled by the DLSS module");
-	return VK_FORMAT_UNDEFINED;
-}
 
-[[nodiscard]] uint32_t ToVkUsage(smvk::ImageUsage u) {
-	uint32_t vk = 0;
-	if ((u & smvk::ImageUsage::TransferSrc) != smvk::ImageUsage::None)
-		vk |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-	if ((u & smvk::ImageUsage::TransferDst) != smvk::ImageUsage::None)
-		vk |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	if ((u & smvk::ImageUsage::Sampled) != smvk::ImageUsage::None)
-		vk |= VK_IMAGE_USAGE_SAMPLED_BIT;
-	if ((u & smvk::ImageUsage::Storage) != smvk::ImageUsage::None)
-		vk |= VK_IMAGE_USAGE_STORAGE_BIT;
-	if ((u & smvk::ImageUsage::ColorAttachment) != smvk::ImageUsage::None)
-		vk |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	if ((u & smvk::ImageUsage::DepthStencilAttachment) != smvk::ImageUsage::None)
-		vk |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-	return vk;
-}
-
-// Fills one sl::Resource + tag pair. `layout` must be the image layout at
-// the time SL consumes the resource (the rendergraph barriers images to
-// exactly these layouts via the pass image hints before recording).
-struct TaggedResource {
-	sl::Resource resource;
-	sl::ResourceTag tag;
-	sl::Extent extent;
-
-	// depth: VkImageLayout DEPTH_STENCIL_READ_ONLY_OPTIMAL (the graph's
-	// depth read promotion); everything else SHADER_READ_ONLY_OPTIMAL;
-	// the storage output GENERAL.
-	TaggedResource(smvk::Extent2D extent2d, smvk::Format format, smvk::ImageUsage usage,
-		VkImageLayout layout, sl::BufferType type, sl::ResourceLifecycle lifecycle,
-		VkImage vkImage, VkImageView vkView)
-		: resource(sl::ResourceType::eTex2d,
-			reinterpret_cast<void*>(vkImage),
-			nullptr,
-			reinterpret_cast<void*>(vkView),
-			static_cast<uint32_t>(layout))
-		, extent{ 0u, 0u, extent2d.width, extent2d.height }
-	{
-		// Body assignment: the tag copies `extent`, which is only fully
-		// initialized after the member-init list ran (declaration order).
-		resource.width = extent2d.width;
-		resource.height = extent2d.height;
-		resource.nativeFormat = ToVkFormat(format);
-		resource.mipLevels = 1;
-		resource.arrayLayers = 1;
-		resource.usage = usage != smvk::ImageUsage::None
-			? ToVkUsage(usage) : VK_IMAGE_USAGE_SAMPLED_BIT;
-		tag.resource = &resource;
-		tag.type = type;
-		tag.lifecycle = lifecycle;
-		tag.extent = extent;
-	}
-};
 
 } // namespace
 #endif // _WIN32 (first anon-namespace block: SL state + proc resolution)
@@ -620,27 +552,27 @@ bool DlssEvaluate(ResourceManager& ctx, void* vkCommandBuffer,
 	// Lifecycles follow the DLSS programming guide's tagging example:
 	// depth lives until present, the volatile per-frame inputs are
 	// consumed immediately at evaluate.
-	TaggedResource colorIn(
+	dlss_vk::TaggedResource colorIn(
 		in.renderExtent, in.colorFormat, usageOf(in.colorInImage),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow,
 		vkImage(in.colorInImage), vkView(in.colorInView));
-	TaggedResource colorOut(
+	dlss_vk::TaggedResource colorOut(
 		in.outputExtent, in.colorFormat, usageOf(in.colorOutImage),
 		VK_IMAGE_LAYOUT_GENERAL,
 		sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow,
 		vkImage(in.colorOutImage), vkView(in.colorOutView));
-	TaggedResource depth(
+	dlss_vk::TaggedResource depth(
 		in.renderExtent, in.depthFormat, usageOf(in.depthImage),
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 		sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent,
 		vkImage(in.depthImage), vkView(in.depthView));
-	TaggedResource mvec(
+	dlss_vk::TaggedResource mvec(
 		in.renderExtent, in.mvecFormat, usageOf(in.mvecImage),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow,
 		vkImage(in.mvecImage), vkView(in.mvecView));
-	TaggedResource exposure(
+	dlss_vk::TaggedResource exposure(
 		Extent2D{ 1u, 1u }, in.exposureFormat, usageOf(in.exposureImage),
 		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		sl::kBufferTypeExposure, sl::ResourceLifecycle::eOnlyValidNow,

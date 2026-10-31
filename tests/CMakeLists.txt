@@ -466,7 +466,7 @@ foreach(_hdr ${_smoke_headers})
     list(APPEND _smoke_srcs "${_src}")
 endforeach()
 
-add_library(HeaderSmoke OBJECT EXCLUDE_FROM_ALL ${_smoke_srcs})
+add_library(HeaderSmoke OBJECT ${_smoke_srcs})
 # The engine target's INTERFACE include paths (glm, SDL3, spirv-reflect,
 # ...) - the headers legitimately use these third-party deps; the pure
 # "no RHI include dirs" form of the smoke test lands with the tour/smvk
@@ -475,10 +475,13 @@ add_library(HeaderSmoke OBJECT EXCLUDE_FROM_ALL ${_smoke_srcs})
 target_link_libraries(HeaderSmoke PRIVATE engine)
 # No PCH, no extra defines: the headers must stand on their own.
 target_compile_features(HeaderSmoke PRIVATE cxx_std_20)
+# In the DEFAULT build (not EXCLUDE_FROM_ALL): the ctest entry would
+# otherwise spawn a compiler at TEST time - from a test runner without
+# the MSVC environment (plain ctest vs a vcvars shell) the STL includes
+# are missing and the entry flakes. In the default build the objects
+# exist before ctest in EVERY workflow, and the TUs only rebuild when
+# the headers change - which is exactly when the check should run.
 
-# The ctest marker: building the target is the real check; the test
-# binary just proves the target was built (a no-op exe would be
-# heavier). A custom target + a compile-only "test" that re-builds.
 add_custom_target(HeaderSmokeCheck
     COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target HeaderSmoke --config $<CONFIG>
     COMMAND echo "header smoke: all public headers compiled standalone"
