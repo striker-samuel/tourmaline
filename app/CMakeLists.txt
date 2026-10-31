@@ -25,6 +25,7 @@ add_library(tourmaline_apphost STATIC
     src/PakAppArgs.cpp
     src/PakPreload.cpp
     src/PakWorldLoader.cpp
+    src/ProjectRuntime.cpp
 )
 
 target_include_directories(tourmaline_apphost

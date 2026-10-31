@@ -1003,6 +1003,20 @@ void TestAppManifest() {
 				"[paks]\na.pak\n" },
 			{ "empty-scene-name", "appmanifest 1\nentry a.pak \"\"\n"
 				"[paks]\na.pak\n" },
+			// The [ids] table (the runtime catalog mirror).
+			{ "id-bad-hex", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\nzz scene a.pak c/s.tour\n" },
+			{ "id-duplicate", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\n0x10 scene a.pak c/a.tour\n"
+				"0x10 texture a.pak c/b.png\n" },
+			{ "id-bad-kind", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\n0x10 widget a.pak c/a.tour\n" },
+			{ "id-unlisted-pak", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\n0x10 scene b.pak c/a.tour\n" },
+			{ "id-bad-arity", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\n0x10 scene a.pak\n" },
+			{ "id-zero", "appmanifest 1\nentry a.pak scene\n"
+				"[paks]\na.pak\n[ids]\n0x0 scene a.pak c/a.tour\n" },
 		};
 		for (const Bad& b : bad) {
 			smvk::AppManifest m;
@@ -1024,6 +1038,34 @@ void TestAppManifest() {
 				&& err.find("not listed") != std::string::npos,
 				"tapp.save-rejects-invalid");
 		}
+	}
+	// The [ids] round-trip: save -> load -> identical rows + FindAsset.
+	{
+		smvk::AppManifest m;
+		m.version = smvk::kAppManifestVersion;
+		m.entryPak = "world.pak";
+		m.entryScene = "scene";
+		m.paks = { "shared.pak", "world.pak" };
+		m.assets = {
+			{ 0x1000, "scene", "world.pak", "content/scenes/w.tour" },
+			{ 0x2000, "texture", "shared.pak",
+				"content/models/s/stone.png" },
+			{ 0x3000, "mesh", "world.pak", "content/models/w/w.geometry" },
+		};
+		const fs::path file = tmp / "ids.tapp";
+		std::string err;
+		Check(smvk::SaveAppManifest(file.generic_string(), m, err),
+			"tapp.ids-save-ok");
+		smvk::AppManifest back;
+		Check(smvk::LoadAppManifest(file.generic_string(), back, err)
+			&& back.assets.size() == 3
+			&& back.assets[1].id == 0x2000
+			&& back.assets[1].kind == "texture"
+			&& back.assets[1].pak == "shared.pak"
+			&& back.assets[1].path == "content/models/s/stone.png"
+			&& back.FindAsset(0x3000) == &back.assets[2]
+			&& back.FindAsset(0x9999) == nullptr,
+			"tapp.ids-round-trip");
 	}
 }
 
@@ -1427,6 +1469,31 @@ void TestBuildPlanExecutor() {
 					&& manifest.paks[0] == "shared.pak"
 					&& manifest.paks[1] == "world.pak",
 					"executor.manifest-content");
+				// The content-id table (the runtime catalog mirror —
+				// the same registry the ids command maintains): the
+				// scene + mesh in world.pak, the texture cross-pak in
+				// shared.pak, ids from the kind ranges.
+				{
+					const smvk::AppManifestAsset* scene =
+						manifest.FindAsset(0x1000);
+					const smvk::AppManifestAsset* tex =
+						manifest.FindAsset(0x2000);
+					const smvk::AppManifestAsset* mesh =
+						manifest.FindAsset(0x3000);
+					Check(manifest.assets.size() == 3
+						&& scene && scene->kind == "scene"
+						&& scene->pak == "world.pak"
+						&& scene->path == "content/scenes/grid.tour"
+						&& tex && tex->kind == "texture"
+						&& tex->pak == "shared.pak"
+						&& tex->path
+							== "content/models/grid/shared/stone.png"
+						&& mesh && mesh->kind == "mesh"
+						&& mesh->pak == "world.pak"
+						&& mesh->path
+							== "content/models/grid/grid.geometry",
+						"executor.manifest-id-table");
+				}
 				bool paksExist = true;
 				for (const std::string& pak : manifest.paks)
 					if (!fs::is_regular_file(

@@ -14,6 +14,7 @@
 //   out/build/x64-Release/GameProject.exe                          (runs the entry scene)
 
 #include "Host.h"
+#include "ProjectRuntime.h"
 
 #include "project.h"
 
@@ -40,6 +41,8 @@ int main(int argc, const char* argv[]) {
 		"the catalog must carry the entry scene");
 	static_assert(!project::Paks.empty(),
 		"the catalog must carry at least one pak");
+	static_assert(project::Contains(project::textures::stone),
+		"the catalog must carry the shared texture");
 
 	// The catalog-driven launch banner (every id the header carries).
 	std::printf("[GameProject] content-as-code: project 0x%llX '%s', %zu"
@@ -95,5 +98,37 @@ int main(int argc, const char* argv[]) {
 	if (!app::ParsePakAppArgs(int(args.size()), args.data(), cfg.cli,
 			exitCode))
 		return exitCode;
+
+	// ---- THE RUNTIME FAÇADE: stable ids resolve to real bytes -------
+	// The compiled header's project::textures::stone (a constexpr id
+	// from the project's asset db) resolves through the appmanifest's
+	// [ids] table to its pak + path, and the bytes come back through
+	// the pak backend — game code never types a path or an index.
+	// (Cross-pak by construction: the texture lives in shared.pak while
+	// the entry scene rides game.pak.)
+	if (!cfg.cli.project.empty()) {
+		std::string rtErr;
+		if (auto runtime = app::ProjectRuntime::Load(cfg.cli.project,
+				rtErr)) {
+			if (const smvk::AppManifestAsset* row =
+					runtime->Asset(project::textures::stone)) {
+				std::printf("[GameProject] id 0x%llx -> %s '%s'\n",
+					(unsigned long long)project::textures::stone,
+					row->pak.c_str(), row->path.c_str());
+				if (auto bytes = runtime->ReadAsset(
+						project::textures::stone, rtErr))
+					std::printf("[GameProject] read %zu bytes of"
+						" ktx2 through %s\n", bytes->size(),
+						row->pak.c_str());
+				else
+					std::printf("[GameProject] texture read failed:"
+						" %s\n", rtErr.c_str());
+			}
+			else {
+				std::printf("[GameProject] the id table does not carry"
+					" the texture (rebuild GameProject_paks)\n");
+			}
+		}
+	}
 	return app::RunPakApp(cfg);
 }

@@ -43,11 +43,33 @@ namespace smvk {
 
 inline constexpr uint32_t kAppManifestVersion = 1;
 
+// One CONTENT-ID row (the generated project.h's catalog, mirrored into
+// the manifest so the RUNTIME resolves stable ids without the header —
+// the spec's "the cooker uses those exact identifiers in the cooked
+// metadata"). kind: "scene" | "texture" | "mesh"; pak is the FILE
+// (manifest-relative, listed in [paks]); path is the project-relative
+// content path (VFS-addressable for textures/meshes; the scene's tour
+// path for scenes — the runtime pairs it with the pak's scene list).
+struct AppManifestAsset {
+	uint64_t id = 0;
+	std::string kind;
+	std::string pak;
+	std::string path;
+};
+
 struct AppManifest {
 	uint32_t version = 0;
 	std::string entryPak;   // pak file (manifest-relative)
 	std::string entryScene; // the cooked scene's name inside entryPak
 	std::vector<std::string> paks; // ordered (mount order), relative
+	// The content-id table (OPTIONAL — manifests from before the
+	// catalog mirror carry none; the runtime façade degrades to
+	// path-only). Ids are unique; each row's pak must be listed.
+	std::vector<AppManifestAsset> assets;
+
+	// The row for a stable id (nullptr = unknown). The runtime façade's
+	// core lookup.
+	[[nodiscard]] const AppManifestAsset* FindAsset(uint64_t id) const;
 };
 
 // Text round-trip. Save refuses an invalid manifest (no entry, entry

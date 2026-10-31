@@ -26,6 +26,13 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
+#include <artifact_cache/assetdb.h>
+#include <artifact_cache/artifact_cache.h>
+
+#include <project_pipeline/import_pipeline.h>
+#include <project_pipeline/project.h>
+#include <project_pipeline/project_catalog.h>
+
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
 
@@ -584,6 +591,58 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		manifest.entryScene = entrySceneName;
 		for (const PlanPak& pak : plan.paks)
 			manifest.paks.push_back(pak.output);
+		// The content-id table (the runtime mirror of the generated
+		// project.h — game code resolves stable ids through the
+		// apphost's ProjectRuntime without the header). The SAME
+		// registry (assets.db — the one identity store) the ids
+		// command maintains; ensuring here is idempotent, so a build
+		// alone is sufficient and the manifest always carries the
+		// current catalog.
+		{
+			const std::string registryRoot =
+				smvk::cache::EnsureRegistryRoot(project.DerivedDataDir());
+			smvk::cache::AssetDatabase db;
+			if (!registryRoot.empty()
+					&& db.Open(registryRoot, project.root, err)) {
+				ProjectCatalog catalog;
+				std::vector<std::string> deps;
+				if (GenerateProjectCatalog(project, plan, db, catalog,
+						deps, err)) {
+					std::map<std::string, std::string> pakFileById;
+					for (const PlanPak& pak : plan.paks)
+						pakFileById[pak.id] = pak.output;
+					const auto addRows =
+						[&](const std::vector<CatalogEntry>& entries,
+							const char* kind) {
+							for (const CatalogEntry& e : entries) {
+								smvk::AppManifestAsset row;
+								row.id = e.id;
+								row.kind = kind;
+								row.pak = pakFileById.count(e.pak)
+									? pakFileById[e.pak] : e.pak;
+								row.path = e.path;
+								manifest.assets.push_back(
+									std::move(row));
+							}
+						};
+					addRows(catalog.scenes, "scene");
+					addRows(catalog.textures, "texture");
+					addRows(catalog.meshes, "mesh");
+				}
+				else {
+					// The manifest's id table is part of the build's
+					// product now — a registry failure fails the build.
+					err = "the manifest's content-id table failed: "
+						+ err;
+					return false;
+				}
+			}
+			else {
+				err = "the asset db open failed for the content-id"
+					" table: " + err;
+				return false;
+			}
+		}
 		std::string manifestName = options.manifestName;
 		if (manifestName.empty()) {
 			manifestName = fs::path(entryPak->output).stem()

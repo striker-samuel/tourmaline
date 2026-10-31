@@ -744,6 +744,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/PakAppArgs.cpp
 	../app/src/PakPreload.cpp
 	../app/src/PakWorldLoader.cpp
+	../app/src/ProjectRuntime.cpp
 )
 
 target_include_directories(PakHostTests

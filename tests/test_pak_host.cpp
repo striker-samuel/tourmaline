@@ -32,9 +32,11 @@
 #include "Host.h"
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
+#include "ProjectRuntime.h"
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
+#include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Scene/scene.h>
 
@@ -409,6 +411,89 @@ void TestParallelCrcFirstUse() {
 		"pakcorruption.parallel-crc-first-use-agrees");
 }
 
+// ---- ProjectRuntime (the apphost's project façade) -------------------
+// A pak with one Texture blob + a manifest with the [ids] row beside
+// it: the stable id resolves to its row and to REAL BYTES through the
+// pak backend (the v1 form of "LoadTexture(project::textures::Stone)").
+void TestProjectRuntime() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_prt";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+	const std::string vfsPath = "content/models/s/stone.png";
+	const std::vector<uint8_t> ktx = { 0xAB, 'K', 'T', 'X', ' ', '2',
+		'0', 0x0D, 0x0A, 1, 2, 3, 4, 5 };
+	{
+		smvk::PakWriter w;
+		w.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+			smvk::BuildTexturePayload(vfsPath, -1, -1, -1, -1,
+				std::span<const uint8_t>(ktx)));
+		const std::vector<uint8_t> image = w.Finalize();
+		std::ofstream f(tmp / "shared.pak",
+			std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(image.data()),
+			std::streamsize(image.size()));
+	}
+	const fs::path tapp = tmp / "game.tapp";
+	{
+		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		f << "# Tourmaline Runtime Project\n"
+			<< "appmanifest 1\n"
+			<< "entry shared.pak scene\n"
+			<< "\n[paks]\nshared.pak\n"
+			<< "\n[ids]\n"
+			<< "0x2000 texture shared.pak " << vfsPath << "\n";
+	}
+	std::string err;
+	auto rt = app::ProjectRuntime::Load(tapp.generic_string(), err);
+	Check(bool(rt) && err.empty(), "prt.load");
+	if (rt) {
+		Check(rt->Manifest().paks.size() == 1
+			&& rt->Manifest().assets.size() == 1,
+			"prt.manifest-parsed");
+		const smvk::AppManifestAsset* row = rt->Asset(0x2000);
+		Check(row && row->kind == "texture"
+			&& row->pak == "shared.pak" && row->path == vfsPath,
+			"prt.asset-row");
+		Check(rt->Asset(0x9999) == nullptr
+			&& rt->Asset("texture", vfsPath) == row,
+			"prt.asset-lookup");
+		std::string rErr;
+		auto bytes = rt->ReadAsset(0x2000, rErr);
+		Check(bytes && *bytes == ktx && rErr.empty(),
+			"prt.read-bytes");
+		// Unknown ids + unserved paths fail LOUDLY (never a guess).
+		std::string badErr;
+		Check(!rt->ReadAsset(0x9999, badErr) && !badErr.empty(),
+			"prt.unknown-id-fails");
+		// A manifest-relative pak resolution: move the whole tree, the
+		// runtime still resolves (RUN-04's contract through the façade).
+		const fs::path moved = tmp / "moved";
+		fs::create_directories(moved, ec);
+		fs::copy(tmp / "shared.pak", moved / "shared.pak",
+			fs::copy_options::overwrite_existing, ec);
+		fs::copy(tapp, moved / "game.tapp",
+			fs::copy_options::overwrite_existing, ec);
+		std::string mErr;
+		auto rt2 = app::ProjectRuntime::Load(
+			(moved / "game.tapp").generic_string(), mErr);
+		std::string rErr2;
+		Check(bool(rt2)
+			&& rt2->ReadAsset(0x2000, rErr2) && rErr2.empty(),
+			"prt.moved-tree-reads");
+	}
+	else {
+		Check(false, "prt.manifest-parsed");
+		Check(false, "prt.asset-row");
+		Check(false, "prt.asset-lookup");
+		Check(false, "prt.read-bytes");
+		Check(false, "prt.unknown-id-fails");
+		Check(false, "prt.moved-tree-reads");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -417,6 +502,7 @@ int main() {
 	TestPakPathResolution();
 	TestPakCorruption();
 	TestStaticFlagApplication();
+	TestProjectRuntime();
 	std::cout << "pak_host_tests: " << (g_checks - g_failures) << "/"
 		<< g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;

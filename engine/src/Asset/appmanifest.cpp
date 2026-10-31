@@ -20,6 +20,40 @@ namespace {
 
 bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
+// 64-bit hex ("0x1000") — the id rows' form.
+bool ParseIdHex(const std::string& s, uint64_t& out) {
+	out = 0;
+	if (s.size() < 3 || s[0] != '0' || (s[1] != 'x' && s[1] != 'X'))
+		return false;
+	if (s.size() > 18)
+		return false;
+	for (size_t i = 2; i < s.size(); ++i) {
+		const char c = s[i];
+		int v = -1;
+		if (c >= '0' && c <= '9')
+			v = c - '0';
+		else if (c >= 'a' && c <= 'f')
+			v = c - 'a' + 10;
+		else if (c >= 'A' && c <= 'F')
+			v = c - 'A' + 10;
+		if (v < 0)
+			return false;
+		out = (out << 4) | uint64_t(v);
+	}
+	return true;
+}
+
+std::string Hex(uint64_t v) {
+	static const char* k = "0123456789abcdef";
+	std::string s = "0x";
+	for (int shift = 60; shift >= 0; shift -= 4) {
+		const char c = k[(v >> shift) & 0xF];
+		if (c != '0' || s.size() > 2)
+			s += c;
+	}
+	return s;
+}
+
 std::string Trim(const std::string& s) {
 	size_t b = 0, e = s.size();
 	while (b < e && IsSpace(s[b]))
@@ -125,7 +159,47 @@ bool ValidateAppManifest(const AppManifest& m, std::string& err) {
 		err = "the entry scene name is empty";
 		return false;
 	}
+	// The optional content-id rows: unique ids, known kinds, listed
+	// paks, valid relative paths.
+	std::set<uint64_t> ids;
+	for (const AppManifestAsset& a : m.assets) {
+		if (a.id == 0) {
+			err = "content id 0 is reserved (row '" + a.path + "')";
+			return false;
+		}
+		if (!ids.insert(a.id).second) {
+			err = "duplicate content id 0x" + Hex(a.id);
+			return false;
+		}
+		if (a.kind != "scene" && a.kind != "texture"
+				&& a.kind != "mesh") {
+			err = "unknown content kind '" + a.kind + "' (row 0x"
+				+ Hex(a.id) + ")";
+			return false;
+		}
+		std::string why;
+		if (!ValidRelativePath(a.pak, why)) {
+			err = "content row pak '" + a.pak + "': " + why;
+			return false;
+		}
+		if (!seen.count(a.pak)) {
+			err = "content row 0x" + Hex(a.id)
+				+ " names unlisted pak '" + a.pak + "'";
+			return false;
+		}
+		if (!ValidRelativePath(a.path, why)) {
+			err = "content row path '" + a.path + "': " + why;
+			return false;
+		}
+	}
 	return true;
+}
+
+const AppManifestAsset* AppManifest::FindAsset(uint64_t id) const {
+	for (const AppManifestAsset& a : assets)
+		if (a.id == id)
+			return &a;
+	return nullptr;
 }
 
 bool LoadAppManifestText(const std::string& text, AppManifest& out,
@@ -136,7 +210,7 @@ bool LoadAppManifestText(const std::string& text, AppManifest& out,
 			&& static_cast<unsigned char>(body[1]) == 0xBB
 			&& static_cast<unsigned char>(body[2]) == 0xBF)
 		body = body.substr(3);
-	bool inPaks = false, sawVersion = false, sawEntry = false;
+	bool inPaks = false, inIds = false, sawVersion = false, sawEntry = false;
 	std::vector<std::string> lines;
 	{
 		size_t start = 0;
@@ -164,11 +238,59 @@ bool LoadAppManifestText(const std::string& text, AppManifest& out,
 		const std::string where = "(line " + std::to_string(lineNo) + "): ";
 		if (content == "[paks]") {
 			inPaks = true;
+			inIds = false;
+			continue;
+		}
+		if (content == "[ids]") {
+			inIds = true;
+			inPaks = false;
 			continue;
 		}
 		if (content.front() == '[') {
 			err = where + "unknown section '" + content + "'";
 			return false;
+		}
+		if (inIds) {
+			// id rows: <0xId> <kind> <pak-file> <path> (the last two
+			// may be quoted — paths with spaces).
+			std::vector<std::string> toks;
+			size_t i = 0;
+			while (i < content.size()) {
+				while (i < content.size() && IsSpace(content[i]))
+					++i;
+				if (i < content.size() && content[i] == '"') {
+					const size_t close = content.find('"', i + 1);
+					if (close == std::string::npos) {
+						err = where + "unterminated quoted value";
+						return false;
+					}
+					toks.push_back(content.substr(i + 1, close - i - 1));
+					i = close + 1;
+				}
+				else {
+					size_t j = i;
+					while (j < content.size() && !IsSpace(content[j]))
+						++j;
+					if (i < j)
+						toks.push_back(content.substr(i, j - i));
+					i = j;
+				}
+			}
+			if (toks.size() != 4) {
+				err = where + "an id row is"
+					" '<0xId> <scene|texture|mesh> <pak> <path>'";
+				return false;
+			}
+			AppManifestAsset row;
+			if (!ParseIdHex(toks[0], row.id)) {
+				err = where + "'" + toks[0] + "' is not an id (0x hex)";
+				return false;
+			}
+			row.kind = toks[1];
+			row.pak = toks[2];
+			row.path = toks[3];
+			out.assets.push_back(std::move(row));
+			continue;
 		}
 		if (inPaks) {
 			std::string pak = content;
@@ -291,6 +413,12 @@ bool SaveAppManifest(const std::string& path, const AppManifest& m,
 	os << "\n[paks]\n";
 	for (const std::string& pak : m.paks)
 		os << pak << "\n";
+	if (!m.assets.empty()) {
+		os << "\n[ids]\n";
+		for (const AppManifestAsset& a : m.assets)
+			os << Hex(a.id) << " " << a.kind << " " << a.pak << " "
+				<< a.path << "\n";
+	}
 	std::ofstream f(path, std::ios::binary | std::ios::trunc);
 	if (!f) {
 		err = "cannot write the appmanifest: " + path;
