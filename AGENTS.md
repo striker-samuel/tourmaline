@@ -270,6 +270,38 @@ trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
   — recipes never control its inclusion. Unit-tested in
   test_project_pipeline.cpp (`shaders.*`).
 
+### The watched shader hot-reload service (dev)
+
+- `smvk::shader_reload` (`Engine/Utils/shader_hot_reload.h`) is the
+  source→bytes leg of live shader editing: a FileWatcher over
+  `engine/shaders/` (*.hlsl + *.hlsli), settled edits recompiled
+  IN-PROCESS through the DXC integration (the same flag shape
+  CompileShaders.cmake uses, now with include-dir + defines +
+  CAPTURED diagnostics), the replacement bytecode VALIDATED (the
+  SPIR-V magic) before it lands, and the .spv written ATOMICALLY
+  into the dev override tree the shader library serves — the next
+  `smvk::shaders::Read` returns the fresh bytes.
+- THE LAST-KNOWN-GOOD CONTRACT: a failed compile (or invalid output)
+  NEVER touches the previous .spv — the previous generation keeps
+  serving, the compiler's diagnostic rides the Change log. A
+  byte-identical recompile skips the write (no mtime churn).
+- THE INVALIDATION RULES: a .hlsl edit recompiles that file's BASE
+  output + its VARIANT TWINS (the baked-define permutations —
+  `VariantsOf`, the mirror of engine/CMakeLists.txt's VARIANTS list;
+  drift degrades gracefully, never a wrong variant); a .hlsli edit
+  recompiles EVERYTHING (includes are coarse).
+- Arming: `TOURMALINE_SHADER_RELOAD=1` (App + Editor, dev only —
+  never on by default; `TOURMALINE_SHADER_RELOAD_SRC` overrides the
+  source tree). `WorldRenderer::RenderFrame` consumes the change log
+  at the frame boundary and logs Recompiled/FAILED lines.
+- THE SWAP CONTRACT (the consumer leg): Vulkan modules are immutable
+  — a consumer rebuilds its module+pipeline set at the frame
+  boundary (between submits, the GPU-safe point) and retires old
+  handles behind the in-flight frames. v1 scope lands the
+  recompile+validation+diagnostics+frame-tick seam; the per-builder
+  rebuild hooks (live in-place pipeline swaps) are the documented
+  follow-up. Regression-tested in test_shader_hot_reload.cpp.
+
 ## Running
 
 `App.exe` runs from the build directory (`out/build/x64-Release`), loading

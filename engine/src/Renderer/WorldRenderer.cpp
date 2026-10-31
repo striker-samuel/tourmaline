@@ -67,6 +67,7 @@
 #include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
+#include <Engine/Utils/shader_hot_reload.h> // the frame-tick consume (the hot-reload seam)
 #include <imgui.h>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -9672,6 +9673,40 @@ namespace engine {
 	void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 		SMVK_PROFILE_FUNCTION();
 		SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
+
+		// THE SHADER HOT-RELOAD CONSUME (the frame-boundary seam, see
+		// Engine/Utils/shader_hot_reload.h): settled source edits have
+		// already recompiled + validated + LANDED as fresh .spv bytes
+		// in the dev override tree (the last-known-good contract held
+		// — a failed compile never touched the previous file). The
+		// swap contract: Vulkan modules are immutable, so a consumer
+		// rebuilds its module+pipeline set at THIS boundary (between
+		// submits — the GPU-safe point) and retires the old handles
+		// behind the in-flight frames. v1 scope: this tick drains the
+		// change log + surfaces the diagnostics (a Recompiled line
+		// means the next renderer (re)build serves the new bytes; a
+		// Failed line means the last-known-good pipelines KEEP
+		// rendering). The per-builder rebuild hooks are the follow-up
+		// that turns this into a live in-place swap.
+		if (smvk::shader_reload::Running()) {
+			for (const smvk::shader_reload::Change& c :
+					smvk::shader_reload::ConsumeChanges()) {
+				if (c.status
+						== smvk::shader_reload::Status::Recompiled)
+					std::fprintf(stderr,
+						"[shader-reload] recompiled %s"
+						" (%llu B, from %s)\n",
+						c.spvPath.c_str(),
+						(unsigned long long)c.bytes,
+						c.source.c_str());
+				else
+					std::fprintf(stderr,
+						"[shader-reload] FAILED %s (kept the last"
+						" known-good): %s\n",
+						c.spvPath.c_str(),
+						c.diagnostic.c_str());
+			}
+		}
 
 		m_frameCounter += 1;
 		// Open the Streamline frame (one SL token per rendered frame, shared

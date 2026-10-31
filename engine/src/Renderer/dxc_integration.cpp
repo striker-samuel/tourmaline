@@ -45,9 +45,41 @@ std::vector<char> CompileHLSLToSPIRV(
     const wchar_t* entryPoint
 )
 {
+    // The legacy self-contained form: no include dir, no defines.
+    return CompileHLSLToSPIRV(source, stage, entryPoint,
+        std::wstring(), {}, nullptr);
+}
+
+std::vector<char> CompileHLSLToSPIRV(
+    std::string_view source,
+    DxcShaderStage stage,
+    const wchar_t* entryPoint,
+    const std::wstring& includeDir,
+    const std::vector<std::wstring>& defines,
+    std::string* outDiagnostics
+)
+{
     IDxcUtils* utils = nullptr;
     IDxcCompiler3* compiler = nullptr;
     IDxcResult* result = nullptr;
+    IDxcIncludeHandler* includes = nullptr;
+
+    auto giveUp = [&](const char* what, const std::string& diag) {
+        if (includes)
+            includes->Release();
+        if (result)
+            result->Release();
+        if (compiler)
+            compiler->Release();
+        if (utils)
+            utils->Release();
+        if (outDiagnostics && !diag.empty())
+            *outDiagnostics = diag;
+        // The diagnostics ride the throw too — the reload service
+        // surfaces them either way.
+        throw std::runtime_error(diag.empty() ? what
+            : std::string(what) + ": " + diag);
+    };
 
     HRESULT hr = DxcCreateInstance(
         CLSID_DxcUtils,
@@ -55,7 +87,7 @@ std::vector<char> CompileHLSLToSPIRV(
     );
 
     if (FAILED(hr))
-        throw std::runtime_error("Failed to create IDxcUtils");
+        giveUp("Failed to create IDxcUtils", {});
 
     hr = DxcCreateInstance(
         CLSID_DxcCompiler,
@@ -63,54 +95,60 @@ std::vector<char> CompileHLSLToSPIRV(
     );
 
     if (FAILED(hr))
-    {
-        utils->Release();
-        throw std::runtime_error("Failed to create IDxcCompiler3");
-    }
+        giveUp("Failed to create IDxcCompiler3", {});
+
+    // The include handler (the engine's shaders #include their .hlsli
+    // headers — without a handler every include errors).
+    hr = utils->CreateDefaultIncludeHandler(&includes);
+    if (FAILED(hr))
+        giveUp("Failed to create the include handler", {});
 
     DxcBuffer sourceBuffer{};
     sourceBuffer.Ptr = source.data();
     sourceBuffer.Size = source.size();
     sourceBuffer.Encoding = DXC_CP_UTF8;
 
-    const wchar_t* arguments[] =
-    {
-        L"-E", entryPoint,
-        L"-T", GetShaderProfile(stage),
-
-        L"-spirv",
-        L"-fspv-target-env=vulkan1.3",
-
-        // Useful with HLSL data layouts in Vulkan
-        L"-fvk-use-dx-layout",
-
+    // The argument list (built dynamically: the -I/-D entries are
+    // optional). Mirrors cmake/CompileShaders.cmake's flag set.
+    std::vector<const wchar_t*> arguments;
+    arguments.push_back(L"-E");
+    arguments.push_back(entryPoint ? entryPoint : L"main");
+    arguments.push_back(L"-T");
+    arguments.push_back(GetShaderProfile(stage));
+    arguments.push_back(L"-spirv");
+    arguments.push_back(L"-fspv-target-env=vulkan1.3");
+    // Useful with HLSL data layouts in Vulkan
+    arguments.push_back(L"-fvk-use-dx-layout");
+    if (!includeDir.empty()) {
+        arguments.push_back(L"-I");
+        arguments.push_back(includeDir.c_str());
+    }
+    for (const std::wstring& define : defines) {
+        arguments.push_back(L"-D");
+        arguments.push_back(define.c_str());
+    }
 #ifndef NDEBUG
-        L"-Zi",
-        L"-Qembed_debug",
-        // NOTE: keep vulkan (not vulkan-with-source): DXC emits invalid
-        // DebugLine column ends vs the embedded source for some shaders,
-        // rejected by spirv-val ("Column End ... larger then Line ...
-        // column length ... found in the DebugSource text").
-        L"-fspv-debug=vulkan",
+    arguments.push_back(L"-Zi");
+    arguments.push_back(L"-Qembed_debug");
+    // NOTE: keep vulkan (not vulkan-with-source): DXC emits invalid
+    // DebugLine column ends vs the embedded source for some shaders,
+    // rejected by spirv-val ("Column End ... larger then Line ...
+    // column length ... found in the DebugSource text").
+    arguments.push_back(L"-fspv-debug=vulkan");
 #else
-        L"-O3",
+    arguments.push_back(L"-O3");
 #endif
-    };
 
     hr = compiler->Compile(
         &sourceBuffer,
-        arguments,
-        static_cast<uint32_t>(std::size(arguments)),
-        nullptr,
+        arguments.data(),
+        static_cast<uint32_t>(arguments.size()),
+        includes,
         IID_PPV_ARGS(&result)
     );
 
     if (FAILED(hr))
-    {
-        compiler->Release();
-        utils->Release();
-        throw std::runtime_error("DXC Compile() call failed");
-    }
+        giveUp("DXC Compile() call failed", {});
 
     // Compiler warnings/errors
     IDxcBlobUtf8* errors = nullptr;
@@ -121,28 +159,19 @@ std::vector<char> CompileHLSLToSPIRV(
         nullptr
     );
 
-    if (errors && errors->GetStringLength() > 0)
-    {
-        std::fprintf(
-            stderr,
-            "%s\n",
-            errors->GetStringPointer()
-        );
+    std::string errorText;
+    if (errors && errors->GetStringLength() > 0) {
+        errorText = errors->GetStringPointer();
+        std::fprintf(stderr, "%s\n", errors->GetStringPointer());
     }
 
     HRESULT compileStatus;
     result->GetStatus(&compileStatus);
 
-    if (FAILED(compileStatus))
-    {
+    if (FAILED(compileStatus)) {
         if (errors)
             errors->Release();
-
-        result->Release();
-        compiler->Release();
-        utils->Release();
-
-        throw std::runtime_error("HLSL compilation failed");
+        giveUp("HLSL compilation failed", errorText);
     }
 
     // Retrieve compiled SPIR-V
@@ -154,16 +183,10 @@ std::vector<char> CompileHLSLToSPIRV(
         nullptr
     );
 
-    if (FAILED(hr) || !object)
-    {
+    if (FAILED(hr) || !object) {
         if (errors)
             errors->Release();
-
-        result->Release();
-        compiler->Release();
-        utils->Release();
-
-        throw std::runtime_error("Failed to retrieve SPIR-V");
+        giveUp("Failed to retrieve SPIR-V", errorText);
     }
 
     const char* begin =
@@ -182,6 +205,7 @@ std::vector<char> CompileHLSLToSPIRV(
     result->Release();
     compiler->Release();
     utils->Release();
+    includes->Release();
 
     return spirv;
 }

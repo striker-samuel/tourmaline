@@ -591,8 +591,18 @@ bool FileWatcher::Start(const Policy& policy, std::string& err) {
 	err.clear();
 	if (!m_impl)
 		m_impl = new Impl{};
+	const bool wasRunning = m_impl->running.load();
 	m_impl->policy = policy;
-	if (m_impl->running.load())
+	if (!wasRunning) {
+		// A fresh start RE-BASELINES: pending events from a previous
+		// arm die here (they may belong to roots that are no longer
+		// registered — a stale event would recompile the wrong tree).
+		// Missed-event recovery across a restart is Reconcile()'s job
+		// (the known-state map survives below).
+		std::lock_guard<std::mutex> lock(m_impl->mtx);
+		m_impl->pending.clear();
+	}
+	if (wasRunning)
 		return true; // policy swap only — the thread picks it up
 #ifdef _WIN32
 	m_impl->iocp = CreateIoCompletionPort(

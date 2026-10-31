@@ -6,12 +6,14 @@
 #include <Engine/Memory/memory.h>
 #include <Engine/debug_log.h> // SetTraceEnabled (mute engine dashboards)
 #include <Engine/Rendergraph/dlss.h> // DlssSetStartupEnabled (Streamline never loads here)
+#include <Engine/Utils/shader_hot_reload.h> // the dev watched recompile (TOURMALINE_SHADER_RELOAD)
 #include <Engine/Utils/shader_library.h> // the engine shader mount (before the Live view)
 
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <filesystem>
 
 #ifdef _WIN32
 // ---------------------------------------------------------------------------
@@ -438,6 +440,28 @@ InstallCrashHandler();
 	// override. Every later shader read (the Live view's full
 	// WorldRenderer included) serves through it.
 	smvk::shaders::Init();
+	// TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
+	// service — engine/shaders/ edits recompile in-process and land
+	// in the dev override tree; the Live view's frame tick consumes
+	// the change log. Never on by default.
+	if (std::getenv("TOURMALINE_SHADER_RELOAD")) {
+		namespace fs = std::filesystem;
+		fs::path srcDir;
+		if (const char* src =
+				std::getenv("TOURMALINE_SHADER_RELOAD_SRC"))
+			srcDir = fs::path(src);
+		else
+			srcDir = (fs::current_path() / ".." / ".." / ".."
+				/ "engine" / "shaders").lexically_normal();
+		const std::string outDir = (fs::current_path() / "content"
+			/ "shaders").lexically_normal().generic_string();
+		std::string rErr;
+		if (!smvk::shader_reload::Start(
+				srcDir.lexically_normal().generic_string(), outDir,
+				rErr))
+			std::cerr << "[shader-reload] not armed: " << rErr
+				<< "\n";
+	}
 
 	editor::EditorApp app;
 	// The REQUIRED project (checked above): the launcher's pick. Opens at

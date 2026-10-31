@@ -917,6 +917,24 @@ set_target_properties(ShaderLibraryTests PROPERTIES
 
 add_test(NAME shader_library_tests COMMAND ShaderLibraryTests)
 
+# The watched shader hot-reload service (Engine/Utils/
+# shader_hot_reload.h): the in-process DXC recompile (includes +
+# variant twins), SPIR-V validation, the byte-identical no-op, the
+# LAST-KNOWN-GOOD contract, the .hlsli coarse invalidation + the
+# watcher-driven flow. CPU-only (bytes landing — no GPU).
+add_executable(ShaderHotReloadTests test_shader_hot_reload.cpp)
+
+target_link_libraries(ShaderHotReloadTests
+	PRIVATE
+		engine
+)
+
+set_target_properties(ShaderHotReloadTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME shader_hot_reload_tests COMMAND ShaderHotReloadTests)
+
 # The executor's parity leg shells out to the stage exes beside this
 # exe (the shared build root): legacy BuildProject vs ExecuteBuildPlan
 # through the subprocess adapter, byte-compared. They are build
