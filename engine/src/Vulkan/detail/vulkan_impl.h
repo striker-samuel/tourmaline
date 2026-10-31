@@ -71,44 +71,58 @@ struct SDL_Window;
 
 namespace smvk {
 
-	class VulkanSamplerCache;
 	class App;
-	class VulkanSwapchain;
 	using VulkanApp = App;
 
-	struct VulkanFrameBuffer {
-		uint32_t frameIndex = 0;
-		uint32_t imageIndex = 0;
-		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-		VulkanSwapchain& swapchain;
-		// Async-split second graphics part (G2): set by RenderGraph::Execute
-		// when the frame splits G1/C/G2 (null = single submit). EndAndPresent
-		// ends + submits it with the compute-done wait below, then presents.
-		VkCommandBuffer splitCommandBuffer = VK_NULL_HANDLE;
-		VkSemaphore splitWaitSemaphore = VK_NULL_HANDLE; // timeline: C -> G2
-		uint64_t splitWaitValue = 0;
-		// G1 -> G2 ordering (async split): G2 additionally waits G1's own
-		// timeline signal. Per spec, submissions to one queue only respect
-		// submission (begin) order and may overlap — G2 must not be able to
-		// start (and write the swapchain image in Tonemap) while G1 is still
-		// blocked on the acquire semaphore, so the acquire wait G1 performs
-		// is inherited explicitly, not "transitively through same-queue
-		// submission order". Timeline waits don't consume, so waiting the
-		// same G2C semaphore from both C and G2 is legal.
-		VkSemaphore splitWaitSemaphore2 = VK_NULL_HANDLE; // timeline: G1 -> G2
-		uint64_t splitWaitValue2 = 0;
-	};
+	// (the namespace/RHI boundary audit) The VULKAN IMPLEMENTATION
+	// classes live in smvk::detail::vulkan - PRIVATE to the backend;
+	// the smvk-scope aliases below keep the implementation TUs
+	// compiling through the migration (retire as call sites qualify).
+	namespace detail { namespace vulkan {
+		class VulkanSamplerCache;
+		class VulkanPipelineCache;
+		class VulkanSwapchain;
 
- 	struct VulkanPipeline {
- 		VkPipeline pipeline{};
- 		VkPipelineLayout layout{};
- 	};
+		struct VulkanFrameBuffer {
+			uint32_t frameIndex = 0;
+			uint32_t imageIndex = 0;
+			VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+			VulkanSwapchain& swapchain;
+			// Async-split second graphics part (G2): set by RenderGraph::Execute
+			// when the frame splits G1/C/G2 (null = single submit). EndAndPresent
+			// ends + submits it with the compute-done wait below, then presents.
+			VkCommandBuffer splitCommandBuffer = VK_NULL_HANDLE;
+			VkSemaphore splitWaitSemaphore = VK_NULL_HANDLE; // timeline: C -> G2
+			uint64_t splitWaitValue = 0;
+			// G1 -> G2 ordering (async split): G2 additionally waits G1's own
+			// timeline signal. Per spec, submissions to one queue only respect
+			// submission (begin) order and may overlap - G2 must not be able to
+			// start (and write the swapchain image in Tonemap) while G1 is still
+			// blocked on the acquire semaphore, so the acquire wait G1 performs
+			// is inherited explicitly, not "transitively through same-queue
+			// submission order". Timeline waits don't consume, so waiting the
+			// same G2C semaphore from both C and G2 is legal.
+			VkSemaphore splitWaitSemaphore2 = VK_NULL_HANDLE; // timeline: G1 -> G2
+			uint64_t splitWaitValue2 = 0;
+		};
 
-	struct PipelineBundle {
-		VkPipeline pipeline = VK_NULL_HANDLE;
-		VkPipelineLayout layout = VK_NULL_HANDLE;
-	};
+		struct VulkanPipeline {
+			VkPipeline pipeline{};
+			VkPipelineLayout layout{};
+		};
 
+		struct PipelineBundle {
+			VkPipeline pipeline = VK_NULL_HANDLE;
+			VkPipelineLayout layout = VK_NULL_HANDLE;
+		};
+	}} // detail::vulkan
+
+	using detail::vulkan::VulkanSamplerCache;
+	using detail::vulkan::VulkanSwapchain;
+	using detail::vulkan::VulkanPipelineCache;
+	using detail::vulkan::VulkanFrameBuffer;
+	using detail::vulkan::VulkanPipeline;
+	using detail::vulkan::PipelineBundle;
 	struct Image
 	{
 		VkImage vkImage = VK_NULL_HANDLE;
@@ -1172,6 +1186,7 @@ namespace smvk {
 		Image CreateImageImpl(const ImageCreateInfo& ci);
 	};
 
+	namespace detail { namespace vulkan {
 	class VulkanSwapchain final /*: public ISwapchain*/ {
 
  	public:
@@ -1371,6 +1386,7 @@ namespace smvk {
 		VulkanFrameBuffer AcquireFramebuffer();
 		void EndAndPresentFramebuffer(VulkanFrameBuffer& cb);
 	};
+	}} // detail::vulkan
 
 
 
@@ -1486,6 +1502,7 @@ namespace smvk {
 	// to a stable descriptor-array index (0 .. smvk::limits::MaxSamplers-1). The cache
 	// owns the VkSampler handles and drives descriptor updates.
 	// ------------------------------------------------------------------
+	namespace detail { namespace vulkan {
 	class VulkanSamplerCache
 	{
 	public:
@@ -1601,6 +1618,7 @@ namespace smvk {
 		};
 		std::unordered_map<ComputeKey, PipelineBundle, ComputeKeyHash> computePipelines_;
 	};
+	}} // detail::vulkan
 
 	std::vector<VkVertexInputBindingDescription> getVkVertexInputBindingDescriptions(const VertexLayoutDesc& format);
 	std::vector<VkVertexInputAttributeDescription> getVkVertexAttributeDescriptions(const VertexLayoutDesc& format);

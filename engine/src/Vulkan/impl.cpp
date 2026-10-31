@@ -9028,7 +9028,7 @@ void smvk::VulkanResourceManager::CommitImageSyncStates(const std::unordered_map
 		imageSyncShards_[shard][kv.first] = kv.second;
 	}
 }
-bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
+bool smvk::detail::vulkan::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
 	if (flight >= smvk::limits::MaxFramesInFlight)
 		return false;
 	if (asyncSplitReady_[flight])
@@ -9080,7 +9080,7 @@ bool smvk::VulkanSwapchain::EnsureAsyncSplit(uint32_t flight) {
 // async pass per frame — timeline-chained per-pass submits in Execute).
 // Handles persist across frames; the per-flight pool reset in Acquire
 // returns them to recordable state alongside the split CBs.
-bool smvk::VulkanSwapchain::EnsureAsyncPassBuffers(uint32_t flight, uint32_t count) {
+bool smvk::detail::vulkan::VulkanSwapchain::EnsureAsyncPassBuffers(uint32_t flight, uint32_t count) {
 	if (flight >= smvk::limits::MaxFramesInFlight || !asyncSplitReady_[flight])
 		return false;
 	if (asyncPassBuffers[flight].size() >= count)
@@ -10023,7 +10023,7 @@ void smvk::Submitter::recycleSlot(
 }
 
 // VulkanSwapchain
-smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Window* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
+smvk::detail::vulkan::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Window* window/*, uint32_t framesInFlight, uint32_t desiredImageCount*/)
 	: ctx_(context)
 	, window_(window)
 {
@@ -10041,7 +10041,7 @@ smvk::VulkanSwapchain::VulkanSwapchain(VulkanResourceManager& context, SDL_Windo
 	CreateTimestampPools();
 }
 
-void smvk::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
+void smvk::detail::vulkan::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
 	VkCommandPoolCreateInfo poolInfo{};
 	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -10063,7 +10063,7 @@ void smvk::VulkanSwapchain::InitFrameCommands(uint32_t graphicsFamily) {
 		VK_CHECK(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffers[i]));
 	}
 }
-smvk::VulkanSwapchain::~VulkanSwapchain() {
+smvk::detail::vulkan::VulkanSwapchain::~VulkanSwapchain() {
 
 	vkDeviceWaitIdle(device_);
 	DestroyTimestampPools();
@@ -10083,7 +10083,7 @@ smvk::VulkanSwapchain::~VulkanSwapchain() {
 	DestroySyncObjects();
 	CleanupSwapchain(true);
 }
-void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
+void smvk::detail::vulkan::VulkanSwapchain::WaitForNonMinimizedExtent() {
 	// Two minimized signatures must both gate here:
 	// - platforms that zero the client size while minimized (0x0 extent,
 	//   the original gate)
@@ -10114,7 +10114,7 @@ void smvk::VulkanSwapchain::WaitForNonMinimizedExtent() {
 	}
 }
 
-void smvk::VulkanSwapchain::Recreate() {
+void smvk::detail::vulkan::VulkanSwapchain::Recreate() {
 	// No new sync objects. Should investigate, can iamge# change? on OOD
 	static uint64_t recreateCount = 0;
 	fprintf(stderr, "[swapchain] Recreate #%llu\n", (unsigned long long)++recreateCount);
@@ -10201,7 +10201,7 @@ void smvk::VulkanSwapchain::Recreate() {
 
 	currentImageIndex_ = 0;
 }
-void smvk::VulkanSwapchain::CreateSwapchain() {
+void smvk::detail::vulkan::VulkanSwapchain::CreateSwapchain() {
 
 	SwapChainSupportDetails support = querySwapChainSupport(physicalDevice_, surface_);
 	VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(support.formats);
@@ -10293,10 +10293,10 @@ void smvk::VulkanSwapchain::CreateSwapchain() {
 
 	SDL_GetWindowSize(window_, &windowWidth, &windowHeight);
 }
-std::vector<VkPresentModeKHR> smvk::VulkanSwapchain::GetAvailablePresentModes() const {
+std::vector<VkPresentModeKHR> smvk::detail::vulkan::VulkanSwapchain::GetAvailablePresentModes() const {
 	return querySwapChainSupport(physicalDevice_, surface_).presentModes;
 }
-void smvk::VulkanSwapchain::CreateTimestampPools() {
+void smvk::detail::vulkan::VulkanSwapchain::CreateTimestampPools() {
 	DestroyTimestampPools();
 	VkPhysicalDeviceProperties props{};
 	vkGetPhysicalDeviceProperties(physicalDevice_, &props);
@@ -10320,7 +10320,7 @@ void smvk::VulkanSwapchain::CreateTimestampPools() {
 		lastStageGpuMs_[s] = 0.0;
 	}
 }
-void smvk::VulkanSwapchain::DestroyTimestampPools() {
+void smvk::detail::vulkan::VulkanSwapchain::DestroyTimestampPools() {
 	for (uint32_t i = 0; i < smvk::limits::MaxFramesInFlight; ++i) {
 		if (timestampPools_[i] != VK_NULL_HANDLE) {
 			vkDestroyQueryPool(device_, timestampPools_[i], nullptr);
@@ -10330,7 +10330,7 @@ void smvk::VulkanSwapchain::DestroyTimestampPools() {
 	}
 	gpuTimingValid_ = false;
 }
-void smvk::VulkanSwapchain::CreateImageViews() {
+void smvk::detail::vulkan::VulkanSwapchain::CreateImageViews() {
 	const uint32_t count = static_cast<uint32_t>(images_.size());
 
 	// Keep ImageViewHandles stable across recreation so external owners (the
@@ -10380,7 +10380,7 @@ void smvk::VulkanSwapchain::CreateImageViews() {
 		}
 	}
 }
-void smvk::VulkanSwapchain::CreateDepthResources() {
+void smvk::detail::vulkan::VulkanSwapchain::CreateDepthResources() {
 
 	assert(depthFormat != smvk::Format::Undefined && "core depthFormat not set. failed to create swapchain depth Image");
 
@@ -10460,7 +10460,7 @@ void smvk::VulkanSwapchain::CreateDepthResources() {
 // (No `inline`: single out-of-line definition - an inline member
 // definition in one TU is only emitted where ODR-used, leaving other TUs'
 // calls unresolved on GCC/Clang; MSVC happened to emit it.)
-void smvk::VulkanSwapchain::CreateSyncObjects() {
+void smvk::detail::vulkan::VulkanSwapchain::CreateSyncObjects() {
 	renderFinishedSemaphores_.resize(images_.size(), VK_NULL_HANDLE);
 	imageAvailableSemaphores_.resize(framesInFlight_, VK_NULL_HANDLE);
 	inFlightFences_.resize(framesInFlight_, VK_NULL_HANDLE);
@@ -10494,7 +10494,7 @@ void smvk::VulkanSwapchain::CreateSyncObjects() {
 		timelineValue_ = 0;
 	}
 }
-inline void smvk::VulkanSwapchain::DestroySyncObjects() {
+inline void smvk::detail::vulkan::VulkanSwapchain::DestroySyncObjects() {
 
 	for (VkSemaphore semaphore : renderFinishedSemaphores_) {
 		if (semaphore != VK_NULL_HANDLE) {
@@ -10528,7 +10528,7 @@ inline void smvk::VulkanSwapchain::DestroySyncObjects() {
 		ctx_.NotifyGraphicsSubmit(VK_NULL_HANDLE, 0);
 	}
 }
-inline void smvk::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
+inline void smvk::detail::vulkan::VulkanSwapchain::CleanupSwapchain(bool fullDestroy) {
 
 	for (VkImageView view : imageViews_) {
 		if (view != VK_NULL_HANDLE) {
@@ -10683,7 +10683,7 @@ namespace {
 		}
 	}
 } // namespace
-smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
+smvk::VulkanFrameBuffer smvk::detail::vulkan::VulkanSwapchain::AcquireFramebuffer()
 {
 	SMVK_PROFILE_SCOPE_COLOR("AcquireFramebuffer", Optick::Color::SteelBlue);
 	// Frame-boundary host sync: FENCE wait, not a timeline-semaphore host
@@ -10850,7 +10850,7 @@ smvk::VulkanFrameBuffer smvk::VulkanSwapchain::AcquireFramebuffer()
 	};
 	return frameBufferContext_;
 }
-void smvk::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
+void smvk::detail::vulkan::VulkanSwapchain::EndAndPresentFramebuffer(VulkanFrameBuffer& fb)
 {
 	SMVK_PROFILE_SCOPE_COLOR("Present", Optick::Color::SteelBlue);
 	SMVK_PROFILE_GPU_FLIP(fb.swapchain.vk_swapchain_); // GPU profiling for present
@@ -11154,7 +11154,7 @@ smvk::getVkVertexAttributeDescriptions(const smvk::VertexLayoutDesc& format)
 	return descriptions;
 }
 //
-smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk::PipelineKey& key)
+smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::BuildGraphicsPipeline(const smvk::PipelineKey& key)
 {
 	// ========================================================
 	// SHADERS
@@ -11707,7 +11707,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildGraphicsPipeline(const smvk
 
 	return bundle;
 }
-smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
+smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::GetRenderPipeline(
 	ShaderProgram& program,
 	const VertexLayoutDesc& vertexFormat,
 	const Format* colorFormats,
@@ -11758,7 +11758,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetRenderPipeline(
 
 	return it->second;
 }
-void smvk::VulkanPipelineCache::Clear() {
+void smvk::detail::vulkan::VulkanPipelineCache::Clear() {
 	for (auto& [key, bundle] : pipelines_)
 	{
 		if (bundle.pipeline != VK_NULL_HANDLE)
@@ -11779,7 +11779,7 @@ void smvk::VulkanPipelineCache::Clear() {
 	computePipelines_.clear();
 }
 
-smvk::PipelineBundle smvk::VulkanPipelineCache::GetComputePipeline(
+smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::GetComputePipeline(
 	ShaderProgram& program)
 {
 	assert(program.shaderCount == 1);
@@ -11799,7 +11799,7 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::GetComputePipeline(
 	return bundle;
 }
 
-smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
+smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::BuildComputePipeline(
 	ShaderProgram& program)
 {
 	assert(program.shaderCount == 1);
@@ -11865,9 +11865,9 @@ smvk::PipelineBundle smvk::VulkanPipelineCache::BuildComputePipeline(
 // ------------------------------------------------------------------
 // VulkanSamplerCache
 // ------------------------------------------------------------------
-smvk::VulkanSamplerCache::VulkanSamplerCache(VulkanResourceManager* rm) : rm_(rm) {}
-smvk::VulkanSamplerCache::~VulkanSamplerCache() { Clear(); }
-uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
+smvk::detail::vulkan::VulkanSamplerCache::VulkanSamplerCache(VulkanResourceManager* rm) : rm_(rm) {}
+smvk::detail::vulkan::VulkanSamplerCache::~VulkanSamplerCache() { Clear(); }
+uint32_t smvk::detail::vulkan::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto it = map_.find(ci);
 	if (it != map_.end()) return it->second;
@@ -11885,12 +11885,12 @@ uint32_t smvk::VulkanSamplerCache::GetOrCreate(const SamplerCreateInfo& ci) {
 	if (rm_) rm_->m_needToUpdateSamplers = true;
 	return index;
 }
-VkSampler smvk::VulkanSamplerCache::at(uint32_t index) const {
+VkSampler smvk::detail::vulkan::VulkanSamplerCache::at(uint32_t index) const {
 	std::lock_guard<std::mutex> lock(mutex_);
 	assert(index < samplers_.size());
 	return samplers_[index];
 }
-bool smvk::VulkanSamplerCache::Recreate(uint32_t index, const SamplerCreateInfo& ci) {
+bool smvk::detail::vulkan::VulkanSamplerCache::Recreate(uint32_t index, const SamplerCreateInfo& ci) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (index >= samplers_.size())
 		return false;
@@ -11914,7 +11914,7 @@ bool smvk::VulkanSamplerCache::Recreate(uint32_t index, const SamplerCreateInfo&
 	if (rm_) rm_->m_needToUpdateSamplers = true;
 	return true;
 }
-void smvk::VulkanSamplerCache::Clear() {
+void smvk::detail::vulkan::VulkanSamplerCache::Clear() {
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (VkSampler s : samplers_) if (s != VK_NULL_HANDLE) vkDestroySampler(device_, s, nullptr);
 	samplers_.clear();

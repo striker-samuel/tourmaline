@@ -357,3 +357,48 @@ feature/namespace-rhi-boundary):
      01_triangle derives smvk::App directly (fine as a DELIBERATE
      low-level RHI sample, but opt in explicitly); 04_project_game
      should demonstrate the engine-only surface.
+  6. THE REVERSED DEPENDENCIES (the RHI reaching UP into engine code -
+     resource_manager.h:11 includes Engine/Renderer for SPIR-V
+     reflection; its public upload takes smvk::Image whose definition
+     carries Vulkan allocation state (:161) + three native
+     image-view/sampler accessors (:239-241); smvk.h:1376 ENGINE FRAME
+     GLOBALS live in the RHI top header (:1408-1415 the renderer GPU
+     stage-timing enum; :1443 queue-family indices expose Vulkan
+     topology); Rendergraph/renderer.h:33-53 smvk::FrameContext +
+     IFrameRenderer mix world rendering, graph orchestration and RHI;
+     Vulkan/impl.cpp:52-60 includes App/World/Rendergraph/DLSS/mesh
+     headers). Direction: rendergraph + world-renderer orchestration
+     moves to tour; GPU command/resource primitives stay smvk;
+     device-specific ops move into the Vulkan backend.
+  7. THE BOUNDARY RULES (explicit + testable): the tour public API
+     exposes NO smvk::/RHI headers/Vk*/Vulkan/native handles; the smvk
+     public RHI exposes NO tour::World/App, no Vulkan types/VMA/Volk,
+     no backend methods; smvk::detail::vulkan may use Vulkan internally
+     but is never included by public engine/RHI headers; the engine
+     renderer impl uses smvk ONLY through the public RHI; application/
+     game code sees only tour by default (RHI access = an explicit
+     opt-in). Layout direction: engine/include/Tour/* + engine/src/
+     {core,scene,assets,renderer,internal}; rhi/include/Smvk/* +
+     rhi/src/{common,Vulkan} - separate dirs are not mandatory for the
+     NAMING, but they make ownership enforceable.
+     BUILD-TARGET SEPARATION (the high-priority change): split the one
+     engine static lib into tour_engine + smvk_rhi + smvk_vulkan;
+     tour_engine links PRIVATE smvk_rhi; smvk_vulkan links PRIVATE
+     volk + vulkan_headers_iface. The Vulkan include dirs must NEVER
+     propagate to the public engine/RHI compile interface.
+  8. CI ARCHITECTURE CHECKS (all GPU-free, must become mandatory):
+     (a) ENGINE HEADER SMOKE - compile every public Tour header
+     individually, PCH off, no RHI/Vulkan include dirs; (b) RHI-ONLY
+     SMOKE - compile every public Smvk header without Vulkan SDK/
+     Volk/VMA/Tour; (c) NAMESPACE + API SCANNER - fail on new global
+     declarations, smvk types leaked into the tour API, or
+     Vulkan-specific names in the RHI interface (exported signatures,
+     aliases, inherited types - not just direct includes; a regex is
+     the early warning, the real scanner is required); (d) TRANSITIVE
+     DEPENDENCY CHECK - compiler include-dependency output + CMake
+     target properties prove neither public surface transitively
+     imports a forbidden layer; (e) BACKEND INDEPENDENCE - compile +
+     exercise core RHI contracts against a null/mock backend; (f)
+     CROSS-PLATFORM - Linux GCC/Clang + Windows MSVC. Architecture
+     checks stay SEPARATE from the GPU-window tests (which remain
+     excluded on hosted runners).
