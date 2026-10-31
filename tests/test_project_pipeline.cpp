@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <project_pipeline/build_plan.h>
+#include <project_pipeline/build_pipeline.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
 #include <project_pipeline/project_recipe.h>
@@ -58,7 +59,7 @@ struct TestSource {
 };
 
 TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
-	int n, uint32_t seed = 0) {
+	int n, uint32_t seed = 0, bool withMaterial = false) {
 	fs::create_directories(dir);
 	const fs::path binPath = dir / (stem + ".bin");
 	const int verts = (n + 1) * (n + 1);
@@ -103,8 +104,15 @@ TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
 		"\"scenes\":[{\"nodes\":[0]}],"
 		"\"nodes\":[{\"name\":\"Grid\",\"mesh\":0}],"
 		"\"meshes\":[{\"primitives\":[{\"attributes\":"
-		"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2}]}],"
-		"\"accessors\":["
+		"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2"
+		<< (withMaterial ? ",\"material\":0" : "") << "}]}],"
+		<< (withMaterial
+				? "\"materials\":[{\"name\":\"Grid\","
+					"\"pbrMetallicRoughness\":{"
+					"\"baseColorFactor\":[0.8,0.8,0.8,1],"
+					"\"metallicFactor\":0,\"roughnessFactor\":1}}],"
+				: "")
+		<< "\"accessors\":["
 		"{\"bufferView\":0,\"componentType\":5126,\"count\":" << verts
 		<< ",\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[" << n
 		<< ",1," << n << "]},"
@@ -872,15 +880,312 @@ void TestRecipeResolution() {
 	}
 }
 
+// ---- the shared executor (M2: one plan, adapter-invoked stages) ------
+
+// A recording adapter: captures every stage invocation WITHOUT running
+// anything — the sequencing + args contract, checked pure-CPU.
+class RecordingAdapter final : public smvk::project::StageAdapter {
+public:
+	struct Call {
+		const char* stage;
+		std::vector<std::string> args;
+	};
+	std::vector<Call> calls;
+	int cookRc = 0, giRc = 0, pakRc = 0;
+	int Cook(const smvk::project::CookStageArgs& a,
+		std::string&) override {
+		calls.push_back({ "Cook", { a.contentDir, a.tour,
+			a.cubemap ? "cubemap:on" : "cubemap:off",
+			a.lightmap ? "lightmap:on" : "lightmap:off" } });
+		return cookRc;
+	}
+	int GiBaker(const smvk::project::GiBakerStageArgs& a,
+		std::string&) override {
+		calls.push_back({ "GiBaker", { a.contentDir, a.tour } });
+		return giRc;
+	}
+	int Pak(const smvk::project::PakStageArgs& a,
+		std::string&) override {
+		std::vector<std::string> v = { a.contentDir, a.inVfs, a.tour,
+			a.outPak, a.verify ? "verify:on" : "verify:off" };
+		for (const std::string& e : a.extraArtifacts)
+			v.push_back(e);
+		calls.push_back({ "Pak", v });
+		if (pakRc == 0) {
+			// The executor verifies the stage's output EXISTS after a
+			// success — the recording adapter fakes the write (it must:
+			// it never ran the stage).
+			std::error_code ec;
+			fs::create_directories(fs::path(a.outPak).parent_path(), ec);
+			std::ofstream f(a.outPak, std::ios::binary | std::ios::trunc);
+			f << "pak";
+		}
+		return pakRc;
+	}
+};
+
+std::vector<char> ReadAllBytes(const fs::path& p) {
+	std::ifstream f(p, std::ios::binary);
+	return { std::istreambuf_iterator<char>(f),
+		std::istreambuf_iterator<char>() };
+}
+
+void TestBuildPlanExecutor() {
+	// The fixture: a single-scene project (grid import + authored tour).
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_exec";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	const fs::path ext = tmp / "external";
+	const fs::path projDir = tmp / "proj";
+	fs::create_directories(ext, ec);
+	{
+		bool created = false;
+		std::string err;
+		smvk::project::Project p = smvk::project::Project::Init(
+			projDir.generic_string(), "ExecTest", created, err);
+		Check(p.Valid() && created, "executor.project-created");
+	}
+	smvk::project::Project project;
+	{
+		std::string err;
+		project = smvk::project::Project::Open(projDir.generic_string(),
+			err);
+	}
+	Check(project.Valid(), "executor.project-open");
+	// A material on the primitive: the bake paths (bake-input grid +
+	// BuildTraceSceneFromCluster) require a material ROW on the mesh
+	// node — material-less geometry renders with the default but the
+	// trace paths skip it ("no renderable geometry").
+	const TestSource src = WriteGridGltf(ext, "grid", 8, 0, true);
+	{
+		smvk::project::ImportRequest req;
+		req.project = project;
+		req.source = src.gltf;
+		smvk::project::ImportResult res;
+		std::string err;
+		Check(smvk::project::ImportProjectAsset(req, res, err)
+			&& res.derived, "executor.import-grid");
+	}
+	const fs::path scenes = fs::path(project.root) / "content" / "scenes";
+	fs::create_directories(scenes, ec);
+	{
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = "content/models/grid/grid.geometry";
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		// The default-material seed (materialAsset -default): the grid
+		// glTF has no materials, so without the pool's default entry the
+		// bake's FindMaterial skips every mesh ("no renderable
+		// geometry") — the canonical tours all carry this line.
+		smvk::tour::MaterialAssetCmd defMat;
+		defMat.editorDefault = true;
+		defMat.name = "default";
+		doc.materialAssets.push_back(defMat);
+		std::string err;
+		Check(smvk::tour::SaveTour((scenes / "grid.tour").generic_string(),
+				doc, err),
+			"executor.tour-saved");
+	}
+	const std::string recipeText =
+		"recipe 1\n"
+		"project ExecTest\n"
+		"entry content/scenes/grid.tour\n"
+		"bake gi\n"
+		"bake cubemaps off\n"
+		"[pak game]\n"
+		"output grid.pak\n"
+		"scene content/scenes/grid.tour\n";
+	smvk::project::ProjectRecipe recipe;
+	smvk::project::RecipeDiagnostic diag;
+	Check(smvk::project::ParseProjectRecipeText(recipeText, recipe,
+			diag),
+		"executor.recipe-parses");
+	smvk::project::BuildPlan plan;
+	std::string err;
+	Check(smvk::project::ResolveRecipe(project, recipe, plan, err),
+		"executor.plan-resolves");
+
+	// Sequencing + args through the recording adapter (no stages run).
+	{
+		RecordingAdapter rec;
+		smvk::project::BuildPlanOptions opts;
+		opts.publishDir = (tmp / "publish").generic_string();
+		smvk::project::BuildPlanReport rep;
+		std::string e;
+		Check(smvk::project::ExecuteBuildPlan(project, plan, rec, opts,
+				rep, e)
+				&& e.empty() && rep.paks.size() == 1,
+			"executor.plan-runs");
+		Check(rec.calls.size() == 3
+			&& std::string(rec.calls[0].stage) == "Cook"
+			&& std::string(rec.calls[1].stage) == "GiBaker"
+			&& std::string(rec.calls[2].stage) == "Pak",
+			"executor.stage-sequence");
+		Check(rec.calls[0].args[0] == project.root
+			&& rec.calls[0].args[2] == "cubemap:off"
+			&& rec.calls[0].args[3] == "lightmap:off",
+			"executor.cook-flags-from-recipe");
+		Check(rec.calls[2].args[1] == "content/models/grid/grid.geometry"
+			&& rec.calls[2].args[2]
+				== (scenes / "grid.tour").lexically_normal()
+					.generic_string()
+			&& rec.calls[2].args[3]
+				== (tmp / "publish" / "grid.pak").lexically_normal()
+					.generic_string()
+			&& rec.calls[2].args[4] == "verify:on",
+			"executor.pak-args");
+		if (rep.paks.size() == 1) {
+			Check(rep.paks[0].id == "game"
+				&& rep.paks[0].scene == "content/scenes/grid.tour"
+				&& !rep.paks[0].reimported,
+				"executor.report");
+		}
+		else {
+			Check(false, "executor.report");
+		}
+	}
+	// 'bake gi off' skips the GiBaker stage entirely.
+	{
+		smvk::project::BuildPlan noGi = plan;
+		noGi.bakeGi = false;
+		RecordingAdapter rec;
+		smvk::project::BuildPlanOptions opts;
+		opts.publishDir = (tmp / "publish").generic_string();
+		smvk::project::BuildPlanReport rep;
+		std::string e;
+		Check(smvk::project::ExecuteBuildPlan(project, noGi, rec, opts,
+				rep, e),
+			"executor.bake-gi-off-runs");
+		Check(rec.calls.size() == 2
+			&& std::string(rec.calls[1].stage) == "Pak",
+			"executor.bake-gi-off-skips-gibaker");
+	}
+	// Failure propagation: a failing stage aborts the plan (the failing
+	// stage is named) and NOTHING later runs.
+	{
+		RecordingAdapter rec;
+		rec.cookRc = 1;
+		smvk::project::BuildPlanOptions opts;
+		smvk::project::BuildPlanReport rep;
+		std::string e;
+		Check(!smvk::project::ExecuteBuildPlan(project, plan, rec, opts,
+				rep, e)
+			&& e.find("the Cook stage failed") != std::string::npos
+			&& rec.calls.size() == 1 && rep.paks.empty(),
+			"executor.cook-failure-aborts");
+	}
+	{
+		RecordingAdapter rec;
+		rec.pakRc = 2;
+		smvk::project::BuildPlanOptions opts;
+		smvk::project::BuildPlanReport rep;
+		std::string e;
+		Check(!smvk::project::ExecuteBuildPlan(project, plan, rec, opts,
+				rep, e)
+			&& e.find("the Pak stage failed") != std::string::npos
+			&& rec.calls.size() == 3 && rep.paks.empty(),
+			"executor.pak-failure-aborts");
+	}
+	// Asset-only paks refuse loudly until the M3 packer extension (a
+	// silently-empty pak must never publish).
+	{
+		const fs::path sharedTex =
+			fs::path(project.ImportsDir()) / "shared";
+		fs::create_directories(sharedTex, ec);
+		{
+			std::ofstream f(sharedTex / "stone.png",
+				std::ios::binary | std::ios::trunc);
+			f << "png";
+		}
+		const std::string two =
+			"recipe 1\n"
+			"entry content/scenes/grid.tour\n"
+			"[pak game]\n"
+			"output grid.pak\n"
+			"scene content/scenes/grid.tour\n"
+			"depends shared\n"
+			"[pak shared]\n"
+			"output shared.pak\n"
+			"include content/models/shared/**\n";
+		smvk::project::ProjectRecipe r2;
+		smvk::project::RecipeDiagnostic d2;
+		smvk::project::BuildPlan p2;
+		std::string e;
+		Check(smvk::project::ParseProjectRecipeText(two, r2, d2)
+			&& smvk::project::ResolveRecipe(project, r2, p2, e),
+			"executor.two-pak-plan-resolves");
+		RecordingAdapter rec;
+		smvk::project::BuildPlanOptions opts;
+		smvk::project::BuildPlanReport rep;
+		Check(!smvk::project::ExecuteBuildPlan(project, p2, rec, opts,
+				rep, e)
+			&& e.find("asset-only") != std::string::npos
+			&& rep.paks.empty(),
+			"executor.asset-only-refused-until-m3");
+	}
+
+	// ---- the M2 GATE: end-to-end parity with the legacy build ----------
+	// Legacy BuildProject (its own subprocess path) vs ExecuteBuildPlan
+	// through the subprocess adapter — same project, same stages, same
+	// flags (build-settings cubemap=off matches the recipe's 'bake
+	// cubemaps off'). The paks must be byte-identical.
+	{
+		const fs::path dd =
+			fs::path(project.DerivedDataDir());
+		fs::create_directories(dd, ec);
+		{
+			std::ofstream f(dd / "build-settings.txt",
+				std::ios::binary | std::ios::trunc);
+			f << "cubemap=off\n";
+		}
+		smvk::project::BuildOptions bo;
+		bo.scene = "content/scenes/grid.tour";
+		bo.outputPak = (tmp / "legacy" / "grid.pak").generic_string();
+		smvk::project::BuildReport br;
+		std::string e;
+		Check(smvk::project::BuildProject(project, bo, br, e),
+			"executor.legacy-build-ok");
+		auto sub = smvk::project::MakeSubprocessStageAdapter();
+		smvk::project::BuildPlanOptions opts;
+		opts.publishDir = (tmp / "publish2").generic_string();
+		smvk::project::BuildPlanReport rep;
+		Check(smvk::project::ExecuteBuildPlan(project, plan, *sub, opts,
+				rep, e),
+			"executor.plan-build-ok");
+		if (br.pak.empty() || rep.paks.empty()) {
+			Check(false, "executor.parity-bytes");
+			if (!e.empty())
+				std::cout << "  (plan err: " << e << ")\n";
+		}
+		else {
+			const std::vector<char> legacy = ReadAllBytes(br.pak);
+			const std::vector<char> planned =
+				ReadAllBytes(rep.paks[0].output);
+			Check(!legacy.empty() && legacy == planned,
+				"executor.parity-bytes");
+		}
+	}
+}
+
 } // namespace
 
 int main() {
+	// Unbuffered streams: printf and std::cout carry SEPARATE buffers, so
+	// a crash would otherwise scramble the log order (the last output
+	// before an AV is lost/deferred). Tests are small — pay the flush.
+	setvbuf(stdout, nullptr, _IONBF, 0);
+	setvbuf(stderr, nullptr, _IONBF, 0);
+	std::cout << std::unitbuf;
 	TestProjectModel();
 	TestImportLifecycle();
 	TestFingerprint();
 	TestRecipeParsing();
 	TestRecipeGlob();
 	TestRecipeResolution();
+	TestBuildPlanExecutor();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks
 		<< " checks passed\n";

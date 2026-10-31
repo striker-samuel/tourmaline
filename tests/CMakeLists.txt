@@ -781,6 +781,12 @@ set_target_properties(ProjectPipelineTests PROPERTIES
 
 add_test(NAME project_pipeline_tests COMMAND ProjectPipelineTests)
 
+# The executor's parity leg shells out to the stage exes beside this
+# exe (the shared build root): legacy BuildProject vs ExecuteBuildPlan
+# through the subprocess adapter, byte-compared. They are build
+# prerequisites of the test, not runtime finds.
+add_dependencies(ProjectPipelineTests Cook GiBaker Pak)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)
 tourmaline_stage_sdl3(SpirvReflectionTests)

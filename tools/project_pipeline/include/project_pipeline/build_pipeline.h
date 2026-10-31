@@ -24,8 +24,10 @@
 // project's persisted build settings (.tourmaline/build-settings.txt) —
 // the batch script never duplicates them.
 
+#include <memory>
 #include <string>
 
+#include "build_plan.h"
 #include "project.h"
 
 namespace smvk::project {
@@ -50,5 +52,85 @@ struct BuildReport {
 // a failed build never replaces the last valid pak.
 bool BuildProject(const Project& project, const BuildOptions& options,
 	BuildReport& out, std::string& err);
+
+// ---- the shared build-plan executor (the recipe spec) ----------------
+//
+// ONE plan, TWO environments: the executor sequences the resolved
+// BuildPlan; a STAGE ADAPTER decides how each stage physically runs.
+// The CLI adapter shells out to the stage EXEs (the exact legacy
+// BuildProject invocations); the editor adapter calls the linked-in
+// cooktool::Run / gibaker::Run / paktool::Run (the same Run() the exes'
+// own mains call). The adapter is the invocation mechanism ONLY — never
+// a second cooking implementation.
+//
+// Stage flags come from the RECIPE (bake gi / bake cubemaps): the
+// recipe build's authority. The legacy BuildProject keeps reading
+// .tourmaline/build-settings.txt — that file stays the LEGACY path's
+// home and never leaks into plan builds.
+
+struct CookStageArgs {
+	std::string contentDir; // the project root
+	std::string tour;       // the scene tour (absolute)
+	bool cubemap = true;
+	bool lightmap = false;
+};
+
+struct GiBakerStageArgs {
+	std::string contentDir;
+	std::string tour;
+};
+
+struct PakStageArgs {
+	std::string contentDir;
+	std::string inVfs;     // the root artifact (the primary identity)
+	std::vector<std::string> extraArtifacts; // additional positional artifacts
+	std::string tour;      // "" = an asset-only pak (no scene blob)
+	std::string outPak;    // absolute destination
+	bool verify = true;
+};
+
+struct StageAdapter {
+	virtual ~StageAdapter() = default;
+	// Each returns the stage's exit code (0 = success). err carries the
+	// LAUNCH failure only (a missing exe, a dead fork) — the stage's own
+	// diagnostics stream through the adapter's output channel (the
+	// subprocess console; the editor's tool::SetLineSink feed).
+	virtual int Cook(const CookStageArgs& args, std::string& err) = 0;
+	virtual int GiBaker(const GiBakerStageArgs& args, std::string& err) = 0;
+	virtual int Pak(const PakStageArgs& args, std::string& err) = 0;
+};
+
+// The CLI default: the stage exes as subprocesses (flag-for-flag the
+// legacy BuildProject invocations — the parity contract).
+[[nodiscard]] std::unique_ptr<StageAdapter> MakeSubprocessStageAdapter();
+
+struct BuildPlanOptions {
+	// Where the paks (and the appmanifest) publish. Absolute or
+	// project-relative; empty = <root>/build.
+	std::string publishDir;
+};
+
+struct BuildPlanReport {
+	struct Pak {
+		std::string id;
+		std::string output; // absolute
+		std::string scene;  // project-relative ("" = asset-only)
+		bool reimported = false;
+	};
+	std::vector<Pak> paks; // plan order (topological — mount order)
+};
+
+// Execute a resolved plan end to end:
+//   import freshness (in-process, every family the plan packs)
+//   -> per scene pak: Cook + GiBaker (bake gi gates the GiBaker stage)
+//   -> per pak, PLAN ORDER: Pak (assembly + the bake-freshness gate +
+//      verify)
+// A failed stage aborts the plan (the failing stage is named) and never
+// reaches the next one; the Pak stage writes only on success, so the
+// previous build's outputs stand (a failed build never replaces the
+// last valid anything).
+bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
+	StageAdapter& adapter, const BuildPlanOptions& options,
+	BuildPlanReport& out, std::string& err);
 
 } // namespace smvk::project

@@ -172,6 +172,245 @@ int RunStage(const char* name, const std::vector<std::string>& args,
 
 } // namespace
 
+// ---- the shared build-plan executor ------------------------------------
+
+namespace {
+
+// The CLI adapter's exe names: the tools share the build root
+// (RUNTIME_OUTPUT_DIRECTORY), resolved beside THIS executable — the
+// same contract the legacy BuildProject RunStage calls rely on.
+// Windows exes carry .exe; the POSIX tool targets do not.
+#ifdef _WIN32
+std::string StageExe(const char* base) { return std::string(base) + ".exe"; }
+#else
+std::string StageExe(const char* base) { return base; }
+#endif
+
+// The subprocess adapter: flag-for-flag the legacy BuildProject
+// invocations (the M2 parity contract — a single-pak plan through this
+// adapter IS the legacy build, sequenced by the plan instead of the
+// hardcoded steps).
+class SubprocessStageAdapter final : public StageAdapter {
+public:
+	int Cook(const CookStageArgs& a, std::string& err) override {
+		return RunStage(StageExe("Cook").c_str(),
+			{ a.contentDir, "--tour", a.tour,
+				"--cubemap", a.cubemap ? "on" : "off",
+				"--lightmap", a.lightmap ? "on" : "off" },
+			err);
+	}
+	int GiBaker(const GiBakerStageArgs& a, std::string& err) override {
+		return RunStage(StageExe("GiBaker").c_str(),
+			{ "--content-dir", a.contentDir, "--tour", a.tour }, err);
+	}
+	int Pak(const PakStageArgs& a, std::string& err) override {
+		std::vector<std::string> args = { a.contentDir, a.inVfs };
+		for (const std::string& extra : a.extraArtifacts)
+			args.push_back(extra);
+		if (!a.tour.empty()) {
+			args.push_back("--tour");
+			args.push_back(a.tour);
+		}
+		args.push_back("--out-pak");
+		args.push_back(a.outPak);
+		if (a.verify) {
+			args.push_back("--verify");
+			args.push_back("on");
+		}
+		return RunStage(StageExe("Pak").c_str(), args, err);
+	}
+};
+
+std::string StageFail(const char* stage, int rc, const std::string& err) {
+	return err.empty()
+		? ("the " + std::string(stage) + " stage failed (exit "
+			+ std::to_string(rc) + ")")
+		: ("the " + std::string(stage) + " stage failed: " + err);
+}
+
+} // namespace
+
+std::unique_ptr<StageAdapter> MakeSubprocessStageAdapter() {
+	return std::make_unique<SubprocessStageAdapter>();
+}
+
+bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
+	StageAdapter& adapter, const BuildPlanOptions& options,
+	BuildPlanReport& out, std::string& err) {
+	err.clear();
+	out = BuildPlanReport{};
+	if (!project.Valid()) {
+		err = "invalid project (open/init first)";
+		return false;
+	}
+	if (plan.paks.empty() || plan.entryPak.empty()) {
+		err = "the plan is empty (resolve a recipe first)";
+		return false;
+	}
+	std::error_code ec;
+	const fs::path projectRoot(project.root);
+
+	// ---- 0) the publish directory --------------------------------------
+	fs::path publish = options.publishDir.empty()
+		? projectRoot / "build"
+		: fs::path(options.publishDir);
+	if (publish.is_relative())
+		publish = projectRoot / publish;
+	fs::create_directories(publish, ec);
+
+	// ---- 1) import freshness (in-process, every family the plan packs) -
+	// The legacy path covered the root reference only; the plan walks
+	// every geometry family it will pack (scene artifacts + owned
+	// Geometry assets). Stale -> the canonical ImportProjectAsset.
+	std::set<std::string> families;
+	for (const PlanPak& pak : plan.paks) {
+		for (const std::string& a : pak.sceneArtifacts)
+			families.insert(a);
+		for (const PlanAsset& asset : pak.assets)
+			if (asset.kind == PlanAssetKind::Geometry)
+				families.insert(asset.path);
+	}
+	std::set<std::string> reimportedFamilies;
+	for (const std::string& artifact : families) {
+		const fs::path artifactAbs = projectRoot / fs::path(artifact);
+		// The family's source glTF/GLB: beside a .geometry artifact, or
+		// the artifact itself when the tour referenced the raw source.
+		std::vector<fs::path> candidates;
+		const std::string ext = artifactAbs.extension().generic_string();
+		if (ext == ".gltf" || ext == ".glb")
+			candidates.push_back(artifactAbs);
+		else
+			for (const char* e : { ".gltf", ".glb" }) {
+				fs::path src = artifactAbs;
+				src.replace_extension(e);
+				candidates.push_back(src);
+			}
+		for (const fs::path& srcAbs : candidates) {
+			if (!fs::is_regular_file(srcAbs, ec))
+				continue;
+			if (smvk::assets::MeshArtifactStale(srcAbs,
+					GeometryImportSettings{})) {
+				ImportRequest req;
+				req.project = project;
+				req.source = srcAbs;
+				req.settings = GeometryImportSettings{};
+				ImportResult result;
+				std::string iErr;
+				if (!ImportProjectAsset(req, result, iErr)) {
+					err = "reimport failed: " + iErr;
+					return false;
+				}
+				if (result.derived) {
+					reimportedFamilies.insert(artifact);
+					std::printf("[build] reimported: %s\n",
+						result.geometry.generic_string().c_str());
+				}
+			}
+			break; // one family per artifact (the first existing source)
+		}
+	}
+
+	// ---- 2) per scene pak: Cook + GiBaker (plan order) ------------------
+	// The bake flags come from the RECIPE (the plan), never
+	// build-settings.txt — a recipe build is fully described by its
+	// recipe. 'bake gi off' skips the GiBaker stage outright; 'bake
+	// cubemaps off' passes --cubemap off to Cook.
+	for (const PlanPak& pak : plan.paks) {
+		if (pak.scene.empty())
+			continue; // asset-only pak: no scene bakes
+		const fs::path tourAbs = projectRoot / fs::path(pak.scene);
+		if (!fs::is_regular_file(tourAbs, ec)) {
+			err = "[Cook] the scene tour is missing: " + pak.scene;
+			return false;
+		}
+		{
+			CookStageArgs stage;
+			stage.contentDir = project.root;
+			stage.tour = tourAbs.lexically_normal().generic_string();
+			stage.cubemap = plan.bakeCubemaps;
+			stage.lightmap = false; // the deprecated path stays off
+			const int rc = adapter.Cook(stage, err);
+			if (rc != 0) {
+				err = StageFail("Cook", rc, err);
+				return false;
+			}
+		}
+		if (plan.bakeGi) {
+			GiBakerStageArgs stage;
+			stage.contentDir = project.root;
+			stage.tour = tourAbs.lexically_normal().generic_string();
+			const int rc = adapter.GiBaker(stage, err);
+			if (rc != 0) {
+				err = StageFail("GiBaker", rc, err);
+				return false;
+			}
+		}
+	}
+
+	// ---- 3) per pak: Pak (plan order = dependencies first) --------------
+	for (const PlanPak& pak : plan.paks) {
+		PakStageArgs stage;
+		stage.contentDir = project.root;
+		stage.outPak = (publish / fs::path(pak.output))
+			.lexically_normal().generic_string();
+		stage.verify = true;
+		if (pak.scene.empty()) {
+			// Asset-only pak: the owned VFS assets, no scene blob. The
+			// M3 packer extension consumes these; until it lands the
+			// executor refuses the plan loudly (never a silently-empty
+			// pak).
+			err = "[Pak " + pak.id + "] asset-only packages need the"
+				" packer's content-set support (M3) — give this pak a"
+				" 'scene' for now";
+			return false;
+		}
+		if (pak.sceneArtifacts.empty()) {
+			err = "[Pak " + pak.id + "] the scene pak has no root"
+				" artifact (a broken plan — re-resolve)";
+			return false;
+		}
+		for (const std::string& artifact : pak.sceneArtifacts)
+			if (!fs::is_regular_file(projectRoot / fs::path(artifact),
+					ec)) {
+				err = "[Pak " + pak.id + "] the artifact is missing: "
+					+ artifact;
+				return false;
+			}
+		stage.inVfs = pak.sceneArtifacts[0];
+		for (size_t i = 1; i < pak.sceneArtifacts.size(); ++i)
+			stage.extraArtifacts.push_back(pak.sceneArtifacts[i]);
+		stage.tour = (projectRoot / fs::path(pak.scene))
+			.lexically_normal().generic_string();
+		std::error_code mkEc;
+		fs::create_directories(fs::path(stage.outPak).parent_path(), mkEc);
+		const int rc = adapter.Pak(stage, err);
+		if (rc != 0) {
+			err = StageFail("Pak", rc, err)
+				+ "; a stale bake was refused, or an asset failed — see"
+					" the stage output above";
+			// A failed pak never replaces the last valid one: the stage
+			// writes its output only on success (verify on).
+			return false;
+		}
+		if (!fs::is_regular_file(stage.outPak, ec)) {
+			err = "[Pak " + pak.id + "] the stage reported success but"
+				" the output is missing: " + stage.outPak;
+			return false;
+		}
+		BuildPlanReport::Pak rep;
+		rep.id = pak.id;
+		rep.output = stage.outPak;
+		rep.scene = pak.scene;
+		for (const std::string& a : pak.sceneArtifacts)
+			if (reimportedFamilies.count(a)) {
+				rep.reimported = true;
+				break;
+			}
+		out.paks.push_back(std::move(rep));
+	}
+	return true;
+}
+
 bool BuildProject(const Project& project, const BuildOptions& options,
 	BuildReport& out, std::string& err) {
 	err.clear();
