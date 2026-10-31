@@ -256,6 +256,19 @@ trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
 - Regression-tested in test_shader_library.cpp (the pak round trip,
   bytecode detection, validation failures, dev-override precedence,
   the declared-list discipline, corrupt-declared failures).
+- **PROJECT-AUTHORED shader assets** are a separate identity lane:
+  the recipe resolver classifies `.spv` under the project's own
+  content tree as `PlanAssetKind::Shader`; asset-only paks embed them
+  VERBATIM as Shader-kind blobs through the content-set path (SPIR-V
+  magic validated at pack time — corrupt blobs fail the build); the
+  content-id range is **0x5xxx** (`assets.db`'s `IdRangeForKind`),
+  the generated project.h carries `project::shaders::*` typed
+  `ShaderKey` constants + `AssetKind::Shader = 4` (the ABI kind byte
+  — appended, nothing renumbered); the `.tapp`'s [ids] rows take
+  `kind shader` and `ProjectRuntime::ReadAsset` serves the raw
+  bytecode. The ENGINE-NATIVE set (engine-shaders.pak) is build-owned
+  — recipes never control its inclusion. Unit-tested in
+  test_project_pipeline.cpp (`shaders.*`).
 
 ## Running
 

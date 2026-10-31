@@ -793,6 +793,15 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 		// free after meshes.
 		base = 0x4000;
 	}
+	else if (kind == "shader") {
+		// PROJECT-AUTHORED SHADER assets (compiled .spv the project
+		// owns — distinct from the ENGINE-NATIVE set engine-shaders.pak
+		// carries; recipes never control mandatory engine shader
+		// inclusion). VFS-addressable pak blobs (PakAssetKind::Shader,
+		// served through the same shader library) + the [ids] rows the
+		// runtime resolves. The 0x5xxx range.
+		base = 0x5000;
+	}
 	else
 		return false;
 	last = base + 0xFFF;

@@ -1706,6 +1706,196 @@ std::vector<char> ReadAllBytes(const fs::path& p) {
 		std::istreambuf_iterator<char>() };
 }
 
+// PROJECT-AUTHORED SHADER assets (the 0x5xxx kind): the plan
+// classification (.spv), the catalog bucket + ShaderKey emission, the
+// content-set packing (validated SPIR-V only) and the manifest's
+// shader kind rows.
+void TestShaderAssets() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_shaders";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	const fs::path projDir = tmp / "proj";
+	smvk::project::Project project;
+	{
+		bool created = false;
+		std::string err;
+		project = smvk::project::Project::Init(
+			projDir.generic_string(), "ShaderTest", created, err);
+		Check(project.Valid() && created, "shaders.project-created");
+	}
+	// A well-formed SPIR-V under the project's OWN shader tree (the
+	// project-AUTHORED form — engine/shaders/ is a different, build-
+	// owned tree that never flows through a plan).
+	const fs::path spvDir =
+		fs::path(project.root) / "content" / "shaders";
+	fs::create_directories(spvDir, ec);
+	const fs::path spv = spvDir / "testonly.frag.hlsl.spv";
+	std::vector<uint8_t> spvBytes;
+	{
+		const uint32_t words[] = { 0x07230203u, 0x00010300u,
+			0xdeadbe0fu, 0u, 1u, 2u, 3u, 4u };
+		for (uint32_t w : words)
+			for (int b = 0; b < 4; ++b)
+				spvBytes.push_back(uint8_t(w >> (8 * b)));
+		std::ofstream f(spv, std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(spvBytes.data()),
+			std::streamsize(spvBytes.size()));
+	}
+	// The recipe: an asset-only pak claiming the .spv (+ the entry
+	// scene the recipe spec requires — a dummy .geometry + tour).
+	const fs::path models =
+		fs::path(project.root) / "content" / "models" / "thing";
+	const fs::path scenes =
+		fs::path(project.root) / "content" / "scenes";
+	fs::create_directories(models, ec);
+	fs::create_directories(scenes, ec);
+	{
+		std::ofstream f(models / "thing.geometry",
+			std::ios::binary | std::ios::trunc);
+		f << "geo";
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = "content/models/thing/thing.geometry";
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		std::string tErr;
+		Check(smvk::tour::SaveTour(
+				(scenes / "thing.tour").generic_string(), doc, tErr),
+			"shaders.tour-saved");
+	}
+	const std::string recipeText =
+		"recipe 1\n"
+		"project ShaderTest\n"
+		"entry content/scenes/thing.tour\n"
+		"[pak fx]\n"
+		"output fx.pak\n"
+		"include content/shaders/*.spv\n"
+		"[pak world]\n"
+		"output thing.pak\n"
+		"scene content/scenes/thing.tour\n";
+	smvk::project::ProjectRecipe recipe;
+	smvk::project::RecipeDiagnostic diag;
+	smvk::project::BuildPlan plan;
+	std::string err;
+	Check(smvk::project::ParseProjectRecipeText(recipeText, recipe,
+			diag)
+		&& smvk::project::ResolveRecipe(project, recipe, plan, err),
+		"shaders.plan-resolves");
+	{
+		const smvk::project::PlanPak* fx = plan.FindPak("fx");
+		Check(fx && fx->assets.size() == 1
+			&& fx->assets[0].kind
+				== smvk::project::PlanAssetKind::Shader,
+			"shaders.plan-classifies-spv");
+	}
+	// The catalog: the shaders bucket + the 0x5xxx range + ShaderKey.
+	smvk::cache::AssetDatabase db;
+	{
+		const std::string root = smvk::cache::EnsureRegistryRoot(
+			project.DerivedDataDir());
+		Check(!root.empty() && db.Open(root, project.root, err),
+			"shaders.db-opens");
+	}
+	smvk::project::ProjectCatalog catalog;
+	std::vector<std::string> deps;
+	Check(smvk::project::GenerateProjectCatalog(project, plan, db,
+			catalog, deps, err),
+		"shaders.catalog-generates");
+	Check(catalog.shaders.size() == 1
+		&& catalog.shaders[0].id >= 0x5000
+		&& catalog.shaders[0].id <= 0x5FFF
+		&& catalog.shaders[0].kind == "shader",
+		"shaders.catalog-bucket-and-range");
+	{
+		smvk::project::GenerationStamp stamp;
+		stamp.generation = 1;
+		stamp.timestamp = 1793451600;
+		stamp.contentHash =
+			smvk::project::ComputeCatalogContentHash(catalog);
+		const std::string header =
+			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
+		Check(header.find("namespace shaders") != std::string::npos
+			&& header.find("struct ShaderKey") != std::string::npos
+			&& header.find("Shader = 4") != std::string::npos
+			&& header.find("AssetKind::Shader") != std::string::npos
+			&& header.find("shaders::"
+				+ catalog.shaders[0].symbol) != std::string::npos,
+			"shaders.header-emits-shaderkey");
+	}
+	// The packer: the content-set embeds the .spv VERBATIM as a
+	// Shader-kind blob; a CORRUPT blob fails the pack.
+	{
+		paktool::PakArgs args;
+		args.contentDir = project.root;
+		args.contentSet = { "content/shaders/testonly.frag.hlsl.spv" };
+		args.outPak = (tmp / "fx.pak").generic_string();
+		Check(paktool::Run(args) == 0, "shaders.content-set-packs");
+		std::vector<char> image = ReadAllBytes(tmp / "fx.pak");
+		std::string openErr;
+		auto reader = smvk::PakReader::Open(
+			std::span<const uint8_t>(
+				reinterpret_cast<const uint8_t*>(image.data()),
+				image.size()), openErr);
+		Check(bool(reader), "shaders.pak-opens");
+		if (reader) {
+			const auto blobs =
+				reader->BlobsOfKind(smvk::PakAssetKind::Shader);
+			Check(blobs.size() == 1
+				&& blobs[0]->path
+					== "content/shaders/testonly.frag.hlsl.spv",
+				"shaders.shader-blob-by-path");
+			if (blobs.size() == 1) {
+				const std::span<const uint8_t> payload =
+					reader->Payload(*blobs[0]);
+				Check(std::equal(payload.begin(), payload.end(),
+						spvBytes.begin(), spvBytes.end()),
+					"shaders.shader-bytes-verbatim");
+			}
+		}
+	}
+	{
+		// Corrupt magic under the same path: the pack REFUSES (the
+		// deploy-time validation gate is the second line, never the
+		// only one).
+		std::ofstream f(spv, std::ios::binary | std::ios::trunc);
+		f << "not spirv at all";
+		paktool::PakArgs args;
+		args.contentDir = project.root;
+		args.contentSet = { "content/shaders/testonly.frag.hlsl.spv" };
+		args.outPak = (tmp / "fx_bad.pak").generic_string();
+		Check(paktool::Run(args) != 0, "shaders.corrupt-spv-refused");
+		Check(!fs::exists(tmp / "fx_bad.pak", ec),
+			"shaders.corrupt-wrote-nothing");
+	}
+	// The manifest's kind gate: a shader row round-trips.
+	{
+		smvk::AppManifest m;
+		m.version = smvk::kAppManifestVersion;
+		m.entryPak = "fx.pak";
+		m.entryScene = "scene";
+		m.paks.push_back("fx.pak");
+		smvk::AppManifestAsset row;
+		row.id = 0x5000;
+		row.kind = "shader";
+		row.pak = "fx.pak";
+		row.path = "content/shaders/testonly.frag.hlsl.spv";
+		m.assets.push_back(row);
+		std::string sErr;
+		Check(smvk::SaveAppManifest((tmp / "fx.tapp").generic_string(),
+				m, sErr),
+			"shaders.manifest-saves");
+		smvk::AppManifest back;
+		std::string lErr;
+		Check(smvk::LoadAppManifest((tmp / "fx.tapp").generic_string(),
+				back, lErr)
+			&& back.assets.size() == 1
+			&& back.assets[0].kind == "shader",
+			"shaders.manifest-round-trips");
+	}
+}
+
 void TestBuildPlanExecutor() {
 	// The fixture: a single-scene project (grid import + authored tour).
 	const fs::path tmp = fs::temp_directory_path()
@@ -3443,6 +3633,7 @@ int main(int argc, char** argv) {
 	TestImportLifecycle();
 	TestFingerprint();
 	TestSubassetIdentity();
+	TestShaderAssets();
 	TestRecipeParsing();
 	TestRecipeGlob();
 	TestRecipeResolution();

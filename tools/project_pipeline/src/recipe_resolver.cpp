@@ -69,6 +69,11 @@ PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
 		return PlanAssetKind::Texture;
 	if (ext == ".wav")
 		return PlanAssetKind::Sound;
+	// PROJECT-AUTHORED compiled shaders (the .spv the project OWNS —
+	// its own content tree, never the engine's build-owneds; the
+	// engine-shaders.pak carries those).
+	if (ext == ".spv")
+		return PlanAssetKind::Shader;
 	if (ext == ".givolumemanifest" || ext == ".givolume"
 			|| ext == ".cubemanifest")
 		return PlanAssetKind::BakeFile;

@@ -63,6 +63,10 @@ struct ProjectCatalog {
 	std::vector<CatalogEntry> textures;
 	std::vector<CatalogEntry> meshes;
 	std::vector<CatalogEntry> sounds;
+	// PROJECT-AUTHORED SHADER assets (the 0x5xxx range — compiled .spv
+	// the project owns; the ENGINE-NATIVE set never appears here: it
+	// rides engine-shaders.pak, build-owned, outside every recipe).
+	std::vector<CatalogEntry> shaders;
 	// (id, file) in plan (mount) order — paks are named entities, not
 	// id carriers: renaming a package updates this table; asset ids
 	// stay.

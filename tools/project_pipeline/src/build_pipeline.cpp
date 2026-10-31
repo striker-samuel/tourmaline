@@ -458,7 +458,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		for (const PlanAsset& asset : pak.assets)
 			if (asset.kind == PlanAssetKind::Texture
 					|| asset.kind == PlanAssetKind::BakeFile
-					|| asset.kind == PlanAssetKind::Sound)
+					|| asset.kind == PlanAssetKind::Sound
+					|| asset.kind == PlanAssetKind::Shader)
 				vfsOwner[asset.path] = pak.id;
 
 	// The staged set: every pak writes under publish/.staging/ with its
@@ -555,7 +556,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				for (const PlanAsset& asset : other.assets)
 					if (asset.kind == PlanAssetKind::Texture
 							|| asset.kind == PlanAssetKind::BakeFile
-							|| asset.kind == PlanAssetKind::Sound)
+							|| asset.kind == PlanAssetKind::Sound
+							|| asset.kind == PlanAssetKind::Shader)
 						stage.excludeVfs.push_back(asset.path);
 			}
 		}
@@ -595,8 +597,9 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					+ perr;
 				return false;
 			}
-			const smvk::PakAssetKind policeKinds[2] = {
-				smvk::PakAssetKind::Texture, smvk::PakAssetKind::Sound };
+			const smvk::PakAssetKind policeKinds[3] = {
+				smvk::PakAssetKind::Texture, smvk::PakAssetKind::Sound,
+			smvk::PakAssetKind::Shader };
 			for (const smvk::PakAssetKind kind : policeKinds)
 			for (const smvk::PakTocEntry* e : reader->BlobsOfKind(kind)) {
 				auto ownerIt = vfsOwner.find(e->path);
@@ -851,6 +854,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					addRows(catalog.textures, "texture");
 					addRows(catalog.meshes, "mesh");
 					addRows(catalog.sounds, "sound");
+					addRows(catalog.shaders, "shader");
 					// The CATALOG FINGERPRINT (the compiled-catalog contract's
 					// deployment half): the SAME fold the generated project.h
 					// emits as project::CatalogFingerprint (CatalogFingerprintOf -

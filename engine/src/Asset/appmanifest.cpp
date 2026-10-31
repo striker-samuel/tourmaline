@@ -174,7 +174,7 @@ bool ValidateAppManifest(const AppManifest& m, std::string& err) {
 			return false;
 		}
 		if (a.kind != "scene" && a.kind != "texture" && a.kind != "mesh"
-				&& a.kind != "sound") {
+				&& a.kind != "sound" && a.kind != "shader") {
 			err = "unknown content kind '" + a.kind + "' (row 0x"
 				+ Hex(a.id) + ")";
 			return false;
@@ -225,6 +225,7 @@ bool CatalogKindFromString(const std::string& kind, uint8_t& out) {
 	if (kind == "texture") { out = kCatalogKindTexture; return true; }
 	if (kind == "mesh") { out = kCatalogKindMesh; return true; }
 	if (kind == "sound") { out = kCatalogKindSound; return true; }
+	if (kind == "shader") { out = kCatalogKindShader; return true; }
 	return false;
 }
 
@@ -234,6 +235,7 @@ const char* CatalogKindToString(uint8_t kind) {
 	case kCatalogKindTexture: return "texture";
 	case kCatalogKindMesh: return "mesh";
 	case kCatalogKindSound: return "sound";
+	case kCatalogKindShader: return "shader";
 	default: return "";
 	}
 }

@@ -42,6 +42,12 @@ enum class PlanAssetKind : uint8_t {
 	// resolved by the runtime audio manager through the stable 0x4xxx
 	// content ids.
 	Sound,
+	// PROJECT-AUTHORED SHADER assets (compiled .spv under the
+	// project's content tree): PakAssetKind::Shader blobs served by
+	// the mounted pak backends + the engine shader library, resolved
+	// through the stable 0x5xxx content ids. The ENGINE-NATIVE set
+	// (engine-shaders.pak) is build-owned — recipes never control it.
+	Shader,
 };
 
 struct PlanAsset {

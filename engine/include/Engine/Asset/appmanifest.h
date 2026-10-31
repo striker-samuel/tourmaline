@@ -101,8 +101,12 @@ inline constexpr uint8_t kCatalogKindScene = 0;
 inline constexpr uint8_t kCatalogKindTexture = 1;
 inline constexpr uint8_t kCatalogKindMesh = 2;
 inline constexpr uint8_t kCatalogKindSound = 3;
-// The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound";
-// false for any other spelling).
+// PROJECT-AUTHORED SHADER assets (compiled .spv the project owns —
+// distinct from the ENGINE-NATIVE set the engine-shaders.pak carries;
+// project recipes never control mandatory engine shader inclusion).
+inline constexpr uint8_t kCatalogKindShader = 4;
+// The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
+// "shader"; false for any other spelling).
 [[nodiscard]] bool CatalogKindFromString(const std::string& kind,
 	uint8_t& out);
 [[nodiscard]] const char* CatalogKindToString(uint8_t kind);

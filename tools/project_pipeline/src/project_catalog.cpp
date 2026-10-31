@@ -519,6 +519,15 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 						out.sounds))
 					return false;
 			}
+			else if (asset.kind == PlanAssetKind::Shader) {
+				// PROJECT-AUTHORED shaders: the .spv's own sidecar
+				// identity, ids in the 0x5xxx range. The ENGINE-NATIVE
+				// set never flows through a plan (engine-shaders.pak
+				// is build-owned — recipes never control it).
+				if (!ensureAsset(asset.path, "shader", pak.id, {},
+						out.shaders))
+					return false;
+			}
 		}
 	}
 
@@ -578,6 +587,7 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::sort(out.textures.begin(), out.textures.end(), byId);
 	std::sort(out.meshes.begin(), out.meshes.end(), byId);
 	std::sort(out.sounds.begin(), out.sounds.end(), byId);
+	std::sort(out.shaders.begin(), out.shaders.end(), byId);
 	return true;
 }
 
@@ -612,6 +622,7 @@ uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	push(c.textures, smvk::kCatalogKindTexture);
 	push(c.meshes, smvk::kCatalogKindMesh);
 	push(c.sounds, smvk::kCatalogKindSound);
+	push(c.shaders, smvk::kCatalogKindShader);
 	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
 		pakIndices.data(), paths.data(), ids.size());
 }
@@ -646,6 +657,11 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "struct MeshKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
 		<< "struct SoundKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "// PROJECT-AUTHORED shader assets (the 0x5xxx range -"
+		<< " compiled .spv the project OWNS, distinct from the"
+		<< " ENGINE-NATIVE set engine-shaders.pak carries).\n"
+		<< "struct ShaderKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
 		<< "// (SkeletonKey / AnimationClipKey arrive with their catalog\n"
 		<< "// buckets - the .anim asset identity kinds; the HANDLE types\n"
@@ -693,6 +709,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitNamespace("textures", c.textures, "TextureKey");
 	emitNamespace("meshes", c.meshes, "MeshKey");
 	emitNamespace("sounds", c.sounds, "SoundKey");
+	emitNamespace("shaders", c.shaders, "ShaderKey");
 	os << "// Runtime packages (plan/mount order).\n"
 		<< "struct Pak {\n"
 		<< "    std::string_view name;\n"
@@ -711,6 +728,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "    Texture = 1,\n"
 		<< "    Mesh = 2,\n"
 		<< "    Sound = 3,\n"
+		<< "    Shader = 4,\n"
 		<< "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
 		<< "// no startup strings, no maps, no runtime discovery table.\n"
@@ -749,6 +767,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitRows(c.textures, "textures", "Texture");
 	emitRows(c.meshes, "meshes", "Mesh");
 	emitRows(c.sounds, "sounds", "Sound");
+	emitRows(c.shaders, "shaders", "Shader");
 	os << "};\n\n"
 		<< "// The catalog identity fingerprint: FNV-1a64 over the rows'\n"
 		<< "// stable identity in emission order (appmanifest.h's\n"
@@ -815,6 +834,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 				return "MeshKey";
 			if (kind == "sound")
 				return "SoundKey";
+			if (kind == "shader")
+				return "ShaderKey";
 			return "Id"; // an unknown kind degrades to the raw id
 		};
 		os << "// RETIRED assets (tombstones): the historical identities,\n"
@@ -936,6 +957,7 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 	addBucket("texture", c.textures);
 	addBucket("mesh", c.meshes);
 	addBucket("sound", c.sounds);
+	addBucket("shader", c.shaders);
 	// The retired set is catalog SEMANTICS too: a retire/reactivate
 	// moves the content hash (a generation event), so the compiled
 	// catalog and its hash can never disagree about membership.
@@ -1040,7 +1062,8 @@ bool CollectAssetFingerprints(const Project& project,
 		return true;
 	};
 	return add(catalog.scenes) && add(catalog.textures)
-		&& add(catalog.meshes) && add(catalog.sounds);
+		&& add(catalog.meshes) && add(catalog.sounds)
+		&& add(catalog.shaders);
 }
 
 bool DiscoverPakFingerprints(const std::string& pakDir,

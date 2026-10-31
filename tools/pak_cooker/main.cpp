@@ -2895,6 +2895,31 @@ int Run(const PakArgs& c) {
 				<< " (" << wavBytes << " B wav)\n";
 			continue;
 		}
+		if (ext == ".spv") {
+			// A PROJECT-AUTHORED SHADER asset: the compiled bytecode
+			// VERBATIM as a Shader-kind blob (the third VFS-addressable
+			// kind - the shader library validates + serves it by path).
+			// The SPIR-V magic is validated here - a corrupt blob
+			// never ships (the runtime's read gate is the second one).
+			if (smvk::shaders::DetectBytecode(bytes->data(),
+					bytes->size())
+					!= smvk::shaders::Bytecode::Spirv) {
+				tool::err() << "Content-set shader failed SPIR-V"
+					" validation (truncated or wrong backend?): "
+					<< vfsPath << std::endl;
+				return 1;
+			}
+			const size_t spvBytes = bytes->size();
+			if (!writer.AddBlob(smvk::PakAssetKind::Shader, vfsPath,
+					std::move(*bytes))) {
+				tool::err() << "Content-set AddBlob failed: " << vfsPath
+					<< std::endl;
+				return 1;
+			}
+			tool::out() << "Embedded content-set shader " << vfsPath
+				<< " (" << spvBytes << " B spv)\n";
+			continue;
+		}
 		std::vector<uint8_t> embed;
 		if (ext == ".ktx2" || ext == ".cubemanifest"
 				|| ext == ".givolumemanifest" || ext == ".givolume") {
