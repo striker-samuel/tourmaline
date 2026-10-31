@@ -419,7 +419,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
    │  selection (multi + Mesh/Face/Vertex highlight + World/NonDag pseudo-selection),
    │  gizmo drag state, override rules, references, env, placement, images, path remaps
    └─ Outputs: CookToPak (temp coalesced tour + PakCooker --tour worker + GiBaker stage),
-      RunInApp (App.exe --pak/--gltf), LM PNG export, Flintbase publish
+      LM PNG export
 ```
 
 * **RHI context** (`m_context`, from `AppImpl`): device, upload/flush, buffer/texture/
@@ -477,7 +477,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 | Placement (never cooked) | `editor_placement*.cpp` | Scatter graphs → `PlacementProgram`; live CPU preview; `place.*` settings |
 | Images/file nodes | `editor_app.h:789` | `ImageDef` (path+wrap/colorspace/filter) → cluster texture on use; `fileNode` cooked, `editorSettings` not |
 | Paths | `editor_paths.cpp` | Unified source/tour/ref/URI/cook/atlas view; live relink = undoable slot reassign + `path.remap.*`; copy-fix is cook-safe |
-| Cook/Run | `editor_cook.cpp` | `CookToPak`: temp coalesced tour → `PakCooker --tour` pipe worker (`CookFeed` live console) → optional `GiBaker` cvol+world stages; `RunInApp`: `App.exe --pak/--gltf` (edits need Cook first); pak scenes refuse cook |
+| Cook/Run | `editor_cook.cpp` | `CookToPak`: temp coalesced tour → `PakCooker --tour` pipe worker (`CookFeed` live console) → optional `GiBaker` cvol+world stages; the cooked pak runs in the App (`--pak`, never `--gltf` — the App loads our format only); pak scenes refuse cook |
 | LM inspect/export | `editor_lmexport.cpp` | `.sglm` atlas inspect, F8/F10 views, offscreen unwrapped PNG export |
 | Branding/prefs/dialogs | `editor_branding.cpp`, `editor_native_dialog.cpp` | Tourmaline gem + generated logo (chrome only); native open/save; prefs auto-save on shutdown/close |
 

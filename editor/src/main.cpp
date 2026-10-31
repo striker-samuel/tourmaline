@@ -300,13 +300,17 @@ namespace {
 
 	void PrintUsage(const char* prog) {
 		std::cout << "Usage: " << (prog ? prog : "Editor")
-			<< " --project <dir> [--gltf <path.gltf>] [--out-pak <path.pak>]"
+			<< " --project <dir> [--scene <path.tour|.gltf>] [--out-pak <path.pak>]"
 			" [--strict]\n"
 			<< "  --project is REQUIRED: the editor never picks a project\n"
 			<< "  itself — EditorLauncher.exe owns selection (recents +\n"
 			<< "  New/Browse) and spawns this exe with --project.\n"
-			<< "  Source scenes only: cooked paks run in the App (the editor\n"
-			<< "  is the WYSIWYG authoring tool; pak opens are refused).\n"
+			<< "  --scene opens any SOURCE scene at boot (the same dispatch\n"
+			<< "  as the open dialog: .tour replays the authored scene,\n"
+			<< "  .gltf/.glb runs the import funnel — glTF is import-only\n"
+			<< "  content and the editor is the importer). Cooked paks run\n"
+			<< "  in the App (the editor is the WYSIWYG authoring tool;\n"
+			<< "  pak opens are refused).\n"
 			<< "  --strict: resource-pool exhaustion ABORTS with a fatal\n"
 			<< "  diagnostic instead of degrading silently (dev/diagnosis;\n"
 			<< "  same as TOURMALINE_STRICT=1 — see AGENTS.md).\n";
@@ -374,11 +378,15 @@ InstallCrashHandler();
 	bool strict = false;
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
-		if (std::strcmp(a, "--gltf") == 0 && i + 1 < argc) {
+		// --scene: the GENERIC source-scene open (any .tour or
+		// .gltf/.glb — OpenAnySceneFile's exact dispatch). The old
+		// glTF-named flag is GONE: glTF is import-only content, the
+		// flag name was a format leak onto a generic surface.
+		if (std::strcmp(a, "--scene") == 0 && i + 1 < argc) {
 			scenePath = argv[++i];
 		}
-		else if (std::strncmp(a, "--gltf=", 7) == 0) {
-			scenePath = a + 7;
+		else if (std::strncmp(a, "--scene=", 8) == 0) {
+			scenePath = a + 8;
 		}
 		else if (std::strcmp(a, "--project") == 0 && i + 1 < argc) {
 			projectDir = argv[++i];
