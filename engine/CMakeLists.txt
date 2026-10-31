@@ -73,11 +73,17 @@ if(ENGINE_BACKEND STREQUAL "Vulkan")
     target_compile_definitions(engine PRIVATE ENGINE_VULKAN)
 endif()
 
-# Full Vulkan headers (Linux; see the root CMakeLists block): PUBLIC so
-# every engine consumer (app, editor, tools, tests) compiles against the
-# same complete 1.4 symbol set, ahead of the older distro headers.
+# Full Vulkan headers (Linux; see the root CMakeLists block): PRIVATE
+# since the namespace/RHI boundary audit - the engine's PUBLIC headers
+# include no Vulkan (only engine/src/Vulkan impl TUs do), so the
+# include path must NOT propagate to consumers. The Linux consumers
+# that genuinely include <volk.h>/Vulkan headers directly (the cook
+# tools' VkFormat enums, the GPU window tests) opt in themselves - the
+# boundary rule: RHI/Vulkan access is an explicit opt-in, never a
+# transitive default. (Windows: the SDK headers arrive via
+# find_package(Vulkan) at the consumers that need them - unchanged.)
 if(TARGET vulkan_headers_iface)
-    target_link_libraries(engine PUBLIC vulkan_headers_iface)
+    target_link_libraries(engine PRIVATE vulkan_headers_iface)
 endif()
 
 # ---------------------------------------------------------------------------

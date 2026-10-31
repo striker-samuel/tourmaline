@@ -38,3 +38,18 @@ OptickCore
 set_target_properties(Cook PROPERTIES
 RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(CookLib PRIVATE vulkan_headers_iface)
+endif()
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(Cook PRIVATE vulkan_headers_iface)
+endif()

@@ -847,3 +847,32 @@ tourmaline_stage_sdl3(PakHostTests)
 tourmaline_stage_sdl3(ProjectPipelineTests)
 tourmaline_stage_sdl3(ProbePremixGpuTests)
 tourmaline_stage_sdl3(RhiUploadBarrierGpuTests)
+
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(PlacementGpuTests PRIVATE vulkan_headers_iface)
+endif()
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(ProbePremixGpuTests PRIVATE vulkan_headers_iface)
+endif()
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(RhiUploadBarrierGpuTests PRIVATE vulkan_headers_iface)
+endif()
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(WorldFieldsGpuTests PRIVATE vulkan_headers_iface)
+endif()

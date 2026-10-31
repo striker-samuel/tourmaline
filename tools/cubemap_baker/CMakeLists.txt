@@ -36,3 +36,11 @@ add_custom_command(TARGET CubemapBaker POST_BUILD
 )
 
 tourmaline_stage_sdl3(CubemapBaker)
+
+# Vulkan headers opt-in (the namespace/RHI boundary audit): this target
+# includes <volk.h> / Vulkan headers directly - link the Linux
+# full-header iface EXPLICITLY instead of relying on the engine's (now
+# PRIVATE) propagation. Windows: the SDK headers via find_package.
+if(TARGET vulkan_headers_iface)
+    target_link_libraries(CubemapBaker PRIVATE vulkan_headers_iface)
+endif()
