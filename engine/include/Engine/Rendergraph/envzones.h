@@ -34,7 +34,8 @@
 
 // Global-scope forward (SceneEnv is Engine/Scene/scene.h's; a forward
 // inside the namespace below would mint a DIFFERENT type).
-struct SceneEnv;
+namespace tour::scene { struct SceneEnv; }
+using tour::scene::SceneEnv;
 
 namespace smvk::envzones {
 

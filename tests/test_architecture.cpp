@@ -269,6 +269,67 @@ int main() {
 		for (const std::string& o : offenders)
 			std::cout << "  R3 offender: " << o << "\n";
 	}
+	// R4: THE UPWARD DEPENDENCY RULE (the audit's section 6, as a
+	// scanner guard): the public RHI headers (smvk.h + RHI/*.h) must
+	// not include ENGINE-DOMAIN headers (scene/app/gi/placement/
+	// audio/camera/profile/assets/worldfields/utils) - the RHI stays
+	// unaware of the engine above it. BASELINE (the tracked pre-
+	// existing findings, NOT new leaks):
+	//   * resource_manager.h -> Engine/Renderer/spirv_reflection.h
+	//     (the section 6 finding: the shader-module creation surface
+	//     needs the reflection records; the P1 fix is moving the
+	//     reflection types or the dependency behind an adapter).
+	//   * Memory/handle.h + pool.h + string_view.h: the generational
+	//     pool/handle vocabulary is shared infrastructure the RHI
+	//     pools are built on (smvk-scope, deliberately allowed - the
+	//     audit table moves memory.h the ARENA layer, not these).
+	{
+		std::vector<std::string> offenders;
+		const fs::path rhiRoot = fs::path(TOURMALINE_SOURCE_ROOT)
+			/ "engine" / "include" / "Engine";
+		std::vector<fs::path> rhiHeaders;
+		for (const char* name :
+				{ "smvk.h", "RHI/resource_manager.h",
+				  "RHI/swapchain.h", "RHI/DescriptorLimits.h",
+				  "RHI/FrameConfig.h" }) {
+			const fs::path p = rhiRoot / name;
+			if (fs::exists(p))
+				rhiHeaders.push_back(p);
+		}
+		// Engine-domain include prefixes the RHI must never pull.
+		static const char* kForbidden[] = {
+			"Engine/Scene/", "Engine/App/", "Engine/GI/",
+			"Engine/Placement/", "Engine/Audio/", "Engine/Camera/",
+			"Engine/Profile/", "Engine/WorldFields/",
+			"Engine/Utils/", "Engine/ImGui/",
+			"Engine/Asset/tour.h", "Engine/Asset/pak.h",
+			"Engine/Asset/touranim.h",
+			"Engine/Asset/appmanifest.h",
+		};
+		for (const fs::path& p : rhiHeaders) {
+			const std::string code =
+				StripCommentsAndStrings(ReadText(p));
+			size_t at = 0;
+			while ((at = code.find("#include", at))
+					!= std::string::npos) {
+				const size_t lineEnd = code.find('\n', at);
+				const std::string line = code.substr(
+					at, lineEnd == std::string::npos
+						? std::string::npos : lineEnd - at);
+				for (const char* bad : kForbidden) {
+					if (Contains(line, bad))
+						offenders.push_back(
+							p.generic_string() + ": "
+							+ line.substr(0, 72));
+				}
+				at = lineEnd == std::string::npos
+					? code.size() : lineEnd;
+			}
+		}
+		Check(offenders.empty(), "arch.r4-rhi-no-engine-includes");
+		for (const std::string& o : offenders)
+			std::cout << "  R4 offender: " << o << "\n";
+	}
 
 	std::cout << "architecture_tests: " << (g_checks - g_failures)
 		<< "/" << g_checks << " checks passed\n";

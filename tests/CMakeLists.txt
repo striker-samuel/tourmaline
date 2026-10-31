@@ -429,6 +429,63 @@ add_test(NAME scene_table_tests COMMAND SceneTableTests)
 # so it runs on every matrix runner the suite does.
 add_test(NAME architecture_tests COMMAND ArchitectureTests)
 
+# ---------------------------------------------------------------------------
+# THE HEADER SMOKE TEST (todo item 8, section 8a): every PUBLIC engine
+# header must compile STANDALONE - one generated TU per header, no PCH,
+# nothing else included. Catches include-what-you-use breaks (a header
+# relying on transitive includes - the camera.h/core.h finding's class)
+# at build time instead of at the consumer that trips on it.
+#
+# GPU-free, compile-only: an OBJECT library of per-header TUs (an
+# executable would need a main; the object lib still type-checks every
+# header). It is NOT part of the default 'all' target (EXCLUDE_FROM_ALL
+# - 100+ TUs would slow every incremental build); CI and the dedicated
+# target build it explicitly:
+#   cmake --build <build> --target HeaderSmoke
+# and ctest runs the (trivial) marker so the suite reports it.
+# ---------------------------------------------------------------------------
+set(HEADER_SMOKE_DIR "${CMAKE_CURRENT_BINARY_DIR}/header_smoke")
+file(REMOVE_RECURSE "${HEADER_SMOKE_DIR}")
+file(MAKE_DIRECTORY "${HEADER_SMOKE_DIR}")
+
+file(GLOB_RECURSE _smoke_headers
+    "${CMAKE_SOURCE_DIR}/engine/include/Engine/*.h")
+set(_smoke_srcs "")
+foreach(_hdr ${_smoke_headers})
+    # Skip the impl-adjacent + generated headers: vulkan_opaque.h etc.
+    # are included from implementation contexts only; engine_limits is
+    # the CPU/HLSL contract consumed via Limits.h.
+    get_filename_component(_name "${_hdr}" NAME)
+    if(_name STREQUAL "engine_limits.hlsli.h")
+        continue()
+    endif()
+    file(RELATIVE_PATH _rel "${CMAKE_SOURCE_DIR}/engine/include" "${_hdr}")
+    string(REGEX REPLACE "[^A-Za-z0-9_]" "_" _tu "${_rel}")
+    set(_src "${HEADER_SMOKE_DIR}/${_tu}.cpp")
+    file(WRITE "${_src}" "#include <${_rel}>\n// (generated header smoke TU - see tests/CMakeLists.txt)\nint ${_tu}_marker() { return 0; }\n")
+    list(APPEND _smoke_srcs "${_src}")
+endforeach()
+
+add_library(HeaderSmoke OBJECT EXCLUDE_FROM_ALL ${_smoke_srcs})
+# The engine target's INTERFACE include paths (glm, SDL3, spirv-reflect,
+# ...) - the headers legitimately use these third-party deps; the pure
+# "no RHI include dirs" form of the smoke test lands with the tour/smvk
+# directory split (todo 8.7). Vulkan stays PRIVATE on the engine (stage
+# 2), so nothing RHI-only propagates here.
+target_link_libraries(HeaderSmoke PRIVATE engine)
+# No PCH, no extra defines: the headers must stand on their own.
+target_compile_features(HeaderSmoke PRIVATE cxx_std_20)
+
+# The ctest marker: building the target is the real check; the test
+# binary just proves the target was built (a no-op exe would be
+# heavier). A custom target + a compile-only "test" that re-builds.
+add_custom_target(HeaderSmokeCheck
+    COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target HeaderSmoke --config $<CONFIG>
+    COMMAND echo "header smoke: all public headers compiled standalone"
+)
+add_test(NAME header_smoke
+    COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target HeaderSmoke --config $<CONFIG>)
+
 add_executable(PlacementTests test_placement.cpp)
 
 target_link_libraries(PlacementTests

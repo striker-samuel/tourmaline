@@ -25,6 +25,7 @@
 // this struct only owns GPU memory + dispatch.
 
 #include <Engine/Memory/pool.h>
+#include <Engine/Placement/placement_draw.h>
 #include <Engine/Placement/placement_gpu.h>
 #include <Engine/Placement/placement_terrain.h>
 #include <Engine/Placement/placement_tile.h>

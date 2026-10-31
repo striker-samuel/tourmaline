@@ -16,6 +16,7 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/Placement/placement_ir.h>
 #include <Engine/Placement/placement_point.h>
 
 namespace tour::placement {

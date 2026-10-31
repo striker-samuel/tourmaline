@@ -46,6 +46,8 @@
 #include <Engine/Asset/touranim.h> // Clip/Track/Skeleton
 #include <Engine/Scene/entity_handle.h>
 
+namespace tour { struct Cluster; }
+
 namespace tour {
 // (migration compat) the animator references the World + handle types
 // unqualified; qualify as call sites migrate, then drop this.

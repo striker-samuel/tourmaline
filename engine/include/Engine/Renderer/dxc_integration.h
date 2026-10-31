@@ -1,3 +1,4 @@
+#include <string_view>
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 

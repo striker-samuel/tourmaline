@@ -38,11 +38,7 @@
 #include <glm/gtc/packing.hpp>
 
 namespace tour::gi {
-// (migration compat) the moved block still spells the engine's smvk
-// types unqualified; qualify them as call sites migrate, then drop
-// this directive.
-using namespace ::smvk;
-
+// (self-sufficient: no smvk types referenced - no bridge needed)
 // ---------------------------------------------------------------------------
 // Fixed SG basis
 // ---------------------------------------------------------------------------

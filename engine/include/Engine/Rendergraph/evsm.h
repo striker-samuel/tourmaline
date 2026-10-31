@@ -40,6 +40,7 @@
 // Frame indexing: moments + blurred outputs are ringed by smvk::limits::MaxFramesInFlight.
 // With OneFrameLag, sample index = (writeIndex + FLIGHTS - 1) % FLIGHTS.
 
+#include <Engine/platform.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/smvk.h>

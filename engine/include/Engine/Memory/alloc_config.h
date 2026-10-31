@@ -36,6 +36,7 @@
 // fallback, or compaction strategies by design.
 
 #include <cstddef>
+#include <cstdint>
 
 namespace tour::mem::config {
 

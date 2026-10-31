@@ -52,6 +52,7 @@
 
 #include <glm/glm.hpp>
 
+#include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
 
 namespace engine::worldpartition {

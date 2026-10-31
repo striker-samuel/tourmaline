@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <Engine/Renderer/mesh.h>
+#include <Engine/Scene/scene.h>
 #include <functional>
 #include <vector>
 #include <cassert>
