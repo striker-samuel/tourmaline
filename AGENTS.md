@@ -3,10 +3,22 @@
 ## Runtime layers (app/src — the project façade stack)
 
 - **ProjectRuntime** (the façade): stable ids → appmanifest [ids] rows →
-  pak bytes. `ReadAsset(id)` serves TEXTURE and SOUND payloads (the two
-  VFS-addressable pak kinds); scenes load by identity, meshes ship
-  inside their scene's cluster. `OpenPak`/`AdoptPakBackend` = the shared
-  lazy backend cache (one image per archive whatever opens it).
+  pak bytes. `ReadAsset(id)` serves TEXTURE, SOUND and SHADER payloads
+  (the three VFS-addressable pak kinds); scenes load by identity, meshes
+  ship inside their scene's cluster. `OpenPak`/`AdoptPakBackend` = the
+  shared lazy backend cache (one image per archive whatever opens it).
+  `AttachCompiledCatalog` (row-level + catalog-fingerprint checks) is
+  the compiled-catalog gate project hosts run.
+- **DeployCheck** (`app/src/DeployCheck.h`): the DEPLOYMENT VALIDATION
+  GATE, pre-graphics in the `--project` launch — every manifest-listed
+  pak EXISTS + opens (PakReader magic/CRC) + its CONTENT-ADDRESSED
+  name (`<stem>-<fnv1a64>.pak`) matches the file's ACTUAL bytes (a
+  stale/wrong pak under the expected name fails even though its own
+  image is internally valid), and an ENGINE SHADER SOURCE exists
+  (`smvk::shaders::HasAnySource` — the engine-shaders.pak package or
+  the loose dev tree). A broken deployment is a loud, actionable
+  failure before any Vulkan/window work, never a half-booted app.
+  Unit-tested in test_pak_host.cpp (`deploycheck.*`).
 - **ProjectScenes** (docs/project_scenes.md): the scene-INSTANCE layer —
   `LoadScene`/`LoadSceneAdditive`/`RemoveScene` by NUMERIC id over a
   live World (SceneHandle = 64-bit generational, same shape as the

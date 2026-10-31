@@ -12,6 +12,7 @@
 #include "Host.h"
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
+#include "DeployCheck.h"
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Memory/memory.h>
@@ -168,6 +169,30 @@ namespace app {
 			}
 			entrySceneName = manifest.entryScene;
 			sceneId = StemOf(pakPaths[entryPakIndex]);
+			// THE DEPLOYMENT VALIDATION GATE (pre-graphics, see
+			// DeployCheck.h): every listed pak proves itself (exists +
+			// a valid image + the content-addressed NAME matching the
+			// actual bytes) and an engine shader source exists — a
+			// broken deployment is a loud, actionable failure, never
+			// a half-booted window. (The preload below re-opens the
+			// images anyway; this gate runs FIRST and checks the
+			// deployment CONTRACT the preload cannot see.)
+			for (const std::string& pak : pakPaths) {
+				std::string dErr;
+				if (!app::ValidatePakFile(pak, dErr)) {
+					std::cerr << "[App] deployment rejected: " << dErr
+						<< "\n";
+					return EXIT_FAILURE;
+				}
+			}
+			{
+				std::string dErr;
+				if (!app::ValidateEngineShaderSource(dErr)) {
+					std::cerr << "[App] deployment rejected: " << dErr
+						<< "\n";
+					return EXIT_FAILURE;
+				}
+			}
 			auto futures = std::make_shared<
 				std::vector<std::future<PakPreload>>>();
 			for (const std::string& pak : pakPaths)

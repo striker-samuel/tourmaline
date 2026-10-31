@@ -822,6 +822,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/PakWorldLoader.cpp
 	../app/src/ProjectRuntime.cpp
 	../app/src/ProjectScenes.cpp
+	../app/src/DeployCheck.cpp
 )
 
 target_include_directories(PakHostTests
@@ -832,6 +833,8 @@ target_include_directories(PakHostTests
 target_link_libraries(PakHostTests
 	PRIVATE
 		engine
+		# DeployCheck's content-address digest (the pak name hash).
+		artifact_cache
 )
 
 set_target_properties(PakHostTests PROPERTIES

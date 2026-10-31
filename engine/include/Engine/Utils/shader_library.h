@@ -56,6 +56,10 @@ void Init();
 // Drops every mount (tests; a full graphics shutdown). Idempotent.
 void Shutdown();
 [[nodiscard]] bool Initialized();
+// True when at least ONE shader source is mounted (the deployment
+// gate's proof: the engine-shaders.pak package and/or the loose dev
+// tree exist exe-relative). False = nothing can ever serve a read.
+[[nodiscard]] bool HasAnySource();
 
 // ---- explicit providers (hosts + tests) ----------------------------------
 // Mount ONE shader package (a pak carrying PakAssetKind::Shader

@@ -28,6 +28,7 @@ add_library(tourmaline_apphost STATIC
     src/ProjectRuntime.cpp
     src/ProjectScenes.cpp
     src/AudioRuntime.cpp
+    src/DeployCheck.cpp
 )
 
 target_include_directories(tourmaline_apphost
@@ -39,6 +40,10 @@ target_link_libraries(tourmaline_apphost
     PUBLIC
         engine
         gltf_import
+    PRIVATE
+        # DeployCheck's content-address digest (the pak name hash):
+        # HashBytes. PRIVATE — the gate is host-internal.
+        artifact_cache
 )
 
 # ---------------------------------------------------------------------------

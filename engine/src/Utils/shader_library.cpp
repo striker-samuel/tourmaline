@@ -180,6 +180,13 @@ bool Initialized() {
 	return lib.inited;
 }
 
+bool HasAnySource() {
+	Library& lib = Lib();
+	std::lock_guard<std::mutex> lock(lib.mtx);
+	InitLocked();
+	return !lib.vfs.Mounts().empty();
+}
+
 bool MountPak(const std::string& pakFilePath, std::string& err) {
 	Library& lib = Lib();
 	std::lock_guard<std::mutex> lock(lib.mtx);

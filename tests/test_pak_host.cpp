@@ -34,6 +34,9 @@
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
+#include "DeployCheck.h"
+
+#include <artifact_cache/artifact_cache.h> // HashBytes (the name digests)
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
@@ -336,6 +339,106 @@ bool AllNodesDynamic(const smvk::World& world) {
 	return s.staticRoot.size() == s.hierarchy.size()
 		&& std::all_of(s.staticRoot.begin(), s.staticRoot.end(),
 			[](uint8_t v) { return v == 0; });
+}
+
+// The DEPLOYMENT VALIDATION GATE (DeployCheck.h): the content-address
+// contract + existence + integrity, and the engine shader source.
+void TestDeployCheck() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_deploycheck";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+	// A minimal VALID pak.
+	smvk::PakWriter writer;
+	Check(writer.AddBlob(smvk::PakAssetKind::Scene, "scene/only",
+			{ 1, 2, 3, 4 }), "deploycheck.writer-adds-blob");
+	const std::vector<uint8_t> image = writer.Finalize();
+	// The content-addressed name: <stem>-<fnv1a64>.pak (exactly what
+	// the recipe build's publish pass writes).
+	const std::string digest =
+		smvk::cache::HashBytes(image.data(), image.size());
+	const fs::path addressed = tmp / ("game-" + digest + ".pak");
+	{
+		std::ofstream f(addressed, std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(image.data()),
+			std::streamsize(image.size()));
+	}
+	{
+		std::string err;
+		Check(app::ValidatePakFile(addressed.generic_string(), err),
+			"deploycheck.addressed-pak-passes");
+	}
+	// The SAME bytes under a WRONG digest name: the deployment
+	// contract fails (a stale/wrong pak under the expected name).
+	{
+		const std::string wrong = digest == "0000000000000000"
+			? "ffffffffffffffff" : "0000000000000000";
+		const fs::path badName = tmp / ("game-" + wrong + ".pak");
+		{
+			std::ofstream f(badName, std::ios::binary | std::ios::trunc);
+			f.write(reinterpret_cast<const char*>(image.data()),
+				std::streamsize(image.size()));
+		} // close + flush BEFORE the gate reads the bytes
+		std::string err;
+		const bool ok = app::ValidatePakFile(badName.generic_string(), err);
+		if (!(!ok && err.find("content-address mismatch")
+				!= std::string::npos))
+			std::cout << "  (wrong-digest: ok=" << ok
+				<< " err='" << err << "')\n";
+		Check(!ok && err.find("content-address mismatch")
+				!= std::string::npos,
+			"deploycheck.wrong-digest-fails");
+	}
+	// A PLAIN (legacy, non-addressed) name: passes on existence +
+	// a valid image.
+	{
+		const fs::path plain = tmp / "plain.pak";
+		{
+			std::ofstream f(plain, std::ios::binary | std::ios::trunc);
+			f.write(reinterpret_cast<const char*>(image.data()),
+				std::streamsize(image.size()));
+		} // close + flush BEFORE the gate reads the bytes
+		std::string err;
+		const bool ok = app::ValidatePakFile(plain.generic_string(), err);
+		if (!ok)
+			std::cout << "  (plain: err='" << err << "')\n";
+		Check(ok, "deploycheck.plain-name-passes");
+	}
+	// Missing file: the actionable missing-deployment error.
+	{
+		std::string err;
+		Check(!app::ValidatePakFile(
+				(tmp / "nope-0123456789abcdef.pak").generic_string(),
+				err)
+			&& err.find("missing") != std::string::npos,
+			"deploycheck.missing-pak-fails");
+	}
+	// Corrupt bytes under the RIGHT name: the integrity check fails.
+	{
+		std::vector<uint8_t> torn = image;
+		torn[torn.size() / 2] ^= 0xFF;
+		const fs::path tornPath = tmp / ("game-" + digest + ".pak");
+		// (overwrite the good file with torn bytes)
+		{
+			std::ofstream f(tornPath, std::ios::binary | std::ios::trunc);
+			f.write(reinterpret_cast<const char*>(torn.data()),
+				std::streamsize(torn.size()));
+		}
+		std::string err;
+		Check(!app::ValidatePakFile(tornPath.generic_string(), err)
+			&& err.find("integrity") != std::string::npos,
+			"deploycheck.torn-pak-fails");
+	}
+	// The engine shader source: the test exe runs beside the build
+	// tree's dev content/shaders/ (+ the deployed engine-shaders.pak)
+	// — a source is mounted.
+	{
+		std::string err;
+		Check(app::ValidateEngineShaderSource(err),
+			"deploycheck.shader-source-present");
+	}
 }
 
 void TestStaticFlagApplication() {
@@ -870,6 +973,7 @@ int main() {
 	TestCliParse();
 	TestPakPathResolution();
 	TestPakCorruption();
+	TestDeployCheck();
 	TestStaticFlagApplication();
 	TestProjectRuntime();
 	TestProjectScenes();
