@@ -247,4 +247,49 @@ external/   Pinned submodules and fetched third-party dependencies
 
 Tourmaline is developed as a personal project. Development has been assisted by AI coding tools for implementation, debugging, tests, and documentation; architectural review and final decisions remain with the project author.
 
-**Current repository license: [MIT](LICENSE).** Third-party components retain their own licenses; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The project currently includes code derived from *Mastering Graphics Programming with Vulkan* under its original MIT attribution. Any contemplated future Community/Commercial licensing model is **not** the license currently published in this repository.
+## License
+
+**Tourmaline is free for independent creators and organizations with less than
+USD $10 million in worldwide annual corporate-group revenue.** You can use the
+engine to build and sell games, keep your gameplay code and private engine
+modifications closed-source, and distribute completed games without engine
+royalties or per-copy fees.
+
+Organizations with **USD $10 million or more in corporate-group annual revenue**
+need a separate **Tourmaline Commercial License** before new development using
+Community-licensed Tourmaline releases. Parent companies, subsidiaries, and
+commonly controlled entities count together; assigning development to a smaller
+affiliate or contractor does not avoid this rule. Ordinary independent publishing
+and non-controlling financing do not, by themselves, make an eligible studio
+ineligible.
+
+| Worldwide corporate-group annual revenue | Licensing |
+| --- | --- |
+| Below $10 million | Free Community License |
+| $10 million to below $50 million | Commercial — illustrative $5,000/year |
+| $50 million through $250 million | Commercial — illustrative $15,000/year |
+| Above $250 million | Negotiated enterprise agreement |
+
+Commercial prices are **proposed starting prices**, not a binding offer. A
+separate signed agreement is required. See
+[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md).
+
+**Your games remain yours.** Neither Community nor the proposed Commercial model
+requires publishing private changes to the engine. The Community License provides
+perpetual royalty-free distribution and maintenance rights for lawfully released
+End Products, including bug fixes, platform/security updates, and eligible
+Tourmaline maintenance patches. A Commercial License should expressly preserve
+those same rights after its term ends. Neither model provides indefinite
+technical support or unlimited feature upgrades.
+
+The license is **source-available, not OSI-approved open source**. Community
+rights depend on developer eligibility. See the full
+[Tourmaline Community License 1.0](LICENSE.md).
+
+**Existing MIT rights are preserved.** Tourmaline versions and source copies
+previously published under MIT remain under MIT, including for commercial use.
+The historical MIT license and the Packt scene-format attribution are preserved
+in [LICENSE-MIT-2026.txt](LICENSE-MIT-2026.txt). Third-party libraries, tools,
+assets, and binaries continue under their own terms; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Do not assume that every file
+in the repository is relicensed under Tourmaline Community.
