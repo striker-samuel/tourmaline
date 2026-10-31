@@ -510,9 +510,21 @@ bool AssetDatabase::AdoptFile(const std::string& assetPath,
 	}
 	const int64_t mtime = FileMtime(assetPath);
 	try {
+		// CONDITIONAL upsert: the row is written ONLY when the recorded
+		// metadata actually changes. The ids generation runs on every
+		// build and adopts every participating asset — an unconditional
+		// INSERT OR REPLACE churned the whole table each time (SQLite
+		// writes + WAL growth for byte-identical rows). ON CONFLICT DO
+		// UPDATE ... WHERE <changed> skips the write entirely when the
+		// path/kind/size/mtime all stand.
 		SQLite::Statement q(*m_impl->db,
-			"INSERT OR REPLACE INTO assets "
-			"(guid, path, kind, size, mtime) VALUES (?, ?, ?, ?, ?)");
+			"INSERT INTO assets (guid, path, kind, size, mtime) "
+			"VALUES (?, ?, ?, ?, ?) "
+			"ON CONFLICT(guid) DO UPDATE SET "
+			"  path = excluded.path, kind = excluded.kind, "
+			"  size = excluded.size, mtime = excluded.mtime "
+			"WHERE path <> excluded.path OR kind <> excluded.kind "
+			"   OR size <> excluded.size OR mtime <> excluded.mtime");
 		q.bind(1, guid);
 		q.bind(2, ToStoredPath(m_projectRoot, abs));
 		q.bind(3, kind);
@@ -780,30 +792,38 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 	return true;
 }
 
-// A valid C++ identifier from the path's stem: [A-Za-z0-9_], invalid
-// chars fold to '_', a leading digit takes an '_' prefix, and C++
-// KEYWORDS take an '_' prefix too (a legitimate 'class.png' must never
-// emit the invalid 'project::textures::class' — the generator is a
-// compiler front end for the catalog; it safely-transforms before any
-// code is emitted). The stem at FIRST registration only — renames
-// later keep the assigned symbol.
+// A valid C++ identifier from the path's stem, in three passes:
+//   (a) sanitize: [A-Za-z0-9_], invalid chars fold to '_', a leading
+//       digit takes an '_' prefix;
+//   (b) RESERVED normalization: any identifier CONTAINING '__' is
+//       reserved ([lex.name]) — every '__' folds to '_u_' until none
+//       remain (__stone -> _u_stone, ___x -> _u_u_x); a LEADING '_'
+//       followed by an uppercase letter is reserved too — an 'u'
+//       inserts after the underscore (_Stone -> _uStone);
+//   (c) C++20 KEYWORDS (the COMPLETE set, incl. the digraph operators
+//       and the charN_t/co_* tokens the first cut missed — compl.png
+//       and bitand.png must never emit textures::compl) take an '_'
+//       prefix.
+// The stem at FIRST registration only — renames later keep the
+// assigned symbol.
 std::string SymbolFromPath(const std::string& projectRelPath) {
 	static const char* kKeywords[] = {
-		"alignas", "alignof", "and", "asm", "auto", "bool", "break",
-		"case", "catch", "char", "class", "co_await", "co_return",
-		"co_yield", "concept", "const", "consteval", "constexpr",
-		"constinit", "const_cast", "continue", "decltype", "default",
-		"delete", "do", "double", "dynamic_cast", "else", "enum",
-		"explicit", "export", "extern", "false", "float", "for",
+		"alignas", "alignof", "and", "and_eq", "asm", "auto",
+		"bitand", "bitor", "bool", "break", "case", "catch", "char",
+		"char8_t", "char16_t", "char32_t", "class", "compl", "concept",
+		"const", "consteval", "constexpr", "constinit", "const_cast",
+		"continue", "co_await", "co_return", "co_yield", "decltype",
+		"default", "delete", "do", "double", "dynamic_cast", "else",
+		"enum", "explicit", "export", "extern", "false", "float", "for",
 		"friend", "goto", "if", "inline", "int", "long", "mutable",
-		"namespace", "new", "noexcept", "not", "nullptr", "operator",
-		"or", "private", "protected", "public", "register",
-		"reinterpret_cast", "requires", "return", "short", "signed",
-		"sizeof", "static", "static_assert", "static_cast", "struct",
-		"switch", "template", "this", "thread_local", "throw", "true",
-		"try", "typedef", "typeid", "typename", "union", "unsigned",
-		"using", "virtual", "void", "volatile", "wchar_t", "while",
-		"xor",
+		"namespace", "new", "noexcept", "not", "not_eq", "nullptr",
+		"operator", "or", "or_eq", "private", "protected", "public",
+		"register", "reinterpret_cast", "requires", "return", "short",
+		"signed", "sizeof", "static", "static_assert", "static_cast",
+		"struct", "switch", "template", "this", "thread_local",
+		"throw", "true", "try", "typedef", "typeid", "typename",
+		"union", "unsigned", "using", "virtual", "void", "volatile",
+		"wchar_t", "while", "xor", "xor_eq",
 	};
 	std::string stem = fs::path(projectRelPath).stem().generic_string();
 	std::string sym;
@@ -816,6 +836,16 @@ std::string SymbolFromPath(const std::string& projectRelPath) {
 		sym = "_";
 	if (sym[0] >= '0' && sym[0] <= '9')
 		sym = "_" + sym;
+	// (b) reserved '__' anywhere: fold to '_u_' until none remain (the
+	// fold itself can never create a new '__').
+	for (size_t at = sym.find("__"); at != std::string::npos;
+			at = sym.find("__"))
+		sym.replace(at, 2, "_u_");
+	// (b) reserved leading '_' + uppercase: insert 'u' after the '_'.
+	if (sym.size() >= 2 && sym[0] == '_'
+			&& sym[1] >= 'A' && sym[1] <= 'Z')
+		sym.insert(1, "u");
+	// (c) keywords take an '_' prefix.
 	for (const char* kw : kKeywords)
 		if (sym == kw) {
 			sym = "_" + sym;

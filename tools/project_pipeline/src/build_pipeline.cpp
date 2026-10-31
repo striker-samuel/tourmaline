@@ -419,20 +419,24 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					|| asset.kind == PlanAssetKind::BakeFile)
 				vfsOwner[asset.path] = pak.id;
 
-	// The staged set (see the loop's STAGED PUBLICATION note): the
-	// destructor removes every un-committed staging file, so ANY early
-	// return below leaves the previous generation intact.
+	// The staged set: every pak writes under publish/.staging/ with its
+	// AUTHORED name (BakeStems keys bake discovery on the out-pak stem —
+	// the staging name must stay clean); the destructor removes every
+	// un-committed staging file, so ANY early return below leaves the
+	// previous generation intact.
 	struct StagedSet {
-		std::vector<std::pair<fs::path, fs::path>> files; // (staged, final)
+		std::vector<fs::path> files;
 		bool committed = false;
 		~StagedSet() {
 			if (committed)
 				return;
 			std::error_code ec;
-			for (const auto& [stagedPath, finalPath] : files)
-				fs::remove(stagedPath, ec);
+			for (const fs::path& p : files)
+				fs::remove(p, ec);
 		}
 	} staged;
+	const fs::path stagingDir = publish / ".staging";
+	fs::create_directories(stagingDir, ec);
 
 	// The per-pak reports land in a LOCAL first: they describe PUBLISHED
 	// outputs, and a mid-set failure rolls the whole set back — the
@@ -442,22 +446,20 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	for (const PlanPak& pak : plan.paks) {
 		PakStageArgs stage;
 		stage.contentDir = project.root;
-		const fs::path finalPath =
-			(publish / fs::path(pak.output)).lexically_normal();
-		fs::path stagedPath = finalPath;
-		stagedPath += ".staged";
-		// STAGED PUBLICATION: every pak writes to a STAGING name; only
-		// after the WHOLE set verified + policed do the renames land
-		// (per-file atomic on one volume), and only then does the
-		// manifest publish. A failure anywhere — a failed stage, a
-		// failed verify, a failed police, even a failed rename —
-		// destroys the staged set on scope exit and leaves the
-		// PREVIOUS generation's paks + manifest untouched (the old
-		// manifest never references a mixed generation: the manifest is
-		// the atomic commit point and the paks under it flip as one
-		// set).
+		// STAGED PUBLICATION (the content-addressed design): every pak
+		// writes under .staging/ with its authored name; only after the
+		// WHOLE set verified + policed does the publish pass land the
+		// files under CONTENT-ADDRESSED, IMMUTABLE names (<stem>-<digest>
+		// .pak — a rename never overwrites an existing pak), and the
+		// manifest — the SINGLE-FILE commit point — atomically replaces
+		// the .tapp last. A failure anywhere leaves the previous
+		// manifest + every pak it references fully intact (a half-published
+		// set only adds unreferenced immutable files, which the next
+		// successful build sweeps).
+		const fs::path stagedPath =
+			(stagingDir / fs::path(pak.output)).lexically_normal();
 		stage.outPak = stagedPath.generic_string();
-		staged.files.emplace_back(stagedPath, finalPath);
+		staged.files.push_back(stagedPath);
 		stage.verify = true;
 		if (pak.scene.empty()) {
 			// ASSET-ONLY pak (the recipe spec's shared package): the
@@ -561,7 +563,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		}
 		BuildPlanReport::Pak rep;
 		rep.id = pak.id;
-		rep.output = finalPath.lexically_normal().generic_string();
+		rep.output.clear(); // filled by the publish pass (content-addressed)
 		rep.scene = pak.scene;
 		for (const std::string& a : pak.sceneArtifacts)
 			if (reimportedFamilies.count(a)) {
@@ -571,42 +573,82 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		reps.push_back(std::move(rep));
 	}
 
-	// ---- the atomic publish: every staged pak verified + policed, now
-	// the renames land (per-file atomic on one volume, the whole set
-	// before any manifest write). A rename failure rolls the set back
-	// where it can (the destructor cleans what remains staged).
-	for (const auto& [stagedPath, finalPath] : staged.files) {
-		std::error_code renEc;
-		fs::rename(stagedPath, finalPath, renEc);
-		if (renEc) {
-			err = "the publish rename failed: "
-				+ stagedPath.generic_string() + " -> "
-				+ finalPath.generic_string() + " ("
-				+ renEc.message() + ")";
-			return false;
+	// ---- the publish pass: every staged pak verified + policed, now
+	// the content-addressed landings. Each final name is <stem>-<digest>
+	// .pak (FNV-1a 64 over the pak bytes): IMMUTABLE by construction —
+	// landing one never overwrites an existing file, so a partial
+	// failure mid-pass leaves the previous manifest + every pak it
+	// references fully intact (the orphans the failed run added are
+	// unreferenced immutable files; the next successful build sweeps
+	// them). An unchanged rebuild dedups: the final name already
+	// exists, the staged copy is dropped, the published mtime never
+	// moves.
+	std::vector<fs::path> finalPaths; // plan order
+	{
+		std::error_code readEc;
+		for (size_t i = 0; i < plan.paks.size(); ++i) {
+			const fs::path& stagedPath = staged.files[i];
+			std::vector<uint8_t> image;
+			{
+				std::ifstream in(stagedPath, std::ios::binary);
+				image.assign((std::istreambuf_iterator<char>(in)),
+					std::istreambuf_iterator<char>());
+			}
+			if (image.empty() && !fs::is_regular_file(stagedPath, readEc)) {
+				err = "the staged pak vanished before publication: "
+					+ stagedPath.generic_string();
+				return false;
+			}
+			const std::string digest = smvk::cache::HashBytes(
+				image.data(), image.size());
+			const std::string finalName =
+				fs::path(plan.paks[i].output).stem().generic_string()
+				+ "-" + digest + ".pak";
+			const fs::path finalPath =
+				(publish / finalName).lexically_normal();
+			std::error_code renEc;
+			if (fs::exists(finalPath, renEc)) {
+				// Same content already published — dedup, never touch
+				// the live file.
+				fs::remove(stagedPath, renEc);
+			}
+			else {
+				fs::rename(stagedPath, finalPath, renEc);
+				if (renEc) {
+					err = "the publish rename failed: "
+						+ stagedPath.generic_string() + " -> "
+						+ finalPath.generic_string() + " ("
+						+ renEc.message() + ")";
+					return false;
+				}
+			}
+			finalPaths.push_back(finalPath);
+			reps[i].output = finalPath.generic_string();
 		}
 	}
-	staged.committed = true;
-	// The set is live: the reports describe genuinely published paks
-	// from here on (a manifest-write failure below leaves the paks on
-	// disk with the PREVIOUS manifest standing — the documented
-	// residual window; the full fix is versioned pak filenames, noted
-	// as the follow-up).
+	// The set is live (immutable adds only): the reports describe
+	// genuinely published paks from here on. The manifest write below
+	// is the COMMIT; until it lands, the previous manifest + its paks
+	// stand untouched.
 	out.paks = std::move(reps);
 
-	// ---- 4) publish the appmanifest (LAST, after every pak verified) --
+	// ---- 4) publish the appmanifest (the single-file COMMIT) ----------
 	// The manifest names the entry pak + the entry scene's cooked
-	// identity + the ordered pak list (mount order = plan order). Every
-	// pak reopened + policed above; only now does the manifest land, so
-	// a failure anywhere above leaves the PREVIOUS manifest + its paks
-	// standing (the publish-last contract).
+	// identity + the ordered pak list (mount order = plan order, the
+	// CONTENT-ADDRESSED file names). It is written to a STAGED path and
+	// ATOMICALLY RENAMED over the final .tapp: the rename is the commit
+	// point — every failure above it leaves the previous manifest + the
+	// paks it references fully intact (content-addressed paks are
+	// immutable adds; a half-published run only leaves unreferenced
+	// orphans, swept below on the next success).
 	{
 		const PlanPak* entryPak = plan.FindPak(plan.entryPak);
-		const std::string entryOut = entryPak
-			? (publish / fs::path(entryPak->output)).lexically_normal()
-				.generic_string()
-			: std::string();
-		if (entryOut.empty() || !fs::is_regular_file(entryOut, ec)) {
+		size_t entryIdx = SIZE_MAX;
+		for (size_t i = 0; i < plan.paks.size(); ++i)
+			if (plan.paks[i].id == plan.entryPak)
+				entryIdx = i;
+		if (!entryPak || entryIdx == SIZE_MAX
+				|| !fs::is_regular_file(finalPaths[entryIdx], ec)) {
 			err = "the entry pak '" + plan.entryPak
 				+ "' did not build (cannot publish the manifest)";
 			return false;
@@ -616,7 +658,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		// scene; the runtime resolves by name, never by index).
 		std::string entrySceneName;
 		{
-			std::ifstream in(entryOut, std::ios::binary);
+			std::ifstream in(finalPaths[entryIdx], std::ios::binary);
 			std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)),
 				std::istreambuf_iterator<char>());
 			std::string rerr;
@@ -644,10 +686,11 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			entrySceneName = "scene"; // the packer's tour-scene name
 		smvk::AppManifest manifest;
 		manifest.version = smvk::kAppManifestVersion;
-		manifest.entryPak = entryPak->output;
+		manifest.entryPak = finalPaths[entryIdx].filename()
+			.generic_string();
 		manifest.entryScene = entrySceneName;
-		for (const PlanPak& pak : plan.paks)
-			manifest.paks.push_back(pak.output);
+		for (const fs::path& p : finalPaths)
+			manifest.paks.push_back(p.filename().generic_string());
 		// The content-id table (the runtime mirror of the generated
 		// project.h — game code resolves stable ids through the
 		// apphost's ProjectRuntime without the header). The SAME
@@ -666,8 +709,9 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				if (GenerateProjectCatalog(project, plan, db, catalog,
 						deps, err)) {
 					std::map<std::string, std::string> pakFileById;
-					for (const PlanPak& pak : plan.paks)
-						pakFileById[pak.id] = pak.output;
+					for (size_t i = 0; i < plan.paks.size(); ++i)
+						pakFileById[plan.paks[i].id] =
+							finalPaths[i].filename().generic_string();
 					const auto addRows =
 						[&](const std::vector<CatalogEntry>& entries,
 							const char* kind) {
@@ -706,14 +750,79 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				.generic_string();
 		}
 		const fs::path manifestPath =
-			publish / (manifestName + ".tapp");
+			(publish / (manifestName + ".tapp")).lexically_normal();
+		const fs::path stagedManifest =
+			(stagingDir / (manifestName + ".tapp")).lexically_normal();
+		staged.files.push_back(stagedManifest); // rolled back on failure
 		std::string mErr;
-		if (!smvk::SaveAppManifest(manifestPath.generic_string(),
+		if (!smvk::SaveAppManifest(stagedManifest.generic_string(),
 				manifest, mErr)) {
 			err = "the appmanifest publish failed: " + mErr;
 			return false;
 		}
-		out.manifest = manifestPath.lexically_normal().generic_string();
+		// THE COMMIT: rename-over-existing is atomic on both supported
+		// platforms (MSVC MoveFileEx REPLACE_EXISTING; POSIX rename).
+		{
+			std::error_code renEc;
+			fs::rename(stagedManifest, manifestPath, renEc);
+			if (renEc) {
+				err = "the appmanifest commit rename failed: "
+					+ stagedManifest.generic_string() + " -> "
+					+ manifestPath.generic_string() + " ("
+					+ renEc.message() + ")";
+				return false;
+			}
+		}
+		staged.committed = true;
+		out.manifest = manifestPath.generic_string();
+		// ---- the stale-generation sweep (only AFTER the commit) ------
+		// Remove unreferenced <stem>.pak / <stem>-<digest>.pak files for
+		// OUR stems: the previous generation's paks (content-addressed
+		// or pre-content-addressing plain names) plus any orphans a
+		// failed run left. Nothing referenced by the live manifest is
+		// ever touched.
+		{
+			std::set<std::string> referenced(manifest.paks.begin(),
+				manifest.paks.end());
+			const auto isHex16 = [](const std::string& s) {
+				if (s.size() != 16)
+					return false;
+				for (char c : s)
+					if (!(c >= '0' && c <= '9')
+							&& !(c >= 'a' && c <= 'f'))
+						return false;
+				return true;
+			};
+			std::vector<fs::path> stale;
+			for (const fs::directory_entry& e :
+					fs::directory_iterator(publish, ec)) {
+				if (!e.is_regular_file(ec))
+					continue;
+				const std::string name =
+					e.path().filename().generic_string();
+				for (const PlanPak& pak : plan.paks) {
+					const std::string stem =
+						fs::path(pak.output).stem().generic_string();
+					const bool plain = name == stem + ".pak";
+					const bool addressed = name.size() > stem.size() + 17
+						&& name.compare(0, stem.size(), stem) == 0
+						&& name[stem.size()] == '-'
+						&& name.compare(name.size() - 4, 4, ".pak") == 0
+						&& isHex16(name.substr(stem.size() + 1,
+							name.size() - stem.size() - 5));
+					if ((plain || addressed)
+							&& !referenced.count(name))
+						stale.push_back(e.path());
+				}
+			}
+			for (const fs::path& p : stale) {
+				std::error_code rmEc;
+				fs::remove(p, rmEc); // best-effort: swept again next run
+			}
+			if (!stale.empty())
+				std::printf("[build] swept %zu stale pak(s) from the"
+					" previous generation\n", stale.size());
+		}
 		std::printf("[build] published appmanifest: %s (entry %s:%s,"
 			" %zu pak(s))\n", out.manifest.c_str(),
 			manifest.entryPak.c_str(), manifest.entryScene.c_str(),
@@ -851,7 +960,7 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 			"--cubemap", settings.cubemap ? "on" : "off",
 			"--lightmap", settings.lightmap ? "on" : "off",
 		};
-		const int rc = RunStage("Cook.exe", a, err);
+		const int rc = RunStage(StageExe("Cook").c_str(), a, err);
 		if (rc != 0) {
 			err = err.empty()
 				? ("the Cook stage failed (exit " + std::to_string(rc)
@@ -879,7 +988,7 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 			"--content-dir", project.root,
 			"--tour", tourAbs.generic_string(),
 		};
-		const int rc = RunStage("GiBaker.exe", a, err);
+		const int rc = RunStage(StageExe("GiBaker").c_str(), a, err);
 		if (rc != 0) {
 			err = err.empty()
 				? ("the GiBaker stage failed (exit " + std::to_string(rc)
@@ -903,7 +1012,7 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 			"--out-pak", outPak.generic_string(),
 			"--verify", "on",
 		};
-		const int rc = RunStage("Pak.exe", a, err);
+		const int rc = RunStage(StageExe("Pak").c_str(), a, err);
 		if (rc != 0) {
 			err = err.empty()
 				? ("the Pak stage failed (exit " + std::to_string(rc)

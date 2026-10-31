@@ -1579,14 +1579,9 @@ std::string TextureConversionHash(const void* data, size_t size,
 	return TextureConversionHashImpl(data, size, srgb);
 }
 
-glm::vec3 GltfPunctualAimAxis(int) {
-	// glTF punctual lights aim along their node's -Z axis. Raw locals
-	// (the basis rides the chain top): the world aim reads straight off
-	// the node's global transform — globalTransform * (0,0,-1) — in
-	// every coordFix mode. (The old per-node conjugation needed the
-	// coordFix-0 special case +Z read; the chain-top basis kills it.)
-	return glm::vec3(0.0f, 0.0f, -1.0f);
-}
+// (GltfPunctualAimAxis moved INLINE into gltf.h — the engine consumes
+// it too and an out-of-line definition here made every engine consumer
+// order-dependent on linking gltf_import; see the header note.)
 
 smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex)
 {

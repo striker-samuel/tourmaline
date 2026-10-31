@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1162,6 +1163,9 @@ public:
 	int cookRc = 0, giRc = 0, pakRc = 0;
 	int failPakCall = -1;    // 0-based Pak-call index to fail (-1 never)
 	int pakCallCount = 0;
+	// Payload variant for the fake paks (the content-addressed
+	// publication tests flip it to produce different pak bytes).
+	std::string payloadTag;
 	int Cook(const smvk::project::CookStageArgs& a,
 		std::string&) override {
 		calls.push_back({ "Cook", { a.contentDir, a.tour,
@@ -1201,6 +1205,18 @@ public:
 			smvk::PakWriter w;
 			w.AddBlob(smvk::PakAssetKind::Scene, "recording/fake",
 				MinimalSceneBlob());
+			// The payload variant rides a SEPARATE blob (appending
+			// bytes to the scene blob breaks ParseSceneBlob's trailing
+			// sections): a distinct pak digest without a distinct
+			// scene. Only the SCENE pak's call (non-empty tour) — the
+			// variant models "one pak's content changed", not both.
+			if (!payloadTag.empty() && !a.tour.empty()) {
+				const std::vector<uint8_t> tag(payloadTag.begin(),
+					payloadTag.end());
+				w.AddBlob(smvk::PakAssetKind::Texture, "recording/tag",
+					smvk::BuildTexturePayload("recording/tag", -1, -1,
+						-1, -1, std::span<const uint8_t>(tag)));
+			}
 			const std::vector<uint8_t> image = w.Finalize();
 			std::ofstream f(a.outPak, std::ios::binary | std::ios::trunc);
 			f.write(reinterpret_cast<const char*>(image.data()),
@@ -1361,7 +1377,7 @@ void TestBuildPlanExecutor() {
 					== (scenes / "grid.tour").lexically_normal()
 						.generic_string()
 				&& rec.calls[2].args[3]
-					== (tmp / "publish" / "grid.pak.staged")
+					== (tmp / "publish" / ".staging" / "grid.pak")
 						.lexically_normal().generic_string()
 				&& rec.calls[2].args[4] == "verify:on",
 				"executor.pak-args");
@@ -1502,6 +1518,7 @@ void TestBuildPlanExecutor() {
 		// #5): a pak failing MID-SET never touches the published
 		// generation — the finals stand byte-identical and no staging
 		// file lingers.
+		std::string ok1Shared, ok1World; // the first generation's paths
 		{
 			smvk::project::BuildPlanOptions opts;
 			opts.publishDir = (tmp / "publish5").generic_string();
@@ -1512,6 +1529,8 @@ void TestBuildPlanExecutor() {
 					opts, ok1, e1)
 				&& ok1.paks.size() == 2,
 				"executor.staged-generation-builds");
+			ok1Shared = ok1.paks[0].output;
+			ok1World = ok1.paks[1].output;
 			const std::vector<char> sharedBefore =
 				ReadAllBytes(ok1.paks[0].output);
 			const std::vector<char> worldBefore =
@@ -1531,13 +1550,94 @@ void TestBuildPlanExecutor() {
 			Check(ReadAllBytes(ok1.paks[0].output) == sharedBefore
 				&& ReadAllBytes(ok1.paks[1].output) == worldBefore,
 				"executor.staged-previous-generation-untouched");
+			// No staging leftovers (the .staging dir holds nothing).
 			bool stagingLingers = false;
-			for (const fs::directory_entry& e :
-					fs::directory_iterator(tmp / "publish5", ec))
-				if (e.path().extension() == ".staged")
+			if (fs::is_directory(tmp / "publish5" / ".staging", ec))
+				for (const fs::directory_entry& e :
+						fs::directory_iterator(
+							tmp / "publish5" / ".staging", ec))
 					stagingLingers = true;
 			Check(!stagingLingers,
 				"executor.staged-no-staging-leftovers");
+		}
+		// ---- the content-addressed publication contract (the commit
+		// review's follow-up round): unchanged content DEDUPS (same
+		// immutable name, mtime never moves, no duplicates); changed
+		// content publishes a NEW immutable name and the stale sweep
+		// retires the superseded generation after the manifest commits.
+		{
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (tmp / "publish5").generic_string();
+			// Unchanged rebuild: same bytes -> same digest -> the
+			// published file is never touched (mtime stands), and the
+			// publish dir carries exactly the two paks of one
+			// generation.
+			const auto pakCount = [&]() {
+				size_t n = 0;
+				for (const fs::directory_entry& e :
+						fs::directory_iterator(tmp / "publish5", ec))
+					if (e.is_regular_file(ec)
+							&& e.path().extension() == ".pak")
+						++n;
+				return n;
+			};
+			const fs::file_time_type worldMtime =
+				fs::last_write_time(ok1World, ec);
+			ec.clear();
+			{
+				RecordingAdapter rec;
+				smvk::project::BuildPlanReport rep;
+				std::string e;
+				Check(smvk::project::ExecuteBuildPlan(project, p2, rec,
+						opts, rep, e)
+					&& rep.paks.size() == 2,
+					"executor.addressed-rebuild-ok");
+				Check(rep.paks[0].output == ok1Shared
+					&& rep.paks[1].output == ok1World,
+					"executor.addressed-unchanged-same-names");
+				Check(fs::last_write_time(ok1World, ec) == worldMtime,
+					"executor.addressed-dedup-mtime-untouched");
+				ec.clear();
+				Check(pakCount() == 2,
+					"executor.addressed-no-duplicates");
+			}
+			// Changed content (a different pak payload for world): a
+			// NEW immutable name lands, the manifest commits to it, and
+			// the sweep retires the superseded world pak while the
+			// unchanged shared pak stays (dedup again).
+			{
+				RecordingAdapter rec;
+				rec.payloadTag = "v2";
+				smvk::project::BuildPlanReport rep;
+				std::string e;
+				Check(smvk::project::ExecuteBuildPlan(project, p2, rec,
+						opts, rep, e)
+					&& rep.paks.size() == 2,
+					"executor.addressed-changed-rebuild-ok");
+				if (!e.empty())
+					std::cout << "  (addressed-changed err: " << e
+						<< ")\n";
+				Check(rep.paks[0].output == ok1Shared
+					&& rep.paks[1].output != ok1World,
+					"executor.addressed-changed-new-name");
+				Check(!fs::is_regular_file(ok1World, ec),
+					"executor.addressed-old-pak-swept");
+				ec.clear();
+				Check(pakCount() == 2,
+					"executor.addressed-sweep-single-generation");
+				// The manifest committed to the new generation.
+				smvk::AppManifest m;
+				std::string mErr;
+				Check(smvk::LoadAppManifest(
+						(tmp / "publish5" / "world.tapp")
+							.generic_string(),
+						m, mErr)
+					&& m.paks.size() == 2
+					&& m.paks[1] == fs::path(rep.paks[1].output)
+						.filename()
+						.generic_string(),
+					"executor.addressed-manifest-committed");
+			}
 		}
 		// The real leg: build through the subprocess adapter, then
 		// inspect BOTH paks (BLD-02 verify + BLD-07 asset-only + the
@@ -1563,16 +1663,55 @@ void TestBuildPlanExecutor() {
 					&& smvk::LoadAppManifest(rep.manifest, manifest,
 						mErr),
 					"executor.manifest-published");
-				Check(manifest.entryPak == "world.pak"
+				Check(manifest.entryPak
+						== fs::path(rep.paks[1].output)
+							.filename()
+							.generic_string()
 					&& !manifest.entryScene.empty()
 					&& manifest.paks.size() == 2
-					&& manifest.paks[0] == "shared.pak"
-					&& manifest.paks[1] == "world.pak",
+					&& manifest.paks[0]
+						== fs::path(rep.paks[0].output)
+							.filename()
+							.generic_string()
+					&& manifest.paks[1]
+						== fs::path(rep.paks[1].output)
+							.filename()
+							.generic_string(),
 					"executor.manifest-content");
+				// The published names are CONTENT-ADDRESSED
+				// (<stem>-<16hex>.pak — immutable, atomic-generation
+				// publication).
+				{
+					const auto isAddressed = [](const std::string& n) {
+						if (n.size() < 6
+								|| n.compare(n.size() - 4, 4, ".pak")
+									!= 0)
+							return false;
+						const size_t dash = n.rfind('-');
+						if (dash == std::string::npos)
+							return false;
+						const std::string h =
+							n.substr(dash + 1, n.size() - dash - 5);
+						if (h.size() != 16)
+							return false;
+						for (char c : h)
+							if (!((c >= '0' && c <= '9')
+									|| (c >= 'a' && c <= 'f')))
+								return false;
+						return true;
+					};
+					Check(std::all_of(manifest.paks.begin(),
+							manifest.paks.end(),
+							[&](const std::string& n) {
+								return isAddressed(n);
+							}),
+						"executor.manifest-content-addressed-names");
+				}
 				// The content-id table (the runtime catalog mirror —
 				// the same registry the ids command maintains): the
-				// scene + mesh in world.pak, the texture cross-pak in
-				// shared.pak, ids from the kind ranges.
+				// scene + mesh in the WORLD pak, the texture cross-pak
+				// in the SHARED pak, ids from the kind ranges, paks
+				// named by their published (content-addressed) files.
 				{
 					const smvk::AppManifestAsset* scene =
 						manifest.FindAsset(0x1000);
@@ -1582,14 +1721,20 @@ void TestBuildPlanExecutor() {
 						manifest.FindAsset(0x3000);
 					Check(manifest.assets.size() == 3
 						&& scene && scene->kind == "scene"
-						&& scene->pak == "world.pak"
+						&& scene->pak == fs::path(rep.paks[1].output)
+							.filename()
+							.generic_string()
 						&& scene->path == "content/scenes/grid.tour"
 						&& tex && tex->kind == "texture"
-						&& tex->pak == "shared.pak"
+						&& tex->pak == fs::path(rep.paks[0].output)
+							.filename()
+							.generic_string()
 						&& tex->path
 							== "content/models/grid/shared/stone.png"
 						&& mesh && mesh->kind == "mesh"
-						&& mesh->pak == "world.pak"
+						&& mesh->pak == fs::path(rep.paks[1].output)
+							.filename()
+							.generic_string()
 						&& mesh->path
 							== "content/models/grid/grid.geometry",
 						"executor.manifest-id-table");
@@ -2049,7 +2194,9 @@ void TestProjectCatalog() {
 			"catalog.kind-mismatch-rejected");
 	}
 	// C++ keywords get a safe '_' prefix (class.png -> _class, never
-	// the invalid project::textures::class).
+	// the invalid project::textures::class) — the COMPLETE set now:
+	// the digraph operators (compl, bitand) and char8_t that the first
+	// cut missed.
 	{
 		uint64_t id = 0;
 		std::string sym, err2;
@@ -2058,6 +2205,83 @@ void TestProjectCatalog() {
 				"content/t/class.png", id, sym, err2)
 			&& sym == "_class",
 			"catalog.keyword-symbol-safe");
+		for (const char* name : { "compl", "bitand", "char8_t",
+				"or_eq", "xor_eq", "not_eq", "and_eq", "bitor" }) {
+			const std::string path =
+				std::string("content/t/") + name + ".png";
+			const std::string want = std::string("_") + name;
+			// A DISTINCT guid per name (one guid = one asset; reusing
+			// it returns the first row). 30 sevens + a 2-hex counter
+			// = 32 hex chars.
+			static int s_n = 0;
+			++s_n;
+			char guidBuf[33];
+			std::snprintf(guidBuf, sizeof(guidBuf),
+				"777777777777777777777777777777%02x", s_n);
+			Check(db.EnsureContentId(guidBuf, "texture", path, id, sym,
+					err2)
+				&& sym == want,
+				(std::string("catalog.keyword-digraph.") + name).c_str());
+		}
+	}
+	// RESERVED identifiers normalize: '__' ANYWHERE folds to '_u_'
+	// (std reserved), a leading '_'+uppercase inserts 'u'.
+	{
+		uint64_t id = 0;
+		std::string sym, err2;
+		Check(db.EnsureContentId(
+				"88888888888888888888888888888888", "texture",
+				"content/t/__stone.png", id, sym, err2)
+			&& sym == "_u_stone"
+			&& db.EnsureContentId(
+				"88888888888888888888888888888889", "texture",
+				"content/t/_Stone.png", id, sym, err2)
+			&& sym == "_uStone",
+			"catalog.reserved-normalized");
+	}
+	// Structural validation of the emitted header: every generated
+	// symbol line is a valid, non-reserved, non-keyword identifier.
+	// The entries carry DB-SANITIZED symbols (what SymbolFromPath
+	// produces for class.png/__under.png/compl.png) — the lexical pass
+	// must accept all of them.
+	{
+		smvk::project::ProjectCatalog c;
+		c.projectName = "StructTest";
+		c.scenes.push_back({ 0x1000, "_class", "content/s/a.tour",
+			"world" });
+		c.scenes.push_back({ 0x1001, "_u_under", "content/s/b.tour",
+			"world" });
+		c.textures.push_back({ 0x2000, "_compl", "content/t/c.png",
+			"world" });
+		const std::string text =
+			smvk::project::EmitProjectHeader(c);
+		const std::regex symLine(
+			"\\s*inline constexpr Id ([A-Za-z_][A-Za-z0-9_]*) =");
+		std::smatch match;
+		std::string::const_iterator at = text.begin();
+		int symbols = 0, valid = 0;
+		static const char* kKw[] = { "class", "compl", "int", "struct",
+			"template", "char8_t", "bitand" };
+		while (std::regex_search(at, text.end(), match, symLine)) {
+			++symbols;
+			const std::string sym = match[1].str();
+			bool ok = sym.find("__") == std::string::npos
+				&& !(sym.size() >= 2 && sym[0] == '_'
+					&& sym[1] >= 'A' && sym[1] <= 'Z');
+			for (const char* kw : kKw)
+				if (sym == kw)
+					ok = false;
+			if (ok)
+				++valid;
+			at = match.suffix().first;
+		}
+		// ProjectId + the 3 catalog entries (EntryScene aliases an
+		// entry symbol, not a fresh declaration of this shape).
+		Check(symbols == 4 && valid == 4,
+			"catalog.header-symbols-lexically-valid");
+		if (symbols != 4 || valid != 4)
+			std::cout << "  (lexical: symbols=" << symbols
+				<< " valid=" << valid << ")\n";
 	}
 	// Identity acquisition ADOPTS: the guid has a row in the ASSET
 	// DIRECTORY too (one database, both tables agree — the mint never
@@ -2071,6 +2295,52 @@ void TestProjectCatalog() {
 				found)
 			&& !found.empty(),
 			"catalog.identity-adopted");
+	}
+	// A MALFORMED sidecar FAILS the generation WITHOUT touching it —
+	// identity repair is explicit (auto-re-minting would orphan every
+	// content id keyed on the old guid).
+	{
+		const fs::path evil = fs::path(project.ImportsDir())
+			/ "thing" / "evil.png";
+		{
+			std::ofstream f(evil, std::ios::binary | std::ios::trunc);
+			f << "png";
+			std::ofstream m(fs::path(evil).string() + ".meta",
+				std::ios::binary | std::ios::trunc);
+			m << "guid=not-a-guid\n";
+		}
+		const std::string evilRecipe =
+			"recipe 1\n"
+			"project CatalogTest\n"
+			"entry content/scenes/thing.tour\n"
+			"[pak world]\n"
+			"output thing.pak\n"
+			"scene content/scenes/thing.tour\n"
+			"[pak shared]\n"
+			"output shared.pak\n"
+			"include content/models/thing/evil.png\n";
+		smvk::project::ProjectRecipe r3;
+		smvk::project::RecipeDiagnostic d3;
+		smvk::project::BuildPlan p3;
+		std::string e3;
+		Check(smvk::project::ParseProjectRecipeText(evilRecipe, r3, d3)
+			&& smvk::project::ResolveRecipe(project, r3, p3, e3),
+			"catalog.malformed-setup-resolves");
+		smvk::project::ProjectCatalog c3;
+		std::vector<std::string> deps3b;
+		Check(!smvk::project::GenerateProjectCatalog(project, p3, db,
+				c3, deps3b, e3)
+			&& e3.find("REFUSING to auto-replace")
+				!= std::string::npos,
+			"catalog.malformed-sidecar-refuses");
+		// The malformed sidecar is UNTOUCHED (repair stays explicit).
+		{
+			std::ifstream m(fs::path(evil).string() + ".meta");
+			std::string text((std::istreambuf_iterator<char>(m)),
+				std::istreambuf_iterator<char>());
+			Check(text.find("not-a-guid") != std::string::npos,
+				"catalog.malformed-sidecar-untouched");
+		}
 	}
 	// String-literal escaping: quotes/backslashes in names/paths never
 	// break the emitted header.

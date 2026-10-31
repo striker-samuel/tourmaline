@@ -29,15 +29,17 @@ add_executable(GameProject
 	main.cpp
 )
 
+# The full HOST setup (the same one App.exe gets): runtime output dir,
+# the staged shared DLLs (KTX/OptickCore/SDL3 — this exe renders at
+# runtime, its imports must resolve from a bare tree), fonts/luts,
+# the engine+gltf_import link and the shader dependency. (The ad-hoc
+# setup this replaces only staged SDL3: the exe would have failed to
+# start anywhere but a warm build dir.)
+tourmaline_host_setup(GameProject)
+
 target_link_libraries(GameProject
 	PRIVATE
 		tourmaline_apphost
 )
 
 tourmaline_attach_project(GameProject GameProject)
-
-set_target_properties(GameProject PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-)
-
-tourmaline_stage_sdl3(GameProject)

@@ -56,11 +56,15 @@ std::string CppStr(const std::string& s) {
 //      source-asset registry and the content-id registry NEVER
 //      disagree about an entity (one database, both tables, one
 //      acquisition path);
-//   2. a MISSING sidecar mints a fresh GUID + writes it (the sidecar
-//      travels with the file — renames keep the identity) + adopts;
-//   3. an INVALID sidecar GUID (corrupt/unparseable — the identity was
-//      already unusable) re-mints + rewrites + adopts, with `note`
-//      carrying the loud replacement record (never a silent repair).
+//   2. a MISSING sidecar ("no .meta") mints a fresh GUID + writes it
+//      (the sidecar travels with the file — renames keep the identity)
+//      + adopts;
+//   3. a MALFORMED/UNREADABLE sidecar FAILS THE GENERATION WITHOUT
+//      TOUCHING IT. Auto-re-minting would silently REPLACE a stable
+//      identity (every content id keyed on the old guid orphaned) —
+//      identity repair is a SEPARATE, EXPLICIT operation: the error
+//      tells the author to delete or fix the sidecar by hand (a
+//      deletion re-enters the missing path on the next run).
 // `sidecarOut` (optional) receives the sidecar path (the depfile feed —
 // identity inputs belong with the content deps).
 bool AcquireAssetIdentity(smvk::cache::AssetDatabase& db,
@@ -78,17 +82,23 @@ bool AcquireAssetIdentity(smvk::cache::AssetDatabase& db,
 		outGuid = guid;
 		return true;
 	}
-	// Missing ("no .meta") or invalid ("invalid guid ..."): mint.
+	if (metaErr != "no .meta") {
+		// Malformed/unreadable — never auto-repair a stable identity.
+		err = "the identity sidecar '" + sidecarOut + "' is unreadable"
+			" (" + metaErr + ") — REFUSING to auto-replace it (every"
+				" content id keyed on that guid would silently orphan)."
+				" Identity repair is explicit: fix or delete the sidecar"
+				" by hand (a deleted sidecar re-mints on the next run)";
+		return false;
+	}
 	outGuid = smvk::tour::GenerateUuid();
 	if (!smvk::cache::WriteAssetMeta(absPath, outGuid, "content-id",
 			err))
 		return false;
 	if (!db.AdoptFile(absPath, outGuid, kind, err))
 		return false;
-	if (metaErr.find("invalid guid") != std::string::npos)
-		note = "sidecar guid was invalid (" + metaErr
-			+ ") — identity REPLACED with a fresh mint at '"
-			+ sidecarOut + "'";
+	note = "sidecar was missing — identity MINTED at '"
+		+ sidecarOut + "'";
 	return true;
 }
 

@@ -326,7 +326,21 @@ bool LoadModelFromAsciiFile(
 // glTF punctual aim axis (KHR_lights_punctual: the light node's -Z
 // direction). Raw locals (the coordFix basis rides the chain top):
 // resolve world aims as globalTransform * (0,0,-1) in every mode.
-glm::vec3 GltfPunctualAimAxis(int coordFix);
+// glTF punctual lights aim along their node's -Z axis. Raw locals
+// (the basis rides the chain top): the world aim reads straight off
+// the node's global transform - globalTransform * (0,0,-1) - in
+// every coordFix mode. (The old per-node conjugation needed the
+// coordFix-0 special case +Z read; the chain-top basis kills it.)
+// INLINE BY DESIGN: the ENGINE's WorldRenderer consumes this too, and
+// an out-of-line definition in gltf_import made libengine carry an
+// unresolved gltf_import symbol - every host then had to link
+// gltf_import AFTER engine (MSVC tolerates any order; GNU ld scans
+// archives once and the apphost-mediated order emitted gltf_import
+// first -> undefined reference). Header-defined = no link dependency,
+// the layering debt dies here.
+inline glm::vec3 GltfPunctualAimAxis(int) {
+	return glm::vec3(0.0f, 0.0f, -1.0f);
+}
 
 // The node's RAW local as authored (matrix verbatim, else T*R*S from
 // the TRS fields). The coordFix basis NEVER lands here - it rides the
