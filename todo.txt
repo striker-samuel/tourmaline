@@ -299,7 +299,7 @@ and the audio layer's per-process pak-image cost note (the shared
 apphost->game runtime seam - RunPakApp handing its preloaded backends
 to the AudioRuntime's ProjectRuntime).
 
-(Namespace/RHI boundary audit, staged) THE tour::/smvk:: SPLIT - the
+(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi). REMAINING) THE tour::/smvk:: SPLIT - the
 audit's confirmed findings + the migration plan (feature branch
 feature/namespace-rhi-boundary):
   TARGET: tour:: = the public engine API (apps, scenes, assets, camera,
@@ -402,3 +402,16 @@ feature/namespace-rhi-boundary):
      CROSS-PLATFORM - Linux GCC/Clang + Windows MSVC. Architecture
      checks stay SEPARATE from the GPU-window tests (which remain
      excluded on hosted runners).
+
+(Namespace/RHI boundary audit, branch notes) The tour-NAME COLLISION is
+pinned by stage 4a: inside namespace smvk an unqualified tour::X
+resolves to smvk::tour (the .tour-doc namespace) - compat aliases spell
+::tour::, forward-declaration blocks must declare tour::audio directly,
+and the smvk::tour -> tour::asset rename (the audit table) dissolves
+the pressure. The moved GI blocks carry a documented transitional
+`using namespace ::smvk` bridge (their bodies still spell smvk types
+unqualified) - retire as those references qualify. NEXT SLICES, in
+order: placement (13 headers, the same shape as gi); the global-
+namespace cleanup (NodeId/scene tables/payloads/Camera/Input ->
+tour::(scene)); the giants (App/world/cluster -> tour::, pak+tour.h ->
+tour::asset); then the P0 interface redesigns + the build split.
