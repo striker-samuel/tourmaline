@@ -73,6 +73,10 @@ struct CookStageArgs {
 	std::string tour;       // the scene tour (absolute)
 	bool cubemap = true;
 	bool lightmap = false;
+	// The artifact-cache store root (the editor's registry; empty = the
+	// CLI's derived convention or off). Acceleration only — the output
+	// is byte-identical either way (the cache's own contract).
+	std::string registryDir;
 };
 
 struct GiBakerStageArgs {
@@ -87,6 +91,11 @@ struct PakStageArgs {
 	std::string tour;      // "" = an asset-only pak (no scene blob)
 	std::string outPak;    // absolute destination
 	bool verify = true;
+	// The playable-unit convention (the editor's cooks pack one): packs
+	// levels/<levelName>.level into the pak. Empty = no level blob.
+	std::string levelName;
+	// The artifact-cache store root (see CookStageArgs::registryDir).
+	std::string registryDir;
 	// The multi-pak ownership surface (the resolved plan's tables):
 	// contentSet = the VFS paths an ASSET-ONLY pak embeds directly as
 	// Texture blobs (no scene, no clusters — the shared-texture pak);
@@ -119,6 +128,20 @@ struct BuildPlanOptions {
 	// The manifest's name (sponza.tourrecipe -> "sponza" publishes
 	// sponza.tapp). Empty = the entry pak's stem.
 	std::string manifestName;
+	// The playable-unit convention: packs levels/<levelName>.level into
+	// every SCENE pak (the editor sets this to the pak stem; the CLI
+	// default is empty). EDT-01 equivalence holds when both
+	// environments pass the same options.
+	std::string levelName;
+	// The artifact-cache store root (the editor's registry; empty = the
+	// CLI convention — derived or off). Acceleration ONLY: the stage
+	// output is byte-identical either way.
+	std::string registryDir;
+	// THE UNSAVED-SCENE BUILD (the editor's EDT-02 form): the plan
+	// RESOLVES against the authored .tour on disk (the saved truth),
+	// but every STAGE runs against this snapshot tour instead — the
+	// authored document is never touched. Empty = run the authored doc.
+	std::string sceneSnapshot;
 };
 
 struct BuildPlanReport {

@@ -773,6 +773,24 @@ target_link_libraries(ProjectPipelineTests
 		project_pipeline
 		gltf_import
 		engine
+		# The EDT-01 parity leg: the IN-PROCESS stage adapter (the linked
+		# Cook/GiBaker/Pak Runs — exactly what the editor drives) builds
+		# the same plan the subprocess adapter does; the paks must be
+		# byte-identical.
+		CookLib
+		GiBakerLib
+		PakLib
+)
+
+# The stage libs' headers (cook_tool.h/gi_baker.h/pak_tool.h ride their
+# PRIVATE include dirs) + the stb headers the test's impl TU needs.
+target_include_directories(ProjectPipelineTests
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/tools/cook/src
+		${CMAKE_SOURCE_DIR}/tools/gi_baker
+		${CMAKE_SOURCE_DIR}/tools/pak_cooker
+		${CMAKE_SOURCE_DIR}/tools/common
+		${CMAKE_SOURCE_DIR}/external/stb
 )
 
 set_target_properties(ProjectPipelineTests PROPERTIES

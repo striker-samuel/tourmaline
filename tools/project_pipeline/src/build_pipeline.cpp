@@ -233,10 +233,18 @@ public:
 		}
 		args.push_back("--out-pak");
 		args.push_back(a.outPak);
+		if (!a.levelName.empty()) {
+			args.push_back("--level");
+			args.push_back(a.levelName);
+		}
 		if (a.verify) {
 			args.push_back("--verify");
 			args.push_back("on");
 		}
+		// (registryDir is the IN-PROCESS adapter's surface — the CLI
+		// derives its cache by convention; the editor's explicit store
+		// rides the library adapter. Output is byte-identical either
+		// way, so CLI-vs-editor parity holds.)
 		return RunStage(StageExe("Pak").c_str(), args, err);
 	}
 };
@@ -338,9 +346,16 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	for (const PlanPak& pak : plan.paks) {
 		if (pak.scene.empty())
 			continue; // asset-only pak: no scene bakes
-		const fs::path tourAbs = projectRoot / fs::path(pak.scene);
+		// The tour the stages run: the authored doc, or the editor's
+		// UNSAVED-SCENE SNAPSHOT (the plan resolved against the authored
+		// file; the snapshot substitutes for every stage — the authored
+		// document is never touched by a cook).
+		fs::path tourAbs = options.sceneSnapshot.empty()
+			? projectRoot / fs::path(pak.scene)
+			: fs::path(options.sceneSnapshot);
 		if (!fs::is_regular_file(tourAbs, ec)) {
-			err = "[Cook] the scene tour is missing: " + pak.scene;
+			err = "[Cook] the scene tour is missing: "
+				+ tourAbs.lexically_normal().generic_string();
 			return false;
 		}
 		{
@@ -349,6 +364,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			stage.tour = tourAbs.lexically_normal().generic_string();
 			stage.cubemap = plan.bakeCubemaps;
 			stage.lightmap = false; // the deprecated path stays off
+			stage.registryDir = options.registryDir;
 			const int rc = adapter.Cook(stage, err);
 			if (rc != 0) {
 				err = StageFail("Cook", rc, err);
@@ -410,8 +426,12 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			// reference walk) — positionals are identity only, so the
 			// root artifact is the whole story (legacy parity: BakeStems
 			// keys bake discovery on these stems).
-			stage.tour = (projectRoot / fs::path(pak.scene))
+			stage.tour = (options.sceneSnapshot.empty()
+					? (projectRoot / fs::path(pak.scene))
+					: fs::path(options.sceneSnapshot))
 				.lexically_normal().generic_string();
+			stage.levelName = options.levelName;
+			stage.registryDir = options.registryDir;
 			// The cross-pak excludes: every VFS-addressable asset owned
 			// by a DECLARED dependency pak is not embedded here — the
 			// materials keep their refs, the runtime resolves them

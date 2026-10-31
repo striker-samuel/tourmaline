@@ -33,6 +33,20 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
+#include "cook_tool.h"
+#include "gi_baker.h"
+#include "pak_tool.h"
+
+// The in-process stage libs (CookLib/PakLib) reference the stb impls
+// without DEFINING them (the CLI exes compile their own impl TUs; the
+// editor provides them in editor_branding.cpp). This test drives the
+// libs directly — it provides the impls the same way. (The engine's
+// own stb copy is STB_*_STATIC, so no collision.)
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image.h>
+#include <stb_image_write.h>
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -1090,6 +1104,44 @@ public:
 	}
 };
 
+// The IN-PROCESS stage adapter — the editor's form (the linked
+// Cook/GiBaker/Pak Runs). The EDT-01 parity leg builds the same plan
+// through this and through the subprocess adapter and byte-compares
+// the paks: the CLI and the editor drive ONE pipeline.
+class InProcessAdapter final : public smvk::project::StageAdapter {
+public:
+	int Cook(const smvk::project::CookStageArgs& a,
+		std::string&) override {
+		cooktool::CookArgs args;
+		args.contentDir = a.contentDir;
+		args.tour = a.tour;
+		args.cubemap = a.cubemap;
+		args.lightmap = a.lightmap;
+		args.registryDir = a.registryDir;
+		return cooktool::Run(args);
+	}
+	int GiBaker(const smvk::project::GiBakerStageArgs& a,
+		std::string&) override {
+		gibaker::Args args;
+		args.contentDir = a.contentDir;
+		args.tour = a.tour;
+		return gibaker::Run(args);
+	}
+	int Pak(const smvk::project::PakStageArgs& a,
+		std::string&) override {
+		paktool::PakArgs args;
+		args.contentDir = a.contentDir;
+		args.inVfs = a.inVfs;
+		args.inVfsList = a.extraArtifacts;
+		args.tour = a.tour;
+		args.outPak = a.outPak;
+		args.verify = a.verify;
+		args.levelName = a.levelName;
+		args.registryDir = a.registryDir;
+		return paktool::Run(args);
+	}
+};
+
 std::vector<char> ReadAllBytes(const fs::path& p) {
 	std::ifstream f(p, std::ios::binary);
 	return { std::istreambuf_iterator<char>(f),
@@ -1489,6 +1541,65 @@ void TestBuildPlanExecutor() {
 				ReadAllBytes(rep.paks[0].output);
 			Check(!legacy.empty() && legacy == planned,
 				"executor.parity-bytes");
+		}
+		// ---- EDT-01: the editor's form (the linked-in Runs) builds the
+		// SAME plan byte-identically — one pipeline, two adapters.
+		{
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (tmp / "publish-inproc").generic_string();
+			opts.manifestName = "grid";
+			smvk::project::BuildPlanReport inRep;
+			std::string ie;
+			InProcessAdapter inProc;
+			Check(smvk::project::ExecuteBuildPlan(project, plan, inProc,
+					opts, inRep, ie),
+				"executor.inproc-build-ok");
+			if (!ie.empty())
+				std::cout << "  (inproc err: " << ie << ")\n";
+			if (!inRep.paks.empty() && !rep.paks.empty()) {
+				const std::vector<char> inPak =
+					ReadAllBytes(inRep.paks[0].output);
+				const std::vector<char> subPak =
+					ReadAllBytes(rep.paks[0].output);
+				Check(!inPak.empty() && inPak == subPak,
+					"executor.inproc-parity-bytes");
+			}
+			else {
+				Check(false, "executor.inproc-parity-bytes");
+			}
+		}
+		// ---- EDT-02: the unsaved-scene build — the plan RESOLVES against
+		// the authored doc; every STAGE runs the SNAPSHOT; the authored
+		// document is never touched, and identical snapshot content
+		// builds the identical pak.
+		{
+			const fs::path authored = scenes / "grid.tour";
+			const std::vector<char> before = ReadAllBytes(authored);
+			const fs::path snapshot = tmp / "grid-snapshot.tour";
+			std::error_code cec;
+			fs::copy_file(authored, snapshot,
+				fs::copy_options::overwrite_existing, cec);
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (tmp / "publish-snap").generic_string();
+			opts.sceneSnapshot = snapshot.generic_string();
+			smvk::project::BuildPlanReport snapRep;
+			std::string se;
+			InProcessAdapter inProc;
+			Check(smvk::project::ExecuteBuildPlan(project, plan, inProc,
+					opts, snapRep, se),
+				"executor.snapshot-build-ok");
+			if (!se.empty())
+				std::cout << "  (snapshot err: " << se << ")\n";
+			Check(ReadAllBytes(authored) == before,
+				"executor.snapshot-never-touches-authored");
+			if (!snapRep.paks.empty() && !rep.paks.empty()) {
+				Check(ReadAllBytes(snapRep.paks[0].output)
+						== ReadAllBytes(rep.paks[0].output),
+					"executor.snapshot-same-content-same-pak");
+			}
+			else {
+				Check(false, "executor.snapshot-same-content-same-pak");
+			}
 		}
 	}
 }

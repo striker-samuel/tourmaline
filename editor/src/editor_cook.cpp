@@ -31,10 +31,60 @@
 #include "pak_tool.h"
 #include <tool_log.h>
 
+#include <project_pipeline/build_pipeline.h>
+#include <project_pipeline/project.h>
+#include <project_pipeline/project_recipe.h>
+#include <project_pipeline/recipe_resolver.h>
+
 #include <fstream>
 #include <optional>
 
 namespace editor {
+
+namespace {
+
+// The EDITOR's stage adapter (the shared executor's invocation seam):
+// the LINKED-IN cooktool/gibaker/paktool Runs — the same Runs the CLI
+// exes' own mains call — with the tool line sink streaming into the
+// cook feed (the job sets the sink around ExecuteBuildPlan). The
+// executor owns sequencing; this adapter owns HOW each stage runs.
+// That is the whole CLI/editor unification: one plan, two invocation
+// mechanisms, zero second cooking implementations.
+class EditorStageAdapter final : public smvk::project::StageAdapter {
+public:
+	int Cook(const smvk::project::CookStageArgs& a,
+		std::string&) override {
+		cooktool::CookArgs args;
+		args.contentDir = a.contentDir;
+		args.tour = a.tour;
+		args.cubemap = a.cubemap;
+		args.lightmap = a.lightmap;
+		args.registryDir = a.registryDir;
+		return cooktool::Run(args);
+	}
+	int GiBaker(const smvk::project::GiBakerStageArgs& a,
+		std::string&) override {
+		gibaker::Args args;
+		args.contentDir = a.contentDir;
+		args.tour = a.tour;
+		return gibaker::Run(args);
+	}
+	int Pak(const smvk::project::PakStageArgs& a,
+		std::string&) override {
+		paktool::PakArgs args;
+		args.contentDir = a.contentDir;
+		args.inVfs = a.inVfs;
+		args.inVfsList = a.extraArtifacts;
+		args.tour = a.tour;
+		args.outPak = a.outPak;
+		args.verify = a.verify;
+		args.levelName = a.levelName;
+		args.registryDir = a.registryDir;
+		return paktool::Run(args);
+	}
+};
+
+} // namespace
 
 
 // Shared snapshot for the cooker/baker subprocesses: a TEMP coalesced
@@ -226,6 +276,31 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				"refreshed; no pak write)")
 			: std::string(" (GI bake updated in place: convex volumes, "
 				"then the pak)")));
+	// ---- the unified path's inputs (computed on MAIN, before the post):
+	// a PROJECT scene (the authored .tour inside the open project)
+	// builds through the SAME resolver + executor the CLI drives — one
+	// plan, one sequence, the linked-in Runs as the adapter. Refresh
+	// runs (quick bakes / cubemap-only) and EXTERNAL scenes (outside
+	// the project — the plan model is project-scoped by design) keep
+	// the direct stage calls below.
+	bool unifiedBuild = false;
+	std::string projectRelTour;
+	bool bakeCubemapsFlag = ExportCfg().cubemap;
+	{
+		if (!quickBakes && !cubemapsOnly && !m_projectRoot.empty()
+				&& !m_tourPath.empty()) {
+			std::string perr;
+			smvk::project::Project proj =
+				smvk::project::Project::Open(m_projectRoot, perr);
+			if (proj.Valid()) {
+				projectRelTour = proj.RelativeTo(
+					std::filesystem::absolute(m_tourPath)
+						.lexically_normal().generic_string());
+				unifiedBuild = !projectRelTour.empty()
+					&& projectRelTour.rfind("content/") == 0;
+			}
+		}
+	}
  	auto feed = std::make_shared<CookFeed>();
  	m_cookFeed = feed;
 	// Cache acceleration (opt-in, never required): when the project
@@ -242,7 +317,9 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 	// PollCookProcess, which now only drains the feed).
  	auto result = std::make_shared<CookResult>();
  	m_fibers.Post(quickBakes ? "update-bakes" : "cook",
- 		[cook, feed, registryDir, pakStem, quickBakes, cubemapsOnly, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
+ 		[cook, feed, registryDir, pakStem, quickBakes, cubemapsOnly,
+ 			projectRoot = m_projectRoot, projectRelTour, unifiedBuild,
+ 			bakeCubemapsFlag, tempTourPath = std::move(tempTourPath), contentDir = std::move(contentDir), inVfs = std::move(inVfs), result]() {
 			CookResult r{};
 			// Live feed: each tool line is pushed to the shared feed
 			// (mutex-guarded); PollCookProcess drains it on the main
@@ -261,6 +338,102 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
  						feed->errLines.erase(feed->errLines.begin());
  				}
  			};
+		// ---- THE UNIFIED BUILD (the shared executor) -------------------
+		// Project scenes build through the same resolver + executor the
+		// CLI drives: the synthesized recipe (this scene, this out pak,
+		// the session's bake flags) -> ResolveRecipe -> ExecuteBuildPlan
+		// with the EDITOR adapter (the linked-in cooktool/gibaker/
+		// paktool Runs — the same Runs the CLI exes' own mains call, so
+		// a CLI build and an editor build of the same saved scene are
+		// the same stage sequence). The plan RESOLVES against the
+		// authored .tour; every STAGE runs against the SNAPSHOT (the
+		// authored document is never touched — the unsaved-scene build).
+		// The executor also refreshes stale imports (the canonical
+		// ImportProjectAsset — in-process like every stage here) and
+		// publishes the appmanifest beside the pak.
+		if (unifiedBuild)
+		{
+			smvk::project::Project proj;
+			std::string perr;
+			proj = smvk::project::Project::Open(projectRoot, perr);
+			if (!proj.Valid()) {
+				r.ok = false;
+				r.log = "cook: project open failed (" + perr + ")\n";
+				std::error_code ec;
+				std::filesystem::remove(tempTourPath, ec);
+				*result = r;
+				return;
+			}
+			smvk::project::ProjectRecipe recipe;
+			recipe.version = smvk::project::kRecipeGrammarVersion;
+			recipe.projectName = proj.name;
+			recipe.entry = projectRelTour;
+			recipe.bakeGi = true; // the cook always refreshed the bake
+			recipe.bakeCubemaps = bakeCubemapsFlag; // the session's node
+			smvk::project::RecipePak rpak;
+			rpak.id = "scene";
+			rpak.output = std::filesystem::path(cook.outPak)
+				.filename().generic_string();
+			rpak.scene = projectRelTour;
+			recipe.paks.push_back(rpak);
+			smvk::project::BuildPlan plan;
+			std::string planErr;
+			push("cook: resolving the plan (the shared executor)");
+			if (!smvk::project::ResolveRecipe(proj, recipe, plan,
+					planErr)) {
+				r.ok = false;
+				r.log = "cook: plan resolve failed (" + planErr + ")\n";
+				std::error_code ec;
+				std::filesystem::remove(tempTourPath, ec);
+				*result = r;
+				return;
+			}
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = std::filesystem::path(cook.outPak)
+				.parent_path().generic_string();
+			opts.levelName = pakStem; // the playable-unit convention
+			opts.registryDir = registryDir;
+			opts.sceneSnapshot = tempTourPath; // EDT-02: never the authored doc
+			EditorStageAdapter adapter;
+			push("cook: executing the plan (Cook -> GiBaker -> Pak:"
+				" verified + policed; import freshness first)");
+			push("cook: stage 1/2 (bakes) starting");
+			tool::SetLineSink([&push](const std::string& line, bool err) {
+				push(line, err);
+			});
+			smvk::project::BuildPlanReport report;
+			const bool ok = smvk::project::ExecuteBuildPlan(proj, plan,
+				adapter, opts, report, planErr);
+			tool::SetLineSink(nullptr);
+			r.ok = ok;
+			r.log = ok
+				? "cook: plan executed OK ("
+					+ std::to_string(report.paks.size()) + " pak(s),"
+					+ " appmanifest " + report.manifest + ")\n"
+				: "cook: plan failed (" + planErr + ")\n";
+			// The stamped records ride the result BEFORE the snapshot
+			// dies: GiBaker (a plan stage) stamped the SNAPSHOT tour;
+			// read them back so the live-doc mirror follows on success
+			// (the bake owner is the one authority on the records).
+			if (ok) {
+				smvk::tour::Doc stamped;
+				std::string lerr;
+				std::vector<std::string> lwarn;
+				if (smvk::tour::LoadTour(tempTourPath, stamped, lerr,
+						&lwarn)) {
+					r.giAssets = std::move(stamped.giAssets);
+				}
+				else {
+					push("cook: snapshot record read failed (" + lerr
+						+ ") — the live doc keeps its records", true);
+				}
+			}
+			std::error_code ec;
+			std::filesystem::remove(tempTourPath, ec);
+			push("cook: unified build epilogue — result recorded");
+			*result = r;
+			return;
+		}
 		// ---- stage 1: the scene's GI bake (GiBaker — the tour's authored
 		// convex volumes; the definition tour is the only input, nothing
 		// reused). Every artifact lands at a RANDOM-MINTED path (GiBaker
