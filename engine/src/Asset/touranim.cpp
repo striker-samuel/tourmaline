@@ -18,7 +18,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace smvk::touranim {
+namespace tour::asset {
 
 namespace {
 
@@ -329,4 +329,4 @@ bool LoadTourAnimText(const std::string& text, AnimDoc& doc, std::string& err,
 	return true;
 }
 
-} // namespace smvk::touranim
+} // namespace tour::asset

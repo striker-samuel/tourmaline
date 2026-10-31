@@ -65,7 +65,7 @@
 
 struct Scene;
 
-namespace smvk::touranim {
+namespace tour::asset {
 
 inline constexpr int kTourAnimVersion = 1;
 
@@ -155,4 +155,12 @@ glm::vec4 SampleTrack(const Track& track, double t);
 void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
 	std::vector<glm::mat4>& palette);
 
-} // namespace smvk::touranim
+} // namespace tour::asset
+
+// COMPAT (the namespace/RHI boundary audit): the .tourAnim model is
+// ENGINE-OWNED and lives in tour::asset (with the .tour model). The
+// namespace alias keeps every existing smvk::touranim:: spelling
+// resolving.
+namespace smvk {
+	namespace touranim = ::tour::asset;
+}

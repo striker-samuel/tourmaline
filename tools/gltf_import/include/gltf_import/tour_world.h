@@ -17,14 +17,11 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 
+namespace tour { struct Cluster; struct World; }
 namespace smvk {
-class Cluster;
-class World;
-struct MeshletConfig;
-namespace tour {
-struct Doc;
-struct FileNode;
-} // namespace tour
+	using ::tour::Cluster;
+	using ::tour::World;
+	struct MeshletConfig;
 } // namespace smvk
 
 struct GltfArtifactCache;

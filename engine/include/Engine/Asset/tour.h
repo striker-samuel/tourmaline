@@ -67,7 +67,7 @@ namespace smvk { using ::tour::Cluster; } // namespace smvk
 
 struct Scene;
 
-namespace smvk::tour {
+namespace tour::asset {
 
 inline constexpr int kTourVersion = 1;
 
@@ -694,4 +694,14 @@ bool ApplyExportAttr(SceneExportSettings& es, const Command& c,
 bool ExportSettingsFromDoc(const Doc& doc, SceneExportSettings& out,
 	std::string* warnOut = nullptr);
 
-} // namespace smvk::tour
+} // namespace tour::asset
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the .tour
+// document model is ENGINE-OWNED and lives in tour::asset. The
+// namespace ALIAS keeps every existing smvk::tour:: spelling resolving
+// (a true alias - no per-name enumeration needed); retire it as call
+// sites move. THE NAME COLLISION DISSOLVES: unqualified tour:: inside
+// namespace smvk no longer finds a sibling tour namespace here.
+namespace smvk {
+	namespace tour = ::tour::asset;
+}

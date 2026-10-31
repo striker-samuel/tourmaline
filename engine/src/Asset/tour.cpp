@@ -27,7 +27,7 @@
 #include <Engine/Placement/placement_terrain.h>
 #include <Engine/Scene/scene.h>
 
-namespace smvk::tour {
+namespace tour::asset {
 namespace {
 
 std::string Quote(const std::string& s) {
@@ -5123,4 +5123,4 @@ bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
 	return false;
 }
 
-} // namespace smvk::tour
+} // namespace tour::asset
