@@ -2397,6 +2397,13 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	//     the record only.
 	void EditorApp::UpdateWysiwygBoundary(float dt) {
 		m_wysiwygLayerRenderable = false;
+		// THE WATCHED-PROJECT REFRESH (item 10's editor leg, the
+		// boundary phase — BEFORE the host's acquire): drain settled
+		// source changes + route them through the selective funnels.
+		// Cheap when nothing moved (the watcher's OS queue carries
+		// the load — never a per-frame project scan). Runs even when
+		// the live view is PARKED.
+		ConsumeWatchedProjectChanges();
 		// Launch housekeeping, lazy per frame: launch while a world + the
 		// LIT MODE (panel 0's) are on; relaunch when the world OBJECT or
 		// the scene stem swaps (open/close/load) or right after a bake

@@ -24,10 +24,13 @@
 #include <artifact_cache/assetdb.h>
 
 #include <Engine/Asset/tour.h>
+#include <Engine/Utils/file_watcher.h>
 
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 
 namespace editor {
 namespace {
@@ -250,6 +253,7 @@ bool EditorApp::OpenProject(const std::string& dir) {
 	}
 	SavePrefs();
 	UpdateWindowTitle();
+	ArmProjectWatcher();
 	Log("Project open: '" + m_projectName + "' (" + m_projectRoot
 		+ ") — artifact\ cache\ and\ cooks\ live\ here\ now.");
 	return true;
@@ -797,6 +801,112 @@ bool EditorApp::ImportAsset(const std::string& srcPath) {
 	Log("Import: '" + stem + "' ready in the editor (cook: Ctrl+Shift+C "
 		"-> " + m_cook.outPak + ").");
 	return true;
+}
+
+// ---- the project-scoped watcher (item 10's editor leg) ---------------
+// Arm: one FileWatcher over the project root. The policy is
+// ProjectDefault PLUS the editor's own output trees (artifacts/ +
+// gi/ — the cooker's bake files land there; watching them would feed
+// our own writes back). TOURMALINE_EDITOR_WATCH=0 disables (the
+// manual Rescan + re-import paths stand).
+void EditorApp::ArmProjectWatcher() {
+	m_projectWatcherEnabled = true;
+	if (const char* e = std::getenv("TOURMALINE_EDITOR_WATCH"))
+		m_projectWatcherEnabled = std::atoi(e) != 0;
+	if (!m_projectWatcherEnabled || m_projectRoot.empty()) {
+		m_projectWatcher.reset();
+		return;
+	}
+	auto watcher = std::make_unique<smvk::FileWatcher>();
+	smvk::FileWatcher::Policy policy =
+		smvk::FileWatcher::Policy::ProjectDefault();
+	// The editor's own output trees (never watch what we write):
+	// artifacts/ (the owned bake dir) + gi/ (the cooker's loose bake
+	// files) — feedback loops die here.
+	for (const char* d : { "artifacts", "gi" })
+		policy.ignoredDirNames.push_back(d);
+	std::string err;
+	if (!watcher->Start(policy, err)
+			|| !watcher->AddDirectory(m_projectRoot, err)) {
+		Log("Project watcher: not armed (" + err + ") — the manual "
+			"Rescan + re-import paths stand.");
+		m_projectWatcher.reset();
+		return;
+	}
+	m_projectWatcher = std::move(watcher);
+	Log("Project watcher armed (sources + .meta + .tour; generated "
+		"outputs invisible).");
+}
+
+// Consume: drain SETTLED changes + route them through the EXISTING
+// selective funnels — the frame-boundary call (cheap when nothing
+// moved; never a project scan). The routing is per-extension:
+//   .gltf/.glb -> ImportMeshArtifactFor (the stale gate re-derives
+//                 ONLY when the source changed; the identity ledger
+//                 preserves every GUID across the reimport)
+//   .meta      -> the asset-db rescan (the identity ledger moved)
+//   .tour      -> a LOG ONLY: an external edit never silently
+//                 overwrites unsaved editor work (the checklist's
+//                 contract) — reload the scene to apply it
+//   textures / recipes / anything else -> the log (their live
+//                 refresh legs are the item-16 follow-ups)
+void EditorApp::ConsumeWatchedProjectChanges() {
+	if (!m_projectWatcher || !m_projectWatcher->Running())
+		return;
+	const std::vector<smvk::FileWatcher::Change> changes =
+		m_projectWatcher->Poll(150);
+	if (changes.empty())
+		return;
+	for (const smvk::FileWatcher::Change& c : changes) {
+		const std::string name =
+			std::filesystem::path(c.path).filename().generic_string();
+		const std::string ext =
+			std::filesystem::path(c.path).extension().generic_string();
+		// A removed source keeps its rows (the registry heals on the
+		// next rescan; a log line is enough).
+		if (c.event == smvk::FileWatcher::Event::Removed) {
+			Log("Watcher: '" + name + "' removed — the next Rescan "
+				"reconciles the registry.");
+			continue;
+		}
+		// Identity sidecars (incl. the .gltf.meta ledger): rescan.
+		if (ext == ".meta") {
+			smvk::cache::RescanStats stats;
+			std::string rerr;
+			if (m_assetDb.RescanProject(stats, rerr))
+				Log("Watcher: identity sidecar '" + name + "' — "
+					"rescanned (" + std::to_string(stats.adopted)
+					+ " adopted, " + std::to_string(stats.moved)
+					+ " re-pointed).");
+			else
+				Log("Watcher: rescan failed (" + rerr + ").");
+			continue;
+		}
+		// glTF sources: the selective re-import funnel (stale-gated,
+		// identity-preserving — ImportMeshArtifactFor's whole
+		// contract). The LIVE session keeps rendering the loaded
+		// generation; re-open the scene to see the fresh one.
+		if (name.size() >= 5
+				&& (name.substr(name.size() - 5) == ".gltf"
+					|| name.substr(name.size() - 4) == ".glb")) {
+			Log("Watcher: glTF source '" + name + "' changed — "
+				"re-importing (identity preserved; re-open the "
+				"scene to see the fresh geometry).");
+			(void)ImportMeshArtifactFor(c.path);
+			continue;
+		}
+		// Authored scenes: NEVER auto-replay (an external edit must
+		// not silently overwrite unsaved editor work).
+		if (ext == ".tour" || ext == ".tourrecipe") {
+			Log("Watcher: '" + name + "' changed on disk — reload it "
+				"to apply (external edits never overwrite unsaved "
+				"editor work).");
+			continue;
+		}
+		Log("Watcher: '" + name + "' changed on disk (the "
+			"development refresh for this kind lands with the "
+			"live-update follow-ups).");
+	}
 }
 
 } // namespace editor

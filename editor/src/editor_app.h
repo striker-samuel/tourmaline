@@ -48,6 +48,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
+#include <Engine/Utils/file_watcher.h>
 #include <gltf_import/gltf.h> // GltfGuidResolver (the hook below)
 #include <gltf_import/asset_export.h> // the preprocessed asset derivation
 #include <artifact_cache/store_adapter.h>
@@ -2238,6 +2239,21 @@ private:
 	// SourceAssetDB analog). Open while a project is open with its
 	// cache online; closed otherwise (global runs stay path-based).
 	smvk::cache::AssetDatabase m_assetDb;
+	// ---- the project-scoped WATCHER (item 10's editor leg) -------
+	// One FileWatcher over the project root (the ProjectDefault
+	// policy + the editor's own output trees ignored: artifacts/,
+	// gi/). Armed at OpenProject; the frame boundary (UpdateWysiwyg
+	// Boundary) drains SETTLED changes and routes them through the
+	// EXISTING selective funnels — never a per-frame project scan.
+	// TOURMALINE_EDITOR_WATCH=0 disables.
+	std::unique_ptr<smvk::FileWatcher> m_projectWatcher;
+	bool m_projectWatcherEnabled = true;
+	// Arms (or re-arms) the watcher for the open project. EditorApp
+	// side (editor_project.cpp).
+	void ArmProjectWatcher();
+	// Drains settled changes + routes them (the frame-boundary call;
+	// cheap when nothing moved). Defined beside ArmProjectWatcher.
+	void ConsumeWatchedProjectChanges();
 	// GltfGuidResolver over m_assetDb (gltf_import hook): tour
 	// references carrying -guid resolve identity-first — moves/
 	// renames heal through rescan + the .meta sidecars. Closed db

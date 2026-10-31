@@ -199,6 +199,20 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   during a stop/restart report on the next call). Poll() once per
   frame is cheap — the watcher never scans/hashes the whole project
   per frame. Unit-tested in test_file_watcher.cpp.
+- **The editor's watched selective refresh (item 10's editor leg)**:
+  `EditorApp` arms the watcher at `OpenProject`
+  (`ArmProjectWatcher` — ProjectDefault + the editor's own output
+  trees `artifacts/` + `gi/` ignored; `TOURMALINE_EDITOR_WATCH=0`
+  disables) and the frame boundary (`UpdateWysiwygBoundary`, before
+  the host's acquire, even while the live view is parked) drains
+  settled changes and routes them through the EXISTING selective
+  funnels — `.gltf`/`.glb` → `ImportMeshArtifactFor` (stale-gated,
+  identity ledger preserving; re-open the scene for the fresh
+  geometry), `.meta` → the asset-db rescan, `.tour`/`.tourrecipe` →
+  a LOG ONLY (external edits never silently overwrite unsaved editor
+  work — reload to apply), other kinds → the log (their live-refresh
+  legs are the item-16 follow-ups). No per-frame project scan ever
+  runs.
 
 ## Submodules
 
