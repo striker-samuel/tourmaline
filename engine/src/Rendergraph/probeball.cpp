@@ -6,6 +6,7 @@
 // pass (own push block, no scene pc).
 
 #include <Engine/Rendergraph/probeball.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 #include <cmath>
@@ -118,10 +119,10 @@ bool ProbeBallVisual::Ensure(ResourceManager& ctx) {
 	try {
 		if (vsModule.empty())
 			vsModule = ctx.CreateShaderModule(
-				readFile(kProbeBallVsPath), "probeBallVert");
+				smvk::shaders::Read(kProbeBallVsPath), "probeBallVert");
 		if (psModule.empty())
 			psModule = ctx.CreateShaderModule(
-				readFile(kProbeBallPsPath), "probeBallFrag");
+				smvk::shaders::Read(kProbeBallPsPath), "probeBallFrag");
 	}
 	catch (...) {
 		ok = false;

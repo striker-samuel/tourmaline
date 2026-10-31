@@ -23,6 +23,7 @@
 
 #include <Engine/Renderer/mesh.h> // TerrainVertex + TerrainFullLayout
 #include <Engine/platform.h>       // readFile (the .spv loader)
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <stb_image_write.h>
 
 namespace editor {
@@ -204,9 +205,9 @@ bool EditorApp::EnsureMatBallResources() {
 	// set, matball.vert/frag.hlsl).
 	try {
 		m_matBallVsModule = m_context->CreateShaderModule(
-			readFile("content/shaders/matball.vert.hlsl.spv"), "matBallVS");
+			smvk::shaders::Read("content/shaders/matball.vert.hlsl.spv"), "matBallVS");
 		m_matBallFsModule = m_context->CreateShaderModule(
-			readFile("content/shaders/matball.frag.hlsl.spv"), "matBallFS");
+			smvk::shaders::Read("content/shaders/matball.frag.hlsl.spv"), "matBallFS");
 	}
 	catch (const std::exception& e) {
 		std::fprintf(stderr, "[MatBall] shader compile: %s\n", e.what());

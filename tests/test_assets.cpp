@@ -38,6 +38,7 @@
 #include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 namespace {
 
@@ -2473,7 +2474,7 @@ void TestVertexLayoutShaderAbi() {
 		bool abiOk = true;
 		int reflected = 0;
 		for (const auto& [spvPath, layout] : pairs) {
-			const std::vector<char> code = readFile(spvPath);
+			const std::vector<char> code = smvk::shaders::Read(spvPath);
 			if (code.empty()) {
 				std::cout << "  missing shader: " << spvPath << "\n";
 				abiOk = false;

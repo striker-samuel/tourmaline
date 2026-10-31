@@ -10,6 +10,7 @@
 #include <Engine/Rendergraph/terrain.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Rendergraph/terrain_blocks.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 #include <cmath>
@@ -24,13 +25,13 @@ bool TerrainField::EnsureShaders(ResourceManager& ctx,
 	try {
 		if (vsModule.empty())
 			vsModule = ctx.CreateShaderModule(
-				readFile(vsPath ? vsPath : kTerrainVsPath), "terrainVert");
+				smvk::shaders::Read(vsPath ? vsPath : kTerrainVsPath), "terrainVert");
 		if (psModule.empty())
 			psModule = ctx.CreateShaderModule(
-				readFile(psPath ? psPath : kTerrainPsPath), "terrainFrag");
+				smvk::shaders::Read(psPath ? psPath : kTerrainPsPath), "terrainFrag");
 		if (farVsModule.empty())
 			farVsModule = ctx.CreateShaderModule(
-				readFile(farVsPath ? farVsPath : kTerrainFarVsPath),
+				smvk::shaders::Read(farVsPath ? farVsPath : kTerrainFarVsPath),
 				"terrainFarVert");
 	}
 	catch (...) {

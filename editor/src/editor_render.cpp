@@ -38,6 +38,7 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/bvh.h>
 #include <Engine/core.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <imgui.h>
 
@@ -54,7 +55,7 @@ namespace editor {
 			engine::renderer::limits::MaxSimultaneousLights;
 
 		std::vector<char> LoadSpv(const char* path) {
-			return readFile(path);
+			return smvk::shaders::Read(path);
 		}
 	} // namespace
 

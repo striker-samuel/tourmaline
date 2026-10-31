@@ -66,6 +66,7 @@
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <imgui.h>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -1628,8 +1629,8 @@ namespace engine {
 
 		// Main ShaderProgram (scene-owned; shadow/bloom/tonemap programs live
 		// in their engine builders with defaults + Ensure).
-		auto vertCode = readFile("content/shaders/default.vert.hlsl.spv");
-		auto fragCode = readFile("content/shaders/default_lit.frag.hlsl.spv");
+		auto vertCode = smvk::shaders::Read("content/shaders/default.vert.hlsl.spv");
+		auto fragCode = smvk::shaders::Read("content/shaders/default_lit.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "fragLit");
 
@@ -1652,7 +1653,7 @@ namespace engine {
 		// of discard for 2x MSAA Main. Non-fatal: missing module keeps every
 		// material on the discard variant.
 		try {
-			auto a2cCode = readFile("content/shaders/default_lit_a2c.frag.hlsl.spv");
+			auto a2cCode = smvk::shaders::Read("content/shaders/default_lit_a2c.frag.hlsl.spv");
 			m_resources.fragA2CShader = m_context->CreateShaderModule(a2cCode, "fragLitA2C");
 		}
 		catch (...) {
@@ -1665,7 +1666,7 @@ namespace engine {
 			try {
 				const std::string path = std::string("content/shaders/default_lit.frag.hlsl.sg")
 					+ std::to_string(engine::GfxRenderer::LitSgVariantLobes(li)) + ".spv";
-				auto sgCode = readFile(path);
+				auto sgCode = smvk::shaders::Read(path);
 				m_resources.fragLitSgModules[li] =
 					m_context->CreateShaderModule(sgCode, "fragLitSg");
 			}
@@ -1687,7 +1688,7 @@ namespace engine {
 			try {
 				const std::string path = std::string("content/shaders/default_lit.frag.hlsl.gi")
 					+ std::to_string(gi) + ".spv";
-				auto giCode = readFile(path);
+				auto giCode = smvk::shaders::Read(path);
 				m_resources.fragLitGiModules[gi] =
 					m_context->CreateShaderModule(giCode, "fragLitGi");
 			}
@@ -1701,7 +1702,7 @@ namespace engine {
 		// Non-fatal: missing modules fall back to the monolith picks.
 		try {
 			m_resources.fragStdModule = m_context->CreateShaderModule(
-				readFile("content/shaders/default_lit.frag.hlsl.std.spv"), "fragLitStd");
+				smvk::shaders::Read("content/shaders/default_lit.frag.hlsl.std.spv"), "fragLitStd");
 			m_resources.mainProgramStd = {
 				.shaders = {
 					smvk::Shader{
@@ -1729,7 +1730,7 @@ namespace engine {
 				const std::string path = std::string("content/shaders/default_lit.frag.hlsl.gi")
 					+ std::to_string(gi) + "std.spv";
 				m_resources.fragLitGiStdModules[gi] =
-					m_context->CreateShaderModule(readFile(path), "fragLitGiStd");
+					m_context->CreateShaderModule(smvk::shaders::Read(path), "fragLitGiStd");
 				m_resources.mainProgramGiStd[gi] = {
 					.shaders = {
 						smvk::Shader{
@@ -1773,21 +1774,21 @@ namespace engine {
 		// colors): same VS as main. Failure is non-fatal (program stays at
 		// shaderCount 0 and the view falls back to Lit at record time).
 		try {
-			auto unlitCode = readFile("content/shaders/default_unlit.frag.hlsl.spv");
+			auto unlitCode = smvk::shaders::Read("content/shaders/default_unlit.frag.hlsl.spv");
 			m_resources.fragUnlitShader = m_context->CreateShaderModule(unlitCode, "fragUnlit");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_unlit unavailable - F2 falls back to Lit\n";
 		}
 		try {
-			auto cascadeCode = readFile("content/shaders/default_cascade_debug.frag.hlsl.spv");
+			auto cascadeCode = smvk::shaders::Read("content/shaders/default_cascade_debug.frag.hlsl.spv");
 			m_resources.fragCascadeShader = m_context->CreateShaderModule(cascadeCode, "fragCascade");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_cascade_debug unavailable - F4 falls back to Lit\n";
 		}
 		try {
-			auto vcolorCode = readFile("content/shaders/default_vertexcolor_debug.frag.hlsl.spv");
+			auto vcolorCode = smvk::shaders::Read("content/shaders/default_vertexcolor_debug.frag.hlsl.spv");
 			m_resources.fragVertexColorShader = m_context->CreateShaderModule(vcolorCode, "fragVertexColor");
 		}
 		catch (...) {
@@ -1818,42 +1819,42 @@ namespace engine {
 		}
 
 		try {
-			auto uv0Code = readFile("content/shaders/default_uv0_debug.frag.hlsl.spv");
+			auto uv0Code = smvk::shaders::Read("content/shaders/default_uv0_debug.frag.hlsl.spv");
 			m_resources.fragUv0DebugShader = m_context->CreateShaderModule(uv0Code, "fragUv0Debug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_uv0_debug unavailable - F9 falls back to Lit\n";
 		}
 		try {
-			auto uv1Code = readFile("content/shaders/default_uv1_debug.frag.hlsl.spv");
+			auto uv1Code = smvk::shaders::Read("content/shaders/default_uv1_debug.frag.hlsl.spv");
 			m_resources.fragUv1DebugShader = m_context->CreateShaderModule(uv1Code, "fragUv1Debug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_uv1_debug unavailable - F10 falls back to Lit\n";
 		}
 		try {
-			auto pomCode = readFile("content/shaders/default_pom.frag.hlsl.spv");
+			auto pomCode = smvk::shaders::Read("content/shaders/default_pom.frag.hlsl.spv");
 			m_resources.fragPomShader = m_context->CreateShaderModule(pomCode, "fragPom");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_pom unavailable - F11 falls back to Lit\n";
 		}
 		try {
-			auto ssrmaskCode = readFile("content/shaders/default_ssrmask_debug.frag.hlsl.spv");
+			auto ssrmaskCode = smvk::shaders::Read("content/shaders/default_ssrmask_debug.frag.hlsl.spv");
 			m_resources.fragSsrMaskDebugShader = m_context->CreateShaderModule(ssrmaskCode, "fragSsrMaskDebug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_ssrmask_debug unavailable - SSR mask view falls back to Lit\n";
 		}
 		try {
-			auto normalsCode = readFile("content/shaders/default_normals_debug.frag.hlsl.spv");
+			auto normalsCode = smvk::shaders::Read("content/shaders/default_normals_debug.frag.hlsl.spv");
 			m_resources.fragNormalsDebugShader = m_context->CreateShaderModule(normalsCode, "fragNormalsDebug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_normals_debug unavailable - Normals view falls back to Lit\n";
 		}
 		try {
-			auto normalsMappedCode = readFile("content/shaders/default_normals_mapped_debug.frag.hlsl.spv");
+			auto normalsMappedCode = smvk::shaders::Read("content/shaders/default_normals_mapped_debug.frag.hlsl.spv");
 			m_resources.fragNormalsMappedDebugShader =
 				m_context->CreateShaderModule(normalsMappedCode, "fragNormalsMappedDebug");
 		}
@@ -1861,7 +1862,7 @@ namespace engine {
 			std::cerr << "[WorldRenderer] default_normals_mapped_debug unavailable - Mapped normals view falls back to Lit\n";
 		}
 		try {
-			auto contactCode = readFile("content/shaders/default_contact_debug.frag.hlsl.spv");
+			auto contactCode = smvk::shaders::Read("content/shaders/default_contact_debug.frag.hlsl.spv");
 			m_resources.fragContactDebugShader =
 				m_context->CreateShaderModule(contactCode, "fragContactDebug");
 		}
@@ -1889,7 +1890,7 @@ namespace engine {
 			for (size_t i = 0; i < 6; ++i) {
 				try {
 					m_resources.fragPbrDebugShaders[i] =
-						m_context->CreateShaderModule(readFile(pbrPaths[i]), pbrNames[i]);
+						m_context->CreateShaderModule(smvk::shaders::Read(pbrPaths[i]), pbrNames[i]);
 				}
 				catch (...) {
 					std::cerr << "[WorldRenderer] " << pbrPaths[i]
@@ -1900,21 +1901,21 @@ namespace engine {
 		// Naive shading-model previews (SSS / hair / water - the development
 		// test beds; same non-fatal contract).
 		try {
-			auto sssCode = readFile("content/shaders/default_sss_debug.frag.hlsl.spv");
+			auto sssCode = smvk::shaders::Read("content/shaders/default_sss_debug.frag.hlsl.spv");
 			m_resources.fragSssDebugShader = m_context->CreateShaderModule(sssCode, "fragSssDebug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_sss_debug unavailable - SSS preview falls back to Lit\n";
 		}
 		try {
-			auto hairCode = readFile("content/shaders/default_hair_debug.frag.hlsl.spv");
+			auto hairCode = smvk::shaders::Read("content/shaders/default_hair_debug.frag.hlsl.spv");
 			m_resources.fragHairDebugShader = m_context->CreateShaderModule(hairCode, "fragHairDebug");
 		}
 		catch (...) {
 			std::cerr << "[WorldRenderer] default_hair_debug unavailable - Hair preview falls back to Lit\n";
 		}
 		try {
-			auto waterCode = readFile("content/shaders/default_water_debug.frag.hlsl.spv");
+			auto waterCode = smvk::shaders::Read("content/shaders/default_water_debug.frag.hlsl.spv");
 			m_resources.fragWaterDebugShader = m_context->CreateShaderModule(waterCode, "fragWaterDebug");
 		}
 		catch (...) {
@@ -1994,8 +1995,8 @@ namespace engine {
 		// is non-fatal - the subsystem falls back to full-lit everywhere
 		// (ShaderLodActive).
 		try {
-			auto vlVertCode = readFile("content/shaders/default_vertexlit.vert.hlsl.spv");
-			auto vlFragCode = readFile("content/shaders/default_vertexlit.frag.hlsl.spv");
+			auto vlVertCode = smvk::shaders::Read("content/shaders/default_vertexlit.vert.hlsl.spv");
+			auto vlFragCode = smvk::shaders::Read("content/shaders/default_vertexlit.frag.hlsl.spv");
 			m_resources.vertexLitVertShader = m_context->CreateShaderModule(vlVertCode, "vertLitLod");
 			m_resources.vertexLitFragShader = m_context->CreateShaderModule(vlFragCode, "fragLitLod");
 		}
@@ -2026,7 +2027,7 @@ namespace engine {
 		// with any of them). Failure is non-fatal - wireframe keeps the
 		// shaded FS (raster override only).
 		try {
-			auto wireCode = readFile("content/shaders/default_wire.frag.hlsl.spv");
+			auto wireCode = smvk::shaders::Read("content/shaders/default_wire.frag.hlsl.spv");
 			m_resources.fragWireShader = m_context->CreateShaderModule(wireCode, "fragWire");
 		}
 		catch (...) {
@@ -2069,8 +2070,8 @@ namespace engine {
 		}
 
 		// Masked shadow-depth program (leaf-shaped shadows for cutout).
-		auto shadowVertCode = readFile("content/shaders/shadow.vert.hlsl.spv");
-		auto shadowFragCode = readFile("content/shaders/shadow.frag.hlsl.spv");
+		auto shadowVertCode = smvk::shaders::Read("content/shaders/shadow.vert.hlsl.spv");
+		auto shadowFragCode = smvk::shaders::Read("content/shaders/shadow.frag.hlsl.spv");
 		m_resources.shadowMaskedVertShader = m_context->CreateShaderModule(shadowVertCode, "shadowMaskedVert");
 		m_resources.shadowMaskedFragShader = m_context->CreateShaderModule(shadowFragCode, "shadowMaskedFrag");
 		// SDSM stats (sdsm_stats.cs.hlsl): decimated depth min/max per frame;
@@ -2078,7 +2079,7 @@ namespace engine {
 	// flight's stats never races the other's rewrite (the exposure
 	// histogram's ring guarantee - see UpdateReadbacks).
 		try {
-			auto sdsmStatsCode = readFile("content/shaders/sdsm_stats.cs.hlsl.spv");
+			auto sdsmStatsCode = smvk::shaders::Read("content/shaders/sdsm_stats.cs.hlsl.spv");
 			m_resources.sdsmStatsModule = m_context->CreateShaderModule(sdsmStatsCode, "sdsmStatsCS");
 			m_resources.sdsmStatsProgram = {
 				.shaders = {
@@ -2123,7 +2124,7 @@ namespace engine {
 		// correctness requirement - the passthrough write satisfies both
 		// bounds).
 		try {
-			auto shadowRevCode = readFile("content/shaders/shadow_rev.frag.hlsl.spv");
+			auto shadowRevCode = smvk::shaders::Read("content/shaders/shadow_rev.frag.hlsl.spv");
 			m_resources.shadowMaskedFragRevShader = m_context->CreateShaderModule(shadowRevCode, "shadowMaskedFragRev");
 		}
 		catch (...) {
@@ -2159,8 +2160,8 @@ namespace engine {
 		// + prepassMaskedProgram when the G-buffer layer is wanted; Main is
 		// untouched (no MRT, no stencil classification).
 		try {
-			auto gbufferCode = readFile("content/shaders/gbuffer.frag.hlsl.spv");
-			auto gbufferMaskedCode = readFile("content/shaders/gbuffer_masked.frag.hlsl.spv");
+			auto gbufferCode = smvk::shaders::Read("content/shaders/gbuffer.frag.hlsl.spv");
+			auto gbufferMaskedCode = smvk::shaders::Read("content/shaders/gbuffer_masked.frag.hlsl.spv");
 			m_resources.gbufferFragShader =
 				m_context->CreateShaderModule(gbufferCode, "gbufferFrag");
 			m_resources.gbufferMaskedFragShader =
@@ -2208,7 +2209,7 @@ namespace engine {
 		// comment on m_ssrHzb*). Failure is non-fatal: the trace keeps the
 		// plain adaptive-stride march (the HZB skip stays off, BDA 0).
 		try {
-			auto hzbMaxCode = readFile("content/shaders/hzb_max.cs.hlsl.spv");
+			auto hzbMaxCode = smvk::shaders::Read("content/shaders/hzb_max.cs.hlsl.spv");
 			m_ssrHzbModule = m_context->CreateShaderModule(hzbMaxCode, "ssrHzbMaxCS");
 			if (!m_ssrHzbModule.empty()) {
 				smvk::Shader cs{
@@ -2227,7 +2228,7 @@ namespace engine {
 		// A/B + verify env contract). Failure is non-fatal: the renderer
 		// falls back to the per-mip hzb_max build (same resources).
 		try {
-			auto hzbSpdCode = readFile("content/shaders/hzb_spd.cs.hlsl.spv");
+			auto hzbSpdCode = smvk::shaders::Read("content/shaders/hzb_spd.cs.hlsl.spv");
 			m_ssrHzbSpdModule = m_context->CreateShaderModule(hzbSpdCode, "ssgiHzbSpdCS");
 			if (!m_ssrHzbSpdModule.empty()) {
 				smvk::Shader cs{
@@ -13972,10 +13973,10 @@ namespace engine {
 						if (m_ssrDepthViewProgram.shaderCount == 0) {
 							try {
 								auto vs = m_context->CreateShaderModule(
-									readFile("content/shaders/tonemap.vert.hlsl.spv"),
+									smvk::shaders::Read("content/shaders/tonemap.vert.hlsl.spv"),
 									"ssrDepthViewVert");
 								auto ps = m_context->CreateShaderModule(
-									readFile("content/shaders/ssr_depthview.frag.hlsl.spv"),
+									smvk::shaders::Read("content/shaders/ssr_depthview.frag.hlsl.spv"),
 									"ssrDepthViewFrag");
 								if (!vs.empty() && !ps.empty()) {
 									smvk::Shader vsS{ .module = vs, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
@@ -14052,10 +14053,10 @@ namespace engine {
 							if (m_ssrStencilViewProgram.shaderCount == 0) {
 								try {
 									auto vs = m_context->CreateShaderModule(
-										readFile("content/shaders/tonemap.vert.hlsl.spv"),
+										smvk::shaders::Read("content/shaders/tonemap.vert.hlsl.spv"),
 										"ssrStencilViewVert");
 									auto ps = m_context->CreateShaderModule(
-										readFile("content/shaders/ssr_stencilview.frag.hlsl.spv"),
+										smvk::shaders::Read("content/shaders/ssr_stencilview.frag.hlsl.spv"),
 										"ssrStencilViewFrag");
 									if (!vs.empty() && !ps.empty()) {
 										smvk::Shader vsS{ .module = vs, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };

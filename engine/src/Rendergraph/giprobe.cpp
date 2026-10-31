@@ -6,6 +6,7 @@
 // scene pc).
 
 #include <Engine/Rendergraph/giprobe.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 #include <cmath>
@@ -128,10 +129,10 @@ bool GiProbeVisual::Ensure(ResourceManager& ctx) {
 	try {
 		if (vsModule.empty())
 			vsModule = ctx.CreateShaderModule(
-				readFile(kGiProbeVsPath), "giProbeVert");
+				smvk::shaders::Read(kGiProbeVsPath), "giProbeVert");
 		if (psModule.empty())
 			psModule = ctx.CreateShaderModule(
-				readFile(kGiProbePsPath), "giProbeFrag");
+				smvk::shaders::Read(kGiProbePsPath), "giProbeFrag");
 	}
 	catch (...) {
 		ok = false;

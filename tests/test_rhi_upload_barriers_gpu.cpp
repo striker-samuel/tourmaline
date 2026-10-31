@@ -53,6 +53,7 @@
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 namespace {
 
@@ -123,7 +124,7 @@ int main()
 	smvk::Holder<smvk::ShaderModuleHandle> csModule, vsModule, psModule;
 	smvk::ShaderProgram csProgram{}, drawProgram{};
 	{
-		std::vector<char> code = readFile(
+		std::vector<char> code = smvk::shaders::Read(
 			"content/shaders/rhitest_indirect_write.cs.hlsl.spv");
 		Check(!code.empty(), "rhi.shader.cs.present");
 		if (code.empty())
@@ -134,12 +135,12 @@ int main()
 			.stage = smvk::ShaderStage::Compute };
 		csProgram = { .shaders = { cs }, .shaderCount = 1 };
 
-		code = readFile("content/shaders/rhitest_triangle.vert.hlsl.spv");
+		code = smvk::shaders::Read("content/shaders/rhitest_triangle.vert.hlsl.spv");
 		Check(!code.empty(), "rhi.shader.vs.present");
 		if (code.empty())
 			return 1;
 		vsModule = rm.CreateShaderModule(code, "rhiTestTriVS");
-		code = readFile("content/shaders/rhitest_triangle.frag.hlsl.spv");
+		code = smvk::shaders::Read("content/shaders/rhitest_triangle.frag.hlsl.spv");
 		Check(!code.empty(), "rhi.shader.ps.present");
 		if (code.empty())
 			return 1;

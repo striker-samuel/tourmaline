@@ -9,6 +9,7 @@
 #include <Engine/debug_log.h>
 #include <Engine/platform.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 #include <cmath>
@@ -90,7 +91,7 @@ namespace engine {
 			try {
 				if (filteredVsModule.empty())
 					filteredVsModule = ctx.CreateShaderModule(
-						readFile(vsPath), "gfxFilteredVS");
+						smvk::shaders::Read(vsPath), "gfxFilteredVS");
 			}
 			catch (...) {
 				return false;
@@ -170,9 +171,9 @@ namespace engine {
 			try {
 				if (seedVsModule.empty())
 					seedVsModule = ctx.CreateShaderModule(
-						readFile(kGfxSeedVsPath), "gfxSeedVS");
+						smvk::shaders::Read(kGfxSeedVsPath), "gfxSeedVS");
 				seedMaskedVsModule = ctx.CreateShaderModule(
-					readFile(kGfxSeedMaskedVsPath), "gfxSeedMaskedVS");
+					smvk::shaders::Read(kGfxSeedMaskedVsPath), "gfxSeedMaskedVS");
 			}
 			catch (...) {
 				return true; // filter works; seed stays off
@@ -193,16 +194,16 @@ namespace engine {
 			try {
 				if (meshDebugVsModule.empty())
 					meshDebugVsModule = ctx.CreateShaderModule(
-						readFile(kMeshDebugVsPath), "meshDebugVS");
+						smvk::shaders::Read(kMeshDebugVsPath), "meshDebugVS");
 				if (meshDebugFragModule.empty())
 					meshDebugFragModule = ctx.CreateShaderModule(
-						readFile(kMeshDebugFragPath), "meshDebugFS");
+						smvk::shaders::Read(kMeshDebugFragPath), "meshDebugFS");
 				if (lineVsModule.empty())
 					lineVsModule = ctx.CreateShaderModule(
-						readFile(kLineVsPath), "debugLineVS");
+						smvk::shaders::Read(kLineVsPath), "debugLineVS");
 				if (lineFragModule.empty())
 					lineFragModule = ctx.CreateShaderModule(
-						readFile(kLineFragPath), "debugLineFS");
+						smvk::shaders::Read(kLineFragPath), "debugLineFS");
 			}
 			catch (...) {
 				return true; // filter works; debug views stay off
@@ -246,7 +247,7 @@ namespace engine {
 		if (filteredVsModule.empty()) {
 			try {
 				filteredVsModule = ctx.CreateShaderModule(
-					readFile(smvk::gfx::kGfxFilteredVsPath), "gfxFilteredVS");
+					smvk::shaders::Read(smvk::gfx::kGfxFilteredVsPath), "gfxFilteredVS");
 			}
 			catch (...) {
 				return p;
@@ -264,10 +265,10 @@ namespace engine {
 			try {
 				if (meshMsModule.empty())
 					meshMsModule = ctx.CreateShaderModule(
-						readFile(smvk::gfx::kGfxMeshMsPath), "gfxMeshMS");
+						smvk::shaders::Read(smvk::gfx::kGfxMeshMsPath), "gfxMeshMS");
 				if (meshFsModule.empty())
 					meshFsModule = ctx.CreateShaderModule(
-						readFile(smvk::gfx::kGfxMeshFsPath), "gfxMeshFS");
+						smvk::shaders::Read(smvk::gfx::kGfxMeshFsPath), "gfxMeshFS");
 			}
 			catch (...) {
 			}
@@ -291,7 +292,7 @@ namespace engine {
 				const std::string variant = base.substr(0, base.size() - 4)
 					+ kSgSuffix[li] + ".spv";
 				meshFsSgModules_[li] = ctx.CreateShaderModule(
-					readFile(variant), "gfxMeshFsSg");
+					smvk::shaders::Read(variant), "gfxMeshFsSg");
 			}
 			catch (...) {
 			}
@@ -309,7 +310,7 @@ namespace engine {
 				const std::string variant = base.substr(0, base.size() - 4)
 					+ ".gi" + std::to_string(gi) + ".spv";
 				meshFsGiModules_[gi] = ctx.CreateShaderModule(
-					readFile(variant), "gfxMeshFsGi");
+					smvk::shaders::Read(variant), "gfxMeshFsGi");
 			}
 			catch (...) {
 			}
@@ -326,7 +327,7 @@ namespace engine {
 				const std::string base = std::string(smvk::gfx::kGfxMeshFsPath);
 				const std::string variant = base.substr(0, base.size() - 4) + ".std.spv";
 				meshFsStdModule = ctx.CreateShaderModule(
-					readFile(variant), "gfxMeshFsStd");
+					smvk::shaders::Read(variant), "gfxMeshFsStd");
 			}
 			catch (...) {
 			}
@@ -344,7 +345,7 @@ namespace engine {
 				const std::string variant = base.substr(0, base.size() - 4)
 					+ ".gi" + std::to_string(gi) + "std.spv";
 				meshFsGiStdModules_[gi] = ctx.CreateShaderModule(
-					readFile(variant), "gfxMeshFsGiStd");
+					smvk::shaders::Read(variant), "gfxMeshFsGiStd");
 			}
 			catch (...) {
 			}
@@ -759,10 +760,10 @@ namespace engine {
 		try {
 			if (shadowSeedVsModule.empty())
 				shadowSeedVsModule = ctx.CreateShaderModule(
-					readFile(kGfxShadowSeedVsPath), "gfxShadowSeedVS");
+					smvk::shaders::Read(kGfxShadowSeedVsPath), "gfxShadowSeedVS");
 			if (shadowSeedMaskedVsModule.empty())
 				shadowSeedMaskedVsModule = ctx.CreateShaderModule(
-					readFile(kGfxShadowSeedMaskedVsPath), "gfxShadowSeedMaskedVS");
+					smvk::shaders::Read(kGfxShadowSeedMaskedVsPath), "gfxShadowSeedMaskedVS");
 		}
 		catch (...) {
 			return false;
@@ -1721,7 +1722,7 @@ namespace engine {
 		try {
 			if (filteredMotionVsModule.empty())
 				filteredMotionVsModule = ctx.CreateShaderModule(
-					readFile(kFilteredMotionVsPath), "gfxFilteredMotionVS");
+					smvk::shaders::Read(kFilteredMotionVsPath), "gfxFilteredMotionVS");
 		}
 		catch (...) {
 			return false;

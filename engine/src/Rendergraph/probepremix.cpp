@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Rendergraph/probepremix.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 
@@ -149,7 +150,7 @@ bool ProbePremix::Ensure(ResourceManager& ctx, RenderGraph& rg,
 
 	// Programs.
 	{
-		std::vector<char> code = readFile(kWeightsCsPath);
+		std::vector<char> code = smvk::shaders::Read(kWeightsCsPath);
 		if (code.empty()) {
 			std::cerr << "[ProbePremix] weights shader missing: "
 				<< kWeightsCsPath << "\n";
@@ -165,7 +166,7 @@ bool ProbePremix::Ensure(ResourceManager& ctx, RenderGraph& rg,
 		};
 	}
 	{
-		std::vector<char> code = readFile(kMixCsPath);
+		std::vector<char> code = smvk::shaders::Read(kMixCsPath);
 		if (code.empty()) {
 			std::cerr << "[ProbePremix] mix shader missing: "
 				<< kMixCsPath << "\n";

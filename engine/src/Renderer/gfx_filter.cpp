@@ -6,6 +6,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
 #include <cmath>
@@ -235,7 +236,7 @@ bool EnsureShaders(State& s, ResourceManager& ctx, const char* csPath) {
 	try {
 		if (s.filterModule.empty())
 			s.filterModule = ctx.CreateShaderModule(
-				readFile(csPath ? csPath : kGfxFilterCsPath), "gfxFilterCS");
+				smvk::shaders::Read(csPath ? csPath : kGfxFilterCsPath), "gfxFilterCS");
 	}
 	catch (...) {
 		return false;
@@ -281,7 +282,7 @@ bool EnsureBatchCullShaders(State& s, ResourceManager& ctx, const char* csPath) 
 	try {
 		if (s.batchCullModule.empty())
 			s.batchCullModule = ctx.CreateShaderModule(
-				readFile(csPath ? csPath : kGfxBatchCullCsPath), "gfxBatchCullCS");
+				smvk::shaders::Read(csPath ? csPath : kGfxBatchCullCsPath), "gfxBatchCullCS");
 	}
 	catch (...) {
 		return false;
@@ -299,7 +300,7 @@ bool EnsureDrawCullShaders(State& s, ResourceManager& ctx, const char* csPath) {
 	try {
 		if (s.drawCullModule.empty())
 			s.drawCullModule = ctx.CreateShaderModule(
-				readFile(csPath ? csPath : kGfxDrawCullCsPath), "gfxDrawCullCS");
+				smvk::shaders::Read(csPath ? csPath : kGfxDrawCullCsPath), "gfxDrawCullCS");
 	}
 	catch (...) {
 		return false;
@@ -318,7 +319,7 @@ bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg) {
 		try {
 			if (s.skinBoundsModule.empty())
 				s.skinBoundsModule = ctx.CreateShaderModule(
-					readFile(kGfxSkinBoundsCsPath), "gfxSkinBoundsCS");
+					smvk::shaders::Read(kGfxSkinBoundsCsPath), "gfxSkinBoundsCS");
 		}
 		catch (...) {
 			return false;
@@ -353,7 +354,7 @@ bool EnsureHizShaders(State& s, ResourceManager& ctx, const char* csPath) {
 	try {
 		if (s.hizModule.empty())
 			s.hizModule = ctx.CreateShaderModule(
-				readFile(csPath ? csPath : kHizCsPath), "hizBuildCS");
+				smvk::shaders::Read(csPath ? csPath : kHizCsPath), "hizBuildCS");
 	}
 	catch (...) {
 		return false;
@@ -376,7 +377,7 @@ bool EnsureHizSpdShaders(State& s, ResourceManager& ctx, const char* csPath) {
 	try {
 		if (s.hizSpdModule.empty())
 			s.hizSpdModule = ctx.CreateShaderModule(
-				readFile(csPath ? csPath : kHizSpdCsPath), "hizSpdBuildCS");
+				smvk::shaders::Read(csPath ? csPath : kHizSpdCsPath), "hizSpdBuildCS");
 	}
 	catch (...) {
 		return false;
@@ -2818,7 +2819,7 @@ void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable) 
 			try {
 				if (s.coneDebugModule.empty())
 					s.coneDebugModule = ctx.CreateShaderModule(
-						readFile(kGfxConeDebugCsPath), "gfxConeDebugCS");
+						smvk::shaders::Read(kGfxConeDebugCsPath), "gfxConeDebugCS");
 			}
 			catch (...) {
 				return; // broken install: the overlay stays dark
