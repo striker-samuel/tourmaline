@@ -940,10 +940,12 @@ bool PakBackend::Exists(const VfsPath& path) const {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty() || !reader_)
 		return false;
-	// The two VFS-addressable kinds (pak.h's interop contract): texture
-	// blobs (embedded .ktx2) + sound blobs (raw .wav).
+	// The three VFS-addressable kinds (pak.h's interop contract):
+	// texture blobs (embedded .ktx2), sound blobs (raw .wav) and
+	// shader blobs (raw compiled bytecode).
 	return reader_->Find(PakAssetKind::Texture, n) != nullptr
-		|| reader_->Find(PakAssetKind::Sound, n) != nullptr;
+		|| reader_->Find(PakAssetKind::Sound, n) != nullptr
+		|| reader_->Find(PakAssetKind::Shader, n) != nullptr;
 }
 
 std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) const {
@@ -966,6 +968,14 @@ std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) con
 		const std::span<const uint8_t> wav = reader_->Payload(*e);
 		return std::vector<uint8_t>(wav.begin(), wav.end());
 	}
+	// SHADER blobs: the payload IS the raw compiled bytecode (no
+	// wrapper — SPIR-V on the Vulkan backend; the shader library
+	// validates the magic before a module is ever created).
+	e = reader_->Find(PakAssetKind::Shader, n);
+	if (e) {
+		const std::span<const uint8_t> code = reader_->Payload(*e);
+		return std::vector<uint8_t>(code.begin(), code.end());
+	}
 	return std::nullopt;
 }
 
@@ -978,10 +988,13 @@ std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
 	// Both VFS-addressable kinds list (the overlay's union view).
 	std::vector<const PakTocEntry*> all;
 	all.reserve(reader_->BlobsOfKind(PakAssetKind::Texture).size()
-		+ reader_->BlobsOfKind(PakAssetKind::Sound).size());
+		+ reader_->BlobsOfKind(PakAssetKind::Sound).size()
+		+ reader_->BlobsOfKind(PakAssetKind::Shader).size());
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Texture))
 		all.push_back(e);
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Sound))
+		all.push_back(e);
+	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Shader))
 		all.push_back(e);
 	for (const PakTocEntry* e : all) {
 		const std::string& p = e->path;
@@ -1016,6 +1029,14 @@ std::optional<VfsStat> PakBackend::Stat(const VfsPath& path) const {
 		return s;
 	}
 	e = reader_->Find(PakAssetKind::Sound, n);
+	if (e) {
+		VfsStat s;
+		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());
+		s.backend = Name();
+		s.source = name_ + ":" + n;
+		return s;
+	}
+	e = reader_->Find(PakAssetKind::Shader, n);
 	if (e) {
 		VfsStat s;
 		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());

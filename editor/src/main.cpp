@@ -6,6 +6,7 @@
 #include <Engine/Memory/memory.h>
 #include <Engine/debug_log.h> // SetTraceEnabled (mute engine dashboards)
 #include <Engine/Rendergraph/dlss.h> // DlssSetStartupEnabled (Streamline never loads here)
+#include <Engine/Utils/shader_library.h> // the engine shader mount (before the Live view)
 
 #include <cstring>
 #include <cstdio>
@@ -430,6 +431,13 @@ InstallCrashHandler();
 	// at the interposer; after that the decision is locked in). Same
 	// contract as the App's --no-dlss. The shipped App keeps its DLSS.
 	smvk::DlssSetStartupEnabled(false);
+
+	// The engine shader library mounts BEFORE any graphics/editor Live
+	// view initialization: the exe-relative engine-shaders.pak (the
+	// mandatory production source) + the dev content/shaders/
+	// override. Every later shader read (the Live view's full
+	// WorldRenderer included) serves through it.
+	smvk::shaders::Init();
 
 	editor::EditorApp app;
 	// The REQUIRED project (checked above): the launcher's pick. Opens at

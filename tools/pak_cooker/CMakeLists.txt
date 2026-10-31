@@ -75,3 +75,36 @@ endif()
 if(TARGET vulkan_headers_iface)
     target_link_libraries(Pak PRIVATE vulkan_headers_iface)
 endif()
+
+# ---------------------------------------------------------------------------
+# THE ENGINE SHADER PACKAGE (engine-shaders.pak): one ENGINE-OWNED
+# package over the DECLARED compiled-output list (engine/CMakeLists.txt
+# writes ${CMAKE_BINARY_DIR}/engine-shaders.list from compile_shaders'
+# exact .spv set). Pak.exe's --shaders-list mode validates every blob's
+# SPIR-V magic and packs the list EXACTLY (a retired variant's stale
+# .spv in an old build tree never ships). This is the FIRST scope where
+# both EngineScene_shaders and the Pak tool exist (engine is
+# add_subdirectory'd before tools). Hosts deploy the package next to
+# their exe (HostSetup) and the engine shader library
+# (Engine/Utils/shader_library.h) mounts it at boot — a MANDATORY
+# runtime dependency of every graphics host, built independent of any
+# scene or project recipe.
+# ---------------------------------------------------------------------------
+if(TARGET EngineScene_shaders AND DEFINED ENGINE_SHADER_OUTPUTS)
+    set(ENGINE_SHADER_PAK "${CMAKE_BINARY_DIR}/content/paks/engine-shaders.pak"
+        CACHE INTERNAL "the engine-owned shader package")
+    add_custom_command(
+        OUTPUT "${ENGINE_SHADER_PAK}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/content/paks"
+        COMMAND $<TARGET_FILE:Pak> --shaders-list "${CMAKE_BINARY_DIR}/engine-shaders.list"
+                --out-pak "${ENGINE_SHADER_PAK}" --compress on
+        # The DECLARED list is the feed; the .spv outputs are the FILE
+        # dependencies (a target DEPENDS alone would only order, not
+        # rebuild, on a recompiled shader).
+        DEPENDS "${CMAKE_BINARY_DIR}/engine-shaders.list" ${ENGINE_SHADER_OUTPUTS}
+        COMMENT "Packing engine-shaders.pak (the declared engine shader set)"
+        VERBATIM
+    )
+    add_custom_target(EngineScene_shaderpak ALL DEPENDS "${ENGINE_SHADER_PAK}")
+    add_dependencies(EngineScene_shaderpak Pak)
+endif()

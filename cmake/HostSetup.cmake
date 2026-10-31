@@ -200,6 +200,22 @@ function(tourmaline_host_setup TGT)
                     "$<TARGET_FILE_DIR:${TGT}>/content/shaders"
             COMMENT "[${TGT}] Syncing compiled shaders next to the exe"
         )
+        # THE ENGINE SHADER PACKAGE (engine-shaders.pak, built by
+        # EngineScene_shaderpak over the declared compiled-output list
+        # - see tools/pak_cooker/CMakeLists.txt): deployed next to
+        # every host; the engine shader library mounts it at boot as
+        # the MANDATORY production shader source. The loose sync above
+        # stays the DEV override (a recompiled shader serves
+        # immediately); the package is what a deployed tree ships.
+        if(TARGET EngineScene_shaderpak)
+            add_dependencies(${TGT} EngineScene_shaderpak)
+            add_custom_command(TARGET ${TGT} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${ENGINE_SHADER_PAK}"
+                        "$<TARGET_FILE_DIR:${TGT}>/engine-shaders.pak"
+                COMMENT "[${TGT}] Deploying engine-shaders.pak next to the exe"
+            )
+        endif()
     else()
         message(WARNING "[${TGT}] EngineScene_shaders target missing - scene shaders will not build!")
     endif()

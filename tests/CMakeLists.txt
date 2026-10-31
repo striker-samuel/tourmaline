@@ -895,6 +895,25 @@ set_target_properties(FileWatcherTests PROPERTIES
 
 add_test(NAME file_watcher_tests COMMAND FileWatcherTests)
 
+# Compiled shaders as first-class pak/VFS assets (PakAssetKind::Shader)
+# + the unified VFS-backed shader reader (Engine/Utils/
+# shader_library.h): the pak round trip (write -> PakBackend serve ->
+# validated read), bytecode detection (SPIR-V vs DXBC vs garbage),
+# validation failures, dev-override precedence, named diagnostics.
+# CPU-only.
+add_executable(ShaderLibraryTests test_shader_library.cpp)
+
+target_link_libraries(ShaderLibraryTests
+	PRIVATE
+		engine
+)
+
+set_target_properties(ShaderLibraryTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME shader_library_tests COMMAND ShaderLibraryTests)
+
 # The executor's parity leg shells out to the stage exes beside this
 # exe (the shared build root): legacy BuildProject vs ExecuteBuildPlan
 # through the subprocess adapter, byte-compared. They are build

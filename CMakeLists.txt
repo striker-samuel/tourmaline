@@ -466,8 +466,12 @@ if(TOURMALINE_IS_TOP_LEVEL)
 add_subdirectory(tools/project)            # Project.exe: the project-pipeline CLI
   add_subdirectory(tools/artifact_cache)
   add_subdirectory(tools/cook)
-  add_subdirectory(app)               # App.exe: the plain pak-viewer host
+  # pak_cooker BEFORE the hosts: it owns the ENGINE SHADER PACKAGE
+  # target (EngineScene_shaderpak over the declared compiled-output
+  # list — see tools/pak_cooker/CMakeLists.txt), and HostSetup's
+  # deploy branch needs the target to exist when each host is set up.
   add_subdirectory(tools/pak_cooker)
+  add_subdirectory(app)               # App.exe: the plain pak-viewer host
   add_subdirectory(editor)
   add_subdirectory(tools/gi_baker)
   add_subdirectory(tools/cubemap_baker)

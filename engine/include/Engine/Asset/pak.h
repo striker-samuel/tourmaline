@@ -57,13 +57,15 @@ using namespace ::smvk;
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
 // kept in the TOC for debugging and collision-safe lookup.
 //
-// VFS interop: PakBackend serves *texture* and *sound* entries through
-// the IVfsBackend interface (returns the embedded .ktx2 / raw .wav bytes
-// for the original VFS path), so materials in one pak can reference
-// textures stored in another pak via plain VFS paths — and emitters the
-// same for sounds. Scene/Mesh/Material blobs are cluster-internal and are
-// consumed through PakReader by the cluster deserializer, not via VFS
-// file reads.
+// VFS interop: PakBackend serves *texture*, *sound* and *shader*
+// entries through the IVfsBackend interface (returns the embedded
+// .ktx2 / raw .wav / raw compiled-shader bytes for the original VFS
+// path), so materials in one pak can reference textures stored in
+// another pak via plain VFS paths, emitters the same for sounds, and
+// the shader library the same for engine/project shader packages.
+// Scene/Mesh/Material blobs are cluster-internal and are consumed
+// through PakReader by the cluster deserializer, not via VFS file
+// reads.
 // ---------------------------------------------------------------------------
 
 // Mesh blobs carry trailing meshlet sections and the Scene blob a
@@ -131,6 +133,20 @@ enum class PakAssetKind : uint32_t {
 	// id (the scene blob's audio section) — never by path — and the
 	// appmanifest's [ids] table carries the id -> (pak, path) join.
 	Sound = 11,
+	// SHADER (the compiled-shader asset kind): one blob per compiled
+	// shader stage/variant, keyed by its original VFS path (the same
+	// "content/shaders/<file>.spv" strings every consumer already
+	// uses), payload = the raw compiled bytecode (SPIR-V on the
+	// Vulkan backend — NEVER wrapped in a texture payload). The THIRD
+	// VFS-addressable kind (with Texture + Sound): PakBackend serves
+	// Shader blobs by path through the same Exists/TryRead/ListDir/
+	// Stat surface, and the engine shader library (Engine/Utils/
+	// shader_library.h) reads + VALIDATES them (the SPIR-V magic on
+	// the Vulkan backend; DXIL carries its own DXBC magic). The
+	// engine-owned package (engine-shaders.pak — the build's
+	// declared-output list) is a MANDATORY runtime dependency of
+	// every graphics host.
+	Shader = 12,
 };
 
 enum PakEntryFlags : uint32_t {

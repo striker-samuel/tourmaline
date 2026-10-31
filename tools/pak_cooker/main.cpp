@@ -99,6 +99,7 @@
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Utils/thread_pool.h>
+#include <Engine/Utils/shader_library.h> // DetectBytecode (the --shaders pack gate)
 #include <gltf_import/gltf.h>
 #include <gltf_import/asset_export.h> // materialAsset replay (tour cooks)
 #include <Engine/Asset/bake_asset.h> // bake-asset identity (bake GUIDs)
@@ -190,6 +191,20 @@ namespace paktool {
 		// Terrain blobs ride the same pak (or a terrain-only pak with no
 		// artifacts/tour); empty = no terrain.
 		std::string terrainDir;
+		// SHADER PACK mode (the engine-owned engine-shaders.pak): a
+		// host directory whose recursive *.spv files embed VERBATIM as
+		// Shader-kind blobs, keyed "content/shaders/<relative>" (the
+		// path strings every consumer already uses). Every file's
+		// SPIR-V magic is validated — a corrupt/truncated blob fails
+		// the pack, never ships. The declared compiled-output list is
+		// the CMake layer's (CompileShaders.cmake writes it); this
+		// flag just packages a tree.
+		std::string shaderDir;
+		// The DECLARED-LIST form (the build's authoritative compiled-
+		// output list, one HOST path per line): packs EXACTLY these
+		// files (a stale .spv left in an old build tree by a retired
+		// variant never ships), keyed "content/shaders/<basename>".
+		std::string shaderList;
 		// LEVEL blob (the exploration spike; see Engine/Asset/level.h):
 		// when set, ONE composite levels/<name>.level blob packs the
 		// scene payload + the baked data blobs this pak carries (the
@@ -549,6 +564,12 @@ namespace paktool {
 			else if (a == "--terrain") {
 				if (!need(out.terrainDir)) return false;
 			}
+			else if (a == "--shaders") {
+				if (!need(out.shaderDir)) return false;
+			}
+			else if (a == "--shaders-list") {
+				if (!need(out.shaderList)) return false;
+			}
 			else if (a == "--level") {
 				if (!need(out.levelName)) return false;
 			}
@@ -563,6 +584,11 @@ namespace paktool {
 	// Positionals: [0] = the VFS root, [1..] = the artifact list.
 	if (!out.dumpPak.empty())
 		return true; // inspection mode needs no cook inputs
+	// The SHADER PACK mode needs no VFS root either (the --shaders dir
+	// / --shaders-list file are host paths, not VFS trees).
+	if ((!out.shaderDir.empty() || !out.shaderList.empty())
+			&& positional.empty())
+		return true;
 	if (positional.empty()) {
 		tool::err() << "Required: pak.exe <vfs_path> <artifact...> [--options]"
 			" - the VFS content root + the processed .geometry list"
@@ -576,7 +602,8 @@ namespace paktool {
 		out.inVfs = out.inVfsList.front();
 	}
 	if (out.inVfsList.empty() && out.tour.empty() && out.terrainDir.empty()
-			&& out.contentSet.empty()) {
+			&& out.contentSet.empty() && out.shaderDir.empty()
+			&& out.shaderList.empty()) {
 		tool::err() << "Required: at least one artifact .geometry (or --tour"
 		" <scene.tour> - the editor-authored definition), and"
 		" --out-pak <host path> (--terrain <dir> alone cooks a"
@@ -616,7 +643,12 @@ namespace paktool {
 			<< "           --sun-color 1,0.95,0.9]\n"
 			<< "          [--gi-probe <name> ...] [--compress on|off]\n"
 			<< "          [--lz4-accel 1]\n"
-			<< "          [--terrain <terrain_src dir>]\n";
+			<< "          [--terrain <terrain_src dir>]\n"
+			<< "          [--shaders <compiled .spv dir>] (SHADER PACK:"
+			<< "           the recursive *.spv tree embeds verbatim as"
+			<< "           Shader blobs under content/shaders/ — the"
+			<< "           engine-shaders.pak mode; every blob's SPIR-V"
+			<< "           magic is validated)\n";
 	}
 
 	// Little-endian cursor over a MeshBlob payload for manifest printing. Mesh
@@ -1448,6 +1480,121 @@ namespace paktool {
 // (namespace paktool stays open through Run below; the helpers above
 // and Run share it, so Args resolves unqualified.)
 
+// Embed ONE validated shader blob (the shared core of the dir walk +
+// the declared-list pack): reads `hostPath`, validates the SPIR-V
+// magic, adds it as a Shader-kind blob under `vfsPath`.
+bool PackShaderBlob(const std::string& hostPath, const std::string& vfsPath,
+	smvk::PakWriter& writer) {
+	std::ifstream in(hostPath, std::ios::binary);
+	if (!in) {
+		tool::err() << "shader blob unreadable: " << hostPath
+			<< std::endl;
+		return false;
+	}
+	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+		std::istreambuf_iterator<char>());
+	if (bytes.size() < 4
+			|| smvk::shaders::DetectBytecode(bytes.data(), bytes.size())
+				!= smvk::shaders::Bytecode::Spirv) {
+		tool::err() << "shader blob failed SPIR-V validation"
+			" (truncated or wrong backend?): " << hostPath << std::endl;
+		return false;
+	}
+	if (!writer.AddBlob(smvk::PakAssetKind::Shader, vfsPath,
+			std::move(bytes))) {
+		tool::err() << "Shader AddBlob failed: " << vfsPath << std::endl;
+		return false;
+	}
+	return true;
+}
+
+// The DECLARED-LIST pack (the build's authoritative compiled-output
+// list): one HOST path per line; each file embeds under
+// "content/shaders/<basename>". Packing the LIST (not a directory
+// walk) is what keeps retired variants' stale .spv out of the
+// package — the list is the single source of truth.
+bool PackShaderList(const std::string& listPath, smvk::PakWriter& writer) {
+	std::ifstream in(listPath);
+	if (!in) {
+		tool::err() << "--shaders-list file not found: " << listPath
+			<< std::endl;
+		return false;
+	}
+	size_t embedded = 0;
+	std::string line;
+	while (std::getline(in, line)) {
+		if (!line.empty() && line.back() == '\r')
+			line.pop_back();
+		// Blank + '#'-comment lines pass through (hand-editable).
+		if (line.empty() || line[0] == '#')
+			continue;
+		const std::string name =
+			std::filesystem::path(line).filename().generic_string();
+		if (name.empty()) {
+			tool::err() << "--shaders-list carries a bad row: " << line
+				<< std::endl;
+			return false;
+		}
+		if (!PackShaderBlob(line, "content/shaders/" + name, writer))
+			return false;
+		++embedded;
+	}
+	if (embedded == 0) {
+		tool::err() << "--shaders-list packed nothing: " << listPath
+			<< std::endl;
+		return false;
+	}
+	tool::out() << "Embedded " << embedded << " shader blob(s) from the"
+		" declared list " << listPath << "\n";
+	return true;
+}
+
+// The SHADER PACK walk (the engine-shaders.pak mode — see
+// Args::shaderDir): the recursive *.spv tree under `dir` embeds
+// VERBATIM as Shader-kind blobs keyed "content/shaders/<relative>"
+// (the path strings every consumer reads). Every file's SPIR-V magic
+// is validated — a corrupt/truncated blob FAILS the pack here; the
+// runtime's read-time validation is the second gate, never the only
+// one. False + a printed reason on failure.
+bool PackShaderTree(const std::string& dir, smvk::PakWriter& writer) {
+	size_t embedded = 0;
+	std::error_code walkEc;
+	if (!std::filesystem::is_directory(dir, walkEc)) {
+		tool::err() << "--shaders dir not found: " << dir << std::endl;
+		return false;
+	}
+	for (const std::filesystem::directory_entry& e :
+			std::filesystem::recursive_directory_iterator(dir,
+				walkEc)) {
+		if (walkEc)
+			break;
+		std::error_code fe;
+		if (!e.is_regular_file(fe))
+			continue;
+		if (e.path().extension().generic_string() != ".spv")
+			continue;
+		const std::string rel = std::filesystem::relative(e.path(), dir,
+			fe).generic_string();
+		if (fe || rel.empty()) {
+			tool::err() << "shader path resolution failed: "
+				<< e.path().generic_string() << std::endl;
+			return false;
+		}
+		if (!PackShaderBlob(e.path().generic_string(),
+				"content/shaders/" + rel, writer))
+			return false;
+		++embedded;
+	}
+	if (embedded == 0) {
+		tool::err() << "--shaders found no *.spv under " << dir
+			<< std::endl;
+		return false;
+	}
+	tool::out() << "Embedded " << embedded << " shader blob(s) from "
+		<< dir << "\n";
+	return true;
+}
+
 // Runs the pak assembly; returns the process exit code (byte-identical
 // to the CLI run). See pak_tool.h — PakArgs mirrors the full CLI
 // surface (the original lossy 6-field map is what this replaces).
@@ -1480,6 +1627,84 @@ int Run(const PakArgs& c) {
 	args.contentSet = c.contentSet;
 	args.excludeVfsPaths = c.excludeVfsPaths;
 	args.soundIds = c.soundIds;
+	args.shaderDir = c.shaderDir;
+	args.shaderList = c.shaderList;
+
+	// SHADER PACK mode (standalone): --shaders/--shaders-list alone +
+	// --out-pak = the engine-owned engine-shaders.pak. No VFS, no
+	// scene machinery — the validated walk, the write, the reader
+	// self-check.
+	if ((!args.shaderDir.empty() || !args.shaderList.empty())
+			&& args.inVfsList.empty() && args.tour.empty()
+			&& args.contentSet.empty() && args.terrainDir.empty()) {
+		if (args.outPak.empty()) {
+			tool::err() << "Required: --out-pak <host path>"
+				<< std::endl;
+			return 1;
+		}
+		smvk::PakWriter writer;
+		writer.SetCompression(
+			args.compress ? smvk::PakCompression::Lz4
+				: smvk::PakCompression::None,
+			args.lz4Accel);
+		if (!args.shaderDir.empty()
+				&& !PackShaderTree(args.shaderDir, writer))
+			return 1;
+		if (!args.shaderList.empty()
+				&& !PackShaderList(args.shaderList, writer))
+			return 1;
+		const std::vector<uint8_t> pak = writer.Finalize();
+		{
+			std::filesystem::path out(args.outPak);
+			std::error_code ec;
+			std::filesystem::create_directories(out.parent_path(), ec);
+			FILE* f = std::fopen(out.string().c_str(), "wb");
+			if (!f) {
+				tool::err() << "Cannot open output: " << args.outPak
+					<< std::endl;
+				return 1;
+			}
+			std::fwrite(pak.data(), 1, pak.size(), f);
+			std::fclose(f);
+		}
+		tool::out() << "Packed " << writer.EntryCount() << " shader"
+			" blob(s) (" << pak.size() << " B, compressed="
+			<< writer.CompressedEntryCount() << ") -> "
+			<< args.outPak << "\n";
+		// The self-check: re-open through the production reader (the
+		// same CRC/TOC gate every runtime open runs).
+		if (args.verify) {
+			std::ifstream rf(args.outPak, std::ios::binary
+				| std::ios::ate);
+			if (!rf) {
+				tool::err() << "Verify: cannot re-open "
+					<< args.outPak << std::endl;
+				return 1;
+			}
+			const auto sz = rf.tellg();
+			rf.seekg(0);
+			std::vector<uint8_t> image(static_cast<size_t>(sz));
+			if (!rf.read(reinterpret_cast<char*>(image.data()), sz)) {
+				tool::err() << "Verify: read failed" << std::endl;
+				return 1;
+			}
+			std::string verr;
+			static std::vector<uint8_t> keepAlive = std::move(image);
+			auto reader = smvk::PakReader::Open(
+				std::span<const uint8_t>(keepAlive), verr);
+			if (!reader) {
+				tool::err() << "Verify: PakReader rejected: " << verr
+					<< std::endl;
+				return 1;
+			}
+			tool::out() << "Verify: " << reader->EntryCount()
+				<< " entries, "
+				<< reader->BlobsOfKind(
+					smvk::PakAssetKind::Shader).size()
+				<< " shader blob(s) read back OK\n";
+		}
+		return 0;
+	}
 
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
@@ -2547,7 +2772,8 @@ int Run(const PakArgs& c) {
 		// terrain blobs and/or the content-set Texture blobs carry it.
 		// Anything else was rejected at ParseArgs (artifacts/tour/
 		// content-set all empty never reaches here).
-		if (args.terrainDir.empty() && args.contentSet.empty()) {
+		if (args.terrainDir.empty() && args.contentSet.empty()
+				&& args.shaderDir.empty()) {
 			tool::err() << "Serialize failed: no clusters to serialize"
 				<< std::endl;
 			return 1;
@@ -2622,6 +2848,15 @@ int Run(const PakArgs& c) {
 		tool::out() << "Embedded anim clip " << vfsPath
 			<< " (" << bytes.size() << " B text)\n";
 	}
+	// ---- SHADER blobs (the engine-shaders.pak mode) ---------------------
+	// (See PackShaderTree/PackShaderList — the shared validated embeds,
+	// used by the standalone shader-pack branch in Run too.)
+	if (!args.shaderDir.empty()
+			&& !PackShaderTree(args.shaderDir, writer))
+		return 1;
+	if (!args.shaderList.empty()
+			&& !PackShaderList(args.shaderList, writer))
+		return 1;
 	// ---- content-set blobs (asset-only paks; the recipe build) ---------
 	// Direct VFS embeds: no scene, no clusters — the SHARED-TEXTURE pak.
 	// PakBackend serves them by path so any mounted pak's materials can
@@ -2992,6 +3227,8 @@ int main(int argc, char** argv) {
 	c.contentSet = args.contentSet;
 	c.excludeVfsPaths = args.excludeVfsPaths;
 	c.soundIds = args.soundIds;
+	c.shaderDir = args.shaderDir;
+	c.shaderList = args.shaderList;
 	return paktool::Run(c);
 }
 #endif

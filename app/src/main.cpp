@@ -9,6 +9,7 @@
 #include "Host.h"
 
 #include <Engine/App/RunConfig.h>
+#include <Engine/Utils/shader_library.h>
 
 int main(int argc, const char* argv[]) {
 	// Central run config: parse ALL TOURMALINE_* once, log one line, warn
@@ -17,6 +18,12 @@ int main(int argc, const char* argv[]) {
 	const engine::RunConfig runCfg = engine::RunConfig::Parse();
 	runCfg.Log();
 	engine::RunConfig::WarnUnknown();
+	// The engine shader library mounts BEFORE any graphics
+	// initialization: the exe-relative engine-shaders.pak (the
+	// mandatory production source) + the dev content/shaders/
+	// override. Every later shader read (renderer, render-graph,
+	// debug views) serves through it.
+	smvk::shaders::Init();
 	// The CLI parse fills the dedicated options object ONLY — the
 	// host-supplied state below is assembled after it and can never be
 	// reset or erased by the parser.

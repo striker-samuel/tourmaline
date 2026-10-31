@@ -55,6 +55,18 @@ struct PakArgs {
 	std::string levelName;
 	// Tiled terrain source dir (host path; see Rendergraph/terrain_meta.h).
 	std::string terrainDir;
+	// SHADER PACK mode (the engine-owned engine-shaders.pak): a host
+	// directory whose recursive *.spv files embed VERBATIM as
+	// Shader-kind blobs keyed "content/shaders/<relative>". Set alone
+	// (no artifacts/tour/content-set/terrain) = a standalone shader
+	// package; set beside scene inputs = the shaders ride the same
+	// pak. Every blob's SPIR-V magic is validated — a corrupt blob
+	// fails the pack, never ships.
+	std::string shaderDir;
+	// The DECLARED-LIST form: one HOST path per line (the build's
+	// authoritative compiled-output list); packs EXACTLY these files
+	// (stale .spv from retired variants never ship).
+	std::string shaderList;
 	// Sun/sky bake env (the CLI sun defaults; the tour env block wins
 	// when the definition carries one — see EnvForBake).
 	float sunAzimuth = 30.0f;

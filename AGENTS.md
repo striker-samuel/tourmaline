@@ -84,15 +84,30 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
 
 ## The generated project.h (content as code)
 
+- **Project identity (persistent, never name/path-derived)**: the
+  `project.tourproj` marker carries a `guid=` row (format version 2)
+  minted ONCE at project creation; the stable 64-bit
+  `project::ProjectId` derives from that GUID
+  (`smvk::project::DeriveProjectId`), so renaming the project or
+  moving the root keeps every compiled-in id valid. Current-format
+  policy — NO v1 marker reader: a marker without a valid guid is
+  rejected by `Project::Open`, the editor's `OpenProject` and the
+  launcher's scaffold; `Project.exe init` on an existing project is
+  the ONE explicit adopt-and-mint recovery path. The editor, launcher
+  and CLI agree on the same parse.
 - `project.h` (the `tourmaline_add_project`/`tourmaline_attach_project`
   layer, `cmake/TourmalineProject.cmake`) is a GENERATION-STAMPED,
   self-contained C++ catalog: `project::Generation` / `GeneratedAt` /
   `ContentHash` constexpr (cheap version control for asset time) plus
   an EOF machine-readable COMMENT section (`TOURMALINE-METADATA`,
   versioned markers) carrying the per-asset/per-pak fingerprints
-  (mtime_s/size/fnv1a64 hash + pak cook-state) — the generator's
-  incremental cache lives IN the header, no side file. Never code
-  against the EOF section; it is tool data.
+  (mtime_s/size/fnv1a64 hash + pak cook-state) — the generation
+  ledger lives IN the header, no side file. Never code against the
+  EOF section; it is tool data. The fingerprints are VERIFIED CONTENT
+  HASHES, recomputed from bytes on every run — matching size + mtime
+  is NEVER proof of unchanged content (preserved-timestamp, backdated
+  and same-size edits are detected; the mtime/size ride the records
+  as diagnostics + the demotion-only cook-state hints).
 - The stamp moves ONLY on a generation EVENT (any change to the
   emitted text — catalog semantics or fingerprints — or a forced
   refresh); an unchanged generation re-emits byte-identical text, so
@@ -108,7 +123,42 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   (catalog only), `--target <Name>_stamp` (forced generation),
   `--target <Name>_paks` (cook, no C++), `--target <Game>` (exe + the
   auto refresh). Unit-tested in test_project_pipeline.cpp
-  (`stamp.*`).
+  (`stamp.*`, `identity.*`, `proj.*`).
+
+## Source identity + the file watcher (the watched-resource pipeline)
+
+- **The glTF identity ledger** (item: identities survive reimports):
+  the `.gltf.meta` manifest is the family's identity LEDGER, fully
+  separate from the source-byte fingerprints. The family guid comes
+  from the caller's explicit resolution (`ImportProjectAsset` resolves
+  the PUBLISHED manifest before staging and passes it) or the previous
+  manifest (identity CARRIES across content edits — the digest records
+  the change) or the deterministic from-zero mint (`SourceAssetGuid`).
+  Subasset identities (materials/anims/geometry) carry BY NAME (the
+  logical key) — a DCC re-export that reorders the glTF arrays keeps
+  every GUID where cooks, `.tour`s and content ids expect them; a
+  name-group COUNT change against a previous record is AMBIGUOUS and
+  the import FAILS (never a silent re-assignment); removed names
+  retire. A manifest that exists but does not parse (or carries a
+  malformed guid) refuses the derive — identity repair is explicit.
+  Unit-tested in test_project_pipeline.cpp (`identity.*`).
+- **The project-scoped native filesystem watcher**
+  (`Engine/Utils/file_watcher.h`): one background thread over
+  REGISTERED watch roots (recursive dirs + single files),
+  ReadDirectoryChangesW over an IOCP on Windows / inotify on Linux.
+  The POLICY (ProjectDefault) excludes generated artifacts/
+  intermediates/published products whatever directory they sit in
+  (derived `.geometry`/`.material`/`.anim`, `.spv`, `.pak`/`.tapp`,
+  staging/`.tourmaline`/`out`/`build`/`paks` trees, the generated
+  `project.h`, atomic-save temps) — only authoritative sources produce
+  events (`.meta` sidecars INCLUDING the `.gltf.meta` ledger ARE
+  watched). Changes settle after a quiet window + a readability probe
+  (atomic-save renames land as ONE Modified on the target);
+  `Overflowed()` reports lost OS events and `Reconcile()` is the
+  stat-only snapshot diff (silent first baseline; missed events
+  during a stop/restart report on the next call). Poll() once per
+  frame is cheap — the watcher never scans/hashes the whole project
+  per frame. Unit-tested in test_file_watcher.cpp.
 
 ## Submodules
 
@@ -130,6 +180,42 @@ trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
 - Debug builds compile shaders `-Od`; files listed in `HLSL_FORCE_O3_FILES`
   (`cmake/CompileShaders.cmake`, currently `gfxfilter.cs.hlsl` — its `-Od`
   SPIR-V AVs nvgpucomp64.dll) are pinned to `-O3` even in Debug
+
+### Shaders as packaged assets (the engine shader library)
+
+- `PakAssetKind::Shader` (kind 12) stores compiled bytecode VERBATIM as
+  a blob keyed by its VFS path (`content/shaders/<file>.spv` — the
+  path strings consumers always used); it is the THIRD
+  VFS-addressable kind (with Texture and Sound):
+  `PakBackend::Exists/TryRead/ListDir/Stat` all serve it.
+- `smvk::shaders` (`Engine/Utils/shader_library.h`) is THE unified
+  shader reader: one process-wide overlay mounting (in precedence)
+  loose DEV trees (the exe-relative `content/shaders/` the build
+  syncs — a recompiled shader serves immediately in dev; explicit
+  `MountLooseDir` overrides too) over SHADER PACKAGES
+  (`MountPak`/the exe-relative `engine-shaders.pak` — the production
+  source). Every read VALIDATES the bytecode magic (SPIR-V on the
+  Vulkan backend; `DetectBytecode` also distinguishes DXBC/DXIL) — a
+  corrupt blob fails at READ time with a named provider, never inside
+  a driver. `Read(path)` is a drop-in for the old
+  `readFile("content/shaders/...")` reads. Hosts call
+  `smvk::shaders::Init()` before graphics initialization (app +
+  editor do); every entry is lazily self-initializing anyway.
+- `engine-shaders.pak` (the ENGINE-OWNED package) is built by
+  `EngineScene_shaderpak` (`tools/pak_cooker/CMakeLists.txt`) from the
+  AUTHORITATIVE DECLARED compiled-output list
+  (`engine-shaders.list`, written by `engine/CMakeLists.txt` from
+  `compile_shaders()`'s exact `.spv` set — base outputs + every
+  configured variant, whatever the backend/build produced; a retired
+  variant's stale `.spv` in an old build tree NEVER ships). Pak.exe's
+  `--shaders-list` mode validates every blob's SPIR-V magic and packs
+  the list exactly (`--shaders <dir>` walks a tree instead). Hosts
+  deploy the package next to their exe (`HostSetup`) — a MANDATORY
+  runtime dependency of every graphics host, built independent of any
+  scene or project recipe.
+- Regression-tested in test_shader_library.cpp (the pak round trip,
+  bytecode detection, validation failures, dev-override precedence,
+  the declared-list discipline, corrupt-declared failures).
 
 ## Running
 
