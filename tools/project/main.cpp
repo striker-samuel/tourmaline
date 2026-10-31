@@ -85,7 +85,20 @@ int Usage(const char* prog) {
 		<< "      or --project <dir> --output <pak> [--scene <tour>] (the\n"
 		<< "         legacy single-scene build — unchanged)\n"
 		<< "  status --project <dir>\n"
-		<< "         report every imported source: current, or why not\n";
+		<< "         report every imported source: current, or why not\n"
+		<< "  explain --project <dir> --recipe <file.tourrecipe>\n"
+		<< "          --id <0xhex id | project-relative path>\n"
+		<< "         [--pak-dir <dir>] [--header <project.h>]\n"
+		<< "         PROVENANCE + stale causes for one asset: identity\n"
+		<< "         (id/symbol/kind/guid), ownership (the pak + its\n"
+		<< "         declared dependencies), deployment (the published\n"
+		<< "         content-addressed file + cook state) and freshness\n"
+		<< "         (the verified source hash vs the last generation's\n"
+		<< "         EOF record). Recipe cycles/missing dependencies\n"
+		<< "         fail loud here (the resolver's own diagnostics).\n"
+		<< "         NOTE: like the ids pass, explain reconciles the\n"
+		<< "         registry to the recipe (dropped assets tombstone;\n"
+		<< "         the next generation re-activates them).\n";
 	return 2;
 }
 
@@ -117,7 +130,7 @@ int main(int argc, const char* argv[]) {
 	// Shared flag scan.
 	std::string projectDir, source, name, ratiosCsv, scene, output,
 		fromScene, recipeFile, publishDir, manifestName, headerOut,
-		depsOut, pakDir;
+		depsOut, pakDir, explainTarget;
 	bool fromGltf = false, force = false, stampRefresh = false;
 	bool noLods = false, noMeshlets = false, shaderLods = false;
 	bool ratiosSet = false, errorSet = false;
@@ -206,6 +219,10 @@ int main(int argc, const char* argv[]) {
 			shaderLods = true;
 		else if (std::strcmp(a, "--force") == 0)
 			force = true;
+		else if ((std::strcmp(a, "--id") == 0) && i + 1 < argc)
+			explainTarget = argv[++i];
+		else if (std::strncmp(a, "--id=", 5) == 0)
+			explainTarget = a + 5;
 		else {
 			std::cerr << "Unknown flag: " << a << "\n";
 			return Usage(argv[0]);
@@ -694,6 +711,281 @@ int main(int argc, const char* argv[]) {
 		}
 		std::cout << (rows.size() - stale) << "/" << rows.size()
 			<< " current\n";
+		return 0;
+	}
+
+	if (cmd == "explain") {
+		// PROVENANCE + STALE CAUSES for one asset (see Usage). The
+		// recipe must resolve (cycles + missing dependencies fail HERE
+		// with the resolver's own actionable diagnostics).
+		if (explainTarget.empty()) {
+			std::cerr << "explain: --id <0xhex id | project-relative"
+				" path> is required\n";
+			return Usage(argv[0]);
+		}
+		if (recipeFile.empty()) {
+			std::cerr << "explain: --recipe is required\n";
+			return Usage(argv[0]);
+		}
+		std::string err;
+		smvk::project::Project p =
+			smvk::project::Project::Open(projectDir, err);
+		if (!p.Valid()) {
+			std::cerr << err << "\n";
+			return 1;
+		}
+		// The plan (the resolver rejects cycles + missing deps).
+		smvk::project::ProjectRecipe recipe;
+		smvk::project::RecipeDiagnostic diag;
+		smvk::project::BuildPlan plan;
+		if (!smvk::project::ParseProjectRecipe(recipeFile, recipe,
+				diag)) {
+			std::cerr << "recipe parse failed: "
+				<< diag.Format(recipeFile) << "\n";
+			return 1;
+		}
+		if (!smvk::project::ResolveRecipe(p, recipe, plan, err)) {
+			std::cerr << "recipe resolve failed: " << err << "\n";
+			return 1;
+		}
+		// The catalog (same reconciliation the ids pass runs; the
+		// registry is the one identity store).
+		smvk::cache::AssetDatabase db;
+		{
+			const std::string root = smvk::cache::EnsureRegistryRoot(
+				p.DerivedDataDir());
+			if (root.empty() || !db.Open(root, p.root, err)) {
+				std::cerr << "asset database: " << err << "\n";
+				return 1;
+			}
+		}
+		smvk::project::ProjectCatalog catalog;
+		std::vector<std::string> contentDeps;
+		if (!smvk::project::GenerateProjectCatalog(p, plan, db,
+				catalog, contentDeps, err)) {
+			std::cerr << "catalog: " << err << "\n";
+			return 1;
+		}
+		// Resolve the target: an 0xhex/decimal id or a
+		// project-relative path, over the ACTIVE buckets + the
+		// retired table.
+		const smvk::project::CatalogEntry* active = nullptr;
+		const smvk::project::CatalogEntry* retired = nullptr;
+		const auto bucketOf =
+			[&](const std::string& kind)
+				-> const std::vector<smvk::project::CatalogEntry>& {
+			if (kind == "scene")
+				return catalog.scenes;
+			if (kind == "texture")
+				return catalog.textures;
+			if (kind == "mesh")
+				return catalog.meshes;
+			return catalog.sounds;
+		};
+		{
+			uint64_t wantId = 0;
+			bool byId = false;
+			if (!explainTarget.empty()
+					&& explainTarget.find_first_not_of(
+						"0123456789abcdefABCDEFxX") == std::string::npos) {
+				try {
+					wantId = std::stoull(explainTarget, nullptr, 0);
+					byId = wantId != 0;
+				}
+				catch (...) {
+				}
+			}
+			for (const char* kind :
+					{ "scene", "texture", "mesh", "sound" }) {
+				for (const auto& e : bucketOf(kind)) {
+					if ((byId && e.id == wantId)
+							|| (!byId && e.path == explainTarget)) {
+						active = &e;
+						break;
+					}
+				}
+				if (active)
+					break;
+			}
+			for (const auto& e : catalog.retired) {
+				if ((byId && e.id == wantId)
+						|| (!byId && e.path == explainTarget)) {
+					retired = &e;
+					break;
+				}
+			}
+		}
+		if (!active && !retired) {
+			std::cerr << "explain: no asset matches '"
+				<< explainTarget << "' (active or retired) under the"
+					" resolved plan\n";
+			return 1;
+		}
+		const smvk::project::CatalogEntry& e = active ? *active : *retired;
+		// The guid join (identity lives with identity).
+		std::string guid;
+		{
+			std::vector<smvk::cache::ContentIdRecord> rows;
+			if (db.ListContentIds(rows, err))
+				for (const auto& r : rows)
+					if (r.id == e.id) {
+						guid = r.guid;
+						break;
+					}
+		}
+		std::cout << "asset 0x" << std::hex << e.id << std::dec << " '"
+			<< e.symbol << "' (" << e.kind << ")\n"
+			<< "  guid   " << (guid.empty() ? "(unknown)" : guid)
+			<< "\n"
+			<< "  path   " << e.path << "\n"
+			<< "  state  "
+			<< (retired ? "RETIRED (tombstoned; the id+symbol stay"
+					" reserved forever)"
+				: "active") << "\n";
+		if (retired) {
+			// A retired identity has no owner/staleness — the contract
+			// is the reservation itself.
+			std::cout << "  restore: re-add the asset with its original"
+				" GUID (the sidecar/manifest) + regenerate — the SAME"
+				" id+symbol re-activate\n";
+			return 0;
+		}
+		// Ownership: the pak + its declared dependencies.
+		const smvk::project::PlanPak* owner = plan.FindPak(e.pak);
+		std::cout << "  owner  pak '" << e.pak << "'"
+			<< (owner ? "" : " (not in the resolved plan!)") << "\n";
+		if (owner) {
+			std::cout << "    output '" << owner->output << "'";
+			if (!owner->scene.empty())
+				std::cout << " scene " << owner->scene;
+			std::cout << "\n";
+			if (!owner->depends.empty()) {
+				std::cout << "    depends:";
+				for (const std::string& d : owner->depends)
+					std::cout << " " << d;
+				std::cout << " (each must publish EARLIER in plan"
+					" order)\n";
+				// Missing-dependency proof: every declared dependency
+				// must be a plan pak that appears EARLIER in the
+				// topological order.
+				for (const std::string& d : owner->depends) {
+					const smvk::project::PlanPak* dep = plan.FindPak(d);
+					bool earlier = false;
+					for (size_t i = 0; i < plan.paks.size(); ++i) {
+						if (plan.paks[i].id == e.pak)
+							break;
+						if (plan.paks[i].id == d) {
+							earlier = true;
+							break;
+						}
+					}
+					std::cout << "    " << d << ": "
+						<< (!dep ? "MISSING from the plan"
+							: earlier ? "ok (earlier in plan order)"
+								: "ORDER VIOLATION (later/absent)")
+						<< "\n";
+				}
+			}
+		}
+		// Freshness: the verified source hash vs the last
+		// generation's EOF record (when a header is given).
+		const std::string effectivePakDir = pakDir.empty()
+			? (std::filesystem::path(p.root) / "build")
+				.generic_string()
+			: pakDir;
+		std::vector<smvk::project::AssetFingerprint> prints;
+		if (!smvk::project::CollectAssetFingerprints(p, catalog,
+				prints, err)) {
+			std::cerr << "fingerprints: " << err << "\n";
+			return 1;
+		}
+		const smvk::project::AssetFingerprint* mine = nullptr;
+		for (const auto& f : prints)
+			if (f.id == e.id) {
+				mine = &f;
+				break;
+			}
+		if (mine) {
+			std::cout << "  source " << e.path << "\n"
+				<< "    mtime  " << mine->mtime << " size "
+				<< mine->size << "\n"
+				<< "    hash  " << (mine->hash.empty()
+					? "(missing file)" : mine->hash) << "\n";
+			if (!headerOut.empty()) {
+				smvk::project::HeaderMetadata prev;
+				std::string mErr;
+				if (smvk::project::ReadProjectHeaderMetadata(headerOut,
+						prev, mErr)) {
+					const auto pa = prev.assets.find(e.id);
+					if (pa != prev.assets.end()
+							&& pa->second.hash != mine->hash)
+						std::cout << "    STALE: the source hash moved"
+							" since the last generation (recorded "
+							<< pa->second.hash << ")\n";
+					else if (pa != prev.assets.end())
+						std::cout << "    fresh: matches the last"
+							" generation's record\n";
+					else
+						std::cout << "    no record for this id in"
+							" the header's EOF metadata\n";
+				}
+				else
+					std::cout << "    (header metadata unreadable: "
+						<< mErr << ")\n";
+			}
+			else
+				std::cout << "    (pass --header to compare against"
+					" the last generation's record)\n";
+		}
+		// Deployment: the owning pak's published file + cook state.
+		std::vector<smvk::project::PakFingerprint> pakPrints;
+		if (!smvk::project::DiscoverPakFingerprints(effectivePakDir,
+				catalog, prints,
+				smvk::project::HeaderMetadata{}, pakPrints, err)) {
+			std::cerr << "pak discovery: " << err << "\n";
+			return 1;
+		}
+		const smvk::project::PakFingerprint* pf = nullptr;
+		{
+			// The published name is either the plain output ("thing
+			// .pak", the legacy form) or its content-addressed form
+			// ("thing-<digest>.pak") — match on the output's STEM.
+			const std::string want = owner ? owner->output : e.pak;
+			const std::string stem = want.substr(0,
+				want.rfind(".pak") == std::string::npos
+					? want.size() : want.rfind(".pak"));
+			for (const auto& f : pakPrints) {
+				const std::string n =
+					std::filesystem::path(f.file).stem().generic_string();
+				// "thing" (plain) or "thing-<digest>" (addressed).
+				if (n == stem
+						|| (n.size() > stem.size() + 1
+							&& n.compare(0, stem.size() + 1,
+								stem + "-") == 0)) {
+					pf = &f;
+					break;
+				}
+			}
+		}
+		if (pf && !pf->file.empty()) {
+			std::cout << "  deployed " << pf->file << "\n"
+				<< "    mtime  " << pf->mtime << " size " << pf->size
+				<< "\n"
+				<< "    hash  " << (pf->hash.empty()
+					? "(unreadable)" : pf->hash) << "\n"
+				<< "    state " << pf->state << "\n";
+			if (pf->state == "stale")
+				std::cout << "    (an asset of this pak is unpublished,"
+					" changed since the last generation, or newer"
+					" than the pak — rebuild with 'build')\n";
+			else if (pf->state == "missing")
+				std::cout << "    (no published pak found — build"
+					" first)\n";
+		}
+		else
+			std::cout << "  deployed (nothing published for '"
+				<< (owner ? owner->output : e.pak)
+				<< "' in " << effectivePakDir << " — build first)\n";
 		return 0;
 	}
 

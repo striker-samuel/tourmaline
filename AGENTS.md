@@ -136,6 +136,18 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   `--target <Name>_paks` (cook, no C++), `--target <Game>` (exe + the
   auto refresh). Unit-tested in test_project_pipeline.cpp
   (`stamp.*`, `identity.*`, `proj.*`).
+- **`Project.exe explain`** (the provenance/stale-causes CLI):
+  `explain --project <dir> --recipe <file> --id <0xhex id | path>
+  [--pak-dir <dir>] [--header <project.h>]` reports one asset's full
+  chain — identity (id/symbol/kind/guid), ownership (the pak + its
+  declared dependencies, each proven earlier in the topological plan
+  order; recipe cycles/missing deps fail loud with the resolver's
+  diagnostics), freshness (the VERIFIED source hash vs the last
+  generation's EOF record) and deployment (the published
+  content-addressed file + its cook state). Retired identities report
+  the tombstone reservation + the restore path. Like the ids pass it
+  reconciles the registry to the recipe. Smoke-tested in
+  test_project_pipeline.cpp (`catalog.explain-*`).
 - **The retired asset-ID/tombstone contract**: deleted assets
   TOMBSTONE in assets.db (active=0 — the id+symbol stay reserved
   FOREVER, never reused; a new asset at the same path gets a fresh id

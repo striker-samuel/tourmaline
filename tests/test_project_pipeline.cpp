@@ -61,6 +61,10 @@ namespace fs = std::filesystem;
 int g_failures = 0;
 int g_checks = 0;
 
+// The test exe's path (main() fills it; the explain CLI smoke resolves
+// Project.exe beside it — never CWD, ctest launches from anywhere).
+const char* g_argv0 = "";
+
 void Check(bool cond, const char* name) {
 	++g_checks;
 	if (cond) {
@@ -2905,6 +2909,82 @@ void TestProjectCatalog() {
 				!= std::string::npos,
 			"catalog.header-escapes-literals");
 	}
+
+	// ---- the explain CLI (provenance + stale causes) ------------------
+	// Project.exe sits beside this test exe (the shared build root);
+	// the fixture above (the mini project + its db) is the subject.
+	{
+		const fs::path recipePath = tmp / "thing.tourrecipe";
+		{
+			std::ofstream f(recipePath,
+				std::ios::binary | std::ios::trunc);
+			f << recipeText;
+		}
+		const fs::path outPath = tmp / "explain_out.txt";
+		auto runExplain = [&](const std::string& idArg) -> std::string {
+			const std::string exe =
+				(fs::path(g_argv0).parent_path() / "Project.exe")
+					.string();
+			const std::string cmd = exe + " explain --project "
+				+ fs::path(project.root).string() + " --recipe "
+				+ recipePath.string() + " --id " + idArg
+				+ " > " + outPath.string() + " 2>&1";
+			(void)std::system(cmd.c_str());
+			std::ifstream out(outPath);
+			const std::string text(
+				(std::istreambuf_iterator<char>(out)),
+				std::istreambuf_iterator<char>());
+			fs::remove(outPath, ec);
+			return text;
+		};
+		{
+			// The ACTIVE scene (the catalog's own bucket — the db also
+			// carries tombstoned stability-test rows at nearby ids).
+			char idArg[32];
+			std::snprintf(idArg, sizeof idArg, "0x%llx",
+				(unsigned long long)catalog.scenes[0].id);
+			const std::string out = runExplain(idArg);
+			Check(out.find("asset 0x") != std::string::npos
+				&& out.find("(scene)") != std::string::npos
+				&& out.find("state  active") != std::string::npos
+				&& out.find("owner  pak 'world'") != std::string::npos
+				&& out.find("hash  fnv1a64:") != std::string::npos,
+				"catalog.explain-active-provenance");
+		}
+		{
+			// A retired identity, DISCOVERED from the db (the ids the
+			// generations above tombstoned): the reservation contract.
+			uint64_t retiredId = 0;
+			{
+				std::vector<smvk::cache::ContentIdRecord> rows;
+				if (db.ListContentIds(rows, err))
+					for (const auto& r : rows)
+						if (!r.active) {
+							retiredId = r.id;
+							break;
+						}
+			}
+			if (retiredId) {
+				char idArg[32];
+				std::snprintf(idArg, sizeof idArg, "0x%llx",
+					(unsigned long long)retiredId);
+				const std::string out = runExplain(idArg);
+				Check(out.find("RETIRED") != std::string::npos
+					&& out.find("restore") != std::string::npos,
+					"catalog.explain-retired-contract");
+			}
+			else {
+				Check(false, "catalog.explain-retired-contract"
+					" (fixture had no tombstone)");
+			}
+		}
+		{
+			// A nonsense target: the actionable miss.
+			const std::string out = runExplain("0x9999");
+			Check(out.find("no asset matches") != std::string::npos,
+				"catalog.explain-unknown-misses");
+		}
+	}
 }
 
 // The GENERATION STAMP + the EOF metadata (project.h as its own build
@@ -3350,7 +3430,9 @@ void TestProjectHeaderStamp() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+	if (argc > 0 && argv[0])
+		g_argv0 = argv[0];
 	// Unbuffered streams: printf and std::cout carry SEPARATE buffers, so
 	// a crash would otherwise scramble the log order (the last output
 	// before an AV is lost/deferred). Tests are small — pay the flush.
