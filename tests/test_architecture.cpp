@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -329,6 +330,108 @@ int main() {
 		Check(offenders.empty(), "arch.r4-rhi-no-engine-includes");
 		for (const std::string& o : offenders)
 			std::cout << "  R4 offender: " << o << "\n";
+	}
+	// R5: THE TRANSITIVE upward dependency (section 8d's early-warning
+	// form): walk the FULL include graph from the public RHI headers
+	// and fail on any engine-domain header reachable TRANSITIVELY (a
+	// direct include ban is R4; a chain like RHI -> allowed-middle ->
+	// Engine/App/... is this rule). Same baseline/allowed vocabulary
+	// as R4. Depth-capped (a diamond graph would revisit; the cap is
+	// generous for header chains).
+	{
+		std::vector<std::string> offenders;
+		const fs::path incRoot = fs::path(TOURMALINE_SOURCE_ROOT)
+			/ "engine" / "include" / "Engine";
+		auto engineIncludes = [](const std::string& code) {
+			std::vector<std::string> out;
+			std::string at(code);
+			std::smatch m;
+			static const std::regex re(
+				"#include\\s*<Engine/([^>]+)>");
+			auto begin = code.cbegin();
+			while (std::regex_search(begin, code.cend(), m, re)) {
+				out.push_back(m[1].str());
+				begin = m.suffix().first;
+			}
+			return out;
+		};
+		// forbidden prefixes (same as R4) + the baseline edges
+		// (from-file, to-include) that are tracked findings.
+		static const char* kForbiddenPfx[] = {
+			"Scene/", "App/", "GI/", "Placement/", "Audio/",
+			"Camera/", "Profile/", "WorldFields/", "Utils/",
+			"ImGui/", "Asset/tour.h", "Asset/pak.h",
+			"Asset/touranim.h", "Asset/appmanifest.h",
+		};
+		struct BaselineEdge { const char* from; const char* to; };
+		static const BaselineEdge kBaseline[] = {
+			// resource_manager.h -> spirv_reflection.h (section 6,
+			// the P1 adapter fix) - spirv_reflection itself only
+			// pulls smvk.h, so the chain stops there.
+			{ "RHI/resource_manager.h", "Renderer/spirv_reflection.h" },
+		};
+		auto isForbidden = [](const std::string& inc) {
+			for (const char* p : kForbiddenPfx)
+				if (inc.rfind(p, 0) == 0)
+					return true;
+			return false;
+		};
+		auto isBaseline = [](const std::string& from,
+				const std::string& inc) {
+			for (const BaselineEdge& b : kBaseline) {
+				const std::string f = b.from;
+				if (from == f
+						&& inc.rfind(b.to, 0) == 0)
+					return true;
+			}
+			return false;
+		};
+		// BFS from the RHI roots, over the STRIPPED code (comments
+		// gone so commented-out includes never count). VISITED-set
+		// keyed on the walked FILE (the include graph is cyclic -
+		// smvk.h <-> resource_manager.h - and without the set the
+		// re-walk burns the hop budget before the deep edges).
+		std::vector<std::string> roots = { "smvk.h",
+			"RHI/resource_manager.h", "RHI/swapchain.h",
+			"RHI/DescriptorLimits.h", "RHI/FrameConfig.h" };
+		std::vector<std::pair<std::string, std::string>> queue;
+		std::vector<std::string> visited;
+		auto wasVisited = [&visited](const std::string& inc) {
+			return std::find(visited.begin(), visited.end(), inc)
+				!= visited.end();
+		};
+		for (const std::string& r : roots) {
+			const fs::path p = incRoot / r;
+			if (fs::exists(p)) {
+				visited.push_back(r);
+				for (const std::string& inc : engineIncludes(
+						StripCommentsAndStrings(ReadText(p))))
+					queue.push_back({ r, inc });
+			}
+		}
+		const size_t kMaxHops = 4096;
+		size_t hops = 0;
+		while (!queue.empty() && hops++ < kMaxHops) {
+			const auto [from, inc] = queue.back();
+			queue.pop_back();
+			if (isForbidden(inc) && !isBaseline(from, inc)) {
+				offenders.push_back(from + " -> " + inc);
+				continue; // report, don't walk further
+			}
+			const fs::path next = incRoot / inc;
+			std::error_code ec;
+			if (!fs::exists(next, ec) || inc.rfind("Renderer/", 0) == 0)
+				continue; // don't walk into Renderer/ (the gray zone)
+			if (wasVisited(inc))
+				continue;
+			visited.push_back(inc);
+			for (const std::string& deeper : engineIncludes(
+					StripCommentsAndStrings(ReadText(next))))
+				queue.push_back({ inc, deeper });
+		}
+		Check(offenders.empty(), "arch.r5-rhi-transitively-clean");
+		for (const std::string& o : offenders)
+			std::cout << "  R5 offender: " << o << "\n";
 	}
 
 	std::cout << "architecture_tests: " << (g_checks - g_failures)
