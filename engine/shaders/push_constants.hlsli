@@ -74,7 +74,12 @@ struct PushConstants
     // ditherCloseup — the direct prepass/Main/shadow legs push it per
     // draw, 0/1; default.vert / shadow.vert forward it flat at VS
     // location 8 so the FS family reads one channel on both paths —
-    // the filtered legs deliver the Draw ring's flag bit there). y..w
-    // stay scratch.
+    // the filtered legs deliver the Draw ring's flag bit there).
+    // .y: the DIRECT legs' per-draw RESOLVED material userdata
+    // (docs/shader_library_design.md — pushed per LIT draw; default.
+    // vert forwards it flat at VS location 9; the filtered legs
+    // deliver the Draw ring's misc3.x there. The filtered motion pass
+    // overlays the whole 240..256 word with its own tail, so the two
+    // scratch users never conflict). z..w stay scratch.
     uint4 padEnd;
 };

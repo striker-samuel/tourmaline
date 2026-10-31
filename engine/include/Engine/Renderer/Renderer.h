@@ -71,7 +71,15 @@ public:
 		// prepass / Main / shadow legs; default.vert / shadow.vert
 		// forward it flat at VS location 8 so the FS family reads ONE
 		// channel on both paths — the filtered legs deliver the gfx Draw
-		// ring's DrawFlagBit_DitherCloseup there). [1..3] stay scratch.
+		// ring's DrawFlagBit_DitherCloseup there).
+		// padEnd_[1]: the DIRECT legs' per-draw RESOLVED material
+		// userdata (docs/shader_library_design.md Phase A — pushed per
+		// LIT draw by the direct Main legs + the editor's direct legs;
+		// default.vert forwards it flat at VS location 9, the unified
+		// second per-draw channel; the filtered legs deliver the Draw
+		// ring's userData there. The filtered motion pass overlays the
+		// whole 240..256 word with its own tail before its draws, so
+		// the two scratch users never conflict). [2..3] stay scratch.
 		uint32_t padEnd_[4];
 	};
 

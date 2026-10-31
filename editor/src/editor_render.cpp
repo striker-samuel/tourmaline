@@ -888,6 +888,13 @@ namespace editor {
 				sizeof(objPc.materialId), &objPc.materialId, smvk::ShaderStage::All);
 			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
 				sizeof(objPc.model), objPc.model, smvk::ShaderStage::All);
+			// The resolved material userdata (padEnd_[1] — default.vert
+			// forwards it flat at VS location 9 for the lit hooks;
+			// pushed per draw like the main host's direct legs).
+			objPc.padEnd_[1] = m_world->ResolvedItemUserData(item);
+			cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, padEnd_)
+				+ sizeof(objPc.padEnd_[0]), sizeof(objPc.padEnd_[1]),
+				&objPc.padEnd_[1], smvk::ShaderStage::All);
 			if (chartTail) {
 				// Per-mesh chart tail: the direct VS unpacks chart uvs to
 				// atlas space for views that sample lightmaps (F8/Uv1).

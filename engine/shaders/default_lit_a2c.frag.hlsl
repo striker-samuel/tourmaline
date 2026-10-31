@@ -16,4 +16,7 @@
 #include "sg_lightmap.hlsli"
 #include "sg_regular.hlsli"
 #include "sg_gi_volume.hlsli"
+// The STANDARD no-op hook family (a project lit family includes its own
+// hook library here instead — same body, same seam).
+#include "lit_hooks_default.hlsli"
 #include "default_lit_body.hlsli"

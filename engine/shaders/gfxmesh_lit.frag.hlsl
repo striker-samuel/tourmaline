@@ -40,7 +40,15 @@ struct PSIn
     // location 8; sequential assignment happened to match here but
     // dead-stripping could shift it).
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+    // The resolved per-draw material userdata (flat; the ring's misc3.x
+    // forwarded by the mesh MS — the hooks' runtime input; see
+    // lit_hooks_api.hlsli). EXPLICIT location 9, pinned exactly like
+    // ditherCloseup above.
+    [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
     bool isFrontFace : SV_IsFrontFace;
 };
 #define GFX_MATERIAL_ID (IN.meshMaterial)
+// The STANDARD no-op hook family (a project lit family includes its own
+// hook library here instead — same body, same seam).
+#include "lit_hooks_default.hlsli"
 #include "default_lit_body.hlsli"

@@ -394,6 +394,150 @@ void TestMeshEntitiesAndAnimators() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Material runtime state + material instances (the 32-bit userdata lane,
+// docs/shader_library_design.md Phase A): the base-material default, the
+// per-entity instance override, the resolve/re-key survival, the drawItems
+// linkage (including the entity items — the mirror loop now runs BEFORE
+// the drawItems build) and the destroy fallback.
+// ---------------------------------------------------------------------------
+
+void TestMaterialInstances() {
+	using namespace smvk;
+	World w;
+	// One cluster with a mesh + material (the TestMeshEntities setup,
+	// static — instances are a value lane, not a geometry one).
+	auto a = std::make_unique<smvk::Cluster>(nullptr);
+	a->SetOfflineMode(true);
+	smvk::Cluster* ap = a.get();
+	const int meshNode = addNode(a->scene, -1, 0);
+	const auto mh = a->staticMeshes.create(StaticMesh{});
+	SetMesh(a->scene, NodeId(meshNode), mh.index());
+	Material matDef{};
+	matDef.rebuildPipeline();
+	const auto math = a->materials.create(std::move(matDef));
+	SetMaterial(a->scene, NodeId(meshNode), math.index());
+	w.RegisterCluster(std::move(a));
+	w.ResolveAndFixup_clusters();
+
+	uint32_t sourceNode = UINT32_MAX;
+	uint32_t materialIdx = UINT32_MAX;
+	for (const MeshRow& row : w.scene.tables.meshes) {
+		sourceNode = row.node;
+		const MaterialRow* mr = FindMaterial(w.scene, row.node);
+		if (mr)
+			materialIdx = mr->material;
+	}
+	Check(materialIdx != UINT32_MAX, "matinst.source-found");
+
+	// Base default: set + read + resolve through a no-instance item.
+	Check(w.SetMaterialUserData(materialIdx, 0x12345678u),
+		"matinst.default-set");
+	Check(!w.SetMaterialUserData(UINT32_MAX, 1u),
+		"matinst.default-bad-index-refused");
+	Check(w.MaterialUserData(materialIdx) == 0x12345678u,
+		"matinst.default-reads");
+	const auto findItem = [&](NodeId node) -> const World::RenderItem* {
+		for (const World::RenderItem& item : w.drawItems)
+			if (item.node == node)
+				return &item;
+		return nullptr;
+	};
+	{
+		const World::RenderItem* srcItem = findItem(sourceNode);
+		Check(srcItem != nullptr, "matinst.source-item");
+		Check(srcItem && w.ResolvedItemUserData(*srcItem) == 0x12345678u,
+			"matinst.default-resolves");
+	}
+
+	// Two entities on the SAME base material: only one overrides (the
+	// damage-flash example's shape).
+	const MeshEntityHandle eA = w.SpawnMeshFromNode(sourceNode,
+		glm::translate(glm::mat4(1.0f), glm::vec3(10, 0, 0)), UINT32_MAX);
+	const MeshEntityHandle eB = w.SpawnMeshFromNode(sourceNode,
+		glm::translate(glm::mat4(1.0f), glm::vec3(20, 0, 0)), UINT32_MAX);
+	Check(bool(eA) && bool(eB), "matinst.entities-spawned");
+	// The mirror-loop reorder pin: after ONE resolve the entity items
+	// ARE in drawItems (the old tail-position loop left them out until
+	// a second resolve — they never reached forEachRenderItem).
+	w.ResolveAndFixup_clusters();
+	{
+		const NodeId nodeA = w.MeshEntityNode(eA);
+		const NodeId nodeB = w.MeshEntityNode(eB);
+		Check(nodeA != UINT32_MAX && nodeB != UINT32_MAX,
+			"matinst.mirror-remap");
+		Check(findItem(nodeA) != nullptr && findItem(nodeB) != nullptr,
+			"matinst.entity-items-in-drawitems");
+	}
+
+	// Instances: create over the base, bind to entity A only.
+	Check(!w.CreateMaterialInstance(UINT32_MAX), "matinst.bad-base-refused");
+	const MaterialInstanceHandle inst = w.CreateMaterialInstance(materialIdx);
+	Check(bool(inst) && w.IsMaterialInstanceAlive(inst), "matinst.create");
+	Check(w.SetMeshMaterialInstance(eA, inst), "matinst.bind");
+	Check(!w.SetMeshMaterialInstance(MeshEntityHandle{}, inst),
+		"matinst.bind-dead-entity-refused");
+	// The linkage lands at the NEXT resolve (binding marks the world,
+	// the drawItems build joins the entity's mirror node).
+	w.ResolveAndFixup_clusters();
+	w.SetMaterialInstanceUserData(inst, 0x000000FFu);
+	{
+		const World::RenderItem* itemA = findItem(w.MeshEntityNode(eA));
+		const World::RenderItem* itemB = findItem(w.MeshEntityNode(eB));
+		// A: the override. B: the base default. Value updates are LIVE
+		// pool writes — no resolve between the set and this read.
+		Check(itemA && w.ResolvedItemUserData(*itemA) == 0x000000FFu,
+			"matinst.override-resolves");
+		Check(itemB && w.ResolvedItemUserData(*itemB) == 0x12345678u,
+			"matinst.sibling-inherits-default");
+	}
+	// Clear the override: back to the base default.
+	Check(w.ClearMaterialInstanceUserDataOverride(inst),
+		"matinst.clear-override");
+	{
+		const World::RenderItem* itemA = findItem(w.MeshEntityNode(eA));
+		Check(itemA && w.ResolvedItemUserData(*itemA) == 0x12345678u,
+			"matinst.cleared-inherits");
+	}
+	// Destroy the instance: the entity falls back to the base default
+	// (the stale linkage fails the generation check — never a stranger's
+	// value), and stale handles refuse further writes.
+	Check(w.DestroyMaterialInstance(inst), "matinst.destroy");
+	Check(!w.IsMaterialInstanceAlive(inst), "matinst.destroy-invalidates");
+	Check(!w.SetMaterialInstanceUserData(inst, 1u),
+		"matinst.stale-set-refused");
+	{
+		const World::RenderItem* itemA = findItem(w.MeshEntityNode(eA));
+		Check(itemA && w.ResolvedItemUserData(*itemA) == 0x12345678u,
+			"matinst.destroy-falls-back");
+	}
+	// Slot reuse: a NEW instance over the same slot keeps the OLD
+	// linkage dead (generation bump) — resolving through the stale
+	// drawItems linkage still reads the base default.
+	const MaterialInstanceHandle inst2 = w.CreateMaterialInstance(materialIdx);
+	Check(bool(inst2) && inst2 != inst, "matinst.slot-reuse");
+	w.SetMaterialInstanceUserData(inst2, 0xDEADBEEFu);
+	{
+		const World::RenderItem* itemA = findItem(w.MeshEntityNode(eA));
+		Check(itemA && w.ResolvedItemUserData(*itemA) == 0x12345678u,
+			"matinst.reuse-stale-link-dead");
+	}
+	// And the base default SURVIVES resolves (the re-key capture): the
+	// values are keyed by the stable (owner, handle) pair.
+	w.ResolveAndFixup_clusters();
+	Check(w.MaterialUserData(materialIdx) == 0x12345678u,
+		"matinst.default-survives-resolve");
+	{
+		const World::RenderItem* itemB = findItem(w.MeshEntityNode(eB));
+		Check(itemB && w.ResolvedItemUserData(*itemB) == 0x12345678u,
+			"matinst.default-resolves-after-rekey");
+	}
+	// Unbinding: an empty instance handle clears the override lane.
+	Check(w.SetMeshMaterialInstance(eA, MaterialInstanceHandle{}),
+		"matinst.unbind");
+	(void)ap;
+}
+
 void TestDecalEntities() {
 	smvk::World w;
 
@@ -835,6 +979,7 @@ int main() {
 	TestDecalEntities();
 	TestAudioSourceEntities();
 	TestMeshEntitiesAndAnimators();
+	TestMaterialInstances();
 	TestBakePayloadChannel();
 	TestEnvZones();
 	TestActiveEnvironmentFirstWins();

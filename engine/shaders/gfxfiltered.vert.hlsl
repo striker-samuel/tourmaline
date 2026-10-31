@@ -98,6 +98,12 @@ struct VSOut
     // lit FS family reads ONE channel on both paths (default.vert delivers
     // the direct legs' pc word at the same location).
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+    // The resolved per-draw material userdata (flat; Draw ring misc3.x —
+    // docs/shader_library_design.md): forwarded to the lit FS family's
+    // TM_ModifySurface / TM_ModifyLitColor hooks. Location 9, pinned
+    // exactly like location 8 above (every producer of the lit FS
+    // interface must agree).
+    [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
 };
 
 VSOut mainVS(VSIn IN)
@@ -160,6 +166,11 @@ VSOut mainVS(VSIn IN)
     // GFX_DRAW_DITHER_CLOSEUP; set at PushDraw time together with the
     // MASKED bucket routing for the depth legs).
     OUT.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
+
+    // The resolved material userdata rides the ring (misc3.x): the CPU
+    // draw producer resolved the material instance override / base
+    // default at frame build — flat per draw, never a per-vertex value.
+    OUT.userData = draw.misc3.x;
 
     // Packed shading stream: normal/tangent ride as R32_UInt oct words
     // (the skinned swap above replaces the packed words with the deformed

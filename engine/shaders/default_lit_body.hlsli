@@ -43,6 +43,11 @@ struct PSIn
     // (garbage) and the closeup dissolve fired on unflagged draws
     // ("too strong, starts too early"). gbuffer_masked already pinned 8.
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+    // The resolved per-draw material userdata (flat, per-draw; see
+    // lit_hooks_api.hlsli): the hooks' runtime input. Both paths deliver
+    // it exactly like ditherCloseup (direct pc byte 244 / Draw ring
+    // misc3.x), pinned at EXPLICIT location 9 for the same reason.
+    [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
     bool isFrontFace : SV_IsFrontFace;
 };
 #endif
@@ -82,6 +87,14 @@ struct PSOut
 // flag gated — see the file header + docs/jhfaa_normal_fix.md).
 #include "shading_normal_fix.hlsli"
 #include "gpu_platform.hlsli"
+// The lit-hook API (docs/shader_library_design.md): typed structs +
+// PROTOTYPES only. The entry wrapper's include chain defines the actual
+// implementation BEFORE this body (lit_hooks_default.hlsli for the
+// engine's StandardLit family; a project hook library for ProjectLit) —
+// a wrapper that ships no implementation fails the DXC compile loudly
+// at the call sites below (undefined function), never a silent
+// stock-shading fallback.
+#include "lit_hooks_api.hlsli"
 
 static const float PI = 3.14159265359f;
 
@@ -934,6 +947,44 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     ApplyForwardPlusDecals(frame, clipPos.xy, IN.worldPos, geomN,
         baseColor, N, metallic, roughness, emissive);
 
+    // ---------------------------------------------------------------
+    // LIT HOOK #1 — TM_ModifySurface (lit_hooks_api.hlsli): the
+    // project's chance to edit the EVALUATED SURFACE after textures +
+    // layers + decals and BEFORE the BRDF derives F0 / specular AA /
+    // any lighting (the wetness-hook home: physically meaningful
+    // roughness/baseColor changes flow through the normal PBR path).
+    // Runs ONLY in the lit branch (the unlit/debug early returns above
+    // deliberately exclude it — no promise those paths honor hooks).
+    // The re-clamp below is part of the CONTRACT: custom code may not
+    // push metallic/roughness out of legal range, and a non-finite
+    // baseColor/emissive would poison every term below (NaN compares
+    // are false, so the range test rejects them).
+    // ---------------------------------------------------------------
+    {
+        TMSurface surface;
+        surface.baseColor = baseColor;
+        surface.metallic = metallic;
+        surface.roughness = roughness;
+        surface.emissive = emissive;
+        TMLitInput hookIn;
+        hookIn.userData = IN.userData;
+        hookIn.uv = IN.uv;
+        hookIn.worldPos = IN.worldPos;
+        hookIn.normalWS = N;
+        hookIn.time = hot.time;
+        TM_ModifySurface(surface, hookIn);
+        baseColor = surface.baseColor;
+        metallic = surface.metallic;
+        roughness = surface.roughness;
+        emissive = surface.emissive;
+        metallic = saturate(metallic);
+        roughness = saturate(roughness);
+        if (!(dot(baseColor, baseColor) >= 0.0f))
+            baseColor = float3(0.0f, 0.0f, 0.0f);
+        if (!(dot(emissive, emissive) >= 0.0f))
+            emissive = float3(0.0f, 0.0f, 0.0f);
+    }
+
     float3 V = normalize(hot.cameraPos - IN.worldPos);
 
     // ---------------------------------------------------------------
@@ -1510,6 +1561,29 @@ float envVis = 1.0f;
     {
         float3 fogHdr = frame.env.fogColor.rgb * max(frame.env.fogColor.w, 0.0f);
         color = lerp(color, fogHdr, fogF);
+    }
+
+    // ---------------------------------------------------------------
+    // LIT HOOK #2 — TM_ModifyLitColor (lit_hooks_api.hlsli): the
+    // project's chance to tint the ASSEMBLED, FOGGED lit color before
+    // the HDR sanitization/output (the damage-flash home). Artistic
+    // color-only: outAoTerm/outEnvSpec/alpha stay untouched, so the
+    // AO compose + SSR exports keep their exact reconstruction
+    // contracts — effects needing full post-composite consistency
+    // belong in a dedicated later post pass (design §6). The
+    // non-finite guard is part of the CONTRACT (SanitizeHdr clamps
+    // magnitude but a NaN survives it).
+    // ---------------------------------------------------------------
+    {
+        TMLitInput hookIn;
+        hookIn.userData = IN.userData;
+        hookIn.uv = IN.uv;
+        hookIn.worldPos = IN.worldPos;
+        hookIn.normalWS = N;
+        hookIn.time = hot.time;
+        TM_ModifyLitColor(color, hookIn);
+        if (!(dot(color, color) >= 0.0f))
+            color = float3(0.0f, 0.0f, 0.0f);
     }
 
     // ---------------------------------------------------------------

@@ -1598,7 +1598,10 @@ namespace engine {
 			}
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 				item.material, drawFlags, drawSet, lmChunk, chartOffset,
-				lmDelta);
+				lmDelta,
+				// The resolved material userdata (the instance override
+				// or the base default — the lit hooks' runtime input).
+				world.ResolvedItemUserData(item));
 			if (dumpGates) ++s_gates.pushed;
 			// TMP-DIAG (TOURMALINE_DUMPGFX, the LOD-sibling draw-drop hunt):
 			// the pushed draw list, once per process (the camera is static

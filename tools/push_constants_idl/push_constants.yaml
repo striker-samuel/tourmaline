@@ -6,7 +6,11 @@
 #   Scratch map: 192..208 direct chart tail, 192..224 filtered VS tail, 192..240 motion
 #   prevModel, 240..244 padEnd_.x = the DIRECT legs' per-draw dither-on-closeup flag
 #   (Scene::ditherCloseup; pushed per draw by the direct prepass/Main/shadow legs,
-#   forwarded flat by default.vert/shadow.vert at VS location 8).
+#   forwarded flat by default.vert/shadow.vert at VS location 8),
+#   244..248 padEnd_.y = the DIRECT legs' per-draw RESOLVED material userdata
+#   (docs/shader_library_design.md Phase A; pushed per LIT draw, forwarded flat by
+#   default.vert at VS location 9; the filtered motion pass overlays the whole
+#   240..256 word with its own tail, so the two never conflict).
 # Total must be exactly 256 bytes (engine push budget, single global range).
 total_size: 256
 scratch_start: 192

@@ -239,7 +239,7 @@ external/   Pinned submodules and fetched third-party dependencies
 - [`docs/project_scenes.md`](docs/project_scenes.md) — ID-based scene loading and asset ownership.
 - [`docs/entities_and_animators.md`](docs/entities_and_animators.md) — typed runtime handles and animation.
 - [`docs/audio_source.md`](docs/audio_source.md) — authored audio sources and sound content.
-- [`docs/shader_library_design.md`](docs/shader_library_design.md) — design proposal: project HLSL shader libraries, material instances, and 32-bit userdata (not yet implemented).
+- [`docs/shader_library_design.md`](docs/shader_library_design.md) — project HLSL shader libraries, material instances, and 32-bit userdata (Phase A — the userdata transport + lit-hook seam — implemented; the ProjectLit family is the follow-up).
 - [`docs/artifact-db-funnel.md`](docs/artifact-db-funnel.md) — ongoing artifact pipeline redesign notes (not all sections are implemented).
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored dependencies and redistribution notices.
 

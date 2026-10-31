@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <tuple>
+#include <unordered_map>
 #include <immintrin.h>
 #ifdef _WIN32
 #include <intrin.h>
@@ -515,6 +517,149 @@ using namespace ::smvk;
 		return WorldIndexOfMesh(meshLocations, e.meshOwner, e.mesh);
 	}
 
+	// ---- material runtime state + material instances (the userdata
+	// lane, docs/shader_library_design.md) ----
+
+	bool World::SetMaterialUserData(uint32_t materialIndex, uint32_t userData)
+	{
+		if (materialIndex >= materialLocations.size())
+			return false;
+		if (materialUserData.size() < materialLocations.size())
+			materialUserData.resize(materialLocations.size(), 0u);
+		materialUserData[materialIndex] = userData;
+		return true;
+	}
+
+	uint32_t World::MaterialUserData(uint32_t materialIndex) const
+	{
+		return materialIndex < materialUserData.size()
+			? materialUserData[materialIndex] : 0u;
+	}
+
+	MaterialInstanceHandle World::CreateMaterialInstance(
+		uint32_t baseMaterialIndex)
+	{
+		if (baseMaterialIndex >= materialLocations.size())
+			return {};
+		const MaterialLocation& loc = materialLocations[baseMaterialIndex];
+		if (!loc.cluster || !loc.handle.valid())
+			return {};
+		uint32_t index;
+		uint32_t generation;
+		if (!materialInstanceFree.empty()) {
+			index = materialInstanceFree.back();
+			materialInstanceFree.pop_back();
+			generation = materialInstances[index].generation;
+		}
+		else {
+			index = uint32_t(materialInstances.size());
+			materialInstances.emplace_back();
+			generation = materialInstances.back().generation;
+		}
+		MaterialInstanceEntity& inst = materialInstances[index];
+		inst.alive = true;
+		inst.baseOwner = loc.cluster;
+		inst.base = loc.handle;
+		inst.userData = 0;
+		inst.overridesUserData = false;
+		return MakeEntityHandle<MaterialInstanceTag>(index, generation);
+	}
+
+	bool World::DestroyMaterialInstance(MaterialInstanceHandle handle)
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= materialInstances.size())
+			return false;
+		MaterialInstanceEntity& inst = materialInstances[idx];
+		if (!inst.alive || inst.generation != handle.Generation())
+			return false;
+		// The SHARED base material is never touched. Bound entities'
+		// stale handles (and the drawItems linkage) fail validation and
+		// fall back to the base default — no dangling state.
+		inst.alive = false;
+		inst.baseOwner = nullptr;
+		inst.base = {};
+		inst.userData = 0;
+		inst.overridesUserData = false;
+		if (inst.generation != UINT32_MAX) {
+			++inst.generation;
+			if (inst.generation != 0)
+				materialInstanceFree.push_back(idx);
+		}
+		return true;
+	}
+
+	bool World::IsMaterialInstanceAlive(MaterialInstanceHandle handle) const
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		return idx < materialInstances.size()
+			&& materialInstances[idx].alive
+			&& materialInstances[idx].generation == handle.Generation();
+	}
+
+	bool World::SetMeshMaterialInstance(MeshEntityHandle mesh,
+		MaterialInstanceHandle instance)
+	{
+		if (!IsMeshEntityAlive(mesh))
+			return false;
+		// An EMPTY instance unbinds (back to the base default); a
+		// non-empty one must be live.
+		if (instance && !IsMaterialInstanceAlive(instance))
+			return false;
+		MeshEntity& e = meshEntities[mesh.Index()];
+		e.materialInstance = instance;
+		// The drawItems LINKAGE re-resolves at the next resolve (the
+		// entity's mirror carries it); the world-dirty marking matches
+		// every other mirror edit.
+		dirtyCull = true;
+		return true;
+	}
+
+	bool World::SetMaterialInstanceUserData(MaterialInstanceHandle instance,
+		uint32_t userData)
+	{
+		if (!IsMaterialInstanceAlive(instance))
+			return false;
+		MaterialInstanceEntity& inst = materialInstances[instance.Index()];
+		inst.userData = userData;
+		inst.overridesUserData = true;
+		return true;
+	}
+
+	bool World::ClearMaterialInstanceUserDataOverride(
+		MaterialInstanceHandle instance)
+	{
+		if (!IsMaterialInstanceAlive(instance))
+			return false;
+		MaterialInstanceEntity& inst = materialInstances[instance.Index()];
+		inst.overridesUserData = false;
+		inst.userData = 0;
+		return true;
+	}
+
+	uint32_t World::ResolvedItemUserData(const RenderItem& item) const
+	{
+		// The item's linkage is the raw HANDLE VALUE: a destroyed
+		// instance — or a younger one that reused the slot — fails the
+		// generation check and cleanly falls back to the base default.
+		if (item.materialInstance != 0) {
+			const uint32_t idx =
+				uint32_t(item.materialInstance & 0xFFFFFFFFu);
+			const uint32_t gen = uint32_t(item.materialInstance >> 32);
+			if (idx < materialInstances.size()) {
+				const MaterialInstanceEntity& inst = materialInstances[idx];
+				if (inst.alive && inst.generation == gen
+						&& inst.overridesUserData)
+					return inst.userData;
+			}
+		}
+		return MaterialUserData(item.material);
+	}
+
 	Animator World::AddAnimator(MeshEntityHandle mesh,
 		touranim::Clip initialClip)
 	{
@@ -770,6 +915,25 @@ using namespace ::smvk;
 	// slots that point back to the owning Cluster + handle.
 	void World::ResolveAndFixup_clusters()
 	{
+		// MATERIAL USERDATA RE-KEY CAPTURE (consumed by the re-key below
+		// the material-table rebuild): the world material indices are
+		// about to be rebuilt, so the per-material defaults are captured
+		// keyed by the STABLE (owner cluster, pool handle) pair — they
+		// survive resolves and cluster load/unload reordering exactly
+		// like the entity bindings.
+		std::vector<std::tuple<Cluster*, ClusterMaterialHandle, uint32_t>>
+			oldMaterialUserData;
+		{
+			const size_t n = std::min(materialLocations.size(),
+				materialUserData.size());
+			oldMaterialUserData.reserve(n);
+			for (size_t i = 0; i < n; ++i) {
+				const MaterialLocation& loc = materialLocations[i];
+				if (loc.cluster && loc.handle.valid())
+					oldMaterialUserData.emplace_back(loc.cluster,
+						loc.handle, materialUserData[i]);
+			}
+		}
 		scene = Scene{};
 		meshLocations.clear();
 		materialLocations.clear();
@@ -1211,6 +1375,85 @@ using namespace ::smvk;
 			});
 		}
 
+		// MATERIAL USERDATA RE-KEY: re-emit the captured defaults into
+		// the new index layout (values keyed by the stable (owner,
+		// handle) pair; unset entries read 0 — the neutral default).
+		materialUserData.assign(materialLocations.size(), 0u);
+		for (size_t i = 0; i < materialLocations.size(); ++i) {
+			const MaterialLocation& loc = materialLocations[i];
+			if (!loc.cluster || !loc.handle.valid())
+				continue;
+			for (const auto& [c, h, v] : oldMaterialUserData) {
+				if (c == loc.cluster && h == loc.handle) {
+					materialUserData[i] = v;
+					break;
+				}
+			}
+		}
+
+		// The runtime MESH entities' mirrors: the resolve wiped the
+		// merged scene, so each entity's durable transform node remaps
+		// through its owner's map and the mesh + material rows are
+		// RE-ESTABLISHED on it (the bindings are the stable (cluster,
+		// pool handle) pairs — the world indices were just rebuilt).
+		// Runs BEFORE the flags/drawItems build below (it used to run
+		// at the tail, which left the freshly re-mirrored entity rows
+		// outside drawItems until a SECOND resolve — spawned entities
+		// never reached forEachRenderItem consumers at all): every
+		// iterator flag, the compact draw list, the LOD chains and the
+		// static BVH now see the entity mirrors exactly like cooked
+		// content. The bound material-instance HANDLE VALUE joins into
+		// entityInstanceByNode for the drawItems build (the per-item
+		// userdata linkage; the VALUE stays live in the pool).
+		std::unordered_map<NodeId, uint64_t> entityInstanceByNode;
+		for (MeshEntity& e : meshEntities) {
+			if (!e.alive || !e.transformOwner || !e.meshOwner)
+				continue;
+			e.mergedNode = UINT32_MAX;
+			// The durable node's merged id (find the owner's ordinal).
+			for (size_t ci = 0; ci < clusters.size(); ++ci) {
+				if (clusters[ci].get() != e.transformOwner
+						|| ci >= clusterMergedNodes.size())
+					continue;
+				const auto& merged = clusterMergedNodes[ci];
+				if (e.clusterNode < merged.size()
+						&& merged[e.clusterNode] != UINT32_MAX)
+					e.mergedNode = merged[e.clusterNode];
+				break;
+			}
+			if (e.mergedNode == UINT32_MAX
+					|| e.mergedNode >= scene.hierarchy.size())
+				continue;
+			const uint32_t worldMeshIdx = WorldIndexOfMesh(
+				meshLocations, e.meshOwner, e.mesh);
+			if (worldMeshIdx != UINT32_MAX)
+				SetMesh(scene, e.mergedNode, worldMeshIdx);
+			if (e.material.valid()) {
+				// The material's owner is whatever cluster held it at
+				// spawn (cross-cluster materials ride the same table);
+				// search by handle across owners (the common case is
+				// the mesh's own cluster).
+				uint32_t worldMatIdx = WorldIndexOfMaterial(
+					materialLocations, e.meshOwner, e.material);
+				if (worldMatIdx == UINT32_MAX) {
+					for (const auto& loc : materialLocations)
+						if (loc.handle == e.material) {
+							worldMatIdx = uint32_t(&loc
+								- materialLocations.data());
+							break;
+						}
+				}
+				if (worldMatIdx != UINT32_MAX)
+					SetMaterial(scene, e.mergedNode, worldMatIdx);
+			}
+			if (e.materialInstance)
+				entityInstanceByNode[e.mergedNode] =
+					e.materialInstance.value;
+		}
+		// (The animators' target clusters persist through resolves —
+		// their rest poses + cursors stand; the next Update re-flushes
+		// the pose onto the rebuilt cluster scene.)
+
 		RebuildStaticCache(scene);
 		// Full-recalc marking at the merge boundary: root-level nodes
 		// (the cooker's WorldSun is addNode(scene,-1,1)) fall outside
@@ -1320,11 +1563,22 @@ using namespace ::smvk;
 			if (!IsVisibleNode(scene, int(node)))
 				continue; // hidden override: not drawn, not picked, not baked-listed
 			const MaterialRow* matRow = FindMaterial(scene, node);
+			// The per-item material-instance linkage (the entity mirror
+			// block above joins bound instances by merged node; static
+			// scene nodes carry none in v1). The HANDLE VALUE, not a
+			// slot index: a destroyed instance (or a younger one that
+			// reused the slot) fails ResolvedItemUserData's generation
+			// check and cleanly falls back to the base default.
+			uint64_t instanceLink = 0;
+			if (const auto it = entityInstanceByNode.find(node);
+					it != entityInstanceByNode.end())
+				instanceLink = it->second;
 			drawItems.push_back(RenderItem{
 				.node = node,
 				.mesh = row.mesh,
 				.material = matRow ? matRow->material : kInvalidIndex,
 				.flags = flags[node],
+				.materialInstance = instanceLink,
 				});
 		}
 		std::stable_sort(drawItems.begin(), drawItems.end(),
@@ -1344,55 +1598,12 @@ using namespace ::smvk;
 		RebuildStaticBvh();
 		dirtyCull = true;
 
-		// The runtime MESH entities' mirrors: the resolve wiped the
-		// merged scene, so each entity's durable transform node remaps
-		// through its owner's map and the mesh + material rows are
-		// RE-ESTABLISHED on it (the bindings are the stable (cluster,
-		// pool handle) pairs — the world indices were just rebuilt).
-		for (MeshEntity& e : meshEntities) {
-			if (!e.alive || !e.transformOwner || !e.meshOwner)
-				continue;
-			e.mergedNode = UINT32_MAX;
-			// The durable node's merged id (find the owner's ordinal).
-			for (size_t ci = 0; ci < clusters.size(); ++ci) {
-				if (clusters[ci].get() != e.transformOwner
-						|| ci >= clusterMergedNodes.size())
-					continue;
-				const auto& merged = clusterMergedNodes[ci];
-				if (e.clusterNode < merged.size()
-						&& merged[e.clusterNode] != UINT32_MAX)
-					e.mergedNode = merged[e.clusterNode];
-				break;
-			}
-			if (e.mergedNode == UINT32_MAX
-					|| e.mergedNode >= scene.hierarchy.size())
-				continue;
-			const uint32_t worldMeshIdx = WorldIndexOfMesh(
-				meshLocations, e.meshOwner, e.mesh);
-			if (worldMeshIdx != UINT32_MAX)
-				SetMesh(scene, e.mergedNode, worldMeshIdx);
-			if (e.material.valid()) {
-				// The material's owner is whatever cluster held it at
-				// spawn (cross-cluster materials ride the same table);
-				// search by handle across owners (the common case is
-				// the mesh's own cluster).
-				uint32_t worldMatIdx = WorldIndexOfMaterial(
-					materialLocations, e.meshOwner, e.material);
-				if (worldMatIdx == UINT32_MAX) {
-					for (const auto& loc : materialLocations)
-						if (loc.handle == e.material) {
-							worldMatIdx = uint32_t(&loc
-								- materialLocations.data());
-							break;
-						}
-				}
-				if (worldMatIdx != UINT32_MAX)
-					SetMaterial(scene, e.mergedNode, worldMatIdx);
-			}
-		}
-		// (The animators' target clusters persist through resolves —
-		// their rest poses + cursors stand; the next Update re-flushes
-		// the pose onto the rebuilt cluster scene.)
+		// (The mesh entities' mirrors were re-established EARLIER in
+		// this resolve — before the flags/drawItems build, so their
+		// rows take part in the iterator lists; see the moved block
+		// above. The animators' target clusters persist through
+		// resolves — their rest poses + cursors stand; the next Update
+		// re-flushes the pose onto the rebuilt cluster scene.)
 	}
 
 	StaticMesh* World::GetMesh(uint32_t meshIndex)

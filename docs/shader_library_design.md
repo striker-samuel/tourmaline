@@ -1,6 +1,9 @@
 # Tourmaline: HLSL Shader Libraries, Material Instances, and 32-bit Userdata
 
-**Status:** Design proposal (not implemented)  
+**Status:** Phase A (the baseline userdata transport + the no-op
+StandardLit hook family) is implemented on `master` — see AGENTS.md
+"The lit-hook seam + the 32-bit userdata lane". Phases B/C below remain
+proposals.  
 **Target:** Tourmaline `master`, reviewed October 2026  
 **Design principle:** Extend existing shaders with HLSL functions, not generated shader source.
 

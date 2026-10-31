@@ -77,6 +77,12 @@ struct MeshVert
     // skips masked buckets), so this stays 0 here today; kept for the
     // interface parity the lit FS twin declares.
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+    // The resolved per-draw material userdata (flat; Draw ring misc3.x —
+    // docs/shader_library_design.md): same unified-channel contract as
+    // ditherCloseup above (default.vert / gfxfiltered.vert deliver theirs
+    // at the same location), consumed by the lit FS twin's
+    // TM_ModifySurface / TM_ModifyLitColor hooks.
+    [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
 };
 
 // Per-triangle cull: verbatim port of CullTriangle (gfxfilter.cs.hlsl),
@@ -196,6 +202,10 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
     draw.model = float4x4(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     draw.misc = uint4(0, 0, 0, 0);
     draw.misc2 = uint4(0, 0, 0, 0xFFFFFFFFu); // misc2.w lm sentinel
+    // misc3 (userdata + stride pad) MUST be initialized too: the gated
+    // path never overwrites the record, and an uncontrolled misc3.x
+    // would forward a garbage userdata to the lit FS twin's hooks.
+    draw.misc3 = uint4(0, 0, 0, 0);
     bool gated = true;
     uint triBase = 0;
     uint halfTris = 0;
@@ -362,6 +372,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
             v.lmChunk = draw.misc.w;
             v.meshMaterial = draw.misc2.y;
             v.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;
+            v.userData = draw.misc3.x;
 
             float3 normal = OctDecodeNormal(nW);
             float4 tangent = OctDecodeTangent(tW);

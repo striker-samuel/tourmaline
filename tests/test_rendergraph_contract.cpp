@@ -257,6 +257,29 @@ int main() {
 	// (8) + 2 uints. The lightmap BDA sits between shading and indices on
 	// BOTH sides (gfxmesh.hlsli) — never reorder one side alone.
 	Check(sizeof(smvk::gfx::GfxMeshParams) == 240, "contract.meshparams-240");
+	// The filtered MOTION pass's prev-model tail owns the LAST scratch
+	// word (240..256 — vsPrevDeformed spans 240..248, which is why the
+	// direct legs' per-draw userdata at 244 can never leak into it: the
+	// motion pass pushes this tail before its draws, a different
+	// pipeline's full-word overlay). Pin the claim (docs/
+	// shader_library_design.md Phase A's scratch census).
+	Check(smvk::gfx::kFilteredMotionPrevTailOffset == 240,
+		"contract.motionprev-offset-240");
+	Check(smvk::gfx::kFilteredMotionPrevTailOffset
+			+ sizeof(smvk::gfx::FilteredMotionPrevTail) == kScratchEnd,
+		"contract.motionprev-ends-scratch");
+	// The GPU draw-record ABI (C++ Draw == HLSL GfxDraw, 112B since the
+	// userdata word + stride pads landed — the design's documented
+	// 96->112 growth; the upload/build/cull math all derive from
+	// sizeof, so this pin is the test-side guard of the whole ring).
+	Check(sizeof(smvk::gfx::Draw) == 112, "contract.draw-stride-112");
+	// The direct legs' per-draw scratch pair: dither flag at 240
+	// (padEnd_[0]) + resolved material userdata at 244 (padEnd_[1]).
+	Check(offsetof(PC, padEnd_) == 240, "contract.padend-240");
+	{
+		const PC pcPin{};
+		Check(sizeof(pcPin.padEnd_) == 16, "contract.padend-spans-tail");
+	}
 
 	// 2. Mesh eligibility truth table.
 	Check(smvk::gfx::MeshDrawEligible(smvk::gfx::DrawSetBit_Opaque, 0),

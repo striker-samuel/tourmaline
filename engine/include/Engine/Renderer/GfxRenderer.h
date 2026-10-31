@@ -609,9 +609,10 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	// the engine's sync-state tables are not safe for concurrent uploads).
 	void PushShadowDraw(uint32_t sview, uint32_t mesh, const glm::mat4& model,
 		uint32_t material, smvk::gfx::DrawFlags flags,
-		smvk::gfx::DrawSetMask drawSet) {
+		smvk::gfx::DrawSetMask drawSet,
+		uint32_t userData = 0) {
 		smvk::gfx::PushShadowDraw(gfx, sview, mesh, model, material,
-			flags, drawSet);
+			flags, drawSet, userData);
 	}
 	void BuildShadowList(uint32_t sview) {
 		smvk::gfx::BuildShadowList(gfx, sview);

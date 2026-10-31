@@ -2504,6 +2504,102 @@ void TestCasterContributionView() {
 		"gfx.contribution.degenerate-keeps-raw-planes");
 }
 
+// ---------------------------------------------------------------------------
+// Per-draw material userdata (docs/shader_library_design.md Phase A):
+// the resolved word rides DrawRequest -> Draw on BOTH rings (the main
+// filtered view + the shadow lists), defaulted to 0 for existing
+// callers, and never perturbs the material sort (same-material draws
+// with different values stay batched — the no-batch-split contract).
+// ---------------------------------------------------------------------------
+
+void TestUserData() {
+	using namespace smvk::gfx;
+	State s{};
+	const uint32_t m0 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(0, 0, 0), glm::vec3(1, 0, 0), glm::vec3(0, 1, 0)), 0);
+	const uint32_t m1 = RegisterMeshFromUpload(s, MakeTri(
+		glm::vec3(2, 0, 0), glm::vec3(3, 0, 0), glm::vec3(2, 1, 0)), 3);
+
+	smvk::RenderViewSet views;
+	views.NewFrame();
+	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
+	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
+	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	proj[1][1] *= -1.0f;
+	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
+	View v{};
+	v.renderView = &views.Get(rv);
+	v.eye = eye;
+	v.width = 800;
+	v.height = 600;
+	v.viewProj = views.Get(rv).m_viewProjectionMatrix;
+	v.cullFlags = CullFlagBit_Degenerate;
+	s.views.push_back(std::move(v));
+	s.viewCount = 1;
+
+	// Same material, two DIFFERENT userdata values + one defaulted push.
+	PushDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque,
+		0xFFFFFFFFu, 0, 0xFFFFFFFFu, 0xAABBCCDDu);
+	PushDraw(s, 0, m1, glm::mat4(1.0f), 3);
+	PushDraw(s, 0, m1, glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.2f, 0)),
+		3, 0, DrawSetBit_Opaque, 0xFFFFFFFFu, 0, 0xFFFFFFFFu, 0x11223344u);
+	BuildBatches(s, 0);
+
+	const View& out = s.views[0];
+	Check(out.drawConstants.size() == 3, "gfx.userdata.drawconsts");
+	// The word rides into the ring verbatim (the resolved value is the
+	// CPU's truth; the GPU forwards it flat, never interprets it).
+	bool rideOk = true;
+	uint32_t seenWords = 0;
+	for (const Draw& d : out.drawConstants) {
+		rideOk = rideOk && (d.userData == 0xAABBCCDDu
+			|| d.userData == 0u || d.userData == 0x11223344u);
+		if (d.userData == 0xAABBCCDDu) ++seenWords;
+		if (d.userData == 0x11223344u) ++seenWords;
+		if (d.userData == 0u) ++seenWords;
+	}
+	Check(rideOk && seenWords == 3, "gfx.userdata.rides-ring");
+	// Each value lands on its OWN draw (m0's draw carries the first
+	// word; the two m1 draws carry the third + the default 0).
+	const Draw* d0 = nullptr;
+	const Draw* d1 = nullptr;
+	const Draw* d2 = nullptr;
+	for (const Draw& d : out.drawConstants) {
+		if (d.mesh == m0) d0 = &d;
+		else if (!d1) d1 = &d;
+		else d2 = &d;
+	}
+	Check(d0 && d0->userData == 0xAABBCCDDu, "gfx.userdata.draw0");
+	Check(d1 && d2 && ((d1->userData == 0u && d2->userData == 0x11223344u)
+		|| (d1->userData == 0x11223344u && d2->userData == 0u)),
+		"gfx.userdata.draw1-2");
+	// No batch split: one material => one range covering all three
+	// draws whatever their userdata values.
+	Check(out.materialRanges.size() == 1
+		&& out.materialRanges[0].material == 3
+		&& out.materialRanges[0].commandCount == out.batchCount,
+		"gfx.userdata.no-batch-split");
+
+	// The shadow ring: the word rides for record consistency even
+	// though the depth/shadow legs never read it.
+	ShadowView sv{};
+	sv.renderView = &views.Get(rv);
+	sv.cullFlags = CullFlagBit_Degenerate;
+	sv.width = 800;
+	sv.height = 600;
+	s.shadowViews.push_back(std::move(sv));
+	s.shadowViewCount = 1;
+	PushShadowDraw(s, 0, m0, glm::mat4(1.0f), 3, 0, DrawSetBit_Opaque,
+		0xCAFEBABEu);
+	PushShadowDraw(s, 0, m1, glm::mat4(1.0f), 3);
+	BuildShadowList(s, 0);
+	const ShadowView& sout = s.shadowViews[0];
+	Check(sout.drawConstants.size() == 2
+		&& sout.drawConstants[0].userData == 0xCAFEBABEu
+		&& sout.drawConstants[1].userData == 0u,
+		"gfx.userdata.shadow-ring");
+}
+
 } // namespace
 
 int main() {
@@ -2530,6 +2626,7 @@ int main() {
 	TestGpuCandidateBuild();
 	TestShadowMeshGate();
 	TestCasterContributionView();
+	TestUserData();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

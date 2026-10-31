@@ -134,6 +134,18 @@ using namespace ::smvk;
 			uint32_t mesh;     // world mesh index (meshLocations)
 			uint32_t material; // world material index (materialLocations)
 			IteratorFlags flags;
+			// The resolved MATERIAL-INSTANCE linkage: the bound
+			// instance's HANDLE VALUE (0 = none — inherit the base
+			// material default). Stored as the raw handle so a
+			// destroyed instance (or a younger one that reused the
+			// slot) fails the generation check in ResolvedItemUserData
+			// and cleanly falls back, never aliasing a stranger's
+			// value. The LINKAGE is resolved here (drawItems build /
+			// entity mirrors); the VALUE stays live in the pool —
+			// per-frame value updates (SetMaterialInstanceUserData:
+			// the damage flash fade) are plain pool writes, no
+			// rebuild, visible on the next frame build.
+			uint64_t materialInstance = 0;
 		};
 		std::vector<RenderItem> drawItems; // material-sorted; see above
 
@@ -252,9 +264,45 @@ using namespace ::smvk;
 			ClusterStaticMeshHandle mesh{};
 			ClusterMaterialHandle material{};  // empty = material-less
 			uint32_t animatorSlot = UINT32_MAX;
+			// The OPTIONAL material instance (the 32-bit userdata
+			// override lane — see the material-instance registry
+			// below): empty = inherit the base material's default.
+			// Binding changes mark the world dirty like any other
+			// mirror edit; the INSTANCE VALUE stays live in the pool.
+			MaterialInstanceHandle materialInstance{};
 		};
 		std::vector<MeshEntity> meshEntities;
 		std::vector<uint32_t> meshEntityFree;
+		// ---- material instances (the userdata override lane,
+		// docs/shader_library_design.md Phase A) ----
+		// A material instance references ONE base material (the world
+		// material index at creation, re-keyed through resolves like
+		// every location) and optionally overrides the material's
+		// 32-bit userdata. NO MaterialValues copy: the base material's
+		// GPU row, textures, PBR factors, alpha mode and batching stay
+		// SHARED — the instance only owns the one runtime word, so
+		// instance value changes are never a reupload, a pipeline
+		// event or a batch split. The base binding is stored as the
+		// stable (owner cluster, pool handle) pair so cluster
+		// unloads/re-resolves re-key it like the entity bindings.
+		struct MaterialInstanceEntity {
+			uint32_t generation = 1;
+			bool alive = false;
+			Cluster* baseOwner = nullptr;      // the base material's owner
+			ClusterMaterialHandle base{};      // ... and its pool handle
+			uint32_t userData = 0;
+			bool overridesUserData = false;
+		};
+		std::vector<MaterialInstanceEntity> materialInstances;
+		std::vector<uint32_t> materialInstanceFree;
+		// Per-MATERIAL userdata defaults, parallel to materialLocations
+		// (the resolved value for every draw of the material that has
+		// no live instance override). Re-keyed at every resolve through
+		// the (owner, handle) capture so the values survive cluster
+		// loads/unloads reordering the index layout. NEVER inside
+		// MaterialValues (the GPU 128B row): a value change is a CPU
+		// write, nothing more.
+		std::vector<uint32_t> materialUserData;
 		// Animator registry (the AnimatorState payloads + generational
 		// slots — see animator.h; meshEntitySlot back-references the
 		// attached entity for the DestroyMesh cleanup).
@@ -380,6 +428,58 @@ using namespace ::smvk;
 		// cluster may have been unloaded).
 		[[nodiscard]] uint32_t MeshEntityMeshIndex(
 			MeshEntityHandle handle) const;
+
+		// ---- material runtime state + MATERIAL INSTANCES (the
+		// 32-bit userdata lane, docs/shader_library_design.md) ----
+		// userData is ONE runtime word per resolved draw: the material
+		// instance override or the base material default, resolved at
+		// frame build and forwarded flat to the lit fragment's
+		// TM_ModifySurface / TM_ModifyLitColor hooks (VS location 9 /
+		// gfx Draw misc3.x / the direct legs' push byte 244). The bit
+		// layout belongs to gameplay code — the engine never
+		// interprets it. A value change is a plain CPU write: no
+		// shader recompile, no pipeline event, no MaterialValues
+		// reupload, no batch split (the material stays the sort key).
+		// Sets the base material's DEFAULT userdata (every draw of the
+		// material without a live instance override). False on a bad
+		// index.
+		bool SetMaterialUserData(uint32_t materialIndex, uint32_t userData);
+		// The material's default (0 = never set / bad index).
+		[[nodiscard]] uint32_t MaterialUserData(
+			uint32_t materialIndex) const;
+		// Creates a material instance over a base material (the shared
+		// base row stays untouched). Empty handle on a bad base index.
+		[[nodiscard]] MaterialInstanceHandle CreateMaterialInstance(
+			uint32_t baseMaterialIndex);
+		// Destroys the instance (its overrides die with it; meshes
+		// bound to it silently fall back to the base default — the
+		// drawItems linkage stays valid, ResolvedItemUserData skips
+		// dead slots). NEVER touches the base material.
+		bool DestroyMaterialInstance(MaterialInstanceHandle handle);
+		[[nodiscard]] bool IsMaterialInstanceAlive(
+			MaterialInstanceHandle handle) const;
+		// Binds a material instance to a live mesh ENTITY (the
+		// per-entity override join — static scene nodes take instances
+		// through spawn/editor flows only in v1). Binding marks the
+		// world for the next resolve's linkage rebuild; the instance
+		// VALUE stays live per frame. False on stale handles.
+		bool SetMeshMaterialInstance(MeshEntityHandle mesh,
+			MaterialInstanceHandle instance);
+		// The instance's value override (live: visible on the next
+		// frame build, no rebuild). False on a stale handle.
+		bool SetMaterialInstanceUserData(MaterialInstanceHandle instance,
+			uint32_t userData);
+		// Clears the override — the instance goes back to inheriting
+		// the base material's default. False on a stale handle.
+		bool ClearMaterialInstanceUserDataOverride(
+			MaterialInstanceHandle instance);
+		// The per-frame RESOLUTION: a draw item's effective userdata —
+		// the bound instance's override when live and overriding, else
+		// the base material default. This is what the draw producers
+		// call per item at frame build (GfxRenderer's filtered walk,
+		// the direct legs' per-draw push).
+		[[nodiscard]] uint32_t ResolvedItemUserData(
+			const RenderItem& item) const;
 
 		// ---- the ANIMATOR component (Engine/App/animator.h —
 		// per-entity playback state, the explicit Option-B surface) ----

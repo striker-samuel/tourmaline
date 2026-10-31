@@ -316,6 +316,60 @@ trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
   rebuild hooks (live in-place pipeline swaps) are the documented
   follow-up. Regression-tested in test_shader_hot_reload.cpp.
 
+### The lit-hook seam + the 32-bit userdata lane (Phase A landed)
+
+**docs/shader_library_design.md** is the design record; its Phase A
+(the baseline userdata transport + the no-op StandardLit hook family)
+is IMPLEMENTED; Phase B (the ProjectLit family + project shader
+compilation) is the follow-up.
+
+- **The seam**: `engine/shaders/lit_hooks_api.hlsli` (typed
+  `TMLitInput`/`TMSurface` + prototypes) + `lit_hooks_default.hlsli`
+  (the StandardLit no-ops). The three lit entry wrappers
+  (default_lit / default_lit_a2c / gfxmesh_lit) include the default
+  family BEFORE `default_lit_body.hlsli`; the body calls
+  `TM_ModifySurface` after decals (before F0/specular AA — the
+  wetness home, with a metallic/roughness re-clamp + non-finite
+  guard as CONTRACT) and `TM_ModifyLitColor` after fog (before the
+  HDR sanitize — the damage-flash home, outAoTerm/outEnvSpec/alpha
+  untouched). Unlit + debug early returns deliberately skip the
+  hooks. A wrapper shipping no hook implementation fails the DXC
+  compile loudly — never a silent stock fallback.
+- **The value**: ONE resolved `uint32_t` per draw — the material
+  INSTANCE override or the base material default. World owns the
+  lane: `SetMaterialUserData` (base defaults, re-keyed through
+  resolves by the stable (owner, handle) capture), material
+  instances (`CreateMaterialInstance` /
+  `SetMeshMaterialInstance` / `SetMaterialInstanceUserData` /
+  `ClearMaterialInstanceUserDataOverride` /
+  `DestroyMaterialInstance` — generational handles, the shared base
+  material row/textures/batching NEVER touched), and
+  `ResolvedItemUserData(item)` for the draw producers. Value
+  changes are plain CPU pool writes: no recompile, no reupload, no
+  batch split (the material stays the sort key — pinned by
+  `gfx.userdata.no-batch-split`).
+- **The transport** (all three lit producer paths, pinned at VS
+  location 9): the gfx Draw ring grew 96→112 bytes
+  (`Draw::userData` / HLSL `GfxDraw.misc3.x`, the synthetic mesh
+  record initializes it) → gfxfiltered.vert + gfxfilter.mesh
+  forward it flat; the direct legs push it at push-constant byte
+  244 (`padEnd_[1]`, the always-per-draw discipline — the filtered
+  motion pass owns 240..256 as its own tail overlay, so the two
+  never conflict) → default.vert forwards it. The shadow/seed legs
+  copy the word for ring consistency but never read it (the hooks
+  are color-only in v1 — NO coverage parity, no dissolve hooks).
+- **drawItems linkage**: `RenderItem::materialInstance` carries the
+  bound instance's HANDLE VALUE (generation-checked at resolve —
+  destroyed/slot-reused instances fall back to the base default,
+  never a stranger's value). The entity mirror loop in
+  ResolveAndFixup now runs BEFORE the flags/drawItems build
+  (spawned entities reach forEachRenderItem consumers after ONE
+  resolve — the old tail position left them out entirely;
+  `matinst.entity-items-in-drawitems` pins it).
+- Tests: `gfx.userdata.*` (test_gfxfilter.cpp),
+  `matinst.*` (test_world_entities.cpp), the 112B stride +
+  motion-tail + padEnd pins (test_rendergraph_contract.cpp).
+
 ## Running
 
 `App.exe` runs from the build directory (`out/build/x64-Release`), loading

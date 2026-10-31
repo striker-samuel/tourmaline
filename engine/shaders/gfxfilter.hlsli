@@ -156,6 +156,14 @@ struct GfxDraw
     // The VS resolves the atlas UV as
     // chartUv * xforms[misc2.x + chartId].xy + xforms[misc2.x + chartId].zw.
     uint4 misc2;
+    // x = the RESOLVED per-draw material userdata (C++ Draw::userData;
+    // docs/shader_library_design.md Phase A): the material instance
+    // override or the base material default, forwarded flat (VS location
+    // 9) to the lit FS family's TM_ModifySurface / TM_ModifyLitColor
+    // hooks. Bit layout is gameplay-owned. y/z/w reserved (stride pad
+    // to the 16-byte multiple — 112 bytes total, the C++ static_assert's
+    // mirror).
+    uint4 misc3;
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
 

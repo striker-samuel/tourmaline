@@ -177,7 +177,7 @@ struct LmChartXform {
 };
 static_assert(sizeof(LmChartXform) == 16);
 
-// Per-draw frame entry. Must match HLSL GfxDraw (96 bytes).
+// Per-draw frame entry. Must match HLSL GfxDraw (112 bytes).
 struct alignas(16) Draw {
 	glm::mat4 model{};
 	uint32_t mesh = 0;
@@ -209,8 +209,19 @@ struct alignas(16) Draw {
 	// (the classic filtered VS binds the lightmapped layout per mesh
 	// when lightmaps return).
 	uint32_t lmDelta = 0xFFFFFFFFu;
+	// HLSL misc3.x: the RESOLVED per-draw material userdata (Phase A of
+	// docs/shader_library_design.md): the material instance's override
+	// or the base material's default, resolved by the CPU draw producer
+	// at frame build — one flat uint reaching the lit fragment (VS
+	// location 9) for the TM_ModifySurface/TM_ModifyLitColor hooks.
+	// Bit layout is gameplay-owned; the engine never interprets it.
+	// Color-only by v1 contract: the depth/shadow/seed legs copy the
+	// word for ring consistency but never read it (no coverage hooks).
+	uint32_t userData = 0;
+	// misc3.y/z/w: reserved (stride padding to the 16-byte multiple).
+	uint32_t userDataPad[3] = {};
 };
-static_assert(sizeof(Draw) == 96);
+static_assert(sizeof(Draw) == 112);
 
 // GPU batch entry (1x uvec4): (cluster, draw, outputOffset, flags).
 struct Batch {
@@ -609,6 +620,12 @@ struct DrawRequest {
 	// The per-draw additive lightmap-heap delta (HLSL misc2.w; see the
 	// Draw field). 0xFFFFFFFF = the mesh carries no lightmap stream.
 	uint32_t lmDelta = 0xFFFFFFFFu;
+	// The RESOLVED per-draw material userdata (HLSL misc3.x — the
+	// material instance override or the base material default, resolved
+	// by the caller from the World's runtime state at frame build; see
+	// World::ResolvedItemUserData). 0 = none (the StandardLit no-op
+	// family ignores it entirely).
+	uint32_t userData = 0;
 };
 
 struct Cluster {
@@ -1324,7 +1341,12 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
 	DrawSetMask drawSet = DrawSetBit_Opaque,
 	uint32_t lmChunk = 0xFFFFFFFFu, uint32_t lmChartOffset = 0,
-	uint32_t lmDelta = 0xFFFFFFFFu);
+	uint32_t lmDelta = 0xFFFFFFFFu,
+	// The resolved material userdata (Draw::userData / HLSL misc3.x).
+	// Trailing + defaulted so existing callers (tests, tools) stay
+	// source-compatible; hosts that set it resolve per draw from the
+	// World's material runtime state.
+	uint32_t userData = 0);
 // Pure-CPU cluster test (meshoptimizer perspective cone + sphere vs planes).
 // Exported for unit tests; eye must be the camera world position.
 // The normal-cone (backface) and sphere-vs-frustum parts always run. The
@@ -1445,7 +1467,11 @@ uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
 // mutable state besides the read-only mesh/cluster tables.
 void PushShadowDraw(State& s, uint32_t sview, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
-	DrawSetMask drawSet = DrawSetBit_Opaque);
+	DrawSetMask drawSet = DrawSetBit_Opaque,
+	// The resolved material userdata: copied into the shadow ring for
+	// record consistency but never read by the depth/shadow legs (the
+	// hooks are color-only by v1 contract — no coverage parity).
+	uint32_t userData = 0);
 // Sorts the view's draws by material, expands draw x cluster with the
 // per-cluster sphere test against the RenderView planes (the normal-cone
 // test is deliberately skipped: directional cascade views have no valid

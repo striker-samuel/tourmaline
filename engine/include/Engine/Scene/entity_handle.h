@@ -71,9 +71,16 @@ template <typename Tag>
 struct MeshEntityTag {};
 struct AnimatorTag {};
 struct AudioSourceTag {};
+struct MaterialInstanceTag {};
 
 using MeshEntityHandle = EntityHandle<MeshEntityTag>;
 using AnimatorHandle = EntityHandle<AnimatorTag>;
 using AudioSourceHandle = EntityHandle<AudioSourceTag>;
+// Material instances (World::CreateMaterialInstance): runtime value
+// overrides over a shared base material — the 32-bit userdata lane of
+// docs/shader_library_design.md. Like the other handles: gameplay code
+// composes them, the World owns the pool, destroying one never touches
+// the shared base material.
+using MaterialInstanceHandle = EntityHandle<MaterialInstanceTag>;
 
 } // namespace smvk

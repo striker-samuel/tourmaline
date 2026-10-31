@@ -1905,7 +1905,7 @@ uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags,
 	DrawSetMask drawSet, uint32_t lmChunk, uint32_t lmChartOffset,
-	uint32_t lmDelta) {
+	uint32_t lmDelta, uint32_t userData) {
 	assert(view < s.viewCount);
 	assert(mesh < s.meshes.size());
 	View& v = s.views[view];
@@ -1928,6 +1928,7 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	d.lmChunk = lmChunk;
 	d.lmChartOffset = lmChartOffset;
 	d.lmDelta = lmDelta;
+	d.userData = userData;
 	v.draws.push_back(d);
 }
 
@@ -2127,7 +2128,7 @@ uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
 
 void PushShadowDraw(State& s, uint32_t sview, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags,
-	DrawSetMask drawSet) {
+	DrawSetMask drawSet, uint32_t userData) {
 	assert(sview < s.shadowViewCount);
 	assert(mesh < s.meshes.size());
 	ShadowView& sv = s.shadowViews[sview];
@@ -2147,6 +2148,7 @@ void PushShadowDraw(State& s, uint32_t sview, uint32_t mesh,
 	d.model = model;
 	d.flags = flags;
 	d.drawSet = drawSet;
+	d.userData = userData;
 	sv.draws.push_back(d);
 }
 
@@ -2184,6 +2186,9 @@ void BuildShadowList(State& s, uint32_t sview) {
 		dc.lmChunk = d.lmChunk;
 		dc.lmChartOffset = d.lmChartOffset;
 		dc.lmDelta = d.lmDelta;
+		// userdata rides for record consistency; the shadow legs never
+		// read it (color-only hooks — no coverage parity in v1).
+		dc.userData = d.userData;
 		sv.drawConstants.push_back(dc);
 		const Mesh& mesh = s.meshes[d.mesh];
 		const float basisScale = MaxBasisScale(d.model);
@@ -2411,6 +2416,10 @@ void BuildBatches(State& s, uint32_t view) {
 		dc.lmChartOffset = d.lmChartOffset;
 		dc.lmDelta = d.lmDelta;
 		dc.material = d.material;
+		// The resolved material userdata (misc3.x -> VS location 9 ->
+		// the lit hooks). Does NOT affect the material sort above:
+		// same-material draws stay batched whatever their values.
+		dc.userData = d.userData;
 		// Filled below with the draw's candidate-slot base
 		// (0xFFFFFFFF = the cap dropped the draw).
 		dc.candidateBase = 0;

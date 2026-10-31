@@ -64,6 +64,21 @@ struct DefaultVsPush
     GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed; // 216: the frame's deformed heap
     uint4 _padSkin;    // 224..240: layout filler
     uint ditherCloseup; // 240
+    // Byte 244 = PushConstants::padEnd_.y: the DIRECT legs' per-draw
+    // RESOLVED material userdata (docs/shader_library_design.md Phase A
+    // — the World's material-instance override or base default, pushed
+    // per lit draw; 0 = none). Forwarded flat at location 9 like the
+    // dither flag above, so the FS family reads ONE channel on both
+    // paths (the filtered legs deliver the Draw ring's misc3.x at the
+    // same location).
+    // Scratch-ownership note: the FILTERED motion pass overlays the
+    // whole 240..256 word with its own FilteredMotionPrevTail — that is
+    // a different pipeline whose pass pushes its tail before its draws,
+    // so a stale direct-pass 244 can never leak into it; and only lit
+    // FSs read location 9, while every lit direct draw pushes its own
+    // value here (the padEnd_.x anti-leak contract, scoped to the
+    // readers that exist).
+    uint userData;     // 244
 };
 
 GPU_PUSH(DefaultVsPush, pcDB);
@@ -108,6 +123,13 @@ struct VSOut
     // ring's flag at the same location). FSs that do not declare it
     // simply do not fetch it.
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+    // The resolved per-draw material userdata (flat; byte 244 — the
+    // direct legs' per-lit-draw push): the unified second per-draw
+    // channel, consumed by the lit FS family's TM_ModifySurface /
+    // TM_ModifyLitColor hooks (the filtered legs deliver the Draw
+    // ring's misc3.x at the same location). FSs that do not declare it
+    // simply do not fetch it.
+    [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
 };
 
 VSOut mainVS(VSIn IN)
@@ -167,6 +189,10 @@ VSOut mainVS(VSIn IN)
     // Dither-on-closeup per-draw flag (byte 240 of this push — see the
     // struct tail above; the direct legs push it per draw).
     OUT.ditherCloseup = pcDB.ditherCloseup;
+
+    // The resolved material userdata (byte 244 — the direct legs push it
+    // per lit draw; the resolve is the World's material runtime state).
+    OUT.userData = pcDB.userData;
 
     // Properly transform normal/tangent to world space.
     // - Normal uses inverse-transpose of upper 3x3 to survive non-uniform scale.

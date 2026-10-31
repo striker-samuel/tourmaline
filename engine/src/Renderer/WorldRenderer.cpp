@@ -8158,6 +8158,11 @@ namespace engine {
 				if (smesh != nullptr && smesh->skinned)
 					d.flags |= smvk::gfx::DrawFlagBit_Skinned;
 			}
+			// The resolved material userdata rides for record consistency
+			// (BuildShadowList copies it into the ring); the shadow depth
+			// legs never read it — the hooks are color-only by v1
+			// contract, no coverage parity.
+			d.userData = m_world->ResolvedItemUserData(item);
 			m_shadowCandidates.push_back(d);
 		});
 		SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
@@ -10708,7 +10713,8 @@ namespace engine {
 					SMVK_PROFILE_RENDER("GfxShadowListBuild");
 					for (const smvk::gfx::DrawRequest& cand : m_shadowCandidates)
 						m_gfxRenderer.PushShadowDraw(slot, cand.mesh, cand.model,
-							cand.material, cand.flags, cand.drawSet);
+							cand.material, cand.flags, cand.drawSet,
+							cand.userData);
 					m_gfxRenderer.BuildShadowList(slot);
 				}));
 			};
@@ -12197,7 +12203,8 @@ namespace engine {
 				return prog;
 			};
 
-			auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId) {
+			auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId,
+			uint32_t userData = 0) {
 				auto& model = m_world->scene.globalTransform[node];
 				smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
 				if (!meshDesc)
@@ -12223,14 +12230,20 @@ namespace engine {
 				// the depth/shadow legs. Always pushed (0 or 1): the partial
 				// push range persists across draws, so a stale Fade flag must
 				// never leak into the next draw.
+				// padEnd_[1] = the RESOLVED material userdata (Phase A of
+				// docs/shader_library_design.md): default.vert forwards it
+				// flat at VS location 9 for the lit hooks; pushed in the
+				// SAME always-per-draw discipline (a stale word must never
+				// leak into the next lit draw).
 				IRenderer::PushConstants pc{};
 				pc.materialId = materialId;
 				pc.padEnd_[0] = (DitherCloseupStateFor(m_world->scene,
 					int(node), m_cameraPositioner.cameraPosition_)
 					== DitherCloseupState::Fade) ? 1u : 0u;
+				pc.padEnd_[1] = userData;
 				cmd.PushConstants(
 					offsetof(IRenderer::PushConstants, padEnd_),
-					sizeof(pc.padEnd_[0]),
+					sizeof(pc.padEnd_[0]) * 2,
 					&pc.padEnd_[0],
 					smvk::ShaderStage::All
 				);
@@ -12821,7 +12834,10 @@ namespace engine {
 				}
 				if (vertexLitLevel && !shadingDbg)
 					++m_lodShaderDraws;
-				drawNode(item.node, item.mesh, materialId);
+				drawNode(item.node, item.mesh, materialId,
+					// The resolved material userdata (instance override
+					// or base default — the lit hooks' runtime input).
+					m_world->ResolvedItemUserData(item));
 				}
 				);
 			}
@@ -13102,7 +13118,12 @@ namespace engine {
 						boundMaterial = d.materialId;
 						boundProgram = prog;
 					}
-					drawNode(d.node, d.meshId, d.materialId);
+					drawNode(d.node, d.meshId, d.materialId,
+						// Transparent list draws have no RenderItem; the
+						// material default is the resolved value
+						// (instances bind to mesh entities, which ride
+						// the opaque paths in v1).
+						m_world->MaterialUserData(d.materialId));
 				}
 			}
 
