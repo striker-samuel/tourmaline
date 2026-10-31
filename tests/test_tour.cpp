@@ -558,7 +558,7 @@ void TestReferences() {
 		smvk::assets::AssetManifest man;
 		std::string ierr;
 		smvk::assets::DeriveConfig cfg{};
-		Check(smvk::assets::ImportMeshSource(gltf, "", cfg, man,
+		Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg, man,
 				nullptr, &ierr),
 			checkName);
 		return fs::path(gltf).replace_extension(".geometry");
@@ -702,7 +702,7 @@ void TestRootReference() {
 	smvk::assets::AssetManifest sceneMan;
 	std::string derr;
 	smvk::assets::DeriveConfig dcfg{};
-	Check(smvk::assets::ImportMeshSource(gltf, "", dcfg, sceneMan,
+	Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, dcfg, sceneMan,
 			nullptr, &derr),
 		"rootref derive artifact");
 	std::string err;
@@ -831,7 +831,7 @@ void TestRootReference() {
 		smvk::assets::AssetManifest extraMan;
 		smvk::assets::DeriveConfig extraCfg{};
 		Check(smvk::assets::ImportMeshSource(dir / "extra.gltf", "",
-				extraCfg, extraMan, nullptr, &derr),
+				nullptr, extraCfg, extraMan, nullptr, &derr),
 			"rootref derive extra artifact");
 	}
 	{
@@ -896,11 +896,11 @@ void TestTourReferences() {
 		smvk::assets::AssetManifest man;
 		std::string ierr;
 		smvk::assets::DeriveConfig cfg{};
-		Check(smvk::assets::ImportMeshSource(dir / "sub.gltf", "", cfg,
-				man, nullptr, &ierr),
+		Check(smvk::assets::ImportMeshSource(dir / "sub.gltf", "",
+				nullptr, cfg, man, nullptr, &ierr),
 			"tourref derive sub artifact");
-		Check(smvk::assets::ImportMeshSource(dir / "gear.gltf", "", cfg,
-				man, nullptr, &ierr),
+		Check(smvk::assets::ImportMeshSource(dir / "gear.gltf", "",
+				nullptr, cfg, man, nullptr, &ierr),
 			"tourref derive gear artifact");
 	}
 	{
@@ -2564,7 +2564,7 @@ void TestReferenceGuid() {
 		smvk::assets::AssetManifest man;
 		std::string derr;
 		smvk::assets::DeriveConfig cfg{};
-		Check(smvk::assets::ImportMeshSource(gltf, "", cfg, man,
+		Check(smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg, man,
 				nullptr, &derr),
 			"refguid derive artifact");
 	}
@@ -3068,8 +3068,8 @@ void TestTourFuzz() {
 			std::string derr;
 			smvk::assets::DeriveConfig cfg{};
 			(void)smvk::assets::ImportMeshSource(
-				dir / (std::string(stem) + ".gltf"), "", cfg, man,
-				nullptr, &derr);
+				dir / (std::string(stem) + ".gltf"), "", nullptr, cfg,
+				man, nullptr, &derr);
 		};
 		writeGltf("a.gltf", "A");
 		writeGltf("b.gltf", "B");

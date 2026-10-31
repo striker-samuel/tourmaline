@@ -105,8 +105,12 @@ void WriteTinyPng(const fs::path& path) {
 }
 
 TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
-	int n, uint32_t seed = 0, bool withMaterial = false) {
+	int n, uint32_t seed = 0, bool withMaterial = false,
+	const std::vector<std::string>* namedMaterials = nullptr) {
 	fs::create_directories(dir);
+	// namedMaterials: an explicit, NAMED materials array (order under
+	// the caller's control — the subasset-identity tests' reorder +
+	// remap driver; plain PBR factors, no textures).
 	const fs::path binPath = dir / (stem + ".bin");
 	const int verts = (n + 1) * (n + 1);
 	std::vector<float> pos, nrm;
@@ -145,14 +149,29 @@ TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
 	const size_t nrmEnd = posEnd + nrm.size() * sizeof(float);
 	const size_t idxEnd = nrmEnd + idx.size() * sizeof(uint16_t);
 	std::ostringstream j;
+	std::string materialsJson;
+	if (namedMaterials) {
+		std::ostringstream mats;
+		for (size_t i = 0; i < namedMaterials->size(); ++i) {
+			if (i)
+				mats << ",";
+			mats << "{\"name\":\"" << (*namedMaterials)[i]
+				<< "\",\"pbrMetallicRoughness\":{"
+					"\"baseColorFactor\":[0.8,0.8,0.8,1],"
+					"\"metallicFactor\":0,\"roughnessFactor\":1}}";
+		}
+		materialsJson = "\"materials\":[" + mats.str() + "],";
+	}
 	j << "{\"asset\":{\"version\":\"2.0\"},"
 		"\"scene\":0,"
 		"\"scenes\":[{\"nodes\":[0]}],"
 		"\"nodes\":[{\"name\":\"Grid\",\"mesh\":0}],"
 		"\"meshes\":[{\"primitives\":[{\"attributes\":"
 		"{\"POSITION\":0,\"NORMAL\":1},\"indices\":2"
-		<< (withMaterial ? ",\"material\":0" : "") << "}]}],"
-		<< (withMaterial
+		<< (namedMaterials ? ",\"material\":0"
+				: withMaterial ? ",\"material\":0" : "") << "}]}],"
+		<< (namedMaterials ? materialsJson
+			: withMaterial
 				? "\"materials\":[{\"name\":\"Grid\","
 					"\"pbrMetallicRoughness\":{"
 					"\"baseColorFactor\":[0.8,0.8,0.8,1],"
@@ -358,6 +377,7 @@ void TestImportLifecycle() {
 	Check(fs::is_regular_file(fs::path(r1.geometry), ec),
 		"import.geometry-path-resolves");
 	// The manifest carries the import fingerprint.
+	std::string familyGuid1, geometryGuid1, digest1;
 	{
 		smvk::assets::AssetManifest m;
 		std::string merr;
@@ -368,6 +388,16 @@ void TestImportLifecycle() {
 				== smvk::assets::ImportFingerprintFor(
 					smvk::project::GeometryImportSettings{}),
 			"import.manifest-fingerprint-recorded");
+		// Captured for the identity-ledger checks below (the re-derives
+		// in 3 + 4 must CARRY these, not re-mint them).
+		familyGuid1 = m.guid;
+		digest1 = m.sourceDigest;
+		for (const auto& e : m.entries)
+			if (e.kind == smvk::assets::AssetKind::Geometry)
+				geometryGuid1 = e.guid;
+		Check(!familyGuid1.empty() && !geometryGuid1.empty()
+			&& !digest1.empty(),
+			"import.identity-captured");
 	}
 
 	// 2) Idempotence: unchanged source + unchanged settings = a no-op.
@@ -424,6 +454,20 @@ void TestImportLifecycle() {
 		std::string err;
 		Check(smvk::project::ImportProjectAsset(req, r4, err)
 			&& r4.derived, "import.source-change-rederives");
+		// The identity LEDGER carried across the changed content (the
+		// staged derive resolved the PUBLISHED manifest up front): the
+		// family + the geometry identity stand, only the digest moved.
+		Check(r4.guid == familyGuid1, "import.source-change-keeps-family");
+		smvk::assets::AssetManifest m4;
+		std::string m4err;
+		std::string geom4;
+		if (smvk::assets::LoadAssetManifest(family / "grid.gltf", m4,
+				m4err))
+			for (const auto& e : m4.entries)
+				if (e.kind == smvk::assets::AssetKind::Geometry)
+					geom4 = e.guid;
+		Check(geom4 == geometryGuid1 && m4.sourceDigest != digest1,
+			"import.source-change-keeps-geometry");
 	}
 
 	// 5) FAILURE RETENTION: a corrupt source must NOT disturb the live
@@ -510,12 +554,195 @@ void TestFingerprint() {
 	const TestSource src = WriteGridGltf(tmp, "fp", 12);
 	smvk::assets::AssetManifest man;
 	std::string err;
-	Check(smvk::assets::ImportMeshSource(src.gltf, "", a, man,
+	Check(smvk::assets::ImportMeshSource(src.gltf, "", nullptr, a, man,
 			nullptr, &err), "fingerprint.derive-ok");
 	Check(!smvk::assets::MeshArtifactStale(src.gltf, a),
 		"fingerprint.same-settings-current");
 	Check(smvk::assets::MeshArtifactStale(src.gltf, b),
 		"fingerprint.changed-settings-stale");
+}
+
+// The SUBASSET IDENTITY contract (the identity ledger): logical
+// identity (the name key) is separate from the source-byte
+// fingerprints; reimports carry identities across content edits and
+// DCC reorders; ambiguous remaps FAIL rather than silently
+// re-assigning; a corrupt ledger is a loud refusal, never a re-mint.
+void TestSubassetIdentity() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_identity";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	const fs::path ext = tmp / "external";
+	fs::create_directories(ext, ec);
+	const fs::path gltf = ext / "knight.gltf";
+	const smvk::assets::DeriveConfig cfg{};
+	// Named-material sets (addressable locals — the helper takes a
+	// pointer by design: identity tests control array ORDER).
+	const std::vector<std::string> kGoldSteel{ "Gold", "Steel" };
+	const std::vector<std::string> kSteelGold{ "Steel", "Gold" };
+	const std::vector<std::string> kGoldOnly{ "Gold" };
+	const std::vector<std::string> kGoldGold{ "Gold", "Gold" };
+	const std::vector<std::string> kGoldSilver{ "Gold", "Silver" };
+	auto guidOf = [](const smvk::assets::AssetManifest& m,
+			smvk::assets::AssetKind k, const std::string& name) {
+		for (const auto& e : m.entries)
+			if (e.kind == k && e.name == name)
+				return e.guid;
+		return std::string();
+	};
+	auto derive = [&](smvk::assets::AssetManifest& m,
+			smvk::assets::DeriveStats& s, std::string& err) {
+		return smvk::assets::ImportMeshSource(gltf, "", nullptr, cfg,
+			m, &s, &err);
+	};
+
+	// First import: two NAMED materials (the from-zero mint).
+	WriteGridGltf(ext, "knight", 8, 0, false,
+		&kGoldSteel);
+	smvk::assets::AssetManifest m1;
+	smvk::assets::DeriveStats s1;
+	std::string err1;
+	Check(derive(m1, s1, err1), "identity.first-derives");
+	const std::string family1 = m1.guid;
+	const std::string gold1 = guidOf(m1, smvk::assets::AssetKind::Material,
+		"Gold");
+	const std::string steel1 = guidOf(m1, smvk::assets::AssetKind::Material,
+		"Steel");
+	const std::string geom1 = guidOf(m1, smvk::assets::AssetKind::Geometry,
+		"knight");
+	Check(!family1.empty() && !gold1.empty() && !steel1.empty()
+		&& !geom1.empty() && gold1 != steel1,
+		"identity.first-rows");
+	Check(s1.newGuids == 3 && s1.keptGuids == 0,
+		"identity.first-mints"); // 2 materials + the geometry
+
+	// REORDER (the DCC re-export shuffles the arrays): the ledger
+	// (.gltf.meta beside the source) carries EVERY identity by name.
+	WriteGridGltf(ext, "knight", 8, 0, false,
+		&kSteelGold);
+	{
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(derive(m, s, derr), "identity.reorder-derives");
+		Check(m.guid == family1, "identity.reorder-keeps-family");
+		Check(guidOf(m, smvk::assets::AssetKind::Material, "Gold")
+				== gold1
+			&& guidOf(m, smvk::assets::AssetKind::Material, "Steel")
+				== steel1,
+			"identity.reorder-keeps-subassets");
+		Check(guidOf(m, smvk::assets::AssetKind::Geometry, "knight")
+				== geom1,
+			"identity.reorder-keeps-geometry");
+		Check(s.keptGuids == 3 && s.newGuids == 0,
+			"identity.reorder-all-carried");
+	}
+
+	// CONTENT EDIT (the heights shift): identity carries, the DIGEST
+	// (the staleness fingerprint) moves — logical identity separate
+	// from source-byte fingerprints.
+	WriteGridGltf(ext, "knight", 8, 3, false,
+		&kGoldSteel);
+	{
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(derive(m, s, derr), "identity.edit-derives");
+		Check(m.guid == family1
+			&& guidOf(m, smvk::assets::AssetKind::Material, "Gold")
+				== gold1
+			&& guidOf(m, smvk::assets::AssetKind::Material, "Steel")
+				== steel1
+			&& guidOf(m, smvk::assets::AssetKind::Geometry, "knight")
+				== geom1,
+			"identity.edit-carries-all");
+		Check(m.sourceDigest != m1.sourceDigest,
+			"identity.edit-moves-digest");
+	}
+
+	// A REMOVED name retires (its GUID drops from the manifest, never
+	// re-assigns); the survivor carries.
+	WriteGridGltf(ext, "knight", 8, 3, false,
+		&kGoldOnly);
+	{
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(derive(m, s, derr), "identity.removed-derives");
+		Check(m.guid == family1
+			&& guidOf(m, smvk::assets::AssetKind::Material, "Gold")
+				== gold1
+			&& guidOf(m, smvk::assets::AssetKind::Material, "Steel")
+				.empty(),
+			"identity.removed-retires");
+	}
+
+	// AMBIGUOUS remap (a duplicate of a RECORDED name with a changed
+	// count): a loud failure — identity is never silently re-assigned.
+	WriteGridGltf(ext, "knight", 8, 3, false,
+		&kGoldGold);
+	{
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(!derive(m, s, derr)
+			&& derr.find("ambiguous") != std::string::npos,
+			"identity.ambiguous-fails");
+	}
+
+	// A NEW name beside a carried one: carried + freshly minted.
+	WriteGridGltf(ext, "knight", 8, 3, false,
+		&kGoldSilver);
+	{
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(derive(m, s, derr), "identity.new-name-derives");
+		Check(guidOf(m, smvk::assets::AssetKind::Material, "Gold")
+				== gold1
+			&& !guidOf(m, smvk::assets::AssetKind::Material, "Silver")
+				.empty()
+			&& guidOf(m, smvk::assets::AssetKind::Material, "Silver")
+				!= gold1,
+			"identity.new-name-mints");
+		Check(s.keptGuids == 2 && s.newGuids == 1,
+			"identity.new-name-counts"); // Gold + geometry carried
+	}
+
+	// A CORRUPT ledger refuses the derive — both shapes: unparseable
+	// text, and parseable text carrying a MALFORMED guid row. Never a
+	// silent identity re-mint.
+	{
+		const std::string meta = std::string(gltf.string()) + ".meta";
+		{
+			std::ofstream f(meta, std::ios::binary | std::ios::trunc);
+			f << "source=whatever\nfingerprint=x\n"; // no guid row
+		}
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(!derive(m, s, derr)
+			&& derr.find("REFUSING") != std::string::npos,
+			"identity.corrupt-ledger-refuses");
+		{
+			std::ofstream f(meta, std::ios::binary | std::ios::trunc);
+			f << "guid=garbage!!! not a 32-hex row\n"; // malformed guid
+		}
+		std::string derr2;
+		Check(!derive(m, s, derr2)
+			&& derr2.find("REFUSING") != std::string::npos,
+			"identity.malformed-guid-refuses");
+		fs::remove(meta, ec);
+	}
+	// (Ledger deleted by hand: the next derive mints from zero — the
+	// explicit identity-repair path.)
+	{
+		smvk::assets::AssetManifest m;
+		smvk::assets::DeriveStats s;
+		std::string derr;
+		Check(derive(m, s, derr) && m.guid != family1,
+			"identity.deleted-ledger-remints");
+	}
 }
 
 // ---- the recipe layer (the .tourrecipe spec's M1: PAR + RES) ---------
@@ -3061,6 +3288,7 @@ int main() {
 	TestProjectModel();
 	TestImportLifecycle();
 	TestFingerprint();
+	TestSubassetIdentity();
 	TestRecipeParsing();
 	TestRecipeGlob();
 	TestRecipeResolution();

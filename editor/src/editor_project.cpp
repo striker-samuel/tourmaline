@@ -674,19 +674,20 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 			+ "' (no re-import).");
 		return geometry.generic_string();
 	}
-	// NO project guid: the derivation derives the asset identity from the
-	// SOURCE FILE CONTENT (SourceAssetGuid — see asset_export.h), so an
-	// in-project import and a from-zero re-import (another dir, machine,
-	// no project DB) produce the SAME uuids and byte-identical artifacts.
+	// NO explicit guid: the derivation consumes the .gltf.meta BESIDE
+	// the source as the identity ledger (a re-import over changed
+	// content CARRIES the family + subasset identities; a first import
+	// mints the deterministic from-zero identity — see asset_export.h).
 	// The project DB still adopts the file for its own bookkeeping
-	// (ProjectAssetGuid elsewhere); the ARTIFACT identity is the source's.
+	// (ProjectAssetGuid elsewhere); the ARTIFACT identity is the
+	// ledger's.
 	const std::string guid;
 	smvk::assets::AssetManifest manifest;
 	smvk::assets::DeriveStats stats;
 	std::string derr;
 	Log("Import: deriving the mesh artifact from '"
 		+ fs::path(gltfPath).filename().generic_string() + "'...");
-	if (!smvk::assets::ImportMeshSource(gltfPath, guid, cfg,
+	if (!smvk::assets::ImportMeshSource(gltfPath, guid, nullptr, cfg,
 			manifest, &stats, &derr)) {
 		Log("Import: mesh importer failed: " + derr
 			+ " — the scene does NOT open from the glTF (glTF is "

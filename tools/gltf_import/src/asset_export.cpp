@@ -23,7 +23,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -1251,8 +1253,8 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 
 bool DeriveGltfAssets(const tinygltf::Model& model,
 	const std::filesystem::path& gltfPath, const std::string& gltfGuid,
-	const DeriveConfig& config, AssetManifest& outManifest,
-	DeriveStats* outStats, std::string* err) {
+	const AssetManifest* prevIdentity, const DeriveConfig& config,
+	AssetManifest& outManifest, DeriveStats* outStats, std::string* err) {
 	DeriveStats stats{};
 	std::string fail;
 	const std::string stem =
@@ -1335,37 +1337,174 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		gltfNodeMap = importer.gltfNodeMap();
 	}
 
-	// 2) Manifest identity: REGISTER THE ORIGINAL SOURCE (the .meta records
-	// the source file name + its CONTENT digest — SourceAssetGuid, derived
-	// from the glTF bytes) and derive every GUID deterministically off it,
-	// so a FROM-ZERO RE-IMPORT (no project DB, no .meta, another machine,
-	// another directory) reproduces the SAME UUIDs — and with them the same
-	// .geometry/.material bytes (entries embed the GUIDs), i.e. a
-	// byte-stable artifact family. The caller's guid (an assetdb identity)
-	// still wins when given; the editor passes none, so project sessions
-	// and from-zero imports agree. (The old random-mint + keep-the-old-
-	// manifest block is gone: deterministic derivation IS the stability —
-	// a re-import over the same content derives the same values; changed
-	// content is a new identity by design, and old metas with random GUIDs
-	// re-derive deterministically on the next import.)
+	// 2) Manifest identity — THE IDENTITY LEDGER, separate from the
+	// source-byte fingerprints (the identity contract):
+	//   family guid  — the caller's EXPLICIT resolution (the .meta the
+	//                   project pipeline resolved before importing —
+	//                   see ImportProjectAsset) > the previous
+	//                   manifest's guid (identity CARRIES across
+	//                   content edits; the digest below records the
+	//                   change) > the deterministic from-zero mint
+	//                   (SourceAssetGuid — no ledger, no caller).
+	//   sourcedigest — the STALENESS fingerprint (recomputed every
+	//                   derive; never an identity).
+	//   subasset ids — carried from the previous manifest BY NAME (the
+	//                   logical key: the glTF material/animation name),
+	//                   so a DCC re-export that REORDERS the arrays
+	//                   keeps every GUID where cooks, .tours and
+	//                   content ids expect them; unknown names mint
+	//                   deterministically. A name group whose entry
+	//                   COUNT changed against a previous record is
+	//                   AMBIGUOUS — a loud failure, never a silent
+	//                   re-assignment (identity swap).
 	AssetManifest manifest;
-	// Stable identity (the .gltf file alone — texture/.bin edits must not
-	// re-GUID the family); staleness is the FULL source set below.
+	// The previous manifest (the identity ledger): the caller's
+	// explicit resolution wins (the pipeline resolves the PUBLISHED
+	// .gltf.meta before staging — the stage dir has none); otherwise a
+	// manifest beside the source (the editor / direct-import path) IS
+	// the ledger. A beside-file manifest that exists but does not
+	// parse — or parses to a malformed guid — FAILS: re-deriving over
+	// a corrupt ledger would silently mint a whole new identity set.
+	std::optional<AssetManifest> prevLedger;
+	{
+		if (prevIdentity)
+			prevLedger = *prevIdentity;
+		else {
+			std::error_code metaEc;
+			if (std::filesystem::is_regular_file(
+					std::filesystem::path(gltfPath.string() + ".meta"),
+					metaEc)) {
+				AssetManifest prev;
+				std::string perr;
+				if (!LoadAssetManifest(gltfPath, prev, perr))
+					return giveUp("the manifest beside '"
+						+ gltfPath.generic_string() + "' exists but"
+						+ " does not parse (" + perr + ") — REFUSING"
+						+ " to re-derive over a corrupt identity"
+						+ " ledger. Fix or delete it by hand; identity"
+						+ " repair is explicit, never automatic");
+				if (prev.guid.size() != 32
+						|| prev.guid.find_first_not_of(
+								"0123456789abcdef")
+							!= std::string::npos)
+					return giveUp("the manifest beside '"
+						+ gltfPath.generic_string()
+						+ "' carries a malformed guid row ('"
+						+ prev.guid + "') — REFUSING to re-derive"
+						" over a corrupt identity ledger. Fix or"
+						" delete it by hand; identity repair is"
+						" explicit, never automatic");
+				prevLedger = std::move(prev);
+			}
+		}
+	}
 	const std::string sourceGuid = SourceAssetGuid(gltfPath);
-	manifest.guid = gltfGuid.empty() ? sourceGuid : gltfGuid;
+	manifest.guid = !gltfGuid.empty() ? gltfGuid
+		: (prevLedger && !prevLedger->guid.empty())
+			? prevLedger->guid : sourceGuid;
+	if (prevLedger && !gltfGuid.empty() && !prevLedger->guid.empty()
+			&& gltfGuid != prevLedger->guid)
+		return giveUp("identity conflict: the caller resolved guid "
+			+ gltfGuid + " but the existing manifest for '"
+			+ gltfPath.generic_string() + "' carries "
+			+ prevLedger->guid + " — the EXISTING identity wins or"
+			" the manifest is deleted deliberately; never re-minted"
+			" by accident");
 	manifest.source =
 		std::filesystem::path(gltfPath).filename().generic_string();
 	manifest.sourceDigest = SourceContentDigest(gltfPath, model);
 	manifest.importFingerprint = ImportFingerprintFor(config);
 	manifest.stem = stem;
-	auto guidFor = [&](AssetKind kind, int sourceIndex) -> std::string {
+
+	// The name groups (the logical identity keys), pre-scanned so the
+	// ambiguity check runs BEFORE any file is written. Unnamed glTF
+	// assets fall back to index-derived display names ("mat0"/"anim1")
+	// — the best key available; EMPTY previous names (pre-ledger anim
+	// rows) are unkeyable and skip the ledger entirely (fresh mints,
+	// no ambiguity failure against them).
+	const auto materialName = [&](int mi) -> std::string {
+		const tinygltf::Material& gm = model.materials[size_t(mi)];
+		return gm.name.empty()
+			? ("mat" + std::to_string(mi)) : gm.name;
+	};
+	const auto animName = [&](int ai) -> std::string {
+		const tinygltf::Animation& ga = model.animations[size_t(ai)];
+		return ga.name.empty()
+			? ("anim" + std::to_string(ai)) : ga.name;
+	};
+	std::map<std::pair<int, std::string>, int> prevCounts;
+	if (prevLedger)
+		for (const AssetEntry& e : prevLedger->entries)
+			if (!e.name.empty())
+				++prevCounts[{ int(e.kind), e.name }];
+	std::map<std::pair<int, std::string>, int> newCounts;
+	for (int mi = 0; mi < int(model.materials.size()); ++mi)
+		++newCounts[{ int(AssetKind::Material), materialName(mi) }];
+	for (int ai = 0; ai < int(model.animations.size()); ++ai)
+		++newCounts[{ int(AssetKind::Anim), animName(ai) }];
+	++newCounts[{ int(AssetKind::Geometry), stem }];
+	for (const auto& [group, newCount] : newCounts) {
+		const auto pit = prevCounts.find(group);
+		if (pit == prevCounts.end() || pit->second == 0)
+			continue; // no previous record: fresh group, nothing to
+			          // be ambiguous against
+		if (pit->second != newCount)
+			return giveUp("ambiguous subasset remapping: the previous"
+				" manifest has " + std::to_string(pit->second)
+				+ " " + AssetKindName(AssetKind(
+					AssetKind(group.first)))
+				+ "(s) named '" + group.second + "' but the source now"
+				" has " + std::to_string(newCount) + " — which"
+				" previous identity maps where cannot be decided"
+				" safely. Name the assets uniquely (or align the"
+				" counts) and re-import; identity is never silently"
+				" re-assigned");
+	}
+
+	// The subasset resolver. IDEMPOTENT per (kind, sourceIndex) — the
+	// instance material bindings re-ask for already-resolved assets
+	// (and no longer duplicate manifest rows). The LEDGER side keys on
+	// (kind, name, occurrence): the Nth previous entry of a name group
+	// is the Nth new one (the counts were verified equal above);
+	// unrecorded keys mint deterministically (from-zero reproducible).
+	std::map<std::pair<int, int>, std::string> guidByKindIndex;
+	std::map<std::pair<int, std::string>, int> occurrenceOf;
+	auto guidFor = [&](AssetKind kind, int sourceIndex,
+			const std::string& name) -> std::string {
+		const std::pair<int, int> askKey{ int(kind), sourceIndex };
+		const auto hit = guidByKindIndex.find(askKey);
+		if (hit != guidByKindIndex.end())
+			return hit->second; // already resolved (an instance
+			                    // binding re-asking its material)
+		const int occurrence =
+			occurrenceOf[{ int(kind), name }]++;
+		std::string guid;
+		if (prevLedger && !name.empty()) {
+			int seen = 0;
+			for (const AssetEntry& e : prevLedger->entries) {
+				if (int(e.kind) != int(kind) || e.name != name)
+					continue;
+				if (seen == occurrence) {
+					guid = e.guid; // the carry: identity preserved
+					               // across the content edit
+					++stats.keptGuids;
+					break;
+				}
+				++seen;
+			}
+		}
+		if (guid.empty()) {
+			guid = DerivedEntryGuidForName(manifest.guid, kind, name,
+				occurrence);
+			++stats.newGuids;
+		}
+		guidByKindIndex[askKey] = guid;
 		AssetEntry e{};
 		e.kind = kind;
 		e.sourceIndex = sourceIndex;
-		e.guid = DerivedEntryGuid(manifest.guid, kind, sourceIndex);
+		e.guid = guid;
 		manifest.entries.push_back(e);
-		++stats.newGuids;
-		return e.guid;
+		return guid;
 	};
 
 	// 3) Material assets (straight from the glTF model: the PBR values
@@ -1374,8 +1513,10 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 	for (int mi = 0; mi < int(model.materials.size()); ++mi) {
 		const tinygltf::Material& gm = model.materials[size_t(mi)];
 		MaterialAsset m{};
-		m.guid = guidFor(AssetKind::Material, mi);
-		m.name = gm.name.empty() ? ("mat" + std::to_string(mi)) : gm.name;
+		// The NAME resolves the identity (the ledger's logical key) —
+		// computed BEFORE the guid ask, then the guid asks with it.
+		m.name = materialName(mi);
+		m.guid = guidFor(AssetKind::Material, mi, m.name);
 		m.info.baseColorFactor = glm::vec4(
 			float(gm.pbrMetallicRoughness.baseColorFactor[0]),
 			float(gm.pbrMetallicRoughness.baseColorFactor[1]),
@@ -1598,7 +1739,14 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 					const int mi = std::atoi(u.c_str() + at + 5);
 					if (mi >= 0 && mi < int(model.materials.size()))
 						inst.materialGuid =
-							guidFor(AssetKind::Material, mi);
+							guidFor(AssetKind::Material, mi,
+								materialName(mi)); // idempotent:
+								                   // the material's
+								                   // guid resolved
+								                   // in its own
+								                   // loop; the
+								                   // re-ask adds
+								                   // no rows
 				}
 			}
 			mesh.instances.push_back(inst);
@@ -1629,7 +1777,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		AssetEntry e{};
 		e.kind = AssetKind::Geometry;
 		e.sourceIndex = -1;
-		e.guid = guidFor(AssetKind::Geometry, -1);
+		e.guid = guidFor(AssetKind::Geometry, -1, stem);
 		e.file = geometryFile;
 		e.name = stem;
 		for (AssetEntry& x : manifest.entries)
@@ -1649,6 +1797,13 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		smvk::touranim::Clip clip{};
 		clip.name = ga.name.empty()
 			? ("anim" + std::to_string(ai)) : ga.name;
+		// The anim's identity ask (the manifest row + the ledger
+		// carry): NAME-keyed like materials — a re-import keeps a
+		// NAMED animation's GUID wherever cooks/.tours expect it, and
+		// the row (with the fallback-named display name — never the
+		// EMPTY raw name, which could not key the ledger) lands in
+		// the manifest like materials always did.
+		(void)guidFor(AssetKind::Anim, ai, clip.name);
 		double lastT = 0.0;
 		for (const tinygltf::AnimationChannel& ch : ga.channels) {
 			if (ch.sampler < 0
@@ -1816,7 +1971,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 		for (AssetEntry& e : manifest.entries)
 			if (e.kind == AssetKind::Anim && e.sourceIndex == ai) {
 				e.file = file;
-				e.name = ga.name;
+				e.name = clip.name; // the fallback-named key (never
+				                    // empty — the ledger's name group)
 			}
 		++stats.anims;
 	}
@@ -1832,8 +1988,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 
 bool ImportMeshSource(
 	const std::filesystem::path& gltfPath, const std::string& gltfGuid,
-	const DeriveConfig& config, AssetManifest& outManifest,
-	DeriveStats* outStats, std::string* err) {
+	const AssetManifest* prevIdentity, const DeriveConfig& config,
+	AssetManifest& outManifest, DeriveStats* outStats, std::string* err) {
 	auto giveUp = [&](const std::string& e) {
 		if (err)
 			*err = e;
@@ -1845,8 +2001,8 @@ bool ImportMeshSource(
 	if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
 		return giveUp("source parse failed: "
 			+ gltfPath.generic_string());
-	return DeriveGltfAssets(model, gltfPath, gltfGuid, config,
-		outManifest, outStats, err);
+	return DeriveGltfAssets(model, gltfPath, gltfGuid, prevIdentity,
+		config, outManifest, outStats, err);
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
@@ -1987,6 +2143,21 @@ std::string DerivedEntryGuid(const std::string& sourceGuid,
 	std::snprintf(seed, sizeof(seed), "%s|%c|%d", sourceGuid.c_str(),
 		char(kind), sourceIndex);
 	return GuidHexFromBytes(seed, std::strlen(seed));
+}
+
+std::string DerivedEntryGuidForName(const std::string& sourceGuid,
+	AssetKind kind, const std::string& name, int occurrence) {
+	// Seed = the source identity + the entry's LOGICAL KEY (the kind +
+	// the glTF asset NAME + the same-name occurrence ordinal — the key
+	// the identity ledger carries, NOT the glTF array index): a
+	// from-zero import reproduces the same GUID for the same NAMED
+	// asset regardless of how the DCC ordered the arrays. Unnamed glTF
+	// assets have no logical key to key on (their fallback names embed
+	// the index by necessity) — the ordering independence is a
+	// NAMED-asset property.
+	const std::string seed = sourceGuid + "|" + char(kind) + "|"
+		+ std::to_string(occurrence) + "|" + name;
+	return GuidHexFromBytes(seed.data(), seed.size());
 }
 
 bool MeshArtifactStale(const std::filesystem::path& gltfPath,

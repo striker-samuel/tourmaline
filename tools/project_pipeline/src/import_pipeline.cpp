@@ -134,10 +134,28 @@ bool ImportProjectAsset(const ImportRequest& request,
 			return false;
 	}
 
-	// ---- derive (the ONE importer; the request's settings) ---------------
+	// ---- resolve the family identity BEFORE importing (the explicit
+	// .meta resolution the derivation consumes): the PUBLISHED
+	// manifest beside the project copy is the identity ledger — its
+	// family guid + its subasset rows carry across the content edit
+	// (the staged derive cannot see it: the stage dir is fresh).
+	smvk::assets::AssetManifest prevLedger;
+	bool haveLedger = false;
+	{
+		smvk::assets::AssetManifest m;
+		std::string merr;
+		if (smvk::assets::LoadAssetManifest(projectSource, m, merr)) {
+			prevLedger = std::move(m);
+			haveLedger = true;
+		}
+	}
+
+	// ---- derive (the ONE importer; the request's settings) -----------
 	smvk::assets::AssetManifest manifest;
 	smvk::assets::DeriveStats stats;
-	if (!smvk::assets::ImportMeshSource(stageSource, "",
+	if (!smvk::assets::ImportMeshSource(stageSource,
+			haveLedger ? prevLedger.guid : "",
+			haveLedger ? &prevLedger : nullptr,
 			request.settings, manifest, &stats, &err)) {
 		err = "import failed: " + err;
 		return false; // stage stays for diagnostics? no — cleaned below

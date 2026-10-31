@@ -196,12 +196,12 @@ int main(int argc, char** argv) {
 	smvk::assets::AssetManifest manifest;
 	smvk::assets::DeriveStats stats;
 	std::string err;
-	// gltfGuid "" = the from-zero source identity (ImportMeshSource
-	// derives it from the SOURCE FILE CONTENT - deterministic; the
-	// editor passes "" by design so project sessions agree with
-	// from-zero re-imports).
-	if (!smvk::assets::ImportMeshSource(inPath, "", config, manifest,
-			&stats, &err)) {
+	// gltfGuid "" + ledger nullptr = the from-zero/ledger flow: the
+	// derivation consumes a .gltf.meta beside the source when one
+	// exists (identity carries across re-imports) and otherwise mints
+	// the deterministic from-zero identity (SourceAssetGuid).
+	if (!smvk::assets::ImportMeshSource(inPath, "", nullptr, config,
+			manifest, &stats, &err)) {
 		std::cerr << "Import failed: " << (err.empty()
 			? "unknown" : err) << std::endl;
 		return 1;
