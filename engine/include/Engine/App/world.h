@@ -12,6 +12,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/animator.h>
 #include <Engine/Asset/cluster_serializer.h> // ExternalTextureResolver
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
@@ -231,6 +232,36 @@ namespace smvk {
 		};
 		std::vector<AudioSourceEntity> audioEntities;
 		std::vector<uint32_t> audioEntityFree;
+		// Runtime MESH entities: a bare durable transform node (dynamic
+		// cluster) + CROSS-CLUSTER mesh/material bindings stored as the
+		// stable (owner cluster, pool handle) pair — the merged-scene
+		// rows are mirrors the resolve tail re-establishes. The
+		// animatorSlot is the ATTACHED animator (an explicitly-owned
+		// attachment: DestroyMesh cleans it up).
+		struct MeshEntity {
+			uint32_t generation = 1;
+			bool alive = false;
+			Cluster* transformOwner = nullptr; // the dynamic cluster
+			NodeId clusterNode = 0;            // durable transform node
+			NodeId mergedNode = 0;             // resolved/mirrored node
+			Cluster* meshOwner = nullptr;      // the mesh's owning cluster
+			ClusterStaticMeshHandle mesh{};
+			ClusterMaterialHandle material{};  // empty = material-less
+			uint32_t animatorSlot = UINT32_MAX;
+		};
+		std::vector<MeshEntity> meshEntities;
+		std::vector<uint32_t> meshEntityFree;
+		// Animator registry (the AnimatorState payloads + generational
+		// slots — see animator.h; meshEntitySlot back-references the
+		// attached entity for the DestroyMesh cleanup).
+		struct AnimatorEntity {
+			uint32_t generation = 1;
+			bool alive = false;
+			uint32_t meshEntitySlot = UINT32_MAX;
+			AnimatorState state{};
+		};
+		std::vector<AnimatorEntity> animators;
+		std::vector<uint32_t> animatorFree;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).
@@ -309,6 +340,73 @@ namespace smvk {
 		// (FindAudioSource on the merged row, gizmo selection...).
 		[[nodiscard]] NodeId AudioSourceNode(AudioSourceHandle handle)
 			const;
+
+		// ---- runtime MESH entities (the gameplay-handle surface,
+		// Engine/Scene/entity_handle.h — one spawn API, static and
+		// skinned alike; skinning is a capability of the MESH ASSET,
+		// not a separate entity category) ----
+		// Instances a loaded world mesh onto a fresh entity node: the
+		// durable home is the dynamic cluster's own scene (a bare
+		// transform — the CreateDecalAt pattern), and the MESH +
+		// MATERIAL bindings live on the ENTITY (cross-cluster: the
+		// source mesh stays owned by its pak cluster; the merged-scene
+		// mirror rows resolve through world meshLocations, and the
+		// resolve tail RE-MIRRORS them after every rebuild — the
+		// binding is stored as the stable (owner cluster, pool handle)
+		// pair). `frame` is the entity node's local transform.
+		// SpawnMeshFromNode copies the source NODE's mesh + material
+		// associations (the classic spawn-point instancing); empty
+		// handle on a bad source.
+		MeshEntityHandle SpawnMeshFromNode(NodeId sourceNode,
+			const glm::mat4& frame, NodeId parent);
+		// Destroys the entity (rows + nodes drop, the generation
+		// advances — stale copies fail validation forever). The
+		// ATTACHED animator (an explicitly-owned attachment) dies with
+		// it: its playback state + its external-pose claim drop; an
+		// independently-held AnimatorHandle fails validation.
+		bool DestroyMesh(MeshEntityHandle handle);
+		[[nodiscard]] bool IsMeshEntityAlive(MeshEntityHandle handle)
+			const;
+		// The entity's MERGED-scene node (UINT32_MAX = stale). Like
+		// AudioSourceNode: unstable across resolves, same-frame use.
+		[[nodiscard]] NodeId MeshEntityNode(MeshEntityHandle handle)
+			const;
+		// The world meshLocations index the entity's mesh resolves
+		// through (UINT32_MAX = stale/unresolvable — the owning
+		// cluster may have been unloaded).
+		[[nodiscard]] uint32_t MeshEntityMeshIndex(
+			MeshEntityHandle handle) const;
+
+		// ---- the ANIMATOR component (Engine/App/animator.h —
+		// per-entity playback state, the explicit Option-B surface) ----
+		// Attaches an animator to a live MESH entity. The skeleton
+		// binding is the entity mesh's OWNING cluster (must carry one —
+		// the v1 single-skeleton-per-cluster contract; a static-mesh
+		// entity refuses with an empty facade). The returned facade
+		// forwards to World-owned state; clips pass BY VALUE (the
+		// animator owns its copy — shared clip caches are the asset
+		// manager's business).
+		[[nodiscard]] Animator AddAnimator(MeshEntityHandle mesh,
+			touranim::Clip initialClip);
+		// Destroys the animator (independent ownership — gameplay code
+		// that holds animators NOT attached through DestroyMesh's
+		// cleanup destroys them explicitly; see the Kill() pattern).
+		bool DestroyAnimator(AnimatorHandle handle);
+		[[nodiscard]] bool IsAnimatorAlive(AnimatorHandle handle) const;
+		[[nodiscard]] AnimatorState* AnimatorStateOf(
+			AnimatorHandle handle);
+		[[nodiscard]] const AnimatorState* AnimatorStateOf(
+			AnimatorHandle handle) const;
+
+		// Advances every live animator + flushes the FIRST-ALIVE
+		// animator's evaluated pose into its target cluster's scene
+		// (Cluster::poseExternallyDriven — the existing skinning path
+		// consumes the pose; the renderer's own clip advance skips
+		// driven clusters). PUBLIC because the renderer's frame build
+		// drives it with the frame's dt (bench-deterministic); custom
+		// hosts that drive it themselves own the call instead.
+		void Update(float dt);
+
 		// Erases the cluster and REBUILDS the world: after the erase the
 		// merged scene + every location table still point into the
 		// destroyed cluster, so a full ResolveAndFixup_clusters() runs

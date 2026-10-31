@@ -321,6 +321,374 @@ namespace smvk {
 		return e.mergedNode;
 	}
 
+	// ---- runtime mesh entities + the animator component ---------------
+
+	namespace {
+		// The world-level index a (cluster, pool-handle) pair resolves
+		// through the CURRENT location tables (rebuilt per resolve —
+		// look it up fresh every use, never cache it).
+		uint32_t WorldIndexOfMesh(
+			const std::vector<World::MeshLocation>& locations,
+			const Cluster* cluster, ClusterStaticMeshHandle handle)
+		{
+			for (uint32_t i = 0; i < locations.size(); ++i)
+				if (locations[i].cluster == cluster
+						&& locations[i].handle == handle)
+					return i;
+			return UINT32_MAX;
+		}
+		uint32_t WorldIndexOfMaterial(
+			const std::vector<World::MaterialLocation>& locations,
+			const Cluster* cluster, ClusterMaterialHandle handle)
+		{
+			for (uint32_t i = 0; i < locations.size(); ++i)
+				if (locations[i].cluster == cluster
+						&& locations[i].handle == handle)
+					return i;
+			return UINT32_MAX;
+		}
+	} // namespace
+
+	MeshEntityHandle World::SpawnMeshFromNode(NodeId sourceNode,
+		const glm::mat4& frame, NodeId parent)
+	{
+		// The source: a merged-scene node carrying the mesh (+optional
+		// material) associations to instance.
+		(void)parent;
+		if (sourceNode >= scene.hierarchy.size())
+			return {};
+		const MeshRow* srcMesh = FindMesh(scene, sourceNode);
+		if (!srcMesh || srcMesh->mesh >= meshLocations.size())
+			return {};
+		const auto& srcLoc = meshLocations[srcMesh->mesh];
+		Cluster* meshOwner = srcLoc.cluster;
+		const ClusterStaticMeshHandle meshHandle = srcLoc.handle;
+		if (!meshOwner)
+			return {};
+		ClusterMaterialHandle matHandle{};
+		const MaterialRow* srcMat = FindMaterial(scene, sourceNode);
+		if (srcMat && srcMat->material < materialLocations.size()) {
+			matHandle = materialLocations[srcMat->material].handle;
+			// (the material must belong to the same owner for a single
+			// (cluster,handle) binding pair; cross-cluster materials
+			// ride the world table the same way at mirror time.)
+		}
+		// The durable transform node (the dynamic cluster's own scene —
+		// the CreateDecalAt pattern; the MESH binding is cross-cluster
+		// so it lives on the ENTITY, not the dyn-scene tables).
+		Cluster& dyn = EnsureDynamicCluster(nullptr);
+		const int cnode = addNode(dyn.scene, -1, 0);
+		if (cnode < 0)
+			return {};
+		dyn.scene.localTransform[size_t(cnode)] = frame;
+		dyn.scene.globalTransform[size_t(cnode)] = frame;
+		(void)parent; // (the durable node roots at the cluster root; the
+		              // resolved hierarchy owns the merge — same as the
+		              // audio entities)
+		// The merged mirror for immediate visibility (mesh + material
+		// rows through the CURRENT world location tables).
+		const uint32_t worldMeshIdx =
+			WorldIndexOfMesh(meshLocations, meshOwner, meshHandle);
+		NodeId merged = UINT32_MAX;
+		const int mnode = addNode(scene, -1, 0);
+		if (mnode >= 0 && worldMeshIdx != UINT32_MAX) {
+			scene.localTransform[size_t(mnode)] = frame;
+			scene.globalTransform[size_t(mnode)] = frame;
+			SetMesh(scene, NodeId(mnode), worldMeshIdx);
+			if (srcMat) {
+				const uint32_t worldMatIdx = WorldIndexOfMaterial(
+					materialLocations,
+					materialLocations[srcMat->material].cluster,
+					materialLocations[srcMat->material].handle);
+				if (worldMatIdx != UINT32_MAX)
+					SetMaterial(scene, NodeId(mnode), worldMatIdx);
+			}
+			markAsChanged(scene, mnode);
+			merged = NodeId(mnode);
+		}
+		// The registry slot.
+		uint32_t index;
+		uint32_t generation;
+		if (!meshEntityFree.empty()) {
+			index = meshEntityFree.back();
+			meshEntityFree.pop_back();
+			generation = meshEntities[index].generation;
+		}
+		else {
+			index = uint32_t(meshEntities.size());
+			meshEntities.emplace_back();
+			generation = meshEntities.back().generation;
+		}
+		MeshEntity& e = meshEntities[index];
+		e.alive = true;
+		e.transformOwner = &dyn;
+		e.clusterNode = NodeId(cnode);
+		e.mergedNode = merged;
+		e.meshOwner = meshOwner;
+		e.mesh = meshHandle;
+		e.material = matHandle;
+		e.animatorSlot = UINT32_MAX;
+		return MakeEntityHandle<MeshEntityTag>(index, generation);
+	}
+
+	bool World::DestroyMesh(MeshEntityHandle handle)
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= meshEntities.size())
+			return false;
+		MeshEntity& e = meshEntities[idx];
+		if (!e.alive || e.generation != handle.Generation())
+			return false;
+		// The ATTACHED animator dies with the entity (explicitly-owned
+		// attachment — the Kill() contract; independently-held animator
+		// handles fail validation after this).
+		if (e.animatorSlot != UINT32_MAX
+				&& e.animatorSlot < animators.size()) {
+			AnimatorEntity& a = animators[e.animatorSlot];
+			if (a.alive) {
+				if (a.state.target && a.state.target->poseExternallyDriven)
+					a.state.target->poseExternallyDriven = false;
+				a.alive = false;
+				a.state = AnimatorState{};
+				if (a.generation != UINT32_MAX) {
+					++a.generation;
+					if (a.generation != 0)
+						animatorFree.push_back(e.animatorSlot);
+				}
+			}
+		}
+		// Drop the mirror rows + retire the nodes.
+		if (e.mergedNode != UINT32_MAX
+				&& e.mergedNode < scene.hierarchy.size()) {
+			RemoveMesh(scene, e.mergedNode);
+			RemoveMaterial(scene, e.mergedNode);
+			RetireNodeSlot(scene, e.mergedNode);
+		}
+		if (e.transformOwner) {
+			RemoveMesh(e.transformOwner->scene, e.clusterNode);
+			RetireNodeSlot(e.transformOwner->scene, e.clusterNode);
+		}
+		e.alive = false;
+		if (e.generation != UINT32_MAX) {
+			++e.generation;
+			if (e.generation != 0)
+				meshEntityFree.push_back(idx);
+		}
+		return true;
+	}
+
+	bool World::IsMeshEntityAlive(MeshEntityHandle handle) const
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= meshEntities.size())
+			return false;
+		const MeshEntity& e = meshEntities[idx];
+		return e.alive && e.generation == handle.Generation();
+	}
+
+	NodeId World::MeshEntityNode(MeshEntityHandle handle) const
+	{
+		if (!handle)
+			return UINT32_MAX;
+		const uint32_t idx = handle.Index();
+		if (idx >= meshEntities.size())
+			return UINT32_MAX;
+		const MeshEntity& e = meshEntities[idx];
+		if (!e.alive || e.generation != handle.Generation())
+			return UINT32_MAX;
+		return e.mergedNode;
+	}
+
+	uint32_t World::MeshEntityMeshIndex(MeshEntityHandle handle) const
+	{
+		if (!IsMeshEntityAlive(handle))
+			return UINT32_MAX;
+		const MeshEntity& e =
+			meshEntities[handle.Index()];
+		return WorldIndexOfMesh(meshLocations, e.meshOwner, e.mesh);
+	}
+
+	Animator World::AddAnimator(MeshEntityHandle mesh,
+		touranim::Clip initialClip)
+	{
+		if (!IsMeshEntityAlive(mesh))
+			return {};
+		MeshEntity& e = meshEntities[mesh.Index()];
+		if (!e.meshOwner || !e.meshOwner->hasSkeleton) {
+			std::cerr << "[World] AddAnimator: the entity's mesh cluster"
+				" carries no skeleton (a static-mesh entity — the v1"
+				" single-skeleton-per-cluster contract)\n";
+			return {};
+		}
+		if (e.animatorSlot != UINT32_MAX) {
+			// One animator per entity (the attachment slot): replace.
+			if (e.animatorSlot < animators.size()
+					&& animators[e.animatorSlot].alive) {
+				AnimatorEntity& old = animators[e.animatorSlot];
+				if (old.state.target
+						&& old.state.target->poseExternallyDriven)
+					old.state.target->poseExternallyDriven = false;
+				old.alive = false;
+				old.state = AnimatorState{};
+				if (old.generation != UINT32_MAX) {
+					++old.generation;
+					if (old.generation != 0)
+						animatorFree.push_back(e.animatorSlot);
+				}
+			}
+			e.animatorSlot = UINT32_MAX;
+		}
+		// The rest pose: the target cluster's CURRENT joint locals (the
+		// bind pose on a fresh load — attach before other writers move
+		// the joints if you need exact bind; untracked joints/channels
+		// keep this pose forever).
+		Cluster* target = e.meshOwner;
+		AnimatorState state;
+		state.mesh = mesh;
+		state.target = target;
+		state.restLocals.resize(target->skeleton.Count());
+		for (uint32_t j = 0; j < target->skeleton.Count(); ++j) {
+			const uint32_t node = target->skeleton.joints[j];
+			state.restLocals[j] = node <
+					target->scene.localTransform.size()
+				? target->scene.localTransform[node]
+				: glm::mat4(1.0f);
+		}
+		AnimatorPlay(state, std::move(initialClip), true);
+		// The registry slot.
+		uint32_t index;
+		uint32_t generation;
+		if (!animatorFree.empty()) {
+			index = animatorFree.back();
+			animatorFree.pop_back();
+			generation = animators[index].generation;
+		}
+		else {
+			index = uint32_t(animators.size());
+			animators.emplace_back();
+			generation = animators.back().generation;
+		}
+		AnimatorEntity& a = animators[index];
+		a.alive = true;
+		a.meshEntitySlot = mesh.Index();
+		a.state = std::move(state);
+		e.animatorSlot = index;
+		return Animator(*this,
+			MakeEntityHandle<AnimatorTag>(index, generation));
+	}
+
+	bool World::DestroyAnimator(AnimatorHandle handle)
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= animators.size())
+			return false;
+		AnimatorEntity& a = animators[idx];
+		if (!a.alive || a.generation != handle.Generation())
+			return false;
+		if (a.state.target && a.state.target->poseExternallyDriven)
+			a.state.target->poseExternallyDriven = false;
+		// Detach from the entity (a later DestroyMesh must not touch
+		// the freed slot).
+		if (a.meshEntitySlot != UINT32_MAX
+				&& a.meshEntitySlot < meshEntities.size()
+				&& meshEntities[a.meshEntitySlot].animatorSlot == idx)
+			meshEntities[a.meshEntitySlot].animatorSlot = UINT32_MAX;
+		a.alive = false;
+		a.state = AnimatorState{};
+		if (a.generation != UINT32_MAX) {
+			++a.generation;
+			if (a.generation != 0)
+				animatorFree.push_back(idx);
+		}
+		return true;
+	}
+
+	bool World::IsAnimatorAlive(AnimatorHandle handle) const
+	{
+		if (!handle)
+			return false;
+		const uint32_t idx = handle.Index();
+		if (idx >= animators.size())
+			return false;
+		const AnimatorEntity& a = animators[idx];
+		return a.alive && a.generation == handle.Generation();
+	}
+
+	AnimatorState* World::AnimatorStateOf(AnimatorHandle handle)
+	{
+		if (!handle)
+			return nullptr;
+		const uint32_t idx = handle.Index();
+		if (idx >= animators.size())
+			return nullptr;
+		AnimatorEntity& a = animators[idx];
+		if (!a.alive || a.generation != handle.Generation())
+			return nullptr;
+		return &a.state;
+	}
+
+	const AnimatorState* World::AnimatorStateOf(
+		AnimatorHandle handle) const
+	{
+		if (!handle)
+			return nullptr;
+		const uint32_t idx = handle.Index();
+		if (idx >= animators.size())
+			return nullptr;
+		const AnimatorEntity& a = animators[idx];
+		if (!a.alive || a.generation != handle.Generation())
+			return nullptr;
+		return &a.state;
+	}
+
+	void World::Update(float dt)
+	{
+		if (animators.empty())
+			return;
+		// Reset the claims for THIS frame (the first animator per
+		// cluster re-claims below; the renderer reads the flags after
+		// Update — a sticky claim would freeze the driving animator's
+		// own re-flush, and a dead animator's claim is re-taken by the
+		// next animator on its next Update).
+		for (const auto& clusterPtr : clusters)
+			if (clusterPtr)
+				clusterPtr->poseExternallyDriven = false;
+		// Advance every animator (independent playback state — exact
+		// for all entities) + flush the FIRST animator per target
+		// cluster (the poseExternallyDriven flag IS the claim for this
+		// frame: the first to reach a cluster writes its pose, later
+		// animators on the SAME cluster keep their independent state
+		// but do not fight the pose).
+		for (AnimatorEntity& a : animators) {
+			if (!a.alive || !a.state.target)
+				continue;
+			AdvanceAnimator(a.state, dt);
+			Cluster& c = *a.state.target;
+			if (a.state.jointLocals.empty() || c.poseExternallyDriven)
+				continue;
+			// The flush: the evaluated joint locals become the
+			// cluster's pose (the existing global walk + palette build
+			// consume it; the renderer skips its own clip advance on
+			// driven clusters).
+			const touranim::Skeleton& sk = c.skeleton;
+			for (uint32_t j = 0; j < sk.Count(); ++j) {
+				if (sk.joints[j] >= c.scene.localTransform.size())
+					continue;
+				c.scene.localTransform[sk.joints[j]] =
+					a.state.jointLocals[j];
+				markAsChanged(c.scene, int(sk.joints[j]));
+			}
+			recalculateGlobalTransforms(c.scene);
+			c.poseExternallyDriven = true;
+		}
+	}
+
 	std::span<const uint8_t> World::ReadBakeBytes(
 		const std::string& vfsPath) const
 	{
@@ -972,6 +1340,56 @@ namespace smvk {
 		RebuildLightmapChartTable();
 		RebuildStaticBvh();
 		dirtyCull = true;
+
+		// The runtime MESH entities' mirrors: the resolve wiped the
+		// merged scene, so each entity's durable transform node remaps
+		// through its owner's map and the mesh + material rows are
+		// RE-ESTABLISHED on it (the bindings are the stable (cluster,
+		// pool handle) pairs — the world indices were just rebuilt).
+		for (MeshEntity& e : meshEntities) {
+			if (!e.alive || !e.transformOwner || !e.meshOwner)
+				continue;
+			e.mergedNode = UINT32_MAX;
+			// The durable node's merged id (find the owner's ordinal).
+			for (size_t ci = 0; ci < clusters.size(); ++ci) {
+				if (clusters[ci].get() != e.transformOwner
+						|| ci >= clusterMergedNodes.size())
+					continue;
+				const auto& merged = clusterMergedNodes[ci];
+				if (e.clusterNode < merged.size()
+						&& merged[e.clusterNode] != UINT32_MAX)
+					e.mergedNode = merged[e.clusterNode];
+				break;
+			}
+			if (e.mergedNode == UINT32_MAX
+					|| e.mergedNode >= scene.hierarchy.size())
+				continue;
+			const uint32_t worldMeshIdx = WorldIndexOfMesh(
+				meshLocations, e.meshOwner, e.mesh);
+			if (worldMeshIdx != UINT32_MAX)
+				SetMesh(scene, e.mergedNode, worldMeshIdx);
+			if (e.material.valid()) {
+				// The material's owner is whatever cluster held it at
+				// spawn (cross-cluster materials ride the same table);
+				// search by handle across owners (the common case is
+				// the mesh's own cluster).
+				uint32_t worldMatIdx = WorldIndexOfMaterial(
+					materialLocations, e.meshOwner, e.material);
+				if (worldMatIdx == UINT32_MAX) {
+					for (const auto& loc : materialLocations)
+						if (loc.handle == e.material) {
+							worldMatIdx = uint32_t(&loc
+								- materialLocations.data());
+							break;
+						}
+				}
+				if (worldMatIdx != UINT32_MAX)
+					SetMaterial(scene, e.mergedNode, worldMatIdx);
+			}
+		}
+		// (The animators' target clusters persist through resolves —
+		// their rest poses + cursors stand; the next Update re-flushes
+		// the pose onto the rebuilt cluster scene.)
 	}
 
 	StaticMesh* World::GetMesh(uint32_t meshIndex)

@@ -19,6 +19,8 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
+#include <Engine/App/animator.h>
+#include <Engine/Asset/touranim.h>
 #include <Engine/Scene/scene.h>
 
 namespace {
@@ -208,6 +210,188 @@ void TestAudioSourceEntities() {
 		&& !w.DestroyAudioSource(smvk::MakeEntityHandle<
 			smvk::AudioSourceTag>(9999u, 1u)),
 		"audio.garbage-handle-refused");
+}
+
+// Runtime MESH entities + the ANIMATOR component (the gameplay-handle
+// surface — World::SpawnMeshFromNode/DestroyMesh + AddAnimator and the
+// playback engine; GPU-less, headless). Pins: the instancing rows +
+// the resolve RE-MIRROR (the handle stays, the binding re-establishes),
+// the animator's rest capture + track flush into the target cluster
+// (poseExternallyDriven), the playback controls (pause/resume/speed/
+// wrap), and the attachment cleanup (DestroyMesh kills the animator).
+void TestMeshEntitiesAndAnimators() {
+	using namespace smvk;
+	World w;
+
+	// A "pak" cluster: root(0) + a joint child(1) + a mesh node(2),
+	// with a 2-joint skeleton (the v1 single-skeleton contract).
+	auto a = std::make_unique<smvk::Cluster>(nullptr);
+	a->SetOfflineMode(true);
+	Cluster* ap = a.get();
+	addNode(a->scene, -1, 0);                          // 0: root
+	const int jointChild = addNode(a->scene, 0, 1);    // 1
+	const int meshNode = addNode(a->scene, 0, 1);      // 2
+	a->skeleton.joints = { 0u, uint32_t(jointChild) };
+	a->skeleton.inverseBind = { glm::mat4(1.0f),
+		glm::mat4(1.0f) };
+	a->skeleton.root = 0;
+	a->hasSkeleton = true;
+	const auto mh = a->staticMeshes.create(StaticMesh{});
+	SetMesh(a->scene, NodeId(meshNode), mh.index());
+	Material matDef{};
+	matDef.rebuildPipeline();
+	const auto math = a->materials.create(std::move(matDef));
+	SetMaterial(a->scene, NodeId(meshNode), math.index());
+	w.RegisterCluster(std::move(a));
+	w.ResolveAndFixup_clusters();
+
+	// The source node (the merged-scene node carrying the mesh).
+	uint32_t sourceNode = UINT32_MAX;
+	uint32_t sourceMeshIdx = UINT32_MAX;
+	for (const MeshRow& row : w.scene.tables.meshes) {
+		if (row.mesh < w.meshLocations.size()
+				&& w.meshLocations[row.mesh].cluster == ap) {
+			sourceNode = row.node;
+			sourceMeshIdx = row.mesh;
+			break;
+		}
+	}
+	Check(sourceNode != UINT32_MAX, "meshent.source-found");
+
+	// Spawn: the entity node + the CROSS-CLUSTER binding (the source
+	// cluster owns the mesh; the mirror rows resolve through the world
+	// tables).
+	const glm::mat4 spawnFrame = glm::translate(glm::mat4(1.0f),
+		glm::vec3(10.0f, 0.0f, 0.0f));
+	MeshEntityHandle h = w.SpawnMeshFromNode(sourceNode, spawnFrame,
+		UINT32_MAX);
+	Check(bool(h) && w.IsMeshEntityAlive(h), "meshent.spawn-alive");
+	const uint32_t entNode = w.MeshEntityNode(h);
+	Check(entNode != UINT32_MAX
+		&& FindMesh(w.scene, entNode) != nullptr
+		&& FindMesh(w.scene, entNode)->mesh == sourceMeshIdx,
+		"meshent.spawn-mirror-row");
+	Check(FindMaterial(w.scene, entNode) != nullptr,
+		"meshent.spawn-material-row");
+	Check(w.MeshEntityMeshIndex(h) == sourceMeshIdx,
+		"meshent.mesh-index-resolves");
+
+	// Resolve: the mirror dies, the binding RE-ESTABLISHES on the
+	// remapped node (the handle never moved).
+	w.ResolveAndFixup_clusters();
+	Check(w.IsMeshEntityAlive(h), "meshent.resolve-handle-stays");
+	{
+		const uint32_t remapped = w.MeshEntityNode(h);
+		Check(remapped != UINT32_MAX
+			&& FindMesh(w.scene, remapped) != nullptr
+			&& FindMesh(w.scene, remapped)->mesh
+				== w.MeshEntityMeshIndex(h),
+			"meshent.resolve-remirror");
+	}
+
+	// The animator: a 1s translate clip on the child joint (0 -> y=2).
+	touranim::Clip clip;
+	clip.name = "rise";
+	clip.duration = 1.0;
+	touranim::Track track;
+	track.joint = uint32_t(jointChild);
+	track.channel = touranim::Channel::Translate;
+	track.spline = touranim::Spline::Linear;
+	track.keys = { touranim::Key{ 0.0, glm::vec4(0, 0, 0, 0) },
+		touranim::Key{ 1.0, glm::vec4(0, 2, 0, 0) } };
+	clip.tracks.push_back(track);
+	Animator anim = w.AddAnimator(h, clip);
+	Check(bool(anim) && anim.Playing(), "anim.add-ok");
+
+	// The playback engine: Update advances + flushes the pose into the
+	// TARGET cluster's scene (the first animator claims it).
+	w.Update(0.5f);
+	{
+		const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+		Check(std::abs(t.y - 1.0f) < 1e-4f, "anim.flush-sample");
+		Check(ap->poseExternallyDriven, "anim.cluster-claimed");
+		// The untracked joint keeps the REST pose.
+		const glm::vec3 t0(ap->scene.localTransform[0][3]);
+		Check(std::abs(t0.y) < 1e-5f, "anim.rest-untracked");
+	}
+	// Pause freezes; resume continues.
+	anim.Pause();
+	w.Update(0.25f);
+	{
+		const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+		Check(std::abs(t.y - 1.0f) < 1e-4f, "anim.pause-freezes");
+	}
+	anim.Resume();
+	w.Update(0.25f);
+	{
+		const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+		Check(std::abs(t.y - 1.5f) < 1e-4f, "anim.resume-continues");
+	}
+	// Speed 2 + 0.25s: the cursor moves 0.75 -> 1.25 -> the LOOP wraps
+	// once to 0.25 -> y = 0.5.
+	anim.SetSpeed(2.0f);
+	w.Update(0.25f);
+	{
+		const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+		Check(std::abs(t.y - 0.5f) < 1e-4f, "anim.speed-loop-wrap");
+	}
+	Check(std::abs(anim.Speed() - 2.0f) < 1e-5f, "anim.speed-reads");
+
+	// CrossFade (back to speed 1): the current (rise @ 0.25, heading
+	// to y=2) fades against a sink clip (y 0 -> -2) over 1s. At the
+	// fade midpoint: rise has advanced to 0.75 (y=1.5), sink sits at
+	// its 0.5 point (y=-1), the 0.5/0.5 blend -> y = 0.25.
+	anim.SetSpeed(1.0f);
+	touranim::Clip sink;
+	sink.name = "sink";
+	sink.duration = 1.0;
+	touranim::Track sinkTrack;
+	sinkTrack.joint = uint32_t(jointChild);
+	sinkTrack.channel = touranim::Channel::Translate;
+	sinkTrack.spline = touranim::Spline::Linear;
+	sinkTrack.keys = { touranim::Key{ 0.0, glm::vec4(0, 0, 0, 0) },
+		touranim::Key{ 1.0, glm::vec4(0, -2, 0, 0) } };
+	sink.tracks.push_back(sinkTrack);
+	anim.CrossFade(sink, 1.0f);
+	w.Update(0.5f);
+	{
+		const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+		Check(std::abs(t.y - 0.25f) < 1e-3f, "anim.crossfade-blend");
+	}
+
+	// DestroyMesh: the ATTACHED animator dies with the entity (the
+	// Kill() contract) + the cluster's claim clears.
+	const AnimatorHandle animHandle = anim.handle();
+	Check(w.DestroyMesh(h), "meshent.destroy");
+	Check(!w.IsMeshEntityAlive(h) && !w.DestroyMesh(h),
+		"meshent.destroy-stale-invalid");
+	Check(!w.IsAnimatorAlive(animHandle), "anim.dies-with-mesh");
+	Check(!ap->poseExternallyDriven, "anim.claim-cleared");
+	Check(FindMesh(w.scene, w.MeshEntityNode(h)) == nullptr,
+		"meshent.rows-dropped");
+	// The stale facade no-ops (never crashes).
+	anim.Pause();
+	anim.SetSpeed(4.0f);
+
+	// A static cluster (no skeleton) refuses the animator.
+	{
+		World w2;
+		auto s = std::make_unique<smvk::Cluster>(nullptr);
+		s->SetOfflineMode(true);
+		addNode(s->scene, -1, 0);
+		const auto smh = s->staticMeshes.create(StaticMesh{});
+		SetMesh(s->scene, 0, smh.index());
+		w2.RegisterCluster(std::move(s));
+		w2.ResolveAndFixup_clusters();
+		uint32_t src = UINT32_MAX;
+		for (const MeshRow& row : w2.scene.tables.meshes)
+			src = row.node;
+		MeshEntityHandle sh = w2.SpawnMeshFromNode(src,
+			glm::mat4(1.0f), UINT32_MAX);
+		Check(bool(sh), "anim.static-spawn");
+		Animator refused = w2.AddAnimator(sh, clip);
+		Check(!bool(refused), "anim.static-refused");
+	}
 }
 
 void TestDecalEntities() {
@@ -650,6 +834,7 @@ int main() {
 	TestUnloadAndDynamicCluster();
 	TestDecalEntities();
 	TestAudioSourceEntities();
+	TestMeshEntitiesAndAnimators();
 	TestBakePayloadChannel();
 	TestEnvZones();
 	TestActiveEnvironmentFirstWins();

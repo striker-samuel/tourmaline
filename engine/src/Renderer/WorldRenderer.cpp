@@ -10450,6 +10450,14 @@ namespace engine {
 			gfx.skinDeformedBase = UINT32_MAX;
 			const uint64_t lastSkinHeapBda = m_skinLastHeapBda;
 			const uint32_t lastSkinDeformedBase = m_skinLastDeformedBase;
+			// The ANIMATOR COMPONENT advance (World::Update): every live
+			// animator's independent playback state advances here, with
+			// the frame's dt (bench-deterministic - the same place the
+			// old cluster-clip cursor advanced) and the first animator
+			// per cluster flushes its pose into the cluster scene
+			// (poseExternallyDriven). A world with no animators no-ops.
+			if (!m_world->animators.empty())
+				m_world->Update(m_deltaTime);
 			for (const auto& clusterPtr : m_world->clusters) {
 				smvk::Cluster* c = clusterPtr.get();
 				if (!c || !c->hasSkeleton)
@@ -10468,7 +10476,16 @@ namespace engine {
 					// locals -> the global walk -> the palette (or the
 					// bind-pose fallback when no clip is attached).
 					SMVK_PROFILE_RENDER("Skinning_SampleAnimation");
-					if (!c->SampleAnimation(m_deltaTime, palette)) {
+					if (c->poseExternallyDriven) {
+						// ANIMATOR-DRIVEN: World::Update already wrote
+						// the pose into the scene (its own cursor
+						// advanced) - build the palette straight off
+						// it, never double advance the cluster's own
+						// clip.
+						smvk::touranim::BuildSkinPalette(
+							c->scene, c->skeleton, palette);
+					}
+					else if (!c->SampleAnimation(m_deltaTime, palette)) {
 						// No clip attached: the bind-pose palette (the loaded
 						// globals ARE the bind pose) - the deformed heap
 						// exists, the fetch swap works, nothing moves.

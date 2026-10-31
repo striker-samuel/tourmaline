@@ -37,9 +37,18 @@
   AudioSourceHandle, zero = invalid, generation bumps on destroy).
   The generated project.h carries TYPED KEYS (SceneKey/TextureKey/
   MeshKey/SoundKey constants — which ASSET; handles name which
-  INSTANCE). `World::SpawnAudioSource`/`DestroyAudioSource` +
-  `World::clusterMergedNodes` are the audio-entity surface today;
-  the mesh/animator registries follow the same shape.
+  INSTANCE). The full mesh-entity + animator surface has landed
+  (docs/entities_and_animators.md): World::SpawnMeshFromNode/
+  DestroyMesh (cross-cluster bindings as stable (cluster, pool
+  handle) pairs, the resolve tail RE-MIRRORS the rows),
+  World::AddAnimator + the Animator facade (Play/CrossFade/SetSpeed/
+  Pause/Resume/Stop, per-entity private joint arrays, the
+  World::Update flush through Cluster::poseExternallyDriven — the
+  renderer frame build drives Update with the frame's dt, NEVER a
+  second caller). Renderer limit: one POSE per cluster (independent
+  STATE for all animators); the per-draw palette table + the
+  SpawnMesh(MeshKey)/LoadMesh/LoadSkeleton/LoadAnimation asset surface
+  are the documented follow-ups.
 
 ## Build system
 

@@ -344,6 +344,14 @@ namespace smvk {
 		[[nodiscard]] bool HasAnimClip() const
 		{ return animClip_.has_value(); }
 		bool SampleAnimation(float dt, std::vector<glm::mat4>& outPalette);
+		// ANIMATOR-DRIVEN pose (World::Update flushes a live animator's
+		// evaluated joint locals into this scene and sets this): the
+		// renderer's skinning leg must NOT advance its own clip on a
+		// driven cluster (the pose is already in the scene — double
+		// advancing would run both cursors). Cleared when the driving
+		// animator dies/destroys (the cluster resumes its own clip) or
+		// never set (the normal path).
+		bool poseExternallyDriven = false;
 
 		// GPU-free offline mode (pak cooker without a Vulkan device).
 		// UploadStaticMesh records CPU geometry + retained uploads only
