@@ -87,6 +87,14 @@ struct PakStageArgs {
 	std::string tour;      // "" = an asset-only pak (no scene blob)
 	std::string outPak;    // absolute destination
 	bool verify = true;
+	// The multi-pak ownership surface (the resolved plan's tables):
+	// contentSet = the VFS paths an ASSET-ONLY pak embeds directly as
+	// Texture blobs (no scene, no clusters — the shared-texture pak);
+	// excludeVfs = VFS texture paths a DEPENDENCY pak owns (this pak's
+	// serializer skips them; the materials keep their refs and resolve
+	// cross-pak through the mounted backends at runtime).
+	std::vector<std::string> contentSet;
+	std::vector<std::string> excludeVfs;
 };
 
 struct StageAdapter {

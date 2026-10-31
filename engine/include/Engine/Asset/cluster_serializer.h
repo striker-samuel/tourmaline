@@ -66,13 +66,22 @@ struct PakSceneInfo {
 // Texture blobs embed the .ktx2 source bytes from Cluster::GetTextureSource
 // — the importer stashes them; a missing payload fails that texture with
 // an error (cooker must fail loudly, never silently drop).
+// excludeTextureVfsPaths/excludeTextureVfsCount (optional, the recipe
+// build's multi-pak ownership surface): VFS texture paths this pak must
+// NOT embed because a DEPENDENCY pak owns them — the materials keep
+// their texture refs and resolve them cross-pak through the mounted pak
+// backends at runtime (pak.h's interop contract: PakBackend serves
+// Texture-kind blobs by VFS path). Null/0 = embed everything (the
+// default, byte-identical to the historical output).
 // Returns false on error (err filled).
 bool SerializeClusters(
 	const std::vector<const Cluster*>& clusters,
 	const std::vector<std::string>& sceneNames, // parallel, may be short
 	PakWriter& writer,
 	ClusterSerializeStats* stats = nullptr,
-	std::string* err = nullptr);
+	std::string* err = nullptr,
+	const std::string* excludeTextureVfsPaths = nullptr,
+	size_t excludeTextureVfsCount = 0);
 
 // Single-scene form (identical layout: index-0 scene blob).
 bool SerializeCluster(

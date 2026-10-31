@@ -533,7 +533,9 @@ bool SerializeClusters(
 	const std::vector<std::string>& sceneNames,
 	PakWriter& writer,
 	ClusterSerializeStats* stats,
-	std::string* err) {
+	std::string* err,
+	const std::string* excludeTextureVfsPaths,
+	size_t excludeTextureVfsCount) {
 	auto fail = [&](const std::string& msg) {
 		if (err)
 			*err = msg;
@@ -542,6 +544,19 @@ bool SerializeClusters(
 	};
 	if (clusters.empty())
 		return fail("no clusters to serialize");
+	// The cross-pak ownership exclude (see the header): a texture whose
+	// VFS path a dependency pak owns is NOT embedded here — the material
+	// keeps its ref and the runtime resolves it through the other pak's
+	// backend. Checked BEFORE the source lookup: the excluded source
+	// lives in the OWNING pak's cluster, not this one.
+	auto textureExcluded = [&](const std::string& filePart) {
+		if (!excludeTextureVfsPaths || filePart.empty())
+			return false;
+		for (size_t i = 0; i < excludeTextureVfsCount; ++i)
+			if (excludeTextureVfsPaths[i] == filePart)
+				return true;
+		return false;
+	};
 	// The trailing skin-section writer's static fallback (a null retained
 	// upload writes count 0).
 	static const std::vector<PackedSkinInfluences> kEmptySkinStream{};
@@ -854,6 +869,14 @@ bool SerializeClusters(
 	std::vector<TexCookJob> texCooks;
 	for (const auto& [uri, rhi] : cluster.ListTextureUris()) {
 		(void)rhi;
+		// TextureBlob TOC path = the file part (VFS path) so PakBackend can
+		// serve the .ktx2 bytes through the VFS overlay.
+		const std::string filePart = AssetFilePart(uri);
+		if (textureExcluded(filePart)) {
+			// Owned by a dependency pak: no blob here, the material's
+			// ref resolves cross-pak at runtime.
+			continue;
+		}
 		if (!texturesDone.insert(uri.Str()).second)
 			continue; // shared with a sibling scene
 		const std::vector<uint8_t>* src = cluster.GetTextureSource(uri);
@@ -863,9 +886,6 @@ bool SerializeClusters(
 		TextureSamplerDesc samp;
 		if (auto hit = cluster.GetTextureSampler(uri))
 			samp = *hit;
-		// TextureBlob TOC path = the file part (VFS path) so PakBackend can
-		// serve the .ktx2 bytes through the VFS overlay.
-		const std::string filePart = AssetFilePart(uri);
 		if (filePart.empty())
 			return fail("texture uri has no VFS file part: " + uri.Str());
 		texCooks.push_back(TexCookJob{ uri.Str(), filePart, samp, src,

@@ -29,6 +29,7 @@
 
 #include <gltf_import/asset_export.h>
 
+#include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
 namespace {
@@ -57,6 +58,29 @@ struct TestSource {
 	fs::path gltf;
 	fs::path bin;
 };
+
+// A minimal VALID 1x1 red RGBA PNG (93-byte spec shape with zeroed CRCs
+// — stb_image decodes it and does not verify CRCs; GDI+ confirms the
+// bytes decode). The fixture's only real texture: the multi-pak tests
+// transcode it through the content-set path.
+void WriteTinyPng(const fs::path& path) {
+	static const unsigned char kPng[] = {
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54,
+		0x78, 0x01, 0x01, 0x05, 0x00, 0xFA, 0xFF, 0x00,
+		0xFF, 0x00, 0x00, 0xFF, 0x05, 0x00, 0x01, 0xFF,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+		0x00, 0x00, 0x00, 0x00
+	};
+	std::error_code ec;
+	fs::create_directories(path.parent_path(), ec);
+	std::ofstream f(path, std::ios::binary | std::ios::trunc);
+	f.write(reinterpret_cast<const char*>(kPng), sizeof(kPng));
+}
 
 TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
 	int n, uint32_t seed = 0, bool withMaterial = false) {
@@ -110,7 +134,11 @@ TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
 				? "\"materials\":[{\"name\":\"Grid\","
 					"\"pbrMetallicRoughness\":{"
 					"\"baseColorFactor\":[0.8,0.8,0.8,1],"
-					"\"metallicFactor\":0,\"roughnessFactor\":1}}],"
+					"\"metallicFactor\":0,\"roughnessFactor\":1},"
+					"\"baseColorTexture\":{\"index\":0}}],"
+					"\"textures\":[{\"sampler\":0,\"source\":0}],"
+					"\"samplers\":[{}],"
+					"\"images\":[{\"uri\":\"shared/stone.png\"}],"
 				: "")
 		<< "\"accessors\":["
 		"{\"bufferView\":0,\"componentType\":5126,\"count\":" << verts
@@ -130,6 +158,8 @@ TestSource WriteGridGltf(const fs::path& dir, const std::string& stem,
 		"\"buffers\":[{\"uri\":\"" << (stem + ".bin")
 		<< "\",\"byteLength\":" << idxEnd << "}]}";
 	const fs::path gltfPath = dir / (stem + ".gltf");
+	if (withMaterial)
+		WriteTinyPng(dir / "shared" / "stone.png"); // the material's image
 	{
 		std::ofstream f(gltfPath, std::ios::binary | std::ios::trunc);
 		f << j.str();
@@ -854,6 +884,14 @@ void TestRecipeResolution() {
 		"[pak a]\noutput a.pak\ninclude content/models/world/*.gltf\n"
 		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
 		"owns no content");
+	// An include claiming geometry for a scene-less pak: meshes are
+	// cluster-internal — dead content in an asset-only pak.
+	resolveFails("geometry-without-scene",
+		"recipe 1\nentry content/scenes/world.tour\n"
+		"[pak hoard]\noutput h.pak\n"
+		"include content/models/world/*.geometry\n"
+		"[pak world]\noutput w.pak\nscene content/scenes/world.tour\n",
+		"owns no scene");
 	// A nested scene-reference cycle (a -> b -> a).
 	{
 		writeTour(scenes / "loopA.tour", "content/models/world/world.geometry");
@@ -909,16 +947,28 @@ public:
 		std::vector<std::string> v = { a.contentDir, a.inVfs, a.tour,
 			a.outPak, a.verify ? "verify:on" : "verify:off" };
 		for (const std::string& e : a.extraArtifacts)
-			v.push_back(e);
+			v.push_back("extra:" + e);
+		for (const std::string& e : a.contentSet)
+			v.push_back("content-set:" + e);
+		for (const std::string& e : a.excludeVfs)
+			v.push_back("exclude:" + e);
 		calls.push_back({ "Pak", v });
 		if (pakRc == 0) {
-			// The executor verifies the stage's output EXISTS after a
-			// success — the recording adapter fakes the write (it must:
-			// it never ran the stage).
+			// The executor verifies the stage's output EXISTS and
+			// POLICES it through PakReader after a success — the
+			// recording adapter fakes a REAL minimal pak (one Scene
+			// blob; policing only inspects Texture entries, so a
+			// scene-blob-only pak passes it by construction).
 			std::error_code ec;
 			fs::create_directories(fs::path(a.outPak).parent_path(), ec);
+			smvk::PakWriter w;
+			const std::vector<uint8_t> fake{ 1, 2, 3 };
+			w.AddBlob(smvk::PakAssetKind::Scene, "recording/fake",
+				std::vector<uint8_t>(fake));
+			const std::vector<uint8_t> image = w.Finalize();
 			std::ofstream f(a.outPak, std::ios::binary | std::ios::trunc);
-			f << "pak";
+			f.write(reinterpret_cast<const char*>(image.data()),
+				std::streamsize(image.size()));
 		}
 		return pakRc;
 	}
@@ -1019,24 +1069,29 @@ void TestBuildPlanExecutor() {
 				rep, e)
 				&& e.empty() && rep.paks.size() == 1,
 			"executor.plan-runs");
+		if (!e.empty())
+			std::cout << "  (plan-runs err: " << e << ")\n";
 		Check(rec.calls.size() == 3
 			&& std::string(rec.calls[0].stage) == "Cook"
 			&& std::string(rec.calls[1].stage) == "GiBaker"
 			&& std::string(rec.calls[2].stage) == "Pak",
 			"executor.stage-sequence");
-		Check(rec.calls[0].args[0] == project.root
-			&& rec.calls[0].args[2] == "cubemap:off"
-			&& rec.calls[0].args[3] == "lightmap:off",
-			"executor.cook-flags-from-recipe");
-		Check(rec.calls[2].args[1] == "content/models/grid/grid.geometry"
-			&& rec.calls[2].args[2]
-				== (scenes / "grid.tour").lexically_normal()
-					.generic_string()
-			&& rec.calls[2].args[3]
-				== (tmp / "publish" / "grid.pak").lexically_normal()
-					.generic_string()
-			&& rec.calls[2].args[4] == "verify:on",
-			"executor.pak-args");
+		if (rec.calls.size() >= 3) {
+			Check(rec.calls[0].args[0] == project.root
+				&& rec.calls[0].args[2] == "cubemap:off"
+				&& rec.calls[0].args[3] == "lightmap:off",
+				"executor.cook-flags-from-recipe");
+			Check(rec.calls[2].args[1]
+					== "content/models/grid/grid.geometry"
+				&& rec.calls[2].args[2]
+					== (scenes / "grid.tour").lexically_normal()
+						.generic_string()
+				&& rec.calls[2].args[3]
+					== (tmp / "publish" / "grid.pak").lexically_normal()
+						.generic_string()
+				&& rec.calls[2].args[4] == "verify:on",
+				"executor.pak-args");
+		}
 		if (rep.paks.size() == 1) {
 			Check(rep.paks[0].id == "game"
 				&& rep.paks[0].scene == "content/scenes/grid.tour"
@@ -1089,27 +1144,30 @@ void TestBuildPlanExecutor() {
 			&& rec.calls.size() == 3 && rep.paks.empty(),
 			"executor.pak-failure-aborts");
 	}
-	// Asset-only paks refuse loudly until the M3 packer extension (a
-	// silently-empty pak must never publish).
+	// ---- the multi-pak gate (M3): asset-only shared pak + scene pak -----
+	// The grid glTF's material references shared/stone.png; the import
+	// copies it into the family (content/models/grid/shared/stone.png);
+	// the recipe gives it to an ASSET-ONLY shared pak and world depends
+	// on shared — world's pak must NOT embed it (the cross-pak exclude;
+	// its material keeps the ref) while shared's pak carries it as a
+	// content-set Texture blob with no scene.
 	{
-		const fs::path sharedTex =
-			fs::path(project.ImportsDir()) / "shared";
-		fs::create_directories(sharedTex, ec);
-		{
-			std::ofstream f(sharedTex / "stone.png",
-				std::ios::binary | std::ios::trunc);
-			f << "png";
-		}
+		const fs::path sharedPng = fs::path(project.ImportsDir())
+			/ "grid" / "shared" / "stone.png";
+		Check(fs::is_regular_file(sharedPng, ec),
+			"executor.texture-copied-in");
 		const std::string two =
 			"recipe 1\n"
 			"entry content/scenes/grid.tour\n"
-			"[pak game]\n"
-			"output grid.pak\n"
+			"bake gi\n"
+			"bake cubemaps off\n"
+			"[pak world]\n"
+			"output world.pak\n"
 			"scene content/scenes/grid.tour\n"
 			"depends shared\n"
 			"[pak shared]\n"
 			"output shared.pak\n"
-			"include content/models/shared/**\n";
+			"include content/models/grid/shared/**\n";
 		smvk::project::ProjectRecipe r2;
 		smvk::project::RecipeDiagnostic d2;
 		smvk::project::BuildPlan p2;
@@ -1117,14 +1175,118 @@ void TestBuildPlanExecutor() {
 		Check(smvk::project::ParseProjectRecipeText(two, r2, d2)
 			&& smvk::project::ResolveRecipe(project, r2, p2, e),
 			"executor.two-pak-plan-resolves");
-		RecordingAdapter rec;
-		smvk::project::BuildPlanOptions opts;
-		smvk::project::BuildPlanReport rep;
-		Check(!smvk::project::ExecuteBuildPlan(project, p2, rec, opts,
-				rep, e)
-			&& e.find("asset-only") != std::string::npos
-			&& rep.paks.empty(),
-			"executor.asset-only-refused-until-m3");
+		Check(p2.paks.size() == 2 && p2.paks[0].id == "shared"
+			&& p2.paks[1].id == "world"
+			&& p2.paks[0].assets.size() == 1
+			&& p2.paks[0].assets[0].path
+				== "content/models/grid/shared/stone.png",
+			"executor.shared-owns-texture");
+		// The recording leg: the stage args carry the content set and
+		// the cross-pak exclude (calls: Cook, GiBaker, Pak(shared),
+		// Pak(world) — scene bakes first, then paks in plan order).
+		{
+			RecordingAdapter rec;
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (tmp / "publish3").generic_string();
+			smvk::project::BuildPlanReport rep;
+			std::string e2;
+			Check(smvk::project::ExecuteBuildPlan(project, p2, rec,
+					opts, rep, e2)
+				&& rep.paks.size() == 2,
+				"executor.two-pak-runs");
+			if (!e2.empty())
+				std::cout << "  (two-pak-runs err: " << e2 << ")\n";
+			Check(rec.calls.size() == 4
+				&& std::string(rec.calls[2].stage) == "Pak"
+				&& std::string(rec.calls[3].stage) == "Pak",
+				"executor.two-pak-call-order");
+			if (rec.calls.size() == 4) {
+				const std::vector<std::string>& sharedArgs =
+					rec.calls[2].args;
+				const std::vector<std::string>& worldArgs =
+					rec.calls[3].args;
+				const auto hasArg = [](const std::vector<std::string>& v,
+						const std::string& needle) {
+					for (const std::string& a : v)
+						if (a == needle)
+							return true;
+					return false;
+				};
+				Check(sharedArgs[2] == ""
+					&& hasArg(sharedArgs,
+						"content-set:content/models/grid/shared/"
+						"stone.png")
+					&& !hasArg(sharedArgs, "exclude:"),
+					"executor.shared-content-set-args");
+				Check(hasArg(worldArgs,
+						"exclude:content/models/grid/shared/stone.png")
+					&& !hasArg(worldArgs, "content-set:"),
+					"executor.world-exclude-args");
+			}
+		}
+		// The real leg: build through the subprocess adapter, then
+		// inspect BOTH paks (BLD-02 verify + BLD-07 asset-only + the
+		// ownership police's contract).
+		{
+			auto sub = smvk::project::MakeSubprocessStageAdapter();
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (tmp / "publish4").generic_string();
+			smvk::project::BuildPlanReport rep;
+			std::string e3;
+			Check(smvk::project::ExecuteBuildPlan(project, p2, *sub,
+					opts, rep, e3),
+				"executor.two-pak-build-ok");
+			if (!e3.empty())
+				std::cout << "  (two-pak err: " << e3 << ")\n";
+			if (rep.paks.size() == 2) {
+				const auto open = [](const std::string& p) {
+					std::ifstream in(p, std::ios::binary);
+					std::vector<uint8_t> image(
+						(std::istreambuf_iterator<char>(in)),
+						std::istreambuf_iterator<char>());
+					std::string verr;
+					return smvk::PakReader::Open(
+						std::span<const uint8_t>(image), verr);
+				};
+				auto shared = open(rep.paks[0].output);
+				auto world = open(rep.paks[1].output);
+				Check(bool(shared) && bool(world),
+					"executor.two-pak-open-verify");
+				if (shared && world) {
+					const auto texPath =
+						[&](const std::optional<smvk::PakReader>& r,
+							const char* path) {
+							for (const smvk::PakTocEntry* e : r
+									->BlobsOfKind(
+										smvk::PakAssetKind::Texture))
+								if (e->path == path)
+									return true;
+							return false;
+						};
+					const bool sharedHas = texPath(shared,
+						"content/models/grid/shared/stone.png");
+					if (!sharedHas) {
+						std::cout << "  (shared.pak textures:";
+						for (const smvk::PakTocEntry* e : shared
+								->BlobsOfKind(
+									smvk::PakAssetKind::Texture))
+							std::cout << " " << e->path;
+						std::cout << ")\n";
+					}
+					Check(sharedHas, "executor.shared-embeds-texture");
+					Check(!world
+							->BlobsOfKind(smvk::PakAssetKind::Scene)
+							.empty()
+						&& !texPath(world,
+							"content/models/grid/shared/stone.png"),
+						"executor.world-excludes-shared-texture");
+					Check(shared
+							->BlobsOfKind(smvk::PakAssetKind::Scene)
+							.empty(),
+						"executor.asset-only-no-scene");
+				}
+			}
+		}
 	}
 
 	// ---- the M2 GATE: end-to-end parity with the legacy build ----------

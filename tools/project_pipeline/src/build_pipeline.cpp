@@ -10,14 +10,18 @@
 
 #include <project_pipeline/build_pipeline.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <vector>
 
+#include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
 #include <project_pipeline/import_pipeline.h>
@@ -204,12 +208,26 @@ public:
 			{ "--content-dir", a.contentDir, "--tour", a.tour }, err);
 	}
 	int Pak(const PakStageArgs& a, std::string& err) override {
-		std::vector<std::string> args = { a.contentDir, a.inVfs };
-		for (const std::string& extra : a.extraArtifacts)
-			args.push_back(extra);
+		// inVfs + extras are POSITIONAL (root, then artifacts); an
+		// asset-only pak has NEITHER (an empty positional would smuggle
+		// a "" artifact into the CLI's list).
+		std::vector<std::string> args = { a.contentDir };
+		if (!a.inVfs.empty()) {
+			args.push_back(a.inVfs);
+			for (const std::string& extra : a.extraArtifacts)
+				args.push_back(extra);
+		}
 		if (!a.tour.empty()) {
 			args.push_back("--tour");
 			args.push_back(a.tour);
+		}
+		for (const std::string& path : a.contentSet) {
+			args.push_back("--content-set");
+			args.push_back(path);
+		}
+		for (const std::string& path : a.excludeVfs) {
+			args.push_back("--exclude-vfs");
+			args.push_back(path);
 		}
 		args.push_back("--out-pak");
 		args.push_back(a.outPak);
@@ -348,6 +366,15 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	}
 
 	// ---- 3) per pak: Pak (plan order = dependencies first) --------------
+	// The ownership tables the stages + the policing need: which pak owns
+	// which VFS-addressable path (the resolver's one-owner invariant).
+	std::map<std::string, std::string> vfsOwner; // path -> pak id
+	for (const PlanPak& pak : plan.paks)
+		for (const PlanAsset& asset : pak.assets)
+			if (asset.kind == PlanAssetKind::Texture
+					|| asset.kind == PlanAssetKind::BakeFile)
+				vfsOwner[asset.path] = pak.id;
+
 	for (const PlanPak& pak : plan.paks) {
 		PakStageArgs stage;
 		stage.contentDir = project.root;
@@ -355,32 +382,57 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			.lexically_normal().generic_string();
 		stage.verify = true;
 		if (pak.scene.empty()) {
-			// Asset-only pak: the owned VFS assets, no scene blob. The
-			// M3 packer extension consumes these; until it lands the
-			// executor refuses the plan loudly (never a silently-empty
-			// pak).
-			err = "[Pak " + pak.id + "] asset-only packages need the"
-				" packer's content-set support (M3) — give this pak a"
-				" 'scene' for now";
-			return false;
+			// ASSET-ONLY pak (the recipe spec's shared package): the
+			// owned VFS assets embed directly as Texture blobs — no
+			// scene, no clusters. (The resolver rejects Geometry claims
+			// on scene-less paks: meshes are cluster-internal.)
+			for (const PlanAsset& asset : pak.assets)
+				stage.contentSet.push_back(asset.path);
 		}
-		if (pak.sceneArtifacts.empty()) {
-			err = "[Pak " + pak.id + "] the scene pak has no root"
-				" artifact (a broken plan — re-resolve)";
-			return false;
-		}
-		for (const std::string& artifact : pak.sceneArtifacts)
-			if (!fs::is_regular_file(projectRoot / fs::path(artifact),
-					ec)) {
-				err = "[Pak " + pak.id + "] the artifact is missing: "
-					+ artifact;
+		else {
+			if (pak.sceneArtifacts.empty()) {
+				err = "[Pak " + pak.id + "] the scene pak has no root"
+					" artifact (a broken plan — re-resolve)";
 				return false;
 			}
-		stage.inVfs = pak.sceneArtifacts[0];
-		for (size_t i = 1; i < pak.sceneArtifacts.size(); ++i)
-			stage.extraArtifacts.push_back(pak.sceneArtifacts[i]);
-		stage.tour = (projectRoot / fs::path(pak.scene))
-			.lexically_normal().generic_string();
+			for (const std::string& artifact : pak.sceneArtifacts)
+				if (!fs::is_regular_file(
+						projectRoot / fs::path(artifact), ec)) {
+					err = "[Pak " + pak.id + "] the artifact is missing: "
+						+ artifact;
+					return false;
+				}
+			stage.inVfs = pak.sceneArtifacts[0];
+			for (size_t i = 1; i < pak.sceneArtifacts.size(); ++i)
+				stage.extraArtifacts.push_back(pak.sceneArtifacts[i]);
+			// Owned geometry the scene's own reference walk did NOT
+			// list (an include-claimed .geometry) packs as additional
+			// cluster artifacts.
+			for (const PlanAsset& asset : pak.assets)
+				if (asset.kind == PlanAssetKind::Geometry
+						&& std::find(pak.sceneArtifacts.begin(),
+							pak.sceneArtifacts.end(), asset.path)
+							== pak.sceneArtifacts.end())
+					stage.extraArtifacts.push_back(asset.path);
+			stage.tour = (projectRoot / fs::path(pak.scene))
+				.lexically_normal().generic_string();
+			// The cross-pak excludes: every VFS-addressable asset owned
+			// by a DECLARED dependency pak is not embedded here — the
+			// materials keep their refs, the runtime resolves them
+			// through the dependency's mounted backend (pak.h's
+			// interop contract: PakBackend serves Texture blobs by VFS
+			// path).
+			std::set<std::string> depIds(pak.depends.begin(),
+				pak.depends.end());
+			for (const PlanPak& other : plan.paks) {
+				if (!depIds.count(other.id))
+					continue;
+				for (const PlanAsset& asset : other.assets)
+					if (asset.kind == PlanAssetKind::Texture
+							|| asset.kind == PlanAssetKind::BakeFile)
+						stage.excludeVfs.push_back(asset.path);
+			}
+		}
 		std::error_code mkEc;
 		fs::create_directories(fs::path(stage.outPak).parent_path(), mkEc);
 		const int rc = adapter.Pak(stage, err);
@@ -396,6 +448,40 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			err = "[Pak " + pak.id + "] the stage reported success but"
 				" the output is missing: " + stage.outPak;
 			return false;
+		}
+		// ---- OWNERSHIP POLICING (RES-04 at the pack boundary) ----------
+		// Re-open the written pak and verify its Texture-kind TOC never
+		// carries a path another pak owns — with the excludes above a
+		// dependency-owned path cannot embed, so a hit here is an
+		// undeclared cross-pak reference (the author referenced shared
+		// content without the depends edge) or a packer regression.
+		// Either way the build fails BEFORE publication, never ships a
+		// duplicate.
+		{
+			std::ifstream in(stage.outPak, std::ios::binary);
+			std::vector<uint8_t> image((std::istreambuf_iterator<char>(in)),
+				std::istreambuf_iterator<char>());
+			std::string perr;
+			auto reader = smvk::PakReader::Open(
+				std::span<const uint8_t>(image), perr);
+			if (!reader) {
+				err = "[Pak " + pak.id + "] policing open failed: "
+					+ perr;
+				return false;
+			}
+			for (const smvk::PakTocEntry* e :
+					reader->BlobsOfKind(smvk::PakAssetKind::Texture)) {
+				auto ownerIt = vfsOwner.find(e->path);
+				if (ownerIt != vfsOwner.end()
+						&& ownerIt->second != pak.id) {
+					err = "[Pak " + pak.id + "] embeds '" + e->path
+						+ "' owned by [pak " + ownerIt->second + "] —"
+							" a duplicated/undeclared cross-pak asset"
+							" (add the depends edge or fix the"
+							" ownership)";
+					return false;
+				}
+			}
 		}
 		BuildPlanReport::Pak rep;
 		rep.id = pak.id;

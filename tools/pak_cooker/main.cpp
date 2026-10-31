@@ -23,6 +23,14 @@
 //       [--sun-azimuth 30 --sun-elevation 55 --sun-intensity 10000
 //        --sky-intensity 600 --sun-color 1,0.95,0.9]
 //       [--gi-probe <name> ...] [--terrain <dir>] [--level <name>]
+//       [--content-set <vfs path> ...] [--exclude-vfs <vfs path> ...]
+//
+// --content-set (the recipe build's ASSET-ONLY pak): embed the listed
+// VFS paths directly as Texture blobs — no scene, no clusters; the
+// shared-texture pak other paks' materials resolve through the mounted
+// backends. --exclude-vfs (the ownership table): VFS texture paths a
+// DEPENDENCY pak owns — the serializer skips them, the materials keep
+// their refs, the runtime resolves cross-pak.
 //
 // Inputs: ALREADY-PROCESSED .geometry artifacts (import.exe derives
 // them; cook.exe bakes + stamps <stem>.cooked — pak refuses
@@ -151,6 +159,19 @@ namespace paktool {
 		// registers gi/<name>.sggi names into the clusters (bake the matching
 		// volumes with GiBaker --out). Runtime resolves by name.
 		std::vector<std::string> giProbes;
+		// ---- the multi-pak content-set surface (the recipe build) ----
+		// VFS paths to embed directly as Texture-kind blobs (an ASSET-ONLY
+		// pak: no scene, no clusters — e.g. shared textures another pak's
+		// materials resolve cross-pak through the mounted backends).
+		// Source images (.png/.jpg/...) transcode to KTX2 sRGB (authored
+		// color content); .ktx2 + text manifests embed verbatim.
+		std::vector<std::string> contentSet;
+		// VFS texture paths this pak must NOT embed (owned by a
+		// DEPENDENCY pak — the resolved plan's ownership table): the
+		// serializer skips them, the materials keep their refs, the
+		// runtime resolves cross-pak. Empty = embed everything (the
+		// single-pak default, byte-identical).
+		std::vector<std::string> excludeVfsPaths;
 		// Read-only inspection: open an existing pak and print its manifest
 		// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 		std::string dumpPak;
@@ -481,6 +502,16 @@ namespace paktool {
 				if (!need(v)) return false;
 				out.giProbes.push_back(v);
 			}
+			else if (a == "--content-set") {
+				std::string v;
+				if (!need(v)) return false;
+				out.contentSet.push_back(v);
+			}
+			else if (a == "--exclude-vfs") {
+				std::string v;
+				if (!need(v)) return false;
+				out.excludeVfsPaths.push_back(v);
+			}
 			else if (a == "--dump-pak") {
 				if (!need(out.dumpPak)) return false;
 			}
@@ -518,11 +549,13 @@ namespace paktool {
 		out.inVfsList.assign(positional.begin() + 1, positional.end());
 		out.inVfs = out.inVfsList.front();
 	}
-	if (out.inVfsList.empty() && out.tour.empty() && out.terrainDir.empty()) {
+	if (out.inVfsList.empty() && out.tour.empty() && out.terrainDir.empty()
+			&& out.contentSet.empty()) {
 		tool::err() << "Required: at least one artifact .geometry (or --tour"
 		" <scene.tour> - the editor-authored definition), and"
 		" --out-pak <host path> (--terrain <dir> alone cooks a"
-		" terrain-only pak)" << std::endl;
+		" terrain-only pak; --content-set <vfs>... alone cooks an"
+		" asset-only pak)" << std::endl;
 		return false;
 	}
 	if (out.outPak.empty()) {
@@ -1418,6 +1451,8 @@ int Run(const PakArgs& c) {
 	args.skyIntensity = c.skyIntensity;
 	args.sunColor = c.sunColor;
 	args.giProbes = c.giProbes;
+	args.contentSet = c.contentSet;
+	args.excludeVfsPaths = c.excludeVfsPaths;
 
 	// Read-only inspection path: no VFS, no cooking, no writes.
 	if (!args.dumpPak.empty()) {
@@ -2471,19 +2506,28 @@ int Run(const PakArgs& c) {
 	for (auto& sc : sceneClusters)
 		cookPtrs.push_back(sc.get());
 	if (cookPtrs.empty()) {
-		// Terrain-only pak (no clusters): valid, terrain blobs carry it.
-		// Anything else was rejected at ParseArgs (artifacts/tour empty
-		// without --terrain never reaches here).
-		if (args.terrainDir.empty()) {
+		// Terrain-only / ASSET-ONLY pak (no clusters): valid — the
+		// terrain blobs and/or the content-set Texture blobs carry it.
+		// Anything else was rejected at ParseArgs (artifacts/tour/
+		// content-set all empty never reaches here).
+		if (args.terrainDir.empty() && args.contentSet.empty()) {
 			tool::err() << "Serialize failed: no clusters to serialize"
 				<< std::endl;
 			return 1;
 		}
 	}
-	else if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err)) {
+	else if (!SerializeClusters(cookPtrs, sceneNames, writer, &stats, &err,
+			args.excludeVfsPaths.empty()
+				? nullptr : args.excludeVfsPaths.data(),
+			args.excludeVfsPaths.size())) {
 		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
+	if (!args.excludeVfsPaths.empty())
+		tool::out() << "Cross-pak texture excludes: "
+			<< args.excludeVfsPaths.size() << " path(s) not embedded"
+			<< " (dependency-owned; resolved through the mounted paks)"
+			<< std::endl;
 	// Preconvolved cubemaps ride as Texture blobs under their VFS paths
 	// (PakBackend serves them; CubemapLibrary::Load resolves them). Added
 	// after the cluster serialize so the cook stages above never see
@@ -2537,6 +2581,55 @@ int Run(const PakArgs& c) {
 		}
 		tool::out() << "Embedded anim clip " << vfsPath
 			<< " (" << bytes.size() << " B text)\n";
+	}
+	// ---- content-set blobs (asset-only paks; the recipe build) ---------
+	// Direct VFS embeds: no scene, no clusters — the SHARED-TEXTURE pak.
+	// PakBackend serves them by path so any mounted pak's materials can
+	// reference them (the cross-pak interop contract). Source images
+	// transcode to KTX2 sRGB (authored color content — linear content
+	// ships as authored .ktx2); .ktx2 and text manifests embed verbatim
+	// (the same path-embed pattern as the manifests above).
+	for (const std::string& vfsPath : args.contentSet) {
+		if (!vfs.Exists(vfsPath)) {
+			tool::err() << "Content-set path not found through the VFS: "
+				<< vfsPath << std::endl;
+			return 1;
+		}
+		auto bytes = vfs.TryRead(vfsPath);
+		if (!bytes || bytes->empty()) {
+			tool::err() << "Content-set path unreadable: " << vfsPath
+				<< std::endl;
+			return 1;
+		}
+		std::string ext = vfsPath.substr(vfsPath.rfind('.'));
+		for (char& ch : ext)
+			ch = char(std::tolower(static_cast<unsigned char>(ch)));
+		std::vector<uint8_t> embed;
+		if (ext == ".ktx2" || ext == ".cubemanifest"
+				|| ext == ".givolumemanifest" || ext == ".givolume") {
+			embed = std::move(*bytes);
+		}
+		else {
+			// A source image: transcode to KTX2 (RGBA8, sRGB — the
+			// authored-color assumption; data textures ship as .ktx2).
+			std::string terr;
+			if (!TranscodeImageToKtx2(bytes->data(), bytes->size(), true,
+					vfsPath, embed, terr)) {
+				tool::err() << "Content-set transcode failed: " << vfsPath
+					<< " (" << terr << ")" << std::endl;
+				return 1;
+			}
+		}
+		std::vector<uint8_t> payload = smvk::BuildTexturePayload(
+			vfsPath, -1, -1, -1, -1, std::span<const uint8_t>(embed));
+		if (!writer.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+				std::move(payload))) {
+			tool::err() << "Content-set AddBlob failed: " << vfsPath
+				<< std::endl;
+			return 1;
+		}
+		tool::out() << "Embedded content-set " << vfsPath << " ("
+			<< embed.size() << " B ktx2)\n";
 	}
 	// Tiled terrain (optional, independent of clusters): terrain.json +
 	// H/S PNGs -> Terrain blobs. Runs for mixed and terrain-only paks;
@@ -2797,6 +2890,8 @@ int main(int argc, char** argv) {
 	c.skyIntensity = args.skyIntensity;
 	c.sunColor = args.sunColor;
 	c.giProbes = args.giProbes;
+	c.contentSet = args.contentSet;
+	c.excludeVfsPaths = args.excludeVfsPaths;
 	return paktool::Run(c);
 }
 #endif

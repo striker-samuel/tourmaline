@@ -310,6 +310,18 @@ bool ResolveRecipe(const Project& project, const ProjectRecipe& recipe,
 			const PlanAssetKind kind = ClassifyAsset(rel, known);
 			if (!known)
 				continue; // family/support file — the stages' discovery
+			if (kind == PlanAssetKind::Geometry && pak.scene.empty()) {
+				// Meshes are cluster-internal: a .geometry in a
+				// scene-less pak is unreachable content (nothing loads
+				// it — meshes are not VFS-addressable). The scene's pak
+				// owns its geometry; an asset-only pak carries
+				// VFS-addressable content only.
+				err = "[pak " + pak.id + "] include claims the geometry '"
+					+ rel + "' but owns no scene — meshes are"
+						" cluster-internal (v1): give the pak the scene"
+						" that uses it, or share textures instead";
+				return false;
+			}
 			auto it = owned.find(rel);
 			if (it != owned.end()) {
 				if (it->second.pak == pak.id)
