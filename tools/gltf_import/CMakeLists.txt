@@ -8,6 +8,9 @@ project(GltfImport)
 # Static lib linked by PakCooker, GiBaker, CubemapBaker, Editor and App.
 add_library(gltf_import STATIC
     src/gltf.cpp
+    # The ONLY TU compiling the tinyobjloader implementation (the OBJ
+    # source adapter; tinygltf's implementation lives in gltf.cpp).
+    src/obj_import.cpp
     src/tex_transcode.cpp
     src/asset_export.cpp
     src/tour_world.cpp
@@ -16,10 +19,17 @@ add_library(gltf_import STATIC
 target_include_directories(gltf_import
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-    # stb_image.h / stb_image_resize.h for the in-process KTX transcoder
-    # (xatlas thirdparty; implementations compile once in tex_transcode).
-    # tools/common for tool_log.h (tour_world.cpp definition lines).
+    # tinyobjloader FIRST: xatlas's thirdparty dir bundles an older
+    # tiny_obj_loader.h (its copy predates the v2 ObjReader API this
+    # adapter uses), and include order decides which one
+    # `#include <tiny_obj_loader.h>` resolves to. The dir carries only
+    # that one header, so fronting it cannot shadow anything else.
+    # stb_image.h / stb_image_resize.h for the in-process KTX
+    # transcoder follow (xatlas thirdparty; implementations compile
+    # once in tex_transcode). tools/common for tool_log.h
+    # (tour_world.cpp definition lines).
     PRIVATE
+        ${TOURMALINE_SOURCE_DIR}/external/tinyobjloader
         ${TOURMALINE_SOURCE_DIR}/external/xatlas/source/thirdparty
         ${TOURMALINE_SOURCE_DIR}/tools/common
 )

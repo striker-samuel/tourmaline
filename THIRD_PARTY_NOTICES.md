@@ -53,6 +53,7 @@ a hand-written integration, or are an unpinnable snapshot:
 | [zlib](https://zlib.net) | `external/zlib` | [zlib](external/zlib/LICENSE) | CRC/reference only (not wired into the build); unpinnable develop-branch snapshot |
 | [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | `external/VulkanMemoryAllocator` | MIT (see header notice) | `vk_mem_alloc.h` |
 | [tinygltf](https://github.com/syoyo/tinygltf) | `external/tinygltf` | MIT (see header notice) | `tiny_gltf.h` (gltf_import tool) |
+| [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) | `external/tinyobjloader` | MIT (see header notice) | `tiny_obj_loader.h` v2.0.0rc13 (gltf_import's OBJ source adapter) |
 | [stb](https://github.com/nothings/stb) | `external/stb` | Public Domain / MIT (see header notices) | `stb_image.h`, `stb_image_write.h` |
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) 1.4.357 | `external/vulkan-headers` | Apache-2.0 | Linux-only fetch: the full 1.4 symbol set ahead of older distro `libvulkan-dev` headers (Ubuntu 24.04 ships 1.3.275); the loader stays the system's |
 | [DirectX-Headers](https://github.com/microsoft/DirectX-Headers) v1.619.5 | `external/directx-headers` | MIT | Linux-only fetch: DirectXTex's non-Win32 path includes its `wsl/winadapter.h` + `directx/d3d12.h` (Windows uses the SDK's own) |

@@ -32,6 +32,7 @@
 #include <artifact_cache/artifact_cache.h>
 
 #include <gltf_import/asset_export.h>
+#include <gltf_import/source_formats.h>
 
 namespace smvk::project {
 
@@ -448,14 +449,12 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 		// glTF's own GUID stays the SOURCE model's identity; keying the
 		// mesh row on it was the identity split this fixes).
 		for (const std::string& artifact : pak.sceneArtifacts) {
-			const std::string ext =
-				fs::path(artifact).extension().generic_string();
 			std::string familySource;
-			if (ext == ".gltf" || ext == ".glb")
+			if (smvk::assets::IsMeshSourceFile(fs::path(artifact)))
 				familySource = artifact;
 			else {
 				fs::path src = fs::path(artifact);
-				for (const char* e : { ".gltf", ".glb" }) {
+				for (const char* e : { ".gltf", ".glb", ".obj" }) {
 					src.replace_extension(e);
 					if (fs::is_regular_file(
 							fs::path(project.root) / src))

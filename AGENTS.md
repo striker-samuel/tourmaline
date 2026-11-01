@@ -324,6 +324,23 @@ bloom/tonemap/AA/UI → swapchain.
 
 ## Source identity + the file watcher (the watched-resource pipeline)
 
+- **The mesh-source formats (the import lane)**:
+  `LoadModelFromSourceFile` (gltf_import) is the ONE loader for every
+  model source: .gltf (ASCII) and .glb (detected by MAGIC, never
+  extension) through tinygltf, .obj through the tinyobjloader adapter
+  (`obj_import.cpp`, builds the tinygltf interchange form in memory;
+  its .mtl libraries are digest/staging dependencies via extraDeps).
+  EMBEDDED textures (GLB bufferView images, glTF data: URIs) EXTRACT
+  to `<stem>_<srcext>_img<N>.<ext>` sidecar files beside the source
+  (write-if-changed; a failed write fails the import LOUDLY) — the
+  whole downstream (texture sources, .material TexRefs, project
+  staging, the content digest) addresses them like authored files.
+  The shared extension gate is `source_formats.h`
+  (`IsMeshSourceFile` / `IsMeshSourceMetaSidecar` — the CLI, the
+  project pipelines, the catalog/recipe resolver and the editor's
+  open/drop/reference/watch surfaces all funnel through it; .fbx/.dae/
+  .usd have NO adapter yet). Pinned by `import.*` in
+  test_source_import.cpp.
 - **The glTF identity ledger**: the `.gltf.meta` manifest is the
   family's identity LEDGER, separate from source-byte fingerprints.
   Family guid comes from the caller's explicit resolution, the previous

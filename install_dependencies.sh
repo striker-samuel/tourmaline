@@ -210,6 +210,11 @@ install_raw stb-write   stb stb_image_write.h \
 install_raw tinygltf   tinygltf tiny_gltf.h \
     'https://raw.githubusercontent.com/syoyo/tinygltf/v2.8.10/tiny_gltf.h' \
     777b94a0d7b4876b521cea53630a5bbd55aff693ef49586a55fb273278e96bf5 || fail tinygltf
+# v2.0.0rc13 (the release the ecosystem uses; no final v2.0.0 was ever
+# tagged): the OBJ source adapter (tools/gltf_import/obj_import.cpp).
+install_raw tinyobjloader tinyobjloader tiny_obj_loader.h \
+    'https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/v2.0.0rc13/tiny_obj_loader.h' \
+    a55a0933a29caa0e9e84ef62a45cbe8cb25dd0e17bc2850c591c6b06f95d5ebe || fail tinyobjloader
 install_raw lz4-h       lz4 lz4.h \
     'https://raw.githubusercontent.com/lz4/lz4/v1.10.0/lib/lz4.h' \
     26b82efc53d1570f3b54eef02e9c4764c1ad374ff03cac04e2ced5ea4d4c552f || fail lz4-h

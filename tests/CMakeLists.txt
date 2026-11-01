@@ -330,6 +330,33 @@ set_target_properties(MotionBlurTests PROPERTIES
 
 add_test(NAME motionblur_tests COMMAND MotionBlurTests)
 
+# The multi-format MESH-IMPORT lane (LoadModelFromSourceFile +
+# ImportMeshSource): the format gate (.gltf/.glb/.obj), the GLB binary
+# load (the old ASCII-only parse failed every .glb), EMBEDDED-texture
+# extraction (GLB bufferView images + glTF data: URIs -> sidecar files
+# the material/digest/staging machinery addresses like authored ones),
+# and the OBJ adapter end-to-end (geometry, MTL map refs, .mtl digest
+# dependency, missing-library refusal). CPU-only (offline-mode
+# derivations into temp dirs).
+add_executable(SourceImportTests test_source_import.cpp)
+
+target_include_directories(SourceImportTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/external/stb
+)
+
+target_link_libraries(SourceImportTests
+    PRIVATE
+        gltf_import
+        engine
+)
+
+set_target_properties(SourceImportTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME source_import_tests COMMAND SourceImportTests)
+
 project(TourTests)
 
 add_executable(TourTests test_tour.cpp)
@@ -1035,6 +1062,7 @@ tourmaline_stage_sdl3(CubemapTests)
 tourmaline_stage_sdl3(ParticlesTests)
 tourmaline_stage_sdl3(MotionBlurTests)
 tourmaline_stage_sdl3(TourTests)
+tourmaline_stage_sdl3(SourceImportTests)
 tourmaline_stage_sdl3(KnightAnimTests)
 tourmaline_stage_sdl3(AssetOpsTests)
 tourmaline_stage_sdl3(WorldEntityTests)

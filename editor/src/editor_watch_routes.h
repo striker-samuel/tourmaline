@@ -11,10 +11,12 @@
 // The table (per settled change; extensions case-insensitive):
 //   Removed        a deleted source: the registry heals on the next
 //                  Rescan (a log line only)
-//   MetaSidecar    .meta (incl. the .gltf.meta identity ledger): the
-//                  asset-db rescan
-//   GltfSource     .gltf/.glb: ImportMeshArtifactFor (stale-gated,
-//                  identity-preserving) + the geometry re-open flow
+//   MetaSidecar    .meta (incl. the <source>.meta identity ledgers of
+//                  every mesh source format): the asset-db rescan
+//   GltfSource     a mesh source (.gltf/.glb/.obj — one shared gate,
+//                  see source_formats.h): ImportMeshArtifactFor
+//                  (stale-gated, identity-preserving) + the geometry
+//                  re-open flow
 //   TourDoc        .tour/.tourrecipe: LOG ONLY (an external edit never
 //                  silently overwrites unsaved editor work)
 //   TextureSource  an image source BESIDE its .texture asset (the
@@ -30,6 +32,8 @@
 
 #include <filesystem>
 #include <string>
+
+#include <gltf_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
 
 namespace editor {
 
@@ -53,7 +57,7 @@ enum class WatchRoute {
 			c = char(c - 'A' + 'a');
 	if (ext == ".meta")
 		return WatchRoute::MetaSidecar;
-	if (ext == ".gltf" || ext == ".glb")
+	if (smvk::assets::IsMeshSourceExtension(ext))
 		return WatchRoute::GltfSource;
 	if (ext == ".tour" || ext == ".tourrecipe")
 		return WatchRoute::TourDoc;

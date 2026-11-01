@@ -594,24 +594,26 @@ void EditorApp::CloseScene() {
 		// opened tour file (otherwise <stem>.tour next to the source,
 		// which does not exist here).
 		// THE MESH IMPORTER redirect (the glTF privileges are gone): a
-		// .gltf/.glb NEVER loads as a session — the source routes through
+		// mesh source (.gltf/.glb/.obj) NEVER loads as a session — the
+		// source routes through
 		// the importer (derive-if-stale beside it, ImportMeshArtifactFor)
 		// and the SESSION (m_gltfPath identity, the recorded definition
 		// reference, SaveTour) names the derived .geometry. Every funnel
 		// lands here: direct opens (OpenScene), tour-recorded sources
 		// (OpenTourFile / ResolveTourSource) and reloads. A failed import
-		// fails the load — NO glTF session fallback (the glTF is
-		// import-only; the cooker/baker/session build refuse it outright).
+		// fails the load — NO source-session fallback (sources are
+		// import-only; the cooker/baker/session build refuse them
+		// outright).
 		std::string path = pathIn;
 		if (!path.empty()) {
 			std::string ext =
 				std::filesystem::path(path).extension().string();
 			for (char& c : ext)
 				c = char(std::tolower((unsigned char)c));
-			if (ext == ".gltf" || ext == ".glb") {
+			if (smvk::assets::IsMeshSourceExtension(ext)) {
 				const std::string artifact = ImportMeshArtifactFor(path);
 				if (artifact.empty())
-					return false; // logged (no glTF session fallback)
+					return false; // logged (no source-session fallback)
 				path = artifact;
 			}
 		}

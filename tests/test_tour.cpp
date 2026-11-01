@@ -766,7 +766,7 @@ void TestRootReference() {
 	Check(defPh.size() == 1 && defPh[0] == -1, "rootref placeholder sentinel");
 	// Bind parity B: direct import of the same glTF.
 	tinygltf::Model model;
-	Check(LoadModelFromAsciiFile(model, gltf.string().c_str()),
+	Check(LoadModelFromSourceFile(model, gltf.string().c_str()),
 		"rootref parse for direct import");
 	auto dirCluster = std::make_unique<smvk::Cluster>(nullptr);
 	dirCluster->SetOfflineMode(true);
@@ -2707,7 +2707,7 @@ void TestTextureCacheConsult() {
 	};
 	auto importWith = [&](FakeCache& cache) -> bool {
 		tinygltf::Model model;
-		if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+		if (!LoadModelFromSourceFile(model, gltfPath.string().c_str()))
 			return false;
 		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 		cluster->SetOfflineMode(true);

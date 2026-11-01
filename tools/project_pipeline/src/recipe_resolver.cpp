@@ -22,6 +22,8 @@
 
 #include <Engine/Asset/tour.h>
 
+#include <gltf_import/source_formats.h>
+
 namespace smvk::project {
 
 namespace {
@@ -197,7 +199,8 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 					err, active, done))
 				return false;
 		}
-		else if (ext == ".geometry" || ext == ".gltf" || ext == ".glb") {
+		else if (ext == ".geometry"
+				|| smvk::assets::IsMeshSourceExtension(ext)) {
 			if (!fs::is_regular_file(
 					fs::path(project.root) / fs::path(ref.source), ec)) {
 				err = "the tour's referenced artifact is missing: '"
@@ -208,8 +211,8 @@ bool CollectSceneArtifacts(const Project& project, const std::string& scene,
 		}
 		else {
 			err = "unsupported reference '" + ref.source + "' (" + scene
-				+ "): references are .tour scenes or .geometry/.gltf"
-					" artifacts";
+				+ "): references are .tour scenes or .geometry/"
+					"model-source artifacts";
 			return false;
 		}
 	}

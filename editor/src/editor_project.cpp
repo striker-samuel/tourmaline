@@ -54,15 +54,9 @@ std::string Normalized(const std::string& p) {
 }
 
 bool HasModelExtension(const std::string& path) {
-	auto lowerTail = [&](size_t n) {
-		if (path.size() < n)
-			return std::string();
-		std::string t = path.substr(path.size() - n);
-		for (char& c : t)
-			c = char(std::tolower((unsigned char)c));
-		return t;
-	};
-	return lowerTail(4) == ".glb" || lowerTail(5) == ".gltf";
+	// The shared mesh-source gate (.gltf/.glb/.obj — one row in
+	// source_formats.h lights up editor + pipelines + CLI together).
+	return smvk::assets::IsMeshSourceFile(std::filesystem::path(path));
 }
 
 } // namespace
@@ -370,7 +364,7 @@ std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
 		return {};
 	}
 	if (!HasModelExtension(srcPath)) {
-		Log("Import: only .gltf/.glb sources in this version: "
+		Log("Import: only .gltf/.glb/.obj sources in this version: "
 			+ srcPath);
 		return {};
 	}
@@ -436,11 +430,16 @@ std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
 		// The model file first (dependencies may point back at it).
 		if (!copyIn(src, destDir / src.filename()))
 			return {};
-		// External dependencies: buffers + images with URIs.
+		// External dependencies: buffers + images with URIs, plus the
+		// .mtl libraries of an OBJ source (LoadModelFromSourceFile's
+		// extraDeps; embedded images arrive as their extracted sidecar
+		// URIs).
 		std::vector<std::string> uris;
 		{
 			tinygltf::Model deps;
-			if (!LoadModelFromAsciiFile(deps, srcPath.c_str())) {
+			std::vector<std::string> extraDeps;
+			if (!LoadModelFromSourceFile(deps, srcPath.c_str(),
+					&extraDeps)) {
 				Log("Import: source parse failed — copied the model "
 					"file only (dependencies may dangle; the Path "
 					"editor can relink).");
@@ -452,6 +451,8 @@ std::string EditorApp::ImportAssetFile(const std::string& srcPath) {
 				for (const auto& im : deps.images)
 					if (!im.uri.empty() && im.uri.rfind("data:", 0) != 0)
 						uris.push_back(im.uri);
+				for (const std::string& dep : extraDeps)
+					uris.push_back(dep);
 			}
 		}
 		size_t missing = 0, flattened = 0;
@@ -615,9 +616,9 @@ void EditorApp::OnInputEvent(const input::Event& e) {
 
 void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 	// Drop routing (the asset browser's drop target): images become
-	// .texture assets in the browsed dir; .gltf/.glb run the full import
-	// (copy + derive + open). Everything else drops with a log — never
-	// silently.
+	// .texture assets in the browsed dir; mesh sources (.gltf/.glb/.obj)
+	// run the full import (copy + derive + open). Everything else drops
+	// with a log — never silently.
 	if (m_projectRoot.empty()) {
 		Log("Drop: open a project first (File > New / Open Project...).");
 		return;
@@ -636,14 +637,14 @@ void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 			if (!CreateTextureAsset(p, m_assetsDir).empty())
 				++imported;
 		}
-		else if (ext == ".gltf" || ext == ".glb") {
+		else if (smvk::assets::IsMeshSourceExtension(ext)) {
 			if (ImportAsset(p))
 				++imported;
 		}
 		else {
 			++unsupported;
 			Log("Drop: unsupported format '" + p + "' (want png/jpg/jpeg/"
-				"tga/bmp/ktx2/gltf/glb).");
+				"tga/bmp/ktx2/gltf/glb/obj).");
 		}
 	}
 	if (imported > 0)
@@ -850,7 +851,8 @@ void EditorApp::ArmProjectWatcher() {
 // selective funnels — the frame-boundary call (cheap when nothing
 // moved; never a project scan). The ROUTING lives in
 // editor_watch_routes.h (the pure classifier, unit-tested):
-//   .gltf/.glb -> ImportMeshArtifactFor (the stale gate re-derives
+//   a mesh source (.gltf/.glb/.obj — the shared source_formats gate)
+//                 -> ImportMeshArtifactFor (the stale gate re-derives
 //                 ONLY when the source changed; the identity ledger
 //                 preserves every GUID) + the GEOMETRY RE-OPEN flow
 //                 (item 16): when the SCENE'S OWN source re-derived,

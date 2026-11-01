@@ -11,6 +11,7 @@
 #include <system_error>
 
 #include <gltf_import/asset_export.h> // manifest-derived asset detection
+#include <gltf_import/source_formats.h> // the mesh-source gate + meta sidecars
 
 namespace editor {
 
@@ -52,9 +53,9 @@ std::string RelOf(const std::string& abs, const std::string& root) {
 	return abs;
 }
 
-// The sibling <stem>.gltf whose manifest lists `fileAbs` as a derived
-// asset ("" when the file is standalone). Derived files carry no
-// per-file sidecar — identity is manifest-driven.
+// The sibling mesh source (<stem>.gltf/.glb/.obj) whose manifest lists
+// `fileAbs` as a derived asset ("" when the file is standalone).
+// Derived files carry no per-file sidecar — identity is manifest-driven.
 std::string OwningGltf(const std::string& fileAbs) {
 	const fs::path file(fileAbs);
 	const fs::path dir = file.parent_path();
@@ -68,8 +69,9 @@ std::string OwningGltf(const std::string& fileAbs) {
 		if (!it->is_regular_file(fec) || fec)
 			continue;
 		const std::string n = it->path().filename().string();
-		if (n.size() <= 10
-			|| n.compare(n.size() - 10, 10, ".gltf.meta") != 0)
+		// ANY mesh source's identity ledger (<stem>.<srcext>.meta —
+		// .gltf/.glb/.obj; see IsMeshSourceMetaSidecar).
+		if (!smvk::assets::IsMeshSourceMetaSidecar(n))
 			continue;
 		const std::string gltf = it->path().generic_string().substr(
 			0, it->path().generic_string().size() - 5); // strip ".meta"
@@ -166,7 +168,7 @@ bool PlanAssetDelete(const std::string& absPath,
 		out.also.push_back(abs + ".meta");
 	// (the .gicook/.lmcook bake classes passed the derived check above)
 	const std::string name = fs::path(abs).filename().generic_string();
-	if (HasSuffixLower(name, ".gltf") || HasSuffixLower(name, ".glb")) {
+	if (smvk::assets::IsMeshSourceFile(fs::path(abs))) {
 		// A manifested source takes its derived set with it.
 		smvk::assets::AssetManifest man;
 		std::string merr;

@@ -365,10 +365,10 @@ bool EditorApp::ResolveReferenceAssetEx(const std::string& input,
 		if (HasPakExtension(abs))
 			Log("References: sources must be .tour scenes (paks are "
 				"cooked, not referenceable).");
-		else if (ext == ".gltf" || ext == ".glb")
-			Log("References: glTFs are ASSETS, not references — import "
-				"one (it derives its .geometry set) and place meshes "
-				"from the asset browser.");
+		else if (smvk::assets::IsMeshSourceExtension(ext))
+			Log("References: mesh sources are ASSETS, not references — "
+				"import one (it derives its .geometry set) and place "
+				"meshes from the asset browser.");
 		else if (isGeometry && !allowGeometryAsset)
 			Log("References: data blobs are not references — place "
 				"meshes from the asset browser (drag onto a viewport).");
@@ -687,8 +687,9 @@ void EditorApp::DrawReferencesPanel() {
 		ImGui::End();
 		return;
 	}
-	// Add = a file browser (.gltf/.tour pick; the name defaults to the
-	// path stem — Maya-style namespaces apply at bind time).
+	// Add = a file browser (a .tour pick — mesh sources are refused as
+	// references; the name defaults to the path stem — Maya-style
+	// namespaces apply at bind time).
 	if (ImGui::Button("Add reference...")) {
 		std::string picked;
 		if (NativeOpenFile(picked) && !picked.empty())

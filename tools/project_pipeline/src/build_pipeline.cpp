@@ -29,6 +29,8 @@
 #include <artifact_cache/assetdb.h>
 #include <artifact_cache/artifact_cache.h>
 
+#include <gltf_import/source_formats.h>
+
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
 #include <project_pipeline/project_catalog.h>
@@ -302,14 +304,14 @@ bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
 	std::set<std::string> reimported;
 	for (const std::string& artifact : families) {
 		const fs::path artifactAbs = projectRoot / fs::path(artifact);
-		// The family's source glTF/GLB: beside a .geometry artifact, or
-		// the artifact itself when the tour referenced the raw source.
+		// The family's source (a mesh source format — .gltf/.glb/.obj):
+		// beside a .geometry artifact, or the artifact itself when the
+		// tour referenced the raw source.
 		std::vector<fs::path> candidates;
-		const std::string ext = artifactAbs.extension().generic_string();
-		if (ext == ".gltf" || ext == ".glb")
+		if (smvk::assets::IsMeshSourceFile(artifactAbs))
 			candidates.push_back(artifactAbs);
 		else
-			for (const char* e : { ".gltf", ".glb" }) {
+			for (const char* e : { ".gltf", ".glb", ".obj" }) {
 				fs::path src = artifactAbs;
 				src.replace_extension(e);
 				candidates.push_back(src);
@@ -1138,15 +1140,16 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 	if (!fs::is_regular_file(artifactAbs, ec)) {
 		err = "the tour's referenced artifact is missing: '" + refSource
 			+ "' (import the source first: Project.exe import --project "
-			+ project.root + " --source <glTF>)";
+			+ project.root + " --source <model .gltf/.glb/.obj>)";
 		return false;
 	}
 	out.artifact = refSource;
 
 	// ---- 3) import freshness (reimport stale; unchanged = no-op) --------
-	// The source glTF/GLB beside the imported artifact (same stem, same
-	// directory — the project's copy-in convention).
-	for (const char* ext : { ".gltf", ".glb" }) {
+	// The source (a mesh source format — .gltf/.glb/.obj) beside the
+	// imported artifact (same stem, same directory — the project's
+	// copy-in convention).
+	for (const char* ext : { ".gltf", ".glb", ".obj" }) {
 		const fs::path srcAbs =
 			fs::path(artifactAbs).replace_extension(ext);
 		if (!fs::is_regular_file(srcAbs, ec))
