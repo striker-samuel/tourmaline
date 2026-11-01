@@ -26,6 +26,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Rendergraph/terrain_meta.h>
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
 
 namespace tour {
@@ -2231,6 +2232,34 @@ using namespace ::smvk;
 		if (base.empty())
 			return std::nullopt;
 		const StringViewT uri = LodSiblingUri(base, lodIndex);
+		// STAGE 6 (the pager lane): a host-installed LOD page source
+		// supplies the sibling's ENTRY BYTES (a pager page) — the
+		// pinned whole image is then NOT needed for the promote. No
+		// source / no page = the classic image-pin lane (unchanged).
+		if (LodPageSourceRef()) {
+			char uriBuf[1024];
+			const size_t uriLen = uri.size() < sizeof(uriBuf) - 1
+				? uri.size() : sizeof(uriBuf) - 1;
+			std::memcpy(uriBuf, uri.data(), uriLen);
+			uriBuf[uriLen] = '\0';
+			std::optional<LodPagePin> pin =
+				LodPageSourceRef()(uriBuf);
+			if (pin && pin->data && pin->size) {
+				std::optional<Cluster::PromotedLod> r;
+				for (const auto& clusterPtr : clusters) {
+					if (!clusterPtr)
+						continue;
+					r = clusterPtr->PromoteDeferredMeshLodFromPage(
+						uriBuf, pin->data, pin->size);
+					if (r)
+						break;
+				}
+				if (pin->release)
+					pin->release(); // after the synchronous upload
+				if (r)
+					return r;
+			}
+		}
 		// Any cluster may hold the deferred record (the overlay rule) -
 		// walk in registration order like ResolveMeshAcrossClusters.
 		for (const auto& clusterPtr : clusters) {

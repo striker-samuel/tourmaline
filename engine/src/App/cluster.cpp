@@ -962,7 +962,67 @@ smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
 		UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
 	if (handles.size() != 1 || !handles[0].valid())
 		return std::nullopt;
-	const ClusterStaticMeshHandle h = handles[0];
+	return FinishPromoteDeferred(rec, handles[0]);
+}
+
+// STAGE 6 (the pager lane): the same promote with the payload
+// supplied as the ENTRY'S OWN BYTES (a pager page — contiguous, the
+// whole blob) instead of the pinned whole image. The record's
+// file-absolute stream offsets rebase by entryOffset; every range
+// must fit the page (a truncated page refuses loudly, never a wild
+// upload). The caller owns the payload's lifetime through the call
+// (BulkCopyBuffer stages synchronously — release the page after).
+std::optional<smvk::Cluster::PromotedLod>
+smvk::Cluster::PromoteDeferredMeshLodFromPage(StringViewT uri,
+	const uint8_t* entryPayload, size_t entryBytes)
+{
+	DeferredMeshLod* rec = nullptr;
+	for (DeferredMeshLod& d : deferredLods_) {
+		if (uri != d.uri)
+			continue;
+		if (!d.promotedHandle.valid())
+			rec = &d;
+		break; // one record per uri; skip already-promoted ones
+	}
+	if (rec == nullptr)
+		return std::nullopt;
+	if (!entryPayload || entryBytes == 0)
+		return std::nullopt; // no payload source: cannot promote
+	const uint64_t base = rec->entryOffset;
+	StaticGeometrySource src = rec->src;
+	src.posSrc -= base;
+	src.shadeSrc -= base;
+	src.lmSrc = src.lmSrc ? src.lmSrc - base : 0;
+	src.idxSrc -= base;
+	const auto fits = [&](uint64_t off, uint64_t bytes) {
+		return off <= entryBytes && bytes <= entryBytes - off;
+	};
+	// PackedVertexPosition 12 B, PackedVertexShading 16 B,
+	// PackedVertexLightmap 8 B, u32 indices.
+	const uint64_t posBytes = uint64_t(src.vertexCount) * 12;
+	const uint64_t shadeBytes = uint64_t(src.vertexCount) * 16;
+	const uint64_t lmBytes = src.lmSrc
+		? uint64_t(src.vertexCount) * 8 : 0;
+	const uint64_t idxBytes = uint64_t(src.indexCount) * 4;
+	if (!fits(src.posSrc, posBytes) || !fits(src.shadeSrc, shadeBytes)
+			|| (src.lmSrc && !fits(src.lmSrc, lmBytes))
+			|| !fits(src.idxSrc, idxBytes))
+		return std::nullopt; // the page does not carry the blob whole
+	const StaticGeometrySource srcs[1] = { src };
+	const std::vector<ClusterStaticMeshHandle> handles =
+		UploadStaticMeshesDirect(entryPayload, srcs);
+	if (handles.size() != 1 || !handles[0].valid())
+		return std::nullopt;
+	return FinishPromoteDeferred(rec, handles[0]);
+}
+
+// The shared promote tail (both payload lanes): the meta re-attach +
+// the registration + the record's promotedHandle — verbatim the old
+// inline block (cluster_serializer.cpp's post-upload sequence).
+std::optional<smvk::Cluster::PromotedLod>
+smvk::Cluster::FinishPromoteDeferred(DeferredMeshLod* rec,
+	ClusterStaticMeshHandle h)
+{
 
 	// The deserializer's meta re-attach (cluster_serializer.cpp's
 	// post-upload block, verbatim): sphere + lightmap chunk/xforms +

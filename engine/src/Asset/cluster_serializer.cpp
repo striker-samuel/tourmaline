@@ -2585,6 +2585,9 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	const auto meshEntries = reader.BlobsOfKind(PakAssetKind::Mesh);
 	struct MeshMeta {
 		std::string uri;
+		// The owning TOC entry's file-absolute offset (Stage 6: the
+		// page-based promote rebases the stream offsets by this).
+		uint64_t entryOffset = 0;
 		float sphere = 0.0f;
 		uint32_t lmChunk = 0;
 		std::vector<glm::vec4> lmXforms;
@@ -2773,8 +2776,9 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				return fail("mesh skin section does not end the blob: "
 					+ e->path);
 		}
-		meshMetas.push_back(MeshMeta{ std::move(uri), sphere, lmChunk,
-			std::move(lmXforms), lod, std::move(cooked), std::move(skin) });
+		meshMetas.push_back(MeshMeta{ std::move(uri), e->offset, sphere,
+			lmChunk, std::move(lmXforms), lod, std::move(cooked),
+			std::move(skin) });
 	}
 	{
 		// ---- Geometry LOD streaming split (Renderer/geometry_streamer.h).
@@ -2832,6 +2836,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				Cluster::DeferredMeshLod d;
 				d.uri = std::move(meta.uri);
 				d.src = directs[i];
+				d.entryOffset = meta.entryOffset;
 				d.sphere = meta.sphere;
 				d.lmChunk = meta.lmChunk;
 				d.lmXforms = std::move(meta.lmXforms);

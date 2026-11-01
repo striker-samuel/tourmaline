@@ -159,6 +159,56 @@ deterministic sides, the corrupt-page failure + clean sibling, the
 missing/garbage refusals, and 8-thread concurrent demand (every page
 read exactly once).
 
+## The geometry Stage 6 disk-range lane (Phase 7 — landed)
+
+The pager-based LOD promote (the `geometry_streamer.h` stage-6 TODO,
+realized): deferred siblings promote from their ENTRY'S OWN BYTES
+through the async pager instead of the pinned whole image.
+
+- `Cluster::PromoteDeferredMeshLodFromPage(uri, entryPayload,
+  entryBytes)`: the record's file-absolute stream offsets rebase by
+  the new `DeferredMeshLod::entryOffset`; every range must FIT the
+  page (a truncated page refuses loudly — never a wild upload); the
+  upload stages from the page (contiguous — the whole blob). The
+  promote tail (meta re-attach + registration) is shared with the
+  image-pin lane (`FinishPromoteDeferred`) — one tail, two payload
+  lanes.
+- `smvk::SetLodPageSource(...)` (geometry_streamer.h): the
+  host-installed page source; `World::PromoteLodLevel` consults it
+  FIRST (no source / no page → the classic image-pin lane,
+  unchanged). The pin rides the release closure through a shared
+  holder — the LAST closure copy's destruction unpins (the upload is
+  synchronous staging, the bytes are consumed first).
+- `RunPakApp` installs the source when `TOURMALINE_GEOMETRY_STREAMING`
+  is armed: one pager per launched pak (the light SMP8 mount; a pak
+  that fails to open is SKIPPED — its clusters keep the classic
+  lane). The single-pak lane passes the RESOLVED path (the CLI arg
+  may be relative — the preload ladder's own resolution).
+
+Verified end to end (the geometry-streaming discipline — no unit
+pins exist for the GPU-bound promote path; its regression is the
+budget-churn headless run): sponza, `GEO_STREAMING=on`,
+`GEO_BUDGET_MB=4` (a 4 MiB working-set ceiling against 13.9 MiB of
+deferrable payload — constant promote/evict cycling), 48 frames:
+165 siblings deferred, 55 throttled promotes through the PAGE lane,
+zero CRC/read failures, avg frame 11.38 ms (vs the 11.43 ms
+no-streaming baseline — the lane costs nothing measurable), a
+byte-comparable capture.
+
+## The remaining Phase 7 follow-ups
+
+- **Texture mip / GI / audio residency** (the design's "separately
+  measured extensions"): texture mips need a mip-granular page model
+  (ktx spans are compressed — not range-addressable like meshes);
+  GI/audio ride the ReadAsset pager lane already but have no
+  residency policies.
+- **The permanent shared-mesh store** (mesh rows owned by AssetStore,
+  never by scene clusters — the duplicate-carve fix): blocked on the
+  subset fast path; the AssetStore's carrier model is the documented
+  bridge until then.
+- **Safe editor generation swapping** (the editor's live reload of
+  regenerated paks without relaunching).
+
 ## Pinned by
 
 - `smp8.*` (test_assets.cpp): the plan codec round trip + malformed

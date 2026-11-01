@@ -507,6 +507,11 @@ using namespace ::smvk;
 	struct DeferredMeshLod {
 		std::string uri;
 		StaticGeometrySource src;  // pak-image offsets/counts/aabb
+		// The owning TOC entry's file-absolute offset (Stage 6: the
+		// page-based promote rebases src by this — the entry's OWN
+		// bytes are a complete contiguous payload, exactly like the
+		// whole image is for the pin path).
+		uint64_t entryOffset = 0;
 		float sphere = 0.0f;
 		uint32_t lmChunk = 0;
 		std::vector<glm::vec4> lmXforms;
@@ -535,6 +540,21 @@ using namespace ::smvk;
 	};
 	[[nodiscard]] std::optional<PromotedLod> PromoteDeferredMeshLod(
 		StringViewT uri);
+	// STAGE 6 (the pager lane): the same promote with the payload
+	// supplied as the ENTRY'S OWN BYTES (a pager page — contiguous,
+	// the whole blob) instead of the pinned whole image. The record's
+	// file-absolute stream offsets rebase by entryOffset; the upload
+	// stages from `entryPayload`. The caller owns the payload's
+	// lifetime through the call (BulkCopyBuffer stages
+	// synchronously — release the page after the return).
+	[[nodiscard]] std::optional<PromotedLod>
+	PromoteDeferredMeshLodFromPage(StringViewT uri,
+		const uint8_t* entryPayload, size_t entryBytes);
+	// The shared promote tail (both payload lanes — the pinned-image
+	// path and the Stage-6 page path): meta re-attach + registration
+	// + the record's promotedHandle.
+	std::optional<PromotedLod> FinishPromoteDeferred(
+		DeferredMeshLod* rec, ClusterStaticMeshHandle h);
 	// Evict: the inverse of promote - the promoted sibling's runtime
 	// fields move back into its record, the pool mesh + heap ranges
 	// retire (DestroyMesh - the range frees ride DeferDestroyTask, so

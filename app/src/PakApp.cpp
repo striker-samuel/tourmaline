@@ -15,11 +15,13 @@
 #include "DeployCheck.h"
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/pak_pager.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Profile/profile.h>
 
 #include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Renderer/WorldRendererElement.h>
+#include <Engine/Renderer/geometry_streamer.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -139,6 +141,9 @@ namespace app {
 			projectFutures;
 		size_t entryPakIndex = 0;
 		std::string entrySceneName;
+		// Every pak this launch opens (both lanes) — the Stage-6 LOD
+		// page source's pager set below.
+		std::vector<std::string> launchPaks;
 		if (!cfg.cli.project.empty()) {
 			smvk::AppManifest manifest;
 			std::string mErr;
@@ -170,6 +175,7 @@ namespace app {
 			}
 			entrySceneName = manifest.entryScene;
 			sceneId = StemOf(pakPaths[entryPakIndex]);
+			launchPaks = pakPaths;
 			// THE DEPLOYMENT VALIDATION GATE (pre-graphics, see
 			// DeployCheck.h): every listed pak proves itself (exists +
 			// a valid image + the content-addressed NAME matching the
@@ -213,13 +219,75 @@ namespace app {
 			// (GI bake stem + check-scene gating) is the pak stem.
 			sceneId = cfg.cli.sceneId.empty()
 				? StemOf(cfg.cli.pakPath) : cfg.cli.sceneId;
+			// The RESOLVED pak path (the CLI arg may be relative —
+			// the preload ladder resolves it; the Stage-6 pager needs
+			// the same absolute path).
+			launchPaks.push_back(ResolvePakOpenPath(cfg.cli.pakPath));
 			preloadFuture = std::make_shared<std::future<PakPreload>>(
-				KickPakPreload(cfg.cli.pakPath));
+				KickPakPreload(launchPaks.back()));
 			std::cerr << "Scene: pak '" << cfg.cli.pakPath << "' (id '"
 				<< sceneId << "', index " << cfg.cli.sceneIndex << ")\n";
 		}
 		if (sceneId.empty())
 			sceneId = "pak";
+
+		// STAGE 6 (geometry_streamer.h): when streaming is armed,
+		// install the LOD PAGE SOURCE — the deferred-sibling promotes
+		// read their ENTRY BYTES through the async pager instead of
+		// the pinned whole image (the page IS the entry payload: a
+		// complete contiguous blob). A pak that fails its light
+		// mount is SKIPPED (logged) — its clusters keep the classic
+		// image-pin promote lane.
+		if (smvk::GeometryStreamingEnabled()) {
+			auto pagers = std::make_shared<
+				std::vector<std::shared_ptr<smvk::PakPager>>>();
+			for (const std::string& pak : launchPaks) {
+				auto pager = std::make_shared<smvk::PakPager>(pak);
+				if (pager->Valid())
+					pagers->push_back(std::move(pager));
+				else
+					std::cerr << "[GeometryStreaming] the LOD page"
+						" source skips '" << pak << "': "
+						<< pager->OpenError() << "\n";
+			}
+			smvk::SetLodPageSource(
+				[pagers](const char* uri)
+					-> std::optional<smvk::LodPagePin> {
+				for (const std::shared_ptr<smvk::PakPager>& p :
+						*pagers) {
+					const smvk::PakTocEntry* e =
+						p->Reader().Find(smvk::PakAssetKind::Mesh,
+							uri);
+					if (!e)
+						continue;
+					std::string rerr;
+					smvk::PakPager::PinnedPage page =
+						p->Read(*e, rerr);
+					if (!page)
+						return std::nullopt; // the promote caller
+						                     // reports the miss
+					smvk::LodPagePin pin;
+					pin.data = page.data();
+					pin.size = page.size();
+					// The PIN rides the release closure through a
+					// shared holder (std::function requires
+					// copy-constructible targets; the move-only
+					// PinnedPage cannot ride it directly): the LAST
+					// closure copy's destruction — after the dispatch
+					// scope drops the LodPagePin — unpins the pager
+					// page; the upload itself is synchronous staging,
+					// so the bytes are consumed before the release.
+					auto held =
+						std::make_shared<smvk::PakPager::PinnedPage>(
+							std::move(page));
+					pin.release = [held]() { (void)held; };
+					return pin;
+				}
+				return std::nullopt;
+			});
+			std::cerr << "[GeometryStreaming] the LOD page source"
+				" carries " << pagers->size() << " pak(s)\n";
+		}
 
 		// App host + WorldRenderer ELEMENT (nvapp-style: the host owns the
 		// window/context/swapchain + the frame sync — the default DrawFrame

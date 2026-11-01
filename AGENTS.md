@@ -101,6 +101,39 @@
   preload until the subset fast path / permanent shared-mesh store
   lands (the direct-addressed mesh upload needs a contiguous image
   base) — documented in pak_vnext.md.
+- **THE COMPILED STATIC PLANS** (`engine/Asset/asset_plan.h` —
+  Phase 6, docs/pak_vnext.md): the shipping hot path loads meshes
+  with NO runtime name search, path normalization, or TOC walk —
+  and FAILS CLOSED on layout mismatch. `smvk::MeshPlanRef` (the pak
+  MOUNT INDEX + the family's BASE pak SLOT + the .geometry
+  identity); the PRIVATE generated `project_plans.h`
+  (`EmitPlansHeader`, wired into the ids pass + the build re-stamp —
+  never the game-facing project.h); the LAYOUT HASH (ONE shared
+  engine fold `PakLayoutFingerprint` + `FoldPakLayouts` — pak list +
+  slot tables + the mesh-plan join; CONTENT EXCLUDED, so a
+  payload-only redeploy needs no recompile); the gate
+  (`ProjectRuntime::AttachCompiledPlans` — count or fold mismatch =
+  LOUD abort, never a dynamic fallback); the plan load lane
+  (`AssetManager::LoadMeshByPlan` — the pak by index, the slot
+  validated through the O(1) `PakReader::FindBySlot` index).
+  Pinned by `planfp.*` + `plansgen.*` + `planlane.*`.
+- **GEOMETRY STAGE 6 — THE PAGER LOD PROMOTE** (Phase 7, docs/
+  pak_vnext.md): `Cluster::PromoteDeferredMeshLodFromPage` promotes
+  deferred siblings from their ENTRY'S OWN BYTES through the pager
+  (the record's file-absolute offsets rebase by the new
+  `DeferredMeshLod::entryOffset`; every range must FIT the page — a
+  truncated page refuses loudly) with the promote tail SHARED with
+  the image-pin lane (`FinishPromoteDeferred`). `smvk::
+  SetLodPageSource` (geometry_streamer.h) is the host-installed
+  seam — `World::PromoteLodLevel` consults it FIRST (no source/no
+  page = the classic image-pin lane, unchanged); `RunPakApp` arms it
+  with one pager per launched pak when `TOURMALINE_GEOMETRY_STREAMING`
+  is on (the single-pak lane passes the RESOLVED path — the CLI arg
+  may be relative). Verified on sponza (GEO_BUDGET_MB=4 churn: 165
+  deferred, 55 page-lane promotes, 0 CRC failures, avg frame
+  unchanged vs the no-streaming baseline). Follow-ups (pak_vnext.md):
+  texture-mip/GI/audio residency, the permanent shared-mesh store,
+  editor generation swapping.
 - **PROJECT-DEFINED NODE SCHEMAS** (`engine/Scene/node_schema.h` —
   Phase 3's storage contract): typed DATA associations on regular
   scene transform nodes, authored as `.nodeschema` text files

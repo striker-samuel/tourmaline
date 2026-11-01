@@ -130,9 +130,41 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <optional>
+#include <string>
 #include <unordered_map>
 
 namespace smvk {
+
+// ---- STAGE 6: the LOD page source (the host-installed payload lane) --
+// The pager-based promote seam: when installed, the demand promote
+// (World::PromoteLodLevel) asks the SOURCE for the deferred sibling's
+// ENTRY BYTES (a pager page — contiguous, the whole blob) instead of
+// reading the pinned whole image. Process-wide, host-installed at
+// startup (main thread; the promote tick is render-thread between
+// frames — same-thread by the World::Update discipline). Null/empty
+// result = fall back to the pinned-image lane (clusters loaded the
+// classic way still promote exactly as before).
+struct LodPagePin {
+	const uint8_t* data = nullptr; // the ENTRY payload (contiguous)
+	size_t size = 0;
+	std::function<void()> release; // unpin (after the synchronous upload)
+};
+using LodPageSource = std::function<std::optional<LodPagePin>(
+	const char* uri)>;
+void SetLodPageSource(LodPageSource source);
+[[nodiscard]] LodPageSource& LodPageSourceRef();
+
+inline LodPageSource& LodPageSourceRef() {
+	// Process-wide, installed once at host startup (main thread; the
+	// promote tick is the frame boundary — same-thread discipline).
+	static LodPageSource source;
+	return source;
+}
+inline void SetLodPageSource(LodPageSource source) {
+	LodPageSourceRef() = std::move(source);
+}
 
 // The env gate (the DebugImageDumpArmed pattern: static-cached, read
 // once; ships in all builds - the env is the only switch). Parsed by
