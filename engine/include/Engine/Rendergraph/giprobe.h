@@ -126,6 +126,14 @@ struct GiProbeVisual {
 	bool Ensure(ResourceManager& ctx);
 	void Destroy();
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure (geometry stands). Returns true when anything
+	// moved; the released old handles ride `retired` for the caller's
+	// retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired);
+
 	// Appends the dedicated probe-sphere pass: the HDR color
 	// (load/store) + the scene depth (load, TEST-ONLY) at `extent`, ONE
 	// instanced DrawIndexed per volume row. Rows are COPIED (handles +

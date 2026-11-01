@@ -259,6 +259,14 @@ struct ProbePremix {
 		uint32_t mipCountIn);
 	void Destroy(RenderGraph& rg);
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure with the LAST face/mip config (the buffers
+	// survive). Returns true when anything moved; the released old
+	// handles ride `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx, RenderGraph& rg,
+		std::vector<ShaderModuleHandle>& retired);
+
 	// Appends the two compute passes (weights then mix). lightsBda =
 	// the fpLights buffer address (the same buffer the lit walk reads);
 	// lightCount/probeCount = the tail window; poi = the camera position;

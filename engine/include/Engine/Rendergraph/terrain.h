@@ -148,6 +148,14 @@ struct TerrainField {
 		const char* farVsPath = kTerrainFarVsPath);
 	void DestroyShaders();
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure (the baked blocks survive). Returns true when
+	// anything moved; the released old handles ride `retired` for the
+	// caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired);
+
 	// Bakes G-blocks from the harvested source (H + S masks). Masks bake
 	// into vertex color and are NOT retained. Idempotent (rebuilds).
 	bool BuildFromSource(ResourceManager& ctx, const TerrainSource& src,

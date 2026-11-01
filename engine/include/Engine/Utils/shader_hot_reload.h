@@ -42,17 +42,27 @@
 // changes the consumer does NOTHING (the last-known-good pipelines
 // keep rendering).
 //
-// THE LANDED CONSUMER: WorldRenderer::ReloadLitShaders (the
-// RenderFrame boundary) covers the scene lighting set + the
-// GPU-driven legs — default.vert, every default_lit permutation, the
-// project family, gfxfiltered.vert, the mesh MS + both mesh FS
-// families (see WorldRenderer::LiveSwapCovers, pinned by the
-// swap.cover-* tests). The rendergraph builders' OWN modules
-// (bloom/tonemap/forwardplus/shadows/...) still keep their
-// last-known-good on a recompile — their rebuild hooks remain the
-// documented follow-up. The headless frame-safety regression:
-// TOURMALINE_SHADER_SWAP=<frame> forces a full lit-family swap
-// mid-bench (the TOURMALINE_GI_HOTSWAP discipline).
+// THE LANDED CONSUMER: TWO legs run at WorldRenderer::RenderFrame's
+// boundary on every recompiled change set. (1) The LIT-family leg —
+// WorldRenderer::ReloadLitShaders covers default.vert, every
+// default_lit permutation, the ProjectLit family, gfxfiltered.vert,
+// the mesh MS + both mesh FS families (see LiveSwapCovers, pinned by
+// the swap.cover-* tests). (2) THE PER-BUILDER LEG —
+// WorldRenderer::ReloadBuilderShaders swaps every rendergraph
+// builder's modules through the shared SwapShaderModule helper
+// (Rendergraph/ShaderSwap.h: fresh-first, per-module last-known-good,
+// release-into-retire — one ReloadShaders per builder, from the
+// bloom/tonemap/shadow/SSR/GI-volumetric chains down to the probe
+// visuals + the terrain/skinning passes). The legs are not path-gated
+// against each other: builders also consume lit-family modules
+// (ForwardPlus's depth VS is default.vert, bloom/DOF ride
+// tonemap.vert). STILL last-known-good (the one remaining documented
+// gap): the gfx compute chain (gfxfilter/gfxbatchcull/hzb — the
+// smvk::gfx::State modules) and WorldRenderer's auxiliary FS sets
+// (debug views, shadow/gbuffer twins). The headless frame-safety
+// regression: TOURMALINE_SHADER_SWAP=<frame> forces the FULL swap
+// (both legs) mid-bench (the TOURMALINE_GI_HOTSWAP discipline;
+// verified 0.00% differing pixels vs the no-swap reference).
 
 #include <cstdint>
 #include <string>

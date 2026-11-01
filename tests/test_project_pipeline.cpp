@@ -3112,8 +3112,15 @@ void TestProjectCatalog() {
 		}
 		const fs::path outPath = tmp / "explain_out.txt";
 		auto runExplain = [&](const std::string& idArg) -> std::string {
+			// The tool's NAME is per-platform (Project.exe on Windows,
+			// Project on Linux — the CMake target name).
+#ifdef _WIN32
+			const char* kProjectTool = "Project.exe";
+#else
+			const char* kProjectTool = "Project";
+#endif
 			const std::string exe =
-				(fs::path(g_argv0).parent_path() / "Project.exe")
+				(fs::path(g_argv0).parent_path() / kProjectTool)
 					.string();
 			const std::string cmd = exe + " explain --project "
 				+ fs::path(project.root).string() + " --recipe "

@@ -248,6 +248,32 @@ struct MotionBlur {
 		dilateCsModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap across BOTH program sets (a failed read keeps the
+	// standing module), zero the programs, re-Ensure. Returns true when
+	// anything moved; the released old handles ride `retired` for the
+	// caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kMotionBlurVsPath,
+			"motionBlurVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kMotionBlurPsPath,
+			"motionBlurFrag", fragModule, retired);
+		any |= SwapShaderModule(ctx, kMotionBlurTilesCsPath,
+			"motionBlurTilesCS", tilesCsModule, retired);
+		any |= SwapShaderModule(ctx, kMotionBlurTileDilateCsPath,
+			"motionBlurTileDilateCS", dilateCsModule, retired);
+		if (!any)
+			return false;
+		program = ShaderProgram();
+		tilesProgram = ShaderProgram();
+		dilateProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		EnsureComputeShaders(ctx);
+		return true;
+	}
+
 	// One RGBA32F tile-map slot (Storage for the compute write via the
 	// binding-2 mirror, Sampled for the next phase's textures[] read).
 	struct TileTarget {

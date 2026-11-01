@@ -27,8 +27,12 @@ using namespace ::smvk;
 } // namespace tour
 namespace smvk {
 // (smvk-scope: the asset-registry free functions stay in smvk - the
-// header declares them there; only the Cluster members are tour::)
-smvk::StringViewT smvk::NormalizeAssetUri(StringViewT uri, Arena& scratch) {
+// header declares them there; only the Cluster members are tour::.)
+// NOTE: the UNQUALIFIED function name - GCC 14 rejects a qualified-id
+// in a declaration here ("explicit qualification in declaration")
+// while MSVC accepts it; the unqualified form defines the same
+// smvk::NormalizeAssetUri (the enclosing namespace is the qualifier).
+smvk::StringViewT NormalizeAssetUri(StringViewT uri, Arena& scratch) {
 	if (uri.empty())
 		return {};
 	if (UriAlreadyNormalized(uri))

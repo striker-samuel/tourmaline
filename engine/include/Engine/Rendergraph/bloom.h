@@ -35,6 +35,7 @@
 //   tonemap samples bloom.MipBindless(0) as bloomTexture.
 
 #include <Engine/Rendergraph/mipchain.h>
+#include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/platform.h>
 
 #include <cassert>
@@ -221,6 +222,32 @@ struct BloomChain {
 		downFragModule = {};
 		upFragModule = {};
 		spdModule = {};
+	}
+
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): swap every
+	// module FRESH-FIRST (a failed read keeps the standing module —
+	// the per-module last-known-good), zero the programs, re-Ensure.
+	// The released old handles ride `retired` for the caller's
+	// RenderGraph::RetireShaderModule + deferred-queue pass. Returns
+	// true when anything moved.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kBloomFullscreenVsPath,
+			"bloomFullscreenVS", vsModule, retired);
+		any |= SwapShaderModule(ctx, kBloomDownPsPath,
+			"bloomDownFrag", downFragModule, retired);
+		any |= SwapShaderModule(ctx, kBloomUpPsPath,
+			"bloomUpFrag", upFragModule, retired);
+		any |= SwapShaderModule(ctx, kBloomSpdCsPath,
+			"bloomSpdCS", spdModule, retired);
+		if (!any)
+			return false;
+		downProgram = ShaderProgram();
+		upProgram = ShaderProgram();
+		spdProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
 	}
 
 	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D hdr, const BloomDesc& d,

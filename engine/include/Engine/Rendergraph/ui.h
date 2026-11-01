@@ -175,6 +175,24 @@ struct UiComposite {
 		fragModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure. Returns true when anything moved; the released
+	// old handles ride `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kUiCompositeVsPath,
+			"uiCompositeVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kUiCompositePsPath,
+			"uiCompositeFrag", fragModule, retired);
+		if (!any)
+			return false;
+		program = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	bool Ensure(ResourceManager& ctx,
 		const char* vsPath = kUiCompositeVsPath,
 		const char* psPath = kUiCompositePsPath) {

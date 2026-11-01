@@ -896,22 +896,96 @@ namespace engine {
 				m_gfxFilterAvailable = false;
 			}
 		}
-		// Retirement: evict every cached pipeline built from the old
-		// modules (deferred VkPipeline destroy behind the in-flight
-		// frames) + defer the module destroys themselves. Modules are
-		// technically destroyable once their pipelines exist, but the
-		// deferred queue is the uniform discipline.
+		// Retirement: the shared tail (pipeline eviction + deferred
+		// module destroys behind the in-flight frames).
+		RetireShaderModules(retired);
+		std::fprintf(stderr,
+			"[shader-reload] LIVE SWAP: %zu module(s) rebuilt\n",
+			retired.size());
+		return true;
+	}
+
+	void WorldRenderer::RetireShaderModules(
+		const std::vector<smvk::ShaderModuleHandle>& old) {
 		size_t pipelinesRetired = 0;
-		for (smvk::ShaderModuleHandle old : retired) {
-			pipelinesRetired += m_rendergraph->RetireShaderModule(old);
+		for (smvk::ShaderModuleHandle h : old) {
+			pipelinesRetired += m_rendergraph->RetireShaderModule(h);
 			smvk::ResourceManager* ctx = m_context;
 			ctx->DeferDestroyTask(std::packaged_task<void()>(
-				[ctx, old] { ctx->DestroyShaderModule(old); }));
+				[ctx, h] { ctx->DestroyShaderModule(h); }));
 		}
+		if (!old.empty())
+			std::fprintf(stderr,
+				"[shader-reload] retired %zu module(s) + %zu stale"
+				" pipeline(s) behind the in-flight frames\n",
+				old.size(), pipelinesRetired);
+	}
+
+	bool WorldRenderer::ReloadBuilderShaders() {
+		std::vector<smvk::ShaderModuleHandle> retired;
+		size_t moved = 0;
+		// ViewportResources' builder set (each entry: fresh-first module
+		// swap + program zero + re-Ensure, per Rendergraph/ShaderSwap.h).
+		moved += m_viewportResources.directionalShadows
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.spotShadows
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.evsmDir
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.evsmSpot
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.bloom
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.tonemap
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.forwardPlus
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.deferredShadows
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.particles
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.motionVectors
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.motionBlur
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.dof
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.ssr
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.volumetric
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.exposure
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.ssgi
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.ssgiDiffuse
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.godrays
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.contactShadows
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.uiComposite
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_viewportResources.smaa
+			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		// The WorldRenderer-owned cpp builders (skydome, terrain,
+		// skinning, the probe visuals, the probe pre-mix).
+		moved += m_skydome.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_terrain.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_skinning.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_probeBalls.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_giProbeVisual.ReloadShaders(*m_context, retired) ? 1 : 0;
+		moved += m_probePremix.ReloadShaders(*m_context, *m_rendergraph,
+			retired) ? 1 : 0;
+		if (moved == 0) {
+			// Every builder read failed (a broken tree): all of them kept
+			// their standing modules — the last-known-good contract holds.
+			return false;
+		}
+		RetireShaderModules(retired);
 		std::fprintf(stderr,
-			"[shader-reload] LIVE SWAP: %zu module(s) rebuilt,"
-			" %zu stale pipeline(s) retired behind the in-flight frames\n",
-			retired.size(), pipelinesRetired);
+			"[shader-reload] BUILDER SWAP: %zu builder(s) moved, %zu"
+			" module(s) rebuilt\n", moved, retired.size());
 		return true;
 	}
 
@@ -10153,14 +10227,22 @@ namespace engine {
 						c.diagnostic.c_str());
 				}
 			}
-			if (!recompiled.empty())
+			if (!recompiled.empty()) {
+				// The lit-family leg (WorldRenderer + GfxRenderer
+				// modules) + the PER-BUILDER leg (every rendergraph
+				// builder — they also consume lit-family modules like
+				// default.vert/tonemap.vert, so both legs run on every
+				// change set).
 				ReloadLitShaders(recompiled);
+				ReloadBuilderShaders();
+			}
 		}
 		// HOT-SWAP regression pin (TOURMALINE_SHADER_SWAP=<frame>, the
-		// TOURMALINE_GI_HOTSWAP discipline): force a full lit-family
-		// swap at this frame's boundary — same bytes, fresh module
-		// handles, fresh pipelines — proving the swap's frame safety
-		// headless (clean frames + an unchanged capture after the swap).
+		// TOURMALINE_GI_HOTSWAP discipline): force a full lit-family +
+		// builder swap at this frame's boundary — same bytes, fresh
+		// module handles, fresh pipelines — proving the swap's frame
+		// safety headless (clean frames + an unchanged capture after
+		// the swap).
 		if (m_shaderSwapFrame >= 0
 				&& int(m_frameCounter) == m_shaderSwapFrame) {
 			std::fprintf(stderr,
@@ -10169,6 +10251,7 @@ namespace engine {
 			ReloadLitShaders({
 				"content/shaders/default.vert.hlsl.spv",
 				"content/shaders/default_lit.frag.hlsl.spv" });
+			ReloadBuilderShaders();
 			m_shaderSwapFrame = -1;
 		}
 

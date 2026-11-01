@@ -1613,6 +1613,19 @@ public:
 	// and retires the old modules + their cached pipelines behind the
 	// in-flight frames. Returns true when anything moved.
 	bool ReloadLitShaders(const std::vector<std::string>& recompiled);
+	// THE PER-BUILDER LEG (the item-15 completion): swap every owned
+	// rendergraph builder's shader modules at the same frame boundary —
+	// the same fresh-first/last-known-good discipline, one
+	// ReloadShaders per builder (Rendergraph/ShaderSwap.h). Runs on
+	// EVERY recompiled change set (the builders also consume lit-family
+	// modules: ForwardPlus's depth VS is default.vert, bloom/DOF ride
+	// tonemap.vert), so a per-path gate would under-cover. Returns true
+	// when anything moved.
+	bool ReloadBuilderShaders();
+	// The shared retirement tail (RenderGraph::RetireShaderModule evicts
+	// every stale cache entry + defers the VkPipeline destroys behind the
+	// in-flight frames; the module destroys ride the same queue).
+	void RetireShaderModules(const std::vector<smvk::ShaderModuleHandle>& old);
 	// Re-forges the direct-leg lit programs from the CURRENT module
 	// Holders (idempotent; skips pairs whose modules are missing).
 	void ForgeLitPrograms();

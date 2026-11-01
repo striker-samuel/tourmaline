@@ -57,6 +57,26 @@ void SkinVisual::Destroy() {
 	valid = false;
 }
 
+bool SkinVisual::ReloadShaders(ResourceManager& ctx,
+	std::vector<ShaderModuleHandle>& retired) {
+	if (!valid)
+		return false; // nothing standing: the next Ensure builds fresh
+	if (!SwapShaderModule(ctx, kSkinningCsPath, "skinningCS",
+			csModule, retired))
+		return false;
+	program = ShaderProgram();
+	if (!csModule.empty()) {
+		program = {
+			.shaders = { Shader{
+				.module = csModule,
+				.entryPoint = "mainCS",
+				.stage = ShaderStage::Compute } },
+			.shaderCount = 1
+		};
+	}
+	return true;
+}
+
 bool SkinVisual::AppendPass(ResourceManager& ctx, RenderGraph& rg,
 	uint32_t frameIndex, const SkinPush& push,
 	const std::vector<glm::mat4>& palette) {

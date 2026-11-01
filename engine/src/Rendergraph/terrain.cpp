@@ -66,6 +66,23 @@ void TerrainField::DestroyShaders() {
 	farVsModule = {};
 }
 
+bool TerrainField::ReloadShaders(ResourceManager& ctx,
+	std::vector<ShaderModuleHandle>& retired) {
+	bool any = false;
+	any |= SwapShaderModule(ctx, kTerrainVsPath,
+		"terrainVert", vsModule, retired);
+	any |= SwapShaderModule(ctx, kTerrainPsPath,
+		"terrainFrag", psModule, retired);
+	any |= SwapShaderModule(ctx, kTerrainFarVsPath,
+		"terrainFarVert", farVsModule, retired);
+	if (!any)
+		return false;
+	program = ShaderProgram();
+	farProgram = ShaderProgram();
+	EnsureShaders(ctx);
+	return true;
+}
+
 bool TerrainField::BuildFromSource(ResourceManager& ctx,
 	const TerrainSource& src, const TerrainDesc& d) {
 	if (!src.hasTerrain || !src.hfield.valid() || src.masks.size() != 256) {

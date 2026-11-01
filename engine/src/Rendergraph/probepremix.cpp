@@ -215,6 +215,44 @@ void ProbePremix::Destroy(RenderGraph& rg) {
 	valid = false;
 }
 
+bool ProbePremix::ReloadShaders(ResourceManager& ctx, RenderGraph& rg,
+	std::vector<ShaderModuleHandle>& retired) {
+	(void)rg;
+	if (!valid)
+		return false; // nothing standing: the next Ensure builds fresh
+	bool any = false;
+	any |= SwapShaderModule(ctx, kWeightsCsPath,
+		"premixWeightsCS", weightsModule, retired);
+	any |= SwapShaderModule(ctx, kMixCsPath,
+		"premixMixCS", mixModule, retired);
+	if (!any)
+		return false;
+	// The inline forge (Ensure's shape gate would SKIP the rebuild —
+	// valid already true and the buffers stand; the programs re-forge
+	// over the CURRENT modules, the per-module last-known-good mix).
+	weightsProgram = ShaderProgram();
+	mixProgram = ShaderProgram();
+	if (!weightsModule.empty()) {
+		weightsProgram = {
+			.shaders = { smvk::Shader{
+				.module = weightsModule,
+				.entryPoint = "mainCS",
+				.stage = smvk::ShaderStage::Compute } },
+			.shaderCount = 1
+		};
+	}
+	if (!mixModule.empty()) {
+		mixProgram = {
+			.shaders = { smvk::Shader{
+				.module = mixModule,
+				.entryPoint = "mainCS",
+				.stage = smvk::ShaderStage::Compute } },
+			.shaderCount = 1
+		};
+	}
+	return true;
+}
+
 bool ProbePremix::AppendPasses(RenderGraph& rg, uint64_t lightsBda,
 	uint32_t lightCount, uint32_t probeCount, const glm::vec3& poi,
 	uint32_t samplerIndex) {

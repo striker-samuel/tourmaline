@@ -424,6 +424,40 @@ struct Smaa {
 		resolveVsModule = {}; resolvePsModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap across all four program pairs (a failed read keeps
+	// the standing module), zero the programs, re-Ensure. Returns true
+	// when anything moved; the released old handles ride `retired` for
+	// the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kSmaaEdgeVsPath,
+			"smaaEdgeVert", edgeVsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaEdgePsPath,
+			"smaaEdgeFrag", edgePsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaWeightsVsPath,
+			"smaaWeightsVert", weightsVsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaWeightsPsPath,
+			"smaaWeightsFrag", weightsPsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaNeighborhoodVsPath,
+			"smaaNeighborhoodVert", nbVsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaNeighborhoodPsPath,
+			"smaaNeighborhoodFrag", nbPsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaResolveVsPath,
+			"smaaResolveVert", resolveVsModule, retired);
+		any |= SwapShaderModule(ctx, kSmaaResolvePsPath,
+			"smaaResolveFrag", resolvePsModule, retired);
+		if (!any)
+			return false;
+		edgeProgram = ShaderProgram();
+		weightsProgram = ShaderProgram();
+		nbProgram = ShaderProgram();
+		resolveProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	void DestroyTargets(RenderGraph& rg) {
 		ldr.Destroy(rg);
 		edges.Destroy(rg);

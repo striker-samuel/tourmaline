@@ -261,6 +261,15 @@ struct MeshParticles {
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg,
 		uint32_t framesInFlight, const MeshParticlesDesc& d = {});
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module) + the
+	// inline program re-forge (Create owns the one-shot load; the
+	// reload must NOT re-run it — the buffers survive). Returns true
+	// when anything moved; the released old handles ride `retired` for
+	// the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired);
+
 	// Emitter rows for THIS frame (the flight slice). Pointer + count.
 	// The rows' tail.x MUST be 0 (the GPU carry owns scheduling).
 	void UpdateEmitters(ResourceManager& ctx, uint32_t frame,
@@ -622,6 +631,46 @@ inline void MeshParticles::Destroy(RenderGraph& rg) {
 	scatterProgram = ShaderProgram(); buildProgram = ShaderProgram();
 	emitModule = {}; simModule = {}; cullModule = {};
 	prefixModule = {}; scatterModule = {}; buildModule = {};
+}
+
+inline bool MeshParticles::ReloadShaders(ResourceManager& ctx,
+	std::vector<ShaderModuleHandle>& retired) {
+	bool any = false;
+	any |= SwapShaderModule(ctx, kMeshParticlesEmitCsPath,
+		"meshParticlesEmitCS", emitModule, retired);
+	any |= SwapShaderModule(ctx, kMeshParticlesSimCsPath,
+		"meshParticlesSimCS", simModule, retired);
+	any |= SwapShaderModule(ctx, kMeshParticlesCullCsPath,
+		"meshParticlesCullCS", cullModule, retired);
+	any |= SwapShaderModule(ctx, kMeshParticlesPrefixCsPath,
+		"meshParticlesPrefixCS", prefixModule, retired);
+	any |= SwapShaderModule(ctx, kMeshParticlesScatterCsPath,
+		"meshParticlesScatterCS", scatterModule, retired);
+	any |= SwapShaderModule(ctx, placement::kPlacementDrawBuildCsPath,
+		"meshParticlesDrawBuildCS", buildModule, retired);
+	if (!any)
+		return false;
+	// The forge over the CURRENT modules (a failed swap kept its old
+	// handle — the mix is exactly the per-module last-known-good).
+	// (the paren value-init forms: the GCC 13 brace-temporary ICE)
+	emitProgram = ShaderProgram(); simProgram = ShaderProgram();
+	cullProgram = ShaderProgram(); prefixProgram = ShaderProgram();
+	scatterProgram = ShaderProgram(); buildProgram = ShaderProgram();
+	{
+		Shader e{ .module = emitModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		emitProgram = { .shaders = { e }, .shaderCount = 1 };
+		Shader s{ .module = simModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		simProgram = { .shaders = { s }, .shaderCount = 1 };
+		Shader c{ .module = cullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		cullProgram = { .shaders = { c }, .shaderCount = 1 };
+		Shader p{ .module = prefixModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		prefixProgram = { .shaders = { p }, .shaderCount = 1 };
+		Shader sc{ .module = scatterModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		scatterProgram = { .shaders = { sc }, .shaderCount = 1 };
+		Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		buildProgram = { .shaders = { b }, .shaderCount = 1 };
+	}
+	return true;
 }
 
 inline bool MeshParticles::Ensure(ResourceManager& ctx, RenderGraph& rg,

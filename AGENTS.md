@@ -344,37 +344,53 @@ trees, binary packages — see `THIRD_PARTY_NOTICES.md`).
   never on by default; `TOURMALINE_SHADER_RELOAD_SRC` overrides the
   source tree). `WorldRenderer::RenderFrame` consumes the change log
   at the frame boundary and logs Recompiled/FAILED lines.
-- THE CONSUMER LEG (LANDED — the live in-place swap): a Recompiled
-  change set covered by `WorldRenderer::LiveSwapCovers` (the scene
-  lighting set: default.vert + every default_lit permutation + the
-  ProjectLit family; the GPU-driven legs: gfxfiltered.vert, the mesh
-  MS + both mesh FS families) triggers `ReloadLitShaders` AT the
-  frame boundary: each covered module re-reads through the shader
-  library (dev override first — the fresh bytes), the old handle is
-  RELEASED into a retire list (a failed read keeps that module's
-  last-known-good), the direct programs re-forge
-  (`ForgeLitPrograms`), the far-spec twin cache clears, the
-  GfxRenderer legs re-feed + re-Ensure (`ReleaseSelfModules` detaches
-  the touched self modules; `InvalidateDerivedPrograms` zeros the
-  derived twins so the gates rebuild them), and every old module is
-  retired through `RenderGraph::RetireShaderModule` — the per-graph
+- THE CONSUMER LEG (LANDED — the live in-place swap, BOTH legs): a
+  Recompiled change set triggers TWO swaps at the frame boundary. The
+  LIT-FAMILY leg — covered by `WorldRenderer::LiveSwapCovers` (the
+  scene lighting set: default.vert + every default_lit permutation +
+  the ProjectLit family; the GPU-driven legs: gfxfiltered.vert, the
+  mesh MS + both mesh FS families) — runs `ReloadLitShaders`: each
+  covered module re-reads through the shader library (dev override
+  first — the fresh bytes), the old handle is RELEASED into a retire
+  list (a failed read keeps that module's last-known-good), the
+  direct programs re-forge (`ForgeLitPrograms`), the far-spec twin
+  cache clears, the GfxRenderer legs re-feed + re-Ensure
+  (`ReleaseSelfModules` detaches the touched self modules;
+  `InvalidateDerivedPrograms` zeros the derived twins so the gates
+  rebuild them). The PER-BUILDER leg — `ReloadBuilderShaders`,
+  UNCONDITIONAL on every change set (builders also consume
+  lit-family modules: ForwardPlus's depth VS is default.vert,
+  bloom/DOF ride tonemap.vert) — swaps every rendergraph builder's
+  modules through the shared `SwapShaderModule` helper
+  (`Rendergraph/ShaderSwap.h`: fresh-first, per-module
+  last-known-good, RELEASE-into-retire — never an empty-assign
+  destroy) via one `ReloadShaders` per builder (bloom, tonemap,
+  forwardplus, deferred shadows, the shadow/EVSM atlases, motion,
+  DOF, SSR, the two SSGI chains, volumetric, exposure, godrays,
+  contact shadows, particles, SMAA, UI composite, skydome, terrain,
+  skinning, the probe visuals + the probe pre-mix; placement/
+  meshparticles carry hooks for their future consumers). Both legs
+  retire through `RetireShaderModules` — the per-graph
   `VulkanPipelineCache::RetireModule` evicts every cached entry whose
-  key references the old handle and DEFERS the VkPipeline destroys
-  behind the in-flight frames (the retire-margin queue); the module
-  destroys ride the same queue. NOT covered (keep last-known-good,
-  documented follow-ups): the debug/shadow/gbuffer/SSR FS sets, the
-  gfx compute chain, and the rendergraph builders' own modules.
-  Frame-safety regression: `TOURMALINE_SHADER_SWAP=<frame>` forces a
-  full lit-family swap mid-bench (the TOURMALINE_GI_HOTSWAP
-  discipline — clean frames, unchanged capture after the swap).
+  key references an old handle and DEFERS the VkPipeline destroys
+  behind the in-flight frames; the module destroys ride the same
+  queue. STILL last-known-good (the remaining documented gap): the
+  gfx compute chain (gfxfilter/gfxbatchcull/hzb — the
+  `smvk::gfx::State` modules) + WorldRenderer's auxiliary FS sets
+  (debug views, shadow/gbuffer twins). Frame-safety regression:
+  `TOURMALINE_SHADER_SWAP=<frame>` forces the FULL swap (both legs)
+  mid-bench (the TOURMALINE_GI_HOTSWAP discipline — verified on the
+  GameProject scene with the ProjectLit demo live: 27 lit + 76
+  builder modules rebuilt, 29 stale pipelines retired, 24 clean
+  frames after, 0.00% differing pixels vs the no-swap reference).
   Pinned by the `swap.cover-*` checks in test_shader_hot_reload.cpp.
 - THE SWAP CONTRACT (the consumer leg): Vulkan modules are immutable
   — a consumer rebuilds its module+pipeline set at the frame
   boundary (between submits, the GPU-safe point) and retires old
-  handles behind the in-flight frames. The WorldRenderer lit-family
-  leg is LANDED (the block above); the rendergraph builders' own
-  rebuild hooks remain the documented follow-up.
-  Regression-tested in test_shader_hot_reload.cpp.
+  handles behind the in-flight frames. Both legs (the lit family +
+  every rendergraph builder) are LANDED (the block above); the gfx
+  compute chain + the auxiliary FS sets remain the documented
+  follow-up. Regression-tested in test_shader_hot_reload.cpp.
 
 ### The lit-hook seam + the 32-bit userdata lane (Phase A landed)
 

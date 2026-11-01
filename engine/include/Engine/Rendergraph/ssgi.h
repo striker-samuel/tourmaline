@@ -741,6 +741,34 @@ struct Ssgi {
 		composeFragModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kSsgiVsPath,
+			"ssgiVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiSsaoPsPath,
+			"ssgiSsaoRawFrag", ssaoFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiSaoPsPath,
+			"ssgiSaoRawFrag", saoFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiBlurPsPath,
+			"ssgiBlurFrag", blurFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiComposePsPath,
+			"ssgiComposeFrag", composeFragModule, retired);
+		if (!any)
+			return false;
+		ssaoRawProgram = ShaderProgram();
+		saoRawProgram = ShaderProgram();
+		blurProgram = ShaderProgram();
+		composeProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D full, const SsgiDesc& d,
 		const char* vsPath = kSsgiVsPath,
 		const char* ssaoPath = kSsgiSsaoPsPath,

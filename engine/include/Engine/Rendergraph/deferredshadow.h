@@ -58,6 +58,7 @@
 //   // lighting pass: AddMainReadHints + FrameUniforms ds* fields.
 
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/platform.h>
@@ -508,6 +509,28 @@ struct DeferredShadows {
             phasePrograms[p] = ShaderProgram();
             phaseModules[p] = {};
         }
+    }
+
+    // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+    // module swap (a failed read keeps the standing module), zero the
+    // programs, re-Ensure. Returns true when anything moved; the
+    // released old handles ride `retired` for the caller's retirement
+    // pass (RenderGraph::RetireShaderModule + the deferred queue).
+    [[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+        std::vector<ShaderModuleHandle>& retired) {
+        static constexpr const char* kPaths[3] = {
+            kDsPhase2CsPath, kDsPhase3CsPath, kDsPhase4CsPath
+        };
+        bool any = false;
+        for (uint32_t p = 0; p < 3; ++p)
+            any |= SwapShaderModule(ctx, kPaths[p], "deferredShadowCS",
+                phaseModules[p], retired);
+        if (!any)
+            return false;
+        for (uint32_t p = 0; p < 3; ++p)
+            phasePrograms[p] = ShaderProgram();
+        EnsureShaders(ctx);
+        return true;
     }
 
     bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D swapExtent) {

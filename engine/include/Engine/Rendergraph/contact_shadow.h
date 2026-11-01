@@ -166,6 +166,20 @@ struct SunContactShadows {
 		csModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure. Returns true when anything moved; the released
+	// old handle rides `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		if (!SwapShaderModule(ctx, kContactShadowCsPath,
+				"contactShadowCS", csModule, retired))
+			return false;
+		program = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
 		Extent2D ext, const char* name, Target& out) {
 		if (ext.width == 0 || ext.height == 0)

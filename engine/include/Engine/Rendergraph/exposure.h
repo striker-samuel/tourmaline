@@ -153,6 +153,20 @@ struct ExposureMeter {
 		histogramModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure. Returns true when anything moved; the released
+	// old handle rides `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		if (!SwapShaderModule(ctx, kExposureHistogramCsPath,
+				"exposureHistogramCS", histogramModule, retired))
+			return false;
+		histogramProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	// Extent-independent (each slice is always 64 uints); creates all
 	// flight slices once.
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const ExposureDesc& d,

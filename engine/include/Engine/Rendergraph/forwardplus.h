@@ -533,6 +533,28 @@ struct ForwardPlus {
 		depthVsModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass. NOTE: the depth VS is default.vert — the SAME module the
+	// lit family swaps, so this builder rides every lit-family change
+	// too (the driver runs the builder leg unconditionally).
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kForwardPlusCsPath,
+			"forwardplusCullCS", cullModule, retired);
+		any |= SwapShaderModule(ctx, kForwardPlusDepthVsPath,
+			"forwardplusDepthVS", depthVsModule, retired);
+		if (!any)
+			return false;
+		cullProgram = ShaderProgram();
+		depthProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	bool Create(ResourceManager& ctx, RenderGraph& rg, Extent2D swapExtent,
 		const ForwardPlusDesc& d, ImageViewHandle depthView,
 		const char* csPath = kForwardPlusCsPath,

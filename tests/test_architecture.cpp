@@ -238,16 +238,19 @@ int main() {
 			while ((at = code.find("Vk", at)) != std::string::npos) {
 				const bool wordStart =
 					at == 0
-					|| !(std::isalnum(unsigned char(code[at - 1]))
+					|| !(std::isalnum(static_cast<unsigned char>(
+							code[at - 1]))
 						|| code[at - 1] == '_');
 				const bool vulkanType =
 					code.size() > at + 2
-					&& std::isupper(unsigned char(code[at + 2]));
+					&& std::isupper(static_cast<unsigned char>(
+						code[at + 2]));
 				if (wordStart && vulkanType) {
 					// Grab the token + baseline check.
 					size_t end = at + 2;
 					while (end < code.size()
-							&& (std::isalnum(unsigned char(code[end]))
+							&& (std::isalnum(static_cast<unsigned char>(
+									code[end]))
 								|| code[end] == '_'))
 						++end;
 					const std::string tok = code.substr(at, end - at);

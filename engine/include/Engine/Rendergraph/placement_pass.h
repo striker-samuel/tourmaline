@@ -99,6 +99,20 @@ struct PlacementPass {
 		tileModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure. Returns true when anything moved; the released
+	// old handle rides `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		if (!SwapShaderModule(ctx, kPlacementTileCsPath,
+				"placementTileCS", tileModule, retired))
+			return false;
+		tileProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	bool Create(ResourceManager& ctx, RenderGraph& rg, const PlacementPassDesc& d,
 		const char* tileCsPath = kPlacementTileCsPath) {
 		if (d.maxInstancesPerTile == 0 || d.maxTiles == 0) return false;
@@ -611,6 +625,24 @@ struct PlacementDrawPrograms {
 		vsModule = {};
 		psModule = {};
 	}
+
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure. Returns true when anything moved; the released
+	// old handles ride `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kPlacementInstancedVsPath,
+			"placementInstancedVS", vsModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementUnlitPsPath,
+			"placementUnlitPS", psModule, retired);
+		if (!any)
+			return false;
+		program = ShaderProgram();
+		Ensure(ctx);
+		return true;
+	}
 };
 
 // ---------------------------------------------------------------------------
@@ -769,6 +801,32 @@ struct PlacementCullPrograms {
 		scatterProgram = ShaderProgram();
 		buildProgram = ShaderProgram();
 		cullModule = {}; prefixModule = {}; scatterModule = {}; buildModule = {};
+	}
+
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kPlacementCullCsPath,
+			"placementCullCS", cullModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementPrefixCsPath,
+			"placementPrefixCS", prefixModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementScatterVisCsPath,
+			"placementScatterVisCS", scatterModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementDrawBuildCsPath,
+			"placementDrawBuildCS", buildModule, retired);
+		if (!any)
+			return false;
+		cullProgram = ShaderProgram();
+		prefixProgram = ShaderProgram();
+		scatterProgram = ShaderProgram();
+		buildProgram = ShaderProgram();
+		Ensure(ctx);
+		return true;
 	}
 
 	// ---- Pass shells (buffer-hint edges order the chain) ----
@@ -1230,6 +1288,26 @@ struct PlacementScatterPrograms {
 		meshModule = {};
 		hfModule = {};
 	}
+
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kPlacementMeshTileCsPath,
+			"placementMeshTileCS", meshModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementHfTileCsPath,
+			"placementHfTileCS", hfModule, retired);
+		if (!any)
+			return false;
+		meshProgram = ShaderProgram();
+		hfProgram = ShaderProgram();
+		Ensure(ctx);
+		return true;
+	}
 	// Scatter eval pass shell over a PlacementPass tile slot: slot buffers
 	// RW + domain/params buffers read-only (rendergraph emits the edges).
 	static RenderPass& AddScatterPass(RenderGraph& rg, const PlacementPass& pass,
@@ -1319,6 +1397,29 @@ struct PlacementConstraint {
 		electProgram = { .shaders = { e }, .shaderCount = 1 };
 		Shader k{ .module = killModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
 		killProgram = { .shaders = { k }, .shaderCount = 1 };
+		return true;
+	}
+
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kPlacementConBuildCsPath,
+			"placementConBuildCS", buildModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementConElectCsPath,
+			"placementConElectCS", electModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementConKillCsPath,
+			"placementConKillCS", killModule, retired);
+		if (!any)
+			return false;
+		buildProgram = ShaderProgram();
+		electProgram = ShaderProgram();
+		killProgram = ShaderProgram();
+		EnsureShaders(ctx);
 		return true;
 	}
 

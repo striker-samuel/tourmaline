@@ -785,6 +785,53 @@ struct ScreenSpaceReflections {
 		depthHistoryFragModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap across the whole chain (a failed read keeps the
+	// standing module; the optional .dbg twin is TOLERANT — a missing
+	// twin keeps the previous one or stays off), zero the programs,
+	// re-Ensure. Returns true when anything moved; the released old
+	// handles ride `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kSsrVsPath,
+			"ssrVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kSsrBlurPsPath,
+			"ssrBlurFrag", blurFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsrSeparableBlurPsPath,
+			"ssrSeparableBlurFrag", separableBlurFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsrTemporalPsPath,
+			"ssrTemporalFrag", temporalFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsrComposePsPath,
+			"ssrComposeFrag", composeFragModule, retired);
+		(void)SwapShaderModule(ctx, kSsrComposeDbgPsPath,
+			"ssrComposeDbgFrag", composeDbgFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsrClassifyCsPath,
+			"ssrClassifyCS", classifyModule, retired);
+		any |= SwapShaderModule(ctx, kSsrIndirectCsPath,
+			"ssrIndirectCS", indirectModule, retired);
+		any |= SwapShaderModule(ctx, kSsrIntersectCsPath,
+			"ssrIntersectCS", intersectModule, retired);
+		any |= SwapShaderModule(ctx, kSsrCopyPsPath,
+			"ssrCopyFrag", copyFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsrDepthHistoryPsPath,
+			"ssrDepthHistoryFrag", depthHistoryFragModule, retired);
+		if (!any)
+			return false;
+		blurProgram = ShaderProgram();
+		separableBlurProgram = ShaderProgram();
+		temporalProgram = ShaderProgram();
+		composeProgram = ShaderProgram();
+		composeDbgProgram = ShaderProgram();
+		classifyProgram = ShaderProgram();
+		indirectProgram = ShaderProgram();
+		intersectProgram = ShaderProgram();
+		copyProgram = ShaderProgram();
+		depthHistoryProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
 		Extent2D ext, Format format, const char* name, Target& out) {
 		if (ext.width == 0 || ext.height == 0)

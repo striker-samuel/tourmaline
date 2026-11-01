@@ -271,6 +271,33 @@ struct EvsmAtlas {
 		return true;
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure with the SAME path set the caller configured.
+	// Returns true when anything moved; the released old handles ride
+	// `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired,
+		const char* resolvePath = kEvsmResolveCsPath,
+		const char* csHPath = kEvsmBlurHPath,
+		const char* csVPath = kEvsmBlurVPath) {
+		bool any = false;
+		any |= SwapShaderModule(ctx,
+			resolvePath ? resolvePath : kEvsmResolveCsPath,
+			"evsmResolveCS", resolveModule, retired);
+		any |= SwapShaderModule(ctx, csHPath ? csHPath : kEvsmBlurHPath,
+			"evsmBlurHCS", blurHModule, retired);
+		any |= SwapShaderModule(ctx, csVPath ? csVPath : kEvsmBlurVPath,
+			"evsmBlurVCS", blurVModule, retired);
+		if (!any)
+			return false;
+		resolveProgram = ShaderProgram();
+		blurHProgram = ShaderProgram();
+		blurVProgram = ShaderProgram();
+		EnsureShaders(ctx, resolvePath, csHPath, csVPath);
+		return true;
+	}
+
 	void Destroy(RenderGraph& rg) {
 		if (!msaaDepthLogical.empty())
 			rg.FreeImageView(msaaDepthLogical);

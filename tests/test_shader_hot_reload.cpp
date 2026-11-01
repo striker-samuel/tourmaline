@@ -345,8 +345,7 @@ void TestLiveSwapCoverage() {
 		"swap.cover-filtered-vs");
 	Check(WorldRenderer::LiveSwapCovers(
 			"content/shaders/gfxfilter.mesh.hlsl.spv"),
-		"swap.cover-mesh-ms");
-	Check(WorldRenderer::LiveSwapCovers(
+		"swap.cover-mesh-ms");	Check(WorldRenderer::LiveSwapCovers(
 			"content/shaders/gfxmesh_lit.frag.hlsl.spv")
 		&& WorldRenderer::LiveSwapCovers(
 			"content/shaders/gfxmesh_lit.frag.hlsl.sg9.spv"),
@@ -354,9 +353,13 @@ void TestLiveSwapCoverage() {
 	Check(WorldRenderer::LiveSwapCovers(
 			"content/shaders/gfxmesh_project_lit.frag.hlsl.std.spv"),
 		"swap.cover-mesh-project-fs");
-	// The NOT-covered set (keeps last-known-good; the documented
-	// follow-ups): debug FSs, shadow/gbuffer/SSR sets, the gfx compute
-	// chain, post-FX builders, the wire twin.
+	// The NOT-LIT set: these paths do not touch the LIT-family swap
+	// (LiveSwapCovers false) — they belong to the PER-BUILDER leg
+	// (ReloadBuilderShaders, which runs unconditionally on every
+	// recompiled change set — the builders also consume lit modules
+	// like default.vert, so the legs are not path-gated against each
+	// other). The gfx compute chain (gfxfilter/gfxbatchcull/hzb) keeps
+	// its last-known-good — the one remaining documented gap.
 	Check(!WorldRenderer::LiveSwapCovers(
 			"content/shaders/default_unlit.frag.hlsl.spv"),
 		"swap.cover-excludes-debug-fs");

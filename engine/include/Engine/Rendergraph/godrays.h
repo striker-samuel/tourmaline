@@ -245,6 +245,34 @@ struct ScreenSpaceGodRays {
 		compositeFragModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kGodraysVsPath,
+			"godraysVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kGodraysMaskPsPath,
+			"godraysMaskFrag", maskFragModule, retired);
+		any |= SwapShaderModule(ctx, kGodraysRadialPsPath,
+			"godraysRadialFrag", radialFragModule, retired);
+		any |= SwapShaderModule(ctx, kGodraysFilterPsPath,
+			"godraysFilterFrag", filterFragModule, retired);
+		any |= SwapShaderModule(ctx, kGodraysCompositePsPath,
+			"godraysCompositeFrag", compositeFragModule, retired);
+		if (!any)
+			return false;
+		maskProgram = ShaderProgram();
+		radialProgram = ShaderProgram();
+		filterProgram = ShaderProgram();
+		compositeProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
 		Extent2D ext, Format format, const char* name, Target& out) {
 		if (ext.width == 0 || ext.height == 0)

@@ -462,8 +462,16 @@ struct FileWatcher::Impl {
 	// registration changes/stop.
 	int inotifyFd = -1;
 	int wakePipe[2] = { -1, -1 }; // [0] read, [1] write
+	// wd -> watched dir. GUARDED: Add* arms INLINE on the caller
+	// thread (the add-race fix below) while the loop reads it — one
+	// mutex covers every touch.
+	std::mutex wdMtx;
 	std::map<int, std::string> pathByWd;
 
+	// Idempotent by inotify semantics: adding an already-watched dir
+	// returns the SAME wd (no remove/re-add churn — a remove+re-add
+	// pair opens an event-loss window, and no API removes roots
+	// mid-run; Stop tears the whole set down).
 	bool ArmWatch(const std::string& dir, std::string& err) {
 		const uint32_t mask = IN_MODIFY | IN_ATTRIB | IN_CLOSE_WRITE
 			| IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO;
@@ -473,6 +481,7 @@ struct FileWatcher::Impl {
 				+ "': " + std::strerror(errno);
 			return false;
 		}
+		std::lock_guard<std::mutex> lock(wdMtx);
 		pathByWd[wd] = dir;
 		return true;
 	}
@@ -503,10 +512,12 @@ struct FileWatcher::Impl {
 	void ThreadLoop() {
 		std::string err;
 		auto rebuild = [&]() {
-			// Drop the old descriptors, re-arm the current roots.
-			for (const auto& [wd, path] : pathByWd)
-				inotify_rm_watch(inotifyFd, wd);
-			pathByWd.clear();
+			// IDEMPOTENT re-arm — NEVER a blanket remove: the old
+			// rm_all + re-add pair opened an event-loss window (and
+			// churned a fresh IN_IGNORED per watch). Roots only GROW
+			// mid-run (no remove API; Stop tears everything down), so
+			// the walk just re-arms what stands — add_watch returns
+			// the existing wd for anything already armed.
 			for (const std::string& d : dirRoots)
 				ArmRecursive(d, err);
 			std::set<std::string> parents;
@@ -547,19 +558,28 @@ struct FileWatcher::Impl {
 					reinterpret_cast<const inotify_event*>(
 						buf + off);
 				off += sizeof *ev + ev->len;
-				const auto wit = pathByWd.find(ev->wd);
-				if (wit == pathByWd.end())
-					continue;
+				std::string watchedDir;
+				{
+					std::lock_guard<std::mutex> lock(wdMtx);
+					const auto wit = pathByWd.find(ev->wd);
+					if (wit == pathByWd.end())
+						continue;
+					watchedDir = wit->second;
+				}
 				if (ev->mask & IN_Q_OVERFLOW) {
 					overflowed.store(true);
 					continue;
 				}
 				const std::string name = ev->len ? ev->name : "";
 				const std::string path =
-					fs::path(wit->second) / fs::path(name)
+					fs::path(watchedDir) / fs::path(name)
 						.lexically_normal().generic_string();
 				if (name.empty())
 					continue;
+				// (No per-event filtering here: Record() owns the
+				// Watched()/policy filters, over the NORMALIZED path —
+				// the raw join here can differ in form, and a second
+				// filter point silently diverged from it once.)
 				if (ev->mask & (IN_DELETE | IN_MOVED_FROM)) {
 					Record(path, Event::Removed);
 					continue;
@@ -618,6 +638,12 @@ bool FileWatcher::Start(const Policy& policy, std::string& err) {
 		err = std::string("inotify_init1 failed: ")
 			+ std::strerror(errno);
 		return false;
+	}
+	// A fresh inotify fd RESTARTS wd numbering: stale entries from a
+	// previous arm (Stop closed that fd) would misroute the new wds.
+	{
+		std::lock_guard<std::mutex> lock(m_impl->wdMtx);
+		m_impl->pathByWd.clear();
 	}
 	if (pipe(m_impl->wakePipe) != 0) {
 		err = std::string("pipe failed: ") + std::strerror(errno);
@@ -707,6 +733,15 @@ bool FileWatcher::AddDirectory(const std::string& dir, std::string& err) {
 		PostQueuedCompletionStatus(m_impl->iocp, 0, Impl::kRebuildKey,
 			nullptr);
 #else
+		// ARM INLINE on the caller thread BEFORE the wake: the watch
+		// must exist when THIS call returns — a write landing in the
+		// wake->thread-rebuild window produced NO event at all (the
+		// Linux CI test flakes' root cause). The wake still fires;
+		// the thread's idempotent re-arm walk discovers subdirs.
+		{
+			std::string aerr;
+			m_impl->ArmRecursive(norm, aerr);
+		}
 		const char c = 'r';
 		(void)!write(m_impl->wakePipe[1], &c, 1);
 #endif
@@ -732,6 +767,13 @@ bool FileWatcher::AddFile(const std::string& file, std::string& err) {
 		PostQueuedCompletionStatus(m_impl->iocp, 0, Impl::kRebuildKey,
 			nullptr);
 #else
+		// ARM INLINE (the AddDirectory add-race fix's twin): the
+		// parent-dir watch exists when this call returns.
+		{
+			std::string aerr;
+			m_impl->ArmWatch(fs::path(norm).parent_path()
+				.lexically_normal().generic_string(), aerr);
+		}
 		const char c = 'r';
 		(void)!write(m_impl->wakePipe[1], &c, 1);
 #endif

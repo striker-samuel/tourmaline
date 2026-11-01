@@ -7,6 +7,10 @@
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/mesh.h>
+// The per-builder hot-reload swap helper (SwapShaderModule): every
+// rendergraph builder includes this header, so the consumer leg's
+// ReloadShaders implementations share one exact module-swap recipe.
+#include <Engine/Rendergraph/ShaderSwap.h>
 
 #include <cassert>
 #include <cstddef>

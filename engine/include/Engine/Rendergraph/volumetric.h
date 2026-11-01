@@ -348,6 +348,28 @@ struct VolumetricFog {
 		compositeFragModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kVolumetricVsPath,
+			"volumetricVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kVolumetricIntegratePsPath,
+			"volumetricIntegrateFrag", integrateFragModule, retired);
+		any |= SwapShaderModule(ctx, kVolumetricCompositePsPath,
+			"volumetricCompositeFrag", compositeFragModule, retired);
+		if (!any)
+			return false;
+		integrateProgram = ShaderProgram();
+		compositeProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	bool CreateTarget(ResourceManager& ctx, RenderGraph& rg, Extent2D renderExtentIn, const VolumetricDesc& d) {
 		if (renderExtentIn.width == 0 || renderExtentIn.height == 0)
 			return false;

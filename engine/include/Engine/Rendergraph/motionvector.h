@@ -21,6 +21,7 @@
 //   ... motionVectors.target.logicalView / .bindlessIndex ...
 
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/platform.h>
 
@@ -164,6 +165,24 @@ struct MotionVectors {
 		program = ShaderProgram();
 		vsModule = {};
 		fragModule = {};
+	}
+
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// program, re-Ensure. Returns true when anything moved; the released
+	// old handles ride `retired` for the caller's retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kMotionVectorVsPath,
+			"motionVectorVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kMotionVectorPsPath,
+			"motionVectorFrag", fragModule, retired);
+		if (!any)
+			return false;
+		program = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
 	}
 
 	// Idempotent target + program creation. Returns true when ready.

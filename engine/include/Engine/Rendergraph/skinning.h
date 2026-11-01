@@ -63,6 +63,15 @@ struct SkinVisual {
 	bool Ensure(ResourceManager& ctx);
 	void Destroy();
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module) + the
+	// inline program re-forge (Ensure's `valid` gate would skip the
+	// rebuild — the buffers stand). Returns true when anything moved;
+	// the released old handle rides `retired` for the caller's
+	// retirement pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired);
+
 	// Appends the skinning compute pass: uploads the palette (the CPU
 	// bone-eval box's output - the joint matrices the cluster's
 	// SampleAnimation built this frame) into this flight's buffer +

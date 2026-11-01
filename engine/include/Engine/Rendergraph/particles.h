@@ -331,6 +331,31 @@ struct Particles {
 		drawPsModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kParticlesEmitCsPath,
+			"particlesEmitCS", emitModule, retired);
+		any |= SwapShaderModule(ctx, kParticlesSimCsPath,
+			"particlesSimCS", simModule, retired);
+		any |= SwapShaderModule(ctx, kParticlesDrawVsPath,
+			"particlesDrawVS", drawVsModule, retired);
+		any |= SwapShaderModule(ctx, kParticlesDrawPsPath,
+			"particlesDrawPS", drawPsModule, retired);
+		if (!any)
+			return false;
+		emitProgram = ShaderProgram();
+		simProgram = ShaderProgram();
+		drawProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	bool Create(ResourceManager& ctx, RenderGraph& rg, uint32_t frames,
 		const ParticlesDesc& d,
 		const char* emitCsPath = kParticlesEmitCsPath,

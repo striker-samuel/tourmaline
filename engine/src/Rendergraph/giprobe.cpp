@@ -163,6 +163,20 @@ void GiProbeVisual::Destroy() {
 	psModule = {};
 }
 
+bool GiProbeVisual::ReloadShaders(ResourceManager& ctx,
+	std::vector<ShaderModuleHandle>& retired) {
+	bool any = false;
+	any |= SwapShaderModule(ctx, kGiProbeVsPath,
+		"giProbeVert", vsModule, retired);
+	any |= SwapShaderModule(ctx, kGiProbePsPath,
+		"giProbeFrag", psModule, retired);
+	if (!any)
+		return false;
+	program = ShaderProgram();
+	Ensure(ctx);
+	return true;
+}
+
 bool GiProbeVisual::AppendPass(RenderGraph& rg,
 	LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
 	Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,

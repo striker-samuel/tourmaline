@@ -335,16 +335,23 @@ void TestCookerPack() {
 			<< spvB.generic_string() << "\n";
 	}
 	const fs::path pak = tmp / "engine-shaders-test.pak";
-	// Pak.exe sits beside this test exe (the shared build root) —
-	// resolve it EXE-relative (never CWD: ctest/hosts launch from
-	// anywhere), with NATIVE separators. NO embedded quotes: the CRT's
-	// system() wraps the string in a leading-quote cmd /c form whose
-	// quote-stripping rule mangles multi-quoted commands ("filename
-	// syntax is incorrect"); every path here is space-free (the test
-	// temp dir + the repo), so bare tokens parse cleanly.
+	// The Pak cooker tool sits beside this test exe (the shared build
+	// root) — resolve it EXE-relative (never CWD: ctest/hosts launch
+	// from anywhere), with NATIVE separators. NO embedded quotes: the
+	// CRT's system() wraps the string in a leading-quote cmd /c form
+	// whose quote-stripping rule mangles multi-quoted commands
+	// ("filename syntax is incorrect"); every path here is space-free
+	// (the test temp dir + the repo), so bare tokens parse cleanly.
+	// The tool's NAME is per-platform: Pak.exe on Windows, Pak on
+	// Linux (the CMake target name — no executable suffix).
 	auto runPak = [&](const std::string& extra) -> int {
+#ifdef _WIN32
+		const char* kPakTool = "Pak.exe";
+#else
+		const char* kPakTool = "Pak";
+#endif
 		const std::string exe =
-			(fs::path(g_argv0).parent_path() / "Pak.exe").string();
+			(fs::path(g_argv0).parent_path() / kPakTool).string();
 		return std::system((exe + " " + extra).c_str());
 	};
 	{

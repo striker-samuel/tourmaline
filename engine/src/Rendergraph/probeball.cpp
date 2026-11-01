@@ -153,6 +153,20 @@ void ProbeBallVisual::Destroy() {
 	psModule = {};
 }
 
+bool ProbeBallVisual::ReloadShaders(ResourceManager& ctx,
+	std::vector<ShaderModuleHandle>& retired) {
+	bool any = false;
+	any |= SwapShaderModule(ctx, kProbeBallVsPath,
+		"probeBallVert", vsModule, retired);
+	any |= SwapShaderModule(ctx, kProbeBallPsPath,
+		"probeBallFrag", psModule, retired);
+	if (!any)
+		return false;
+	program = ShaderProgram();
+	Ensure(ctx);
+	return true;
+}
+
 bool ProbeBallVisual::AppendPass(RenderGraph& rg,
 	LogicalImageViewHandle hdrView, LogicalImageViewHandle depthView,
 	Extent2D extent, const glm::mat4& viewProj, const glm::vec3& eye,

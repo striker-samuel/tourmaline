@@ -438,6 +438,40 @@ struct ScreenSpaceDiffuseGi {
 		copyFragModule = {};
 	}
 
+	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
+	// module swap (a failed read keeps the standing module), zero the
+	// programs, re-Ensure. Returns true when anything moved; the
+	// released old handles ride `retired` for the caller's retirement
+	// pass.
+	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
+		std::vector<ShaderModuleHandle>& retired) {
+		bool any = false;
+		any |= SwapShaderModule(ctx, kSsgiDiffuseVsPath,
+			"ssgiDiffuseVert", vsModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiDiffuseTraceCsPath,
+			"ssgiDiffuseTraceCS", traceCsModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiDiffuseBlurPsPath,
+			"ssgiDiffuseBlurFrag", blurFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiDiffuseTemporalPsPath,
+			"ssgiDiffuseTemporalFrag", temporalFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiDiffusePrevPsPath,
+			"ssgiDiffusePrevFrag", prevFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiDiffuseComposePsPath,
+			"ssgiDiffuseComposeFrag", composeFragModule, retired);
+		any |= SwapShaderModule(ctx, kSsgiDiffuseCopyPsPath,
+			"ssgiDiffuseCopyFrag", copyFragModule, retired);
+		if (!any)
+			return false;
+		traceProgram = ShaderProgram();
+		blurProgram = ShaderProgram();
+		temporalProgram = ShaderProgram();
+		prevProgram = ShaderProgram();
+		composeProgram = ShaderProgram();
+		copyProgram = ShaderProgram();
+		EnsureShaders(ctx);
+		return true;
+	}
+
 	// ---- target lifecycle (the ssr.h pattern) ----
 
 	static bool CreateTarget(ResourceManager& ctx, RenderGraph& rg,
