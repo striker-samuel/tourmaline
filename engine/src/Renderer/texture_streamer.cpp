@@ -15,7 +15,11 @@
 
 #include "ktx.h"
 
-namespace smvk {
+// Lives in tour (ENGINE-OWNED policy; the header carries the smvk
+// compat aliases). The RHI names it builds on are qualified here:
+// the old enclosing-smvk lookup does not exist from namespace tour.
+
+namespace tour {
 namespace {
 
 // Destroys the KTX object on scope exit (decode failures, upload throws).
@@ -29,7 +33,7 @@ struct KtxGuard {
 
 } // namespace
 
-TextureStreamer::TextureStreamer(ResourceManager& ctx, TextureStreamerConfig config)
+TextureStreamer::TextureStreamer(smvk::ResourceManager& ctx, TextureStreamerConfig config)
 	: ctx_(ctx)
 	, config_(config)
 {
@@ -88,8 +92,8 @@ uint32_t TextureStreamer::initialBaseFor(uint32_t fullMips, uint32_t baseLongSid
 		config_.minResidentMips, config_.initialResidentDimCap);
 }
 
-Holder<TextureHandle> TextureStreamer::StreamTexture(const void* payload, size_t payloadSize,
-	const std::string& debugName, const ImageCreateInfo& imageCI)
+smvk::Holder<smvk::TextureHandle> TextureStreamer::StreamTexture(const void* payload, size_t payloadSize,
+	const std::string& debugName, const smvk::ImageCreateInfo& imageCI)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (payload == nullptr || payloadSize == 0)
@@ -121,9 +125,9 @@ Holder<TextureHandle> TextureStreamer::StreamTexture(const void* payload, size_t
 
 	try
 	{
-		ImageCreateInfo ci = imageCI;
+		smvk::ImageCreateInfo ci = imageCI;
 		ci.hostTransfer = true;
-		Holder<TextureHandle> holder = ctx_.CreateStreamingTexture(
+		smvk::Holder<smvk::TextureHandle> holder = ctx_.CreateStreamingTexture(
 			*ktxTex, base, fullMips - base, debugName.c_str(), ci);
 		if (!holder.valid())
 			return {};
@@ -153,14 +157,14 @@ Holder<TextureHandle> TextureStreamer::StreamTexture(const void* payload, size_t
 	}
 }
 
-void TextureStreamer::Unregister(TextureHandle handle)
+void TextureStreamer::Unregister(smvk::TextureHandle handle)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	entries_.erase(EntryKey(handle));
 	++slotMetaEpoch_; // slot content gone: gfx meta table re-upload
 }
 
-bool TextureStreamer::RegisterExisting(TextureHandle handle,
+bool TextureStreamer::RegisterExisting(smvk::TextureHandle handle,
 	const void* payloadData, size_t payloadSize,
 	const std::string& debugName, uint32_t fullMips, uint32_t baseWidth,
 	uint32_t baseHeight, uint32_t arrayLayers, uint32_t residentBase)
@@ -190,7 +194,7 @@ bool TextureStreamer::RegisterExisting(TextureHandle handle,
 	return true;
 }
 
-void TextureStreamer::RequestMip(TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex)
+void TextureStreamer::RequestMip(smvk::TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto it = entries_.find(EntryKey(handle));
@@ -212,7 +216,7 @@ uint32_t TextureStreamer::ResolveFullMip(uint32_t residentBase, uint32_t fullMip
 	return static_cast<uint32_t>(std::min<uint64_t>(want, fullMips - 1));
 }
 
-void TextureStreamer::RequestMipFromLod(TextureHandle handle, uint32_t residentLod, uint32_t frameIndex)
+void TextureStreamer::RequestMipFromLod(smvk::TextureHandle handle, uint32_t residentLod, uint32_t frameIndex)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto it = entries_.find(EntryKey(handle));
@@ -226,10 +230,10 @@ void TextureStreamer::RequestMipFromLod(TextureHandle handle, uint32_t residentL
 	e.lastRequestFrame = frameIndex;
 }
 
-std::vector<TextureHandle> TextureStreamer::BuildBindlessSlotMap() const
+std::vector<smvk::TextureHandle> TextureStreamer::BuildBindlessSlotMap() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	std::vector<TextureHandle> map;
+	std::vector<smvk::TextureHandle> map;
 	for (const auto& [key, e] : entries_)
 	{
 		(void)key;
@@ -632,4 +636,4 @@ std::vector<TextureStreamEntryDebug> TextureStreamer::GetEntriesDebug() const
 	return out;
 }
 
-} // namespace smvk
+} // namespace tour

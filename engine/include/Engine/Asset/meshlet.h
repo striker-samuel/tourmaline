@@ -19,9 +19,13 @@
 
 #include <glm/glm.hpp>
 
+// (moved: StaticMeshUpload is ENGINE-OWNED/tour:: — the smvk fwd decl
+// became a using-declaration so it cannot collide with mesh.h's compat
+// re-export; CookedMeshlets stays smvk::)
+namespace tour { struct StaticMeshUpload; }
 namespace smvk {
-
-struct StaticMeshUpload;
+	using ::tour::StaticMeshUpload;
+struct CookedMeshlets;
 
 // THE meshlet size limits (kMax constants — the one place the number lives).
 // 64v/64t is an ENGINE invariant, not a tunable: one mesh-shader workgroup

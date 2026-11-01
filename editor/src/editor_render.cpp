@@ -55,7 +55,7 @@ namespace editor {
 			engine::renderer::limits::MaxSimultaneousLights;
 
 		std::vector<char> LoadSpv(const char* path) {
-			return smvk::shaders::Read(path);
+			return tour::shaders::Read(path);
 		}
 	} // namespace
 
@@ -850,8 +850,8 @@ namespace editor {
 		const smvk::IteratorFlags req =
 			smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
 				smvk::IteratorFlagBit_Opaque | smvk::IteratorFlagBit_StaticVertexFmt);
-		m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
-			if (item.material == smvk::World::kInvalidIndex)
+		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+			if (item.material == tour::World::kInvalidIndex)
 				return;
 			if (!IsVisibleNode(m_world->scene, int(item.node)))
 				return; // live visibility overrides apply without a Resolve
@@ -1005,8 +1005,8 @@ namespace editor {
 		const smvk::IteratorFlags req = smvk::IteratorFlags(
 			smvk::IteratorFlagBit_Renderable |
 			smvk::IteratorFlagBit_StaticVertexFmt);
-		m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
-			if (item.material == smvk::World::kInvalidIndex)
+		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+			if (item.material == tour::World::kInvalidIndex)
 				return;
 			if (!subtree.contains(item.node))
 				return;
@@ -1560,8 +1560,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						smvk::IteratorFlagBit_Renderable |
 						smvk::IteratorFlagBit_Transparent |
 						smvk::IteratorFlagBit_StaticVertexFmt);
-					m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
-						if (item.material == smvk::World::kInvalidIndex)
+					m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+						if (item.material == tour::World::kInvalidIndex)
 							return;
 						if (!IsVisibleNode(m_world->scene, int(item.node)))
 							return;
@@ -1703,8 +1703,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						smvk::IteratorFlagBit_Renderable |
 						smvk::IteratorFlagBit_Transparent |
 						smvk::IteratorFlagBit_StaticVertexFmt);
-					m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
-						if (item.material == smvk::World::kInvalidIndex)
+					m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+						if (item.material == tour::World::kInvalidIndex)
 							return;
 						if (!IsVisibleNode(m_world->scene, int(item.node)))
 							return;
@@ -1900,8 +1900,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		dp.color[1] = 0.45f * meshletColorPreScale;
 		dp.color[2] = 0.5f * meshletColorPreScale;
 		dp.color[3] = 1.0f;
-		m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
-			if (item.material == smvk::World::kInvalidIndex)
+		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+			if (item.material == tour::World::kInvalidIndex)
 				return;
 			if (!IsVisibleNode(m_world->scene, int(item.node)))
 				return;
@@ -1920,8 +1920,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// Meshlet leg: switch the index binding to the expanded buffer
 		// (monoblock-absolute ids, vertexOffset 0) and flat-color each range.
 		cmd.BindIndexBuffer(m_meshletIndices);
-		m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
-			if (item.material == smvk::World::kInvalidIndex)
+		m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+			if (item.material == tour::World::kInvalidIndex)
 				return;
 			if (!IsVisibleNode(m_world->scene, int(item.node)))
 				return;
@@ -2340,7 +2340,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// hook (the onAttach gate keys on exactly this flag).
 		engine::WorldRendererConfig cfg = engine::WorldRendererConfig::All();
 		cfg.ui = false;
-		m_wysiwyg = smvk::mem::MakeProcess<engine::WorldRenderer>(*this);
+		m_wysiwyg = tour::mem::MakeProcess<engine::WorldRenderer>(*this);
 		m_wysiwyg->Configure(cfg);
 		// The BORROWED form of the world contract (see WorldRenderer.h):
 		// the editor KEEPS owning + mutating its world — the renderer
@@ -2706,7 +2706,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			return true;
 		// The graph + target (persistent — never recreated, never claimed
 		// through the target heap).
-		m_triangleGraph = smvk::mem::MakeProcess<smvk::RenderGraph>(
+		m_triangleGraph = tour::mem::MakeProcess<smvk::RenderGraph>(
 			*m_context);
 		smvk::ImageCreateInfo ci{};
 		ci.extent = { 256, 256, 1 };

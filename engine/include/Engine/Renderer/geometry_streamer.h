@@ -135,7 +135,14 @@
 #include <string>
 #include <unordered_map>
 
-namespace smvk {
+// (namespace/RHI boundary audit, todo 8.4) the geometry streaming
+// POLICY layer is ENGINE-OWNED: budget/eviction/promote-throttle state,
+// the pager page-source seam and the env gates — no RHI types at all
+// (this block is std-only, which is why the move needs no broad
+// import). tour:: is canonical; the smvk aliases below keep the
+// existing call sites compiling through the consumer migration.
+
+namespace tour {
 
 // ---- STAGE 6: the LOD page source (the host-installed payload lane) --
 // The pager-based promote seam: when installed, the demand promote
@@ -357,4 +364,22 @@ GeometryStreamingRuntimeConfig() {
 	return cfg;
 }
 
-} // namespace smvk
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): this header's
+// declarations live in tour; the smvk aliases keep the existing call
+// sites (WorldRenderer's streamer state, the cluster promote/evict
+// machinery, PakApp's SetLodPageSource install) compiling through the
+// consumer migration. Retire as call sites move.
+namespace smvk {
+	using ::tour::LodPagePin;
+	using ::tour::LodPageSource;
+	using ::tour::SetLodPageSource;
+	using ::tour::LodPageSourceRef;
+	using ::tour::GeometryStreamingEnabled;
+	using ::tour::GeometryStreamingConfig;
+	using ::tour::GeometryStreamingStats;
+	using ::tour::PromotedLodEntry;
+	using ::tour::GeometryStreamer;
+	using ::tour::GeometryStreamingRuntimeConfig;
+}

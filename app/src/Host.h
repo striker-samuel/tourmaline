@@ -117,9 +117,9 @@ struct PakAppConfig {
 	// (capture determinism — RunPakApp gates). The plain App host leaves
 	// it unset: the clean viewer.
 	std::function<std::shared_ptr<engine::IAppElement>(
-		smvk::App& host,
+		tour::App& host,
 		engine::WorldRenderer& renderer,
-		std::shared_ptr<smvk::World*> worldHandle)> extraElement;
+		std::shared_ptr<tour::World*> worldHandle)> extraElement;
 	// True when the extra element owns the camera (RunPakApp then parks
 	// the renderer element's FPS camera drive for the whole run).
 	bool extraOwnsCamera = false;

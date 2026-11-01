@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-namespace smvk {
+namespace tour {
 
 namespace shaders {
 
@@ -91,4 +91,14 @@ void Shutdown();
 
 } // namespace shaders
 
-} // namespace smvk
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the engine
+// shader library is ENGINE-OWNED (an asset/VFS service, not an RHI
+// primitive) and lives in tour::shaders. The namespace ALIAS keeps
+// every existing smvk::shaders:: spelling resolving (a true alias —
+// no per-name enumeration needed); retire it as call sites migrate.
+// Canonical NEW code writes tour::shaders::Read(...).
+namespace smvk {
+	namespace shaders = ::tour::shaders;
+}

@@ -74,8 +74,10 @@
 namespace tour { struct Cluster; }
 namespace smvk { using ::tour::Cluster; } // namespace smvk
 
-struct Scene;
-
+// (namespace/RHI boundary audit) the old GLOBAL `struct Scene;` fwd is
+// GONE: it declared a ::Scene distinct from tour::scene::Scene and
+// relied on elaborated-lookup merging with scene.h's global compat
+// alias (included above). The signatures below say tour::scene::Scene.
 namespace tour::asset {
 
 inline constexpr int kTourVersion = 1;

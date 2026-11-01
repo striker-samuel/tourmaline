@@ -13,6 +13,12 @@
 #include <Engine/Memory/pool.h>
 #include <Engine/smvk.h>
 
+// (moved: TextureStreamer is engine-owned/tour::; the QUALIFIED
+// elaborated specifier cannot re-declare smvk::TextureStreamer, which
+// would collide with the compat using-declaration in
+// texture_streamer.h)
+namespace tour { class TextureStreamer; }
+
 namespace smvk {
 
 class ResourceManager;
@@ -101,7 +107,7 @@ struct KtxTailJob {
 std::unordered_map<int, Holder<TextureHandle>> LoadStreamingTailTexturesParallel(
 	ResourceManager& ctx,
 	const std::vector<KtxTailJob>& jobs,
-	class TextureStreamer* streamer,
+	class ::tour::TextureStreamer* streamer,
 	const ImageCreateInfo& imageCI = {},
 	ParallelTextureStats* outStats = nullptr,
 	size_t maxThreads = 0);

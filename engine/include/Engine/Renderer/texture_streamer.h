@@ -42,9 +42,18 @@
 #include <unordered_map>
 #include <vector>
 
-namespace smvk {
+// (namespace/RHI boundary audit, todo 8.4) the texture streaming
+// POLICY layer (budget, feedback, tail residency) is ENGINE-OWNED:
+// tour:: is canonical, the RHI handle types it drives stay smvk::
+// and are spelled QUALIFIED (the block is small enough to avoid the
+// broad using-directive the bigger migration headers still carry).
+// The smvk aliases at the bottom keep existing call sites compiling.
 
-class ResourceManager;
+namespace smvk {
+class ResourceManager; // the RHI upload context (fwd-decl: RHI-owned)
+} // namespace smvk
+
+namespace tour {
 
 struct TextureStreamerConfig {
 	uint64_t budgetBytes = 256ull * 1024 * 1024; // VRAM budget for streamed textures
@@ -97,7 +106,7 @@ struct TextureStreamEntryDebug {
 
 class TextureStreamer {
 public:
-	explicit TextureStreamer(ResourceManager& ctx, TextureStreamerConfig config = {});
+	explicit TextureStreamer(smvk::ResourceManager& ctx, TextureStreamerConfig config = {});
 	~TextureStreamer();
 
 	TextureStreamer(const TextureStreamer&) = delete;
@@ -117,8 +126,8 @@ public:
 	// registration (the glTF path keeps them in Cluster::textureSources;
 	// call ReleaseTextureSources() only after the streamer is done).
 	// Returns an empty holder on failure (error already logged).
-	Holder<TextureHandle> StreamTexture(const void* payload, size_t payloadSize,
-		const std::string& debugName, const ImageCreateInfo& imageCI = {});
+	smvk::Holder<smvk::TextureHandle> StreamTexture(const void* payload, size_t payloadSize,
+		const std::string& debugName, const smvk::ImageCreateInfo& imageCI = {});
 
 	// Register an ALREADY-UPLOADED tail-resident texture for streaming
 	// upgrades (the pak v4 fast-load path: objects + tail upload happen
@@ -128,24 +137,24 @@ public:
 	// StreamTexture (pak path borrows the loaded pak image, pinned by the
 	// cluster). residentBase is the full-chain mip backing image level 0.
 	// Returns false when the handle is already registered.
-	bool RegisterExisting(TextureHandle handle,
+	bool RegisterExisting(smvk::TextureHandle handle,
 		const void* payloadData, size_t payloadSize,
 		const std::string& debugName, uint32_t fullMips, uint32_t baseWidth,
 		uint32_t baseHeight, uint32_t arrayLayers, uint32_t residentBase);
 
 	// Drop a texture from the budget (call before destroying its holder).
-	void Unregister(TextureHandle handle);
+	void Unregister(smvk::TextureHandle handle);
 
 	// Feedback input: full-chain mip index the texture needs this frame
 	// (0 = full res). Takes the minimum across callers; consumed by
 	// Update(), which then decays it back toward the floor.
-	void RequestMip(TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex);
+	void RequestMip(smvk::TextureHandle handle, uint32_t wantedFullMip, uint32_t frameIndex);
 
 	// GPU-feedback input: RESIDENT-relative LOD as reported by the shader
 	// (0 = sharpest resident mip). Converted to a full-chain mip with the
 	// entry's residentBase (resident level r == full mip residentBase + r)
 	// and fed to RequestMip. Out-of-range reports clamp to the tail.
-	void RequestMipFromLod(TextureHandle handle, uint32_t residentLod, uint32_t frameIndex);
+	void RequestMipFromLod(smvk::TextureHandle handle, uint32_t residentLod, uint32_t frameIndex);
 
 	// Pure conversion behind RequestMipFromLod (device-free, unit-tested).
 	static uint32_t ResolveFullMip(uint32_t residentBase, uint32_t fullMips, uint32_t reportedLod);
@@ -164,7 +173,7 @@ public:
 	// a streamed texture hold an empty handle. Sized to the highest live
 	// slot + 1 (may be shorter than the consume range; the consumer takes
 	// the minimum).
-	std::vector<TextureHandle> BuildBindlessSlotMap() const;
+	std::vector<smvk::TextureHandle> BuildBindlessSlotMap() const;
 
 	// Per-slot meta for the gfx filter's draw-level demand publisher
 	// (gfxfilter.cs.hlsl PublishDrawDemand): baseLongSide + fullMips per
@@ -219,7 +228,7 @@ public:
 
 private:
 	struct Entry {
-		TextureHandle handle{};
+		smvk::TextureHandle handle{};
 		const void* payloadData = nullptr; // non-owning (see StreamTexture)
 		size_t payloadSize = 0;
 		std::string name;
@@ -241,7 +250,7 @@ private:
 		bool errorPinned = false;
 	};
 
-	static uint64_t EntryKey(TextureHandle h) {
+	static uint64_t EntryKey(smvk::TextureHandle h) {
 		return (static_cast<uint64_t>(h.gen()) << 32) | h.index();
 	}
 
@@ -249,7 +258,7 @@ private:
 	uint32_t maxBaseFor(uint32_t fullMips) const; // coarsest base allowed by minResidentMips
 	bool retarget(Entry& e, uint32_t newBase, uint32_t frameIndex);
 
-	ResourceManager& ctx_;
+	smvk::ResourceManager& ctx_;
 	TextureStreamerConfig config_;
 	std::unordered_map<uint64_t, Entry> entries_;
 	// Guards entries_ across the parallel texture-load path (one shard per
@@ -261,4 +270,16 @@ private:
 	uint32_t statsDowngrades_ = 0;
 };
 
-} // namespace smvk
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the
+// TextureStreamer family lives in tour; the smvk aliases keep the
+// existing call sites (WorldRenderer's demand loop, the pak loaders,
+// the editor's stats panels, the cooker's digest parity) compiling
+// through the consumer migration. Retire as call sites move.
+namespace smvk {
+	using ::tour::TextureStreamerConfig;
+	using ::tour::TextureStreamingStats;
+	using ::tour::TextureStreamEntryDebug;
+	using ::tour::TextureStreamer;
+}

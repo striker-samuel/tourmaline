@@ -92,7 +92,7 @@ void EditorApp::RefreshCubemapDensity() {
 			const uint32_t meshIdx = row.mesh;
 			if (node >= scene.globalTransform.size())
 				continue;
-			const smvk::ClusterStaticMeshHandle h =
+			const tour::ClusterStaticMeshHandle h =
 				clusterPtr->staticMeshes.getHandle(meshIdx);
 			if (!h.valid())
 				continue;

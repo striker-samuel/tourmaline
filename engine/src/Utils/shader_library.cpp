@@ -8,6 +8,15 @@
 // fallback, no packages, no validation; this is the unified surface
 // that keeps every existing path string working while making the
 // engine-shaders.pak the production source.
+//
+// Lives in tour::shaders (ENGINE-OWNED; the header carries the
+// smvk::shaders compat alias). The VFS + pak types it builds on are
+// still spelled through their own namespaces — smvk::OverlayVfs
+// (Vfs/vfs.h, not yet migrated) and tour::asset::PakBackend (the
+// pak family's canonical home) — deliberately QUALIFIED: the old
+// enclosing-namespace smvk:: lookup does not exist from inside
+// tour::shaders, and the broad using-directive shortcut is banned
+// by the R6 architecture gate.
 
 #include <Engine/Utils/shader_library.h>
 
@@ -29,7 +38,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Vfs/vfs.h>
 
-namespace smvk::shaders {
+namespace tour::shaders {
 
 // Forward: the lock-free mount core (defined with the other library
 // entries below) — InitLocked runs under Lib().mtx and must not go
@@ -51,7 +60,7 @@ constexpr uint8_t kDxbcMagic[4] = { 'D', 'X', 'B', 'C' };
 
 struct Library {
 	std::mutex mtx;
-	OverlayVfs vfs;
+	smvk::OverlayVfs vfs;
 	bool inited = false;
 	bool looseDevMounted = false; // the exe-relative dev tree
 	bool enginePakMounted = false; // the exe-relative engine-shaders.pak
@@ -113,7 +122,7 @@ void InitLocked() {
 			// paths are "content/shaders/<file>", so the root is the
 			// exe dir itself.
 			Lib().vfs.Mount(
-				std::make_shared<LooseBackend>(ExeDir()), -10,
+				std::make_shared<smvk::LooseBackend>(ExeDir()), -10,
 				"engine-shaders-loose");
 			Lib().looseDevMounted = true;
 		}
@@ -219,8 +228,8 @@ bool MountPakUnlocked(const std::string& pakFilePath, std::string& err) {
 		return false;
 	}
 	std::string openErr;
-	std::shared_ptr<PakBackend> backend =
-		PakBackend::Open(image, pakFilePath, openErr);
+	std::shared_ptr<tour::asset::PakBackend> backend =
+		tour::asset::PakBackend::Open(image, pakFilePath, openErr);
 	if (!backend) {
 		err = "shader package failed to open: " + pakFilePath + " ("
 			+ openErr + ")";
@@ -243,7 +252,7 @@ bool MountLooseDir(const std::string& rootDir, const std::string& name,
 	Library& lib = Lib();
 	std::lock_guard<std::mutex> lock(lib.mtx);
 	InitLocked();
-	lib.vfs.Mount(std::make_shared<LooseBackend>(rootDir), -20, name);
+	lib.vfs.Mount(std::make_shared<smvk::LooseBackend>(rootDir), -20, name);
 	return true;
 }
 
@@ -270,7 +279,7 @@ bool TryRead(const std::string& path, std::vector<uint8_t>& out,
 	if (!bytes) {
 		std::ostringstream os;
 		os << "shader not found: " << path << " (mounted: ";
-		const std::vector<VfsMount> mounts = Lib().vfs.Mounts();
+		const std::vector<smvk::VfsMount> mounts = Lib().vfs.Mounts();
 		if (mounts.empty())
 			os << "nothing";
 		for (size_t i = 0; i < mounts.size(); ++i) {
@@ -286,7 +295,7 @@ bool TryRead(const std::string& path, std::vector<uint8_t>& out,
 	// created from it (a corrupt/truncated blob fails HERE with a
 	// named path + provider, never inside the driver).
 	const Bytecode kind = DetectBytecode(bytes->data(), bytes->size());
-	const std::optional<VfsStat> st = Lib().vfs.Stat(path);
+	const std::optional<smvk::VfsStat> st = Lib().vfs.Stat(path);
 	provider = st ? st->source : std::string("vfs");
 	if (kind != Bytecode::Spirv) {
 		err = "shader bytecode validation failed: " + path + " ("
@@ -310,4 +319,4 @@ std::vector<char> Read(const std::string& path) {
 	return std::vector<char>(bytes.begin(), bytes.end());
 }
 
-} // namespace smvk::shaders
+} // namespace tour::shaders

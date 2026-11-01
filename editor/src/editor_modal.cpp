@@ -583,7 +583,7 @@ void EditorApp::ModalViewBaked() {
 				smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable
 					| smvk::IteratorFlagBit_Transparent
 					| smvk::IteratorFlagBit_StaticVertexFmt),
-				[&](const smvk::World::RenderItem& item) {
+				[&](const tour::World::RenderItem& item) {
 					if (smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh))
 						if (mesh->lmChunk != 0xFFFFFFFFu)
 							anyChunk = true;

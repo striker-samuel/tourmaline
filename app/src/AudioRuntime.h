@@ -81,9 +81,9 @@ namespace app {
 // preloaded + MOUNTED every pak (the scene layer's adopt-or-open pass
 // then shares those images instead of re-reading the archives).
 [[nodiscard]] std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
-	smvk::App& host,
+	tour::App& host,
 	const std::string& tappPath,
-	std::shared_ptr<smvk::World*> worldHandle,
+	std::shared_ptr<tour::World*> worldHandle,
 	engine::WorldRenderer* renderer);
 
 // ---- the imperative surface (gameplay code drives these directly;
@@ -103,7 +103,7 @@ bool ReleaseSound(uint64_t soundId);
 // emitter's volume (1 = authored). The voice stops with the emitter's
 // scene/spawn lifetime. Returns the mixer voice handle (invalid +
 // err on an unknown node/clip).
-tour::audio::VoiceHandle PlaySound(smvk::World& world,
+tour::audio::VoiceHandle PlaySound(tour::World& world,
 	uint32_t emitterNode, uint64_t soundId, float gain = 1.0f,
 	std::string* err = nullptr);
 // Stops a voice started by PlaySound (the mixer handle).
@@ -112,7 +112,7 @@ void StopSound(tour::audio::VoiceHandle voice);
 // row the renderer world carries + the owning cluster's durable row —
 // so a later resolve keeps the edit). False when the node carries no
 // audio source.
-bool SetAudioSourceVolume(smvk::World& world, uint32_t emitterNode,
+bool SetAudioSourceVolume(tour::World& world, uint32_t emitterNode,
 	float volume);
 // Pins the listener pose (world-space). An empty forward resets to
 // FOLLOW-THE-CAMERA (the default when a renderer was given).

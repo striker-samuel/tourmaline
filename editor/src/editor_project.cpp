@@ -992,7 +992,7 @@ void EditorApp::LiveRefreshTextureAsset(const std::string& changedImagePath) {
 			"beside it (nothing to refresh).");
 		return;
 	}
-	smvk::Cluster* owner = nullptr;
+	tour::Cluster* owner = nullptr;
 	std::string ownerUri;
 	const std::string exact = asset.lexically_normal().generic_string();
 	for (const auto& clusterPtr : m_world->clusters) {

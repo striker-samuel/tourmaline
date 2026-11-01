@@ -1161,7 +1161,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	if (c.lightShadow && def.type != ::SceneLight::Type::Directional)
 		def.flags |= ::SceneLight::kSceneLightFlag_CastShadow;
 	def.name = c.afterText;
-	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
+	tour::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
 	auto handle = cl->lights.create(std::move(def));
 	const uint32_t worldLightIdx = uint32_t(m_world->lightLocations.size());
 	m_world->lightLocations.push_back({ cl, handle });
@@ -1305,7 +1305,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 	def.farClip = std::max(c.camFar, def.nearClip * 1.1f + 1e-3f);
 	def.orthoHalfH = std::clamp(c.camOrthoHalfH, 1e-2f, 1e5f);
 	def.name = c.afterText;
-	smvk::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
+	tour::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
 	auto handle = cl->cameras.create(std::move(def));
 	const uint32_t worldCamIdx = uint32_t(m_world->cameraLocations.size());
 	m_world->cameraLocations.push_back({ cl, handle });
@@ -1963,7 +1963,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
 				if (m_world->drawItems[i].node == id) {
-					const smvk::World::RenderItem& item =
+					const tour::World::RenderItem& item =
 						m_world->drawItems[i];
 					c.delDrawItems.insert(c.delDrawItems.end(),
 						{ uint32_t(i), item.node, item.mesh,
@@ -2051,7 +2051,7 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	});
 	for (size_t k : order) {
 		const uint32_t pos = c.delDrawItems[k];
-		smvk::World::RenderItem item{ c.delDrawItems[k + 1],
+		tour::World::RenderItem item{ c.delDrawItems[k + 1],
 			c.delDrawItems[k + 2], c.delDrawItems[k + 3],
 			c.delDrawItems[k + 4] };
 		m_world->drawItems.insert(m_world->drawItems.begin()
@@ -5533,7 +5533,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 			hp = std::filesystem::path(m_projectRoot) / ta.path;
 		if (hp.empty() || !std::filesystem::exists(hp, ec))
 			hp = std::filesystem::path(ta.path);
-		smvk::Cluster* cl =
+		tour::Cluster* cl =
 			m_world->clusters.empty() ? nullptr
 			: m_world->clusters[0].get();
 		if (!cl)
@@ -5581,13 +5581,13 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 			hp = std::filesystem::path(m_projectRoot) / ma.path;
 		if (hp.empty() || !std::filesystem::exists(hp, ec))
 			hp = std::filesystem::path(ma.path);
-		smvk::Cluster* cl =
+		tour::Cluster* cl =
 			m_world->clusters.empty() ? nullptr
 			: m_world->clusters[0].get();
 		if (!cl)
 			break;
 		std::string imErr;
-		const smvk::ClusterMaterialHandle h =
+		const tour::ClusterMaterialHandle h =
 			smvk::assets::ImportMaterialAssetToCluster(
 				*cl, hp, m_context.get(), imErr);
 		if (h.empty()) {
@@ -6017,11 +6017,11 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode, uint32_t x0,
 			continue;
 		}
 		const auto& loc = m_world->meshLocations[worldMeshIdx];
-		smvk::Cluster* cl = loc.cluster ? loc.cluster
+		tour::Cluster* cl = loc.cluster ? loc.cluster
 			: m_world->clusters[0].get();
 		if (loc.cluster)
 			loc.cluster->DestroyMesh(loc.handle);
-		const smvk::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+		const tour::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
 		if (!mh.valid()) {
 			Log("Terrain tile upload failed.");
 			ok = false;
@@ -6090,7 +6090,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 	const uint32_t material = (c.material != UINT32_MAX
 		&& c.material < m_world->materialLocations.size())
 		? c.material : EnsureDefaultMaterial();
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	tour::Cluster* cl = m_world->clusters[0].get();
 	// Tile children: node + mesh + world wiring + draw entry each.
 	// Tile position = its ACTUAL first sample (TerrainTileOrigin — the
 	// integer sample split does not align with the even metric split
@@ -6117,7 +6117,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 				Log("Terrain tile build failed.");
 				return;
 			}
-			const smvk::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+			const tour::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
 			if (!mh.valid()) {
 				Log("Terrain tile upload failed.");
 				return;
@@ -6136,7 +6136,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 				smvk::IteratorFlagBit_StaticVertexFmt |
 				smvk::IteratorFlagBit_Opaque |
 				smvk::IteratorFlagBit_CastShadow);
-			m_world->drawItems.push_back(smvk::World::RenderItem{
+			m_world->drawItems.push_back(tour::World::RenderItem{
 				t, worldMeshIdx, material,
 				m_world->flags[size_t(t)] });
 			m_world->itemFlags.push_back(m_world->flags[size_t(t)]);
@@ -6238,7 +6238,7 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 		Log("Material editor: texture file is empty: " + path);
 		return -1;
 	}
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	tour::Cluster* cl = m_world->clusters[0].get();
 	// KTX2 payload passes through; other image sources (PNG/JPG/...)
 	// transcode to KTX2 (the importer's own conversion) so the Path
 	// editor + material slots can relink against the ORIGINAL source
@@ -6360,7 +6360,7 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
 		if (hp.empty() || !std::filesystem::exists(hp, ec))
 			hp = std::filesystem::path(cookieRef);
 	}
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	tour::Cluster* cl = m_world->clusters[0].get();
 	std::string imErr;
 	const smvk::TextureHandle h =
 		smvk::assets::ImportTextureAssetToCluster(
@@ -6416,11 +6416,11 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
 		Log("Assets: material load failed: " + err);
 		return;
 	}
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	tour::Cluster* cl = m_world->clusters[0].get();
 	// SHARED import (the cook replays the same path from the tour's
 	// materialAsset records — pool determinism across the session and
 	// the cook replay; see ImportMaterialAssetToCluster).
-	smvk::ClusterMaterialHandle imported{};
+	tour::ClusterMaterialHandle imported{};
 	{
 		std::string imErr;
 		imported = smvk::assets::ImportMaterialAssetToCluster(
@@ -6495,7 +6495,7 @@ uint32_t EditorApp::EnsureDefaultMaterial() {
 	if (m_defaultMatWorld != UINT32_MAX
 		&& m_defaultMatWorld < m_world->materialLocations.size())
 		return m_defaultMatWorld;
-	smvk::Cluster* cl = m_world->clusters[0].get();
+	tour::Cluster* cl = m_world->clusters[0].get();
 	// Reuse an existing pool entry when the URI is already registered
 	// (e.g. a pak scene cooked from a tour that minted one) — NO pool
 	// growth, so no tour record (records mirror pool CREATIONS only).
@@ -6507,7 +6507,7 @@ uint32_t EditorApp::EnsureDefaultMaterial() {
 	}
 	// SHARED seed creation (the deterministic material; cooks replay it
 	// from the tour's materialAsset records — EnsureClusterDefaultMaterial).
-	const smvk::ClusterMaterialHandle h =
+	const tour::ClusterMaterialHandle h =
 		smvk::assets::EnsureClusterDefaultMaterial(*cl);
 	if (h.empty())
 		return UINT32_MAX;

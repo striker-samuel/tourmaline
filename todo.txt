@@ -174,6 +174,46 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
      as gi), the global-namespace cleanup (NodeId/scene tables/
      payloads/Camera/Input -> tour::(scene)), App/world/cluster+
      pak+tour.h.
+      LANDED (finding-3 declaration moves, each with its R7 compat
+      record): the engine shader library (Utils/shader_library.h +
+      src/Utils/shader_library.cpp) -> tour::shaders, alias
+      smvk::shaders; the geometry streaming policy layer
+      (Renderer/geometry_streamer.h) -> tour, per-name aliases (the
+      block is std-only — the cleanest move); the texture streaming
+      family (Renderer/texture_streamer.h + .cpp) -> tour, RHI types
+      spelled smvk::-qualified, no broad import; mesh.h's material data
+      model trio (MaterialValues/ShadingModel/AlphaMode) -> tour with
+      smvk re-exports; the gfx cull/filter family
+      (Renderer/gfx_filter.h + gfx_filter.cpp) -> tour::gfx, namespace
+      alias smvk::gfx, the header FULLY QUALIFIED after the broad-import
+      form's transitive lookup proved ambiguous (tour::gfx::Cluster vs
+      tour::Cluster for using-namespace-gfx consumers — the recorded
+      lesson: qualify in headers, TU-local using-directives in .cpps).
+      LANDED (the two giants): (a) mesh.h's whole renderer DATA MODEL
+      -> tour:: (Material/StaticMesh/StaticMeshUpload/ImportStaticVertex,
+      the packed-vertex + terrain/skin streams, ShaderLod*,
+      MaterialCreateInfo, the material flags/word helpers — 35 smvk
+      re-export rows; mesh.cpp follows) — the vertex-INPUT contract
+      (VertexLayoutId + the layout constants + GetVertexLayoutDesc,
+      defined against smvk.h's VertexLayoutDesc and consumed by the
+      Vulkan backend) deliberately STAYS smvk::; the three cross-file
+      `struct StaticMeshUpload;` fwd decls (meshlet.h/lightmap.h/
+      gfx_filter.h) became using-declarations so they cannot collide
+      with mesh.h's compat block. (b) THE GLOBAL-NAMESPACE CLEANUP IS
+      COMPLETE: bvh.h -> tour + the global bridge, dxc_integration.h
+      -> tour::dxc + bridge, and the stale GLOBAL `struct Scene;` fwd
+      decls in tour.h/touranim.h (a ::Scene DISTINCT from
+      tour::scene::Scene — a C2874 landmine against scene.h's global
+      alias) are gone; NO engine type is declared at global scope
+      anymore (NodeId/scene tables/payloads/Camera/Input/BVH/DXC all
+      live in tour::(scene|dxc|...), bridged by the audited global
+      re-export rows). R9 gates it: new global declarations fail
+      outright, the bridges are shrink-only per-file counts.
+      NEXT in the same shape: placement's 13 headers + the remaining
+      smvk::-owned asset family (pak_pager, appmanifest, vfs, the
+      node schemas) — the placement headers already carry their
+      compat blocks; finishing is call-site spelling + alias
+      retirement.
   5. P0 INTERFACE REDESIGNS (the real boundary work):
      - smvk::App exposes GetResourceManager/GetSwapchain/
        GetRendergraph + stores RHI members -> tour::App owns the app;
@@ -197,9 +237,43 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
      01_triangle is a DELIBERATE low-level RHI sample (opt in
      explicitly); 04_project_game should demonstrate the
      engine-only surface.
+     LANDED (the finding-7 consumer migration, app + editor): the
+     audit-named sites + the whole migratable surface moved to
+     canonical spellings - Host.h's extraElement callback
+     (tour::App/tour::World*), ProjectScenes' signatures (the
+     smvk::Cluster fwd decl that would collide with tour.h's compat
+     using-decl is gone; clusterLoader takes tour::World/
+     tour::Cluster/tour::asset::PakReader), editor_app.h's
+     EditorApp base (tour::App), PakApp's LOD-page-source install
+     (tour::SetLodPageSource), AudioRuntime/AssetStore/
+     AssetManager/PakWorldLoader (tour::World/Cluster/
+     TextureStreamer/mem), the smvk::shaders -> tour::shaders call
+     sites (DeployCheck, main, matball, editor_render, editor main),
+     and the editor TUs' Cluster/World/mem spellings (~130 sites).
+     Remaining downstream: the engine-internal TUs (WorldRenderer/
+     impl.cpp spellings retire with the 8.5 interface redesigns);
+     tools + samples + tests keep the alias spellings until their
+     own passes; 01_triangle stays DELIBERATE.
   8. Deep follow-ups (block only on real need): the three-target
      build split (tour_engine + smvk_rhi + smvk_vulkan — blocked on
      impl.cpp's App coupling), the null/mock backend test, the
-     signature-walking namespace scanner (the compile-level CI
-     battery R1-R5 + header smoke is in), and the bridge-call-site
+     AST SIGNATURE-WALKING namespace scanner (the compile-level CI
+     battery is R1-R9 + header smoke: R6/R7/R8/R9 LANDED as the
+     baseline-ratchet form — R6 freezes the broad using-namespace-
+     ::smvk imports to the ten landed-stage headers, R7 confines the
+     smvk::-compat re-export blocks to the audited per-file counts,
+     R8 freezes the RHI implementation-state exposure shapes
+     (App's getters/LinearPtr members, ElementFrame's Framebuffer*,
+     gfx::State, the raw RHI pointer types), R9 gates the GLOBAL
+     namespace (new global engine-type declarations fail outright;
+     the global re-export bridges: input.h/scene.h/scene_tables.h/
+     scene_payloads.h/scene_node_id.h/camera.h/envzones.h/bvh.h/
+     dxc_integration.h, shrink-only counts), and R2/R4/R5 now see
+     QUOTED include paths while R5 walks past Renderer/. Every
+     baseline is exact BOTH ways: growth AND silent staling fail
+     (retiring compat surface requires deleting its baseline row in
+     the same commit). What still needs the AST walker: signature-
+     walking exported-API analysis (fields/params/returns/inheritance
+     of RHI types beyond R8's regex vocabulary; the declaration-level
+     finding-3 work above is DONE by hand), and the bridge-call-site
      retirement (mechanical, endless, opportunistic).

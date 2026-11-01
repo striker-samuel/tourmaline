@@ -17,8 +17,17 @@
 #include <utility>
 #include <chrono>
 
-namespace smvk {
-namespace gfx {
+namespace tour::gfx {
+
+// (migration compat) this TU still spells the smvk RHI names
+// unqualified (Holder/BufferHandle/ShaderProgram/ResourceManager/...),
+// the way the old enclosing-smvk lookup made them resolve; the
+// TU-LOCAL using-directive stands in for it. Deliberately NOT in the
+// header: a public using-directive is R6-gated, and its transitive
+// lookup collides gfx's own Cluster with tour::Cluster for every
+// using-namespace-gfx consumer — the ambiguity that made the header
+// fully qualified instead.
+using namespace ::smvk;
 
 // TMP-PROBE: list-mechanism breakdown for the traversal investigation.
 // Accumulates per-scope ms, prints averages every 240 BeginViews.
@@ -3417,5 +3426,4 @@ void DumpHzb(State& s, ResourceManager& ctx, uint32_t view) {
 	}
 }
 
-} // namespace gfx
-} // namespace smvk
+} // namespace tour::gfx

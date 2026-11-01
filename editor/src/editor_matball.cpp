@@ -205,9 +205,9 @@ bool EditorApp::EnsureMatBallResources() {
 	// set, matball.vert/frag.hlsl).
 	try {
 		m_matBallVsModule = m_context->CreateShaderModule(
-			smvk::shaders::Read("content/shaders/matball.vert.hlsl.spv"), "matBallVS");
+			tour::shaders::Read("content/shaders/matball.vert.hlsl.spv"), "matBallVS");
 		m_matBallFsModule = m_context->CreateShaderModule(
-			smvk::shaders::Read("content/shaders/matball.frag.hlsl.spv"), "matBallFS");
+			tour::shaders::Read("content/shaders/matball.frag.hlsl.spv"), "matBallFS");
 	}
 	catch (const std::exception& e) {
 		std::fprintf(stderr, "[MatBall] shader compile: %s\n", e.what());

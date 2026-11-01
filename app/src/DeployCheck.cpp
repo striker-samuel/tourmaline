@@ -118,8 +118,8 @@ bool ValidatePakFile(const std::string& pakPath, std::string& err) {
 
 bool ValidateEngineShaderSource(std::string& err) {
 	err.clear();
-	smvk::shaders::Init();
-	if (smvk::shaders::HasAnySource())
+	tour::shaders::Init();
+	if (tour::shaders::HasAnySource())
 		return true;
 	err = "no engine shader source: neither an engine-shaders.pak"
 		" package nor a content/shaders/ dev tree exists next to the"

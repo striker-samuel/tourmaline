@@ -20,7 +20,14 @@
 // allocation layer AllocateStaticVertexFmt creates + the draw paths bind).
 #include <Engine/Renderer/static_vertex_heap.h>
 
-namespace smvk {
+// (namespace/RHI boundary audit, todo 8.4) the material DATA MODEL trio
+// below (MaterialValues + ShadingModel + AlphaMode) is ENGINE-OWNED —
+// material/shading POLICY, not an RHI primitive — and lives in tour;
+// the smvk using-declarations after the block keep the unqualified
+// spellings inside the rest of mesh.h and every smvk-scope consumer
+// resolving (retire as call sites migrate).
+
+namespace tour {
 
 	// GPU material buffer layout – must match HLSL common.hlsli::MaterialValues.
 	// Keep 16-byte alignment for StructuredBuffer / buffer_device_address.
@@ -50,6 +57,37 @@ namespace smvk {
 	static_assert(sizeof(MaterialValues) == 128);
 
 	// -------------------------------------------------------------------------
+	// Shading / raster abstraction
+	// -------------------------------------------------------------------------
+
+	enum class ShadingModel : uint8_t {
+		DefaultLit = 0, // PBR metallic-roughness, single forward pass
+		Unlit,          // baseColor only, no lighting
+		Masked,         // alpha-tested (cutout), uses alphaCutoff
+	};
+
+	enum class AlphaMode : uint8_t {
+		Opaque = 0,
+		Mask,
+		Blend,
+	};
+
+} // namespace tour
+
+// (namespace/RHI boundary audit, todo 8.4) the whole renderer DATA
+// MODEL below (materials, packed/import/terrain/skin vertices, the
+// static-mesh + upload structures) is ENGINE-OWNED and lives in
+// tour:: — the RHI types it references (smvk::TextureHandle, the pipeline
+// state settings, CookedMeshlets, smvk::vertexpack::) stay smvk:: and are
+// spelled QUALIFIED. The smvk re-exports at the bottom of the file
+// keep every smvk::/unqualified consumer spelling resolving; retire
+// them as call sites migrate. The vertex-INPUT CONTRACT (VertexLayoutId,
+// the layout constants, GetVertexLayoutDesc) STAYS in smvk below —
+// it is the RHI's BindRenderPipeline vocabulary, defined against
+// smvk.h's VertexLayoutDesc and consumed by the Vulkan backend.
+namespace tour {
+
+	// -------------------------------------------------------------------------
 	// Per-material flag bits (MaterialValues::emissiveFactor.w - the old
 	// pad word; the HLSL mirror is common.hlsli's MATERIAL_* defines).
 	// The bits ride the float word as their raw uint pattern
@@ -69,20 +107,9 @@ namespace smvk {
 	inline uint32_t MaterialFlagsFromWord(float w) { return std::bit_cast<uint32_t>(w); }
 
 	// -------------------------------------------------------------------------
-	// Shading / raster abstraction
+	// Shading / raster abstraction (MaterialValues/ShadingModel/AlphaMode
+	// live in tour above; the smvk using-declarations re-export them)
 	// -------------------------------------------------------------------------
-
-	enum class ShadingModel : uint8_t {
-		DefaultLit = 0, // PBR metallic-roughness, single forward pass
-		Unlit,          // baseColor only, no lighting
-		Masked,         // alpha-tested (cutout), uses alphaCutoff
-	};
-
-	enum class AlphaMode : uint8_t {
-		Opaque = 0,
-		Mask,
-		Blend,
-	};
 
 	// Runtime transparency technique for AlphaMode::Blend materials.
 	// Dithered (default): screen-door discard in shader, opaque pipeline
@@ -94,9 +121,9 @@ namespace smvk {
 	};
 
 	struct MaterialPipelineState {
-		RasterSettings raster{};
-		DepthSettings depth{};
-		BlendSettings blend{};
+		smvk::RasterSettings raster{};
+		smvk::DepthSettings depth{};
+		smvk::BlendSettings blend{};
 	};
 
 	// ---- Shader family (per base material) --------------------------
@@ -163,13 +190,13 @@ namespace smvk {
 
 	struct MaterialCreateInfo {
 		// Primary PBR textures – baseColorTexture == diffuse for backward compat.
-		TextureHandle baseColorTexture{};
-		TextureHandle metallicRoughnessTexture{};
-		TextureHandle normalTexture{};
-		TextureHandle occlusionTexture{};
-		TextureHandle emissiveTexture{};
+		smvk::TextureHandle baseColorTexture{};
+		smvk::TextureHandle metallicRoughnessTexture{};
+		smvk::TextureHandle normalTexture{};
+		smvk::TextureHandle occlusionTexture{};
+		smvk::TextureHandle emissiveTexture{};
 		// Legacy alias: alias for baseColorTexture
-		TextureHandle diffuse{};
+		smvk::TextureHandle diffuse{};
 
 		glm::vec4 baseColorFactor{ 1.0f };
 		glm::vec3 emissiveFactor{ 0.0f };
@@ -243,8 +270,8 @@ namespace smvk {
 	};
 
 	// GPU shading stream (16 bytes): color is packed via
-	// vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv
-	// via vertexpack::PackUvHalf fetched as Format::RG16_Float,
+	// smvk::vertexpack::PackColorUnorm8 and fetched as Format::RGBA8_UNorm, uv
+	// via smvk::vertexpack::PackUvHalf fetched as Format::RG16_Float,
 	// normal/tangent via PackNormalOct/PackTangentOct fetched as
 	// Format::R32_UInt and unpacked by hand in the vertex shader (see
 	// vertex_pack.hlsli). The bitangent is never stored (B =
@@ -280,7 +307,7 @@ namespace smvk {
 	// OPTIONAL lightmap stream (8 bytes, carved only for meshes whose
 	// vertices carry chart data — any chartId != 0xFFFFFFFF): chartUv is
 	// the CHART-LOCAL lightmap UV in the chart's inner rect, [0,1],
-	// packed via vertexpack::PackChartUv fetched as Format::RG16_UNorm —
+	// packed via smvk::vertexpack::PackChartUv fetched as Format::RG16_UNorm —
 	// UNORM because chart-space UVs need 65536-step precision (half-float
 	// is 1-texel-at-2048, 4-texel-at-8192); chartId is the owning chart
 	// index (0xFFFFFFFF = uncharted). Consumed (when lightmaps return) by
@@ -389,8 +416,8 @@ namespace smvk {
 	inline void PackTerrainVertex(const TerrainVertexSrc& src,
 		TerrainVertex& out) noexcept {
 		out.pos = src.pos;
-		vertexpack::PackTerrainNormalHalf(src.normal, out.normal);
-		vertexpack::PackTerrainTangentHalf(src.tangent, src.tangentFlip,
+		smvk::vertexpack::PackTerrainNormalHalf(src.normal, out.normal);
+		smvk::vertexpack::PackTerrainTangentHalf(src.tangent, src.tangentFlip,
 			out.tangent);
 		out.color[0] = uint8_t(glm::clamp(
 			int(src.color.r * 255.0f + 0.5f), 0, 255));
@@ -444,12 +471,12 @@ namespace smvk {
 		PackedVertexPosition& pos, PackedVertexShading& shade,
 		PackedVertexLightmap& lm) noexcept {
 		pos.pos = src.pos;
-		shade.color = vertexpack::PackColorUnorm8(src.color);
-		shade.uv = vertexpack::PackUvHalf(src.texCoord);
-		shade.normal = vertexpack::PackNormalOct(src.normal);
-		shade.tangent = vertexpack::PackTangentOct(
+		shade.color = smvk::vertexpack::PackColorUnorm8(src.color);
+		shade.uv = smvk::vertexpack::PackUvHalf(src.texCoord);
+		shade.normal = smvk::vertexpack::PackNormalOct(src.normal);
+		shade.tangent = smvk::vertexpack::PackTangentOct(
 			glm::vec3(src.tangent), src.tangent.w);
-		lm.chartUv = vertexpack::PackChartUv(src.texCoord2);
+		lm.chartUv = smvk::vertexpack::PackChartUv(src.texCoord2);
 		lm.chartId = src.chartId;
 	}
 
@@ -465,8 +492,8 @@ namespace smvk {
 		out.texCoord = glm::unpackHalf2x16(shade.uv);
 		out.texCoord2 = glm::unpackUnorm2x16(lm.chartUv);
 		out.chartId = lm.chartId;
-		out.normal = vertexpack::UnpackNormalOct(shade.normal);
-		out.tangent = vertexpack::UnpackTangentOct(shade.tangent);
+		out.normal = smvk::vertexpack::UnpackNormalOct(shade.normal);
+		out.tangent = smvk::vertexpack::UnpackTangentOct(shade.tangent);
 	}
 
 	// CPU-side import vertex (skinned): position/color/uv/normal/tangent
@@ -502,6 +529,56 @@ namespace smvk {
 		glm::vec3 pos;
 	};
 	static_assert(sizeof(DebugLineVertex) == 12);
+
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the
+// renderer data model lives in tour; the smvk re-exports keep the
+// unqualified spellings inside smvk-scope code (the Vulkan backend,
+// the rendergraph passes, the layout contract below) and every
+// smvk::-qualified consumer (WorldRenderer, the editor, the tools,
+// the tests) resolving. Retire as call sites migrate; the R7
+// architecture gate baselines this block.
+namespace smvk {
+	using ::tour::kMaterialFlagReceiveContactShadows;
+	using ::tour::MaterialFlagsToWord;
+	using ::tour::MaterialFlagsFromWord;
+	using ::tour::MaterialValues;
+	using ::tour::ShadingModel;
+	using ::tour::AlphaMode;
+	using ::tour::TransparentMode;
+	using ::tour::MaterialPipelineState;
+	using ::tour::MaterialShaderFamily;
+	using ::tour::ShaderLodQuality;
+	using ::tour::ShaderLodPolicy;
+	using ::tour::kSpecLitSpecular;
+	using ::tour::kSpecLitNormalMap;
+	using ::tour::MaterialCreateInfo;
+	using ::tour::MakePipelineStateForMaterial;
+	using ::tour::Material;
+	using ::tour::PackedVertexPosition;
+	using ::tour::PackedVertexShading;
+	using ::tour::PackedVertexLightmap;
+	using ::tour::PackedSkinInfluences;
+	using ::tour::ImportStaticVertex;
+	using ::tour::PackStaticVertex;
+	using ::tour::UnpackStaticVertex;
+	using ::tour::TerrainVertex;
+	using ::tour::TerrainFarVertex;
+	using ::tour::TerrainVertexSrc;
+	using ::tour::PackTerrainVertex;
+	using ::tour::PackTerrainFarVertex;
+	using ::tour::SkinnedVertex;
+	using ::tour::DebugLineVertex;
+} // namespace smvk
+
+// ---- the RHI vertex-input contract (STAYS smvk::) -------------------------
+// The layout constants + ValidateVertexLayout are defined against
+// smvk.h's VertexLayoutDesc (RHI-owned); the Vulkan backend consumes
+// GetVertexLayoutDesc on every bind. The moved Packed* structs they
+// measure resolve through the compat re-exports above (the same
+// entities).
+namespace smvk {
 
 	inline const VertexLayoutDesc DebugLineLayout{
 		.bindings = {
@@ -901,6 +978,12 @@ namespace smvk {
 	// Draw information
 	// -----------------------------------------------------------------------------
 
+} // namespace smvk
+
+// (the data model tail — back into tour:: with the rest of the model;
+// no dependency on the layout contract above)
+namespace tour {
+
 	struct Surface {
 		uint32_t firstIndex = 0;
 		uint32_t indexCount = 0;
@@ -908,7 +991,7 @@ namespace smvk {
 	};
 
 	struct Geometry {
-		PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+		smvk::PrimitiveTopology topology = smvk::PrimitiveTopology::TriangleList;
 
 		uint32_t vertexCount = 0;
 		uint32_t indexCount = 0;
@@ -935,7 +1018,7 @@ namespace smvk {
 		// Cook-time meshlet data for the future indirect/mesh-shader path.
 		// Empty when the mesh was cooked without meshlets. Never consulted
 		// by the current direct-draw renderer.
-		std::optional<CookedMeshlets> meshlets;
+		std::optional<smvk::CookedMeshlets> meshlets;
 		// Lightmap: atlas chunk index (cooked with --lightmap; the lobe
 		// count rides the gfx draw ring (GfxDraw.misc.w) to the lit
 		// fragment). 0xFFFFFFFF = none.
@@ -978,6 +1061,30 @@ namespace smvk {
 
 	void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);
 
+} // namespace tour
+
+// COMPAT tail (the second half of the data-model re-export: these
+// five are declared in the tour block above, so their using rows
+// belong here — after the definitions; the R7 gate counts the whole
+// file's total).
+namespace smvk {
+	using ::tour::Surface;
+	using ::tour::Geometry;
+	using ::tour::StaticMesh;
+	using ::tour::StaticMeshUpload;
+	using ::tour::AllocateStaticVertexFmt;
+}
+
+// ---- the RHI vertex-input contract (STAYS smvk::) -------------------------
+// VertexLayoutId is the BindRenderPipeline vocabulary and the layout
+// table is defined against smvk.h's VertexLayoutDesc; the Vulkan
+// backend consumes GetVertexLayoutDesc on every bind. These names
+// are deliberately NOT in the compat re-export set below — they are
+// RHI-owned. (The layout constants reference the moved Packed*
+// structs; inside namespace smvk those resolve through the using-
+// declarations at the bottom of this file — the same entities.)
+namespace smvk {
+
 	enum struct VertexLayoutId {
 		Empty
 		, Static
@@ -1001,7 +1108,5 @@ namespace smvk {
 	// Returns the static description for the given layout id (no
 	// per-call copies: BindRenderPipeline runs this on every bind).
 	const VertexLayoutDesc& GetVertexLayoutDesc(VertexLayoutId layout);
-
-
 
 } // namespace smvk

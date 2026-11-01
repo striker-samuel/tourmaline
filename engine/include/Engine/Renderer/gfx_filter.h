@@ -62,10 +62,26 @@
 #include <cstring>
 #include <vector>
 
+// (moved: StaticMeshUpload is ENGINE-OWNED/tour::, mesh.h — the smvk
+// fwd decl became a using-declaration so it cannot collide with
+// mesh.h's compat re-export; CookedMeshlets stays smvk::)
+namespace tour { struct StaticMeshUpload; }
 namespace smvk {
-struct StaticMeshUpload;
+	using ::tour::StaticMeshUpload;
 struct CookedMeshlets;
+}
 
+// (namespace/RHI boundary audit, todo 8.4) the GPU cull/filter CONFIG
+// + policy layer is ENGINE-OWNED (renderer-side culling decisions over
+// RHI resources) and lives in tour::gfx; the RHI types it drives
+// (Holder/BufferHandle/ShaderProgram/RenderGraph/limits) stay smvk::
+// and are spelled FULLY QUALIFIED here — no broad using-directive: a
+// public one is R6-gated, and its transitive lookup collides this
+// namespace's own Cluster with tour::Cluster for every
+// using-namespace-gfx consumer (the ambiguity that decided this shape).
+// The smvk::gfx namespace ALIAS at the bottom keeps every
+// smvk::gfx::* spelling resolving.
+namespace tour {
 namespace gfx {
 
 // Must match gfxfilter.hlsli GFX_CULL_*.
@@ -685,7 +701,7 @@ struct View {
 	CullFlags cullFlags = CullFlagBit_Degenerate;
 	uint32_t width = 0, height = 0;
 	glm::mat4 viewProj{ 1.0f };
-	const RenderView* renderView = nullptr; // frustum planes (owned by RenderViewSet)
+	const smvk::RenderView* renderView = nullptr; // frustum planes (owned by RenderViewSet)
 	std::vector<DrawRequest> draws;
 	std::vector<Batch> batches;
 	std::vector<Draw> drawConstants;
@@ -712,12 +728,12 @@ struct View {
 	// only retires the same slot), and uploads flush immediately, so any
 	// single-copy buffer would be clobbered by the next frame while the
 	// current one still reads it. Same rule as RenderViewSet's slab.
-	Holder<BufferHandle> batchBuffers[smvk::limits::MaxFramesInFlight];
-	Holder<BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
-	Holder<BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle batchLogicals[smvk::limits::MaxFramesInFlight]{};
-	LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
-	LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> batchBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::Holder<smvk::BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::Holder<smvk::BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle batchLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
 	// GPU cull chain state, per (view, flight):
 	//   kept — kept-bit ring with TWO parity regions inside one buffer
 	//          (the frame with parity P writes region P and reads 1-P,
@@ -728,10 +744,10 @@ struct View {
 	//          flight's consecutive users.
 	//   cullState — draw-cull verdict words + the filter's atomic
 	//          filtered-offset counter (word kCullStateCounterWord).
-	Holder<BufferHandle> keptBuffers[smvk::limits::MaxFramesInFlight];
-	Holder<BufferHandle> cullStateBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle keptLogicals[smvk::limits::MaxFramesInFlight]{};
-	LogicalBufferHandle cullStateLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> keptBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::Holder<smvk::BufferHandle> cullStateBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle keptLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::LogicalBufferHandle cullStateLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Filtered-index scratch lives in the static index monoblock (one index
 	// VkBuffer for mesh + cluster-ordered + filtered regions; firstIndex is
 	// absolute, so the index binding never switches). Per (view, flight)
@@ -762,8 +778,8 @@ struct HizResources {
 	uint32_t height = 0;
 	uint32_t mipCount = 0;
 	uint32_t mipOffsets[kHizMaxMips] = {}; // float offsets into buffer
-	Holder<BufferHandle> buffer;
-	LogicalBufferHandle logical{};
+	smvk::Holder<smvk::BufferHandle> buffer;
+	smvk::LogicalBufferHandle logical{};
 };
 // Pure-CPU HZB layout (headless-testable). Mip dims clamp at 1x1; count
 // stops when both dims are 1 (capped at kHizMaxMips).
@@ -952,8 +968,8 @@ struct TemporalView {
 	// independent, created lazily by EnsureHiz while SPD or its verify
 	// is on; creation-zero-filled (the GPU-counter convention) and reset
 	// by the shader's last group after the tail.
-	Holder<BufferHandle> hizSpdCounter;
-	LogicalBufferHandle hizSpdCounterLogical{};
+	smvk::Holder<smvk::BufferHandle> hizSpdCounter;
+	smvk::LogicalBufferHandle hizSpdCounterLogical{};
 	// SPD verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin of
 	// hiz[f], per flight, built from the same seed depth while the
 	// per-mip path feeds the cull chain; VerifyHizSpd compares the two
@@ -988,18 +1004,18 @@ struct TemporalView {
 	std::vector<VisibleCluster> visPairScratch;
 	// GPU mirror, ringed per frame in flight (same rule as View buffers:
 	// frames overlap, uploads flush immediately).
-	Holder<BufferHandle> visClusterBuffers[smvk::limits::MaxFramesInFlight];
-	Holder<BufferHandle> visDrawBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle visClusterLogicals[smvk::limits::MaxFramesInFlight]{};
-	LogicalBufferHandle visDrawLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> visClusterBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::Holder<smvk::BufferHandle> visDrawBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle visClusterLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::LogicalBufferHandle visDrawLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Seed command list (T3): one indirect draw per prevBatch, reordered
 	// bucket-major (opaque runs first) with per-(bucket, material) ranges.
 	// Consumed by the seed depth pass; rebuilt from the snapshot each frame.
 	std::vector<SeedCommand> seedCommands;
 	std::vector<SeedRange> seedRanges;
 	uint32_t seedOpaqueCommands = 0; // leading commands using the opaque PSO
-	Holder<BufferHandle> seedIndirectBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle seedIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> seedIndirectBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle seedIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Remainder command list (T5): currVisible minus prevVisible, keyed by
 	// (cluster, model matrix). Drawn by depth pass 2 after the filter so
 	// newly exposed geometry lands in depth (and the HZB refresh) the same
@@ -1007,8 +1023,8 @@ struct TemporalView {
 	std::vector<SeedCommand> remainderCommands;
 	std::vector<SeedRange> remainderRanges;
 	uint32_t remainderOpaqueCommands = 0;
-	Holder<BufferHandle> remainderIndirectBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle remainderIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> remainderIndirectBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle remainderIndirectLogicals[smvk::limits::MaxFramesInFlight]{};
 };
 
 // ---------------------------------------------------------------------------
@@ -1030,12 +1046,12 @@ struct TemporalView {
 // BEFORE dispatching any build: the slot vector must not grow while
 // workers hold element references inside BuildShadowList.
 struct ShadowView {
-	const RenderView* renderView = nullptr; // frustum planes (RenderViewSet-owned)
+	const smvk::RenderView* renderView = nullptr; // frustum planes (RenderViewSet-owned)
 	// Contribution gate (the main camera's view): non-null when the caller
 	// wants the mesh-bound fast discard to drop casters that cannot
 	// contribute to the main view (m_shadowContributionCulling's indirect
 	// twin — the direct fallback path culls at item level).
-	const RenderView* contributionView = nullptr;
+	const smvk::RenderView* contributionView = nullptr;
 	CullFlags cullFlags = CullFlagBit_Frustum;
 	uint32_t width = 0, height = 0;
 	uint32_t frameIndex = 0; // set by BuildShadowList
@@ -1050,10 +1066,10 @@ struct ShadowView {
 	// Build scratch (parallel to the emit walk; capacity retained).
 	std::vector<detail::EmitEntry> emitScratch;
 	// Ringed per-frame GPU mirrors (draws BDA + indirect commands).
-	Holder<BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
-	Holder<BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
-	LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> drawBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::Holder<smvk::BufferHandle> indirectBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle drawLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::LogicalBufferHandle indirectLogicals[smvk::limits::MaxFramesInFlight]{};
 	bool buffersReady = false;
 };
 
@@ -1070,13 +1086,13 @@ struct State {
 	uint64_t clusterIndexAllocBits = 0; // VMA virtual-allocation bits (see View)
 	// Rendergraph logical for the static index monoblock (all index streams
 	// share one buffer, so one hint covers mesh/cluster/filtered reads).
-	LogicalBufferHandle indexHeapLogical{};
-	Holder<BufferHandle> clusterBuffer;
-	LogicalBufferHandle clusterLogical{};
+	smvk::LogicalBufferHandle indexHeapLogical{};
+	smvk::Holder<smvk::BufferHandle> clusterBuffer;
+	smvk::LogicalBufferHandle clusterLogical{};
 	// Static per-mesh cluster ranges (GPU mirror of `meshes`; the GPU cull
 	// chain derives each draw group's cluster window from it).
-	Holder<BufferHandle> meshesBuffer;
-	LogicalBufferHandle meshesLogical{};
+	smvk::Holder<smvk::BufferHandle> meshesBuffer;
+	smvk::LogicalBufferHandle meshesLogical{};
 	// GPU cull chain (Northlight style, the only path): the CPU seeds
 	// the draw list + candidate slot layout, then GfxBatchCull ->
 	// GfxSeedDepth -> GfxHiz -> GfxDrawCull -> GfxFilter all run GPU-side
@@ -1084,21 +1100,21 @@ struct State {
 	// link stays GPU-resident through the kept-bit parity rings on the
 	// views).
 	uint32_t frameCounter = 0; // BeginFrame ++; keptParity source
-	Holder<ShaderModuleHandle> batchCullModule;
-	ShaderProgram batchCullProgram{};
-	Holder<ShaderModuleHandle> drawCullModule;
-	ShaderProgram drawCullProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> batchCullModule;
+	smvk::ShaderProgram batchCullProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> drawCullModule;
+	smvk::ShaderProgram drawCullProgram{};
 	// Draw-level texture-demand source (gfxfilter.cs.hlsl
 	// PublishDrawDemand; see the FilterPush tail + the demand API below).
 	// meshBounds: per-mesh union bound over the mesh's clusters (xyz
 	// center, w radius, OBJECT space), static after UploadStaticData.
 	std::vector<glm::vec4> meshBounds;
-	Holder<BufferHandle> meshBoundsBuffer;
-	LogicalBufferHandle meshBoundsLogical{};
+	smvk::Holder<smvk::BufferHandle> meshBoundsBuffer;
+	smvk::LogicalBufferHandle meshBoundsLogical{};
 	// textureMeta/epoch/count: per-slot meta table, re-uploaded only when
 	// the streamer's epoch bumps (register/unregister only; slots are
 	// stable across retargets so retargets never re-upload).
-	Holder<BufferHandle> textureMetaBuffer;
+	smvk::Holder<smvk::BufferHandle> textureMetaBuffer;
 	uint64_t textureMetaEpoch = 0;  // streamer epoch last uploaded (0 = none)
 	uint32_t textureMetaCount = 0; // live slot count in the uploaded table
 	// Demand ring: one uint per bindless slot per flight. SetDemandInputs
@@ -1109,7 +1125,7 @@ struct State {
 	// in-flight copy, and the frame's filter writes wait the chain, so a
 	// stale min can never pin a texture sharp — the cadence the retired
 	// fragment-feedback ring proved).
-	Holder<BufferHandle> demandBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::Holder<smvk::BufferHandle> demandBuffers[smvk::limits::MaxFramesInFlight];
 	uint64_t demandMaterialsBda = 0; // this frame's slice (SetDemandInputs)
 	float demandMipBias = 0.0f;
 	// The per-frame DEFORMED heap (the Northlight compute-skinning
@@ -1138,10 +1154,10 @@ struct State {
 	// GfxClusterData candidate slots + the kMaxDraws drawBound tail (one
 	// buffer, one BDA). Lazily created on the first frame a deformed buffer
 	// exists.
-	Holder<ShaderModuleHandle> skinBoundsModule;
-	ShaderProgram skinBoundsProgram{};
-	Holder<BufferHandle> skinBoundsBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle skinBoundsLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::ShaderModuleHandle> skinBoundsModule;
+	smvk::ShaderProgram skinBoundsProgram{};
+	smvk::Holder<smvk::BufferHandle> skinBoundsBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle skinBoundsLogicals[smvk::limits::MaxFramesInFlight]{};
 	bool skinBoundsReady = false;
 	// GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
 	// DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
@@ -1151,10 +1167,10 @@ struct State {
 	// overlay's UI toggle (SetConeDebug); one shared line buffer (the
 	// candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
 	// exactly the written range).
-	Holder<ShaderModuleHandle> coneDebugModule;
-	ShaderProgram coneDebugProgram{};
-	Holder<BufferHandle> coneDebugLines;
-	LogicalBufferHandle coneDebugLinesLogical{};
+	smvk::Holder<smvk::ShaderModuleHandle> coneDebugModule;
+	smvk::ShaderProgram coneDebugProgram{};
+	smvk::Holder<smvk::BufferHandle> coneDebugLines;
+	smvk::LogicalBufferHandle coneDebugLinesLogical{};
 	bool coneDebug = false; // the UI toggle's armed state
 	// The STATIC heap BDAs for the VS legs' skinned fetch (the same heaps
 	// every draw path reads - the RHI globals from vulkan_impl.h, stashed
@@ -1162,10 +1178,10 @@ struct State {
 	// the globals themselves). 0 = not stashed yet (static fetches).
 	uint64_t vsPosHeapBda = 0;
 	uint64_t vsShadeHeapBda = 0;
-	Holder<ShaderModuleHandle> filterModule;
-	ShaderProgram filterProgram{};
-	Holder<ShaderModuleHandle> hizModule;
-	ShaderProgram hizProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> filterModule;
+	smvk::ShaderProgram filterProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> hizModule;
+	smvk::ShaderProgram hizProgram{};
 	// SPD twin (hzb_spd.cs.hlsl .min — HZB_REDUCE_MAX=0, the MIN-reduced
 	// culling pyramid in ONE dispatch; same BDA buffer + mip layout +
 	// clamped footprints as the per-mip hizProgram path). A/B + verify
@@ -1178,8 +1194,8 @@ struct State {
 	//                  Execute (stalls; 0 mismatching texels is the
 	//                  contract — a wrong MIN pyramid makes geometry
 	//                  disappear, so this gate stays until it is green).
-	Holder<ShaderModuleHandle> hizSpdModule;
-	ShaderProgram hizSpdProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> hizSpdModule;
+	smvk::ShaderProgram hizSpdProgram{};
 	bool hizSpd = false;
 	bool hizSpdVerify = false;
 	bool hizSpdVerifyArmed = false; // this frame built both pyramids
@@ -1188,16 +1204,16 @@ struct State {
 	// Task-less mesh path (main-leg opaque only): mesh module + base-lit
 	// twin program { mesh, gfxmesh_lit FS }. Per-flight params blob +
 	// rendergraph aliases (uploaded per mesh dispatch).
-	Holder<ShaderModuleHandle> meshModule;
-	Holder<ShaderModuleHandle> meshFsModule;
-	ShaderProgram meshProgram{};
-	Holder<BufferHandle> meshParamsBuffers[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle meshParamsLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshModule;
+	smvk::Holder<smvk::ShaderModuleHandle> meshFsModule;
+	smvk::ShaderProgram meshProgram{};
+	smvk::Holder<smvk::BufferHandle> meshParamsBuffers[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle meshParamsLogicals[smvk::limits::MaxFramesInFlight]{};
 	// Compacted eligible batch indices, rewritten per mesh dispatch set
 	// (one upload per frame covering all variant spans; dispatches slice
 	// it via the listBDA base). kMaxBatches uints per flight.
-	Holder<BufferHandle> meshBatchLists[smvk::limits::MaxFramesInFlight];
-	LogicalBufferHandle meshBatchListLogicals[smvk::limits::MaxFramesInFlight]{};
+	smvk::Holder<smvk::BufferHandle> meshBatchLists[smvk::limits::MaxFramesInFlight];
+	smvk::LogicalBufferHandle meshBatchListLogicals[smvk::limits::MaxFramesInFlight]{};
 	std::vector<View> views;
 	std::vector<TemporalView> temporals; // parallel to views (same slot)
 	uint32_t viewCount = 0;
@@ -1229,7 +1245,7 @@ inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debu
 //      see MakeCasterContributionView - cannot shadow it; the indirect-
 //      path twin of the direct fallback's item-level contribution cull).
 bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
-	const RenderView& shadowView, const RenderView* contributionView);
+	const smvk::RenderView& shadowView, const smvk::RenderView* contributionView);
 
 // ---- GPU cull chain pass shells (caller sets the recording func) ----
 // Deformed cluster bounds: runs between the skinning pass and GfxBatchCull.
@@ -1237,11 +1253,11 @@ bool CullShadowMeshBound(const glm::vec4& meshBound, const glm::mat4& model,
 // write an object-space bounding sphere (cone degenerated) per candidate
 // slot from the frame's deformed heap. No-op when no skinned cluster exists
 // (the caller gates on State::skinDeformedBda).
-RenderPass& AddSkinBoundsPass(State& s, RenderGraph& rg, uint32_t view);
-void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+smvk::RenderPass& AddSkinBoundsPass(State& s, smvk::RenderGraph& rg, uint32_t view);
+void PushAndDispatchSkinBounds(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t view);
 // Creates the per-flight skinBounds ring + module lazily (idempotent).
-bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg);
+bool EnsureSkinBounds(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
 // Cone-axis overlay's GPU leg: runs after GfxSkinBounds, before Main's
 // overlay draw. One 128-thread workgroup per draw; threads stride the
 // draw's clusters and write TWO packed DebugLineVertex float3s per
@@ -1249,45 +1265,45 @@ bool EnsureSkinBounds(State& s, ResourceManager& ctx, RenderGraph& rg);
 // for static draws, this frame's deformed cones for skinned draws). The
 // candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
 // exactly the written range; Main Draws that count over the line buffer.
-RenderPass& AddConeDebugPass(State& s, RenderGraph& rg, uint32_t view);
-void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+smvk::RenderPass& AddConeDebugPass(State& s, smvk::RenderGraph& rg, uint32_t view);
+void PushAndDispatchConeDebug(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t view);
 // Arms/disarms the overlay (the UI toggle's handler): on enable, lazily
 // creates the module/program + the shared line buffer + logical; on
 // disable, only the flag flips (the buffer stays — re-arm is free). The
 // per-frame pass is recorded only while ConeDebugReady(s).
-void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable);
+void SetConeDebug(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg, bool enable);
 [[nodiscard]] inline bool ConeDebugReady(const State& s) {
 	return s.coneDebug && s.coneDebugProgram.shaderCount != 0
 		&& !s.coneDebugLines.empty() && !s.coneDebugLinesLogical.empty();
 }
-[[nodiscard]] inline LogicalBufferHandle ConeDebugLinesLogical(const State& s) {
+[[nodiscard]] inline smvk::LogicalBufferHandle ConeDebugLinesLogical(const State& s) {
 	return s.coneDebugLinesLogical;
 }
-[[nodiscard]] inline BufferHandle ConeDebugLinesBuffer(const State& s) {
+[[nodiscard]] inline smvk::BufferHandle ConeDebugLinesBuffer(const State& s) {
 	return s.coneDebugLines; // Holder's implicit handle conversion
 }
 // First compute pass of the frame (before the seed pass): one workgroup
 // per draw; sphere + cone verdicts, temporal seed/remainder commands,
 // batch array + filter indirect statics, kept bits.
-RenderPass& AddBatchCullPass(State& s, RenderGraph& rg, uint32_t view);
-void PushAndDispatchBatchCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+smvk::RenderPass& AddBatchCullPass(State& s, smvk::RenderGraph& rg, uint32_t view);
+void PushAndDispatchBatchCull(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t view);
 // After the HZB passes, before the filter: one thread per draw; mesh-bound
 // frustum (frozen view) + HZB occlusion verdicts.
-RenderPass& AddDrawCullPass(State& s, RenderGraph& rg, uint32_t view);
-void PushAndDispatchDrawCull(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+smvk::RenderPass& AddDrawCullPass(State& s, smvk::RenderGraph& rg, uint32_t view);
+void PushAndDispatchDrawCull(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t view);
 // GPU-mode seed/remainder ranges (positional candidate spans, bucket-major;
 // identical for both passes — the GPU-written instanceCounts gate draws).
 [[nodiscard]] const std::vector<SeedRange>& CullRanges(const State& s, uint32_t view);
 [[nodiscard]] uint32_t CullOpaqueCommands(const State& s, uint32_t view);
 
-bool EnsureShaders(State& s, ResourceManager& ctx,
+bool EnsureShaders(State& s, smvk::ResourceManager& ctx,
 	const char* csPath = kGfxFilterCsPath);
 // Task-less mesh path ring (per-flight 152B params blob + logicals).
 // Best-effort: failure only disables the mesh record (indexed stays).
-bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg);
+bool EnsureMeshParams(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
 // Mesh record: upload params, bind mesh pipeline, push tails,
 // DrawMeshTasks(2*batchCount). The full scene push must already be pushed
 // (same as the indexed leg). Null-BDA guard refuses the dispatch (same
@@ -1298,21 +1314,21 @@ bool EnsureMeshParams(State& s, ResourceManager& ctx, RenderGraph& rg);
 // (== the view record's matrix when the culling freeze is off; the two
 // differ while the freeze holds the filter). Returns the params BDA,
 // 0 on null-BDA refuse (indexed covers).
-uint64_t UploadMeshParams(State& s, ResourceManager& ctx, uint32_t view,
+uint64_t UploadMeshParams(State& s, smvk::ResourceManager& ctx, uint32_t view,
 	uint64_t listBDA, uint64_t lmXformsAddr, const glm::mat4& liveViewProj);
 // One variant dispatch: bind mesh pipeline, push tails, DrawMeshTasks.
 // Params must already be uploaded (UploadMeshParams); listBase/listCount
 // slice this dispatch out of the shared compacted list.
-void RecordMeshVariant(State& s, CommandBuffer& cmd, ResourceManager& ctx,
-	uint32_t view, ShaderProgram& meshProg, uint64_t paramsBDA,
+void RecordMeshVariant(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
+	uint32_t view, smvk::ShaderProgram& meshProg, uint64_t paramsBDA,
 	uint32_t listBase, uint32_t listCount,
 	uint64_t renderViewsAddr, uint32_t renderViewIndex, uint64_t lmXformsAddr,
-	const DepthSettings& depth, const MSAASettings& msaa);
+	const smvk::DepthSettings& depth, const smvk::MSAASettings& msaa);
 // Creates shader only; per-(view, frame) buffers are allocated on demand
 // by BeginView (pool) so unused views cost nothing.
-bool Ensure(State& s, ResourceManager& ctx, RenderGraph& rg,
+bool Ensure(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 	const char* csPath = kGfxFilterCsPath);
-void Destroy(State& s, RenderGraph& rg);
+void Destroy(State& s, smvk::RenderGraph& rg);
 [[nodiscard]] inline bool Valid(const State& s) {
 	return s.filterProgram.shaderCount != 0;
 }
@@ -1322,13 +1338,13 @@ void Destroy(State& s, RenderGraph& rg);
 // (falls back to <=128-tri chunks with sphere bounds when cooking fails);
 // FromCooked reuses persisted CookedMeshlets (pak path, no CPU verts needed).
 // Returns the mesh index for PushDraw, UINT32_MAX on failure.
-uint32_t RegisterMeshFromUpload(State& s, const StaticMeshUpload& upload,
+uint32_t RegisterMeshFromUpload(State& s, const smvk::StaticMeshUpload& upload,
 	uint32_t baseVertex);
-uint32_t RegisterMeshFromCooked(State& s, const CookedMeshlets& cooked,
+uint32_t RegisterMeshFromCooked(State& s, const smvk::CookedMeshlets& cooked,
 	uint32_t baseVertex);
 // Bakes filterIndices/clusters into GPU buffers (call once after all
 // Register* calls). Re-uploads on every call; load-time only.
-void UploadStaticData(State& s, ResourceManager& ctx, RenderGraph& rg);
+void UploadStaticData(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
 
 // Clears the LOAD-TIME registration state (filterIndices/clusters/
 // meshes/meshBounds) so a RegisterWorldMeshes re-run REBUILDS the
@@ -1351,8 +1367,8 @@ void BeginFrame(State& s);
 // Starts one filtered view bound to an allocated RenderView (frustum planes
 // come from it; eye = camera world position for the cone test).
 // Returns the view slot, UINT32_MAX on failure.
-uint32_t BeginView(State& s, ResourceManager& ctx, RenderGraph& rg,
-	const RenderView& renderView, const glm::vec3& eye,
+uint32_t BeginView(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+	const smvk::RenderView& renderView, const glm::vec3& eye,
 	CullFlags cullFlags, uint32_t width, uint32_t height);
 void PushDraw(State& s, uint32_t view, uint32_t mesh,
 	const glm::mat4& model, uint32_t material, DrawFlags flags = 0,
@@ -1371,7 +1387,7 @@ void PushDraw(State& s, uint32_t view, uint32_t mesh,
 // so mirrored / non-uniform instances cull the same side the rasterizer keeps.
 bool CullCluster(const Cluster& c, const glm::mat4& model,
 	const glm::mat4& invModel, const glm::vec3& eye,
-	const RenderView& renderView);
+	const smvk::RenderView& renderView);
 // Cone fit result (the object-space fields feed Cluster's cone tail exactly):
 // degenerate = true keeps the keep-cone (axis 0 -> GfxConeCulled's len2 <
 // 1e-12 keep; the value the cluster fields must hold in that case).
@@ -1401,7 +1417,7 @@ void BuildBatches(State& s, uint32_t view);
 // uploads the draws ring slice into the frameIndex slot (everything else
 // is GPU-written by the cull chain). Returns exact counters
 // (trianglesProcessed counts emitted triangles).
-Stats FinalizeView(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+Stats FinalizeView(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 
 // ---- Temporal visibility (T1 state, T3/T5 consumers) ----
 // Accessor (resizes the sidecar on demand so hand-built unit-test Views
@@ -1424,7 +1440,7 @@ void InvalidateHistory(State& s, uint32_t view);
 void SnapshotVisible(State& s, uint32_t view);
 // Uploads the snapshot (prevBatches as compact VisibleCluster pairs +
 // prevDraws) into the frameIndex ring slice. No-op when empty/unallocated.
-void UploadVisible(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+void UploadVisible(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 // Builds the seed command list from the snapshot intersected with the
 // current view's batches (same cluster + same transform only — a stale
 // prev-LOD sibling or moved instance would otherwise replay nearer depth
@@ -1445,22 +1461,22 @@ void BuildSeedAndRemainder(State& s, uint32_t view);
 void BuildRemainderCommands(State& s, uint32_t view);
 // Uploads the seed commands into the frameIndex ring slice. No-op when
 // empty/unallocated.
-void UploadSeed(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+void UploadSeed(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 // Uploads the remainder commands. No-op when empty/unallocated.
-void UploadRemainder(State& s, ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
+void UploadRemainder(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex, uint32_t view);
 // Depth-seed pass shell over the render-depth target (caller sets the
 // recording func to PushSeedConstants + DrawSeedRange per range).
-RenderPass& AddSeedPass(State& s, RenderGraph& rg, uint32_t view,
-	LogicalImageViewHandle depthLogical);
+smvk::RenderPass& AddSeedPass(State& s, smvk::RenderGraph& rg, uint32_t view,
+	smvk::LogicalImageViewHandle depthLogical);
 // Depth pass 2 shell (T5): draws the remainder list over seeded depth
 // (Load/Store). Same record pattern with the remainder ranges/buffer.
-RenderPass& AddRemainderPass(State& s, RenderGraph& rg, uint32_t view,
-	LogicalImageViewHandle depthLogical);
+smvk::RenderPass& AddRemainderPass(State& s, smvk::RenderGraph& rg, uint32_t view,
+	smvk::LogicalImageViewHandle depthLogical);
 // Consume-side barrier helper for the seed depth pass: cluster-ordered
 // index heap + vis draws + seed indirect as vertex-stage reads.
-void AddSeedConsumeHints(RenderPass& pass,
-	LogicalBufferHandle indexLogical, LogicalBufferHandle visDrawLogical,
-	LogicalBufferHandle seedIndirectLogical);
+void AddSeedConsumeHints(smvk::RenderPass& pass,
+	smvk::LogicalBufferHandle indexLogical, smvk::LogicalBufferHandle visDrawLogical,
+	smvk::LogicalBufferHandle seedIndirectLogical);
 
 // ---- CPU-built shadow draw lists (cascade + spot tiles) --------------
 // Resets the per-frame shadow slot cursor (slots persist; buffers are
@@ -1474,10 +1490,10 @@ void BeginShadowFrame(State& s);
 // thread only: the slot vector grows here, so claim every view of the
 // frame before dispatching BuildShadowList tasks. Returns the slot,
 // UINT32_MAX on failure.
-uint32_t BeginShadowView(State& s, ResourceManager& ctx, RenderGraph& rg,
-	const RenderView& renderView, CullFlags cullFlags,
+uint32_t BeginShadowView(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+	const smvk::RenderView& renderView, CullFlags cullFlags,
 	uint32_t width, uint32_t height,
-	const RenderView* contributionView = nullptr);
+	const smvk::RenderView* contributionView = nullptr);
 // Pushes one caster candidate (mesh = REGISTERED gfx mesh index from
 // RegisterMeshFrom*; UINT32_MAX casters stay on the caller's direct
 // fallback). Thread-safe per view: distinct slots only, no shared
@@ -1500,46 +1516,46 @@ void BuildShadowList(State& s, uint32_t sview);
 // shader reads, commands as draw-indirect reads). Main thread only: the
 // global buffer sync-state tables are sharded by handle, not by thread,
 // so concurrent uploads on same-shard buffers would race.
-void UploadShadowList(State& s, ResourceManager& ctx,
+void UploadShadowList(State& s, smvk::ResourceManager& ctx,
 	uint32_t frameIndex, uint32_t sview);
 // Accessors (frame slice resolved from the view's frameIndex, stamped by
 // BuildShadowList).
 [[nodiscard]] const std::vector<SeedRange>& ShadowRanges(
 	const State& s, uint32_t sview);
 [[nodiscard]] uint32_t ShadowOpaqueCommands(const State& s, uint32_t sview);
-[[nodiscard]] BufferHandle ShadowDrawBuffer(const State& s, uint32_t sview);
-[[nodiscard]] BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview);
-[[nodiscard]] LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview);
-[[nodiscard]] LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview);
+[[nodiscard]] smvk::BufferHandle ShadowDrawBuffer(const State& s, uint32_t sview);
+[[nodiscard]] smvk::BufferHandle ShadowIndirectBuffer(const State& s, uint32_t sview);
+[[nodiscard]] smvk::LogicalBufferHandle ShadowDrawLogical(const State& s, uint32_t sview);
+[[nodiscard]] smvk::LogicalBufferHandle ShadowIndirectLogical(const State& s, uint32_t sview);
 // CPU-side draw-constants mirror (diagnostics; the GPU reads the uploaded
 // ring slice).
 [[nodiscard]] const std::vector<Draw>& ShadowDrawConstants(
 	const State& s, uint32_t sview);
 
 // ---- Hierarchical-Z (T2 build, T4 consumer) ----
-bool EnsureHizShaders(State& s, ResourceManager& ctx,
+bool EnsureHizShaders(State& s, smvk::ResourceManager& ctx,
 	const char* csPath = kHizCsPath);
 // Cull chain programs (best effort: failure skips the chain's passes
 // loudly at record time — AppendPasses gates on the programs).
-bool EnsureBatchCullShaders(State& s, ResourceManager& ctx,
+bool EnsureBatchCullShaders(State& s, smvk::ResourceManager& ctx,
 	const char* csPath = kGfxBatchCullCsPath);
-bool EnsureDrawCullShaders(State& s, ResourceManager& ctx,
+bool EnsureDrawCullShaders(State& s, smvk::ResourceManager& ctx,
 	const char* csPath = kGfxDrawCullCsPath);
 // (Re)creates the view's HZB buffer for w/h (frees the old logical).
 // Resets historyValid when the size drifts (stale seed geometry extent).
 // Returns false on zero extent or allocation failure (history invalid).
-bool EnsureHiz(State& s, ResourceManager& ctx, RenderGraph& rg,
+bool EnsureHiz(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 	uint32_t view, uint32_t w, uint32_t h);
 // Compute pass shell for one HZB level (caller sets the recording func
 // to PushAndDispatchHiz). dstMip 0 additionally reads depthLogical.
 // passName labels the node in the framegraph; the post-remainder refresh
 // passes "GfxHizRefresh" so the two builds are distinguishable.
-RenderPass& AddHizPass(State& s, RenderGraph& rg, uint32_t view,
-	uint32_t dstMip, LogicalImageViewHandle depthLogical,
+smvk::RenderPass& AddHizPass(State& s, smvk::RenderGraph& rg, uint32_t view,
+	uint32_t dstMip, smvk::LogicalImageViewHandle depthLogical,
 	const char* passName = "GfxHiz");
 // Recording helper: pushes HzbPush for dstMip and dispatches the level.
 // depthBindlessIndex is consumed only for dstMip 0 (UINT32_MAX otherwise).
-void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+void PushAndDispatchHiz(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t view, uint32_t dstMip, uint32_t depthBindlessIndex = UINT32_MAX);
 // ---- single-dispatch SPD HZB (hzb_spd .min; the culling twin of the
 // per-mip pair above — see HizResources' counter-ring comment and the
@@ -1549,7 +1565,7 @@ void PushAndDispatchHiz(State& s, CommandBuffer& cmd, ResourceManager& ctx,
 void SetHizSpd(State& s, bool live, bool verify);
 // Best-effort module load (gfx::Ensure calls it like the cull-chain
 // programs; failure keeps the per-mip path).
-bool EnsureHizSpdShaders(State& s, ResourceManager& ctx,
+bool EnsureHizSpdShaders(State& s, smvk::ResourceManager& ctx,
 	const char* csPath = kHizSpdCsPath);
 // Compute pass shell for the ONE-dispatch build: the whole pyramid in a
 // single pass (caller sets the recording func to PushAndDispatchHizSpd).
@@ -1557,48 +1573,48 @@ bool EnsureHizSpdShaders(State& s, ResourceManager& ctx,
 // hizVerify "GfxHizSpdVerify" node) instead of the live pyramid.
 // REQUIRES EnsureHiz to have built the view's counter ring (the caller
 // gates on it — an absent ring falls back to the per-mip path).
-RenderPass& AddHizSpdPass(State& s, RenderGraph& rg, uint32_t view,
-	LogicalImageViewHandle depthLogical,
+smvk::RenderPass& AddHizSpdPass(State& s, smvk::RenderGraph& rg, uint32_t view,
+	smvk::LogicalImageViewHandle depthLogical,
 	const char* passName = "GfxHizSpd", bool shadow = false);
 // Recording helper: pushes HzbSpdPush and dispatches the whole build
 // (one workgroup per 64x64 mip-0 tile; groupCount rides the push).
 // depthBindlessIndex feeds the mip-0 copy (UINT32_MAX = undefined mip 0,
 // same over-cull warning as the per-mip path).
-void PushAndDispatchHizSpd(State& s, CommandBuffer& cmd, ResourceManager& ctx,
+void PushAndDispatchHizSpd(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx,
 	uint32_t view, uint32_t depthBindlessIndex, bool shadow = false);
 // Verify compare (TOURMALINE_HIZ_SPD_VERIFY; post-Execute, STALLS):
 // downloads the live per-mip pyramid + the SPD shadow of this flight
 // and byte-compares every mip (exact equality expected — deterministic
 // MIN over identical finite inputs). Prints per-frame + running totals.
-void VerifyHizSpd(State& s, ResourceManager& ctx, uint32_t view);
+void VerifyHizSpd(State& s, smvk::ResourceManager& ctx, uint32_t view);
 // BDA of the view's HZB buffer (0 when unallocated; T4 skips occlusion then).
-uint64_t HizAddress(State& s, ResourceManager& ctx, uint32_t view);
+uint64_t HizAddress(State& s, smvk::ResourceManager& ctx, uint32_t view);
 // DEBUG: Download and print HZB buffer contents for inspection.
-void DumpHzb(State& s, ResourceManager& ctx, uint32_t view);
+void DumpHzb(State& s, smvk::ResourceManager& ctx, uint32_t view);
 
 // ---- Pass shells (caller sets the recording func) ----
-RenderPass& AddFilterPass(State& s, RenderGraph& rg, uint32_t view);
-void AddConsumeHints(RenderPass& pass,
-	LogicalBufferHandle filteredLogical, LogicalBufferHandle indirectLogical);
+smvk::RenderPass& AddFilterPass(State& s, smvk::RenderGraph& rg, uint32_t view);
+void AddConsumeHints(smvk::RenderPass& pass,
+	smvk::LogicalBufferHandle filteredLogical, smvk::LogicalBufferHandle indirectLogical);
 // Recording helper: pushes FilterPush and dispatches batchCount. No-op when empty.
-void PushAndDispatch(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view);
+void PushAndDispatch(State& s, smvk::CommandBuffer& cmd, smvk::ResourceManager& ctx, uint32_t view);
 
 // ---- Draw-level texture demand (designated-publisher source) ----
 // Per-frame demand inputs (app-resolved): THIS frame's materials BDA
 // slice + the streamer's mip bias. Idempotent; call once per frame before
 // AppendPasses records the filter (PushAndDispatch reads them). Creates
 // the demand ring pre-filled with kDemandNoReport on first use.
-void SetDemandInputs(State& s, ResourceManager& ctx,
+void SetDemandInputs(State& s, smvk::ResourceManager& ctx,
 	uint64_t materialsBda, float mipBias);
 // Uploads the per-slot meta table when the streamer's epoch changes.
 // Returns false on buffer/upload failure (retry next frame — the cached
 // epoch stays stale so the call re-attempts).
-bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
+bool UploadTextureMeta(State& s, smvk::ResourceManager& ctx, uint64_t epoch,
 	const TextureMeta* meta, size_t count);
 // Demand ring slice for the readback consumer (empty handle when the ring
 // was never created). Slots hold wanted FULL-CHAIN mips;
 // kDemandNoReport = no draw reported the texture this frame.
-[[nodiscard]] inline BufferHandle DemandBuffer(
+[[nodiscard]] inline smvk::BufferHandle DemandBuffer(
 		const State& s, uint32_t frameIndex) {
 	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	return s.demandBuffers[frameIndex];
@@ -1609,11 +1625,11 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 // counter - zeroed by the batch-cull dispatch, accumulated per kept
 // entry), i.e. the GPU-side cull survivor count the CPU stats cannot see.
 // MAIN view (views[0] - the filter's view 0; shadow legs keep their own).
-[[nodiscard]] inline BufferHandle CullStateBuffer(
+[[nodiscard]] inline smvk::BufferHandle CullStateBuffer(
 		const State& s, uint32_t frameIndex) {
 	assert(frameIndex < smvk::limits::MaxFramesInFlight);
 	if (s.views.empty())
-		return BufferHandle{};
+		return smvk::BufferHandle{};
 	return s.views[0].cullStateBuffers[frameIndex];
 }
 // Live slot count in the uploaded meta table (bounds the consumer's
@@ -1626,7 +1642,7 @@ bool UploadTextureMeta(State& s, ResourceManager& ctx, uint64_t epoch,
 // slice. Call AFTER the consumer's download submit (download-before-
 // clear, same queue-ordering the retired fragment-feedback ring used).
 // No-op when the ring was never created.
-void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex);
+void ClearDemand(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex);
 
 // ---- Accessors (frame slices resolved from the view's frameIndex) ----
 [[nodiscard]] inline uint32_t ViewFrame(const State& s, uint32_t view) {
@@ -1643,7 +1659,7 @@ void ClearDemand(State& s, ResourceManager& ctx, uint32_t frameIndex);
 	assert(view < s.temporals.size() && view < s.views.size());
 	return s.temporals[view].hiz[s.views[view].frameIndex];
 }
-[[nodiscard]] inline BufferHandle BatchBuffer(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::BufferHandle BatchBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].batchBuffers[s.views[view].frameIndex];
 }
@@ -1683,17 +1699,17 @@ inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
 	tail.vsPrevValid = s.skinPrevValid;
 }
 
-[[nodiscard]] inline BufferHandle DrawBuffer(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::BufferHandle DrawBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].drawBuffers[s.views[view].frameIndex];
 }
-[[nodiscard]] inline BufferHandle IndirectBuffer(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::BufferHandle IndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].indirectBuffers[s.views[view].frameIndex];
 }
 // Static index monoblock accessor (mesh + cluster-ordered + filtered index
 // regions share one VkBuffer; draws use absolute firstIndex, offset-0 bind).
-[[nodiscard]] inline LogicalBufferHandle IndexHeapLogical(const State& s) {
+[[nodiscard]] inline smvk::LogicalBufferHandle IndexHeapLogical(const State& s) {
 	return s.indexHeapLogical;
 }
 [[nodiscard]] inline uint32_t ClusterIndexBase(const State& s) {
@@ -1703,19 +1719,19 @@ inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
 	assert(view < s.views.size());
 	return s.views[view].filteredBase[s.views[view].frameIndex];
 }
-[[nodiscard]] inline BufferHandle SeedIndirectBuffer(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::BufferHandle SeedIndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].seedIndirectBuffers[s.views[view].frameIndex];
 }
-[[nodiscard]] inline LogicalBufferHandle SeedIndirectLogical(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::LogicalBufferHandle SeedIndirectLogical(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].seedIndirectLogicals[s.views[view].frameIndex];
 }
-[[nodiscard]] inline BufferHandle VisDrawBuffer(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::BufferHandle VisDrawBuffer(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].visDrawBuffers[s.views[view].frameIndex];
 }
-[[nodiscard]] inline LogicalBufferHandle VisDrawLogical(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::LogicalBufferHandle VisDrawLogical(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].visDrawLogicals[s.views[view].frameIndex];
 }
@@ -1731,11 +1747,11 @@ inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
 	assert(view < s.views.size());
 	return s.views[view].cullOpaqueCommands;
 }
-[[nodiscard]] inline BufferHandle RemainderIndirectBuffer(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::BufferHandle RemainderIndirectBuffer(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].remainderIndirectBuffers[s.views[view].frameIndex];
 }
-[[nodiscard]] inline LogicalBufferHandle RemainderIndirectLogical(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::LogicalBufferHandle RemainderIndirectLogical(const State& s, uint32_t view) {
 	assert(view < s.temporals.size());
 	return s.temporals[view].remainderIndirectLogicals[s.views[view].frameIndex];
 }
@@ -1748,15 +1764,15 @@ inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
 	assert(view < s.views.size());
 	return s.views[view].cullOpaqueCommands;
 }
-[[nodiscard]] inline LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].batchLogicals[s.views[view].frameIndex];
 }
-[[nodiscard]] inline LogicalBufferHandle DrawLogical(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::LogicalBufferHandle DrawLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].drawLogicals[s.views[view].frameIndex];
 }
-[[nodiscard]] inline LogicalBufferHandle IndirectLogical(const State& s, uint32_t view) {
+[[nodiscard]] inline smvk::LogicalBufferHandle IndirectLogical(const State& s, uint32_t view) {
 	assert(view < s.views.size());
 	return s.views[view].indirectLogicals[s.views[view].frameIndex];
 }
@@ -1772,4 +1788,13 @@ inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
 [[nodiscard]] inline uint32_t ViewCount(const State& s) { return s.viewCount; }
 
 } // namespace gfx
-} // namespace smvk
+} // namespace tour
+
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the gfx
+// cull/filter family lives in tour::gfx; the namespace ALIAS keeps every
+// existing smvk::gfx::* spelling (GfxRenderer, WorldRenderer, the
+// contract tests) resolving — a true alias, no per-name enumeration.
+// Retire it as call sites migrate.
+namespace smvk {
+	namespace gfx = ::tour::gfx;
+}

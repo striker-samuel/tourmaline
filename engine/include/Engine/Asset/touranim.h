@@ -63,7 +63,11 @@
 
 #include <glm/glm.hpp>
 
-struct Scene;
+// (namespace/RHI boundary audit) the old GLOBAL `struct Scene;` fwd is
+// GONE — it declared a ::Scene distinct from tour::scene::Scene and
+// was a C2874 landmine against scene.h's global compat alias in any TU
+// including them in the wrong order. Qualify through tour::scene.
+namespace tour::scene { struct Scene; }
 
 namespace tour::asset {
 
@@ -152,7 +156,7 @@ glm::vec4 SampleTrack(const Track& track, double t);
 // The pose pass writes sampled joint locals into scene.localTransform
 // (composed as T * R * S) before the scene's regular transform update,
 // then this rides the existing global-transform walk (see scene.h).
-void BuildSkinPalette(const Scene& scene, const Skeleton& skeleton,
+void BuildSkinPalette(const scene::Scene& scene, const Skeleton& skeleton,
 	std::vector<glm::mat4>& palette);
 
 } // namespace tour::asset

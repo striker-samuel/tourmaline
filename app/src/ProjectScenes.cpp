@@ -56,9 +56,9 @@ std::string HexId(uint64_t id) {
 // The DEFAULT pak->cluster step: World::LoadClusterFromPak verbatim
 // (DeserializeCluster + RegisterCluster; throws on failure — caught
 // here, the staged uploads drained, surfaced as err + null).
-smvk::Cluster* DefaultClusterLoader(smvk::World& world,
+tour::Cluster* DefaultClusterLoader(tour::World& world,
 	smvk::ResourceManager* ctx, const smvk::PakReader& reader,
-	uint32_t sceneIndex, smvk::TextureStreamer* streamer,
+	uint32_t sceneIndex, tour::TextureStreamer* streamer,
 	std::shared_ptr<const std::vector<uint8_t>> imagePin,
 	const smvk::ExternalTextureResolver* externalTexture,
 	std::string& err) {
@@ -234,8 +234,8 @@ std::optional<ProjectScenes::SceneTarget> ProjectScenes::ResolveSceneTarget(
 
 // ---- scene instances ---------------------------------------------------
 
-SceneHandle ProjectScenes::LoadScene(smvk::World& world,
-	smvk::ResourceManager* ctx, smvk::TextureStreamer* streamer,
+SceneHandle ProjectScenes::LoadScene(tour::World& world,
+	smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 	uint64_t sceneId, std::string& err) {
 	err.clear();
 	// REPLACE semantics: every loaded project scene unloads first.
@@ -260,15 +260,15 @@ SceneHandle ProjectScenes::LoadScene(smvk::World& world,
 	return LoadInternal(world, ctx, streamer, sceneId, err);
 }
 
-SceneHandle ProjectScenes::LoadSceneAdditive(smvk::World& world,
-	smvk::ResourceManager* ctx, smvk::TextureStreamer* streamer,
+SceneHandle ProjectScenes::LoadSceneAdditive(tour::World& world,
+	smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 	uint64_t sceneId, std::string& err) {
 	err.clear();
 	return LoadInternal(world, ctx, streamer, sceneId, err);
 }
 
-SceneHandle ProjectScenes::LoadInternal(smvk::World& world,
-	smvk::ResourceManager* ctx, smvk::TextureStreamer* streamer,
+SceneHandle ProjectScenes::LoadInternal(tour::World& world,
+	smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 	uint64_t sceneId, std::string& err) {
 	if (!m_openError.empty()) {
 		err = "the project's paks did not all open: " + m_openError;
@@ -291,7 +291,7 @@ SceneHandle ProjectScenes::LoadInternal(smvk::World& world,
 	// it never runs without a context.
 	smvk::ResourceManager* resolverCtx = ctx;
 	smvk::ExternalTextureResolver resolver =
-		[resolverCtx, this](smvk::Cluster& c,
+		[resolverCtx, this](tour::Cluster& c,
 			const std::string& uri) -> smvk::TextureHandle {
 		if (!resolverCtx) {
 			std::cerr << "[Scenes] cross-pak texture unresolved (no"
@@ -330,7 +330,7 @@ SceneHandle ProjectScenes::LoadInternal(smvk::World& world,
 	inst->pak = target->pak;
 	inst->sceneName = target->sceneName;
 	inst->sceneIndex = target->sceneIndex;
-	smvk::Cluster* cluster = clusterLoader(world, ctx,
+	tour::Cluster* cluster = clusterLoader(world, ctx,
 		backend->Reader(), target->sceneIndex, streamer,
 		backend->Image(), &resolver, err);
 	if (!cluster) {
@@ -354,7 +354,7 @@ SceneHandle ProjectScenes::LoadInternal(smvk::World& world,
 	return handle;
 }
 
-bool ProjectScenes::RemoveScene(SceneHandle scene, smvk::World& world,
+bool ProjectScenes::RemoveScene(SceneHandle scene, tour::World& world,
 	std::string& err, std::vector<uint64_t>* releasedAssets) {
 	err.clear();
 	SceneInstance* inst = Instance(scene);
@@ -401,7 +401,7 @@ uint64_t ProjectScenes::SceneContentId(SceneHandle scene) const {
 	return inst ? inst->contentId : 0;
 }
 
-smvk::Cluster* ProjectScenes::SceneCluster(SceneHandle scene) const {
+tour::Cluster* ProjectScenes::SceneCluster(SceneHandle scene) const {
 	const SceneInstance* inst = Instance(scene);
 	return inst ? inst->cluster : nullptr;
 }

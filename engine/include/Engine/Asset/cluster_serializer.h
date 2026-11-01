@@ -15,12 +15,12 @@
 #include <Engine/Scene/node_schema.h>
 #include <Engine/Scene/scene.h>
 
-namespace tour { struct Cluster; struct GiBinding; }
+namespace tour { struct Cluster; struct GiBinding; class TextureStreamer; }
 namespace smvk {
 	using ::tour::Cluster;
 
 using ::tour::GiBinding;
-class TextureStreamer;
+using ::tour::TextureStreamer; // (moved: engine-owned streamer, tour::)
 class ResourceManager;
 
 struct ClusterSerializeStats {

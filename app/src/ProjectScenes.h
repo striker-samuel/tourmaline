@@ -9,7 +9,7 @@
 // names, no VFS paths enter from the outside):
 //
 //   1. SCENE INSTANCES — LoadScene/LoadSceneAdditive/RemoveScene over
-//      a live smvk::World. A load deserializes the scene's pak blob
+//      a live tour::World. A load deserializes the scene's pak blob
 //      into a NEW registered Cluster (World::LoadClusterFromPak's
 //      path) and runs the same post-load tail the apphost's entry
 //      load runs (anim attach, cooked static flags, the resolve that
@@ -70,13 +70,11 @@
 #include <string>
 #include <vector>
 
-namespace tour { struct World; }
+namespace tour { struct World; struct Cluster; class TextureStreamer; }
+namespace tour::asset { class PakReader; }
 namespace smvk {
 	class OverlayVfs;
 	class ResourceManager;
-	class TextureStreamer;
-	struct Cluster;
-	using ::tour::World;
 }
 
 namespace app {
@@ -114,10 +112,10 @@ public:
 	// seam and refuses); the GPU-less tests replace it with a
 	// hand-built offline cluster. Returns the registered cluster
 	// (the WORLD owns it) or null + err.
-	using ClusterLoader = std::function<smvk::Cluster*(
-		smvk::World& world, smvk::ResourceManager* ctx,
-		const smvk::PakReader& reader, uint32_t sceneIndex,
-		smvk::TextureStreamer* streamer,
+	using ClusterLoader = std::function<tour::Cluster*(
+		tour::World& world, smvk::ResourceManager* ctx,
+		const tour::asset::PakReader& reader, uint32_t sceneIndex,
+		tour::TextureStreamer* streamer,
 		std::shared_ptr<const std::vector<uint8_t>> imagePin,
 		const smvk::ExternalTextureResolver* externalTexture,
 		std::string& err)>;
@@ -155,14 +153,14 @@ public:
 	// ctx is the host's upload context — REQUIRED for the default
 	// cluster loader (null = the GPU-less test seam, which must pair
 	// with a replaced clusterLoader).
-	SceneHandle LoadScene(smvk::World& world, smvk::ResourceManager* ctx,
-		smvk::TextureStreamer* streamer, uint64_t sceneId,
+	SceneHandle LoadScene(tour::World& world, smvk::ResourceManager* ctx,
+		tour::TextureStreamer* streamer, uint64_t sceneId,
 		std::string& err);
 	// ADDITIVE: stacks sceneId on top of whatever the world already
 	// carries (the entry scene the apphost loaded, other additive
 	// scenes, editor content).
-	SceneHandle LoadSceneAdditive(smvk::World& world,
-		smvk::ResourceManager* ctx, smvk::TextureStreamer* streamer,
+	SceneHandle LoadSceneAdditive(tour::World& world,
+		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 		uint64_t sceneId, std::string& err);
 	// Unloads the scene's cluster from `world` and releases its owned
 	// assets. releasedAssets (optional out) receives the asset ids
@@ -170,7 +168,7 @@ public:
 	// pin — the decoded-form caches (audio) evict exactly those.
 	// False + err on a stale/unknown handle (generation mismatch =
 	// the scene was already removed).
-	bool RemoveScene(SceneHandle scene, smvk::World& world,
+	bool RemoveScene(SceneHandle scene, tour::World& world,
 		std::string& err,
 		std::vector<uint64_t>* releasedAssets = nullptr);
 
@@ -183,7 +181,7 @@ public:
 	// The cluster a loaded instance created (nullptr on a bad handle;
 	// DEAD after RemoveScene — the world owned it, the unload erased
 	// it). Lets scene-aware layers (audio) reach the owning cluster.
-	[[nodiscard]] smvk::Cluster* SceneCluster(SceneHandle scene) const;
+	[[nodiscard]] tour::Cluster* SceneCluster(SceneHandle scene) const;
 
 	// ---- ownership-aware prefetch ----
 	// Warms the asset's pak (the background preload + open — the
@@ -224,7 +222,7 @@ private:
 		std::string pak;
 		std::string sceneName;
 		uint32_t sceneIndex = 0;
-		smvk::Cluster* cluster = nullptr; // dead after RemoveScene
+		tour::Cluster* cluster = nullptr; // dead after RemoveScene
 		std::vector<uint64_t> ownedAssets;
 	};
 
@@ -233,8 +231,8 @@ private:
 	[[nodiscard]] SceneHandle AllocHandle();
 	void FreeHandle(SceneHandle scene);
 
-	SceneHandle LoadInternal(smvk::World& world,
-		smvk::ResourceManager* ctx, smvk::TextureStreamer* streamer,
+	SceneHandle LoadInternal(tour::World& world,
+		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 		uint64_t sceneId, std::string& err);
 
 	ProjectRuntime& m_runtime;

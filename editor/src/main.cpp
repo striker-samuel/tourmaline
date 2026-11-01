@@ -321,7 +321,7 @@ namespace {
    	int main(int argc, const char* argv[]) {
 	// Reserve linear-allocator virtual address space FIRST (see
 	// Engine/Memory/memory.h) — before any subsystem init.
-	smvk::mem::InitMemory();
+	tour::mem::InitMemory();
 	// Mute the periodic engine dashboards ([GfxProbe]/[GfxFilter]
 	// view + dispatch, [exposure] record/download — SMVK_TRACE_LOG):
 	// the editor's terminal is interactive and these every-N-frame
@@ -447,7 +447,7 @@ InstallCrashHandler();
 	// mandatory production source) + the dev content/shaders/
 	// override. Every later shader read (the Live view's full
 	// WorldRenderer included) serves through it.
-	smvk::shaders::Init();
+	tour::shaders::Init();
 	// TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
 	// service — engine/shaders/ edits recompile in-process and land
 	// in the dev override tree; the Live view's frame tick consumes
@@ -497,6 +497,6 @@ InstallCrashHandler();
 		std::cin.get();
 		return EXIT_FAILURE;
 	}
-	smvk::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
+	tour::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
 	return EXIT_SUCCESS;
 }

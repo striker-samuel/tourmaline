@@ -240,7 +240,7 @@ bool EditorApp::Initialize() {
 	}
 
 
-	m_imgui = smvk::mem::MakeProcess<smvk::ImGuiOverlay>();
+	m_imgui = tour::mem::MakeProcess<smvk::ImGuiOverlay>();
 	smvk::ImGuiOverlayDesc imguiDesc{};
 	if (!m_imgui->Init(*m_context, *m_swapchain, window, imguiDesc)) {
 		std::cerr << "[Editor] ImGui init failed, continuing without UI\n";
@@ -636,7 +636,7 @@ void EditorApp::CloseScene() {
 	m_texHandleBySlot.clear();
 	m_bindlessBySlot.clear();
 	if (m_textureStreamingEnabled && m_texMode != TexMode::Full) {
-		smvk::TextureStreamerConfig streamCfg;
+		tour::TextureStreamerConfig streamCfg;
 		streamCfg.budgetBytes = 256ull * 1024 * 1024;
 		// Coarsest-only mode pins the floor to the single coarsest mip
 		// with no demand and no hysteresis (one Update() decays all).
@@ -654,13 +654,13 @@ void EditorApp::CloseScene() {
 		// error texture. Cooked runs keep the default (refuse + pink).
 		streamCfg.allowRetargetTranscode = true;
 		m_textureStreamer =
-			smvk::mem::MakeProcess<smvk::TextureStreamer>(*m_context, streamCfg);
+			tour::mem::MakeProcess<tour::TextureStreamer>(*m_context, streamCfg);
 	}
 	// The thumbnails' bindings reference the OLD world's cluster texture
 	// views — the fresh world below orphans them (see TextureThumb).
 	DropTextureThumbs();
-	m_world = smvk::mem::MakeProcess<smvk::World>();
-	smvk::Cluster& cluster = m_world->LoadCluster(*m_context);
+	m_world = tour::mem::MakeProcess<tour::World>();
+	tour::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// CPU geometry mirror (the editor's picking/UV/placement source):
 	// every mesh this import lands keeps a retained StaticMeshUpload
 	// (Cluster::GetRetainedUpload) — THE replacement for the old kept
@@ -805,7 +805,7 @@ void EditorApp::CloseScene() {
 	{
 		uint32_t meshedMeshes = 0, meshletTotal = 0;
 		cluster.staticMeshes.forEachHandle(
-			[&](smvk::ClusterStaticMeshHandle h) {
+			[&](tour::ClusterStaticMeshHandle h) {
 				if (const smvk::StaticMesh* m = cluster.staticMeshes.get(h)) {
 					if (m->meshlets && !m->meshlets->empty()) {
 						++meshedMeshes;
@@ -1412,8 +1412,8 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
 		};
 		m_world->forEachRenderItem(
 			smvk::IteratorFlagBit_Renderable,
-			[&](const smvk::World::RenderItem& item) {
-				if (item.material == smvk::World::kInvalidIndex)
+			[&](const tour::World::RenderItem& item) {
+				if (item.material == tour::World::kInvalidIndex)
 					return;
 				const smvk::Material* mat = m_world->GetMaterial(item.material);
 				if (!mat)
@@ -1449,7 +1449,7 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
 			auto cit = chain.find(key);
 			if (cit == chain.end())
 				continue;
-			const uint32_t want = smvk::TextureStreamer::WantedMipForDistance(
+			const uint32_t want = tour::TextureStreamer::WantedMipForDistance(
 				cit->second.first, cit->second.second, dist,
 				static_cast<float>(renderExtent.height), fovY, 2.0f, bias);
 			m_textureStreamer->RequestMip(hit->second, want, streamFrame);

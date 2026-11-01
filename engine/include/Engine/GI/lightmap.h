@@ -54,8 +54,12 @@
 
 #include <glm/glm.hpp>
 
+// (moved: StaticMeshUpload is ENGINE-OWNED/tour::, Engine/Renderer/
+// mesh.h — the smvk fwd decl became a using-declaration so it cannot
+// collide with mesh.h's compat re-export)
+namespace tour { struct StaticMeshUpload; }
 namespace smvk {
-struct StaticMeshUpload; // Engine/Renderer/mesh.h
+	using ::tour::StaticMeshUpload;
 }
 
 namespace tour::gi {

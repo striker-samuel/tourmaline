@@ -1595,7 +1595,7 @@ namespace editor {
 	const EditorApp::TexPreview& EditorApp::ResolveDiffusePreview(uint32_t matWorld) {
 		TexPreview& pv = m_texPreview;
 		smvk::Material* mat = m_world ? m_world->GetMaterial(matWorld) : nullptr;
-		smvk::Cluster* cluster = nullptr;
+		tour::Cluster* cluster = nullptr;
 		int slot = -1;
 		if (mat && matWorld < m_world->materialLocations.size()) {
 			cluster = m_world->materialLocations[matWorld].cluster;
@@ -4111,7 +4111,7 @@ namespace editor {
 			ImGui::TextDisabled("Material resolve failed.");
 			return;
 		}
-		smvk::Cluster* cl = m_world->clusters.empty()
+		tour::Cluster* cl = m_world->clusters.empty()
 			? nullptr : m_world->clusters[0].get();
 
 		// ---- Preview + the ball sidecar --------------------------------

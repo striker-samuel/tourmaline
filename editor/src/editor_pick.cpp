@@ -74,7 +74,7 @@ const smvk::StaticMeshUpload* EditorApp::MeshUploadOf(
 	uint32_t worldMeshIdx) const {
 	if (!m_world || worldMeshIdx >= m_world->meshLocations.size())
 		return nullptr;
-	const smvk::World::MeshLocation& loc =
+	const tour::World::MeshLocation& loc =
 		m_world->meshLocations[worldMeshIdx];
 	if (!loc.cluster || !loc.handle.valid())
 		return nullptr;
@@ -149,7 +149,7 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 	bool found = false;
 	const smvk::IteratorFlags req = smvk::IteratorFlags(
 		smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_StaticVertexFmt);
-	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+	m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
 		if (!IsVisibleNode(m_world->scene, int(item.node)))
 			return; // hidden subtrees are not pickable
 		smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
@@ -340,7 +340,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
 	bool found = false;
 	const smvk::IteratorFlags req = smvk::IteratorFlags(
 		smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_StaticVertexFmt);
-	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+	m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
 		if (!IsVisibleNode(m_world->scene, int(item.node)))
 			return;
 		smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);

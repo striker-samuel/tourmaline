@@ -60,8 +60,8 @@ struct AssetManager::Impl {
 		bool keepResident = true;
 		uint64_t key = 0;             // the catalog id
 		std::string pak;              // the owning pak (logical name)
-		smvk::Cluster* cluster = nullptr;       // store-held (refs keep it alive)
-		smvk::ClusterStaticMeshHandle mesh{};   // the family's BASE mesh row
+		tour::Cluster* cluster = nullptr;       // store-held (refs keep it alive)
+		tour::ClusterStaticMeshHandle mesh{};   // the family's BASE mesh row
 	};
 	std::vector<MeshSlot> meshSlots;
 	std::vector<uint32_t> meshFree;
@@ -201,7 +201,7 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	// adopted from a world-registered scene cluster, or loaded through
 	// the cluster-source seam - with asset-side refs that keep it
 	// alive across scene removals (the park bridge).
-	smvk::Cluster* cluster = m_impl->store.AcquireFamilyCluster(
+	tour::Cluster* cluster = m_impl->store.AcquireFamilyCluster(
 		m_impl->world, row->pak, row->path, members,
 		options.keepResident, err);
 	if (!cluster)
@@ -210,7 +210,7 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	// cluster pool row (the spawn-side seam resolves the WORLD index
 	// fresh per query - see WorldMeshIndexOf; the slot keeps the
 	// stable carrier row).
-	smvk::ClusterStaticMeshHandle baseMesh{};
+	tour::ClusterStaticMeshHandle baseMesh{};
 	for (const smvk::PakMeshPlanMember& m : members) {
 		if (m.lodIndex != 0)
 			continue; // a LOD sibling, not the base
@@ -373,7 +373,7 @@ MeshHandle AssetManager::LoadMeshByPlan(const smvk::MeshPlanRef& plan,
 	}
 	// The plan acquire (per-asset fail-closed: the pak by index, the
 	// slot validated against the deployed TOC).
-	smvk::Cluster* cluster =
+	tour::Cluster* cluster =
 		m_impl->store.AcquireFamilyClusterByPlan(m_impl->world, plan,
 			options.keepResident, err);
 	if (!cluster)
@@ -391,7 +391,7 @@ MeshHandle AssetManager::LoadMeshByPlan(const smvk::MeshPlanRef& plan,
 	}
 	const smvk::PakTocEntry* base =
 		pager->Reader().FindBySlot(plan.baseSlot);
-	smvk::ClusterStaticMeshHandle baseMesh{};
+	tour::ClusterStaticMeshHandle baseMesh{};
 	if (base)
 		if (auto hit = cluster->FindMeshByUri(base->path))
 			baseMesh = *hit;

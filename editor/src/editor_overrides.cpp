@@ -1012,7 +1012,7 @@ namespace editor {
 						const auto& loc =
 							r.materialWorld < m_world->materialLocations.size()
 							? m_world->materialLocations[r.materialWorld]
-							: smvk::World::MaterialLocation{};
+							: tour::World::MaterialLocation{};
 						if (loc.cluster)
 							ImGui::SetTooltip("%s",
 								loc.cluster->GetMaterialUri(loc.handle).Str());

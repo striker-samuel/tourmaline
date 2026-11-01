@@ -133,6 +133,85 @@
   documented follow-ups; the typed-key MESH load/spawn lane is LANDED
   (AssetManager::LoadMesh + SpawnMesh).
 
+## The namespace boundary invariant (tour:: engine / smvk:: RHI)
+
+**The ownership rule (todo item 8, the standing architecture target):**
+
+- **`tour::`** — the ENGINE API: app, scene/world/cluster, assets, paks,
+  audio, GI, placement, camera, mem, profiler, renderers' engine-side
+  policy, the shader library, the streamers.
+- **`smvk::`** — the RHI ONLY: resources (Texture/Image/Buffer handles,
+  Holder/Handle), command buffers, swapchain, rendergraph recording,
+  synchronization, descriptor limits.
+- **`smvk::detail::vulkan`** — the private Vulkan implementation
+  (public headers never include it).
+
+The engine is ALLOWED to call `smvk::` RHI operations — spell them
+qualified (`smvk::TextureHandle`, `smvk::ResourceManager&`). The
+VIOLATION is the reverse ownership direction: engine policy, engine
+assets or engine services declared inside `namespace smvk`, or the RHI
+including/referencing engine-domain headers.
+
+**Rules for new + touched code:**
+
+1. New engine-owned types go in a `tour::` namespace (flat `tour::` for
+   the core families, `tour::shaders` / `tour::gfx` / `tour::asset` /
+   `tour::gi` / `tour::placement` / `tour::mem` / `tour::audio` style
+   for subsystems). NEVER declare engine concepts in `namespace smvk`.
+2. NEVER add `using namespace ::smvk;` to a public header (R6 bans it).
+   In moved headers, QUALIFY the RHI types — a header small enough to
+   qualify is small enough to qualify; a broad import's transitive
+   lookup also collides same-named types (the `tour::gfx::Cluster` vs
+   `tour::Cluster` ambiguity is the recorded lesson —
+   gfx_filter.h). TU-LOCAL using-directives in .cpp files are the
+   contained escape hatch while a moved block still spells RHI names
+   unqualified.
+3. Migrations follow the landed pattern: declare in `tour::`, add the
+   `smvk::` compat re-export (`using ::tour::X;`, or a namespace alias
+   `namespace X = ::tour::Y;` for whole families), keep consumers
+   compiling, migrate call sites opportunistically, then RETIRE the
+   alias. Adding a compat re-export = a deliberate R7 baseline row in
+   the same commit.
+4. Legacy `smvk::` spellings of MIGRATED types (`smvk::World`,
+   `smvk::shaders::*`, `smvk::TextureStreamer`, `smvk::gfx::*`,
+   `smvk::MaterialValues`, ...) keep resolving through the R7-baselined
+   compat aliases — they are TRANSITIONAL, not the canonical surface.
+   New code writes the `tour::` spelling.
+
+**The CI leak alarm — `tests/test_architecture.cpp` (R1–R9):** the
+namespace/RHI boundary scanner, GPU-free + source-tree-only, runs in
+every ctest/CI run. R1–R5: no Vulkan includes / private-impl includes /
+Vk types / upward RHI includes (direct + transitive, quoted forms
+included). R6–R9 are the SHRINK-ONLY BASELINE gates that make the audit
+findings impossible to grow silently:
+
+- **R6** — no broad `using namespace ::smvk` import in any public header
+  (the landed migration stages' directives are the frozen exception
+  list).
+- **R7** — the `smvk::`-compat re-export blocks are confined to exact
+  per-file counts: a new compat alias anywhere, or a grown one, FAILS.
+- **R8** — RHI implementation-state exposure in engine-facing headers
+  (`GetResourceManager`/`GetSwapchain`/`GetRendergraph`,
+  `LinearPtr<Swapchain>` members, `ElementFrame`'s `Framebuffer*`,
+  `gfx::State`, raw `ResourceManager*`/`Swapchain*`/`RenderGraph*`/
+  `Framebuffer*` pointer types) is frozen per (file, token).
+- **R9** — the GLOBAL-NAMESPACE gate (the global-namespace cleanup is
+  complete: no engine type is declared at global scope anymore —
+  NodeId/scene/Camera/Input/BVH/DXC all live in tour::(scene|dxc|...))
+  with the transitional GLOBAL compat re-export bridges (`using
+  tour::scene::Scene;` etc. in input.h/scene.h/scene_tables.h/
+  camera.h/bvh.h...) confined to exact per-file counts, and any NEW
+  global struct/class/enum declaration failing outright.
+
+The baselines are EXACT in both directions: growth or a new site fails
+the suite, and RETIREMENT also fails until the baseline row is deleted
+in the same commit — the exception list can only shrink, explicitly.
+When you retire compat surface, shrink the matching row; when you
+believe you need new exposure or a new alias, add the row with a
+comment and let the review happen at the gate. The full AST
+signature-walking scanner remains the follow-up (todo 8.8); the regex
+battery is the enforceable v1.
+
 ## Build system
 
 **Always configure and build with the Ninja generator.**
@@ -366,7 +445,8 @@ binary packages — see `THIRD_PARTY_NOTICES.md`).
 - `PakAssetKind::Shader` (kind 12) stores compiled bytecode VERBATIM as
   a blob keyed by its VFS path (`content/shaders/<file>.spv`); the THIRD
   VFS-addressable kind.
-- `smvk::shaders` (`Engine/Utils/shader_library.h`) is THE unified
+- `tour::shaders` (`Engine/Utils/shader_library.h`; `smvk::shaders` is
+  the R7-baselined compat alias) is THE unified
   shader reader: one process-wide overlay mounting (in precedence) loose
   DEV trees (the exe-relative `content/shaders/` the build syncs) over
   SHADER PACKAGES (`MountPak` — the production source is the
@@ -374,7 +454,7 @@ binary packages — see `THIRD_PARTY_NOTICES.md`).
   magic (SPIR-V on the Vulkan backend) — a corrupt blob fails at READ
   time with a named provider, never inside a driver. `Read(path)` is a
   drop-in for the old `readFile(...)` reads. Hosts call
-  `smvk::shaders::Init()` before graphics initialization.
+  `tour::shaders::Init()` before graphics initialization.
 - `engine-shaders.pak` (the ENGINE-OWNED package) is built by
   `EngineScene_shaderpak` (`tools/pak_cooker/CMakeLists.txt`) from the
   AUTHORITATIVE DECLARED compiled-output list (`engine-shaders.list`)
@@ -611,6 +691,17 @@ pak, the deployed catalog fingerprint vs the runtime fold, every
 VFS-servable [ids] row read through its pak, and a scene load through
 the public clusterLoader seam. Compiling the sample's game exe is the
 build configs' job; its GPU launch stays a dev-side golden run.
+
+`architecture_tests` is the NAMESPACE/RHI BOUNDARY LEAK ALARM (R1–R9,
+see "The namespace boundary invariant" above): every ctest run — local
+or CI — fails on NEW boundary leakage (broad smvk imports, new/grown
+compat re-export blocks — smvk-side AND global-scope — new global
+namespace declarations, new/grown RHI implementation-state exposure,
+upward RHI includes incl. quoted forms). Its baselines are exact both
+ways: growth fails, and retiring surface fails until you delete the
+baseline row in the same commit. If a boundary check fails your build,
+do not "fix the test" — fix the leak, or add the row with a comment
+when the exposure is deliberate.
 
 ## Conventions
 

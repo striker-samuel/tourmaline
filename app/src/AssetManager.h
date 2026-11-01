@@ -54,10 +54,11 @@ class WorldRenderer; // the renderer facade (the GI publish seam)
 }
 namespace tour {
 class World; // the engine-owned world (smvk::World is an alias)
+class TextureStreamer; // (moved: engine-owned streamer, tour::)
 }
 namespace smvk {
 class ResourceManager;
-class TextureStreamer;
+using ::tour::TextureStreamer;
 class OverlayVfs;
 }
 

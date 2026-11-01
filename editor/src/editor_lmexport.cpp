@@ -201,8 +201,8 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
 			smvk::IteratorFlagBit_Renderable |
 			smvk::IteratorFlagBit_StaticVertexFmt);
 		m_world->forEachRenderItem(req,
-			[&](const smvk::World::RenderItem& item) {
-				if (item.material == smvk::World::kInvalidIndex)
+			[&](const tour::World::RenderItem& item) {
+				if (item.material == tour::World::kInvalidIndex)
 					return;
 				const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
 				if (!mesh || mesh->lmChunk == 0xFFFFFFFFu)

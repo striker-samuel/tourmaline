@@ -115,7 +115,7 @@ namespace app {
 		// Reserve linear-allocator virtual address space FIRST, before worker
 		// threads, Vulkan, or asset loading (see Engine/Memory/memory.h). An
 		// unsatisfiable reservation fails fast here with the OOM diagnostic.
-		smvk::mem::InitMemory();
+		tour::mem::InitMemory();
 
 		// Early gate: an unknown --present value fails fast, BEFORE any
 		// window/context/element work (nothing to shut down but the memory
@@ -238,7 +238,7 @@ namespace app {
 		// complete contiguous blob). A pak that fails its light
 		// mount is SKIPPED (logged) — its clusters keep the classic
 		// image-pin promote lane.
-		if (smvk::GeometryStreamingEnabled()) {
+		if (tour::GeometryStreamingEnabled()) {
 			auto pagers = std::make_shared<
 				std::vector<std::shared_ptr<smvk::PakPager>>>();
 			for (const std::string& pak : launchPaks) {
@@ -250,9 +250,9 @@ namespace app {
 						" source skips '" << pak << "': "
 						<< pager->OpenError() << "\n";
 			}
-			smvk::SetLodPageSource(
+			tour::SetLodPageSource(
 				[pagers](const char* uri)
-					-> std::optional<smvk::LodPagePin> {
+					-> std::optional<tour::LodPagePin> {
 				for (const std::shared_ptr<smvk::PakPager>& p :
 						*pagers) {
 					const smvk::PakTocEntry* e =
@@ -266,7 +266,7 @@ namespace app {
 					if (!page)
 						return std::nullopt; // the promote caller
 						                     // reports the miss
-					smvk::LodPagePin pin;
+					tour::LodPagePin pin;
 					pin.data = page.data();
 					pin.size = page.size();
 					// The PIN rides the release closure through a
@@ -293,7 +293,7 @@ namespace app {
 		// window/context/swapchain + the frame sync — the default DrawFrame
 		// pump drives the element between its acquire and present; the
 		// renderer never acquires/presents on its own).
-		smvk::App app;
+		tour::App app;
 		try {
 			// The ELEMENT owns the control layer (input, keybinds, camera drive,
 			// UI mode, lifecycle) and wraps the pure frame renderer (see
@@ -332,19 +332,19 @@ namespace app {
 			// element stack detaches in reverse order, so the game drops the
 			// hook + stops touching the world before the renderer tears it
 			// down).
-			auto worldHandle = std::make_shared<smvk::World*>();
+			auto worldHandle = std::make_shared<tour::World*>();
 			renderer.SetWorldSource(
 				[preloadFuture, projectFutures, entryPakIndex,
 					entrySceneName, sceneIndex, rendererRaw, worldHandle]
 				(
 					smvk::ResourceManager& ctx,
 					smvk::OverlayVfs& contentVfs
-					) -> smvk::mem::LinearPtr<smvk::World> {
+					) -> tour::mem::LinearPtr<tour::World> {
 				// --project: every listed pak's preload joins here, the
 				// backends mount in manifest order and the entry scene
 				// loads BY IDENTITY (LoadProjectWorld). --pak: the
 				// legacy single-pak, index-based path.
-				smvk::mem::LinearPtr<smvk::World> world;
+				tour::mem::LinearPtr<tour::World> world;
 				if (projectFutures) {
 					std::vector<PakPreload> preloads;
 					preloads.reserve(projectFutures->size());
@@ -543,7 +543,7 @@ namespace app {
 			app.Shutdown();
 			exitCode = EXIT_FAILURE;
 		}
-		smvk::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
+		tour::mem::ShutdownMemory(); // footprint report (used/committed/reserved)
 		return exitCode;
 	}
 

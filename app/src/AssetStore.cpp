@@ -29,7 +29,7 @@ AssetStore::AssetStore(ProjectRuntime& runtime, smvk::ResourceManager* ctx)
 	// ctx refuses loudly; the GPU-less tests override the seam.
 	clusterSource =
 		[this](tour::World& world, const smvk::PakReader& reader,
-			uint32_t sceneIndex, std::string& err) -> smvk::Cluster* {
+			uint32_t sceneIndex, std::string& err) -> tour::Cluster* {
 		if (!m_ctx) {
 			err = "LoadMesh needs a GPU context (the mesh's owning"
 				" scene cluster deserializes + uploads)";
@@ -57,7 +57,7 @@ AssetStore::~AssetStore()
 
 // ---- the found-or-loaded acquire ------------------------------------------
 
-smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
+tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	const std::string& pakName, const std::string& familyPath,
 	const std::vector<smvk::PakMeshPlanMember>& members, bool resident,
 	std::string& err)
@@ -72,7 +72,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	// (a) A cluster this store already holds (registered OR parked)
 	// against THIS world: the shared-acquire dedup — repeated keys
 	// never re-load, never re-carve GPU ranges.
-	if (smvk::Cluster* held = FindHeldWithFamily(world, members)) {
+	if (tour::Cluster* held = FindHeldWithFamily(world, members)) {
 		TakeRef(world, held, resident);
 		return held;
 	}
@@ -109,7 +109,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 			err = "the AssetStore has no cluster source installed";
 			return nullptr;
 		}
-		smvk::Cluster* loaded = clusterSource(world,
+		tour::Cluster* loaded = clusterSource(world,
 			backend->Reader(), si, err);
 		if (!loaded) {
 			if (err.empty())
@@ -137,7 +137,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	return nullptr;
 }
 
-smvk::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
+tour::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
 	const smvk::MeshPlanRef& plan, bool resident, std::string& err)
 {
 	err.clear();
@@ -193,7 +193,7 @@ smvk::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
 		members, resident, err);
 }
 
-void AssetStore::ReleaseFamilyCluster(smvk::Cluster* cluster)
+void AssetStore::ReleaseFamilyCluster(tour::Cluster* cluster)
 {
 	// Pointer IDENTITY only until the ref is confirmed — a cluster
 	// this store does not hold is a no-op, never a dereference.
@@ -209,7 +209,7 @@ void AssetStore::ReleaseFamilyCluster(smvk::Cluster* cluster)
 		m_held.erase(it); // nothing left holding it: the record goes
 }
 
-void AssetStore::MakeResident(smvk::Cluster* cluster)
+void AssetStore::MakeResident(tour::Cluster* cluster)
 {
 	const auto it = m_held.find(cluster);
 	if (it == m_held.end())
@@ -254,12 +254,12 @@ std::size_t AssetStore::HeldClusterCount() const
 	return m_held.size();
 }
 
-bool AssetStore::HoldsCluster(smvk::Cluster* cluster) const
+bool AssetStore::HoldsCluster(tour::Cluster* cluster) const
 {
 	return m_held.find(cluster) != m_held.end();
 }
 
-smvk::Cluster* AssetStore::FindHeldWithFamily(tour::World& world,
+tour::Cluster* AssetStore::FindHeldWithFamily(tour::World& world,
 	const std::vector<smvk::PakMeshPlanMember>& members) const
 {
 	// A held cluster is refcounted alive (every record implies >= 1
@@ -273,7 +273,7 @@ smvk::Cluster* AssetStore::FindHeldWithFamily(tour::World& world,
 	return nullptr;
 }
 
-bool AssetStore::clusterHasFamily(smvk::Cluster& cluster,
+bool AssetStore::clusterHasFamily(tour::Cluster& cluster,
 	const std::vector<smvk::PakMeshPlanMember>& members)
 {
 	for (const smvk::PakMeshPlanMember& m : members)
@@ -282,7 +282,7 @@ bool AssetStore::clusterHasFamily(smvk::Cluster& cluster,
 	return false;
 }
 
-void AssetStore::TakeRef(tour::World& world, smvk::Cluster* cluster,
+void AssetStore::TakeRef(tour::World& world, tour::Cluster* cluster,
 	bool resident)
 {
 	const auto [it, inserted] = m_held.try_emplace(cluster,

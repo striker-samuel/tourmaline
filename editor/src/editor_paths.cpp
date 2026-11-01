@@ -132,7 +132,7 @@ int EditorApp::RelinkTextureLive(const GltfImportImage& rec,
 	const std::string& newPath) {
 	if (!m_world || rec.uri.empty() || newPath.empty())
 		return -1;
-	smvk::Cluster* cl = m_world->clusters.empty()
+	tour::Cluster* cl = m_world->clusters.empty()
 		? nullptr
 		: m_world->clusters[0].get();
 	if (!cl)
@@ -351,7 +351,7 @@ void EditorApp::DrawPathsPanel() {
 				"No imported image records (open a source scene / bind references).");
 		}
 		else {
-			smvk::Cluster* cl = m_world->clusters.empty()
+			tour::Cluster* cl = m_world->clusters.empty()
 				? nullptr
 				: m_world->clusters[0].get();
 			// One row per import record: the authored uri, the resolved

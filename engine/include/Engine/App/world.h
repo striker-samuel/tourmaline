@@ -869,19 +869,19 @@ using namespace ::smvk;
 		// Dynamic nodes are NOT in this tree: callers brute-force a sphere
 		// test per dynamic item (few, moving) while static items do one
 		// O(1) mask lookup after a single frustumCullBVH walk.
-		mutable ::BvhTree staticBvh_;
+		mutable BvhTree staticBvh_;
 		mutable bool staticBvhValid_ = false;
 		// (Re)builds staticBvh_ from the current scene. Cheap no-op when
 		// there are no static mesh nodes (leaves the tree empty).
 		void RebuildStaticBvh();
 		void InvalidateStaticBvh();
 		// Lazily rebuilds when invalid; returns the cached static tree.
-		const ::BvhTree& EnsureStaticBvh() const;
+		const BvhTree& EnsureStaticBvh() const;
 		// World-space AABB over every mesh instance (union of the
 		// per-instance mesh AABBs under their global transforms). Used to
 		// fit procedural content (e.g. the Forward+ demo light grid) to the
 		// loaded scene. Empty (infinities) when the world holds no geometry.
-		::Aabb ComputeSceneBounds() const;
+		Aabb ComputeSceneBounds() const;
 		[[nodiscard]] bool HasStaticBvh() const {
 			return staticBvhValid_ && !staticBvh_.nodes.empty()
 				&& !staticBvh_.primIndices.empty();

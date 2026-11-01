@@ -115,7 +115,11 @@ std::string TextureConversionHash(const void* data, size_t size,
 
 #include <functional>
 
-namespace smvk { class TextureStreamer; }
+// (moved: the TextureStreamer is ENGINE-OWNED and lives in tour; the
+// smvk using-declaration keeps the smvk::TextureStreamer* spellings in
+// this header + the importer resolving)
+namespace tour { class TextureStreamer; }
+namespace smvk { using ::tour::TextureStreamer; }
 
 struct GltfToSceneImporter
 {

@@ -424,13 +424,20 @@ add_test(NAME physics_jolt_tests COMMAND PhysicsJoltTests)
 add_executable(SceneTableTests test_scene_tables.cpp)
 
 # The namespace/RHI BOUNDARY SCANNER (todo item 8, section 8c - the
-# regex early-warning v1): walks the engine's public headers, GPU-free
+# regex early-warning v1+): walks the engine's public headers, GPU-free
 # and source-tree-only, failing on NEW boundary violations (Vulkan
-# includes, private-impl includes, typed Vk handles in public code).
-# Deliberately does NOT flag the audit's confirmed pre-existing
-# findings (the P0/P1 redesign list, todo 8.5-8.6) - those are tracked
-# work; this test keeps the boundary from getting WORSE while they
-# land. Runs everywhere CI does (no GPU, no window).
+# includes, private-impl includes, typed Vk handles in public code) -
+# and, since the boundary-ownership gate landed, the audit's confirmed
+# findings are no longer invisible: the broad `using namespace
+# ::smvk` imports (R6), the smvk::->tour:: compat re-export blocks
+# (R7) and the RHI implementation-state exposure shapes (R8:
+# App's RHI getters/members, ElementFrame's Framebuffer*, the raw
+# RHI pointer types in renderer headers) are all BASELINE-GATED with
+# exact, shrink-only exception lists: growth or a new site fails,
+# and retirement fails until the baseline row is deleted in the same
+# commit. The AST/signature-walking scanner remains the follow-up
+# (detecting engine types declared DIRECTLY inside namespace smvk
+# still needs it). Runs everywhere CI does (no GPU, no window).
 add_executable(ArchitectureTests test_architecture.cpp)
 target_compile_definitions(ArchitectureTests PRIVATE
     TOURMALINE_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
@@ -447,7 +454,9 @@ set_target_properties(SceneTableTests PROPERTIES
 add_test(NAME scene_table_tests COMMAND SceneTableTests)
 
 # The boundary scanner: a CI architecture check (todo 8.8c) - GPU-free,
-# so it runs on every matrix runner the suite does.
+# so it runs on every matrix runner the suite does. The shrink-only
+# baselines (R6/R7/R8) are part of the contract: retiring compat surface
+# REQUIRES deleting its baseline row in the same commit.
 add_test(NAME architecture_tests COMMAND ArchitectureTests)
 
 # ---------------------------------------------------------------------------

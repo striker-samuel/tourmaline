@@ -353,8 +353,8 @@ struct CookSettings {
 	std::string inVfs; // VFS path for --in-vfs when no tour
 };
 
-class EditorApp : public smvk::App {
-	using Super = smvk::App;
+class EditorApp : public tour::App {
+	using Super = tour::App;
 	// The synchronized-tick world layer (see WorldLayer above): the
 	// element's phases drive the WYSIWYG halves — onUpdate (the
 	// boundary, before the host's acquire), onResize (the pump's
@@ -800,7 +800,7 @@ private:
 	// checkerboard (no Vulkan/ImGui-texture interop needed). Tinted by
 	// the baseColor factor like the lit shader multiplies them.
 	struct TexPreview {
-		smvk::Cluster* cluster = nullptr;
+		tour::Cluster* cluster = nullptr;
 		int slot = -1;
 		size_t srcBytes = 0;
 		bool ok = false;
@@ -1475,7 +1475,7 @@ private:
 	// World object — edits show live, per frame; the renderer relaunches
 	// on scene swap and bake completion (its GI/cubemap loaders run at
 	// attach).
-	smvk::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
+	tour::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
 	// (The m_showWysiwyg toggle is RETIRED — the live view is simply the
 	// LIT view mode: LiveViewActive() below. No menu entry, no badge, no
 	// special gates — Lit is a panel like the others, its content just
@@ -1493,7 +1493,7 @@ private:
 	// The live view's VIEWPORT (the camera + rect source): always 0.
 	static constexpr int kLiveViewVp = 0;
 	bool m_wysiwygValid = false;     // onAttach succeeded (else the hint shows)
-	smvk::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
+	tour::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
 	bool m_wysiwygBakeWasRunning = false; // bake-completion edge (GI landed post-attach)
 	// RENDER QUALITY (the WYSIWYG's GI/shadow knobs — AmbientMode/GI
@@ -1564,7 +1564,7 @@ private:
 	// chain's per-extent target recreation". If the churn death
 	// reproduces here too, the embed seam itself is the trigger; if not,
 	// the world chain's churn is.
-	smvk::mem::LinearPtr<smvk::RenderGraph> m_triangleGraph{};
+	tour::mem::LinearPtr<smvk::RenderGraph> m_triangleGraph{};
 	smvk::Holder<smvk::ImageHandle> m_triangleImage{};
 	smvk::Holder<smvk::ImageViewHandle> m_triangleView{};
 	smvk::LogicalImageViewHandle m_triangleLogical{};
@@ -2702,7 +2702,7 @@ private:
 	//uint32_t m_uvWinLinesCap = 0;
 
 	// ---- imgui ----
-	smvk::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
+	tour::mem::LinearPtr<smvk::ImGuiOverlay> m_imgui{};
 
 	// ---- texture streaming (cheap initial mips, distance demand upgrades) ----
 	// Streaming: tail-resident uploads upgraded by camera-distance demand
@@ -2718,7 +2718,7 @@ private:
 		Full = 2,
 	};
 	TexMode m_texMode = TexMode::Streaming;
-	smvk::mem::LinearPtr<smvk::TextureStreamer> m_textureStreamer;
+	tour::mem::LinearPtr<tour::TextureStreamer> m_textureStreamer;
 	bool m_textureStreamingEnabled = true;
 	// RHI pool index (what MaterialValues::textures stores) -> live RHI
 	// handle for demand requests. Rebuilt on every scene load; empty for

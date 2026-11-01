@@ -67,7 +67,7 @@ namespace app {
 		// No clip = the bind-pose palette (the pass still runs, nothing
 		// moves - the deformed heap exists, the fetch swap works).
 		// Attaches the first loadable clip to a skinned cluster.
-		void AttachClips(smvk::Cluster& c, const std::string& stem,
+		void AttachClips(tour::Cluster& c, const std::string& stem,
 			smvk::OverlayVfs& contentVfs) {
 			if (c.HasAnimClip())
 				return;
@@ -125,14 +125,14 @@ namespace app {
 	// The post-load tail SHARED by both entry points (--pak's legacy
 	// path and --project): anim-clip attach, cooked static flags, the
 	// resolve/fixup, and the env-gated scene-prep diagnostics.
-	void PostLoadTail(smvk::World& world, const std::string& pakStem,
+	void PostLoadTail(tour::World& world, const std::string& pakStem,
 		smvk::OverlayVfs& contentVfs) {
 		// THE SKINNING CLIP: attach to the first cluster carrying a
 		// skeleton (ONE for now — the driver's cap).
 		{
 			SMVK_PROFILE_IO("PakWorld_AttachClips");
 			for (auto& clusterPtr : world.clusters) {
-				smvk::Cluster* c = clusterPtr.get();
+				tour::Cluster* c = clusterPtr.get();
 				if (!c || !c->hasSkeleton)
 					continue;
 				AttachClips(*c, pakStem, contentVfs);
@@ -190,7 +190,7 @@ namespace app {
 				const uint32_t meshIdx = row.mesh;
 				if (meshIdx >= world.meshLocations.size())
 					continue;
-				smvk::Cluster* cl = world.meshLocations[meshIdx].cluster;
+				tour::Cluster* cl = world.meshLocations[meshIdx].cluster;
 				if (!cl || !cl->hasSkeleton)
 					continue;
 				const glm::mat4& g = world.scene.globalTransform[node];
@@ -217,9 +217,9 @@ namespace app {
 	// genuinely legacy clusters (a pre-v2 blob / hand-built scene) and is
 	// loud; skinned clusters never freeze (the animation driver owns
 	// their transforms).
-	void ApplyCookedStaticFlags(smvk::World& world, const std::string& pakName) {
+	void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
 		for (auto& clusterPtr : world.clusters) {
-			smvk::Cluster* c = clusterPtr.get();
+			tour::Cluster* c = clusterPtr.get();
 			if (!c || c->scene.hierarchy.empty())
 				continue;
 			if (c->scene.staticRootsSerialized)
@@ -235,12 +235,12 @@ namespace app {
 		}
 	}
 
-	smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
+	tour::mem::LinearPtr<tour::World> LoadPakWorld(
 		PakPreload pre,
 		int sceneIndex,
 		smvk::ResourceManager& ctx,
 		smvk::OverlayVfs& contentVfs,
-		smvk::TextureStreamer* sceneStreamer
+		tour::TextureStreamer* sceneStreamer
 	) {
 		// Optick: the synchronous scene-load path (startup / scene-switch
 		// latency, not steady frame cost) — stage scopes below.
@@ -267,7 +267,7 @@ namespace app {
 			if (!reader.BlobsOfKind(smvk::PakAssetKind::Terrain).empty()) {
 				std::cerr << "[App] no scenes: terrain-only pak, loading "
 					"terrain without a scene\n";
-				auto world = smvk::mem::MakeProcess<smvk::World>();
+				auto world = tour::mem::MakeProcess<tour::World>();
 				std::string terrErr;
 				if (!world->LoadTerrainFromPak(reader, terrErr)) {
 					std::cerr << "[App] terrain harvest failed: " << terrErr
@@ -291,7 +291,7 @@ namespace app {
 		}
 		std::cerr << "[App] loading scene[" << sceneIndex << "] '"
 			<< scenes[size_t(sceneIndex)].name << "'...\n";
-		auto world = smvk::mem::MakeProcess<smvk::World>();
+		auto world = tour::mem::MakeProcess<tour::World>();
 		{
 			// The cluster deserialize + GPU uploads (meshes, materials,
 			// textures staged through the streamer) — the dominant
@@ -319,13 +319,13 @@ namespace app {
 		return world;
 	}
 
-	smvk::mem::LinearPtr<smvk::World> LoadProjectWorld(
+	tour::mem::LinearPtr<tour::World> LoadProjectWorld(
 		std::vector<PakPreload> preloads,
 		size_t entryPakIndex,
 		const std::string& entrySceneName,
 		smvk::ResourceManager& ctx,
 		smvk::OverlayVfs& contentVfs,
-		smvk::TextureStreamer* sceneStreamer
+		tour::TextureStreamer* sceneStreamer
 	) {
 		SMVK_PROFILE_IO("ProjectWorld_Load");
 		// EVERY listed pak must have preloaded clean — one missing or
@@ -395,7 +395,7 @@ namespace app {
 		// sampler (the pak-served path's payload filters stay with the
 		// owning pak's own loads).
 		smvk::ExternalTextureResolver resolver =
-			[&ctx, &contentVfs](smvk::Cluster& c,
+			[&ctx, &contentVfs](tour::Cluster& c,
 				const std::string& uri) -> smvk::TextureHandle {
 			const std::string norm = smvk::NormalizeAssetUri(uri).Str();
 			auto bytes = contentVfs.TryRead(norm.empty() ? uri : norm);
@@ -422,7 +422,7 @@ namespace app {
 			return th;
 		};
 
-		auto world = smvk::mem::MakeProcess<smvk::World>();
+		auto world = tour::mem::MakeProcess<tour::World>();
 		{
 			SMVK_PROFILE_IO("ProjectWorld_LoadCluster");
 			try {

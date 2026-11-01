@@ -2449,7 +2449,7 @@ using namespace ::smvk;
 		staticBvh_.nodes.reserve(N * 2);
 		staticBvh_.primToNode.clear();
 		if (N > 0)
-			::buildRecursive(staticBvh_, prims, 0, N, /*maxLeafSize=*/4);
+			buildRecursive(staticBvh_, prims, 0, N, /*maxLeafSize=*/4);
 		staticBvh_.primToNode.resize(N);
 		for (uint32_t slot = 0; slot < N; ++slot) {
 			const uint32_t primId = staticBvh_.primIndices[slot];

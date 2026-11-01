@@ -25,6 +25,11 @@
 
 #include <Engine/Renderer/dxc_integration.h>
 
+// (moved: the definitions live in tour::dxc with the header's
+// declarations; the global compat aliases in the header keep the
+// legacy spellings resolving.)
+namespace tour::dxc {
+
 static const wchar_t* GetShaderProfile(DxcShaderStage stage)
 {
     switch (stage)
@@ -209,3 +214,5 @@ std::vector<char> CompileHLSLToSPIRV(
 
     return spirv;
 }
+
+} // namespace tour::dxc

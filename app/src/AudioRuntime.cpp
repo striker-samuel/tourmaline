@@ -36,7 +36,7 @@ namespace {
 // RemoveScenes of OTHER scenes (the contract: only the OWNED scene's
 // voices stop).
 struct EmitterKey {
-	smvk::Cluster* cluster;
+	tour::Cluster* cluster;
 	uint32_t node;
 	bool operator==(const EmitterKey& o) const {
 		return cluster == o.cluster && node == o.node;
@@ -70,8 +70,8 @@ struct ActiveVoice {
 
 class AudioRuntimeElement final : public engine::IAppElement {
 public:
-	AudioRuntimeElement(smvk::App& host, const std::string& tappPath,
-			std::shared_ptr<smvk::World*> worldHandle,
+	AudioRuntimeElement(tour::App& host, const std::string& tappPath,
+			std::shared_ptr<tour::World*> worldHandle,
 			engine::WorldRenderer* renderer)
 		: m_host(host)
 		, m_tappPath(tappPath)
@@ -106,7 +106,7 @@ public:
 
 	void onUpdate(float dt) override {
 		(void)dt;
-		smvk::World* world = m_worldHandle ? *m_worldHandle : nullptr;
+		tour::World* world = m_worldHandle ? *m_worldHandle : nullptr;
 		if (!world)
 			return;
 		if (!EnsureScenes())
@@ -118,7 +118,7 @@ public:
 		// pass 2 through their handles).
 		std::unordered_set<EmitterKey, EmitterKeyHash> liveEmitters;
 		for (size_t ci = 0; ci < world->clusters.size(); ++ci) {
-			smvk::Cluster* cluster = world->clusters[ci].get();
+			tour::Cluster* cluster = world->clusters[ci].get();
 			if (!cluster || cluster->isDynamic)
 				continue;
 			const auto& merged = ci < world->clusterMergedNodes.size()
@@ -136,7 +136,7 @@ public:
 			}
 		}
 		// Pass 2: the spawned emitters (the gameplay-handle surface).
-		for (const smvk::World::AudioSourceEntity& e : world->audioEntities) {
+		for (const tour::World::AudioSourceEntity& e : world->audioEntities) {
 			if (!e.alive || !e.owner)
 				continue;
 			const EmitterKey key{ e.owner, e.clusterNode };
@@ -182,7 +182,7 @@ public:
 		{
 			std::unordered_set<uint64_t> referenced;
 			for (size_t ci = 0; ci < world->clusters.size(); ++ci) {
-				smvk::Cluster* cluster = world->clusters[ci].get();
+				tour::Cluster* cluster = world->clusters[ci].get();
 				if (!cluster)
 					continue;
 				for (const AudioSourceRow& row :
@@ -191,7 +191,7 @@ public:
 						if (s.soundId != 0)
 							referenced.insert(s.soundId);
 			}
-			for (const smvk::World::AudioSourceEntity& e : world->audioEntities) {
+			for (const tour::World::AudioSourceEntity& e : world->audioEntities) {
 				if (!e.alive || !e.owner)
 					continue;
 				const AudioSourceRow* row =
@@ -238,7 +238,7 @@ public:
 		return true;
 	}
 
-	tour::audio::VoiceHandle Play(smvk::World& world,
+	tour::audio::VoiceHandle Play(tour::World& world,
 		uint32_t mergedNode, uint64_t soundId, float gain,
 		std::string* err) {
 		// Resolve the emitter: any live row whose merged node matches
@@ -289,7 +289,7 @@ public:
 			}
 	}
 
-	bool SetVolume(smvk::World& world, uint32_t mergedNode, float vol) {
+	bool SetVolume(tour::World& world, uint32_t mergedNode, float vol) {
 		bool wrote = false;
 		if (mergedNode < world.scene.hierarchy.size()) {
 			AudioSourceRow* row =
@@ -373,10 +373,10 @@ private:
 		return true;
 	}
 
-	EmitterKey FindEmitterByMergedNode(smvk::World& world,
+	EmitterKey FindEmitterByMergedNode(tour::World& world,
 		uint32_t mergedNode) const {
 		for (size_t ci = 0; ci < world.clusters.size(); ++ci) {
-			smvk::Cluster* cluster = world.clusters[ci].get();
+			tour::Cluster* cluster = world.clusters[ci].get();
 			if (!cluster)
 				continue;
 			const auto& merged = ci < world.clusterMergedNodes.size()
@@ -390,7 +390,7 @@ private:
 					return EmitterKey{ cluster, row.node };
 			}
 		}
-		for (const smvk::World::AudioSourceEntity& e : world.audioEntities)
+		for (const tour::World::AudioSourceEntity& e : world.audioEntities)
 			if (e.alive && e.mergedNode == mergedNode && e.owner)
 				return EmitterKey{ e.owner, e.clusterNode };
 		return EmitterKey{ nullptr, 0 };
@@ -399,7 +399,7 @@ private:
 	// One emitter's per-frame advance: autoplay (once), attenuation +
 	// pan for the autoplay voice, per-voice updates for PlaySound's
 	// actives on the same emitter.
-	void UpdateEmitter(smvk::World& world, const EmitterKey& key,
+	void UpdateEmitter(tour::World& world, const EmitterKey& key,
 		const SceneAudioSource* def, uint32_t mergedNode,
 		const ListenerPose& listener) {
 		if (!def || mergedNode == UINT32_MAX
@@ -524,8 +524,8 @@ private:
 		return true;
 	}
 	bool m_sceneInitFailed = false;
-	smvk::App& m_host;
-	std::shared_ptr<smvk::World*> m_worldHandle;
+	tour::App& m_host;
+	std::shared_ptr<tour::World*> m_worldHandle;
 	engine::WorldRenderer* m_renderer;
 	std::unordered_map<EmitterKey, EmitterState, EmitterKeyHash>
 		m_emitters;
@@ -549,8 +549,8 @@ public:
 } // namespace
 
 std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
-	smvk::App& host, const std::string& tappPath,
-	std::shared_ptr<smvk::World*> worldHandle,
+	tour::App& host, const std::string& tappPath,
+	std::shared_ptr<tour::World*> worldHandle,
 	engine::WorldRenderer* renderer) {
 	return std::make_shared<AudioRuntimeElement>(host, tappPath,
 		std::move(worldHandle), renderer);
@@ -570,7 +570,7 @@ bool ReleaseSound(uint64_t soundId) {
 	return inst ? inst->Release(soundId) : false;
 }
 
-tour::audio::VoiceHandle PlaySound(smvk::World& world,
+tour::audio::VoiceHandle PlaySound(tour::World& world,
 	uint32_t emitterNode, uint64_t soundId, float gain,
 	std::string* err) {
 	std::lock_guard<std::mutex> lock(AudioRuntimeElement::SingletonMutex());
@@ -586,7 +586,7 @@ void StopSound(tour::audio::VoiceHandle voice) {
 		inst->Stop(voice);
 }
 
-bool SetAudioSourceVolume(smvk::World& world, uint32_t emitterNode,
+bool SetAudioSourceVolume(tour::World& world, uint32_t emitterNode,
 	float volume) {
 	std::lock_guard<std::mutex> lock(AudioRuntimeElement::SingletonMutex());
 	AudioRuntimeElement* inst = AudioRuntimeElement::Instance();

@@ -11,7 +11,14 @@
 
 #include <algorithm>
 
-namespace smvk {
+// Lives in tour (the renderer data model — see mesh.h's migration
+// comment). The RHI names this TU drives (CullMode/DepthSettings/
+// BlendSettings, the static vertex heap) are still spelled
+// unqualified: the TU-LOCAL using-directive stands in for the old
+// enclosing-smvk lookup (contained to this TU; the header carries no
+// broad import — see the gfx_filter.h lesson).
+namespace tour {
+using namespace ::smvk;
 
 	MaterialPipelineState MakePipelineStateForMaterial(
 		AlphaMode alphaMode,
@@ -140,4 +147,4 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 	staticVertexFmtHeap.m_staticIndexBlock.Initialize(
 		indexHeapBytes);
 }
-};
+} // namespace tour

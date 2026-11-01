@@ -54,7 +54,7 @@ void EditorApp::RefreshNodeDrawState(uint32_t node) {
 	if (IsCastsVolumetricShadowNode(scene, int(node)))
 		f |= smvk::IteratorFlags(smvk::IteratorFlagBit_CastVolumetricShadow);
 	const MaterialRow* matRow = FindMaterial(scene, node);
-	uint32_t matIdx = smvk::World::kInvalidIndex;
+	uint32_t matIdx = tour::World::kInvalidIndex;
 	if (matRow && matRow->material < m_world->materialLocations.size()) {
 		matIdx = matRow->material;
 		const auto& loc = m_world->materialLocations[matIdx];

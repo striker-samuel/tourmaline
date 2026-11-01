@@ -63,7 +63,7 @@ public:
 	// refuses loudly, the production lane pinned by every cooked
 	// project launch); the GPU-LESS tests substitute hand-built
 	// clusters exactly like the ProjectScenes test seam.
-	using ClusterSource = std::function<smvk::Cluster*(
+	using ClusterSource = std::function<tour::Cluster*(
 		tour::World& world, const smvk::PakReader& reader,
 		uint32_t sceneIndex, std::string& err)>;
 
@@ -92,7 +92,7 @@ public:
 	// the world) or PARKED in it (a previously acquired carrier whose
 	// scene went away; its rows are valid, its nodes are not in the
 	// fold).
-	smvk::Cluster* AcquireFamilyCluster(tour::World& world,
+	tour::Cluster* AcquireFamilyCluster(tour::World& world,
 		const std::string& pakName, const std::string& familyPath,
 		const std::vector<smvk::PakMeshPlanMember>& members,
 		bool resident, std::string& err);
@@ -102,21 +102,21 @@ public:
 	// through the O(1) slot index (kind + the family-path key — a
 	// mismatch is a LOUD failure, never a dynamic fallback), then
 	// acquires through the same core as the catalog lane.
-	smvk::Cluster* AcquireFamilyClusterByPlan(tour::World& world,
+	tour::Cluster* AcquireFamilyClusterByPlan(tour::World& world,
 		const smvk::MeshPlanRef& plan, bool resident,
 		std::string& err);
 	// Releases ONE acquire reference (the slot-death pairing; a no-op
 	// for a cluster this store does not hold — pointer IDENTITY only,
 	// never a dereference). When the last acquire ref of a PARKED
 	// cluster drops (and no session ref exists) the world destroys it.
-	void ReleaseFamilyCluster(smvk::Cluster* cluster);
+	void ReleaseFamilyCluster(tour::Cluster* cluster);
 	// Upgrades a held carrier to RESIDENT (the sticky session ref) —
 	// the keepResident-UPGRADE path on a dedup hit (a default-options
 	// load over a live transient handle): the slot flag and this
 	// store's ledger must stay in lockstep or an unload would drop a
 	// carrier the facade still promises to hold. No-op when already
 	// resident or not held.
-	void MakeResident(smvk::Cluster* cluster);
+	void MakeResident(tour::Cluster* cluster);
 	// Session teardown: drops EVERY reference (acquire + session).
 	// The last one per cluster releases it for destruction (a parked
 	// cluster dies here; a registered one stays with its scene owner).
@@ -134,7 +134,7 @@ public:
 	// ---- diagnostics ----------------------------------------------------
 	// Clusters this store currently holds references for.
 	[[nodiscard]] std::size_t HeldClusterCount() const;
-	[[nodiscard]] bool HoldsCluster(smvk::Cluster* cluster) const;
+	[[nodiscard]] bool HoldsCluster(tour::Cluster* cluster) const;
 
 private:
 	// One held carrier's ledger. `refs` counts OUTSTANDING ACQUIRE
@@ -150,13 +150,13 @@ private:
 
 	ProjectRuntime& m_runtime;
 	smvk::ResourceManager* m_ctx;
-	std::map<smvk::Cluster*, Held> m_held;
+	std::map<tour::Cluster*, Held> m_held;
 
-	smvk::Cluster* FindHeldWithFamily(tour::World& world,
+	tour::Cluster* FindHeldWithFamily(tour::World& world,
 		const std::vector<smvk::PakMeshPlanMember>& members) const;
-	static bool clusterHasFamily(smvk::Cluster& cluster,
+	static bool clusterHasFamily(tour::Cluster& cluster,
 		const std::vector<smvk::PakMeshPlanMember>& members);
-	void TakeRef(tour::World& world, smvk::Cluster* cluster,
+	void TakeRef(tour::World& world, tour::Cluster* cluster,
 		bool resident);
 };
 

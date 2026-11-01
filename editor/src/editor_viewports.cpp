@@ -424,7 +424,7 @@ void EditorApp::FinishBoxSelect() {
 	const smvk::IteratorFlags req = smvk::IteratorFlags(
 		smvk::IteratorFlagBit_Renderable |
 		smvk::IteratorFlagBit_StaticVertexFmt);
-	m_world->forEachRenderItem(req, [&](const smvk::World::RenderItem& item) {
+	m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
 		if (!IsVisibleNode(m_world->scene, int(item.node)))
 			return;
 		const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);

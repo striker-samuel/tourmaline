@@ -7,6 +7,13 @@
 #include <string_view>
 #include <vector>
 
+// (namespace/RHI boundary audit, todo 8.4) the in-process DXC compile
+// service is ENGINE-OWNED dev tooling and lives in tour::dxc; the
+// GLOBAL re-export bridge below keeps the existing global/smvk-scope
+// spellings resolving while call sites migrate (the R9 gate baselines
+// it).
+namespace tour::dxc {
+
 enum class DxcShaderStage
 {
 	Vertex,
@@ -33,3 +40,10 @@ std::vector<char> CompileHLSLToSPIRV(std::string_view source,
 	const std::wstring& includeDir,
 	const std::vector<std::wstring>& defines,
 	std::string* outDiagnostics);
+
+} // namespace tour::dxc
+
+// GLOBAL compat aliases (the migration bridge; retire with the call
+// sites — the R9 boundary gate baselines these).
+using tour::dxc::DxcShaderStage;
+using tour::dxc::CompileHLSLToSPIRV;

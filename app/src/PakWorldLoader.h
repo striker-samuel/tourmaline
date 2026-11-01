@@ -16,28 +16,28 @@
 #include <string>
 #include <vector>
 
-namespace tour { struct World; }
+namespace tour { struct World; class TextureStreamer; }
 namespace smvk {
 	class OverlayVfs;
 	class ResourceManager;
-	class TextureStreamer;
+	using ::tour::TextureStreamer; // (moved: engine-owned streamer, tour::)
 	using ::tour::World;
 }
 
 namespace app {
 
 // Loads scene `sceneIndex` (0 = default) from the preloaded pak into a
-// fresh smvk::World (uploads issued to ctx; everything renders by
+// fresh tour::World (uploads issued to ctx; everything renders by
 // handles). Null on any failure (logged). Mounts the pak backend into
 // contentVfs at priority 10 (below loose content/, so dev overrides
 // win) before the anim-clip resolution so the pak serves its own
 // embedded clips (the self-contained path).
-smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
+tour::mem::LinearPtr<tour::World> LoadPakWorld(
 	PakPreload pre,
 	int sceneIndex,
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
-	smvk::TextureStreamer* sceneStreamer);
+	tour::TextureStreamer* sceneStreamer);
 
 // The --project launch (the appmanifest flow): EVERY listed pak
 // preloaded + mounted (manifest order) BEFORE the cluster load —
@@ -47,13 +47,13 @@ smvk::mem::LinearPtr<smvk::World> LoadPakWorld(
 // pak (identity, never an index). A failed preload of ANY listed pak
 // fails the launch (named, loud — never an unrelated fallback scene).
 // `preloads` is manifest order; `entryPakIndex` indexes into it.
-smvk::mem::LinearPtr<smvk::World> LoadProjectWorld(
+tour::mem::LinearPtr<tour::World> LoadProjectWorld(
 	std::vector<PakPreload> preloads,
 	size_t entryPakIndex,
 	const std::string& entrySceneName,
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
-	smvk::TextureStreamer* sceneStreamer);
+	tour::TextureStreamer* sceneStreamer);
 
 // STATIC-FLAG APPLICATION (the loader's decision seam — public for
 // PakHostTests, which drives it on hand-built value worlds). Cooked
@@ -62,7 +62,7 @@ smvk::mem::LinearPtr<smvk::World> LoadProjectWorld(
 // all zeros) is cooked data and is honored verbatim; the viewer-side
 // freeze is the loud LEGACY fallback only (no serialized static section
 // + no skeleton). `pakName` labels the fallback log.
-void ApplyCookedStaticFlags(smvk::World& world, const std::string& pakName);
+void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName);
 
 // The POST-LOAD TAIL shared by the world loaders and the runtime scene
 // layer (ProjectScenes): anim-clip attach (the first skinned cluster),
@@ -70,7 +70,7 @@ void ApplyCookedStaticFlags(smvk::World& world, const std::string& pakName);
 // into the merged world scene, and the env-gated scene-prep diagnostics.
 // Public so additive scene loads run the SAME tail as the entry load.
 // `pakStem` is the anim fallback's stem (the loading pak's).
-void PostLoadTail(smvk::World& world, const std::string& pakStem,
+void PostLoadTail(tour::World& world, const std::string& pakStem,
 	smvk::OverlayVfs& contentVfs);
 
 } // namespace app

@@ -251,7 +251,7 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 	//              consumes them verbatim);
 	//   shader  -> the raw compiled bytecode (the project-AUTHORED
 	//              .spv — validated SPIR-V, distinct from the
-	//              engine-native set; serve through smvk::shaders);
+	//              engine-native set; serve through tour::shaders);
 	//   gi      -> the .givolumemanifest bytes (a baked GI SET's row
 	//              list — AssetManager::LoadGI parses it and loads
 	//              the .givolume payloads it names, also VFS-served);

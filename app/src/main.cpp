@@ -27,7 +27,7 @@ int main(int argc, const char* argv[]) {
 	// mandatory production source) + the dev content/shaders/
 	// override. Every later shader read (renderer, render-graph,
 	// debug views) serves through it.
-	smvk::shaders::Init();
+	tour::shaders::Init();
 	// TOURMALINE_SHADER_RELOAD=1 (dev): arm the watched recompile
 	// service — engine/shaders/ edits recompile in-process and land
 	// in the dev override tree; the renderer's frame tick consumes
