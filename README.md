@@ -1,12 +1,17 @@
-# Tourmaline
+<picture>
+  <source
+    media="(prefers-color-scheme: dark)"
+    srcset="branding/tourmaline-logo-horizontal-dark.png"
+  >
+  <img
+    src="branding/tourmaline-logo-horizontal.png"
+    alt="Tourmaline logo"
+    style="width: 100%; height: auto;"
+  >
+</picture>
 
 [![CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)
 [![Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="branding/tourmaline-logo-horizontal-dark.png">
-  <img src="branding/tourmaline-logo-horizontal.png" width="420" alt="Tourmaline logo">
-</picture>
 
 **A rendering and content framework for C++20 applications, built on Vulkan 1.3.**
 
