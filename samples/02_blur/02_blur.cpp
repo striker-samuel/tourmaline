@@ -213,8 +213,8 @@ private:
 			return false;
 
 		// Fullscreen blur pipeline (one VS + one separable-blur/copy PS).
-		auto vertCode = CompileHLSLToSPIRV(kBlurVertShader, DxcShaderStage::Vertex, L"mainVS");
-		auto fragCode = CompileHLSLToSPIRV(kBlurFragShader, DxcShaderStage::Fragment, L"mainPS");
+		auto vertCode = tour::dxc::CompileHLSLToSPIRV(kBlurVertShader, tour::dxc::DxcShaderStage::Vertex, L"mainVS");
+		auto fragCode = tour::dxc::CompileHLSLToSPIRV(kBlurFragShader, tour::dxc::DxcShaderStage::Fragment, L"mainPS");
 		m_vert = m_context->CreateShaderModule(vertCode, "blurVert");
 		m_frag = m_context->CreateShaderModule(fragCode, "blurFrag");
 		smvk::Shader vs{ .module = m_vert, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };

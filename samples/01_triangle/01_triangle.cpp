@@ -82,15 +82,15 @@ private:
 			return false;
 
 		//void CreateResources();
-		auto vertCode = CompileHLSLToSPIRV(
+		auto vertCode = tour::dxc::CompileHLSLToSPIRV(
 			kTriangleVertShader,
-			DxcShaderStage::Vertex,
+			tour::dxc::DxcShaderStage::Vertex,
 			L"mainVS"
 		);
 
-		auto fragCode = CompileHLSLToSPIRV(
+		auto fragCode = tour::dxc::CompileHLSLToSPIRV(
 			kTriangleFragShader,
-			DxcShaderStage::Fragment,
+			tour::dxc::DxcShaderStage::Fragment,
 			L"mainPS"
 		);
 

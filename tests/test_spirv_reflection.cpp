@@ -289,7 +289,7 @@ void mainCS(uint3 id : SV_DispatchThreadID) {
 )";
 	std::vector<char> spv;
 	try {
-		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Compute, L"mainCS");
+		spv = tour::dxc::CompileHLSLToSPIRV(kSrc, tour::dxc::DxcShaderStage::Compute, L"mainCS");
 	} catch (const std::exception& e) {
 		std::cout << "SKIP spirv.dxc (DXC unavailable: " << e.what() << ")\n";
 		return;
@@ -418,7 +418,7 @@ float4 mainPS(PSIn i) : SV_Target0 {
 )";
 	std::vector<char> spv;
 	try {
-		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Fragment, L"mainPS");
+		spv = tour::dxc::CompileHLSLToSPIRV(kSrc, tour::dxc::DxcShaderStage::Fragment, L"mainPS");
 	} catch (const std::exception& e) {
 		std::cout << "SKIP spirv.sanitize.dxc (DXC unavailable: " << e.what() << ")\n";
 		return;
@@ -503,7 +503,7 @@ void mainCS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
 	static_assert(sizeof(smvk::SpdPush) == 48, "SpdPush must stay 48 bytes");
 	std::vector<char> spv;
 	try {
-		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Compute, L"mainCS");
+		spv = tour::dxc::CompileHLSLToSPIRV(kSrc, tour::dxc::DxcShaderStage::Compute, L"mainCS");
 	} catch (const std::exception& e) {
 		std::cout << "SKIP spirv.spd (DXC unavailable: " << e.what() << ")\n";
 		return;
@@ -564,7 +564,7 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
 )";
 	std::vector<char> spv;
 	try {
-		spv = CompileHLSLToSPIRV(kSrc, DxcShaderStage::Mesh, L"mainMS");
+		spv = tour::dxc::CompileHLSLToSPIRV(kSrc, tour::dxc::DxcShaderStage::Mesh, L"mainMS");
 	} catch (const std::exception& e) {
 		std::cout << "SKIP spirv.mesh (DXC unavailable: " << e.what() << ")\n";
 		return;

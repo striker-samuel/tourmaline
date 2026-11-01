@@ -70,10 +70,8 @@
 #include <vector>
 
 namespace tour::gi {
-// (migration compat) the moved block still spells the engine's smvk
-// types unqualified; qualify them as call sites migrate, then drop
-// this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) fully qualified - no broad
+// using-directive (R6-gated).
 
 // FNV-1a 64 with a length finish (the artifact-cache grade, 16 lowercase
 // hex). Self-contained: the engine does not link the cache tool lib.

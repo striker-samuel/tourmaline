@@ -60,6 +60,15 @@
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
 
+// (namespace/RHI boundary audit) TU-LOCAL escape hatch: the tour::App
+// member bodies defined in this file (out-of-class, qualified names)
+// spell RHI names unqualified; the header-level broad imports are GONE
+// (R6), so this TU carries its own contained using-directive — the
+// documented pattern (qualify in headers, TU-local using-directives in
+// .cpps). Qualify opportunistically; retire with the App impl/bridge
+// (todo 8.5).
+using namespace ::smvk;
+
 // Debug-object-name setter (null-guarded): vkSetDebugUtilsObjectNameEXT
 // is a volk-resolved function pointer that stays NULL when the
 // VK_EXT_debug_utils instance extension is not enabled — which happens on

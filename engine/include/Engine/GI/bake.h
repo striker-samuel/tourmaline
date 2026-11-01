@@ -73,10 +73,8 @@ namespace smvk {
 } // namespace smvk
 
 namespace tour::gi {
-// (migration compat) the moved block still spells the engine's smvk
-// types unqualified; qualify them as call sites migrate, then drop
-// this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) fully qualified - no broad
+// using-directive (R6-gated).
 
 // ---------------------------------------------------------------------------
 // Trace scene
@@ -395,7 +393,7 @@ private:
 };
 
 struct GiSceneBuildOptions {
-	EnvironmentSettings env{}; // sun + sky parameters
+	smvk::EnvironmentSettings env{}; // sun + sky parameters
 
 	// Optional average-texel colors keyed by the cluster's cook texture id
 	// (MaterialValues texture slots): the cook decodes KTX2 files and

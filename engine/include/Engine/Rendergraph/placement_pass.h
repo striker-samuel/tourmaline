@@ -15,7 +15,7 @@
 //   pass.ClearTile(ctx, slot);           // zero the append counter
 //   pass.BuildTilePush(layer, tile, ...) // CPU LayerBinding -> GPU push
 //   auto& eval = pass.AddEvalPass(rg, slot);
-//   eval.SetRecordingFunc([&](CommandBuffer& cmd){
+//   eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd){
 //       pass.PushAndDispatch(cmd, push); });
 //   // ...Execute... DownloadTile() for readback/parity/bake.
 //
@@ -54,13 +54,13 @@ struct PlacementPass {
 	PlacementPassDesc desc{};
 	uint32_t tileSlots = 0; // live slot count (== desc.maxTiles after Create)
 
-	std::vector<Holder<BufferHandle>> instanceBuffers;
-	std::vector<Holder<BufferHandle>> countBuffers;
-	std::vector<LogicalBufferHandle> instanceLogicals;
-	std::vector<LogicalBufferHandle> countLogicals;
+	std::vector<smvk::Holder<smvk::BufferHandle>> instanceBuffers;
+	std::vector<smvk::Holder<smvk::BufferHandle>> countBuffers;
+	std::vector<smvk::LogicalBufferHandle> instanceLogicals;
+	std::vector<smvk::LogicalBufferHandle> countLogicals;
 
-	Holder<ShaderModuleHandle> tileModule;
-	ShaderProgram tileProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> tileModule;
+	smvk::ShaderProgram tileProgram{};
 
 	[[nodiscard]] bool Valid() const {
 		if (tileSlots == 0 || instanceBuffers.size() != tileSlots
@@ -77,7 +77,7 @@ struct PlacementPass {
 		return tileProgram.shaderCount != 0 && !tileModule.empty();
 	}
 
-	bool EnsureShaders(ResourceManager& ctx,
+	bool EnsureShaders(smvk::ResourceManager& ctx,
 		const char* tileCsPath = kPlacementTileCsPath) {
 		if (ShadersValid()) return true;
 		try {
@@ -89,13 +89,13 @@ struct PlacementPass {
 			return false;
 		}
 		if (tileModule.empty()) return false;
-		Shader cs{ .module = tileModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader cs{ .module = tileModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		tileProgram = { .shaders = { cs }, .shaderCount = 1 };
 		return true;
 	}
 
 	void DestroyShaders() {
-		tileProgram = ShaderProgram();
+		tileProgram = smvk::ShaderProgram();
 		tileModule = {};
 	}
 
@@ -103,33 +103,33 @@ struct PlacementPass {
 	// module swap (a failed read keeps the standing module), zero the
 	// program, re-Ensure. Returns true when anything moved; the released
 	// old handle rides `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
+	[[nodiscard]] bool ReloadShaders(smvk::ResourceManager& ctx,
+		std::vector<smvk::ShaderModuleHandle>& retired) {
 		if (!SwapShaderModule(ctx, kPlacementTileCsPath,
 				"placementTileCS", tileModule, retired))
 			return false;
-		tileProgram = ShaderProgram();
+		tileProgram = smvk::ShaderProgram();
 		EnsureShaders(ctx);
 		return true;
 	}
 
-	bool Create(ResourceManager& ctx, RenderGraph& rg, const PlacementPassDesc& d,
+	bool Create(smvk::ResourceManager& ctx, smvk::RenderGraph& rg, const PlacementPassDesc& d,
 		const char* tileCsPath = kPlacementTileCsPath) {
 		if (d.maxInstancesPerTile == 0 || d.maxTiles == 0) return false;
 		if (d.maxInstancesPerTile > 65536) return false; // the HLSL view bound
 		Destroy(rg);
-		std::vector<Holder<BufferHandle>> inst;
-		std::vector<Holder<BufferHandle>> cnt;
-		std::vector<LogicalBufferHandle> instL;
-		std::vector<LogicalBufferHandle> cntL;
+		std::vector<smvk::Holder<smvk::BufferHandle>> inst;
+		std::vector<smvk::Holder<smvk::BufferHandle>> cnt;
+		std::vector<smvk::LogicalBufferHandle> instL;
+		std::vector<smvk::LogicalBufferHandle> cntL;
 		inst.reserve(d.maxTiles); cnt.reserve(d.maxTiles);
 		instL.reserve(d.maxTiles); cntL.reserve(d.maxTiles);
 		for (uint32_t s = 0; s < d.maxTiles; ++s) {
-			Holder<BufferHandle> ib = ctx.CreateBuffer(
+			smvk::Holder<smvk::BufferHandle> ib = ctx.CreateBuffer(
 				sizeof(RenderInstance) * d.maxInstancesPerTile,
-				BufferType_Storage, "placement tile instances");
-			Holder<BufferHandle> cb = ctx.CreateBuffer(
-				sizeof(PlacementCountGpu), BufferType_Storage, "placement tile count");
+				smvk::BufferType_Storage, "placement tile instances");
+			smvk::Holder<smvk::BufferHandle> cb = ctx.CreateBuffer(
+				sizeof(PlacementCountGpu), smvk::BufferType_Storage, "placement tile count");
 			if (ib.empty() || cb.empty()) {
 				// Graceful by default (the RHI returns empty handles and
 				// never decides policy); strict turns it into a loud abort
@@ -137,8 +137,8 @@ struct PlacementPass {
 				smvk::OnResourceExhaustion("placement tile buffers");
 				return false;
 			}
-			LogicalBufferHandle il = rg.AddExternalBuffer(ib, "placement tile instances");
-			LogicalBufferHandle cl = rg.AddExternalBuffer(cb, "placement tile count");
+			smvk::LogicalBufferHandle il = rg.AddExternalBuffer(ib, "placement tile instances");
+			smvk::LogicalBufferHandle cl = rg.AddExternalBuffer(cb, "placement tile count");
 			if (il.empty() || cl.empty()) {
 				rg.FreeBuffer(il);
 				rg.FreeBuffer(cl);
@@ -164,7 +164,7 @@ struct PlacementPass {
 		return EnsureShaders(ctx, tileCsPath);
 	}
 
-	void Destroy(RenderGraph& rg) {
+	void Destroy(smvk::RenderGraph& rg) {
 		for (uint32_t i = 0; i < tileSlots; ++i) {
 			if (!instanceLogicals[i].empty()) rg.FreeBuffer(instanceLogicals[i]);
 			if (!countLogicals[i].empty()) rg.FreeBuffer(countLogicals[i]);
@@ -176,7 +176,7 @@ struct PlacementPass {
 		tileSlots = 0;
 	}
 
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const PlacementPassDesc& d,
+	bool Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg, const PlacementPassDesc& d,
 		const char* tileCsPath = kPlacementTileCsPath) {
 		const bool shapeOk = Valid()
 			&& desc.maxInstancesPerTile == d.maxInstancesPerTile
@@ -193,19 +193,19 @@ struct PlacementPass {
 	// zeroed AND capacity published (the kernels' guard reads it). Call
 	// before recording the eval pass for that slot (uploads flush
 	// immediately; the pass RW hint orders the dispatch after prior uses).
-	void ClearTile(ResourceManager& ctx, uint32_t slot) const {
+	void ClearTile(smvk::ResourceManager& ctx, uint32_t slot) const {
 		assert(slot < tileSlots);
 		PlacementCountGpu state{};
 		state.capacity = desc.maxInstancesPerTile;
 		ctx.UploadDataToBuffer(countBuffers[slot], &state, sizeof(state),
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite, 0, 0);
 	}
 
-	uint64_t TileInstancesAddress(ResourceManager& ctx, uint32_t slot) const {
+	uint64_t TileInstancesAddress(smvk::ResourceManager& ctx, uint32_t slot) const {
 		assert(slot < tileSlots);
 		return ctx.GetBufferDeviceAddress(instanceBuffers[slot]);
 	}
-	uint64_t TileCountAddress(ResourceManager& ctx, uint32_t slot) const {
+	uint64_t TileCountAddress(smvk::ResourceManager& ctx, uint32_t slot) const {
 		assert(slot < tileSlots);
 		return ctx.GetBufferDeviceAddress(countBuffers[slot]);
 	}
@@ -214,13 +214,13 @@ struct PlacementPass {
 	// pushes PlacementTilePush (see BuildTilePush) and dispatches
 	// PlacementDispatchGroups(candidateCount). Barriers: both slot buffers
 	// are compute RW (append counter + instance writes).
-	RenderPass& AddEvalPass(RenderGraph& rg, uint32_t slot,
+	smvk::RenderPass& AddEvalPass(smvk::RenderGraph& rg, uint32_t slot,
 		const char* name = "PlacementEval") const {
 		assert(Valid() && slot < tileSlots);
-		RenderPass& pass = rg.AddComputePass(name);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::RenderPass& pass = rg.AddComputePass(name);
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		pass.AddBufferHint(instanceLogicals[slot], rw);
 		pass.AddBufferHint(countLogicals[slot], rw);
 		return pass;
@@ -230,8 +230,8 @@ struct PlacementPass {
 	// Dispatch-setup contract (Phase 0): candidateCount sane, output BDAs
 	// valid, prototype count within the kernels' 8 slots — asserted so a
 	// mis-built push faults at dispatch setup, not as device garbage.
-	// Non-const: CommandBuffer::BindComputePipeline takes ShaderProgram&.
-	void PushAndDispatch(CommandBuffer& cmd, const PlacementTilePush& push) {
+	// Non-const: CommandBuffer::BindComputePipeline takes smvk::ShaderProgram&.
+	void PushAndDispatch(smvk::CommandBuffer& cmd, const PlacementTilePush& push) {
 		assert(ShadersValid());
 		if (push.candidateCount == 0) return;
 		assert(push.outInstances != 0 && "placement: null instances BDA");
@@ -239,7 +239,7 @@ struct PlacementPass {
 		assert(push.protoCount >= 1 && push.protoCount <= 8
 			&& "placement: protoCount outside the kernel's 8 slots");
 		cmd.BindComputePipeline(tileProgram);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch(PlacementDispatchGroups(push.candidateCount), 1, 1);
 	}
 
@@ -251,7 +251,7 @@ struct PlacementPass {
 	// successful tile reports 0; > 0 means the capacity was too small and
 	// the caller must treat the tile as an error/diagnostic, not a
 	// truncated success.
-	uint32_t DownloadTile(ResourceManager& ctx, uint32_t slot,
+	uint32_t DownloadTile(smvk::ResourceManager& ctx, uint32_t slot,
 		std::vector<RenderInstance>& out, uint32_t maxInstances,
 		uint32_t* overflowOut = nullptr) const {
 		assert(slot < tileSlots);
@@ -345,15 +345,15 @@ struct PlacementPass {
 struct PlacementProgramGpu {
 	uint64_t programId = 0;
 	uint64_t revision = 0;
-	Holder<BufferHandle> instrs;     // GpuFieldInstr[instrCount]
-	LogicalBufferHandle instrsL{};
+	smvk::Holder<smvk::BufferHandle> instrs;     // GpuFieldInstr[instrCount]
+	smvk::LogicalBufferHandle instrsL{};
 	uint32_t instrCount = 0;
 	uint32_t acceptIndex = 0;
 
 	[[nodiscard]] bool Valid() const {
 		return !instrs.empty() && !instrsL.empty() && instrCount > 0;
 	}
-	void Destroy(RenderGraph& rg) {
+	void Destroy(smvk::RenderGraph& rg) {
 		if (!instrsL.empty()) rg.FreeBuffer(instrsL);
 		instrsL = {};
 		instrs = {};
@@ -364,14 +364,14 @@ struct PlacementProgramGpu {
 	// must NOT dispatch; run the CPU oracle instead. The eco gate: a
 	// program using EcotopeMask refuses when the layer carries no mask
 	// (or an out-of-range paint channel) — never a silent zero density.
-	bool Upload(ResourceManager& ctx, RenderGraph& rg,
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const PlacementSystem::LayerBinding& layer, uint64_t rev) {
 		return Upload(ctx, rg, layer.program, layer.programId, rev,
 			layer.ecotope ? layer.ecotope->channels : 0);
 	}
 	// The explicit-eco form (the WORLD RUNTIME's authority: the paint
 	// comes from the world's S-tile channels (4), not the layer binding).
-	bool Upload(ResourceManager& ctx, RenderGraph& rg,
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const PlacementProgram& prog, uint64_t programIdIn,
 		uint64_t rev, uint32_t ecoChannels) {
 		const char* err = nullptr;
@@ -395,7 +395,7 @@ struct PlacementProgramGpu {
 			for (int k = 0; k < 4; ++k) gpu[i].params[k] = in.params[k];
 		}
 		instrs = ctx.CreateBuffer(sizeof(GpuFieldInstr) * n,
-			BufferType_Storage, "placement field program");
+			smvk::BufferType_Storage, "placement field program");
 		if (instrs.empty()) {
 			smvk::OnResourceExhaustion("placement program instrs buffer");
 			return false;
@@ -406,7 +406,7 @@ struct PlacementProgramGpu {
 			return false;
 		}
 		ctx.UploadDataToBuffer(instrs, gpu.data(), sizeof(GpuFieldInstr) * n,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		programId = programIdIn;
 		revision = rev;
 		instrCount = (uint32_t)n;
@@ -414,13 +414,13 @@ struct PlacementProgramGpu {
 		return true;
 	}
 	// Re-uploads only when the (programId, revision) key changed.
-	bool Ensure(ResourceManager& ctx, RenderGraph& rg,
+	bool Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const PlacementSystem::LayerBinding& layer, uint64_t rev) {
 		if (Valid() && programId == layer.programId && revision == rev)
 			return true;
 		return Upload(ctx, rg, layer, rev);
 	}
-	PlacementProgramView View(ResourceManager& ctx) const {
+	PlacementProgramView View(smvk::ResourceManager& ctx) const {
 		PlacementProgramView v;
 		v.instrBDA = Valid() ? ctx.GetBufferDeviceAddress(instrs) : 0;
 		v.instrCount = instrCount;
@@ -438,27 +438,27 @@ struct PlacementProgramGpu {
 inline constexpr uint32_t kPlacementMaxEcoTexels = 1048576; // 4M floats
 
 struct PlacementEcoMaskGpu {
-	Holder<BufferHandle> weights;    // float[channels*h*w]
-	LogicalBufferHandle weightsL{};
+	smvk::Holder<smvk::BufferHandle> weights;    // float[channels*h*w]
+	smvk::LogicalBufferHandle weightsL{};
 	uint32_t w = 0, h = 0, channels = 0;
 
 	[[nodiscard]] bool Valid() const {
 		return !weights.empty() && !weightsL.empty() && channels >= 1;
 	}
-	void Destroy(RenderGraph& rg) {
+	void Destroy(smvk::RenderGraph& rg) {
 		if (!weightsL.empty()) rg.FreeBuffer(weightsL);
 		weightsL = {};
 		weights = {};
 		w = h = channels = 0;
 	}
-	bool Upload(ResourceManager& ctx, RenderGraph& rg,
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const EcotopeMaskData& eco) {
 		Destroy(rg);
 		if (!eco.valid()) return false;
 		if ((uint64_t)eco.channels * eco.height * eco.width
 			> kPlacementMaxEcoTexels) return false;
 		weights = ctx.CreateBuffer(sizeof(float) * eco.weights.size(),
-			BufferType_Storage, "placement ecotope mask");
+			smvk::BufferType_Storage, "placement ecotope mask");
 		if (weights.empty()) {
 			smvk::OnResourceExhaustion("placement ecotope mask buffer");
 			return false;
@@ -470,11 +470,11 @@ struct PlacementEcoMaskGpu {
 		}
 		ctx.UploadDataToBuffer(weights, eco.weights.data(),
 			sizeof(float) * eco.weights.size(),
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		w = eco.width; h = eco.height; channels = eco.channels;
 		return true;
 	}
-	PlacementEcoView View(ResourceManager& ctx) const {
+	PlacementEcoView View(smvk::ResourceManager& ctx) const {
 		PlacementEcoView v;
 		v.bda = Valid() ? ctx.GetBufferDeviceAddress(weights) : 0;
 		v.w = w; v.h = h; v.channels = channels;
@@ -592,13 +592,13 @@ private:
 // fragments bind unchanged. See placement_draw.h's recording contract.
 // ---------------------------------------------------------------------------
 struct PlacementDrawPrograms {
-	Holder<ShaderModuleHandle> vsModule, psModule;
-	ShaderProgram program{};
+	smvk::Holder<smvk::ShaderModuleHandle> vsModule, psModule;
+	smvk::ShaderProgram program{};
 
 	[[nodiscard]] bool Valid() const {
 		return program.shaderCount == 2 && !vsModule.empty() && !psModule.empty();
 	}
-	bool Ensure(ResourceManager& ctx,
+	bool Ensure(smvk::ResourceManager& ctx,
 		const char* vsPath = kPlacementInstancedVsPath,
 		const char* psPath = kPlacementUnlitPsPath) {
 		if (Valid()) return true;
@@ -615,13 +615,13 @@ struct PlacementDrawPrograms {
 			return false;
 		}
 		if (vsModule.empty() || psModule.empty()) return false;
-		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
-		Shader ps{ .module = psModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment };
+		smvk::Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex };
+		smvk::Shader ps{ .module = psModule, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment };
 		program = { .shaders = { vs, ps }, .shaderCount = 2 };
 		return true;
 	}
 	void Destroy() {
-		program = ShaderProgram();
+		program = smvk::ShaderProgram();
 		vsModule = {};
 		psModule = {};
 	}
@@ -630,8 +630,8 @@ struct PlacementDrawPrograms {
 	// module swap (a failed read keeps the standing module), zero the
 	// program, re-Ensure. Returns true when anything moved; the released
 	// old handles ride `retired` for the caller's retirement pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
+	[[nodiscard]] bool ReloadShaders(smvk::ResourceManager& ctx,
+		std::vector<smvk::ShaderModuleHandle>& retired) {
 		bool any = false;
 		any |= SwapShaderModule(ctx, kPlacementInstancedVsPath,
 			"placementInstancedVS", vsModule, retired);
@@ -639,7 +639,7 @@ struct PlacementDrawPrograms {
 			"placementUnlitPS", psModule, retired);
 		if (!any)
 			return false;
-		program = ShaderProgram();
+		program = smvk::ShaderProgram();
 		Ensure(ctx);
 		return true;
 	}
@@ -663,11 +663,11 @@ struct PlacementDrawPrograms {
 //                 single-scope-written by drawbuild every frame)
 // ---------------------------------------------------------------------------
 struct PlacementVisibleSet {
-	Holder<BufferHandle> mask;      // bitpack verdict: maxInstances/32 words
-	Holder<BufferHandle> bins;      // PlacementBinsGpu (128B)
-	Holder<BufferHandle> visible;   // uint32[maxInstances]
-	Holder<BufferHandle> indirect;  // PlacementIndirectCmd[8] (BufferType_Indirect)
-	LogicalBufferHandle maskL{}, binsL{}, visibleL{}, indirectL{};
+	smvk::Holder<smvk::BufferHandle> mask;      // bitpack verdict: maxInstances/32 words
+	smvk::Holder<smvk::BufferHandle> bins;      // PlacementBinsGpu (128B)
+	smvk::Holder<smvk::BufferHandle> visible;   // uint32[maxInstances]
+	smvk::Holder<smvk::BufferHandle> indirect;  // PlacementIndirectCmd[8] (smvk::BufferType_Indirect)
+	smvk::LogicalBufferHandle maskL{}, binsL{}, visibleL{}, indirectL{};
 	uint32_t maxInstances = 0;
 
 	[[nodiscard]] bool Valid() const {
@@ -675,24 +675,24 @@ struct PlacementVisibleSet {
 			&& !indirect.empty() && !maskL.empty() && !binsL.empty()
 			&& !visibleL.empty() && !indirectL.empty();
 	}
-	void Destroy(RenderGraph& rg) {
-		for (LogicalBufferHandle l : { maskL, binsL, visibleL, indirectL })
+	void Destroy(smvk::RenderGraph& rg) {
+		for (smvk::LogicalBufferHandle l : { maskL, binsL, visibleL, indirectL })
 			if (!l.empty()) rg.FreeBuffer(l);
 		maskL = {}; binsL = {}; visibleL = {}; indirectL = {};
 		mask = {}; bins = {}; visible = {}; indirect = {};
 		maxInstances = 0;
 	}
-	bool Create(ResourceManager& ctx, RenderGraph& rg, uint32_t maxInst) {
+	bool Create(smvk::ResourceManager& ctx, smvk::RenderGraph& rg, uint32_t maxInst) {
 		Destroy(rg);
 		if (maxInst == 0 || maxInst > kPlacementMaxTileInstances) return false;
 		mask = ctx.CreateBuffer(sizeof(uint32_t) * ((maxInst + 31) / 32),
-			BufferType_Storage, "placement cull mask");
+			smvk::BufferType_Storage, "placement cull mask");
 		bins = ctx.CreateBuffer(sizeof(PlacementBinsGpu),
-			BufferType_Storage, "placement cull bins");
+			smvk::BufferType_Storage, "placement cull bins");
 		visible = ctx.CreateBuffer(sizeof(uint32_t) * maxInst,
-			BufferType_Storage, "placement visible");
+			smvk::BufferType_Storage, "placement visible");
 		indirect = ctx.CreateBuffer(kPlacementIndirectStride * kPlacementMaxProtos,
-			BufferType_Indirect, "placement indirect");
+			smvk::BufferType_Indirect, "placement indirect");
 		if (mask.empty() || bins.empty() || visible.empty() || indirect.empty()) {
 			smvk::OnResourceExhaustion("placement visible-set buffers");
 			return false;
@@ -711,15 +711,15 @@ struct PlacementVisibleSet {
 		return true;
 	}
 	// Per-frame zero of the mask + the bin slab's atomics.
-	void ClearFrame(ResourceManager& ctx) const {
+	void ClearFrame(smvk::ResourceManager& ctx) const {
 		assert(Valid());
 		const std::vector<uint32_t> zeros((maxInstances + 31) / 32, 0);
 		ctx.UploadDataToBuffer(mask, zeros.data(),
 			sizeof(uint32_t) * zeros.size(),
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite, 0, 0);
 		PlacementBinsGpu zeroBins{};
 		ctx.UploadDataToBuffer(bins, &zeroBins, sizeof(zeroBins),
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite, 0, 0);
 	}
 	// NOTE: no indirect seeding here. The draw-build kernel owns the
 	// COMPLETE command (the prototype table rides its push — the
@@ -729,26 +729,26 @@ struct PlacementVisibleSet {
 	// stranded-upload-write hazard (todo.txt): an UPLOAD's bytes on a
 	// buffer this set's kernel rewrites in the same frame never became
 	// visible to the indirect draw.
-	uint64_t MaskAddress(ResourceManager& ctx) const {
+	uint64_t MaskAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(mask);
 	}
-	uint64_t BinsAddress(ResourceManager& ctx) const {
+	uint64_t BinsAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(bins);
 	}
-	uint64_t VisibleAddress(ResourceManager& ctx) const {
+	uint64_t VisibleAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(visible);
 	}
-	uint64_t IndirectAddress(ResourceManager& ctx) const {
+	uint64_t IndirectAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(indirect);
 	}
 	// The indirect buffer HANDLE (the renderer's DrawIndexedIndirect).
-	BufferHandle IndirectBuffer() const { return indirect; }
+	smvk::BufferHandle IndirectBuffer() const { return indirect; }
 };
 
 // The chain's shader program set (cull + prefix + scatter + drawbuild).
 struct PlacementCullPrograms {
-	Holder<ShaderModuleHandle> cullModule, prefixModule, scatterModule, buildModule;
-	ShaderProgram cullProgram{}, prefixProgram{}, scatterProgram{}, buildProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> cullModule, prefixModule, scatterModule, buildModule;
+	smvk::ShaderProgram cullProgram{}, prefixProgram{}, scatterProgram{}, buildProgram{};
 
 	[[nodiscard]] bool Valid() const {
 		return cullProgram.shaderCount != 0 && prefixProgram.shaderCount != 0
@@ -756,7 +756,7 @@ struct PlacementCullPrograms {
 			&& !cullModule.empty() && !prefixModule.empty()
 			&& !scatterModule.empty() && !buildModule.empty();
 	}
-	bool Ensure(ResourceManager& ctx,
+	bool Ensure(smvk::ResourceManager& ctx,
 		const char* cullCsPath = kPlacementCullCsPath,
 		const char* prefixCsPath = kPlacementPrefixCsPath,
 		const char* scatterCsPath = kPlacementScatterVisCsPath,
@@ -785,21 +785,21 @@ struct PlacementCullPrograms {
 		if (cullModule.empty() || prefixModule.empty()
 			|| scatterModule.empty() || buildModule.empty())
 			return false;
-		Shader c{ .module = cullModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader c{ .module = cullModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		cullProgram = { .shaders = { c }, .shaderCount = 1 };
-		Shader p{ .module = prefixModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader p{ .module = prefixModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		prefixProgram = { .shaders = { p }, .shaderCount = 1 };
-		Shader s{ .module = scatterModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader s{ .module = scatterModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		scatterProgram = { .shaders = { s }, .shaderCount = 1 };
-		Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		buildProgram = { .shaders = { b }, .shaderCount = 1 };
 		return true;
 	}
 	void Destroy() {
-		cullProgram = ShaderProgram();
-		prefixProgram = ShaderProgram();
-		scatterProgram = ShaderProgram();
-		buildProgram = ShaderProgram();
+		cullProgram = smvk::ShaderProgram();
+		prefixProgram = smvk::ShaderProgram();
+		scatterProgram = smvk::ShaderProgram();
+		buildProgram = smvk::ShaderProgram();
 		cullModule = {}; prefixModule = {}; scatterModule = {}; buildModule = {};
 	}
 
@@ -808,8 +808,8 @@ struct PlacementCullPrograms {
 	// programs, re-Ensure. Returns true when anything moved; the
 	// released old handles ride `retired` for the caller's retirement
 	// pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
+	[[nodiscard]] bool ReloadShaders(smvk::ResourceManager& ctx,
+		std::vector<smvk::ShaderModuleHandle>& retired) {
 		bool any = false;
 		any |= SwapShaderModule(ctx, kPlacementCullCsPath,
 			"placementCullCS", cullModule, retired);
@@ -821,57 +821,57 @@ struct PlacementCullPrograms {
 			"placementDrawBuildCS", buildModule, retired);
 		if (!any)
 			return false;
-		cullProgram = ShaderProgram();
-		prefixProgram = ShaderProgram();
-		scatterProgram = ShaderProgram();
-		buildProgram = ShaderProgram();
+		cullProgram = smvk::ShaderProgram();
+		prefixProgram = smvk::ShaderProgram();
+		scatterProgram = smvk::ShaderProgram();
+		buildProgram = smvk::ShaderProgram();
 		Ensure(ctx);
 		return true;
 	}
 
 	// ---- Pass shells (buffer-hint edges order the chain) ----
 	// cull: instances+count read; mask+bins RW (+ alive read when used).
-	static RenderPass& AddCullPass(RenderGraph& rg, const PlacementPass& pass,
+	static smvk::RenderPass& AddCullPass(smvk::RenderGraph& rg, const PlacementPass& pass,
 		uint32_t slot, const PlacementVisibleSet& vis,
-		LogicalBufferHandle aliveLogical,
-		LogicalBufferHandle renderViewsLogical) {
-		RenderPass& rp = rg.AddComputePass("PlacementCull");
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::LogicalBufferHandle aliveLogical,
+		smvk::LogicalBufferHandle renderViewsLogical) {
+		smvk::RenderPass& rp = rg.AddComputePass("PlacementCull");
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(pass.instanceLogicals[slot], read);
 		rp.AddBufferHint(pass.countLogicals[slot], read);
 		if (!aliveLogical.empty()) rp.AddBufferHint(aliveLogical, read);
 		if (!renderViewsLogical.empty()) rp.AddBufferHint(renderViewsLogical, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(vis.maskL, rw);
 		rp.AddBufferHint(vis.binsL, rw);
 		return rp;
 	}
 	// prefix: bins RW (reads counts, writes offsets/total).
-	static RenderPass& AddPrefixPass(RenderGraph& rg, const PlacementVisibleSet& vis) {
-		RenderPass& rp = rg.AddComputePass("PlacementPrefix");
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+	static smvk::RenderPass& AddPrefixPass(smvk::RenderGraph& rg, const PlacementVisibleSet& vis) {
+		smvk::RenderPass& rp = rg.AddComputePass("PlacementPrefix");
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(vis.binsL, rw);
 		return rp;
 	}
 	// scatter: instances+count+bins read; bins RW (appendNext) + visible RW.
-	static RenderPass& AddScatterVisPass(RenderGraph& rg, const PlacementPass& pass,
+	static smvk::RenderPass& AddScatterVisPass(smvk::RenderGraph& rg, const PlacementPass& pass,
 		uint32_t slot, const PlacementVisibleSet& vis) {
-		RenderPass& rp = rg.AddComputePass("PlacementScatterVisible");
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::RenderPass& rp = rg.AddComputePass("PlacementScatterVisible");
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(pass.instanceLogicals[slot], read);
 		rp.AddBufferHint(pass.countLogicals[slot], read);
 		rp.AddBufferHint(vis.maskL, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(vis.binsL, rw);
 		rp.AddBufferHint(vis.visibleL, rw);
 		return rp;
@@ -883,22 +883,22 @@ struct PlacementCullPrograms {
 	// downstream indirect draw's hint (IndirectCommandRead) pairs with
 	// this write: the compute-write -> indirect-read barrier is
 	// complete by construction (single writer per frame).
-	static RenderPass& AddDrawBuildPass(RenderGraph& rg, const PlacementVisibleSet& vis) {
-		RenderPass& rp = rg.AddComputePass("PlacementDrawBuild");
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+	static smvk::RenderPass& AddDrawBuildPass(smvk::RenderGraph& rg, const PlacementVisibleSet& vis) {
+		smvk::RenderPass& rp = rg.AddComputePass("PlacementDrawBuild");
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(vis.binsL, read);
-		BufferSyncRequest write{};
-		write.barrierMasks.accessMask = AccessFlags::ShaderWrite;
-		write.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::BufferSyncRequest write{};
+		write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+		write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(vis.indirectL, write);
 		return rp;
 	}
 
 	// ---- Recording helpers (dispatch widths: the CPU-known capacity
 	// upper bound — the kernels self-bound from the count buffer). ----
-	static void PushAndDispatchCull(CommandBuffer& cmd, ShaderProgram& program,
+	static void PushAndDispatchCull(smvk::CommandBuffer& cmd, smvk::ShaderProgram& program,
 		const PlacementCullPush& push, uint32_t capacity) {
 		if (capacity == 0) return;
 		assert(push.instances != 0 && push.count != 0
@@ -906,30 +906,30 @@ struct PlacementCullPrograms {
 		assert(push.renderViews != 0);
 		assert(push.protoCount >= 1 && push.protoCount <= kPlacementMaxProtos);
 		cmd.BindComputePipeline(program);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch(PlacementDispatchGroups(capacity), 1, 1);
 	}
-	static void PushAndDispatchPrefix(CommandBuffer& cmd, ShaderProgram& program,
+	static void PushAndDispatchPrefix(smvk::CommandBuffer& cmd, smvk::ShaderProgram& program,
 		const PlacementCullPush& push) {
 		cmd.BindComputePipeline(program);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch(1, 1, 1);
 	}
-	static void PushAndDispatchScatterVis(CommandBuffer& cmd, ShaderProgram& program,
+	static void PushAndDispatchScatterVis(smvk::CommandBuffer& cmd, smvk::ShaderProgram& program,
 		const PlacementScatterVisPush& push, uint32_t capacity) {
 		if (capacity == 0) return;
 		assert(push.instances != 0 && push.count != 0 && push.mask != 0
 			&& push.bins != 0 && push.visible != 0);
 		cmd.BindComputePipeline(program);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch(PlacementDispatchGroups(capacity), 1, 1);
 	}
-	static void PushAndDispatchDrawBuild(CommandBuffer& cmd, ShaderProgram& program,
+	static void PushAndDispatchDrawBuild(smvk::CommandBuffer& cmd, smvk::ShaderProgram& program,
 		const PlacementDrawBuildPush& push) {
 		assert(push.bins != 0 && push.indirect != 0);
 		assert(push.protoCount >= 1 && push.protoCount <= kPlacementMaxProtos);
 		cmd.BindComputePipeline(program);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch(1, 1, 1);
 	}
 };
@@ -985,8 +985,8 @@ struct ScatterBDAs {
 };
 
 struct PlacementMeshGpu {
-	Holder<BufferHandle> pos, nrm, uv, idx, prob, alias;
-	LogicalBufferHandle posL{}, nrmL{}, uvL{}, idxL{}, probL{}, aliasL{};
+	smvk::Holder<smvk::BufferHandle> pos, nrm, uv, idx, prob, alias;
+	smvk::LogicalBufferHandle posL{}, nrmL{}, uvL{}, idxL{}, probL{}, aliasL{};
 	uint32_t vertCount = 0;
 	uint32_t triCount = 0;
 	bool hasNormals = false;
@@ -997,8 +997,8 @@ struct PlacementMeshGpu {
 			&& !posL.empty() && !idxL.empty() && !probL.empty() && !aliasL.empty()
 			&& triCount > 0;
 	}
-	void Destroy(RenderGraph& rg) {
-		for (LogicalBufferHandle l : { posL, nrmL, uvL, idxL, probL, aliasL })
+	void Destroy(smvk::RenderGraph& rg) {
+		for (smvk::LogicalBufferHandle l : { posL, nrmL, uvL, idxL, probL, aliasL })
 			if (!l.empty()) rg.FreeBuffer(l);
 		posL = {}; nrmL = {}; uvL = {}; idxL = {}; probL = {}; aliasL = {};
 		pos = {}; nrm = {}; uv = {}; idx = {}; prob = {}; alias = {};
@@ -1008,7 +1008,7 @@ struct PlacementMeshGpu {
 
 	// Uploads (converting vec3 -> float4). Builds the alias table when
 	// missing. Returns false when the mesh exceeds GPU bounds or is empty.
-	bool Upload(ResourceManager& ctx, RenderGraph& rg, PlacementMeshData& mesh) {
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg, PlacementMeshData& mesh) {
 		Destroy(rg);
 		const size_t tris = mesh.triangleCount();
 		if (tris == 0 || tris > kPlacementMaxMeshTris) return false;
@@ -1035,12 +1035,12 @@ struct PlacementMeshGpu {
 			for (uint32_t v = 0; v < verts; ++v) uv2[v] = mesh.uvs[v];
 		}
 		auto make = [&](size_t bytes, const char* name) {
-			Holder<BufferHandle> b = ctx.CreateBuffer(bytes, BufferType_Storage, name);
+			smvk::Holder<smvk::BufferHandle> b = ctx.CreateBuffer(bytes, smvk::BufferType_Storage, name);
 			return b;
 		};
 		pos = make(sizeof(glm::vec4) * verts, "placement mesh pos");
-		nrm = hasNormals ? make(sizeof(glm::vec4) * verts, "placement mesh nrm") : Holder<BufferHandle>{};
-		uv = hasUVs ? make(sizeof(glm::vec2) * verts, "placement mesh uv") : Holder<BufferHandle>{};
+		nrm = hasNormals ? make(sizeof(glm::vec4) * verts, "placement mesh nrm") : smvk::Holder<smvk::BufferHandle>{};
+		uv = hasUVs ? make(sizeof(glm::vec2) * verts, "placement mesh uv") : smvk::Holder<smvk::BufferHandle>{};
 		idx = make(sizeof(uint32_t) * tris * 3, "placement mesh idx");
 		prob = make(sizeof(float) * tris, "placement mesh prob");
 		alias = make(sizeof(uint32_t) * tris, "placement mesh alias");
@@ -1050,8 +1050,8 @@ struct PlacementMeshGpu {
 			return false;
 		}
 		posL = rg.AddExternalBuffer(pos, "placement mesh pos");
-		nrmL = hasNormals ? rg.AddExternalBuffer(nrm, "placement mesh nrm") : LogicalBufferHandle{};
-		uvL = hasUVs ? rg.AddExternalBuffer(uv, "placement mesh uv") : LogicalBufferHandle{};
+		nrmL = hasNormals ? rg.AddExternalBuffer(nrm, "placement mesh nrm") : smvk::LogicalBufferHandle{};
+		uvL = hasUVs ? rg.AddExternalBuffer(uv, "placement mesh uv") : smvk::LogicalBufferHandle{};
 		idxL = rg.AddExternalBuffer(idx, "placement mesh idx");
 		probL = rg.AddExternalBuffer(prob, "placement mesh prob");
 		aliasL = rg.AddExternalBuffer(alias, "placement mesh alias");
@@ -1060,23 +1060,23 @@ struct PlacementMeshGpu {
 			return false;
 		}
 		ctx.UploadDataToBuffer(pos, pos4.data(), sizeof(glm::vec4) * verts,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		if (hasNormals) ctx.UploadDataToBuffer(nrm, nrm4.data(), sizeof(glm::vec4) * verts,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		if (hasUVs) ctx.UploadDataToBuffer(uv, uv2.data(), sizeof(glm::vec2) * verts,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		ctx.UploadDataToBuffer(idx, mesh.indices.data(), sizeof(uint32_t) * tris * 3,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		ctx.UploadDataToBuffer(prob, mesh.aliasProb.data(), sizeof(float) * tris,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		ctx.UploadDataToBuffer(alias, mesh.aliasIndex.data(), sizeof(uint32_t) * tris,
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		vertCount = verts;
 		triCount = (uint32_t)tris;
 		return true;
 	}
 
-	ScatterBDAs Addresses(ResourceManager& ctx) const {
+	ScatterBDAs Addresses(smvk::ResourceManager& ctx) const {
 		ScatterBDAs b;
 		b.pos = ctx.GetBufferDeviceAddress(pos);
 		b.nrm = hasNormals ? ctx.GetBufferDeviceAddress(nrm) : 0;
@@ -1087,34 +1087,34 @@ struct PlacementMeshGpu {
 		return b;
 	}
 	// Read-only logicals for scatter-pass hints (null entries skipped).
-	std::vector<LogicalBufferHandle> ReadLogicals() const {
-		std::vector<LogicalBufferHandle> out;
-		for (LogicalBufferHandle l : { posL, nrmL, uvL, idxL, probL, aliasL })
+	std::vector<smvk::LogicalBufferHandle> ReadLogicals() const {
+		std::vector<smvk::LogicalBufferHandle> out;
+		for (smvk::LogicalBufferHandle l : { posL, nrmL, uvL, idxL, probL, aliasL })
 			if (!l.empty()) out.push_back(l);
 		return out;
 	}
 };
 
 struct PlacementHeightfieldGpu {
-	Holder<BufferHandle> heights;
-	LogicalBufferHandle heightsL{};
+	smvk::Holder<smvk::BufferHandle> heights;
+	smvk::LogicalBufferHandle heightsL{};
 	uint32_t w = 0, h = 0;
 
 	[[nodiscard]] bool Valid() const {
 		return !heights.empty() && !heightsL.empty() && w >= 2 && h >= 2;
 	}
-	void Destroy(RenderGraph& rg) {
+	void Destroy(smvk::RenderGraph& rg) {
 		if (!heightsL.empty()) rg.FreeBuffer(heightsL);
 		heightsL = {};
 		heights = {};
 		w = h = 0;
 	}
-	bool Upload(ResourceManager& ctx, RenderGraph& rg, const HeightfieldData& hf) {
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg, const HeightfieldData& hf) {
 		Destroy(rg);
 		if (!hf.valid()) return false;
 		if ((uint64_t)hf.width * hf.height > kPlacementMaxHfTexels) return false;
 		heights = ctx.CreateBuffer(sizeof(float) * hf.heights.size(),
-			BufferType_Storage, "placement heightfield");
+			smvk::BufferType_Storage, "placement heightfield");
 		if (heights.empty()) {
 			smvk::OnResourceExhaustion("placement heightfield buffer");
 			return false;
@@ -1126,11 +1126,11 @@ struct PlacementHeightfieldGpu {
 		}
 		ctx.UploadDataToBuffer(heights, hf.heights.data(),
 			sizeof(float) * hf.heights.size(),
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		w = hf.width; h = hf.height;
 		return true;
 	}
-	uint64_t Address(ResourceManager& ctx) const {
+	uint64_t Address(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(heights);
 	}
 };
@@ -1140,19 +1140,19 @@ struct PlacementHeightfieldGpu {
 // binding) change — NOT per frame. The scatter push addresses it by BDA
 // (the 64B push budget carries nothing inline).
 struct PlacementParamsGpu {
-	Holder<BufferHandle> params;
-	LogicalBufferHandle logical{};
+	smvk::Holder<smvk::BufferHandle> params;
+	smvk::LogicalBufferHandle logical{};
 
 	[[nodiscard]] bool Valid() const { return !params.empty() && !logical.empty(); }
-	void Destroy(RenderGraph& rg) {
+	void Destroy(smvk::RenderGraph& rg) {
 		if (!logical.empty()) rg.FreeBuffer(logical);
 		logical = {};
 		params = {};
 	}
-	bool Upload(ResourceManager& ctx, RenderGraph& rg, const PlacementDomainParams& p) {
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg, const PlacementDomainParams& p) {
 		Destroy(rg);
 		params = ctx.CreateBuffer(sizeof(PlacementDomainParams),
-			BufferType_Storage, "placement scatter params");
+			smvk::BufferType_Storage, "placement scatter params");
 		if (params.empty()) {
 			smvk::OnResourceExhaustion("placement scatter params buffer");
 			return false;
@@ -1163,10 +1163,10 @@ struct PlacementParamsGpu {
 			return false;
 		}
 		ctx.UploadDataToBuffer(params, &p, sizeof(p),
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 		return true;
 	}
-	uint64_t Address(ResourceManager& ctx) const {
+	uint64_t Address(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(params);
 	}
 };
@@ -1252,14 +1252,14 @@ inline bool BuildScatterPush(const PlacementSystem::LayerBinding& layer,
 // outside PlacementPass (which owns the tile slots) because domain data
 // has its own lifetime (asset-cooked, shared across slots).
 struct PlacementScatterPrograms {
-	Holder<ShaderModuleHandle> meshModule, hfModule;
-	ShaderProgram meshProgram{}, hfProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshModule, hfModule;
+	smvk::ShaderProgram meshProgram{}, hfProgram{};
 
 	[[nodiscard]] bool Valid() const {
 		return meshProgram.shaderCount != 0 && hfProgram.shaderCount != 0
 			&& !meshModule.empty() && !hfModule.empty();
 	}
-	bool Ensure(ResourceManager& ctx,
+	bool Ensure(smvk::ResourceManager& ctx,
 		const char* meshCsPath = kPlacementMeshTileCsPath,
 		const char* hfCsPath = kPlacementHfTileCsPath) {
 		if (Valid()) return true;
@@ -1276,15 +1276,15 @@ struct PlacementScatterPrograms {
 			return false;
 		}
 		if (meshModule.empty() || hfModule.empty()) return false;
-		Shader mcs{ .module = meshModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader mcs{ .module = meshModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		meshProgram = { .shaders = { mcs }, .shaderCount = 1 };
-		Shader hcs{ .module = hfModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader hcs{ .module = hfModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		hfProgram = { .shaders = { hcs }, .shaderCount = 1 };
 		return true;
 	}
 	void Destroy() {
-		meshProgram = ShaderProgram();
-		hfProgram = ShaderProgram();
+		meshProgram = smvk::ShaderProgram();
+		hfProgram = smvk::ShaderProgram();
 		meshModule = {};
 		hfModule = {};
 	}
@@ -1294,8 +1294,8 @@ struct PlacementScatterPrograms {
 	// programs, re-Ensure. Returns true when anything moved; the
 	// released old handles ride `retired` for the caller's retirement
 	// pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
+	[[nodiscard]] bool ReloadShaders(smvk::ResourceManager& ctx,
+		std::vector<smvk::ShaderModuleHandle>& retired) {
 		bool any = false;
 		any |= SwapShaderModule(ctx, kPlacementMeshTileCsPath,
 			"placementMeshTileCS", meshModule, retired);
@@ -1303,27 +1303,27 @@ struct PlacementScatterPrograms {
 			"placementHfTileCS", hfModule, retired);
 		if (!any)
 			return false;
-		meshProgram = ShaderProgram();
-		hfProgram = ShaderProgram();
+		meshProgram = smvk::ShaderProgram();
+		hfProgram = smvk::ShaderProgram();
 		Ensure(ctx);
 		return true;
 	}
 	// Scatter eval pass shell over a PlacementPass tile slot: slot buffers
 	// RW + domain/params buffers read-only (rendergraph emits the edges).
-	static RenderPass& AddScatterPass(RenderGraph& rg, const PlacementPass& pass,
-		uint32_t slot, const std::vector<LogicalBufferHandle>& domainReads,
-		LogicalBufferHandle paramsLogical, const char* name = "PlacementScatter") {
+	static smvk::RenderPass& AddScatterPass(smvk::RenderGraph& rg, const PlacementPass& pass,
+		uint32_t slot, const std::vector<smvk::LogicalBufferHandle>& domainReads,
+		smvk::LogicalBufferHandle paramsLogical, const char* name = "PlacementScatter") {
 		assert(pass.Valid() && slot < pass.tileSlots);
-		RenderPass& rp = rg.AddComputePass(name);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::RenderPass& rp = rg.AddComputePass(name);
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(pass.instanceLogicals[slot], rw);
 		rp.AddBufferHint(pass.countLogicals[slot], rw);
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
-		for (LogicalBufferHandle l : domainReads)
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+		for (smvk::LogicalBufferHandle l : domainReads)
 			if (!l.empty()) rp.AddBufferHint(l, read);
 		if (!paramsLogical.empty()) rp.AddBufferHint(paramsLogical, read);
 		return rp;
@@ -1331,14 +1331,14 @@ struct PlacementScatterPrograms {
 	// Recording helper (mirrors PlacementPass::PushAndDispatch). Same
 	// dispatch-setup contract: asserts the output/params BDAs and the
 	// candidate count before any dispatch is recorded.
-	static void PushAndDispatchScatter(CommandBuffer& cmd, ShaderProgram& program,
+	static void PushAndDispatchScatter(smvk::CommandBuffer& cmd, smvk::ShaderProgram& program,
 		const PlacementScatterPush& push) {
 		if (push.candidateCount == 0) return;
 		assert(push.outInstances != 0 && "placement scatter: null instances BDA");
 		assert(push.outCount != 0 && "placement scatter: null count BDA");
 		assert(push.params != 0 && "placement scatter: null params BDA");
 		cmd.BindComputePipeline(program);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch(PlacementDispatchGroups(push.candidateCount), 1, 1);
 	}
 };
@@ -1352,11 +1352,11 @@ struct PlacementConstraint {
 	uint32_t maxInstances = kPlacementConMaxInstances;
 	uint32_t maxCells = kPlacementConMaxCells;
 
-	Holder<BufferHandle> headBuffer, nextBuffer, flag2Buffer, paramsBuffer;
-	LogicalBufferHandle headLogical{}, nextLogical{}, flag2Logical{}, paramsLogical{};
+	smvk::Holder<smvk::BufferHandle> headBuffer, nextBuffer, flag2Buffer, paramsBuffer;
+	smvk::LogicalBufferHandle headLogical{}, nextLogical{}, flag2Logical{}, paramsLogical{};
 
-	Holder<ShaderModuleHandle> buildModule, electModule, killModule;
-	ShaderProgram buildProgram{}, electProgram{}, killProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> buildModule, electModule, killModule;
+	smvk::ShaderProgram buildProgram{}, electProgram{}, killProgram{};
 
 	[[nodiscard]] bool Valid() const {
 		return !headBuffer.empty() && !nextBuffer.empty() && !flag2Buffer.empty()
@@ -1369,7 +1369,7 @@ struct PlacementConstraint {
 			&& !electModule.empty() && !killModule.empty();
 	}
 
-	bool EnsureShaders(ResourceManager& ctx,
+	bool EnsureShaders(smvk::ResourceManager& ctx,
 		const char* buildCsPath = kPlacementConBuildCsPath,
 		const char* electCsPath = kPlacementConElectCsPath,
 		const char* killCsPath = kPlacementConKillCsPath) {
@@ -1391,11 +1391,11 @@ struct PlacementConstraint {
 			return false;
 		}
 		if (buildModule.empty() || electModule.empty() || killModule.empty()) return false;
-		Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader b{ .module = buildModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		buildProgram = { .shaders = { b }, .shaderCount = 1 };
-		Shader e{ .module = electModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader e{ .module = electModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		electProgram = { .shaders = { e }, .shaderCount = 1 };
-		Shader k{ .module = killModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+		smvk::Shader k{ .module = killModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		killProgram = { .shaders = { k }, .shaderCount = 1 };
 		return true;
 	}
@@ -1405,8 +1405,8 @@ struct PlacementConstraint {
 	// programs, re-Ensure. Returns true when anything moved; the
 	// released old handles ride `retired` for the caller's retirement
 	// pass.
-	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
-		std::vector<ShaderModuleHandle>& retired) {
+	[[nodiscard]] bool ReloadShaders(smvk::ResourceManager& ctx,
+		std::vector<smvk::ShaderModuleHandle>& retired) {
 		bool any = false;
 		any |= SwapShaderModule(ctx, kPlacementConBuildCsPath,
 			"placementConBuildCS", buildModule, retired);
@@ -1416,34 +1416,34 @@ struct PlacementConstraint {
 			"placementConKillCS", killModule, retired);
 		if (!any)
 			return false;
-		buildProgram = ShaderProgram();
-		electProgram = ShaderProgram();
-		killProgram = ShaderProgram();
+		buildProgram = smvk::ShaderProgram();
+		electProgram = smvk::ShaderProgram();
+		killProgram = smvk::ShaderProgram();
 		EnsureShaders(ctx);
 		return true;
 	}
 
-	bool Create(ResourceManager& ctx, RenderGraph& rg,
+	bool Create(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		uint32_t maxInst = kPlacementConMaxInstances,
 		uint32_t cells = kPlacementConMaxCells) {
 		if (maxInst == 0 || cells == 0) return false;
 		Destroy(rg);
-		Holder<BufferHandle> head = ctx.CreateBuffer(sizeof(uint32_t) * cells,
-			BufferType_Storage, "placement con head");
-		Holder<BufferHandle> next = ctx.CreateBuffer(sizeof(uint32_t) * maxInst,
-			BufferType_Storage, "placement con next");
-		Holder<BufferHandle> flag2 = ctx.CreateBuffer(sizeof(uint32_t) * 2 * maxInst,
-			BufferType_Storage, "placement con flags");
-		Holder<BufferHandle> prm = ctx.CreateBuffer(sizeof(PlacementConParams),
-			BufferType_Storage, "placement con params");
+		smvk::Holder<smvk::BufferHandle> head = ctx.CreateBuffer(sizeof(uint32_t) * cells,
+			smvk::BufferType_Storage, "placement con head");
+		smvk::Holder<smvk::BufferHandle> next = ctx.CreateBuffer(sizeof(uint32_t) * maxInst,
+			smvk::BufferType_Storage, "placement con next");
+		smvk::Holder<smvk::BufferHandle> flag2 = ctx.CreateBuffer(sizeof(uint32_t) * 2 * maxInst,
+			smvk::BufferType_Storage, "placement con flags");
+		smvk::Holder<smvk::BufferHandle> prm = ctx.CreateBuffer(sizeof(PlacementConParams),
+			smvk::BufferType_Storage, "placement con params");
 		if (head.empty() || next.empty() || flag2.empty() || prm.empty()) {
 			smvk::OnResourceExhaustion("placement constraint buffers");
 			return false;
 		}
-		LogicalBufferHandle headL = rg.AddExternalBuffer(head, "placement con head");
-		LogicalBufferHandle nextL = rg.AddExternalBuffer(next, "placement con next");
-		LogicalBufferHandle flag2L = rg.AddExternalBuffer(flag2, "placement con flags");
-		LogicalBufferHandle prmL = rg.AddExternalBuffer(prm, "placement con params");
+		smvk::LogicalBufferHandle headL = rg.AddExternalBuffer(head, "placement con head");
+		smvk::LogicalBufferHandle nextL = rg.AddExternalBuffer(next, "placement con next");
+		smvk::LogicalBufferHandle flag2L = rg.AddExternalBuffer(flag2, "placement con flags");
+		smvk::LogicalBufferHandle prmL = rg.AddExternalBuffer(prm, "placement con params");
 		if (headL.empty() || nextL.empty() || flag2L.empty() || prmL.empty()) {
 			rg.FreeBuffer(headL); rg.FreeBuffer(nextL);
 			rg.FreeBuffer(flag2L); rg.FreeBuffer(prmL);
@@ -1462,47 +1462,47 @@ struct PlacementConstraint {
 		return EnsureShaders(ctx);
 	}
 
-	void Destroy(RenderGraph& rg) {
-		for (LogicalBufferHandle l : { headLogical, nextLogical, flag2Logical, paramsLogical })
+	void Destroy(smvk::RenderGraph& rg) {
+		for (smvk::LogicalBufferHandle l : { headLogical, nextLogical, flag2Logical, paramsLogical })
 			if (!l.empty()) rg.FreeBuffer(l);
 		headLogical = {}; nextLogical = {}; flag2Logical = {}; paramsLogical = {};
 		headBuffer = {}; nextBuffer = {}; flag2Buffer = {}; paramsBuffer = {};
-		// (ShaderProgram() - the paren value-init form: GCC rejects the
-		// brace temporary; see the NOTE at struct ShaderProgram in smvk.h.)
-		buildProgram = ShaderProgram(); electProgram = ShaderProgram(); killProgram = ShaderProgram();
+		// (smvk::ShaderProgram() - the paren value-init form: GCC rejects the
+		// brace temporary; see the NOTE at struct smvk::ShaderProgram in smvk.h.)
+		buildProgram = smvk::ShaderProgram(); electProgram = smvk::ShaderProgram(); killProgram = smvk::ShaderProgram();
 		buildModule = {}; electModule = {}; killModule = {};
 	}
 
 	// Primes scratch: head=EMPTY, next=0, flag2=0 (~2MB uploads; tile-gen
 	// cadence only, never per-frame).
-	void Clear(ResourceManager& ctx) const {
+	void Clear(smvk::ResourceManager& ctx) const {
 		assert(Valid());
 		std::vector<uint32_t> empty(maxCells, 0xFFFFFFFFu);
 		ctx.UploadDataToBuffer(headBuffer, empty.data(), sizeof(uint32_t) * maxCells,
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite, 0, 0);
 		std::vector<uint32_t> zeros(maxInstances * 2, 0);
 		ctx.UploadDataToBuffer(nextBuffer, zeros.data(), sizeof(uint32_t) * maxInstances,
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite, 0, 0);
 		ctx.UploadDataToBuffer(flag2Buffer, zeros.data(), sizeof(uint32_t) * maxInstances * 2,
-			PipelineStageBit_Transfer, AccessFlags::TransferWrite, 0, 0);
+			smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite, 0, 0);
 	}
 
-	void UploadParams(ResourceManager& ctx, const PlacementConParams& p) const {
+	void UploadParams(smvk::ResourceManager& ctx, const PlacementConParams& p) const {
 		assert(Valid());
 		ctx.UploadDataToBuffer(paramsBuffer, &p, sizeof(p),
-			PipelineStageBit_Compute, AccessFlags::ShaderRead, 0, 0);
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
 	}
 
-	uint64_t HeadAddress(ResourceManager& ctx) const {
+	uint64_t HeadAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(headBuffer);
 	}
-	uint64_t NextAddress(ResourceManager& ctx) const {
+	uint64_t NextAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(nextBuffer);
 	}
-	uint64_t Flag2Address(ResourceManager& ctx) const {
+	uint64_t Flag2Address(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(flag2Buffer);
 	}
-	uint64_t ParamsAddress(ResourceManager& ctx) const {
+	uint64_t ParamsAddress(smvk::ResourceManager& ctx) const {
 		return ctx.GetBufferDeviceAddress(paramsBuffer);
 	}
 
@@ -1513,67 +1513,67 @@ struct PlacementConstraint {
 	//          read (.x snapshot) AND written (.y) -> RW hint. The .x
 	//          snapshot is stable because elect completed (pass edge) and
 	//          kill never writes .x.
-	static RenderPass& AddBuildPass(RenderGraph& rg, const PlacementConstraint& con,
-		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
+	static smvk::RenderPass& AddBuildPass(smvk::RenderGraph& rg, const PlacementConstraint& con,
+		smvk::LogicalBufferHandle instancesLogical, smvk::LogicalBufferHandle countLogical,
 		const char* name = "PlacementConBuild") {
-		RenderPass& rp = rg.AddComputePass(name);
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::RenderPass& rp = rg.AddComputePass(name);
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(instancesLogical, read);
 		rp.AddBufferHint(countLogical, read);
 		rp.AddBufferHint(con.paramsLogical, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(con.headLogical, rw);
 		rp.AddBufferHint(con.nextLogical, rw);
 		return rp;
 	}
-	static RenderPass& AddElectPass(RenderGraph& rg, const PlacementConstraint& con,
-		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
-		LogicalBufferHandle flag2Logical,
+	static smvk::RenderPass& AddElectPass(smvk::RenderGraph& rg, const PlacementConstraint& con,
+		smvk::LogicalBufferHandle instancesLogical, smvk::LogicalBufferHandle countLogical,
+		smvk::LogicalBufferHandle flag2Logical,
 		const char* name = "PlacementConElect") {
-		RenderPass& rp = rg.AddComputePass(name);
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::RenderPass& rp = rg.AddComputePass(name);
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(instancesLogical, read);
 		rp.AddBufferHint(countLogical, read);
 		rp.AddBufferHint(con.paramsLogical, read);
 		rp.AddBufferHint(con.headLogical, read);
 		rp.AddBufferHint(con.nextLogical, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(flag2Logical, rw);
 		return rp;
 	}
-	static RenderPass& AddKillPass(RenderGraph& rg, const PlacementConstraint& con,
-		LogicalBufferHandle instancesLogical, LogicalBufferHandle countLogical,
-		LogicalBufferHandle flag2Logical,
+	static smvk::RenderPass& AddKillPass(smvk::RenderGraph& rg, const PlacementConstraint& con,
+		smvk::LogicalBufferHandle instancesLogical, smvk::LogicalBufferHandle countLogical,
+		smvk::LogicalBufferHandle flag2Logical,
 		const char* name = "PlacementConKill") {
-		RenderPass& rp = rg.AddComputePass(name);
-		BufferSyncRequest read{};
-		read.barrierMasks.accessMask = AccessFlags::ShaderRead;
-		read.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::RenderPass& rp = rg.AddComputePass(name);
+		smvk::BufferSyncRequest read{};
+		read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+		read.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(instancesLogical, read);
 		rp.AddBufferHint(countLogical, read);
 		rp.AddBufferHint(con.paramsLogical, read);
 		rp.AddBufferHint(con.headLogical, read);
 		rp.AddBufferHint(con.nextLogical, read);
-		BufferSyncRequest rw{};
-		rw.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-		rw.barrierMasks.stageMask = PipelineStageBit_Compute;
+		smvk::BufferSyncRequest rw{};
+		rw.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
+		rw.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
 		rp.AddBufferHint(flag2Logical, rw);
 		return rp;
 	}
 
-	static void PushAndDispatchCon(CommandBuffer& cmd, ShaderProgram& program,
+	static void PushAndDispatchCon(smvk::CommandBuffer& cmd, smvk::ShaderProgram& program,
 		const PlacementConPush& push, uint32_t count) {
 		if (count == 0) return;
 		cmd.BindComputePipeline(program);
-		cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+		cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
 		cmd.Dispatch((count + 63) / 64, 1, 1);
 	}
 
@@ -1694,10 +1694,10 @@ struct PlacementWorldRuntime {
 		// verdicts to every resident tile (the review's findings 5+7).
 		// Created at tenancy only when the layer min-spaces; empty =
 		// no constraint filter (the cull's alive test off).
-		Holder<BufferHandle> aliveBuffer;
-		LogicalBufferHandle aliveL{};
+		smvk::Holder<smvk::BufferHandle> aliveBuffer;
+		smvk::LogicalBufferHandle aliveL{};
 		uint64_t aliveBDA = 0;
-		void Destroy(RenderGraph& rg) {
+		void Destroy(smvk::RenderGraph& rg) {
 			hf.Destroy(rg);
 			eco.Destroy(rg);
 			params.Destroy(rg);
@@ -1714,7 +1714,7 @@ struct PlacementWorldRuntime {
 
 	[[nodiscard]] bool Valid() const { return created && pass.Valid(); }
 
-	bool Create(ResourceManager& ctx, RenderGraph& rg) {
+	bool Create(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
 		if (!layer || !hfield || !masks) return false;
 		if (slotBudget == 0 || viewBudget == 0) return false;
 		Destroy(rg);
@@ -1753,7 +1753,7 @@ struct PlacementWorldRuntime {
 		created = true;
 		return true;
 	}
-	void Destroy(RenderGraph& rg) {
+	void Destroy(smvk::RenderGraph& rg) {
 		for (auto& a : active)
 			a.Destroy(rg);
 		active.clear();
@@ -1788,7 +1788,7 @@ struct PlacementWorldRuntime {
 	// written (COMPUTE) by draw-build every frame, so the bytes this
 	// used to upload can never strand from the draw's barrier (the
 	// old upload was the stranded-upload-write hazard; see todo.txt).
-	bool SeedIndirect(ResourceManager& /*ctx*/, uint32_t view,
+	bool SeedIndirect(smvk::ResourceManager& /*ctx*/, uint32_t view,
 		const PlacementIndirectCmd* seeds, uint32_t cmdCount) {
 		if (view >= viewBudget) return false;
 		if (!seeds || cmdCount == 0 || cmdCount > kPlacementMaxProtos)
@@ -1834,7 +1834,7 @@ struct PlacementWorldRuntime {
 		}
 		return h;
 	}
-	void BeginFrame(ResourceManager& ctx, RenderGraph& rg,
+	void BeginFrame(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const glm::vec4* interests, size_t interestCount,
 		const DependencyVersions& deps) {
 		if (!created) return;
@@ -1911,9 +1911,9 @@ struct PlacementWorldRuntime {
 				const size_t aliveElems =
 					2 * size_t(pass.desc.maxInstancesPerTile);
 				at.aliveBuffer = ctx.CreateBuffer(
-					sizeof(uint32_t) * aliveElems, BufferType_Storage,
+					sizeof(uint32_t) * aliveElems, smvk::BufferType_Storage,
 					"placement con alive");
-				at.aliveL = at.aliveBuffer.empty() ? LogicalBufferHandle{}
+				at.aliveL = at.aliveBuffer.empty() ? smvk::LogicalBufferHandle{}
 					: rg.AddExternalBuffer(at.aliveBuffer,
 						"placement con alive");
 				if (at.aliveBuffer.empty() || at.aliveL.empty()) {
@@ -1924,7 +1924,7 @@ struct PlacementWorldRuntime {
 				const std::vector<uint32_t> zeros(aliveElems, 0u);
 				ctx.UploadDataToBuffer(at.aliveBuffer, zeros.data(),
 					sizeof(uint32_t) * zeros.size(),
-					PipelineStageBit_Transfer, AccessFlags::TransferWrite,
+					smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite,
 					0, 0);
 				at.aliveBDA = ctx.GetBufferDeviceAddress(at.aliveBuffer);
 			}
@@ -2062,8 +2062,8 @@ struct PlacementWorldRuntime {
 	// tile. The renderer calls this per view (the main camera, each
 	// shadow view...) BEFORE recording the draws; overlapping in-flight
 	// frames need their own VIEW SETS (view < viewBudget).
-	void RecordCullChain(ResourceManager& ctx, RenderGraph& rg,
-		uint32_t view, LogicalBufferHandle renderViewsLogical,
+	void RecordCullChain(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+		uint32_t view, smvk::LogicalBufferHandle renderViewsLogical,
 		uint64_t renderViewsBDA, uint32_t renderViewIndex,
 		const glm::vec3& camPos, uint32_t cullFlags) {
 		if (!created || view >= viewBudget) return;

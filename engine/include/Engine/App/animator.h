@@ -9,8 +9,8 @@
 // data. Gameplay code composes the handle:
 //
 //   struct Knight {
-//       MeshEntityHandle mesh{};
-//       AnimatorHandle animator{};
+//       smvk::MeshEntityHandle mesh{};
+//       smvk::AnimatorHandle animator{};
 //   };
 //   knight.mesh = world.SpawnMeshFromNode(knightRig, frame, parent);
 //   auto anim = world.AddAnimator(knight.mesh, std::move(idleClip));
@@ -30,7 +30,7 @@
 // independent RENDERING is the v1 limit (one pose per cluster — the
 // per-draw palette table is the documented renderer follow-up).
 //
-// CLIPS are touranim::Clip values (loaded through the .tourAnim
+// CLIPS are asset::Clip values (loaded through the .tourAnim
 // channel — LoadTourAnimText; the AnimationClipKey catalog bucket +
 // the LoadAnimation asset surface are the follow-up that makes
 // `anim.Play(project::animations::Idle)` resolve bytes by id). Clips
@@ -49,9 +49,8 @@
 namespace tour { struct Cluster; }
 
 namespace tour {
-// (migration compat) the animator references the World + handle types
-// unqualified; qualify as call sites migrate, then drop this.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) fully qualified - no broad
+// using-directive (R6-gated).
 
 struct World;
 
@@ -59,7 +58,7 @@ struct World;
 // + the crossfade target). `cursor` advances by dt*speed (looping
 // wraps at the clip duration; one-shots clamp and retire).
 struct AnimatorLayer {
-	touranim::Clip clip;
+	asset::Clip clip;
 	double cursor = 0.0;
 	float weight = 1.0f; // the blend weight (crossfade ramps it)
 	bool loop = true;
@@ -67,7 +66,7 @@ struct AnimatorLayer {
 };
 
 // World-owned playback state (one per AddAnimator; the registry's
-// slot carries the generational identity — see AnimatorHandle).
+// slot carries the generational identity — see smvk::AnimatorHandle).
 // `restLocals` is the pose captured at ATTACH (a fresh cluster's
 // loaded locals = the bind pose; document: attach before any other
 // writer moves the joints if you need exact bind).
@@ -82,7 +81,7 @@ struct AnimatorState {
 	bool playing = false;
 	// The binding: the mesh entity + its skeleton's owning cluster +
 	// the captured rest pose (per skeleton joint, cluster node order).
-	MeshEntityHandle mesh{};
+	smvk::MeshEntityHandle mesh{};
 	Cluster* target = nullptr;
 	std::vector<glm::mat4> restLocals;
 	// The evaluated pose (joint LOCALS, skeleton joint order — the
@@ -100,11 +99,11 @@ void AdvanceAnimator(AnimatorState& state, float dt);
 
 // Starts/restarts a clip (loop = wrap at duration). A running clip is
 // replaced (the classic Play semantics — no fade).
-void AnimatorPlay(AnimatorState& state, touranim::Clip clip, bool loop);
+void AnimatorPlay(AnimatorState& state, asset::Clip clip, bool loop);
 // Cross-fades to a clip over fadeSeconds (the running clip's weight
 // ramps down as the target's ramps up; the fade completes by
 // replacement). fadeSeconds <= 0 = an immediate Play.
-void AnimatorCrossFade(AnimatorState& state, touranim::Clip clip,
+void AnimatorCrossFade(AnimatorState& state, asset::Clip clip,
 	float fadeSeconds);
 
 // The lightweight FACADE over World-owned state (the public API the
@@ -114,12 +113,12 @@ void AnimatorCrossFade(AnimatorState& state, touranim::Clip clip,
 class Animator {
 public:
 	Animator() = default;
-	Animator(World& world, AnimatorHandle handle)
+	Animator(World& world, smvk::AnimatorHandle handle)
 		: m_world(&world), m_handle(handle) {}
 
 	[[nodiscard]] explicit operator bool() const;
-	void Play(touranim::Clip clip, bool loop = true);
-	void CrossFade(touranim::Clip clip, float fadeSeconds);
+	void Play(asset::Clip clip, bool loop = true);
+	void CrossFade(asset::Clip clip, float fadeSeconds);
 	void SetSpeed(float speed);
 	void Pause();
 	void Resume();
@@ -127,11 +126,11 @@ public:
 	[[nodiscard]] float Speed() const;
 	[[nodiscard]] bool Playing() const;
 
-	[[nodiscard]] AnimatorHandle handle() const { return m_handle; }
+	[[nodiscard]] smvk::AnimatorHandle handle() const { return m_handle; }
 
 private:
 	World* m_world = nullptr;
-	AnimatorHandle m_handle{};
+	smvk::AnimatorHandle m_handle{};
 };
 
 } // namespace tour

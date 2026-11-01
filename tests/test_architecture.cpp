@@ -671,17 +671,15 @@ int main() {
 	// boundary regression; retiring one REQUIRES deleting its row.
 	{
 		struct FileCount { const char* file; int count; };
+		// EMPTY (item 1 of the remaining-changes list: zero broad
+		// namespace imports in public headers - the last ten removed,
+		// their RHI names qualified or their impl TUs carry the
+		// TU-local escape hatch). Any new `using namespace ...smvk`
+		// in a public header fails outright. (The {nullptr, 0}
+		// sentinel is the empty-list representation: zero-size
+		// arrays are not C++.)
 		static const FileCount kBaseline[] = {
-			{ "App/world.h", 1 },
-			{ "App/cluster.h", 1 },
-			{ "App/animator.h", 1 },
-			{ "Asset/pak.h", 1 },
-			{ "GI/lightmap.h", 1 },
-			{ "GI/regular_volume.h", 1 },
-			{ "GI/cubemap_volume.h", 1 },
-			{ "GI/bake_inputs.h", 1 },
-			{ "GI/bake.h", 1 },
-			{ "Placement/placement_terrain.h", 1 },
+			{ nullptr, 0 },
 		};
 		static const std::regex re(
 			"using\\s+namespace\\s*(::)?\\s*smvk"
@@ -696,7 +694,7 @@ int main() {
 			int expected = 0;
 			bool inBaseline = false;
 			for (const FileCount& b : kBaseline)
-				if (r == b.file) {
+				if (b.file && r == b.file) {
 					expected = b.count;
 					inBaseline = true;
 					break;
@@ -712,7 +710,7 @@ int main() {
 					+ ") - DELETE the baseline row");
 		}
 		for (const FileCount& b : kBaseline)
-			if (!scanned.count(b.file))
+			if (b.file && !scanned.count(b.file))
 				stale.push_back(std::string(b.file)
 					+ ": baseline row points at a missing header"
 					" - DELETE it");
@@ -983,7 +981,6 @@ int main() {
 			{ "Camera/camera.h", 7 },
 			{ "Rendergraph/envzones.h", 1 },
 			{ "Utils/bvh.h", 15 },
-			{ "Renderer/dxc_integration.h", 2 },
 		};
 		static const std::regex reReexport(
 			"using\\s+(namespace\\s+)?(\\w+\\s*=\\s*)?(::)?tour\\s*::");

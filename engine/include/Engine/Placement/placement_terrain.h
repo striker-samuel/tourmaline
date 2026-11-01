@@ -22,10 +22,8 @@
 #include <Engine/Rendergraph/terrain_hfield.h>
 
 namespace tour::placement {
-// (migration compat) the moved block still spells the engine's smvk
-// types unqualified; qualify them as call sites migrate, then drop
-// this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) fully qualified - no broad
+// using-directive (R6-gated).
 
 struct TerrainParams {
 	glm::vec2 origin{ 0.0f, 0.0f }; // world XZ of texel (0,0)

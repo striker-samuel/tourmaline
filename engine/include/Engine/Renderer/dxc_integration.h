@@ -43,7 +43,7 @@ std::vector<char> CompileHLSLToSPIRV(std::string_view source,
 
 } // namespace tour::dxc
 
-// GLOBAL compat aliases (the migration bridge; retire with the call
-// sites — the R9 boundary gate baselines these).
-using tour::dxc::DxcShaderStage;
-using tour::dxc::CompileHLSLToSPIRV;
+// (namespace/RHI boundary audit) the GLOBAL compat re-exports that
+// lived here are RETIRED (item 2, the compat-layer cleanup): every
+// consumer now spells tour::dxc:: explicitly - the R9 baseline row is
+// deleted in the same commit, per the shrink-only contract.

@@ -33,34 +33,34 @@ namespace fs = std::filesystem;
 // ---- the stage/entry conventions (CompileShaders.cmake's
 // _detect_hlsl_stage_and_entry, the runtime mirror) ------------------
 bool StageAndEntry(const std::string& fileName,
-	DxcShaderStage& stage, std::wstring& entry) {
+	tour::dxc::DxcShaderStage& stage, std::wstring& entry) {
 	auto endsWith = [&](const char* suffix) {
 		const size_t n = std::strlen(suffix);
 		return fileName.size() >= n
 			&& fileName.compare(fileName.size() - n, n, suffix) == 0;
 	};
 	if (endsWith(".vert.hlsl")) {
-		stage = DxcShaderStage::Vertex;
+		stage = tour::dxc::DxcShaderStage::Vertex;
 		entry = L"mainVS";
 		return true;
 	}
 	if (endsWith(".frag.hlsl") || endsWith(".pix.hlsl")) {
-		stage = DxcShaderStage::Fragment;
+		stage = tour::dxc::DxcShaderStage::Fragment;
 		entry = L"mainPS";
 		return true;
 	}
 	if (endsWith(".cs.hlsl") || endsWith(".comp.hlsl")) {
-		stage = DxcShaderStage::Compute;
+		stage = tour::dxc::DxcShaderStage::Compute;
 		entry = L"mainCS";
 		return true;
 	}
 	if (endsWith(".mesh.hlsl") || endsWith(".ms.hlsl")) {
-		stage = DxcShaderStage::Mesh;
+		stage = tour::dxc::DxcShaderStage::Mesh;
 		entry = L"mainMS";
 		return true;
 	}
 	if (endsWith(".task.hlsl") || endsWith(".as.hlsl")) {
-		stage = DxcShaderStage::Task;
+		stage = tour::dxc::DxcShaderStage::Task;
 		entry = L"mainAS";
 		return true;
 	}
@@ -178,7 +178,7 @@ bool WriteAtomic(const fs::path& target, const char* data, size_t size,
 // validate -> byte-compare (skip identical) -> atomic write. False +
 // diagnostic on failure (the target is NEVER touched then).
 bool CompileAndLand(const std::string& sourceText,
-	const fs::path& sourcePath, DxcShaderStage stage,
+	const fs::path& sourcePath, tour::dxc::DxcShaderStage stage,
 	const std::wstring& entry, const std::vector<std::string>& defines,
 	const fs::path& outSpv, Change& out) {
 	// The -D arguments (wide form).
@@ -189,7 +189,7 @@ bool CompileAndLand(const std::string& sourceText,
 	std::string diagnostic;
 	std::vector<char> spirv;
 	try {
-		spirv = CompileHLSLToSPIRV(sourceText, stage, entry.c_str(),
+		spirv = tour::dxc::CompileHLSLToSPIRV(sourceText, stage, entry.c_str(),
 			sourcePath.parent_path().wstring(), wideDefines,
 			&diagnostic);
 	}
@@ -251,7 +251,7 @@ bool Recompile(const std::string& hlslAbsPath,
 	out.source = source.generic_string();
 	const std::string fileName =
 		source.filename().generic_string();
-	DxcShaderStage stage = DxcShaderStage::Vertex;
+	tour::dxc::DxcShaderStage stage = tour::dxc::DxcShaderStage::Vertex;
 	std::wstring entry;
 	if (!StageAndEntry(fileName, stage, entry)) {
 		out.status = Status::Failed;

@@ -20,6 +20,12 @@
 #include <Engine/Utils/thread_pool.h>
 
 namespace tour::asset {
+// (namespace/RHI boundary audit) TU-LOCAL escape hatch: this impl TU
+// still spells the smvk names unqualified (ThreadPool,
+// TextureStreamMeta, VfsStat...); the header-level broad import is
+// GONE (R6), so the TU carries its own contained using-directive -
+// the documented pattern. Qualify opportunistically.
+using namespace ::smvk;
 namespace {
 
 static_assert(std::endian::native == std::endian::little,

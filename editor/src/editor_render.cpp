@@ -2753,11 +2753,11 @@ float4 mainPS(float4 position : SV_Position, float3 color : COLOR0) : SV_Target 
 )";
 		try {
 			m_triangleVsModule = m_context->CreateShaderModule(
-				CompileHLSLToSPIRV(kVert, DxcShaderStage::Vertex,
+				tour::dxc::CompileHLSLToSPIRV(kVert, tour::dxc::DxcShaderStage::Vertex,
 					L"mainVS"),
 				"triangleEmbedVS");
 			m_triangleFsModule = m_context->CreateShaderModule(
-				CompileHLSLToSPIRV(kFrag, DxcShaderStage::Fragment,
+				tour::dxc::CompileHLSLToSPIRV(kFrag, tour::dxc::DxcShaderStage::Fragment,
 					L"mainPS"),
 				"triangleEmbedFS");
 		}

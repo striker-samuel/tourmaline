@@ -13,18 +13,16 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/animator.h>
-#include <Engine/Asset/cluster_serializer.h> // ExternalTextureResolver
+#include <Engine/Asset/cluster_serializer.h> // smvk::ExternalTextureResolver
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Utils/bvh.h>
-#include <Engine/Scene/entity_handle.h> // AudioSourceHandle (typed)
+#include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/scene.h>
 
 namespace tour {
-// (migration compat) the moved block still spells the RHI/engine smvk
-// types unqualified (ResourceManager, TextureStreamer, Cluster...);
-// qualify as call sites migrate, then drop this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) this block's RHI dependencies are
+// FULLY QUALIFIED (smvk::) - no broad using-directive (R6-gated).
 
 	class TextureStreamer;
 
@@ -34,7 +32,7 @@ using namespace ::smvk;
 	// are NOT kept resident past the bake in v1 (GPU mask textures land
 	// with the atlas in phase 4). Empty (hasTerrain=false) = no terrain.
 	struct TerrainSource {
-		terrain::TerrainHField hfield{};
+		smvk::terrain::TerrainHField hfield{};
 		// 256 S-tiles of 256x256 RGBA8, row-major (tz*16+tx) test masks.
 		// Present only between harvest and the terrain bake.
 		std::vector<std::vector<uint8_t>> masks{};
@@ -242,7 +240,7 @@ using namespace ::smvk;
 		// positions from the merged global transforms — merged node
 		// ids themselves are rebuilt on every resolve (unstable).
 		std::vector<std::vector<NodeId>> clusterMergedNodes;
-		// Runtime audio-source entity registry (the AudioSourceHandle
+		// Runtime audio-source entity registry (the smvk::AudioSourceHandle
 		// slots — see SpawnAudioSource). Keyed by handle index; the
 		// generation is the stale-handle guarantee. `owner` +
 		// `clusterNode` are the DURABLE identity (the dynamic cluster
@@ -278,7 +276,7 @@ using namespace ::smvk;
 			// below): empty = inherit the base material's default.
 			// Binding changes mark the world dirty like any other
 			// mirror edit; the INSTANCE VALUE stays live in the pool.
-			MaterialInstanceHandle materialInstance{};
+			smvk::MaterialInstanceHandle materialInstance{};
 		};
 		std::vector<MeshEntity> meshEntities;
 		std::vector<uint32_t> meshEntityFree;
@@ -336,9 +334,9 @@ using namespace ::smvk;
 		// Per-mesh LOD markers parallel to meshLocations (cook-time chain:
 		// LOD0 + "/lodN" siblings with world-scaled simplifier error used
 		// for runtime LOD selection — see SelectLodIndex).
-		std::vector<LodInfo> meshLodInfos;
+		std::vector<smvk::LodInfo> meshLodInfos;
 
-		Cluster& LoadCluster(ResourceManager& ctx);
+		Cluster& LoadCluster(smvk::ResourceManager& ctx);
 		// Deserializes a cooked pak (PakReader over caller-owned bytes) into
 		// a new registered Cluster. Throws std::runtime_error on failure.
 		// The caller issues ctx.FlushUploads() after ResolveAndFixup.
@@ -346,16 +344,16 @@ using namespace ::smvk;
 		// CreateStreamingTextureFromMeta (tail-only upload, no KTX parse)
 		// and register for demand upgrades — imagePin (the loaded pak
 		// image) must then be given to pin the borrowed payloads.
-		Cluster& LoadClusterFromPak(ResourceManager& ctx, const class PakReader& reader,
+		Cluster& LoadClusterFromPak(smvk::ResourceManager& ctx, const asset::PakReader& reader,
 			uint32_t sceneIndex = 0,
-			::smvk::TextureStreamer* streamer = nullptr,
+			TextureStreamer* streamer = nullptr,
 			std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
-			const ExternalTextureResolver* externalTexture = nullptr);
+			const smvk::ExternalTextureResolver* externalTexture = nullptr);
 		// Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
 		// into terrainSource (byte copies; the reader may die after). Also
 		// called by LoadClusterFromPak (non-fatal: scene loads even when
 		// terrain is broken). False with err set on malformed terrain.
-		bool LoadTerrainFromPak(const class PakReader& reader, std::string& err);
+		bool LoadTerrainFromPak(const asset::PakReader& reader, std::string& err);
 		// The world's DYNAMIC cluster (see Cluster::isDynamic): the
 		// dedicated home for runtime-created entities (editor-created
 		// lights/cameras, app demo content, later decals/particles).
@@ -365,7 +363,7 @@ using namespace ::smvk;
 		// either edit incrementally (node in the merged scene + location
 		// push, the editor's live path) or keep their nodes in the
 		// dynamic cluster's own scene so a later resolve folds them in.
-		Cluster& EnsureDynamicCluster(ResourceManager* ctx);
+		Cluster& EnsureDynamicCluster(smvk::ResourceManager* ctx);
 		// Runtime decal creation (app presets, the renderer's J crosshair
 		// spawn): appends a node with `frame` as its local transform
 		// (translation = projector center, local -Z into the surface, +Y
@@ -386,7 +384,7 @@ using namespace ::smvk;
 		// durable home is the dynamic cluster's own scene, so the
 		// entity survives pak-cluster unloads + resolves — the
 		// CreateDecalAt pattern) + the SceneAudioSource payload row +
-		// a registry slot keyed by the returned AudioSourceHandle. A
+		// a registry slot keyed by the returned smvk::AudioSourceHandle. A
 		// MIRROR row lands in the merged scene for immediate
 		// visibility. Gameplay code holds the handle and destroys it
 		// EXPLICITLY (World::DestroyAudioSource); authored .tour
@@ -394,7 +392,7 @@ using namespace ::smvk;
 		// `parent` (optional, UINT32_MAX = the world root) parents
 		// the durable node — the emitter pose resolves from the node's
 		// GLOBAL transform at use, so parenting applies like meshes.
-		AudioSourceHandle SpawnAudioSource(const glm::mat4& localFrame,
+		smvk::AudioSourceHandle SpawnAudioSource(const glm::mat4& localFrame,
 			NodeId parent, const SceneAudioSource& def);
 		// Destroys the spawned emitter (its rows + nodes drop, its
 		// registry generation advances — every stale copy of the
@@ -402,14 +400,14 @@ using namespace ::smvk;
 		// handle. The VOICES keyed to it stop: the audio manager
 		// validates its emitters against IsAudioSourceAlive each
 		// update (nothing here reaches the mixer).
-		bool DestroyAudioSource(AudioSourceHandle handle);
-		[[nodiscard]] bool IsAudioSourceAlive(AudioSourceHandle handle)
+		bool DestroyAudioSource(smvk::AudioSourceHandle handle);
+		[[nodiscard]] bool IsAudioSourceAlive(smvk::AudioSourceHandle handle)
 			const;
 		// The emitter's MERGED-scene node (UINT32_MAX = stale handle
 		// or not-yet-resolved). Unstable across resolves — the durable
 		// identity is the handle; use this only for same-frame reads
 		// (FindAudioSource on the merged row, gizmo selection...).
-		[[nodiscard]] NodeId AudioSourceNode(AudioSourceHandle handle)
+		[[nodiscard]] NodeId AudioSourceNode(smvk::AudioSourceHandle handle)
 			const;
 
 		// ---- runtime MESH entities (the gameplay-handle surface,
@@ -428,7 +426,7 @@ using namespace ::smvk;
 		// SpawnMeshFromNode copies the source NODE's mesh + material
 		// associations (the classic spawn-point instancing); empty
 		// handle on a bad source.
-		MeshEntityHandle SpawnMeshFromNode(NodeId sourceNode,
+		smvk::MeshEntityHandle SpawnMeshFromNode(NodeId sourceNode,
 			const glm::mat4& frame, NodeId parent);
 		// The KEY-DRIVEN spawn (the content-as-code lane, the typed-key
 		// gameplay surface): instances a WORLD MESH ROW directly — no
@@ -440,33 +438,33 @@ using namespace ::smvk;
 		// base-material row (kInvalidIndex = material-less). The parent
 		// contract matches SpawnMeshFromNode (the resolved hierarchy
 		// owns the merge). Empty handle on a bad row.
-		MeshEntityHandle SpawnMesh(uint32_t worldMeshIndex,
+		smvk::MeshEntityHandle SpawnMesh(uint32_t worldMeshIndex,
 			const glm::mat4& frame, NodeId parent,
 			uint32_t worldMaterialIndex = kInvalidIndex);
 		// The shared spawn core (both entries): the durable transform
 		// node (dynamic cluster) + the merged mirror (fresh world
 		// indices) + the entity slot. NOT API — the public entries
 		// resolve the (mesh, material) bindings from their own sources.
-		MeshEntityHandle SpawnMeshEntityInternal(
+		smvk::MeshEntityHandle SpawnMeshEntityInternal(
 			const MeshLocation& meshLoc, const MaterialLocation* matLoc,
 			const glm::mat4& frame);
 		// Destroys the entity (rows + nodes drop, the generation
 		// advances — stale copies fail validation forever). The
 		// ATTACHED animator (an explicitly-owned attachment) dies with
 		// it: its playback state + its external-pose claim drop; an
-		// independently-held AnimatorHandle fails validation.
-		bool DestroyMesh(MeshEntityHandle handle);
-		[[nodiscard]] bool IsMeshEntityAlive(MeshEntityHandle handle)
+		// independently-held smvk::AnimatorHandle fails validation.
+		bool DestroyMesh(smvk::MeshEntityHandle handle);
+		[[nodiscard]] bool IsMeshEntityAlive(smvk::MeshEntityHandle handle)
 			const;
 		// The entity's MERGED-scene node (UINT32_MAX = stale). Like
 		// AudioSourceNode: unstable across resolves, same-frame use.
-		[[nodiscard]] NodeId MeshEntityNode(MeshEntityHandle handle)
+		[[nodiscard]] NodeId MeshEntityNode(smvk::MeshEntityHandle handle)
 			const;
 		// The world meshLocations index the entity's mesh resolves
 		// through (UINT32_MAX = stale/unresolvable — the owning
 		// cluster may have been unloaded).
 		[[nodiscard]] uint32_t MeshEntityMeshIndex(
-			MeshEntityHandle handle) const;
+			smvk::MeshEntityHandle handle) const;
 
 		// ---- material runtime state + MATERIAL INSTANCES (the
 		// 32-bit userdata lane, docs/shader_library_design.md) ----
@@ -488,30 +486,30 @@ using namespace ::smvk;
 			uint32_t materialIndex) const;
 		// Creates a material instance over a base material (the shared
 		// base row stays untouched). Empty handle on a bad base index.
-		[[nodiscard]] MaterialInstanceHandle CreateMaterialInstance(
+		[[nodiscard]] smvk::MaterialInstanceHandle CreateMaterialInstance(
 			uint32_t baseMaterialIndex);
 		// Destroys the instance (its overrides die with it; meshes
 		// bound to it silently fall back to the base default — the
 		// drawItems linkage stays valid, ResolvedItemUserData skips
 		// dead slots). NEVER touches the base material.
-		bool DestroyMaterialInstance(MaterialInstanceHandle handle);
+		bool DestroyMaterialInstance(smvk::MaterialInstanceHandle handle);
 		[[nodiscard]] bool IsMaterialInstanceAlive(
-			MaterialInstanceHandle handle) const;
+			smvk::MaterialInstanceHandle handle) const;
 		// Binds a material instance to a live mesh ENTITY (the
 		// per-entity override join — static scene nodes take instances
 		// through spawn/editor flows only in v1). Binding marks the
 		// world for the next resolve's linkage rebuild; the instance
 		// VALUE stays live per frame. False on stale handles.
-		bool SetMeshMaterialInstance(MeshEntityHandle mesh,
-			MaterialInstanceHandle instance);
+		bool SetMeshMaterialInstance(smvk::MeshEntityHandle mesh,
+			smvk::MaterialInstanceHandle instance);
 		// The instance's value override (live: visible on the next
 		// frame build, no rebuild). False on a stale handle.
-		bool SetMaterialInstanceUserData(MaterialInstanceHandle instance,
+		bool SetMaterialInstanceUserData(smvk::MaterialInstanceHandle instance,
 			uint32_t userData);
 		// Clears the override — the instance goes back to inheriting
 		// the base material's default. False on a stale handle.
 		bool ClearMaterialInstanceUserDataOverride(
-			MaterialInstanceHandle instance);
+			smvk::MaterialInstanceHandle instance);
 		// The per-frame RESOLUTION: a draw item's effective userdata —
 		// the bound instance's override when live and overriding, else
 		// the base material default. This is what the draw producers
@@ -541,17 +539,17 @@ using namespace ::smvk;
 		// forwards to World-owned state; clips pass BY VALUE (the
 		// animator owns its copy — shared clip caches are the asset
 		// manager's business).
-		[[nodiscard]] Animator AddAnimator(MeshEntityHandle mesh,
-			touranim::Clip initialClip);
+		[[nodiscard]] Animator AddAnimator(smvk::MeshEntityHandle mesh,
+			asset::Clip initialClip);
 		// Destroys the animator (independent ownership — gameplay code
 		// that holds animators NOT attached through DestroyMesh's
 		// cleanup destroys them explicitly; see the Kill() pattern).
-		bool DestroyAnimator(AnimatorHandle handle);
-		[[nodiscard]] bool IsAnimatorAlive(AnimatorHandle handle) const;
+		bool DestroyAnimator(smvk::AnimatorHandle handle);
+		[[nodiscard]] bool IsAnimatorAlive(smvk::AnimatorHandle handle) const;
 		[[nodiscard]] AnimatorState* AnimatorStateOf(
-			AnimatorHandle handle);
+			smvk::AnimatorHandle handle);
 		[[nodiscard]] const AnimatorState* AnimatorStateOf(
-			AnimatorHandle handle) const;
+			smvk::AnimatorHandle handle) const;
 
 		// Advances every live animator + flushes the FIRST-ALIVE
 		// animator's evaluated pose into its target cluster's scene
@@ -607,7 +605,7 @@ using namespace ::smvk;
 		const smvk::Material* GetMaterial(uint32_t materialIndex) const;
 		// LOD marker for tooling (LOD0 + cooked "/lodN" siblings with
 		// world-scaled simplifier error). Null when the index is out of range.
-		const LodInfo* GetLodInfo(uint32_t meshIndex) const;
+		const smvk::LodInfo* GetLodInfo(uint32_t meshIndex) const;
 
 		// Runtime LOD chain over cooked "/lodN" siblings (see mesh_optimizer.h).
 		// The scene always references LOD0; siblings share the base URI and
@@ -630,7 +628,7 @@ using namespace ::smvk;
 				MeshLocation mesh;  // geometry sibling for this level
 				float error;        // world-space simplifier error (0 for LOD0)
 				// Geometry streaming (geometry_streamer.h): false = the
-				// sibling is KNOWN (LodInfo registered - the metadata
+				// sibling is KNOWN (smvk::LodInfo registered - the metadata
 				// chain includes it) but its payload is NOT resident
 				// (no pool mesh). mesh is invalid for such levels; the
 				// picker never selects them (World::SelectLodIndex
@@ -835,8 +833,8 @@ using namespace ::smvk;
 
 		// First-hit URI resolution across clusters in registration order
 		// (mirrors the VFS overlay rule). Used for cross-pak references.
-		std::optional<MeshLocation> ResolveMeshAcrossClusters(StringViewT uri) const;
-		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(StringViewT uri) const;
+		std::optional<MeshLocation> ResolveMeshAcrossClusters(smvk::StringViewT uri) const;
+		std::optional<MaterialLocation> ResolveMaterialAcrossClusters(smvk::StringViewT uri) const;
 		// Bake-payload channel (see Cluster::bakePayloads): the bytes at a
 		// GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
 		// DYNAMIC cluster first — runtime injections (editor quick-bake)

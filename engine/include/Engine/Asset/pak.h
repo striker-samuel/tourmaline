@@ -13,15 +13,13 @@
 
 #include <Engine/Asset/compression.h>
 #include <Engine/Vfs/vfs.h>
-#include <Engine/smvk.h> // TextureStreamMeta (v4 tail-upload digest form)
+#include <Engine/smvk.h> // smvk::TextureStreamMeta (v4 tail-upload digest form)
 
 #include <mutex>
 
 namespace tour::asset {
-// (migration compat) the moved block still spells the engine's smvk
-// types unqualified (VfsPath, TextureStreamMeta, ResourceManager...);
-// qualify as call sites migrate, then drop this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) fully qualified - no broad
+// using-directive (R6-gated).
 
 // ---------------------------------------------------------------------------
 // .pak container: a mountable mini-filesystem for cooked clusters.
@@ -75,7 +73,7 @@ using namespace ::smvk;
 // bytes (the LZ4 wrapper included when compressed).
 //
 // VFS interop: PakBackend serves *texture*, *sound* and *shader*
-// entries through the IVfsBackend interface (returns the embedded
+// entries through the smvk::IVfsBackend interface (returns the embedded
 // .ktx2 / raw .wav / raw compiled-shader bytes for the original VFS
 // path), so materials in one pak can reference textures stored in
 // another pak via plain VFS paths, emitters the same for sounds, and
@@ -210,7 +208,7 @@ struct PakTocEntry {
 	// (the page integrity - verified at FETCH time, never at mount).
 	uint32_t slot = 0;
 	uint32_t contentCrc = 0;
-	VfsPath path;
+	smvk::VfsPath path;
 };
 
 uint64_t PakHashPath(const std::string& normalizedPath);
@@ -332,30 +330,30 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		int32_t wrapS, int32_t wrapT, std::span<const uint8_t> ktxBytes,
 		std::span<const uint8_t> digest);
 
-	// v4 tail-upload digest record (TextureStreamMeta serialization; fixed
+	// v4 tail-upload digest record (smvk::TextureStreamMeta serialization; fixed
 	// u32/u64 fields, 16 B per region row):
 	//   u32 kind(=1) | u32 tailFirstMip | u32 residentMips |
 	//   u32 baseWidth | u32 baseHeight | u32 baseDepth | u32 numLevels |
 	//   u32 ktxLayers | u32 numFaces | u32 ktxVkFormat | u32 transferSrgb |
 	//   u32 dims | u32 cubemap | u32 regionCount |
 	//   rows: u64 bufferOffset | u32 mip | u32 arrayLayer
-	bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out);
-	bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+	bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t>& out);
+	bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
 
-	// v4 tail-upload digest record (TextureStreamMeta serialization):
+	// v4 tail-upload digest record (smvk::TextureStreamMeta serialization):
 	//   u32 kind(=1) | u32 tailFirstMip
-	bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out);
-	bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+	bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t>& out);
+	bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
 
-	// v4 tail-upload digest record (TextureStreamMeta serialization; fixed
+	// v4 tail-upload digest record (smvk::TextureStreamMeta serialization; fixed
 	// u32/u64 fields, 16 B per region row):
 	//   u32 kind(=1) | u32 tailFirstMip | u32 residentMips |
 	//   u32 baseWidth | u32 baseHeight | u32 baseDepth | u32 numLevels |
 	//   u32 ktxLayers | u32 numFaces | u32 ktxVkFormat | u32 transferSrgb |
 	//   u32 dims | u32 cubemap | u32 regionCount |
 	//   rows: u64 bufferOffset | u32 mip | u32 arrayLayer
-	bool BuildTextureDigest(const TextureStreamMeta& meta, std::vector<uint8_t>& out);
-	bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out);
+	bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t>& out);
+	bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
 
 	// Incremental pak builder (cooker side).
 	class PakWriter {
@@ -371,11 +369,11 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		// LZ4 compression for subsequently added blobs (default: None).
 		// Blobs below kCompressMinBytes or that do not shrink stay stored
 		// verbatim (flags == None), so tiny blobs never grow.
-		void SetCompression(PakCompression mode, int lz4Acceleration = 1) {
+		void SetCompression(smvk::PakCompression mode, int lz4Acceleration = 1) {
 			compression_ = mode;
 			lz4Acceleration_ = lz4Acceleration < 1 ? 1 : lz4Acceleration;
 		}
-		PakCompression Compression() const { return compression_; }
+		smvk::PakCompression Compression() const { return compression_; }
 		size_t EntryCount() const { return entries_.size(); }
 		size_t CompressedEntryCount() const;
 		const std::vector<PakTocEntry>& Entries() const { return metas_; }
@@ -389,7 +387,7 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		};
 		std::vector<Pending> entries_;
 		std::vector<PakTocEntry> metas_; // mirrors entries_[].meta (stable order)
-		PakCompression compression_ = PakCompression::None;
+		smvk::PakCompression compression_ = smvk::PakCompression::None;
 		int lz4Acceleration_ = 1;
 	};
 
@@ -493,10 +491,10 @@ private:
 	std::unique_ptr<FileHandle> file_;
 };
 
-// IVfsBackend over a loaded pak image. Serves texture entries by their
+// smvk::IVfsBackend over a loaded pak image. Serves texture entries by their
 // original VFS path (embedded .ktx2 bytes). All other kinds are invisible
 // to VFS file reads (Exists() == false) — load them via PakReader.
-class PakBackend final : public IVfsBackend {
+class PakBackend final : public smvk::IVfsBackend {
 public:
 	// Takes shared ownership of the pak image bytes.
 	static std::shared_ptr<PakBackend> Open(
@@ -505,10 +503,10 @@ public:
 		std::string& outError);
 
 	std::string Name() const override { return name_; }
-	bool Exists(const VfsPath& path) const override;
-	std::optional<std::vector<uint8_t>> TryRead(const VfsPath& path) const override;
-	std::vector<VfsPath> ListDir(const VfsPath& dir) const override;
-	std::optional<VfsStat> Stat(const VfsPath& path) const override;
+	bool Exists(const smvk::VfsPath& path) const override;
+	std::optional<std::vector<uint8_t>> TryRead(const smvk::VfsPath& path) const override;
+	std::vector<smvk::VfsPath> ListDir(const smvk::VfsPath& dir) const override;
+	std::optional<smvk::VfsStat> Stat(const smvk::VfsPath& path) const override;
 	const PakReader& Reader() const { return *reader_; }
 	// The shared pak image (the reader borrows it; cluster loads pin it
 	// so tail-borrowed payloads outlive the backend). Never null on a

@@ -25,10 +25,8 @@
 #include <Engine/Asset/touranim.h>
 
 namespace tour {
-// (migration compat) the moved block still spells the RHI/engine smvk
-// types unqualified (ResourceManager, TextureHandle, Material...);
-// qualify as call sites migrate, then drop this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) this block's RHI dependencies are
+// FULLY QUALIFIED (smvk::) - no broad using-directive (R6-gated).
 
 	struct World;
 
@@ -38,12 +36,12 @@ using namespace ::smvk;
 	// Backend-defined record of a static mesh's renderer allocations
 	// (opaque here; complete type lives in the Vulkan detail header).
 
-	using ClusterStaticMeshHandle = Handle<StaticMesh>;
-	using ClusterMaterialHandle = Handle<Material>;
-	using ClusterTextureHandle = Handle<struct Texture>;
-	using ClusterLightHandle = Handle<SceneLight>;
-	using ClusterCameraHandle = Handle<SceneCamera>;
-	using ClusterDecalHandle = Handle<SceneDecal>;
+	using ClusterStaticMeshHandle = smvk::Handle<StaticMesh>;
+	using ClusterMaterialHandle = smvk::Handle<Material>;
+	using ClusterTextureHandle = smvk::Handle<struct Texture>;
+	using ClusterLightHandle = smvk::Handle<SceneLight>;
+	using ClusterCameraHandle = smvk::Handle<SceneCamera>;
+	using ClusterDecalHandle = smvk::Handle<SceneDecal>;
 
 	// Cooked GI binding (named bake payload): the GI payloads themselves
 	// (probe volumes, lightmap atlases, manifests, cubemap captures) live
@@ -78,24 +76,24 @@ using namespace ::smvk;
 	struct Cluster {
 		// ctx may be nullptr for GPU-less offline clusters (see SetOfflineMode);
 		// any GPU upload with a null context is a programming error.
-		explicit Cluster(ResourceManager* ctx);
+		explicit Cluster(smvk::ResourceManager* ctx);
 		~Cluster();
 		Cluster(const Cluster&) = delete;
 		Cluster& operator=(const Cluster&) = delete;
 
-		ResourceManager* ctx_ = nullptr;
+		smvk::ResourceManager* ctx_ = nullptr;
 		Scene scene;
 		World* world = nullptr;
 		Cluster* sibling = nullptr;
 		// linked list for import chain if multiple clusters belong to one input file.
 
-		Pool<StaticMesh, StaticMesh> staticMeshes;
-		//Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
-		Pool<Material, Material> materials;
-		Pool<Texture, Holder<TextureHandle>> textures;
-		Pool<SceneLight, SceneLight> lights;
-		Pool<SceneCamera, SceneCamera> cameras;
-		Pool<SceneDecal, SceneDecal> decals;
+		smvk::Pool<StaticMesh, StaticMesh> staticMeshes;
+		//smvk::Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
+		smvk::Pool<Material, Material> materials;
+		smvk::Pool<Texture, smvk::Holder<smvk::TextureHandle>> textures;
+		smvk::Pool<SceneLight, SceneLight> lights;
+		smvk::Pool<SceneCamera, SceneCamera> cameras;
+		smvk::Pool<SceneDecal, SceneDecal> decals;
 
 		ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
 		// Batched UploadStaticMesh: identical semantics per entry (heap
@@ -127,11 +125,11 @@ using namespace ::smvk;
 		// CLUSTER's side of that service: the caller-owned arena tokens
 		// land in this cluster's meshAllocations_ map, the mesh values
 		// in this cluster's pool. The source shape is the service's
-		// StaticGeometrySource (the old nested StaticMeshDirectSource
+		// smvk::StaticGeometrySource (the old nested StaticMeshDirectSource
 		// name is GONE — call sites migrated, no compat alias).
 		std::vector<ClusterStaticMeshHandle> UploadStaticMeshesDirect(
-			const void* content, std::span<const StaticGeometrySource> sources);
-		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
+			const void* content, std::span<const smvk::StaticGeometrySource> sources);
+		ClusterMaterialHandle CreateMaterial(smvk::TextureHandle diffuse);
 		ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
 		// Pure value assembly (no texture resolution): shared core of
 		// CreateMaterial and the GPU-free offline path. textureIds use the
@@ -223,7 +221,7 @@ using namespace ::smvk;
 		// need a table keyed by mesh, deliberately deferred). The
 		// per-mesh PackedSkinInfluences streams (mesh.h, binding 2) index the
 		// Skeleton's joint table; the palette build
-		// (touranim::BuildSkinPalette) evaluates it per frame.
+		// (asset::BuildSkinPalette) evaluates it per frame.
 		//
 		// The importer records (mesh, glTF skin) pairs during the node
 		// walk, then patches the retained uploads' skin streams in a POST
@@ -233,7 +231,7 @@ using namespace ::smvk;
 		// both (the mesh blob's trailing skin-stream section + the scene
 		// blob's trailing skeleton section).
 		// ------------------------------------------------------------------
-		smvk::touranim::Skeleton skeleton;
+		asset::Skeleton skeleton;
 		bool hasSkeleton = false;
 		// Patches a retained upload's PackedSkinInfluences stream (the import post
 		// pass; also the deserializer on load). No-op when uploads are
@@ -300,12 +298,12 @@ using namespace ::smvk;
 		// mesh, static data - once) + allocates the deformed buffer
 		// covering the skinned meshes' heap span. Idempotent; false when
 		// the cluster carries no skin streams or the context is null.
-		bool EnsureSkinnedGpuData(ResourceManager& ctx);
+		bool EnsureSkinnedGpuData(smvk::ResourceManager& ctx);
 		[[nodiscard]] const std::vector<SkinnedMeshRange>&
 			GetSkinnedRanges() const { return skinnedRanges_; }
-		[[nodiscard]] BufferHandle GetSkinnedStreamBuffer() const
+		[[nodiscard]] smvk::BufferHandle GetSkinnedStreamBuffer() const
 		{ return skinnedStream_; }
-		[[nodiscard]] BufferHandle GetSkinnedDeformedBuffer() const
+		[[nodiscard]] smvk::BufferHandle GetSkinnedDeformedBuffer() const
 		{ return skinnedDeformed_; }
 		// The DEFORMED buffer's heap-id base (the skinned span's first
 		// heap vertex id; the draw fetch maps vi - base into the
@@ -322,7 +320,7 @@ using namespace ::smvk;
 		// The ranges table BDA (the compute pass's per-range
 		// (heapBase, count, skinBase) rows - static, uploaded at
 		// Ensure). 0 when nothing is skinned.
-		[[nodiscard]] BufferHandle GetSkinnedRangesBuffer() const
+		[[nodiscard]] smvk::BufferHandle GetSkinnedRangesBuffer() const
 		{ return skinnedRangesBuf_; }
 
 		// ------------------------------------------------------------------
@@ -343,7 +341,7 @@ using namespace ::smvk;
 		// Untracked joints/channels keep the loaded (bind-pose) locals.
 		// Returns false (no palette) when no clip or no skeleton.
 		// ------------------------------------------------------------------
-		void SetAnimClip(touranim::Clip clip);
+		void SetAnimClip(asset::Clip clip);
 		[[nodiscard]] bool HasAnimClip() const
 		{ return animClip_.has_value(); }
 		bool SampleAnimation(float dt, std::vector<glm::mat4>& outPalette);
@@ -400,29 +398,29 @@ using namespace ::smvk;
 		// asset inside this Cluster. Main-thread only (Cluster pools are
 		// externally synchronized, see Memory/pool.h).
 		//
-		// Storage is string-free: keys are StringViewT slices owned by the
+		// Storage is string-free: keys are smvk::StringViewT slices owned by the
 		// per-Cluster uriArena_ (freed wholesale with the Cluster) and the
 		// maps are open-addressing UriMaps — lookups take caller views and
 		// never allocate (the previous std::unordered_map<std::string,...>
 		// round-tripped a std::string per lookup).
 		// ------------------------------------------------------------------
-		bool RegisterMeshUri(StringViewT uri, ClusterStaticMeshHandle handle);
-		bool RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle);
-		bool RegisterLightUri(StringViewT uri, ClusterLightHandle handle);
-		bool RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle);
-		bool RegisterDecalUri(StringViewT uri, ClusterDecalHandle handle);
+		bool RegisterMeshUri(smvk::StringViewT uri, ClusterStaticMeshHandle handle);
+		bool RegisterMaterialUri(smvk::StringViewT uri, ClusterMaterialHandle handle);
+		bool RegisterLightUri(smvk::StringViewT uri, ClusterLightHandle handle);
+		bool RegisterCameraUri(smvk::StringViewT uri, ClusterCameraHandle handle);
+		bool RegisterDecalUri(smvk::StringViewT uri, ClusterDecalHandle handle);
 		// Textures live in the global RHI pool for binding (materials store
 		// RHI TextureHandles); the Cluster pool only owns lifetime Holders.
 		// The uri map therefore stores the RHI handle used at bind time.
-		bool RegisterTextureUri(StringViewT uri, TextureHandle handle);
-		void UnregisterUri(StringViewT uri);
+		bool RegisterTextureUri(smvk::StringViewT uri, smvk::TextureHandle handle);
+		void UnregisterUri(smvk::StringViewT uri);
 
-		std::optional<ClusterStaticMeshHandle> FindMeshByUri(StringViewT uri) const;
-		std::optional<ClusterMaterialHandle> FindMaterialByUri(StringViewT uri) const;
-		std::optional<ClusterLightHandle> FindLightByUri(StringViewT uri) const;
-		std::optional<ClusterCameraHandle> FindCameraByUri(StringViewT uri) const;
-		std::optional<ClusterDecalHandle> FindDecalByUri(StringViewT uri) const;
-		std::optional<TextureHandle> FindTextureByUri(StringViewT uri) const;
+		std::optional<ClusterStaticMeshHandle> FindMeshByUri(smvk::StringViewT uri) const;
+		std::optional<ClusterMaterialHandle> FindMaterialByUri(smvk::StringViewT uri) const;
+		std::optional<ClusterLightHandle> FindLightByUri(smvk::StringViewT uri) const;
+		std::optional<ClusterCameraHandle> FindCameraByUri(smvk::StringViewT uri) const;
+		std::optional<ClusterDecalHandle> FindDecalByUri(smvk::StringViewT uri) const;
+		std::optional<smvk::TextureHandle> FindTextureByUri(smvk::StringViewT uri) const;
 
 		// Resolves an AssetRef in place: keeps ref.uri, fills cluster/handle
 		// on hit, clears resolution on miss. Returns true on hit.
@@ -435,7 +433,7 @@ using namespace ::smvk;
 		// assigns a "<cluster-local>#..." fallback uri. The view points
 		// into the cluster's uri arena and stays valid for the cluster's
 		// lifetime.
-		StringViewT GetMeshUri(ClusterStaticMeshHandle handle) const;
+		smvk::StringViewT GetMeshUri(ClusterStaticMeshHandle handle) const;
 		// The mesh's vertexBase into the STATIC pos/shading heaps (vertex
 		// units — the global vertex ids the cluster-ordered index streams
 		// carry). 0xFFFFFFFF when the handle is empty/unknown. Consumers
@@ -443,10 +441,10 @@ using namespace ::smvk;
 		// independently-packed windows — the draw ring's GfxDraw.misc2.w).
 		[[nodiscard]] uint32_t GetMeshHeapVertexBase(
 			ClusterStaticMeshHandle handle) const;
-		StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
-		StringViewT GetLightUri(ClusterLightHandle handle) const;
-		StringViewT GetCameraUri(ClusterCameraHandle handle) const;
-		StringViewT GetDecalUri(ClusterDecalHandle handle) const;
+		smvk::StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
+		smvk::StringViewT GetLightUri(ClusterLightHandle handle) const;
+		smvk::StringViewT GetCameraUri(ClusterCameraHandle handle) const;
+		smvk::StringViewT GetDecalUri(ClusterDecalHandle handle) const;
 
 		// Per-mesh LOD marker (see Asset/mesh_optimizer.h). Stored into
 		// MeshBlobs; the renderer does not branch on it. simplifyError is
@@ -455,34 +453,34 @@ using namespace ::smvk;
 		// cook-time world-scaling pass exists (the removed
 		// FinalizeLodWorldErrors compounded the scale per re-cook; see
 		// the removal note in mesh_optimizer.cpp).
-		void RegisterMeshLod(StringViewT uri, const LodInfo& lod);
-		std::optional<LodInfo> GetMeshLod(StringViewT uri) const;
+		void RegisterMeshLod(smvk::StringViewT uri, const smvk::LodInfo& lod);
+		std::optional<smvk::LodInfo> GetMeshLod(smvk::StringViewT uri) const;
 		// All LOD markers for cook post-passes.
-		std::vector<std::pair<StringViewT, LodInfo>> ListMeshLods() const;
+		std::vector<std::pair<smvk::StringViewT, smvk::LodInfo>> ListMeshLods() const;
 
 		// Per-mesh cooked meshlets (see Asset/meshlet.h). Stamped by the
 		// importer when meshlet cooking is enabled, persisted in MeshBlobs,
 		// and loaded into StaticMesh::meshlets on deserialize. The renderer
 		// does not consume them yet (indirect path foundation only).
-		void RegisterMeshMeshlets(StringViewT uri, const CookedMeshlets& meshlets);
-		std::optional<CookedMeshlets> GetMeshMeshlets(StringViewT uri) const;
+		void RegisterMeshMeshlets(smvk::StringViewT uri, const smvk::CookedMeshlets& meshlets);
+		std::optional<smvk::CookedMeshlets> GetMeshMeshlets(smvk::StringViewT uri) const;
 
 		// Enumerates registered texture URIs for serialization
 		// ({uri, RHI handle} pairs, sorted by uri for deterministic paks).
-		std::vector<std::pair<StringViewT, TextureHandle>> ListTextureUris() const;
+		std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> ListTextureUris() const;
 
 		// glTF sampler parameters per texture uri (persisted into paks;
 		// the renderer still uses its default sampler until sampler
 		// selection is wired up — see Asset/asset_registry.h notes).
-		void RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc);
-		std::optional<TextureSamplerDesc> GetTextureSampler(StringViewT uri) const;
+		void RegisterTextureSampler(smvk::StringViewT uri, const smvk::TextureSamplerDesc& desc);
+		std::optional<smvk::TextureSamplerDesc> GetTextureSampler(smvk::StringViewT uri) const;
 
 		// Embedded source bytes per texture uri (populated by the importer
 		// so the cooker can embed .ktx2 payloads without re-reading the
 		// host fs; also populated on pak load so re-cook works).
 		// Call ReleaseTextureSources() to drop the copies at runtime.
-		void SetTextureSource(StringViewT uri, std::vector<uint8_t> bytes);
-		const std::vector<uint8_t>* GetTextureSource(StringViewT uri) const;
+		void SetTextureSource(smvk::StringViewT uri, std::vector<uint8_t> bytes);
+		const std::vector<uint8_t>* GetTextureSource(smvk::StringViewT uri) const;
 		void ReleaseTextureSources();
 		// Pins the loaded pak image for BORROWED texture payloads (the v4
 		// fast-load path: the texture streamer registers ktx spans owned
@@ -506,7 +504,7 @@ using namespace ::smvk;
 	// the sibling is deferred again, re-promotable byte-identically.
 	struct DeferredMeshLod {
 		std::string uri;
-		StaticGeometrySource src;  // pak-image offsets/counts/aabb
+		smvk::StaticGeometrySource src;  // pak-image offsets/counts/aabb
 		// The owning TOC entry's file-absolute offset (Stage 6: the
 		// page-based promote rebases src by this — the entry's OWN
 		// bytes are a complete contiguous payload, exactly like the
@@ -515,8 +513,8 @@ using namespace ::smvk;
 		float sphere = 0.0f;
 		uint32_t lmChunk = 0;
 		std::vector<glm::vec4> lmXforms;
-		LodInfo lod;
-		CookedMeshlets meshlets;
+		smvk::LodInfo lod;
+		smvk::CookedMeshlets meshlets;
 		uint64_t payloadBytes = 0;   // vertex+index bytes (budget/throttle)
 		// Valid while the sibling is PROMOTED (resident): the pool
 		// handle EvictMeshLod destroys. The record's payload fields are
@@ -527,7 +525,7 @@ using namespace ::smvk;
 	// Returns the accounted payload bytes (the load census).
 	uint64_t DeferMeshLod(DeferredMeshLod&& d);
 	[[nodiscard]] const DeferredMeshLod* FindDeferredMeshLod(
-		StringViewT uri) const;
+		smvk::StringViewT uri) const;
 	// Promote: re-run the direct upload (one source, from the pinned pak
 	// image) + the full registration the deserializer performed for
 	// load-time meshes; the record STAYS (promotedHandle set) for the
@@ -539,7 +537,7 @@ using namespace ::smvk;
 		uint64_t payloadBytes = 0;
 	};
 	[[nodiscard]] std::optional<PromotedLod> PromoteDeferredMeshLod(
-		StringViewT uri);
+		smvk::StringViewT uri);
 	// STAGE 6 (the pager lane): the same promote with the payload
 	// supplied as the ENTRY'S OWN BYTES (a pager page — contiguous,
 	// the whole blob) instead of the pinned whole image. The record's
@@ -548,7 +546,7 @@ using namespace ::smvk;
 	// lifetime through the call (BulkCopyBuffer stages
 	// synchronously — release the page after the return).
 	[[nodiscard]] std::optional<PromotedLod>
-	PromoteDeferredMeshLodFromPage(StringViewT uri,
+	PromoteDeferredMeshLodFromPage(smvk::StringViewT uri,
 		const uint8_t* entryPayload, size_t entryBytes);
 	// The shared promote tail (both payload lanes — the pinned-image
 	// path and the Stage-6 page path): meta re-attach + registration
@@ -560,10 +558,10 @@ using namespace ::smvk;
 	// retire (DestroyMesh - the range frees ride DeferDestroyTask, so
 	// in-flight frames drawing the ranges stay safe), the mesh URI
 	// unregisters (FindMeshByUri misses again - the chain sees the
-	// sibling as deferred) while the LodInfo metadata STAYS. Returns
+	// sibling as deferred) while the smvk::LodInfo metadata STAYS. Returns
 	// the freed payload bytes, 0 when the uri is not currently
 	// promoted. Render thread, between frames.
-	[[nodiscard]] uint64_t EvictMeshLod(StringViewT uri);
+	[[nodiscard]] uint64_t EvictMeshLod(smvk::StringViewT uri);
 	[[nodiscard]] size_t DeferredLodCount() const;
 	[[nodiscard]] uint64_t DeferredLodBytes() const;
 	// ANY streaming record (deferred OR promoted) - the streamer tick's
@@ -576,17 +574,17 @@ using namespace ::smvk;
 	private:
 		// Owned URI key storage for all maps below; freed wholesale with
 		// the Cluster (see asset_registry.cpp registration flow).
-		Arena uriArena_;
-		UriMap<ClusterStaticMeshHandle> meshByUri_;
-		UriMap<ClusterMaterialHandle> materialByUri_;
-		UriMap<ClusterLightHandle> lightByUri_;
-		UriMap<ClusterCameraHandle> cameraByUri_;
-		UriMap<ClusterDecalHandle> decalByUri_;
-		UriMap<TextureHandle> textureByUri_;
-		UriMap<TextureSamplerDesc> textureSamplers_;
-		UriMap<std::vector<uint8_t>> textureSources_;
-		UriMap<LodInfo> meshLods_;
-		UriMap<CookedMeshlets> meshMeshlets_;
+		smvk::Arena uriArena_;
+		smvk::UriMap<ClusterStaticMeshHandle> meshByUri_;
+		smvk::UriMap<ClusterMaterialHandle> materialByUri_;
+		smvk::UriMap<ClusterLightHandle> lightByUri_;
+		smvk::UriMap<ClusterCameraHandle> cameraByUri_;
+		smvk::UriMap<ClusterDecalHandle> decalByUri_;
+		smvk::UriMap<smvk::TextureHandle> textureByUri_;
+		smvk::UriMap<smvk::TextureSamplerDesc> textureSamplers_;
+		smvk::UriMap<std::vector<uint8_t>> textureSources_;
+		smvk::UriMap<smvk::LodInfo> meshLods_;
+		smvk::UriMap<smvk::CookedMeshlets> meshMeshlets_;
 		bool retainUploads_ = false;
 		std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
 		// Pak-image pin for borrowed texture payloads (see PinPakImage).
@@ -597,7 +595,7 @@ using namespace ::smvk;
 		std::unordered_map<std::string, BakePayload> bakePayloads_;
 		// Per-cluster static mesh allocations keyed by the local staticMeshes
 		// pool index (pool indices are only unique within one Cluster).
-		std::unordered_map<uint32_t, StaticMeshAllocation*> meshAllocations_;
+		std::unordered_map<uint32_t, smvk::StaticMeshAllocation*> meshAllocations_;
 		// Geometry-LOD streaming: deferred siblings by uri (see the
 		// public block). Linear scan - the promote path touches one per
 		// demand miss, the census counts them once.
@@ -613,15 +611,15 @@ using namespace ::smvk;
 		// TWO parity halves of span bytes) + the deformed span's heap-id
 		// base + the span bytes + the ranges table buffer.
 		std::vector<SkinnedMeshRange> skinnedRanges_;
-		Holder<BufferHandle> skinnedStream_;
-		Holder<BufferHandle> skinnedDeformed_;
-		Holder<BufferHandle> skinnedRangesBuf_;
+		smvk::Holder<smvk::BufferHandle> skinnedStream_;
+		smvk::Holder<smvk::BufferHandle> skinnedDeformed_;
+		smvk::Holder<smvk::BufferHandle> skinnedRangesBuf_;
 		uint32_t skinnedDeformedBase_ = UINT32_MAX;
 		uint64_t skinnedDeformedSpanBytes_ = 0;
 		bool skinnedGpuValid_ = false;
 		// The animation driver state: the attached clip + the time
 		// cursor (seconds, looping the clip duration).
-		std::optional<touranim::Clip> animClip_;
+		std::optional<asset::Clip> animClip_;
 		double animTime_ = 0.0;
 		bool offlineMode_ = false;
 		uint32_t offlineNextTextureId_ = 0;
@@ -629,7 +627,7 @@ using namespace ::smvk;
 
 template<typename HandleT>
 struct AssetRef {
-	StringViewT uri;
+	smvk::StringViewT uri;
 
 	Cluster* cluster = nullptr;
 	HandleT handle{};

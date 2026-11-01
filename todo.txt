@@ -259,8 +259,15 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
      impl.cpp's App coupling), the null/mock backend test, the
      AST SIGNATURE-WALKING namespace scanner (the compile-level CI
      battery is R1-R9 + header smoke: R6/R7/R8/R9 LANDED as the
-     baseline-ratchet form — R6 freezes the broad using-namespace-
-     ::smvk imports to the ten landed-stage headers, R7 confines the
+     baseline-ratchet form - R6 is now ABSOLUTE (the remaining-changes
+     item 1 landed: ZERO broad using-namespace-
+     ::smvk imports in public headers; the last ten removed with their
+     RHI names qualified - the impl TUs that still spell them
+     unqualified carry the documented TU-local using-directive
+     (impl.cpp, pak.cpp, mesh.cpp, gfx_filter.cpp) and the R6 baseline
+     is EMPTY, any new public-header import fails outright. Recorded
+     lesson: placement_pass.h silently leaned on placement_terrain.h's
+     directive through the shared enclosing namespace), R7 confines the
      smvk::-compat re-export blocks to the audited per-file counts,
      R8 freezes the RHI implementation-state exposure shapes
      (App's getters/LinearPtr members, ElementFrame's Framebuffer*,

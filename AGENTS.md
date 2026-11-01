@@ -158,13 +158,17 @@ including/referencing engine-domain headers.
    the core families, `tour::shaders` / `tour::gfx` / `tour::asset` /
    `tour::gi` / `tour::placement` / `tour::mem` / `tour::audio` style
    for subsystems). NEVER declare engine concepts in `namespace smvk`.
-2. NEVER add `using namespace ::smvk;` to a public header (R6 bans it).
-   In moved headers, QUALIFY the RHI types — a header small enough to
-   qualify is small enough to qualify; a broad import's transitive
-   lookup also collides same-named types (the `tour::gfx::Cluster` vs
-   `tour::Cluster` ambiguity is the recorded lesson —
-   gfx_filter.h). TU-LOCAL using-directives in .cpp files are the
-   contained escape hatch while a moved block still spells RHI names
+2. NEVER add `using namespace ::smvk;` to a public header (R6 bans it
+   with an EMPTY exception list - zero broad imports remain). In moved
+   headers, QUALIFY the RHI types — the engine's public headers are all
+   fully qualified now (the recorded lessons: a broad import's
+   transitive lookup also collides same-named types — the
+   `tour::gfx::Cluster` vs `tour::Cluster` ambiguity that decided
+   gfx_filter.h; and a directive in one placement header silently
+   covers every sibling in the same enclosing namespace — the
+   placement_pass.h lean). TU-LOCAL using-directives in .cpp files
+   (impl.cpp, pak.cpp, mesh.cpp, gfx_filter.cpp) are the contained
+   escape hatch while a moved block still spells RHI names
    unqualified.
 3. Migrations follow the landed pattern: declare in `tour::`, add the
    `smvk::` compat re-export (`using ::tour::X;`, or a namespace alias
@@ -185,9 +189,13 @@ Vk types / upward RHI includes (direct + transitive, quoted forms
 included). R6–R9 are the SHRINK-ONLY BASELINE gates that make the audit
 findings impossible to grow silently:
 
-- **R6** — no broad `using namespace ::smvk` import in any public header
-  (the landed migration stages' directives are the frozen exception
-  list).
+- **R6** — NO broad `using namespace ::smvk` import in ANY public header,
+  with an EMPTY exception list (item 1 of the remaining-changes list
+  landed: the last ten migration-stage imports were removed, their RHI
+  names explicitly qualified; the impl TUs that still spell RHI names
+  unqualified carry the documented TU-LOCAL using-directive escape
+  hatch — impl.cpp, pak.cpp). Any new public-header import fails
+  outright.
 - **R7** — the `smvk::`-compat re-export blocks are confined to exact
   per-file counts: a new compat alias anywhere, or a grown one, FAILS.
 - **R8** — RHI implementation-state exposure in engine-facing headers

@@ -63,10 +63,8 @@ namespace smvk {
 }
 
 namespace tour::gi {
-// (migration compat) the moved block still spells the engine's smvk
-// types unqualified; qualify them as call sites migrate, then drop
-// this directive.
-using namespace ::smvk;
+// (namespace/RHI boundary audit) fully qualified - no broad
+// using-directive (R6-gated).
 
 // ---------------------------------------------------------------------------
 // Fixed per-count SG bases
