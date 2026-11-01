@@ -1,0 +1,177 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: LicenseRef-Tourmaline-Community-1.0
+
+#pragma once
+// THE ASSET MANAGER FACADE (docs/content_as_code.md): the explicit
+// load/blend surface over the compiled catalog's typed keys -
+// gameplay code SELECTS assets at compile time (project.h's
+// MatchAssets / the typed namespaces) and loads them EXPLICITLY here.
+//
+//   inline constexpr auto WorldMeshes =
+//       project::MatchAssets<project::MeshKey, "^world_.*$">();
+//   auto batch = assets.LoadMeshes(WorldMeshes.data(),
+//       WorldMeshes.size());
+//
+// The manager composes the EXISTING runtime layers - never a parallel
+// loading path: ProjectRuntime (the [ids] join + the pak backends),
+// the World's cluster loader (DeserializeCluster - the mesh/material/
+// texture dependency resolution), and the WorldRenderer's GI
+// machinery (BuildGiVolumeSetFromPaths + the blend publish).
+//
+// OWNERSHIP MODEL: resource handles (MeshHandle/GiHandle) name LOADED
+// SHARED ASSETS; the World's entity handles name INSTANCES - the two
+// never conflate. Mesh loading loads the mesh's OWNING SCENE CLUSTER
+// (the v1 pak-format boundary: meshes ship inside their scene's
+// cluster) and returns per-mesh handles into it; repeated keys
+// deduplicate (the cluster loads once per pak). GI sets load by their
+// manifest rows and stay RESIDENT while referenced (SetGIBlend keeps
+// BOTH sets live; only the scalar alpha moves per frame - the game
+// owns ALL interpolation timing, never the engine).
+//
+// This header is the public surface; the implementation lives in
+// AssetManager.cpp (the AudioRuntime facade discipline).
+
+#include <Engine/Asset/appmanifest.h>
+#include <Engine/Scene/entity_handle.h>
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace engine {
+class WorldRenderer; // the renderer facade (the GI publish seam)
+}
+namespace tour {
+class World; // the engine-owned world (smvk::World is an alias)
+}
+namespace smvk {
+class ResourceManager;
+class TextureStreamer;
+class OverlayVfs;
+}
+
+namespace app {
+
+class ProjectRuntime;
+
+// Mesh loading options (the v1 shape - see docs/content_as_code.md
+// for the documented follow-ups).
+struct MeshLoadOptions {
+	// v1 always resolves the owning cluster (materials + textures
+	// ride the cluster's dependency graph). The flags are carried for
+	// the subset-load lane (the pak's per-mesh blobs ARE addressable;
+	// the future geometry-only fast path).
+	bool loadMaterials = true;
+	bool loadTextures = true;
+	// keepResident=false releases the owning cluster when the last
+	// handle drops (deferred behind in-flight frames); true keeps the
+	// pak's cluster loaded for the session (the prefetch idiom).
+	bool keepResident = true;
+};
+
+// MeshHandle: a loaded MESH (an asset resource - NOT a world entity).
+// Generational; zero = invalid. Resolves to the mesh's owning cluster
+// row for spawn-side use (the World::SpawnMesh follow-up).
+struct MeshHandle {
+	std::uint64_t value = 0;
+	constexpr bool operator==(const MeshHandle&) const = default;
+	constexpr explicit operator bool() const { return value != 0; }
+};
+
+// GiHandle: a loaded GI SET (a baked lighting set - one or more GI
+// volumes). Generational; zero = invalid. Multiple sets stay resident
+// simultaneously (the blend's two endpoints).
+struct GiHandle {
+	std::uint64_t value = 0;
+	constexpr bool operator==(const GiHandle&) const = default;
+	constexpr explicit operator bool() const { return value != 0; }
+};
+
+// A batch result: one handle PER INPUT KEY, in input order (a
+// duplicate key in the input yields the SAME handle - deduplication
+// is per key, never per slot). Raw pointer + count per the public-API
+// convention; the manager owns the memory until UnloadMesh releases
+// the batch's last reference.
+struct MeshBatch {
+	MeshHandle* handles = nullptr;
+	std::size_t count = 0;
+
+	MeshHandle operator[](std::size_t i) const
+		{ return handles[i]; }
+	// The pointer/count projection (nullptr valid only when count 0).
+	const MeshHandle* data() const { return handles; }
+};
+
+class AssetManager {
+public:
+	// The facade's seams: the runtime (ids -> paks), the world (the
+	// cluster loader), the context (GPU uploads), the renderer (the
+	// GI publish). Nullptr ctx = the GPU-less test seam (the cluster
+	// loads offline; the GI lane refuses loudly).
+	AssetManager(ProjectRuntime& runtime, ::tour::World& world,
+		smvk::ResourceManager* ctx,
+		::engine::WorldRenderer* renderer = nullptr);
+	~AssetManager();
+
+	AssetManager(const AssetManager&) = delete;
+	AssetManager& operator=(const AssetManager&) = delete;
+
+	// ---- MESHES -------------------------------------------------------
+	// Loads one mesh BY KEY: resolves the [ids] row -> the owning pak
+	// -> the scene cluster that carries it (DeserializeCluster: the
+	// mesh/material/texture graph resolves exactly as scene loading)
+	// -> the mesh's cluster row. Repeated calls with the same key
+	// return the SAME handle (the pak's cluster loads once).
+	// Empty handle + err on a bad key/missing pak.
+	MeshHandle LoadMesh(std::uint64_t key, std::string& err,
+		const MeshLoadOptions& options = {});
+	// The batch form (raw pointer + count; nullptr valid only when
+	// count == 0 - the borrowed-input convention: the manager never
+	// retains the input past the call). Duplicate keys dedup; the
+	// per-pak grouping loads each owning cluster once.
+	MeshBatch LoadMeshes(const std::uint64_t* keys, std::size_t count,
+		std::string& err, const MeshLoadOptions& options = {});
+	// The handle's world mesh index (the spawn-side seam; UINT32_MAX
+	// when invalid) + the mesh's LOD sibling count.
+	std::uint32_t MeshWorldIndex(MeshHandle handle) const;
+	bool MeshValid(MeshHandle handle) const;
+	// Releases ONE handle's reference; the owning cluster drops when
+	// the last reference + keepResident=false (deferred retirement).
+	bool UnloadMesh(MeshHandle handle);
+	// Releases EVERY mesh reference (the session teardown form).
+	void UnloadAllMeshes();
+
+	// ---- GI BAKE SETS --------------------------------------------------
+	// Loads a GI set BY KEY: the [ids] row's .givolumemanifest bytes
+	// through the pak's VFS surface (ReadAsset), its .givolume rows
+	// parsed, the set built (the renderer's BuildGiVolumeSetFromPaths
+	// - the same per-volume load/upload as scene GI). Multiple sets
+	// stay resident; each LoadGI of the same key returns the SAME
+	// handle.
+	GiHandle LoadGI(std::uint64_t key, std::string& err);
+	// Publishes a resident set as the ACTIVE GI (the renderer's
+	// AdoptGiVolumeSet - the hot-swap publish; old resources retire
+	// behind in-flight frames). False when the renderer seam is absent
+	// or the handle is invalid.
+	bool SetGI(GiHandle gi);
+	// The BLEND: both sets evaluate INDEPENDENTLY each frame; the
+	// shader interpolates the RESULTING lighting by alpha (0 = fully
+	// `from`, 1 = fully `to`, 0.5 = equal; clamped). Both sets stay
+	// resident; repeated calls with the same handles ONLY move the
+	// scalar (no rebuild, no re-upload). The GAME owns the timing -
+	// no engine-side durations/easing/timers by design.
+	bool SetGIBlend(GiHandle from, GiHandle to, float alpha);
+	// Releases a GI set's reference (the renderer-side resources
+	// retire when no handle + no active publish references them).
+	bool UnloadGI(GiHandle gi);
+
+	// Diagnostics.
+	std::size_t LoadedMeshCount() const;
+	std::size_t LoadedGiCount() const;
+
+private:
+	struct Impl;
+	Impl* m_impl = nullptr;
+};
+
+} // namespace app

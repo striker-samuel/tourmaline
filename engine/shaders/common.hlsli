@@ -865,6 +865,18 @@ uint decalCount;                                         // 776 0 = decals off
     // remaining 4 pad to the unchanged 2160 total - NO size churn, no
     // later offset moves. ----
     uint contactShadowIndex;                                        // 2152 (bindless visibility)
+    // ---- GI BLEND (the caller-controlled second GI set): when
+    // giBlendEnabled, the shaders evaluate the B tables below
+    // independently and lerp the resulting lighting by giBlendAlpha
+    // (0 = the A set, 1 = the B set). APPEND-ONLY tail after 2160 -
+    // the C++ mirror is FrameUniforms (WorldRenderer.h). ----
+    GPU_PTR_READ(GiVolumesBuffer) giVolumesB;                     // 2160 the B set's descriptor pack
+    uint giVolumeCountB;                                          // 2168 B set volume count
+    uint giBlendEnabled;                                          // 2172 1 = blend the B set in
+    float giBlendAlpha;                                           // 2176 0 = A, 1 = B (clamped)
+    uint giVolumeLayersB[56];                                     // 2180 B set 8 volumes x 7 layer slots
+    uint giVolumeMeanLayersB[8];                                  // 2404 B mean texture slots
+    uint giVolumeVisLayersB[16];                                  // 2436 B vis layer slots
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

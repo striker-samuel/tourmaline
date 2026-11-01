@@ -4591,6 +4591,15 @@ namespace engine {
 		m_giVolumes.clear();
 		m_giVolumesBuffer = {};
 		m_giVolumesAddress = 0;
+		// The scene's own bindings replace any EXTERNAL set (the
+		// AssetManager lane's override dies at the scene boundary).
+		m_giBlendActive = false;
+		m_giBlendAlpha = 0.0f;
+		m_giVolumesB.clear();
+		m_giVolumesBufferB = {};
+		m_giVolumesAddressB = 0;
+		m_giSetPathsA.clear();
+		m_giSetPathsB.clear();
 		std::vector<GiVolumeResources> built;
 		smvk::Holder<smvk::BufferHandle> buf;
 		uint64_t addr = 0;
@@ -4653,6 +4662,306 @@ namespace engine {
 			<< " volume(s); the previous generation retires behind the";
 			" in-flight frames\n";
 		return true;
+	}
+
+	// ---- THE ASSET-MANAGER GI LANE (docs/content_as_code.md) ---------
+	// The explicit-lines build core: BuildGiVolumeSet's transactional
+	// body over a CALLER-supplied .givolume path list (a GiKey's
+	// manifest rows) - the same per-volume load/upload/audit/pack.
+	bool WorldRenderer::BuildGiVolumeSetFromPaths(
+		const std::vector<std::string>& lines,
+		std::vector<GiVolumeResources>& built,
+		smvk::Holder<smvk::BufferHandle>& buf, uint64_t& addr) {
+		built.clear();
+		buf = {};
+		addr = 0;
+		constexpr uint32_t kMaxVolumes = 8; // SG_GI_VOLUME_MAX
+		for (const std::string& line : lines) {
+			if (built.size() >= kMaxVolumes) {
+				std::cerr << "[GIV] the set lists more than " << kMaxVolumes
+					<< " volumes - extra entries ignored\n";
+				break;
+			}
+			const std::span<const uint8_t> volBytes = ReadBakeBytes(line);
+			if (volBytes.empty()) {
+				std::cerr << "[GIV] missing volume '" << line
+					<< "' - skipped\n";
+				continue;
+			}
+			GiVolumeResources cv{};
+			std::string verr;
+			if (!cv.volume.ReadFromMemory(volBytes, verr)) {
+				std::cerr << "[GIV] volume rejected: " << verr << "\n";
+				continue;
+			}
+			if (cv.volume.bc6hFormat && cv.volume.coeffs.empty()) {
+				if (!cv.volume.DecodeBc6hCoeffs(verr)) {
+					std::cerr << "[GIV] BC6H decode failed: " << verr
+						<< " - skipped\n";
+					continue;
+				}
+			}
+			bool ok = true;
+			if (cv.volume.bc6hFormat) {
+				for (uint32_t l = 0; l < 9 && ok; ++l) {
+					smvk::ImageCreateInfo ci{};
+					ci.type = smvk::ImageType::Image3D;
+					ci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+						cv.volume.dims[2] };
+					ci.format = smvk::Format::BC6H_UFloat;
+					ci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "gi set bc6h lobe";
+					auto tex = m_context->CreateTexture(ci,
+						cv.volume.bc6hLayers[l].data());
+					if (tex.empty()) {
+						std::cerr << "[GIV] bc6h lobe " << l
+							<< " creation failed\n";
+						ok = false;
+						break;
+					}
+					cv.layers[l] = std::move(tex);
+					cv.layerSlots[l] =
+						m_context->GetTextureBindlessIndex(cv.layers[l]);
+				}
+			}
+			else {
+				std::vector<uint16_t> layers[7];
+				cv.volume.PackGpuLayers(layers);
+				for (uint32_t t = 0; t < 7 && ok; ++t) {
+					smvk::ImageCreateInfo ci{};
+					ci.type = smvk::ImageType::Image3D;
+					ci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+						cv.volume.dims[2] };
+					ci.format = smvk::Format::RGBA16_Float;
+					ci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					ci.mipLevels = 1;
+					ci.arrayLayers = 1;
+					ci.name = "gi set layer";
+					auto tex = m_context->CreateTexture(ci, layers[t].data());
+					if (tex.empty()) {
+						std::cerr << "[GIV] layer " << t
+							<< " creation failed\n";
+						ok = false;
+						break;
+					}
+					cv.layers[t] = std::move(tex);
+					cv.layerSlots[t] =
+						m_context->GetTextureBindlessIndex(cv.layers[t]);
+				}
+			}
+			{
+				std::vector<uint16_t> meanLayer;
+				cv.volume.PackGpuMeanLayer(meanLayer);
+				smvk::ImageCreateInfo mci{};
+				mci.type = smvk::ImageType::Image3D;
+				mci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+					cv.volume.dims[2] };
+				mci.format = smvk::Format::RGBA16_Float;
+				mci.usage = smvk::ImageUsage::Sampled
+					| smvk::ImageUsage::TransferDst;
+				mci.mipLevels = 1;
+				mci.arrayLayers = 1;
+				mci.name = "gi set mean";
+				auto meanTex = m_context->CreateTexture(mci,
+					meanLayer.data());
+				if (meanTex.empty())
+					ok = false;
+				else {
+					cv.meanTex = std::move(meanTex);
+					cv.meanSlot = m_context->GetTextureBindlessIndex(cv.meanTex);
+				}
+			}
+			{
+				std::vector<uint8_t> visLayers[2];
+				cv.volume.PackGpuVisLayers(visLayers);
+				for (uint32_t t = 0; t < 2; ++t) {
+					smvk::ImageCreateInfo vci{};
+					vci.type = smvk::ImageType::Image3D;
+					vci.extent = { cv.volume.dims[0], cv.volume.dims[1],
+						cv.volume.dims[2] };
+					vci.format = smvk::Format::RGBA8_UNorm;
+					vci.usage = smvk::ImageUsage::Sampled
+						| smvk::ImageUsage::TransferDst;
+					vci.mipLevels = 1;
+					vci.arrayLayers = 1;
+					vci.name = "gi set vis";
+					auto tex = m_context->CreateTexture(vci,
+						visLayers[t].data());
+					if (tex.empty())
+						continue; // soft (the trilerp fallback)
+					cv.visLayers[t] = std::move(tex);
+					cv.visSlots[t] =
+						m_context->GetTextureBindlessIndex(cv.visLayers[t]);
+				}
+			}
+			if (!ok)
+				continue;
+			cv.volume.coeffs.clear();
+			cv.volume.coeffs.shrink_to_fit();
+			built.push_back(std::move(cv));
+		}
+		if (built.empty())
+			return false;
+		std::stable_sort(built.begin(), built.end(),
+			[](const GiVolumeResources& a, const GiVolumeResources& b) {
+				return a.volume.def.priority < b.volume.def.priority;
+			});
+		// The descriptor pack (BuildGiVolumeSet's exact packing).
+		GiVolumesGpu descs{};
+		uint32_t planeBase = 0;
+		for (size_t v = 0; v < built.size(); ++v) {
+			const smvk::gi::GiVolume& vol = built[v].volume;
+			GiVolumeGpu& g = descs.volumes[v];
+			glm::vec3 mn = glm::vec3(-1e30f), mx = glm::vec3(1e30f);
+			float fadeOut = 0.0f;
+			for (const smvk::gi::GiVolumePlane& pl : vol.def.planes)
+				fadeOut = std::max(fadeOut, pl.outsideFade);
+			{
+				glm::vec3 bmn, bmx;
+				if (vol.def.Bounds(bmn, bmx)) {
+					mn = bmn - glm::vec3(fadeOut);
+					mx = bmx + glm::vec3(fadeOut);
+				}
+			}
+			g.aabbMin[0] = mn.x; g.aabbMin[1] = mn.y; g.aabbMin[2] = mn.z;
+			g.aabbMax[0] = mx.x; g.aabbMax[1] = mx.y; g.aabbMax[2] = mx.z;
+			const glm::vec3 d = glm::max(
+				glm::vec3(vol.dims[0], vol.dims[1], vol.dims[2]), glm::vec3(1.0f));
+			const glm::vec3 s = glm::max(
+				glm::vec3(vol.spacing) * d, glm::vec3(1e-6f));
+			const glm::vec3 scale = 1.0f / s;
+			g.uvwScale[0] = scale.x; g.uvwScale[1] = scale.y;
+			g.uvwScale[2] = scale.z;
+			g.uvwScale[3] = d.x;
+			g.uvwBias[0] = -vol.gridMin.x * scale.x;
+			g.uvwBias[1] = -vol.gridMin.y * scale.y;
+			g.uvwBias[2] = -vol.gridMin.z * scale.z;
+			g.uvwBias[3] = d.y;
+			g.aabbMax[3] = d.z;
+			const uint32_t planeCount = std::min<uint32_t>(
+				uint32_t(vol.def.planes.size()), 16u);
+			g.planeCountBase[0] = planeCount;
+			g.planeCountBase[1] = planeBase;
+			g.planeCountBase[2] = vol.bc6hFormat ? 1u : 0u;
+			for (uint32_t p = 0; p < planeCount; ++p) {
+				const smvk::gi::GiVolumePlane& pl = vol.def.planes[p];
+				GiVolumePlaneGpu& pg = descs.planes[planeBase + p];
+				const float span = std::max(
+					pl.insideFade + pl.outsideFade, 1e-5f);
+				const float fadeScale = 1.0f / span;
+				pg.weightEquation[0] = -pl.normal.x * fadeScale;
+				pg.weightEquation[1] = -pl.normal.y * fadeScale;
+				pg.weightEquation[2] = -pl.normal.z * fadeScale;
+				pg.weightEquation[3] = pl.outsideFade * fadeScale
+					- pl.d * fadeScale;
+			}
+			planeBase += planeCount;
+		}
+		constexpr smvk::PipelineStage kCvStages =
+			smvk::PipelineStage(smvk::PipelineStageBit_Fragment);
+		buf = m_context->CreateBuffer(
+			sizeof(GiVolumesGpu), smvk::BufferType_Storage, "gi set");
+		m_context->UploadDataToBuffer(buf, &descs,
+			sizeof(GiVolumesGpu), kCvStages, smvk::AccessFlags::ShaderRead);
+		addr = m_context->GetBufferDeviceAddress(buf);
+		return true;
+	}
+
+	bool WorldRenderer::AdoptGiVolumeSet(
+		const std::vector<std::string>& volumePaths) {
+		std::vector<GiVolumeResources> built;
+		smvk::Holder<smvk::BufferHandle> buf;
+		uint64_t addr = 0;
+		if (!BuildGiVolumeSetFromPaths(volumePaths, built, buf, addr)) {
+			std::cerr << "[GIV] AdoptGiVolumeSet: no volumes could load"
+				" - the current set stays\n";
+			return false;
+		}
+		m_giVolumes = std::move(built);
+		m_giVolumesBuffer = std::move(buf);
+		m_giVolumesAddress = addr;
+		m_giVolumesLoaded = true;
+		m_giVolumesEnabled = true;
+		m_giProbeInstancesBuilt = false;
+		// A plain SetGI drops any blend (the B set retires).
+		ClearGiBlend();
+		m_giSetPathsA = volumePaths;
+		std::cerr << "[GIV] external set adopted: " << m_giVolumes.size()
+			<< " volume(s)\n";
+		return true;
+	}
+
+	bool WorldRenderer::AdoptGiVolumeBlend(
+		const std::vector<std::string>& fromPaths,
+		const std::vector<std::string>& toPaths, float alpha) {
+		// Set A (the from): reuse the resident set when the paths are
+		// the SAME list (the repeated-call contract - only the scalar
+		// moves).
+		if (m_giSetPathsA != fromPaths || !m_giVolumesLoaded) {
+			std::vector<GiVolumeResources> built;
+			smvk::Holder<smvk::BufferHandle> buf;
+			uint64_t addr = 0;
+			if (!BuildGiVolumeSetFromPaths(fromPaths, built, buf, addr)) {
+				std::cerr << "[GIV] AdoptGiVolumeBlend: the FROM set"
+					" failed to load - the previous state stays\n";
+				return false;
+			}
+			m_giVolumes = std::move(built);
+			m_giVolumesBuffer = std::move(buf);
+			m_giVolumesAddress = addr;
+			m_giVolumesLoaded = true;
+			m_giVolumesEnabled = true;
+			m_giProbeInstancesBuilt = false;
+			m_giSetPathsA = fromPaths;
+		}
+		// Set B (the to): same residency rule.
+		if (!m_giBlendActive || m_giSetPathsB != toPaths
+				|| m_giVolumesB.empty()) {
+			std::vector<GiVolumeResources> builtB;
+			smvk::Holder<smvk::BufferHandle> bufB;
+			uint64_t addrB = 0;
+			if (!BuildGiVolumeSetFromPaths(toPaths, builtB, bufB, addrB)) {
+				std::cerr << "[GIV] AdoptGiVolumeBlend: the TO set failed"
+					" to load - the blend stays off (set A published)\n";
+				ClearGiBlend();
+				return false;
+			}
+			m_giVolumesB = std::move(builtB);
+			m_giVolumesBufferB = std::move(bufB);
+			m_giVolumesAddressB = addrB;
+			m_giSetPathsB = toPaths;
+		}
+		m_giBlendActive = true;
+		m_giBlendAlpha = std::clamp(alpha, 0.0f, 1.0f);
+		std::cerr << "[GIV] blend active: " << m_giVolumes.size()
+			<< " volume(s) -> " << m_giVolumesB.size()
+			<< " volume(s) at alpha " << m_giBlendAlpha << "\n";
+		return true;
+	}
+
+	void WorldRenderer::SetGiBlendAlpha(float alpha) {
+		if (!m_giBlendActive)
+			return;
+		m_giBlendAlpha = std::clamp(alpha, 0.0f, 1.0f);
+	}
+
+	void WorldRenderer::ClearGiBlend() {
+		if (!m_giBlendActive && m_giVolumesB.empty()) {
+			m_giSetPathsB.clear();
+			return;
+		}
+		m_giBlendActive = false;
+		m_giBlendAlpha = 0.0f;
+		m_giVolumesB.clear();
+		m_giVolumesBufferB = {};
+		m_giVolumesAddressB = 0;
+		m_giSetPathsB.clear();
+		std::cerr << "[GIV] blend cleared - the B set retires behind"
+			" the in-flight frames\n";
 	}
 
 	// The probe-sphere instance tables (Rendergraph/giprobe.h): per
@@ -5272,6 +5581,43 @@ namespace engine {
 				slot = UINT32_MAX;
 			data.giVolumeCount = 0u;
 			data.giVolumesEnabled = 0u;
+		}
+		// ---- GI BLEND (the B set - docs/content_as_code.md): the same
+		// per-volume slot table shape over the SECOND resident set; the
+		// shaders evaluate both sets independently and lerp the result
+		// by giBlendAlpha. The B set carries no tile masks (the cull
+		// pass walks set A only) - the shader's B walk relies on the
+		// per-pixel AABB + plane weights, which own correctness.
+		data.giVolumesB = 0;
+		for (uint32_t& slot : data.giVolumeLayersB)
+			slot = UINT32_MAX;
+		for (uint32_t& slot : data.giVolumeMeanLayersB)
+			slot = UINT32_MAX;
+		for (uint32_t& slot : data.giVolumeVisLayersB)
+			slot = UINT32_MAX;
+		data.giVolumeCountB = 0u;
+		data.giBlendEnabled = 0u;
+		data.giBlendAlpha = 0.0f;
+		if (m_giBlendActive && !m_giVolumesB.empty()) {
+			data.giVolumesB = m_giVolumesAddressB;
+			const uint32_t nB = std::min<uint32_t>(
+				uint32_t(m_giVolumesB.size()), 8u);
+			for (uint32_t v = 0; v < nB; ++v) {
+				const uint32_t layerCount =
+					m_giVolumesB[v].volume.bc6hFormat ? 9u : 7u;
+				for (uint32_t t = 0; t < layerCount; ++t)
+					data.giVolumeLayersB[v * 10u + t] =
+						m_giVolumesB[v].layerSlots[t];
+				for (uint32_t t = layerCount; t < 10; ++t)
+					data.giVolumeLayersB[v * 10u + t] = UINT32_MAX;
+				data.giVolumeMeanLayersB[v] = m_giVolumesB[v].meanSlot;
+				for (uint32_t t = 0; t < 2; ++t)
+					data.giVolumeVisLayersB[v * 2u + t] =
+						m_giVolumesB[v].visSlots[t];
+			}
+			data.giVolumeCountB = nB;
+			data.giBlendEnabled = 1u;
+			data.giBlendAlpha = m_giBlendAlpha;
 		}
 		// Convex-volume tile masks: published under the decal tile-list
 		// freshness contract above, with the DsActive() term the dispatch

@@ -572,6 +572,11 @@ void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, flo
 // outHit whether any volume reached the pixel at all. volMask comes
 // from SgGiVolumeTileMask (hoistable per pixel; the volumetric march reuses
 // one mask for all its segments).
+// (Forward declaration: the B-set twins below are referenced by the
+// blend tail.)
+void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
+    out float3 amps[SG_GI_LOBES], out float transmission, out bool hit);
+
 void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
     out float3 amps[SG_GI_LOBES], out float transmission, out bool hit)
 {
@@ -603,5 +608,294 @@ void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
         transmission *= 1.0 - w;
         if (transmission <= 0.0)
             break; // deep inside: lower priorities + base contribute 0
+    }
+    // ---- GI BLEND (docs/content_as_code.md): evaluate the B set
+    // INDEPENDENTLY (its own volumes/grids/vis - never re-uploaded
+    // per frame; only the scalar below changes) and interpolate the
+    // RESULTING lighting (0 = fully this set, 1 = fully the B set).
+    // The B walk ignores the A tile mask (the mask culls THIS set's
+    // volumes; correctness lives in the per-pixel weights - the mask
+    // is a hoist).
+    if (frame.giBlendEnabled != 0u)
+    {
+        float3 ampsB[SG_GI_LOBES];
+        float transB;
+        bool hitB;
+        SgGiVolumeCompositeSetB(frame, pos, ampsB, transB, hitB);
+        const float a = saturate(frame.giBlendAlpha);
+        [unroll]
+        for (uint l = 0; l < SG_GI_LOBES; ++l)
+            amps[l] = lerp(amps[l], ampsB[l], a);
+        transmission = lerp(transmission, transB, a);
+        hit = hit || hitB;
+    }
+}
+
+// ***************************************************************************
+// THE GI BLEND B-SET TWINS (docs/content_as_code.md): frame.giVolumesB
+// + the *B layer tables carry a SECOND resident GI set; the functions
+// below are the A-set twins' exact math over the B tables, kept as
+// separate bodies so the A paths' hot code is untouched (blending is
+// a caller-controlled rare state - a day/night transition - and the
+// A-set code paths pay zero cost when it is off).
+// ***************************************************************************
+
+// Samples one B-set volume's dense grid at world pos (the
+// SgGiVolumeSample twin over the B tables).
+void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
+    out float3 amps[SG_GI_LOBES])
+{
+    const GiVolumeGpu v = frame.giVolumesB.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+
+    const uint visSlotB = frame.giVolumeVisLayersB[vol * 2u + 1u];
+    if (visSlotB != 0xffffffffu)
+    {
+        const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+        const float3 rel = uvw * dims;
+        const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+        if (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5)
+        {
+            const uint visSlotA = frame.giVolumeVisLayersB[vol * 2u];
+            const float3 f = saturate(rel - 0.5 - float3(b));
+            float3 acc[SG_GI_LOBES] = { float3(0, 0, 0), float3(0, 0, 0),
+                float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
+                float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
+                float3(0, 0, 0) };
+            float wSum = 0.0;
+            [unroll]
+            for (uint c = 0; c < 8; ++c)
+            {
+                const int3 cc = int3(b) + int3(c & 1 ? 1 : 0,
+                    c & 2 ? 1 : 0, c & 4 ? 1 : 0);
+                const float3 dRel = rel - (float3(cc) + 0.5);
+                const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+                const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+                const float wv = SgGiVolumeVisFactor(dRel, visA, visB);
+                const float3 t3 = float3(c & 1 ? f.x : 1.0 - f.x,
+                    c & 2 ? f.y : 1.0 - f.y, c & 4 ? f.z : 1.0 - f.z);
+                const float wt = wv * (t3.x * t3.y * t3.z);
+                if (wt <= 0.0)
+                    continue;
+                float3 corner[SG_GI_LOBES];
+                if (v.planeCountBase.z == 1u)
+                {
+                    [unroll]
+                    for (uint l = 0; l < SG_GI_LOBES; ++l)
+                        corner[l] = volumeTextures[
+                            frame.giVolumeLayersB[vol * 10u + l]]
+                            .Load(int4(cc, 0)).rgb;
+                }
+                else
+                {
+                    float4 layers[SG_GI_VOLUME_LAYERS];
+                    [unroll]
+                    for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
+                        layers[t] = volumeTextures[
+                            frame.giVolumeLayersB[vol * 10u + t]]
+                            .Load(int4(cc, 0));
+                    SgRegularUnpack(layers, corner);
+                }
+                [unroll]
+                for (uint l = 0; l < SG_GI_LOBES; ++l)
+                    acc[l] += corner[l] * wt;
+                wSum += wt;
+            }
+            if (wSum > 1e-4)
+            {
+                [unroll]
+                for (uint l = 0; l < SG_GI_LOBES; ++l)
+                    amps[l] = acc[l] / wSum;
+            }
+            else
+            {
+                [unroll]
+                for (uint l = 0; l < SG_GI_LOBES; ++l)
+                    amps[l] = float3(0.0, 0.0, 0.0);
+            }
+            return;
+        }
+    }
+
+    if (v.planeCountBase.z == 1u)
+    {
+        [unroll]
+        for (uint l = 0; l < SG_GI_LOBES; ++l)
+            amps[l] = volumeTextures[frame.giVolumeLayersB[vol * 10u + l]]
+                .Sample(samplers[2], uvw).rgb;
+        return;
+    }
+    float4 layers[SG_GI_VOLUME_LAYERS];
+    [unroll]
+    for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
+    {
+        layers[t] = volumeTextures[frame.giVolumeLayersB[vol * 10u + t]]
+            .Sample(samplers[2], uvw);
+    }
+    SgRegularUnpack(layers, amps);
+}
+
+// The B-set composite walk (the SgGiVolumeComposite A-walk's twin;
+// no tile mask - see the blend note above).
+void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
+    out float3 amps[SG_GI_LOBES], out float transmission, out bool hit)
+{
+    [unroll]
+    for (uint l = 0; l < SG_GI_LOBES; ++l)
+        amps[l] = float3(0.0, 0.0, 0.0);
+    transmission = 1.0;
+    hit = false;
+    if (frame.giBlendEnabled == 0u)
+        return;
+    const uint volCount = min(frame.giVolumeCountB, (uint)SG_GI_VOLUME_MAX);
+    [loop]
+    for (int v = int(volCount) - 1; v >= 0; --v)
+    {
+        const GiVolumeGpu vol = frame.giVolumesB.Get().volumes[uint(v)];
+        const float w = SgGiVolumeWeight(frame, vol, pos);
+        [branch]
+        if (w <= 0.0)
+            continue;
+        float3 vAmps[SG_GI_LOBES];
+        SgGiVolumeSampleB(frame, uint(v), pos, vAmps);
+        const float c = transmission * w;
+        [unroll]
+        for (uint l = 0; l < SG_GI_LOBES; ++l)
+            amps[l] += vAmps[l] * c;
+        hit = true;
+        transmission *= 1.0 - w;
+        if (transmission <= 0.0)
+            break;
+    }
+}
+
+// Samples one B-set volume's baked mean texture (the fog twin).
+void SgGiVolumeSampleMeanB(FrameUniforms frame, uint vol, float3 pos,
+    out float3 mean)
+{
+    const GiVolumeGpu v = frame.giVolumesB.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    mean = volumeTextures[frame.giVolumeMeanLayersB[vol]]
+        .Sample(samplers[2], uvw).rgb;
+}
+
+// The B-set FOG ray prep (the SgGiVolumeRayPrep twin over the B
+// descriptors; no tile mask - the B set has no published tile masks,
+// the per-segment plane weights own correctness).
+void SgGiVolumeRayPrepB(FrameUniforms frame, float3 camPos,
+    float3 rayDir, float rayLen, out GiVolumeRayPrep prep)
+{
+    prep.rayCount = 0u;
+    prep.tailCount = 0u;
+    if (frame.giBlendEnabled == 0u)
+        return;
+    const uint volCount = min(frame.giVolumeCountB, (uint)SG_GI_VOLUME_MAX);
+    [loop]
+    for (int v = int(volCount) - 1; v >= 0; --v)
+    {
+        const GiVolumeGpu vol = frame.giVolumesB.Get().volumes[uint(v)];
+        float3 t0 = (vol.aabbMin.xyz - camPos) / rayDir;
+        float3 t1 = (vol.aabbMax.xyz - camPos) / rayDir;
+        [unroll]
+        for (int a = 0; a < 3; ++a)
+        {
+            if (abs(rayDir[a]) < 1e-8f)
+            {
+                const bool inside = camPos[a] >= vol.aabbMin[a]
+                    && camPos[a] <= vol.aabbMax[a];
+                t0[a] = inside ? -1e30f : 1e30f;
+                t1[a] = 1e30f;
+            }
+        }
+        const float3 tmin = min(t0, t1);
+        const float3 tmax = max(t0, t1);
+        const float enter = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
+        const float exit = min(min(tmax.x, tmax.y), rayLen);
+        if (exit < enter)
+            continue;
+        if (prep.rayCount < (uint)SG_GI_VOLUME_MAX_RAY)
+        {
+            const uint s = prep.rayCount;
+            prep.rays[s].enter = enter;
+            prep.rays[s].exit = exit;
+            prep.rays[s].volume = uint(v);
+            const uint count = min(vol.planeCountBase.x, (uint)SG_GI_VOLUME_MAX_PLANES);
+            prep.rays[s].planeCount = count;
+            [loop]
+            for (uint p = 0; p < count; ++p)
+            {
+                const float4 wEq = frame.giVolumesB.Get()
+                    .planes[vol.planeCountBase.y + p].weightEquation;
+                prep.rays[s].base[p] = dot(wEq.xyz, camPos) + wEq.w;
+                prep.rays[s].slope[p] = dot(wEq.xyz, rayDir);
+            }
+            prep.rayMeanValid[s] = false;
+            prep.rayCount = s + 1u;
+        }
+        else
+        {
+            if (prep.tailCount < (uint)SG_GI_VOLUME_MAX)
+            {
+                prep.tailVolumes[prep.tailCount] = uint(v);
+                prep.tailEnter[prep.tailCount] = enter;
+                prep.tailExit[prep.tailCount] = exit;
+                prep.tailCount++;
+            }
+        }
+    }
+}
+
+// The B-set FOG ray composite (the SgGiVolumeRayComposite twin).
+void SgGiVolumeRayCompositeB(FrameUniforms frame, inout GiVolumeRayPrep prep,
+    float t, float3 wpos, out float3 volAcc, out float trans)
+{
+    volAcc = float3(0.0, 0.0, 0.0);
+    trans = 1.0;
+    [loop]
+    for (uint s = 0; s < prep.rayCount; ++s)
+    {
+        if (t < prep.rays[s].enter || t > prep.rays[s].exit)
+            continue;
+        float minT = 1.0;
+        [loop]
+        for (uint p = 0; p < prep.rays[s].planeCount; ++p)
+        {
+            minT = min(minT, saturate(prep.rays[s].base[p]
+                + prep.rays[s].slope[p] * t));
+            if (minT <= 0.0)
+                break;
+        }
+        const float w = minT * minT * (3.0 - 2.0 * minT);
+        [branch]
+        if (w <= 0.0)
+            continue;
+        if (!prep.rayMeanValid[s])
+        {
+            SgGiVolumeSampleMeanB(frame, prep.rays[s].volume, wpos,
+                prep.rayMean[s]);
+            prep.rayMeanValid[s] = true;
+        }
+        volAcc += prep.rayMean[s] * (trans * w);
+        trans *= 1.0 - w;
+        if (trans <= 0.0)
+            return;
+    }
+    [loop]
+    for (uint k = 0; k < prep.tailCount; ++k)
+    {
+        if (t < prep.tailEnter[k] || t > prep.tailExit[k])
+            continue;
+        const GiVolumeGpu vol =
+            frame.giVolumesB.Get().volumes[prep.tailVolumes[k]];
+        const float w = SgGiVolumeWeight(frame, vol, wpos);
+        [branch]
+        if (w <= 0.0)
+            continue;
+        float3 vMean;
+        SgGiVolumeSampleMeanB(frame, prep.tailVolumes[k], wpos, vMean);
+        volAcc += vMean * (trans * w);
+        trans *= 1.0 - w;
+        if (trans <= 0.0)
+            return;
     }
 }

@@ -250,6 +250,74 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   lane is pinned by test_tour.cpp's `texforce.*` checks. No
   per-frame project scan ever runs.
 
+## The content-as-code query + loading + GI-blend API (v1 landed)
+
+**docs/content_as_code.md** is the system reference. Three layers:
+
+- **THE COMPILE-TIME QUERY** (`engine/include/Engine/Asset/
+  asset_query.h` + the generated project.h binding):
+  `project::MatchAssets<Key, "regex">()` - a CONSTEVAL regex over
+  the catalog's SYMBOL names (default) or content PATHS
+  (`MatchField::Path`), kind-filtered by `AssetTraits<Key>`,
+  returning a precisely sized `std::array<Key, N>` in catalog order
+  (zero matches = an empty array; new matching assets join at the
+  next project.h regeneration). The grammar: literals, `.`, `* + ?`,
+  groups, alternation, classes/ranges/negation, `^ $` anchors,
+  escapes - FULL-MATCH semantics (the pattern must match the whole
+  name; an empty pattern matches nothing). A malformed pattern is a
+  COMPILE-TIME error. The matcher is a bounded AST + position-SET
+  evaluation (Thompson/Pike) - linear, no backtracking. The
+  generated metadata (the `AssetSymbols` table, the `AssetCatalog`
+  carrier, the traits) is deliberately OUTSIDE the runtime catalog
+  ABI - `CatalogFingerprint` is unchanged by the query block.
+  Pinned by test_asset_query.cpp (`qrx.*` + the static_assert pins)
+  and `catalog.header-query-block`/`catalog.header-symbol-table`
+  (the emitter's shapes).
+- **THE GI CATALOG LANE**: `GiKey` (the 0x6xxx id range; a
+  `.givolumemanifest` = a baked GI SET naming its `.givolume`
+  payload rows). The kind byte `kCatalogKindGi = 5` is APPENDED (the
+  ABI never renumbers); the lane spans the resolver
+  (`.givolumemanifest` → `PlanAssetKind::Gi`; the payloads stay
+  BakeFile), `IdRangeForKind`, the appmanifest kind gate/strings,
+  the catalog bucket + fingerprint fold + content-hash bucket, the
+  emitted namespace (`project::gi::*`), the [ids] rows (`kind gi`),
+  and `ProjectRuntime::ReadAsset` (gi manifests serve as
+  VFS-addressed bytes). Pinned by `catalog.gi-*` +
+  `catalog.gi-id-range`.
+- **THE ASSET MANAGER FACADE** (`app/src/AssetManager.h/.cpp`):
+  `LoadMesh(MeshKey)`/`LoadMeshes(ptr, count)` (raw pointer + count;
+  nullptr valid ONLY with count 0; per-key dedup; the per-pak
+  grouping loads each owning cluster once; resource handles stay
+  separate from world entity handles - `MeshWorldIndex` is the
+  spawn-side seam; v1 loads the owning scene cluster through the
+  normal deserializer - the mesh join is the [ids] row's .geometry
+  path = the pak's Mesh-blob URI prefix) + `LoadGI(GiKey)` (the
+  manifest bytes through ReadAsset, rows parsed with
+  SplitManifestRow) + `SetGI`/`SetGIBlend(from, to, alpha)`/`
+  UnloadGI` (generational handles; multiple GI sets stay resident).
+  The GAME owns all blend timing - NO engine-side durations/easing/
+  timers by design. Pinned by `am.*` in test_pak_host.cpp.
+- **THE RENDERER GI-BLEND SEAM**: `WorldRenderer::
+  BuildGiVolumeSetFromPaths` (the transactional build core over an
+  explicit path list), `AdoptGiVolumeSet`/`AdoptGiVolumeBlend`/
+  `SetGiBlendAlpha`/`ClearGiBlend` (the hot-swap publish pattern; a
+  scene load resets any external set). FrameUniforms carries the
+  B-set tables in an APPEND-ONLY tail (giVolumesB @2160 through
+  giVolumeVisLayersB @2436, sizeof 2512 - pinned by static_asserts +
+  the HLSL mirror in common.hlsli). The shader twins
+  (`SgGiVolumeSampleB`/`SgGiVolumeCompositeSetB`/
+  `SgGiVolumeSampleMeanB`/`SgGiVolumeRayPrepB`/
+  `SgGiVolumeRayCompositeB` in sg_gi_volume.hlsli +
+  volumetric_integrate's lerped composite) evaluate BOTH sets
+  independently and interpolate the RESULT - the A-set hot paths pay
+  zero cost when blending is off. The B set carries no tile masks
+  (the cull hoist walks set A; the B walk's per-pixel weights own
+  correctness) and no probe spheres.
+- Documented follow-ups: `World::SpawnMesh(MeshHandle)`, the
+  subset/pak-grouped mesh fast path (the per-mesh blob direct
+  upload), the shared-cluster refcount, and the dedicated two-bake-
+  set GPU rendering regression.
+
 ## Submodules
 
 Unmodified upstream deps are pinned git submodules under `external/`

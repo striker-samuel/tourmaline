@@ -3022,6 +3022,90 @@ void TestProjectCatalog() {
 			Check(text.find(want) != std::string::npos,
 				"catalog.header-fingerprint-emitted");
 		}
+		// THE QUERY API BLOCK (docs/content_as_code.md): the symbol
+		// table (rows' order), the AssetCatalog carrier, the
+		// MatchAssets binding, the AssetTraits specializations, and
+		// the Gi kind lane (GiKey + the appended AssetKind::Gi = 5).
+		{
+			Check(text.find("#include <Engine/Asset/asset_query.h>")
+					!= std::string::npos
+				&& text.find("struct AssetCatalog")
+					!= std::string::npos
+				&& text.find("consteval auto MatchAssets()")
+					!= std::string::npos
+				&& text.find(
+					"project_pipeline::query::AssetTraits<project::GiKey>")
+					!= std::string::npos,
+				"catalog.header-query-block");
+			Check(text.find("std::string_view(\"_class\"),")
+					!= std::string::npos
+				&& text.find("std::string_view(\"_compl\"),")
+					!= std::string::npos,
+				"catalog.header-symbol-table");
+			Check(text.find("struct GiKey") != std::string::npos
+				&& text.find("    Gi = 5,") != std::string::npos,
+				"catalog.header-gi-kind-lane");
+		}
+	}
+	// THE GI CATALOG BUCKET (docs/content_as_code.md): the gi kind's
+	// full emission lane - the namespace, the Assets row, the
+	// fingerprint fold (the SAME shared fold a gi row joins), the
+	// content hash bucket, and the ID RANGE (0x6xxx).
+	{
+		smvk::project::ProjectCatalog c;
+		c.projectName = "GiTest";
+		c.gi.push_back({ 0x6000, "day", "content/gi/day.givolumemanifest",
+			"world" });
+		smvk::project::GenerationStamp st;
+		st.generation = 1;
+		st.timestamp = 1793451600;
+		st.contentHash = smvk::project::ComputeCatalogContentHash(c);
+		const std::string text =
+			smvk::project::EmitProjectHeader(c, st, {}, {});
+		Check(text.find("namespace gi {")
+				!= std::string::npos
+			&& text.find("inline constexpr GiKey day{0x6000ULL};")
+				!= std::string::npos,
+			"catalog.gi-namespace-emitted");
+		Check(text.find(
+				"AssetDesc{gi::day, AssetKind::Gi, 0,"
+				" \"content/gi/day.givolumemanifest\", \"\"},")
+				!= std::string::npos,
+			"catalog.gi-assets-row");
+		char fp[40];
+		std::snprintf(fp, sizeof(fp), "0x%llx",
+			static_cast<unsigned long long>(
+				smvk::project::CatalogFingerprintOf(c)));
+		Check(text.find(std::string(
+				"inline constexpr std::uint64_t CatalogFingerprint = ")
+				+ fp) != std::string::npos,
+			"catalog.gi-fingerprint-folded");
+	}
+	{
+		// The ID RANGE: gi ids allocate from 0x6xxx.
+		smvk::cache::AssetDatabase db;
+		std::string derr;
+		fs::path dir = fs::temp_directory_path() / "tourmaline_girange"
+			/ "proj";
+		fs::remove_all(dir);
+		fs::create_directories(dir / ".tourmaline");
+		bool created = false;
+		smvk::project::Project p = smvk::project::Project::Init(
+			dir.generic_string(), "GiRangeTest", created, derr);
+		const std::string root =
+			smvk::cache::EnsureRegistryRoot(
+				(dir / ".tourmaline").generic_string());
+		Check(p.Valid() && db.Open(root, p.root, derr),
+			"catalog.gi-db-opens");
+		uint64_t id = 0;
+		std::string sym;
+		Check(db.EnsureContentId(
+				"11111111111111111111111111111111", "gi",
+				"content/gi/day.givolumemanifest", id, sym, derr)
+			&& id >= 0x6000 && id <= 0x6FFF && sym == "day",
+			"catalog.gi-id-range");
+		db.Close();
+		fs::remove_all(dir.parent_path());
 	}
 	// Identity acquisition ADOPTS: the guid has a row in the ASSET
 	// DIRECTORY too (one database, both tables agree — the mint never

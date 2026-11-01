@@ -528,6 +528,16 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 						out.shaders))
 					return false;
 			}
+			else if (asset.kind == PlanAssetKind::Gi) {
+				// GI bake SETS (.givolumemanifest — the manifest names
+				// the set's .givolume payloads): the file's own sidecar
+				// identity, ids in the 0x6xxx range. The runtime loads
+				// these by GiKey (AssetManager::LoadGI) and can blend
+				// two resident sets.
+				if (!ensureAsset(asset.path, "gi", pak.id, {},
+						out.gi))
+					return false;
+			}
 		}
 	}
 
@@ -588,16 +598,17 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::sort(out.meshes.begin(), out.meshes.end(), byId);
 	std::sort(out.sounds.begin(), out.sounds.end(), byId);
 	std::sort(out.shaders.begin(), out.shaders.end(), byId);
+	std::sort(out.gi.begin(), out.gi.end(), byId);
 	return true;
 }
 
 // The catalog IDENTITY fingerprint (the shared fold, appmanifest.h's
 // ComputeCatalogFingerprint): over the entries in EMISSION order
-// (bucket order: scenes, textures, meshes, sounds; id-sorted within -
-// exactly what the header's Assets array and the manifest's [ids]
-// rows both enumerate), folding (id, kind byte, pakIndex, path).
-// The SAME implementation the manifest writer uses - one fold, no
-// drift between the compiled and deployed halves.
+// (bucket order: scenes, textures, meshes, sounds, shaders, gi;
+// id-sorted within - exactly what the header's Assets array and the
+// manifest's [ids] rows both enumerate), folding (id, kind byte,
+// pakIndex, path). The SAME implementation the manifest writer uses
+// - one fold, no drift between the compiled and deployed halves.
 uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	std::vector<uint64_t> ids;
 	std::vector<uint8_t> kinds;
@@ -623,6 +634,7 @@ uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	push(c.meshes, smvk::kCatalogKindMesh);
 	push(c.sounds, smvk::kCatalogKindSound);
 	push(c.shaders, smvk::kCatalogKindShader);
+	push(c.gi, smvk::kCatalogKindGi);
 	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
 		pakIndices.data(), paths.data(), ids.size());
 }
@@ -641,7 +653,10 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "// file byte-identical (write-only-on-change).\n"
 		<< "#pragma once\n\n"
 		<< "#include <array>\n#include <cstdint>\n"
-			"#include <string_view>\n\n"
+			"#include <string_view>\n"
+		<< "// The compile-time query API (MatchAssets + the constexpr\n"
+		<< "// regex engine + AssetTraits' primary) - pure C++20.\n"
+		<< "#include <Engine/Asset/asset_query.h>\n\n"
 		<< "namespace project {\n\n"
 		<< "using Id = std::uint64_t;\n\n"
 
@@ -662,6 +677,12 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< " compiled .spv the project OWNS, distinct from the"
 		<< " ENGINE-NATIVE set engine-shaders.pak carries).\n"
 		<< "struct ShaderKey { Id id = 0; constexpr operator Id() const"
+		<< " { return id; } };\n"
+		<< "// GI bake SETS (the 0x6xxx range - a .givolumemanifest:\n"
+		<< "// a baked lighting set of one or more GI volumes, loadable\n"
+		<< "// through AssetManager::LoadGI - the runtime can blend two\n"
+		<< "// resident sets, see docs/content_as_code.md).\n"
+		<< "struct GiKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
 		<< "// (SkeletonKey / AnimationClipKey arrive with their catalog\n"
 		<< "// buckets - the .anim asset identity kinds; the HANDLE types\n"
@@ -710,6 +731,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitNamespace("meshes", c.meshes, "MeshKey");
 	emitNamespace("sounds", c.sounds, "SoundKey");
 	emitNamespace("shaders", c.shaders, "ShaderKey");
+	emitNamespace("gi", c.gi, "GiKey");
 	os << "// Runtime packages (plan/mount order).\n"
 		<< "struct Pak {\n"
 		<< "    std::string_view name;\n"
@@ -722,13 +744,14 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	os << "};\n\n"
 		<< "// The asset KIND enum - the values are an ABI (the runtime's\n"
 		<< "// catalog-fingerprint fold + the .tapp validation agree on\n"
-		<< "// these bytes; do not renumber).\n"
+		<< "// these bytes; do not renumber - Gi is APPENDED, 5).\n"
 		<< "enum class AssetKind : std::uint8_t {\n"
 		<< "    Scene = 0,\n"
 		<< "    Texture = 1,\n"
 		<< "    Mesh = 2,\n"
 		<< "    Sound = 3,\n"
 		<< "    Shader = 4,\n"
+		<< "    Gi = 5,\n"
 		<< "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
 		<< "// no startup strings, no maps, no runtime discovery table.\n"
@@ -768,6 +791,25 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitRows(c.meshes, "meshes", "Mesh");
 	emitRows(c.sounds, "sounds", "Sound");
 	emitRows(c.shaders, "shaders", "Shader");
+	emitRows(c.gi, "gi", "Gi");
+	os << "};\n\n"
+		<< "// The SYMBOL-NAME table (compile-time query metadata; the\n"
+		<< "// same order as Assets). NOT part of the runtime catalog\n"
+		<< "// ABI - AssetDesc/CompiledAssetDesc/the fingerprint fold\n"
+		<< "// are untouched; only MatchAssets reads this.\n"
+		<< "inline constexpr std::array AssetSymbols = {\n";
+	const auto emitSymbols = [&](
+			const std::vector<CatalogEntry>& entries) {
+		for (const CatalogEntry& e : entries)
+			os << "    std::string_view(\"" << CppStr(e.symbol)
+				<< "\"),\n";
+	};
+	emitSymbols(c.scenes);
+	emitSymbols(c.textures);
+	emitSymbols(c.meshes);
+	emitSymbols(c.sounds);
+	emitSymbols(c.shaders);
+	emitSymbols(c.gi);
 	os << "};\n\n"
 		<< "// The catalog identity fingerprint: FNV-1a64 over the rows'\n"
 		<< "// stable identity in emission order (appmanifest.h's\n"
@@ -874,7 +916,65 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 			<< "}\n"
 			<< "\n";
 	}
+
+	// ---- THE COMPILE-TIME QUERY API BINDING (MatchAssets) ----------
+	// The catalog carrier (the query core's data seam - static
+	// constexpr accessors; no object NTTPs). MatchAssets<Key,
+	// "pattern"> filters Assets by kind + a constexpr REGEX over the
+	// SYMBOL names (default) or the content PATHS (MatchField::Path),
+	// returning a precisely sized std::array<Key, N> in catalog
+	// order - see Engine/Asset/asset_query.h for the grammar.
+	os << "// The catalog carrier + the compile-time query binding.\n"
+		<< "struct AssetCatalog {\n"
+		<< "    static constexpr auto Rows() { return Assets; }\n"
+		<< "    static constexpr auto Symbols() { return AssetSymbols; }\n"
+		<< "};\n"
+		<< "template<typename Key,\n"
+		<< "    ::project_pipeline::query::FixedString Pattern,\n"
+		<< "    ::project_pipeline::query::MatchField Field\n"
+		<< "        = ::project_pipeline::query::MatchField::Symbol>\n"
+		<< "consteval auto MatchAssets() {\n"
+		<< "    return ::project_pipeline::query::MatchAssetsImpl<\n"
+		<< "        Key, Pattern, Field, AssetCatalog>();\n"
+		<< "}\n\n";
 	os << "} // namespace project\n\n";
+
+	// The AssetTraits specializations (OUTER scope - the qualified-id
+	// form the standard requires for a cross-namespace
+	// specialization; the query core consults these at instantiation
+	// to filter by the row's catalog kind).
+	os << "// The kind traits (MatchAssets' typed filter).\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::SceneKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Scene; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::TextureKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Texture; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::MeshKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Mesh; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::SoundKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Sound; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::ShaderKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Shader; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::GiKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::Gi; }\n"
+		<< "};\n"
+		<< "\n";
 
 	// ---- the EOF metadata (the tools' half of the file) --------------
 	// A machine-readable COMMENT: the compiler never sees it, nothing
@@ -958,6 +1058,7 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 	addBucket("mesh", c.meshes);
 	addBucket("sound", c.sounds);
 	addBucket("shader", c.shaders);
+	addBucket("gi", c.gi);
 	// The retired set is catalog SEMANTICS too: a retire/reactivate
 	// moves the content hash (a generation event), so the compiled
 	// catalog and its hash can never disagree about membership.

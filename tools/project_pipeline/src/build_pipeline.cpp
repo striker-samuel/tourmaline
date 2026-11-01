@@ -855,6 +855,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					addRows(catalog.meshes, "mesh");
 					addRows(catalog.sounds, "sound");
 					addRows(catalog.shaders, "shader");
+					addRows(catalog.gi, "gi");
 					// The CATALOG FINGERPRINT (the compiled-catalog contract's
 					// deployment half): the SAME fold the generated project.h
 					// emits as project::CatalogFingerprint (CatalogFingerprintOf -

@@ -34,6 +34,7 @@
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
+#include "AssetManager.h"
 #include "DeployCheck.h"
 
 #include <artifact_cache/artifact_cache.h> // HashBytes (the name digests)
@@ -968,6 +969,134 @@ void TestProjectScenes() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// THE ASSET MANAGER FACADE (app/src/AssetManager.h - the content-as-
+// code load/blend surface, docs/content_as_code.md). CPU-only legs:
+// the GI manifest parse + the generational handle registry + the kind
+// refusals; the mesh leg + the renderer publish need a GPU (their
+// regression rides the sample + the headless pins).
+// ---------------------------------------------------------------------------
+void TestAssetManager() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_am";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+	// A pak carrying a GI manifest (a Texture-kind blob at a gi/ VFS
+	// path - the payload channel the cooker uses) + the [ids] row.
+	const std::string manifestText =
+		"# day set\n"
+		"gi/scene_day_atrium.givolume\n"
+		"gi/scene_day_hall.givolume\n"
+		"# a legacy guid row (still parses)\n"
+		"abcdef0123456789abcdef0123456789 gi/scene_day_cellar.givolume\n";
+	const std::string texPath = "content/models/s/stone.png";
+	{
+		// A minimal KTX2 payload wrapped through BuildTexturePayload
+		// (the TestProjectRuntime recipe - the texture channel's
+		// envelope).
+		const std::vector<uint8_t> ktx = { 0xAB, 'K', 'T', 'X', ' ',
+			'2', '0', 0x0D, 0x0A, 1, 2, 3, 4, 5 };
+		smvk::PakWriter w;
+		w.AddBlob(smvk::PakAssetKind::Texture, texPath,
+			smvk::BuildTexturePayload(texPath, -1, -1, -1, -1,
+				std::span<const uint8_t>(ktx)));
+		w.AddBlob(smvk::PakAssetKind::Texture,
+			"content/gi/day.givolumemanifest",
+			smvk::BuildTexturePayload("content/gi/day.givolumemanifest",
+				-1, -1, -1, -1,
+				std::span<const uint8_t>(
+					reinterpret_cast<const uint8_t*>(
+						manifestText.data()),
+					manifestText.size())));
+		const std::vector<uint8_t> image = w.Finalize();
+		std::ofstream f(tmp / "one.pak", std::ios::binary
+			| std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(image.data()),
+			std::streamsize(image.size()));
+	}
+	const fs::path tapp = tmp / "game.tapp";
+	{
+		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		f << "# Tourmaline Runtime Project\n"
+			<< "appmanifest 1\n"
+			<< "entry one.pak x\n"
+			<< "\n[paks]\none.pak\n"
+			<< "\n[ids]\n"
+			<< "0x2000 texture one.pak " << texPath << "\n"
+			<< "0x6000 gi one.pak content/gi/day.givolumemanifest\n";
+	}
+	std::string err;
+	auto rtOpt = app::ProjectRuntime::Load(tapp.generic_string(), err);
+	Check(bool(rtOpt) && err.empty(), "am.load-manifest");
+	if (!rtOpt) {
+		Check(false, "am.gi-load-parse");
+		Check(false, "am.gi-dedup");
+		Check(false, "am.gi-kind-refusal");
+		Check(false, "am.gi-invalid-handle");
+		Check(false, "am.mesh-null-ctx-refused");
+		return;
+	}
+	smvk::World world;
+	app::AssetManager assets(*rtOpt, world, nullptr, nullptr);
+	// ---- the GI lane ----
+	{
+		app::GiHandle day = assets.LoadGI(0x6000, err);
+		Check(bool(day) && err.empty(), "am.gi-load-parse");
+		// The dedup: the same key returns the SAME handle.
+		std::string dErr2;
+		app::GiHandle day2 = assets.LoadGI(0x6000, dErr2);
+		Check(bool(day2) && day2 == day && dErr2.empty(),
+			"am.gi-dedup");
+		Check(assets.LoadedGiCount() == 1, "am.gi-count");
+		// A wrong-kind key refuses loudly (the typed-key contract).
+		std::string kErr;
+		Check(!assets.LoadGI(0x2000, kErr)
+			&& kErr.find("MESH") == std::string::npos
+			&& kErr.find("GI ids") != std::string::npos,
+			"am.gi-kind-refusal");
+		// An unknown id refuses.
+		std::string uErr;
+		Check(!assets.LoadGI(0x9999, uErr) && !uErr.empty(),
+			"am.gi-unknown-refused");
+		// SetGI/SetGIBlend without the renderer seam refuse (the
+		// GPU-less test seam - the publish needs the renderer).
+		Check(!assets.SetGI(day), "am.am.setgi-no-renderer-refused");
+		Check(!assets.SetGIBlend(day, day, 0.5f),
+			"am.setgiblend-no-renderer-refused");
+		// Unload + the stale-handle guarantee.
+		Check(assets.UnloadGI(day), "am.gi-unload");
+		Check(!assets.UnloadGI(day), "am.gi-stale-unload-refused");
+		Check(assets.LoadedGiCount() == 0, "am.gi-count-after-unload");
+		// A re-load after the unload re-registers (a fresh handle).
+		std::string rErr;
+		app::GiHandle day3 = assets.LoadGI(0x6000, rErr);
+		Check(bool(day3) && day3 != day, "am.gi-reload-after-unload");
+	}
+	// ---- the MESH lane's CPU-refused legs ----
+	{
+		// LoadMesh without a GPU context refuses loudly (the cluster
+		// deserialize + upload seam); the manifest still resolves the
+		// id (the refusal is the CONTEXT, not the key).
+		std::string mErr;
+		Check(!assets.LoadMesh(0x9999, mErr) && !mErr.empty(),
+			"am.mesh-unknown-refused");
+		// The null-pointer batch convention: nullptr is valid ONLY
+		// with count == 0 (a zero batch succeeds trivially).
+		std::string zErr;
+		const app::MeshBatch zero =
+			assets.LoadMeshes(nullptr, 0, zErr);
+		Check(zero.count == 0 && zErr.empty(),
+			"am.mesh-batch-null-zero-ok");
+		const app::MeshBatch bad =
+			assets.LoadMeshes(nullptr, 2, zErr);
+		Check(bad.count == 0 && !zErr.empty(),
+			"am.mesh-batch-null-nonzero-refused");
+	}
+	fs::remove_all(tmp, ec);
+}
+
 } // namespace
 
 int main() {
@@ -979,6 +1108,7 @@ int main() {
 	TestStaticFlagApplication();
 	TestProjectRuntime();
 	TestProjectScenes();
+	TestAssetManager();
 	std::cout << "pak_host_tests: " << (g_checks - g_failures) << "/"
 		<< g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;

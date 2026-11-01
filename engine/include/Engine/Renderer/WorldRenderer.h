@@ -1060,6 +1060,24 @@ struct FrameUniforms
 	// remaining 4 bytes pad to the UNCHANGED 2160 total - zero size
 	// churn, no later offset moves, HLSL mirror at the same offset. ----
 	uint32_t contactShadowIndex = UINT32_MAX; // 2152 (bindless visibility)
+	// ---- GI BLEND (docs/content_as_code.md - the caller-controlled
+	// second GI set): when giBlendEnabled, the frame carries a SECOND
+	// resident GI-volume set (the B tables below) and the shaders
+	// evaluate BOTH sets independently, then interpolate the resulting
+	// lighting by giBlendAlpha (0 = fully the A set, 1 = fully the B
+	// set; AssetManager::SetGIBlend clamps). The A tables are the
+	// giVolume* members above; both sets keep their OWN grids,
+	// layouts, vis + mean textures - no re-upload per frame, only the
+	// scalar alpha changes. APPEND-ONLY tail after 2160: every pinned
+	// offset above stays put; the HLSL mirror (common.hlsli) carries
+	// the same members at the same offsets. ----
+	uint64_t giVolumesB = 0;            // 2160 the B set's descriptor pack
+	uint32_t giVolumeCountB = 0;        // 2168 B set volume count
+	uint32_t giBlendEnabled = 0;        // 2172 1 = blend the B set in
+	float giBlendAlpha = 0.0f;          // 2176 0 = A, 1 = B (clamped)
+	uint32_t giVolumeLayersB[56] = {};  // 2180 B set 8 volumes x 7 slots
+	uint32_t giVolumeMeanLayersB[8] = {};  // 2404 B mean slots
+	uint32_t giVolumeVisLayersB[16] = {}; // 2436 B vis slots
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1088,6 +1106,15 @@ static_assert(offsetof(FrameUniforms, giDebug) == 744, "giDebug offset: HLSL mir
 static_assert(offsetof(FrameUniforms, evsmMode) == 748, "evsmMode offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giLevelLayers) == 1320, "giLevelLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeMeanLayers) == 1640, "giVolumeMeanLayers offset: HLSL mirror");
+// GI BLEND tail (the second resident set): pinned like every other
+// HLSL-mirrored member.
+static_assert(offsetof(FrameUniforms, giVolumesB) == 2160, "giVolumesB offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeCountB) == 2168, "giVolumeCountB offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giBlendEnabled) == 2172, "giBlendEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giBlendAlpha) == 2176, "giBlendAlpha offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeLayersB) == 2180, "giVolumeLayersB offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeMeanLayersB) == 2404, "giVolumeMeanLayersB offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeVisLayersB) == 2436, "giVolumeVisLayersB offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1122,7 +1149,7 @@ static_assert(offsetof(FrameUniforms, fogShadowRect) == 2128, "fogShadowRect off
 static_assert(offsetof(FrameUniforms, fogShadowBias) == 2144, "fogShadowBias offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148, "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152, "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 2160, "FrameUniforms size: HLSL mirror (2156 of fields + the 16-align tail pad - the contactShadow append lands in the old pad, zero size churn)");
+static_assert(sizeof(FrameUniforms) == 2512, "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; the mat4 16-align tail rounds to 2512; every pre-blend offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -3206,6 +3233,20 @@ public:
 	std::vector<GiVolumeResources> m_giVolumes;
 	smvk::Holder<smvk::BufferHandle> m_giVolumesBuffer;
 	uint64_t m_giVolumesAddress = 0;
+	// ---- GI BLEND (the AssetManager lane - docs/content_as_code.md):
+	// the SECOND resident set (the blend destination). Both sets keep
+	// their own grids/layouts/textures; only the SCALAR below changes
+	// per frame (no re-upload, no rebuild). The B set carries no probe
+	// spheres + no tile masks (the visual overlay + the cull hoist stay
+	// set-A features; the B walk's per-pixel weights own correctness).
+	std::vector<GiVolumeResources> m_giVolumesB;
+	smvk::Holder<smvk::BufferHandle> m_giVolumesBufferB;
+	uint64_t m_giVolumesAddressB = 0;
+	bool m_giBlendActive = false;
+	float m_giBlendAlpha = 0.0f;   // 0 = fully A, 1 = fully B (clamped)
+	// The cached path lists (AdoptGiVolumeBlend's residency check).
+	std::vector<std::string> m_giSetPathsA;
+	std::vector<std::string> m_giSetPathsB;
 	bool GiVolumesActive() const {
 		return m_giVolumesLoaded && m_giVolumesEnabled && ProbesWanted();
 	}
@@ -3233,6 +3274,37 @@ public:
 	// untouched.
 	bool BuildGiVolumeSet(std::vector<GiVolumeResources>& built,
 		smvk::Holder<smvk::BufferHandle>& buf, uint64_t& addr);
+	// The EXPLICIT-LINES build core (the AssetManager lane's seam): the
+	// same transactional build over a CALLER-supplied .givolume VFS
+	// path list (a GiKey's manifest rows) instead of the scene-binding
+	// channels. False = nothing built (the caller keeps its current
+	// state).
+	bool BuildGiVolumeSetFromPaths(const std::vector<std::string>& lines,
+		std::vector<GiVolumeResources>& built,
+		smvk::Holder<smvk::BufferHandle>& buf, uint64_t& addr);
+	// ---- THE ASSET-MANAGER GI LANE (docs/content_as_code.md) --------
+	// Publish an EXTERNAL GI set (a loaded GiKey's volumes) as the
+	// ACTIVE set A - the hot-swap publish pattern (old Holders retire
+	// behind the in-flight frames). False = the current set stays.
+	bool AdoptGiVolumeSet(const std::vector<std::string>& volumePaths);
+	// Publish the BLEND: `from` becomes set A, `to` becomes the B set;
+	// alpha 0 = fully from, 1 = fully to (clamped). Each call REBUILDS
+	// the sets only when their PATH LIST changed (the cached sets stay
+	// resident - repeated SetGI/SetGIBlend calls with the same sets
+	// only move the scalar). False = the previous blend state stays.
+	bool AdoptGiVolumeBlend(const std::vector<std::string>& fromPaths,
+		const std::vector<std::string>& toPaths, float alpha);
+	// Update ONLY the blend scalar (both sets stay resident; no
+	// rebuild, no re-upload - the game's per-frame day/night call).
+	void SetGiBlendAlpha(float alpha);
+	// Drop the blend (the B set retires; set A stays).
+	void ClearGiBlend();
+	// The cached path lists (the AssetManager's identity check - a
+	// repeated SetGI/SetGIBlend with the same GiKey hits the cache).
+	const std::vector<std::string>& GiSetPathsA() const
+		{ return m_giSetPathsA; }
+	const std::vector<std::string>& GiSetPathsB() const
+		{ return m_giSetPathsB; }
 	// HOT-SWAP the GI volumes in the RUNNING renderer (the bake-
 	// completion path): generation N+1 built in separate resources,
 	// published by the member swap; the old generation's Holders retire

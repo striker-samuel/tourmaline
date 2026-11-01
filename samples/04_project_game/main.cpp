@@ -149,6 +149,28 @@ int main(int argc, const char* argv[]) {
 		"the catalog must carry at least one pak");
 	static_assert(project::Contains(project::textures::stone),
 		"the catalog must carry the shared texture");
+	// THE QUERY API pins (docs/content_as_code.md): MatchAssets'
+	// consteval regex over the generated symbol table. New assets
+	// matching a pattern join the result AUTOMATICALLY at the next
+	// project.h regeneration + rebuild.
+	static_assert(project::MatchAssets<project::MeshKey, "^game.*$">()
+		.size() == 1);
+	static_assert(project::MatchAssets<project::MeshKey, "^game.*$">()[0]
+		.id == project::meshes::game_2.id);
+	static_assert(project::MatchAssets<project::TextureKey, "^stone$">()
+		.size() == 1);
+	static_assert(project::MatchAssets<project::SoundKey, "^bell.*$">()
+		.size() == 1);
+	// Kind filtering + empty results + the PATH field.
+	static_assert(project::MatchAssets<project::SceneKey, "^game.*$">()
+		.size() == 1);
+	static_assert(project::MatchAssets<project::ShaderKey, "^.*$">()
+		.size() == 0);
+	static_assert(project::MatchAssets<project::GiKey, "^.*$">()
+		.size() == 0);
+	static_assert(project::MatchAssets<project::TextureKey,
+		"^content/models/game/shared/.*\\.png$",
+		::project_pipeline::query::MatchField::Path>().size() == 1);
 
 	// The catalog-driven launch banner (every id the header carries).
 	std::printf("[GameProject] content-as-code: project 0x%llX '%s', %zu"

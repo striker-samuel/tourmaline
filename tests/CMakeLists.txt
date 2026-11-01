@@ -16,6 +16,22 @@ set_target_properties(AssetTests PROPERTIES
 
 add_test(NAME asset_tests COMMAND AssetTests)
 
+# The compile-time asset-query engine (Engine/Asset/asset_query.h -
+# MatchAssets' regex core over a synthetic generated-catalog shape;
+# compile-time pins via static_assert + the runtime pattern matrix).
+add_executable(AssetQueryTests test_asset_query.cpp)
+
+target_include_directories(AssetQueryTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/engine/include
+)
+
+set_target_properties(AssetQueryTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME asset_query_tests COMMAND AssetQueryTests)
+
 # .tourAnim loader/sampler + the Cluster pose driver (headless).
 add_executable(TourAnimTests test_touranim.cpp)
 
@@ -822,6 +838,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/PakWorldLoader.cpp
 	../app/src/ProjectRuntime.cpp
 	../app/src/ProjectScenes.cpp
+	../app/src/AssetManager.cpp
 	../app/src/DeployCheck.cpp
 )
 

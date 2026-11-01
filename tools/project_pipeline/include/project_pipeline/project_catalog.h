@@ -67,6 +67,11 @@ struct ProjectCatalog {
 	// the project owns; the ENGINE-NATIVE set never appears here: it
 	// rides engine-shaders.pak, build-owned, outside every recipe).
 	std::vector<CatalogEntry> shaders;
+	// GI bake SETS (the 0x6xxx range — .givolumemanifest files: a
+	// baked lighting set of one or more GI volumes; the runtime loads
+	// them by GiKey through AssetManager::LoadGI and can blend two
+	// resident sets — see docs/content_as_code.md).
+	std::vector<CatalogEntry> gi;
 	// (id, file) in plan (mount) order — paks are named entities, not
 	// id carriers: renaming a package updates this table; asset ids
 	// stay.

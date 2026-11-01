@@ -74,8 +74,14 @@ PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
 	// engine-shaders.pak carries those).
 	if (ext == ".spv")
 		return PlanAssetKind::Shader;
-	if (ext == ".givolumemanifest" || ext == ".givolume"
-			|| ext == ".cubemanifest")
+	// GI bake SETS: the .givolumemanifest is the GAME-LOADABLE asset
+	// (a baked lighting set naming its .givolume payload rows — a
+	// 0x6xxx GiKey, AssetManager::LoadGI). The .givolume payloads +
+	// .cubemanifest stay BakeFile plumbing (family/support content
+	// the packer embeds on the gi/ VFS channel).
+	if (ext == ".givolumemanifest")
+		return PlanAssetKind::Gi;
+	if (ext == ".givolume" || ext == ".cubemanifest")
 		return PlanAssetKind::BakeFile;
 	known = false;
 	return PlanAssetKind::Texture;

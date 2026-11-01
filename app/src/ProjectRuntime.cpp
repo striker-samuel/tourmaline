@@ -167,7 +167,7 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 		return std::nullopt;
 	}
 	// KIND DISPATCH (the honest channel per kind — the pak's VFS
-	// surface serves TEXTURE, SOUND and SHADER blobs; meshes and
+	// surface serves TEXTURE, SOUND, SHADER and GI blobs; meshes and
 	// scenes are cluster-internal payloads with no VFS address):
 	//   texture -> the embedded .ktx2 bytes (what every loader in the
 	//              tree consumes — the v1 LoadTexture form);
@@ -176,18 +176,21 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 	//   shader  -> the raw compiled bytecode (the project-AUTHORED
 	//              .spv — validated SPIR-V, distinct from the
 	//              engine-native set; serve through smvk::shaders);
+	//   gi      -> the .givolumemanifest bytes (a baked GI SET's row
+	//              list — AssetManager::LoadGI parses it and loads
+	//              the .givolume payloads it names, also VFS-served);
 	//   scene   -> scenes load BY IDENTITY through the apphost's world
 	//              loading (the appmanifest entry / the pak's scene
 	//              list), never as raw bytes;
 	//   mesh    -> meshes ship INSIDE their scene's cluster (the v1
 	//              pak-format boundary) — load the owning scene.
 	if (row->kind != "texture" && row->kind != "sound"
-			&& row->kind != "shader") {
+			&& row->kind != "shader" && row->kind != "gi") {
 		err = "content id 0x" + std::to_string(id) + " is a '"
-			+ row->kind + "' — only TEXTURE, SOUND and SHADER payloads"
-				" are VFS-addressed bytes (scenes load by identity"
-				" through the world loader; meshes ship inside their"
-				" scene's cluster)";
+			+ row->kind + "' — only TEXTURE, SOUND, SHADER and GI"
+				" payloads are VFS-addressed bytes (scenes load by"
+				" identity through the world loader; meshes ship"
+				" inside their scene's cluster)";
 		return std::nullopt;
 	}
 	// The row's pak through the SHARED lazy backend cache (see

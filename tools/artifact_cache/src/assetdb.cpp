@@ -802,6 +802,13 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 		// runtime resolves. The 0x5xxx range.
 		base = 0x5000;
 	}
+	else if (kind == "gi") {
+		// GI bake SETS (.givolumemanifest — the manifest naming the
+		// set's .givolume payloads): the 0x6xxx range. The runtime
+		// loads these by GiKey (AssetManager::LoadGI) and can blend
+		// two resident sets (SetGIBlend).
+		base = 0x6000;
+	}
 	else
 		return false;
 	last = base + 0xFFF;
@@ -887,7 +894,7 @@ bool AssetDatabase::EnsureContentId(const std::string& guid,
 	}
 	uint64_t base = 0, last = 0;
 	if (!IdRangeForKind(kind, base, last)) {
-		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound)";
+		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound|shader|gi)";
 		return false;
 	}
 	try {

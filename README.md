@@ -240,6 +240,7 @@ external/   Pinned submodules and fetched third-party dependencies
 - [`docs/entities_and_animators.md`](docs/entities_and_animators.md) — typed runtime handles and animation.
 - [`docs/audio_source.md`](docs/audio_source.md) — authored audio sources and sound content.
 - [`docs/shader_library_design.md`](docs/shader_library_design.md) — project HLSL shader libraries, material instances, and 32-bit userdata (Phase A — the userdata transport + lit-hook seam — implemented; the ProjectLit family is the follow-up).
+- [`docs/content_as_code.md`](docs/content_as_code.md) — the query/loading/GI-blend API: `MatchAssets` (the compile-time regex query), the `AssetManager` facade (`LoadMesh`/`LoadMeshes`/`LoadGI`/`SetGI`/`SetGIBlend`), and GI bake sets as a catalog kind.
 - [`docs/artifact-db-funnel.md`](docs/artifact-db-funnel.md) — ongoing artifact pipeline redesign notes (not all sections are implemented).
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored dependencies and redistribution notices.
 

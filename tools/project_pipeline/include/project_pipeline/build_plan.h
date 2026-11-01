@@ -48,6 +48,14 @@ enum class PlanAssetKind : uint8_t {
 	// through the stable 0x5xxx content ids. The ENGINE-NATIVE set
 	// (engine-shaders.pak) is build-owned — recipes never control it.
 	Shader,
+	// GI bake SETS (.givolumemanifest files - a baked lighting set
+	// naming its .givolume payload rows): VFS-addressable content in
+	// the pak (the payload blobs ride the existing gi/ Texture-blob
+	// channel), resolved through the stable 0x6xxx content ids and
+	// loaded/blended at runtime by GiKey (AssetManager::LoadGI /
+	// SetGI / SetGIBlend). The .givolume payloads + .cubemanifest
+	// stay BakeFile plumbing - only the SET manifest is the asset.
+	Gi,
 };
 
 struct PlanAsset {

@@ -28,6 +28,7 @@ add_library(tourmaline_apphost STATIC
     src/ProjectRuntime.cpp
     src/ProjectScenes.cpp
     src/AudioRuntime.cpp
+    src/AssetManager.cpp
     src/DeployCheck.cpp
 )
 

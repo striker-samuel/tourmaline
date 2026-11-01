@@ -523,9 +523,17 @@ PSOut mainPS(PSIn IN)
 
     // Ray-space volume prep (once per pixel).
     GiVolumeRayPrep rayPrep;
+    GiVolumeRayPrep rayPrepB;
     float3 baseHeld = skyMean;
     if (volumeGiOn)
         SgGiVolumeRayPrep(frame, volMask, camPos, rayDir, rayLen, rayPrep);
+    // GI BLEND: the B set's own ray table (its own volumes/grids);
+    // per segment the two composites are evaluated independently and
+    // the RESULTING ambient is interpolated (docs/content_as_code.md).
+    const bool giBlendOn = volumeGiOn && frame.giBlendEnabled != 0u;
+    const float giBlendA = saturate(frame.giBlendAlpha);
+    if (giBlendOn)
+        SgGiVolumeRayPrepB(frame, camPos, rayDir, rayLen, rayPrepB);
 
     float3 lightsHeld = float3(0.0, 0.0, 0.0);
     const bool fogLightsOn = vp.fpLightCount > 0u;
@@ -611,6 +619,17 @@ PSOut mainPS(PSIn IN)
         float volTrans = 1.0;
         if (volumeGiOn)
             SgGiVolumeRayComposite(frame, rayPrep, t, wpos, volAcc, volTrans);
+        // GI BLEND: evaluate the B set's composite independently and
+        // interpolate the RESULT (the volAcc/transmission pair).
+        if (giBlendOn)
+        {
+            float3 volAccB = float3(0.0, 0.0, 0.0);
+            float volTransB = 1.0;
+            SgGiVolumeRayCompositeB(frame, rayPrepB, t, wpos,
+                volAccB, volTransB);
+            volAcc = lerp(volAcc, volAccB, giBlendA);
+            volTrans = lerp(volTrans, volTransB, giBlendA);
+        }
         if (t - giT >= giRefreshDist)
         {
             giT = t;
