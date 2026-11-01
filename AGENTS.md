@@ -83,6 +83,24 @@
   from zero — the standing policy, no compat reader). Pinned by
   `smp8.*`/`pak.corrupt.*`/`pak.bounds.*`/`cook.pak.plan*` in
   test_assets.cpp + `am.mesh-no-plan-refused` in test_pak_host.cpp.
+- **THE ASYNC PAK PAGER** (`engine/Asset/pak_pager.h` — Phase 5 of
+  the consolidated architecture, docs/pak_vnext.md): ONE worker
+  thread over a persistent handle, positional page reads outside the
+  pool lock, demand-reads-jump-prefetch (prefetch is NEVER a
+  guarantee — the later Read is the contract), in-flight/resident
+  DEDUP by slot, a bounded byte-budget pool with LRU eviction of
+  UNPINNED pages only (a PinnedPage never invalidates; the pager
+  outlives its pins), queued-prefetch cancellation, loud terminal
+  per-page failures. THE SELECTIVE RUNTIME LANE:
+  `ProjectRuntime::ReadAsset` serves through the pager whenever the
+  pak has no backend in the cache — one positional page read, no
+  whole-image preload, no blocking preload future (a scene-loaded pak
+  serves from its resident image; one copy of the bytes whatever
+  opened first). Pinned by `pager.*` (test_assets.cpp) + `prt.pager-*`
+  (test_pak_host.cpp). The SCENE lane stays on the whole-image
+  preload until the subset fast path / permanent shared-mesh store
+  lands (the direct-addressed mesh upload needs a contiguous image
+  base) — documented in pak_vnext.md.
 - **The gameplay-handle model** (engine Engine/Scene/entity_handle.h):
   NO generic game-entity registry — gameplay structs compose TYPED
   64-bit generational handles (MeshEntityHandle/AnimatorHandle/

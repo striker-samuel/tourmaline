@@ -65,12 +65,55 @@ until the pager replaces the preload path.
   packing-policy work (scene locality, LOD grouping, mip tails) is
   gated on the A/B/C profile the design requires — measure before
   finalizing the packing.
-- **The async pager**: worker reads, coalescing, bounded pools,
-  pinning, eviction, cancellation (Phase 5). `OpenFile` + the
-  per-page CRCs are its container contract.
 - **Compiled static plans**: the private codegen that turns
   slot-keyed plans into compile-time physical reads + the
   fail-closed layout hash (Phase 6).
+- **The scene lane on the pager**: cluster loading still uses the
+  whole-image preload (the direct-addressed mesh fast path needs a
+  contiguous image base). Moving it is the subset fast path /
+  permanent shared-mesh store work (Phase 7 residue) — the pager
+  already serves every VFS-addressed asset read (see below).
+
+## The async pager (`smvk::PakPager`, Phase 5 — landed)
+
+`engine/include/Engine/Asset/pak_pager.h` — the scheduling + residency
+layers over the SMP8 container contract:
+
+- ONE background worker over a persistent file handle; every fetch is
+  a positional page read (verify + LZ4-decode) performed OUTSIDE the
+  pool lock — a slow read never blocks a poll or a pin release.
+- Demand reads jump queued PREFETCH entries (prefetch is early work,
+  demand owns latency; **prefetch is never a guarantee** — the later
+  `Read` is the contract).
+- In-flight/resident pages are DEDUPLICATED by slot — concurrent
+  requests attach to one disk read.
+- A BOUNDED byte-budget pool (default 64 MiB) with LRU eviction of
+  UNPINNED pages only; a `PinnedPage` holds its page for its
+  lifetime (the pool never invalidates a live span). The pager
+  outlives its pins (the standard owner rule).
+- Cancellation for QUEUED prefetches (never in-flight, never demand);
+  a demand read on a cancelled page un-cancels it; `Acquire` of a
+  dead/evicted record re-enqueues on demand.
+- Per-page failures are loud + terminal (the SMP8 lazy verification
+  surfaced: a corrupt page fails AT the page, its neighbors stay
+  servable).
+
+**The selective runtime lane (landed):** `ProjectRuntime::ReadAsset`
+reads through the pager whenever the pak has no backend in the cache
+(a scene-loaded pak serves from its already-resident image — one copy
+of the bytes whatever opened first). An asset read on a pak nobody
+preloaded does ONE positional page read: no backend is created, no
+whole-image preload runs, no blocking preload future — the
+small-loads acceptance contract, pinned by `prt.pager-*` in
+test_pak_host.cpp (`diskReads == 1`, `bytesRead < fileSize`,
+`HasPak == false`).
+
+Pinned by `pager.*` in test_assets.cpp: payload parity with the
+image-backed reader (LZ4 + plain), the dedup, the pin/eviction
+lifecycle, prefetch-satisfies-demand, the cancel contract's
+deterministic sides, the corrupt-page failure + clean sibling, the
+missing/garbage refusals, and 8-thread concurrent demand (every page
+read exactly once).
 
 ## Pinned by
 

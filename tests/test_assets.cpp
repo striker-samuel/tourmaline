@@ -33,6 +33,7 @@
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/pak_pager.h>
 #include <Engine/platform.h> // readFile (exe-relative shader loads)
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/Renderer/vertex_pack.h>
@@ -1095,6 +1096,221 @@ void TestPakSmp8() {
 				(tmp / "smp7.pak").generic_string(), ferr2)
 			&& ferr2.find("recook") != std::string::npos,
 			"smp8.smp7-file-rejected");
+	}
+
+	fs::remove_all(tmp, ec);
+}
+
+// THE ASYNC PAK PAGER (docs/pak_vnext.md): page-granular reads over a
+// pak FILE — the demand/prefetch lanes, in-flight dedup, the pinned
+// bounded pool, cancellation, the per-page failure surfacing, and the
+// parity with the image-backed reader.
+void TestPakPager() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path() / "tourmaline_pager";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+
+	// A pak: a compressible mesh payload (LZ4), a plain scene blob, a
+	// texture envelope.
+	smvk::PakWriter w;
+	w.SetCompression(smvk::PakCompression::Lz4);
+	std::vector<uint8_t> big(64 * 1024);
+	for (size_t i = 0; i < big.size(); ++i)
+		big[i] = static_cast<uint8_t>((i * 7) & 0xFF);
+	Check(w.AddBlob(smvk::PakAssetKind::Mesh, "models/big#mesh.0", big),
+		"pager.add.mesh");
+	Check(w.AddBlob(smvk::PakAssetKind::Scene, "scene/only", { 1, 2, 3, 4 }),
+		"pager.add.scene");
+	const std::vector<uint8_t> ktx = { 7, 8, 9, 10 };
+	w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+		smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1, -1,
+			std::span<const uint8_t>(ktx)));
+	const std::vector<uint8_t> img = w.Finalize();
+	const fs::path pakPath = tmp / "pager.pak";
+	{
+		std::ofstream f(pakPath, std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(img.data()),
+			std::streamsize(img.size()));
+	}
+	const std::string pak = pakPath.generic_string();
+
+	// Open + payload parity with the image-backed reader (LZ4 + plain
+	// pages both decode identically) + the single disk read.
+	{
+		smvk::PakPager pager(pak);
+		Check(pager.Valid(), "pager.open");
+		const auto* mesh = pager.Reader().Find(
+			smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+		Check(mesh != nullptr, "pager.find.mesh");
+		std::string err;
+		auto page = pager.Read(*mesh, err);
+		Check(bool(page) && err.empty() && page.size() == big.size()
+			&& memcmp(page.data(), big.data(), big.size()) == 0,
+			"pager.page-parity-lz4");
+		const auto stats = pager.PageStats();
+		Check(stats.diskReads == 1 && stats.residentPages == 1,
+			"pager.one-disk-read");
+		// DEDUP: concurrent requests for the same page ATTACH — one
+		// disk read total, every Acquire succeeds.
+		std::vector<smvk::PakPager::Request> reqs;
+		for (int i = 0; i < 8; ++i)
+			reqs.push_back(pager.ReadAsync(*mesh));
+		bool allServed = true;
+		for (const auto& r : reqs) {
+			std::string aerr;
+			auto p = pager.Acquire(r, aerr);
+			allServed = allServed && bool(p)
+				&& p.size() == big.size();
+		}
+		Check(allServed && pager.PageStats().diskReads == 1,
+			"pager.dedup-attaches");
+		// Prefetch satisfies a later demand read (attach to the
+		// queued/in-flight/resident page - still one read).
+		const auto* scene = pager.Reader().Find(
+			smvk::PakAssetKind::Scene, "scene/only");
+		pager.Prefetch(*scene);
+		std::string serr;
+		auto spage = pager.Read(*scene, serr);
+		Check(spage && spage.size() == 4
+			&& pager.PageStats().diskReads == 2,
+			"pager.prefetch-satisfies-demand");
+		// Cancellation of a RESIDENT page refuses (deterministic side
+		// of the cancel contract); unknown requests refuse.
+		smvk::PakPager::Request bogus;
+		Check(!pager.Cancel(bogus), "pager.cancel-unknown-refused");
+		smvk::PakPager::Request live = pager.ReadAsync(*scene);
+		Check(!pager.Cancel(live), "pager.cancel-resident-refused");
+	}
+
+	// The pinned bounded pool: pins + demand WAITERS survive the
+	// budget; unpinned LRU pages evict on trim; a pinned page's bytes
+	// stay valid across evictions. (A budget below ONE page is the
+	// adversarial case: the install -> pin window must never evict
+	// the page out from under its waiter - the livelock the waiters
+	// counter exists to break.)
+	{
+		smvk::PakPager pager(pak);
+		pager.SetBudget(1024); // far below any page
+		const auto* mesh = pager.Reader().Find(
+			smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+		const auto* scene = pager.Reader().Find(
+			smvk::PakAssetKind::Scene, "scene/only");
+		std::string err;
+		auto pinned = pager.Read(*mesh, err);
+		Check(bool(pinned), "pager.pin-read");
+		Check(pager.PageStats().residentPages == 1,
+			"pager.pin-survives-budget");
+		{
+			std::string serr;
+			auto temp = pager.Read(*scene, serr);
+			Check(bool(temp), "pager.pin-second-page");
+			// Both pages stay: the pinned one + the one being waited
+			// on (over budget is the holders' doing, not the pool's).
+			Check(pager.PageStats().residentPages == 2,
+				"pager.pin-over-budget-both-resident");
+		}
+		// temp died: an explicit trim evicts the UNPINNED page; the
+		// PINNED one stays + its bytes are untouched.
+		pager.SetBudget(1024);
+		const auto stats = pager.PageStats();
+		Check(stats.evictions == 1 && stats.residentPages == 1,
+			"pager.evict-unpinned-lru");
+		Check(pinned.size() == big.size()
+			&& memcmp(pinned.data(), big.data(), big.size()) == 0,
+			"pager.pinned-bytes-valid");
+		// Releasing the pin lets a later trim drop it.
+		pinned = {};
+		pager.SetBudget(1024);
+		Check(pager.PageStats().residentPages == 0,
+			"pager.trim-after-unpin");
+	}
+
+	// A CORRUPT PAGE fails AT the page (the SMP8 lazy verification
+	// surfaced by the pager) — its neighbors stay servable.
+	{
+		std::string serr;
+		auto imgReader = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), serr);
+		Check(imgReader.has_value(), "pager.corrupt.source-open");
+		if (imgReader) {
+			const auto* scene = imgReader->Find(
+				smvk::PakAssetKind::Scene, "scene/only");
+			Check(scene != nullptr, "pager.corrupt.find-scene");
+			if (scene) {
+				std::vector<uint8_t> bad = img;
+				bad[size_t(scene->offset)] ^= 0xFF;
+				const fs::path badPath = tmp / "pagerbad.pak";
+				{
+					std::ofstream f(badPath,
+						std::ios::binary | std::ios::trunc);
+					f.write(reinterpret_cast<const char*>(bad.data()),
+						std::streamsize(bad.size()));
+				}
+				smvk::PakPager pager(badPath.generic_string());
+				Check(pager.Valid(), "pager.corrupt.open");
+				const auto* scene2 = pager.Reader().Find(
+					smvk::PakAssetKind::Scene, "scene/only");
+				const auto* mesh2 = pager.Reader().Find(
+					smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+				std::string perr;
+				auto page = pager.Read(*scene2, perr);
+				Check(!page && perr.find("corrupt page")
+					!= std::string::npos,
+					"pager.corrupt-page-fails-loud");
+				std::string merr;
+				auto mesh = pager.Read(*mesh2, merr);
+				Check(mesh && mesh.size() == big.size(),
+					"pager.corrupt-sibling-serves");
+			}
+		}
+	}
+
+	// Bad inputs: a missing file + a garbage file refuse loudly; reads
+	// on an invalid pager never touch anything.
+	{
+		smvk::PakPager missing((tmp / "missing.pak").generic_string());
+		Check(!missing.Valid() && !missing.OpenError().empty(),
+			"pager.missing-refused");
+		const fs::path garbagePath = tmp / "garbage.pak";
+		{
+			std::ofstream f(garbagePath, std::ios::binary | std::ios::trunc);
+			const char bytes[64] = {};
+			f.write(bytes, sizeof(bytes));
+		}
+		smvk::PakPager garbage(garbagePath.generic_string());
+		Check(!garbage.Valid() && garbage.OpenError().find("magic")
+			!= std::string::npos, "pager.garbage-refused");
+	}
+	// Concurrency: threads demanding the same + different pages; every
+	// Acquire served, per-page dedup holds (each DISTINCT page read
+	// exactly once).
+	{
+		smvk::PakPager pager(pak);
+		const auto* mesh = pager.Reader().Find(
+			smvk::PakAssetKind::Mesh, "models/big#mesh.0");
+		const auto* scene = pager.Reader().Find(
+			smvk::PakAssetKind::Scene, "scene/only");
+		std::atomic<int> failures{ 0 };
+		std::vector<std::thread> threads;
+		for (int t = 0; t < 8; ++t) {
+			threads.emplace_back([&, t] {
+				const smvk::PakTocEntry& e =
+					(t % 2) ? *mesh : *scene;
+				for (int i = 0; i < 16; ++i) {
+					std::string err;
+					auto page = pager.Read(e, err);
+					if (!page || !err.empty())
+						++failures;
+				}
+			});
+		}
+		for (auto& th : threads)
+			th.join();
+		Check(failures.load() == 0, "pager.concurrent-all-served");
+		Check(pager.PageStats().diskReads == 2,
+			"pager.concurrent-dedup");
 	}
 
 	fs::remove_all(tmp, ec);
@@ -3174,6 +3390,7 @@ int main() {
 	run("TestLz4Codec", TestLz4Codec);
 	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
 	run("TestPakSmp8", TestPakSmp8);
+	run("TestPakPager", TestPakPager);
 	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
 	run("TestMeshOpt", TestMeshOpt);
 	run("TestSmoothNormalRepair", TestSmoothNormalRepair);

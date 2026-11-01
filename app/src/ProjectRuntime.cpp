@@ -82,6 +82,26 @@ void ProjectRuntime::AdoptPakBackend(const std::string& pakFile,
 	m_backends.emplace(pakFile, std::move(backend));
 }
 
+std::shared_ptr<smvk::PakPager> ProjectRuntime::OpenPakPager(
+	const std::string& pakFile, std::string& err) {
+	err.clear();
+	// Lazy cache, one pager per archive (the pager owns its file
+	// handle + worker thread; the mount is the SMP8 small one —
+	// header/footer/TOC only, no blob bytes, no preload future).
+	auto cached = m_pagers.find(pakFile);
+	if (cached == m_pagers.end()) {
+		auto pager = std::make_shared<smvk::PakPager>(
+			PakPath(pakFile));
+		if (!pager->Valid()) {
+			err = "the content pak '" + pakFile + "' failed to open"
+				" for paging: " + pager->OpenError();
+			return nullptr;
+		}
+		cached = m_pagers.emplace(pakFile, std::move(pager)).first;
+	}
+	return cached->second;
+}
+
 bool ProjectRuntime::AttachCompiledCatalog(
 	const CompiledAssetDesc* assets, size_t assetCount,
 	uint64_t fingerprint, std::string& err) {
@@ -193,17 +213,54 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAsset(
 				" inside their scene's cluster)";
 		return std::nullopt;
 	}
-	// The row's pak through the SHARED lazy backend cache (see
-	// OpenPak — one preload + open per archive, kept for the runtime's
-	// lifetime).
-	std::shared_ptr<smvk::PakBackend> backend = OpenPak(row->pak, err);
-	if (!backend)
-		return std::nullopt;
-	auto bytes = backend->TryRead(row->path);
+	// The read lane (the SELECTIVE startup contract): a pak the
+	// SCENE lane already opened (or the apphost adopted) serves from
+	// its resident image — one copy of the bytes whatever opened
+	// first. A pak nobody preloaded goes through the PAGER: the SMP8
+	// small mount + ONE positional page read for this asset. NO
+	// whole-image preload ever happens on the asset-read path.
+	const smvk::PakTocEntry* entry = nullptr;
+	smvk::PakAssetKind entryKind = smvk::PakAssetKind::Texture;
+	std::optional<std::vector<uint8_t>> bytes;
+	{
+		const auto backendIt = m_backends.find(row->pak);
+		if (backendIt != m_backends.end()) {
+			bytes = backendIt->second->TryRead(row->path);
+		}
+		else {
+			// The pager lane. The row's kind maps to the pak's VFS
+			// kinds ("gi" manifests ride Texture-kind blobs).
+			smvk::PakAssetKind kind = smvk::PakAssetKind::Texture;
+			if (row->kind == "sound")
+				kind = smvk::PakAssetKind::Sound;
+			else if (row->kind == "shader")
+				kind = smvk::PakAssetKind::Shader;
+			std::string perr;
+			std::shared_ptr<smvk::PakPager> pager =
+				OpenPakPager(row->pak, perr);
+			if (!pager) {
+				err = perr;
+				return std::nullopt;
+			}
+			entry = pager->Reader().Find(kind, row->path);
+			if (entry) {
+				entryKind = kind;
+				smvk::PakPager::PinnedPage page =
+					pager->Read(*entry, perr);
+				if (page)
+					bytes = smvk::PakServeVfsBytes(entryKind,
+						page.bytes(), row->path);
+				else
+					err = perr;
+			}
+		}
+	}
 	if (!bytes || bytes->empty()) {
-		err = "the pak '" + row->pak + "' does not serve '"
-			+ row->path + "' (content id 0x" + std::to_string(id)
-			+ " — a version skew between the build and the manifest?)";
+		if (err.empty())
+			err = "the pak '" + row->pak + "' does not serve '"
+				+ row->path + "' (content id 0x"
+				+ std::to_string(id)
+				+ " — a version skew between the build and the manifest?)";
 		return std::nullopt;
 	}
 	return bytes;

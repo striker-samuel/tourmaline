@@ -20,6 +20,7 @@
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/pak_pager.h>
 
 #include <cstdint>
 #include <map>
@@ -114,6 +115,14 @@ public:
 	// ProjectScenes' constructor) if you want the reads overlapped.
 	[[nodiscard]] std::shared_ptr<smvk::PakBackend> OpenPak(
 		const std::string& pakFile, std::string& err);
+	// The pak's PAGER (the SELECTIVE lane, SMP8): the header/footer/
+	// TOC-only mount + page-granular reads through the async pager —
+	// NO whole-image preload, ever. ReadAsset uses this lane whenever
+	// the pak has no backend in the cache (a scene-loaded pak serves
+	// from its already-resident image instead — one copy of the bytes
+	// whatever lane opened first). Lazy cache, one pager per archive.
+	[[nodiscard]] std::shared_ptr<smvk::PakPager> OpenPakPager(
+		const std::string& pakFile, std::string& err);
 	// Cheap cache presence (no open, no block).
 	[[nodiscard]] bool HasPak(const std::string& pakFile) const {
 		return m_backends.count(pakFile) != 0;
@@ -142,6 +151,9 @@ private:
 	// the runtime's lifetime).
 	std::map<std::string, std::shared_ptr<smvk::PakBackend>>
 		m_backends;
+	// Lazily opened PAGERS, keyed by pak file (the selective lane —
+	// no image, page-granular reads; see OpenPakPager).
+	std::map<std::string, std::shared_ptr<smvk::PakPager>> m_pagers;
 	bool m_compiledCatalogAttached = false;
 };
 

@@ -595,6 +595,34 @@ void TestProjectRuntime() {
 		auto bytes = rt->ReadAsset(0x2000, rErr);
 		Check(bytes && *bytes == ktx && rErr.empty(),
 			"prt.read-bytes");
+		// THE SELECTIVE LANE (SMP8 + the pager): an asset read on a pak
+		// NOBODY preloaded does ONE positional page read — no backend
+		// was ever created, no whole-image preload ran (the small-load
+		// acceptance contract).
+		{
+			Check(!rt->HasPak("shared.pak"),
+				"prt.pager-no-backend-preloaded");
+			std::string perr;
+			std::shared_ptr<smvk::PakPager> pager =
+				rt->OpenPakPager("shared.pak", perr);
+			Check(pager && perr.empty(), "prt.pager-opens-lazily");
+			if (pager) {
+				const auto stats = pager->PageStats();
+				const auto fileSize = fs::file_size(
+					fs::path(rt->PakPath("shared.pak")));
+				Check(stats.diskReads == 1
+					&& stats.bytesRead > 0
+					&& stats.bytesRead < fileSize,
+					"prt.pager-selective-bytes");
+				// The cached pager is THE one the read used (the lazy
+				// cache): a second read attaches, no new disk read.
+				std::string rErr2;
+				auto again = rt->ReadAsset(0x2000, rErr2);
+				Check(again && *again == ktx
+					&& pager->PageStats().diskReads == 1,
+					"prt.pager-second-read-attaches");
+			}
+		}
 		// Unknown ids + unserved paths fail LOUDLY (never a guess).
 		std::string badErr;
 		Check(!rt->ReadAsset(0x9999, badErr) && !badErr.empty(),
@@ -633,6 +661,8 @@ void TestProjectRuntime() {
 		Check(false, "prt.asset-row");
 		Check(false, "prt.asset-lookup");
 		Check(false, "prt.read-bytes");
+		Check(false, "prt.pager-no-backend-preloaded");
+		Check(false, "prt.pager-selective-bytes");
 		Check(false, "prt.unknown-id-fails");
 		Check(false, "prt.moved-tree-reads");
 	}

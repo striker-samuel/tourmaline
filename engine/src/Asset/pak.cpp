@@ -1279,33 +1279,41 @@ bool PakBackend::Exists(const VfsPath& path) const {
 		|| reader_->Find(PakAssetKind::Shader, n) != nullptr;
 }
 
+std::optional<std::vector<uint8_t>> PakServeVfsBytes(
+	PakAssetKind kind, std::span<const uint8_t> payload,
+	const std::string& path) {
+	// The shared serve shape (the backend's TryRead + the PAGER lane):
+	// texture blobs unwrap the envelope to the embedded .ktx2; sound +
+	// shader blobs ARE the payload (the raw .wav / the raw compiled
+	// bytecode). Nullopt on a malformed texture envelope (logged with
+	// the path).
+	if (kind == PakAssetKind::Texture) {
+		PakTexturePayload parsed;
+		if (!ParseTexturePayload(payload, parsed)) {
+			std::cerr << "PakServeVfsBytes: malformed texture payload: "
+				<< path << std::endl;
+			return std::nullopt;
+		}
+		return std::vector<uint8_t>(parsed.ktxBytes.begin(),
+			parsed.ktxBytes.end());
+	}
+	if (kind == PakAssetKind::Sound || kind == PakAssetKind::Shader)
+		return std::vector<uint8_t>(payload.begin(), payload.end());
+	return std::nullopt;
+}
+
 std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) const {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty() || !reader_)
 		return std::nullopt;
-	const PakTocEntry* e = reader_->Find(PakAssetKind::Texture, n);
-	if (e) {
-		PakTexturePayload payload;
-		if (!ParseTexturePayload(reader_->Payload(*e), payload)) {
-			std::cerr << "PakBackend: malformed texture payload: " << n << std::endl;
-			return std::nullopt;
-		}
-		return std::vector<uint8_t>(payload.ktxBytes.begin(), payload.ktxBytes.end());
-	}
-	// SOUND blobs: the payload IS the raw .wav bytes (no header
-	// wrapper — LoadWavFromMemory consumes them verbatim).
-	e = reader_->Find(PakAssetKind::Sound, n);
-	if (e) {
-		const std::span<const uint8_t> wav = reader_->Payload(*e);
-		return std::vector<uint8_t>(wav.begin(), wav.end());
-	}
-	// SHADER blobs: the payload IS the raw compiled bytecode (no
-	// wrapper — SPIR-V on the Vulkan backend; the shader library
-	// validates the magic before a module is ever created).
-	e = reader_->Find(PakAssetKind::Shader, n);
-	if (e) {
-		const std::span<const uint8_t> code = reader_->Payload(*e);
-		return std::vector<uint8_t>(code.begin(), code.end());
+	// The three VFS-addressable kinds (pak.h's interop contract),
+	// served through the shared per-kind helper.
+	for (const PakAssetKind kind : { PakAssetKind::Texture,
+			PakAssetKind::Sound, PakAssetKind::Shader }) {
+		const PakTocEntry* e = reader_->Find(kind, n);
+		if (!e)
+			continue;
+		return PakServeVfsBytes(kind, reader_->Payload(*e), n);
 	}
 	return std::nullopt;
 }

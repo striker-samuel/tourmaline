@@ -105,6 +105,9 @@ inline constexpr uint32_t kPakFooterMagic = 0x384D504B; // "KPM8" LE
 // path, not a cluster-local one - one plan per PAK.
 inline constexpr const char* kPakMeshPlanPath = "#meshplan";
 
+// A breaking change to any of this bumps the pak magic (SMP8 is the
+// current epoch - the paged break: per-page contentCrc, stable slots,
+// the mesh plan); content recooks from zero.
 enum class PakAssetKind : uint32_t {
 	Scene = 1,
 	Mesh = 2,
@@ -204,6 +207,14 @@ struct PakTocEntry {
 
 uint64_t PakHashPath(const std::string& normalizedPath);
 uint32_t PakCrc32(const void* data, size_t size);
+// The shared VFS serve shape (PakBackend::TryRead + the PAGER lane of
+// ProjectRuntime::ReadAsset): the kind-appropriate bytes for a
+// TEXTURE / SOUND / SHADER entry's payload (texture: the envelope's
+// embedded .ktx2; sound + shader: the raw payload). Nullopt on a
+// malformed texture envelope.
+std::optional<std::vector<uint8_t>> PakServeVfsBytes(
+	PakAssetKind kind, std::span<const uint8_t> payload,
+	const std::string& path);
 // CRC-32 of A||B from the CRCs of the parts (zlib crc32_combine style:
 // GF(2) zeros-operator matrices over the reflected CRC-32 polynomial).
 // len2 is the byte length covered by crc2. Public for tests; the reader
@@ -511,6 +522,7 @@ namespace smvk {
 	using ::tour::asset::PakTocEntry;
 	using ::tour::asset::PakHashPath;
 	using ::tour::asset::PakCrc32;
+	using ::tour::asset::PakServeVfsBytes;
 	using ::tour::asset::PakCrc32Combine;
 	using ::tour::asset::PakCrc32Parallel;
 	using ::tour::asset::PakAppendInfo;
