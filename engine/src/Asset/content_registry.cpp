@@ -203,6 +203,120 @@ bool ContentRegistry::AddBackendOverride(const std::string& name,
 }
 
 // ---------------------------------------------------------------------------
+// discovery (the .tapp-free lane)
+// ---------------------------------------------------------------------------
+
+bool ContentRegistry::DiscoverPak(const std::string& name,
+	const std::string& pakPath, std::string& err) {
+	err.clear();
+	if (name.empty()) {
+		err = "a discovered pak needs a provider name";
+		return false;
+	}
+	// Idempotent: a provider with that name is already discovered.
+	if (ProviderByName(name))
+		return true;
+	// The light SMP8 mount (header/footer/TOC — no blob bytes, no
+	// whole image) + ONE page read for the identity table.
+	auto pager = std::make_shared<smvk::PakPager>(pakPath);
+	if (!pager->Valid()) {
+		err = "the content pak '" + name
+			+ "' failed its light mount: " + pager->OpenError();
+		return false;
+	}
+	const smvk::PakTocEntry* entry = pager->Reader().Find(
+		smvk::PakAssetKind::Identity, kPakAssetIdsPath);
+	if (!entry) {
+		err = "the pak '" + name + "' carries no identity metadata (the"
+			" '#ids' registry blob) — recook it through the project"
+			" build (or use the appmanifest compatibility lane)";
+		return false;
+	}
+	std::string perr;
+	smvk::PakPager::PinnedPage page = pager->Read(*entry, perr);
+	if (!page) {
+		err = "the pak '" + name + "' failed reading its identity"
+			" table: " + perr;
+		return false;
+	}
+	std::vector<PakAssetIdRow> rows;
+	if (!ParseAssetIdsBlob(page.bytes(), rows, perr)) {
+		err = "the pak '" + name + "' carries a malformed identity"
+			" table: " + perr;
+		return false;
+	}
+	// Validate the WHOLE row set (against the existing table AND
+	// within the pak's own rows) BEFORE committing anything — the
+	// atomicity contract: a conflicting pak adds no records, no
+	// provider, nothing.
+	std::vector<ContentRecord> pending;
+	pending.reserve(rows.size());
+	std::unordered_map<uint64_t, size_t> pendingById;
+	std::unordered_map<uint64_t, size_t> pendingByPath;
+	for (const PakAssetIdRow& r : rows) {
+		const std::string norm = smvk::vfs::Normalize(r.path);
+		if (norm.empty()) {
+			err = "the pak '" + name + "' identity row " + HexId(r.id)
+				+ " path '" + r.path
+				+ "' does not normalize to a valid logical path";
+			return false;
+		}
+		const auto claimErr = [&](const std::string& what,
+				const std::string& prevPak) -> std::string {
+			if (prevPak == name)
+				return "identity conflict inside '" + name + "': the "
+					+ what + " is claimed twice by the same pak"
+					" (recook)";
+			return "identity conflict: the " + what
+				+ " is claimed by both '" + prevPak + "' and '" + name
+				+ "' (one owner per asset — a deployment conflict;"
+				" recook)";
+		};
+		if (m_byId.count(r.id) || pendingById.count(r.id)) {
+			const std::string prevPak = pendingById.count(r.id)
+				? name : m_records[m_byId.at(r.id)].pak;
+			err = claimErr("id " + HexId(r.id), prevPak);
+			return false;
+		}
+		const uint64_t key = PathKey(r.kind, norm);
+		if (m_byPath.count(key) || pendingByPath.count(key)) {
+			const std::string prevPak = pendingByPath.count(key)
+				? name : m_records[m_byPath.at(key)].pak;
+			err = claimErr(std::string(smvk::CatalogKindToString(r.kind))
+				+ " path '" + norm + "'", prevPak);
+			return false;
+		}
+		ContentRecord rec;
+		rec.id = r.id;
+		rec.kind = r.kind;
+		rec.path = norm;
+		rec.pak = name;
+		rec.sceneName = r.sceneName;
+		pendingById.emplace(rec.id, pending.size());
+		pendingByPath.emplace(key, pending.size());
+		pending.push_back(std::move(rec));
+	}
+	// Commit: the provider first (the pager stays CACHED on it — the
+	// discovery's own mount + page read already served), then the
+	// records + both indexes.
+	ContentProvider p;
+	p.type = ContentProvider::Type::Pak;
+	p.name = name;
+	p.base = true;
+	p.source = pakPath;
+	p.pager = std::move(pager);
+	p.pagerOpenTried = true;
+	m_base.push_back(std::move(p));
+	for (ContentRecord& rec : pending) {
+		const size_t idx = m_records.size();
+		m_byId.emplace(rec.id, idx);
+		m_byPath.emplace(PathKey(rec.kind, rec.path), idx);
+		m_records.push_back(std::move(rec));
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // the convergent lookups
 // ---------------------------------------------------------------------------
 

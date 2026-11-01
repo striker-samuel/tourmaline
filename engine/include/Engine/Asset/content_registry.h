@@ -173,6 +173,23 @@ public:
 	bool AddBackendOverride(const std::string& name,
 		std::shared_ptr<smvk::IVfsBackend> backend, std::string& err);
 
+	// ---- discovery (the .tapp-free lane) --------------------------------
+	// Discovers a pak's OWN identity metadata (the "#ids" registry
+	// blob — kPakAssetIdsPath) and merges it: the pak becomes a BASE
+	// provider + its rows become records. NO whole-image load, NO
+	// manifest — the light SMP8 mount + ONE page read for the blob
+	// (the pager stays cached on the provider: later byte reads ride
+	// it until a backend is adopted). A pak without the blob refuses
+	// loudly (recook — discovery never guesses). A duplicate identity
+	// across discovered paks is a DEPLOYMENT CONFLICT (loud, naming
+	// both — one owner per asset, the same policing the build applies
+	// at cook time); the discovery is ATOMIC (a conflicting pak adds
+	// no records and no provider). Re-discovering a known name is
+	// idempotent. Scene rows with an empty name ride the existing
+	// single-scene inference at load time.
+	bool DiscoverPak(const std::string& name,
+		const std::string& pakPath, std::string& err);
+
 	// ---- the convergent lookups ---------------------------------------
 	// The record for a stable id (nullptr = unknown — a version skew
 	// between the compiled header and the packaged content).

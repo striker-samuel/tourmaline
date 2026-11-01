@@ -405,6 +405,166 @@ int main() {
 			"cr.readopt-base-reads-pager");
 	}
 
+	// ---- THE DISCOVERY LANE (the .tapp-free form) ------------------------
+	// A FRESH registry with NO manifest: the paks' own "#ids" registry
+	// blobs build the record table + the provider set. This is the
+	// per-pak identity metadata the .tapp retirement builds on —
+	// one pak's discovery is a light mount + ONE page read, never a
+	// whole image, never a manifest.
+	{
+		const std::vector<uint8_t> ktxDisc = Ktx(0x04);
+		const fs::path discPak = tmp / "disc.pak";
+		const fs::path plainPak = tmp / "plain.pak";
+		const fs::path clashPak = tmp / "clash.pak";
+		const fs::path badPak = tmp / "badids.pak";
+		const std::vector<tour::asset::PakAssetIdRow> discRows = {
+			{ 0x1000, smvk::kCatalogKindScene,
+				"content/scenes/d.tour", "" },
+			{ 0x2000, smvk::kCatalogKindTexture, kStone, "" },
+			{ 0x4000, smvk::kCatalogKindSound, kBell, "" },
+		};
+		{
+			smvk::PakWriter w;
+			w.AddBlob(smvk::PakAssetKind::Texture, kStone,
+				smvk::BuildTexturePayload(kStone, -1, -1, -1, -1,
+					std::span<const uint8_t>(ktxDisc)));
+			w.AddBlob(smvk::PakAssetKind::Sound, kBell, wav);
+			w.AddBlob(smvk::PakAssetKind::Identity,
+				tour::asset::kPakAssetIdsPath,
+				tour::asset::WriteAssetIdsBlob(discRows));
+			WritePak(discPak, w.Finalize());
+		}
+		{
+			// A well-formed pak WITHOUT the identity blob (the
+			// refusal case — discovery never guesses).
+			smvk::PakWriter w;
+			w.AddBlob(smvk::PakAssetKind::Texture, kStone,
+				smvk::BuildTexturePayload(kStone, -1, -1, -1, -1,
+					std::span<const uint8_t>(ktxDisc)));
+			WritePak(plainPak, w.Finalize());
+		}
+		{
+			// A pak whose identity blob claims disc.pak's texture id
+			// (the deployment-conflict case).
+			smvk::PakWriter w;
+			const std::vector<tour::asset::PakAssetIdRow> clashRows = {
+				{ 0x2000, smvk::kCatalogKindTexture,
+					"content/models/s/other.png", "" },
+			};
+			w.AddBlob(smvk::PakAssetKind::Texture,
+				"content/models/s/other.png",
+				smvk::BuildTexturePayload("content/models/s/other.png",
+					-1, -1, -1, -1,
+					std::span<const uint8_t>(ktxDisc)));
+			w.AddBlob(smvk::PakAssetKind::Identity,
+				tour::asset::kPakAssetIdsPath,
+				tour::asset::WriteAssetIdsBlob(clashRows));
+			WritePak(clashPak, w.Finalize());
+		}
+		{
+			// A pak whose identity blob is garbage bytes (the
+			// malformed-table refusal).
+			smvk::PakWriter w;
+			const std::vector<uint8_t> garbage = { 1, 2, 3, 4, 5, 6 };
+			w.AddBlob(smvk::PakAssetKind::Identity,
+				tour::asset::kPakAssetIdsPath, garbage);
+			WritePak(badPak, w.Finalize());
+		}
+		ta::ContentRegistry reg2;
+		std::string dErr;
+		Check(reg2.DiscoverPak("disc", discPak.generic_string(), dErr)
+			&& dErr.empty() && reg2.RecordCount() == 3,
+			"disc.discovers");
+		// The convergent forms over DISCOVERED records (the pager lane
+		// — the discovery's own cached pager serves; no backend).
+		{
+			std::string idErr;
+			auto idBytes = reg2.Read(0x2000, idErr);
+			std::string pErr;
+			auto pathBytes = reg2.Read(smvk::kCatalogKindTexture,
+				kStone, pErr);
+			Check(idBytes && *idBytes == ktxDisc && idErr.empty(),
+				"disc.id-read");
+			Check(pathBytes && *pathBytes == ktxDisc && pErr.empty(),
+				"disc.path-read");
+			Check(idBytes && pathBytes && *idBytes == *pathBytes,
+				"disc.forms-agree");
+		}
+		{
+			// The record fields + the scene join's shape (an empty
+			// name rides the single-scene inference at load time).
+			const ta::ContentRecord* scene = reg2.Find(0x1000);
+			Check(scene && scene->kind == smvk::kCatalogKindScene
+				&& scene->pak == "disc" && scene->sceneName.empty(),
+				"disc.scene-record");
+			std::string rErr;
+			ta::ContentRegistry::Resolution r = reg2.Resolve(0x1000,
+				rErr);
+			Check(r.record && r.provider
+				&& r.provider->name == "disc",
+				"disc.scene-resolves-owner");
+			std::string sErr;
+			auto sound = reg2.Read(0x4000, sErr);
+			Check(sound && *sound == wav, "disc.sound-read");
+		}
+		// Idempotent re-discovery (same name, same archive).
+		{
+			std::string rErr;
+			Check(reg2.DiscoverPak("disc", discPak.generic_string(),
+					rErr)
+				&& reg2.RecordCount() == 3,
+				"disc.idempotent");
+		}
+		// A pak without identity metadata refuses loudly (recook —
+		// never a guess, never silent).
+		{
+			std::string pErr;
+			Check(!reg2.DiscoverPak("plain", plainPak.generic_string(),
+					pErr)
+				&& pErr.find("identity metadata") != std::string::npos,
+				"disc.no-blob-refused");
+		}
+		// The malformed table refuses loudly.
+		{
+			std::string bErr;
+			Check(!reg2.DiscoverPak("badids", badPak.generic_string(),
+					bErr)
+				&& bErr.find("malformed") != std::string::npos,
+				"disc.malformed-refused");
+		}
+		// The deployment conflict refuses ATOMICALLY: no records, no
+		// provider (the count + the provider table are unchanged).
+		{
+			std::string cErr;
+			Check(!reg2.DiscoverPak("clash", clashPak.generic_string(),
+					cErr)
+				&& cErr.find("conflict") != std::string::npos
+				&& cErr.find("disc") != std::string::npos,
+				"disc.conflict-refused");
+			Check(reg2.RecordCount() == 3
+				&& reg2.ProviderInfos().size() == 1,
+				"disc.conflict-atomic");
+		}
+		// Overrides compose over discovered base providers: the loose
+		// dev tree wins for BOTH forms, the toggle reveals the
+		// discovered pak beneath.
+		{
+			std::string oErr;
+			Check(reg2.AddLooseOverride("dev",
+					(tmp / "dev").generic_string(), oErr),
+				"disc.override-registers");
+			std::string rErr;
+			auto bytes = reg2.Read(0x2000, rErr);
+			Check(bytes && *bytes == ktxDev,
+				"disc.override-wins");
+			reg2.SetProviderEnabled("dev", false);
+			std::string d2Err;
+			auto base = reg2.Read(0x2000, d2Err);
+			Check(base && *base == ktxDisc && d2Err.empty(),
+				"disc.toggle-reveals-discovered");
+		}
+	}
+
 	std::cout << "checks=" << g_checks << " failures=" << g_failures
 		<< "\n";
 	return g_failures != 0 ? EXIT_FAILURE : EXIT_SUCCESS;

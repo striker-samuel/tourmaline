@@ -102,6 +102,11 @@ inline constexpr uint32_t kPakFooterMagic = 0x384D504B; // "KPM8" LE
 // family -> member join (see PakMeshPlanFamily). A fixed reserved
 // path, not a cluster-local one - one plan per PAK.
 inline constexpr const char* kPakMeshPlanPath = "#meshplan";
+// The per-pak IDENTITY TABLE blob's reserved TOC path: the pak's
+// content-identity rows (see PakAssetIdRow + WriteAssetIdsBlob) —
+// the discovery lane's metadata (a fixed reserved path, one per pak,
+// exactly like #meshplan / #schemas).
+inline constexpr const char* kPakAssetIdsPath = "#ids";
 
 // A breaking change to any of this bumps the pak magic (SMP8 is the
 // current epoch - the paged break: per-page contentCrc, stable slots,
@@ -188,6 +193,16 @@ enum class PakAssetKind : uint32_t {
 	// schema-association rows against it. Cluster-internal, invisible
 	// to the VFS backends.
 	Schema = 14,
+	// IDENTITY (the per-pak content-identity table): ONE blob per pak
+	// at the reserved path kPakAssetIdsPath ("#ids") carrying the
+	// pak's PakAssetIdRow set — the stable ids + kinds + logical paths
+	// (and optionally the cooked scene names) the pak OWNS. The
+	// DISCOVERY lane's metadata (the .tapp [ids] successor): a
+	// session builds its record table from the paks themselves
+	// (ContentRegistry::DiscoverPak — the light mount + one page
+	// read, no manifest, no whole-image load). Cluster-internal,
+	// invisible to the VFS backends.
+	Identity = 15,
 };
 
 enum PakEntryFlags : uint32_t {
@@ -263,6 +278,35 @@ std::vector<uint8_t> WriteMeshPlanBlob(
 	const std::vector<PakMeshPlanFamily>& families);
 bool ParseMeshPlanBlob(std::span<const uint8_t> blob,
 	std::vector<PakMeshPlanFamily>& out, std::string& err);
+
+// ---- THE PER-PAK IDENTITY TABLE (the "#ids" registry blob) ---------------
+// One Identity-kind blob per pak (kPakAssetIdsPath) carrying the
+// CONTENT-IDENTITY rows the pak owns — the per-pak successor of the
+// .tapp [ids] table (the consolidated content architecture's
+// discovery lane): a session can build its whole record table from
+// the paks themselves, no manifest. `id` + `kind` use the SHARED ABI
+// (smvk::kCatalogKind* — the same bytes the manifest's kind strings
+// and the generated project.h's AssetKind enum carry); `path` is the
+// LOGICAL path (project-relative, the join key); scene rows MAY
+// carry the cooked scene's name (empty = the single-scene inference
+// the scene join already performs — multi-scene paks without names
+// refuse at load time, recook).
+struct PakAssetIdRow {
+	uint64_t id = 0;
+	uint8_t kind = 0;          // smvk::kCatalogKind* (the shared kind ABI)
+	std::string path;          // the logical path (project-relative)
+	std::string sceneName;     // scene rows: the cooked name (may be empty)
+};
+// Blob encoding (LE): 'IDTR' magic | u32 version(=1) | u32 rowCount |
+// per row: u64 id | u8 kind | u32 pathLen | path bytes |
+// u32 nameLen | name bytes. End-exact.
+[[nodiscard]] std::vector<uint8_t> WriteAssetIdsBlob(
+	const std::vector<PakAssetIdRow>& rows);
+// False + err on: short/malformed input, a bad magic/version, a row
+// whose id is 0, whose kind byte exceeds the ABI, or whose path is
+// empty. End-exact (trailing bytes = malformed).
+bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
+	std::vector<PakAssetIdRow>& out, std::string& err);
 
 // Append-grow: adds blobs to a pak FILE on disk (created when missing
 // or empty), keeping the image valid for PakReader::Open at all times.
