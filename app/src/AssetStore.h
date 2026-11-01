@@ -82,14 +82,18 @@ public:
 	// walk — holding ASSET-SIDE references: one per acquire (released
 	// through ReleaseFamilyCluster) plus ONE STICKY SESSION REF when
 	// `resident` (the keepResident idiom; upgrades only — released at
-	// ReleaseAll/teardown). Null + err on failure. The returned
-	// cluster is REGISTERED in `world` (a found/loaded carrier — the
-	// v1 boundary: the owning scene's nodes are part of the world) or
-	// PARKED in it (a previously acquired carrier whose scene went
-	// away; its rows are valid, its nodes are not in the fold).
+	// ReleaseAll/teardown). The FAMILY -> MEMBER join comes from the
+	// pak's cooked mesh plan (SMP8, the Plan blob — see
+	// PakReader::MeshPlanFamily): the cook resolved the ambiguity, the
+	// runtime NEVER string-scans the TOC. Null + err on failure. The
+	// returned cluster is REGISTERED in `world` (a found/loaded
+	// carrier — the v1 boundary: the owning scene's nodes are part of
+	// the world) or PARKED in it (a previously acquired carrier whose
+	// scene went away; its rows are valid, its nodes are not in the
+	// fold).
 	smvk::Cluster* AcquireFamilyCluster(tour::World& world,
 		const smvk::AppManifestAsset& row,
-		const std::vector<std::string>& familyPaths,
+		const std::vector<smvk::PakMeshPlanMember>& members,
 		bool resident, std::string& err);
 	// Releases ONE acquire reference (the slot-death pairing; a no-op
 	// for a cluster this store does not hold — pointer IDENTITY only,
@@ -108,12 +112,14 @@ public:
 	// cluster dies here; a registered one stays with its scene owner).
 	void ReleaseAll();
 
-	// The family blob-path join (the [ids] row's .geometry path is
-	// the URI PREFIX the pak's Mesh blobs carry): the pak READER's
-	// Mesh-kind TOC entries under "<path>#".
-	static std::vector<std::string> FamilyBlobPaths(
-		const smvk::PakBackend& backend,
-		const std::string& familyPrefix);
+	// The family -> member join (SMP8, the cooked mesh plan): the
+	// pak's Plan blob resolves the family's members (base + lodN
+	// siblings). False + err when the pak carries no plan / no such
+	// family (a version skew between the catalog and the cooked
+	// content - recook). NEVER a TOC string scan.
+	static bool FamilyMembers(const smvk::PakBackend& backend,
+		const std::string& familyPath,
+		std::vector<smvk::PakMeshPlanMember>& out, std::string& err);
 
 	// ---- diagnostics ----------------------------------------------------
 	// Clusters this store currently holds references for.
@@ -137,9 +143,9 @@ private:
 	std::map<smvk::Cluster*, Held> m_held;
 
 	smvk::Cluster* FindHeldWithFamily(tour::World& world,
-		const std::vector<std::string>& familyPaths) const;
+		const std::vector<smvk::PakMeshPlanMember>& members) const;
 	static bool clusterHasFamily(smvk::Cluster& cluster,
-		const std::vector<std::string>& familyPaths);
+		const std::vector<smvk::PakMeshPlanMember>& members);
 	void TakeRef(tour::World& world, smvk::Cluster* cluster,
 		bool resident);
 };

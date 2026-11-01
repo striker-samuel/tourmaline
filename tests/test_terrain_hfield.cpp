@@ -268,6 +268,13 @@ int main() {
 			return img;
 		};
 		{
+			const uint32_t kSmp7 = 0x37504D53; // "SMP7" LE (dead epoch - the SMP8 paged break)
+			const uint32_t kKpm7 = 0x374D504B; // "KPM7" LE
+			std::string lerr;
+			Check(!PakReader::Open(forgeEpoch(image, kSmp7, kKpm7), lerr),
+				"hfield.pak-smp7-rejected");
+		}
+		{
 			const uint32_t kSmp6 = 0x36504D53; // "SMP6" LE (dead epoch)
 			const uint32_t kKpm6 = 0x364D504B; // "KPM6" LE
 			std::string lerr;

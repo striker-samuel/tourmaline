@@ -147,9 +147,12 @@ auto batch = assets.LoadMeshes(WorldMeshes.data(), WorldMeshes.size());
 - v1 mesh loading ACQUIRES the mesh's OWNING SCENE CLUSTER through
   **AssetStore** (the pak-format boundary: meshes ship inside their
   scene's cluster; materials + textures resolve exactly as
-  scene loading). The join is the `[ids]` row's `.geometry` path =
-  the pak's Mesh-blob URI prefix. A multi-scene pak whose scenes
-  split one family refuses loudly (the documented v1 boundary).
+  scene loading). The family -> member join is the pak's COOKED MESH
+  PLAN (SMP8, the Plan blob at `"#meshplan"` — see docs/pak_vnext.md):
+  the cook resolved the ambiguity, the runtime NEVER string-scans the
+  TOC; a missing plan/family is a version skew (loud failure,
+  recook). A multi-scene pak whose scenes split one family refuses
+  loudly (the documented v1 boundary).
 - **The shared-asset retention contract** (the park bridge, pinned
   by the `am.mesh-*` + `wretain.*` checks in test_pak_host.cpp): the
   store holds asset-side references (`Cluster::assetRefs` +

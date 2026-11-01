@@ -184,7 +184,7 @@ void TestLibrary() {
 		const fs::path bad = tmp / "corrupt.pak";
 		{
 			std::ofstream f(bad, std::ios::binary | std::ios::trunc);
-			f << "SMP7garbage-not-a-pak";
+			f << "SMP8garbage-not-a-pak";
 		}
 		std::string berr;
 		Check(!smvk::shaders::MountPak(bad.generic_string(), berr)

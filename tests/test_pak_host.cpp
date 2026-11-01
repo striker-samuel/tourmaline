@@ -294,15 +294,33 @@ void TestPakCorruption() {
 		Check(backend == nullptr && !err.empty(),
 			"pakcorruption.garbage-rejected");
 	}
-	// A torn write (CRC mismatch): one byte flipped mid-image.
+	// A torn page write (SMP8): the small mount still opens (the TOC
+	// metadata is intact) - the corrupt PAGE fails at its fetch and
+	// VerifyAll names it (the lazy per-page contract; the deployment
+	// gate calls VerifyAll, the runtime never hashes at boot).
 	{
 		std::vector<uint8_t> torn = image;
-		torn[torn.size() / 2] ^= 0xFF;
+		torn[32] ^= 0xFF; // the scene blob's first payload byte
 		std::string err;
 		auto backend = smvk::PakBackend::Open(
 			std::make_shared<std::vector<uint8_t>>(torn), "torn", err);
-		Check(backend == nullptr && !err.empty(),
-			"pakcorruption.crc-torn-rejected");
+		Check(backend != nullptr, "pakcorruption.torn-mount-tolerates");
+		bool caught = false;
+		if (backend) {
+			try {
+				const auto* e = backend->Reader().Find(
+					smvk::PakAssetKind::Scene, "scene/only");
+				if (e)
+					(void)backend->Reader().Payload(*e);
+			}
+			catch (const std::runtime_error&) {
+				caught = true;
+			}
+			std::string verr;
+			Check(caught
+				&& !backend->Reader().VerifyAll(verr),
+				"pakcorruption.torn-page-detected");
+		}
 	}
 	// Truncated image: rejected.
 	{
@@ -1045,7 +1063,9 @@ void TestAssetManager() {
 		// tree family carries a /lod1 sibling too - the base-mesh
 		// filter). The blob CONTENT is irrelevant on the seam path
 		// (the hand-built clusters stand in for the deserialize); the
-		// TOC paths are the join.
+		// TOC paths are the join. The GHOST family carries blobs + an
+		// [ids] row but NO plan entry - the join must refuse loudly
+		// (a version skew - recook), never a silent empty.
 		w.AddBlob(smvk::PakAssetKind::Scene, "recording/one",
 			NamedSceneBlob("Meshes"));
 		w.AddBlob(smvk::PakAssetKind::Mesh,
@@ -1054,6 +1074,21 @@ void TestAssetManager() {
 			treeFamily + "#mesh.0/prim.0/lod1", { 5, 6, 7, 8 });
 		w.AddBlob(smvk::PakAssetKind::Mesh,
 			rockFamily + "#mesh.0/prim.0", { 9, 10, 11, 12 });
+		w.AddBlob(smvk::PakAssetKind::Mesh,
+			"content/models/ghost.geometry#mesh.0/prim.0", { 13, 14 });
+		// SMP8: the cooked mesh plan (the family -> member join the
+		// runtime reads - never a TOC string scan).
+		{
+			std::vector<smvk::PakMeshPlanFamily> plan = {
+				{ treeFamily,
+					{ { treeFamily + "#mesh.0/prim.0", 0 },
+					  { treeFamily + "#mesh.0/prim.0/lod1", 1 } } },
+				{ rockFamily,
+					{ { rockFamily + "#mesh.0/prim.0", 0 } } },
+			};
+			w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+				smvk::WriteMeshPlanBlob(plan));
+		}
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "one.pak", std::ios::binary
 			| std::ios::trunc);
@@ -1072,6 +1107,9 @@ void TestAssetManager() {
 			<< "0x2000 texture one.pak " << texPath << "\n"
 			<< "0x3000 mesh one.pak " << treeFamily << "\n"
 			<< "0x3001 mesh one.pak " << rockFamily << "\n"
+			// The ghost family: blobs exist but the PLAN does not
+			// carry it - the join must refuse (recook).
+			<< "0x3002 mesh one.pak content/models/ghost.geometry\n"
 			<< "0x6000 gi one.pak content/gi/day.givolumemanifest\n";
 	}
 	std::string err;
@@ -1139,6 +1177,13 @@ void TestAssetManager() {
 		Check(!assets.LoadMesh(0x3000, cErr)
 			&& cErr.find("GPU context") != std::string::npos,
 			"am.mesh-null-ctx-refused");
+		// The plan-less family refuses loudly (the cooked mesh plan is
+		// the ONLY join - a family missing from it is a version skew,
+		// recook; never a silent empty, never a TOC string scan).
+		std::string gErr;
+		Check(!assets.LoadMesh(0x3002, gErr)
+			&& gErr.find("recook") != std::string::npos,
+			"am.mesh-no-plan-refused");
 		// The null-pointer batch convention: nullptr is valid ONLY
 		// with count == 0 (a zero batch succeeds trivially).
 		std::string zErr;

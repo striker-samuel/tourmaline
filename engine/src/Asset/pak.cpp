@@ -24,12 +24,16 @@ static_assert(std::endian::native == std::endian::little,
 
 inline constexpr size_t kHeaderSize = 32;
 inline constexpr size_t kFooterSize = 24;
-inline constexpr size_t kTocEntryFixed = 8 + 4 + 4 + 8 + 8 + 4; // hash,kind,flags,off,size,pathLen
+// SMP8 TOC entry: hash, kind, flags, offset, size, slot, contentCrc,
+// pathLen.
+inline constexpr size_t kTocEntryFixed = 8 + 4 + 4 + 8 + 8 + 4 + 4 + 4;
 inline constexpr size_t kAlign = 16;
 
 // Images below this stay on the serial CRC/decompress paths (pool spin-up
 // would cost more than the work; tests and small appends land here).
-inline constexpr size_t kCrcParallelMinBytes = 32ull * 1024ull * 1024ull;
+// (SMP8 note: the mount CRC is TOC-only now, so the reader itself no
+// longer splits thresholds — PakCrc32Parallel stays public for the
+// tests + tools that hash big buffers.)
 
 size_t AlignUp(size_t v, size_t align) {
 	return (v + align - 1) & ~(align - 1);
@@ -365,6 +369,10 @@ bool PakWriter::AddBlob(PakAssetKind kind, const std::string& path, std::vector<
 	p.meta.kind = kind;
 	p.meta.flags = PakEntryFlag_None;
 	p.meta.path = n;
+	// SMP8: the STABLE slot (the entry's ordinal - assigned at cook,
+	// preserved across append grows; the compiled-plan addressing keys
+	// pages by slot, never by TOC position).
+	p.meta.slot = static_cast<uint32_t>(entries_.size());
 	if (compression_ == PakCompression::Lz4 && !storeUncompressed) {
 		auto [stored, compressed] = CompressPakBlob(
 			std::span<const uint8_t>(payload), PakCompression::Lz4, lz4Acceleration_);
@@ -379,6 +387,10 @@ bool PakWriter::AddBlob(PakAssetKind kind, const std::string& path, std::vector<
 	else {
 		p.payload = std::move(payload);
 	}
+	// SMP8: the page integrity - the CRC over the entry's STORED bytes
+	// (the LZ4 wrapper included when compressed). Verified at FETCH
+	// time by the reader, never at mount.
+	p.meta.contentCrc = PakCrc32(p.payload.data(), p.payload.size());
 	metas_.push_back(p.meta);
 	entries_.push_back(std::move(p));
 	return true;
@@ -409,7 +421,8 @@ std::vector<uint8_t> PakWriter::Finalize() const {
 		out.insert(out.end(), e.payload.begin(), e.payload.end());
 	}
 
-	// TOC.
+	// TOC (SMP8 layout: hash, kind, flags, offset, size, slot,
+	// contentCrc, pathLen, path).
 	const size_t tocOffset = AlignUp(out.size(), kAlign);
 	out.insert(out.end(), tocOffset - out.size(), 0);
 	for (const auto& e : entries_) {
@@ -418,15 +431,21 @@ std::vector<uint8_t> PakWriter::Finalize() const {
 		AppendU32(out, e.meta.flags);
 		AppendU64(out, e.meta.offset);
 		AppendU64(out, e.meta.size);
+		AppendU32(out, e.meta.slot);
+		AppendU32(out, e.meta.contentCrc);
 		AppendU32(out, static_cast<uint32_t>(e.meta.path.size()));
 		out.insert(out.end(), e.meta.path.begin(), e.meta.path.end());
 	}
 
-	// Footer: tocOffset, tocCount, crc32 over [0, footerCrcOff), footer magic.
-	// NOTE: the header placeholder is patched *before* the CRC so the
-	// checksum covers the final header bytes. No version field anywhere:
-	// the magic IS the version (a breaking format change bumps it and old
-	// paks fail closed at Open).
+	// Footer (SMP8): tocOffset, tocCount, the CRC over ONLY the TOC
+	// bytes (the mount validates the small metadata cheaply; every
+	// blob page verifies through its own contentCrc at fetch), the
+	// footer magic. No version field anywhere: the magic IS the
+	// version (a breaking format change bumps it and old paks fail
+	// closed at Open). NOTE: the CRC range is exactly the TOC - it is
+	// computed BEFORE the footer head appends (an off-by-append here
+	// would fold the tocOffset/tocCount words into the hash and
+	// mismatch the reader's [tocOffset, footerStart) range).
 	const uint64_t tocCount = entries_.size();
 	{
 		uint8_t* h = out.data();
@@ -439,10 +458,11 @@ std::vector<uint8_t> PakWriter::Finalize() const {
 		memcpy(h + 20, &tocCount, 8);
 		// bytes [28,32) reserved.
 	}
+	const uint32_t tocCrc = PakCrc32(out.data() + tocOffset,
+		out.size() - tocOffset);
 	AppendU64(out, static_cast<uint64_t>(tocOffset));
 	AppendU64(out, tocCount);
-	const uint32_t crc = PakCrc32(out.data(), out.size());
-	AppendU32(out, crc);
+	AppendU32(out, tocCrc);
 	AppendU32(out, kPakFooterMagic);
 
 	if (out.size() < kHeaderSize + kFooterSize)
@@ -470,43 +490,10 @@ void WriteTocEntry(std::vector<uint8_t>& out, const PakTocEntry& e) {
 	AppendU32(out, e.flags);
 	AppendU64(out, e.offset);
 	AppendU64(out, e.size);
+	AppendU32(out, e.slot);
+	AppendU32(out, e.contentCrc);
 	AppendU32(out, static_cast<uint32_t>(e.path.size()));
 	out.insert(out.end(), e.path.begin(), e.path.end());
-}
-
-// Rolling reflected CRC-32 (same table/step as PakCrc32, unfinalized):
-// the footer's first 16 bytes (tocOffset + tocCount) are COVERED by
-// the pak CRC but not on disk until the footer write — the caller
-// streams the file range, then feeds those bytes from memory.
-// Caller seeds crc with 0xFFFFFFFF, finalizes with ^0xFFFFFFFF.
-bool Crc32FeedFile(std::istream& f, uint64_t end, uint32_t& crc) {
-	// The shared magic-static table (Crc32Table): thread-safe on first
-	// use - the OLD lazy fill here raced concurrent first appends.
-	const uint32_t* table = Crc32Table();
-	std::vector<uint8_t> buf(1 << 20);
-	uint64_t pos = 0;
-	f.clear();
-	f.seekg(0, std::ios::beg);
-	while (pos < end) {
-		const uint64_t want = std::min<uint64_t>(end - pos, buf.size());
-		f.read(reinterpret_cast<char*>(buf.data()),
-			static_cast<std::streamsize>(want));
-		if (f.gcount() != static_cast<std::streamsize>(want))
-			return false;
-		for (uint64_t i = 0; i < want; ++i)
-			crc = table[(crc ^ buf[size_t(i)]) & 0xFF] ^ (crc >> 8);
-		pos += want;
-	}
-	return true;
-}
-
-void Crc32FeedBytes(const void* data, size_t size, uint32_t& crc) {
-	// The shared magic-static table (Crc32Table): thread-safe on first
-	// use - the OLD lazy fill here raced concurrent first appends.
-	const uint32_t* table = Crc32Table();
-	const uint8_t* p = static_cast<const uint8_t*>(data);
-	for (size_t i = 0; i < size; ++i)
-		crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
 }
 
 } // namespace
@@ -534,6 +521,10 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		}
 		e.pathHash = PakHashPath(e.path);
 		e.size = payload.size();
+		// SMP8: the page integrity over the stored bytes. The SLOT is
+		// assigned after the existing TOC is read (stable ordinals:
+		// appended entries take maxExistingSlot + 1).
+		e.contentCrc = PakCrc32(payload.data(), payload.size());
 		newEntries.push_back(std::move(e));
 	}
 
@@ -598,6 +589,9 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 			f.read(reinterpret_cast<char*>(&e.flags), 4);
 			f.read(reinterpret_cast<char*>(&e.offset), 8);
 			f.read(reinterpret_cast<char*>(&e.size), 8);
+			// SMP8 fields: the stable slot + the page contentCrc.
+			f.read(reinterpret_cast<char*>(&e.slot), 4);
+			f.read(reinterpret_cast<char*>(&e.contentCrc), 4);
 			f.read(reinterpret_cast<char*>(&pathLen), 4);
 			if (!f || pathLen > 4096) {
 				err = "pak TOC unreadable: " + pakPath;
@@ -648,11 +642,26 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 
 	// New TOC: old entries with duplicates replaced, then the new ones
 	// (first-match Find keeps resolving the latest registration).
+	// SMP8 SLOTS stay stable: appended entries take
+	// max(existing slots) + 1 — an existing page's slot NEVER changes,
+	// so slot-keyed addressing (the compiled plans) survives grows.
+	{
+		uint32_t maxSlot = 0;
+		for (const PakTocEntry& e : entries)
+			maxSlot = std::max(maxSlot, e.slot);
+		for (size_t i = 0; i < newEntries.size(); ++i)
+			newEntries[i].slot = maxSlot + 1u + uint32_t(i);
+	}
 	for (const PakTocEntry& ne : newEntries) {
 		bool replaced = false;
 		for (PakTocEntry& e : entries) {
 			if (e.path == ne.path && e.kind == ne.kind) {
-				e = ne; // supersede: old payload turns dead space
+				// Supersede: the old payload turns dead space; the
+				// replacement KEEPS the old slot (the stable-ordinal
+				// contract - the newest bytes answer the same slot).
+				const uint32_t keptSlot = e.slot;
+				e = ne;
+				e.slot = keptSlot;
 				replaced = true;
 				break;
 			}
@@ -661,6 +670,7 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 			entries.push_back(ne);
 	}
 	const size_t newTocOffset = AlignUp(size_t(cursor), kAlign);
+	uint32_t tocCrc = 0;
 	{
 		std::vector<uint8_t> toc;
 		toc.reserve(TocEntryBytes(entries));
@@ -673,6 +683,10 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 			err = "TOC write failed: " + pakPath;
 			return false;
 		}
+		// SMP8: the footer CRC covers ONLY the TOC bytes (the small
+		// mount metadata; every page verifies through its own
+		// contentCrc at fetch).
+		tocCrc = PakCrc32(toc.data(), toc.size());
 	}
 	// Patch the header, then the footer + resize complete the grow.
 	// The header is the ONE live byte range rewritten (the crash
@@ -697,28 +711,16 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 		err = "header patch failed: " + pakPath;
 		return false;
 	}
-	// Footer: the pak CRC covers [0, footerCrcOff) = file bytes plus the
-	// footer's leading (tocOffset, tocCount) — stream the file, then
-	// feed those 16 bytes from memory before finalizing.
+	// Footer (SMP8): tocOffset, tocCount, the TOC CRC (computed above
+	// over the in-memory bytes just written), the footer magic + the
+	// truncating resize complete the grow.
 	const uint64_t footerAt = uint64_t(newTocOffset)
 		+ TocEntryBytes(entries);
-	uint32_t crc = 0xFFFFFFFFu;
-	if (!Crc32FeedFile(f, footerAt, crc)) {
-		err = "crc stream failed: " + pakPath;
-		return false;
-	}
 	const auto count = uint64_t(entries.size());
-	{
-		uint8_t footerHead[16];
-		memcpy(footerHead + 0, &newTocOffset, 8);
-		memcpy(footerHead + 8, &count, 8);
-		Crc32FeedBytes(footerHead, sizeof(footerHead), crc);
-	}
-	crc ^= 0xFFFFFFFFu;
 	f.seekp(std::streamoff(footerAt), std::ios::beg);
 	f.write(reinterpret_cast<const char*>(&newTocOffset), 8);
 	f.write(reinterpret_cast<const char*>(&count), 8);
-	f.write(reinterpret_cast<const char*>(&crc), 4);
+	f.write(reinterpret_cast<const char*>(&tocCrc), 4);
 	f.write(reinterpret_cast<const char*>(&kPakFooterMagic), 4);
 	const auto finalSize = footerAt + kFooterSize;
 	f.flush();
@@ -731,6 +733,80 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 // PakReader
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// SMP8 magic for the mesh-plan blob ('MPLN' LE).
+inline constexpr uint32_t kMeshPlanMagic = 0x4E4C504Du;
+
+// Shared TOC parser (the image-backed and file-backed opens read the
+// same bytes): `toc` is the TOC region, `tocCount` the declared entry
+// count, `tocOffset` the region's file/image offset (the payload
+// region's upper bound). out starts EMPTY (reserve tocCount). Every
+// bounds check is SUBTRACTION-based (attacker-controlled u64/u32
+// fields; unsigned addition wraps - see the Open block's history
+// note).
+bool ParseTocEntries(std::span<const uint8_t> toc, uint64_t tocCount,
+	uint64_t tocOffset, std::vector<PakTocEntry>& out,
+	std::string& outError) {
+	size_t off = 0;
+	for (uint64_t i = 0; i < tocCount; ++i) {
+		if (kTocEntryFixed > toc.size() - off) {
+			outError = "pak TOC overruns image";
+			return false;
+		}
+		PakTocEntry e;
+		uint32_t kind = 0, pathLen = 0;
+		memcpy(&e.pathHash, toc.data() + off, 8);
+		memcpy(&kind, toc.data() + off + 8, 4);
+		memcpy(&e.flags, toc.data() + off + 12, 4);
+		memcpy(&e.offset, toc.data() + off + 16, 8);
+		memcpy(&e.size, toc.data() + off + 24, 8);
+		memcpy(&e.slot, toc.data() + off + 32, 4);
+		memcpy(&e.contentCrc, toc.data() + off + 36, 4);
+		memcpy(&pathLen, toc.data() + off + 40, 4);
+		off += kTocEntryFixed;
+		if (pathLen > 4096 || pathLen > toc.size() - off) {
+			outError = "pak TOC path overruns image";
+			return false;
+		}
+		e.kind = static_cast<PakAssetKind>(kind);
+		e.path.assign(reinterpret_cast<const char*>(toc.data() + off), pathLen);
+		off += pathLen;
+		// Blob ranges live in the PAYLOAD region [kHeaderSize,
+		// tocOffset): lower-bound checked, upper bound by subtraction
+		// (the old `e.offset + e.size > tocOffset` wrapped).
+		if (e.offset < kHeaderSize || e.offset > tocOffset
+			|| e.size > tocOffset - e.offset) {
+			outError = "pak blob overruns TOC: " + e.path;
+			return false;
+		}
+		if (e.pathHash != PakHashPath(e.path)) {
+			outError = "pak path hash mismatch: " + e.path;
+			return false;
+		}
+		if (e.flags & ~PakEntryFlag_Lz4) {
+			outError = "pak unknown entry flags: " + e.path;
+			return false;
+		}
+		out.push_back(std::move(e));
+	}
+	if (off != toc.size()) {
+		outError = "pak TOC trailing bytes";
+		return false;
+	}
+	return true;
+}
+
+} // namespace
+
+struct PakReader::FileHandle {
+	std::fstream f; // the open pak file (positional page reads)
+};
+
+PakReader::~PakReader() = default;
+PakReader::PakReader(PakReader&&) noexcept = default;
+PakReader& PakReader::operator=(PakReader&&) noexcept = default;
+
 std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::string& outError) {
 	if (image.size() < kHeaderSize + kFooterSize) {
 		outError = "pak too small";
@@ -742,8 +818,8 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 	memcpy(&tocOffset, image.data() + 12, 8);
 	memcpy(&tocCount, image.data() + 20, 8);
 	// ONE CANONICAL PATH: exactly one accepted magic. Any older epoch
-	// (SMP5/SMP6) fails closed here — content recooks from zero, never
-	// migrates (the SMP6-era legacy-terrain-empty acceptance is gone).
+	// (SMP5/SMP6/SMP7) fails closed here — content recooks from zero,
+	// never migrates.
 	if (magic != kPakMagic) {
 		outError = "bad pak magic (stale pak - recook from zero)";
 		return std::nullopt;
@@ -769,90 +845,128 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 	// may not start inside the header (payloads always follow the
 	// 32-byte header) and may not touch the footer region. This gate
 	// also bounds every subtraction below: fOff <= image.size(), so
-	// `fOff - off` is well-defined for any off that passes it. Checked
-	// BEFORE the whole-image CRC: it is two compares, and a malformed
-	// offset should not pay a multi-GB table walk first. (A CRC only
-	// proves the bytes are as-authored - a hostile/corrupt blob can
-	// carry a RECOMPUTED CRC over any offset field, so the range
+	// `fOff - off` is well-defined for any off that passes it. (A CRC
+	// only proves the bytes are as-authored - a hostile/corrupt blob
+	// can carry a RECOMPUTED CRC over any offset field, so the range
 	// checks do the actual safety work.)
 	if (tocOffset < kHeaderSize || tocOffset > fOff) {
 		outError = "pak TOC offset out of range";
 		return std::nullopt;
 	}
-	// Whole-image CRC dominates startup for multi-GB paks (the table walk
-	// is ~1 GB/s serial); big images verify chunk-parallel instead.
-	const size_t crcBytes = fOff + 16;
-	const uint32_t crc = (crcBytes >= kCrcParallelMinBytes)
-		? PakCrc32Parallel(std::span<const uint8_t>(image.data(), crcBytes))
-		: PakCrc32(image.data(), crcBytes);
-	if (crc != fCrc) {
-		outError = "pak CRC mismatch (corrupt or truncated)";
+	// SMP8 MOUNT CRC: the SMALL metadata only - the TOC bytes
+	// [tocOffset, fOff). Every blob page verifies through its own
+	// contentCrc at FETCH time (the lazy per-page contract), so a
+	// mount never pays a multi-GB walk; VerifyAll() is the explicit
+	// whole-image policy for deployment gates.
+	const uint32_t tocCrc = PakCrc32(image.data() + tocOffset,
+		fOff - tocOffset);
+	if (tocCrc != fCrc) {
+		outError = "pak TOC CRC mismatch (corrupt or truncated)";
 		return std::nullopt;
 	}
 
-	// Parse TOC. Every bounds check is SUBTRACTION-based: the operands
-	// are attacker-controlled u64/u32 fields, and unsigned ADDITION
-	// wraps - a wrapped `off + kTocEntryFixed` (or `offset + size`
-	// below) can sail through a `> bound` compare and hand subspan()
-	// an out-of-range pair (UINT64_MAX offsets are the canonical wrap;
-	// the old additive checks let them through).
 	PakReader r;
 	r.image_ = image;
-	size_t off = static_cast<size_t>(tocOffset);
-	for (uint64_t i = 0; i < tocCount; ++i) {
-		if (off > fOff || kTocEntryFixed > fOff - off) {
-			outError = "pak TOC overruns image";
-			return std::nullopt;
-		}
-		PakTocEntry e;
-		uint32_t kind = 0, pathLen = 0;
-		memcpy(&e.pathHash, image.data() + off, 8);
-		memcpy(&kind, image.data() + off + 8, 4);
-		memcpy(&e.flags, image.data() + off + 12, 4);
-		memcpy(&e.offset, image.data() + off + 16, 8);
-		memcpy(&e.size, image.data() + off + 24, 8);
-		memcpy(&pathLen, image.data() + off + 32, 4);
-		off += kTocEntryFixed;
-		if (pathLen > 4096 || pathLen > fOff - off) {
-			outError = "pak TOC path overruns image";
-			return std::nullopt;
-		}
-		e.kind = static_cast<PakAssetKind>(kind);
-		e.path.assign(reinterpret_cast<const char*>(image.data() + off), pathLen);
-		off += pathLen;
-		// Blob ranges live in the PAYLOAD region [kHeaderSize,
-		// tocOffset): lower-bound checked, upper bound by subtraction
-		// (the old `e.offset + e.size > tocOffset` wrapped).
-		if (e.offset < kHeaderSize || e.offset > tocOffset
-			|| e.size > tocOffset - e.offset) {
-			outError = "pak blob overruns TOC: " + e.path;
-			return std::nullopt;
-		}
-		if (e.pathHash != PakHashPath(e.path)) {
-			outError = "pak path hash mismatch: " + e.path;
-			return std::nullopt;
-		}
-		if (e.flags & ~PakEntryFlag_Lz4) {
-			outError = "pak unknown entry flags: " + e.path;
-			return std::nullopt;
-		}
-		r.entries_.push_back(std::move(e));
-	}
-	// LAZY LZ4 decompression (finding #18): Open only parses + CRCs the
-	// image — compressed entries decompress on FIRST Payload() access
-	// (see Payload below) into reader-owned, lifetime-cached buffers.
-	// The old eager pass decompressed EVERY compressed entry at Open —
-	// a viewer that needs one scene out of a multi-GB pak paid for all
-	// of them before the first frame, and a torn LZ4 block surfaced at
-	// boot instead of at the entry that needs it.
-	// The lazily-decompressed payloads are cached for the reader's
-	// LIFETIME (Payload() hands out spans into decompressed_ — an
-	// eviction-based bounded cache would invalidate live spans; the
-	// cache is therefore bounded by "everything actually read", which
-	// is <= what the eager path materialized, always).
+	// The reserve is a HINT capped to a sane bound: tocCount is an
+	// attacker-controlled u64 and the fuzz corpus sends 2^40 — the
+	// loop below is bounded (it dies on the first out-of-region
+	// entry), so the reserve must never try to materialize the count.
+	r.entries_.reserve(static_cast<size_t>(
+		std::min<uint64_t>(tocCount, 1u << 20)));
+	if (!ParseTocEntries(
+			std::span<const uint8_t>(image.data() + tocOffset,
+				fOff - tocOffset),
+			tocCount, tocOffset, r.entries_, outError))
+		return std::nullopt;
+	// LAZY materialization + page verification: Open only parses +
+	// CRCs the small metadata — pages fetch (+verify their
+	// contentCrc, +decompress when LZ4) on FIRST Payload() access
+	// (see Payload). The materialized payloads are cached for the
+	// reader's LIFETIME (Payload() hands out spans into
+	// decompressed_ — an eviction-based bounded cache would
+	// invalidate live spans; the cache is therefore bounded by
+	// "everything actually read", always <= the eager equivalent).
 	r.decompressed_.assign(r.entries_.size(), {});
 	r.decompressDone_.assign(r.entries_.size(), 0);
+	r.verified_.assign(r.entries_.size(), 0);
 	r.lazyMutex_ = std::make_unique<std::mutex>();
+	return r;
+}
+
+std::optional<PakReader> PakReader::OpenFile(const std::string& path,
+	std::string& outError) {
+	std::fstream f(path, std::ios::in | std::ios::binary);
+	if (!f) {
+		outError = "cannot open pak file: " + path;
+		return std::nullopt;
+	}
+	f.seekg(0, std::ios::end);
+	const uint64_t fileSize = uint64_t(f.tellg());
+	if (fileSize < kHeaderSize + kFooterSize) {
+		outError = "pak too small";
+		return std::nullopt;
+	}
+	// Header.
+	uint32_t magic = 0;
+	uint64_t tocOffset = 0, tocCount = 0;
+	f.seekg(0, std::ios::beg);
+	f.read(reinterpret_cast<char*>(&magic), 4);
+	f.seekg(4, std::ios::cur); // reserved
+	f.seekg(4, std::ios::cur); // flags
+	f.read(reinterpret_cast<char*>(&tocOffset), 8);
+	f.read(reinterpret_cast<char*>(&tocCount), 8);
+	if (!f || magic != kPakMagic) {
+		outError = "bad pak magic (stale pak - recook from zero)";
+		return std::nullopt;
+	}
+	// Footer.
+	uint64_t fTocOffset = 0, fTocCount = 0;
+	uint32_t fCrc = 0, fMagic = 0;
+	f.seekg(std::streamoff(fileSize - kFooterSize), std::ios::beg);
+	f.read(reinterpret_cast<char*>(&fTocOffset), 8);
+	f.read(reinterpret_cast<char*>(&fTocCount), 8);
+	f.read(reinterpret_cast<char*>(&fCrc), 4);
+	f.read(reinterpret_cast<char*>(&fMagic), 4);
+	if (!f || fMagic != kPakFooterMagic) {
+		outError = "bad pak footer magic";
+		return std::nullopt;
+	}
+	if (fTocOffset != tocOffset || fTocCount != tocCount) {
+		outError = "pak header/footer TOC mismatch";
+		return std::nullopt;
+	}
+	const uint64_t fOff = fileSize - kFooterSize;
+	if (tocOffset < kHeaderSize || tocOffset > fOff) {
+		outError = "pak TOC offset out of range";
+		return std::nullopt;
+	}
+	// Read + verify the TOC region only (the SMP8 small mount).
+	std::vector<uint8_t> toc(static_cast<size_t>(fOff - tocOffset));
+	f.seekg(std::streamoff(tocOffset), std::ios::beg);
+	f.read(reinterpret_cast<char*>(toc.data()),
+		std::streamsize(toc.size()));
+	if (!f || f.gcount() != std::streamsize(toc.size())) {
+		outError = "pak TOC read failed: " + path;
+		return std::nullopt;
+	}
+	if (PakCrc32(toc.data(), toc.size()) != fCrc) {
+		outError = "pak TOC CRC mismatch (corrupt or truncated)";
+		return std::nullopt;
+	}
+	PakReader r;
+	// Capped reserve hint (the fuzz corpus's 2^40 tocCount must never
+	// reach an allocation; the parse loop is bounded by the first
+	// out-of-region entry).
+	r.entries_.reserve(static_cast<size_t>(
+		std::min<uint64_t>(tocCount, 1u << 20)));
+	if (!ParseTocEntries(toc, tocCount, tocOffset, r.entries_, outError))
+		return std::nullopt;
+	r.decompressed_.assign(r.entries_.size(), {});
+	r.decompressDone_.assign(r.entries_.size(), 0);
+	r.verified_.assign(r.entries_.size(), 0);
+	r.lazyMutex_ = std::make_unique<std::mutex>();
+	r.file_ = std::make_unique<FileHandle>();
+	r.file_->f = std::move(f);
 	return r;
 }
 
@@ -883,35 +997,252 @@ const PakTocEntry* PakReader::Find(PakAssetKind kind, const std::string& normali
 	return nullptr;
 }
 
+const PakTocEntry* PakReader::FindBySlot(uint32_t slot) const {
+	for (const auto& e : entries_) {
+		if (e.slot == slot)
+			return &e;
+	}
+	return nullptr;
+}
+
 std::span<const uint8_t> PakReader::Payload(const PakTocEntry& entry) const {
 	// Entries are only ever accessed via pointers into entries_ (Find /
-	// BlobsOfKind), so pointer arithmetic recovers the owned buffer.
+	// BlobsOfKind / FindBySlot), so pointer arithmetic recovers the
+	// owned buffer.
 	const size_t idx = static_cast<size_t>(&entry - entries_.data());
-	if (entry.flags & PakEntryFlag_Lz4) {
-		// Lazy decompress-on-first-use (see Open): guarded so concurrent
-		// first reads (the preload thread + the render thread sharing a
-		// backend) decompress exactly once; the result stays cached for
-		// the reader's lifetime — the returned span never invalidates.
-		std::lock_guard<std::mutex> lock(*lazyMutex_);
-		if (!decompressDone_[idx]) {
+	// First fetch: materialize (file-backed: positional page read) +
+	// VERIFY the page's contentCrc once per reader. Guarded so
+	// concurrent first reads (the preload thread + the render thread
+	// sharing a backend) materialize exactly once; the result stays
+	// cached for the reader's lifetime — the returned span never
+	// invalidates.
+	std::lock_guard<std::mutex> lock(*lazyMutex_);
+	if (!verified_[idx]) {
+		if (file_) {
+			if (!decompressDone_[idx]) {
+				std::vector<uint8_t> stored(static_cast<size_t>(entry.size));
+				file_->f.clear();
+				file_->f.seekg(std::streamoff(entry.offset), std::ios::beg);
+				file_->f.read(reinterpret_cast<char*>(stored.data()),
+					std::streamsize(stored.size()));
+				if (file_->f.gcount() != std::streamsize(stored.size()))
+					throw std::runtime_error(
+						"pak page read failed: " + entry.path);
+				if (PakCrc32(stored.data(), stored.size())
+						!= entry.contentCrc)
+					throw std::runtime_error(
+						"pak page CRC mismatch (corrupt page): "
+						+ entry.path);
+				if (entry.flags & PakEntryFlag_Lz4) {
+					std::vector<uint8_t> out;
+					if (!DecompressPakBlob(stored, true, out))
+						throw std::runtime_error(
+							"pak LZ4 decompress failed: " + entry.path);
+					decompressed_[idx] = std::move(out);
+				}
+				else {
+					decompressed_[idx] = std::move(stored);
+				}
+				decompressDone_[idx] = 1;
+			}
+			// else: a previously-fetched page - already materialized
+			// AND verified.
+		}
+		else {
 			const std::span<const uint8_t> stored = image_.subspan(
 				static_cast<size_t>(entry.offset),
 				static_cast<size_t>(entry.size));
-			std::vector<uint8_t> out;
-			if (!DecompressPakBlob(stored, true, out)) {
-				// The CRC already verified the image at Open: a failing
-				// LZ4 block means a torn-in-place write that passed CRC —
-				// loud (throw), and the host's load path turns it into a
-				// failed launch instead of a corrupt scene.
+			if (PakCrc32(stored.data(), stored.size()) != entry.contentCrc)
 				throw std::runtime_error(
-					"pak LZ4 decompress failed: " + entry.path);
+					"pak page CRC mismatch (corrupt page): " + entry.path);
+			if ((entry.flags & PakEntryFlag_Lz4)
+					&& !decompressDone_[idx]) {
+				std::vector<uint8_t> out;
+				if (!DecompressPakBlob(stored, true, out))
+					throw std::runtime_error(
+						"pak LZ4 decompress failed: " + entry.path);
+				decompressed_[idx] = std::move(out);
+				decompressDone_[idx] = 1;
 			}
-			decompressed_[idx] = std::move(out);
-			decompressDone_[idx] = 1;
 		}
-		return std::span<const uint8_t>(decompressed_[idx]);
+		verified_[idx] = 1;
 	}
-	return image_.subspan(static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
+	if (file_ || (entry.flags & PakEntryFlag_Lz4))
+		return std::span<const uint8_t>(decompressed_[idx]);
+	return image_.subspan(static_cast<size_t>(entry.offset),
+		static_cast<size_t>(entry.size));
+}
+
+bool PakReader::VerifyAll(std::string& outError) const {
+	// The explicit full-verification policy (deployment gates): hash
+	// every entry's STORED bytes against its contentCrc. Pages already
+	// fetched were verified at fetch (verified_); the rest hash here
+	// WITHOUT materializing (no decompression, no page cache growth).
+	std::lock_guard<std::mutex> lock(*lazyMutex_);
+	std::vector<uint8_t> scratch;
+	for (const PakTocEntry& e : entries_) {
+		const size_t idx = static_cast<size_t>(&e - entries_.data());
+		if (verified_[idx])
+			continue;
+		if (file_) {
+			scratch.assign(static_cast<size_t>(e.size), 0);
+			file_->f.clear();
+			file_->f.seekg(std::streamoff(e.offset), std::ios::beg);
+			file_->f.read(reinterpret_cast<char*>(scratch.data()),
+				std::streamsize(scratch.size()));
+			if (file_->f.gcount() != std::streamsize(scratch.size())) {
+				outError = "pak page read failed: " + e.path;
+				return false;
+			}
+			if (PakCrc32(scratch.data(), scratch.size()) != e.contentCrc) {
+				outError = "pak page CRC mismatch: " + e.path;
+				return false;
+			}
+		}
+		else {
+			const std::span<const uint8_t> stored = image_.subspan(
+				static_cast<size_t>(e.offset),
+				static_cast<size_t>(e.size));
+			if (PakCrc32(stored.data(), stored.size()) != e.contentCrc) {
+				outError = "pak page CRC mismatch: " + e.path;
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool PakReader::MeshPlanFamily(const std::string& familyPath,
+	std::vector<PakMeshPlanMember>& outMembers,
+	std::string& outError) const {
+	outMembers.clear();
+	const PakTocEntry* plan = Find(PakAssetKind::Plan, kPakMeshPlanPath);
+	if (!plan) {
+		outError = "the pak carries no mesh plan (a version skew"
+			" between the catalog and the cooked content - recook)";
+		return false;
+	}
+	std::vector<PakMeshPlanFamily> families;
+	std::string perr;
+	if (!ParseMeshPlanBlob(Payload(*plan), families, perr)) {
+		outError = "the pak's mesh plan is unreadable: " + perr;
+		return false;
+	}
+	for (const PakMeshPlanFamily& f : families)
+		if (f.familyPath == familyPath) {
+			outMembers = f.members;
+			return true;
+		}
+	outError = "the pak's mesh plan has no family '" + familyPath
+		+ "' (a version skew between the catalog and the cooked"
+		" content - recook)";
+	return false;
+}
+
+// ---- the cooked mesh-plan blob codec ---------------------------------------
+
+std::vector<uint8_t> WriteMeshPlanBlob(
+	const std::vector<PakMeshPlanFamily>& families) {
+	std::vector<uint8_t> out;
+	AppendU32(out, kMeshPlanMagic);
+	AppendU32(out, 1); // version
+	AppendU32(out, static_cast<uint32_t>(families.size()));
+	for (const PakMeshPlanFamily& fam : families) {
+		AppendU32(out, static_cast<uint32_t>(fam.familyPath.size()));
+		out.insert(out.end(), fam.familyPath.begin(), fam.familyPath.end());
+		AppendU32(out, static_cast<uint32_t>(fam.members.size()));
+		for (const PakMeshPlanMember& m : fam.members) {
+			AppendU32(out, static_cast<uint32_t>(m.tocPath.size()));
+			out.insert(out.end(), m.tocPath.begin(), m.tocPath.end());
+			AppendU32(out, m.lodIndex);
+		}
+	}
+	return out;
+}
+
+bool ParseMeshPlanBlob(std::span<const uint8_t> blob,
+	std::vector<PakMeshPlanFamily>& out, std::string& err) {
+	out.clear();
+	const auto readU32 = [&blob](size_t off, uint32_t& v) -> bool {
+		if (off > blob.size() || 4 > blob.size() - off)
+			return false;
+		memcpy(&v, blob.data() + off, 4);
+		return true;
+	};
+	uint32_t magic = 0, version = 0, familyCount = 0;
+	if (!readU32(0, magic) || !readU32(4, version) || !readU32(8, familyCount)) {
+		err = "mesh plan header truncated";
+		return false;
+	}
+	if (magic != kMeshPlanMagic) {
+		err = "bad mesh plan magic";
+		return false;
+	}
+	if (version != 1) {
+		err = "unsupported mesh plan version";
+		return false;
+	}
+	if (familyCount > 65536) {
+		err = "mesh plan family count out of range";
+		return false;
+	}
+	size_t off = 12;
+	out.reserve(familyCount);
+	for (uint32_t i = 0; i < familyCount; ++i) {
+		PakMeshPlanFamily fam;
+		uint32_t pathLen = 0, memberCount = 0;
+		if (!readU32(off, pathLen)) {
+			err = "mesh plan family path truncated";
+			return false;
+		}
+		off += 4;
+		if (pathLen > 4096 || pathLen > blob.size() - off) {
+			err = "mesh plan family path out of range";
+			return false;
+		}
+		fam.familyPath.assign(
+			reinterpret_cast<const char*>(blob.data() + off), pathLen);
+		off += pathLen;
+		if (!readU32(off, memberCount)) {
+			err = "mesh plan member count truncated";
+			return false;
+		}
+		off += 4;
+		if (memberCount > 65536) {
+			err = "mesh plan member count out of range";
+			return false;
+		}
+		fam.members.reserve(memberCount);
+		for (uint32_t m = 0; m < memberCount; ++m) {
+			PakMeshPlanMember mem;
+			uint32_t mPathLen = 0, lodIndex = 0;
+			if (!readU32(off, mPathLen)) {
+				err = "mesh plan member path truncated";
+				return false;
+			}
+			off += 4;
+			if (mPathLen > 4096 || mPathLen > blob.size() - off) {
+				err = "mesh plan member path out of range";
+				return false;
+			}
+			mem.tocPath.assign(
+				reinterpret_cast<const char*>(blob.data() + off), mPathLen);
+			off += mPathLen;
+			if (!readU32(off, lodIndex)) {
+				err = "mesh plan member LOD truncated";
+				return false;
+			}
+			off += 4;
+			mem.lodIndex = lodIndex;
+			fam.members.push_back(std::move(mem));
+		}
+		out.push_back(std::move(fam));
+	}
+	if (off != blob.size()) {
+		err = "mesh plan trailing bytes";
+		return false;
+	}
+	return true;
 }
 
 // ---------------------------------------------------------------------------

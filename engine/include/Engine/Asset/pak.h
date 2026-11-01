@@ -28,15 +28,25 @@ using namespace ::smvk;
 //
 // Layout (all integers little-endian, all blobs 16-byte aligned):
 //
-//   Header  (32 B): magic "SMP7", u32 reserved, u32 flags, u64 tocOffset,
+//   Header  (32 B): magic "SMP8", u32 reserved, u32 flags, u64 tocOffset,
 //                   u64 tocCount, u32 reserved
 //   Blobs   : [payload bytes ...] (opaque to this layer; see
 //             Engine/Asset/cluster_serializer.h for Scene/Mesh/Material/
-//             Texture/Light blob encodings)
+//             Texture/Light blob encodings). Each blob is a PAGE: an
+//             independently verifiable, independently readable extent -
+//             the per-entry contentCrc in the TOC is its integrity, and
+//             PakReader::OpenFile reads any single page positionally
+//             without the rest of the file.
 //   TOC     : tocCount × { u64 pathHash, u32 kind, u32 flags,
-//                          u64 offset, u64 size, u32 pathLen, path bytes }
-//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 crc32, u32 magic "KPM7"
-//                   (crc covers header+blobs+TOC)
+//                          u64 offset, u64 size, u32 slot,
+//                          u32 contentCrc, u32 pathLen, path bytes }
+//   Footer  (24 B): u64 tocOffset, u64 tocCount, u32 tocCrc,
+//                   u32 magic "KPM8"
+//                   (tocCrc covers ONLY the TOC bytes - the mount
+//                   validates the small metadata cheaply; every blob
+//                   verifies through its own contentCrc at FETCH time,
+//                   the lazy per-page contract. VerifyAll() is the
+//                   explicit full-image policy for deployment gates.)
 //
 // NO FORMAT VERSIONS: the magic IS the version. A breaking format change
 // bumps the trailing magic char and the reader fails closed on
@@ -50,12 +60,19 @@ using namespace ::smvk;
 // SMP7 (the scene-tables break): the pak scene blob's mesh/material
 //   link sections are sourced from the typed scene tables (and the
 //   legacy .scene format's association sections went row-native).
-//   The SMP6-era legacy-terrain acceptance hack is GONE with this
-//   bump — every older pak fails closed, content recooks from zero.
+// SMP8 (the paged break): per-entry contentCrc (lazy page verification
+//   replaces the whole-image CRC at mount), stable per-entry slots,
+//   the PakAssetKind::Plan mesh-plan join blob, and the file-backed
+//   OpenFile (positional page reads). Every SMP7-or-older pak fails
+//   closed at the magic - content recooks from zero.
 //
 // TOC pathHash = FNV-1a64 over the normalized VFS path (textures: the
 // original file path, e.g. "textures/brick.ktx2"). The full path string is
-// kept in the TOC for debugging and collision-safe lookup.
+// kept in the TOC for debugging and collision-safe lookup. `slot` is the
+// entry's STABLE ordinal (assigned at cook, preserved across appends) -
+// the compiled-plan addressing of the pak-vNext work keys pages by slot,
+// never by TOC position. `contentCrc` is the CRC-32 of the entry's STORED
+// bytes (the LZ4 wrapper included when compressed).
 //
 // VFS interop: PakBackend serves *texture*, *sound* and *shader*
 // entries through the IVfsBackend interface (returns the embedded
@@ -81,8 +98,12 @@ using namespace ::smvk;
 // blobs (e.g. bakery-appended textures) keep the full-resident path.
 // A breaking change to any of this bumps the magic below (never a
 // version field); content recooks from zero.
-inline constexpr uint32_t kPakMagic = 0x37504D53; // "SMP7" LE
-inline constexpr uint32_t kPakFooterMagic = 0x374D504B; // "KPM7" LE
+inline constexpr uint32_t kPakMagic = 0x38504D53; // "SMP8" LE
+inline constexpr uint32_t kPakFooterMagic = 0x384D504B; // "KPM8" LE
+// The per-pak MESH PLAN blob's reserved TOC path (SMP8): the cooked
+// family -> member join (see PakMeshPlanFamily). A fixed reserved
+// path, not a cluster-local one - one plan per PAK.
+inline constexpr const char* kPakMeshPlanPath = "#meshplan";
 
 enum class PakAssetKind : uint32_t {
 	Scene = 1,
@@ -147,6 +168,17 @@ enum class PakAssetKind : uint32_t {
 	// declared-output list) is a MANDATORY runtime dependency of
 	// every graphics host.
 	Shader = 12,
+	// PLAN (SMP8, the cooked mesh-plan join): ONE blob per pak at the
+	// reserved path kPakMeshPlanPath ("#meshplan") carrying the
+	// family -> member table the cook resolves (see
+	// WriteMeshPlanBlob/ParseMeshPlanBlob): which Mesh blobs make up
+	// each .geometry family, with LOD indices. The runtime mesh join
+	// (the AssetStore's family acquire) reads the PLAN - never a TOC
+	// string-prefix scan (the consolidated architecture's "resolve
+	// ambiguity while cooking; no runtime name search"). Cluster-
+	// internal like Scene/Mesh: consumed through PakReader, invisible
+	// to the VFS backends.
+	Plan = 13,
 };
 
 enum PakEntryFlags : uint32_t {
@@ -162,6 +194,11 @@ struct PakTocEntry {
 	uint32_t flags = 0;
 	uint64_t offset = 0;
 	uint64_t size = 0;
+	// SMP8: the entry's STABLE ordinal (assigned at cook, preserved
+	// across AppendPakBlobs grows) and the CRC-32 of its STORED bytes
+	// (the page integrity - verified at FETCH time, never at mount).
+	uint32_t slot = 0;
+	uint32_t contentCrc = 0;
 	VfsPath path;
 };
 
@@ -186,6 +223,29 @@ struct PakAppendInfo {
 	uint64_t offset = 0;
 	uint64_t size = 0;
 };
+
+// ---- THE COOKED MESH PLAN (SMP8, the family -> member join) ---------------
+// One Plan-kind blob per pak (kPakMeshPlanPath) mapping each .geometry
+// FAMILY (the [ids] mesh row's path - the public MeshKey's identity)
+// to its cooked MEMBER blobs (base + /lodN siblings) with LOD indices.
+// The cook resolves the ambiguity ONCE; the runtime join is a plan
+// lookup, never a TOC string-prefix scan (the consolidated content
+// architecture's contract).
+struct PakMeshPlanMember {
+	std::string tocPath; // the Mesh blob's full pak URI
+	uint32_t lodIndex = 0; // 0 = the base mesh
+};
+struct PakMeshPlanFamily {
+	std::string familyPath; // the .geometry path (the [ids] row path)
+	std::vector<PakMeshPlanMember> members;
+};
+// Blob encoding (LE): 'MPLN' u32 magic | u32 version(=1) | u32
+// familyCount | per family: u32 pathLen | path | u32 memberCount |
+// per member: u32 pathLen | tocPath | u32 lodIndex. End-exact.
+std::vector<uint8_t> WriteMeshPlanBlob(
+	const std::vector<PakMeshPlanFamily>& families);
+bool ParseMeshPlanBlob(std::span<const uint8_t> blob,
+	std::vector<PakMeshPlanFamily>& out, std::string& err);
 
 // Append-grow: adds blobs to a pak FILE on disk (created when missing
 // or empty), keeping the image valid for PakReader::Open at all times.
@@ -326,34 +386,85 @@ bool AppendPakBlobs(const std::string& pakPath, PakAssetKind kind,
 // Payload() time throws (the CRC already verified the image at Open, so
 // a bad LZ4 block means a torn write that passed CRC — loud, and the
 // host's load path turns it into a failed launch, not a corrupt scene).
+//
+// SMP8 PAGE VERIFICATION: Open validates the small metadata only
+// (magic/header/footer agreement + the TOC CRC); every entry's
+// contentCrc verifies at FIRST Payload() fetch (cached - once per
+// reader), so a corrupt page fails loudly AT THE PAGE, and a consumer
+// that never touches the page never pays its hash. VerifyAll() is the
+// explicit whole-image policy (deployment gates). A reader opened over
+// a FILE (OpenFile) has no resident image: every fetch is a positional
+// page read + verify + cache - the pager's container primitive.
 class PakReader {
 public:
-	// Validates magic/version/sizes/CRC. Nullopt on failure (reason logged).
+	// Validates magic/header/footer/TOC (small + cheap). Nullopt on
+	// failure (reason logged). Page bytes verify lazily at Payload.
 	static std::optional<PakReader> Open(std::span<const uint8_t> image, std::string& outError);
+	// FILE-BACKED open: reads ONLY the header + footer + TOC from the
+	// file; every Payload() fetch is a positional page read (verify +
+	// cache, lifetime-stable spans like the image-backed form). The
+	// page-level container primitive the async pager builds on. A
+	// file-backed reader has NO image: ImageData() is null and
+	// image-relative consumers (the direct-addressed mesh fast path)
+	// must use the image-backed Open.
+	static std::optional<PakReader> OpenFile(const std::string& path, std::string& outError);
+	~PakReader();
+	PakReader(PakReader&&) noexcept;
+	PakReader& operator=(PakReader&&) noexcept;
+	PakReader(const PakReader&) = delete;
+	PakReader& operator=(const PakReader&) = delete;
 	size_t EntryCount() const { return entries_.size(); }
 	size_t CompressedEntryCount() const;
 	const std::vector<PakTocEntry>& Entries() const { return entries_; }
 	std::vector<const PakTocEntry*> BlobsOfKind(PakAssetKind kind) const;
 	const PakTocEntry* Find(PakAssetKind kind, const std::string& normalizedPath) const;
+	// The entry by its STABLE slot (the compiled-plan addressing);
+	// null when no entry carries the slot.
+	const PakTocEntry* FindBySlot(uint32_t slot) const;
 	std::span<const uint8_t> Payload(const PakTocEntry& entry) const;
-	// Base of the loaded image. UNCOMPRESSED entry payloads are subspans of
-	// this base at entry.offset — the v4 fast-load path stages geometry
-	// straight from here with pure offset math (BulkCopyBuffer content).
+	// The explicit full-verification policy: hashes every entry's
+	// stored bytes against its contentCrc (image-backed: in-memory;
+	// file-backed: positional reads). False + the first failing path
+	// on any corrupt page. NOT the default - the lazy per-page checks
+	// own runtime integrity; this is the deployment-gate form.
+	bool VerifyAll(std::string& outError) const;
+	// The cooked mesh-plan join (the Plan blob at kPakMeshPlanPath):
+	// the family's members (base + lodN), or false + err when the pak
+	// carries no plan / no such family (a version skew between the
+	// catalog and the cooked content - recook).
+	bool MeshPlanFamily(const std::string& familyPath,
+		std::vector<PakMeshPlanMember>& outMembers,
+		std::string& outError) const;
+	// Base of the loaded image (null for file-backed readers).
+	// UNCOMPRESSED entry payloads are subspans of this base at
+	// entry.offset — the v4 fast-load path stages geometry straight
+	// from here with pure offset math (BulkCopyBuffer content).
 	const uint8_t* ImageData() const { return image_.data(); }
+	// True when the reader was opened image-backed (an image exists
+	// to borrow spans from).
+	bool HasImage() const { return image_.data() != nullptr; }
 
 private:
+	PakReader() = default;
+	struct FileHandle; // the fstream wrapper (defined in the impl)
 	std::span<const uint8_t> image_;
 	std::vector<PakTocEntry> entries_;
-	// Lazy per-entry LZ4 decompression (parallel to entries_; sized at
-	// Open, filled under lazyMutex_ on first Payload() access and kept
-	// for the reader's lifetime — the spans Payload() returns must stay
-	// valid, so the cache never evicts). `done_` marks "decompressed"
-	// separately from "empty result" (an empty-after-decompress entry
-	// would otherwise re-decompress on every read — harmless, but exact
-	// is better). Mutable: Payload() is const (callers are const).
+	// Lazy per-entry payload materialization (parallel to entries_;
+	// sized at Open, filled under lazyMutex_ on first Payload()
+	// access and kept for the reader's lifetime — the spans Payload()
+	// returns must stay valid, so the cache never evicts). For an
+	// image-backed reader only LZ4 entries land here; a FILE-backed
+	// reader caches EVERY fetched page (there is no image to borrow
+	// from). `done_` marks "materialized" separately from "empty
+	// result". Mutable: Payload() is const (callers are const).
 	mutable std::vector<std::vector<uint8_t>> decompressed_;
 	mutable std::vector<uint8_t> decompressDone_;
+	// Per-entry page verification (SMP8): contentCrc checked once per
+	// reader at first fetch.
+	mutable std::vector<uint8_t> verified_;
 	mutable std::unique_ptr<std::mutex> lazyMutex_;
+	// File-backed mode: the open file (null for image-backed).
+	std::unique_ptr<FileHandle> file_;
 };
 
 // IVfsBackend over a loaded pak image. Serves texture entries by their
@@ -403,12 +514,17 @@ namespace smvk {
 	using ::tour::asset::PakCrc32Combine;
 	using ::tour::asset::PakCrc32Parallel;
 	using ::tour::asset::PakAppendInfo;
+	using ::tour::asset::PakMeshPlanMember;
+	using ::tour::asset::PakMeshPlanFamily;
+	using ::tour::asset::WriteMeshPlanBlob;
+	using ::tour::asset::ParseMeshPlanBlob;
 	using ::tour::asset::PakTexturePayload;
 	using ::tour::asset::PakWriter;
 	using ::tour::asset::PakReader;
 	using ::tour::asset::PakBackend;
 	using ::tour::asset::kPakMagic;
 	using ::tour::asset::kPakFooterMagic;
+	using ::tour::asset::kPakMeshPlanPath;
 	using ::tour::asset::PakEntryFlag_None;
 	using ::tour::asset::PakEntryFlag_Lz4;
 	using ::tour::asset::BuildTexturePayload;

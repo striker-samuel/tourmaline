@@ -211,11 +211,43 @@ void TestPakRoundTrip() {
 	}
 	Check(r->Find(smvk::PakAssetKind::Mesh, "textures/a.ktx2") == nullptr, "pak.find.kindmiss");
 
-	// Corruption is detected.
-	std::vector<uint8_t> bad = img;
-	bad[40] ^= 0xFF;
-	std::string err2;
-	Check(!smvk::PakReader::Open(std::span<const uint8_t>(bad), err2), "pak.corrupt.detected");
+	// SMP8 PAGE VERIFICATION: a corrupt PAGE byte passes the small
+	// mount (the footer CRC covers the TOC metadata only) and fails
+	// AT THE PAGE — Payload() throws + VerifyAll() reports it (the
+	// lazy per-page contract; the deployment gate calls VerifyAll).
+	{
+		std::vector<uint8_t> bad = img;
+		bad[32] ^= 0xFF; // the tex blob's first payload byte
+		std::string err2;
+		auto rBad = smvk::PakReader::Open(
+			std::span<const uint8_t>(bad), err2);
+		Check(rBad.has_value(), "pak.corrupt.mount-tolerates-page");
+		bool threw = false;
+		if (rBad) {
+			const auto* tex2 = rBad->Find(
+				smvk::PakAssetKind::Texture, "textures/a.ktx2");
+			if (tex2) {
+				try {
+					(void)rBad->Payload(*tex2);
+				}
+				catch (const std::runtime_error&) {
+					threw = true;
+				}
+			}
+			std::string verr;
+			Check(!rBad->VerifyAll(verr) && !verr.empty(),
+				"pak.corrupt.verifyall-reports");
+		}
+		Check(threw, "pak.corrupt.page-throws");
+		// The untouched scene page still serves (selective integrity:
+		// a corrupt page never poisons its neighbors).
+		if (rBad) {
+			const auto* sc = rBad->Find(smvk::PakAssetKind::Scene,
+				"<cluster-local>#scene");
+			Check(sc != nullptr && rBad->Payload(*sc).size() == 3,
+				"pak.corrupt.sibling-page-clean");
+		}
+	}
 
 	// Texture payload helpers.
 	auto tp = smvk::BuildTexturePayload("textures/a.ktx2", 1, 2, 3, 4,
@@ -474,8 +506,10 @@ void TestPakAppend() {
 
 // Hand-rolled minimal pak image (the fuzz corpus needs field-level
 // control PakWriter does not expose): header | 16B payload | TOC(1
-// entry, path "a") | footer, all little-endian. Mutators patch fields
-// and recompute the CRC so the reader's CRC gate always passes.
+// entry, path "a") | footer, all little-endian, the SMP8 entry layout
+// (slot + contentCrc + pathLen after offset/size). Mutators patch
+// fields and recompute the TOC CRC so the reader's CRC gate always
+// passes.
 struct RawPak {
 	std::vector<uint8_t> bytes;
 	size_t tocOffset = 0;
@@ -485,21 +519,24 @@ struct RawPak {
 	void Put32(size_t at, uint32_t v) { memcpy(&bytes[at], &v, 4); }
 	void Put64(size_t at, uint64_t v) { memcpy(&bytes[at], &v, 8); }
 
-	// Recompute the footer CRC over [0, footerOff + 16).
+	// SMP8 reseat: the footer CRC covers ONLY the TOC bytes
+	// [tocOffset, footerOff) (the small mount metadata).
 	void Reseat() {
-		const uint32_t crc =
-			smvk::PakCrc32(bytes.data(), footerOff + 16);
+		const uint32_t crc = smvk::PakCrc32(
+			bytes.data() + tocOffset, footerOff - tocOffset);
 		Put32(footerOff + 16, crc);
 	}
 };
 
-RawPak BuildRawPak(uint64_t entryOffset, uint64_t entrySize) {
+RawPak BuildRawPak(uint64_t entryOffset, uint64_t entrySize,
+	const std::string& path = "a") {
 	RawPak p;
-	const std::string path = "a";
 	const size_t payloadOff = 32, payloadLen = 16;
 	p.tocOffset = payloadOff + payloadLen; // 48
 	p.entryOff = p.tocOffset;
-	p.footerOff = p.tocOffset + 36 + path.size();
+	// SMP8 fixed entry: 44 bytes (hash, kind, flags, offset, size,
+	// slot, contentCrc, pathLen) + the path.
+	p.footerOff = p.tocOffset + 44 + path.size();
 	p.bytes.assign(p.footerOff + 24, 0);
 	p.Put32(0, smvk::kPakMagic);
 	p.Put64(12, p.tocOffset);
@@ -511,8 +548,15 @@ RawPak BuildRawPak(uint64_t entryOffset, uint64_t entrySize) {
 	p.Put32(p.entryOff + 12, 0); // flags
 	p.Put64(p.entryOff + 16, entryOffset);
 	p.Put64(p.entryOff + 24, entrySize);
-	p.Put32(p.entryOff + 32, static_cast<uint32_t>(path.size()));
-	memcpy(&p.bytes[p.entryOff + 36], path.data(), path.size());
+	p.Put32(p.entryOff + 32, 0); // slot
+	// The page's contentCrc over the payload bytes (the baseline case
+	// serves the page; the tampered-offset cases reject at the range
+	// checks before any fetch).
+	p.Put32(p.entryOff + 36,
+		smvk::PakCrc32(p.bytes.data() + payloadOff, payloadLen));
+	p.Put32(p.entryOff + 40, static_cast<uint32_t>(path.size()));
+	if (!path.empty())
+		memcpy(&p.bytes[p.entryOff + 44], path.data(), path.size());
 	p.Put64(p.footerOff + 0, p.tocOffset);
 	p.Put64(p.footerOff + 8, 1);
 	p.Put32(p.footerOff + 20, smvk::kPakFooterMagic);
@@ -617,20 +661,29 @@ void TestPakMalformedBounds() {
 		p.Reseat();
 		Check(!OpenRaw(p), "pak.bounds.toc.count.oversized.rejected");
 	}
-	// Zero-length path with its matching hash: accepted today (a
-	// harmless row - Find() only ever queries normalized non-empty
-	// paths); pinned so a future tightening is a deliberate change.
+	// Zero-length path with its matching hash + an EXACT TOC: accepted
+	// (a harmless row - Find() only ever queries normalized non-empty
+	// paths). The SMP8 parser TIGHTENED the shape: the TOC must end
+	// EXACTLY, so the slack byte the SMP7-era pin tolerated is now a
+	// deliberate rejection (pinned right below).
 	{
-		RawPak p = BuildRawPak(32, 16);
-		p.Put32(p.entryOff + 32, 0);
-		p.Put64(p.entryOff + 0, smvk::PakHashPath(""));
-		p.Reseat();
+		RawPak p = BuildRawPak(32, 16, "");
 		std::string err;
 		auto r = smvk::PakReader::Open(
 			std::span<const uint8_t>(p.bytes), err);
 		Check(r.has_value(), "pak.bounds.zero.pathlen.accepted");
 		if (r)
 			Check(r->EntryCount() == 1, "pak.bounds.zero.pathlen.entry");
+	}
+	// The SMP8 tightening itself: a zero-length path with a leftover
+	// slack byte after the entry (the old pin's shape) is rejected -
+	// the TOC may not carry unaccounted bytes.
+	{
+		RawPak p = BuildRawPak(32, 16, "a");
+		p.Put32(p.entryOff + 40, 0); // pathLen 0, the "a" byte stays
+		p.Put64(p.entryOff + 0, smvk::PakHashPath(""));
+		p.Reseat();
+		Check(!OpenRaw(p), "pak.bounds.toc.slack.rejected");
 	}
 }
 
@@ -785,12 +838,34 @@ void TestPakCompressedRoundTrip() {
 		Check(payload.size() == big.size() &&
 			memcmp(payload.data(), big.data(), big.size()) == 0, "paklz4.payload.bytes");
 	}
-	// Corruption inside a compressed blob is detected at Open().
-	std::vector<uint8_t> bad = img;
-	if (bad.size() > 80)
-		bad[60] ^= 0xFF;
-	std::string err2;
-	Check(!smvk::PakReader::Open(std::span<const uint8_t>(bad), err2), "paklz4.corrupt.detected");
+	// SMP8 PAGE VERIFICATION: a corrupt byte inside the STORED LZ4
+	// block passes the small mount (TOC-only CRC) and fails AT THE
+	// PAGE — Payload() throws + VerifyAll() reports.
+	{
+		std::vector<uint8_t> bad = img;
+		if (bad.size() > 80)
+			bad[60] ^= 0xFF; // inside the stored (compressed) blob
+		std::string err2;
+		auto rBad = smvk::PakReader::Open(
+			std::span<const uint8_t>(bad), err2);
+		Check(rBad.has_value(), "paklz4.corrupt.mount-tolerates-page");
+		bool threw = false;
+		if (rBad) {
+			const auto* m2 = rBad->Find(smvk::PakAssetKind::Mesh,
+				"models/big#mesh.0");
+			if (m2) {
+				try {
+					(void)rBad->Payload(*m2);
+				}
+				catch (const std::runtime_error&) {
+					threw = true;
+				}
+			}
+			std::string verr;
+			Check(!rBad->VerifyAll(verr), "paklz4.corrupt.verifyall");
+		}
+		Check(threw, "paklz4.corrupt.page-throws");
+	}
 
 	// Compressed textures stay servable through the VFS backend.
 	smvk::PakWriter w2;
@@ -809,6 +884,220 @@ void TestPakCompressedRoundTrip() {
 		auto bytes = vfs.TryRead("textures/big.ktx2");
 		Check(bytes && bytes->size() == ktx.size() && (*bytes)[0] == 0x5A, "paklz4.backend.serve");
 	}
+}
+
+// SMP8 (the paged break): the format's new surface pinned directly —
+// the mesh-plan codec + join, the stable slots, the FILE-BACKED open
+// (positional page reads with no resident image), and the lazy
+// per-page verification contract (mount = small TOC metadata; the
+// page CRC checks at fetch / VerifyAll - never at boot).
+void TestPakSmp8() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path() / "tourmaline_smp8";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+
+	// The plan codec: write/parse round trip + malformed refusals.
+	{
+		std::vector<smvk::PakMeshPlanFamily> fams = {
+			{ "content/models/tree.geometry",
+				{ { "content/models/tree.geometry#mesh.0/prim.0", 0 },
+				  { "content/models/tree.geometry#mesh.0/prim.0/lod1", 1 },
+				  { "content/models/tree.geometry#mesh.0/prim.0/lod2", 2 } } },
+			{ "content/models/rock.geometry",
+				{ { "content/models/rock.geometry#mesh.0/prim.0", 0 } } },
+		};
+		const std::vector<uint8_t> blob = smvk::WriteMeshPlanBlob(fams);
+		std::vector<smvk::PakMeshPlanFamily> back;
+		std::string perr;
+		Check(smvk::ParseMeshPlanBlob(
+				std::span<const uint8_t>(blob), back, perr)
+			&& back.size() == 2
+			&& back[0].familyPath == fams[0].familyPath
+			&& back[0].members.size() == 3
+			&& back[0].members[0].tocPath
+				== fams[0].members[0].tocPath
+			&& back[0].members[0].lodIndex == 0
+			&& back[0].members[1].tocPath
+				== fams[0].members[1].tocPath
+			&& back[0].members[1].lodIndex == 1
+			&& back[0].members[2].lodIndex == 2
+			&& back[1].familyPath == fams[1].familyPath
+			&& back[1].members.size() == 1,
+			"smp8.plan.roundtrip");
+		// Truncated + trailing junk refuse.
+		std::vector<smvk::PakMeshPlanFamily> junk;
+		Check(!smvk::ParseMeshPlanBlob(
+				std::span<const uint8_t>(blob.data(), blob.size() - 3),
+				junk, perr), "smp8.plan.truncated-refused");
+		std::vector<uint8_t> trailing = blob;
+		trailing.push_back(0);
+		Check(!smvk::ParseMeshPlanBlob(
+				std::span<const uint8_t>(trailing), junk, perr),
+			"smp8.plan.trailing-refused");
+	}
+
+	// A pak carrying a plan + slots; the join serves through
+	// MeshPlanFamily.
+	smvk::PakWriter w;
+	const std::string treeFamily = "content/models/tree.geometry";
+	Check(w.AddBlob(smvk::PakAssetKind::Mesh,
+			treeFamily + "#mesh.0/prim.0", { 1, 2, 3, 4 }), "smp8.add.base");
+	Check(w.AddBlob(smvk::PakAssetKind::Mesh,
+			treeFamily + "#mesh.0/prim.0/lod1", { 5, 6, 7, 8 }),
+		"smp8.add.lod");
+	Check(w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+			{ 9, 9, 9 }), "smp8.add.tex");
+	{
+		std::vector<smvk::PakMeshPlanFamily> fams = {
+			{ treeFamily,
+				{ { treeFamily + "#mesh.0/prim.0", 0 },
+				  { treeFamily + "#mesh.0/prim.0/lod1", 1 } } },
+		};
+		Check(w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+				smvk::WriteMeshPlanBlob(fams)), "smp8.add.plan");
+	}
+	const std::vector<uint8_t> img = w.Finalize();
+	const fs::path pakPath = tmp / "smp8.pak";
+	{
+		std::ofstream f(pakPath, std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(img.data()),
+			std::streamsize(img.size()));
+	}
+
+	// Image-backed: slots + the join.
+	{
+		std::string err;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), err);
+		Check(r.has_value(), "smp8.open.ok");
+		if (r) {
+			// Slots: sequential writer ordinals, FindBySlot resolves.
+			Check(r->FindBySlot(0) != nullptr
+				&& r->FindBySlot(0)->path
+					== treeFamily + "#mesh.0/prim.0"
+				&& r->FindBySlot(1)->path
+					== treeFamily + "#mesh.0/prim.0/lod1"
+				&& r->FindBySlot(2)->path == "textures/a.ktx2"
+				&& r->FindBySlot(3)->path == smvk::kPakMeshPlanPath
+				&& r->FindBySlot(999) == nullptr,
+				"smp8.slots");
+			// The join: base + lod sibling with LOD indices.
+			std::vector<smvk::PakMeshPlanMember> members;
+			std::string jerr;
+			Check(r->MeshPlanFamily(treeFamily, members, jerr)
+				&& members.size() == 2
+				&& members[0].lodIndex == 0
+				&& members[1].lodIndex == 1,
+				"smp8.join-family");
+			// VerifyAll on a pristine image passes.
+			std::string verr;
+			Check(r->VerifyAll(verr) && verr.empty(), "smp8.verifyall.ok");
+		}
+	}
+
+	// FILE-BACKED: the header/footer/TOC-only mount + positional page
+	// reads; payload parity with the image-backed form + HasImage
+	// false + ImageData null.
+	{
+		std::string err;
+		auto r = smvk::PakReader::OpenFile(pakPath.generic_string(), err);
+		Check(r.has_value(), "smp8.file.open");
+		if (r) {
+			Check(!r->HasImage() && r->ImageData() == nullptr,
+				"smp8.file.no-image");
+			Check(r->EntryCount() == 4, "smp8.file.entries");
+			const auto* base = r->Find(smvk::PakAssetKind::Mesh,
+				treeFamily + "#mesh.0/prim.0");
+			Check(base != nullptr, "smp8.file.find");
+			if (base) {
+				const auto payload = r->Payload(*base);
+				Check(payload.size() == 4 && payload[0] == 1,
+					"smp8.file.page-parity");
+			}
+			// The join serves identically from the file-backed reader.
+			std::vector<smvk::PakMeshPlanMember> members;
+			std::string jerr;
+			Check(r->MeshPlanFamily(treeFamily, members, jerr)
+				&& members.size() == 2, "smp8.file.join");
+			// VerifyAll over the file passes.
+			std::string verr;
+			Check(r->VerifyAll(verr) && verr.empty(), "smp8.file.verifyall");
+		}
+		// A MISSING file refuses loudly.
+		std::string merr;
+		Check(!smvk::PakReader::OpenFile(
+				(tmp / "missing.pak").generic_string(), merr)
+			&& !merr.empty(), "smp8.file.missing-refused");
+	}
+
+	// FILE-BACKED page corruption: the mount opens (the TOC is fine),
+	// the corrupt page's fetch throws, VerifyAll names it, the clean
+	// sibling page still serves.
+	{
+		std::vector<uint8_t> bad = img;
+		bad[32] ^= 0xFF; // the base mesh blob's first byte
+		const fs::path badPath = tmp / "smp8bad.pak";
+		{
+			std::ofstream f(badPath, std::ios::binary | std::ios::trunc);
+			f.write(reinterpret_cast<const char*>(bad.data()),
+				std::streamsize(bad.size()));
+		}
+		std::string err;
+		auto r = smvk::PakReader::OpenFile(badPath.generic_string(), err);
+		Check(r.has_value(), "smp8.file.corrupt.mount-tolerant");
+		if (r) {
+			const auto* base = r->Find(smvk::PakAssetKind::Mesh,
+				treeFamily + "#mesh.0/prim.0");
+			bool threw = false;
+			if (base) {
+				try {
+					(void)r->Payload(*base);
+				}
+				catch (const std::runtime_error&) {
+					threw = true;
+				}
+			}
+			Check(threw, "smp8.file.corrupt.page-throws");
+			const auto* lod = r->Find(smvk::PakAssetKind::Mesh,
+				treeFamily + "#mesh.0/prim.0/lod1");
+			Check(lod != nullptr && r->Payload(*lod).size() == 4,
+				"smp8.file.corrupt.sibling-clean");
+			std::string verr;
+			Check(!r->VerifyAll(verr) && !verr.empty(),
+				"smp8.file.corrupt.verifyall");
+		}
+	}
+
+	// Dead epochs fail closed: an SMP7 image (forged with a valid
+	// shape) is refused at the magic - the format has NO compat
+	// reader, content recooks from zero.
+	{
+		std::vector<uint8_t> smp7 = img;
+		const uint32_t oldMagic = 0x37504D53u; // "SMP7"
+		const uint32_t oldFooter = 0x374D504Bu; // "KPM7"
+		memcpy(smp7.data(), &oldMagic, 4);
+		memcpy(smp7.data() + smp7.size() - 4, &oldFooter, 4);
+		std::string err;
+		Check(!smvk::PakReader::Open(
+				std::span<const uint8_t>(smp7), err)
+			&& err.find("recook") != std::string::npos,
+			"smp8.smp7-rejected");
+		{
+			std::ofstream f(tmp / "smp7.pak",
+				std::ios::binary | std::ios::trunc);
+			f.write(reinterpret_cast<const char*>(smp7.data()),
+				std::streamsize(smp7.size()));
+		}
+		std::string ferr2;
+		Check(!smvk::PakReader::OpenFile(
+				(tmp / "smp7.pak").generic_string(), ferr2)
+			&& ferr2.find("recook") != std::string::npos,
+			"smp8.smp7-file-rejected");
+	}
+
+	fs::remove_all(tmp, ec);
 }
 
 void TestPakBackendServesTextures() {
@@ -1986,6 +2275,29 @@ void TestClusterSerializeCook() {
 	Check(reader->BlobsOfKind(PakAssetKind::Material).size() == 1, "cook.pak.mat1");
 	Check(reader->BlobsOfKind(PakAssetKind::Texture).size() == 1, "cook.pak.tex1");
 	Check(reader->BlobsOfKind(PakAssetKind::Scene).size() == 1, "cook.pak.scene1");
+	// SMP8: the cook emits the MESH PLAN (the family -> member join)
+	// alongside the mesh blobs — the runtime join reads it, never a
+	// TOC string scan.
+	Check(reader->BlobsOfKind(PakAssetKind::Plan).size() == 1,
+		"cook.pak.plan1");
+	{
+		std::vector<PakMeshPlanMember> planMembers;
+		std::string planErr;
+		Check(reader->MeshPlanFamily("models/q.gltf", planMembers,
+				planErr)
+			&& planMembers.size() == 1
+			&& planMembers[0].tocPath == "models/q.gltf#mesh.0/prim.0"
+			&& planMembers[0].lodIndex == 0,
+			"cook.pak.plan-family");
+		// A family the plan does not carry refuses loudly (a version
+		// skew - recook, never a silent empty join).
+		std::vector<PakMeshPlanMember> none;
+		std::string noneErr;
+		Check(!reader->MeshPlanFamily("models/ghost.geometry", none,
+				noneErr)
+			&& noneErr.find("recook") != std::string::npos,
+			"cook.pak.plan-unknown-refused");
+	}
 
 	// Scene blob's trailing v16 ANIMATION-REFS section (the last thing
 	// the writer emits): u32 count + PutStr per ref. The blob tail must
@@ -2861,6 +3173,7 @@ int main() {
 	run("TestPakMalformedBounds", TestPakMalformedBounds);
 	run("TestLz4Codec", TestLz4Codec);
 	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
+	run("TestPakSmp8", TestPakSmp8);
 	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
 	run("TestMeshOpt", TestMeshOpt);
 	run("TestSmoothNormalRepair", TestSmoothNormalRepair);

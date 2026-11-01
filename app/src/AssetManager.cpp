@@ -187,31 +187,30 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 		err = perr;
 		return {};
 	}
-	const std::string familyPrefix = row->path + "#";
-	const std::vector<std::string> familyPaths =
-		AssetStore::FamilyBlobPaths(*backend, familyPrefix);
-	if (familyPaths.empty()) {
-		err = "the pak '" + row->pak + "' carries no mesh blobs under '"
-			+ familyPrefix + "' (a version skew between the catalog and"
-			" the cooked content?)";
+	// SMP8 THE COOKED MESH PLAN: the family -> member join comes from
+	// the pak's Plan blob (the cook resolved it; the runtime never
+	// string-scans the TOC). A missing plan/family = version skew =
+	// loud failure.
+	std::vector<smvk::PakMeshPlanMember> members;
+	if (!AssetStore::FamilyMembers(*backend, row->path, members, err))
 		return {};
-	}
 	// ACQUIRE the family's carrier through the store: found (held),
 	// adopted from a world-registered scene cluster, or loaded through
 	// the cluster-source seam - with asset-side refs that keep it
 	// alive across scene removals (the park bridge).
 	smvk::Cluster* cluster = m_impl->store.AcquireFamilyCluster(
-		m_impl->world, *row, familyPaths, options.keepResident, err);
+		m_impl->world, *row, members, options.keepResident, err);
 	if (!cluster)
 		return {};
-	// The family's BASE mesh (no /lodN suffix) -> the cluster pool row
-	// (the spawn-side seam resolves the WORLD index fresh per query -
-	// see WorldMeshIndexOf; the slot keeps the stable carrier row).
+	// The family's BASE mesh (the plan's lodIndex 0 member) -> the
+	// cluster pool row (the spawn-side seam resolves the WORLD index
+	// fresh per query - see WorldMeshIndexOf; the slot keeps the
+	// stable carrier row).
 	smvk::ClusterStaticMeshHandle baseMesh{};
-	for (const std::string& p : familyPaths) {
-		if (p.find("/lod") != std::string::npos)
+	for (const smvk::PakMeshPlanMember& m : members) {
+		if (m.lodIndex != 0)
 			continue; // a LOD sibling, not the base
-		if (auto hit = cluster->FindMeshByUri(p)) {
+		if (auto hit = cluster->FindMeshByUri(m.tocPath)) {
 			baseMesh = *hit;
 			break;
 		}

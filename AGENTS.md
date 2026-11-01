@@ -65,6 +65,24 @@
   (the pak cooker's `--sound-id` map resolves paths; a non-empty map
   with an unresolved referenced path FAILS the cook — never silently
   omit). The appmanifest's kind gate is `scene|texture|mesh|sound`.
+- **THE PAK CONTAINER IS SMP8** (the paged break — docs/pak_vnext.md
+  is the format reference): per-entry `contentCrc` verified LAZILY at
+  `Payload()` fetch (never at mount — a corrupt page throws AT the
+  page, its neighbors stay servable), the footer CRC covers ONLY the
+  TOC (the small mount: no multi-GB walk at boot; `VerifyAll()` is
+  the explicit full policy — DeployCheck calls it), STABLE per-entry
+  `slot` ordinals (preserved across appends; the compiled-plan
+  addressing), `PakReader::OpenFile` (the header/footer/TOC-only
+  file-backed open with positional page reads — the async pager's
+  container primitive), and the cooked MESH PLAN (`PakAssetKind::Plan`
+  blob at `"#meshplan"`: the family -> member join the COOK resolved;
+  the runtime join is a plan lookup, NEVER a TOC string scan —
+  `SerializeClusters` emits it, `AssetStore::FamilyMembers` consumes
+  it, a missing plan/family = version skew = loud recook failure).
+  Every SMP7-or-older pak fails closed at the magic (content recooks
+  from zero — the standing policy, no compat reader). Pinned by
+  `smp8.*`/`pak.corrupt.*`/`pak.bounds.*`/`cook.pak.plan*` in
+  test_assets.cpp + `am.mesh-no-plan-refused` in test_pak_host.cpp.
 - **The gameplay-handle model** (engine Engine/Scene/entity_handle.h):
   NO generic game-entity registry — gameplay structs compose TYPED
   64-bit generational handles (MeshEntityHandle/AnimatorHandle/

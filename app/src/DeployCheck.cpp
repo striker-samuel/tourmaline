@@ -71,15 +71,26 @@ bool ValidatePakFile(const std::string& pakPath, std::string& err) {
 		err = "pak unreadable or empty: '" + pakPath + "'";
 		return false;
 	}
-	// The image proof (magic/sizes/CRC — the same gate the runtime's
-	// PakBackend::Open runs; a torn or corrupt file fails HERE).
+	// The image proof (magic/sizes/TOC — the same gate the runtime's
+	// PakBackend::Open runs) PLUS the EXPLICIT FULL-VERIFICATION
+	// policy: the deployment gate hashes every page (the runtime's
+	// mount is TOC-only by design — pages verify lazily at fetch, the
+	// selective-startup contract — so THIS is where a corrupt page
+	// surfaces pre-launch; never inside the game).
 	{
 		std::string openErr;
-		if (!smvk::PakReader::Open(
-				std::span<const uint8_t>(image), openErr)) {
+		auto reader = smvk::PakReader::Open(
+			std::span<const uint8_t>(image), openErr);
+		if (!reader) {
 			err = "pak failed its integrity check: '" + pakPath
 				+ "' (" + openErr + ") — the file is corrupt or"
 					" truncated; redeploy it";
+			return false;
+		}
+		std::string pageErr;
+		if (!reader->VerifyAll(pageErr)) {
+			err = "pak page corruption: '" + pakPath + "' ("
+				+ pageErr + ") — the file is corrupt; redeploy it";
 			return false;
 		}
 	}

@@ -589,6 +589,44 @@ bool SerializeClusters(
 		lightIdByUri, camIdByUri, decalIdByUri;
 	std::unordered_set<std::string> texturesDone;
 	uint64_t textureBytes = 0;
+	// SMP8 THE COOKED MESH PLAN (the family -> member join): every
+	// mesh blob this pak actually writes accumulates here, grouped by
+	// family (the URI's base before '#', the [ids] mesh row's .geometry
+	// path) with its LOD index — the runtime join reads the plan, never
+	// a TOC string-prefix scan (the consolidated content architecture's
+	// "resolve the ambiguity while cooking" contract).
+	std::vector<PakMeshPlanFamily> meshPlan;
+	std::unordered_map<std::string, size_t> meshPlanFamilyIndex;
+	const auto planRecordMesh = [&meshPlan,
+			&meshPlanFamilyIndex](const std::string& uri) {
+		const size_t hash = uri.find('#');
+		const std::string family =
+			hash == std::string::npos ? uri : uri.substr(0, hash);
+		uint32_t lodIndex = 0;
+		const size_t lod = uri.rfind("/lod");
+		if (lod != std::string::npos && lod > hash
+				&& lod + 4 < uri.size()) {
+			uint32_t n = 0;
+			bool ok = true;
+			for (size_t c = lod + 4; c < uri.size(); ++c) {
+				if (uri[c] < '0' || uri[c] > '9') {
+					ok = false;
+					break;
+				}
+				n = n * 10u + uint32_t(uri[c] - '0');
+			}
+			if (ok)
+				lodIndex = n;
+		}
+		auto it = meshPlanFamilyIndex.find(family);
+		if (it == meshPlanFamilyIndex.end()) {
+			it = meshPlanFamilyIndex.emplace(family, meshPlan.size()).first;
+			meshPlan.emplace_back();
+			meshPlan.back().familyPath = family;
+		}
+		meshPlan[it->second].members.push_back(
+			PakMeshPlanMember{ uri, lodIndex });
+	};
 	struct LocalMaps {
 		std::unordered_map<uint32_t, uint32_t> mesh, mat, light, camera,
 			decal;
@@ -796,6 +834,8 @@ bool SerializeClusters(
 		// Raises the pak version so older readers reject at Open.
 		if (!writer.AddBlob(PakAssetKind::Mesh, uri, std::move(blob), true))
 			return fail("invalid mesh uri: " + uri);
+		// SMP8: the just-written blob joins the pak's mesh plan.
+		planRecordMesh(uri);
 	}
 
 	// --- Materials ---------------------------------------------------------
@@ -1514,6 +1554,17 @@ bool SerializeClusters(
 			stats->nodes += nodeCount;
 	}
 	} // per-cluster loop
+
+	// SMP8 THE COOKED MESH PLAN (pak-level, one blob at the reserved
+	// path): the family -> member join accumulated as the mesh blobs
+	// were written. REQUIRED for the runtime mesh join — a pak without
+	// a plan fails the AssetStore's family acquire loudly (a version
+	// skew between the catalog and the cooked content - recook).
+	if (!meshPlan.empty()) {
+		if (!writer.AddBlob(PakAssetKind::Plan, kPakMeshPlanPath,
+				WriteMeshPlanBlob(meshPlan)))
+			return fail("mesh plan blob rejected");
+	}
 
 	// Cooked GI registry (pak-level, one blob): union of the clusters'
 	// named bake bindings, first-seen order. Loaders enforce one

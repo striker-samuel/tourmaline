@@ -59,20 +59,20 @@ AssetStore::~AssetStore()
 
 smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	const smvk::AppManifestAsset& row,
-	const std::vector<std::string>& familyPaths, bool resident,
+	const std::vector<smvk::PakMeshPlanMember>& members, bool resident,
 	std::string& err)
 {
 	err.clear();
-	if (familyPaths.empty()) {
-		err = "the mesh family '" + row.path + "' has no pak blobs"
-			" (a version skew between the catalog and the cooked"
-			" content?)";
+	if (members.empty()) {
+		err = "the mesh family '" + row.path + "' has no cooked"
+			" members (the pak's mesh plan is a version skew -"
+			" recook)";
 		return nullptr;
 	}
 	// (a) A cluster this store already holds (registered OR parked)
 	// against THIS world: the shared-acquire dedup — repeated keys
 	// never re-load, never re-carve GPU ranges.
-	if (smvk::Cluster* held = FindHeldWithFamily(world, familyPaths)) {
+	if (smvk::Cluster* held = FindHeldWithFamily(world, members)) {
 		TakeRef(world, held, resident);
 		return held;
 	}
@@ -80,7 +80,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	// the owning scene through ProjectScenes): adopt it — the asset
 	// rides the scene's own cluster, no duplicate carrier.
 	for (const auto& c : world.clusters)
-		if (c && clusterHasFamily(*c, familyPaths)) {
+		if (c && clusterHasFamily(*c, members)) {
 			TakeRef(world, c.get(), resident);
 			return c.get();
 		}
@@ -117,7 +117,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 					+ std::to_string(si) + ")";
 			return nullptr;
 		}
-		if (clusterHasFamily(*loaded, familyPaths)) {
+		if (clusterHasFamily(*loaded, members)) {
 			// The fresh carrier folds into the world exactly like the
 			// old EnsureFamilyCluster did (World::LoadClusterFromPak's
 			// own resolve parity — a source that registers a cluster
@@ -183,18 +183,14 @@ void AssetStore::ReleaseAll()
 
 // ---- the join + the searches -----------------------------------------------
 
-std::vector<std::string> AssetStore::FamilyBlobPaths(
-	const smvk::PakBackend& backend, const std::string& familyPrefix)
+bool AssetStore::FamilyMembers(const smvk::PakBackend& backend,
+	const std::string& familyPath,
+	std::vector<smvk::PakMeshPlanMember>& out, std::string& err)
 {
-	std::vector<std::string> out;
-	for (const auto& e : backend.Reader().Entries()) {
-		if (e.kind != tour::asset::PakAssetKind::Mesh)
-			continue;
-		if (e.path.rfind(familyPrefix, 0) != 0)
-			continue;
-		out.push_back(e.path);
-	}
-	return out;
+	// The COOKED MESH PLAN (SMP8): the cook resolved the family ->
+	// member join; the runtime never string-scans the TOC. A missing
+	// plan/family is a version skew - recook, never a silent empty.
+	return backend.Reader().MeshPlanFamily(familyPath, out, err);
 }
 
 std::size_t AssetStore::HeldClusterCount() const
@@ -208,7 +204,7 @@ bool AssetStore::HoldsCluster(smvk::Cluster* cluster) const
 }
 
 smvk::Cluster* AssetStore::FindHeldWithFamily(tour::World& world,
-	const std::vector<std::string>& familyPaths) const
+	const std::vector<smvk::PakMeshPlanMember>& members) const
 {
 	// A held cluster is refcounted alive (every record implies >= 1
 	// world assetRef) — the dereference is safe by construction. A
@@ -216,16 +212,16 @@ smvk::Cluster* AssetStore::FindHeldWithFamily(tour::World& world,
 	// world at a time (the v1 bridge; the permanent store lifts this).
 	for (const auto& [cluster, h] : m_held)
 		if (h.world == &world && cluster
-			&& clusterHasFamily(*cluster, familyPaths))
+			&& clusterHasFamily(*cluster, members))
 			return cluster;
 	return nullptr;
 }
 
 bool AssetStore::clusterHasFamily(smvk::Cluster& cluster,
-	const std::vector<std::string>& familyPaths)
+	const std::vector<smvk::PakMeshPlanMember>& members)
 {
-	for (const std::string& p : familyPaths)
-		if (cluster.FindMeshByUri(p))
+	for (const smvk::PakMeshPlanMember& m : members)
+		if (cluster.FindMeshByUri(m.tocPath))
 			return true;
 	return false;
 }
