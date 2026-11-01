@@ -58,13 +58,13 @@ AssetStore::~AssetStore()
 // ---- the found-or-loaded acquire ------------------------------------------
 
 smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
-	const smvk::AppManifestAsset& row,
+	const std::string& pakName, const std::string& familyPath,
 	const std::vector<smvk::PakMeshPlanMember>& members, bool resident,
 	std::string& err)
 {
 	err.clear();
 	if (members.empty()) {
-		err = "the mesh family '" + row.path + "' has no cooked"
+		err = "the mesh family '" + familyPath + "' has no cooked"
 			" members (the pak's mesh plan is a version skew -"
 			" recook)";
 		return nullptr;
@@ -92,7 +92,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	// subset-load follow-up addresses it).
 	std::string perr;
 	std::shared_ptr<smvk::PakBackend> backend =
-		m_runtime.OpenPak(row.pak, perr);
+		m_runtime.OpenPak(pakName, perr);
 	if (!backend) {
 		err = perr;
 		return nullptr;
@@ -101,7 +101,7 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 	const std::vector<smvk::PakSceneInfo> scenes =
 		smvk::ListPakScenes(backend->Reader(), &lerr);
 	if (scenes.empty()) {
-		err = "the pak '" + row.pak + "' carries no scenes: " + lerr;
+		err = "the pak '" + pakName + "' carries no scenes: " + lerr;
 		return nullptr;
 	}
 	for (uint32_t si = 0; si < uint32_t(scenes.size()); ++si) {
@@ -131,10 +131,66 @@ smvk::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
 		// user-visible back in).
 		world.UnloadCluster(*loaded);
 	}
-	err = "no scene in pak '" + row.pak + "' carries the mesh family '"
-		+ row.path + "' (a multi-scene split family - the v1 join"
+	err = "no scene in pak '" + pakName + "' carries the mesh family '"
+		+ familyPath + "' (a multi-scene split family - the v1 join"
 		" boundary, see docs/content_as_code.md)";
 	return nullptr;
+}
+
+smvk::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
+	const smvk::MeshPlanRef& plan, bool resident, std::string& err)
+{
+	err.clear();
+	// The pak by MOUNT INDEX — never a name search.
+	const std::string pakName =
+		m_runtime.ManifestPakName(plan.pakIndex);
+	if (pakName.empty()) {
+		err = "the compiled plan names pak index "
+			+ std::to_string(plan.pakIndex)
+			+ " but the manifest carries fewer paks — a version skew"
+			" (redeploy or rebuild; never a dynamic fallback)";
+		return nullptr;
+	}
+	// The compiled slot validated against the DEPLOYED TOC through
+	// the O(1) slot index: kind + the family-path key. A mismatch is
+	// the per-asset fail-closed contract.
+	std::string perr;
+	std::shared_ptr<smvk::PakPager> pager =
+		m_runtime.OpenPakPager(pakName, perr);
+	if (!pager) {
+		err = perr;
+		return nullptr;
+	}
+	const smvk::PakTocEntry* base =
+		pager->Reader().FindBySlot(plan.baseSlot);
+	if (!base || base->kind != smvk::PakAssetKind::Mesh) {
+		err = "the compiled plan's slot "
+			+ std::to_string(plan.baseSlot) + " in pak '" + pakName
+			+ "' is not a mesh entry — the deployed content's layout"
+			" does not match the compiled plans (redeploy or"
+			" rebuild; never a dynamic fallback)";
+		return nullptr;
+	}
+	const std::string expectedPrefix =
+		std::string(plan.familyPath) + "#";
+	if (base->path.rfind(expectedPrefix, 0) != 0) {
+		err = "the compiled plan's slot "
+			+ std::to_string(plan.baseSlot) + " in pak '" + pakName
+			+ "' carries '" + base->path + "' but the plan keys"
+			" family '" + std::string(plan.familyPath)
+			+ "' — the deployed content's layout does not match the"
+			" compiled plans (redeploy or rebuild; never a dynamic"
+			" fallback)";
+		return nullptr;
+	}
+	// The acquire through the SAME core as the catalog lane (the
+	// held/world searches + the cluster-source walk) — the plan names
+	// the ADDRESS; the ownership machinery is shared, never
+	// duplicated.
+	std::vector<smvk::PakMeshPlanMember> members;
+	members.push_back(smvk::PakMeshPlanMember{ base->path, 0 });
+	return AcquireFamilyCluster(world, pakName, plan.familyPath,
+		members, resident, err);
 }
 
 void AssetStore::ReleaseFamilyCluster(smvk::Cluster* cluster)

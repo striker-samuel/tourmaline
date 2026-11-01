@@ -34,6 +34,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
+#include <Engine/Asset/asset_plan.h>
 #include <Engine/Scene/node_schema.h>
 #include <Engine/platform.h> // readFile (exe-relative shader loads)
 #include <Engine/Renderer/spirv_reflection.h>
@@ -1536,6 +1537,135 @@ void TestNodeSchemas() {
 			}
 		}
 	}
+}
+
+// THE LAYOUT FINGERPRINTS (Engine/Asset/asset_plan.h — the compiled
+// static plans' fail-closed contract): determinism, the deliberate
+// CONTENT exclusion (a payload-only redeploy keeps the fingerprint —
+// no recompile), and the layout sensitivity (slots, lengths, kinds,
+// the mesh-plan join all move it).
+void TestPakLayoutFingerprint() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_planfp";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp, ec);
+
+	const auto writePak = [&](const char* name,
+			const std::vector<uint8_t>& img) {
+		std::ofstream f(tmp / name, std::ios::binary | std::ios::trunc);
+		f.write(reinterpret_cast<const char*>(img.data()),
+			std::streamsize(img.size()));
+	};
+	smvk::PakWriter w;
+	w.AddBlob(smvk::PakAssetKind::Mesh,
+		"content/models/tree.geometry#mesh.0/prim.0", { 1, 2, 3, 4 });
+	w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+		smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1, -1,
+			std::span<const uint8_t>(
+				std::vector<uint8_t>{ 9, 9, 9 })));
+	{
+		std::vector<smvk::PakMeshPlanFamily> plan = {
+			{ "content/models/tree.geometry",
+				{ { "content/models/tree.geometry#mesh.0/prim.0", 0 } } },
+		};
+		w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+			smvk::WriteMeshPlanBlob(plan));
+	}
+	const std::vector<uint8_t> img = w.Finalize();
+	writePak("a.pak", img);
+	// A CONTENT-ONLY variant: the same layout, one payload byte
+	// different (the texture's ktx tail).
+	std::vector<uint8_t> repixel = img;
+	{
+		std::string oerr;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(repixel), oerr);
+		if (r) {
+			if (const auto* e = r->Find(smvk::PakAssetKind::Texture,
+					"textures/a.ktx2"))
+				repixel[size_t(e->offset + e->size - 1)] ^= 0xFF;
+		}
+	}
+	writePak("repixel.pak", repixel);
+	// A LAYOUT variant: one entry's LENGTH changes (a re-cooked
+	// payload of a different size).
+	{
+		smvk::PakWriter w2;
+		w2.AddBlob(smvk::PakAssetKind::Mesh,
+			"content/models/tree.geometry#mesh.0/prim.0", { 1, 2, 3 });
+		w2.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+			smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1,
+				-1, std::span<const uint8_t>(
+					std::vector<uint8_t>{ 9, 9, 9 })));
+		std::vector<smvk::PakMeshPlanFamily> plan = {
+			{ "content/models/tree.geometry",
+				{ { "content/models/tree.geometry#mesh.0/prim.0",
+					0 } } },
+		};
+		w2.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+			smvk::WriteMeshPlanBlob(plan));
+		writePak("relayout.pak", w2.Finalize());
+	}
+	// A MESH-PLAN variant: the same entries, the JOIN changes (a new
+	// LOD member reference).
+	{
+		smvk::PakWriter w3;
+		w3.AddBlob(smvk::PakAssetKind::Mesh,
+			"content/models/tree.geometry#mesh.0/prim.0", { 1, 2, 3, 4 });
+		w3.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+			smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1,
+				-1, std::span<const uint8_t>(
+					std::vector<uint8_t>{ 9, 9, 9 })));
+		std::vector<smvk::PakMeshPlanFamily> plan = {
+			{ "content/models/tree.geometry",
+				{ { "content/models/tree.geometry#mesh.0/prim.0", 0 },
+				  { "content/models/tree.geometry"
+					"#mesh.0/prim.0/lod1", 1 } } },
+		};
+		w3.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+			smvk::WriteMeshPlanBlob(plan));
+		writePak("replan.pak", w3.Finalize());
+	}
+
+	const auto fpOf = [&](const char* name) -> std::string {
+		std::string oerr;
+		auto r = smvk::PakReader::OpenFile(
+			(tmp / name).generic_string(), oerr);
+		Check(r.has_value(), (std::string("planfp.open.")
+			+ name).c_str());
+		return r ? smvk::PakLayoutFingerprint(*r) : std::string();
+	};
+	const std::string fpA = fpOf("a.pak");
+	// Determinism: the same file folds the same.
+	Check(fpOf("a.pak") == fpA, "planfp.deterministic");
+	// CONTENT-ONLY change: the SAME fingerprint (the payload-only
+	// redeploy needs NO recompile — the acceptance contract; the
+	// per-page contentCrc owns runtime integrity, not the layout).
+	Check(fpOf("repixel.pak") == fpA, "planfp.content-excluded");
+	// LENGTH change: a DIFFERENT fingerprint (lengths are covered).
+	Check(fpOf("relayout.pak") != fpA, "planfp.length-covered");
+	// The mesh-plan join is covered.
+	Check(fpOf("replan.pak") != fpA, "planfp.meshplan-covered");
+	// The LIST fold: the pak names + per-pak fingerprints.
+	{
+		const std::string names[2] = { "one.pak", "two.pak" };
+		const std::string fps[2] = { fpA, fpA };
+		const std::string listA =
+			smvk::FoldPakLayouts(names, fps, 2);
+		Check(smvk::FoldPakLayouts(names, fps, 2) == listA,
+			"planfp.list-deterministic");
+		// The order matters (mount order is an assumption).
+		const std::string swapped[2] = { "two.pak", "one.pak" };
+		Check(smvk::FoldPakLayouts(swapped, fps, 2) != listA,
+			"planfp.list-order-covered");
+		// A pak's layout change moves the list.
+		const std::string fps2[2] = { fpOf("relayout.pak"), fpA };
+		Check(smvk::FoldPakLayouts(names, fps2, 2) != listA,
+			"planfp.list-pak-covered");
+	}
+	fs::remove_all(tmp, ec);
 }
 
 void TestPakBackendServesTextures() {
@@ -3623,6 +3753,7 @@ int main() {
 	run("TestPakSmp8", TestPakSmp8);
 	run("TestPakPager", TestPakPager);
 	run("TestNodeSchemas", TestNodeSchemas);
+	run("TestPakLayoutFingerprint", TestPakLayoutFingerprint);
 	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
 	run("TestMeshOpt", TestMeshOpt);
 	run("TestSmoothNormalRepair", TestSmoothNormalRepair);

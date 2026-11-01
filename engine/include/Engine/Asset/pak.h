@@ -437,8 +437,9 @@ public:
 	const std::vector<PakTocEntry>& Entries() const { return entries_; }
 	std::vector<const PakTocEntry*> BlobsOfKind(PakAssetKind kind) const;
 	const PakTocEntry* Find(PakAssetKind kind, const std::string& normalizedPath) const;
-	// The entry by its STABLE slot (the compiled-plan addressing);
-	// null when no entry carries the slot.
+	// The entry by its STABLE slot (the compiled-plan addressing):
+	// O(1) through the slot index built at open - never a TOC walk.
+	// Null when no entry carries the slot.
 	const PakTocEntry* FindBySlot(uint32_t slot) const;
 	std::span<const uint8_t> Payload(const PakTocEntry& entry) const;
 	// The explicit full-verification policy: hashes every entry's
@@ -466,8 +467,14 @@ public:
 private:
 	PakReader() = default;
 	struct FileHandle; // the fstream wrapper (defined in the impl)
+	// The slot index builder (both open paths share it).
+	static void BuildSlotIndex(PakReader& r);
 	std::span<const uint8_t> image_;
 	std::vector<PakTocEntry> entries_;
+	// Slot -> entries_ index (built at open; -1 = the slot is
+	// unclaimed). The compiled-plan lane's O(1) addressing - never a
+	// TOC walk.
+	std::vector<int32_t> entriesBySlot_;
 	// Lazy per-entry payload materialization (parallel to entries_;
 	// sized at Open, filled under lazyMutex_ on first Payload()
 	// access and kept for the reader's lifetime — the spans Payload()

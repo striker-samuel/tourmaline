@@ -123,6 +123,21 @@ public:
 	// whatever lane opened first). Lazy cache, one pager per archive.
 	[[nodiscard]] std::shared_ptr<smvk::PakPager> OpenPakPager(
 		const std::string& pakFile, std::string& err);
+	// The manifest's pak name by MOUNT INDEX (the compiled plans'
+	// pakIndex key — the [paks] list order). Empty when out of range.
+	[[nodiscard]] std::string ManifestPakName(size_t index) const;
+	// ---- THE COMPILED-PLANS GATE (fail-closed) -----------------------
+	// Validates the DEPLOYED paks against the generated
+	// project_plans.h constants (PlansPakCount + PlansLayoutHash):
+	// opens every manifest pak through the light SMP8 mount, folds
+	// each pak's LAYOUT (the slot table + the mesh-plan join — the
+	// shared engine fold; content bytes excluded), and compares. A
+	// count or fold mismatch is a LOUD failure — redeploy the content
+	// or rebuild the game; NEVER a silent fallback to the dynamic
+	// resolver (the shipping acceptance contract). Call once at boot,
+	// before any plan-driven load.
+	bool AttachCompiledPlans(uint32_t compiledPakCount,
+		const char* compiledLayoutHash, std::string& err);
 	// Cheap cache presence (no open, no block).
 	[[nodiscard]] bool HasPak(const std::string& pakFile) const {
 		return m_backends.count(pakFile) != 0;

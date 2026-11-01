@@ -66,6 +66,9 @@ struct AssetManager::Impl {
 	std::vector<MeshSlot> meshSlots;
 	std::vector<uint32_t> meshFree;
 	std::map<uint64_t, MeshHandle> meshByKey; // dedup per key
+	// The compiled-plan lane's dedup: (pakIndex << 32 | baseSlot) ->
+	// the handle (a parallel key into the same slots).
+	std::map<uint64_t, MeshHandle> meshByPlan;
 
 	// GI slots: a loaded set's manifest rows (the identity), kept
 	// resident while referenced. The renderer builds/publishes on
@@ -199,7 +202,8 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	// the cluster-source seam - with asset-side refs that keep it
 	// alive across scene removals (the park bridge).
 	smvk::Cluster* cluster = m_impl->store.AcquireFamilyCluster(
-		m_impl->world, *row, members, options.keepResident, err);
+		m_impl->world, row->pak, row->path, members,
+		options.keepResident, err);
 	if (!cluster)
 		return {};
 	// The family's BASE mesh (the plan's lodIndex 0 member) -> the
@@ -299,8 +303,10 @@ bool AssetManager::UnloadMesh(MeshHandle handle) {
 		s->cluster = nullptr;
 	}
 	s->mesh = {};
-	if (!s->keepResident)
+	if (!s->keepResident) {
 		m_impl->meshByKey.erase(s->key);
+		m_impl->meshByPlan.erase(s->key); // the plan lane's parallel key
+	}
 	s->alive = false;
 	if (s->generation != UINT32_MAX) {
 		++s->generation;
@@ -317,6 +323,7 @@ void AssetManager::UnloadAllMeshes() {
 	for (auto& [key, handle] : m_impl->meshByKey)
 		(void)UnloadMesh(handle);
 	m_impl->meshByKey.clear();
+	m_impl->meshByPlan.clear();
 	m_impl->batchMemory.clear();
 	// The session (keepResident) refs go with the teardown: the last
 	// one per carrier releases it for destruction (a parked carrier
@@ -339,6 +346,86 @@ smvk::MeshEntityHandle AssetManager::SpawnMesh(MeshHandle mesh,
 	if (row == UINT32_MAX)
 		return {};
 	return m_impl->world.SpawnMesh(row, frame, parent);
+}
+
+MeshHandle AssetManager::LoadMeshByPlan(const smvk::MeshPlanRef& plan,
+	std::string& err, const MeshLoadOptions& options)
+{
+	err.clear();
+	if (!m_impl)
+		return {};
+	// Dedup by the PLAN IDENTITY (the compiled address), never the
+	// catalog id (the two lanes are parallel keys into the same
+	// slots).
+	const uint64_t planKey =
+		(uint64_t(plan.pakIndex) << 32) | plan.baseSlot;
+	if (auto hit = m_impl->meshByPlan.find(planKey);
+			hit != m_impl->meshByPlan.end()) {
+		if (Impl::MeshSlot* s = m_impl->MeshSlotOf(hit->second)) {
+			if (options.keepResident && !s->keepResident) {
+				s->keepResident = true;
+				if (s->cluster)
+					m_impl->store.MakeResident(s->cluster);
+			}
+			return hit->second;
+		}
+		m_impl->meshByPlan.erase(hit);
+	}
+	// The plan acquire (per-asset fail-closed: the pak by index, the
+	// slot validated against the deployed TOC).
+	smvk::Cluster* cluster =
+		m_impl->store.AcquireFamilyClusterByPlan(m_impl->world, plan,
+			options.keepResident, err);
+	if (!cluster)
+		return {};
+	// The base mesh's URI: the slot entry's OWN path (the compiled
+	// key — the store's validation proved it belongs to the plan's
+	// family).
+	std::string perr;
+	std::shared_ptr<smvk::PakPager> pager =
+		m_impl->runtime.OpenPakPager(
+			m_impl->runtime.ManifestPakName(plan.pakIndex), perr);
+	if (!pager) {
+		err = perr;
+		return {};
+	}
+	const smvk::PakTocEntry* base =
+		pager->Reader().FindBySlot(plan.baseSlot);
+	smvk::ClusterStaticMeshHandle baseMesh{};
+	if (base)
+		if (auto hit = cluster->FindMeshByUri(base->path))
+			baseMesh = *hit;
+	if (!baseMesh.valid()) {
+		err = "the compiled plan for family '"
+			+ std::string(plan.familyPath)
+			+ "' acquired its carrier but the base mesh row is"
+			" missing (a cook anomaly - recook)";
+		return {};
+	}
+	// The slot (the same mint as the catalog lane).
+	uint32_t index;
+	uint32_t generation;
+	if (!m_impl->meshFree.empty()) {
+		index = m_impl->meshFree.back();
+		m_impl->meshFree.pop_back();
+		generation = m_impl->meshSlots[index].generation;
+	}
+	else {
+		index = uint32_t(m_impl->meshSlots.size());
+		m_impl->meshSlots.emplace_back();
+		generation = m_impl->meshSlots.back().generation;
+	}
+	Impl::MeshSlot& slot = m_impl->meshSlots[index];
+	slot.alive = true;
+	slot.keepResident = options.keepResident;
+	slot.key = planKey;
+	slot.pak = m_impl->runtime.ManifestPakName(plan.pakIndex);
+	slot.cluster = cluster;
+	slot.mesh = baseMesh;
+	const MeshHandle handle{
+		(uint64_t(generation) << 32) | index };
+	m_impl->meshByPlan.emplace(planKey, handle);
+	return handle;
 }
 
 // ---- GI BAKE SETS ---------------------------------------------------------

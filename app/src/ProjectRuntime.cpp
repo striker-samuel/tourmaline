@@ -7,6 +7,8 @@
 
 #include "ProjectRuntime.h"
 
+#include <Engine/Asset/asset_plan.h>
+
 #include "PakPreload.h"
 
 #include <filesystem>
@@ -100,6 +102,60 @@ std::shared_ptr<smvk::PakPager> ProjectRuntime::OpenPakPager(
 		cached = m_pagers.emplace(pakFile, std::move(pager)).first;
 	}
 	return cached->second;
+}
+
+std::string ProjectRuntime::ManifestPakName(size_t index) const
+{
+	if (index >= m_manifest.paks.size())
+		return {};
+	return m_manifest.paks[index];
+}
+
+bool ProjectRuntime::AttachCompiledPlans(uint32_t compiledPakCount,
+	const char* compiledLayoutHash, std::string& err)
+{
+	err.clear();
+	if (compiledPakCount != m_manifest.paks.size()) {
+		err = "the compiled plans name " + std::to_string(
+				compiledPakCount) + " pak(s) but the manifest lists "
+			+ std::to_string(m_manifest.paks.size())
+			+ " — a version skew between the build and the deployed"
+			" content; redeploy or rebuild the game (never a"
+			" dynamic fallback)";
+		return false;
+	}
+	// Open every manifest pak through the light mount + fold its
+	// LAYOUT (the shared engine fold — the same one the generator
+	// used; content bytes excluded by design).
+	std::vector<std::string> names;
+	std::vector<std::string> fingerprints;
+	names.reserve(m_manifest.paks.size());
+	fingerprints.reserve(m_manifest.paks.size());
+	for (const std::string& pak : m_manifest.paks) {
+		std::string perr;
+		std::shared_ptr<smvk::PakPager> pager = OpenPakPager(pak, perr);
+		if (!pager) {
+			err = perr;
+			return false;
+		}
+		names.push_back(pak);
+		fingerprints.push_back(
+			smvk::PakLayoutFingerprint(pager->Reader()));
+	}
+	const std::string deployed = smvk::FoldPakLayouts(names.data(),
+		fingerprints.data(), names.size());
+	if (deployed != std::string(compiledLayoutHash
+			? compiledLayoutHash : "")) {
+		err = "the deployed paks' LAYOUT does not match the compiled"
+			" plans (compiled " + std::string(compiledLayoutHash
+				? compiledLayoutHash : "<empty>")
+			+ ", deployed " + deployed
+			+ ") — the content was repacked with a different layout;"
+			" redeploy the matching generation or rebuild the game"
+			" (never a dynamic fallback)";
+		return false;
+	}
+	return true;
 }
 
 bool ProjectRuntime::AttachCompiledCatalog(

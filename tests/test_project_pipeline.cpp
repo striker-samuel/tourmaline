@@ -37,6 +37,7 @@
 #include <gltf_import/asset_export.h>
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/asset_plan.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 
@@ -3888,6 +3889,162 @@ void TestNodeSchemaCodegen() {
 	fs::remove_all(tmp, ec);
 }
 
+// THE COMPILED STATIC PLANS' EMISSION (EmitPlansHeader): the private
+// project_plans.h — the slot-keyed MeshPlanRef constants + the
+// layout hash; the empty form (no published paks), the inconsistent
+// publish refusal, and the layout/content hash discipline.
+void TestPlansHeaderEmission() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_plansgen";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	const fs::path pakDir = tmp / "build";
+	fs::create_directories(pakDir, ec);
+
+	const auto writePak = [&](const char* name,
+			smvk::PakWriter& w, const std::string& treeBytes) {
+		w.AddBlob(smvk::PakAssetKind::Mesh,
+			"content/models/tree.geometry#mesh.0/prim.0",
+			std::vector<uint8_t>(treeBytes.begin(), treeBytes.end()));
+		w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+			smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1,
+				-1, std::span<const uint8_t>(
+					std::vector<uint8_t>{ 9, 9, 9 })));
+		std::vector<smvk::PakMeshPlanFamily> plan = {
+			{ "content/models/tree.geometry",
+				{ { "content/models/tree.geometry#mesh.0/prim.0",
+					0 } } },
+		};
+		w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+			smvk::WriteMeshPlanBlob(plan));
+		std::ofstream f(pakDir / name, std::ios::binary
+			| std::ios::trunc);
+		const std::vector<uint8_t> img = w.Finalize();
+		f.write(reinterpret_cast<const char*>(img.data()),
+			std::streamsize(img.size()));
+	};
+	smvk::PakWriter firstWriter;
+	writePak("game.pak", firstWriter, "\x01\x02\x03\x04");
+
+	smvk::project::ProjectCatalog catalog;
+	catalog.projectName = "PlansDemo";
+	catalog.paks.emplace_back("game", "game.pak");
+	catalog.meshes.push_back({ 0x3000, "Tree",
+		"content/models/tree.geometry", "game", "mesh" });
+	// The EMPTY form: no published paks (a fresh tree).
+	{
+		std::string text;
+		std::string err;
+		Check(smvk::project::EmitPlansHeader(catalog,
+				(tmp / "empty").generic_string(), text, err),
+			"plansgen.empty-ok");
+		Check(text.find("PlansPakCount = 0") != std::string::npos
+			&& text.find("namespace project::plans")
+				!= std::string::npos,
+			"plansgen.empty-shape");
+	}
+	// The full emission: the constant + the hash.
+	std::string text;
+	{
+		std::string err;
+		Check(smvk::project::EmitPlansHeader(catalog,
+				pakDir.generic_string(), text, err),
+			"plansgen.emits");
+		Check(text.find("PlansPakCount = 1u") != std::string::npos
+			&& text.find("smvk::MeshPlanRef Tree{ 0u, 0u,")
+				!= std::string::npos
+			&& text.find("PlansLayoutHash = \"")
+				!= std::string::npos,
+			"plansgen.constant-shape");
+		// The hash matches the runtime gate's fold (the shared engine
+		// fold — one implementation, both sides).
+		std::string oerr;
+		auto reader = smvk::PakReader::OpenFile(
+			(pakDir / "game.pak").generic_string(), oerr);
+		Check(reader.has_value(), "plansgen.reader-opens");
+		if (reader) {
+			const std::string names[1] = { "game" };
+			const std::string fps[1] = {
+				smvk::PakLayoutFingerprint(*reader)
+			};
+			const size_t at = text.find("PlansLayoutHash = \"");
+			const std::string emitted = text.substr(at + 19, 16);
+			Check(emitted
+					== smvk::FoldPakLayouts(names, fps, 1),
+				"plansgen.hash-matches-gate-fold");
+		}
+	}
+	// The hash discipline: a CONTENT-only repack keeps the hash
+	// (payload-only redeploy, no recompile); a LENGTH change moves it.
+	{
+		// Overwrite game.pak with the SAME LAYOUT (4-byte mesh
+		// payload, one byte different — a repixel).
+		smvk::PakWriter w;
+		writePak("game.pak", w, "\x01\x02\x03\x05");
+		std::string err;
+		std::string text2;
+		Check(smvk::project::EmitPlansHeader(catalog,
+				pakDir.generic_string(), text2, err)
+			&& text2 == text,
+			"plansgen.content-only-keeps-hash");
+	}
+	{
+		// A LENGTH change: the catalog's mesh family payload grows —
+		// a different layout (rebuild the game).
+		smvk::PakWriter w;
+		w.AddBlob(smvk::PakAssetKind::Mesh,
+			"content/models/tree.geometry#mesh.0/prim.0",
+			{ 1, 2, 3, 4, 5 });
+		w.AddBlob(smvk::PakAssetKind::Texture, "textures/a.ktx2",
+			smvk::BuildTexturePayload("textures/a.ktx2", -1, -1, -1,
+				-1, std::span<const uint8_t>(
+					std::vector<uint8_t>{ 9, 9, 9 })));
+		std::vector<smvk::PakMeshPlanFamily> plan = {
+			{ "content/models/tree.geometry",
+				{ { "content/models/tree.geometry#mesh.0/prim.0",
+					0 } } },
+		};
+		w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
+			smvk::WriteMeshPlanBlob(plan));
+		std::ofstream f(pakDir / "game.pak", std::ios::binary
+			| std::ios::trunc);
+		const std::vector<uint8_t> img = w.Finalize();
+		f.write(reinterpret_cast<const char*>(img.data()),
+			std::streamsize(img.size()));
+		std::string err;
+		std::string text3;
+		Check(smvk::project::EmitPlansHeader(catalog,
+				pakDir.generic_string(), text3, err)
+			&& text3 != text,
+			"plansgen.layout-change-moves-hash");
+	}
+	// A catalog mesh whose family the pak's plan does not carry:
+	// LOUD refusal (never a silent skip).
+	{
+		smvk::project::ProjectCatalog skewed = catalog;
+		skewed.meshes[0].path = "content/models/ghost.geometry";
+		std::string err;
+		std::string text4;
+		Check(!smvk::project::EmitPlansHeader(skewed,
+				pakDir.generic_string(), text4, err)
+			&& err.find("ghost") != std::string::npos,
+			"plansgen.unknown-family-refused");
+	}
+	// An INCONSISTENT publish (one of two manifest paks missing).
+	{
+		smvk::project::ProjectCatalog two = catalog;
+		two.paks.emplace_back("other", "missing.pak");
+		std::string err;
+		std::string text5;
+		Check(!smvk::project::EmitPlansHeader(two,
+				pakDir.generic_string(), text5, err)
+			&& err.find("INCONSISTENT") != std::string::npos,
+			"plansgen.inconsistent-publish-refused");
+	}
+	fs::remove_all(tmp, ec);
+}
+
 int main(int argc, char** argv) {
 	if (argc > 0 && argv[0])
 		g_argv0 = argv[0];
@@ -3909,6 +4066,7 @@ int main(int argc, char** argv) {
 	TestProjectCatalog();
 	TestProjectHeaderStamp();
 	TestNodeSchemaCodegen();
+	TestPlansHeaderEmission();
 	TestBuildPlanExecutor();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks

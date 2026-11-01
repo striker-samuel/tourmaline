@@ -39,6 +39,7 @@
 // AssetManager.cpp (the AudioRuntime facade discipline).
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/asset_plan.h>
 #include <Engine/Scene/entity_handle.h>
 #include <Engine/Scene/scene_node_id.h>
 
@@ -185,6 +186,20 @@ public:
 	// World::SpawnMeshFromNode.
 	smvk::MeshEntityHandle SpawnMesh(MeshHandle mesh,
 		const glm::mat4& frame, NodeId parent);
+
+	// ---- THE COMPILED-PLAN LANE (the static hot path) ----------------
+	// Loads one mesh BY COMPILED PLAN (the private project_plans.h
+	// constants — Engine/Asset/asset_plan.h): the pak by MOUNT INDEX,
+	// the family by its STABLE SLOT — NO manifest row lookup, NO
+	// mesh-plan parse, NO TOC string scan (the per-asset fail-closed
+	// validation lives in the store's plan acquire; the boot-time
+	// gate is ProjectRuntime::AttachCompiledPlans). Repeated plans
+	// dedup by (pakIndex, baseSlot). The returned handle feeds the
+	// same MeshWorldIndex/SpawnMesh/UnloadMesh surface as the
+	// catalog lane.
+	MeshHandle LoadMeshByPlan(const smvk::MeshPlanRef& plan,
+		std::string& err,
+		const MeshLoadOptions& options = {});
 
 	// ---- GI BAKE SETS --------------------------------------------------
 	// Loads a GI set BY KEY: the [ids] row's .givolumemanifest bytes

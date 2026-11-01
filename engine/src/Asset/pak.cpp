@@ -3,9 +3,12 @@
 
 #include <Engine/Asset/pak.h>
 
+#include <Engine/Asset/asset_plan.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -889,6 +892,7 @@ std::optional<PakReader> PakReader::Open(std::span<const uint8_t> image, std::st
 	r.decompressed_.assign(r.entries_.size(), {});
 	r.decompressDone_.assign(r.entries_.size(), 0);
 	r.verified_.assign(r.entries_.size(), 0);
+	BuildSlotIndex(r);
 	r.lazyMutex_ = std::make_unique<std::mutex>();
 	return r;
 }
@@ -964,6 +968,7 @@ std::optional<PakReader> PakReader::OpenFile(const std::string& path,
 	r.decompressed_.assign(r.entries_.size(), {});
 	r.decompressDone_.assign(r.entries_.size(), 0);
 	r.verified_.assign(r.entries_.size(), 0);
+	BuildSlotIndex(r);
 	r.lazyMutex_ = std::make_unique<std::mutex>();
 	r.file_ = std::make_unique<FileHandle>();
 	r.file_->f = std::move(f);
@@ -998,11 +1003,33 @@ const PakTocEntry* PakReader::Find(PakAssetKind kind, const std::string& normali
 }
 
 const PakTocEntry* PakReader::FindBySlot(uint32_t slot) const {
-	for (const auto& e : entries_) {
-		if (e.slot == slot)
-			return &e;
+	// The compiled-plan lane's O(1) addressing: the slot index built
+	// at open — never a TOC walk.
+	if (slot >= entriesBySlot_.size())
+		return nullptr;
+	const int32_t idx = entriesBySlot_[slot];
+	if (idx < 0 || size_t(idx) >= entries_.size())
+		return nullptr;
+	return &entries_[size_t(idx)];
+}
+
+void PakReader::BuildSlotIndex(PakReader& r)
+{
+	uint32_t maxSlot = 0;
+	bool any = false;
+	for (const PakTocEntry& e : r.entries_) {
+		maxSlot = std::max(maxSlot, e.slot);
+		any = true;
 	}
-	return nullptr;
+	r.entriesBySlot_.assign(any ? size_t(maxSlot) + 1 : 0, -1);
+	for (size_t i = 0; i < r.entries_.size(); ++i) {
+		const uint32_t slot = r.entries_[i].slot;
+		// A duplicate slot is a corrupt TOC (the writer assigns
+		// uniquely): first wins — the layout fingerprint (which folds
+		// the slot table) catches it loudly at the gate anyway.
+		if (r.entriesBySlot_[slot] < 0)
+			r.entriesBySlot_[slot] = int32_t(i);
+	}
 }
 
 std::span<const uint8_t> PakReader::Payload(const PakTocEntry& entry) const {
@@ -1384,6 +1411,106 @@ std::optional<VfsStat> PakBackend::Stat(const VfsPath& path) const {
 		return s;
 	}
 	return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// THE LAYOUT FINGERPRINTS (the compiled static plans' fail-closed
+// contract — see Engine/Asset/asset_plan.h): ONE shared fold, used by
+// BOTH the generator (tools) and the runtime gate — two drifting
+// implementations would be a silent-accept bug. Content bytes are
+// deliberately NOT folded (the SMP8 per-page contentCrc owns them):
+// equal fingerprints + different bytes = a payload-only redeploy, no
+// recompile.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// FNV-1a 64 over the canonical text (same constants as PakHashPath).
+std::string Fnva64Hex(const std::string& canonical) {
+	uint64_t h = 14695981039346656037ull;
+	for (unsigned char c : canonical) {
+		h ^= c;
+		h *= 1099511628211ull;
+	}
+	char buf[32];
+	std::snprintf(buf, sizeof(buf), "%016llx",
+		static_cast<unsigned long long>(h));
+	return std::string(buf);
+}
+
+void AppendFpU32(std::string& out, uint32_t v) {
+	char buf[16];
+	std::snprintf(buf, sizeof(buf), "%u ", v);
+	out += buf;
+}
+void AppendFpU64(std::string& out, uint64_t v) {
+	char buf[32];
+	std::snprintf(buf, sizeof(buf), "%llu ",
+		static_cast<unsigned long long>(v));
+	out += buf;
+}
+
+} // namespace
+
+std::string PakLayoutFingerprint(const PakReader& reader) {
+	// The canonical form: the slot table in SLOT order (slot, kind,
+	// codec flags, stored length, path hash — everything a compiled
+	// read keys or sizes against) + the cooked mesh-plan join blob
+	// VERBATIM (the family -> member -> LOD structure the plans
+	// validate through). The pak's OWN magic epoch is implicitly
+	// covered: the reader refused to open anything but the current
+	// one.
+	std::string c;
+	c += "layout-v1 ";
+	AppendFpU64(c, uint64_t(reader.EntryCount()));
+	c += "\n";
+	std::vector<const PakTocEntry*> bySlot;
+	bySlot.reserve(reader.Entries().size());
+	for (const PakTocEntry& e : reader.Entries())
+		bySlot.push_back(&e);
+	std::sort(bySlot.begin(), bySlot.end(),
+		[](const PakTocEntry* a, const PakTocEntry* b) {
+			return a->slot < b->slot;
+		});
+	for (const PakTocEntry* e : bySlot) {
+		AppendFpU32(c, e->slot);
+		AppendFpU32(c, static_cast<uint32_t>(e->kind));
+		AppendFpU32(c, e->flags);
+		AppendFpU64(c, e->size);
+		AppendFpU64(c, e->pathHash);
+		c += "\n";
+	}
+	// The mesh-plan join (a pak without a plan folds as none — the
+	// plan lane's family lookups fail loudly either way).
+	if (const PakTocEntry* plan =
+			reader.Find(PakAssetKind::Plan, kPakMeshPlanPath)) {
+		const std::span<const uint8_t> blob = reader.Payload(*plan);
+		c += "meshplan ";
+		AppendFpU64(c, uint64_t(blob.size()));
+		c += "\n";
+		c.append(reinterpret_cast<const char*>(blob.data()),
+			blob.size());
+		c += "\n";
+	}
+	else {
+		c += "nomeshplan\n";
+	}
+	return Fnva64Hex(c);
+}
+
+std::string FoldPakLayouts(const std::string* pakNames,
+	const std::string* pakFingerprints, size_t pakCount) {
+	std::string c;
+	c += "paks-v1 ";
+	AppendFpU64(c, uint64_t(pakCount));
+	c += "\n";
+	for (size_t i = 0; i < pakCount; ++i) {
+		c += pakNames[i];
+		c += " ";
+		c += pakFingerprints[i];
+		c += "\n";
+	}
+	return Fnva64Hex(c);
 }
 
 } // namespace tour::asset

@@ -38,6 +38,8 @@
 #include "AssetManager.h"
 #include "DeployCheck.h"
 
+#include <Engine/Asset/asset_plan.h>
+
 #include <artifact_cache/artifact_cache.h> // HashBytes (the name digests)
 
 #include <Engine/App/cluster.h>
@@ -1418,6 +1420,118 @@ void TestAssetManager() {
 		Check(bool(rock2) && rock2 != rock && seamCalls == 1,
 			"am.mesh-reload-shares-registered-carrier");
 		assets.UnloadAllMeshes();
+	}
+
+	// ---- THE COMPILED-PLAN LANE + THE FAIL-CLOSED GATE ----------------
+	// The private project_plans.h constants' runtime surface: the
+	// slot-keyed load (no manifest row, no mesh-plan parse, no TOC
+	// scan) + the boot gate (the deployed paks' layout vs the
+	// compiled hash - a mismatch is a LOUD abort, never a dynamic
+	// fallback).
+	{
+		app::ProjectRuntime& rt = *rtOpt;
+		// The test stands in for the generator: fold the deployed
+		// one.pak the same way EmitPlansHeader does.
+		std::string perr;
+		std::shared_ptr<smvk::PakPager> pager =
+			rt.OpenPakPager("one.pak", perr);
+		Check(pager != nullptr, "planlane.pager-opens");
+		const std::string names[1] = { "one.pak" };
+		const std::string fps[1] = {
+			smvk::PakLayoutFingerprint(pager->Reader())
+		};
+		const std::string hash =
+			smvk::FoldPakLayouts(names, fps, 1);
+		std::string gerr;
+		Check(rt.AttachCompiledPlans(1, hash.c_str(), gerr)
+			&& gerr.empty(), "planlane.gate-matches");
+		Check(!rt.AttachCompiledPlans(2, hash.c_str(), gerr)
+			&& gerr.find("never a dynamic fallback")
+				!= std::string::npos,
+			"planlane.gate-count-mismatch-fails-closed");
+		Check(!rt.AttachCompiledPlans(1, "deadbeefdeadbeef", gerr)
+			&& gerr.find("LAYOUT does not match")
+				!= std::string::npos,
+			"planlane.gate-hash-mismatch-fails-closed");
+		// The compiled plan: the tree family's base slot (resolved
+		// here the way the generator does - through the pak's mesh
+		// plan; the CONSTANT carries it in the real game).
+		uint32_t treeBaseSlot = UINT32_MAX;
+		{
+			std::vector<smvk::PakMeshPlanMember> members;
+			std::string merr;
+			Check(pager->Reader().MeshPlanFamily(treeFamily,
+					members, merr)
+				&& !members.empty(),
+				"planlane.family-resolves");
+			for (const smvk::PakMeshPlanMember& m : members)
+				if (m.lodIndex == 0) {
+					if (const auto* e = pager->Reader().Find(
+							smvk::PakAssetKind::Mesh, m.tocPath))
+						treeBaseSlot = e->slot;
+					break;
+				}
+			Check(treeBaseSlot != UINT32_MAX,
+				"planlane.base-slot-found");
+		}
+		if (treeBaseSlot != UINT32_MAX) {
+			// The cluster-source seam: the plan lane's carrier load
+			// goes through the SAME seam as the catalog lane (this
+			// block's source builds the TREE family — the seam
+			// battery's rock source is spent).
+			assets.Store().clusterSource =
+				[](smvk::World& w, const smvk::PakReader&,
+					uint32_t, std::string&) -> smvk::Cluster* {
+				auto c = MeshFamilyCluster(
+					"content/models/tree.geometry#mesh.0/prim.0");
+				smvk::Cluster* raw = c.get();
+				w.RegisterCluster(std::move(c));
+				return raw;
+			};
+			const smvk::MeshPlanRef treePlan{
+				0u, treeBaseSlot, treeFamily.c_str() };
+			std::string lerr;
+			const app::MeshHandle byPlan =
+				assets.LoadMeshByPlan(treePlan, lerr);
+			Check(bool(byPlan) && lerr.empty(),
+				"planlane.load-by-plan");
+			Check(assets.MeshWorldIndex(byPlan) != UINT32_MAX,
+				"planlane.worldindex");
+			// The dedup by PLAN IDENTITY (the compiled address).
+			std::string lerr2;
+			Check(assets.LoadMeshByPlan(treePlan, lerr2) == byPlan,
+				"planlane.dedup-by-plan-identity");
+			// The full gameplay lane from a plan-loaded handle.
+			const smvk::MeshEntityHandle pe = assets.SpawnMesh(
+				byPlan, glm::mat4(1.0f), UINT32_MAX);
+			Check(bool(pe) && world.IsMeshEntityAlive(pe)
+				&& world.DestroyMesh(pe),
+				"planlane.spawn-destroy");
+			// THE WRONG SLOT fails closed: the ghost family's base
+			// entry (a MESH slot, but not the plan's family) - the
+			// per-asset fail-closed contract.
+			uint32_t ghostSlot = UINT32_MAX;
+			if (const auto* e = pager->Reader().Find(
+					smvk::PakAssetKind::Mesh,
+					"content/models/ghost.geometry#mesh.0/prim.0"))
+				ghostSlot = e->slot;
+			if (ghostSlot != UINT32_MAX) {
+				const smvk::MeshPlanRef wrong{
+					0u, ghostSlot, treeFamily.c_str() };
+				std::string werr;
+				Check(!assets.LoadMeshByPlan(wrong, werr)
+					&& werr.find("never a dynamic fallback")
+						!= std::string::npos,
+					"planlane.wrong-slot-fails-closed");
+			}
+			// A bad pak index refuses loudly.
+			const smvk::MeshPlanRef badPak{
+				9u, treeBaseSlot, treeFamily.c_str() };
+			std::string berr;
+			Check(!assets.LoadMeshByPlan(badPak, berr)
+				&& berr.find("version skew") != std::string::npos,
+				"planlane.bad-pak-index-refused");
+		}
 	}
 	fs::remove_all(tmp, ec);
 }

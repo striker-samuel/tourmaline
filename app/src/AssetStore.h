@@ -40,6 +40,7 @@
 // one). Main-thread only (cluster lifetime state).
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/asset_plan.h>
 #include <Engine/App/world.h>
 
 #include <cstdint>
@@ -92,9 +93,18 @@ public:
 	// scene went away; its rows are valid, its nodes are not in the
 	// fold).
 	smvk::Cluster* AcquireFamilyCluster(tour::World& world,
-		const smvk::AppManifestAsset& row,
+		const std::string& pakName, const std::string& familyPath,
 		const std::vector<smvk::PakMeshPlanMember>& members,
 		bool resident, std::string& err);
+	// THE PLAN LANE (the compiled static plans, fail-closed
+	// per-asset): resolves the pak by MOUNT INDEX (never a name
+	// search), validates the compiled slot against the pak's TOC
+	// through the O(1) slot index (kind + the family-path key — a
+	// mismatch is a LOUD failure, never a dynamic fallback), then
+	// acquires through the same core as the catalog lane.
+	smvk::Cluster* AcquireFamilyClusterByPlan(tour::World& world,
+		const smvk::MeshPlanRef& plan, bool resident,
+		std::string& err);
 	// Releases ONE acquire reference (the slot-death pairing; a no-op
 	// for a cluster this store does not hold — pointer IDENTITY only,
 	// never a dereference). When the last acquire ref of a PARKED

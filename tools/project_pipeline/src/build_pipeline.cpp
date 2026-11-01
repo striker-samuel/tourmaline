@@ -1022,6 +1022,26 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 							static_cast<unsigned long long>(
 								stamp.generation),
 							wrote ? "re-stamped" : "unchanged");
+					// THE COMPILED STATIC PLANS: the private header
+					// re-emits from the JUST-BUILT paks (the strict
+					// mode's cook-precedes-plan-generation order).
+					if (hErr.empty()) {
+						const fs::path plansPath =
+							fs::path(options.projectHeaderPath)
+							.parent_path() / "project_plans.h";
+						std::string plansText;
+						if (EmitPlansHeader(catalog,
+								publish.generic_string(),
+								plansText, hErr)) {
+							bool plansWrote = false;
+							if (WriteProjectHeaderIfChanged(
+									plansPath.generic_string(),
+									plansText, plansWrote, hErr)
+								&& plansWrote)
+								std::printf("[build] project_plans.h"
+									" regenerated\n");
+						}
+					}
 				}
 			}
 			if (!hErr.empty())

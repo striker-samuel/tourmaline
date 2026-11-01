@@ -571,6 +571,30 @@ int main(int argc, const char* argv[]) {
 			std::cerr << err << "\n";
 			return 1;
 		}
+		// THE COMPILED STATIC PLANS (the private header beside
+		// project.h): the slot-keyed mesh constants + the layout hash
+		// the runtime gate fails closed against. Same
+		// write-only-on-change discipline.
+		{
+			const std::filesystem::path plansPath =
+				std::filesystem::path(header).parent_path()
+				/ "project_plans.h";
+			std::string plansText;
+			if (!smvk::project::EmitPlansHeader(catalog,
+					effectivePakDir, plansText, err)) {
+				std::cerr << err << "\n";
+				return 1;
+			}
+			bool plansWrote = false;
+			if (!smvk::project::WriteProjectHeaderIfChanged(
+					plansPath.generic_string(), plansText,
+					plansWrote, err)) {
+				std::cerr << err << "\n";
+				return 1;
+			}
+			if (plansWrote)
+				std::printf("[ids] project_plans.h regenerated\n");
+		}
 		// The depfile (the CMake/Ninja rebuild trigger): the header
 		// depends on the recipe, every content file the resolution
 		// touched, and the registry itself (an id allocation anywhere

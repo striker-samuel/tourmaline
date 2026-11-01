@@ -65,14 +65,58 @@ until the pager replaces the preload path.
   packing-policy work (scene locality, LOD grouping, mip tails) is
   gated on the A/B/C profile the design requires — measure before
   finalizing the packing.
-- **Compiled static plans**: the private codegen that turns
-  slot-keyed plans into compile-time physical reads + the
-  fail-closed layout hash (Phase 6).
 - **The scene lane on the pager**: cluster loading still uses the
   whole-image preload (the direct-addressed mesh fast path needs a
   contiguous image base). Moving it is the subset fast path /
   permanent shared-mesh store work (Phase 7 residue) — the pager
   already serves every VFS-addressed asset read (see below).
+
+## The compiled static plans (Phase 6 — landed)
+
+`Engine/Asset/asset_plan.h` + the private generated
+`project_plans.h` + the fail-closed runtime gate:
+
+- **`smvk::MeshPlanRef`** — the compiled plan type: the pak MOUNT
+  INDEX + the family's BASE pak SLOT + the .geometry identity. The
+  SMP8 slots ARE the stable page addresses; the plan never carries a
+  TOC position, a runtime path join, or the mesh-plan join itself.
+- **The private `project_plans.h`** (`EmitPlansHeader`, wired into
+  the ids pass + the build re-stamp — the strict mode's
+  cook-precedes-plan-generation order): one `MeshPlanRef` constant
+  per mesh asset + `PlansPakCount` + `PlansLayoutHash`. PRIVATE by
+  design — never the game-facing `project.h`; the game includes it
+  only at plan-driven call sites. Empty form on fresh trees (the
+  gate refuses any deployed pak against `PlansPakCount 0`);
+  inconsistent publishes and unknown families fail the generation
+  loudly.
+- **The layout hash** — ONE shared fold (`PakLayoutFingerprint` +
+  `FoldPakLayouts`, engine-side so the generator and the gate can
+  never drift): the pak list (mount order + names) + each pak's slot
+  table (slot, kind, codec flags, length, path hash — SLOT order) +
+  the cooked mesh-plan join verbatim. **Content bytes are excluded**
+  (the per-page contentCrc owns them): a payload-only redeploy with
+  an unchanged layout needs NO recompile — the acceptance contract.
+  Length/slot/kind/join changes move it — rebuild the game.
+- **The fail-closed gate** — `ProjectRuntime::AttachCompiledPlans(
+  PlansPakCount, PlansLayoutHash)`: opens every manifest pak through
+  the light mount, folds, compares. A count or fold mismatch is a
+  LOUD abort — redeploy or rebuild; NEVER a silent fallback to the
+  dynamic resolver.
+- **The plan load lane** — `AssetManager::LoadMeshByPlan` /
+  `AssetStore::AcquireFamilyClusterByPlan`: the pak by MOUNT INDEX
+  (no name lookup), the slot validated against the deployed TOC
+  through the O(1) slot index (`PakReader::FindBySlot` — no walk),
+  per-asset fail-closed on kind/family mismatch, then the SAME
+  ownership machinery as the catalog lane (shared, never duplicated).
+  Dedup keys by the plan identity (pakIndex, baseSlot).
+
+Pinned by `planfp.*` (test_assets.cpp: fold determinism,
+content-exclusion, length/plan sensitivity, the list fold),
+`plansgen.*` (test_project_pipeline.cpp: the emission, the
+hash-matches-gate-fold identity, content-only-keeps-hash,
+layout-change-moves-hash, the refusals) + `planlane.*`
+(test_pak_host.cpp: the gate's three outcomes, the plan load +
+dedup + spawn, the wrong-slot and bad-index fail-closed refusals).
 
 ## The async pager (`smvk::PakPager`, Phase 5 — landed)
 

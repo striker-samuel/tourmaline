@@ -103,6 +103,28 @@ struct ProjectCatalog {
 [[nodiscard]] bool CollectNodeSchemas(const std::string& projectRoot,
 	std::vector<NodeSchema>& out, std::string& err);
 
+// ---- THE COMPILED STATIC PLANS (Phase 6; the private header) --------
+// Emits `project_plans.h` (the HEADER_DIR beside project.h — PRIVATE,
+// never part of the game-facing catalog): one smvk::MeshPlanRef
+// constant per mesh asset (the pak mount index + the family's BASE
+// slot + the .geometry identity — the SMP8 slot addressing, never a
+// TOC position or a runtime path join), plus PlansPakCount +
+// PlansLayoutHash (the fold of every assumption the compiled reads
+// make: the pak list + each pak's slot table + the mesh-plan join —
+// content bytes excluded, so a payload-only redeploy needs no
+// recompile; the runtime gate compares the DEPLOYED paks against it
+// and fails closed).
+//
+// `pakDir` is the published-paks directory (the manifest's [paks]
+// names are the content-addressed files). NO paks on disk at all
+// (a fresh tree before the first build) emits the EMPTY header
+// (PlansPakCount 0 — the gate refuses any deployed pak against it);
+// SOME paks missing is an inconsistent publish and FAILS loudly.
+// A catalog mesh whose family the pak's mesh plan does not carry
+// fails loudly (a version skew — never a silent skip).
+[[nodiscard]] bool EmitPlansHeader(const ProjectCatalog& c,
+	const std::string& pakDir, std::string& text, std::string& err);
+
 // ---- the generation stamp + the EOF metadata -----------------------
 // project.h is TWO artifacts in one file: the constexpr C++ catalog
 // (the compiler's) and, appended after the C++ section, a
