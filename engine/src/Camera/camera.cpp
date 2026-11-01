@@ -8,7 +8,7 @@
 
 namespace tour {
 
-glm::mat4 tour::MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
+glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
 {
 	float f = 1.0f / tan(fovY_radians / 2.0f);
 	return glm::mat4(
@@ -18,7 +18,7 @@ glm::mat4 tour::MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, flo
 		0.0f, 0.0f, zNear, 0.0f);
 }
 
-glm::mat4 tour::MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar)
+glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar)
 {
 	assert(zFar > zNear && zNear > 0.0f);
 	float f = 1.0f / tan(fovY_radians / 2.0f);

@@ -859,6 +859,15 @@ The tree builds and passes ctest on Linux (Ubuntu 24.04 + GCC 14
 verified in WSL; the same test suite as Windows, passing on both).
 Conventions:
 
+- MSVC ACCEPTS but GCC REJECTS a redundant namespace qualification on
+  an out-of-line function definition inside its owning namespace block
+  (`namespace tour { glm::mat4 tour::Foo(); }` — "explicit
+  qualification in declaration"): the mechanical
+  namespace-migration passes qualify CALLERS, never definitions inside
+  the moved block. The camera.cpp Linux-CI failure (green locally on
+  MSVC) was exactly this. A `wsl -d Ubuntu-24.04 -e bash -lc "g++
+  -fsyntax-only -std=c++20 -Iengine/include -Iexternal/glm <file>"`
+  sweep over the touched files catches the class before the push.
 - `install_dependencies.sh` is the Linux installer: it carries the
   platform-specific pins (SDL3 3.4.16 SOURCE zip — the root CMakeLists
   builds it as a subproject when no system SDL3 exists; the DXC
