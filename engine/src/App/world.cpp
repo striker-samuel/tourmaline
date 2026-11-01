@@ -891,6 +891,21 @@ using namespace ::smvk;
 			return;
 		for (auto it = clusters.begin(); it != clusters.end(); ++it) {
 			if (it->get() == &cluster) {
+				// SHARED-ASSET PARKING: live external refs keep the
+				// cluster's resource rows alive (an asset holder — app::
+				// AssetStore — retained them). Detach instead of destroy:
+				// the merged scene + every location table still point
+				// into the cluster, so the full resolve rebuild runs over
+				// the survivors exactly like a destroy (the scene
+				// instance is GONE — no resurrection), but the cluster
+				// object parks in retainedClusters until the last
+				// ReleaseCluster destroys it.
+				if (cluster.assetRefs > 0) {
+					retainedClusters.push_back(std::move(*it));
+					clusters.erase(it);
+					ResolveAndFixup_clusters();
+					return;
+				}
 				clusters.erase(it);
 				// The merged scene + every location table still hold
 				// pointers/indices into the destroyed cluster: rebuild
@@ -900,6 +915,46 @@ using namespace ::smvk;
 				return;
 			}
 		}
+	}
+
+	bool World::RetainCluster(Cluster& cluster)
+	{
+		// The dynamic cluster is runtime state, never an asset carrier.
+		if (cluster.isDynamic)
+			return false;
+		for (const auto& c : clusters)
+			if (c.get() == &cluster) {
+				++cluster.assetRefs;
+				return true;
+			}
+		for (const auto& c : retainedClusters)
+			if (c.get() == &cluster) {
+				++cluster.assetRefs;
+				return true;
+			}
+		return false;
+	}
+
+	bool World::ReleaseCluster(Cluster& cluster)
+	{
+		if (cluster.assetRefs == 0)
+			return false;
+		if (--cluster.assetRefs > 0)
+			return true;
+		// Last external ref: a PARKED cluster's scene instance is
+		// already gone — destroy it here (the mesh range frees ride
+		// DestroyMesh's deferred retirement, the same contract as
+		// UnloadCluster's destroy; no resolve is needed, a parked
+		// cluster is outside the fold). A still-REGISTERED cluster
+		// stays with its scene owner.
+		for (auto it = retainedClusters.begin();
+				it != retainedClusters.end(); ++it) {
+			if (it->get() == &cluster) {
+				retainedClusters.erase(it);
+				return true;
+			}
+		}
+		return true;
 	}
 
 	void World::RegisterCluster(std::unique_ptr<Cluster> cluster)
@@ -925,6 +980,19 @@ using namespace ::smvk;
 				// UnloadCluster; the detached cluster stays alive for
 				// re-parenting into another world).
 				ResolveAndFixup_clusters();
+				return detached;
+			}
+		}
+		// A PARKED cluster (retainedClusters) can be pulled out the
+		// same way — it is already outside the fold, so no resolve is
+		// needed; the asset refs stay (the cluster keeps its resource
+		// rows wherever it lands next).
+		for (auto it = retainedClusters.begin();
+				it != retainedClusters.end(); ++it) {
+			if (it->get() == &cluster) {
+				std::unique_ptr<Cluster> detached = std::move(*it);
+				retainedClusters.erase(it);
+				detached->world = nullptr;
 				return detached;
 			}
 		}

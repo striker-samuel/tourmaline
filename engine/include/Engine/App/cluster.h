@@ -17,6 +17,7 @@
 #include <Engine/Memory/pool.h>
 #include <Engine/Memory/string_view.h>
 #include <Engine/Memory/uri_map.h>
+#include <Engine/Renderer/geometry_upload.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/asset_registry.h>
@@ -119,18 +120,17 @@ using namespace ::smvk;
 		// meshlets, uri) per handle afterwards. All-or-nothing like
 		// UploadStaticMeshes; cook mode is a programming error (the
 		// deserializer only calls this with a GPU context).
-		struct StaticMeshDirectSource {
-			uint64_t posSrc = 0;   // content-relative stream offsets
-			uint64_t shadeSrc = 0;
-			uint64_t lmSrc = 0;    // lightmap stream (0 = none)
-			uint64_t idxSrc = 0;
-			uint32_t vertexCount = 0;
-			uint32_t indexCount = 0;
-			glm::vec3 aabbMin{};
-			glm::vec3 aabbMax{};
-		};
+		//
+		// The carve + copy core lives in the SHARED GEOMETRY UPLOAD
+		// SERVICE (Renderer/geometry_upload.h — extracted so non-cluster
+		// owners upload through the same seam); this method is the
+		// CLUSTER's side of that service: the caller-owned arena tokens
+		// land in this cluster's meshAllocations_ map, the mesh values
+		// in this cluster's pool. The source shape is the service's
+		// StaticGeometrySource (the old nested StaticMeshDirectSource
+		// name is GONE — call sites migrated, no compat alias).
 		std::vector<ClusterStaticMeshHandle> UploadStaticMeshesDirect(
-			const void* content, std::span<const StaticMeshDirectSource> sources);
+			const void* content, std::span<const StaticGeometrySource> sources);
 		ClusterMaterialHandle CreateMaterial(TextureHandle diffuse);
 		ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
 		// Pure value assembly (no texture resolution): shared core of
@@ -372,6 +372,18 @@ using namespace ::smvk;
 		// semantic otherwise: resolve folds it into the merged scene like
 		// any other cluster.
 		bool isDynamic = false;
+		// ---- Shared-asset retention (the app AssetStore bridge) --------
+		// EXTERNAL reference count held by ASSET-side owners (app::
+		// AssetStore) on a cluster that ALSO carries shared asset rows
+		// (the v1 pak boundary: mesh families ship inside their owning
+		// scene cluster). World::UnloadCluster PARKS a cluster with live
+		// refs (detached from the merged fold — its nodes stop rendering,
+		// exactly like an unload; scene removal never resurrects scene
+		// content) but keeps it alive in the world's retained list; the
+		// last World::ReleaseCluster destroys it. The engine only
+		// COUNTS — the retention POLICY belongs to the asset-side holder,
+		// never here. Main-thread only (cluster lifetime state).
+		uint32_t assetRefs = 0;
 		// Allocates the next cook texture id (valid Handle::Mint index for
 		// MaterialValues texture slots).
 		uint32_t AllocOfflineTextureId();
@@ -494,7 +506,7 @@ using namespace ::smvk;
 	// the sibling is deferred again, re-promotable byte-identically.
 	struct DeferredMeshLod {
 		std::string uri;
-		StaticMeshDirectSource src;  // pak-image offsets/counts/aabb
+		StaticGeometrySource src;  // pak-image offsets/counts/aabb
 		float sphere = 0.0f;
 		uint32_t lmChunk = 0;
 		std::vector<glm::vec4> lmXforms;

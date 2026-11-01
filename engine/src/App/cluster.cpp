@@ -13,75 +13,12 @@ namespace tour {
 // (migration compat) the impl still spells the RHI/engine smvk
 // types unqualified; qualify as call sites migrate, then drop this.
 using namespace ::smvk;
-// -----------------------------------------------------------------------------
-// Mesh heap-range retirement (the deferred-destruction contract — the
-// facade's DeferDestroyTask, the Vulkan VulkanResourceManager::DeferDestroy
-// key): the vertex/index arena ranges free RETIREMENT-ORDERED with the last published graphics timeline
-// point, never in place. An in-flight frame can still be DRAWING a destroyed
-// mesh's ranges — an immediate arena free hands the range to the next upload,
-// and the old frame's draws then read the NEW mesh's vertices/indices through
-// the old draw args (garbage rendering, the classic suballoc-vs-frames-in-
-// flight hazard). The deferred task keys on the same point every other range
-// free in the engine keys on (ReleaseTargetHeapClaim /
-// ReleaseTransientPlacement), so the free lands strictly after every
-// submitted frame that can still reference the range, and a reuse-allocated
-// new mesh's uploads land strictly after that.
-//
-// Contract (the DeferDestroy API rule): only call from the render thread
-// between frames — the published point then covers every in-flight producer.
-// The arenas live in the lifetime-global staticVertexFmtHeap (inline storage
-// — outlives every retirement), so capturing them by pointer here stays
-// valid through the retirement window.
-// -----------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// In-place variant (see the retirement contract above): ONLY safe for ranges
-// that were never staged to the GPU and never referenced by any pending
-// streamer batch (the batch allocation loops' all-or-nothing rollbacks, whose
-// bulk uploads happen only after every range is carved + every pool entry
-// created). Everything a draw could have touched must use the deferred form.
-// -----------------------------------------------------------------------------
-void FreeStaticMeshRangesNow(
-	StaticHeapArena::AllocId vertexAllocation,
-	StaticHeapArena::AllocId indexAllocation,
-	StaticHeapArena::AllocId lightmapAllocation)
-{
-	if (vertexAllocation)
-		staticVertexFmtHeap.m_staticVertexBlock.Free(vertexAllocation);
-	if (indexAllocation)
-		staticVertexFmtHeap.m_staticIndexBlock.Free(indexAllocation);
-	if (lightmapAllocation)
-		staticVertexFmtHeap.m_staticLightmapBlock.Free(lightmapAllocation);
-}
-
-void DeferFreeStaticMeshRanges(
-	ResourceManager* ctx,
-	StaticHeapArena::AllocId vertexAllocation,
-	StaticHeapArena::AllocId indexAllocation,
-	StaticHeapArena::AllocId lightmapAllocation)
-{
-	if (!ctx) {
-		// Defensive (allocations imply a live ctx_): nothing was ever
-		// staged through this path, free in place.
-		FreeStaticMeshRangesNow(vertexAllocation, indexAllocation,
-			lightmapAllocation);
-		return;
-	}
-	StaticHeapArena* vertexBlock = &staticVertexFmtHeap.m_staticVertexBlock;
-	StaticHeapArena* indexBlock = &staticVertexFmtHeap.m_staticIndexBlock;
-	StaticHeapArena* lightmapBlock =
-		&staticVertexFmtHeap.m_staticLightmapBlock;
-	ctx->DeferDestroyTask(std::packaged_task<void()>(
-		[vertexBlock, vertexAllocation, indexBlock, indexAllocation,
-			lightmapBlock, lightmapAllocation] {
-			if (vertexAllocation)
-				vertexBlock->Free(vertexAllocation);
-			if (indexAllocation)
-				indexBlock->Free(indexAllocation);
-			if (lightmapAllocation)
-				lightmapBlock->Free(lightmapAllocation);
-		}));
-}
-} // namespace smvk
+// The mesh heap-range retirement helpers (FreeStaticMeshRangesNow /
+// DeferFreeStaticMeshRanges) moved to the SHARED GEOMETRY UPLOAD
+// SERVICE (Renderer/geometry_upload.h/.cpp) with the carve + copy
+// core — see the service header for the deferred-destruction
+// contract they implement.
+} // namespace tour
 
 smvk::Cluster::~Cluster() {
 
@@ -903,180 +840,52 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 }
 
 std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDirect(
-	const void* content, std::span<const StaticMeshDirectSource> sources)
+	const void* content, std::span<const StaticGeometrySource> sources)
 {
 	std::vector<ClusterStaticMeshHandle> handles;
 	if (!content || sources.empty())
 		return handles;
 	assert(!offlineMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
 
-	// =========================================================================
-	// 1. Allocate heap ranges (all-or-nothing — nothing staged on failure)
-	// =========================================================================
-	struct MeshRange {
-		uint64_t vertexBase = 0; // VERTEX UNITS
-		uint64_t indexByteOffset = 0;
-		StaticMeshAllocation alloc{};
-	};
-	std::vector<MeshRange> ranges(sources.size());
-	// Same all-or-nothing rollback as UploadStaticMeshes' carve loop (the
-	// old bare `return {}` leaked every carved range; in place is safe -
-	// nothing is staged before every range is carved + every pool entry
-	// created).
-	auto failCarved = [&ranges](size_t upto) {
-		for (size_t j = 0; j < upto; ++j)
-			FreeStaticMeshRangesNow(ranges[j].alloc.vertexAllocation,
-				ranges[j].alloc.indexAllocation,
-				ranges[j].alloc.lightmapAllocation);
-	};
-	for (size_t i = 0; i < sources.size(); ++i) {
-		const StaticMeshDirectSource& src = sources[i];
-		if (src.vertexCount == 0) {
-			failCarved(i); // degenerate entry fails the whole batch
-			return {};
-		}
-		MeshRange& r = ranges[i];
-		{
-			r.alloc.vertexAllocation =
-				staticVertexFmtHeap.m_staticVertexBlock.Allocate(
-					src.vertexCount, 1, r.vertexBase);
-			if (r.alloc.vertexAllocation == 0) {
-				failCarved(i);
-				return {};
-			}
-		}
-		if (src.indexCount > 0) {
-			const uint64_t indexBytes = sizeof(uint32_t)
-				* static_cast<uint64_t>(src.indexCount);
-			r.alloc.indexAllocation =
-				staticVertexFmtHeap.m_staticIndexBlock.Allocate(
-					indexBytes, alignof(uint32_t), r.indexByteOffset);
-			if (r.alloc.indexAllocation == 0) {
-				failCarved(i + 1);
-				return {};
-			}
-		}
-		// The OPTIONAL lightmap range: the source blob carries the
-		// stream only for charted meshes (lmSrc != 0).
-		if (src.lmSrc != 0) {
-			uint64_t lmBase = 0;
-			r.alloc.lightmapAllocation =
-				staticVertexFmtHeap.m_staticLightmapBlock.Allocate(
-					src.vertexCount, 1, lmBase);
-			if (r.alloc.lightmapAllocation == 0) {
-				failCarved(i + 1);
-				return {};
-			}
-			r.alloc.lightmapBase = lmBase;
-		}
-	}
+	// The SHARED GEOMETRY UPLOAD SERVICE (Renderer/geometry_upload.h)
+	// owns the carve + the all-or-nothing rollback + the table-driven
+	// bulk copies — extracted verbatim from this body so non-cluster
+	// owners (the app AssetStore's shared mesh rows, the pak-vNext
+	// pager's page-aware uploads) submit through the same seam. THIS
+	// cluster keeps only its own bookkeeping: the pool row + the
+	// meshAllocations_ entry per mesh (the service hands the arena
+	// tokens back CALLER-OWNED).
+	std::vector<StaticGeometryUpload> uploaded =
+		UploadStaticGeometry(*ctx_, content, sources);
+	if (uploaded.empty())
+		return handles;
 
-	// =========================================================================
-	// 2. Pool entries + bookkeeping (BEFORE any GPU staging)
-	// =========================================================================
-	handles.resize(sources.size());
-	for (size_t i = 0; i < sources.size(); ++i) {
-		const StaticMeshDirectSource& src = sources[i];
-		MeshRange& r = ranges[i];
-		StaticMesh mesh{};
-		mesh.geometry.topology = PrimitiveTopology::TriangleList;
-		mesh.geometry.vertexCount = src.vertexCount;
-		mesh.geometry.indexCount = src.indexCount;
-		mesh.geometry.aabbMin = src.aabbMin;
-		mesh.geometry.aabbMax = src.aabbMax;
-		Surface surface{};
-		surface.firstIndex = static_cast<uint32_t>(
-			r.indexByteOffset / sizeof(uint32_t));
-		surface.indexCount = src.indexCount;
-		surface.baseVertex = static_cast<int32_t>(r.vertexBase);
-		mesh.geometry.surfaces.push_back(surface);
-		// The optional lightmap window's published base (0xFFFFFFFF =
-		// none) — the draw-ring fill reads it for the per-draw delta.
-		mesh.lightmapBase = r.alloc.lightmapAllocation
-			? static_cast<uint32_t>(r.alloc.lightmapBase) : 0xFFFFFFFFu;
-		handles[i] = staticMeshes.create(std::move(mesh));
+	// Pool entries + bookkeeping (the caller side of the service
+	// contract). The service's bulk copies are ALREADY STAGED by this
+	// point, so a failure here frees RETIREMENT-ORDERED (deferred) —
+	// the pre-extraction code could free the failed entry's fresh
+	// ranges in place only because nothing was staged before every
+	// pool entry existed.
+	handles.resize(uploaded.size());
+	for (size_t i = 0; i < uploaded.size(); ++i) {
+		handles[i] = staticMeshes.create(std::move(uploaded[i].mesh));
 		if (handles[i].empty()) {
-			// Same rollback contract as UploadStaticMeshes: the rolled-back
-			// DestroyMesh frees are retirement-ordered (deferred, never
-			// staged); the failed entry's OWN fresh ranges free in place
-			// (nothing was staged - the bulk copies happen only after every
-			// pool entry succeeds).
+			// Same rollback contract as UploadStaticMeshes: the
+			// rolled-back DestroyMesh frees are retirement-ordered.
 			for (size_t j = 0; j < i; ++j)
 				DestroyMesh(handles[j]);
-			// Same as UploadStaticMeshes: the failed entry's own fresh
-			// ranges free in place (nothing was staged - the bulk copies
-			// happen only after every pool entry succeeds).
-			FreeStaticMeshRangesNow(r.alloc.vertexAllocation,
-				r.alloc.indexAllocation, r.alloc.lightmapAllocation);
+			// The failed entry's own fresh ranges were staged with the
+			// batch — deferred, never in place.
+			DeferFreeStaticMeshRanges(ctx_,
+				uploaded[i].alloc.vertexAllocation,
+				uploaded[i].alloc.indexAllocation,
+				uploaded[i].alloc.lightmapAllocation);
 			return {};
 		}
-		r.alloc.vertexBase = r.vertexBase;
-		r.alloc.indexByteOffset = r.indexByteOffset;
 		auto [it, inserted] = meshAllocations_.emplace(
 			handles[i].index(),
-			new StaticMeshAllocation(std::move(r.alloc)));
+			new StaticMeshAllocation(std::move(uploaded[i].alloc)));
 		assert(inserted);
-	}
-
-	// =========================================================================
-	// 3. THREE table-driven bulk uploads straight from `content` — the
-	//    sources are packed-SoA subranges of one blob (the loaded pak
-	//    image), so this is pure offset math: no AoS parse, no conversion,
-	//    no intermediate vectors.
-	// =========================================================================
-	std::vector<BufferBulkCopy> posCopies;
-	std::vector<BufferBulkCopy> shadeCopies;
-	std::vector<BufferBulkCopy> idxCopies;
-	std::vector<BufferBulkCopy> lmCopies;
-	posCopies.reserve(sources.size());
-	shadeCopies.reserve(sources.size());
-	lmCopies.reserve(sources.size());
-	idxCopies.reserve(sources.size());
-	for (size_t i = 0; i < sources.size(); ++i) {
-		const StaticMeshDirectSource& src = sources[i];
-		MeshRange& r = ranges[i];
-		posCopies.push_back(BufferBulkCopy{
-			size_t(src.posSrc),
-			size_t(r.vertexBase) * sizeof(PackedVertexPosition),
-			size_t(src.vertexCount) * sizeof(PackedVertexPosition) });
-		shadeCopies.push_back(BufferBulkCopy{
-			size_t(src.shadeSrc),
-			size_t(r.vertexBase) * sizeof(PackedVertexShading),
-			size_t(src.vertexCount) * sizeof(PackedVertexShading) });
-		if (src.lmSrc != 0) {
-			lmCopies.push_back(BufferBulkCopy{
-				size_t(src.lmSrc),
-				size_t(r.alloc.lightmapBase)
-					* sizeof(PackedVertexLightmap),
-				size_t(src.vertexCount) * sizeof(PackedVertexLightmap) });
-		}
-		if (src.indexCount > 0) {
-			idxCopies.push_back(BufferBulkCopy{
-				size_t(src.idxSrc),
-				size_t(r.indexByteOffset),
-				size_t(src.indexCount) * sizeof(uint32_t) });
-		}
-	}
-	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexPosBuffer,
-		content, posCopies,
-		PipelineStageBit_Vertex,
-		AccessFlags::VertexAttributeRead);
-	ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticVertexShadingBuffer,
-		content, shadeCopies,
-		PipelineStageBit_Vertex,
-		AccessFlags::VertexAttributeRead);
-	if (!lmCopies.empty()) {
-		ctx_->BulkCopyBuffer(
-			staticVertexFmtHeap.m_staticVertexLightmapBuffer,
-			content, lmCopies,
-			PipelineStageBit_All,
-			AccessFlags::ShaderRead);
-	}
-	if (!idxCopies.empty()) {
-		ctx_->BulkCopyBuffer(staticVertexFmtHeap.m_staticIndexBuffer,
-			content, idxCopies,
-			PipelineStageBit_Vertex,
-			AccessFlags::IndexRead);
 	}
 	return handles;
 }
@@ -1148,7 +957,7 @@ smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri)
 	// One direct upload from the pinned pak image (the deserializer's
 	// batch path with a single source - fresh arena ranges, table-driven
 	// copies through the RHI upload streamer).
-	const StaticMeshDirectSource srcs[1] = { rec->src };
+	const StaticGeometrySource srcs[1] = { rec->src };
 	const std::vector<ClusterStaticMeshHandle> handles =
 		UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
 	if (handles.size() != 1 || !handles[0].valid())

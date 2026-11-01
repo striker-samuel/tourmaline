@@ -509,9 +509,9 @@ int main()
 			op = "uploadDirect";
 			const size_t n = 1 + size_t(rng() % 4);
 			const bool withDegenerate = n > 1 && (rng() % 3) == 0;
-			std::vector<smvk::Cluster::StaticMeshDirectSource> srcs(n);
+			std::vector<smvk::StaticGeometrySource> srcs(n);
 			for (size_t i = 0; i < n; ++i) {
-				smvk::Cluster::StaticMeshDirectSource& s = srcs[i];
+				smvk::StaticGeometrySource& s = srcs[i];
 				if (withDegenerate && i == n / 2) {
 					s.vertexCount = 0; // degenerate entry
 					continue;

@@ -13,20 +13,27 @@
 //       WorldMeshes.size());
 //
 // The manager composes the EXISTING runtime layers - never a parallel
-// loading path: ProjectRuntime (the [ids] join + the pak backends),
-// the World's cluster loader (DeserializeCluster - the mesh/material/
+// loading path: the AssetStore (the shared-resource OWNERSHIP layer -
+// found-or-loaded carriers, asset-side refs, the park-on-unload
+// bridge), ProjectRuntime (the [ids] join + the pak backends), the
+// World's cluster loader (DeserializeCluster - the mesh/material/
 // texture dependency resolution), and the WorldRenderer's GI
 // machinery (BuildGiVolumeSetFromPaths + the blend publish).
 //
 // OWNERSHIP MODEL: resource handles (MeshHandle/GiHandle) name LOADED
 // SHARED ASSETS; the World's entity handles name INSTANCES - the two
-// never conflate. Mesh loading loads the mesh's OWNING SCENE CLUSTER
-// (the v1 pak-format boundary: meshes ship inside their scene's
-// cluster) and returns per-mesh handles into it; repeated keys
-// deduplicate (the cluster loads once per pak). GI sets load by their
-// manifest rows and stay RESIDENT while referenced (SetGIBlend keeps
-// BOTH sets live; only the scalar alpha moves per frame - the game
-// owns ALL interpolation timing, never the engine).
+// never conflate. Mesh loading ACQUIRES the mesh's OWNING SCENE
+// CLUSTER through the store (the v1 pak-format boundary: meshes ship
+// inside their scene's cluster) - the store holds asset-side
+// references, so a scene removal PARKS the carrier instead of
+// destroying it out from under live handles (the handle stays valid;
+// the mesh rows stay resident; the scene's nodes leave the world -
+// removal never destroys an independently held asset, never
+// resurrects scene content). Repeated keys deduplicate (the carrier
+// is acquired once, never re-carved). GI sets load by their manifest
+// rows and stay RESIDENT while referenced (SetGIBlend keeps BOTH sets
+// live; only the scalar alpha moves per frame - the game owns ALL
+// interpolation timing, never the engine).
 //
 // This header is the public surface; the implementation lives in
 // AssetManager.cpp (the AudioRuntime facade discipline).
@@ -53,19 +60,22 @@ class OverlayVfs;
 namespace app {
 
 class ProjectRuntime;
+class AssetStore; // the shared-resource ownership layer (AssetStore.h)
 
 // Mesh loading options (the v1 shape - see docs/content_as_code.md
 // for the documented follow-ups).
 struct MeshLoadOptions {
-	// v1 always resolves the owning cluster (materials + textures
+	// v1 always resolves the owning carrier (materials + textures
 	// ride the cluster's dependency graph). The flags are carried for
 	// the subset-load lane (the pak's per-mesh blobs ARE addressable;
 	// the future geometry-only fast path).
 	bool loadMaterials = true;
 	bool loadTextures = true;
-	// keepResident=false releases the owning cluster when the last
-	// handle drops (deferred behind in-flight frames); true keeps the
-	// pak's cluster loaded for the session (the prefetch idiom).
+	// keepResident=false releases the carrier when the last handle
+	// drops (a parked carrier is destroyed on the last ref - deferred
+	// behind in-flight frames); true holds the store's SESSION ref
+	// for the session (the prefetch idiom, released at UnloadAllMeshes
+	// or teardown).
 	bool keepResident = true;
 };
 
@@ -106,8 +116,10 @@ class AssetManager {
 public:
 	// The facade's seams: the runtime (ids -> paks), the world (the
 	// cluster loader), the context (GPU uploads), the renderer (the
-	// GI publish). Nullptr ctx = the GPU-less test seam (the cluster
-	// loads offline; the GI lane refuses loudly).
+	// GI publish). Nullptr ctx = the GPU-less test seam (the store's
+	// DEFAULT cluster source refuses loudly - override
+	// Store().clusterSource for the offline lane; the GI lane refuses
+	// loudly either way).
 	AssetManager(ProjectRuntime& runtime, ::tour::World& world,
 		smvk::ResourceManager* ctx,
 		::engine::WorldRenderer* renderer = nullptr);
@@ -116,29 +128,45 @@ public:
 	AssetManager(const AssetManager&) = delete;
 	AssetManager& operator=(const AssetManager&) = delete;
 
+	// The shared-asset OWNERSHIP layer under this facade (see
+	// AssetStore.h): the cluster-provider seam (the GPU-less test
+	// lane / custom cluster sources) + the retention diagnostics.
+	AssetStore& Store();
+
 	// ---- MESHES -------------------------------------------------------
 	// Loads one mesh BY KEY: resolves the [ids] row -> the owning pak
-	// -> the scene cluster that carries it (DeserializeCluster: the
-	// mesh/material/texture graph resolves exactly as scene loading)
-	// -> the mesh's cluster row. Repeated calls with the same key
-	// return the SAME handle (the pak's cluster loads once).
-	// Empty handle + err on a bad key/missing pak.
+	// -> ACQUIRES the scene cluster that carries it through the store
+	// (found, adopted from a loaded scene, or loaded through the
+	// cluster-source seam: the mesh/material/texture graph resolves
+	// exactly as scene loading) -> the mesh's cluster row. Repeated
+	// calls with the same key return the SAME handle (the carrier is
+	// acquired once; the store's refs keep it alive across scene
+	// removals). Empty handle + err on a bad key/missing pak.
 	MeshHandle LoadMesh(std::uint64_t key, std::string& err,
 		const MeshLoadOptions& options = {});
 	// The batch form (raw pointer + count; nullptr valid only when
 	// count == 0 - the borrowed-input convention: the manager never
 	// retains the input past the call). Duplicate keys dedup; the
-	// per-pak grouping loads each owning cluster once.
+	// per-pak grouping acquires each owning carrier once.
 	MeshBatch LoadMeshes(const std::uint64_t* keys, std::size_t count,
 		std::string& err, const MeshLoadOptions& options = {});
-	// The handle's world mesh index (the spawn-side seam; UINT32_MAX
-	// when invalid) + the mesh's LOD sibling count.
+	// The handle's CURRENT world mesh row (the spawn-side seam),
+	// resolved FRESH against the live world's meshLocations every
+	// call (the tables rebuild per resolve - a cached index is stale
+	// the moment any scene changes; the asset itself is not intrinsi-
+	// cally world-indexed - a shared mesh can be carried by several
+	// scene instances, and a PARKED carrier has no row at all).
+	// UINT32_MAX when the carrier has no current world mapping.
 	std::uint32_t MeshWorldIndex(MeshHandle handle) const;
 	bool MeshValid(MeshHandle handle) const;
-	// Releases ONE handle's reference; the owning cluster drops when
-	// the last reference + keepResident=false (deferred retirement).
+	// Releases ONE handle's reference; the carrier drops when the
+	// last reference releases (a parked carrier is destroyed on the
+	// last ref - deferred retirement; keepResident holds the session
+	// ref until UnloadAllMeshes/teardown, and a carrier still owned
+	// by a live scene stays with that scene).
 	bool UnloadMesh(MeshHandle handle);
-	// Releases EVERY mesh reference (the session teardown form).
+	// Releases EVERY mesh reference + the session (keepResident) refs
+	// (the session teardown form).
 	void UnloadAllMeshes();
 
 	// ---- GI BAKE SETS --------------------------------------------------

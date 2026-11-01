@@ -5,13 +5,16 @@
 // for the surface contract + docs/content_as_code.md for the design).
 //
 // Composition, never duplication: every load rides an EXISTING layer -
-// the [ids] join (ProjectRuntime), the pak backends (OpenPak's shared
-// cache), the cluster deserializer (World::LoadClusterFromPak - the
-// mesh/material/texture dependency graph), and the GI build/publish
+// the AssetStore (the shared-resource ownership: the found-or-loaded
+// carrier acquire/release + the asset-side refs that keep carriers
+// alive across scene removals), the [ids] join (ProjectRuntime), the
+// pak backends (OpenPak's shared cache), the cluster deserializer
+// (through the store's cluster-source seam), and the GI build/publish
 // (WorldRenderer's BuildGiVolumeSetFromPaths + the adopt entries).
 
 #include "AssetManager.h"
 
+#include "AssetStore.h"
 #include "ProjectRuntime.h"
 
 #include <Engine/App/world.h>
@@ -42,28 +45,27 @@ struct AssetManager::Impl {
 	smvk::ResourceManager* ctx;
 	::engine::WorldRenderer* renderer;
 
+	// The shared-resource ownership layer: the found-or-loaded
+	// carrier acquire/release, the asset-side refs (the
+	// park-on-unload bridge), the cluster-source seam.
+	AssetStore store;
+
 	// MESH slots: a loaded mesh family (the .geometry asset's cluster
-	// rows). The owning cluster loads ONCE per (pak, scene) - the
-	// loaded-scene cache below - and every mesh key referencing it
-	// shares it.
+	// rows). The carrier is acquired ONCE through the store (its refs
+	// keep it alive across scene removals) and every mesh key
+	// referencing it shares it.
 	struct MeshSlot {
 		uint32_t generation = 1;
 		bool alive = false;
 		bool keepResident = true;
 		uint64_t key = 0;             // the catalog id
 		std::string pak;              // the owning pak (logical name)
-		smvk::Cluster* cluster = nullptr;
-		uint32_t worldMeshIndex = UINT32_MAX; // the base mesh's row
+		smvk::Cluster* cluster = nullptr;       // store-held (refs keep it alive)
+		smvk::ClusterStaticMeshHandle mesh{};   // the family's BASE mesh row
 	};
 	std::vector<MeshSlot> meshSlots;
 	std::vector<uint32_t> meshFree;
 	std::map<uint64_t, MeshHandle> meshByKey; // dedup per key
-	// The loaded-scene cache: (pak, sceneIndex) -> the world cluster.
-	// Loading a mesh's owning scene through the SAME world the apphost
-	// uses means an ALREADY-loaded scene is found + shared (the
-	// cluster search happens first in the world itself).
-	std::map<std::pair<std::string, uint32_t>, smvk::Cluster*>
-		sceneClusters;
 
 	// GI slots: a loaded set's manifest rows (the identity), kept
 	// resident while referenced. The renderer builds/publishes on
@@ -85,7 +87,7 @@ struct AssetManager::Impl {
 
 	Impl(ProjectRuntime& rt, ::tour::World& w, smvk::ResourceManager* c,
 			::engine::WorldRenderer* r)
-		: runtime(rt), world(w), ctx(c), renderer(r) {}
+		: runtime(rt), world(w), ctx(c), renderer(r), store(rt, c) {}
 
 	MeshSlot* MeshSlotOf(MeshHandle h) {
 		const uint32_t idx = uint32_t(h.value & 0xFFFFFFFFu);
@@ -109,54 +111,22 @@ struct AssetManager::Impl {
 		return &s;
 	}
 
-	// Finds the world cluster that carries a mesh family: the cluster
-	// search first (an already-loaded scene shares), else NULL. The
-	// family's blob paths come from the pak READER's Mesh TOC (the
-	// [ids] row's .geometry path is the URI PREFIX the blobs carry).
-	smvk::Cluster* FindClusterWithMeshFamily(
-		const std::vector<std::string>& familyPaths) {
-		if (familyPaths.empty())
-			return nullptr;
-		// (a) The loaded-scene cache.
-		for (auto& [k, cluster] : sceneClusters)
-			if (cluster && clusterHasFamily(*cluster, familyPaths))
-				return cluster;
-		// (b) ANY world cluster (the apphost may have loaded the
-		// owning scene outside this manager).
-		for (const auto& c : world.clusters)
-			if (c && clusterHasFamily(*c, familyPaths))
-				return c.get();
-		return nullptr;
-	}
-
-	static bool clusterHasFamily(smvk::Cluster& c,
-			const std::vector<std::string>& familyPaths) {
-		for (const std::string& p : familyPaths)
-			if (c.FindMeshByUri(p))
-				return true;
-		return false;
-	}
-
-	// The pak's Mesh blobs under the family prefix (the join).
-	static std::vector<std::string> FamilyBlobPaths(
-		const smvk::PakBackend& backend,
-		const std::string& familyPrefix) {
-		std::vector<std::string> out;
-		for (const auto& e : backend.Reader().Entries()) {
-			if (e.kind != tour::asset::PakAssetKind::Mesh)
-				continue;
-			if (e.path.rfind(familyPrefix, 0) != 0)
-				continue;
-			out.push_back(e.path);
+	// The slot's CURRENT world mesh row, resolved FRESH against the
+	// live meshLocations (the "resolve fresh, never cache" discipline
+	// - the tables rebuild per resolve, and a PARKED carrier has no
+	// row at all: UINT32_MAX then, the honest no-current-mapping
+	// answer).
+	uint32_t WorldMeshIndexOf(const MeshSlot& s) const {
+		if (!s.cluster || !s.mesh.valid())
+			return UINT32_MAX;
+		for (uint32_t i = 0; i < world.meshLocations.size(); ++i) {
+			const tour::World::MeshLocation& loc =
+				world.meshLocations[i];
+			if (loc.cluster == s.cluster && loc.handle == s.mesh)
+				return i;
 		}
-		return out;
+		return UINT32_MAX;
 	}
-
-	// Ensures the mesh family's owning pak-scene cluster is loaded
-	// (the same deserialize the scene loader runs; null ctx = the
-	// offline seam).
-	smvk::Cluster* EnsureFamilyCluster(const smvk::AppManifestAsset& row,
-		const std::vector<std::string>& familyPaths, std::string& err);
 };
 
 AssetManager::AssetManager(ProjectRuntime& runtime, ::tour::World& world,
@@ -168,65 +138,8 @@ AssetManager::~AssetManager() {
 	delete m_impl;
 }
 
-// ---- the owning-cluster ensure -------------------------------------------
-
-smvk::Cluster* AssetManager::Impl::EnsureFamilyCluster(
-	const smvk::AppManifestAsset& row,
-	const std::vector<std::string>& familyPaths, std::string& err) {
-	if (!ctx) {
-		err = "LoadMesh needs a GPU context (the mesh's owning scene"
-			" cluster deserializes + uploads)";
-		return nullptr;
-	}
-	if (smvk::Cluster* found = FindClusterWithMeshFamily(familyPaths))
-		return found;
-	// Load the pak's FIRST scene cluster (the v1 mesh join: mesh rows
-	// carry no cooked-scene token; a multi-scene pak whose scenes
-	// split one .geometry family refuses loudly - the subset-load
-	// follow-up addresses it, see docs/content_as_code.md).
-	std::string perr;
-	std::shared_ptr<smvk::PakBackend> backend =
-		runtime.OpenPak(row.pak, perr);
-	if (!backend) {
-		err = perr;
-		return nullptr;
-	}
-	std::string lerr;
-	const std::vector<smvk::PakSceneInfo> scenes =
-		smvk::ListPakScenes(backend->Reader(), &lerr);
-	if (scenes.empty()) {
-		err = "the pak '" + row.pak + "' carries no scenes: " + lerr;
-		return nullptr;
-	}
-	// Prefer the scene whose cluster carries the family (multi-scene
-	// paks): deserialize is the only proof, so walk the scenes in
-	// order - a deserialize is a load; on a miss, unload and try the
-	// next. v1 keeps it to the FIRST scene (the common single-scene
-	// project pak) and searches the world after.
-	for (uint32_t si = 0; si < uint32_t(scenes.size()); ++si) {
-		smvk::Cluster* loaded = nullptr;
-		try {
-			loaded = &world.LoadClusterFromPak(*ctx,
-				backend->Reader(), si);
-		}
-		catch (const std::exception& e) {
-			err = std::string("the owning cluster failed to load: ")
-				+ e.what();
-			return nullptr;
-		}
-		if (clusterHasFamily(*loaded, familyPaths)) {
-			sceneClusters[{ row.pak, si }] = loaded;
-			world.ResolveAndFixup_clusters();
-			return loaded;
-		}
-		// Not this scene's family: drop the cluster again (a
-		// load-time miss, the resolve folded nothing user-visible).
-		world.UnloadCluster(*loaded);
-	}
-	err = "no scene in pak '" + row.pak + "' carries the mesh family '"
-		+ row.path + "' (a multi-scene split family - the v1 join"
-		" boundary, see docs/content_as_code.md)";
-	return nullptr;
+AssetStore& AssetManager::Store() {
+	return m_impl->store;
 }
 
 // ---- MESHES ---------------------------------------------------------------
@@ -238,9 +151,15 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 			hit != m_impl->meshByKey.end()) {
 		if (Impl::MeshSlot* s = m_impl->MeshSlotOf(hit->second)) {
 			// keepResident upgrades only (never downgrades a shared
-			// cluster's residency).
-			if (options.keepResident)
+			// carrier's residency) — and the upgrade must reach the
+			// STORE (the session ref): the slot flag and the store's
+			// ledger stay in lockstep, or an unload would drop a
+			// carrier the facade still promises to hold.
+			if (options.keepResident && !s->keepResident) {
 				s->keepResident = true;
+				if (s->cluster)
+					m_impl->store.MakeResident(s->cluster);
+			}
 			return hit->second;
 		}
 		m_impl->meshByKey.erase(hit);
@@ -270,47 +189,36 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	}
 	const std::string familyPrefix = row->path + "#";
 	const std::vector<std::string> familyPaths =
-		Impl::FamilyBlobPaths(*backend, familyPrefix);
+		AssetStore::FamilyBlobPaths(*backend, familyPrefix);
 	if (familyPaths.empty()) {
 		err = "the pak '" + row->pak + "' carries no mesh blobs under '"
 			+ familyPrefix + "' (a version skew between the catalog and"
 			" the cooked content?)";
 		return {};
 	}
-	smvk::Cluster* cluster =
-		m_impl->EnsureFamilyCluster(*row, familyPaths, err);
+	// ACQUIRE the family's carrier through the store: found (held),
+	// adopted from a world-registered scene cluster, or loaded through
+	// the cluster-source seam - with asset-side refs that keep it
+	// alive across scene removals (the park bridge).
+	smvk::Cluster* cluster = m_impl->store.AcquireFamilyCluster(
+		m_impl->world, *row, familyPaths, options.keepResident, err);
 	if (!cluster)
 		return {};
-	// The family's BASE mesh (no /lodN suffix) -> the cluster pool
-	// row -> the WORLD mesh index (the spawn-side seam).
-	uint32_t worldMeshIndex = UINT32_MAX;
-	{
-		// The world's meshLocations index = the resolve order; find
-		// the family's base URI across the world's clusters (the
-		// location tables are rebuilt per resolve - resolve fresh,
-		// never cache, the world.cpp discipline).
-		for (const std::string& p : familyPaths) {
-			if (p.find("/lod") != std::string::npos)
-				continue; // a LOD sibling, not the base
-			const auto hit = cluster->FindMeshByUri(p);
-			if (!hit)
-				continue;
-			for (uint32_t i = 0;
-					i < m_impl->world.meshLocations.size(); ++i) {
-				const tour::World::MeshLocation& loc =
-					m_impl->world.meshLocations[i];
-				if (loc.cluster == cluster && loc.handle == *hit) {
-					worldMeshIndex = i;
-					break;
-				}
-			}
-			if (worldMeshIndex != UINT32_MAX)
-				break;
+	// The family's BASE mesh (no /lodN suffix) -> the cluster pool row
+	// (the spawn-side seam resolves the WORLD index fresh per query -
+	// see WorldMeshIndexOf; the slot keeps the stable carrier row).
+	smvk::ClusterStaticMeshHandle baseMesh{};
+	for (const std::string& p : familyPaths) {
+		if (p.find("/lod") != std::string::npos)
+			continue; // a LOD sibling, not the base
+		if (auto hit = cluster->FindMeshByUri(p)) {
+			baseMesh = *hit;
+			break;
 		}
 	}
-	if (worldMeshIndex == UINT32_MAX) {
+	if (!baseMesh.valid()) {
 		err = "the mesh family '" + row->path
-			+ "' loaded but no base mesh resolved (a cook anomaly)";
+			+ "' loaded but carries no base mesh (a cook anomaly)";
 		return {};
 	}
 	// The slot.
@@ -332,7 +240,7 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	slot.key = key;
 	slot.pak = row->pak;
 	slot.cluster = cluster;
-	slot.worldMeshIndex = worldMeshIndex;
+	slot.mesh = baseMesh;
 	const MeshHandle handle{
 		(uint64_t(generation) << 32) | index };
 	m_impl->meshByKey.emplace(key, handle);
@@ -348,8 +256,8 @@ MeshBatch AssetManager::LoadMeshes(const uint64_t* keys, size_t count,
 	}
 	m_impl->batchMemory.assign(count, MeshHandle{});
 	// Dedup + per-pak grouping fall out of LoadMesh's key cache (the
-	// owning cluster loads once per family; repeated keys short-
-	// circuit to the cached handle).
+	// carrier is acquired once per family; repeated keys short-circuit
+	// to the cached handle).
 	for (size_t i = 0; i < count; ++i) {
 		std::string lerr;
 		m_impl->batchMemory[i] = LoadMesh(keys[i], lerr, options);
@@ -367,7 +275,10 @@ std::uint32_t AssetManager::MeshWorldIndex(MeshHandle handle) const {
 	const Impl::MeshSlot* s = m_impl
 		? m_impl->MeshSlotOf(handle)
 		: nullptr;
-	return s ? s->worldMeshIndex : UINT32_MAX;
+	// Fresh resolution against the LIVE world tables (a cached index
+	// is stale the moment any scene changes; a parked carrier - its
+	// scene was removed while handles stay - has no row at all).
+	return s ? m_impl->WorldMeshIndexOf(*s) : UINT32_MAX;
 }
 
 bool AssetManager::MeshValid(MeshHandle handle) const {
@@ -378,14 +289,20 @@ bool AssetManager::UnloadMesh(MeshHandle handle) {
 	Impl::MeshSlot* s = m_impl ? m_impl->MeshSlotOf(handle) : nullptr;
 	if (!s)
 		return false;
-	// v1 residency: keepResident clusters stay for the session (the
-	// prefetch idiom); a non-resident drop releases the slot (the
-	// cluster itself stays until the owning scene unloads - the
-	// shared-cluster refcount follow-up).
+	// Release the slot's store reference FIRST (the cluster pointer is
+	// the lookup key - identity only). The carrier drops when its last
+	// ref releases: a PARKED carrier is destroyed by the world on the
+	// last ref (deferred retirement), a registered one stays with its
+	// scene owner, and keepResident's session ref holds it until
+	// UnloadAllMeshes/teardown either way.
+	if (s->cluster) {
+		m_impl->store.ReleaseFamilyCluster(s->cluster);
+		s->cluster = nullptr;
+	}
+	s->mesh = {};
 	if (!s->keepResident)
 		m_impl->meshByKey.erase(s->key);
 	s->alive = false;
-	s->cluster = nullptr;
 	if (s->generation != UINT32_MAX) {
 		++s->generation;
 		if (s->generation != 0)
@@ -402,6 +319,10 @@ void AssetManager::UnloadAllMeshes() {
 		(void)UnloadMesh(handle);
 	m_impl->meshByKey.clear();
 	m_impl->batchMemory.clear();
+	// The session (keepResident) refs go with the teardown: the last
+	// one per carrier releases it for destruction (a parked carrier
+	// dies here; a registered one stays with its scene owner).
+	m_impl->store.ReleaseAll();
 }
 
 // ---- GI BAKE SETS ---------------------------------------------------------

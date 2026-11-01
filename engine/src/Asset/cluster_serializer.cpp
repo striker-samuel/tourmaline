@@ -2468,7 +2468,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 		CookedMeshlets meshlets;
 		std::vector<PackedSkinInfluences> skin;
 	};
-	std::vector<Cluster::StaticMeshDirectSource> directs;
+	std::vector<StaticGeometrySource> directs;
 	std::vector<MeshMeta> meshMetas;
 	std::vector<ClusterStaticMeshHandle> meshByPakId;
 	// Geometry-LOD streaming (geometry_streamer.h): the pak id -> uri
@@ -2568,7 +2568,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 			return fail("mesh stream ranges overrun blob: " + e->path);
 		// The meshlet trailer follows the index stream.
 		c.off = static_cast<size_t>(idxOff) + idxBytes;
-		directs.push_back(Cluster::StaticMeshDirectSource{
+		directs.push_back(StaticGeometrySource{
 			e->offset + posOff,
 			e->offset + shadeOff,
 			e->offset + lmOff,
@@ -2686,7 +2686,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 					defer[i] = true;
 			}
 		}
-		std::vector<Cluster::StaticMeshDirectSource> uploadSrcs;
+		std::vector<StaticGeometrySource> uploadSrcs;
 		std::vector<ClusterStaticMeshHandle> handles;
 		uploadSrcs.reserve(meshMetas.size());
 		for (size_t i = 0; i < meshMetas.size(); ++i)
@@ -2694,7 +2694,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 				uploadSrcs.push_back(directs[i]);
 		if (!uploadSrcs.empty()) {
 			handles = cluster->UploadStaticMeshesDirect(reader.ImageData(),
-				std::span<const Cluster::StaticMeshDirectSource>(uploadSrcs));
+				std::span<const StaticGeometrySource>(uploadSrcs));
 			if (handles.empty())
 				return fail("UploadStaticMeshesDirect failed (degenerate mesh "
 					"or full heap): " + meshMetas.front().uri);

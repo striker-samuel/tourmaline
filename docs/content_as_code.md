@@ -1,14 +1,27 @@
 # Content-as-Code: The Query, Loading, and GI-Blend API
 
 **Status:** v1 implemented (the query API + the GI catalog lane + the
-AssetManager facade + caller-controlled GI blending). The mesh
-spawn-side surface (`World::SpawnMesh(MeshHandle)`) and the
-subset/pak-grouped mesh fast path are the documented follow-ups.
+AssetManager facade + caller-controlled GI blending). The SHARED-ASSET
+OWNERSHIP layer (`app::AssetStore` — the found-or-loaded carrier
+acquire, the park-on-scene-removal bridge, the cluster-source seam)
+and the shared GPU geometry upload service
+(`Engine/Renderer/geometry_upload.h`) are LANDED. The mesh spawn-side
+surface (`World::SpawnMesh(MeshHandle)`), the subset/pak-grouped mesh
+fast path, and the pak-vNext page pager remain the documented
+follow-ups.
 
 **Surface:**
 - `engine/include/Engine/Asset/asset_query.h` — the compile-time
   query core (the regex engine + `MatchAssetsImpl`).
-- `app/src/AssetManager.h/.cpp` — the loading facade.
+- `app/src/AssetStore.h/.cpp` — the shared-resource OWNERSHIP layer
+  (the first slice of the consolidated content architecture; see
+  its header for the semantic contract table).
+- `app/src/AssetManager.h/.cpp` — the loading facade (composes the
+  store; `Store()` exposes the cluster-source seam).
+- `engine/include/Engine/Renderer/geometry_upload.h` — the shared GPU
+  geometry upload service (the extracted carve + copy core; one
+  uploader for the cluster deserializer, the future shared mesh
+  store, and the pak-vNext pager — never a duplicate).
 - The generated `project.h` — the per-project binding (emitted by
   `Project.exe ids`; never hand-edited).
 
@@ -104,20 +117,51 @@ auto batch = assets.LoadMeshes(WorldMeshes.data(), WorldMeshes.size());
   — raw pointer + count (the borrowed-input convention: `nullptr` is
   valid only when count == 0; the manager never retains the input
   past the call). Repeated keys deduplicate; the per-pak grouping
-  loads each owning cluster once. `MeshBatch` carries one handle per
-  input key, in input order.
+  acquires each owning carrier once (never a re-carve). `MeshBatch`
+  carries one handle per input key, in input order.
 - **Resource handles stay separate from world entity handles**
-  (loading never spawns entities). `MeshWorldIndex(handle)` exposes
-  the world mesh row for the spawn-side seam.
-- v1 mesh loading loads the mesh's OWNING SCENE CLUSTER through the
-  normal deserializer (the pak-format boundary: meshes ship inside
-  their scene's cluster; materials + textures resolve exactly as
+  (loading never spawns entities). `MeshWorldIndex(handle)` resolves
+  the handle's CURRENT world mesh row FRESH against the live
+  `meshLocations` every call (a cached index is stale the moment any
+  scene changes; a shared mesh can be carried by several scene
+  instances, and a PARKED carrier has no row at all — UINT32_MAX is
+  the honest no-current-mapping answer, never an error).
+- v1 mesh loading ACQUIRES the mesh's OWNING SCENE CLUSTER through
+  **AssetStore** (the pak-format boundary: meshes ship inside their
+  scene's cluster; materials + textures resolve exactly as
   scene loading). The join is the `[ids]` row's `.geometry` path =
   the pak's Mesh-blob URI prefix. A multi-scene pak whose scenes
   split one family refuses loudly (the documented v1 boundary).
-- `keepResident` (default) holds the cluster for the session; the
-  subset/pak-grouped fast path and the shared-cluster refcount are
-  the documented follow-ups.
+- **The shared-asset retention contract** (the park bridge, pinned
+  by the `am.mesh-*` + `wretain.*` checks in test_pak_host.cpp): the
+  store holds asset-side references (`Cluster::assetRefs` +
+  `World::RetainCluster`), so a `RemoveScene` whose carrier still has
+  live handles PARKS it (`World::UnloadCluster` detaches it from the
+  merged fold — the scene's nodes stop rendering, removal never
+  resurrects scene content — while the mesh rows stay resident). The
+  handle stays valid across the removal; a re-load shares the parked
+  carrier (no re-carve of GPU ranges); the LAST reference releases
+  it for destruction. `keepResident` (default) holds a sticky
+  SESSION ref until `UnloadAllMeshes`/teardown, and residency
+  upgrades propagate to the store (`MakeResident`) — the slot flag
+  and the store's ledger stay in lockstep.
+- The store's `clusterSource` seam (mirroring
+  `ProjectScenes::ClusterLoader`) replaces the pak-to-cluster step
+  for the GPU-less tests (hand-built mesh-carrying clusters stand in
+  for the real deserialize); the default source is the engine's real
+  deserialize, which refuses a null GPU context loudly.
+- The carve + bulk-copy core behind the cluster's upload entry lives
+  in the SHARED GEOMETRY UPLOAD SERVICE
+  (`Engine/Renderer/geometry_upload.h`) — caller-owned arena tokens,
+  pool-independent mesh values; the cluster's
+  `UploadStaticMeshesDirect` is its cluster-bookkeeping side. The
+  permanent model (page-resident mesh rows owned by the store, never
+  by scene clusters), the subset/pak-grouped fast path, and the
+  pak-vNext page pager remain the documented follow-ups. **Format
+  policy for that work: when the paged format lands, the pak magic
+  BUMPS — no version negotiation, no compat reader; stale paks fail
+  loud at open (the existing `PakReader::Open` behavior) and content
+  recooks from zero.**
 
 ## 4. GI as a first-class catalog asset
 

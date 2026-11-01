@@ -287,16 +287,51 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
 - **THE ASSET MANAGER FACADE** (`app/src/AssetManager.h/.cpp`):
   `LoadMesh(MeshKey)`/`LoadMeshes(ptr, count)` (raw pointer + count;
   nullptr valid ONLY with count 0; per-key dedup; the per-pak
-  grouping loads each owning cluster once; resource handles stay
-  separate from world entity handles - `MeshWorldIndex` is the
-  spawn-side seam; v1 loads the owning scene cluster through the
-  normal deserializer - the mesh join is the [ids] row's .geometry
-  path = the pak's Mesh-blob URI prefix) + `LoadGI(GiKey)` (the
-  manifest bytes through ReadAsset, rows parsed with
-  SplitManifestRow) + `SetGI`/`SetGIBlend(from, to, alpha)`/`
-  UnloadGI` (generational handles; multiple GI sets stay resident).
-  The GAME owns all blend timing - NO engine-side durations/easing/
-  timers by design. Pinned by `am.*` in test_pak_host.cpp.
+  grouping acquires each owning carrier once - never a re-carve;
+  resource handles stay separate from world entity handles -
+  `MeshWorldIndex` resolves the handle's CURRENT world mesh row FRESH
+  per call, UINT32_MAX the honest no-current-mapping answer; v1
+  acquires the owning scene cluster through the store - the mesh join
+  is the [ids] row's .geometry path = the pak's Mesh-blob URI prefix)
+  + `LoadGI(GiKey)` (the manifest bytes through ReadAsset, rows
+  parsed with SplitManifestRow) + `SetGI`/`SetGIBlend(from, to,
+  alpha)`/`UnloadGI` (generational handles; multiple GI sets stay
+  resident). The GAME owns all blend timing - NO engine-side
+  durations/easing/timers by design. Pinned by `am.*` in
+  test_pak_host.cpp.
+- **THE ASSET STORE** (`app/src/AssetStore.h/.cpp` - the
+  shared-resource OWNERSHIP layer, the first landed slice of the
+  consolidated content architecture, docs/content_as_code.md): the
+  found-or-loaded mesh-family carrier acquire with ASSET-SIDE refs
+  (`Cluster::assetRefs` + `World::RetainCluster`). Scene removal
+  never destroys an independently held asset: `World::UnloadCluster`
+  PARKS a carrier with live refs (detached from the merged fold -
+  nodes stop rendering, removal never resurrects scene content - but
+  alive in `World::retainedClusters` until the last
+  `ReleaseCluster`); a re-load shares the parked carrier (no
+  re-carve). `keepResident` is the sticky SESSION ref
+  (`MakeResident` keeps the slot flag and the store ledger in
+  lockstep) released at `UnloadAllMeshes`/teardown. The
+  `clusterSource` seam (the `ProjectScenes::ClusterLoader`
+  discipline) drives the GPU-less mesh-lane tests; the DEFAULT
+  source is the real deserialize (null ctx refuses loudly). The
+  ownership is the STORE's - ProjectScenes knows nothing about who
+  holds assets. Teardown order: the store dies BEFORE its world.
+  Pinned by `am.mesh-*` (the retention battery) + `wretain.*` (the
+  engine primitives) in test_pak_host.cpp.
+- **THE SHARED GEOMETRY UPLOAD SERVICE**
+  (`engine/include/Engine/Renderer/geometry_upload.h/.cpp`): the
+  carve + all-or-nothing rollback + table-driven bulk-copy core
+  extracted from `Cluster::UploadStaticMeshesDirect` (now the
+  cluster-bookkeeping side of the service - pool row +
+  `meshAllocations_`). `UploadStaticGeometry` returns CALLER-OWNED
+  arena tokens + pool-independent `StaticMesh` values (the source
+  type is the service's `StaticGeometrySource`; the old nested
+  `Cluster::StaticMeshDirectSource` name is GONE, no compat alias) -
+  the one upload seam the future shared mesh store + the pak-vNext
+  pager submit into, never a duplicate uploader. Pinned by the
+  retirement-fuzz arena oracle + every cooked project launch
+  (byte-identical to the pre-extraction uploads).
 - **THE RENDERER GI-BLEND SEAM**: `WorldRenderer::
   BuildGiVolumeSetFromPaths` (the transactional build core over an
   explicit path list), `AdoptGiVolumeSet`/`AdoptGiVolumeBlend`/
@@ -315,8 +350,11 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   correctness) and no probe spheres.
 - Documented follow-ups: `World::SpawnMesh(MeshHandle)`, the
   subset/pak-grouped mesh fast path (the per-mesh blob direct
-  upload), the shared-cluster refcount, and the dedicated two-bake-
-  set GPU rendering regression.
+  upload), the pak-vNext page pager + the permanent shared-mesh
+  store (page-resident mesh rows owned by AssetStore, never by scene
+  clusters; the paged format BUMPS the pak magic - no version
+  negotiation, no compat reader, stale paks fail loud + recook from
+  zero), and the dedicated two-bake-set GPU rendering regression.
 
 ## Submodules
 

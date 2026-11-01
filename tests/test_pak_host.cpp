@@ -34,6 +34,7 @@
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
+#include "AssetStore.h"
 #include "AssetManager.h"
 #include "DeployCheck.h"
 
@@ -971,11 +972,37 @@ void TestProjectScenes() {
 
 // ---------------------------------------------------------------------------
 // THE ASSET MANAGER FACADE (app/src/AssetManager.h - the content-as-
-// code load/blend surface, docs/content_as_code.md). CPU-only legs:
-// the GI manifest parse + the generational handle registry + the kind
-// refusals; the mesh leg + the renderer publish need a GPU (their
-// regression rides the sample + the headless pins).
+// code load/blend surface, docs/content_as_code.md). The GI manifest
+// parse + the generational handle registry + the kind refusals are
+// direct; the MESH lane runs GPU-LESS through the AssetStore's
+// cluster-source seam (the ProjectScenes clusterLoader discipline):
+// hand-built mesh-carrying clusters stand in for the real deserialize
+// (the production lane stays pinned by every cooked project launch),
+// driving the shared-asset retention contract end to end - adoption,
+// park-on-remove, no-recarve reloads, the session ref, the last-ref
+// release. Only the renderer publish still needs a GPU.
 // ---------------------------------------------------------------------------
+
+// A hand-built offline cluster carrying ONE mesh family row (the
+// GPU-less mesh-lane recipe: a pool mesh + its URI registration + a
+// scene node row so the world resolve folds it into meshLocations -
+// no GPU, no deserialize, the exact seam contract).
+std::unique_ptr<smvk::Cluster> MeshFamilyCluster(const std::string& uri)
+{
+	auto c = std::make_unique<smvk::Cluster>(nullptr);
+	smvk::StaticMesh m{};
+	m.geometry.vertexCount = 3;
+	m.geometry.indexCount = 3;
+	m.geometry.aabbMin = glm::vec3(-1.0f);
+	m.geometry.aabbMax = glm::vec3(1.0f);
+	m.geometry.surfaces.push_back(smvk::Surface{0, 3, 0});
+	const auto h = c->staticMeshes.create(std::move(m));
+	c->RegisterMeshUri(uri, h);
+	const int node = addNode(c->scene, -1, 0);
+	SetMesh(c->scene, uint32_t(node), h.index());
+	return c;
+}
+
 void TestAssetManager() {
 	namespace fs = std::filesystem;
 	const fs::path tmp = fs::temp_directory_path()
@@ -984,7 +1011,9 @@ void TestAssetManager() {
 	fs::remove_all(tmp, ec);
 	fs::create_directories(tmp, ec);
 	// A pak carrying a GI manifest (a Texture-kind blob at a gi/ VFS
-	// path - the payload channel the cooker uses) + the [ids] row.
+	// path - the payload channel the cooker uses), a named scene (the
+	// mesh lane's carrier source), and TWO mesh families (the [ids]
+	// join's Mesh-kind TOC blobs under the row paths' "#"-prefixes).
 	const std::string manifestText =
 		"# day set\n"
 		"gi/scene_day_atrium.givolume\n"
@@ -992,6 +1021,8 @@ void TestAssetManager() {
 		"# a legacy guid row (still parses)\n"
 		"abcdef0123456789abcdef0123456789 gi/scene_day_cellar.givolume\n";
 	const std::string texPath = "content/models/s/stone.png";
+	const std::string treeFamily = "content/models/tree.geometry";
+	const std::string rockFamily = "content/models/rock.geometry";
 	{
 		// A minimal KTX2 payload wrapped through BuildTexturePayload
 		// (the TestProjectRuntime recipe - the texture channel's
@@ -1010,6 +1041,19 @@ void TestAssetManager() {
 					reinterpret_cast<const uint8_t*>(
 						manifestText.data()),
 					manifestText.size())));
+		// The mesh lane: a named scene + the two families' blobs (the
+		// tree family carries a /lod1 sibling too - the base-mesh
+		// filter). The blob CONTENT is irrelevant on the seam path
+		// (the hand-built clusters stand in for the deserialize); the
+		// TOC paths are the join.
+		w.AddBlob(smvk::PakAssetKind::Scene, "recording/one",
+			NamedSceneBlob("Meshes"));
+		w.AddBlob(smvk::PakAssetKind::Mesh,
+			treeFamily + "#mesh.0/prim.0", { 1, 2, 3, 4 });
+		w.AddBlob(smvk::PakAssetKind::Mesh,
+			treeFamily + "#mesh.0/prim.0/lod1", { 5, 6, 7, 8 });
+		w.AddBlob(smvk::PakAssetKind::Mesh,
+			rockFamily + "#mesh.0/prim.0", { 9, 10, 11, 12 });
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "one.pak", std::ios::binary
 			| std::ios::trunc);
@@ -1024,7 +1068,10 @@ void TestAssetManager() {
 			<< "entry one.pak x\n"
 			<< "\n[paks]\none.pak\n"
 			<< "\n[ids]\n"
+			<< "0x1001 scene one.pak content/scenes/meshes.tour Meshes\n"
 			<< "0x2000 texture one.pak " << texPath << "\n"
+			<< "0x3000 mesh one.pak " << treeFamily << "\n"
+			<< "0x3001 mesh one.pak " << rockFamily << "\n"
 			<< "0x6000 gi one.pak content/gi/day.givolumemanifest\n";
 	}
 	std::string err;
@@ -1034,8 +1081,13 @@ void TestAssetManager() {
 		Check(false, "am.gi-load-parse");
 		Check(false, "am.gi-dedup");
 		Check(false, "am.gi-kind-refusal");
-		Check(false, "am.gi-invalid-handle");
+		Check(false, "am.mesh-unknown-refused");
 		Check(false, "am.mesh-null-ctx-refused");
+		Check(false, "am.mesh-two-instances-folded");
+		Check(false, "am.mesh-adopts-scene-cluster");
+		Check(false, "am.mesh-remove-preserves-asset");
+		Check(false, "am.mesh-last-ref-releases");
+		Check(false, "am.mesh-seam-load");
 		return;
 	}
 	smvk::World world;
@@ -1076,12 +1128,17 @@ void TestAssetManager() {
 	}
 	// ---- the MESH lane's CPU-refused legs ----
 	{
-		// LoadMesh without a GPU context refuses loudly (the cluster
-		// deserialize + upload seam); the manifest still resolves the
-		// id (the refusal is the CONTEXT, not the key).
 		std::string mErr;
 		Check(!assets.LoadMesh(0x9999, mErr) && !mErr.empty(),
 			"am.mesh-unknown-refused");
+		// LoadMesh without a GPU context AND without a cluster-source
+		// seam refuses loudly (the real deserialize is the DEFAULT
+		// source); the manifest still resolves the id (the refusal is
+		// the CONTEXT, not the key).
+		std::string cErr;
+		Check(!assets.LoadMesh(0x3000, cErr)
+			&& cErr.find("GPU context") != std::string::npos,
+			"am.mesh-null-ctx-refused");
 		// The null-pointer batch convention: nullptr is valid ONLY
 		// with count == 0 (a zero batch succeeds trivially).
 		std::string zErr;
@@ -1094,7 +1151,251 @@ void TestAssetManager() {
 		Check(bad.count == 0 && !zErr.empty(),
 			"am.mesh-batch-null-nonzero-refused");
 	}
+
+	// ---- the SHARED-ASSET RETENTION battery (the park-on-unload
+	// bridge, end to end through the facades): LoadMesh adopts a
+	// scene's carrier, RemoveScene parks it while the handle lives,
+	// the other scene instance is untouched, a reload shares the
+	// parked carrier (no re-carve), and the last reference releases.
+	{
+		smvk::OverlayVfs vfs;
+		app::ProjectScenes scenes(*rtOpt, vfs);
+		Check(scenes.Valid(), "am.mesh-scenes-ctor");
+		// The scene loader builds a mesh-carrying cluster per instance
+		// (the pscenes GPU-less seam recipe + one mesh family row).
+		scenes.clusterLoader =
+			[](smvk::World& w, smvk::ResourceManager* ctx,
+				const smvk::PakReader& reader, uint32_t sceneIndex,
+				smvk::TextureStreamer* streamer,
+				std::shared_ptr<const std::vector<uint8_t>> imagePin,
+				const smvk::ExternalTextureResolver* externalTexture,
+				std::string& loadErr) -> smvk::Cluster* {
+			(void)ctx; (void)reader; (void)sceneIndex; (void)streamer;
+			(void)imagePin; (void)externalTexture; (void)loadErr;
+			auto c = MeshFamilyCluster(
+				"content/models/tree.geometry#mesh.0/prim.0");
+			smvk::Cluster* raw = c.get();
+			w.RegisterCluster(std::move(c));
+			return raw;
+		};
+		app::SceneHandle s1 = scenes.LoadSceneAdditive(world, nullptr,
+			nullptr, 0x1001, err);
+		app::SceneHandle s2 = scenes.LoadSceneAdditive(world, nullptr,
+			nullptr, 0x1001, err);
+		Check(bool(s1) && bool(s2) && scenes.LoadedSceneCount() == 2
+			&& world.meshLocations.size() == 2,
+			"am.mesh-two-instances-folded");
+		// LoadMesh ADOPTS the scene's carrier (the store's
+		// world-cluster search - the load seam must never run: an
+		// already-loaded scene IS the carrier).
+		bool seamRan = false;
+		assets.Store().clusterSource =
+			[&seamRan](smvk::World&, const smvk::PakReader&, uint32_t,
+				std::string&) -> smvk::Cluster* {
+			seamRan = true;
+			return nullptr;
+		};
+		std::string mErr;
+		const app::MeshHandle tree = assets.LoadMesh(0x3000, mErr);
+		Check(bool(tree) && mErr.empty() && !seamRan,
+			"am.mesh-adopts-scene-cluster");
+		Check(assets.MeshWorldIndex(tree) != UINT32_MAX,
+			"am.mesh-worldindex");
+		std::string dErr;
+		Check(assets.LoadMesh(0x3000, dErr) == tree && dErr.empty(),
+			"am.mesh-dedup");
+		// REMOVE one scene instance: its carrier PARKS (the asset refs
+		// are live) - the removed scene stays gone, the handle stays
+		// valid, the OTHER instance's rows stay folded, and the
+		// asset's world mapping reads honestly stale.
+		std::vector<uint64_t> released;
+		std::string rErr;
+		Check(scenes.RemoveScene(s1, world, rErr, &released)
+			&& !scenes.IsLoaded(s1) && scenes.IsLoaded(s2),
+			"am.mesh-scene-gone");
+		Check(assets.MeshValid(tree)
+			&& world.retainedClusters.size() == 1,
+			"am.mesh-remove-preserves-asset");
+		Check(world.meshLocations.size() == 1,
+			"am.mesh-other-instance-unaffected");
+		Check(assets.MeshWorldIndex(tree) == UINT32_MAX,
+			"am.mesh-worldindex-stale-after-remove");
+		// A re-load shares the PARKED carrier: the same handle, no
+		// fresh cluster, no re-carve of GPU ranges.
+		std::string r2Err;
+		Check(assets.LoadMesh(0x3000, r2Err) == tree
+			&& world.retainedClusters.size() == 1,
+			"am.mesh-reload-shared-no-recarve");
+		// Unload the handle: keepResident's SESSION ref keeps the
+		// parked carrier alive.
+		Check(assets.UnloadMesh(tree), "am.mesh-unload");
+		Check(!assets.UnloadMesh(tree),
+			"am.mesh-stale-unload-refused");
+		Check(world.retainedClusters.size() == 1,
+			"am.mesh-resident-survives-unload");
+		// Teardown drops the session ref: the LAST reference releases
+		// the parked carrier for destruction.
+		assets.UnloadAllMeshes();
+		Check(world.retainedClusters.empty(),
+			"am.mesh-last-ref-releases");
+		// The surviving scene instance still removes cleanly (nothing
+		// the asset lane did pins it).
+		std::string r3Err;
+		std::vector<uint64_t> released2;
+		Check(scenes.RemoveScene(s2, world, r3Err, &released2)
+			&& world.retainedClusters.empty(),
+			"am.mesh-other-instance-removes-clean");
+	}
+
+	// ---- the CLUSTER-SOURCE SEAM battery (the load lane, no scene):
+	// the store's walk resolves the family through the seam, the
+	// world index resolves FRESH across rebuilds, the batch keeps its
+	// per-slot shape, and a transient (non-resident) acquire releases
+	// with the handle.
+	{
+		int seamCalls = 0;
+		assets.Store().clusterSource =
+			[&seamCalls](smvk::World& w, const smvk::PakReader& reader,
+				uint32_t sceneIndex, std::string& seamErr)
+			-> smvk::Cluster* {
+			(void)reader; (void)sceneIndex; (void)seamErr;
+			++seamCalls;
+			auto c = MeshFamilyCluster(
+				"content/models/rock.geometry#mesh.0/prim.0");
+			smvk::Cluster* raw = c.get();
+			w.RegisterCluster(std::move(c));
+			return raw;
+		};
+		// A TRANSIENT acquire (keepResident=false): only the handle's
+		// reference, no session ref.
+		app::MeshLoadOptions transient;
+		transient.keepResident = false;
+		std::string mErr;
+		const app::MeshHandle rock =
+			assets.LoadMesh(0x3001, mErr, transient);
+		Check(bool(rock) && mErr.empty() && seamCalls == 1,
+			"am.mesh-seam-load");
+		Check(assets.MeshWorldIndex(rock) != UINT32_MAX,
+			"am.mesh-seam-worldindex");
+		// The FRESH resolution: a world rebuild never stales the
+		// query (the location tables are re-scanned per call).
+		world.ResolveAndFixup_clusters();
+		Check(assets.MeshWorldIndex(rock) != UINT32_MAX,
+			"am.mesh-worldindex-fresh-across-resolve");
+		// The batch: mixed valid/unknown keys keep the batch shape
+		// (failed slots read as invalid handles - per-slot
+		// inspection), and duplicates dedup to the same handle. The
+		// TRANSIENT options ride the batch too (no session ref).
+		const std::uint64_t keys[3] = { 0x3001, 0x3001, 0x9999 };
+		std::string bErr;
+		const app::MeshBatch batch =
+			assets.LoadMeshes(keys, 3, bErr, transient);
+		Check(batch.count == 3 && bool(batch[0])
+			&& batch[1] == batch[0] && !bool(batch[2])
+			&& !bErr.empty(),
+			"am.mesh-batch-mixed");
+		// The residency UPGRADE: a default-options load over the live
+		// transient handle takes the store's SESSION ref (the slot
+		// flag and the store's ledger stay in lockstep).
+		std::string uErr;
+		Check(assets.LoadMesh(0x3001, uErr) == rock && uErr.empty()
+			&& assets.Store().HeldClusterCount() == 1,
+			"am.mesh-residency-upgrade");
+		// The unload keeps the carrier alive now (the session ref):
+		// the hold survives the transient handle's death.
+		Check(assets.UnloadMesh(rock), "am.mesh-transient-unload");
+		Check(assets.Store().HeldClusterCount() == 1,
+			"am.mesh-resident-survives-transient-unload");
+		// Teardown releases the session ref: the hold drops entirely.
+		assets.UnloadAllMeshes();
+		Check(assets.Store().HeldClusterCount() == 0
+			&& assets.LoadedMeshCount() == 0,
+			"am.mesh-transient-released");
+		// A re-load after the release acquires FRESH (a new handle)
+		// but still SHARES the registered carrier (no seam call, no
+		// re-carve - repeated requests share asset resources).
+		std::string rErr;
+		const app::MeshHandle rock2 =
+			assets.LoadMesh(0x3001, rErr, transient);
+		Check(bool(rock2) && rock2 != rock && seamCalls == 1,
+			"am.mesh-reload-shares-registered-carrier");
+		assets.UnloadAllMeshes();
+	}
 	fs::remove_all(tmp, ec);
+}
+
+// ---------------------------------------------------------------------------
+// WORLD SHARED-ASSET RETENTION (Cluster::assetRefs + World's park/
+// release) - the engine primitives under the AssetStore bridge, pinned
+// directly: retain -> unload PARKS -> the last release destroys; a
+// re-parenting UnregisterCluster pulls a parked cluster back out.
+// ---------------------------------------------------------------------------
+void TestWorldRetention() {
+	smvk::World world;
+	const auto mkCluster = [] {
+		auto c = std::make_unique<smvk::Cluster>(nullptr);
+		::SceneLight def{};
+		def.type = ::SceneLight::Type::Point;
+		def.intensity = 100.0f;
+		def.name = "test_light";
+		const auto h = c->CreateLight(def);
+		const int node = addNode(c->scene, -1, 0);
+		SetLight(c->scene, uint32_t(node), h.index());
+		return c;
+	};
+	smvk::Cluster* a = nullptr;
+	smvk::Cluster* b = nullptr;
+	{
+		auto ca = mkCluster();
+		auto cb = mkCluster();
+		a = ca.get();
+		b = cb.get();
+		world.RegisterCluster(std::move(ca));
+		world.RegisterCluster(std::move(cb));
+	}
+	world.ResolveAndFixup_clusters();
+	Check(world.lightLocations.size() == 2, "wretain.folded");
+	// Two external refs on a.
+	Check(world.RetainCluster(*a) && world.RetainCluster(*a)
+		&& a->assetRefs == 2, "wretain.retain");
+	// Releasing a cluster that was never retained is refused (a
+	// no-op, never an underflow).
+	Check(!world.ReleaseCluster(*b) && b->assetRefs == 0,
+		"wretain.release-unreffed-refused");
+	// Unload with live refs PARKS: the fold loses a's light exactly
+	// like a destroy (removal never resurrects scene content), the
+	// cluster stays alive in the retained list.
+	world.UnloadCluster(*a);
+	Check(world.clusters.size() == 1
+		&& world.retainedClusters.size() == 1
+		&& world.retainedClusters[0].get() == a
+		&& world.lightLocations.size() == 1,
+		"wretain.unload-parks");
+	// Retain works on a PARKED cluster too.
+	Check(world.RetainCluster(*a) && a->assetRefs == 3,
+		"wretain.retain-parked");
+	Check(world.ReleaseCluster(*a) && world.retainedClusters.size() == 1,
+		"wretain.release-keeps-while-reffed");
+	Check(world.ReleaseCluster(*a) && world.retainedClusters.size() == 1,
+		"wretain.release-keeps-while-reffed-2");
+	// The LAST release destroys the parked cluster (no resolve needed
+	// - it is outside the fold).
+	Check(world.ReleaseCluster(*a) && world.retainedClusters.empty(),
+		"wretain.last-release-destroys");
+	// UnregisterCluster pulls a PARKED cluster out for re-parenting
+	// (the existing re-parenting use case, retained-list side).
+	Check(world.RetainCluster(*b) && b->assetRefs == 1,
+		"wretain.retain-for-reparent");
+	world.UnloadCluster(*b);
+	Check(world.retainedClusters.size() == 1,
+		"wretain.park-for-reparent");
+	std::unique_ptr<smvk::Cluster> detached =
+		world.UnregisterCluster(*b);
+	Check(bool(detached) && detached.get() == b
+		&& world.retainedClusters.empty(),
+		"wretain.unregister-pulled-from-retained");
+	// The re-parenting holder owns the detached cluster now; its ref
+	// travels with it (the count is the NEW owner's to drop).
 }
 
 } // namespace
@@ -1109,6 +1410,7 @@ int main() {
 	TestProjectRuntime();
 	TestProjectScenes();
 	TestAssetManager();
+	TestWorldRetention();
 	std::cout << "pak_host_tests: " << (g_checks - g_failures) << "/"
 		<< g_checks << " checks passed\n";
 	return g_failures == 0 ? 0 : 1;

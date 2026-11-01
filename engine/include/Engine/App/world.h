@@ -112,6 +112,15 @@ using namespace ::smvk;
 		mutable bool dirtyCull = true;
 		std::vector<IteratorFlags> flags; // indexed by node
 		std::vector<std::unique_ptr<Cluster>> clusters;
+		// RETAINED clusters (the shared-asset bridge, Cluster::assetRefs):
+		// clusters PARKED by UnloadCluster while asset-side references
+		// were live. A parked cluster is OUT of the merged fold + every
+		// location table (its scene instance is gone — removal never
+		// resurrects scene content) but its resource rows (meshes...)
+		// stay alive for the reference holders (app::AssetStore). The
+		// last ReleaseCluster destroys it. UnregisterCluster can pull a
+		// parked cluster back out for re-parenting. Main-thread only.
+		std::vector<std::unique_ptr<Cluster>> retainedClusters;
 
 		// Tiled-terrain source (see TerrainSource): empty unless a loaded
 		// pak carried Terrain blobs.
@@ -539,12 +548,36 @@ using namespace ::smvk;
 		// over the survivors — the unloaded cluster's entities vanish.
 		// Refuses the dynamic cluster (runtime state, never pak content).
 		// Load-time operation, not a hot path.
+		//
+		// SHARED-ASSET PARKING: a cluster with live external references
+		// (Cluster::assetRefs — an asset holder retained its resource
+		// rows) is NOT destroyed: it detaches from the merged fold
+		// exactly like an unload (nodes stop rendering, location tables
+		// rebuild) but moves to retainedClusters until the last
+		// ReleaseCluster. Scene removal never destroys an independently
+		// referenced asset — and never resurrects scene content.
 		void UnloadCluster(smvk::Cluster&);
+
+		// ---- Shared-asset retention (Cluster::assetRefs) ---------------
+		// Bumps the external ref count of a REGISTERED or RETAINED
+		// cluster (false when this world does not hold it; the dynamic
+		// cluster is refused — runtime state is never an asset carrier).
+		// Main-thread only.
+		bool RetainCluster(Cluster&);
+		// Drops one external ref. When the count reaches zero on a
+		// RETAINED (parked) cluster the cluster is DESTROYED there (its
+		// mesh range frees ride the same deferred-retirement contract
+		// as UnloadCluster; no resolve is needed — a parked cluster is
+		// outside the fold). A still-REGISTERED cluster is left to its
+		// scene owner (UnloadCluster re-checks the count when its scene
+		// goes). False when the cluster is unknown to this world.
+		bool ReleaseCluster(Cluster&);
 
 		void RegisterCluster(std::unique_ptr<Cluster> cluster);
 		// Detaches (does not destroy) + rebuilds like UnloadCluster; the
-		// returned cluster is re-parentable into another World. Refuses
-		// the dynamic cluster.
+		// returned cluster is re-parentable into another World (also
+		// pulls a RETAINED/parked cluster out — the re-parenting use
+		// case). Refuses the dynamic cluster.
 		std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
 		void ResolveAndFixup_clusters();
 

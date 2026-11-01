@@ -838,6 +838,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/PakWorldLoader.cpp
 	../app/src/ProjectRuntime.cpp
 	../app/src/ProjectScenes.cpp
+	../app/src/AssetStore.cpp
 	../app/src/AssetManager.cpp
 	../app/src/DeployCheck.cpp
 )
