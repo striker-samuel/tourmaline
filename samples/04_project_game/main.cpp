@@ -284,16 +284,21 @@ int main(int argc, const char* argv[]) {
 					" pak[%u] '%.*s'\n",
 					unsigned(tex->kind), tex->pakIndex,
 					int(tex->path.size()), tex->path.data());
-			if (const smvk::AppManifestAsset* row =
+			// The canonical record (the registry's identity table —
+			// the manifest [ids] join's successor): kind byte + owner
+			// pak + the logical path.
+			if (const tour::asset::ContentRecord* record =
 					runtime->Asset(project::textures::stone)) {
-				std::printf("[GameProject] id 0x%llx -> %s '%s'\n",
+				std::printf("[GameProject] id 0x%llx -> %s '%.*s'\n",
 					(unsigned long long)project::textures::stone,
-					row->pak.c_str(), row->path.c_str());
+					record->pak.c_str(),
+					int(record->path.size()),
+					record->path.data());
 				if (auto bytes = runtime->ReadAsset(
 						project::textures::stone, rtErr))
 					std::printf("[GameProject] read %zu bytes of"
 						" ktx2 through %s\n", bytes->size(),
-						row->pak.c_str());
+						record->pak.c_str());
 				else
 					std::printf("[GameProject] texture read failed:"
 						" %s\n", rtErr.c_str());

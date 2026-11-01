@@ -418,7 +418,9 @@ bool ContentRegistry::AdoptBackend(const std::string& pakFile,
 	// First adoption wins per archive contract (the cache's own
 	// open and an adopted host backend are the same archive by
 	// construction); the resident image releases the provider's
-	// pager (one worker + handle per archive back).
+	// cached pager (one worker + handle per archive back) and FULLY
+	// RESETS the pager-open state — a later explicit PagerFor (the
+	// compiled-plan lane's TOC folding) lazily opens a fresh one.
 	if (pakFile.empty() || !backend)
 		return false;
 	ContentProvider* p = ProviderByName(pakFile);
@@ -429,12 +431,20 @@ bool ContentRegistry::AdoptBackend(const std::string& pakFile,
 	p->backend = std::move(backend);
 	p->openError.clear();
 	p->pager.reset();
+	p->pagerOpenTried = false;
 	return true;
 }
 
 bool ContentRegistry::HasBackend(const std::string& pakFile) const {
 	const ContentProvider* p = ProviderByName(pakFile);
 	return p && p->type == ContentProvider::Type::Pak && p->backend;
+}
+
+std::shared_ptr<smvk::PakBackend> ContentRegistry::BackendFor(
+	const std::string& pakFile) const {
+	const ContentProvider* p = ProviderByName(pakFile);
+	return p && p->type == ContentProvider::Type::Pak
+		? p->backend : nullptr;
 }
 
 std::shared_ptr<smvk::PakPager> ContentRegistry::PagerFor(
@@ -445,8 +455,24 @@ std::shared_ptr<smvk::PakPager> ContentRegistry::PagerFor(
 		err = "no pak provider named '" + pakFile + "'";
 		return nullptr;
 	}
-	if (smvk::PakPager* cached = PagerOf(*p))
+	// The cached pager first (byte-lane opens + a previous explicit
+	// request share ONE instance per archive while no backend holds
+	// the slot).
+	if (p->pager)
 		return p->pager;
+	// Open (or REOPEN — a backend adoption released the cached
+	// instance): the explicit accessor answers a usable pager even
+	// when the image lane is the byte path (the plan lane folds TOCs
+	// through it, never pages payloads).
+	auto pager = std::make_shared<smvk::PakPager>(p->source);
+	p->pagerOpenTried = true;
+	if (pager->Valid()) {
+		p->pager = std::move(pager);
+		return p->pager;
+	}
+	// The failure records the provider's openError (the corrupt-owner
+	// diagnostic feeds on it) + answers null + err.
+	p->openError = pager->OpenError();
 	err = "the content pak '" + pakFile + "' failed: " + p->openError;
 	return nullptr;
 }

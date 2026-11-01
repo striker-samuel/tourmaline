@@ -586,12 +586,15 @@ void TestProjectRuntime() {
 		Check(rt->Manifest().paks.size() == 1
 			&& rt->Manifest().assets.size() == 3,
 			"prt.manifest-parsed");
-		const smvk::AppManifestAsset* row = rt->Asset(0x2000);
-		Check(row && row->kind == "texture"
-			&& row->pak == "shared.pak" && row->path == vfsPath,
+		const tour::asset::ContentRecord* record = rt->Asset(0x2000);
+		Check(record && record->kind == smvk::kCatalogKindTexture
+			&& record->pak == "shared.pak" && record->path == vfsPath,
 			"prt.asset-row");
+		// The convergent reverse lookup (the registry's (kind, path)
+		// join — the same record the id form returns).
 		Check(rt->Asset(0x9999) == nullptr
-			&& rt->Asset("texture", vfsPath) == row,
+			&& rt->Registry().Find(smvk::kCatalogKindTexture, vfsPath)
+				== record,
 			"prt.asset-lookup");
 		std::string rErr;
 		auto bytes = rt->ReadAsset(0x2000, rErr);
@@ -657,6 +660,52 @@ void TestProjectRuntime() {
 		Check(bool(rt2)
 			&& rt2->ReadAsset(0x2000, rErr2) && rErr2.empty(),
 			"prt.moved-tree-reads");
+		// ---- THE CONVERGENCE CONTRACT through the façade (the
+		// consolidated content architecture's first acceptance
+		// contract): a mod pak serving the record's path overrides
+		// BOTH read forms — the id form (the compiled game) and the
+		// path form (the serialized-content lane) resolve through the
+		// SAME provider selection, and a toggle reveals the base
+		// provider beneath.
+		{
+			std::vector<uint8_t> ktxMod = ktx;
+			ktxMod.push_back(0xCCu);
+			const fs::path modPak = tmp / "mod.pak";
+			{
+				smvk::PakWriter w;
+				w.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+					smvk::BuildTexturePayload(vfsPath, -1, -1, -1,
+						-1, std::span<const uint8_t>(ktxMod)));
+				const std::vector<uint8_t> image = w.Finalize();
+				std::ofstream f(modPak, std::ios::binary
+					| std::ios::trunc);
+				f.write(reinterpret_cast<const char*>(image.data()),
+					std::streamsize(image.size()));
+			}
+			std::string oErr;
+			Check(rt->AddPakOverride("mod",
+					modPak.generic_string(), oErr) && oErr.empty(),
+				"prt.override-registers");
+			std::string idErr;
+			auto idBytes = rt->ReadAsset(0x2000, idErr);
+			std::string pErr;
+			auto pathBytes = rt->ReadAssetByPath(
+				smvk::kCatalogKindTexture, vfsPath, pErr);
+			Check(idBytes && *idBytes == ktxMod && idErr.empty(),
+				"prt.override-wins-id-form");
+			Check(pathBytes && *pathBytes == ktxMod && pErr.empty(),
+				"prt.override-wins-path-form");
+			Check(idBytes && pathBytes && *idBytes == *pathBytes,
+				"prt.forms-agree");
+			// The between-launches toggle: disabling the override
+			// reveals the base provider beneath (the shared.pak
+			// pager lane — no backend was ever adopted here).
+			rt->Registry().SetProviderEnabled("mod", false);
+			std::string baseErr;
+			auto baseBytes = rt->ReadAsset(0x2000, baseErr);
+			Check(baseBytes && *baseBytes == ktx && baseErr.empty(),
+				"prt.toggle-reveals-base");
+		}
 	}
 	else {
 		Check(false, "prt.manifest-parsed");
@@ -665,6 +714,11 @@ void TestProjectRuntime() {
 		Check(false, "prt.read-bytes");
 		Check(false, "prt.pager-no-backend-preloaded");
 		Check(false, "prt.pager-selective-bytes");
+		Check(false, "prt.override-registers");
+		Check(false, "prt.override-wins-id-form");
+		Check(false, "prt.override-wins-path-form");
+		Check(false, "prt.forms-agree");
+		Check(false, "prt.toggle-reveals-base");
 		Check(false, "prt.unknown-id-fails");
 		Check(false, "prt.moved-tree-reads");
 	}

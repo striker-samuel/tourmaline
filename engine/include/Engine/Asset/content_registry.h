@@ -221,9 +221,19 @@ public:
 	bool AdoptBackend(const std::string& pakFile,
 		std::shared_ptr<smvk::PakBackend> backend);
 	[[nodiscard]] bool HasBackend(const std::string& pakFile) const;
-	// The provider's PAGER (opens on first use, cached until a backend
-	// is adopted). Null + err when the provider is unknown or its
-	// archive fails the light mount.
+	// The provider's ADOPTED backend (the shared-image lane's
+	// accessor — the scene/asset loaders hand the reader + image to
+	// their cluster paths). Null when the pak provider carries none
+	// (the pager lane serves its bytes).
+	[[nodiscard]] std::shared_ptr<smvk::PakBackend> BackendFor(
+		const std::string& pakFile) const;
+	// The provider's PAGER (the explicit accessor — the compiled-plan
+	// lane's TOC folding + the geometry-streaming page source): opens
+	// lazily and REOPENS after a backend adoption released the cached
+	// instance (the caller owns the shared_ptr it gets). Null + err
+	// when the provider is unknown or its archive fails the light
+	// mount (the failure records the provider's openError — the
+	// corrupt-owner diagnostic feeds on it).
 	[[nodiscard]] std::shared_ptr<smvk::PakPager> PagerFor(
 		const std::string& pakFile, std::string& err);
 
@@ -275,8 +285,10 @@ private:
 	// it lazily — a failed open is recorded once, loudly).
 	[[nodiscard]] bool ProviderServes(ContentProvider& p,
 		const std::string& norm, smvk::PakAssetKind kind);
-	// The provider's pager (lazily opened; a failed open records
-	// openError ONCE). Null when the archive fails the light mount.
+	// The provider's pager (the BYTE-LANE helper — never called with
+	// a resident backend present): lazily opened; a failed open
+	// records openError ONCE and answers null from then on. Null when
+	// the archive fails the light mount.
 	[[nodiscard]] smvk::PakPager* PagerOf(ContentProvider& p);
 	// The bytes for `norm` through this provider (kind fixed, or any
 	// VFS-addressable kind when kind == nullptr). Empty optional on a

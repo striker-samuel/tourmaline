@@ -125,7 +125,12 @@ public:
 
 	// The constructor's adopt-or-open pass: every manifest pak adopted
 	// from the host's mounts or preloaded + opened in parallel, then
-	// mounted (priority 10, manifest order) if not already mounted.
+	// registered with the session's registry (the shared-image lane)
+	// and mounted (priority 10, manifest order) into `contentVfs` if
+	// not already mounted — the overlay is the LOOSE/LEGACY surface
+	// (the anim-clip fallback lane in PostLoadTail); the CANONICAL
+	// content resolution (cross-pak textures, byte reads) goes through
+	// the session's registry, never the overlay.
 	// One pak failing leaves the layer unusable (the same every-pak-
 	// must-open contract LoadProjectWorld applies) — check Valid().
 	[[nodiscard]] bool Valid() const { return m_openError.empty(); }

@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// ProjectRuntime: the apphost's PUBLIC project façade — the runtime
-// half of content-as-code. The generated project.h gives game code
-// STABLE IDS at compile time; the appmanifest's [ids] table (written
-// by the build from the same asset-db registry) mirrors them at run
-// time. This class bridges the two: resolve a stable id to its catalog
-// row (kind/pak/path) and read the asset's bytes through its pak (the
-// preloaded backend serves Texture + Sound-kind blobs by VFS path —
-// the same channel the cross-pak texture resolution uses).
+// ProjectRuntime: the apphost's PUBLIC project façade — the SESSION
+// over the content registry (the consolidated content architecture).
+// The generated project.h gives game code STABLE IDS at compile time;
+// the appmanifest's [ids] table mirrors them at run time. This class
+// bridges the two: it OWNS the manifest (the identity source, until
+// per-pak identity metadata replaces it) and ONE
+// tour::asset::ContentRegistry — the single content-resolution
+// authority where BOTH the stable-id form and the logical-path form
+// converge on the same effective provider (ReadAsset(id) and
+// ReadAssetByPath(kind, path) agree; an override serving a path wins
+// for both — see Engine/Asset/content_registry.h).
 //
 // The v1 shape of the epoch-2 spec's illustrative APIs:
 //   const auto* row = runtime.Asset(project::textures::Stone);
@@ -19,6 +22,7 @@
 // loader in the tree already consumes.)
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/content_registry.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
 
@@ -37,8 +41,9 @@ public:
 
 	// Parse + validate the appmanifest at <tappPath> (every pak path
 	// resolves MANIFEST-RELATIVE — a moved build directory keeps
-	// working). nullopt + err on any failure (the caller fails the
-	// launch visibly).
+	// working) and ADOPT it into the content registry (the base
+	// providers + the record table). nullopt + err on any failure (the
+	// caller fails the launch visibly).
 	[[nodiscard]] static std::optional<ProjectRuntime> Load(
 		const std::string& tappPath, std::string& err);
 
@@ -50,24 +55,55 @@ public:
 	// The manifest's own directory (the pak resolution base).
 	[[nodiscard]] const std::string& BaseDir() const { return m_baseDir; }
 
-	// The catalog row for a stable id (nullptr = the id is not in this
-	// build — a version skew between the compiled header and the
-	// packaged content; fail loudly, never guess).
-	[[nodiscard]] const smvk::AppManifestAsset* Asset(
-		uint64_t id) const {
-		return m_manifest.FindAsset(id);
+	// ---- THE CONTENT REGISTRY (the resolution authority) ---------------
+	// One registry per runtime façade: the identity table + the
+	// provider set (base manifest paks + the host's overrides) + the
+	// convergent byte lanes. The public seam for layers that resolve
+	// by PATH (the cross-pak texture resolver, the scene-aware audio)
+	// — everything the id form sees, the path form sees too.
+	[[nodiscard]] tour::asset::ContentRegistry& Registry() {
+		return m_registry;
 	}
-	// The row for a kind+path (the header's Catalog rows carry both —
-	// the reverse lookup).
-	[[nodiscard]] const smvk::AppManifestAsset* Asset(
-		const std::string& kind, const std::string& path) const;
+	[[nodiscard]] const tour::asset::ContentRegistry& Registry() const {
+		return m_registry;
+	}
+	// The canonical record for a stable id (nullptr = the id is not
+	// in this build — a version skew between the compiled header and
+	// the packaged content; fail loudly, never guess). The RECORD is
+	// identity; provider selection answers "who supplies it NOW".
+	[[nodiscard]] const tour::asset::ContentRecord* Asset(
+		uint64_t id) const {
+		return m_registry.Find(id);
+	}
 
-	// The asset's bytes through its pak: the archive preloads + opens
-	// (cached per pak — one read per archive), then the backend serves
-	// the VFS path. Empty optional = the row's pak is missing/corrupt
-	// or the path is not served by it (err filled).
+	// The asset's bytes through the registry's effective provider
+	// (OVERRIDE-AWARE: a mod/patch provider serving the record's path
+	// wins — for the id form and the path form alike). Empty optional
+	// + err on every refusal (unknown id, unservable kind, no provider
+	// — the corrupt-owner case names the pak's own failure).
 	std::optional<std::vector<uint8_t>> ReadAsset(uint64_t id,
 		std::string& err);
+	// The convergent PATH form: the kind + logical path resolve through
+	// the SAME provider selection (a path that carries a record of
+	// this kind resolves through that record's identity; a path with
+	// no record resolves PATH-ONLY — mod-added content — through the
+	// same provider precedence). The cross-pak texture resolver's lane.
+	std::optional<std::vector<uint8_t>> ReadAssetByPath(uint8_t kind,
+		const std::string& path, std::string& err);
+
+	// ---- override providers (mods / patches / dev trees) ---------------
+	// Registers an OVERRIDE provider with the registry: overrides
+	// precede every base provider; among overrides EARLIER
+	// REGISTRATION WINS (the host declares precedence by order).
+	// `ReadAsset`/`ReadAssetByPath` see overrides IMMEDIATELY.
+	bool AddPakOverride(const std::string& name,
+		const std::string& pakPath, std::string& err) {
+		return m_registry.AddPakOverride(name, pakPath, err);
+	}
+	bool AddLooseOverride(const std::string& name,
+		const std::string& rootDir, std::string& err) {
+		return m_registry.AddLooseOverride(name, rootDir, err);
+	}
 
 	// ---- the compiled-catalog contract (the flattened project.h) ----
 	// The LAYOUT MIRROR of the generated project.h's AssetDesc (the
@@ -117,10 +153,11 @@ public:
 		const std::string& pakFile, std::string& err);
 	// The pak's PAGER (the SELECTIVE lane, SMP8): the header/footer/
 	// TOC-only mount + page-granular reads through the async pager —
-	// NO whole-image preload, ever. ReadAsset uses this lane whenever
-	// the pak has no backend in the cache (a scene-loaded pak serves
-	// from its already-resident image instead — one copy of the bytes
-	// whatever lane opened first). Lazy cache, one pager per archive.
+	// NO whole-image preload, ever. The registry's byte lanes use this
+	// whenever a pak provider carries no adopted backend (a
+	// scene-loaded pak serves from its already-resident image instead
+	// — one copy of the bytes whatever lane opened first). One pager
+	// per archive, released when a backend is adopted.
 	[[nodiscard]] std::shared_ptr<smvk::PakPager> OpenPakPager(
 		const std::string& pakFile, std::string& err);
 	// The manifest's pak name by MOUNT INDEX (the compiled plans'
@@ -138,9 +175,11 @@ public:
 	// before any plan-driven load.
 	bool AttachCompiledPlans(uint32_t compiledPakCount,
 		const char* compiledLayoutHash, std::string& err);
-	// Cheap cache presence (no open, no block).
+	// Cheap cache presence (no open, no block): an ADOPTED backend is
+	// registered for the pak (the registry's provider carries it —
+	// reads then serve through the resident image).
 	[[nodiscard]] bool HasPak(const std::string& pakFile) const {
-		return m_backends.count(pakFile) != 0;
+		return m_registry.HasBackend(pakFile);
 	}
 	// Registers an ALREADY-OPENED backend under its pak file. The
 	// apphost's --project launch preloads + mounts the manifest's paks
@@ -161,14 +200,14 @@ public:
 private:
 	smvk::AppManifest m_manifest;
 	std::string m_baseDir;
-	// Lazily preloaded + opened backends, keyed by pak file (the
-	// PakBackend owns its image; the cache keeps archives alive for
-	// the runtime's lifetime).
-	std::map<std::string, std::shared_ptr<smvk::PakBackend>>
-		m_backends;
-	// Lazily opened PAGERS, keyed by pak file (the selective lane —
-	// no image, page-granular reads; see OpenPakPager).
-	std::map<std::string, std::shared_ptr<smvk::PakPager>> m_pagers;
+	// THE CONTENT REGISTRY (Engine/Asset/content_registry.h): the
+	// single resolution authority this façade fronts — the record
+	// table (adopted from the manifest at Load), the provider set
+	// (base manifest paks + the host's overrides) and BOTH byte
+	// lanes (the adopted-backend image lane + the SMP8 pager lane).
+	// The per-pak backend/pager caches the façade used to own live
+	// HERE now (one image + one pager per archive, on the provider).
+	tour::asset::ContentRegistry m_registry;
 	bool m_compiledCatalogAttached = false;
 };
 
