@@ -57,6 +57,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/content_registry.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
@@ -440,6 +441,76 @@ int main(int argc, char** argv) {
 		Check(readAll, "e2e.assets-serve-through-paks");
 		Check(sawTexture, "e2e.texture-row-served");
 		Check(sawSound && soundMatches, "e2e.sound-bytes-match-source");
+	}
+
+	// ---- THE DISCOVERY LANE (the .tapp-free deployment acceptance) ----
+	// Every published pak carries its OWN identity table (the "#ids"
+	// registry blob the build appends post-cook): a FRESH registry —
+	// NO manifest — discovers the paks (light mounts + one page read
+	// each) and must reach the SAME identities the .tapp carries,
+	// row for row, and a byte read through the discovered providers
+	// (the pager lane — no backends adopted) matches the session's.
+	{
+		tour::asset::ContentRegistry disc;
+		bool allDiscovered = true;
+		for (const fs::path& p : paks) {
+			std::string dErr;
+			if (!disc.DiscoverPak(p.filename().generic_string(),
+					p.generic_string(), dErr)) {
+				allDiscovered = false;
+				std::cout << "  discover " << p.filename().string()
+					<< ": " << dErr << "\n";
+			}
+		}
+		Check(allDiscovered, "e2e.paks-discover-without-manifest");
+		{
+			// Row-for-row identity parity with the manifest (the
+			// scene names compare when both sides carry one — a
+			// multi-scene pak's blob row leaves the name empty and
+			// rides the single-scene inference instead).
+			bool allMatch = true;
+			for (const auto& row : rt.Manifest().assets) {
+				const tour::asset::ContentRecord* rec =
+					disc.Find(row.id);
+				uint8_t kind = 0;
+				(void)smvk::CatalogKindFromString(row.kind, kind);
+				if (!rec || rec->kind != kind
+						|| rec->path != row.path
+						|| (!row.name.empty() && !rec->sceneName.empty()
+							&& rec->sceneName != row.name)) {
+					allMatch = false;
+					std::cout << "  identity mismatch: manifest "
+						<< row.id << " " << row.kind << " '"
+						<< row.path << "' vs discovered "
+						<< (rec ? "row" : "<missing>") << "\n";
+				}
+			}
+			Check(allMatch
+				&& disc.RecordCount() == rt.Manifest().assets.size(),
+				"e2e.discovery-matches-manifest-identities");
+		}
+		{
+			uint64_t textureId = 0;
+			std::string texturePath;
+			for (const auto& row : rt.Manifest().assets)
+				if (row.kind == "texture") {
+					textureId = row.id;
+					texturePath = row.path;
+					break;
+				}
+			std::string dErr, tErr;
+			auto discBytes = disc.Read(textureId, dErr);
+			auto tappBytes = rt.ReadAsset(textureId, tErr);
+			Check(discBytes && tappBytes && *discBytes == *tappBytes
+				&& dErr.empty() && tErr.empty(),
+				"e2e.discovery-reads-match-session");
+			std::string pErr;
+			auto pathBytes = disc.Read(smvk::kCatalogKindTexture,
+				texturePath, pErr);
+			Check(pathBytes && discBytes
+				&& *pathBytes == *discBytes,
+				"e2e.discovery-forms-agree");
+		}
 	}
 
 	// The scene leg: the id->scene join over the DEPLOYED manifest, then

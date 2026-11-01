@@ -427,13 +427,15 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	// consumes). A plan with no sound assets yields an empty table =
 	// the bare-cook semantic (referenced sounds serialize 0).
 	std::vector<std::pair<std::string, uint64_t>> soundIds;
+	// The catalog stays in scope below: the per-pak IDENTITY-TABLE
+	// append (the "#ids" registry blob) reads the same rows.
+	ProjectCatalog catalog;
 	{
 		const std::string registryRoot =
 			smvk::cache::EnsureRegistryRoot(project.DerivedDataDir());
 		smvk::cache::AssetDatabase db;
 		if (!registryRoot.empty()
 				&& db.Open(registryRoot, project.root, err)) {
-			ProjectCatalog catalog;
 			std::vector<std::string> deps;
 			if (GenerateProjectCatalog(project, plan, db, catalog, deps,
 					err)) {
@@ -612,6 +614,76 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 							" a duplicated/undeclared cross-pak asset"
 							" (add the depends edge or fix the"
 							" ownership)";
+					return false;
+				}
+			}
+			// ---- THE PER-PAK IDENTITY TABLE (the "#ids" registry
+			// blob) — the consolidated content architecture's
+			// discovery lane: the pak carries its OWN identity rows
+			// (the .tapp [ids] successor), appended POST-COOK through
+			// the append-grow lane. The ids/kinds/paths come from the
+			// catalog THIS build generated (one owner per asset — the
+			// same policing above), the scene rows' cooked names from
+			// the just-written pak itself (ListPakScenes — the join
+			// the manifest records; a multi-scene pak leaves the name
+			// empty and rides the single-scene inference). STABLE
+			// SLOTS are preserved across appends (the compiled plans'
+			// addressing keeps working — project_plans.h re-folds from
+			// the FINAL paks below, so the layout contract stays
+			// consistent), and the publish pass hashes the APPENDED
+			// bytes: the content-addressed name covers the identity
+			// table too.
+			{
+				std::vector<::tour::asset::PakAssetIdRow> rows;
+				const auto addRows =
+					[&](const std::vector<CatalogEntry>& entries)
+						-> bool {
+					for (const CatalogEntry& e : entries) {
+						if (e.pak != pak.id)
+							continue;
+						::tour::asset::PakAssetIdRow row;
+						row.id = e.id;
+						row.path = e.path;
+						if (!smvk::CatalogKindFromString(e.kind,
+								row.kind)) {
+							err = "[Pak " + pak.id + "] the catalog"
+								" row carries kind '" + e.kind
+								+ "' — not a catalog kind";
+							return false;
+						}
+						if (row.kind == smvk::kCatalogKindScene) {
+							std::string slerr;
+							const std::vector<smvk::PakSceneInfo>
+								scenes = smvk::ListPakScenes(*reader,
+									&slerr);
+							row.sceneName = scenes.size() == 1
+								? scenes[0].name : std::string{};
+						}
+						rows.push_back(std::move(row));
+					}
+					return true;
+				};
+				if (!addRows(catalog.scenes)
+						|| !addRows(catalog.textures)
+						|| !addRows(catalog.meshes)
+						|| !addRows(catalog.sounds)
+						|| !addRows(catalog.shaders)
+						|| !addRows(catalog.gi))
+					return false;
+				const std::vector<uint8_t> blob =
+					::tour::asset::WriteAssetIdsBlob(rows);
+				std::vector<std::pair<std::string,
+					std::span<const uint8_t>>> append = {
+					{ ::tour::asset::kPakAssetIdsPath,
+						std::span<const uint8_t>(blob) },
+				};
+				std::vector<smvk::PakAppendInfo> appended;
+				std::string aerr;
+				if (!smvk::AppendPakBlobs(stage.outPak,
+						smvk::PakAssetKind::Identity, append,
+						appended, aerr)) {
+					err = "[Pak " + pak.id + "] the identity-table"
+						" append failed: " + aerr;
 					return false;
 				}
 			}

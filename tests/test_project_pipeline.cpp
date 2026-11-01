@@ -2522,11 +2522,54 @@ void TestBuildPlanExecutor() {
 				std::cout << "  (plan err: " << e << ")\n";
 		}
 		else {
+			// The M2 parity, POST-identity-metadata: the PLAN build now
+			// appends the per-pak "#ids" registry blob (the discovery
+			// lane — a bare legacy build carries no identity), so RAW
+			// byte equality is gone BY DESIGN. The parity that still
+			// holds — pinned here — is ENTRY parity: every legacy TOC
+			// entry (kind, path, slot, payload bytes) appears
+			// IDENTICALLY in the plan pak, which carries exactly ONE
+			// extra entry (the identity table).
 			const std::vector<char> legacy = ReadAllBytes(br.pak);
 			const std::vector<char> planned =
 				ReadAllBytes(rep.paks[0].output);
-			Check(!legacy.empty() && legacy == planned,
-				"executor.parity-bytes");
+			bool parity = !legacy.empty() && !planned.empty();
+			if (parity) {
+				std::string oerr;
+				auto lr = smvk::PakReader::Open(
+					std::span<const uint8_t>(
+						reinterpret_cast<const uint8_t*>(legacy.data()),
+						legacy.size()), oerr);
+				auto pr = smvk::PakReader::Open(
+					std::span<const uint8_t>(
+						reinterpret_cast<const uint8_t*>(planned.data()),
+						planned.size()), oerr);
+				parity = bool(lr) && bool(pr);
+				if (parity) {
+					for (const smvk::PakTocEntry& le : lr->Entries()) {
+						const smvk::PakTocEntry* pe =
+							pr->Find(le.kind, le.path);
+						if (!pe || pe->slot != le.slot) {
+							parity = false;
+							break;
+						}
+						const std::span<const uint8_t> lp =
+							lr->Payload(le);
+						const std::span<const uint8_t> pp =
+							pr->Payload(*pe);
+						if (lp.size() != pp.size()
+								|| !std::equal(lp.begin(), lp.end(),
+									pp.begin())) {
+							parity = false;
+							break;
+						}
+					}
+					if (parity)
+						parity = pr->EntryCount()
+							== lr->EntryCount() + 1;
+				}
+			}
+			Check(parity, "executor.parity-bytes");
 		}
 		// ---- EDT-01: the editor's form (the linked-in Runs) builds the
 		// SAME plan byte-identically — one pipeline, two adapters.
