@@ -1,0 +1,642 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// ContentRegistry — see content_registry.h (the consolidated content
+// architecture: the ONE content-resolution authority). The byte lanes
+// mirror the legacy ProjectRuntime::ReadAsset split — an adopted
+// backend's resident image first, else the SMP8 async pager (one
+// positional page read, no whole-image preload) — with the provider
+// walk unified so ids and paths agree about which version wins.
+
+#include <Engine/Asset/content_registry.h>
+
+#include <filesystem>
+#include <sstream>
+
+namespace tour::asset {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+std::string HexId(uint64_t id) {
+	std::ostringstream os;
+	os << "0x" << std::hex << id;
+	return os.str();
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// kinds
+// ---------------------------------------------------------------------------
+
+bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
+	// The byte forms: TEXTURE (the .ktx2 envelope bytes), SOUND (the
+	// raw .wav), SHADER (the raw compiled bytecode) and GI (the
+	// manifest rows ride Texture-kind blobs — the .gi/* payload
+	// channel). SCENE and MESH are identity-addressed (the world
+	// loader / the cluster) and have NO VFS byte form.
+	switch (kind) {
+	case smvk::kCatalogKindTexture:
+	case smvk::kCatalogKindGi:
+		out = smvk::PakAssetKind::Texture;
+		return true;
+	case smvk::kCatalogKindSound:
+		out = smvk::PakAssetKind::Sound;
+		return true;
+	case smvk::kCatalogKindShader:
+		out = smvk::PakAssetKind::Shader;
+		return true;
+	default:
+		return false;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// construction
+// ---------------------------------------------------------------------------
+
+bool ContentRegistry::AdoptManifest(const smvk::AppManifest& manifest,
+	const std::string& manifestBaseDir, std::string& err) {
+	// REPLACE any previous state: the between-launches rebuild form
+	// (a fresh manifest adoption over a previously-built registry
+	// must never carry stale providers/records forward).
+	m_records.clear();
+	m_overrides.clear();
+	m_base.clear();
+	m_byId.clear();
+	m_byPath.clear();
+
+	// The base providers: every listed pak, MANIFEST ORDER (the
+	// mount order — base precedence), the pak paths resolved
+	// MANIFEST-RELATIVE (a moved build directory keeps working).
+	for (const std::string& pak : manifest.paks) {
+		ContentProvider p;
+		p.type = ContentProvider::Type::Pak;
+		p.name = pak;
+		p.base = true;
+		fs::path pp(pak);
+		if (pp.is_relative())
+			pp = fs::path(manifestBaseDir) / pp;
+		p.source = pp.lexically_normal().generic_string();
+		m_base.push_back(std::move(p));
+	}
+
+	// The record table: every [ids] row, keyed by id + (kind, path).
+	for (const smvk::AppManifestAsset& row : manifest.assets) {
+		uint8_t kind = 0;
+		if (!smvk::CatalogKindFromString(row.kind, kind)) {
+			err = "the [ids] row " + HexId(row.id) + " carries kind '"
+				+ row.kind + "' — not a catalog kind";
+			return false;
+		}
+		if (row.id == 0) {
+			err = "the [ids] row for '" + row.path
+				+ "' carries id 0 (the reserved no-identity value)";
+			return false;
+		}
+		const std::string norm = smvk::vfs::Normalize(row.path);
+		if (norm.empty()) {
+			err = "the [ids] row " + HexId(row.id)
+				+ " path '" + row.path
+				+ "' does not normalize to a valid logical path";
+			return false;
+		}
+		if (!ProviderByName(row.pak)) {
+			err = "the [ids] row " + HexId(row.id)
+				+ " names pak '" + row.pak
+				+ "' which the manifest does not list";
+			return false;
+		}
+		if (m_byId.count(row.id)) {
+			err = "the manifest carries id " + HexId(row.id)
+				+ " twice (identity is unique — recook)";
+			return false;
+		}
+		const uint64_t key = PathKey(kind, norm);
+		if (m_byPath.count(key)) {
+			err = "the manifest carries the " + row.kind + " path '"
+				+ norm + "' twice (" + HexId(row.id)
+				+ " — one identity per kind+path; recook)";
+			return false;
+		}
+		ContentRecord r;
+		r.id = row.id;
+		r.kind = kind;
+		r.path = norm;
+		r.pak = row.pak;
+		r.sceneName = row.name;
+		const size_t idx = m_records.size();
+		m_records.push_back(std::move(r));
+		m_byId.emplace(row.id, idx);
+		m_byPath.emplace(key, idx);
+	}
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// overrides
+// ---------------------------------------------------------------------------
+
+bool ContentRegistry::AddPakOverride(const std::string& name,
+	const std::string& pakPath, std::string& err) {
+	err.clear();
+	if (name.empty()) {
+		err = "an override provider needs a name";
+		return false;
+	}
+	if (ProviderByName(name)) {
+		err = "a provider named '" + name + "' already exists";
+		return false;
+	}
+	ContentProvider p;
+	p.type = ContentProvider::Type::Pak;
+	p.name = name;
+	p.base = false;
+	fs::path pp(pakPath);
+	p.source = pp.lexically_normal().generic_string();
+	m_overrides.push_back(std::move(p));
+	return true;
+}
+
+bool ContentRegistry::AddLooseOverride(const std::string& name,
+	const std::string& rootDir, std::string& err) {
+	err.clear();
+	if (name.empty()) {
+		err = "an override provider needs a name";
+		return false;
+	}
+	if (ProviderByName(name)) {
+		err = "a provider named '" + name + "' already exists";
+		return false;
+	}
+	ContentProvider p;
+	p.type = ContentProvider::Type::Loose;
+	p.name = name;
+	p.base = false;
+	p.loose = std::make_shared<smvk::LooseBackend>(rootDir);
+	p.source = rootDir;
+	m_overrides.push_back(std::move(p));
+	return true;
+}
+
+bool ContentRegistry::AddBackendOverride(const std::string& name,
+	std::shared_ptr<smvk::IVfsBackend> backend, std::string& err) {
+	err.clear();
+	if (name.empty() || !backend) {
+		err = "an override provider needs a name and a backend";
+		return false;
+	}
+	if (ProviderByName(name)) {
+		err = "a provider named '" + name + "' already exists";
+		return false;
+	}
+	ContentProvider p;
+	p.type = ContentProvider::Type::Loose;
+	p.name = name;
+	p.base = false;
+	p.loose = std::move(backend);
+	p.source = backend->Name();
+	m_overrides.push_back(std::move(p));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// the convergent lookups
+// ---------------------------------------------------------------------------
+
+const ContentRecord* ContentRegistry::Find(uint64_t id) const {
+	const auto it = m_byId.find(id);
+	return it == m_byId.end() ? nullptr : &m_records[it->second];
+}
+
+const ContentRecord* ContentRegistry::Find(uint8_t kind,
+	const std::string& path) const {
+	const std::string norm = smvk::vfs::Normalize(path);
+	if (norm.empty())
+		return nullptr;
+	const auto it = m_byPath.find(PathKey(kind, norm));
+	return it == m_byPath.end() ? nullptr : &m_records[it->second];
+}
+
+// ---------------------------------------------------------------------------
+// resolution
+// ---------------------------------------------------------------------------
+
+ContentRegistry::Resolution ContentRegistry::Resolve(uint64_t id,
+	std::string& err) {
+	err.clear();
+	const ContentRecord* record = Find(id);
+	if (!record) {
+		err = "unknown content id " + HexId(id)
+			+ " (a version skew between the compiled project.h and the"
+			" packaged content?)";
+		return {};
+	}
+	return ResolveInternal(record, record->kind, record->path, err);
+}
+
+ContentRegistry::Resolution ContentRegistry::Resolve(uint8_t kind,
+	const std::string& path, std::string& err) {
+	err.clear();
+	const std::string norm = smvk::vfs::Normalize(path);
+	if (norm.empty()) {
+		err = "the path '" + path
+			+ "' does not normalize to a valid logical path";
+		return {};
+	}
+	// The convergence contract: a path that carries a record of this
+	// kind resolves through THAT record's identity (the same provider
+	// selection the id form applies — an override serving the path
+	// wins for both forms, never a split).
+	const ContentRecord* record = Find(kind, norm);
+	return ResolveInternal(record, kind, norm, err);
+}
+
+ContentRegistry::Resolution ContentRegistry::ResolveInternal(
+	const ContentRecord* record, uint8_t pathKind,
+	const std::string& norm, std::string& err) {
+	// The kind that governs the probe: the RECORD's kind when one
+	// exists (its path is the identity), else the path-only caller's.
+	const uint8_t kind = record ? record->kind : pathKind;
+	const std::string& path = record ? record->path : norm;
+
+	// IDENTITY-ADDRESSED kinds (scene/mesh): no provider selection
+	// applies — the payload rides the owning pak's cluster-internal
+	// blobs (loaded by identity through the world loader), and byte
+	// override semantics never made sense for them. The owner IS the
+	// answer (null resolution + a loud refusal shape on Read).
+	smvk::PakAssetKind pakKind = smvk::PakAssetKind::Texture;
+	if (!CatalogKindToPakKind(kind, pakKind)) {
+		if (!record)
+			return {}; // path-only with a non-byte kind: nothing to probe
+		const ContentProvider* owner = ProviderByName(record->pak);
+		if (!owner) {
+			err = "the scene/mesh record " + HexId(record->id)
+				+ " names pak '" + record->pak
+				+ "' which no provider carries";
+			return {};
+		}
+		return Resolution{ record, owner, owner->IsOverride(),
+			owner->generation };
+	}
+
+	// The provider walk: overrides (registration order) then base
+	// (manifest order) — the first ENABLED provider that serves the
+	// path under the kind is the effective provider.
+	for (std::deque<ContentProvider>* list :
+			{ &m_overrides, &m_base }) {
+		for (ContentProvider& p : *list) {
+			if (!p.enabled)
+				continue;
+			if (!ProviderServes(p, path, pakKind))
+				continue;
+			return Resolution{ record, &p, p.IsOverride(),
+				p.generation };
+		}
+	}
+	// Nobody serves it. The corrupt-owner case names the pak's OWN
+	// failure (actionable — a broken archive, never a vague miss);
+	// otherwise the honest no-provider form.
+	if (record) {
+		if (const ContentProvider* owner = ProviderByName(record->pak)) {
+			if (!owner->openError.empty()) {
+				err = "the content pak '" + record->pak
+					+ "' failed: " + owner->openError;
+				return {};
+			}
+		}
+		err = "no provider serves '" + path + "' (content id "
+			+ HexId(record->id)
+			+ " — a version skew between the build and the manifest?)";
+	}
+	else {
+		err = "no provider serves '" + path + "'";
+	}
+	return {};
+}
+
+// ---------------------------------------------------------------------------
+// the byte lanes
+// ---------------------------------------------------------------------------
+
+std::optional<std::vector<uint8_t>> ContentRegistry::Read(uint64_t id,
+	std::string& err) {
+	err.clear();
+	const ContentRecord* record = Find(id);
+	if (!record) {
+		err = "unknown content id " + HexId(id)
+			+ " (a version skew between the compiled project.h and the"
+			" packaged content?)";
+		return std::nullopt;
+	}
+	// The kind gate (the same contract the runtime façade always
+	// enforced): only TEXTURE, SOUND, SHADER and GI payloads are
+	// VFS-addressed bytes; scenes load BY IDENTITY through the world
+	// loader and meshes ship inside their scene's cluster.
+	smvk::PakAssetKind pakKind = smvk::PakAssetKind::Texture;
+	if (!CatalogKindToPakKind(record->kind, pakKind)) {
+		err = "content id " + HexId(id) + " is a '"
+			+ smvk::CatalogKindToString(record->kind)
+			+ "' — only TEXTURE, SOUND, SHADER and GI payloads are"
+			" VFS-addressed bytes (scenes load by identity through the"
+			" world loader; meshes ship inside their scene's cluster)";
+		return std::nullopt;
+	}
+	Resolution r = ResolveInternal(record, record->kind, record->path,
+		err);
+	if (!r.provider)
+		return std::nullopt; // err composed by ResolveInternal
+	// The resolution borrows const views; our own storage is mutable
+	// (Read lazily opens provider pagers) — the contained const_cast.
+	return ReadThrough(*const_cast<ContentProvider*>(r.provider),
+		record->path, &pakKind, err);
+}
+
+std::optional<std::vector<uint8_t>> ContentRegistry::Read(uint8_t kind,
+	const std::string& path, std::string& err) {
+	err.clear();
+	const std::string norm = smvk::vfs::Normalize(path);
+	if (norm.empty()) {
+		err = "the path '" + path
+			+ "' does not normalize to a valid logical path";
+		return std::nullopt;
+	}
+	smvk::PakAssetKind pakKind = smvk::PakAssetKind::Texture;
+	if (!CatalogKindToPakKind(kind, pakKind)) {
+		err = "the kind byte " + std::to_string(kind)
+			+ " has no VFS-addressable byte form (scenes load by"
+			" identity; meshes ship inside their scene's cluster)";
+		return std::nullopt;
+	}
+	Resolution r = ResolveInternal(Find(kind, norm), kind, norm, err);
+	if (!r.provider)
+		return std::nullopt;
+	return ReadThrough(*const_cast<ContentProvider*>(r.provider), norm,
+		&pakKind, err);
+}
+
+std::optional<std::vector<uint8_t>> ContentRegistry::ReadPath(
+	const std::string& path, std::string& err) {
+	err.clear();
+	const std::string norm = smvk::vfs::Normalize(path);
+	if (norm.empty()) {
+		err = "the path '" + path
+			+ "' does not normalize to a valid logical path";
+		return std::nullopt;
+	}
+	// A path with NO catalog identity (mod-added content, loose
+	// files): the same provider precedence, probing every
+	// VFS-addressable kind per provider (texture first — the payload
+	// channel's dominant kind).
+	for (std::deque<ContentProvider>* list :
+			{ &m_overrides, &m_base }) {
+		for (ContentProvider& p : *list) {
+			if (!p.enabled)
+				continue;
+			for (const smvk::PakAssetKind kind :
+					{ smvk::PakAssetKind::Texture,
+						smvk::PakAssetKind::Sound,
+						smvk::PakAssetKind::Shader }) {
+				if (!ProviderServes(p, norm, kind))
+					continue;
+				return ReadThrough(p, norm, &kind, err);
+			}
+		}
+	}
+	err = "no provider serves '" + norm + "'";
+	return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// backend adoption (the shared-image lane)
+// ---------------------------------------------------------------------------
+
+bool ContentRegistry::AdoptBackend(const std::string& pakFile,
+	std::shared_ptr<smvk::PakBackend> backend) {
+	// First adoption wins per archive contract (the cache's own
+	// open and an adopted host backend are the same archive by
+	// construction); the resident image releases the provider's
+	// pager (one worker + handle per archive back).
+	if (pakFile.empty() || !backend)
+		return false;
+	ContentProvider* p = ProviderByName(pakFile);
+	if (!p || p->type != ContentProvider::Type::Pak)
+		return false;
+	if (p->backend)
+		return true;
+	p->backend = std::move(backend);
+	p->openError.clear();
+	p->pager.reset();
+	return true;
+}
+
+bool ContentRegistry::HasBackend(const std::string& pakFile) const {
+	const ContentProvider* p = ProviderByName(pakFile);
+	return p && p->type == ContentProvider::Type::Pak && p->backend;
+}
+
+std::shared_ptr<smvk::PakPager> ContentRegistry::PagerFor(
+	const std::string& pakFile, std::string& err) {
+	err.clear();
+	ContentProvider* p = ProviderByName(pakFile);
+	if (!p || p->type != ContentProvider::Type::Pak) {
+		err = "no pak provider named '" + pakFile + "'";
+		return nullptr;
+	}
+	if (smvk::PakPager* cached = PagerOf(*p))
+		return p->pager;
+	err = "the content pak '" + pakFile + "' failed: " + p->openError;
+	return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// mod toggling
+// ---------------------------------------------------------------------------
+
+bool ContentRegistry::SetProviderEnabled(const std::string& name,
+	bool enabled) {
+	ContentProvider* p = ProviderByName(name);
+	if (!p || p->enabled == enabled)
+		return false;
+	p->enabled = enabled;
+	++p->generation; // a cached resolution's invalidation signal
+	return true;
+}
+
+bool ContentRegistry::ProviderEnabled(const std::string& name) const {
+	const ContentProvider* p = ProviderByName(name);
+	return p && p->enabled;
+}
+
+uint64_t ContentRegistry::ProviderGeneration(
+	const std::string& name) const {
+	const ContentProvider* p = ProviderByName(name);
+	return p ? p->generation : 0;
+}
+
+// ---------------------------------------------------------------------------
+// diagnostics
+// ---------------------------------------------------------------------------
+
+std::vector<std::string> ContentRegistry::ProvidersFor(uint8_t kind,
+	const std::string& path) {
+	std::vector<std::string> out;
+	smvk::PakAssetKind pakKind = smvk::PakAssetKind::Texture;
+	if (!CatalogKindToPakKind(kind, pakKind))
+		return out;
+	const std::string norm = smvk::vfs::Normalize(path);
+	if (norm.empty())
+		return out;
+	for (std::deque<ContentProvider>* list :
+			{ &m_overrides, &m_base }) {
+		for (ContentProvider& p : *list) {
+			if (!p.enabled)
+				continue;
+			if (ProviderServes(p, norm, pakKind))
+				out.push_back(p.name);
+		}
+	}
+	return out;
+}
+
+std::vector<ContentRegistry::ProviderInfo>
+ContentRegistry::ProviderInfos() const {
+	std::vector<ProviderInfo> out;
+	out.reserve(m_overrides.size() + m_base.size());
+	const auto push = [&](const ContentProvider& p) {
+		ProviderInfo info;
+		info.name = p.name;
+		info.source = p.source;
+		info.type = p.type;
+		info.base = p.base;
+		info.enabled = p.enabled;
+		out.push_back(std::move(info));
+	};
+	for (const ContentProvider& p : m_overrides)
+		push(p);
+	for (const ContentProvider& p : m_base)
+		push(p);
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// internals
+// ---------------------------------------------------------------------------
+
+ContentProvider* ContentRegistry::ProviderByName(
+	const std::string& name) {
+	for (std::deque<ContentProvider>* list :
+			{ &m_overrides, &m_base })
+		for (ContentProvider& p : *list)
+			if (p.name == name)
+				return &p;
+	return nullptr;
+}
+
+const ContentProvider* ContentRegistry::ProviderByName(
+	const std::string& name) const {
+	for (const std::deque<ContentProvider>* list :
+			{ &m_overrides, &m_base })
+		for (const ContentProvider& p : *list)
+			if (p.name == name)
+				return &p;
+	return nullptr;
+}
+
+smvk::PakPager* ContentRegistry::PagerOf(ContentProvider& p) {
+	if (p.pager)
+		return p.pager.get();
+	// Loud once: a failed light mount records the failure + answers
+	// "not serving" from then on (the corrupt-owner error surfaces
+	// through ResolveInternal when nothing serves the path).
+	if (p.pagerOpenTried)
+		return nullptr;
+	p.pagerOpenTried = true;
+	auto pager = std::make_shared<smvk::PakPager>(p.source);
+	if (pager->Valid()) {
+		p.pager = std::move(pager);
+		return p.pager.get();
+	}
+	p.openError = pager->OpenError();
+	return nullptr;
+}
+
+bool ContentRegistry::ProviderServes(ContentProvider& p,
+	const std::string& norm, smvk::PakAssetKind kind) {
+	switch (p.type) {
+	case ContentProvider::Type::Loose:
+		return p.loose && p.loose->Exists(norm);
+	case ContentProvider::Type::Pak:
+		break;
+	}
+	// The resident-backend lane first (the whole image the host
+	// preloaded / the scene lane opened): one copy of the bytes,
+	// whatever opened it first.
+	if (p.backend)
+		return p.backend->Reader().Find(kind, norm) != nullptr;
+	// The pager lane: the SMP8 light mount's TOC probe (no blob
+	// bytes, no preload — the pager reads pages on demand).
+	smvk::PakPager* pager = PagerOf(p);
+	return pager && pager->Reader().Find(kind, norm) != nullptr;
+}
+
+std::optional<std::vector<uint8_t>> ContentRegistry::ReadThrough(
+	ContentProvider& p, const std::string& norm,
+	const smvk::PakAssetKind* kind, std::string& err) {
+	err.clear();
+	if (p.type == ContentProvider::Type::Loose)
+		return p.loose ? p.loose->TryRead(norm) : std::nullopt;
+	// The resident backend serves through its VFS surface (the
+	// kind-appropriate bytes for the entry — PakBackend::TryRead).
+	if (p.backend)
+		return p.backend->TryRead(norm);
+	smvk::PakPager* pager = PagerOf(p);
+	if (!pager) {
+		err = "the content pak '" + p.name + "' failed: "
+			+ p.openError;
+		return std::nullopt;
+	}
+	// The pager lane: the entry by kind (or any VFS-addressable
+	// kind for the path-only form), ONE positional page read.
+	const smvk::PakTocEntry* entry = nullptr;
+	smvk::PakAssetKind found = smvk::PakAssetKind::Texture;
+	if (kind) {
+		entry = pager->Reader().Find(*kind, norm);
+		found = *kind;
+	}
+	else {
+		for (const smvk::PakAssetKind probe :
+				{ smvk::PakAssetKind::Texture,
+					smvk::PakAssetKind::Sound,
+					smvk::PakAssetKind::Shader }) {
+			entry = pager->Reader().Find(probe, norm);
+			if (entry) {
+				found = probe;
+				break;
+			}
+		}
+	}
+	if (!entry)
+		return std::nullopt; // a miss: the caller composes the form
+	std::string perr;
+	smvk::PakPager::PinnedPage page = pager->Read(*entry, perr);
+	if (!page) {
+		err = perr; // a corrupt page names its path — loud + terminal
+		return std::nullopt;
+	}
+	return smvk::PakServeVfsBytes(found, page.bytes(), norm);
+}
+
+uint64_t ContentRegistry::PathKey(uint8_t kind,
+	const std::string& norm) const {
+	// FNV-1a64 over the normalized path (the same fold PakHashPath
+	// applies), the kind byte folded in — one hash space per kind.
+	uint64_t h = PakHashPath(norm);
+	h ^= kind;
+	h *= 0x100000001b3ULL;
+	return h;
+}
+
+} // namespace tour::asset

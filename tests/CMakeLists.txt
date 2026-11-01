@@ -32,6 +32,25 @@ set_target_properties(AssetQueryTests PROPERTIES
 
 add_test(NAME asset_query_tests COMMAND AssetQueryTests)
 
+# The content registry (Engine/Asset/content_registry.h — the
+# consolidated content architecture): the CONVERGENCE CONTRACT (the
+# id form + the path form resolve the same effective provider),
+# override precedence + toggling, both byte lanes (pager + adopted
+# backend), the corrupt-owner diagnostics and the kind gates.
+# No GPU, no window: hand-built paks + a hand-written .tapp.
+add_executable(ContentRegistryTests test_content_registry.cpp)
+
+target_link_libraries(ContentRegistryTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(ContentRegistryTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME content_registry_tests COMMAND ContentRegistryTests)
+
 # .tourAnim loader/sampler + the Cluster pose driver (headless).
 add_executable(TourAnimTests test_touranim.cpp)
 
@@ -1083,6 +1102,7 @@ tourmaline_stage_sdl3(WorldFieldAssetTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
 tourmaline_stage_sdl3(PakHostTests)
+tourmaline_stage_sdl3(ContentRegistryTests)
 tourmaline_stage_sdl3(ProjectPipelineTests)
 tourmaline_stage_sdl3(ProbePremixGpuTests)
 tourmaline_stage_sdl3(RhiUploadBarrierGpuTests)
