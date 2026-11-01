@@ -3886,6 +3886,108 @@ void TestLightmapOptIn() {
 		"lm override attr name");
 }
 
+void TestTextureAssetForceImport() {
+	// The importer's FORCE lane (the watched-project live refresh,
+	// item 16): a re-import over a STANDING uri re-reads the edited
+	// source, lands a fresh handle under the SAME uri, reports the
+	// replaced handle for the caller's material-slot rewire, and the
+	// dedupe contract holds on BOTH sides of the swap. CPU-only: an
+	// OFFLINE cluster (the Mint path) + a hand-written TGA (stb
+	// decodes uncompressed true-color with no encoder dependency).
+	//
+	// The scratch tree sits at a RELATIVE path under the CWD — asset
+	// URIs are VFS-relative by contract (NormalizeAssetUri REJECTS
+	// drive-letter/absolute/.. paths), so an absolute temp dir would
+	// never register and every uri-keyed row would miss.
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path dir = "tourmaline_texforce";
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+
+	// A 2x2 uncompressed 32-bit top-down TGA; `fill` picks the pixel
+	// pattern so the two generations differ byte-wise.
+	const auto writeTga = [&dir](uint8_t fill) {
+		std::vector<uint8_t> tga(18 + 2 * 2 * 4, 0);
+		tga[2] = 2;    // uncompressed true-color
+		tga[12] = 2;   // width (LE)
+		tga[14] = 2;   // height (LE)
+		tga[16] = 32;  // bits per pixel
+		tga[17] = 0x28; // top-down origin + 8 attribute bits
+		for (size_t i = 18; i < tga.size(); ++i)
+			tga[i] = uint8_t(fill + (i - 18));
+		std::ofstream out(dir / "brick.tga",
+			std::ios::binary | std::ios::trunc);
+		out.write(reinterpret_cast<const char*>(tga.data()),
+			std::streamsize(tga.size()));
+	};
+	writeTga(10);
+	{
+		std::ofstream out(dir / "brick.texture",
+			std::ios::binary | std::ios::trunc);
+		out << "guid=3f3458f33359f0a4822a6ad788d7c3a0\n"
+			"name=brick\nsource=brick.tga\ncolorspace=srgb\n"
+			"format=rgba8\n";
+	}
+
+	// NOTE: the cluster is HEAP-allocated like every other test — a
+	// Cluster carries INLINE 8192-entry pools (Pool::objects_[kMaxSize]),
+	// so a stack instance is megabytes and overflows the 1 MB stack at
+	// the function probe (the stack-overflow exit this test first
+	// shipped with, misread as an earlier test's crash through the
+	// buffered-stdout ordering).
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	const fs::path assetPath = dir / "brick.texture";
+	std::string err;
+	// First import: mints the offline handle + the uri/stash rows.
+	const smvk::TextureHandle h1 =
+		smvk::assets::ImportTextureAssetToCluster(
+			*cluster, assetPath, nullptr, err);
+	Check(h1.valid(), "texforce.first-import");
+	// The dedupe: a repeat import (no force) returns the SAME handle.
+	Check(smvk::assets::ImportTextureAssetToCluster(
+			*cluster, assetPath, nullptr, err) == h1,
+		"texforce.dedupe-keeps-standing");
+	// The source EDIT on disk + the FORCE re-import: a FRESH handle
+	// under the SAME uri, the OLD handle reported for the rewire.
+	writeTga(200); // the edited generation
+	smvk::TextureHandle replaced{};
+	const smvk::TextureHandle h2 =
+		smvk::assets::ImportTextureAssetToCluster(
+			*cluster, assetPath, nullptr, err, /*force=*/true,
+			&replaced);
+	Check(h2.valid() && h2 != h1, "texforce.force-fresh-handle");
+	Check(replaced == h1, "texforce.force-reports-replaced");
+	const std::string uri = assetPath.generic_string();
+	Check(cluster->FindTextureByUri(uri).value_or(smvk::TextureHandle{})
+			== h2, "texforce.uri-upserted");
+	{
+		// The stash rides the NEW payload (the cook embeds the fresh
+		// pixels, not the stale generation).
+		const std::vector<uint8_t>* stash = cluster->GetTextureSource(uri);
+		Check(stash != nullptr && !stash->empty(),
+			"texforce.stash-refreshed");
+	}
+	// The dedupe holds on the NEW entry too.
+	Check(smvk::assets::ImportTextureAssetToCluster(
+			*cluster, assetPath, nullptr, err) == h2,
+		"texforce.dedupe-against-new");
+	// A FAILED force (the source deleted) keeps the standing entry +
+	// reports nothing replaced — the consumer-side last-known-good.
+	fs::remove(dir / "brick.tga", ec);
+	smvk::TextureHandle replacedFail{};
+	const smvk::TextureHandle hFail =
+		smvk::assets::ImportTextureAssetToCluster(
+			*cluster, assetPath, nullptr, err, /*force=*/true,
+			&replacedFail);
+	Check(hFail.empty() && replacedFail.empty(),
+		"texforce.failed-force-keeps-standing");
+	Check(cluster->FindTextureByUri(uri).value_or(smvk::TextureHandle{})
+			== h2, "texforce.standing-survives-failure");
+	fs::remove_all(dir, ec);
+}
+
 int main() {
 	TestRoundTrip();
 	TestFileNodes();
@@ -3912,6 +4014,7 @@ int main() {
 	TestCreateNode();
 	TestMaterialAssets();
 	TestTextureAssets();
+	TestTextureAssetForceImport();
 	TestTourFuzz();
 	TestDitherCloseup();
 	TestSceneFlagTables();

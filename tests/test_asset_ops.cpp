@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "editor_asset_ops.h"
+#include "editor_watch_routes.h"
 
 namespace {
 
@@ -60,8 +61,64 @@ constexpr const char* kGuidC = "cccccccccccccccccccccccccccccccc";
 constexpr const char* kGuidD = "dddddddddddddddddddddddddddddddd";
 constexpr const char* kGuidE = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
-void TestStandaloneFile() {
-	const std::string root = Root();
+// ---------------------------------------------------------------------------
+// The watched-project ROUTING TABLE (editor_watch_routes.h — the item-16
+// classifier ConsumeWatchedProjectChanges switches on): a real scratch
+// tree pins which settled change lands in which funnel. The contract
+// this guards: a texture SOURCE (image beside its .texture) must reach
+// the live-refresh funnel, a BARE image must NOT (it would pool-swap
+// something that is not a .texture asset), and the .tour log-only rule
+// must never rot into an auto-replay.
+// ---------------------------------------------------------------------------
+
+void TestWatchRoutes() {
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path dir = fs::temp_directory_path(ec)
+		/ "tourmaline_watchroutes";
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	const auto touch = [&dir](const char* name) {
+		Write((dir / name).generic_string(), "x");
+		return dir / name;
+	};
+	using R = editor::WatchRoute;
+	Check(editor::ClassifyWatchedChange(touch("scene.gltf"))
+			== R::GltfSource, "watchroute.gltf");
+	Check(editor::ClassifyWatchedChange(touch("model.GLB"))
+			== R::GltfSource, "watchroute.glb-case-insensitive");
+	Check(editor::ClassifyWatchedChange(touch("asset.meta"))
+			== R::MetaSidecar, "watchroute.meta");
+	Check(editor::ClassifyWatchedChange(touch("game.tour"))
+			== R::TourDoc, "watchroute.tour");
+	Check(editor::ClassifyWatchedChange(touch("game.tourrecipe"))
+			== R::TourDoc, "watchroute.tourrecipe");
+	// The texture leg: an image BESIDE its .texture asset.
+	{
+		touch("brick.png");
+		touch("brick.texture");
+		Check(editor::ClassifyWatchedChange(dir / "brick.png")
+				== R::TextureSource, "watchroute.texture-source");
+		Check(editor::ClassifyWatchedChange(dir / "brick.ktx2")
+				== R::TextureSource,
+			"watchroute.texture-source-ktx2-sibling-covers");
+	}
+	// A BARE image (no .texture beside it): Other — glTF source images
+	// ride the artifact's content digest, never a pool swap.
+	Check(editor::ClassifyWatchedChange(touch("bare.jpg"))
+			== R::Other, "watchroute.bare-image-other");
+	Check(editor::ClassifyWatchedChange(touch("note.txt"))
+			== R::Other, "watchroute.other");
+	// Case-insensitive extension match (a DCC saving X.PNG).
+	{
+		touch("UPPER.PNG");
+		Check(editor::ClassifyWatchedChange(dir / "UPPER.PNG")
+				== R::Other, "watchroute.upper-png-no-asset");
+	}
+	fs::remove_all(dir, ec);
+}
+
+void TestStandaloneFile() {	const std::string root = Root();
 	const std::string file = root + "/content/bar.txt";
 	Write(file, "hello");
 	Write(file + ".meta", std::string("guid=") + kGuidA
@@ -207,6 +264,7 @@ int main() {
 	TestDerivedSet();
 	TestDerivedSetLegacyMesh();
 	TestCookAssetAndDir();
+	TestWatchRoutes();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

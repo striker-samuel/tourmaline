@@ -2519,8 +2519,11 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
 // rides the cluster source stash (the cook passthrough-embeds it).
 smvk::TextureHandle ImportTextureAssetToCluster(
 	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
-	smvk::ResourceManager* ctx, std::string& err) {
+	smvk::ResourceManager* ctx, std::string& err, bool force,
+	smvk::TextureHandle* replacedHandle) {
 	err.clear();
+	if (replacedHandle)
+		*replacedHandle = {};
 	TextureAsset t;
 	if (!LoadTextureAsset(assetPath, t, err))
 		return {};
@@ -2528,8 +2531,18 @@ smvk::TextureHandle ImportTextureAssetToCluster(
 	// Repeat import: the pool entry + stash already stand. A settings
 	// change applies at the NEXT import (a fresh session, a cook, or a
 	// delete + re-create — the URI-keyed reuse never re-imports).
+	// The FORCE lane (the watched-project live refresh) is the one
+	// exception: a source edit on disk is exactly what the caller
+	// wants re-read, so the dedupe is bypassed and the standing entry
+	// is REPLACED below (the old handle rides replacedHandle for the
+	// caller's slot rewire; the old pool row dies here, its Holder
+	// releasing through the deferred queue — in-flight frames sampling
+	// the old image finish first).
+	smvk::TextureHandle standing{};
 	if (auto hit = cluster.FindTextureByUri(uri))
-		return *hit;
+		standing = *hit;
+	if (standing.valid() && !force)
+		return standing;
 	const std::filesystem::path srcPath =
 		assetPath.parent_path() / t.source;
 	std::ifstream in(srcPath, std::ios::binary);
@@ -2616,6 +2629,23 @@ smvk::TextureHandle ImportTextureAssetToCluster(
 	// a cook-time transcode; a Basis-family KTX2 source still rides the
 	// cook's per-semantic transcode + pink-error fallback).
 	cluster.SetTextureSource(uri, std::move(payload));
+	// THE FORCE LANE's replace tail: the fresh entry stands (uri +
+	// sampler + stash upserted onto it above). Destroy the standing
+	// pool row — the scan matches the row holding the OLD RHI handle
+	// (the pool's own handle type is internal; the uri map + material
+	// slots key the RHI handle) — its Holder releases the image through
+	// the deferred queue, and the freed pool slot recycles. The caller
+	// rewires material slots off replacedHandle AFTER this returns (the
+	// frame boundary is single-threaded; nothing renders in between).
+	if (force && standing.valid()) {
+		cluster.textures.forEachHandle([&](auto poolHandle) {
+			auto* row = cluster.textures.get(poolHandle);
+			if (row && smvk::TextureHandle(*row) == standing)
+				cluster.textures.destroy(poolHandle);
+		});
+		if (replacedHandle)
+			*replacedHandle = standing;
+	}
 	return h;
 }
 

@@ -2010,7 +2010,12 @@ private:
 	// return the .geometry path the session references. "" = failure
 	// (logged; the caller must NOT open the glTF). Every .gltf session
 	// entry (opens, tour-recorded sources, drops) lands here.
-	std::string ImportMeshArtifactFor(const std::string& gltfPath);
+	// rederived (optional out): true when the stale gate actually
+	// RE-DERIVED the artifact (false = current, no import ran) — the
+	// watcher's geometry re-open flow keys on it (no re-derive = no
+	// reload).
+	std::string ImportMeshArtifactFor(const std::string& gltfPath,
+		bool* rederived = nullptr);
 	// Asset browser (the LEFT column's "Assets" tab — moved from the
 	// bottom dock in the layout rework): a GRID directory
 	// explorer of the project folder (Unity Project window style):
@@ -2258,6 +2263,23 @@ private:
 	// Drains settled changes + routes them (the frame-boundary call;
 	// cheap when nothing moved). Defined beside ArmProjectWatcher.
 	void ConsumeWatchedProjectChanges();
+	// ---- the item-16 legs (the watched-project live refresh) ------
+	// The TEXTURE leg: an image source edited beside its .texture asset
+	// re-imports with the importer's FORCE lane (a fresh pool entry +
+	// handle under the SAME uri, the old row destroyed deferred) and
+	// rewires every material slot off the old GLOBAL RHI index — the
+	// per-frame pool->bindless remap publishes, NO scene reload. The
+	// GEOMETRY leg: when the scene's OWN .gltf re-derived, the world
+	// rebinds through ReloadReferencesViaTemp (the temp-tour snapshot
+	// PRESERVES unsaved edits — cameras/selection/dirty flag restored).
+	// Both defined beside ConsumeWatchedProjectChanges.
+	void LiveRefreshTextureAsset(const std::string& changedImagePath);
+	// Material-slot rewire for the texture leg: every slot (in every
+	// cluster's material pool) referencing the old GLOBAL RHI texture
+	// pool index moves to the new one. NOT undoable (a live refresh,
+	// not an authored edit — the tour's textureAsset record already
+	// names the asset, and a reload/cook re-imports it fresh).
+	void RewireTextureSlots(uint32_t oldRhiIndex, uint32_t newRhiIndex);
 	// GltfGuidResolver over m_assetDb (gltf_import hook): tour
 	// references carrying -guid resolve identity-first — moves/
 	// renames heal through rescan + the .meta sidecars. Closed db

@@ -19,12 +19,15 @@
 // render pipeline — no manual staging, no global cache.
 
 #include "editor_app.h"
+#include "editor_watch_routes.h"
 
 #include <artifact_cache/artifact_kind.h>
 #include <artifact_cache/assetdb.h>
 
 #include <Engine/Asset/tour.h>
 #include <Engine/Utils/file_watcher.h>
+// (gltf_import/asset_export.h rides editor_app.h — the import funnel's
+// shared header.)
 
 #include <cctype>
 #include <cstdlib>
@@ -655,8 +658,11 @@ void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 // .geometry path the session references. "" = failure (logged). This is
 // the SINGLE place a .gltf turns into a session: opens (direct or
 // tour-recorded), drops and the project import all land here.
-std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
+std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
+	bool* rederived) {
 	namespace fs = std::filesystem;
+	if (rederived)
+		*rederived = false;
 	if (gltfPath.empty())
 		return {};
 	const fs::path geometry =
@@ -678,6 +684,8 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath) {
 			+ "' (no re-import).");
 		return geometry.generic_string();
 	}
+	if (rederived)
+		*rederived = true;
 	// NO explicit guid: the derivation consumes the .gltf.meta BESIDE
 	// the source as the identity ledger (a re-import over changed
 	// content CARRIES the family + subasset identities; a first import
@@ -840,16 +848,28 @@ void EditorApp::ArmProjectWatcher() {
 
 // Consume: drain SETTLED changes + route them through the EXISTING
 // selective funnels — the frame-boundary call (cheap when nothing
-// moved; never a project scan). The routing is per-extension:
+// moved; never a project scan). The ROUTING lives in
+// editor_watch_routes.h (the pure classifier, unit-tested):
 //   .gltf/.glb -> ImportMeshArtifactFor (the stale gate re-derives
 //                 ONLY when the source changed; the identity ledger
-//                 preserves every GUID across the reimport)
+//                 preserves every GUID) + the GEOMETRY RE-OPEN flow
+//                 (item 16): when the SCENE'S OWN source re-derived,
+//                 the world rebinds through ReloadReferencesViaTemp —
+//                 the temp-tour snapshot preserves unsaved edits, so
+//                 the fresh geometry lands without losing any session
+//                 state (referenced models keep the reference-editor
+//                 reload path; a no-op save never reloads)
 //   .meta      -> the asset-db rescan (the identity ledger moved)
+//   image beside its .texture -> the LIVE TEXTURE REFRESH (item 16):
+//                 the force re-import lands fresh pixels under the
+//                 SAME uri, material slots rewire off the old RHI
+//                 index, and the per-frame bindless remap publishes —
+//                 no reload (a bare image keeps the log: glTF source
+//                 images ride the artifact's content digest instead)
 //   .tour      -> a LOG ONLY: an external edit never silently
 //                 overwrites unsaved editor work (the checklist's
 //                 contract) — reload the scene to apply it
-//   textures / recipes / anything else -> the log (their live
-//                 refresh legs are the item-16 follow-ups)
+//   anything else -> the log
 void EditorApp::ConsumeWatchedProjectChanges() {
 	if (!m_projectWatcher || !m_projectWatcher->Running())
 		return;
@@ -860,52 +880,202 @@ void EditorApp::ConsumeWatchedProjectChanges() {
 	for (const smvk::FileWatcher::Change& c : changes) {
 		const std::string name =
 			std::filesystem::path(c.path).filename().generic_string();
-		const std::string ext =
-			std::filesystem::path(c.path).extension().generic_string();
 		// A removed source keeps its rows (the registry heals on the
-		// next rescan; a log line is enough).
+		// next rescan; a log line is enough) — the event check comes
+		// BEFORE the path classification (a delete routes by event,
+		// never by extension).
 		if (c.event == smvk::FileWatcher::Event::Removed) {
 			Log("Watcher: '" + name + "' removed — the next Rescan "
 				"reconciles the registry.");
 			continue;
 		}
-		// Identity sidecars (incl. the .gltf.meta ledger): rescan.
-		if (ext == ".meta") {
-			smvk::cache::RescanStats stats;
-			std::string rerr;
-			if (m_assetDb.RescanProject(stats, rerr))
-				Log("Watcher: identity sidecar '" + name + "' — "
-					"rescanned (" + std::to_string(stats.adopted)
-					+ " adopted, " + std::to_string(stats.moved)
-					+ " re-pointed).");
-			else
-				Log("Watcher: rescan failed (" + rerr + ").");
-			continue;
-		}
-		// glTF sources: the selective re-import funnel (stale-gated,
-		// identity-preserving — ImportMeshArtifactFor's whole
-		// contract). The LIVE session keeps rendering the loaded
-		// generation; re-open the scene to see the fresh one.
-		if (name.size() >= 5
-				&& (name.substr(name.size() - 5) == ".gltf"
-					|| name.substr(name.size() - 4) == ".glb")) {
+		switch (ClassifyWatchedChange(std::filesystem::path(c.path))) {
+		case editor::WatchRoute::Removed:
+			// Unreachable (the event check above owns removals); kept
+			// so the switch is exhaustive over the classifier.
+			break;
+		case editor::WatchRoute::MetaSidecar:
+			// Identity sidecars (incl. the .gltf.meta ledger): rescan.
+			{
+				smvk::cache::RescanStats stats;
+				std::string rerr;
+				if (m_assetDb.RescanProject(stats, rerr))
+					Log("Watcher: identity sidecar '" + name + "' — "
+						"rescanned (" + std::to_string(stats.adopted)
+						+ " adopted, " + std::to_string(stats.moved)
+						+ " re-pointed).");
+				else
+					Log("Watcher: rescan failed (" + rerr + ").");
+			}
+			break;
+		case editor::WatchRoute::GltfSource: {
 			Log("Watcher: glTF source '" + name + "' changed — "
-				"re-importing (identity preserved; re-open the "
-				"scene to see the fresh geometry).");
-			(void)ImportMeshArtifactFor(c.path);
-			continue;
+				"re-importing (identity preserved).");
+			bool rederived = false;
+			(void)ImportMeshArtifactFor(c.path, &rederived);
+			// THE GEOMETRY RE-OPEN FLOW: the old funnel stopped at the
+			// artifact + told the user to re-open. When the changed
+			// source IS the loaded scene's source and the artifact
+			// actually re-derived, rebind NOW through the temp-tour
+			// snapshot (ReloadReferencesViaTemp preserves cameras,
+			// selection, the dirty flag + every unsaved edit — a fresh
+			// import + replay, never a save).
+			std::error_code ec;
+			const bool isSceneSource = !m_gltfPath.empty() && m_world
+				&& std::filesystem::equivalent(
+					std::filesystem::path(c.path),
+					std::filesystem::path(m_gltfPath), ec)
+				&& !ec;
+			if (rederived && isSceneSource) {
+				if (ReloadReferencesViaTemp())
+					Log("Watcher: geometry reloaded LIVE (unsaved edits "
+						"preserved through the temp snapshot).");
+				else
+					Log("Watcher: geometry reload failed — re-open the "
+						"scene to apply.");
+			}
+			else if (rederived) {
+				Log("Watcher: referenced model re-imported — use the "
+					"reference editor's Reload (or re-open) to see the "
+					"fresh geometry.");
+			}
+			else {
+				Log("Watcher: artifact already current — no reload "
+					"needed.");
+			}
+			break;
 		}
-		// Authored scenes: NEVER auto-replay (an external edit must
-		// not silently overwrite unsaved editor work).
-		if (ext == ".tour" || ext == ".tourrecipe") {
+		case editor::WatchRoute::TourDoc:
+			// Authored scenes: NEVER auto-replay (an external edit must
+			// not silently overwrite unsaved editor work).
 			Log("Watcher: '" + name + "' changed on disk — reload it "
 				"to apply (external edits never overwrite unsaved "
 				"editor work).");
-			continue;
+			break;
+		case editor::WatchRoute::TextureSource:
+			LiveRefreshTextureAsset(c.path);
+			break;
+		case editor::WatchRoute::Other:
+			Log("Watcher: '" + name + "' changed on disk (no live "
+				"refresh for this kind — a glTF source image rides the "
+				"artifact's content digest; everything else is a "
+				"follow-up).");
+			break;
 		}
-		Log("Watcher: '" + name + "' changed on disk (the "
-			"development refresh for this kind lands with the "
-			"live-update follow-ups).");
+	}
+}
+
+// The TEXTURE leg (item 16): an image edited beside its .texture
+// asset re-imports with the FORCE lane + rewires the slots — the
+// renderer's per-frame pool->bindless remap + material upload publish
+// the fresh pixels with NO reload, NO relaunch (the borrowed-world
+// contract: the WYSIWYG renderer reads the same World object).
+void EditorApp::LiveRefreshTextureAsset(const std::string& changedImagePath) {
+	namespace fs = std::filesystem;
+	const std::string name =
+		fs::path(changedImagePath).filename().generic_string();
+	if (!m_world) {
+		Log("Watcher: texture '" + name + "' — no session world, the "
+			"next import picks the edit up.");
+		return;
+	}
+	// The asset sits beside the source (the CreateTextureAsset
+	// convention); find the OWNER cluster through the registered uri
+	// (the import-time path spelling — the exact string first, then a
+	// filename match like RelinkTextureLive's, healing
+	// absolute/relative spelling drift).
+	fs::path asset = fs::path(changedImagePath);
+	asset.replace_extension(".texture");
+	std::error_code ec;
+	if (!fs::exists(asset, ec)) {
+		Log("Watcher: texture '" + name + "' — no .texture asset "
+			"beside it (nothing to refresh).");
+		return;
+	}
+	smvk::Cluster* owner = nullptr;
+	std::string ownerUri;
+	const std::string exact = asset.lexically_normal().generic_string();
+	for (const auto& clusterPtr : m_world->clusters) {
+		if (!clusterPtr)
+			continue;
+		if (clusterPtr->FindTextureByUri(exact)) {
+			owner = clusterPtr.get();
+			ownerUri = exact;
+			break;
+		}
+	}
+	if (!owner) {
+		for (const auto& clusterPtr : m_world->clusters) {
+			if (!clusterPtr)
+				continue;
+			for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
+				(void)h;
+				const std::string u(uri.data(), uri.size());
+				if (fs::path(u).filename() == asset.filename()
+						&& fs::exists(fs::path(u), ec)) {
+					owner = clusterPtr.get();
+					ownerUri = u;
+					break;
+				}
+			}
+			if (owner)
+				break;
+		}
+	}
+	if (!owner) {
+		Log("Watcher: texture '" + name + "' changed — not imported in "
+			"this session (the next import picks the edit up).");
+		return;
+	}
+	// The FORCE re-import: fresh pixels under the SAME uri, the old
+	// pool row destroyed (its image releases deferred — in-flight
+	// frames sampling the old texture finish first).
+	smvk::TextureHandle replaced{};
+	std::string err;
+	const smvk::TextureHandle h = smvk::assets::ImportTextureAssetToCluster(
+		*owner, fs::path(ownerUri), m_context.get(), err,
+		/*force=*/true, &replaced);
+	if (h.empty()) {
+		Log("Watcher: texture refresh failed for '" + name + "': "
+			+ (err.empty() ? "import failed" : err));
+		return;
+	}
+	if (!replaced.empty()) {
+		RewireTextureSlots(replaced.index(), h.index());
+		RebuildTexHandleMap();
+		Log("Watcher: texture '" + name + "' refreshed LIVE (pool entry "
+			"replaced, material slots rewired — no reload).");
+	}
+	else {
+		RebuildTexHandleMap();
+		Log("Watcher: texture '" + name + "' imported LIVE (no standing "
+			"entry to replace).");
+	}
+}
+
+void EditorApp::RewireTextureSlots(uint32_t oldRhiIndex,
+	uint32_t newRhiIndex) {
+	if (!m_world || oldRhiIndex == newRhiIndex)
+		return;
+	// MaterialValues::textures/textures2 store GLOBAL RHI texture pool
+	// indices (one pool per context — BuildPoolToBindlessMap's
+	// contract), so the rewire walks EVERY cluster's material pool.
+	// -1 slots (no texture) never match (oldRhiIndex is a valid index).
+	for (const auto& clusterPtr : m_world->clusters) {
+		if (!clusterPtr)
+			continue;
+		clusterPtr->materials.forEach(
+			[&](smvk::Material& mat) {
+			for (int i = 0; i < 4; ++i)
+				if (mat.values.textures[i]
+						== static_cast<int>(oldRhiIndex))
+					mat.values.textures[i]
+						= static_cast<int>(newRhiIndex);
+			if (mat.values.textures2[0]
+					== static_cast<int>(oldRhiIndex))
+				mat.values.textures2[0]
+					= static_cast<int>(newRhiIndex);
+		});
 	}
 }
 

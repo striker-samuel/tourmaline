@@ -519,8 +519,22 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster,
 // refreshes its pool->RHI map afterwards). ctx == nullptr (cook): pool +
 // URI + source registration only; no GPU work.
 // Returns the cluster texture handle (empty + err on failure).
+//
+// force (the LIVE-REFRESH lane, the watched-project texture leg):
+// re-import over a STANDING uri — the default URI-dedupe returns the
+// existing handle and never re-reads the source; force re-transcodes
+// the (edited) source, lands a FRESH pool entry + handle, upserts the
+// uri/sampler/stash onto it and DESTROYS the replaced pool row (the
+// old RHI Holder releases through the deferred queue — in-flight
+// frames sampling the old image finish first; the retire-margin
+// discipline). `replacedHandle` (optional out) carries the OLD handle
+// so the caller can rewire its material slots (they store GLOBAL RHI
+// pool indices — the caller owns the cross-cluster rewrite + its
+// pool->bindless map rebuild). Default false keeps the dedupe
+// contract everywhere else.
 smvk::TextureHandle ImportTextureAssetToCluster(
 	smvk::Cluster& cluster, const std::filesystem::path& assetPath,
-	smvk::ResourceManager* ctx, std::string& err);
+	smvk::ResourceManager* ctx, std::string& err, bool force = false,
+	smvk::TextureHandle* replacedHandle = nullptr);
 
 } // namespace smvk::assets

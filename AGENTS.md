@@ -228,13 +228,27 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   disables) and the frame boundary (`UpdateWysiwygBoundary`, before
   the host's acquire, even while the live view is parked) drains
   settled changes and routes them through the EXISTING selective
-  funnels — `.gltf`/`.glb` → `ImportMeshArtifactFor` (stale-gated,
-  identity ledger preserving; re-open the scene for the fresh
-  geometry), `.meta` → the asset-db rescan, `.tour`/`.tourrecipe` →
+  funnels - `.gltf`/`.glb` → `ImportMeshArtifactFor` (stale-gated,
+  identity ledger preserving) + the GEOMETRY RE-OPEN FLOW (item 16:
+  when the SCENE'S OWN source re-derived, `ReloadReferencesViaTemp`
+  rebinds the world through the temp-tour snapshot - unsaved edits,
+  cameras, selection + the dirty flag all survive; a referenced
+  model keeps the reference-editor reload; a no-op save never
+  reloads), `.meta` → the asset-db rescan, `.tour`/`.tourrecipe` →
   a LOG ONLY (external edits never silently overwrite unsaved editor
-  work — reload to apply), other kinds → the log (their live-refresh
-  legs are the item-16 follow-ups). No per-frame project scan ever
-  runs.
+  work - reload to apply), an image BESIDE its `.texture` asset →
+  the LIVE TEXTURE REFRESH (item 16: `ImportTextureAssetToCluster`'s
+  FORCE lane lands fresh pixels under the SAME uri - the old pool
+  row destroyed, its image releasing DEFERRED so in-flight frames
+  finish - and `RewireTextureSlots` moves every material slot off
+  the old GLOBAL RHI index; the per-frame pool→bindless remap +
+  `RebuildTexHandleMap` publish, NO reload, NO relaunch; a BARE
+  image keeps the log - glTF source images ride the artifact's
+  content digest instead), other kinds → the log. The routing table
+  lives in `editor/src/editor_watch_routes.h` (the pure classifier,
+  pinned by test_asset_ops.cpp's `watchroute.*` checks); the force
+  lane is pinned by test_tour.cpp's `texforce.*` checks. No
+  per-frame project scan ever runs.
 
 ## Submodules
 
