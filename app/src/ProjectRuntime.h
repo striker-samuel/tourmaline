@@ -47,8 +47,30 @@ public:
 	[[nodiscard]] static std::optional<ProjectRuntime> Load(
 		const std::string& tappPath, std::string& err);
 
+	// ---- THE DISCOVERY LANE (the .tapp-free form) ----------------------
+	// Build the session from PAKS ALONE: every pak discovers through
+	// its own "#ids" identity table (base providers + records; a pak
+	// WITHOUT the blob joins as a path-serving provider only — the
+	// legacy form, `requireIdentityBlob` false — so a viewer launch
+	// over pre-identity content still resolves cross-pak paths).
+	// The manifest stays EMPTY: the provider table is the authority
+	// (PakNames() reflects it), the compiled-catalog/compiled-plans
+	// gates do not apply (no deployment manifest to validate against),
+	// and the entry point is the HOST's choice (a --scene name, the
+	// first scene-bearing pak).
+	[[nodiscard]] static std::optional<ProjectRuntime> OpenDiscovered(
+		const std::vector<std::string>& pakPaths,
+		std::string& err, bool requireIdentityBlob = false);
+	// The pak provider names in MOUNT ORDER (the manifest's [paks] in
+	// the .tapp lane; the discovered base providers in the discovery
+	// lane) — the table every layer that iterates "the session's
+	// paks" walks (ProjectScenes' adopt-or-open, the log lines).
+	[[nodiscard]] std::vector<std::string> PakNames() const;
+
 	// The parsed manifest (the entry pak/scene, the pak order, the id
-	// table — see Engine/Asset/appmanifest.h).
+	// table — see Engine/Asset/appmanifest.h). EMPTY in the discovery
+	// lane (no deployment manifest — PakNames() + the registry are
+	// the authority there).
 	[[nodiscard]] const smvk::AppManifest& Manifest() const {
 		return m_manifest;
 	}

@@ -104,9 +104,12 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 			mounted.emplace(m.name, std::move(pb));
 	}
 	// (b) KICK parallel preloads for the rest (the runtime's own cache
-	//     counts as opened — HasPak, no double read).
+	//     counts as opened — HasPak, no double read). The session's PAK
+	//     NAMES drive the loop (the manifest's [paks] or the discovered
+	//     providers — one authority, whatever lane built the session).
+	const std::vector<std::string> pakNames = runtime.PakNames();
 	std::vector<std::string> missing;
-	for (const std::string& pak : runtime.Manifest().paks) {
+	for (const std::string& pak : pakNames) {
 		if (mounted.count(pak) || runtime.HasPak(pak))
 			continue;
 		missing.push_back(pak);
@@ -125,11 +128,11 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 			m_openError = "the project pak '" + missing[i]
 				+ "' failed: " + pre.error;
 	}
-	// (c) Register + mount, in MANIFEST order (the mount order the
-	//     overlay's cross-pak resolution depends on). First failure
-	//     poisons the layer (Valid() == false) but keeps mounting —
-	//     the error names the pak.
-	for (const std::string& pak : runtime.Manifest().paks) {
+	// (c) Register + mount, in the session's PAK ORDER (the mount
+	//     order the overlay's cross-pak resolution depends on). First
+	//     failure poisons the layer (Valid() == false) but keeps
+	//     mounting — the error names the pak.
+	for (const std::string& pak : pakNames) {
 		std::shared_ptr<smvk::PakBackend> backend;
 		if (auto it = mounted.find(pak); it != mounted.end())
 			backend = it->second;
@@ -149,8 +152,8 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 			contentVfs.Mount(backend, 10, pak);
 	}
 	if (m_openError.empty()) {
-		std::cerr << "[Scenes] project ready: "
-			<< runtime.Manifest().paks.size() << " pak(s) adopted/mounted"
+		std::cerr << "[Scenes] project ready: " << pakNames.size()
+			<< " pak(s) adopted/mounted"
 			<< "\n";
 	}
 	else {

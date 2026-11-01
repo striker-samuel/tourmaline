@@ -545,6 +545,27 @@ int main() {
 				&& reg2.ProviderInfos().size() == 1,
 				"disc.conflict-atomic");
 		}
+		// The LENIENT form (the viewer's legacy lane,
+		// requireIdentityBlob=false): a blob-less pak joins as a
+		// PATH-SERVING provider — bytes, never identity rows (a
+		// pre-identity pak in a multi-pak launch still resolves
+		// cross-pak paths).
+		{
+			ta::ContentRegistry reg3;
+			std::string lErr;
+			Check(reg3.DiscoverPak("plain",
+					plainPak.generic_string(), lErr, false)
+				&& lErr.empty() && reg3.RecordCount() == 0
+				&& reg3.ProviderInfos().size() == 1,
+				"disc.lenient-joins-provider");
+			std::string pErr;
+			auto bytes = reg3.ReadPath(kStone, pErr);
+			Check(bytes && *bytes == ktxDisc && pErr.empty(),
+				"disc.lenient-serves-paths");
+			std::string iErr;
+			Check(!reg3.Read(0x2000, iErr) && !iErr.empty(),
+				"disc.lenient-no-identity-rows");
+		}
 		// Overrides compose over discovered base providers: the loose
 		// dev tree wins for BOTH forms, the toggle reveals the
 		// discovered pak beneath.

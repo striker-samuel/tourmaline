@@ -47,11 +47,20 @@
   pager accessor. `AddPakOverride`/`AddLooseOverride` register mod/
   dev providers. `AttachCompiledCatalog` (row-level +
   catalog-fingerprint checks) is the compiled-catalog gate project
-  hosts run. RunPakApp's `--project` lane builds ONE shared session
-  (the loose `content/` tree registered as an override unless
-  `--no-vfs`), hands it to `LoadProjectWorld`'s cross-pak resolver
-  and to the game element hook (the audio runtime borrows it — no
-  second package universe).
+  hosts run. **THE DISCOVERY LANE**: `OpenDiscovered(pakPaths)` builds
+  the session from PAKS ALONE (no .tapp) — every pak joins through
+  its own "#ids" identity table (a legacy blob-less pak serves paths
+  only); the manifest stays EMPTY and `PakNames()` (the registry's
+  base providers, both lanes) replaces manifest-paks iteration
+  (ProjectScenes' adopt-or-open walks it). RunPakApp's `--project`
+  lane AND the viewer's MULTI-PAK lane (several `--pak`, or `--pak +
+  --scene <name>` — entry by cooked identity, DeployCheck-gated) both
+  build ONE shared session and load through the same
+  LoadProjectWorld path; the loose `content/` tree registers as an
+  override unless `--no-vfs`. The game element hook receives the
+  session (the audio runtime borrows it — no second package
+  universe). The build appends the per-pak "#ids" blob post-cook
+  (stable slots preserved; the publish digest covers it).
 
 - **DeployCheck** (`app/src/DeployCheck.h`): the deployment validation
   gate, pre-graphics in the `--project` launch — every manifest-listed

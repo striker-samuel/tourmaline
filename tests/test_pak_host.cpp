@@ -206,6 +206,33 @@ void TestCliParse() {
 			&& cfg.extraOwnsCamera,
 			"cli.parse.preserves-host-config");
 	}
+	// ---- The multi-pak + --scene surface (the discovery lane's CLI):
+	// --pak is REPEATABLE (one legacy lane, several = the multi-pak
+	// discovery lane), --scene names the entry by its cooked identity,
+	// and the addressing forms never mix.
+	{
+		app::ViewerOptions opts;
+		Check(ParseOk({ "App", "--pak", "a.pak", "--pak", "b.pak",
+				"--scene", "Crypt" }, opts)
+			&& opts.pakPaths.size() == 2 && opts.pakPaths[1] == "b.pak"
+			&& opts.pakPath == "a.pak" && opts.sceneName == "Crypt"
+			&& opts.sceneIndex == 0,
+			"cli.multi-pak-scene-parse");
+		app::ViewerOptions eq;
+		Check(ParseOk({ "App", "--pak=a.pak", "--scene=Crypt" }, eq)
+			&& eq.pakPaths.size() == 1 && eq.sceneName == "Crypt",
+			"cli.scene-equals-form");
+		// Index vs identity never mixes.
+		int ec = 0;
+		Check(ParseFails({ "App", "--pak", "x.pak", "--scene", "S",
+				"--scene-index", "1" }, ec) && ec != 0,
+			"cli.scene-vs-index-exclusive");
+		// --scene has no effect with --project (the manifest names the
+		// entry by identity).
+		Check(ParseFails({ "App", "--project", "g.tapp", "--scene",
+				"S" }, ec) && ec != 0,
+			"cli.scene-with-project-refused");
+	}
 }
 
 // ---- Pak path resolution (app::ResolvePakOpenPath) ----
@@ -1072,6 +1099,51 @@ void TestProjectScenes() {
 		Check(bool(c) && scenes.LoadedSceneCount() == 1
 			&& !scenes.IsLoaded(a) && !scenes.IsLoaded(b),
 			"pscenes.replace-unloads-all");
+	}
+
+	// ---- THE DISCOVERY SESSION (the .tapp-free form) -------------------
+	// ProjectRuntime::OpenDiscovered over LEGACY paks (no identity
+	// blobs): the paks join as path providers, PakNames reflects them
+	// (the manifest stays empty), the convergent path lane serves
+	// bytes, and id reads refuse honestly (no identity rows — the
+	// strict discovery lane's recook refusal is pinned in the
+	// content-registry tests).
+	{
+		std::string dErr;
+		const std::string pakArgs[2] = {
+			(tmp / "one.pak").generic_string(),
+			(tmp / "two.pak").generic_string() };
+		auto rtD = app::ProjectRuntime::OpenDiscovered(
+			{ pakArgs[0], pakArgs[1] }, dErr);
+		Check(bool(rtD) && dErr.empty()
+			&& rtD->PakNames().size() == 2
+			&& rtD->PakNames()[0] == "one.pak"
+			&& rtD->Manifest().paks.empty(),
+			"dsc.session-opens-legacy-paks");
+		if (rtD) {
+			// The path lane serves through the discovered providers
+			// (the pager lane — no backends adopted).
+			std::string rErr;
+			auto bytes = rtD->ReadAssetByPath(
+				smvk::kCatalogKindTexture, texPath, rErr);
+			Check(bytes && *bytes == ktx && rErr.empty(),
+				"dsc.path-read-serves-legacy");
+			// The manifest-relative PakPath consults the provider's
+			// own source (the given pak path).
+			Check(rtD->PakPath("one.pak") == pakArgs[0],
+				"dsc.pakpath-uses-provider-source");
+			// No identity rows: id reads refuse loudly, never guess.
+			std::string iErr;
+			Check(!rtD->ReadAsset(0x2000, iErr) && !iErr.empty(),
+				"dsc.no-identity-rows-refused");
+			// ProjectScenes over the discovered session: the ctor's
+			// adopt-or-open walks PakNames (the session's providers,
+			// manifest or not).
+			smvk::OverlayVfs dVfs;
+			app::ProjectScenes dScenes(*rtD, dVfs);
+			Check(dScenes.Valid() && dVfs.Mounts().size() == 2,
+				"dsc.scenes-ctor-adopts-discovered");
+		}
 	}
 }
 

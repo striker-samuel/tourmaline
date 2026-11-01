@@ -207,7 +207,8 @@ bool ContentRegistry::AddBackendOverride(const std::string& name,
 // ---------------------------------------------------------------------------
 
 bool ContentRegistry::DiscoverPak(const std::string& name,
-	const std::string& pakPath, std::string& err) {
+	const std::string& pakPath, std::string& err,
+	bool requireIdentityBlob) {
 	err.clear();
 	if (name.empty()) {
 		err = "a discovered pak needs a provider name";
@@ -226,24 +227,32 @@ bool ContentRegistry::DiscoverPak(const std::string& name,
 	}
 	const smvk::PakTocEntry* entry = pager->Reader().Find(
 		smvk::PakAssetKind::Identity, kPakAssetIdsPath);
-	if (!entry) {
-		err = "the pak '" + name + "' carries no identity metadata (the"
-			" '#ids' registry blob) — recook it through the project"
-			" build (or use the appmanifest compatibility lane)";
-		return false;
-	}
-	std::string perr;
-	smvk::PakPager::PinnedPage page = pager->Read(*entry, perr);
-	if (!page) {
-		err = "the pak '" + name + "' failed reading its identity"
-			" table: " + perr;
-		return false;
-	}
 	std::vector<PakAssetIdRow> rows;
-	if (!ParseAssetIdsBlob(page.bytes(), rows, perr)) {
-		err = "the pak '" + name + "' carries a malformed identity"
-			" table: " + perr;
-		return false;
+	if (!entry) {
+		if (requireIdentityBlob) {
+			err = "the pak '" + name
+				+ "' carries no identity metadata (the '#ids'"
+				" registry blob) — recook it through the project"
+				" build (or use the appmanifest compatibility lane)";
+			return false;
+		}
+		// The LEGACY form: a pre-identity pak joins as a BASE
+		// provider serving its paths — it contributes BYTES (the
+		// path-only resolution lane), never identity rows.
+	}
+	else {
+		std::string perr;
+		smvk::PakPager::PinnedPage page = pager->Read(*entry, perr);
+		if (!page) {
+			err = "the pak '" + name + "' failed reading its identity"
+				" table: " + perr;
+			return false;
+		}
+		if (!ParseAssetIdsBlob(page.bytes(), rows, perr)) {
+			err = "the pak '" + name + "' carries a malformed identity"
+				" table: " + perr;
+			return false;
+		}
 	}
 	// Validate the WHOLE row set (against the existing table AND
 	// within the pak's own rows) BEFORE committing anything — the

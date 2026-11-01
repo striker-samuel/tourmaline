@@ -50,7 +50,55 @@ std::optional<ProjectRuntime> ProjectRuntime::Load(
 	return rt;
 }
 
+std::optional<ProjectRuntime> ProjectRuntime::OpenDiscovered(
+	const std::vector<std::string>& pakPaths, std::string& err,
+	bool requireIdentityBlob) {
+	ProjectRuntime rt;
+	// Every pak joins through its OWN identity table (the light
+	// mount + one page read; the pager stays cached on the provider).
+	// The provider NAME is the pak file's name — the mount identity
+	// every layer (logs, ProjectScenes' adopt-or-open, scene targets)
+	// addresses it by, exactly like a manifest pak name.
+	for (const std::string& pakPath : pakPaths) {
+		const std::string name =
+			fs::path(pakPath).filename().generic_string();
+		if (!rt.m_registry.DiscoverPak(name, pakPath, err,
+				requireIdentityBlob)) {
+			err = "the pak '" + pakPath + "' does not join the content"
+				" session: " + err;
+			return std::nullopt;
+		}
+	}
+	return rt;
+}
+
+std::vector<std::string> ProjectRuntime::PakNames() const {
+	// The registry's BASE providers in order — the manifest's [paks]
+	// list in the .tapp lane (AdoptManifest registered them in
+	// manifest order), the discovered base providers in the discovery
+	// lane. ONE authority: whatever iterated the manifest's pak list
+	// iterates this (the manifest itself is a compatibility surface).
+	std::vector<std::string> names;
+	for (const tour::asset::ContentRegistry::ProviderInfo& p :
+			m_registry.ProviderInfos())
+		if (p.base)
+			names.push_back(p.name);
+	return names;
+}
+
 std::string ProjectRuntime::PakPath(const std::string& pakFile) const {
+	// The registry's provider SOURCE first: the .tapp lane's
+	// manifest-relative resolution AND the discovery lane's given
+	// pak path both land on the provider at adoption/discovery time —
+	// one answer whatever lane built the session.
+	for (const tour::asset::ContentRegistry::ProviderInfo& p :
+			m_registry.ProviderInfos())
+		if (p.base && p.name == pakFile
+				&& p.type == tour::asset::ContentProvider::Type::Pak)
+			return p.source;
+	// The manifest-relative fallback (a pak the manifest names but
+	// the registry does not carry — possible only mid-adoption
+	// anomalies; the callers fail loudly on the missing archive).
 	fs::path p(pakFile);
 	if (p.is_relative())
 		p = fs::path(m_baseDir) / p;

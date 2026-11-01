@@ -180,15 +180,20 @@ public:
 	// manifest — the light SMP8 mount + ONE page read for the blob
 	// (the pager stays cached on the provider: later byte reads ride
 	// it until a backend is adopted). A pak without the blob refuses
-	// loudly (recook — discovery never guesses). A duplicate identity
-	// across discovered paks is a DEPLOYMENT CONFLICT (loud, naming
-	// both — one owner per asset, the same policing the build applies
-	// at cook time); the discovery is ATOMIC (a conflicting pak adds
-	// no records and no provider). Re-discovering a known name is
-	// idempotent. Scene rows with an empty name ride the existing
-	// single-scene inference at load time.
+	// loudly when `requireIdentityBlob` (recook — discovery never
+	// guesses); with it false the pak still joins as a BASE provider
+	// serving its paths (the LEGACY form — a pre-identity pak in a
+	// viewer launch contributes BYTES, never identity rows). A
+	// duplicate identity across discovered paks is a DEPLOYMENT
+	// CONFLICT (loud, naming both — one owner per asset, the same
+	// policing the build applies at cook time); the discovery is
+	// ATOMIC (a conflicting pak adds no records and no provider).
+	// Re-discovering a known name is idempotent. Scene rows with an
+	// empty name ride the existing single-scene inference at load
+	// time.
 	bool DiscoverPak(const std::string& name,
-		const std::string& pakPath, std::string& err);
+		const std::string& pakPath, std::string& err,
+		bool requireIdentityBlob = true);
 
 	// ---- the convergent lookups ---------------------------------------
 	// The record for a stable id (nullptr = unknown — a version skew

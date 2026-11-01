@@ -52,12 +52,24 @@ class ProjectRuntime; // the content session (ProjectRuntime.h)
 // The viewer's CLI options (one field per CLI flag; ParsePakAppArgs fills
 // this object and nothing else — see the layer note above).
 struct ViewerOptions {
-	// The entry-point pak — REQUIRED, no default: a bare App.exe must
+	// The entry-point pak(s) — REQUIRED, no default: a bare App.exe must
 	// refuse instead of silently running whatever pak happens to sit at
 	// some hard-coded path (the old default content/paks/sponza.pak
-	// launched stale builds' content by accident). Empty after the
-	// parse = the parse gate rejects (usage + EXIT_FAILURE).
+	// launched stale builds' content by accident). REPEATABLE: one --pak
+	// runs the legacy single-pak lane (index-based), several run the
+	// MULTI-PAK discovery lane (the .tapp-free form — every pak joins
+	// one content session, entry scene by --scene or the first
+	// scene-bearing pak). Empty after the parse = the parse gate
+	// rejects (usage + EXIT_FAILURE). pakPath mirrors the FIRST --pak
+	// (the legacy lane's single-pak fields keep working).
 	std::string pakPath;
+	std::vector<std::string> pakPaths;
+	// --scene <name>: the entry scene BY IDENTITY (the cooked scene's
+	// name — ListPakScenes' identity) in the multi-pak lane, or by name
+	// inside the single pak. Mutually exclusive with --scene-index
+	// (index vs identity never mixes) and with --project (the
+	// appmanifest names its own entry).
+	std::string sceneName;
 	int sceneIndex = 0;
 	bool minimal = false;
 	bool filterOnly = false;

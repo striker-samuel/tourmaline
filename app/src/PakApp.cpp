@@ -16,6 +16,7 @@
 #include "DeployCheck.h"
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/cluster_serializer.h> // ListPakScenes (the discovery lane's entry pick)
 #include <Engine/Asset/pak_pager.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Profile/profile.h>
@@ -255,18 +256,87 @@ namespace app {
 					<< " agree on the pak-only universe)\n";
 		}
 		else {
-			// A pak file + a scene index (0 = default). The scene id
+			// THE PAK LANES. Legacy single-pak (no --scene, ONE --pak):
+			// a pak file + a scene index (0 = default); the scene id
 			// (GI bake stem + check-scene gating) is the pak stem.
-			sceneId = cfg.cli.sceneId.empty()
-				? StemOf(cfg.cli.pakPath) : cfg.cli.sceneId;
-			// The RESOLVED pak path (the CLI arg may be relative —
-			// the preload ladder resolves it; the Stage-6 pager needs
-			// the same absolute path).
-			launchPaks.push_back(ResolvePakOpenPath(cfg.cli.pakPath));
-			preloadFuture = std::make_shared<std::future<PakPreload>>(
-				KickPakPreload(launchPaks.back()));
-			std::cerr << "Scene: pak '" << cfg.cli.pakPath << "' (id '"
-				<< sceneId << "', index " << cfg.cli.sceneIndex << ")\n";
+			// The MULTI-PAK DISCOVERY LANE (several --pak, or --scene
+			// naming the entry by its cooked identity): every pak
+			// joins ONE content session (OpenDiscovered — a pak
+			// carrying its "#ids" identity table contributes its ids;
+			// a legacy pak serves paths only), DeployCheck polices each
+			// archive like a --project launch, and the load runs the
+			// SAME LoadProjectWorld path (the backends adopt into the
+			// session as the preloads resolve; the entry scene is
+			// --scene's name or the first scene-bearing pak's).
+			const bool multiPak = cfg.cli.pakPaths.size() > 1
+				|| !cfg.cli.sceneName.empty();
+			if (multiPak) {
+				for (const std::string& pak : cfg.cli.pakPaths)
+					launchPaks.push_back(ResolvePakOpenPath(pak));
+				sceneId = cfg.cli.sceneId.empty()
+					? StemOf(cfg.cli.pakPaths.front())
+					: cfg.cli.sceneId;
+				// The content session over the discovered paks.
+				std::string dErr;
+				if (auto rt = app::ProjectRuntime::OpenDiscovered(
+						launchPaks, dErr,
+						/*requireIdentityBlob=*/false)) {
+					session = std::make_shared<app::ProjectRuntime>(
+						std::move(*rt));
+					if (!cfg.cli.noVfs) {
+						std::string oErr;
+						(void)session->AddLooseOverride("content",
+							"content", oErr);
+					}
+				}
+				else {
+					std::cerr << "[App] the content session failed: "
+						<< dErr << "\n";
+					return EXIT_FAILURE;
+				}
+				// The deployment gate (the --project contract): every
+				// named pak proves itself BEFORE any graphics work.
+				for (const std::string& pak : launchPaks) {
+					std::string pErr;
+					if (!app::ValidatePakFile(pak, pErr)) {
+						std::cerr << "[App] deployment rejected: "
+							<< pErr << "\n";
+						return EXIT_FAILURE;
+					}
+				}
+				{
+					std::string sErr;
+					if (!app::ValidateEngineShaderSource(sErr)) {
+						std::cerr << "[App] deployment rejected: "
+							<< sErr << "\n";
+						return EXIT_FAILURE;
+					}
+				}
+				auto futures = std::make_shared<
+					std::vector<std::future<PakPreload>>>();
+				for (const std::string& pak : launchPaks)
+					futures->push_back(KickPakPreload(pak));
+				projectFutures = std::move(futures);
+				std::cerr << "[App] multi-pak discovery: "
+					<< launchPaks.size() << " pak(s), entry scene "
+					<< (cfg.cli.sceneName.empty()
+						? "<first scene-bearing pak>"
+						: ("'" + cfg.cli.sceneName + "'"))
+					<< " (session " << session->Registry().RecordCount()
+					<< " identity row(s))\n";
+			}
+			else {
+				sceneId = cfg.cli.sceneId.empty()
+					? StemOf(cfg.cli.pakPath) : cfg.cli.sceneId;
+				// The RESOLVED pak path (the CLI arg may be relative —
+				// the preload ladder resolves it; the Stage-6 pager needs
+				// the same absolute path).
+				launchPaks.push_back(ResolvePakOpenPath(cfg.cli.pakPath));
+				preloadFuture = std::make_shared<std::future<PakPreload>>(
+					KickPakPreload(launchPaks.back()));
+				std::cerr << "Scene: pak '" << cfg.cli.pakPath << "' (id '"
+					<< sceneId << "', index " << cfg.cli.sceneIndex << ")\n";
+			}
 		}
 		if (sceneId.empty())
 			sceneId = "pak";
@@ -365,6 +435,14 @@ namespace app {
 			// shared_ptr capture would self-cycle.
 			const int sceneIndex = cfg.cli.sceneIndex;
 			engine::WorldRenderer* rendererRaw = &renderer;
+			// The discovery lane's entry pick: --scene's name (empty =
+			// the first scene-bearing pak's first scene), resolved
+			// INSIDE the world-source call where the preloaded
+			// readers exist. The --project lane's entry is
+			// entryByIdentity (the manifest recorded it — never a
+			// runtime pick).
+			const std::string discoveryScene = cfg.cli.sceneName;
+			const bool entryByIdentity = !cfg.cli.project.empty();
 			// World handoff for the invaders element (app/src/InvadersGame):
 			// the lambda stashes the raw world pointer as it returns the
 			// LinearPtr to the renderer. The renderer owns the lifetime; the
@@ -375,7 +453,8 @@ namespace app {
 			auto worldHandle = std::make_shared<tour::World*>();
 			renderer.SetWorldSource(
 				[preloadFuture, projectFutures, entryPakIndex,
-					entrySceneName, sceneIndex, rendererRaw, worldHandle,
+					entrySceneName, entryByIdentity, discoveryScene,
+					sceneIndex, rendererRaw, worldHandle,
 					session]
 				(
 					smvk::ResourceManager& ctx,
@@ -386,15 +465,66 @@ namespace app {
 				// SESSION's registry — the shared images) and the entry
 				// scene loads BY IDENTITY (LoadProjectWorld; the
 				// cross-pak resolver reads through the session).
-				// --pak: the legacy single-pak, index-based path.
+				// Multi-pak discovery: the same path, the entry picked
+				// from the preloaded readers. --pak (single): the legacy
+				// single-pak, index-based path.
 				tour::mem::LinearPtr<tour::World> world;
 				if (projectFutures) {
 					std::vector<PakPreload> preloads;
 					preloads.reserve(projectFutures->size());
 					for (std::future<PakPreload>& f : *projectFutures)
 						preloads.push_back(f.get());
+					size_t entryIdx = entryPakIndex;
+					std::string entryName = entrySceneName;
+					if (!entryByIdentity) {
+						// The discovery lane's pick: --scene's name
+						// across the preloaded paks, else the FIRST
+						// scene-bearing pak's first scene. A named scene
+						// that no pak carries fails loudly — never a
+						// fallback, never index 0 by accident.
+						bool found = false;
+						for (size_t pi = 0; pi < preloads.size()
+								&& !found; ++pi) {
+							if (!preloads[pi].backend)
+								continue;
+							std::string lerr;
+							const std::vector<smvk::PakSceneInfo>
+								scenes = smvk::ListPakScenes(
+									preloads[pi].backend->Reader(),
+									&lerr);
+							if (scenes.empty())
+								continue;
+							if (!discoveryScene.empty()) {
+								for (size_t si = 0; si < scenes.size();
+										++si)
+									if (scenes[si].name
+											== discoveryScene) {
+										entryIdx = pi;
+										entryName = scenes[si].name;
+										found = true;
+										break;
+									}
+							}
+							else {
+								entryIdx = pi;
+								entryName = scenes[0].name;
+								found = true;
+							}
+						}
+						if (!found) {
+							std::cerr << "[App] the entry scene "
+								<< (discoveryScene.empty()
+									? std::string("(any)")
+									: ("'" + discoveryScene + "' "))
+								<< "is not in any of the "
+								<< preloads.size() << " pak(s) — scenes"
+									" load BY IDENTITY, a miss fails"
+									" loudly (never a fallback)\n";
+							return nullptr;
+						}
+					}
 					world = LoadProjectWorld(std::move(preloads),
-						entryPakIndex, entrySceneName, ctx, contentVfs,
+						entryIdx, entryName, ctx, contentVfs,
 						rendererRaw->GetTextureStreamer(), session.get());
 				}
 				else {
