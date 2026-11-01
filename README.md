@@ -181,7 +181,7 @@ cmake --build <build-dir>
 ctest --test-dir <build-dir> --output-on-failure
 ```
 
-The CMake suite currently registers **52 tests**. Five tests create a Vulkan device/window and need a working local graphics setup; hosted CI excludes those five while running the CPU-capable tests on Windows/MSVC and Ubuntu 24.04/GCC 14. Building on Linux is CI-tested, but interactive rendering is primarily verified on the author's Windows GPU configurations.
+The CMake suite currently registers **54 tests**. Five tests create a Vulkan device/window and need a working local graphics setup; hosted CI excludes those five (and `test_knight_anim` reports `Skipped` when its content base is absent) while running the CPU-capable tests — including the bundled-project end-to-end gate (`project_e2e_tests`: the checked-in `samples/04_project_game` cooked + published + deploy-checked + consumed headless) — on Windows/MSVC and Ubuntu 24.04/GCC 14. Building on Linux is CI-tested, but interactive rendering is primarily verified on the author's Windows GPU configurations.
 
 ## Engine and gameplay boundary
 

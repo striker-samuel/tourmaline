@@ -1,5 +1,17 @@
 # Scene Data Tables, Pak V2 & Jolt Physics — migration record
 
+> **HISTORICAL RECORD — read as history, not as current-state docs.**
+> This file documents the typed-scene-tables migration as it was
+> PLANNED on its feature branch: baseline snapshots and phrasing below
+> (e.g. the SMP6→**SMP7/KPM7** magic bump, the 44-test baseline, the
+> branch's fork SHA) describe THAT MOMENT. The container format has
+> since moved on (the staged paged break, **SMP8/KPM8** — see
+> `docs/pak_vnext.md`, THE current pak format reference), and the
+> suite is larger now (53 registered ctest targets; five GPU-window
+> tests excluded on hosted runners). Migration epochs already landed
+> are recorded here as the decisions record; unlanded epochs stay
+> open items.
+
 The working document for the typed-scene-tables migration. This file
 records the baseline, the inventory that drives the epoch order, and
 the design decisions locked in before each phase. Update it at every

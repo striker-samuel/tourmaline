@@ -81,7 +81,9 @@ int main() {
 	if (!fs::exists(geo) || !fs::exists(anim)) {
 		std::cout << "SKIP knight content absent (" << dir.string()
 			<< ")\n";
-		return 0;
+		// Exit 77 -> ctest's SKIP_RETURN_CODE property marks the test
+		// "Skipped" (never a green pass on content machines).
+		return 77;
 	}
 
 	// ---- 1) The .geometry rebuild (BuildFromMeshAsset, ph=0) ----------

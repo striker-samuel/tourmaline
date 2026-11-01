@@ -8,9 +8,11 @@ the shared GPU geometry upload service
 (`Engine/Renderer/geometry_upload.h`), and the TYPED-KEY SPAWN LANE
 (`AssetManager::LoadMesh(project::meshes::X)` →
 `AssetManager::SpawnMesh(handle)` → the engine's row-driven
-`World::SpawnMesh(worldMeshIndex)`) are LANDED. The
-subset/pak-grouped mesh fast path and the pak-vNext page pager remain
-the documented follow-ups.
+`World::SpawnMesh(worldMeshIndex)`) are LANDED. The pak-vNext page
+pager is ALSO landed as the selective `ProjectRuntime::ReadAsset`
+serve lane (`engine/Asset/pak_pager.h`); the remaining documented
+follow-ups are the subset/pak-grouped mesh fast path and the
+permanent shared mesh store.
 
 **Surface:**
 - `engine/include/Engine/Asset/asset_query.h` — the compile-time
@@ -22,8 +24,8 @@ the documented follow-ups.
   store; `Store()` exposes the cluster-source seam).
 - `engine/include/Engine/Renderer/geometry_upload.h` — the shared GPU
   geometry upload service (the extracted carve + copy core; one
-  uploader for the cluster deserializer, the future shared mesh
-  store, and the pak-vNext pager — never a duplicate).
+  uploader for the cluster deserializer, the (landed) pak-vNext
+  pager, and the future shared mesh store — never a duplicate).
 - The generated `project.h` — the per-project binding (emitted by
   `Project.exe ids`; never hand-edited).
 
@@ -194,14 +196,17 @@ auto batch = assets.LoadMeshes(WorldMeshes.data(), WorldMeshes.size());
   in the SHARED GEOMETRY UPLOAD SERVICE
   (`Engine/Renderer/geometry_upload.h`) — caller-owned arena tokens,
   pool-independent mesh values; the cluster's
-  `UploadStaticMeshesDirect` is its cluster-bookkeeping side. The
-  permanent model (page-resident mesh rows owned by the store, never
-  by scene clusters), the subset/pak-grouped fast path, and the
-  pak-vNext page pager remain the documented follow-ups. **Format
-  policy for that work: when the paged format lands, the pak magic
-  BUMPS — no version negotiation, no compat reader; stale paks fail
-  loud at open (the existing `PakReader::Open` behavior) and content
-  recooks from zero.**
+  `UploadStaticMeshesDirect` is its cluster-bookkeeping side.
+  STATUS UPDATE: the paged SMP8 container + the async pager
+  (`engine/Asset/pak_pager.h`) have since LANDED — the pager serves
+  the selective `ProjectRuntime::ReadAsset` lane (docs/pak_vnext.md).
+  The permanent model (page-resident mesh rows owned by the store,
+  never by scene clusters) and the subset/pak-grouped fast path remain
+  the documented follow-ups. **Format policy stands: when container
+  changes land, the pak magic BUMPS — no version negotiation, no
+  compat reader; stale paks fail loud at open and content recooks
+  from zero** (now exercised: the SMP7→SMP8 break recooked cleanly
+  without a reader).
 
 ## 4. GI as a first-class catalog asset
 

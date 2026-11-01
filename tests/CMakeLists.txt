@@ -62,6 +62,11 @@ set_target_properties(KnightAnimTests PROPERTIES
 )
 
 add_test(NAME knight_anim_tests COMMAND KnightAnimTests)
+# The content under F:/content/demo/knight_only lives on the author's
+# scratch disk (derived from the knight glTF, too large to carry in
+# git) — the test exits 77 WITHOUT it so ctest reports "Skipped", never
+# a green pass. A green run on CI means the content WAS present.
+set_tests_properties(knight_anim_tests PROPERTIES SKIP_RETURN_CODE 77)
 
 # Placement editor model (engine-only TU: no ImGui, no EditorApp).
 add_executable(PlacementEditorTests test_placement_editor.cpp
@@ -959,8 +964,53 @@ add_test(NAME shader_hot_reload_tests COMMAND ShaderHotReloadTests)
 # prerequisites of the test, not runtime finds.
 add_dependencies(ProjectPipelineTests Cook GiBaker Pak)
 
+# The BUNDLED-PROJECT END-TO-END ACCEPTANCE GATE (CPU-only): the
+# checked-in samples/04_project_game content driven through the
+# CONTRIBUTOR flow — Project.exe build (the real CLI + the real
+# subprocess stage adapter: Cook/GiBaker/Pak spawn exactly as on a
+# contributor's machine) cooks + publishes the content-addressed paks
+# + the game.tapp manifest; then the deployment halves run headless
+# IN-PROCESS: DeployCheck (pak VerifyAll + content-addressed digest)
+# over every published pak, the deployed catalog fingerprint vs the
+# runtime fold (the compiled-catalog contract GameProject.exe checks at
+# boot), every VFS-servable [ids] row reading its bytes, and a scene
+# load through the public clusterLoader seam. The GameProject EXE
+# itself compiles in every top-level configure (CI build verification
+# covers that leg); its GPU launch stays dev-side (golden_capture).
+add_executable(ProjectE2eTests test_project_e2e.cpp
+	../app/src/ProjectRuntime.cpp
+	../app/src/ProjectScenes.cpp
+	# PakWorldLoader.cpp owns PostLoadTail (the post-load tail every
+	# scene load runs — anim attach, static flags, the resolve fold).
+	../app/src/PakWorldLoader.cpp
+	../app/src/PakPreload.cpp
+	../app/src/DeployCheck.cpp
+)
+
+target_include_directories(ProjectE2eTests
+	PRIVATE
+		${CMAKE_SOURCE_DIR}/app/src
+)
+
+target_link_libraries(ProjectE2eTests
+	PRIVATE
+		engine
+		artifact_cache
+)
+
+set_target_properties(ProjectE2eTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME project_e2e_tests COMMAND ProjectE2eTests)
+
+# Project.exe (the CLI under test) + the stage tools it spawns are
+# build prerequisites, not runtime finds.
+add_dependencies(ProjectE2eTests Project Cook GiBaker Pak)
+
 # SDL3 is linked PUBLIC via engine: stage the DLL next to each test exe.
 tourmaline_stage_sdl3(AssetTests)
+tourmaline_stage_sdl3(ProjectE2eTests)
 tourmaline_stage_sdl3(SpirvReflectionTests)
 tourmaline_stage_sdl3(GfxFilterTests)
 tourmaline_stage_sdl3(ExposureTests)

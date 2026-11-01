@@ -178,12 +178,22 @@ temporary bake allocations. Real volumes are far smaller
 
 ### 3a. NO VERSION FIELD
 
-**Policy:** the magic is the identity. No version members, no legacy
-readers, no conversions. Old files refuse at the magic — re-bake.
+**Policy:** the magic is the identity. No version members, no
+conversions. Files refuse at any other magic — re-bake (the standing
+`GVOL`→`GV6H` break is the working example: GV6H is the ONLY emitted
+format; the legacy GVOL form is still read on intake for old content
+to re-bake from, exactly because no conversion path exists).
+
+> STATUS (as of the GV6H landing): the canonical `.givolume` format is
+> **GV6H** (BC6H_UFloat, ~9 bytes/probe) — packaged as `GV6H`; the
+> `GVOL` row below is the LEGACY reference form (read-only intake for
+> pre-GV6H content + the quality-comparison baseline), so the "no
+> legacy readers" note originally described a policy against FORMAT
+> CONVERSION, not against accepting old files verbatim for re-bake.
 
 | Format | Magic | Notes |
 |--------|-------|-------|
-| `.givolume` | `GVOL` | the post-visibility shape |
+| `.givolume` | `GV6H` | the post-visibility shape — BC6H_UFloat per-lobe 9-layer (`GVOL` is the legacy RGBA16F form, still ACCEPTED on read as the reference/rebake input, never emitted) |
 | `.sgrv` | `RGVL` | the regular SG lattice |
 | `.sglm` | `SGLA` | the SG lightmap atlas |
 | `.reach` | `REAX` | the capture-reach sidecar |

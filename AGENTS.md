@@ -602,6 +602,16 @@ exclude the test targets from a configure entirely (that is what CI's
 BUILD VERIFICATION does; the Tests workflow runs the suite — the five
 GPU-window tests excluded on hosted runners: no display / Vulkan ICD).
 
+`project_e2e_tests` is the BUNDLED-PROJECT ACCEPTANCE GATE: the
+checked-in samples/04_project_game project copied to a temp dir, cooked
+and published through the real `Project.exe build` CLI (the subprocess
+stage adapter — Cook/GiBaker/Pak spawn as on a contributor's machine),
+then the deployment halves headless: DeployCheck over every published
+pak, the deployed catalog fingerprint vs the runtime fold, every
+VFS-servable [ids] row read through its pak, and a scene load through
+the public clusterLoader seam. Compiling the sample's game exe is the
+build configs' job; its GPU launch stays a dev-side golden run.
+
 ## Conventions
 
 - Push-constant structs: C++ (`engine/include/Engine/Rendergraph/*.h`)

@@ -1,8 +1,11 @@
 # Pak vNext: SMP8 (the paged break)
 
-**Status:** landed (the container layer of the consolidated content
-architecture). The async pager (Phase 5) and the compiled static
-plans (Phase 6) build on the primitives defined here.
+**Status:** landed — the container layer of the consolidated content
+architecture. Phases 5 (the async pak pager, `engine/Asset/pak_pager.h`)
+and 6 (the compiled static plans, `engine/Asset/asset_plan.h`) are ALSO
+landed on top of the primitives defined here; the remaining open work
+is the subset/pak-grouped mesh fast path + the permanent shared mesh
+store (see the follow-ups at the end).
 
 ## The format
 

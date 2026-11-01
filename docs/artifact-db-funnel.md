@@ -3,6 +3,19 @@
 Durable record for the pipeline rework (naming, staging, schema).
 Status: spec agreed, implementing in slices (see §8).
 
+> **READ AS DESIGN HISTORY + OPEN-PROPOSAL LEDGER, not as current-state
+> docs.** This document predates several landed slices: the pipeline it
+> sketches (asset DB, VFS, pak funnel) exists today largely as
+> described, but specific counts, stage lists and P0–P3 step plans below
+> are snapshots of the moment they were written (e.g. its early
+> "32-test" baseline), and its open design questions are PROPOSALS —
+> several may already be settled in code. The authoritative current
+> references are `AGENTS.md` (the runtime layers + conventions),
+> `docs/content_as_code.md` (the landed query/loading API), and
+> `docs/pak_vnext.md` (the SMP8 container + pager + plans). Do not treat
+> anything here as a TODO list without an implementation-level audit
+> first.
+
 ## 1. The chain (owner-directed)
 
 ```
