@@ -1196,7 +1196,7 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 	// ---- 5) GiBaker (the authored GI volumes only) -----------------------
 	{
 		// The legacy .sggi world bake is RETIRED from the schedule (stage
-		// 2 of tourmaline_octree_retirement_plan.md): NO --out, no
+		// 2 of the octree retirement): NO --out, no
 		// --backend, no --max-probes — a bare run is GI-VOLUME-ONLY (the
 		// world bake is gated on the explicit --out; see GiBaker's
 		// outExplicit contract). The runtime's ambient rides the baked

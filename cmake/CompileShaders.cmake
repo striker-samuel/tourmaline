@@ -299,8 +299,10 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
                 # ALLOWLIST: only the shaders whose push blocks carry NO
                 # vk::BufferPointer compile today (that attribute is
                 # SPIR-V-only; 108/111 fail on it — measured 2026-10; the
-                # DXIL BDA rework is the remaining shader-milestone, see
-                # docs/dx12_porting_notes.md). Everything NOT on the list
+                # DXIL BDA rework is the remaining shader-milestone (the
+                # experimental D3D12/backend branch is unmerged — its
+                # porting diary never landed on master). Everything NOT on
+                # the list
                 # skips the DXIL twin quietly; the .spv contract is never
                 # gated by a DXIL failure.
                 if (NOT DEFINED HLSL_DXIL_OK_FILES)

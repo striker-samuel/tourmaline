@@ -1,6 +1,22 @@
 TODO
 ====
 
+(Proofread backlog — highest value first)
+
+1. `pak.cpp`: TOC/blob `u64` overflow checks, `Payload` entry-provenance;
+   the pool-ctor `ThreadPool(0)` hang is guarded now, but the pak sites
+   still use `min(count, hc)` — wrap with `max(1u,…)` when touched.
+2. `impl.cpp` barrier collection: `continue`-on-missing skips (assert+log
+   instead); `%2` SDSM slots vs 3 flights (verify/convert to flight count).
+3. Bindless: exhaustion must fail closed (`UINT32_MAX`, not assert-only);
+   destroy path is being hardened upstream (`NullBindlessSlotWrites`) —
+   coordinate, don't duplicate.
+4. `AppFrameContext::gfxLodFilterable` (`std::function`, nullable): null-guard
+   at call sites; don't copy per frame.
+5. `RenderGraph::NewFrame` pool growth: free/reuse transients, don't
+   `AddImage` per frame without free.
+
+
 (Engine, future) Two-sided materials (CullMode::None): the importer asserts
 on doubleSided under --strict while the runtime IGNORES the cooked flag
 (mesh.h: "two-sided rendering is no longer supported (the pipeline is
@@ -9,7 +25,7 @@ Content wants it: glass panes already stamp doubleSided=true (gltf.cpp's
 stale "pipeline cull None via doubleSided" comment), and thin double-skin
 shells (the knight's cloth/shield) suffer under Cull Back (see-through at
 open edges/folds/grazing angles) + under the Cull Front shadow depth (the
-thin-shell self-shadow acne — see the resolved verdict below). Support
+thin-shell self-shadow acne — see the standing verdict below). Support
 shape: un-ignore Material::doubleSided -> MakePipelineStateForMaterial
 gains a CullMode::None raster variant for those materials across every
 pipeline family (lit/depth/prepass/motion/seed + the direct and indirect
@@ -19,156 +35,34 @@ the importer's --strict assert drops once the flag is real. The meshlet
 cones stay safe either way (facing-mixed -> degenerate -> keep); the
 per-triangle homogeneous backface filter flag needs no change.
 
-(Engine, decision) Skinned-mesh culling runs CONSERVATIVE by default: the
-cone test and the HZB occlusion test are SKIPPED for skinned draws/clusters
-(sphere + frustum + contribution only; the deformed spheres/unions are
-SkinDump cross-checked sound). Evidence trail: the fit itself is verified
+(Engine, standing decision) Skinned-mesh culling runs CONSERVATIVE by
+default: the cone test and the HZB occlusion test are SKIPPED for skinned
+draws/clusters (sphere + frustum + contribution only). The fit is verified
 honest (TOURMALINE_SKINBOUNDS_DUMP's CPU-reference cross-check agreed
-2000/2000, zero field mismatches) and ~42% of the knight's posed clusters
-degenerate their cones anyway (the spread is real geometry) — but the fog
-evidence (a complete depth silhouette while Main misses meshlets) pinned
-the visible-chunk drops on the lossy filter stages, so skinned geometry
-stays off both until the residual dropper is isolated. This mirrors
-Remedy's own shipped call: Alan Wake 2 rebuilt cones (~0.1 ms) but SHIPPED
-with meshlet cone culling disabled — their HZB occlusion covered the win.
-TOURMALINE_SKIN_CONE=1 restores the skinned cone test (A/B lever); the
-rebuild + the cone-axis overlay always run (honest data either way). The
-HZB skip for skinned has no lever yet — add one if the occluder leg is
-ever exonerated. The SkinDump diagnostic stays until the investigation
-fully closes (remove in the squash).
+2000/2000) and ~42% of the knight's posed clusters degenerate their cones
+anyway — but the fog evidence (a complete depth silhouette while Main
+misses meshlets) pinned the visible-chunk drops on the lossy filter
+stages, so skinned geometry stays off both until the residual dropper is
+isolated (the shipped-alan-wake-2 precedent: cones rebuilt, culling
+disabled). HZB skip for skinned has no lever yet — add one if the
+occluder leg is ever exonerated. The SkinDump diagnostic stays until the
+investigation fully closes (remove in the squash).
 
-(Engine, resolved-verdict) Skinned-mesh self-shadowing on thin double-skin
-meshes (the knight's shield): the shadow chain is the standard robust one
-(receiver-side normal bias ~1.25 texels world + slope-scaled oriented depth
-bias ~0.5 texels/depthRange, per-cascade texel-scaled, UI scales in the
-Debug panel) and it detaches self-overlap up to ~a few mm. The residual is
-geometric, not a bias bug: shadow depth renders with Cull Front (back-face
-depth — the classic closed-mesh anti-acne choice), so on a THIN OPEN shell
-(~2mm skins) the stored back skin sits 2mm behind the receiver skin instead
-of a closed mesh's thickness, and at grazing sun angles the required
-detachment grows unbounded while the baked bias is fixed (any bias big
-enough to clear it would peter-pan real contact shadows globally). RIDE
-WITH IT. Content-side fixes: close the shell rim (a solid edge strip makes
-it a closed volume — the back-face trick then works as designed) or widen
-the skin gap beyond the bias budget (~>1 cm). Engine-side answer for thin
-shells if it ever matters: EVSM (variance maps leak light through tiny
-overlaps naturally — the toggle exists, default PCF).
+(Engine, standing decision) Skinned-mesh self-shadowing on thin
+double-skin meshes (the knight's shield): the residual acne is GEOMETRIC,
+not a bias bug — shadow depth renders with Cull Front, so on a THIN OPEN
+shell (~2mm skins) the stored back skin sits 2mm behind the receiver skin
+and grazing sun angles unbound the required detachment. RIDE WITH IT.
+Content-side fixes: close the shell rim (solid edge strip) or widen the
+skin gap beyond the bias budget (~>1 cm). Engine-side answer if it ever
+matters: EVSM (leaks light through tiny overlaps natively).
 
-(Editor, future) The editor's meshlet debug (F4 "Cone-cutoff heat" +
-per-meshlet cone data) reads its own cooked STATIC meshlets — bind-pose
-cones, no deformed source. The engine's gfx cull chain now rebuilds
-deformed cones on GPU (GfxSkinBounds) and its runtime axis overlay consumes
-them GPU-side (GfxConeDebug, TOURMALINE_CONE_DEBUG=1 arms it headless); the
-editor preview is the remaining place a skinned mesh shows bind-pose cone
-data. Revisit if the editor ever runs the skinning preview / the gfx filter
-chain (it would then get the same GfxSkinBounds table; until then the
-editor overlay is honest only for static meshes).
-
-(Engine, RESOLVED) THE STRANDED-UPLOAD WRITE — a rendergraph sync sharp
-edge where an UPLOAD's bytes were read by a draw in the same frame, even
-though the frame's submit waits for the upload. Caught on device by
-PlacementGpuTests' section 10 (the end-to-end pixels-on-device draw
-proof, commit 370798dd): the publish frame's DrawIndexedIndirect read
-indexCount == 0 (a SILENT no-op draw — no fault, no pixels) while the
-POST-FRAME READBACK OF THE VERY SAME BUFFER showed the seeded
-indexCount == 6 + the kernel's instanceCount == 69, with a reliable
-one-frame lag (benign pop-in for streaming tiles, pinned as a contract
-by the test).
-
-ROOT CAUSE (the hint defect): the section-10 draw pass hinted the
-indirect buffer with IndirectCommandRead @ PipelineStageBit_AllGraphics
-— but the engine's AllGraphics maps to the SHADER-stage union ONLY
-(ToVkStage, impl.cpp ~1511: Vertex|Fragment|Geometry|Tess|Task|Mesh ->
-VERTEX_INPUT|VERTEX|...|TASK|MESH — never
-VK_PIPELINE_STAGE_2_DRAW_INDIRECT). The barrier's dst stage therefore
-EXCLUDED the fixed-function stage that fetches the command, so the fetch
-was unsynchronized no matter who wrote the buffer. The production
-pairing rule (gfx_filter's AddConsumeHints: "Engine helper covers
-IndexRead@Vertex and IndirectCommandRead@DrawIndirect") is the contract:
-IndirectCommandRead MUST pair with PipelineStageBit_DrawIndirect. The
-test's hint is fixed; every hand-written indirect-draw hint must follow
-that shape — now ENFORCED (see below).
-
-  Historical barrier evidence (TOURMALINE_BARRIER_TRACE, pre-fix — note
-  the dstStage=1807fc on the draw line: the missing 0x2 DRAW_INDIRECT
-  bit WAS the defect):
-
-    [RG] pass 'PlacementDrawBuild' ... barrier buf h=78:
-        srcStage=1000(TRANSFER) srcAcc=1000 -> dstStage=800(COMPUTE)
-    [RG] pass 'PlacementDraw'     ... barrier buf h=78:
-        srcStage=800(COMPUTE)  srcAcc=60  -> dstStage=1807fc dstAcc=21
-
-NOTE (the retired theory): the investigation's first explanation — that
-the rendergraph loses upload visibility because its per-resource sync
-state tracks only the LAST write's scope (the draw-build COMPUTE
-re-write shadowing the TRANSFER seed, so no barrier ever delivered the
-seed to the draw) — was DISPROVEN on device by PR2's reproducer: the
-frame submit's transfer-timeline wait already establishes the memory
-dependency to the whole waiting submission, so the narrowed graph-local
-barrier src is NOT a visibility bug. The last-writer tracking, the
-upload timeline semaphore, and the single-writer placement are all sound
-as-is; no synchronization machinery change is needed or wanted.
-
-PR1 (the placement-side hardening, merged): draw-build owns the COMPLETE
-command. PlacementDrawBuildPush grew 32 -> 128 bytes (the prototype
-table's indexCount/firstIndex/vertexOffset[8] ride the push as two uint4
-lanes per field); placement_drawbuild.cs.hlsl writes all five fields;
-PlacementWorldRuntime::SeedIndirect is pure metadata (cache + push
-capture at RecordCullChain; no GPU write); the publication-time seed
-upload is gone; the draw-build pass's indirect hint is now ShaderWrite
-(single-scope COMPUTE writer per frame — the draw's compute-write ->
-indirect-read barrier is complete BY CONSTRUCTION). MeshParticles shares
-the kernel and got the same treatment. The section-10 regression now
-asserts the FIRST eligible frame's pixels (22896/65536 lit, bins
-69+65+61) + full command parity + the zero-visible bin + a changed
-prototype table reaching the next recorded frame.
-
-PR2 (the RHI-level regression, merged):
-tests/test_rhi_upload_barriers_gpu.cpp reproduces the split writer at
-the RHI level, independent of the placement renderer: a
-BufferType_Indirect command whose STATIC halves come from
-UploadDataToBuffer (declared for its first consumer — COMPUTE /
-ShaderRead|ShaderWrite, the placement seed's exact shape) and whose
-DYNAMIC halves a same-frame compute pass rewrites, feeding an immediate
-DrawIndexedIndirect with the CORRECT hint pairing (IndirectCommandRead @
-PipelineStageBit_DrawIndirect). ON-DEVICE EVIDENCE: the FIRST frame
-draws the complete command (23762/65536 px lit, stable on frame 2) —
-the upload machinery delivers the UPLOADED bytes to the DRAW_INDIRECT
-fetch. The reproducer stays as the regression pin (it fails if the hint
-pairing regresses OR the upload handoff breaks). Evidence rule (the
-Vulkan constraint): a timeline-semaphore wait already establishes a
-memory dependency between its signal and wait scopes — the absence of
-TRANSFER_WRITE from a later graph-local barrier src is NOT by itself a
-visibility bug; the failing dependency must be demonstrated on device
-before any synchronization change. The sharing-policy audit
-(BufferType_Indirect's exclusion from concurrent sharing in
-CreateBuffer) stays UNTOUCHED pending a real failure; do not switch
-sharing modes speculatively.
-
-ENFORCEMENT (the pairing rule is now assert-checked): smvk's
-AssertStageAccessSupported / SupportingStagesFor (smvk.h, next to
-DerivePipelineStage) debug-assert every (stage x access) pair at the
-rendergraph's hint-ingestion choke points (RenderPass::AddImageHint /
-AddBufferHint) and at CollectPassUsages' convergence — a hand-written
-IndirectCommandRead hint under AllGraphics (or any stage mask without
-the DrawIndirect bit) aborts Debug builds at the declaring site, and the
-decision table itself is pinned CPU-side by RendergraphContractTests
-(the pair.* checks). The class of defect cannot silently return.
-
-The CONSUMER RULE ("never let a draw depend on bytes an UPLOAD wrote to
-a buffer that a KERNEL re-writes in the same frame") is RETIRED for
-placement (single-scope writer by construction); the write-debt union
-alternative stays UNRESOLVED BY DESIGN — do NOT take the naive union
-blindly:
-  - A naive `state.masks |= req.barrierMasks` prototype was tried and
-    BROKE OTHER PASSES: accumulated READ scopes produced access bits
-    whose supporting stages were not in the mask (e.g. IndirectCommandRead
-    with no DrawIndirect stage) — invalid (stage x access) pairings, the
-    exact class the ingestion assert now rejects. Any union approach
-    must track WRITE (stage, access) PAIRS only, never read scopes, and
-    the debt must survive read passes until the buffer dies (a barrier
-    delivers only to its own dst scope; later readers with a different
-    scope each need their own delivery).
+(Editor, future) The editor's meshlet debug (F4 "Cone-cutoff heat") reads
+its own cooked STATIC meshlets — bind-pose cones, no deformed source. The
+engine's gfx cull chain rebuilds deformed cones on GPU (GfxSkinBounds +
+the runtime GfxConeDebug overlay); the editor preview is the remaining
+place a skinned mesh shows bind-pose cone data. Revisit if the editor
+ever runs the skinning preview / the gfx filter chain.
 
 (Engine, next-PR) PR07 — THE PLACEMENT SHADOW-VIEWS + OCCLUSION/LOD +
 THE PERF/GOLDEN CONTRACT. PR01-PR06 left the chain MAIN-VIEW-ONLY and
@@ -182,275 +76,130 @@ no shadow views. Four scoped gaps, in dependency order:
     ALREADY THERE (the vis array strides [slot * viewBudget + view],
     PlacementVisibleSet is per view, and placement_cull.cs takes
     (renderViews, renderViewIndex)) — what is missing is the POLICY +
-    the wiring. Shadow cascades need placed geometry too (meadows/
-    grass casting shadows) but should NOT pay the main view's cull
-    shape: a depth-only cascade view has no contribution test to
-    piggyback, so the honest options are (a) one shared conservative
+    the wiring. Shadow cascades need placed geometry too but should NOT
+    pay the main view's cull shape: (a) one shared conservative
     FRUSTUM-ONLY visible set recorded for the union of the shadow
-    views (viewBudget 2: main + one shared shadow set — the cascade
-    frusta are cheap to union CPU-side) or (b) per-cascade sets
-    (viewBudget 1 + cascadeCount — honest per-view cost, more cull
-    dispatches). Decide with the per-pass timings from the perf scene
-    below, then wire the shadow draws into the cascade views' command
-    recording (the renderer's shadow-view list joins RecordCullChain).
+    views (viewBudget 2: main + one shared shadow set), or (b)
+    per-cascade sets (viewBudget 1 + cascadeCount). Decide with the
+    per-pass timings from the perf scene below, then wire the shadow
+    draws into the cascade views' command recording (the renderer's
+    shadow-view list joins RecordCullChain).
   - HZB/LOD: every placed instance today draws its BASE proto mesh —
-    no LOD tier, no occlusion rejection. The mesh side has both halves
-    to borrow: the HZB pass + its per-view occlusion walk, and
-    World::SelectLodIndex applying the instance's world scale at pick
-    time (the LOD sibling errors stay MESH-LOCAL by contract — never
-    bake a scene transform into the serialized error). The placement
-    shape: a placement-tier LOD per proto (the prototype table owns
-    the proto id; selection needs the instance's world scale + the
-    VIEW's distance — a per-view distance band picking the tier in the
-    cull/build pass, NOT per-draw CPU work) and OPTIONALLY one HZB
-    sample against the placement sphere (the same conservative sphere
-    the frustum test already uses). A/B both on the perf scene before
-    either becomes load-bearing — the skinned-mesh lesson (a lossy
-    filter stage silently dropping visible chunks) says prove the
-    occluder leg exoneration FIRST, pin with a lever (the
-    TOURMALINE_SKIN_CONE pattern), ship conservative by default.
-  - Perf scenes: a placement-heavy bench target (the meadow/tile
-    content the GPU tests already seed, or a bistro strip) under the
-    --bench + TOURMALINE_CAPTURE contract with the per-pass timings
+    no LOD tier, no occlusion rejection. Borrow the mesh side's halves:
+    the HZB pass + its per-view occlusion walk, and World::SelectLodIndex
+    (LOD sibling errors stay MESH-LOCAL — never bake a scene transform
+    into the serialized error). Shape: a placement-tier LOD per proto
+    (selection needs the instance's world scale + the VIEW's distance —
+    a per-view distance band picking the tier in the cull/build pass)
+    and OPTIONALLY one HZB sample against the placement sphere.
+    A/B both on the perf scene before either becomes load-bearing —
+    the skinned-mesh lesson says prove the occluder leg exoneration
+    FIRST, pin with a lever, ship conservative by default.
+  - Perf scenes: a placement-heavy bench target under the --bench +
+    TOURMALINE_CAPTURE contract with the per-pass timings
     (scatter/prefix/cull/drawbuild/draw) in the stderr table — the
-    chain's per-frame cost needs ONE scene it is tuned against, the
-    role sponza played for the octree/volumetrics A/B matrix.
+    chain needs ONE scene it is tuned against, the role sponza played
+    for the octree/volumetrics A/B matrix.
   - Golden captures: the capture + diff protocol as the placement
     regression gate — a golden per PIN-MATRIX (the TOURMALINE_* pin
     set -> one screenshot, re-captured on shader/runtime changes),
-    compared with the established NOISE-FLOOR contract (identical-
-    source runs differ ~11.5k-12k samples / sum ~15.0-15.6k / max ~20
-    at 4 px stride; any honest "unchanged" verdict must sit BELOW it —
-    the octree retirement's merge record is the working example).
+    compared with the NOISE-FLOOR contract (identical-source runs
+    differ ~11.5k-12k samples / sum ~15.0-15.6k / max ~20 at 4 px
+    stride; any honest "unchanged" verdict must sit BELOW it).
 
+(Engine, deferred) Forward+ hierarchical tile-light culling follow-ups
+(TOURMALINE_FP_MASKS, default ON, validated: the invariant suite + a
+byte-identical sponza A/B capture; under DS the F+ light leg stays
+linear by design — the DS lists own the lights, the decal/probe/volume
+legs still run):
 
-
-(Engine, future) Forward+ hierarchical tile-light culling (TOURMALINE_FP_MASKS,
-default ON) - the FFXVI phase-1 artifacts now feed the DEFAULT forward+ tile
-cull (lights CPU-sorted by near distance + zBins + 64px coarse tile masks,
-reusing the DS pipeline's builders verbatim; the cull intersects mask x zBin
-window at the 32-bit word level and runs the exact side-plane/slab tests only
-on surviving bits). Validated: 47/47 ctest, the invariant suite
-(test_forwardplus_masks.cpp: 10.9M exact-test survivors window-checked, 9.4M
-true contributors bit-checked), and a byte-identical sponza A/B capture
-(TOURMALINE_FP_MASKS=0|1, 96-light crowd, TOURMALINE_DS=0). Deferred follow-ups:
-
-  - GPU-side phase-1: the sort + DsBuildZBins + DsBuildTileMasks run on the
-    CPU every frame (~0.15 ms at 96 lights / 1080p, group-plane cached - the
-    [perf] fp/ds bucket). If heavy-dynamic scenes push that past ~0.5 ms,
-    move the zBin/mask BUILD to compute (the paper does phase 1 on GPU; the
-    light sort itself can stay CPU-side since the upload is CPU-owned - the
-    builder order is the zBin index space).
+  - GPU-side phase-1: the sort + DsBuildZBins + DsBuildTileMasks run on
+    the CPU every frame (~0.15 ms at 96 lights / 1080p). If heavy-dynamic
+    scenes push that past ~0.5 ms, move the zBin/mask BUILD to compute
+    (the paper does phase 1 on GPU; the light sort itself can stay
+    CPU-side — the builder order is the zBin index space).
   - Occupancy batching: forwardplus.cs.hlsl still dispatches [1,1,1]
-    workgroups (one lane per tile). Batching 8x8 tiles per workgroup (64
-    lanes, the guide's stage-C shape) is mechanical (per-thread tileId
-    mapping; no shared state - each tile owns its lists) and should pay on
-    the depth-preload + candidate walk; keep the [1,1,1] shape as the A/B
-    reference.
-  - Compact per-tile arena lists (the guide's stage D): deliberately NOT
-    ported - the fixed-stride rows (maxLightsPerTile + probe slots) with
-    count-gated consumers ARE the guide's ""fixed capacity first version"",
-    and compaction (offset/count + pooled arena, one atomic per tile group)
-    would touch every surface-list consumer for a marginal sparse-tile win.
-    Revisit only if a profile pins list-read bandwidth in the lit body.
-  - Under DS the F+ light leg stays linear (dead work by design - the DS
-    lists own the lights; the decal/probe/volume legs still run). If that
-    dead work ever shows in a profile, the DS ring's phase-1 artifacts are
-    byte-compatible - feeding them to the F+ cull is a wire-up, not a port.
+    workgroups. Batching 8x8 tiles per workgroup (64 lanes) is
+    mechanical and should pay on the depth-preload + candidate walk;
+    keep the [1,1,1] shape as the A/B reference.
+  - Compact per-tile arena lists: deliberately NOT ported — the
+    fixed-stride rows with count-gated consumers ARE the guide's
+    "fixed capacity first version". Revisit only if a profile pins
+    list-read bandwidth in the lit body.
+  - DS-off caveat: m_dsEnabled defaults TRUE, so the masks pay on the
+    DS-off path (H toggle / TOURMALINE_DS=0) until DS flips default-off.
 
-NOTE the active-path caveat: m_dsEnabled defaults TRUE, so the engine's
-default lighting lists are the DS pipeline's - the masks pay on the DS-off
-path (the H toggle / TOURMALINE_DS=0, the classic forward+ A/B path) until
-DS flips default-off. The mask path's contract is NO-MISSING-CONTRIBUTOR
-(the paper's invariant, not bit-identical lists): center-based -range
-side-plane tests do not compose across nested wedges for behind-camera
-centers, so the mask may drop the linear scan's own zero-contribution false
-positives - captures match except in SATURATED tiles where the mask path
-keeps a superset of the reference's true contributors (its sorted insertion
-wastes no slots on the dead entries). See forwardplus.cs.hlsl's header for
-the per-reject proofs.
-(Entity model, next) THE PER-DRAW PALETTE TABLE - one rendered POSE per
+(Entity model, next) THE PER-DRAW PALETTE TABLE — one rendered POSE per
 cluster today (World::Update flushes the FIRST animator per target
 cluster; every animator's STATE is already independent + exact). The
-renderer generalization: a palette per DRAW, not per cluster - the
+renderer generalization: a palette per DRAW, not per cluster — the
 skinning pass grows a palette table (per-entity ranges keyed by draw),
 SkinPush gains the per-draw palette index, and GFX_DRAW_SKINNED fetches
 its own palette. Unblocks N knight entities sharing one cluster with
 independent poses. See docs/entities_and_animators.md (v1 limits).
 
-(Entity model, next) THE ASSET-MANAGER SURFACE: SpawnMesh(MeshKey) +
-LoadMesh/LoadSkeleton/LoadAnimation. Needs (a) the key->loaded-mesh
-join - the appmanifest gains the mesh's OWNING SCENE + mesh-URI rows
-(meshes ship inside their scene's cluster, the v1 pak boundary; the
-app layer resolves MeshKey -> owning scene id -> ProjectScenes
-ensures-loaded -> the world mesh row), and (b) the AnimationClipKey +
-SkeletonKey CATALOG BUCKETS (0x5xxx ranges: .anim classification in
-recipes, the asset-db kind, the bucket emission, the [ids] rows - the
-.anim blobs already embed as Texture-kind at VFS paths so ReadAsset
-serves the text; LoadTourAnimText parses). Clips today pass as loaded
-touranim::Clip values. Also: one skeleton per cluster (the importer's
-first-skin-wins contract) - a mesh-keyed skeleton table is the deeper
-unblock for multi-character clusters.
+(Entity model, next) THE ASSET-MANAGER SURFACE — the typed-key MESH lane
+is LANDED (AssetManager::LoadMesh over the project MeshKeys +
+SpawnMesh(handle)); the remaining halves:
+
+  - the AnimationClipKey + SkeletonKey CATALOG BUCKETS (0x5xxx ranges:
+    .anim classification in recipes, the asset-db kind, the bucket
+    emission, the [ids] rows — the .anim blobs already embed as
+    Texture-kind at VFS paths so ReadAsset serves the text;
+    LoadTourAnimText parses). Clips today pass as loaded
+    touranim::Clip values.
+  - one skeleton per cluster (the importer's first-skin-wins contract)
+    — a mesh-keyed skeleton table is the deeper unblock for
+    multi-character clusters.
 
 (Audio, future) Spatial audio v1 scope upgrades: cones/occlusion,
 emitter orientation (nodes are omnidirectional today), compressed +
 streaming formats (WAV/SDL only), more than the first autoplay slot,
 and the audio layer's per-process pak-image cost note (the shared
-apphost->game runtime seam - RunPakApp handing its preloaded backends
+apphost->game runtime seam — RunPakApp handing its preloaded backends
 to the AudioRuntime's ProjectRuntime).
 
-(Namespace/RHI boundary audit, staged - LANDED so far on feature/namespace-rhi-boundary: the audit plan + stage 1 (smvk::detail::vulkan), stage 2 (the CMake PRIVATE flip + consumer opt-ins), stage 3 (ArchitectureTests - the CI boundary scanner), stage 4a (tour::audio/profiler/mem + mem::config), stage 4b (tour::gi), stage 4c (tour::placement), the flattened typed catalog + the fingerprint contract (114068d8), the COMPLETE global-namespace cleanup (NodeId/scene payloads/tables/scene.h/Camera/Input), World + Cluster + Animator -> tour, the tour-doc + touranim + pak models -> tour::asset (THE NAME COLLISION DISSOLVED), App -> tour, the CI battery's R4 (direct) + R5 (TRANSITIVE - with the vacuous-pass fix the seeded-leak proof caught) + the header smoke test (in the DEFAULT build - 8 self-sufficiency bugs caught + fixed; the ctest-spawns-a-compiler flake fixed), the DLSS Vulkan adapter split (f9de7ded - the P1; dlss.cpp's orchestration spells no VkFormat). REMAINING) THE tour::/smvk:: SPLIT - the
-audit's confirmed findings + the migration plan (feature branch
-feature/namespace-rhi-boundary):
-  TARGET: tour:: = the public engine API (apps, scenes, assets, camera,
-  world, audio, gi, placement, mem, profiler); smvk:: = the RHI ONLY
-  (ResourceManager, handles, descriptor limits, swapchain, command
-  recording); smvk::detail::vulkan = the private impl (Vk*, VMA, Volk,
-  device/queue ownership). A namespace is not an architectural
-  boundary by itself - the P0 interface fixes below are the real ones.
-  STAGES, each compiling + 47/47 ctest green:
-  1. smvk::detail::vulkan for the impl classes (VulkanSwapchain/
-     VulkanFrameBuffer/VulkanPipeline, vulkan_impl.h:72-112) - private
-     headers, contained.
-  2. The CMake Vulkan leak: engine/CMakeLists.txt links
-     vulkan_headers_iface PUBLIC - Vulkan headers propagate to every
-     engine consumer. Flip PRIVATE; downstream targets that genuinely
-     use the RHI opt in. Longer term: split the single engine static
-     lib (all of engine/src incl. the Vulkan impl) into engine +
-     backend targets so the boundary is BUILD-enforced.
-  3. The GLOBAL-namespace cleanup: NodeId/NodeHandle (scene_node_id.h),
-     the scene tables/payloads (RowId, MeshRow..., SceneGiVolume...),
-     Camera + the positioners (camera.h - which also includes core.h,
-     pulling the RHI into camera consumers), and Input/TOUR_* ->
-     tour::(scene::) with compat aliases at the old scopes while
-     consumers migrate.
-  4. THE PRIMARY MIGRATION: engine-owned definitions OUT of smvk:: ->
-     tour:: (App/app.h, App/world.h, App/cluster.h -> tour::(scene);
+(Namespace/RHI boundary audit, REMAINING — the stages LANDED so far
+live on feature/namespace-rhi-boundary; work in order:) THE tour::/
+smvk:: SPLIT. TARGET: tour:: = the public engine API (apps, scenes,
+assets, camera, world, audio, gi, placement, mem, profiler); smvk:: =
+the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
+
+  4. THE PRIMARY MIGRATION (engine-owned definitions OUT of smvk:: ->
+     tour::: App/app.h, App/world.h, App/cluster.h -> tour::(scene);
      Asset/pak.h + Asset/tour.h's smvk::tour -> tour::asset;
-     smvk::audio -> tour::audio; smvk::gi -> tour::gi;
-     smvk::placement -> tour::placement; smvk::mem -> tour::mem;
-     smvk::profiler -> tour::profiler) - smvk:: keeps the legitimate
-     RHI (ResourceManager, handles, limits, swapchain). Compat
-     using-aliases in smvk:: keep the tree compiling; retire them as
-     call sites migrate.
+     smvk::audio/gi/placement/mem/profiler -> tour::*) — compat
+     using-aliases keep the tree compiling; retire as call sites
+     migrate. The giants' order: placement (13 headers, same shape
+     as gi), the global-namespace cleanup (NodeId/scene tables/
+     payloads/Camera/Input -> tour::(scene)), App/world/cluster+
+     pak+tour.h.
   5. P0 INTERFACE REDESIGNS (the real boundary work):
-     - smvk::App exposes GetResourceManager/GetSwapchain/GetRendergraph
-       + stores RHI members (app.h:113-142) -> tour::App owns the app;
+     - smvk::App exposes GetResourceManager/GetSwapchain/
+       GetRendergraph + stores RHI members -> tour::App owns the app;
        the concrete rendering context moves behind an impl/bridge.
-     - engine::ElementFrame carries smvk::Framebuffer*/Extent2D
-       (Element.h:61-94) -> a tour::RenderFrame hiding swapchain +
-       command ownership.
+     - engine::ElementFrame carries smvk::Framebuffer*/Extent2D ->
+       a tour::RenderFrame hiding swapchain + command ownership.
      - GfxRenderer publicly inherits smvk::IFrameRenderer + exposes
-       shader programs/handles (GfxRenderer.h:75-84); WorldRenderer.h
-       ~4000 lines including dozens of rendergraph components ->
+       shader programs/handles; WorldRenderer.h ~4000 lines ->
        a compact public renderer API vs private pass state.
-     - engine/core.h: the umbrella header including the RHI resource
-       manager + swapchain + rendergraph - split it.
-  6. P1s: WorldField's smvk::Format/ImageHandle/ImageRegion3D exposure
-     (CPU field description vs GPU upload split); dlss.cpp's direct
-     VkFormat/VkImage/VkPhysicalDevice use (Streamline adaptation ->
-     a backend file, settings/orchestration stay neutral); RHI's
-     SetImageViewVkView opaque-pointer API + swapchain GetImpl()/
-     GetVulkanOpaque() -> internal backend accessors.
+     - engine/core.h: the umbrella header - split it.
+     Whole-tree sequence note: impl.cpp's App::Initialize BOOTS the
+     whole renderer — moving that behind a bridge is a rearchitecture
+     of the 14k-line backend file, sequenced first among these.
+  6. P1s: WorldField's smvk::Format/ImageHandle/ImageRegion3D
+     exposure; dlss.cpp's direct VkFormat/VkImage/
+     VkPhysicalDevice use (Streamline adaptation -> a backend file);
+     RHI's SetImageViewVkView opaque-pointer API + swapchain
+     GetImpl()/GetVulkanOpaque() -> internal backend accessors.
   7. Downstream: Host.h's callback mixes smvk::App/World +
      engine::WorldRenderer; editor_app.h includes everything;
-     01_triangle derives smvk::App directly (fine as a DELIBERATE
-     low-level RHI sample, but opt in explicitly); 04_project_game
-     should demonstrate the engine-only surface.
-  6. THE REVERSED DEPENDENCIES (the RHI reaching UP into engine code -
-     resource_manager.h:11 includes Engine/Renderer for SPIR-V
-     reflection; its public upload takes smvk::Image whose definition
-     carries Vulkan allocation state (:161) + three native
-     image-view/sampler accessors (:239-241); smvk.h:1376 ENGINE FRAME
-     GLOBALS live in the RHI top header (:1408-1415 the renderer GPU
-     stage-timing enum; :1443 queue-family indices expose Vulkan
-     topology); Rendergraph/renderer.h:33-53 smvk::FrameContext +
-     IFrameRenderer mix world rendering, graph orchestration and RHI;
-     Vulkan/impl.cpp:52-60 includes App/World/Rendergraph/DLSS/mesh
-     headers). Direction: rendergraph + world-renderer orchestration
-     moves to tour; GPU command/resource primitives stay smvk;
-     device-specific ops move into the Vulkan backend.
-  7. THE BOUNDARY RULES (explicit + testable): the tour public API
-     exposes NO smvk::/RHI headers/Vk*/Vulkan/native handles; the smvk
-     public RHI exposes NO tour::World/App, no Vulkan types/VMA/Volk,
-     no backend methods; smvk::detail::vulkan may use Vulkan internally
-     but is never included by public engine/RHI headers; the engine
-     renderer impl uses smvk ONLY through the public RHI; application/
-     game code sees only tour by default (RHI access = an explicit
-     opt-in). Layout direction: engine/include/Tour/* + engine/src/
-     {core,scene,assets,renderer,internal}; rhi/include/Smvk/* +
-     rhi/src/{common,Vulkan} - separate dirs are not mandatory for the
-     NAMING, but they make ownership enforceable.
-     BUILD-TARGET SEPARATION (the high-priority change): split the one
-     engine static lib into tour_engine + smvk_rhi + smvk_vulkan;
-     tour_engine links PRIVATE smvk_rhi; smvk_vulkan links PRIVATE
-     volk + vulkan_headers_iface. The Vulkan include dirs must NEVER
-     propagate to the public engine/RHI compile interface.
-  8. CI ARCHITECTURE CHECKS (all GPU-free, must become mandatory):
-     (a) ENGINE HEADER SMOKE - compile every public Tour header
-     individually, PCH off, no RHI/Vulkan include dirs; (b) RHI-ONLY
-     SMOKE - compile every public Smvk header without Vulkan SDK/
-     Volk/VMA/Tour; (c) NAMESPACE + API SCANNER - fail on new global
-     declarations, smvk types leaked into the tour API, or
-     Vulkan-specific names in the RHI interface (exported signatures,
-     aliases, inherited types - not just direct includes; a regex is
-     the early warning, the real scanner is required); (d) TRANSITIVE
-     DEPENDENCY CHECK - compiler include-dependency output + CMake
-     target properties prove neither public surface transitively
-     imports a forbidden layer; (e) BACKEND INDEPENDENCE - compile +
-     exercise core RHI contracts against a null/mock backend; (f)
-     CROSS-PLATFORM - Linux GCC/Clang + Windows MSVC. Architecture
-     checks stay SEPARATE from the GPU-window tests (which remain
-     excluded on hosted runners).
-
-(Namespace/RHI boundary audit, branch notes) The tour-NAME COLLISION is
-pinned by stage 4a: inside namespace smvk an unqualified tour::X
-resolves to smvk::tour (the .tour-doc namespace) - compat aliases spell
-::tour::, forward-declaration blocks must declare tour::audio directly,
-and the smvk::tour -> tour::asset rename (the audit table) dissolves
-the pressure. The moved GI blocks carry a documented transitional
-`using namespace ::smvk` bridge (their bodies still spell smvk types
-unqualified) - retire as those references qualify. NEXT SLICES, in
-order: placement (13 headers, the same shape as gi); the global-
-namespace cleanup (NodeId/scene tables/payloads/Camera/Input ->
-tour::(scene)); the giants (App/world/cluster -> tour::, pak+tour.h ->
-tour::asset); then the P0 interface redesigns + the build split.
-(Content-as-code, landed) THE FLATTENED TYPED CATALOG (the review'"'"'s
-middle option, 114068d8): project.h is AUTHORITATIVE for asset
-identity - the flat Assets[] POD table (id, AssetKind, pakIndex into
-the LOGICAL Paks, path; sceneName reserved, cooked-scene identity
-stays deployment-side) + constexpr Find + CatalogFingerprint (the
-shared fold, appmanifest.h'"'"'s ComputeCatalogFingerprint - id, kind
-byte, pakIndex, path in emission order; NOT the published pak
-filename). The .tapp carries the same fold on a `catalog 0x...` line;
-ProjectRuntime::AttachCompiledCatalog proves the compiled table
-against the deployment manifest (the fingerprint gate + row-by-row:
-id/kind/path + the pakIndex mount-order alignment; pre-contract
-manifests degrade to row-by-row with a warning). The mirror
-CompiledAssetDesc is layout-pinned by static_asserts. Gameplay never
-sees a .tapp row, a TOC entry, or a pak filename. Follow-ups: the
-tour::Project runtime facade (app.assets()/app.scenes() over the
-attached table), reducing the .tapp further (the logical->published
-pak map + the cooked scene names + the fingerprint is the END STATE -
-today it still carries the full [ids] rows as the compatibility
-surface), and gameplay-config PODs as typed generated structs.
-
-(Boundary audit, honest ledger) The remaining items and WHY they are
-genuinely separate projects, not unfinished rename work:
-  - The P0 INTERFACE REDESIGNS (App RHI ownership behind an impl bridge,
-    ElementFrame -> tour::RenderFrame, the renderer facade split):
-    impl.cpp's App::Initialize BOOTS the whole renderer (window/
-    swapchain/rendergraph/world) - moving that behind a bridge is a
-    rearchitecture of the 14k-line backend file, sequenced next.
-  - core.h: audited - all six remaining consumers (app/editor/render/
-    WorldRenderer/svg_icons/gltf) legitimately use the RHI surface;
-    decomposing is per-consumer include-list churn with no structural
-    win until the renderer split. The camera.h/core.h finding (the one
-    real excess) is fixed.
-  - The three-target build split: blocked on impl.cpp's App coupling
-    (above) + the spirv_reflection upward edge (the R4/R5 baseline).
-  - The null/mock backend test + the signature-walking scanner: the
-    compile-level CI battery (R1-R5 + header smoke) is in; these two
-    are the deeper follow-ups.
-  - Bridge retirement: migrating call sites off the smvk::/global
-    aliases - mechanical, unlimited scope, best done opportunistically.
+     01_triangle is a DELIBERATE low-level RHI sample (opt in
+     explicitly); 04_project_game should demonstrate the
+     engine-only surface.
+  8. Deep follow-ups (block only on real need): the three-target
+     build split (tour_engine + smvk_rhi + smvk_vulkan — blocked on
+     impl.cpp's App coupling), the null/mock backend test, the
+     signature-walking namespace scanner (the compile-level CI
+     battery R1-R5 + header smoke is in), and the bridge-call-site
+     retirement (mechanical, endless, opportunistic).

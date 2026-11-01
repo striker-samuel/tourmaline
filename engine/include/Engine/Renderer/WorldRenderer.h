@@ -989,7 +989,7 @@ struct FrameUniforms
 	uint32_t lmEnabled = 0;            // 1936 1 = lightmap branch active
 	uint32_t lmLayerKind = 0;          // 1940 0 = RGBA16F stream, 1 = BC6H
 	uint32_t lmPad_[2] = {};           // 1944 (16-align tail; struct was 1952)
-	// ---- GPU probe pre-mix (docs/probe_premix_plan.md; the Remember Me
+	// ---- GPU probe pre-mix (the Remember Me
 	// architecture, GPU-only selection). probePremixIndex = the BLENDED
 	// cubemap's bindless index (UINT32_MAX = off: the per-pixel walk owns
 	// the specular env unchanged). probePremixMips = the blended chain's
@@ -2480,7 +2480,7 @@ public:
 	smvk::giprobe::GiProbeVisual m_giProbeVisual{};
 	bool m_giProbeInstancesBuilt = false;
 
-	// ---- GPU probe pre-mix (docs/probe_premix_plan.md) ----------------
+	// ---- GPU probe pre-mix -------------------------------------------
 	// The Remember Me architecture, GPU-only selection: the weights pass
 	// reads the RESIDENT probe tail (the Forward+ light buffer - the GPU
 	// system we already have; NO CPU classification anywhere) and blends

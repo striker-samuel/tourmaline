@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// Probe pre-mix weights pass (docs/probe_premix_plan.md, pass A; Phase 2
-// = the Remember Me NDF transition-region weights). Reads the RESIDENT
+// Probe pre-mix weights pass (pass A; the Remember Me NDF transition-region
+// weights). Reads the RESIDENT
 // probe tail through the fpLights buffer-address (the same type-2 entries
 // the lit walk reads - the GPU-side selection we already have; NO CPU
 // classification), and writes the selection for the mix pass + the

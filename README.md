@@ -238,15 +238,15 @@ external/   Pinned submodules and fetched third-party dependencies
 
 ## Documentation
 
-- [`AGENTS.md`](AGENTS.md) — build/test commands and development conventions.
-- [`docs/project_guide.md`](docs/project_guide.md) — architecture overview and extension seams.
+- [`AGENTS.md`](AGENTS.md) — build/test commands, architecture seams, and development conventions.
 - [`docs/editor_tour_and_context.md`](docs/editor_tour_and_context.md) — `.tour` authoring and replay model.
 - [`docs/project_scenes.md`](docs/project_scenes.md) — ID-based scene loading and asset ownership.
 - [`docs/entities_and_animators.md`](docs/entities_and_animators.md) — typed runtime handles and animation.
 - [`docs/audio_source.md`](docs/audio_source.md) — authored audio sources and sound content.
-- [`docs/shader_library_design.md`](docs/shader_library_design.md) — project HLSL shader libraries, material instances, and 32-bit userdata (Phase A — the userdata transport + lit-hook seam — implemented; the ProjectLit family is the follow-up).
+- [`docs/shader_library_design.md`](docs/shader_library_design.md) — project HLSL shader libraries, material instances, and 32-bit userdata (the userdata transport + lit-hook seam + the ProjectLit project-authored family — all implemented).
 - [`docs/content_as_code.md`](docs/content_as_code.md) — the query/loading/GI-blend API: `MatchAssets` (the compile-time regex query), the `AssetManager` facade (`LoadMesh`/`LoadMeshes`/`LoadGI`/`SetGI`/`SetGIBlend`), and GI bake sets as a catalog kind.
 - [`docs/artifact-db-funnel.md`](docs/artifact-db-funnel.md) — ongoing artifact pipeline redesign notes (not all sections are implemented).
+- [`docs/headless_bench.md`](docs/headless_bench.md) — the full headless run reference: bench/capture contract, `TOURMALINE_*` A/B pins, and debug views.
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored dependencies and redistribution notices.
 
 ## Development and licensing

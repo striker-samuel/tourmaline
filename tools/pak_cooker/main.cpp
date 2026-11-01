@@ -2443,7 +2443,7 @@ int Run(const PakArgs& c) {
 			const auto& sn = gateCluster->scene;
 			// ---- World field (giAsset kind world): RETIRED ------------
 			// The runtime stopped loading the .sggi octree (stage 1 of
-			// tourmaline_octree_retirement_plan.md); stage 2 stops
+			// the retirement plan); stage 2 stops
 			// REQUIRING the artifact. The pak neither embeds nor
 			// freshness-gates the world bake anymore: an authored tour's
 			// legacy world record (stamped when the scene was baked

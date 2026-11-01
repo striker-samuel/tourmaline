@@ -1302,7 +1302,7 @@ void BuildTraceSceneFromWorld(World& world, const GiSceneBuildOptions& opts,
 // ---------------------------------------------------------------------------
 // The ADAPTIVE OCTREE BAKE (bricks, relocation, refinement waves,
 // BakeSgGiVolume) is DELETED — stage 3 (data layer) of the legacy-.sggi
-// retirement (tourmaline_octree_retirement_plan.md). What remains in this
+// retirement. What remains in this
 // file is the SHARED trace substrate every live bake consumes: the
 // GiTraceScene (transport, sky, emissive, sun, transmission, albedo
 // sampling), the KTX texel decode helpers, and BuildTraceSceneFromCluster.

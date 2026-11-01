@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// Probe pre-mix blend pass (docs/probe_premix_plan.md, pass B): each
+// Probe pre-mix blend pass (pass B): each
 // texel of the blended cubemap's (face, mip) is the selection-weighted
 // sum of the source cubemaps at the SAME mip level - the Remember Me
 // mip-to-mip rule (the GGX prefiltered chains are already baked per

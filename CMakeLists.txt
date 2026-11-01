@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.20)
-# Build hygiene (see docs/project_guide.md): this repo is Ninja-only and
+# Build hygiene: this repo is Ninja-only and
 # out-of-source. In-source configures pollute the tree (CMakeCache.txt,
 # *.vcxproj, Testing/, Debug/ next to the sources) and the Visual Studio
 # generator breaks the Ninja-configured out/build/<config> dirs.

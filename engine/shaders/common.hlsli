@@ -803,7 +803,7 @@ uint decalCount;                                         // 776 0 = decals off
     uint lmEnabled;                                               // 1936 1 = lightmap branch active
     uint lmLayerKind;                                             // 1940 0 = RGBA16F stream, 1 = BC6H
     uint2 lmPad_;                                                 // 1944 (16-align; struct was 1952)
-    // ---- GPU probe pre-mix (docs/probe_premix_plan.md; the Remember Me
+    // ---- GPU probe pre-mix (the Remember Me
     // architecture, GPU-only selection - mirror of the C++ append-only
     // tail). probePremixIndex = the BLENDED cubemap's bindless index
     // (0xffffffff = off: the per-pixel walk owns the specular env

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// GPU probe pre-mix (Remember Me architecture; docs/probe_premix_plan.md).
+// GPU probe pre-mix (Remember Me architecture).
 //
 // Per frame, two compute passes turn the RESIDENT probe tail (the Forward+
 // light buffer type-2 entries - the GPU-side selection we already have,

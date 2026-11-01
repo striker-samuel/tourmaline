@@ -6,8 +6,7 @@
 // bake consumes (see GI/sg.h for the representation). The ADAPTIVE
 // OCTREE bake (bricks, relocation, error-refinement waves,
 // BakeSgGiVolume) that once owned this header is DELETED — stage 3
-// (data layer) of the legacy-.sggi retirement
-// (tourmaline_octree_retirement_plan.md); the live baked-GI products
+// (data layer) of the legacy-.sggi retirement; the live baked-GI products
 // (convex .givolume grids via BakeGiVolume, regular lattices via
 // BakeSgRegularVolume, lightmap atlases via BakeSgLightmapChunks)
 // each own their bake in their own TU and share only the trace scene
@@ -548,7 +547,7 @@ std::optional<GiTraceTexelData> GiDecodeKtxTexelData(
 // ---------------------------------------------------------------------------
 // The adaptive-octree BAKE section (SgGiBakeConfig, SgGiBakeStats,
 // BakeSgGiVolume) is DELETED — stage 3 (data layer) of the legacy-.sggi
-// retirement (tourmaline_octree_retirement_plan.md). The trace scene above
+// retirement. The trace scene above
 // is the shared substrate; the live bakes are declared in their own
 // headers: BakeGiVolume (cubemap_volume.h), BakeSgRegularVolume
 // (regular_volume.h), BakeSgLightmapChunks (lightmap.h).

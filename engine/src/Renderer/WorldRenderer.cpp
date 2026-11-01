@@ -1749,7 +1749,7 @@ namespace engine {
 				std::cerr << "[WorldRenderer] TOURMALINE_LIGHT_CROWD wants 0..96\n";
 			}
 		}
-		// GPU probe pre-mix A/B (docs/probe_premix_plan.md): 1 (default)
+		// GPU probe pre-mix A/B: 1 (default)
 		// = the weights pass selects the top-K captures around the camera
 		// (GPU-side, off the Forward+ light-buffer probe tail) and the mix
 		// pass blends them into ONE cubemap every lit pixel samples with
@@ -5380,7 +5380,7 @@ namespace engine {
 			}
 		}
 
-		// GPU probe pre-mix (docs/probe_premix_plan.md). All CPU-known
+		// GPU probe pre-mix. All CPU-known
 		// constants (the module's own bindless index + chain depth) + the
 		// GPU-owned selection's BDA: the material's single-fetch branch
 		// reads the DOMINANT probe's parallax box straight from the
@@ -11297,7 +11297,7 @@ namespace engine {
 		};
 		// (size checked by static_assert in Engine/Renderer/Renderer.h)
 
-		// ---- GPU probe pre-mix (docs/probe_premix_plan.md) ------------
+		// ---- GPU probe pre-mix ----------------------------------------
 		// Remember Me architecture, GPU-only selection: the weights pass
 		// reads the RESIDENT probe tail straight off THIS frame's
 		// fpLights flight slice (the tail this frame's upload just wrote -

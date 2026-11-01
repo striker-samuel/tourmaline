@@ -254,7 +254,7 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     bool useBaked = frame.cubemapIntensity > 0.0f;
     uint cubeDbg = frame.cubemapDebug;
 
-    // ---- GPU probe pre-mix (docs/probe_premix_plan.md; the Remember Me
+    // ---- GPU probe pre-mix (the Remember Me
     // architecture, GPU-only selection): the weights pass already
     // selected the top-K captures around the point of interest (the
     // camera) off the Forward+ light-buffer probe tail - the GPU system

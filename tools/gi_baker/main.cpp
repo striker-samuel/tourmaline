@@ -12,7 +12,7 @@
 //           [--sky-intensity 600] [--textures on|off] [--verify on|off]
 //
 // The ADAPTIVE .sggi world-field bake (--out) is RETIRED — stage 3 of
-// the octree retirement (tourmaline_octree_retirement_plan.md): the
+// the octree retirement (the stage-3 data-layer deletion): the
 // flag parses (old scripts get the loud refusal below) but Run refuses
 // a non-empty --out. The ambient rides the authored .givolume set + the
 // sky IBL fallback.
@@ -696,7 +696,7 @@ namespace gibaker {
 // CLI run). See gi_baker.h.
 int Run(Args& args) {
 	// The --out WORLD-FIELD BAKE is RETIRED (stage 3 of the octree
-	// retirement — tourmaline_octree_retirement_plan.md): the .sggi
+	// retirement): the .sggi
 	// octree bake is deleted, so a non-empty out can only be a stale
 	// caller (an old script's --out, or an un-migrated in-process fill
 	// of Args.out). REFUSE LOUDLY instead of silently baking only the
@@ -1787,7 +1787,7 @@ int Run(Args& args) {
 	// (The ADAPTIVE WORLD-FIELD BAKE — the freshness check, BakeSgGiVolume,
 	// the dense-layer bake, the .sggi write + world binding/hash stamp,
 	// the reload verify — is DELETED: stage 3 (data layer) of the octree
-	// retirement (tourmaline_octree_retirement_plan.md). Every stage above
+	// retirement. Every stage above
 	// owns its exit; the only way to land here is a run that requested NO
 	// bake stage at all (e.g. the pipeline's bare --tour over a project
 	// with zero authored GI volume nodes). Say so and exit clean — the

@@ -135,6 +135,10 @@ bld/
 # Code reference folder for agents.
 reference/
 
+# ImGui runtime window-layout state (imgui.h writes it CWD-relative by
+# default; app/editor window layouts are user-local, never source).
+imgui.ini
+
 # Visual Studio 2015/2017 cache/options directory
 .vs/
 # Uncomment if you have tasks that create the project's static files in wwwroot

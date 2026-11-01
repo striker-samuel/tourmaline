@@ -1,6 +1,7 @@
 # JHFAA-style shading-normal validity correction
 
-Branch: `feature/jhfaa-normal-fix` · Status: **experimental, default OFF**
+Branch: originally developed on `feature/jhfaa-normal-fix`; the feature
+itself lives on master behind the flags below · Status: **experimental, default OFF**
 
 ## The problem
 
