@@ -47,6 +47,8 @@ namespace engine {
 
 namespace app {
 
+class ProjectRuntime; // the content session (ProjectRuntime.h)
+
 // The viewer's CLI options (one field per CLI flag; ParsePakAppArgs fills
 // this object and nothing else — see the layer note above).
 struct ViewerOptions {
@@ -116,10 +118,20 @@ struct PakAppConfig {
 	// (the env kill switch lives there). Bench runs never stack it
 	// (capture determinism — RunPakApp gates). The plain App host leaves
 	// it unset: the clean viewer.
+	// `session` is the launch's SHARED content session (the
+	// ProjectRuntime over the content registry): present on a
+	// --project launch (the manifest adopted, every listed pak's
+	// backend adopted as the preloads resolve, the loose discovery
+	// tree registered as an override), NULL on the legacy --pak lane.
+	// A game element builds its layers over IT (the scene-aware audio
+	// rides the shared images + the shared provider selection — no
+	// second package universe re-reading the archives).
 	std::function<std::shared_ptr<engine::IAppElement>(
 		tour::App& host,
 		engine::WorldRenderer& renderer,
-		std::shared_ptr<tour::World*> worldHandle)> extraElement;
+		std::shared_ptr<tour::World*> worldHandle,
+		const std::shared_ptr<app::ProjectRuntime>& session)>
+		extraElement;
 	// True when the extra element owns the camera (RunPakApp then parks
 	// the renderer element's FPS camera drive for the whole run).
 	bool extraOwnsCamera = false;

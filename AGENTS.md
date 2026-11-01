@@ -19,12 +19,39 @@
   scene; keyless lines keep the numeric path bit-identical. Tests:
   TestLogicalNodeTargets (test_tour.cpp).
 
-- **ProjectRuntime** (the façade): stable ids → appmanifest [ids] rows →
-  pak bytes. `ReadAsset(id)` serves TEXTURE, SOUND, SHADER and GI
-  payloads; scenes load by identity, meshes ship inside their scene's
-  cluster. `OpenPak`/`AdoptPakBackend` = the shared lazy backend cache.
-  `AttachCompiledCatalog` (row-level + catalog-fingerprint checks) is
-  the compiled-catalog gate project hosts run.
+- **THE CONTENT REGISTRY** (`engine/include/Engine/Asset/
+  content_registry.h`, `tour::asset::ContentRegistry`): the ONE
+  content-resolution authority — "an asset has ONE identity, ONE
+  effective provider, possibly many available versions". The
+  CONVERGENCE CONTRACT: `Read(id)` and `Read(kind, path)` resolve
+  through the SAME provider selection (overrides registered first
+  win; base = manifest paks in order), so a mod/patch/loose override
+  serving a record's path wins for the compiled-game id form AND the
+  serialized-path form alike — never the old split where the [ids]
+  join read the manifest-named pak while the VFS overlay read
+  whichever mount preceded. Byte lanes: an ADOPTED backend's resident
+  image first (one copy of the bytes), else the SMP8 pager (light
+  mount + one positional page read — never a whole-image preload on
+  the read path). Providers toggle by name with a generation bump
+  (between-launches mods; loaded resources never mutate). Pinned by
+  test_content_registry.cpp (the base+mod+loose acceptance ladder).
+
+- **ProjectRuntime** (the session façade over the registry): owns the
+  manifest (the identity source — the .tapp compatibility lane) + ONE
+  ContentRegistry. `Asset(id)` returns the canonical ContentRecord
+  (kind byte + owner pak + logical path + the scene-name join);
+  `ReadAsset(id)` / `ReadAssetByPath(kind, path)` are the two
+  convergent byte forms (override-aware); `OpenPak`/
+  `AdoptPakBackend` adopt whole-image backends into the registry
+  (releasing the provider's pager); `OpenPakPager` is the explicit
+  pager accessor. `AddPakOverride`/`AddLooseOverride` register mod/
+  dev providers. `AttachCompiledCatalog` (row-level +
+  catalog-fingerprint checks) is the compiled-catalog gate project
+  hosts run. RunPakApp's `--project` lane builds ONE shared session
+  (the loose `content/` tree registered as an override unless
+  `--no-vfs`), hands it to `LoadProjectWorld`'s cross-pak resolver
+  and to the game element hook (the audio runtime borrows it — no
+  second package universe).
 
 - **DeployCheck** (`app/src/DeployCheck.h`): the deployment validation
   gate, pre-graphics in the `--project` launch — every manifest-listed

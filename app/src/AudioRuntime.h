@@ -86,6 +86,22 @@ namespace app {
 	std::shared_ptr<tour::World*> worldHandle,
 	engine::WorldRenderer* renderer);
 
+// The SHARED-SESSION form (the consolidated content architecture): a
+// --project launch builds ONE content session up front (RunPakApp —
+// the manifest adopted, every listed pak's backend adopted as the
+// preloads resolve, the loose discovery tree registered as an
+// override) and hands it to the game element here. The audio layer
+// borrows it — the SAME pak images, the SAME provider selection (a
+// mod/dev override serving a sound's path wins for the id form AND
+// the path form alike) — no second package universe re-reading the
+// archives. The tappPath form above stays for hosts that run without
+// a launch session (the lazy lane).
+[[nodiscard]] std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
+	tour::App& host,
+	std::shared_ptr<ProjectRuntime> session,
+	std::shared_ptr<tour::World*> worldHandle,
+	engine::WorldRenderer* renderer);
+
 // ---- the imperative surface (gameplay code drives these directly;
 // they are safe before/without the element — no-ops then) ----
 // These operate on the SINGLETON instance the element registers

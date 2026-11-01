@@ -26,6 +26,8 @@ namespace smvk {
 
 namespace app {
 
+class ProjectRuntime; // the content session (ProjectRuntime.h)
+
 // Loads scene `sceneIndex` (0 = default) from the preloaded pak into a
 // fresh tour::World (uploads issued to ctx; everything renders by
 // handles). Null on any failure (logged). Mounts the pak backend into
@@ -41,19 +43,24 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(
 
 // The --project launch (the appmanifest flow): EVERY listed pak
 // preloaded + mounted (manifest order) BEFORE the cluster load —
-// cross-pak textures resolve through the mounted backends via
-// DeserializeCluster's external-texture hook, GI payloads + anim clips
-// the same way — then the entry scene loads BY NAME from the entry
-// pak (identity, never an index). A failed preload of ANY listed pak
-// fails the launch (named, loud — never an unrelated fallback scene).
-// `preloads` is manifest order; `entryPakIndex` indexes into it.
+// cross-pak textures resolve through the content session's REGISTRY
+// (DeserializeCluster's external-texture hook) when `session` is
+// given, else through the mounted backends on the overlay (the legacy
+// lane) — GI payloads + anim clips the same way — then the entry
+// scene loads BY NAME from the entry pak (identity, never an index).
+// A failed preload of ANY listed pak fails the launch (named, loud —
+// never an unrelated fallback scene). `preloads` is manifest order;
+// `entryPakIndex` indexes into it. The preloaded backends are ADOPTED
+// into `session`'s registry when present (the shared-image lane: the
+// resolver + every later byte read serve through the same images).
 tour::mem::LinearPtr<tour::World> LoadProjectWorld(
 	std::vector<PakPreload> preloads,
 	size_t entryPakIndex,
 	const std::string& entrySceneName,
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
-	tour::TextureStreamer* sceneStreamer);
+	tour::TextureStreamer* sceneStreamer,
+	app::ProjectRuntime* session = nullptr);
 
 // STATIC-FLAG APPLICATION (the loader's decision seam — public for
 // PakHostTests, which drives it on hand-built value worlds). Cooked

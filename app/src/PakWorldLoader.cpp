@@ -7,8 +7,11 @@
 
 #include "PakWorldLoader.h"
 
+#include "ProjectRuntime.h" // the content session (LoadProjectWorld's resolver lane)
+
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
+#include <Engine/Asset/appmanifest.h> // kCatalogKind* (the resolver's kind byte)
 #include <Engine/Asset/cluster_serializer.h> // ListPakScenes (scene discovery)
 #include <Engine/Asset/pak.h>
 #include <Engine/Profile/profile.h>
@@ -325,7 +328,8 @@ namespace app {
 		const std::string& entrySceneName,
 		smvk::ResourceManager& ctx,
 		smvk::OverlayVfs& contentVfs,
-		tour::TextureStreamer* sceneStreamer
+		tour::TextureStreamer* sceneStreamer,
+		app::ProjectRuntime* session
 	) {
 		SMVK_PROFILE_IO("ProjectWorld_Load");
 		// EVERY listed pak must have preloaded clean — one missing or
@@ -343,13 +347,17 @@ namespace app {
 			return nullptr;
 		}
 		// Mount ALL the backends FIRST (manifest order) — BEFORE the
-		// cluster load — so cross-pak content resolves through the
-		// overlay during the load itself: material textures a
-		// dependency pak owns (the ownership exclude kept them out of
-		// the entry pak), GI payloads, anim clips. Loose content still
-		// wins (same priority ladder as the single-pak path).
-		for (const PakPreload& p : preloads)
+		// cluster load — into the overlay (the loose/legacy anim lane
+		// still reads there) AND, when the launch carries a session,
+		// ADOPT them into its registry: the shared-image lane — every
+		// later byte read (the entry load's cross-pak resolver below,
+		// the audio element's sound decodes, game ReadAsset calls)
+		// serves through the same images + the same provider selection.
+		for (const PakPreload& p : preloads) {
 			contentVfs.Mount(p.backend, 10, p.scenePak);
+			if (session)
+				session->AdoptPakBackend(p.scenePak, p.backend);
+		}
 
 		const PakPreload& entry = preloads[entryPakIndex];
 		const smvk::PakReader& reader = entry.backend->Reader();
@@ -388,17 +396,29 @@ namespace app {
 
 		// The cross-pak texture resolver (DeserializeCluster's external
 		// hook): a material URI with no blob in the entry pak is served
-		// from whatever mounted backend carries it — the VFS read gives
-		// the embedded .ktx2 bytes, the standard parallel loader decodes
-		// + uploads, and the texture registers on the cluster under its
-		// original URI. v1 note: the cross-pak path takes the DEFAULT
-		// sampler (the pak-served path's payload filters stay with the
-		// owning pak's own loads).
+		// from whatever provider carries its logical path — through the
+		// SESSION's registry when the launch carries one (the ONE
+		// resolution authority: an override serving the path wins here
+		// exactly as it wins for the compiled-id form — the convergence
+		// contract), else through the overlay (the legacy lane). The
+		// bytes are the embedded .ktx2, the standard parallel loader
+		// decodes + uploads, and the texture registers on the cluster
+		// under its original URI. v1 note: the cross-pak path takes the
+		// DEFAULT sampler (the pak-served path's payload filters stay
+		// with the owning pak's own loads).
 		smvk::ExternalTextureResolver resolver =
-			[&ctx, &contentVfs](tour::Cluster& c,
+			[&ctx, &contentVfs, session](tour::Cluster& c,
 				const std::string& uri) -> smvk::TextureHandle {
 			const std::string norm = smvk::NormalizeAssetUri(uri).Str();
-			auto bytes = contentVfs.TryRead(norm.empty() ? uri : norm);
+			const std::string probe = norm.empty() ? uri : norm;
+			std::optional<std::vector<uint8_t>> bytes;
+			if (session) {
+				std::string rErr;
+				bytes = session->ReadAssetByPath(
+					smvk::kCatalogKindTexture, probe, rErr);
+			}
+			else
+				bytes = contentVfs.TryRead(probe);
 			if (!bytes || bytes->empty()) {
 				std::cerr << "[App] cross-pak texture unresolved: " << uri
 					<< "\n";

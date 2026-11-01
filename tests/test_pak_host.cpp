@@ -194,7 +194,8 @@ void TestCliParse() {
 		app::PakAppConfig cfg;
 		bool hookRan = false;
 		cfg.extraElement = [&hookRan](smvk::App&, engine::WorldRenderer&,
-				std::shared_ptr<smvk::World*>) {
+				std::shared_ptr<smvk::World*>,
+				const std::shared_ptr<app::ProjectRuntime>&) {
 			hookRan = true;
 			return nullptr;
 		};

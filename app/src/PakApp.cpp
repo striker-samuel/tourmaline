@@ -12,6 +12,7 @@
 #include "Host.h"
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
+#include "ProjectRuntime.h"
 #include "DeployCheck.h"
 
 #include <Engine/Asset/appmanifest.h>
@@ -144,12 +145,49 @@ namespace app {
 		// Every pak this launch opens (both lanes) — the Stage-6 LOD
 		// page source's pager set below.
 		std::vector<std::string> launchPaks;
+		// THE SHARED CONTENT SESSION (the --project lane): one
+		// ProjectRuntime over the content registry — the manifest
+		// adopted, the loose discovery tree registered as an override,
+		// every preloaded backend adopted into the registry as the
+		// preloads resolve (LoadProjectWorld does the adoption). The
+		// world load's cross-pak resolver AND the game element's byte
+		// reads resolve through the SAME provider selection (the
+		// convergence contract — no per-layer package universes).
+		std::shared_ptr<app::ProjectRuntime> session;
 		if (!cfg.cli.project.empty()) {
 			smvk::AppManifest manifest;
 			std::string mErr;
 			if (!smvk::LoadAppManifest(cfg.cli.project, manifest, mErr)) {
 				std::cerr << "[App] appmanifest rejected: " << mErr
 					<< "\n";
+				return EXIT_FAILURE;
+			}
+			// THE SESSION: the manifest adopts into the registry (the
+			// base providers + the record table) before any graphics
+			// work — a manifest that does not adopt fails the launch
+			// loudly right here.
+			std::string sErr;
+			if (auto rt = app::ProjectRuntime::Load(cfg.cli.project,
+					sErr)) {
+				session = std::make_shared<app::ProjectRuntime>(
+					std::move(*rt));
+				// The loose discovery tree (the renderer's
+				// MountContentVfs equivalent) as a registry OVERRIDE:
+				// dev-override files win over the paks for BOTH the
+				// id form and the path form (the old split — the
+				// overlay saw loose files, the [ids] join did not —
+				// is the divergence this session exists to close).
+				// --no-vfs mutes the lane: the project's paks are
+				// then the ONLY providers.
+				if (!cfg.cli.noVfs) {
+					std::string oErr;
+					(void)session->AddLooseOverride("content",
+						"content", oErr);
+				}
+			}
+			else {
+				std::cerr << "[App] the content session failed: "
+					<< sErr << "\n";
 				return EXIT_FAILURE;
 			}
 			namespace fs = std::filesystem;
@@ -211,8 +249,10 @@ namespace app {
 				<< "'\n";
 			if (cfg.cli.noVfs)
 				std::cerr << "[Scene] --no-vfs: only the project's "
-					<< manifest.paks.size() << " mounted pak(s) serve"
-					<< " scene content\n";
+					<< manifest.paks.size() << " pak provider(s) serve"
+					<< " content (the session carries no loose"
+					<< " override — the id form and the path form"
+					<< " agree on the pak-only universe)\n";
 		}
 		else {
 			// A pak file + a scene index (0 = default). The scene id
@@ -335,15 +375,18 @@ namespace app {
 			auto worldHandle = std::make_shared<tour::World*>();
 			renderer.SetWorldSource(
 				[preloadFuture, projectFutures, entryPakIndex,
-					entrySceneName, sceneIndex, rendererRaw, worldHandle]
+					entrySceneName, sceneIndex, rendererRaw, worldHandle,
+					session]
 				(
 					smvk::ResourceManager& ctx,
 					smvk::OverlayVfs& contentVfs
 					) -> tour::mem::LinearPtr<tour::World> {
 				// --project: every listed pak's preload joins here, the
-				// backends mount in manifest order and the entry scene
-				// loads BY IDENTITY (LoadProjectWorld). --pak: the
-				// legacy single-pak, index-based path.
+				// backends mount in manifest order (adopted into the
+				// SESSION's registry — the shared images) and the entry
+				// scene loads BY IDENTITY (LoadProjectWorld; the
+				// cross-pak resolver reads through the session).
+				// --pak: the legacy single-pak, index-based path.
 				tour::mem::LinearPtr<tour::World> world;
 				if (projectFutures) {
 					std::vector<PakPreload> preloads;
@@ -352,7 +395,7 @@ namespace app {
 						preloads.push_back(f.get());
 					world = LoadProjectWorld(std::move(preloads),
 						entryPakIndex, entrySceneName, ctx, contentVfs,
-						rendererRaw->GetTextureStreamer());
+						rendererRaw->GetTextureStreamer(), session.get());
 				}
 				else {
 					world = LoadPakWorld(preloadFuture->get(),
@@ -497,7 +540,8 @@ namespace app {
 			app.AddElement(element);
 			element.reset();
 			if (extraOn) {
-				if (auto extra = cfg.extraElement(app, renderer, worldHandle)) {
+				if (auto extra = cfg.extraElement(app, renderer,
+						worldHandle, session)) {
 					// Reverse detach order: the extension drops off the stack
 					// (and out of the world) before the renderer tears down.
 					app.AddElement(extra);

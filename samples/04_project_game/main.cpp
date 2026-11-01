@@ -318,20 +318,27 @@ int main(int argc, const char* argv[]) {
 	// against the active camera, per frame). Gameplay code drives it
 	// through the imperative surface: PrefetchSound /
 	// PlaySound(world, node, sound) / StopSound / SetListener.
+	// The launch's SHARED content session arrives with the hook (the
+	// --project lane built it before any graphics work): the audio
+	// layer borrows it — the same pak images + provider selection the
+	// world load resolved through (a dev/mod override serving a
+	// sound's path wins identically for both read forms).
 	if (!cfg.cli.project.empty()) {
-		std::string audioTapp = cfg.cli.project;
 		cfg.extraElement =
-			[audioTapp](smvk::App& host,
+			[](smvk::App& host,
 				engine::WorldRenderer& renderer,
-				std::shared_ptr<smvk::World*> worldHandle)
+				std::shared_ptr<smvk::World*> worldHandle,
+				const std::shared_ptr<app::ProjectRuntime>& session)
 			-> std::shared_ptr<engine::IAppElement> {
+			if (!session)
+				return nullptr; // no session (a --pak override): no audio
 			// The audio runtime + the ProjectLit family demo, composed
 			// into ONE element (RunPakApp carries a single extraElement
 			// slot; the demo forwards every lifecycle call to the audio
 			// leg it wraps).
 			std::shared_ptr<smvk::World*> worldForDemo = worldHandle;
 			return std::make_shared<ProjectLitDemo>(
-				app::MakeAudioRuntime(host, audioTapp,
+				app::MakeAudioRuntime(host, session,
 					std::move(worldHandle), &renderer),
 				std::move(worldForDemo));
 		};
