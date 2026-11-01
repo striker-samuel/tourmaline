@@ -1201,6 +1201,16 @@ void TestAssetManager() {
 			"am.mesh-adopts-scene-cluster");
 		Check(assets.MeshWorldIndex(tree) != UINT32_MAX,
 			"am.mesh-worldindex");
+		// The typed-key spawn lane (the gameplay surface): the loaded
+		// handle instances through its CURRENT row - the entity is
+		// world-owned, DestroyMesh kills it.
+		const smvk::MeshEntityHandle ent = assets.SpawnMesh(tree,
+			glm::mat4(1.0f), UINT32_MAX);
+		Check(bool(ent) && world.IsMeshEntityAlive(ent),
+			"am.mesh-spawn-typed-key");
+		Check(world.DestroyMesh(ent)
+			&& !world.IsMeshEntityAlive(ent),
+			"am.mesh-spawn-destroy");
 		std::string dErr;
 		Check(assets.LoadMesh(0x3000, dErr) == tree && dErr.empty(),
 			"am.mesh-dedup");
@@ -1220,6 +1230,12 @@ void TestAssetManager() {
 			"am.mesh-other-instance-unaffected");
 		Check(assets.MeshWorldIndex(tree) == UINT32_MAX,
 			"am.mesh-worldindex-stale-after-remove");
+		// The spawn refuses while the carrier is parked (no CURRENT
+		// row - never a stale-row instance); the ASSET itself stays
+		// valid (the resource vs instance split).
+		Check(!assets.SpawnMesh(tree, glm::mat4(1.0f), UINT32_MAX)
+			&& assets.MeshValid(tree),
+			"am.mesh-spawn-refused-while-parked");
 		// A re-load shares the PARKED carrier: the same handle, no
 		// fresh cluster, no re-carve of GPU ranges.
 		std::string r2Err;
@@ -1277,6 +1293,13 @@ void TestAssetManager() {
 			"am.mesh-seam-load");
 		Check(assets.MeshWorldIndex(rock) != UINT32_MAX,
 			"am.mesh-seam-worldindex");
+		// The typed-key spawn through the seam-loaded carrier (the
+		// end-to-end lane: key -> load -> spawn -> destroy).
+		const smvk::MeshEntityHandle rent = assets.SpawnMesh(
+			rock, glm::mat4(1.0f), UINT32_MAX);
+		Check(bool(rent) && world.IsMeshEntityAlive(rent)
+			&& world.DestroyMesh(rent),
+			"am.mesh-seam-spawn-destroy");
 		// The FRESH resolution: a world rebuild never stales the
 		// query (the location tables are re-scanned per call).
 		world.ResolveAndFixup_clusters();

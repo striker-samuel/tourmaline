@@ -325,6 +325,23 @@ void AssetManager::UnloadAllMeshes() {
 	m_impl->store.ReleaseAll();
 }
 
+smvk::MeshEntityHandle AssetManager::SpawnMesh(MeshHandle mesh,
+	const glm::mat4& frame, NodeId parent)
+{
+	const Impl::MeshSlot* s = m_impl
+		? m_impl->MeshSlotOf(mesh)
+		: nullptr;
+	if (!s)
+		return {};
+	// The handle's CURRENT world row, resolved FRESH (the parked-
+	// carrier contract: no row -> no spawn, never a stale row into a
+	// rebuilt table).
+	const uint32_t row = m_impl->WorldMeshIndexOf(*s);
+	if (row == UINT32_MAX)
+		return {};
+	return m_impl->world.SpawnMesh(row, frame, parent);
+}
+
 // ---- GI BAKE SETS ---------------------------------------------------------
 
 GiHandle AssetManager::LoadGI(uint64_t key, std::string& err) {

@@ -365,19 +365,46 @@ using namespace ::smvk;
 		const MeshRow* srcMesh = FindMesh(scene, sourceNode);
 		if (!srcMesh || srcMesh->mesh >= meshLocations.size())
 			return {};
-		const auto& srcLoc = meshLocations[srcMesh->mesh];
-		Cluster* meshOwner = srcLoc.cluster;
-		const ClusterStaticMeshHandle meshHandle = srcLoc.handle;
+		const MaterialRow* srcMat = FindMaterial(scene, sourceNode);
+		const MaterialLocation* matLoc = nullptr;
+		if (srcMat && srcMat->material < materialLocations.size())
+			// (the material may belong to another cluster — the ENTITY
+			// binding carries the pair, the mirror resolves it through
+			// the world table the same way at mirror time.)
+			matLoc = &materialLocations[srcMat->material];
+		return SpawnMeshEntityInternal(meshLocations[srcMesh->mesh],
+			matLoc, frame);
+	}
+
+	MeshEntityHandle World::SpawnMesh(uint32_t worldMeshIndex,
+		const glm::mat4& frame, NodeId parent,
+		uint32_t worldMaterialIndex)
+	{
+		// The KEY-DRIVEN entry (see the header block): the row is the
+		// whole source — a loaded asset handle resolved to its CURRENT
+		// world mesh index (the app-side MeshWorldIndex discipline:
+		// fresh, never cached — a parked carrier has no row at all).
+		(void)parent;
+		if (worldMeshIndex >= meshLocations.size())
+			return {};
+		const MaterialLocation* matLoc = nullptr;
+		if (worldMaterialIndex != kInvalidIndex
+				&& worldMaterialIndex < materialLocations.size())
+			matLoc = &materialLocations[worldMaterialIndex];
+		return SpawnMeshEntityInternal(meshLocations[worldMeshIndex],
+			matLoc, frame);
+	}
+
+	MeshEntityHandle World::SpawnMeshEntityInternal(
+		const MeshLocation& meshLoc, const MaterialLocation* matLoc,
+		const glm::mat4& frame)
+	{
+		Cluster* meshOwner = meshLoc.cluster;
+		const ClusterStaticMeshHandle meshHandle = meshLoc.handle;
 		if (!meshOwner)
 			return {};
-		ClusterMaterialHandle matHandle{};
-		const MaterialRow* srcMat = FindMaterial(scene, sourceNode);
-		if (srcMat && srcMat->material < materialLocations.size()) {
-			matHandle = materialLocations[srcMat->material].handle;
-			// (the material must belong to the same owner for a single
-			// (cluster,handle) binding pair; cross-cluster materials
-			// ride the world table the same way at mirror time.)
-		}
+		const ClusterMaterialHandle matHandle =
+			matLoc ? matLoc->handle : ClusterMaterialHandle{};
 		// The durable transform node (the dynamic cluster's own scene —
 		// the CreateDecalAt pattern; the MESH binding is cross-cluster
 		// so it lives on the ENTITY, not the dyn-scene tables).
@@ -387,9 +414,8 @@ using namespace ::smvk;
 			return {};
 		dyn.scene.localTransform[size_t(cnode)] = frame;
 		dyn.scene.globalTransform[size_t(cnode)] = frame;
-		(void)parent; // (the durable node roots at the cluster root; the
-		              // resolved hierarchy owns the merge — same as the
-		              // audio entities)
+		// (the durable node roots at the cluster root; the resolved
+		// hierarchy owns the merge — same as the audio entities)
 		// The merged mirror for immediate visibility (mesh + material
 		// rows through the CURRENT world location tables).
 		const uint32_t worldMeshIdx =
@@ -400,11 +426,9 @@ using namespace ::smvk;
 			scene.localTransform[size_t(mnode)] = frame;
 			scene.globalTransform[size_t(mnode)] = frame;
 			SetMesh(scene, NodeId(mnode), worldMeshIdx);
-			if (srcMat) {
+			if (matLoc) {
 				const uint32_t worldMatIdx = WorldIndexOfMaterial(
-					materialLocations,
-					materialLocations[srcMat->material].cluster,
-					materialLocations[srcMat->material].handle);
+					materialLocations, matLoc->cluster, matLoc->handle);
 				if (worldMatIdx != UINT32_MAX)
 					SetMaterial(scene, NodeId(mnode), worldMatIdx);
 			}

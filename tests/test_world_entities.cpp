@@ -290,6 +290,44 @@ void TestMeshEntitiesAndAnimators() {
 			"meshent.resolve-remirror");
 	}
 
+	// The KEY-DRIVEN spawn (World::SpawnMesh by row — the typed-key
+	// gameplay lane: a loaded project mesh key resolves to its CURRENT
+	// world row and spawns with NO authored source node).
+	{
+		const glm::mat4 rowFrame = glm::translate(glm::mat4(1.0f),
+			glm::vec3(-10.0f, 0.0f, 0.0f));
+		// Material-less: no material row on the mirror.
+		const MeshEntityHandle rh = w.SpawnMesh(sourceMeshIdx, rowFrame,
+			UINT32_MAX);
+		Check(bool(rh) && w.IsMeshEntityAlive(rh),
+			"meshent.rowspawn-alive");
+		const uint32_t rnode = w.MeshEntityNode(rh);
+		Check(rnode != UINT32_MAX
+			&& FindMesh(w.scene, rnode) != nullptr
+			&& FindMesh(w.scene, rnode)->mesh == sourceMeshIdx
+			&& FindMaterial(w.scene, rnode) == nullptr,
+			"meshent.rowspawn-mirror-materialless");
+		// The optional material binding: the same world material row
+		// the source node carries.
+		const uint32_t worldMat = FindMaterial(w.scene,
+			sourceNode)->material;
+		const MeshEntityHandle rm = w.SpawnMesh(sourceMeshIdx, rowFrame,
+			UINT32_MAX, worldMat);
+		Check(bool(rm), "meshent.rowspawn-material-bind");
+		const uint32_t mnode = w.MeshEntityNode(rm);
+		Check(mnode != UINT32_MAX
+			&& FindMaterial(w.scene, mnode) != nullptr,
+			"meshent.rowspawn-material-row");
+		// A bad row refuses (empty handle, never a garbage instance).
+		Check(!w.SpawnMesh(UINT32_MAX, rowFrame, UINT32_MAX),
+			"meshent.rowspawn-bad-row-refused");
+		// Destroy both row spawns.
+		Check(w.DestroyMesh(rh) && !w.IsMeshEntityAlive(rh),
+			"meshent.rowspawn-destroy");
+		Check(w.DestroyMesh(rm) && !w.IsMeshEntityAlive(rm),
+			"meshent.rowspawn-destroy-2");
+	}
+
 	// The animator: a 1s translate clip on the child joint (0 -> y=2).
 	touranim::Clip clip;
 	clip.name = "rise";

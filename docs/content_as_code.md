@@ -3,12 +3,14 @@
 **Status:** v1 implemented (the query API + the GI catalog lane + the
 AssetManager facade + caller-controlled GI blending). The SHARED-ASSET
 OWNERSHIP layer (`app::AssetStore` — the found-or-loaded carrier
-acquire, the park-on-scene-removal bridge, the cluster-source seam)
-and the shared GPU geometry upload service
-(`Engine/Renderer/geometry_upload.h`) are LANDED. The mesh spawn-side
-surface (`World::SpawnMesh(MeshHandle)`), the subset/pak-grouped mesh
-fast path, and the pak-vNext page pager remain the documented
-follow-ups.
+acquire, the park-on-scene-removal bridge, the cluster-source seam),
+the shared GPU geometry upload service
+(`Engine/Renderer/geometry_upload.h`), and the TYPED-KEY SPAWN LANE
+(`AssetManager::LoadMesh(project::meshes::X)` →
+`AssetManager::SpawnMesh(handle)` → the engine's row-driven
+`World::SpawnMesh(worldMeshIndex)`) are LANDED. The
+subset/pak-grouped mesh fast path and the pak-vNext page pager remain
+the documented follow-ups.
 
 **Surface:**
 - `engine/include/Engine/Asset/asset_query.h` — the compile-time
@@ -126,6 +128,22 @@ auto batch = assets.LoadMeshes(WorldMeshes.data(), WorldMeshes.size());
   scene changes; a shared mesh can be carried by several scene
   instances, and a PARKED carrier has no row at all — UINT32_MAX is
   the honest no-current-mapping answer, never an error).
+- **The typed-key spawn lane** (the gameplay surface, pinned by
+  `meshent.rowspawn-*` + `am.mesh-spawn-*`):
+  ```cpp
+  auto tree = assets.LoadMesh(project::meshes::Tree);
+  auto entity = assets.SpawnMesh(tree, spawnFrame, UINT32_MAX);
+  // ... world.DestroyMesh(entity) when it dies.
+  ```
+  The manager resolves the handle's CURRENT row and calls the
+  engine's row-driven `World::SpawnMesh(worldMeshIndex, frame,
+  parent, worldMaterialIndex)` (the shared spawn core behind
+  `SpawnMeshFromNode` — cross-cluster (owner, handle) binding, the
+  resolve-tail re-mirror, the attached-animator cleanup all
+  identical). A handle whose carrier is PARKED (its scene removed
+  while the asset stays live) refuses with an empty handle — never a
+  stale-row instance; the ASSET stays valid (the resource vs
+  instance split).
 - v1 mesh loading ACQUIRES the mesh's OWNING SCENE CLUSTER through
   **AssetStore** (the pak-format boundary: meshes ship inside their
   scene's cluster; materials + textures resolve exactly as

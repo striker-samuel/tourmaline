@@ -31,9 +31,14 @@ handle)** pair, and the merged-scene rows are MIRRORS the resolve tail
 re-establishes after every rebuild. `MeshEntityMeshIndex(handle)`
 resolves the current world index; `DestroyMesh` drops the rows + nodes.
 
-`SpawnMesh(MeshKey)` — the authored API — needs the key→loaded-mesh
-join (the mesh's owning scene + a mesh-URI table in the manifest);
-that's the app-layer follow-up listed below.
+`SpawnMesh(MeshKey)` — the typed-key lane — is LANDED end to end:
+`app::AssetManager::LoadMesh(project::meshes::X)` acquires the mesh's
+owning-scene carrier (the AssetStore), and
+`app::AssetManager::SpawnMesh(handle, frame, parent)` resolves the
+handle's CURRENT world mesh row (fresh; a parked carrier has none) into
+the engine's row-driven `World::SpawnMesh(worldMeshIndex, ...)` — the
+shared spawn core behind `SpawnMeshFromNode`. Game code drives the
+project's typed keys, never authored scene nodes.
 
 ## The Animator
 
@@ -87,12 +92,12 @@ The World never knows `Enemy` exists.
   entities sharing one cluster render the first animator's pose. The
   per-draw palette table (a palette per draw, not per cluster) is the
   renderer generalization.
-- **`SpawnMesh(MeshKey)` + `LoadMesh`/`LoadSkeleton`/`LoadAnimation`**:
-  the app-layer asset-manager surface — the key→loaded-mesh join needs
-  the mesh's owning-scene + mesh-URI rows in the appmanifest, and the
-  `AnimationClipKey`/`SkeletonKey` catalog buckets (0x5xxx+) for
-  `.anim`/skeleton identities. Clips currently pass as loaded
-  `touranim::Clip` values (`LoadTourAnimText`).
+- **`LoadSkeleton`/`LoadAnimation`**: the remaining app-layer asset-
+  manager surface — the `AnimationClipKey`/`SkeletonKey` catalog
+  buckets (0x5xxx+) for `.anim`/skeleton identities. The MESH lane
+  (`LoadMesh` + `SpawnMesh` over the typed project keys) is LANDED;
+  clips currently pass as loaded `touranim::Clip` values
+  (`LoadTourAnimText`).
 - **One skeleton per cluster** (the importer's first-skin-wins
   contract) — a mesh-keyed skeleton table is the deeper unblock.
 

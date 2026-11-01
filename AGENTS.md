@@ -81,8 +81,11 @@
   renderer frame build drives Update with the frame's dt, NEVER a
   second caller). Renderer limit: one POSE per cluster (independent
   STATE for all animators); the per-draw palette table + the
-  SpawnMesh(MeshKey)/LoadMesh/LoadSkeleton/LoadAnimation asset surface
-  are the documented follow-ups.
+  LoadSkeleton/LoadAnimation asset surface are the documented
+  follow-ups (the typed-key MESH lane LANDED: AssetManager::LoadMesh
+  over the project MeshKeys + AssetManager::SpawnMesh(handle) ->
+  World::SpawnMesh(worldMeshIndex) — the row-driven spawn core shared
+  with SpawnMeshFromNode).
 
 ## Build system
 
@@ -348,8 +351,8 @@ cmd /c "`"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\B
   zero cost when blending is off. The B set carries no tile masks
   (the cull hoist walks set A; the B walk's per-pixel weights own
   correctness) and no probe spheres.
-- Documented follow-ups: `World::SpawnMesh(MeshHandle)`, the
-  subset/pak-grouped mesh fast path (the per-mesh blob direct
+- Documented follow-ups: the subset/pak-grouped mesh fast path (the
+  per-mesh blob direct
   upload), the pak-vNext page pager + the permanent shared-mesh
   store (page-resident mesh rows owned by AssetStore, never by scene
   clusters; the paged format BUMPS the pak magic - no version

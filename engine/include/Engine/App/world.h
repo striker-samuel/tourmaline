@@ -430,6 +430,26 @@ using namespace ::smvk;
 		// handle on a bad source.
 		MeshEntityHandle SpawnMeshFromNode(NodeId sourceNode,
 			const glm::mat4& frame, NodeId parent);
+		// The KEY-DRIVEN spawn (the content-as-code lane, the typed-key
+		// gameplay surface): instances a WORLD MESH ROW directly — no
+		// authored source node. The game loads a typed project mesh key
+		// through app::AssetManager (LoadMesh — MeshWorldIndex resolves
+		// the handle's CURRENT row fresh) and spawns HERE; the row's
+		// owning cluster keeps the mesh (cross-cluster binding, exactly
+		// like SpawnMeshFromNode). `worldMaterialIndex` is the optional
+		// base-material row (kInvalidIndex = material-less). The parent
+		// contract matches SpawnMeshFromNode (the resolved hierarchy
+		// owns the merge). Empty handle on a bad row.
+		MeshEntityHandle SpawnMesh(uint32_t worldMeshIndex,
+			const glm::mat4& frame, NodeId parent,
+			uint32_t worldMaterialIndex = kInvalidIndex);
+		// The shared spawn core (both entries): the durable transform
+		// node (dynamic cluster) + the merged mirror (fresh world
+		// indices) + the entity slot. NOT API — the public entries
+		// resolve the (mesh, material) bindings from their own sources.
+		MeshEntityHandle SpawnMeshEntityInternal(
+			const MeshLocation& meshLoc, const MaterialLocation* matLoc,
+			const glm::mat4& frame);
 		// Destroys the entity (rows + nodes drop, the generation
 		// advances — stale copies fail validation forever). The
 		// ATTACHED animator (an explicitly-owned attachment) dies with

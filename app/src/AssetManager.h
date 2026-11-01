@@ -40,6 +40,9 @@
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Scene/entity_handle.h>
+#include <Engine/Scene/scene_node_id.h>
+
+#include <glm/glm.hpp>
 
 #include <cstdint>
 #include <string>
@@ -168,6 +171,20 @@ public:
 	// Releases EVERY mesh reference + the session (keepResident) refs
 	// (the session teardown form).
 	void UnloadAllMeshes();
+
+	// ---- the spawn-side seam (the typed-key gameplay lane) ---------
+	// Instances one LOADED mesh: LoadMesh(project::meshes::X) ->
+	// SpawnMesh(handle, frame) - app/game code drives the project's
+	// TYPED KEYS end to end, no authored scene node, no cluster
+	// picking. Resolves the handle's CURRENT world row FRESH (a parked
+	// carrier - its scene was removed while the asset stays live -
+	// has NO row: the spawn refuses with an empty handle, never a
+	// stale row). The entity is WORLD-owned: world.DestroyMesh(
+	// entity) kills it (the manager owns the RESOURCE, never the
+	// instance). `parent` = the same resolved-hierarchy contract as
+	// World::SpawnMeshFromNode.
+	smvk::MeshEntityHandle SpawnMesh(MeshHandle mesh,
+		const glm::mat4& frame, NodeId parent);
 
 	// ---- GI BAKE SETS --------------------------------------------------
 	// Loads a GI set BY KEY: the [ids] row's .givolumemanifest bytes
