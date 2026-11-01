@@ -538,7 +538,13 @@ bool SerializeClusters(
 	size_t excludeTextureVfsCount,
 	const std::string* soundIdPaths,
 	const uint64_t* soundIds,
-	size_t soundIdCount) {
+	size_t soundIdCount,
+	// The project's node schemas (node_schema.h): emitted as the
+	// pak-level "#schemas" registry blob (the cooked LAYOUTS the
+	// runtime + the generated project::types decode against). Null +
+	// 0 = a schema-less pak (association-free content).
+	const NodeSchema* schemas,
+	size_t schemaCount) {
 	auto fail = [&](const std::string& msg) {
 		if (err)
 			*err = msg;
@@ -1547,6 +1553,40 @@ bool SerializeClusters(
 					static_cast<uint32_t>(audioRows.size());
 		}
 
+		// v19 PROJECT-DEFINED SCHEMA ASSOCIATIONS (node_schema.h):
+		// u32 rowCount + per row (denseNode, u32 schemaId, u32
+		// valueByteCount, the cooked value bytes), node-sorted. ALWAYS
+		// written (possibly zero rows) so the layout is uniform for
+		// new paks; old readers fail new blobs at the trailing-bytes
+		// check (the sanctioned break). The schema LAYOUTS ride the
+		// pak-level "#schemas" registry blob below.
+		{
+			std::vector<const SchemaAssocRow*> assocRows;
+			for (const SchemaAssocRow& r : cluster.scene.tables.schemaAssocs) {
+				if (r.node >= slotToDense.size()
+						|| slotToDense[r.node] == UINT32_MAX)
+					return fail("scene schema-assoc row references"
+						" retired node slot "
+						+ std::to_string(r.node));
+				assocRows.push_back(&r);
+			}
+			std::sort(assocRows.begin(), assocRows.end(),
+				[&slotToDense](const SchemaAssocRow* a,
+					const SchemaAssocRow* b) {
+					return slotToDense[a->node]
+						< slotToDense[b->node];
+				});
+			PutU32(blob, static_cast<uint32_t>(assocRows.size()));
+			for (const SchemaAssocRow* r : assocRows) {
+				PutU32(blob, slotToDense[r->node]);
+				PutU32(blob, r->schemaId);
+				PutU32(blob,
+					static_cast<uint32_t>(r->values.size()));
+				blob.insert(blob.end(), r->values.begin(),
+					r->values.end());
+			}
+		}
+
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
 			return fail("scene blob rejected");
@@ -1554,6 +1594,20 @@ bool SerializeClusters(
 			stats->nodes += nodeCount;
 	}
 	} // per-cluster loop
+
+	// The pak-level SCHEMA REGISTRY (node_schema.h): the cooked schema
+	// layouts the runtime + the generated project::types decode
+	// against. One blob at the reserved "#schemas" path whenever the
+	// cook carries schemas; a pak with schema-association rows but no
+	// registry entry for their ids fails the load loudly (a version
+	// skew - recook).
+	if (schemaCount > 0) {
+		if (!writer.AddBlob(PakAssetKind::Schema,
+				kPakSchemaRegistryPath,
+				WriteSchemaRegistryBlob(std::vector<NodeSchema>(
+					schemas, schemas + schemaCount))))
+			return fail("schema registry blob rejected");
+	}
 
 	// SMP8 THE COOKED MESH PLAN (pak-level, one blob at the reserved
 	// path): the family -> member join accumulated as the mesh blobs
@@ -1616,38 +1670,24 @@ bool SerializeCluster(
 	const Cluster& cluster,
 	PakWriter& writer,
 	ClusterSerializeStats* stats,
-	std::string* err) {
-	return SerializeClusters({ &cluster }, {}, writer, stats, err);
+	std::string* err,
+	const NodeSchema* schemas,
+	size_t schemaCount) {
+	return SerializeClusters({ &cluster }, {}, writer, stats, err,
+		nullptr, 0, nullptr, nullptr, 0, schemas, schemaCount);
 }
 
 // ---------------------------------------------------------------------------
 // Deserialize
 // ---------------------------------------------------------------------------
 
-namespace {
-// Pak-id remap tables for one scene parse (null = discovery listing:
-// links are skipped but the cursor still walks + validates structure).
-struct SceneLinkMaps {
-	const std::vector<ClusterStaticMeshHandle>* meshes = nullptr;
-	const std::vector<ClusterMaterialHandle>* materials = nullptr;
-	const std::vector<ClusterLightHandle>* lights = nullptr;
-	const std::vector<ClusterCameraHandle>* cameras = nullptr;
-	const std::vector<ClusterDecalHandle>* decals = nullptr;
-};
-
-// Shared Scene-blob parse (see the v2/v3/v4/v5 trailing sections in the
-// writer): hierarchy + transforms + node links + names + static/noLM/
-// lights sections + v5 name. With maps, links resolve to fresh pool
-// handles; without (ListPakScenes), only structure + names come out.
-// skeletonOut/hasSkeletonOut (v14, appended last so existing callers keep
-// compiling): the trailing CLUSTER-SKELETON section (the joint table the
-// per-mesh PackedSkinInfluences streams index; the writer always writes it). Null =
-// skip (structure-only callers). An ABSENT section (a pre-skin pak) leaves
-// *hasSkeletonOut false.
+// SceneLinkMaps + ParseSceneBlob are declared in the header (the
+// GPU-less structure-only lane: ListPakScenes, tools, tests). The
+// definition below matches - external linkage, no defaults repeated.
 bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	std::string& nameOut, const SceneLinkMaps* maps, std::string& err,
-	smvk::touranim::Skeleton* skeletonOut = nullptr,
-	bool* hasSkeletonOut = nullptr) {
+	smvk::touranim::Skeleton* skeletonOut,
+	bool* hasSkeletonOut) {
 	auto fail = [&](const std::string& msg) {
 		err = msg;
 		return false;
@@ -2122,6 +2162,38 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			if (!c.ok)
 				return fail("truncated scene audio-source section");
 		}
+		// Project-defined SCHEMA ASSOCIATIONS (v19; v18 blobs end
+		// after the audio sources): u32 rowCount + per row (denseNode,
+		// u32 schemaId, u32 valueByteCount, the cooked value bytes) —
+		// the typed data blocks (Engine/Scene/node_schema.h). The
+		// engine stores the bytes VERBATIM (no reflection): the schema
+		// LAYOUT rides the pak-level "#schemas" registry blob and the
+		// generated project::types PODs own the decode. Missing ==
+		// none (pre-v19 paks); present must end the blob exactly (the
+		// shared trailing-bytes check below).
+		if (c.off < c.img.size()) {
+			const uint32_t rowCount = c.u32();
+			if (!c.ok || rowCount > 1024 * 1024)
+				return fail("bad scene schema-assoc section");
+			for (uint32_t i = 0; i < rowCount; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t schemaId = c.u32();
+				const uint32_t valueBytes = c.u32();
+				if (!c.ok || node >= nodeCount
+						|| valueBytes > 16ull * 1024ull * 1024ull
+						|| valueBytes > c.img.size() - c.off)
+					return fail("bad scene schema-assoc section");
+				SchemaAssocRow row{};
+				row.node = node;
+				row.schemaId = schemaId;
+				row.values.assign(c.img.data() + c.off,
+					c.img.data() + c.off + valueBytes);
+				c.off += valueBytes;
+				scene.tables.schemaAssocs.push_back(std::move(row));
+			}
+			if (!c.ok)
+				return fail("truncated scene schema-assoc section");
+		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
 	}
@@ -2141,6 +2213,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 	return true;
 }
 
+namespace {
 // Scene blobs in index order ("#scene" first, then "#scene.N").
 std::vector<const PakTocEntry*> OrderedSceneEntries(const PakReader& reader) {
 	auto sceneEntries = reader.BlobsOfKind(PakAssetKind::Scene);

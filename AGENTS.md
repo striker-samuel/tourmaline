@@ -101,6 +101,30 @@
   preload until the subset fast path / permanent shared-mesh store
   lands (the direct-addressed mesh upload needs a contiguous image
   base) — documented in pak_vnext.md.
+- **PROJECT-DEFINED NODE SCHEMAS** (`engine/Scene/node_schema.h` —
+  Phase 3's storage contract): typed DATA associations on regular
+  scene transform nodes, authored as `.nodeschema` text files
+  (`schema <name> <stable-id>` + `attr <name> <type> [count] [=
+  literals]`; types f32/i32/u32/bool/vec2/vec3/vec4/str/ref, fixed
+  arrays; the field identity is the DECLARATION ORDINAL — renames
+  free, reorder = recook). "COMPILE TYPES; COOK VALUES": the engine
+  stores the cooked value bytes (the scene blob's v19 section —
+  `(node, schemaId, valueBytes)` rows, NO reflection by design), the
+  schema layouts ride the per-pak `"#schemas"` registry blob
+  (PakAssetKind::Schema, the cooker's `--schema` flag), the world
+  fold carries the rows into `world.scene.tables.schemaAssocs`
+  (nodes remapped, bytes verbatim, one row per node), and the
+  GENERATED project::types PODs (the codegen follow-up) own the
+  decode — the generator guarantees the C++ layout equals the cooked
+  layout (natural alignment, NOT stride: a vec3 aligns 4 like the
+  C++ float[3]; str fields are layout-TERMINAL — the variable tail).
+  Pinned by `schema.*` (test_assets.cpp: the text form, the layout
+  math, the registry codec + in-pak round trip, the v19 scene-blob
+  round trip through ParseSceneBlob, the uniform zero-row section) +
+  `schemafold.*` (test_world_entities.cpp: the world fold, the
+  overlap remap, remove-one-keeps-other). Follow-ups: the
+  generated-types emission in Project.exe ids + the editor
+  authoring/inspector/gizmo lane.
 - **The gameplay-handle model** (engine Engine/Scene/entity_handle.h):
   NO generic game-entity registry — gameplay structs compose TYPED
   64-bit generational handles (MeshEntityHandle/AnimatorHandle/

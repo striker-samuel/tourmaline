@@ -180,6 +180,11 @@ namespace paktool {
 		// one loud warning each); NON-EMPTY with an unresolved
 		// referenced path FAILS the cook (never silently omit).
 		std::vector<std::pair<std::string, uint64_t>> soundIds;
+		// The project's NODE SCHEMAS (--schema <file>, repeatable):
+		// cooked into the pak's "#schemas" registry blob (the schema
+		// LAYOUTS the scene's v19 schema-association rows decode
+		// against — Engine/Scene/node_schema.h).
+		std::vector<std::string> schemaFiles;
 		// Read-only inspection: open an existing pak and print its manifest
 		// (meshes + lmChunk, materials + texture URIs, textures). No cooking.
 		std::string dumpPak;
@@ -552,6 +557,16 @@ namespace paktool {
 					return false;
 				}
 				out.soundIds.emplace_back(v, id);
+			}
+			else if (a == "--schema") {
+				// --schema <.nodeschema file> (repeatable): the
+				// project's node schemas (Engine/Scene/node_schema.h)
+				// — cooked into the pak's "#schemas" registry blob the
+				// runtime + the generated project::types decode the
+				// scene's v19 schema-association rows against.
+				std::string v;
+				if (!need(v)) return false;
+				out.schemaFiles.push_back(std::move(v));
 			}
 			else if (a == "--dump-pak") {
 				if (!need(out.dumpPak)) return false;
@@ -1627,6 +1642,7 @@ int Run(const PakArgs& c) {
 	args.contentSet = c.contentSet;
 	args.excludeVfsPaths = c.excludeVfsPaths;
 	args.soundIds = c.soundIds;
+	args.schemaFiles = c.schemaFiles;
 	args.shaderDir = c.shaderDir;
 	args.shaderList = c.shaderList;
 
@@ -2753,6 +2769,29 @@ int Run(const PakArgs& c) {
 		args.compress ? smvk::PakCompression::Lz4 : smvk::PakCompression::None,
 		args.lz4Accel);
 	smvk::ClusterSerializeStats stats;
+
+	// The project's node schemas (--schema files, parsed here into the
+	// cooked registry the serializer emits as the "#schemas" blob).
+	std::vector<smvk::NodeSchema> cookSchemas;
+	for (const std::string& file : args.schemaFiles) {
+		std::ifstream in(file, std::ios::binary);
+		if (!in) {
+			tool::err() << "cannot open --schema file: " << file
+				<< std::endl;
+			return 1;
+		}
+		const std::string text((std::istreambuf_iterator<char>(in)),
+			std::istreambuf_iterator<char>());
+		std::vector<smvk::NodeSchema> parsed;
+		std::string serr;
+		if (!smvk::ParseNodeSchemaFile(text, parsed, serr)) {
+			tool::err() << "--schema file '" << file << "' failed: "
+				<< serr << std::endl;
+			return 1;
+		}
+		for (smvk::NodeSchema& s : parsed)
+			cookSchemas.push_back(std::move(s));
+	}
 	std::string err;
 	std::vector<const smvk::Cluster*> cookPtrs;
 	for (auto& sc : sceneClusters)
@@ -2785,7 +2824,9 @@ int Run(const PakArgs& c) {
 			args.excludeVfsPaths.size(),
 			soundIdPaths.empty() ? nullptr : soundIdPaths.data(),
 			soundIdVals.empty() ? nullptr : soundIdVals.data(),
-			soundIdVals.size())) {
+			soundIdVals.size(),
+			cookSchemas.empty() ? nullptr : cookSchemas.data(),
+			cookSchemas.size())) {
 		tool::err() << "Serialize failed: " << err << std::endl;
 		return 1;
 	}
@@ -3252,6 +3293,7 @@ int main(int argc, char** argv) {
 	c.contentSet = args.contentSet;
 	c.excludeVfsPaths = args.excludeVfsPaths;
 	c.soundIds = args.soundIds;
+	c.schemaFiles = args.schemaFiles;
 	c.shaderDir = args.shaderDir;
 	c.shaderList = args.shaderList;
 	return paktool::Run(c);

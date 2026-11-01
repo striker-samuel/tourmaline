@@ -140,6 +140,21 @@ struct AudioSourceRow {
 	SceneAudioSource source{};
 };
 
+// Node -> PROJECT-DEFINED SCHEMA ASSOCIATION (the custom-node-schema
+// lane, Engine/Scene/node_schema.h + docs/content_as_code.md): a
+// typed data block attached to a regular scene transform node. The
+// engine stores COOKED BYTES (the schema's value-block layout — no
+// reflection by design); the schema LAYOUT rides the per-pak schema
+// registry blob and the GENERATED project::types PODs own the
+// type-safe decode ("compile types; cook values"). Inline payload:
+// the value block is a node-local definition, exactly like the audio
+// source. At most ONE schema association per node (Set replaces).
+struct SchemaAssocRow {
+	NodeId node = 0;
+	uint32_t schemaId = 0; // the STABLE schema id (the pak's registry)
+	std::vector<uint8_t> values; // the cooked value block
+};
+
 // The row contract for the future pak chunks (Epoch 7): every row is
 // trivially copyable with a static layout — the writer/reader pair
 // pins field order + widths explicitly, and these asserts prove the
@@ -170,6 +185,7 @@ struct SceneTables {
 	std::vector<EnvRow> envs;
 	std::vector<EnvVolumeRow> envVolumes;
 	std::vector<AudioSourceRow> audioSources;
+	std::vector<SchemaAssocRow> schemaAssocs;
 	// Rigid bodies + colliders arrive at Epoch 10.
 };
 
@@ -191,6 +207,7 @@ struct NodeRows {
 	RowId env = InvalidRow;
 	RowId envVolume = InvalidRow;
 	RowId audioSource = InvalidRow;
+	RowId schemaAssoc = InvalidRow;
 	RowId body = InvalidRow;
 };
 
@@ -239,6 +256,8 @@ EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node);
 const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node);
 AudioSourceRow* FindAudioSource(Scene& scene, NodeId node);
 const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node);
+SchemaAssocRow* FindSchemaAssoc(Scene& scene, NodeId node);
+const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node);
 
 // Association mutators. At most one row per node per kind: Set REPLACES
 // the existing row (duplicate rejection with replacement semantics).
@@ -256,6 +275,11 @@ bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment);
 bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
 bool SetAudioSource(Scene& scene, NodeId node,
 	const SceneAudioSource& source);
+// The schema association (node_schema.h): the cooked value block is
+// stored verbatim — the schema id names the layout (the pak's
+// registry); `values` may be empty (defaults decode at read time).
+bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId,
+	std::vector<uint8_t> values);
 
 // Removes the node's row of that kind (swap-and-pop + lookup repair).
 // Returns whether a row existed.
@@ -270,6 +294,7 @@ bool RemoveExport(Scene& scene, NodeId node);
 bool RemoveEnv(Scene& scene, NodeId node);
 bool RemoveEnvVolume(Scene& scene, NodeId node);
 bool RemoveAudioSource(Scene& scene, NodeId node);
+bool RemoveSchemaAssoc(Scene& scene, NodeId node);
 
 // ---- dense node metadata (name/uuid; see NodeMetadata) ----
 // Grows scene.metadata to the node count on demand (addNode does not
@@ -348,3 +373,7 @@ using tour::scene::RemoveEnvVolume;
 using tour::scene::FindAudioSource;
 using tour::scene::SetAudioSource;
 using tour::scene::RemoveAudioSource;
+using tour::scene::SchemaAssocRow;
+using tour::scene::FindSchemaAssoc;
+using tour::scene::SetSchemaAssoc;
+using tour::scene::RemoveSchemaAssoc;

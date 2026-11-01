@@ -171,6 +171,25 @@ auto batch = assets.LoadMeshes(WorldMeshes.data(), WorldMeshes.size());
   for the GPU-less tests (hand-built mesh-carrying clusters stand in
   for the real deserialize); the default source is the engine's real
   deserialize, which refuses a null GPU context loudly.
+- **Project-defined node schemas** (the custom-node-schema lane,
+  `Engine/Scene/node_schema.h`): the EDITOR defines DATA — typed
+  attribute sets (f32/i32/u32/bool/vec2/vec3/vec4/str/ref + fixed
+  arrays) attached to regular scene transform nodes via authored
+  `.nodeschema` files (`schema <name> <stable id>` + `attr` lines).
+  "Compile types; cook values": the engine stores the cooked value
+  BYTES (the v19 scene-blob section: `(node, schemaId, valueBytes)`
+  rows — NO runtime reflection by design), the schema LAYOUTS ride
+  the per-pak `"#schemas"` registry blob (PakAssetKind::Schema,
+  written when the cooker's `--schema` files are passed), and the
+  GENERATED `project::types::*` PODs own the type-safe decode (the
+  generator guarantees the C++ layout equals the cooked layout).
+  The world fold carries each cluster's rows into the merged table
+  (nodes remapped, bytes verbatim); game code iterates
+  `world.scene.tables.schemaAssocs` + reads each row's node transform
+  from the merged scene. Pinned by `schema.*` (test_assets.cpp) +
+  `schemafold.*` (test_world_entities.cpp). The generated-types
+  emission + the editor authoring/gizmo lane are the documented
+  follow-ups.
 - The carve + bulk-copy core behind the cluster's upload entry lives
   in the SHARED GEOMETRY UPLOAD SERVICE
   (`Engine/Renderer/geometry_upload.h`) — caller-owned arena tokens,

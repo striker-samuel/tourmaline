@@ -107,7 +107,7 @@ inline constexpr const char* kPakMeshPlanPath = "#meshplan";
 
 // A breaking change to any of this bumps the pak magic (SMP8 is the
 // current epoch - the paged break: per-page contentCrc, stable slots,
-// the mesh plan); content recooks from zero.
+// the mesh plan, the schema registry); content recooks from zero.
 enum class PakAssetKind : uint32_t {
 	Scene = 1,
 	Mesh = 2,
@@ -182,6 +182,14 @@ enum class PakAssetKind : uint32_t {
 	// internal like Scene/Mesh: consumed through PakReader, invisible
 	// to the VFS backends.
 	Plan = 13,
+	// SCHEMA (the project-defined node-schema registry): ONE blob per
+	// pak at the reserved path kPakSchemaRegistryPath ("#schemas")
+	// carrying the cooked schema LAYOUTS (Engine/Scene/node_schema.h)
+	// the project's scenes were authored against — the runtime + the
+	// generated project::types PODs decode the scene blob's v19
+	// schema-association rows against it. Cluster-internal, invisible
+	// to the VFS backends.
+	Schema = 14,
 };
 
 enum PakEntryFlags : uint32_t {

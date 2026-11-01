@@ -1063,6 +1063,77 @@ void TestResolveCarriesInlineTables()
 			"resolve.rebuild-stale-free");
 }
 
+// PROJECT-DEFINED SCHEMA ASSOCIATIONS (Engine/Scene/node_schema.h):
+// the world fold carries each cluster's typed rows into the merged
+// table — nodes remapped, cooked value bytes VERBATIM (no decode at
+// fold time; the generated project::types own the decode), and the
+// row's node transform readable from the merged scene (the
+// instance-qualified identity gameplay iterates).
+void TestSchemaAssocFold()
+{
+	smvk::World w;
+	auto c1 = std::make_unique<smvk::Cluster>(nullptr);
+	c1->SetOfflineMode(true);
+	auto c2 = std::make_unique<smvk::Cluster>(nullptr);
+	c2->SetOfflineMode(true);
+	// OVERLAPPING local ids: node 1 in both clusters, each carrying a
+	// schema association with DISTINCT cooked bytes.
+	for (smvk::Cluster* c : { c1.get(), c2.get() }) {
+		addNode(c->scene, -1, 0);
+		addNode(c->scene, 0, 1);
+	}
+	const std::vector<uint8_t> valsA = { 0x11, 0x22, 0x33, 0x44 };
+	const std::vector<uint8_t> valsB = { 0xAA, 0xBB };
+	Check(SetSchemaAssoc(c1->scene, 1, 3001, valsA),
+		"schemafold.set-a");
+	Check(SetSchemaAssoc(c2->scene, 1, 3002, valsB),
+		"schemafold.set-b");
+	setNodeName(c1->scene, 1, "SpawnerA");
+	setNodeName(c2->scene, 1, "SpawnerB");
+	w.RegisterCluster(std::move(c1));
+	w.RegisterCluster(std::move(c2));
+	w.ResolveAndFixup_clusters();
+	const ::Scene& s = w.scene;
+	Check(s.tables.schemaAssocs.size() == 2,
+		"schemafold.both-carried");
+	const SchemaAssocRow* a = nullptr;
+	const SchemaAssocRow* b = nullptr;
+	for (const SchemaAssocRow& r : s.tables.schemaAssocs) {
+		if (r.schemaId == 3001) a = &r;
+		if (r.schemaId == 3002) b = &r;
+	}
+	Check(a != nullptr && b != nullptr, "schemafold.rows-found");
+	if (a && b) {
+		// Verbatim bytes, distinct world nodes (the overlap remapped
+		// apart), and the row's node TRANSFORM + name readable from
+		// the merged scene — the instance-qualified read lane.
+		Check(a->values == valsA && b->values == valsB,
+			"schemafold.values-verbatim");
+		Check(a->node != b->node, "schemafold.nodes-remapped-apart");
+		Check(a->node < s.hierarchy.size()
+			&& b->node < s.hierarchy.size(),
+			"schemafold.nodes-in-range");
+		Check(getNodeName(s, int(a->node)) == "SpawnerA"
+			&& getNodeName(s, int(b->node)) == "SpawnerB",
+			"schemafold.identity-at-row-node");
+		Check(s.globalTransform.size() > a->node,
+			"schemafold.transform-readable");
+		// The derived index resolves both.
+		Check(FindSchemaAssoc(w.scene, a->node) == a
+			&& FindSchemaAssoc(w.scene, b->node) == b,
+			"schemafold.find-resolves");
+	}
+	// Unload ONE cluster: only its rows fold away — the other
+	// instance's association survives untouched (the additive-scene
+	// contract).
+	if (w.clusters.size() == 2) {
+		w.UnloadCluster(*w.clusters[0]);
+		Check(w.scene.tables.schemaAssocs.size() == 1
+			&& w.scene.tables.schemaAssocs[0].schemaId == 3002,
+			"schemafold.remove-one-keeps-other");
+	}
+}
+
 // Epoch 6b: the resolve's SLOT-ASSOCIATION map — a cluster scene with
 // a retired slot (a hole) resolves correctly: live nodes land with
 // intact links, the hole never enters the world scene, and node-id
@@ -1116,6 +1187,7 @@ int main() {
 	TestActiveEnvironmentFirstWins();
 	TestResolveCarriesInlineTables();
 	TestResolveHoledCluster();
+	TestSchemaAssocFold();
 	std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " ("
 		<< g_checks << " checks)\n";
 	return g_failures == 0 ? 0 : 1;

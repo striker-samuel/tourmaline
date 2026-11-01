@@ -34,6 +34,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
+#include <Engine/Scene/node_schema.h>
 #include <Engine/platform.h> // readFile (exe-relative shader loads)
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/Renderer/vertex_pack.h>
@@ -1316,6 +1317,227 @@ void TestPakPager() {
 	fs::remove_all(tmp, ec);
 }
 
+// PROJECT-DEFINED NODE SCHEMAS (Engine/Scene/node_schema.h — the
+// custom-node-schema lane): the authored text form, the cooked
+// layout, the per-pak registry blob, and the scene blob's v19
+// schema-association round trip (through ParseSceneBlob, the
+// GPU-less reader).
+void TestNodeSchemas() {
+	// The authored text form: fields, defaults (scalars, vec3, ref,
+	// str, fixed arrays), stable ids.
+	smvk::NodeSchema schema;
+	{
+		const std::string text =
+			"# the stable id never changes; the name may\n"
+			"schema ZombieSpawner 3001\n"
+			"  attr respawnTime f32 = 12.0\n"
+			"  attr maxAlive u32 = 8\n"
+			"  attr spawnOffset vec3 = 1 2 3\n"
+			"  attr guardMesh ref = 0x3000\n"
+			"  attr patrolPoints vec3 2 = 0 0 0  10 0 0\n"
+			"  attr enabled bool = 1\n"
+			"  attr label str = \"spawner\"\n";
+		std::string perr;
+		Check(smvk::ParseNodeSchemaText(text, schema, perr),
+			"schema.parse");
+		Check(schema.id == 3001 && schema.name == "ZombieSpawner"
+			&& schema.fields.size() == 7, "schema.parse.fields");
+		// Defaults decode: f32 at its offset, vec3 components, the
+		// ref content id (u64 LE), the str (len + bytes).
+		const smvk::SchemaField* respawn = schema.Field(0);
+		Check(respawn && respawn->offset == 0
+			&& respawn->defaultValue.size() == 4, "schema.layout.first");
+		float f = 0;
+		if (respawn)
+			std::memcpy(&f, respawn->defaultValue.data(), 4);
+		Check(f == 12.0f, "schema.default.f32");
+		const smvk::SchemaField* offset3 = schema.Field(2);
+		Check(offset3 && offset3->stride == 12
+			&& offset3->defaultValue.size() == 12,
+			"schema.layout.vec3");
+		const smvk::SchemaField* ref = schema.Field(3);
+		Check(ref && ref->offset == 24 && ref->stride == 8,
+			"schema.layout.ref-align8");
+		uint64_t refId = 0;
+		if (ref)
+			std::memcpy(&refId, ref->defaultValue.data(),
+				std::min<size_t>(8, ref->defaultValue.size()));
+		Check(refId == 0x3000, "schema.default.ref");
+		const smvk::SchemaField* arr = schema.Field(4);
+		Check(arr && arr->count == 2 && arr->stride == 12
+			&& arr->defaultValue.size() == 24,
+			"schema.layout.array");
+		const smvk::SchemaField* str = schema.Field(6);
+		Check(str && str->count == 1
+			&& str->defaultValue.size() >= 4 + 7,
+			"schema.layout.str");
+		uint32_t strLen = 0;
+		if (str && str->defaultValue.size() >= 4) {
+			std::memcpy(&strLen, str->defaultValue.data(), 4);
+			Check(strLen == 7
+				&& std::memcmp(str->defaultValue.data() + 4, "spawner",
+					7) == 0,
+				"schema.default.str");
+		}
+		else {
+			Check(false, "schema.default.str");
+		}
+		// The full cooked block size: fields in order, NATURALLY
+		// aligned (f32@0, u32@4, vec3@8..20, ref@24..32 (align 8),
+		// vec3[2]@32..56, bool@56..60, str tail@60: 4+7 padded ->
+		// 72).
+		Check(schema.valueBytes == 72, "schema.layout.value-bytes");
+	}
+	// Malformed: unknown type, bad count, wrong literal count, dup
+	// names, missing header, str-not-last.
+	{
+		const char* bads[] = {
+			"schema X 1\n attr a quat = 1",
+			"schema X 1\n attr a f32 0 = 1",
+			"schema X 1\n attr a vec3 = 1 2",
+			"schema X 1\n attr a f32 = 1\n attr a f32 = 2",
+			"attr a f32 = 1",
+			"schema X 0\n attr a f32 = 1",
+			// str must be layout-terminal (the variable tail).
+			"schema X 1\n attr a str = \"x\"\n attr b f32 = 1",
+		};
+		for (const char* text : bads) {
+			smvk::NodeSchema junk;
+			std::string perr;
+			Check(!smvk::ParseNodeSchemaText(text, junk, perr),
+				"schema.parse-malformed");
+		}
+	}
+	// The multi-schema file form.
+	{
+		const std::string file =
+			"schema A 3001\n attr x f32 = 1\n"
+			"schema B 3002\n attr y u32 = 2\n attr z ref = 0x2000\n";
+		std::vector<smvk::NodeSchema> parsed;
+		std::string perr;
+		Check(smvk::ParseNodeSchemaFile(file, parsed, perr)
+			&& parsed.size() == 2 && parsed[0].id == 3001
+			&& parsed[1].id == 3002 && parsed[1].fields.size() == 2,
+			"schema.file-multi");
+	}
+	// The registry blob codec + the in-pak round trip.
+	{
+		const std::vector<uint8_t> blob =
+			smvk::WriteSchemaRegistryBlob({ schema });
+		std::vector<smvk::NodeSchema> back;
+		std::string rerr;
+		Check(smvk::ParseSchemaRegistryBlob(
+				std::span<const uint8_t>(blob), back, rerr)
+			&& back.size() == 1 && back[0].id == 3001
+			&& back[0].valueBytes == schema.valueBytes
+			&& back[0].fields.size() == schema.fields.size()
+			&& back[0].Field(3)->offset == schema.Field(3)->offset,
+			"schema.registry-roundtrip");
+		std::vector<smvk::NodeSchema> junk;
+		Check(!smvk::ParseSchemaRegistryBlob(
+				std::span<const uint8_t>(blob.data(), blob.size() - 4),
+				junk, rerr), "schema.registry-truncated-refused");
+
+		// Through a pak: the Schema-kind blob at the reserved path.
+		smvk::PakWriter w;
+		Check(w.AddBlob(smvk::PakAssetKind::Schema,
+				smvk::kPakSchemaRegistryPath, blob), "schema.pak-add");
+		const std::vector<uint8_t> img = w.Finalize();
+		std::string oerr;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), oerr);
+		Check(r.has_value(), "schema.pak-open");
+		if (r) {
+			const auto* e = r->Find(smvk::PakAssetKind::Schema,
+				smvk::kPakSchemaRegistryPath);
+			Check(e != nullptr, "schema.pak-find");
+			std::vector<smvk::NodeSchema> loaded;
+			std::string lerr;
+			Check(e && smvk::ParseSchemaRegistryBlob(r->Payload(*e),
+					loaded, lerr)
+				&& loaded.size() == 1 && loaded[0].id == 3001,
+				"schema.pak-registry-serves");
+		}
+	}
+	// The scene blob's v19 round trip: an offline cluster carrying a
+	// schema association cooks + reads back byte-exact (through
+	// ParseSceneBlob, the GPU-less reader).
+	{
+		auto c = std::make_unique<smvk::Cluster>(nullptr);
+		c->SetOfflineMode(true);
+		const int root = addNode(c->scene, -1, 0);
+		const int child = addNode(c->scene, root, 1);
+		// The cooked value block: the schema's defaults.
+		std::vector<uint8_t> values(schema.valueBytes, 0);
+		for (const smvk::SchemaField& f : schema.fields)
+			std::memcpy(values.data() + f.offset, f.defaultValue.data(),
+				std::min(f.defaultValue.size(),
+					values.size() - f.offset));
+		Check(SetSchemaAssoc(c->scene, NodeId(child), 3001,
+				values), "schema.set-assoc");
+		smvk::PakWriter w;
+		std::string serr;
+		smvk::ClusterSerializeStats stats;
+		Check(smvk::SerializeCluster(*c, w, &stats, &serr, &schema, 1),
+			"schema.serialize");
+		const std::vector<uint8_t> img = w.Finalize();
+		std::string oerr;
+		auto r = smvk::PakReader::Open(
+			std::span<const uint8_t>(img), oerr);
+		Check(r.has_value(), "schema.scene-pak-open");
+		if (r) {
+			const auto* e = r->Find(smvk::PakAssetKind::Scene,
+				"<cluster-local>#scene");
+			Check(e != nullptr, "schema.scene-find");
+			Scene scene;
+			std::string name;
+			std::string perr;
+			Check(e && smvk::ParseSceneBlob(r->Payload(*e), scene,
+					name, nullptr, perr),
+				"schema.scene-parse");
+			Check(scene.tables.schemaAssocs.size() == 1
+				&& scene.tables.schemaAssocs[0].schemaId == 3001
+				&& scene.tables.schemaAssocs[0].values == values
+				&& FindSchemaAssoc(scene,
+					scene.tables.schemaAssocs[0].node) != nullptr,
+				"schema.scene-row-roundtrip");
+			// The registry blob rides the same pak.
+			const auto* reg = r->Find(smvk::PakAssetKind::Schema,
+				smvk::kPakSchemaRegistryPath);
+			std::vector<smvk::NodeSchema> loaded;
+			std::string lerr;
+			Check(reg && smvk::ParseSchemaRegistryBlob(r->Payload(*reg),
+					loaded, lerr) && loaded.size() == 1,
+				"schema.scene-registry-rides");
+		}
+		// A schema-less cluster: the v19 section is UNIFORM (zero
+		// rows) — old-shape blobs still parse.
+		{
+			auto bare = std::make_unique<smvk::Cluster>(nullptr);
+			bare->SetOfflineMode(true);
+			addNode(bare->scene, -1, 0);
+			smvk::PakWriter w2;
+			Check(smvk::SerializeCluster(*bare, w2, nullptr, &serr),
+				"schema.serialize-bare");
+			auto img2 = w2.Finalize();
+			auto r2 = smvk::PakReader::Open(
+				std::span<const uint8_t>(img2), oerr);
+			Check(r2.has_value(), "schema.bare-pak-open");
+			if (r2) {
+				const auto* e = r2->Find(smvk::PakAssetKind::Scene,
+					"<cluster-local>#scene");
+				Scene scene;
+				std::string name;
+				std::string perr;
+				Check(e && smvk::ParseSceneBlob(r2->Payload(*e), scene,
+						name, nullptr, perr)
+					&& scene.tables.schemaAssocs.empty(),
+					"schema.bare-zero-rows");
+			}
+		}
+	}
+}
+
 void TestPakBackendServesTextures() {
 	smvk::PakWriter w;
 	auto tp = smvk::BuildTexturePayload("textures/brick.ktx2", -1, -1, -1, -1,
@@ -2556,6 +2778,11 @@ void TestClusterSerializeCook() {
 			// the writer emits the zero-row form; see the dedicated
 			// TestAudioSceneSection for the populated encoding).
 			putU32(0);
+			// The v19 schema-association section trails the audio
+			// sources (u32 rowCount — this scene carries no schema
+			// associations, so the writer emits the uniform zero-row
+			// form).
+			putU32(0);
 			const size_t at = p.size() - expect.size();
 			bool tailOk = p.size() >= expect.size();
 			for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3299,6 +3526,10 @@ void TestAudioSceneSection() {
 				putU64(0x4000);     // the STABLE content id
 				putF32(1.5f);       // gain
 				putU32(1);          // loop
+				// The v19 schema-association section trails the audio
+				// sources (the uniform zero-row form — this scene
+				// carries no schema associations).
+				putU32(0);
 				const size_t at = p.size() - expect.size();
 				bool tailOk = p.size() >= expect.size();
 				for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3391,6 +3622,7 @@ int main() {
 	run("TestPakCompressedRoundTrip", TestPakCompressedRoundTrip);
 	run("TestPakSmp8", TestPakSmp8);
 	run("TestPakPager", TestPakPager);
+	run("TestNodeSchemas", TestNodeSchemas);
 	run("TestPakBackendServesTextures", TestPakBackendServesTextures);
 	run("TestMeshOpt", TestMeshOpt);
 	run("TestSmoothNormalRepair", TestSmoothNormalRepair);

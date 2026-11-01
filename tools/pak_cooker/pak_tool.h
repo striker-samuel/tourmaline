@@ -96,6 +96,11 @@ struct PakArgs {
 	// non-project cook (referenced sounds serialize 0 = unresolved);
 	// NON-EMPTY with an unresolved referenced path FAILS the cook.
 	std::vector<std::pair<std::string, uint64_t>> soundIds;
+	// The project's NODE SCHEMAS (--schema <file>, repeatable): cooked
+	// into the pak's "#schemas" registry blob (the schema LAYOUTS the
+	// scene's v19 schema-association rows decode against —
+	// Engine/Scene/node_schema.h).
+	std::vector<std::string> schemaFiles;
 };
 
 // Byte-identical to the CLI run (same return codes). Prints go through

@@ -1402,6 +1402,16 @@ using namespace ::smvk;
 			for (const AudioSourceRow& row : cs.tables.audioSources)
 				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
 					SetAudioSource(scene, nodeMap[row.node], row.source);
+			// Project-defined schema associations (node_schema.h): the
+			// cooked value bytes ride VERBATIM (no decode at fold time
+			// — the generated project::types own the decode), nodes
+			// through the map. Game code iterates the merged table +
+			// reads each row's node transform from the merged scene
+			// (the instance-qualified identity).
+			for (const SchemaAssocRow& row : cs.tables.schemaAssocs)
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					SetSchemaAssoc(scene, nodeMap[row.node],
+						row.schemaId, row.values);
 			if (!envTaken && cs.envAuthored) {
 				scene.environment = cs.environment;
 				scene.envAuthored = true;

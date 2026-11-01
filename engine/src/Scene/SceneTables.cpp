@@ -168,6 +168,16 @@ void RebuildNodeRows(Scene& scene)
 		scene.rowsForNode[row.node].audioSource = RowId(i);
 		++i;
 	}
+	for (size_t i = 0; i < scene.tables.schemaAssocs.size();) {
+		SchemaAssocRow& row = scene.tables.schemaAssocs[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = std::move(scene.tables.schemaAssocs.back());
+			scene.tables.schemaAssocs.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].schemaAssoc = RowId(i);
+		++i;
+	}
 }
 
 // ---- mesh ----
@@ -803,6 +813,64 @@ bool RemoveAudioSource(Scene& scene, NodeId node)
 		scene.rowsForNode[moved].audioSource = rid;
 	}
 	scene.rowsForNode[node].audioSource = InvalidRow;
+	return true;
+}
+
+// ---- project-defined schema associations (node_schema.h) ----------
+
+const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].schemaAssoc;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.schemaAssocs.size());
+	return &scene.tables.schemaAssocs[rid];
+}
+
+SchemaAssocRow* FindSchemaAssoc(Scene& scene, NodeId node)
+{
+	return const_cast<SchemaAssocRow*>(FindSchemaAssoc(
+		static_cast<const Scene&>(scene), node));
+}
+
+bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId,
+	std::vector<uint8_t> values)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (SchemaAssocRow* row = FindSchemaAssoc(scene, node)) {
+		row->schemaId = schemaId;
+		row->values = std::move(values);
+		return true;
+	}
+	SchemaAssocRow row{};
+	row.node = node;
+	row.schemaId = schemaId;
+	row.values = std::move(values);
+	scene.tables.schemaAssocs.push_back(std::move(row));
+	scene.rowsForNode[node].schemaAssoc =
+		RowId(scene.tables.schemaAssocs.size() - 1);
+	return true;
+}
+
+bool RemoveSchemaAssoc(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].schemaAssoc;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.schemaAssocs[rid] =
+		std::move(scene.tables.schemaAssocs.back());
+	scene.tables.schemaAssocs.pop_back();
+	if (size_t(rid) < scene.tables.schemaAssocs.size()) {
+		const NodeId moved = scene.tables.schemaAssocs[rid].node;
+		scene.rowsForNode[moved].schemaAssoc = rid;
+	}
+	scene.rowsForNode[node].schemaAssoc = InvalidRow;
 	return true;
 }
 

@@ -10,7 +10,10 @@
 #include <string>
 #include <vector>
 
+#include <Engine/App/cluster.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Scene/node_schema.h>
+#include <Engine/Scene/scene.h>
 
 namespace tour { struct Cluster; struct GiBinding; }
 namespace smvk {
@@ -96,14 +99,24 @@ bool SerializeClusters(
 	// project contract: never silently omit a referenced sound).
 	const std::string* soundIdPaths = nullptr,
 	const uint64_t* soundIds = nullptr,
-	size_t soundIdCount = 0);
+	size_t soundIdCount = 0,
+	// The project's node schemas (Engine/Scene/node_schema.h): emitted
+	// as the pak-level "#schemas" registry blob (the cooked LAYOUTS
+	// the runtime + the generated project::types decode against).
+	// Null/0 = a schema-less pak (association-free content).
+	const NodeSchema* schemas = nullptr,
+	size_t schemaCount = 0);
 
-// Single-scene form (identical layout: index-0 scene blob).
+// Single-scene form (identical layout: index-0 scene blob). The
+// schema params forward to SerializeClusters (the pak-level
+// "#schemas" registry).
 bool SerializeCluster(
 	const Cluster& cluster,
 	PakWriter& writer,
 	ClusterSerializeStats* stats = nullptr,
-	std::string* err = nullptr);
+	std::string* err = nullptr,
+	const NodeSchema* schemas = nullptr,
+	size_t schemaCount = 0);
 
 // Parses a PakAssetKind::Gi registry blob (u32 count | u32 kind |
 // str name) into bindings. Used by DeserializeCluster and by tools
@@ -156,5 +169,28 @@ using ExternalTextureResolver =
 		TextureStreamer* streamer = nullptr,
 		std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
 		const ExternalTextureResolver* externalTexture = nullptr);
+
+	// ---- the GPU-less scene-blob reader (the structure-only lane) ----
+	// The pak-id remap tables for one scene-blob parse (null = a
+	// structure-only walk: links are skipped but the cursor still
+	// walks + validates — the ListPakScenes + test lane).
+	struct SceneLinkMaps {
+		const std::vector<ClusterStaticMeshHandle>* meshes = nullptr;
+		const std::vector<ClusterMaterialHandle>* materials = nullptr;
+		const std::vector<ClusterLightHandle>* lights = nullptr;
+		const std::vector<ClusterCameraHandle>* cameras = nullptr;
+		const std::vector<ClusterDecalHandle>* decals = nullptr;
+	};
+	// The shared Scene-blob reader (the writer's v1..v19 sections):
+	// hierarchy + transforms + node links + names + the trailing
+	// sections. With maps, links resolve to fresh pool handles;
+	// without (null), only structure + names come out. skeletonOut/
+	// hasSkeletonOut (v14): null = skip (structure-only callers); an
+	// absent section leaves *hasSkeletonOut false.
+	bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
+		std::string& nameOut, const SceneLinkMaps* maps,
+		std::string& err,
+		smvk::touranim::Skeleton* skeletonOut = nullptr,
+		bool* hasSkeletonOut = nullptr);
 
 } // namespace smvk
