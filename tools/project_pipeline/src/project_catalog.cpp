@@ -652,7 +652,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "// generation event; an unchanged generation re-emits this\n"
 		<< "// file byte-identical (write-only-on-change).\n"
 		<< "#pragma once\n\n"
-		<< "#include <array>\n#include <cstdint>\n"
+		<< "#include <array>\n#include <cstddef>\n"
+			"#include <cstdint>\n#include <cstring>\n"
 			"#include <string_view>\n"
 		<< "// The compile-time query API (MatchAssets + the constexpr\n"
 		<< "// regex engine + AssetTraits' primary) - pure C++20.\n"
@@ -732,6 +733,122 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitNamespace("sounds", c.sounds, "SoundKey");
 	emitNamespace("shaders", c.shaders, "ShaderKey");
 	emitNamespace("gi", c.gi, "GiKey");
+
+	// ---- the generated TYPES (the node schemas; "compile types;
+	// cook values") -----------------------------------------------
+	// The C++ layout is GUARANTEED to equal the cooked layout: fields
+	// in declaration order, naturally aligned (a vec3 aligns 4 like
+	// the emitted float[3]; ref aligns 8) - the static_asserts prove
+	// every field offset + the fixed prefix's extent. str fields are
+	// layout-TERMINAL (the variable tail): they are NOT members; the
+	// generated accessor reads them past the fixed prefix.
+	if (!c.schemas.empty()) {
+		os << "// THE GENERATED TYPES (the project's node schemas -\n"
+			<< "// docs/content_as_code.md). COMPILE TYPES; COOK VALUES:\n"
+			<< "// the layout below equals the cooked value block the\n"
+			<< "// scene's v19 schema-association rows carry (asserted);\n"
+			<< "// FromValues decodes a row's bytes with one memcpy.\n"
+			<< "// Decode str fields through the generated accessors\n"
+			<< "// (they live past the fixed prefix - the variable tail).\n"
+			<< "namespace types {\n\n";
+		// Id-sorted for determinism (same order as the content hash).
+		std::vector<const NodeSchema*> sortedSchemas;
+		sortedSchemas.reserve(c.schemas.size());
+		for (const NodeSchema& s : c.schemas)
+			sortedSchemas.push_back(&s);
+		std::sort(sortedSchemas.begin(), sortedSchemas.end(),
+			[](const NodeSchema* a, const NodeSchema* b) {
+				return a->id < b->id;
+			});
+		for (const NodeSchema* sp : sortedSchemas) {
+			const NodeSchema& s = *sp;
+			os << "struct " << s.name << " {\n"
+				<< "    static constexpr std::uint32_t SchemaId = "
+				<< s.id << "u;\n";
+			// The fixed members (everything except the terminal str).
+			uint32_t fixedBytes = 0;
+			const SchemaField* strField = nullptr;
+			std::vector<std::string> asserts;
+			for (const SchemaField& f : s.fields) {
+				if (f.type == SchemaFieldType::Str) {
+					strField = &f;
+					continue;
+				}
+				os << "    "; // member
+				switch (f.type) {
+				case SchemaFieldType::F32:
+					os << "float " << f.name; break;
+				case SchemaFieldType::I32:
+					os << "std::int32_t " << f.name; break;
+				case SchemaFieldType::U32:
+				case SchemaFieldType::Bool:
+					os << "std::uint32_t " << f.name; break;
+				case SchemaFieldType::Ref:
+					os << "std::uint64_t " << f.name; break;
+				case SchemaFieldType::Vec2:
+				case SchemaFieldType::Vec3:
+				case SchemaFieldType::Vec4: {
+					const uint32_t n = f.stride / 4;
+					os << "float " << f.name;
+					if (f.count > 1)
+						os << "[" << f.count << "]";
+					os << "[" << n << "]";
+					break;
+				}
+				default:
+					break;
+				}
+				if (f.count > 1
+						&& f.type != SchemaFieldType::Vec2
+						&& f.type != SchemaFieldType::Vec3
+						&& f.type != SchemaFieldType::Vec4)
+					os << "[" << f.count << "]";
+				os << "; // field " << f.id << "\n";
+				asserts.push_back("static_assert(offsetof(" + s.name
+					+ ", " + f.name + ") == " + std::to_string(f.offset)
+					+ "u);");
+				fixedBytes = f.offset + f.stride * f.count;
+			}
+			// The C++ sizeof includes tail padding (alignment); the
+			// FIXED extent is the last fixed field's end - asserted
+			// through the last member, never sizeof.
+			os << "    static constexpr std::uint32_t FixedBytes = "
+				<< fixedBytes << "u;\n"
+				<< "    static " << s.name
+				<< " FromValues(const void* cooked) {\n"
+				<< "        " << s.name << " v{};\n"
+				<< "        std::memcpy(&v, cooked, FixedBytes);\n"
+				<< "        return v;\n"
+				<< "    }\n";
+			if (strField) {
+				os << "    // The layout-terminal str tail (the\n"
+					<< "    // variable-length end of the row's cooked\n"
+					<< "    // block - never a member).\n"
+					<< "    static std::string_view " << strField->name
+					<< "(const std::uint8_t* rowBytes,\n"
+					<< "            std::uint32_t rowBytesCount) {\n"
+					<< "        if (rowBytesCount < "
+					<< (strField->offset + 4) << "u)\n"
+					<< "            return {};\n"
+					<< "        std::uint32_t len = 0;\n"
+					<< "        std::memcpy(&len, rowBytes + "
+					<< strField->offset << "u, 4);\n"
+					<< "        if (rowBytesCount < "
+					<< (strField->offset + 4) << "u + len)\n"
+					<< "            return {};\n"
+					<< "        return { reinterpret_cast<const char*>"
+					<< "(rowBytes + " << (strField->offset + 4)
+					<< "u), len };\n"
+					<< "    }\n";
+			}
+			os << "};\n";
+			for (const std::string& a : asserts)
+				os << a << "\n";
+			os << "\n";
+		}
+		os << "} // namespace types\n\n";
+	}
+
 	os << "// Runtime packages (plan/mount order).\n"
 		<< "struct Pak {\n"
 		<< "    std::string_view name;\n"
@@ -1059,6 +1176,38 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 	addBucket("sound", c.sounds);
 	addBucket("shader", c.shaders);
 	addBucket("gi", c.gi);
+	// The node schemas are catalog SEMANTICS ("compile types; cook
+	// values"): a schema edit changes the generated TYPES — a
+	// generation event, never a silent re-emit.
+	canonical += "schemas\n";
+	{
+		std::vector<const NodeSchema*> sorted;
+		sorted.reserve(c.schemas.size());
+		for (const NodeSchema& s : c.schemas)
+			sorted.push_back(&s);
+		std::sort(sorted.begin(), sorted.end(),
+			[](const NodeSchema* a, const NodeSchema* b) {
+				return a->id < b->id;
+			});
+		for (const NodeSchema* s : sorted) {
+			canonical += "schema " + std::to_string(s->id) + " "
+				+ s->name + " " + std::to_string(s->valueBytes)
+				+ "\n";
+			for (const SchemaField& f : s->fields) {
+				canonical += "field " + std::to_string(f.id) + " "
+					+ f.name + " "
+					+ std::to_string(uint32_t(f.type)) + " "
+					+ std::to_string(f.count) + " "
+					+ std::to_string(f.offset) + " "
+					+ std::to_string(f.stride) + " "
+					+ std::to_string(f.defaultValue.size())
+					+ "\n";
+				canonical.insert(canonical.end(),
+					f.defaultValue.begin(), f.defaultValue.end());
+				canonical += "\n";
+			}
+		}
+	}
 	// The retired set is catalog SEMANTICS too: a retire/reactivate
 	// moves the content hash (a generation event), so the compiled
 	// catalog and its hash can never disagree about membership.
@@ -1067,6 +1216,61 @@ std::string ComputeCatalogContentHash(const ProjectCatalog& c) {
 		canonical += "asset 0x" + Hex64(e.id) + " " + e.symbol + " "
 			+ e.kind + "\n";
 	return smvk::cache::HashBytes(canonical.data(), canonical.size());
+}
+
+bool CollectNodeSchemas(const std::string& projectRoot,
+	std::vector<NodeSchema>& out, std::string& err) {
+	out.clear();
+	// The project IS the content tree: every .nodeschema file under
+	// the root is a project schema (recursive, deterministic walk).
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	std::vector<std::string> files;
+	for (fs::recursive_directory_iterator it(projectRoot, ec), end;
+			!ec && it != end; it.increment(ec)) {
+		if (!it->is_regular_file(ec))
+			continue;
+		if (it->path().extension().generic_string() != ".nodeschema")
+			continue;
+		files.push_back(it->path().generic_string());
+	}
+	if (ec) {
+		err = "the schema walk failed under '" + projectRoot + "': "
+			+ ec.message();
+		return false;
+	}
+	std::sort(files.begin(), files.end());
+	for (const std::string& file : files) {
+		std::ifstream in(file, std::ios::binary);
+		if (!in) {
+			err = "cannot open schema file: " + file;
+			return false;
+		}
+		const std::string text((std::istreambuf_iterator<char>(in)),
+			std::istreambuf_iterator<char>());
+		std::vector<NodeSchema> parsed;
+		std::string perr;
+		if (!ParseNodeSchemaFile(text, parsed, perr)) {
+			err = "the schema file '" + file + "' failed: " + perr;
+			return false;
+		}
+		for (NodeSchema& s : parsed)
+			out.push_back(std::move(s));
+	}
+	// Id-sorted + duplicate-id refusal (two schemas claiming one id
+	// would silently shadow in every id-keyed lookup).
+	std::sort(out.begin(), out.end(),
+		[](const NodeSchema& a, const NodeSchema& b) {
+			return a.id < b.id;
+		});
+	for (size_t i = 1; i < out.size(); ++i)
+		if (out[i].id == out[i - 1].id) {
+			err = "two schemas claim id " + std::to_string(out[i].id)
+				+ " ('" + out[i - 1].name + "' and '" + out[i].name
+				+ "') - schema ids are stable and unique";
+			return false;
+		}
+	return true;
 }
 
 bool ReadProjectHeaderMetadata(const std::string& path,

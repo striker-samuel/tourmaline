@@ -118,6 +118,28 @@ bool FinalizeSchema(NodeSchema& schema, std::string& err) {
 		err = "the schema needs a name and a nonzero stable id";
 		return false;
 	}
+	// The names become C++ IDENTIFIERS in the generated project::types
+	// (and keys in the authored tooling): validate the shape HERE so
+	// the generator can trust it ([A-Za-z_][A-Za-z0-9_]*).
+	const auto isIdentifier = [](const std::string& s) {
+		if (s.empty())
+			return false;
+		for (size_t i = 0; i < s.size(); ++i) {
+			const char c = s[i];
+			const bool ok = (c >= 'a' && c <= 'z')
+				|| (c >= 'A' && c <= 'Z') || c == '_'
+				|| (i > 0 && c >= '0' && c <= '9');
+			if (!ok)
+				return false;
+		}
+		return true;
+	};
+	if (!isIdentifier(schema.name)) {
+		err = "the schema name '" + schema.name
+			+ "' is not a valid identifier (it becomes the generated"
+			" project::types struct name)";
+		return false;
+	}
 	uint32_t off = 0;
 	bool sawStr = false;
 	for (uint32_t i = 0; i < schema.fields.size(); ++i) {
@@ -126,6 +148,12 @@ bool FinalizeSchema(NodeSchema& schema, std::string& err) {
 		if (f.name.empty()) {
 			err = "schema '" + schema.name + "' field #"
 				+ std::to_string(i) + " has no name";
+			return false;
+		}
+		if (!isIdentifier(f.name)) {
+			err = "schema '" + schema.name + "' field '" + f.name
+				+ "' is not a valid identifier (it becomes the"
+				" generated member name)";
 			return false;
 		}
 		if (f.count == 0) {

@@ -768,6 +768,12 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 				std::vector<std::string> deps;
 				if (GenerateProjectCatalog(project, plan, db, catalog,
 						deps, err)) {
+					// The project's node schemas (the generated
+					// project::types + the content-hash fold - the
+					// same collection the ids pass runs).
+					if (!CollectNodeSchemas(project.root,
+							catalog.schemas, err))
+						return false;
 					std::map<std::string, std::string> pakFileById;
 					for (size_t i = 0; i < plan.paks.size(); ++i)
 						pakFileById[plan.paks[i].id] =

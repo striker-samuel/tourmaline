@@ -545,6 +545,15 @@ int main(int argc, const char* argv[]) {
 			std::cerr << err << "\n";
 			return 1;
 		}
+		// The project's NODE SCHEMAS (the authored .nodeschema files
+		// under the content tree): the generated project::types + the
+		// content hash's schema fold (a schema edit is a generation
+		// event - "compile types; cook values").
+		if (!smvk::project::CollectNodeSchemas(p.root, catalog.schemas,
+				err)) {
+			std::cerr << err << "\n";
+			return 1;
+		}
 		std::vector<smvk::project::PakFingerprint> pakPrints;
 		if (!smvk::project::DiscoverPakFingerprints(effectivePakDir,
 				catalog, assetPrints, prev, pakPrints, err)) {

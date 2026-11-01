@@ -3711,6 +3711,183 @@ void TestProjectHeaderStamp() {
 
 } // namespace
 
+// THE NODE-SCHEMA CODEGEN (the "compile types" half of the
+// custom-node-schema lane): CollectNodeSchemas discovers + parses the
+// project's .nodeschema files, EmitProjectHeader emits project::types
+// PODs whose layout is ASSERTED equal to the cooked value blocks, the
+// content hash folds the schemas (an edit is a generation event), and
+// ComposeProjectHeader moves the stamp on a schema change.
+void TestNodeSchemaCodegen() {
+	namespace fs = std::filesystem;
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_schema_codegen";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	fs::create_directories(tmp / "content", ec);
+
+	// An authored schema file under the project's content tree.
+	const std::string schemaText =
+		"schema ZombieSpawner 3001\n"
+		"  attr respawnTime f32 = 12.0\n"
+		"  attr maxAlive u32 = 8\n"
+		"  attr spawnOffset vec3 = 1 2 3\n"
+		"  attr guardMesh ref = 0x3000\n"
+		"  attr patrolPoints vec3 2 = 0 0 0  10 0 0\n"
+		"  attr label str = \"spawner\"\n";
+	{
+		std::ofstream out(tmp / "content" / "game.nodeschema",
+			std::ios::binary | std::ios::trunc);
+		out << schemaText;
+	}
+	{
+		std::vector<smvk::NodeSchema> schemas;
+		std::string err;
+		Check(smvk::project::CollectNodeSchemas(
+				tmp.generic_string(), schemas, err)
+			&& schemas.size() == 1 && schemas[0].id == 3001
+			&& schemas[0].fields.size() == 6,
+			"schemagen.collect");
+	}
+	// Malformed + duplicate-id refusals (loud, with the file).
+	{
+		{
+			std::ofstream out(tmp / "content" / "bad.nodeschema",
+				std::ios::binary | std::ios::trunc);
+			out << "schema Bad 3002\n attr x quat = 1\n";
+		}
+		std::vector<smvk::NodeSchema> schemas;
+		std::string err;
+		Check(!smvk::project::CollectNodeSchemas(
+				tmp.generic_string(), schemas, err)
+			&& err.find("bad.nodeschema") != std::string::npos,
+			"schemagen.collect-malformed-refused");
+		fs::remove(tmp / "content" / "bad.nodeschema", ec);
+	}
+	{
+		{
+			std::ofstream out(tmp / "content" / "dup.nodeschema",
+				std::ios::binary | std::ios::trunc);
+			out << "schema AlsoZombie 3001\n attr x f32 = 1\n";
+		}
+		std::vector<smvk::NodeSchema> schemas;
+		std::string err;
+		Check(!smvk::project::CollectNodeSchemas(
+				tmp.generic_string(), schemas, err)
+			&& err.find("3001") != std::string::npos,
+			"schemagen.collect-duplicate-id-refused");
+		fs::remove(tmp / "content" / "dup.nodeschema", ec);
+	}
+
+	// The emission: project::types with the layout asserts + the
+	// decode + the str accessor.
+	smvk::project::ProjectCatalog catalog;
+	catalog.projectName = "SchemaDemo";
+	{
+		std::string err;
+		Check(smvk::project::CollectNodeSchemas(tmp.generic_string(),
+				catalog.schemas, err), "schemagen.catalog-fills");
+	}
+	{
+		smvk::project::GenerationStamp stamp;
+		stamp.generation = 1;
+		stamp.timestamp = 1793451600;
+		stamp.contentHash =
+			smvk::project::ComputeCatalogContentHash(catalog);
+		const std::string header =
+			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
+		Check(header.find("namespace types") != std::string::npos
+			&& header.find("struct ZombieSpawner")
+				!= std::string::npos
+			&& header.find("SchemaId = 3001u") != std::string::npos
+			&& header.find("FixedBytes = 56u") != std::string::npos
+			&& header.find("FromValues") != std::string::npos,
+			"schemagen.header-emits-types");
+		Check(header.find("static_assert(offsetof(ZombieSpawner,"
+				" respawnTime) == 0u);") != std::string::npos
+			&& header.find("static_assert(offsetof(ZombieSpawner,"
+				" guardMesh) == 24u);") != std::string::npos
+			&& header.find("static_assert(offsetof(ZombieSpawner,"
+				" patrolPoints) == 32u);") != std::string::npos,
+			"schemagen.header-layout-asserts");
+		// The str tail: NOT a member - the generated accessor (named
+		// for the FIELD) reads past the fixed prefix.
+		Check(header.find("float label") == std::string::npos
+			&& header.find("static std::string_view label(")
+				!= std::string::npos,
+			"schemagen.header-str-accessor");
+	}
+	// The content hash folds the schemas: a field default edit or a
+	// NAME edit moves it (the generated C++ changed - dependents
+	// recompile; a rename is identity-free but NOT recompile-free).
+	{
+		const std::string base =
+			smvk::project::ComputeCatalogContentHash(catalog);
+		smvk::NodeSchema edited = catalog.schemas[0];
+		edited.fields[0].defaultValue[0] ^= 0x01; // 12.0 -> not-12.0
+		smvk::project::ProjectCatalog other = catalog;
+		other.schemas[0] = edited;
+		Check(smvk::project::ComputeCatalogContentHash(other) != base,
+			"schemagen.hash-folds-schema");
+		// A rename keeps the IDENTITY (the ordinal) but moves the
+		// hash: the emitted member name changed - a generation event
+		// (never a silent re-emit).
+		smvk::project::ProjectCatalog renamed = catalog;
+		renamed.schemas[0].fields[1].name = "maxConcurrent";
+		Check(smvk::project::ComputeCatalogContentHash(renamed)
+			!= base, "schemagen.hash-moves-on-rename");
+	}
+	// The stamp discipline: a schema edit on disk is a GENERATION
+	// event (the emitted types changed - the probe sees it).
+	{
+		const fs::path header = tmp / "project.h";
+		smvk::project::GenerationStamp stamp;
+		std::string text;
+		bool changed = false;
+		smvk::project::ComposeProjectHeader(catalog, {}, {},
+			header.generic_string(), false, text, stamp, changed);
+		Check(changed && stamp.generation == 1,
+			"schemagen.stamp-first-write");
+		// The composed header must LAND (the second compose derives
+		// its generation from the on-disk metadata - the no-op probe
+		// reads the file, not memory).
+		{
+			std::ofstream out(header, std::ios::binary | std::ios::trunc);
+			out << text;
+		}
+		// The schema edit (a new field BEFORE the terminal str - the
+		// str-last rule): the generation moves.
+		{
+			const std::string editedText =
+				"schema ZombieSpawner 3001\n"
+				"  attr respawnTime f32 = 12.0\n"
+				"  attr maxAlive u32 = 8\n"
+				"  attr spawnOffset vec3 = 1 2 3\n"
+				"  attr guardMesh ref = 0x3000\n"
+				"  attr patrolPoints vec3 2 = 0 0 0  10 0 0\n"
+				"  attr aggroRadius f32 = 4.0\n"
+				"  attr label str = \"spawner\"\n";
+			std::ofstream out(tmp / "content" / "game.nodeschema",
+				std::ios::binary | std::ios::trunc);
+			out << editedText;
+		}
+		std::string err;
+		Check(smvk::project::CollectNodeSchemas(tmp.generic_string(),
+				catalog.schemas, err)
+			&& catalog.schemas[0].fields.size() == 7,
+			"schemagen.edit-recollected");
+		smvk::project::GenerationStamp stamp2;
+		std::string text2;
+		bool changed2 = false;
+		smvk::project::ComposeProjectHeader(catalog, {}, {},
+			header.generic_string(), false, text2, stamp2, changed2);
+		Check(changed2 && stamp2.generation == stamp.generation + 1
+			&& text2.find("float aggroRadius") != std::string::npos,
+			"schemagen.stamp-moves-on-edit");
+	}
+
+	fs::remove_all(tmp, ec);
+}
+
 int main(int argc, char** argv) {
 	if (argc > 0 && argv[0])
 		g_argv0 = argv[0];
@@ -3731,6 +3908,7 @@ int main(int argc, char** argv) {
 	TestAppManifest();
 	TestProjectCatalog();
 	TestProjectHeaderStamp();
+	TestNodeSchemaCodegen();
 	TestBuildPlanExecutor();
 	std::cout << "project_pipeline_tests: "
 		<< (g_checks - g_failures) << "/" << g_checks

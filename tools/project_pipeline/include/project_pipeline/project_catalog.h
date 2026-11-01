@@ -36,6 +36,7 @@
 #include <vector>
 
 #include <artifact_cache/assetdb.h>
+#include <Engine/Scene/node_schema.h>
 
 #include "build_plan.h"
 #include "project.h"
@@ -84,8 +85,23 @@ struct ProjectCatalog {
 	// active namespaces and the published manifests. Re-adding the
 	// asset with its original GUID re-activates the SAME id+symbol.
 	std::vector<CatalogEntry> retired;
+	// THE PROJECT'S NODE SCHEMAS (Engine/Scene/node_schema.h — the
+	// authored .nodeschema files under the project's content tree):
+	// the header emits them as `project::types` PODs whose layout is
+	// ASSERTED equal to the cooked value blocks the scene's v19
+	// schema-association rows carry ("compile types; cook values").
+	// A schema edit is catalog SEMANTICS — the content hash folds it
+	// (a generation event, never a silent re-emit).
+	std::vector<NodeSchema> schemas;
 	uint64_t entryScene = 0; // the scenes:: namespace id (0 = none)
 };
+
+// Collects + parses every .nodeschema file under the project's root
+// (recursive; the project IS the content tree) into `out`, id-sorted.
+// False + err (with the file + line) on any malformed file — the ids
+// pass fails LOUDLY, never skips a schema.
+[[nodiscard]] bool CollectNodeSchemas(const std::string& projectRoot,
+	std::vector<NodeSchema>& out, std::string& err);
 
 // ---- the generation stamp + the EOF metadata -----------------------
 // project.h is TWO artifacts in one file: the constexpr C++ catalog
