@@ -2388,8 +2388,8 @@ using namespace ::smvk;
 	namespace {
 		// World-space AABB of a mesh under `model` (8-corner transform so
 		// rotation/scale stay conservative).
-		::Aabb WorldAabbForMesh(const StaticMesh* mesh, const glm::mat4& model) {
-			::Aabb out = ::Aabb::empty();
+		::tour::Aabb WorldAabbForMesh(const StaticMesh* mesh, const glm::mat4& model) {
+			::tour::Aabb out = ::tour::Aabb::empty();
 			if (!mesh)
 				return out;
 			const glm::vec3 localMin = mesh->geometry.aabbMin;
@@ -2415,7 +2415,7 @@ using namespace ::smvk;
 	void World::RebuildStaticBvh() {
 		InvalidateStaticBvh();
 		EnsureLodChainsCached(*this);
-		std::vector<::Partition> prims;
+		std::vector<Partition> prims;
 		prims.reserve(scene.tables.meshes.size());
 		for (const MeshRow& row : scene.tables.meshes) {
 			const NodeId node = row.node;
@@ -2427,7 +2427,7 @@ using namespace ::smvk;
 			if (!base)
 				continue;
 			const glm::mat4& model = scene.globalTransform[node];
-			::Aabb bounds = WorldAabbForMesh(base, model);
+			::tour::Aabb bounds = WorldAabbForMesh(base, model);
 			// LOD-chain union: any LodIndexForNode selection stays inside.
 			if (row.mesh < lodChains.size()) {
 				const LodChain& chain = lodChains[row.mesh];
@@ -2440,7 +2440,7 @@ using namespace ::smvk;
 				}
 			}
 			const glm::vec3 c = bounds.centroid();
-			prims.push_back(::Partition{ bounds, c, node });
+			prims.push_back(Partition{ bounds, c, node });
 		}
 		const uint32_t N = static_cast<uint32_t>(prims.size());
 		staticBvh_.primIndices.resize(N);
@@ -2458,8 +2458,8 @@ using namespace ::smvk;
 		staticBvhValid_ = true;
 	}
 
-	::Aabb World::ComputeSceneBounds() const {
-		::Aabb out = ::Aabb::empty();
+	::tour::Aabb World::ComputeSceneBounds() const {
+		::tour::Aabb out = ::tour::Aabb::empty();
 		for (const MeshRow& row : scene.tables.meshes) {
 			if (row.mesh >= meshLocations.size())
 				continue;
@@ -2476,7 +2476,7 @@ using namespace ::smvk;
 		return out;
 	}
 
-	const ::BvhTree& World::EnsureStaticBvh() const {
+	const ::tour::BvhTree& World::EnsureStaticBvh() const {
 		if (!staticBvhValid_)
 			const_cast<World*>(this)->RebuildStaticBvh();
 		return staticBvh_;
@@ -2484,12 +2484,12 @@ using namespace ::smvk;
 
 	std::vector<uint8_t> World::StaticVisibilityMask(
 		const glm::vec4* planes, int planeCount) const {
-		const ::BvhTree& tree = EnsureStaticBvh();
+		const ::tour::BvhTree& tree = EnsureStaticBvh();
 		if (tree.nodes.empty() || tree.primIndices.empty() || !planes || planeCount <= 0)
 			return {};
 		std::vector<int> slots;
 		slots.reserve(tree.primIndices.size());
-		::frustumCullBVH(tree, 0, planes, planeCount, slots);
+		::tour::frustumCullBVH(tree, 0, planes, planeCount, slots);
 		std::vector<uint8_t> mask(scene.hierarchy.size(), 0);
 		// Dynamic (non-static) nodes pass through: the caller sphere-tests
 		// them per item. Static nodes default to culled; visible ones are

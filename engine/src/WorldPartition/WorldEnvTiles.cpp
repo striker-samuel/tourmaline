@@ -177,7 +177,7 @@ bool WorldEnvTiles::Build(const Scene& scene, glm::vec2 gridMin,
 		nodeZones.reserve(scene.tables.envs.size());
 		for (const EnvRow& envRow : scene.tables.envs) {
 			const NodeId node = envRow.node;
-			const SceneEnv& env = envRow.environment;
+			const tour::scene::SceneEnv& env = envRow.environment;
 			if (node >= scene.globalTransform.size())
 				continue;
 			// EnvVolume shape knobs (absent row = the legacy defaults).

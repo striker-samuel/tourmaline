@@ -793,7 +793,7 @@ void TestEnvZones() {
 		m[1] = glm::vec4(0.0f, 10.0f, 0.0f, 0.0f);
 		m[2] = glm::vec4(0.0f, 0.0f, 10.0f, 0.0f);
 		scene.localTransform[size_t(n)] = m;
-		::SceneEnv envA{};
+		tour::scene::SceneEnv envA{};
 		SetEnv(scene, uint32_t(n), envA);
 		zoneA = uint32_t(n);
 		markAsChanged(scene, n);
@@ -815,7 +815,7 @@ void TestEnvZones() {
 		m[2] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
 		m[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 		scene.localTransform[size_t(n)] = m;
-		::SceneEnv envB{};
+		tour::scene::SceneEnv envB{};
 		SetEnv(scene, uint32_t(n), envB);
 		zoneB = uint32_t(n);
 		markAsChanged(scene, n);
@@ -833,7 +833,7 @@ void TestEnvZones() {
 		m[2] = glm::vec4(0.0f, 0.0f, 2.0f, 0.0f);
 		m[3] = glm::vec4(5.0f, 0.0f, 0.0f, 1.0f);
 		scene.localTransform[size_t(n)] = m;
-		::SceneEnv envC{};
+		tour::scene::SceneEnv envC{};
 		envC.zonePriority = 5.0f;
 		SetEnv(scene, uint32_t(n), envC);
 		zoneC = uint32_t(n);
@@ -862,7 +862,7 @@ void TestEnvZones() {
 		m[2] = glm::vec4(0.0f, 0.0f, 2.0f, 0.0f);
 		m[3] = glm::vec4(0.0f, 5.0f, 0.0f, 1.0f);
 		scene.localTransform[size_t(n)] = m;
-		::SceneEnv envD{};
+		tour::scene::SceneEnv envD{};
 		SetEnv(scene, uint32_t(n), envD);
 		zoneD = uint32_t(n);
 		markAsChanged(scene, n);
@@ -910,7 +910,7 @@ void TestActiveEnvironmentFirstWins() {
 	// elevation per block (exact floats — resolve copies verbatim).
 	auto addEnvBlock = [](smvk::Cluster& cl, int parent, float sunEl) {
 		const int n = addNode(cl.scene, parent, 0);
-		SceneEnv e{};
+		tour::scene::SceneEnv e{};
 		e.sunElevation = sunEl;
 		SetEnv(cl.scene, uint32_t(n), e);
 		return n;

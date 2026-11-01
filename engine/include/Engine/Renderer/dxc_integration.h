@@ -42,8 +42,3 @@ std::vector<char> CompileHLSLToSPIRV(std::string_view source,
 	std::string* outDiagnostics);
 
 } // namespace tour::dxc
-
-// (namespace/RHI boundary audit) the GLOBAL compat re-exports that
-// lived here are RETIRED (item 2, the compat-layer cleanup): every
-// consumer now spells tour::dxc:: explicitly - the R9 baseline row is
-// deleted in the same commit, per the shrink-only contract.

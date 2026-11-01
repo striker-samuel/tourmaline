@@ -147,7 +147,7 @@ bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
 	return false;
 }
 
-EnvZone DeriveZoneLook(const SceneEnv& e, const SceneEnv& base)
+EnvZone DeriveZoneLook(const ::tour::scene::SceneEnv& e, const ::tour::scene::SceneEnv& base)
 {
 	EnvZone z{};
 	for (int c = 0; c < 3; ++c) {

@@ -43,7 +43,7 @@ uint32_t MakeZone(::Scene& s, const glm::vec3& half) {
 		s.globalTransform.resize(size_t(n) + 1, glm::mat4(1.0f));
 	s.globalTransform[size_t(n)] =
 		glm::scale(glm::mat4(1.0f), half);
-	SceneEnv e{};
+	tour::scene::SceneEnv e{};
 	SetEnv(s, NodeId(n), e);
 	return uint32_t(n);
 }
@@ -310,7 +310,7 @@ int main() {
 			s.globalTransform[size_t(n)] =
 				glm::translate(glm::mat4(1.0f), pos)
 				* glm::scale(glm::mat4(1.0f), half);
-			SceneEnv e{};
+			tour::scene::SceneEnv e{};
 			e.fogColor = fog; // the look: distinct per zone = record identity
 			e.zonePriority = priority;
 			SetEnv(s, NodeId(n), e);
@@ -426,7 +426,7 @@ int main() {
 		// volumetric pass marching at ZERO pass density whenever the
 		// env table authors fog): only a record's ABSOLUTE
 		// volumetricDensity counts; the base record carries the scene
-		// env's own (SceneEnv's 0.015 default), so a default-constructed
+		// env's own (tour::scene::SceneEnv's 0.015 default), so a default-constructed
 		// env already authors fog.
 		{
 			// The pure-base bake (no node zones): the base record's

@@ -73,7 +73,7 @@ glm::mat4 ApplyT2xJitterForTest(const glm::mat4& proj, float paritySign,
 // jitter would give 0.75 here and break the subsample pairing).
 void CheckT2xJitterCase(float renderW, float renderH,
 	float swapW, float swapH, const char* tag) {
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), renderW / renderH, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), renderW / renderH, 0.1f);
 	proj[1][1] *= -1.0f; // app Vulkan Y-flip (y-down NDC)
 	const glm::vec3 eye(2.0f, 1.0f, 6.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0, 1, 0));

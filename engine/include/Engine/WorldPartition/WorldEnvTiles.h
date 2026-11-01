@@ -115,7 +115,7 @@ struct EnvGridExtent
 	uint32_t dimX = 0, dimZ = 0;
 	float yMin = 0.0f, yMax = 0.0f;
 };
-// The seed bounds (the caller's ::Aabb flattened — no Utils/bvh.h
+// The seed bounds (the caller's ::tour::Aabb flattened — no Utils/bvh.h
 // dependency in this header).
 struct EnvGridBounds
 {

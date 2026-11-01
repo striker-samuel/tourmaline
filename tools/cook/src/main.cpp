@@ -380,7 +380,7 @@ namespace cooktool {
 		std::string registryDir;
 	};
 
-	// Bake/pak sun+sky source of record (see SceneEnv): the scene's LUX-NATIVE
+	// Bake/pak sun+sky source of record (see tour::scene::SceneEnv): the scene's LUX-NATIVE
 	// env block when the tour carried one (the editor always writes env.default.*),
 	// else the CLI sun defaults (bare cooks). Every stage — the synthesized
 	// WorldSun, the lightmap / cubemap / GI-volume bakes — reads this, so ONE
@@ -393,7 +393,7 @@ namespace cooktool {
 	BakeEnv EnvForBake(const smvk::Cluster& c, const Args& args) {
 		BakeEnv e{};
 		if (c.scene.envAuthored) {
-			const SceneEnv& se = c.scene.environment;
+			const tour::scene::SceneEnv& se = c.scene.environment;
 			e.sunAzimuth = se.sunAzimuth;
 			e.sunElevation = se.sunElevation;
 			e.sunIntensity = se.sunIntensity;
@@ -4937,7 +4937,7 @@ int Run(const CookArgs& c) {
 		}
 		if (!hasSun)
 			continue;
-		SceneEnv& e = sc->scene.environment;
+		tour::scene::SceneEnv& e = sc->scene.environment;
 		e.sunElevation = glm::degrees(
 			std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
 		e.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));

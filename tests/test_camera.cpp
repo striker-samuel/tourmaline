@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // camera_tests: CPU-side regression tests for the finite reversed-Z main
@@ -13,7 +13,7 @@
 //   3. beyond-far cullability: past-far geometry lands on the NDC z<0
 //      side; in-front-of-near lands past 1 (frustum planes functional,
 //      unlike the degenerate infinite rows).
-//   4. SafeLookAt/ResolveLookAtUp (the SINGLE shared degenerate framing):
+//   4. tour::SafeLookAt/tour::ResolveLookAtUp (the SINGLE shared degenerate framing):
 //      straight-down/up pick a deterministic horizontal basis, the
 //      editor's truncated-pitch Top camera equals the exact straight-down
 //      framing, and the positioner's quat path agrees with the mat4 one.
@@ -58,7 +58,7 @@ void TestFiniteMapping() {
 	constexpr float kAspect = 16.0f / 9.0f;
 	constexpr float kNear = 0.01f;
 	constexpr float kFar = 100000.0f;
-	const glm::mat4 proj = MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
+	const glm::mat4 proj = tour::MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
 
 	Check(std::abs(NdcZ(proj, kNear) - 1.0f) < 1e-6f, "camera.finite.near-maps-to-one");
 	Check(std::abs(NdcZ(proj, kFar)) < 1e-6f, "camera.finite.far-maps-to-zero");
@@ -76,8 +76,8 @@ void TestMatchesInfiniteInRange() {
 	constexpr float kAspect = 16.0f / 9.0f;
 	constexpr float kNear = 0.01f;
 	constexpr float kFar = 100000.0f;
-	const glm::mat4 finite = MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
-	const glm::mat4 infinite = MakeInfReversedZProjRH(kFov, kAspect, kNear);
+	const glm::mat4 finite = tour::MakeReversedZProjRH(kFov, kAspect, kNear, kFar);
+	const glm::mat4 infinite = tour::MakeInfReversedZProjRH(kFov, kAspect, kNear);
 
 	// Inside [near, far] the finite form must agree with the infinite form
 	// to ~1e-7 relative: switching projections is visually silent, only
@@ -103,7 +103,7 @@ float MatMaxDiff(const glm::mat4& a, const glm::mat4& b) {
 }
 
 void TestSafeLookAt() {
-	// The SHARED degenerate-lookAt resolution (ResolveLookAtUp/SafeLookAt):
+	// The SHARED degenerate-lookAt resolution (tour::ResolveLookAtUp/tour::SafeLookAt):
 	// every camera framing that can look straight down/up resolves through
 	// it, so all consumers of one (eye, target) pair agree on the screen
 	// basis (the editor's overlay camera + the drive paths picking
@@ -111,18 +111,18 @@ void TestSafeLookAt() {
 	// against the scene in the straight-down top view).
 	const glm::vec3 upPref(0.0f, 1.0f, 0.0f);
 
-	// Non-degenerate framing: SafeLookAt == plain lookAt with the
+	// Non-degenerate framing: tour::SafeLookAt == plain lookAt with the
 	// preferred up (byte-identical basis).
 	const glm::vec3 eye(3.0f, 4.0f, 5.0f);
 	const glm::vec3 tgt(0.0f, 1.0f, 0.0f);
-	Check(MatMaxDiff(SafeLookAt(eye, tgt), glm::lookAt(eye, tgt, upPref))
+	Check(MatMaxDiff(tour::SafeLookAt(eye, tgt), glm::lookAt(eye, tgt, upPref))
 			< 1e-6f, "camera.safelookat.nondeg-plain-agrees");
 
 	// Straight DOWN (eye above target): right = +X, screen-up = -Z
 	// ("north up"), deterministically. (View-matrix axes live in the ROWS
 	// of the column-major mat4: row 0 = right, row 1 = screen-up.)
 	{
-		const glm::mat4 v = SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f),
+		const glm::mat4 v = tour::SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f),
 			glm::vec3(0.0f), upPref);
 		const glm::vec3 right(v[0][0], v[1][0], v[2][0]);
 		const glm::vec3 up(v[0][1], v[1][1], v[2][1]);
@@ -132,7 +132,7 @@ void TestSafeLookAt() {
 	}
 	// Straight UP (eye below target): screen-up = +Z.
 	{
-		const glm::mat4 v = SafeLookAt(glm::vec3(0.0f, -25.0f, 0.0f),
+		const glm::mat4 v = tour::SafeLookAt(glm::vec3(0.0f, -25.0f, 0.0f),
 			glm::vec3(0.0f), upPref);
 		const glm::vec3 up(v[0][1], v[1][1], v[2][1]);
 		Check(glm::dot(up, glm::vec3(0, 0, 1)) > 0.999f,
@@ -151,18 +151,18 @@ void TestSafeLookAt() {
 				std::cos(pitch) * std::sin(yaw),
 				-std::sin(pitch),
 				std::cos(pitch) * std::cos(yaw));
-		const glm::mat4 a = SafeLookAt(topEye, glm::vec3(0.0f), upPref);
-		const glm::mat4 b = SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f),
+		const glm::mat4 a = tour::SafeLookAt(topEye, glm::vec3(0.0f), upPref);
+		const glm::mat4 b = tour::SafeLookAt(glm::vec3(0.0f, 25.0f, 0.0f),
 			glm::vec3(0.0f), upPref);
 		Check(MatMaxDiff(a, b) < 1e-4f,
 			"camera.safelookat.topcam-equals-exact-straight-down");
 	}
 	// The camera drive paths feed the resolved up into the POSITIONER's
 	// lookAt (quat orientation -> mat4_cast view): it must agree with the
-	// mat4 SafeLookAt for the same (eye, target, resolved up) — straight
+	// mat4 tour::SafeLookAt for the same (eye, target, resolved up) — straight
 	// down AND a normal framing.
 	{
-		CameraPositioner_FirstPerson p;
+		tour::CameraPositioner_FirstPerson p;
 		const glm::vec3 eyes[2] = {
 			glm::vec3(0.0f, 25.0f, 0.0f), // straight down
 			glm::vec3(3.0f, 4.0f, 5.0f),  // normal
@@ -172,9 +172,9 @@ void TestSafeLookAt() {
 		};
 		bool okDown = true, okNorm = true;
 		for (int i = 0; i < 2; ++i) {
-			p.lookAt(eyes[i], tgts[i], ResolveLookAtUp(eyes[i], tgts[i]));
+			p.lookAt(eyes[i], tgts[i], tour::ResolveLookAtUp(eyes[i], tgts[i]));
 			const float diff = MatMaxDiff(p.getViewMatrix(),
-				SafeLookAt(eyes[i], tgts[i]));
+				tour::SafeLookAt(eyes[i], tgts[i]));
 			if (i == 0)
 				okDown = diff < 1e-4f;
 			else
@@ -193,7 +193,7 @@ void TestMouseLookFramerateIndependent() {
 	// bit-identical forward vectors.
 	const glm::vec2 total(0.35f, -0.2f);
 	auto drive = [&](int steps, double dt) {
-		CameraPositioner_FirstPerson p;
+		tour::CameraPositioner_FirstPerson p;
 		glm::vec2 cursor(0.0f);
 		const glm::vec2 step = total / float(steps);
 		for (int i = 0; i < steps; ++i) {
@@ -218,7 +218,7 @@ void TestResetAnchorsAtLookAt() {
 	// defaults, authored scene cameras, the generic fit) re-anchors the
 	// snapshot through lookAt — and the glide dies (moveSpeed_ zeroed, or
 	// the damping decay keeps drifting the camera off the restored pose).
-	CameraPositioner_FirstPerson p;
+	tour::CameraPositioner_FirstPerson p;
 	const glm::vec3 eye(7.24f, 4.03f, 0.04f);
 	const glm::vec3 fwd(-0.949f, -0.312f, -0.045f);
 	p.lookAt(eye, eye + fwd, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -245,7 +245,7 @@ void TestResetAnchorsAtLookAt() {
 	// first mouselook keeps the basis instead of NaN-ing).
 	const glm::vec3 eye2(0.0f, 25.0f, 0.0f);
 	const glm::vec3 tgt2(0.0f);
-	p.lookAt(eye2, tgt2, ResolveLookAtUp(eye2, tgt2));
+	p.lookAt(eye2, tgt2, tour::ResolveLookAtUp(eye2, tgt2));
 	p.reset();
 	Check(glm::distance(p.getPosition(), eye2) < 1e-6f,
 		"camera.reset.reanchor-latest");

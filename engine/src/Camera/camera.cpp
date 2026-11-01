@@ -8,7 +8,7 @@
 
 namespace tour {
 
-glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
+glm::mat4 tour::MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear)
 {
 	float f = 1.0f / tan(fovY_radians / 2.0f);
 	return glm::mat4(
@@ -18,7 +18,7 @@ glm::mat4 MakeInfReversedZProjRH(float fovY_radians, float aspectWbyH, float zNe
 		0.0f, 0.0f, zNear, 0.0f);
 }
 
-glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar)
+glm::mat4 tour::MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear, float zFar)
 {
 	assert(zFar > zNear && zNear > 0.0f);
 	float f = 1.0f / tan(fovY_radians / 2.0f);
@@ -29,16 +29,16 @@ glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear,
 		0.0f, 0.0f, zNear * zFar / (zFar - zNear), 0.0f);
 }
 
-Camera::Camera(CameraPositionerInterface& positioner) : positioner_(&positioner) { proj_ = glm::mat4(1.0f); }
+Camera::Camera(tour::CameraPositionerInterface& positioner) : positioner_(&positioner) { proj_ = glm::mat4(1.0f); }
 glm::mat4 Camera::getViewMatrix() const { return positioner_->getViewMatrix(); }
 glm::vec3 Camera::getPosition() const { return positioner_->getPosition(); }
 glm::mat4 Camera::getProjMatrix() const { return proj_; }
 void Camera::setOrtho2D(float width, float height) { proj_ = glm::ortho(0.0f, width, 0.0f, height, -1.0f, 1.0f); }
-void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) { proj_ = MakeReversedZProjRH(fovY, aspect, zNear, zFar); }
+void Camera::setPerspective(float fovY, float aspect, float zNear, float zFar) { proj_ = tour::MakeReversedZProjRH(fovY, aspect, zNear, zFar); }
 void Camera::setOrtho3D(float halfH, float aspect, float zNear, float zFar) {
 	assert(halfH > 0.0f && zFar > zNear && zNear > 0.0f);
 	// Reversed-Z via swapped glm near/far args ([zNear, zFar] -> [1, 0],
-	// matching MakeReversedZProjRH). GL-convention Y-up like
+	// matching tour::MakeReversedZProjRH). GL-convention Y-up like
 	// setPerspective: the frame-uniform layer applies the Vulkan Y-flip.
 	proj_ = glm::orthoRH_ZO(-halfH * aspect, halfH * aspect, -halfH,
 		halfH, zFar, zNear);
@@ -54,7 +54,7 @@ CameraPositioner_FirstPerson::CameraPositioner_FirstPerson(const glm::vec3& pos,
 	starting_up = up_;
 }
 
-void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)
+void tour::CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& mousePos, bool mousePressed)
 {
 	// Right-stick look: same euler mapping as the mouse path
 	// (x = yaw right+, y = pitch), scaled by stick rate * dt.
@@ -128,35 +128,35 @@ void CameraPositioner_FirstPerson::update(double deltaSeconds, const glm::vec2& 
 	cameraPosition_ += moveSpeed_ * static_cast<float>(deltaSeconds);
 }
 
-glm::mat4 CameraPositioner_FirstPerson::getViewMatrix() const
+glm::mat4 tour::CameraPositioner_FirstPerson::getViewMatrix() const
 {
 	const glm::mat4 t = glm::translate(glm::mat4(1.0f), -cameraPosition_);
 	const glm::mat4 r = glm::mat4_cast(cameraOrientation_);
 	return r * t;
 }
 
-glm::vec3 CameraPositioner_FirstPerson::getPosition() const
+glm::vec3 tour::CameraPositioner_FirstPerson::getPosition() const
 {
 	return cameraPosition_;
 }
 
-void CameraPositioner_FirstPerson::setPosition(const glm::vec3& pos)
+void tour::CameraPositioner_FirstPerson::setPosition(const glm::vec3& pos)
 {
 	cameraPosition_ = pos;
 }
-void CameraPositioner_FirstPerson::setSpeed(const glm::vec3& speed) {
+void tour::CameraPositioner_FirstPerson::setSpeed(const glm::vec3& speed) {
 	moveSpeed_ = speed;
 }
-void CameraPositioner_FirstPerson::resetMousePosition(const glm::vec2& p) {
+void tour::CameraPositioner_FirstPerson::resetMousePosition(const glm::vec2& p) {
 	mousePos_ = p;
 }
-void CameraPositioner_FirstPerson::setUpVector(const glm::vec3& up)
+void tour::CameraPositioner_FirstPerson::setUpVector(const glm::vec3& up)
 {
 	const glm::mat4 view = getViewMatrix();
 	const glm::vec3 dir = -glm::vec3(view[0][2], view[1][2], view[2][2]);
 	cameraOrientation_ = glm::lookAt(cameraPosition_, cameraPosition_ + dir, up);
 }
-void CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up) {
+void tour::CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up) {
 	cameraPosition_ = pos;
 	cameraOrientation_ = glm::lookAt(pos, target, up);
 	up_ = up;
@@ -165,23 +165,23 @@ void CameraPositioner_FirstPerson::lookAt(const glm::vec3& pos, const glm::vec3&
 	// snapshot to the LAST pose set this way so the camera reset returns
 	// to the actual scene spawn, not the ctor's stale default. up_ is
 	// assigned too: the degenerate framings resolve a horizontal up
-	// (ResolveLookAtUp), and leaving the (0,1,0) default there would
+	// (tour::ResolveLookAtUp), and leaving the (0,1,0) default there would
 	// cross NaNs in setUpVector on the first mouselook after the spawn.
 	starting_pos = cameraPosition_;
 	starting_cameraOrientation = cameraOrientation_;
 	starting_up = up_;
 }
-glm::vec3 CameraPositioner_FirstPerson::getForward() const {
+glm::vec3 tour::CameraPositioner_FirstPerson::getForward() const {
 	const glm::mat4 rot = glm::mat4_cast(cameraOrientation_);
 	return -glm::vec3(rot[0][2], rot[1][2], rot[2][2]);
 }
-glm::quat CameraPositioner_FirstPerson::getOrientation() const {
+glm::quat tour::CameraPositioner_FirstPerson::getOrientation() const {
 	return cameraOrientation_;
 }
-glm::vec3 CameraPositioner_FirstPerson::getEulerDegrees() const {
+glm::vec3 tour::CameraPositioner_FirstPerson::getEulerDegrees() const {
 	return glm::degrees(glm::eulerAngles(cameraOrientation_));
 }
-void CameraPositioner_FirstPerson::reset() {
+void tour::CameraPositioner_FirstPerson::reset() {
 	cameraOrientation_ = starting_cameraOrientation;
 	cameraPosition_ = starting_pos;
 	up_ = starting_up;

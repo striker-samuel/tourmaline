@@ -32,10 +32,12 @@
 #include <cstdint>
 #include <vector>
 
-// Global-scope forward (SceneEnv is Engine/Scene/scene.h's; a forward
-// inside the namespace below would mint a DIFFERENT type).
+// Forward (SceneEnv is Engine/Scene/scene_payloads.h's, tour::scene; a
+// forward inside the namespace below would mint a DIFFERENT type).
+// The GLOBAL compat re-export that lived here is RETIRED (item 2, the
+// compat-layer cleanup): consumers spell ::tour::scene::SceneEnv
+// explicitly, and envzones' own signatures do too.
 namespace tour::scene { struct SceneEnv; }
-using tour::scene::SceneEnv;
 
 namespace smvk::envzones {
 
@@ -108,6 +110,7 @@ bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones, const glm::vec3& p,
 // volumetric extinction are absolute, volumetrics is a RATIO over the
 // pass base intensity (1 = global, 0 = off). The DEFAULT block derives
 // against ITSELF (the neutral base record).
-EnvZone DeriveZoneLook(const SceneEnv& env, const SceneEnv& base);
+EnvZone DeriveZoneLook(const ::tour::scene::SceneEnv& env,
+	const ::tour::scene::SceneEnv& base);
 
 } // namespace smvk::envzones

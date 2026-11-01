@@ -2861,7 +2861,7 @@ namespace engine {
 // Scene bounds log + default-camera framing (see below): the light set
 // is the resolved authored set - no procedural grid to fit.
 		{
-			const ::Aabb bounds = m_world->ComputeSceneBounds();
+			const ::tour::Aabb bounds = m_world->ComputeSceneBounds();
 			if (bounds.mx.x >= bounds.mn.x && bounds.mx.y >= bounds.mn.y && bounds.mx.z >= bounds.mn.z) {
 				std::cerr << "[Scene] bounds min=(" << bounds.mn.x << "," << bounds.mn.y << "," << bounds.mn.z
 					<< ") max=(" << bounds.mx.x << "," << bounds.mx.y << "," << bounds.mx.z << ")\n";
@@ -2920,7 +2920,7 @@ namespace engine {
 						if (glm::length(fwd) > 1e-6f) {
 							fwd = glm::normalize(fwd);
 							m_cameraPositioner.lookAt(eye, eye + fwd,
-								ResolveLookAtUp(eye, eye + fwd));
+								tour::ResolveLookAtUp(eye, eye + fwd));
 							m_sceneNearClip = std::max(
 								defCam->nearClip, 1e-4f);
 							m_sceneFovYDeg = (defCam->projection
@@ -3817,8 +3817,8 @@ namespace engine {
 		//  - manifest path already filled m_cubemapProbes above;
 		//  - single/legacy path centers one global probe on the scene bounds.
 		if (fileBakeFound && m_cubemapProbes.empty() && !m_cubemaps.entries.empty()) {
-			const ::Aabb bounds = m_world ? m_world->ComputeSceneBounds()
-				: ::Aabb::empty();
+			const ::tour::Aabb bounds = m_world ? m_world->ComputeSceneBounds()
+				: ::tour::Aabb::empty();
 			glm::vec3 center{ 0.0f };
 			float radius = 10.0f;
 			if (bounds.mn.x <= bounds.mx.x && bounds.mn.y <= bounds.mx.y && bounds.mn.z <= bounds.mx.z) {
@@ -7351,14 +7351,14 @@ namespace engine {
 		if (!m_world)
 			return;
 		// Volumetric fog state (the App panel's settings) seeds from the
-		// authored env ONCE per scene load/rebind (see SceneEnv - the
+		// authored env ONCE per scene load/rebind (see tour::scene::SceneEnv - the
 		// fog-quality volumetric tier; the panel stays live afterwards).
 		// volumetrics is the master: 0 = off (the analytic tier or no
 		// fog), else the scattering intensity; the vol* knobs load with
 		// it. The runtime degrade (volumetric -> analytic when the pass
 		// cannot run) lives at the frame-env build.
 		if (m_world->scene.envAuthored) {
-			const SceneEnv& se = m_world->scene.environment;
+			const tour::scene::SceneEnv& se = m_world->scene.environment;
 			PushVolumetricEnv(se);
 			// Postfx look seed (bloom/tonemap/exposure/AO/SSR/motion
 			// blur/DOF/AA/cubemap - the App panels' settings): from the
@@ -7601,7 +7601,7 @@ namespace engine {
 		if (seedEnvSun && sunTaken && m_world
 			&& !m_world->scene.envAuthored) {
 			const glm::vec3 t = glm::normalize(electedSunDir);
-			SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
+			tour::scene::SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
 			sceneEnv.sunElevation = glm::degrees(std::asin(
 				std::clamp(t.y, -1.0f, 1.0f)));
 			sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
@@ -10321,7 +10321,7 @@ namespace engine {
 		ExportScreenshot(m_captureExtent);
 	}
 	
-	// Scene->frame environment mapping (see SceneEnv): the scene authors
+	// Scene->frame environment mapping (see tour::scene::SceneEnv): the scene authors
 	// LUX-NATIVE intensities (sun 10000 / sky 600 defaults - the same units
 	// this EnvironmentSettings and every bake use), so both ride through
 	// UNCONVERTED - the env block is the single source of truth for the
@@ -10332,7 +10332,7 @@ namespace engine {
 	// unlitKillSun mirrors the editor frame's Unlit handling (the Unlit
 	// debug view replaces shading wholesale anyway; this keeps the lit
 	// leftovers - transparents, particles - honest).
-	static smvk::EnvironmentSettings MapSceneEnv(const SceneEnv& w,
+	static smvk::EnvironmentSettings MapSceneEnv(const tour::scene::SceneEnv& w,
 		bool unlitKillSun)
 	{
 		smvk::EnvironmentSettings env{}; // engine defaults (disc, exponent, fog shape)
@@ -10349,7 +10349,7 @@ namespace engine {
 		env.sunIntensity = unlitKillSun ? 0.0f : w.sunIntensity;
 		env.fogColor = w.fogColor;
 		env.fogDensity = w.fogDensity;
-		// Fog quality tiers (see SceneEnv): the volumetric tier's fog renders
+		// Fog quality tiers (see tour::scene::SceneEnv): the volumetric tier's fog renders
 		// in the RAYMARCHED pass (the analytic fog stays off - both would
 		// read twice); the analytic tier uses the exp2 distance fog (the
 		// cheap fallback); off renders nothing. The runtime degrade (the
@@ -10396,7 +10396,7 @@ namespace engine {
 
 		// ---- The dirty fingerprint: everything Build() reads. ----
 		uint64_t hash = 2166136261u;
-		::Aabb bounds{};
+		::tour::Aabb bounds{};
 		{
 			// Optick: the per-frame change check (the full input walk +
 			// scene-bounds recompute) — cheap but nonzero every frame,
@@ -10409,7 +10409,7 @@ namespace engine {
 			const auto mixF = [&hash](float f) {
 				hash ^= std::hash<float>{}(f); hash *= 16777619ull;
 			};
-			const auto mixEnv = [&](const SceneEnv& e) {
+			const auto mixEnv = [&](const tour::scene::SceneEnv& e) {
 				for (int c = 0; c < 3; ++c) { mixF(e.skyColor[c]); mixF(e.fogColor[c]); }
 				mixF(e.skyIntensity); mixF(e.fogDensity); mixF(e.volumetrics);
 				mixF(e.volumetricDensity); mixF(e.zonePriority);
@@ -11031,7 +11031,7 @@ namespace engine {
 			? MapSceneEnv(m_world->scene.environment,
 				m_debugView == ViewMode::Unlit)
 			: smvk::EnvironmentSettings{};
-		// Fog degrade (see SceneEnv::fogQuality): the VOLUMETRIC tier
+		// Fog degrade (see tour::scene::SceneEnv::fogQuality): the VOLUMETRIC tier
 		// falls back to the ANALYTIC exp2 fog when the raymarched pass
 		// cannot run this frame (pass off / disabled / target missing /
 		// zero density or intensity / a debug visualization would read
@@ -16404,7 +16404,7 @@ namespace engine {
 					{
 						ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
 						if (m_world) {
-							SceneEnv& se = m_world->scene.environment;
+							tour::scene::SceneEnv& se = m_world->scene.environment;
 							auto authored = [&]() { m_world->scene.envAuthored = true; };
 							ImGui::ColorEdit3("Sky color", &se.skyColor.x);
 							ImGui::DragFloat("Sky intensity (lux)", &se.skyIntensity,
@@ -20187,7 +20187,7 @@ namespace engine {
 			sizeZ = m_terrain.boundsMax.z - minZ;
 		}
 		else if (m_world) {
-			const ::Aabb b = m_world->ComputeSceneBounds();
+			const ::tour::Aabb b = m_world->ComputeSceneBounds();
 			if (b.mx.x >= b.mn.x && b.mx.y >= b.mn.y && b.mx.z >= b.mn.z
 				&& (b.mx.x > b.mn.x || b.mx.z > b.mn.z)) {
 				minX = b.mn.x;
@@ -20502,7 +20502,7 @@ namespace engine {
 			const ::Scene& scene = m_world->scene;
 			for (const EnvRow& envRow : scene.tables.envs) {
 				const NodeId node = envRow.node;
-				const SceneEnv& env = envRow.environment;
+				const tour::scene::SceneEnv& env = envRow.environment;
 				if (node >= scene.globalTransform.size())
 					continue;
 				++nZones;

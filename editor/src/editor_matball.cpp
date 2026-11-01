@@ -170,7 +170,7 @@ bool EditorApp::EnsureMatBallResources() {
 	glm::vec3 at(0.0f, 0.0f, 0.0f);
 	glm::vec3 up(0.0f, 1.0f, 0.0f);
 	const glm::mat4 view = glm::lookAtRH(eye, at, up);
-	const glm::mat4 proj = MakeReversedZProjRH(glm::radians(38.0f), 1.0f,
+	const glm::mat4 proj = tour::MakeReversedZProjRH(glm::radians(38.0f), 1.0f,
 		0.05f, 20.0f);
 	m_matBallViewProj = proj;
 	m_matBallViewProj[1][1] *= -1.0f; // Vulkan Y-flip (EditorCamProj's)

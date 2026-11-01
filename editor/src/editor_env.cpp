@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Editor environment (IBL) settings: viewport lighting lives in the
-// SCENE (smvk::SceneEnv blocks — the scene default, plus per-node
+// SCENE (smvktour::scene::SceneEnv blocks — the scene default, plus per-node
 // ENVIRONMENT NODES; skybox + EV/volumetrics authoring; position = node
 // translate, size = node scale; convex-volume rendering comes later).
 // The current source feeds every viewport straight from the scene.
@@ -70,7 +70,7 @@ namespace editor {
 		// writer besides the tour/cook loaders.
 		if (!m_world)
 			return;
-		const SceneEnv* src = &m_world->scene.defaultEnvironment;
+		const tour::scene::SceneEnv* src = &m_world->scene.defaultEnvironment;
 		if (m_envCurrent != UINT32_MAX) {
 			auto it = FindEnv(m_world->scene, m_envCurrent);
 			if (it)
@@ -934,7 +934,7 @@ namespace editor {
 			doc.editorSettings.emplace_back(key, val);
 		};
 		auto saveEnv = [&](const std::string& prefix, uint32_t clusterNode,
-			const SceneEnv& e) {
+			const tour::scene::SceneEnv& e) {
 			if (clusterNode != UINT32_MAX)
 				put(prefix + ".node", std::to_string(clusterNode));
 			put(prefix + ".skyColor", Vec3Str(e.skyColor));
@@ -944,7 +944,7 @@ namespace editor {
 			put(prefix + ".sunElevation", std::to_string(e.sunElevation));
 			put(prefix + ".sunIntensity", std::to_string(e.sunIntensity));
 			put(prefix + ".exposure", std::to_string(e.exposure));
-			// Fog quality tiers (see SceneEnv): 0 = off, 1 = analytic (the
+			// Fog quality tiers (see tour::scene::SceneEnv): 0 = off, 1 = analytic (the
 			// cheap fallback), 2 = volumetric (the raymarched pass).
 			put(prefix + ".fogQuality", std::to_string(e.fogQuality));
 			put(prefix + ".fogDensity", std::to_string(e.fogDensity));
@@ -972,8 +972,8 @@ namespace editor {
 		};
 		// Sceneless save (shouldn't happen — tours save scenes): struct
 		// defaults stand in for the scene blocks.
-		const SceneEnv sceneDefault{};
-		const SceneEnv& def = m_world
+		const tour::scene::SceneEnv sceneDefault{};
+		const tour::scene::SceneEnv& def = m_world
 			? m_world->scene.defaultEnvironment : sceneDefault;
 		saveEnv("env.default", UINT32_MAX, def);
 		// Sort env nodes for deterministic files.
@@ -1114,7 +1114,7 @@ namespace editor {
 			else if (f == "sunElevation") e.sunElevation = StrFloat(v, e.sunElevation);
 			else if (f == "sunIntensity") e.sunIntensity = StrFloat(v, e.sunIntensity);
 			else if (f == "exposure") e.exposure = StrFloat(v, e.exposure);
-			// Fog quality tiers (see SceneEnv) + the volumetric knobs (the
+			// Fog quality tiers (see tour::scene::SceneEnv) + the volumetric knobs (the
 			// App's pass seeds from them — "volumetrics" is the master:
 			// 0 = off, else the scattering intensity).
 			else if (f == "fogQuality") e.fogQuality = int(StrFloat(v, float(e.fogQuality)));

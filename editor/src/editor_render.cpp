@@ -400,7 +400,7 @@ namespace editor {
 		m_lastViewProj = m_viewports[m_activeVp].viewProj;
 
 	// Sun light (lights[0], same convention as App) from the CURRENT env.
-	// The env block is LUX-NATIVE (see SceneEnv) and the lit view now runs
+	// The env block is LUX-NATIVE (see tour::scene::SceneEnv) and the lit view now runs
 	// the App's RAW-LUX HDR display chain (see the file header + m_sceneHdr)
 	// - the lux go in unscaled and the per-viewport tonemap layer brings
 	// them down with the authored operator + exposure, exactly like the App.
@@ -460,11 +460,11 @@ namespace editor {
 	}
 
 	EditorApp::EditorEnv& EditorApp::CurrentEnv() {
-		// Scene-backed (see SceneEnv): the resolved source that renders —
+		// Scene-backed (see tour::scene::SceneEnv): the resolved source that renders —
 		// the scene default, or the selected node block. UI writes land
 		// directly in the scene (no publish step; ResolveSceneEnv refreshes
 		// the rendered copy afterwards).
-		static SceneEnv fallback{};
+		static tour::scene::SceneEnv fallback{};
 		if (!m_world)
 			return fallback;
 		if (m_envCurrent != UINT32_MAX) {
@@ -477,7 +477,7 @@ namespace editor {
 	}
 
 	const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
-		static const SceneEnv fallback{};
+		static const tour::scene::SceneEnv fallback{};
 		if (!m_world)
 			return fallback;
 		if (m_envCurrent != UINT32_MAX) {
@@ -553,12 +553,12 @@ namespace editor {
 	}
 
 	glm::mat4 EditorCamView(const EditorCam& c) {
-		// SafeLookAt: the SHARED degenerate-lookAt resolution (the same one
+		// tour::SafeLookAt: the SHARED degenerate-lookAt resolution (the same one
 		// the camera drive paths use). The old direct lookAt picked
 		// its own near-degenerate basis for the straight-down Top camera,
 		// which rotated the editor's wire boxes 90 degrees against the scene
 		// scene in the top view (the two agreed everywhere else).
-		return SafeLookAt(EditorCamEye(c), c.target);
+		return tour::SafeLookAt(EditorCamEye(c), c.target);
 	}
 
 	glm::mat4 EditorCamProj(const EditorCam& c, float aspect) {
@@ -571,7 +571,7 @@ namespace editor {
 				c.farClip, c.nearClip);
 		}
 		else {
-			proj = MakeReversedZProjRH(glm::radians(c.fovYDeg), aspect,
+			proj = tour::MakeReversedZProjRH(glm::radians(c.fovYDeg), aspect,
 				c.nearClip, c.farClip);
 		}
 		proj[1][1] *= -1.0f; // Vulkan Y-flip
@@ -602,9 +602,9 @@ namespace editor {
 			|| std::abs(glm::dot(up, out.fwd)) > 0.999f)
 			// Degenerate (or parallel to the view direction): the SHARED
 			// resolution (same convention as every other camera framing —
-			// see ResolveLookAtUp) instead of an ad-hoc +X pick, which
+			// see tour::ResolveLookAtUp) instead of an ad-hoc +X pick, which
 			// disagreed with the drive paths.
-			up = ResolveLookAtUp(out.eye, out.eye + out.fwd);
+			up = tour::ResolveLookAtUp(out.eye, out.eye + out.fwd);
 		else
 			up = glm::normalize(up);
 		out.up = up;
@@ -634,7 +634,7 @@ namespace editor {
 				farClip, nearClip);
 		}
 		else {
-			p = MakeReversedZProjRH(glm::radians(pose.fovYDeg), aspect,
+			p = tour::MakeReversedZProjRH(glm::radians(pose.fovYDeg), aspect,
 				nearClip, farClip);
 		}
 		p[1][1] *= -1.0f; // Vulkan Y-flip
@@ -812,7 +812,7 @@ namespace editor {
 						frame.farPlane, frame.nearPlane);
 				}
 				else {
-					p = MakeReversedZProjRH(glm::radians(
+					p = tour::MakeReversedZProjRH(glm::radians(
 						std::clamp(C->fovYDeg, 1.0f, 179.0f)), aspect,
 						frame.nearPlane, frame.farPlane);
 				}

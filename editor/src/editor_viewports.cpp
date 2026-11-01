@@ -37,7 +37,7 @@ namespace {
 // the projection's NEAR plane still drew, and the ORTHO viewports were
 // never clipped at all, since ortho's w is constant 1). Both editor
 // viewport projections are reversed-Z ZO (the perspective
-// MakeReversedZProjRH: near -> NDC z = 1, far -> 0; the swapped-args
+// tour::MakeReversedZProjRH: near -> NDC z = 1, far -> 0; the swapped-args
 // ortho: same), so the clip volume for w > 0 is:
 //   |x| <= w, |y| <= w, 0 <= z <= w     (z == w IS the near plane)
 // ---------------------------------------------------------------------------

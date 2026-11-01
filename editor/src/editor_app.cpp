@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // EditorApp: init / frame loop / scene loading / frame-data upload.
@@ -946,7 +946,7 @@ void EditorApp::CloseScene() {
 	EnsureDefaultMaterial(); // editor fallback material (editor://default)
 
 	// Fit the default perspective camera to the scene bounds.
-	const ::Aabb bounds = m_world->ComputeSceneBounds();
+	const ::tour::Aabb bounds = m_world->ComputeSceneBounds();
 	if (bounds.mx.x >= bounds.mn.x) {
 		const glm::vec3 center = (bounds.mn + bounds.mx) * 0.5f;
 		const float radius = glm::length(bounds.mx - bounds.mn) * 0.5f;
@@ -1753,7 +1753,7 @@ bool EditorApp::SelectionPivotCenter(glm::vec3& outCenter) {
 void EditorApp::FrameAll() {
 	if (!m_world)
 		return;
-	const ::Aabb bounds = m_world->ComputeSceneBounds();
+	const ::tour::Aabb bounds = m_world->ComputeSceneBounds();
 	if (bounds.mx.x < bounds.mn.x)
 		return;
 	SetupDefaultCameras();

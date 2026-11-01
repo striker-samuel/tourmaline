@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 #pragma once
@@ -1865,7 +1865,7 @@ private:
 	void FrameAll();
 
 	// ---- environment (scene definition, NEVER a render setting) ----
-	// The authored look lives in the SCENE (smvk::SceneEnv, see
+	// The authored look lives in the SCENE (smvktour::scene::SceneEnv, see
 	// Engine/Scene/scene.h): the resolved ACTIVE block in
 	// scene.environment, the default block in scene.defaultEnvironment
 	// and the per-node alternatives in the env table — saved to the
@@ -1875,7 +1875,7 @@ private:
 	// renders, like the active camera) and resolves it into
 	// scene.environment on every change; the renderers never receive
 	// the environment through any other channel.
-	using EditorEnv = SceneEnv;
+	using EditorEnv = tour::scene::SceneEnv;
 	uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = default block renders
 
 	EditorEnv& CurrentEnv();   // the source that renders (scene-backed)
@@ -2542,7 +2542,7 @@ private:
 	float m_menuH = 19.0f;
 
 	// ---- sun/ambient (viewport lighting) ----
-	// ---- viewport lighting (see SceneEnv: the live values live in the
+	// ---- viewport lighting (see tour::scene::SceneEnv: the live values live in the
 	// scene — CurrentEnv() reads the default block or the selected node
 	// block; RebuildCookedLights seeds the scene default from the cooked
 	// directional sun when the scene has one, else the defaults stand in).

@@ -21,7 +21,7 @@
 // is ENGINE-OWNED and lives in tour:: (flat — the utils convention).
 // The GLOBAL re-export bridge at the bottom of this file follows the
 // scene_node_id.h pattern: the whole tree's bare/global-qualified
-// `Aabb`/`BvhTree`/`::Aabb` spellings keep resolving through it while
+// `Aabb`/`BvhTree`/`::tour::Aabb` spellings keep resolving through it while
 // call sites migrate; retire the bridge as they do. (Scene references
 // inside resolve through scene.h's own global compat alias.)
 namespace tour {
@@ -436,23 +436,4 @@ inline void frustumCullBVH(
 }
 
 } // namespace tour
-
-// GLOBAL compat aliases (the migration bridge; retire with the call
-// sites — the R9 boundary gate guards against NEW global declarations
-// and re-exports, these are the tracked pre-existing set).
-using tour::minVec;
-using tour::maxVec;
-using tour::Aabb;
-using tour::Partition;
-using tour::BvhNode;
-using tour::BvhTree;
-using tour::MeshFromIndexFunc;
-using tour::BvhNodeFilter;
-using tour::treeFromScene;
-using tour::SplitBvh;
-using tour::splitBvhFromScene;
-using tour::normalizePlaneSafe;
-using tour::getFrustumPlanes_ZO_InfiniteFar;
-using tour::aabbInFrustum;
-using tour::frustumCullBVH;
 

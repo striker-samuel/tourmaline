@@ -976,11 +976,8 @@ int main() {
 			{ "App/input.h", 120 },
 			{ "Scene/scene.h", 66 },
 			{ "Scene/scene_tables.h", 60 },
-			{ "Scene/scene_payloads.h", 14 },
+			{ "Scene/scene_payloads.h", 13 },
 			{ "Scene/scene_node_id.h", 11 },
-			{ "Camera/camera.h", 7 },
-			{ "Rendergraph/envzones.h", 1 },
-			{ "Utils/bvh.h", 15 },
 		};
 		static const std::regex reReexport(
 			"using\\s+(namespace\\s+)?(\\w+\\s*=\\s*)?(::)?tour\\s*::");

@@ -288,10 +288,10 @@ ktx_transcode_fmt_e CookBcnTarget(const std::vector<uint8_t>& src,
 	r.digested = haveDigest;
 	return r;
 }
-// Authored-environment record (see SceneEnv): 16 floats in fixed order +
+// Authored-environment record (see ::tour::scene::SceneEnv): 16 floats in fixed order +
 // the skybox URI string. Shared by the resolved look, the default block
 // and the per-node blocks.
-void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
+void PutSceneEnv(std::vector<uint8_t>& out, const ::tour::scene::SceneEnv& e) {
 	PutVec3(out, e.skyColor);
 	PutF32(out, e.skyIntensity);
 	PutVec3(out, e.sunColor);
@@ -303,7 +303,7 @@ void PutSceneEnv(std::vector<uint8_t>& out, const SceneEnv& e) {
 	PutVec3(out, e.fogColor);
 	PutF32(out, e.volumetrics);
 	PutStr(out, e.skyboxUri);
-	// Fog quality tiers + the volumetric fog settings (SceneEnv — the
+	// Fog quality tiers + the volumetric fog settings (::tour::scene::SceneEnv — the
 	// App's pass seeds from the resolved env). Appended AFTER the v10
 	// record: older paks fail the reader loudly (the sanctioned break —
 	// old format, no conversions).
@@ -416,8 +416,8 @@ struct Cursor {
 	// Authored-environment record (mirrors PutSceneEnv): 16 floats in
 	// fixed order + the skybox URI. Sets ok=false on truncation (the
 	// caller keeps defaults).
-	SceneEnv sceneEnv() {
-		SceneEnv e{};
+	::tour::scene::SceneEnv sceneEnv() {
+		::tour::scene::SceneEnv e{};
 		e.skyColor = vec3();
 		e.skyIntensity = f32();
 		e.sunColor = vec3();
@@ -1901,8 +1901,8 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 		// struct defaults stand and envAuthored stays false.
 		if (c.off < c.img.size()) {
 			const uint32_t envFlag = c.u32();
-			SceneEnv resolved = c.sceneEnv();
-			SceneEnv def = c.sceneEnv();
+			::tour::scene::SceneEnv resolved = c.sceneEnv();
+			::tour::scene::SceneEnv def = c.sceneEnv();
 			const uint32_t envPairCount = c.u32();
 			if (!c.ok || envPairCount > 1024 * 1024)
 				return fail("bad scene environment section");
@@ -1910,7 +1910,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			rows.reserve(envPairCount);
 			for (uint32_t i = 0; i < envPairCount; ++i) {
 				const uint32_t node = c.u32();
-				SceneEnv block = c.sceneEnv();
+				::tour::scene::SceneEnv block = c.sceneEnv();
 				if (!c.ok || node >= nodeCount)
 					return fail("bad scene environment section");
 				rows.push_back(EnvRow{ node, std::move(block) });

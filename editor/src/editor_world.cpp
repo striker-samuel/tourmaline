@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // Live world-scene surgery: reparent / rename / material-flag refresh.
@@ -209,7 +209,7 @@ void EditorApp::RebuildCookedLights() {
 			const glm::vec3 toSun = -aimWs;
 			m_cookedSunName = l->name.empty()
 				? ("node " + std::to_string(node)) : l->name;
-			SceneEnv& env = m_world->scene.defaultEnvironment; // seed the scene default
+			tour::scene::SceneEnv& env = m_world->scene.defaultEnvironment; // seed the scene default
 			env.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
 			if (env.sunAzimuth < 0.0f)
 				env.sunAzimuth += 360.0f;

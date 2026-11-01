@@ -1017,7 +1017,7 @@ int Run(Args& args) {
 	}
 
 	// Environment: the TOUR'S ENV BLOCK when one replayed (the editor
-	// always writes env.default.* — SceneEnv, lux-native) so the bake sees
+	// always writes env.default.* — tour::scene::SceneEnv, lux-native) so the bake sees
 	// exactly the sun/sky the pak and every other bake use (ONE authored
 	// sun); the CLI --sun-*/--sky-intensity defaults stay the no-tour
 	// fallback. The analytic sky is baked on open-sky rays (TraceIncoming),
@@ -1025,7 +1025,7 @@ int Run(Args& args) {
 	if (!args.emissive)
 		tool::out() << "  note: --emissive off (emissive is runtime-only)\n";
 	if (cluster->scene.envAuthored) {
-		const SceneEnv& se = cluster->scene.environment;
+		const tour::scene::SceneEnv& se = cluster->scene.environment;
 		buildOpts.env.sunAzimuthDeg = se.sunAzimuth;
 		buildOpts.env.sunElevationDeg = se.sunElevation;
 		buildOpts.env.sunIntensity = se.sunIntensity;

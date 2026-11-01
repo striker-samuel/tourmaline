@@ -299,7 +299,6 @@ using tour::scene::kEnvInfNegZ;
 using tour::scene::kEnvInfPosZ;
 using tour::scene::EnvVolume;
 using tour::scene::SceneCubemap;
-using tour::scene::SceneEnv;
 using tour::scene::kSceneEnvFloatCount;
 using tour::scene::SceneAudioSource;
 using tour::scene::AudioSoundRef;

@@ -114,7 +114,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 		: smvk::AttachmentLoadOp::Clear;
 
 	// ---- CPU frustum culling for the prepass ----
-	// Static nodes: single frustumCullBVH walk over the World's cached
+	// Static nodes: single ::tour::frustumCullBVH walk over the World's cached
 	// static tree (built once in ResolveAndFixup_clusters from frozen
 	// static-subtree globals, LOD-union bounds). Dynamic nodes: per-item
 	// sphere test below (they never enter the static tree).
@@ -241,7 +241,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base,
 						return;
 				}
 				// Static frustum cull: O(1) mask lookup from the single
-				// frustumCullBVH walk at Append time (dynamic nodes are
+				// ::tour::frustumCullBVH walk at Append time (dynamic nodes are
 				// always 1 here and get sphere-tested below).
 				if (staticMask && item.node < staticMask->size()
 					&& (*staticMask)[item.node] == 0)

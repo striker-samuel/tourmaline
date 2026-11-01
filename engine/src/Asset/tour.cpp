@@ -2895,8 +2895,8 @@ namespace {
 // are cluster-space (validated against the replayed scene by the caller;
 // dangling blocks warn + drop, never fatal).
 struct TourEnvBlocks {
-	SceneEnv def{};
-	std::vector<std::pair<uint32_t, SceneEnv>> nodeEnvs; // cluster-space, file order
+	tour::scene::SceneEnv def{};
+	std::vector<std::pair<uint32_t, tour::scene::SceneEnv>> nodeEnvs; // cluster-space, file order
 	uint32_t currentCluster = UINT32_MAX;
 	bool haveCurrent = false;
 	bool hasBlocks = false;
@@ -2934,7 +2934,7 @@ glm::vec3 TourEnvVec3(const std::string& s, const glm::vec3& fallback) {
 	in >> v.x >> v.y >> v.z;
 	return v;
 }
-void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) {
+void TourEnvApplyField(tour::scene::SceneEnv& e, const std::string& f, const std::string& v) {
 	if (f == "skyColor") e.skyColor = TourEnvVec3(v, e.skyColor);
 	else if (f == "sunColor") e.sunColor = TourEnvVec3(v, e.sunColor);
 	else if (f == "fogColor") e.fogColor = TourEnvVec3(v, e.fogColor);
@@ -2943,7 +2943,7 @@ void TourEnvApplyField(SceneEnv& e, const std::string& f, const std::string& v) 
 	else if (f == "sunElevation") e.sunElevation = TourEnvFloat(v, e.sunElevation);
 	else if (f == "sunIntensity") e.sunIntensity = TourEnvFloat(v, e.sunIntensity);
 	else if (f == "exposure") e.exposure = TourEnvFloat(v, e.exposure);
-	// Fog quality tiers (see SceneEnv): 0 = off, 1 = analytic (the
+	// Fog quality tiers (see tour::scene::SceneEnv): 0 = off, 1 = analytic (the
 	// cheap fallback), 2 = volumetric (the raymarched pass, with the
 	// analytic fallback at runtime).
 	else if (f == "fogQuality") e.fogQuality = int(TourEnvFloat(v, float(e.fogQuality)));
@@ -3025,7 +3025,7 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 	TourEnvBlocks eb{};
 	bool inNode = false;
 	uint32_t nodeCluster = UINT32_MAX;
-	SceneEnv cur{};
+	tour::scene::SceneEnv cur{};
 	bool inVol = false;
 	uint32_t volCluster = UINT32_MAX;
 	EnvVolume volCur{};
@@ -3048,7 +3048,7 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 					eb.nodeEnvs.emplace_back(nodeCluster, cur);
 				inNode = true;
 				nodeCluster = uint32_t(TourEnvFloat(val, -1.0f));
-				cur = SceneEnv{};
+				cur = tour::scene::SceneEnv{};
 			}
 			else if (inNode) {
 				eb.hasBlocks = true;
@@ -4688,7 +4688,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					warn("tour: env node block #" + std::to_string(n) +
 						" out of range (dropped)");
 			}
-			SceneEnv active = eb.def;
+			tour::scene::SceneEnv active = eb.def;
 			uint32_t activeNode = UINT32_MAX;
 			if (eb.haveCurrent) {
 				auto it = std::find_if(rows.begin(), rows.end(),

@@ -100,7 +100,7 @@ std::string BakeEnvHash(const Scene& scene) {
 	// is a view setting, not a bake input; fog is not traced by bakes.
 	Hasher hs;
 	hs.feed("env");
-	const SceneEnv& e = scene.environment;
+	const tour::scene::SceneEnv& e = scene.environment;
 	hs.feedPod(e.skyColor);
 	hs.feedPod(e.skyIntensity);
 	hs.feedPod(e.sunColor);

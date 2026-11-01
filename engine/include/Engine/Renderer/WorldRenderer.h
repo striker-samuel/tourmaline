@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 #pragma once
@@ -719,7 +719,7 @@ struct ResolvedSceneLights {
 	// World-space static lights, spots FIRST (per-tile lists keep only
 	// the first FP_MAX_PER_TILE passing lights — cone lights must not
 	// compete with the point crowd for those slots).
-	// No sun flag: the scene env ALWAYS carries sun values (SceneEnv
+	// No sun flag: the scene env ALWAYS carries sun values (tour::scene::SceneEnv
 	// defaults) and a resolved directional overwrites them at bind time —
 	// there is no authored-vs-default sun state to retain. The election
 	// lives in RefreshSceneLights locals and dies on return.
@@ -1545,7 +1545,7 @@ public:
 	// this; the frame build reads position/orientation off it). Named
 	// CameraPositioner, not Camera: a Camera()-named member would shadow
 	// the smvk::Camera TYPE at the m_camera member declaration below.
-	CameraPositioner_FirstPerson& CameraPositioner() { return m_cameraPositioner; }
+	tour::CameraPositioner_FirstPerson& CameraPositioner() { return m_cameraPositioner; }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
 	// The RunConfig overload applies the central TOURMALINE_* environment
@@ -1690,7 +1690,7 @@ public:
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	void SetAaMode(AaMode m) { m_aaMode = m; }
 	void SetWireframe(bool v) { m_wireframe = v; }
-	void PushVolumetricEnv(const SceneEnv& env) {
+	void PushVolumetricEnv(const tour::scene::SceneEnv& env) {
 		const bool volTier = env.fogQuality == 2 && env.volumetrics > 0.0f;
 		m_volumetricEnabled = volTier;
 		if (volTier) {			m_volumetricIntensity = env.volumetrics;
@@ -1726,7 +1726,7 @@ public:
 	// probe pre-mix, EVSM) are HOST-OWNED session state — the editor's
 	// PushRenderQuality prefs, the App's panels/keys, the TOURMALINE_*
 	// pins — and never scene content (see RenderQualityConfig).
-	void PushPostfxEnv(const SceneRenderSettings& r, const SceneEnv& env) {
+	void PushPostfxEnv(const SceneRenderSettings& r, const tour::scene::SceneEnv& env) {
 		m_bloomEnabled = r.bloomEnabled;
 		m_bloomIntensity = std::clamp(r.bloomIntensity, 0.0f, 2.0f);
 		m_bloomThreshold = std::max(r.bloomThreshold, 0.0f);
@@ -1984,7 +1984,7 @@ protected:
 	// dimensions and motion-vector UVs all derive from it, so the aspect
 	// must describe the same image (differs from the swapchain ratio by
 	// rounding once renderScale != 1).
-	// NOTE: Camera::setPerspective forwards to MakeReversedZProjRH, whose
+	// NOTE: Camera::setPerspective forwards to tour::MakeReversedZProjRH, whose
 	// fovY is in radians and whose depth maps [near, far] -> [1, 0]
 	// (reversed-Z: near maps to depth 1, far to 0, like the old infinite
 	// form, whose limit it recovers as far -> infinity).
@@ -4037,12 +4037,12 @@ public:
 	// the shared body of both paths; see the viewer draw site). 2D gets
 	// one binding; cubemaps get the six per-face views + bindings.
 	void SelectTexDebugTexture(const smvk::TextureInfo& t);
-	CameraPositioner_FirstPerson m_cameraPositioner = CameraPositioner_FirstPerson(
+	tour::CameraPositioner_FirstPerson m_cameraPositioner = tour::CameraPositioner_FirstPerson(
 		glm::vec3(0.0f, 1.0f, 0.0f), //pos
 		glm::vec3(0.0f, 1.0f, 1.0f), //target
 		glm::vec3(0.0f, 1.0f, 0.0f) //up
 	);
-	Camera m_camera = Camera(m_cameraPositioner);
+	tour::Camera m_camera = tour::Camera(m_cameraPositioner);
 	// (The virtual cursor for FPS mouselook moved to WorldRendererElement
 	// with the camera drive.)
 	// ---- Texture streaming (mip-tail residency, see

@@ -73,7 +73,7 @@ void EditorApp::RefreshCubemapDensity() {
 		return;
 	}
 	// Scene bounds (the placement domain, exactly like the cooker).
-	const ::Aabb wb = m_world->ComputeSceneBounds();
+	const ::tour::Aabb wb = m_world->ComputeSceneBounds();
 	if (!(wb.mn.x <= wb.mx.x && wb.mn.y <= wb.mx.y && wb.mn.z <= wb.mx.z)) {
 		m_cubemapDensityInfo = "empty scene bounds";
 		return;

@@ -120,7 +120,7 @@ glm::vec3 EditorApp::MouseRay(float mouseX, float mouseY, smvk::Extent2D extent,
 	// Mouse pixels (top-left origin) -> NDC (Y-down after the Vulkan flip)
 	// -> world ray via the inverse view-projection. Depth is REVERSED-Z:
 	// NDC z=1 is the near plane, z=0 the far plane (see
-	// MakeReversedZProjRH) — unprojecting z=0 as "near" builds a
+	// tour::MakeReversedZProjRH) — unprojecting z=0 as "near" builds a
 	// backwards ray that hits geometry behind the camera instead of
 	// what's under the cursor.
 	const float nx = (extent.width > 0) ? (mouseX / float(extent.width)) * 2.0f - 1.0f : 0.0f;

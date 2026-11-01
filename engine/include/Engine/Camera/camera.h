@@ -169,14 +169,3 @@ public:
 };
 
 } // namespace tour
-
-// GLOBAL compat aliases (the migration bridge - retire with the call
-// sites; the boundary scanner guards against NEW globals, these are
-// the tracked pre-existing set).
-using tour::Camera;
-using tour::CameraPositioner_FirstPerson;
-using tour::CameraPositionerInterface;
-using tour::MakeInfReversedZProjRH;
-using tour::MakeReversedZProjRH;
-using tour::ResolveLookAtUp;
-using tour::SafeLookAt;

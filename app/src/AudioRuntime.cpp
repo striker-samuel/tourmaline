@@ -12,7 +12,7 @@
 #include <Engine/App/app.h>          // smvk::App (m_audio)
 #include <Engine/App/world.h>
 #include <Engine/Audio/audio.h>
-#include <Engine/Camera/camera.h>    // CameraPositioner_FirstPerson
+#include <Engine/Camera/camera.h>    // tour::CameraPositioner_FirstPerson
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Vfs/vfs.h>
@@ -339,7 +339,7 @@ private:
 		// Follow the renderer's active camera (the default; explicit
 		// selection stays available through SetListener).
 		ListenerPose pose;
-		const CameraPositioner_FirstPerson& cam =
+		const tour::CameraPositioner_FirstPerson& cam =
 			m_renderer->CameraPositioner();
 		pose.position = cam.cameraPosition_;
 		pose.forward = cam.getForward();

@@ -135,7 +135,7 @@ void TestWindingSign() {
 
 	const glm::vec3 eye(0.0f, 0.0f, 4.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f; // viewport fix, mirrors UpdateFrameUniforms
 	const glm::mat4 viewProj = proj * view;
 
@@ -280,7 +280,7 @@ void TestBatching() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 
@@ -368,7 +368,7 @@ void TestLobeGrouping() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 
@@ -484,7 +484,7 @@ void TestDemandPlumbing() {
 	views.NewFrame();
 	const glm::vec3 eye(0.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	View v{};
@@ -596,7 +596,7 @@ void TestPreCull() {
 		views.NewFrame();
 		const glm::vec3 eye(0, 0, 4);
 		const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-		glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+		glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 		proj[1][1] *= -1.0f;
 		const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 		View v{};
@@ -634,7 +634,7 @@ void TestPreCull() {
 		views.NewFrame();
 		const glm::vec3 eye(0, 0, 4);
 		const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 8), glm::vec3(0, 1, 0));
-		glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+		glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 		proj[1][1] *= -1.0f;
 		const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 		View v{};
@@ -672,7 +672,7 @@ void TestConeCull() {
 	views.NewFrame();
 	const glm::vec3 eye(0, 0, 4);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 
@@ -721,7 +721,7 @@ void TestConeCull() {
 	views2.NewFrame();
 	const glm::vec3 eye2(0, 0, -4);
 	const glm::mat4 view2 = glm::lookAt(eye2, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj2 = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj2 = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj2[1][1] *= -1.0f;
 	const uint32_t rv2 = views2.AllocateMainView(proj2 * view2, { 800.0f, 600.0f });
 	const smvk::RenderView& renderView2 = views2.Get(rv2);
@@ -1142,7 +1142,7 @@ void TestTemporalSnapshot() {
 	views.NewFrame();
 	const glm::vec3 eye(0, 0, 4);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	View v{};
@@ -1269,7 +1269,7 @@ void TestSeedCommands() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	View v{};
@@ -1370,7 +1370,7 @@ void TestSeedIntersection() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	auto freshView = [&]() {
@@ -1446,7 +1446,7 @@ void TestHzbOcclusion() {
 	using namespace smvk::gfx;
 	const glm::vec3 eye(0, 0, 4);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
 	const glm::mat4 viewProj = proj * view;
 	constexpr uint32_t W = 800, H = 600;
@@ -1574,7 +1574,7 @@ void TestRemainderCommands() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	auto freshView = [&]() {
@@ -1738,7 +1738,7 @@ void TestSeedDuplicateBatches() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	auto freshView = [&]() {
@@ -1816,7 +1816,7 @@ void TestHzbSpawnView() {
 	const float nearP = 0.01f;
 	const glm::vec3 eye(0.0f, 1.0f, 0.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 1, 1), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(45.0f), W / float(H), nearP);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(45.0f), W / float(H), nearP);
 	proj[1][1] *= -1.0f; // engine Y-flip (UpdateFrameUniforms)
 	const glm::mat4 viewProj = proj * view;
 	const glm::mat4 invViewProj = glm::inverse(viewProj);
@@ -2056,7 +2056,7 @@ void TestGpuMirrorAgreement() {
 	using namespace smvk::gfx;
 	const glm::vec3 eye(0, 0, 4);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f; // engine Y-flip, mirrors UpdateFrameUniforms
 	const glm::mat4 viewProj = proj * view;
 	constexpr uint32_t W = 256, H = 256;
@@ -2179,7 +2179,7 @@ void TestJitterCullStability() {
 	constexpr float kGuardPx = 1.0f;
 	constexpr float kPxNdcX = 2.0f / W;
 
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), W / H, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), W / H, 0.1f);
 	proj[1][1] *= -1.0f; // app Vulkan Y-flip (cf. UpdateFrameUniforms)
 	const glm::mat4 view = glm::mat4(1.0f); // camera at origin, looking -Z
 
@@ -2277,7 +2277,7 @@ void TestGpuCandidateBuild() {
 	const glm::vec3 eye(3.5f, 0.5f, 50.0f);
 	const glm::mat4 view =
 		glm::lookAt(eye, glm::vec3(3.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(30.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(30.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 
@@ -2384,7 +2384,7 @@ void TestShadowMeshGate() {
 	// looking -Z — a superset frustum in front of it. On-axis bounds are
 	// inside both; z in (0, 10) is behind the MAIN camera but inside the
 	// shadow view (the contribution-gate case); z > 10 is behind both.
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const glm::vec3 eyeA(0.0f, 0.0f, 0.0f);
 	const glm::mat4 viewA =
@@ -2446,7 +2446,7 @@ void TestCasterContributionView() {
 	views.NewFrame();
 	// Main camera at the origin looking -Z, fov 90 (half-width == depth),
 	// reversed-Z infinite far (the engine's main-view projection).
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(90.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const glm::mat4 view =
 		glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0, 1, 0));
@@ -2525,7 +2525,7 @@ void TestUserData() {
 	views.NewFrame();
 	const glm::vec3 eye(1.5f, 0.5f, 5.0f);
 	const glm::mat4 view = glm::lookAt(eye, glm::vec3(1.5f, 0.5f, 0.0f), glm::vec3(0, 1, 0));
-	glm::mat4 proj = MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
+	glm::mat4 proj = tour::MakeInfReversedZProjRH(glm::radians(60.0f), 1.0f, 0.1f);
 	proj[1][1] *= -1.0f;
 	const uint32_t rv = views.AllocateMainView(proj * view, { 800.0f, 600.0f });
 	View v{};
