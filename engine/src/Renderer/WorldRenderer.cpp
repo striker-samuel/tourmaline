@@ -11741,19 +11741,9 @@ namespace engine {
 					fogPC);
 			});
 			(void)fogShadowPass;
-			// Rasterize the same large casters into the lower-resolution
-			// depth mip. The volumetric march reads this populated mip,
-			// without asking the GPU to linearly blit D32 depth values.
-			if (!m_viewportResources.directionalShadows.fogCoarseLogical.empty()) {
-				auto& coarsePass = m_viewportResources.directionalShadows
-					.AddVolumetricShadowMipPass(*m_rendergraph);
-				coarsePass.SetRecordingFunc(
-					[this, fogPC](smvk::CommandBuffer& cmd) {
-					RecordVolumetricShadowCasters(cmd,
-						m_viewportResources.directionalShadows.program,
-						fogPC);
-				});
-			}
+			// Full mip pyramid, one compute SPD pass, no extra caster draws.
+			m_viewportResources.directionalShadows.AddVolumetricShadowSpdPass(
+				*m_rendergraph, *m_context, fb.frameIndex);
 		}
 
 		// ---- Spot shadow passes - one per selected caster tile ----
@@ -15281,7 +15271,7 @@ namespace engine {
 					&& m_passes.directionalShadows
 					&& m_viewportResources.directionalShadows.Valid()
 					&& m_viewportResources.directionalShadows.fogTileExtent.width != 0
-					&& !m_viewportResources.directionalShadows.fogLogicalView.empty()
+					&& !m_viewportResources.directionalShadows.fogPyramidLogical.empty()
 					&& m_fogShadowCasterCount > 0;
 				auto& volPass = m_viewportResources.volumetric.AddVolumetricPass(
 					*m_rendergraph,
@@ -15314,14 +15304,14 @@ namespace engine {
 					volCsmFeed
 					? m_viewportResources.directionalShadows.logicalView
 					: (volCoarseFeed
-						? m_viewportResources.directionalShadows.fogLogicalView
+						? m_viewportResources.directionalShadows.fogPyramidLogical
 						: smvk::LogicalImageViewHandle{}),
 					volCsmFeed
 					? m_context->GetBindlessIndex(
 						m_viewportResources.directionalShadows.bindless)
 					: (volCoarseFeed
 						? m_context->GetBindlessIndex(
-							m_viewportResources.directionalShadows.fogBindless)
+							m_viewportResources.directionalShadows.fogPyramidBindless)
 						: UINT32_MAX));
 				// Convex-volume tile masks: the fog march reads the per-tile
 				// volume bitmask (fragment) after the tile cull wrote it
