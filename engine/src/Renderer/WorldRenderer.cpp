@@ -4642,6 +4642,9 @@ namespace engine {
 	// returns false with the OLD generation fully intact (last valid GI
 	// keeps rendering - the stale-while-baking contract).
 	bool WorldRenderer::ReloadGiVolumesHotSwap() {
+		// Editor rebakes mint new paths. Rediscover the borrowed world's
+		// current bindings instead of reusing the attach-time path list.
+		ResolveGiBakes();
 		std::vector<GiVolumeResources> built;
 		smvk::Holder<smvk::BufferHandle> buf;
 		uint64_t addr = 0;
