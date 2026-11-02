@@ -1003,15 +1003,18 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "// The asset KIND enum - the values are an ABI (the runtime's\n"
 		<< "// catalog-fingerprint fold + the .tapp validation agree on\n"
 		<< "// these bytes; do not renumber - AudioGraph is APPENDED, 6).\n"
-		<< "enum class AssetKind : std::uint8_t {\n"
-		<< "    Scene = 0,\n"
-		<< "    Texture = 1,\n"
-		<< "    Mesh = 2,\n"
-		<< "    Sound = 3,\n"
-		<< "    Shader = 4,\n"
-		<< "    Gi = 5,\n"
-		<< "    AudioGraph = 6,\n"
-		<< "};\n\n"
+		<< "enum class AssetKind : std::uint8_t {\n";
+	// Enum labels are also a two-column collection: align their '='.
+	EmitAlignedRows(os, {
+		{ "Scene", "= 0," },
+		{ "Texture", "= 1," },
+		{ "Mesh", "= 2," },
+		{ "Sound", "= 3," },
+		{ "Shader", "= 4," },
+		{ "Gi", "= 5," },
+		{ "AudioGraph", "= 6," }
+	});
+	os << "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
 		<< "// no startup strings, no maps, no runtime discovery table.\n"
 		<< "// IDENTITY ONLY (id, kind, path): the owning package, its\n"
