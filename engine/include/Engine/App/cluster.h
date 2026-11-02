@@ -204,6 +204,11 @@ namespace tour {
 		// Lookup by VFS path ("gi/<stem>.sggi", ...). Null = not carried.
 		[[nodiscard]] const BakePayload* FindBakePayload(
 			const std::string& vfsPath) const;
+		// Editor hot-bake: the newly minted GI path replaces the old
+		// payload; do not retain the previous bake's CPU bytes forever.
+		void RemoveBakePayload(const std::string& vfsPath) {
+			bakePayloads_.erase(vfsPath);
+		}
 
 		// Cook support: when enabled, UploadStaticMesh keeps a CPU-side copy
 		// of every upload keyed by pool index so the pak cooker can embed
