@@ -44,6 +44,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
+#include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
@@ -2063,6 +2064,12 @@ protected:
 	tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
 	tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
 	tour::gpu_scene::Uploader m_gpuSceneUploader;
+	// Feature-gated CPU/GPU instance visibility parity only. Separate
+	// per-flight buffers, never used to create production draw commands.
+	tour::gpu_scene::CandidateValidator m_gpuSceneValidator;
+	smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneCullModule{};
+	smvk::ShaderProgram m_gpuSceneCullProgram{};
+	bool m_gpuSceneDatabaseReady = false;
 	// Transient gfx registration indices are reassigned on each rebuild.
 	// Republish all mesh links when the source registration changes.
 	uint64_t m_gpuSceneGeometryRevision = 0;

@@ -77,7 +77,11 @@ struct RelativeFrustum {
         for (const auto& p : planes) {
             for (int k = 0; k < 4; ++k)
                 if (!std::isfinite(p[k])) return false;
-            if (!(glm::dot(glm::dvec3(p), glm::dvec3(p)) > 1e-20))
+            // A disabled infinite-far plane is (0,0,0,+1e30).
+            // Zero normal + positive w rejects nothing; zero plane
+            // with w<=0 is malformed, not a valid cull frustum.
+            if (!(glm::dot(glm::dvec3(p), glm::dvec3(p)) > 1e-20)
+                && !(p.w > 0.0))
                 return false;
         }
         return true;
