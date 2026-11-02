@@ -4653,6 +4653,22 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::SetTriggerVolumeAttr: {
+		if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
+		} else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0) {
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
+		} else if (const int a = app.CreatedAudioRoomIndex(c.node); a >= 0) {
+			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(a);
+		} else if (!needNode()) return false;
+		out.verb = smvk::tour::Verb::SetTriggerVolumeAttr;
+		out.text = c.triggerVolumeAttr;
+		out.flag = c.afterFlag;
+		out.name = c.afterText; // tag string
+		return true;
+	}
+	case EditVerb::AttachTriggerVolume:
+	case EditVerb::RemoveTriggerVolumeVerb:
 	case EditVerb::AttachGiVolume:
 	case EditVerb::RemoveGiVolumeVerb:
 	case EditVerb::AttachAudioRoom:
@@ -4660,7 +4676,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// The association verbs: the target may be a created room, a
 		// created GIVOLUME (a room hung on a GI volume — the -owner
 		// givolume addressing) or a cluster-backed node.
-		out.verb = c.verb == EditVerb::AttachGiVolume
+		out.verb = c.verb == EditVerb::AttachTriggerVolume
+			? smvk::tour::Verb::AttachTriggerVolume
+			: c.verb == EditVerb::RemoveTriggerVolumeVerb
+			? smvk::tour::Verb::RemoveTriggerVolume
+			: c.verb == EditVerb::AttachGiVolume
 			? smvk::tour::Verb::AttachGiVolume
 			: c.verb == EditVerb::RemoveGiVolumeVerb
 			? smvk::tour::Verb::RemoveGiVolume
@@ -6187,6 +6207,35 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::SetTriggerVolumeAttr: {
+		uint32_t target = UINT32_MAX;
+		const uint32_t family = tc.node & smvk::tour::kCreateRefFamilyMask;
+		if (family == smvk::tour::kCreateTransformRefBase
+				|| family == smvk::tour::kCreateGiVolumeRefBase
+				|| family == smvk::tour::kCreateAudioRoomRefBase) {
+			const auto& nodes = family == smvk::tour::kCreateTransformRefBase
+				? app.m_tourCreatedTransformNodes
+				: family == smvk::tour::kCreateGiVolumeRefBase
+				? app.m_tourCreatedGiVolumeNodes
+				: app.m_tourCreatedAudioRoomNodes;
+			const uint32_t k = tc.node & ~family;
+			if (k >= nodes.size()) return false;
+			target = nodes[k];
+		} else target = app.ClusterToWorld(tc.node);
+		if (target == UINT32_MAX
+				|| !tour::scene::FindTriggerVolume(app.m_world->scene, target))
+			return false;
+		out.verb = EditVerb::SetTriggerVolumeAttr;
+		out.node = target;
+		out.triggerVolumeAttr = tc.text;
+		if (!app.ReadNodeTriggerVolumeAttr(target, tc.text,
+				out.beforeNum, out.beforeFlag, out.beforeText)) return false;
+		out.afterFlag = tc.flag;
+		out.afterText = tc.name;
+		return true;
+	}
+	case smvk::tour::Verb::AttachTriggerVolume:
+	case smvk::tour::Verb::RemoveTriggerVolume:
 	case smvk::tour::Verb::AttachGiVolume:
 	case smvk::tour::Verb::RemoveGiVolume:
 	case smvk::tour::Verb::AttachAudioRoom:
@@ -6221,7 +6270,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		out.verb = tc.verb == smvk::tour::Verb::AttachGiVolume
+		out.verb = tc.verb == smvk::tour::Verb::AttachTriggerVolume
+			? EditVerb::AttachTriggerVolume
+			: tc.verb == smvk::tour::Verb::RemoveTriggerVolume
+			? EditVerb::RemoveTriggerVolumeVerb
+			: tc.verb == smvk::tour::Verb::AttachGiVolume
 			? EditVerb::AttachGiVolume
 			: tc.verb == smvk::tour::Verb::RemoveGiVolume
 			? EditVerb::RemoveGiVolumeVerb
