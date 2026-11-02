@@ -439,6 +439,32 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateGiVolume(c);
 		break;
 	}
+	case EditVerb::AttachGiVolume: {
+		if (forward) {
+			c.beforeGiVolume = false;
+			if (const auto* row = FindGiVolume(scene, c.node)) {
+				c.beforeGiVolume = true;
+				c.beforeGi = row->volume;
+			}
+			SetGiVolume(scene, c.node, SceneGiVolume{});
+		} else if (c.beforeGiVolume)
+			SetGiVolume(scene, c.node, c.beforeGi);
+		else
+			RemoveGiVolume(scene, c.node);
+		break;
+	}
+	case EditVerb::RemoveGiVolumeVerb: {
+		if (forward) {
+			c.beforeGiVolume = false;
+			if (const auto* row = FindGiVolume(scene, c.node)) {
+				c.beforeGiVolume = true;
+				c.beforeGi = row->volume;
+				RemoveGiVolume(scene, c.node);
+			}
+		} else if (c.beforeGiVolume)
+			SetGiVolume(scene, c.node, c.beforeGi);
+		break;
+	}
 	case EditVerb::SetGiVolumeAttr: {
 		const std::string& attr = c.giVolumeAttr;
 		if (forward)
@@ -4284,6 +4310,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		const int k = app.CreatedGiVolumeIndex(c.node);
 		if (k >= 0) {
 			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(k);
+		} else if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
 		} else if (!needNode()) {
 			return false;
 		}
@@ -4542,6 +4570,10 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		const int k = app.CreatedAudioRoomIndex(c.node);
 		if (k >= 0) {
 			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(k);
+		} else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0) {
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
+		} else if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
 		} else if (!needNode()) {
 			return false;
 		}
@@ -4559,12 +4591,18 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::AttachGiVolume:
+	case EditVerb::RemoveGiVolumeVerb:
 	case EditVerb::AttachAudioRoom:
 	case EditVerb::RemoveAudioRoomVerb: {
 		// The association verbs: the target may be a created room, a
 		// created GIVOLUME (a room hung on a GI volume — the -owner
 		// givolume addressing) or a cluster-backed node.
-		out.verb = c.verb == EditVerb::AttachAudioRoom
+		out.verb = c.verb == EditVerb::AttachGiVolume
+			? smvk::tour::Verb::AttachGiVolume
+			: c.verb == EditVerb::RemoveGiVolumeVerb
+			? smvk::tour::Verb::RemoveGiVolume
+			: c.verb == EditVerb::AttachAudioRoom
 			? smvk::tour::Verb::AttachAudioRoom
 			: smvk::tour::Verb::RemoveAudioRoom;
 		if (const int k = app.CreatedAudioRoomIndex(c.node); k >= 0) {
@@ -4574,6 +4612,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 				app.CreatedGiVolumeIndex(c.node); g >= 0) {
 			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
 			out.text = "givolume";
+		} else if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
+			out.text = "transform";
 		} else if (!needNode()) {
 			return false;
 		}
