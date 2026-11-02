@@ -65,7 +65,7 @@ parameters.
 - **Fresnel is untouched.** The existing GGX + Schlick evaluation already
   carries grazing-angle Fresnel; the correction must not zero the
   legitimate silhouette reflectance, so no extra multiplier is applied on
-  top. A dedicated silhouette reflection sourcing (Hammes uses
+  top. A dedicated approach to sourcing silhouette reflections (Hammes uses
   previous-frame screen-space reflections for the last few edge pixels,
   no full reprojection) is a follow-up experiment on the existing SSR
   infrastructure.

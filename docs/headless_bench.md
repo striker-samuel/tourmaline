@@ -1,7 +1,7 @@
 # Headless running + bench/capture reference
 
 The full A/B-pin and debug-view reference. All `TOURMALINE_*` knobs are
-declared, parsed and WarnUnknown-covered in `engine/App/RunConfig.h/.cpp`
+declared, parsed, and covered by `WarnUnknown` in `engine/App/RunConfig.h/.cpp`
 (one knob, one place).
 
 - `App.exe` runs from the build directory (`out/build/x64-Release`),

@@ -70,8 +70,8 @@ has for targets. Both share the same foundation.
   `UNDEFINED`, discarding the previous contents — correct, because
   the previous tenant is done by construction.
 
-- **Retirement ordering (the FIFO pairing).** Destroys of packed
-  images and their ranges go through the deferred-destroy queue
+- **Retirement ordering (the FIFO pairing).** Destruction of packed
+  images and their ranges goes through the deferred-destroy queue
   (`DeferDestroy`) keyed on the graphics timeline point +
   `MAX_FRAMES_IN_FLIGHT` margin — in-flight frames keep their objects
   alive past their last recorded use. The pairing rules that make

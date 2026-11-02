@@ -967,8 +967,8 @@ when the exposure is deliberate.
   DEVICE_LOST, pinned via `VK_NV_device_diagnostic_checkpoints`;
   `TOURMALINE_CHECKPOINTS=0` kills the marker emission; `x64-Release-
   ShaderDebug` + `TOURMALINE_SHADER_DEBUG=ON` for Aftermath line tables).
-- Dont use F12 for any binding since it can trigger debugbreak.
-- Dont ever bump format versions or add conversions to keep old data
+- Don't use F12 for any binding since it can trigger debugbreak.
+- Don't ever bump format versions or add conversions to keep old data
   working. Bumping magic to break old files is ok. No important assets
   to keep.
 - The editor/launcher split: `Editor.exe` REQUIRES `--project <dir>`

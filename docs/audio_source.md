@@ -1,7 +1,7 @@
 # The AudioSource node — authored emitters, sound assets, runtime playback
 
-The AudioSource pipeline in three stages (the authoring → content →
-playback split). Design rule throughout: **a sound slot is an ASSET
+The AudioSource pipeline has three stages (authoring → content →
+playback). The design rule throughout: **a sound slot is an ASSET
 REFERENCE, never a playing voice** — clips are shared by many emitters;
 playback belongs to runtime state.
 
@@ -77,9 +77,9 @@ SetListener(pos, fwd, up);                      // or follow the camera (default
 
 - **Mixer**: per-voice pan (constant-power, `SetVoiceSpatial(vol,
   pan)`) — all spatial reasoning lives ABOVE the mixer.
-- **Emitter states** key by the STABLE (owning cluster, cluster-local
+- **Emitter states** are keyed by the STABLE (owning cluster, cluster-local
   node) pair through `World::clusterMergedNodes` — merged node ids
-  rebuild on every resolve; emitters (and their voices) never confuse.
+  rebuild on every resolve; emitters (and their voices) cannot be confused after a rebuild.
   Per frame: linear min→max distance rolloff + right-axis pan against
   the listener, change-detected mixer commands.
 - **Lifecycle**: `playOnLoad` autoplays the first slot once per scene

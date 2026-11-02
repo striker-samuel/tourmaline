@@ -61,7 +61,7 @@ A resource being loaded is NOT safe to use. CPU-only resources
 upload completion, barriers and valid descriptor/page-table publication
 (the WorldFields publication contract — region uploads, then the page
 table, one transfer batch that executes only after every previously
-submitted frame retired — is ONE instance of this rule).
+submitted frame has retired — is ONE instance of this rule).
 
 Interests (`StreamingInterest`) carry position, velocity, radius,
 priority, a layer mask and a desired residency. The prefetch rule:
