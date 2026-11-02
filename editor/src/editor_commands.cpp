@@ -695,6 +695,20 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 	return -1;
 }
 
+int EditorApp::CreatedTransformIndex(uint32_t worldNode) const {
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateTransform
+				|| !CreateCmdEmitsInTour(*this, h))
+			continue;
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
 int EditorApp::CreatedGiVolumeIndex(uint32_t worldNode) const {
 	// Same contract as CreatedLightIndex, for the GI-volume family:
 	// alive + emitting creates only (a deleted GI volume's CreateGiVolume
@@ -2710,6 +2724,8 @@ void EditorApp::ExecCreateTransform(EditCmd& c) {
 	markAsChanged(scene, created);
 	recalculateGlobalTransforms(scene);
 	m_selected = uint32_t(created);
+	if (m_replayingTour)
+		m_tourCreatedTransformNodes.push_back(uint32_t(created));
 	Log("Created transform '" + c.afterText + "' (#"
 		+ std::to_string(created) + ").");
 }
@@ -6259,6 +6275,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	}
 	m_tourCreatedNodes.clear();
 	m_tourCreatedGiVolumeNodes.clear();
+	m_tourCreatedTransformNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
 	m_tourCreatedCameraNodes.clear();
 	m_tourCreatedAudioNodes.clear();
