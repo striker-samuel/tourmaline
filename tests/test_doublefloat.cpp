@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <initializer_list>
 
 namespace {
 using tour::math::DoubleFloat3;
