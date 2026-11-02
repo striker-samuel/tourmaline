@@ -1411,6 +1411,9 @@ using namespace ::smvk;
 			for (const tour::scene::AudioRoomRow& row : cs.tables.audioRooms)
 				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
 					tour::scene::SetAudioRoom(scene, nodeMap[row.node], row.room);
+			for (const tour::scene::TriggerVolumeRow& row : cs.tables.triggerVolumes)
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					tour::scene::SetTriggerVolume(scene, nodeMap[row.node], row.trigger);
 			// Project-defined schema associations (node_schema.h): the
 			// cooked value bytes ride VERBATIM (no decode at fold time
 			// — the generated project::types own the decode), nodes
