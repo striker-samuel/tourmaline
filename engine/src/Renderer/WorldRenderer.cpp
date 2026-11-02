@@ -13030,7 +13030,7 @@ namespace engine {
 		if (m_selectedNode != UINT32_MAX && m_world
 			&& m_selectedNode < m_world->scene.hierarchy.size()
 			&& m_selectedNode < m_world->scene.globalTransform.size()
-			&& m_gfxRenderer.DebugProgramsValid()) {
+			&& m_gfxRenderer.LineProgram().shaderCount == 2) {
 			const glm::mat4 selectedFrame =
 				m_world->scene.globalTransform[m_selectedNode];
 			const float det = glm::determinant(selectedFrame);
