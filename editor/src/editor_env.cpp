@@ -449,9 +449,9 @@ namespace editor {
 				"GPU pre-mixed probe blend (one cubemap "
 					"fetch per pixel); off = the per-pixel probe walk");
 			ImGui::SeparatorText("Shadows");
-			attr::Check("EVSM moment shadows", &q.evsmEnabled,
-				"EVSM moment shadow maps (soft shadows; "
-					"falls back to PCF when unsupported)");
+			// EVSM is a frequently toggled preview setting. Avoid a
+			// hover tooltip that looks like an extra floating window.
+			attr::Check("EVSM moment shadows", &q.evsmEnabled, nullptr);
 			attr::Slider("EVSM softness", &q.evsmSoftness, 0.0f, 4.0f, "%.2f",
 				"Scales shadow softness relative to the light's "
 				"physical size (0 = hard).");
