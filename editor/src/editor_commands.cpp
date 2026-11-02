@@ -439,6 +439,41 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateGiVolume(c);
 		break;
 	}
+	case EditVerb::AttachTriggerVolume: {
+		if (forward) {
+			c.beforeTriggerVolume = false;
+			if (const auto* row = tour::scene::FindTriggerVolume(scene, c.node)) {
+				c.beforeTriggerVolume = true;
+				c.beforeTrigger = row->trigger;
+			}
+			tour::scene::SetTriggerVolume(scene, c.node, tour::scene::SceneTriggerVolume{});
+		} else if (c.beforeTriggerVolume)
+			tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
+		else
+			tour::scene::RemoveTriggerVolume(scene, c.node);
+		break;
+	}
+	case EditVerb::RemoveTriggerVolumeVerb: {
+		if (forward) {
+			c.beforeTriggerVolume = false;
+			if (const auto* row = tour::scene::FindTriggerVolume(scene, c.node)) {
+				c.beforeTriggerVolume = true;
+				c.beforeTrigger = row->trigger;
+				tour::scene::RemoveTriggerVolume(scene, c.node);
+			}
+		} else if (c.beforeTriggerVolume)
+			tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
+		break;
+	}
+	case EditVerb::SetTriggerVolumeAttr: {
+		if (forward)
+			WriteNodeTriggerVolumeAttr(c.node, c.triggerVolumeAttr, c.number,
+				c.afterFlag, c.afterText);
+		else
+			WriteNodeTriggerVolumeAttr(c.node, c.triggerVolumeAttr, c.beforeNum,
+				c.beforeFlag, c.beforeText);
+		break;
+	}
 	case EditVerb::AttachGiVolume: {
 		if (forward) {
 			c.beforeGiVolume = false;
@@ -2892,6 +2927,33 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	} else {
 		return false;
 	}
+	return true;
+}
+
+bool EditorApp::ReadNodeTriggerVolumeAttr(uint32_t node,
+		const std::string& attr, double& num, bool& flag,
+		std::string& text) const {
+	num = 0.0;
+	flag = false;
+	text.clear();
+	if (!m_world) return false;
+	const auto* row = tour::scene::FindTriggerVolume(m_world->scene, node);
+	if (!row) return false;
+	if (attr == "enabled") flag = row->trigger.enabled;
+	else if (attr == "once") flag = row->trigger.once;
+	else if (attr == "tag") text = row->trigger.tag;
+	else return false;
+	return true;
+}
+bool EditorApp::WriteNodeTriggerVolumeAttr(uint32_t node,
+		const std::string& attr, double, bool flag, const std::string& text) {
+	if (!m_world) return false;
+	auto* row = tour::scene::FindTriggerVolume(m_world->scene, node);
+	if (!row) return false;
+	if (attr == "enabled") row->trigger.enabled = flag;
+	else if (attr == "once") row->trigger.once = flag;
+	else if (attr == "tag") row->trigger.tag = text.substr(0, 256);
+	else return false;
 	return true;
 }
 
