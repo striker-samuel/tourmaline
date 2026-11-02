@@ -51,39 +51,34 @@
 // no reupload, no batch split — a family switch is a pipeline pick,
 // a userdata change is a CPU write.
 //
-// The element COMPOSES with the audio runtime (RunPakApp carries one
-// extraElement slot): lifecycle forwards to the nested element, the
-// demo work rides onUpdate beside it.
+// A STANDALONE element: the audio runtime stacks as its OWN element
+// beside this one (the host's extension list composes elements, never
+// forces a game to nest lifecycle-forwarding wrappers).
 class ProjectLitDemo final : public engine::IAppElement {
 public:
-	ProjectLitDemo(std::shared_ptr<engine::IAppElement> audio,
-		std::shared_ptr<smvk::World*> worldHandle)
-		: m_audio(std::move(audio))
-		, m_worldHandle(std::move(worldHandle)) {}
+	explicit ProjectLitDemo(
+			std::shared_ptr<smvk::World*> worldHandle)
+		: m_worldHandle(std::move(worldHandle)) {}
 
 	const char* ElementName() const override { return "GameProjectDemo"; }
 
+	// The demo's lifecycle is narrow: attach adopts the material, the
+	// update pulses it. The rest of the element surface rides as
+	// no-ops (a standalone element owns ONLY its concerns — no nested
+	// element forwarding).
 	bool onAttach() override {
 		// The host stacks this element AFTER the renderer's attach (the
 		// world source ran), so the scene's materials exist here.
 		AdoptMaterial();
-		return m_audio ? m_audio->onAttach() : true;
+		return true;
 	}
-	void onDetach() override { if (m_audio) m_audio->onDetach(); }
-	void onResize(smvk::Extent2D e) override { if (m_audio) m_audio->onResize(e); }
-	void onUpdate(float dt) override {
-		if (m_audio)
-			m_audio->onUpdate(dt);
-		Pulse(dt);
-	}
-	void onUIMenu() override { if (m_audio) m_audio->onUIMenu(); }
-	void onUIRender() override { if (m_audio) m_audio->onUIRender(); }
-	void onPreRender(engine::ElementFrame& f) override {
-		if (m_audio) m_audio->onPreRender(f);
-	}
-	void onRender(engine::ElementFrame& f) override {
-		if (m_audio) m_audio->onRender(f);
-	}
+	void onDetach() override {}
+	void onResize(smvk::Extent2D) override {}
+	void onUpdate(float dt) override { Pulse(dt); }
+	void onUIMenu() override {}
+	void onUIRender() override {}
+	void onPreRender(engine::ElementFrame&) override {}
+	void onRender(engine::ElementFrame&) override {}
 
 private:
 	// Picks the scene's first opaque material and opts it into the
@@ -134,7 +129,6 @@ private:
 			quant(damage) | (quant(wet) << 8));
 	}
 
-	std::shared_ptr<engine::IAppElement> m_audio;
 	std::shared_ptr<smvk::World*> m_worldHandle;
 	uint32_t m_material = smvk::World::kInvalidIndex;
 	float m_time = 0.0f;
@@ -230,101 +224,46 @@ int main(int argc, const char* argv[]) {
 			exitCode))
 		return exitCode;
 
-	// ---- THE RUNTIME FAÇADE: stable ids resolve to real bytes -------
-	// The compiled header's project::textures::stone (a constexpr id
-	// from the project's asset db) resolves through the appmanifest's
-	// [ids] table to its pak + path, and the bytes come back through
-	// the pak backend — game code never types a path or an index.
-	// (Cross-pak by construction: the texture lives in shared.pak while
-	// the entry scene rides game.pak.)
-	if (!cfg.cli.project.empty()) {
-		std::string rtErr;
-		if (auto runtime = app::ProjectRuntime::Load(cfg.cli.project,
-				rtErr)) {
-			// ---- THE COMPILED-CATALOG CONTRACT (the flattened
-			// project.h): the game proves ITSELF against the deployed
-			// content up front — the header's flat Assets table (the
-			// compile-time POD records) + its CatalogFingerprint
-			// validate against the .tapp's [ids] rows + `catalog` line.
-			// After this, the game KNOWS the ids it was compiled with
-			// are the ids the content ships — no runtime discovery, no
-			// .tapp row ever reaches gameplay code.
-			static_assert(sizeof(project::AssetDesc)
-					== sizeof(app::ProjectRuntime::CompiledAssetDesc)
-				&& offsetof(project::AssetDesc, id)
-					== offsetof(app::ProjectRuntime::CompiledAssetDesc,
-						id)
-				&& offsetof(project::AssetDesc, pakIndex)
-					== offsetof(app::ProjectRuntime::CompiledAssetDesc,
-						pakIndex)
-				&& offsetof(project::AssetDesc, path)
-					== offsetof(app::ProjectRuntime::CompiledAssetDesc,
-						path),
-				"the generated AssetDesc and the runtime's mirror must"
-				" stay layout-identical (member order + types)");
-			if (runtime->AttachCompiledCatalog(
-					reinterpret_cast<
-						const app::ProjectRuntime::CompiledAssetDesc*>(
-						project::Assets.data()),
-					project::Assets.size(),
-					project::CatalogFingerprint, rtErr))
-				std::printf("[GameProject] compiled catalog attached +"
-					" validated against the deployment manifest"
-					" (fingerprint 0x%llx, %zu asset(s))\n",
-					(unsigned long long)project::CatalogFingerprint,
-					project::Assets.size());
-			else
-				std::printf("[GameProject] compiled catalog REJECTED:"
-					" %s\n", rtErr.c_str());
-			// The flat table is a first-class compile-time surface:
-			// kind + pakIndex typed queries, no strings.
-			if (const project::AssetDesc* tex =
-					project::Find(project::textures::stone))
-				std::printf("[GameProject] flat table: stone -> kind %u"
-					" pak[%u] '%.*s'\n",
-					unsigned(tex->kind), tex->pakIndex,
-					int(tex->path.size()), tex->path.data());
-			// The canonical record (the registry's identity table —
-			// the manifest [ids] join's successor): kind byte + owner
-			// pak + the logical path.
-			if (const tour::asset::ContentRecord* record =
-					runtime->Asset(project::textures::stone)) {
-				std::printf("[GameProject] id 0x%llx -> %s '%.*s'\n",
-					(unsigned long long)project::textures::stone,
-					record->pak.c_str(),
-					int(record->path.size()),
-					record->path.data());
-				if (auto bytes = runtime->ReadAsset(
-						project::textures::stone, rtErr))
-					std::printf("[GameProject] read %zu bytes of"
-						" ktx2 through %s\n", bytes->size(),
-						record->pak.c_str());
-				else
-					std::printf("[GameProject] texture read failed:"
-						" %s\n", rtErr.c_str());
-			}
-			else {
-				std::printf("[GameProject] the id table does not carry"
-					" the texture (rebuild GameProject_paks)\n");
-			}
+	// ---- THE RUNTIME FAÇADE + THE COMPILED-CATALOG GATE ----------------
+	// The typed helper proves the generated AssetDesc's layout against
+	// the runtime mirror ONCE (static_asserts — the sample's old
+	// hand-rolled reinterpret_cast + offsetof proof is gone), and
+	// RunPakApp runs the gate FATAL at bootstrap: the session builds
+	// (the manifest adopts into the registry), the game proves itself
+	// against the deployed content BEFORE any graphics work, and a
+	// refusal refuses the launch (the old log-and-run-anyway is the
+	// exact contract this closes).
+	cfg.compiledCatalogGate =
+		[](app::ProjectRuntime& session, std::string& err) {
+		if (app::AttachCompiledCatalog(session, project::Assets.data(),
+				project::Assets.size(), project::CatalogFingerprint,
+				err)) {
+			std::printf("[GameProject] compiled catalog attached +"
+				" validated against the deployment manifest"
+				" (fingerprint 0x%llx, %zu asset(s))\n",
+				(unsigned long long)project::CatalogFingerprint,
+				project::Assets.size());
+			return true;
 		}
-	}
-	// ---- THE AUDIO LAYER: the scene-aware runtime over the mixer ----
-	// The AudioRuntime element stacks over the renderer (the host
-	// extension hook): it owns the clip cache (sound ids decoded
-	// through the project's pak), the emitter states (the authored
-	// audio-source nodes — this scene's BellTower, with its playOnLoad
-	// + loop ring on load), and the spatialization (attenuation + pan
-	// against the active camera, per frame). Gameplay code drives it
-	// through the imperative surface: PrefetchSound /
-	// PlaySound(world, node, sound) / StopSound / SetListener.
-	// The launch's SHARED content session arrives with the hook (the
-	// --project lane built it before any graphics work): the audio
-	// layer borrows it — the same pak images + provider selection the
-	// world load resolved through (a dev/mod override serving a
-	// sound's path wins identically for both read forms).
+		return false;
+	};
+	// The flat table is a first-class compile-time surface: kind +
+	// pakIndex typed queries, no strings.
+	if (const project::AssetDesc* tex =
+			project::Find(project::textures::stone))
+		std::printf("[GameProject] flat table: stone -> kind %u"
+			" pak[%u] '%.*s'\n",
+			unsigned(tex->kind), tex->pakIndex,
+			int(tex->path.size()), tex->path.data());
+	// ---- THE GAME ELEMENTS (composed, never nested) ---------------------
+	// TWO standalone elements stack over the renderer, in list order:
+	// the scene-aware audio runtime (borrowing the launch's SHARED
+	// content session — the same pak images + provider selection the
+	// world load resolved through) and the ProjectLit family demo (a
+	// plain world handle). No lifecycle-forwarding wrapper: the host's
+	// extension list composes elements, each owning its own concerns.
 	if (!cfg.cli.project.empty()) {
-		cfg.extraElement =
+		cfg.extraElements.push_back(
 			[](smvk::App& host,
 				engine::WorldRenderer& renderer,
 				std::shared_ptr<smvk::World*> worldHandle,
@@ -332,16 +271,18 @@ int main(int argc, const char* argv[]) {
 			-> std::shared_ptr<engine::IAppElement> {
 			if (!session)
 				return nullptr; // no session (a --pak override): no audio
-			// The audio runtime + the ProjectLit family demo, composed
-			// into ONE element (RunPakApp carries a single extraElement
-			// slot; the demo forwards every lifecycle call to the audio
-			// leg it wraps).
-			std::shared_ptr<smvk::World*> worldForDemo = worldHandle;
+			return app::MakeAudioRuntime(host, session,
+				std::move(worldHandle), &renderer);
+		});
+		cfg.extraElements.push_back(
+			[](smvk::App&,
+				engine::WorldRenderer&,
+				std::shared_ptr<smvk::World*> worldHandle,
+				const std::shared_ptr<app::ProjectRuntime>&)
+			-> std::shared_ptr<engine::IAppElement> {
 			return std::make_shared<ProjectLitDemo>(
-				app::MakeAudioRuntime(host, session,
-					std::move(worldHandle), &renderer),
-				std::move(worldForDemo));
-		};
+				std::move(worldHandle));
+		});
 	}
 	return app::RunPakApp(cfg);
 }

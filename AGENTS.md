@@ -60,7 +60,17 @@
   override unless `--no-vfs`. The game element hook receives the
   session (the audio runtime borrows it — no second package
   universe). The build appends the per-pak "#ids" blob post-cook
-  (stable slots preserved; the publish digest covers it).
+  (stable slots preserved; the publish digest covers it). The game
+  bootstrap contract: `app::AttachCompiledCatalog` (the typed helper —
+  layout static_asserts + the pointer cast in ONE audited place, never
+  a reinterpret_cast in game code) installs through
+  `PakAppConfig::compiledCatalogGate`, which RunPakApp runs FATAL at
+  bootstrap (a catalog/deployment mismatch refuses the launch before
+  any graphics work); `PakAppConfig::extraElements` (a LIST, in attach
+  order, reverse detach) replaced the single `extraElement` slot —
+  game elements compose standalone, never nested lifecycle-forwarding
+  wrappers (Sample 04: the audio element + the ProjectLit demo beside
+  it).
 
 - **DeployCheck** (`app/src/DeployCheck.h`): the deployment validation
   gate, pre-graphics in the `--project` launch — every manifest-listed

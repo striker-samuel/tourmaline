@@ -30,6 +30,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <Engine/App/RunConfig.h>
 
@@ -121,32 +122,44 @@ struct PakAppConfig {
 	// Central run config (parsed once in main; Log/WarnUnknown there).
 	// Carried by value so the renderer consumes the same snapshot.
 	engine::RunConfig run;
-	// ---- Host extension element (the game-host hook) ----
-	// A host (Asteroids.exe — asteroids/src/main.cpp) installs a factory
-	// that RunPakApp stacks OVER the renderer element (after its onAttach
-	// loaded the world): the game layer owns whatever it wants (the
-	// sponza invaders element drives the camera + ball entities through
-	// the merged scene). Returning null from the factory skips stacking
-	// (the env kill switch lives there). Bench runs never stack it
-	// (capture determinism — RunPakApp gates). The plain App host leaves
-	// it unset: the clean viewer.
+	// ---- Host extension elements (the game-host hook) ----
+	// A game host installs factories that RunPakApp stacks OVER the
+	// renderer element (after its onAttach loaded the world), IN THE
+	// GIVEN ORDER (attach order = list order; detach is reverse — a
+	// game element drops off the stack before the renderer tears the
+	// world down). Returning null from a factory skips that element
+	// (the env kill switch lives there). Bench runs never stack them
+	// (capture determinism — RunPakApp gates). The plain App host
+	// leaves the list empty: the clean viewer.
 	// `session` is the launch's SHARED content session (the
 	// ProjectRuntime over the content registry): present on a
 	// --project launch (the manifest adopted, every listed pak's
 	// backend adopted as the preloads resolve, the loose discovery
-	// tree registered as an override), NULL on the legacy --pak lane.
-	// A game element builds its layers over IT (the scene-aware audio
-	// rides the shared images + the shared provider selection — no
-	// second package universe re-reading the archives).
-	std::function<std::shared_ptr<engine::IAppElement>(
+	// tree registered as an override) and on the multi-pak discovery
+	// lane, NULL on the legacy single-pak lane. A game element builds
+	// its layers over IT (the scene-aware audio rides the shared
+	// images + the shared provider selection — no second package
+	// universe re-reading the archives).
+	std::vector<std::function<std::shared_ptr<engine::IAppElement>(
 		tour::App& host,
 		engine::WorldRenderer& renderer,
 		std::shared_ptr<tour::World*> worldHandle,
-		const std::shared_ptr<app::ProjectRuntime>& session)>
-		extraElement;
-	// True when the extra element owns the camera (RunPakApp then parks
-	// the renderer element's FPS camera drive for the whole run).
+		const std::shared_ptr<app::ProjectRuntime>& session)>>
+		extraElements;
+	// True when an extension element owns the camera (RunPakApp then
+	// parks the renderer element's FPS camera drive for the whole run).
 	bool extraOwnsCamera = false;
+	// ---- THE COMPILED-CATALOG GATE (fatal bootstrap validation) ----
+	// A game host installs this to prove ITSELF against the deployed
+	// content BEFORE any graphics work: RunPakApp builds the session,
+	// calls the gate, and a refusal is FATAL (the version-skew
+	// contract — a game binary and its deployed content may never
+	// silently disagree; the old behavior logged + ran anyway). Use
+	// the typed AttachCompiledCatalog helper below to install it over
+	// the generated project.h's own types (no reinterpret_cast in
+	// game code). Null = no compiled catalog (the plain viewer).
+	std::function<bool(app::ProjectRuntime& session, std::string& err)>
+		compiledCatalogGate;
 };
 
 // Parse argv into `opts` (the dedicated CLI options object — nothing else

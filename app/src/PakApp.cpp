@@ -172,6 +172,21 @@ namespace app {
 					sErr)) {
 				session = std::make_shared<app::ProjectRuntime>(
 					std::move(*rt));
+				// THE COMPILED-CATALOG GATE (fatal bootstrap
+				// validation): the game proves ITSELF against the
+				// deployed content BEFORE any preload, any Vulkan
+				// work — a mismatch is a REFUSED launch, never the
+				// old log-and-run-anyway.
+				if (cfg.compiledCatalogGate) {
+					std::string gErr;
+					if (!cfg.compiledCatalogGate(*session, gErr)) {
+						std::cerr << "[App] the compiled catalog was"
+							" REJECTED: " << gErr << "\n";
+						return EXIT_FAILURE;
+					}
+					std::cerr << "[App] compiled catalog attached +"
+						" validated against the deployment\n";
+				}
 				// The loose discovery tree (the renderer's
 				// MountContentVfs equivalent) as a registry OVERRIDE:
 				// dev-override files win over the paks for BOTH the
@@ -642,15 +657,19 @@ namespace app {
 				std::cout << "bench: constant-velocity flight " << cfg.cli.benchMoveSpeed
 					<< " m/s forward from the spawn pose (past warmup)\n";
 			}
-			// Host extension element (the game-host hook, see Host.h): stacked
-			// AFTER the renderer element — attach order guarantees the world is
-			// loaded (the renderer's onAttach ran the world source) before the
-			// extension looks for it. Bench runs never stack it (the extension
-			// animates every frame — capture determinism), unless the explicit
-			// TOURMALINE_EXTRA_ELEMENT_BENCH=1 pin opts in: the headless A/B
-			// lane for extension-driven effects (the ProjectLit family demo's
-			// capture, e.g. TOURMALINE_CAPTURE=12 --bench 24 with the pin).
-			const bool extraOn = static_cast<bool>(cfg.extraElement)
+			// Host extension elements (the game-host hook, see Host.h):
+			// stacked AFTER the renderer element, IN LIST ORDER -
+			// attach order guarantees the world is loaded (the
+			// renderer's onAttach ran the world source) before the
+			// extensions look for it, and the reverse detach order
+			// drops them before the renderer tears the world down.
+			// Bench runs never stack them (the extensions animate
+			// every frame - capture determinism), unless the explicit
+			// TOURMALINE_EXTRA_ELEMENT_BENCH=1 pin opts in: the
+			// headless A/B lane for extension-driven effects (the
+			// ProjectLit family demo's capture, e.g.
+			// TOURMALINE_CAPTURE=12 --bench 24 with the pin).
+			const bool extraOn = !cfg.extraElements.empty()
 				&& (cfg.cli.benchFrames <= 0 && cfg.cli.benchMoveSpeed <= 0.0f
 					|| [] {
 						static const bool pin = [] {
@@ -661,17 +680,17 @@ namespace app {
 						return pin;
 					}());
 			if (extraOn && cfg.extraOwnsCamera)
-				element->SetDisableControl(true); // the extension owns the camera
+				element->SetDisableControl(true); // an extension owns the camera
 			// Attach the element to the host's stack and DROP the host-side
 			// reference: the App owns the element now (Shutdown's detach pass
 			// destroys it INSIDE the shutdown window, Holders releasing while
-			// the context is alive — an outliving host reference would defer
+			// the context is alive - an outliving host reference would defer
 			// element destruction to after ~App and leak the GPU handles).
 			app.AddElement(element);
 			element.reset();
-			if (extraOn) {
-				if (auto extra = cfg.extraElement(app, renderer,
-						worldHandle, session)) {
+			for (const auto& factory : cfg.extraElements) {
+				if (auto extra = factory(app, renderer, worldHandle,
+						session)) {
 					// Reverse detach order: the extension drops off the stack
 					// (and out of the world) before the renderer tears down.
 					app.AddElement(extra);

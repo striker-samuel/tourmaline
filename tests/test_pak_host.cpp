@@ -193,16 +193,17 @@ void TestCliParse() {
 	{
 		app::PakAppConfig cfg;
 		bool hookRan = false;
-		cfg.extraElement = [&hookRan](smvk::App&, engine::WorldRenderer&,
+		cfg.extraElements.push_back(
+			[&hookRan](smvk::App&, engine::WorldRenderer&,
 				std::shared_ptr<smvk::World*>,
 				const std::shared_ptr<app::ProjectRuntime>&) {
 			hookRan = true;
 			return nullptr;
-		};
+		});
 		cfg.extraOwnsCamera = true;
 		app::ViewerOptions& optsRef = cfg.cli;
 		Check(ParseOk({ "App", "--pak", "x.pak" }, optsRef)
-			&& cfg.extraElement && !hookRan
+			&& !cfg.extraElements.empty() && !hookRan
 			&& cfg.extraOwnsCamera,
 			"cli.parse.preserves-host-config");
 	}
@@ -931,6 +932,47 @@ void TestProjectScenes() {
 					kErr)
 				&& kErr.find("mount-order") != std::string::npos,
 				"pscenes.catalog-pakindex-skew-fails");
+		}
+		// THE TYPED HELPER (the sample's bootstrap gate): a FOREIGN
+		// project.h-shaped Desc proves its layout at instantiation
+		// (static_asserts) and forwards — no reinterpret_cast in game
+		// code, the pointer cast lives in ONE audited place.
+		{
+			struct GeneratedDesc {
+				uint64_t id;
+				uint8_t kind;
+				uint32_t pakIndex;
+				std::string_view path;
+				std::string_view sceneName;
+			};
+			const GeneratedDesc gen[4] = {
+				{ 0x1000, smvk::kCatalogKindScene, 0,
+					"content/scenes/church.tour", "" },
+				{ 0x1001, smvk::kCatalogKindScene, 1,
+					"content/scenes/two.tour", "" },
+				{ 0x2000, smvk::kCatalogKindTexture, 0,
+					"content/models/s/stone.png", "" },
+				{ 0x4000, smvk::kCatalogKindSound, 0,
+					"content/audio/bells.wav", "" },
+			};
+			std::string gErr;
+			Check(app::AttachCompiledCatalog(rt, gen, 4, catalogFp,
+					gErr)
+				&& gErr.empty(),
+				"pscenes.typed-helper-attaches");
+			// The null/count convention: nullptr valid ONLY with
+			// count 0.
+			const GeneratedDesc* none = nullptr;
+			std::string nErr;
+			Check(!app::AttachCompiledCatalog(rt, none, 2, catalogFp,
+					nErr)
+				&& nErr.find("null pointer") != std::string::npos,
+				"pscenes.typed-helper-null-nonzero-refused");
+			std::string zErr;
+			Check(app::AttachCompiledCatalog(rt, none, 0, catalogFp,
+					zErr)
+				&& zErr.empty(),
+				"pscenes.typed-helper-null-zero-ok");
 		}
 	}
 	smvk::OverlayVfs vfs;

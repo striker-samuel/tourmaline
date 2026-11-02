@@ -26,6 +26,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -232,5 +233,46 @@ private:
 	tour::asset::ContentRegistry m_registry;
 	bool m_compiledCatalogAttached = false;
 };
+
+// ---- THE TYPED CATALOG HELPER (the generated header's own types) --------
+// The compiled catalog's Assets array is a GENERATED POD table
+// (project.h); the validation mirror (CompiledAssetDesc) must stay
+// LAYOUT-IDENTICAL to it. This helper does the proof ONCE (member
+// order + types, static_asserted at every instantiation) and the
+// pointer cast in ONE audited place — game code never
+// reinterpret_cast's its generated data again (the sample's old
+// hand-rolled proof lived at its call site).
+template <typename Desc>
+bool AttachCompiledCatalog(ProjectRuntime& rt,
+	const Desc* assets, size_t assetCount, uint64_t fingerprint,
+	std::string& err) {
+	static_assert(sizeof(Desc)
+			== sizeof(ProjectRuntime::CompiledAssetDesc),
+		"the generated AssetDesc and the runtime mirror must stay"
+		" layout-identical (size)");
+	static_assert(offsetof(Desc, id)
+			== offsetof(ProjectRuntime::CompiledAssetDesc, id)
+		&& offsetof(Desc, kind)
+			== offsetof(ProjectRuntime::CompiledAssetDesc, kind)
+		&& offsetof(Desc, pakIndex)
+			== offsetof(ProjectRuntime::CompiledAssetDesc, pakIndex)
+		&& offsetof(Desc, path)
+			== offsetof(ProjectRuntime::CompiledAssetDesc, path)
+		&& offsetof(Desc, sceneName)
+			== offsetof(ProjectRuntime::CompiledAssetDesc, sceneName),
+		"the generated AssetDesc and the runtime mirror must stay"
+		" layout-identical (member order)");
+	// The null/count convention: nullptr valid only with count 0 (an
+	// empty catalog — the row-by-row proof trivially passes).
+	if (!assets && assetCount != 0) {
+		err = "the compiled catalog is a null pointer with a nonzero"
+			" count";
+		return false;
+	}
+	return rt.AttachCompiledCatalog(
+		reinterpret_cast<
+			const ProjectRuntime::CompiledAssetDesc*>(assets),
+		assetCount, fingerprint, err);
+}
 
 } // namespace app
