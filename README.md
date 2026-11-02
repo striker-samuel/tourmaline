@@ -47,6 +47,8 @@ Renderer inspection and debugging panels:
 
 *These captures use the Sponza demonstration scene. Its cooked content is not committed to the repository — it ships as a one-command download from the [demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) (see [Demo content](#demo-content-sponza)).*
 
+**Sponza attribution:** The model is Crytek-derived, with upstream contributions by Frank Meinl, Marko Dabrovic, Morgan McGuire and Alexandre Pestana. See [Sponza credits and license status](SPONZA-CREDITS.md).
+
 ## How it fits together
 
 Tourmaline separates **authoring**, **content builds**, and **game execution**. Content does not need to be cooked by launching the editor.
@@ -206,6 +208,8 @@ cd out/build/linux-Release
 If you already have a suitable KTX 4.4.2 installation, omit its clone/build steps and set `-DKTX_ROOT` to its install prefix. Vulkan runtime execution requires an actual working ICD/driver and display; CI verifies the Linux **build**, not interactive rendering on a hosted runner.
 
 #### Demo content: Sponza
+
+**Source and third-party license:** The demo is derived from [Khronos's Sponza glTF](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza). The maintainer performed the KTX texture conversion. The upstream model is marked **CRYENGINE Limited License Agreement**, and its redistribution rights are under [unresolved discussion](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172). **Attribution does not establish redistribution permission**. Read [SPONZA-CREDITS.md](SPONZA-CREDITS.md) before redistributing or recooking the demo.
 
 The [rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) contains `sponza_10.tapp`, its content-addressed `sponza_10-*.pak` (approximately 100 MB), and `SHA256SUMS.txt`. The pak filename changes when the demo is recooked; **do not hardcode the pak name**. Use the stable manifest path:
 

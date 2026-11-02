@@ -103,6 +103,14 @@ try {
   foreach ($a in $contentAssets) {
     Copy-Item (Join-Path $tmp $a.name) (Join-Path $Dest $a.name) -Force
   }
+  # Keep the repository's model provenance/license notice alongside the
+  # downloaded release assets (the rolling GitHub release currently carries
+  # only the pak, manifest and checksums).
+  $creditsSource = Join-Path (Split-Path $PSScriptRoot -Parent) "SPONZA-CREDITS.md"
+  if (-not (Test-Path $creditsSource -PathType Leaf)) {
+    Fail "SPONZA-CREDITS.md is missing from this checkout; cannot stage demo attribution."
+  }
+  Copy-Item -LiteralPath $creditsSource -Destination (Join-Path $Dest "SPONZA-CREDITS.md") -Force
   foreach ($stale in (Get-ChildItem $Dest -Filter "sponza_10-*.pak" -File)) {
     if ($keep -notcontains $stale.Name) {
       Write-Host "  removing stale demo pak: $($stale.Name)"
@@ -112,7 +120,7 @@ try {
 
   $tapp = $contentAssets | Where-Object { $_.name -like "*.tapp" } | Select-Object -First 1
   Write-Host ""
-  Write-Host "demo content installed into ${Dest}:"
+  Write-Host "demo content installed into ${Dest} (credits: SPONZA-CREDITS.md):"
   foreach ($a in $contentAssets) {
     Write-Host ("  {0}  ({1:N1} MB)" -f $a.name, ($a.size / 1MB))
   }
