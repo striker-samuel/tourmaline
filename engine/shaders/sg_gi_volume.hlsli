@@ -408,7 +408,8 @@ struct GiVolumeRayPrep
     uint tailVolumes[SG_GI_VOLUME_MAX];             // priority ordered
     float tailEnter[SG_GI_VOLUME_MAX];              // segment skip intervals
     float tailExit[SG_GI_VOLUME_MAX];
-    float3 rayMean[SG_GI_VOLUME_MAX_RAY];           // held means (lazy fetch)
+    float3 rayMean[SG_GI_VOLUME_MAX_RAY];           // held means (cadenced fetch)
+    float rayMeanSampleT[SG_GI_VOLUME_MAX_RAY]; // last sampled ray distance
     bool rayMeanValid[SG_GI_VOLUME_MAX_RAY];
 };
 
@@ -505,13 +506,12 @@ void SgGiVolumeRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
 
 // Per-segment volume composite from the ray-space table: exact weights
 // (FMA-only plane ramps, no loads, no dot3s) over the interval-active
-// volumes, plus the pool-fallback tail. Means are fetched LAZILY once
-// (the mean texture is static — a held mean stays valid), so a volume
-// whose interval goes live between octree refreshes still blends its
-// true mean. Same ordered transmittance math as SgGiVolumeComposite — the
+// volumes, plus the pool-fallback tail. Means are fetched lazily and refreshed at the configured GI cadence.
+// The texture is static but varies with position; holding the first
+// sample for an entire ray would smear lighting across rooms. Same ordered transmittance math as SgGiVolumeComposite — the
 // result is the composite AT this t with exact weights.
 void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, float t,
-    float3 wpos, out float3 volAcc, out float trans)
+    float meanRefreshDist, float3 wpos, out float3 volAcc, out float trans)
 {
     volAcc = float3(0.0, 0.0, 0.0);
     trans = 1.0;
@@ -533,10 +533,12 @@ void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, flo
         [branch]
         if (w <= 0.0)
             continue;
-        if (!prep.rayMeanValid[s])
+        if (!prep.rayMeanValid[s] ||
+            t - prep.rayMeanSampleT[s] >= meanRefreshDist)
         {
             SgGiVolumeSampleMean(frame, prep.rays[s].volume, wpos,
                 prep.rayMean[s]);
+            prep.rayMeanSampleT[s] = t;
             prep.rayMeanValid[s] = true;
         }
         volAcc += prep.rayMean[s] * (trans * w);
@@ -847,7 +849,7 @@ void SgGiVolumeRayPrepB(FrameUniforms frame, float3 camPos,
 
 // The B-set FOG ray composite (the SgGiVolumeRayComposite twin).
 void SgGiVolumeRayCompositeB(FrameUniforms frame, inout GiVolumeRayPrep prep,
-    float t, float3 wpos, out float3 volAcc, out float trans)
+    float t, float meanRefreshDist, float3 wpos, out float3 volAcc, out float trans)
 {
     volAcc = float3(0.0, 0.0, 0.0);
     trans = 1.0;
@@ -869,10 +871,12 @@ void SgGiVolumeRayCompositeB(FrameUniforms frame, inout GiVolumeRayPrep prep,
         [branch]
         if (w <= 0.0)
             continue;
-        if (!prep.rayMeanValid[s])
+        if (!prep.rayMeanValid[s] ||
+            t - prep.rayMeanSampleT[s] >= meanRefreshDist)
         {
             SgGiVolumeSampleMeanB(frame, prep.rays[s].volume, wpos,
                 prep.rayMean[s]);
+            prep.rayMeanSampleT[s] = t;
             prep.rayMeanValid[s] = true;
         }
         volAcc += prep.rayMean[s] * (trans * w);

@@ -893,8 +893,8 @@ bool ChooseGiVolumeGridLayout(const TriangleBvh& bvh, const GiVolumeDef& def,
 	GiGridLayoutResult best{};
 	uint64_t rejectedCap = 0;
 
-	// Candidate memory model (the weight's normalizer): the RGBA16F
-	// coefficient set the runtime uploads today — 7 layers x 8 B/probe.
+	// Candidate memory model: canonical GV6H residency = 9 BC6H
+	// lobe + 8 visibility + 8 fog-mean bytes/probe (excluding block padding).
 	auto candidateProbes = [&](float s, const float ph[3],
 			uint32_t dims[3], glm::vec3& gridMin) -> uint64_t {
 		gridMin = bMin + glm::vec3(ph[0], ph[1], ph[2]) * s;
@@ -997,7 +997,7 @@ bool ChooseGiVolumeGridLayout(const TriangleBvh& bvh, const GiVolumeDef& def,
 			const double invalidFrac =
 				(double(invalid) + double(insideSolid)) / double(n);
 			const double memFrac =
-				double(n * 56ull) / 1048576.0; // bytes vs 1 MiB scale
+				double(n * 25ull) / 1048576.0; // bytes vs 1 MiB scale
 			const double score = opts.coverageWeight * (1.0 - coverage)
 				+ opts.invalidWeight * invalidFrac
 				+ opts.memoryWeight * memFrac;
@@ -1503,11 +1503,10 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 	}
 
 	// ---- Fast-path flags (the forward cell's clean bit) ----
-	// Clean = every corner of the cell [v, v+1]^3 records every axis
-	// distance >= 1.35 spacing units: the maximum in-cell tap offset
-	// along any axis is 1 spacing, and rejection only starts past
-	// dist + 0.35, so no tap in a clean cell can ever reject and the
-	// runtime's hardware trilerp IS the visibility-weighted blend.
+	// Clean = every corner of the cell [v, v+1]^3 has enough axis
+	// distance that the maximal in-cell offset (1 spacing) stays inside
+	// reach = max(dist * 1.5, 0.5). 1/1.5 = 0.667 suffices, and 0.75
+	// leaves a margin for UNORM8 visibility quantization.
 	// Conservative by construction (a clean-but-near-wall cell simply
 	// takes the weighted path — same values, more fetches). Voxels at
 	// the +1 edges have no forward cell (the runtime clamps its base
@@ -1517,7 +1516,7 @@ bool BakeGiVolume(const GiTraceScene& scene, const GiVolumeDef& def,
 		const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1],
 			nz = outVolume.dims[2];
 		outVolume.visCellClean.assign(size_t(n), 0);
-		constexpr float kCleanMin = 1.35f; // 1 spacing reach + the 0.35 slack
+		constexpr float kCleanMin = 0.75f; // > 1/1.5 with quantization margin
 		for (uint64_t v = 0; v < n; ++v) {
 			// Blocked = every axis zero (the inside-solid set — the
 			// runtime factor kills any offset past the slack).
