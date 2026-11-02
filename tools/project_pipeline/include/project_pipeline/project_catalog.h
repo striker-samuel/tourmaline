@@ -73,6 +73,25 @@ struct ProjectCatalog {
 	// them by GiKey through AssetManager::LoadGI and can blend two
 	// resident sets — see docs/content_as_code.md).
 	std::vector<CatalogEntry> gi;
+	// AUTHORED AUDIO GRAPHS (the 0x7xxx range — .audiograph files: the
+	// audio system's node-graph + cue asset, docs/audio_graph.md). The
+	// header emits project::audiographs::* AudioGraphKey constants
+	// PLUS per-cue constants (project::audiocues::<graph>_<cue>,
+	// bundling (graph id, cue ordinal) — parsed at catalog time from
+	// the authored text, OUTSIDE the catalog ABI like the query
+	// metadata).
+	std::vector<CatalogEntry> audiographs;
+	// The per-graph CUE tables (parsed from the authored text at
+	// catalog time — the same loud-validation discipline as the schema
+	// collection): cue names in authored (ordinal) order, id-sorted
+	// with the bucket. The header's project::audiocues constants ride
+	// these; a malformed graph fails the ids pass, never packs.
+	struct AudioGraphCueTable {
+		uint64_t id = 0;               // the graph asset's catalog id
+		std::string symbol;            // the graph's emitted symbol
+		std::vector<std::string> cues; // cue names, authored order
+	};
+	std::vector<AudioGraphCueTable> audiographCues;
 	// (id, file) in plan (mount) order — paks are named entities, not
 	// id carriers: renaming a package updates this table; asset ids
 	// stay.

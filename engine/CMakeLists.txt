@@ -55,7 +55,21 @@ target_include_directories(engine
         # the executables (gltf_import PUBLIC-links engine, so linking it
         # here would be a dependency cycle).
         ${TOURMALINE_SOURCE_DIR}/tools/gltf_import/include
+        # miniaudio (vendored single-header, device-less configuration):
+        # the audio DSP/node-graph core — include path is PRIVATE (the
+        # engine's public headers never mention ma_* types; all miniaudio
+        # use lives in engine/src/Audio), and every TU includes it through
+        # src/Audio/miniaudio_config.h so the feature macros are uniform.
+        ${TOURMALINE_SOURCE_DIR}/external/miniaudio
         ${ENGINE_FALLBACK_INCS}
+)
+
+# The miniaudio implementation TU skips the engine PCH: a 4 MB
+# self-contained C header gains nothing from the force-injected engine
+# includes (and would recompile them pointlessly into its prefix).
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Audio/miniaudio_impl.cpp"
+    PROPERTIES SKIP_PRECOMPILE_HEADERS ON
 )
 
 

@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/audiograph.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
 #include <Engine/Asset/tour.h>
@@ -79,6 +80,24 @@ std::string CppStr(const std::string& s) {
 			o += '\\';
 		o += c;
 	}
+	return o;
+}
+
+// A valid C++ identifier from an authored name (the audio-graph CUE
+// names are free-form text; the emitted audiocues constants need
+// identifiers). Invalid characters fold to '_'; a leading digit gets
+// an '_' prefix; empty becomes "_".
+std::string CppIdent(const std::string& s) {
+	std::string o;
+	for (char c : s) {
+		const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+			|| (c >= '0' && c <= '9') || c == '_';
+		o += ok ? c : '_';
+	}
+	if (o.empty())
+		o = "_";
+	if (o[0] >= '0' && o[0] <= '9')
+		o = "_" + o;
 	return o;
 }
 
@@ -541,6 +560,44 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 						out.gi))
 					return false;
 			}
+			else if (asset.kind == PlanAssetKind::AudioGraph) {
+				// AUTHORED AUDIO GRAPHS (.audiograph — the audio
+				// system's node-graph + cue asset): the file's own
+				// sidecar identity, ids in the 0x7xxx range. The text
+				// is PARSED here (the loud catalog-time validation —
+				// a malformed graph fails the ids pass) and the cue
+				// table recorded for the header's project::audiocues
+				// constants.
+				if (!ensureAsset(asset.path, "audiograph", pak.id, {},
+						out.audiographs))
+					return false;
+				std::string text;
+				bool exists = false;
+				if (!ReadTextFile(
+						(fs::path(project.root)
+							/ fs::path(asset.path)).lexically_normal()
+							.generic_string(),
+						exists, text)
+					|| !exists) {
+					err = "audiograph read failed for '" + asset.path
+						+ "'";
+					return false;
+				}
+				::tour::asset::AudioGraphDoc doc;
+				std::string parseErr;
+				if (!::tour::asset::ParseAudioGraphText(text, doc,
+						parseErr)) {
+					err = "audiograph '" + asset.path
+						+ "' failed to parse: " + parseErr;
+					return false;
+				}
+				ProjectCatalog::AudioGraphCueTable table;
+				table.id = out.audiographs.back().id;
+				table.symbol = out.audiographs.back().symbol;
+				for (const ::tour::asset::AudioCue& cue : doc.cues)
+					table.cues.push_back(cue.name);
+				out.audiographCues.push_back(std::move(table));
+			}
 		}
 	}
 
@@ -602,6 +659,12 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 	std::sort(out.sounds.begin(), out.sounds.end(), byId);
 	std::sort(out.shaders.begin(), out.shaders.end(), byId);
 	std::sort(out.gi.begin(), out.gi.end(), byId);
+	std::sort(out.audiographs.begin(), out.audiographs.end(), byId);
+	std::sort(out.audiographCues.begin(), out.audiographCues.end(),
+		[](const ProjectCatalog::AudioGraphCueTable& a,
+			const ProjectCatalog::AudioGraphCueTable& b) {
+			return a.id < b.id;
+		});
 	return true;
 }
 
@@ -631,6 +694,7 @@ uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	push(c.sounds, smvk::kCatalogKindSound);
 	push(c.shaders, smvk::kCatalogKindShader);
 	push(c.gi, smvk::kCatalogKindGi);
+	push(c.audiographs, smvk::kCatalogKindAudioGraph);
 	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
 		paths.data(), ids.size());
 }
@@ -681,6 +745,19 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "// resident sets, see docs/content_as_code.md).\n"
 		<< "struct GiKey { Id id = 0; constexpr operator Id() const"
 		<< " { return id; } };\n"
+		<< "// AUTHORED AUDIO GRAPHS (the 0x7xxx range - a .audiograph:\n"
+		<< "// the audio system's node-graph + cue asset,\n"
+		<< "// docs/audio_graph.md - loadable through the audio facade\n"
+		<< "// into a runtime AudioInstance handle).\n"
+		<< "struct AudioGraphKey { Id id = 0; constexpr operator Id()"
+		<< " const { return id; } };\n"
+		<< "// ONE CUE of an authored audio graph: the (graph id, cue\n"
+		<< "// ordinal) pair (the ordinal indexes the authored file's\n"
+		<< "// cue list - project::audiocues::* below). A different\n"
+		<< "// thing from a KEY: this names WHICH CUE, the graph key\n"
+		<< "// names WHICH ASSET.\n"
+		<< "struct AudioCueKey { Id graph = 0; std::uint32_t cue = 0;"
+		<< " constexpr operator bool() const { return graph != 0; } };\n"
 		<< "// (SkeletonKey / AnimationClipKey arrive with their catalog\n"
 		<< "// buckets - the .anim asset identity kinds; the HANDLE types\n"
 		<< "// they pair with are already in entity_handle.h.)\n"
@@ -729,6 +806,29 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitNamespace("sounds", c.sounds, "SoundKey");
 	emitNamespace("shaders", c.shaders, "ShaderKey");
 	emitNamespace("gi", c.gi, "GiKey");
+	emitNamespace("audiographs", c.audiographs, "AudioGraphKey");
+
+	// ---- THE PER-CUE CONSTANTS (project::audiocues) --------------------
+	// Which CUE of WHICH authored graph: one constant per (graph,
+	// cue), the name <graphSymbol>_<cueName>. OUTSIDE the runtime
+	// catalog ABI (like AssetSymbols): the cue ordinal is authored
+	// file order, stable for a given graph text; a cue edit is a
+	// generation event (the fingerprints + the content hash cover the
+	// file bytes).
+	if (!c.audiographCues.empty()) {
+		os << "// The authored audio-graph CUES (docs/audio_graph.md):\n"
+			<< "// each constant bundles (graph id, cue ordinal) - the\n"
+			<< "// ordinal indexes the authored file's cue list. Feed\n"
+			<< "// these to the audio facade's PlayCue/CrossFade.\n"
+			<< "namespace audiocues {\n";
+		for (const auto& table : c.audiographCues)
+			for (size_t ci = 0; ci < table.cues.size(); ++ci)
+				os << "    inline constexpr AudioCueKey "
+					<< table.symbol << "_" << CppIdent(table.cues[ci])
+					<< "{0x" << std::hex << table.id << std::dec
+					<< "ULL, " << ci << "u};\n";
+		os << "} // namespace audiocues\n\n";
+	}
 
 	// ---- the generated TYPES (the node schemas; "compile types;
 	// cook values") -----------------------------------------------
@@ -857,7 +957,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	os << "};\n\n"
 		<< "// The asset KIND enum - the values are an ABI (the runtime's\n"
 		<< "// catalog-fingerprint fold + the .tapp validation agree on\n"
-		<< "// these bytes; do not renumber - Gi is APPENDED, 5).\n"
+		<< "// these bytes; do not renumber - AudioGraph is APPENDED, 6).\n"
 		<< "enum class AssetKind : std::uint8_t {\n"
 		<< "    Scene = 0,\n"
 		<< "    Texture = 1,\n"
@@ -865,6 +965,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "    Sound = 3,\n"
 		<< "    Shader = 4,\n"
 		<< "    Gi = 5,\n"
+		<< "    AudioGraph = 6,\n"
 		<< "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
 		<< "// no startup strings, no maps, no runtime discovery table.\n"
@@ -895,6 +996,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitRows(c.sounds, "sounds", "Sound");
 	emitRows(c.shaders, "shaders", "Shader");
 	emitRows(c.gi, "gi", "Gi");
+	emitRows(c.audiographs, "audiographs", "AudioGraph");
 	os << "};\n\n"
 		<< "// The SYMBOL-NAME table (compile-time query metadata; the\n"
 		<< "// same order as Assets). NOT part of the runtime catalog\n"
@@ -913,6 +1015,7 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	emitSymbols(c.sounds);
 	emitSymbols(c.shaders);
 	emitSymbols(c.gi);
+	emitSymbols(c.audiographs);
 	os << "};\n\n"
 		<< "// The catalog identity fingerprint: FNV-1a64 over the rows'\n"
 		<< "// stable identity in emission order (appmanifest.h's\n"
@@ -1076,6 +1179,11 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "struct project_pipeline::query::AssetTraits<project::GiKey> {\n"
 		<< "    static constexpr bool Matches(project::AssetKind k)\n"
 		<< "        { return k == project::AssetKind::Gi; }\n"
+		<< "};\n"
+		<< "template<>\n"
+		<< "struct project_pipeline::query::AssetTraits<project::AudioGraphKey> {\n"
+		<< "    static constexpr bool Matches(project::AssetKind k)\n"
+		<< "        { return k == project::AssetKind::AudioGraph; }\n"
 		<< "};\n"
 		<< "\n";
 
@@ -1490,7 +1598,7 @@ bool CollectAssetFingerprints(const Project& project,
 	};
 	return add(catalog.scenes) && add(catalog.textures)
 		&& add(catalog.meshes) && add(catalog.sounds)
-		&& add(catalog.shaders);
+		&& add(catalog.shaders) && add(catalog.audiographs);
 }
 
 bool DiscoverPakFingerprints(const std::string& pakDir,

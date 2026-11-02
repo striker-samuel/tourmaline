@@ -56,6 +56,14 @@ enum class PlanAssetKind : uint8_t {
 	// SetGI / SetGIBlend). The .givolume payloads + .cubemanifest
 	// stay BakeFile plumbing - only the SET manifest is the asset.
 	Gi,
+	// AUTHORED AUDIO GRAPHS (.audiograph files — the audio system's
+	// node-graph + cue asset, docs/audio_graph.md): VFS-addressable
+	// content (PakAssetKind::AudioGraph blobs carrying the authored
+	// text VERBATIM, validated at pack time), resolved through the
+	// stable 0x7xxx content ids. A graph's source nodes reference
+	// .wav Sound assets by VFS path — resolved at instance create
+	// through the same registry.
+	AudioGraph,
 };
 
 struct PlanAsset {

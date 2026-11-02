@@ -113,17 +113,56 @@
   (an IAppElement) — clip cache keyed by sound id, emitter states keyed
   by the STABLE (cluster, cluster-node) pair through
   `World::clusterMergedNodes`, per-frame distance attenuation +
-  constant-power pan, autoplay, scene/spawn lifecycle. The mixer itself
-  stays amplitude+pan-only (`SetVoiceSpatial`). The imperative surface
+  constant-power pan, autoplay, scene/spawn lifecycle. The imperative surface
   (PrefetchSound/PlaySound/StopSound/SetAudioSourceVolume/SetListener)
   forwards through its singleton.
 
+- **THE AUDIO RENDERING CORE IS MINIAUDIO, DEVICE-LESS** (vendored
+  0.11.26 at `external/miniaudio`; impl TU
+  `engine/src/Audio/miniaudio_impl.cpp`, feature macros in
+  `engine/src/Audio/miniaudio_config.h` — MA_NO_DEVICE_IO /
+  MA_NO_RESOURCE_MANAGER / MA_NO_DECODING): ONE `ma_engine` hosts every
+  voice, bus and effect node; the mixer thread renders each chunk via
+  `ma_engine_read_pcm_frames` into the SAME SDL3 stream (SDL keeps the
+  device, paks keep the content, miniaudio owns the DSP). The legacy
+  voice lane (`Play`/`Stop`/`SetVoiceSpatial`) is API-unchanged — each
+  voice an `ma_sound` on the endpoint. `Config::deviceless` +
+  `PumpOffline` is the deterministic test/bounce lane.
+
+- **AUTHORED AUDIO GRAPHS** (docs/audio_graph.md — the animator
+  parallel): a `.audiograph` text asset (tour::asset::AudioGraphDoc —
+  node topology + exposed params + ALL of its cues; STRICT parse with
+  line numbers, gated at catalog ids, cooker AND runtime) is a
+  first-class kind (`PakAssetKind::AudioGraph` = 16, catalog byte 6,
+  0x7xxx ids, the FOURTH VFS-addressable kind — authored text
+  verbatim). `PakAssetKind`/catalog kinds APPEND, never renumber.
+  Instances are ENGINE-owned (`tour::audio::AudioEngine` registries +
+  generational `smvk::AudioInstanceHandle` + the
+  `tour::audio::AudioInstance` facade: play/playCue/crossFade/stop/
+  set/setVolume/playing); gameplay reaches them through
+  `app::Context::audio()` (`app::AudioGraphs` — the typed-key create +
+  the doc/clip caches over the shared session). Clip resolution is
+  CALLER-thread (sounds resolve by VFS path through the registry;
+  pak reads + WAV decode never touch the mixer thread). ALL graph
+  mutations + param scheduling happen at CHUNK boundaries on the
+  mixer thread; the whole node set + every (source, cue) voice is
+  pre-built at create (the one allocation burst — steady state is
+  alloc-free); automation evaluates AT the chunk cadence (immune to
+  frame stalls). The generated project.h emits
+  `project::audiographs::*` AudioGraphKeys PLUS per-cue constants
+  (`project::audiocues::<graph>_<cue>` bundling (graph id, cue
+  ordinal), outside the catalog ABI). v1: no reverb node (miniaudio
+  ships none), no in-graph spatialization, no editor surface yet.
+  Pinned by audiograph_tests + `audiograph.*` in
+  project_pipeline_tests + the sample + project_e2e_tests.
+
 - **Sound assets are a first-class kind**: `PakAssetKind::Sound` (raw
   .wav at the VFS path), 0x4xxx content ids (scenes 0x1xxx / textures
-  0x2xxx / meshes 0x3xxx / sounds 0x4xxx), and the cooked scene's v18
-  audio section stores NUMERIC sound ids (the pak cooker's `--sound-id`
-  map; a non-empty map with an unresolved referenced path FAILS the
-  cook). The kinds gate on the SHARED catalog kind bytes.
+  0x2xxx / meshes 0x3xxx / sounds 0x4xxx / audiographs 0x7xxx), and
+  the cooked scene's v18 audio section stores NUMERIC sound ids (the
+  pak cooker's `--sound-id` map; a non-empty map with an unresolved
+  referenced path FAILS the cook). The kinds gate on the SHARED
+  catalog kind bytes.
 
 - **THE PAK CONTAINER IS SMP8** (the paged break — docs/pak_vnext.md is
   the format reference): per-entry `contentCrc` verified LAZILY at

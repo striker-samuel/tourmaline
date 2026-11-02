@@ -203,6 +203,17 @@ enum class PakAssetKind : uint32_t {
 	// read, no manifest, no whole-image load). Cluster-internal,
 	// invisible to the VFS backends.
 	Identity = 15,
+	// AUDIOGRAPH (the authored audio-graph asset kind): one blob per
+	// .audiograph file, keyed by its original VFS path, payload = the
+	// AUTHORED TEXT VERBATIM (the strict parser — engine/Engine/Asset/
+	// audiograph.h — validates it at pack time, the corrupt-refused
+	// discipline; the runtime parses after ReadAsset). The FOURTH
+	// VFS-addressable kind (with Texture + Sound + Shader): PakBackend
+	// serves AudioGraph blobs by path so graphs resolve cross-pak
+	// exactly like sounds. A graph's SOURCE nodes reference sound
+	// assets by VFS path (resolved loudly at instance create through
+	// the same registry), never by stamped numeric id.
+	AudioGraph = 16,
 };
 
 enum PakEntryFlags : uint32_t {

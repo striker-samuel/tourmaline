@@ -36,10 +36,11 @@ std::string HexId(uint64_t id) {
 
 bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
 	// The byte forms: TEXTURE (the .ktx2 envelope bytes), SOUND (the
-	// raw .wav), SHADER (the raw compiled bytecode) and GI (the
-	// manifest rows ride Texture-kind blobs — the .gi/* payload
-	// channel). SCENE and MESH are identity-addressed (the world
-	// loader / the cluster) and have NO VFS byte form.
+	// raw .wav), SHADER (the raw compiled bytecode), AUDIOGRAPH (the
+	// authored text, verbatim) and GI (the manifest rows ride Texture-
+	// kind blobs — the .gi/* payload channel). SCENE and MESH are
+	// identity-addressed (the world loader / the cluster) and have NO
+	// VFS byte form.
 	switch (kind) {
 	case smvk::kCatalogKindTexture:
 	case smvk::kCatalogKindGi:
@@ -50,6 +51,9 @@ bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
 		return true;
 	case smvk::kCatalogKindShader:
 		out = smvk::PakAssetKind::Shader;
+		return true;
+	case smvk::kCatalogKindAudioGraph:
+		out = smvk::PakAssetKind::AudioGraph;
 		return true;
 	default:
 		return false;
@@ -445,7 +449,8 @@ std::optional<std::vector<uint8_t>> ContentRegistry::ReadPath(
 			for (const smvk::PakAssetKind kind :
 					{ smvk::PakAssetKind::Texture,
 						smvk::PakAssetKind::Sound,
-						smvk::PakAssetKind::Shader }) {
+						smvk::PakAssetKind::Shader,
+						smvk::PakAssetKind::AudioGraph }) {
 				if (!ProviderServes(p, norm, kind))
 					continue;
 				return ReadThrough(p, norm, &kind, err);
@@ -591,7 +596,8 @@ std::vector<std::string> ContentRegistry::ListPathsUnder(
 		// same set PakBackend::ListDir unions.
 		for (const PakAssetKind kind :
 				{ PakAssetKind::Texture, PakAssetKind::Sound,
-					PakAssetKind::Shader }) {
+					PakAssetKind::Shader,
+					PakAssetKind::AudioGraph }) {
 			for (const PakTocEntry* e : reader.BlobsOfKind(kind)) {
 				const std::string& p = e->path;
 				if (p.size() <= prefixSlash.size()
@@ -740,7 +746,8 @@ std::optional<std::vector<uint8_t>> ContentRegistry::ReadThrough(
 		for (const smvk::PakAssetKind probe :
 				{ smvk::PakAssetKind::Texture,
 					smvk::PakAssetKind::Sound,
-					smvk::PakAssetKind::Shader }) {
+					smvk::PakAssetKind::Shader,
+					smvk::PakAssetKind::AudioGraph }) {
 			entry = pager->Reader().Find(probe, norm);
 			if (entry) {
 				found = probe;
@@ -784,7 +791,8 @@ uint64_t ContentRegistry::RecordFingerprint() const {
 		[](const ContentRecord* x, const ContentRecord* y) {
 			if (x->kind != y->kind) {
 				// The generator's bucket order: scene, texture,
-				// mesh, sound, shader, gi (the kCatalogKind* ABI).
+				// mesh, sound, shader, gi, audiograph (the
+				// kCatalogKind* ABI).
 				return x->kind < y->kind;
 			}
 			return x->id < y->id;

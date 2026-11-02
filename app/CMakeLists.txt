@@ -28,6 +28,7 @@ add_library(tourmaline_apphost STATIC
     src/ProjectRuntime.cpp
     src/ProjectScenes.cpp
     src/AudioRuntime.cpp
+    src/AudioGraphs.cpp
     src/AssetManager.cpp
     src/DeployCheck.cpp
     # THE APPLICATION-FACING RUNTIME (app::RunGame — Runtime.h): the

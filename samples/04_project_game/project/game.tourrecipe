@@ -26,3 +26,7 @@ depends shared
 output shared.pak
 include content/models/game/shared/**
 include content/audio/*.wav
+# The authored audio graph (docs/audio_graph.md): rides the shared pak
+# with its sound — the graph's source node references bells.wav by VFS
+# path, resolved through the SAME mounted backend at instance create.
+include content/audio/*.audiograph

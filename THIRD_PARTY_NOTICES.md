@@ -55,6 +55,7 @@ a hand-written integration, or are an unpinnable snapshot:
 | [tinygltf](https://github.com/syoyo/tinygltf) | `external/tinygltf` | MIT (see header notice) | `tiny_gltf.h` (gltf_import tool) |
 | [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) | `external/tinyobjloader` | MIT (see header notice) | `tiny_obj_loader.h` v2.0.0rc13 (gltf_import's OBJ source adapter) |
 | [stb](https://github.com/nothings/stb) | `external/stb` | Public Domain / MIT (see header notices) | `stb_image.h`, `stb_image_write.h` |
+| [miniaudio](https://github.com/mackron/miniaudio) 0.11.26 | `external/miniaudio` | [MIT-0 / public domain](external/miniaudio/LICENSE) | `miniaudio.h` — the audio DSP/node-graph core (device-less: SDL3 keeps the device, paks keep the content; impl TU in `engine/src/Audio/miniaudio_impl.cpp`, feature macros in `engine/src/Audio/miniaudio_config.h`) |
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) 1.4.357 | `external/vulkan-headers` | Apache-2.0 | Linux-only fetch: the full 1.4 symbol set ahead of older distro `libvulkan-dev` headers (Ubuntu 24.04 ships 1.3.275); the loader stays the system's |
 | [DirectX-Headers](https://github.com/microsoft/DirectX-Headers) v1.619.5 | `external/directx-headers` | MIT | Linux-only fetch: DirectXTex's non-Win32 path includes its `wsl/winadapter.h` + `directx/d3d12.h` (Windows uses the SDK's own) |
 | [DirectXMath](https://github.com/microsoft/DirectXMath) jun2026 | `external/directxmath` | MIT | Linux-only fetch: DirectXTex's `DirectXPackedVector.h`/`DirectXMath.h` |

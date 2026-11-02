@@ -19,6 +19,7 @@
 #include "project.h"
 
 #include <Engine/App/world.h>
+#include <Engine/Audio/audio.h> // tour::audio::AudioInstance (the graph facade)
 
 #include <cmath>
 #include <cstddef>
@@ -41,11 +42,26 @@
 // live by then), the update pulses it. The service elements (the
 // scene-aware audio) stack UNDER this through the launch options —
 // no nested lifecycle-forwarding wrappers anywhere.
+// ---- THE AUTHORED AUDIO-GRAPH DEMO (docs/audio_graph.md) — AS THE
+// GAME ------------------------------------------------------------
+// The animator parallel on the audio side: an authored GRAPH asset
+// (the skeleton analog) instantiated into a runtime AudioInstance
+// (the animator analog) whose cues (the clip analog) the gameplay
+// plays, parameter-drives and crossfades. Everything addresses
+// compile-time identities: the graph through its AudioGraphKey, the
+// cue through the generated per-cue constant. The DSP + graph
+// execution is miniaudio's node graph under the engine's AudioEngine
+// (device-less — SDL3 keeps the device); the asset identity + bytes
+// are Tourmaline's (the shared pak's AudioGraph-kind blob).
 class ProjectGame final : public app::GameBehaviour {
 public:
-	void onStart(app::Context& ctx) override { AdoptMaterial(ctx); }
+	void onStart(app::Context& ctx) override {
+		AdoptMaterial(ctx);
+		StartAudio(ctx);
+	}
 	void onUpdate(app::Context& ctx, float dt) override {
 		Pulse(ctx, dt);
+		PulseAudio(ctx, dt);
 	}
 
 private:
@@ -99,6 +115,48 @@ private:
 
 	uint32_t m_material = smvk::World::kInvalidIndex;
 	float m_time = 0.0f;
+
+	// ---- the audio-graph demo state ---------------------------------
+	tour::audio::AudioInstance m_forest{};
+	bool m_storm = false;
+	float m_audioTime = 0.0f;
+
+	// Creates the graph instance + starts the authored default cue
+	// ("calm" — the bells fade in over four seconds). A missing graph
+	// (an engine-only deployment) is NOT an error: the create reports
+	// loudly and the demo simply has nothing to drive.
+	void StartAudio(app::Context& ctx) {
+		std::string err;
+		m_forest = ctx.audio().create(project::audiographs::forest,
+			&err);
+		if (!m_forest) {
+			std::printf("[GameProject] audio graph: none (%s)\n",
+				err.c_str());
+			return;
+		}
+		m_forest.play();
+		std::printf("[GameProject] audio graph: forest instance live"
+			" (calm cue, chimes ramps 0 -> 0.6 over 4 s)\n");
+	}
+	// The gameplay surface: a slow parameter pulse over the exposed
+	// "chimes" envelope, then ONE authored crossfade into the storm
+	// cue at the ten-second mark (the AnimatorCrossFade analog — the
+	// old cue's sources + automation ramp out as the storm's ramp in
+	// over two seconds).
+	void PulseAudio(app::Context& ctx, float dt) {
+		if (!m_forest)
+			return;
+		m_audioTime += dt;
+		const float chimes = 0.6f + 0.15f * std::sin(m_audioTime * 1.3f);
+		m_forest.set("chimes", chimes);
+		if (!m_storm && m_audioTime >= 10.0f) {
+			m_storm = true;
+			m_forest.crossFade(project::audiocues::forest_storm.cue,
+				2.0f);
+			std::printf("[GameProject] audio graph: crossfading to the"
+				" storm cue (2 s)\n");
+		}
+	}
 };
 
 int main(int argc, const char* argv[]) {
@@ -132,6 +190,14 @@ int main(int argc, const char* argv[]) {
 		.size() == 0);
 	static_assert(project::MatchAssets<project::GiKey, "^.*$">()
 		.size() == 0);
+	// The authored audio-graph lane (docs/audio_graph.md): the graph
+	// is a typed AudioGraphKey like every other asset; the CUES ride
+	// the graph asset as generated constants bundling (graph id, cue
+	// ordinal).
+	static_assert(project::MatchAssets<project::AudioGraphKey,
+		"^forest$">().size() == 1);
+	static_assert(project::Contains(project::audiographs::forest));
+	static_assert(project::audiocues::forest_storm.cue == 1u);
 	static_assert(project::MatchAssets<project::TextureKey,
 		"^content/models/game/shared/.*\\.png$",
 		::project_pipeline::query::MatchField::Path>().size() == 1);

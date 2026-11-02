@@ -65,6 +65,22 @@ set_target_properties(TourAnimTests PROPERTIES
 
 add_test(NAME touranim_tests COMMAND TourAnimTests)
 
+# The .audiograph authored-format parser + the miniaudio instance
+# engine (deviceless, deterministic offline rendering — no device, no
+# thread, no wall clock).
+add_executable(AudioGraphTests test_audiograph.cpp)
+
+target_link_libraries(AudioGraphTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(AudioGraphTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME audiograph_tests COMMAND AudioGraphTests)
+
 # Knight walk-clip end-to-end on the REAL derived assets (guarded: SKIPs
 # when F:/content/demo/knight_only is absent): .geometry rebuild + clip
 # attach + the follow diagnostic (the hip chain must ride the pelvis).
@@ -901,6 +917,9 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/AssetStore.cpp
 	../app/src/AssetManager.cpp
 	../app/src/DeployCheck.cpp
+	# Runtime.cpp's Context lazily builds the audio-graph service
+	# (AudioGraphs) — the ctor/dtor live here, not the apphost lib.
+	../app/src/AudioGraphs.cpp
 	../app/src/Runtime.cpp
 )
 
@@ -1082,6 +1101,7 @@ tourmaline_stage_sdl3(CubemapTests)
 tourmaline_stage_sdl3(ParticlesTests)
 tourmaline_stage_sdl3(MotionBlurTests)
 tourmaline_stage_sdl3(TourTests)
+tourmaline_stage_sdl3(AudioGraphTests)
 tourmaline_stage_sdl3(SourceImportTests)
 tourmaline_stage_sdl3(KnightAnimTests)
 tourmaline_stage_sdl3(AssetOpsTests)

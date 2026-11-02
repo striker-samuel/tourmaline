@@ -33,6 +33,9 @@
 //   AudioSourceHandle — World::SpawnAudioSource emitters (authored
 //                       .tour audio sources have no handle — they die
 //                       with their scene; spawned ones die explicitly)
+//   AudioInstanceHandle — tour::audio::AudioEngine::CreateInstance
+//                       audio-graph instances (the animator parallel;
+//                       the AudioEngine owns the registry)
 //
 // vs the STABLE CATALOG KEYS (project.h's MeshKey/SkeletonKey/
 // AnimationClipKey/SoundKey/...): a KEY names WHICH ASSET, a HANDLE
@@ -72,6 +75,7 @@ struct MeshEntityTag {};
 struct AnimatorTag {};
 struct AudioSourceTag {};
 struct MaterialInstanceTag {};
+struct AudioInstanceTag {};
 
 using MeshEntityHandle = EntityHandle<MeshEntityTag>;
 using AnimatorHandle = EntityHandle<AnimatorTag>;
@@ -82,5 +86,12 @@ using AudioSourceHandle = EntityHandle<AudioSourceTag>;
 // composes them, the World owns the pool, destroying one never touches
 // the shared base material.
 using MaterialInstanceHandle = EntityHandle<MaterialInstanceTag>;
+// Audio-graph INSTANCES (tour::audio::AudioEngine::CreateInstance —
+// the animator parallel of docs/audio_graph.md): the handle names
+// WHICH live graph instance; the AudioGraphDoc ASSET (the typed
+// AudioGraphKey in generated project.h) names which authored graph.
+// The engine's AudioEngine owns the registry (not the World — audio
+// instances are not scene-space objects in v1).
+using AudioInstanceHandle = EntityHandle<AudioInstanceTag>;
 
 } // namespace smvk

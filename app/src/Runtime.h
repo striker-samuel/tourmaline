@@ -45,6 +45,8 @@
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
 
+#include "AudioGraphs.h"
+
 #include <Engine/App/Element.h>
 
 #include <cstdint>
@@ -89,12 +91,19 @@ public:
 	// prefetch). Lazily built at first use (one per context).
 	[[nodiscard]] app::ProjectScenes& scenes();
 
+	// The AUDIO-GRAPH SERVICE (AudioGraphs over the session + the
+	// engine's AudioEngine — docs/audio_graph.md): the typed-key
+	// create() gameplay drives authored graph instances through.
+	// Lazily built at first use (one per context).
+	[[nodiscard]] app::AudioGraphs& audio();
+
 private:
 	app::ProjectRuntime& m_session;
 	tour::App& m_host;
 	engine::WorldRenderer& m_renderer;
 	std::shared_ptr<tour::World*> m_worldHandle;
 	std::unique_ptr<app::ProjectScenes> m_scenes;
+	std::unique_ptr<app::AudioGraphs> m_audio;
 	smvk::OverlayVfs m_vfs; // protocol surface only (see content(8))
 };
 

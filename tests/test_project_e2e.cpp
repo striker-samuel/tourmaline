@@ -325,6 +325,8 @@ int main(int argc, char** argv) {
 
 	// ---- 4) the RUNTIME half (the launch contract, GPU-less) ---------
 	auto rtOpt = app::ProjectRuntime::Load(tapp.string(), err);
+	if (!rtOpt && !err.empty())
+		std::cout << "  (Load err: " << err << ")\n";
 	Check(bool(rtOpt) && err.empty(), "e2e.runtime-loads-manifest");
 	if (!rtOpt) {
 		std::cout << "checks=" << g_checks << " failures=" << g_failures

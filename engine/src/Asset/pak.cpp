@@ -1383,7 +1383,7 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 				" no-identity value)";
 			return false;
 		}
-		if (row.kind > smvk::kCatalogKindGi) {
+		if (row.kind > smvk::kCatalogKindAudioGraph) {
 			err = "identity table row kind byte out of the catalog ABI";
 			return false;
 		}
@@ -1426,12 +1426,14 @@ bool PakBackend::Exists(const VfsPath& path) const {
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty() || !reader_)
 		return false;
-	// The three VFS-addressable kinds (pak.h's interop contract):
-	// texture blobs (embedded .ktx2), sound blobs (raw .wav) and
-	// shader blobs (raw compiled bytecode).
+	// The four VFS-addressable kinds (pak.h's interop contract):
+	// texture blobs (embedded .ktx2), sound blobs (raw .wav), shader
+	// blobs (raw compiled bytecode) and audiograph blobs (authored
+	// text, verbatim).
 	return reader_->Find(PakAssetKind::Texture, n) != nullptr
 		|| reader_->Find(PakAssetKind::Sound, n) != nullptr
-		|| reader_->Find(PakAssetKind::Shader, n) != nullptr;
+		|| reader_->Find(PakAssetKind::Shader, n) != nullptr
+		|| reader_->Find(PakAssetKind::AudioGraph, n) != nullptr;
 }
 
 std::optional<std::vector<uint8_t>> PakServeVfsBytes(
@@ -1440,8 +1442,8 @@ std::optional<std::vector<uint8_t>> PakServeVfsBytes(
 	// The shared serve shape (the backend's TryRead + the PAGER lane):
 	// texture blobs unwrap the envelope to the embedded .ktx2; sound +
 	// shader blobs ARE the payload (the raw .wav / the raw compiled
-	// bytecode). Nullopt on a malformed texture envelope (logged with
-	// the path).
+	// bytecode); audiograph blobs are the authored text VERBATIM.
+	// Nullopt on a malformed texture envelope (logged with the path).
 	if (kind == PakAssetKind::Texture) {
 		PakTexturePayload parsed;
 		if (!ParseTexturePayload(payload, parsed)) {
@@ -1452,7 +1454,8 @@ std::optional<std::vector<uint8_t>> PakServeVfsBytes(
 		return std::vector<uint8_t>(parsed.ktxBytes.begin(),
 			parsed.ktxBytes.end());
 	}
-	if (kind == PakAssetKind::Sound || kind == PakAssetKind::Shader)
+	if (kind == PakAssetKind::Sound || kind == PakAssetKind::Shader
+		|| kind == PakAssetKind::AudioGraph)
 		return std::vector<uint8_t>(payload.begin(), payload.end());
 	return std::nullopt;
 }
@@ -1461,10 +1464,11 @@ std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) con
 	const VfsPath n = vfs::Normalize(path);
 	if (n.empty() || !reader_)
 		return std::nullopt;
-	// The three VFS-addressable kinds (pak.h's interop contract),
+	// The four VFS-addressable kinds (pak.h's interop contract),
 	// served through the shared per-kind helper.
 	for (const PakAssetKind kind : { PakAssetKind::Texture,
-			PakAssetKind::Sound, PakAssetKind::Shader }) {
+			PakAssetKind::Sound, PakAssetKind::Shader,
+			PakAssetKind::AudioGraph }) {
 		const PakTocEntry* e = reader_->Find(kind, n);
 		if (!e)
 			continue;
@@ -1479,16 +1483,19 @@ std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
 		return out;
 	const VfsPath n = vfs::Normalize(dir);
 	const std::string prefix = n.empty() ? std::string{} : n + "/";
-	// Both VFS-addressable kinds list (the overlay's union view).
+	// Every VFS-addressable kind lists (the overlay's union view).
 	std::vector<const PakTocEntry*> all;
 	all.reserve(reader_->BlobsOfKind(PakAssetKind::Texture).size()
 		+ reader_->BlobsOfKind(PakAssetKind::Sound).size()
-		+ reader_->BlobsOfKind(PakAssetKind::Shader).size());
+		+ reader_->BlobsOfKind(PakAssetKind::Shader).size()
+		+ reader_->BlobsOfKind(PakAssetKind::AudioGraph).size());
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Texture))
 		all.push_back(e);
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Sound))
 		all.push_back(e);
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Shader))
+		all.push_back(e);
+	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::AudioGraph))
 		all.push_back(e);
 	for (const PakTocEntry* e : all) {
 		const std::string& p = e->path;
@@ -1531,6 +1538,14 @@ std::optional<VfsStat> PakBackend::Stat(const VfsPath& path) const {
 		return s;
 	}
 	e = reader_->Find(PakAssetKind::Shader, n);
+	if (e) {
+		VfsStat s;
+		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());
+		s.backend = Name();
+		s.source = name_ + ":" + n;
+		return s;
+	}
+	e = reader_->Find(PakAssetKind::AudioGraph, n);
 	if (e) {
 		VfsStat s;
 		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());

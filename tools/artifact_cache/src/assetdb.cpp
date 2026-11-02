@@ -809,6 +809,14 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 		// two resident sets (SetGIBlend).
 		base = 0x6000;
 	}
+	else if (kind == "audiograph") {
+		// AUTHORED AUDIO GRAPHS (.audiograph — the audio system's
+		// node-graph + cue asset, docs/audio_graph.md): VFS-addressable
+		// pak blobs (PakAssetKind::AudioGraph, the authored text
+		// verbatim) + the [ids] rows the runtime resolves. The 0x7xxx
+		// range — the next free after GI.
+		base = 0x7000;
+	}
 	else
 		return false;
 	last = base + 0xFFF;
@@ -894,7 +902,7 @@ bool AssetDatabase::EnsureContentId(const std::string& guid,
 	}
 	uint64_t base = 0, last = 0;
 	if (!IdRangeForKind(kind, base, last)) {
-		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound|shader|gi)";
+		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound|shader|gi|audiograph)";
 		return false;
 	}
 	try {

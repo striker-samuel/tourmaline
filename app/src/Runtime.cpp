@@ -42,6 +42,16 @@ app::ProjectScenes& Context::scenes() {
 	return *m_scenes;
 }
 
+app::AudioGraphs& Context::audio() {
+	// Lazily built at first use (one per context): the audio-graph
+	// service pairing the shared session (graph text + sound bytes)
+	// with the host engine's AudioEngine (the instance registry).
+	if (!m_audio)
+		m_audio = std::make_unique<app::AudioGraphs>(m_session,
+			m_host);
+	return *m_audio;
+}
+
 // ---- GameElement -----------------------------------------------------------
 
 GameElement::GameElement(GameBehaviour* game,

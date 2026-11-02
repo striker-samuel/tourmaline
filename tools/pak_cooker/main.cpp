@@ -82,6 +82,7 @@
 #include <Engine/App/cluster.h>
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/tour.h>
+#include <Engine/Asset/audiograph.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -2959,6 +2960,36 @@ int Run(const PakArgs& c) {
 			}
 			tool::out() << "Embedded content-set shader " << vfsPath
 				<< " (" << spvBytes << " B spv)\n";
+			continue;
+		}
+		if (ext == ".audiograph") {
+			// An AUTHORED AUDIO GRAPH: the authored text VERBATIM as an
+			// AudioGraph-kind blob (the fourth VFS-addressable kind -
+			// served by path, parsed by the runtime after ReadAsset).
+			// The STRICT parser validates it here - a malformed graph
+			// never ships (the corrupt-refused discipline, same as the
+			// shader magic gate above; the catalog's ids pass is the
+			// first gate).
+			tour::asset::AudioGraphDoc doc;
+			std::string perr, pwarn;
+			std::vector<std::string> pwarnings;
+			std::string text(bytes->begin(), bytes->end());
+			if (!tour::asset::ParseAudioGraphText(text, doc, perr,
+					&pwarnings)) {
+				tool::err() << "Content-set audiograph failed to parse ("
+					<< perr << "): " << vfsPath << std::endl;
+				return 1;
+			}
+			const size_t agBytes = bytes->size();
+			if (!writer.AddBlob(smvk::PakAssetKind::AudioGraph, vfsPath,
+					std::move(*bytes))) {
+				tool::err() << "Content-set AddBlob failed: " << vfsPath
+					<< std::endl;
+				return 1;
+			}
+			tool::out() << "Embedded content-set audiograph " << vfsPath
+				<< " (" << agBytes << " B, " << doc.cues.size()
+				<< " cues)\n";
 			continue;
 		}
 		std::vector<uint8_t> embed;

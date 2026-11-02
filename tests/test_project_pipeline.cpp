@@ -1813,6 +1813,215 @@ void TestShaderAssets() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// AUTHORED AUDIO GRAPHS (.audiograph — docs/audio_graph.md): the plan
+// classification, the catalog bucket + the 0x7xxx range, the typed key
+// + the PER-CUE constants the header emits (the cue tables parsed at
+// catalog time), content-set packing (validated text only) and the
+// corrupt-refused gate at BOTH the catalog and the pack.
+// ---------------------------------------------------------------------------
+void TestAudioGraphAssets() {
+	const fs::path tmp = fs::temp_directory_path()
+		/ "tourmaline_pp_audiograph";
+	std::error_code ec;
+	fs::remove_all(tmp, ec);
+	const fs::path projDir = tmp / "proj";
+	smvk::project::Project project;
+	{
+		bool created = false;
+		std::string err;
+		project = smvk::project::Project::Init(
+			projDir.generic_string(), "AudioGraphTest", created, err);
+		Check(project.Valid() && created, "audiograph.project-created");
+	}
+	// An authored graph under the project's content tree: one source
+	// through an envelope into the master, one exposed param, TWO cues
+	// (the header must emit per-cue constants for both).
+	const fs::path audioDir =
+		fs::path(project.root) / "content" / "audio";
+	const fs::path scenes =
+		fs::path(project.root) / "content" / "scenes";
+	const fs::path models =
+		fs::path(project.root) / "content" / "models" / "thing";
+	fs::create_directories(audioDir, ec);
+	fs::create_directories(scenes, ec);
+	fs::create_directories(models, ec);
+	const fs::path graph = audioDir / "forest.audiograph";
+	const std::string graphText =
+		"version 1\n"
+		"node -name \"src\" -type source"
+		" -sound \"content/audio/loop.wav\" -gain 0.8 -loop on\n"
+		"node -name \"env\" -type gain -gain 0.0\n"
+		"node -name \"master\" -type gain -gain 1.0\n"
+		"connect -from \"src\" -to \"env\"\n"
+		"connect -from \"env\" -to \"master\"\n"
+		"connect -from \"master\" -to \"output\"\n"
+		"param -name \"bed\" -node \"env\" -field gain\n"
+		"cue -name \"calm\"\n"
+		"start -node \"src\" -t 0\n"
+		"ramp -param \"bed\" -t 0 -value 0.0\n"
+		"ramp -param \"bed\" -t 4 -value 0.6\n"
+		"cue -name \"storm\"\n"
+		"start -node \"src\" -t 0\n"
+		"set -param \"bed\" -t 0 -value 1.0\n";
+	{
+		std::ofstream f(graph, std::ios::binary | std::ios::trunc);
+		f << graphText;
+		std::ofstream w(audioDir / "loop.wav",
+			std::ios::binary | std::ios::trunc);
+		w << "RIFF----WAVEfmt "; // bytes never decoded on this lane
+	}
+	// The recipe spec needs an entry scene (a dummy .geometry + tour).
+	{
+		std::ofstream f(models / "thing.geometry",
+			std::ios::binary | std::ios::trunc);
+		f << "geo";
+		smvk::tour::Doc doc;
+		smvk::tour::ReferenceCmd root;
+		root.source = "content/models/thing/thing.geometry";
+		root.name = "ROOT";
+		root.root = true;
+		doc.references.push_back(root);
+		std::string tErr;
+		Check(smvk::tour::SaveTour(
+				(scenes / "thing.tour").generic_string(), doc, tErr),
+			"audiograph.tour-saved");
+	}
+	const std::string recipeText =
+		"recipe 1\n"
+		"project AudioGraphTest\n"
+		"entry content/scenes/thing.tour\n"
+		"[pak amb]\n"
+		"output amb.pak\n"
+		"include content/audio/*.audiograph\n"
+		"[pak world]\n"
+		"output thing.pak\n"
+		"scene content/scenes/thing.tour\n";
+	smvk::project::ProjectRecipe recipe;
+	smvk::project::RecipeDiagnostic diag;
+	smvk::project::BuildPlan plan;
+	std::string err;
+	Check(smvk::project::ParseProjectRecipeText(recipeText, recipe,
+			diag)
+		&& smvk::project::ResolveRecipe(project, recipe, plan, err),
+		"audiograph.plan-resolves");
+	{
+		const smvk::project::PlanPak* amb = plan.FindPak("amb");
+		Check(amb && amb->assets.size() == 1
+			&& amb->assets[0].kind
+				== smvk::project::PlanAssetKind::AudioGraph,
+			"audiograph.plan-classifies");
+	}
+	// The catalog: the audiographs bucket + the 0x7xxx range + the
+	// PARSED cue table (the loud catalog-time validation).
+	smvk::cache::AssetDatabase db;
+	{
+		const std::string root = smvk::cache::EnsureRegistryRoot(
+			project.DerivedDataDir());
+		Check(!root.empty() && db.Open(root, project.root, err),
+			"audiograph.db-opens");
+	}
+	smvk::project::ProjectCatalog catalog;
+	std::vector<std::string> deps;
+	Check(smvk::project::GenerateProjectCatalog(project, plan, db,
+			catalog, deps, err),
+		"audiograph.catalog-generates");
+	Check(catalog.audiographs.size() == 1
+		&& catalog.audiographs[0].id >= 0x7000
+		&& catalog.audiographs[0].id <= 0x7FFF
+		&& catalog.audiographs[0].kind == "audiograph",
+		"audiograph.catalog-bucket-and-range");
+	Check(catalog.audiographCues.size() == 1
+		&& catalog.audiographCues[0].cues.size() == 2
+		&& catalog.audiographCues[0].cues[0] == "calm"
+		&& catalog.audiographCues[0].cues[1] == "storm",
+		"audiograph.cue-table-parsed");
+	{
+		smvk::project::GenerationStamp stamp;
+		stamp.generation = 1;
+		stamp.timestamp = 1793451600;
+		stamp.contentHash =
+			smvk::project::ComputeCatalogContentHash(catalog);
+		const std::string header =
+			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
+		Check(header.find("namespace audiographs") != std::string::npos
+			&& header.find("struct AudioGraphKey")
+				!= std::string::npos
+			&& header.find("struct AudioCueKey") != std::string::npos
+			&& header.find("AudioGraph = 6") != std::string::npos
+			&& header.find("AssetKind::AudioGraph")
+				!= std::string::npos
+			&& header.find("audiographs::"
+				+ catalog.audiographs[0].symbol)
+				!= std::string::npos,
+			"audiograph.header-emits-key");
+		Check(header.find("namespace audiocues") != std::string::npos
+			&& header.find(catalog.audiographs[0].symbol + "_calm{")
+				!= std::string::npos
+			&& header.find(catalog.audiographs[0].symbol + "_storm{")
+				!= std::string::npos,
+			"audiograph.header-emits-cues");
+	}
+	// The packer: the content-set embeds the authored text VERBATIM as
+	// an AudioGraph-kind blob; a CORRUPT graph fails the pack.
+	{
+		paktool::PakArgs args;
+		args.contentDir = project.root;
+		args.contentSet = { "content/audio/forest.audiograph" };
+		args.outPak = (tmp / "amb.pak").generic_string();
+		Check(paktool::Run(args) == 0, "audiograph.content-set-packs");
+		std::vector<char> image = ReadAllBytes(tmp / "amb.pak");
+		std::string openErr;
+		auto reader = smvk::PakReader::Open(
+			std::span<const uint8_t>(
+				reinterpret_cast<const uint8_t*>(image.data()),
+				image.size()), openErr);
+		Check(bool(reader), "audiograph.pak-opens");
+		if (reader) {
+			const auto blobs =
+				reader->BlobsOfKind(smvk::PakAssetKind::AudioGraph);
+			Check(blobs.size() == 1
+				&& blobs[0]->path
+					== "content/audio/forest.audiograph",
+				"audiograph.blob-by-path");
+			if (blobs.size() == 1) {
+				const std::span<const uint8_t> payload =
+					reader->Payload(*blobs[0]);
+				Check(payload.size() == graphText.size()
+					&& std::equal(payload.begin(), payload.end(),
+						graphText.begin(), graphText.end()),
+					"audiograph.bytes-verbatim");
+			}
+		}
+	}
+	{
+		// A malformed graph: the PACK refuses (and writes nothing) —
+		// the file is closed BEFORE the pack reads it (an open stream
+		// can leave the bytes unflushed; the refusal must come from
+		// the PARSE, never from an unreadable path).
+		{
+			std::ofstream f(graph, std::ios::binary | std::ios::trunc);
+			f << "version 1\nnode -name \"a\" -type gain\n";
+		}
+		paktool::PakArgs args;
+		args.contentDir = project.root;
+		args.contentSet = { "content/audio/forest.audiograph" };
+		args.outPak = (tmp / "amb_bad.pak").generic_string();
+		Check(paktool::Run(args) != 0, "audiograph.corrupt-refused");
+		Check(!fs::exists(tmp / "amb_bad.pak", ec),
+			"audiograph.corrupt-wrote-nothing");
+		// The CATALOG pass refuses too (the ids gate — a malformed
+		// graph never reaches a project.h).
+		smvk::project::ProjectCatalog bad;
+		std::vector<std::string> badDeps;
+		std::string bErr;
+		Check(!smvk::project::GenerateProjectCatalog(project, plan, db,
+				bad, badDeps, bErr)
+			&& bErr.find("audiograph") != std::string::npos,
+			"audiograph.catalog-parse-rejects");
+	}
+}
+
 void TestBuildPlanExecutor() {
 	// The fixture: a single-scene project (grid import + authored tour).
 	const fs::path tmp = fs::temp_directory_path()
@@ -4041,6 +4250,7 @@ int main(int argc, char** argv) {
 	TestFingerprint();
 	TestSubassetIdentity();
 	TestShaderAssets();
+	TestAudioGraphAssets();
 	TestRecipeParsing();
 	TestRecipeGlob();
 	TestRecipeResolution();

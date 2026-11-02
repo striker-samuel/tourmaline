@@ -85,6 +85,10 @@ PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
 		return PlanAssetKind::Gi;
 	if (ext == ".givolume" || ext == ".cubemanifest")
 		return PlanAssetKind::BakeFile;
+	// AUTHORED AUDIO GRAPHS (the .audiograph text asset — a 0x7xxx
+	// AudioGraphKey; the strict parser validates it at pack time).
+	if (ext == ".audiograph")
+		return PlanAssetKind::AudioGraph;
 	known = false;
 	return PlanAssetKind::Texture;
 }

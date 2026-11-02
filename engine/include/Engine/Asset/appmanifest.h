@@ -78,8 +78,13 @@ inline constexpr uint8_t kCatalogKindShader = 4;
 // more GI volumes; loaded by GiKey through AssetManager::LoadGI,
 // blendable across two resident sets).
 inline constexpr uint8_t kCatalogKindGi = 5;
+// AUTHORED AUDIO GRAPHS (.audiograph — the audio system's node-graph
+// + cue asset; docs/audio_graph.md. The graph asset carries ALL of its
+// cues — the generated header additionally emits per-cue constants
+// bundling (graph id, cue ordinal) in project::audiocues).
+inline constexpr uint8_t kCatalogKindAudioGraph = 6;
 // The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
-// "shader"/"gi"; false for any other spelling).
+// "shader"/"gi"/"audiograph"; false for any other spelling).
 [[nodiscard]] bool CatalogKindFromString(const std::string& kind,
 	uint8_t& out);
 [[nodiscard]] const char* CatalogKindToString(uint8_t kind);
