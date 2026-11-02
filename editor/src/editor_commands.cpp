@@ -77,16 +77,18 @@ void EditorApp::ApplyGiAssetBindingsToScene() {
 				liveScene.giCapturesHash = ga.bakedHash;
 				continue;
 			}
-			const uint32_t k =
-				ga.ref & ~smvk::tour::kCreateGiVolumeRefBase;
-			if ((ga.ref & smvk::tour::kCreateGiVolumeRefBase) == 0
-					|| k >= m_tourCreatedGiVolumeNodes.size()) {
-				Log("tour: giAsset GI-volume ref out of range (dropped — '"
+			const uint32_t family = ga.ref & smvk::tour::kCreateRefFamilyMask;
+			const uint32_t k = ga.ref & ~family;
+			const auto* nodes = family == smvk::tour::kCreateTransformRefBase
+				? &m_tourCreatedTransformNodes
+				: family == smvk::tour::kCreateGiVolumeRefBase
+				? &m_tourCreatedGiVolumeNodes : nullptr;
+			if (!nodes || k >= nodes->size()) {
+				Log("tour: giAsset GI ref out of range (dropped — '"
 					+ ga.source + "')");
 				continue;
 			}
-			GiVolumeRow* it = FindGiVolume(liveScene,
-				m_tourCreatedGiVolumeNodes[k]);
+			GiVolumeRow* it = FindGiVolume(liveScene, (*nodes)[k]);
 			if (!it)
 				continue;
 			it->volume.bakeSource = ga.source;
