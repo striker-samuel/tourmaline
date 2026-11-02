@@ -365,15 +365,60 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
 // was pure register-pressure poison at up to vp.steps lookups per
 // pixel. Same header/AABB/plane weighting as SgGiVolumeWeight. ----
 
-// Samples one volume's baked mean texture at world pos (one trilinear
-// RGB fetch; uvw from the same packed header transform).
+// Visibility-aware RGB mean sampling for fog. Clean cells retain the
+// single hardware-trilinear lookup; wall-adjacent cells use the same
+// visibility-weighted 8-corner interpolation as surface SG sampling.
+// This prevents the isotropic fog mean from blending through thin walls.
+// Keep both GI sets on this identical sampling contract.
+float3 SgGiVolumeSampleMeanFiltered(FrameUniforms frame, GiVolumeGpu v,
+    uint meanSlot, uint visSlotA, uint visSlotB, float3 pos)
+{
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    if (visSlotA == 0xffffffffu || visSlotB == 0xffffffffu)
+        return volumeTextures[meanSlot].Sample(samplers[2], uvw).rgb;
+
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    if (any(dims < 2.0))
+        return volumeTextures[meanSlot].Sample(samplers[2], uvw).rgb;
+
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    if (volumeTextures[visSlotB].Load(int4(b, 0)).z >= 0.5)
+        return volumeTextures[meanSlot].Sample(samplers[2], uvw).rgb;
+
+    const float3 frac = saturate(rel - 0.5 - float3(b));
+    float3 accumulated = float3(0.0, 0.0, 0.0);
+    float totalWeight = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+    {
+        const int3 cc = b + int3((c & 1u) != 0u ? 1 : 0,
+            (c & 2u) != 0u ? 1 : 0, (c & 4u) != 0u ? 1 : 0);
+        const float3 dRel = rel - (float3(cc) + 0.5);
+        const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+        const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+        const float visibility = SgGiVolumeVisFactor(dRel, visA, visB);
+        const float3 t3 = float3((c & 1u) != 0u ? frac.x : 1.0 - frac.x,
+            (c & 2u) != 0u ? frac.y : 1.0 - frac.y,
+            (c & 4u) != 0u ? frac.z : 1.0 - frac.z);
+        const float weight = visibility * t3.x * t3.y * t3.z;
+        if (weight <= 0.0)
+            continue;
+        accumulated += volumeTextures[meanSlot].Load(int4(cc, 0)).rgb * weight;
+        totalWeight += weight;
+    }
+    // Preserve the surface GI contract when all neighbors are blocked.
+    return totalWeight > 1e-4 ? accumulated / totalWeight : float3(0.0, 0.0, 0.0);
+}
+
 void SgGiVolumeSampleMean(FrameUniforms frame, uint vol, float3 pos,
     out float3 mean)
 {
     const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
-    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
-    mean = volumeTextures[frame.giVolumeMeanLayers[vol]]
-        .Sample(samplers[2], uvw).rgb;
+    mean = SgGiVolumeSampleMeanFiltered(frame, v,
+        frame.giVolumeMeanLayers[vol],
+        frame.giVolumeVisLayers[vol * 2u],
+        frame.giVolumeVisLayers[vol * 2u + 1u], pos);
 }
 
 // ---- Fog ray-space volume table (per-pixel prep, SgGiVolumeRayPrep) ----
@@ -771,14 +816,15 @@ void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
     }
 }
 
-// Samples one B-set volume's baked mean texture (the fog twin).
+// B-set fog GI shares the exact same wall-aware mean filter.
 void SgGiVolumeSampleMeanB(FrameUniforms frame, uint vol, float3 pos,
     out float3 mean)
 {
     const GiVolumeGpu v = frame.giVolumesB.Get().volumes[vol];
-    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
-    mean = volumeTextures[frame.giVolumeMeanLayersB[vol]]
-        .Sample(samplers[2], uvw).rgb;
+    mean = SgGiVolumeSampleMeanFiltered(frame, v,
+        frame.giVolumeMeanLayersB[vol],
+        frame.giVolumeVisLayersB[vol * 2u],
+        frame.giVolumeVisLayersB[vol * 2u + 1u], pos);
 }
 
 // The B-set FOG ray prep (the SgGiVolumeRayPrep twin over the B
