@@ -2,56 +2,46 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-"""Pack browser (PyQt6) for .pak files.
+"""Tourmaline package browser for SMP8 .pak archives and appmanifest 2 .tapp files.
 
-Reads the pak manifest/header (no engine build needed) to inspect pack
-contents and their VFS relationship:
+GUI: python tools/pak_browser.py [file.pak | project.tapp ...]
+CLI: python tools/pak_browser.py --cli-dump project.tapp
+     python tools/pak_browser.py --cli-validate project.tapp
 
-- Header (32 B): magic "SMP4", reserved, flags, tocOffset, tocCount.
-- Blobs (16-byte aligned payloads).
-- TOC: per-entry pathHash (FNV-1a64), kind, flags, offset, size, path.
-- Footer (24 B): tocOffset, tocCount, crc32 (covers everything before it),
-  magic "KPM4".
-
-VFS relationship (mirrors Engine/Asset/pak.h + Engine/Vfs/vfs.h):
-- Only Texture blobs are visible through PakBackend (Exists/TryRead/ListDir
-  keyed by the ORIGINAL vfs path, returning the embedded .ktx2 bytes).
-- Scene/Mesh/Material/Light/Gi blobs are cluster-internal, consumed via
-  PakReader by the cluster deserializer - invisible to VFS file reads.
-- OverlayVfs is first-match-wins over mounts ordered by priority; this
-  browser lets you mount several paks + a loose dir and test lookups.
-
-Usage:
-    py tools/pak_browser.py [pak ...] [--cli-dump]
-    py tools/pak_browser.py --cli-dump path/to.pak   # headless manifest dump
+The .tapp is a release pointer (entry scene and ordered package names);
+asset identities live in each package's #ids blob. SMP8 verifies the TOC at
+open and verifies each stored payload independently on demand. CLI validation
+checks every page as well as the metadata, without requiring PyQt6 or lz4.
 """
 from __future__ import annotations
 
 import os
+import shlex
 import struct
 import sys
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Pure-python pak model (mirrors engine/src/Asset/pak.cpp)
-# ---------------------------------------------------------------------------
-
-KPAK_MAGIC = 0x34504D53  # "SMP4" LE (the magic IS the version: bump the
-KPAK_FOOTER_MAGIC = 0x344D504B  # "KPM4" LE trailing char on breaking changes)
+# See Engine/Asset/pak.h, appmanifest.h and docs/pak_vnext.md.
+KPAK_MAGIC = 0x38504D53  # SMP8
+KPAK_FOOTER_MAGIC = 0x384D504B  # KPM8
 KHEADER_SIZE = 32
 KFOOTER_SIZE = 24
-KTOC_FIXED = 36  # hash u64, kind u32, flags u32, off u64, size u64, pathLen u32
+KTOC_FIXED = 44  # hash, kind, flags, offset, size, slot, contentCrc, pathLen
 KALIGN = 16
+FLAG_LZ4 = 1
 
-KINDS = {1: "Scene", 2: "Mesh", 3: "Material", 4: "Texture", 5: "Light", 6: "Gi", 7: "Camera"}
-KIND_BY_NAME = {v: k for k, v in KINDS.items()}
-FLAG_LZ4 = 1 << 0
+KINDS = {
+    1: "Scene", 2: "Mesh", 3: "Material", 4: "Texture",
+    5: "Light", 6: "Gi", 7: "Camera", 8: "Decal",
+    9: "Terrain", 10: "Level", 11: "Sound", 12: "Shader",
+    13: "Plan", 14: "Schema", 15: "Identity", 16: "AudioGraph",
+}
+KIND_BY_NAME = {name: kind for kind, name in KINDS.items()}
+VFS_KINDS = frozenset((4, 11, 12, 16))
+CATALOG_KINDS = ("scene", "texture", "mesh", "sound", "shader", "gi", "audiograph")
 
-# KTX2 identifier is 12 bytes: AB 4B 54 58 20 <ver:2> BB 0D 0A 1A 0A.
-# The bundled libktx writes version "20" (older files use "11"), so the
-# check accepts any version tag and reports it.
 KTX2_PREFIX = bytes([0xAB, 0x4B, 0x54, 0x58, 0x20])
 KTX2_SUFFIX = bytes([0xBB, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -61,10 +51,10 @@ def ktx2_magic_info(ktx: bytes) -> tuple[bool, str]:
         return False, "(too short)"
     ok = ktx[:5] == KTX2_PREFIX and ktx[7:12] == KTX2_SUFFIX
     try:
-        ver = ktx[5:7].decode("ascii")
+        version = ktx[5:7].decode("ascii")
     except UnicodeDecodeError:
-        ver = ktx[5:7].hex()
-    return ok, ver
+        version = ktx[5:7].hex()
+    return ok, version
 
 
 def fnv1a64(s: str) -> int:
@@ -76,38 +66,32 @@ def fnv1a64(s: str) -> int:
 
 
 def vfs_normalize(path: str) -> str:
-    """Mirror smvk::vfs::Normalize (incl. //flintbase/ scheme). '' = invalid."""
+    """Mirror smvk::vfs::Normalize, including the //flintbase/ scheme."""
     if not path:
         return ""
     p = path.replace("\\", "/")
-    # scheme?
     low = p.lower()
-    if low.startswith("//flintbase/") or low == "//flintbase":
-        cut = len("//flintbase/")
-        rest = p[cut:] if len(p) >= cut else ""
-        norm, ok = _norm_rel(rest)
-        if not ok:
-            return ""
-        return "//flintbase/" if not norm else "//flintbase/" + norm
-    pc.frameUniforms.Get()if len(p) >= 2 and p[1] == ":":
+    if low == "//flintbase" or low.startswith("//flintbase/"):
+        rest = p[len("//flintbase/"):] if low.startswith("//flintbase/") else ""
+        normalized, ok = _norm_rel(rest)
+        return ("//flintbase/" + normalized) if ok else ""
+    if p.startswith("/") or (len(p) >= 2 and p[1] == ":"):
         return ""
-    if p.startswith("/"):
-        return ""
-    norm, ok = _norm_rel(p)
-    return norm if ok else ""
+    normalized, ok = _norm_rel(p)
+    return normalized if ok else ""
 
 
-def _norm_rel(path: str):
+def _norm_rel(path: str) -> tuple[str, bool]:
     parts: list[str] = []
-    for seg in path.split("/"):
-        if seg == "" or seg == ".":
+    for part in path.split("/"):
+        if part in ("", "."):
             continue
-        if seg == "..":
+        if part == "..":
             if not parts:
                 return "", False
             parts.pop()
-            continue
-        parts.append(seg)
+        else:
+            parts.append(part)
     return "/".join(parts), True
 
 
@@ -121,7 +105,10 @@ class PakEntry:
     size: int
     path: str
     hash_ok: bool
+    slot: int = 0
+    content_crc: int = 0
     blob_overruns_toc: bool = False
+    page_crc_ok: bool | None = None
 
     @property
     def compressed(self) -> bool:
@@ -129,15 +116,14 @@ class PakEntry:
 
     @property
     def vfs_visible(self) -> bool:
-        # Mirrors PakBackend: only Texture blobs served via VFS.
-        return self.kind == 4
+        return self.kind in VFS_KINDS
 
 
 @dataclass
 class PakFile:
     source: str
     data: bytes = field(repr=False)
-    version: int = 0
+    version: int = 8
     flags: int = 0
     toc_offset: int = 0
     toc_count: int = 0
@@ -160,114 +146,252 @@ class PakFile:
         return len(self.data)
 
     def stored_payload(self, e: PakEntry) -> bytes:
-        return self.data[e.offset : e.offset + e.size]
+        return self.data[e.offset:e.offset + e.size]
+
+    def verify_page(self, e: PakEntry) -> bool:
+        if e.page_crc_ok is None:
+            e.page_crc_ok = (
+                zlib.crc32(self.stored_payload(e)) & 0xFFFFFFFF
+            ) == e.content_crc
+        return e.page_crc_ok
+
+    def verify_all(self) -> list[str]:
+        if self.error:
+            return [self.error]
+        return [
+            f"{e.path}: content CRC mismatch (slot {e.slot})"
+            for e in self.entries if not self.verify_page(e)
+        ]
 
     def payload(self, e: PakEntry) -> tuple[bytes, str]:
-        """Return (bytes, note). Decompresses LZ4 transparently like PakReader."""
+        """Verify stored page before decompressing; never decode a corrupt page."""
+        if not self.verify_page(e):
+            return b"", (
+                f"CONTENT CRC MISMATCH: stored=0x{e.content_crc:08X} "
+                f"computed=0x{zlib.crc32(self.stored_payload(e)) & 0xFFFFFFFF:08X}"
+            )
         stored = self.stored_payload(e)
-        if not (e.flags & FLAG_LZ4):
+        if not e.compressed:
             return stored, ""
         if len(stored) < 8:
-            return stored, "LZ4 flag set but stored blob < 8 bytes"
-        (uncompressed_size,) = struct.unpack_from("<Q", stored, 0)
-        block = stored[8:]
+            return b"", "invalid LZ4 wrapper (less than 8 bytes)"
+        (size,) = struct.unpack_from("<Q", stored)
         try:
             import lz4.block  # type: ignore
-
-            raw = lz4.block.decompress(block, uncompressed_size=uncompressed_size)
+            raw = lz4.block.decompress(stored[8:], uncompressed_size=size)
             return bytes(raw), f"lz4: {len(stored)} stored -> {len(raw)} bytes"
         except ImportError:
-            return stored, (
-                f"LZ4-compressed (needs 'pip install lz4'): "
-                f"stored {len(stored)} B, uncompressed {uncompressed_size} B"
-            )
-        except Exception as ex:  # corrupt block
-            return stored, f"LZ4 decompress failed: {ex}"
+            return b"", f"LZ4 page needs 'pip install lz4' ({size} uncompressed bytes)"
+        except Exception as exc:
+            return b"", f"LZ4 decompression failed: {exc}"
 
 
 def parse_pak(source: str, data: bytes) -> PakFile:
     pak = PakFile(source=source, data=data)
     if len(data) < KHEADER_SIZE + KFOOTER_SIZE:
-        pak.error = f"too small ({len(data)} B < {KHEADER_SIZE + KFOOTER_SIZE})"
+        pak.error = "pak too small"
         return pak
-    try:
-        magic, ver, flags, toc_off, toc_count, reserved = struct.unpack_from(
-            "<IIIQQI", data, 0
-        )
-    except struct.error as ex:
-        pak.error = f"header unpack failed: {ex}"
-        return pak
-    pak.version, pak.flags = ver, flags
-    pak.toc_offset, pak.toc_count = toc_off, toc_count
+    magic, reserved, flags, toc_off, toc_count, reserved2 = struct.unpack_from(
+        "<IIIQQI", data
+    )
+    pak.flags, pak.toc_offset, pak.toc_count = flags, toc_off, toc_count
     pak.header_reserved = reserved
     if magic != KPAK_MAGIC:
-        pak.error = f"bad magic 0x{magic:08X} (want 0x{KPAK_MAGIC:08X} 'SMP4' — recook from zero)"
+        pak.error = f"bad magic 0x{magic:08X} (expected SMP8; recook stale packages)"
         return pak
     foff = len(data) - KFOOTER_SIZE
-    f_toc_off, f_toc_count, f_crc, f_magic = struct.unpack_from("<QQII", data, foff)
+    f_toc_off, f_toc_count, f_crc, f_magic = struct.unpack_from(
+        "<QQII", data, foff
+    )
     pak.footer_toc_offset, pak.footer_toc_count = f_toc_off, f_toc_count
     pak.footer_crc_stored = f_crc
-    pak.footer_crc_computed = zlib.crc32(data[: foff + 16]) & 0xFFFFFFFF
-    pak.crc_ok = pak.footer_crc_computed == f_crc
-    pak.header_footer_match = (f_toc_off == toc_off) and (f_toc_count == toc_count)
+    pak.header_footer_match = (f_toc_off, f_toc_count) == (toc_off, toc_count)
     if f_magic != KPAK_FOOTER_MAGIC:
-        pak.error = f"bad footer magic 0x{f_magic:08X} (want 'KPM4')"
+        pak.error = "bad footer magic (expected KPM8)"
         return pak
     if not pak.header_footer_match:
-        pak.error = (
-            f"header/footer TOC mismatch (hdr {toc_off}/{toc_count} vs "
-            f"ftr {f_toc_off}/{f_toc_count})"
-        )
+        pak.error = "header/footer TOC mismatch"
         return pak
+    if not KHEADER_SIZE <= toc_off <= foff:
+        pak.error = "TOC offset out of range"
+        return pak
+    toc = data[toc_off:foff]
+    pak.footer_crc_computed = zlib.crc32(toc) & 0xFFFFFFFF
+    pak.crc_ok = pak.footer_crc_computed == f_crc
     if not pak.crc_ok:
-        pak.error = (
-            f"CRC mismatch: stored 0x{f_crc:08X} != "
-            f"computed 0x{pak.footer_crc_computed:08X}"
-        )
+        pak.error = "TOC CRC mismatch"
         return pak
-    # TOC
-    off = toc_off
+    # A large untrusted count must not preallocate or loop without bounds.
+    if toc_count > len(toc) // KTOC_FIXED:
+        pak.error = "TOC count exceeds available metadata"
+        return pak
+    off = 0
     for i in range(toc_count):
-        if off + KTOC_FIXED > len(data):
-            pak.error = f"TOC entry {i} overruns image"
+        if len(toc) - off < KTOC_FIXED:
+            pak.error = f"TOC entry {i} truncated"
             return pak
-        h, kind, fl, b_off, b_sz, plen = struct.unpack_from("<QIIQQI", data, off)
+        h, kind, fl, b_off, b_sz, slot, page_crc, plen = struct.unpack_from(
+            "<QIIQQIII", toc, off
+        )
         off += KTOC_FIXED
-        if plen > 4096 or off + plen > len(data):
-            pak.error = f"TOC entry {i}: path overruns image (len {plen})"
+        if plen > 4096 or plen > len(toc) - off:
+            pak.error = f"TOC entry {i}: invalid path length"
             return pak
         try:
-            path = data[off : off + plen].decode("utf-8")
+            path = toc[off:off + plen].decode("utf-8")
         except UnicodeDecodeError:
-            pak.error = f"TOC entry {i}: path not valid UTF-8"
+            pak.error = f"TOC entry {i}: path is not UTF-8"
             return pak
         off += plen
-        overruns = (b_off + b_sz) > toc_off
-        entry = PakEntry(
-            path_hash=h,
-            kind=kind,
-            kind_name=KINDS.get(kind, f"Unknown({kind})"),
-            flags=fl,
-            offset=b_off,
-            size=b_sz,
-            path=path,
-            hash_ok=(h == fnv1a64(path)),
-            blob_overruns_toc=overruns,
-        )
-        if fl & ~FLAG_LZ4:
-            pak.error = f"entry '{path}': unknown flags 0x{fl:X}"
-            return pak
-        if (fl & FLAG_LZ4) and ver < 3:
-            pak.error = f"entry '{path}': LZ4 flag in v{ver} pak"
-            return pak
-        if overruns:
+        if b_off < KHEADER_SIZE or b_off > toc_off or b_sz > toc_off - b_off:
             pak.error = f"blob overruns TOC: {path}"
             return pak
-        if not entry.hash_ok:
+        if fl & ~FLAG_LZ4:
+            pak.error = f"unknown flags 0x{fl:X}: {path}"
+            return pak
+        if h != fnv1a64(path):
             pak.error = f"path hash mismatch: {path}"
             return pak
-        pak.entries.append(entry)
+        pak.entries.append(PakEntry(
+            path_hash=h, kind=kind, kind_name=KINDS.get(kind, f"Unknown({kind})"),
+            flags=fl, offset=b_off, size=b_sz, path=path, hash_ok=True,
+            slot=slot, content_crc=page_crc,
+        ))
+    if off != len(toc):
+        pak.error = "TOC contains trailing bytes"
     return pak
+
+
+@dataclass
+class TappFile:
+    source: str
+    version: int = 0
+    entry_pak: str = ""
+    entry_scene: str = ""
+    paks: list[str] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def valid(self) -> bool:
+        return not self.error
+
+
+def _manifest_path_ok(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    return bool(normalized) and not normalized.startswith("/") and not (
+        len(normalized) >= 2 and normalized[1] == ":"
+    ) and all(
+        part not in ("", ".", "..") and "*" not in part and "?" not in part
+        for part in parts
+    )
+
+
+def parse_tapp(source: str, text: str) -> TappFile:
+    """Parse appmanifest 2, preserving the [paks] order and quoted names."""
+    m = TappFile(source)
+    saw_version = saw_entry = in_paks = False
+    for number, raw in enumerate(text.lstrip("\ufeff").splitlines(), 1):
+        try:
+            tokens = shlex.split(raw, comments=True, posix=True)
+        except ValueError as exc:
+            m.error = f"line {number}: {exc}"
+            return m
+        if not tokens:
+            continue
+        if tokens == ["[paks]"]:
+            in_paks = True
+            continue
+        if tokens[0].startswith("["):
+            m.error = f"line {number}: unknown section {tokens[0]}"
+            return m
+        if in_paks:
+            m.paks.append(" ".join(tokens))
+        elif tokens[0] == "appmanifest" and len(tokens) == 2 and not saw_version:
+            saw_version = True
+            if not tokens[1].isdigit() or len(tokens[1]) > 4:
+                m.error = f"line {number}: invalid appmanifest version"
+                return m
+            m.version = int(tokens[1])
+        elif tokens[0] == "entry" and len(tokens) == 3 and not saw_entry:
+            saw_entry = True
+            m.entry_pak, m.entry_scene = tokens[1:]
+        else:
+            m.error = f"line {number}: invalid or duplicate directive {tokens[0]}"
+            return m
+    if not saw_version or m.version != 2:
+        m.error = "requires appmanifest 2 (older manifests must be rebuilt)"
+    elif not saw_entry or not m.entry_scene:
+        m.error = "missing entry pak/scene"
+    elif not m.paks:
+        m.error = "manifest lists no paks"
+    elif any(not _manifest_path_ok(p) for p in m.paks):
+        m.error = "invalid manifest-relative pak path"
+    elif len(m.paks) != len(set(m.paks)):
+        m.error = "duplicate pak in manifest"
+    elif m.entry_pak not in m.paks:
+        m.error = f"entry pak {m.entry_pak!r} not listed in [paks]"
+    return m
+
+
+def tapp_pak_path(manifest: TappFile, name: str) -> Path:
+    if not _manifest_path_ok(name):
+        raise ValueError(f"invalid manifest pak path: {name}")
+    return Path(manifest.source).parent.joinpath(*name.replace("\\", "/").split("/"))
+
+
+def load_tapp(source: str) -> TappFile:
+    return parse_tapp(source, Path(source).read_text(encoding="utf-8-sig"))
+
+
+def decode_ids(payload: bytes) -> dict:
+    """Decode the per-pak IDTR v1 catalog, not the removed .tapp [ids]."""
+    if len(payload) < 12:
+        return {"error": "truncated identity header"}
+    magic, version, count = struct.unpack_from("<III", payload)
+    if magic != 0x52544449 or version != 1 or count > (1 << 20):
+        return {"error": "invalid IDTR magic, version, or row count"}
+    off = 12
+    rows = []
+    try:
+        for _ in range(count):
+            if len(payload) - off < 13:
+                raise ValueError("truncated identity row")
+            asset_id, kind, path_len = struct.unpack_from("<QBI", payload, off)
+            off += 13
+            if not 0 < path_len <= 4096 or path_len > len(payload) - off:
+                raise ValueError("invalid identity path length")
+            path = payload[off:off + path_len].decode("utf-8")
+            off += path_len
+            if len(payload) - off < 4:
+                raise ValueError("truncated scene name length")
+            (name_len,) = struct.unpack_from("<I", payload, off)
+            off += 4
+            if name_len > 4096 or name_len > len(payload) - off:
+                raise ValueError("invalid scene name length")
+            name = payload[off:off + name_len].decode("utf-8")
+            off += name_len
+            if not asset_id or kind >= len(CATALOG_KINDS) or (name and kind != 0):
+                raise ValueError("invalid identity row")
+            rows.append({
+                "id": f"0x{asset_id:X}", "kind": CATALOG_KINDS[kind],
+                "path": path, "scene": name,
+            })
+    except (ValueError, UnicodeDecodeError) as exc:
+        return {"error": str(exc)}
+    if off != len(payload):
+        return {"error": "trailing identity table bytes"}
+    return {"count": count, "rows": rows}
+
+
+def package_id_info(pak: PakFile) -> dict:
+    e = next((e for e in pak.entries if e.kind == 15 and e.path == "#ids"), None)
+    if e is None:
+        return {"error": "missing #ids identity table (recook for appmanifest 2)"}
+    payload, note = pak.payload(e)
+    if note.startswith(("CONTENT CRC", "LZ4 page", "LZ4 decompression", "invalid LZ4")):
+        return {"error": note}
+    return decode_ids(payload)
 
 
 # ---------------------------------------------------------------------------
