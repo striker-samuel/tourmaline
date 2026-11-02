@@ -44,6 +44,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
 #include "editor_asset_inspect.h"
+#include "editor_live_preview_policy.h"
 #include "editor_asset_ops.h" // browser delete planning (pending plan member)
 #include "editor_fibers.h" // EDITOR-ONLY job pool (see editor_fibers.cpp)
 #include <Engine/Vfs/vfs.h>
@@ -1538,13 +1539,9 @@ private:
 	// viewport), so quad-view F8 works without migrating the editor
 	// preview's legacy shader/frame ABI.
 	int LiveViewViewport() const {
-		if (m_activeVp >= 0 && m_activeVp < ViewportCount()
-			&& m_viewports[m_activeVp].viewMode == ViewMode::Baked)
-			return m_activeVp;
-		for (int vp = 0; vp < ViewportCount(); ++vp)
-			if (m_viewports[vp].viewMode == ViewMode::Baked)
-				return vp;
-		return m_viewports[0].viewMode == ViewMode::Lit ? 0 : -1;
+		return SelectLivePreviewViewport(ViewportCount(), m_activeVp,
+			[this](int vp) { return m_viewports[vp].viewMode; },
+			ViewMode::Lit, ViewMode::Baked);
 	}
 	bool LiveViewActive() const { return LiveViewViewport() >= 0; }
 	bool m_wysiwygValid = false;     // onAttach succeeded (else the hint shows)
