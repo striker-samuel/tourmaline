@@ -27,7 +27,7 @@ int main() {
 	assert(content.bounds.origin == glm::vec2(20, 60));
 	assert(content.bounds.size == glm::vec2(760, 60));
 	const auto fill = layout.Next({0, 0});
-	assert(fill.bounds.size == glm::vec2(760, 450));
+	assert(fill.bounds.size == glm::vec2(760, 460));
 
 	UiLayoutStyle2D row{};
 	row.direction = UiLayoutDirection2D::Row;

@@ -105,7 +105,8 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
 		if (clear) {
 			rg.AddPass("GameUI clear").SetExtent(viewport).SetColor(
 				{colorTarget}, smvk::AttachmentLoadOp::Clear,
-				smvk::AttachmentStoreOp::Store, smvk::ClearColor(0, 0, 0, 0));
+				smvk::AttachmentStoreOp::Store, smvk::ClearColor(0, 0, 0, 0))
+				.SetRecordingFunc([](smvk::CommandBuffer&) {});
 		}
 		return true;
 	}
