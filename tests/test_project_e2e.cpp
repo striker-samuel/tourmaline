@@ -176,19 +176,6 @@ int RunToolCapture(const fs::path& exe, const std::string& args,
 }
 #endif
 
-// The bucket order ComputeCatalogFingerprint's callers must emit in
-// (the generated project.h's exact sequence): scenes, textures,
-// meshes, sounds, shaders, gi — id-sorted within.
-int KindBucket(const std::string& kind) {
-	if (kind == "scene") return 0;
-	if (kind == "texture") return 1;
-	if (kind == "mesh") return 2;
-	if (kind == "sound") return 3;
-	if (kind == "shader") return 4;
-	if (kind == "gi") return 5;
-	return 6;
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -345,49 +332,25 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	app::ProjectRuntime& rt = *rtOpt;
-	Check(!rt.Manifest().assets.empty(), "e2e.catalog-rows-present");
+	Check(!rt.Manifest().assets.empty()
+		&& !rt.Registry().Records().empty(),
+		"e2e.manifest-still-mirrors-records");
 
-	// The compiled-catalog contract, reconstructed from the DEPLOYED
-	// manifest (the row + fingerprint fold the generated project.h
-	// emits; GameProject.exe attaches the same at boot). The deployed
-	// fingerprint must equal the fold over the [ids] rows in the
-	// generator's emission order — IDENTITY ONLY (id, kind, path; no
-	// package addressing in the fold).
+	// The compiled-catalog contract, reconstructed from THE REGISTRY's
+	// records (the deployed authority — the paks' own identity tables,
+	// never the manifest's [ids] mirror). The compiled fingerprint must
+	// equal the registry's canonical fold, and the gate's row-by-row
+	// proof must pass (GameProject.exe attaches the same at boot).
 	{
-		std::vector<const smvk::AppManifestAsset*> rows;
-		for (const auto& a : rt.Manifest().assets) {
-			rows.push_back(&a);
-		}
-		std::stable_sort(rows.begin(), rows.end(),
-			[](const smvk::AppManifestAsset* x,
-				const smvk::AppManifestAsset* y) {
-				const int bx = KindBucket(x->kind);
-				const int by = KindBucket(y->kind);
-				if (bx != by) {
-					return bx < by;
-				}
-				return x->id < y->id;
-			});
-		std::vector<uint64_t> ids;
-		std::vector<uint8_t> kinds;
-		std::vector<const char*> paths;
 		std::vector<app::ProjectRuntime::CompiledAssetDesc> descs;
-		for (const smvk::AppManifestAsset* row : rows) {
-			uint8_t kindByte = 0;
-			if (!smvk::CatalogKindFromString(row->kind, kindByte)) {
-				Check(false, "e2e.row-identity-sound");
-				continue;
-			}
-			ids.push_back(row->id);
-			kinds.push_back(kindByte);
-			paths.push_back(row->path.c_str());
-			descs.push_back({ row->id, kindByte, row->path,
-				row->name });
-		}
-		Check(descs.size() == rows.size(), "e2e.row-identity-sound");
-		const uint64_t fold = smvk::ComputeCatalogFingerprint(
-			ids.data(), kinds.data(), paths.data(), ids.size());
-		Check(fold != 0 && fold == rt.Manifest().catalogFingerprint,
+		for (const tour::asset::ContentRecord& rec :
+				rt.Registry().Records())
+			descs.push_back({ rec.id, rec.kind, rec.path,
+				rec.sceneName });
+		Check(!descs.empty(), "e2e.catalog-rows-present");
+		const uint64_t fold = rt.Registry().RecordFingerprint();
+		Check(fold != 0
+			&& fold == rt.Manifest().catalogFingerprint,
 			"e2e.catalog-fingerprint-matches-deployment");
 		std::string aErr;
 		Check(rt.AttachCompiledCatalog(descs.data(), descs.size(), fold,
@@ -397,6 +360,14 @@ int main(int argc, char** argv) {
 		if (!aErr.empty()) {
 			std::cout << "  attach err: " << aErr << "\n";
 		}
+		// THE AUTHORITY FLIP: the manifest's [ids] mirror is
+		// vestigial — tamper a row's PATH in the mirror and the gate
+		// still passes (the registry's records, from the paks' own
+		// tables, are the deployed truth the compiled game proves
+		// itself against).
+		// (The paks are the authority: nothing to tamper in-process —
+		// the runtime never reads the mirror. The records here ARE the
+		// pak-derived table.)
 	}
 
 	// Every VFS-servable row reads its bytes through its pak; the SOUND

@@ -633,6 +633,20 @@ void TestProjectRuntime() {
 		w.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
 			smvk::BuildTexturePayload(vfsPath, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktx)));
+		// THE PER-PAK IDENTITY TABLE (the "#ids" registry blob): the
+		// runtime reads the records from THE PAK (the discovery lane —
+		// the manifest's [ids] mirror is a vestigial compatibility
+		// field the runtime ignores).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x2000, smvk::kCatalogKindTexture, vfsPath, "" },
+			{ 0x3000, smvk::kCatalogKindMesh,
+				"content/models/s/rock.geometry", "" },
+			{ 0x1000, smvk::kCatalogKindScene,
+				"content/scenes/s.tour", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "shared.pak",
 			std::ios::binary | std::ios::trunc);
@@ -675,7 +689,10 @@ void TestProjectRuntime() {
 		// THE SELECTIVE LANE (SMP8 + the pager): an asset read on a pak
 		// NOBODY preloaded does ONE positional page read — no backend
 		// was ever created, no whole-image preload ran (the small-load
-		// acceptance contract).
+		// acceptance contract). The load-time DISCOVERY consumed one
+		// page first (the pak's own "#ids" identity table — the records
+		// come from THE PAK now), so the counters start at 1: the asset
+		// read is exactly ONE more.
 		{
 			Check(!rt->HasPak("shared.pak"),
 				"prt.pager-no-backend-preloaded");
@@ -687,16 +704,17 @@ void TestProjectRuntime() {
 				const auto stats = pager->PageStats();
 				const auto fileSize = fs::file_size(
 					fs::path(rt->PakPath("shared.pak")));
-				Check(stats.diskReads == 1
+				Check(stats.diskReads == 2 // discovery's #ids + the asset
 					&& stats.bytesRead > 0
 					&& stats.bytesRead < fileSize,
 					"prt.pager-selective-bytes");
 				// The cached pager is THE one the read used (the lazy
-				// cache): a second read attaches, no new disk read.
+				// cache): a second read attaches, no new disk read
+				// (the count stays at the discovery + first-read pair).
 				std::string rErr2;
 				auto again = rt->ReadAsset(0x2000, rErr2);
 				Check(again && *again == ktx
-					&& pager->PageStats().diskReads == 1,
+					&& pager->PageStats().diskReads == 2,
 					"prt.pager-second-read-attaches");
 			}
 		}
@@ -867,6 +885,18 @@ void TestProjectScenes() {
 			smvk::BuildTexturePayload(texPath, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktx)));
 		w.AddBlob(smvk::PakAssetKind::Sound, wavPath, wav);
+		// THE PER-PAK IDENTITY TABLE (the records the runtime reads —
+		// the manifest's [ids] mirror is vestigial): the scene row
+		// carries the cooked NAME (the id->scene join).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1000, smvk::kCatalogKindScene,
+				"content/scenes/church.tour", "Church" },
+			{ 0x2000, smvk::kCatalogKindTexture, texPath, "" },
+			{ 0x4000, smvk::kCatalogKindSound, wavPath, "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "one.pak", std::ios::binary
 			| std::ios::trunc);
@@ -879,6 +909,16 @@ void TestProjectScenes() {
 			NamedSceneBlob("Alpha"));
 		w.AddBlob(smvk::PakAssetKind::Scene, "recording/two-b",
 			NamedSceneBlob("Beta"));
+		// The scene row WITHOUT a name: the multi-scene pak refuses
+		// loudly at load time (the single-scene inference has no
+		// ground here — the exact refusal the battery pins).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1001, smvk::kCatalogKindScene,
+				"content/scenes/two.tour", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "two.pak", std::ios::binary
 			| std::ios::trunc);
@@ -1218,10 +1258,14 @@ void TestProjectScenes() {
 			// own source (the given pak path).
 			Check(rtD->PakPath("one.pak") == pakArgs[0],
 				"dsc.pakpath-uses-provider-source");
-			// No identity rows: id reads refuse loudly, never guess.
+			// The discovery session's paks CARRY identity tables now
+			// (the records come from the paks): ReadAsset by id serves
+			// through the DISCOVERED records (the manifest mirror is
+			// ignored — vestigial).
 			std::string iErr;
-			Check(!rtD->ReadAsset(0x2000, iErr) && !iErr.empty(),
-				"dsc.no-identity-rows-refused");
+			auto byId = rtD->ReadAsset(0x2000, iErr);
+			Check(byId && *byId == ktx && iErr.empty(),
+				"dsc.identity-rows-read-through-paks");
 			// ProjectScenes over the discovered session: the ctor's
 			// adopt-or-open walks PakNames (the session's providers,
 			// manifest or not).
@@ -1334,6 +1378,24 @@ void TestAssetManager() {
 			w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
 				smvk::WriteMeshPlanBlob(plan));
 		}
+		// THE PER-PAK IDENTITY TABLE (the records the runtime reads —
+		// the manifest's [ids] mirror is vestigial): the scene row
+		// carries the cooked NAME, the ghost family carries an
+		// identity but NO plan entry (the join's loud refusal).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1001, smvk::kCatalogKindScene,
+				"content/scenes/meshes.tour", "Meshes" },
+			{ 0x2000, smvk::kCatalogKindTexture, texPath, "" },
+			{ 0x3000, smvk::kCatalogKindMesh, treeFamily, "" },
+			{ 0x3001, smvk::kCatalogKindMesh, rockFamily, "" },
+			{ 0x3002, smvk::kCatalogKindMesh,
+				"content/models/ghost.geometry", "" },
+			{ 0x6000, smvk::kCatalogKindGi,
+				"content/gi/day.givolumemanifest", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "one.pak", std::ios::binary
 			| std::ios::trunc);

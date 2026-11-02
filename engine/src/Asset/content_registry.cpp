@@ -851,4 +851,39 @@ uint64_t ContentRegistry::PathKey(uint8_t kind,
 	return h;
 }
 
+uint64_t ContentRegistry::RecordFingerprint() const {
+	// The identity fold in CANONICAL emission order: kind-bucketed
+	// (the generator's bucket sequence — scene..gi), id-sorted within
+	// each bucket. The records' INSERTION order is whatever lane
+	// built the table (manifest adoption rows, per-pak discovery
+	// rows) — the fingerprint is over IDENTITY, and identity's order
+	// is the emission sequence, never the build order.
+	std::vector<const ContentRecord*> ordered;
+	ordered.reserve(m_records.size());
+	for (const ContentRecord& r : m_records)
+		ordered.push_back(&r);
+	std::stable_sort(ordered.begin(), ordered.end(),
+		[](const ContentRecord* x, const ContentRecord* y) {
+			if (x->kind != y->kind) {
+				// The generator's bucket order: scene, texture,
+				// mesh, sound, shader, gi (the kCatalogKind* ABI).
+				return x->kind < y->kind;
+			}
+			return x->id < y->id;
+		});
+	std::vector<uint64_t> ids;
+	std::vector<uint8_t> kinds;
+	std::vector<const char*> paths;
+	ids.reserve(ordered.size());
+	kinds.reserve(ordered.size());
+	paths.reserve(ordered.size());
+	for (const ContentRecord* r : ordered) {
+		ids.push_back(r->id);
+		kinds.push_back(r->kind);
+		paths.push_back(r->path.c_str());
+	}
+	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
+		paths.data(), ids.size());
+}
+
 } // namespace tour::asset

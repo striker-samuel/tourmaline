@@ -303,6 +303,17 @@ public:
 	}
 	// The record count (tooling).
 	[[nodiscard]] size_t RecordCount() const { return m_records.size(); }
+	// THE RECORD FINGERPRINT: the identity fold over the records in
+	// CANONICAL emission order (kind-bucketed: scenes, textures,
+	// meshes, sounds, shaders, gi; id-sorted within — the generator's
+	// exact emission sequence), folding (id, kind, path) through the
+	// ONE shared fold (appmanifest.h's ComputeCatalogFingerprint).
+	// This is the DEPLOYED half of the compiled-catalog contract: a
+	// game's compiled CatalogFingerprint proves itself against THIS,
+	// whatever lane built the record table (manifest adoption or pak
+	// discovery — the records are the authority, never the manifest's
+	// [ids] mirror).
+	[[nodiscard]] uint64_t RecordFingerprint() const;
 
 private:
 	// Provider lookup by mount name (searches overrides then base).

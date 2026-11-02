@@ -38,14 +38,20 @@ std::optional<ProjectRuntime> ProjectRuntime::Load(
 	rt.m_baseDir =
 		fs::path(tappPath).lexically_normal().parent_path()
 			.generic_string();
-	// Adopt the manifest into the registry (the base providers —
-	// every listed pak in manifest order — + the record table). A
-	// manifest whose rows do not adopt (an unlisted pak, a duplicate
-	// identity, an unnormalizable path) fails the launch visibly.
-	if (!rt.m_registry.AdoptManifest(rt.m_manifest, rt.m_baseDir, err)) {
-		err = "the manifest '" + tappPath + "' does not adopt into the"
-			" content registry: " + err;
-		return std::nullopt;
+	// THE RECORDS COME FROM THE PAKS (the discovery lane): every
+	// listed pak joins through its OWN "#ids" identity table — the
+	// manifest's [ids] mirror is IGNORED (the paks are the authority
+	// since the per-pak identity table landed; the manifest is the
+	// RELEASE POINTER: entry + [paks]). A listed pak without its
+	// table fails the launch loudly (recook — the build writes the
+	// tables; an old pre-table deployment rebuilds).
+	for (const std::string& pak : rt.m_manifest.paks) {
+		if (!rt.m_registry.DiscoverPak(pak, rt.PakPath(pak), err,
+				/*requireIdentityBlob=*/true)) {
+			err = "the manifest '" + tappPath
+				+ "' does not join the content session: " + err;
+			return std::nullopt;
+		}
 	}
 	return rt;
 }
@@ -214,52 +220,52 @@ bool ProjectRuntime::AttachCompiledCatalog(
 			" count";
 		return false;
 	}
-	// The fast gate: the manifest's fingerprint line (when present)
-	// must equal the compiled fold. The row-by-row pass below is the
-	// proof; this is the loud early answer.
-	if (m_manifest.catalogFingerprint != 0
-			&& m_manifest.catalogFingerprint != fingerprint) {
+	// The fast gate: the REGISTRY's own identity fold (the deployed
+	// half — the record table is the authority, whatever lane built
+	// it: manifest adoption or pak discovery). A mismatch is a
+	// version skew between the game binary and its content (recook
+	// the project or rebuild the game; fail loudly, never guess).
+	const uint64_t deployed = m_registry.RecordFingerprint();
+	if (fingerprint != 0 && deployed != 0 && deployed != fingerprint) {
 		char buf[160];
 		std::snprintf(buf, sizeof(buf),
 			"catalog fingerprint mismatch: the game was compiled"
 			" against 0x%llX, the deployed content carries 0x%llX"
 			" (recook the project or rebuild the game)",
 			static_cast<unsigned long long>(fingerprint),
-			static_cast<unsigned long long>(
-				m_manifest.catalogFingerprint));
+			static_cast<unsigned long long>(deployed));
 		err = buf;
 		return false;
 	}
-	// The proof: every compiled row resolves through the manifest.
+	// The proof: every compiled row resolves through the REGISTRY's
+	// records (the identity authority) — IDENTITY ONLY (id, kind,
+	// path; the package addressing is selection state, never part of
+	// the catalog's contract).
 	for (size_t i = 0; i < assetCount; ++i) {
 		const CompiledAssetDesc& a = assets[i];
-		const smvk::AppManifestAsset* row = m_manifest.FindAsset(a.id);
-		if (!row) {
+		const tour::asset::ContentRecord* record =
+			m_registry.Find(a.id);
+		if (!record) {
 			err = "the compiled catalog carries id 0x"
 				+ std::to_string(a.id)
-				+ " but the deployed manifest does not (a version"
+				+ " but the deployed content does not (a version"
 				" skew — recook the project or rebuild the game)";
 			return false;
 		}
-		uint8_t kind = 0;
-		if (!smvk::CatalogKindFromString(row->kind, kind) || kind != a.kind) {
+		if (record->kind != a.kind) {
 			err = "the compiled catalog's id 0x" + std::to_string(a.id)
 				+ " is kind " + std::to_string(a.kind)
-				+ " but the deployed manifest says '"
-				+ (row->kind.empty() ? "?" : row->kind) + "'";
+				+ " but the deployed content says kind "
+				+ std::to_string(record->kind);
 			return false;
 		}
-		if (row->path != a.path) {
+		if (record->path != a.path) {
 			err = "the compiled catalog's id 0x" + std::to_string(a.id)
 				+ " moved: '" + std::string(a.path) + "' compiled,"
-				+ " '" + row->path + "' deployed";
+				+ " '" + record->path + "' deployed";
 			return false;
 		}
 	}
-	if (m_manifest.catalogFingerprint == 0)
-		std::cerr << "[ProjectRuntime] the manifest carries no catalog"
-			" fingerprint line (a pre-contract deployment) - the"
-			" compiled catalog validated row-by-row only\n";
 	m_compiledCatalogAttached = true;
 	return true;
 }
