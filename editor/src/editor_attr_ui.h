@@ -32,6 +32,20 @@
 
 namespace editor::attr {
 
+// Scoped component/instance identity. Use stable semantic keys, not display
+// labels or positions in a list. RAII keeps the ImGui ID stack balanced when
+// an inspector section returns early.
+class ScopedID {
+public:
+	explicit ScopedID(const char* key) { ImGui::PushID(key); }
+	explicit ScopedID(int key) { ImGui::PushID(key); }
+	~ScopedID() { ImGui::PopID(); }
+
+	ScopedID(const ScopedID&) = delete;
+	ScopedID& operator=(const ScopedID&) = delete;
+};
+
+
 // The label column width: MEASURED against the window's content width
 // (42% clamped to [90, 220] px — the two-column property contract at
 // any inspector width/DPI; a long label truncates with a full-text
@@ -87,7 +101,7 @@ inline bool Bool(const char* name, bool v, const char* hint) {
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive,
 			ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 	}
-	const bool clicked = ImGui::Button(v ? "on" : "off",
+	const bool clicked = ImGui::Button(v ? "on###value" : "off###value",
 		ImVec2(52.0f, 0.0f));
 	if (v)
 		ImGui::PopStyleColor(3);
@@ -177,7 +191,7 @@ inline Vec3Result Vec3(const char* name, float v[3], float speed,
 	// id (survives frames; per-window like every ImGui open state).
 	const ImGuiID openId = ImGui::GetID("vec3open");
 	bool open = ImGui::GetStateStorage()->GetBool(openId, true);
-	if (ImGui::Button(open ? "-##vec3" : "+##vec3", ImVec2(18.0f, 0.0f))) {
+	if (ImGui::Button(open ? "-###vec3" : "+###vec3", ImVec2(18.0f, 0.0f))) {
 		open = !open;
 		ImGui::GetStateStorage()->SetBool(openId, open);
 	}

@@ -1430,7 +1430,7 @@ namespace editor {
 						? " [locator]" : "",
 					IsRefPlaceholder(n) ? " [ref]" : "",
 					!IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
-				if (ImGui::Selectable(label, sel)) {
+				if (ImGui::Selectable((std::string(label) + "###outliner_node").c_str(), sel)) {
 					// Click = replace; ctrl-click = toggle one;
 					// shift-click = contiguous visible range.
 					if (ImGui::GetIO().KeyShift)
@@ -1512,7 +1512,7 @@ namespace editor {
 			IsRefPlaceholder(node) ? " [ref]" : "",
 			!IsVisibleNode(scene, int(node))
 			? (IsHiddenNode(scene, int(node)) ? " [hidden]" : " [hidden*]") : "");
-		const bool open = ImGui::TreeNodeEx(label, flags);
+		const bool open = ImGui::TreeNodeEx((std::string(label) + "###outliner_node").c_str(), flags);
 		// Drag source (reparent by drop).
 		if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
 			ImGui::SetDragDropPayload("EDITOR_NODE", &node, sizeof(node));
@@ -1851,6 +1851,7 @@ namespace editor {
 	}
 
 	void EditorApp::DrawGiVolumeSection(uint32_t node) {
+		const attr::ScopedID componentId("gi_volume");
 		// Authored GI volume on this node (editor GI volume node):
 		// box shape from the node's TRS (translate = center, scale = full
 		// extents), bake params below. Undoable SetGiVolumeAttr edits persisted
@@ -2013,6 +2014,7 @@ namespace editor {
 	}
 
 	void EditorApp::DrawTriggerVolumeSection(uint32_t node) {
+		const attr::ScopedID componentId("trigger_volume");
 		if (!m_world || node >= m_world->scene.hierarchy.size())
 			return;
 		Scene& scene = m_world->scene;
@@ -2067,6 +2069,7 @@ namespace editor {
 	}
 
 	void EditorApp::DrawAudioRoomSection(uint32_t node) {
+		const attr::ScopedID componentId("audio_room");
 	if (!m_world)
 		return;
 	Scene& scene = m_world->scene;
@@ -2226,6 +2229,7 @@ namespace editor {
 	}
 }
 void EditorApp::DrawExportSettingsSection(uint32_t node) {
+		const attr::ScopedID componentId("export_settings");
 		// The scene's exportSettings node: the WorldSettings-style EXPORT
 		// CONFIG page (cook knobs). Every edit is an undoable SetExportAttr
 		// command persisted as a setExportAttr tour line; Cook.exe/Pak.exe
@@ -2391,6 +2395,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	}
 
 	void EditorApp::DrawCubemapSection(uint32_t node) {
+		const attr::ScopedID componentId("cubemap");
 		// Authored cubemap capture on this node (editor cubemap node): a
 		// PINNED specular probe. Position = the node's translate (gizmo);
 		// the influence radius below. Baked by the cook's --cubemap stage
@@ -2442,6 +2447,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	}
 
 	void EditorApp::DrawCamSection(uint32_t node) {
+		const attr::ScopedID componentId("camera");
 		// Authored camera on this node (editor camera node): the LENS below;
 		// the pose is the node's transform (gizmo), forward = node -Z in
 		// world. Undoable SetCamAttr edits persisted as setCamAttr tour
@@ -2534,6 +2540,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	}
 
 	void EditorApp::DrawAudioSection(uint32_t node) {
+		const attr::ScopedID componentId("audio_source");
 		// Authored audio source on this node (the emitter association):
 		// the payload knobs + the SOUND SLOTS below — asset references,
 		// never playing voices (the runtime audio manager owns playback;
@@ -2776,6 +2783,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		Scene& scene = m_world->scene;
 		const uint32_t node = m_selected;
+		const attr::ScopedID nodeId(int(node));
 		if (m_selection.size() > 1)
 			ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
 				m_selection.size(), node);
@@ -2927,6 +2935,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// Cooked light on this node (KHR punctual, import or pak).
 		if (glm::vec3 aimWs(0.0f);
 			const ::SceneLight * li = FindNodeLight(node, &aimWs)) {
+			const attr::ScopedID lightId("light");
 			ImGui::Separator();
 			const char* tname = li->type == ::SceneLight::Type::Directional
 				? "Directional (sun)"
@@ -4358,6 +4367,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	// flags but no slots, the focus page had scalars+layers in the old
 	// pre-revamp presentation. Now one body, the attr stubs everywhere.)
 	void EditorApp::DrawMaterialBody(uint32_t mat) {
+		const attr::ScopedID materialScope("material_body");
+		const attr::ScopedID materialId(int(mat));
 		smvk::Material* m = m_world ? m_world->GetMaterial(mat) : nullptr;
 		if (!m) {
 			ImGui::TextDisabled("Material resolve failed.");
@@ -6140,11 +6151,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// view (the same file listed twice through different views, or
 		// any future collision) can no longer collide ids (the red debug
 		// flash the filters showed).
-		int tileSeq = 0;
-		auto tile = [&](const Entry& e, int uid) {
-			ImGui::PushID(uid);
+		// Tile identity uses stable asset data, not its changing sort position.
+		auto tile = [&](const Entry& e) {
 			ImGui::PushID(e.abs.data());
+			ImGui::PushID(e.name.data());
 			ImGui::PushID(e.back ? 1 : 0);
+			ImGui::PushID(e.vfilter);
 			// The SET highlight (the multi-selection); the primary
 			// (m_assetsSel) is redundant inside the set on plain clicks.
 			// NAVIGATION CHROME NEVER HIGHLIGHTS: the ".." back tile
@@ -6438,18 +6450,19 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::PopID();
 			ImGui::PopID();
 			ImGui::PopID();
+			ImGui::PopID();
 		};
 		for (const Entry& e : dirs) {
 			if (col != 0)
 				ImGui::SameLine(0.0f, 4.0f);
-			tile(e, tileSeq++);
+			tile(e);
 			if (++col == cols)
 				col = 0;
 		}
 		for (const Entry& e : files) {
 			if (col != 0)
 				ImGui::SameLine(0.0f, 4.0f);
-			tile(e, tileSeq++);
+			tile(e);
 			if (++col == cols)
 				col = 0;
 		}

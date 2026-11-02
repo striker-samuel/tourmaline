@@ -94,6 +94,8 @@ void EditorApp::DirtyPlacementOnEdit() {
 }
 
 void EditorApp::DrawPlacementParams(GraphDoc& doc, PNode& n) {
+	// A graph node's parameters keep their own state regardless of selection.
+	const attr::ScopedID graphNodeId(int(n.id));
 	ImGui::Text("%s  (#%u)", NodeKindName(n.kind), n.id);
 	ImGui::Separator();
 	auto& F = n.f;
