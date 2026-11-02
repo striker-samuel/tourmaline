@@ -17,7 +17,7 @@
 
 namespace editor {
 namespace {
-enum class ColumnKind { Float, UInt, Bool };
+enum class ColumnKind { Float, UInt, Bool, String };
 struct Column {
 	const char* title;
 	const char* attr;
@@ -42,6 +42,11 @@ constexpr Column kRoom[] = {
 	{"RT60", "rt60", ColumnKind::Float, 0.15f, 8},
 	{"Damping", "damping", ColumnKind::Float, 0, 1},
 	{"Transition", "transitionSeconds", ColumnKind::Float, 0.001f, 10},
+};
+constexpr Column kTrigger[] = {
+	{"Enabled", "enabled", ColumnKind::Bool, 0, 1},
+	{"Once", "once", ColumnKind::Bool, 0, 1},
+	{"Event tag", "tag", ColumnKind::String, 0, 0},
 };
 constexpr Column kSource[] = {
 	{"Volume", "volume", ColumnKind::Float, 0, 16},
@@ -74,7 +79,7 @@ void EditorApp::DrawComponentTable() {
 	// just like choosing point/primitive/detail attributes in Houdini.
 	static int kind = 0;
 	ImGui::SetNextItemWidth(170);
-	ImGui::Combo("Component", &kind, "GI Volume\0Audio Room\0Audio Source\0");
+	ImGui::Combo("Component", &kind, "GI Volume\0Audio Room\0Audio Source\0Trigger Volume\0");
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(220);
 	ImGui::InputTextWithHint("##component_filter", "Filter node name or ID",
@@ -85,26 +90,31 @@ void EditorApp::DrawComponentTable() {
 	ImGui::SameLine();
 	ImGui::TextDisabled("Enter: commit cell  |  Ctrl+Z: undo");
 
-	const Column* columns = kind == 0 ? kGi : kind == 1 ? kRoom : kSource;
+	const Column* columns = kind == 0 ? kGi : kind == 1 ? kRoom
+		: kind == 2 ? kSource : kTrigger;
 	const size_t count = kind == 0 ? sizeof(kGi) / sizeof(kGi[0])
 		: kind == 1 ? sizeof(kRoom) / sizeof(kRoom[0])
-		: sizeof(kSource) / sizeof(kSource[0]);
+		: kind == 2 ? sizeof(kSource) / sizeof(kSource[0])
+		: sizeof(kTrigger) / sizeof(kTrigger[0]);
 	const EditVerb verb = kind == 0 ? EditVerb::SetGiVolumeAttr
-		: kind == 1 ? EditVerb::SetAudioRoomAttr : EditVerb::SetAudioAttr;
+		: kind == 1 ? EditVerb::SetAudioRoomAttr
+		: kind == 2 ? EditVerb::SetAudioAttr : EditVerb::SetTriggerVolumeAttr;
 
 	auto read = [&](uint32_t node, const char* attr, glm::vec4& vec,
 			double& num, bool& flag, std::string& name) {
 		switch (kind) {
 		case 0: return ReadNodeGiVolumeAttr(node, attr, vec, num, name);
 		case 1: return ReadNodeAudioRoomAttr(node, attr, vec, num, flag, name);
-		default: return ReadNodeAudioSourceAttr(node, attr, vec, num, flag, name);
+		case 2: return ReadNodeAudioSourceAttr(node, attr, vec, num, flag, name);
+		default: return ReadNodeTriggerVolumeAttr(node, attr, num, flag, name);
 		}
 	};
 	auto hasComponent = [&](uint32_t node) {
 		switch (kind) {
 		case 0: return FindGiVolume(scene, node) != nullptr;
 		case 1: return tour::scene::FindAudioRoom(scene, node) != nullptr;
-		default: return FindAudioSource(scene, node) != nullptr;
+		case 2: return FindAudioSource(scene, node) != nullptr;
+		default: return tour::scene::FindTriggerVolume(scene, node) != nullptr;
 		}
 	};
 	std::vector<uint32_t> nodes;
@@ -160,7 +170,12 @@ void EditorApp::DrawComponentTable() {
 						if (columns[by - 2].kind == ColumnKind::Bool) {
 							an = af ? 1 : 0; bn = bf ? 1 : 0;
 						}
-						less = an < bn; greater = an > bn;
+						if (columns[by - 2].kind == ColumnKind::String) {
+							std::string as, bs;
+							read(a, columns[by - 2].attr, v, an, af, as);
+							read(b, columns[by - 2].attr, v, bn, bf, bs);
+							less = as < bs; greater = as > bs;
+						} else { less = an < bn; greater = an > bn; }
 					}
 					return descending ? greater : less;
 				});
@@ -177,8 +192,7 @@ void EditorApp::DrawComponentTable() {
 			ImGui::TableSetColumnIndex(0);
 			char idText[32];
 			std::snprintf(idText, sizeof(idText), "%u", node);
-			if (ImGui::Selectable(idText, m_selected == node,
-					ImGuiSelectableFlags_SpanAllColumns)) {
+			if (ImGui::Selectable(idText, m_selected == node)) {
 				m_selected = node;
 				m_worldSelected = false;
 				m_selection.clear();
@@ -200,7 +214,13 @@ void EditorApp::DrawComponentTable() {
 				bool committed = false;
 				double value = oldNum;
 				bool flagValue = oldFlag;
-				if (col.kind == ColumnKind::Bool)
+				char stringValue[257];
+				std::snprintf(stringValue, sizeof(stringValue), "%s", oldText.c_str());
+				if (col.kind == ColumnKind::String) {
+					committed = ImGui::InputText("##cell", stringValue,
+						sizeof(stringValue), ImGuiInputTextFlags_EnterReturnsTrue);
+				}
+				else if (col.kind == ColumnKind::Bool)
 					committed = ImGui::Checkbox("##cell", &flagValue);
 				else if (col.kind == ColumnKind::UInt) {
 					int v = int(oldNum);
@@ -223,10 +243,13 @@ void EditorApp::DrawComponentTable() {
 					cmd.beforeText = oldText;
 					cmd.number = value;
 					cmd.afterFlag = flagValue;
+					if (col.kind == ColumnKind::String)
+						cmd.afterText = stringValue;
 					switch (kind) {
 					case 0: cmd.giVolumeAttr = col.attr; break;
 					case 1: cmd.roomAttr = col.attr; break;
-					default: cmd.audioAttr = col.attr; break;
+					case 2: cmd.audioAttr = col.attr; break;
+					default: cmd.triggerVolumeAttr = col.attr; break;
 					}
 					Do(cmd);
 				}
