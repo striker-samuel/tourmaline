@@ -21,6 +21,7 @@
 
 #include "editor_asset_ops.h"
 #include "editor_asset_browser_nav.h"
+#include "editor_live_preview_policy.h"
 #include "editor_asset_inspect.h"
 #include "editor_watch_routes.h"
 
@@ -341,6 +342,40 @@ void TestAssetInspectorFallback() {
 	fs::remove_all(dir, ec);
 }
 
+void TestLiveBakedPreviewRouting() {
+	enum class Mode { Lit, Baked, Unlit };
+	const Mode normal[4] = { Mode::Lit, Mode::Unlit,
+		Mode::Unlit, Mode::Unlit };
+	const auto selected = [](const Mode* modes, int count, int active) {
+		return editor::SelectLivePreviewViewport(count, active,
+			[&](int vp) { return modes[vp]; }, Mode::Lit, Mode::Baked);
+	};
+	Check(selected(normal, 1, 0) == 0,
+		"preview.single.lit-hosts");
+	Check(selected(normal, 4, 3) == 0,
+		"preview.quad.lit-stays-in-0");
+	const Mode activeBaked[4] = { Mode::Lit, Mode::Unlit,
+		Mode::Baked, Mode::Unlit };
+	Check(selected(activeBaked, 4, 2) == 2,
+		"preview.quad.active-baked-hosts");
+	Check(selected(activeBaked, 4, 1) == 2,
+		"preview.quad.inactive-baked-stays-hosted");
+	const Mode noLit[4] = { Mode::Unlit, Mode::Unlit,
+		Mode::Unlit, Mode::Unlit };
+	Check(selected(noLit, 1, 0) == -1,
+		"preview.unlit-uses-editor-path");
+	const Mode noLitBaked[4] = { Mode::Unlit, Mode::Baked,
+		Mode::Unlit, Mode::Unlit };
+	Check(selected(noLitBaked, 4, 1) == 1,
+		"preview.baked-without-lit-hosts");
+	const Mode twoBaked[4] = { Mode::Baked, Mode::Baked,
+		Mode::Unlit, Mode::Unlit };
+	Check(selected(twoBaked, 4, 1) == 1,
+		"preview.multiple-baked-prefers-active");
+	Check(selected(normal, 0, 0) == -1,
+		"preview.zero-views");
+}
+
 } // namespace
 
 int main() {
@@ -353,6 +388,7 @@ int main() {
 	TestVirtualFolderLocation();
 	TestAssetBrowserSelectionClears();
 	TestAssetInspectorFallback();
+	TestLiveBakedPreviewRouting();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
