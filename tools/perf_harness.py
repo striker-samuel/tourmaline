@@ -166,7 +166,8 @@ def main(argv=None):
             report["summary"] = {"median_ms": statistics.median(samples), "mean_ms": statistics.mean(samples),
                                  "min_ms": min(samples), "max_ms": max(samples),
                                  "estimated_fps": 1000 / statistics.median(samples)}
-        report["ok"] = not failed\n        if args.mode in ("capture", "trace"):\n            report["note"] = "Nsight runs are instrumented; do not compare their FPS against bench mode. Inspect the Nsight output/log for capture artifacts."
+        report["ok"] = not failed
+        if args.mode in ("capture", "trace"):\n            report["note"] = "Nsight runs are instrumented; do not compare their FPS against bench mode. Inspect the Nsight output/log for capture artifacts."
     finally:
         (out / "result.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return 1 if failed else 0
