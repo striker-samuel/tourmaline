@@ -284,3 +284,47 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
      of RHI types beyond R8's regex vocabulary; the declaration-level
      finding-3 work above is DONE by hand), and the bridge-call-site
      retirement (mechanical, endless, opportunistic).
+
+(Content architecture, LANDED + the deferred tail — the content-session
+branch) The consolidated content architecture landed: tour::asset::
+ContentRegistry (the ONE resolution authority — id and path forms
+converge), ProjectRuntime as the SESSION over it, per-pak "#ids"
+identity tables (the build appends them post-cook), the multi-pak/
+--scene .tapp-free lanes, the overlay no longer a content source on
+any runtime path, app::RunGame (the run<Game> boundary, the FATAL
+compiled-catalog gate, composed element lists), pakIndex gone from
+the catalog (identity is id+kind+path), and appmanifest 2 (the .tapp
+is a six-line RELEASE POINTER: entry + [paks]; the [ids] mirror died
+loudly). DEFERRED, deliberately:
+
+1. The SHADER LIBRARY keeps its own OverlayVfs (a protected-domain
+   decision: the dev override tree + engine-shaders.pak + MountPak mod
+   packages, precedence -20..0 — shader paths never collide with the
+   catalog's resolution domain, so the overlay is not competing with
+   the registry's authority. Migrating it onto the provider mechanism
+   wants a session available at engine-init time; block on real need).
+2. MeshPlanRef still keys by MOUNT INDEX (project_plans.h's pakIndex
+   → the manifest's [paks] order). It is a PRIVATE contract, validated
+   fail-closed (AttachCompiledPlans folds the deployed layouts; a
+   count or fold mismatch is a loud abort, never a dynamic fallback) —
+   the compiled plans never claimed to be identity. The
+   provider-relative hint shape (resolve the provider first, validate
+   kind + layout, then the direct slot) is the follow-up if modded
+   content ever needs to invalidate plans without recompiling.
+3. LIVE MOD TOGGLING: providers toggle by name with generation bumps
+   (between-launches semantics; loaded resources never mutate), but
+   the coordinator that applies a toggle to a LIVE scene at a safe
+   boundary (scene replacement, in-use resource reloads) is not built
+   — the ownership registry (ProjectScenes) + the provider generation
+   are the machinery that would drive it.
+4. INSTALLER-LEVEL RELEASE MANAGEMENT: appmanifest 2 IS the atomic
+   pointer to a complete generation (entry + [paks], written last,
+   renamed over atomically) — the release-root/pointer-file
+   indirection (an installer's current-release directory or an atomic
+   pointer file) composes on top of exactly that shape when
+   multi-generation deployments need it.
+
+Standing pre-merge gate for the branch: the golden/dev-GPU pass
+(bistro/sponza captures + the sample's visual launch) — the headless
+suite + the live smokes on the dev machine covered everything else.
+
