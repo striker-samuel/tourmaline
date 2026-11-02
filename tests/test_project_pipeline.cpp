@@ -3607,6 +3607,39 @@ void TestProjectHeaderStamp() {
 			gen.generic_string(), t, wrote, err)
 		&& !wrote,
 		"stamp.unchanged-skip");
+	// A developer editing the checked-in header cannot make that edit
+	// stick: the next normal ids pass replaces the entire C++ body
+	// with the generator\'s output. No forced --stamp required.
+	{
+		const fs::path edited = tmp / "edited" / "project.h";
+		fs::create_directories(edited.parent_path(), ec);
+		bool editedWrote = false;
+		Check(smvk::project::WriteProjectHeaderIfChanged(
+				edited.generic_string(), first, editedWrote, err)
+			&& editedWrote, "stamp.manual-edit-setup");
+		{
+			std::ofstream f(edited, std::ios::binary | std::ios::trunc);
+			f << "#define USER_EDIT_MUST_NOT_SURVIVE 1\\n" << first;
+		}
+		std::string repaired;
+		smvk::project::GenerationStamp repairedStamp;
+		bool repairedChanged = false;
+		smvk::project::ComposeProjectHeader(c, assets, paks,
+			edited.generic_string(), false, repaired, repairedStamp,
+			repairedChanged);
+		Check(repairedChanged && repairedStamp.generation == 2
+			&& repaired.find("USER_EDIT_MUST_NOT_SURVIVE")
+				== std::string::npos,
+			"stamp.manual-edit-replaced");
+		editedWrote = false;
+		Check(smvk::project::WriteProjectHeaderIfChanged(
+				edited.generic_string(), repaired, editedWrote, err)
+			&& editedWrote, "stamp.manual-edit-rewritten");
+		std::ifstream onDisk(edited, std::ios::binary);
+		const std::string actual((std::istreambuf_iterator<char>(onDisk)),
+			std::istreambuf_iterator<char>());
+		Check(actual == repaired, "stamp.manual-edit-disk-canonical");
+	}
 	// Forced (--stamp / the <Name>_stamp target): a NEW generation
 	// every run, changed content or not.
 	smvk::project::ComposeProjectHeader(c, assets, paks,
