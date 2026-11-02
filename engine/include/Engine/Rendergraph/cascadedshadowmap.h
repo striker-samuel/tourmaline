@@ -105,7 +105,7 @@ struct FogShadowSpdPush {
 	uint64_t counter = 0;
 	uint32_t width = 0, height = 0, mipCount = 0, groupCount = 0;
 };
-static_assert(sizeof(FogShadowSpdPush) == 88);
+static_assert(sizeof(FogShadowSpdPush) == 96);
 
 struct CascadedShadowAtlas {
 	Holder<ImageHandle> image;
