@@ -10,6 +10,9 @@
 
 #include <Engine/Asset/content_registry.h>
 
+#include <Engine/Asset/content_registry.h>
+
+#include <algorithm>
 #include <filesystem>
 #include <sstream>
 
@@ -647,6 +650,63 @@ std::vector<std::string> ContentRegistry::ProvidersFor(uint8_t kind,
 				out.push_back(p.name);
 		}
 	}
+	return out;
+}
+
+std::vector<std::string> ContentRegistry::ListPathsUnder(
+	const std::string& prefix) {
+	// The union across every ENABLED provider, deduplicated + sorted
+	// (OverlayVfs::ListDir's semantics): the child path "prefix/<next
+	// segment>" per provider — a loose tree lists its real children,
+	// a pak its VFS-addressable TOC entries. The anim-clip fallback's
+	// legacy hunt + tooling; one level, prefixed, read-only.
+	const std::string norm = smvk::vfs::Normalize(prefix);
+	if (norm.empty())
+		return {};
+	const std::string prefixSlash = norm + "/";
+	std::vector<std::string> out;
+	const auto addPakReader = [&](const PakReader& reader) {
+		// The VFS-addressable kinds (pak.h's interop contract) — the
+		// same set PakBackend::ListDir unions.
+		for (const PakAssetKind kind :
+				{ PakAssetKind::Texture, PakAssetKind::Sound,
+					PakAssetKind::Shader }) {
+			for (const PakTocEntry* e : reader.BlobsOfKind(kind)) {
+				const std::string& p = e->path;
+				if (p.size() <= prefixSlash.size()
+						|| p.compare(0, prefixSlash.size(), prefixSlash)
+							!= 0)
+					continue;
+				const std::string rest = p.substr(prefixSlash.size());
+				const size_t slash = rest.find('/');
+				out.push_back(slash == std::string::npos
+					? p : prefixSlash + rest.substr(0, slash));
+			}
+		}
+	};
+	for (std::deque<ContentProvider>* list :
+			{ &m_overrides, &m_base }) {
+		for (ContentProvider& p : *list) {
+			if (!p.enabled)
+				continue;
+			switch (p.type) {
+			case ContentProvider::Type::Loose:
+				if (p.loose)
+					for (const smvk::VfsPath& e :
+							p.loose->ListDir(norm))
+						out.push_back(e);
+				break;
+			case ContentProvider::Type::Pak:
+				if (p.backend)
+					addPakReader(p.backend->Reader());
+				else if (smvk::PakPager* pager = PagerOf(p))
+					addPakReader(pager->Reader());
+				break;
+			}
+		}
+	}
+	std::sort(out.begin(), out.end());
+	out.erase(std::unique(out.begin(), out.end()), out.end());
 	return out;
 }
 

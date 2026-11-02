@@ -70,7 +70,16 @@
   order, reverse detach) replaced the single `extraElement` slot —
   game elements compose standalone, never nested lifecycle-forwarding
   wrappers (Sample 04: the audio element + the ProjectLit demo beside
-  it).
+  it). **THE OVERLAY IS NO LONGER A CONTENT SOURCE on any runtime
+  path**: the anim-clip fallback (the last overlay read —
+  AttachClips/PostLoadTail ride `ReadAssetPath` +
+  `ContentRegistry::ListPathsUnder`, the ONE enumeration surface:
+  the provider union under a prefix, one level, read-only), the
+  legacy single-`--pak` lane (its own session via lenient discovery
+  + adoption), and `LoadProjectWorld`'s cross-pak resolver all read
+  through the session. The world-source callback's vfs stays as the
+  ENGINE's protocol surface only (the renderer hands the callback a
+  vfs; hosts mount their paks into it — nothing READS it anymore).
 
 - **DeployCheck** (`app/src/DeployCheck.h`): the deployment validation
   gate, pre-graphics in the `--project` launch — every manifest-listed

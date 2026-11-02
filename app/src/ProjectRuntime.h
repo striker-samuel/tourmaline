@@ -113,6 +113,12 @@ public:
 	// same provider precedence). The cross-pak texture resolver's lane.
 	std::optional<std::vector<uint8_t>> ReadAssetByPath(uint8_t kind,
 		const std::string& path, std::string& err);
+	// A path with NO catalog identity (anim clips, loose dev files,
+	// mod-added blobs): the same provider selection, probing every
+	// VFS-addressable kind. The anim-clip fallback's lane — the last
+	// host-side read that used to ride the overlay.
+	std::optional<std::vector<uint8_t>> ReadAssetPath(
+		const std::string& path, std::string& err);
 
 	// ---- override providers (mods / patches / dev trees) ---------------
 	// Registers an OVERRIDE provider with the registry: overrides

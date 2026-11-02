@@ -305,4 +305,12 @@ std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAssetByPath(
 	return m_registry.Read(kind, path, err);
 }
 
+std::optional<std::vector<uint8_t>> ProjectRuntime::ReadAssetPath(
+	const std::string& path, std::string& err) {
+	// The identity-free lane (anim clips, loose dev files, mod-added
+	// blobs): the same provider precedence, probing every
+	// VFS-addressable kind — the registry's ONE authority answers.
+	return m_registry.ReadPath(path, err);
+}
+
 } // namespace app

@@ -347,6 +347,30 @@ namespace app {
 				// the preload ladder resolves it; the Stage-6 pager needs
 				// the same absolute path).
 				launchPaks.push_back(ResolvePakOpenPath(cfg.cli.pakPath));
+				// THE SINGLE-PAK LANE'S SESSION (lenient discovery over
+				// the one archive — a legacy pak joins as a path-serving
+				// provider, no identity rows) + the loose override:
+				// EVERY content read on this path (the anim-clip
+				// fallback inside PostLoadTail) resolves through the
+				// SAME provider selection as every other lane — the
+				// host overlay is no longer a content source anywhere.
+				std::string dErr;
+				if (auto rt = app::ProjectRuntime::OpenDiscovered(
+						launchPaks, dErr,
+						/*requireIdentityBlob=*/false)) {
+					session = std::make_shared<app::ProjectRuntime>(
+						std::move(*rt));
+					if (!cfg.cli.noVfs) {
+						std::string oErr;
+						(void)session->AddLooseOverride("content",
+							"content", oErr);
+					}
+				}
+				else {
+					std::cerr << "[App] the content session failed: "
+						<< dErr << "\n";
+					return EXIT_FAILURE;
+				}
 				preloadFuture = std::make_shared<std::future<PakPreload>>(
 					KickPakPreload(launchPaks.back()));
 				std::cerr << "Scene: pak '" << cfg.cli.pakPath << "' (id '"
@@ -547,7 +571,8 @@ namespace app {
 						sceneIndex,
 						ctx,
 						contentVfs,
-						rendererRaw->GetTextureStreamer()
+						rendererRaw->GetTextureStreamer(),
+						*session
 						);
 				}
 				*worldHandle = world.get();

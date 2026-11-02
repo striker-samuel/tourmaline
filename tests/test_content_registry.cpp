@@ -584,6 +584,76 @@ int main() {
 			Check(base && *base == ktxDisc && d2Err.empty(),
 				"disc.toggle-reveals-discovered");
 		}
+		// ---- THE ENUMERATION SURFACE (ListPathsUnder) ------------------
+		// The anim-clip fallback's legacy hunt rides this: the provider
+		// UNION under a prefix (loose children + pak TOC entries,
+		// dedup + sorted), NEVER a traversal API.
+		{
+			// anim.pak: a demo/-tree of Texture-kind anim blobs (the
+			// cooker's anim channel) — the legacy hunt's provider.
+			const fs::path animPak = tmp / "anim.pak";
+			{
+				smvk::PakWriter w;
+				const std::vector<uint8_t> walk = { 1, 2, 3 };
+				const std::vector<uint8_t> idle = { 4, 5 };
+				// The anim channel's convention (pak_cooker): anim
+				// clips ride Texture-kind blobs WRAPPED in the texture
+				// envelope (PakServeVfsBytes unwraps them back).
+				w.AddBlob(smvk::PakAssetKind::Texture,
+					"demo/knight.anim0_walk.anim",
+					smvk::BuildTexturePayload(
+						"demo/knight.anim0_walk.anim", -1, -1, -1, -1,
+						std::span<const uint8_t>(walk)));
+				w.AddBlob(smvk::PakAssetKind::Texture,
+					"demo/knight.anim1_idle.anim",
+					smvk::BuildTexturePayload(
+						"demo/knight.anim1_idle.anim", -1, -1, -1, -1,
+						std::span<const uint8_t>(idle)));
+				w.AddBlob(smvk::PakAssetKind::Texture,
+					"other/stuff.png", { 6 });
+				w.AddBlob(smvk::PakAssetKind::Mesh,
+					"demo/cluster-internal.mesh", { 7 });
+				// A blob under a DEEPER path (the one-level rule: the
+				// child segment, not the whole tree).
+				w.AddBlob(smvk::PakAssetKind::Texture,
+					"demo/sub/deeper.png", { 8 });
+				WritePak(animPak, w.Finalize());
+			}
+			std::string aErr;
+			Check(reg2.DiscoverPak("anim", animPak.generic_string(),
+					aErr, /*requireIdentityBlob=*/false)
+				&& aErr.empty(),
+				"disc.anim-pak-joins");
+			// The loose dev tree carries a demo child too (the union
+			// dedups across providers).
+			WriteFile(tmp / "dev" / "demo" / "loose_only.anim",
+				ktxDev.data(), 1);
+			reg2.SetProviderEnabled("dev", true);
+			std::vector<std::string> demo =
+				reg2.ListPathsUnder("demo");
+			bool unionOk = demo.size() == 4
+				&& demo[0] == "demo/knight.anim0_walk.anim"
+				&& demo[1] == "demo/knight.anim1_idle.anim"
+				&& demo[2] == "demo/loose_only.anim"
+				&& demo[3] == "demo/sub";
+			Check(unionOk, "cr.list-paths-under-union");
+			// Disabled providers drop out of the enumeration.
+			reg2.SetProviderEnabled("anim", false);
+			std::vector<std::string> demoDisabled =
+				reg2.ListPathsUnder("demo");
+			Check(demoDisabled.size() == 1
+				&& demoDisabled[0] == "demo/loose_only.anim",
+				"cr.list-paths-under-disabled-excluded");
+			reg2.SetProviderEnabled("anim", true);
+			// The anim-lane read itself (the identity-free form): a
+			// demo path serves its bytes through the provider union.
+			std::string rErr;
+			auto clip = reg2.ReadPath(
+				"demo/knight.anim0_walk.anim", rErr);
+			Check(clip && clip->size() == 3 && (*clip)[0] == 1
+				&& rErr.empty(),
+				"cr.anim-path-served");
+		}
 	}
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures

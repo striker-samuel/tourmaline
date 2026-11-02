@@ -280,6 +280,14 @@ public:
 	// diagnostics, tooling). Non-const: probes pak TOCs (see Resolve).
 	std::vector<std::string> ProvidersFor(uint8_t kind,
 		const std::string& path);
+	// Enumerate every ENABLED provider's entries under a prefix (the
+	// UNION across providers, deduplicated + sorted — OverlayVfs::
+	// ListDir's union semantics over the same provider set; a loose
+	// tree lists its real children, a pak its VFS-addressable TOC
+	// entries). THE ONE enumeration surface: the anim-clip fallback's
+	// legacy hunt ("demo/<stem>.anim*") + tooling diagnostics — one
+	// level, prefixed, read-only; never a traversal API.
+	std::vector<std::string> ListPathsUnder(const std::string& prefix);
 	// The provider table in precedence order (name + type + flags).
 	struct ProviderInfo {
 		std::string name;

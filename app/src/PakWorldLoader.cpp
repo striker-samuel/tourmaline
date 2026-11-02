@@ -63,15 +63,19 @@ namespace app {
 		//   1. TOURMALINE_ANIM=<vfs path> (the explicit headless pin),
 		//   2. the cluster's RECORDED anim refs (scene.animClipRefs —
 		//      the cooked asset names its clips; the pak-carrying blobs
-		//      resolve through the mounted pak backend),
+		//      resolve through the session's providers),
 		//   3. legacy: '<stem>.anim*' beside the pak under demo/ (old
 		//      paks that predate the recorded refs — content/demo-style
 		//      layouts where the .anim0_* asset sits next to the scene).
 		// No clip = the bind-pose palette (the pass still runs, nothing
 		// moves - the deformed heap exists, the fetch swap works).
 		// Attaches the first loadable clip to a skinned cluster.
+		// EVERY byte + every enumeration resolves through the SESSION
+		// (the registry's provider union — overrides + paks, the SAME
+		// selection every other content read uses): the host overlay
+		// is no longer a content source on any runtime path.
 		void AttachClips(tour::Cluster& c, const std::string& stem,
-			smvk::OverlayVfs& contentVfs) {
+			app::ProjectRuntime& session) {
 			if (c.HasAnimClip())
 				return;
 			std::vector<std::string> candidates;
@@ -83,14 +87,16 @@ namespace app {
 			for (const std::string& ref : c.scene.animClipRefs)
 				if (!ref.empty())
 					candidates.push_back(ref);
-			// 3) Legacy demo-dir enumeration (pre-ref paks only).
+			// 3) Legacy demo-dir enumeration (pre-ref paks only) —
+			// through the registry's ONE enumeration surface (the
+			// provider union under the prefix; the importer names clips
+			// '<stem>.anim<idx>_<sanitized glTF animation name>.anim',
+			// so enumerate the demo dir for '<stem>.anim*' rather than
+			// guessing a label — the union is sorted, so this is stable).
 			if (c.scene.animClipRefs.empty()) {
-				// The importer names clips
-				// '<stem>.anim<idx>_<sanitized glTF animation name>.anim',
-				// so enumerate the demo dir for '<stem>.anim*' rather than
-				// guessing a label. ListDir is sorted, so this is stable.
 				const std::string prefix = "demo/" + stem + ".anim";
-				for (const smvk::VfsPath& e : contentVfs.ListDir("demo")) {
+				for (const std::string& e :
+						session.Registry().ListPathsUnder("demo")) {
 					if (e.size() >= prefix.size() + 5
 						&& e.compare(0, prefix.size(), prefix) == 0
 						&& e.compare(e.size() - 5, 5, ".anim") == 0)
@@ -99,7 +105,9 @@ namespace app {
 			}
 			for (const std::string& path : candidates) {
 				const std::string norm = smvk::NormalizeAssetUri(path).Str();
-				auto bytes = contentVfs.TryRead(norm.empty() ? path : norm);
+				std::string rErr;
+				auto bytes = session.ReadAssetPath(
+					norm.empty() ? path : norm, rErr);
 				if (!bytes || bytes->empty())
 					continue;
 				smvk::touranim::AnimDoc doc;
@@ -127,9 +135,12 @@ namespace app {
 
 	// The post-load tail SHARED by both entry points (--pak's legacy
 	// path and --project): anim-clip attach, cooked static flags, the
-	// resolve/fixup, and the env-gated scene-prep diagnostics.
+	// resolve/fixup, and the env-gated scene-prep diagnostics. EVERY
+	// content read resolves through the SESSION (the registry's
+	// provider union — the host overlay is no longer a content source
+	// on any runtime path).
 	void PostLoadTail(tour::World& world, const std::string& pakStem,
-		smvk::OverlayVfs& contentVfs) {
+		app::ProjectRuntime& session) {
 		// THE SKINNING CLIP: attach to the first cluster carrying a
 		// skeleton (ONE for now — the driver's cap).
 		{
@@ -138,7 +149,7 @@ namespace app {
 				tour::Cluster* c = clusterPtr.get();
 				if (!c || !c->hasSkeleton)
 					continue;
-				AttachClips(*c, pakStem, contentVfs);
+				AttachClips(*c, pakStem, session);
 				break;
 			}
 		}
@@ -243,7 +254,8 @@ namespace app {
 		int sceneIndex,
 		smvk::ResourceManager& ctx,
 		smvk::OverlayVfs& contentVfs,
-		tour::TextureStreamer* sceneStreamer
+		tour::TextureStreamer* sceneStreamer,
+		app::ProjectRuntime& session
 	) {
 		// Optick: the synchronous scene-load path (startup / scene-switch
 		// latency, not steady frame cost) — stage scopes below.
@@ -279,6 +291,10 @@ namespace app {
 				}
 				world->ResolveAndFixup_clusters();
 				contentVfs.Mount(pre.backend, 10, pre.scenePak);
+				// The shared-image lane: the backend adopts into the
+				// session's registry too (every later read rides the same
+				// image + the same provider selection).
+				session.AdoptPakBackend(pre.scenePak, pre.backend);
 				return world;
 			}
 			std::cerr << "[App] no loadable scenes: " << lerr << "\n";
@@ -313,12 +329,15 @@ namespace app {
 			}
 		}
 		std::cerr << "[App] pak cluster loaded\n";
-		// Mount the pak backend NOW — BEFORE the anim resolution — so the
-		// pak serves its own embedded clips (below loose content/, so dev
-		// overrides still win). The old flow mounted only after the clip
-		// hunt, so the hunt could only ever see LOOSE files.
+		// Mount the pak backend into the overlay (the world-source
+		// protocol role: the engine hands the callback a vfs, hosts
+		// mount their paks) AND ADOPT it into the session's registry —
+		// the shared-image lane. The anim resolution + every later
+		// read ride the session's provider selection; the overlay is
+		// no longer a content source on any runtime path.
 		contentVfs.Mount(pre.backend, 10, pre.scenePak);
-		PostLoadTail(*world, StemOf(pre.scenePak), contentVfs);
+		session.AdoptPakBackend(pre.scenePak, pre.backend);
+		PostLoadTail(*world, StemOf(pre.scenePak), session);
 		return world;
 	}
 
@@ -397,28 +416,24 @@ namespace app {
 		// The cross-pak texture resolver (DeserializeCluster's external
 		// hook): a material URI with no blob in the entry pak is served
 		// from whatever provider carries its logical path — through the
-		// SESSION's registry when the launch carries one (the ONE
-		// resolution authority: an override serving the path wins here
-		// exactly as it wins for the compiled-id form — the convergence
-		// contract), else through the overlay (the legacy lane). The
-		// bytes are the embedded .ktx2, the standard parallel loader
-		// decodes + uploads, and the texture registers on the cluster
-		// under its original URI. v1 note: the cross-pak path takes the
+		// SESSION's registry (the ONE resolution authority: an override
+		// serving the path wins here exactly as it wins for the
+		// compiled-id form — the convergence contract; the overlay is
+		// no longer a content source on any runtime path). The bytes
+		// are the embedded .ktx2, the standard parallel loader decodes
+		// + uploads, and the texture registers on the cluster under
+		// its original URI. v1 note: the cross-pak path takes the
 		// DEFAULT sampler (the pak-served path's payload filters stay
 		// with the owning pak's own loads).
 		smvk::ExternalTextureResolver resolver =
-			[&ctx, &contentVfs, session](tour::Cluster& c,
+			[&ctx, session](tour::Cluster& c,
 				const std::string& uri) -> smvk::TextureHandle {
 			const std::string norm = smvk::NormalizeAssetUri(uri).Str();
 			const std::string probe = norm.empty() ? uri : norm;
-			std::optional<std::vector<uint8_t>> bytes;
-			if (session) {
-				std::string rErr;
-				bytes = session->ReadAssetByPath(
+			std::string rErr;
+			std::optional<std::vector<uint8_t>> bytes =
+				session->ReadAssetByPath(
 					smvk::kCatalogKindTexture, probe, rErr);
-			}
-			else
-				bytes = contentVfs.TryRead(probe);
 			if (!bytes || bytes->empty()) {
 				std::cerr << "[App] cross-pak texture unresolved: " << uri
 					<< "\n";
@@ -458,7 +473,7 @@ namespace app {
 			}
 		}
 		std::cerr << "[App] project cluster loaded\n";
-		PostLoadTail(*world, StemOf(entry.scenePak), contentVfs);
+		PostLoadTail(*world, StemOf(entry.scenePak), *session);
 		return world;
 	}
 

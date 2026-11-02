@@ -358,11 +358,13 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 		return {};
 	}
 	inst->cluster = cluster;
-	// The shared post-load tail: anim attach, cooked static flags, the
+	// The shared post-load tail: anim attach (through the SESSION —
+	// the registry's provider union; the overlay is no longer a
+	// content source on any runtime path), cooked static flags, the
 	// resolve that folds the new cluster into the merged world scene
 	// (the additive scene's nodes become world nodes exactly like the
 	// entry scene's).
-	PostLoadTail(world, StemOf(target->pak), m_vfs);
+	PostLoadTail(world, StemOf(target->pak), m_runtime);
 	if (ctx)
 		ctx->FlushUploads();
 	std::cerr << "[Scenes] scene " << HexId(sceneId) << " loaded (pak '"
