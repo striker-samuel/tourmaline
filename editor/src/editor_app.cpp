@@ -664,6 +664,9 @@ void EditorApp::CloseScene() {
 	// The thumbnails' bindings reference the OLD world's cluster texture
 	// views — the fresh world below orphans them (see TextureThumb).
 	DropTextureThumbs();
+	// A rebuilt world gets new clusters; no payload from the prior world
+	// can be retired through the newly created scene's carrier.
+	m_editorGiInjectedPaths.clear();
 	m_world = tour::mem::MakeProcess<tour::World>();
 	tour::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// CPU geometry mirror (the editor's picking/UV/placement source):
@@ -1129,7 +1132,7 @@ void EditorApp::ClearSglmLayers() {
 // (strided sample + coverage counts) is built here alongside the hull.
 // ---------------------------------------------------------------------------
 bool EditorApp::TryLoadGiVolumes() {
-	m_giVolumePreviews.clear();
+	std::vector<GiVolumePreview> freshPreviews;
 	namespace fs = std::filesystem;
 	// The HARD identification (no stems, no manifests): each authored
 	// GI volume carries its baked .givolume ON THE LIVE SCENE
@@ -1170,18 +1173,12 @@ bool EditorApp::TryLoadGiVolumes() {
 		Log("GI content discovery unavailable: " + discoveryError);
 		return false;
 	}
-	// Refresh the payload and binding channel the borrowed WorldRenderer
-	// actually consumes. The source cluster owns these until scene close.
+	// Stage an entire new generation before changing the borrowed
+	// renderer's byte/binding channel. Invalid or missing replacements
+	// must not discard the last valid GI set.
 	if (m_world->clusters.empty() || !m_world->clusters.front())
 		return false;
-	smvk::Cluster& carrier = *m_world->clusters.front();
-	for (const std::string& stale : m_editorGiInjectedPaths)
-		carrier.RemoveBakePayload(stale);
-	m_editorGiInjectedPaths.clear();
-	carrier.giBindings.erase(std::remove_if(carrier.giBindings.begin(),
-		carrier.giBindings.end(), [](const smvk::GiBinding& b) {
-			return b.kind == smvk::GiBinding::Kind::GiVolume;
-		}), carrier.giBindings.end());
+	std::vector<std::pair<std::string, std::vector<uint8_t>>> staged;
 	int loaded = 0;
 	for (const Bound& b : bound) {
 		fs::path volPath(b.path);
@@ -1205,10 +1202,6 @@ bool EditorApp::TryLoadGiVolumes() {
 			Log("Convex volume decode failed '" + b.path + "': " + err);
 			continue;
 		}
-		carrier.AddBakePayload(b.path, *bytes);
-		carrier.RegisterGiBinding(smvk::GiBinding::Kind::GiVolume,
-			b.path);
-		m_editorGiInjectedPaths.push_back(b.path);
 		GiVolumePreview pv;
 		pv.name = volPath.stem().string();
 		pv.priority = vol.def.priority;
@@ -1352,9 +1345,33 @@ bool EditorApp::TryLoadGiVolumes() {
 			}
 		pv.center = centroidCount > 0
 			? centroidSum / float(centroidCount) : pv.gridMin;
-		m_giVolumePreviews.push_back(std::move(pv));
+		freshPreviews.push_back(std::move(pv));
+		staged.emplace_back(b.path, *bytes);
 		++loaded;
 	}
+	if (loaded != static_cast<int>(bound.size())) {
+		Log("Convex GI volumes: " + std::to_string(loaded) + "/"
+			+ std::to_string(bound.size()) + " decoded; keeping previous "
+			"GI generation and previews");
+		return false;
+	}
+	// Commit the complete generation only after the registry delivered
+	// and the CPU validated every bound volume.
+	smvk::Cluster& carrier = *m_world->clusters.front();
+	for (const std::string& stale : m_editorGiInjectedPaths)
+		carrier.RemoveBakePayload(stale);
+	m_editorGiInjectedPaths.clear();
+	carrier.giBindings.erase(std::remove_if(carrier.giBindings.begin(),
+		carrier.giBindings.end(), [](const smvk::GiBinding& b) {
+			return b.kind == smvk::GiBinding::Kind::GiVolume;
+		}), carrier.giBindings.end());
+	for (auto& entry : staged) {
+		carrier.AddBakePayload(entry.first, std::move(entry.second));
+		carrier.RegisterGiBinding(smvk::GiBinding::Kind::GiVolume,
+			entry.first);
+		m_editorGiInjectedPaths.push_back(entry.first);
+	}
+	m_giVolumePreviews = std::move(freshPreviews);
 	if (loaded > 0) {
 		Log("Convex GI volumes: loaded " + std::to_string(loaded)
 			+ " from the scene's giAsset bindings (J in LIGHTING toggles "
