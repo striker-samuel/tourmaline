@@ -1564,6 +1564,9 @@ public:
 	// CameraPositioner, not Camera: a Camera()-named member would shadow
 	// the smvk::Camera TYPE at the m_camera member declaration below.
 	tour::CameraPositioner_FirstPerson& CameraPositioner() { return m_cameraPositioner; }
+	// Notify the renderer of an intentional camera switch/teleport, including
+	// small changes below automatic cut thresholds. Consumed next render.
+	void NotifyCameraCut() { m_cameraChanges.RequestCut(); }
     // Viewer-only: source flags for replaying the currently loaded scene.
     // Editor/borrowed-world renderers leave this empty and hide export.
     void SetBenchmarkSourceArgs(std::vector<std::string> args) {
@@ -3436,6 +3439,8 @@ public:
 	// history without the per-frame jitter.
 	glm::mat4 m_prevUnjitteredViewProj{ 1.0f };
 	bool m_prevViewProjValid = false; // false until the first frame completes
+	tour::CameraChangeTracker m_cameraChanges;
+	bool m_cameraCutThisFrame = false;
 	// ---- Temporal jitter bookkeeping (SMAA T2x / DLSS) ----
 	// The motion vectors MUST carry the jitter (prevViewProj is jittered)
 	// so SMAA T2x / DLSS reproject exactly. Non-temporal consumers (motion
