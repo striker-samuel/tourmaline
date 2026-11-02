@@ -1251,7 +1251,10 @@ float envVis = 1.0f;
     // Common GI variables (declared once, assigned per permutation)
     uint giSource = 0u;
     float3 bakedE = float3(0.0f, 0.0f, 0.0f);
-    uint giDbgMode = 0u;
+    // F8 must also report missing coverage in GI_NONE (magenta).
+    // Previously the no-GI permutation left this at zero, silently
+    // rendering ordinary lighting even with the debug flag set.
+    uint giDbgMode = frame.giDebug & 0xffu;
     // The "GI intensity" slider is the AMBIENT scale: it must move the
     // sky-IBL fallback too, not only the baked sources. Uncovered
     // pixels used to ignore it entirely (the fallback composed after
@@ -1453,7 +1456,6 @@ float envVis = 1.0f;
     // disagreement heat, ...) are gone — bake-side analysis belongs to
     // GiBaker --analyze.
     // ---------------------------------------------------------------
-#if !defined(GI_NONE)
     if (giDbgMode != 0u)
     {
         // Debug flat colors carry no AO-sensitive lighting: export 0.
@@ -1534,7 +1536,7 @@ float envVis = 1.0f;
             * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
         return OUT;
     }
-#endif
+
 
     // SSGI AO export (target1): everything AO is allowed to attenuate,
     // summed PRE-AO, carrying the SAME occlusion depth it sits at in the
