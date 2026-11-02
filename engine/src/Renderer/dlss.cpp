@@ -183,7 +183,7 @@ bool DlssStartup() {
 
 	sl::Preferences pref{};
 	pref.showConsole = false;
-	pref.logLevel = sl::LogLevel::eDefault;
+	pref.logLevel = sl::LogLevel::eOff;
 	pref.logMessageCallback = &DlssLog;
 	pref.flags = sl::PreferenceFlags::eDisableCLStateTracking
 		| sl::PreferenceFlags::eAllowOTA
