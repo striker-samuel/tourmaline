@@ -17005,7 +17005,7 @@ namespace engine {
 				// Retired-slice counters lag ~2 frames.
 				// ---------------------------------------------------------
 				// Runtime-only procedural meshes, materials and Forward+ light stress.
-				if (ImGui::BeginTabItem("Procedurals")) {
+				if (!m_borrowedWorld && ImGui::BeginTabItem("Procedurals")) {
 					DrawRuntimeProceduralsTab();
 					ImGui::EndTabItem();
 				}
