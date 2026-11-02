@@ -32,3 +32,53 @@ You can keep separate entries for shadow draw-call stress, alpha/overdraw, fog/v
 - The GPU-less workflow `.github/workflows/perf_scenarios.yml` runs `compileall`, Python `unittest` checks, and `perf_harness.py list`; it **does not** execute GPU benchmarks or Nsight. Locally run `python -m unittest discover -s tools/tests -v` and `python tools/perf_harness.py list` to validate the tracked catalog.
 
 See [docs/perf_harness.md](../docs/perf_harness.md) for `bench`, `compare`, `trace` and `capture` CLI usage.
+
+## Forward+ light crowd and feature-toggle matrix
+
+The `bistro-fp-*` entries share the documented Bistro camera and require
+`content/paks/bistro.pak` in the benchmark executable's working directory.
+The camera was documented for SSR; it is **not** guaranteed to frame the
+procedural crowd, which is centered at world origin with the renderer's
+default 10 m radius. Use the Forward+ counters or capture a frame to check
+visible light coverage before drawing image-quality conclusions.
+
+| Scenario ID | Crowd | Key difference |
+| --- | ---: | --- |
+| `bistro-fp-lights-off` | 0 | Stripped feature/control run |
+| `bistro-fp-lights-32` | 32 | Moderate procedural point-light cost |
+| `bistro-fp-lights-96-masks-on` | 96 | Max crowd; hierarchical tile-light masks |
+| `bistro-fp-lights-96-masks-off` | 96 | Same workload; linear-scan tile cull |
+| `bistro-fp-lights-96-ssr-ao` | 96 | SSR, SAO, bloom, SMAA T2x |
+| `bistro-fp-lights-96-ssgi` | 96 | SSGI diffuse enabled |
+| `bistro-fp-lights-96-fog` | 96 | Volumetric fog, 96 steps |
+| `bistro-fp-lights-96-full` | 96 | Combined SSR/SSGI/fog/contact/DOF/bloom |
+| `bistro-fp-lights-96-deferred` | 96 | Deferred-shadow alternative |
+| `bistro-fp-lights-96-msaa` | 96 | MSAA 2x instead of SMAA |
+
+The renderer's existing `TOURMALINE_LIGHT_CROWD` pin supports **0–96**
+procedural point lights. Requests outside this range are rejected; this
+catalog deliberately does not pretend to spawn hundreds or thousands.
+Crowd lights are animated deterministically using benchmark frame time,
+append to scene lights, and may be clamped if the scene has already used
+the shared light budget. The Forward+ per-tile surface list holds 16
+lights, so the dense test stresses selection and overflow behavior.
+Crowd shadow casting is a live UI control and **not** headlessly pinned by
+these scenarios; do not treat the deferred case as a 96-shadow-caster test.
+
+Run, for example:
+
+```powershell
+python tools/perf_harness.py list
+python tools/perf_harness.py bench --scenario bistro-fp-lights-96-masks-on --exe out/build/x64-Release/Benchmark.exe --repeat 5 --output out/perf/fp-masks-on
+python tools/perf_harness.py bench --scenario bistro-fp-lights-96-masks-off --exe out/build/x64-Release/Benchmark.exe --repeat 5 --output out/perf/fp-masks-off
+```
+
+Use **same-ID runs** to compare code revisions with
+`tools/perf_harness.py compare`; that command intentionally rejects
+different scenario IDs, including masks-on versus masks-off. For
+feature-toggle A/B results, compare the reported medians manually with
+the differing pins recorded in each result JSON. Some features require
+scene-authored inputs (e.g. nonzero fog density) to produce a visually
+meaningful result. These entries are workload presets, **not** GPU test
+results; a built Benchmark target, cooked Bistro pak, and Vulkan-capable
+GPU remain necessary.
