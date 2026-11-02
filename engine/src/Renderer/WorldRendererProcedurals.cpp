@@ -280,9 +280,11 @@ void WorldRenderer::ApplyRuntimeProceduralRequest() {
         }
         // Retire previous fixture only after the new one has been built.
         if (m_runtimeProcNode != UINT32_MAX) {
-            smvk::RetireNodeSlot(dyn.scene, m_runtimeProcNode);
+            RemoveMesh(dyn.scene, m_runtimeProcNode);
+            RemoveMaterial(dyn.scene, m_runtimeProcNode);
+            RetireNodeSlot(dyn.scene, m_runtimeProcNode);
         }
-        const int node = smvk::addNode(dyn.scene, -1, 0);
+        const int node = addNode(dyn.scene, -1, 0);
         if (node < 0) {
             dyn.DestroyMesh(newMesh);
             dyn.DestroyMaterial(newMaterial);
@@ -295,14 +297,16 @@ void WorldRenderer::ApplyRuntimeProceduralRequest() {
             glm::translate(glm::mat4(1.0f), center);
         dyn.scene.globalTransform[size_t(node)] =
             dyn.scene.localTransform[size_t(node)];
-        smvk::SetMesh(dyn.scene, uint32_t(node), newMesh.index());
-        smvk::SetMaterial(dyn.scene, uint32_t(node), newMaterial.index());
+        SetMesh(dyn.scene, uint32_t(node), newMesh.index());
+        SetMaterial(dyn.scene, uint32_t(node), newMaterial.index());
         m_runtimeProcMesh = newMesh;
         m_runtimeProcMaterial = newMaterial;
     } else if (request == 2) {
         if (m_runtimeProcNode == UINT32_MAX)
             return;
-        smvk::RetireNodeSlot(dyn.scene, m_runtimeProcNode);
+        RemoveMesh(dyn.scene, m_runtimeProcNode);
+        RemoveMaterial(dyn.scene, m_runtimeProcNode);
+        RetireNodeSlot(dyn.scene, m_runtimeProcNode);
         m_runtimeProcNode = UINT32_MAX;
     }
     // Scene + render-item tables must be derived from the cluster
