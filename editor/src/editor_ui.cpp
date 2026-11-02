@@ -5434,6 +5434,14 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ClearAssetBrowserSelection(
 				m_assetsSel, m_assetsSelSet, m_assetsAnchor);
 		};
+		// Creating/reimporting an internal artifact can select it from code.
+		// Drop that stale browser selection: the corresponding tile is hidden.
+		if (!m_assetsSel.empty()) {
+			std::error_code selEc;
+			if (std::filesystem::is_regular_file(m_assetsSel, selEc)
+				&& HideAssetBrowserFile(m_assetsSel))
+				clearAssetSelection();
+		}
 		const auto navigateAssetDirectory = [&](const std::string& path) {
 			m_assetsDir = path;
 			m_assetsExpandGltf.clear();
