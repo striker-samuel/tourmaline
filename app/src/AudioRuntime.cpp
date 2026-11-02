@@ -564,7 +564,7 @@ private:
 		}
 		if (m_session)
 			std::cerr << "[Audio] session shared with the launch ("
-				<< m_rt->Manifest().paks.size() << " pak provider(s),"
+				<< m_rt->PakNames().size() << " pak provider(s),"
 				" the same images + selection)\n";
 		return true;
 	}

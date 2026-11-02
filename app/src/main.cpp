@@ -7,6 +7,7 @@
 // PakPreload.cpp / Host.h — NOT in the engine; the engine's WorldRenderer
 // renders whatever world the host hands it.
 #include "Host.h"
+#include "AudioRuntime.h"
 
 #include <filesystem>
 #include <iostream>
@@ -58,6 +59,29 @@ int main(int argc, const char* argv[]) {
 	// reset or erased by the parser.
 	app::PakAppConfig cfg;
 	cfg.run = runCfg;
+	// ---- THE SCENE-AWARE AUDIO SERVICE ---------------------------------
+	// Authored audio is CONTENT: a viewer that shows the scene without
+	// its bells misrepresents the package. The element stacks over the
+	// renderer (the world loaded), borrowing the launch's SHARED
+	// content session — every lane builds one (--project, the
+	// multi-pak discovery lane, the legacy single-pak lane), so the
+	// clip decodes ride the same provider selection as every other
+	// content read. The clean-viewer discipline was about GAME content
+	// (demo seeding), never about authored scene audio; a null session
+	// (no lane carried one) skips the service.
+	// Bench determinism holds: RunPakApp gates extraElements off during
+	// bench (TOURMALINE_EXTRA_ELEMENT_BENCH=1 re-enables).
+	cfg.extraElements.push_back(
+		[](tour::App& host,
+			engine::WorldRenderer& renderer,
+			std::shared_ptr<tour::World*> worldHandle,
+			const std::shared_ptr<app::ProjectRuntime>& session)
+		-> std::shared_ptr<engine::IAppElement> {
+		if (!session)
+			return nullptr; // no session: no authored audio to serve
+		return app::MakeAudioRuntime(host, session,
+			std::move(worldHandle), &renderer);
+	});
 	int exitCode = 0;
 	if (!app::ParsePakAppArgs(argc, argv, cfg.cli, exitCode))
 		return exitCode;

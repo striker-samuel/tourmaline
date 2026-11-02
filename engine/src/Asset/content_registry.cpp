@@ -356,8 +356,9 @@ ContentRegistry::Resolution ContentRegistry::Resolve(uint64_t id,
 	const ContentRecord* record = Find(id);
 	if (!record) {
 		err = "unknown content id " + HexId(id)
-			+ " (a version skew between the compiled project.h and the"
-			" packaged content?)";
+			+ " — not in this launch's content set (a version skew"
+			" between the compiled project.h and the packaged"
+			" content, or a pak this launch did not mount?)";
 		return {};
 	}
 	return ResolveInternal(record, record->kind, record->path, err);
@@ -435,7 +436,8 @@ ContentRegistry::Resolution ContentRegistry::ResolveInternal(
 		}
 		err = "no provider serves '" + path + "' (content id "
 			+ HexId(record->id)
-			+ " — a version skew between the build and the manifest?)";
+			+ " — a version skew between the build and the manifest,"
+			" or a pak this launch did not mount?)";
 	}
 	else {
 		err = "no provider serves '" + path + "'";
@@ -453,8 +455,9 @@ std::optional<std::vector<uint8_t>> ContentRegistry::Read(uint64_t id,
 	const ContentRecord* record = Find(id);
 	if (!record) {
 		err = "unknown content id " + HexId(id)
-			+ " (a version skew between the compiled project.h and the"
-			" packaged content?)";
+			+ " — not in this launch's content set (a version skew"
+			" between the compiled project.h and the packaged"
+			" content, or a pak this launch did not mount?)";
 		return std::nullopt;
 	}
 	// The kind gate (the same contract the runtime façade always
