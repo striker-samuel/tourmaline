@@ -152,6 +152,7 @@ void WorldRenderer::ExportBenchmarkScenario() {
     s.subsystem = m_benchmarkSubsystem;
     s.notes = m_benchmarkNotes;
     s.sourceArgs = m_benchmarkSourceArgs;
+    s.appArgs = m_benchmarkAppArgs;
     const glm::vec3 pos = m_cameraPositioner.cameraPosition_;
     const glm::vec3 fwd = glm::normalize(m_cameraPositioner.getForward());
     if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) ||
