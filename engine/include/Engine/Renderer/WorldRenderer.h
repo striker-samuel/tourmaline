@@ -42,6 +42,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/gfx_filter.h>
+#include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
@@ -1987,6 +1988,10 @@ protected:
 	// SOURCE contract): owned = the moved-in source result (below),
 	// borrowed = the host's live pointer (kept alive by the host).
 	smvk::World* m_world = nullptr;
+	// Persistent, per-flight scene database — no render consumer yet.
+	tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
+	tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
+	tour::gpu_scene::Uploader m_gpuSceneUploader;
 	smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
 	smvk::World* m_borrowedWorld = nullptr;        // the embedded-host form
 

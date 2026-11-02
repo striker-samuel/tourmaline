@@ -11068,6 +11068,14 @@ namespace engine {
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
 		UpdateGeometryStreaming();
+		// GPUIR scene mirror: topology reconciliation or dirty transforms,
+		// then flight-safe GPU table publication. Draws still use GfxFilter.
+		if (m_world) {
+			m_gpuSceneSync.Synchronize(*m_world, m_gpuSceneDatabase);
+			if (!m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase,
+					fb.frameIndex))
+				std::fprintf(stderr, "[GpuScene] database publication failed; no GPU reader this frame\n");
+		}
 		// Probe residency for this frame's eye (throttled inside; the
 		// FP upload below reads the rebuilt rows - see m_cubemapRows).
 		UpdateCubemapStreaming(m_cameraPositioner.cameraPosition_);

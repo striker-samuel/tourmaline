@@ -916,6 +916,7 @@ using namespace ::smvk;
 			return;
 		for (auto it = clusters.begin(); it != clusters.end(); ++it) {
 			if (it->get() == &cluster) {
+				gpuSceneClusterIds.erase(&cluster);
 				// SHARED-ASSET PARKING: live external refs keep the
 				// cluster's resource rows alive (an asset holder — app::
 				// AssetStore — retained them). Detach instead of destroy:
@@ -986,6 +987,7 @@ using namespace ::smvk;
 	{
 		assert(cluster != nullptr);
 		cluster->world = this;
+		gpuSceneClusterIds[cluster.get()] = nextGpuSceneClusterId++;
 		clusters.push_back(std::move(cluster));
 	}
 
@@ -997,6 +999,7 @@ using namespace ::smvk;
 			return nullptr;
 		for (auto it = clusters.begin(); it != clusters.end(); ++it) {
 			if (it->get() == &cluster) {
+				gpuSceneClusterIds.erase(&cluster);
 				std::unique_ptr<Cluster> detached = std::move(*it);
 				clusters.erase(it);
 				detached->world = nullptr;
@@ -1771,6 +1774,7 @@ using namespace ::smvk;
 		RebuildLodChains();
 		RebuildLightmapChartTable();
 		RebuildStaticBvh();
+		++gpuSceneTopologyRevision; // authored/runtime topology or binding remap
 		dirtyCull = true;
 
 		// (The mesh entities' mirrors were re-established EARLIER in
