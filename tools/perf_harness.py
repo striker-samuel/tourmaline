@@ -11,6 +11,48 @@ import statistics
 import subprocess
 import sys
 
+
+def default_paths_config():
+    # User-local settings, not in the Git repository or distributed content.
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return root / "Tourmaline" / "nsight_trace_paths.json"
+
+
+def resolve_paths(parser, args):
+    config_file = (args.paths_config or default_paths_config()).expanduser().resolve()
+    chosen = {"schema_version": 1}
+    if config_file.is_file():
+        try:
+            saved = json.loads(config_file.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict) or saved.get("schema_version") != 1:
+                raise ValueError("unexpected preferences schema")
+            for key in ("capture_dir", "scratch_dir"):
+                if key in saved:
+                    if not isinstance(saved[key], str):
+                        raise ValueError("invalid directory in preferences")
+                    chosen[key] = saved[key]
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot read Nsight preferences {config_file}: {exc}")
+    if args.capture_dir is not None:
+        chosen["capture_dir"] = str(args.capture_dir.expanduser().resolve())
+    if args.scratch_dir is not None:
+        chosen["scratch_dir"] = str(args.scratch_dir.expanduser().resolve())
+    if args.save_paths:
+        if args.capture_dir is None and args.scratch_dir is None:
+            parser.error("--save-paths requires --capture-dir and/or --scratch-dir")
+        try:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            pending = config_file.with_suffix(".tmp")
+            pending.write_text(json.dumps(chosen, indent=2) + chr(10), encoding="utf-8")
+            pending.replace(config_file)
+        except OSError as exc:
+            parser.error(f"cannot save Nsight preferences: {exc}")
+    return config_file, chosen
+
+
 PERF = re.compile(r"\[perf\] avg frame ([0-9]+(?:\.[0-9]+)?) ms over ([0-9]+) frames")
 SECTIONS = re.compile(r"\[perf\] sections poll ([0-9.]+) ms game ([0-9.]+) ms draw ([0-9.]+) ms")
 
@@ -91,7 +133,12 @@ def main(argv=None):
     scene.add_argument("--pak", type=Path)
     scene.add_argument("--project", type=Path)
     parser.add_argument("--workdir", type=Path, help="App working directory (defaults to exe directory)")
-    parser.add_argument("--output", type=Path, default=Path("out/perf"))
+    parser.add_argument("--output", type=Path, default=Path("out/perf"), help="Run logs and result.json")
+    parser.add_argument("--capture-dir", type=Path, help="Root folder for Nsight exports (overrides saved preference)")
+    parser.add_argument("--scratch-dir", type=Path, help="Fast disk for scratch (TMP, TEMP, TMPDIR; Linux XDG_CACHE_HOME)")
+    parser.add_argument("--paths-config", type=Path, help="Alternative user-local preferences JSON")
+    parser.add_argument("--save-paths", action="store_true", help="Persist capture and scratch settings")
+    parser.add_argument("--show-paths", action="store_true", help="Display current paths without starting Nsight")
     parser.add_argument("--frames", type=positive, help="Measured frames; overrides scenario default (120 otherwise)")
     parser.add_argument("--repeat", type=positive, default=3)
     parser.add_argument("--warmup", type=positive, default=10, help="App internally uses 10 warmup frames")
@@ -109,6 +156,19 @@ def main(argv=None):
     parser.add_argument("--app-arg", action="append", default=[], help="Additional App flag (repeat, one token per flag)")
     parser.add_argument("--timeout", type=positive, default=600)
     args = parser.parse_args(argv)
+    if args.mode in ("trace", "capture") or args.save_paths or args.show_paths:
+        config_file, chosen = resolve_paths(parser, args)
+        if args.save_paths or args.show_paths:
+            print(json.dumps({"config": str(config_file),
+                              "capture_dir": chosen.get("capture_dir", str((args.output / "nsight").resolve())),
+                              "scratch_dir": chosen.get("scratch_dir", "system temp"),
+                              "saved": args.save_paths}, indent=2))
+            return 0
+        args.capture_dir = Path(chosen.get("capture_dir") or (args.output / "nsight")).expanduser().resolve()
+        args.scratch_dir = Path(chosen["scratch_dir"]).expanduser().resolve() if chosen.get("scratch_dir") else None
+    else:
+        args.capture_dir = None
+        args.scratch_dir = None
 
     if args.mode == "list":
         try:
