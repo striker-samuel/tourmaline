@@ -1164,3 +1164,11 @@ endif()
 if(TARGET vulkan_headers_iface)
     target_link_libraries(WorldFieldsGpuTests PRIVATE vulkan_headers_iface)
 endif()
+
+# GPU-scene high/low position transport and precision-safe rebasing.
+# Headless: no renderer or Vulkan device required at runtime.
+add_executable(DoubleFloatTests test_doublefloat.cpp)
+target_link_libraries(DoubleFloatTests PRIVATE engine)
+set_target_properties(DoubleFloatTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME doublefloat_tests COMMAND DoubleFloatTests)
