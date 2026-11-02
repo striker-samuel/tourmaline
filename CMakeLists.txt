@@ -488,6 +488,28 @@ add_subdirectory(tools/project)            # Project.exe: the project-pipeline C
   # deploy branch needs the target to exist when each host is set up.
   add_subdirectory(tools/pak_cooker)
   add_subdirectory(app)               # App.exe: the plain pak-viewer host
+  # Demo content fetch: downloads the rolling 'demo-content' GitHub
+  # release (the cooked sponza_10 project - .tapp manifest + its
+  # content-addressed pak, SHA-256 verified, stale paks cleaned up)
+  # into THIS build's content/paks so the viewer can launch the demo
+  # scene right after a fresh checkout + build:
+  #   cmake --build <build-dir> --target demo_content
+  #   App --project content/paks/sponza_10.tapp   (from the build dir)
+  # The ~100 MB cooked pak lives in the release, not the git tree (its
+  # content-addressed name changes on every recook anyway - see
+  # tools/fetch_demo_content.ps1 / .sh for the download + verify logic).
+  if(WIN32)
+    add_custom_target(demo_content
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File ${CMAKE_SOURCE_DIR}/tools/fetch_demo_content.ps1
+              -Dest ${CMAKE_BINARY_DIR}/content/paks
+      VERBATIM)
+  else()
+    add_custom_target(demo_content
+      COMMAND bash ${CMAKE_SOURCE_DIR}/tools/fetch_demo_content.sh
+              ${CMAKE_BINARY_DIR}/content/paks
+      VERBATIM)
+  endif()
   add_subdirectory(editor)
   add_subdirectory(tools/gi_baker)
   add_subdirectory(tools/cubemap_baker)

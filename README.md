@@ -45,7 +45,7 @@ Renderer inspection and debugging panels:
 
 ![Tourmaline debug panels](docs/images/debug_menus.png)
 
-*These captures use external demonstration assets. The full Sponza scene is not shipped in this repository.*
+*These captures use the Sponza demonstration scene. Its cooked content is not committed to the repository — it ships as a one-command download from the [demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) (see [Demo content](#demo-content-sponza)).*
 
 ## How it fits together
 
@@ -157,7 +157,7 @@ comparing pipeline compilation cost.
 
 ### 3. Cook and run the bundled C++ game sample
 
-The repository includes a small project with checked-in glTF geometry, a texture, a WAV sound, a `.tour` scene, and a `.tourrecipe`. Unlike the larger Sponza demo, it does **not** require an external content store.
+The repository includes a small project with checked-in glTF geometry, a texture, a WAV sound, a `.tour` scene, and a `.tourrecipe`. Unlike the larger Sponza demo (a separate download — see [Demo content](#demo-content-sponza) below), it does **not** require an external content store.
 
 ```bash
 # Replace <build-dir> with out/build/x64-Release or out/build/linux-Release.
@@ -174,7 +174,21 @@ App --pak <path-to-file.pak>
 App --project <path-to-file.tapp>
 ```
 
-The viewer requires cooked content; there is no ready-to-run Sponza pak in a fresh checkout.
+The viewer requires cooked content. The bundled sample above cooks from checked-in sources; for a larger scene, fetch the demo content below.
+
+#### Demo content: Sponza
+
+The engine's initial demo content — the cooked `sponza_10` project: the Sponza scene with meshes, textures, baked GI volumes, and cubemaps in one ~100 MB content-addressed pak — ships on the repository's GitHub [demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) rather than in the git tree:
+
+```bash
+# Replace <build-dir> with out/build/x64-Release or out/build/linux-Release.
+cmake --build <build-dir> --target demo_content   # download + SHA-256 verify into <build-dir>/content/paks
+App --project content/paks/sponza_10.tapp         # run from the build directory
+```
+
+The `demo_content` target runs `tools/fetch_demo_content.ps1` (Windows) or `tools/fetch_demo_content.sh` (Linux): it downloads the release's `.tapp` manifest and content-addressed `.pak`, verifies them against the published SHA-256 checksums, installs them into the build's `content/paks`, and removes demo paks left by earlier fetches. The release is rolling — republished whenever the demo is recooked — and the pak's content-addressed name changes with its bytes; the fetch target always retrieves the current set. At launch the engine's `DeployCheck` independently verifies the pak's content-addressed name against its actual bytes, so a truncated or stale download fails loudly before any graphics work.
+
+To download manually instead, grab `sponza_10.tapp`, the `sponza_10-*.pak` it names, and `SHA256SUMS.txt` from the [release page](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) and place them in `<build-dir>/content/paks/`.
 
 ### 4. Open the editor
 
