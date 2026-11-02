@@ -1439,6 +1439,7 @@ private:
 	// (createNode -at transform); the runtime finds them by NAME
 	// (findNodeByName — the name IS the locator's identity).
 	void DraftCreateLocator();
+	void DraftCreateSpatialVolume(); // generic transform with full box extents
 	// True when the node is a bare transform: no mesh/light/camera/decal/
 	// givolume/cubemap/export/env link — the "locator" definition. Used
 	// by the outliner tag, the gizmo marker, and the click pick. NOTE:
