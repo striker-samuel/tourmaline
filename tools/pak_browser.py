@@ -2,56 +2,46 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-"""Pack browser (PyQt6) for .pak files.
+"""Tourmaline package browser for SMP8 .pak archives and appmanifest 2 .tapp files.
 
-Reads the pak manifest/header (no engine build needed) to inspect pack
-contents and their VFS relationship:
+GUI: python tools/pak_browser.py [file.pak | project.tapp ...]
+CLI: python tools/pak_browser.py --cli-dump project.tapp
+     python tools/pak_browser.py --cli-validate project.tapp
 
-- Header (32 B): magic "SMP4", reserved, flags, tocOffset, tocCount.
-- Blobs (16-byte aligned payloads).
-- TOC: per-entry pathHash (FNV-1a64), kind, flags, offset, size, path.
-- Footer (24 B): tocOffset, tocCount, crc32 (covers everything before it),
-  magic "KPM4".
-
-VFS relationship (mirrors Engine/Asset/pak.h + Engine/Vfs/vfs.h):
-- Only Texture blobs are visible through PakBackend (Exists/TryRead/ListDir
-  keyed by the ORIGINAL vfs path, returning the embedded .ktx2 bytes).
-- Scene/Mesh/Material/Light/Gi blobs are cluster-internal, consumed via
-  PakReader by the cluster deserializer - invisible to VFS file reads.
-- OverlayVfs is first-match-wins over mounts ordered by priority; this
-  browser lets you mount several paks + a loose dir and test lookups.
-
-Usage:
-    py tools/pak_browser.py [pak ...] [--cli-dump]
-    py tools/pak_browser.py --cli-dump path/to.pak   # headless manifest dump
+The .tapp is a release pointer (entry scene and ordered package names);
+asset identities live in each package's #ids blob. SMP8 verifies the TOC at
+open and verifies each stored payload independently on demand. CLI validation
+checks every page as well as the metadata, without requiring PyQt6 or lz4.
 """
 from __future__ import annotations
 
 import os
+import shlex
 import struct
 import sys
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Pure-python pak model (mirrors engine/src/Asset/pak.cpp)
-# ---------------------------------------------------------------------------
-
-KPAK_MAGIC = 0x34504D53  # "SMP4" LE (the magic IS the version: bump the
-KPAK_FOOTER_MAGIC = 0x344D504B  # "KPM4" LE trailing char on breaking changes)
+# See Engine/Asset/pak.h, appmanifest.h and docs/pak_vnext.md.
+KPAK_MAGIC = 0x38504D53  # SMP8
+KPAK_FOOTER_MAGIC = 0x384D504B  # KPM8
 KHEADER_SIZE = 32
 KFOOTER_SIZE = 24
-KTOC_FIXED = 36  # hash u64, kind u32, flags u32, off u64, size u64, pathLen u32
+KTOC_FIXED = 44  # hash, kind, flags, offset, size, slot, contentCrc, pathLen
 KALIGN = 16
+FLAG_LZ4 = 1
 
-KINDS = {1: "Scene", 2: "Mesh", 3: "Material", 4: "Texture", 5: "Light", 6: "Gi", 7: "Camera"}
-KIND_BY_NAME = {v: k for k, v in KINDS.items()}
-FLAG_LZ4 = 1 << 0
+KINDS = {
+    1: "Scene", 2: "Mesh", 3: "Material", 4: "Texture",
+    5: "Light", 6: "Gi", 7: "Camera", 8: "Decal",
+    9: "Terrain", 10: "Level", 11: "Sound", 12: "Shader",
+    13: "Plan", 14: "Schema", 15: "Identity", 16: "AudioGraph",
+}
+KIND_BY_NAME = {name: kind for kind, name in KINDS.items()}
+VFS_KINDS = frozenset((4, 11, 12, 16))
+CATALOG_KINDS = ("scene", "texture", "mesh", "sound", "shader", "gi", "audiograph")
 
-# KTX2 identifier is 12 bytes: AB 4B 54 58 20 <ver:2> BB 0D 0A 1A 0A.
-# The bundled libktx writes version "20" (older files use "11"), so the
-# check accepts any version tag and reports it.
 KTX2_PREFIX = bytes([0xAB, 0x4B, 0x54, 0x58, 0x20])
 KTX2_SUFFIX = bytes([0xBB, 0x0D, 0x0A, 0x1A, 0x0A])
 
@@ -61,10 +51,10 @@ def ktx2_magic_info(ktx: bytes) -> tuple[bool, str]:
         return False, "(too short)"
     ok = ktx[:5] == KTX2_PREFIX and ktx[7:12] == KTX2_SUFFIX
     try:
-        ver = ktx[5:7].decode("ascii")
+        version = ktx[5:7].decode("ascii")
     except UnicodeDecodeError:
-        ver = ktx[5:7].hex()
-    return ok, ver
+        version = ktx[5:7].hex()
+    return ok, version
 
 
 def fnv1a64(s: str) -> int:
@@ -76,38 +66,32 @@ def fnv1a64(s: str) -> int:
 
 
 def vfs_normalize(path: str) -> str:
-    """Mirror smvk::vfs::Normalize (incl. //flintbase/ scheme). '' = invalid."""
+    """Mirror smvk::vfs::Normalize, including the //flintbase/ scheme."""
     if not path:
         return ""
     p = path.replace("\\", "/")
-    # scheme?
     low = p.lower()
-    if low.startswith("//flintbase/") or low == "//flintbase":
-        cut = len("//flintbase/")
-        rest = p[cut:] if len(p) >= cut else ""
-        norm, ok = _norm_rel(rest)
-        if not ok:
-            return ""
-        return "//flintbase/" if not norm else "//flintbase/" + norm
-    pc.frameUniforms.Get()if len(p) >= 2 and p[1] == ":":
+    if low == "//flintbase" or low.startswith("//flintbase/"):
+        rest = p[len("//flintbase/"):] if low.startswith("//flintbase/") else ""
+        normalized, ok = _norm_rel(rest)
+        return ("//flintbase/" + normalized) if ok else ""
+    if p.startswith("/") or (len(p) >= 2 and p[1] == ":"):
         return ""
-    if p.startswith("/"):
-        return ""
-    norm, ok = _norm_rel(p)
-    return norm if ok else ""
+    normalized, ok = _norm_rel(p)
+    return normalized if ok else ""
 
 
-def _norm_rel(path: str):
+def _norm_rel(path: str) -> tuple[str, bool]:
     parts: list[str] = []
-    for seg in path.split("/"):
-        if seg == "" or seg == ".":
+    for part in path.split("/"):
+        if part in ("", "."):
             continue
-        if seg == "..":
+        if part == "..":
             if not parts:
                 return "", False
             parts.pop()
-            continue
-        parts.append(seg)
+        else:
+            parts.append(part)
     return "/".join(parts), True
 
 
@@ -121,7 +105,10 @@ class PakEntry:
     size: int
     path: str
     hash_ok: bool
+    slot: int = 0
+    content_crc: int = 0
     blob_overruns_toc: bool = False
+    page_crc_ok: bool | None = None
 
     @property
     def compressed(self) -> bool:
@@ -129,15 +116,14 @@ class PakEntry:
 
     @property
     def vfs_visible(self) -> bool:
-        # Mirrors PakBackend: only Texture blobs served via VFS.
-        return self.kind == 4
+        return self.kind in VFS_KINDS
 
 
 @dataclass
 class PakFile:
     source: str
     data: bytes = field(repr=False)
-    version: int = 0
+    version: int = 8
     flags: int = 0
     toc_offset: int = 0
     toc_count: int = 0
@@ -160,114 +146,252 @@ class PakFile:
         return len(self.data)
 
     def stored_payload(self, e: PakEntry) -> bytes:
-        return self.data[e.offset : e.offset + e.size]
+        return self.data[e.offset:e.offset + e.size]
+
+    def verify_page(self, e: PakEntry) -> bool:
+        if e.page_crc_ok is None:
+            e.page_crc_ok = (
+                zlib.crc32(self.stored_payload(e)) & 0xFFFFFFFF
+            ) == e.content_crc
+        return e.page_crc_ok
+
+    def verify_all(self) -> list[str]:
+        if self.error:
+            return [self.error]
+        return [
+            f"{e.path}: content CRC mismatch (slot {e.slot})"
+            for e in self.entries if not self.verify_page(e)
+        ]
 
     def payload(self, e: PakEntry) -> tuple[bytes, str]:
-        """Return (bytes, note). Decompresses LZ4 transparently like PakReader."""
+        """Verify stored page before decompressing; never decode a corrupt page."""
+        if not self.verify_page(e):
+            return b"", (
+                f"CONTENT CRC MISMATCH: stored=0x{e.content_crc:08X} "
+                f"computed=0x{zlib.crc32(self.stored_payload(e)) & 0xFFFFFFFF:08X}"
+            )
         stored = self.stored_payload(e)
-        if not (e.flags & FLAG_LZ4):
+        if not e.compressed:
             return stored, ""
         if len(stored) < 8:
-            return stored, "LZ4 flag set but stored blob < 8 bytes"
-        (uncompressed_size,) = struct.unpack_from("<Q", stored, 0)
-        block = stored[8:]
+            return b"", "invalid LZ4 wrapper (less than 8 bytes)"
+        (size,) = struct.unpack_from("<Q", stored)
         try:
             import lz4.block  # type: ignore
-
-            raw = lz4.block.decompress(block, uncompressed_size=uncompressed_size)
+            raw = lz4.block.decompress(stored[8:], uncompressed_size=size)
             return bytes(raw), f"lz4: {len(stored)} stored -> {len(raw)} bytes"
         except ImportError:
-            return stored, (
-                f"LZ4-compressed (needs 'pip install lz4'): "
-                f"stored {len(stored)} B, uncompressed {uncompressed_size} B"
-            )
-        except Exception as ex:  # corrupt block
-            return stored, f"LZ4 decompress failed: {ex}"
+            return b"", f"LZ4 page needs 'pip install lz4' ({size} uncompressed bytes)"
+        except Exception as exc:
+            return b"", f"LZ4 decompression failed: {exc}"
 
 
 def parse_pak(source: str, data: bytes) -> PakFile:
     pak = PakFile(source=source, data=data)
     if len(data) < KHEADER_SIZE + KFOOTER_SIZE:
-        pak.error = f"too small ({len(data)} B < {KHEADER_SIZE + KFOOTER_SIZE})"
+        pak.error = "pak too small"
         return pak
-    try:
-        magic, ver, flags, toc_off, toc_count, reserved = struct.unpack_from(
-            "<IIIQQI", data, 0
-        )
-    except struct.error as ex:
-        pak.error = f"header unpack failed: {ex}"
-        return pak
-    pak.version, pak.flags = ver, flags
-    pak.toc_offset, pak.toc_count = toc_off, toc_count
+    magic, reserved, flags, toc_off, toc_count, reserved2 = struct.unpack_from(
+        "<IIIQQI", data
+    )
+    pak.flags, pak.toc_offset, pak.toc_count = flags, toc_off, toc_count
     pak.header_reserved = reserved
     if magic != KPAK_MAGIC:
-        pak.error = f"bad magic 0x{magic:08X} (want 0x{KPAK_MAGIC:08X} 'SMP4' — recook from zero)"
+        pak.error = f"bad magic 0x{magic:08X} (expected SMP8; recook stale packages)"
         return pak
     foff = len(data) - KFOOTER_SIZE
-    f_toc_off, f_toc_count, f_crc, f_magic = struct.unpack_from("<QQII", data, foff)
+    f_toc_off, f_toc_count, f_crc, f_magic = struct.unpack_from(
+        "<QQII", data, foff
+    )
     pak.footer_toc_offset, pak.footer_toc_count = f_toc_off, f_toc_count
     pak.footer_crc_stored = f_crc
-    pak.footer_crc_computed = zlib.crc32(data[: foff + 16]) & 0xFFFFFFFF
-    pak.crc_ok = pak.footer_crc_computed == f_crc
-    pak.header_footer_match = (f_toc_off == toc_off) and (f_toc_count == toc_count)
+    pak.header_footer_match = (f_toc_off, f_toc_count) == (toc_off, toc_count)
     if f_magic != KPAK_FOOTER_MAGIC:
-        pak.error = f"bad footer magic 0x{f_magic:08X} (want 'KPM4')"
+        pak.error = "bad footer magic (expected KPM8)"
         return pak
     if not pak.header_footer_match:
-        pak.error = (
-            f"header/footer TOC mismatch (hdr {toc_off}/{toc_count} vs "
-            f"ftr {f_toc_off}/{f_toc_count})"
-        )
+        pak.error = "header/footer TOC mismatch"
         return pak
+    if not KHEADER_SIZE <= toc_off <= foff:
+        pak.error = "TOC offset out of range"
+        return pak
+    toc = data[toc_off:foff]
+    pak.footer_crc_computed = zlib.crc32(toc) & 0xFFFFFFFF
+    pak.crc_ok = pak.footer_crc_computed == f_crc
     if not pak.crc_ok:
-        pak.error = (
-            f"CRC mismatch: stored 0x{f_crc:08X} != "
-            f"computed 0x{pak.footer_crc_computed:08X}"
-        )
+        pak.error = "TOC CRC mismatch"
         return pak
-    # TOC
-    off = toc_off
+    # A large untrusted count must not preallocate or loop without bounds.
+    if toc_count > len(toc) // KTOC_FIXED:
+        pak.error = "TOC count exceeds available metadata"
+        return pak
+    off = 0
     for i in range(toc_count):
-        if off + KTOC_FIXED > len(data):
-            pak.error = f"TOC entry {i} overruns image"
+        if len(toc) - off < KTOC_FIXED:
+            pak.error = f"TOC entry {i} truncated"
             return pak
-        h, kind, fl, b_off, b_sz, plen = struct.unpack_from("<QIIQQI", data, off)
+        h, kind, fl, b_off, b_sz, slot, page_crc, plen = struct.unpack_from(
+            "<QIIQQIII", toc, off
+        )
         off += KTOC_FIXED
-        if plen > 4096 or off + plen > len(data):
-            pak.error = f"TOC entry {i}: path overruns image (len {plen})"
+        if plen > 4096 or plen > len(toc) - off:
+            pak.error = f"TOC entry {i}: invalid path length"
             return pak
         try:
-            path = data[off : off + plen].decode("utf-8")
+            path = toc[off:off + plen].decode("utf-8")
         except UnicodeDecodeError:
-            pak.error = f"TOC entry {i}: path not valid UTF-8"
+            pak.error = f"TOC entry {i}: path is not UTF-8"
             return pak
         off += plen
-        overruns = (b_off + b_sz) > toc_off
-        entry = PakEntry(
-            path_hash=h,
-            kind=kind,
-            kind_name=KINDS.get(kind, f"Unknown({kind})"),
-            flags=fl,
-            offset=b_off,
-            size=b_sz,
-            path=path,
-            hash_ok=(h == fnv1a64(path)),
-            blob_overruns_toc=overruns,
-        )
-        if fl & ~FLAG_LZ4:
-            pak.error = f"entry '{path}': unknown flags 0x{fl:X}"
-            return pak
-        if (fl & FLAG_LZ4) and ver < 3:
-            pak.error = f"entry '{path}': LZ4 flag in v{ver} pak"
-            return pak
-        if overruns:
+        if b_off < KHEADER_SIZE or b_off > toc_off or b_sz > toc_off - b_off:
             pak.error = f"blob overruns TOC: {path}"
             return pak
-        if not entry.hash_ok:
+        if fl & ~FLAG_LZ4:
+            pak.error = f"unknown flags 0x{fl:X}: {path}"
+            return pak
+        if h != fnv1a64(path):
             pak.error = f"path hash mismatch: {path}"
             return pak
-        pak.entries.append(entry)
+        pak.entries.append(PakEntry(
+            path_hash=h, kind=kind, kind_name=KINDS.get(kind, f"Unknown({kind})"),
+            flags=fl, offset=b_off, size=b_sz, path=path, hash_ok=True,
+            slot=slot, content_crc=page_crc,
+        ))
+    if off != len(toc):
+        pak.error = "TOC contains trailing bytes"
     return pak
+
+
+@dataclass
+class TappFile:
+    source: str
+    version: int = 0
+    entry_pak: str = ""
+    entry_scene: str = ""
+    paks: list[str] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def valid(self) -> bool:
+        return not self.error
+
+
+def _manifest_path_ok(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    parts = normalized.split("/")
+    return bool(normalized) and not normalized.startswith("/") and not (
+        len(normalized) >= 2 and normalized[1] == ":"
+    ) and all(
+        part not in ("", ".", "..") and "*" not in part and "?" not in part
+        for part in parts
+    )
+
+
+def parse_tapp(source: str, text: str) -> TappFile:
+    """Parse appmanifest 2, preserving the [paks] order and quoted names."""
+    m = TappFile(source)
+    saw_version = saw_entry = in_paks = False
+    for number, raw in enumerate(text.lstrip("\ufeff").splitlines(), 1):
+        try:
+            tokens = shlex.split(raw, comments=True, posix=True)
+        except ValueError as exc:
+            m.error = f"line {number}: {exc}"
+            return m
+        if not tokens:
+            continue
+        if tokens == ["[paks]"]:
+            in_paks = True
+            continue
+        if tokens[0].startswith("["):
+            m.error = f"line {number}: unknown section {tokens[0]}"
+            return m
+        if in_paks:
+            m.paks.append(" ".join(tokens))
+        elif tokens[0] == "appmanifest" and len(tokens) == 2 and not saw_version:
+            saw_version = True
+            if not tokens[1].isdigit() or len(tokens[1]) > 4:
+                m.error = f"line {number}: invalid appmanifest version"
+                return m
+            m.version = int(tokens[1])
+        elif tokens[0] == "entry" and len(tokens) == 3 and not saw_entry:
+            saw_entry = True
+            m.entry_pak, m.entry_scene = tokens[1:]
+        else:
+            m.error = f"line {number}: invalid or duplicate directive {tokens[0]}"
+            return m
+    if not saw_version or m.version != 2:
+        m.error = "requires appmanifest 2 (older manifests must be rebuilt)"
+    elif not saw_entry or not m.entry_scene:
+        m.error = "missing entry pak/scene"
+    elif not m.paks:
+        m.error = "manifest lists no paks"
+    elif any(not _manifest_path_ok(p) for p in m.paks):
+        m.error = "invalid manifest-relative pak path"
+    elif len(m.paks) != len(set(m.paks)):
+        m.error = "duplicate pak in manifest"
+    elif m.entry_pak not in m.paks:
+        m.error = f"entry pak {m.entry_pak!r} not listed in [paks]"
+    return m
+
+
+def tapp_pak_path(manifest: TappFile, name: str) -> Path:
+    if not _manifest_path_ok(name):
+        raise ValueError(f"invalid manifest pak path: {name}")
+    return Path(manifest.source).parent.joinpath(*name.replace("\\", "/").split("/"))
+
+
+def load_tapp(source: str) -> TappFile:
+    return parse_tapp(source, Path(source).read_text(encoding="utf-8-sig"))
+
+
+def decode_ids(payload: bytes) -> dict:
+    """Decode the per-pak IDTR v1 catalog, not the removed .tapp [ids]."""
+    if len(payload) < 12:
+        return {"error": "truncated identity header"}
+    magic, version, count = struct.unpack_from("<III", payload)
+    if magic != 0x52544449 or version != 1 or count > (1 << 20):
+        return {"error": "invalid IDTR magic, version, or row count"}
+    off = 12
+    rows = []
+    try:
+        for _ in range(count):
+            if len(payload) - off < 13:
+                raise ValueError("truncated identity row")
+            asset_id, kind, path_len = struct.unpack_from("<QBI", payload, off)
+            off += 13
+            if not 0 < path_len <= 4096 or path_len > len(payload) - off:
+                raise ValueError("invalid identity path length")
+            path = payload[off:off + path_len].decode("utf-8")
+            off += path_len
+            if len(payload) - off < 4:
+                raise ValueError("truncated scene name length")
+            (name_len,) = struct.unpack_from("<I", payload, off)
+            off += 4
+            if name_len > 4096 or name_len > len(payload) - off:
+                raise ValueError("invalid scene name length")
+            name = payload[off:off + name_len].decode("utf-8")
+            off += name_len
+            if not asset_id or kind >= len(CATALOG_KINDS) or (name and kind != 0):
+                raise ValueError("invalid identity row")
+            rows.append({
+                "id": f"0x{asset_id:X}", "kind": CATALOG_KINDS[kind],
+                "path": path, "scene": name,
+            })
+    except (ValueError, UnicodeDecodeError) as exc:
+        return {"error": str(exc)}
+    if off != len(payload):
+        return {"error": "trailing identity table bytes"}
+    return {"count": count, "rows": rows}
+
+
+def package_id_info(pak: PakFile) -> dict:
+    e = next((e for e in pak.entries if e.kind == 15 and e.path == "#ids"), None)
+    if e is None:
+        return {"error": "missing #ids identity table (recook for appmanifest 2)"}
+    payload, note = pak.payload(e)
+    if note.startswith(("CONTENT CRC", "LZ4 page", "LZ4 decompression", "invalid LZ4")):
+        return {"error": note}
+    return decode_ids(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -328,26 +452,41 @@ class _Cur:
 
 
 def decode_texture(payload: bytes) -> dict:
+    """Read legacy and digest-bearing v4 texture envelopes (best effort)."""
     c = _Cur(payload)
     uri = c.string()
-    mag = c.i32()
-    mn = c.i32()
-    ws = c.i32()
-    wt = c.i32()
-    ks = c.u64()
-    info: dict = {"uri": uri, "mag": mag, "min": mn, "wrapS": ws, "wrapT": wt}
+    mag, mn, ws, wt = c.i32(), c.i32(), c.i32(), c.i32()
+    info = {"uri": uri, "mag": mag, "min": mn, "wrapS": ws, "wrapT": wt}
     if not c.ok:
-        return {"error": "truncated texture header", **info}
-    if c.o + ks != len(payload):
-        return {"error": f"ktxSize {ks} != remaining {len(payload) - c.o}", **info}
-    ktx = payload[c.o : c.o + ks]
-    info["ktxBytes"] = ks
-    magic_ok, magic_ver = ktx2_magic_info(ktx)
-    info["ktxMagicOk"] = magic_ok
-    info["ktxVersion"] = magic_ver
-    info["ktxFirst12"] = ktx[:12].hex(" ") if ktx else "(empty)"
+        return {"error": "truncated texture envelope", **info}
+    offset = c.o
+    candidates: list[tuple[int, int, int, str]] = []
+    if offset + 8 <= len(payload):
+        (ks,) = struct.unpack_from("<Q", payload, offset)
+        if ks > 0 and ks == len(payload) - offset - 8:
+            candidates.append((offset + 8, ks, 0, "legacy"))
+    if offset + 12 <= len(payload):
+        (dlen,) = struct.unpack_from("<I", payload, offset)
+        if dlen <= 1024 * 1024 and dlen <= len(payload) - offset - 12:
+            end = offset + 4 + dlen
+            (ks,) = struct.unpack_from("<Q", payload, end)
+            if ks > 0 and ks == len(payload) - end - 8:
+                if dlen == 0 or (dlen == 8 and
+                        struct.unpack_from("<I", payload, offset + 4)[0] == 1):
+                    candidates.append((end + 8, ks, dlen, "v4"))
+    if not candidates:
+        return {"error": "invalid texture envelope length/digest", **info}
+    start, ks, dlen, fmt = candidates[-1]
+    ktx = payload[start:start + ks]
+    magic_ok, magic_version = ktx2_magic_info(ktx)
+    info.update({
+        "envelope": fmt, "digestBytes": dlen, "ktxBytes": ks,
+        "ktxMagicOk": magic_ok, "ktxVersion": magic_version,
+        "ktxFirst12": ktx[:12].hex(" "),
+    })
+    if dlen == 8:
+        info["tailFirstMip"] = struct.unpack_from("<I", payload, offset + 8)[0]
     return info
-
 
 def decode_mesh(payload: bytes) -> dict:
     c = _Cur(payload)
@@ -467,40 +606,100 @@ def hexdump(buf: bytes, limit: int = 512) -> str:
 # ---------------------------------------------------------------------------
 
 
-def cli_dump(path: str) -> int:
+def _read_pak(path: str) -> PakFile:
     try:
-        data = Path(path).read_bytes()
-    except OSError as ex:
-        print(f"error: cannot read {path}: {ex}")
-        return 2
-    pak = parse_pak(path, data)
-    print(f"pak: {path} ({len(data)} B)")
-    print(
-        f"header: magic=SMP4 flags={pak.flags} "
-        f"tocOffset={pak.toc_offset} tocCount={pak.toc_count}"
-    )
-    print(
-        f"footer: tocOffset={pak.footer_toc_offset} tocCount={pak.footer_toc_count} "
-        f"crc=0x{pak.footer_crc_stored:08X} computed=0x{pak.footer_crc_computed:08X} "
-        f"{'OK' if pak.crc_ok else 'MISMATCH'}"
-    )
+        return parse_pak(path, Path(path).read_bytes())
+    except OSError as exc:
+        return PakFile(source=path, data=b"", error=f"cannot read: {exc}")
+
+
+def _manifest_pak_problems(manifest: TappFile, name: str, pak: PakFile,
+                           verify_pages: bool) -> list[str]:
+    if pak.error:
+        return [pak.error]
+    issues = pak.verify_all() if verify_pages else []
+    ids = package_id_info(pak)
+    if "error" in ids:
+        issues.append(ids["error"])
+    elif name == manifest.entry_pak:
+        scenes = [r for r in ids["rows"] if r["kind"] == "scene"]
+        if not any(
+            r["scene"] == manifest.entry_scene or
+            (not r["scene"] and len(scenes) == 1)
+            for r in scenes
+        ):
+            issues.append(f"entry scene {manifest.entry_scene!r} not found in #ids")
+    return issues
+
+
+def cli_dump(path: str, validate: bool = False) -> int:
+    """Dump one pak or release pointer; validation checks all stored pages."""
+    if path.lower().endswith(".tapp"):
+        try:
+            manifest = load_tapp(path)
+        except (OSError, UnicodeError) as exc:
+            print(f"{path}: cannot read manifest: {exc}")
+            return 2
+        print(f"tapp: {path}  appmanifest {manifest.version}")
+        if manifest.error:
+            print(f"INVALID: {manifest.error}")
+            return 1
+        print(f"entry: pak={manifest.entry_pak!r} scene={manifest.entry_scene!r}")
+        print(f"paks: {len(manifest.paks)} (manifest order)")
+        result = 0
+        for name in manifest.paks:
+            pak_path = str(tapp_pak_path(manifest, name))
+            pak = _read_pak(pak_path)
+            problems = _manifest_pak_problems(manifest, name, pak, validate)
+            print(f"  {name}: {'INVALID: ' + '; '.join(problems) if problems else 'OK'}"
+                  f" ({len(pak.entries)} entries)")
+            if not validate and not pak.error:
+                _print_pak_entries(pak, indent="    ")
+                ids = package_id_info(pak)
+                if "rows" in ids:
+                    print(f"    #ids: {ids['count']} asset identities")
+                    for row in ids["rows"]:
+                        print(f"      {row['id']:>12} {row['kind']:<10} "
+                              f"{row['path']} {row['scene']}")
+            if problems:
+                result = 1
+        return result
+    pak = _read_pak(path)
+    print(f"pak: {path} ({pak.size} B)")
+    print(f"header: SMP8 flags={pak.flags} tocOffset={pak.toc_offset} "
+          f"tocCount={pak.toc_count}")
+    print(f"footer: TOC CRC=0x{pak.footer_crc_stored:08X} "
+          f"computed=0x{pak.footer_crc_computed:08X} "
+          f"({'OK' if pak.crc_ok else 'MISMATCH'})")
     if pak.error:
         print(f"INVALID: {pak.error}")
         return 1
-    from collections import Counter
+    problems = pak.verify_all() if validate else []
+    if not validate:
+        _print_pak_entries(pak)
+        ids = package_id_info(pak) if any(e.path == "#ids" for e in pak.entries) else {}
+        if "rows" in ids:
+            print(f"#ids: {ids['count']} identities")
+            for row in ids["rows"]:
+                print(f"  {row['id']:>12} {row['kind']:<10} "
+                      f"{row['path']} {row['scene']}")
+    for problem in problems:
+        print(f"INVALID: {problem}")
+    if validate:
+        print(f"{path}: {'OK (TOC + all pages)' if not problems else 'INVALID'}")
+    return 1 if problems else 0
 
+
+def _print_pak_entries(pak: PakFile, indent: str = "") -> None:
+    from collections import Counter
     counts = Counter(e.kind_name for e in pak.entries)
-    print(f"entries: {len(pak.entries)} " + str(dict(counts)))
+    print(f"{indent}entries: {len(pak.entries)} {dict(counts)}")
     for e in pak.entries:
-        comp = " lz4" if e.compressed else ""
-        vis = "VFS" if e.vfs_visible else "internal"
-        print(
-            f"  [{e.kind_name:8}] {e.offset:10} +{e.size:<10} "
-            f"hash=0x{e.path_hash:016X}{comp} {vis}  {e.path}"
-        )
-    print("note: only Texture blobs are VFS-visible (PakBackend); the rest are")
-    print("      cluster-internal and load via PakReader, not VFS file reads.")
-    return 0
+        codec = "lz4" if e.compressed else "raw"
+        vfs = "VFS" if e.vfs_visible else "internal"
+        print(f"{indent}  [{e.kind_name:10}] slot={e.slot:<6} "
+              f"{e.offset:>10} +{e.size:<10} "
+              f"CRC=0x{e.content_crc:08X} {codec} {vfs} {e.path}")
 
 
 # ---------------------------------------------------------------------------
@@ -545,20 +744,22 @@ if HAVE_QT:
     @dataclass
     class Mount:
         name: str
-        kind: str  # "pak" | "loose"
+        kind: str  # "pak" | "tapp" | "loose"
         priority: int
         pak: PakFile | None = None
         loose_dir: str = ""
+        tapp: TappFile | None = None
+        manifest_source: str = ""
 
     class PakBrowser(QMainWindow):
         def __init__(self, initial_paks: list[str] | None = None):
             super().__init__()
-            self.setWindowTitle("Pack Browser - manifest/header + VFS inspector")
+            self.setWindowTitle("Tourmaline Package Browser - SMP8 + .tapp")
             self.resize(1280, 800)
             self.mounts: list[Mount] = []
             self._build_ui()
             for p in initial_paks or []:
-                self.add_pak_mount(p)
+                self.add_source(p)
 
         # -- layout ---------------------------------------------------
         def _build_ui(self):
@@ -571,7 +772,7 @@ if HAVE_QT:
 
             # toolbar row
             bar = QHBoxLayout()
-            self.btn_open = QPushButton("Open pak...")
+            self.btn_open = QPushButton("Open .pak / .tapp...")
             self.btn_loose = QPushButton("Mount loose dir...")
             self.btn_up = QPushButton("Priority up")
             self.btn_down = QPushButton("Priority down")
@@ -608,15 +809,15 @@ if HAVE_QT:
             self.search.setPlaceholderText("filter path substring...")
             self.kind_combo = QComboBox()
             self.kind_combo.addItems(
-                ["all kinds", "Scene", "Mesh", "Material", "Texture", "Light", "Gi"]
+                ["all kinds", *KINDS.values()]
             )
             filt_row.addWidget(self.search, 1)
             filt_row.addWidget(self.kind_combo)
             left_l.addLayout(filt_row)
 
-            self.table = QTableWidget(0, 7)
+            self.table = QTableWidget(0, 9)
             self.table.setHorizontalHeaderLabels(
-                ["path", "kind", "offset", "size", "flags", "hash", "VFS"]
+                ["path", "package", "kind", "slot", "offset", "size", "flags", "CRC32", "VFS"]
             )
             self.table.setSortingEnabled(True)
             self.table.setSelectionBehavior(
@@ -640,9 +841,9 @@ if HAVE_QT:
             vfs_tab = QWidget()
             vfs_l = QVBoxLayout(vfs_tab)
             note = QLabel(
-                "PakBackend serves <b>Texture blobs only</b> through VFS "
-                "(original path -> embedded .ktx2). Scene/Mesh/Material/Light/Gi "
-                "are cluster-internal (PakReader, not VFS reads). "
+                "PakBackend serves <b>Texture, Sound, Shader, AudioGraph</b> through VFS "
+                "(other kinds are package-internal). "
+                
                 "Overlay = first-match-wins by mount priority."
             )
             note.setWordWrap(True)
@@ -669,7 +870,7 @@ if HAVE_QT:
             vfs_l.addLayout(dir_row)
             self.dir_result = QListWidget()
             vfs_l.addWidget(self.dir_result, 1)
-            vfs_l.addWidget(QLabel("VFS tree (Texture paths, union over mounts)"))
+            vfs_l.addWidget(QLabel("VFS tree (readable asset paths across mounts)"))
             self.tree = QTreeWidget()
             self.tree.setHeaderLabels(["vfs path", "providers"])
             vfs_l.addWidget(self.tree, 1)
@@ -693,29 +894,50 @@ if HAVE_QT:
             self.dir_input.returnPressed.connect(self.list_union_dir)
 
         # -- mounts ---------------------------------------------------
-        def add_pak_mount(self, path: str):
-            try:
-                data = Path(path).read_bytes()
-            except OSError as ex:
-                QMessageBox.warning(self, "Open failed", f"{path}:\n{ex}")
-                return
-            pak = parse_pak(path, data)
+        def add_source(self, path: str):
+            if path.lower().endswith(".tapp"):
+                self.add_tapp_mount(path)
+            else:
+                self.add_pak_mount(path)
+
+        def add_pak_mount(self, path: str, manifest_source: str = "",
+                          select: bool = True):
+            pak = _read_pak(path)
             prio = len(self.mounts)
-            name = f"{Path(path).name} (pak p{prio})"
-            self.mounts.append(Mount(name, "pak", prio, pak))
-            if pak.error:
-                QMessageBox.warning(
-                    self, "Invalid pak", f"{path}:\n{pak.error}"
-                )
+            self.mounts.append(Mount(
+                f"{Path(path).name} (pak p{prio})", "pak", prio,
+                pak=pak, manifest_source=manifest_source))
+            if pak.error and not manifest_source:
+                QMessageBox.warning(self, "Invalid pak", f"{path}:\n{pak.error}")
+            if select:
+                self.refresh_mount_list()
+                self.mount_list.setCurrentRow(prio)
+
+        def add_tapp_mount(self, path: str):
+            try:
+                manifest = load_tapp(path)
+            except (OSError, UnicodeError) as exc:
+                manifest = TappFile(source=path, error=str(exc))
+            prio = len(self.mounts)
+            self.mounts.append(Mount(
+                f"{Path(path).name} (tapp)", "tapp", prio, tapp=manifest))
+            if manifest.error:
+                QMessageBox.warning(self, "Invalid .tapp", manifest.error)
+            else:
+                for name in manifest.paks:
+                    self.add_pak_mount(
+                        str(tapp_pak_path(manifest, name)),
+                        manifest_source=path, select=False)
             self.refresh_mount_list()
-            self.mount_list.setCurrentRow(len(self.mounts) - 1)
+            self.mount_list.setCurrentRow(prio)
 
         def on_open(self):
             paths, _ = QFileDialog.getOpenFileNames(
-                self, "Open .pak", "", "Pak files (*.pak);;All files (*)"
+                self, "Open Tourmaline packages", "",
+                "Tourmaline files (*.pak *.tapp);;All files (*)"
             )
-            for p in paths:
-                self.add_pak_mount(p)
+            for path in paths:
+                self.add_source(path)
 
         def on_loose(self):
             d = QFileDialog.getExistingDirectory(self, "Mount loose content dir")
@@ -731,7 +953,15 @@ if HAVE_QT:
         def on_remove(self):
             row = self.mount_list.currentRow()
             if 0 <= row < len(self.mounts):
-                del self.mounts[row]
+                source = self.mounts[row].tapp.source if self.mounts[row].tapp else ""
+                if source:
+                    self.mounts = [
+                        m for m in self.mounts
+                        if m.manifest_source != source
+                        and not (m.tapp and m.tapp.source == source)
+                    ]
+                else:
+                    del self.mounts[row]
                 self._renumber()
                 self.refresh_mount_list()
 
@@ -762,6 +992,9 @@ if HAVE_QT:
                     n = len(m.pak.entries) if m.pak and not m.pak.error else 0
                     ok = "OK" if m.pak and not m.pak.error else "INVALID"
                     self.mount_list.addItem(f"[p{m.priority}] pak {m.name} - {n} entries ({ok})")
+                elif m.kind == "tapp":
+                    state = "INVALID" if m.tapp and m.tapp.error else "manifest"
+                    self.mount_list.addItem(f"[p{m.priority}] tapp {m.name} ({state})")
                 else:
                     self.mount_list.addItem(f"[p{m.priority}] loose {m.loose_dir}")
             self.refresh_all()
@@ -789,13 +1022,35 @@ if HAVE_QT:
                 )
                 self.statusBar().showMessage(f"loose {m.loose_dir}")
                 return
+            if m.kind == "tapp":
+                manifest = m.tapp
+                assert manifest is not None
+                rows = [
+                    ("file", manifest.source),
+                    ("format", f"appmanifest {manifest.version}"),
+                    ("entry", f"{manifest.entry_pak} / {manifest.entry_scene}"),
+                    ("paks", f"{len(manifest.paks)} in manifest order"),
+                ]
+                for name in manifest.paks:
+                    child = next((p for p in self.mounts if p.pak and
+                                  p.manifest_source == manifest.source and
+                                  p.pak.source == str(tapp_pak_path(manifest, name))), None)
+                    rows.append((name, (child.pak.error or "OK") if child else "missing"))
+                if manifest.error:
+                    rows.append(("INVALID", manifest.error))
+                for key, value in rows:
+                    label = QLabel(value)
+                    label.setWordWrap(True)
+                    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                    self.header_form.addRow(key, label)
+                return
             pak = m.pak
             assert pak is not None
             rows = [
                 ("file", f"{pak.source} ({pak.size} B)"),
                 (
                     "magic",
-                    f"SMP4 {'OK' if not pak.error else 'INVALID'} "
+                    f"SMP8 {'OK' if not pak.error else 'INVALID'} "
                     f"(flags={pak.flags})".strip(),
                 ),
                 ("toc", f"offset={pak.toc_offset} count={pak.toc_count}"),
@@ -809,7 +1064,7 @@ if HAVE_QT:
                 ("compressed", f"{sum(1 for e in pak.entries if e.compressed)} lz4"),
                 (
                     "vfs-visible",
-                    f"{sum(1 for e in pak.entries if e.vfs_visible)} Texture blobs",
+                    f"{sum(1 for e in pak.entries if e.vfs_visible)} assets",
                 ),
             ]
             if pak.error:
@@ -830,75 +1085,61 @@ if HAVE_QT:
             c = Counter(e.kind_name for e in pak.entries)
             return " (" + ", ".join(f"{k}:{v}" for k, v in sorted(c.items())) + ")"
 
-        def filtered_entries(self) -> list[tuple[Mount | None, PakEntry]]:
-            """Entries of the selected mount (pak) filtered by search/kind."""
-            m = self.selected_mount()
-            if m is None or m.kind != "pak" or not m.pak or m.pak.error:
-                # invalid pak: still show nothing (error is in header pane)
-                if m is not None and m.kind == "pak" and m.pak and m.pak.error:
-                    return []
+        def filtered_entries(self):
+            selected = self.selected_mount()
+            if selected is None:
+                return []
+            if selected.kind == "tapp" and selected.tapp:
+                sources = [m for m in self.mounts if m.kind == "pak"
+                           and m.manifest_source == selected.tapp.source]
+            elif selected.kind == "pak":
+                sources = [selected]
+            else:
                 return []
             q = self.search.text().strip().lower()
             kind = self.kind_combo.currentText()
-            out = []
-            for e in m.pak.entries:
-                if kind != "all kinds" and e.kind_name != kind:
-                    continue
-                if q and q not in e.path.lower():
-                    continue
-                out.append((m, e))
-            return out
+            return [(m, e) for m in sources if m.pak and not m.pak.error
+                    for e in m.pak.entries
+                    if (kind == "all kinds" or e.kind_name == kind)
+                    and (not q or q in e.path.lower())]
 
         def refresh_table(self):
             rows = self.filtered_entries()
             self.table.setSortingEnabled(False)
             self.table.setRowCount(len(rows))
-            for i, (_, e) in enumerate(rows):
-                vals = [
-                    e.path,
-                    e.kind_name,
-                    str(e.offset),
-                    str(e.size),
-                    ("lz4" if e.compressed else "none"),
-                    f"0x{e.path_hash:016X}",
-                    ("VFS" if e.vfs_visible else "internal"),
-                ]
-                for j, v in enumerate(vals):
-                    it = QTableWidgetItem(v)
-                    if j in (2, 3):
-                        it.setData(Qt.ItemDataRole.DisplayRole, int(vals[j]))
-                    self.table.setItem(i, j, it)
+            for i, (mount, entry) in enumerate(rows):
+                values = [entry.path, Path(mount.pak.source).name,
+                          entry.kind_name, entry.slot, entry.offset, entry.size,
+                          "lz4" if entry.compressed else "raw",
+                          f"0x{entry.content_crc:08X}",
+                          "VFS" if entry.vfs_visible else "internal"]
+                for j, value in enumerate(values):
+                    item = QTableWidgetItem()
+                    item.setData(Qt.ItemDataRole.DisplayRole, value)
+                    item.setData(Qt.ItemDataRole.UserRole, (mount, entry))
+                    self.table.setItem(i, j, item)
             self.table.setSortingEnabled(True)
             self.table.resizeColumnsToContents()
             if rows:
                 self.table.selectRow(0)
 
-        # -- detail ----------------------------------------------------
         def show_selected(self):
-            rows = self.filtered_entries()
-            sel = self.table.currentRow()
-            if not (0 <= sel < len(rows)):
-                # table may be sorted; fall back to path lookup
-                items = self.table.selectedItems()
-                if not items:
-                    return
-                path = self.table.item(items[0].row(), 0).text()
-                m = self.selected_mount()
-                if not m or m.kind != "pak" or not m.pak:
-                    return
-                e = next((x for x in m.pak.entries if x.path == path), None)
-                if e is None:
-                    return
-                self.show_entry(m, e)
+            items = self.table.selectedItems()
+            if not items:
                 return
-            m, e = rows[sel]
-            assert m is not None
-            self.show_entry(m, e)
+            item = self.table.item(items[0].row(), 0)
+            if item is not None:
+                selected = item.data(Qt.ItemDataRole.UserRole)
+                if selected:
+                    self.show_entry(*selected)
 
         def show_entry(self, m: Mount, e: PakEntry):
             assert m.pak is not None
             payload, note = m.pak.payload(e)
             lines = [
+                f"package:   {m.pak.source}",
+                f"slot:      {e.slot}",
+                f"contentCRC: 0x{e.content_crc:08X}",
                 f"path:      {e.path}",
                 f"normalized:{vfs_normalize(e.path) or '(INVALID VFS PATH)'}",
                 f"kind:      {e.kind_name} ({e.kind})",
@@ -907,13 +1148,18 @@ if HAVE_QT:
                 f"flags:     0x{e.flags:X} ({'lz4' if e.compressed else 'stored'})",
                 f"hash:      0x{e.path_hash:016X} "
                 f"({'OK' if e.hash_ok else 'MISMATCH'})",
-                f"vfs:       {'VISIBLE via PakBackend (Texture)' if e.vfs_visible else 'internal-only (PakReader, not VFS reads)'}",
+                f"vfs:       {'VISIBLE via PakBackend' if e.vfs_visible else 'internal-only (PakReader)'}",
             ]
             if note:
                 lines.append(f"codec:     {note}")
             # per-kind decode
             try:
-                if e.kind == 4:
+                if note and not note.startswith('lz4:'):
+                    lines.append('payload unavailable; decode skipped')
+                elif e.kind == 15:
+                    lines.append('identity table:')
+                    lines += self._fmt_dict(decode_ids(payload))
+                elif e.kind == 4:
                     d = decode_texture(payload)
                     lines += self._fmt_texture(d)
                 elif e.kind == 2:
@@ -965,7 +1211,7 @@ if HAVE_QT:
 
         # -- VFS --------------------------------------------------------
         def _texture_index(self) -> dict[str, list[str]]:
-            """normalized vfs path -> provider mount names (Texture blobs + loose)."""
+            """Normalized vfs path -> provider names (VFS-visible entries + loose)."""
             idx: dict[str, list[str]] = {}
             for m in sorted(self.mounts, key=lambda x: x.priority):
                 if m.kind == "pak" and m.pak and not m.pak.error:
@@ -1022,7 +1268,7 @@ if HAVE_QT:
                     )
                     if e is not None:
                         payload, _ = m.pak.payload(e)
-                        d = decode_texture(payload)
+                        d = decode_texture(payload) if e.kind == 4 else {}
                         lines.append(
                             f"blob:       [{e.kind_name}] offset={e.offset} stored={e.size} "
                             f"ktx={d.get('ktxBytes', '?')} B "
@@ -1136,31 +1382,20 @@ def run_gui(initial: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
-    args = [a for a in argv[1:] if not a.startswith("-")]
-    if "--cli-dump" in argv[1:]:
-        if not args:
-            print("usage: pak_browser.py --cli-dump <pak> [more.pak ...]")
-            return 2
-        rc = 0
-        for p in args:
-            rc |= cli_dump(p)
-        return rc
     if "--help" in argv[1:] or "-h" in argv[1:]:
         print(__doc__)
         return 0
-    # --cli-validate: exit-code only check (CI friendly)
-    if "--cli-validate" in argv[1:]:
-        rc = 0
-        for p in args:
-            try:
-                pak = parse_pak(p, Path(p).read_bytes())
-            except OSError as ex:
-                print(f"{p}: unreadable: {ex}")
-                rc = 1
-                continue
-            print(f"{p}: {'OK' if not pak.error else 'INVALID: ' + pak.error}")
-            rc |= 1 if pak.error else 0
-        return rc
+    args = [a for a in argv[1:] if not a.startswith("-")]
+    if "--cli-dump" in argv[1:] or "--cli-validate" in argv[1:]:
+        if not args:
+            print("usage: pak_browser.py (--cli-dump | --cli-validate) "
+                  "<pak-or-tapp> [...]")
+            return 2
+        validate = "--cli-validate" in argv[1:]
+        result = 0
+        for path in args:
+            result |= cli_dump(path, validate=validate)
+        return result
     return run_gui(args)
 
 
