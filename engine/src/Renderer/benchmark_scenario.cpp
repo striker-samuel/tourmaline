@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/benchmark_scenario.h>
+#include <Engine/Renderer/WorldRenderer.h>
 
 #include <nlohmann/json.hpp>
 
@@ -8,7 +9,9 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
+#include <cmath>
 #include <system_error>
 #ifdef _WIN32
 #include <windows.h>
@@ -140,3 +143,93 @@ bool Save(const Scenario& scenario, std::string& message) {
 }
 
 } // namespace engine::benchmark
+
+namespace engine {
+
+void WorldRenderer::ExportBenchmarkScenario() {
+    benchmark::Scenario s;
+    s.label = m_benchmarkLabel;
+    s.subsystem = m_benchmarkSubsystem;
+    s.notes = m_benchmarkNotes;
+    s.sourceArgs = m_benchmarkSourceArgs;
+    const glm::vec3 pos = m_cameraPositioner.cameraPosition_;
+    const glm::vec3 fwd = glm::normalize(m_cameraPositioner.getForward());
+    if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) ||
+        !std::isfinite(fwd.x) || !std::isfinite(fwd.y) || !std::isfinite(fwd.z)) {
+        m_benchmarkExportMessage = "Camera contains non-finite coordinates.";
+        return;
+    }
+    s.position = {pos.x, pos.y, pos.z};
+    s.forward = {fwd.x, fwd.y, fwd.z};
+    auto scalar = [](float x) {
+        std::ostringstream stream;
+        stream << std::setprecision(9) << x;
+        return stream.str();
+    };
+    auto vec = [&](const glm::vec3& v) {
+        return scalar(v.x) + "," + scalar(v.y) + "," + scalar(v.z);
+    };
+    auto pin = [&](const char* name, bool v) {
+        s.environment[name] = v ? "1" : "0";
+    };
+    s.environment["TOURMALINE_CAM_POS"] = vec(pos);
+    s.environment["TOURMALINE_CAM_FWD"] = vec(fwd);
+    s.environment["TOURMALINE_RENDER_SCALE"] = scalar(m_renderScale);
+    switch (m_aaMode) {
+    case AaMode::Off: s.environment["TOURMALINE_AA"] = "off"; break;
+    case AaMode::Msaa2x: s.environment["TOURMALINE_AA"] = "msaa2x"; break;
+    case AaMode::Smaa1x: s.environment["TOURMALINE_AA"] = "smaa1x"; break;
+    case AaMode::SmaaT2x: s.environment["TOURMALINE_AA"] = "smaat2x"; break;
+    }
+    s.environment["TOURMALINE_AO"] =
+        m_aoMode == AoMode::None ? "off" :
+        m_aoMode == AoMode::Ssao ? "ssao" : "sao";
+    pin("TOURMALINE_SSR", m_ssrEnabled);
+    pin("TOURMALINE_SSGI", m_ssgiDiffuseEnabled);
+    pin("TOURMALINE_DS", m_dsEnabled);
+    pin("TOURMALINE_EVSM", m_evsmEnabled);
+    pin("TOURMALINE_SDSM", m_sdsmEnabled);
+    pin("TOURMALINE_TERRAIN", m_passes.terrain);
+    pin("TOURMALINE_CUBEMAP", m_cubemapEnabled);
+    pin("TOURMALINE_LIGHTMAP", m_lmEnabled);
+    pin("TOURMALINE_CONTACT_SHADOWS", m_contactShadowsEnabled);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_STEPS"] =
+        std::to_string(m_contactShadowSteps);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_DIST"] =
+        scalar(m_contactShadowMaxDistance);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_THICKNESS"] =
+        scalar(m_contactShadowThickness);
+    s.environment["TOURMALINE_CONTACT_SHADOWS_RES"] =
+        std::to_string(m_contactShadowResolutionDivisor);
+    pin("TOURMALINE_VOLUMETRIC", m_volumetricEnabled);
+    s.environment["TOURMALINE_VOLUMETRIC_STEPS"] =
+        std::to_string(m_volumetricSteps);
+    s.environment["TOURMALINE_VOLUMETRIC_INTENSITY"] =
+        scalar(m_volumetricIntensity);
+    s.environment["TOURMALINE_VOLUMETRIC_SUN"] = scalar(m_volumetricSun);
+    s.environment["TOURMALINE_VOLUMETRIC_GI"] = scalar(m_volumetricGi);
+    s.environment["TOURMALINE_GI_INTENSITY"] = scalar(m_giIntensity);
+    s.environment["TOURMALINE_BLOOM_INTENSITY"] = scalar(m_bloomIntensity);
+    s.environment["TOURMALINE_BLOOM_THRESHOLD"] = scalar(m_bloomThreshold);
+    // The benchmark host deliberately fixes exposure off to keep the
+    // comparison deterministic; do not export the live exposure checkbox.
+    s.environment["TOURMALINE_AUTO_EXPOSURE"] = "0";
+
+    switch (m_dlssMode) {
+    case smvk::DlssMode::Off: s.environment["TOURMALINE_DLSS"] = "off"; break;
+    case smvk::DlssMode::UltraPerformance: s.environment["TOURMALINE_DLSS"] = "ultraperf"; break;
+    case smvk::DlssMode::MaxPerformance: s.environment["TOURMALINE_DLSS"] = "perf"; break;
+    case smvk::DlssMode::Balanced: s.environment["TOURMALINE_DLSS"] = "balanced"; break;
+    case smvk::DlssMode::MaxQuality: s.environment["TOURMALINE_DLSS"] = "quality"; break;
+    case smvk::DlssMode::UltraQuality: s.environment["TOURMALINE_DLSS"] = "ultraquality"; break;
+    case smvk::DlssMode::DLAA: s.environment["TOURMALINE_DLSS"] = "dlaa"; break;
+    }
+    if (!m_bloomEnabled) s.appArgs.push_back("--without=bloom");
+    if (!m_dofEnabled) s.appArgs.push_back("--without=dof");
+    // Keep the renderer pass graph consistent with the captured UI state.
+    // Highly specialized live-only sliders are intentionally not claimed
+    // as replayable; prefer adding a RunConfig pin before exporting them.
+    benchmark::Save(s, m_benchmarkExportMessage);
+}
+
+} // namespace engine
