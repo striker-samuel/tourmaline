@@ -1199,3 +1199,10 @@ target_link_libraries(TriggerVolumeTests PRIVATE engine)
 set_target_properties(TriggerVolumeTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME trigger_volume_tests COMMAND TriggerVolumeTests)
+
+# GPUIR GPU Scene v2: stable World identity / transform-change bridge.
+add_executable(GpuSceneWorldTests test_gpu_scene_world.cpp)
+target_link_libraries(GpuSceneWorldTests PRIVATE engine)
+set_target_properties(GpuSceneWorldTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_world_tests COMMAND GpuSceneWorldTests)

@@ -311,6 +311,7 @@ bool recalculateGlobalTransforms(Scene& scene)
     if (!IsLiveSlot(scene, uint32_t(c)))
       continue;
     scene.globalTransform[c] = scene.localTransform[c];
+    scene.gpuSceneGlobalChanges.push_back(uint32_t(c));
     wasUpdated = true;
   }
   scene.changedAtThisFrame[0].clear();
@@ -328,6 +329,7 @@ bool recalculateGlobalTransforms(Scene& scene)
         scene.globalTransform[c] = scene.localTransform[c];
       else
         scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
+      scene.gpuSceneGlobalChanges.push_back(uint32_t(c));
     }
     wasUpdated |= !scene.changedAtThisFrame[i].empty();
     scene.changedAtThisFrame[i].clear();
@@ -351,6 +353,7 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
     const bool isStatic = (size_t)c < scene.staticNode.size() && scene.staticNode[(size_t)c] != 0;
     if (!isStatic) {
       scene.globalTransform[c] = scene.localTransform[c];
+      scene.gpuSceneGlobalChanges.push_back(uint32_t(c));
       wasUpdated = true;
     }
     scene.changedAtThisFrame[0].clear();
@@ -365,6 +368,7 @@ bool recalculateGlobalTransformsDynamic(Scene& scene)
         continue;
       const int p              = scene.hierarchy[c].parent;
       scene.globalTransform[c] = scene.globalTransform[p] * scene.localTransform[c];
+      scene.gpuSceneGlobalChanges.push_back(uint32_t(c));
       wasUpdated = true;
     }
     scene.changedAtThisFrame[i].clear();

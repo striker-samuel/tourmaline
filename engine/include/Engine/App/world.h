@@ -106,6 +106,11 @@ namespace tour {
 		// Merged runtime scene graph. Imported Cluster scenes are folded into
 		// this via ResolveAndFixup_clusters().
 		Scene scene;
+		// Monotonic per-World owner registration identity; never use a
+		// recycled Cluster* address as the permanent GPU scene key.
+		uint64_t gpuSceneTopologyRevision = 0;
+		uint64_t nextGpuSceneClusterId = 1;
+		std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
 
 		mutable bool dirtyCull = true;
 		std::vector<IteratorFlags> flags; // indexed by node
