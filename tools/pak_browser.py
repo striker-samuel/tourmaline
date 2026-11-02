@@ -452,26 +452,41 @@ class _Cur:
 
 
 def decode_texture(payload: bytes) -> dict:
+    """Read legacy and digest-bearing v4 texture envelopes (best effort)."""
     c = _Cur(payload)
     uri = c.string()
-    mag = c.i32()
-    mn = c.i32()
-    ws = c.i32()
-    wt = c.i32()
-    ks = c.u64()
-    info: dict = {"uri": uri, "mag": mag, "min": mn, "wrapS": ws, "wrapT": wt}
+    mag, mn, ws, wt = c.i32(), c.i32(), c.i32(), c.i32()
+    info = {"uri": uri, "mag": mag, "min": mn, "wrapS": ws, "wrapT": wt}
     if not c.ok:
-        return {"error": "truncated texture header", **info}
-    if c.o + ks != len(payload):
-        return {"error": f"ktxSize {ks} != remaining {len(payload) - c.o}", **info}
-    ktx = payload[c.o : c.o + ks]
-    info["ktxBytes"] = ks
-    magic_ok, magic_ver = ktx2_magic_info(ktx)
-    info["ktxMagicOk"] = magic_ok
-    info["ktxVersion"] = magic_ver
-    info["ktxFirst12"] = ktx[:12].hex(" ") if ktx else "(empty)"
+        return {"error": "truncated texture envelope", **info}
+    offset = c.o
+    candidates: list[tuple[int, int, int, str]] = []
+    if offset + 8 <= len(payload):
+        (ks,) = struct.unpack_from("<Q", payload, offset)
+        if ks > 0 and ks == len(payload) - offset - 8:
+            candidates.append((offset + 8, ks, 0, "legacy"))
+    if offset + 12 <= len(payload):
+        (dlen,) = struct.unpack_from("<I", payload, offset)
+        if dlen <= 1024 * 1024 and dlen <= len(payload) - offset - 12:
+            end = offset + 4 + dlen
+            (ks,) = struct.unpack_from("<Q", payload, end)
+            if ks > 0 and ks == len(payload) - end - 8:
+                if dlen == 0 or (dlen == 8 and
+                        struct.unpack_from("<I", payload, offset + 4)[0] == 1):
+                    candidates.append((end + 8, ks, dlen, "v4"))
+    if not candidates:
+        return {"error": "invalid texture envelope length/digest", **info}
+    start, ks, dlen, fmt = candidates[-1]
+    ktx = payload[start:start + ks]
+    magic_ok, magic_version = ktx2_magic_info(ktx)
+    info.update({
+        "envelope": fmt, "digestBytes": dlen, "ktxBytes": ks,
+        "ktxMagicOk": magic_ok, "ktxVersion": magic_version,
+        "ktxFirst12": ktx[:12].hex(" "),
+    })
+    if dlen == 8:
+        info["tailFirstMip"] = struct.unpack_from("<I", payload, offset + 8)[0]
     return info
-
 
 def decode_mesh(payload: bytes) -> dict:
     c = _Cur(payload)
@@ -591,40 +606,100 @@ def hexdump(buf: bytes, limit: int = 512) -> str:
 # ---------------------------------------------------------------------------
 
 
-def cli_dump(path: str) -> int:
+def _read_pak(path: str) -> PakFile:
     try:
-        data = Path(path).read_bytes()
-    except OSError as ex:
-        print(f"error: cannot read {path}: {ex}")
-        return 2
-    pak = parse_pak(path, data)
-    print(f"pak: {path} ({len(data)} B)")
-    print(
-        f"header: magic=SMP4 flags={pak.flags} "
-        f"tocOffset={pak.toc_offset} tocCount={pak.toc_count}"
-    )
-    print(
-        f"footer: tocOffset={pak.footer_toc_offset} tocCount={pak.footer_toc_count} "
-        f"crc=0x{pak.footer_crc_stored:08X} computed=0x{pak.footer_crc_computed:08X} "
-        f"{'OK' if pak.crc_ok else 'MISMATCH'}"
-    )
+        return parse_pak(path, Path(path).read_bytes())
+    except OSError as exc:
+        return PakFile(source=path, data=b"", error=f"cannot read: {exc}")
+
+
+def _manifest_pak_problems(manifest: TappFile, name: str, pak: PakFile,
+                           verify_pages: bool) -> list[str]:
+    if pak.error:
+        return [pak.error]
+    issues = pak.verify_all() if verify_pages else []
+    ids = package_id_info(pak)
+    if "error" in ids:
+        issues.append(ids["error"])
+    elif name == manifest.entry_pak:
+        scenes = [r for r in ids["rows"] if r["kind"] == "scene"]
+        if not any(
+            r["scene"] == manifest.entry_scene or
+            (not r["scene"] and len(scenes) == 1)
+            for r in scenes
+        ):
+            issues.append(f"entry scene {manifest.entry_scene!r} not found in #ids")
+    return issues
+
+
+def cli_dump(path: str, validate: bool = False) -> int:
+    """Dump one pak or release pointer; validation checks all stored pages."""
+    if path.lower().endswith(".tapp"):
+        try:
+            manifest = load_tapp(path)
+        except (OSError, UnicodeError) as exc:
+            print(f"{path}: cannot read manifest: {exc}")
+            return 2
+        print(f"tapp: {path}  appmanifest {manifest.version}")
+        if manifest.error:
+            print(f"INVALID: {manifest.error}")
+            return 1
+        print(f"entry: pak={manifest.entry_pak!r} scene={manifest.entry_scene!r}")
+        print(f"paks: {len(manifest.paks)} (manifest order)")
+        result = 0
+        for name in manifest.paks:
+            pak_path = str(tapp_pak_path(manifest, name))
+            pak = _read_pak(pak_path)
+            problems = _manifest_pak_problems(manifest, name, pak, validate)
+            print(f"  {name}: {'INVALID: ' + '; '.join(problems) if problems else 'OK'}"
+                  f" ({len(pak.entries)} entries)")
+            if not validate and not pak.error:
+                _print_pak_entries(pak, indent="    ")
+                ids = package_id_info(pak)
+                if "rows" in ids:
+                    print(f"    #ids: {ids['count']} asset identities")
+                    for row in ids["rows"]:
+                        print(f"      {row['id']:>12} {row['kind']:<10} "
+                              f"{row['path']} {row['scene']}")
+            if problems:
+                result = 1
+        return result
+    pak = _read_pak(path)
+    print(f"pak: {path} ({pak.size} B)")
+    print(f"header: SMP8 flags={pak.flags} tocOffset={pak.toc_offset} "
+          f"tocCount={pak.toc_count}")
+    print(f"footer: TOC CRC=0x{pak.footer_crc_stored:08X} "
+          f"computed=0x{pak.footer_crc_computed:08X} "
+          f"({'OK' if pak.crc_ok else 'MISMATCH'})")
     if pak.error:
         print(f"INVALID: {pak.error}")
         return 1
-    from collections import Counter
+    problems = pak.verify_all() if validate else []
+    if not validate:
+        _print_pak_entries(pak)
+        ids = package_id_info(pak) if any(e.path == "#ids" for e in pak.entries) else {}
+        if "rows" in ids:
+            print(f"#ids: {ids['count']} identities")
+            for row in ids["rows"]:
+                print(f"  {row['id']:>12} {row['kind']:<10} "
+                      f"{row['path']} {row['scene']}")
+    for problem in problems:
+        print(f"INVALID: {problem}")
+    if validate:
+        print(f"{path}: {'OK (TOC + all pages)' if not problems else 'INVALID'}")
+    return 1 if problems else 0
 
+
+def _print_pak_entries(pak: PakFile, indent: str = "") -> None:
+    from collections import Counter
     counts = Counter(e.kind_name for e in pak.entries)
-    print(f"entries: {len(pak.entries)} " + str(dict(counts)))
+    print(f"{indent}entries: {len(pak.entries)} {dict(counts)}")
     for e in pak.entries:
-        comp = " lz4" if e.compressed else ""
-        vis = "VFS" if e.vfs_visible else "internal"
-        print(
-            f"  [{e.kind_name:8}] {e.offset:10} +{e.size:<10} "
-            f"hash=0x{e.path_hash:016X}{comp} {vis}  {e.path}"
-        )
-    print("note: only Texture blobs are VFS-visible (PakBackend); the rest are")
-    print("      cluster-internal and load via PakReader, not VFS file reads.")
-    return 0
+        codec = "lz4" if e.compressed else "raw"
+        vfs = "VFS" if e.vfs_visible else "internal"
+        print(f"{indent}  [{e.kind_name:10}] slot={e.slot:<6} "
+              f"{e.offset:>10} +{e.size:<10} "
+              f"CRC=0x{e.content_crc:08X} {codec} {vfs} {e.path}")
 
 
 # ---------------------------------------------------------------------------
@@ -1260,31 +1335,20 @@ def run_gui(initial: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
-    args = [a for a in argv[1:] if not a.startswith("-")]
-    if "--cli-dump" in argv[1:]:
-        if not args:
-            print("usage: pak_browser.py --cli-dump <pak> [more.pak ...]")
-            return 2
-        rc = 0
-        for p in args:
-            rc |= cli_dump(p)
-        return rc
     if "--help" in argv[1:] or "-h" in argv[1:]:
         print(__doc__)
         return 0
-    # --cli-validate: exit-code only check (CI friendly)
-    if "--cli-validate" in argv[1:]:
-        rc = 0
-        for p in args:
-            try:
-                pak = parse_pak(p, Path(p).read_bytes())
-            except OSError as ex:
-                print(f"{p}: unreadable: {ex}")
-                rc = 1
-                continue
-            print(f"{p}: {'OK' if not pak.error else 'INVALID: ' + pak.error}")
-            rc |= 1 if pak.error else 0
-        return rc
+    args = [a for a in argv[1:] if not a.startswith("-")]
+    if "--cli-dump" in argv[1:] or "--cli-validate" in argv[1:]:
+        if not args:
+            print("usage: pak_browser.py (--cli-dump | --cli-validate) "
+                  "<pak-or-tapp> [...]")
+            return 2
+        validate = "--cli-validate" in argv[1:]
+        result = 0
+        for path in args:
+            result |= cli_dump(path, validate=validate)
+        return result
     return run_gui(args)
 
 
