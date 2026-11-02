@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: LicenseRef-Tourmaline-Community-1.0
 
-// THE ASSET MANAGER FACADE - the implementation (see AssetManager.h
-// for the surface contract + docs/content_as_code.md for the design).
+// AssetManager facade implementation (see AssetManager.h for the public
+// interface and docs/content_as_code.md for the design).
 //
 // Composition, never duplication: every load rides an EXISTING layer -
 // the AssetStore (the shared-resource ownership: the found-or-loaded
