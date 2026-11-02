@@ -13,6 +13,8 @@
 // normal rides the same weights (decode-oct -> weighted vector sum ->
 // normalize -> re-encode: never average ENCODED pairs across the
 // octahedral fold — the fold is discontinuous at the hemisphere seam).
+// Each tap must be fetched and classified independently: bilinear filtering
+// packed AO/depth/normal data can invent a receiver at a discontinuity.
 
 struct PSIn
 {
@@ -31,13 +33,13 @@ struct PSOut
 struct SsgiAoBlurPush
 {
     uint aoTextureIndex; // raw half-res (ao, encDist, octN)
-    uint samplerIndex; // linear clamp (taps)
+    uint samplerIndex; // kept for push-constant ABI; exact texel loads below
     uint pad0;
     uint pad1;
     float sharpness; // depth edge weight (higher = tighter)
     float maxDistance; // rep-dist decode (matches the raw pass)
-    float texelX; // 1 / half-res width
-    float texelY; // 1 / half-res height
+    float texelX; // kept for push-constant ABI
+    float texelY; // kept for push-constant ABI
 };
 
 GPU_PUSH(SsgiAoBlurPush, bp);
@@ -46,14 +48,16 @@ PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
     Texture2D aoTex = textures[NonUniformResourceIndex(bp.aoTextureIndex)];
-    SamplerState smp = samplers[NonUniformResourceIndex(bp.samplerIndex)];
+    uint halfW, halfH;
+    aoTex.GetDimensions(halfW, halfH);
+    int2 halfPx = int2(IN.pos.xy);
 
     // Center texel (exact .Load; the filtered 5x5 taps gather around it).
     // Raw's strict guards wrote the RESERVED sentinel code here for
     // any-sky / silhouette-edge / too-far blocks — passthrough, same
     // discipline as the old early-out (a guarded block can never receive
     // or spread AO).
-    float4 selfTap = aoTex.Load(int3(int2(IN.pos.xy), 0));
+    float4 selfTap = aoTex.Load(int3(halfPx, 0));
     if (selfTap.g >= 1.0f)
     {
         OUT.outColor = kAoSkyBlock;
@@ -62,7 +66,9 @@ PSOut mainPS(PSIn IN)
     float centerDist = AoDecodeRepDist(selfTap.g, bp.maxDistance);
     float3 centerN = AoOctDecode(selfTap.zw);
 
-    // 5x5 gaussian-ish blur, edge-rejected across the carried depths.
+    // 5x5 gaussian-ish blur: each candidate owns its depth and normal.
+    // Skip sky/sentinel blocks and bounds rather than blending or
+    // duplicating them at the border before the bilateral test.
     float aoAcc = 0.0f;
     float distAcc = 0.0f;
     float3 nAcc = float3(0.0f, 0.0f, 0.0f);
@@ -71,30 +77,36 @@ PSOut mainPS(PSIn IN)
     {
         for (int x = -2; x <= 2; ++x)
         {
-            float2 tapUv = IN.uv + float2(float(x) * bp.texelX,
-                                          float(y) * bp.texelY);
-            float4 tap = aoTex.Sample(smp, tapUv);
-            float tapDist = AoDecodeRepDist(tap.g, bp.maxDistance);
+            int2 tapPx = halfPx + int2(x, y);
+            if (tapPx.x < 0 || tapPx.y < 0 ||
+                tapPx.x >= int(halfW) || tapPx.y >= int(halfH))
+                continue;
+            float4 tap = aoTex.Load(int3(tapPx, 0));
+            if (tap.g >= 1.0f)
+                continue; // reserved sky/no-receiver code
 
+            float tapDist = AoDecodeRepDist(tap.g, bp.maxDistance);
+            float3 tapN = AoOctDecode(tap.zw);
             float wx = (x == 0) ? 6.0f : ((abs(x) == 1) ? 4.0f : 1.0f);
             float wy = (y == 0) ? 6.0f : ((abs(y) == 1) ? 4.0f : 1.0f);
-            float w = wx * wy * AoEdgeWeight(tapDist, centerDist, bp.sharpness);
+            float w = wx * wy
+                * AoEdgeWeight(tapDist, centerDist, bp.sharpness)
+                * AoNormalWeight(tapN, centerN);
             aoAcc += tap.r * w;
             distAcc += tapDist * w;
-            nAcc += AoOctDecode(tap.zw) * w;
+            nAcc += tapN * w;
             wSum += w;
         }
     }
     if (wSum <= 1e-5f)
     {
-        OUT.outColor = kAoSkyBlock;
+        // A valid center is a valid fallback even if every neighbor rejects.
+        OUT.outColor = selfTap;
         return OUT;
     }
     float ao = aoAcc / wSum;
-    // Representative distance: weighted scalar average of the ACCEPTED
-    // samples — sentinel taps carried the kAoSkyDist sentinel and ~0
-    // weight (exp underflow), so the average stays <= maxDistance and the
-    // re-encode below can never reach the reserved code from them.
+    // Representative distance: only accepted geometry taps participate;
+    // sentinel taps never enter the accumulator.
     float repDist = distAcc / wSum;
     // Representative normal: weighted vector average on the sphere
     // (fold-safe); a fully-cancelled sum (opposing normals across an

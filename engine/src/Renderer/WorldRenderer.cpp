@@ -537,8 +537,10 @@ static smvk::SpotShadowMapDesc MakeSpotShadowDesc(uint32_t resolution) {
 
 // -----------------------------------------------------------------------------
 // EVSM moment atlases (RGBA32F 2xMSAA + async separable blur, 1-frame lag).
-// Tile counts/resolutions mirror the PCF atlases so the same lightVP math
-// (BuildDirectionalLight / BuildSpotTile) drives both representations.
+// Tile counts and normalized tile layout mirror the PCF atlases so the
+// same lightVP math (BuildDirectionalLight / BuildSpotTile) addresses both.
+// Tile pixel resolution may be capped by the host to avoid EVSM's large
+// multi-flight RGBA32F allocation (the tile UV fractions stay identical).
 // -----------------------------------------------------------------------------
 static smvk::EvsmDesc MakeEvsmDirDesc(smvk::EvsmPipelineMode pipeline, uint32_t tileResolution) {
 	smvk::EvsmDesc d{};
@@ -3230,10 +3232,10 @@ namespace engine {
 			std::cerr << "[WorldRenderer] EVSM unsupported (no RGBA32F 2xMSAA moments) - PCF shadows\n";
 		}
 		if (m_evsmEnabled) {
-			if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution))) {
+			if (!m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, EvsmDirTileResolution()))) {
 				std::cerr << "[WorldRenderer] EVSM directional atlas unavailable - PCF fallback\n";
 			}
-			if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline, m_spotShadowResolution))) {
+			if (!m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline, EvsmLocalTileResolution()))) {
 				std::cerr << "[WorldRenderer] EVSM spot atlas unavailable - PCF fallback\n";
 			}
 		}
@@ -10847,7 +10849,10 @@ namespace engine {
 			m_viewportResources.directionalShadows.Ensure(*m_context, *m_rendergraph,
 				MakeShadowDesc(m_cascadeResolution, m_cascadeLambda));
 			m_viewportResources.spotShadows.Ensure(*m_context, *m_rendergraph, MakeSpotShadowDesc(m_spotShadowResolution));
-			// EVSM atlas lifecycle follows the FEATURE FLAG (lazy):
+			// EVSM atlas lifecycle follows the FEATURE FLAG (lazy).
+			// Hosts may cap EVSM-only tile sizes: the atlas uses the same
+			// normalized tile grid as PCF but fewer moment texels.
+			// No change to the PCF cascade/spot atlas resolution.
 			// Ensure only when the opt-in is on (also covers the
 			// pipeline-mode flip - a no-op in steady state, shaders
 			// persist); Destroy when it flips off - the off state must
@@ -10856,8 +10861,8 @@ namespace engine {
 			// which requires Valid atlases, so PCF is the path the whole
 			// time they are gone.
 			if (m_evsmEnabled) {
-				m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, m_cascadeResolution));
-				m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline, m_spotShadowResolution));
+				m_viewportResources.evsmDir.Ensure(*m_context, *m_rendergraph, MakeEvsmDirDesc(m_evsmPipeline, EvsmDirTileResolution()));
+				m_viewportResources.evsmSpot.Ensure(*m_context, *m_rendergraph, MakeEvsmSpotDesc(m_evsmPipeline, EvsmLocalTileResolution()));
 			}
 			else {
 				if (m_viewportResources.evsmDir.Valid())
@@ -16427,14 +16432,16 @@ namespace engine {
 							const char* tiers[3] = {
 								"Off", "Analytic (exp2, fallback)", "Volumetric (raymarched GI-lit)"
 							};
-							if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3))
-								authored();
 							// Headless override wins (TOURMALINE_VOLUMETRIC): the
-							// AGENTS.md contract is "scene fog settings lose".
-							static const bool sVolumetricEnvPinned =
+						// AGENTS.md contract is "scene fog settings lose".
+						static const bool sVolumetricEnvPinned =
 								std::getenv("TOURMALINE_VOLUMETRIC") != nullptr;
+						if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3)) {
+							authored();
 							if (!sVolumetricEnvPinned)
-								m_volumetricEnabled = (se.fogQuality == 2);
+								m_volumetricEnabled =
+									se.fogQuality == 2 && se.volumetrics > 0.0f;
+						}
 							if (se.fogQuality == 1) {
 								if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
 								if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();

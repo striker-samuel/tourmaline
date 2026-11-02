@@ -1164,6 +1164,27 @@ endif()
 if(TARGET vulkan_headers_iface)
     target_link_libraries(WorldFieldsGpuTests PRIVATE vulkan_headers_iface)
 endif()
+
+# GPU-scene high/low position transport and precision-safe rebasing.
+# Headless: no renderer or Vulkan device required at runtime.
+add_executable(DoubleFloatTests test_doublefloat.cpp)
+target_link_libraries(DoubleFloatTests PRIVATE engine)
+set_target_properties(DoubleFloatTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME doublefloat_tests COMMAND DoubleFloatTests)
+
+# GPU-less contracts for opt-in vertex pulling; no renderer or RHI required.
+add_executable(VertexPullTests test_vertex_pull.cpp)
+target_include_directories(VertexPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(VertexPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME vertex_pull_tests COMMAND VertexPullTests)
+
+# Independently packed optional chart stream mapping; no RHI required.
+add_executable(LightmapPullTests test_lightmap_pull.cpp)
+target_include_directories(LightmapPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(LightmapPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME lightmap_pull_tests COMMAND LightmapPullTests)
+
 # Shared spatial volume trigger semantics (headless).
 add_executable(TriggerVolumeTests test_trigger_volume.cpp)
 target_link_libraries(TriggerVolumeTests PRIVATE engine)

@@ -10,6 +10,7 @@
 #include "editor_app.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
+#include "editor_asset_browser_nav.h" // collection folders belong at root
 
 #include <cstring>
 #include <algorithm>
@@ -5395,6 +5396,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			return;
 		}
 		namespace fs = std::filesystem;
+		const auto clearAssetSelection = [&]() {
+			ClearAssetBrowserSelection(
+				m_assetsSel, m_assetsSelSet, m_assetsAnchor);
+		};
+		const auto navigateAssetDirectory = [&](const std::string& path) {
+			m_assetsDir = path;
+			m_assetsExpandGltf.clear();
+			m_assetsExpandTour.clear();
+			m_assetsFilter = 0;
+			clearAssetSelection();
+		};
 		ImGui::BeginChild(
 			"##assets_root",
 			ImVec2(0, 0),
@@ -5403,14 +5415,15 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGuiWindowFlags_NoScrollWithMouse
 		);
 
-		// Navigation state heal: home = <root>/content.
+		// Navigation state heal: home = <root>/content, but the project
+		// root itself is also a valid browsing location.
 		std::error_code ec;
 		if (m_assetsDir.empty()
 			|| !fs::is_directory(fs::path(m_assetsDir), ec)
-			|| !InProjectDir(m_assetsDir)) {
-			m_assetsDir =
-				(fs::path(m_projectRoot) / "content").generic_string();
-			m_assetsSel.clear();
+			|| (!InProjectDir(m_assetsDir)
+				&& !AssetBrowserAtProjectRoot(m_projectRoot, m_assetsDir))) {
+			navigateAssetDirectory(
+				(fs::path(m_projectRoot) / "content").generic_string());
 		}
 
 		// ---- OS drag-and-drop target (Windows Explorer -> browser) -------
@@ -5475,17 +5488,15 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		if (ImGui::SmallButton("^ Up")) {
 			const std::string rel = ProjectRelativePath(m_assetsDir);
 			const size_t slash = rel.find_last_of('/');
-			m_assetsDir = (slash == std::string::npos)
+			navigateAssetDirectory((slash == std::string::npos)
 				? m_projectRoot
 				: (fs::path(m_projectRoot) / rel.substr(0, slash))
-				.generic_string();
-			m_assetsSel.clear();
+					.generic_string());
 		}
 		ImGui::EndDisabled();
 		SameLineIfFits(m_projectName.c_str());
 		if (ImGui::SmallButton(m_projectName.c_str())) {
-			m_assetsDir = m_projectRoot;
-			m_assetsSel.clear();
+			navigateAssetDirectory(m_projectRoot);
 		}
 		{
 			fs::path acc = fs::path(m_projectRoot);
@@ -5508,8 +5519,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				ImGui::SameLine();
 				ImGui::PushID(depth++);
 				if (ImGui::SmallButton(shown.c_str())) {
-					m_assetsDir = acc.generic_string();
-					m_assetsSel.clear();
+					navigateAssetDirectory(acc.generic_string());
 				}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("%s", acc.generic_string().c_str());
@@ -5528,22 +5538,22 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::SetTooltip("%s", m_assetsDir.c_str());
 
 		// ---- header row 2: collection filter and expanded views --------
-		const char* filters[9] = { "All (files)", "Meshes", "Materials",
+		const char* filters[9] = { "All items", "Meshes", "Materials",
 			"Animations", "GI bakes", "Cubemaps", "GI cooks",
 			"Lightmap cooks", "GI volumes" };
 		ImGui::SetNextItemWidth(std::min(180.0f,
 			std::max(1.0f, ImGui::GetContentRegionAvail().x)));
-		ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 9);
+		if (ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 9))
+			clearAssetSelection();
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Collection views: derived assets across "
-				"the project's content tree.");
+			ImGui::SetTooltip("Show files and folders, or browse assets by type.");
 		if (!m_assetsExpandGltf.empty()) {
 			const std::string stem = fs::path(m_assetsExpandGltf).stem().string();
 			const std::string btn = stem + " X##expand";
 			SameLineIfFits(btn.c_str());
 			if (ImGui::SmallButton(btn.c_str())) {
 				m_assetsExpandGltf.clear();
-				m_assetsSel.clear();
+				clearAssetSelection();
 			}
 		}
 		if (!m_assetsExpandTour.empty()) {
@@ -5552,7 +5562,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			SameLineIfFits(btn.c_str());
 			if (ImGui::SmallButton(btn.c_str())) {
 				m_assetsExpandTour.clear();
-				m_assetsSel.clear();
+				clearAssetSelection();
 			}
 		}
 
@@ -5563,34 +5573,28 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			if (NativeOpenFile(picked) && !picked.empty()
 				&& ImportAsset(picked)) {
 				// Navigate to where the import landed.
-				m_assetsDir = (fs::path(m_projectRoot) / "content"
-					/ "models").generic_string();
-				m_assetsSel.clear();
+				navigateAssetDirectory((fs::path(m_projectRoot) / "content"
+					/ "models").generic_string());
 			}
 		}
-		// Cook-asset creation (same helper as the Create menu — placement
-		// dir is the browsed directory).
+		// The toolbar and grid context menu share the same creation
+		// actions; new assets are placed in the browsed directory.
+		const auto drawNewAssetMenu = [&]() {
+			if (ImGui::MenuItem("New Cubemap Asset (.cubemap)"))
+				CreateCubemapAsset(m_assetsDir);
+			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
+				CreateGivolumeAsset(m_assetsDir);
+			if (ImGui::MenuItem("New Texture (from image)...")) {
+				std::string picked;
+				if (NativeOpenFile(picked, true) && !picked.empty())
+					CreateTextureAsset(picked, m_assetsDir);
+			}
+		};
 		SameLineIfFits("New...");
-		if (ImGui::Button("New...")) {
+		if (ImGui::Button("New..."))
 			ImGui::OpenPopup("##newcookasset");
-		}
 		if (ImGui::BeginPopup("##newcookasset")) {
-			//// NOTE: .gicook/.lmcook are NOT listed here on purpose — they
-			//// are an internal consequence of baking (minted/updated per
-			//// scene by RecordBakeAssetsFromCook), never user-created.
-			//if (ImGui::MenuItem("Cubemap Asset (.cubemap)")) {
-			//	CreateCubemapAsset(m_assetsDir);
-			//}
-			//if (ImGui::MenuItem("GI Volume Asset (.givolume)")) {
-			//	CreateGivolumeAsset(m_assetsDir);
-			//}
-			//// Texture asset (from a picked source image): the .texture
-			//// import-settings record + identity (see CreateTextureAsset).
-			//if (ImGui::MenuItem("Texture (from image)...")) {
-			//	std::string picked;
-			//	if (NativeOpenFile(picked, true) && !picked.empty())
-			//		CreateTextureAsset(picked, m_assetsDir);
-			//}
+			drawNewAssetMenu();
 			ImGui::EndPopup();
 		}
 		if (m_assetDb.IsOpen()) {
@@ -5693,9 +5697,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			// MULTI: the set deletes as one request when >1.
 			SameLineIfFits("Delete");
 			ImGui::BeginDisabled(m_assetsSel.empty());
-			if (ImGui::SmallButton(
-					m_assetsSelSet.size() > 1
-						? "Delete (N)##sel" : "Delete##sel")) {
+			const std::string deleteLabel = m_assetsSelSet.size() > 1
+				? "Delete (" + std::to_string(m_assetsSelSet.size()) + ")##sel"
+				: "Delete##sel";
+			if (ImGui::SmallButton(deleteLabel.c_str())) {
 				if (m_assetsSelSet.size() > 1)
 					RequestAssetDelete(m_assetsSelSet.data(),
 						m_assetsSelSet.size());
@@ -5739,22 +5744,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		ImGui::BeginChild("##assetgrid", ImVec2(0, 0), false,
 			ImGuiWindowFlags_AlwaysVerticalScrollbar);
 		ImDrawList* dl = ImGui::GetWindowDrawList();
-		// Background context menu (right-click the grid background): the
-		// same creation as the header New... button (placement dir = the
-		// browsed directory). .gicook/.lmcook are NOT listed — internal
-		// bake consequences, never user-created.
+		// Background context menu shares the header's New... actions.
+		// .gicook/.lmcook are bake outputs, never user-created.
 		if (ImGui::BeginPopupContextWindow("##assetgrid_ctx",
 			ImGuiPopupFlags_MouseButtonRight |
 			ImGuiPopupFlags_NoOpenOverItems)) {
-			if (ImGui::MenuItem("New Cubemap Asset (.cubemap)"))
-				CreateCubemapAsset(m_assetsDir);
-			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
-				CreateGivolumeAsset(m_assetsDir);
-			if (ImGui::MenuItem("New Texture (from image)...")) {
-				std::string picked;
-				if (NativeOpenFile(picked, true) && !picked.empty())
-					CreateTextureAsset(picked, m_assetsDir);
-			}
+			drawNewAssetMenu();
 			ImGui::EndPopup();
 		}
 		// Registered GUID map (assets.db) for badges + tooltips. The rows
@@ -5830,8 +5825,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		};
 		std::vector<Entry> dirs, files;
 		// ---- VIRTUAL FOLDERS (the canon collection views) ---------------
-		// The header filter combo's views present as FOLDER TILES in the
-		// grid (the Unity project-window feel): each enters its collection
+		// At the project root, the header filter views appear as FOLDER
+		// TILES in the grid: each enters its collection
 		// on double-click; the active view's ".." leaves back to All. The
 		// tile ids ride the "vfolder://<n>" scheme — never a real path
 		// (plus the per-tile numeric uid below makes every tile id unique
@@ -5860,12 +5855,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				back.icon = IconType::Folder;
 				dirs.push_back(back);
 			}
-			else if (m_assetsExpandGltf.empty()
-				&& m_assetsExpandTour.empty()) {
-				// The root view: the canon folders up front (pinned
-				// ahead of the real directories by the stable sort
-				// below — the Unity feel: the collection roots are the
-				// affordance, the real folders follow).
+			else if (ShowAssetBrowserCollectionFolders(
+				m_projectRoot, m_assetsDir,
+				!m_assetsExpandGltf.empty(),
+				!m_assetsExpandTour.empty())) {
+				// Only the project root shows collection tiles; keep them
+				// ahead of real directories in the stable sort below.
 				for (const VFolderDef& v : kVFolders) {
 					Entry t{};
 					t.name = put(v.label);
@@ -6279,13 +6274,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			// ".." back tile, the canon VIRTUAL FOLDERS) is a move, not
 			// an asset — chrome entering the set made ranges span it +
 			// the delete target the folder's PARENT.
-			if (clicked && e.vfilter < 0) {
+			if (clicked && !e.back && e.vfilter < 0) {
 				const bool ctrl = ImGui::GetIO().KeyCtrl;
 				const bool shift = ImGui::GetIO().KeyShift;
 				m_assetsSel = e.abs.Str();
 				if (e.back) {
-					// Navigation-only: the primary follows (the legacy
-					// single-selection behavior), the SET never grows.
+					// Navigation-only; handled on double-click below.
 				}
 				else if (ctrl) {
 					// Toggle; the anchor moves (the next shift ranges
@@ -6334,28 +6328,28 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					// folder): the filter combo and the tile are the same
 					// knob.
 					m_assetsFilter = e.vfilter;
-					m_assetsSel.clear();
-					m_assetsSelSet.clear();
-					m_assetsAnchor.clear();
+					clearAssetSelection();
 				}
 				else {
-				m_assetsSel = e.abs.Str();
-				m_assetsSelSet = { e.abs.Str() };
-				m_assetsAnchor = e.abs.Str();
+				if (!e.back) {
+					m_assetsSel = e.abs.Str();
+					m_assetsSelSet = { e.abs.Str() };
+					m_assetsAnchor = e.abs.Str();
+				}
 				if (e.back) {
 					// Leave the expanded glTF/tour folder OR the canon
 					// collection view (".." -> All).
 					m_assetsExpandGltf.clear();
 					m_assetsExpandTour.clear();
 					m_assetsFilter = 0;
-					m_assetsSel.clear();
+					clearAssetSelection();
 				}
 				else if (e.gltf) {
 					// A glTF with a manifest: open the FOLDER (the derived
 					// assets) — never the scene (the .tour references the
 					// .mesh asset; the glTF is the container/source).
 					m_assetsExpandGltf = e.abs.Str();
-					m_assetsSel.clear();
+					clearAssetSelection();
 				}
 				else if (e.tour) {
 					// A .tour with bake refs: open the FOLDER (its bake
@@ -6363,11 +6357,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					// source tile's isOpenable branch below) and via the
 					// header Open button.
 					m_assetsExpandTour = e.abs.Str();
-					m_assetsSel.clear();
+					clearAssetSelection();
 				}
 				else if (e.dir) {
-					m_assetsDir = e.abs.Str();
-					m_assetsSel.clear();
+					navigateAssetDirectory(e.abs.Str());
 				}
 				else if (isOpenable(e.abs.Str())) {
 					if (!m_cookRunning)
@@ -6407,10 +6400,11 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			}
 			if (hovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
 				if (e.vfilter >= 0) {
-					ImGui::SetTooltip("VIRTUAL FOLDER — the canon "
-						"collection view: every asset of this kind "
-						"across the project's content tree.\n"
-						"Double-click to enter; \"..\" leaves.");
+					ImGui::SetTooltip("View the %s collection.\n"
+						"Double-click to open.", e.name.data());
+				}
+				else if (e.back) {
+					ImGui::SetTooltip("Double-click to return.");
 				}
 				else {
 					const auto git = guidByAbs.find(e.abs.Str());
@@ -6420,10 +6414,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						? git->second.c_str() : "(no asset uuid)");
 				}
 			}
-			// Per-tile menu (right-click): delete through the same confirm
-			// modal as the header button (selection is pinned first).
-			// (The canon VIRTUAL FOLDERS never delete — chrome.)
-			if (e.vfilter < 0
+			// Navigation chrome (back/collection) has no Delete menu.
+			// Real assets use the same confirm dialog as the header.
+			if (!e.back && e.vfilter < 0
 				&& ImGui::BeginPopupContextItem("##assettile_ctx")) {
 				// MULTI-AWARE: deleting a tile that sits in a multi-
 				// selection (>1) requests the WHOLE set (one confirm,
@@ -6674,8 +6667,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						plan.also.size());
 			}
 		}
-		ImGui::TextDisabled("The GUID row stays missing so references "
-			"report cleanly.");
+		ImGui::TextDisabled("References to deleted assets may become unresolved.");
 		ImGui::Separator();
 		if (ImGui::Button("Delete", ImVec2(120, 0))) {
 			size_t okCount = 0, fileCount = 0;

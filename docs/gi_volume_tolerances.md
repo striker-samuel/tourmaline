@@ -136,21 +136,20 @@ purpose: soften the transition between directly-traced probes and
 dilated (filled) probes, and smooth the per-probe Monte Carlo
 noise.
 
-### 2d. The CLEAN-CELL threshold — `1.35` spacing units
+### 2d. The CLEAN-CELL threshold — `0.75` spacing units
 
 **File:** `engine/src/GI/cubemap_volume.cpp` (the clean-flag pass)
 
 A cell [v, v+1]³ is "clean" (fast path: plain trilerp, no
 rejection) only if all 8 corners have all 6 axis distances
-≥ 1.35 spacing units. This is conservative — the theoretical
-no-rejection threshold for the hybrid reach is **~0.667**
-(max offset 1.0 / reach factor 1.5), so cells in the
-[0.667, 1.35] range take the weighted path unnecessarily (same
-values, more fetches — a perf cost, not a correctness issue).
+≥ 0.75 spacing units. The hybrid-reach factor uses
+`reach = max(dist * 1.5, 0.5)`, so the theoretical no-rejection
+threshold is **~0.667** (maximum axis offset 1.0 / reach factor 1.5).
 
-**Why 1.35:** = 1.0 (max in-cell offset) + 0.35 (the original
-absolute slack). The hybrid reach's actual threshold is lower
-(1.0 / 1.5 ≈ 0.667), but the conservatism is harmless.
+**Why 0.75:** a modest margin above the theoretical threshold also
+accounts for the runtime's UNORM8 visibility quantization. Cells
+previously in the [0.75, 1.35) range can use the hardware-trilinear
+fast path without changing their visibility weights.
 
 ### 2e. The FIREFLY CLAMP — `8×` the probe's finite-sample mean
 
@@ -268,6 +267,22 @@ All of these are **compile-time constants** — edit the source, rebuild.
 They are properties of the algorithm, not user-facing settings. The
 runtime has no UI for them by design (changing them affects the
 bake's output semantics, not just the display).
+
+
+## 7. Volumetric GI filtering (2026-11-02)
+
+The fog's precomputed isotropic RGB mean is now sampled with the same
+visibility rule as the surface SG coefficients. In clean cells it remains
+one hardware-trilinear lookup; near walls it gathers eight mean texels,
+uses the existing six-axis visibility factor for each corner, and
+renormalizes the surviving weights. If all corners are blocked the result
+is black, matching the surface GI fallback.
+
+This applies to both GI blend sets A and B. The mean remains an RGBA16F
+3D texture; no GI bake format or shader descriptor layout changes are
+required. The extra reads are limited to cells marked non-clean by the
+bake. Use `TOURMALINE_GI_VIS=0` and the volumetric GI A/B toggles to
+compare through-wall fog leakage and cost in enclosed scenes.
 
 ---
 

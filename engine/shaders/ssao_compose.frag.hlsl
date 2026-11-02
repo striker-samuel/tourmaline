@@ -184,9 +184,9 @@ PSOut mainPS(PSIn IN)
         centerN = normalize(mul((float3x3)frame.view, worldN));
     }
 
-    // 2x2 nearest half-res texels around this full-res pixel (same
-    // addressing as the old AoUpsample), jointly weighted by the tap's
-    // carried (repDist, repNormal) against the pixel's own (depth, normal).
+    // 2x2 nearest half-res texels around this full-res pixel, weighted
+    // spatially as a bilinear tent AND by the tap's carried (repDist,
+    // repNormal) against the pixel's own (depth, normal).
     // Half-res extent: the CEIL form (n+1)/2 - must equal
     // Ssgi::HalfExtentFor, which sizes the AO targets. The old floor
     // division dropped the last full-res column/row at odd extents
@@ -194,7 +194,7 @@ PSOut mainPS(PSIn IN)
     int2 halfExtent = max((int2((int) cp.fullW, (int) cp.fullH) + 1) / 2,
         int2(1, 1));
     int2 halfMin = int2(floor((float2(fullPx) - 1.0f) * 0.5f));
-    int2 halfMax = halfExtent - 1;
+    float2 fullCenter = float2(fullPx) + 0.5f;
 
     float aoAcc = 0.0f;
     float wSum = 0.0f;
@@ -204,10 +204,21 @@ PSOut mainPS(PSIn IN)
         [unroll]
         for (int tx = 0; tx < 2; ++tx)
         {
-            int2 hp = clamp(halfMin + int2(tx, ty), int2(0, 0), halfMax);
+            int2 hp = halfMin + int2(tx, ty);
+            if (hp.x < 0 || hp.y < 0 ||
+                hp.x >= halfExtent.x || hp.y >= halfExtent.y)
+                continue; // do not duplicate border blocks
             float4 tap = aoTex.Load(int3(hp, 0));
+            if (tap.g >= 1.0f)
+                continue; // no valid AO receiver in this block
             float tapDist = AoDecodeRepDist(tap.g, cp.maxDistance);
-            float w = AoEdgeWeight(tapDist, centerDist, cp.sharpness);
+            // Bilinear footprint, expressed in full-resolution pixels:
+            // near blocks contribute more than diagonal neighbors.
+            float2 tapCenterFull = float2(hp) * 2.0f + 1.0f;
+            float2 axisWeight = saturate(1.0f
+                - abs(fullCenter - tapCenterFull) * 0.5f);
+            float w = axisWeight.x * axisWeight.y
+                * AoEdgeWeight(tapDist, centerDist, cp.sharpness);
             if (haveN)
                 w *= AoNormalWeight(AoOctDecode(tap.zw), centerN);
             aoAcc += tap.r * w;
