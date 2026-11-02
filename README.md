@@ -144,6 +144,17 @@ cmake --build out/build/linux-Release --target App Editor EditorLauncher Project
 
 All builds are out-of-source and use **Ninja**.
 
+**Windows build flavors:** `x64-Release` is the lean shipping build (optimized C++,
+`-O3 -Qstrip_debug` SPIR-V, no diagnostic PDB option). The
+`x64-Release-ShaderDebug` preset keeps Release C++ and HLSL optimizations,
+adds MSVC `/Zi` and full PDBs plus DXC `-Zi -fspv-debug=vulkan`, and
+enables Nsight Aftermath shader debug mappings where supported. Use this
+preset to reproduce optimized GPU/CPU bugs; archive the matching PDBs privately
+rather than distributing them with the shipping package. The `x64-Debug`
+preset remains the separate development build. Set
+`TOURMALINE_AFTERMATH=0` to disable driver-side symbol generation when
+comparing pipeline compilation cost.
+
 ### 3. Cook and run the bundled C++ game sample
 
 The repository includes a small project with checked-in glTF geometry, a texture, a WAV sound, a `.tour` scene, and a `.tourrecipe`. Unlike the larger Sponza demo, it does **not** require an external content store.

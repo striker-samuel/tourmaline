@@ -140,8 +140,14 @@ std::vector<char> CompileHLSLToSPIRV(
     // rejected by spirv-val ("Column End ... larger then Line ...
     // column length ... found in the DebugSource text").
     arguments.push_back(L"-fspv-debug=vulkan");
+#elif defined(TOURMALINE_SHADER_DEBUG_INFO)
+    // Match the Release-ShaderDebug build-time DXC flags on hot reload.
+    arguments.push_back(L"-O3");
+    arguments.push_back(L"-Zi");
+    arguments.push_back(L"-fspv-debug=vulkan");
 #else
     arguments.push_back(L"-O3");
+    arguments.push_back(L"-Qstrip_debug");
 #endif
 
     hr = compiler->Compile(

@@ -40,7 +40,7 @@
       "inheritEnvironments": [ "msvc_x64_x64" ],
       "buildRoot": "${projectDir}\\out\\build\\${name}",
       "installRoot": "${projectDir}\\out\\install\\${name}",
-      "cmakeCommandArgs": "-DTOURMALINE_SHADER_DEBUG=ON",
+      "cmakeCommandArgs": "-DTOURMALINE_SHADER_DEBUG=ON -DTOURMALINE_NATIVE_SYMBOLS=ON",
       "buildCommandArgs": "",
       "ctestCommandArgs": ""
     }
