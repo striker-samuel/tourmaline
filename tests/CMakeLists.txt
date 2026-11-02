@@ -1170,3 +1170,9 @@ add_executable(VertexPullTests test_vertex_pull.cpp)
 target_include_directories(VertexPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 set_target_properties(VertexPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME vertex_pull_tests COMMAND VertexPullTests)
+
+# Independently packed optional chart stream mapping; no RHI required.
+add_executable(LightmapPullTests test_lightmap_pull.cpp)
+target_include_directories(LightmapPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(LightmapPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME lightmap_pull_tests COMMAND LightmapPullTests)
