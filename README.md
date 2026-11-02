@@ -78,6 +78,8 @@ A checked-in `.tourrecipe` declares entry scenes, package ownership, cross-pak d
 
 The generated `project.h` contains typed asset keys, a compile-time asset table, a catalog fingerprint, and generation metadata. The catalog and deployed manifest can be checked for identity mismatches. Catalog refresh, forced restamping, content cooking, and executable compilation are separate build operations.
 
+**IDE and source control:** By default, `tourmaline_add_project` writes `project.h` next to the recipe, in the project source directory (for the example: `samples/04_project_game/project/project.h`). `tourmaline_attach_project` also lists it as a generated header on the CMake target, so CMake-aware IDEs can navigate to it. After the first `GameProject_ids` or `GameProject` build, run `git add samples/04_project_game/project/project.h` to version it alongside game code; subsequent clones receive the committed header immediately. Do not edit it by hand—refresh it with the `<Name>_ids` target, and inspect the generated diff before committing. The header's generation stamp and asset/pak fingerprints can change with local content/build state; these are generated metadata, not handwritten source. The private `project_plans.h` remains ignored. Set `HEADER_DIR` explicitly on `tourmaline_add_project` if you prefer to generate the headers in a build-only directory.
+
 ### Example: code refers to assets, not filenames
 
 ```cpp
