@@ -295,6 +295,32 @@ void TestVirtualFolderLocation() {
 }
 
 
+void TestAssetBrowserHiddenArtifacts() {
+	using editor::HideAssetBrowserFile;
+	Check(HideAssetBrowserFile("content/sky.cubemap"),
+		"browser.hidden.cubemap");
+	Check(HideAssetBrowserFile("content/sky.CUBEMAP"),
+		"browser.hidden.cubemap-case-insensitive");
+	Check(HideAssetBrowserFile("content/main.gicook"),
+		"browser.hidden.gicook");
+	Check(HideAssetBrowserFile("content/captures.CUBEMANIFEST"),
+		"browser.hidden.cubemanifest");
+	Check(HideAssetBrowserFile("content/legacy.bin", "cubemap"),
+		"browser.hidden.db-kind-cubemap");
+	Check(HideAssetBrowserFile("content/legacy.bin", "GICOOK"),
+		"browser.hidden.db-kind-gicook");
+	Check(!HideAssetBrowserFile("content/scene.tour"),
+		"browser.visible.tour");
+	Check(!HideAssetBrowserFile("content/readme.txt"),
+		"browser.visible.text");
+	Check(!HideAssetBrowserFile("content/scene.lmcook", "lmcook"),
+		"browser.visible.lightmap-cook");
+	Check(!HideAssetBrowserFile("content/scene.givolume", "givolume"),
+		"browser.visible.givolume");
+	Check(!HideAssetBrowserFile("content/sky.texture", "texture"),
+		"browser.visible.texture");
+}
+
 void TestAssetInspectorFallback() {
 	using editor::BrowserInspectorKind;
 	using editor::ClassifyBrowserInspector;
@@ -353,6 +379,7 @@ int main() {
 	TestVirtualFolderLocation();
 	TestAssetBrowserSelectionClears();
 	TestAssetInspectorFallback();
+	TestAssetBrowserHiddenArtifacts();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
