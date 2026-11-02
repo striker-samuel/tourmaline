@@ -192,21 +192,25 @@ void TestStringViewArena() {
 void TestTextureSourceLifetime() {
 	// TextureStreamer retains a borrowed pointer into Cluster's source
 	// bytes. Both the initial stash and UriMap growth must preserve it.
-	smvk::Cluster cluster(nullptr);
+	// HEAP-ALLOCATE the Cluster: sizeof(Cluster) is ~6.5 MB (the embedded
+	// Scene tables), and a stack instance overflows the default 1 MB
+	// Windows thread stack (0xC00000FD) before the first check runs.
+	// Linux's larger default stack masked this in the PR's CI lane.
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	std::vector<uint8_t> bytes(4096, 0xAB);
 	const uint8_t* original = bytes.data();
-	cluster.SetTextureSource("textures/pinned.ktx2", std::move(bytes));
-	const auto* stored = cluster.GetTextureSource("textures/pinned.ktx2");
+	cluster->SetTextureSource("textures/pinned.ktx2", std::move(bytes));
+	const auto* stored = cluster->GetTextureSource("textures/pinned.ktx2");
 	Check(stored && stored->data() == original,
 		"texture.source.stash-moves-backing");
 
 	const uint8_t* pinned = stored ? stored->data() : nullptr;
 	for (int i = 0; i < 64; ++i) {
-		cluster.SetTextureSource(
+		cluster->SetTextureSource(
 			smvk::AppArena().FormatString("textures/other_%d.ktx2", i),
 			std::vector<uint8_t>(4096, static_cast<uint8_t>(i)));
 	}
-	stored = cluster.GetTextureSource("textures/pinned.ktx2");
+	stored = cluster->GetTextureSource("textures/pinned.ktx2");
 	Check(stored && stored->data() == pinned &&
 		stored->size() == 4096 && (*stored)[0] == 0xAB,
 		"texture.source.rehash-preserves-streaming-pointer");
