@@ -1259,6 +1259,37 @@ bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
 	return true;
 }
 
+void EditorApp::DraftCreateSpatialVolume() {
+	if (!m_world) {
+		Log("Create spatial volume: no scene open.");
+		return;
+	}
+	// Spatial bounds are the node's full-extent transform, shared by
+	// optional GI/audio-room associations (spatial_volume.h).
+	std::string name = "SpatialVolume";
+	for (uint32_t suffix = 2;; ++suffix) {
+		bool taken = false;
+		for (size_t i = 0; i < m_world->scene.hierarchy.size(); ++i)
+			if (getNodeName(m_world->scene, int(i)) == name) {
+				taken = true;
+				break;
+			}
+		if (!taken)
+			break;
+		name = "SpatialVolume" + std::to_string(suffix);
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateTransform;
+	c.node = UINT32_MAX;
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = name;
+	c.afterVec = ActiveCam().target;
+	c.svec = glm::vec3(8.0f, 4.0f, 8.0f);
+	Do(c);
+}
+
 void EditorApp::DraftCreateLocator() {
 	if (!m_world) {
 		Log("Create locator: no scene open.");
