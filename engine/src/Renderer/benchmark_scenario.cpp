@@ -188,6 +188,13 @@ void WorldRenderer::ExportBenchmarkScenario() {
     s.environment["TOURMALINE_AO"] =
         m_aoMode == AoMode::None ? "off" :
         m_aoMode == AoMode::Ssao ? "ssao" : "sao";
+    switch (m_textureFiltering) {
+    case TextureFiltering::Trilinear: s.environment["TOURMALINE_TEXTURE_FILTER"] = "trilinear"; break;
+    case TextureFiltering::Anisotropic2x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "2x"; break;
+    case TextureFiltering::Anisotropic4x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "4x"; break;
+    case TextureFiltering::Anisotropic8x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "8x"; break;
+    case TextureFiltering::Anisotropic16x: s.environment["TOURMALINE_TEXTURE_FILTER"] = "16x"; break;
+    }
     pin("TOURMALINE_SSR", m_ssrEnabled);
     pin("TOURMALINE_SSGI", m_ssgiDiffuseEnabled);
     pin("TOURMALINE_DS", m_dsEnabled);
@@ -228,11 +235,38 @@ void WorldRenderer::ExportBenchmarkScenario() {
     case smvk::DlssMode::UltraQuality: s.environment["TOURMALINE_DLSS"] = "ultraquality"; break;
     case smvk::DlssMode::DLAA: s.environment["TOURMALINE_DLSS"] = "dlaa"; break;
     }
-    if (!m_bloomEnabled) s.appArgs.push_back("--without=bloom");
-    if (!m_dofEnabled) s.appArgs.push_back("--without=dof");
-    // Keep the renderer pass graph consistent with the captured UI state.
-    // Highly specialized live-only sliders are intentionally not claimed
-    // as replayable; prefer adding a RunConfig pin before exporting them.
+    // Recreate the pass graph as well as its runtime enable pins.
+    // The csv is one --with and one --without (the CLI parser stores only
+    // the last occurrence of each). This is why toggling Bloom or DOF is
+    // folded into the same final pass list instead of another --without.
+    std::string enabled, disabled;
+    auto pass = [&](const char* token, bool on) {
+        std::string& csv = on ? enabled : disabled;
+        if (!csv.empty()) csv += ",";
+        csv += token;
+    };
+    pass("deferred", m_passes.deferredShadows);
+    pass("ao", m_passes.ssao);
+    pass("smaa", m_passes.smaa);
+    pass("dof", m_passes.dof && m_dofEnabled);
+    pass("ssr", m_passes.ssr);
+    pass("bloom", m_passes.bloom && m_bloomEnabled);
+    pass("exposure", m_passes.exposure && m_autoExposureEnabled);
+    pass("msaa", m_passes.msaa);
+    pass("skydome", m_passes.skydome);
+    pass("ui", m_passes.ui);
+    pass("cull", m_passes.forwardPlusCull);
+    pass("particles", m_passes.particles && m_particlesEnabled);
+    pass("prepass", m_passes.forwardPlusPrepass);
+    pass("filter", m_passes.gfxFilter);
+    pass("terrain", m_passes.terrain && m_terrainEnabled);
+    pass("ssgi", m_passes.ssgiDiffuse && m_ssgiDiffuseEnabled);
+    pass("volumetric", m_passes.volumetric && m_volumetricEnabled);
+    pass("contact", m_passes.contactShadows && m_contactShadowsEnabled);
+    if (!enabled.empty()) s.appArgs.push_back("--with=" + enabled);
+    if (!disabled.empty()) s.appArgs.push_back("--without=" + disabled);
+    // Live-only tweak sliders have no RunConfig equivalent and are not
+    // falsely advertised as replayable.
     benchmark::Save(s, m_benchmarkExportMessage);
 }
 
