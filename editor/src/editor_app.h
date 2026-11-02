@@ -1287,6 +1287,11 @@ private:
 	// Inspector "GI volume" section for GI volume nodes (priority /
 	// spacing / fades via undoable SetGiVolumeAttr; shape via the transform).
 	void DrawGiVolumeSection(uint32_t node);
+	void DrawTriggerVolumeSection(uint32_t node);
+	bool ReadNodeTriggerVolumeAttr(uint32_t node, const std::string& attr,
+		double& num, bool& flag, std::string& text) const;
+	bool WriteNodeTriggerVolumeAttr(uint32_t node, const std::string& attr,
+		double num, bool flag, const std::string& text);
 	// The inspector's "Optimize grid layout" button (GI volume section):
 	// runs ChooseGiVolumeGridLayout against the bake-parity geometry
 	// (tour snapshot -> offline cluster replay -> the trace scene, the
