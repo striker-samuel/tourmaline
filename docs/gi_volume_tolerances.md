@@ -268,6 +268,22 @@ They are properties of the algorithm, not user-facing settings. The
 runtime has no UI for them by design (changing them affects the
 bake's output semantics, not just the display).
 
+
+## 7. Volumetric GI filtering (2026-11-02)
+
+The fog's precomputed isotropic RGB mean is now sampled with the same
+visibility rule as the surface SG coefficients. In clean cells it remains
+one hardware-trilinear lookup; near walls it gathers eight mean texels,
+uses the existing six-axis visibility factor for each corner, and
+renormalizes the surviving weights. If all corners are blocked the result
+is black, matching the surface GI fallback.
+
+This applies to both GI blend sets A and B. The mean remains an RGBA16F
+3D texture; no GI bake format or shader descriptor layout changes are
+required. The extra reads are limited to cells marked non-clean by the
+bake. Use `TOURMALINE_GI_VIS=0` and the volumetric GI A/B toggles to
+compare through-wall fog leakage and cost in enclosed scenes.
+
 ---
 
 *This file is the system reference. Update it whenever a hardcoded
