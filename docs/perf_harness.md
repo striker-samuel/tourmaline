@@ -39,6 +39,22 @@ Two defaults make the study **measure pixels, not asset work**:
 
 `compare` understands multires results: it compares **every** resolution and fails (exit 2) if any one regresses beyond the threshold — exactly the behavior scaling studies exist to protect. `result.json` carries per-resolution groups under `"resolutions"` (runs, per-res environment, summary); the headline `"summary"` is the native-scale (1080p) entry.
 
+## Cull baselines (`cull` mode) — GPU-driven renderer correctness
+
+Performance numbers cannot catch a cull chain that silently **drops visible geometry** or stops rejecting. The `cull` mode records, for a saved scenario camera, exactly which draws the GPU cull chain kept:
+
+```powershell
+# Record once (commit the baseline like scenarios.json):
+python tools/perf_harness.py cull --scenario sponza-atrium --exe out/build/x64-Release/Benchmark.exe --update
+
+# Verify after any gfx cull chain / HZB / GPU-scene change:
+python tools/perf_harness.py cull --scenario sponza-atrium --exe out/build/x64-Release/Benchmark.exe
+```
+
+The mode arms the engine's `TOURMALINE_CULL_DUMP=<frame>` pin (default frame 12; ≥ 2 — the verdict readback accepts one flight of staleness, and the pinned bench camera is static so the verdicts are identical). At that frame `GfxRenderer` reads the main view's draw-cull verdict buffer back (word *i* = 1 visible / 0 culled, per `gfxdrawcull.cs.hlsl`) and writes `exports/cull_dump_<n>.json`: the per-draw `visible_draws`/`culled_draws` index lists plus the filter's aggregate stats. The harness compares that dump against the tracked baseline (`benchmarks/cull_baselines/<scenario>.json`, one per saved camera) — **exit 0** match, **exit 2** mismatch (with the differing keys reported), **exit 1** failure/missing baseline. `--update` records a new baseline; review and commit the diff like any renderer change.
+
+Baseline semantics: draw indices are the CPU push order (deterministic for a pinned scene + camera), verdicts are geometry/camera deterministic, and the aggregate stats pin the filter's exact work (surviving commands, triangles, cluster rejection). A deliberate cull-behavior change (a new rejection stage, a widened guard band) shows up as an explicit, reviewable baseline diff — update it **with the reasoning in the commit message**, never silently.
+
 ## Nsight GPU Trace
 
 ```powershell

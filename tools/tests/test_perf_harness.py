@@ -118,6 +118,32 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 mod.main(["compare", "--baseline", str(a), "--candidate", str(b)])
 
+    def test_cull_baseline_compare(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baselines" / "sponza-atrium.json"
+            dump = {"schema_version": 1, "frame": 12, "view": 0, "draw_count": 3,
+                    "visible_draws": [0, 2], "culled_draws": [1],
+                    "stats": {"draws": 3, "commands": 9, "triangles_processed": 100,
+                              "clusters_processed": 12, "clusters_culled": 3}}
+            # No baseline yet: missing (record first), then --update records.
+            self.assertEqual(mod.cull_baseline_compare(dump, baseline, False),
+                             ("missing", None))
+            self.assertEqual(mod.cull_baseline_compare(dump, baseline, True),
+                             ("updated", None))
+            self.assertEqual(mod.cull_baseline_compare(dump, baseline, False),
+                             ("match", None))
+            # A changed verdict list reports exactly the differing keys.
+            changed = dict(dump, visible_draws=[0, 1, 2], culled_draws=[])
+            status, differs = mod.cull_baseline_compare(changed, baseline, False)
+            self.assertEqual(status, "mismatch")
+            self.assertEqual(differs, ["culled_draws", "visible_draws"])
+            # The dump-wrote regex finds the engine's export line.
+            log = "[perf] avg frame 9.8 ms over 120 frames\n[CullDump] wrote exports/cull_dump_12.json (66 draws, 61 visible)\n"
+            self.assertEqual(mod.CULL_DUMP_WROTE.search(log).group(1),
+                             "exports/cull_dump_12.json")
+            self.assertIsNone(mod.CULL_DUMP_WROTE.search("no dump here"))
+
 
 if __name__ == "__main__":
     unittest.main()

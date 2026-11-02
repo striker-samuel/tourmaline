@@ -316,6 +316,26 @@ int main() {
 	}
 	UnsetVar("TOURMALINE_TEXSTREAM_MIP_BIAS");
 
+	// (6) GPU-cull baseline dump frame (TOURMALINE_CULL_DUMP): default
+	// off (-1), a valid frame parses, and a frame below 2 warns and
+	// stays off (the verdict readback accepts one flight of staleness —
+	// frame 1 would read a buffer the cull chain has not seeded twice).
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.cullDump == -1, "runconfig.default-cull-dump-off");
+	}
+	SetVar("TOURMALINE_CULL_DUMP", "12");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.cullDump == 12, "runconfig.parse-cull-dump");
+	}
+	SetVar("TOURMALINE_CULL_DUMP", "1");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.cullDump == -1, "runconfig.invalid-cull-dump-falls-back");
+	}
+	UnsetVar("TOURMALINE_CULL_DUMP");
+
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }
