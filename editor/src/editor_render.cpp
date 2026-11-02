@@ -2433,7 +2433,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
 				|| m_wysiwygSceneId != SceneIdForHost()))
 			LaunchWysiwyg();
-		if (m_wysiwygBakeWasRunning && !m_bakeRunning && m_wysiwyg) {
+		if (m_wysiwygGiReloadPending && !m_bakeRunning && m_wysiwyg) {
 			// Bake completion: HOT-SWAP the GI volumes in the RUNNING
 			// renderer (generation N+1 in separate resources, published
 			// by the member swap, the old generation retiring behind
@@ -2448,7 +2448,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				Log("Bake GI: hot-swap found no volumes - the live view "
 					"keeps the previous generation");
 		}
-		m_wysiwygBakeWasRunning = m_bakeRunning;
+		if (m_wysiwygGiReloadPending && !m_bakeRunning)
+			m_wysiwygGiReloadPending = false;
 		if (!wantLive)
 			return; // PARK: skip the tick/record; keep the renderer + its state
 		if (!m_wysiwyg || !m_wysiwygValid)

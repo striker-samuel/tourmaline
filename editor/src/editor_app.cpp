@@ -12,6 +12,7 @@
 #endif
 
 #include "editor_app.h"
+#include <Engine/Asset/content_registry.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -539,6 +540,8 @@ void EditorApp::CloseScene() {
 	m_sglmBuf[0] = '\0';
 	ClearSglmLayers();
 	m_giVolumePreviews.clear();
+	m_editorGiInjectedPaths.clear();
+	m_wysiwygGiReloadPending = false;
 	m_giVolumePreviewMode = 0;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
@@ -661,6 +664,9 @@ void EditorApp::CloseScene() {
 	// The thumbnails' bindings reference the OLD world's cluster texture
 	// views — the fresh world below orphans them (see TextureThumb).
 	DropTextureThumbs();
+	// A rebuilt world gets new clusters; no payload from the prior world
+	// can be retired through the newly created scene's carrier.
+	m_editorGiInjectedPaths.clear();
 	m_world = tour::mem::MakeProcess<tour::World>();
 	tour::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// CPU geometry mirror (the editor's picking/UV/placement source):
@@ -1126,7 +1132,7 @@ void EditorApp::ClearSglmLayers() {
 // (strided sample + coverage counts) is built here alongside the hull.
 // ---------------------------------------------------------------------------
 bool EditorApp::TryLoadGiVolumes() {
-	m_giVolumePreviews.clear();
+	std::vector<GiVolumePreview> freshPreviews;
 	namespace fs = std::filesystem;
 	// The HARD identification (no stems, no manifests): each authored
 	// GI volume carries its baked .givolume ON THE LIVE SCENE
@@ -1157,17 +1163,43 @@ bool EditorApp::TryLoadGiVolumes() {
 			  "in LIGHTING)");
 		return false;
 	}
-	std::error_code ec;
+	// The project is a loose content provider. Discover and read through
+	// ContentRegistry, the same resolver used by the deployed runtime:
+	// no stem-based guesses or second filesystem/manifest scanner.
+	tour::asset::ContentRegistry content;
+	std::string discoveryError;
+	if (m_projectRoot.empty() || !content.AddLooseOverride(
+			"editor-project", m_projectRoot, discoveryError)) {
+		Log("GI content discovery unavailable: " + discoveryError);
+		return false;
+	}
+	// Stage an entire new generation before changing the borrowed
+	// renderer's byte/binding channel. Invalid or missing replacements
+	// must not discard the last valid GI set.
+	if (m_world->clusters.empty() || !m_world->clusters.front())
+		return false;
+	std::vector<std::pair<std::string, std::vector<uint8_t>>> staged;
 	int loaded = 0;
 	for (const Bound& b : bound) {
 		fs::path volPath(b.path);
 		if (volPath.is_relative() && !m_projectRoot.empty())
 			volPath = (fs::path(m_projectRoot) / volPath)
 				.lexically_normal();
-		smvk::gi::GiVolume vol;
 		std::string err;
-		if (!smvk::gi::GiVolume::ReadFile(volPath.string(), vol, err)) {
+		const std::optional<std::vector<uint8_t>> bytes =
+			content.ReadPath(b.path, err);
+		if (!bytes) {
+			Log("Convex volume discovery failed '" + b.path + "': " + err);
+			continue;
+		}
+		smvk::gi::GiVolume vol;
+		if (!vol.ReadFromMemory(*bytes, err)) {
 			Log("Convex volume load failed '" + volPath.string() + "': " + err);
+			continue;
+		}
+		if (vol.bc6hFormat && vol.coeffs.empty() &&
+			!vol.DecodeBc6hCoeffs(err)) {
+			Log("Convex volume decode failed '" + b.path + "': " + err);
 			continue;
 		}
 		GiVolumePreview pv;
@@ -1313,9 +1345,33 @@ bool EditorApp::TryLoadGiVolumes() {
 			}
 		pv.center = centroidCount > 0
 			? centroidSum / float(centroidCount) : pv.gridMin;
-		m_giVolumePreviews.push_back(std::move(pv));
+		freshPreviews.push_back(std::move(pv));
+		staged.emplace_back(b.path, *bytes);
 		++loaded;
 	}
+	if (loaded != static_cast<int>(bound.size())) {
+		Log("Convex GI volumes: " + std::to_string(loaded) + "/"
+			+ std::to_string(bound.size()) + " decoded; keeping previous "
+			"GI generation and previews");
+		return false;
+	}
+	// Commit the complete generation only after the registry delivered
+	// and the CPU validated every bound volume.
+	smvk::Cluster& carrier = *m_world->clusters.front();
+	for (const std::string& stale : m_editorGiInjectedPaths)
+		carrier.RemoveBakePayload(stale);
+	m_editorGiInjectedPaths.clear();
+	carrier.giBindings.erase(std::remove_if(carrier.giBindings.begin(),
+		carrier.giBindings.end(), [](const smvk::GiBinding& b) {
+			return b.kind == smvk::GiBinding::Kind::GiVolume;
+		}), carrier.giBindings.end());
+	for (auto& entry : staged) {
+		carrier.AddBakePayload(entry.first, std::move(entry.second));
+		carrier.RegisterGiBinding(smvk::GiBinding::Kind::GiVolume,
+			entry.first);
+		m_editorGiInjectedPaths.push_back(entry.first);
+	}
+	m_giVolumePreviews = std::move(freshPreviews);
 	if (loaded > 0) {
 		Log("Convex GI volumes: loaded " + std::to_string(loaded)
 			+ " from the scene's giAsset bindings (J in LIGHTING toggles "

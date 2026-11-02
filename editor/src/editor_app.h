@@ -1537,7 +1537,7 @@ private:
 	bool m_wysiwygValid = false;     // onAttach succeeded (else the hint shows)
 	tour::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
-	bool m_wysiwygBakeWasRunning = false; // bake-completion edge (GI landed post-attach)
+	bool m_wysiwygGiReloadPending = false; // successful bake: refresh the running renderer
 	// RENDER QUALITY (the WYSIWYG's GI/shadow knobs — AmbientMode/GI
 	// intensity, the per-source opt-ins, probe pre-mix, EVSM): the
 	// SESSION's renderer options — the Render tab drives them live
@@ -1779,6 +1779,9 @@ private:
 	// into the snapshot tour back into this mirror — the editor never
 	// derives records itself). Reset with the session.
 	std::vector<smvk::tour::GiAssetCmd> m_giAssets;
+	// Re-resolve the bake owner's stamped giAsset records into the live
+	// scene without replaying the edit history (on bake/cook completion).
+	void ApplyGiAssetBindingsToScene();
 	// AddSceneReference: the References PANEL path takes .tour SCENES
 	// only (references are scene documents — content enters scenes as
 	// ASSETS). allowGeometryAsset = the viewport DROP path (dragging a
@@ -2458,6 +2461,9 @@ private:
 		uint64_t voxNonzero = 0;  // voxels carrying any nonzero lobe
 	};
 	std::vector<GiVolumePreview> m_giVolumePreviews;
+	// The editor's injected per-volume content paths in the source
+	// cluster; discarded on rebake/reopen (the registry resolves bytes).
+	std::vector<std::string> m_editorGiInjectedPaths;
 	void DrawGiVolumePreviewOverlay(); // editor_viewports.cpp (ImGui foreground)
 	// Capture balls + App-parity probe overlay (editor_viewports.cpp,
 	// ImGui foreground, LIGHTING mode only): the scene's LOADED probe
