@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <cwchar>
+#include <cstdlib>
 
 namespace fs = std::filesystem;
 
