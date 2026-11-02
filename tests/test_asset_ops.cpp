@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "editor_asset_ops.h"
+#include "editor_asset_browser_nav.h"
 #include "editor_watch_routes.h"
 
 namespace {
@@ -258,6 +259,40 @@ void TestCookAssetAndDir() {
 	fs::remove_all(root, ec);
 }
 
+void TestAssetBrowserSelectionClears() {
+    std::string primary = "project/content/models/mesh.geometry";
+    std::vector<std::string> selection = {
+        primary, "project/content/models/other.geometry"
+    };
+    std::string anchor = primary;
+    editor::ClearAssetBrowserSelection(primary, selection, anchor);
+    Check(primary.empty() && selection.empty() && anchor.empty(),
+        "browser.navigation.clears-multi-selection");
+}
+
+void TestVirtualFolderLocation() {
+    const std::string root = "project";
+    Check(editor::AssetBrowserAtProjectRoot(root, root),
+        "browser.root.is-valid");
+    Check(!editor::AssetBrowserAtProjectRoot(root, root + "/content"),
+        "browser.content.not-root");
+    Check(!editor::AssetBrowserAtProjectRoot("", ""),
+        "browser.no-project.not-root");
+
+    Check(editor::ShowAssetBrowserCollectionFolders(
+            root, root, false, false), "browser.virtual.root");
+    Check(!editor::ShowAssetBrowserCollectionFolders(
+            root, root + "/content", false, false),
+        "browser.virtual.content-hidden");
+    Check(!editor::ShowAssetBrowserCollectionFolders(
+            root, root + "/content/models", false, false),
+        "browser.virtual.nested-hidden");
+    Check(!editor::ShowAssetBrowserCollectionFolders(
+            root, root, true, false), "browser.virtual.gltf-expanded-hidden");
+    Check(!editor::ShowAssetBrowserCollectionFolders(
+            root, root, false, true), "browser.virtual.tour-expanded-hidden");
+}
+
 } // namespace
 
 int main() {
@@ -267,6 +302,8 @@ int main() {
 	TestDerivedSetLegacyMesh();
 	TestCookAssetAndDir();
 	TestWatchRoutes();
+	TestVirtualFolderLocation();
+	TestAssetBrowserSelectionClears();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
