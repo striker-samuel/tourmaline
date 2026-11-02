@@ -3191,10 +3191,10 @@ void TestProjectCatalog() {
 				&& text.find("struct AssetDesc")
 					!= std::string::npos
 				&& text.find(
-					"AssetDesc{scenes::_class, AssetKind::Scene,")
+					"AssetDesc{scenes::_class,")
 					!= std::string::npos
 				&& text.find(
-					"AssetDesc{textures::_compl, AssetKind::Texture,")
+					"AssetDesc{textures::_compl,")
 					!= std::string::npos
 				&& text.find(
 					"constexpr const AssetDesc* Find(Id id)")
@@ -3354,6 +3354,95 @@ void TestProjectCatalog() {
 				"catalog.malformed-sidecar-untouched");
 		}
 	}
+	// Every generated multi-column collection is padded from the
+	// longest emitted C++ token, not a hard-coded width. This includes
+	// packages, assets, keys, cue names and retired declarations.
+	{
+		smvk::project::ProjectCatalog aligned;
+		aligned.projectName = "Alignment";
+		aligned.paks = { { "s", "short.pak" },
+			{ "long_package", "longer_package_file.pak" } };
+		aligned.scenes.push_back({ 0x1000, "x",
+			"content/s.tour", "s" });
+		aligned.scenes.push_back({ 0x1001, "long_scene_name",
+			"content/long_scene.tour", "s" });
+		aligned.textures.push_back({ 0x2000, "long_symbol",
+			"content/textures/long_texture_name.png", "s" });
+		aligned.audiographs.push_back({ 0x7000, "forest",
+			"content/audio/forest.audiograph", "s" });
+		aligned.audiographCues.push_back({
+			0x7000, "forest", { "a", "very_long_cue" } });
+		aligned.retired.push_back({
+			0x4000, "s", "", "", "sound" });
+		aligned.retired.push_back({
+			0x2001, "long_retired_name", "", "", "texture" });
+		smvk::project::GenerationStamp ver;
+		ver.generation = 1;
+		ver.timestamp = 1793451600;
+		ver.contentHash = smvk::project::ComputeCatalogContentHash(aligned);
+		const std::string printed =
+			smvk::project::EmitProjectHeader(aligned, ver, {}, {});
+		const auto lineFor = [&](const std::string& needle) {
+			const size_t at = printed.find(needle);
+			if (at == std::string::npos)
+				return std::string();
+			const size_t start = printed.rfind('\n', at);
+			const size_t first = start == std::string::npos
+				? 0 : start + 1;
+			const size_t end = printed.find('\n', at);
+			return printed.substr(first, end == std::string::npos
+				? std::string::npos : end - first);
+		};
+		const std::string scene =
+			lineFor("AssetDesc{scenes::x,");
+		const std::string texture =
+			lineFor("AssetDesc{textures::long_symbol,");
+		const std::string graph =
+			lineFor("AssetDesc{audiographs::forest,");
+		Check(!scene.empty() && !texture.empty() && !graph.empty()
+			&& scene.find("AssetKind::Scene,")
+				== texture.find("AssetKind::Texture,")
+			&& scene.find("AssetKind::Scene,")
+				== graph.find("AssetKind::AudioGraph,")
+			&& scene.find("\"content/s.tour\",")
+				== texture.find("\"content/textures/long_texture_name.png\",")
+			&& scene.find("\"\"},") == texture.find("\"\"},"),
+			"catalog.aligned-assets");
+		const std::string pakA = lineFor("Pak{\"s\",");
+		const std::string pakB = lineFor("Pak{\"long_package\",");
+		Check(!pakA.empty() && !pakB.empty()
+			&& pakA.find("\"short.pak\"") ==
+				pakB.find("\"longer_package_file.pak\""),
+			"catalog.aligned-paks");
+		const std::string keyA =
+			lineFor("inline constexpr SceneKey x");
+		const std::string keyB =
+			lineFor("inline constexpr SceneKey long_scene_name");
+		Check(!keyA.empty() && !keyB.empty()
+			&& keyA.find("{0x") == keyB.find("{0x"),
+			"catalog.aligned-keys");
+		const std::string cueA =
+			lineFor("inline constexpr AudioCueKey forest_a");
+		const std::string cueB =
+			lineFor("inline constexpr AudioCueKey forest_very_long_cue");
+		Check(!cueA.empty() && !cueB.empty()
+			&& cueA.find("{0x") == cueB.find("{0x"),
+			"catalog.aligned-audiocues");
+		const std::string retiredA =
+			lineFor("inline constexpr SoundKey ");
+		const std::string retiredB =
+			lineFor("inline constexpr TextureKey ");
+		Check(!retiredA.empty() && !retiredB.empty()
+			&& retiredA.find("{0x") == retiredB.find("{0x")
+			&& retiredA.find(" s ") != std::string::npos,
+			"catalog.aligned-retired");
+		Check(smvk::project::EmitProjectHeader(aligned, ver, {}, {})
+				== printed
+			&& printed.find("std::string_view(\"x\"),")
+				!= std::string::npos,
+			"catalog.aligned-deterministic");
+	}
+
 	// String-literal escaping: quotes/backslashes in names/paths never
 	// break the emitted header.
 	{
