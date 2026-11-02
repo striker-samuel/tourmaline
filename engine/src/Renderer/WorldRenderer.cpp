@@ -3456,6 +3456,8 @@ namespace engine {
 		// Must run while the rendergraph and the static heap are alive;
 		// otherwise the regions leak and VMA asserts at heap teardown.
 		m_gfxRenderer.Destroy(*m_rendergraph);
+		m_selectionLineBuffer = {};
+		m_selectedNode = UINT32_MAX;
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.exposure.Destroy(*m_rendergraph);
 		m_viewportResources.exposure.DestroyShaders();
