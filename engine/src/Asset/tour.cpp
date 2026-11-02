@@ -3517,7 +3517,8 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings, std::string* err, bool strict,
-	std::vector<uint32_t>* createdGiVolumesOut) {
+	std::vector<uint32_t>* createdGiVolumesOut,
+	std::vector<uint32_t>* createdTransformsOut) {
 	auto warn = [&](const std::string& w) {
 		if (warnings)
 			warnings->push_back(w);
@@ -5210,6 +5211,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	}
 	if (createdGiVolumesOut)
 		*createdGiVolumesOut = createdGiVolumes;
+	if (createdTransformsOut)
+		*createdTransformsOut = createdTransforms;
 	// Transform pass: collect per-node TRS triples (tour order = last wins
 	// per channel), then rebuild each touched node's local matrix.
 	{
@@ -5488,12 +5491,20 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 
 bool StampGiAssets(Doc& doc, const Scene& scene,
 	const std::vector<uint32_t>& createdGiVolumes, std::string* err,
-	std::vector<std::string>* superseded) {
+	std::vector<std::string>* superseded,
+	const std::vector<uint32_t>* createdTransforms) {
 	// Invert the family list once (node -> the k-th createGiVolume, the
 	// index the giAsset GI-volume records address).
 	std::unordered_map<uint32_t, uint32_t> familyOf;
 	for (size_t k = 0; k < createdGiVolumes.size(); ++k)
 		familyOf[createdGiVolumes[k]] = uint32_t(k);
+	// Generic Spatial Volumes have their own creation-order space; a
+	// GI component on them shares the transform node, not a special GI
+	// create. Persist its artifact through -owner transform.
+	if (createdTransforms)
+		for (size_t k = 0; k < createdTransforms->size(); ++k)
+			familyOf[(*createdTransforms)[k]] =
+				kCreateTransformRefBase | uint32_t(k);
 	// The supersede list (record-exact): the OLD records' paths the new
 	// set drops. Bake artifacts carry RANDOM minted names — a fresh bake
 	// never collides with (or overwrites) an old file — so the ONLY way
@@ -5522,6 +5533,15 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 			kCreateGiVolumeRefBase | k, it->volume.bakeSource,
 			it->volume.bakeGuid, it->volume.bakeInputHash });
 	}
+	if (createdTransforms)
+		for (uint32_t k = 0; k < createdTransforms->size(); ++k) {
+			const auto* it = FindGiVolume(scene, (*createdTransforms)[k]);
+			if (!it || it->volume.bakeSource.empty()) continue;
+			doc.giAssets.push_back(GiAssetCmd{
+				GiAssetCmd::Kind::GiVolume,
+				kCreateTransformRefBase | k, it->volume.bakeSource,
+				it->volume.bakeGuid, it->volume.bakeInputHash });
+		}
 	// The capture set last (one record; the per-capture hashes ride the
 	// manifest rows — this is the set-level fold the gate fast-paths).
 	if (!scene.giCapturesSource.empty())
