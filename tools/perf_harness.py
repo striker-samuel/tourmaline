@@ -75,7 +75,7 @@ def select_scenario(catalog, scenario_id):
 
 def command(args):
     # The exe requires its working directory to be the build root.
-    source = args.source_args or (["--project", str(args.project.resolve())] if args.project else
+    source = getattr(args, "source_args", []) or (["--project", str(args.project.resolve())] if args.project else
            ["--pak", str(args.pak.resolve())])
     return [str(args.exe.resolve()), *source, "--disable_control", "--bench", str(args.frames),
             "--present", "immediate", *args.app_arg]
