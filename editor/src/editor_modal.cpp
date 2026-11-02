@@ -571,32 +571,18 @@ void EditorApp::ModalGiVolumePreviewCycle() {
 }
 
 void EditorApp::ModalViewBaked() {
-	if (m_lmGpu) {
-		// Honest empty-view warning: an atlas with a scene whose meshes
-		// carry no lmChunk stamps (a recook with lightmap off strips
-		// them) draws NOTHING — the baked pass skips unchunked meshes
-		// by design (they would sample foreign texels). Say so instead
-		// of a silently blank viewport.
-		if (m_world) {
-			bool anyChunk = false;
-			m_world->forEachRenderItem(
-				smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable
-					| smvk::IteratorFlagBit_Transparent
-					| smvk::IteratorFlagBit_StaticVertexFmt),
-				[&](const tour::World::RenderItem& item) {
-					if (smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh))
-						if (mesh->lmChunk != 0xFFFFFFFFu)
-							anyChunk = true;
-				});
-			if (!anyChunk)
-				Log("Baked view: the cooked scene carries no lightmap "
-					"chunks (recooked with lightmap off?) — unchunked "
-					"meshes are skipped, the view will be empty.");
-		}
-		ActiveViewMode() = ViewMode::Baked;
+	if (!m_world) {
+		Log("Baked irradiance view: open a scene first.");
+		return;
 	}
-	else
-		Log("Baked view needs a lightmap atlas (open a baked pak).");
+	// The current GI is baked into regular/convex probes (and optionally
+	// lightmaps). The old editor F8 shader uses a retired FrameUniforms
+	// lightmap ABI and emits black: route this view through the SAME
+	// WorldRenderer GI debug path as the App, not the .sglm-only path.
+	ActiveViewMode() = ViewMode::Baked;
+	Log("Baked irradiance (F8): full renderer's baked-GI debug; "
+		"magenta = no baked source covers that pixel. "
+		"Bake GI and enable its volume source in Render settings.");
 }
 
 void EditorApp::ModalViewLmUv() { ActiveViewMode() = ViewMode::Uv1; }
