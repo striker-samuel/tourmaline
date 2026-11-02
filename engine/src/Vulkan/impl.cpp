@@ -59,6 +59,7 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/world.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/Profile/aftermath_sdk.h>
 
 // (namespace/RHI boundary audit) TU-LOCAL escape hatch: the tour::App
 // member bodies defined in this file (out-of-class, qualified names)
@@ -2260,6 +2261,8 @@ void static CreateSampler(const smvk::SamplerCreateInfo& samplerCreateInfo, VkSa
 }
 
 int smvk::VulkanCore::CreateInstance() {
+	// SDK owns crash dump callbacks; enabled only in private diagnostic builds.
+	tour::aftermath::Initialize();
 
 	if (enableValidationLayers && !checkValidationLayerSupport(config_.validationLayers)) {
 		// Diagnostic escape hatch (TOURMALINE_NO_VALIDATION=1): the ASan
@@ -2920,6 +2923,7 @@ inline smvk::VulkanCore::~VulkanCore() {
 			fprintf(stderr, "[Vulkan Warning] vkDeviceWaitIdle returned VK_ERROR_DEVICE_LOST during ~VulkanCore, proceeding with teardown\n");
 		}
 	}
+	tour::aftermath::Shutdown();
 	smvk::profiler::Shutdown();
 	if (device_ != VK_NULL_HANDLE) {
 		std::lock_guard<std::mutex> lock(g_allPoolsMutex);
