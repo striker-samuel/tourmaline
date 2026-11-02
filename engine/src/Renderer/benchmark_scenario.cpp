@@ -14,6 +14,9 @@
 #include <cmath>
 #include <system_error>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -85,7 +88,7 @@ bool Save(const Scenario& scenario, std::string& message) {
         int suffix = 2;
         auto occupied = [&](const std::string& candidate) {
             for (const auto& entry : root["scenarios"])
-                if (entry.is_object() && entry.value("id", "") == candidate)
+                if (entry.is_object() && entry.value("id", std::string{}) == candidate)
                     return true;
             return false;
         };
@@ -190,7 +193,7 @@ void WorldRenderer::ExportBenchmarkScenario() {
     pin("TOURMALINE_DS", m_dsEnabled);
     pin("TOURMALINE_EVSM", m_evsmEnabled);
     pin("TOURMALINE_SDSM", m_sdsmEnabled);
-    pin("TOURMALINE_TERRAIN", m_passes.terrain);
+    pin("TOURMALINE_TERRAIN", m_passes.terrain && m_terrainEnabled);
     pin("TOURMALINE_CUBEMAP", m_cubemapEnabled);
     pin("TOURMALINE_LIGHTMAP", m_lmEnabled);
     pin("TOURMALINE_CONTACT_SHADOWS", m_contactShadowsEnabled);
