@@ -23,6 +23,7 @@ struct Addresses {
     uint64_t submeshes = 0;
     uint64_t instances = 0;
     uint64_t leaves = 0;
+    uint64_t leafMembers = 0;
 };
 
 class Uploader {

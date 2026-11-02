@@ -8,6 +8,7 @@
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
+#include <compare>
 #include <cmath>
 #include <cstdint>
 #include <limits>

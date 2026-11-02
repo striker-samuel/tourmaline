@@ -73,6 +73,16 @@ struct alignas(16) Instance {
     glm::uvec4 refs{InvalidIndex}; // mesh slot, mesh generation, World material, flags
 };
 
+// A leaf is cullable only if EVERY member has a valid, conservative
+// full-LOD-chain bound. Otherwise the future GPU pass must bypass leaf cull.
+inline constexpr uint32_t LeafFlagBoundsComplete = 1u << 0;
+
+// A leaf contains a contiguous span of LeafMember rows; each member
+// points at an Instance slot+generation rather than a frame-local draw.
+struct alignas(16) LeafMember {
+    glm::uvec4 ref{InvalidIndex, 0u, 0u, 0u};
+};
+
 struct alignas(16) Leaf {
     tour::math::DoubleFloat3 worldCenter{};
     glm::vec4 halfExtents{0.0f}; // xyz conservative; w reserved
@@ -83,12 +93,13 @@ struct alignas(16) Leaf {
 
 static_assert(sizeof(Mesh) == 16 && sizeof(Lod) == 16);
 static_assert(sizeof(Submesh) == 16 && sizeof(Instance) == 112);
-static_assert(sizeof(Leaf) == 64);
+static_assert(sizeof(Leaf) == 64 && sizeof(LeafMember) == 16);
 static_assert(sizeof(Row<Mesh>) == 32);
 static_assert(sizeof(Row<Lod>) == 32);
 static_assert(sizeof(Row<Submesh>) == 32);
 static_assert(sizeof(Row<Instance>) == 128);
 static_assert(sizeof(Row<Leaf>) == 80);
+static_assert(sizeof(Row<LeafMember>) == 32);
 static_assert(offsetof(Row<Instance>, identity) == 112);
 static_assert(std::is_trivially_copyable_v<Row<Instance>>);
 static_assert(std::is_standard_layout_v<Row<Instance>>);
@@ -304,6 +315,7 @@ struct Database {
     Table<Submesh, FrameCount> submeshes;
     Table<Instance, FrameCount> instances;
     Table<Leaf, FrameCount> leaves;
+    Table<LeafMember, FrameCount> leafMembers;
 };
 
 } // namespace tour::gpu_scene
