@@ -32,6 +32,70 @@
 
 namespace editor {
 
+// The bake owner's stamped GI bindings are the scene's source of truth.
+// Reuse this after replay and after an in-process bake: the editor's
+// preview and the borrowed renderer must see the same current paths.
+void EditorApp::ApplyGiAssetBindingsToScene() {
+	if (m_world) {
+		Scene& liveScene = m_world->scene;
+		liveScene.giWorldSource.clear();
+		liveScene.giWorldGuid.clear();
+		liveScene.giWorldInputHash.clear();
+		liveScene.giCapturesSource.clear();
+		liveScene.giCapturesGuid.clear();
+		liveScene.giCapturesHash.clear();
+		for (GiVolumeRow& _row : liveScene.tables.giVolumes) {
+		NodeId node = _row.node; auto& def = _row.volume;
+			def.bakeSource.clear();
+			def.bakeGuid.clear();
+			def.bakeInputHash.clear();
+		}
+		// Mirrors ApplyTourToCluster's giAsset pass EXACTLY (the
+		// tour.cpp loop is the authoritative semantics � World /
+		// Captures / per-volume records; this editor mirror drifted:
+		// the Captures branch was missing entirely, so every captures
+		// record fell into the GI-volume ref check with ref 0 and
+		// dropped with "ref out of range", losing the live scene's
+		// capture-set binding on every tour open; the bake-input
+		// hashes were missing from the other branches the same way).
+		for (const smvk::tour::GiAssetCmd& ga : m_giAssets) {
+			if (ga.source.empty())
+				continue; // half-written record: skip (mirrors the writer)
+			if (ga.kind == smvk::tour::GiAssetCmd::Kind::World) {
+				if (!liveScene.giWorldSource.empty())
+					continue; // duplicate world record: first kept
+				liveScene.giWorldSource = ga.source;
+				liveScene.giWorldGuid = ga.guid;
+				liveScene.giWorldInputHash = ga.bakedHash;
+				continue;
+			}
+			if (ga.kind == smvk::tour::GiAssetCmd::Kind::Captures) {
+				if (!liveScene.giCapturesSource.empty())
+					continue; // duplicate captures record: first kept
+				liveScene.giCapturesSource = ga.source;
+				liveScene.giCapturesGuid = ga.guid;
+				liveScene.giCapturesHash = ga.bakedHash;
+				continue;
+			}
+			const uint32_t k =
+				ga.ref & ~smvk::tour::kCreateGiVolumeRefBase;
+			if ((ga.ref & smvk::tour::kCreateGiVolumeRefBase) == 0
+					|| k >= m_tourCreatedGiVolumeNodes.size()) {
+				Log("tour: giAsset GI-volume ref out of range (dropped � '"
+					+ ga.source + "')");
+				continue;
+			}
+			GiVolumeRow* it = FindGiVolume(liveScene,
+				m_tourCreatedGiVolumeNodes[k]);
+			if (!it)
+				continue;
+			it->volume.bakeSource = ga.source;
+			it->volume.bakeGuid = ga.guid;
+			it->volume.bakeInputHash = ga.bakedHash;
+		}
+	}
+}
+
 void EditorApp::ReadLocalTRS(uint32_t node, glm::vec3& t,
 	glm::vec3& rDeg, glm::vec3& s) const {
 	const glm::mat4& m = m_world->scene.localTransform[node];
@@ -6210,74 +6274,9 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		m_history.push_back(c);
 		++applied;
 	}
-	// GI-asset bindings (the session mirror + the LIVE-SCENE resolution):
-	// the mirror round-trips through save (the records are doc state,
-	// never derived here � only the bake owner writes them); the
-	// per-volume bindings resolve onto the live scene through the SAME
-	// family list the setGiVolumeAttr replay used (m_tourCreatedGiVolumeNodes,
-	// filled in command order above), so the editor's loaders (the GI-volume
-	// preview) read exactly what the scene carries � no stem guessing.
-	// Clear-first keeps a re-replay idempotent (stale bindings from the
-	// previous pass die).
+	// Reuse the same binding resolver for tour replay and successful GI bakes.
 	m_giAssets = doc.giAssets;
-	if (m_world) {
-		Scene& liveScene = m_world->scene;
-		liveScene.giWorldSource.clear();
-		liveScene.giWorldGuid.clear();
-		liveScene.giWorldInputHash.clear();
-		liveScene.giCapturesSource.clear();
-		liveScene.giCapturesGuid.clear();
-		liveScene.giCapturesHash.clear();
-		for (GiVolumeRow& _row : liveScene.tables.giVolumes) {
-		NodeId node = _row.node; auto& def = _row.volume;
-			def.bakeSource.clear();
-			def.bakeGuid.clear();
-			def.bakeInputHash.clear();
-		}
-		// Mirrors ApplyTourToCluster's giAsset pass EXACTLY (the
-		// tour.cpp loop is the authoritative semantics � World /
-		// Captures / per-volume records; this editor mirror drifted:
-		// the Captures branch was missing entirely, so every captures
-		// record fell into the GI-volume ref check with ref 0 and
-		// dropped with "ref out of range", losing the live scene's
-		// capture-set binding on every tour open; the bake-input
-		// hashes were missing from the other branches the same way).
-		for (const smvk::tour::GiAssetCmd& ga : m_giAssets) {
-			if (ga.source.empty())
-				continue; // half-written record: skip (mirrors the writer)
-			if (ga.kind == smvk::tour::GiAssetCmd::Kind::World) {
-				if (!liveScene.giWorldSource.empty())
-					continue; // duplicate world record: first kept
-				liveScene.giWorldSource = ga.source;
-				liveScene.giWorldGuid = ga.guid;
-				liveScene.giWorldInputHash = ga.bakedHash;
-				continue;
-			}
-			if (ga.kind == smvk::tour::GiAssetCmd::Kind::Captures) {
-				if (!liveScene.giCapturesSource.empty())
-					continue; // duplicate captures record: first kept
-				liveScene.giCapturesSource = ga.source;
-				liveScene.giCapturesGuid = ga.guid;
-				liveScene.giCapturesHash = ga.bakedHash;
-				continue;
-			}
-			const uint32_t k =
-				ga.ref & ~smvk::tour::kCreateGiVolumeRefBase;
-			if ((ga.ref & smvk::tour::kCreateGiVolumeRefBase) == 0
-					|| k >= m_tourCreatedGiVolumeNodes.size()) {
-				Log("tour: giAsset GI-volume ref out of range (dropped � '"
-					+ ga.source + "')");
-				continue;
-			}
-			GiVolumeRow* it = FindGiVolume(liveScene,
-				m_tourCreatedGiVolumeNodes[k]);
-			if (!it)
-				continue;
-			it->volume.bakeSource = ga.source;
-			it->volume.bakeGuid = ga.guid;
-			it->volume.bakeInputHash = ga.bakedHash;
-		}
-	}
+	ApplyGiAssetBindingsToScene();
 	m_replayingTour = false;
 	m_historyCursor = m_history.size();
 	Log("tour: applied " + std::to_string(applied) + "/"
