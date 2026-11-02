@@ -1164,3 +1164,9 @@ endif()
 if(TARGET vulkan_headers_iface)
     target_link_libraries(WorldFieldsGpuTests PRIVATE vulkan_headers_iface)
 endif()
+# Shared spatial volume trigger semantics (headless).
+add_executable(TriggerVolumeTests test_trigger_volume.cpp)
+target_link_libraries(TriggerVolumeTests PRIVATE engine)
+set_target_properties(TriggerVolumeTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME trigger_volume_tests COMMAND TriggerVolumeTests)
