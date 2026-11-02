@@ -139,6 +139,7 @@ def main(argv=None):
     parser.add_argument("--paths-config", type=Path, help="Alternative user-local preferences JSON")
     parser.add_argument("--save-paths", action="store_true", help="Persist capture and scratch settings")
     parser.add_argument("--show-paths", action="store_true", help="Display current paths without starting Nsight")
+    parser.add_argument("--dry-run", action="store_true", help="Print the planned Nsight command and destinations without running it")
     parser.add_argument("--frames", type=positive, help="Measured frames; overrides scenario default (120 otherwise)")
     parser.add_argument("--repeat", type=positive, default=3)
     parser.add_argument("--warmup", type=positive, default=10, help="App internally uses 10 warmup frames")
@@ -166,6 +167,10 @@ def main(argv=None):
             return 0
         args.capture_dir = Path(chosen.get("capture_dir") or (args.output / "nsight")).expanduser().resolve()
         args.scratch_dir = Path(chosen["scratch_dir"]).expanduser().resolve() if chosen.get("scratch_dir") else None
+        # Keep reports and logs on the chosen capture drive by default,
+        # not just the larger Nsight trace artifacts.
+        if chosen.get("capture_dir") and args.output == Path("out/perf"):
+            args.output = args.capture_dir / "_runs"
     else:
         args.capture_dir = None
         args.scratch_dir = None
@@ -268,7 +273,8 @@ def main(argv=None):
     # Prevent a user shell's shader hot reload from mutating the benchmark.
     env.pop("TOURMALINE_SHADER_RELOAD", None)
     env.pop("TOURMALINE_SHADER_RELOAD_SRC", None)
-    args.output.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        args.output.mkdir(parents=True, exist_ok=True)
     out = args.output.resolve()
     argv_app = command(args)
     report = {"schema_version": 1, "mode": args.mode, "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -294,20 +300,25 @@ def main(argv=None):
         invocations = [argv_app] * total
     elif args.mode == "trace":
         ngfx = args.ngfx or shutil.which("ngfx")
-        if not ngfx:
+        if not ngfx and not args.dry_run:
             parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
+        ngfx = ngfx or "ngfx"
         # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
         # of presents; samples are NOT a trustworthy standalone FPS benchmark.
         trace_root = args.capture_dir or (out / "nsight")
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         slug = re.sub(r"[^a-zA-Z0-9_-]", "_", args.scenario or "manual")
         trace_dir = trace_root / f"{slug}-{stamp}"
-        try:
-            trace_dir.mkdir(parents=True, exist_ok=False)
-        except OSError as exc:
-            parser.error(f"cannot create capture directory {trace_dir}: {exc}")
+        if not args.dry_run:
+            try:
+                trace_dir.mkdir(parents=True, exist_ok=False)
+            except OSError as exc:
+                parser.error(f"cannot create capture directory {trace_dir}: {exc}")
         report["capture_dir"] = str(trace_dir)
         report["scratch_dir"] = str(args.scratch_dir) if args.scratch_dir else None
+        target_pins = dict(pins)
+        if args.scratch_dir is not None:
+            target_pins.update({k: str(args.scratch_dir) for k in ("TMP", "TEMP", "TMPDIR")})
         invocations = [[ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
                         f'--exe={args.exe.resolve()}', f'--dir={workdir}',
                         '--args=' + subprocess.list2cmdline(argv_app[1:]),
@@ -315,7 +326,8 @@ def main(argv=None):
                         f'--start-after-frames={args.warmup}',
                         f'--limit-to-frames={args.trace_frames}',
                         f'--num-frames={args.trace_frames}',
-                        f'--max-duration-ms={args.trace_duration_ms}', '--auto-export']]
+                        f'--max-duration-ms={args.trace_duration_ms}', '--auto-export',
+                        *(['--env=' + '; '.join(f'{k}={v}' for k, v in target_pins.items())] if target_pins else [])]]
     else:
         capture = args.ngfx_capture or shutil.which("ngfx-capture")
         if not capture:
@@ -328,6 +340,11 @@ def main(argv=None):
         invocations = [[capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
                         "--args", subprocess.list2cmdline(argv_app[1:]),
                         "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(cap_root)]]
+    if args.dry_run:
+        print(json.dumps({"mode": args.mode, "command": invocations[0],
+                          "cwd": str(workdir), "capture_dir": report.get("capture_dir"),
+                          "scratch_dir": str(args.scratch_dir) if args.scratch_dir else "system temp"}, indent=2))
+        return 0
     failed = False
     try:
         for i, invocation in enumerate(invocations, 1):
