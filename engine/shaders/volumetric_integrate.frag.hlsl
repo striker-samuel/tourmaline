@@ -316,9 +316,20 @@ float SampleVolumetricShadow(float3 wpos, FrameUniforms frame)
     atlasUV = clamp(atlasUV, frame.fogShadowRect.xy,
         frame.fogShadowRect.xy + frame.fogShadowRect.zw);
 
-    SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
-    float storedDepth = textures[vp.shadowDepthIndex]
-        .SampleLevel(smp, atlasUV, 0.0).r;
+    // Strict MIN pyramid: neither bilinear nor trilinear interpolation
+    // preserves the nearest blocker. Select a discrete mip and fetch
+    // one exact texel; Load ignores the unrelated fog linear sampler.
+    Texture2D shadowPyramid = textures[vp.shadowDepthIndex];
+    uint shadowWidth, shadowHeight, shadowMips;
+    shadowPyramid.GetDimensions(0, shadowWidth, shadowHeight, shadowMips);
+    float dist = length(wpos - frame.cameraPos);
+    uint lod = min((uint)floor(log2(max(1.0, dist * 0.04))),
+        max(shadowMips, 1u) - 1u);
+    uint mipWidth, mipHeight, ignoredMips;
+    shadowPyramid.GetDimensions(lod, mipWidth, mipHeight, ignoredMips);
+    int2 texel = int2(clamp(atlasUV * float2(mipWidth, mipHeight),
+        float2(0.0, 0.0), float2(mipWidth, mipHeight) - 1.0));
+    float storedDepth = shadowPyramid.Load(int3(texel, int(lod))).r;
 
     float receiver = ndc.z - frame.fogShadowBias * 0.3;
     static const float kFogSunSoften = 16.0;

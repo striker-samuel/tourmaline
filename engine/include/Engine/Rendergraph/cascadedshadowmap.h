@@ -16,6 +16,7 @@
 //    (no Y-flip on the light ortho – see note in BuildDirectionalLight)
 
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/mipchain.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/light.h>
 #include <Engine/platform.h>
@@ -23,6 +24,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cassert>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -95,6 +97,25 @@ inline std::vector<float> ComputeCascadeSplits(
 
 // Default SPV for the depth-only cascade pass (single VS, no FS).
 inline constexpr const char* kCascadedShadowVsPath = "content/shaders/shadow.vert.hlsl.spv";
+inline constexpr const char* kFogShadowSpdCsPath = "content/shaders/volumetric_shadow_spd.cs.hlsl.spv";
+static constexpr uint32_t kFogShadowMaxMips = 16;
+
+// The depth atlas is a square power-of-two image. Real mip images floor
+// odd dimensions, dropping their unpaired edge texels under a 2x2
+// reduction. Rounding the raster target UP before rendering means the
+// single-dispatch SPD covers every caster down to the 1x1 tail.
+// Limit the chain to kFogShadowMaxMips (2^15 => 16 levels).
+inline uint32_t FogShadowPaddedResolution(uint32_t requested) {
+	return requested ? std::bit_ceil(requested) : 0u;
+}
+static constexpr uint32_t kFogSpdCounterStride = 256;
+struct FogShadowSpdPush {
+	uint32_t depthTextureIndex = UINT32_MAX;
+	uint32_t mipIndices[kFogShadowMaxMips]{};
+	uint64_t counter = 0;
+	uint32_t width = 0, height = 0, mipCount = 0, groupCount = 0;
+};
+static_assert(sizeof(FogShadowSpdPush) == 96);
 
 struct CascadedShadowAtlas {
 	Holder<ImageHandle> image;
@@ -103,14 +124,24 @@ struct CascadedShadowAtlas {
 	Holder<BindlessImageHandle> bindless;
 	LogicalImageViewHandle logicalView; // rendergraph alias of sampledView
 
-	// The DEDICATED coarse volumetric atlas (fogShadowResolution > 0):
-	// a second square D32 image + its own bindless index and graph
-	// view. Empty handles = no volumetric tile (fogTileExtent 0x0).
+	// The dedicated D32 atlas is rasterized once. Its SPD output is a
+	// full R32F mip chain for standard-Z conservative (MIN) depth sampling.
 	Holder<ImageHandle> fogImage;
-	Holder<ImageViewHandle> fogAttachmentView;
-	Holder<ImageViewHandle> fogSampledView;
+	Holder<ImageViewHandle> fogAttachmentView, fogSampledView;
 	Holder<BindlessImageHandle> fogBindless;
-	LogicalImageViewHandle fogLogicalView;
+	LogicalImageViewHandle fogAttachmentLogical, fogLogicalView;
+	Holder<ImageHandle> fogPyramidImage;
+	Holder<ImageViewHandle> fogPyramidView;
+	Holder<BindlessImageHandle> fogPyramidBindless;
+	LogicalImageViewHandle fogPyramidLogical;
+	std::vector<Holder<ImageViewHandle>> fogMipViews;
+	std::vector<Holder<BindlessImageHandle>> fogMipBindless;
+	std::vector<LogicalImageViewHandle> fogMipLogicals;
+	Holder<BufferHandle> fogSpdCounter;
+	LogicalBufferHandle fogSpdCounterLogical;
+	Holder<ShaderModuleHandle> fogSpdModule;
+	ShaderProgram fogSpdProgram{};
+	uint32_t fogMipCount = 0;
 
 	// Default depth-only program (shadow.vert, mainVS). Created by
 	// EnsureShaders/Create/Ensure so apps don't own shadow modules.
@@ -155,7 +186,7 @@ struct CascadedShadowAtlas {
 	// Idempotent default program creation (shadow.vert, mainVS).
 	// Returns true when program is ready afterwards.
 	bool EnsureShaders(ResourceManager& ctx, const char* vsPath = kCascadedShadowVsPath) {
-		if (ShadersValid())
+		if (ShadersValid() && (fogTileExtent.width == 0 || fogSpdProgram.shaderCount != 0))
 			return true;
 		try {
 			const std::string path = vsPath ? vsPath : kCascadedShadowVsPath;
@@ -165,6 +196,15 @@ struct CascadedShadowAtlas {
 		}
 		if (vsModule.empty())
 			return false;
+		if (fogTileExtent.width != 0 && fogSpdModule.empty()) {
+			try { fogSpdModule = ctx.CreateShaderModule(readFile(kFogShadowSpdCsPath), "fogShadowSpdCS"); }
+			catch (...) { return false; }
+		}
+		if (fogTileExtent.width != 0) {
+			if (fogSpdModule.empty()) return false;
+			Shader cs{ .module = fogSpdModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute };
+			fogSpdProgram = { .shaders = { cs }, .shaderCount = 1 };
+		}
 		Shader vs{ .module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex };
 		program = { .shaders = { vs }, .shaderCount = 1 };
 		return true;
@@ -173,6 +213,8 @@ struct CascadedShadowAtlas {
 	void DestroyShaders() {
 		program = ShaderProgram();
 		vsModule = {};
+		fogSpdProgram = ShaderProgram();
+		fogSpdModule = {};
 	}
 
 	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
@@ -181,10 +223,13 @@ struct CascadedShadowAtlas {
 	// old handle rides `retired` for the caller's retirement pass.
 	[[nodiscard]] bool ReloadShaders(ResourceManager& ctx,
 		std::vector<ShaderModuleHandle>& retired) {
-		if (!SwapShaderModule(ctx, kCascadedShadowVsPath,
-				"shadowVert", vsModule, retired))
-			return false;
+		bool moved = SwapShaderModule(ctx, kCascadedShadowVsPath,
+				"shadowVert", vsModule, retired);
+		moved |= SwapShaderModule(ctx, kFogShadowSpdCsPath,
+			"fogShadowSpdCS", fogSpdModule, retired);
+		if (!moved) return false;
 		program = ShaderProgram();
+		fogSpdProgram = ShaderProgram();
 		EnsureShaders(ctx);
 		return true;
 	}
@@ -199,13 +244,27 @@ struct CascadedShadowAtlas {
 		sampledView = {};
 		attachmentView = {};
 		image = {};
-		if (!fogLogicalView.empty())
-			rg.FreeImageView(fogLogicalView);
+		if (!fogLogicalView.empty()) rg.FreeImageView(fogLogicalView);
+		if (!fogAttachmentLogical.empty()) rg.FreeImageView(fogAttachmentLogical);
+		if (!fogPyramidLogical.empty()) rg.FreeImageView(fogPyramidLogical);
+		for (auto v : fogMipLogicals) if (!v.empty()) rg.FreeImageView(v);
+		if (!fogSpdCounterLogical.empty()) rg.FreeBuffer(fogSpdCounterLogical);
 		fogLogicalView = {};
+		fogAttachmentLogical = {};
+		fogPyramidLogical = {};
+		fogSpdCounterLogical = {};
+		fogMipLogicals.clear();
+		fogMipBindless.clear();
+		fogMipViews.clear();
 		fogBindless = {};
+		fogPyramidBindless = {};
+		fogSpdCounter = {};
 		fogSampledView = {};
 		fogAttachmentView = {};
+		fogPyramidView = {};
 		fogImage = {};
+		fogPyramidImage = {};
+		fogMipCount = 0;
 		gridExtent = { 0, 0 };
 		tileExtent = { 0, 0 };
 		fogTileExtent = { 0, 0 };
@@ -220,7 +279,7 @@ struct CascadedShadowAtlas {
 		const char* vsPath = kCascadedShadowVsPath) {
 		if (desc.cascadeCount == 0 || desc.cascadeCount > kMaxCascades)
 			return false;
-		if (desc.cascadeResolution == 0)
+		if (desc.cascadeResolution == 0 || desc.fogShadowResolution > (1u << (kFogShadowMaxMips - 1u)))
 			return false;
 
 		// The main atlas is EXACTLY the cascade grid (the pre-volumetric
@@ -284,79 +343,110 @@ struct CascadedShadowAtlas {
 
 		// ---- The DEDICATED coarse volumetric atlas (fogShadowResolution
 		// > 0): a second square D32 image with its own bindless index +
-		// graph view. All-or-nothing like the main views above (a failed
-		// fog atlas fails Create - the caller logs and disables the
-		// shadow passes; no half-created state survives).
+		// graph view, plus the R32F SPD pyramid (the full mip chain the
+		// one-dispatch compute writes). Everything lands in LOCALS first
+		// and commits below — the SAME all-or-nothing contract the main
+		// views follow above: a failed fog atlas fails Create (the caller
+		// logs and disables the shadow passes; no half-created state
+		// survives). The Holder locals free their acquire-side resources
+		// on any mid-way failure; a committed state always carries ALL
+		// of image/views/bindless/pyramid/counter together.
+		const uint32_t fogRes = FogShadowPaddedResolution(desc.fogShadowResolution);
+		const Extent2D fogTile{ fogRes, fogRes };
 		Holder<ImageHandle> newFogImage;
-		Holder<ImageViewHandle> newFogAttachment;
-		Holder<ImageViewHandle> newFogSampled;
+		Holder<ImageViewHandle> newFogAttachment, newFogSampled;
 		Holder<BindlessImageHandle> newFogBindless;
-		LogicalImageViewHandle newFogLogical;
-		const Extent2D fogTile = (desc.fogShadowResolution > 0)
-			? Extent2D{ std::max(1u, desc.fogShadowResolution),
-				std::max(1u, desc.fogShadowResolution) }
-			: Extent2D{ 0, 0 };
+		LogicalImageViewHandle newFogAttachmentLogical, newFogLogical;
+		Holder<ImageHandle> newFogPyramidImage;
+		Holder<ImageViewHandle> newFogPyramidView;
+		Holder<BindlessImageHandle> newFogPyramidBindless;
+		LogicalImageViewHandle newFogPyramidLogical;
+		std::vector<Holder<ImageViewHandle>> newFogMipViews;
+		std::vector<Holder<BindlessImageHandle>> newFogMipBindless;
+		std::vector<LogicalImageViewHandle> newFogMipLogicals;
+		Holder<BufferHandle> newFogSpdCounter;
+		LogicalBufferHandle newFogSpdCounterLogical;
+		uint32_t newFogMipCount = 0;
 		if (fogTile.width != 0) {
 			ImageCreateInfo fogCI{};
 			fogCI.format = desc.format;
-			fogCI.extent = { fogTile.width, fogTile.height, 1u };
-			fogCI.mipLevels = 1u;
-			fogCI.arrayLayers = 1u;
+			fogCI.extent = { fogTile.width, fogTile.height, 1 };
+			fogCI.mipLevels = 1;
+			fogCI.arrayLayers = 1;
 			fogCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
-			// TransferSrc: debug stage dumps (TOURMALINE_FOG_TILE_DUMP) —
-			// armed dumps only (DownloadDataFromImage needs it on the
-			// source image).
-			if (DebugImageDumpArmed())
-				fogCI.usage |= ImageUsage::TransferSrc;
+			if (DebugImageDumpArmed()) fogCI.usage |= ImageUsage::TransferSrc;
 			fogCI.name = "volumetricShadowAtlas";
-
 			newFogImage = ctx.CreateImage(fogCI, nullptr);
-			if (newFogImage.empty())
-				return false;
+			if (newFogImage.empty()) return false;
+			ImageViewCreateInfo dci{};
+			dci.viewType = ImageViewType::View2D;
+			dci.format = Format::Undefined;
+			dci.subresourceRange = { ImageAspect::Depth, 0, 1, 0, 1 };
+			dci.name = "volumetric shadow depth";
+			newFogAttachment = ctx.CreateImageView(newFogImage, dci);
+			if (newFogAttachment.empty()) return false;
+			newFogSampled = ctx.CreateImageView(newFogImage, dci);
+			if (newFogSampled.empty()) return false;
+			newFogBindless = ctx.CreateBindlessImage(newFogSampled, ImageLayout::DepthReadOnlyOptimal);
+			if (newFogBindless.empty()) return false;
+			newFogAttachmentLogical = rg.AddExternalImageView(newFogAttachment, desc.format, "fog depth attachment");
+			newFogLogical = rg.AddExternalImageView(newFogSampled, desc.format, "fog depth sampled");
+			if (newFogAttachmentLogical.empty() || newFogLogical.empty()) return false;
 
-			ImageViewCreateInfo fogAttachmentCI{};
-			fogAttachmentCI.viewType = ImageViewType::View2D;
-			fogAttachmentCI.format = Format::Undefined; // inherit
-			fogAttachmentCI.subresourceRange = {
-				.aspect = ImageAspect::Depth,
-				.baseMipLevel = 0,
-				.mipLevelCount = 1,
-				.baseArrayLayer = 0,
-				.arrayLayerCount = 1,
-			};
-			fogAttachmentCI.name = "volumetric shadow attachment";
-
-			newFogAttachment = ctx.CreateImageView(newFogImage, fogAttachmentCI);
-			if (newFogAttachment.empty())
-				return false;
-
-			ImageViewCreateInfo fogSampledCI{};
-			fogSampledCI.viewType = ImageViewType::View2D;
-			fogSampledCI.format = Format::Undefined; // inherit
-			fogSampledCI.subresourceRange = {
-				.aspect = ImageAspect::Depth,
-				.baseMipLevel = 0,
-				.mipLevelCount = 1,
-				.baseArrayLayer = 0,
-				.arrayLayerCount = 1,
-			};
-			fogSampledCI.name = "volumetric shadow sampled";
-
-			newFogSampled = ctx.CreateImageView(newFogImage, fogSampledCI);
-			if (newFogSampled.empty())
-				return false;
-
-			newFogBindless = ctx.CreateBindlessImage(newFogSampled,
-				ImageLayout::DepthReadOnlyOptimal);
-			if (newFogBindless.empty())
-				return false;
-
-			newFogLogical = rg.AddExternalImageView(newFogSampled, desc.format,
-				"volumetricShadowMapView");
-			if (newFogLogical.empty())
-				return false;
+			// A single R32F image with the complete mip chain. Mip 0 is
+			// copied from D32 by SPD; all further mips use MIN reduction.
+			newFogMipCount = CalcMipLevels(fogTile, kFogShadowMaxMips);
+			ImageCreateInfo pci{};
+			pci.format = Format::R32_Float;
+			pci.extent = { fogTile.width, fogTile.height, 1 };
+			pci.mipLevels = newFogMipCount;
+			pci.arrayLayers = 1;
+			pci.usage = ImageUsage::Storage | ImageUsage::Sampled;
+			pci.name = "volumetricShadowSPD";
+			newFogPyramidImage = ctx.CreateImage(pci, nullptr);
+			if (newFogPyramidImage.empty()) return false;
+			ImageViewCreateInfo vci{};
+			vci.viewType = ImageViewType::View2D;
+			vci.format = Format::Undefined;
+			vci.subresourceRange = { ImageAspect::Color, 0, newFogMipCount, 0, 1 };
+			vci.name = "volumetric shadow SPD full chain";
+			newFogPyramidView = ctx.CreateImageView(newFogPyramidImage, vci);
+			if (newFogPyramidView.empty()) return false;
+			// This full-range view is sampled only AFTER the SPD compute
+			// writes. SetInputImages transitions it to ShaderReadOnlyOptimal;
+			// the storage-only per-mip descriptors below remain General.
+			newFogPyramidBindless = ctx.CreateBindlessImage(
+				newFogPyramidView, ImageLayout::ShaderReadOnlyOptimal);
+			if (newFogPyramidBindless.empty()) return false;
+			newFogPyramidLogical = rg.AddExternalImageView(newFogPyramidView, Format::R32_Float, "fog SPD sampled");
+			if (newFogPyramidLogical.empty()) return false;
+			for (uint32_t mip = 0; mip < newFogMipCount; ++mip) {
+				vci.subresourceRange.baseMipLevel = mip;
+				vci.subresourceRange.mipLevelCount = 1;
+				vci.name = "volumetric shadow SPD mip";
+				auto view = ctx.CreateImageView(newFogPyramidImage, vci);
+				if (view.empty()) return false;
+				auto bindless = ctx.CreateBindlessImage(view, ImageLayout::General);
+				if (bindless.empty()) return false;
+				auto logical = rg.AddExternalImageView(view, Format::R32_Float, "fog SPD mip");
+				if (logical.empty()) return false;
+				newFogMipViews.push_back(std::move(view));
+				newFogMipBindless.push_back(std::move(bindless));
+				newFogMipLogicals.push_back(logical);
+			}
+			const size_t counterBytes = size_t(kFogSpdCounterStride) * limits::MaxFramesInFlight;
+			newFogSpdCounter = ctx.CreateBuffer(counterBytes, BufferType_Storage, "fog SPD counters");
+			if (newFogSpdCounter.empty()) return false;
+			std::vector<uint8_t> zeros(counterBytes, 0);
+			ctx.UploadDataToBuffer(newFogSpdCounter, zeros.data(), zeros.size(),
+				PipelineStage(PipelineStageBit_Compute),
+				AccessFlags::ShaderRead | AccessFlags::ShaderWrite);
+			newFogSpdCounterLogical = rg.AddExternalBuffer(newFogSpdCounter, "fog SPD counters");
+			if (newFogSpdCounterLogical.empty()) return false;
 		}
-
+		// THE COMMIT: every resource of both atlases is in hand — publish
+		// them together (the pre-commit state never carries a half atlas,
+		// and the failure paths above left only Holder locals to free).
 		image = std::move(newImage);
 		attachmentView = std::move(newAttachment);
 		sampledView = std::move(newSampled);
@@ -366,7 +456,18 @@ struct CascadedShadowAtlas {
 		fogAttachmentView = std::move(newFogAttachment);
 		fogSampledView = std::move(newFogSampled);
 		fogBindless = std::move(newFogBindless);
+		fogAttachmentLogical = newFogAttachmentLogical;
 		fogLogicalView = newFogLogical;
+		fogPyramidImage = std::move(newFogPyramidImage);
+		fogPyramidView = std::move(newFogPyramidView);
+		fogPyramidBindless = std::move(newFogPyramidBindless);
+		fogPyramidLogical = newFogPyramidLogical;
+		fogMipViews = std::move(newFogMipViews);
+		fogMipBindless = std::move(newFogMipBindless);
+		fogMipLogicals = std::move(newFogMipLogicals);
+		fogMipCount = newFogMipCount;
+		fogSpdCounter = std::move(newFogSpdCounter);
+		fogSpdCounterLogical = newFogSpdCounterLogical;
 		gridExtent = grid;
 		tileExtent = { desc.cascadeResolution, desc.cascadeResolution };
 		fogTileExtent = fogTile;
@@ -380,17 +481,17 @@ struct CascadedShadowAtlas {
 	// Also internalizes EnsureShaders – one call keeps resources + program valid.
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
 		const char* vsPath = kCascadedShadowVsPath) {
-		const Extent2D wantFog = (desc.fogShadowResolution > 0)
-			? Extent2D{ std::max(1u, desc.fogShadowResolution),
-				std::max(1u, desc.fogShadowResolution) }
-			: Extent2D{ 0, 0 };
+		if (desc.fogShadowResolution > (1u << (kFogShadowMaxMips - 1u))) return false;
+		const uint32_t fogRes = FogShadowPaddedResolution(desc.fogShadowResolution);
+		const Extent2D wantFog{ fogRes, fogRes };
 		// The fog atlas's handles must agree with the wanted extent (the
 		// belt-and-braces twin of the extent compare - a half-created
 		// state can never masquerade as valid).
 		const bool fogHandlesOk = (wantFog.width == 0)
 			? (fogImage.empty() && fogLogicalView.empty())
 			: (!fogImage.empty() && !fogBindless.empty()
-				&& !fogLogicalView.empty());
+				&& !fogLogicalView.empty() && !fogPyramidLogical.empty()
+				&& fogMipCount == CalcMipLevels(wantFog, kFogShadowMaxMips));
 		if (Valid()
 			&& fogHandlesOk
 			&& cascadeCount == desc.cascadeCount
@@ -573,17 +674,59 @@ struct CascadedShadowAtlas {
 		const char* name = "VolumetricShadow") const {
 		assert(Valid());
 		assert(fogTileExtent.width != 0);
-		assert(!fogLogicalView.empty());
+		assert(!fogAttachmentLogical.empty());
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(0, 0)
 			.SetExtent(fogTileExtent)
 			.SetDepth(
-				fogLogicalView,
+				fogAttachmentLogical,
 				AttachmentLoadOp::Clear,
 				AttachmentStoreOp::Store,
 				ClearDepthStencil(1.0f, 0));
 		return pass;
 	}
+
+	// SPD build after the ONE shadow-depth raster. The graph sees D32
+	// producer -> compute reader -> R32F writer -> volumetric reader.
+	RenderPass& AddVolumetricShadowSpdPass(RenderGraph& rg, ResourceManager& ctx,
+		uint32_t frameIndex, const char* name = "VolumetricShadowSPD") const {
+		assert(fogSpdProgram.shaderCount && fogMipCount && !fogLogicalView.empty());
+		auto& pass = rg.AddComputePass(name);
+		ImageSyncRequest src{};
+		src.barrierMasks.accessMask = AccessFlags::ShaderRead;
+		src.barrierMasks.stageMask = PipelineStageBit_Compute;
+		src.layout = ImageLayout::DepthReadOnlyOptimal;
+		pass.AddImageHint(fogLogicalView, src);
+		ImageSyncRequest dst{};
+		dst.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+		dst.barrierMasks.stageMask = PipelineStageBit_Compute;
+		dst.layout = ImageLayout::General;
+		for (auto v : fogMipLogicals) pass.AddImageHint(v, dst);
+		BufferSyncRequest counter{};
+		counter.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
+		counter.barrierMasks.stageMask = PipelineStageBit_Compute;
+		pass.AddBufferHint(fogSpdCounterLogical, counter);
+		FogShadowSpdPush push{};
+		push.depthTextureIndex = ctx.GetBindlessIndex(fogBindless);
+		for (uint32_t i = 0; i < fogMipCount; ++i)
+			push.mipIndices[i] = ctx.GetBindlessIndex(fogMipBindless[i]);
+		push.width = fogTileExtent.width;
+		push.height = fogTileExtent.height;
+		push.mipCount = fogMipCount;
+		const uint32_t gx = (push.width + 63u) / 64u;
+		const uint32_t gy = (push.height + 63u) / 64u;
+		push.groupCount = gx * gy;
+		push.counter = ctx.GetBufferDeviceAddress(fogSpdCounter)
+			+ uint64_t(frameIndex % limits::MaxFramesInFlight) * kFogSpdCounterStride;
+		ShaderProgram prog = fogSpdProgram;
+		pass.SetRecordingFunc([push, prog, gx, gy](CommandBuffer& cmd) mutable {
+			cmd.BindComputePipeline(prog);
+			cmd.PushConstants(0, sizeof(FogShadowSpdPush), &push, ShaderStage::Compute);
+			cmd.Dispatch(gx, gy, 1);
+		});
+		return pass;
+	}
+
 };
 
 } // namespace smvk
