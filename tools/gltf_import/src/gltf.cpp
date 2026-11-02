@@ -2895,6 +2895,7 @@ size_t BuildFromMeshAsset(
 			}
 		}
 		smvk::TextureHandle h;
+		bool streamingSourceStashed = false;
 		if (cluster.IsOfflineMode()) {
 			h = smvk::TextureHandle::Mint(cluster.AllocOfflineTextureId());
 		}
@@ -2903,6 +2904,7 @@ size_t BuildFromMeshAsset(
 		}
 		else if (streamer && !identity.empty()) {
 			cluster.SetTextureSource(identity, std::move(ktx));
+			streamingSourceStashed = true;
 			const std::vector<uint8_t>* stored =
 				cluster.GetTextureSource(identity);
 			if (!stored || stored->empty())
@@ -2923,13 +2925,13 @@ size_t BuildFromMeshAsset(
 			cluster.textures.create(std::move(holder));
 		}
 		cluster.RegisterTextureUri(identity, h);
-		// Stash unconditionally (offline mode included): the pak serializer
-		// embeds these bytes, and the CLI offline cluster is built fresh from
-		// the artifact - nothing else stashes them (the editor path has
-		// them from its import session). Skipping the stash in offline mode
-		// made every CLI cook fail at serialize with "missing embedded
-		// .ktx2 source".
-		cluster.SetTextureSource(identity, std::move(ktx));
+		// Offline cooking and full-resident loads still need the source
+		// stashed for serialization. The streaming path already moved ktx
+		// into the cluster and registered a borrowed pointer to it: stashing
+		// the moved-from vector again would free that payload, causing
+		// KTX2 re-decode failures and a possible access violation.
+		if (!streamingSourceStashed)
+			cluster.SetTextureSource(identity, std::move(ktx));
 		return h;
 	};
 
