@@ -1631,6 +1631,25 @@ bool SerializeClusters(
 					static_cast<uint32_t>(roomRows.size());
 		}
 
+		// v21 TRIGGERS: dense node, enabled/once flags, string tag.
+		{
+			std::vector<const tour::scene::TriggerVolumeRow*> rows;
+			for (const auto& row : cluster.scene.tables.triggerVolumes) {
+				if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
+					return fail("scene trigger row references retired node");
+				rows.push_back(&row);
+			}
+			std::sort(rows.begin(), rows.end(), [&](const auto* a, const auto* b) {
+				return slotToDense[a->node] < slotToDense[b->node];
+			});
+			PutU32(blob, uint32_t(rows.size()));
+			for (const auto* row : rows) {
+				PutU32(blob, slotToDense[row->node]);
+				PutU32(blob, (row->trigger.enabled ? 1u : 0u)
+					| (row->trigger.once ? 2u : 0u));
+				PutStr(blob, row->trigger.tag);
+			}
+		}
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
 			return fail("scene blob rejected");
@@ -2286,6 +2305,24 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			}
 			if (!c.ok)
 				return fail("truncated scene audio-room section");
+		}
+		// v21 triggers — always written, even when empty.
+		if (c.off < c.img.size()) {
+			const uint32_t count = c.u32();
+			if (!c.ok || count > 1024 * 1024)
+				return fail("bad scene trigger section");
+			for (uint32_t i = 0; i < count; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t flags = c.u32();
+				const std::string tag = c.str();
+				if (!c.ok || node >= nodeCount || tag.size() > 4096)
+					return fail("bad scene trigger record");
+				tour::scene::SceneTriggerVolume trigger{};
+				trigger.enabled = (flags & 1u) != 0;
+				trigger.once = (flags & 2u) != 0;
+				trigger.tag = tag;
+				scene.tables.triggerVolumes.push_back({ node, std::move(trigger) });
+			}
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");
