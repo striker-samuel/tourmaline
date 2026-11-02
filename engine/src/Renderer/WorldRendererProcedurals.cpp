@@ -248,7 +248,7 @@ smvk::MaterialCreateInfo FixtureMaterial(int shape) {
 // Queued by ImGui during the last frame. Rebuild only at the next frame
 // boundary, before the rendergraph records any view of the new world.
 void WorldRenderer::ApplyRuntimeProceduralRequest() {
-    if (m_runtimeProcRequest == 0 || !m_worldOwned || !m_world
+    if (m_runtimeProcRequest == 0 || m_worldOwned.get() == nullptr || !m_world
         || !m_context || !m_rendergraph) {
         m_runtimeProcRequest = 0;
         return;
@@ -358,7 +358,7 @@ void WorldRenderer::DrawRuntimeProceduralsTab() {
     }
     if (m_runtimeProcShape == 5)
         ImGui::TextDisabled("Solid strands, not alpha-tested hair cards.");
-    const bool canSpawn = m_worldOwned && m_world;
+    const bool canSpawn = m_worldOwned.get() != nullptr && m_world != nullptr;
     ImGui::BeginDisabled(!canSpawn);
     if (ImGui::Button("Spawn / replace fixture")) {
         m_runtimeProcOldMesh = m_runtimeProcMesh;
