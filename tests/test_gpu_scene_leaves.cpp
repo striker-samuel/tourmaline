@@ -116,7 +116,8 @@ void CheckMembership() {
     assert(leaves.LeafCount() == 1);
     SourceRecord c = a;
     c.instance = {102, 1, 1};
-    assert(source.Reconcile(std::array<SourceRecord,2>{b,c}, db).created == 1);
+    const std::array<SourceRecord, 2> afterReload{b, c};
+    assert(source.Reconcile(afterReload, db).created == 1);
     const Id cId = source.Find(c.instance);
     assert(cId && cId.slot == aId.slot && cId.generation != aId.generation);
     Apply(source, leaves, db);

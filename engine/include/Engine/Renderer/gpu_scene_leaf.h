@@ -218,7 +218,7 @@ private:
 
         // Incomplete source mesh bounds MUST disable future whole-leaf
         // frustum rejection. A false negative here would drop every member.
-        bool complete = true;
+        bool complete = cell.x != INT64_MIN; // sentinel must never be culled
         bool haveBounds = false;
         glm::dvec3 mn(0.0), mx(0.0);
         for (InstanceId id : state.members) {
