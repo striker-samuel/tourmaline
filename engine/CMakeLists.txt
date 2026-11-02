@@ -152,6 +152,33 @@ if(SHADER_DEBUG_INFO_ON)
     target_compile_definitions(engine PRIVATE TOURMALINE_SHADER_DEBUG_INFO=1)
 endif()
 
+# Proprietary NVIDIA SDK is installed locally, not vendored or packaged.
+option(TOURMALINE_AFTERMATH_SDK "Private Aftermath SDK crash capture" OFF)
+if(TOURMALINE_AFTERMATH_SDK)
+    if(NOT WIN32 OR NOT TOURMALINE_BUILD_PROFILE STREQUAL "diagnostics")
+        message(FATAL_ERROR "Aftermath SDK requires the private Windows diagnostics profile")
+    endif()
+    set(TOURMALINE_AFTERMATH_SDK_ROOT "" CACHE PATH "Local Nsight Aftermath SDK root")
+    find_path(AFTERMATH_INCLUDE_DIR GFSDK_Aftermath_GpuCrashDump.h
+        HINTS "${TOURMALINE_AFTERMATH_SDK_ROOT}" PATH_SUFFIXES include)
+    find_library(AFTERMATH_LIBRARY NAMES GFSDK_Aftermath_Lib.x64
+        HINTS "${TOURMALINE_AFTERMATH_SDK_ROOT}" PATH_SUFFIXES lib/x64 lib)
+    if(NOT AFTERMATH_INCLUDE_DIR OR NOT AFTERMATH_LIBRARY)
+        message(FATAL_ERROR "Missing Aftermath SDK; set TOURMALINE_AFTERMATH_SDK_ROOT")
+    endif()
+    target_include_directories(engine PRIVATE "${AFTERMATH_INCLUDE_DIR}")
+    target_link_libraries(engine PRIVATE "${AFTERMATH_LIBRARY}")
+    target_compile_definitions(engine PRIVATE TOURMALINE_USE_AFTERMATH_SDK=1)
+    find_file(AFTERMATH_DLL GFSDK_Aftermath_Lib.x64.dll
+        HINTS "${TOURMALINE_AFTERMATH_SDK_ROOT}" PATH_SUFFIXES lib/x64 bin/x64 bin)
+    if(NOT AFTERMATH_DLL)
+        message(FATAL_ERROR "Missing Aftermath SDK runtime DLL")
+    endif()
+    add_custom_command(TARGET engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${AFTERMATH_DLL}" "${TOURMALINE_BINARY_DIR}")
+endif()
+
 target_link_libraries(engine
     PUBLIC
         SDL3::SDL3
