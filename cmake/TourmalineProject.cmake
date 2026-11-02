@@ -123,19 +123,23 @@ function(tourmaline_attach_project TARGET NAME)
 			"tourmaline_attach_project(${TARGET}, ${NAME}): "
 			"tourmaline_add_project(${NAME}) was not called")
 	endif()
-	# Declare the header as a source of the consuming target so CMake IDE
-	# integrations show it even before the first ids build creates it.
-	# It is a generated header, not a translation unit to compile.
+	# IDE hint, not an OS read-only attribute: Visual Studio/CMake users
+	# should see a GENERATED header in its own group. Do not set the file
+	# read-only: Git checkout and the generator must be able to replace it.
 	set_source_files_properties("${header}" PROPERTIES
 		GENERATED TRUE HEADER_FILE_ONLY TRUE)
 	target_sources(${TARGET} PRIVATE "${header}")
-	source_group("Project" FILES "${header}")
+	source_group("Generated Catalogs" FILES "${header}")
 	target_include_directories(${TARGET} PRIVATE "${include_dir}")
 	# The publish dir = the consuming exe's dir (where <Name>_paks
 	# lands the paks and the runtime loads them exe-relative).
 	set(TP_PAK_DIR "$<TARGET_FILE_DIR:${TARGET}>")
 
 	if(NOT TARGET ${NAME}_ids)
+		# This ALWAYS-RUN target repairs *manual edits* to a checked-in
+		# project.h before the consuming game compiles. The emitter is
+		# authoritative; when already byte-identical, it keeps mtime so
+		# unchanged game code is not recompiled needlessly.
 		# The generation runs on EVERY build (a custom target's command
 		# is never skipped): a depfile could not see a NEWLY CREATED
 		# file matching a recipe glob (it was absent when the deps were
