@@ -24,6 +24,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cassert>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -98,6 +99,15 @@ inline std::vector<float> ComputeCascadeSplits(
 inline constexpr const char* kCascadedShadowVsPath = "content/shaders/shadow.vert.hlsl.spv";
 inline constexpr const char* kFogShadowSpdCsPath = "content/shaders/volumetric_shadow_spd.cs.hlsl.spv";
 static constexpr uint32_t kFogShadowMaxMips = 16;
+
+// The depth atlas is a square power-of-two image. Real mip images floor
+// odd dimensions, dropping their unpaired edge texels under a 2x2
+// reduction. Rounding the raster target UP before rendering means the
+// single-dispatch SPD covers every caster down to the 1x1 tail.
+// 2^30 is the largest valid input for bit_ceil on a uint32_t.
+inline uint32_t FogShadowPaddedResolution(uint32_t requested) {
+	return requested ? std::bit_ceil(requested) : 0u;
+}
 static constexpr uint32_t kFogSpdCounterStride = 256;
 struct FogShadowSpdPush {
 	uint32_t depthTextureIndex = UINT32_MAX;
@@ -269,7 +279,7 @@ struct CascadedShadowAtlas {
 		const char* vsPath = kCascadedShadowVsPath) {
 		if (desc.cascadeCount == 0 || desc.cascadeCount > kMaxCascades)
 			return false;
-		if (desc.cascadeResolution == 0)
+		if (desc.cascadeResolution == 0 || desc.fogShadowResolution > (1u << 30))
 			return false;
 
 		// The main atlas is EXACTLY the cascade grid (the pre-volumetric
@@ -336,8 +346,8 @@ struct CascadedShadowAtlas {
 		// graph view. All-or-nothing like the main views above (a failed
 		// fog atlas fails Create - the caller logs and disables the
 		// shadow passes; no half-created state survives).
-		const Extent2D fogTile = desc.fogShadowResolution
-			? Extent2D{ desc.fogShadowResolution, desc.fogShadowResolution } : Extent2D{ 0, 0 };
+		const uint32_t fogRes = FogShadowPaddedResolution(desc.fogShadowResolution);
+		const Extent2D fogTile{ fogRes, fogRes };
 		if (fogTile.width != 0) {
 			ImageCreateInfo fogCI{};
 			fogCI.format = desc.format;
@@ -383,7 +393,11 @@ struct CascadedShadowAtlas {
 			vci.name = "volumetric shadow SPD full chain";
 			fogPyramidView = ctx.CreateImageView(fogPyramidImage, vci);
 			if (fogPyramidView.empty()) return false;
-			fogPyramidBindless = ctx.CreateBindlessImage(fogPyramidView, ImageLayout::General);
+			// This full-range view is sampled only AFTER the SPD compute
+			// writes. SetInputImages transitions it to ShaderReadOnlyOptimal;
+			// the storage-only per-mip descriptors below remain General.
+			fogPyramidBindless = ctx.CreateBindlessImage(
+				fogPyramidView, ImageLayout::ShaderReadOnlyOptimal);
 			if (fogPyramidBindless.empty()) return false;
 			fogPyramidLogical = rg.AddExternalImageView(fogPyramidView, Format::R32_Float, "fog SPD sampled");
 			if (fogPyramidLogical.empty()) return false;
@@ -424,10 +438,9 @@ struct CascadedShadowAtlas {
 	// Also internalizes EnsureShaders – one call keeps resources + program valid.
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
 		const char* vsPath = kCascadedShadowVsPath) {
-		const Extent2D wantFog = (desc.fogShadowResolution > 0)
-			? Extent2D{ std::max(1u, desc.fogShadowResolution),
-				std::max(1u, desc.fogShadowResolution) }
-			: Extent2D{ 0, 0 };
+		if (desc.fogShadowResolution > (1u << 30)) return false;
+		const uint32_t fogRes = FogShadowPaddedResolution(desc.fogShadowResolution);
+		const Extent2D wantFog{ fogRes, fogRes };
 		// The fog atlas's handles must agree with the wanted extent (the
 		// belt-and-braces twin of the extent compare - a half-created
 		// state can never masquerade as valid).
