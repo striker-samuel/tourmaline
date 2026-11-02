@@ -62,6 +62,48 @@ glm::mat4 MakeReversedZProjRH(float fovY_radians, float aspectWbyH, float zNear,
 		ResolveLookAtUp(eye, target, preferredUp));
 }
 
+// Camera continuity is a per-RECORDED-frame property, not a property of
+// individual input updates. A cut invalidates reprojection/temporal history;
+// continuous movement must leave it intact. Call RequestCut() for authored
+// camera switches or teleports below the automatic thresholds.
+enum class CameraChange { Initial, Continuous, Cut };
+
+struct CameraFramePose {
+	glm::vec3 position{ 0.0f };
+	glm::quat orientation{ 1.0f, 0.0f, 0.0f, 0.0f };
+	float fovYDegrees = 45.0f;
+	float nearClip = 0.01f;
+};
+
+class CameraChangeTracker {
+public:
+	void RequestCut() { cutPending_ = true; }
+
+	[[nodiscard]] CameraChange Observe(const CameraFramePose& pose) {
+		// Quaternion sign does not change orientation. Compare the shortest
+		// rotation, not Euler components (which wrap at 180/360 degrees).
+		const bool jumped = valid_ && (
+			glm::distance(pose.position, previous_.position) > 5.0f ||
+			glm::abs(glm::dot(glm::normalize(pose.orientation),
+				glm::normalize(previous_.orientation))) < 0.9238795f || // 45 degrees
+			glm::abs(pose.fovYDegrees - previous_.fovYDegrees) > 5.0f ||
+			glm::abs(pose.nearClip - previous_.nearClip)
+				> 0.01f * std::max(previous_.nearClip, 0.001f));
+		const CameraChange change = (cutPending_ || jumped)
+			? CameraChange::Cut
+			: (valid_ ? CameraChange::Continuous : CameraChange::Initial);
+		previous_ = pose;
+		valid_ = true;
+		cutPending_ = false;
+		return change;
+	}
+
+private:
+	CameraFramePose previous_{};
+	bool valid_ = false;
+	bool cutPending_ = false;
+};
+
 class CameraPositionerInterface
 {
 public:
