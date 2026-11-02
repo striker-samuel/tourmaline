@@ -43,6 +43,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
+#include "editor_asset_inspect.h"
 #include "editor_asset_ops.h" // browser delete planning (pending plan member)
 #include "editor_fibers.h" // EDITOR-ONLY job pool (see editor_fibers.cpp)
 #include <Engine/Vfs/vfs.h>
@@ -2157,12 +2158,16 @@ private:
 	// the Inspector when m_assetsSel is a .material/.geometry file; empty
 	// selection draws nothing.
 	void DrawAssetReadonlyPage();
+	void DrawAssetGenericPage(); // folders, text and binary fallback
 	// IMPORTABLE-SOURCE page (a raw image selected in the browser, not
 	// yet imported): probe + the "Import as .texture" button (the wrap
 	// carries the import settings from here on).
 	void DrawImportableTexturePage();
 	// Asset inspection cache (loaded on selection change, never per
 	// frame): the inspected file + its loaded content.
+	// Generic previews are cached per selection and capped at 64 KiB.
+	std::string m_assetGenericPath;
+	BrowserFilePreview m_assetGenericPreview;
 	std::string m_assetInspectPath;
 	std::optional<smvk::assets::MaterialAsset> m_assetInspectMat;
 	std::optional<smvk::assets::MeshAsset> m_assetInspectMesh;
