@@ -108,9 +108,12 @@ struct CascadedShadowAtlas {
 	// view. Empty handles = no volumetric tile (fogTileExtent 0x0).
 	Holder<ImageHandle> fogImage;
 	Holder<ImageViewHandle> fogAttachmentView;
-	Holder<ImageViewHandle> fogSampledView;
+	Holder<ImageViewHandle> fogCoarseAttachmentView; // mip 1 depth target
+	Holder<ImageViewHandle> fogSampledView; // both mips for explicit LOD sampling
 	Holder<BindlessImageHandle> fogBindless;
-	LogicalImageViewHandle fogLogicalView;
+	LogicalImageViewHandle fogAttachmentLogical;
+	LogicalImageViewHandle fogCoarseLogical;
+	LogicalImageViewHandle fogLogicalView; // sampled full mip range
 
 	// Default depth-only program (shadow.vert, mainVS). Created by
 	// EnsureShaders/Create/Ensure so apps don't own shadow modules.
@@ -201,9 +204,16 @@ struct CascadedShadowAtlas {
 		image = {};
 		if (!fogLogicalView.empty())
 			rg.FreeImageView(fogLogicalView);
+		if (!fogAttachmentLogical.empty())
+			rg.FreeImageView(fogAttachmentLogical);
+		if (!fogCoarseLogical.empty())
+			rg.FreeImageView(fogCoarseLogical);
 		fogLogicalView = {};
+		fogAttachmentLogical = {};
+		fogCoarseLogical = {};
 		fogBindless = {};
 		fogSampledView = {};
+		fogCoarseAttachmentView = {};
 		fogAttachmentView = {};
 		fogImage = {};
 		gridExtent = { 0, 0 };
@@ -289,8 +299,11 @@ struct CascadedShadowAtlas {
 		// shadow passes; no half-created state survives).
 		Holder<ImageHandle> newFogImage;
 		Holder<ImageViewHandle> newFogAttachment;
+		Holder<ImageViewHandle> newFogCoarseAttachment;
 		Holder<ImageViewHandle> newFogSampled;
 		Holder<BindlessImageHandle> newFogBindless;
+		LogicalImageViewHandle newFogAttachmentLogical;
+		LogicalImageViewHandle newFogCoarseLogical;
 		LogicalImageViewHandle newFogLogical;
 		const Extent2D fogTile = (desc.fogShadowResolution > 0)
 			? Extent2D{ std::max(1u, desc.fogShadowResolution),
@@ -300,7 +313,10 @@ struct CascadedShadowAtlas {
 			ImageCreateInfo fogCI{};
 			fogCI.format = desc.format;
 			fogCI.extent = { fogTile.width, fogTile.height, 1u };
-			fogCI.mipLevels = 1u;
+			// Two independently rasterized depth mips: no D32 blit/filter
+			// feature requirement (Vulkan/D3D12), and mip 1 supplies a
+			// genuinely lower-resolution volumetric shadow lookup.
+			fogCI.mipLevels = fogTile.width > 1 && fogTile.height > 1 ? 2u : 1u;
 			fogCI.arrayLayers = 1u;
 			fogCI.usage = ImageUsage::DepthStencilAttachment | ImageUsage::Sampled;
 			// TransferSrc: debug stage dumps (TOURMALINE_FOG_TILE_DUMP) —
@@ -329,6 +345,14 @@ struct CascadedShadowAtlas {
 			newFogAttachment = ctx.CreateImageView(newFogImage, fogAttachmentCI);
 			if (newFogAttachment.empty())
 				return false;
+			if (fogCI.mipLevels > 1) {
+				ImageViewCreateInfo coarseCI = fogAttachmentCI;
+				coarseCI.subresourceRange.baseMipLevel = 1;
+				coarseCI.name = "volumetric shadow coarse mip attachment";
+				newFogCoarseAttachment = ctx.CreateImageView(newFogImage, coarseCI);
+				if (newFogCoarseAttachment.empty())
+					return false;
+			}
 
 			ImageViewCreateInfo fogSampledCI{};
 			fogSampledCI.viewType = ImageViewType::View2D;
@@ -336,7 +360,7 @@ struct CascadedShadowAtlas {
 			fogSampledCI.subresourceRange = {
 				.aspect = ImageAspect::Depth,
 				.baseMipLevel = 0,
-				.mipLevelCount = 1,
+				.mipLevelCount = fogCI.mipLevels,
 				.baseArrayLayer = 0,
 				.arrayLayerCount = 1,
 			};
@@ -351,6 +375,16 @@ struct CascadedShadowAtlas {
 			if (newFogBindless.empty())
 				return false;
 
+			newFogAttachmentLogical = rg.AddExternalImageView(
+				newFogAttachment, desc.format, "volumetricShadowAttachmentView");
+			if (newFogAttachmentLogical.empty())
+				return false;
+			if (!newFogCoarseAttachment.empty()) {
+				newFogCoarseLogical = rg.AddExternalImageView(
+					newFogCoarseAttachment, desc.format, "volumetricShadowMip1View");
+				if (newFogCoarseLogical.empty())
+					return false;
+			}
 			newFogLogical = rg.AddExternalImageView(newFogSampled, desc.format,
 				"volumetricShadowMapView");
 			if (newFogLogical.empty())
@@ -364,8 +398,11 @@ struct CascadedShadowAtlas {
 		logicalView = newLogical;
 		fogImage = std::move(newFogImage);
 		fogAttachmentView = std::move(newFogAttachment);
+		fogCoarseAttachmentView = std::move(newFogCoarseAttachment);
 		fogSampledView = std::move(newFogSampled);
 		fogBindless = std::move(newFogBindless);
+		fogAttachmentLogical = newFogAttachmentLogical;
+		fogCoarseLogical = newFogCoarseLogical;
 		fogLogicalView = newFogLogical;
 		gridExtent = grid;
 		tileExtent = { desc.cascadeResolution, desc.cascadeResolution };
@@ -573,14 +610,32 @@ struct CascadedShadowAtlas {
 		const char* name = "VolumetricShadow") const {
 		assert(Valid());
 		assert(fogTileExtent.width != 0);
-		assert(!fogLogicalView.empty());
+		assert(!fogAttachmentLogical.empty());
 		RenderPass& pass = rg.AddPass(name);
 		pass.SetOffset(0, 0)
 			.SetExtent(fogTileExtent)
 			.SetDepth(
-				fogLogicalView,
+				fogAttachmentLogical,
 				AttachmentLoadOp::Clear,
 				AttachmentStoreOp::Store,
+				ClearDepthStencil(1.0f, 0));
+		return pass;
+	}
+
+	// Independently rasterize mip 1 from the SAME marked casters and VP.
+	// This avoids platform-dependent depth-image blits and creates a
+	// populated lower-resolution mip for the fog shader's SampleLevel(1).
+	// The rendergraph synchronizes both depth writes with the sampled
+	// full-mip view consumed by AddVolumetricPass.
+	RenderPass& AddVolumetricShadowMipPass(RenderGraph& rg,
+		const char* name = "VolumetricShadowMip1") const {
+		assert(!fogCoarseLogical.empty());
+		RenderPass& pass = rg.AddPass(name);
+		pass.SetOffset(0, 0)
+			.SetExtent({ std::max(1u, fogTileExtent.width >> 1),
+				std::max(1u, fogTileExtent.height >> 1) })
+			.SetDepth(fogCoarseLogical,
+				AttachmentLoadOp::Clear, AttachmentStoreOp::Store,
 				ClearDepthStencil(1.0f, 0));
 		return pass;
 	}
