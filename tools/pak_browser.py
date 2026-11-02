@@ -894,29 +894,50 @@ if HAVE_QT:
             self.dir_input.returnPressed.connect(self.list_union_dir)
 
         # -- mounts ---------------------------------------------------
-        def add_pak_mount(self, path: str):
-            try:
-                data = Path(path).read_bytes()
-            except OSError as ex:
-                QMessageBox.warning(self, "Open failed", f"{path}:\n{ex}")
-                return
-            pak = parse_pak(path, data)
+        def add_source(self, path: str):
+            if path.lower().endswith(".tapp"):
+                self.add_tapp_mount(path)
+            else:
+                self.add_pak_mount(path)
+
+        def add_pak_mount(self, path: str, manifest_source: str = "",
+                          select: bool = True):
+            pak = _read_pak(path)
             prio = len(self.mounts)
-            name = f"{Path(path).name} (pak p{prio})"
-            self.mounts.append(Mount(name, "pak", prio, pak))
-            if pak.error:
-                QMessageBox.warning(
-                    self, "Invalid pak", f"{path}:\n{pak.error}"
-                )
+            self.mounts.append(Mount(
+                f"{Path(path).name} (pak p{prio})", "pak", prio,
+                pak=pak, manifest_source=manifest_source))
+            if pak.error and not manifest_source:
+                QMessageBox.warning(self, "Invalid pak", f"{path}:\n{pak.error}")
+            if select:
+                self.refresh_mount_list()
+                self.mount_list.setCurrentRow(prio)
+
+        def add_tapp_mount(self, path: str):
+            try:
+                manifest = load_tapp(path)
+            except (OSError, UnicodeError) as exc:
+                manifest = TappFile(source=path, error=str(exc))
+            prio = len(self.mounts)
+            self.mounts.append(Mount(
+                f"{Path(path).name} (tapp)", "tapp", prio, tapp=manifest))
+            if manifest.error:
+                QMessageBox.warning(self, "Invalid .tapp", manifest.error)
+            else:
+                for name in manifest.paks:
+                    self.add_pak_mount(
+                        str(tapp_pak_path(manifest, name)),
+                        manifest_source=path, select=False)
             self.refresh_mount_list()
-            self.mount_list.setCurrentRow(len(self.mounts) - 1)
+            self.mount_list.setCurrentRow(prio)
 
         def on_open(self):
             paths, _ = QFileDialog.getOpenFileNames(
-                self, "Open .pak", "", "Pak files (*.pak);;All files (*)"
+                self, "Open Tourmaline packages", "",
+                "Tourmaline files (*.pak *.tapp);;All files (*)"
             )
-            for p in paths:
-                self.add_pak_mount(p)
+            for path in paths:
+                self.add_source(path)
 
         def on_loose(self):
             d = QFileDialog.getExistingDirectory(self, "Mount loose content dir")
@@ -932,7 +953,15 @@ if HAVE_QT:
         def on_remove(self):
             row = self.mount_list.currentRow()
             if 0 <= row < len(self.mounts):
-                del self.mounts[row]
+                source = self.mounts[row].tapp.source if self.mounts[row].tapp else ""
+                if source:
+                    self.mounts = [
+                        m for m in self.mounts
+                        if m.manifest_source != source
+                        and not (m.tapp and m.tapp.source == source)
+                    ]
+                else:
+                    del self.mounts[row]
                 self._renumber()
                 self.refresh_mount_list()
 
@@ -963,6 +992,9 @@ if HAVE_QT:
                     n = len(m.pak.entries) if m.pak and not m.pak.error else 0
                     ok = "OK" if m.pak and not m.pak.error else "INVALID"
                     self.mount_list.addItem(f"[p{m.priority}] pak {m.name} - {n} entries ({ok})")
+                elif m.kind == "tapp":
+                    state = "INVALID" if m.tapp and m.tapp.error else "manifest"
+                    self.mount_list.addItem(f"[p{m.priority}] tapp {m.name} ({state})")
                 else:
                     self.mount_list.addItem(f"[p{m.priority}] loose {m.loose_dir}")
             self.refresh_all()
@@ -989,6 +1021,28 @@ if HAVE_QT:
                     QLabel("all VFS paths (regular backends only)"),
                 )
                 self.statusBar().showMessage(f"loose {m.loose_dir}")
+                return
+            if m.kind == "tapp":
+                manifest = m.tapp
+                assert manifest is not None
+                rows = [
+                    ("file", manifest.source),
+                    ("format", f"appmanifest {manifest.version}"),
+                    ("entry", f"{manifest.entry_pak} / {manifest.entry_scene}"),
+                    ("paks", f"{len(manifest.paks)} in manifest order"),
+                ]
+                for name in manifest.paks:
+                    child = next((p for p in self.mounts if p.pak and
+                                  p.manifest_source == manifest.source and
+                                  p.pak.source == str(tapp_pak_path(manifest, name))), None)
+                    rows.append((name, (child.pak.error or "OK") if child else "missing"))
+                if manifest.error:
+                    rows.append(("INVALID", manifest.error))
+                for key, value in rows:
+                    label = QLabel(value)
+                    label.setWordWrap(True)
+                    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                    self.header_form.addRow(key, label)
                 return
             pak = m.pak
             assert pak is not None
