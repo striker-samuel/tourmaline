@@ -37,27 +37,30 @@
   test_content_registry.cpp (the base+mod+loose acceptance ladder).
 
 - **ProjectRuntime** (the session façade over the registry): owns the
-  manifest (the identity source — the .tapp compatibility lane) + ONE
-  ContentRegistry. `Asset(id)` returns the canonical ContentRecord
-  (kind byte + owner pak + logical path + the scene-name join);
-  `ReadAsset(id)` / `ReadAssetByPath(kind, path)` are the two
-  convergent byte forms (override-aware); `OpenPak`/
-  `AdoptPakBackend` adopt whole-image backends into the registry
-  (releasing the provider's pager); `OpenPakPager` is the explicit
-  pager accessor. `AddPakOverride`/`AddLooseOverride` register mod/
-  dev providers. `AttachCompiledCatalog` (row-level +
-  catalog-fingerprint checks) is the compiled-catalog gate project
-  hosts run. **THE DISCOVERY LANE**: `OpenDiscovered(pakPaths)` builds
-  the session from PAKS ALONE (no .tapp) — every pak joins through
-  its own "#ids" identity table (a legacy blob-less pak serves paths
-  only); the manifest stays EMPTY and `PakNames()` (the registry's
-  base providers, both lanes) replaces manifest-paks iteration
-  (ProjectScenes' adopt-or-open walks it). RunPakApp's `--project`
-  lane AND the viewer's MULTI-PAK lane (several `--pak`, or `--pak +
-  --scene <name>` — entry by cooked identity, DeployCheck-gated) both
-  build ONE shared session and load through the same
-  LoadProjectWorld path; the loose `content/` tree registers as an
-  override unless `--no-vfs`. The game element hook receives the
+  release pointer (the appmanifest 2 `.tapp` — `entry` + `[paks]`,
+  NOTHING else: the identity lives in the paks) + ONE ContentRegistry.
+  **ProjectRuntime::Load parses the pointer + DISCOVERS every listed
+  pak through its OWN "#ids" identity table** (strict — a listed pak
+  without its table fails the launch, recook). `Asset(id)` returns the
+  canonical ContentRecord (kind byte + owner pak + logical path + the
+  scene-name join); `ReadAsset(id)` / `ReadAssetByPath(kind, path)` /
+  `ReadAssetPath(path)` are the convergent byte forms (override-aware);
+  `OpenPak`/`AdoptPakBackend` adopt whole-image backends into the
+  registry (releasing the provider's pager); `OpenPakPager` is the
+  explicit pager accessor. `AddPakOverride`/`AddLooseOverride` register
+  mod/dev providers. `AttachCompiledCatalog` (the compiled catalog's
+  rows + fingerprint vs the REGISTRY's `RecordFingerprint()` — the
+  manifest's `[ids]` mirror + `catalog` line died with appmanifest 2)
+  is the compiled-catalog gate project hosts run. **THE DISCOVERY
+  LANE**: `OpenDiscovered(pakPaths)` builds the session from PAKS
+  ALONE (a legacy blob-less pak serves paths only); `PakNames()` (the
+  registry's base providers, both lanes) replaces manifest-paks
+  iteration (ProjectScenes' adopt-or-open walks it). RunPakApp's
+  `--project` lane AND the viewer's MULTI-PAK lane (several `--pak`,
+  or `--pak + --scene <name>` — entry by cooked identity,
+  DeployCheck-gated) both build ONE shared session and load through
+  the same LoadProjectWorld path; the loose `content/` tree registers
+  as an override unless `--no-vfs`. The game element hook receives the
   session (the audio runtime borrows it — no second package
   universe). The build appends the per-pak "#ids" blob post-cook
   (stable slots preserved; the publish digest covers it). The game
@@ -100,10 +103,11 @@
 - **ProjectScenes** (docs/project_scenes.md): the scene-INSTANCE layer —
   `LoadScene`/`LoadSceneAdditive`/`RemoveScene` by NUMERIC id over a
   live World (SceneHandle = 64-bit generational), the id→cooked-scene
-  join ([ids] scene rows carry the cooked NAME), and the
-  OWNERSHIP-AWARE prefetch (Prefetch/Release pins + the per-scene asset
-  registry; `RemoveScene`'s `releasedAssets` reports the dropped ids).
-  GPU-less tests drive it through the public `clusterLoader` seam.
+  join (the paks' identity-table scene rows carry the cooked NAME),
+  and the OWNERSHIP-AWARE prefetch (Prefetch/Release pins + the
+  per-scene asset registry; `RemoveScene`'s `releasedAssets` reports
+  the dropped ids). GPU-less tests drive it through the public
+  `clusterLoader` seam.
 
 - **AudioRuntime** (docs/audio_source.md): the scene-aware audio layer
   (an IAppElement) — clip cache keyed by sound id, emitter states keyed
@@ -119,7 +123,7 @@
   0x2xxx / meshes 0x3xxx / sounds 0x4xxx), and the cooked scene's v18
   audio section stores NUMERIC sound ids (the pak cooker's `--sound-id`
   map; a non-empty map with an unresolved referenced path FAILS the
-  cook). The appmanifest's kind gate is `scene|texture|mesh|sound`.
+  cook). The kinds gate on the SHARED catalog kind bytes.
 
 - **THE PAK CONTAINER IS SMP8** (the paged break — docs/pak_vnext.md is
   the format reference): per-entry `contentCrc` verified LAZILY at
@@ -463,7 +467,7 @@ bloom/tonemap/AA/UI → swapchain.
   baked GI SET naming its `.givolume` payload rows). The kind byte is
   APPENDED (the ABI never renumbers); spans resolver→IdRangeForKind→
   kind gate/strings→fingerprint folds→emitted namespace (`project::gi::*`)
-  →[ids] rows→`ReadAsset`. Pinned by `catalog.gi-*`.
+  →the paks' identity tables→`ReadAsset`. Pinned by `catalog.gi-*`.
 - **THE ASSET MANAGER FACADE** (`app/src/AssetManager.h/.cpp`):
   `LoadMesh(MeshKey)`/`LoadMeshes(ptr, count)` (raw pointer + count;
   nullptr valid ONLY with count 0; per-key dedup; per-pak grouping
@@ -559,10 +563,11 @@ binary packages — see `THIRD_PARTY_NOTICES.md`).
   Shader-kind blobs (SPIR-V magic validated at pack time); the content-id
   range is **0x5xxx**; the generated project.h carries
   `project::shaders::*` typed `ShaderKey` constants + `AssetKind::Shader`
-  = 4 (the ABI kind byte — appended, nothing renumbered); `.tapp` [ids]
-  rows take `kind shader`; `ProjectRuntime::ReadAsset` serves the raw
-  bytecode. The ENGINE-NATIVE set is build-owned — recipes never control
-  its inclusion. Unit-tested in test_project_pipeline.cpp (`shaders.*`).
+  = 4 (the ABI kind byte — appended, nothing renumbered); the paks'
+  identity tables carry the kind byte; `ProjectRuntime::ReadAsset`
+  serves the raw bytecode. The ENGINE-NATIVE set is build-owned —
+  recipes never control its inclusion. Unit-tested in
+  test_project_pipeline.cpp (`shaders.*`).
 
 ### The watched shader hot-reload service (dev)
 
@@ -776,10 +781,12 @@ checked-in samples/04_project_game project copied to a temp dir, cooked
 and published through the real `Project.exe build` CLI (the subprocess
 stage adapter — Cook/GiBaker/Pak spawn as on a contributor's machine),
 then the deployment halves headless: DeployCheck over every published
-pak, the deployed catalog fingerprint vs the runtime fold, every
-VFS-servable [ids] row read through its pak, and a scene load through
-the public clusterLoader seam. Compiling the sample's game exe is the
-build configs' job; its GPU launch stays a dev-side golden run.
+pak, the compiled catalog vs the registry's record fold, every
+byte-servable record read through its pak (the .tapp-free discovery
+lane proved against the release-pointer session), and a scene load
+through the public clusterLoader seam. Compiling the sample's game
+exe is the build configs' job; its GPU launch stays a dev-side golden
+run.
 
 `architecture_tests` is the NAMESPACE/RHI BOUNDARY LEAK ALARM (R1–R9,
 see "The namespace boundary invariant" above): every ctest run — local
