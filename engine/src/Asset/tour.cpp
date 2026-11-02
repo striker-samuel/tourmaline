@@ -145,17 +145,17 @@ static void WriteNodeToken(std::ostream& f, const Command& c) {
 // every attr verb.
 static void WriteRoomTarget(std::ostream& f, const Command& c) {
 	if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase
-			&& !c.text.empty()) {
+			 ) {
 		f << "-ref " << (c.node & ~kCreateAudioRoomRefBase)
 			<< " -owner " << c.text;
 	}
 	else if ((c.node & kCreateRefFamilyMask) == kCreateGiVolumeRefBase
-			&& !c.text.empty()) {
+			 ) {
 		f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
 			<< " -owner " << c.text;
 	}
 	else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase
-			&& !c.text.empty())
+			 )
 		f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 	else if (c.node != UINT32_MAX)
 		f << "-n " << c.node;
@@ -183,7 +183,9 @@ static bool IsGenericNodeVerb(Verb v) {
 		|| v == Verb::SetVisibility || v == Verb::Parent;
 }
 static bool IsAttrNodeVerb(Verb v) {
-	return v == Verb::AttachGiVolume || v == Verb::RemoveGiVolume
+	return v == Verb::AttachTriggerVolume || v == Verb::RemoveTriggerVolume
+		|| v == Verb::SetTriggerVolumeAttr
+		|| v == Verb::AttachGiVolume || v == Verb::RemoveGiVolume
 		|| v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
 		|| v == Verb::SetCubemapAttr || v == Verb::SetCamAttr
 		|| v == Verb::SetAudioAttr || v == Verb::AddAudioSound
@@ -564,6 +566,23 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		f << " -name " << Quote(c.text)
 			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
 			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
+		break;
+	}
+	case Verb::AttachTriggerVolume:
+	case Verb::RemoveTriggerVolume: {
+		f << (c.verb == Verb::AttachTriggerVolume
+			? "attachTriggerVolume " : "removeTriggerVolume ");
+		WriteRoomTarget(f, c);
+		break;
+	}
+	case Verb::SetTriggerVolumeAttr: {
+		f << "setTriggerVolumeAttr ";
+		WriteRoomTarget(f, c);
+		f << " -at " << c.text;
+		if (c.text == "tag")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
 		break;
 	}
 	case Verb::AttachGiVolume:
@@ -2794,6 +2813,58 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 		c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
 	}
+	else if (effVerb == "attachTriggerVolume" || effVerb == "removeTriggerVolume") {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
+				|| fl.hasRef != fl.hasOwner) {
+			err = "line " + std::to_string(lineNo)
+				+ ": trigger component needs -n, -uuid or -ref -owner";
+			return false;
+		}
+		c.verb = effVerb == "attachTriggerVolume"
+			? Verb::AttachTriggerVolume : Verb::RemoveTriggerVolume;
+		if (fl.hasRef) {
+			uint32_t base = 0;
+			if (fl.owner == "transform") base = kCreateTransformRefBase;
+			else if (fl.owner == "givolume") base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "audioRoom") base = kCreateAudioRoomRefBase;
+			else {
+				err = "line " + std::to_string(lineNo) + ": bad trigger owner";
+				return false;
+			}
+			c.node = base | fl.ref;
+			c.text = fl.owner;
+		} else {
+			c.node = fl.n;
+		}
+	}
+	else if (effVerb == "setTriggerVolumeAttr" && fl.hasAt
+			&& (fl.hasN || fl.hasRef || fl.hasUuid)) {
+		if (fl.at != "enabled" && fl.at != "once" && fl.at != "tag") {
+			err = "line " + std::to_string(lineNo) + ": bad trigger attr";
+			return false;
+		}
+		c.verb = Verb::SetTriggerVolumeAttr;
+		c.text = fl.at;
+		c.node = fl.hasRef
+			? ((fl.owner == "transform" ? kCreateTransformRefBase
+				: fl.owner == "audioRoom" ? kCreateAudioRoomRefBase
+				: kCreateGiVolumeRefBase) | fl.ref)
+			: fl.n;
+		if (!fl.hasV) {
+			err = "line " + std::to_string(lineNo) + ": trigger attr needs -v";
+			return false;
+		}
+		if (fl.at == "tag") {
+			if (fl.v.size() > 256) {
+				err = "line " + std::to_string(lineNo) + ": trigger tag too long";
+				return false;
+			}
+			c.name = fl.v;
+		} else if (!ParseFlagWord(fl.v, c.flag)) {
+			err = "line " + std::to_string(lineNo) + ": bad trigger bool";
+			return false;
+		}
+	}
 	else if (effVerb == "attachGiVolume" || effVerb == "removeGiVolume") {
 		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
 				|| fl.hasRef != fl.hasOwner) {
@@ -4207,6 +4278,9 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		createdAudioRooms.push_back(uint32_t(newId));
 		break;
 	}
+	case Verb::AttachTriggerVolume:
+	case Verb::RemoveTriggerVolume:
+	case Verb::SetTriggerVolumeAttr:
 	case Verb::AttachGiVolume:
 	case Verb::RemoveGiVolume: {
 		uint32_t target = 0;
@@ -4230,8 +4304,20 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		if (c.verb == Verb::AttachGiVolume)
 			SetGiVolume(scene, target, SceneGiVolume{});
-		else
+		else if (c.verb == Verb::RemoveGiVolume)
 			RemoveGiVolume(scene, target);
+		else if (c.verb == Verb::AttachTriggerVolume)
+			SetTriggerVolume(scene, target, SceneTriggerVolume{});
+		else if (c.verb == Verb::RemoveTriggerVolume)
+			RemoveTriggerVolume(scene, target);
+		else if (auto* row = FindTriggerVolume(scene, target)) {
+			if (c.text == "enabled") row->trigger.enabled = c.flag;
+			else if (c.text == "once") row->trigger.once = c.flag;
+			else if (c.text == "tag") row->trigger.tag = c.name;
+		} else {
+			if (err) *err = "tour: trigger attr on node without trigger";
+			if (!failCmd(c)) return false;
+		}
 		break;
 	}
 	case Verb::AttachAudioRoom:
