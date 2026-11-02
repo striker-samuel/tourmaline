@@ -61,6 +61,415 @@
         "TOURMALINE_AA": "off"
       },
       "frames": 120
+    },
+    {
+      "id": "bistro-fp-lights-off",
+      "label": "Bistro Forward+ baseline (crowd off)",
+      "subsystem": "forward+",
+      "notes": "Control for Forward+ light-crowd tests: no procedural lights, no expensive postprocessing, Forward+ tile cull retained. Compare with the 32/96-light scenarios on the same cooked Bistro pak.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,volumetric,contact,bloom,dof,particles"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "0"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-32",
+      "label": "Bistro Forward+ medium crowd (32)",
+      "subsystem": "forward+",
+      "notes": "Spawn 32 deterministic moving point lights; baseline effects disabled to isolate light-list work. Crowd uses the renderer's default world-origin center and 10 m spiral radius.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,volumetric,contact,bloom,dof,particles"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "32"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-masks-on",
+      "label": "Bistro Forward+ maximum crowd (96, masks on)",
+      "subsystem": "forward+",
+      "notes": "Spawn the renderer's maximum supported procedural crowd (96 point lights); hierarchical tile-light masks enabled. Per-tile cap is 16, so dense overlap intentionally stresses culling/overflow.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,volumetric,contact,bloom,dof,particles"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-masks-off",
+      "label": "Bistro Forward+ maximum crowd (96, masks off)",
+      "subsystem": "forward+",
+      "notes": "Exact 96-light A/B partner to masks-on: linear light scan instead of hierarchical tile-light masks. Keep every other pin, camera, pass and frame budget identical.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,volumetric,contact,bloom,dof,particles"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "0",
+        "TOURMALINE_LIGHT_CROWD": "96"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-ssr-ao",
+      "label": "Bistro 96 lights + SSR/AO/bloom",
+      "subsystem": "postfx",
+      "notes": "Heavy crowd with SSR and SAO enabled, SMAA T2x and bloom; compare against the stripped 96-light run to see postprocessing overhead.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ssgi,volumetric,contact,dof,particles",
+        "--with=ao,ssr,bloom,smaa"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "smaat2x",
+        "TOURMALINE_AO": "sao",
+        "TOURMALINE_SSR": "1",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-ssgi",
+      "label": "Bistro 96 lights + SSGI",
+      "subsystem": "ssgi",
+      "notes": "SSGI diffuse pass on top of the maximum crowd; other expensive effects remain off. Explicitly enable the pass and its runtime pin.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,volumetric,contact,bloom,dof,particles",
+        "--with=ssgi"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "1",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-fog",
+      "label": "Bistro 96 lights + dense fog march",
+      "subsystem": "volumetric",
+      "notes": "Maximum crowd with volumetric fog and 96 march steps; tests the separate per-tile fog candidate lists plus lighting. Requires the cooked scene to supply visible fog density.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,contact,bloom,dof,particles",
+        "--with=volumetric"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "1",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96",
+        "TOURMALINE_VOLUMETRIC_STEPS": "96"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-full",
+      "label": "Bistro 96 lights + heavy feature stack",
+      "subsystem": "mixed",
+      "notes": "Max supported point-light crowd with SSR, SSGI, SAO, high-step volumetrics, contact shadows, bloom, DOF, and SMAA T2x. Intended as an expensive stability/performance soak, not a single-feature A/B.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,particles",
+        "--with=cull,prepass,ao,ssr,ssgi,volumetric,contact,bloom,dof,smaa"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "smaat2x",
+        "TOURMALINE_AO": "sao",
+        "TOURMALINE_SSR": "1",
+        "TOURMALINE_SSGI": "1",
+        "TOURMALINE_VOLUMETRIC": "1",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96",
+        "TOURMALINE_VOLUMETRIC_STEPS": "96",
+        "TOURMALINE_CONTACT_SHADOWS": "1"
+      },
+      "frames": 240
+    },
+    {
+      "id": "bistro-fp-lights-96-deferred",
+      "label": "Bistro 96 lights + deferred shadows",
+      "subsystem": "deferred",
+      "notes": "Toggle the deferred-shadow pipeline with a full point-light crowd; under deferred shadows Forward+ hierarchical masks are not used. Do not interpret this as a mask A/B run.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=ao,ssr,ssgi,volumetric,contact,bloom,dof,particles",
+        "--with=deferred"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "1",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-fp-lights-96-msaa",
+      "label": "Bistro 96 lights + MSAA 2x",
+      "subsystem": "msaa",
+      "notes": "Max point-light crowd with MSAA 2x instead of SMAA, stripped postprocessing, for a distinct multisampling cost test.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,volumetric,contact,bloom,dof,particles,smaa",
+        "--with=msaa"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "msaa2x",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "0",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96"
+      },
+      "frames": 180
     }
   ]
 }
