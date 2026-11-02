@@ -4467,7 +4467,8 @@ int Run(const CookArgs& c) {
 	std::vector<std::string> sceneNames;
 	smvk::tour::Doc tour;
 	bool haveTour = false;
-	std::vector<uint32_t> createdGiVolumes; // family refs (the GI-volume stamp's map)
+	std::vector<uint32_t> createdGiVolumes; // dedicated GI creates
+	std::vector<uint32_t> createdTransforms; // generic spatial volumes
 
 	if (!args.tour.empty()) {
 		// Load tour: the DEFINITION (root reference = the source glTF,
@@ -4696,7 +4697,7 @@ int Run(const CookArgs& c) {
 		std::vector<std::string> rwarn;
 		std::string rerr;
 		if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-			&rerr, true, &createdGiVolumes)) {
+			&rerr, true, &createdGiVolumes, &createdTransforms)) {
 				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
@@ -5003,7 +5004,7 @@ int Run(const CookArgs& c) {
 				std::vector<std::string> superseded;
 				if (!smvk::tour::StampGiAssets(tour,
 						sceneClusters.front()->scene,
-						createdGiVolumes, &serr, &superseded)) {
+						createdGiVolumes, &serr, &superseded, &createdTransforms)) {
 					tool::err() << "Tour giAsset stamp failed: "
 						<< serr << std::endl;
 					return 1;
@@ -6804,7 +6805,7 @@ int Run(const CookArgs& c) {
 		std::string serr;
 		std::vector<std::string> superseded;
 		if (!smvk::tour::StampGiAssets(tour, cluster->scene, createdGiVolumes,
-				&serr, &superseded)) {
+				&serr, &superseded, &createdTransforms)) {
 			tool::err() << "Tour giAsset stamp failed: " << serr
 				<< std::endl;
 			return 1;

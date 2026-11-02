@@ -77,16 +77,18 @@ void EditorApp::ApplyGiAssetBindingsToScene() {
 				liveScene.giCapturesHash = ga.bakedHash;
 				continue;
 			}
-			const uint32_t k =
-				ga.ref & ~smvk::tour::kCreateGiVolumeRefBase;
-			if ((ga.ref & smvk::tour::kCreateGiVolumeRefBase) == 0
-					|| k >= m_tourCreatedGiVolumeNodes.size()) {
-				Log("tour: giAsset GI-volume ref out of range (dropped — '"
+			const uint32_t family = ga.ref & smvk::tour::kCreateRefFamilyMask;
+			const uint32_t k = ga.ref & ~family;
+			const auto* nodes = family == smvk::tour::kCreateTransformRefBase
+				? &m_tourCreatedTransformNodes
+				: family == smvk::tour::kCreateGiVolumeRefBase
+				? &m_tourCreatedGiVolumeNodes : nullptr;
+			if (!nodes || k >= nodes->size()) {
+				Log("tour: giAsset GI ref out of range (dropped — '"
 					+ ga.source + "')");
 				continue;
 			}
-			GiVolumeRow* it = FindGiVolume(liveScene,
-				m_tourCreatedGiVolumeNodes[k]);
+			GiVolumeRow* it = FindGiVolume(liveScene, (*nodes)[k]);
 			if (!it)
 				continue;
 			it->volume.bakeSource = ga.source;
@@ -439,6 +441,67 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateGiVolume(c);
 		break;
 	}
+	case EditVerb::AttachTriggerVolume: {
+		if (forward) {
+			c.beforeTriggerVolume = false;
+			if (const auto* row = tour::scene::FindTriggerVolume(scene, c.node)) {
+				c.beforeTriggerVolume = true;
+				c.beforeTrigger = row->trigger;
+			}
+			tour::scene::SetTriggerVolume(scene, c.node, tour::scene::SceneTriggerVolume{});
+		} else if (c.beforeTriggerVolume)
+			tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
+		else
+			tour::scene::RemoveTriggerVolume(scene, c.node);
+		break;
+	}
+	case EditVerb::RemoveTriggerVolumeVerb: {
+		if (forward) {
+			c.beforeTriggerVolume = false;
+			if (const auto* row = tour::scene::FindTriggerVolume(scene, c.node)) {
+				c.beforeTriggerVolume = true;
+				c.beforeTrigger = row->trigger;
+				tour::scene::RemoveTriggerVolume(scene, c.node);
+			}
+		} else if (c.beforeTriggerVolume)
+			tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
+		break;
+	}
+	case EditVerb::SetTriggerVolumeAttr: {
+		if (forward)
+			WriteNodeTriggerVolumeAttr(c.node, c.triggerVolumeAttr, c.number,
+				c.afterFlag, c.afterText);
+		else
+			WriteNodeTriggerVolumeAttr(c.node, c.triggerVolumeAttr, c.beforeNum,
+				c.beforeFlag, c.beforeText);
+		break;
+	}
+	case EditVerb::AttachGiVolume: {
+		if (forward) {
+			c.beforeGiVolume = false;
+			if (const auto* row = FindGiVolume(scene, c.node)) {
+				c.beforeGiVolume = true;
+				c.beforeGi = row->volume;
+			}
+			SetGiVolume(scene, c.node, SceneGiVolume{});
+		} else if (c.beforeGiVolume)
+			SetGiVolume(scene, c.node, c.beforeGi);
+		else
+			RemoveGiVolume(scene, c.node);
+		break;
+	}
+	case EditVerb::RemoveGiVolumeVerb: {
+		if (forward) {
+			c.beforeGiVolume = false;
+			if (const auto* row = FindGiVolume(scene, c.node)) {
+				c.beforeGiVolume = true;
+				c.beforeGi = row->volume;
+				RemoveGiVolume(scene, c.node);
+			}
+		} else if (c.beforeGiVolume)
+			SetGiVolume(scene, c.node, c.beforeGi);
+		break;
+	}
 	case EditVerb::SetGiVolumeAttr: {
 		const std::string& attr = c.giVolumeAttr;
 		if (forward)
@@ -688,6 +751,20 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 			continue; // deleted (tombstoned): not in the file's ref space
 		if (!CreateCmdEmitsInTour(*this, h))
 			continue; // emission dropped (parent unresolvable)
+		if (h.node == worldNode)
+			return count;
+		++count;
+	}
+	return -1;
+}
+
+int EditorApp::CreatedTransformIndex(uint32_t worldNode) const {
+	int count = 0;
+	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
+		const EditCmd& h = m_history[i];
+		if (h.verb != EditVerb::CreateTransform
+				|| !CreateCmdEmitsInTour(*this, h))
+			continue;
 		if (h.node == worldNode)
 			return count;
 		++count;
@@ -1257,6 +1334,37 @@ bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
 	if (FindEnvVolume(scene, node) != nullptr)
 		return false;
 	return true;
+}
+
+void EditorApp::DraftCreateSpatialVolume() {
+	if (!m_world) {
+		Log("Create spatial volume: no scene open.");
+		return;
+	}
+	// Spatial bounds are the node's full-extent transform, shared by
+	// optional GI/audio-room associations (spatial_volume.h).
+	std::string name = "SpatialVolume";
+	for (uint32_t suffix = 2;; ++suffix) {
+		bool taken = false;
+		for (size_t i = 0; i < m_world->scene.hierarchy.size(); ++i)
+			if (getNodeName(m_world->scene, int(i)) == name) {
+				taken = true;
+				break;
+			}
+		if (!taken)
+			break;
+		name = "SpatialVolume" + std::to_string(suffix);
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateTransform;
+	c.node = UINT32_MAX;
+	const uint32_t sel = m_selected;
+	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
+		? sel : DefaultCreateParent();
+	c.afterText = name;
+	c.afterVec = ActiveCam().target;
+	c.svec = glm::vec3(8.0f, 4.0f, 8.0f);
+	Do(c);
 }
 
 void EditorApp::DraftCreateLocator() {
@@ -2192,10 +2300,13 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		// undo below.
 		auto cvit = FindGiVolume(scene, n);
 		c.beforeFlag = (cvit);
-		if (c.beforeFlag)
+		if (c.beforeFlag) {
 			c.beforeVec4 = glm::vec4(float(cvit->volume.priority),
 				cvit->volume.spacing, cvit->volume.insideFade,
 				cvit->volume.outsideFade);
+			c.beforeGiVolume = true;
+			c.beforeGi = cvit->volume;
+		}
 		// Cubemap capture def (created or replayed): presence rides
 		// beforeCubemap, the radius rides beforeNum (the light index
 		// in c.number above is exclusive — a capture node has no
@@ -2225,6 +2336,10 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			c.beforeAudioRoom = true;
 			c.beforeRoom = aroom->room;
 		}
+		if (const auto* trigger = tour::scene::FindTriggerVolume(scene, n)) {
+			c.beforeTriggerVolume = true;
+			c.beforeTrigger = trigger->trigger;
+		}
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -2252,6 +2367,8 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		RemoveCubemap(scene, id);
 		RemoveCamera(scene, id);
 		RemoveAudioSource(scene, id);
+		tour::scene::RemoveAudioRoom(scene, id);
+		tour::scene::RemoveTriggerVolume(scene, id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -2297,7 +2414,9 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	}
 	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
 		SetLight(scene, n, uint32_t(c.number));
-	if (c.beforeFlag)
+	if (c.beforeGiVolume)
+		SetGiVolume(scene, n, c.beforeGi);
+	else if (c.beforeFlag)
 		SetGiVolume(scene, n, ::SceneGiVolume{ uint32_t(c.beforeVec4.x),
 			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w });
 	if (c.beforeCubemap)
@@ -2311,6 +2430,8 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 		SetAudioSource(scene, n, c.beforeAudio);
 	if (c.beforeAudioRoom)
 		tour::scene::SetAudioRoom(scene, n, c.beforeRoom);
+	if (c.beforeTriggerVolume)
+		tour::scene::SetTriggerVolume(scene, n, c.beforeTrigger);
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -2679,6 +2800,8 @@ void EditorApp::ExecCreateTransform(EditCmd& c) {
 	markAsChanged(scene, created);
 	recalculateGlobalTransforms(scene);
 	m_selected = uint32_t(created);
+	if (m_replayingTour)
+		m_tourCreatedTransformNodes.push_back(uint32_t(created));
 	Log("Created transform '" + c.afterText + "' (#"
 		+ std::to_string(created) + ").");
 }
@@ -2819,6 +2942,33 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	} else {
 		return false;
 	}
+	return true;
+}
+
+bool EditorApp::ReadNodeTriggerVolumeAttr(uint32_t node,
+		const std::string& attr, double& num, bool& flag,
+		std::string& text) const {
+	num = 0.0;
+	flag = false;
+	text.clear();
+	if (!m_world) return false;
+	const auto* row = tour::scene::FindTriggerVolume(m_world->scene, node);
+	if (!row) return false;
+	if (attr == "enabled") flag = row->trigger.enabled;
+	else if (attr == "once") flag = row->trigger.once;
+	else if (attr == "tag") text = row->trigger.tag;
+	else return false;
+	return true;
+}
+bool EditorApp::WriteNodeTriggerVolumeAttr(uint32_t node,
+		const std::string& attr, double, bool flag, const std::string& text) {
+	if (!m_world) return false;
+	auto* row = tour::scene::FindTriggerVolume(m_world->scene, node);
+	if (!row) return false;
+	if (attr == "enabled") row->trigger.enabled = flag;
+	else if (attr == "once") row->trigger.once = flag;
+	else if (attr == "tag") row->trigger.tag = text.substr(0, 256);
+	else return false;
 	return true;
 }
 
@@ -4237,6 +4387,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		const int k = app.CreatedGiVolumeIndex(c.node);
 		if (k >= 0) {
 			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(k);
+		} else if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
 		} else if (!needNode()) {
 			return false;
 		}
@@ -4495,6 +4647,10 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		const int k = app.CreatedAudioRoomIndex(c.node);
 		if (k >= 0) {
 			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(k);
+		} else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0) {
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
+		} else if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
 		} else if (!needNode()) {
 			return false;
 		}
@@ -4512,12 +4668,38 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		return true;
 	}
+	case EditVerb::SetTriggerVolumeAttr: {
+		if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
+		} else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0) {
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
+		} else if (const int a = app.CreatedAudioRoomIndex(c.node); a >= 0) {
+			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(a);
+		} else if (!needNode()) return false;
+		out.verb = smvk::tour::Verb::SetTriggerVolumeAttr;
+		out.text = c.triggerVolumeAttr;
+		out.flag = c.afterFlag;
+		out.name = c.afterText; // tag string
+		return true;
+	}
+	case EditVerb::AttachTriggerVolume:
+	case EditVerb::RemoveTriggerVolumeVerb:
+	case EditVerb::AttachGiVolume:
+	case EditVerb::RemoveGiVolumeVerb:
 	case EditVerb::AttachAudioRoom:
 	case EditVerb::RemoveAudioRoomVerb: {
 		// The association verbs: the target may be a created room, a
 		// created GIVOLUME (a room hung on a GI volume — the -owner
 		// givolume addressing) or a cluster-backed node.
-		out.verb = c.verb == EditVerb::AttachAudioRoom
+		out.verb = c.verb == EditVerb::AttachTriggerVolume
+			? smvk::tour::Verb::AttachTriggerVolume
+			: c.verb == EditVerb::RemoveTriggerVolumeVerb
+			? smvk::tour::Verb::RemoveTriggerVolume
+			: c.verb == EditVerb::AttachGiVolume
+			? smvk::tour::Verb::AttachGiVolume
+			: c.verb == EditVerb::RemoveGiVolumeVerb
+			? smvk::tour::Verb::RemoveGiVolume
+			: c.verb == EditVerb::AttachAudioRoom
 			? smvk::tour::Verb::AttachAudioRoom
 			: smvk::tour::Verb::RemoveAudioRoom;
 		if (const int k = app.CreatedAudioRoomIndex(c.node); k >= 0) {
@@ -4527,6 +4709,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 				app.CreatedGiVolumeIndex(c.node); g >= 0) {
 			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
 			out.text = "givolume";
+		} else if (const int t = app.CreatedTransformIndex(c.node); t >= 0) {
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
+			out.text = "transform";
 		} else if (!needNode()) {
 			return false;
 		}
@@ -5759,6 +5944,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			if (k >= app.m_tourCreatedGiVolumeNodes.size())
 				return false;
 			target = app.m_tourCreatedGiVolumeNodes[k];
+		} else if ((tc.node & smvk::tour::kCreateRefFamilyMask)
+				== smvk::tour::kCreateTransformRefBase) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateTransformRefBase;
+			if (k >= app.m_tourCreatedTransformNodes.size()) return false;
+			target = app.m_tourCreatedTransformNodes[k];
 		} else {
 			target = app.ClusterToWorld(tc.node);
 		}
@@ -5998,6 +6188,12 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 				return false;
 			target = app.m_tourCreatedGiVolumeNodes[k];
 		}
+		else if ((tc.node & smvk::tour::kCreateRefFamilyMask)
+				== smvk::tour::kCreateTransformRefBase) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateTransformRefBase;
+			if (k >= app.m_tourCreatedTransformNodes.size()) return false;
+			target = app.m_tourCreatedTransformNodes[k];
+		}
 		else {
 			target = app.ClusterToWorld(tc.node);
 		}
@@ -6026,6 +6222,37 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::SetTriggerVolumeAttr: {
+		uint32_t target = UINT32_MAX;
+		const uint32_t family = tc.node & smvk::tour::kCreateRefFamilyMask;
+		if (family == smvk::tour::kCreateTransformRefBase
+				|| family == smvk::tour::kCreateGiVolumeRefBase
+				|| family == smvk::tour::kCreateAudioRoomRefBase) {
+			const auto& nodes = family == smvk::tour::kCreateTransformRefBase
+				? app.m_tourCreatedTransformNodes
+				: family == smvk::tour::kCreateGiVolumeRefBase
+				? app.m_tourCreatedGiVolumeNodes
+				: app.m_tourCreatedAudioRoomNodes;
+			const uint32_t k = tc.node & ~family;
+			if (k >= nodes.size()) return false;
+			target = nodes[k];
+		} else target = app.ClusterToWorld(tc.node);
+		if (target == UINT32_MAX
+				|| !tour::scene::FindTriggerVolume(app.m_world->scene, target))
+			return false;
+		out.verb = EditVerb::SetTriggerVolumeAttr;
+		out.node = target;
+		out.triggerVolumeAttr = tc.text;
+		if (!app.ReadNodeTriggerVolumeAttr(target, tc.text,
+				out.beforeNum, out.beforeFlag, out.beforeText)) return false;
+		out.afterFlag = tc.flag;
+		out.afterText = tc.name;
+		return true;
+	}
+	case smvk::tour::Verb::AttachTriggerVolume:
+	case smvk::tour::Verb::RemoveTriggerVolume:
+	case smvk::tour::Verb::AttachGiVolume:
+	case smvk::tour::Verb::RemoveGiVolume:
 	case smvk::tour::Verb::AttachAudioRoom:
 	case smvk::tour::Verb::RemoveAudioRoom: {
 		// The association verbs: a created room, a created GIVOLUME
@@ -6047,15 +6274,27 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 				return false;
 			target = app.m_tourCreatedGiVolumeNodes[k];
 		}
-		else {
+		else if ((tc.node & smvk::tour::kCreateRefFamilyMask)
+				== smvk::tour::kCreateTransformRefBase) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateTransformRefBase;
+			if (k >= app.m_tourCreatedTransformNodes.size()) return false;
+			target = app.m_tourCreatedTransformNodes[k];
+		} else {
 			target = app.ClusterToWorld(tc.node);
 		}
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		out.verb = (tc.verb == smvk::tour::Verb::AttachAudioRoom)
-			? EditVerb::AttachAudioRoom
-			: EditVerb::RemoveAudioRoomVerb;
+		out.verb = tc.verb == smvk::tour::Verb::AttachTriggerVolume
+			? EditVerb::AttachTriggerVolume
+			: tc.verb == smvk::tour::Verb::RemoveTriggerVolume
+			? EditVerb::RemoveTriggerVolumeVerb
+			: tc.verb == smvk::tour::Verb::AttachGiVolume
+			? EditVerb::AttachGiVolume
+			: tc.verb == smvk::tour::Verb::RemoveGiVolume
+			? EditVerb::RemoveGiVolumeVerb
+			: tc.verb == smvk::tour::Verb::AttachAudioRoom
+			? EditVerb::AttachAudioRoom : EditVerb::RemoveAudioRoomVerb;
 		out.node = target;
 		// (The before-row is captured at FORWARD EXECUTION - the
 		// ExecCmd cases, idempotently under redo.)
@@ -6228,6 +6467,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	}
 	m_tourCreatedNodes.clear();
 	m_tourCreatedGiVolumeNodes.clear();
+	m_tourCreatedTransformNodes.clear();
 	m_tourCreatedCubemapNodes.clear();
 	m_tourCreatedCameraNodes.clear();
 	m_tourCreatedAudioNodes.clear();

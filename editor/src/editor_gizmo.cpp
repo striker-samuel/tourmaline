@@ -500,6 +500,40 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				batches.push_back(std::move(b));
 		}
 	}
+	// A single neutral box for generic Spatial Volumes and triggers
+	// without an existing GI/Audio gizmo. Shares spatial_volume.h's
+	// OBB convention and avoids superimposed duplicate boxes.
+	if (lightSetVisible && m_showGiVolumeGizmos) {
+		const Scene& scene = m_world->scene;
+		for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
+			if (m_deletedNodes.contains(node)
+				|| node >= scene.globalTransform.size()
+				|| FindGiVolume(scene, node)
+				|| tour::scene::FindAudioRoom(scene, node))
+				continue;
+			const bool hasTrigger =
+				tour::scene::FindTriggerVolume(scene, node) != nullptr;
+			const std::string name = getNodeName(scene, int(node));
+			const bool authoredSpatial = name.rfind("SpatialVolume", 0) == 0;
+			if (!hasTrigger && !authoredSpatial)
+				continue;
+			const auto shape = tour::scene::VolumeBoxFromGlobalTransform(
+				scene.globalTransform[node]);
+			if (!shape.Valid())
+				continue;
+			glm::vec3 corners[8];
+			tour::scene::SpatialVolumeCorners(shape, corners);
+			LineBatch b;
+			b.depthTest = false;
+			b.color = (node == m_selected)
+				? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)
+				: hasTrigger ? glm::vec4(1.0f, 0.45f, 0.65f, 1.0f)
+				: glm::vec4(0.65f, 0.75f, 1.0f, 0.7f);
+			AddBoxCorners(b, corners);
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
 	// Cubemap capture visuals (X-ray batches): a distance-scaled diamond +
 	// the influence ring per AUTHORED capture node (position = the node's
 	// global translate). Magenta reads apart from lights

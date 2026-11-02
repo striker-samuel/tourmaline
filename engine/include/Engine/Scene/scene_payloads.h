@@ -241,6 +241,15 @@ struct SceneAudioRoom {
 	float transitionSeconds = 0.25f; // the listener-blend glide
 };
 
+// Trigger component: an oriented spatial box (from the owning node's
+// global transform). Runtime emits enter/exit on the boundary. "once"
+// suppresses further enter notifications per actor after the first entry.
+struct SceneTriggerVolume {
+	bool enabled = true;
+	bool once = false;
+	std::string tag = "Trigger";
+};
+
 // Authored environment block (editor LIGHTING authoring): LUX-NATIVE
 // intensities — sun 10000 lux / sky 600 default, the same units the
 // runtime EnvironmentSettings and every bake (GI/lightmap/cubemap) use,

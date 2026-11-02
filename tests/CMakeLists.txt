@@ -1192,3 +1192,10 @@ target_link_libraries(GpuSceneDatabaseTests PRIVATE engine)
 set_target_properties(GpuSceneDatabaseTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_database_tests COMMAND GpuSceneDatabaseTests)
+
+# Shared spatial volume trigger semantics (headless).
+add_executable(TriggerVolumeTests test_trigger_volume.cpp)
+target_link_libraries(TriggerVolumeTests PRIVATE engine)
+set_target_properties(TriggerVolumeTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME trigger_volume_tests COMMAND TriggerVolumeTests)

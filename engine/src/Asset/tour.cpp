@@ -145,15 +145,18 @@ static void WriteNodeToken(std::ostream& f, const Command& c) {
 // every attr verb.
 static void WriteRoomTarget(std::ostream& f, const Command& c) {
 	if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase
-			&& !c.text.empty()) {
+			 ) {
 		f << "-ref " << (c.node & ~kCreateAudioRoomRefBase)
-			<< " -owner " << c.text;
+			<< " -owner audioRoom";
 	}
 	else if ((c.node & kCreateRefFamilyMask) == kCreateGiVolumeRefBase
-			&& !c.text.empty()) {
+			 ) {
 		f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
-			<< " -owner " << c.text;
+			<< " -owner givolume";
 	}
+	else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase
+			 )
+		f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 	else if (c.node != UINT32_MAX)
 		f << "-n " << c.node;
 	WriteTargetKeys(f, c, false);
@@ -180,7 +183,10 @@ static bool IsGenericNodeVerb(Verb v) {
 		|| v == Verb::SetVisibility || v == Verb::Parent;
 }
 static bool IsAttrNodeVerb(Verb v) {
-	return v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
+	return v == Verb::AttachTriggerVolume || v == Verb::RemoveTriggerVolume
+		|| v == Verb::SetTriggerVolumeAttr
+		|| v == Verb::AttachGiVolume || v == Verb::RemoveGiVolume
+		|| v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
 		|| v == Verb::SetCubemapAttr || v == Verb::SetCamAttr
 		|| v == Verb::SetAudioAttr || v == Verb::AddAudioSound
 		|| v == Verb::RemoveAudioSound
@@ -562,6 +568,29 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
 		break;
 	}
+	case Verb::AttachTriggerVolume:
+	case Verb::RemoveTriggerVolume: {
+		f << (c.verb == Verb::AttachTriggerVolume
+			? "attachTriggerVolume " : "removeTriggerVolume ");
+		WriteRoomTarget(f, c);
+		break;
+	}
+	case Verb::SetTriggerVolumeAttr: {
+		f << "setTriggerVolumeAttr ";
+		WriteRoomTarget(f, c);
+		f << " -at " << c.text;
+		if (c.text == "tag")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		break;
+	}
+	case Verb::AttachGiVolume:
+	case Verb::RemoveGiVolume: {
+		f << (c.verb == Verb::AttachGiVolume ? "attachGiVolume " : "removeGiVolume ");
+		WriteRoomTarget(f, c);
+		break;
+	}
 	case Verb::AttachAudioRoom: {
 		f << "attachAudioRoom ";
 		WriteRoomTarget(f, c);
@@ -584,6 +613,8 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 				== kCreateGiVolumeRefBase)
 			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
 				<< " -owner givolume";
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase)
+			f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
 		WriteTargetKeys(f, c, false);
@@ -636,8 +667,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		// rotation-deg, size) ride -t; name rides -v as a string;
 		// scalars (priority, spacing, inside, outside) ride -v.
 		f << "setGiVolumeAttr ";
-		if ((c.node & kCreateGiVolumeRefBase) != 0 && c.node != UINT32_MAX)
+		if ((c.node & kCreateRefFamilyMask) == kCreateGiVolumeRefBase)
 			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase);
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase)
+			f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
 		WriteTargetKeys(f, c, false);
@@ -1058,8 +1091,11 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			: ga.kind == GiAssetCmd::Kind::Captures ? "captures"
 			: "world";
 		f << "giAsset -kind " << kindText;
-		if (ga.kind == GiAssetCmd::Kind::GiVolume)
-			f << " -ref " << (ga.ref & ~kCreateGiVolumeRefBase);
+		if (ga.kind == GiAssetCmd::Kind::GiVolume) {
+			const uint32_t family = ga.ref & kCreateRefFamilyMask;
+			f << " -ref " << (ga.ref & ~family);
+			if (family == kCreateTransformRefBase) f << " -owner transform";
+		}
 		f << " -source " << Quote(ga.source);
 		if (!ga.guid.empty())
 			f << " -guid " << ga.guid;
@@ -1832,7 +1868,10 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			continue;
 		}
 		if (ga.kind == GiAssetCmd::Kind::GiVolume)
-			ga.ref = fl.hasRef ? (kCreateGiVolumeRefBase | fl.ref) : 0;
+			ga.ref = fl.hasRef
+				? ((fl.hasOwner && fl.owner == "transform"
+					? kCreateTransformRefBase : kCreateGiVolumeRefBase) | fl.ref)
+				: 0;
 		if (!fl.hasSource || fl.source.empty()) {
 			warn("tour:" + std::to_string(lineNo) +
 				": giAsset without -source (skipped)");
@@ -2466,7 +2505,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			return false;
 		}
 		c.verb = Verb::SetGiVolumeAttr;
-		c.node = fl.hasRef ? (kCreateGiVolumeRefBase | fl.ref) : fl.n;
+		c.node = fl.hasRef ? ((fl.hasOwner && fl.owner == "transform"
+			? kCreateTransformRefBase : kCreateGiVolumeRefBase) | fl.ref) : fl.n;
 		c.text = fl.at;
 		if (fl.at == "position" || fl.at == "rotation"
 			|| fl.at == "size") {
@@ -2779,6 +2819,82 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 		c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
 	}
+	else if (effVerb == "attachTriggerVolume" || effVerb == "removeTriggerVolume") {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
+				|| fl.hasRef != fl.hasOwner) {
+			err = "line " + std::to_string(lineNo)
+				+ ": trigger component needs -n, -uuid or -ref -owner";
+			return false;
+		}
+		c.verb = effVerb == "attachTriggerVolume"
+			? Verb::AttachTriggerVolume : Verb::RemoveTriggerVolume;
+		if (fl.hasRef) {
+			uint32_t base = 0;
+			if (fl.owner == "transform") base = kCreateTransformRefBase;
+			else if (fl.owner == "givolume") base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "audioRoom") base = kCreateAudioRoomRefBase;
+			else {
+				err = "line " + std::to_string(lineNo) + ": bad trigger owner";
+				return false;
+			}
+			c.node = base | fl.ref;
+			c.text = fl.owner;
+		} else {
+			c.node = fl.n;
+		}
+	}
+	else if (effVerb == "setTriggerVolumeAttr" && fl.hasAt
+			&& (fl.hasN || fl.hasRef || fl.hasUuid)) {
+		if (fl.at != "enabled" && fl.at != "once" && fl.at != "tag") {
+			err = "line " + std::to_string(lineNo) + ": bad trigger attr";
+			return false;
+		}
+		c.verb = Verb::SetTriggerVolumeAttr;
+		c.text = fl.at;
+		c.node = fl.hasRef
+			? ((fl.owner == "transform" ? kCreateTransformRefBase
+				: fl.owner == "audioRoom" ? kCreateAudioRoomRefBase
+				: kCreateGiVolumeRefBase) | fl.ref)
+			: fl.n;
+		if (!fl.hasV) {
+			err = "line " + std::to_string(lineNo) + ": trigger attr needs -v";
+			return false;
+		}
+		if (fl.at == "tag") {
+			if (fl.v.size() > 256) {
+				err = "line " + std::to_string(lineNo) + ": trigger tag too long";
+				return false;
+			}
+			c.name = fl.v;
+		} else if (!ParseFlagWord(fl.v, c.flag)) {
+			err = "line " + std::to_string(lineNo) + ": bad trigger bool";
+			return false;
+		}
+	}
+	else if (effVerb == "attachGiVolume" || effVerb == "removeGiVolume") {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
+				|| fl.hasRef != fl.hasOwner) {
+			err = "line " + std::to_string(lineNo)
+				+ ": GI component needs -n, -uuid, or -ref with -owner";
+			return false;
+		}
+		c.verb = effVerb == "attachGiVolume"
+			? Verb::AttachGiVolume : Verb::RemoveGiVolume;
+		if (fl.hasRef) {
+			uint32_t base = 0;
+			if (fl.owner == "transform") base = kCreateTransformRefBase;
+			else if (fl.owner == "givolume") base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "audioRoom") base = kCreateAudioRoomRefBase;
+			else {
+				err = "line " + std::to_string(lineNo) + ": unknown GI owner";
+				return false;
+			}
+			c.node = base | fl.ref;
+			c.text = fl.owner;
+		} else {
+			c.node = fl.n;
+		}
+	}
 	else if (effVerb == "attachAudioRoom" || effVerb == "removeAudioRoom") {
 		// The ASSOCIATION verbs: attach drops a DEFAULT AudioRoomRow on
 		// an EXISTING node (the GI-inspector "Enable" path — a room on
@@ -2805,6 +2921,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				base = kCreateAudioRoomRefBase;
 			else if (fl.owner == "givolume")
 				base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "transform")
+				base = kCreateTransformRefBase;
 			else {
 				err = "line " + std::to_string(lineNo)
 					+ ": unknown -owner family '" + fl.owner
@@ -2853,6 +2971,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				base = kCreateAudioRoomRefBase;
 			else if (fl.owner == "givolume")
 				base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "transform")
+				base = kCreateTransformRefBase;
 			else {
 				err = "line " + std::to_string(lineNo)
 					+ ": unknown -owner family '" + fl.owner
@@ -3397,7 +3517,8 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings, std::string* err, bool strict,
-	std::vector<uint32_t>* createdGiVolumesOut) {
+	std::vector<uint32_t>* createdGiVolumesOut,
+	std::vector<uint32_t>* createdTransformsOut) {
 	auto warn = [&](const std::string& w) {
 		if (warnings)
 			warnings->push_back(w);
@@ -3458,6 +3579,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Same scheme for created convex volumes (kCreateGiVolumeRefBase | k),
 	// resolved by SetGiVolumeAttr below.
 	std::vector<uint32_t> createdGiVolumes;
+	std::vector<uint32_t> createdTransforms;
 	// Same scheme for created cubemap captures (kCreateCubemapRefBase |
 	// k), resolved by SetCubemapAttr below.
 	std::vector<uint32_t> createdCubemaps;
@@ -3769,6 +3891,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
 			SetNodeNameIndex(scene, uint32_t(newId), nameId);
+			createdTransforms.push_back(uint32_t(newId));
 			break;
 		}
 		case Verb::CreateLight: {
@@ -4162,6 +4285,48 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		createdAudioRooms.push_back(uint32_t(newId));
 		break;
 	}
+	case Verb::AttachTriggerVolume:
+	case Verb::RemoveTriggerVolume:
+	case Verb::SetTriggerVolumeAttr:
+	case Verb::AttachGiVolume:
+	case Verb::RemoveGiVolume: {
+		uint32_t target = 0;
+		const uint32_t family = c.node & kCreateRefFamilyMask;
+		if (family == kCreateTransformRefBase
+				|| family == kCreateGiVolumeRefBase
+				|| family == kCreateAudioRoomRefBase) {
+			const auto& nodes = family == kCreateTransformRefBase
+				? createdTransforms : family == kCreateGiVolumeRefBase
+				? createdGiVolumes : createdAudioRooms;
+			const uint32_t k = c.node & ~family;
+			if (k >= nodes.size()) {
+				if (err) *err = "tour: GI component ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = nodes[k];
+		} else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c)) return false;
+			break;
+		}
+		if (c.verb == Verb::AttachGiVolume)
+			SetGiVolume(scene, target, SceneGiVolume{});
+		else if (c.verb == Verb::RemoveGiVolume)
+			RemoveGiVolume(scene, target);
+		else if (c.verb == Verb::AttachTriggerVolume)
+			tour::scene::SetTriggerVolume(scene, target, tour::scene::SceneTriggerVolume{});
+		else if (c.verb == Verb::RemoveTriggerVolume)
+			tour::scene::RemoveTriggerVolume(scene, target);
+		else if (auto* row = tour::scene::FindTriggerVolume(scene, target)) {
+			if (c.text == "enabled") row->trigger.enabled = c.flag;
+			else if (c.text == "once") row->trigger.once = c.flag;
+			else if (c.text == "tag") row->trigger.tag = c.name;
+		} else {
+			if (err) *err = "tour: trigger attr on node without trigger";
+			if (!failCmd(c)) return false;
+		}
+		break;
+	}
 	case Verb::AttachAudioRoom:
 	case Verb::RemoveAudioRoom: {
 		// The ASSOCIATION verbs: attach drops/replaces a default
@@ -4197,6 +4362,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				break;
 			}
 			target = createdGiVolumes[k];
+		}
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase) {
+			const uint32_t k = c.node & ~kCreateTransformRefBase;
+			if (k >= createdTransforms.size()) {
+				if (err) *err = "tour: audio room transform ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = createdTransforms[k];
 		}
 		else if (!resolveNode(c.node, c, target)) {
 			if (!failCmd(c))
@@ -4250,6 +4424,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				break;
 			}
 			target = createdGiVolumes[k];
+		}
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase) {
+			const uint32_t k = c.node & ~kCreateTransformRefBase;
+			if (k >= createdTransforms.size()) {
+				if (err) *err = "tour: room attr transform ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = createdTransforms[k];
 		}
 		else if (!resolveNode(c.node, c, target)) {
 			if (!failCmd(c))
@@ -4598,6 +4781,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				break;
 			}
 			target = createdGiVolumes[k];
+		}
+		else if ((target & kCreateRefFamilyMask) == kCreateTransformRefBase) {
+			const uint32_t k = target & ~kCreateTransformRefBase;
+			if (k >= createdTransforms.size()) {
+				if (err) *err = "tour: GI attr transform ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = createdTransforms[k];
 		}
 		else if (!checkNode(target, c)) {
 			if (!failCmd(c))
@@ -4997,13 +5189,17 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.giCapturesHash = ga.bakedHash;
 			continue;
 		}
-		const uint32_t k = ga.ref & ~kCreateGiVolumeRefBase;
-		if ((ga.ref & kCreateGiVolumeRefBase) == 0 || k >= createdGiVolumes.size()) {
-			warn("tour: giAsset GI-volume ref out of range: " + std::to_string(k)
+		const uint32_t family = ga.ref & kCreateRefFamilyMask;
+		const uint32_t k = ga.ref & ~family;
+		const std::vector<uint32_t>* owners =
+			family == kCreateTransformRefBase ? &createdTransforms
+			: family == kCreateGiVolumeRefBase ? &createdGiVolumes : nullptr;
+		if (!owners || k >= owners->size()) {
+			warn("tour: giAsset GI ref out of range: " + std::to_string(k)
 				+ " (dropped — '" + ga.source + "')");
 			continue;
 		}
-		GiVolumeRow* it = FindGiVolume(scene, createdGiVolumes[k]);
+		GiVolumeRow* it = FindGiVolume(scene, (*owners)[k]);
 		if (!it) {
 			warn("tour: giAsset GI-volume target is not a GI volume (dropped — '"
 				+ ga.source + "')");
@@ -5015,6 +5211,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	}
 	if (createdGiVolumesOut)
 		*createdGiVolumesOut = createdGiVolumes;
+	if (createdTransformsOut)
+		*createdTransformsOut = createdTransforms;
 	// Transform pass: collect per-node TRS triples (tour order = last wins
 	// per channel), then rebuild each touched node's local matrix.
 	{
@@ -5293,12 +5491,20 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 
 bool StampGiAssets(Doc& doc, const Scene& scene,
 	const std::vector<uint32_t>& createdGiVolumes, std::string* err,
-	std::vector<std::string>* superseded) {
+	std::vector<std::string>* superseded,
+	const std::vector<uint32_t>* createdTransforms) {
 	// Invert the family list once (node -> the k-th createGiVolume, the
 	// index the giAsset GI-volume records address).
 	std::unordered_map<uint32_t, uint32_t> familyOf;
 	for (size_t k = 0; k < createdGiVolumes.size(); ++k)
 		familyOf[createdGiVolumes[k]] = uint32_t(k);
+	// Generic Spatial Volumes have their own creation-order space; a
+	// GI component on them shares the transform node, not a special GI
+	// create. Persist its artifact through -owner transform.
+	if (createdTransforms)
+		for (size_t k = 0; k < createdTransforms->size(); ++k)
+			familyOf[(*createdTransforms)[k]] =
+				kCreateTransformRefBase | uint32_t(k);
 	// The supersede list (record-exact): the OLD records' paths the new
 	// set drops. Bake artifacts carry RANDOM minted names — a fresh bake
 	// never collides with (or overwrites) an old file — so the ONLY way
@@ -5327,6 +5533,15 @@ bool StampGiAssets(Doc& doc, const Scene& scene,
 			kCreateGiVolumeRefBase | k, it->volume.bakeSource,
 			it->volume.bakeGuid, it->volume.bakeInputHash });
 	}
+	if (createdTransforms)
+		for (uint32_t k = 0; k < createdTransforms->size(); ++k) {
+			const auto* it = FindGiVolume(scene, (*createdTransforms)[k]);
+			if (!it || it->volume.bakeSource.empty()) continue;
+			doc.giAssets.push_back(GiAssetCmd{
+				GiAssetCmd::Kind::GiVolume,
+				kCreateTransformRefBase | k, it->volume.bakeSource,
+				it->volume.bakeGuid, it->volume.bakeInputHash });
+		}
 	// The capture set last (one record; the per-capture hashes ride the
 	// manifest rows — this is the set-level fold the gate fast-paths).
 	if (!scene.giCapturesSource.empty())

@@ -226,6 +226,8 @@ namespace editor {
 			DrawStatusBar();
 		} // m_uiMode (panel columns)
 
+		if (m_showComponentTable)
+			DrawComponentTable();
 		DrawPanelSplitters(); // resize handles between panels and viewport
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
@@ -459,6 +461,8 @@ namespace editor {
 				DraftCreateLight(false);
 			if (ImGui::MenuItem("Spot light", nullptr, false, canCreate))
 				DraftCreateLight(true);
+			if (ImGui::MenuItem("Spatial Volume", nullptr, false, canCreate))
+				DraftCreateSpatialVolume();
 			if (ImGui::MenuItem("Convex volume (GI)", nullptr, false,
 				canCreate))
 				DraftCreateGiVolume();
@@ -743,6 +747,7 @@ namespace editor {
 			ImGui::Separator();
 			if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 				m_placement.showGraph = !m_placement.showGraph;
+			ImGui::MenuItem("Component Spreadsheet...", nullptr, &m_showComponentTable);
 			if (ImGui::MenuItem("Reference editor...", nullptr,
 				m_showReferencesPanel))
 				m_showReferencesPanel = !m_showReferencesPanel;
@@ -1854,8 +1859,17 @@ namespace editor {
 			return;
 		Scene& scene = m_world->scene;
 		auto it = FindGiVolume(scene, node);
-		if (!it)
+		if (!it) {
+			ImGui::Separator();
+			ImGui::TextDisabled("GI Volume component: not attached");
+			if (ImGui::Button("Add GI Volume component")) {
+				EditCmd c{};
+				c.verb = EditVerb::AttachGiVolume;
+				c.node = node;
+				Do(c);
+			}
 			return;
+		}
 		::SceneGiVolume& def = it->volume;
 		ImGui::Separator();
 		ImGui::Text("Convex volume: '%s'",
@@ -1990,6 +2004,66 @@ namespace editor {
 		else if (ImGui::Button("Optimize grid layout")) {
 			RunGiLayoutOptimizer(node);
 		}
+		if (ImGui::Button("Remove GI Volume component")) {
+			EditCmd c{};
+			c.verb = EditVerb::RemoveGiVolumeVerb;
+			c.node = node;
+			Do(c);
+		}
+	}
+
+	void EditorApp::DrawTriggerVolumeSection(uint32_t node) {
+		if (!m_world || node >= m_world->scene.hierarchy.size())
+			return;
+		Scene& scene = m_world->scene;
+		const auto* row = tour::scene::FindTriggerVolume(scene, node);
+		ImGui::Separator();
+		if (!row) {
+			ImGui::TextDisabled("Trigger component: not attached");
+			if (ImGui::Button("Add Trigger component")) {
+				EditCmd cmd{};
+				cmd.verb = EditVerb::AttachTriggerVolume;
+				cmd.node = node;
+				Do(cmd);
+			}
+			return;
+		}
+		ImGui::TextUnformatted("Trigger component");
+		ImGui::TextDisabled("Oriented box = this node's global transform.");
+		auto check = [&](const char* label, const char* attr, bool current) {
+			bool v = current;
+			if (ImGui::Checkbox(label, &v)) {
+				EditCmd cmd{};
+				cmd.verb = EditVerb::SetTriggerVolumeAttr;
+				cmd.node = node;
+				cmd.triggerVolumeAttr = attr;
+				ReadNodeTriggerVolumeAttr(node, attr, cmd.beforeNum,
+					cmd.beforeFlag, cmd.beforeText);
+				cmd.afterFlag = v;
+				Do(cmd);
+			}
+		};
+		check("Trigger enabled", "enabled", row->trigger.enabled);
+		check("Fire only once per actor", "once", row->trigger.once);
+		char tag[257];
+		std::snprintf(tag, sizeof(tag), "%s", row->trigger.tag.c_str());
+		if (ImGui::InputText("Event tag", tag, sizeof(tag),
+				ImGuiInputTextFlags_EnterReturnsTrue)) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::SetTriggerVolumeAttr;
+			cmd.node = node;
+			cmd.triggerVolumeAttr = "tag";
+			ReadNodeTriggerVolumeAttr(node, "tag", cmd.beforeNum,
+				cmd.beforeFlag, cmd.beforeText);
+			cmd.afterText = tag;
+			Do(cmd);
+		}
+		if (ImGui::Button("Remove Trigger component")) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::RemoveTriggerVolumeVerb;
+			cmd.node = node;
+			Do(cmd);
+		}
 	}
 
 	void EditorApp::DrawAudioRoomSection(uint32_t node) {
@@ -2006,7 +2080,7 @@ namespace editor {
 		// node can carry a room — the GI inspector's "Audio room:
 		// Enable" path is this same command).
 		ImGui::TextDisabled("Audio room: none (shape = node transform)");
-		if (ImGui::Button("Enable audio room")) {
+		if (ImGui::Button("Add Audio Room component")) {
 			EditCmd c{};
 			c.verb = EditVerb::AttachAudioRoom;
 			c.node = node;
@@ -2141,7 +2215,7 @@ namespace editor {
 			Do(c);
 		}
 	}
-	if (ImGui::Button("Disable audio room")) {
+	if (ImGui::Button("Remove Audio Room component")) {
 		// Drops the ASSOCIATION only — the node + any GI volume on it
 		// stay (the RemoveAudioRoomVerb command; undo restores the
 		// captured row exactly).
@@ -3078,6 +3152,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 
 		// Authored GI volume on this node (GI volume inspector).
 		DrawGiVolumeSection(node);
+		DrawTriggerVolumeSection(node);
 		// Authored cubemap capture on this node (pinned probe inspector).
 		DrawCubemapSection(node);
 		// Authored camera on this node (lens inspector).

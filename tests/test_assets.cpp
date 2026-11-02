@@ -2918,6 +2918,11 @@ void TestClusterSerializeCook() {
 			// rooms, so the writer emits the uniform zero-row form;
 			// see TestAudioRoomSection for the populated encoding).
 			putU32(0);
+			// The v21 trigger section trails the audio rooms (u32
+			// rowCount — no triggers in this scene, uniform zero-row
+			// form; see TestTriggerVolume in test_trigger_volume.cpp
+			// for the populated encoding).
+			putU32(0);
 			const size_t at = p.size() - expect.size();
 			bool tailOk = p.size() >= expect.size();
 			for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3669,6 +3674,9 @@ void TestAudioSceneSection() {
 				// associations (the uniform zero-row form — this scene
 				// carries no audio rooms).
 				putU32(0);
+				// The v21 trigger section trails the audio rooms (the
+				// uniform zero-row form — no triggers in this scene).
+				putU32(0);
 				const size_t at = p.size() - expect.size();
 				bool tailOk = p.size() >= expect.size();
 				for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3780,8 +3788,9 @@ void TestAudioRoomSection() {
 					putU32(v);
 				};
 				// Node-sorted: denseNode 0 (the root room) first, then
-				// denseNode 1. v20 is the LAST section — the tail ends
-				// exactly here.
+				// denseNode 1. v20 ends here; the v21 trigger section
+				// (uniform zero-row form — no triggers in this scene)
+				// is the tail's actual end.
 				putU32(2);      // rowCount
 				putU32(0);      // denseNode 0
 				putU32(0);      // flags: disabled
@@ -3801,6 +3810,9 @@ void TestAudioRoomSection() {
 				putF32(2.5f);   // rt60
 				putF32(0.7f);   // damping
 				putF32(0.5f);   // transitionSeconds
+				// The v21 trigger section (u32 rowCount — zero-row
+				// form: this scene carries no trigger components).
+				putU32(0);
 				const size_t at = p.size() - expect.size();
 				bool tailOk = p.size() >= expect.size();
 				for (size_t i = 0; tailOk && i < expect.size(); ++i)

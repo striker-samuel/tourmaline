@@ -254,7 +254,12 @@ enum class Verb : uint8_t {
 	                // spacing[m], insideFade[m], outsideFade[m]).
 	                // An authored convex GI volume (gi_baker box spec
 	                // shape): axis-aligned, rotation ignored.
- 	SetGiVolumeAttr,    // node = target cluster id, or a created-volume ref
+ 	AttachTriggerVolume, // attach a spatial trigger row to an existing node
+  RemoveTriggerVolume, // detach trigger without deleting node
+  SetTriggerVolumeAttr, // enabled, once or tag
+  AttachGiVolume,  // add a default GI component to an existing node
+  RemoveGiVolume,  // remove only GI on a node
+  SetGiVolumeAttr,    // node = target cluster id, or a created-volume ref
 	                // (kCreateGiVolumeRefBase | k — see below); text = attr
 	                // ("priority","spacing","inside","outside",
 	                // "position","rotation","size","name"); number =
@@ -536,6 +541,9 @@ inline constexpr uint32_t kCreateAudioSourceRefBase = 0x02000000u;
 // nodes of OTHER families (a room on a created givolume) through the
 // family base + the text family name. Disjoint from all bases above.
 inline constexpr uint32_t kCreateAudioRoomRefBase = 0x01000000u;
+// Generic scene transforms (including Spatial Volumes) have their own
+// creation-order reference family for component attach/attr commands.
+inline constexpr uint32_t kCreateTransformRefBase = 0x00800000u;
 
 // All create-family ref bases OR'd together: a create-family ref
 // carries EXACTLY ONE base bit plus a small k (< 0x01000000 — the
@@ -549,7 +557,7 @@ inline constexpr uint32_t kCreateRefFamilyMask =
 	kCreateLightRefBase | kCreateTerrainRefBase | kCreateGiVolumeRefBase
 	| kCreateCubemapRefBase | kCreateCameraRefBase
 	| kCreateExportRefBase | kCreateAudioSourceRefBase
-	| kCreateAudioRoomRefBase;
+	| kCreateAudioRoomRefBase | kCreateTransformRefBase;
 
 struct Doc {
 	int version = kTourVersion;
@@ -641,7 +649,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr,
 	bool strict = true,
-	std::vector<uint32_t>* createdGiVolumesOut = nullptr);
+	std::vector<uint32_t>* createdGiVolumesOut = nullptr,
+	std::vector<uint32_t>* createdTransformsOut = nullptr);
 
 // The bake owner's STAMP: mirror a replayed scene's GI bindings onto the
 // doc's giAsset records. The SCENE is the authority — the bake updates
@@ -661,7 +670,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 bool StampGiAssets(Doc& doc, const Scene& scene,
 	const std::vector<uint32_t>& createdGiVolumes,
 	std::string* err = nullptr,
-	std::vector<std::string>* superseded = nullptr);
+	std::vector<std::string>* superseded = nullptr,
+	const std::vector<uint32_t>* createdTransforms = nullptr);
 
 // Structural reparent on any Scene (shared by the editor live path and the
 // cook replay path). Index-preserving: no nodes are added/removed, only

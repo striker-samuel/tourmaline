@@ -93,7 +93,12 @@ enum class EditVerb : uint8_t {
   	              // Post-creation edits ride SetGiVolumeAttr (like
   	              // lights: translate/rotate/scale/rename lower to
   	              // position/rotation/size/name channels).
-  	SetGiVolumeAttr, // GI volume property edit; c.node = GI volume node
+  	AttachTriggerVolume, // attach a trigger to the selected volume
+  RemoveTriggerVolumeVerb, // detach trigger, retain volume
+  SetTriggerVolumeAttr, // enabled, once or tag
+  AttachGiVolume, // add a default GI component to a transform
+  RemoveGiVolumeVerb, // detach GI, retain node and any other components
+  SetGiVolumeAttr, // GI volume property edit; c.node = GI volume node
   	              // (world), giVolumeAttr selects the channel (see below).
   	CreateCubemap, // append a cubemap capture node (world): a pinned
   	              // specular probe position + node-local SceneCubemap
@@ -240,6 +245,11 @@ struct EditCmd {
 	// afterText (name); before-state rides beforeNum / beforeVec4 /
 	// beforeText.
 	std::string giVolumeAttr;
+	std::string triggerVolumeAttr;
+	bool beforeTriggerVolume = false;
+	tour::scene::SceneTriggerVolume beforeTrigger{};
+	bool beforeGiVolume = false;
+	SceneGiVolume beforeGi{};
 	// CreateCubemap payload (live-world domain; pinned probe position
 	// in afterVec, name in afterText, parent in node2):
 	float cubemapRadius = 1.5f; // influence radius (m), fade = r/2

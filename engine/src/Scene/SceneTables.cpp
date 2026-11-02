@@ -178,6 +178,17 @@ void RebuildNodeRows(Scene& scene)
 		scene.rowsForNode[row.node].audioRoom = RowId(i);
 		++i;
 	}
+
+	for (size_t i = 0; i < scene.tables.triggerVolumes.size();) {
+		TriggerVolumeRow& row = scene.tables.triggerVolumes[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = std::move(scene.tables.triggerVolumes.back());
+			scene.tables.triggerVolumes.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].triggerVolume = RowId(i);
+		++i;
+	}
 	for (size_t i = 0; i < scene.tables.schemaAssocs.size();) {
 		SchemaAssocRow& row = scene.tables.schemaAssocs[i];
 		if (!NodeInRange(scene, row.node)) {
@@ -887,6 +898,43 @@ bool RemoveAudioRoom(Scene& scene, NodeId node)
 	return true;
 }
 
+// ---- spatial trigger association ----
+TriggerVolumeRow* FindTriggerVolume(Scene& scene, NodeId node) {
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].triggerVolume;
+	return rid == InvalidRow ? nullptr : &scene.tables.triggerVolumes[rid];
+}
+const TriggerVolumeRow* FindTriggerVolume(const Scene& scene, NodeId node) {
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].triggerVolume;
+	return rid == InvalidRow ? nullptr : &scene.tables.triggerVolumes[rid];
+}
+bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigger) {
+	if (!NodeInRange(scene, node)) return false;
+	EnsureNodeRows(scene);
+	if (auto* row = FindTriggerVolume(scene, node)) {
+		row->trigger = trigger;
+		return true;
+	}
+	scene.tables.triggerVolumes.push_back(TriggerVolumeRow{node, trigger});
+	scene.rowsForNode[node].triggerVolume = RowId(scene.tables.triggerVolumes.size() - 1);
+	return true;
+}
+bool RemoveTriggerVolume(Scene& scene, NodeId node) {
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].triggerVolume;
+	if (rid == InvalidRow) return false;
+	scene.tables.triggerVolumes[rid] = std::move(scene.tables.triggerVolumes.back());
+	scene.tables.triggerVolumes.pop_back();
+	if (size_t(rid) < scene.tables.triggerVolumes.size())
+		scene.rowsForNode[scene.tables.triggerVolumes[rid].node].triggerVolume = rid;
+	scene.rowsForNode[node].triggerVolume = InvalidRow;
+	return true;
+}
+
 // ---- project-defined schema associations (node_schema.h) ----------
 
 const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node)
@@ -1001,6 +1049,7 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 	removed |= RemoveEnvVolume(scene, node);
 	removed |= RemoveAudioSource(scene, node);
 	removed |= RemoveAudioRoom(scene, node);
+	removed |= RemoveTriggerVolume(scene, node);
 	return removed;
 }
 

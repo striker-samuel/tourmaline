@@ -791,6 +791,9 @@ private:
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);
 	void DrawInspector();
+	void DrawComponentTable(); // scene-wide undoable component data grid
+	bool m_showComponentTable = false;
+	char m_componentTableFilter[128] = {};
 	void DrawWorldPanel(); // Inspector page for the World pseudo-node
 	// Material editor page (m_materialFocus travel) + camera section.
 	void DrawMaterialFocusPage();
@@ -868,6 +871,8 @@ private:
 	// file order): setGiVolumeAttr -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedGiVolumeNodes;
+	// All editor-created generic transforms, addressed by volume components.
+	std::vector<uint32_t> m_tourCreatedTransformNodes;
 	// Same scheme for history-created cubemap captures (tour
 	// CreateCubemap file order): setCubemapAttr -ref addressing.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
@@ -952,6 +957,7 @@ private:
 	int CreatedLightIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created GI volume, same contract.
 	int CreatedGiVolumeIndex(uint32_t worldNode) const;
+	int CreatedTransformIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created cubemap capture, same
 	// contract.
 	int CreatedCubemapIndex(uint32_t worldNode) const;
@@ -1281,6 +1287,11 @@ private:
 	// Inspector "GI volume" section for GI volume nodes (priority /
 	// spacing / fades via undoable SetGiVolumeAttr; shape via the transform).
 	void DrawGiVolumeSection(uint32_t node);
+	void DrawTriggerVolumeSection(uint32_t node);
+	bool ReadNodeTriggerVolumeAttr(uint32_t node, const std::string& attr,
+		double& num, bool& flag, std::string& text) const;
+	bool WriteNodeTriggerVolumeAttr(uint32_t node, const std::string& attr,
+		double num, bool flag, const std::string& text);
 	// The inspector's "Optimize grid layout" button (GI volume section):
 	// runs ChooseGiVolumeGridLayout against the bake-parity geometry
 	// (tour snapshot -> offline cluster replay -> the trace scene, the
@@ -1436,6 +1447,7 @@ private:
 	// (createNode -at transform); the runtime finds them by NAME
 	// (findNodeByName — the name IS the locator's identity).
 	void DraftCreateLocator();
+	void DraftCreateSpatialVolume(); // generic transform with full box extents
 	// True when the node is a bare transform: no mesh/light/camera/decal/
 	// givolume/cubemap/export/env link — the "locator" definition. Used
 	// by the outliner tag, the gizmo marker, and the click pick. NOTE:
