@@ -1085,70 +1085,53 @@ if HAVE_QT:
             c = Counter(e.kind_name for e in pak.entries)
             return " (" + ", ".join(f"{k}:{v}" for k, v in sorted(c.items())) + ")"
 
-        def filtered_entries(self) -> list[tuple[Mount | None, PakEntry]]:
-            """Entries of the selected mount (pak) filtered by search/kind."""
-            m = self.selected_mount()
-            if m is None or m.kind != "pak" or not m.pak or m.pak.error:
-                # invalid pak: still show nothing (error is in header pane)
-                if m is not None and m.kind == "pak" and m.pak and m.pak.error:
-                    return []
+        def filtered_entries(self):
+            selected = self.selected_mount()
+            if selected is None:
+                return []
+            if selected.kind == "tapp" and selected.tapp:
+                sources = [m for m in self.mounts if m.kind == "pak"
+                           and m.manifest_source == selected.tapp.source]
+            elif selected.kind == "pak":
+                sources = [selected]
+            else:
                 return []
             q = self.search.text().strip().lower()
             kind = self.kind_combo.currentText()
-            out = []
-            for e in m.pak.entries:
-                if kind != "all kinds" and e.kind_name != kind:
-                    continue
-                if q and q not in e.path.lower():
-                    continue
-                out.append((m, e))
-            return out
+            return [(m, e) for m in sources if m.pak and not m.pak.error
+                    for e in m.pak.entries
+                    if (kind == "all kinds" or e.kind_name == kind)
+                    and (not q or q in e.path.lower())]
 
         def refresh_table(self):
             rows = self.filtered_entries()
             self.table.setSortingEnabled(False)
             self.table.setRowCount(len(rows))
-            for i, (_, e) in enumerate(rows):
-                vals = [
-                    e.path,
-                    e.kind_name,
-                    str(e.offset),
-                    str(e.size),
-                    ("lz4" if e.compressed else "none"),
-                    f"0x{e.path_hash:016X}",
-                    ("VFS" if e.vfs_visible else "internal"),
-                ]
-                for j, v in enumerate(vals):
-                    it = QTableWidgetItem(v)
-                    if j in (2, 3):
-                        it.setData(Qt.ItemDataRole.DisplayRole, int(vals[j]))
-                    self.table.setItem(i, j, it)
+            for i, (mount, entry) in enumerate(rows):
+                values = [entry.path, Path(mount.pak.source).name,
+                          entry.kind_name, entry.slot, entry.offset, entry.size,
+                          "lz4" if entry.compressed else "raw",
+                          f"0x{entry.content_crc:08X}",
+                          "VFS" if entry.vfs_visible else "internal"]
+                for j, value in enumerate(values):
+                    item = QTableWidgetItem()
+                    item.setData(Qt.ItemDataRole.DisplayRole, value)
+                    item.setData(Qt.ItemDataRole.UserRole, (mount, entry))
+                    self.table.setItem(i, j, item)
             self.table.setSortingEnabled(True)
             self.table.resizeColumnsToContents()
             if rows:
                 self.table.selectRow(0)
 
-        # -- detail ----------------------------------------------------
         def show_selected(self):
-            rows = self.filtered_entries()
-            sel = self.table.currentRow()
-            if not (0 <= sel < len(rows)):
-                # table may be sorted; fall back to path lookup
-                items = self.table.selectedItems()
-                if not items:
-                    return
-                path = self.table.item(items[0].row(), 0).text()
-                m = self.selected_mount()
-                if not m or m.kind != "pak" or not m.pak:
-                    return
-                e = next((x for x in m.pak.entries if x.path == path), None)
-                if e is None:
-                    return
-                self.show_entry(m, e)
+            items = self.table.selectedItems()
+            if not items:
                 return
-            m, e = rows[sel]
-            assert m is not None
-            self.show_entry(m, e)
+            item = self.table.item(items[0].row(), 0)
+            if item is not None:
+                selected = item.data(Qt.ItemDataRole.UserRole)
+                if selected:
+                    self.show_entry(*selected)
 
         def show_entry(self, m: Mount, e: PakEntry):
             assert m.pak is not None
