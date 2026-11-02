@@ -2300,10 +2300,13 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		// undo below.
 		auto cvit = FindGiVolume(scene, n);
 		c.beforeFlag = (cvit);
-		if (c.beforeFlag)
+		if (c.beforeFlag) {
 			c.beforeVec4 = glm::vec4(float(cvit->volume.priority),
 				cvit->volume.spacing, cvit->volume.insideFade,
 				cvit->volume.outsideFade);
+			c.beforeGiVolume = true;
+			c.beforeGi = cvit->volume;
+		}
 		// Cubemap capture def (created or replayed): presence rides
 		// beforeCubemap, the radius rides beforeNum (the light index
 		// in c.number above is exclusive — a capture node has no
@@ -2333,6 +2336,10 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			c.beforeAudioRoom = true;
 			c.beforeRoom = aroom->room;
 		}
+		if (const auto* trigger = tour::scene::FindTriggerVolume(scene, n)) {
+			c.beforeTriggerVolume = true;
+			c.beforeTrigger = trigger->trigger;
+		}
 		// Draw entries (position, node, mesh, material, flags).
 		for (uint32_t id : nodes)
 			for (size_t i = 0; i < m_world->drawItems.size(); ++i)
@@ -2360,6 +2367,8 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		RemoveCubemap(scene, id);
 		RemoveCamera(scene, id);
 		RemoveAudioSource(scene, id);
+		tour::scene::RemoveAudioRoom(scene, id);
+		tour::scene::RemoveTriggerVolume(scene, id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -2405,7 +2414,9 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 	}
 	if (c.number >= 0.0 && c.number < double(m_world->lightLocations.size()))
 		SetLight(scene, n, uint32_t(c.number));
-	if (c.beforeFlag)
+	if (c.beforeGiVolume)
+		SetGiVolume(scene, n, c.beforeGi);
+	else if (c.beforeFlag)
 		SetGiVolume(scene, n, ::SceneGiVolume{ uint32_t(c.beforeVec4.x),
 			c.beforeVec4.y, c.beforeVec4.z, c.beforeVec4.w });
 	if (c.beforeCubemap)
@@ -2419,6 +2430,8 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 		SetAudioSource(scene, n, c.beforeAudio);
 	if (c.beforeAudioRoom)
 		tour::scene::SetAudioRoom(scene, n, c.beforeRoom);
+	if (c.beforeTriggerVolume)
+		tour::scene::SetTriggerVolume(scene, n, c.beforeTrigger);
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
