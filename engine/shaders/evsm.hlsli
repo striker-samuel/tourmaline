@@ -3,6 +3,7 @@
 
 #pragma once
 #include "gpu_platform.hlsli"
+#include "shadow_bias.hlsli"
 
 // EVSM (Exponential Variance Shadow Maps) shared helpers.
 //
@@ -414,7 +415,12 @@ float SampleEvsmSpotTileSoft(
     out bool valid)
 {
     valid = false;
-    float3 biasedWorld = worldPos + faceNormal * t.normalBias;
+    // Match PCF/PCSS: normalBias is a cap, not a fixed 2 cm offset.
+    const float4 unbiasedClip = mul(t.lightVP, float4(worldPos, 1.0f));
+    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
+    const float normalBias = PerspectiveShadowNormalBias(
+        unbiasedClip.w, tanOuter, t.invShadowSize.x, t.normalBias);
+    float3 biasedWorld = worldPos + faceNormal * normalBias;
     float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
     if (clip.w <= 1e-6f)
         return 1.0f;

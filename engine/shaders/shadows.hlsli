@@ -11,6 +11,7 @@
 #define Epsilon 1
 #include "common.hlsli"
 #include "gpu_platform.hlsli"
+#include "shadow_bias.hlsli"
 
 struct CascadeMeta
 {
@@ -516,12 +517,17 @@ float GetSpotShadowFactorTile(
     float3 worldPos,
     float3 faceNormal,
     float3 spotDirection,
+    float outerAngle,
     GpuCascadeDescription t,
     uint atlasIdx
 )
 {
-    // Receiver-side normal bias, same rationale as the cascaded path.
-    float3 biasedWorld = worldPos + faceNormal * t.normalBias;
+    // Use at most half a projected shadow texel rather than a fixed 2 cm.
+    const float4 unbiasedClip = mul(t.lightVP, float4(worldPos, 1.0f));
+    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
+    const float normalBias = PerspectiveShadowNormalBias(
+        unbiasedClip.w, tanOuter, t.invShadowSize.x, t.normalBias);
+    float3 biasedWorld = worldPos + faceNormal * normalBias;
     float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
     // Behind the light (w <= 0) or beyond far plane => lit.
     if (clip.w <= 1e-6f)
@@ -564,7 +570,7 @@ float GetSpotShadowFactorTile(
 // atlas; every tap clamps into the tile (same discipline as
 // PCFShadowAtlas). outerAngle is the spot's half angle (light struct).
 float PcssSpotShadow(
-    uint samplerId,
+    uint comparisonSamplerId,
     float3 worldPos,
     float3 faceNormal,
     float3 spotDirection,
@@ -575,8 +581,12 @@ float PcssSpotShadow(
     float outerAngle     // spot half angle (radians)
 )
 {
-    // Same receiver bias + projection as GetSpotShadowFactorTile.
-    const float3 biasedWorld = worldPos + faceNormal * t.normalBias;
+    // Match the inline PCF/EVSM receiver bias for consistent contacts.
+    const float4 unbiasedClip = mul(t.lightVP, float4(worldPos, 1.0f));
+    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
+    const float normalBias = PerspectiveShadowNormalBias(
+        unbiasedClip.w, tanOuter, t.invShadowSize.x, t.normalBias);
+    const float3 biasedWorld = worldPos + faceNormal * normalBias;
     const float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
     if (clip.w <= 1e-6f)
         return 1.0f;
@@ -593,7 +603,6 @@ float PcssSpotShadow(
     uint aw, ah;
     textures[atlasIdx].GetDimensions(aw, ah);
     const float tileRes = max(float(aw) * t.uvScale.x, 1.0f);
-    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
     const float farP = max(t.splitEnd, nearPlane + 0.01f);
     // Eye distances (RH_ZO perspective inversion; monotone in ndc.z).
     const float zRecv = farP * nearPlane
@@ -613,8 +622,11 @@ float PcssSpotShadow(
             const float2 tapUV = clamp(
                 uvAtlas + float2(x, y) * rSearchUV * t.uvScale,
                 t.uvClampMin, t.uvClampMax);
-            const float d = textures[atlasIdx]
-                .SampleLevel(samplers[samplerId], tapUV, 0).r;
+            // Point-fetch RAW depth: linear interpolation can mix the
+            // blocker with the far-plane clear depth and skew penumbrae.
+            const uint2 texel = min(
+                (uint2)(tapUV * float2(aw, ah)), uint2(aw - 1u, ah - 1u));
+            const float d = textures[atlasIdx].Load(int3(int2(texel), 0)).r;
             if (d < receiverDepth) { // in front of the receiver: blocker
                 blockerSum += d;
                 blockerCount += 1u;
@@ -641,9 +653,9 @@ float PcssSpotShadow(
             const float2 tapUV = clamp(
                 uvAtlas + float2(px, py) * rPenUV * t.uvScale,
                 t.uvClampMin, t.uvClampMax);
-            const float d = textures[atlasIdx]
-                .SampleLevel(samplers[samplerId], tapUV, 0).r;
-            sum += (receiverDepth <= d) ? 1.0f : 0.0f;
+            // Compare first, then bilinear-filter visibility via hardware PCF.
+            sum += textures[atlasIdx].SampleCmpLevelZero(
+                comparisonSamplers[comparisonSamplerId], tapUV, receiverDepth);
         }
     }
     return sum / 9.0f;
@@ -659,6 +671,7 @@ float GetSpotShadowFactorFromPC(
     float3 worldPos,
     float3 faceNormal,
     float3 spotDirection,
+    float outerAngle,
     int tileIndex
 )
 {
@@ -674,7 +687,9 @@ float GetSpotShadowFactorFromPC(
         return 1.0f;
     uint atlasIdx = NonUniformResourceIndex(pc.spotShadowMapIndex);
     GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
-    return GetSpotShadowFactorTile(comparisonSamplerId, worldPos, faceNormal, spotDirection, t, atlasIdx);
+    return GetSpotShadowFactorTile(
+        comparisonSamplerId, worldPos, faceNormal, spotDirection,
+        outerAngle, t, atlasIdx);
 }
 
 #endif // ENGINE_HAS_PC
@@ -713,7 +728,13 @@ float GetPointShadowFactorTile(
     // normal bias: read it from the BASE tile, bias the receiver, THEN
     // pick the face from the biased direction (keeps the projection
     // inside the NDC square by construction - see the block comment).
-    const float normalBias = tiles.Get().tiles[tileBase].normalBias;
+    // Each cube face has tan(halfFov)=1. Apply the same projected-
+    // texel bias before face selection in both PCF and EVSM.
+    const float3 dirUnbiased = worldPos - lightPosition;
+    const float eyeDepth = max(max(abs(dirUnbiased.x), abs(dirUnbiased.y)), abs(dirUnbiased.z));
+    const float normalBias = PerspectiveShadowNormalBias(
+        eyeDepth, 1.0f, tiles.Get().tiles[tileBase].invShadowSize.x,
+        tiles.Get().tiles[tileBase].normalBias);
     const float3 biasedWorld = worldPos + faceNormal * normalBias;
     const float3 dir = biasedWorld - lightPosition; // light -> biased receiver
     const float dist = length(dir);
@@ -835,7 +856,13 @@ float GetPointShadowFactorEvsmTile(
     // Face selection from the biased direction - MUST mirror the PCF path
     // above (X-first tie-breaks, +X/-X/+Y/-Y/+Z/-Z order) so the point's
     // PCF and EVSM sample the SAME face for the same receiver.
-    const float normalBias = tiles.Get().tiles[tileBase].normalBias;
+    // Each cube face has tan(halfFov)=1. Apply the same projected-
+    // texel bias before face selection in both PCF and EVSM.
+    const float3 dirUnbiased = worldPos - lightPosition;
+    const float eyeDepth = max(max(abs(dirUnbiased.x), abs(dirUnbiased.y)), abs(dirUnbiased.z));
+    const float normalBias = PerspectiveShadowNormalBias(
+        eyeDepth, 1.0f, tiles.Get().tiles[tileBase].invShadowSize.x,
+        tiles.Get().tiles[tileBase].normalBias);
     const float3 biasedWorld = worldPos + faceNormal * normalBias;
     const float3 dir = biasedWorld - lightPosition; // light -> biased receiver
     const float dist = length(dir);

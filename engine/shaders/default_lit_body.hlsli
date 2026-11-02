@@ -291,7 +291,7 @@ plColor *= EvaluateLightFunction(
             // interpolation) — the COMPARISON sampler (pc.comparison-
             // SamplerId, slot 1), never the regular sampler.
             shadowFactor = GetSpotShadowFactorFromPC(pc.comparisonSamplerId, worldPos, geomN,
-                pl.direction, pl.shadowTile);
+                pl.direction, pl.outerAngle, pl.shadowTile);
     }
     else if (useInlineShadow && pl.type == 0 && pl.shadowTile >= 0)
     {
