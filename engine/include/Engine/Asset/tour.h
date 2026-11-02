@@ -254,7 +254,10 @@ enum class Verb : uint8_t {
 	                // spacing[m], insideFade[m], outsideFade[m]).
 	                // An authored convex GI volume (gi_baker box spec
 	                // shape): axis-aligned, rotation ignored.
- 	AttachGiVolume,  // add a default GI component to an existing node
+ 	AttachTriggerVolume, // attach a spatial trigger row to an existing node
+  RemoveTriggerVolume, // detach trigger without deleting node
+  SetTriggerVolumeAttr, // enabled, once or tag
+  AttachGiVolume,  // add a default GI component to an existing node
   RemoveGiVolume,  // remove only GI on a node
   SetGiVolumeAttr,    // node = target cluster id, or a created-volume ref
 	                // (kCreateGiVolumeRefBase | k — see below); text = attr
