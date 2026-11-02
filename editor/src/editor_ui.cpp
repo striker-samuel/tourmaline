@@ -744,6 +744,7 @@ namespace editor {
 			ImGui::Separator();
 			if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 				m_placement.showGraph = !m_placement.showGraph;
+			ImGui::MenuItem("Component table...", nullptr, &m_showComponentTable);
 			if (ImGui::MenuItem("Reference editor...", nullptr,
 				m_showReferencesPanel))
 				m_showReferencesPanel = !m_showReferencesPanel;
