@@ -15,9 +15,11 @@
 #include <Engine/Camera/camera.h>    // tour::CameraPositioner_FirstPerson
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
+#include <Engine/Scene/spatial_volume.h> // the shared room OBB decode
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Renderer/WorldRenderer.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -137,6 +139,11 @@ public:
 			return;
 		app::ProjectScenes& scenes = *m_scenes;
 		const ListenerPose listener = ResolveListener();
+		// The ENVIRONMENTAL ROOM evaluation (docs/audio_graph.md): the
+		// listener's coverage over every authored audio room drives the
+		// shared world-SFX reverb send. Runs BEFORE the emitter passes
+		// (independent state, no ordering coupling).
+		UpdateRooms(*world, listener);
 		// Pass 1: the authored emitters (the pak clusters' OWN scenes —
 		// the durable rows; the dynamic cluster's spawned entities ride
 		// pass 2 through their handles).
@@ -294,8 +301,14 @@ public:
 			err->clear();
 		const float vol = std::clamp(row->source.volume * gain, 0.0f,
 			1.0f);
+		// The ROUTE: spatial emitters ride the environmental bus
+		// (listener-driven rooms reverber them); 2D sources stay
+		// direct (music/UI never unintentionally reverberate).
+		const tour::audio::AudioRoute route = row->source.spatial
+			? tour::audio::AudioRoute::WorldSfx
+			: tour::audio::AudioRoute::Direct;
 		tour::audio::VoiceHandle voice = m_host.m_audio.Play(
-			cached.clip, vol, false, 1.0f);
+			cached.clip, vol, false, 1.0f, route);
 		if (voice.valid())
 			m_voices.push_back(
 				ActiveVoice{ voice, key, std::max(gain, 0.0f) });
@@ -444,10 +457,15 @@ private:
 				CachedClip& cached = m_clips[slot.soundId];
 				if (!cached.clip.valid()
 						&& DecodeClip(slot.soundId, cached.clip, err)) {
+					// Spatial emitters ride the environmental bus (the
+					// listener's room coverage reverber them).
 					state.autoplayVoice = m_host.m_audio.Play(
 						cached.clip,
 						std::clamp(def->volume * slot.gain, 0.0f, 1.0f),
-						slot.loop, 1.0f);
+						slot.loop, 1.0f,
+						def->spatial
+							? tour::audio::AudioRoute::WorldSfx
+							: tour::audio::AudioRoute::Direct);
 					if (state.autoplayVoice.valid())
 						std::cerr << "[Audio] autoplay: node "
 							<< mergedNode << " -> sound 0x" << std::hex
@@ -510,8 +528,103 @@ private:
 				apply(v.voice, v.gainMul);
 	}
 
-	// The content session this layer resolves through. THE SHARED
-	// LANE (the consolidated content architecture): a --project launch
+	// ---- the environmental room evaluation (docs/audio_graph.md) --
+	// The listener's coverage over every AUTHORED audio room (the
+	// durable pak clusters' rows — exactly the emitter walk's shape),
+	// blended by the ordered-coverage rule: rooms sorted by descending
+	// audio priority (stable cluster/node tie-breaks), each
+	// contributing remaining*w(room) — the nearest face dominates the
+	// weight (spatial_volume.h, the GI placement convention). The
+	// leftover coverage stays at the OUTDOOR baseline (wet 0, a short
+	// rt60), so rt60/damping stay meaningful with no room winning.
+	// Changes push ONE mixer command, change-detected — the smoothing
+	// is entirely mixer-thread-side (the wet gainer + the reverb's
+	// coefficient glide), immune to frame stalls.
+	void UpdateRooms(tour::World& world, const ListenerPose& listener) {
+		struct RoomRef {
+			tour::Cluster* cluster;
+			size_t clusterIndex;      // world.clusters slot (the map key)
+			uint32_t clusterNode; // the durable (cluster, node) key
+			const tour::scene::SceneAudioRoom* def;
+		};
+		std::vector<RoomRef> rooms;
+		for (size_t ci = 0; ci < world.clusters.size(); ++ci) {
+			tour::Cluster* cluster = world.clusters[ci].get();
+			if (!cluster || cluster->isDynamic)
+				continue; // authored rooms only (v1)
+			for (const tour::scene::AudioRoomRow& row :
+					cluster->scene.tables.audioRooms)
+				if (row.room.enabled)
+					rooms.push_back(
+						{ cluster, ci, row.node, &row.room });
+		}
+		// Descending audio priority; stable ties (cluster pointer,
+		// then node) keep the blend deterministic across frames.
+		std::stable_sort(rooms.begin(), rooms.end(),
+			[](const RoomRef& a, const RoomRef& b) {
+				if (a.def->priority != b.def->priority)
+					return a.def->priority > b.def->priority;
+				if (a.cluster != b.cluster)
+					return a.cluster < b.cluster;
+				return a.clusterNode < b.clusterNode;
+			});
+		// The ordered-coverage blend.
+		constexpr float kOutdoorRt60 = 0.35f;
+		constexpr float kOutdoorDamping = 0.5f;
+		float remaining = 1.0f;
+		float wet = 0.0f, rt60 = 0.0f, damping = 0.0f;
+		bool anyShape = false;
+		for (const RoomRef& r : rooms) {
+			if (remaining <= 0.0f)
+				break;
+			// Resolve the room's shape against the MERGED transform
+			// (never a cached merged id — the map is rebuilt per
+			// resolve; the durable key is the cluster + its node).
+			const auto& merged =
+				r.clusterIndex < world.clusterMergedNodes.size()
+				? world.clusterMergedNodes[r.clusterIndex]
+				: std::vector<uint32_t>{};
+			const uint32_t m = r.clusterNode < merged.size()
+				? merged[r.clusterNode] : UINT32_MAX;
+			if (m == UINT32_MAX
+					|| m >= world.scene.globalTransform.size())
+				continue;
+			const tour::scene::SpatialVolumeBox box =
+				tour::scene::VolumeBoxFromGlobalTransform(
+					world.scene.globalTransform[m]);
+			if (!box.Valid())
+				continue; // degenerate/flat: covers nothing
+			anyShape = true;
+			const float w = tour::scene::SpatialVolumeWeight(box,
+				listener.position, r.def->insideFade,
+				r.def->outsideFade);
+			if (w <= 0.0f)
+				continue;
+			const float c = remaining * w;
+			wet += c * r.def->wet;
+			rt60 += c * r.def->rt60;
+			damping += c * r.def->damping;
+			remaining *= (1.0f - w);
+		}
+		(void)anyShape; // (an empty room table keeps the dry default)
+		// The leftover coverage: the outdoor baseline.
+		rt60 += remaining * kOutdoorRt60;
+		damping += remaining * kOutdoorDamping;
+		// Change-detected push (no per-frame command spam).
+		constexpr float kEps = 1e-3f;
+		if (std::fabs(wet - m_envTarget.wet) > kEps
+			|| std::fabs(rt60 - m_envTarget.rt60) > kEps
+			|| std::fabs(damping - m_envTarget.damping) > kEps) {
+			m_envTarget = tour::audio::EnvironmentReverb{ wet, rt60,
+				damping };
+			m_host.m_audio.SetEnvironmentReverb(m_envTarget);
+		}
+	}
+
+	// The last-applied environmental target (change detection).
+	tour::audio::EnvironmentReverb m_envTarget{};
+
+	// The content session this layer resolves through. THE SHARED	// LANE (the consolidated content architecture): a --project launch
 	// builds ONE session up front (RunPakApp — the manifest adopted
 	// into the registry, every listed pak's backend adopted as the
 	// preloads resolve, the loose discovery tree registered as an

@@ -1403,6 +1403,14 @@ using namespace ::smvk;
 			for (const AudioSourceRow& row : cs.tables.audioSources)
 				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
 					SetAudioSource(scene, nodeMap[row.node], row.source);
+			// Audio rooms (the environmental-reverb volume): payloads
+			// verbatim, nodes through the map — the audio runtime
+			// evaluates each room's shape against the MERGED global
+			// transform at the listener, every update (never a cached
+			// merged id — the map is rebuilt per resolve).
+			for (const tour::scene::AudioRoomRow& row : cs.tables.audioRooms)
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					tour::scene::SetAudioRoom(scene, nodeMap[row.node], row.room);
 			// Project-defined schema associations (node_schema.h): the
 			// cooked value bytes ride VERBATIM (no decode at fold time
 			// — the generated project::types own the decode), nodes

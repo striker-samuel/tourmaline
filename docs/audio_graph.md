@@ -192,26 +192,161 @@ The kind's full ladder (the shaders/gi pattern):
   path). No numeric id stamping (the cross-pak path form is the
   stable identity here, unlike cooked scenes which stamp ids).
 
+## The Schroeder reverb (v1 DSP)
+
+`engine/src/Audio/schroeder_reverb.{h,cpp}` — a custom miniaudio
+`ma_node` (the ONE custom node; everything else is stock miniaudio):
+four staggered feedback combs in parallel, two all-pass diffusers in
+series, per channel, with distinct left/right delay tunings
+(Freeverb's reference values at 44.1 kHz, scaled to the engine rate)
+and a one-pole high-frequency damper inside each comb's feedback path.
+
+- **Two modes, one implementation**: MIX (the authored-graph inline
+  form: `out = (1-wet)*dry + wet*processed`; wet 0 is an EXACT
+  bypass — the callback short-circuits to a copy) and WET-ONLY (the
+  environmental send form: the node emits only the tail; the dry path
+  rides a separate splitter branch, so the send gain never attenuates
+  the dry signal).
+- **The audio-thread contract**: all heap allocation at init (the
+  sanctioned burst), freed at uninit; the callback never allocates,
+  locks, logs or reinitializes; delay line LENGTHS are fixed for the
+  node's lifetime; coefficients (comb feedback from RT60 via
+  `fb = 10^(-3*D/rt60)`, the damping pole, the wet mix) smooth toward
+  their targets inside the callback (~30 ms glide).
+- `MA_NODE_FLAG_CONTINUOUS_PROCESSING | MA_NODE_FLAG_ALLOW_NULL_INPUT`:
+  tails drain through input silence (a stopped source never truncates
+  its reverb). Non-finite input reads as zero; comb filter states
+  zero-snap below 1e-20 (denormal protection); feedback clamped
+  strictly below unity.
+
+Pinned by `ag.reverb.*` (audiograph_tests): byte-exact wet-0 bypass,
+the tail outliving a 50 ms source at rt60 3, decay ordering (rt60 0.25
+dead vs rt60 3.0 ringing at the same instant), stereo decorrelation,
+finite output, and mid-flight RT60 retargets.
+
+## Authored graph `reverb` nodes
+
+`node -type reverb -wet 0.28 -rt60 1.8 -damping 0.60` — the inline
+form (`AudioNodeType::Reverb = 11`, appended; the param fields
+`wet`/`rt60`/`damping` appended to `AudioParamField`). The bounds gate
+at all three parse points (catalog ids, cooker, runtime):
+wet/damping 0..1, rt60 0.15..8 s. Like `delay`, the reverb's feedback
+lives INSIDE the node — it authorizes no graph cycles.
+
+## Audio rooms (the environmental reverb volumes)
+
+**`SceneAudioRoom`** (scene_payloads.h) — a node-local payload:
+`enabled`, `priority` (audio's own ordering, INDEPENDENT of GI
+lighting priority), `insideFade`/`outsideFade` (per-face metres),
+`wet`, `rt60`, `damping`, `transitionSeconds`. The room SHAPE is the
+node's transform — the GI-volume placement convention, decoded at the
+listener by `Engine/Scene/spatial_volume.h` (the ONE shared OBB
+utility: center = global translation, axes = normalized transform
+columns, half-extents = HALF the column lengths; per-face
+smoothstep fades; min-of-six-faces; parity with the GI volume's own
+plane math pinned by scene_table_tests). **Independent of GI by
+design**: a node may carry BOTH a `GiVolumeRow` and an `AudioRoomRow`
+(one placement, two associations), or only a room — nothing here
+reads `.givolume` artifacts, probe textures or the renderer's GI
+budget.
+
+- **Authoring**: `.tour` verbs — `createNode -at audioRoom` (the
+  givolume-lane create: `-t` position, `-s` FULL extents),
+  `attachAudioRoom`/`removeAudioRoom` (the association verbs; a room
+  on a created GI volume rides `-ref k -owner givolume`), and
+  `setAudioRoomAttr` (the property lines + the position/rotation/
+  size shape channels; post-creation transform edits lower to them,
+  the givolume lane). `kCreateAudioRoomRefBase = 0x01000000`.
+- **Editor**: Create → Audio room; the inspector's Audio room section
+  (the Enable button attaches a default row to ANY transform node;
+  every field drags with coalesced undo); teal X-ray box gizmos
+  (View toggle) + pick; full CmdToTour/TourToCmd round-trip,
+  duplicate/delete capture, and the family-ref drop guards.
+- **Cooked scene**: the blob's **v20 audio-room section** (appended
+  after v19 schemaAssocs; the sanctioned break — old readers reject
+  at the trailing-bytes check): `u32 rowCount` + per node-sorted row
+  `(denseNode, flags, priority, insideFade, outsideFade, wet, rt60,
+  damping, transitionSeconds)`. Values sanitize on read (the last
+  gate). The world merge copies rows per-cluster through the node map,
+  exactly like the audio sources.
+
+### The environmental world-SFX bus
+
+```
+spatial SceneAudioSource voice ──┐
+                                 ├─> worldSfxGroup ─> splitter ─┬─ dry ─> endpoint
+PlaySound (spatial emitters) ───┘                              └─ wet ─> SchroederReverbNode (wet-only)
+                                                                        └─> wetGain ─> endpoint
+
+2D / UI / music voices ────────────────> endpoint (Direct, the default)
+.audiograph instance buses ────────────> endpoint (unchanged by default)
+```
+
+`Play(..., AudioRoute route)` gains the route parameter (default
+`Direct` — every pre-room caller keeps its exact old behavior); the
+scene-aware layer routes `spatial == true` emitters to `WorldSfx`. A
+failed bus build degrades WorldSfx to the direct attach (logged once,
+never fatal). The reverb is a **send**: the dry path is never
+attenuated; the listener-room weight drives the wet gain.
+
+**Listener-side evaluation** (AudioRuntime, after ResolveListener):
+walk the durable pak clusters' `audioRooms` rows (the emitter-walk's
+shape — stable keys, merged transforms through `clusterMergedNodes`,
+never cached merged ids), sort by descending audio priority (stable
+cluster/node tie-breaks), blend by **ordered coverage**: each room
+contributes `remaining * weight(room)` of its wet/rt60/damping, the
+leftover coverage stays at the OUTDOOR baseline (wet 0, rt60 0.35 s,
+damping 0.5). ONE change-detected `SetEnvironmentReverb` command per
+material change; all smoothing is mixer-thread-side (the wet gainer's
+256-frame ramp + the reverb's ~30 ms coefficient glide) — immune to
+frame stalls, no zipper.
+
+**MVP rule** (the honest scope): room geometry governs
+listener-side environmental reverb only — no openings, no
+source-to-listener transmission, occlusion, diffraction or per-room
+impulse responses. It is not geometric acoustics.
+
+### The per-voice cursor (the shared-buffer trap)
+
+**A clip's decoded bytes are wrapped by PER-VOICE
+`ma_audio_buffer_ref` cursors — never a shared `ma_audio_buffer`.**
+One `ma_audio_buffer` carries ONE cursor: the first voice to play a
+clip exhausts it, and every later voice wrapping the same buffer
+reads silence; two simultaneous voices would fight over the position.
+The instance lane's seek-to-0 masked this for sequential instances;
+overlapping same-clip instances still raced. Pinned by
+`ag.bus.raw-cursor-trap`/`-fix` (the raw demonstration) and
+`ag.bus.second-play-rings`/`ag.bus.world-*-rings` (the engine-level
+regression pins).
+
 ## v1 limits + follow-ups
 
-- **No reverb node** — miniaudio 0.11 ships no reverb; the stock set
-  is source/gain/lpf/hpf/bpf/notch/peak/loshelf/hishelf/delay. A
-  Schroeder comb+allpass `ma_node` implementation is the natural
-  follow-up.
+- ~~**No reverb node**~~ — **LANDED**: the Schroeder reverb
+  (`engine/src/Audio/schroeder_reverb.{h,cpp}`) serves both the
+  authored-graph `reverb` node and the environmental world-SFX send.
+  Follow-ups: separate early reflections, dual crossfaded reverb
+  processors for sharp room changes, real room-material estimates.
 - **No spatialization inside graphs** — graph sources render
   non-spatial stereo in v1; the scene-emitter lane (amplitude+pan per
-  frame) is the only spatial surface. A per-voice spatializer bridge
-  (the `ma_spatializer` is already in every `ma_sound`) is the
-  follow-up.
+  frame) plus the listener-driven environmental send are the spatial
+  surfaces. A per-voice spatializer bridge (the `ma_spatializer` is
+  already in every `ma_sound`) is the follow-up.
 - **Instance volumes are not sample-accurate** — they land at chunk
   boundaries with 256-frame smoothing (21 ms cadence); fine for beds
   and ambience, not for rhythm-critical one-shots.
 - **The doc passes by value into the instance** (the animator's
   clip-by-value rule); a shared doc cache beyond the app lane's is
   unnecessary at graph sizes.
-- **No editor surface yet** — the format is authored as text; a
-  visual graph editor (the editor's Create/inspector surfaces) is the
-  follow-up this format was shaped for.
-- Pinned by: `audiograph_tests` (parser + engine), `audiograph.*` in
-  project_pipeline_tests, the sample's compile-time pins
+- **No graph editor yet** — the `.audiograph` format is authored as
+  text; AUDIO ROOMS have their full editor surface (create, inspector,
+  gizmo, undo, tour round-trip) — a visual graph editor remains the
+  follow-up the format was shaped for.
+- **Room audio v1 follow-ups**: per-source room sends, doorway/portal
+  topology, real material absorption, the per-room transition glide
+  (the field cooks + round-trips; the runtime uses the engine's fixed
+  ~30 ms coefficient glide).
+- Pinned by: `audiograph_tests` (parser + engine + reverb + world
+  bus), `audiograph.*` in project_pipeline_tests, `room.*` in asset
+  tests (the v20 section), `room *` + `volume *` pins in
+  scene_table_tests + tour_tests, the sample's compile-time pins
   (`samples/04_project_game`), and `project_e2e_tests`.

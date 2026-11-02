@@ -151,10 +151,59 @@
   frame stalls). The generated project.h emits
   `project::audiographs::*` AudioGraphKeys PLUS per-cue constants
   (`project::audiocues::<graph>_<cue>` bundling (graph id, cue
-  ordinal), outside the catalog ABI). v1: no reverb node (miniaudio
-  ships none), no in-graph spatialization, no editor surface yet.
+  ordinal), outside the catalog ABI). v1: no in-graph spatialization,
+  no graph editor yet.
   Pinned by audiograph_tests + `audiograph.*` in
   project_pipeline_tests + the sample + project_e2e_tests.
+
+- **THE SCHROEDER REVERB** (`engine/src/Audio/schroeder_reverb.
+  {h,cpp}` — the ONE custom miniaudio `ma_node`): four damped
+  feedback combs + two all-pass diffusers per channel, stereo
+  decorrelated, MIX mode (the authored-graph `reverb` node —
+  `AudioNodeType::Reverb = 11`, params wet/rt60/damping appended,
+  wet 0 = an EXACT bypass) and WET-ONLY mode (the environmental
+  send). Continuous processing drains tails through input silence;
+  coefficients (RT60 feedback, damping, wet) smooth INSIDE the
+  callback; delay lengths fixed for the node's lifetime; bounded
+  rt60 0.15..8 s at every gate.
+
+- **AUDIO ROOMS — the environmental reverb volumes** (docs/
+  audio_graph.md): `SceneAudioRoom` (a node-local payload:
+  priority/fades/wet/rt60/damping/transition; INDEPENDENT of GI — a
+  node may carry BOTH a GiVolumeRow and an AudioRoomRow, or a
+  room only) + the shared OBB utility `Engine/Scene/
+  spatial_volume.h` (the GI placement convention: center =
+  translation, half-extents = HALF the column lengths; parity with
+  the GI planes pinned by tests). The `.tour` lane: `createNode -at
+  audioRoom`, `attachAudioRoom`/`removeAudioRoom` (`-ref k -owner
+  givolume` targets a created GI volume — one placement, two
+  associations), `setAudioRoomAttr` (properties + the givolume-lane
+  position/rotation/size shape channels);
+  `kCreateAudioRoomRefBase = 0x01000000`. The EDITOR lane is full
+  (Create menu, the inspector's Enable button + field drags, teal
+  box gizmos + pick, undo/redo, duplicate/delete capture, the
+  family-ref drop guards). The COOKED lane: the scene blob's v20
+  audio-room section (appended after v19 — the sanctioned break).
+  The RUNTIME lane: the ENVIRONMENTAL WORLD-SFX BUS (worldSfxGroup →
+  splitter → {dry → endpoint, wet-only Schroeder → wetGain →
+  endpoint}); `Play(..., AudioRoute)` routes spatial scene emitters
+  through it (default Direct — the compat contract; a failed bus
+  build degrades to direct, logged, never fatal); AudioRuntime
+  evaluates the listener's ordered-coverage blend over the durable
+  cluster rows each frame (descending audio priority, the outdoor
+  baseline for the leftover coverage) and pushes ONE
+  change-detected `SetEnvironmentReverb` — all smoothing is
+  mixer-thread-side. MVP: listener-side reverb ONLY — no occlusion,
+  portals or per-room IRs.
+
+- **THE PER-VOICE CURSOR RULE** (the shared-buffer trap,
+  docs/audio_graph.md): a clip's decoded bytes are wrapped by
+  PER-VOICE `ma_audio_buffer_ref` cursors — NEVER a shared
+  `ma_audio_buffer` (one buffer = one cursor: the first voice to
+  play a clip exhausts it and every later voice reads silence;
+  simultaneous voices race the position). Pinned by
+  `ag.bus.raw-cursor-trap`/`-fix` + the `ag.bus.*-rings`
+  regression pins.
 
 - **Sound assets are a first-class kind**: `PakAssetKind::Sound` (raw
   .wav at the VFS path), 0x4xxx content ids (scenes 0x1xxx / textures

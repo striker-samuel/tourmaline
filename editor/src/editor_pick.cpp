@@ -20,6 +20,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Scene/spatial_volume.h> // the shared OBB decode (audio rooms)
 #include <Engine/Renderer/renderview.h>
 
 namespace editor {
@@ -297,6 +298,22 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
 			if (!GiVolumeBox(node, mn, mx))
 				continue;
 			consider(node, (mn + mx) * 0.5f);
+		}
+	}
+	if (m_showAudioRoomGizmos) {
+		// Audio rooms: pick by the OBB's center (the same shape decode
+		// the gizmo draws).
+		for (const tour::scene::AudioRoomRow& _row
+			: scene.tables.audioRooms) {
+			const NodeId node = _row.node;
+			if (node >= scene.globalTransform.size())
+				continue;
+			const tour::scene::SpatialVolumeBox box =
+				tour::scene::VolumeBoxFromGlobalTransform(
+					scene.globalTransform[node]);
+			if (!box.Valid())
+				continue;
+			consider(node, box.center);
 		}
 	}
 	if (m_showCubemapGizmos) {

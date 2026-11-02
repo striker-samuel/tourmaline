@@ -140,6 +140,15 @@ struct AudioSourceRow {
 	SceneAudioSource source{};
 };
 
+// Node -> authored AUDIO ROOM (the environmental-reverb volume; see
+// SceneAudioRoom). Inline payload like audioSource/giVolume: the room
+// is a node-local definition — at most ONE per node (Set replaces),
+// independent of any GiVolumeRow on the same node.
+struct AudioRoomRow {
+	NodeId node = 0;
+	SceneAudioRoom room{};
+};
+
 // Node -> PROJECT-DEFINED SCHEMA ASSOCIATION (the custom-node-schema
 // lane, Engine/Scene/node_schema.h + docs/content_as_code.md): a
 // typed data block attached to a regular scene transform node. The
@@ -185,6 +194,7 @@ struct SceneTables {
 	std::vector<EnvRow> envs;
 	std::vector<EnvVolumeRow> envVolumes;
 	std::vector<AudioSourceRow> audioSources;
+	std::vector<AudioRoomRow> audioRooms;
 	std::vector<SchemaAssocRow> schemaAssocs;
 	// Rigid bodies + colliders arrive at Epoch 10.
 };
@@ -207,6 +217,7 @@ struct NodeRows {
 	RowId env = InvalidRow;
 	RowId envVolume = InvalidRow;
 	RowId audioSource = InvalidRow;
+	RowId audioRoom = InvalidRow;
 	RowId schemaAssoc = InvalidRow;
 	RowId body = InvalidRow;
 };
@@ -256,6 +267,8 @@ EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node);
 const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node);
 AudioSourceRow* FindAudioSource(Scene& scene, NodeId node);
 const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node);
+AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node);
+const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node);
 SchemaAssocRow* FindSchemaAssoc(Scene& scene, NodeId node);
 const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node);
 
@@ -275,6 +288,7 @@ bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment);
 bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
 bool SetAudioSource(Scene& scene, NodeId node,
 	const SceneAudioSource& source);
+bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room);
 // The schema association (node_schema.h): the cooked value block is
 // stored verbatim — the schema id names the layout (the pak's
 // registry); `values` may be empty (defaults decode at read time).
@@ -294,6 +308,7 @@ bool RemoveExport(Scene& scene, NodeId node);
 bool RemoveEnv(Scene& scene, NodeId node);
 bool RemoveEnvVolume(Scene& scene, NodeId node);
 bool RemoveAudioSource(Scene& scene, NodeId node);
+bool RemoveAudioRoom(Scene& scene, NodeId node);
 bool RemoveSchemaAssoc(Scene& scene, NodeId node);
 
 // ---- dense node metadata (name/uuid; see NodeMetadata) ----

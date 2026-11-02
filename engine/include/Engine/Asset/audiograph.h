@@ -61,12 +61,19 @@
 //   notch / peak    — (-frequency, -q; peak adds -gainDb)
 //   loshelf / hishelf — (-frequency, -gainDb, -q)
 //   delay  — (-delay seconds, -decay 0..1 the feedback blend)
+//   reverb — the Schroeder reverb (-wet 0..1 the inline dry/wet mix,
+//            -rt60 seconds clamped 0.15..8, -damping 0..1 the comb
+//            feedback HF damping; stereo decorrelated; tails drain
+//            through input silence). Like delay, its feedback lives
+//            INSIDE the node — a reverb authorizes no graph cycles.
 //
 // Param fields (the -field vocabulary): gain, cutoff, frequency, q,
-// gainDb, decay. A param's field must be valid for its node's type
-// (the biquad lpf/hpf/bpf carry cutoff only — no resonance knob; the
-// parametric Q lives on notch/peak/shelf; a delay's LENGTH is static
-// in v1, its -decay is live).
+// gainDb, decay, wet, rt60, damping. A param's field must be valid
+// for its node's type (the biquad lpf/hpf/bpf carry cutoff only — no
+// resonance knob; the parametric Q lives on notch/peak/shelf; a
+// delay's LENGTH is static in v1, its -decay is live; a reverb's
+// delay lines are fixed at build — its -wet/-rt60/-damping are
+// live, smoothed on the mixer thread).
 //
 // Cue events:
 //   start/stop -node <source> -t <sec>   (edge-fired at their time)
@@ -103,6 +110,9 @@ enum class AudioNodeType : uint32_t {
 	LowShelf = 8, // biquad EQ
 	HighShelf = 9,// biquad EQ
 	Delay = 10,   // delay + feedback blend (feedback lives INSIDE the node)
+	Reverb = 11,  // the Schroeder reverb (4 damped combs + 2 all-passes,
+	              // per channel, stereo decorrelated; the inline graph
+	              // form mixes dry/wet by -wet, 1 = fully wet)
 };
 
 // The node's authored fields. Which ones a type consumes is documented
@@ -124,6 +134,13 @@ struct AudioGraphNode {
 	// Delay
 	float delaySeconds = 0.25f;
 	float decay = 0.5f;
+	// Reverb (the Schroeder node's live shape: delay LENGTHS are fixed
+	// at build — only these coefficients automate, smoothed on the
+	// mixer thread)
+	float reverbWet = 1.0f;      // 0..1, the inline dry/wet mix (0 = an
+	                             // EXACT dry bypass)
+	float reverbRt60 = 1.2f;     // seconds, clamped [0.15, 8]
+	float reverbDamping = 0.5f;  // 0..1, comb feedback HF damping
 };
 
 enum class AudioParamField : uint32_t {
@@ -133,6 +150,10 @@ enum class AudioParamField : uint32_t {
 	Q = 4,
 	GainDb = 5,
 	Decay = 6,
+	// The reverb lane (append-only ABI — never renumber).
+	Wet = 7,
+	Rt60 = 8,
+	Damping = 9,
 };
 
 // An EXPOSED parameter: the gameplay-facing name bound to one node

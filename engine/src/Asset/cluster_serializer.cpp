@@ -1587,6 +1587,50 @@ bool SerializeClusters(
 			}
 		}
 
+		// v20 AUDIO ROOMS (the environmental-reverb volume rows,
+		// docs/audio_graph.md): u32 rowCount + per row (u32 denseNode,
+		// u32 flags(enabled), u32 priority, f32 insideFade, f32
+		// outsideFade, f32 wet, f32 rt60, f32 damping, f32
+		// transitionSeconds), node-sorted. The room SHAPE is the node's
+		// transform (cooked as the node itself — the runtime decodes
+		// the OBB through spatial_volume.h at the listener, exactly
+		// like the GI volume placement); NO .givolume dependency, no
+		// bake artifact, no GI budget. Always written (possibly zero
+		// rows) so the layout is uniform; old readers fail new blobs
+		// at the trailing-bytes check (the sanctioned break).
+		{
+			std::vector<const tour::scene::AudioRoomRow*> roomRows;
+			roomRows.reserve(cluster.scene.tables.audioRooms.size());
+			for (const tour::scene::AudioRoomRow& row
+				: cluster.scene.tables.audioRooms) {
+				if (row.node >= slotToDense.size()
+					|| slotToDense[row.node] == UINT32_MAX)
+					return fail("scene audio-room row references"
+						" retired node slot "
+						+ std::to_string(row.node));
+				roomRows.push_back(&row);
+			}
+			std::sort(roomRows.begin(), roomRows.end(),
+				[&](const tour::scene::AudioRoomRow* a, const tour::scene::AudioRoomRow* b) {
+					return slotToDense[a->node] < slotToDense[b->node];
+				});
+			PutU32(blob, static_cast<uint32_t>(roomRows.size()));
+			for (const tour::scene::AudioRoomRow* row : roomRows) {
+				PutU32(blob, slotToDense[row->node]);
+				PutU32(blob, row->room.enabled ? 1u : 0u);
+				PutU32(blob, row->room.priority);
+				PutF32(blob, row->room.insideFade);
+				PutF32(blob, row->room.outsideFade);
+				PutF32(blob, row->room.wet);
+				PutF32(blob, row->room.rt60);
+				PutF32(blob, row->room.damping);
+				PutF32(blob, row->room.transitionSeconds);
+			}
+			if (stats)
+				stats->audioRooms +=
+					static_cast<uint32_t>(roomRows.size());
+		}
+
 		if (!writer.AddBlob(PakAssetKind::Scene,
 				SceneTocPath(ci, multi), std::move(blob)))
 			return fail("scene blob rejected");
@@ -2193,6 +2237,55 @@ bool ParseSceneBlob(std::span<const uint8_t> payload, Scene& scene,
 			}
 			if (!c.ok)
 				return fail("truncated scene schema-assoc section");
+		}
+		// AUDIO ROOMS (v20; v19 blobs end after the schema
+		// associations): u32 rowCount + per row (denseNode, flags,
+		// priority, insideFade, outsideFade, wet, rt60, damping,
+		// transitionSeconds) — the environmental-reverb volumes. The
+		// room shape is the NODE (the transform cooks as the node
+		// itself; the runtime decodes the OBB through spatial_volume.h
+		// at the listener). Missing == none (pre-v20 paks); present
+		// must end the blob exactly. Values SANITIZE on read (the
+		// parser/cook gates are the first line; this is the last).
+		if (c.off < c.img.size()) {
+			const uint32_t rowCount = c.u32();
+			if (!c.ok || rowCount > 1024 * 1024)
+				return fail("bad scene audio-room section");
+			for (uint32_t i = 0; i < rowCount; ++i) {
+				const uint32_t node = c.u32();
+				const uint32_t flags = c.u32();
+				const uint32_t priority = c.u32();
+				const float insideFade = c.f32();
+				const float outsideFade = c.f32();
+				const float wet = c.f32();
+				const float rt60 = c.f32();
+				const float damping = c.f32();
+				const float transitionSeconds = c.f32();
+				if (!c.ok || node >= nodeCount)
+					return fail("bad scene audio-room section");
+				tour::scene::AudioRoomRow row{};
+				row.node = node;
+				row.room.enabled = (flags & 1u) != 0u;
+				row.room.priority = priority;
+				row.room.insideFade =
+					std::isfinite(insideFade) && insideFade > 0.0f
+					? insideFade : 0.30f;
+				row.room.outsideFade =
+					std::isfinite(outsideFade) && outsideFade > 0.0f
+					? outsideFade : 0.70f;
+				row.room.wet = std::isfinite(wet)
+					? std::clamp(wet, 0.0f, 1.0f) : 0.25f;
+				row.room.rt60 = std::isfinite(rt60)
+					? std::clamp(rt60, 0.15f, 8.0f) : 1.20f;
+				row.room.damping = std::isfinite(damping)
+					? std::clamp(damping, 0.0f, 1.0f) : 0.50f;
+				row.room.transitionSeconds = std::isfinite(
+					transitionSeconds) && transitionSeconds > 0.0f
+					? transitionSeconds : 0.25f;
+				scene.tables.audioRooms.push_back(std::move(row));
+			}
+			if (!c.ok)
+				return fail("truncated scene audio-room section");
 		}
 		if (c.off != c.img.size())
 			return fail("scene blob trailing bytes mismatch");

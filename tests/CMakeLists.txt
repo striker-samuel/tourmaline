@@ -75,6 +75,14 @@ target_link_libraries(AudioGraphTests
         engine
 )
 
+# The world-bus raw-isolation diagnostics include miniaudio directly
+# (the same configuration wrapper the engine TUs use).
+target_include_directories(AudioGraphTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/engine/src/Audio
+        ${CMAKE_SOURCE_DIR}/external/miniaudio
+)
+
 set_target_properties(AudioGraphTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )

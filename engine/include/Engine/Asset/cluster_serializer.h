@@ -53,6 +53,11 @@ struct ClusterSerializeStats {
 	// (inline emitter payloads — no separate blobs; the referenced
 	// sounds ship as PakAssetKind::Sound blobs keyed by VFS path).
 	uint32_t audioSources = 0;
+	// Authored audio rooms persisted in the Scene blob's v20 section
+	// (the environmental-reverb volume rows — inline payloads, the
+	// shape riding the node transform itself; no .givolume, no bake
+	// artifact).
+	uint32_t audioRooms = 0;
 };
 
 // One scene entry of a pak (TOC order = scene index; index 0 is the

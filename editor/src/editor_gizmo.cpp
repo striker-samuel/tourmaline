@@ -19,6 +19,7 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 #include <Engine/Renderer/mesh.h>
+#include <Engine/Scene/spatial_volume.h> // the shared OBB decode (audio rooms)
 
 namespace editor {
 namespace {
@@ -436,6 +437,53 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 			AddBoxCorners(b, corners);
 			// Center anchor diamond (the box itself has no mesh to
 			// click; the marker reads at a glance like light nodes).
+			glm::vec3 c(0.0f);
+			for (const glm::vec3& k : corners)
+				c += k;
+			c *= 0.125f;
+			glm::vec3 mn(c), mx(c);
+			for (const glm::vec3& k : corners) {
+				mn = glm::min(mn, k);
+				mx = glm::max(mx, k);
+			}
+			const float s = std::max(
+				glm::length(mx - mn) * 0.02f, 0.05f);
+			AddDiamond(b, c, s);
+			if (!b.verts.empty())
+				batches.push_back(std::move(b));
+		}
+	}
+	// Audio-room boxes (View toggle): one X-ray wire box per
+	// AudioRoomRow — the SAME OBB decode as the GI volumes
+	// (spatial_volume.h's shared shape math; the placement convention
+	// is identical), TEAL to read apart from the GI priority hues
+	// (orange/cyan/yellow) and the cubemap magenta; the selection
+	// draws bright gold like every other volume kind. Disabled rooms
+	// draw dim. LIGHTING mode only — room nodes carry no mesh.
+	if (lightSetVisible && m_showAudioRoomGizmos
+		&& !m_world->scene.tables.audioRooms.empty()) {
+		for (const tour::scene::AudioRoomRow& _row
+			: m_world->scene.tables.audioRooms) {
+			const NodeId node = _row.node;
+			const auto& def = _row.room;
+			if (node >= m_world->scene.globalTransform.size())
+				continue;
+			const tour::scene::SpatialVolumeBox box =
+				tour::scene::VolumeBoxFromGlobalTransform(
+					m_world->scene.globalTransform[node]);
+			if (!box.Valid())
+				continue;
+			glm::vec3 corners[8];
+			tour::scene::SpatialVolumeCorners(box, corners);
+			LineBatch b;
+			b.depthTest = false; // X-ray: author shapes against walls
+			if (node == m_selected)
+				b.color = glm::vec4(1.0f, 0.9f, 0.3f, 1.0f);
+			else if (def.enabled)
+				b.color = glm::vec4(0.2f, 0.85f, 0.8f, 1.0f); // teal
+			else
+				b.color = glm::vec4(0.2f, 0.85f, 0.8f, 0.25f); // dim
+			AddBoxCorners(b, corners);
 			glm::vec3 c(0.0f);
 			for (const glm::vec3& k : corners)
 				c += k;

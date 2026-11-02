@@ -20,6 +20,12 @@
 #include <Engine/Asset/audiograph.h>
 #include <Engine/Audio/audio.h>
 
+// The raw world-bus isolation block (TestWorldBus) drives miniaudio
+// directly through the SAME configuration wrapper the engine uses
+// (plus the Schroeder node for the full-bus probe).
+#include "miniaudio_config.h"
+#include "schroeder_reverb.h"
+
 namespace {
 
 int g_failures = 0;
@@ -424,6 +430,846 @@ void TestInstances() {
 	Check(true, "ag.inst.shutdown");
 }
 
+// ---------------------------------------------------------------------------
+// The Schroeder reverb: the authored-graph inline form (the DSP is the
+// same custom ma_node the environmental world bus will run wet-only —
+// PR 3). All deterministic through the deviceless offline lane.
+// ---------------------------------------------------------------------------
+void TestReverb() {
+	using namespace tour::audio;
+
+	// The grammar: the node flags + the bounded shape + the param
+	// vocabulary.
+	{
+		tour::asset::AudioGraphDoc doc;
+		std::string err;
+		const std::string text =
+			"version 1\n"
+			"node -name \"air\" -type source"
+			" -sound \"audio/blip.wav\" -gain 0.9\n"
+			"node -name \"hall\" -type reverb -wet 0.28 -rt60 1.8"
+			" -damping 0.6\n"
+			"connect -from \"air\" -to \"hall\"\n"
+			"connect -from \"hall\" -to \"output\"\n"
+			"param -name \"hallWet\" -node \"hall\" -field wet\n"
+			"param -name \"hallTail\" -node \"hall\" -field rt60\n"
+			"cue -name \"go\"\n"
+			"start -node \"air\" -t 0\n";
+		Check(tour::asset::ParseAudioGraphText(text, doc, err),
+			"ag.reverb.parse");
+		if (!err.empty())
+			std::cout << "  (err: " << err << ")\n";
+		Check(doc.nodes[1].type == tour::asset::AudioNodeType::Reverb
+			&& doc.nodes[1].reverbWet == 0.28f
+			&& doc.nodes[1].reverbRt60 == 1.8f
+			&& doc.nodes[1].reverbDamping == 0.6f,
+			"ag.reverb.fields");
+		// The bounded shape rejects.
+		auto rejects = [&](const std::string& nodeLine,
+			const char* name) {
+			tour::asset::AudioGraphDoc d;
+			std::string e;
+			const std::string t =
+				"version 1\n"
+				"node -name \"air\" -type source"
+				" -sound \"audio/blip.wav\"\n"
+				+ nodeLine +
+				"\nconnect -from \"air\" -to \"hall\"\n"
+				"connect -from \"hall\" -to \"output\"\n"
+				"cue -name \"go\"\n";
+			Check(!tour::asset::ParseAudioGraphText(t, d, e), name);
+		};
+		rejects("node -name \"hall\" -type reverb -rt60 12",
+			"ag.reverb.rt60-bounded");
+		rejects("node -name \"hall\" -type reverb -wet 1.5",
+			"ag.reverb.wet-bounded");
+		rejects("node -name \"hall\" -type reverb -damping -1",
+			"ag.reverb.damping-bounded");
+		// The field vocabulary: wet is reverb-only.
+		{
+			tour::asset::AudioGraphDoc d;
+			std::string e;
+			const std::string t =
+				"version 1\n"
+				"node -name \"air\" -type source"
+				" -sound \"audio/blip.wav\"\n"
+				"node -name \"g\" -type gain\n"
+				"connect -from \"air\" -to \"g\"\n"
+				"connect -from \"g\" -to \"output\"\n"
+				"param -name \"p\" -node \"g\" -field wet\n"
+				"cue -name \"go\"\n";
+			Check(!tour::asset::ParseAudioGraphText(t, d, e),
+				"ag.reverb.field-type-gate");
+		}
+	}
+
+	// The DSP, through graphs: a one-shot blip into a fully-wet hall.
+	AudioEngine audio;
+	Config cfg{};
+	cfg.deviceless = true;
+	if (!audio.Init(cfg)) {
+		Check(false, "ag.reverb.engine-init");
+		return;
+	}
+	Check(true, "ag.reverb.engine-init");
+
+	// A 50 ms click-ish burst (a sine at full amplitude, one-shot).
+	const std::vector<uint8_t> blipWav = MakeWavSine(1000.0f, 0.05f,
+		0.9f);
+	const ClipHandle blip = audio.LoadWavFromMemory(blipWav.data(),
+		blipWav.size());
+	Check(blip.valid(), "ag.reverb.clip");
+
+	ResolverCtx resolver;
+	resolver.engine = &audio;
+	resolver.table.push_back({ "audio/blip.wav", blip });
+
+	// Builds the blip->(reverb?)->output graph + a playing instance,
+	// pumps `chunks` and returns the per-chunk RMS series. `middle`
+	// is the full node-decl + connect block between the source line
+	// and the cue (the reverb form routes air->hall->output; the
+	// direct form routes air->output with no extra node).
+	struct Run {
+		std::vector<float> chunkRms;
+	};
+	auto run = [&](const std::string& middle, int chunks) -> Run {
+		const std::string text =
+			"version 1\n"
+			"node -name \"air\" -type source"
+			" -sound \"audio/blip.wav\" -gain 0.9\n"
+			+ middle +
+			"cue -name \"go\"\n"
+			"start -node \"air\" -t 0\n";
+		tour::asset::AudioGraphDoc doc;
+		std::string err;
+		Run out;
+		if (!tour::asset::ParseAudioGraphText(text, doc, err))
+			return out;
+		const auto h = audio.CreateInstance(doc, ResolveClip, &resolver,
+			&err);
+		if (!h)
+			return out;
+		AudioInstance inst(audio, h);
+		inst.play();
+		std::vector<float> buf(1024 * 2);
+		for (int i = 0; i < chunks; ++i) {
+			audio.PumpOffline(buf.data(), 1024);
+			out.chunkRms.push_back(RmsOf(buf));
+		}
+		audio.DestroyInstance(h);
+		return out;
+	};
+	const auto reverbMiddle = [](float wet, float rt60) {
+		return "node -name \"hall\" -type reverb -wet "
+			+ std::to_string(wet) + " -rt60 " + std::to_string(rt60)
+			+ "\nconnect -from \"air\" -to \"hall\"\n"
+			"connect -from \"hall\" -to \"output\"\n";
+	};
+	const std::string directMiddle =
+		"connect -from \"air\" -to \"output\"\n";
+
+	// The blip is 50 ms = ~2.4 chunks; everything past chunk ~4 is
+	// pure reverb tail.
+	const Run dry = run("node -name \"hall\" -type reverb -wet 0\n"
+		"connect -from \"air\" -to \"hall\"\n"
+		"connect -from \"hall\" -to \"output\"\n", 8);
+	const Run direct = run(directMiddle, 8); // no reverb node at all
+	const Run wetShort = run(reverbMiddle(1.0f, 0.25f), 120);
+	const Run wetLong = run(reverbMiddle(1.0f, 3.0f), 120);
+
+	// wet=0 is an EXACT bypass: byte-identical per-chunk RMS to the
+	// no-reverb graph (the memcpy short-circuit).
+	Check(dry.chunkRms.size() == 8 && direct.chunkRms.size() == 8,
+		"ag.reverb.runs-complete");
+	{
+		bool equal = dry.chunkRms.size() == direct.chunkRms.size();
+		for (size_t i = 0; equal && i < dry.chunkRms.size(); ++i)
+			equal = dry.chunkRms[i] == direct.chunkRms[i];
+		Check(equal, "ag.reverb.wet0-exact-bypass");
+	}
+
+	// The tail outlives the 50 ms source: chunks past the dry part
+	// stay audible, then decays.
+	{
+		const auto& r = wetLong.chunkRms;
+		Check(r.size() == 120, "ag.reverb.long-run-complete");
+		// ~2.5 s in (chunk 118, way past the 50 ms blip): still
+		// audible at rt60 3.
+		Check(r[118] > 1e-4f, "ag.reverb.tail-outlives-source");
+		std::cout << "  (tail rms @2.5s=" << r[118] << ")\n";
+	}
+	// RT60 ordering: the short tail is dead where the long one rings.
+	Check(wetShort.chunkRms.size() == 120
+		&& wetLong.chunkRms.size() == 120, "ag.reverb.runs-2");
+	Check(wetLong.chunkRms[60] > wetShort.chunkRms[60] * 10.0f,
+		"ag.reverb.rt60-decay-order");
+	std::cout << "  (short@1.3s=" << wetShort.chunkRms[60]
+		<< " long@1.3s=" << wetLong.chunkRms[60] << ")\n";
+
+	// Stereo decorrelation: L != R after the impulse (the +23-sample
+	// right-channel tunings).
+	{
+		const std::string text =
+			"version 1\n"
+			"node -name \"air\" -type source"
+			" -sound \"audio/blip.wav\" -gain 0.9\n"
+			"node -name \"hall\" -type reverb -wet 1 -rt60 2.0\n"
+			"connect -from \"air\" -to \"hall\"\n"
+			"connect -from \"hall\" -to \"output\"\n"
+			"cue -name \"go\"\n"
+			"start -node \"air\" -t 0\n";
+		tour::asset::AudioGraphDoc doc;
+		std::string err;
+		Check(tour::asset::ParseAudioGraphText(text, doc, err),
+			"ag.reverb.stereo-doc");
+		const auto h = audio.CreateInstance(doc, ResolveClip, &resolver,
+			&err);
+		Check(h && err.empty(), "ag.reverb.stereo-create");
+		AudioInstance inst(audio, h);
+		inst.play();
+		std::vector<float> buf(1024 * 2);
+		bool decorrelated = false;
+		bool finite = true;
+		for (int i = 0; i < 40; ++i) {
+			audio.PumpOffline(buf.data(), 1024);
+			float lAcc = 0.0f, rAcc = 0.0f;
+			for (int f = 0; f < 1024; ++f) {
+				lAcc += std::fabs(buf[f * 2]);
+				rAcc += std::fabs(buf[f * 2 + 1]);
+				if (!std::isfinite(buf[f * 2])
+					|| !std::isfinite(buf[f * 2 + 1]))
+					finite = false;
+			}
+			// Skip the first chunk (the dry blip is identical L/R by
+			// construction — MakeWavSine writes the same sample to
+			// both channels).
+			if (i > 3 && std::fabs(lAcc - rAcc) > 1e-3f)
+				decorrelated = true;
+		}
+		Check(decorrelated, "ag.reverb.stereo-decorrelated");
+		Check(finite, "ag.reverb.output-finite");
+		audio.DestroyInstance(h);
+	}
+
+	// Live parameter automation: retuning rt60 mid-tail changes the
+	// decay (and never allocates/locks — it rides the same command
+	// lane as every other param).
+	{
+		const std::string text =
+			"version 1\n"
+			"node -name \"air\" -type source"
+			" -sound \"audio/blip.wav\" -gain 0.9\n"
+			"node -name \"hall\" -type reverb -wet 1 -rt60 0.3\n"
+			"connect -from \"air\" -to \"hall\"\n"
+			"connect -from \"hall\" -to \"output\"\n"
+			"param -name \"tail\" -node \"hall\" -field rt60\n"
+			"cue -name \"go\"\n"
+			"start -node \"air\" -t 0\n";
+		tour::asset::AudioGraphDoc doc;
+		std::string err;
+		Check(tour::asset::ParseAudioGraphText(text, doc, err),
+			"ag.reverb.param-doc");
+		const auto h = audio.CreateInstance(doc, ResolveClip, &resolver,
+			&err);
+		Check(h && err.empty(), "ag.reverb.param-create");
+		AudioInstance inst(audio, h);
+		inst.play();
+		std::vector<float> buf(1024 * 2);
+		for (int i = 0; i < 4; ++i)
+			audio.PumpOffline(buf.data(), 1024);
+		// Stretch the tail from 0.3 s to 6 s mid-flight.
+		inst.set("tail", 6.0f);
+		float late = 0.0f;
+		for (int i = 0; i < 100; ++i) {
+			audio.PumpOffline(buf.data(), 1024);
+			late = std::max(late, RmsOf(buf));
+		}
+		// The retune must not silence the tail (the smoothed retarget
+		// keeps it ringing) — the exact value depends on where the
+		// decay was when retargeted; the assertion is "still audible
+		// 2 s later", which the old 0.3 s target could never do.
+		Check(late > 1e-4f, "ag.reverb.param-retarget");
+		std::cout << "  (retarget late rms=" << late << ")\n";
+		audio.DestroyInstance(h);
+	}
+
+	audio.Shutdown();
+	Check(true, "ag.reverb.shutdown");
+}
+
+// ---------------------------------------------------------------------------
+// The environmental WORLD-SFX bus (PR 3): spatial voices ride the shared
+// send (a wet-only Schroeder), direct voices bypass it, and the send's
+// tail outlives the one-shot dry source. All offline/deterministic.
+// ---------------------------------------------------------------------------
+void TestWorldBus() {
+	using namespace tour::audio;
+	// RAW MINIAUDIO ISOLATION FIRST: the stock sound->group->endpoint
+	// configuration, outside AudioEngine (a diagnostic pin — if this
+	// is silent, the bus design must change; if it rings, the engine's
+	// config differs somewhere). BISECT LADDER: (a) the stock group;
+	// (b) NO_DEFAULT_ATTACHMENT + a manual attach; (c) + a splitter.
+	{
+		ma_engine eng;
+		ma_engine_config ec = ma_engine_config_init();
+		ec.channels = 2;
+		ec.sampleRate = 48000;
+		ec.noDevice = MA_TRUE;
+		ec.periodSizeInFrames = 1024;
+		ec.defaultVolumeSmoothTimeInPCMFrames = 256;
+		if (ma_engine_init(&ec, &eng) != MA_SUCCESS) {
+			Check(false, "ag.bus.raw-engine");
+		}
+		else {
+			// A CLEAN float sine buffer (no WAV wrapper).
+			std::vector<float> sine(48000); // 0.5 s stereo interleaved
+			for (size_t i = 0; i < sine.size() / 2; ++i) {
+				const float v = 0.9f
+					* std::sin(2.0f * 3.14159265f * 700.0f
+						* float(i) / 48000.0f);
+				sine[i * 2] = v;
+				sine[i * 2 + 1] = v;
+			}
+			auto probe = [&](const char* name, bool manualAttach,
+					bool withSplitter) {
+				ma_audio_buffer buf;
+				ma_audio_buffer_config bc =
+					ma_audio_buffer_config_init(ma_format_f32, 2,
+						sine.size() / 2, sine.data(), nullptr);
+				bc.sampleRate = 48000;
+				if (ma_audio_buffer_init(&bc, &buf) != MA_SUCCESS) {
+					Check(false, name);
+					return;
+				}
+				ma_sound_group group;
+				ma_splitter_node split;
+				bool splitInit = false;
+				if (manualAttach) {
+					ma_sound_group_config gc =
+						ma_sound_group_config_init_2(&eng);
+					gc.flags |= MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
+					if (ma_sound_group_init_ex(&eng, &gc, &group)
+						!= MA_SUCCESS) {
+						Check(false, name);
+						ma_audio_buffer_uninit(&buf);
+						return;
+					}
+				}
+				else {
+					if (ma_sound_group_init(&eng, 0, nullptr, &group)
+						!= MA_SUCCESS) {
+						Check(false, name);
+						ma_audio_buffer_uninit(&buf);
+						return;
+					}
+				}
+				if (withSplitter) {
+					ma_splitter_node_config sc =
+						ma_splitter_node_config_init(2);
+					sc.outputBusCount = 2;
+					if (ma_splitter_node_init(
+							ma_engine_get_node_graph(&eng), &sc,
+							nullptr, &split) == MA_SUCCESS) {
+						splitInit = true;
+						ma_node_attach_output_bus(&split.base, 0,
+							ma_engine_get_endpoint(&eng), 0);
+						ma_node_attach_output_bus(&split.base, 1,
+							ma_engine_get_endpoint(&eng), 0);
+						ma_node_attach_output_bus(
+							(ma_node*)&group, 0, &split.base, 0);
+					}
+				}
+				else if (manualAttach) {
+					ma_node_attach_output_bus((ma_node*)&group, 0,
+						ma_engine_get_endpoint(&eng), 0);
+				}
+				ma_sound sound;
+				if (ma_sound_init_from_data_source(&eng,
+						(ma_data_source*)&buf,
+						MA_SOUND_FLAG_NO_SPATIALIZATION, &group,
+						&sound) != MA_SUCCESS) {
+					Check(false, name);
+				}
+				else {
+					ma_sound_start(&sound);
+					float out[2048];
+					float peak = 0.0f;
+					for (int i = 0; i < 8; ++i) {
+						ma_engine_read_pcm_frames(&eng, out, 1024,
+							nullptr);
+						for (float v : out)
+							peak = std::max(peak, std::fabs(v));
+					}
+					Check(peak > 0.1f && peak < 2.0f, name);
+					std::cout << "  (" << name << " peak=" << peak
+						<< ")\n";
+					ma_sound_uninit(&sound);
+				}
+				if (splitInit)
+					ma_splitter_node_uninit(&split, nullptr);
+				ma_sound_group_uninit(&group);
+				ma_audio_buffer_uninit(&buf);
+			};
+			probe("ag.bus.raw-stock", false, false);
+			probe("ag.bus.raw-manual", true, false);
+			probe("ag.bus.raw-split", true, true);
+			// (e) THE SEQUENTIAL ONE-SHOT REPRO: sound #1 plays +
+			// ends naturally; sound #2 plays after — silent?
+			{
+				// VARIANT A: #1 ends + is UNINITED (the full poison).
+				auto runSeq = [&](bool uninitFirst) {
+					// PER-VOICE GROUPS (the shield probe): each sound
+					// attaches through its OWN throwaway group — a
+					// group never signals AT_END, so the endpoint bus
+					// never sees a data-source end.
+					ma_sound_group grp1;
+					ma_sound_group_init(&eng, 0, nullptr, &grp1);
+					ma_sound_group grp2;
+					ma_sound_group_init(&eng, 0, nullptr, &grp2);
+					ma_audio_buffer buf1;
+					std::vector<float> blip(48000); // 1 s: LOOPS in #1
+					for (size_t i = 0; i < blip.size() / 2; ++i) {
+						const float v = 0.9f
+							* std::sin(2.0f * 3.14159265f
+								* 700.0f * float(i) / 48000.0f);
+						blip[i * 2] = v;
+						blip[i * 2 + 1] = v;
+					}
+					ma_audio_buffer_config bc1 =
+						ma_audio_buffer_config_init(ma_format_f32, 2,
+							blip.size() / 2, blip.data(), nullptr);
+					bc1.sampleRate = 48000;
+					ma_sound s1;
+					ma_audio_buffer_init(&bc1, &buf1);
+					ma_sound_init_from_data_source(&eng,
+						(ma_data_source*)&buf1,
+									MA_SOUND_FLAG_NO_PITCH, &grp1, &s1);
+					ma_sound_set_looping(&s1, MA_TRUE); // #1 NEVER ends
+					ma_sound_start(&s1);
+					float out[2048];
+					for (int i = 0; i < 6; ++i) // loops throughout
+						ma_engine_read_pcm_frames(&eng, out, 1024,
+							nullptr);
+					// EXPLICIT stop (never atEnd), then the teardown.
+					ma_sound_stop(&s1);
+					if (uninitFirst) {
+						ma_sound_uninit(&s1);
+						ma_audio_buffer_uninit(&buf1);
+						// THE WORKAROUND PROBE: destroy the starved
+						// group BEFORE #2 attaches — the dead
+						// attachment leaves the endpoint bus entirely.
+						ma_sound_group_uninit(&grp1);
+					}
+					// #2 through its own (fresh) group.
+					ma_sound s2;
+					if (ma_sound_init_from_data_source(&eng,
+							(ma_data_source*)&buf1,
+										MA_SOUND_FLAG_NO_PITCH, &grp2, &s2)
+							!= MA_SUCCESS)
+						return -1.0f;
+					ma_sound_start(&s2);
+					float peak = 0.0f;
+					for (int i = 0; i < 4; ++i) {
+						ma_engine_read_pcm_frames(&eng, out, 1024,
+							nullptr);
+						for (float v : out)
+							peak = std::max(peak, std::fabs(v));
+					}
+					ma_sound_uninit(&s2);
+					if (!uninitFirst) {
+						ma_sound_uninit(&s1);
+						ma_audio_buffer_uninit(&buf1);
+						ma_sound_group_uninit(&grp1); // still alive
+					}
+					ma_sound_group_uninit(&grp2);
+					return peak;
+				};
+				const float pa = runSeq(true);
+				const float pb = runSeq(false);
+				std::cout << "  (raw-seq uninit=" << pa
+					<< " keep=" << pb << ")\n";
+				Check(pa > 0.1f, "ag.bus.raw-seq-uninit");
+				Check(pb > 0.1f, "ag.bus.raw-seq-keep");
+				// (f2) THE KEEP-ALIVE WORKAROUND PROBE: an infinite
+				// looping ZERO-volume sound pinned to the endpoint for
+				// (f2) THE SHARED-CURSOR TRAP + THE FIX (the root-cause
+				// pin): a second sound wrapping the SAME exhausted
+				// ma_audio_buffer reads silence (one buffer = one
+				// cursor, exhausted by the first play) — while a
+				// PER-VOICE ma_audio_buffer_ref over the same bytes
+				// plays fine. This is exactly the engine's per-voice
+				// cursor design.
+				{
+					std::vector<float> blip(4800);
+					for (size_t i = 0; i < blip.size() / 2; ++i) {
+						const float v = 0.9f
+							* std::sin(2.0f * 3.14159265f * 700.0f
+								* float(i) / 48000.0f);
+						blip[i * 2] = v;
+						blip[i * 2 + 1] = v;
+					}
+					ma_audio_buffer buf;
+					ma_audio_buffer_config bc =
+						ma_audio_buffer_config_init(ma_format_f32, 2,
+							blip.size() / 2, blip.data(), nullptr);
+					bc.sampleRate = 48000;
+					ma_audio_buffer_init(&bc, &buf);
+					ma_sound_group grp;
+					ma_sound_group_init(&eng, 0, nullptr, &grp);
+					ma_sound s1;
+					ma_sound_init_from_data_source(&eng,
+						(ma_data_source*)&buf, 0, &grp, &s1);
+					ma_sound_start(&s1);
+					float out[2048];
+					for (int i = 0; i < 6; ++i) // s1 plays to its end
+						ma_engine_read_pcm_frames(&eng, out, 1024,
+							nullptr);
+					ma_sound_uninit(&s1);
+					// (a) The TRAP: a second sound over the SAME
+					// buffer reads it exhausted -> silence.
+					float trapPeak = 0.0f;
+					{
+						ma_sound s2;
+						ma_sound_init_from_data_source(&eng,
+							(ma_data_source*)&buf, 0, &grp, &s2);
+						ma_sound_start(&s2);
+						for (int i = 0; i < 4; ++i) {
+							ma_engine_read_pcm_frames(&eng, out, 1024,
+								nullptr);
+							for (float v : out)
+								trapPeak = std::max(trapPeak,
+									std::fabs(v));
+						}
+						ma_sound_uninit(&s2);
+					}
+					// (b) THE FIX: a fresh ma_audio_buffer_ref (the
+					// per-voice cursor) over the same bytes.
+					float fixPeak = 0.0f;
+					{
+						ma_audio_buffer_ref ref;
+						ma_audio_buffer_ref_init(ma_format_f32, 2,
+							blip.data(), blip.size() / 2, &ref);
+						ma_sound s3;
+						ma_sound_init_from_data_source(&eng,
+							(ma_data_source*)&ref, 0, &grp, &s3);
+						ma_sound_start(&s3);
+						for (int i = 0; i < 4; ++i) {
+							ma_engine_read_pcm_frames(&eng, out, 1024,
+								nullptr);
+							for (float v : out)
+								fixPeak = std::max(fixPeak,
+									std::fabs(v));
+						}
+						ma_sound_uninit(&s3);
+						ma_audio_buffer_ref_uninit(&ref);
+					}
+					std::cout << "  (cursor trap=" << trapPeak
+						<< " fix=" << fixPeak << ")\n";
+					Check(trapPeak < 0.01f, "ag.bus.raw-cursor-trap");
+					Check(fixPeak > 0.1f, "ag.bus.raw-cursor-fix");
+					ma_audio_buffer_uninit(&buf);
+					ma_sound_group_uninit(&grp);
+				}
+				// (f) THE CLOCK PROBE: does the engine's global time
+				// advance across a sound's natural end?
+				{
+					ma_sound_group grp;
+					ma_sound_group_init(&eng, 0, nullptr, &grp);
+					std::vector<float> blip(4800);
+					for (size_t i = 0; i < blip.size() / 2; ++i) {
+						const float v = 0.9f
+							* std::sin(2.0f * 3.14159265f * 700.0f
+								* float(i) / 48000.0f);
+						blip[i * 2] = v;
+						blip[i * 2 + 1] = v;
+					}
+					ma_audio_buffer buf;
+					ma_audio_buffer_config bc =
+						ma_audio_buffer_config_init(ma_format_f32, 2,
+							blip.size() / 2, blip.data(), nullptr);
+					bc.sampleRate = 48000;
+					ma_audio_buffer_init(&bc, &buf);
+					ma_sound s1;
+					ma_sound_init_from_data_source(&eng,
+						(ma_data_source*)&buf, 0, &grp, &s1);
+					ma_sound_start(&s1);
+					float out[2048];
+					const ma_uint64 t0 =
+						ma_engine_get_time_in_pcm_frames(&eng);
+					for (int i = 0; i < 6; ++i)
+						ma_engine_read_pcm_frames(&eng, out, 1024,
+							nullptr);
+					const ma_uint64 t1 =
+						ma_engine_get_time_in_pcm_frames(&eng);
+					std::cout << "  (clock t0=" << t0 << " t1=" << t1
+						<< " delta=" << (t1 - t0) << ")\n";
+					ma_sound_uninit(&s1);
+					ma_audio_buffer_uninit(&buf);
+					ma_sound_group_uninit(&grp);
+				}
+			}
+			// (d) The FULL bus: splitter + the wet-only Schroeder +
+			// the wet gain — exactly BuildWorldBus's shape.
+			{
+				ma_node_graph* graph = ma_engine_get_node_graph(&eng);
+				ma_sound_group group;
+				ma_splitter_node split;
+				tour::audio::SchroederReverbNode reverb;
+				ma_sound_group wetGain;
+				bool ok = true;
+				{
+					ma_sound_group_config gc =
+						ma_sound_group_config_init_2(&eng);
+					if (ma_sound_group_init_ex(&eng, &gc, &wetGain)
+						!= MA_SUCCESS)
+						ok = false;
+				}
+				if (ok) {
+					tour::audio::SchroederReverbConfig rc;
+					rc.channels = 2;
+					rc.sampleRate = 48000;
+					rc.wet = 1.0f;
+					rc.wetOnly = true;
+					if (!tour::audio::SchroederReverbInit(graph, rc,
+							&reverb))
+						ok = false;
+					else
+						ma_node_attach_output_bus(&reverb.base, 0,
+							(ma_node*)&wetGain, 0);
+				}
+				if (ok) {
+					ma_splitter_node_config sc =
+						ma_splitter_node_config_init(2);
+					sc.outputBusCount = 2;
+					if (ma_splitter_node_init(graph, &sc, nullptr,
+							&split) != MA_SUCCESS)
+						ok = false;
+					else {
+						ma_node_attach_output_bus(&split.base, 0,
+							ma_engine_get_endpoint(&eng), 0);
+						ma_node_attach_output_bus(&split.base, 1,
+							&reverb.base, 0);
+					}
+				}
+				if (ok) {
+					ma_sound_group_config gc =
+						ma_sound_group_config_init_2(&eng);
+					gc.flags |= MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
+					if (ma_sound_group_init_ex(&eng, &gc, &group)
+						!= MA_SUCCESS)
+						ok = false;
+					else
+						ma_node_attach_output_bus(
+							(ma_node*)&group, 0, &split.base, 0);
+				}
+				if (!ok) {
+					Check(false, "ag.bus.raw-full-build");
+				}
+				else {
+					ma_audio_buffer buf;
+					std::vector<float> sine2 = sine;
+					ma_audio_buffer_config bc =
+						ma_audio_buffer_config_init(ma_format_f32, 2,
+							sine2.size() / 2, sine2.data(), nullptr);
+					bc.sampleRate = 48000;
+					ma_audio_buffer_init(&bc, &buf);
+					ma_sound sound;
+					if (ma_sound_init_from_data_source(&eng,
+							(ma_data_source*)&buf,
+							MA_SOUND_FLAG_NO_SPATIALIZATION, &group,
+							&sound) != MA_SUCCESS) {
+						Check(false, "ag.bus.raw-full-sound");
+					}
+					else {
+						ma_sound_start(&sound);
+						float out[2048];
+						float peak = 0.0f;
+						for (int i = 0; i < 8; ++i) {
+							ma_engine_read_pcm_frames(&eng, out,
+								1024, nullptr);
+							for (float v : out)
+								peak = std::max(peak, std::fabs(v));
+						}
+						Check(peak > 0.1f, "ag.bus.raw-full-audible");
+						std::cout << "  (raw-full peak=" << peak
+							<< ")\n";
+						ma_sound_uninit(&sound);
+					}
+					ma_audio_buffer_uninit(&buf);
+				}
+				ma_node_detach_all_output_buses(
+					(ma_node*)&group);
+				ma_sound_group_uninit(&group);
+				ma_node_detach_all_output_buses(&split.base);
+				ma_splitter_node_uninit(&split, nullptr);
+				ma_node_detach_all_output_buses(&reverb.base);
+				tour::audio::SchroederReverbUninit(&reverb);
+				ma_node_detach_all_output_buses((ma_node*)&wetGain);
+				ma_sound_group_uninit(&wetGain);
+			}
+			ma_engine_uninit(&eng);
+		}
+	}
+	AudioEngine audio;
+	Config cfg{};
+	cfg.deviceless = true;
+	if (!audio.Init(cfg)) {
+		Check(false, "ag.bus.engine-init");
+		return;
+	}
+	Check(true, "ag.bus.engine-init");
+	const std::vector<uint8_t> blipWav = MakeWavSine(700.0f, 0.05f,
+		0.9f);
+	const ClipHandle blip = audio.LoadWavFromMemory(blipWav.data(),
+		blipWav.size());
+	Check(blip.valid(), "ag.bus.clip");
+	std::vector<float> buf(1024 * 2);
+
+	// THE SHARED-CURSOR REGRESSION (the trap the raw pin above
+	// documents, at the ENGINE level): two DIRECT one-shots of the
+	// SAME clip around a natural end + reap — the second must ring
+	// (the per-voice cursor fix; before it, the second read the
+	// clip's exhausted buffer and played silence).
+	{
+		const auto d0 = audio.Play(blip, 1.0f, false, 1.0f,
+			AudioRoute::Direct);
+		(void)d0;
+		float first = 0.0f;
+		for (int i = 0; i < 6; ++i) { // the 50 ms blip ends + reaps
+			audio.PumpOffline(buf.data(), 1024);
+			first = std::max(first, RmsOf(buf));
+		}
+		const auto d1 = audio.Play(blip, 1.0f, false, 1.0f,
+			AudioRoute::Direct);
+		(void)d1;
+		float second = 0.0f;
+		for (int i = 0; i < 4; ++i) {
+			audio.PumpOffline(buf.data(), 1024);
+			second = std::max(second, RmsOf(buf));
+		}
+		Check(first > 0.05f && second > 0.05f,
+			"ag.bus.second-play-rings");
+	}
+	// SEQUENTIAL WORLD voices around a natural end + reap (the same
+	// regression through the environmental route), then a direct
+	// voice after everything — every later voice must ring.
+	{
+		const auto v0 = audio.Play(blip, 1.0f, false, 1.0f,
+			AudioRoute::WorldSfx);
+		float e0 = 0.0f;
+		for (int i = 0; i < 4; ++i) {
+			audio.PumpOffline(buf.data(), 1024);
+			e0 = std::max(e0, RmsOf(buf));
+		}
+		Check(v0.valid() && e0 > 0.05f, "ag.bus.world-first-rings");
+		// A SECOND world voice after the first's natural end.
+		float e1 = 0.0f;
+		{
+			const auto v1 = audio.Play(blip, 1.0f, false, 1.0f,
+				AudioRoute::WorldSfx);
+			for (int i = 0; i < 4; ++i) {
+				audio.PumpOffline(buf.data(), 1024);
+				e1 = std::max(e1, RmsOf(buf));
+			}
+			audio.Stop(v1);
+		}
+		Check(e1 > 0.05f, "ag.bus.world-second-rings");
+		// Let everything drain, then a DIRECT voice.
+		for (int i = 0; i < 8; ++i)
+			audio.PumpOffline(buf.data(), 1024);
+		float e3 = 0.0f;
+		{
+			const auto v3 = audio.Play(blip, 1.0f, false, 1.0f,
+				AudioRoute::Direct);
+			for (int i = 0; i < 4; ++i) {
+				audio.PumpOffline(buf.data(), 1024);
+				e3 = std::max(e3, RmsOf(buf));
+			}
+			audio.Stop(v3);
+		}
+		Check(e3 > 0.05f, "ag.bus.direct-after-all-rings");
+		for (int i = 0; i < 8; ++i)
+			audio.PumpOffline(buf.data(), 1024);
+	}
+
+	// DIRECT: a one-shot is dead well past its 50 ms dry span (no
+	// send, no tail).
+	const auto voiceDirect = audio.Play(blip, 1.0f, false, 1.0f,
+		AudioRoute::Direct);
+	Check(voiceDirect.valid(), "ag.bus.direct-play");
+	float directLate = 0.0f;
+	float directEarly = 0.0f;
+	for (int i = 0; i < 40; ++i) {
+		audio.PumpOffline(buf.data(), 1024);
+		if (i < 3)
+			directEarly = std::max(directEarly, RmsOf(buf));
+		if (i >= 8)
+			directLate = std::max(directLate, RmsOf(buf));
+	}
+	std::cout << "  (direct early=" << directEarly << ")\n";
+	Check(directLate < 1e-5f, "ag.bus.direct-has-no-tail");
+
+	// The environmental target: a strong send.
+	audio.SetEnvironmentReverb(EnvironmentReverb{ 0.9f, 2.0f, 0.5f });
+	// (One boundary for the command to land + the smoothing to
+	// engage.)
+	audio.PumpOffline(buf.data(), 1024);
+
+	// WORLDSFX: the same one-shot, routed through the shared send —
+	// its tail RINGS past the dry span (the listener-in-room sound).
+	const auto voiceWorld = audio.Play(blip, 1.0f, false, 1.0f,
+		AudioRoute::WorldSfx);
+	Check(voiceWorld.valid(), "ag.bus.world-play");
+	audio.PumpOffline(buf.data(), 1024);
+	std::cout << "  (world playing after 1 pump="
+		<< (audio.IsVoicePlaying(voiceWorld) ? 1 : 0)
+		<< " rms=" << RmsOf(buf) << ")\n";
+	float worldLate = 0.0f;
+	for (int i = 0; i < 39; ++i) {
+		audio.PumpOffline(buf.data(), 1024);
+		if (i >= 8)
+			worldLate = std::max(worldLate, RmsOf(buf));
+	}
+	Check(worldLate > 1e-3f, "ag.bus.world-tail-outlives-dry");
+	std::cout << "  (bus late rms: direct=" << directLate
+		<< " world=" << worldLate << ")\n";
+
+	// Wet to zero: the send silences (the dry path itself is never
+	// attenuated — the gainer rides the WET branch only).
+	audio.SetEnvironmentReverb(EnvironmentReverb{ 0.0f, 2.0f, 0.5f });
+	audio.PumpOffline(buf.data(), 1024);
+	const auto voiceWorld2 = audio.Play(blip, 1.0f, false, 1.0f,
+		AudioRoute::WorldSfx);
+	(void)voiceWorld2;
+	float wet0Late = 0.0f;
+	float wet0Early = 0.0f;
+	for (int i = 0; i < 40; ++i) {
+		audio.PumpOffline(buf.data(), 1024);
+		if (i < 3)
+			wet0Early = std::max(wet0Early, RmsOf(buf));
+		if (i >= 8)
+			wet0Late = std::max(wet0Late, RmsOf(buf));
+	}
+	// The dry path stays FULL (comparable to the direct route's early
+	// chunks) while the tail dies like a direct voice.
+	Check(wet0Early > 0.05f, "ag.bus.wet0-dry-preserved");
+	Check(wet0Late < 1e-3f, "ag.bus.wet0-no-tail");
+
+	// The DEFAULT route stays Direct (the compat contract: every
+	// pre-room caller keeps its exact old behavior). The play lands at
+	// the next boundary — pump once, then the voice is live AND the
+	// mix carries it.
+	const auto voiceDefault = audio.Play(blip, 1.0f);
+	audio.PumpOffline(buf.data(), 1024);
+	Check(voiceDefault.valid()
+			&& audio.IsVoicePlaying(voiceDefault)
+			&& RmsOf(buf) > 0.05f,
+		"ag.bus.default-route-works");
+
+	audio.Shutdown();
+	Check(true, "ag.bus.shutdown");
+}
+
 } // namespace
 
 int main() {
@@ -436,6 +1282,10 @@ int main() {
 	std::cout << "[audiograph] parse done\n";
 	TestInstances();
 	std::cout << "[audiograph] instances done\n";
+	TestReverb();
+	std::cout << "[audiograph] reverb done\n";
+	TestWorldBus();
+	std::cout << "[audiograph] bus done\n";
 	std::cout << "checks=" << g_checks << " failures=" << g_failures
 		<< "\n";
 	return g_failures == 0 ? 0 : 1;

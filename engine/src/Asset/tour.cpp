@@ -139,6 +139,26 @@ static void WriteNodeToken(std::ostream& f, const Command& c) {
 		f << " -n " << c.node;
 }
 
+// The attach/remove AUDIO-ROOM association addressing: a created-family
+// ref (-ref k -owner <family> — which family the index addresses rides
+// c.text) or a plain cluster id. Uuid keys ride WriteTargetKeys like
+// every attr verb.
+static void WriteRoomTarget(std::ostream& f, const Command& c) {
+	if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase
+			&& !c.text.empty()) {
+		f << "-ref " << (c.node & ~kCreateAudioRoomRefBase)
+			<< " -owner " << c.text;
+	}
+	else if ((c.node & kCreateRefFamilyMask) == kCreateGiVolumeRefBase
+			&& !c.text.empty()) {
+		f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
+			<< " -owner " << c.text;
+	}
+	else if (c.node != UINT32_MAX)
+		f << "-n " << c.node;
+	WriteTargetKeys(f, c, false);
+}
+
 // THE LOGICAL-TARGET VERB SET (the Item-6 resolution layer): commands
 // whose node slot may be addressed by -uuid <hex> / -name "<name>"
 // instead of (or alongside) the bare -n <cluster id>. The replay
@@ -163,7 +183,9 @@ static bool IsAttrNodeVerb(Verb v) {
 	return v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
 		|| v == Verb::SetCubemapAttr || v == Verb::SetCamAttr
 		|| v == Verb::SetAudioAttr || v == Verb::AddAudioSound
-		|| v == Verb::RemoveAudioSound;
+		|| v == Verb::RemoveAudioSound
+		|| v == Verb::SetAudioRoomAttr || v == Verb::AttachAudioRoom
+		|| v == Verb::RemoveAudioRoom;
 }
 static bool IsLogicalNodeVerb(Verb v) {
 	return IsGenericNodeVerb(v) || IsAttrNodeVerb(v);
@@ -524,6 +546,58 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			f << "-n " << c.node;
 		WriteTargetKeys(f, c, false);
 		f << " -name " << Quote(c.text);
+		break;
+	}
+	case Verb::CreateAudioRoom: {
+		// The unified createNode form (the save spelling): -t packs
+		// local position, -s the FULL box extents, -at echoes
+		// "audioRoom". The payload rides setAudioRoomAttr lines.
+		f << "createNode -at audioRoom -p ";
+		if (!c.parentRef.empty())
+			f << Quote(c.parentRef);
+		else
+			f << c.node;
+		f << " -name " << Quote(c.text)
+			<< " -t " << c.vec.x << " " << c.vec.y << " " << c.vec.z
+			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
+		break;
+	}
+	case Verb::AttachAudioRoom: {
+		f << "attachAudioRoom ";
+		WriteRoomTarget(f, c);
+		break;
+	}
+	case Verb::RemoveAudioRoom: {
+		f << "removeAudioRoom ";
+		WriteRoomTarget(f, c);
+		break;
+	}
+	case Verb::SetAudioRoomAttr: {
+		// -ref k of the k-th created node of EITHER family (the owner
+		// rides the ref's base bit: audioRoom | givolume), else -n
+		// cluster id. Bools ride -type "bool" -v on|off; name rides
+		// -v as a string; the shape triples ride -t; scalars ride -v.
+		f << "setAudioRoomAttr ";
+		if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase)
+			f << "-ref " << (c.node & ~kCreateAudioRoomRefBase);
+		else if ((c.node & kCreateRefFamilyMask)
+				== kCreateGiVolumeRefBase)
+			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
+				<< " -owner givolume";
+		else if (c.node != UINT32_MAX)
+			f << "-n " << c.node;
+		WriteTargetKeys(f, c, false);
+		f << " -at " << c.text;
+		if (c.text == "name")
+			f << " -type \"string\" -v " << Quote(c.name);
+		else if (c.text == "position" || c.text == "rotation"
+				|| c.text == "size")
+			f << " -type \"double3\" -t " << c.vec4.x << " "
+				<< c.vec4.y << " " << c.vec4.z;
+		else if (c.text == "enabled")
+			f << " -type \"bool\" -v " << (c.flag ? "on" : "off");
+		else
+			f << " -v " << c.number;
 		break;
 	}
 	case Verb::TerrainPaint: {
@@ -1016,6 +1090,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			return 4;
 		if (c.verb == Verb::CreateAudioSource)
 			return 6;
+		if (c.verb == Verb::CreateAudioRoom)
+			return 7;
 		if (c.verb == Verb::CreateNode) {
 			if (c.nodeType == "pointLight" || c.nodeType == "spotLight")
 				return 0;
@@ -1031,6 +1107,8 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				return 5;
 			if (c.nodeType == "audioSource")
 				return 6;
+			if (c.nodeType == "audioRoom")
+				return 7;
 		}
 		return -1;
 	};
@@ -1059,7 +1137,12 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 				|| (family == 1 && d.verb == Verb::TerrainPaint
 					&& (d.node & kCreateTerrainRefBase) != 0
 					&& (d.node & ~kCreateTerrainRefBase) == k)
-				|| (family == 2 && d.verb == Verb::SetGiVolumeAttr
+				|| (family == 2
+					&& (d.verb == Verb::SetGiVolumeAttr
+						|| ((d.verb == Verb::SetAudioRoomAttr
+							|| d.verb == Verb::AttachAudioRoom
+							|| d.verb == Verb::RemoveAudioRoom)
+							&& d.text != "audioRoom"))
 					&& (d.node & kCreateGiVolumeRefBase) != 0
 					&& (d.node & ~kCreateGiVolumeRefBase) == k)
 				|| (family == 3 && d.verb == Verb::SetCubemapAttr
@@ -1076,7 +1159,14 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 					|| d.verb == Verb::AddAudioSound
 					|| d.verb == Verb::RemoveAudioSound)
 				&& (d.node & kCreateAudioSourceRefBase) != 0
-				&& (d.node & ~kCreateAudioSourceRefBase) == k);
+				&& (d.node & ~kCreateAudioSourceRefBase) == k)
+				|| (family == 7
+					&& (d.verb == Verb::SetAudioRoomAttr
+						|| d.verb == Verb::AttachAudioRoom
+						|| d.verb == Verb::RemoveAudioRoom)
+					&& (d.node & kCreateAudioRoomRefBase) != 0
+					&& (d.node & ~kCreateAudioRoomRefBase) == k
+					&& d.text != "givolume");
 			if (child) {
 				WriteCommandLine(f, d, "\t");
 				cmdConsumed[j] = 1;
@@ -1153,6 +1243,9 @@ struct Flags {
 	bool hasHash = false;
 	bool loop = false;     // -loop on|off (addAudioSound slot default)
 	bool hasLoop = false;
+	std::string owner;    // -owner <family> (attachAudioRoom targeting:
+	                       // which created family a -ref indexes)
+	bool hasOwner = false;
 };
 
 static bool ParseFlagWord(const std::string& w, bool& out) {
@@ -1360,6 +1453,14 @@ static bool ParseFlags(const std::vector<std::string>& toks, size_t from,
 			}
 			i += 2;
 		}
+		else if (k == "-owner" && i + 1 < toks.size()) {
+			std::string w = toks[i + 1];
+			if (!w.empty() && w.back() == ';')
+				w.pop_back();
+			f.hasOwner = true;
+			f.owner = w;
+			i += 2;
+		}
 		else if (k == "-type" && i + 1 < toks.size()) {
 			// Value datatype (Maya -type flavor: double3/float4/
 			// string/bool/enum) — informational for now: the values
@@ -1400,6 +1501,7 @@ static const CreateNodeType kCreateNodeTypes[] = {
 	{ "cubemap", CreateNodeKind::Dag },
 	{ "camera", CreateNodeKind::Dag },
 	{ "audioSource", CreateNodeKind::Dag },
+	{ "audioRoom", CreateNodeKind::Dag },
 	{ "exportSettings", CreateNodeKind::Dag },
 	{ "material", CreateNodeKind::System },
 	{ "file", CreateNodeKind::System },
@@ -1820,6 +1922,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			effVerb = "createCamera";
 		else if (tn == "audioSource")
 			effVerb = "createAudioSource";
+		else if (tn == "audioRoom")
+			effVerb = "createAudioRoom";
 		else
 			effVerb = "createLight"; // pointLight | spotLight
 			// Legacy light -at vocabulary for the shared branch below.
@@ -2639,6 +2743,200 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.node = fl.hasRef ? (kCreateAudioSourceRefBase | fl.ref) : fl.n;
 		c.text = fl.name;
 	}
+	else if (effVerb == "createAudioRoom" && (fl.hasP || fl.hasPStr)
+		&& fl.hasName
+		&& (fl.t.size() == 0 || fl.t.size() == 3)
+		&& (fl.svec.size() == 0 || fl.svec.size() == 3)) {
+		// A room-only creation: -t = optional local position, -s =
+		// optional FULL box extents (the givolume placement
+		// convention). -at must read "audioRoom" when present (the
+		// unified createNode form echo). The payload rides
+		// setAudioRoomAttr lines (the exportSettings pattern).
+		if (fl.hasAt && fl.at != "audioRoom") {
+			err = "line " + std::to_string(lineNo)
+				+ ": createAudioRoom wants -at audioRoom";
+			return false;
+		}
+		double v[3] = {};
+		for (size_t k = 0; k < fl.t.size(); ++k)
+			if (!ParseDouble(fl.t[k], v[k])) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad createAudioRoom value";
+				return false;
+			}
+		double s[3] = { 8, 4, 8 };
+		for (size_t k = 0; k < fl.svec.size(); ++k)
+			if (!ParseDouble(fl.svec[k], s[k]) || !(s[k] > 0.0)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": createAudioRoom -s wants positive extents";
+				return false;
+			}
+		c.verb = Verb::CreateAudioRoom;
+		c.node = fl.hasP ? fl.p : 0;
+		if (fl.hasPStr)
+			c.parentRef = fl.pStr;
+		c.text = fl.name;
+		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
+		c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
+	}
+	else if (effVerb == "attachAudioRoom" || effVerb == "removeAudioRoom") {
+		// The ASSOCIATION verbs: attach drops a DEFAULT AudioRoomRow on
+		// an EXISTING node (the GI-inspector "Enable" path — a room on
+		// a created givolume rides -ref k -owner givolume); remove
+		// drops the row (the node + any GI row stay). -owner is
+		// REQUIRED with -ref (which family the index addresses) and
+		// FORBIDDEN without it.
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid)) {
+			err = "line " + std::to_string(lineNo) + ": " + effVerb
+				+ " wants (-n <id> | -ref <k> -owner <family>"
+				" | -uuid <hex>)";
+			return false;
+		}
+		if (fl.hasOwner != fl.hasRef) {
+			err = "line " + std::to_string(lineNo) + ": " + effVerb
+				+ " -owner rides -ref (and needs it)";
+			return false;
+		}
+		c.verb = effVerb == "attachAudioRoom"
+			? Verb::AttachAudioRoom : Verb::RemoveAudioRoom;
+		if (fl.hasRef) {
+			uint32_t base = 0;
+			if (fl.owner == "audioRoom")
+				base = kCreateAudioRoomRefBase;
+			else if (fl.owner == "givolume")
+				base = kCreateGiVolumeRefBase;
+			else {
+				err = "line " + std::to_string(lineNo)
+					+ ": unknown -owner family '" + fl.owner
+					+ "' (givolume | audioRoom)";
+				return false;
+			}
+			c.node = base | fl.ref;
+			c.text = fl.owner;
+		}
+		else {
+			c.node = fl.n;
+			c.text.clear();
+		}
+	}
+	else if (effVerb == "setAudioRoomAttr" && (fl.hasN || fl.hasRef
+			|| fl.hasUuid) && fl.hasAt) {
+		if (fl.hasOwner && !fl.hasRef) {
+			err = "line " + std::to_string(lineNo)
+				+ ": setAudioRoomAttr -owner rides -ref";
+			return false;
+		}
+		static const char* kAttrs[] = { "enabled", "priority",
+			"insideFade", "outsideFade", "wet", "rt60", "damping",
+			"transitionSeconds", "name", "position", "rotation",
+			"size" };
+		bool known = false;
+		for (const char* a : kAttrs)
+			if (fl.at == a) {
+				known = true;
+				break;
+			}
+		if (!known) {
+			err = "line " + std::to_string(lineNo)
+				+ ": bad audio room attr '" + fl.at + "'";
+			return false;
+		}
+		c.verb = Verb::SetAudioRoomAttr;
+		if (fl.hasRef) {
+			// -ref k may index EITHER created family: -owner names
+			// which (audioRoom | givolume — a room hung on a created
+			// GI volume, the proposal's attach-then-tune flow). The
+			// apply resolves by the ref BASE (the family rides the
+			// bit, no extra slot needed).
+			uint32_t base = 0;
+			if (!fl.hasOwner || fl.owner == "audioRoom")
+				base = kCreateAudioRoomRefBase;
+			else if (fl.owner == "givolume")
+				base = kCreateGiVolumeRefBase;
+			else {
+				err = "line " + std::to_string(lineNo)
+					+ ": unknown -owner family '" + fl.owner
+					+ "' (givolume | audioRoom)";
+				return false;
+			}
+			c.node = base | fl.ref;
+		}
+		else {
+			c.node = fl.n;
+		}
+		c.text = fl.at;
+		if (fl.at == "name") {
+			c.name = fl.hasV ? fl.v : (fl.t.empty() ? "" : fl.t[0]);
+		}
+		else if (fl.at == "position" || fl.at == "rotation"
+				|| fl.at == "size") {
+			if (fl.t.size() < 3) {
+				err = "line " + std::to_string(lineNo)
+					+ ": audio room triple wants 3 values";
+				return false;
+			}
+			double x = 0, y = 0, z = 0;
+			if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
+				!ParseDouble(fl.t[2], z)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad audio room triple";
+				return false;
+			}
+			if (fl.at == "size" && !(x > 0.0 && y > 0.0 && z > 0.0)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": size wants positive extents";
+				return false;
+			}
+			c.vec4 = glm::vec4(float(x), float(y), float(z), 1.0f);
+		}
+		else if (fl.at == "enabled") {
+			bool on = false;
+			const std::string& w = fl.hasV ? fl.v
+				: (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseFlagWord(w, on)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad flag '" + w + "'";
+				return false;
+			}
+			c.flag = on;
+		}
+		else {
+			const std::string& w = fl.hasV ? fl.v
+				: (fl.t.empty() ? "" : fl.t[0]);
+			if (!ParseDouble(w, c.number)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": bad value '" + w + "'";
+				return false;
+			}
+			// The bounded room contract (the parser is the first gate;
+			// the serializer's read-side sanitize is the last).
+			if (fl.at == "wet" || fl.at == "damping") {
+				if (c.number < 0.0 || c.number > 1.0) {
+					err = "line " + std::to_string(lineNo) + ": "
+						+ fl.at + " wants 0..1";
+					return false;
+				}
+			}
+			else if (fl.at == "rt60") {
+				if (c.number < 0.15 || c.number > 8.0) {
+					err = "line " + std::to_string(lineNo)
+						+ ": rt60 wants 0.15..8 seconds";
+					return false;
+				}
+			}
+			else if ((fl.at == "insideFade" || fl.at == "outsideFade"
+					|| fl.at == "priority") && c.number < 0.0) {
+				err = "line " + std::to_string(lineNo) + ": " + fl.at
+					+ " wants >= 0";
+				return false;
+			}
+			else if (fl.at == "transitionSeconds" && c.number <= 0.0) {
+				err = "line " + std::to_string(lineNo)
+					+ ": transitionSeconds wants > 0";
+				return false;
+			}
+		}
+	}
 	else if (effVerb == "setExportAttr" && (fl.hasN || fl.hasRef) && fl.hasAt) {
 		// The exportSettings node's payload lines (one per field —
 		// SceneExportSettings). Addressing: -ref k of the k-th
@@ -3170,6 +3468,11 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// k), resolved by SetAudioAttr / AddAudioSound / RemoveAudioSound
 	// below.
 	std::vector<uint32_t> createdAudioSources;
+	// Same scheme for created audio rooms (kCreateAudioRoomRefBase | k),
+	// resolved by SetAudioRoomAttr below — and for the attach/remove
+	// association verbs targeting created rooms OR created givolumes
+	// (the -owner family).
+	std::vector<uint32_t> createdAudioRooms;
 	// Same scheme for the created exportSettings node
 	// (kCreateExportRefBase | k), resolved by SetExportAttr below. The
 	// singleton semantic is authoring-side: the FIRST create wins the
@@ -3822,6 +4125,203 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				it = slots.erase(it);
 			else
 				++it;
+		break;
+	}
+	case Verb::CreateAudioRoom: {
+		// A room-only authored node (the environmental-reverb volume):
+		// append a node under the recorded parent (TRS = translate +
+		// FULL-extent scale, the givolume placement convention) + the
+		// DEFAULT SceneAudioRoom payload — the properties ride
+		// setAudioRoomAttr lines. The room SHAPE is the node's
+		// transform (spatial_volume.h decodes the OBB at the
+		// listener).
+		uint32_t parent = 0;
+		if (!resolveParent(c, "createAudioRoom", c.node, parent)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		const int level = scene.hierarchy[parent].level + 1;
+		const int newId = addNode(scene, int(parent), level);
+		if (newId < 0) {
+			if (err)
+				*err = "tour: createAudioRoom failed under parent "
+					+ std::to_string(parent);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		glm::mat4 m(1.0f);
+		m = glm::translate(m, c.vec);
+		m = glm::scale(m, glm::max(c.svec, glm::vec3(1e-3f)));
+		scene.localTransform[size_t(newId)] = m;
+		tour::scene::SetAudioRoom(scene, uint32_t(newId), tour::scene::SceneAudioRoom{});
+		const uint32_t nameId = uint32_t(scene.nodeNames.size());
+		scene.nodeNames.push_back(c.text);
+		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		createdAudioRooms.push_back(uint32_t(newId));
+		break;
+	}
+	case Verb::AttachAudioRoom:
+	case Verb::RemoveAudioRoom: {
+		// The ASSOCIATION verbs: attach drops/replaces a default
+		// AudioRoomRow on an EXISTING node (a room on a created
+		// givolume rides -ref k -owner givolume); remove drops the row
+		// (the node + any GI row stay). Idempotent both ways.
+		uint32_t target = 0;
+		if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase) {
+			const uint32_t k = c.node & ~kCreateAudioRoomRefBase;
+			if (k >= createdAudioRooms.size()) {
+				if (err)
+					*err = "tour: " + std::string(c.verb
+							== Verb::AttachAudioRoom
+							? "attachAudioRoom" : "removeAudioRoom")
+						+ " ref out of range: " + std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdAudioRooms[k];
+		}
+		else if ((c.node & kCreateRefFamilyMask)
+				== kCreateGiVolumeRefBase) {
+			const uint32_t k = c.node & ~kCreateGiVolumeRefBase;
+			if (k >= createdGiVolumes.size()) {
+				if (err)
+					*err = "tour: " + std::string(c.verb
+							== Verb::AttachAudioRoom
+							? "attachAudioRoom" : "removeAudioRoom")
+						+ " ref out of range: " + std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdGiVolumes[k];
+		}
+		else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		if (c.verb == Verb::AttachAudioRoom) {
+			if (!tour::scene::SetAudioRoom(scene, target, tour::scene::SceneAudioRoom{})) {
+				if (err)
+					*err = "tour: attachAudioRoom on invalid node "
+						+ std::to_string(target);
+				if (!failCmd(c))
+					return false;
+			}
+		}
+		else {
+			tour::scene::RemoveAudioRoom(scene, target); // absent == fine (idempotent)
+		}
+		break;
+	}
+	case Verb::SetAudioRoomAttr: {
+		// The room payload's property lines (one attr per line —
+		// SceneAudioRoom). Addressing: -ref k of the k-th created node
+		// of EITHER family (a room hung on a created givolume rides
+		// the givolume base — the proposal's attach-then-tune flow),
+		// or -n cluster id. The SHAPE channels (position/rotation/
+		// size) rebuild the node's local TRS (the givolume lane —
+		// size is FULL extents).
+		uint32_t target = 0;
+		if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase) {
+			const uint32_t k = c.node & ~kCreateAudioRoomRefBase;
+			if (k >= createdAudioRooms.size()) {
+				if (err)
+					*err = "tour: setAudioRoomAttr ref out of range: "
+						+ std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdAudioRooms[k];
+		}
+		else if ((c.node & kCreateRefFamilyMask)
+				== kCreateGiVolumeRefBase) {
+			const uint32_t k = c.node & ~kCreateGiVolumeRefBase;
+			if (k >= createdGiVolumes.size()) {
+				if (err)
+					*err = "tour: setAudioRoomAttr ref out of range: "
+						+ std::to_string(k);
+				if (!failCmd(c))
+					return false;
+				break;
+			}
+			target = createdGiVolumes[k];
+		}
+		else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(scene, target);
+		if (!row) {
+			if (err)
+				*err = "tour: setAudioRoomAttr on non-audio-room node "
+					+ std::to_string(target);
+			if (!failCmd(c))
+				return false;
+			break;
+		}
+		tour::scene::SceneAudioRoom& def = row->room;
+		if (c.text == "name") {
+			const uint32_t id = uint32_t(scene.nodeNames.size());
+			scene.nodeNames.push_back(c.name);
+			SetNodeNameIndex(scene, target, id);
+		}
+		else if (c.text == "position" || c.text == "rotation"
+				|| c.text == "size") {
+			glm::vec3 skew, t, s;
+			glm::vec4 persp;
+			glm::quat q;
+			glm::decompose(scene.localTransform[target], s, q, t,
+				skew, persp);
+			glm::vec3 e = glm::degrees(glm::eulerAngles(q));
+			if (c.text == "position")
+				t = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			else if (c.text == "rotation")
+				e = glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z);
+			else
+				s = glm::max(glm::vec3(c.vec4.x, c.vec4.y, c.vec4.z),
+					glm::vec3(1e-3f));
+			glm::mat4 m(1.0f);
+			m = glm::translate(m, t);
+			m = glm::rotate(m, glm::radians(e.z), glm::vec3(0, 0, 1));
+			m = glm::rotate(m, glm::radians(e.y), glm::vec3(0, 1, 0));
+			m = glm::rotate(m, glm::radians(e.x), glm::vec3(1, 0, 0));
+			m = glm::scale(m, s);
+			scene.localTransform[target] = m;
+		}
+		else if (c.text == "enabled") {
+			def.enabled = c.flag;
+		}
+		else if (c.text == "priority") {
+			def.priority = uint32_t(std::max(c.number, 0.0));
+		}
+		else if (c.text == "insideFade") {
+			def.insideFade = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "outsideFade") {
+			def.outsideFade = std::max(float(c.number), 0.0f);
+		}
+		else if (c.text == "wet") {
+			def.wet = std::clamp(float(c.number), 0.0f, 1.0f);
+		}
+		else if (c.text == "rt60") {
+			def.rt60 = std::clamp(float(c.number), 0.15f, 8.0f);
+		}
+		else if (c.text == "damping") {
+			def.damping = std::clamp(float(c.number), 0.0f, 1.0f);
+		}
+		else if (c.text == "transitionSeconds") {
+			def.transitionSeconds = std::max(float(c.number), 1e-3f);
+		}
+		else {
+			warn("tour: unknown audio room attr '" + c.text
+				+ "' (skipped)");
+		}
 		break;
 	}
 		case Verb::CreateTerrain: {
@@ -4996,6 +5496,36 @@ std::string Describe(const Command& c) {
 			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
 		std::snprintf(buf, sizeof(buf), "removeAudioSound %s '%s'",
 			tgt, c.text.c_str());
+		break;
+	}
+	case Verb::CreateAudioRoom:
+		std::snprintf(buf, sizeof(buf),
+			"createAudioRoom '%s' under #%u", c.text.c_str(), c.node);
+		break;
+	case Verb::SetAudioRoomAttr: {
+		char tgt[32];
+		if ((c.node & kCreateAudioRoomRefBase) != 0)
+			std::snprintf(tgt, sizeof(tgt), "create%u", c.node & ~kCreateAudioRoomRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "audioroom.%s.%s", tgt,
+			c.text.c_str());
+		break;
+	}
+	case Verb::AttachAudioRoom:
+	case Verb::RemoveAudioRoom: {
+		char tgt[32];
+		if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase)
+			std::snprintf(tgt, sizeof(tgt), "create%u",
+				c.node & ~kCreateAudioRoomRefBase);
+		else if ((c.node & kCreateRefFamilyMask)
+				== kCreateGiVolumeRefBase)
+			std::snprintf(tgt, sizeof(tgt), "giCreate%u",
+				c.node & ~kCreateGiVolumeRefBase);
+		else
+			std::snprintf(tgt, sizeof(tgt), "#%u", c.node);
+		std::snprintf(buf, sizeof(buf), "%sRoom %s",
+			c.verb == Verb::AttachAudioRoom ? "attach" : "remove", tgt);
 		break;
 	}
 	case Verb::SetCubemapAttr: {

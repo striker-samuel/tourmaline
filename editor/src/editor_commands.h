@@ -142,7 +142,34 @@ enum class EditVerb : uint8_t {
   	                 // (world); afterText = the slot name. The removed
   	                 // slot's value rides beforeText/beforeNum/
   	                 // beforeFlag — undo re-adds it EXACTLY.
-  	CreateExportSettings, // append the scene's WorldSettings-style
+  	CreateAudioRoom, // append an audio-room node (world): a DAG
+	                 // transform (translate + FULL-extent scale - the
+	                 // givolume placement convention; the room SHAPE
+	                 // is the node transform, spatial_volume.h decodes
+	                 // it at the listener) + a node-local SceneAudioRoom
+	                 // payload in scene.tables.audioRooms. c.node =
+	                 // CREATED world id once forward-executed
+	                 // (UINT32_MAX before); c.node2 = parent world id;
+	                 // afterText = name; afterVec = local position;
+	                 // svec = full extents; roomDupFrom = a live node
+	                 // whose payload DuplicateSelection copies
+	                 // (UINT32_MAX = the default payload). Post-creation
+	                 // edits ride SetAudioRoomAttr
+	                 // (kCreateAudioRoomRefBase addressing).
+	AttachAudioRoom, // drop a DEFAULT AudioRoomRow on an EXISTING node
+	                 // (the inspector "Enable" path): c.node = the
+	                 // target (world). Idempotent; the before-row rides
+	                 // beforeRoom for exact undo.
+	RemoveAudioRoomVerb, // drop the AudioRoomRow from a node (the
+	                 // "Disable" path - the node + any GI row stay):
+	                 // c.node = the target (world); the before-row
+	                 // rides beforeRoom.
+	SetAudioRoomAttr, // audio-room property edit; c.node = the room's
+	                 // NODE (world), roomAttr selects the channel (see
+	                 // below); scalars ride number, bools ride
+	                 // afterFlag, the shape triples ride vec4, name
+	                 // rides afterText.
+	CreateExportSettings, // append the scene's WorldSettings-style
   	              // EXPORT CONFIG node (world): a DAG transform node
   	              // (identity; no shape) + a node-local
   	              // SceneExportSettings payload in
@@ -267,6 +294,22 @@ struct EditCmd {
 	// index since there is none).
 	bool beforeAudioSource = false;
 	SceneAudioSource beforeAudio{};
+	// SetAudioRoomAttr channel ("enabled","priority","insideFade",
+	// "outsideFade","wet","rt60","damping","transitionSeconds","name",
+	// "position","rotation","size"). Value rides number (scalars) /
+	// afterFlag (enabled) / afterText (name) / vec4 (the shape
+	// triples, degrees for rotation, FULL extents for size);
+	// before-state rides beforeNum / beforeFlag / beforeText /
+	// beforeVec4.
+	std::string roomAttr;
+	// CreateAudioRoom duplication source (DuplicateSelection): when
+	// != UINT32_MAX, ExecCreateAudioRoom copies that node's LIVE
+	// SceneAudioRoom payload instead of planting the default.
+	uint32_t roomDupFrom = UINT32_MAX;
+	// Attach/Remove/Delete payload: the room row's presence + captured
+	// value (undo restores it EXACTLY; a node carries at most one).
+	bool beforeAudioRoom = false;
+	tour::scene::SceneAudioRoom beforeRoom{};
 	// SetExportAttr channel — a SceneExportSettings field name
 	// ("meshopt","lods","lodRatios","lodError","lightmap",
 	// "lmMetersPerTexel","lmLobes","lmAtlasWidth","lmRays",

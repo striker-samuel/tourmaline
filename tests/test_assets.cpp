@@ -2913,6 +2913,11 @@ void TestClusterSerializeCook() {
 			// associations, so the writer emits the uniform zero-row
 			// form).
 			putU32(0);
+			// The v20 audio-room section trails the schema
+			// associations (u32 rowCount — this scene carries no audio
+			// rooms, so the writer emits the uniform zero-row form;
+			// see TestAudioRoomSection for the populated encoding).
+			putU32(0);
 			const size_t at = p.size() - expect.size();
 			bool tailOk = p.size() >= expect.size();
 			for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3660,6 +3665,10 @@ void TestAudioSceneSection() {
 				// sources (the uniform zero-row form — this scene
 				// carries no schema associations).
 				putU32(0);
+				// The v20 audio-room section trails the schema
+				// associations (the uniform zero-row form — this scene
+				// carries no audio rooms).
+				putU32(0);
 				const size_t at = p.size() - expect.size();
 				bool tailOk = p.size() >= expect.size();
 				for (size_t i = 0; tailOk && i < expect.size(); ++i)
@@ -3708,6 +3717,140 @@ void TestAudioSceneSection() {
 			auto listed = ListPakScenes(*reader, &lerr);
 			Check(listed.size() == 1, "audio.bare.list-parses");
 		}
+	}
+}
+
+// The scene blob's v20 AUDIO-ROOM section: the exact populated byte
+// tail (v20 is the LAST section the writer emits), the cook stats, a
+// full ParseSceneBlob payload round-trip (the reader's sanitize gates
+// included) and the structure-only ListPakScenes lane.
+void TestAudioRoomSection() {
+	using namespace smvk;
+	auto mkCluster = []() {
+		auto c = std::make_unique<smvk::Cluster>(nullptr);
+		c->SetOfflineMode(true);
+		addNode(c->scene, -1, 0); // root (slot 0)
+		const int roomNode = addNode(c->scene, 0, 1); // slot 1
+		tour::scene::SceneAudioRoom room;
+		room.enabled = true;
+		room.priority = 3;
+		room.insideFade = 0.5f;
+		room.outsideFade = 1.0f;
+		room.wet = 0.4f;
+		room.rt60 = 2.5f;
+		room.damping = 0.7f;
+		room.transitionSeconds = 0.5f;
+		tour::scene::SetAudioRoom(c->scene, NodeId(roomNode), room);
+		// A second DISABLED room on the root exercises the flags bit.
+		tour::scene::SceneAudioRoom off;
+		off.enabled = false;
+		off.priority = 9;
+		tour::scene::SetAudioRoom(c->scene, NodeId(0), off);
+		return c;
+	};
+	{
+		auto c = mkCluster();
+		PakWriter w;
+		std::string err;
+		ClusterSerializeStats stats;
+		Check(SerializeClusters({ c.get() }, { "Room" }, w, &stats,
+				&err, nullptr, 0, nullptr, nullptr, 0),
+			"room.serialize.ok");
+		Check(stats.audioRooms == 2, "room.serialize.stats");
+		std::vector<uint8_t> img = w.Finalize();
+		std::string openErr;
+		auto reader = PakReader::Open(
+			std::span<const uint8_t>(img), openErr);
+		Check(reader.has_value(), "room.pak.open");
+		if (reader) {
+			const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
+			Check(scenes.size() == 1, "room.pak.scene1");
+			if (scenes.size() == 1) {
+				const std::span<const uint8_t> p =
+					reader->Payload(*scenes[0]);
+				std::vector<uint8_t> expect;
+				auto putU32 = [&](uint32_t v) {
+					for (int i = 0; i < 4; ++i)
+						expect.push_back(
+							uint8_t((v >> (8 * i)) & 0xFF));
+				};
+				auto putF32 = [&](float f) {
+					uint32_t v = 0;
+					memcpy(&v, &f, 4);
+					putU32(v);
+				};
+				// Node-sorted: denseNode 0 (the root room) first, then
+				// denseNode 1. v20 is the LAST section — the tail ends
+				// exactly here.
+				putU32(2);      // rowCount
+				putU32(0);      // denseNode 0
+				putU32(0);      // flags: disabled
+				putU32(9);      // priority
+				putF32(0.30f);  // insideFade
+				putF32(0.70f);  // outsideFade
+				putF32(0.25f);  // wet
+				putF32(1.20f);  // rt60
+				putF32(0.50f);  // damping
+				putF32(0.25f);  // transitionSeconds
+				putU32(1);      // denseNode 1
+				putU32(1);      // flags: enabled
+				putU32(3);      // priority
+				putF32(0.5f);   // insideFade
+				putF32(1.0f);   // outsideFade
+				putF32(0.4f);   // wet
+				putF32(2.5f);   // rt60
+				putF32(0.7f);   // damping
+				putF32(0.5f);   // transitionSeconds
+				const size_t at = p.size() - expect.size();
+				bool tailOk = p.size() >= expect.size();
+				for (size_t i = 0; tailOk && i < expect.size(); ++i)
+					tailOk = p[at + i] == expect[i];
+				Check(tailOk, "room.pak.scene.section-tail");
+				// The structure parse (ListPakScenes shares
+				// ParseSceneBlob) consumes the populated section.
+				std::string lerr;
+				auto listed = ListPakScenes(*reader, &lerr);
+				Check(listed.size() == 1 && lerr.empty()
+					&& listed[0].nodes == 2,
+					"room.pak.scene.list-parses");
+				// The FULL payload round-trip: every authored field
+				// survives the cook + the reader's sanitize gates.
+				Scene scene;
+				std::string nameOut, perr;
+				Check(ParseSceneBlob(p, scene, nameOut, nullptr, perr)
+					&& perr.empty(), "room.parse.round-trips");
+				const tour::scene::AudioRoomRow* r1 =
+					tour::scene::FindAudioRoom(scene, NodeId(1));
+				const tour::scene::AudioRoomRow* r0 = tour::scene::FindAudioRoom(scene, NodeId(0));
+				Check(r1 && r1->room.enabled
+					&& r1->room.priority == 3
+					&& r1->room.insideFade == 0.5f
+					&& r1->room.outsideFade == 1.0f
+					&& r1->room.wet == 0.4f
+					&& r1->room.rt60 == 2.5f
+					&& r1->room.damping == 0.7f
+					&& r1->room.transitionSeconds == 0.5f,
+					"room.parse.payload");
+				Check(r0 && !r0->room.enabled && r0->room.priority == 9,
+					"room.parse.disabled-flags");
+			}
+		}
+	}
+	// A row on a RETIRED slot fails the serialize loudly (the same
+	// contract as every association table). The row is pushed DIRECTLY
+	// — the Set mutator would reject it first (that is its own gate);
+	// this pins the serializer's independent backstop.
+	{
+		auto c = mkCluster();
+		tour::scene::AudioRoomRow orphan;
+		orphan.node = 99; // no such slot in the 2-node cluster
+		c->scene.tables.audioRooms.push_back(orphan);
+		PakWriter w;
+		std::string err;
+		Check(!SerializeClusters({ c.get() }, { "Room" }, w, nullptr,
+				&err, nullptr, 0, nullptr, nullptr, 0)
+			&& err.find("retired node slot") != std::string::npos,
+			"room.serialize.retired-fails");
 	}
 }
 
@@ -3767,6 +3910,7 @@ int main() {
 	run("TestClusterSerializeCook", TestClusterSerializeCook);
 	run("TestMultiSceneSerialize", TestMultiSceneSerialize);
 	run("TestAudioSceneSection", TestAudioSceneSection);
+	run("TestAudioRoomSection", TestAudioRoomSection);
 	run("TestStaticSubtrees", TestStaticSubtrees);
 	run("TestMeshlets", TestMeshlets);
 	run("TestStaticCollapse", TestStaticCollapse);

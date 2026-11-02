@@ -124,6 +124,7 @@ bool ReadNodeType(const Tokens& t, size_t& i, AudioNodeType& out) {
 	if (s == "loshelf") { out = AudioNodeType::LowShelf; return true; }
 	if (s == "hishelf") { out = AudioNodeType::HighShelf; return true; }
 	if (s == "delay") { out = AudioNodeType::Delay; return true; }
+	if (s == "reverb") { out = AudioNodeType::Reverb; return true; }
 	return false;
 }
 
@@ -137,6 +138,9 @@ bool ReadParamField(const Tokens& t, size_t& i, AudioParamField& out) {
 	if (s == "q") { out = AudioParamField::Q; return true; }
 	if (s == "gainDb") { out = AudioParamField::GainDb; return true; }
 	if (s == "decay") { out = AudioParamField::Decay; return true; }
+	if (s == "wet") { out = AudioParamField::Wet; return true; }
+	if (s == "rt60") { out = AudioParamField::Rt60; return true; }
+	if (s == "damping") { out = AudioParamField::Damping; return true; }
 	return false;
 }
 
@@ -193,6 +197,12 @@ bool AudioGraphNodeFieldValid(AudioNodeType type, AudioParamField field) {
 		// The delay LENGTH is static in v1 (the ma_delay layout is sized
 		// at build); the feedback blend is live.
 		return field == AudioParamField::Decay;
+	case AudioNodeType::Reverb:
+		// The delay lines are fixed at build; the mix, the decay time
+		// and the comb damping are live (smoothed on the mixer thread).
+		return field == AudioParamField::Wet
+			|| field == AudioParamField::Rt60
+			|| field == AudioParamField::Damping;
 	}
 	return false;
 }
@@ -342,6 +352,21 @@ bool ParseAudioGraphText(const std::string& text, AudioGraphDoc& out,
 						err = At(lineNo) + "-decay needs a number";
 						return false;
 					}
+				} else if (key == "-wet") {
+					if (!ReadFloat(tok, i, node.reverbWet)) {
+						err = At(lineNo) + "-wet needs a number";
+						return false;
+					}
+				} else if (key == "-rt60") {
+					if (!ReadFloat(tok, i, node.reverbRt60)) {
+						err = At(lineNo) + "-rt60 needs seconds";
+						return false;
+					}
+				} else if (key == "-damping") {
+					if (!ReadFloat(tok, i, node.reverbDamping)) {
+						err = At(lineNo) + "-damping needs a number";
+						return false;
+					}
 				} else {
 					err = At(lineNo) + "unknown node flag '" + key + "'";
 					return false;
@@ -374,10 +399,33 @@ bool ParseAudioGraphText(const std::string& text, AudioGraphDoc& out,
 					return false;
 				}
 			}
+			if (node.type == AudioNodeType::Delay) {
+				// nothing further in v1 (the length is the shape)
+			}
 			if (node.type == AudioNodeType::Source && node.gain < 0.0f) {
 				err = At(lineNo) + "source node '" + node.name
 					+ "': -gain must be >= 0";
 				return false;
+			}
+			if (node.type == AudioNodeType::Reverb) {
+				// The bounded reverb shape (the runtime clamps again —
+				// the parser is the FIRST gate, the DSP the last).
+				if (!(node.reverbWet >= 0.0f && node.reverbWet <= 1.0f)) {
+					err = At(lineNo) + "reverb node '" + node.name
+						+ "': -wet must be 0..1";
+					return false;
+				}
+				if (!(node.reverbRt60 >= 0.15f && node.reverbRt60 <= 8.0f)) {
+					err = At(lineNo) + "reverb node '" + node.name
+						+ "': -rt60 must be 0.15..8 seconds";
+					return false;
+				}
+				if (!(node.reverbDamping >= 0.0f
+						&& node.reverbDamping <= 1.0f)) {
+					err = At(lineNo) + "reverb node '" + node.name
+						+ "': -damping must be 0..1";
+					return false;
+				}
 			}
 			if (AudioGraphFindNode(out, node.name) >= 0) {
 				err = At(lineNo) + "duplicate node name '" + node.name + "'";

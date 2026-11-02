@@ -1542,9 +1542,10 @@ void TestCubemapVerbs() {
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
 void TestCreateNode() {
-	// Type table: DAG vs system knowledge lives on the type.
+	// Type table: DAG vs system knowledge lives on the type. (13 since
+	// the audioRoom type landed — the table grows with node types.)
 	size_t count = 0;
-	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 12,
+	Check(smvk::tour::CreateNodeTypes(count) != nullptr && count == 13,
 		"createnode table size");
 	const smvk::tour::CreateNodeType* t =
 		smvk::tour::FindCreateNodeType("spotLight");
@@ -2519,6 +2520,209 @@ void TestAudioSource() {
 		Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw,
 				&rerr),
 			"audio replay second ok");
+	}
+	std::error_code ec;
+	std::filesystem::remove(TempTour(), ec);
+}
+
+void TestAudioRoom() {
+	// Hand-built doc: room-only create + -ref property attrs (the
+	// authored-room surface — payload via tabulated lines, the
+	// exportSettings pattern), plus the attach/remove association
+	// verbs on a created GIVOLUME (one placement, two associations).
+	smvk::tour::Doc doc;
+	smvk::tour::Command c{};
+	c.verb = smvk::tour::Verb::CreateAudioRoom;
+	c.node = 0;
+	c.text = "Hall";
+	c.vec = glm::vec3(0.0f, 2.0f, 0.0f);
+	c.svec = glm::vec3(14.0f, 4.0f, 12.0f);
+	doc.commands.push_back(c);
+	const auto attr = [&](const char* name, double v) {
+		smvk::tour::Command a{};
+		a.verb = smvk::tour::Verb::SetAudioRoomAttr;
+		a.node = smvk::tour::kCreateAudioRoomRefBase | 0u;
+		a.text = name;
+		a.number = v;
+		doc.commands.push_back(a);
+	};
+	attr("rt60", 1.9);
+	attr("wet", 0.32);
+	attr("damping", 0.65);
+	attr("priority", 5);
+	std::string err;
+	Check(smvk::tour::SaveTour(TempTour(), doc, err), "room save");
+	{
+		std::ifstream in(TempTour(), std::ios::binary);
+		std::stringstream ss;
+		ss << in.rdbuf();
+		const std::string text = ss.str();
+		Check(text.find("createNode -at audioRoom -p 0"
+				" -name \"Hall\" -t 0 2 0 -s 14 4 12")
+				!= std::string::npos,
+			"room create line");
+		Check(text.find("\tsetAudioRoomAttr -ref 0 -at rt60 -v 1.9")
+				!= std::string::npos,
+			"room tabulated ref");
+	}
+	smvk::tour::Doc back;
+	std::vector<std::string> warns;
+	Check(smvk::tour::LoadTour(TempTour(), back, err, &warns),
+		"room load");
+	Check(back.commands.size() == 5, "room command count");
+	if (back.commands.size() == 5) {
+		const auto& cc = back.commands[0];
+		Check(cc.verb == smvk::tour::Verb::CreateAudioRoom
+			&& cc.text == "Hall" && cc.vec.y == 2.0f
+			&& cc.svec.x == 14.0f && cc.svec.z == 12.0f,
+			"room create payload");
+		Check(back.commands[1].verb == smvk::tour::Verb::SetAudioRoomAttr
+			&& back.commands[1].text == "rt60"
+			&& back.commands[1].number == 1.9, "room rt60 attr");
+	}
+	// The unified spelling lowers identically (both -t and -s).
+	{
+		std::ofstream f(TempTour(), std::ios::binary | std::ios::trunc);
+		f << "createNode -at audioRoom -p 0 -name \"U\" -t 0 4 0"
+			" -s 8 4 8;\n";
+		f.close();
+		smvk::tour::Doc u;
+		Check(smvk::tour::LoadTour(TempTour(), u, err, nullptr),
+			"room unified load");
+		Check(u.commands.size() == 1
+			&& u.commands[0].verb == smvk::tour::Verb::CreateAudioRoom
+			&& u.commands[0].vec.y == 4.0f
+			&& u.commands[0].svec.x == 8.0f, "room unified lowers");
+	}
+	// Validation rejects garbage: unknown attr, out-of-range rt60/wet,
+	// attachAudioRoom -ref without -owner, an unknown owner family.
+	{
+		auto reject = [&](const char* text, const char* name) {
+			std::ofstream f(TempTour(), std::ios::binary
+				| std::ios::trunc);
+			f << text;
+			f.close();
+			smvk::tour::Doc b;
+			Check(!smvk::tour::LoadTour(TempTour(), b, err, nullptr),
+				name);
+		};
+		reject("setAudioRoomAttr -n 1 -at tempo -v 2;\n",
+			"room bad attr rejected");
+		reject("setAudioRoomAttr -n 1 -at rt60 -v 12;\n",
+			"room rt60 out of range rejected");
+		reject("setAudioRoomAttr -n 1 -at wet -v 1.5;\n",
+			"room wet out of range rejected");
+		reject("attachAudioRoom -ref 0;\n",
+			"room attach without owner rejected");
+		reject("attachAudioRoom -ref 0 -owner camera;\n",
+			"room unknown owner family rejected");
+	}
+	// Replay: the created node + the payload row; the pose = translate
+	// + FULL-extent scale; a second replay runs clean.
+	{
+		auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+		cluster->SetOfflineMode(true);
+		addNode(cluster->scene, -1, 0);
+		std::vector<std::string> rw;
+		std::string rerr;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr),
+			"room replay ok");
+		Check(cluster->scene.hierarchy.size() == 2, "room replay node");
+		const tour::scene::AudioRoomRow* it =
+			tour::scene::FindAudioRoom(cluster->scene, 1);
+		Check(it != nullptr, "room replay link");
+		if (it != nullptr) {
+			const tour::scene::SceneAudioRoom& def = it->room;
+			Check(def.rt60 == 1.9f && def.wet == 0.32f
+				&& def.damping == 0.65f && def.priority == 5
+				&& def.enabled && def.insideFade == 0.30f,
+				"room replay payload");
+		}
+		// The room shape: translate(0,2,0) + scale(14,4,12) — the FULL
+		// extents ride the scale columns (half = 7,2,6 through
+		// spatial_volume.h).
+		const glm::vec3 t(cluster->scene.localTransform[1][3]);
+		const float sx = glm::length(glm::vec3(
+			cluster->scene.localTransform[1][0]));
+		Check(std::abs(t.y - 2.0f) < 1e-4f && std::abs(sx - 14.0f) < 1e-3f,
+			"room replay shape");
+		smvk::tour::Doc second = back;
+		Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw,
+				&rerr),
+			"room replay second ok");
+	}
+	// The association verbs on a CREATED GIVOLUME: attach drops the
+	// row on the GI node (both associations coexist), remove drops the
+	// room and leaves the GI row intact.
+	{
+		smvk::tour::Doc gd;
+		smvk::tour::Command g{};
+		g.verb = smvk::tour::Verb::CreateGiVolume;
+		g.node = 0;
+		g.text = "GreatHall";
+		g.vec = glm::vec3(0.0f, 2.0f, 0.0f);
+		g.svec = glm::vec3(14.0f, 4.0f, 12.0f);
+		g.vec4 = glm::vec4(0.0f, 0.5f, 0.1f, 0.1f);
+		gd.commands.push_back(g);
+		smvk::tour::Command at{};
+		at.verb = smvk::tour::Verb::AttachAudioRoom;
+		at.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		at.text = "givolume";
+		gd.commands.push_back(at);
+		smvk::tour::Command st{};
+		st.verb = smvk::tour::Verb::SetAudioRoomAttr;
+		st.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		st.text = "rt60";
+		st.number = 2.4;
+		gd.commands.push_back(st);
+		{
+			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+			cluster->SetOfflineMode(true);
+			addNode(cluster->scene, -1, 0);
+			std::vector<std::string> rw;
+			std::string rerr;
+			Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw,
+					&rerr),
+				"room attach replay ok");
+			Check(FindGiVolume(cluster->scene, 1) != nullptr
+				&& tour::scene::FindAudioRoom(cluster->scene, 1)
+					!= nullptr,
+				"room attach coexists with givolume");
+			const tour::scene::AudioRoomRow* row =
+				tour::scene::FindAudioRoom(cluster->scene, 1);
+			Check(row && row->room.rt60 == 2.4f,
+				"room attach attr applies");
+		}
+		// Save + reload round-trips the -owner addressing.
+		Check(smvk::tour::SaveTour(TempTour(), gd, err), "room gi save");
+		{
+			std::ifstream in(TempTour(), std::ios::binary);
+			std::stringstream ss;
+			ss << in.rdbuf();
+			const std::string text = ss.str();
+			Check(text.find("attachAudioRoom -ref 0 -owner givolume")
+				!= std::string::npos, "room gi attach line");
+		}
+		// Remove: the room row drops, the GI row stays.
+		smvk::tour::Command rm{};
+		rm.verb = smvk::tour::Verb::RemoveAudioRoom;
+		rm.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
+		rm.text = "givolume";
+		gd.commands.push_back(rm);
+		{
+			auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+			cluster->SetOfflineMode(true);
+			addNode(cluster->scene, -1, 0);
+			std::vector<std::string> rw;
+			std::string rerr;
+			Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw,
+					&rerr),
+				"room remove replay ok");
+			Check(FindGiVolume(cluster->scene, 1) != nullptr
+				&& tour::scene::FindAudioRoom(cluster->scene, 1)
+					== nullptr,
+				"room remove leaves the givolume");
+		}
 	}
 	std::error_code ec;
 	std::filesystem::remove(TempTour(), ec);
@@ -3993,6 +4197,7 @@ int main() {
 	TestFileNodes();
 	TestCamera();
 	TestAudioSource();
+	TestAudioRoom();
 	TestTextureCacheConsult();
 	TestTourFormat();
 	TestUnknownVerbSkipped();

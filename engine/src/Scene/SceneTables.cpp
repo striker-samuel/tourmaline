@@ -168,6 +168,16 @@ void RebuildNodeRows(Scene& scene)
 		scene.rowsForNode[row.node].audioSource = RowId(i);
 		++i;
 	}
+	for (size_t i = 0; i < scene.tables.audioRooms.size();) {
+		AudioRoomRow& row = scene.tables.audioRooms[i];
+		if (!NodeInRange(scene, row.node)) {
+			row = std::move(scene.tables.audioRooms.back());
+			scene.tables.audioRooms.pop_back();
+			continue;
+		}
+		scene.rowsForNode[row.node].audioRoom = RowId(i);
+		++i;
+	}
 	for (size_t i = 0; i < scene.tables.schemaAssocs.size();) {
 		SchemaAssocRow& row = scene.tables.schemaAssocs[i];
 		if (!NodeInRange(scene, row.node)) {
@@ -816,6 +826,67 @@ bool RemoveAudioSource(Scene& scene, NodeId node)
 	return true;
 }
 
+// ---- audioRoom (the environmental-reverb volume association; a POD
+// inline payload — the plain copy twin of the audioSource set) ----
+
+AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].audioRoom;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.audioRooms.size());
+	return &scene.tables.audioRooms[rid];
+}
+
+const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return nullptr;
+	const RowId rid = scene.rowsForNode[node].audioRoom;
+	if (rid == InvalidRow)
+		return nullptr;
+	assert(size_t(rid) < scene.tables.audioRooms.size());
+	return &scene.tables.audioRooms[rid];
+}
+
+bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room)
+{
+	if (!NodeInRange(scene, node))
+		return false;
+	EnsureNodeRows(scene);
+	if (AudioRoomRow* row = FindAudioRoom(scene, node)) {
+		row->room = room;
+		return true;
+	}
+	AudioRoomRow row{};
+	row.node = node;
+	row.room = room;
+	scene.tables.audioRooms.push_back(std::move(row));
+	scene.rowsForNode[node].audioRoom =
+		RowId(scene.tables.audioRooms.size() - 1);
+	return true;
+}
+
+bool RemoveAudioRoom(Scene& scene, NodeId node)
+{
+	if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
+		return false;
+	const RowId rid = scene.rowsForNode[node].audioRoom;
+	if (rid == InvalidRow)
+		return false;
+	scene.tables.audioRooms[rid] =
+		std::move(scene.tables.audioRooms.back());
+	scene.tables.audioRooms.pop_back();
+	if (size_t(rid) < scene.tables.audioRooms.size()) {
+		const NodeId moved = scene.tables.audioRooms[rid].node;
+		scene.rowsForNode[moved].audioRoom = rid;
+	}
+	scene.rowsForNode[node].audioRoom = InvalidRow;
+	return true;
+}
+
 // ---- project-defined schema associations (node_schema.h) ----------
 
 const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node)
@@ -929,6 +1000,7 @@ bool RemoveNodeRows(Scene& scene, NodeId node)
 	removed |= RemoveEnv(scene, node);
 	removed |= RemoveEnvVolume(scene, node);
 	removed |= RemoveAudioSource(scene, node);
+	removed |= RemoveAudioRoom(scene, node);
 	return removed;
 }
 

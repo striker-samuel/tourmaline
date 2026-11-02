@@ -6,6 +6,9 @@
 // The ONE miniaudio configuration (feature macros + include; see the
 // wrapper's header comment — no TU includes miniaudio.h directly).
 #include "miniaudio_config.h"
+// The Schroeder reverb custom node (the shared DSP behind the
+// authored-graph reverb node + the environmental world bus).
+#include "schroeder_reverb.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_audio.h>
@@ -77,21 +80,31 @@ int PinCurrentThreadToCore(int core) {
 // ===========================================================================
 
 // One decoded clip: interleaved float32 at the engine rate/channels
-// (SDL decodes), wrapped by an ma_audio_buffer (an external-data wrap
-// — ONE copy of the bytes, no second decode into miniaudio).
+// (SDL decodes). The clip owns the BYTES; every voice owns its own
+// ma_audio_buffer_ref cursor over them (never a shared buffer — one
+// buffer is one cursor, and the first voice to play a clip exhausts
+// it for every later voice).
 struct ClipData {
     std::vector<float> samples;
-    ma_audio_buffer buffer{};
     bool alive = false;
-    bool bufferInit = false;
 };
 
-// A legacy fire-and-forget voice: one ma_sound over a clip's buffer,
-// attached to the endpoint, stopped + uninitialized at its end.
+// A legacy fire-and-forget voice: one ma_sound over a PER-VOICE
+// ma_audio_buffer_ref — a lightweight CURSOR over the clip's decoded
+// bytes (never a copy). THE PER-VOICE REF IS LOAD-BEARING (the
+// upstream-cursor trap, pinned by audiograph_tests): a shared
+// ma_audio_buffer carries ONE cursor, so a second voice wrapping the
+// same buffer reads it EXHAUSTED (the first voice played it to the
+// end) and plays silence — and two SIMULTANEOUS voices would fight
+// over the cursor. The clip owns the bytes; every voice owns its own
+// cursor. (The instance lane's per-voice seek-to-0 masked this for
+// sequential instances; overlapping same-clip instances still raced.)
 struct Voice {
     bool inUse = false;
     uint32_t id = 0;
     uint32_t clipIndex = UINT32_MAX;
+    ma_audio_buffer_ref dataSource{}; // the voice's OWN cursor
+    bool dataSourceInit = false;
     ma_sound sound{};
 };
 
@@ -110,6 +123,8 @@ struct InstanceNode {
     ma_loshelf_node loshelf{};
     ma_hishelf_node hishelf{};
     ma_delay_node delay{};
+    // The Schroeder reverb (the custom ma_node — mix mode inline).
+    SchroederReverbNode reverb{};
     // A splitter inserted after the node when it fans out to more
     // than one destination (an output bus feeds ONE input; fan-out
     // is a splitter).
@@ -139,6 +154,10 @@ struct InstanceVoice {
     bool loop = false;
     float authoredGain = 1.0f;
     float lastVolume = -1.0f;
+    // The voice's OWN cursor over the clip's bytes (see the build
+    // site — never the clip's shared buffer).
+    ma_audio_buffer_ref dataSource{};
+    bool dataSourceInit = false;
     // A splitter when the SOURCE fans out to more than one
     // destination (the sound feeds the splitter, the splitter's
     // outputs feed the destinations).
@@ -211,6 +230,31 @@ struct AudioEngine::Core {
     // torn down; validated by generation at every use).
     std::vector<GraphInstanceState*> instances;
 
+    // ---- THE ENVIRONMENTAL WORLD-SFX BUS (docs/audio_graph.md) ------
+    // spatial scene voices -> worldSfxGroup -> splitter -> {dry ->
+    // endpoint, wet-only Schroeder -> wetGain -> endpoint}. The SEND
+    // is listener-driven (SetEnvironmentReverb); the dry path is
+    // NEVER attenuated by the send. A failed build leaves worldBusOk
+    // false — Play(WorldSfx) degrades to a direct endpoint attach
+    // (logged once), everything else keeps working.
+    ma_sound_group worldSfxGroup{};
+    ma_splitter_node worldSplit{};
+    SchroederReverbNode worldReverb{};
+    ma_sound_group wetGain{};
+    bool worldBusBuilt = false; // the groups' init flags
+    bool worldSfxGroupInit = false;
+    bool worldSplitInit = false;
+    bool worldReverbInit = false;
+    bool wetGainInit = false;
+
+    // Builds the bus (the ONE allocation burst at engine init).
+    // Transactional: a failure uninits every partial piece.
+    bool BuildWorldBus();
+    // Tears the bus down (Shutdown order: before the engine uninit).
+    void TeardownWorldBus();
+    // Applies an environmental target (mixer thread, chunk boundary).
+    void ApplyEnvironment(float wet, float rt60, float damping);
+
     // The instance engine (all mixer-thread-only; see the free
     // functions below for the pure-math halves).
     void UninitInstance(GraphInstanceState* st);
@@ -225,8 +269,130 @@ struct AudioEngine::Core {
     void ApplyInstanceSetParam(GraphInstanceState& st,
         uint32_t paramOrdinal, float value);
 
+    // Tears one legacy voice down (the sound detaches from the graph,
+    // the per-voice cursor clears). Mixer thread, chunk boundary.
+    void UninitVoice(Voice& v);
+
     ~Core();
 };
+
+void AudioEngine::Core::UninitVoice(Voice& v) {
+    if (v.inUse) {
+        ma_sound_stop(&v.sound);
+        ma_sound_uninit(&v.sound);
+    }
+    if (v.dataSourceInit) {
+        ma_audio_buffer_ref_uninit(&v.dataSource);
+        v.dataSourceInit = false;
+    }
+    v.inUse = false;
+}
+
+bool AudioEngine::Core::BuildWorldBus() {
+    ma_node_graph* graph = ma_engine_get_node_graph(&engine);
+    ma_node* endpoint = ma_engine_get_endpoint(&engine);
+    const ma_uint32 channels = ma_engine_get_channels(&engine);
+    const ma_uint32 rate = ma_engine_get_sample_rate(&engine);
+    // The wet gain: defaults to an endpoint attach (exactly what the
+    // wet path wants); its volume is the SEND gain.
+    {
+        ma_sound_group_config cfg =
+            ma_sound_group_config_init_2(&engine);
+        if (ma_sound_group_init_ex(&engine, &cfg, &wetGain)
+            != MA_SUCCESS)
+            return false;
+        wetGainInit = true;
+        ma_sound_group_set_volume(&wetGain, 0.0f);
+    }
+    // The wet-only Schroeder send.
+    {
+        SchroederReverbConfig cfg;
+        cfg.channels = channels;
+        cfg.sampleRate = rate;
+        cfg.rt60 = 0.35f;   // the outdoor baseline until a room wins
+        cfg.damping = 0.5f;
+        cfg.wet = 1.0f;
+        cfg.wetOnly = true; // the SEND form: dry rides the splitter
+        if (!SchroederReverbInit(graph, cfg, &worldReverb))
+            return false;
+        worldReverbInit = true;
+        ma_node_attach_output_bus(&worldReverb.base, 0,
+            (ma_node*)&wetGain, 0);
+    }
+    // The dry/wet splitter.
+    {
+        ma_splitter_node_config cfg =
+            ma_splitter_node_config_init(channels);
+        cfg.outputBusCount = 2;
+        if (ma_splitter_node_init(graph, &cfg, nullptr, &worldSplit)
+            != MA_SUCCESS)
+            return false;
+        worldSplitInit = true;
+        // Bus 0: the untouched dry path. Bus 1: the wet send.
+        if (ma_node_attach_output_bus(&worldSplit.base, 0, endpoint, 0)
+            != MA_SUCCESS)
+            return false;
+        if (ma_node_attach_output_bus(&worldSplit.base, 1,
+            &worldReverb.base, 0) != MA_SUCCESS)
+            return false;
+    }
+    // The shared group every world-SFX voice attaches into.
+    {
+        ma_sound_group_config cfg =
+            ma_sound_group_config_init_2(&engine);
+        cfg.flags |= MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
+        if (ma_sound_group_init_ex(&engine, &cfg, &worldSfxGroup)
+            != MA_SUCCESS)
+            return false;
+        worldSfxGroupInit = true;
+        if (ma_node_attach_output_bus((ma_node*)&worldSfxGroup, 0,
+            &worldSplit.base, 0) != MA_SUCCESS)
+            return false;
+    }
+    worldBusBuilt = true;
+    return true;
+}
+
+void AudioEngine::Core::TeardownWorldBus() {
+    // Detach + uninit in reverse build order (a node's inputs go
+    // before the node; nothing may reference a freed buffer when
+    // the graph next reads — the mixer thread is parked at
+    // Shutdown/teardown time, so plain uninits are safe).
+    if (worldSfxGroupInit) {
+        ma_node_detach_all_output_buses((ma_node*)&worldSfxGroup);
+        ma_sound_group_uninit(&worldSfxGroup);
+        worldSfxGroupInit = false;
+    }
+    if (worldSplitInit) {
+        ma_node_detach_all_output_buses(&worldSplit.base);
+        ma_splitter_node_uninit(&worldSplit, nullptr);
+        worldSplitInit = false;
+    }
+    if (worldReverbInit) {
+        ma_node_detach_all_output_buses(&worldReverb.base);
+        SchroederReverbUninit(&worldReverb);
+        worldReverbInit = false;
+    }
+    if (wetGainInit) {
+        ma_node_detach_all_output_buses((ma_node*)&wetGain);
+        ma_sound_group_uninit(&wetGain);
+        wetGainInit = false;
+    }
+    worldBusBuilt = false;
+}
+
+void AudioEngine::Core::ApplyEnvironment(float wet, float rt60,
+    float damping) {
+    if (!worldBusBuilt)
+        return;
+    // The send gain rides the wet group (256-frame smoothed by the
+    // engine node); the coefficients smooth inside the reverb's
+    // processing callback (~30 ms) — both on the mixer thread.
+    ma_sound_group_set_volume(&wetGain,
+        std::clamp(wet, 0.0f, 1.0f));
+    SchroederReverbSetRt60(&worldReverb, rt60);
+    SchroederReverbSetDamping(&worldReverb, damping);
+}
 
 AudioEngine::Core::~Core() {
     // Defensive only — AudioEngine::Shutdown tears everything down in
@@ -236,14 +402,8 @@ AudioEngine::Core::~Core() {
         delete st;
     instances.clear();
     for (Voice& v : voices)
-        if (v.inUse)
-            ma_sound_uninit(&v.sound);
+        UninitVoice(v);
     voices.clear();
-    for (ClipData& c : clips) {
-        if (c.bufferInit)
-            ma_audio_buffer_uninit(&c.buffer);
-        c.bufferInit = false;
-    }
     clips.clear();
     if (engineInit)
         ma_engine_uninit(&engine);
@@ -272,6 +432,8 @@ static ma_node* NodeOf(InstanceNode& n) {
         return &n.hishelf.baseNode;
     case asset::AudioNodeType::Delay:
         return &n.delay.baseNode;
+    case asset::AudioNodeType::Reverb:
+        return &n.reverb.base;
     case asset::AudioNodeType::Source:
         return nullptr; // sources are per-(source,cue) voices, not nodes
     }
@@ -309,6 +471,9 @@ static void UninitInstanceNode(InstanceNode& n) {
     case asset::AudioNodeType::Delay:
         ma_delay_node_uninit(&n.delay, nullptr);
         break;
+    case asset::AudioNodeType::Reverb:
+        SchroederReverbUninit(&n.reverb);
+        break;
     case asset::AudioNodeType::Source:
         break;
     }
@@ -329,6 +494,10 @@ void AudioEngine::Core::UninitInstance(GraphInstanceState* st) {
             if (v.built) {
                 ma_sound_stop(&v.sound);
                 ma_sound_uninit(&v.sound);
+                if (v.dataSourceInit) {
+                    ma_audio_buffer_ref_uninit(&v.dataSource);
+                    v.dataSourceInit = false;
+                }
                 if (v.hasSplit) {
                     ma_splitter_node_uninit(&v.split, nullptr);
                     v.hasSplit = false;
@@ -508,6 +677,25 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             n.built = true;
             break;
         }
+        case asset::AudioNodeType::Reverb: {
+            // The INLINE form: dry/wet mixed inside the node by the
+            // authored -wet (the send form — the world bus — runs the
+            // same DSP wet-only; see Core's environmental lane).
+            SchroederReverbConfig cfg;
+            cfg.channels = channels;
+            cfg.sampleRate = rate;
+            cfg.rt60 = a.reverbRt60;
+            cfg.damping = a.reverbDamping;
+            cfg.wet = a.reverbWet;
+            cfg.wetOnly = false;
+            if (!SchroederReverbInit(graph, cfg, &n.reverb)) {
+                std::cerr << "[Audio] instance create: reverb node '"
+                    << a.name << "' init failed\n";
+                return nullptr;
+            }
+            n.built = true;
+            break;
+        }
         case asset::AudioNodeType::Source: {
             // No node object — the per-(source,cue) voices are created
             // in pass 3. Register the source joins.
@@ -596,8 +784,29 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             v.clipIndex = clip.index;
             v.loop = a.loop;
             v.authoredGain = a.gain;
+            // The PER-VOICE CURSOR (the legacy lane's trap applies here
+            // too: one shared buffer = one cursor — two instances of
+            // the same graph, or two cues firing the same source,
+            // would fight over it. Each voice wraps the clip's bytes
+            // in its OWN ref).
+            {
+                const ClipData& cd = clips[clip.index];
+                const ma_uint64 frames = channels > 0
+                    ? cd.samples.size()
+                        / static_cast<ma_uint64>(channels)
+                    : 0;
+                if (frames == 0
+                    || ma_audio_buffer_ref_init(ma_format_f32,
+                        channels, cd.samples.data(), frames,
+                        &v.dataSource) != MA_SUCCESS) {
+                    std::cerr << "[Audio] instance create: voice"
+                        " cursor for '" << a.name << "' failed\n";
+                    return nullptr;
+                }
+                v.dataSourceInit = true;
+            }
             ma_sound_config cfg = ma_sound_config_init_2(&engine);
-            cfg.pDataSource = &clips[clip.index].buffer;
+            cfg.pDataSource = (ma_data_source*)&v.dataSource;
             cfg.flags = MA_SOUND_FLAG_NO_SPATIALIZATION
                 | MA_SOUND_FLAG_NO_PITCH;
             if (dsts.size() == 1) {
@@ -654,6 +863,11 @@ GraphInstanceState* AudioEngine::Core::BuildInstance(
             case asset::AudioParamField::Q: value = a.q; break;
             case asset::AudioParamField::GainDb: value = a.gainDb; break;
             case asset::AudioParamField::Decay: value = a.decay; break;
+            case asset::AudioParamField::Wet: value = a.reverbWet; break;
+            case asset::AudioParamField::Rt60: value = a.reverbRt60; break;
+            case asset::AudioParamField::Damping:
+                value = a.reverbDamping;
+                break;
             }
         }
         st->paramStore[pi] = value;
@@ -771,6 +985,18 @@ void AudioEngine::Core::ApplyInstanceParam(GraphInstanceState& st,
     case asset::AudioParamField::Decay:
         if (n.type == asset::AudioNodeType::Delay)
             ma_delay_node_set_decay(&n.delay, value);
+        break;
+    case asset::AudioParamField::Wet:
+        if (n.type == asset::AudioNodeType::Reverb)
+            SchroederReverbSetWet(&n.reverb, value);
+        break;
+    case asset::AudioParamField::Rt60:
+        if (n.type == asset::AudioNodeType::Reverb)
+            SchroederReverbSetRt60(&n.reverb, value);
+        break;
+    case asset::AudioParamField::Damping:
+        if (n.type == asset::AudioNodeType::Reverb)
+            SchroederReverbSetDamping(&n.reverb, value);
         break;
     }
 }
@@ -1048,6 +1274,9 @@ void AudioEngine::Core::ApplyInstanceSetParam(GraphInstanceState& st,
     ApplyInstanceParam(st, paramOrdinal, value);
 }
 
+// Tears one legacy voice down COMPLETELY (the sound first — it lives
+// inside the carrier's bus — then the carrier group itself). Mixer
+// thread, at a chunk boundary. (A Core member — the type is private.)
 // ===========================================================================
 // AudioEngine — game-thread entry points
 // ===========================================================================
@@ -1113,6 +1342,12 @@ bool AudioEngine::Init(const Config& cfg) {
     }
     core_->engineInit = true;
     ma_engine_set_volume(&core_->engine, config_.masterVolume);
+    // The environmental world-SFX bus (the shared listener-driven
+    // reverb send). A failure is NEVER fatal: audio keeps working,
+    // Play(WorldSfx) degrades to a direct endpoint attach.
+    if (!core_->BuildWorldBus())
+        std::cerr << "[Audio] environmental bus init failed -"
+            " world-SFX voices fall back to direct (no reverb)\n";
 
     if (config_.deviceless) {
         initialized_ = true;
@@ -1152,12 +1387,12 @@ void AudioEngine::Shutdown() {
         }
         core_->instances.clear();
         for (Voice& v : core_->voices)
-            if (v.inUse)
-                ma_sound_uninit(&v.sound);
+            core_->UninitVoice(v);
         core_->voices.clear();
-        for (ClipData& c : core_->clips)
-            if (c.bufferInit)
-                ma_audio_buffer_uninit(&c.buffer);
+        // The environmental bus (every dependent voice is detached
+        // above; the reverb's delay lines free here).
+        core_->TeardownWorldBus();
+        core_->clips.clear(); // the decoded bytes (voice cursors gone)
         delete core_; // uninits the engine last (Core dtor)
         core_ = nullptr;
     }
@@ -1315,26 +1550,10 @@ ClipHandle AudioEngine::StoreClip(std::vector<float>&& samples) {
     }
     ClipData& cd = core_->clips[idx];
     cd.samples = std::move(samples);
-    // Wrap the decoded bytes in an ma_audio_buffer — external data,
-    // ONE copy of the bytes, no re-decode into miniaudio. The buffer
-    // reports the ENGINE rate so sounds never resample it (pitch
-    // handling owns any resampling).
-    const ma_uint64 frames = config_.channels > 0
-        ? cd.samples.size() / static_cast<ma_uint64>(config_.channels)
-        : 0;
-    ma_audio_buffer_config bc = ma_audio_buffer_config_init(
-        ma_format_f32, static_cast<ma_uint32>(config_.channels), frames,
-        cd.samples.data(), nullptr);
-    bc.sampleRate = static_cast<ma_uint32>(config_.sampleRate);
-    ma_audio_buffer_uninit(&cd.buffer); // no-op unless reused slot
-    if (ma_audio_buffer_init(&bc, &cd.buffer) != MA_SUCCESS) {
-        cd.samples.clear();
-        cd.samples.shrink_to_fit();
-        lastError_ = "ma_audio_buffer_init failed";
-        SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
-        return {};
-    }
-    cd.bufferInit = true;
+    // The clip owns the DECODED BYTES only — every voice wraps them in
+    // its OWN ma_audio_buffer_ref cursor at play time (the
+    // shared-cursor trap: one ma_audio_buffer = one cursor, exhausted
+    // by the first voice to play it). No clip-side miniaudio object.
     cd.alive = true;
     clipAlive_[idx] = 1;
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
@@ -1378,7 +1597,8 @@ void AudioEngine::PushCommand(Command&& c) {
     SDL_UnlockMutex(static_cast<SDL_Mutex*>(mutex_));
 }
 
-VoiceHandle AudioEngine::Play(ClipHandle clip, float volume, bool loop, float pitch) {
+VoiceHandle AudioEngine::Play(ClipHandle clip, float volume, bool loop,
+    float pitch, AudioRoute route) {
     if (!clip.valid() || !mutex_)
         return {};
     Command c{};
@@ -1387,6 +1607,7 @@ VoiceHandle AudioEngine::Play(ClipHandle clip, float volume, bool loop, float pi
     c.volume = std::clamp(volume, 0.0f, 1.0f);
     c.pitch = std::clamp(pitch, 0.1f, 4.0f);
     c.loop = loop;
+    c.route = route == AudioRoute::WorldSfx ? 1u : 0u;
     c.voiceId = nextVoiceId_++;
     if (nextVoiceId_ == 0)
         nextVoiceId_ = 1;
@@ -1481,6 +1702,17 @@ void AudioEngine::SetPaused(bool paused) {
     Command c{};
     c.type = Command::Type::SetPaused;
     c.paused = paused;
+    PushCommand(std::move(c));
+}
+
+void AudioEngine::SetEnvironmentReverb(const EnvironmentReverb& target) {
+    if (!mutex_)
+        return; // not initialized: nothing to drive (a logged no-op)
+    Command c{};
+    c.type = Command::Type::SetEnvironment;
+    c.volume = std::clamp(target.wet, 0.0f, 1.0f);
+    c.envRt60 = target.rt60;
+    c.envDamping = target.damping;
     PushCommand(std::move(c));
 }
 
@@ -1595,12 +1827,12 @@ bool AudioEngine::PumpOffline(float* out, int frames) {
             if (st)
                 core_->AdvanceInstance(*st, dt);
     }
-    // Reap finished voices + publish the game-thread snapshot.
+    // Reap finished voices + publish the game-thread snapshot. The
+    // full teardown (sound + its carrier group) rides UninitVoice —
+    // the carrier MUST die with the voice (the atEnd shield).
     for (Voice& v : core_->voices) {
-        if (v.inUse && !ma_sound_is_playing(&v.sound)) {
-            ma_sound_uninit(&v.sound);
-            v.inUse = false;
-        }
+        if (v.inUse && !ma_sound_is_playing(&v.sound))
+            core_->UninitVoice(v);
     }
     {
         SDL_LockMutex(static_cast<SDL_Mutex*>(mutex_));
@@ -1650,13 +1882,45 @@ void AudioEngine::DrainCommands() {
             }
             if (!slot)
                 break; // voice budget exhausted — drop silently (v1)
+            // THE PER-VOICE CURSOR (see Voice's comment): a fresh
+            // ma_audio_buffer_ref over the clip's decoded bytes —
+            // never the clip's own buffer (whose shared cursor the
+            // last voice may have exhausted).
+            {
+                const ClipData& cd = core_->clips[c.clipIndex];
+                const ma_uint64 frames = config_.channels > 0
+                    ? cd.samples.size()
+                        / static_cast<ma_uint64>(config_.channels)
+                    : 0;
+                if (frames == 0) {
+                    std::cerr << "[Audio] voice over an empty clip"
+                        " (dropped)\n";
+                    break;
+                }
+                if (ma_audio_buffer_ref_init(ma_format_f32,
+                        static_cast<ma_uint32>(config_.channels),
+                        cd.samples.data(), frames, &slot->dataSource)
+                    != MA_SUCCESS) {
+                    std::cerr << "[Audio] voice cursor init failed"
+                        " (dropped)\n";
+                    break;
+                }
+                slot->dataSourceInit = true;
+            }
             ma_sound_config cfg =
                 ma_sound_config_init_2(&core_->engine);
-            cfg.pDataSource = &core_->clips[c.clipIndex].buffer;
+            cfg.pDataSource = (ma_data_source*)&slot->dataSource;
             cfg.flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
+            // The ROUTE: the shared environmental bus (spatial scene
+            // voices) or the endpoint (everything else; a failed bus
+            // build degrades WorldSfx to the direct attach).
+            if (c.route == 1u && core_->worldBusBuilt)
+                cfg.pInitialAttachment =
+                    (ma_node*)&core_->worldSfxGroup;
             if (ma_sound_init_ex(&core_->engine, &cfg, &slot->sound)
                 != MA_SUCCESS) {
                 std::cerr << "[Audio] voice init failed (dropped)\n";
+                core_->UninitVoice(*slot);
                 break;
             }
             ma_sound_set_volume(&slot->sound, c.volume);
@@ -1672,20 +1936,14 @@ void AudioEngine::DrainCommands() {
         }
         case Command::Type::Stop:
             for (auto& v : core_->voices) {
-                if (v.inUse && v.id == c.voiceId) {
-                    ma_sound_stop(&v.sound);
-                    ma_sound_uninit(&v.sound);
-                    v.inUse = false;
-                }
+                if (v.inUse && v.id == c.voiceId)
+                    core_->UninitVoice(v);
             }
             break;
         case Command::Type::StopAll:
             for (auto& v : core_->voices) {
-                if (v.inUse) {
-                    ma_sound_stop(&v.sound);
-                    ma_sound_uninit(&v.sound);
-                    v.inUse = false;
-                }
+                if (v.inUse)
+                    core_->UninitVoice(v);
             }
             break;
         case Command::Type::setVolume:
@@ -1724,17 +1982,14 @@ void AudioEngine::DrainCommands() {
             if (c.clipIndex >= core_->clips.size())
                 break;
             ClipData& cd = core_->clips[c.clipIndex];
-            if (!cd.alive && !cd.bufferInit)
+            if (!cd.alive)
                 break;
             // Stop + uninit every dependent BEFORE freeing the bytes
             // (reads only happen after drains — nothing can touch the
             // buffer past this point in the iteration).
             for (auto& v : core_->voices) {
-                if (v.inUse && v.clipIndex == c.clipIndex) {
-                    ma_sound_stop(&v.sound);
-                    ma_sound_uninit(&v.sound);
-                    v.inUse = false;
-                }
+                if (v.inUse && v.clipIndex == c.clipIndex)
+                    core_->UninitVoice(v);
             }
             for (GraphInstanceState* st : core_->instances) {
                 if (!st)
@@ -1743,6 +1998,10 @@ void AudioEngine::DrainCommands() {
                     if (v.built && v.clipIndex == c.clipIndex) {
                         ma_sound_stop(&v.sound);
                         ma_sound_uninit(&v.sound);
+                        if (v.dataSourceInit) {
+                            ma_audio_buffer_ref_uninit(&v.dataSource);
+                            v.dataSourceInit = false;
+                        }
                         v.built = false;
                         v.started = false;
                         if (v.hasSplit) {
@@ -1752,8 +2011,6 @@ void AudioEngine::DrainCommands() {
                     }
                 }
             }
-            ma_audio_buffer_uninit(&cd.buffer);
-            cd.bufferInit = false;
             cd.samples.clear();
             cd.samples.shrink_to_fit();
             break;
@@ -1823,6 +2080,12 @@ void AudioEngine::DrainCommands() {
             }
             break;
         }
+        case Command::Type::SetEnvironment:
+            // The environmental send: applied at the boundary, all
+            // smoothing mixer-thread-side (the wet group's 256-frame
+            // gainer + the reverb's ~30 ms coefficient glide).
+            core_->ApplyEnvironment(c.volume, c.envRt60, c.envDamping);
+            break;
         }
     }
 }
@@ -1869,12 +2132,11 @@ void AudioEngine::MixerLoop() {
                 if (st)
                     core_->AdvanceInstance(*st, chunkSeconds);
         }
-        // Reap finished one-shot voices.
+        // Reap finished one-shot voices (the FULL teardown — the
+        // carrier group dies with the voice: the atEnd shield).
         for (Voice& v : core_->voices) {
-            if (v.inUse && !ma_sound_is_playing(&v.sound)) {
-                ma_sound_uninit(&v.sound);
-                v.inUse = false;
-            }
+            if (v.inUse && !ma_sound_is_playing(&v.sound))
+                core_->UninitVoice(v);
         }
         // Publish the game-thread visibility snapshot.
         {

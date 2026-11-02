@@ -97,6 +97,25 @@ struct VoiceHandle {
     bool valid() const { return id != 0; }
 };
 
+// The voice's ROUTE (the environmental bus contract, docs/
+// audio_graph.md): DIRECT attaches to the endpoint (the default —
+// every pre-room caller keeps its exact old behavior); WORLDSFX
+// attaches to the shared environmental bus, whose listener-driven
+// Schroeder send the scene-aware layer drives from the listener's
+// room coverage. A failed bus build degrades WORLDSFX to DIRECT
+// (logged once — audio keeps working, the reverb is simply off).
+enum class AudioRoute : uint8_t { Direct = 0, WorldSfx = 1 };
+
+// The environmental reverb TARGET the scene-aware layer computes
+// each frame from the listener's room coverage (the ordered-coverage
+// blend over the room rows). Applied at a chunk boundary, smoothed
+// on the mixer thread — never sample-stepped from the game thread.
+struct EnvironmentReverb {
+    float wet = 0.0f;     // 0..1, the send gain (0 = dry)
+    float rt60 = 0.35f;   // s, the outdoor/default baseline
+    float damping = 0.5f; // 0..1
+};
+
 // Clip resolution for instance creation (called on the GAME thread):
 // returns the decoded clip for a sound asset's VFS path, or an
 // invalid handle to fail the create (the named path lands in `err`).
@@ -124,8 +143,14 @@ public:
     bool ClipValid(ClipHandle clip) const;
 
     // Fire-and-forget playback. volume in [0,1], pitch = playback-rate
-    // multiplier (1 = normal), loop restarts the clip at end.
-    VoiceHandle Play(ClipHandle clip, float volume = 1.0f, bool loop = false, float pitch = 1.0f);
+    // multiplier (1 = normal), loop restarts the clip at end. The
+    // ROUTE picks the attachment: Direct (the endpoint, the default)
+    // or the shared environmental WorldSfx bus (the scene-aware layer
+    // routes spatial emitters there so listener-driven rooms reverber
+    // them; 2D/music/UI stay direct).
+    VoiceHandle Play(ClipHandle clip, float volume = 1.0f,
+        bool loop = false, float pitch = 1.0f,
+        AudioRoute route = AudioRoute::Direct);
     void Stop(VoiceHandle voice);
     void StopAll();
     void SetVoiceVolume(VoiceHandle voice, float volume);
@@ -149,6 +174,13 @@ public:
     void SetMasterVolume(float v);
     float GetMasterVolume() const { return config_.masterVolume; }
     void SetPaused(bool paused);
+
+    // Sets the ENVIRONMENTAL REVERB target (the shared world-SFX
+    // bus's send): the wet gain + the Schroeder's rt60/damping,
+    // clamped, applied at the next chunk boundary and smoothed on
+    // the mixer thread (the listener's room blend glides, never
+    // steps). A failed bus build makes this a logged no-op.
+    void SetEnvironmentReverb(const EnvironmentReverb& target);
 
     // ---- AUTHORED AUDIO GRAPH INSTANCES (docs/audio_graph.md) -----
     // Creates a runtime instance of an authored graph: resolves every
@@ -216,6 +248,8 @@ private:
             InstanceCreate, InstanceDestroy, InstancePlay,
             InstanceCrossFade, InstanceStop, InstanceSetParam,
             InstanceSetVolume,
+            // The environmental bus (the shared world-SFX send)
+            SetEnvironment,
         } type;
         uint32_t voiceId = 0;
         uint32_t clipIndex = UINT32_MAX;
@@ -226,6 +260,11 @@ private:
         float pan = 0.0f;
         float pitch = 1.0f;
         float fadeSeconds = 0.0f;
+        // The environmental target (SetEnvironment).
+        float envRt60 = 0.35f;
+        float envDamping = 0.5f;
+        // The voice route (Play): 0 = direct, 1 = world-SFX.
+        uint8_t route = 0;
         bool loop = false;
         bool paused = false;
         // InstanceCreate only (ownership transfers at the drain).

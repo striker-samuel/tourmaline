@@ -330,6 +330,36 @@ enum class Verb : uint8_t {
                   // Upsert by slot name (a re-add replaces).
   RemoveAudioSound, // node = target cluster id or a created-source
                   // ref; text = the slot name to remove.
+  CreateAudioRoom, // node = PARENT cluster id; text = room name; vec =
+                  // local position; svec = FULL box extents (the
+                  // givolume placement convention). An authored
+                  // audio-room node (the environmental-reverb
+                  // association, docs/audio_graph.md): a plain
+                  // transform + the DEFAULT SceneAudioRoom payload -
+                  // the properties ride setAudioRoomAttr lines
+                  // tabulated under the create. The room SHAPE is the
+                  // node's transform (spatial_volume.h decodes it at
+                  // the listener); a node may ALSO carry a GiVolumeRow
+                  // (one placement, two associations).
+  AttachAudioRoom, // Attaches an AudioRoomRow to an EXISTING node (the
+                  // GI-inspector "Enable" path): node = the target
+                  // (cluster id, or a created-family ref), text = the
+                  // family the ref indexes ("givolume" / "audioRoom").
+                  // The DEFAULT payload attaches - setAudioRoomAttr
+                  // lines carry the properties. Idempotent by node (a
+                  // re-attach replaces the row).
+  RemoveAudioRoom, // Drops the AudioRoomRow from the target node (the
+                  // "Disable" path - the NODE + any GiVolumeRow stay).
+  SetAudioRoomAttr, // node = target cluster id, or a created-room ref
+                  // (kCreateAudioRoomRefBase | k); text = attr
+                  // ("enabled","priority","insideFade","outsideFade",
+                  // "wet","rt60","damping","transitionSeconds","name",
+                  // "position","rotation","size"); number = scalar;
+                  // flag = bool (enabled); name = new name (attr
+                  // "name" only); vec4 = triple (position / rotation
+                  // degrees / size = FULL extents). Post-creation TRS
+                  // edits on created rooms lower to position/rotation/
+                  // size (the givolume lane).
  };
 
 // Node-type table for createNode -at (Maya node types): whether the
@@ -500,8 +530,15 @@ inline constexpr uint32_t kCreateExportRefBase = 0x04000000u;
 // audioSource create in file order). Disjoint from all bases above.
 inline constexpr uint32_t kCreateAudioSourceRefBase = 0x02000000u;
 
+// Same scheme for audio rooms created by an earlier createNode -at
+// audioRoom: SetAudioRoomAttr addresses them via kCreateAudioRoomRefBase
+// | k. AttachAudioRoom/RemoveAudioRoom additionally target CREATED
+// nodes of OTHER families (a room on a created givolume) through the
+// family base + the text family name. Disjoint from all bases above.
+inline constexpr uint32_t kCreateAudioRoomRefBase = 0x01000000u;
+
 // All create-family ref bases OR'd together: a create-family ref
-// carries EXACTLY ONE base bit plus a small k (< 0x02000000 — the
+// carries EXACTLY ONE base bit plus a small k (< 0x01000000 — the
 // create counts are bounded far below the lowest base). A value with
 // SEVERAL high bits set (a sentinel like UINT32_MAX, or any garbage) is
 // a ref of NO family — ref checks must test the exclusive form
@@ -511,7 +548,8 @@ inline constexpr uint32_t kCreateAudioSourceRefBase = 0x02000000u;
 inline constexpr uint32_t kCreateRefFamilyMask =
 	kCreateLightRefBase | kCreateTerrainRefBase | kCreateGiVolumeRefBase
 	| kCreateCubemapRefBase | kCreateCameraRefBase
-	| kCreateExportRefBase | kCreateAudioSourceRefBase;
+	| kCreateExportRefBase | kCreateAudioSourceRefBase
+	| kCreateAudioRoomRefBase;
 
 struct Doc {
 	int version = kTourVersion;

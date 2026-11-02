@@ -476,6 +476,16 @@ namespace editor {
 				// the node's global transform at use.
 				DraftCreateAudioSource();
 			}
+			if (ImGui::MenuItem("Audio room", nullptr, false, canCreate)) {
+				// An environmental-reverb volume (docs/audio_graph.md):
+				// a transform whose box is the room (the givolume
+				// placement convention) + the node-local SceneAudioRoom
+				// payload. Persisted as createNode -at audioRoom +
+				// tabulated setAudioRoomAttr lines; a GI volume may
+				// ALSO carry a room (one placement, two associations —
+				// the inspector's Enable button attaches it).
+				DraftCreateAudioRoom();
+			}
 			if (ImGui::MenuItem("Locator", nullptr, false, canCreate)) {
 				// A named bare transform (no mesh/light/pool) — a game
 				// code anchor: spawn points, trigger zones, patrol
@@ -744,6 +754,9 @@ namespace editor {
 			m_showLightGizmos = !m_showLightGizmos;
 		if (ImGui::MenuItem("GI volume boxes", nullptr, m_showGiVolumeGizmos))
 			m_showGiVolumeGizmos = !m_showGiVolumeGizmos;
+		if (ImGui::MenuItem("Audio room boxes", nullptr,
+			m_showAudioRoomGizmos))
+			m_showAudioRoomGizmos = !m_showAudioRoomGizmos;
 		if (ImGui::MenuItem("Cubemap capture markers", nullptr,
 			m_showCubemapGizmos))
 			m_showCubemapGizmos = !m_showCubemapGizmos;
@@ -1978,7 +1991,166 @@ namespace editor {
 		}
 	}
 
-	void EditorApp::DrawExportSettingsSection(uint32_t node) {
+	void EditorApp::DrawAudioRoomSection(uint32_t node) {
+	if (!m_world)
+		return;
+	Scene& scene = m_world->scene;
+	if (node >= scene.hierarchy.size())
+		return;
+	const tour::scene::AudioRoomRow* row =
+		tour::scene::FindAudioRoom(scene, node);
+	ImGui::Separator();
+	if (!row) {
+		// No association yet: offer the Enable button (ANY transform
+		// node can carry a room � the GI inspector's "Audio room:
+		// Enable" path is this same command).
+		ImGui::TextDisabled("Audio room: none (shape = node transform)");
+		if (ImGui::Button("Enable audio room")) {
+			EditCmd c{};
+			c.verb = EditVerb::AttachAudioRoom;
+			c.node = node;
+			Do(c);
+		}
+		return;
+	}
+	const tour::scene::SceneAudioRoom& def = row->room;
+	ImGui::Text("Audio room: '%s'",
+		getNodeName(scene, int(node)).c_str());
+	ImGui::TextDisabled("shape = node translate/scale/rotation"
+		" (gizmo); a GI volume on the same node keeps its own bake");
+	// The drag pattern (one coalesced SetAudioRoomAttr per drag).
+	auto beginRoomDrag = [&](const char* attr) {
+		if (m_pending.active
+			&& (m_pending.cmd.verb != EditVerb::SetAudioRoomAttr
+				|| m_pending.cmd.node != node
+				|| m_pending.cmd.roomAttr != attr))
+			FinalizePending();
+		if (!m_pending.active) {
+			m_pending.active = true;
+			m_pending.cmd = EditCmd{};
+			m_pending.cmd.verb = EditVerb::SetAudioRoomAttr;
+			m_pending.cmd.node = node;
+			m_pending.cmd.roomAttr = attr;
+			ReadNodeAudioRoomAttr(node, attr,
+				m_pending.cmd.beforeVec4, m_pending.cmd.beforeNum,
+				m_pending.cmd.beforeFlag, m_pending.cmd.beforeText);
+		}
+	};
+	auto endRoomDrag = [&](const char* attr) {
+		if (ImGui::IsItemDeactivatedAfterEdit() && m_pending.active
+			&& m_pending.cmd.verb == EditVerb::SetAudioRoomAttr
+			&& m_pending.cmd.node == node
+			&& m_pending.cmd.roomAttr == attr)
+			FinishDrag();
+	};
+	{
+		float v = def.wet;
+		if (attr::Float("Wet", &v, 0.01f, 0.0f, 1.0f, "%.2f",
+				"The environmental reverb send gain (0 = dry)")) {
+			beginRoomDrag("wet");
+			WriteNodeAudioRoomAttr(node, "wet", glm::vec4(0),
+				double(v), false, {});
+			m_pending.cmd.number = double(v);
+		}
+		endRoomDrag("wet");
+	}
+	{
+		float v = def.rt60;
+		if (attr::Float("RT60 (s)", &v, 0.05f, 0.15f, 8.0f, "%.2f",
+				"Seconds until the tail drops 60 dB")) {
+			beginRoomDrag("rt60");
+			WriteNodeAudioRoomAttr(node, "rt60", glm::vec4(0),
+				double(v), false, {});
+			m_pending.cmd.number = double(v);
+		}
+		endRoomDrag("rt60");
+	}
+	{
+		float v = def.damping;
+		if (attr::Float("Damping", &v, 0.01f, 0.0f, 1.0f, "%.2f",
+				"High-frequency loss in the reverb tail")) {
+			beginRoomDrag("damping");
+			WriteNodeAudioRoomAttr(node, "damping", glm::vec4(0),
+				double(v), false, {});
+			m_pending.cmd.number = double(v);
+		}
+		endRoomDrag("damping");
+	}
+	{
+		int p = int(def.priority);
+		if (attr::Int("Priority", &p, 0, 1000000,
+				"Higher wins when rooms overlap (audio's own"
+				" ordering, independent of GI priority)")) {
+			beginRoomDrag("priority");
+			WriteNodeAudioRoomAttr(node, "priority", glm::vec4(0),
+				double(p), false, {});
+			m_pending.cmd.number = double(p);
+		}
+		endRoomDrag("priority");
+	}
+	{
+		float v = def.insideFade;
+		if (attr::Float("Inside fade (m)", &v, 0.05f, 0.0f, 100.0f,
+				"%.1f", "Per-face inner transition (metres)")) {
+			beginRoomDrag("insideFade");
+			WriteNodeAudioRoomAttr(node, "insideFade", glm::vec4(0),
+				double(v), false, {});
+			m_pending.cmd.number = double(v);
+		}
+		endRoomDrag("insideFade");
+	}
+	{
+		float v = def.outsideFade;
+		if (attr::Float("Outside fade (m)", &v, 0.05f, 0.0f, 100.0f,
+				"%.1f", "Per-face exterior influence (metres)")) {
+			beginRoomDrag("outsideFade");
+			WriteNodeAudioRoomAttr(node, "outsideFade", glm::vec4(0),
+				double(v), false, {});
+			m_pending.cmd.number = double(v);
+		}
+		endRoomDrag("outsideFade");
+	}
+	{
+		float v = def.transitionSeconds;
+		if (attr::Float("Transition (s)", &v, 0.01f, 0.0f, 10.0f,
+				"%.2f", "The listener's room-blend glide time")) {
+			beginRoomDrag("transitionSeconds");
+			WriteNodeAudioRoomAttr(node, "transitionSeconds",
+				glm::vec4(0), double(v), false, {});
+			m_pending.cmd.number = double(v);
+		}
+		endRoomDrag("transitionSeconds");
+	}
+	// The enabled chip (immediate � one Do per click).
+	{
+		bool en = def.enabled;
+		if (attr::Check("Enabled", &en,
+				"A disabled room covers nothing (the shape stays"
+				" authored for re-enabling)")) {
+			EditCmd c{};
+			c.verb = EditVerb::SetAudioRoomAttr;
+			c.node = node;
+			c.roomAttr = "enabled";
+			ReadNodeAudioRoomAttr(node, "enabled", c.beforeVec4,
+				c.beforeNum, c.beforeFlag, c.beforeText);
+			c.afterFlag = en;
+			c.number = c.beforeNum;
+			WriteNodeAudioRoomAttr(node, "enabled", glm::vec4(0),
+				0.0, en, {});
+			Do(c);
+		}
+	}
+	if (ImGui::Button("Disable audio room")) {
+		// Drops the ASSOCIATION only � the node + any GI volume on it
+		// stay (the RemoveAudioRoomVerb command; undo restores the
+		// captured row exactly).
+		EditCmd c{};
+		c.verb = EditVerb::RemoveAudioRoomVerb;
+		c.node = node;
+		Do(c);
+	}
+}
+void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// The scene's exportSettings node: the WorldSettings-style EXPORT
 		// CONFIG page (cook knobs). Every edit is an undoable SetExportAttr
 		// command persisted as a setExportAttr tour line; Cook.exe/Pak.exe
@@ -2911,6 +3083,10 @@ namespace editor {
 		DrawCamSection(node);
 		// Authored audio source on this node (emitter inspector).
 		DrawAudioSection(node);
+		// Audio room on this node (the environmental-reverb inspector
+		// — renders the Enable button when the node carries no room;
+		// ANY transform node can hold one).
+		DrawAudioRoomSection(node);
 		// The scene's export config node (cook/export knobs).
 		DrawExportSettingsSection(node);
 

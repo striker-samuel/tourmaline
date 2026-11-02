@@ -217,6 +217,30 @@ struct SceneAudioSource {
 	std::vector<AudioSoundRef> sounds; // the sound slots (asset refs)
 };
 
+// Authored AUDIO ROOM (the AudioRoom node association — the
+// environmental-reverb volume, docs/audio_graph.md): the ROOM SHAPE
+// rides the node's transform exactly like a GI volume (center =
+// global translation, axes = the transform columns, half-extents =
+// HALF the column lengths — Engine/Scene/spatial_volume.h is the ONE
+// shared decoder), and this payload carries the room's acoustic
+// character. INDEPENDENT of SceneGiVolume by design: a node may carry
+// BOTH (one placement, two associations) or ONLY a room (no GI bake
+// involved); nothing here reads or requires .givolume artifacts,
+// probe textures or the renderer's GI budget. The values are
+// AUDITIONING defaults + bounded ranges, not physical claims: GI
+// probes encode lighting, not doorway openness or absorption.
+// Room priority is INDEPENDENT from the GI lighting priority.
+struct SceneAudioRoom {
+	bool enabled = true;
+	uint32_t priority = 0;       // higher wins (audio's own ordering)
+	float insideFade = 0.30f;    // m, per-face inner transition
+	float outsideFade = 0.70f;   // m, per-face exterior influence
+	float wet = 0.25f;           // 0..1, environmental reverb gain
+	float rt60 = 1.20f;          // s until the tail drops 60 dB
+	float damping = 0.50f;       // 0..1, high-frequency loss
+	float transitionSeconds = 0.25f; // the listener-blend glide
+};
+
 // Authored environment block (editor LIGHTING authoring): LUX-NATIVE
 // intensities — sun 10000 lux / sky 600 default, the same units the
 // runtime EnvironmentSettings and every bake (GI/lightmap/cubemap) use,

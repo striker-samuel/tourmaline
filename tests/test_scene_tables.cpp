@@ -16,9 +16,16 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
+#include <limits>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <Engine/GI/cubemap_volume.h> // the GI parity reference
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
+#include <Engine/Scene/spatial_volume.h>
 
 namespace {
 
@@ -33,6 +40,10 @@ void Check(bool cond, const char* name) {
 		++g_failures;
 		std::printf("FAIL %s\n", name);
 	}
+}
+
+bool Near(float a, float b, float eps = 1e-4f) {
+	return std::fabs(a - b) <= eps;
 }
 
 // A fresh scene with `count` root-level nodes (addNode grows
@@ -117,12 +128,49 @@ int main() {
 		audio.sounds.push_back(AudioSoundRef{ "Bells",
 			"content/audio/bells.wav", 0, 1.0f, true });
 		SetAudioSource(s, 2, audio);
+		tour::scene::SceneAudioRoom room;
+		room.priority = 4;
+		room.wet = 0.4f;
+		room.rt60 = 2.5f;
+		tour::scene::SetAudioRoom(s, 2, room);
 		Check(FindMesh(s, 2) && FindMaterial(s, 2) && FindDecal(s, 2)
 			&& FindCamera(s, 2) && FindLight(s, 2)
-			&& FindAudioSource(s, 2),
-			"all six kinds coexist on one node");
+			&& FindAudioSource(s, 2) && tour::scene::FindAudioRoom(s, 2),
+			"all kinds coexist on one node");
 		Check(FindDecal(s, 2)->decal == 40 && FindCamera(s, 2)->camera == 50,
 			"coexisting rows keep their own payloads");
+		{
+			const tour::scene::AudioRoomRow* rr = tour::scene::FindAudioRoom(s, 2);
+			Check(rr && rr->room.priority == 4
+				&& rr->room.wet == 0.4f && rr->room.rt60 == 2.5f,
+				"audio room row payload round-trips");
+			// A GI-volume row on the SAME node coexists (one placement,
+			// two independent associations) — the room neither requires
+			// nor disturbs it.
+			Check(SetGiVolume(s, 2, SceneGiVolume{})
+				&& FindGiVolume(s, 2) && tour::scene::FindAudioRoom(s, 2),
+				"audio room + GI volume coexist on one node");
+			RemoveGiVolume(s, 2);
+			Check(tour::scene::FindAudioRoom(s, 2),
+				"removing the GI row leaves the room intact");
+			// Replacement in place (Set replaces).
+			tour::scene::SceneAudioRoom room2;
+			room2.priority = 7;
+			Check(tour::scene::SetAudioRoom(s, 2, room2)
+				&& s.tables.audioRooms.size() == 1
+				&& tour::scene::FindAudioRoom(s, 2)->room.priority == 7,
+				"re-tour::scene::SetAudioRoom replaces in place");
+			// Swap-and-pop keeps the payload whole.
+			tour::scene::SceneAudioRoom room3;
+			room3.wet = 0.9f;
+			tour::scene::SetAudioRoom(s, 3, room3);
+			Check(tour::scene::RemoveAudioRoom(s, 2) && tour::scene::FindAudioRoom(s, 3)
+				&& tour::scene::FindAudioRoom(s, 3)->room.wet == 0.9f,
+				"audio room swap-and-pop keeps the payload");
+			Check(!tour::scene::RemoveAudioRoom(s, 2),
+				"audio room re-Remove returns false");
+			tour::scene::RemoveAudioRoom(s, 3);
+		}
 		{
 			const AudioSourceRow* ar = FindAudioSource(s, 2);
 			Check(ar && ar->source.volume == 0.8f
@@ -155,7 +203,7 @@ int main() {
 		Check(RemoveNodeRows(s, 2), "RemoveNodeRows reports removal");
 		Check(!FindMesh(s, 2) && !FindMaterial(s, 2) && !FindDecal(s, 2)
 			&& !FindCamera(s, 2) && !FindLight(s, 2)
-			&& !FindAudioSource(s, 2),
+			&& !FindAudioSource(s, 2) && !tour::scene::FindAudioRoom(s, 2),
 			"RemoveNodeRows cleared all kinds");
 		Check(!RemoveNodeRows(s, 2), "RemoveNodeRows on a bare node is false");
 
@@ -282,6 +330,87 @@ int main() {
 			if (row.node == (uint32_t)e)
 				staleRow = true;
 		Check(!staleRow, "rebuild compacts rows of retired slots");
+	}
+
+	{
+		// ---- THE SHARED SPATIAL-VOLUME SHAPE (spatial_volume.h) ----
+		// The GI-volume placement convention: center = translation,
+		// axes = normalized columns, half = HALF the column lengths.
+		// Fades in metres, min-of-six-faces, degenerate shapes cover
+		// nothing, and PARITY with the GI volume's own plane math.
+		using namespace tour::scene;
+		const float inFade = 0.3f, outFade = 0.7f;
+		// Axis-aligned 10x4x6 box at (0,2,0): scale = FULL extents.
+		const glm::mat4 g = glm::translate(glm::mat4(1.0f),
+			glm::vec3(0.0f, 2.0f, 0.0f))
+			* glm::scale(glm::mat4(1.0f), glm::vec3(10.0f, 4.0f, 6.0f));
+		const SpatialVolumeBox box =
+			VolumeBoxFromGlobalTransform(g);
+		Check(Near(box.center.y, 2.0f) && Near(box.half.x, 5.0f)
+			&& Near(box.half.y, 2.0f) && Near(box.half.z, 3.0f),
+			"volume box decodes the GI placement convention");
+		Check(Near(SpatialVolumeWeight(box,
+				glm::vec3(0.0f, 2.0f, 0.0f), inFade, outFade), 1.0f),
+			"volume weight 1 at the center");
+		Check(Near(SpatialVolumeWeight(box,
+				glm::vec3(20.0f, 2.0f, 0.0f), inFade, outFade), 0.0f),
+			"volume weight 0 well outside");
+		// The face transition: at the +x face (x = 5) the signed inside
+		// distance is 0 -> smoothstep(-outsideFade, insideFade, 0) =
+		// t=0.7 -> 0.784 (biased IN, the fade band); a metre past the
+		// outer fade (x = 6, d = -1 < -outsideFade) it is 0.
+		const float atFace = SpatialVolumeWeight(box,
+			glm::vec3(5.0f, 2.0f, 0.0f), inFade, outFade);
+		const float pastFace = SpatialVolumeWeight(box,
+			glm::vec3(6.0f, 2.0f, 0.0f), inFade, outFade);
+		Check(Near(atFace, 0.784f, 1e-3f) && Near(pastFace, 0.0f),
+			"volume weight ramps across the face fade");
+		// A ROTATED box: rotate 90 degrees about Y — the former +x
+		// half-extent becomes the z axis.
+		const glm::mat4 gr = glm::translate(glm::mat4(1.0f),
+			glm::vec3(0.0f, 2.0f, 0.0f))
+			* glm::rotate(glm::mat4(1.0f), glm::radians(90.0f),
+				glm::vec3(0.0f, 1.0f, 0.0f))
+			* glm::scale(glm::mat4(1.0f), glm::vec3(10.0f, 4.0f, 6.0f));
+		const SpatialVolumeBox rb = VolumeBoxFromGlobalTransform(gr);
+		Check(Near(rb.half.x, 5.0f) && Near(rb.half.z, 3.0f),
+			"rotated box keeps its half extents");
+		Check(Near(SpatialVolumeWeight(rb,
+				glm::vec3(0.0f, 2.0f, 4.0f), inFade, outFade), 1.0f),
+			"rotated box full inside (along the rotated axis)");
+		// GI PARITY: the shared weight equals GiVolumeDef::Weight over
+		// the same rotated shape (the plane math is the GI volume's
+		// own — one convention, two implementations, pinned equal).
+		{
+			tour::gi::GiVolumeDef def;
+			def.planes = tour::gi::GiVolumeBoxPlanesRotated(rb.center,
+				rb.axes, rb.half, inFade, outFade);
+			bool parity = true;
+			for (const glm::vec3 p : {
+					glm::vec3(0, 2, 0), glm::vec3(4.9f, 2, 0),
+					glm::vec3(5.2f, 2, 0), glm::vec3(6.5f, 2, 0),
+					glm::vec3(0, 2.1f, 1.2f), glm::vec3(-3, 3.4f, 2),
+					glm::vec3(0, 6.5f, 0), glm::vec3(9, 2, 4) }) {
+				if (std::fabs(def.Weight(p)
+						- SpatialVolumeWeight(rb, p, inFade, outFade)) > 1e-4f)
+					parity = false;
+			}
+			Check(parity, "spatial volume parity with the GI planes");
+		}
+			// Degenerate shapes cover nothing (never NaN).
+		{
+			SpatialVolumeBox flat = box;
+			flat.half = glm::vec3(0.0f); // zero extent
+			Check(SpatialVolumeWeight(flat,
+				glm::vec3(0.0f, 2.0f, 0.0f), inFade, outFade) == 0.0f,
+				"degenerate box covers nothing");
+			SpatialVolumeBox bad;
+			bad.center = glm::vec3(
+				std::numeric_limits<float>::quiet_NaN());
+			Check(SpatialVolumeWeight(bad,
+				glm::vec3(0.0f), inFade, outFade) == 0.0f,
+				"non-finite box covers nothing (never NaN)");
+		}
 	}
 
 	if (g_failures > 0) {

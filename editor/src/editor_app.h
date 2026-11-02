@@ -885,6 +885,10 @@ private:
 	// removeAudioSound -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedAudioNodes;
+	// Same scheme for history-created audio rooms (tour
+	// CreateAudioRoom file order): setAudioRoomAttr -ref addressing.
+	// Rebuilt on every replay alongside m_tourCreatedNodes.
+	std::vector<uint32_t> m_tourCreatedAudioRoomNodes;
 	// Same scheme for history-created exportSettings nodes (tour
 	// createNode -at exportSettings file order): setExportAttr -ref
 	// addressing. Rebuilt on every replay alongside m_tourCreatedNodes
@@ -1375,6 +1379,40 @@ private:
 	// Next free "AudioSource_N" over live node names (1-based) — the
 	// UniqueCameraName pattern.
 	std::string UniqueAudioSourceName() const;
+	// Audio-room attr channels (the givolume-attr shape: name + the
+	// position/rotation/size TRS channels; plus the scalar/bool room
+	// fields). False when the node carries no AudioRoomRow / the attr
+	// is unknown.
+	bool ReadNodeAudioRoomAttr(uint32_t node, const std::string& attr,
+		glm::vec4& v4, double& num, bool& flag, std::string& text) const;
+	bool WriteNodeAudioRoomAttr(uint32_t node, const std::string& attr,
+		const glm::vec4& v4, double num, bool flag,
+		const std::string& text);
+	// Next free "AudioRoom"/"AudioRoom2"/... over live node names (the
+	// audio-source pattern).
+	std::string UniqueAudioRoomName() const;
+	// The created-audio-room creation index (the -ref space the save
+	// emits): alive + emitting creates only, -1 when not a created
+	// room.
+	int CreatedAudioRoomIndex(uint32_t worldNode) const;
+	// Inspector "Audio room" section: the Enable/Disable association
+	// buttons + the room's property knobs (any transform node can
+	// carry a room — the section renders the enable button when the
+	// node has no row yet).
+	void DrawAudioRoomSection(uint32_t node);
+	// Created-audio-room execution (ExecCmd cases): append/remove the
+	// world node (translate + FULL-extent scale — the givolume
+	// placement convention) + the node-local SceneAudioRoom row.
+	// ExecCreateAudioRoom records the assigned id back into the
+	// command, copies roomDupFrom's live payload when set
+	// (DuplicateSelection), and registers the node into
+	// m_tourCreatedAudioRoomNodes while a tour replays.
+	void ExecCreateAudioRoom(EditCmd& c);
+	void ExecUncreateAudioRoom(EditCmd& c);
+	// Create menu: audio room box at the active camera target
+	// (8x4x8 m box, the DEFAULT SceneAudioRoom payload — properties
+	// edit in the inspector; the shape rides the transform gizmo).
+	void DraftCreateAudioRoom();
 	// Inspector "Audio source" section for audio-source nodes (payload
 	// knobs + the sound-slot list via undoable SetAudioAttr/
 	// AddAudioSound/RemoveAudioSound; pose via the transform gizmo).
@@ -1425,6 +1463,9 @@ private:
 	void ExecUncreateCubemap(EditCmd& c);
 	// Viewport boxes for GI volume nodes (editor_gizmo.cpp batches).
 	bool m_showGiVolumeGizmos = true;
+	// Audio room boxes (View toggle): X-ray wire boxes per AudioRoomRow,
+	// teal to read apart from the GI priority hues.
+	bool m_showAudioRoomGizmos = true;
 	// Viewport markers for cubemap capture nodes (diamond + radius).
 	bool m_showCubemapGizmos = true;
 	// Viewport frustums for camera nodes (eye diamond + near/far box).
