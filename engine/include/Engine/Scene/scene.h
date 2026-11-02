@@ -238,6 +238,9 @@ struct Scene {
 	// Final global-transform writes, consumed by the GPU scene after
 	// recalculation has cleared changedAtThisFrame. Single reader.
 	std::vector<NodeId> gpuSceneGlobalChanges;
+	// One pending bit per node, preventing unbounded journal growth if
+	// multiple recalculations occur before the renderer consumes changes.
+	std::vector<uint8_t> gpuSceneGlobalQueued;
 
 	std::vector<Hierarchy> hierarchy;
 

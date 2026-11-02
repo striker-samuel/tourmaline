@@ -86,6 +86,10 @@ int main() {
         if (n == uint32_t(child)) sawChild = true;
     }
     assert(sawParent && sawChild);
+    const size_t pendingBefore = scene.gpuSceneGlobalChanges.size();
+    markAsChanged(scene, parent);
+    assert(recalculateGlobalTransforms(scene));
+    assert(scene.gpuSceneGlobalChanges.size() == pendingBefore);
     std::puts("gpu scene world synchronization: PASS");
     return 0;
 }

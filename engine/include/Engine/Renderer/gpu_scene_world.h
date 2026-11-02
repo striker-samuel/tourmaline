@@ -213,6 +213,8 @@ public:
             stats = registry_.Reconcile(records, db);
             revision_ = world.gpuSceneTopologyRevision;
             world.scene.gpuSceneGlobalChanges.clear();
+            std::fill(world.scene.gpuSceneGlobalQueued.begin(),
+                      world.scene.gpuSceneGlobalQueued.end(), uint8_t(0));
             return stats;
         }
         // Recalc can append the same node multiple times before a frame.
@@ -226,6 +228,9 @@ public:
                                        world.scene.globalTransform[node], db))
                 ++stats.updated;
         }
+        for (NodeId node : dirty)
+            if (node < world.scene.gpuSceneGlobalQueued.size())
+                world.scene.gpuSceneGlobalQueued[node] = 0;
         dirty.clear();
         return stats;
     }
