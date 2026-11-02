@@ -8,9 +8,13 @@
 #   tourmaline_add_project(GameProject
 #       RECIPE  project/game.tourrecipe     # authored build definition
 #       [PROJECT <dir>]               # default: the recipe's directory
-#       [HEADER_DIR <dir>]            # default: ${CMAKE_CURRENT_BINARY_DIR}/<name>
+#       [HEADER_DIR <dir>]            # default: <project>/ (checked-in header)
 #   )
 #   tourmaline_attach_project(GameProject GameProject)
+#
+# project.h lives beside the recipe by default, so IDEs and Git see it
+# like other project headers. HEADER_DIR can opt into a build-local path.
+# The private project_plans.h is generated beside it and gitignored.
 #
 # add_project VALIDATES + REGISTERS (no targets — attach creates them,
 # because attach is where the consuming exe's publish dir becomes
@@ -73,9 +77,15 @@ function(tourmaline_add_project NAME)
 	endif()
 	if(NOT TP_PROJECT)
 		get_filename_component(TP_PROJECT "${TP_RECIPE}" DIRECTORY)
+	else()
+		get_filename_component(TP_PROJECT "${TP_PROJECT}" ABSOLUTE)
 	endif()
 	if(NOT TP_HEADER_DIR)
-		set(TP_HEADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/${NAME}")
+		# The project owns its C++ catalog: keep it in the source tree
+		# for IDE navigation and version control, not the CMake build tree.
+		set(TP_HEADER_DIR "${TP_PROJECT}")
+	else()
+		get_filename_component(TP_HEADER_DIR "${TP_HEADER_DIR}" ABSOLUTE)
 	endif()
 	set(TP_HEADER "${TP_HEADER_DIR}/project.h")
 
@@ -113,6 +123,13 @@ function(tourmaline_attach_project TARGET NAME)
 			"tourmaline_attach_project(${TARGET}, ${NAME}): "
 			"tourmaline_add_project(${NAME}) was not called")
 	endif()
+	# Declare the header as a source of the consuming target so CMake IDE
+	# integrations show it even before the first ids build creates it.
+	# It is a generated header, not a translation unit to compile.
+	set_source_files_properties("${header}" PROPERTIES
+		GENERATED TRUE HEADER_FILE_ONLY TRUE)
+	target_sources(${TARGET} PRIVATE "${header}")
+	source_group("Project" FILES "${header}")
 	target_include_directories(${TARGET} PRIVATE "${include_dir}")
 	# The publish dir = the consuming exe's dir (where <Name>_paks
 	# lands the paks and the runtime loads them exe-relative).
