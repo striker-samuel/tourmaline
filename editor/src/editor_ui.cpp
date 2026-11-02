@@ -2002,7 +2002,7 @@ namespace editor {
 	ImGui::Separator();
 	if (!row) {
 		// No association yet: offer the Enable button (ANY transform
-		// node can carry a room � the GI inspector's "Audio room:
+		// node can carry a room — the GI inspector's "Audio room:
 		// Enable" path is this same command).
 		ImGui::TextDisabled("Audio room: none (shape = node transform)");
 		if (ImGui::Button("Enable audio room")) {
@@ -2121,7 +2121,7 @@ namespace editor {
 		}
 		endRoomDrag("transitionSeconds");
 	}
-	// The enabled chip (immediate � one Do per click).
+	// The enabled chip (immediate — one Do per click).
 	{
 		bool en = def.enabled;
 		if (attr::Check("Enabled", &en,
@@ -2141,7 +2141,7 @@ namespace editor {
 		}
 	}
 	if (ImGui::Button("Disable audio room")) {
-		// Drops the ASSOCIATION only � the node + any GI volume on it
+		// Drops the ASSOCIATION only — the node + any GI volume on it
 		// stay (the RemoveAudioRoomVerb command; undo restores the
 		// captured row exactly).
 		EditCmd c{};
