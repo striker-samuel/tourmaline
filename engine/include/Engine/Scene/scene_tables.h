@@ -149,6 +149,12 @@ struct AudioRoomRow {
 	SceneAudioRoom room{};
 };
 
+// Node -> optional spatial trigger component.
+struct TriggerVolumeRow {
+	NodeId node = 0;
+	SceneTriggerVolume trigger{};
+};
+
 // Node -> PROJECT-DEFINED SCHEMA ASSOCIATION (the custom-node-schema
 // lane, Engine/Scene/node_schema.h + docs/content_as_code.md): a
 // typed data block attached to a regular scene transform node. The
@@ -195,6 +201,7 @@ struct SceneTables {
 	std::vector<EnvVolumeRow> envVolumes;
 	std::vector<AudioSourceRow> audioSources;
 	std::vector<AudioRoomRow> audioRooms;
+	std::vector<TriggerVolumeRow> triggerVolumes;
 	std::vector<SchemaAssocRow> schemaAssocs;
 	// Rigid bodies + colliders arrive at Epoch 10.
 };
@@ -218,6 +225,7 @@ struct NodeRows {
 	RowId envVolume = InvalidRow;
 	RowId audioSource = InvalidRow;
 	RowId audioRoom = InvalidRow;
+	RowId triggerVolume = InvalidRow;
 	RowId schemaAssoc = InvalidRow;
 	RowId body = InvalidRow;
 };
@@ -268,6 +276,8 @@ const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node);
 AudioSourceRow* FindAudioSource(Scene& scene, NodeId node);
 const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node);
 AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node);
+TriggerVolumeRow* FindTriggerVolume(Scene& scene, NodeId node);
+const TriggerVolumeRow* FindTriggerVolume(const Scene& scene, NodeId node);
 const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node);
 SchemaAssocRow* FindSchemaAssoc(Scene& scene, NodeId node);
 const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node);
@@ -289,6 +299,7 @@ bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
 bool SetAudioSource(Scene& scene, NodeId node,
 	const SceneAudioSource& source);
 bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room);
+bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigger);
 // The schema association (node_schema.h): the cooked value block is
 // stored verbatim — the schema id names the layout (the pak's
 // registry); `values` may be empty (defaults decode at read time).
@@ -309,6 +320,7 @@ bool RemoveEnv(Scene& scene, NodeId node);
 bool RemoveEnvVolume(Scene& scene, NodeId node);
 bool RemoveAudioSource(Scene& scene, NodeId node);
 bool RemoveAudioRoom(Scene& scene, NodeId node);
+bool RemoveTriggerVolume(Scene& scene, NodeId node);
 bool RemoveSchemaAssoc(Scene& scene, NodeId node);
 
 // ---- dense node metadata (name/uuid; see NodeMetadata) ----
