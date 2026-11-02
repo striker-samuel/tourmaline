@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <cwchar>
