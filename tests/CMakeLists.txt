@@ -1184,3 +1184,11 @@ add_executable(LightmapPullTests test_lightmap_pull.cpp)
 target_include_directories(LightmapPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 set_target_properties(LightmapPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME lightmap_pull_tests COMMAND LightmapPullTests)
+
+# GPUIR-style persistent GPU scene tables: pure CPU record/journal
+# tests with byte-for-byte fake GPU mirrors (no Vulkan device).
+add_executable(GpuSceneDatabaseTests test_gpu_scene.cpp)
+target_link_libraries(GpuSceneDatabaseTests PRIVATE engine)
+set_target_properties(GpuSceneDatabaseTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_database_tests COMMAND GpuSceneDatabaseTests)
