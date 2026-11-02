@@ -1219,6 +1219,13 @@ if(Python3_FOUND)
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tools/tests
             -t ${CMAKE_SOURCE_DIR}/tools/tests)
+    # The SMP8/.tapp pak browser's stdlib-only suite (same registration
+    # rationale as perf_harness_tests; PR #26 shipped it discover-only).
+    add_test(NAME pak_browser_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests
+            -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_pak_browser.py)
 else()
     message(STATUS "Python3 not found: perf_harness_tests not registered")
 endif()
