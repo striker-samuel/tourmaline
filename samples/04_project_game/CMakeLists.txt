@@ -6,10 +6,12 @@ project(game_project_sample)
 # ---------------------------------------------------------------------------
 # 04_project_game: the CONTENT-AS-CODE sample — a standalone project exe.
 # The project (raw sources + the recipe) is checked in under project/;
-# the build generates the GENERATION-STAMPED project.h (content ids
-# ensured in the project's asset database by the GameProject_ids target
-# — it IMPORTS + resolves on the first run, so the checked-in tree
-# needs no derived files), GameProject_stamp forces a new catalog
+# the build generates the GENERATION-STAMPED project/project.h (content
+# ids ensured in the project's asset database by the GameProject_ids
+# target — it IMPORTS + resolves on the first run). The header appears
+# in the IDE and can be committed like any other project source file;
+# project_plans.h stays ignored as private build output.
+# GameProject_stamp forces a new catalog
 # generation on demand, and GameProject_paks cooks the full content
 # (recipe build -> verified paks + the appmanifest + a project.h
 # re-stamp whose pak records go state=verified) next to the exe ON
