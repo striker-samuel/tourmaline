@@ -1082,6 +1082,10 @@ namespace editor {
 		if (!m_world)
 			return;
 		auto& scene = m_world->scene;
+		// Editor default for new/unauthored scene looks. Authored
+		// render.autoExposure from the tour is parsed below and wins.
+		// Do not change SceneRenderSettings' runtime/App default.
+		scene.defaultRenderSettings.autoExposure = false;
 		scene.tables.envs.clear();
 		scene.envZonesEnabled = true; // absent key = auto-on (Scene default)
 		m_envCurrent = UINT32_MAX;

@@ -342,6 +342,12 @@ struct RenderQualityConfig {
 	bool probePremixEnabled = true;  // GPU probe pre-mix (single-fetch path)
 	bool evsmEnabled = false;        // EVSM moment shadows (else PCF)
 	float evsmSoftness = 1.0f;       // EVSM penumbra artistic scale (0 = hard)
+	// Optional host-side EVSM memory caps (0 = follow the PCF tile size).
+	// EVSM uses six RGBA32F atlas images plus MSAA depth per atlas, so
+	// editor live previews can request smaller tiles without lowering
+	// the ordinary PCF shadow resolution.
+	uint32_t evsmDirTileLimit = 0;
+	uint32_t evsmLocalTileLimit = 0;
 
 	// ---- The SESSION-quality surface beyond the ambient block (the
 	// editor's Render tab parity with the App's Quality tab): every
@@ -1782,6 +1788,8 @@ public:
 		m_probePremixEnabled = q.probePremixEnabled;
 		m_evsmEnabled = q.evsmEnabled;
 		m_evsmSoftness = std::max(q.evsmSoftness, 0.0f);
+		m_evsmDirTileLimit = q.evsmDirTileLimit;
+		m_evsmLocalTileLimit = q.evsmLocalTileLimit;
 		// Display.
 		m_renderScale = std::clamp(q.renderScale, 0.25f, 2.0f);
 		m_dlssMode = q.dlssMode;
@@ -2661,6 +2669,18 @@ public:
 	// diameter (m_evsmSpotLightSize) with PCSS similar-triangles. 0 = hard.
 	float m_evsmSoftness = 1.0f;
 	float m_evsmSpotLightSize = 0.35f; // m, matches the demo PCSS light size
+	uint32_t m_evsmDirTileLimit = 0; // 0 = mirror the PCF cascade resolution
+	uint32_t m_evsmLocalTileLimit = 0; // 0 = mirror the PCF spot resolution
+	uint32_t EvsmDirTileResolution() const {
+		return m_evsmDirTileLimit
+			? std::min(m_cascadeResolution, m_evsmDirTileLimit)
+			: m_cascadeResolution;
+	}
+	uint32_t EvsmLocalTileResolution() const {
+		return m_evsmLocalTileLimit
+			? std::min(m_spotShadowResolution, m_evsmLocalTileLimit)
+			: m_spotShadowResolution;
+	}
 	// ---- Directional CSM tuning (UI, Quality tab) ----
 	// Tile resolution recreates the depth + EVSM moment atlases on change
 	// (one-time hitch via the idempotent per-frame Ensure).
