@@ -11741,6 +11741,19 @@ namespace engine {
 					fogPC);
 			});
 			(void)fogShadowPass;
+			// Rasterize the same large casters into the lower-resolution
+			// depth mip. The volumetric march reads this populated mip,
+			// without asking the GPU to linearly blit D32 depth values.
+			if (!m_viewportResources.directionalShadows.fogCoarseLogical.empty()) {
+				auto& coarsePass = m_viewportResources.directionalShadows
+					.AddVolumetricShadowMipPass(*m_rendergraph);
+				coarsePass.SetRecordingFunc(
+					[this, fogPC](smvk::CommandBuffer& cmd) {
+					RecordVolumetricShadowCasters(cmd,
+						m_viewportResources.directionalShadows.program,
+						fogPC);
+				});
+			}
 		}
 
 		// ---- Spot shadow passes - one per selected caster tile ----
