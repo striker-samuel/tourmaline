@@ -108,11 +108,13 @@ function(tourmaline_host_setup TGT)
             "$<TARGET_FILE:KTX::ktx>"
             "$<TARGET_FILE_DIR:${TGT}>"
     )
+    if(ENABLE_OPTICK)
     add_custom_command(TARGET ${TGT} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:OptickCore>"
             "$<TARGET_FILE_DIR:${TGT}>"
     )
+    endif()
 
     # Runtime content next to the exe: ONLY the small engine-read
     # resources — content/fonts (the UI font, Roboto) + content/luts
@@ -163,8 +165,11 @@ function(tourmaline_host_setup TGT)
             engine
             gltf_import
             KTX::ktx
-            OptickCore
     )
+
+    if(ENABLE_OPTICK)
+        target_link_libraries(${TGT} PRIVATE OptickCore)
+    endif()
 
     # SDL3 is SHARED (vendored prebuilt): stage its DLL next to the exe.
     tourmaline_stage_sdl3(${TGT})

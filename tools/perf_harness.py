@@ -201,6 +201,8 @@ def main(argv=None):
     parser.add_argument("--repeat", type=positive, default=3)
     parser.add_argument("--warmup", type=positive, default=10, help="App internally uses 10 warmup frames")
     parser.add_argument("--capture-frame", type=positive, default=20)
+    parser.add_argument("--trace-frames", type=positive, default=10, help="Nsight GPU Trace frames (1-15; default 10)")
+    parser.add_argument("--trace-duration-ms", type=positive, default=10000, help="Maximum Nsight GPU Trace duration in ms")
     parser.add_argument("--ngfx", help="Path to Nsight Graphics ngfx[.exe] for GPU trace")
     parser.add_argument("--ngfx-capture", help="Path to ngfx-capture[.exe] for graphics capture")
     parser.add_argument("--platform", choices=("Windows", "Linux"), default="Windows" if os.name == "nt" else "Linux")
@@ -310,8 +312,13 @@ def main(argv=None):
             parser.error(f"scene input does not exist: {source}")
     if args.warmup != 10:
         parser.error("App currently has exactly 10 internal warmup frames")
-    if args.capture_frame < 2 or args.capture_frame >= args.frames + args.warmup:
+    if args.mode == "capture" and (args.capture_frame < 2 or args.capture_frame >= args.frames + args.warmup):
         parser.error("capture frame must occur before the benchmark exits")
+    if args.mode == "trace":
+        if args.trace_frames > 15:
+            parser.error("Nsight GPU Trace supports a maximum of 15 frames")
+        if args.frames < args.trace_frames + 2:
+            parser.error("benchmark measured frames must exceed --trace-frames by at least 2 so capture can finish")
     env = os.environ.copy()
     # One scenario must not inherit hidden TOURMALINE_* pins from the shell.
     # The full active environment is explicit and archived in result.json.
@@ -352,6 +359,9 @@ def main(argv=None):
               "command": argv_app, "cwd": str(workdir), "frames": args.frames,
               "warmup_frames": args.warmup, "environment": pins, "app_args": args.app_arg,
               "source_args": args.source_args if scenario else argv_app[1:3], "scenario": args.scenario, "runs": []}
+    if args.mode == "trace":
+        report["trace_frames"] = args.trace_frames
+        report["trace_duration_ms"] = args.trace_duration_ms
     if args.shader_debug:
         # Shader symbolication is a BUILD setting, not a runtime switch. Never claim
         # a release build contains SPIR-V line tables because this CLI was passed a flag.
@@ -394,9 +404,22 @@ def main(argv=None):
             parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
         # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
         # of presents; samples are NOT a trustworthy standalone FPS benchmark.
+    elif args.mode == "trace":
+        ngfx = args.ngfx or shutil.which("ngfx")
+        if not ngfx:
+            parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
+        # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
+        # of presents; samples are NOT a trustworthy standalone FPS benchmark.
+        trace_dir = out / "nsight"
+        trace_dir.mkdir(parents=True, exist_ok=True)
         plan = [{"invocation": [ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
-                                f'--exe={args.exe.resolve()}', '--args=' + subprocess.list2cmdline(argv_app[1:]),
-                                f'--start-after-frames={args.warmup}', "--limit-to-frames=1", '--auto-export'],
+                                f'--exe={args.exe.resolve()}', f'--dir={workdir}',
+                                '--args=' + subprocess.list2cmdline(argv_app[1:]),
+                                f'--output-dir={trace_dir}',
+                                f'--start-after-frames={args.warmup}',
+                                f'--limit-to-frames={args.trace_frames}',
+                                f'--num-frames={args.trace_frames}',
+                                f'--max-duration-ms={args.trace_duration_ms}', '--auto-export'],
                  "env": env, "name": "trace-01.log", "resolution": None}]
     elif args.mode == "cull":
         # One invocation at the scenario camera; the engine's
