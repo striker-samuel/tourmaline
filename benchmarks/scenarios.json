@@ -31,6 +31,36 @@
         "TOURMALINE_AUTO_EXPOSURE": "0"
       },
       "frames": 120
+    },
+    {
+      "id": "sponza-atrium",
+      "label": "Sponza atrium (the canonical demo camera)",
+      "subsystem": "gi",
+      "notes": "The Sponza_10 atrium interior camera, verified on the demo-content release's .tapp (the AGENTS.md/golden_capture.py camera belongs to the older sponza.pak cook and lands outside this scene's bounds). Source is the stable .tapp manifest (never the content-addressed pak name). The GI canon for docs/gi_volume_perf_investigation.md.",
+      "source_args": [
+        "--project",
+        "content/paks/sponza_10.tapp"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          8.82,
+          5.38,
+          -0.6
+        ],
+        "forward": [
+          -0.988,
+          -0.018,
+          0.152
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "8.82,5.38,-0.60",
+        "TOURMALINE_CAM_FWD": "-0.988,-0.018,0.152",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
     }
   ]
 }

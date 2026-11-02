@@ -877,6 +877,14 @@ uint decalCount;                                         // 776 0 = decals off
     uint giVolumeLayersB[56];                                     // 2180 B set 8 volumes x 7 layer slots
     uint giVolumeMeanLayersB[8];                                  // 2404 B mean texture slots
     uint giVolumeVisLayersB[16];                                  // 2436 B vis layer slots
+    // ---- GI VOLUME LAYER TABLE (§1.1, docs/gi_volume_perf_investigation.md):
+    // 10 slots per volume (9 BC6H / 7 legacy + invalid tail) x 8 volumes =
+    // 80 slots per set. The [56] arrays above are RESERVED (the sixth
+    // volume's 10-slot tail wrote past them on the CPU side); readers use
+    // giVolumeLayerTable[vol * 10 + layer]. 4-aligned straight after the
+    // vis tail - no pad on either side (DXC packs uint arrays at 4). ----
+    uint giVolumeLayerTable[80];                                  // 2500 A set: 8 volumes x 10 layer slots
+    uint giVolumeLayerTableB[80];                                 // 2820 B set
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
