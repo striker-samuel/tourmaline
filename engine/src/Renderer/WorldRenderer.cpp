@@ -2819,6 +2819,14 @@ namespace engine {
 				"nothing to render (see the errors above)\n";
 			return false;
 		}
+		// Fixture handles belong to the previous App world, if any.
+		// A new attach starts with an empty runtime test lab.
+		m_runtimeProcRequest = 0;
+		m_runtimeProcNode = UINT32_MAX;
+		m_runtimeProcMesh = {};
+		m_runtimeProcMaterial = {};
+		m_runtimeProcOldMesh = {};
+		m_runtimeProcOldMaterial = {};
 		std::cerr << "[Scene] world resolved: nodes="
 			<< m_world->scene.hierarchy.size() << " meshes="
 			<< m_world->meshLocations.size() << " materials="
