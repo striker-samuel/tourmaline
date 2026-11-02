@@ -259,6 +259,17 @@ void TestCookAssetAndDir() {
 	fs::remove_all(root, ec);
 }
 
+void TestAssetBrowserSelectionClears() {
+    std::string primary = "project/content/models/mesh.geometry";
+    std::vector<std::string> selection = {
+        primary, "project/content/models/other.geometry"
+    };
+    std::string anchor = primary;
+    editor::ClearAssetBrowserSelection(primary, selection, anchor);
+    Check(primary.empty() && selection.empty() && anchor.empty(),
+        "browser.navigation.clears-multi-selection");
+}
+
 void TestVirtualFolderLocation() {
     const std::string root = "project";
     Check(editor::AssetBrowserAtProjectRoot(root, root),
@@ -292,6 +303,7 @@ int main() {
 	TestCookAssetAndDir();
 	TestWatchRoutes();
 	TestVirtualFolderLocation();
+	TestAssetBrowserSelectionClears();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

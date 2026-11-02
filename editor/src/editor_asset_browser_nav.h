@@ -4,6 +4,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace editor {
 
@@ -21,6 +22,15 @@ inline bool ShowAssetBrowserCollectionFolders(
     bool gltfExpanded, bool tourExpanded) {
     return AssetBrowserAtProjectRoot(projectRoot, currentDir)
         && !gltfExpanded && !tourExpanded;
+}
+
+// A directory or collection change invalidates the complete selection,
+// including shift-range anchors (not just the primary selected asset).
+inline void ClearAssetBrowserSelection(std::string& primary,
+    std::vector<std::string>& selection, std::string& anchor) {
+    primary.clear();
+    selection.clear();
+    anchor.clear();
 }
 
 } // namespace editor
