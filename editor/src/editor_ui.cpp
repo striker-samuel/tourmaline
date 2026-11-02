@@ -5807,7 +5807,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		// A .tour with only hidden bake references remains a normal scene
 		// tile (not a folder containing just a back button + itself).
-		const visibleBakeRef = [&](const std::string& guid) {
+		const auto visibleBakeRef = [&](const std::string& guid) {
 			const auto path = absByGuid.find(guid);
 			if (path == absByGuid.end())
 				return false;
