@@ -1229,3 +1229,10 @@ if(Python3_FOUND)
 else()
     message(STATUS "Python3 not found: perf_harness_tests not registered")
 endif()
+
+# GPU-free validation of the 2D atlas and stable Z/atlas batching.
+add_executable(World2DTests test_world2d.cpp)
+target_link_libraries(World2DTests PRIVATE engine)
+set_target_properties(World2DTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME world2d_tests COMMAND World2DTests)
