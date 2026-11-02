@@ -12,6 +12,7 @@
 #endif
 
 #include "editor_app.h"
+#include <Engine/Asset/content_registry.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -539,6 +540,8 @@ void EditorApp::CloseScene() {
 	m_sglmBuf[0] = '\0';
 	ClearSglmLayers();
 	m_giVolumePreviews.clear();
+	m_editorGiInjectedPaths.clear();
+	m_wysiwygGiReloadPending = false;
 	m_giVolumePreviewMode = 0;
 	m_overrideRules.clear();
 	m_nextOverrideId = 1;
@@ -1157,19 +1160,55 @@ bool EditorApp::TryLoadGiVolumes() {
 			  "in LIGHTING)");
 		return false;
 	}
-	std::error_code ec;
+	// The project is a loose content provider. Discover and read through
+	// ContentRegistry, the same resolver used by the deployed runtime:
+	// no stem-based guesses or second filesystem/manifest scanner.
+	tour::asset::ContentRegistry content;
+	std::string discoveryError;
+	if (m_projectRoot.empty() || !content.AddLooseOverride(
+			"editor-project", m_projectRoot, discoveryError)) {
+		Log("GI content discovery unavailable: " + discoveryError);
+		return false;
+	}
+	// Refresh the payload and binding channel the borrowed WorldRenderer
+	// actually consumes. The source cluster owns these until scene close.
+	if (m_world->clusters.empty() || !m_world->clusters.front())
+		return false;
+	smvk::Cluster& carrier = *m_world->clusters.front();
+	for (const std::string& stale : m_editorGiInjectedPaths)
+		carrier.RemoveBakePayload(stale);
+	m_editorGiInjectedPaths.clear();
+	carrier.giBindings.erase(std::remove_if(carrier.giBindings.begin(),
+		carrier.giBindings.end(), [](const smvk::GiBinding& b) {
+			return b.kind == smvk::GiBinding::Kind::GiVolume;
+		}), carrier.giBindings.end());
 	int loaded = 0;
 	for (const Bound& b : bound) {
 		fs::path volPath(b.path);
 		if (volPath.is_relative() && !m_projectRoot.empty())
 			volPath = (fs::path(m_projectRoot) / volPath)
 				.lexically_normal();
-		smvk::gi::GiVolume vol;
 		std::string err;
-		if (!smvk::gi::GiVolume::ReadFile(volPath.string(), vol, err)) {
+		const std::optional<std::vector<uint8_t>> bytes =
+			content.ReadPath(b.path, err);
+		if (!bytes) {
+			Log("Convex volume discovery failed '" + b.path + "': " + err);
+			continue;
+		}
+		smvk::gi::GiVolume vol;
+		if (!vol.ReadFromMemory(*bytes, err)) {
 			Log("Convex volume load failed '" + volPath.string() + "': " + err);
 			continue;
 		}
+		if (vol.bc6hFormat && vol.coeffs.empty() &&
+			!vol.DecodeBc6hCoeffs(err)) {
+			Log("Convex volume decode failed '" + b.path + "': " + err);
+			continue;
+		}
+		carrier.AddBakePayload(b.path, *bytes);
+		carrier.RegisterGiBinding(smvk::GiBinding::Kind::GiVolume,
+			b.path);
+		m_editorGiInjectedPaths.push_back(b.path);
 		GiVolumePreview pv;
 		pv.name = volPath.stem().string();
 		pv.priority = vol.def.priority;
