@@ -1257,3 +1257,10 @@ target_link_libraries(GpuSceneLeafTests PRIVATE engine)
 set_target_properties(GpuSceneLeafTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_leaf_tests COMMAND GpuSceneLeafTests)
+
+# CPU-only GPUIR coarse leaf selection and reference instance culling.
+add_executable(GpuSceneCandidatesTests test_gpu_scene_candidates.cpp)
+target_link_libraries(GpuSceneCandidatesTests PRIVATE engine)
+set_target_properties(GpuSceneCandidatesTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_candidates_tests COMMAND GpuSceneCandidatesTests)
