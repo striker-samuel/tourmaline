@@ -901,6 +901,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/AssetStore.cpp
 	../app/src/AssetManager.cpp
 	../app/src/DeployCheck.cpp
+	../app/src/Runtime.cpp
 )
 
 target_include_directories(PakHostTests

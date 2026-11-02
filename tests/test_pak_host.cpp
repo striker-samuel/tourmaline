@@ -34,6 +34,7 @@
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
+#include "Runtime.h"
 #include "AssetStore.h"
 #include "AssetManager.h"
 #include "DeployCheck.h"
@@ -85,8 +86,7 @@ void TestCliParse() {
 	app::ViewerOptions opts;
 	Check(ParseOk({ "App", "--pak", "x.pak" }, opts)
 		&& opts.pakPath == "x.pak",
-		"cli.pak.required-value");
-	Check(ParseOk({ "App", "--pak=y.pak", "--scene-index=3" }, opts)
+		"cli.pak.required-value");	Check(ParseOk({ "App", "--pak=y.pak", "--scene-index=3" }, opts)
 		&& opts.sceneIndex == 3,
 		"cli.scene-index.equals-form");
 	// The required-flag gate: no --pak, no run.
@@ -233,6 +233,49 @@ void TestCliParse() {
 		Check(ParseFails({ "App", "--project", "g.tapp", "--scene",
 				"S" }, ec) && ec != 0,
 			"cli.scene-with-project-refused");
+	}
+}
+
+// ---- THE APPLICATION-FACING RUNTIME (app::RunGame's pieces) ----------
+// Headless: the packaged-default entry resolution (the pure half).
+// The game element's hook pump + the context's services ride a real
+// graphics host — the golden/e2e lanes own those (the GameProject
+// sample's BUILD instantiates RunGame + the typed gate end to end).
+
+void TestRuntime() {
+	// ArgsWithDefaultEntry: the packaged appmanifest beside the EXE
+	// becomes the entry point unless the caller named one; an empty
+	// default disables the whole lane.
+	{
+		const char* argv[2] = { "Game", "--irrelevant-flag" };
+		std::vector<const char*> args = app::ArgsWithDefaultEntry(2,
+			argv, "game.tapp");
+		Check(args.size() == 4 && std::string(args[2]) == "--project"
+			&& std::string(args[3]).find("game.tapp")
+				!= std::string::npos,
+			"rt.default-entry-appended");
+		// A caller-named entry (either form) wins: nothing appended.
+		const char* argvPak[3] = { "Game", "--pak", "x.pak" };
+		std::vector<const char*> withPak = app::ArgsWithDefaultEntry(3,
+			argvPak, "game.tapp");
+		Check(withPak.size() == 3, "rt.explicit-pak-wins");
+		const char* argvProject[3] = { "Game", "--project", "y.tapp" };
+		std::vector<const char*> withProject =
+			app::ArgsWithDefaultEntry(3, argvProject, "game.tapp");
+		Check(withProject.size() == 3, "rt.explicit-project-wins");
+		// The empty default disables the lane (the caller MUST name
+		// an entry — the parse gate below refuses otherwise).
+		std::vector<const char*> disabled = app::ArgsWithDefaultEntry(
+			2, argv, "");
+		Check(disabled.size() == 2, "rt.empty-default-disabled");
+	}
+	// The GameLaunchOptions defaults: one service-less camera-free
+	// launch with the game.tapp default.
+	{
+		app::GameLaunchOptions opts;
+		Check(opts.services.empty() && !opts.extraOwnsCamera
+			&& opts.defaultManifest == "game.tapp",
+			"rt.launch-options-defaults");
 	}
 }
 
@@ -1784,6 +1827,7 @@ void TestWorldRetention() {
 int main() {
 	TestParallelCrcFirstUse();
 	TestCliParse();
+	TestRuntime();
 	TestPakPathResolution();
 	TestPakCorruption();
 	TestDeployCheck();

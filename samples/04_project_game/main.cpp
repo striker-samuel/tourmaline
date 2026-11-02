@@ -13,35 +13,20 @@
 //   cmake --build out/build/x64-Release --target GameProject_paks  (content)
 //   out/build/x64-Release/GameProject.exe                          (runs the entry scene)
 
-#include "Host.h"
-#include "ProjectRuntime.h"
+#include "Runtime.h"
 #include "AudioRuntime.h"
 
 #include "project.h"
 
-#include <Engine/App/Element.h>
-#include <Engine/App/RunConfig.h>
 #include <Engine/App/world.h>
 
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
-#include <cstring>
-#include <filesystem>
-#include <memory>
 #include <string>
-#include <vector>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h> // GetModuleFileNameA (the exe-relative manifest)
-#else
-#include <unistd.h> // readlink (/proc/self/exe)
-#endif
 
 // ---- THE PROJECT LIT FAMILY DEMO (docs/shader_library_design.md
-// Phase B) -----------------------------------------------
+// Phase B) — AS THE GAME -----------------------------------------
 // The two worked-example effects — enemy damage flash (worked example
 // A) and runtime wetness (worked example B) — shipped as the sample's
 // demonstration material: the scene's first opaque material opts into
@@ -51,34 +36,17 @@
 // no reupload, no batch split — a family switch is a pipeline pick,
 // a userdata change is a CPU write.
 //
-// A STANDALONE element: the audio runtime stacks as its OWN element
-// beside this one (the host's extension list composes elements, never
-// forces a game to nest lifecycle-forwarding wrappers).
-class ProjectLitDemo final : public engine::IAppElement {
+// THE GAME BEHAVIOUR (app::GameBehaviour — the application-facing
+// runtime): onStart adopts the material (the world + the session are
+// live by then), the update pulses it. The service elements (the
+// scene-aware audio) stack UNDER this through the launch options —
+// no nested lifecycle-forwarding wrappers anywhere.
+class ProjectGame final : public app::GameBehaviour {
 public:
-	explicit ProjectLitDemo(
-			std::shared_ptr<smvk::World*> worldHandle)
-		: m_worldHandle(std::move(worldHandle)) {}
-
-	const char* ElementName() const override { return "GameProjectDemo"; }
-
-	// The demo's lifecycle is narrow: attach adopts the material, the
-	// update pulses it. The rest of the element surface rides as
-	// no-ops (a standalone element owns ONLY its concerns — no nested
-	// element forwarding).
-	bool onAttach() override {
-		// The host stacks this element AFTER the renderer's attach (the
-		// world source ran), so the scene's materials exist here.
-		AdoptMaterial();
-		return true;
+	void onStart(app::Context& ctx) override { AdoptMaterial(ctx); }
+	void onUpdate(app::Context& ctx, float dt) override {
+		Pulse(ctx, dt);
 	}
-	void onDetach() override {}
-	void onResize(smvk::Extent2D) override {}
-	void onUpdate(float dt) override { Pulse(dt); }
-	void onUIMenu() override {}
-	void onUIRender() override {}
-	void onPreRender(engine::ElementFrame&) override {}
-	void onRender(engine::ElementFrame&) override {}
 
 private:
 	// Picks the scene's first opaque material and opts it into the
@@ -86,8 +54,8 @@ private:
 	// project_lit.*.spv) is NOT an error: the renderer's consult
 	// reports the StandardLit fallback loudly and the demo simply has
 	// no effect to drive.
-	void AdoptMaterial() {
-		smvk::World* world = m_worldHandle ? *m_worldHandle : nullptr;
+	void AdoptMaterial(app::Context& ctx) {
+		smvk::World* world = ctx.world();
 		if (!world)
 			return;
 		world->forEachRenderItem(
@@ -111,8 +79,8 @@ private:
 	// The userdata bit layout the hooks read (lit_hooks_project.hlsli):
 	// bits 0..7 damage, 8..15 wetness. Two slow out-of-phase pulses so
 	// both effects are visible; a plain CPU write per frame.
-	void Pulse(float dt) {
-		smvk::World* world = m_worldHandle ? *m_worldHandle : nullptr;
+	void Pulse(app::Context& ctx, float dt) {
+		smvk::World* world = ctx.world();
 		if (!world || m_material == smvk::World::kInvalidIndex)
 			return;
 		m_time += dt;
@@ -129,7 +97,6 @@ private:
 			quant(damage) | (quant(wet) << 8));
 	}
 
-	std::shared_ptr<smvk::World*> m_worldHandle;
 	uint32_t m_material = smvk::World::kInvalidIndex;
 	float m_time = 0.0f;
 };
@@ -183,70 +150,34 @@ int main(int argc, const char* argv[]) {
 		" never an index)\n",
 		(unsigned long long)project::EntryScene);
 
-	// Central run config (the TOURMALINE_* pins) + the host assembly:
-	// same host as the plain viewer, but the ENTRY POINT comes from the
-	// PROJECT (the appmanifest beside the exe) unless the caller names
-	// one explicitly (--pak/--project still work for debugging).
-	const engine::RunConfig runCfg = engine::RunConfig::Parse();
-	runCfg.Log();
-	app::PakAppConfig cfg;
-	cfg.run = runCfg;
+	// Central run config (the TOURMALINE_* pins): RunGame parses + logs
+	// it (the sample's old block, lifted into the runner).
 
-	std::vector<const char*> args(argv, argv + argc);
-	std::string manifestPath;
-	bool hasEntry = false;
-	for (int i = 1; i < argc; ++i)
-		if (std::strncmp(argv[i], "--pak", 5) == 0
-				|| std::strncmp(argv[i], "--project", 9) == 0)
-			hasEntry = true;
-	if (!hasEntry) {
-		// The packaged launch: the appmanifest next to this exe (the
-		// GameProject_paks target publishes it here; its paks resolve
-		// manifest-relative so the exe+content pair moves as one).
-		namespace fs = std::filesystem;
-		char exePath[1024] = {};
-#ifdef _WIN32
-		GetModuleFileNameA(nullptr, exePath, DWORD(sizeof(exePath)));
-#else
-		const ssize_t n = readlink("/proc/self/exe", exePath,
-			sizeof(exePath) - 1);
-		if (n > 0)
-			exePath[n] = '\0';
-#endif
-		manifestPath = (fs::path(exePath).parent_path() / "game.tapp")
-			.lexically_normal()
-			.generic_string();
-		args.push_back("--project");
-		args.push_back(manifestPath.c_str());
-	}
-	int exitCode = 0;
-	if (!app::ParsePakAppArgs(int(args.size()), args.data(), cfg.cli,
-			exitCode))
-		return exitCode;
-
-	// ---- THE RUNTIME FAÇADE + THE COMPILED-CATALOG GATE ----------------
-	// The typed helper proves the generated AssetDesc's layout against
-	// the runtime mirror ONCE (static_asserts — the sample's old
-	// hand-rolled reinterpret_cast + offsetof proof is gone), and
-	// RunPakApp runs the gate FATAL at bootstrap: the session builds
-	// (the manifest adopts into the registry), the game proves itself
-	// against the deployed content BEFORE any graphics work, and a
-	// refusal refuses the launch (the old log-and-run-anyway is the
-	// exact contract this closes).
-	cfg.compiledCatalogGate =
-		[](app::ProjectRuntime& session, std::string& err) {
-		if (app::AttachCompiledCatalog(session, project::Assets.data(),
-				project::Assets.size(), project::CatalogFingerprint,
-				err)) {
-			std::printf("[GameProject] compiled catalog attached +"
-				" validated against the deployment manifest"
-				" (fingerprint 0x%llx, %zu asset(s))\n",
-				(unsigned long long)project::CatalogFingerprint,
-				project::Assets.size());
-			return true;
-		}
-		return false;
-	};
+	// ---- THE GAME LAUNCH (app::RunGame — the application boundary) --
+	// ONE call: the packaged manifest beside the exe becomes the entry
+	// point (unless the caller names one), the session builds before
+	// any graphics work, the FATAL compiled-catalog gate proves the
+	// game against the deployed content (the typed helper's layout
+	// static_asserts at THIS instantiation — the last reinterpret_cast
+	// left the tree with it), the SERVICE elements stack under the
+	// game element, and the game's own hooks (the ProjectLit demo)
+	// carry the gameplay. No viewer config, no manifest rows, no pak
+	// filenames in game code.
+	app::GameLaunchOptions opts;
+	// The service: the scene-aware audio runtime (borrowing the
+	// launch's SHARED content session — the same pak images + provider
+	// selection the world load resolved through).
+	opts.services.push_back(
+		[](smvk::App& host,
+			engine::WorldRenderer& renderer,
+			std::shared_ptr<smvk::World*> worldHandle,
+			const std::shared_ptr<app::ProjectRuntime>& session)
+		-> std::shared_ptr<engine::IAppElement> {
+		if (!session)
+			return nullptr; // no session (a --pak override): no audio
+		return app::MakeAudioRuntime(host, session,
+			std::move(worldHandle), &renderer);
+	});
 	// The flat table is a first-class compile-time surface: kind +
 	// pakIndex typed queries, no strings.
 	if (const project::AssetDesc* tex =
@@ -255,34 +186,8 @@ int main(int argc, const char* argv[]) {
 			" pak[%u] '%.*s'\n",
 			unsigned(tex->kind), tex->pakIndex,
 			int(tex->path.size()), tex->path.data());
-	// ---- THE GAME ELEMENTS (composed, never nested) ---------------------
-	// TWO standalone elements stack over the renderer, in list order:
-	// the scene-aware audio runtime (borrowing the launch's SHARED
-	// content session — the same pak images + provider selection the
-	// world load resolved through) and the ProjectLit family demo (a
-	// plain world handle). No lifecycle-forwarding wrapper: the host's
-	// extension list composes elements, each owning its own concerns.
-	if (!cfg.cli.project.empty()) {
-		cfg.extraElements.push_back(
-			[](smvk::App& host,
-				engine::WorldRenderer& renderer,
-				std::shared_ptr<smvk::World*> worldHandle,
-				const std::shared_ptr<app::ProjectRuntime>& session)
-			-> std::shared_ptr<engine::IAppElement> {
-			if (!session)
-				return nullptr; // no session (a --pak override): no audio
-			return app::MakeAudioRuntime(host, session,
-				std::move(worldHandle), &renderer);
-		});
-		cfg.extraElements.push_back(
-			[](smvk::App&,
-				engine::WorldRenderer&,
-				std::shared_ptr<smvk::World*> worldHandle,
-				const std::shared_ptr<app::ProjectRuntime>&)
-			-> std::shared_ptr<engine::IAppElement> {
-			return std::make_shared<ProjectLitDemo>(
-				std::move(worldHandle));
-		});
-	}
-	return app::RunPakApp(cfg);
+	ProjectGame game;
+	return app::RunGame(&game, argc, argv,
+		project::Assets.data(), project::Assets.size(),
+		project::CatalogFingerprint, std::move(opts));
 }

@@ -30,6 +30,12 @@ add_library(tourmaline_apphost STATIC
     src/AudioRuntime.cpp
     src/AssetManager.cpp
     src/DeployCheck.cpp
+    # THE APPLICATION-FACING RUNTIME (app::RunGame — Runtime.h): the
+    # game-host convenience adapter (the context, the game element,
+    # the packaged-default entry + the FATAL compiled-catalog gate).
+    # App.exe stays its thin viewer main; PROJECT EXES drive THIS.
+    src/AssetStore.cpp
+    src/Runtime.cpp
 )
 
 target_include_directories(tourmaline_apphost
