@@ -111,6 +111,9 @@ void TestParse() {
 	Check(doc.cues[0].events.size() == 1
 		&& doc.cues[0].events[0].t == 0.0, "ag.parse.cue-events");
 	Check(doc.cues[0].tracks.size() == 2, "ag.parse.cue-tracks");
+	Check(doc.cues[0].tracks[0].param == "wind"
+		&& doc.cues[0].tracks[1].param == "tone",
+		"ag.parse.tracks-in-declaration-order");
 	Check(doc.cues[0].tracks[0].keys.size() == 2
 		&& doc.cues[0].tracks[0].keys[1].value == 0.8f,
 		"ag.parse.keyframes");

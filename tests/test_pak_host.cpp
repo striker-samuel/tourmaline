@@ -1871,6 +1871,9 @@ void TestWorldRetention() {
 } // namespace
 
 int main() {
+	// CTest captures stdout through a pipe: flush each check so a Linux
+	// crash identifies the last completed assertion in the job log.
+	std::cout << std::unitbuf;
 	TestParallelCrcFirstUse();
 	TestCliParse();
 	TestRuntime();

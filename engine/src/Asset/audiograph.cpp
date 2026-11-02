@@ -229,13 +229,20 @@ bool ParseAudioGraphText(const std::string& text, AudioGraphDoc& out,
 	auto flushCueTracks = [&]() {
 		if (!currentCue)
 			return;
-		for (auto& [param, keys] : cueKeys) {
+		// Preserve exposed-param declaration order, not the unspecified
+		// iteration order of unordered_map (which differs across STL
+		// implementations and changes the public cue track ordering).
+		for (const AudioGraphParam& exposed : out.params) {
+			auto it = cueKeys.find(exposed.name);
+			if (it == cueKeys.end())
+				continue;
+			auto& keys = it->second;
 			std::sort(keys.begin(), keys.end(),
 				[](const AudioCueKeyframe& a, const AudioCueKeyframe& b) {
 					return a.t < b.t;
 				});
 			AudioCueParamTrack track;
-			track.param = param;
+			track.param = exposed.name;
 			track.keys = std::move(keys);
 			currentCue->tracks.push_back(std::move(track));
 		}
