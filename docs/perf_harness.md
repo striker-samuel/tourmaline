@@ -53,7 +53,7 @@ The renderer's `--capture` option is specifically the RenderDoc-safe Streamline/
 
 ## Source-controlled camera scenarios / dedicated target
 
-To export a repeatable stress-test view, launch the **App viewer** on a cooked scene and navigate to a costly camera angle. Press **TAB**, enter a label, subsystem and optional notes under **Benchmark scenarios**, then click **Export for benchmark**. This appends a unique ID plus the exact camera position/forward, scene launch identity and supported renderer pins to the tracked `benchmarks/scenarios.json`.
+To export a repeatable stress-test view, launch the **App viewer** on a cooked scene and navigate to a costly camera angle. Press **TAB**, switch to UI cursor mode with **I** if needed, enter a label, subsystem and optional notes under **Benchmark scenarios**, then click **Export for benchmark**. This appends a unique ID plus the exact camera position/forward, scene launch identity and supported renderer pins to the tracked `benchmarks/scenarios.json`.
 
 The separate `Benchmark` CMake target links the cooked-pak host but no sample/gameplay element and **requires --bench**. Build it explicitly:
 
