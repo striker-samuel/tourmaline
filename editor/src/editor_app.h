@@ -871,6 +871,8 @@ private:
 	// file order): setGiVolumeAttr -ref addressing. Rebuilt on every replay
 	// alongside m_tourCreatedNodes.
 	std::vector<uint32_t> m_tourCreatedGiVolumeNodes;
+	// All editor-created generic transforms, addressed by volume components.
+	std::vector<uint32_t> m_tourCreatedTransformNodes;
 	// Same scheme for history-created cubemap captures (tour
 	// CreateCubemap file order): setCubemapAttr -ref addressing.
 	// Rebuilt on every replay alongside m_tourCreatedNodes.
@@ -955,6 +957,7 @@ private:
 	int CreatedLightIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created GI volume, same contract.
 	int CreatedGiVolumeIndex(uint32_t worldNode) const;
+	int CreatedTransformIndex(uint32_t worldNode) const;
 	// Creation-order index of a live created cubemap capture, same
 	// contract.
 	int CreatedCubemapIndex(uint32_t worldNode) const;
