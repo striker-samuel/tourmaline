@@ -33,7 +33,8 @@ The framework is under active development. APIs and asset formats are evolving, 
 - **Authored worlds:** A Maya-inspired, text-based `.tour` scene overlay with references, overrides, editable nodes, and replayable operations. `.tourAnim` provides skeletal clips.
 - **Content as code:** `Project.exe` resolves `.tourrecipe` builds, cooks and verifies multiple `.pak` files, publishes a `.tapp` runtime manifest, and generates a typed, `constexpr` `project.h` catalog of persistent asset IDs.
 - **C++-first runtime:** Scene loading by asset ID, additive scene instances, asset prefetch, typed generational handles for mesh instances/animators/audio emitters, and scene-aware spatial audio. Game code owns the gameplay objects.
-- **Editor and offline tools:** An ImGui scene editor plus command-line import, cooking, GI baking, packaging, asset inspection, and debugging tools. Jolt Physics is vendored and tested; engine-level rigid-body/collider integration is still in progress.
+- **Editor and offline tools:** An ImGui scene editor plus command-line import, cooking, GI baking, packaging, asset inspection, and debugging tools. The editor also offers a full-renderer baked-GI view and fallback inspectors for unrecognized files. Jolt Physics is vendored and tested; engine-level rigid-body/collider integration is still in progress.
+- **Repeatable benchmarks:** A standalone `Benchmark` target, in-viewer scenario export to a source-controlled catalog, a Python A/B performance harness, and optional NVIDIA Nsight Graphics trace/capture workflows.
 
 ## Screenshots
 
@@ -236,7 +237,26 @@ cmake --build out/build/linux-Release --target GameProject
 
 Then launch `GameProject.exe` (Windows) or `./GameProject` (Linux) **from its build directory**. Cooking is intentionally explicit (`GameProject_paks`), not a side effect of compiling `GameProject`. The viewer can also launch other cooked content with `App --pak <file.pak>` or `App --project <file.tapp>`.
 
+**Run a repeatable renderer benchmark (optional):** build the standalone `Benchmark` target from the same configured build directory. It needs a cooked pak or `.tapp` and a GPU-capable environment; it does not run an interactive sample/game loop. From the repository root:
+
+```powershell
+cmake --build out/build/x64-Release --target Benchmark
+python tools/perf_harness.py list
+python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/x64-Release/Benchmark.exe --repeat 5
+```
+
+The example scenario requires `content/paks/bistro.pak` in that build directory; the Sponza demo download does **not** supply Bistro. For a different scene, launch `App`, navigate to a representative view, press **TAB** (and **I** for UI cursor control if needed), then use **Benchmark scenarios → Export for benchmark**. Review and commit `benchmarks/scenarios.json`. See [benchmark scenarios](benchmarks/README.md) and the [agent performance harness](docs/perf_harness.md) for Linux paths, Nsight profiling, and reproducibility limits.
+
 **Build the editor and tools (optional):** from the repository root, run `cmake --build <build-dir> --target Editor EditorLauncher Project`, then start `EditorLauncher` from the build directory (or `Editor --project <project-dir>`). Editor authoring/rendering is experimental.
+
+**Inspect published content without launching Vulkan:** the Python package browser supports SMP8 `.pak` archives and appmanifest v2 `.tapp` files. Its CLI mode requires only Python; the graphical browser additionally needs PyQt6:
+
+```bash
+python tools/pak_browser.py --cli-dump out/build/linux-Release/content/paks/sponza_10.tapp
+python tools/pak_browser.py --cli-validate out/build/linux-Release/content/paks/sponza_10.tapp
+```
+
+Use the equivalent Windows build path when applicable. The CLI checks manifest entries, each pak's `#ids` identity table, and (with `--cli-validate`) all stored payload CRCs. See [SMP8 package inspection](docs/pak_vnext.md#inspecting-smp8-paks-and-tapp-manifests).
 
 **Run tests (optional):** configure a separate build directory with `-DBUILD_TESTING=ON` (the demo recipes above disable tests for a smaller build), then:
 
@@ -275,7 +295,7 @@ An animator can play, crossfade, pause, resume, and adjust speed on a loaded ske
 | `.tourAnim` | Skeletal animation clips with joint/channel tracks |
 | `.tourrecipe` | Entry scene, bake policy, pak ownership, dependency edges |
 | `project.h` | Generated, typed C++ content IDs and build/catalog metadata |
-| `.tapp` | Generated runtime manifest for published paks, entry scene, and content IDs |
+| `.tapp` | Generated appmanifest v2 pointer: entry scene and ordered pak list; asset identities live in each pak's `#ids` table |
 | `.pak` | Verified, compressed or directly packed runtime resources |
 
 The importer handles glTF/GLB and derives optimized geometry, LOD chains, meshlets, materials, and animation data. Cook/bake stages produce renderer-specific assets, while package assembly publishes relocatable content-addressed archives. Sound assets can be referenced through persistent IDs and used by authored or dynamically spawned audio emitters.
@@ -301,7 +321,8 @@ If you need a stable, fully supported production engine today, treat Tourmaline 
 engine/     Vulkan renderer, RHI, render graph, scene/runtime data, shaders
 app/        Host application, runtime project/scene/audio facades, pak viewer
 editor/     ImGui world editor and launcher
-tools/      Import, Project, Cook, Pak, GI baker, artifact database, utilities
+tools/      Import, Project, Cook, Pak, GI baker, artifact database, perf harness
+benchmarks/ Tracked benchmark scenario catalog and workflow
 samples/    Rendering samples and the standalone GameProject example
 tests/      CTest suites (CPU and GPU-dependent)
 branding/   Logo and icon assets (editable SVG sources + raster exports)
@@ -320,7 +341,11 @@ external/   Pinned submodules and fetched third-party dependencies
 - [`docs/shader_library_design.md`](docs/shader_library_design.md) — project HLSL shader libraries, material instances, and 32-bit userdata (the userdata transport + lit-hook seam + the ProjectLit project-authored family — all implemented).
 - [`docs/content_as_code.md`](docs/content_as_code.md) — the query/loading/GI-blend API: `MatchAssets` (the compile-time regex query), the `AssetManager` facade (`LoadMesh`/`LoadMeshes`/`LoadGI`/`SetGI`/`SetGIBlend`), and GI bake sets as a catalog kind.
 - [`docs/artifact-db-funnel.md`](docs/artifact-db-funnel.md) — ongoing artifact pipeline redesign notes (not all sections are implemented).
-- [`docs/headless_bench.md`](docs/headless_bench.md) — the full headless run reference: bench/capture contract, `TOURMALINE_*` A/B pins, and debug views.
+- [`docs/headless_bench.md`](docs/headless_bench.md) — headless bench/capture contract, `TOURMALINE_*` A/B pins, and debug views.
+- [`benchmarks/README.md`](benchmarks/README.md) — creating, reviewing, and replaying source-controlled benchmark scenarios.
+- [`docs/perf_harness.md`](docs/perf_harness.md) — agent-friendly benchmark measurements, comparison, Nsight GPU traces, and capture.
+- [`docs/gi_volume_perf_investigation.md`](docs/gi_volume_perf_investigation.md) — correctness-first GI-volume profiling plan.
+- [`docs/pak_vnext.md`](docs/pak_vnext.md) — SMP8 paging and integrity contract, plus pak/manifest browser CLI instructions.
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored dependencies and redistribution notices.
 
 ## Development and licensing

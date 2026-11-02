@@ -79,7 +79,7 @@ python tools/perf_harness.py list
 Create a **GI-heavy** saved viewpoint (the existing `bistro-ssr-stress` catalog entry targets SSR, not GI):
 1. Open the **App viewer** with a scene containing the baked GI volumes and navigate to an expensive wall/doorway or overlap view.
 2. Press **TAB**; use **I** to enable the UI cursor when necessary; open **Benchmark scenarios** and **Export for benchmark**.
-3. Give it a stable ID, for example `gi-volume-stress`, with `subsystem: gi`. The exporter adds it to tracked `benchmarks/scenarios.json`. Review the resulting entry; it must include the actual source identity, camera pos/forward, relevant `TOURMALINE_*` pins and frame budget. Commit this scenario in the implementation PR or its own preparatory commit.
+3. Enter a label such as **GI volume stress** and `subsystem: gi` (the UI has no separate ID field). The exporter slugifies the label to `gi-volume-stress`, adding a numeric suffix when that ID already exists, and appends it to tracked `benchmarks/scenarios.json`. Review the resulting entry: it must include the actual source identity, camera position/forward, relevant `TOURMALINE_*` pins, consolidated `--with`/`--without` pass lists, and frame budget. Commit this scenario in the implementation PR or a preparatory commit.
 4. Use the same cooked assets and scene throughout. The export cannot capture every live-only UI slider; pin any indispensable missing option through `RunConfig` first rather than assuming replay works.
 
 For this investigation, use at least one **wall-adjacent/filtered** view and one **mostly clean/open** view; also add an overlapping A/B transition view if the content exposes one. A separate, controlled scenario per view is preferable to silently moving the camera.

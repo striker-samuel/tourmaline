@@ -212,6 +212,23 @@ byte-comparable capture.
 - **Safe editor generation swapping** (the editor's live reload of
   regenerated paks without relaunching).
 
+## Inspecting SMP8 paks and `.tapp` manifests
+
+`tools/pak_browser.py` can inspect a single SMP8 `.pak` or an appmanifest v2 `.tapp` pointer. The manifest contains an `entry` scene and an **ordered** `[paks]` list; asset identities are read from each package's `#ids` table, **not** from an old manifest-level `[ids]` section. Old SMP7 paks or pre-v2 manifests are rejected: rebuild/recook rather than assuming compatibility.
+
+From the repository root, use the **Python standard-library CLI** to inspect or fully validate existing artifacts (no GPU, Qt, or Python `lz4` dependency required):
+
+```bash
+python tools/pak_browser.py --cli-dump out/build/linux-Release/content/paks/sponza_10.tapp
+python tools/pak_browser.py --cli-validate out/build/linux-Release/content/paks/sponza_10.tapp
+python tools/pak_browser.py --cli-dump path/to/content.pak
+python tools/pak_browser.py --cli-validate path/to/content.pak
+```
+
+`--cli-dump` reports header/footer and TOC metadata, entry types, paths, stable slots and CRCs, and available `#ids` identities. For `.tapp`, it follows the manifest-relative pak paths in their published order and checks that each package can be opened and supplies the expected identity table. A TOC CRC is validated when a pak is opened, but per-page CRC is **lazy**. `--cli-validate` visits every stored page, reports corruption and returns a nonzero status on failure. Use validation for deployment integrity, not the dump alone.
+
+For the optional **graphical** browser, install `PyQt6` (`python -m pip install PyQt6`) and run `python tools/pak_browser.py path/to/content.pak` or pass a `.tapp`. The GUI exposes package entries, structured metadata and texture envelope/KTX2 inspection; avoid headless Qt platforms such as `QT_QPA_PLATFORM=offscreen`, which cannot draw the interactive window. Python-only browser/manifest regression tests live in `tests/test_pak_browser.py`.
+
 ## Pinned by
 
 - `smp8.*` (test_assets.cpp): the plan codec round trip + malformed
