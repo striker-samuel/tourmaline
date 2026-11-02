@@ -11,6 +11,7 @@
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 #include "editor_asset_browser_nav.h" // collection folders belong at root
+#include "editor_asset_inspect.h" // generic file/directory inspector
 
 #include <cstring>
 #include <algorithm>
@@ -2750,22 +2751,14 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// page: its import settings ARE the authoring (editable for LDR
 		// sources; a KTX2 source pre-decided them — read-only).
 		if (!m_assetsSel.empty()) {
-			std::string e =
-				std::filesystem::path(m_assetsSel).extension().string();
-			for (char& c : e)
-				c = char(std::tolower((unsigned char)c));
-			if (e == ".material" || e == ".geometry" || e == ".texture") {
-				DrawAssetReadonlyPage();
-				return;
-			}
-			// IMPORTABLE SOURCE page: a supported image format selected but
-			// not yet imported as an asset — probe + the import button (the
-			// .texture wrap picks the settings up from here on).
-			if (e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".tga"
-				|| e == ".bmp" || e == ".ktx2") {
+			const auto kind = ClassifyBrowserInspector(m_assetsSel);
+			if (kind == BrowserInspectorKind::TextureSource)
 				DrawImportableTexturePage();
-				return;
-			}
+			else if (kind == BrowserInspectorKind::Generic)
+				DrawAssetGenericPage();
+			else
+				DrawAssetReadonlyPage();
+			return;
 		}
 		// World pseudo-node page (global render settings, not a scene node).
 		if (m_worldSelected) {
@@ -4932,6 +4925,46 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 #endif
 	}
 
+	void EditorApp::DrawAssetGenericPage() {
+		// Fallback for every browser entry without a specialized inspector.
+		// Never read arbitrary files on every frame; keep previews bounded.
+		namespace fs = std::filesystem;
+		const fs::path path(m_assetsSel);
+		if (m_assetGenericPath != m_assetsSel) {
+			m_assetGenericPath = m_assetsSel;
+			m_assetGenericPreview = ReadBrowserFilePreview(path);
+		}
+		const auto& preview = m_assetGenericPreview;
+		ImGui::TextWrapped("%s", path.filename().string().c_str());
+		ImGui::TextDisabled("%s", m_assetsSel.c_str());
+		ImGui::Separator();
+		ImGui::Text("Type: %s", preview.isDirectory ? "Directory"
+			: (path.extension().empty() ? "File" : path.extension().string().c_str()));
+		if (preview.readOk && !preview.isDirectory)
+			ImGui::Text("Size: %llu bytes",
+				static_cast<unsigned long long>(preview.fileSize));
+		if (!preview.error.empty())
+			ImGui::TextWrapped("%s", preview.error.c_str());
+		if (preview.isDirectory) {
+			ImGui::TextDisabled("Double-click in Assets to open this folder.");
+			return;
+		}
+		ImGui::Separator();
+		if (!preview.readOk)
+			return;
+		if (!preview.isText) {
+			ImGui::TextDisabled("Binary or non-UTF-8 file (metadata only).");
+			return;
+		}
+		ImGui::TextDisabled("Text preview (read-only)%s",
+			preview.truncated ? " - first 64 KiB" : "");
+		ImGui::BeginChild("##assettextpreview", ImVec2(0, 0), true,
+			ImGuiWindowFlags_HorizontalScrollbar);
+		ImGui::TextUnformatted(preview.text.c_str(),
+			preview.text.c_str() + preview.text.size());
+		ImGui::EndChild();
+	}
+
 	void EditorApp::DrawAssetReadonlyPage() {
 		// READ-ONLY asset inspector (a .material/.mesh/.gicook/.lmcook click
 		// in the asset browser): view parameters only — edits happen on
@@ -4950,7 +4983,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			&& (m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".geometry") == 0
 				// legacy pre-10/6 blobs (read-only inspection keeps working
 				// until the next re-import derives ".geometry")
-				|| m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0);
+				|| (m_assetsSel.size() >= 5 && m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0));
 		const bool wantGi = !wantTex && !wantMat && !wantMesh && m_assetsSel.size() > 7
 			&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".gicook") == 0;
 		const bool wantLm = !wantTex && !wantMat && !wantMesh && !wantGi
