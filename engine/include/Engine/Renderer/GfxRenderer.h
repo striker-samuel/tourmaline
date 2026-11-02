@@ -475,6 +475,18 @@ struct GfxRenderer : public smvk::IFrameRenderer {
 	}
 	void ClearCullOverride() { cullOverride_ = false; }
 
+	// Cull-baseline dump (TOURMALINE_CULL_DUMP=<1-based app frame>, the
+	// SSR_DUMP diagnostic family): at that frame FilterMainView reads the
+	// main view's draw-cull verdict buffer back and writes
+	// exports/cull_dump_<n>.json - the per-draw visible/culled list plus
+	// the filter's aggregate stats for THIS camera. The canonical,
+	// camera-locked record tools/perf_harness.py (mode "cull") compares
+	// against tracked baselines when the GPU-driven renderer changes.
+	// One shot per process; -1 disables. The verdict readback is the
+	// debug one-shot download (accepts one-flight staleness - the pinned
+	// bench camera is static, so the verdicts are identical).
+	void SetCullDumpFrame(int frame) { cullDumpFrame_ = frame; }
+
 	smvk::RenderPass& AddFilterPass(smvk::RenderGraph& rg, uint32_t slot);
 
 	// Consume side (caller has bound FilteredProgram() with its own PSO).
@@ -849,6 +861,8 @@ private:
 	uint32_t cullView_ = UINT32_MAX;
 	glm::vec3 cullEye_{ 0.0f };
 	uint64_t frameCounter_ = 0; // throttles the per-frame stats log
+	int cullDumpFrame_ = -1;    // TOURMALINE_CULL_DUMP (1-based app frame)
+	bool cullDumpDone_ = false; // one shot per process
 	uint32_t lastSlot_ = UINT32_MAX;
 	bool seededThisFrame_ = false;
 	bool remainderPending_ = false;

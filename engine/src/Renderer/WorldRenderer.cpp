@@ -1026,6 +1026,8 @@ namespace engine {
 		// Texture-streaming mip bias (the scaling study's asset-quality
 		// pin; consumed when the streamer is constructed at attach).
 		m_texstreamMipBias = run.texstreamMipBias;
+		// GPU-cull baseline dump frame (the harness "cull" mode's input).
+		m_gfxRenderer.SetCullDumpFrame(run.cullDump);
 		// Texture filtering default for headless A/B
 		// (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after;
 		// applied every RenderFrame.

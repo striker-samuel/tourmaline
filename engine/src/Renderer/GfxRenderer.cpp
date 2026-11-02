@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -1506,6 +1507,65 @@ namespace engine {
 		smvk::gfx::UploadStaticData(gfx, ctx, rg);
 	}
 
+	// CULL BASELINE DUMP (TOURMALINE_CULL_DUMP): reads the main view's
+	// draw-cull verdict buffer back (word i = 1 visible / 0 culled, see
+	// gfxdrawcull.cs.hlsl) plus the finalized filter stats and writes the
+	// canonical camera-locked JSON the perf harness compares against its
+	// tracked baselines (the correctness gate for GPU-driven renderer
+	// changes). Debug one-shot download: accepts one flight of staleness —
+	// the pinned bench camera is static, so the verdicts are identical.
+	static void DumpCullBaseline(smvk::gfx::State& s, uint32_t view,
+			uint32_t frameIndex, smvk::ResourceManager& ctx,
+			uint64_t appFrame) {
+		smvk::gfx::View& v = s.views[view];
+		const uint32_t drawCount = v.stats.draws;
+		std::vector<uint32_t> words(smvk::gfx::kCullStateWords, 0u);
+		if (drawCount == 0 || drawCount > smvk::gfx::kMaxDraws
+				|| v.cullStateBuffers[frameIndex].empty()
+				|| !ctx.DownloadDataFromBuffer(
+					v.cullStateBuffers[frameIndex], words.data(),
+					smvk::gfx::kCullStateWords * sizeof(uint32_t))) {
+			std::fprintf(stderr,
+				"[CullDump] FAILED: verdict readback unavailable "
+				"(drawCount=%u)\n", drawCount);
+			return;
+		}
+		std::error_code ec;
+		std::filesystem::create_directories("exports", ec);
+		char name[64];
+		std::snprintf(name, sizeof(name), "exports/cull_dump_%llu.json",
+			(unsigned long long)appFrame);
+		FILE* f = std::fopen(name, "wb");
+		if (!f) {
+			std::fprintf(stderr, "[CullDump] FAILED: cannot open %s\n", name);
+			return;
+		}
+		uint32_t visible = 0;
+		std::fprintf(f, "{\"schema_version\":1,\"frame\":%llu,\"view\":%u,"
+			"\"draw_count\":%u,\"visible_draws\":[",
+			(unsigned long long)appFrame, (unsigned)view, drawCount);
+		for (uint32_t i = 0; i < drawCount; ++i)
+			if (words[i] != 0u) {
+				std::fprintf(f, "%s%u", visible ? "," : "", i);
+				++visible;
+			}
+		std::fprintf(f, "],\"culled_draws\":[");
+		bool first = true;
+		for (uint32_t i = 0; i < drawCount; ++i)
+			if (words[i] == 0u) {
+				std::fprintf(f, "%s%u", first ? "" : ",", i);
+				first = false;
+			}
+		std::fprintf(f, "],\"stats\":{\"draws\":%u,\"commands\":%u,"
+			"\"triangles_processed\":%u,\"clusters_processed\":%u,"
+			"\"clusters_culled\":%u}}\n",
+			v.stats.draws, v.stats.commands, v.stats.trianglesProcessed,
+			v.stats.clustersProcessed, v.stats.clustersCulled);
+		std::fclose(f);
+		std::fprintf(stderr, "[CullDump] wrote %s (%u draws, %u visible)\n",
+			name, drawCount, visible);
+	}
+
 	uint32_t GfxRenderer::FilterMainView(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		uint32_t frameIndex, smvk::World& world, const smvk::RenderViewSet& views,
 		uint32_t mainViewIdx, const glm::vec3& eye, const smvk::Extent2D& extent,
@@ -1862,6 +1922,14 @@ namespace engine {
 				(unsigned)ht.seedCommands.size(), (unsigned)ht.seedRanges.size(),
 				(unsigned)ht.remainderCommands.size(), (unsigned)ht.remainderRanges.size(),
 				hh.mipCount, hh.width, hh.height, ht.minimumContribution);
+		}
+		// CULL BASELINE DUMP (TOURMALINE_CULL_DUMP, one shot; frameCounter_
+		// was just incremented, so it holds the 1-based app frame). The >=
+		// comparison tolerates a pin that names an already-passed frame.
+		if (cullDumpFrame_ >= 0 && !cullDumpDone_
+				&& frameCounter_ >= uint64_t(cullDumpFrame_)) {
+			cullDumpDone_ = true;
+			DumpCullBaseline(gfx, slot, frameIndex, ctx, frameCounter_);
 		}
 		return slot;
 	}

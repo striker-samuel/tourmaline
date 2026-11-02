@@ -14,6 +14,30 @@ import sys
 
 PERF = re.compile(r"\[perf\] avg frame ([0-9]+(?:\.[0-9]+)?) ms over ([0-9]+) frames")
 SECTIONS = re.compile(r"\[perf\] sections poll ([0-9.]+) ms game ([0-9.]+) ms draw ([0-9.]+) ms")
+CULL_DUMP_WROTE = re.compile(r"\[CullDump\] wrote (\S+)")
+CULL_DUMP_FAILED = re.compile(r"\[CullDump\] FAILED: (.*)")
+
+
+def cull_baseline_compare(dump, baseline_path, update):
+    """Record or compare a cull dump against its tracked baseline.
+
+    Returns (status, differs) where status is one of:
+      "updated"  - --update wrote the dump as the new baseline
+      "match"    - the dump equals the tracked baseline
+      "mismatch" - differs; `differs` lists the differing top-level keys
+      "missing"  - no baseline recorded yet (run with --update first)
+    """
+    if update:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(dump, indent=2) + "\n", encoding="utf-8")
+        return "updated", None
+    if not baseline_path.is_file():
+        return "missing", None
+    base = json.loads(baseline_path.read_text(encoding="utf-8"))
+    if base == dump:
+        return "match", None
+    differs = sorted(k for k in set(base) | set(dump) if base.get(k) != dump.get(k))
+    return "mismatch", differs
 
 # Resolution scaling study: the headless window is the FrameConfig default
 # 1920x1080 (engine/include/Engine/RHI/FrameConfig.h WindowDefaultWidth/
@@ -164,7 +188,7 @@ def command(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("bench", "trace", "capture", "compare", "list"))
+    parser.add_argument("mode", choices=("bench", "trace", "capture", "compare", "list", "cull"))
     parser.add_argument("--exe", type=Path, help="Viewer App or dedicated Benchmark binary")
     parser.add_argument("--catalog", type=Path, default=Path(__file__).resolve().parents[1] / "benchmarks/scenarios.json")
     parser.add_argument("--scenario", help="Named source-controlled benchmark scenario id")
@@ -187,6 +211,13 @@ def main(argv=None):
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE", help="Set a TOURMALINE_* pin")
     parser.add_argument("--resolutions", help="bench only: comma list of presets (720p,1080p,1440p,4k) or 16:9 WxH "
                           "values - one repeat-set per resolution; MSAA 2x is the default AA load")
+    parser.add_argument("--cull-frame", type=positive, default=12,
+                        help="cull mode: the 1-based app frame the engine dumps verdicts at (TOURMALINE_CULL_DUMP)")
+    parser.add_argument("--update", action="store_true",
+                        help="cull mode: record the dump as the scenario's tracked baseline instead of comparing")
+    parser.add_argument("--baseline-dir", type=Path,
+                        default=Path(__file__).resolve().parents[1] / "benchmarks/cull_baselines",
+                        help="cull mode: the tracked baseline directory (one <scenario>.json per camera)")
     parser.add_argument("--app-arg", action="append", default=[], help="Additional App flag (repeat, one token per flag)")
     parser.add_argument("--timeout", type=positive, default=600)
     args = parser.parse_args(argv)
@@ -302,6 +333,15 @@ def main(argv=None):
         # for golden determinism). An explicit --env TOURMALINE_AA=... wins.
         pins["TOURMALINE_AA"] = "msaa2x"
     env.update(pins)
+    if args.mode == "cull":
+        if not args.scenario:
+            parser.error("cull mode requires --scenario (baselines are per saved camera)")
+        if args.resolutions:
+            parser.error("--resolutions applies to bench mode only")
+        # Arm the engine's verdict dump for the chosen frame. The pin rides
+        # the environment so result.json records exactly what was armed.
+        pins["TOURMALINE_CULL_DUMP"] = str(args.cull_frame)
+        env["TOURMALINE_CULL_DUMP"] = str(args.cull_frame)
     # Prevent a user shell's shader hot reload from mutating the benchmark.
     env.pop("TOURMALINE_SHADER_RELOAD", None)
     env.pop("TOURMALINE_SHADER_RELOAD_SRC", None)
@@ -358,6 +398,11 @@ def main(argv=None):
                                 f'--exe={args.exe.resolve()}', '--args=' + subprocess.list2cmdline(argv_app[1:]),
                                 f'--start-after-frames={args.warmup}', "--limit-to-frames=1", '--auto-export'],
                  "env": env, "name": "trace-01.log", "resolution": None}]
+    elif args.mode == "cull":
+        # One invocation at the scenario camera; the engine's
+        # TOURMALINE_CULL_DUMP pin (armed above) writes the verdict dump.
+        plan = [{"invocation": argv_app, "env": env,
+                 "name": "cull-01.log", "resolution": None}]
     else:
         capture = args.ngfx_capture or shutil.which("ngfx-capture")
         if not capture:
@@ -417,7 +462,7 @@ def main(argv=None):
             item = {"exit_code": rc, "log": name}
             if item_plan["resolution"]:
                 item["resolution"] = item_plan["resolution"]["label"]
-            if args.mode == "bench":
+            if args.mode in ("bench", "cull"):
                 matches = PERF.findall(log)
                 sections = SECTIONS.findall(log)
                 if rc == 0 and len(matches) == 1 and int(matches[0][1]) == args.frames:
@@ -476,11 +521,52 @@ def main(argv=None):
                 report["summary"] = (native or report["resolutions"])[-1]["summary"]
             else:
                 report["summary"] = summarize(report["runs"])
+        cull_mismatch = False
+        if args.mode == "cull" and not failed:
+            log_text = (out / "cull-01.log").read_text(encoding="utf-8", errors="replace")
+            wrote = CULL_DUMP_WROTE.search(log_text)
+            failed_line = CULL_DUMP_FAILED.search(log_text)
+            if not wrote:
+                failed = True
+                report["cull_error"] = (f"engine dump failed: {failed_line.group(1)}"
+                                        if failed_line else
+                                        "no [CullDump] wrote line in the run log")
+            else:
+                dump_path = Path(wrote.group(1))
+                if not dump_path.is_absolute():
+                    dump_path = workdir / dump_path
+                try:
+                    dump = json.loads(dump_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    failed = True
+                    report["cull_error"] = f"unreadable dump {dump_path}: {exc}"
+                else:
+                    report["cull_dump"] = dump
+                    baseline = args.baseline_dir / f"{args.scenario}.json"
+                    status, differs = cull_baseline_compare(dump, baseline, args.update)
+                    report["cull_status"] = status
+                    if differs:
+                        report["cull_differs"] = differs
+                    print(json.dumps({"cull": status, "scenario": args.scenario,
+                                      "baseline": str(baseline),
+                                      "frame": dump.get("frame"),
+                                      "draw_count": dump.get("draw_count"),
+                                      "visible_draws": len(dump.get("visible_draws", [])),
+                                      "differs": differs}, indent=2), flush=True)
+                    if status == "mismatch":
+                        cull_mismatch = True
+                    elif status == "missing":
+                        failed = True
+                        report["cull_error"] = (f"no baseline recorded for scenario "
+                                                f"'{args.scenario}' at {baseline}; "
+                                                f"run with --update first")
         report["ok"] = not failed
         if args.mode in ("capture", "trace"):
             report["note"] = "Nsight runs are instrumented; do not compare their FPS against bench mode. Inspect the Nsight output/log for capture artifacts."
     finally:
         (out / "result.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if cull_mismatch:
+        return 2
     return 1 if failed else 0
 
 

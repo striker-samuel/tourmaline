@@ -245,6 +245,16 @@ struct RunConfig {
 	float texstreamMipBias = 0.0f;
 	bool texstreamTrace = false; // any of 4 presence sites
 
+	// ---- GPU-driven cull baseline dump (the SSR_DUMP diagnostic family;
+	// see docs/perf_harness.md "Cull baselines") ----
+	// 1-based app frame at which GfxRenderer writes
+	// exports/cull_dump_<n>.json: the main view's per-draw visible/culled
+	// verdicts + the filter's aggregate stats for the pinned camera. The
+	// perf harness's "cull" mode records/compares these as tracked
+	// baselines — the correctness gate for changes to the GPU-driven
+	// renderer (the gfx cull chain, HZB, the GPU-scene stack). -1 = off.
+	int cullDump = -1;
+
 	// ---- editor ----
 	bool editorVpQuad = false;
 	bool editorMeshlets = true;

@@ -131,6 +131,15 @@ RunConfig RunConfig::Parse() {
 			c.texstreamMipBias = 0.0f;
 		}
 	}
+	if ((v = Get("TOURMALINE_CULL_DUMP")) != nullptr) {
+		c.cullDump = ToInt(v, -1);
+		if (c.cullDump < 2) {
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_CULL_DUMP "
+				"(want a frame >= 2; the verdict readback accepts one "
+				"flight of staleness): %s\n", v);
+			c.cullDump = -1;
+		}
+	}
 	if ((v = Get("TOURMALINE_TERRAIN")) != nullptr) {
 		c.terrainPinned = true;
 		c.terrain = std::atoi(v) != 0;
@@ -659,6 +668,8 @@ void RunConfig::Log() const {
 		std::fprintf(stderr, " RENDER_SCALE=%.2f", static_cast<double>(renderScale));
 	if (texstreamMipBias != 0.0f)
 		std::fprintf(stderr, " TEXSTREAM_MIP_BIAS=%.3f", static_cast<double>(texstreamMipBias));
+	if (cullDump >= 0)
+		std::fprintf(stderr, " CULL_DUMP=%d", cullDump);
 	std::fprintf(stderr, "\n");
 	std::fflush(stderr);
 }
@@ -669,7 +680,7 @@ void RunConfig::WarnUnknown() {
 	// TMP-DIAG names (warn would be noise; they stay out of Parse).
 	static const char* kKnown[] = {
 		"TOURMALINE_AA", "TOURMALINE_A2C", "TOURMALINE_TEXTURE_FILTER", "TOURMALINE_TERRAIN",
-		"TOURMALINE_TEXSTREAM_MIP_BIAS",
+		"TOURMALINE_TEXSTREAM_MIP_BIAS", "TOURMALINE_CULL_DUMP",
 		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
 		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",
 		"TOURMALINE_VOLUMETRIC", "TOURMALINE_VOLUMETRIC_STEPS", "TOURMALINE_VOLUMETRIC_DENSITY",
