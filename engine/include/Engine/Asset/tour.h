@@ -649,7 +649,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	std::vector<std::string>* warnings = nullptr, std::string* err = nullptr,
 	bool strict = true,
-	std::vector<uint32_t>* createdGiVolumesOut = nullptr);
+	std::vector<uint32_t>* createdGiVolumesOut = nullptr,
+	std::vector<uint32_t>* createdTransformsOut = nullptr);
 
 // The bake owner's STAMP: mirror a replayed scene's GI bindings onto the
 // doc's giAsset records. The SCENE is the authority — the bake updates
@@ -669,7 +670,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 bool StampGiAssets(Doc& doc, const Scene& scene,
 	const std::vector<uint32_t>& createdGiVolumes,
 	std::string* err = nullptr,
-	std::vector<std::string>* superseded = nullptr);
+	std::vector<std::string>* superseded = nullptr,
+	const std::vector<uint32_t>* createdTransforms = nullptr);
 
 // Structural reparent on any Scene (shared by the editor live path and the
 // cook replay path). Index-preserving: no nodes are added/removed, only
