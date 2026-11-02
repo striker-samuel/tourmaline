@@ -2751,7 +2751,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// page: its import settings ARE the authoring (editable for LDR
 		// sources; a KTX2 source pre-decided them — read-only).
 		if (!m_assetsSel.empty()) {
-			const auto kind = ClassifyBrowserInspector(m_assetsSel);
+			const auto kind = std::filesystem::is_directory(m_assetsSel)
+				? BrowserInspectorKind::Generic
+				: ClassifyBrowserInspector(m_assetsSel);
 			if (kind == BrowserInspectorKind::TextureSource)
 				DrawImportableTexturePage();
 			else if (kind == BrowserInspectorKind::Generic)
@@ -4975,26 +4977,14 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// EXCEPTION — .texture (user-authored, not derived): its IMPORT
 		// SETTINGS are the authoring, so LDR sources edit them here (a
 		// KTX2 source pre-decided them in its header — read-only rows).
-		const bool wantTex = m_assetsSel.size() > 8
-			&& m_assetsSel.compare(m_assetsSel.size() - 8, 8, ".texture") == 0;
-		const bool wantMat = !wantTex && m_assetsSel.size() > 9
-			&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".material") == 0;
-		const bool wantMesh = !wantTex && !wantMat && m_assetsSel.size() > 9
-			&& (m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".geometry") == 0
-				// legacy pre-10/6 blobs (read-only inspection keeps working
-				// until the next re-import derives ".geometry")
-				|| (m_assetsSel.size() >= 5 && m_assetsSel.compare(m_assetsSel.size() - 5, 5, ".mesh") == 0));
-		const bool wantGi = !wantTex && !wantMat && !wantMesh && m_assetsSel.size() > 7
-			&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".gicook") == 0;
-		const bool wantLm = !wantTex && !wantMat && !wantMesh && !wantGi
-			&& m_assetsSel.size() > 7
-			&& m_assetsSel.compare(m_assetsSel.size() - 7, 7, ".lmcook") == 0;
-		const bool wantCm = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm
-			&& m_assetsSel.size() > 8
-			&& m_assetsSel.compare(m_assetsSel.size() - 8, 8, ".cubemap") == 0;
-		const bool wantGiv = !wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm
-			&& m_assetsSel.size() > 9
-			&& m_assetsSel.compare(m_assetsSel.size() - 9, 9, ".givolume") == 0;
+		const auto kind = ClassifyBrowserInspector(m_assetsSel);
+		const bool wantTex = kind == BrowserInspectorKind::Texture;
+		const bool wantMat = kind == BrowserInspectorKind::Material;
+		const bool wantMesh = kind == BrowserInspectorKind::Geometry;
+		const bool wantGi = kind == BrowserInspectorKind::GiCook;
+		const bool wantLm = kind == BrowserInspectorKind::LmCook;
+		const bool wantCm = kind == BrowserInspectorKind::Cubemap;
+		const bool wantGiv = kind == BrowserInspectorKind::Givolume;
 		if (!wantTex && !wantMat && !wantMesh && !wantGi && !wantLm && !wantCm && !wantGiv)
 			return;
 		// Cache refresh on selection change (or a failed load retries never:
