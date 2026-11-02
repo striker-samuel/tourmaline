@@ -30,7 +30,7 @@ The four SMP8 deltas over SMP7:
    STORED bytes (the LZ4 wrapper included when compressed). Verified
    at FETCH time (`Payload()` — once per reader, cached), never at
    mount. A corrupt page throws AT THE PAGE with its path; its
-   neighbors stay servable (selective integrity).
+   neighboring pages remain readable (selective integrity).
 2. **The small mount** — the footer CRC covers ONLY the TOC bytes.
    `Open` validates magic/header/footer agreement + the TOC CRC +
    the structural range checks: no multi-GB walk at boot.

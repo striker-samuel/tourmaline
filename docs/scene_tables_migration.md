@@ -9,7 +9,7 @@
 > `docs/pak_vnext.md`, THE current pak format reference), and the
 > suite is larger now (53 registered ctest targets; five GPU-window
 > tests excluded on hosted runners). Migration epochs already landed
-> are recorded here as the decisions record; unlanded epochs stay
+> are recorded here in this decision record; unlanded epochs stay
 > open items.
 
 The working document for the typed-scene-tables migration. This file

@@ -119,7 +119,7 @@ Linux:
 ./install_dependencies.sh
 ```
 
-The scripts fetch the separately pinned/vendored dependencies into `external/`. Install KTX-Software first or before configuring; on Windows, install the Vulkan SDK and obtain prebuilt Embree as described above.
+The scripts fetch the separately pinned/vendored dependencies into `external/`. Install KTX-Software before configuring; on Windows, install the Vulkan SDK and obtain prebuilt Embree as described above.
 
 ### 2. Configure and build
 

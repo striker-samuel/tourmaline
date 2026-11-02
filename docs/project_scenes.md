@@ -10,7 +10,7 @@ or VFS paths enter from the outside.
 
 ## The id→scene join
 
-Scene content ids resolved to their pak, but nothing joined an id to
+Scene content IDs resolved to their pak, but nothing linked an ID to
 the COOKED SCENE inside that pak — the appmanifest's `[ids]` scene
 rows carried the source `.tour` path while the runtime loads scenes by
 their cooked NAME (`ListPakScenes`). The join is now recorded data:

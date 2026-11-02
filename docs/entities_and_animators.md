@@ -27,7 +27,7 @@ mesh ASSET, not a separate entity category. The binding is
 cross-cluster by construction: the source cluster keeps owning the
 mesh pool entry (meshes ship inside their scene's cluster — the v1 pak
 boundary), the entity stores the stable **(owner cluster, pool
-handle)** pair, and the merged-scene rows are MIRRORS the resolve tail
+handle)** pair, and the merged-scene rows are MIRRORS that the resolve tail
 re-establishes after every rebuild. `MeshEntityMeshIndex(handle)`
 resolves the current world index; `DestroyMesh` drops the rows + nodes.
 
