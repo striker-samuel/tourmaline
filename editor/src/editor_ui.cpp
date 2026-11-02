@@ -10,6 +10,7 @@
 #include "editor_app.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
+#include "editor_asset_browser_nav.h" // collection folders belong at root
 
 #include <cstring>
 #include <algorithm>
@@ -5328,11 +5329,13 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGuiWindowFlags_NoScrollWithMouse
 		);
 
-		// Navigation state heal: home = <root>/content.
+		// Navigation state heal: home = <root>/content, but the project
+		// root itself is also a valid browsing location.
 		std::error_code ec;
 		if (m_assetsDir.empty()
 			|| !fs::is_directory(fs::path(m_assetsDir), ec)
-			|| !InProjectDir(m_assetsDir)) {
+			|| (!InProjectDir(m_assetsDir)
+				&& !AssetBrowserAtProjectRoot(m_projectRoot, m_assetsDir))) {
 			m_assetsDir =
 				(fs::path(m_projectRoot) / "content").generic_string();
 			m_assetsSel.clear();
@@ -5785,9 +5788,11 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				back.icon = IconType::Folder;
 				dirs.push_back(back);
 			}
-			else if (m_assetsExpandGltf.empty()
-				&& m_assetsExpandTour.empty()) {
-				// The root view: the canon folders up front (pinned
+			else if (ShowAssetBrowserCollectionFolders(
+				m_projectRoot, m_assetsDir,
+				!m_assetsExpandGltf.empty(),
+				!m_assetsExpandTour.empty())) {
+				// Only the project root shows the canon folders up front (pinned
 				// ahead of the real directories by the stable sort
 				// below — the Unity feel: the collection roots are the
 				// affordance, the real folders follow).
