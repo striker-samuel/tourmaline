@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <iostream>
 #include <string>
 
@@ -292,6 +293,28 @@ int main() {
 	}
 	UnsetVar("TOURMALINE_NORMAL_FIX");
 	UnsetVar("TOURMALINE_NORMAL_FIX_DEBUG");
+
+	// (5) Texture-streaming mip bias (the resolution-scaling study's
+	// asset-quality pin): default 0, valid float parse, out-of-range
+	// warns and falls back to 0 (the demand stays un-biased).
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.texstreamMipBias == 0.0f,
+			"runconfig.default-texstream-mip-bias-zero");
+	}
+	SetVar("TOURMALINE_TEXSTREAM_MIP_BIAS", "0.585");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(std::abs(c.texstreamMipBias - 0.585f) < 1e-4f,
+			"runconfig.parse-texstream-mip-bias");
+	}
+	SetVar("TOURMALINE_TEXSTREAM_MIP_BIAS", "42");
+	{
+		engine::RunConfig c = engine::RunConfig::Parse();
+		Check(c.texstreamMipBias == 0.0f,
+			"runconfig.invalid-texstream-mip-bias-falls-back");
+	}
+	UnsetVar("TOURMALINE_TEXSTREAM_MIP_BIAS");
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

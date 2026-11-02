@@ -20,6 +20,25 @@ python tools/perf_harness.py compare --baseline out/perf/base/result.json --cand
 
 Comparison returns exit code 2 if median frame time regressed more than 5% (or the provided threshold); mismatched frame budgets, pins, and app arguments fail closed. For regression tests on CI without a GPU run `python -m unittest discover -s tools/tests`.
 
+## Warm runs (priming)
+
+The first invocation after any shader or pipeline change pays **pipeline compilation** and first-use driver caches inside its measured frames — observed as 6.2 ms vs 1.6 ms medians on otherwise identical content. Bench mode therefore runs one **unmeasured priming invocation per distinct environment** before the measured repeats (a 12-frame run: enough for every pass to execute and compile, cheap enough to discard; see `PRIMING_BENCH_FRAMES`). Priming entries land in `result.json` under `"priming"` with their own logs (`warmup-*.log`) and are **never summarized**; a failed priming run fails the whole bench (the measured runs never start). The disk pipeline-cache save happens at process shutdown, outside the measured window.
+
+## Resolution scaling (`--resolutions`)
+
+```powershell
+python tools/perf_harness.py bench --scenario sponza-atrium --exe out/build/x64-Release/Benchmark.exe --resolutions 720p,1080p,1440p,4k --repeat 3 --output out/perf/scale
+```
+
+Runs one repeat-set per resolution and prints a `resolution_scaling` table: extent, render scale, median ms, estimated FPS, and **ms per megapixel** — how render time grows with the render extent. Presets: `720p 1080p 1440p 2160p 4k`; explicit 16:9 `WxH` values are accepted (the headless window is the 1920×1080 `FrameConfig` default and `TOURMALINE_RENDER_SCALE` is a single scale, so non-16:9 extents are refused, as is anything outside the engine's 0.25–2.0 clamp).
+
+Two defaults make the study **measure pixels, not asset work**:
+
+- **MSAA 2x** is the default AA load (`TOURMALINE_AA=msaa2x`), deliberately overriding a scenario's AA pin — the sponza-atrium canon pins `AA=off` for golden determinism, but a scaling study fixes its AA. An explicit `--env TOURMALINE_AA=...` wins.
+- **Asset quality is pinned to the 1080p reference**: the texture streamer's wanted-mip demand scales with the render extent (higher resolutions legitimately demand higher-quality textures), so each resolution pins `TOURMALINE_TEXSTREAM_MIP_BIAS=log2(render_scale)` to cancel that. Override with `--env TOURMALINE_TEXSTREAM_MIP_BIAS=...` (e.g. `0`) to measure native per-resolution quality instead.
+
+`compare` understands multires results: it compares **every** resolution and fails (exit 2) if any one regresses beyond the threshold — exactly the behavior scaling studies exist to protect. `result.json` carries per-resolution groups under `"resolutions"` (runs, per-res environment, summary); the headline `"summary"` is the native-scale (1080p) entry.
+
 ## Nsight GPU Trace
 
 ```powershell
