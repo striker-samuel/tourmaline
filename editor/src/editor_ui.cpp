@@ -225,6 +225,8 @@ namespace editor {
 			DrawStatusBar();
 		} // m_uiMode (panel columns)
 
+		if (m_showComponentTable)
+			DrawComponentTable();
 		DrawPanelSplitters(); // resize handles between panels and viewport
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
