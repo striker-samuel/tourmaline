@@ -104,7 +104,7 @@ static constexpr uint32_t kFogShadowMaxMips = 16;
 // odd dimensions, dropping their unpaired edge texels under a 2x2
 // reduction. Rounding the raster target UP before rendering means the
 // single-dispatch SPD covers every caster down to the 1x1 tail.
-// 2^30 is the largest valid input for bit_ceil on a uint32_t.
+// Limit the chain to kFogShadowMaxMips (2^15 => 16 levels).
 inline uint32_t FogShadowPaddedResolution(uint32_t requested) {
 	return requested ? std::bit_ceil(requested) : 0u;
 }
@@ -279,7 +279,7 @@ struct CascadedShadowAtlas {
 		const char* vsPath = kCascadedShadowVsPath) {
 		if (desc.cascadeCount == 0 || desc.cascadeCount > kMaxCascades)
 			return false;
-		if (desc.cascadeResolution == 0 || desc.fogShadowResolution > (1u << 30))
+		if (desc.cascadeResolution == 0 || desc.fogShadowResolution > (1u << (kFogShadowMaxMips - 1u)))
 			return false;
 
 		// The main atlas is EXACTLY the cascade grid (the pre-volumetric
@@ -438,7 +438,7 @@ struct CascadedShadowAtlas {
 	// Also internalizes EnsureShaders – one call keeps resources + program valid.
 	bool Ensure(ResourceManager& ctx, RenderGraph& rg, const CascadedShadowMapDesc& desc,
 		const char* vsPath = kCascadedShadowVsPath) {
-		if (desc.fogShadowResolution > (1u << 30)) return false;
+		if (desc.fogShadowResolution > (1u << (kFogShadowMaxMips - 1u))) return false;
 		const uint32_t fogRes = FogShadowPaddedResolution(desc.fogShadowResolution);
 		const Extent2D wantFog{ fogRes, fogRes };
 		// The fog atlas's handles must agree with the wanted extent (the
