@@ -140,6 +140,11 @@ function(tourmaline_attach_project TARGET NAME)
 		# project.h before the consuming game compiles. The emitter is
 		# authoritative; when already byte-identical, it keeps mtime so
 		# unchanged game code is not recompiled needlessly.
+		# DO NOT list the source-controlled project.h as a BYPRODUCT:
+		# Ninja clean deletes BYPRODUCTS, including checked-in headers.
+		# The consuming target's explicit dependency on _ids orders
+		# generation before compilation, and GENERATED allows a header
+		# that is not yet present at CMake configure time.
 		# The generation runs on EVERY build (a custom target's command
 		# is never skipped): a depfile could not see a NEWLY CREATED
 		# file matching a recipe glob (it was absent when the deps were
@@ -155,7 +160,6 @@ function(tourmaline_attach_project TARGET NAME)
 				--recipe "${recipe}"
 				--header "${header}"
 				--pak-dir "${TP_PAK_DIR}"
-			BYPRODUCTS "${header}"
 			DEPENDS Project "${recipe}"
 			COMMENT "Generating ${NAME} project.h (content ids from the asset db)"
 			VERBATIM
@@ -163,10 +167,9 @@ function(tourmaline_attach_project TARGET NAME)
 	endif()
 	if(NOT TARGET ${NAME}_stamp)
 		# The forced generation (--stamp): a NEW generation every run,
-		# changed content or not. Deliberately NO BYPRODUCTS — ninja
-		# allows exactly one rule per output file, and <Name>_ids owns
-		# the header's build-graph slot; the always-run ids refresh
-		# heals any drift a stamp run leaves.
+		# changed content or not. Like _ids, this deliberately does
+		# not declare BYPRODUCTS: `cmake --build --target clean` must
+		# never delete the source-controlled project.h.
 		add_custom_target(${NAME}_stamp
 			COMMAND $<TARGET_FILE:Project>
 				ids
@@ -185,8 +188,8 @@ function(tourmaline_attach_project TARGET NAME)
 		# The on-demand full content build (bakes included — never a
 		# default dependency): paks + the appmanifest publish next to
 		# the exe, and the generated project.h re-stamps with the
-		# paks' fingerprints at state=verified. NO BYPRODUCTS on the
-		# header (see <Name>_stamp) — <Name>_ids owns the slot.
+		# paks' fingerprints at state=verified. No BYPRODUCTS for the
+		# source-owned header: it must survive clean.
 		add_custom_target(${NAME}_paks
 			COMMAND $<TARGET_FILE:Project>
 				build
