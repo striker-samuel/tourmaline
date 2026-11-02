@@ -147,12 +147,12 @@ static void WriteRoomTarget(std::ostream& f, const Command& c) {
 	if ((c.node & kCreateRefFamilyMask) == kCreateAudioRoomRefBase
 			 ) {
 		f << "-ref " << (c.node & ~kCreateAudioRoomRefBase)
-			<< " -owner " << c.text;
+			<< " -owner audioRoom";
 	}
 	else if ((c.node & kCreateRefFamilyMask) == kCreateGiVolumeRefBase
 			 ) {
 		f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
-			<< " -owner " << c.text;
+			<< " -owner givolume";
 	}
 	else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase
 			 )
@@ -4307,10 +4307,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		else if (c.verb == Verb::RemoveGiVolume)
 			RemoveGiVolume(scene, target);
 		else if (c.verb == Verb::AttachTriggerVolume)
-			SetTriggerVolume(scene, target, SceneTriggerVolume{});
+			tour::scene::SetTriggerVolume(scene, target, tour::scene::SceneTriggerVolume{});
 		else if (c.verb == Verb::RemoveTriggerVolume)
-			RemoveTriggerVolume(scene, target);
-		else if (auto* row = FindTriggerVolume(scene, target)) {
+			tour::scene::RemoveTriggerVolume(scene, target);
+		else if (auto* row = tour::scene::FindTriggerVolume(scene, target)) {
 			if (c.text == "enabled") row->trigger.enabled = c.flag;
 			else if (c.text == "once") row->trigger.once = c.flag;
 			else if (c.text == "tag") row->trigger.tag = c.name;
