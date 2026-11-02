@@ -665,8 +665,8 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				if (!r.giAssets.empty()) {
 					m_giAssets = std::move(r.giAssets);
 					ApplyGiAssetBindingsToScene();
-					TryLoadGiVolumes();
-					m_wysiwygGiReloadPending = true;
+					if (TryLoadGiVolumes())
+						m_wysiwygGiReloadPending = true;
 					Log("Cook: tour giAsset bindings updated ("
 						+ std::to_string(m_giAssets.size())
 						+ " record(s)) — saved with the scene");
@@ -1065,8 +1065,8 @@ void EditorApp::BakeGI() {
 			if (!r.giAssets.empty()) {
 				m_giAssets = std::move(r.giAssets);
 				ApplyGiAssetBindingsToScene();
-				TryLoadGiVolumes();
-				m_wysiwygGiReloadPending = true;
+				if (TryLoadGiVolumes())
+					m_wysiwygGiReloadPending = true;
 				Log("Bake GI: tour giAsset bindings updated ("
 					+ std::to_string(m_giAssets.size())
 					+ " record(s)) — saved with the scene");
