@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "bistro-ssr-stress",
+      "label": "Bistro SSR stress (documented camera)",
+      "subsystem": "ssr",
+      "notes": "Known bistro benchmark pose from docs/headless_bench.md. Requires a cooked content/paks/bistro.pak in the build directory.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_SSR": "1",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0"
+      },
+      "frames": 120
+    }
+  ]
+}

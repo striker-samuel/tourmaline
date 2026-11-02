@@ -16106,6 +16106,23 @@ namespace engine {
 				if (ImGui::Button(m_showHud ? "Hide stats HUD (Ctrl+T)" : "Show stats HUD (Ctrl+T)"))
 					m_showHud = !m_showHud;
 			}
+            // Export the active cooked-scene camera and replayable settings
+            // as a git-tracked stress scenario. This is not displayed by the
+            // editor, whose borrowed world has no stable pak entry point.
+            if (!m_benchmarkSourceArgs.empty()) {
+                ImGui::SeparatorText("Benchmark scenarios");
+                ImGui::InputText("Label##bench", m_benchmarkLabel,
+                    sizeof(m_benchmarkLabel));
+                ImGui::InputText("Subsystem##bench", m_benchmarkSubsystem,
+                    sizeof(m_benchmarkSubsystem));
+                ImGui::InputTextMultiline("Notes##bench", m_benchmarkNotes,
+                    sizeof(m_benchmarkNotes), ImVec2(-1.0f, 48.0f));
+                if (ImGui::Button("Export for benchmark"))
+                    ExportBenchmarkScenario();
+                ImGui::TextDisabled("Saves camera and supported run pins to benchmarks/scenarios.json");
+                if (!m_benchmarkExportMessage.empty())
+                    ImGui::TextWrapped("%s", m_benchmarkExportMessage.c_str());
+            }
 			if (ImGui::BeginTabBar("TourmalineTabs")) {
 				// ---------------------------------------------------------
 				// Quality: every setting that changes the image, in FLAT

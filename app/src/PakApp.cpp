@@ -78,6 +78,9 @@ namespace app {
 				else if (tok == "motion") { passCfg.motionVectors = passCfg.motionBlur = enable; }
 				else if (tok == "dof") flag = &passCfg.dof;
 				else if (tok == "ssr") flag = &passCfg.ssr;
+                else if (tok == "ssgi") flag = &passCfg.ssgiDiffuse;
+                else if (tok == "volumetric") flag = &passCfg.volumetric;
+                else if (tok == "contact") flag = &passCfg.contactShadows;
 				else if (tok == "bloom") flag = &passCfg.bloom;
 				else if (tok == "exposure") flag = &passCfg.exposure;
 				else if (tok == "msaa") flag = &passCfg.msaa;
@@ -452,6 +455,31 @@ namespace app {
 			auto element = std::make_shared<engine::WorldRendererElement>(app);
 			engine::WorldRenderer& renderer = element->Renderer();
 			renderer.SetSceneId(sceneId);
+            // Snapshot the COOKED launch identity, not the editor's live
+            // world. The benchmark target consumes these same App flags.
+            std::vector<std::string> benchmarkSourceArgs;
+            if (!cfg.cli.project.empty()) {
+                benchmarkSourceArgs = {"--project", cfg.cli.project};
+            } else {
+                for (const std::string& pak : cfg.cli.pakPaths) {
+                    benchmarkSourceArgs.push_back("--pak");
+                    benchmarkSourceArgs.push_back(pak);
+                }
+                if (!cfg.cli.sceneName.empty()) {
+                    benchmarkSourceArgs.push_back("--scene");
+                    benchmarkSourceArgs.push_back(cfg.cli.sceneName);
+                } else if (cfg.cli.sceneIndex != 0) {
+                    benchmarkSourceArgs.push_back("--scene-index");
+                    benchmarkSourceArgs.push_back(std::to_string(cfg.cli.sceneIndex));
+                }
+            }
+            renderer.SetBenchmarkSourceArgs(std::move(benchmarkSourceArgs));
+            std::vector<std::string> benchmarkHostArgs;
+            if (cfg.cli.minimal) benchmarkHostArgs.emplace_back("--minimal");
+            if (cfg.cli.filterOnly) benchmarkHostArgs.emplace_back("--filter-only");
+            if (cfg.cli.noVfs) benchmarkHostArgs.emplace_back("--no-vfs");
+            if (cfg.cli.noDlss) benchmarkHostArgs.emplace_back("--no-dlss");
+            renderer.SetBenchmarkAppArgs(std::move(benchmarkHostArgs));
 			// --no-vfs: mute the loose VFS discovery mounts (project root +
 			// content/) so the pak backend mounted at load is the only
 			// scene-content source (proves the pak is self-contained).

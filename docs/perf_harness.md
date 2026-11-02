@@ -50,3 +50,19 @@ This retains release `-O3` SPIR-V codegen but adds DXC `-Zi -fspv-debug=vulkan` 
 Use `--env TOURMALINE_NAME=value` repeatedly for controlled A/B pins; use `--app-arg=--no-vfs` etc. for extra App args. Structured JSON is saved even on benchmark failure. This CLI invokes local proprietary Nsight binaries; it cannot run the GPU profiling stages on headless Linux CI without supported NVIDIA hardware. Do not compare performance reported during capture/trace against uninstrumented benchmark results. Artifact creation and source correlation must be verified by opening the captured trace; a launcher exit of zero is not proof that a valid GPU trace was exported.
 
 The renderer's `--capture` option is specifically the RenderDoc-safe Streamline/Optick disable configuration, unrelated to Nsight's capture CLI. For Nsight, this wrapper leaves the renderer's features unchanged by default; use `--app-arg=--no-dlss` to opt out of Streamline if capture compatibility requires it.
+
+## Source-controlled camera scenarios / dedicated target
+
+To export a repeatable stress-test view, launch the **App viewer** on a cooked scene and navigate to a costly camera angle. Press **TAB**, switch to UI cursor mode with **I** if needed, enter a label, subsystem and optional notes under **Benchmark scenarios**, then click **Export for benchmark**. This appends a unique ID plus the exact camera position/forward, scene launch identity and supported renderer pins to the tracked `benchmarks/scenarios.json`.
+
+The separate `Benchmark` CMake target links the cooked-pak host but no sample/gameplay element and **requires --bench**. Build it explicitly:
+
+```powershell
+cmake --build out/build/x64-Release --target Benchmark
+python tools/perf_harness.py list
+python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/x64-Release/Benchmark.exe --repeat 5
+```
+
+The runner reads `benchmarks/scenarios.json` from source control by default (override with `--catalog`), resolves the cooked scene relative to the benchmark executable's working directory and applies the saved `TOURMALINE_*` pins. It clears inherited `TOURMALINE_*` values for scenario runs, so hidden developer-shell pins cannot silently change a test; explicit `--env` overrides are recorded in the result.
+
+**Limit:** The replay contract covers available `RunConfig` flags, not every live-only debug-panel slider. Review the JSON before committing, and use the same cooked assets, shader flavor and hardware for A/B comparisons. See [benchmarks/README.md](../benchmarks/README.md) for catalog fields and example stress locations.

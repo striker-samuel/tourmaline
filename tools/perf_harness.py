@@ -22,23 +22,77 @@ def positive(value):
     return n
 
 
+def read_catalog(path):
+    """Read the source-controlled scenario registry without executing code."""
+    root = json.loads(path.read_text(encoding="utf-8"))
+    if root.get("schema_version") != 1 or not isinstance(root.get("scenarios"), list):
+        raise ValueError("unsupported scenario schema (expected version 1)")
+    seen = set()
+    for item in root["scenarios"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError("scenario must have a string id")
+        if item["id"] in seen:
+            raise ValueError(f"duplicate scenario id: {item['id']}")
+        seen.add(item["id"])
+    return root["scenarios"]
+
+
+def select_scenario(catalog, scenario_id):
+    items = [s for s in read_catalog(catalog) if s["id"] == scenario_id]
+    if not items:
+        raise ValueError(f"scenario '{scenario_id}' not found in {catalog}")
+    item = items[0]
+    src = item.get("source_args")
+    pins = item.get("environment")
+    extra = item.get("app_args", [])
+    if not isinstance(src, list) or not src or not all(isinstance(x, str) for x in src):
+        raise ValueError("source_args must be a nonempty string array")
+    if not isinstance(pins, dict) or not all(
+        isinstance(k, str) and re.fullmatch(r"TOURMALINE_[A-Z0-9_]+", k)
+        and isinstance(v, str) for k, v in pins.items()
+    ):
+        raise ValueError("environment must contain TOURMALINE_* string pins")
+    if not isinstance(extra, list) or not all(isinstance(x, str) for x in extra):
+        raise ValueError("app_args must be an array of strings")
+    if not isinstance(item.get("frames"), int) or item["frames"] < 1:
+        raise ValueError("frames must be a positive integer")
+    # Viewer exports --pak/--project, optional --scene/--scene-index.
+    # Do not permit scenario data to smuggle in --bench or arbitrary flags.
+    source_pairs = []
+    i = 0
+    while i < len(src):
+        if src[i] not in ("--pak", "--project", "--scene", "--scene-index") or i + 1 >= len(src):
+            raise ValueError("unsupported source_args option or missing value")
+        source_pairs.append((src[i], src[i + 1]))
+        i += 2
+    sources = [p for flag, p in source_pairs if flag in ("--pak", "--project")]
+    if not sources or ("--project" in src and len(sources) != 1):
+        raise ValueError("a scenario needs at least one cooked pak or a project manifest")
+    if any(p in ("", ".", "..") for p in sources):
+        raise ValueError("empty or invalid scene path")
+    return item
+
+
 def command(args):
     # The exe requires its working directory to be the build root.
-    return [str(args.exe.resolve()), *(["--project", str(args.project.resolve())] if args.project else
-           ["--pak", str(args.pak.resolve())]), "--disable_control", "--bench", str(args.frames),
+    source = getattr(args, "source_args", []) or (["--project", str(args.project.resolve())] if args.project else
+           ["--pak", str(args.pak.resolve())])
+    return [str(args.exe.resolve()), *source, "--disable_control", "--bench", str(args.frames),
             "--present", "immediate", *args.app_arg]
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("bench", "trace", "capture", "compare"))
-    parser.add_argument("--exe", type=Path, default=Path("out/build/x64-Release/App.exe"))
+    parser.add_argument("mode", choices=("bench", "trace", "capture", "compare", "list"))
+    parser.add_argument("--exe", type=Path, help="Viewer App or dedicated Benchmark binary")
+    parser.add_argument("--catalog", type=Path, default=Path(__file__).resolve().parents[1] / "benchmarks/scenarios.json")
+    parser.add_argument("--scenario", help="Named source-controlled benchmark scenario id")
     scene = parser.add_mutually_exclusive_group()
     scene.add_argument("--pak", type=Path)
     scene.add_argument("--project", type=Path)
     parser.add_argument("--workdir", type=Path, help="App working directory (defaults to exe directory)")
     parser.add_argument("--output", type=Path, default=Path("out/perf"))
-    parser.add_argument("--frames", type=positive, default=120)
+    parser.add_argument("--frames", type=positive, help="Measured frames; overrides scenario default (120 otherwise)")
     parser.add_argument("--repeat", type=positive, default=3)
     parser.add_argument("--warmup", type=positive, default=10, help="App internally uses 10 warmup frames")
     parser.add_argument("--capture-frame", type=positive, default=20)
@@ -54,6 +108,16 @@ def main(argv=None):
     parser.add_argument("--timeout", type=positive, default=600)
     args = parser.parse_args(argv)
 
+    if args.mode == "list":
+        try:
+            entries = read_catalog(args.catalog)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(str(exc))
+        print(json.dumps({"catalog": str(args.catalog), "scenarios": [
+            {"id": s["id"], "label": s.get("label", ""), "subsystem": s.get("subsystem", ""),
+             "frames": s.get("frames", 120)} for s in entries]}, indent=2))
+        return 0
+
     if args.mode == "compare":
         if not args.baseline or not args.candidate:
             parser.error("compare requires --baseline and --candidate")
@@ -61,29 +125,59 @@ def main(argv=None):
         b = json.loads(args.candidate.read_text(encoding="utf-8"))
         if a.get("mode") != "bench" or b.get("mode") != "bench":
             parser.error("comparison requires two uninstrumented bench results")
-        if a.get("frames") != b.get("frames") or a.get("app_args") != b.get("app_args") or a.get("environment") != b.get("environment"):
+        if a.get("frames") != b.get("frames") or a.get("app_args") != b.get("app_args") or a.get("environment") != b.get("environment") or a.get("source_args") != b.get("source_args") or a.get("scenario") != b.get("scenario"):
             parser.error("benchmark configurations differ; compare matching runs only")
         old, new = a["summary"]["median_ms"], b["summary"]["median_ms"]
         change = (new / old - 1) * 100
         print(json.dumps({"baseline_ms": old, "candidate_ms": new, "change_percent": change, "threshold_percent": args.max_regression, "regression": change > args.max_regression}, indent=2))
         return 2 if change > args.max_regression else 0
 
-    if not args.pak and not args.project:
-        parser.error("--pak or --project required")
+    scenario = None
+    args.source_args = []
+    if args.scenario:
+        if args.pak or args.project:
+            parser.error("--scenario is mutually exclusive with --pak/--project")
+        try:
+            scenario = select_scenario(args.catalog, args.scenario)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(str(exc))
+        args.source_args = scenario["source_args"]
+        args.app_arg = scenario.get("app_args", []) + args.app_arg
+        args.frames = args.frames or scenario["frames"]
+    else:
+        args.frames = args.frames or 120
+        if not args.pak and not args.project:
+            parser.error("--pak, --project or --scenario required")
+    if args.exe is None:
+        binary = "Benchmark.exe" if os.name == "nt" else "Benchmark"
+        args.exe = Path("out/build/x64-Release") / (binary if scenario else ("App.exe" if os.name == "nt" else "App"))
     if not args.exe.is_file():
         parser.error(f"executable does not exist: {args.exe}")
-    source = args.project or args.pak
-    if not source.is_file():
-        parser.error(f"scene input does not exist: {source}")
+    workdir = (args.workdir or args.exe.parent).resolve()
+    if not workdir.is_dir():
+        parser.error(f"working directory does not exist: {workdir}")
+    if scenario:
+        for i, flag in enumerate(args.source_args[:-1]):
+            if flag in ("--pak", "--project"):
+                source = Path(args.source_args[i + 1])
+                if not (source if source.is_absolute() else workdir / source).is_file():
+                    parser.error(f"scenario scene input missing relative to {workdir}: {source}")
+    else:
+        source = args.project or args.pak
+        if not source.is_file():
+            parser.error(f"scene input does not exist: {source}")
     if args.warmup != 10:
         parser.error("App currently has exactly 10 internal warmup frames")
     if args.capture_frame < 2 or args.capture_frame >= args.frames + args.warmup:
         parser.error("capture frame must occur before the benchmark exits")
-    workdir = (args.workdir or args.exe.parent).resolve()
-    if not workdir.is_dir():
-        parser.error(f"working directory does not exist: {workdir}")
     env = os.environ.copy()
-    pins = {}
+    # One scenario must not inherit hidden TOURMALINE_* pins from the shell.
+    # The full active environment is explicit and archived in result.json.
+    if scenario:
+        for key in list(env):
+            if key.startswith("TOURMALINE_"):
+                del env[key]
+    pins = dict(scenario["environment"]) if scenario else {}
     for pair in args.env:
         key, sep, val = pair.partition("=")
         if not sep or not re.fullmatch(r"TOURMALINE_[A-Z0-9_]+", key):
@@ -98,7 +192,8 @@ def main(argv=None):
     argv_app = command(args)
     report = {"schema_version": 1, "mode": args.mode, "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
               "command": argv_app, "cwd": str(workdir), "frames": args.frames,
-              "warmup_frames": args.warmup, "environment": pins, "app_args": args.app_arg, "runs": []}
+              "warmup_frames": args.warmup, "environment": pins, "app_args": args.app_arg,
+              "source_args": args.source_args if scenario else argv_app[1:3], "scenario": args.scenario, "runs": []}
     if args.shader_debug:
         # Shader symbolication is a BUILD setting, not a runtime switch. Never claim
         # a release build contains SPIR-V line tables because this CLI was passed a flag.
