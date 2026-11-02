@@ -102,7 +102,7 @@ namespace audiographs {
 // ordinal indexes the authored file's cue list. Feed
 // these to the audio facade's PlayCue/CrossFade.
 namespace audiocues {
-    inline constexpr AudioCueKey forest_calm{0x7000ULL, 0u};
+    inline constexpr AudioCueKey forest_calm {0x7000ULL, 0u};
     inline constexpr AudioCueKey forest_storm{0x7000ULL, 1u};
 } // namespace audiocues
 
@@ -114,7 +114,7 @@ struct Pak {
 
 inline constexpr std::array Paks = {
     Pak{"shared", "shared.pak"},
-    Pak{"world", "game.pak"},
+    Pak{"world",  "game.pak"},
 };
 
 // The asset KIND enum - the values are an ABI (the runtime's
@@ -146,11 +146,11 @@ struct AssetDesc {
 };
 
 inline constexpr std::array Assets = {
-    AssetDesc{scenes::game, AssetKind::Scene, "content/scenes/game.tour", ""},
-    AssetDesc{textures::stone, AssetKind::Texture, "content/models/game/shared/stone.png", ""},
-    AssetDesc{meshes::game_2, AssetKind::Mesh, "content/models/game/game.geometry", ""},
-    AssetDesc{sounds::bells, AssetKind::Sound, "content/audio/bells.wav", ""},
-    AssetDesc{audiographs::forest, AssetKind::AudioGraph, "content/audio/forest.audiograph", ""},
+    AssetDesc{scenes::game,        AssetKind::Scene,      "content/scenes/game.tour",             ""},
+    AssetDesc{textures::stone,     AssetKind::Texture,    "content/models/game/shared/stone.png", ""},
+    AssetDesc{meshes::game_2,      AssetKind::Mesh,       "content/models/game/game.geometry",    ""},
+    AssetDesc{sounds::bells,       AssetKind::Sound,      "content/audio/bells.wav",              ""},
+    AssetDesc{audiographs::forest, AssetKind::AudioGraph, "content/audio/forest.audiograph",      ""},
 };
 
 // The SYMBOL-NAME table (compile-time query metadata; the
