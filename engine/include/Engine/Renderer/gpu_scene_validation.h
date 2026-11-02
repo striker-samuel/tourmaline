@@ -1,0 +1,250 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+#pragma once
+// Opt-in GPU Scene visibility parity path. Production draws are unchanged.
+// WorldRenderer calls BeginFlight only AFTER that flight's acquire fence.
+// Validation uses a per-flight buffer and a blocking diagnostic readback
+// when that slot is next reused. Never share ResourceManager's async ticket.
+
+#include <Engine/Renderer/gpu_scene_candidates.h>
+#include <Engine/Renderer/renderview.h>
+#include <Engine/RHI/resource_manager.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <limits>
+#include <vector>
+
+namespace tour::gpu_scene {
+
+// Existing RenderView's inward planes are ABSOLUTE float32-world planes.
+// This adapter rebases the SAME planes to a separate relative-space view,
+// without affecting raster, HZB, or the current RenderView layout.
+// This cannot restore precision lost in the float32 scene/camera.
+[[nodiscard]] inline RelativeFrustum LegacyRelativeFrustum(
+    const smvk::RenderView& view, glm::dvec3 origin) {
+    RelativeFrustum out{};
+    out.originWorld = origin;
+    for (int i = 0; i < 6; ++i) {
+        const glm::dvec4 p(view.m_viewPlanes[i]);
+        const glm::dvec3 n(p);
+        if (glm::dot(n,n) < 1e-20) {
+            // Reversed-Z infinite far: disabled half-space.
+            out.planes[i] = glm::dvec4(0,0,0,1e30);
+        } else {
+            out.planes[i] = glm::dvec4(n, p.w + glm::dot(n, origin));
+        }
+    }
+    return out;
+}
+
+// Genuine double VP variant: caller must construct worldToClip in double
+// using authoritative double CPU transforms for true large-world culling.
+// Extracted half-spaces use Vulkan [0,1] depth, reversed-Z safe.
+[[nodiscard]] inline RelativeFrustum DoubleRelativeFrustum(
+    const glm::dmat4& vp, glm::dvec3 origin) {
+    const auto row = [&](int r) {
+        return glm::dvec4(vp[0][r],vp[1][r],vp[2][r],vp[3][r]);
+    };
+    const glm::dvec4 a=row(0), b=row(1), c=row(2), d=row(3);
+    const std::array<glm::dvec4,6> raw{{
+        d+a,d-a,d+b,d-b,c,d-c
+    }};
+    RelativeFrustum out{};
+    out.originWorld = origin;
+    for (size_t i=0;i<6;++i) {
+        const glm::dvec3 n(raw[i]);
+        const double len=glm::length(n);
+        if (!(len>1e-16) || !std::isfinite(len)) {
+            out.planes[i]=glm::dvec4(0,0,0,1e30);
+        } else {
+            const glm::dvec4 p=raw[i]/len;
+            out.planes[i]=glm::dvec4(glm::dvec3(p),
+                p.w+glm::dot(glm::dvec3(p),origin));
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] inline bool PackInstanceCullView(
+    const RelativeFrustum& view, InstanceCullGpuView& out) {
+    if (!view.Valid()) return false;
+    out = {};
+    out.origin = math::SplitDoubleFloat(view.originWorld);
+    for (size_t i=0;i<6;++i)
+        for (int j=0;j<4;++j) {
+            const float v=float(view.planes[i][j]);
+            if (!std::isfinite(v)) return false;
+            out.inwardPlanes[i][j]=v;
+        }
+    return true;
+}
+
+// Invalid references fail closed; missing bounds pass visibility with
+// bypass=1. This mirrors gpu_scene_instance_cull.cs.hlsl for debug parity.
+[[nodiscard]] inline InstanceCullVerdict ReferenceCandidate(
+    const RenderDatabase& db, uint32_t memberIndex,
+    const RelativeFrustum& view) {
+    InstanceCullVerdict result{};
+    if (memberIndex >= db.leafMembers.Size()) return result;
+    const auto& member=db.leafMembers.Rows()[memberIndex];
+    if (member.identity.y != 1u) return result;
+    const Handle<Instance> id{member.value.ref.x,member.value.ref.y};
+    const Instance* inst=db.instances.Get(id);
+    if (!inst) return result;
+    bool bypass=true;
+    if (inst->refs.x < db.meshes.Size()) {
+        const auto& mesh=db.meshes.Rows()[inst->refs.x];
+        bypass=mesh.identity.y != 1u || mesh.identity.x != inst->refs.y ||
+            (mesh.value.flags & MeshFlagCompleteBounds)==0;
+    }
+    const bool visible=bypass || ReferenceInstanceVisible(db,id,view);
+    result.value=glm::uvec4(id.slot,id.generation,
+                              visible ? 1u : 0u,bypass ? 1u : 0u);
+    return result;
+}
+
+class CandidateValidator {
+public:
+    static constexpr uint32_t Flights=smvk::limits::MaxFramesInFlight;
+    static constexpr uint32_t MaxShaderRowSlots=4194304u;
+
+    // MUST run after acquire fence on a slot, BEFORE replacing its buffers.
+    void BeginFlight(smvk::ResourceManager& ctx, uint32_t flight) {
+        if (flight>=Flights) return;
+        auto& f=flight_[flight];
+        f.prepared=false;
+        if (!f.pending) return;
+        f.pending=false;
+        if (f.expected.empty()) return;
+        std::vector<InstanceCullVerdict> readback(f.expected.size());
+        if (!ctx.DownloadDataFromBuffer(f.verdicts,readback.data(),
+                                readback.size()*sizeof(readback[0]))) {
+            std::fprintf(stderr,"[GpuSceneValidate] readback failed\n");
+            f.expected.clear();
+            return;
+        }
+        uint64_t wrong=0;
+        for (size_t i=0;i<readback.size();++i) {
+            const auto& a=readback[i].value;
+            const auto& b=f.expected[i].value;
+            if (a.x!=b.x||a.y!=b.y||a.z!=b.z||a.w!=b.w) {
+                ++wrong;
+                if (wrong<=4)
+                    std::fprintf(stderr,
+                      "[GpuSceneValidate] mismatch candidate=%zu gpu=(%u,%u,%u,%u) cpu=(%u,%u,%u,%u)\n",
+                      i,a.x,a.y,a.z,a.w,b.x,b.y,b.z,b.w);
+            }
+        }
+        tested_+=readback.size();
+        mismatches_+=wrong;
+        std::fprintf(stderr,
+          "[GpuSceneValidate] flight=%u compared=%zu mismatches=%llu total=%llu/%llu\n",
+          flight,readback.size(),(unsigned long long)wrong,
+          (unsigned long long)mismatches_,(unsigned long long)tested_);
+        f.expected.clear();
+    }
+
+    [[nodiscard]] bool Prepare(smvk::ResourceManager& ctx, uint32_t flight,
+        const RenderDatabase& db, const Addresses& addresses,
+        const CandidateSelection& selected, const RelativeFrustum& view,
+        InstanceCullGpuPush& push) {
+        if (flight>=Flights || !selected.Valid() ||
+            selected.candidateCount==0 ||
+            selected.candidateCount>MaxPassedInstanceCandidates ||
+            selected.ranges.size()>MaxPassedLeafRanges ||
+            db.leaves.Size()>MaxShaderRowSlots ||
+            db.leafMembers.Size()>MaxShaderRowSlots ||
+            db.instances.Size()>MaxShaderRowSlots ||
+            db.meshes.Size()>MaxShaderRowSlots ||
+            !addresses.leaves || !addresses.leafMembers ||
+            !addresses.instances || !addresses.meshes)
+            return false;
+        auto& f=flight_[flight];
+        if (f.pending) return false;
+        f.prepared=false;
+        InstanceCullGpuView viewData{};
+        if (!PackInstanceCullView(view,viewData)) return false;
+        const size_t bytes=selected.ranges.size()*sizeof(PassedInstanceRange);
+        const size_t outBytes=size_t(selected.candidateCount)*sizeof(InstanceCullVerdict);
+        if (!Ensure(ctx,f.ranges,f.rangesSize,bytes,"scene candidate ranges") ||
+            !Ensure(ctx,f.verdicts,f.verdictSize,outBytes,"scene candidate verdicts"))
+            return false;
+        if (f.view.empty()) {
+            f.view=ctx.CreateBuffer(sizeof(InstanceCullGpuView),
+                                     smvk::BufferType_Storage,"scene cull view");
+            if (f.view.empty()) return false;
+        }
+        push={};
+        push.ranges=ctx.GetBufferDeviceAddress(f.ranges);
+        push.verdicts=ctx.GetBufferDeviceAddress(f.verdicts);
+        push.view=ctx.GetBufferDeviceAddress(f.view);
+        push.leaves=addresses.leaves;
+        push.members=addresses.leafMembers;
+        push.instances=addresses.instances;
+        push.meshes=addresses.meshes;
+        if (!push.ranges || !push.verdicts || !push.view) return false;
+        push.counts=glm::uvec4(uint32_t(selected.ranges.size()),
+                                 selected.candidateCount,db.leafMembers.Size(),
+                                 db.instances.Size());
+        push.counts2=glm::uvec4(db.leaves.Size(),db.meshes.Size(),1,0);
+
+        std::vector<InstanceCullVerdict> expected;
+        expected.reserve(selected.candidateCount);
+        for (const auto& range:selected.ranges) {
+            const Leaf* leaf=db.leaves.Get({range.leaf.x,range.leaf.y});
+            if (!leaf || leaf->range.x!=range.members.x ||
+                leaf->range.y!=range.members.y) return false;
+            for (uint32_t i=0;i<range.members.y;++i)
+                expected.push_back(ReferenceCandidate(db,range.members.x+i,view));
+        }
+        if (expected.size()!=selected.candidateCount) return false;
+        ctx.UploadDataToBuffer(f.ranges,selected.ranges.data(),bytes,
+                               smvk::PipelineStageBit_Compute,smvk::AccessFlags::ShaderRead);
+        ctx.UploadDataToBuffer(f.view,&viewData,sizeof(viewData),
+                               smvk::PipelineStageBit_Compute,smvk::AccessFlags::ShaderRead);
+        f.expected=std::move(expected);
+        f.prepared=true;
+        return true;
+    }
+
+    void MarkDispatched(uint32_t flight) {
+        if (flight>=Flights) return;
+        auto& f=flight_[flight];
+        if (f.prepared) { f.pending=true; f.prepared=false; }
+    }
+
+    [[nodiscard]] uint64_t Compared() const { return tested_; }
+    [[nodiscard]] uint64_t Mismatches() const { return mismatches_; }
+
+private:
+    struct Flight {
+        smvk::Holder<smvk::BufferHandle> ranges{},view{},verdicts{};
+        size_t rangesSize=0,verdictSize=0;
+        std::vector<InstanceCullVerdict> expected{};
+        bool pending=false,prepared=false;
+    };
+    static bool Ensure(smvk::ResourceManager& ctx,
+        smvk::Holder<smvk::BufferHandle>& holder,size_t& capacity,
+        size_t minimum,const char* label) {
+        if (!holder.empty() && capacity>=minimum) return true;
+        size_t n=std::max<size_t>(256,capacity);
+        while (n<minimum) {
+            if (n>std::numeric_limits<size_t>::max()/2) return false;
+            n*=2;
+        }
+        auto fresh=ctx.CreateBuffer(n,smvk::BufferType_Storage,label);
+        if (fresh.empty()) return false;
+        holder=std::move(fresh);
+        capacity=n;
+        return true;
+    }
+    std::array<Flight,Flights> flight_{};
+    uint64_t tested_=0,mismatches_=0;
+};
+
+} // namespace tour::gpu_scene
