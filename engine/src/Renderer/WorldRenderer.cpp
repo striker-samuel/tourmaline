@@ -2828,6 +2828,14 @@ namespace engine {
 				"nothing to render (see the errors above)\n";
 			return false;
 		}
+		// Fixture handles belong to the previous App world, if any.
+		// A new attach starts with an empty runtime test lab.
+		m_runtimeProcRequest = 0;
+		m_runtimeProcNode = UINT32_MAX;
+		m_runtimeProcMesh = {};
+		m_runtimeProcMaterial = {};
+		m_runtimeProcOldMesh = {};
+		m_runtimeProcOldMaterial = {};
 		std::cerr << "[Scene] world resolved: nodes="
 			<< m_world->scene.hierarchy.size() << " meshes="
 			<< m_world->meshLocations.size() << " materials="
@@ -10630,6 +10638,9 @@ namespace engine {
 		// plugin loaded - same monotonic-id convention as dlssFrameId.
 		(void)smvk::DlssBeginFrame(static_cast<uint32_t>(m_frameCounter & 0xffffffffu));
 		m_rendergraph->NewFrame();
+		// ImGui queues test-fixture changes after scene passes are built.
+		// Apply them before recording the NEXT frame (no mid-frame mutations).
+		ApplyRuntimeProceduralRequest();
 		// Texture filtering (trilinear <-> aniso 16x) is renderer state: enforce
 		// the selected sampler state on the bindless sampler slots every frame
 		// (no-op when already set; recreates slots 0 + 2 on change).
@@ -17092,38 +17103,7 @@ namespace engine {
 							ImGui::SliderFloat("Metallic", &m_debugMaterialMetallic, 0.0f, 1.0f);
 							ImGui::TextDisabled("applies at material upload (UpdateMaterials)");
 						}
-						ImGui::Separator();
-						// Light crowd: the Forward+ tile-list stress tool.
-						ImGui::Checkbox("Enable light crowd", &m_lightDemo.enabled);
-						ImGui::SameLine();
-						ImGui::TextDisabled(m_lightCrowdCount > 0 ? "(spawned)" : "(off)");
-						ImGui::SliderInt("Count", &m_lightDemo.count, 0, 96);
-						ImGui::SliderFloat3("Center", &m_lightDemo.center.x, -30.0f, 30.0f);
-						ImGui::SliderFloat("Spiral radius (m)", &m_lightDemo.radius, 0.5f, 30.0f);
-						ImGui::SliderFloat("Height (m)", &m_lightDemo.height, 0.0f, 12.0f);
-						ImGui::SliderFloat("Bob (m)", &m_lightDemo.bob, 0.0f, 4.0f);
-						ImGui::SliderFloat("Cutoff range (m)", &m_lightDemo.range, 0.5f, 20.0f);
-						// Candela is physical: sunlit scenes need ~20000+ cd to
-						// read against the direct term.
-						ImGui::SliderFloat("Intensity (cd)", &m_lightDemo.intensity, 0.0f, 200000.0f, "%.0f");
-						if (ImGui::IsItemHovered())
-							ImGui::SetTooltip("Sunlit scenes (sun = 10000 lux) need ~20000+ cd to read\n"
-								"against the direct term; night scenes need far less.");
-						ImGui::SliderFloat("Orbit speed (rad/s)", &m_lightDemo.speed, 0.0f, 2.0f);
-						ImGui::SliderFloat("Base hue", &m_lightDemo.baseHue, 0.0f, 1.0f);
-						ImGui::SliderFloat("Hue spread", &m_lightDemo.hueSpread, 0.0f, 1.0f);
-						// Shadow casters: the first `shadowCount` crowd lights
-						// ride the cast-shadow request against the scene's own
-						// requesting lights.
-						ImGui::Checkbox("Cast shadows (crowd)", &m_lightDemo.castShadows);
-						if (m_lightDemo.castShadows) {
-							const int crowdlights = std::max(m_lightDemo.count, 1);
-							const int shadowCap = std::min((int)smvk::kMaxPointShadowLights, crowdlights);
-							int crowdShadows = std::min(m_lightDemo.shadowCount, shadowCap);
-							if (ImGui::SliderInt("Shadow casters (of count)",
-									&crowdShadows, 0, shadowCap))
-								m_lightDemo.shadowCount = crowdShadows;
-						}
+
 					}
 #if defined(DS_DEBUG_VIZ)
 					// ---- Deferred-shadow debug visualizers (paper 5.3/5.4).
@@ -17178,6 +17158,11 @@ namespace engine {
 				// (everything that reports state rather than setting it).
 				// Retired-slice counters lag ~2 frames.
 				// ---------------------------------------------------------
+				// Runtime-only procedural meshes, materials and Forward+ light stress.
+				if (!m_borrowedWorld && ImGui::BeginTabItem("Procedurals")) {
+					DrawRuntimeProceduralsTab();
+					ImGui::EndTabItem();
+				}
 				if (ImGui::BeginTabItem("Stats")) {
 					ImGui::SeparatorText("GPU + frame");
 					{
