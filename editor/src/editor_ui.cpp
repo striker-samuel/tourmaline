@@ -219,11 +219,6 @@ namespace editor {
 						DrawMaterialEditor();
 						ImGui::EndTabItem();
 					}
-					if (ImGui::BeginTabItem("Procedurals")) {
-						m_rightTab = 6;
-						DrawProceduralsPanel();
-						ImGui::EndTabItem();
-					}
 					ImGui::EndTabBar();
 				}
 			}
