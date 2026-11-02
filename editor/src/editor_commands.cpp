@@ -5847,6 +5847,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 			if (k >= app.m_tourCreatedGiVolumeNodes.size())
 				return false;
 			target = app.m_tourCreatedGiVolumeNodes[k];
+		} else if ((tc.node & smvk::tour::kCreateRefFamilyMask)
+				== smvk::tour::kCreateTransformRefBase) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateTransformRefBase;
+			if (k >= app.m_tourCreatedTransformNodes.size()) return false;
+			target = app.m_tourCreatedTransformNodes[k];
 		} else {
 			target = app.ClusterToWorld(tc.node);
 		}
@@ -6086,6 +6091,12 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 				return false;
 			target = app.m_tourCreatedGiVolumeNodes[k];
 		}
+		else if ((tc.node & smvk::tour::kCreateRefFamilyMask)
+				== smvk::tour::kCreateTransformRefBase) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateTransformRefBase;
+			if (k >= app.m_tourCreatedTransformNodes.size()) return false;
+			target = app.m_tourCreatedTransformNodes[k];
+		}
 		else {
 			target = app.ClusterToWorld(tc.node);
 		}
@@ -6114,6 +6125,8 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::AttachGiVolume:
+	case smvk::tour::Verb::RemoveGiVolume:
 	case smvk::tour::Verb::AttachAudioRoom:
 	case smvk::tour::Verb::RemoveAudioRoom: {
 		// The association verbs: a created room, a created GIVOLUME
@@ -6135,15 +6148,23 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 				return false;
 			target = app.m_tourCreatedGiVolumeNodes[k];
 		}
-		else {
+		else if ((tc.node & smvk::tour::kCreateRefFamilyMask)
+				== smvk::tour::kCreateTransformRefBase) {
+			const uint32_t k = tc.node & ~smvk::tour::kCreateTransformRefBase;
+			if (k >= app.m_tourCreatedTransformNodes.size()) return false;
+			target = app.m_tourCreatedTransformNodes[k];
+		} else {
 			target = app.ClusterToWorld(tc.node);
 		}
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		out.verb = (tc.verb == smvk::tour::Verb::AttachAudioRoom)
-			? EditVerb::AttachAudioRoom
-			: EditVerb::RemoveAudioRoomVerb;
+		out.verb = tc.verb == smvk::tour::Verb::AttachGiVolume
+			? EditVerb::AttachGiVolume
+			: tc.verb == smvk::tour::Verb::RemoveGiVolume
+			? EditVerb::RemoveGiVolumeVerb
+			: tc.verb == smvk::tour::Verb::AttachAudioRoom
+			? EditVerb::AttachAudioRoom : EditVerb::RemoveAudioRoomVerb;
 		out.node = target;
 		// (The before-row is captured at FORWARD EXECUTION - the
 		// ExecCmd cases, idempotently under redo.)
