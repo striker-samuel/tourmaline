@@ -641,6 +641,11 @@ namespace tour {
 				// them, GetLodMesh would fall back to LOD0 if anything
 				// ever asked (defense in depth - nothing should).
 				bool resident = true;
+				// Metadata bounds survive deferred residency. Required for a
+				// conservative sphere across the FULL cooked LOD chain.
+				glm::vec3 boundsMin{0.0f};
+				glm::vec3 boundsMax{0.0f};
+				bool boundsKnown = false;
 			};
 			std::vector<Level> levels;
 			// True when any level is deferred: gates the desired-LOD

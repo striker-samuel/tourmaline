@@ -3133,6 +3133,7 @@ namespace engine {
 			}
 			else {
 				m_gfxRenderer.RegisterWorldMeshes(*m_world);
+				++m_gpuSceneGeometryRevision;
 				m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
 				// Geometry LOD streaming census: the cluster loads
 				// deferred their middle LOD siblings (the serializer's
@@ -6530,6 +6531,9 @@ namespace engine {
 				// (promote/evict) frame.
 				SMVK_PROFILE_STREAM("GeoStreaming_RebuildLodChains");
 				m_world->RebuildLodChains();
+				// The physical residency changed even when GfxFilter is off.
+				// Mesh metadata must still republish the resident mask.
+				++m_gpuSceneGeometryRevision;
 				m_world->RebuildLightmapChartTable();
 			}
 			if (m_gfxFilterAvailable) {
@@ -6539,6 +6543,7 @@ namespace engine {
 					SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
 					smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
 					m_gfxRenderer.RegisterWorldMeshes(*m_world);
+				++m_gpuSceneGeometryRevision;
 				}
 				{
 					// Static vertex/index table upload staging.
@@ -11118,7 +11123,13 @@ namespace engine {
 		// GPUIR scene mirror: topology reconciliation or dirty transforms,
 		// then flight-safe GPU table publication. Draws still use GfxFilter.
 		if (m_world) {
-			m_gpuSceneSync.Synchronize(*m_world, m_gpuSceneDatabase);
+			m_gpuSceneSync.Synchronize(*m_world, m_gpuSceneDatabase,
+				m_gpuSceneGeometryRevision,
+				[this](uint32_t worldMesh, uint32_t lod) {
+					return m_gfxFilterAvailable
+						? m_gfxRenderer.GfxMeshForLod(worldMesh, lod)
+						: tour::gpu_scene::InvalidIndex;
+				});
 			if (!m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase,
 					fb.frameIndex))
 				std::fprintf(stderr, "[GpuScene] database publication failed; no GPU reader this frame\n");

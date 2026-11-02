@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -42,6 +43,13 @@ struct alignas(16) Mesh {
     uint32_t flags = 0;
 };
 
+// Flags: keep physical payload residency separate from GPU meshlet registration.
+inline constexpr uint32_t LodFlagResident = 1u << 0;
+inline constexpr uint32_t LodFlagBoundsKnown = 1u << 1;
+inline constexpr uint32_t LodFlagFilterable = 1u << 2;
+// GPU instance culling must require this flag on the referenced mesh.
+inline constexpr uint32_t MeshFlagCompleteBounds = 1u << 0;
+
 struct alignas(16) Lod {
     uint32_t firstSubmesh = 0;
     uint32_t submeshCount = 0;
@@ -62,7 +70,7 @@ struct alignas(16) Instance {
     glm::vec4 basisY{0.0f, 1.0f, 0.0f, 0.0f};
     glm::vec4 basisZ{0.0f, 0.0f, 1.0f, 0.0f};
     glm::vec4 localSphere{0.0f}; // xyz mesh-local center, w radius
-    glm::uvec4 refs{InvalidIndex}; // mesh slot, material slot, leaf slot, flags
+    glm::uvec4 refs{InvalidIndex}; // mesh slot, mesh generation, World material, flags
 };
 
 struct alignas(16) Leaf {
@@ -137,6 +145,55 @@ public:
         ++liveCount_;
         Touch(slot);
         return Id{slot, row.identity.x};
+    }
+
+    // One mesh's LOD records are accessed as firstLod + level on the GPU.
+    // The normal generational Insert() cannot guarantee adjacency when
+    // free slots are recycled. Allocate a contiguous group instead.
+    // This runs at mesh registration/chain reshaping, NOT per frame.
+    [[nodiscard]] std::vector<Id> InsertContiguous(
+        std::span<const Payload> payloads) {
+        std::vector<Id> ids;
+        if (payloads.empty() || payloads.size() > InvalidIndex)
+            return ids;
+        const uint32_t count = static_cast<uint32_t>(payloads.size());
+        uint32_t first = InvalidIndex;
+        if (free_.size() >= count) {
+            std::vector<uint32_t> ordered = free_;
+            std::sort(ordered.begin(), ordered.end());
+            for (size_t i = 0; i + count <= ordered.size(); ++i) {
+                if (ordered[i + count - 1] - ordered[i] == count - 1) {
+                    first = ordered[i];
+                    break;
+                }
+            }
+        }
+        if (first != InvalidIndex) {
+            const uint64_t end = uint64_t(first) + count;
+            free_.erase(std::remove_if(free_.begin(), free_.end(),
+                [&](uint32_t slot) { return slot >= first && slot < end; }),
+                free_.end());
+        } else {
+            if (payloads.size() > size_t(InvalidIndex) - rows_.size())
+                return ids;
+            first = static_cast<uint32_t>(rows_.size());
+            rows_.resize(rows_.size() + count);
+            pendingMasks_.resize(rows_.size(), 0);
+            for (uint32_t i = 0; i < count; ++i)
+                rows_[first + i].identity.x = 1;
+        }
+        ids.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t slot = first + i;
+            Entry& row = rows_[slot];
+            assert(row.identity.x != 0 && row.identity.y == 0);
+            row.value = payloads[i];
+            row.identity.y = 1;
+            ++liveCount_;
+            Touch(slot);
+            ids.push_back(Id{slot, row.identity.x});
+        }
+        return ids;
     }
 
     [[nodiscard]] bool Contains(Id id) const noexcept {
