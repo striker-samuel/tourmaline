@@ -2794,6 +2794,30 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		c.vec = glm::vec3(float(v[0]), float(v[1]), float(v[2]));
 		c.svec = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
 	}
+	else if (effVerb == "attachGiVolume" || effVerb == "removeGiVolume") {
+		if (!(fl.hasN || fl.hasRef || fl.hasUuid)
+				|| fl.hasRef != fl.hasOwner) {
+			err = "line " + std::to_string(lineNo)
+				+ ": GI component needs -n, -uuid, or -ref with -owner";
+			return false;
+		}
+		c.verb = effVerb == "attachGiVolume"
+			? Verb::AttachGiVolume : Verb::RemoveGiVolume;
+		if (fl.hasRef) {
+			uint32_t base = 0;
+			if (fl.owner == "transform") base = kCreateTransformRefBase;
+			else if (fl.owner == "givolume") base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "audioRoom") base = kCreateAudioRoomRefBase;
+			else {
+				err = "line " + std::to_string(lineNo) + ": unknown GI owner";
+				return false;
+			}
+			c.node = base | fl.ref;
+			c.text = fl.owner;
+		} else {
+			c.node = fl.n;
+		}
+	}
 	else if (effVerb == "attachAudioRoom" || effVerb == "removeAudioRoom") {
 		// The ASSOCIATION verbs: attach drops a DEFAULT AudioRoomRow on
 		// an EXISTING node (the GI-inspector "Enable" path — a room on
@@ -3477,6 +3501,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	// Same scheme for created convex volumes (kCreateGiVolumeRefBase | k),
 	// resolved by SetGiVolumeAttr below.
 	std::vector<uint32_t> createdGiVolumes;
+	std::vector<uint32_t> createdTransforms;
 	// Same scheme for created cubemap captures (kCreateCubemapRefBase |
 	// k), resolved by SetCubemapAttr below.
 	std::vector<uint32_t> createdCubemaps;
@@ -3788,6 +3813,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			const uint32_t nameId = uint32_t(scene.nodeNames.size());
 			scene.nodeNames.push_back(c.text);
 			SetNodeNameIndex(scene, uint32_t(newId), nameId);
+			createdTransforms.push_back(uint32_t(newId));
 			break;
 		}
 		case Verb::CreateLight: {
@@ -4181,6 +4207,33 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		createdAudioRooms.push_back(uint32_t(newId));
 		break;
 	}
+	case Verb::AttachGiVolume:
+	case Verb::RemoveGiVolume: {
+		uint32_t target = 0;
+		const uint32_t family = c.node & kCreateRefFamilyMask;
+		if (family == kCreateTransformRefBase
+				|| family == kCreateGiVolumeRefBase
+				|| family == kCreateAudioRoomRefBase) {
+			const auto& nodes = family == kCreateTransformRefBase
+				? createdTransforms : family == kCreateGiVolumeRefBase
+				? createdGiVolumes : createdAudioRooms;
+			const uint32_t k = c.node & ~family;
+			if (k >= nodes.size()) {
+				if (err) *err = "tour: GI component ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = nodes[k];
+		} else if (!resolveNode(c.node, c, target)) {
+			if (!failCmd(c)) return false;
+			break;
+		}
+		if (c.verb == Verb::AttachGiVolume)
+			SetGiVolume(scene, target, SceneGiVolume{});
+		else
+			RemoveGiVolume(scene, target);
+		break;
+	}
 	case Verb::AttachAudioRoom:
 	case Verb::RemoveAudioRoom: {
 		// The ASSOCIATION verbs: attach drops/replaces a default
@@ -4216,6 +4269,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				break;
 			}
 			target = createdGiVolumes[k];
+		}
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase) {
+			const uint32_t k = c.node & ~kCreateTransformRefBase;
+			if (k >= createdTransforms.size()) {
+				if (err) *err = "tour: audio room transform ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = createdTransforms[k];
 		}
 		else if (!resolveNode(c.node, c, target)) {
 			if (!failCmd(c))
@@ -4617,6 +4679,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				break;
 			}
 			target = createdGiVolumes[k];
+		}
+		else if ((target & kCreateRefFamilyMask) == kCreateTransformRefBase) {
+			const uint32_t k = target & ~kCreateTransformRefBase;
+			if (k >= createdTransforms.size()) {
+				if (err) *err = "tour: GI attr transform ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = createdTransforms[k];
 		}
 		else if (!checkNode(target, c)) {
 			if (!failCmd(c))
