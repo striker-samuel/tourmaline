@@ -744,20 +744,22 @@ if HAVE_QT:
     @dataclass
     class Mount:
         name: str
-        kind: str  # "pak" | "loose"
+        kind: str  # "pak" | "tapp" | "loose"
         priority: int
         pak: PakFile | None = None
         loose_dir: str = ""
+        tapp: TappFile | None = None
+        manifest_source: str = ""
 
     class PakBrowser(QMainWindow):
         def __init__(self, initial_paks: list[str] | None = None):
             super().__init__()
-            self.setWindowTitle("Pack Browser - manifest/header + VFS inspector")
+            self.setWindowTitle("Tourmaline Package Browser - SMP8 + .tapp")
             self.resize(1280, 800)
             self.mounts: list[Mount] = []
             self._build_ui()
             for p in initial_paks or []:
-                self.add_pak_mount(p)
+                self.add_source(p)
 
         # -- layout ---------------------------------------------------
         def _build_ui(self):
@@ -770,7 +772,7 @@ if HAVE_QT:
 
             # toolbar row
             bar = QHBoxLayout()
-            self.btn_open = QPushButton("Open pak...")
+            self.btn_open = QPushButton("Open .pak / .tapp...")
             self.btn_loose = QPushButton("Mount loose dir...")
             self.btn_up = QPushButton("Priority up")
             self.btn_down = QPushButton("Priority down")
@@ -807,15 +809,15 @@ if HAVE_QT:
             self.search.setPlaceholderText("filter path substring...")
             self.kind_combo = QComboBox()
             self.kind_combo.addItems(
-                ["all kinds", "Scene", "Mesh", "Material", "Texture", "Light", "Gi"]
+                ["all kinds", *KINDS.values()]
             )
             filt_row.addWidget(self.search, 1)
             filt_row.addWidget(self.kind_combo)
             left_l.addLayout(filt_row)
 
-            self.table = QTableWidget(0, 7)
+            self.table = QTableWidget(0, 9)
             self.table.setHorizontalHeaderLabels(
-                ["path", "kind", "offset", "size", "flags", "hash", "VFS"]
+                ["path", "package", "kind", "slot", "offset", "size", "flags", "CRC32", "VFS"]
             )
             self.table.setSortingEnabled(True)
             self.table.setSelectionBehavior(
@@ -994,7 +996,7 @@ if HAVE_QT:
                 ("file", f"{pak.source} ({pak.size} B)"),
                 (
                     "magic",
-                    f"SMP4 {'OK' if not pak.error else 'INVALID'} "
+                    f"SMP8 {'OK' if not pak.error else 'INVALID'} "
                     f"(flags={pak.flags})".strip(),
                 ),
                 ("toc", f"offset={pak.toc_offset} count={pak.toc_count}"),
