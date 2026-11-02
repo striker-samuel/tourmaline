@@ -791,6 +791,9 @@ private:
 	void DrawOutlinerNode(uint32_t node,
 		const std::unordered_set<uint32_t>* expandSet = nullptr);
 	void DrawInspector();
+	void DrawComponentTable(); // scene-wide undoable component data grid
+	bool m_showComponentTable = false;
+	char m_componentTableFilter[128] = {};
 	void DrawWorldPanel(); // Inspector page for the World pseudo-node
 	// Material editor page (m_materialFocus travel) + camera section.
 	void DrawMaterialFocusPage();
