@@ -11281,7 +11281,10 @@ namespace engine {
 						m_gpuSceneUploader.DeviceAddresses(*m_context,fb.frameIndex),
 						selected, frustum, gpuPush)) {
 					auto& pass = m_rendergraph->AddComputePass("GpuSceneValidate");
-					const smvk::ShaderProgram program = m_gpuSceneCullProgram;
+					// House pattern (the DS phases above): a non-const program
+					// copy captured by a mutable lambda - a const local would
+					// capture as const and fail BindComputePipeline(ShaderProgram&).
+					auto program = m_gpuSceneCullProgram;
 					const uint32_t groups = (selected.candidateCount+63u)/64u;
 					pass.SetRecordingFunc([program, gpuPush, groups](
 						smvk::CommandBuffer& cmd) mutable {

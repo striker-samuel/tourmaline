@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <span>
 #include <vector>
@@ -57,11 +58,27 @@ class GameUiRenderer final : public engine::IRenderer {
 public:
 	const char* RendererName() const override { return "GameUI"; }
 
+	// Instance capacity: mirrors the HLSL GAME_UI_MAX_RECTS array bound in
+	// gameui.hlsli (DXC requires an explicit struct-member dimension; the
+	// draw itself is bounded by the recorded instanceCount). DrawRect fails
+	// loudly past this — a game UI never legitimately exceeds 64k rects.
+	static constexpr size_t kMaxRects = 65536;
+
 	// Draws are appended in painter's order (last is on top). Caller
 	// rebuilds every frame, or may reuse its own retained widget tree.
 	void BeginFrame() { m_rects.clear(); }
 	void Reserve(size_t count) { m_rects.reserve(count); }
-	void DrawRect(const UiDrawRect2D& rect) { m_rects.push_back(rect); }
+	void DrawRect(const UiDrawRect2D& rect) {
+		if (m_rects.size() >= kMaxRects) {
+			if (!m_overflowLogged) {
+				m_overflowLogged = true;
+				std::fprintf(stderr, "[GameUi] rect overflow: >%zu rects "
+					"(the shader table capacity); excess dropped\n", kMaxRects);
+			}
+			return;
+		}
+		m_rects.push_back(rect);
+	}
 
 	// Called on the render thread. Shaders are packed automatically by
 	// the existing engine shaders build. Textures are owned by the host.
@@ -94,6 +111,7 @@ private:
 	static_assert(sizeof(Push) == 24);
 
 	std::vector<UiDrawRect2D> m_rects;
+	bool m_overflowLogged = false;
 	std::array<Flight, smvk::limits::MaxFramesInFlight> m_flights{};
 	smvk::Holder<smvk::ShaderModuleHandle> m_vs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_fs;

@@ -16,8 +16,12 @@ struct GameUiRectInstance {
 	uint textureIndex;
 	uint pad;
 };
+// DXC requires explicit struct-member array dimensions (the draw itself is
+// bounded by the recorded instanceCount, never this constant). Mirrors
+// GameUiRenderer::kMaxRects; the CPU side fails loudly past it.
+#define GAME_UI_MAX_RECTS 65536
 struct GameUiInstances {
-	GameUiRectInstance rects[];
+	GameUiRectInstance rects[GAME_UI_MAX_RECTS];
 };
 struct GameUiPush {
 	GPU_PTR_READ(GameUiInstances) instances;

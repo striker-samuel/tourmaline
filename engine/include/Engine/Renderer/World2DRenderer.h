@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <span>
 #include <vector>
@@ -109,8 +110,23 @@ public:
 
 	// Queue API is per frame (not thread-safe). Submit in arbitrary order;
 	// increasing float Z draws in front, with stable order for equal Z.
+	// kMaxSprites mirrors the HLSL WORLD2D_MAX_SPRITES array bound
+	// (world2d.hlsli; DXC requires an explicit struct-member dimension —
+	// the draw itself is bounded by the recorded instanceCount). Submit
+	// fails loudly past it; 64k on-screen sprites is far past any leg.
+	static constexpr size_t kMaxSprites = 65536;
 	void BeginFrame() { m_sprites.clear(); }
-	void Submit(const Sprite2D& sprite) { m_sprites.push_back(sprite); }
+	void Submit(const Sprite2D& sprite) {
+		if (m_sprites.size() >= kMaxSprites) {
+			if (!m_overflowLogged) {
+				m_overflowLogged = true;
+				std::fprintf(stderr, "[World2D] sprite overflow: >%zu "
+					"(the shader table capacity); excess dropped\n", kMaxSprites);
+			}
+			return;
+		}
+		m_sprites.push_back(sprite);
+	}
 	void Reserve(size_t count) { m_sprites.reserve(count); }
 	void SetCamera(glm::vec2 topLeftWorld, float pixelsPerUnit = 1.0f) {
 		m_camera = topLeftWorld;
@@ -156,6 +172,7 @@ private:
 
 	SpriteAtlas2D m_atlas;
 	std::vector<Sprite2D> m_sprites;
+	bool m_overflowLogged = false;
 	std::vector<PageGpu> m_pages;
 	uint64_t m_uploadedRevision = UINT64_MAX;
 	smvk::Holder<smvk::ShaderModuleHandle> m_vs;

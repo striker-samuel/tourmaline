@@ -62,7 +62,7 @@ public:
 
 	[[nodiscard]] static UiLayoutItem2D Anchor(
 		UiLayoutItem2D parent, glm::vec2 size, UiAnchor2D anchor,
-		glm::vec2 offset = {0.0f});
+		glm::vec2 offset = glm::vec2(0.0f));
 
 private:
 	struct Frame {
