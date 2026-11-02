@@ -324,7 +324,7 @@ void TestAssetInspectorFallback() {
 	const auto text = ReadBrowserFilePreview(dir / "note.txt");
 	Check(text.readOk && text.isText && text.text == "hello\nworld",
 		"inspector.text");
-	Write((dir / "binary.dat").string(), std::string("a\\0b", 3));
+	Write((dir / "binary.dat").string(), std::string("a\0b", 3));
 	const auto binary = ReadBrowserFilePreview(dir / "binary.dat");
 	Check(binary.readOk && !binary.isText && binary.fileSize == 3,
 		"inspector.binary");
@@ -332,7 +332,7 @@ void TestAssetInspectorFallback() {
 	const auto capped = ReadBrowserFilePreview(dir / "large.txt", 3);
 	Check(capped.isText && capped.truncated && capped.text == "abc",
 		"inspector.bounded");
-	Write((dir / "unicode.txt").string(), "\\xE2\\x82\\xAC hello");
+	Write((dir / "unicode.txt").string(), "\xE2\x82\xAC hello");
 	const auto unicode = ReadBrowserFilePreview(dir / "unicode.txt", 2);
 	Check(unicode.isText && unicode.text.empty() && unicode.truncated,
 		"inspector.utf8-cutoff");
