@@ -442,9 +442,13 @@ bloom/tonemap/AA/UI → swapchain.
   `OpenProject` and the launcher's scaffold; `Project.exe init` on an
   existing project is the ONE explicit adopt-and-mint recovery path.
 - `project.h` (`cmake/TourmalineProject.cmake`) defaults to the
-  project SOURCE directory, is registered as an IDE-visible header on
-  its CMake target, and can be committed to Git. Never hand-edit it;
-  regenerate with `<Name>_ids`. The private sibling `project_plans.h`
+  project SOURCE directory, is registered under the CMake target's
+  `Generated Catalogs` group with GENERATED / HEADER_FILE_ONLY, and
+  can be committed to Git. Never hand-edit it: `<Name>_ids` runs on
+  every game build and overwrites modifications before compilation,
+  keeping mtime intact when no change is required. Do not set an OS
+  read-only attribute: it would obstruct Git checkout and generation.
+  The private sibling `project_plans.h`
   stays ignored; explicit `HEADER_DIR` can select build-only output.
   The header is a GENERATION-STAMPED,
   self-contained C++ catalog: `project::Generation` / `GeneratedAt` /
