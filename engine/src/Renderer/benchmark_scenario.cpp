@@ -10,6 +10,9 @@
 #include <fstream>
 #include <sstream>
 #include <system_error>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace engine::benchmark {
 namespace fs = std::filesystem;
