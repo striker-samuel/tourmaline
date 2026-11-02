@@ -5434,6 +5434,14 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ClearAssetBrowserSelection(
 				m_assetsSel, m_assetsSelSet, m_assetsAnchor);
 		};
+		// Creating/reimporting an internal artifact can select it from code.
+		// Drop that stale browser selection: the corresponding tile is hidden.
+		if (!m_assetsSel.empty()) {
+			std::error_code selEc;
+			if (std::filesystem::is_regular_file(m_assetsSel, selEc)
+				&& HideAssetBrowserFile(m_assetsSel))
+				clearAssetSelection();
+		}
 		const auto navigateAssetDirectory = [&](const std::string& path) {
 			m_assetsDir = path;
 			m_assetsExpandGltf.clear();
@@ -5572,12 +5580,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::SetTooltip("%s", m_assetsDir.c_str());
 
 		// ---- header row 2: collection filter and expanded views --------
-		const char* filters[9] = { "All items", "Meshes", "Materials",
-			"Animations", "GI bakes", "Cubemaps", "GI cooks",
-			"Lightmap cooks", "GI volumes" };
+		// Internal cubemap / GI-cook artifacts are not browsable collections.
+		const char* filters[7] = { "All items", "Meshes", "Materials",
+			"Animations", "GI bakes", "Lightmap cooks", "GI volumes" };
 		ImGui::SetNextItemWidth(std::min(180.0f,
 			std::max(1.0f, ImGui::GetContentRegionAvail().x)));
-		if (ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 9))
+		if (ImGui::Combo("##assetsfilter", &m_assetsFilter, filters, 7))
 			clearAssetSelection();
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Show files and folders, or browse assets by type.");
@@ -5614,8 +5622,6 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// The toolbar and grid context menu share the same creation
 		// actions; new assets are placed in the browsed directory.
 		const auto drawNewAssetMenu = [&]() {
-			if (ImGui::MenuItem("New Cubemap Asset (.cubemap)"))
-				CreateCubemapAsset(m_assetsDir);
 			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
 				CreateGivolumeAsset(m_assetsDir);
 			if (ImGui::MenuItem("New Texture (from image)...")) {
@@ -5794,6 +5800,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// its bake refs (the tour's editorSet bake.*.guid keys) through the
 		// assetdb — moves/renames heal through the rescan.
 		std::unordered_map<std::string, std::string> absByGuid;
+		std::unordered_map<std::string, std::string> kindByGuid;
 		std::vector<smvk::cache::AssetRecord> assetRows;
 		if (m_assetDb.IsOpen()) {
 			std::string derr;
@@ -5802,9 +5809,23 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					const std::string abs = m_assetDb.ResolvePath(r.path);
 					guidByAbs[abs] = r.guid;
 					absByGuid[r.guid] = abs;
+					kindByGuid[r.guid] = r.kind;
 				}
 			}
 		}
+		// A .tour with only hidden bake references remains a normal scene
+		// tile (not a folder containing just a back button + itself).
+		const auto visibleBakeRef = [&](const std::string& guid) {
+			const auto path = absByGuid.find(guid);
+			if (path == absByGuid.end())
+				return false;
+			const auto kind = kindByGuid.find(guid);
+			if (HideAssetBrowserFile(path->second,
+				kind == kindByGuid.end() ? "" : kind->second))
+				return false;
+			std::error_code ec;
+			return fs::is_regular_file(path->second, ec) && !ec;
+		};
 		// The tour's bake-asset references (RecordBakeAssetsFromCook writes
 		// them; SaveEnvToDoc persists them into the tour): the editorSet
 		// guids the .tour folder view resolves through the assetdb. Tolerant
@@ -5867,15 +5888,13 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// regardless — the duplicate-abs conflict fix).
 		{
 			struct VFolderDef { const char* label; int filter; IconType icon; };
-			static const VFolderDef kVFolders[8] = {
+			static const VFolderDef kVFolders[6] = {
 				{ "Meshes", 1, IconType::Model },
 				{ "Materials", 2, IconType::Texture },
 				{ "Animations", 3, IconType::Animation },
 				{ "GI bakes", 4, IconType::GI },
-				{ "Cubemaps", 5, IconType::Env },
-				{ "GI cooks", 6, IconType::GI },
-				{ "Lightmap cooks", 7, IconType::GI },
-				{ "GI volumes", 8, IconType::GI },
+				{ "Lightmap cooks", 5, IconType::GI },
+				{ "GI volumes", 6, IconType::GI },
 			};
 			if (m_assetsFilter != 0) {
 				// The active collection view's leave tile (".." -> All).
@@ -5931,9 +5950,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				if (kindFilter >= 0
 					&& int(e.kind) != kindFilter)
 					continue;
+				const fs::path assetPath = fs::path(base) / e.file;
+				if (HideAssetBrowserFile(assetPath))
+					continue;
 				Entry t{};
 				t.name = put(e.name.empty() ? e.file : e.name);
-				t.abs = put((fs::path(base) / e.file).generic_string());
+				t.abs = put(assetPath.generic_string());
 				t.icon = iconForAsset(e.kind);
 				t.dragMesh = (e.kind == smvk::assets::AssetKind::Geometry);
 				t.dragMaterial =
@@ -5980,8 +6002,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				}
 			}
 			else {
-				// Bake/cook-asset collections (GI bakes / cubemap captures /
-				// GI cooks / lightmap cooks): the assetdb rows adopted from
+				// Visible bake/cook collections (GI bakes / lightmap cooks /
+				// GI volumes): the assetdb rows adopted from
 				// the .meta sidecars (see Engine/Asset/bake_asset.h for the
 				// bake rows, Engine/Asset/cook_asset.h for the cook rows) —
 				// moves/renames heal through the rescan, so these stay
@@ -5989,16 +6011,13 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				// whose file is gone are skipped (the db keeps them as
 				// retargets).
 				const char* want = (m_assetsFilter == 4) ? "gi"
-					: (m_assetsFilter == 5) ? "cubemap"
-					: (m_assetsFilter == 6) ? "gicook"
-					: (m_assetsFilter == 7) ? "lmcook" : "givolume";
+					: (m_assetsFilter == 5) ? "lmcook" : "givolume";
 				for (const auto& r : assetRows) {
-					// The cubemap collection also lists legacy loose rows
-					// (kind "cubemap" covers typed .cubemap assets AND the
-					// migrated textures/cubemaps manifests).
 					if (r.kind != want)
 						continue;
 					const std::string abs = m_assetDb.ResolvePath(r.path);
+					if (HideAssetBrowserFile(abs, r.kind))
+						continue;
 					std::error_code fec;
 					if (abs.empty()
 						|| !fs::is_regular_file(abs, fec) || fec)
@@ -6006,8 +6025,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					Entry t{};
 					t.name = put(fs::path(abs).filename().generic_string());
 					t.abs = put(abs);
-					t.icon = (m_assetsFilter == 5)
-						? IconType::Env : IconType::GI;
+					t.icon = IconType::GI;
 					files.push_back(std::move(t));
 				}
 			}
@@ -6047,9 +6065,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			std::vector<std::string> bakeRefs;
 			tourBakeRefs(expandTour, bakeRefs);
 			for (const std::string& guid : bakeRefs) {
+				if (!visibleBakeRef(guid))
+					continue; // hidden or unavailable bake artifact
 				const auto git = absByGuid.find(guid);
-				if (git == absByGuid.end())
-					continue; // not adopted (yet): the ref stays unlisted
 				std::error_code fec;
 				if (!fs::is_regular_file(git->second, fec) || fec)
 					continue;
@@ -6092,8 +6110,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					std::string e = p.extension().string();
 					for (char& c : e)
 						c = char(std::tolower((unsigned char)c));
-					if (e == ".meta")
-						continue; // the asset's own identity sidecar
+					if (e == ".meta" || HideAssetBrowserFile(p))
+						continue; // sidecar or internal bake artifact
 					if (smvk::assets::IsMeshSourceExtension(e)) {
 						// With a manifest the source presents as a FOLDER
 						// of its derived assets; without one it opens as
@@ -6113,7 +6131,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						// file (the legacy behavior).
 						std::vector<std::string> refs;
 						tourBakeRefs(p.generic_string(), refs);
-						isTour = !refs.empty();
+						isTour = std::any_of(refs.begin(), refs.end(), visibleBakeRef);
 						if (isTour)
 							icon = IconType::Folder;
 					}

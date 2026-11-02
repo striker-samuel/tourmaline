@@ -2094,8 +2094,9 @@ private:
 	std::vector<std::string> m_assetsSelSet;
 	std::string m_assetsAnchor; // the shift-range anchor
 	// Collection filter (0 = all/files, 1 = meshes, 2 = materials,
-	// 3 = animations, 4 = GI bakes, 5 = cubemaps, 6 = GI cooks,
-	// 7 = lightmap cooks): non-zero lists every asset of that kind
+	// 3 = animations, 4 = GI bakes, 5 = lightmap cooks, 6 = GI volumes).
+	// Cubemap and GI-cook artifacts are intentionally hidden; non-zero
+	// filters list every visible asset of that kind
 	// across the project's content tree (the glTF manifests for
 	// meshes/materials/animations; the assetdb bake/cook rows
 	// for the rest), not the directory listing.
