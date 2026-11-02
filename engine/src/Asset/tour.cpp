@@ -4332,6 +4332,15 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			target = createdGiVolumes[k];
 		}
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase) {
+			const uint32_t k = c.node & ~kCreateTransformRefBase;
+			if (k >= createdTransforms.size()) {
+				if (err) *err = "tour: room attr transform ref out of range";
+				if (!failCmd(c)) return false;
+				break;
+			}
+			target = createdTransforms[k];
+		}
 		else if (!resolveNode(c.node, c, target)) {
 			if (!failCmd(c))
 				return false;
