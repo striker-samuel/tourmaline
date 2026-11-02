@@ -72,3 +72,10 @@ target_link_libraries(App
 )
 
 tourmaline_host_setup(App)
+
+# Dedicated profiling target: the same cooked-pak host, but no game
+# sample/audio element. It requires a bounded --bench invocation so agents
+# never accidentally launch an unbounded GUI workload.
+add_executable(Benchmark src/benchmark_main.cpp)
+target_link_libraries(Benchmark PRIVATE tourmaline_apphost)
+tourmaline_host_setup(Benchmark)
