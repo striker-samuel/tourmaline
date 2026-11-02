@@ -88,9 +88,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         float3 faceN = normalize(IN.normal);
         if (!IN.isFrontFace)
             faceN = -faceN;
-        // PCF depth atlas uses SampleLevel(samplers[]) + manual compare:
-        // regular sampler 0, never the comparison sampler 1.
-        float shadow = GetShadowFactorCascadedFromPC(0, IN.worldPos, faceN, light);
+        // PCF depth atlas: hardware SampleCmpLevelZero — the COMPARISON
+        // sampler (pc.comparisonSamplerId, slot 1), never the regular one.
+        float shadow = GetShadowFactorCascadedFromPC(pc.comparisonSamplerId, IN.worldPos, faceN, light);
 
         color = CascadeDebugColor(cascade) * (0.3f + 0.7f * shadow);
     }

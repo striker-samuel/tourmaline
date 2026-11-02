@@ -366,7 +366,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
                 (uint)light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
         else
-            shadow = GetShadowFactorCascadedFromPC(0, IN.worldPos, geomN, light);
+            shadow = GetShadowFactorCascadedFromPC(pc.comparisonSamplerId, IN.worldPos, geomN, light);
     }
     shadow *= pomShadow;
 

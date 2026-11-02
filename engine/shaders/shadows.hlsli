@@ -127,8 +127,26 @@ float PCFShadow(
     return sum / samples;
 }
 
+// 3x3 PCF over one atlas tile (uv is WHOLE-ATLAS UV). Two contracts:
+//  - texelSize is ONE PHYSICAL ATLAS TEXEL in atlas-UV units: callers pass
+//    the tile's invShadowSize (TILE-LOCAL, 1/tileExtent — every CPU tile
+//    builder writes that form) * uvScale (tileExtent/atlasExtent). The old
+//    unscaled tile-UV texel spaced this kernel 1/uvScale.x times too far
+//    apart: a 2x2 CSM atlas sampled at 2-texel steps, the many-tile
+//    local-light atlas worse. (Same idiom the PCSS/EVSM disk taps already
+//    use: radius in tile-UV, offset scaled by uvScale.)
+//  - comparisonSamplerId addresses comparisonSamplers[] — the LINEAR
+//    LessEqual comparison sampler the RHI allocates at the FIXED slot 1
+//    (impl.cpp asserts idx1 == 1; the scene pc carries it as
+//    pc.comparisonSamplerId). SampleCmpLevelZero interpolates COMPARISON
+//    RESULTS (hardware PCF), never depth values: the old
+//    SampleLevel(samplers[]) + post-compare bilinear-blended DEPTHS, so a
+//    tap halfway across an occluder edge read a depth between occluder
+//    and receiver and biased the penumbra. Each of the 9 taps is itself a
+//    2x2 hardware compare, so the effective footprint is the 3x3 grid
+//    plus one bilinear ring of taps.
 float PCFShadowAtlas(
-    uint samplerId,
+    uint comparisonSamplerId,
     float2 uv,
     float currentDepth,
     uint shadowIdx,
@@ -149,13 +167,18 @@ float PCFShadowAtlas(
                 uvClampMin,
                 uvClampMax);
 
-            float d = textures[shadowIdx]
-                .SampleLevel(samplers[samplerId], sampleUV, 0).r;
-
-            sum += currentDepth <= d;
+            // Visibility tap (1 = currentDepth <= stored depth, the
+            // sampler's LessEqual op): accumulate the comparison result
+            // directly — the SAME contract PCFShadow above documents (the
+            // re-compare-the-result trap).
+            sum += textures[shadowIdx]
+                .SampleCmpLevelZero(
+                    comparisonSamplers[comparisonSamplerId],
+                    sampleUV,
+                    currentDepth
+                );
         }
     }
-    
 
     return sum * (1.0f / 9.0f);
 }
@@ -199,7 +222,7 @@ float SampleCascadeTile(
     float3 worldPos,
     float3 faceNormal,
     float3 lightDirection,
-    uint samplerId,
+    uint comparisonSamplerId, // comparisonSamplers[] slot (hardware PCF)
     uint idx,
     out bool valid
 )
@@ -256,11 +279,17 @@ float SampleCascadeTile(
 
     valid = true;
     return PCFShadowAtlas(
-    samplerId,
+    comparisonSamplerId,
     uvAtlas,
     receiverDepth,
     idx,
-    cb.Get().dir.cascades[cascadeIndex].invShadowSize,
+    // ONE PHYSICAL ATLAS TEXEL: invShadowSize is tile-local (1/tileExtent,
+    // BuildDirectionalLight) while PCFShadowAtlas walks WHOLE-ATLAS UV,
+    // so the tile texel must be scaled by uvScale (tileExtent/atlasExtent)
+    // — the unscaled form stepped the kernel 1/uvScale.x atlas texels per
+    // tap (2x too far in the 2x2 CSM atlas).
+    cb.Get().dir.cascades[cascadeIndex].invShadowSize *
+    cb.Get().dir.cascades[cascadeIndex].uvScale,
     cb.Get().dir.cascades[cascadeIndex].uvClampMin,
     cb.Get().dir.cascades[cascadeIndex].uvClampMax);
 }
@@ -281,7 +310,7 @@ float SampleCascadeTile(
 //     SampleCascadeTile) read only the fields they need as narrow
 //     physical-storage loads and no aggregate is ever materialized.
 float GetShadowFactorCascaded(
-    uint samplerId,
+    uint comparisonSamplerId, // comparisonSamplers[] slot (hardware PCF)
     float3 worldPos,
     float3 faceNormal,
     float3 lightDirection,
@@ -335,7 +364,7 @@ float GetShadowFactorCascaded(
             worldPos,
             faceNormal,
             lightDirection,
-            samplerId,
+            comparisonSamplerId,
             idx,
             valid);
         if (valid)
@@ -372,7 +401,7 @@ float GetShadowFactorCascaded(
                 worldPos,
                 faceNormal,
                 lightDirection,
-                samplerId,
+                comparisonSamplerId,
                 idx,
                 nextValid);
             if (nextValid)
@@ -437,12 +466,14 @@ float GetShadowFactorCascaded(
 // Legacy wrapper that pulls cascade buffer from push constants – main frag will call this.
 // Guarded: deferred-shadow compute passes include this header with their
 // own push layout (no scene-wide `pc`; see common.hlsli ENGINE_HAS_PC).
-// NOTE: samplerId must be a REGULAR sampler (0): the atlas path does a
-// manual SampleLevel(samplers[]) + compare. The comparison sampler (1) is
-// only for hardware SampleCmp paths (PCFShadow/GetShadowFactorODB).
+// NOTE: comparisonSamplerId must address comparisonSamplers[] — the PCF
+// atlas path samples with hardware SampleCmpLevelZero (visibility
+// interpolation), so pass the COMPARISON sampler (pc.comparisonSamplerId,
+// slot 1). The regular sampler (0) stays for the moment/EVSM paths that
+// bilinear-filter VALUES (moments, raw PCSS blocker depths).
 #ifdef ENGINE_HAS_PC
 float GetShadowFactorCascadedFromPC(
-    uint samplerId,
+    uint comparisonSamplerId,
     float3 worldPos,
     float3 faceNormal,
     Light light
@@ -453,7 +484,7 @@ float GetShadowFactorCascadedFromPC(
     // the old full 1.3 KB materialization) and pass the cascade buffer
     // POINTER + pc scalars — never the 624-byte dir aggregate.
     return GetShadowFactorCascaded(
-        samplerId,
+        comparisonSamplerId,
         worldPos,
         faceNormal,
         light.direction,
@@ -481,7 +512,7 @@ float GetShadowFactorCascadedFromPC(
 // tileIndex comes from ForwardPlusLight.shadowTile. Returns 1 (lit) when the
 // receiver is outside the spot frustum – so out-of-range pixels are unaffected.
 float GetSpotShadowFactorTile(
-    uint samplerId,
+    uint comparisonSamplerId, // comparisonSamplers[] slot (hardware PCF)
     float3 worldPos,
     float3 faceNormal,
     float3 spotDirection,
@@ -507,11 +538,14 @@ float GetSpotShadowFactorTile(
     float receiverDepth = ndc.z + GetOrientedBias(faceNormal, spotDirection, t.bias, false);
     // parked SSS variant: ndc.z + GetOrientedBias(faceNormal, spotDirection, t.bias, true);
     return PCFShadowAtlas(
-        samplerId,
+        comparisonSamplerId,
         uvAtlas,
         receiverDepth,
         atlasIdx,
-        t.invShadowSize,
+        // ONE PHYSICAL ATLAS TEXEL — tile-local invShadowSize * uvScale
+        // (same fix as SampleCascadeTile: the spot atlas packs many tiles,
+        // so the unscaled tile texel stepped the kernel widest here).
+        t.invShadowSize * t.uvScale,
         t.uvClampMin,
         t.uvClampMax
     );
@@ -621,7 +655,7 @@ float PcssSpotShadow(
 // directly through their own push layout).
 #ifdef ENGINE_HAS_PC
 float GetSpotShadowFactorFromPC(
-    uint samplerId,
+    uint comparisonSamplerId, // comparisonSamplers[] slot (hardware PCF)
     float3 worldPos,
     float3 faceNormal,
     float3 spotDirection,
@@ -640,7 +674,7 @@ float GetSpotShadowFactorFromPC(
         return 1.0f;
     uint atlasIdx = NonUniformResourceIndex(pc.spotShadowMapIndex);
     GpuCascadeDescription t = pc.spotShadowBuffer.Get().tiles[tileIndex];
-    return GetSpotShadowFactorTile(samplerId, worldPos, faceNormal, spotDirection, t, atlasIdx);
+    return GetSpotShadowFactorTile(comparisonSamplerId, worldPos, faceNormal, spotDirection, t, atlasIdx);
 }
 
 #endif // ENGINE_HAS_PC
@@ -662,7 +696,7 @@ float GetSpotShadowFactorFromPC(
 // lightTravelDir is normalize(receiver - lightPosition): the point-light
 // stand-in for the spot axis in GetOrientedBias (the travel direction).
 float GetPointShadowFactorTile(
-    uint samplerId,
+    uint comparisonSamplerId, // comparisonSamplers[] slot (hardware PCF)
     float3 worldPos,
     float3 faceNormal,
     float3 lightPosition,
@@ -724,13 +758,16 @@ float GetPointShadowFactorTile(
     // stands in for the spot axis.
     const float receiverDepth = ndc.z + GetOrientedBias(faceNormal, travel, t.bias, false);
     return PCFShadowAtlas(
-        samplerId, uvAtlas, receiverDepth, atlasIdx,
-        t.invShadowSize, t.uvClampMin, t.uvClampMax);
+        comparisonSamplerId, uvAtlas, receiverDepth, atlasIdx,
+        // ONE PHYSICAL ATLAS TEXEL — tile-local invShadowSize * uvScale
+        // (same fix as SampleCascadeTile; the point faces share the spot
+        // atlas's many-tile packing).
+        t.invShadowSize * t.uvScale, t.uvClampMin, t.uvClampMax);
 }
 
 #ifdef ENGINE_HAS_PC
 float GetPointShadowFactorFromPC(
-    uint samplerId,
+    uint comparisonSamplerId, // comparisonSamplers[] slot (hardware PCF)
     float3 worldPos,
     float3 faceNormal,
     float3 lightPosition,
@@ -749,7 +786,7 @@ float GetPointShadowFactorFromPC(
     // moments when the point path runs GetPointShadowFactorEvsmFromPC
     // (the caller picks the sampler by mode, exactly like the spots).
     return GetPointShadowFactorTile(
-        samplerId, worldPos, faceNormal, lightPosition,
+        comparisonSamplerId, worldPos, faceNormal, lightPosition,
         pc.spotShadowBuffer, (uint) tileBase, pc.spotShadowCount,
         NonUniformResourceIndex((uint) shadowMapIndex));
 }

@@ -65,7 +65,9 @@ float4 mainPS(VSOut IN) : SV_Target0
                     frame.view, pcT.cascadeBuffer,
                     (uint)light.shadow_map_index, EVSM_EXPONENT, IN.pos.xy);
             else
-                shadow = GetShadowFactorCascaded(0, IN.worldPos, N, -L,
+                // PCF: the COMPARISON sampler (pcT.comparisonSamplerId);
+                // EVSM above keeps the regular linear sampler (moments).
+                shadow = GetShadowFactorCascaded(pcT.comparisonSamplerId, IN.worldPos, N, -L,
                     light.shadow_map_index, pcT.numCascades,
                     frame.view, pcT.cascadeBuffer);
         }

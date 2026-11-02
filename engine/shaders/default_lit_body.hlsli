@@ -287,9 +287,10 @@ plColor *= EvaluateLightFunction(
                 pl.direction, pl.outerAngle, pl.shadowTile,
                 (uint) pl.shadowMapIndex, EVSM_EXPONENT, pix);
         else
-            // PCF depth atlas: manual SampleLevel(samplers[]) compare, so a
-            // regular sampler (0) — never the comparison sampler (1).
-            shadowFactor = GetSpotShadowFactorFromPC(0, worldPos, geomN,
+            // PCF depth atlas: hardware SampleCmpLevelZero (visibility
+            // interpolation) — the COMPARISON sampler (pc.comparison-
+            // SamplerId, slot 1), never the regular sampler.
+            shadowFactor = GetSpotShadowFactorFromPC(pc.comparisonSamplerId, worldPos, geomN,
                 pl.direction, pl.shadowTile);
     }
     else if (useInlineShadow && pl.type == 0 && pl.shadowTile >= 0)
@@ -299,14 +300,15 @@ plColor *= EvaluateLightFunction(
         // addresses the blurred moments and the same face selection
         // drives the spot-shaped moment sampler (GetPointShadowFactor
         // EvsmFromPC) - PCF depth atlas stays the exact fallback.
-        // Regular sampler 0 like every other manual-compare path.
+        // PCF: the COMPARISON sampler (pc.comparisonSamplerId); EVSM keeps
+        // the regular linear sampler (moments are VALUES to filter).
         uint evsm2 = pc.frameUniforms.Get().evsmMode;
         if (evsm2 != 0u && pl.shadowMapIndex >= 0)
             shadowFactor = GetPointShadowFactorEvsmFromPC(0, worldPos, geomN,
                 pl.position, pl.shadowTile, pl.shadowMapIndex,
                 EVSM_EXPONENT, pix);
         else
-            shadowFactor = GetPointShadowFactorFromPC(0, worldPos, geomN,
+            shadowFactor = GetPointShadowFactorFromPC(pc.comparisonSamplerId, worldPos, geomN,
                 pl.position, pl.shadowTile, pl.shadowMapIndex);
     }
     if (shadowFactor <= 0.0f)
@@ -1064,9 +1066,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
                     (uint) light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
             else
-                // PCF depth atlas: manual SampleLevel(samplers[]) compare, so
-                // a regular sampler (0) — never the comparison sampler (1).
-                shadow = GetShadowFactorCascadedFromPC(0, IN.worldPos, geomN, light);
+                // PCF depth atlas: hardware SampleCmpLevelZero (visibility
+                // interpolation) — the COMPARISON sampler
+                // (pc.comparisonSamplerId), never the regular sampler.
+                shadow = GetShadowFactorCascadedFromPC(pc.comparisonSamplerId, IN.worldPos, geomN, light);
         }
         // PARKED: legacy single-map path kept in shadows.hlsli but disabled.
         // else

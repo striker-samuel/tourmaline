@@ -126,7 +126,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             csm = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, faceN,
                 light, (uint) light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
         else
-            csm = GetShadowFactorCascadedFromPC(0, IN.worldPos, faceN, light);
+            csm = GetShadowFactorCascadedFromPC(pc.comparisonSamplerId, IN.worldPos, faceN, light);
     }
 
     float3 L = normalize(-light.direction);

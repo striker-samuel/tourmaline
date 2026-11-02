@@ -75,7 +75,11 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
                 (uint)L.shadowTile, pcDS.spotShadowCount,
                 NonUniformResourceIndex((uint)L.shadowMapIndex),
                 EVSM_EXPONENT, pix);
-        return GetPointShadowFactorTile(0u, worldPos, faceNormal,
+        // PCF: the comparison sampler — DsPhasePush carries no sampler-id
+        // field, so the RHI's FIXED slot 1 (the LessEqual linear
+        // comparison sampler impl.cpp allocates and asserts at index 1,
+        // same hardcoding discipline as samplers[2] clamp).
+        return GetPointShadowFactorTile(1u, worldPos, faceNormal,
             L.position, pcDS.spotShadowBuffer,
             (uint)L.shadowTile, pcDS.spotShadowCount,
             NonUniformResourceIndex((uint)L.shadowMapIndex));
@@ -95,8 +99,10 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
     if (evsm != 0u)
         return GetSpotShadowFactorEvsmTile(0u, worldPos, faceNormal,
             L.direction, L.outerAngle, t, atlasIdx, EVSM_EXPONENT, pix);
-    // PCF depth atlas: manual SampleLevel(samplers[]) compare, so a regular
-    // sampler (0) — never the comparison sampler (1).
+    // PCF depth atlas is handled inside GetPointShadowFactorTile above
+    // (comparison sampler). The PCSS spot path below needs RAW depths for
+    // its blocker search, so it keeps the REGULAR sampler (0) — its
+    // SampleLevel fetches read depth values, not comparisons.
     return PcssSpotShadow(0u, worldPos, faceNormal, L.direction, t, atlasIdx,
         pcDS.pcssLightSize, pcDS.spotShadowNear, L.outerAngle);
 }
