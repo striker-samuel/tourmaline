@@ -257,12 +257,13 @@ def main(argv=None):
         pins[key] = val
     env.update(pins)
     if args.scratch_dir is not None:
-        try:
-            args.scratch_dir.mkdir(parents=True, exist_ok=True)
-            if not args.scratch_dir.is_dir():
-                raise OSError("scratch path is not a directory")
-        except OSError as exc:
-            parser.error(f"invalid scratch directory {args.scratch_dir}: {exc}")
+        if not args.dry_run:
+            try:
+                args.scratch_dir.mkdir(parents=True, exist_ok=True)
+                if not args.scratch_dir.is_dir():
+                    raise OSError("scratch path is not a directory")
+            except OSError as exc:
+                parser.error(f"invalid scratch directory {args.scratch_dir}: {exc}")
         # Nsight GPU Trace does not document a dedicated scratch-dir flag.
         # Let child/descendant processes resolve OS temp files onto this disk.
         # Internal NVIDIA caches may still use their own fixed locations.
