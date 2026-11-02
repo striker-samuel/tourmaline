@@ -350,6 +350,11 @@ public:
                 std::vector<LevelSource> levels;
                 levels.reserve(chain.size());
                 bool complete = true;
+                // Animated vertex positions can leave the static cooked
+                // mesh bounds: until skinning publishes dynamic bounds,
+                // never reject the whole leaf using the bind-pose sphere.
+                if (const StaticMesh* base = world.GetMesh(worldIndex))
+                    complete = !base->skinned;
                 for (uint32_t i = 0; i < chain.size(); ++i) {
                     const auto& l = chain[i];
                     complete &= l.boundsKnown;
