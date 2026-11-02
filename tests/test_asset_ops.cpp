@@ -21,6 +21,7 @@
 
 #include "editor_asset_ops.h"
 #include "editor_asset_browser_nav.h"
+#include "editor_asset_inspect.h"
 #include "editor_watch_routes.h"
 
 namespace {
@@ -293,6 +294,53 @@ void TestVirtualFolderLocation() {
             root, root, false, true), "browser.virtual.tour-expanded-hidden");
 }
 
+
+void TestAssetInspectorFallback() {
+	using editor::BrowserInspectorKind;
+	using editor::ClassifyBrowserInspector;
+	using editor::ReadBrowserFilePreview;
+	Check(ClassifyBrowserInspector("foo.GICOOK") == BrowserInspectorKind::GiCook,
+		"inspector.gicook");
+	Check(ClassifyBrowserInspector("foo.LMCOOK") == BrowserInspectorKind::LmCook,
+		"inspector.lmcook");
+	Check(ClassifyBrowserInspector("foo.CUBEMAP") == BrowserInspectorKind::Cubemap,
+		"inspector.cubemap");
+	Check(ClassifyBrowserInspector("foo.GIVOLUME") == BrowserInspectorKind::Givolume,
+		"inspector.givolume");
+	Check(ClassifyBrowserInspector("old.MESH") == BrowserInspectorKind::Geometry,
+		"inspector.legacy-mesh");
+	Check(ClassifyBrowserInspector("notes.TXT") == BrowserInspectorKind::Generic,
+		"inspector.generic-text");
+	Check(ClassifyBrowserInspector("photo.PNG") == BrowserInspectorKind::TextureSource,
+		"inspector.image-source");
+
+	namespace fs = std::filesystem;
+	const fs::path dir = fs::temp_directory_path() / "tourmaline_inspector";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	Check(ReadBrowserFilePreview(dir).isDirectory, "inspector.directory");
+	Write((dir / "note.txt").string(), "hello\nworld");
+	const auto text = ReadBrowserFilePreview(dir / "note.txt");
+	Check(text.readOk && text.isText && text.text == "hello\nworld",
+		"inspector.text");
+	Write((dir / "binary.dat").string(), std::string("a\\0b", 3));
+	const auto binary = ReadBrowserFilePreview(dir / "binary.dat");
+	Check(binary.readOk && !binary.isText && binary.fileSize == 3,
+		"inspector.binary");
+	Write((dir / "large.txt").string(), "abcde");
+	const auto capped = ReadBrowserFilePreview(dir / "large.txt", 3);
+	Check(capped.isText && capped.truncated && capped.text == "abc",
+		"inspector.bounded");
+	Write((dir / "unicode.txt").string(), "\\xE2\\x82\\xAC hello");
+	const auto unicode = ReadBrowserFilePreview(dir / "unicode.txt", 2);
+	Check(unicode.isText && unicode.text.empty() && unicode.truncated,
+		"inspector.utf8-cutoff");
+	Check(!ReadBrowserFilePreview(dir / "not-here.txt").readOk,
+		"inspector.missing");
+	fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main() {
@@ -304,6 +352,7 @@ int main() {
 	TestWatchRoutes();
 	TestVirtualFolderLocation();
 	TestAssetBrowserSelectionClears();
+	TestAssetInspectorFallback();
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
