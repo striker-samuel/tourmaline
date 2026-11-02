@@ -319,6 +319,37 @@ endif()
 message(STATUS "Deferred-shadow visualizers: ${DS_VIZ_ON}"
   " (TOURMALINE_DS_VIZ='${TOURMALINE_DS_VIZ}', build type '${CMAKE_BUILD_TYPE}')")
 
+# --- Explicit build profiles -------------------------------------------------
+# Distinct build directories are mandatory; never package diagnostics output.
+set(TOURMALINE_BUILD_PROFILE "custom" CACHE STRING
+    "Profile: custom, shipping, dev, diagnostics")
+set_property(CACHE TOURMALINE_BUILD_PROFILE PROPERTY STRINGS custom shipping dev diagnostics)
+if(NOT TOURMALINE_BUILD_PROFILE MATCHES "^(custom|shipping|dev|diagnostics)$")
+  message(FATAL_ERROR "Unknown TOURMALINE_BUILD_PROFILE: ${TOURMALINE_BUILD_PROFILE}")
+endif()
+option(TOURMALINE_NSIGHT_MARKERS "Vulkan render-graph pass labels" OFF)
+if(NOT TOURMALINE_BUILD_PROFILE STREQUAL "custom")
+  if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(FATAL_ERROR "Profile requires -DCMAKE_BUILD_TYPE=Release (use a separate build directory)")
+  endif()
+  if(TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
+    set(ENABLE_OPTICK OFF CACHE BOOL "" FORCE)
+    set(TOURMALINE_SHADER_DEBUG OFF CACHE BOOL "" FORCE)
+    set(TOURMALINE_NATIVE_SYMBOLS OFF CACHE BOOL "" FORCE)
+    set(TOURMALINE_NSIGHT_MARKERS OFF CACHE BOOL "" FORCE)
+    set(TOURMALINE_DS_VIZ OFF CACHE STRING "" FORCE)
+  elseif(TOURMALINE_BUILD_PROFILE STREQUAL "dev")
+    set(ENABLE_OPTICK OFF CACHE BOOL "" FORCE)
+    set(TOURMALINE_SHADER_DEBUG OFF CACHE BOOL "" FORCE)
+    set(TOURMALINE_NSIGHT_MARKERS ON CACHE BOOL "" FORCE)
+  else()
+    set(ENABLE_OPTICK ON CACHE BOOL "" FORCE)
+    set(TOURMALINE_SHADER_DEBUG ON CACHE BOOL "" FORCE)
+    set(TOURMALINE_NSIGHT_MARKERS ON CACHE BOOL "" FORCE)
+  endif()
+endif()
+message(STATUS "Tourmaline profile: ${TOURMALINE_BUILD_PROFILE}; Nsight labels: ${TOURMALINE_NSIGHT_MARKERS}")
+
 # --- Shader debug information (-Zi) ---------------------------------------------
 # Release tree whose shaders carry SPIR-V debug info (names/lines/source
 # paths via NonSemantic.Shader.DebugInfo.100 — RenderDoc & friends) instead
