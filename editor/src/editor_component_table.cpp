@@ -56,6 +56,40 @@ constexpr Column kSource[] = {
 	{"Max distance", "maxDistance", ColumnKind::Float, 0.001f, 10000},
 };
 
+constexpr Column kLight[] = {
+	{"Intensity", "intensity", ColumnKind::Float, 0, 100000},
+	{"Range", "range", ColumnKind::Float, 0, 100000},
+	{"Inner cone", "inner", ColumnKind::Float, 0, 89},
+	{"Outer cone", "outer", ColumnKind::Float, 0, 89},
+	{"Static", "static", ColumnKind::Bool, 0, 1},
+	{"Cast shadow", "shadow", ColumnKind::Bool, 0, 1},
+	{"Function", "function", ColumnKind::UInt, 0, 3},
+	{"Speed", "functionSpeed", ColumnKind::Float, 0.01f, 100},
+	{"Depth", "functionScale", ColumnKind::Float, 0, 1},
+};
+constexpr Column kCamera[] = {
+	{"Projection", "projection", ColumnKind::UInt, 0, 1},
+	{"FOV Y", "fovY", ColumnKind::Float, 1, 179},
+	{"Ortho height", "orthoHalfH", ColumnKind::Float, 0.01f, 10000},
+	{"Near clip", "near", ColumnKind::Float, 0.001f, 10000},
+	{"Far clip", "far", ColumnKind::Float, 0.01f, 100000},
+};
+constexpr Column kCubemap[] = {
+	{"Radius", "radius", ColumnKind::Float, 0.01f, 10000},
+};
+constexpr Column kTransform[] = {
+	{"Name", "name", ColumnKind::String, 0, 0},
+	{"TX", "tx", ColumnKind::Float, -100000, 100000},
+	{"TY", "ty", ColumnKind::Float, -100000, 100000},
+	{"TZ", "tz", ColumnKind::Float, -100000, 100000},
+	{"RX", "rx", ColumnKind::Float, -36000, 36000},
+	{"RY", "ry", ColumnKind::Float, -36000, 36000},
+	{"RZ", "rz", ColumnKind::Float, -36000, 36000},
+	{"SX", "sx", ColumnKind::Float, 0.001f, 10000},
+	{"SY", "sy", ColumnKind::Float, 0.001f, 10000},
+	{"SZ", "sz", ColumnKind::Float, 0.001f, 10000},
+};
+
 std::string Lower(std::string value) {
 	for (char& c : value)
 		c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -79,7 +113,7 @@ void EditorApp::DrawComponentTable() {
 	// just like choosing point/primitive/detail attributes in Houdini.
 	static int kind = 0;
 	ImGui::SetNextItemWidth(170);
-	ImGui::Combo("Component", &kind, "GI Volume\0Audio Room\0Audio Source\0Trigger Volume\0");
+	ImGui::Combo("Component", &kind, "GI Volume\0Audio Room\0Audio Source\0Trigger Volume\0Light\0Camera\0Cubemap\0Transform\0");
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(220);
 	ImGui::InputTextWithHint("##component_filter", "Filter node name or ID",
@@ -91,14 +125,25 @@ void EditorApp::DrawComponentTable() {
 	ImGui::TextDisabled("Enter: commit cell  |  Ctrl+Z: undo");
 
 	const Column* columns = kind == 0 ? kGi : kind == 1 ? kRoom
-		: kind == 2 ? kSource : kTrigger;
+		: kind == 2 ? kSource : kind == 3 ? kTrigger
+		: kind == 4 ? kLight : kind == 5 ? kCamera
+		: kind == 6 ? kCubemap : kTransform;
 	const size_t count = kind == 0 ? sizeof(kGi) / sizeof(kGi[0])
 		: kind == 1 ? sizeof(kRoom) / sizeof(kRoom[0])
 		: kind == 2 ? sizeof(kSource) / sizeof(kSource[0])
-		: sizeof(kTrigger) / sizeof(kTrigger[0]);
+		: kind == 3 ? sizeof(kTrigger) / sizeof(kTrigger[0])
+		: kind == 4 ? sizeof(kLight) / sizeof(kLight[0])
+		: kind == 5 ? sizeof(kCamera) / sizeof(kCamera[0])
+		: kind == 6 ? sizeof(kCubemap) / sizeof(kCubemap[0])
+		: sizeof(kTransform) / sizeof(kTransform[0]);
 	const EditVerb verb = kind == 0 ? EditVerb::SetGiVolumeAttr
 		: kind == 1 ? EditVerb::SetAudioRoomAttr
-		: kind == 2 ? EditVerb::SetAudioAttr : EditVerb::SetTriggerVolumeAttr;
+		: kind == 2 ? EditVerb::SetAudioAttr
+		: kind == 3 ? EditVerb::SetTriggerVolumeAttr
+		: kind == 4 ? EditVerb::SetLightAttr
+		: kind == 5 ? EditVerb::SetCamAttr
+		: kind == 6 ? EditVerb::SetCubemapAttr
+		: EditVerb::Translate;
 
 	auto read = [&](uint32_t node, const char* attr, glm::vec4& vec,
 			double& num, bool& flag, std::string& name) {
@@ -106,7 +151,25 @@ void EditorApp::DrawComponentTable() {
 		case 0: return ReadNodeGiVolumeAttr(node, attr, vec, num, name);
 		case 1: return ReadNodeAudioRoomAttr(node, attr, vec, num, flag, name);
 		case 2: return ReadNodeAudioSourceAttr(node, attr, vec, num, flag, name);
-		default: return ReadNodeTriggerVolumeAttr(node, attr, num, flag, name);
+		case 3: return ReadNodeTriggerVolumeAttr(node, attr, num, flag, name);
+		case 4: return ReadNodeLightAttr(node, attr, vec, num, flag, name);
+		case 5: return ReadNodeCameraAttr(node, attr, vec, num, name);
+		case 6: return ReadNodeCubemapAttr(node, attr, vec, num, name);
+		default: {
+			if (std::string(attr) == "name") {
+				name = getNodeName(scene, int(node));
+				return true;
+			}
+			glm::vec3 t, rot, scale;
+			ReadLocalTRS(node, t, rot, scale);
+			const char group = attr[0];
+			const int axis = attr[1] == 'x' ? 0 : attr[1] == 'y' ? 1 : 2;
+			if (group == 't') num = t[axis];
+			else if (group == 'r') num = rot[axis];
+			else if (group == 's') num = scale[axis];
+			else return false;
+			return true;
+		}
 		}
 	};
 	auto hasComponent = [&](uint32_t node) {
@@ -114,7 +177,11 @@ void EditorApp::DrawComponentTable() {
 		case 0: return FindGiVolume(scene, node) != nullptr;
 		case 1: return tour::scene::FindAudioRoom(scene, node) != nullptr;
 		case 2: return FindAudioSource(scene, node) != nullptr;
-		default: return tour::scene::FindTriggerVolume(scene, node) != nullptr;
+		case 3: return tour::scene::FindTriggerVolume(scene, node) != nullptr;
+		case 4: return FindLight(scene, node) != nullptr;
+		case 5: return FindCamera(scene, node) != nullptr;
+		case 6: return FindCubemap(scene, node) != nullptr;
+		default: return IsNodeAlive(scene, node);
 		}
 	};
 	std::vector<uint32_t> nodes;
@@ -249,7 +316,28 @@ void EditorApp::DrawComponentTable() {
 					case 0: cmd.giVolumeAttr = col.attr; break;
 					case 1: cmd.roomAttr = col.attr; break;
 					case 2: cmd.audioAttr = col.attr; break;
-					default: cmd.triggerVolumeAttr = col.attr; break;
+					case 3: cmd.triggerVolumeAttr = col.attr; break;
+					case 4: cmd.lightAttr = col.attr; break;
+					case 5: cmd.camAttr = col.attr; break;
+					case 6: cmd.cubemapAttr = col.attr; break;
+					default: {
+						cmd.beforeMat = scene.localTransform[node];
+						if (col.kind == ColumnKind::String) {
+							cmd.verb = EditVerb::Rename;
+						} else {
+							glm::vec3 t, rot, scale;
+							ReadLocalTRS(node, t, rot, scale);
+							glm::vec3* v = col.attr[0] == 't' ? &t
+								: col.attr[0] == 'r' ? &rot : &scale;
+							const int axis = col.attr[1] == 'x' ? 0
+								: col.attr[1] == 'y' ? 1 : 2;
+							(*v)[axis] = float(value);
+							cmd.verb = col.attr[0] == 't' ? EditVerb::Translate
+								: col.attr[0] == 'r' ? EditVerb::Rotate : EditVerb::Scale;
+							cmd.afterVec = *v;
+						}
+						break;
+					}
 					}
 					Do(cmd);
 				}
