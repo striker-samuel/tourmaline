@@ -247,6 +247,15 @@ The example scenario requires `content/paks/bistro.pak` in that build directory;
 
 **Build the editor and tools (optional):** from the repository root, run `cmake --build <build-dir> --target Editor EditorLauncher Project`, then start `EditorLauncher` from the build directory (or `Editor --project <project-dir>`). Editor authoring/rendering is experimental.
 
+**Inspect published content without launching Vulkan:** the Python package browser supports SMP8 `.pak` archives and appmanifest v2 `.tapp` files. Its CLI mode requires only Python; the graphical browser additionally needs PyQt6:
+
+```bash
+python tools/pak_browser.py --cli-dump out/build/linux-Release/content/paks/sponza_10.tapp
+python tools/pak_browser.py --cli-validate out/build/linux-Release/content/paks/sponza_10.tapp
+```
+
+Use the equivalent Windows build path when applicable. The CLI checks manifest entries, each pak's `#ids` identity table, and (with `--cli-validate`) all stored payload CRCs. See [SMP8 package inspection](docs/pak_vnext.md#inspecting-smp8-paks-and-tapp-manifests).
+
 **Run tests (optional):** configure a separate build directory with `-DBUILD_TESTING=ON` (the demo recipes above disable tests for a smaller build), then:
 
 ```bash
@@ -334,6 +343,7 @@ external/   Pinned submodules and fetched third-party dependencies
 - [`benchmarks/README.md`](benchmarks/README.md) — creating, reviewing, and replaying source-controlled benchmark scenarios.
 - [`docs/perf_harness.md`](docs/perf_harness.md) — agent-friendly benchmark measurements, comparison, Nsight GPU traces, and capture.
 - [`docs/gi_volume_perf_investigation.md`](docs/gi_volume_perf_investigation.md) — correctness-first GI-volume profiling plan.
+- [`docs/pak_vnext.md`](docs/pak_vnext.md) — SMP8 paging and integrity contract, plus pak/manifest browser CLI instructions.
 - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — vendored dependencies and redistribution notices.
 
 ## Development and licensing

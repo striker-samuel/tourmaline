@@ -8,6 +8,11 @@
 - Scenario replay scrubs inherited `TOURMALINE_*` environment variables; explicit `--env` pins are recorded. `compare` rejects mismatched scenarios, scene args, app args, frame counts or environment, and compares medians of **per-run average frame times**. Nsight GPU Trace and graphics captures are **instrumented diagnostics**, not FPS baselines; use a GPU-capable Windows/NVIDIA setup and a separate optimized shader-debug build for source correlation.
 - CI `.github/workflows/perf_scenarios.yml` validates the Python harness and catalog with no GPU. Locally run `python -m unittest discover -s tools/tests -v` and `python tools/perf_harness.py list`. More detail: `benchmarks/README.md`, `docs/perf_harness.md`, `docs/headless_bench.md`.
 
+## Package inspection and editor regression surfaces
+
+- `tools/pak_browser.py --cli-dump <pak-or-tapp>` reports SMP8 TOC metadata and per-pak `#ids`; `--cli-validate` verifies each stored page's CRC as well as manifest/TOC integrity, without PyQt6 or GPU. The GUI needs PyQt6. Appmanifest v2 `.tapp` files contain only entry information and an ordered `[paks]` pointer; identity records live in the paks. See `docs/pak_vnext.md` and CPU-only `tests/test_pak_browser.py`.
+- The editor routes F8 baked irradiance through an inline `WorldRenderer` (one live viewport: active F8, other F8, then viewport 0 Lit), and propagates selection bounds there. `editor_asset_inspect.h` supports typed inspector routing and a 64-KiB read-only UTF-8 fallback for generic files; `editor_asset_browser_nav.h` hides internal cubemap/GI-cook tiles **only in the UI**. See `docs/editor_tour_and_context.md` and corresponding editor regression tests.
+
 ## Runtime layers (app/src — the project façade stack)
 
 - **THE .TOUR LOGICAL TARGET LAYER (landed)**: the generic node verbs

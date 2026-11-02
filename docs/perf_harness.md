@@ -16,7 +16,7 @@ python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/
 
 **The bundled `bistro-ssr-stress` entry needs a separately cooked `content/paks/bistro.pak` next to the benchmark executable.** It is not provided by the Sponza demo release. In the App viewer, load your cooked scene, select a costly view, press **TAB**, enable UI cursor with **I** if necessary, enter a label, subsystem and optional notes in **Benchmark scenarios**, and click **Export for benchmark**. The UI derives a stable slug from the label (adding `-2`, `-3`, … to avoid collisions) and appends to tracked `benchmarks/scenarios.json`; it does not let you type an arbitrary ID. Review and commit the catalog entry.
 
-The exporter records the cooked launch identity (`--pak` or `--project`, optionally `--scene` / `--scene-index`), camera position/direction, supported `TOURMALINE_*` renderer values, optional viewer host flags, `--with=<csv>` and `--without=<csv>` pass-graph selections, and a measured-frame budget (120 by default). The exported pass list consolidates each direction into **one** argument because the CLI retains only the last occurrence of each option. It includes SSR, SSGI, volumetric fog, contact shadows, terrain, filtering, and postprocessing where matching startup controls exist; advanced live-only sliders are **not** replayed. Benchmark runs force auto exposure off. Check the JSON for missing settings before treating two exports as equivalent.
+The exporter records the cooked launch identity (`--pak` or `--project`, optionally `--scene` / `--scene-index`), camera position/direction, supported `TOURMALINE_*` renderer values, optional viewer host flags, `--with=<csv>` and `--without=<csv>` pass-graph selections, and a measured-frame budget (120 by default). The exported pass list consolidates each direction into **one** argument because the CLI retains only the last occurrence of each option. It includes SSR, SSGI, volumetric fog, contact shadows, terrain, filtering, and postprocessing where matching startup controls exist; advanced live-only sliders are **not** replayed. Benchmark runs force auto exposure off. Check the JSON for missing settings before treating two exports as equivalent. See the [scenario catalog guide](../benchmarks/README.md) for schema details and source-controlled review practices.
 
 During a scenario replay, the harness clears inherited `TOURMALINE_*` variables, applies the catalog pins, then applies any explicit repeated `--env TOURMALINE_NAME=value` overrides. It validates the scenario ID, its source flags, the scene files relative to the binary's working directory, and basic catalog structure before launch. `--scenario` cannot be combined with `--pak` or `--project`. The `--catalog` option selects a different JSON file; the default is the tracked catalog. On Linux, use the corresponding built `Benchmark` path and executable name (without `.exe`).
 
@@ -67,18 +67,3 @@ Use `--env TOURMALINE_NAME=value` repeatedly for controlled A/B pins; use `--app
 
 The renderer's `--capture` option is specifically the RenderDoc-safe Streamline/Optick disable configuration, unrelated to Nsight's capture CLI. For Nsight, this wrapper leaves the renderer's features unchanged by default; use `--app-arg=--no-dlss` to opt out of Streamline if capture compatibility requires it.
 
-## Benchmark target reminder
-
-The scenario-export workflow and full replay constraints are described above. This short form is useful when rerunning a committed performance baseline.
-
-The separate `Benchmark` CMake target shares the cooked-pak host but no sample/gameplay element, and **requires `--bench`**. Build it explicitly:
-
-```powershell
-cmake --build out/build/x64-Release --target Benchmark
-python tools/perf_harness.py list
-python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/x64-Release/Benchmark.exe --repeat 5
-```
-
-The runner reads `benchmarks/scenarios.json` from source control by default (override with `--catalog`) and resolves scene files relative to the benchmark executable's working directory. It records the active scenario pins and explicit overrides in `result.json`.
-
-**Limit:** The replay contract covers available `RunConfig` flags, not every live-only debug-panel slider. Review the JSON before committing, and use the same cooked assets, shader flavor and hardware for A/B comparisons. See [benchmarks/README.md](../benchmarks/README.md) for catalog fields and example stress locations.
