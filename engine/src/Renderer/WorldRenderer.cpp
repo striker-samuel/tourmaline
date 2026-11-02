@@ -5,6 +5,8 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <cfloat>
+#include <unordered_set>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -13017,6 +13019,89 @@ namespace engine {
 					smvk::ClearDepthStencil(0, 0)
 				);
 		}
+		// Editor selection OBB: prepare one small 24-vertex line list
+		// from the selected node's subtree mesh bounds. The editor passes
+		// only the node id; the WorldRenderer uses its BORROWED world and
+		// its own camera, so the outline stays registered with the live
+		// image instead of being occluded by the editor's unrelated depth.
+		uint32_t selectionLineVerts = 0;
+		if (m_selectedNode != UINT32_MAX && m_world
+			&& m_selectedNode < m_world->scene.hierarchy.size()
+			&& m_selectedNode < m_world->scene.globalTransform.size()
+			&& m_gfxRenderer.DebugProgramsValid()) {
+			const glm::mat4 selectedFrame =
+				m_world->scene.globalTransform[m_selectedNode];
+			const float det = glm::determinant(selectedFrame);
+			if (std::isfinite(det) && std::abs(det) > 1e-9f) {
+				const glm::mat4 invFrame = glm::inverse(selectedFrame);
+				std::unordered_set<uint32_t> subtree;
+				std::vector<uint32_t> pending{ m_selectedNode };
+				while (!pending.empty()) {
+					const uint32_t node = pending.back();
+					pending.pop_back();
+					if (node >= m_world->scene.hierarchy.size()
+						|| !subtree.insert(node).second)
+						continue;
+					for (int child = m_world->scene.hierarchy[node].firstChild;
+						child != -1;
+						child = m_world->scene.hierarchy[child].nextSibling)
+						pending.push_back(static_cast<uint32_t>(child));
+				}
+				glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
+				bool hasMesh = false;
+				for (const auto& item : m_world->drawItems) {
+					if (!subtree.contains(item.node)
+						|| item.node >= m_world->scene.globalTransform.size())
+						continue;
+					const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+					if (!mesh)
+						continue;
+					const glm::mat4& model =
+						m_world->scene.globalTransform[item.node];
+					for (int k = 0; k < 8; ++k) {
+						const glm::vec3 corner(
+							(k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
+							(k & 2) ? mesh->geometry.aabbMax.y : mesh->geometry.aabbMin.y,
+							(k & 4) ? mesh->geometry.aabbMax.z : mesh->geometry.aabbMin.z);
+						const glm::vec3 local = glm::vec3(
+							invFrame * model * glm::vec4(corner, 1.0f));
+						mn = glm::min(mn, local);
+						mx = glm::max(mx, local);
+							hasMesh = true;
+					}
+				}
+				if (hasMesh) {
+					glm::vec3 corners[8];
+					for (int k = 0; k < 8; ++k) {
+						const glm::vec3 local(
+							(k & 1) ? mx.x : mn.x,
+							(k & 2) ? mx.y : mn.y,
+							(k & 4) ? mx.z : mn.z);
+						corners[k] = glm::vec3(selectedFrame * glm::vec4(local, 1.0f));
+					}
+					static constexpr int edges[12][2] = {
+						{0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},
+						{4,6},{5,7},{0,4},{1,5},{2,6},{3,7}
+					};
+					std::array<smvk::DebugLineVertex, 24> lines{};
+					for (int e = 0; e < 12; ++e) {
+						lines[2*e] = { corners[edges[e][0]] };
+						lines[2*e+1] = { corners[edges[e][1]] };
+					}
+					if (m_selectionLineBuffer.empty())
+						m_selectionLineBuffer = m_context->CreateBuffer(
+							sizeof(lines), smvk::BufferType_Vertex,
+							"live selection bounds");
+					if (!m_selectionLineBuffer.empty()) {
+						m_context->UploadDataToBuffer(m_selectionLineBuffer,
+							lines.data(), sizeof(lines),
+							smvk::PipelineStageBit_Vertex,
+							smvk::AccessFlags::VertexAttributeRead);
+						selectionLineVerts = static_cast<uint32_t>(lines.size());
+					}
+				}
+			}
+		}
 		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
 		// Task-less mesh leg (build-time gate): device support + enabled +
 		// programs + opaque state (no wireframe). Execute-time eligibility
@@ -13033,7 +13118,7 @@ namespace engine {
 		const uint64_t mainSkinBda = fc.skinDeformedBda;
 		const uint32_t mainSkinBase = fc.skinDeformedBase;
 		const bool mainSkinValid = fc.skinDeformedValid;
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid](smvk::CommandBuffer& cmd)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
 			// 2x: transient depth is cleared above, main writes it
@@ -14102,6 +14187,32 @@ namespace engine {
 				lp.color[2] = 0.0f; lp.color[3] = 1.0f;
 				cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
 				cmd.Draw(coneLineVerts, 1, 0, 0);
+			}
+			// The selection box shares the live renderer's matrix/target
+			// (HDR gain compensated like the cone overlay). It draws last
+			// and depth-disabled: an editor outline must remain visible
+			// even when the selected mesh is behind other geometry.
+			if (selectionLineVerts && !m_selectionLineBuffer.empty()) {
+				cmd.BindRenderPipeline(
+					m_gfxRenderer.LineProgram(),
+					smvk::VertexLayoutId::DebugLine,
+					smvk::DepthSettings{
+						.depthFunc = smvk::CompareOp::Always,
+						.writeEnable = false, .depthTestEnable = false },
+					noStencil, smvk::BlendSettings::Opaque(), msaaSettings,
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
+					smvk::PrimitiveTopology::LineList);
+				cmd.BindVertexBuffer(m_selectionLineBuffer, 0, 0);
+				LineDebugPush lp{};
+				std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
+				const float exposure = FrameExposure();
+				const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
+				lp.color[0] = gain;
+				lp.color[1] = 0.9f * gain;
+				lp.color[2] = 0.2f * gain;
+				lp.color[3] = 1.0f;
+				cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+				cmd.Draw(selectionLineVerts, 1, 0, 0);
 			}
 		}
 		);
