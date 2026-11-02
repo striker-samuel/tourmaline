@@ -87,6 +87,8 @@ void TestWatchRoutes() {
 			== R::GltfSource, "watchroute.gltf");
 	Check(editor::ClassifyWatchedChange(touch("model.GLB"))
 			== R::GltfSource, "watchroute.glb-case-insensitive");
+	Check(editor::ClassifyWatchedChange(touch("statue.obj"))
+			== R::GltfSource, "watchroute.obj");
 	Check(editor::ClassifyWatchedChange(touch("asset.meta"))
 			== R::MetaSidecar, "watchroute.meta");
 	Check(editor::ClassifyWatchedChange(touch("game.tour"))

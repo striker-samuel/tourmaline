@@ -51,6 +51,7 @@
 #include <Engine/Utils/file_watcher.h>
 #include <gltf_import/gltf.h> // GltfGuidResolver (the hook below)
 #include <gltf_import/asset_export.h> // the preprocessed asset derivation
+#include <gltf_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
 #include <Engine/GI/lightmap.h>

@@ -1254,7 +1254,8 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out,
 bool DeriveGltfAssets(const tinygltf::Model& model,
 	const std::filesystem::path& gltfPath, const std::string& gltfGuid,
 	const AssetManifest* prevIdentity, const DeriveConfig& config,
-	AssetManifest& outManifest, DeriveStats* outStats, std::string* err) {
+	AssetManifest& outManifest, DeriveStats* outStats, std::string* err,
+	const std::vector<std::string>& extraSourceDeps) {
 	DeriveStats stats{};
 	std::string fail;
 	const std::string stem =
@@ -1412,7 +1413,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
 			" by accident");
 	manifest.source =
 		std::filesystem::path(gltfPath).filename().generic_string();
-	manifest.sourceDigest = SourceContentDigest(gltfPath, model);
+	manifest.sourceDigest =
+		SourceContentDigest(gltfPath, model, extraSourceDeps);
 	manifest.importFingerprint = ImportFingerprintFor(config);
 	manifest.stem = stem;
 
@@ -1995,14 +1997,19 @@ bool ImportMeshSource(
 			*err = e;
 		return false;
 	};
-	// Host-side parse (glTF is an import-time SOURCE format — never
-	// runtime/VFS content; see the header).
+	// Host-side parse (mesh sources are import-time SOURCE formats —
+	// never runtime/VFS content; see the header). One loader for every
+	// format: glTF ASCII / GLB binary / the OBJ adapter, with embedded
+	// images extracted to sidecar files and the non-glTF dependencies
+	// (an OBJ's .mtl libraries) reported alongside.
 	tinygltf::Model model;
-	if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+	std::vector<std::string> extraDeps;
+	if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(),
+			&extraDeps))
 		return giveUp("source parse failed: "
 			+ gltfPath.generic_string());
 	return DeriveGltfAssets(model, gltfPath, gltfGuid, prevIdentity,
-		config, outManifest, outStats, err);
+		config, outManifest, outStats, err, extraDeps);
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
@@ -2021,9 +2028,10 @@ std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
 }
 
 std::string SourceContentDigest(const std::filesystem::path& gltfPath,
-	const tinygltf::Model& model) {
+	const tinygltf::Model& model,
+	const std::vector<std::string>& extraSourceDeps) {
 	namespace fs = std::filesystem;
-	// Seed: the .gltf bytes (missing/unreadable = the path string — the
+	// Seed: the source bytes (missing/unreadable = the path string — the
 	// derivation's own read fails loudly right after anyway).
 	std::vector<uint8_t> seed;
 	{
@@ -2039,7 +2047,10 @@ std::string SourceContentDigest(const std::filesystem::path& gltfPath,
 	// Dependencies: external buffer + image URIs, SORTED by authored URI
 	// (deterministic regardless of glTF section order; relative stays
 	// relative — machine-independent). data: URIs are embedded (already
-	// in the hashed bytes).
+	// in the hashed bytes; those that survived the load extract to
+	// sidecar files and arrive as ordinary URIs). extraSourceDeps are
+	// the non-glTF dependencies the synthetic model cannot express (the
+	// .mtl libraries of an OBJ source) — they ride the same set.
 	std::set<std::string> uris;
 	auto collect = [&](const std::string& uri) {
 		if (uri.empty() || uri.rfind("data:", 0) == 0)
@@ -2050,6 +2061,8 @@ std::string SourceContentDigest(const std::filesystem::path& gltfPath,
 		collect(b.uri);
 	for (const auto& im : model.images)
 		collect(im.uri);
+	for (const std::string& dep : extraSourceDeps)
+		collect(dep);
 	const fs::path dir = gltfPath.parent_path();
 	std::vector<uint8_t> all = seed;
 	for (const std::string& uri : uris) {
@@ -2193,10 +2206,12 @@ bool MeshArtifactStale(const std::filesystem::path& gltfPath,
 		// CONTENT half: match -> CONTINUE (the settings half below still
 		// gets its say); mismatch -> stale.
 		tinygltf::Model model;
+		std::vector<std::string> extraDeps;
 		bool contentChanged;
-		if (LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
-			contentChanged =
-				SourceContentDigest(gltfPath, model) != m.sourceDigest;
+		if (LoadModelFromSourceFile(model, gltfPath.string().c_str(),
+				&extraDeps))
+			contentChanged = SourceContentDigest(gltfPath, model,
+				extraDeps) != m.sourceDigest;
 		else
 			contentChanged =
 				SourceAssetGuid(gltfPath) != m.sourceDigest;
@@ -2252,17 +2267,20 @@ std::string ImportFingerprintFor(const DeriveConfig& config) {
 std::vector<std::string> GltfExternalDependencies(
 	const std::filesystem::path& gltfPath) {
 	// Same host-side parse the importer uses (this module is the single
-	// glTF-aware surface). A source that fails to parse returns the empty
-	// set — the import itself reports the parse failure loudly right
-	// after; the dependency enumeration must never invent files.
+	// source-aware surface). A source that fails to parse returns the
+	// empty set — the import itself reports the parse failure loudly
+	// right after; the dependency enumeration must never invent files.
 	std::vector<std::string> out;
 	tinygltf::Model model;
-	if (!LoadModelFromAsciiFile(model, gltfPath.string().c_str()))
+	std::vector<std::string> extraDeps;
+	if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(),
+			&extraDeps))
 		return out;
 	std::set<std::string> uris;
 	auto collect = [&](const std::string& uri) {
-		// Embedded data: URIs ride the .gltf bytes; remote http(s) URIs
-		// are not copyable locals.
+		// Embedded data: URIs ride the source bytes (or extract to
+		// sidecar files at load, arriving here as ordinary URIs);
+		// remote http(s) URIs are not copyable locals.
 		if (uri.empty() || uri.rfind("data:", 0) == 0
 				|| uri.rfind("http://", 0) == 0
 				|| uri.rfind("https://", 0) == 0)
@@ -2273,6 +2291,9 @@ std::vector<std::string> GltfExternalDependencies(
 		collect(b.uri);
 	for (const auto& im : model.images)
 		collect(im.uri);
+	// Non-glTF dependencies (an OBJ's .mtl libraries): the same set.
+	for (const std::string& dep : extraDeps)
+		collect(dep);
 	out.assign(uris.begin(), uris.end());
 	return out;
 }

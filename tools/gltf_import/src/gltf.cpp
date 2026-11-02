@@ -752,6 +752,10 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 	if (imageIndex < 0 || imageIndex >= (int)model.images.size())
 		return {};
 	const tinygltf::Image& img = model.images[imageIndex];
+	// LoadModelFromSourceFile EXTRACTS embedded images (data: URIs, GLB
+	// bufferView payloads) to sidecar files and rewrites their uris, so
+	// an empty/data uri here means a model that bypassed the loader —
+	// an invariant failure, loud in debug, a missing texture in release.
 	if (img.uri.empty() || starts_with(img.uri, "data:")) {
 		assert(false && "Internal textures not supported for gltf loading.");
 		return {};
@@ -901,12 +905,162 @@ void GltfToSceneImporter::noteImageUser(int imageIndex,
 	}
 }
 
-bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
+// ---- source-model loading: glTF (ASCII), GLB (binary), OBJ (adapter) ----
+namespace {
+
+// Keep-the-bytes image loader (installed on every tinygltf load): an
+// image with an authored uri is an EXTERNAL FILE — the importer reads
+// it through the TextureSource lane (remaps, VFS, sidecars), so the
+// tinygltf-side read+decode is skipped entirely (the default loader
+// stb-decodes every image nobody downstream ever looks at). An image
+// with an EMPTY uri is EMBEDDED (a data: URI or a GLB bufferView
+// payload): tinygltf hands this callback the ENCODED file bytes, and
+// they are kept verbatim (as_is) for the extraction below — the whole
+// downstream (texture sources, .material TexRefs, project staging,
+// the content digest) addresses images as FILES, so
+// extract-to-sidecar is the one shape that needs no second texture
+// path anywhere in the pipeline.
+bool KeepImageBytesAsIs(tinygltf::Image* image, int imageIdx,
+	std::string* err, std::string* warn, int reqWidth, int reqHeight,
+	const unsigned char* bytes, int size, void* userData) {
+	(void)imageIdx; (void)err; (void)warn; (void)reqWidth;
+	(void)reqHeight; (void)userData;
+	if (!image || bytes == nullptr || size <= 0)
+		return true; // nothing stashed; tinygltf reports empties itself
+	if (!image->uri.empty())
+		return true; // external file: the TextureSource lane owns it
+	image->as_is = true;
+	image->image.assign(bytes, bytes + size);
+	return true;
+}
+
+// The payload file extension for an embedded image: the authored
+// mimeType when present (glTF only REQUIRES it with a bufferView, and
+// real-world files lie or omit it), then a magic sniff, then ".bin" —
+// an unknown payload keeps the sidecar name stable and fails LOUDLY
+// in the KTX transcode right after (never a silent wrong decode).
+std::string EmbeddedImageExtension(const tinygltf::Image& img) {
+	if (img.mimeType == "image/jpeg") return ".jpg";
+	if (img.mimeType == "image/png") return ".png";
+	if (img.mimeType == "image/bmp") return ".bmp";
+	if (img.mimeType == "image/gif") return ".gif";
+	if (img.mimeType == "image/ktx" || img.mimeType == "image/ktx2")
+		return ".ktx2";
+	if (img.image.size() >= 12) {
+		const uint8_t* b = img.image.data();
+		if (b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G')
+			return ".png";
+		if (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return ".jpg";
+		if (b[0] == 'B' && b[1] == 'M') return ".bmp";
+		if (b[0] == 'G' && b[1] == 'I' && b[2] == 'F' && b[3] == '8')
+			return ".gif";
+		if (IsKtx2Payload(img.image)) return ".ktx2";
+	}
+	return ".bin";
+}
+
+// Write-if-changed: identical bytes keep the existing file (and its
+// mtime) — a re-import of an unchanged source stays watcher-silent,
+// and the digest/staleness machinery never sees churn.
+bool WriteBytesIfChanged(const std::filesystem::path& p,
+	const std::vector<uint8_t>& bytes) {
+	if (auto cur = ReadHostBytes(p); cur && *cur == bytes)
+		return true;
+	std::ofstream f(p, std::ios::binary | std::ios::trunc);
+	if (!f)
+		return false;
+	f.write(reinterpret_cast<const char*>(bytes.data()),
+		std::streamsize(bytes.size()));
+	return f.good();
+}
+
+// Extract every EMBEDDED image (empty uri: data: URIs, GLB bufferView
+// payloads) to a sidecar file beside the source and REWRITE its uri to
+// that file (relative + POSIX, so HostTextureSource's baseDir read,
+// the .material TexRef, the project dependency staging and the content
+// digest all treat it exactly like an authored external texture). The
+// name carries the source extension as an infix: foo.gltf and foo.glb
+// families sharing ONE directory would otherwise fight over
+// foo_img0.png (different content under one name = digest flapping +
+// extraction clobber, forever).
+//
+// A failed write is a LOUD failure (the load fails): every consumer
+// downstream needs the file, and an in-memory fallback would silently
+// drop the texture out of the .material artifact instead.
+bool ExtractEmbeddedImages(tinygltf::Model& model,
+	const std::filesystem::path& sourcePath) {
+	const std::string stem = sourcePath.stem().generic_string();
+	std::string srcExt = sourcePath.extension().string();
+	for (char& c : srcExt)
+		c = char(std::tolower((unsigned char)c));
+	const std::string srcTag = srcExt.size() > 1 ? srcExt.substr(1) : "src";
+	for (size_t i = 0; i < model.images.size(); ++i) {
+		tinygltf::Image& img = model.images[i];
+		if (!img.uri.empty() && !starts_with(img.uri, "data:"))
+			continue; // authored external file — nothing to extract
+		if (img.image.empty() || !img.as_is) {
+			std::cerr << "Embedded image " << i << " of '"
+				<< sourcePath.generic_string() << "' has no kept bytes"
+				<< " (image loader mismatch) — cannot extract" << std::endl;
+			return false;
+		}
+		std::ostringstream name;
+		name << stem << "_" << srcTag << "_img" << i
+			<< EmbeddedImageExtension(img);
+		const std::filesystem::path sidecar =
+			sourcePath.parent_path() / name.str();
+		if (!WriteBytesIfChanged(sidecar, img.image)) {
+			std::cerr << "Embedded-image extraction FAILED (read-only"
+				" source directory?): '" << sidecar.generic_string()
+				<< "'" << std::endl;
+			return false;
+		}
+		std::cerr << "Extracted embedded image: "
+			<< sidecar.generic_string() << " (" << img.image.size()
+			<< " B)" << std::endl;
+		img.uri = name.str();
+		img.image.clear();
+		img.image.shrink_to_fit();
+		img.as_is = false;
+		img.bufferView = -1; // the uri is the identity now
+	}
+	return true;
+}
+
+} // namespace
+
+bool LoadModelFromSourceFile(tinygltf::Model& model, const char* filename,
+	std::vector<std::string>* extraDeps) {
+	const std::filesystem::path path{ filename };
+	std::string ext = path.extension().string();
+	for (char& c : ext)
+		c = char(std::tolower((unsigned char)c));
+	// OBJ (tinyobjloader adapter, obj_import.cpp): builds the
+	// tinygltf::Model interchange form in memory; the .mtl files it
+	// consumed land in extraDeps (source dependencies the synthetic
+	// model cannot express for the digest/staging machinery).
+	if (ext == ".obj") {
+		std::vector<std::string> sink;
+		return LoadObjFileAsModel(model, path, extraDeps ? *extraDeps : sink);
+	}
+
 	tinygltf::TinyGLTF loader;
+	loader.SetImageLoader(&KeepImageBytesAsIs, nullptr);
 	std::string err;
 	std::string warn;
-
-	bool res = loader.LoadASCIIFromFile(&model, &err, &warn, filename);
+	// GLB is detected by MAGIC, never by extension (the CLI's extension
+	// gate is a UX hint, not the format decision — a .gltf-named GLB or
+	// a .glb-named JSON both load correctly).
+	bool isBinary = false;
+	{
+		std::ifstream f(path, std::ios::binary);
+		char magic[4] = {};
+		isBinary = f && f.read(magic, 4)
+			&& std::memcmp(magic, "glTF", 4) == 0;
+	}
+	const bool res = isBinary
+		? loader.LoadBinaryFromFile(&model, &err, &warn, filename)
+		: loader.LoadASCIIFromFile(&model, &err, &warn, filename);
 #ifndef NDEBUG
 	if (!warn.empty()) {
 		std::cout << "WARN: " << warn << std::endl;
@@ -923,8 +1077,11 @@ bool LoadModelFromAsciiFile(tinygltf::Model& model, const char* filename) {
 	else
 		std::cout << "Loaded glTF: " << filename << std::endl;
 #endif
-
-	return res;
+	if (!res)
+		return false;
+	// data: URIs + GLB bufferView images become sidecar files here —
+	// the ONE place embedded textures enter the file-based pipeline.
+	return ExtractEmbeddedImages(model, path);
 }
 std::optional<GltfTextureRef> GltfResolveTexture(const tinygltf::Model& model, const tinygltf::TextureInfo& texInfo)
 {
@@ -1302,8 +1459,10 @@ void GltfToSceneImporter::preloadTextures()
 		if (textureCache.find(imageIndex) != textureCache.end())
 			continue;
 		const tinygltf::Image& img = model.images[imageIndex];
-		// Embedded / data-URI images are not supported (same policy as
-		// loadTextureForImage); skip them here, the sequential path asserts.
+		// Embedded / data-URI images are EXTRACTED to sidecar files by
+		// LoadModelFromSourceFile (uri rewritten), so an empty/data uri
+		// here means a model that bypassed the loader — same policy as
+		// loadTextureForImage: skip here, the sequential path asserts.
 		if (img.uri.empty() || starts_with(img.uri, "data:"))
 			continue;
 		// Input plugs (texture relink): EXACT oldUri match redirects the
@@ -3251,15 +3410,19 @@ size_t ApplySceneReferences(
 						&& modelSource.size() - dotGltf == 5)
 					|| (dotGlb != std::string::npos
 						&& modelSource.size() - dotGlb == 4);
-				if (isGltf) {
-					// glTF sources are IMPORT-ONLY: the editor's open of
-					// a .gltf routes through the MeshImporter (derive
-					// beside the source) and records the .geometry; the
-					// build processes (this resolution, the cooker, the
-					// GiBaker) read artifacts ONLY. A tour still naming a
-					// .gltf is pre-artifact — re-open the source in the
-					// editor (derive + re-save) or run ImportMeshSource.
-					const std::string m = "[References] glTF sources are "
+				const size_t dotObj = modelSource.rfind(".obj");
+				const bool isObj = dotObj != std::string::npos
+					&& modelSource.size() - dotObj == 4;
+				if (isGltf || isObj) {
+					// Mesh sources (glTF/GLB/OBJ) are IMPORT-ONLY: the
+					// editor's open of a source routes through the
+					// MeshImporter (derive beside the source) and records
+					// the .geometry; the build processes (this resolution,
+					// the cooker, the GiBaker) read artifacts ONLY. A tour
+					// still naming a source is pre-artifact — re-open the
+					// source in the editor (derive + re-save) or run
+					// ImportMeshSource.
+					const std::string m = "[References] mesh sources are "
 						"import-only (the MeshImporter): '" + modelSource
 						+ "' — reference the derived .geometry (re-open "
 						"the source in the editor / import it) (skipped)";

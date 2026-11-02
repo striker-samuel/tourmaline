@@ -70,11 +70,34 @@ struct ActiveVoice {
 
 class AudioRuntimeElement final : public engine::IAppElement {
 public:
+	// The LAZY lane (no launch session): the runtime façade + the
+	// scene layer build at first use from `tappPath`.
 	AudioRuntimeElement(tour::App& host, const std::string& tappPath,
 			std::shared_ptr<tour::World*> worldHandle,
 			engine::WorldRenderer* renderer)
+		: AudioRuntimeElement(host, std::string(tappPath), nullptr,
+			std::move(worldHandle), renderer) {}
+	// The SHARED lane: the host's content session (one registry, one
+	// set of pak images — see MakeAudioRuntime's session form).
+	AudioRuntimeElement(tour::App& host,
+			std::shared_ptr<ProjectRuntime> session,
+			std::shared_ptr<tour::World*> worldHandle,
+			engine::WorldRenderer* renderer)
+		: AudioRuntimeElement(host, {}, std::move(session),
+			std::move(worldHandle), renderer) {}
+
+private:
+	// The delegating base ctor — exactly one of (tappPath, session):
+	// the lazy lane loads the manifest at first use, the shared lane
+	// borrows the host's session (the same registry + pak images the
+	// launch's world load resolved through — no second universe).
+	AudioRuntimeElement(tour::App& host, std::string tappPath,
+			std::shared_ptr<ProjectRuntime> session,
+			std::shared_ptr<tour::World*> worldHandle,
+			engine::WorldRenderer* renderer)
 		: m_host(host)
-		, m_tappPath(tappPath)
+		, m_tappPath(std::move(tappPath))
+		, m_session(std::move(session))
 		, m_worldHandle(std::move(worldHandle))
 		, m_renderer(renderer) {
 		// Singleton install (the imperative surface below). One audio
@@ -86,6 +109,7 @@ public:
 		Instance() = this;
 	}
 
+public:
 	~AudioRuntimeElement() override {
 		std::lock_guard<std::mutex> lock(SingletonMutex());
 		if (Instance() == this)
@@ -486,33 +510,50 @@ private:
 				apply(v.voice, v.gainMul);
 	}
 
-	// The lazily-built project layers (see the MakeAudioRuntime note:
-	// built at FIRST USE — ProjectRuntime::Load parses the manifest,
-	// ProjectScenes opens + mounts the paks into the ELEMENT'S OWN
-	// overlay (the apphost's attach-time vfs is scoped to the world
-	// source call, nothing persists). v1 cost note: the pak IMAGES
-	// are opened per layer (the apphost's preloads are not handed
-	// out) — fine at sample scale; a shared-runtime seam is the
-	// follow-up.
-	std::string m_tappPath;
-	std::optional<ProjectRuntime> m_rt;
+	// The content session this layer resolves through. THE SHARED
+	// LANE (the consolidated content architecture): a --project launch
+	// builds ONE session up front (RunPakApp — the manifest adopted
+	// into the registry, every listed pak's backend adopted as the
+	// preloads resolve, the loose discovery tree registered as an
+	// override) and hands it to the element here — the SAME images +
+	// provider selection the world load used, no re-read of the
+	// archives, no divergent override state. THE LAZY LANE (a host
+	// with no launch session): the façade + the scene layer build at
+	// FIRST USE from the manifest path — ProjectScenes then opens +
+	// mounts the paks into the ELEMENT'S OWN overlay (the apphost's
+	// attach-time vfs is scoped to the world source call, nothing
+	// persists).
+	std::string m_tappPath; // the lazy lane's manifest (empty on the shared lane)
+	std::shared_ptr<ProjectRuntime> m_session; // the SHARED session (null on the lazy lane)
+	std::shared_ptr<ProjectRuntime> m_rt;      // the built session (shared or lazily loaded)
 	std::unique_ptr<ProjectScenes> m_scenes;
 	smvk::OverlayVfs m_vfs;
-	// Builds both on first use; false (once, loud) when the manifest
-	// or the paks fail — the layer then no-ops instead of retry-
-	// spamming.
+	// Builds the session + the scene layer on first use; false (once,
+	// loud) when the manifest or the paks fail — the layer then no-ops
+	// instead of retry-spamming.
 	bool EnsureScenes() {
 		if (m_scenes)
 			return true;
 		if (m_sceneInitFailed)
 			return false;
-		std::string err;
-		m_rt = ProjectRuntime::Load(m_tappPath, err);
 		if (!m_rt) {
-			m_sceneInitFailed = true;
-			std::cerr << "[Audio] the project manifest failed: " << err
-				<< " (" << m_tappPath << ") - the audio layer no-ops\n";
-			return false;
+			if (m_session) {
+				// The shared lane: the host's session, verbatim.
+				m_rt = m_session;
+			}
+			else {
+				std::string err;
+				auto rt = ProjectRuntime::Load(m_tappPath, err);
+				if (!rt) {
+					m_sceneInitFailed = true;
+					std::cerr << "[Audio] the project manifest failed: "
+						<< err << " (" << m_tappPath
+						<< ") - the audio layer no-ops\n";
+					return false;
+				}
+				m_rt = std::make_shared<ProjectRuntime>(
+					std::move(*rt));
+			}
 		}
 		m_scenes = std::make_unique<ProjectScenes>(*m_rt, m_vfs);
 		if (!m_scenes->Valid()) {
@@ -521,6 +562,10 @@ private:
 				<< m_scenes->OpenError() << " - the audio layer no-ops\n";
 			return false;
 		}
+		if (m_session)
+			std::cerr << "[Audio] session shared with the launch ("
+				<< m_rt->PakNames().size() << " pak provider(s),"
+				" the same images + selection)\n";
 		return true;
 	}
 	bool m_sceneInitFailed = false;
@@ -554,6 +599,14 @@ std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
 	engine::WorldRenderer* renderer) {
 	return std::make_shared<AudioRuntimeElement>(host, tappPath,
 		std::move(worldHandle), renderer);
+}
+
+std::shared_ptr<engine::IAppElement> MakeAudioRuntime(
+	tour::App& host, std::shared_ptr<ProjectRuntime> session,
+	std::shared_ptr<tour::World*> worldHandle,
+	engine::WorldRenderer* renderer) {
+	return std::make_shared<AudioRuntimeElement>(host,
+		std::move(session), std::move(worldHandle), renderer);
 }
 
 // ---- the imperative surface (the singleton forwarders) ----------------

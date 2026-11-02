@@ -1,0 +1,4 @@
+Populated by install_dependencies.ps1 / install_dependencies.sh (pinned:
+raw tiny_obj_loader.h at upstream tag v2.0.0rc13 - the release the ecosystem
+uses; no final v2.0.0 was ever tagged). The header is the only content; the
+fetch is SHA256-verified.

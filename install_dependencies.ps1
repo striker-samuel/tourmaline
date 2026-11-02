@@ -55,6 +55,13 @@ $Pins = @(
        url='https://raw.githubusercontent.com/syoyo/tinygltf/v2.8.10/tiny_gltf.h';
        file='tiny_gltf.h';
        sha256='777b94a0d7b4876b521cea53630a5bbd55aff693ef49586a55fb273278e96bf5' }
+    @{ name='tinyobjloader'; type='raw'; target='tinyobjloader';
+       # v2.0.0rc13 (the release the ecosystem uses; no final v2.0.0 was
+       # ever tagged). The OBJ source adapter (tools/gltf_import/
+       # obj_import.cpp) parses through this header-only library.
+       url='https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/v2.0.0rc13/tiny_obj_loader.h';
+       file='tiny_obj_loader.h';
+       sha256='a55a0933a29caa0e9e84ef62a45cbe8cb25dd0e17bc2850c591c6b06f95d5ebe' }
     @{ name='lz4';        type='raw';  target='lz4'; multi=$true;
        urls=@('https://raw.githubusercontent.com/lz4/lz4/v1.10.0/lib/lz4.h',
               'https://raw.githubusercontent.com/lz4/lz4/v1.10.0/lib/lz4.c');

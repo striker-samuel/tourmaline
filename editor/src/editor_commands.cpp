@@ -6294,9 +6294,9 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 }
 
 std::string EditorApp::DerivedAssetGuid(const std::string& assetPath) {
-	// A derived asset's GUID lives in the sibling glTF manifest (the
-	// derivation wrote it). Scan the directory's .gltf.meta files for
-	// the entry whose file matches.
+	// A derived asset's GUID lives in the sibling source manifest (the
+	// derivation wrote it). Scan the directory's mesh-source .meta
+	// ledgers for the entry whose file matches.
 	if (assetPath.empty() || !m_world)
 		return {};
 	namespace fs = std::filesystem;
@@ -6309,8 +6309,9 @@ std::string EditorApp::DerivedAssetGuid(const std::string& assetPath) {
 		if (ec || !it->is_regular_file(ec))
 			continue;
 		const std::string n = it->path().filename().string();
-		if (n.size() <= 10
-			|| n.compare(n.size() - 10, 10, ".gltf.meta") != 0)
+		// ANY mesh source's identity ledger (<stem>.<srcext>.meta —
+		// .gltf/.glb/.obj; see IsMeshSourceMetaSidecar).
+		if (!smvk::assets::IsMeshSourceMetaSidecar(n))
 			continue;
 		smvk::assets::AssetManifest man;
 		std::string merr;

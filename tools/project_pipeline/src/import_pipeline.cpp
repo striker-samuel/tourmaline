@@ -21,6 +21,7 @@
 #include <system_error>
 
 #include <gltf_import/asset_export.h>
+#include <gltf_import/source_formats.h>
 
 #include "registry_detail.h"
 
@@ -28,11 +29,9 @@ namespace smvk::project {
 
 namespace {
 
+// The mesh-source gate (one shared place — see source_formats.h).
 bool IsModelSource(const std::filesystem::path& p) {
-	std::string e = p.extension().string();
-	for (char& c : e)
-		c = char(std::tolower((unsigned char)c));
-	return e == ".gltf" || e == ".glb";
+	return smvk::assets::IsMeshSourceFile(p);
 }
 
 // The derived-family file patterns (the publish step replaces exactly
@@ -44,7 +43,11 @@ bool IsDerivedFamilyFile(const std::string& name) {
 		return name.size() >= n
 			&& name.compare(name.size() - n, n, suffix) == 0;
 	};
-	return endsWith(".geometry") || endsWith(".gltf.meta")
+	// The identity ledger sidecar of ANY mesh source format
+	// (<stem>.gltf.meta / .glb.meta / .obj.meta — see
+	// IsMeshSourceMetaSidecar), not just the glTF spelling.
+	return endsWith(".geometry")
+		|| smvk::assets::IsMeshSourceMetaSidecar(name)
 		|| endsWith(".material") || endsWith(".anim");
 }
 
@@ -73,7 +76,7 @@ bool ImportProjectAsset(const ImportRequest& request,
 		return false;
 	}
 	if (request.source.empty() || !IsModelSource(request.source)) {
-		err = "the source must be a .gltf/.glb: "
+		err = "the source must be a .gltf/.glb/.obj: "
 			+ request.source.generic_string();
 		return false;
 	}

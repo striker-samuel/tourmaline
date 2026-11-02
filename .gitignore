@@ -46,6 +46,8 @@ bld/
 !/external/stb/.tourmaline-fetched
 /external/tinygltf/**
 !/external/tinygltf/.tourmaline-fetched
+/external/tinyobjloader/**
+!/external/tinyobjloader/.tourmaline-fetched
 /external/zlib/**
 !/external/zlib/.tourmaline-fetched
 # SQLiteCpp: the tree + the sqlite3 amalgamation are fetched; the tracked

@@ -3,6 +3,7 @@
 
 #include <Engine/Asset/pak.h>
 
+#include <Engine/Asset/appmanifest.h> // kCatalogKind* (the identity-table blob's kind ABI)
 #include <Engine/Asset/asset_plan.h>
 
 #include <algorithm>
@@ -1273,6 +1274,127 @@ bool ParseMeshPlanBlob(std::span<const uint8_t> blob,
 	}
 	if (off != blob.size()) {
 		err = "mesh plan trailing bytes";
+		return false;
+	}
+	return true;
+}
+
+// ---- the per-pak identity-table blob codec ----------------------------------
+
+inline constexpr uint32_t kAssetIdsMagic = 0x52544449u; // "IDTR" LE
+inline constexpr uint32_t kAssetIdsVersion = 1;
+
+std::vector<uint8_t> WriteAssetIdsBlob(
+	const std::vector<PakAssetIdRow>& rows) {
+	std::vector<uint8_t> out;
+	AppendU32(out, kAssetIdsMagic);
+	AppendU32(out, kAssetIdsVersion);
+	AppendU32(out, static_cast<uint32_t>(rows.size()));
+	for (const PakAssetIdRow& r : rows) {
+		AppendU64(out, r.id);
+		out.push_back(r.kind);
+		AppendU32(out, static_cast<uint32_t>(r.path.size()));
+		out.insert(out.end(), r.path.begin(), r.path.end());
+		AppendU32(out, static_cast<uint32_t>(r.sceneName.size()));
+		out.insert(out.end(), r.sceneName.begin(), r.sceneName.end());
+	}
+	return out;
+}
+
+bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
+	std::vector<PakAssetIdRow>& out, std::string& err) {
+	out.clear();
+	const auto readU32 = [&blob](size_t off, uint32_t& v) -> bool {
+		if (off > blob.size() || 4 > blob.size() - off)
+			return false;
+		memcpy(&v, blob.data() + off, 4);
+		return true;
+	};
+	const auto readU64 = [&blob](size_t off, uint64_t& v) -> bool {
+		if (off > blob.size() || 8 > blob.size() - off)
+			return false;
+		memcpy(&v, blob.data() + off, 8);
+		return true;
+	};
+	uint32_t magic = 0, version = 0, rowCount = 0;
+	if (!readU32(0, magic) || !readU32(4, version)
+			|| !readU32(8, rowCount)) {
+		err = "identity table header truncated";
+		return false;
+	}
+	if (magic != kAssetIdsMagic) {
+		err = "bad identity table magic";
+		return false;
+	}
+	if (version != kAssetIdsVersion) {
+		err = "unsupported identity table version";
+		return false;
+	}
+	if (rowCount > (1u << 20)) {
+		err = "identity table row count out of range";
+		return false;
+	}
+	size_t off = 12;
+	out.reserve(rowCount);
+	for (uint32_t i = 0; i < rowCount; ++i) {
+		PakAssetIdRow row;
+		if (!readU64(off, row.id)) {
+			err = "identity table row id truncated";
+			return false;
+		}
+		off += 8;
+		if (off >= blob.size()) {
+			err = "identity table row kind truncated";
+			return false;
+		}
+		row.kind = blob[off];
+		++off;
+		uint32_t pathLen = 0, nameLen = 0;
+		if (!readU32(off, pathLen)) {
+			err = "identity table row path length truncated";
+			return false;
+		}
+		off += 4;
+		if (pathLen == 0 || pathLen > 4096 || pathLen > blob.size() - off) {
+			err = "identity table row path out of range";
+			return false;
+		}
+		row.path.assign(
+			reinterpret_cast<const char*>(blob.data() + off), pathLen);
+		off += pathLen;
+		if (!readU32(off, nameLen)) {
+			err = "identity table row name length truncated";
+			return false;
+		}
+		off += 4;
+		if (nameLen > 4096 || nameLen > blob.size() - off) {
+			err = "identity table row name out of range";
+			return false;
+		}
+		row.sceneName.assign(
+			reinterpret_cast<const char*>(blob.data() + off), nameLen);
+		off += nameLen;
+		// The row invariants (the same ones the manifest's [ids]
+		// validation enforces — the shared ABI never drifts):
+		// a nonzero id, a kind byte inside the catalog ABI, and the
+		// scene-name rule (names ride SCENE rows only).
+		if (row.id == 0) {
+			err = "identity table row carries id 0 (the reserved"
+				" no-identity value)";
+			return false;
+		}
+		if (row.kind > smvk::kCatalogKindGi) {
+			err = "identity table row kind byte out of the catalog ABI";
+			return false;
+		}
+		if (!row.sceneName.empty() && row.kind != smvk::kCatalogKindScene) {
+			err = "identity table row names a non-scene asset";
+			return false;
+		}
+		out.push_back(std::move(row));
+	}
+	if (off != blob.size()) {
+		err = "identity table trailing bytes";
 		return false;
 	}
 	return true;

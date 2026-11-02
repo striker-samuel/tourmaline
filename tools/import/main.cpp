@@ -9,13 +9,18 @@
 //
 // Dispatch by extension (ONE raw-import place — the editor's open/drop
 // runs the same calls):
-//   .glb/.gltf  parse + derive in ONE call (the MeshImporter:
-//               gltf_import's ImportMeshSource): the Tourmaline artifact
-//               family lands next to the source -
+//   .glb/.gltf/.obj
+//               parse + derive in ONE call (the MeshImporter:
+//               gltf_import's ImportMeshSource — glTF/GLB through
+//               tinygltf, OBJ through the tinyobjloader adapter, both
+//               behind LoadModelFromSourceFile): the Tourmaline
+//               artifact family lands next to the source -
 //     <stem>.geometry            the scene blob (hierarchy + SoA streams)
-//     <stem>.mat<idx>_<name>.material (one per glTF material)
-//     <stem>.anim<idx>_<name>.anim   (one per animation)
-//     <stem>.gltf.meta            the manifest (stable GUIDs)
+//     <stem>.mat<idx>_<name>.material (one per source material)
+//     <stem>.anim<idx>_<name>.anim   (one per animation; glTF only)
+//     <stem>.<srcext>.meta       the manifest (stable GUIDs)
+//     + for .glb/data-uri sources: embedded images EXTRACTED beside
+//       the source as <stem>_<srcext>_img<N>.<ext> sidecar files
 //   .png/.jpg/.jpeg/.tga/.bmp/.ktx2
 //               single-image import (ImportTextureSource, the editor's
 //               CreateTextureAsset parity): <stem>.texture beside the
@@ -48,6 +53,7 @@
 #include <string>
 
 #include <gltf_import/asset_export.h>
+#include <gltf_import/source_formats.h>
 
 namespace {
 
@@ -60,8 +66,8 @@ bool ParseOnOff(const std::string& v) {
 			<< "import.exe <input> [--meshlets on|off] [--lods on|off]\n"
 			<< "    [--shader-lods on|off] [--force]\n"
 			<< "  (the raw-source -> engine-format converter:\n"
-			<< "   .glb/.gltf derives the .geometry + .material/.anim +\n"
-			<< "   .gltf.meta artifact family next to the source - the SAME\n"
+			<< "   .glb/.gltf/.obj derives the .geometry + .material/.anim\n"
+			<< "   + .meta artifact family next to the source - the SAME\n"
 			<< "   import the editor's open/drop runs; deterministic GUIDs,\n"
 			<< "   byte-identical from-zero re-imports.\n"
 			<< "   .png/.jpg/.jpeg/.tga/.bmp/.ktx2 writes <stem>.texture\n"
@@ -129,7 +135,7 @@ int main(int argc, char** argv) {
 		}
 	}
 	if (input.empty()) {
-		std::cerr << "Required: import.exe <input> (.glb/.gltf or"
+		std::cerr << "Required: import.exe <input> (.glb/.gltf/.obj or"
 			" .png/.jpg/.jpeg/.tga/.bmp/.ktx2)" << std::endl;
 		Usage();
 		return 1;
@@ -143,13 +149,14 @@ int main(int argc, char** argv) {
 	std::string ext = inPath.extension().string();
 	for (char& c : ext)
 		c = char(std::tolower((unsigned char)c));
-	const bool isModel = (ext == ".glb" || ext == ".gltf");
+	const bool isModel = smvk::assets::IsMeshSourceExtension(ext);
 	const bool isImage = (ext == ".png" || ext == ".jpg"
 		|| ext == ".jpeg" || ext == ".tga" || ext == ".bmp"
 		|| ext == ".ktx2");
 	if (!isModel && !isImage) {
-		std::cerr << "Unsupported input '" << ext << "' (want .glb/.gltf"
-			" or .png/.jpg/.jpeg/.tga/.bmp/.ktx2): " << input << std::endl;
+		std::cerr << "Unsupported input '" << ext << "' (want"
+			" .glb/.gltf/.obj or .png/.jpg/.jpeg/.tga/.bmp/.ktx2): "
+			<< input << std::endl;
 		return 1;
 	}
 

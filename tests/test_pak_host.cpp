@@ -34,6 +34,7 @@
 #include "PakWorldLoader.h"
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
+#include "Runtime.h"
 #include "AssetStore.h"
 #include "AssetManager.h"
 #include "DeployCheck.h"
@@ -85,8 +86,7 @@ void TestCliParse() {
 	app::ViewerOptions opts;
 	Check(ParseOk({ "App", "--pak", "x.pak" }, opts)
 		&& opts.pakPath == "x.pak",
-		"cli.pak.required-value");
-	Check(ParseOk({ "App", "--pak=y.pak", "--scene-index=3" }, opts)
+		"cli.pak.required-value");	Check(ParseOk({ "App", "--pak=y.pak", "--scene-index=3" }, opts)
 		&& opts.sceneIndex == 3,
 		"cli.scene-index.equals-form");
 	// The required-flag gate: no --pak, no run.
@@ -193,17 +193,89 @@ void TestCliParse() {
 	{
 		app::PakAppConfig cfg;
 		bool hookRan = false;
-		cfg.extraElement = [&hookRan](smvk::App&, engine::WorldRenderer&,
-				std::shared_ptr<smvk::World*>) {
+		cfg.extraElements.push_back(
+			[&hookRan](smvk::App&, engine::WorldRenderer&,
+				std::shared_ptr<smvk::World*>,
+				const std::shared_ptr<app::ProjectRuntime>&) {
 			hookRan = true;
 			return nullptr;
-		};
+		});
 		cfg.extraOwnsCamera = true;
 		app::ViewerOptions& optsRef = cfg.cli;
 		Check(ParseOk({ "App", "--pak", "x.pak" }, optsRef)
-			&& cfg.extraElement && !hookRan
+			&& !cfg.extraElements.empty() && !hookRan
 			&& cfg.extraOwnsCamera,
 			"cli.parse.preserves-host-config");
+	}
+	// ---- The multi-pak + --scene surface (the discovery lane's CLI):
+	// --pak is REPEATABLE (one legacy lane, several = the multi-pak
+	// discovery lane), --scene names the entry by its cooked identity,
+	// and the addressing forms never mix.
+	{
+		app::ViewerOptions opts;
+		Check(ParseOk({ "App", "--pak", "a.pak", "--pak", "b.pak",
+				"--scene", "Crypt" }, opts)
+			&& opts.pakPaths.size() == 2 && opts.pakPaths[1] == "b.pak"
+			&& opts.pakPath == "a.pak" && opts.sceneName == "Crypt"
+			&& opts.sceneIndex == 0,
+			"cli.multi-pak-scene-parse");
+		app::ViewerOptions eq;
+		Check(ParseOk({ "App", "--pak=a.pak", "--scene=Crypt" }, eq)
+			&& eq.pakPaths.size() == 1 && eq.sceneName == "Crypt",
+			"cli.scene-equals-form");
+		// Index vs identity never mixes.
+		int ec = 0;
+		Check(ParseFails({ "App", "--pak", "x.pak", "--scene", "S",
+				"--scene-index", "1" }, ec) && ec != 0,
+			"cli.scene-vs-index-exclusive");
+		// --scene has no effect with --project (the manifest names the
+		// entry by identity).
+		Check(ParseFails({ "App", "--project", "g.tapp", "--scene",
+				"S" }, ec) && ec != 0,
+			"cli.scene-with-project-refused");
+	}
+}
+
+// ---- THE APPLICATION-FACING RUNTIME (app::RunGame's pieces) ----------
+// Headless: the packaged-default entry resolution (the pure half).
+// The game element's hook pump + the context's services ride a real
+// graphics host — the golden/e2e lanes own those (the GameProject
+// sample's BUILD instantiates RunGame + the typed gate end to end).
+
+void TestRuntime() {
+	// ArgsWithDefaultEntry: the packaged appmanifest beside the EXE
+	// becomes the entry point unless the caller named one; an empty
+	// default disables the whole lane.
+	{
+		const char* argv[2] = { "Game", "--irrelevant-flag" };
+		std::vector<const char*> args = app::ArgsWithDefaultEntry(2,
+			argv, "game.tapp");
+		Check(args.size() == 4 && std::string(args[2]) == "--project"
+			&& std::string(args[3]).find("game.tapp")
+				!= std::string::npos,
+			"rt.default-entry-appended");
+		// A caller-named entry (either form) wins: nothing appended.
+		const char* argvPak[3] = { "Game", "--pak", "x.pak" };
+		std::vector<const char*> withPak = app::ArgsWithDefaultEntry(3,
+			argvPak, "game.tapp");
+		Check(withPak.size() == 3, "rt.explicit-pak-wins");
+		const char* argvProject[3] = { "Game", "--project", "y.tapp" };
+		std::vector<const char*> withProject =
+			app::ArgsWithDefaultEntry(3, argvProject, "game.tapp");
+		Check(withProject.size() == 3, "rt.explicit-project-wins");
+		// The empty default disables the lane (the caller MUST name
+		// an entry — the parse gate below refuses otherwise).
+		std::vector<const char*> disabled = app::ArgsWithDefaultEntry(
+			2, argv, "");
+		Check(disabled.size() == 2, "rt.empty-default-disabled");
+	}
+	// The GameLaunchOptions defaults: one service-less camera-free
+	// launch with the game.tapp default.
+	{
+		app::GameLaunchOptions opts;
+		Check(opts.services.empty() && !opts.extraOwnsCamera
+			&& opts.defaultManifest == "game.tapp",
+			"rt.launch-options-defaults");
 	}
 }
 
@@ -561,6 +633,20 @@ void TestProjectRuntime() {
 		w.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
 			smvk::BuildTexturePayload(vfsPath, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktx)));
+		// THE PER-PAK IDENTITY TABLE (the "#ids" registry blob): the
+		// runtime reads the records from THE PAK (the discovery lane —
+		// the manifest's [ids] mirror is a vestigial compatibility
+		// field the runtime ignores).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x2000, smvk::kCatalogKindTexture, vfsPath, "" },
+			{ 0x3000, smvk::kCatalogKindMesh,
+				"content/models/s/rock.geometry", "" },
+			{ 0x1000, smvk::kCatalogKindScene,
+				"content/scenes/s.tour", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "shared.pak",
 			std::ios::binary | std::ios::trunc);
@@ -570,28 +656,31 @@ void TestProjectRuntime() {
 	const fs::path tapp = tmp / "game.tapp";
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — no
+		// [ids] mirror (the paks' own tables are the catalog), no
+		// `catalog` line (the registry's record fold is the deployed
+		// fingerprint).
 		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
+			<< "appmanifest 2\n"
 			<< "entry shared.pak scene\n"
-			<< "\n[paks]\nshared.pak\n"
-			<< "\n[ids]\n"
-			<< "0x2000 texture shared.pak " << vfsPath << "\n"
-			<< "0x3000 mesh shared.pak content/models/s/rock.geometry\n"
-			<< "0x1000 scene shared.pak content/scenes/s.tour\n";
+			<< "\n[paks]\nshared.pak\n";
 	}
 	std::string err;
 	auto rt = app::ProjectRuntime::Load(tapp.generic_string(), err);
 	Check(bool(rt) && err.empty(), "prt.load");
 	if (rt) {
 		Check(rt->Manifest().paks.size() == 1
-			&& rt->Manifest().assets.size() == 3,
+			&& rt->Registry().RecordCount() == 3,
 			"prt.manifest-parsed");
-		const smvk::AppManifestAsset* row = rt->Asset(0x2000);
-		Check(row && row->kind == "texture"
-			&& row->pak == "shared.pak" && row->path == vfsPath,
+		const tour::asset::ContentRecord* record = rt->Asset(0x2000);
+		Check(record && record->kind == smvk::kCatalogKindTexture
+			&& record->pak == "shared.pak" && record->path == vfsPath,
 			"prt.asset-row");
+		// The convergent reverse lookup (the registry's (kind, path)
+		// join — the same record the id form returns).
 		Check(rt->Asset(0x9999) == nullptr
-			&& rt->Asset("texture", vfsPath) == row,
+			&& rt->Registry().Find(smvk::kCatalogKindTexture, vfsPath)
+				== record,
 			"prt.asset-lookup");
 		std::string rErr;
 		auto bytes = rt->ReadAsset(0x2000, rErr);
@@ -600,7 +689,10 @@ void TestProjectRuntime() {
 		// THE SELECTIVE LANE (SMP8 + the pager): an asset read on a pak
 		// NOBODY preloaded does ONE positional page read — no backend
 		// was ever created, no whole-image preload ran (the small-load
-		// acceptance contract).
+		// acceptance contract). The load-time DISCOVERY consumed one
+		// page first (the pak's own "#ids" identity table — the records
+		// come from THE PAK now), so the counters start at 1: the asset
+		// read is exactly ONE more.
 		{
 			Check(!rt->HasPak("shared.pak"),
 				"prt.pager-no-backend-preloaded");
@@ -612,16 +704,17 @@ void TestProjectRuntime() {
 				const auto stats = pager->PageStats();
 				const auto fileSize = fs::file_size(
 					fs::path(rt->PakPath("shared.pak")));
-				Check(stats.diskReads == 1
+				Check(stats.diskReads == 2 // discovery's #ids + the asset
 					&& stats.bytesRead > 0
 					&& stats.bytesRead < fileSize,
 					"prt.pager-selective-bytes");
 				// The cached pager is THE one the read used (the lazy
-				// cache): a second read attaches, no new disk read.
+				// cache): a second read attaches, no new disk read
+				// (the count stays at the discovery + first-read pair).
 				std::string rErr2;
 				auto again = rt->ReadAsset(0x2000, rErr2);
 				Check(again && *again == ktx
-					&& pager->PageStats().diskReads == 1,
+					&& pager->PageStats().diskReads == 2,
 					"prt.pager-second-read-attaches");
 			}
 		}
@@ -657,6 +750,52 @@ void TestProjectRuntime() {
 		Check(bool(rt2)
 			&& rt2->ReadAsset(0x2000, rErr2) && rErr2.empty(),
 			"prt.moved-tree-reads");
+		// ---- THE CONVERGENCE CONTRACT through the façade (the
+		// consolidated content architecture's first acceptance
+		// contract): a mod pak serving the record's path overrides
+		// BOTH read forms — the id form (the compiled game) and the
+		// path form (the serialized-content lane) resolve through the
+		// SAME provider selection, and a toggle reveals the base
+		// provider beneath.
+		{
+			std::vector<uint8_t> ktxMod = ktx;
+			ktxMod.push_back(0xCCu);
+			const fs::path modPak = tmp / "mod.pak";
+			{
+				smvk::PakWriter w;
+				w.AddBlob(smvk::PakAssetKind::Texture, vfsPath,
+					smvk::BuildTexturePayload(vfsPath, -1, -1, -1,
+						-1, std::span<const uint8_t>(ktxMod)));
+				const std::vector<uint8_t> image = w.Finalize();
+				std::ofstream f(modPak, std::ios::binary
+					| std::ios::trunc);
+				f.write(reinterpret_cast<const char*>(image.data()),
+					std::streamsize(image.size()));
+			}
+			std::string oErr;
+			Check(rt->AddPakOverride("mod",
+					modPak.generic_string(), oErr) && oErr.empty(),
+				"prt.override-registers");
+			std::string idErr;
+			auto idBytes = rt->ReadAsset(0x2000, idErr);
+			std::string pErr;
+			auto pathBytes = rt->ReadAssetByPath(
+				smvk::kCatalogKindTexture, vfsPath, pErr);
+			Check(idBytes && *idBytes == ktxMod && idErr.empty(),
+				"prt.override-wins-id-form");
+			Check(pathBytes && *pathBytes == ktxMod && pErr.empty(),
+				"prt.override-wins-path-form");
+			Check(idBytes && pathBytes && *idBytes == *pathBytes,
+				"prt.forms-agree");
+			// The between-launches toggle: disabling the override
+			// reveals the base provider beneath (the shared.pak
+			// pager lane — no backend was ever adopted here).
+			rt->Registry().SetProviderEnabled("mod", false);
+			std::string baseErr;
+			auto baseBytes = rt->ReadAsset(0x2000, baseErr);
+			Check(baseBytes && *baseBytes == ktx && baseErr.empty(),
+				"prt.toggle-reveals-base");
+		}
 	}
 	else {
 		Check(false, "prt.manifest-parsed");
@@ -665,6 +804,11 @@ void TestProjectRuntime() {
 		Check(false, "prt.read-bytes");
 		Check(false, "prt.pager-no-backend-preloaded");
 		Check(false, "prt.pager-selective-bytes");
+		Check(false, "prt.override-registers");
+		Check(false, "prt.override-wins-id-form");
+		Check(false, "prt.override-wins-path-form");
+		Check(false, "prt.forms-agree");
+		Check(false, "prt.toggle-reveals-base");
 		Check(false, "prt.unknown-id-fails");
 		Check(false, "prt.moved-tree-reads");
 	}
@@ -741,6 +885,18 @@ void TestProjectScenes() {
 			smvk::BuildTexturePayload(texPath, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktx)));
 		w.AddBlob(smvk::PakAssetKind::Sound, wavPath, wav);
+		// THE PER-PAK IDENTITY TABLE (the records the runtime reads —
+		// the manifest's [ids] mirror is vestigial): the scene row
+		// carries the cooked NAME (the id->scene join).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1000, smvk::kCatalogKindScene,
+				"content/scenes/church.tour", "Church" },
+			{ 0x2000, smvk::kCatalogKindTexture, texPath, "" },
+			{ 0x4000, smvk::kCatalogKindSound, wavPath, "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "one.pak", std::ios::binary
 			| std::ios::trunc);
@@ -753,6 +909,16 @@ void TestProjectScenes() {
 			NamedSceneBlob("Alpha"));
 		w.AddBlob(smvk::PakAssetKind::Scene, "recording/two-b",
 			NamedSceneBlob("Beta"));
+		// The scene row WITHOUT a name: the multi-scene pak refuses
+		// loudly at load time (the single-scene inference has no
+		// ground here — the exact refusal the battery pins).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1001, smvk::kCatalogKindScene,
+				"content/scenes/two.tour", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "two.pak", std::ios::binary
 			| std::ios::trunc);
@@ -763,36 +929,26 @@ void TestProjectScenes() {
 	// The compiled-catalog contract's deployment half: the fingerprint
 	// over the [ids] rows in emission order (scenes, textures, meshes,
 	// sounds; id-sorted within - the fold the generated project.h
-	// emits as CatalogFingerprint).
+	// emits as CatalogFingerprint). IDENTITY ONLY (id, kind, path) —
+	// no package addressing in the fold.
 	const uint64_t fpIds[4] = { 0x1000, 0x1001, 0x2000, 0x4000 };
 	const uint8_t fpKinds[4] = { smvk::kCatalogKindScene,
 		smvk::kCatalogKindScene, smvk::kCatalogKindTexture,
 		smvk::kCatalogKindSound };
-	const uint32_t fpPaks[4] = { 0, 1, 0, 0 };
 	const char* const fpPaths[4] = { "content/scenes/church.tour",
 		"content/scenes/two.tour", "content/models/s/stone.png",
 		"content/audio/bells.wav" };
 	const uint64_t catalogFp = smvk::ComputeCatalogFingerprint(
-		fpIds, fpKinds, fpPaks, fpPaths, 4);
+		fpIds, fpKinds, fpPaths, 4);
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — the
+		// records come from the paks' own "#ids" tables (added above),
+		// the deployed fingerprint from the registry's record fold.
 		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
-			<< "entry one.pak Church\n";
-		{
-			char fp[32];
-			std::snprintf(fp, sizeof(fp), "0x%llX",
-				static_cast<unsigned long long>(catalogFp));
-			f << "catalog " << fp << "\n";
-		}
-		f << "\n[paks]\none.pak\ntwo.pak\n"
-			<< "\n[ids]\n"
-			// The recorded cooked name: the id->scene join.
-			<< "0x1000 scene one.pak content/scenes/church.tour Church\n"
-			// No recorded name: a multi-scene pak must refuse loudly.
-			<< "0x1001 scene two.pak content/scenes/two.tour\n"
-			<< "0x2000 texture one.pak " << texPath << "\n"
-			<< "0x4000 sound one.pak " << wavPath << "\n";
+			<< "appmanifest 2\n"
+			<< "entry one.pak Church\n"
+			<< "\n[paks]\none.pak\ntwo.pak\n";
 	}
 	std::string err;
 	auto rtOpt = app::ProjectRuntime::Load(tapp.generic_string(), err);
@@ -810,13 +966,13 @@ void TestProjectScenes() {
 	{
 		using Desc = app::ProjectRuntime::CompiledAssetDesc;
 		const Desc assets[4] = {
-			{ 0x1000, smvk::kCatalogKindScene, 0,
+			{ 0x1000, smvk::kCatalogKindScene,
 				"content/scenes/church.tour", "" },
-			{ 0x1001, smvk::kCatalogKindScene, 1,
+			{ 0x1001, smvk::kCatalogKindScene,
 				"content/scenes/two.tour", "" },
-			{ 0x2000, smvk::kCatalogKindTexture, 0,
+			{ 0x2000, smvk::kCatalogKindTexture,
 				"content/models/s/stone.png", "" },
-			{ 0x4000, smvk::kCatalogKindSound, 0,
+			{ 0x4000, smvk::kCatalogKindSound,
 				"content/audio/bells.wav", "" },
 		};
 		std::string aErr;
@@ -831,24 +987,66 @@ void TestProjectScenes() {
 		// A row the manifest does not carry fails loudly.
 		{
 			const Desc stray[1] = { { 0x5000,
-				smvk::kCatalogKindSound, 0, "content/audio/x.wav",
+				smvk::kCatalogKindSound, "content/audio/x.wav",
 				"" } };
 			std::string sErr;
 			Check(!rt.AttachCompiledCatalog(stray, 1, catalogFp, sErr)
 				&& sErr.find("0x20480") != std::string::npos,
 				"pscenes.catalog-unknown-row-fails");
 		}
-		// A pakIndex skew (the row names the wrong mount slot).
+		// A moved path fails loudly (identity never drifts silently:
+		// the compiled row and the deployed record must agree on the
+		// LOGICAL PATH, the one field beyond id + kind).
 		{
-			const Desc skewed[4] = { assets[0], assets[1],
-				{ 0x2000, smvk::kCatalogKindTexture, 1,
-					"content/models/s/stone.png", "" },
+			const Desc moved[4] = { assets[0], assets[1],
+				{ 0x2000, smvk::kCatalogKindTexture,
+					"content/models/s/moved.png", "" },
 				assets[3] };
-			std::string kErr;
-			Check(!rt.AttachCompiledCatalog(skewed, 4, catalogFp,
-					kErr)
-				&& kErr.find("mount-order") != std::string::npos,
-				"pscenes.catalog-pakindex-skew-fails");
+			std::string mErr;
+			Check(!rt.AttachCompiledCatalog(moved, 4, catalogFp,
+					mErr)
+				&& mErr.find("moved") != std::string::npos,
+				"pscenes.catalog-path-drift-fails");
+		}
+		// THE TYPED HELPER (the sample's bootstrap gate): a FOREIGN
+		// project.h-shaped Desc proves its layout at instantiation
+		// (static_asserts) and forwards — no reinterpret_cast in game
+		// code, the pointer cast lives in ONE audited place.
+		{
+			struct GeneratedDesc {
+				uint64_t id;
+				uint8_t kind;
+				std::string_view path;
+				std::string_view sceneName;
+			};
+			const GeneratedDesc gen[4] = {
+				{ 0x1000, smvk::kCatalogKindScene,
+					"content/scenes/church.tour", "" },
+				{ 0x1001, smvk::kCatalogKindScene,
+					"content/scenes/two.tour", "" },
+				{ 0x2000, smvk::kCatalogKindTexture,
+					"content/models/s/stone.png", "" },
+				{ 0x4000, smvk::kCatalogKindSound,
+					"content/audio/bells.wav", "" },
+			};
+			std::string gErr;
+			Check(app::AttachCompiledCatalog(rt, gen, 4, catalogFp,
+					gErr)
+				&& gErr.empty(),
+				"pscenes.typed-helper-attaches");
+			// The null/count convention: nullptr valid ONLY with
+			// count 0.
+			const GeneratedDesc* none = nullptr;
+			std::string nErr;
+			Check(!app::AttachCompiledCatalog(rt, none, 2, catalogFp,
+					nErr)
+				&& nErr.find("null pointer") != std::string::npos,
+				"pscenes.typed-helper-null-nonzero-refused");
+			std::string zErr;
+			Check(app::AttachCompiledCatalog(rt, none, 0, catalogFp,
+					zErr)
+				&& zErr.empty(),
+				"pscenes.typed-helper-null-zero-ok");
 		}
 	}
 	smvk::OverlayVfs vfs;
@@ -1018,6 +1216,55 @@ void TestProjectScenes() {
 			&& !scenes.IsLoaded(a) && !scenes.IsLoaded(b),
 			"pscenes.replace-unloads-all");
 	}
+
+	// ---- THE DISCOVERY SESSION (the .tapp-free form) -------------------
+	// ProjectRuntime::OpenDiscovered over LEGACY paks (no identity
+	// blobs): the paks join as path providers, PakNames reflects them
+	// (the manifest stays empty), the convergent path lane serves
+	// bytes, and id reads refuse honestly (no identity rows — the
+	// strict discovery lane's recook refusal is pinned in the
+	// content-registry tests).
+	{
+		std::string dErr;
+		const std::string pakArgs[2] = {
+			(tmp / "one.pak").generic_string(),
+			(tmp / "two.pak").generic_string() };
+		auto rtD = app::ProjectRuntime::OpenDiscovered(
+			{ pakArgs[0], pakArgs[1] }, dErr);
+		Check(bool(rtD) && dErr.empty()
+			&& rtD->PakNames().size() == 2
+			&& rtD->PakNames()[0] == "one.pak"
+			&& rtD->Manifest().paks.empty(),
+			"dsc.session-opens-legacy-paks");
+		if (rtD) {
+			// The path lane serves through the discovered providers
+			// (the pager lane — no backends adopted).
+			std::string rErr;
+			auto bytes = rtD->ReadAssetByPath(
+				smvk::kCatalogKindTexture, texPath, rErr);
+			Check(bytes && *bytes == ktx && rErr.empty(),
+				"dsc.path-read-serves-legacy");
+			// The manifest-relative PakPath consults the provider's
+			// own source (the given pak path).
+			Check(rtD->PakPath("one.pak") == pakArgs[0],
+				"dsc.pakpath-uses-provider-source");
+			// The discovery session's paks CARRY identity tables now
+			// (the records come from the paks): ReadAsset by id serves
+			// through the DISCOVERED records (the manifest mirror is
+			// ignored — vestigial).
+			std::string iErr;
+			auto byId = rtD->ReadAsset(0x2000, iErr);
+			Check(byId && *byId == ktx && iErr.empty(),
+				"dsc.identity-rows-read-through-paks");
+			// ProjectScenes over the discovered session: the ctor's
+			// adopt-or-open walks PakNames (the session's providers,
+			// manifest or not).
+			smvk::OverlayVfs dVfs;
+			app::ProjectScenes dScenes(*rtD, dVfs);
+			Check(dScenes.Valid() && dVfs.Mounts().size() == 2,
+				"dsc.scenes-ctor-adopts-discovered");
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,6 +1368,24 @@ void TestAssetManager() {
 			w.AddBlob(smvk::PakAssetKind::Plan, smvk::kPakMeshPlanPath,
 				smvk::WriteMeshPlanBlob(plan));
 		}
+		// THE PER-PAK IDENTITY TABLE (the records the runtime reads —
+		// the manifest's [ids] mirror is vestigial): the scene row
+		// carries the cooked NAME, the ghost family carries an
+		// identity but NO plan entry (the join's loud refusal).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1001, smvk::kCatalogKindScene,
+				"content/scenes/meshes.tour", "Meshes" },
+			{ 0x2000, smvk::kCatalogKindTexture, texPath, "" },
+			{ 0x3000, smvk::kCatalogKindMesh, treeFamily, "" },
+			{ 0x3001, smvk::kCatalogKindMesh, rockFamily, "" },
+			{ 0x3002, smvk::kCatalogKindMesh,
+				"content/models/ghost.geometry", "" },
+			{ 0x6000, smvk::kCatalogKindGi,
+				"content/gi/day.givolumemanifest", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		const std::vector<uint8_t> image = w.Finalize();
 		std::ofstream f(tmp / "one.pak", std::ios::binary
 			| std::ios::trunc);
@@ -1130,19 +1395,12 @@ void TestAssetManager() {
 	const fs::path tapp = tmp / "game.tapp";
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — the
+		// records come from one.pak's own "#ids" table (added above).
 		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
+			<< "appmanifest 2\n"
 			<< "entry one.pak x\n"
-			<< "\n[paks]\none.pak\n"
-			<< "\n[ids]\n"
-			<< "0x1001 scene one.pak content/scenes/meshes.tour Meshes\n"
-			<< "0x2000 texture one.pak " << texPath << "\n"
-			<< "0x3000 mesh one.pak " << treeFamily << "\n"
-			<< "0x3001 mesh one.pak " << rockFamily << "\n"
-			// The ghost family: blobs exist but the PLAN does not
-			// carry it - the join must refuse (recook).
-			<< "0x3002 mesh one.pak content/models/ghost.geometry\n"
-			<< "0x6000 gi one.pak content/gi/day.givolumemanifest\n";
+			<< "\n[paks]\none.pak\n";
 	}
 	std::string err;
 	auto rtOpt = app::ProjectRuntime::Load(tapp.generic_string(), err);
@@ -1615,6 +1873,7 @@ void TestWorldRetention() {
 int main() {
 	TestParallelCrcFirstUse();
 	TestCliParse();
+	TestRuntime();
 	TestPakPathResolution();
 	TestPakCorruption();
 	TestDeployCheck();

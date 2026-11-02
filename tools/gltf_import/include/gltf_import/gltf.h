@@ -322,9 +322,41 @@ private:
 };
 
 
-bool LoadModelFromAsciiFile(
+// THE source-model loader (every mesh import funnels through here):
+// dispatches by format — glTF (ASCII JSON) and GLB (detected by MAGIC,
+// never by extension) load through tinygltf, .obj through the
+// tinyobjloader adapter (LoadObjFileAsModel below) — then EXTRACTS
+// every embedded image (data: URIs, GLB bufferView payloads) to a
+// sidecar file beside the source and rewrites its uri, so the whole
+// downstream (texture sources, .material TexRefs, project dependency
+// staging, the content digest) addresses embedded textures exactly
+// like authored external files. A failed extraction (read-only source
+// directory) fails the load LOUDLY — every consumer needs the file.
+// `extraDeps` (optional out) receives source dependencies the synthetic
+// model cannot express: today the .mtl files an OBJ source consumed.
+bool LoadModelFromSourceFile(
 	tinygltf::Model& model,
-	const char* filename
+	const char* filename,
+	std::vector<std::string>* extraDeps = nullptr
+);
+
+// The OBJ adapter (obj_import.cpp): parses the .obj (+ its mtllib
+// .mtl files, which must exist — a missing material library is a loud
+// failure, matching the "missing dependency" policy of the glTF lane)
+// and builds the tinygltf::Model interchange form in memory: one
+// glTF node per OBJ shape (names preserved), one mesh per shape with
+// the faces grouped into primitives by material, PBR fields mapped
+// from the MTL dialect (Kd/map_Kd -> baseColor, Ke/map_Ke -> emissive,
+// `norm` -> normalTexture, the PBR extension scalars when authored,
+// roughness from Ns otherwise; map_bump is deliberately NOT bound — a
+// height field is not a normal map) and map paths normalized to POSIX
+// uris relative to the .obj. OBJ and glTF share the Y-up right-handed
+// basis, so no correction transform is applied. `mtlDeps` receives the
+// .mtl file names as authored (the digest/staging dependency set).
+bool LoadObjFileAsModel(
+	tinygltf::Model& model,
+	const std::filesystem::path& objPath,
+	std::vector<std::string>& mtlDeps
 );
 
 // glTF punctual aim axis (KHR_lights_punctual: the light node's -Z

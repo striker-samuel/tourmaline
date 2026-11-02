@@ -29,6 +29,8 @@
 #include <artifact_cache/assetdb.h>
 #include <artifact_cache/artifact_cache.h>
 
+#include <gltf_import/source_formats.h>
+
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
 #include <project_pipeline/project_catalog.h>
@@ -302,14 +304,14 @@ bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
 	std::set<std::string> reimported;
 	for (const std::string& artifact : families) {
 		const fs::path artifactAbs = projectRoot / fs::path(artifact);
-		// The family's source glTF/GLB: beside a .geometry artifact, or
-		// the artifact itself when the tour referenced the raw source.
+		// The family's source (a mesh source format — .gltf/.glb/.obj):
+		// beside a .geometry artifact, or the artifact itself when the
+		// tour referenced the raw source.
 		std::vector<fs::path> candidates;
-		const std::string ext = artifactAbs.extension().generic_string();
-		if (ext == ".gltf" || ext == ".glb")
+		if (smvk::assets::IsMeshSourceFile(artifactAbs))
 			candidates.push_back(artifactAbs);
 		else
-			for (const char* e : { ".gltf", ".glb" }) {
+			for (const char* e : { ".gltf", ".glb", ".obj" }) {
 				fs::path src = artifactAbs;
 				src.replace_extension(e);
 				candidates.push_back(src);
@@ -417,31 +419,35 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		}
 	}
 
-	// ---- 2.5) the SOUND-ID table (the pre-stage catalog ensure) --------
+	// ---- 2.5) the pre-stage catalog ensure --------------------------------
 	// The cooked scenes' audio sections stamp STABLE 0x4xxx ids, so the
-	// identity pass runs BEFORE the pak stages (idempotent — the
-	// manifest step below re-runs it for the final table; on a FIRST
+	// identity pass runs BEFORE the pak stages (idempotent; on a FIRST
 	// build THIS is what mints the .wav sidecars + ids the packer
 	// consumes). A plan with no sound assets yields an empty table =
 	// the bare-cook semantic (referenced sounds serialize 0).
+	// The catalog stays in scope below: the per-pak IDENTITY-TABLE
+	// append (the "#ids" registry blob) + the post-publish project.h
+	// re-stamp read the same rows, and the project's node schemas ride
+	// it (the generated project::types + the content-hash fold — the
+	// same collection the ids pass runs).
 	std::vector<std::pair<std::string, uint64_t>> soundIds;
+	ProjectCatalog catalog;
 	{
 		const std::string registryRoot =
 			smvk::cache::EnsureRegistryRoot(project.DerivedDataDir());
 		smvk::cache::AssetDatabase db;
 		if (!registryRoot.empty()
 				&& db.Open(registryRoot, project.root, err)) {
-			ProjectCatalog catalog;
 			std::vector<std::string> deps;
-			if (GenerateProjectCatalog(project, plan, db, catalog, deps,
+			if (!GenerateProjectCatalog(project, plan, db, catalog,
+					deps, err)
+				|| !CollectNodeSchemas(project.root, catalog.schemas,
 					err)) {
-				for (const CatalogEntry& e : catalog.sounds)
-					soundIds.emplace_back(e.path, e.id);
-			}
-			else {
-				err = "the pre-stage sound-id catalog failed: " + err;
+				err = "the pre-stage catalog failed: " + err;
 				return false;
 			}
+			for (const CatalogEntry& e : catalog.sounds)
+				soundIds.emplace_back(e.path, e.id);
 		}
 		else {
 			err = "the asset db open failed for the sound-id table: "
@@ -613,6 +619,76 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					return false;
 				}
 			}
+			// ---- THE PER-PAK IDENTITY TABLE (the "#ids" registry
+			// blob) — the consolidated content architecture's
+			// discovery lane: the pak carries its OWN identity rows
+			// (the .tapp [ids] successor), appended POST-COOK through
+			// the append-grow lane. The ids/kinds/paths come from the
+			// catalog THIS build generated (one owner per asset — the
+			// same policing above), the scene rows' cooked names from
+			// the just-written pak itself (ListPakScenes — the join
+			// the manifest records; a multi-scene pak leaves the name
+			// empty and rides the single-scene inference). STABLE
+			// SLOTS are preserved across appends (the compiled plans'
+			// addressing keeps working — project_plans.h re-folds from
+			// the FINAL paks below, so the layout contract stays
+			// consistent), and the publish pass hashes the APPENDED
+			// bytes: the content-addressed name covers the identity
+			// table too.
+			{
+				std::vector<::tour::asset::PakAssetIdRow> rows;
+				const auto addRows =
+					[&](const std::vector<CatalogEntry>& entries)
+						-> bool {
+					for (const CatalogEntry& e : entries) {
+						if (e.pak != pak.id)
+							continue;
+						::tour::asset::PakAssetIdRow row;
+						row.id = e.id;
+						row.path = e.path;
+						if (!smvk::CatalogKindFromString(e.kind,
+								row.kind)) {
+							err = "[Pak " + pak.id + "] the catalog"
+								" row carries kind '" + e.kind
+								+ "' — not a catalog kind";
+							return false;
+						}
+						if (row.kind == smvk::kCatalogKindScene) {
+							std::string slerr;
+							const std::vector<smvk::PakSceneInfo>
+								scenes = smvk::ListPakScenes(*reader,
+									&slerr);
+							row.sceneName = scenes.size() == 1
+								? scenes[0].name : std::string{};
+						}
+						rows.push_back(std::move(row));
+					}
+					return true;
+				};
+				if (!addRows(catalog.scenes)
+						|| !addRows(catalog.textures)
+						|| !addRows(catalog.meshes)
+						|| !addRows(catalog.sounds)
+						|| !addRows(catalog.shaders)
+						|| !addRows(catalog.gi))
+					return false;
+				const std::vector<uint8_t> blob =
+					::tour::asset::WriteAssetIdsBlob(rows);
+				std::vector<std::pair<std::string,
+					std::span<const uint8_t>>> append = {
+					{ ::tour::asset::kPakAssetIdsPath,
+						std::span<const uint8_t>(blob) },
+				};
+				std::vector<smvk::PakAppendInfo> appended;
+				std::string aerr;
+				if (!smvk::AppendPakBlobs(stage.outPak,
+						smvk::PakAssetKind::Identity, append,
+						appended, aerr)) {
+					err = "[Pak " + pak.id + "] the identity-table"
+						" append failed: " + aerr;
+					return false;
+				}
+			}
 		}
 		BuildPlanReport::Pak rep;
 		rep.id = pak.id;
@@ -749,141 +825,15 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		manifest.entryScene = entrySceneName;
 		for (const fs::path& p : finalPaths)
 			manifest.paks.push_back(p.filename().generic_string());
-		// The content-id table (the runtime mirror of the generated
-		// project.h — game code resolves stable ids through the
-		// apphost's ProjectRuntime without the header). The SAME
-		// registry (assets.db — the one identity store) the ids
-		// command maintains; ensuring here is idempotent, so a build
-		// alone is sufficient and the manifest always carries the
-		// current catalog.
-		// (Hoisted out of the block below: the post-publish project.h
-		// re-stamp reuses the SAME catalog the manifest mirrored.)
-		ProjectCatalog catalog;
-		{
-			const std::string registryRoot =
-				smvk::cache::EnsureRegistryRoot(project.DerivedDataDir());
-			smvk::cache::AssetDatabase db;
-			if (!registryRoot.empty()
-					&& db.Open(registryRoot, project.root, err)) {
-				std::vector<std::string> deps;
-				if (GenerateProjectCatalog(project, plan, db, catalog,
-						deps, err)) {
-					// The project's node schemas (the generated
-					// project::types + the content-hash fold - the
-					// same collection the ids pass runs).
-					if (!CollectNodeSchemas(project.root,
-							catalog.schemas, err))
-						return false;
-					std::map<std::string, std::string> pakFileById;
-					for (size_t i = 0; i < plan.paks.size(); ++i)
-						pakFileById[plan.paks[i].id] =
-							finalPaths[i].filename().generic_string();
-					// The COOKED SCENE NAME per scene id row (the
-					// id->scene join the runtime's LoadScene-by-id
-					// resolves). Same rule as the entry scene above:
-					// reopen the owning pak, list its scenes, record
-					// scene[0]'s name (tour-built paks carry exactly
-					// one; a multi-scene pak warns and records [0] —
-					// the ownership model keeps one tour scene per
-					// pak by construction). Paks not built in THIS
-					// run (a catalog row pointing outside the plan)
-					// leave the name empty: the runtime then infers
-					// from a single-scene pak and refuses multi-scene
-					// paks loudly (recook).
-					std::map<std::string, fs::path> finalPathByFile;
-					for (const fs::path& p : finalPaths)
-						finalPathByFile[p.filename().generic_string()] = p;
-					std::map<std::string, std::string> sceneNameByPak;
-					const auto sceneNameOf =
-						[&](const std::string& pakFile)
-						-> std::string {
-						auto known = sceneNameByPak.find(pakFile);
-						if (known != sceneNameByPak.end())
-							return known->second;
-						std::string name;
-						const auto it = finalPathByFile.find(pakFile);
-						if (it != finalPathByFile.end()) {
-							std::ifstream in(it->second, std::ios::binary);
-							std::vector<uint8_t> image(
-								(std::istreambuf_iterator<char>(in)),
-								std::istreambuf_iterator<char>());
-							std::string rerr;
-							auto reader = smvk::PakReader::Open(
-								std::span<const uint8_t>(image), rerr);
-							std::string lerr;
-							std::vector<smvk::PakSceneInfo> scenes;
-							if (reader)
-								scenes = smvk::ListPakScenes(*reader,
-									&lerr);
-							if (scenes.empty()) {
-								std::printf("[build] scene row pak '%s'"
-									" carries no scenes (%s) — the row"
-									" keeps no cooked name\n",
-									pakFile.c_str(),
-									(reader ? lerr : rerr).c_str());
-							}
-							else {
-								name = scenes[0].name;
-								if (name.empty())
-									name = "scene"; // the packer's default
-								if (scenes.size() > 1)
-									std::printf("[build] scene row pak"
-										" '%s' carries %zu scenes;"
-										" recording scene[0] '%s'\n",
-										pakFile.c_str(), scenes.size(),
-										name.c_str());
-							}
-						}
-						sceneNameByPak[pakFile] = name;
-						return name;
-					};
-					const auto addRows =
-						[&](const std::vector<CatalogEntry>& entries,
-							const char* kind) {
-							for (const CatalogEntry& e : entries) {
-								smvk::AppManifestAsset row;
-								row.id = e.id;
-								row.kind = kind;
-								row.pak = pakFileById.count(e.pak)
-									? pakFileById[e.pak] : e.pak;
-								row.path = e.path;
-								// Scene rows: the cooked scene name
-								// (the optional 5th [ids] token — see
-								// appmanifest.h).
-								if (std::string_view(kind) == "scene")
-									row.name = sceneNameOf(row.pak);
-								manifest.assets.push_back(
-									std::move(row));
-							}
-						};
-					addRows(catalog.scenes, "scene");
-					addRows(catalog.textures, "texture");
-					addRows(catalog.meshes, "mesh");
-					addRows(catalog.sounds, "sound");
-					addRows(catalog.shaders, "shader");
-					addRows(catalog.gi, "gi");
-					// The CATALOG FINGERPRINT (the compiled-catalog contract's
-					// deployment half): the SAME fold the generated project.h
-					// emits as project::CatalogFingerprint (CatalogFingerprintOf -
-					// one implementation, no drift). The runtime compares the two,
-					// so a compiled game and its deployed content can never
-					// silently disagree.
-					manifest.catalogFingerprint = CatalogFingerprintOf(catalog);
-				}
-				else {
-					// The manifest's id table is part of the build's
-					// product now — a registry failure fails the build.
-					err = "the manifest's content-id table failed: "
-						+ err;
-					return false;
-				}
-			}
-			else {
-				err = "the asset db open failed for the content-id"
-					" table: " + err;
-				return false;
-			}
-		}
+		// THE MANIFEST CARRIES NO CATALOG (appmanifest 2): the release
+		// pointer is entry + [paks] ONLY — every listed pak carries
+		// its OWN "#ids" identity table (appended post-cook in the pak
+		// stage above), and the runtime joins them through discovery
+		// (ProjectRuntime::Load — ContentRegistry::DiscoverPak per
+		// listed pak). The generated project.h + the paks' tables are
+		// the whole catalog contract; the manifest never mirrors
+		// identity again (the [ids] duplication the consolidated
+		// audit killed).
 		std::string manifestName = options.manifestName;
 		if (manifestName.empty()) {
 			manifestName = fs::path(entryPak->output).stem()
@@ -1138,15 +1088,16 @@ bool BuildProject(const Project& project, const BuildOptions& options,
 	if (!fs::is_regular_file(artifactAbs, ec)) {
 		err = "the tour's referenced artifact is missing: '" + refSource
 			+ "' (import the source first: Project.exe import --project "
-			+ project.root + " --source <glTF>)";
+			+ project.root + " --source <model .gltf/.glb/.obj>)";
 		return false;
 	}
 	out.artifact = refSource;
 
 	// ---- 3) import freshness (reimport stale; unchanged = no-op) --------
-	// The source glTF/GLB beside the imported artifact (same stem, same
-	// directory — the project's copy-in convention).
-	for (const char* ext : { ".gltf", ".glb" }) {
+	// The source (a mesh source format — .gltf/.glb/.obj) beside the
+	// imported artifact (same stem, same directory — the project's
+	// copy-in convention).
+	for (const char* ext : { ".gltf", ".glb", ".obj" }) {
 		const fs::path srcAbs =
 			fs::path(artifactAbs).replace_extension(ext);
 		if (!fs::is_regular_file(srcAbs, ec))

@@ -26,34 +26,45 @@ namespace smvk {
 
 namespace app {
 
+class ProjectRuntime; // the content session (ProjectRuntime.h)
+
 // Loads scene `sceneIndex` (0 = default) from the preloaded pak into a
 // fresh tour::World (uploads issued to ctx; everything renders by
-// handles). Null on any failure (logged). Mounts the pak backend into
-// contentVfs at priority 10 (below loose content/, so dev overrides
-// win) before the anim-clip resolution so the pak serves its own
-// embedded clips (the self-contained path).
+// handles). Null on any failure (logged). The pak's backend mounts
+// into contentVfs at priority 10 (below loose content/, so dev
+// overrides win) AND ADOPTS into the session's registry (the
+// shared-image lane) so the anim-clip resolution below resolves
+// through the SAME provider selection every other content read
+// uses — the overlay keeps its protocol role (the engine hands the
+// world-source callback a vfs; hosts mount their paks into it),
+// the CONTENT reads ride the session.
 tour::mem::LinearPtr<tour::World> LoadPakWorld(
 	PakPreload pre,
 	int sceneIndex,
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
-	tour::TextureStreamer* sceneStreamer);
+	tour::TextureStreamer* sceneStreamer,
+	app::ProjectRuntime& session);
 
-// The --project launch (the appmanifest flow): EVERY listed pak
-// preloaded + mounted (manifest order) BEFORE the cluster load —
-// cross-pak textures resolve through the mounted backends via
-// DeserializeCluster's external-texture hook, GI payloads + anim clips
-// the same way — then the entry scene loads BY NAME from the entry
-// pak (identity, never an index). A failed preload of ANY listed pak
-// fails the launch (named, loud — never an unrelated fallback scene).
-// `preloads` is manifest order; `entryPakIndex` indexes into it.
+// The --project + multi-pak launch (the session flows): EVERY listed
+// pak preloaded + mounted (manifest order) BEFORE the cluster load —
+// cross-pak textures resolve through the content session's REGISTRY
+// (DeserializeCluster's external-texture hook; the preloaded backends
+// ADOPT into the session's registry — the shared-image lane) — GI
+// payloads + anim clips the same way — then the entry scene loads BY
+// NAME from the entry pak (identity, never an index). A failed
+// preload of ANY listed pak fails the launch (named, loud — never an
+// unrelated fallback scene). `preloads` is manifest order;
+// `entryPakIndex` indexes into it; `session` is the launch's content
+// session (REQUIRED — every content read on this path rides it).
 tour::mem::LinearPtr<tour::World> LoadProjectWorld(
 	std::vector<PakPreload> preloads,
 	size_t entryPakIndex,
 	const std::string& entrySceneName,
 	smvk::ResourceManager& ctx,
 	smvk::OverlayVfs& contentVfs,
-	tour::TextureStreamer* sceneStreamer);
+	tour::TextureStreamer* sceneStreamer,
+	app::ProjectRuntime* session);
 
 // STATIC-FLAG APPLICATION (the loader's decision seam — public for
 // PakHostTests, which drives it on hand-built value worlds). Cooked
@@ -68,9 +79,12 @@ void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName);
 // layer (ProjectScenes): anim-clip attach (the first skinned cluster),
 // cooked static flags, the resolve/fixup that folds the loaded clusters
 // into the merged world scene, and the env-gated scene-prep diagnostics.
-// Public so additive scene loads run the SAME tail as the entry load.
-// `pakStem` is the anim fallback's stem (the loading pak's).
+// EVERY content read resolves through the SESSION (the registry's
+// provider union — the host overlay is no longer a content source on
+// any runtime path). Public so additive scene loads run the SAME tail
+// as the entry load. `pakStem` is the anim fallback's stem (the loading
+// pak's).
 void PostLoadTail(tour::World& world, const std::string& pakStem,
-	smvk::OverlayVfs& contentVfs);
+	app::ProjectRuntime& session);
 
 } // namespace app

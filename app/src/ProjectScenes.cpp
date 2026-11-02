@@ -104,9 +104,12 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 			mounted.emplace(m.name, std::move(pb));
 	}
 	// (b) KICK parallel preloads for the rest (the runtime's own cache
-	//     counts as opened — HasPak, no double read).
+	//     counts as opened — HasPak, no double read). The session's PAK
+	//     NAMES drive the loop (the manifest's [paks] or the discovered
+	//     providers — one authority, whatever lane built the session).
+	const std::vector<std::string> pakNames = runtime.PakNames();
 	std::vector<std::string> missing;
-	for (const std::string& pak : runtime.Manifest().paks) {
+	for (const std::string& pak : pakNames) {
 		if (mounted.count(pak) || runtime.HasPak(pak))
 			continue;
 		missing.push_back(pak);
@@ -125,11 +128,11 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 			m_openError = "the project pak '" + missing[i]
 				+ "' failed: " + pre.error;
 	}
-	// (c) Register + mount, in MANIFEST order (the mount order the
-	//     overlay's cross-pak resolution depends on). First failure
-	//     poisons the layer (Valid() == false) but keeps mounting —
-	//     the error names the pak.
-	for (const std::string& pak : runtime.Manifest().paks) {
+	// (c) Register + mount, in the session's PAK ORDER (the mount
+	//     order the overlay's cross-pak resolution depends on). First
+	//     failure poisons the layer (Valid() == false) but keeps
+	//     mounting — the error names the pak.
+	for (const std::string& pak : pakNames) {
 		std::shared_ptr<smvk::PakBackend> backend;
 		if (auto it = mounted.find(pak); it != mounted.end())
 			backend = it->second;
@@ -149,8 +152,8 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 			contentVfs.Mount(backend, 10, pak);
 	}
 	if (m_openError.empty()) {
-		std::cerr << "[Scenes] project ready: "
-			<< runtime.Manifest().paks.size() << " pak(s) adopted/mounted"
+		std::cerr << "[Scenes] project ready: " << pakNames.size()
+			<< " pak(s) adopted/mounted"
 			<< "\n";
 	}
 	else {
@@ -166,22 +169,26 @@ std::optional<ProjectScenes::SceneTarget> ProjectScenes::ResolveSceneTarget(
 	err.clear();
 	if (auto cached = m_targets.find(sceneId); cached != m_targets.end())
 		return cached->second;
-	const smvk::AppManifestAsset* row = m_runtime.Asset(sceneId);
-	if (!row) {
+	// The id->scene join runs through the registry's canonical record
+	// (identity: kind byte + owner pak + the cooked scene name).
+	const tour::asset::ContentRecord* record =
+		m_runtime.Asset(sceneId);
+	if (!record) {
 		err = "unknown content id " + HexId(sceneId)
 			+ " (a version skew between the compiled project.h and the"
 			" packaged content?)";
 		return std::nullopt;
 	}
-	if (row->kind != "scene") {
-		err = "content id " + HexId(sceneId) + " is a '" + row->kind
+	if (record->kind != smvk::kCatalogKindScene) {
+		err = "content id " + HexId(sceneId) + " is a '"
+			+ smvk::CatalogKindToString(record->kind)
 			+ "' — scene loading takes SCENE ids (the pak's cooked"
 			" scene, by identity)";
 		return std::nullopt;
 	}
 	std::string perr;
 	std::shared_ptr<smvk::PakBackend> backend = m_runtime.OpenPak(
-		row->pak, perr);
+		record->pak, perr);
 	if (!backend) {
 		err = perr;
 		return std::nullopt;
@@ -190,30 +197,31 @@ std::optional<ProjectScenes::SceneTarget> ProjectScenes::ResolveSceneTarget(
 	const std::vector<smvk::PakSceneInfo> scenes =
 		smvk::ListPakScenes(backend->Reader(), &lerr);
 	if (scenes.empty()) {
-		err = "the scene pak '" + row->pak + "' carries no scenes: "
+		err = "the scene pak '" + record->pak + "' carries no scenes: "
 			+ lerr;
 		return std::nullopt;
 	}
 	SceneTarget t;
-	t.pak = row->pak;
-	if (!row->name.empty()) {
+	t.pak = record->pak;
+	if (!record->sceneName.empty()) {
 		// The recorded name (the build's ListPakScenes result — the
 		// id->scene join). A mismatch is a build/runtime version skew
 		// and fails loudly, never a guess.
 		size_t idx = scenes.size();
 		for (size_t i = 0; i < scenes.size(); ++i)
-			if (scenes[i].name == row->name) {
+			if (scenes[i].name == record->sceneName) {
 				idx = i;
 				break;
 			}
 		if (idx == scenes.size()) {
-			err = "the cooked scene '" + row->name + "' is not in pak '"
-				+ row->pak + "' (a build/runtime version skew — recook"
-				" the project)";
+			err = "the cooked scene '" + record->sceneName
+				+ "' is not in pak '" + record->pak
+				+ "' (a build/runtime version skew — recook the"
+				" project)";
 			return std::nullopt;
 		}
 		t.sceneIndex = uint32_t(idx);
-		t.sceneName = row->name;
+		t.sceneName = record->sceneName;
 	}
 	else if (scenes.size() == 1) {
 		// No recorded name (a row that predates the name token): a
@@ -222,7 +230,7 @@ std::optional<ProjectScenes::SceneTarget> ProjectScenes::ResolveSceneTarget(
 		t.sceneName = scenes[0].name;
 	}
 	else {
-		err = "the scene pak '" + row->pak + "' carries "
+		err = "the scene pak '" + record->pak + "' carries "
 			+ std::to_string(scenes.size()) + " scenes and the manifest"
 			" row records no cooked name — recook (the build records"
 			" the name since the scene-name token)";
@@ -286,9 +294,15 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 	}
 	// The cross-pak texture resolver (the same hook LoadProjectWorld
 	// installs): a material URI with no blob in the scene's pak is
-	// served from whatever mounted backend carries it. Null ctx (the
-	// GPU-less seam) never resolves — the real deserialize that invokes
-	// it never runs without a context.
+	// served from whatever PROVIDER carries its logical path — through
+	// the session's registry (ReadAssetByPath), NOT this layer's
+	// leftover vfs overlay: the registry is the ONE resolution
+	// authority, so an override serving the path wins for the
+	// serialized-content form EXACTLY as it wins for the compiled-id
+	// form (the convergence contract). A path with no catalog record
+	// resolves path-only through the same provider precedence.
+	// Null ctx (the GPU-less seam) never resolves — the real
+	// deserialize that invokes it never runs without a context.
 	smvk::ResourceManager* resolverCtx = ctx;
 	smvk::ExternalTextureResolver resolver =
 		[resolverCtx, this](tour::Cluster& c,
@@ -299,10 +313,14 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 			return {};
 		}
 		const std::string norm = smvk::NormalizeAssetUri(uri).Str();
-		auto bytes = m_vfs.TryRead(norm.empty() ? uri : norm);
+		std::string rErr;
+		auto bytes = m_runtime.ReadAssetByPath(
+			smvk::kCatalogKindTexture,
+			norm.empty() ? uri : norm, rErr);
 		if (!bytes || bytes->empty()) {
 			std::cerr << "[Scenes] cross-pak texture unresolved: "
-				<< uri << "\n";
+				<< uri << (rErr.empty() ? "" : (" — " + rErr))
+				<< "\n";
 			return {};
 		}
 		std::vector<smvk::KtxMemoryJob> jobs;
@@ -340,11 +358,13 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 		return {};
 	}
 	inst->cluster = cluster;
-	// The shared post-load tail: anim attach, cooked static flags, the
+	// The shared post-load tail: anim attach (through the SESSION —
+	// the registry's provider union; the overlay is no longer a
+	// content source on any runtime path), cooked static flags, the
 	// resolve that folds the new cluster into the merged world scene
 	// (the additive scene's nodes become world nodes exactly like the
 	// entry scene's).
-	PostLoadTail(world, StemOf(target->pak), m_vfs);
+	PostLoadTail(world, StemOf(target->pak), m_runtime);
 	if (ctx)
 		ctx->FlushUploads();
 	std::cerr << "[Scenes] scene " << HexId(sceneId) << " loaded (pak '"
@@ -414,8 +434,9 @@ bool ProjectScenes::Prefetch(uint64_t assetId, std::string& err) {
 		err = "the project's paks did not all open: " + m_openError;
 		return false;
 	}
-	const smvk::AppManifestAsset* row = m_runtime.Asset(assetId);
-	if (!row) {
+	const tour::asset::ContentRecord* record =
+		m_runtime.Asset(assetId);
+	if (!record) {
 		err = "unknown content id " + HexId(assetId);
 		return false;
 	}
@@ -423,13 +444,13 @@ bool ProjectScenes::Prefetch(uint64_t assetId, std::string& err) {
 	// expensive half of a first read). Scenes additionally resolve +
 	// cache their SceneTarget (the name join), so the later load
 	// skips straight to the deserialize.
-	if (row->kind == "scene") {
+	if (record->kind == smvk::kCatalogKindScene) {
 		if (!ResolveSceneTarget(assetId, err))
 			return false;
 	}
 	else {
 		std::string perr;
-		if (!m_runtime.OpenPak(row->pak, perr)) {
+		if (!m_runtime.OpenPak(record->pak, perr)) {
 			err = perr;
 			return false;
 		}

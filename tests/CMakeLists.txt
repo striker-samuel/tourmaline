@@ -32,6 +32,25 @@ set_target_properties(AssetQueryTests PROPERTIES
 
 add_test(NAME asset_query_tests COMMAND AssetQueryTests)
 
+# The content registry (Engine/Asset/content_registry.h — the
+# consolidated content architecture): the CONVERGENCE CONTRACT (the
+# id form + the path form resolve the same effective provider),
+# override precedence + toggling, both byte lanes (pager + adopted
+# backend), the corrupt-owner diagnostics and the kind gates.
+# No GPU, no window: hand-built paks + a hand-written .tapp.
+add_executable(ContentRegistryTests test_content_registry.cpp)
+
+target_link_libraries(ContentRegistryTests
+    PRIVATE
+        engine
+)
+
+set_target_properties(ContentRegistryTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME content_registry_tests COMMAND ContentRegistryTests)
+
 # .tourAnim loader/sampler + the Cluster pose driver (headless).
 add_executable(TourAnimTests test_touranim.cpp)
 
@@ -329,6 +348,33 @@ set_target_properties(MotionBlurTests PROPERTIES
 )
 
 add_test(NAME motionblur_tests COMMAND MotionBlurTests)
+
+# The multi-format MESH-IMPORT lane (LoadModelFromSourceFile +
+# ImportMeshSource): the format gate (.gltf/.glb/.obj), the GLB binary
+# load (the old ASCII-only parse failed every .glb), EMBEDDED-texture
+# extraction (GLB bufferView images + glTF data: URIs -> sidecar files
+# the material/digest/staging machinery addresses like authored ones),
+# and the OBJ adapter end-to-end (geometry, MTL map refs, .mtl digest
+# dependency, missing-library refusal). CPU-only (offline-mode
+# derivations into temp dirs).
+add_executable(SourceImportTests test_source_import.cpp)
+
+target_include_directories(SourceImportTests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/external/stb
+)
+
+target_link_libraries(SourceImportTests
+    PRIVATE
+        gltf_import
+        engine
+)
+
+set_target_properties(SourceImportTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME source_import_tests COMMAND SourceImportTests)
 
 project(TourTests)
 
@@ -855,6 +901,7 @@ add_executable(PakHostTests test_pak_host.cpp
 	../app/src/AssetStore.cpp
 	../app/src/AssetManager.cpp
 	../app/src/DeployCheck.cpp
+	../app/src/Runtime.cpp
 )
 
 target_include_directories(PakHostTests
@@ -1035,6 +1082,7 @@ tourmaline_stage_sdl3(CubemapTests)
 tourmaline_stage_sdl3(ParticlesTests)
 tourmaline_stage_sdl3(MotionBlurTests)
 tourmaline_stage_sdl3(TourTests)
+tourmaline_stage_sdl3(SourceImportTests)
 tourmaline_stage_sdl3(KnightAnimTests)
 tourmaline_stage_sdl3(AssetOpsTests)
 tourmaline_stage_sdl3(WorldEntityTests)
@@ -1055,6 +1103,7 @@ tourmaline_stage_sdl3(WorldFieldAssetTests)
 tourmaline_stage_sdl3(EnvVolumeTests)
 tourmaline_stage_sdl3(RetirementFuzzTests)
 tourmaline_stage_sdl3(PakHostTests)
+tourmaline_stage_sdl3(ContentRegistryTests)
 tourmaline_stage_sdl3(ProjectPipelineTests)
 tourmaline_stage_sdl3(ProbePremixGpuTests)
 tourmaline_stage_sdl3(RhiUploadBarrierGpuTests)

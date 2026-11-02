@@ -42,8 +42,8 @@ bool NativeOpenFile(std::string& outPath, bool images) {
 	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
 			CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
 		static const COMDLG_FILTERSPEC kFilters[] = {
-			{ L"Scene files", L"*.gltf;*.glb;*.tour" },
-			{ L"glTF scenes", L"*.gltf;*.glb" },
+			{ L"Scene files", L"*.gltf;*.glb;*.obj;*.tour" },
+			{ L"Model sources", L"*.gltf;*.glb;*.obj" },
 			{ L"Tour files", L"*.tour" },
 			{ L"All files", L"*.*" },
 		};
@@ -292,7 +292,7 @@ bool NativeOpenFile(std::string& outPath, bool images) {
 	const char* filter = images
 		? "--file-filter='Images | *.ktx2 *.png *.jpg *.jpeg *.tga *.bmp *.exr *.hdr' "
 		  "--file-filter='All files | *'"
-		: "--file-filter='Scene files | *.gltf *.glb *.tour' "
+		: "--file-filter='Scene files | *.gltf *.glb *.obj *.tour' "
 		  "--file-filter='All files | *'";
 	if (HaveZenity())
 		return RunZenity(outPath, filter);

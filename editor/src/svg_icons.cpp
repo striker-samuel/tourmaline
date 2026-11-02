@@ -48,7 +48,8 @@ EditorApp::IconType EditorApp::IconTypeFor(const std::string& name,
 		std::filesystem::path(name).extension().string();
 	for (char& c : ext)
 		c = char(std::tolower((unsigned char)c));
-	if (ext == ".gltf" || ext == ".glb" || ext == ".geometry"
+	if (ext == ".gltf" || ext == ".glb" || ext == ".obj"
+		|| ext == ".geometry"
 		// the pre-10/6 derived-blob name (read-only legacy)
 		|| ext == ".mesh")
 		return IconType::Model;

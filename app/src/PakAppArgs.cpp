@@ -23,16 +23,24 @@ namespace {
 
 void PrintUsage(const char* prog) {
 	std::cout << "Usage: " << (prog ? prog : "App")
-		<< " --pak <path.pak> (REQUIRED) [--scene-index N]\n"
+		<< " --pak <path.pak> (REQUIRED, repeatable)"
+		" [--scene <name>] [--scene-index N]\n"
 		<< "  " << (prog ? prog : "App")
 		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
 		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
-		<< "  --pak runs a cooked pak — REQUIRED (or --project), there is no\n"
-		<< "  default (no entry-point pak = the App refuses to run);\n"
-		<< "  scenes inside are discovered at startup, index 0 loads unless\n"
-		<< "  --scene-index picks another. The App loads OUR format only:\n"
+		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
+		<< "  no default (no entry-point pak = the App refuses to run).\n"
+		<< "  ONE --pak runs the legacy single-pak lane: scenes inside\n"
+		<< "  are discovered at startup, index 0 loads unless\n"
+		<< "  --scene-index picks another (--scene <name> loads by the\n"
+		<< "  cooked scene's identity instead). SEVERAL --pak run the\n"
+		<< "  multi-pak discovery lane: every pak joins ONE content\n"
+		<< "  session (cross-pak content resolves through it — a pak\n"
+		<< "  carrying its '#ids' identity table contributes its ids\n"
+		<< "  too), the entry scene is --scene's name or the first\n"
+		<< "  scene-bearing pak's. The App loads OUR format only:\n"
 		<< "  preprocess glTF through the editor (import -> cook).\n"
 		<< "  --project launches a recipe build's appmanifest: every listed\n"
 		<< "  pak mounts (manifest-relative, listed order) and the entry\n"
@@ -113,16 +121,22 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 	for (int i = 1; i < argc; ++i) {
 		const char* a = argv[i];
 		if ((std::strcmp(a, "--pak") == 0) && i + 1 < argc) {
-			opts.pakPath = argv[++i];
+			opts.pakPaths.emplace_back(argv[++i]);
 		}
 		else if (std::strncmp(a, "--pak=", 6) == 0) {
-			opts.pakPath = a + 6;
+			opts.pakPaths.emplace_back(a + 6);
 		}
 		else if ((std::strcmp(a, "--project") == 0) && i + 1 < argc) {
 			opts.project = argv[++i];
 		}
 		else if (std::strncmp(a, "--project=", 10) == 0) {
 			opts.project = a + 10;
+		}
+		else if ((std::strcmp(a, "--scene") == 0) && i + 1 < argc) {
+			opts.sceneName = argv[++i];
+		}
+		else if (std::strncmp(a, "--scene=", 8) == 0) {
+			opts.sceneName = a + 8;
 		}
 		else if ((std::strcmp(a, "--scene-index") == 0) && i + 1 < argc) {
 			const char* v = argv[++i];
@@ -232,31 +246,46 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			return false;
 		}
 	}
-	// The entry-point gate: --pak OR --project (one entry point, no
-	// silent defaults). The appmanifest path is exclusive with the
-	// single-pak surface (--pak/--scene-index): identity-based launch
-	// never mixes with index-based.
-	if (!opts.project.empty() && !opts.pakPath.empty()) {
+	// The entry-point gate: --pak (one or more) OR --project (one entry
+	// point, no silent defaults). The appmanifest path is exclusive with
+	// the pak surface (--pak/--scene/--scene-index): identity-based
+	// launch never mixes with index-based.
+	if (!opts.project.empty() && !opts.pakPaths.empty()) {
 		std::cerr << "--project and --pak are mutually exclusive: the"
 			" appmanifest names its own entry point.\n";
 		PrintUsage(argv[0]);
 		exitCode = EXIT_FAILURE;
 		return false;
 	}
-	if (!opts.project.empty() && opts.sceneIndex != 0) {
-		std::cerr << "--scene-index has no effect with --project: the"
-			" appmanifest resolves the entry scene by identity.\n";
+	if (!opts.project.empty() && (opts.sceneIndex != 0
+			|| !opts.sceneName.empty())) {
+		std::cerr << "--scene/--scene-index have no effect with"
+			" --project: the appmanifest resolves the entry scene by"
+			" identity.\n";
 		PrintUsage(argv[0]);
 		exitCode = EXIT_FAILURE;
 		return false;
 	}
-	if (opts.pakPath.empty() && opts.project.empty()) {
+	// Index vs identity never mixes: --scene (the cooked name) and
+	// --scene-index pick the entry scene through different addressing.
+	if (!opts.sceneName.empty() && opts.sceneIndex != 0) {
+		std::cerr << "--scene and --scene-index are mutually exclusive:"
+			" pick the entry scene by identity or by index, never"
+			" both.\n";
+		PrintUsage(argv[0]);
+		exitCode = EXIT_FAILURE;
+		return false;
+	}
+	if (opts.pakPaths.empty() && opts.project.empty()) {
 		std::cerr << "--pak <path.pak> (or --project <path.tapp>) is"
 			" REQUIRED: no entry point, nothing to run.\n";
 		PrintUsage(argv[0]);
 		exitCode = EXIT_FAILURE;
 		return false;
 	}
+	// The single-pak legacy lane's mirror field.
+	if (!opts.pakPaths.empty())
+		opts.pakPath = opts.pakPaths.front();
 	exitCode = EXIT_SUCCESS;
 	return true;
 }

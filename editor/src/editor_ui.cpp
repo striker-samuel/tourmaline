@@ -5362,7 +5362,7 @@ namespace editor {
 			std::string e = fs::path(p).extension().string();
 			for (char& c : e)
 				c = char(std::tolower((unsigned char)c));
-			return e == ".gltf" || e == ".glb" || e == ".tour";
+			return smvk::assets::IsMeshSourceExtension(e) || e == ".tour";
 		};
 		{
 			const bool selFile = !m_assetsSel.empty()
@@ -5385,7 +5385,7 @@ namespace editor {
 			// Add-to-scene (mesh/geometry selection): the click twin of the
 			// viewport drag-drop (AddSceneReference asset-bind). Imports
 			// land in-project first (ImportAsset), so this only ever adds
-			// in-project assets. A .gltf/.glb container adds its first
+			// in-project assets. A mesh-source container adds its first
 			// derived geometry (same as expanding it and dropping the tile).
 			{
 				auto isMeshAsset = [](const std::string& p) {
@@ -5398,7 +5398,7 @@ namespace editor {
 					std::string e = fs::path(p).extension().string();
 					for (char& c : e)
 						c = char(std::tolower((unsigned char)c));
-					return e == ".gltf" || e == ".glb";
+					return smvk::assets::IsMeshSourceExtension(e);
 				};
 				const bool canAdd = selFile && m_world != nullptr && !m_cookRunning
 					&& (isMeshAsset(m_assetsSel) || isGltfContainer(m_assetsSel));
@@ -5814,10 +5814,10 @@ namespace editor {
 						c = char(std::tolower((unsigned char)c));
 					if (e == ".meta")
 						continue; // the asset's own identity sidecar
-					if (e == ".gltf" || e == ".glb") {
-						// With a manifest the glTF presents as a FOLDER of its
-						// derived assets; without one it opens as a scene
-						// (the legacy path).
+					if (smvk::assets::IsMeshSourceExtension(e)) {
+						// With a manifest the source presents as a FOLDER
+						// of its derived assets; without one it opens as
+						// a scene (the legacy path).
 						std::string merr;
 						smvk::assets::AssetManifest man;
 						isGltf = smvk::assets::LoadAssetManifest(

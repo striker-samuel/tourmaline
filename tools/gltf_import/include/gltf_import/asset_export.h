@@ -330,19 +330,27 @@ bool DeriveGltfAssets(
 	const DeriveConfig& config,
 	AssetManifest& outManifest,
 	DeriveStats* outStats = nullptr,
-	std::string* err = nullptr);
+	std::string* err = nullptr,
+	// Non-glTF source dependencies the synthetic model cannot express
+	// (today: the .mtl files an OBJ source consumed — LoadModelFrom-
+	// SourceFile's extraDeps). Folded into the recorded sourceDigest so
+	// an .mtl edit re-derives exactly like a texture edit does.
+	const std::vector<std::string>& extraSourceDeps = {});
 
 // THE MESH IMPORTER entry: parse + derive in one call. The parse is
-// host-side (glTF is an import-time SOURCE format, never runtime/VFS
-// content). `gltfGuid` is the source's project identity — callers WITHOUT
+// host-side (mesh source formats — .gltf/.glb through tinygltf, .obj
+// through the tinyobjloader adapter, see LoadModelFromSourceFile — are
+// import-time SOURCE formats, never runtime/VFS content; embedded
+// textures extract to sidecar files at load). `gltfGuid` is the
+// source's project identity — callers WITHOUT
 // their own (assetdb-less, from-zero) pass "" and the derivation falls back
 // to the previous manifest / the SOURCE FILE CONTENT (SourceAssetGuid);
-// `prevIdentity` is the caller-resolved ledger (nullptr = the .gltf.meta
-// beside the source, when one exists). On success the .geometry +
-// .material/.anim set + the manifest sit next to the source, and
-// outManifest carries the table. The natural driver is
-// MeshArtifactStale below (derive only when the artifacts are missing or
-// the source changed).
+// `prevIdentity` is the caller-resolved ledger (nullptr = the
+// <source>.meta beside the source, when one exists). On success the
+// .geometry + .material/.anim set + the manifest sit next to the
+// source, and outManifest carries the table. The natural driver is
+// MeshArtifactStale below (derive only when the artifacts are missing
+// or the source changed).
 bool ImportMeshSource(
 	const std::filesystem::path& gltfPath,
 	const std::string& gltfGuid,
@@ -368,18 +376,24 @@ bool ImportMeshSource(
 [[nodiscard]] std::string SourceAssetGuid(
 	const std::filesystem::path& gltfPath);
 // SourceContentDigest: the STALENESS identity — the same two-lane hash
-// over the .gltf bytes PLUS every external source it pulls in (.bin
-// buffers + referenced images, sorted by authored URI for determinism;
-// missing/unreadable files contribute a ":missing:<uri>" marker, remote
-// http(s) URIs contribute the URI alone). Same bytes anywhere = same
-// digest; any edited dependency flips it. Recorded as sourcedigest= and
-// compared by MeshArtifactStale: a texture or .bin edit re-derives (the
-// old single-file digest missed those — the source .gltf never changes
-// when a texture is repainted). .glb (all-embedded) digests to the .glb
-// bytes alone = byte-identical to SourceAssetGuid (no churn).
+// over the source bytes PLUS every external source it pulls in (the
+// .bin buffers + referenced images + extraSourceDeps, sorted by
+// authored URI for determinism; missing/unreadable files contribute a
+// ":missing:<uri>" marker, remote http(s) URIs contribute the URI
+// alone). Same bytes anywhere = same digest; any edited dependency
+// flips it. Recorded as sourcedigest= and compared by
+// MeshArtifactStale: a texture, .bin or .mtl edit re-derives (the old
+// single-file digest missed those — the source file itself never
+// changes when a texture is repainted). GLB-EMBEDDED images extract to
+// sidecar files at load (LoadModelFromSourceFile), so they enter the
+// digest as ordinary external files — an all-embedded .glb whose
+// extracted sidecars are untouched digests to its own bytes + the
+// extracted payloads (deterministic; a hand-edit of an extracted
+// sidecar flips it and the re-import regenerates it from the source).
 [[nodiscard]] std::string SourceContentDigest(
 	const std::filesystem::path& gltfPath,
-	const tinygltf::Model& model);
+	const tinygltf::Model& model,
+	const std::vector<std::string>& extraSourceDeps = {});
 // Single-image import (import.exe + loose-image drops): writes
 // <stem>.texture beside the source (editor CreateTextureAsset parity:
 // sRGB/rgba8/full-chain/repeat/linear defaults; the guid is the source
@@ -431,12 +445,15 @@ inline constexpr uint32_t kImportPipelineRevision = 1;
 // directory-independent.
 [[nodiscard]] std::string ImportFingerprintFor(const DeriveConfig& config);
 
-// The glTF's EXTERNAL DEPENDENCY FILES (the .bin buffers + referenced
-// images, POSIX-relative authored URIs; remote http(s) URIs excluded —
-// they are not copyable locals). The project import copies exactly this
-// set + the .gltf itself into the project. This module is the single
-// glTF-aware surface (no second parser): the enumeration parses through
-// the same tinygltf path the importer uses.
+// The mesh source's EXTERNAL DEPENDENCY FILES (the .bin buffers +
+// referenced images of a glTF/GLB — embedded images arrive here as
+// their extracted sidecar files — plus the .mtl material libraries of
+// an OBJ source; POSIX-relative authored URIs, remote http(s) URIs
+// excluded — they are not copyable locals). The project import copies
+// exactly this set + the source itself into the project. This module
+// is the single source-aware surface (no second parser): the
+// enumeration parses through the same LoadModelFromSourceFile path
+// the importer uses.
 [[nodiscard]] std::vector<std::string> GltfExternalDependencies(
 	const std::filesystem::path& gltfPath);
 

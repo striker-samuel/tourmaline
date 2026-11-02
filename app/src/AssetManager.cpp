@@ -167,25 +167,29 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 		}
 		m_impl->meshByKey.erase(hit);
 	}
-	const smvk::AppManifestAsset* row = m_impl->runtime.Asset(key);
-	if (!row) {
+	// The canonical record (the registry's identity table — the
+	// manifest [ids] join's successor surface).
+	const tour::asset::ContentRecord* record =
+		m_impl->runtime.Asset(key);
+	if (!record) {
 		err = "unknown content id " + HexId(key)
 			+ " (a version skew between the compiled project.h and the"
 			" packaged content?)";
 		return {};
 	}
-	if (row->kind != "mesh") {
-		err = "content id " + HexId(key) + " is a '" + row->kind
+	if (record->kind != smvk::kCatalogKindMesh) {
+		err = "content id " + HexId(key) + " is a '"
+			+ smvk::CatalogKindToString(record->kind)
 			+ "' - LoadMesh takes MESH ids";
 		return {};
 	}
-	// The mesh family: the row's .geometry path is the URI PREFIX the
+	// The mesh family: the record's .geometry path is the URI PREFIX the
 	// pak's Mesh blobs carry ("<path>#mesh.<i>/prim.<j>" + /lodN
 	// siblings). The blob paths come from the READER's TOC (the join),
 	// the pool handles from the loaded cluster's URI registry.
 	std::string perr;
 	std::shared_ptr<smvk::PakBackend> backend =
-		m_impl->runtime.OpenPak(row->pak, perr);
+		m_impl->runtime.OpenPak(record->pak, perr);
 	if (!backend) {
 		err = perr;
 		return {};
@@ -195,14 +199,15 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	// string-scans the TOC). A missing plan/family = version skew =
 	// loud failure.
 	std::vector<smvk::PakMeshPlanMember> members;
-	if (!AssetStore::FamilyMembers(*backend, row->path, members, err))
+	if (!AssetStore::FamilyMembers(*backend, record->path, members,
+			err))
 		return {};
 	// ACQUIRE the family's carrier through the store: found (held),
 	// adopted from a world-registered scene cluster, or loaded through
 	// the cluster-source seam - with asset-side refs that keep it
 	// alive across scene removals (the park bridge).
 	tour::Cluster* cluster = m_impl->store.AcquireFamilyCluster(
-		m_impl->world, row->pak, row->path, members,
+		m_impl->world, record->pak, record->path, members,
 		options.keepResident, err);
 	if (!cluster)
 		return {};
@@ -220,7 +225,7 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 		}
 	}
 	if (!baseMesh.valid()) {
-		err = "the mesh family '" + row->path
+		err = "the mesh family '" + record->path
 			+ "' loaded but carries no base mesh (a cook anomaly)";
 		return {};
 	}
@@ -241,7 +246,7 @@ MeshHandle AssetManager::LoadMesh(uint64_t key, std::string& err,
 	slot.alive = true;
 	slot.keepResident = options.keepResident;
 	slot.key = key;
-	slot.pak = row->pak;
+	slot.pak = record->pak;
 	slot.cluster = cluster;
 	slot.mesh = baseMesh;
 	const MeshHandle handle{
@@ -438,15 +443,17 @@ GiHandle AssetManager::LoadGI(uint64_t key, std::string& err) {
 			return hit->second;
 		m_impl->giByKey.erase(hit);
 	}
-	const smvk::AppManifestAsset* row = m_impl->runtime.Asset(key);
-	if (!row) {
+	const tour::asset::ContentRecord* record =
+		m_impl->runtime.Asset(key);
+	if (!record) {
 		err = "unknown content id " + HexId(key)
 			+ " (a version skew between the compiled project.h and the"
 			" packaged content?)";
 		return {};
 	}
-	if (row->kind != "gi") {
-		err = "content id " + HexId(key) + " is a '" + row->kind
+	if (record->kind != smvk::kCatalogKindGi) {
+		err = "content id " + HexId(key) + " is a '"
+			+ smvk::CatalogKindToString(record->kind)
 			+ "' - LoadGI takes GI ids (.givolumemanifest sets)";
 		return {};
 	}
@@ -478,7 +485,7 @@ GiHandle AssetManager::LoadGI(uint64_t key, std::string& err) {
 		flush();
 	}
 	if (paths.empty()) {
-		err = "the GI manifest '" + row->path + "' lists no volumes";
+		err = "the GI manifest '" + record->path + "' lists no volumes";
 		return {};
 	}
 	// The slot.
