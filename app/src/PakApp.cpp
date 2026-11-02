@@ -78,6 +78,9 @@ namespace app {
 				else if (tok == "motion") { passCfg.motionVectors = passCfg.motionBlur = enable; }
 				else if (tok == "dof") flag = &passCfg.dof;
 				else if (tok == "ssr") flag = &passCfg.ssr;
+                else if (tok == "ssgi") flag = &passCfg.ssgiDiffuse;
+                else if (tok == "volumetric") flag = &passCfg.volumetric;
+                else if (tok == "contact") flag = &passCfg.contactShadows;
 				else if (tok == "bloom") flag = &passCfg.bloom;
 				else if (tok == "exposure") flag = &passCfg.exposure;
 				else if (tok == "msaa") flag = &passCfg.msaa;
