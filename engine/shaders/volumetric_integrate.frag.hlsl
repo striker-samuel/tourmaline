@@ -317,8 +317,11 @@ float SampleVolumetricShadow(float3 wpos, FrameUniforms frame)
         frame.fogShadowRect.xy + frame.fogShadowRect.zw);
 
     SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
+    // The dedicated coarse atlas has mip 1 rasterized explicitly from
+    // volumetric-marked casters. Never read an unpopulated mip: the
+    // coarse-shadow feed is enabled only when its depth passes run.
     float storedDepth = textures[vp.shadowDepthIndex]
-        .SampleLevel(smp, atlasUV, 0.0).r;
+        .SampleLevel(smp, atlasUV, 1.0).r;
 
     float receiver = ndc.z - frame.fogShadowBias * 0.3;
     static const float kFogSunSoften = 16.0;
