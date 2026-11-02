@@ -1,13 +1,10 @@
 # Headless running + bench/capture reference
 
 The full A/B-pin and debug-view reference. All `TOURMALINE_*` knobs are
-declared, parsed, and covered by `WarnUnknown` in `engine/App/RunConfig.h/.cpp`
+declared, parsed, and covered by `WarnUnknown` in `engine/include/Engine/App/RunConfig.h` and `engine/src/App/RunConfig.cpp`
 (one knob, one place).
 
-- `App.exe` runs from the build directory (`out/build/x64-Release`),
-  loading `content/paks/*.pak` and `content/shaders/*.spv` relative to
-  CWD. Redirect `*.log` output to `out/logs/` (root is for sources, not
-  logs).
+- `App` and `Benchmark` run from the configured build directory (for example, `out/build/x64-Release`); staged runtime shaders and cooked content are resolved relative to that working directory. The build also stages `engine-shaders.pak`. Keep logs under `out/`, not in the source root.
 
 ## The bench/capture contract
 
@@ -24,11 +21,24 @@ $env:TOURMALINE_CAPTURE='48'
   forced off — uncapped immediate present; an explicit
   `--present <mode>` wins).
 - `TOURMALINE_CAPTURE=<frame>` exports `exports/screenshot_*.png` — the
-  frame number must land INSIDE the bench budget (capture < bench;
-  e.g. capture 12 with bench 32), otherwise the auto-exit happens
-  before the export.
+  requested frame must arrive before auto-exit (10 warmup frames plus
+  measured `--bench` frames); e.g. capture 12 with bench 32. For the
+  harness's **Nsight** `--capture-frame`, the CLI validates this bound
+  separately; it is not the same as the PNG-export environment pin.
 - Combined with `TOURMALINE_SSR`, `TOURMALINE_EVSM`,
   `TOURMALINE_TRANSPARENCY` the pins below span the full A/B matrix.
+
+## Dedicated benchmark and scenario replay
+
+The `Benchmark` CMake target runs the same pak/project host without the App viewer's gameplay/audio extensions and refuses an interactive run without `--bench`. The Python runner manages frame budgets, repeat runs, logs, and scenario replay; it does **not** bypass the need for a Vulkan-capable GPU.
+
+```powershell
+cmake --build out/build/x64-Release --target Benchmark
+python tools/perf_harness.py list
+python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/x64-Release/Benchmark.exe --repeat 5
+```
+
+The catalog example needs a **separately cooked Bistro pak** in the benchmark build directory. Export new views from `App` using **TAB → Benchmark scenarios → Export for benchmark** (press **I** to enable UI cursor if needed). Each saved entry captures camera, cooked launch identity, supported startup pins, and a consolidated `--with` / `--without` pass graph; live-only controls may not be reproducible. See [scenario catalog](../benchmarks/README.md) and [performance harness](perf_harness.md). The harness runs from the repository root, but the renderer runs with the binary's directory as CWD.
 
 ## Quality A/B pins
 

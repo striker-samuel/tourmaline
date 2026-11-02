@@ -423,17 +423,20 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 ```
 
 * **RHI context** (`m_context`, from `AppImpl`): device, upload/flush, buffer/texture/
-  shader creation. Editor render path (`editor_render.cpp`) is a minimal forward
-  viewport (Unlit/Lit/Lit+Shadows + UV/vertex/baked/meshlet/flat-UV debug modes),
-  NOT the App rendergraph — same compiled shaders, own passes (main/shadow/inset/
-  gizmo lines/lightmap-export).
+  shader creation. Most editor views use the editor's own forward passes (`editor_render.cpp`)
+  for unlit, UV, meshlet and authoring overlays. **One selected viewport at a time**
+  instead composites the full `WorldRenderer` live render graph: ordinary Lit on
+  viewport 0 by default, or F8 baked irradiance in a selected viewport.
+  The editor-only passes remain active for all other viewports.
 * **World**: `m_world` GPU world + primary-cluster texture/material/light pools.
   Structural edits preserve indices (no Resolve); `RefreshNodeDrawState` mirrors
   `ResolveAndFixup_clusters` flag rules per node.
 * **Cameras/viewports**: `EditorCam` orbit frames (target/yaw/pitch/dist + persp/ortho);
   layout Single or Quad 2×2; hovered viewport is ACTIVE (input/gizmo/shadows/framing).
-  `ViewMode` is per-viewport (F-keys act on active). Central rect = window minus
-  left/right/bottom docks + tool tabs (`kEditorLeftW/RightW/BottomH`).
+  `ViewMode` is per-viewport (F-keys act on active). The shared live-preview policy
+  prioritizes the active F8 viewport, then another F8 viewport, then viewport 0
+  when it is Lit. The full renderer uses perspective cameras; orthographic views
+  remain on editor-native rendering. Central rect = window minus the docks/tool tabs.
 
 ### 7.2 Scene loading flows
 
@@ -478,10 +481,18 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 | Images/file nodes | `editor_app.h:789` | `ImageDef` (path+wrap/colorspace/filter) → cluster texture on use; `fileNode` cooked, `editorSettings` not |
 | Paths | `editor_paths.cpp` | Unified source/tour/ref/URI/cook/atlas view; live relink = undoable slot reassign + `path.remap.*`; copy-fix is cook-safe |
 | Cook/Run | `editor_cook.cpp` | `CookToPak`: temp coalesced tour → `PakCooker --tour` pipe worker (`CookFeed` live console) → optional `GiBaker` cvol+world stages; the cooked pak runs in the App (`--pak`, never `--gltf` — the App loads our format only); pak scenes refuse cook |
-| LM inspect/export | `editor_lmexport.cpp` | `.sglm` atlas inspect, F8/F10 views, offscreen unwrapped PNG export |
+| LM inspect/export | `editor_lmexport.cpp` | `.sglm` atlas inspection and offscreen unwrapped PNG export; F8 now uses the full renderer's baked-GI debug rather than the retired lightmap-only shader |
+| Live preview | `editor_render.cpp`, `editor_live_preview_policy.h` | One inlined `WorldRenderer`: viewport 0 Lit by default or the chosen F8 baked view; propagates current selection and draws subtree bounds in the full renderer |
+| Asset browser | `editor_ui.cpp`, `editor_asset_inspect.h`, `editor_asset_browser_nav.h` | Typed inspectors for recognized asset formats; fallback file/directory metadata and bounded, read-only UTF-8 preview for other entries; hide internal cubemap/GI-cook artifacts from browser tiles and collections (not from disk or cooking) |
 | Branding/prefs/dialogs | `editor_branding.cpp`, `editor_native_dialog.cpp` | Tourmaline gem + generated logo (chrome only); native open/save; prefs auto-save on shutdown/close |
 
-### 7.5 UI layout (docks)
+### 7.5 Current view and asset-browser behavior
+
+- **Baked irradiance (F8)** is not gated on an old `.sglm` lightmap atlas. It isolates baked GI via the full renderer's regular/convex probes and cooked lightmaps. **Magenta means no baked source covers the pixel**, even under the renderer's otherwise GI-disabled variant. Bake GI and enable the relevant volume source before interpreting the view. Single and quad layouts use the same viewport-selection policy. The selected node/subtree outline is drawn by `WorldRenderer` in its own pass so it remains visible in the composited view.
+- **Asset selection** routes `.material`, `.geometry` / legacy `.mesh`, `.texture`, `.gicook`, `.lmcook`, `.cubemap`, `.givolume`, and supported image sources to specialized pages. A directory or otherwise unrecognized file shows name, path, type, and size, plus a **read-only first-64-KiB UTF-8** preview if it is valid text; binary or invalid UTF-8 is metadata-only. This is a preview, not an arbitrary-file editor.
+- **Internal artifacts** (`.cubemap`, `.cubemanifest`, `.gicook` and matching asset kinds) are hidden from asset-browser tiles, collection results, and expanded listings. They still exist in the asset database and are used by cook/bake operations; hiding a tile is not deletion. Other kinds (including lightmap-cook and regular authored assets) are not hidden by this rule.
+
+### 7.6 UI layout (docks)
 
 Menu bar (gem mark) → tool topbar tabs (Select/Transform/Terrain/Placement/Modes) →
 left Outliner (Scene/VFS tabs) + right Inspector (node/World/material/env/cvol/cubemap/
