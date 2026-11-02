@@ -3609,7 +3609,7 @@ void TestProjectHeaderStamp() {
 		"stamp.unchanged-skip");
 	// A developer editing the checked-in header cannot make that edit
 	// stick: the next normal ids pass replaces the entire C++ body
-	// with the generator\'s output. No forced --stamp required.
+	// with the generator's output. No forced --stamp required.
 	{
 		const fs::path edited = tmp / "edited" / "project.h";
 		fs::create_directories(edited.parent_path(), ec);
@@ -3619,7 +3619,7 @@ void TestProjectHeaderStamp() {
 			&& editedWrote, "stamp.manual-edit-setup");
 		{
 			std::ofstream f(edited, std::ios::binary | std::ios::trunc);
-			f << "#define USER_EDIT_MUST_NOT_SURVIVE 1\\n" << first;
+			f << "#define USER_EDIT_MUST_NOT_SURVIVE 1\n" << first;
 		}
 		std::string repaired;
 		smvk::project::GenerationStamp repairedStamp;
