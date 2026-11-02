@@ -28,6 +28,7 @@
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
 #include <project_pipeline/project_catalog.h>
+#include <Engine/Asset/content_registry.h>
 #include <project_pipeline/project_recipe.h>
 #include <project_pipeline/recipe_resolver.h>
 
@@ -1331,7 +1332,7 @@ void TestAppManifest() {
 			std::stringstream ss;
 			ss << f.rdbuf();
 			const std::string text = ss.str();
-			Check(text.find("appmanifest 1") != std::string::npos
+			Check(text.find("appmanifest 2") != std::string::npos
 				&& text.find("entry world.pak scene")
 					!= std::string::npos
 				&& text.find("[paks]") != std::string::npos,
@@ -1346,50 +1347,37 @@ void TestAppManifest() {
 		};
 		const Bad bad[] = {
 			{ "no-version", "# c\nentry a.pak scene\n[paks]\na.pak\n" },
-			{ "bad-version", "appmanifest 2\nentry a.pak scene\n"
+			{ "bad-version", "appmanifest 3\nentry a.pak scene\n"
 				"[paks]\na.pak\n" },
-			{ "no-entry", "appmanifest 1\n[paks]\na.pak\n" },
-			{ "entry-not-listed", "appmanifest 1\nentry b.pak scene\n"
+			{ "v1-manifest", "appmanifest 1\nentry a.pak scene\n"
 				"[paks]\na.pak\n" },
-			{ "no-paks", "appmanifest 1\nentry a.pak scene\n[paks]\n" },
-			{ "absolute-pak", "appmanifest 1\nentry a.pak scene\n"
+			{ "no-entry", "appmanifest 2\n[paks]\na.pak\n" },
+			{ "entry-not-listed", "appmanifest 2\nentry b.pak scene\n"
+				"[paks]\na.pak\n" },
+			{ "no-paks", "appmanifest 2\nentry a.pak scene\n[paks]\n" },
+			{ "absolute-pak", "appmanifest 2\nentry a.pak scene\n"
 				"[paks]\nC:/abs/a.pak\n" },
-			{ "escaping-pak", "appmanifest 1\nentry a.pak scene\n"
+			{ "escaping-pak", "appmanifest 2\nentry a.pak scene\n"
 				"[paks]\n../a.pak\n" },
-			{ "duplicate-pak", "appmanifest 1\nentry a.pak scene\n"
+			{ "duplicate-pak", "appmanifest 2\nentry a.pak scene\n"
 				"[paks]\na.pak\na.pak\n" },
-			{ "unknown-directive", "appmanifest 1\nfrobnicate x\n"
+			{ "unknown-directive", "appmanifest 2\nfrobnicate x\n"
 				"entry a.pak scene\n[paks]\na.pak\n" },
-			{ "unknown-section", "appmanifest 1\nentry a.pak scene\n"
+			{ "unknown-section", "appmanifest 2\nentry a.pak scene\n"
 				"[recipes]\na.pak\n" },
-			{ "bad-entry-arity", "appmanifest 1\nentry a.pak\n"
+			{ "bad-entry-arity", "appmanifest 2\nentry a.pak\n"
 				"[paks]\na.pak\n" },
-			{ "empty-scene-name", "appmanifest 1\nentry a.pak \"\"\n"
+			{ "empty-scene-name", "appmanifest 2\nentry a.pak \"\"\n"
 				"[paks]\na.pak\n" },
-			// The [ids] table (the runtime catalog mirror).
-			{ "id-bad-hex", "appmanifest 1\nentry a.pak scene\n"
+			// APPMANIFEST 2's loud refusals: the v1 catalog fields are
+			// GONE — a manifest that carries them dies naming the
+			// section (the paks' own "#ids" tables are the catalog).
+			{ "v1-ids-section",
+				"appmanifest 2\nentry a.pak scene\n"
 				"[paks]\na.pak\n[ids]\nzz scene a.pak c/s.tour\n" },
-			{ "id-duplicate", "appmanifest 1\nentry a.pak scene\n"
-				"[paks]\na.pak\n[ids]\n0x10 scene a.pak c/a.tour\n"
-				"0x10 texture a.pak c/b.png\n" },
-			{ "id-bad-kind", "appmanifest 1\nentry a.pak scene\n"
-				"[paks]\na.pak\n[ids]\n0x10 widget a.pak c/a.tour\n" },
-			{ "id-unlisted-pak", "appmanifest 1\nentry a.pak scene\n"
-				"[paks]\na.pak\n[ids]\n0x10 scene b.pak c/a.tour\n" },
-			{ "id-bad-arity", "appmanifest 1\nentry a.pak scene\n"
-				"[paks]\na.pak\n[ids]\n0x10 scene a.pak\n" },
-			{ "id-zero", "appmanifest 1\nentry a.pak scene\n"
-				"[paks]\na.pak\n[ids]\n0x0 scene a.pak c/a.tour\n" },
-			// The scene-name token (the id->scene join): 5th token is
-			// scene-rows-only, and whitespace in it is malformed.
-			{ "id-name-on-nonscene", "appmanifest 1\nentry a.pak"
-				" scene\n[paks]\na.pak\n[ids]\n0x10 texture a.pak"
-				" c/a.png Church\n" },
-			{ "id-name-whitespace", "appmanifest 1\nentry a.pak"
-				" scene\n[paks]\na.pak\n[ids]\n0x10 scene a.pak"
-				" c/a.tour \"Two Words\"\n" },
-			{ "id-bad-arity-6", "appmanifest 1\nentry a.pak scene\n"
-				"[paks]\na.pak\n[ids]\n0x10 scene a.pak c/a.tour x y\n" },
+			{ "v1-catalog-line",
+				"appmanifest 2\ncatalog 0xDEADBEEFDEADBEEF\n"
+				"entry a.pak scene\n[paks]\na.pak\n" },
 		};
 		for (const Bad& b : bad) {
 			smvk::AppManifest m;
@@ -1397,6 +1385,18 @@ void TestAppManifest() {
 			Check(!smvk::LoadAppManifestText(b.text, m, err)
 				&& !err.empty(),
 			(std::string("tapp.reject.") + b.name).c_str());
+		}
+		// The v1-rejection MESSAGES name the successor (actionable,
+		// never a bare "unknown section").
+		{
+			smvk::AppManifest m;
+			std::string err;
+			Check(!smvk::LoadAppManifestText("appmanifest 2\n"
+					"entry a.pak scene\n[paks]\na.pak\n"
+					"[ids]\n0x10 scene a.pak c/a.tour\n", m, err)
+				&& err.find("'#ids' identity tables")
+					!= std::string::npos,
+				"tapp.reject.v1-ids-names-successor");
 		}
 		// Save refuses an invalid manifest too.
 		{
@@ -1410,67 +1410,6 @@ void TestAppManifest() {
 					m, err)
 				&& err.find("not listed") != std::string::npos,
 				"tapp.save-rejects-invalid");
-		}
-	}
-	// The [ids] round-trip: save -> load -> identical rows + FindAsset.
-	{
-		smvk::AppManifest m;
-		m.version = smvk::kAppManifestVersion;
-		m.entryPak = "world.pak";
-		m.entryScene = "scene";
-		m.paks = { "shared.pak", "world.pak" };
-		m.assets = {
-			{ 0x1000, "scene", "world.pak", "content/scenes/w.tour",
-				"Church" },
-			// A scene row WITHOUT a name (pre-name manifests) stays
-			// 4-token — the runtime infers from a single-scene pak.
-			{ 0x1001, "scene", "shared.pak", "content/scenes/o.tour" },
-			{ 0x2000, "texture", "shared.pak",
-				"content/models/s/stone.png" },
-			{ 0x3000, "mesh", "world.pak", "content/models/w/w.geometry" },
-			// The sound kind (0x4xxx rows — VFS-addressable .wav
-			// assets, the second byte-readable kind).
-			{ 0x4000, "sound", "shared.pak",
-				"content/audio/bells.wav" },
-		};
-		const fs::path file = tmp / "ids.tapp";
-		std::string err;
-		Check(smvk::SaveAppManifest(file.generic_string(), m, err),
-			"tapp.ids-save-ok");
-		smvk::AppManifest back;
-		Check(smvk::LoadAppManifest(file.generic_string(), back, err)
-			&& back.assets.size() == 5
-			&& back.assets[0].name == "Church"
-			&& back.assets[1].name.empty()
-			&& back.assets[2].id == 0x2000
-			&& back.assets[2].kind == "texture"
-			&& back.assets[2].pak == "shared.pak"
-			&& back.assets[2].path == "content/models/s/stone.png"
-			&& back.assets[2].name.empty()
-			&& back.assets[3].id == 0x3000
-			&& back.assets[3].kind == "mesh"
-			&& back.assets[4].id == 0x4000
-			&& back.assets[4].kind == "sound"
-			&& back.assets[4].pak == "shared.pak"
-			&& back.assets[4].path == "content/audio/bells.wav"
-			&& back.FindAsset(0x3000) == &back.assets[3]
-			&& back.FindAsset(0x4000) == &back.assets[4]
-			&& back.FindAsset(0x9999) == nullptr,
-			"tapp.ids-round-trip");
-		// The written text carries the scene-name token only where it
-		// exists (the 5th [ids] token — scene rows only).
-		{
-			std::ifstream f(file, std::ios::binary);
-			std::stringstream ss;
-			ss << f.rdbuf();
-			const std::string text = ss.str();
-			Check(text.find(
-					"0x1000 scene world.pak content/scenes/w.tour Church")
-					!= std::string::npos
-				&& text.find(
-					"0x1001 scene shared.pak content/scenes/o.tour\n")
-					!= std::string::npos,
-				"tapp.ids-scene-name-token");
 		}
 	}
 	// ---- the compiled-catalog contract ---------------------------------
@@ -1524,40 +1463,21 @@ void TestAppManifest() {
 				"tapp.fold-kind-mapping");
 		}
 	}
-	// The `catalog` line round-trips (and a bad hex value rejects).
+	// THE `catalog` LINE IS GONE (v2): the deployed fingerprint is the
+	// record registry's own fold (read from the paks' identity tables)
+	// — a manifest text carrying the line dies loudly.
 	{
-		smvk::AppManifest m;
-		m.version = smvk::kAppManifestVersion;
-		m.entryPak = "world.pak";
-		m.entryScene = "scene";
-		m.paks = { "world.pak" };
-		m.catalogFingerprint = 0xDEADBEEF12345678ULL;
-		const fs::path file = tmp / "fp.tapp";
-		std::string err;
-		Check(smvk::SaveAppManifest(file.generic_string(), m, err),
-			"tapp.fingerprint-save-ok");
-		smvk::AppManifest back;
-		Check(smvk::LoadAppManifest(file.generic_string(), back, err)
-			&& back.catalogFingerprint == 0xDEADBEEF12345678ULL,
-			"tapp.fingerprint-round-trip");
+		const fs::path bad = tmp / "fp_bad.tapp";
 		{
-			std::ifstream f(file, std::ios::binary);
-			std::stringstream ss;
-			ss << f.rdbuf();
-			Check(ss.str().find("catalog 0xdeadbeef12345678")
-					!= std::string::npos,
-				"tapp.fingerprint-line-written");
-		}
-		{
-			const fs::path bad = tmp / "fp_bad.tapp";
 			std::ofstream f(bad, std::ios::binary | std::ios::trunc);
-			f << "appmanifest 1\nentry world.pak scene\n"
-				<< "catalog nothex\n\n[paks]\nworld.pak\n";
-			f.close();
-			smvk::AppManifest b2;
-			Check(!smvk::LoadAppManifest(bad.generic_string(), b2, err),
-				"tapp.fingerprint-bad-hex-rejected");
+			f << "appmanifest 2\nentry world.pak scene\n"
+				<< "catalog 0xDEADBEEF12345678\n\n[paks]\nworld.pak\n";
 		}
+		smvk::AppManifest b2;
+		std::string err;
+		Check(!smvk::LoadAppManifest(bad.generic_string(), b2, err)
+			&& err.find("appmanifest 2") != std::string::npos,
+			"tapp.catalog-line-dies-loud");
 	}
 }
 
@@ -1871,19 +1791,15 @@ void TestShaderAssets() {
 		Check(!fs::exists(tmp / "fx_bad.pak", ec),
 			"shaders.corrupt-wrote-nothing");
 	}
-	// The manifest's kind gate: a shader row round-trips.
+	// The manifest's kind gate: the SHADER kind rides the PAKS'
+	// identity tables (the manifest mirror is gone — appmanifest 2);
+	// the round-trip surface is the manifest itself (entry + [paks]).
 	{
 		smvk::AppManifest m;
 		m.version = smvk::kAppManifestVersion;
 		m.entryPak = "fx.pak";
 		m.entryScene = "scene";
 		m.paks.push_back("fx.pak");
-		smvk::AppManifestAsset row;
-		row.id = 0x5000;
-		row.kind = "shader";
-		row.pak = "fx.pak";
-		row.path = "content/shaders/testonly.frag.hlsl.spv";
-		m.assets.push_back(row);
 		std::string sErr;
 		Check(smvk::SaveAppManifest((tmp / "fx.tapp").generic_string(),
 				m, sErr),
@@ -1892,8 +1808,7 @@ void TestShaderAssets() {
 		std::string lErr;
 		Check(smvk::LoadAppManifest((tmp / "fx.tapp").generic_string(),
 				back, lErr)
-			&& back.assets.size() == 1
-			&& back.assets[0].kind == "shader",
+			&& back.paks.size() == 1 && back.paks[0] == "fx.pak",
 			"shaders.manifest-round-trips");
 	}
 }
@@ -2335,37 +2250,56 @@ void TestBuildPlanExecutor() {
 							}),
 						"executor.manifest-content-addressed-names");
 				}
-				// The content-id table (the runtime catalog mirror —
-				// the same registry the ids command maintains): the
+				// THE IDENTITY TABLES (the paks' OWN "#ids" registry blobs —
+				// the manifest mirror is gone, appmanifest 2): the
 				// scene + mesh in the WORLD pak, the texture cross-pak
-				// in the SHARED pak, ids from the kind ranges, paks
+				// in the SHARED pak, ids from the kind ranges, owners
 				// named by their published (content-addressed) files.
+				// The same discovery the runtime's session runs.
+				tour::asset::ContentRegistry disc;
+				bool discOk = true;
+				for (const std::string& pak : manifest.paks) {
+					std::string dErr;
+					if (!disc.DiscoverPak(pak,
+							(fs::path(rep.manifest).parent_path()
+								/ pak)
+								.lexically_normal()
+								.generic_string(),
+							dErr)) {
+						discOk = false;
+						std::cout << "  discover " << pak << ": "
+							<< dErr << "\n";
+					}
+				}
 				{
-					const smvk::AppManifestAsset* scene =
-						manifest.FindAsset(0x1000);
-					const smvk::AppManifestAsset* tex =
-						manifest.FindAsset(0x2000);
-					const smvk::AppManifestAsset* mesh =
-						manifest.FindAsset(0x3000);
-					Check(manifest.assets.size() == 3
-						&& scene && scene->kind == "scene"
+					const tour::asset::ContentRecord* scene =
+						disc.Find(0x1000);
+					const tour::asset::ContentRecord* tex =
+						disc.Find(0x2000);
+					const tour::asset::ContentRecord* mesh =
+						disc.Find(0x3000);
+					Check(discOk && disc.RecordCount() == 3
+						&& scene
+						&& scene->kind == smvk::kCatalogKindScene
 						&& scene->pak == fs::path(rep.paks[1].output)
 							.filename()
 							.generic_string()
 						&& scene->path == "content/scenes/grid.tour"
-						&& tex && tex->kind == "texture"
+						&& tex
+						&& tex->kind == smvk::kCatalogKindTexture
 						&& tex->pak == fs::path(rep.paks[0].output)
 							.filename()
 							.generic_string()
 						&& tex->path
 							== "content/models/grid/shared/stone.png"
-						&& mesh && mesh->kind == "mesh"
+						&& mesh
+						&& mesh->kind == smvk::kCatalogKindMesh
 						&& mesh->pak == fs::path(rep.paks[1].output)
 							.filename()
 							.generic_string()
 						&& mesh->path
 							== "content/models/grid/grid.geometry",
-						"executor.manifest-id-table");
+						"executor.paks-identity-tables");
 				}
 				// The mesh id keys the DERIVED .geometry manifest guid
 				// (the one identity the asset directory registers the
@@ -2397,16 +2331,16 @@ void TestBuildPlanExecutor() {
 							}
 						Check(!derived.empty(),
 							"executor.mesh-derived-guid-found");
-						if (!derived.empty()) {
-							uint64_t id = 0;
-							std::string sym;
-							Check(db.EnsureContentId(derived, "mesh",
-									"content/models/grid/grid.geometry",
-									id, sym, dErr)
-								&& manifest.FindAsset(0x3000)
-								&& id == manifest.FindAsset(0x3000)->id,
-								"executor.mesh-id-keys-derived-guid");
-						}
+					if (!derived.empty()) {
+						uint64_t id = 0;
+						std::string sym;
+						Check(db.EnsureContentId(derived, "mesh",
+								"content/models/grid/grid.geometry",
+								id, sym, dErr)
+							&& disc.Find(0x3000)
+							&& id == disc.Find(0x3000)->id,
+							"executor.mesh-id-keys-derived-guid");
+					}
 					}
 				}
 				bool paksExist = true;
@@ -3618,14 +3552,25 @@ void TestProjectHeaderStamp() {
 				"stamp.pak-state-missing");
 		}
 		// Publish: the content-addressed pak (backdated, but NEWER
-		// than the source) + the manifest whose [ids] row joins the
-		// stable id to the pak FILE.
+		// than the source) — a REAL pak carrying its OWN "#ids"
+		// identity table (the join the runtime + the ids pass both
+		// read; the manifest mirrors nothing, appmanifest 2).
 		const std::string pakName = "thing-0123456789abcdef.pak";
 		{
+			smvk::PakWriter w;
+			const std::vector<::tour::asset::PakAssetIdRow> idRows = {
+				{ 0x1000, smvk::kCatalogKindScene,
+					"content/scenes/thing.tour", "thing" },
+			};
+			w.AddBlob(smvk::PakAssetKind::Identity,
+				::tour::asset::kPakAssetIdsPath,
+				::tour::asset::WriteAssetIdsBlob(idRows));
+			const std::vector<uint8_t> image = w.Finalize();
 			// (Close BEFORE the backdate — see the source above.)
 			std::ofstream f(dir / pakName,
 				std::ios::binary | std::ios::trunc);
-			f << "pakbytes";
+			f.write(reinterpret_cast<const char*>(image.data()),
+				std::streamsize(image.size()));
 		}
 		fs::last_write_time(dir / pakName,
 			fs::file_time_type::clock::now()
@@ -3636,13 +3581,6 @@ void TestProjectHeaderStamp() {
 			m.entryPak = pakName;
 			m.entryScene = "thing";
 			m.paks.push_back(pakName);
-			smvk::AppManifestAsset row;
-			row.id = 0x1000;
-			row.kind = "scene";
-			row.pak = pakName;
-			row.path = "content/scenes/thing.tour";
-			row.name = "thing";
-			m.assets.push_back(row);
 			std::string mErr;
 			Check(smvk::SaveAppManifest(
 					(dir / "thing.tapp").generic_string(), m, mErr),

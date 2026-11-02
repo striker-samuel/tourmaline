@@ -92,6 +92,20 @@ int main() {
 			smvk::BuildTexturePayload(kStone, -1, -1, -1, -1,
 				std::span<const uint8_t>(ktxBase)));
 		w.AddBlob(smvk::PakAssetKind::Sound, kBell, wav);
+		// THE PER-PAK IDENTITY TABLE (the "#ids" registry blob): the
+		// record source — the paks are the authority (the manifest's
+		// [ids] mirror died with appmanifest 2).
+		const std::vector<tour::asset::PakAssetIdRow> idRows = {
+			{ 0x1000, smvk::kCatalogKindScene,
+				"content/scenes/church.tour", "Church" },
+			{ 0x2000, smvk::kCatalogKindTexture, kStone, "" },
+			{ 0x3000, smvk::kCatalogKindMesh,
+				"content/models/tree.geometry", "" },
+			{ 0x4000, smvk::kCatalogKindSound, kBell, "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(idRows));
 		WritePak(tmp / "base.pak", w.Finalize());
 	}
 	{
@@ -108,40 +122,40 @@ int main() {
 			ktxDev.data(), ktxDev.size());
 	}
 	{
+		// broken.pak: garbage bytes — the corrupt-owner diagnostic's
+		// archive. Its OWN identity table (the ghost texture row):
+		// discovery refuses it at the light mount, and the ghost
+		// texture's resolution reports the pak's own failure.
+		smvk::PakWriter w;
+		const std::vector<tour::asset::PakAssetIdRow> ghostRows = {
+			{ 0x2500, smvk::kCatalogKindTexture,
+				"content/models/ghost.png", "" },
+		};
+		w.AddBlob(smvk::PakAssetKind::Identity,
+			tour::asset::kPakAssetIdsPath,
+			tour::asset::WriteAssetIdsBlob(ghostRows));
+		WritePak(tmp / "brokenids.pak", w.Finalize());
 		const std::vector<uint8_t> garbage(16, 0xEEu);
 		WriteFile(tmp / "broken.pak", garbage.data(), garbage.size());
 	}
-	// The manifest (the identity source — [ids] rows over the paks).
-	const fs::path tapp = tmp / "game.tapp";
-	{
-		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
-		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
-			<< "entry base.pak Church\n"
-			<< "\n[paks]\nbase.pak\nbroken.pak\n"
-			<< "\n[ids]\n"
-			<< "0x1000 scene base.pak content/scenes/church.tour Church\n"
-			<< "0x2000 texture base.pak " << kStone << "\n"
-			<< "0x2500 texture broken.pak content/models/ghost.png\n"
-			<< "0x3000 mesh base.pak content/models/tree.geometry\n"
-			<< "0x4000 sound base.pak " << kBell << "\n";
-	}
 
-	// ---- adoption -------------------------------------------------------
-	smvk::AppManifest manifest;
-	std::string mErr;
-	if (!smvk::LoadAppManifest(tapp.generic_string(), manifest, mErr)) {
-		Check(false, "cr.manifest-load");
-		return (g_failures != 0) ? EXIT_FAILURE : EXIT_SUCCESS;
-	}
+	// ---- DISCOVERY (the record source: the paks' own tables) ---------
+	// base.pak joins through its OWN identity table; brokenids.pak
+	// carries a table whose ARCHIVE is garbage — the corrupt-owner
+	// diagnostic's shape (0x2500's row resolves nowhere + names the
+	// failure).
 	ta::ContentRegistry reg;
 	std::string err;
-	Check(reg.AdoptManifest(manifest,
-			(tapp.parent_path()).generic_string(), err) && err.empty()
-		&& reg.RecordCount() == 5,
-		"cr.manifest-adopt");
+	Check(reg.DiscoverPak("base.pak", (tmp / "base.pak").generic_string(),
+			err) && err.empty() && reg.RecordCount() == 4,
+		"cr.discovery-builds-records");
+	Check(reg.DiscoverPak("broken.pak",
+			(tmp / "brokenids.pak").generic_string(), err)
+		&& err.empty() && reg.RecordCount() == 5,
+		"cr.corrupt-owner-pak-joins");
 	{
-		// The reverse lookup + the join fields survive adoption.
+		// The reverse lookup + the join fields survive discovery
+		// (the records ARE the pak's own rows).
 		const ta::ContentRecord* stone = reg.Find(0x2000);
 		const ta::ContentRecord* church = reg.Find(0x1000);
 		Check(stone && stone->kind == smvk::kCatalogKindTexture
@@ -153,40 +167,6 @@ int main() {
 			&& church->kind == smvk::kCatalogKindScene,
 			"cr.scene-record-fields");
 		Check(reg.Find(0x9999) == nullptr, "cr.unknown-id-null");
-	}
-	// The loud adoption refusals (identity invariants).
-	{
-		smvk::AppManifest bad = manifest;
-		bad.assets[1].pak = "unlisted.pak"; // a row over an unlisted pak
-		std::string aErr;
-		Check(!reg.AdoptManifest(bad,
-				(tapp.parent_path()).generic_string(), aErr)
-			&& aErr.find("unlisted") != std::string::npos,
-			"cr.unlisted-pak-refused");
-		// A duplicate identity (the same id twice) never adopts.
-		smvk::AppManifest dup = manifest;
-		dup.assets.push_back(manifest.assets[1]);
-		std::string dErr;
-		Check(!reg.AdoptManifest(dup,
-				(tapp.parent_path()).generic_string(), dErr)
-			&& dErr.find("twice") != std::string::npos,
-			"cr.duplicate-id-refused");
-		// A duplicate kind+path never adopts (one identity per pair).
-		smvk::AppManifest dup2 = manifest;
-		smvk::AppManifestAsset ghost = manifest.assets[1];
-		ghost.id = 0x2100;
-		dup2.assets.push_back(ghost);
-		std::string d2Err;
-		Check(!reg.AdoptManifest(dup2,
-				(tapp.parent_path()).generic_string(), d2Err)
-			&& d2Err.find("twice") != std::string::npos,
-			"cr.duplicate-path-refused");
-		// The failed adoptions LEFT NO STATE: re-adopt the good
-		// manifest for the rest of the battery.
-		std::string rErr;
-		Check(reg.AdoptManifest(manifest,
-				(tapp.parent_path()).generic_string(), rErr),
-			"cr.adopt-recovers");
 	}
 
 	// ---- overrides ------------------------------------------------------
@@ -364,16 +344,26 @@ int main() {
 			"cr.unknown-id-refused");
 	}
 
-	// ---- the corrupt owner ----------------------------------------------
-	// broken.pak (garbage bytes) owns a texture row: resolution
-	// reports THE PAK'S OWN FAILURE — actionable, never a vague miss
-	// and never a silent skip.
+	// ---- the honest refusals ---------------------------------------------
+	// 0x2500's record exists (brokenids.pak's own table) but its owner
+	// carries no such blob: the resolution answers the honest
+	// no-provider form (the record is REAL — the bytes are not). A
+	// garbage ARCHIVE never even gets this far: its discovery refuses
+	// at the light mount, naming the archive.
 	{
 		std::string cErr;
 		Check(!reg.Read(0x2500, cErr)
-			&& cErr.find("broken.pak") != std::string::npos
-			&& cErr.find("failed") != std::string::npos,
-			"cr.corrupt-owner-named");
+			&& cErr.find("no provider serves") != std::string::npos
+			&& cErr.find("ghost.png") != std::string::npos,
+			"cr.unserved-record-honest-refusal");
+		// The garbage archive's discovery refusal (the corrupt-owner
+		// case at ITS layer: a pak that cannot open joins nothing).
+		ta::ContentRegistry garbage;
+		std::string gErr;
+		Check(!garbage.DiscoverPak("garbage.pak",
+				(tmp / "broken.pak").generic_string(), gErr)
+			&& gErr.find("light mount") != std::string::npos,
+			"cr.garbage-archive-refused-at-discovery");
 	}
 	// ---- a disabled base pak answers nothing -----------------------------
 	{
@@ -385,24 +375,29 @@ int main() {
 		reg.SetProviderEnabled("broken.pak", true);
 	}
 
-	// ---- re-adoption (the between-launches rebuild) ----------------------
-	// A fresh manifest adoption REPLACES the state: overrides do not
-	// carry forward (a new launch builds its provider stack anew).
+	// ---- the between-launches rebuild ------------------------------------
+	// A FRESH registry + re-discovery replaces the state: the
+	// overrides do not carry forward (a new launch builds its
+	// provider stack anew).
 	{
-		std::string rErr;
-		Check(reg.AdoptManifest(manifest,
-				(tapp.parent_path()).generic_string(), rErr),
-			"cr.readopt");
-		auto infos = reg.ProviderInfos();
+		ta::ContentRegistry reg3;
+		std::string r1Err, r2Err;
+		Check(reg3.DiscoverPak("base.pak",
+				(tmp / "base.pak").generic_string(), r1Err)
+			&& reg3.DiscoverPak("broken.pak",
+				(tmp / "brokenids.pak").generic_string(), r2Err),
+			"cr.rebuild");
+		auto infos = reg3.ProviderInfos();
 		Check(infos.size() == 2 && infos[0].base && infos[1].base
-			&& infos[0].enabled && infos[1].enabled,
-			"cr.readopt-clears-overrides");
+			&& infos[0].enabled && infos[1].enabled
+			&& reg3.RecordCount() == 5,
+			"cr.rebuild-clears-overrides");
 		std::string bErr;
-		auto bytes = reg.Read(0x2000, bErr);
-		// base.pak carries NO adopted backend after the re-adoption
-		// — the pager lane answers again.
+		auto bytes = reg3.Read(0x2000, bErr);
+		// A fresh discovery carries NO adopted backend — the pager
+		// lane answers (one positional page read).
 		Check(bytes && *bytes == ktxBase && bErr.empty(),
-			"cr.readopt-base-reads-pager");
+			"cr.rebuild-base-reads-pager");
 	}
 
 	// ---- THE DISCOVERY LANE (the .tapp-free form) ------------------------

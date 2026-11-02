@@ -332,15 +332,16 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	app::ProjectRuntime& rt = *rtOpt;
-	Check(!rt.Manifest().assets.empty()
-		&& !rt.Registry().Records().empty(),
-		"e2e.manifest-still-mirrors-records");
+	Check(!rt.Registry().Records().empty()
+		&& !rt.Manifest().paks.empty(),
+		"e2e.release-pointer-loads-records");
 
 	// The compiled-catalog contract, reconstructed from THE REGISTRY's
 	// records (the deployed authority — the paks' own identity tables,
-	// never the manifest's [ids] mirror). The compiled fingerprint must
-	// equal the registry's canonical fold, and the gate's row-by-row
-	// proof must pass (GameProject.exe attaches the same at boot).
+	// read through the release pointer's listed paks). The compiled
+	// fingerprint must equal the registry's canonical fold, and the
+	// gate's row-by-row proof must pass (GameProject.exe attaches the
+	// same at boot).
 	{
 		std::vector<app::ProjectRuntime::CompiledAssetDesc> descs;
 		for (const tour::asset::ContentRecord& rec :
@@ -349,9 +350,7 @@ int main(int argc, char** argv) {
 				rec.sceneName });
 		Check(!descs.empty(), "e2e.catalog-rows-present");
 		const uint64_t fold = rt.Registry().RecordFingerprint();
-		Check(fold != 0
-			&& fold == rt.Manifest().catalogFingerprint,
-			"e2e.catalog-fingerprint-matches-deployment");
+		Check(fold != 0, "e2e.catalog-fingerprint-folded");
 		std::string aErr;
 		Check(rt.AttachCompiledCatalog(descs.data(), descs.size(), fold,
 				aErr)
@@ -360,14 +359,6 @@ int main(int argc, char** argv) {
 		if (!aErr.empty()) {
 			std::cout << "  attach err: " << aErr << "\n";
 		}
-		// THE AUTHORITY FLIP: the manifest's [ids] mirror is
-		// vestigial — tamper a row's PATH in the mirror and the gate
-		// still passes (the registry's records, from the paks' own
-		// tables, are the deployed truth the compiled game proves
-		// itself against).
-		// (The paks are the authority: nothing to tamper in-process —
-		// the runtime never reads the mirror. The records here ARE the
-		// pak-derived table.)
 	}
 
 	// Every VFS-servable row reads its bytes through its pak; the SOUND
@@ -378,9 +369,12 @@ int main(int argc, char** argv) {
 			ReadFileBytes(proj / "content/audio/bells.wav");
 		bool readAll = true, sawSound = false, sawTexture = false;
 		bool soundMatches = false;
-		for (const auto& row : rt.Manifest().assets) {
-			if (row.kind != "texture" && row.kind != "sound"
-				&& row.kind != "shader" && row.kind != "gi") {
+		for (const tour::asset::ContentRecord& row :
+				rt.Registry().Records()) {
+			if (row.kind != smvk::kCatalogKindTexture
+				&& row.kind != smvk::kCatalogKindSound
+				&& row.kind != smvk::kCatalogKindShader
+				&& row.kind != smvk::kCatalogKindGi) {
 				continue; // scenes/meshes load by identity, not ReadAsset
 			}
 			std::string rErr;
@@ -391,11 +385,11 @@ int main(int argc, char** argv) {
 					<< "\n";
 				continue;
 			}
-			if (row.kind == "sound") {
+			if (row.kind == smvk::kCatalogKindSound) {
 				sawSound = true;
 				soundMatches = (*bytes == source);
 			}
-			if (row.kind == "texture") {
+			if (row.kind == smvk::kCatalogKindTexture) {
 				sawTexture = true;
 			}
 		}
@@ -408,9 +402,10 @@ int main(int argc, char** argv) {
 	// Every published pak carries its OWN identity table (the "#ids"
 	// registry blob the build appends post-cook): a FRESH registry —
 	// NO manifest — discovers the paks (light mounts + one page read
-	// each) and must reach the SAME identities the .tapp carries,
-	// row for row, and a byte read through the discovered providers
-	// (the pager lane — no backends adopted) matches the session's.
+	// each) and must reach the SAME identities the release-pointer
+	// session carries, row for row, and a byte read through the
+	// discovered providers (the pager lane — no backends adopted)
+	// matches the session's.
 	{
 		tour::asset::ContentRegistry disc;
 		bool allDiscovered = true;
@@ -425,36 +420,36 @@ int main(int argc, char** argv) {
 		}
 		Check(allDiscovered, "e2e.paks-discover-without-manifest");
 		{
-			// Row-for-row identity parity with the manifest (the
-			// scene names compare when both sides carry one — a
-			// multi-scene pak's blob row leaves the name empty and
-			// rides the single-scene inference instead).
+			// Row-for-row identity parity with the SESSION's records
+			// (both sides discovery over the same paks — the
+			// release-pointer lane and the no-manifest lane are ONE
+			// architecture).
 			bool allMatch = true;
-			for (const auto& row : rt.Manifest().assets) {
+			for (const tour::asset::ContentRecord& row :
+					rt.Registry().Records()) {
 				const tour::asset::ContentRecord* rec =
 					disc.Find(row.id);
-				uint8_t kind = 0;
-				(void)smvk::CatalogKindFromString(row.kind, kind);
-				if (!rec || rec->kind != kind
+				if (!rec || rec->kind != row.kind
 						|| rec->path != row.path
-						|| (!row.name.empty() && !rec->sceneName.empty()
-							&& rec->sceneName != row.name)) {
+						|| rec->sceneName != row.sceneName) {
 					allMatch = false;
-					std::cout << "  identity mismatch: manifest "
-						<< row.id << " " << row.kind << " '"
-						<< row.path << "' vs discovered "
+					std::cout << "  identity mismatch: session "
+						<< row.id << " '" << row.path
+						<< "' vs discovered "
 						<< (rec ? "row" : "<missing>") << "\n";
 				}
 			}
 			Check(allMatch
-				&& disc.RecordCount() == rt.Manifest().assets.size(),
+				&& disc.RecordCount()
+					== rt.Registry().RecordCount(),
 				"e2e.discovery-matches-manifest-identities");
 		}
 		{
 			uint64_t textureId = 0;
 			std::string texturePath;
-			for (const auto& row : rt.Manifest().assets)
-				if (row.kind == "texture") {
+			for (const tour::asset::ContentRecord& row :
+					rt.Registry().Records())
+				if (row.kind == smvk::kCatalogKindTexture) {
 					textureId = row.id;
 					texturePath = row.path;
 					break;
@@ -474,8 +469,8 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// The scene leg: the id->scene join over the DEPLOYED manifest, then
-	// a headless LOAD through the public clusterLoader seam (the
+	// The scene leg: the id->scene join over the session's records,
+	// then a headless LOAD through the public clusterLoader seam (the
 	// GPU-less offline cluster the pak_host tests use; the real
 	// deserialize runs on every cooked project launch).
 	{
@@ -486,11 +481,12 @@ int main(int argc, char** argv) {
 		if (!scenes.Valid()) {
 			std::cout << "  scenes err: " << scenes.OpenError() << "\n";
 		}
-		// The scene row (the recipe's entry: content/scenes/game.tour).
+		// The scene record (the recipe's entry: content/scenes/game.tour).
 		uint64_t sceneId = 0;
 		bool sawScene = false;
-		for (const auto& row : rt.Manifest().assets) {
-			if (row.kind == "scene") {
+		for (const tour::asset::ContentRecord& row :
+				rt.Registry().Records()) {
+			if (row.kind == smvk::kCatalogKindScene) {
 				sceneId = row.id;
 				sawScene = true;
 				break;

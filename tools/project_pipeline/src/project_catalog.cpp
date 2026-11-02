@@ -27,6 +27,8 @@
 #include <vector>
 
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/pak.h>
+#include <Engine/Asset/pak_pager.h>
 #include <Engine/Asset/tour.h>
 
 #include <artifact_cache/artifact_cache.h>
@@ -1498,11 +1500,14 @@ bool DiscoverPakFingerprints(const std::string& pakDir,
 	std::string& err) {
 	err.clear();
 	out.clear();
-	// 1) the LIVE pak set: every published .tapp in the dir names its
-	//    paks, and the [ids] rows join STABLE asset ids to pak FILES —
-	//    never file-name guessing (the content-addressed names carry
-	//    digests the catalog pass cannot predict). A manifest that
-	//    fails to load names nothing (not ours / corrupt).
+	// 1) the LIVE pak set: every published pak's OWN "#ids" identity
+	//    table joins STABLE asset ids to pak FILES — never file-name
+	//    guessing (the content-addressed names carry digests the
+	//    catalog pass cannot predict), never a manifest mirror (the
+	//    [ids] table died with appmanifest 2 — the paks are the
+	//    authority, same as the runtime's discovery lane). A pak that
+	//    fails its light mount or carries no table names nothing
+	//    (not ours / legacy — the fallback paths stay).
 	std::map<uint64_t, std::string> pakFileByAssetId;
 	{
 		std::error_code ec;
@@ -1513,16 +1518,31 @@ bool DiscoverPakFingerprints(const std::string& pakDir,
 				std::error_code fileEc;
 				if (!e.is_regular_file(fileEc))
 					continue;
-				if (e.path().extension().generic_string() != ".tapp")
+				if (e.path().extension().generic_string() != ".pak")
 					continue;
-				smvk::AppManifest manifest;
-				std::string mErr;
-				if (!smvk::LoadAppManifest(
-						e.path().generic_string(), manifest, mErr))
+				const std::string pakPath =
+					e.path().lexically_normal().generic_string();
+				::smvk::PakPager pager(pakPath);
+				if (!pager.Valid())
+					continue; // corrupt/foreign: names nothing
+				const ::tour::asset::PakTocEntry* entry =
+					pager.Reader().Find(
+						::tour::asset::PakAssetKind::Identity,
+						::tour::asset::kPakAssetIdsPath);
+				if (!entry)
+					continue; // a legacy/asset-only pak: no rows
+				std::string perr;
+				::smvk::PakPager::PinnedPage page =
+					pager.Read(*entry, perr);
+				if (!page)
 					continue;
-				for (const smvk::AppManifestAsset& row
-						: manifest.assets)
-					pakFileByAssetId[row.id] = row.pak;
+				std::vector<::tour::asset::PakAssetIdRow> rows;
+				if (!::tour::asset::ParseAssetIdsBlob(page.bytes(),
+						rows, perr))
+					continue;
+				for (const ::tour::asset::PakAssetIdRow& row : rows)
+					pakFileByAssetId[row.id] =
+						e.path().filename().generic_string();
 			}
 		}
 	}
@@ -1572,7 +1592,8 @@ bool DiscoverPakFingerprints(const std::string& pakDir,
 		// The cook-state rules (a CLAIM, never a content proof — only
 		// the recipe build's re-stamp says verified from knowledge):
 		//   stale if (a) an asset of the pak is UNPUBLISHED (no
-		//          manifest row — the pak cannot contain it),
+		//          identity row in any published pak — the pak cannot
+		//          contain it),
 		//          (b) an asset's fingerprint CHANGED since the last
 		//              generation (no previous record counts as
 		//              changed: a first-ever run claims nothing), or

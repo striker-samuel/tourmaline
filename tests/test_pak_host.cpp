@@ -656,21 +656,21 @@ void TestProjectRuntime() {
 	const fs::path tapp = tmp / "game.tapp";
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — no
+		// [ids] mirror (the paks' own tables are the catalog), no
+		// `catalog` line (the registry's record fold is the deployed
+		// fingerprint).
 		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
+			<< "appmanifest 2\n"
 			<< "entry shared.pak scene\n"
-			<< "\n[paks]\nshared.pak\n"
-			<< "\n[ids]\n"
-			<< "0x2000 texture shared.pak " << vfsPath << "\n"
-			<< "0x3000 mesh shared.pak content/models/s/rock.geometry\n"
-			<< "0x1000 scene shared.pak content/scenes/s.tour\n";
+			<< "\n[paks]\nshared.pak\n";
 	}
 	std::string err;
 	auto rt = app::ProjectRuntime::Load(tapp.generic_string(), err);
 	Check(bool(rt) && err.empty(), "prt.load");
 	if (rt) {
 		Check(rt->Manifest().paks.size() == 1
-			&& rt->Manifest().assets.size() == 3,
+			&& rt->Registry().RecordCount() == 3,
 			"prt.manifest-parsed");
 		const tour::asset::ContentRecord* record = rt->Asset(0x2000);
 		Check(record && record->kind == smvk::kCatalogKindTexture
@@ -942,23 +942,13 @@ void TestProjectScenes() {
 		fpIds, fpKinds, fpPaths, 4);
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — the
+		// records come from the paks' own "#ids" tables (added above),
+		// the deployed fingerprint from the registry's record fold.
 		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
-			<< "entry one.pak Church\n";
-		{
-			char fp[32];
-			std::snprintf(fp, sizeof(fp), "0x%llX",
-				static_cast<unsigned long long>(catalogFp));
-			f << "catalog " << fp << "\n";
-		}
-		f << "\n[paks]\none.pak\ntwo.pak\n"
-			<< "\n[ids]\n"
-			// The recorded cooked name: the id->scene join.
-			<< "0x1000 scene one.pak content/scenes/church.tour Church\n"
-			// No recorded name: a multi-scene pak must refuse loudly.
-			<< "0x1001 scene two.pak content/scenes/two.tour\n"
-			<< "0x2000 texture one.pak " << texPath << "\n"
-			<< "0x4000 sound one.pak " << wavPath << "\n";
+			<< "appmanifest 2\n"
+			<< "entry one.pak Church\n"
+			<< "\n[paks]\none.pak\ntwo.pak\n";
 	}
 	std::string err;
 	auto rtOpt = app::ProjectRuntime::Load(tapp.generic_string(), err);
@@ -1405,19 +1395,12 @@ void TestAssetManager() {
 	const fs::path tapp = tmp / "game.tapp";
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
+		// appmanifest 2 (the RELEASE POINTER): entry + [paks] — the
+		// records come from one.pak's own "#ids" table (added above).
 		f << "# Tourmaline Runtime Project\n"
-			<< "appmanifest 1\n"
+			<< "appmanifest 2\n"
 			<< "entry one.pak x\n"
-			<< "\n[paks]\none.pak\n"
-			<< "\n[ids]\n"
-			<< "0x1001 scene one.pak content/scenes/meshes.tour Meshes\n"
-			<< "0x2000 texture one.pak " << texPath << "\n"
-			<< "0x3000 mesh one.pak " << treeFamily << "\n"
-			<< "0x3001 mesh one.pak " << rockFamily << "\n"
-			// The ghost family: blobs exist but the PLAN does not
-			// carry it - the join must refuse (recook).
-			<< "0x3002 mesh one.pak content/models/ghost.geometry\n"
-			<< "0x6000 gi one.pak content/gi/day.givolumemanifest\n";
+			<< "\n[paks]\none.pak\n";
 	}
 	std::string err;
 	auto rtOpt = app::ProjectRuntime::Load(tapp.generic_string(), err);

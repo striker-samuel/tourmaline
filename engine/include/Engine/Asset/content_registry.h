@@ -145,16 +145,11 @@ public:
 	ContentRegistry() = default;
 
 	// ---- construction -------------------------------------------------
-	// Adopts a parsed + validated appmanifest as the BASE half: every
-	// listed pak becomes a base provider (manifest order — the mount
-	// order), every [ids] row a record. `manifestBaseDir` is the
-	// manifest's own directory (its pak paths resolve RELATIVE to it,
-	// exactly like the runtime façade's PakPath — a moved build
-	// directory keeps working). REPLACES any previous state (the
-	// between-launches rebuild form). Refuses rows whose pak is not
-	// listed, kinds that do not map, or paths that do not normalize.
-	bool AdoptManifest(const smvk::AppManifest& manifest,
-		const std::string& manifestBaseDir, std::string& err);
+	// The registry builds from PROVIDERS: discovery (DiscoverPak — the
+	// record source, the paks' OWN "#ids" identity tables) + overrides
+	// (mods / patches / dev trees). There is NO manifest adoption lane:
+	// the appmanifest is a pure RELEASE POINTER (entry + [paks]) —
+	// ProjectRuntime::Load drives DiscoverPak over its listed paks.
 
 	// ---- overrides (mods / patches / dev trees) -----------------------
 	// Registers an OVERRIDE provider. Overrides precede every base
