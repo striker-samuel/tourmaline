@@ -558,3 +558,6 @@ pipeline_cache*.bin
 !releases/
 !releases/README.md
 releases/paks/*.pak
+
+# Private compiled plan header (project.h itself can be committed).
+project_plans.h

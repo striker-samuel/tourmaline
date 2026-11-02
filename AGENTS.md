@@ -441,7 +441,16 @@ bloom/tonemap/AA/UI → swapchain.
   without a valid guid is rejected by `Project::Open`, the editor's
   `OpenProject` and the launcher's scaffold; `Project.exe init` on an
   existing project is the ONE explicit adopt-and-mint recovery path.
-- `project.h` (`cmake/TourmalineProject.cmake`) is a GENERATION-STAMPED,
+- `project.h` (`cmake/TourmalineProject.cmake`) defaults to the
+  project SOURCE directory, is registered under the CMake target's
+  `Generated Catalogs` group with GENERATED / HEADER_FILE_ONLY, and
+  can be committed to Git. Never hand-edit it: `<Name>_ids` runs on
+  every game build and overwrites modifications before compilation,
+  keeping mtime intact when no change is required. Do not set an OS
+  read-only attribute: it would obstruct Git checkout and generation.
+  The private sibling `project_plans.h`
+  stays ignored; explicit `HEADER_DIR` can select build-only output.
+  The header is a GENERATION-STAMPED,
   self-contained C++ catalog: `project::Generation` / `GeneratedAt` /
   `ContentHash` constexpr plus an EOF machine-readable COMMENT section
   (`TOURMALINE-METADATA`) carrying per-asset/per-pak fingerprints

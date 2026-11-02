@@ -8,9 +8,13 @@
 #   tourmaline_add_project(GameProject
 #       RECIPE  project/game.tourrecipe     # authored build definition
 #       [PROJECT <dir>]               # default: the recipe's directory
-#       [HEADER_DIR <dir>]            # default: ${CMAKE_CURRENT_BINARY_DIR}/<name>
+#       [HEADER_DIR <dir>]            # default: <project>/ (checked-in header)
 #   )
 #   tourmaline_attach_project(GameProject GameProject)
+#
+# project.h lives beside the recipe by default, so IDEs and Git see it
+# like other project headers. HEADER_DIR can opt into a build-local path.
+# The private project_plans.h is generated beside it and gitignored.
 #
 # add_project VALIDATES + REGISTERS (no targets — attach creates them,
 # because attach is where the consuming exe's publish dir becomes
@@ -73,9 +77,15 @@ function(tourmaline_add_project NAME)
 	endif()
 	if(NOT TP_PROJECT)
 		get_filename_component(TP_PROJECT "${TP_RECIPE}" DIRECTORY)
+	else()
+		get_filename_component(TP_PROJECT "${TP_PROJECT}" ABSOLUTE)
 	endif()
 	if(NOT TP_HEADER_DIR)
-		set(TP_HEADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/${NAME}")
+		# The project owns its C++ catalog: keep it in the source tree
+		# for IDE navigation and version control, not the CMake build tree.
+		set(TP_HEADER_DIR "${TP_PROJECT}")
+	else()
+		get_filename_component(TP_HEADER_DIR "${TP_HEADER_DIR}" ABSOLUTE)
 	endif()
 	set(TP_HEADER "${TP_HEADER_DIR}/project.h")
 
@@ -113,12 +123,28 @@ function(tourmaline_attach_project TARGET NAME)
 			"tourmaline_attach_project(${TARGET}, ${NAME}): "
 			"tourmaline_add_project(${NAME}) was not called")
 	endif()
+	# IDE hint, not an OS read-only attribute: Visual Studio/CMake users
+	# should see a GENERATED header in its own group. Do not set the file
+	# read-only: Git checkout and the generator must be able to replace it.
+	set_source_files_properties("${header}" PROPERTIES
+		GENERATED TRUE HEADER_FILE_ONLY TRUE)
+	target_sources(${TARGET} PRIVATE "${header}")
+	source_group("Generated Catalogs" FILES "${header}")
 	target_include_directories(${TARGET} PRIVATE "${include_dir}")
 	# The publish dir = the consuming exe's dir (where <Name>_paks
 	# lands the paks and the runtime loads them exe-relative).
 	set(TP_PAK_DIR "$<TARGET_FILE_DIR:${TARGET}>")
 
 	if(NOT TARGET ${NAME}_ids)
+		# This ALWAYS-RUN target repairs *manual edits* to a checked-in
+		# project.h before the consuming game compiles. The emitter is
+		# authoritative; when already byte-identical, it keeps mtime so
+		# unchanged game code is not recompiled needlessly.
+		# DO NOT list the source-controlled project.h as a BYPRODUCT:
+		# Ninja clean deletes BYPRODUCTS, including checked-in headers.
+		# The consuming target's explicit dependency on _ids orders
+		# generation before compilation, and GENERATED allows a header
+		# that is not yet present at CMake configure time.
 		# The generation runs on EVERY build (a custom target's command
 		# is never skipped): a depfile could not see a NEWLY CREATED
 		# file matching a recipe glob (it was absent when the deps were
@@ -134,7 +160,6 @@ function(tourmaline_attach_project TARGET NAME)
 				--recipe "${recipe}"
 				--header "${header}"
 				--pak-dir "${TP_PAK_DIR}"
-			BYPRODUCTS "${header}"
 			DEPENDS Project "${recipe}"
 			COMMENT "Generating ${NAME} project.h (content ids from the asset db)"
 			VERBATIM
@@ -142,10 +167,9 @@ function(tourmaline_attach_project TARGET NAME)
 	endif()
 	if(NOT TARGET ${NAME}_stamp)
 		# The forced generation (--stamp): a NEW generation every run,
-		# changed content or not. Deliberately NO BYPRODUCTS — ninja
-		# allows exactly one rule per output file, and <Name>_ids owns
-		# the header's build-graph slot; the always-run ids refresh
-		# heals any drift a stamp run leaves.
+		# changed content or not. Like _ids, this deliberately does
+		# not declare BYPRODUCTS: `cmake --build --target clean` must
+		# never delete the source-controlled project.h.
 		add_custom_target(${NAME}_stamp
 			COMMAND $<TARGET_FILE:Project>
 				ids
@@ -164,8 +188,8 @@ function(tourmaline_attach_project TARGET NAME)
 		# The on-demand full content build (bakes included — never a
 		# default dependency): paks + the appmanifest publish next to
 		# the exe, and the generated project.h re-stamps with the
-		# paks' fingerprints at state=verified. NO BYPRODUCTS on the
-		# header (see <Name>_stamp) — <Name>_ids owns the slot.
+		# paks' fingerprints at state=verified. No BYPRODUCTS for the
+		# source-owned header: it must survive clean.
 		add_custom_target(${NAME}_paks
 			COMMAND $<TARGET_FILE:Project>
 				build
