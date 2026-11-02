@@ -167,6 +167,12 @@ bool EditorApp::OpenAnySceneFile(const std::string& path) {
 
 EditorApp::EditorApp()
 	: m_guidResolver(*this) {
+	// The live editor already holds several viewport/preview targets.
+	// EVSM's six RGBA32F images per atlas can exhaust VRAM when the
+	// quality toggle allocates both full-resolution atlases at once.
+	// Cap EVSM ONLY (not the PCF atlas or standalone App defaults).
+	m_renderQuality.evsmDirTileLimit = 512;
+	m_renderQuality.evsmLocalTileLimit = 256;
 }
 
 bool EditorApp::Initialize() {
