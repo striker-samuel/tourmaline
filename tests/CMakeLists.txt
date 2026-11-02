@@ -1206,3 +1206,19 @@ target_link_libraries(GpuSceneWorldTests PRIVATE engine)
 set_target_properties(GpuSceneWorldTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_world_tests COMMAND GpuSceneWorldTests)
+
+# Agent tooling unit tests (tools/perf_harness.py's stdlib-only suite).
+# Registered through ctest so a broken harness (e.g. the literal-\n syntax
+# error PR #24 shipped) fails CI like any C++ test would. The harness tests
+# locate their target by __file__, so the working directory is irrelevant;
+# discovery just needs explicit -s/-t roots. Skipped with a status note when
+# no Python3 interpreter exists (the C++ suite never depends on it).
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+    add_test(NAME perf_harness_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tools/tests
+            -t ${CMAKE_SOURCE_DIR}/tools/tests)
+else()
+    message(STATUS "Python3 not found: perf_harness_tests not registered")
+endif()
