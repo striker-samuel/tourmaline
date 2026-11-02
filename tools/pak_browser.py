@@ -841,9 +841,9 @@ if HAVE_QT:
             vfs_tab = QWidget()
             vfs_l = QVBoxLayout(vfs_tab)
             note = QLabel(
-                "PakBackend serves <b>Texture blobs only</b> through VFS "
-                "(original path -> embedded .ktx2). Scene/Mesh/Material/Light/Gi "
-                "are cluster-internal (PakReader, not VFS reads). "
+                "PakBackend serves <b>Texture, Sound, Shader, AudioGraph</b> through VFS "
+                "(other kinds are package-internal). "
+                
                 "Overlay = first-match-wins by mount priority."
             )
             note.setWordWrap(True)
@@ -870,7 +870,7 @@ if HAVE_QT:
             vfs_l.addLayout(dir_row)
             self.dir_result = QListWidget()
             vfs_l.addWidget(self.dir_result, 1)
-            vfs_l.addWidget(QLabel("VFS tree (Texture paths, union over mounts)"))
+            vfs_l.addWidget(QLabel("VFS tree (readable asset paths across mounts)"))
             self.tree = QTreeWidget()
             self.tree.setHeaderLabels(["vfs path", "providers"])
             vfs_l.addWidget(self.tree, 1)
@@ -1064,7 +1064,7 @@ if HAVE_QT:
                 ("compressed", f"{sum(1 for e in pak.entries if e.compressed)} lz4"),
                 (
                     "vfs-visible",
-                    f"{sum(1 for e in pak.entries if e.vfs_visible)} Texture blobs",
+                    f"{sum(1 for e in pak.entries if e.vfs_visible)} assets",
                 ),
             ]
             if pak.error:
@@ -1137,6 +1137,9 @@ if HAVE_QT:
             assert m.pak is not None
             payload, note = m.pak.payload(e)
             lines = [
+                f"package:   {m.pak.source}",
+                f"slot:      {e.slot}",
+                f"contentCRC: 0x{e.content_crc:08X}",
                 f"path:      {e.path}",
                 f"normalized:{vfs_normalize(e.path) or '(INVALID VFS PATH)'}",
                 f"kind:      {e.kind_name} ({e.kind})",
@@ -1145,13 +1148,18 @@ if HAVE_QT:
                 f"flags:     0x{e.flags:X} ({'lz4' if e.compressed else 'stored'})",
                 f"hash:      0x{e.path_hash:016X} "
                 f"({'OK' if e.hash_ok else 'MISMATCH'})",
-                f"vfs:       {'VISIBLE via PakBackend (Texture)' if e.vfs_visible else 'internal-only (PakReader, not VFS reads)'}",
+                f"vfs:       {'VISIBLE via PakBackend' if e.vfs_visible else 'internal-only (PakReader)'}",
             ]
             if note:
                 lines.append(f"codec:     {note}")
             # per-kind decode
             try:
-                if e.kind == 4:
+                if note and not note.startswith('lz4:'):
+                    lines.append('payload unavailable; decode skipped')
+                elif e.kind == 15:
+                    lines.append('identity table:')
+                    lines += self._fmt_dict(decode_ids(payload))
+                elif e.kind == 4:
                     d = decode_texture(payload)
                     lines += self._fmt_texture(d)
                 elif e.kind == 2:
@@ -1203,7 +1211,7 @@ if HAVE_QT:
 
         # -- VFS --------------------------------------------------------
         def _texture_index(self) -> dict[str, list[str]]:
-            """normalized vfs path -> provider mount names (Texture blobs + loose)."""
+            """Normalized vfs path -> provider names (VFS-visible entries + loose)."""
             idx: dict[str, list[str]] = {}
             for m in sorted(self.mounts, key=lambda x: x.priority):
                 if m.kind == "pak" and m.pak and not m.pak.error:
@@ -1260,7 +1268,7 @@ if HAVE_QT:
                     )
                     if e is not None:
                         payload, _ = m.pak.payload(e)
-                        d = decode_texture(payload)
+                        d = decode_texture(payload) if e.kind == 4 else {}
                         lines.append(
                             f"blob:       [{e.kind_name}] offset={e.offset} stored={e.size} "
                             f"ktx={d.get('ktxBytes', '?')} B "
