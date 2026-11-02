@@ -154,6 +154,9 @@ static void WriteRoomTarget(std::ostream& f, const Command& c) {
 		f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
 			<< " -owner " << c.text;
 	}
+	else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase
+			&& !c.text.empty())
+		f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 	else if (c.node != UINT32_MAX)
 		f << "-n " << c.node;
 	WriteTargetKeys(f, c, false);
@@ -180,7 +183,8 @@ static bool IsGenericNodeVerb(Verb v) {
 		|| v == Verb::SetVisibility || v == Verb::Parent;
 }
 static bool IsAttrNodeVerb(Verb v) {
-	return v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
+	return v == Verb::AttachGiVolume || v == Verb::RemoveGiVolume
+		|| v == Verb::SetLightAttr || v == Verb::SetGiVolumeAttr
 		|| v == Verb::SetCubemapAttr || v == Verb::SetCamAttr
 		|| v == Verb::SetAudioAttr || v == Verb::AddAudioSound
 		|| v == Verb::RemoveAudioSound
@@ -562,6 +566,12 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 			<< " -s " << c.svec.x << " " << c.svec.y << " " << c.svec.z;
 		break;
 	}
+	case Verb::AttachGiVolume:
+	case Verb::RemoveGiVolume: {
+		f << (c.verb == Verb::AttachGiVolume ? "attachGiVolume " : "removeGiVolume ");
+		WriteRoomTarget(f, c);
+		break;
+	}
 	case Verb::AttachAudioRoom: {
 		f << "attachAudioRoom ";
 		WriteRoomTarget(f, c);
@@ -584,6 +594,8 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 				== kCreateGiVolumeRefBase)
 			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase)
 				<< " -owner givolume";
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase)
+			f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
 		WriteTargetKeys(f, c, false);
@@ -636,8 +648,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c,
 		// rotation-deg, size) ride -t; name rides -v as a string;
 		// scalars (priority, spacing, inside, outside) ride -v.
 		f << "setGiVolumeAttr ";
-		if ((c.node & kCreateGiVolumeRefBase) != 0 && c.node != UINT32_MAX)
+		if ((c.node & kCreateRefFamilyMask) == kCreateGiVolumeRefBase)
 			f << "-ref " << (c.node & ~kCreateGiVolumeRefBase);
+		else if ((c.node & kCreateRefFamilyMask) == kCreateTransformRefBase)
+			f << "-ref " << (c.node & ~kCreateTransformRefBase) << " -owner transform";
 		else if (c.node != UINT32_MAX)
 			f << "-n " << c.node;
 		WriteTargetKeys(f, c, false);
@@ -2466,7 +2480,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			return false;
 		}
 		c.verb = Verb::SetGiVolumeAttr;
-		c.node = fl.hasRef ? (kCreateGiVolumeRefBase | fl.ref) : fl.n;
+		c.node = fl.hasRef ? ((fl.hasOwner && fl.owner == "transform"
+			? kCreateTransformRefBase : kCreateGiVolumeRefBase) | fl.ref) : fl.n;
 		c.text = fl.at;
 		if (fl.at == "position" || fl.at == "rotation"
 			|| fl.at == "size") {
@@ -2805,6 +2820,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				base = kCreateAudioRoomRefBase;
 			else if (fl.owner == "givolume")
 				base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "transform")
+				base = kCreateTransformRefBase;
 			else {
 				err = "line " + std::to_string(lineNo)
 					+ ": unknown -owner family '" + fl.owner
@@ -2853,6 +2870,8 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				base = kCreateAudioRoomRefBase;
 			else if (fl.owner == "givolume")
 				base = kCreateGiVolumeRefBase;
+			else if (fl.owner == "transform")
+				base = kCreateTransformRefBase;
 			else {
 				err = "line " + std::to_string(lineNo)
 					+ ": unknown -owner family '" + fl.owner
