@@ -84,6 +84,12 @@ echo "  checksums verified"
 mkdir -p "$DEST"
 cp "$tmp/sponza_10.tapp" "$tmp"/sponza_10-*.pak "$DEST"/
 
+# The GitHub release has data + checksums; stage the checked-in source
+# attribution notice next to the fetched content as well.
+credits="$script_dir/../SPONZA-CREDITS.md"
+[ -f "$credits" ] || fail "SPONZA-CREDITS.md is missing from this checkout; cannot stage demo attribution."
+cp "$credits" "$DEST/SPONZA-CREDITS.md"
+
 # Drop stale demo paks from earlier fetches whose content-addressed
 # names are no longer current (the .tapp only ever names the newest).
 for old in "$DEST"/sponza_10-*.pak; do
@@ -96,7 +102,7 @@ for old in "$DEST"/sponza_10-*.pak; do
 done
 
 echo ""
-echo "demo content installed into $DEST:"
+echo "demo content installed into $DEST (credits: SPONZA-CREDITS.md):"
 for f in "$tmp"/sponza_10.tapp "$tmp"/sponza_10-*.pak; do
   du -h "$f" | cut -f1 | xargs -I{} echo "  $(basename "$f")  ({})"
 done
