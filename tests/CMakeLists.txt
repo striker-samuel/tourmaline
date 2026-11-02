@@ -1236,3 +1236,10 @@ target_link_libraries(GpuSceneLodTests PRIVATE engine)
 set_target_properties(GpuSceneLodTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_lod_tests COMMAND GpuSceneLodTests)
+
+# GPUIR-style persistent spatial leaf IDs, membership and safe bounds.
+add_executable(GpuSceneLeafTests test_gpu_scene_leaves.cpp)
+target_link_libraries(GpuSceneLeafTests PRIVATE engine)
+set_target_properties(GpuSceneLeafTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_leaf_tests COMMAND GpuSceneLeafTests)
