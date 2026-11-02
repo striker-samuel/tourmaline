@@ -1858,8 +1858,17 @@ namespace editor {
 			return;
 		Scene& scene = m_world->scene;
 		auto it = FindGiVolume(scene, node);
-		if (!it)
+		if (!it) {
+			ImGui::Separator();
+			ImGui::TextDisabled("GI Volume component: not attached");
+			if (ImGui::Button("Add GI Volume component")) {
+				EditCmd c{};
+				c.verb = EditVerb::AttachGiVolume;
+				c.node = node;
+				Do(c);
+			}
 			return;
+		}
 		::SceneGiVolume& def = it->volume;
 		ImGui::Separator();
 		ImGui::Text("Convex volume: '%s'",
@@ -1994,6 +2003,12 @@ namespace editor {
 		else if (ImGui::Button("Optimize grid layout")) {
 			RunGiLayoutOptimizer(node);
 		}
+		if (ImGui::Button("Remove GI Volume component")) {
+			EditCmd c{};
+			c.verb = EditVerb::RemoveGiVolumeVerb;
+			c.node = node;
+			Do(c);
+		}
 	}
 
 	void EditorApp::DrawAudioRoomSection(uint32_t node) {
@@ -2010,7 +2025,7 @@ namespace editor {
 		// node can carry a room — the GI inspector's "Audio room:
 		// Enable" path is this same command).
 		ImGui::TextDisabled("Audio room: none (shape = node transform)");
-		if (ImGui::Button("Enable audio room")) {
+		if (ImGui::Button("Add Audio Room component")) {
 			EditCmd c{};
 			c.verb = EditVerb::AttachAudioRoom;
 			c.node = node;
@@ -2145,7 +2160,7 @@ namespace editor {
 			Do(c);
 		}
 	}
-	if (ImGui::Button("Disable audio room")) {
+	if (ImGui::Button("Remove Audio Room component")) {
 		// Drops the ASSOCIATION only — the node + any GI volume on it
 		// stay (the RemoveAudioRoomVerb command; undo restores the
 		// captured row exactly).
