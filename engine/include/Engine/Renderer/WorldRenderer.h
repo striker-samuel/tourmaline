@@ -802,6 +802,44 @@ static constexpr uint64_t kFrameFlagNormalFix = 1ull << 1;
 // viewed apart.
 static constexpr uint64_t kFrameFlagNormalFixDebug = 1ull << 2;
 
+// ---- GI volume layer table contract (docs/gi_volume_perf_investigation.md
+// §1.1): the per-volume layer slot table carries 10 slots per volume (9
+// BC6H per-lobe layers + an invalid tail, or 7 legacy RGBA16F + tail), so
+// kGiVolumeMaxVolumes volumes need 80 slots per set. The legacy
+// giVolumeLayers/giVolumeLayersB [56] FrameUniforms fields could only hold
+// 56 — the sixth volume's tail wrote past them into the fields that
+// follow. CPU pack and HLSL lookup (sg_gi_volume.hlsli reads
+// giVolumeLayerTable[vol * kGiVolumeLayerStride + layer]) share these
+// constants; the pack helpers are deterministic and headless-testable.
+inline constexpr uint32_t kGiVolumeLayerStride = 10;   // slots per volume (9 BC6H / 7 legacy + tail)
+inline constexpr uint32_t kGiVolumeMaxVolumes = 8;     // matches SG_GI_VOLUME_MAX (common.hlsli)
+inline constexpr uint32_t kGiVolumeLayerSlots =        // per-set capacity: 8 x 10
+	kGiVolumeLayerStride * kGiVolumeMaxVolumes;        // = 80 (the legacy [56] arrays' missing 24)
+inline constexpr uint32_t kGiVolumeLayerInvalid = UINT32_MAX; // never a bindless texture index
+
+// Packs one volume's layer slots at its 10-slot block: valid layers first,
+// the tail invalid, so no stale descriptor can survive a format change or
+// a disabled set. Clamped to the stride (defensive: a future 10+-layer
+// format must grow the table, not silently truncate... it still truncates
+// here LOUDLY via the static stride contract — extend kGiVolumeLayerStride).
+inline void PackGiVolumeLayerSlots(uint32_t (&table)[kGiVolumeLayerSlots],
+	uint32_t volume, const uint32_t* layerSlots, uint32_t layerCount) {
+	const uint32_t base = volume * kGiVolumeLayerStride;
+	const uint32_t n = std::min(layerCount, kGiVolumeLayerStride);
+	for (uint32_t t = 0; t < n; ++t)
+		table[base + t] = layerSlots[t];
+	for (uint32_t t = n; t < kGiVolumeLayerStride; ++t)
+		table[base + t] = kGiVolumeLayerInvalid;
+}
+
+// The shader's indexing form, shared with the CPU side so tests can pin
+// the exact slot a shader read will resolve to (including the last legal
+// index, 79 = volume 7, layer 9).
+[[nodiscard]] inline constexpr uint32_t GiVolumeLayerSlotIndex(
+	uint32_t volume, uint32_t layer) {
+	return volume * kGiVolumeLayerStride + layer;
+}
+
 struct FrameUniforms
 {
 	glm::mat4 view;
@@ -1096,6 +1134,16 @@ struct FrameUniforms
 	uint32_t giVolumeLayersB[56] = {};  // 2180 B set 8 volumes x 7 slots
 	uint32_t giVolumeMeanLayersB[8] = {};  // 2404 B mean slots
 	uint32_t giVolumeVisLayersB[16] = {}; // 2436 B vis slots
+	// ---- GI VOLUME LAYER TABLE (§1.1, docs/gi_volume_perf_investigation.md;
+	// APPEND-ONLY tail so every pinned offset above stays put). The [56]
+	// giVolumeLayers/giVolumeLayersB fields above are RESERVED — never
+	// written or read again: the population packs 10 slots per volume, 8
+	// volumes need 80, and the old arrays let the SIXTH volume's tail
+	// overwrite the fields that follow them. The replacement tables carry
+	// the full kGiVolumeLayerSlots capacity; unused slots stay
+	// kGiVolumeLayerInvalid so no stale descriptor survives. ----
+	uint32_t giVolumeLayerTable[kGiVolumeLayerSlots] = {};  // 2500 A set 8 volumes x 10 slots
+	uint32_t giVolumeLayerTableB[kGiVolumeLayerSlots] = {}; // 2820 B set
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1133,6 +1181,11 @@ static_assert(offsetof(FrameUniforms, giBlendAlpha) == 2176, "giBlendAlpha offse
 static_assert(offsetof(FrameUniforms, giVolumeLayersB) == 2180, "giVolumeLayersB offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeMeanLayersB) == 2404, "giVolumeMeanLayersB offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeVisLayersB) == 2436, "giVolumeVisLayersB offset: HLSL mirror");
+// GI volume layer table (§1.1 capacity fix): pinned like every other
+// HLSL-mirrored member. 4-aligned directly after the vis tail — no pad
+// needed on either side (DXC packs uint arrays at 4 like MSVC).
+static_assert(offsetof(FrameUniforms, giVolumeLayerTable) == 2500, "giVolumeLayerTable offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeLayerTableB) == 2820, "giVolumeLayerTableB offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1167,7 +1220,7 @@ static_assert(offsetof(FrameUniforms, fogShadowRect) == 2128, "fogShadowRect off
 static_assert(offsetof(FrameUniforms, fogShadowBias) == 2144, "fogShadowBias offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148, "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152, "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 2512, "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; the mat4 16-align tail rounds to 2512; every pre-blend offset above is unchanged)");
+static_assert(sizeof(FrameUniforms) == 3152, "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; the §1.1 layer tables append 2500 -> 3140, the 16-align tail rounds to 3152; every pre-blend offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).

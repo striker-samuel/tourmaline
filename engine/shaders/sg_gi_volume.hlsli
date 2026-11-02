@@ -67,7 +67,13 @@
 // exactly (six per-plane cubics collapsed into one). The header's
 // fade-expanded AABB rejects far-off volumes before a single plane slot
 // is fetched (the tile mask above it rejects whole volumes per TILE).
-float SgGiVolumeWeight(FrameUniforms frame, GiVolumeGpu v, float3 pos)
+// §1.2 (docs/gi_volume_perf_investigation.md): the plane pool is PER SET.
+// The core takes the pool explicitly so A walks read giVolumes and B walks
+// read giVolumesB — the previous single helper always read the A pool,
+// evaluating B volumes against A planes whenever the two pools differ.
+// Keep tile-mask semantics unchanged: A's mask never culls B.
+float SgGiVolumeWeightInPool(FrameUniforms frame, GiVolumeGpu v, float3 pos,
+    GPU_PTR_READ(GiVolumesBuffer) pool)
 {
     // Broad-phase: the fade-expanded hull AABB (the CPU packer grew the
     // generous Bounds() box by the widest outsideFade per axis — a
@@ -83,13 +89,24 @@ float SgGiVolumeWeight(FrameUniforms frame, GiVolumeGpu v, float3 pos)
         // Early out: once one plane is fully outside, the min cannot
         // recover.
         const float4 p =
-            frame.giVolumes.Get().planes[v.planeCountBase.y + i].weightEquation;
+            pool.Get().planes[v.planeCountBase.y + i].weightEquation;
         const float t = saturate(dot(p.xyz, pos) + p.w);
         minT = min(minT, t);
         if (minT <= 0.0)
             return 0.0;
     }
     return minT * minT * (3.0 - 2.0 * minT);
+}
+
+// Set-specific wrappers (§1.2): the A pool for the A walks, the B pool for
+// the B walks. Call sites must pick the wrapper matching the volume's set.
+float SgGiVolumeWeight(FrameUniforms frame, GiVolumeGpu v, float3 pos)
+{
+    return SgGiVolumeWeightInPool(frame, v, pos, frame.giVolumes);
+}
+float SgGiVolumeWeightB(FrameUniforms frame, GiVolumeGpu v, float3 pos)
+{
+    return SgGiVolumeWeightInPool(frame, v, pos, frame.giVolumesB);
 }
 
 // Per-tile volume bitmask for a pixel (see GiVolumeTileMaskBuffer).
@@ -291,7 +308,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint l = 0; l < SG_GI_LOBES; ++l)
                         corner[l] = volumeTextures[
-                            frame.giVolumeLayers[vol * 10u + l]]
+                            frame.giVolumeLayerTable[vol * 10u + l]]
                             .Load(int4(cc, 0)).rgb;
                 }
                 else
@@ -300,7 +317,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
                         layers[t] = volumeTextures[
-                            frame.giVolumeLayers[vol * 10u + t]]
+                            frame.giVolumeLayerTable[vol * 10u + t]]
                             .Load(int4(cc, 0));
                     SgRegularUnpack(layers, corner);
                 }
@@ -340,7 +357,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     {
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)
-            amps[l] = volumeTextures[frame.giVolumeLayers[vol * 10u + l]]
+            amps[l] = volumeTextures[frame.giVolumeLayerTable[vol * 10u + l]]
                 .Sample(samplers[2], uvw).rgb;
         return;
     }
@@ -348,7 +365,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
     {
-        layers[t] = volumeTextures[frame.giVolumeLayers[vol * 10u + t]]
+        layers[t] = volumeTextures[frame.giVolumeLayerTable[vol * 10u + t]]
             .Sample(samplers[2], uvw);
     }
     SgRegularUnpack(layers, amps);
@@ -730,7 +747,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint l = 0; l < SG_GI_LOBES; ++l)
                         corner[l] = volumeTextures[
-                            frame.giVolumeLayersB[vol * 10u + l]]
+                            frame.giVolumeLayerTableB[vol * 10u + l]]
                             .Load(int4(cc, 0)).rgb;
                 }
                 else
@@ -739,7 +756,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
                         layers[t] = volumeTextures[
-                            frame.giVolumeLayersB[vol * 10u + t]]
+                            frame.giVolumeLayerTableB[vol * 10u + t]]
                             .Load(int4(cc, 0));
                     SgRegularUnpack(layers, corner);
                 }
@@ -768,7 +785,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
     {
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)
-            amps[l] = volumeTextures[frame.giVolumeLayersB[vol * 10u + l]]
+            amps[l] = volumeTextures[frame.giVolumeLayerTableB[vol * 10u + l]]
                 .Sample(samplers[2], uvw).rgb;
         return;
     }
@@ -776,7 +793,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
     {
-        layers[t] = volumeTextures[frame.giVolumeLayersB[vol * 10u + t]]
+        layers[t] = volumeTextures[frame.giVolumeLayerTableB[vol * 10u + t]]
             .Sample(samplers[2], uvw);
     }
     SgRegularUnpack(layers, amps);
@@ -799,7 +816,8 @@ void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
     for (int v = int(volCount) - 1; v >= 0; --v)
     {
         const GiVolumeGpu vol = frame.giVolumesB.Get().volumes[uint(v)];
-        const float w = SgGiVolumeWeight(frame, vol, pos);
+        // §1.2: B volumes weigh against the B plane pool.
+        const float w = SgGiVolumeWeightB(frame, vol, pos);
         [branch]
         if (w <= 0.0)
             continue;
@@ -937,7 +955,8 @@ void SgGiVolumeRayCompositeB(FrameUniforms frame, inout GiVolumeRayPrep prep,
             continue;
         const GiVolumeGpu vol =
             frame.giVolumesB.Get().volumes[prep.tailVolumes[k]];
-        const float w = SgGiVolumeWeight(frame, vol, wpos);
+        // §1.2: B volumes weigh against the B plane pool.
+        const float w = SgGiVolumeWeightB(frame, vol, wpos);
         [branch]
         if (w <= 0.0)
             continue;

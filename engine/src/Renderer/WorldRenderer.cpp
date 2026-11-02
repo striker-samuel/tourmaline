@@ -4559,7 +4559,7 @@ namespace engine {
 			// mirror): 0 = the legacy 7 RGBA16F stream (GVOL), 1 = the
 			// canonical 9 BC6H per-lobe layers (GV6H). The shader's
 			// layer indexing strides off it (10 slots/volume in
-			// FrameUniforms.giVolumeLayers).
+			// FrameUniforms.giVolumeLayerTable).
 			g.planeCountBase[2] = vol.bc6hFormat ? 1u : 0u;
 			for (uint32_t p = 0; p < planeCount; ++p) {
 				const smvk::gi::GiVolumePlane& pl = vol.def.planes[p];
@@ -5555,22 +5555,25 @@ namespace engine {
 		// shader flag and GPU contents can never disagree.
 		if (m_giVolumesLoaded && m_giVolumesEnabled) {
 			data.giVolumes = m_giVolumesAddress;
+			// The legacy [56] tables are RESERVED (§1.1): never indexed
+			// again — the shader reads giVolumeLayerTable. Invalidated
+			// anyway so no stale descriptor can survive anything that
+			// still peeks at them.
+			for (uint32_t& slot : data.giVolumeLayers)
+				slot = UINT32_MAX;
 			const uint32_t n = std::min<uint32_t>(
-				uint32_t(m_giVolumes.size()), 8u);
+				uint32_t(m_giVolumes.size()), kGiVolumeMaxVolumes);
 			for (uint32_t v = 0; v < n; ++v) {
-				// The per-volume layer block: 10 slots/volume (the
-				// array's original 8x(9+1) shape) — BC6H volumes fill
-				// 9 (one per lobe), legacy GVOL fills 7; the tail stays
-				// invalid. The shader reads the stride off the volume's
-				// format flag (GiVolumeGpu.planeCountBase.z, set in the
-				// descs pack below).
+				// The per-volume layer block: 10 slots/volume in the
+				// 80-slot giVolumeLayerTable — BC6H volumes fill 9 (one
+				// per lobe), legacy GVOL fills 7; the tail stays invalid.
+				// The shader reads the stride off the volume's format
+				// flag (GiVolumeGpu.planeCountBase.z, set in the descs
+				// pack below).
 				const uint32_t layerCount =
 					m_giVolumes[v].volume.bc6hFormat ? 9u : 7u;
-				for (uint32_t t = 0; t < layerCount; ++t)
-					data.giVolumeLayers[v * 10u + t] =
-						m_giVolumes[v].layerSlots[t];
-				for (uint32_t t = layerCount; t < 10; ++t)
-					data.giVolumeLayers[v * 10u + t] = UINT32_MAX;
+				PackGiVolumeLayerSlots(data.giVolumeLayerTable, v,
+					m_giVolumes[v].layerSlots, layerCount);
 				// Volumetric one-fetch mean slots (fog-only payload).
 				data.giVolumeMeanLayers[v] = m_giVolumes[v].meanSlot;
 				// The through-wall rejection layers (UINT32_MAX = absent ->
@@ -5586,6 +5589,8 @@ namespace engine {
 			data.giVolumes = 0;
 			for (uint32_t& slot : data.giVolumeLayers)
 				slot = UINT32_MAX;
+			for (uint32_t& slot : data.giVolumeLayerTable)
+				slot = UINT32_MAX;
 			for (uint32_t& slot : data.giVolumeMeanLayers)
 				slot = UINT32_MAX;
 			data.giVolumeCount = 0u;
@@ -5600,6 +5605,8 @@ namespace engine {
 		data.giVolumesB = 0;
 		for (uint32_t& slot : data.giVolumeLayersB)
 			slot = UINT32_MAX;
+		for (uint32_t& slot : data.giVolumeLayerTableB)
+			slot = UINT32_MAX;
 		for (uint32_t& slot : data.giVolumeMeanLayersB)
 			slot = UINT32_MAX;
 		for (uint32_t& slot : data.giVolumeVisLayersB)
@@ -5610,15 +5617,14 @@ namespace engine {
 		if (m_giBlendActive && !m_giVolumesB.empty()) {
 			data.giVolumesB = m_giVolumesAddressB;
 			const uint32_t nB = std::min<uint32_t>(
-				uint32_t(m_giVolumesB.size()), 8u);
+				uint32_t(m_giVolumesB.size()), kGiVolumeMaxVolumes);
 			for (uint32_t v = 0; v < nB; ++v) {
+				// §1.1: the B twin of the A pack above — the same 80-slot
+				// table, never the reserved [56] field.
 				const uint32_t layerCount =
 					m_giVolumesB[v].volume.bc6hFormat ? 9u : 7u;
-				for (uint32_t t = 0; t < layerCount; ++t)
-					data.giVolumeLayersB[v * 10u + t] =
-						m_giVolumesB[v].layerSlots[t];
-				for (uint32_t t = layerCount; t < 10; ++t)
-					data.giVolumeLayersB[v * 10u + t] = UINT32_MAX;
+				PackGiVolumeLayerSlots(data.giVolumeLayerTableB, v,
+					m_giVolumesB[v].layerSlots, layerCount);
 				data.giVolumeMeanLayersB[v] = m_giVolumesB[v].meanSlot;
 				for (uint32_t t = 0; t < 2; ++t)
 					data.giVolumeVisLayersB[v * 2u + t] =
@@ -15597,7 +15603,7 @@ namespace engine {
 		// + evaluates the 9 lobes against the sphere direction). The
 		// probeball slot contract: the HDR tail, scene depth TEST-ONLY
 		// (occluded probes hide behind geometry). The FrameUniforms
-		// giVolumeLayers slots publish under (m_giVolumesLoaded &&
+		// giVolumeLayerTable slots publish under (m_giVolumesLoaded &&
 		// m_giVolumesEnabled) — the pass gates on the SAME condition (a
 		// stale gate would have the VS Load through UINT32_MAX slots).
 		if (m_giShowProbes) {

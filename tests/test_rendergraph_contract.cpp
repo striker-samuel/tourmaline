@@ -25,12 +25,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 
 #include <Engine/App/RunConfig.h>
 #include <Engine/Placement/placement_draw.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Renderer/Renderer.h>
+#include <Engine/Renderer/WorldRenderer.h> // FrameUniforms + the §1.1 layer-table pack contract
 #include <Engine/Renderer/gfx_filter.h>
 
 namespace {
@@ -224,6 +226,94 @@ void TestStageAccessContract() {
 		"RendergraphContractTests");
 }
 
+// 5. GI volume layer table (§1.1, docs/gi_volume_perf_investigation.md):
+//    the per-volume layer pack is 10 slots (9 BC6H / 7 legacy + invalid
+//    tail) over up to 8 volumes — 80 slots per set. The legacy [56]
+//    FrameUniforms fields could not hold that (the sixth volume's tail
+//    wrote past them); this pins the replacement capacity/stride contract
+//    for BOTH sets, including the last legal index (79) the old arrays
+//    could never reach.
+void TestGiVolumeLayerTableContract() {
+	using engine::FrameUniforms;
+	using engine::PackGiVolumeLayerSlots;
+	using engine::GiVolumeLayerSlotIndex;
+	using engine::kGiVolumeLayerStride;
+	using engine::kGiVolumeLayerSlots;
+	using engine::kGiVolumeMaxVolumes;
+	using engine::kGiVolumeLayerInvalid;
+
+	// The capacity contract itself: 8 volumes x the 10-slot stride.
+	Check(kGiVolumeLayerStride == 10, "givoltbl.stride-10");
+	Check(kGiVolumeMaxVolumes == 8, "givoltbl.volumes-8");
+	Check(kGiVolumeLayerSlots == 80, "givoltbl.slots-80");
+	// The last legal slot the shader can compute (volume 7, layer 9) —
+	// the exact index the legacy [56] arrays truncated.
+	Check(GiVolumeLayerSlotIndex(7, 9) == 79, "givoltbl.last-legal-index-79");
+	Check(GiVolumeLayerSlotIndex(0, 0) == 0, "givoltbl.first-index-0");
+	// The tables actually carry the capacity (the reserved [56] fields
+	// stay declared for ABI stability; only these are indexed).
+	Check(sizeof(FrameUniforms::giVolumeLayerTable) == 80 * sizeof(uint32_t),
+		"givoltbl.table-bytes-320");
+	Check(sizeof(FrameUniforms::giVolumeLayerTableB) == 80 * sizeof(uint32_t),
+		"givoltbl.b-table-bytes-320");
+
+	// Deterministic pack over every volume count that matters: below the
+	// old 56-slot horizon, exactly at the overflow start (volume 5's tail
+	// reaches slot 56), and the full 8-volume pack. Both formats.
+	for (const uint32_t count : {0u, 1u, 5u, 6u, 8u}) {
+		uint32_t tableA[kGiVolumeLayerSlots];
+		uint32_t tableB[kGiVolumeLayerSlots];
+		for (uint32_t& slot : tableA) slot = 0xAAAAAAAAu;
+		for (uint32_t& slot : tableB) slot = 0xAAAAAAAAu;
+		for (const uint32_t format : {0u, 1u}) {
+			const uint32_t layerCount = format ? 9u : 7u;
+			for (uint32_t v = 0; v < count; ++v) {
+				uint32_t slots[10];
+				for (uint32_t t = 0; t < layerCount; ++t)
+					slots[t] = 0x1000u + v * 16u + t; // distinct per volume+layer
+				PackGiVolumeLayerSlots(tableA, v, slots, layerCount);
+				PackGiVolumeLayerSlots(tableB, v, slots, layerCount);
+			}
+			char name[96];
+			// Valid layers land verbatim; the tail invalidates; volumes
+			// beyond the count keep whatever invalidation the caller
+			// seeded (the population clears whole tables first).
+			bool ok = true;
+			for (uint32_t v = 0; v < count && ok; ++v) {
+				for (uint32_t t = 0; t < layerCount; ++t)
+					ok = ok && tableA[GiVolumeLayerSlotIndex(v, t)]
+						== 0x1000u + v * 16u + t
+						&& tableB[GiVolumeLayerSlotIndex(v, t)]
+						== 0x1000u + v * 16u + t;
+				for (uint32_t t = layerCount; t < kGiVolumeLayerStride; ++t)
+					ok = ok && tableA[GiVolumeLayerSlotIndex(v, t)]
+						== kGiVolumeLayerInvalid
+						&& tableB[GiVolumeLayerSlotIndex(v, t)]
+						== kGiVolumeLayerInvalid;
+			}
+			std::snprintf(name, sizeof(name),
+				"givoltbl.pack-%u-vols-fmt%u", count, format);
+			Check(ok, name);
+			if (count > 0) {
+				// The last volume's last LEGAL layer index is in-bounds
+				// and was written (the §1.1 regression: index 79 at 8).
+				const uint32_t last =
+					GiVolumeLayerSlotIndex(count - 1, layerCount - 1);
+				std::snprintf(name, sizeof(name),
+					"givoltbl.last-written-%u-fmt%u", count, format);
+				Check(last < kGiVolumeLayerSlots
+					&& tableA[last] != kGiVolumeLayerInvalid
+					&& tableB[last] != kGiVolumeLayerInvalid, name);
+			}
+		}
+		// The volume that previously overflowed: volume 5's block (50..59)
+		// lives INSIDE the new table — slot 56 is a table member now, not
+		// a write past the array into whatever field followed it.
+		Check(tableA[56] == (count > 5 ? 0x1000u + 5 * 16u + 6u : 0xAAAAAAAAu),
+			"givoltbl.overrun-slot-56-contained");
+	}
+}
+
 int main() {
 	using PC = engine::IRenderer::PushConstants;
 	constexpr size_t kScratchStart = 192;
@@ -319,6 +409,9 @@ int main() {
 
 	// 6. The (stage x access) pairing contract.
 	TestStageAccessContract();
+
+	// 7. The GI volume layer table capacity/pack contract (§1.1).
+	TestGiVolumeLayerTableContract();
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;

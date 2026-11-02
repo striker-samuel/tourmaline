@@ -80,7 +80,7 @@ struct GiVolumeGpu
     uint4 planeCountBase;  // x plane count, y first plane in the shared pool below,
                            // z LAYER FORMAT (0 = legacy 7 RGBA16F GVOL stream,
                            //   1 = the canonical 9 BC6H per-lobe GV6H layers -
-                           //   the layer slots live at giVolumeLayers[vol*10 + i]),
+                           //   the layer slots live at giVolumeLayerTable[vol*10 + i]),
                            // w pad
 };
 
