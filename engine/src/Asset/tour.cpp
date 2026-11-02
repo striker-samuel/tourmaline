@@ -1091,8 +1091,11 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			: ga.kind == GiAssetCmd::Kind::Captures ? "captures"
 			: "world";
 		f << "giAsset -kind " << kindText;
-		if (ga.kind == GiAssetCmd::Kind::GiVolume)
-			f << " -ref " << (ga.ref & ~kCreateGiVolumeRefBase);
+		if (ga.kind == GiAssetCmd::Kind::GiVolume) {
+			const uint32_t family = ga.ref & kCreateRefFamilyMask;
+			f << " -ref " << (ga.ref & ~family);
+			if (family == kCreateTransformRefBase) f << " -owner transform";
+		}
 		f << " -source " << Quote(ga.source);
 		if (!ga.guid.empty())
 			f << " -guid " << ga.guid;
@@ -1865,7 +1868,10 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			continue;
 		}
 		if (ga.kind == GiAssetCmd::Kind::GiVolume)
-			ga.ref = fl.hasRef ? (kCreateGiVolumeRefBase | fl.ref) : 0;
+			ga.ref = fl.hasRef
+				? ((fl.hasOwner && fl.owner == "transform"
+					? kCreateTransformRefBase : kCreateGiVolumeRefBase) | fl.ref)
+				: 0;
 		if (!fl.hasSource || fl.source.empty()) {
 			warn("tour:" + std::to_string(lineNo) +
 				": giAsset without -source (skipped)");
@@ -5182,13 +5188,17 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			scene.giCapturesHash = ga.bakedHash;
 			continue;
 		}
-		const uint32_t k = ga.ref & ~kCreateGiVolumeRefBase;
-		if ((ga.ref & kCreateGiVolumeRefBase) == 0 || k >= createdGiVolumes.size()) {
-			warn("tour: giAsset GI-volume ref out of range: " + std::to_string(k)
+		const uint32_t family = ga.ref & kCreateRefFamilyMask;
+		const uint32_t k = ga.ref & ~family;
+		const std::vector<uint32_t>* owners =
+			family == kCreateTransformRefBase ? &createdTransforms
+			: family == kCreateGiVolumeRefBase ? &createdGiVolumes : nullptr;
+		if (!owners || k >= owners->size()) {
+			warn("tour: giAsset GI ref out of range: " + std::to_string(k)
 				+ " (dropped — '" + ga.source + "')");
 			continue;
 		}
-		GiVolumeRow* it = FindGiVolume(scene, createdGiVolumes[k]);
+		GiVolumeRow* it = FindGiVolume(scene, (*owners)[k]);
 		if (!it) {
 			warn("tour: giAsset GI-volume target is not a GI volume (dropped — '"
 				+ ga.source + "')");
