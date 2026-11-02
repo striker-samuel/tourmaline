@@ -11073,6 +11073,15 @@ namespace engine {
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
 		UpdateGeometryStreaming();
+		// Diagnostic parity readback ONLY after this flight's acquire fence:
+		// verdict buffers are never overwritten while GPU work can read them.
+		static const bool s_gpuSceneValidate = [] {
+			const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
+			return e && std::strcmp(e, "1") == 0;
+		}();
+		if (s_gpuSceneValidate)
+			m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
+		m_gpuSceneDatabaseReady = false;
 		// GPUIR scene mirror: topology reconciliation or dirty transforms,
 		// then flight-safe GPU table publication. Draws still use GfxFilter.
 		if (m_world) {
@@ -11083,9 +11092,10 @@ namespace engine {
 						? m_gfxRenderer.GfxMeshForLod(worldMesh, lod)
 						: tour::gpu_scene::InvalidIndex;
 				});
-			if (!gpuSceneSync.leafPublicationOk ||
-				!m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase,
-					fb.frameIndex))
+			if (gpuSceneSync.leafPublicationOk)
+				m_gpuSceneDatabaseReady = m_gpuSceneUploader.Publish(
+					*m_context, m_gpuSceneDatabase, fb.frameIndex);
+			if (!m_gpuSceneDatabaseReady)
 				std::fprintf(stderr, "[GpuScene] database publication failed; no GPU reader this frame\n");
 		}
 		// Probe residency for this frame's eye (throttled inside; the
@@ -11173,6 +11183,74 @@ namespace engine {
 					dirLight.direction[2]));
 		}
 		m_renderViews.Upload(*m_context, fb.frameIndex);
+
+		// GPU Scene validation (off by default): separate relative-space view
+		// built from the existing absolute-world frustum. The production
+		// RenderView, GfxDraw/HZB and indirect chain are NEVER modified.
+		// Sampling once per 120 frames bounds the debug CPU oracle/readback.
+		if (s_gpuSceneValidate && m_world && m_gpuSceneDatabaseReady
+			&& mainRenderView != smvk::RenderViewSet::kInvalidIndex
+			&& (m_frameCounter % 120u) == 0u) {
+			if (m_gpuSceneCullProgram.shaderCount == 0) {
+				try {
+					auto bytes = smvk::shaders::Read(
+						"content/shaders/gpu_scene_instance_cull.cs.hlsl.spv");
+					m_gpuSceneCullModule = m_context->CreateShaderModule(
+						std::move(bytes), "gpuSceneInstanceCullCS");
+					if (!m_gpuSceneCullModule.empty()) {
+						smvk::Shader cs{
+							.module = m_gpuSceneCullModule,
+							.entryPoint = "mainCS",
+							.stage = smvk::ShaderStage::Compute
+						};
+						m_gpuSceneCullProgram = {
+							.shaders = { cs }, .shaderCount = 1
+						};
+					}
+				} catch (...) {
+					static bool logged = false;
+					if (!logged) {
+						std::fprintf(stderr,
+							"[GpuSceneValidate] missing compute shader; validation disabled\n");
+						logged = true;
+					}
+				}
+			}
+			if (m_gpuSceneCullProgram.shaderCount == 1) {
+				// This is a validation bridge, NOT true large-world camera
+				// authority. The source VP remains float32; we only change
+				// coordinate frames consistently for the opt-in compute pass.
+				const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
+				const auto frustum = tour::gpu_scene::LegacyRelativeFrustum(
+					m_renderViews.Get(mainRenderView), origin);
+				const auto tickets = m_gpuSceneSync.LeafTickets(m_gpuSceneDatabase);
+				const auto selected = tour::gpu_scene::SelectPassedInstanceRanges(
+					m_gpuSceneDatabase, tickets, frustum,
+					tour::gpu_scene::CandidateMode::Frustum, 65536, 32768);
+				tour::gpu_scene::InstanceCullGpuPush gpuPush{};
+				if (selected.Valid() && selected.candidateCount > 0 &&
+					m_gpuSceneValidator.Prepare(*m_context, fb.frameIndex,
+						m_gpuSceneDatabase,
+						m_gpuSceneUploader.DeviceAddresses(*m_context,fb.frameIndex),
+						selected, frustum, gpuPush)) {
+					auto& pass = m_rendergraph->AddComputePass("GpuSceneValidate");
+					const smvk::ShaderProgram program = m_gpuSceneCullProgram;
+					const uint32_t groups = (selected.candidateCount+63u)/64u;
+					pass.SetRecordingFunc([program, gpuPush, groups](
+						smvk::CommandBuffer& cmd) mutable {
+						cmd.BindComputePipeline(program);
+						cmd.PushConstants(0, sizeof(gpuPush), &gpuPush,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(groups,1,1);
+					});
+					m_gpuSceneValidator.MarkDispatched(fb.frameIndex);
+				} else if (selected.status != tour::gpu_scene::CandidateStatus::Ok) {
+					std::fprintf(stderr,
+						"[GpuSceneValidate] skipped coarse selection status=%u\n",
+						uint32_t(selected.status));
+				}
+			}
+		}
 		const uint64_t renderViewsAddress =
 			m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
 
