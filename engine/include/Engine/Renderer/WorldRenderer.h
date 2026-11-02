@@ -2001,6 +2001,9 @@ protected:
 	tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
 	tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
 	tour::gpu_scene::Uploader m_gpuSceneUploader;
+	// Transient gfx registration indices are reassigned on each rebuild.
+	// Republish all mesh links when the source registration changes.
+	uint64_t m_gpuSceneGeometryRevision = 0;
 	smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
 	smvk::World* m_borrowedWorld = nullptr;        // the embedded-host form
 

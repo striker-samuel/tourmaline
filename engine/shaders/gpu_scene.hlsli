@@ -14,6 +14,9 @@ struct GpuSceneMesh {
     uint flags;
 };
 
+// Lod flags: 1 = resident payload, 2 = bound metadata known,
+// 4 = registered in the transient meshlet geometry table.
+// Mesh flags: 1 = conservative bounds known for ALL LODs.
 struct GpuSceneLod {
     uint firstSubmesh;
     uint submeshCount;

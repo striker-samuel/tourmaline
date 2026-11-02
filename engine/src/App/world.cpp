@@ -1856,7 +1856,13 @@ using namespace ::smvk;
 			const MeshLocation& lod0 = meshLocations[i];
 			if (lod0.cluster == nullptr || !lod0.handle.valid())
 				continue;
-			chain.levels.push_back(LodChain::Level{ lod0, 0.0f });
+			LodChain::Level baseLevel{ lod0, 0.0f };
+			if (const StaticMesh* baseMesh = lod0.cluster->staticMeshes.get(lod0.handle)) {
+				baseLevel.boundsMin = baseMesh->geometry.aabbMin;
+				baseLevel.boundsMax = baseMesh->geometry.aabbMax;
+				baseLevel.boundsKnown = true;
+			}
+			chain.levels.push_back(baseLevel);
 			const StringViewT base =
 				BaseMeshUriForLod(lod0.cluster->GetMeshUri(lod0.handle));
 			if (base.empty())
@@ -1888,11 +1894,27 @@ using namespace ::smvk;
 					// resident=false) and CONTINUE - the picker compacts
 					// the resident subset, the demand pass sees the
 					// full chain.
-					chain.levels.push_back(LodChain::Level{ MeshLocation{}, err, false });
+					LodChain::Level deferred{ MeshLocation{}, err, false };
+					for (const auto& clusterPtr : clusters) {
+						if (!clusterPtr) continue;
+						if (const auto* record = clusterPtr->FindDeferredMeshLod(uri)) {
+							deferred.boundsMin = record->src.aabbMin;
+							deferred.boundsMax = record->src.aabbMax;
+							deferred.boundsKnown = true;
+							break;
+						}
+					}
+					chain.levels.push_back(deferred);
 					chain.anyDeferred = true;
 					continue;
 				}
-				chain.levels.push_back(LodChain::Level{ *meshHit, err, true });
+				LodChain::Level resident{ *meshHit, err, true };
+				if (const StaticMesh* levelMesh = meshHit->cluster->staticMeshes.get(meshHit->handle)) {
+					resident.boundsMin = levelMesh->geometry.aabbMin;
+					resident.boundsMax = levelMesh->geometry.aabbMax;
+					resident.boundsKnown = true;
+				}
+				chain.levels.push_back(resident);
 			}
 		}
 	}

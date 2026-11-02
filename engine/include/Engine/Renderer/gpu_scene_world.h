@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,6 +44,13 @@ struct SourceRecord {
     uint32_t material = InvalidIndex;
     uint32_t flags = 0;
 };
+struct LevelSource {
+    float simplifyError = 0.0f;
+    uint32_t gfxMesh = InvalidIndex; // transient registration for THIS revision
+    bool resident = false;           // physical payload is in GPU memory
+    bool boundsKnown = false;        // including deferred metadata
+};
+
 struct SyncStats {
     uint32_t created = 0, updated = 0, retired = 0;
     uint32_t meshesCreated = 0, meshesRetired = 0;
@@ -62,9 +70,72 @@ public:
     }
     void Clear(RenderDatabase& db) {
         for (const auto& kv : instances_) (void)db.instances.Erase(kv.second);
-        for (const auto& kv : meshes_) (void)db.meshes.Erase(kv.second);
+        for (auto& kv : meshes_) EraseMesh(kv.second, db);
         instances_.clear();
         meshes_.clear();
+    }
+
+    [[nodiscard]] Handle<Mesh> FindMesh(SourceKey key) const {
+        const auto it = meshes_.find(key);
+        return it == meshes_.end() ? Handle<Mesh>{} : it->second.id;
+    }
+
+    // Stable mesh slot, contiguous LOD span, and one submesh per LOD.
+    // Publishing a streamed LOD changes residency/geometry fields IN PLACE;
+    // chain reshaping replaces the dependent rows but retains mesh identity.
+    // Returns false on invalid metadata / allocation failure. No GPU reader
+    // can use these rows until the standard per-flight uploader completes.
+    [[nodiscard]] bool PublishMesh(SourceKey key,
+        std::span<const LevelSource> levels, bool allBoundsKnown,
+        RenderDatabase& db) {
+        auto it = meshes_.find(key);
+        if (it == meshes_.end() || levels.empty() || levels.size() > 16)
+            return false;
+        MeshState& state = it->second;
+        const size_t count = levels.size();
+        if (state.lods.size() != count) {
+            // Do not retire old rows before successfully allocating a new
+            // replacement; on failure the existing mesh record is intact.
+            std::vector<Submesh> subValues(count);
+            auto subs = db.submeshes.InsertContiguous(subValues);
+            if (subs.size() != count)
+                return false;
+            std::vector<Lod> lodValues(count);
+            auto lods = db.lods.InsertContiguous(lodValues);
+            if (lods.size() != count) {
+                for (auto id : subs) (void)db.submeshes.Erase(id);
+                return false;
+            }
+            for (auto id : state.lods) (void)db.lods.Erase(id);
+            for (auto id : state.submeshes) (void)db.submeshes.Erase(id);
+            state.lods = std::move(lods);
+            state.submeshes = std::move(subs);
+        }
+        uint32_t residentMask = 0;
+        for (uint32_t level = 0; level < count; ++level) {
+            const LevelSource& src = levels[level];
+            const bool filterable = src.resident && src.gfxMesh != InvalidIndex;
+            if (src.resident) residentMask |= 1u << level;
+            const Submesh sub{filterable ? src.gfxMesh : InvalidIndex,
+                              InvalidIndex, InvalidIndex, 0u};
+            const Lod lod{state.submeshes[level].slot, 1u,
+                          src.simplifyError,
+                          (src.resident ? LodFlagResident : 0u) |
+                          (src.boundsKnown ? LodFlagBoundsKnown : 0u) |
+                          (filterable ? LodFlagFilterable : 0u)};
+            const Submesh* prevSub = db.submeshes.Get(state.submeshes[level]);
+            if (!prevSub || std::memcmp(prevSub, &sub, sizeof(sub)) != 0)
+                (void)db.submeshes.Update(state.submeshes[level], sub);
+            const Lod* prevLod = db.lods.Get(state.lods[level]);
+            if (!prevLod || std::memcmp(prevLod, &lod, sizeof(lod)) != 0)
+                (void)db.lods.Update(state.lods[level], lod);
+        }
+        const Mesh desc{state.lods.front().slot, uint32_t(count),
+                        residentMask, allBoundsKnown ? MeshFlagCompleteBounds : 0u};
+        const Mesh* old = db.meshes.Get(state.id);
+        if (!old || std::memcmp(old, &desc, sizeof(desc)) != 0)
+            (void)db.meshes.Update(state.id, desc);
+        return true;
     }
 
     static void SetTransform(Instance& out, const glm::mat4& model) {
@@ -107,13 +178,13 @@ public:
                 // Geometry and LOD tables are populated in a later PR.
                 auto handle = db.meshes.Insert(Mesh{});
                 if (!handle) continue;
-                mesh = meshes_.emplace(r.mesh, handle).first;
+                mesh = meshes_.emplace(r.mesh, MeshState{handle, {}, {}}).first;
                 ++stats.meshesCreated;
             }
             Instance data{};
             SetTransform(data, r.globalModel);
             data.localSphere = r.localSphere; // LOD0 sphere only
-            data.refs = glm::uvec4(mesh->second.slot, r.material,
+            data.refs = glm::uvec4(mesh->second.id.slot, r.material,
                                     InvalidIndex, r.flags);
             auto it = instances_.find(r.instance);
             if (it == instances_.end()) {
@@ -138,7 +209,7 @@ public:
         }
         for (auto it = meshes_.begin(); it != meshes_.end();) {
             if (!usedMeshes.contains(it->first)) {
-                (void)db.meshes.Erase(it->second);
+                EraseMesh(it->second, db);
                 it = meshes_.erase(it);
                 ++stats.meshesRetired;
             } else ++it;
@@ -147,8 +218,18 @@ public:
     }
 
 private:
+    struct MeshState {
+        Handle<Mesh> id{};
+        std::vector<Handle<Lod>> lods;
+        std::vector<Handle<Submesh>> submeshes;
+    };
+    static void EraseMesh(MeshState& state, RenderDatabase& db) {
+        for (auto id : state.lods) (void)db.lods.Erase(id);
+        for (auto id : state.submeshes) (void)db.submeshes.Erase(id);
+        (void)db.meshes.Erase(state.id);
+    }
     std::unordered_map<SourceKey, InstanceId, SourceKeyHash> instances_;
-    std::unordered_map<SourceKey, Handle<Mesh>, SourceKeyHash> meshes_;
+    std::unordered_map<SourceKey, MeshState, SourceKeyHash> meshes_;
 };
 
 // Per-renderer adapter: one O(renderables + source nodes) pass per topology
@@ -156,13 +237,17 @@ private:
 // consumed after global transform recalculation, not before.
 class WorldSynchronizer {
 public:
-    SyncStats Synchronize(World& world, RenderDatabase& db) {
+    using GeometryLookup = std::function<uint32_t(uint32_t, uint32_t)>;
+    SyncStats Synchronize(World& world, RenderDatabase& db,
+                           uint64_t geometryRevision = 0,
+                           const GeometryLookup& geometryLookup = {}) {
         if (world_ != &world) {
             Reset(db);
             world_ = &world;
         }
         SyncStats stats{};
-        if (revision_ != world.gpuSceneTopologyRevision) {
+        if (revision_ != world.gpuSceneTopologyRevision ||
+            geometryRevision_ != geometryRevision) {
             nodeKeys_.assign(world.scene.hierarchy.size(), {});
             for (size_t i = 0; i < world.clusters.size() &&
                                i < world.clusterMergedNodes.size(); ++i) {
@@ -184,6 +269,8 @@ public:
             }
             std::vector<SourceRecord> records;
             records.reserve(world.drawItems.size());
+            std::unordered_map<SourceKey, uint32_t, SourceKeyHash> meshWorldIndices;
+            meshWorldIndices.reserve(world.meshLocations.size());
             for (const World::RenderItem& item : world.drawItems) {
                 if (item.node >= nodeKeys_.size() ||
                     item.node >= world.scene.globalTransform.size() ||
@@ -198,20 +285,58 @@ public:
                 SourceRecord record{};
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
+                meshWorldIndices.try_emplace(record.mesh, item.mesh);
                 record.globalModel = world.scene.globalTransform[item.node];
                 record.material = item.material; // interim World index
                 record.flags = static_cast<uint32_t>(item.flags);
-                if (const StaticMesh* mesh = world.GetMesh(item.mesh)) {
-                    const glm::vec3 lo = mesh->geometry.aabbMin;
-                    const glm::vec3 hi = mesh->geometry.aabbMax;
-                    const glm::vec3 center = lo + (hi - lo) * 0.5f;
-                    record.localSphere = glm::vec4(center,
-                                                   glm::length(hi - center));
+                // Union the bounds of EVERY cooked LOD, including payloads
+                // that are currently deferred. Bounds must not shrink on
+                // eviction or the GPU would cull geometry after promotion.
+                if (item.mesh < world.lodChains.size()) {
+                    const auto& levels = world.lodChains[item.mesh].levels;
+                    bool anyBounds = false;
+                    glm::vec3 bmin(0.0f), bmax(0.0f);
+                    for (const auto& level : levels) {
+                        if (!level.boundsKnown) continue;
+                        if (!anyBounds) {
+                            bmin = level.boundsMin;
+                            bmax = level.boundsMax;
+                            anyBounds = true;
+                        } else {
+                            bmin = glm::min(bmin, level.boundsMin);
+                            bmax = glm::max(bmax, level.boundsMax);
+                        }
+                    }
+                    if (anyBounds) {
+                        const glm::vec3 center = bmin + (bmax - bmin) * 0.5f;
+                        record.localSphere = glm::vec4(center,
+                                                       glm::length(bmax - center));
+                    }
                 }
                 records.push_back(record);
             }
             stats = registry_.Reconcile(records, db);
+            // Metadata is per shared mesh, not per instance. On streaming
+            // revisions, re-scan unique chains but dirty only changed rows.
+            for (const auto& [source, worldIndex] : meshWorldIndices) {
+                if (worldIndex >= world.lodChains.size()) continue;
+                const auto& chain = world.lodChains[worldIndex].levels;
+                if (chain.empty() || chain.size() > 16) continue;
+                std::vector<LevelSource> levels;
+                levels.reserve(chain.size());
+                bool complete = true;
+                for (uint32_t i = 0; i < chain.size(); ++i) {
+                    const auto& l = chain[i];
+                    complete &= l.boundsKnown;
+                    const uint32_t gfxId = geometryLookup
+                        ? geometryLookup(worldIndex, i) : InvalidIndex;
+                    levels.push_back(LevelSource{l.error, gfxId,
+                                                 l.resident, l.boundsKnown});
+                }
+                (void)registry_.PublishMesh(source, levels, complete, db);
+            }
             revision_ = world.gpuSceneTopologyRevision;
+            geometryRevision_ = geometryRevision;
             world.scene.gpuSceneGlobalChanges.clear();
             std::fill(world.scene.gpuSceneGlobalQueued.begin(),
                       world.scene.gpuSceneGlobalQueued.end(), uint8_t(0));
@@ -238,6 +363,7 @@ public:
         registry_.Clear(db);
         nodeKeys_.clear();
         revision_ = ~uint64_t(0);
+        geometryRevision_ = ~uint64_t(0);
         world_ = nullptr;
     }
     [[nodiscard]] SceneRegistry::InstanceId Find(SourceKey k) const {
@@ -247,6 +373,7 @@ public:
 private:
     const World* world_ = nullptr;
     uint64_t revision_ = ~uint64_t(0);
+    uint64_t geometryRevision_ = ~uint64_t(0);
     std::vector<SourceKey> nodeKeys_;
     SceneRegistry registry_;
 };

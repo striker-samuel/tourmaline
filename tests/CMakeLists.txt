@@ -1229,3 +1229,10 @@ if(Python3_FOUND)
 else()
     message(STATUS "Python3 not found: perf_harness_tests not registered")
 endif()
+
+# GPU-scene mesh/LOD/submesh metadata: streaming and contiguous-span contracts.
+add_executable(GpuSceneLodTests test_gpu_scene_lod.cpp)
+target_link_libraries(GpuSceneLodTests PRIVATE engine)
+set_target_properties(GpuSceneLodTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_lod_tests COMMAND GpuSceneLodTests)
