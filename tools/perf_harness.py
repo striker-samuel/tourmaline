@@ -3,6 +3,7 @@
 import argparse
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,86 @@ import sys
 
 PERF = re.compile(r"\[perf\] avg frame ([0-9]+(?:\.[0-9]+)?) ms over ([0-9]+) frames")
 SECTIONS = re.compile(r"\[perf\] sections poll ([0-9.]+) ms game ([0-9.]+) ms draw ([0-9.]+) ms")
+
+# Resolution scaling study: the headless window is the FrameConfig default
+# 1920x1080 (engine/include/Engine/RHI/FrameConfig.h WindowDefaultWidth/
+# Height) and TOURMALINE_RENDER_SCALE re-sizes the RENDER extent (lround per
+# axis, engine clamp 0.25..2.0). One scale per run => the presets below are
+# exact (16:9 keeps per-axis scales identical).
+RESOLUTION_PRESETS = {
+    "720p": (1280, 720),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "2160p": (3840, 2160),
+    "4k": (3840, 2160),
+}
+NATIVE_WINDOW = (1920, 1080)
+
+# Warm-run priming: the first invocation after any shader/pipeline change
+# pays pipeline compilation (and first-use driver caches) INSIDE its frames
+# - observed as 6.2 ms vs 1.6 ms medians on identical content. Bench mode
+# therefore runs one UNMEASURED priming invocation per distinct environment
+# first; the disk pipeline-cache save happens at process shutdown, outside
+# the measured window, so a primed measured run compiles and saves nothing.
+PRIMING_BENCH_FRAMES = 12  # the App's 10 internal warmup frames + 2: every pass executes once
+
+
+def priming_command(argv_app, frames=PRIMING_BENCH_FRAMES):
+    """The measured command with a minimal --bench budget: enough frames to
+    compile every pipeline and populate the caches, cheap enough to throw
+    away. Priming runs are never summarized."""
+    out = list(argv_app)
+    if "--bench" not in out:
+        raise ValueError("bench command missing --bench")
+    out[out.index("--bench") + 1] = str(frames)
+    return out
+
+
+def priming_targets(plan):
+    """One priming run per DISTINCT environment in the plan. Pipelines are
+    environment-shaped (MSAA changes render passes and sample counts; the
+    render extent does not, but a per-environment priming run is cheap and
+    bulletproof against future extent-keyed state)."""
+    seen, targets = [], []
+    keys = set()
+    for item in plan:
+        key = tuple(sorted(item["env"].items()))
+        if key not in keys:
+            keys.add(key)
+            targets.append(item)
+    return targets
+
+
+def parse_resolutions(spec):
+    """'720p,1080p,1440p,4k' (or explicit 16:9 WxH) -> ordered run descriptors."""
+    out, seen = [], set()
+    for token in spec.split(","):
+        token = token.strip().lower()
+        if not token:
+            continue
+        if token in RESOLUTION_PRESETS:
+            width, height = RESOLUTION_PRESETS[token]
+        elif re.fullmatch(r"\d{3,5}x\d{3,5}", token):
+            width, height = (int(v) for v in token.split("x"))
+        else:
+            raise ValueError(
+                f"unknown resolution '{token}' (presets: {sorted(set(RESOLUTION_PRESETS))} or WxH)")
+        if width * NATIVE_WINDOW[1] != height * NATIVE_WINDOW[0]:
+            raise ValueError(
+                f"resolution {token} is not 16:9: the engine's single "
+                "TOURMALINE_RENDER_SCALE cannot express it against the 1920x1080 window")
+        scale = height / NATIVE_WINDOW[1]
+        if not 0.25 <= scale <= 2.0:
+            raise ValueError(
+                f"resolution {token} maps to render scale {scale:.3f}, "
+                "outside the engine's 0.25..2.0 clamp")
+        if token not in seen:
+            seen.add(token)
+            out.append({"label": token, "width": width, "height": height,
+                        "render_scale": scale})
+    if not out:
+        raise ValueError("empty --resolutions list")
+    return out
 
 
 def positive(value):
@@ -104,6 +185,8 @@ def main(argv=None):
     parser.add_argument("--candidate", type=Path, help="JSON from new bench (compare mode)")
     parser.add_argument("--max-regression", type=float, default=5.0, help="Fail comparison if slower by > this percentage")
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE", help="Set a TOURMALINE_* pin")
+    parser.add_argument("--resolutions", help="bench only: comma list of presets (720p,1080p,1440p,4k) or 16:9 WxH "
+                          "values - one repeat-set per resolution; MSAA 2x is the default AA load")
     parser.add_argument("--app-arg", action="append", default=[], help="Additional App flag (repeat, one token per flag)")
     parser.add_argument("--timeout", type=positive, default=600)
     args = parser.parse_args(argv)
@@ -127,10 +210,38 @@ def main(argv=None):
             parser.error("comparison requires two uninstrumented bench results")
         if a.get("frames") != b.get("frames") or a.get("app_args") != b.get("app_args") or a.get("environment") != b.get("environment") or a.get("source_args") != b.get("source_args") or a.get("scenario") != b.get("scenario"):
             parser.error("benchmark configurations differ; compare matching runs only")
+        # Resolution-scaling results compare per resolution: a regression at
+        # ANY studied resolution fails the comparison (scaling behavior is
+        # exactly what these runs exist to protect).
+        if "resolutions" in a and "resolutions" in b:
+            la = [r["label"] for r in a["resolutions"]]
+            lb = [r["label"] for r in b["resolutions"]]
+            if la != lb:
+                parser.error("resolution lists differ; compare identical --resolutions runs")
+            rows, worst = [], -100.0
+            for ra, rb in zip(a["resolutions"], b["resolutions"]):
+                old, new = ra["summary"]["median_ms"], rb["summary"]["median_ms"]
+                change = (new / old - 1) * 100
+                worst = max(worst, change)
+                rows.append({"resolution": ra["label"], "baseline_ms": old,
+                             "candidate_ms": new, "change_percent": change})
+            regression = worst > args.max_regression
+            print(json.dumps({"resolutions": rows, "threshold_percent": args.max_regression,
+                              "worst_change_percent": worst, "regression": regression}, indent=2))
+            return 2 if regression else 0
         old, new = a["summary"]["median_ms"], b["summary"]["median_ms"]
         change = (new / old - 1) * 100
         print(json.dumps({"baseline_ms": old, "candidate_ms": new, "change_percent": change, "threshold_percent": args.max_regression, "regression": change > args.max_regression}, indent=2))
         return 2 if change > args.max_regression else 0
+
+    resolutions = []
+    if args.resolutions:
+        if args.mode != "bench":
+            parser.error("--resolutions applies to bench mode only")
+        try:
+            resolutions = parse_resolutions(args.resolutions)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     scenario = None
     args.source_args = []
@@ -178,11 +289,18 @@ def main(argv=None):
             if key.startswith("TOURMALINE_"):
                 del env[key]
     pins = dict(scenario["environment"]) if scenario else {}
+    user_keys = set()
     for pair in args.env:
         key, sep, val = pair.partition("=")
         if not sep or not re.fullmatch(r"TOURMALINE_[A-Z0-9_]+", key):
             parser.error("--env requires TOURMALINE_NAME=value")
         pins[key] = val
+        user_keys.add(key)
+    if resolutions and "TOURMALINE_AA" not in user_keys:
+        # The scaling study's canonical load is MSAA 2x: it deliberately
+        # overrides a scenario's AA pin (the sponza-atrium canon pins AA=off
+        # for golden determinism). An explicit --env TOURMALINE_AA=... wins.
+        pins["TOURMALINE_AA"] = "msaa2x"
     env.update(pins)
     # Prevent a user shell's shader hot reload from mutating the benchmark.
     env.pop("TOURMALINE_SHADER_RELOAD", None)
@@ -206,40 +324,99 @@ def main(argv=None):
         report["shader_debug_requested"] = True
 
     if args.mode == "bench":
-        total = args.repeat
-        invocations = [argv_app] * total
+        if resolutions:
+            # One repeat-set per resolution: the render scale rides the
+            # environment (never the command line), so each run's log and
+            # result entry records exactly which extent it measured.
+            # ASSET-QUALITY PIN: the texture streamer's wanted-mip demand
+            # scales with the render extent (higher resolutions legitimately
+            # demand higher-quality textures). TOURMALINE_TEXSTREAM_MIP_BIAS
+            # = log2(scale) cancels that, so every studied resolution demands
+            # the SAME asset quality as the 1080p reference and the scaling
+            # table measures pixels, not asset work. An explicit --env pin wins.
+            plan = []
+            for res in resolutions:
+                res_env = dict(env)
+                res_env["TOURMALINE_RENDER_SCALE"] = f"{res['render_scale']:.6g}"
+                if "TOURMALINE_TEXSTREAM_MIP_BIAS" not in user_keys:
+                    res_env["TOURMALINE_TEXSTREAM_MIP_BIAS"] = f"{math.log2(res['render_scale']):.3f}"
+                for i in range(1, args.repeat + 1):
+                    plan.append({"invocation": argv_app, "env": res_env,
+                                 "name": f"bench-{res['label']}-{i:02}.log",
+                                 "resolution": res})
+        else:
+            plan = [{"invocation": argv_app, "env": env,
+                     "name": f"bench-{i:02}.log", "resolution": None}
+                    for i in range(1, args.repeat + 1)]
     elif args.mode == "trace":
         ngfx = args.ngfx or shutil.which("ngfx")
         if not ngfx:
             parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
         # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
         # of presents; samples are NOT a trustworthy standalone FPS benchmark.
-        invocations = [[ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
-                        f'--exe={args.exe.resolve()}', '--args=' + subprocess.list2cmdline(argv_app[1:]),
-                        f'--start-after-frames={args.warmup}', "--limit-to-frames=1", '--auto-export']]
+        plan = [{"invocation": [ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
+                                f'--exe={args.exe.resolve()}', '--args=' + subprocess.list2cmdline(argv_app[1:]),
+                                f'--start-after-frames={args.warmup}', "--limit-to-frames=1", '--auto-export'],
+                 "env": env, "name": "trace-01.log", "resolution": None}]
     else:
         capture = args.ngfx_capture or shutil.which("ngfx-capture")
         if not capture:
             parser.error("graphics capture requires ngfx-capture executable (--ngfx-capture)")
         # Capture CLI syntax may differ across Nsight versions; check --help.
-        invocations = [[capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
-                        "--args", subprocess.list2cmdline(argv_app[1:]),
-                        "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(out)]]
+        plan = [{"invocation": [capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
+                                "--args", subprocess.list2cmdline(argv_app[1:]),
+                                "--capture-frame", str(args.capture_frame), "--frame-count", "1",
+                                "--output-dir", str(out)],
+                 "env": env, "name": "capture-01.log", "resolution": None}]
     failed = False
     try:
-        for i, invocation in enumerate(invocations, 1):
-            print(f"[perf-harness] {args.mode} run {i}/{len(invocations)}", file=sys.stderr, flush=True)
+        # Warm runs first (bench only): compilation and first-use cache
+        # variance land in priming invocations that are never summarized.
+        priming = []
+        if args.mode == "bench":
+            targets = priming_targets(plan)
+            for j, target in enumerate(targets, 1):
+                tag = f" [{target['resolution']['label']}]" if target["resolution"] else ""
+                print(f"[perf-harness] priming run {j}/{len(targets)}{tag} (unmeasured)",
+                      file=sys.stderr, flush=True)
+                name = (f"warmup-{target['resolution']['label']}.log"
+                        if target["resolution"] else f"warmup-{j:02}.log")
+                try:
+                    proc = subprocess.run(priming_command(target["invocation"]),
+                                          cwd=workdir, env=target["env"], text=True,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          timeout=args.timeout, errors="replace", check=False)
+                    log, rc = proc.stdout, proc.returncode
+                except subprocess.TimeoutExpired as exc:
+                    log = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                    rc = 124
+                (out / name).write_text(log, encoding="utf-8")
+                entry = {"exit_code": rc, "log": name}
+                if rc != 0:
+                    failed = True
+                    entry["error"] = "priming run failed (the measured runs never started)"
+                priming.append(entry)
+                print(json.dumps(entry), flush=True)
+                if failed:
+                    break
+        report["priming"] = priming
+        for i, item_plan in enumerate(plan, 1):
+            print(f"[perf-harness] {args.mode} run {i}/{len(plan)}"
+                  + (f" [{item_plan['resolution']['label']}]" if item_plan["resolution"] else ""),
+                  file=sys.stderr, flush=True)
+            invocation, run_env, name = item_plan["invocation"], item_plan["env"], item_plan["name"]
             try:
-                proc = subprocess.run(invocation, cwd=workdir, env=env, text=True,
+                proc = subprocess.run(invocation, cwd=workdir, env=run_env, text=True,
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       timeout=args.timeout, errors="replace", check=False)
                 log, rc = proc.stdout, proc.returncode
             except subprocess.TimeoutExpired as exc:
                 log = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
                 rc = 124
-            name = f"{args.mode}-{i:02}.log"
             (out / name).write_text(log, encoding="utf-8")
             item = {"exit_code": rc, "log": name}
+            if item_plan["resolution"]:
+                item["resolution"] = item_plan["resolution"]["label"]
             if args.mode == "bench":
                 matches = PERF.findall(log)
                 sections = SECTIONS.findall(log)
@@ -257,10 +434,48 @@ def main(argv=None):
             if failed:
                 break
         if args.mode == "bench" and not failed:
-            samples = [run["avg_frame_ms"] for run in report["runs"]]
-            report["summary"] = {"median_ms": statistics.median(samples), "mean_ms": statistics.mean(samples),
-                                 "min_ms": min(samples), "max_ms": max(samples),
-                                 "estimated_fps": 1000 / statistics.median(samples)}
+            def summarize(runs):
+                samples = [run["avg_frame_ms"] for run in runs]
+                return {"median_ms": statistics.median(samples), "mean_ms": statistics.mean(samples),
+                        "min_ms": min(samples), "max_ms": max(samples),
+                        "estimated_fps": 1000 / statistics.median(samples)}
+            if resolutions:
+                # Per-resolution groups + the scaling table (the study's
+                # deliverable: how render time grows with the extent).
+                report["resolutions"] = []
+                table = []
+                for res in resolutions:
+                    runs = [r for r in report["runs"] if r.get("resolution") == res["label"]]
+                    bias_used = (pins["TOURMALINE_TEXSTREAM_MIP_BIAS"]
+                                 if "TOURMALINE_TEXSTREAM_MIP_BIAS" in user_keys
+                                 else f"{math.log2(res['render_scale']):.3f}")
+                    entry = {"label": res["label"], "width": res["width"], "height": res["height"],
+                             "render_scale": res["render_scale"],
+                             "environment": {"TOURMALINE_RENDER_SCALE": f"{res['render_scale']:.6g}",
+                                             "TOURMALINE_AA": pins.get("TOURMALINE_AA", ""),
+                                             "TOURMALINE_TEXSTREAM_MIP_BIAS": bias_used},
+                             "runs": runs, "summary": summarize(runs)}
+                    report["resolutions"].append(entry)
+                    megapixels = res["width"] * res["height"] / 1e6
+                    table.append({"resolution": res["label"],
+                                  "extent": f"{res['width']}x{res['height']}",
+                                  "render_scale": round(res["render_scale"], 4),
+                                  "texstream_mip_bias": float(bias_used),
+                                  "median_ms": entry["summary"]["median_ms"],
+                                  "estimated_fps": round(entry["summary"]["estimated_fps"], 1),
+                                  "ms_per_megapixel": round(entry["summary"]["median_ms"] / megapixels, 3)})
+                print(json.dumps({"resolution_scaling": table,
+                                  "aa": pins.get("TOURMALINE_AA", ""),
+                                  "note": "asset quality pinned to the 1080p reference via "
+                                          "TOURMALINE_TEXSTREAM_MIP_BIAS=log2(render_scale); "
+                                          "override with --env TOURMALINE_TEXSTREAM_MIP_BIAS=... to "
+                                          "measure native per-resolution quality"}, indent=2), flush=True)
+                # The native-scale entry is the headline summary (compare
+                # mode reads it); fall back to the last studied resolution.
+                native = [e for e in report["resolutions"] if e["render_scale"] == 1.0]
+                report["summary"] = (native or report["resolutions"])[-1]["summary"]
+            else:
+                report["summary"] = summarize(report["runs"])
         report["ok"] = not failed
         if args.mode in ("capture", "trace"):
             report["note"] = "Nsight runs are instrumented; do not compare their FPS against bench mode. Inspect the Nsight output/log for capture artifacts."

@@ -4111,6 +4111,11 @@ public:
 	// by the host's world source; digest-less pak blobs stay
 	// full-resident, the pre-v4 behavior).
 	bool m_textureStreamingEnabled = true;
+	// Mip bias for the streamer's demand (RunConfig::texstreamMipBias via
+	// ApplyRunConfig): the resolution-scaling study pins asset quality to
+	// the 1080p reference with log2(render_scale) here, so the studied
+	// resolutions differ ONLY in pixels, never in demanded asset quality.
+	float m_texstreamMipBias = 0.0f;
 	// Geometry LOD streaming (Renderer/geometry_streamer.h): the env
 	// gate arms it at cluster load (what defers); this active flag is
 	// the per-frame tick gate - set at scene registration when the

@@ -1023,6 +1023,9 @@ namespace engine {
 		// Opt-in A2C for masked cutout in MSAA mode (quality trade-off, see
 		// m_msaaAlphaToCoverage).
 		m_msaaAlphaToCoverage = run.a2c;
+		// Texture-streaming mip bias (the scaling study's asset-quality
+		// pin; consumed when the streamer is constructed at attach).
+		m_texstreamMipBias = run.texstreamMipBias;
 		// Texture filtering default for headless A/B
 		// (trilinear | 2x | 4x | 8x | 16x). The ImGui combo stays live after;
 		// applied every RenderFrame.
@@ -2784,7 +2787,9 @@ namespace engine {
 			streamCfg.maxUpgradesPerFrame = 4;
 			streamCfg.maxDowngradesPerFrame = 8;
 			streamCfg.evictCooldownFrames = 60;
-			streamCfg.mipBias = 0.0f;
+			// RunConfig::texstreamMipBias (ApplyRunConfig ran before
+			// attach): the scaling study's asset-quality pin.
+			streamCfg.mipBias = m_texstreamMipBias;
 			m_textureStreamer =
 				smvk::mem::MakeProcess<smvk::TextureStreamer>(*m_context, streamCfg);
 		}

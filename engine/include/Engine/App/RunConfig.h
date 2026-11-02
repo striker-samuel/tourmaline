@@ -233,7 +233,16 @@ struct RunConfig {
 	bool noValidation = false;
 	bool traceWaits = false;
 
-	// ---- trace ----
+	// ---- texture streaming (texture_streamer.h) ----
+	// Mip bias added to the streamer's wanted-mip demand on BOTH feedback
+	// paths (the gfx filter's GPU readback + the CPU screen-coverage
+	// heuristic; positive = coarser, negative = sharper). The
+	// resolution-scaling study (tools/perf_harness.py --resolutions) pins
+	// it to log2(render_scale) so every studied resolution demands the
+	// SAME asset quality as the 1080p reference — without it, higher
+	// render resolutions legitimately demand higher-quality textures and
+	// the scaling table conflates pixels with asset work.
+	float texstreamMipBias = 0.0f;
 	bool texstreamTrace = false; // any of 4 presence sites
 
 	// ---- editor ----
