@@ -205,9 +205,9 @@ def main(argv=None):
             parser.error(str(exc))
         args.source_args = scenario["source_args"]
         args.app_arg = scenario.get("app_args", []) + args.app_arg
-        args.frames = args.frames or scenario["frames"]
+        args.frames = args.frames or (args.trace_frames + 2 if args.mode == "trace" else scenario["frames"])
     else:
-        args.frames = args.frames or 120
+        args.frames = args.frames or (args.trace_frames + 2 if args.mode == "trace" else 120)
         if not args.pak and not args.project:
             parser.error("--pak, --project or --scenario required")
     if args.exe is None:
