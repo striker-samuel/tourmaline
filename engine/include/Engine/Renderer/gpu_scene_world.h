@@ -184,8 +184,8 @@ public:
             Instance data{};
             SetTransform(data, r.globalModel);
             data.localSphere = r.localSphere; // LOD0 sphere only
-            data.refs = glm::uvec4(mesh->second.id.slot, r.material,
-                                    InvalidIndex, r.flags);
+            data.refs = glm::uvec4(mesh->second.id.slot,
+                                    mesh->second.id.generation, r.material, r.flags);
             auto it = instances_.find(r.instance);
             if (it == instances_.end()) {
                 auto handle = db.instances.Insert(data);

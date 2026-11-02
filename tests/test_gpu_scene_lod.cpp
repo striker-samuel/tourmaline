@@ -56,6 +56,7 @@ void CheckMeshResidency() {
     const auto meshId = registry.FindMesh(r.mesh);
     const auto instanceId = registry.Find(r.instance);
     assert(meshId && instanceId);
+    assert(db.instances.Get(instanceId)->refs.y == meshId.generation);
     std::array<LevelSource, 3> chain{{
         {0.0f, 4u, true, true},              // LOD0: resident and filterable
         {0.25f, InvalidIndex, false, true},  // LOD1 deferred, metadata known

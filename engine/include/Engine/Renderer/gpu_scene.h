@@ -70,7 +70,7 @@ struct alignas(16) Instance {
     glm::vec4 basisY{0.0f, 1.0f, 0.0f, 0.0f};
     glm::vec4 basisZ{0.0f, 0.0f, 1.0f, 0.0f};
     glm::vec4 localSphere{0.0f}; // xyz mesh-local center, w radius
-    glm::uvec4 refs{InvalidIndex}; // mesh slot, material slot, leaf slot, flags
+    glm::uvec4 refs{InvalidIndex}; // mesh slot, mesh generation, World material, flags
 };
 
 struct alignas(16) Leaf {

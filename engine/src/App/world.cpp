@@ -1851,6 +1851,14 @@ using namespace ::smvk;
 		lodChains.clear();
 		lodChains.resize(meshLocations.size());
 		InvalidateLodCache();
+		// A corrupt/missing AABB must not be advertised to GPU instance
+		// culling as complete conservative bounds.
+		const auto validBounds = [](const glm::vec3& mn, const glm::vec3& mx) {
+			for (int a = 0; a < 3; ++a)
+				if (!std::isfinite(mn[a]) || !std::isfinite(mx[a]) || mn[a] > mx[a])
+					return false;
+			return true;
+		};
 		for (uint32_t i = 0; i < (uint32_t)meshLocations.size(); ++i) {
 			LodChain& chain = lodChains[i];
 			const MeshLocation& lod0 = meshLocations[i];
@@ -1860,7 +1868,7 @@ using namespace ::smvk;
 			if (const StaticMesh* baseMesh = lod0.cluster->staticMeshes.get(lod0.handle)) {
 				baseLevel.boundsMin = baseMesh->geometry.aabbMin;
 				baseLevel.boundsMax = baseMesh->geometry.aabbMax;
-				baseLevel.boundsKnown = true;
+				baseLevel.boundsKnown = validBounds(baseLevel.boundsMin, baseLevel.boundsMax);
 			}
 			chain.levels.push_back(baseLevel);
 			const StringViewT base =
@@ -1900,7 +1908,7 @@ using namespace ::smvk;
 						if (const auto* record = clusterPtr->FindDeferredMeshLod(uri)) {
 							deferred.boundsMin = record->src.aabbMin;
 							deferred.boundsMax = record->src.aabbMax;
-							deferred.boundsKnown = true;
+							deferred.boundsKnown = validBounds(deferred.boundsMin, deferred.boundsMax);
 							break;
 						}
 					}
@@ -1912,7 +1920,7 @@ using namespace ::smvk;
 				if (const StaticMesh* levelMesh = meshHit->cluster->staticMeshes.get(meshHit->handle)) {
 					resident.boundsMin = levelMesh->geometry.aabbMin;
 					resident.boundsMax = levelMesh->geometry.aabbMax;
-					resident.boundsKnown = true;
+					resident.boundsKnown = validBounds(resident.boundsMin, resident.boundsMax);
 				}
 				chain.levels.push_back(resident);
 			}

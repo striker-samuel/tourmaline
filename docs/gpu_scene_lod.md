@@ -22,6 +22,10 @@ leaving existing CPU LOD selection and GPU meshlet rendering unchanged.
   WorldRenderer increments a geometry registration revision on each
   rebuild and refreshes these references. Persistent mesh identity
   never depends on those transient ids.
+- Instance.refs contains the full generational shared-mesh reference
+  (slot plus generation), so future GPU readers can validate cross-table
+  identity even if a mesh slot is recycled. Per-instance World material
+  and flags follow in the remaining words; leaf linking is deferred.
 - Material ID, pipeline group and passMask remain invalid/zero; NO
   shader may issue a draw from these provisional rows.
 - Chain reshaping retires old LOD/submesh records in flight-safe
