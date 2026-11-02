@@ -12,6 +12,8 @@
 #include <glm/glm.hpp>
 
 #include <array>
+#include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -38,6 +40,30 @@ struct alignas(16) InstanceCullVerdict {
 };
 static_assert(sizeof(PassedInstanceRange) == 32);
 static_assert(sizeof(InstanceCullVerdict) == 16);
+
+// Binary CPU/HLSL ABI. View data lives behind a BDA pointer (128 bytes),
+// not embedded into push constants. Must match the shader's declared
+// GpuSceneCullView and GpuSceneInstanceCullPush exactly.
+struct alignas(16) InstanceCullGpuView {
+    math::DoubleFloat3 origin;
+    glm::vec4 inwardPlanes[6]{};
+};
+struct alignas(16) InstanceCullGpuPush {
+    uint64_t ranges = 0;
+    uint64_t leaves = 0;
+    uint64_t members = 0;
+    uint64_t instances = 0;
+    uint64_t meshes = 0;
+    uint64_t view = 0;
+    uint64_t verdicts = 0;
+    alignas(16) glm::uvec4 counts{0u};
+    glm::uvec4 counts2{0u};
+};
+static_assert(sizeof(InstanceCullGpuView) == 128);
+static_assert(offsetof(InstanceCullGpuView, inwardPlanes) == 32);
+static_assert(sizeof(InstanceCullGpuPush) == 96);
+static_assert(offsetof(InstanceCullGpuPush, counts) == 64);
+static_assert(offsetof(InstanceCullGpuPush, counts2) == 80);
 
 struct RelativeFrustum {
     // The origin and six inward half-spaces must be in the SAME frame as
@@ -124,6 +150,8 @@ struct CandidateSelection {
     };
     if (mode == CandidateMode::Frustum && !view.Valid())
         return fail(CandidateStatus::InvalidView);
+    maxRanges = std::min(maxRanges, MaxPassedLeafRanges);
+    maxCandidates = std::min(maxCandidates, MaxPassedInstanceCandidates);
 
     std::set<std::pair<uint32_t, uint32_t>> seen;
     for (const LeafTicket& ticket : tickets) {

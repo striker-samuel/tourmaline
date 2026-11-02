@@ -15,7 +15,7 @@
 
 #define GPU_SCENE_MAX_PASSED_RANGES   65536u
 #define GPU_SCENE_MAX_CANDIDATES      1048576u
-#define GPU_SCENE_MAX_ROW_SLOTS       16777216u
+#define GPU_SCENE_MAX_ROW_SLOTS       4194304u
 
 struct GpuScenePassedRange {
     uint4 members; // x member row first, y count, z candidate prefix

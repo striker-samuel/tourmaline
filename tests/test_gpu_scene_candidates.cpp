@@ -141,7 +141,8 @@ void CheckCoarse() {
     assert(reincarnated.slot == far.slot);
     assert(reincarnated.generation != far.generation);
     assert(leaves.Flush(db));
-    VerifyRanges(SelectPassedInstanceRanges(db, leaves.Tickets(db), view,
+    const auto newTickets = leaves.Tickets(db);
+    VerifyRanges(SelectPassedInstanceRanges(db, newTickets, view,
         CandidateMode::PassAll), db);
     assert(!db.instances.Contains(far));
 }
