@@ -255,6 +255,43 @@ void TestResetAnchorsAtLookAt() {
 		"camera.reset.resolved-up-carried");
 }
 
+void TestCameraCutSemantics() {
+	using tour::CameraChange;
+	using tour::CameraChangeTracker;
+	using tour::CameraFramePose;
+	CameraChangeTracker tracker;
+	CameraFramePose pose{};
+	Check(tracker.Observe(pose) == CameraChange::Initial,
+		"camera.cut.first-frame-is-initial");
+	Check(tracker.Observe(pose) == CameraChange::Continuous,
+		"camera.cut.stationary-is-continuous");
+	pose.position.x += 1.0f;
+	Check(tracker.Observe(pose) == CameraChange::Continuous,
+		"camera.cut.normal-motion-keeps-history");
+	pose.position.x += 6.0f;
+	Check(tracker.Observe(pose) == CameraChange::Cut,
+		"camera.cut.teleport");
+	Check(tracker.Observe(pose) == CameraChange::Continuous,
+		"camera.cut.one-shot");
+	pose.orientation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+	Check(tracker.Observe(pose) == CameraChange::Cut,
+		"camera.cut.rapid-rotation");
+	pose.orientation = -pose.orientation;
+	Check(tracker.Observe(pose) == CameraChange::Continuous,
+		"camera.cut.quaternion-sign-is-not-motion");
+	pose.fovYDegrees += 10.0f;
+	Check(tracker.Observe(pose) == CameraChange::Cut,
+		"camera.cut.lens-change");
+	pose.nearClip *= 2.0f;
+	Check(tracker.Observe(pose) == CameraChange::Cut,
+		"camera.cut.near-plane-change");
+	tracker.RequestCut();
+	Check(tracker.Observe(pose) == CameraChange::Cut,
+		"camera.cut.explicit-request");
+	Check(tracker.Observe(pose) == CameraChange::Continuous,
+		"camera.cut.explicit-request-consumed");
+}
+
 } // namespace
 
 int main() {
@@ -263,6 +300,7 @@ int main() {
 	TestSafeLookAt();
 	TestMouseLookFramerateIndependent();
 	TestResetAnchorsAtLookAt();
+	TestCameraCutSemantics();
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }
