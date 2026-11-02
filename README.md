@@ -91,122 +91,165 @@ For a complete, compilable example with multi-pak textures and scene-authored au
 
 ## Getting started
 
-### Requirements
+The fastest way to see Tourmaline render a scene is to **build the `App` viewer and fetch the [Sponza demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content)**. The release provides *content*, **not** Windows/Linux engine executables or a packaged installer. The public `demo_content` CMake target downloads and SHA-256-checks the correct content-addressed pak for you.
 
-- **Windows x64:** Visual Studio 2022+ with MSVC C++ tools, the Vulkan SDK, CMake, Ninja, and Git.
-- **Linux x64:** Ubuntu 24.04 with GCC 14 is the verified configuration, plus the required Vulkan/SDL development libraries, CMake, Ninja, and Git.
-- **Both:** KTX-Software **4.4.2** installed separately. The dependency installers do **not** install KTX-Software or the Windows Vulkan SDK.
-- **Windows recommendation:** Use the official **Embree 4.4.1 prebuilt package**; compiling the vendored Embree source with MSVC has triggered compiler internal errors in the tested configuration.
+**For coding agents and automation:** choose exactly **one** platform recipe below. Run commands in order, from the **repository root** unless a command changes directory; use a native shell (Developer PowerShell on Windows, Bash on Linux), not an uninitialized IDE terminal. Do not skip the KTX installation, substitute a Visual Studio CMake generator for Ninja, or launch `App` from the repository root. The commands use separate build directories per OS and do not require the optional editor or a content store.
 
-The detailed OS package lists, KTX build/install commands, and Embree setup are in [the existing build guide](AGENTS.md) and the repository's [CI workflow](.github/workflows/ci.yml).
+### Supported prerequisites
 
-### 1. Clone and install pinned dependencies
+| | Windows x64 | Linux x64 |
+| --- | --- | --- |
+| Verified toolchain | Visual Studio 2022 MSVC x64 build tools | Ubuntu 24.04, GCC/G++ 14 |
+| Build tools | CMake, Ninja, Git; **x64 Developer PowerShell for Visual Studio** | CMake, Ninja, Git, curl and system development packages (below) |
+| Vulkan | [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home) **1.4.357.0**, including DXC | Vulkan loader/dev packages and a working driver; pinned Vulkan headers and DXC are fetched by the dependency script |
+| Additional required dependency | KTX-Software **4.4.2** and prebuilt Embree **4.4.1** (recommended) | KTX-Software **4.4.2**; Embree is built from the fetched source |
+| Runtime | Vulkan 1.3-capable GPU and updated driver | Vulkan 1.3-capable GPU, driver and graphical desktop/session |
+
+The repository's `install_dependencies.ps1` and `install_dependencies.sh` fetch the pinned dependencies into `external/`, but **do not install KTX-Software or the Windows Vulkan SDK**. On Windows, prefer prebuilt Embree: the vendored source has triggered MSVC internal compiler errors. Full platform details are also documented in [CI](.github/workflows/ci.yml) and [AGENTS.md](AGENTS.md).
+
+### Windows — build, install demo content, run
+
+Open **x64 Developer PowerShell for Visual Studio 2022** with CMake, Ninja and Git on `PATH`. Install the Vulkan SDK **1.4.357.0** from [LunarG](https://vulkan.lunarg.com/sdk/home) (the version used by CI). A scripted installation, if needed and permitted by your machine's elevation policy, is:
+
+```powershell
+curl.exe -L -o "$env:TEMP\vulkan-sdk.exe" https://sdk.lunarg.com/sdk/download/1.4.357.0/windows/vulkan-sdk.exe
+Start-Process -Wait -FilePath "$env:TEMP\vulkan-sdk.exe" -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install'
+```
+
+Start or return to an **x64 Developer PowerShell** after installation. The next commands assume the SDK is installed at its normal `C:\VulkanSDK\1.4.357.0` path; adjust that path if yours differs.
+
+```powershell
+$env:VULKAN_SDK = "C:\VulkanSDK\1.4.357.0"
+$env:PATH = "$env:VULKAN_SDK\Bin;$env:PATH"
+if (-not (Test-Path "$env:VULKAN_SDK\Bin\dxc.exe")) { throw "Vulkan SDK/DXC not found; install the SDK first." }
+
+git clone --recursive https://github.com/striker-samuel/tourmaline.git
+Set-Location tourmaline
+
+# KTX 4.4.2 (required; repeat this build only when KTX is not already installed).
+git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software "$env:USERPROFILE\ktx-src"
+cmake -S "$env:USERPROFILE\ktx-src" -B "$env:USERPROFILE\ktx-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DKTX_FEATURE_TOOLS=OFF -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF "-DCMAKE_INSTALL_PREFIX=$env:USERPROFILE\ktx"
+cmake --build "$env:USERPROFILE\ktx-build"
+cmake --install "$env:USERPROFILE\ktx-build"
+
+# Official prebuilt Embree 4.4.1, SHA-256 pin from the Windows CI job.
+$embreeZip = Join-Path $env:TEMP 'embree-4.4.1.x64.windows.zip'
+curl.exe -fL -o $embreeZip https://github.com/embree/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip
+$hash = (Get-FileHash $embreeZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($hash -ne '5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f') { throw "Embree checksum mismatch: $hash" }
+$embreeStage = Join-Path $env:TEMP 'tourmaline-embree-unpack'
+Expand-Archive $embreeZip -DestinationPath $embreeStage -Force
+$embreeRoot = Join-Path $env:USERPROFILE 'embree-4.4.1'
+if (-not (Test-Path "$embreeRoot\lib\cmake")) {
+    Move-Item (Join-Path $embreeStage 'embree-4.4.1.x64.windows') $embreeRoot
+}
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install_dependencies.ps1
+cmake -S . -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF "-DKTX_ROOT=$env:USERPROFILE\ktx" "-DEMBREE_PREBUILT_DIR=$embreeRoot"
+cmake --build out/build/x64-Release --target App
+cmake --build out/build/x64-Release --target demo_content
+
+# Verify before launch: executable, engine shaders and release manifest exist.
+if (-not (Test-Path .\out\build\x64-Release\App.exe)) { throw "App.exe missing" }
+if (-not (Test-Path .\out\build\x64-Release\engine-shaders.pak)) { throw "engine-shaders.pak missing" }
+if (-not (Test-Path .\out\build\x64-Release\content\paks\sponza_10.tapp)) { throw "demo manifest missing" }
+Push-Location .\out\build\x64-Release
+try { .\App.exe --project content\paks\sponza_10.tapp } finally { Pop-Location }
+```
+
+If you already cloned the repository or installed KTX/Embree, skip those acquisition steps and supply your existing paths to `-DKTX_ROOT` and `-DEMBREE_PREBUILT_DIR`. The standard Visual Studio **CMake generator is not supported** here; use `-G Ninja` inside the MSVC developer environment.
+
+### Linux — Ubuntu 24.04/GCC 14: build, install demo content, run
+
+Run in **Bash** on Ubuntu 24.04 (a local desktop session is needed to display the demo). The package list and dependency versions match the build CI configuration.
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  gcc-14 g++-14 build-essential cmake ninja-build git curl unzip pkg-config \
+  glslang-tools libvulkan-dev zlib1g-dev mesa-vulkan-drivers \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+  libxinerama-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+  libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev \
+  libdbus-1-dev libudev-dev libunwind-dev libpipewire-0.3-dev \
+  libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev libinput-dev
+
 git clone --recursive https://github.com/striker-samuel/tourmaline.git
 cd tourmaline
-```
 
-Windows (PowerShell):
+# KTX 4.4.2 (required; if installed already, reuse its prefix).
+git clone --depth 1 --branch v4.4.2 https://github.com/KhronosGroup/KTX-Software "$HOME/ktx-src"
+cmake -S "$HOME/ktx-src" -B "$HOME/ktx-build" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DKTX_FEATURE_TOOLS=OFF \
+  -DKTX_FEATURE_TESTS=OFF -DKTX_FEATURE_DOC=OFF \
+  "-DCMAKE_INSTALL_PREFIX=$HOME/ktx"
+cmake --build "$HOME/ktx-build"
+cmake --install "$HOME/ktx-build"
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install_dependencies.ps1
-```
-
-Linux:
-
-```bash
 ./install_dependencies.sh
+cmake -S . -B out/build/linux-Release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc-14 \
+  -DCMAKE_CXX_COMPILER=g++-14 -DBUILD_TESTING=OFF \
+  "-DKTX_ROOT=$HOME/ktx"
+cmake --build out/build/linux-Release --target App
+cmake --build out/build/linux-Release --target demo_content
+
+# Verify before launch; run from the build directory for relative assets.
+test -f out/build/linux-Release/App
+test -f out/build/linux-Release/engine-shaders.pak
+test -f out/build/linux-Release/content/paks/sponza_10.tapp
+cd out/build/linux-Release
+./App --project content/paks/sponza_10.tapp
 ```
 
-The scripts fetch the separately pinned/vendored dependencies into `external/`. Install KTX-Software before configuring; on Windows, install the Vulkan SDK and obtain prebuilt Embree as described above.
-
-### 2. Configure and build
-
-**Windows — Developer PowerShell for Visual Studio:**
-
-```powershell
-$env:KTX_ROOT = "$env:USERPROFILE\ktx"
-cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release `
-  -DEMBREE_PREBUILT_DIR="$env:USERPROFILE\embree-4.4.1" .
-cmake --build out/build/x64-Release --target App Editor EditorLauncher Project
-```
-
-Paths are examples; set `KTX_ROOT` and `EMBREE_PREBUILT_DIR` to your installations. The Visual Studio **IDE** can use the Ninja configuration, but the Visual Studio **CMake generator** is intentionally unsupported.
-
-**Linux — Ubuntu 24.04/GCC 14 (after installing system packages and KTX):**
-
-```bash
-CC=gcc-14 CXX=g++-14 cmake -B out/build/linux-Release -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release .
-cmake --build out/build/linux-Release --target App Editor EditorLauncher Project
-```
-
-All builds are out-of-source and use **Ninja**.
-
-**Windows build flavors:** `x64-Release` is the lean shipping build (optimized C++,
-`-O3 -Qstrip_debug` SPIR-V, no diagnostic PDB option). The
-`x64-Release-ShaderDebug` preset keeps Release C++ and HLSL optimizations,
-adds MSVC `/Zi` and full PDBs plus DXC `-Zi -fspv-debug=vulkan`, and
-enables Nsight Aftermath shader debug mappings where supported. Use this
-preset to reproduce optimized GPU/CPU bugs; archive the matching PDBs privately
-rather than distributing them with the shipping package. The `x64-Debug`
-preset remains the separate development build. Set
-`TOURMALINE_AFTERMATH=0` to disable driver-side symbol generation when
-comparing pipeline compilation cost.
-
-### 3. Cook and run the bundled C++ game sample
-
-The repository includes a small project with checked-in glTF geometry, a texture, a WAV sound, a `.tour` scene, and a `.tourrecipe`. Unlike the larger Sponza demo (a separate download — see [Demo content](#demo-content-sponza) below), it does **not** require an external content store.
-
-```bash
-# Replace <build-dir> with out/build/x64-Release or out/build/linux-Release.
-cmake --build <build-dir> --target GameProject_paks  # cook + publish content
-cmake --build <build-dir> --target GameProject       # compile the game and catalog
-```
-
-Run the resulting `GameProject.exe` (Windows) or `GameProject` (Linux) from the build output directory. The sample finds its `.tapp` manifest alongside the executable and loads the published paks. The content build is explicitly **on demand**, not an implicit side effect of compiling a game.
-
-The standalone viewer can also launch a cooked archive or project manifest:
-
-```text
-App --pak <path-to-file.pak>
-App --project <path-to-file.tapp>
-```
-
-The viewer requires cooked content. The bundled sample above cooks from checked-in sources; for a larger scene, fetch the demo content below.
+If you already have a suitable KTX 4.4.2 installation, omit its clone/build steps and set `-DKTX_ROOT` to its install prefix. Vulkan runtime execution requires an actual working ICD/driver and display; CI verifies the Linux **build**, not interactive rendering on a hosted runner.
 
 #### Demo content: Sponza
 
-The engine's initial demo content — the cooked `sponza_10` project: the Sponza scene with meshes, textures, baked GI volumes, and cubemaps in one ~100 MB content-addressed pak — ships on the repository's GitHub [demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) rather than in the git tree:
-
-```bash
-# Replace <build-dir> with out/build/x64-Release or out/build/linux-Release.
-cmake --build <build-dir> --target demo_content   # download + SHA-256 verify into <build-dir>/content/paks
-App --project content/paks/sponza_10.tapp         # run from the build directory
-```
-
-The `demo_content` target runs `tools/fetch_demo_content.ps1` (Windows) or `tools/fetch_demo_content.sh` (Linux): it downloads the release's `.tapp` manifest and content-addressed `.pak`, verifies them against the published SHA-256 checksums, installs them into the build's `content/paks`, and removes demo paks left by earlier fetches. The release is rolling — republished whenever the demo is recooked — and the pak's content-addressed name changes with its bytes; the fetch target always retrieves the current set. At launch the engine's `DeployCheck` independently verifies the pak's content-addressed name against its actual bytes, so a truncated or stale download fails loudly before any graphics work.
-
-To download manually instead, grab `sponza_10.tapp`, the `sponza_10-*.pak` it names, and `SHA256SUMS.txt` from the [release page](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) and place them in `<build-dir>/content/paks/`.
-
-### 4. Open the editor
+The [rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) contains `sponza_10.tapp`, its content-addressed `sponza_10-*.pak` (approximately 100 MB), and `SHA256SUMS.txt`. The pak filename changes when the demo is recooked; **do not hardcode the pak name**. Use the stable manifest path:
 
 ```text
-EditorLauncher                 # project picker
-Editor --project <project-dir> # direct launch
+# From inside your configured build directory, after building App:
+# Windows: cmake --build out/build/x64-Release --target demo_content  (from repo root)
+# Linux:   cmake --build out/build/linux-Release --target demo_content (from repo root)
+App --project content/paks/sponza_10.tapp
 ```
 
-The editor supports scene inspection, authored `.tour` changes, references and overrides, gizmos, material/light editing, audio-source nodes, and cook operations. It is actively evolving and uses a simpler preview renderer than the main application path.
+The `demo_content` target invokes `tools/fetch_demo_content.ps1` (Windows) or `tools/fetch_demo_content.sh` (Linux), which downloads the release files, checks their SHA-256 hashes, and removes stale **demo** paks without removing project paks. `DeployCheck` also validates the content-addressed pak when the viewer starts. You can download the three assets manually into `<build-dir>/content/paks/` if the target cannot access GitHub.
 
-### 5. Run tests
+### Other entry points (after the platform setup above)
+
+**Cook and run the checked-in game sample.** `samples/04_project_game` is a small C++ game with its own source assets and recipe; it does not require the Sponza release. From the **repository root**, with the matching build directory configured, run:
+
+```bash
+# Substitute out/build/x64-Release for Windows or out/build/linux-Release for Linux.
+cmake --build out/build/linux-Release --target GameProject_paks
+cmake --build out/build/linux-Release --target GameProject
+```
+
+Then launch `GameProject.exe` (Windows) or `./GameProject` (Linux) **from its build directory**. Cooking is intentionally explicit (`GameProject_paks`), not a side effect of compiling `GameProject`. The viewer can also launch other cooked content with `App --pak <file.pak>` or `App --project <file.tapp>`.
+
+**Build the editor and tools (optional):** from the repository root, run `cmake --build <build-dir> --target Editor EditorLauncher Project`, then start `EditorLauncher` from the build directory (or `Editor --project <project-dir>`). Editor authoring/rendering is experimental.
+
+**Run tests (optional):** configure a separate build directory with `-DBUILD_TESTING=ON` (the demo recipes above disable tests for a smaller build), then:
 
 ```bash
 cmake --build <build-dir>
 ctest --test-dir <build-dir> --output-on-failure
 ```
 
-The CMake suite currently registers **54 tests**. Five tests create a Vulkan device/window and need a working local graphics setup; hosted CI excludes those five (and `test_knight_anim` reports `Skipped` when its content base is absent) while running the CPU-capable tests — including the bundled-project end-to-end gate (`project_e2e_tests`: the checked-in `samples/04_project_game` cooked + published + deploy-checked + consumed headless) — on Windows/MSVC and Ubuntu 24.04/GCC 14. Building on Linux is CI-tested, but interactive rendering is primarily verified on the author's Windows GPU configurations.
+Some tests need a Vulkan device and window. Hosted CI skips GPU-window tests; the CPU-capable suite includes a headless bundled-project end-to-end gate.
+
+### Setup and launch troubleshooting
+
+- **CMake cannot find `KtxConfig.cmake`:** KTX is not installed or `-DKTX_ROOT` points to the wrong prefix. The dependency-fetch scripts do not install it.
+- **Windows: Vulkan/DXC missing or `cl.exe` not found:** install the Vulkan SDK and use **x64 Developer PowerShell** with `VULKAN_SDK`/`PATH` set; do not switch to the Visual Studio generator.
+- **Windows: Embree source compiler crashes:** use the official 4.4.1 prebuilt directory via `-DEMBREE_PREBUILT_DIR`, as above.
+- **Linux: missing Vulkan headers/SDL/DXC:** run `./install_dependencies.sh` and install the listed system libraries before reconfiguring. The fetched headers supplement the distro Vulkan loader.
+- **Missing `sponza_10.tapp` or a pak checksum failure:** rerun `cmake --build <build-dir> --target demo_content` while online, or download the matching release assets manually. Do not rename content-addressed paks.
+- **`App` cannot find shaders or content:** launch **from the build directory**, after `App` and `demo_content` both completed. The build stages `engine-shaders.pak` and supporting runtime files next to the executable.
+- **No Vulkan device/window on Linux, WSL or a headless VM:** an interactive demo requires a working Vulkan 1.3 graphics driver and display/session; a successful compile alone is not proof the demo will render.
 
 ## Engine and gameplay boundary
 
