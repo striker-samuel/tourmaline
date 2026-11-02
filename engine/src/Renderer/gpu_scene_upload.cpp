@@ -78,6 +78,7 @@ struct Uploader::Impl {
     Mirror<Submesh> submeshes;
     Mirror<Instance> instances;
     Mirror<Leaf> leaves;
+    Mirror<LeafMember> leafMembers;
 };
 
 Uploader::Uploader() : impl_(std::make_unique<Impl>()) {}
@@ -94,7 +95,9 @@ bool Uploader::Publish(smvk::ResourceManager& ctx, RenderDatabase& scene,
         && PublishTable(ctx, scene.lods, impl_->lods, flight, "GPU scene LODs")
         && PublishTable(ctx, scene.submeshes, impl_->submeshes, flight, "GPU scene submeshes")
         && PublishTable(ctx, scene.instances, impl_->instances, flight, "GPU scene instances")
-        && PublishTable(ctx, scene.leaves, impl_->leaves, flight, "GPU scene leaves");
+        && PublishTable(ctx, scene.leaves, impl_->leaves, flight, "GPU scene leaves")
+        && PublishTable(ctx, scene.leafMembers, impl_->leafMembers, flight,
+                        "GPU scene leaf members");
 }
 
 Addresses Uploader::DeviceAddresses(const smvk::ResourceManager& ctx,
@@ -104,7 +107,8 @@ Addresses Uploader::DeviceAddresses(const smvk::ResourceManager& ctx,
         Address(ctx, impl_->lods, flight),
         Address(ctx, impl_->submeshes, flight),
         Address(ctx, impl_->instances, flight),
-        Address(ctx, impl_->leaves, flight)
+        Address(ctx, impl_->leaves, flight),
+        Address(ctx, impl_->leafMembers, flight)
     };
 }
 

@@ -8,6 +8,7 @@
 
 #include <Engine/App/world.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
+#include <Engine/Renderer/gpu_scene_leaf.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -54,6 +55,7 @@ struct LevelSource {
 struct SyncStats {
     uint32_t created = 0, updated = 0, retired = 0;
     uint32_t meshesCreated = 0, meshesRetired = 0;
+    bool leafPublicationOk = true;
 };
 
 // Pure CPU reconciler; exposed independently so lifetime/dirty semantics
@@ -68,8 +70,23 @@ public:
     [[nodiscard]] uint32_t LiveCount() const {
         return static_cast<uint32_t>(instances_.size());
     }
+    // Return delta batches in the order "retire old identities, upsert
+    // live identities"; the same slot may reappear with a new generation.
+    struct Deltas {
+        std::vector<InstanceId> changed;
+        std::vector<InstanceId> retired;
+    };
+    [[nodiscard]] Deltas TakeDeltas() {
+        Deltas result{};
+        result.changed.swap(changed_);
+        result.retired.swap(retired_);
+        return result;
+    }
     void Clear(RenderDatabase& db) {
-        for (const auto& kv : instances_) (void)db.instances.Erase(kv.second);
+        for (const auto& kv : instances_) {
+            retired_.push_back(kv.second);
+            (void)db.instances.Erase(kv.second);
+        }
         for (auto& kv : meshes_) EraseMesh(kv.second, db);
         instances_.clear();
         meshes_.clear();
@@ -158,7 +175,9 @@ public:
         SetTransform(next, model);
         if (std::memcmp(existing, &next, sizeof(Instance)) == 0)
             return false;
-        return db.instances.Update(it->second, next);
+        const bool updated = db.instances.Update(it->second, next);
+        if (updated) changed_.push_back(it->second);
+        return updated;
     }
 
     SyncStats Reconcile(std::span<const SourceRecord> sources,
@@ -191,17 +210,21 @@ public:
                 auto handle = db.instances.Insert(data);
                 if (handle) {
                     instances_.emplace(r.instance, handle);
+                    changed_.push_back(handle);
                     ++stats.created;
                 }
             } else {
                 const Instance* old = db.instances.Get(it->second);
                 if (old && std::memcmp(old, &data, sizeof(data)) != 0 &&
-                    db.instances.Update(it->second, data))
+                    db.instances.Update(it->second, data)) {
+                    changed_.push_back(it->second);
                     ++stats.updated;
+                }
             }
         }
         for (auto it = instances_.begin(); it != instances_.end();) {
             if (!seen.contains(it->first)) {
+                retired_.push_back(it->second);
                 (void)db.instances.Erase(it->second);
                 it = instances_.erase(it);
                 ++stats.retired;
@@ -228,6 +251,8 @@ private:
         for (auto id : state.submeshes) (void)db.submeshes.Erase(id);
         (void)db.meshes.Erase(state.id);
     }
+    std::vector<InstanceId> changed_;
+    std::vector<InstanceId> retired_;
     std::unordered_map<SourceKey, InstanceId, SourceKeyHash> instances_;
     std::unordered_map<SourceKey, MeshState, SourceKeyHash> meshes_;
 };
@@ -325,6 +350,11 @@ public:
                 std::vector<LevelSource> levels;
                 levels.reserve(chain.size());
                 bool complete = true;
+                // Animated vertex positions can leave the static cooked
+                // mesh bounds: until skinning publishes dynamic bounds,
+                // never reject the whole leaf using the bind-pose sphere.
+                if (const StaticMesh* base = world.GetMesh(worldIndex))
+                    complete = !base->skinned;
                 for (uint32_t i = 0; i < chain.size(); ++i) {
                     const auto& l = chain[i];
                     complete &= l.boundsKnown;
@@ -335,8 +365,10 @@ public:
                 }
                 (void)registry_.PublishMesh(source, levels, complete, db);
             }
+            const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
             revision_ = world.gpuSceneTopologyRevision;
             geometryRevision_ = geometryRevision;
+            stats.leafPublicationOk = SyncLeaves(db, meshPublicationChanged);
             world.scene.gpuSceneGlobalChanges.clear();
             std::fill(world.scene.gpuSceneGlobalQueued.begin(),
                       world.scene.gpuSceneGlobalQueued.end(), uint8_t(0));
@@ -357,20 +389,38 @@ public:
             if (node < world.scene.gpuSceneGlobalQueued.size())
                 world.scene.gpuSceneGlobalQueued[node] = 0;
         dirty.clear();
+        stats.leafPublicationOk = SyncLeaves(db, false);
         return stats;
     }
     void Reset(RenderDatabase& db) {
+        leafRegistry_.Clear(db);
         registry_.Clear(db);
+        (void)registry_.TakeDeltas();
         nodeKeys_.clear();
         revision_ = ~uint64_t(0);
         geometryRevision_ = ~uint64_t(0);
         world_ = nullptr;
     }
+    [[nodiscard]] std::vector<LeafTicket> LeafTickets(
+        const RenderDatabase& db) const { return leafRegistry_.Tickets(db); }
+    [[nodiscard]] size_t LeafCount() const { return leafRegistry_.LeafCount(); }
     [[nodiscard]] SceneRegistry::InstanceId Find(SourceKey k) const {
         return registry_.Find(k);
     }
 
 private:
+    [[nodiscard]] bool SyncLeaves(RenderDatabase& db, bool meshChanged) {
+        SceneRegistry::Deltas changes = registry_.TakeDeltas();
+        for (auto id : changes.retired)
+            leafRegistry_.Remove(id);
+        for (auto id : changes.changed)
+            leafRegistry_.Upsert(id, db);
+        if (meshChanged)
+            leafRegistry_.RefreshSafety();
+        return leafRegistry_.Flush(db);
+    }
+
+    LeafRegistry leafRegistry_;
     const World* world_ = nullptr;
     uint64_t revision_ = ~uint64_t(0);
     uint64_t geometryRevision_ = ~uint64_t(0);

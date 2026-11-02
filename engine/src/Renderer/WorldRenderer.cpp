@@ -11123,14 +11123,15 @@ namespace engine {
 		// GPUIR scene mirror: topology reconciliation or dirty transforms,
 		// then flight-safe GPU table publication. Draws still use GfxFilter.
 		if (m_world) {
-			m_gpuSceneSync.Synchronize(*m_world, m_gpuSceneDatabase,
+			const auto gpuSceneSync = m_gpuSceneSync.Synchronize(*m_world, m_gpuSceneDatabase,
 				m_gpuSceneGeometryRevision,
 				[this](uint32_t worldMesh, uint32_t lod) {
 					return m_gfxFilterAvailable
 						? m_gfxRenderer.GfxMeshForLod(worldMesh, lod)
 						: tour::gpu_scene::InvalidIndex;
 				});
-			if (!m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase,
+			if (!gpuSceneSync.leafPublicationOk ||
+				!m_gpuSceneUploader.Publish(*m_context, m_gpuSceneDatabase,
 					fb.frameIndex))
 				std::fprintf(stderr, "[GpuScene] database publication failed; no GPU reader this frame\n");
 		}

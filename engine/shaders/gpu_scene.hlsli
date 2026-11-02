@@ -40,6 +40,11 @@ struct GpuSceneInstance {
     uint4 refs;
 };
 
+// Instance references are never draw IDs: generation must match the
+// GpuSceneInstanceRow identity before GPU culling/draw expansion.
+struct GpuSceneLeafMember { uint4 ref; };
+// GpuSceneLeaf.range: x = first LeafMember row, y = member count,
+// z bit 0 = all member bounds complete, w reserved.
 struct GpuSceneLeaf {
     DoubleFloat3 worldCenter;
     float4 halfExtents;
@@ -53,3 +58,4 @@ struct GpuSceneLodRow { GpuSceneLod value; uint4 identity; };
 struct GpuSceneSubmeshRow { GpuSceneSubmesh value; uint4 identity; };
 struct GpuSceneInstanceRow { GpuSceneInstance value; uint4 identity; };
 struct GpuSceneLeafRow { GpuSceneLeaf value; uint4 identity; };
+struct GpuSceneLeafMemberRow { GpuSceneLeafMember value; uint4 identity; };
