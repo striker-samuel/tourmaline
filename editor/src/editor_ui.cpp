@@ -460,6 +460,8 @@ namespace editor {
 				DraftCreateLight(false);
 			if (ImGui::MenuItem("Spot light", nullptr, false, canCreate))
 				DraftCreateLight(true);
+			if (ImGui::MenuItem("Spatial Volume", nullptr, false, canCreate))
+				DraftCreateSpatialVolume();
 			if (ImGui::MenuItem("Convex volume (GI)", nullptr, false,
 				canCreate))
 				DraftCreateGiVolume();
@@ -744,7 +746,7 @@ namespace editor {
 			ImGui::Separator();
 			if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 				m_placement.showGraph = !m_placement.showGraph;
-			ImGui::MenuItem("Component table...", nullptr, &m_showComponentTable);
+			ImGui::MenuItem("Component Spreadsheet...", nullptr, &m_showComponentTable);
 			if (ImGui::MenuItem("Reference editor...", nullptr,
 				m_showReferencesPanel))
 				m_showReferencesPanel = !m_showReferencesPanel;
