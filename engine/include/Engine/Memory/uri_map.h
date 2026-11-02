@@ -41,7 +41,8 @@ public:
 
 	// Inserts or replaces. On replace the FIRST key view stays stored
 	// (arena copy from the original insert — no re-allocation).
-	V* Insert(StringViewT key, const V& value) {
+	// Move rvalue payloads so existing readers can borrow their backing bytes.
+	V* Insert(StringViewT key, V value) {
 		if (key.empty())
 			return nullptr;
 		if ((size_ + dead_ + 1) * 10 >= slots_.size() * 7)
@@ -53,7 +54,7 @@ public:
 			Slot& s = slots_[i];
 			if (s.state == kUsed) {
 				if (s.hash == h && s.key == key) {
-					s.value = value;
+					s.value = std::move(value);
 					return &s.value;
 				}
 			}
@@ -67,7 +68,7 @@ public:
 				t.state = kUsed;
 				t.hash = h;
 				t.key = key;
-				t.value = value;
+				t.value = std::move(value);
 				++size_;
 				return &t.value;
 			}
@@ -154,7 +155,9 @@ private:
 		for (Slot& s : old) {
 			if (s.state != kUsed)
 				continue;
-			Insert(s.key, s.value); // fresh table: no rehash loop
+			// Move, don't copy: TextureStreamer borrows the data() of
+			// cluster-owned vector payloads across URI map growth.
+			Insert(s.key, std::move(s.value)); // fresh table: no rehash loop
 		}
 	}
 
