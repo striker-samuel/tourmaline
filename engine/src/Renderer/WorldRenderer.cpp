@@ -10978,6 +10978,25 @@ namespace engine {
 			m_ssrLastBlurMode = m_ssrBlurMode;
 			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 		}
+		// Detect cuts at render cadence, before the temporal snapshots and
+		// the frame uniforms read previous-view state. External camera drives
+		// and explicit NotifyCameraCut() calls share this reset path.
+		const tour::CameraFramePose cameraPose{
+			m_cameraPositioner.getPosition(),
+			m_cameraPositioner.getOrientation(),
+			m_sceneFovYDeg,
+			m_sceneNearClip
+		};
+		m_cameraCutThisFrame = m_cameraChanges.Observe(cameraPose)
+			== tour::CameraChange::Cut;
+		if (m_cameraCutThisFrame) {
+			smvk::SmaaInvalidateHistory(m_smaaT2x);
+			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+			smvk::SsgiDiffuseTaaInvalidateHistory(m_ssgiDiffuseTaa);
+			m_dlssReset = true;
+			m_prevViewProjValid = false;
+			m_worldFieldPrevEyeValid = false; // avoid teleport-scale velocity
+		}
 		// Global T2x snapshot for this record: the jitter below, the
 		// history slot + subsample indices of the SMAA chain and the overlay
 		// all read this one snapshot so they always agree. Evaluated after
@@ -12662,7 +12681,8 @@ namespace engine {
 					if (!ignoreFilter && motionFilteredActive
 						&& m_gfxRenderer.GfxMeshForLod(item.mesh,
 							LodIndexForNode(item.node, item.mesh)) != UINT32_MAX) {
-						const bool prevValid = m_prevGlobalTransforms.size()
+						const bool prevValid = !m_cameraCutThisFrame
+							&& m_prevGlobalTransforms.size()
 							== m_world->scene.globalTransform.size();
 						if (prevValid) {
 							const glm::mat4& cur = m_world->scene.globalTransform[item.node];
@@ -12709,8 +12729,8 @@ namespace engine {
 					std::copy_n(glm::value_ptr(model), 16, objectPC.model);
 					// Previous frame's transform: zero motion on the first
 					// frame or after the node count changed (scene rebuild).
-					const bool prevValid =
-						m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
+					const bool prevValid = !m_cameraCutThisFrame
+						&& m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
 					const glm::mat4 prevModel =
 						prevValid ? m_prevGlobalTransforms[item.node] : model;
 					// Pack as float3x4 columns (smvk::PackPushFloat3x4): a
