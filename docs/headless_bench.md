@@ -46,7 +46,11 @@ $env:TOURMALINE_CAPTURE='48'
   geometric horizon — works with the correction on or off).
 - `TOURMALINE_VOLUMETRIC=0|1` forces the raymarched fog on/off headless
   (scene fog settings lose); `TOURMALINE_VOLUMETRIC_STEPS=<4..128>`
-  pins the march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_GI_VOLUMES=0`
+  pins the march steps for heavy fog benches; `TOURMALINE_VOLUMETRIC_DENSITY=<0..2>`
+  scales the extinction density (heavy densities isolate the scatter
+  sources from the lit base for A/B); `TOURMALINE_VOLUMETRIC_SUN=<0..4>`
+  and `TOURMALINE_VOLUMETRIC_GI=<0..4>` scale the sun / GI in-scatter
+  contributions; `TOURMALINE_VOLUMETRIC_GI_VOLUMES=0`
   is the fog-GI quality bypass (NO convex-volume walks — the
   world-field/sky fog-GI base still samples; only the volume composite
   is skipped — pairs with `TOURMALINE_VOLUMETRIC` for volume-walk
@@ -79,6 +83,40 @@ $env:TOURMALINE_CAPTURE='48'
   are the same A/B + verify pair for the gfx filter's culling MIN-HZB
   (the verify compare reports as [GfxHizSpdVerify]). Extents > 4096
   always fall back to the per-mip path.
+
+## Fog sun-shadow lane (`TOURMALINE_FOG_CSM`)
+
+The raymarched fog's sun-occlusion feed has three modes:
+
+- `TOURMALINE_FOG_CSM=0|off` — fully-lit fog (no sun occlusion).
+- `TOURMALINE_FOG_CSM=1|on|csm` — the raw MAIN cascade atlas: ONE
+  single-tap depth compare per march step. Two hard rules it rides
+  (see the AddVolumetricPass comment): never `light.shadow_map_index`
+  (that flips to the EVSM moments) and PCF mode only — under EVSM the
+  caster passes write moments, not raw depth, so mode 1 stays off.
+- `TOURMALINE_FOG_CSM=2|coarse` — the DEDICATED coarse atlas: a
+  one-raster pass renders ONLY the CastVolumetricShadow-marked large
+  occluders into its own D32 atlas, then ONE compute SPD dispatch
+  (`volumetric_shadow_spd.cs.hlsl`) builds the full R32F MIN mip
+  pyramid; the march samples a distance-derived discrete mip with
+  unfiltered texel loads (nearest blocker — neither bilinear nor
+  trilinear preserves it). Works under PCF AND EVSM alike. When no
+  marked casters exist the leg falls back (mode 2 → fully lit) rather
+  than sampling a stale tile.
+
+The headless A/B rig (no authored content needed):
+
+```powershell
+$env:TOURMALINE_VOLUMETRIC='1'; $env:TOURMALINE_VOLUMETRIC_DENSITY='0.6'
+$env:TOURMALINE_FOG_CSM='2'; $env:TOURMALINE_VOLUMETRIC_SUN='1'
+$env:TOURMALINE_FOG_SHADOW_MARK_ALL='1'                     # TEST RIG: every opaque surface becomes a marked caster
+& .\App.exe --pak content/paks/sponza.pak --disable_control --bench 64
+```
+
+- `TOURMALINE_FOG_SHADOW_MARK_ALL=1` marks EVERY opaque surface as a
+  volumetric caster (parsed once at the cook, world.cpp) so the tile +
+  pyramid machinery is exercisable without authored content; the
+  authoring surface is the editor's per-node checkbox.
 
 ## Sun contact shadows
 

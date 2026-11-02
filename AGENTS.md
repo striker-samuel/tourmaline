@@ -816,8 +816,13 @@ Pins (every one: `TOURMALINE_*` lives in `engine/App/RunConfig.h`):
   1 authored, 2 doubled)
 - `TOURMALINE_NORMAL_FIX=0|1` (+ `_DEBUG=1`) — JHFAA shading-normal fix
   (experimental; docs/jhfaa_normal_fix.md)
-- `TOURMALINE_VOLUMETRIC[_STEPS][_GI_VOLUMES]` + `TOURMALINE_FOG_GI_DEBUG` —
-  fog/fog-GI pins
+- `TOURMALINE_VOLUMETRIC[_STEPS][_GI_VOLUMES][_DENSITY/_SUN]` +
+  `TOURMALINE_FOG_GI_DEBUG` — fog/fog-GI pins
+- `TOURMALINE_FOG_CSM=0|1|2` — the fog sun-occlusion feed (0 off /
+  1 the raw main CSM tap, PCF mode only / 2 the dedicated coarse atlas
+  + full R32F SPD MIN pyramid, PCF+EVSM); `TOURMALINE_FOG_SHADOW_MARK_ALL=1`
+  is the headless test rig that marks every opaque surface a volumetric
+  caster (docs/headless_bench.md "Fog sun-shadow lane")
 - `TOURMALINE_PROBE_PREMIX=0|1` — Remember Me probe pre-mix A/B
   (0.00% differing pixels is the contract)
 - `TOURMALINE_FP_MASKS=0|1` — Forward+ hierarchical tile-light culling
