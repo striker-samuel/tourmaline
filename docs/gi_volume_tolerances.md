@@ -136,21 +136,20 @@ purpose: soften the transition between directly-traced probes and
 dilated (filled) probes, and smooth the per-probe Monte Carlo
 noise.
 
-### 2d. The CLEAN-CELL threshold — `1.35` spacing units
+### 2d. The CLEAN-CELL threshold — `0.75` spacing units
 
 **File:** `engine/src/GI/cubemap_volume.cpp` (the clean-flag pass)
 
 A cell [v, v+1]³ is "clean" (fast path: plain trilerp, no
 rejection) only if all 8 corners have all 6 axis distances
-≥ 1.35 spacing units. This is conservative — the theoretical
-no-rejection threshold for the hybrid reach is **~0.667**
-(max offset 1.0 / reach factor 1.5), so cells in the
-[0.667, 1.35] range take the weighted path unnecessarily (same
-values, more fetches — a perf cost, not a correctness issue).
+≥ 0.75 spacing units. The hybrid-reach factor uses
+`reach = max(dist * 1.5, 0.5)`, so the theoretical no-rejection
+threshold is **~0.667** (maximum axis offset 1.0 / reach factor 1.5).
 
-**Why 1.35:** = 1.0 (max in-cell offset) + 0.35 (the original
-absolute slack). The hybrid reach's actual threshold is lower
-(1.0 / 1.5 ≈ 0.667), but the conservatism is harmless.
+**Why 0.75:** a modest margin above the theoretical threshold also
+accounts for the runtime's UNORM8 visibility quantization. Cells
+previously in the [0.75, 1.35) range can use the hardware-trilinear
+fast path without changing their visibility weights.
 
 ### 2e. The FIREFLY CLAMP — `8×` the probe's finite-sample mean
 
