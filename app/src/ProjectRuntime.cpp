@@ -255,22 +255,6 @@ bool ProjectRuntime::AttachCompiledCatalog(
 				+ " '" + row->path + "' deployed";
 			return false;
 		}
-		if (a.pakIndex >= m_manifest.paks.size()) {
-			err = "the compiled catalog's id 0x" + std::to_string(a.id)
-				+ " names pak index " + std::to_string(a.pakIndex)
-				+ " but the manifest lists only "
-				+ std::to_string(m_manifest.paks.size())
-				+ " pak(s)";
-			return false;
-		}
-		if (row->pak != m_manifest.paks[a.pakIndex]) {
-			err = "the compiled catalog's id 0x" + std::to_string(a.id)
-				+ " names pak '" + m_manifest.paks[a.pakIndex]
-				+ "' (index " + std::to_string(a.pakIndex)
-				+ ") but the manifest serves it from '"
-				+ row->pak + "' (a mount-order skew)";
-			return false;
-		}
 	}
 	if (m_manifest.catalogFingerprint == 0)
 		std::cerr << "[ProjectRuntime] the manifest carries no catalog"

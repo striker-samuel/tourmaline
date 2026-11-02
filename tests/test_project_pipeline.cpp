@@ -1475,30 +1475,28 @@ void TestAppManifest() {
 	}
 	// ---- the compiled-catalog contract ---------------------------------
 	// The fingerprint fold: shared by the generated header and the
-	// manifest (one implementation - smvk::ComputeCatalogFingerprint).
-	// Deterministic, order-sensitive, and INDEPENDENT of the published
-	// pak filenames (content-addressed names change every cook).
+	// deployment (one implementation - smvk::ComputeCatalogFingerprint).
+	// Deterministic, order-sensitive, and INDEPENDENT of the packages
+	// (IDENTITY ONLY — no mount index, no filenames; content-addressed
+	// names change every cook, the package layout is selection state).
 	{
 		const uint64_t ids[3] = { 0x1000, 0x2000, 0x4000 };
 		const uint8_t kinds[3] = { smvk::kCatalogKindScene,
 			smvk::kCatalogKindTexture, smvk::kCatalogKindSound };
-		const uint32_t pakIdx[3] = { 1, 0, 0 };
 		const char* const paths[3] = { "content/scenes/w.tour",
 			"content/models/s/stone.png", "content/audio/bells.wav" };
 		const uint64_t a = smvk::ComputeCatalogFingerprint(
-			ids, kinds, pakIdx, paths, 3);
+			ids, kinds, paths, 3);
 		const uint64_t b = smvk::ComputeCatalogFingerprint(
-			ids, kinds, pakIdx, paths, 3);
+			ids, kinds, paths, 3);
 		Check(a == b && a != 0, "tapp.fold-deterministic");
 		// Order sensitivity (a swapped row folds differently).
 		{
 			const uint64_t ids2[3] = { ids[1], ids[0], ids[2] };
 			const uint8_t kinds2[3] = { kinds[1], kinds[0], kinds[2] };
-			const uint32_t pakIdx2[3] = { pakIdx[1], pakIdx[0],
-				pakIdx[2] };
 			const char* const paths2[3] = { paths[1], paths[0],
 				paths[2] };
-			Check(smvk::ComputeCatalogFingerprint(ids2, kinds2, pakIdx2,
+			Check(smvk::ComputeCatalogFingerprint(ids2, kinds2,
 					paths2, 3) != a,
 				"tapp.fold-order-sensitive");
 		}
@@ -1506,10 +1504,13 @@ void TestAppManifest() {
 		{
 			const char* const paths2[3] = { "content/scenes/moved.tour",
 				paths[1], paths[2] };
-			Check(smvk::ComputeCatalogFingerprint(ids, kinds, pakIdx,
+			Check(smvk::ComputeCatalogFingerprint(ids, kinds,
 					paths2, 3) != a,
 				"tapp.fold-path-sensitive");
 		}
+		// PACKAGE independence is inherent: the fold's SIGNATURE
+		// carries no package data at all (id, kind, path — identity
+		// only; the physical half cannot reach this proof).
 		// The kind-string <-> byte mapping (the ABI).
 		{
 			uint8_t k = 0xFF;
@@ -3038,8 +3039,8 @@ void TestProjectCatalog() {
 				<< " valid=" << valid << ")\n";
 		// The FLAT TYPED CATALOG (the compiled-catalog contract): the
 		// AssetKind enum (the ABI values), AssetDesc rows carrying
-		// kind + pakIndex (the LOGICAL package index - not the pak
-		// NAME string the old Catalog array carried), the constexpr
+		// IDENTITY ONLY (id, kind, path — the package index left the
+		// catalog: selection state, never identity), the constexpr
 		// Find, and CatalogFingerprint == the shared fold.
 		{
 			Check(text.find("enum class AssetKind")
@@ -3047,7 +3048,7 @@ void TestProjectCatalog() {
 				&& text.find("struct AssetDesc")
 					!= std::string::npos
 				&& text.find(
-					"AssetDesc{scenes::_class, AssetKind::Scene, 0,")
+					"AssetDesc{scenes::_class, AssetKind::Scene,")
 					!= std::string::npos
 				&& text.find(
 					"AssetDesc{textures::_compl, AssetKind::Texture,")
@@ -3112,7 +3113,7 @@ void TestProjectCatalog() {
 				!= std::string::npos,
 			"catalog.gi-namespace-emitted");
 		Check(text.find(
-				"AssetDesc{gi::day, AssetKind::Gi, 0,"
+				"AssetDesc{gi::day, AssetKind::Gi,"
 				" \"content/gi/day.givolumemanifest\", \"\"},")
 				!= std::string::npos,
 			"catalog.gi-assets-row");

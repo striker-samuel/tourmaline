@@ -245,7 +245,7 @@ const char* CatalogKindToString(uint8_t kind) {
 
 uint64_t ComputeCatalogFingerprint(
 	const uint64_t* ids, const uint8_t* kinds,
-	const uint32_t* pakIndices, const char* const* paths, size_t count) {
+	const char* const* paths, size_t count) {
 	// FNV-1a64 (the repo's content-addressing convention).
 	uint64_t h = 1469598103934665603ULL;
 	auto fold = [&h](const void* data, size_t bytes) {
@@ -254,11 +254,6 @@ uint64_t ComputeCatalogFingerprint(
 			h ^= p[i];
 			h *= 1099511628211ULL;
 		}
-	};
-	auto foldU32 = [&fold](uint32_t v) {
-		uint8_t b[4] = { uint8_t(v & 0xFF), uint8_t((v >> 8) & 0xFF),
-			uint8_t((v >> 16) & 0xFF), uint8_t((v >> 24) & 0xFF) };
-		fold(b, 4);
 	};
 	auto foldU64 = [&fold](uint64_t v) {
 		uint8_t b[8];
@@ -269,7 +264,6 @@ uint64_t ComputeCatalogFingerprint(
 	for (size_t i = 0; i < count; ++i) {
 		foldU64(ids[i]);
 		fold(&kinds[i], 1);
-		foldU32(pakIndices[i]);
 		const char* p = paths[i] ? paths[i] : "";
 		fold(p, std::strlen(p));
 		const uint8_t sep = 0;

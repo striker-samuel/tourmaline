@@ -139,11 +139,12 @@ public:
 	// compiled game includes the generated header; this mirror lets
 	// the runtime validate WITHOUT a header dependency — identical
 	// member order/types, same TU ABI by construction; the sample
-	// static_asserts the sizes agree).
+	// static_asserts the sizes agree). IDENTITY ONLY (id, kind, path)
+	// — the package index and physical addressing are selection state,
+	// never part of the catalog's contract.
 	struct CompiledAssetDesc {
 		uint64_t id = 0;
 		uint8_t kind = 0;            // smvk::kCatalogKind*
-		uint32_t pakIndex = 0;
 		std::string_view path;
 		std::string_view sceneName;  // reserved (deployment-side)
 	};
@@ -157,9 +158,9 @@ public:
 	//     and its content (recook the project or rebuild the game;
 	//     fail loudly, never guess);
 	//   * row-by-row: every compiled row must resolve to a manifest
-	//     [ids] row with the same id, kind and path, and its pakIndex
-	//     must index the manifest's [paks] (the mount-order table both
-	//     sides share) naming the row's pak file.
+	//     [ids] row with the same id, kind and path — IDENTITY ONLY
+	//     (the package index and filenames are selection state: the
+	//     same catalog proves itself against ANY package layout).
 	// A manifest with no fingerprint line (pre-contract) degrades to
 	// the row-by-row form. Idempotent (re-attach re-validates).
 	bool AttachCompiledCatalog(const CompiledAssetDesc* assets,
@@ -260,8 +261,6 @@ bool AttachCompiledCatalog(ProjectRuntime& rt,
 			== offsetof(ProjectRuntime::CompiledAssetDesc, id)
 		&& offsetof(Desc, kind)
 			== offsetof(ProjectRuntime::CompiledAssetDesc, kind)
-		&& offsetof(Desc, pakIndex)
-			== offsetof(ProjectRuntime::CompiledAssetDesc, pakIndex)
 		&& offsetof(Desc, path)
 			== offsetof(ProjectRuntime::CompiledAssetDesc, path)
 		&& offsetof(Desc, sceneName)

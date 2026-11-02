@@ -178,13 +178,14 @@ int main(int argc, const char* argv[]) {
 		return app::MakeAudioRuntime(host, session,
 			std::move(worldHandle), &renderer);
 	});
-	// The flat table is a first-class compile-time surface: kind +
-	// pakIndex typed queries, no strings.
+	// The flat table is a first-class compile-time surface: kind-typed
+	// queries, no strings (IDENTITY ONLY — the package addressing is
+	// selection state, never part of the catalog).
 	if (const project::AssetDesc* tex =
 			project::Find(project::textures::stone))
 		std::printf("[GameProject] flat table: stone -> kind %u"
-			" pak[%u] '%.*s'\n",
-			unsigned(tex->kind), tex->pakIndex,
+			" '%.*s'\n",
+			unsigned(tex->kind),
 			int(tex->path.size()), tex->path.data());
 	ProjectGame game;
 	return app::RunGame(&game, argc, argv,

@@ -889,17 +889,17 @@ void TestProjectScenes() {
 	// The compiled-catalog contract's deployment half: the fingerprint
 	// over the [ids] rows in emission order (scenes, textures, meshes,
 	// sounds; id-sorted within - the fold the generated project.h
-	// emits as CatalogFingerprint).
+	// emits as CatalogFingerprint). IDENTITY ONLY (id, kind, path) —
+	// no package addressing in the fold.
 	const uint64_t fpIds[4] = { 0x1000, 0x1001, 0x2000, 0x4000 };
 	const uint8_t fpKinds[4] = { smvk::kCatalogKindScene,
 		smvk::kCatalogKindScene, smvk::kCatalogKindTexture,
 		smvk::kCatalogKindSound };
-	const uint32_t fpPaks[4] = { 0, 1, 0, 0 };
 	const char* const fpPaths[4] = { "content/scenes/church.tour",
 		"content/scenes/two.tour", "content/models/s/stone.png",
 		"content/audio/bells.wav" };
 	const uint64_t catalogFp = smvk::ComputeCatalogFingerprint(
-		fpIds, fpKinds, fpPaks, fpPaths, 4);
+		fpIds, fpKinds, fpPaths, 4);
 	{
 		std::ofstream f(tapp, std::ios::binary | std::ios::trunc);
 		f << "# Tourmaline Runtime Project\n"
@@ -936,13 +936,13 @@ void TestProjectScenes() {
 	{
 		using Desc = app::ProjectRuntime::CompiledAssetDesc;
 		const Desc assets[4] = {
-			{ 0x1000, smvk::kCatalogKindScene, 0,
+			{ 0x1000, smvk::kCatalogKindScene,
 				"content/scenes/church.tour", "" },
-			{ 0x1001, smvk::kCatalogKindScene, 1,
+			{ 0x1001, smvk::kCatalogKindScene,
 				"content/scenes/two.tour", "" },
-			{ 0x2000, smvk::kCatalogKindTexture, 0,
+			{ 0x2000, smvk::kCatalogKindTexture,
 				"content/models/s/stone.png", "" },
-			{ 0x4000, smvk::kCatalogKindSound, 0,
+			{ 0x4000, smvk::kCatalogKindSound,
 				"content/audio/bells.wav", "" },
 		};
 		std::string aErr;
@@ -957,24 +957,26 @@ void TestProjectScenes() {
 		// A row the manifest does not carry fails loudly.
 		{
 			const Desc stray[1] = { { 0x5000,
-				smvk::kCatalogKindSound, 0, "content/audio/x.wav",
+				smvk::kCatalogKindSound, "content/audio/x.wav",
 				"" } };
 			std::string sErr;
 			Check(!rt.AttachCompiledCatalog(stray, 1, catalogFp, sErr)
 				&& sErr.find("0x20480") != std::string::npos,
 				"pscenes.catalog-unknown-row-fails");
 		}
-		// A pakIndex skew (the row names the wrong mount slot).
+		// A moved path fails loudly (identity never drifts silently:
+		// the compiled row and the deployed record must agree on the
+		// LOGICAL PATH, the one field beyond id + kind).
 		{
-			const Desc skewed[4] = { assets[0], assets[1],
-				{ 0x2000, smvk::kCatalogKindTexture, 1,
-					"content/models/s/stone.png", "" },
+			const Desc moved[4] = { assets[0], assets[1],
+				{ 0x2000, smvk::kCatalogKindTexture,
+					"content/models/s/moved.png", "" },
 				assets[3] };
-			std::string kErr;
-			Check(!rt.AttachCompiledCatalog(skewed, 4, catalogFp,
-					kErr)
-				&& kErr.find("mount-order") != std::string::npos,
-				"pscenes.catalog-pakindex-skew-fails");
+			std::string mErr;
+			Check(!rt.AttachCompiledCatalog(moved, 4, catalogFp,
+					mErr)
+				&& mErr.find("moved") != std::string::npos,
+				"pscenes.catalog-path-drift-fails");
 		}
 		// THE TYPED HELPER (the sample's bootstrap gate): a FOREIGN
 		// project.h-shaped Desc proves its layout at instantiation
@@ -984,18 +986,17 @@ void TestProjectScenes() {
 			struct GeneratedDesc {
 				uint64_t id;
 				uint8_t kind;
-				uint32_t pakIndex;
 				std::string_view path;
 				std::string_view sceneName;
 			};
 			const GeneratedDesc gen[4] = {
-				{ 0x1000, smvk::kCatalogKindScene, 0,
+				{ 0x1000, smvk::kCatalogKindScene,
 					"content/scenes/church.tour", "" },
-				{ 0x1001, smvk::kCatalogKindScene, 1,
+				{ 0x1001, smvk::kCatalogKindScene,
 					"content/scenes/two.tour", "" },
-				{ 0x2000, smvk::kCatalogKindTexture, 0,
+				{ 0x2000, smvk::kCatalogKindTexture,
 					"content/models/s/stone.png", "" },
-				{ 0x4000, smvk::kCatalogKindSound, 0,
+				{ 0x4000, smvk::kCatalogKindSound,
 					"content/audio/bells.wav", "" },
 			};
 			std::string gErr;

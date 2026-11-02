@@ -351,7 +351,8 @@ int main(int argc, char** argv) {
 	// manifest (the row + fingerprint fold the generated project.h
 	// emits; GameProject.exe attaches the same at boot). The deployed
 	// fingerprint must equal the fold over the [ids] rows in the
-	// generator's emission order.
+	// generator's emission order — IDENTITY ONLY (id, kind, path; no
+	// package addressing in the fold).
 	{
 		std::vector<const smvk::AppManifestAsset*> rows;
 		for (const auto& a : rt.Manifest().assets) {
@@ -369,34 +370,23 @@ int main(int argc, char** argv) {
 			});
 		std::vector<uint64_t> ids;
 		std::vector<uint8_t> kinds;
-		std::vector<uint32_t> pakIdx;
 		std::vector<const char*> paths;
 		std::vector<app::ProjectRuntime::CompiledAssetDesc> descs;
 		for (const smvk::AppManifestAsset* row : rows) {
 			uint8_t kindByte = 0;
-			uint32_t idx = UINT32_MAX;
-			for (size_t i = 0; i < rt.Manifest().paks.size(); ++i) {
-				if (rt.Manifest().paks[i] == row->pak) {
-					idx = uint32_t(i);
-					break;
-				}
-			}
-			if (!smvk::CatalogKindFromString(row->kind, kindByte)
-				|| idx == UINT32_MAX) {
+			if (!smvk::CatalogKindFromString(row->kind, kindByte)) {
 				Check(false, "e2e.row-identity-sound");
 				continue;
 			}
 			ids.push_back(row->id);
 			kinds.push_back(kindByte);
-			pakIdx.push_back(idx);
 			paths.push_back(row->path.c_str());
-			descs.push_back({ row->id, kindByte, idx, row->path,
+			descs.push_back({ row->id, kindByte, row->path,
 				row->name });
 		}
 		Check(descs.size() == rows.size(), "e2e.row-identity-sound");
 		const uint64_t fold = smvk::ComputeCatalogFingerprint(
-			ids.data(), kinds.data(), pakIdx.data(), paths.data(),
-			ids.size());
+			ids.data(), kinds.data(), paths.data(), ids.size());
 		Check(fold != 0 && fold == rt.Manifest().catalogFingerprint,
 			"e2e.catalog-fingerprint-matches-deployment");
 		std::string aErr;

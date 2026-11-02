@@ -607,26 +607,19 @@ bool GenerateProjectCatalog(const Project& project, const BuildPlan& plan,
 // ComputeCatalogFingerprint): over the entries in EMISSION order
 // (bucket order: scenes, textures, meshes, sounds, shaders, gi;
 // id-sorted within - exactly what the header's Assets array and the
-// manifest's [ids] rows both enumerate), folding (id, kind byte,
-// pakIndex, path). The SAME implementation the manifest writer uses
-// - one fold, no drift between the compiled and deployed halves.
+// registry's records both enumerate), folding (id, kind byte, path)
+// — IDENTITY ONLY, no package addressing. The SAME implementation
+// the deployment half uses - one fold, no drift between the
+// compiled and deployed sides.
 uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	std::vector<uint64_t> ids;
 	std::vector<uint8_t> kinds;
-	std::vector<uint32_t> pakIndices;
 	std::vector<const char*> paths;
 	const auto push = [&](const std::vector<CatalogEntry>& entries,
 			uint8_t kind) {
 		for (const CatalogEntry& e : entries) {
-			uint32_t pakIndex = 0;
-			for (size_t pi = 0; pi < c.paks.size(); ++pi)
-				if (c.paks[pi].first == e.pak) {
-					pakIndex = uint32_t(pi);
-					break;
-				}
 			ids.push_back(e.id);
 			kinds.push_back(kind);
-			pakIndices.push_back(pakIndex);
 			paths.push_back(e.path.c_str());
 		}
 	};
@@ -637,7 +630,7 @@ uint64_t CatalogFingerprintOf(const ProjectCatalog& c) {
 	push(c.shaders, smvk::kCatalogKindShader);
 	push(c.gi, smvk::kCatalogKindGi);
 	return smvk::ComputeCatalogFingerprint(ids.data(), kinds.data(),
-		pakIndices.data(), paths.data(), ids.size());
+		paths.data(), ids.size());
 }
 
 std::string EmitProjectHeader(const ProjectCatalog& c,
@@ -873,16 +866,15 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
 		<< "// no startup strings, no maps, no runtime discovery table.\n"
-		<< "// pakIndex indexes Paks (the LOGICAL package; the published\n"
-		<< "// content-addressed filename is the DEPLOYMENT manifest's\n"
-		<< "// job - the .tapp maps it). sceneName: the cooked-scene\n"
+		<< "// IDENTITY ONLY (id, kind, path): the owning package, its\n"
+		<< "// mount index and the published filename are SELECTION\n"
+		<< "// state, never identity - the content registry answers\n"
+		<< "// \"who supplies it\" at runtime. sceneName: the cooked-scene\n"
 		<< "// identity is cook-state, not stable identity, so it stays\n"
-		<< "// deployment-side (the .tapp's scene rows) - the field is\n"
-		<< "// reserved and emitted empty.\n"
+		<< "// deployment-side - the field is reserved and emitted empty.\n"
 		<< "struct AssetDesc {\n"
 		<< "    Id id;\n"
 		<< "    AssetKind kind;\n"
-		<< "    std::uint32_t pakIndex;\n"
 		<< "    std::string_view path;\n"
 		<< "    std::string_view sceneName;\n"
 		<< "};\n\n"
@@ -890,19 +882,10 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	const auto emitRows = [&](
 			const std::vector<CatalogEntry>& entries, const char* ns,
 			const char* kind) {
-		for (const CatalogEntry& e : entries) {
-			// The entry's pak is the LOGICAL pak id; its index into
-			// c.paks (plan order) is the compiled reference.
-			uint32_t pakIndex = 0;
-			for (size_t pi = 0; pi < c.paks.size(); ++pi)
-				if (c.paks[pi].first == e.pak) {
-					pakIndex = uint32_t(pi);
-					break;
-				}
+		for (const CatalogEntry& e : entries)
 			os << "    AssetDesc{" << ns << "::" << e.symbol
-				<< ", AssetKind::" << kind << ", " << pakIndex
+				<< ", AssetKind::" << kind
 				<< ", \"" << CppStr(e.path) << "\", \"\"},\n";
-		}
 	};
 	emitRows(c.scenes, "scenes", "Scene");
 	emitRows(c.textures, "textures", "Texture");

@@ -118,14 +118,18 @@ inline constexpr uint8_t kCatalogKindGi = 5;
 // The CATALOG FINGERPRINT fold: FNV-1a64 over the rows in EMISSION
 // order (bucket order: scenes, textures, meshes, sounds, shaders,
 // gi; id-sorted within — the generator's exact emission sequence),
-// folding each row's stable identity: id (8 LE bytes), kind byte,
-// pakIndex (4 LE bytes), path bytes + a 0 separator. The published
-// pak FILENAME is deliberately NOT folded — content-addressed names
-// change every cook; the fingerprint proves IDENTITY, not cook
-// state. Raw pointer + count per the public-API convention.
+// folding each row's STABLE IDENTITY: id (8 LE bytes), kind byte,
+// path bytes + a 0 separator. IDENTITY ONLY — the owning pak, its
+// mount index and the package filenames are DELIBERATELY NOT folded
+// (the physical/addressing halves are selection state, not identity:
+// repacking an asset into a different package, reordering the mounts
+// or a content-addressed rename leaves the fingerprint PROOF intact
+// — the compiled game and its content only need to agree on WHAT
+// the assets are, never on which package carries them). Raw pointer
+// + count per the public-API convention.
 [[nodiscard]] uint64_t ComputeCatalogFingerprint(
 	const uint64_t* ids, const uint8_t* kinds,
-	const uint32_t* pakIndices, const char* const* paths, size_t count);
+	const char* const* paths, size_t count);
 
 // Text round-trip. Save refuses an invalid manifest (no entry, entry
 // pak not listed, empty paks, absolute/escaping paths). Load applies
