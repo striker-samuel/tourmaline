@@ -251,6 +251,20 @@ def main(argv=None):
             parser.error("--env requires TOURMALINE_NAME=value")
         pins[key] = val
     env.update(pins)
+    if args.scratch_dir is not None:
+        try:
+            args.scratch_dir.mkdir(parents=True, exist_ok=True)
+            if not args.scratch_dir.is_dir():
+                raise OSError("scratch path is not a directory")
+        except OSError as exc:
+            parser.error(f"invalid scratch directory {args.scratch_dir}: {exc}")
+        # Nsight GPU Trace does not document a dedicated scratch-dir flag.
+        # Let child/descendant processes resolve OS temp files onto this disk.
+        # Internal NVIDIA caches may still use their own fixed locations.
+        for name in ("TMP", "TEMP", "TMPDIR"):
+            env[name] = str(args.scratch_dir)
+        if os.name != "nt":
+            env["XDG_CACHE_HOME"] = str(args.scratch_dir)
     # Prevent a user shell's shader hot reload from mutating the benchmark.
     env.pop("TOURMALINE_SHADER_RELOAD", None)
     env.pop("TOURMALINE_SHADER_RELOAD_SRC", None)
@@ -284,8 +298,16 @@ def main(argv=None):
             parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
         # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
         # of presents; samples are NOT a trustworthy standalone FPS benchmark.
-        trace_dir = out / "nsight"
-        trace_dir.mkdir(parents=True, exist_ok=True)
+        trace_root = args.capture_dir or (out / "nsight")
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        slug = re.sub(r"[^a-zA-Z0-9_-]", "_", args.scenario or "manual")
+        trace_dir = trace_root / f"{slug}-{stamp}"
+        try:
+            trace_dir.mkdir(parents=True, exist_ok=False)
+        except OSError as exc:
+            parser.error(f"cannot create capture directory {trace_dir}: {exc}")
+        report["capture_dir"] = str(trace_dir)
+        report["scratch_dir"] = str(args.scratch_dir) if args.scratch_dir else None
         invocations = [[ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
                         f'--exe={args.exe.resolve()}', f'--dir={workdir}',
                         '--args=' + subprocess.list2cmdline(argv_app[1:]),
@@ -299,9 +321,13 @@ def main(argv=None):
         if not capture:
             parser.error("graphics capture requires ngfx-capture executable (--ngfx-capture)")
         # Capture CLI syntax may differ across Nsight versions; check --help.
+        cap_root = args.capture_dir or out
+        cap_root.mkdir(parents=True, exist_ok=True)
+        report["capture_dir"] = str(cap_root)
+        report["scratch_dir"] = str(args.scratch_dir) if args.scratch_dir else None
         invocations = [[capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
                         "--args", subprocess.list2cmdline(argv_app[1:]),
-                        "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(out)]]
+                        "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(cap_root)]]
     failed = False
     try:
         for i, invocation in enumerate(invocations, 1):
