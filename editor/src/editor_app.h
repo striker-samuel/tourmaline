@@ -2921,25 +2921,7 @@ private:
 	float m_verbToastAge = -1.0f; // -1 = none; seconds since the verb
 	void ShowVerbToast(const EditCmd& c);
 	void DrawVerbToast();
-	// Procedural rendering test lab (editor_procedurals.cpp).
-	void DrawProceduralsPanel();
-	void GenerateProceduralMesh();
-	void GenerateLightCrowd();
-	int m_proceduralShape = 0;
-	float m_proceduralSize = 2.0f;
-	int m_proceduralResolution = 24;
-	float m_proceduralThickness = 0.2f;
-	float m_proceduralWaveAmplitude = 0.15f;
-	float m_proceduralWaveFrequency = 3.0f;
-	int m_lightCrowdCount = 8;
-	int m_lightCrowdSerial = 0;
-	float m_lightCrowdRadius = 5.0f;
-	float m_lightCrowdHeight = 2.0f;
-	float m_lightCrowdIntensity = 800.0f;
-	float m_lightCrowdRange = 15.0f;
-	bool m_lightCrowdColored = true;
-	bool m_lightCrowdShadows = false;
-	int m_rightTab = 0; // Inspector | Render | Material | Procedurals
+	int m_rightTab = 0; // Inspector | Render | Material (the UV tab is retired)
 	int m_leftTab = 0;  // Assets | Console | Overrides (the left column's LOWER tabbed panel — the Outliner above it is always visible, not a tab)
 	// ---- SIDECAR MATERIAL BALL PREVIEW (editor_matball.cpp) -----------
 	// An offscreen 256x256 pass — a unit sphere wearing the material's
