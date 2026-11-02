@@ -2011,6 +2011,60 @@ namespace editor {
 		}
 	}
 
+	void EditorApp::DrawTriggerVolumeSection(uint32_t node) {
+		if (!m_world || node >= m_world->scene.hierarchy.size())
+			return;
+		Scene& scene = m_world->scene;
+		const auto* row = tour::scene::FindTriggerVolume(scene, node);
+		ImGui::Separator();
+		if (!row) {
+			ImGui::TextDisabled("Trigger component: not attached");
+			if (ImGui::Button("Add Trigger component")) {
+				EditCmd cmd{};
+				cmd.verb = EditVerb::AttachTriggerVolume;
+				cmd.node = node;
+				Do(cmd);
+			}
+			return;
+		}
+		ImGui::TextUnformatted("Trigger component");
+		ImGui::TextDisabled("Oriented box = this node's global transform.");
+		auto check = [&](const char* label, const char* attr, bool current) {
+			bool v = current;
+			if (ImGui::Checkbox(label, &v)) {
+				EditCmd cmd{};
+				cmd.verb = EditVerb::SetTriggerVolumeAttr;
+				cmd.node = node;
+				cmd.triggerVolumeAttr = attr;
+				ReadNodeTriggerVolumeAttr(node, attr, cmd.beforeNum,
+					cmd.beforeFlag, cmd.beforeText);
+				cmd.afterFlag = v;
+				Do(cmd);
+			}
+		};
+		check("Trigger enabled", "enabled", row->trigger.enabled);
+		check("Fire only once per actor", "once", row->trigger.once);
+		char tag[257];
+		std::snprintf(tag, sizeof(tag), "%s", row->trigger.tag.c_str());
+		if (ImGui::InputText("Event tag", tag, sizeof(tag),
+				ImGuiInputTextFlags_EnterReturnsTrue)) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::SetTriggerVolumeAttr;
+			cmd.node = node;
+			cmd.triggerVolumeAttr = "tag";
+			ReadNodeTriggerVolumeAttr(node, "tag", cmd.beforeNum,
+				cmd.beforeFlag, cmd.beforeText);
+			cmd.afterText = tag;
+			Do(cmd);
+		}
+		if (ImGui::Button("Remove Trigger component")) {
+			EditCmd cmd{};
+			cmd.verb = EditVerb::RemoveTriggerVolumeVerb;
+			cmd.node = node;
+			Do(cmd);
+		}
+	}
+
 	void EditorApp::DrawAudioRoomSection(uint32_t node) {
 	if (!m_world)
 		return;
@@ -3097,6 +3151,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 
 		// Authored GI volume on this node (GI volume inspector).
 		DrawGiVolumeSection(node);
+		DrawTriggerVolumeSection(node);
 		// Authored cubemap capture on this node (pinned probe inspector).
 		DrawCubemapSection(node);
 		// Authored camera on this node (lens inspector).
