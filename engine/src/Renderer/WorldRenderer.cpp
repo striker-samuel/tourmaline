@@ -16427,14 +16427,16 @@ namespace engine {
 							const char* tiers[3] = {
 								"Off", "Analytic (exp2, fallback)", "Volumetric (raymarched GI-lit)"
 							};
-							if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3))
-								authored();
 							// Headless override wins (TOURMALINE_VOLUMETRIC): the
-							// AGENTS.md contract is "scene fog settings lose".
-							static const bool sVolumetricEnvPinned =
+						// AGENTS.md contract is "scene fog settings lose".
+						static const bool sVolumetricEnvPinned =
 								std::getenv("TOURMALINE_VOLUMETRIC") != nullptr;
+						if (ImGui::Combo("Fog mode", &se.fogQuality, tiers, 3)) {
+							authored();
 							if (!sVolumetricEnvPinned)
-								m_volumetricEnabled = (se.fogQuality == 2);
+								m_volumetricEnabled =
+									se.fogQuality == 2 && se.volumetrics > 0.0f;
+						}
 							if (se.fogQuality == 1) {
 								if (ImGui::ColorEdit3("Fog color", &se.fogColor.x)) authored();
 								if (ImGui::SliderFloat("Fog density", &se.fogDensity, 0.0f, 1.0f)) authored();
