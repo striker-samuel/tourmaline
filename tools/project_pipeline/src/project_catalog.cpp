@@ -83,6 +83,30 @@ std::string CppStr(const std::string& s) {
 	return o;
 }
 
+// Emit tabular C++ initializers with vertically aligned columns.
+// Every cell includes its trailing punctuation (e.g. the comma), so
+// padding comes AFTER punctuation, as in normal hand-formatted C++.
+// This affects only whitespace: row order and literal bytes are unchanged.
+void EmitAlignedRows(std::ostringstream& os,
+	const std::vector<std::vector<std::string>>& rows) {
+	if (rows.empty())
+		return;
+	const size_t columnCount = rows.front().size();
+	std::vector<size_t> widths(columnCount, 0);
+	for (const auto& row : rows)
+		for (size_t i = 0; i < columnCount; ++i)
+			widths[i] = std::max(widths[i], row[i].size());
+	for (const auto& row : rows) {
+		os << "    ";
+		for (size_t i = 0; i < columnCount; ++i) {
+			os << row[i];
+			if (i + 1 < columnCount)
+				os << std::string(widths[i] - row[i].size() + 1, ' ');
+		}
+		os << '\n';
+	}
+}
+
 // A valid C++ identifier from an authored name (the audio-graph CUE
 // names are free-form text; the emitted audiocues constants need
 // identifiers). Invalid characters fold to '_'; a leading digit gets
@@ -795,11 +819,17 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		// typed keys (SceneKey/TextureKey/MeshKey/SoundKey) - game
 		// code writes `MeshKey mesh = project::meshes::Knight;` and
 		// the zero value reads as "no key".
+		// Align the value braces within each group of names.
+		size_t symbolWidth = 0;
+		for (const CatalogEntry& e : entries)
+			symbolWidth = std::max(symbolWidth, e.symbol.size());
 		os << "namespace " << name << " {\n";
 		for (const CatalogEntry& e : entries)
 			os << "    inline constexpr " << keyType << " "
-				<< e.symbol << "{0x"
-				<< std::hex << e.id << std::dec << "ULL};\n";
+				<< e.symbol
+				<< std::string(symbolWidth - e.symbol.size(), ' ')
+				<< "{0x" << std::hex << e.id << std::dec
+				<< "ULL};\n";
 		os << "}\n\n";
 	};
 	emitNamespace("scenes", c.scenes, "SceneKey");
@@ -823,12 +853,20 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 			<< "// ordinal indexes the authored file's cue list. Feed\n"
 			<< "// these to the audio facade's PlayCue/CrossFade.\n"
 			<< "namespace audiocues {\n";
+		size_t cueWidth = 0;
 		for (const auto& table : c.audiographCues)
-			for (size_t ci = 0; ci < table.cues.size(); ++ci)
-				os << "    inline constexpr AudioCueKey "
-					<< table.symbol << "_" << CppIdent(table.cues[ci])
+			for (const std::string& cue : table.cues)
+				cueWidth = std::max(cueWidth,
+					table.symbol.size() + 1 + CppIdent(cue).size());
+		for (const auto& table : c.audiographCues)
+			for (size_t ci = 0; ci < table.cues.size(); ++ci) {
+				const std::string name = table.symbol + "_"
+					+ CppIdent(table.cues[ci]);
+				os << "    inline constexpr AudioCueKey " << name
+					<< std::string(cueWidth - name.size(), ' ')
 					<< "{0x" << std::hex << table.id << std::dec
 					<< "ULL, " << ci << "u};\n";
+			}
 		os << "} // namespace audiocues\n\n";
 	}
 
@@ -953,9 +991,14 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "    std::string_view file;\n"
 		<< "};\n\n"
 		<< "inline constexpr std::array Paks = {\n";
-	for (const auto& [id, file] : c.paks)
-		os << "    Pak{\"" << CppStr(id) << "\", \""
-			<< CppStr(file) << "\"},\n";
+	{
+		std::vector<std::vector<std::string>> rows;
+		rows.reserve(c.paks.size());
+		for (const auto& [id, file] : c.paks)
+			rows.push_back({ "Pak{\"" + CppStr(id) + "\",",
+				"\"" + CppStr(file) + "\"}," });
+		EmitAlignedRows(os, rows);
+	}
 	os << "};\n\n"
 		<< "// The asset KIND enum - the values are an ABI (the runtime's\n"
 		<< "// catalog-fingerprint fold + the .tapp validation agree on\n"
@@ -984,21 +1027,27 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "    std::string_view sceneName;\n"
 		<< "};\n\n"
 		<< "inline constexpr std::array Assets = {\n";
-	const auto emitRows = [&](
-			const std::vector<CatalogEntry>& entries, const char* ns,
-			const char* kind) {
-		for (const CatalogEntry& e : entries)
-			os << "    AssetDesc{" << ns << "::" << e.symbol
-				<< ", AssetKind::" << kind
-				<< ", \"" << CppStr(e.path) << "\", \"\"},\n";
-	};
-	emitRows(c.scenes, "scenes", "Scene");
-	emitRows(c.textures, "textures", "Texture");
-	emitRows(c.meshes, "meshes", "Mesh");
-	emitRows(c.sounds, "sounds", "Sound");
-	emitRows(c.shaders, "shaders", "Shader");
-	emitRows(c.gi, "gi", "Gi");
-	emitRows(c.audiographs, "audiographs", "AudioGraph");
+	{
+		std::vector<std::vector<std::string>> rows;
+		const auto addRows = [&](const std::vector<CatalogEntry>& entries,
+				const char* ns, const char* kind) {
+			for (const CatalogEntry& e : entries)
+				rows.push_back({
+					std::string("AssetDesc{") + ns + "::" + e.symbol + ",",
+					std::string("AssetKind::") + kind + ",",
+					"\"" + CppStr(e.path) + "\",",
+					"\"\"},"
+				});
+		};
+		addRows(c.scenes, "scenes", "Scene");
+		addRows(c.textures, "textures", "Texture");
+		addRows(c.meshes, "meshes", "Mesh");
+		addRows(c.sounds, "sounds", "Sound");
+		addRows(c.shaders, "shaders", "Shader");
+		addRows(c.gi, "gi", "Gi");
+		addRows(c.audiographs, "audiographs", "AudioGraph");
+		EmitAlignedRows(os, rows);
+	}
 	os << "};\n\n"
 		<< "// The SYMBOL-NAME table (compile-time query metadata; the\n"
 		<< "// same order as Assets). NOT part of the runtime catalog\n"
@@ -1094,16 +1143,20 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 			<< "// reused. A runtime load of a retired id fails (the\n"
 			<< "// compiled catalog carries no row for it).\n"
 			<< "namespace retired {\n";
+		size_t typeWidth = 0;
+		size_t symbolWidth = 0;
+		for (const CatalogEntry& e : c.retired) {
+			typeWidth = std::max(typeWidth,
+				std::strlen(keyTypeOf(e.kind)));
+			symbolWidth = std::max(symbolWidth, e.symbol.size());
+		}
 		for (const CatalogEntry& e : c.retired) {
 			const std::string kt = keyTypeOf(e.kind);
-			if (kt == "Id")
-				os << "    inline constexpr Id " << e.symbol
-					<< "{0x" << std::hex << e.id << std::dec
-					<< "ULL};\n";
-			else
-				os << "    inline constexpr " << kt << " "
-					<< e.symbol << "{0x" << std::hex << e.id
-					<< std::dec << "ULL};\n";
+			os << "    inline constexpr " << kt
+				<< std::string(typeWidth - kt.size() + 1, ' ')
+				<< e.symbol
+				<< std::string(symbolWidth - e.symbol.size(), ' ')
+				<< "{0x" << std::hex << e.id << std::dec << "ULL};\n";
 		}
 		os << "}\n\n"
 			<< "inline constexpr std::array RetiredIds = {\n";
