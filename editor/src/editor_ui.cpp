@@ -641,8 +641,8 @@ namespace editor {
 				ActiveViewMode() == ViewMode::Pom))
 				ActiveViewMode() = ViewMode::Pom;
 			if (ImGui::MenuItem("Baked irradiance", "F8",
-				ActiveViewMode() == ViewMode::Baked, m_lmGpu))
-				ActiveViewMode() = ViewMode::Baked;
+				ActiveViewMode() == ViewMode::Baked, m_world != nullptr))
+				ModalViewBaked();
 			if (ActiveViewMode() == ViewMode::Meshlets) {
 				const char* meshletModes[] = { "Random per meshlet",
 					"Cone-cutoff heat" };
@@ -3467,8 +3467,8 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					m_selected, rects);
 			}
 			ImGui::TextDisabled("F10 = UV1 view (baked atlas uv: chart uv + id, unpacked in VS)");
-			if (m_lmGpu && ImGui::Button("Baked irradiance view (F8)"))
-				ActiveViewMode() = ViewMode::Baked;
+			if (m_world && ImGui::Button("Baked irradiance view (F8)"))
+				ModalViewBaked();
 			// Flat lightmap PNG export (whole scene, atlas resolution).
 			ImGui::Separator();
 			ImGui::Checkbox("Export with UV wireframe", &m_lmExportWires);
@@ -3875,14 +3875,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		ImGui::End();
 	}
 
-	// ---- WYSIWYG Live view — THE LIT VIEW MODE (editor_app.h decl) ------
-	// NO special distinction anymore: the WYSIWYG render is simply what
-	// the Lit mode (F1, the viewports' DEFAULT) shows. The ACTIVE
-	// viewport in Lit renders through the engine's whole pipeline (the
-	// world layer's inline target composited over its rect — the same
-	// view the game gets); every other mode (F2 Unlit, F3.. the debug
-	// views) and the non-active viewports render the editor's own
-	// passes exactly as before. The GPU composite pass
+	// ---- WYSIWYG live view (Lit or F8 baked irradiance) --------------
+	// The engine renders Lit in viewport 0 by default and F8 baked GI
+	// in the chosen viewport. Other views keep the editor-only passes.
+	// The GPU composite pass
 	// (RecordLiveViewComposePass, editor_render.cpp) is recorded AFTER
 	// the imgui pass and over-draws the captured rect — so nothing
 	// ImGui-side can live inside it while the composite runs. This draws
@@ -3892,9 +3888,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	// composite to cover it — no LIVE badge, no toggle: a panel like the
 	// others).
 	void EditorApp::DrawLiveViewStage() {
-		if (!LiveViewActive())
+		const int liveVp = LiveViewViewport();
+		if (liveVp < 0)
 			return;
-		const ViewportRect& stage = m_viewports[kLiveViewVp].rect;
+		const ViewportRect& stage = m_viewports[liveVp].rect;
 		if (stage.w < 8.0f || stage.h < 8.0f)
 			return;
 		// The capture: THE FULL stage rect — NO INSET. The first cut

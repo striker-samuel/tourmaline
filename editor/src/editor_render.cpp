@@ -2224,25 +2224,19 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		}
 
 		// ---- scene passes (per viewport) + overlay ---------------------
-		// THE LIVE VIEW IS THE LIT VIEW MODE now (no toggle, no vp0
-		// special case): the ACTIVE viewport in Lit renders through the
-		// world layer's inline target (the composite covers its rect
-		// after the imgui pass) — recording the editor scene pass under
-		// it would be pure waste, and its depth/overlay state would
-		// fight the composite's. Every other viewport (and the active
-		// one in any NON-Lit mode) renders the editor passes as always.
-		// The gizmo + inset ride the ACTIVE viewport — they skip while
-		// the active IS the live one (their depth comes from the scene
-		// pass that no longer ran; drawing them over the game frame
-		// would be authoring chrome over WYSIWYG output).
+		// Lit on viewport 0 and F8 baked irradiance use the full renderer.
+		// Only the chosen live viewport skips the legacy editor scene pass;
+		// its inline image is composited after scene recording. All other
+		// viewports retain their editor passes and depth/overlay behavior.
 		m_rendergraph->NewFrame();
 		{
 			// Optick: graph round 2 — the per-viewport scene passes, the
 			// overlays, the one-shot exports and the ImGui UI, through
 			// the round's Execute.
 			SMVK_PROFILE_RENDER("Editor_Round2Scene");
+			const int liveVp = LiveViewViewport();
 			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-				if (LiveViewActive() && vpIdx == kLiveViewVp)
+				if (vpIdx == liveVp)
 					continue; // panel 0's rect shows the live view's composite
 				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
 				// The pre-bake probe lattice rides every viewport's tail
@@ -2253,7 +2247,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			// The gizmo + inset ride the ACTIVE viewport — they skip only
 			// while the ACTIVE one IS the live host (panel 0 in Lit): their
 			// depth comes from the scene pass that no longer ran there.
-			if (!(LiveViewActive() && m_activeVp == kLiveViewVp)) {
+			if (m_activeVp != liveVp) {
 				RecordInsetPass(m_swapViews[fb.imageIndex], flight);
 				RecordGizmoPass(m_swapViews[fb.imageIndex]);
 			}
@@ -2429,7 +2423,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// returning to Lit resumes the EXACT look. The stop path stays
 		// for the REAL teardowns: the scene/world swap + the bake
 		// completion relaunch (the witnesses) + CloseScene.
-		const bool wantLive = LiveViewActive() && m_world;
+		const int liveVp = LiveViewViewport();
+		const bool wantLive = liveVp >= 0 && m_world;
 		if (wantLive && (!m_wysiwyg || m_wysiwygWorld != m_world.get()
 				|| m_wysiwygSceneId != SceneIdForHost()))
 			LaunchWysiwyg();
@@ -2465,9 +2460,9 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		glm::mat4 view, proj;
 		glm::vec3 eye;
 		float nearClip, farClip;
-		if (!BoundCameraView(kLiveViewVp, view, proj, eye, nearClip, farClip)) {
+		if (!BoundCameraView(liveVp, view, proj, eye, nearClip, farClip)) {
 			const EditorCam& cam =
-				m_editorCams[m_viewports[kLiveViewVp].camIdx];
+				m_editorCams[m_viewports[liveVp].camIdx];
 			view = EditorCamView(cam);
 			proj = EditorCamProj(cam, 1.0f);
 			eye = EditorCamEye(cam);
@@ -2482,6 +2477,19 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// cot(fovY/2); no parallel fov bookkeeping to drift).
 		m_wysiwyg->SetSceneFovY(
 			glm::degrees(2.0f * glm::atan(1.0f / proj[1][1])));
+		// F8 must use the engine's actual baked SG-GI sources (regular
+		// grids / convex volumes / cooked lightmaps), not the retired
+		// editor-only lightmap shader, which now unconditionally outputs
+		// black. Isolate baked contributions regardless of the Render
+		// tab's ambient selection; restore session quality on exit.
+		const bool baked = m_viewports[liveVp].viewMode == ViewMode::Baked;
+		m_wysiwyg->SetAmbientMode(baked ? engine::AmbientMode::Baked
+			: static_cast<engine::AmbientMode>(
+				std::clamp(m_renderQuality.giMode, 0, 5)));
+		m_wysiwyg->SetGiDebug(baked ? 1 : 0);
+		// Selection bounds now belong to WorldRenderer's own render pass:
+		// the editor-only gizmo pass is skipped for the composited view.
+		m_wysiwyg->SetSelectedNode(m_selected);
 		m_wysiwyg->Tick(dt);
 		// The render extent: the Live tab's content rect (captured by
 		// DrawLiveViewTab, one frame of lag) through the protective

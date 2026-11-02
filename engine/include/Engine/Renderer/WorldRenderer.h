@@ -1713,6 +1713,12 @@ public:
 	// activating one (the cycle keybinds, the combo) snap the base view
 	// to Lit or the overlay is invisible under a flat mode.
 	void SetGiDebug(int d) { m_giDebug = d ? 1 : 0; }
+	// Editor-only selection adornment for the borrowed-world WYSIWYG
+	// renderer. UINT32_MAX disables it (also the standalone App default).
+	// WorldRenderer owns the OBB line pass so it uses the SAME camera,
+	// world transforms and color target as the shaded scene.
+	void SetSelectedNode(uint32_t node) { m_selectedNode = node; }
+
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	void SetAaMode(AaMode m) { m_aaMode = m; }
 	void SetWireframe(bool v) { m_wireframe = v; }
@@ -2882,6 +2888,9 @@ public:
 	void MountContentVfs(smvk::OverlayVfs& vfs) const;
 	// ---- GeometryFX-style per-view filter (clustered, see App/renderer.h) ----
 	engine::GfxRenderer m_gfxRenderer{};
+	uint32_t m_selectedNode = UINT32_MAX; // editor selection; no App overlay
+	smvk::Holder<smvk::BufferHandle> m_selectionLineBuffer;
+
 	// The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
 	// legacy direct draws) is gone. This latch is setup-time availability
 	// ONLY (onAttach): Ensure failure or an empty cluster heap drops the

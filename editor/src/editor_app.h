@@ -44,6 +44,7 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
 #include "editor_asset_inspect.h"
+#include "editor_live_preview_policy.h"
 #include "editor_asset_ops.h" // browser delete planning (pending plan member)
 #include "editor_fibers.h" // EDITOR-ONLY job pool (see editor_fibers.cpp)
 #include <Engine/Vfs/vfs.h>
@@ -1531,22 +1532,18 @@ private:
 	// on scene swap and bake completion (its GI/cubemap loaders run at
 	// attach).
 	tour::mem::LinearPtr<engine::WorldRenderer> m_wysiwyg;
-	// (The m_showWysiwyg toggle is RETIRED — the live view is simply the
-	// LIT view mode: LiveViewActive() below. No menu entry, no badge, no
-	// special gates — Lit is a panel like the others, its content just
-	// comes from the engine's whole pipeline.)
-	// PANEL 0 IS PRIVILEGED: the live view hosts ONLY in viewport 0 (the
-	// quad layout's perspective slot) — it never follows the selection
-	// ("goes from selected to selected panel" was the old, confusing
-	// behavior: hovering another quad moved the game frame there mid-
-	// gesture). The camera, the capture rect + the composite all key on
-	// viewport 0; every other viewport (and vp0 in any NON-Lit mode)
-	// renders the editor's own passes, whichever is active.
-	bool LiveViewActive() const {
-		return m_viewports[0].viewMode == ViewMode::Lit;
+	// The full WorldRenderer is required for baked-GI inspection: the
+	// editor-only F8 shader was built for the retired 2D atlas and now
+	// produces black. Normal Lit still lives in viewport 0; an F8/Baked
+	// viewport temporarily owns the inline renderer (prefer the active
+	// viewport), so quad-view F8 works without migrating the editor
+	// preview's legacy shader/frame ABI.
+	int LiveViewViewport() const {
+		return SelectLivePreviewViewport(ViewportCount(), m_activeVp,
+			[this](int vp) { return m_viewports[vp].viewMode; },
+			ViewMode::Lit, ViewMode::Baked);
 	}
-	// The live view's VIEWPORT (the camera + rect source): always 0.
-	static constexpr int kLiveViewVp = 0;
+	bool LiveViewActive() const { return LiveViewViewport() >= 0; }
 	bool m_wysiwygValid = false;     // onAttach succeeded (else the hint shows)
 	tour::World* m_wysiwygWorld = nullptr;   // relaunch witness (the world object swapped)
 	std::string m_wysiwygSceneId;    // relaunch witness (the scene stem swapped)
