@@ -313,6 +313,16 @@ inline const char* AmbientModeName(AmbientMode m) {
 	return "?";
 }
 
+// Optional EVSM-only tile limit: 0 leaves the full PCF tile size.
+// A higher cap never upscales the requested shadow resolution.
+inline constexpr uint32_t CappedEvsmTileResolution(
+	uint32_t requested, uint32_t maxTile) {
+	return maxTile ? std::min(requested, maxTile) : requested;
+}
+static_assert(CappedEvsmTileResolution(1024, 0) == 1024);
+static_assert(CappedEvsmTileResolution(1024, 512) == 512);
+static_assert(CappedEvsmTileResolution(256, 512) == 256);
+
 // ---------------------------------------------------------------------------
 // RENDER QUALITY CONFIG (host-owned, never scene content): HOW the
 // renderer runs — the GI/ambient source, the per-source opt-ins, the
@@ -2672,14 +2682,12 @@ public:
 	uint32_t m_evsmDirTileLimit = 0; // 0 = mirror the PCF cascade resolution
 	uint32_t m_evsmLocalTileLimit = 0; // 0 = mirror the PCF spot resolution
 	uint32_t EvsmDirTileResolution() const {
-		return m_evsmDirTileLimit
-			? std::min(m_cascadeResolution, m_evsmDirTileLimit)
-			: m_cascadeResolution;
+		return CappedEvsmTileResolution(
+			m_cascadeResolution, m_evsmDirTileLimit);
 	}
 	uint32_t EvsmLocalTileResolution() const {
-		return m_evsmLocalTileLimit
-			? std::min(m_spotShadowResolution, m_evsmLocalTileLimit)
-			: m_spotShadowResolution;
+		return CappedEvsmTileResolution(
+			m_spotShadowResolution, m_evsmLocalTileLimit);
 	}
 	// ---- Directional CSM tuning (UI, Quality tab) ----
 	// Tile resolution recreates the depth + EVSM moment atlases on change
