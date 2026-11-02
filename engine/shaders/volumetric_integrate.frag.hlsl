@@ -317,11 +317,17 @@ float SampleVolumetricShadow(float3 wpos, FrameUniforms frame)
         frame.fogShadowRect.xy + frame.fogShadowRect.zw);
 
     SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
-    // The dedicated coarse atlas has mip 1 rasterized explicitly from
-    // volumetric-marked casters. Never read an unpopulated mip: the
-    // coarse-shadow feed is enabled only when its depth passes run.
-    float storedDepth = textures[vp.shadowDepthIndex]
-        .SampleLevel(smp, atlasUV, 1.0).r;
+    // SPD writes mip 0 through the 1x1 tail from the one D32 raster.
+    // Increase the coarse lookup footprint along the ray (roughly one
+    // 2x2 level per doubling of traveled distance). Bound the LOD to
+    // the actual image chain; no shader-side fixed "mip 1" assumption.
+    Texture2D shadowPyramid = textures[vp.shadowDepthIndex];
+    uint shadowWidth, shadowHeight, shadowMips;
+    shadowPyramid.GetDimensions(0, shadowWidth, shadowHeight, shadowMips);
+    float dist = length(wpos - frame.cameraPos);
+    float lod = clamp(log2(max(1.0, dist * 0.04)),
+        0.0, float(max(shadowMips, 1u) - 1u));
+    float storedDepth = shadowPyramid.SampleLevel(smp, atlasUV, lod).r;
 
     float receiver = ndc.z - frame.fogShadowBias * 0.3;
     static const float kFogSunSoften = 16.0;
