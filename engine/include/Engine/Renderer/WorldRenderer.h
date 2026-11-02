@@ -1562,6 +1562,11 @@ public:
 	// CameraPositioner, not Camera: a Camera()-named member would shadow
 	// the smvk::Camera TYPE at the m_camera member declaration below.
 	tour::CameraPositioner_FirstPerson& CameraPositioner() { return m_cameraPositioner; }
+    // Viewer-only: source flags for replaying the currently loaded scene.
+    // Editor/borrowed-world renderers leave this empty and hide export.
+    void SetBenchmarkSourceArgs(std::vector<std::string> args) {
+        m_benchmarkSourceArgs = std::move(args);
+    }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
 	// The RunConfig overload applies the central TOURMALINE_* environment
@@ -2943,6 +2948,14 @@ public:
 	// the same flag). Defaults OFF — hosts render a clean scene by
 	// default; the stats HUD above is the light readout when wanted.
 	bool m_debugPanelOpen = false;
+    // The source-controlled benchmark export is never armed in embedded
+    // editors, because their worlds do not have a stable cooked scene path.
+    std::vector<std::string> m_benchmarkSourceArgs;
+    char m_benchmarkLabel[128] = {};
+    char m_benchmarkSubsystem[64] = {};
+    char m_benchmarkNotes[256] = {};
+    std::string m_benchmarkExportMessage;
+    void ExportBenchmarkScenario();
 	int m_debugMeshletMode = 0;   // 0 = random per meshlet, 1 = cone heat
 	bool m_hideTransparent = false; // debug: skip all transparent draws (bisect blending/overdraw out)
 	// Wireframe (P): raster override on every scene-triangle bind in the
