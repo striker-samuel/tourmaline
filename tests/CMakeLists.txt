@@ -1164,3 +1164,9 @@ endif()
 if(TARGET vulkan_headers_iface)
     target_link_libraries(WorldFieldsGpuTests PRIVATE vulkan_headers_iface)
 endif()
+
+# GPU-less contracts for opt-in vertex pulling; no renderer or RHI required.
+add_executable(VertexPullTests test_vertex_pull.cpp)
+target_include_directories(VertexPullTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(VertexPullTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME vertex_pull_tests COMMAND VertexPullTests)
