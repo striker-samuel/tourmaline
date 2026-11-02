@@ -771,7 +771,8 @@ int Run(Args& args) {
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	cluster->SetOfflineMode(true);
 	smvk::tour::Doc tour;
-	std::vector<uint32_t> createdGiVolumes; // family refs (the stamp's map)
+	std::vector<uint32_t> createdGiVolumes; // dedicated GI creates
+	std::vector<uint32_t> createdTransforms; // generic spatial volumes
 	if (haveTour) {
 		std::string terr;
 		std::vector<std::string> twarn;
@@ -795,7 +796,7 @@ int Run(Args& args) {
 			std::vector<std::string> rwarn;
 			std::string rerr;
 			if (!smvk::tour::ApplyTourToCluster(*cluster, tour, &rwarn,
-					&rerr, true, &createdGiVolumes)) {
+					&rerr, true, &createdGiVolumes, &createdTransforms)) {
 				tool::err() << "Tour replay failed: " << rerr << std::endl;
 				return 1;
 			}
@@ -895,7 +896,7 @@ int Run(Args& args) {
 		std::string serr;
 		std::vector<std::string> superseded;
 		if (!smvk::tour::StampGiAssets(tour, cluster->scene,
-				createdGiVolumes, &serr, &superseded)) {
+				createdGiVolumes, &serr, &superseded, &createdTransforms)) {
 			tool::err() << "Tour giAsset stamp failed: " << serr
 				<< std::endl;
 			return false;
