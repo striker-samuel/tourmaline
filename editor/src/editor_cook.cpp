@@ -664,6 +664,9 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 				// viewport stands, the last valid outputs stand).
 				if (!r.giAssets.empty()) {
 					m_giAssets = std::move(r.giAssets);
+					ApplyGiAssetBindingsToScene();
+					TryLoadGiVolumes();
+					m_wysiwygGiReloadPending = true;
 					Log("Cook: tour giAsset bindings updated ("
 						+ std::to_string(m_giAssets.size())
 						+ " record(s)) — saved with the scene");
@@ -941,9 +944,9 @@ void EditorApp::BakeGI() {
 	// superseded old artifacts BY RECORD. contentRoot = the "content/"
 	// dir itself (bake files land in gi/ next to the pak — exactly what
 	// the loaders check).
-	const std::string contentRoot = std::filesystem::absolute(
-		std::filesystem::path(m_cook.outPak).parent_path() / "..")
-		.lexically_normal().string();
+	// The project owns logical content paths. The pak publish destination
+	// is NOT necessarily its source root (custom output dirs are valid).
+	const std::string contentRoot = m_projectRoot;
 	m_giBakePendingHash = defHash; // adopted as m_giBakedHash on success
 	m_bakeRunning = true;
 	// Blocking progress surface (modal task window).
@@ -1061,6 +1064,9 @@ void EditorApp::BakeGI() {
 			// re-point the doc at superseded (deleted) bake artifacts.
 			if (!r.giAssets.empty()) {
 				m_giAssets = std::move(r.giAssets);
+				ApplyGiAssetBindingsToScene();
+				TryLoadGiVolumes();
+				m_wysiwygGiReloadPending = true;
 				Log("Bake GI: tour giAsset bindings updated ("
 					+ std::to_string(m_giAssets.size())
 					+ " record(s)) — saved with the scene");
