@@ -96,7 +96,7 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld, const std::string& attr,
 			float(mat->values.layerMaterials.w));
 		num = double(mat->values.layerMaterials.w);
 	}
-	// Texture slots: RHI pool indices (-1 none) � the same domain both
+	// Texture slots: RHI pool indices (-1 none) — the same domain both
 	// sides of the tour boundary (materials store pool indices).
 	else if (attr == "baseColorTex")
 		num = double(mat->values.textures.x);
@@ -428,7 +428,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 	}
 	case EditVerb::SetAudioAttr: {
 		// The payload row's property channels (the camera shape, plus
-		// the bool channels the camera lacks � spatial/playOnLoad ride
+		// the bool channels the camera lacks — spatial/playOnLoad ride
 		// the flag slots).
 		const std::string& attr = c.audioAttr;
 		if (forward)
@@ -441,7 +441,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 	}
 	case EditVerb::AddAudioSound: {
 		if (forward) {
-			// Before-state capture on EVERY forward run (idempotent �
+			// Before-state capture on EVERY forward run (idempotent —
 			// see the EditCmd::audioSlotHad note): a REPLACED slot
 			// keeps its captured value for the exact undo, a CREATED
 			// slot marks absent so undo REMOVES it.
@@ -473,7 +473,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 	}
 	case EditVerb::RemoveAudioSound: {
 		if (forward) {
-			// Capture the erased slot's value (idempotent under redo �
+			// Capture the erased slot's value (idempotent under redo —
 			// the undo restored it right before); audioSlotHad marks
 			// whether anything was erased at all, so a remove of a
 			// nonexistent slot is a NO-OP both directions.
@@ -487,7 +487,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			}
 		} else if (c.audioSlotHad) {
 			// Undo re-adds the captured slot EXACTLY (appended at the
-			// end � slots are NAME-addressed, so the order change is
+			// end — slots are NAME-addressed, so the order change is
 			// cosmetic, never a reference break).
 			AddNodeAudioSound(c.node, c.afterText, c.beforeText,
 				float(c.beforeNum), c.beforeFlag);
@@ -511,7 +511,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 	case EditVerb::AttachAudioRoom: {
 		if (forward) {
 			// Capture any existing row for the exact undo (idempotent
-			// capture � LIFO discipline keeps it correct on redo).
+			// capture — LIFO discipline keeps it correct on redo).
 			c.beforeAudioRoom = false;
 			if (const auto* row =
 					tour::scene::FindAudioRoom(scene, c.node)) {
@@ -574,7 +574,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 //
 // A created light is a WORLD node appended to the live scene plus a
 // SceneLight definition in the primary cluster's lights pool, linked
-// through world lightLocations � so gizmos (RecordGizmoPass), the
+// through world lightLocations — so gizmos (RecordGizmoPass), the
 // inspector (FindNodeLight), the outliner tags and the cooked-lights
 // census all pick it up with no special cases. Undo removes the node
 // when it is still the childless tail (ids stay stable); otherwise the
@@ -611,7 +611,7 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
 	// the -ref value CmdToTour emits for SetLightAttr on created nodes.
 	// Deleted (detached) creates are skipped: their CreateLight is
 	// dropped from the tour (live-state emission), so the file's -ref
-	// space only spans ALIVE creates � this keeps save-time indices and
+	// space only spans ALIVE creates — this keeps save-time indices and
 	// replay-time m_tourCreatedNodes addressing identical.
 	// Non-EMITTING creates are skipped too (CreateCmdEmitsInTour): the
 	// file's -ref space is the creates that actually land in the file.
@@ -635,7 +635,7 @@ int EditorApp::CreatedGiVolumeIndex(uint32_t worldNode) const {
 	// Same contract as CreatedLightIndex, for the GI-volume family:
 	// alive + emitting creates only (a deleted GI volume's CreateGiVolume
 	// is dropped from the tour, so the file's -ref space spans the
-	// survivors � save-time indices and replay-time
+	// survivors — save-time indices and replay-time
 	// m_tourCreatedGiVolumeNodes match).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
@@ -748,8 +748,8 @@ int EditorApp::CreatedAudioSourceIndex(uint32_t worldNode) const {
 	// Same contract as CreatedLightIndex, for the audio-source family:
 	// alive + emitting creates only (a deleted source's
 	// CreateAudioSource is dropped from the tour, so the file's -ref
-	// space � which setAudioAttr/addAudioSound/removeAudioSound address
-	// � spans the survivors).
+	// space — which setAudioAttr/addAudioSound/removeAudioSound address
+	// — spans the survivors).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -768,7 +768,7 @@ int EditorApp::CreatedAudioSourceIndex(uint32_t worldNode) const {
 
 std::string EditorApp::UniqueAudioSourceName() const {
 	// Next free "AudioSource"/"AudioSource2"/... over live node names
-	// (the first is bare � no index; the camera pattern's 1-based
+	// (the first is bare — no index; the camera pattern's 1-based
 	// sequence with an unnumbered head).
 	int n = 1;
 	if (m_world) {
@@ -790,8 +790,8 @@ std::string EditorApp::UniqueAudioSourceName() const {
 int EditorApp::CreatedAudioRoomIndex(uint32_t worldNode) const {
 	// Same contract as CreatedLightIndex, for the audio-room family:
 	// alive + emitting creates only (a deleted room's CreateAudioRoom
-	// is dropped from the tour, so the file's -ref space � which
-	// setAudioRoomAttr addresses � spans the survivors).
+	// is dropped from the tour, so the file's -ref space — which
+	// setAudioRoomAttr addresses — spans the survivors).
 	int count = 0;
 	for (size_t i = 0; i < m_historyCursor && i < m_history.size(); ++i) {
 		const EditCmd& h = m_history[i];
@@ -983,7 +983,7 @@ uint32_t EditorApp::CreateEmitParent(const EditorApp& app, const EditCmd& h) {
 	// current parenting (reparents, undos and replays all land there),
 	// so the file carries it directly instead of relying on a Parent
 	// verb the child may not be addressable by (editor-created children
-	// own no cluster id � their Parent lines could never persist).
+	// own no cluster id — their Parent lines could never persist).
 	if (!app.m_world)
 		return UINT32_MAX;
 	const Scene& scene = app.m_world->scene;
@@ -1026,7 +1026,7 @@ bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) 
 		return true; // world root: -p 0 (the primary cluster's root)
 	if (app.WorldToCluster(parentSlot) >= 0)
 		return true; // cluster-backed: numeric -p (the bind builds it)
-	// Editor-created parent: it emits only through its OWN create �
+	// Editor-created parent: it emits only through its OWN create —
 	// terrain TILES ride their group's createTerrain (the tile is not
 	// a standalone create in history).
 	if (app.TerrainGroupOf(parentSlot) != UINT32_MAX
@@ -1152,7 +1152,7 @@ void EditorApp::DraftCreateAudioSource() {
 	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
 		? sel : DefaultCreateParent();
 	c.afterText = UniqueAudioSourceName();
-	// Spawn at the active camera target (what you're looking at � the
+	// Spawn at the active camera target (what you're looking at — the
 	// emitter is a world-placement authoring act). The payload plants
 	// DEFAULT (spatial, 1/30 m distances, no slots); the properties +
 	// sound slots edit in the inspector right after.
@@ -1161,13 +1161,13 @@ void EditorApp::DraftCreateAudioSource() {
 }
 
 bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
-	// The "locator" definition: a bare transform � no type link of any
+	// The "locator" definition: a bare transform — no type link of any
 	// kind. This is the INVERSE of the contains-chain the outliner uses
 	// for tags; it catches editor-created locators, imported glTF empty
 	// group nodes, and tour replayed createNode -at transform nodes.
 	// Hidden/flagged nodes still count (the flags are display state, not
 	// type identity). A terrain group node also matches (its tiles carry
-	// the meshes) � see TerrainGroupOf for the distinction when needed.
+	// the meshes) — see TerrainGroupOf for the distinction when needed.
 	if (node >= scene.hierarchy.size())
 		return false;
 	if (FindMesh(scene, node) != nullptr)
@@ -1200,7 +1200,7 @@ void EditorApp::DraftCreateLocator() {
 		Log("Create locator: no scene open.");
 		return;
 	}
-	// A locator is a Create Transform with a meaningful default name �
+	// A locator is a Create Transform with a meaningful default name —
 	// the NAME is the identity game code will look up (findNodeByName).
 	// The tour verb is createNode -at transform; the pak scene blob
 	// serializes the node's hierarchy row + transform + name with ZERO
@@ -1212,7 +1212,7 @@ void EditorApp::DraftCreateLocator() {
 	c.node2 = (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size())
 		? sel : DefaultCreateParent();
 	c.afterText = UniqueLocatorName();
-	// Spawn at the active camera target (what you're looking at � the
+	// Spawn at the active camera target (what you're looking at — the
 	// most likely intent for a spawn point / trigger / patrol marker).
 	const EditorCam& cam = ActiveCam();
 	c.afterVec = cam.target;
@@ -1244,7 +1244,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	scene.nodeNames.push_back(c.afterText);
 	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	// Pool definition on the DYNAMIC cluster (World::EnsureDynamicCluster):
-	// runtime-created entities live there, never in the scene's cluster �
+	// runtime-created entities live there, never in the scene's cluster —
 	// pak unloads leave them alone and the scene cluster stays pure cooked
 	// content. FindNodeLight resolves world lights through lightLocations
 	// -> cluster + handle, so nothing downstream changes.
@@ -1278,11 +1278,11 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 	Log(buf);
 }
 
-// Shared create-undo retirement (Epoch 6b � see the header contract):
+// Shared create-undo retirement (Epoch 6b — see the header contract):
 // the childless case physically frees the slot; every OTHER node id
 // stays put and a redo re-creates at the same slot id (the freelist
 // pops LIFO). World draw caches + selection scrub for the retired
-// node � the scene arrays no longer shrink past it the way the old
+// node — the scene arrays no longer shrink past it the way the old
 // pop-back did by accident.
 void EditorApp::RetireCreatedNode(uint32_t n) {
 	if (!m_world || n == UINT32_MAX || n >= m_world->scene.hierarchy.size())
@@ -1294,7 +1294,7 @@ void EditorApp::RetireCreatedNode(uint32_t n) {
 	UnlinkNodeFromParent(scene, int(n));
 	RetireNodeSlot(scene, n);
 	// World draw caches (the ExecDelete discipline): the retired slot
-	// keeps its flags[]/drawItems entries otherwise � flat iteration
+	// keeps its flags[]/drawItems entries otherwise — flat iteration
 	// must never see it again.
 	if (n < m_world->flags.size())
 		m_world->flags[n] = smvk::IteratorFlags(smvk::IteratorFlagBit_None);
@@ -1347,7 +1347,7 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 			+ "; slot retired, ids stable).");
 	} else {
 		// Children live under the node: the slot must stay alive for
-		// them � tombstone (hide + detach) as before.
+		// them — tombstone (hide + detach) as before.
 		MarkHidden(scene, int(n));
 		RemoveLight(scene, n);
 		Log("Undid light creation (#" + std::to_string(n)
@@ -1360,7 +1360,7 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 //
 // A created camera is a WORLD node appended to the live scene plus a
 // SceneCamera lens definition in the primary cluster's cameras pool,
-// linked through world cameraLocations � so gizmos, the inspector, the
+// linked through world cameraLocations — so gizmos, the inspector, the
 // outliner tags and the look-through path all pick it up with no special
 // cases. Undo removes the node when it is still the childless tail (ids
 // stay stable); otherwise the camera is tombstoned (hidden + detached)
@@ -1393,7 +1393,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 	scene.nodeNames.push_back(c.afterText);
 	SetNodeNameIndex(scene, uint32_t(created), nameId);
 	// Lens definition on the DYNAMIC cluster (World::EnsureDynamicCluster:
-	// runtime-created entities live there � see ExecCreateLight).
+	// runtime-created entities live there — see ExecCreateLight).
 	// FindNodeCamera resolves world cameras through cameraLocations ->
 	// cluster + handle.
 	::SceneCamera def{};
@@ -1464,17 +1464,17 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 // A created audio source is a WORLD transform node (translate = the
 // emitter pose; the audio manager resolves the node's GLOBAL transform
 // at use, so parenting applies like meshes) plus a node-local
-// SceneAudioSource row in scene.tables.audioSources � the EnvVolumeRow
+// SceneAudioSource row in scene.tables.audioSources — the EnvVolumeRow
 // inline-payload pattern, so the inspector (FindAudioSource), the
 // outliner tags and the tour all pick it up with no special cases. NO
 // pool entry (unlike cameras): the payload IS the row. Undo removes
-// the node when it is childless (ids stay stable � Epoch 6b
+// the node when it is childless (ids stay stable — Epoch 6b
 // retirement); otherwise the row is tombstoned (hidden + detached).
 // Tour persistence: CreateAudioSource carries the creation (CmdToTour
 // emits the LIVE pose + name, so post-creation moves/renames ride
 // along); the PAYLOAD (properties + sound slots) rides the later
 // SetAudioAttr/AddAudioSound/RemoveAudioSound commands, which address
-// later creates via kCreateAudioSourceRefBase (creation order) � the
+// later creates via kCreateAudioSourceRefBase (creation order) — the
 // exportSettings pattern.
 // ---------------------------------------------------------------------------
 void EditorApp::ExecCreateAudioSource(EditCmd& c) {
@@ -1494,15 +1494,15 @@ void EditorApp::ExecCreateAudioSource(EditCmd& c) {
 		return;
 	c.node = uint32_t(created);
 	// TRS = translate only (the emitter pose; rotation/scale carry no
-	// meaning for a point emitter � the cubemap-capture precedent).
+	// meaning for a point emitter — the cubemap-capture precedent).
 	scene.localTransform[size_t(created)] =
 		glm::translate(glm::mat4(1.0f), c.afterVec);
 	// Name (the nodeNames pool is grow-only, like Rename).
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
 	SetNodeNameIndex(scene, uint32_t(created), nameId);
-	// Inline payload: the DEFAULT SceneAudioSource, or � when
-	// DuplicateSelection seeded audioDupFrom � the source node's LIVE
+	// Inline payload: the DEFAULT SceneAudioSource, or — when
+	// DuplicateSelection seeded audioDupFrom — the source node's LIVE
 	// payload (the camera-duplicate precedent, minus the pool: the
 	// payload is inline, so the copy IS the whole state).
 	SceneAudioSource payload{};
@@ -1553,7 +1553,7 @@ void EditorApp::ExecUncreateAudioSource(EditCmd& c) {
 // ---------------------------------------------------------------------------
 // Created AUDIO ROOMS (the environmental-reverb volume nodes,
 // docs/audio_graph.md). A created room is a WORLD transform node
-// (translate = box center, scale = FULL extents � the givolume
+// (translate = box center, scale = FULL extents — the givolume
 // placement convention; spatial_volume.h decodes the OBB at the
 // listener) plus a node-local SceneAudioRoom definition in the
 // scene's audio-room table. Tour persistence: CreateAudioRoom
@@ -1595,7 +1595,7 @@ void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
 	}
 	c.node = uint32_t(created); // recorded back for undo
 	// The room SHAPE: translate + FULL-extent scale (the givolume
-	// placement convention � half extents = half the column lengths).
+	// placement convention — half extents = half the column lengths).
 	glm::mat4 m(1.0f);
 	m = glm::translate(m, c.afterVec);
 	m = glm::scale(m, glm::max(c.svec, glm::vec3(1e-3f)));
@@ -1603,8 +1603,8 @@ void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
 	const uint32_t nameId = uint32_t(scene.nodeNames.size());
 	scene.nodeNames.push_back(c.afterText);
 	SetNodeNameIndex(scene, uint32_t(created), nameId);
-	// Inline payload: the DEFAULT SceneAudioRoom, or � when
-	// DuplicateSelection seeded roomDupFrom � the source node's LIVE
+	// Inline payload: the DEFAULT SceneAudioRoom, or — when
+	// DuplicateSelection seeded roomDupFrom — the source node's LIVE
 	// payload.
 	tour::scene::SceneAudioRoom payload{};
 	if (c.roomDupFrom != UINT32_MAX
@@ -1650,9 +1650,9 @@ void EditorApp::ExecUncreateAudioRoom(EditCmd& c) {
 // Created GI volumes (GI volume nodes).
 //
 // A created GI volume is a WORLD transform node (translate = box center,
-// scale = full extents, axis-aligned � rotation ignored by design) plus
+// scale = full extents, axis-aligned — rotation ignored by design) plus
 // a node-local SceneGiVolume definition in the scene's GI-volume
-// table � so gizmos,
+// table — so gizmos,
 // the inspector, the outliner and the tour all pick it up with no
 // special cases. Undo removes the node when it is still the childless
 // tail (ids stay stable); otherwise the node is tombstoned (hidden +
@@ -1699,7 +1699,7 @@ void EditorApp::ExecCreateGiVolume(EditCmd& c) {
 		return;
 	c.node = uint32_t(created);
 	// TRS = translate + scale-as-size (axis-aligned by design; any
-	// rotation the command carries is dropped � the volume shape
+	// rotation the command carries is dropped — the volume shape
 	// never reads it).
 	scene.localTransform[size_t(created)] =
 		glm::translate(glm::mat4(1.0f), c.afterVec)
@@ -1755,7 +1755,7 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 //
 // A created node is a WORLD transform node (identity; a config node, no
 // shape) plus a node-local SceneExportSettings payload in
-// scene.exportForNode � the inspector, the outliner, the tour (createNode
+// scene.exportForNode — the inspector, the outliner, the tour (createNode
 // -at exportSettings + setExportAttr) and the cooks all pick it up with
 // no special cases. The AUTO-SEED singleton: EnsureExportSettingsNode
 // plants one on every scene open (undoable like any create; the next
@@ -1768,7 +1768,7 @@ uint32_t EditorApp::FindExportSettingsNode() const {
 		return UINT32_MAX;
 	const Scene& scene = m_world->scene;
 	// The FIRST in node id order = THE one (the singleton rule; the
-	// auto-seed keeps it at exactly one � duplicates only via hand
+	// auto-seed keeps it at exactly one — duplicates only via hand
 	// edits or referenced scenes, first wins like every consumer).
 	uint32_t best = UINT32_MAX;
 	for (const ExportRow& _row : scene.tables.exports) {
@@ -1782,7 +1782,7 @@ uint32_t EditorApp::FindExportSettingsNode() const {
 
 const SceneExportSettings& EditorApp::ExportCfg() const {
 	// The live export settings: the node's payload, or the defaults when
-	// the scene carries none (transient � the auto-seed fires on every
+	// the scene carries none (transient — the auto-seed fires on every
 	// scene open; "none" means a mid-session undo removed the node).
 	static const SceneExportSettings kDefaults{};
 	if (!m_world)
@@ -1913,7 +1913,7 @@ bool EditorApp::ReadNodeExportAttr(uint32_t node, const std::string& attr,
 	else if (attr == "meshletMaxTris") num = double(es.meshletMaxTris);
 	else if (attr == "meshletConeWeight") num = double(es.meshletConeWeight);
 	else if (attr == "giVolumes") flag = es.giVolumes;
-	// ("giWorld" reads as unknown here � the field is retired with the
+	// ("giWorld" reads as unknown here — the field is retired with the
 	// .sggi octree; the tour PARSE still tolerates the token, so old
 	// files load, but the editor can no longer author it.)
 	else if (attr == "autoKtx") flag = es.autoKtx;
@@ -1931,7 +1931,7 @@ bool EditorApp::WriteNodeExportAttr(uint32_t node, const std::string& attr,
 	if (!it)
 		return false;
 	// The ONE mapping runs through the shared ApplyExportAttr (the same
-	// code the tour replay + Cook.exe run � no drift by construction).
+	// code the tour replay + Cook.exe run — no drift by construction).
 	smvk::tour::Command tc{};
 	tc.verb = smvk::tour::Verb::SetExportAttr;
 	tc.text = attr;
@@ -1979,7 +1979,7 @@ int EditorApp::CreatedExportIndex(uint32_t worldNode) const {
 //
 // A created capture is a WORLD transform node (translate = the pinned
 // probe position) plus a node-local SceneCubemap definition in
-// scene.cubemapForNode � gizmos, the inspector, the outliner and the
+// scene.cubemapForNode — gizmos, the inspector, the outliner and the
 // cook's --cubemap harvest all pick it up with no special cases. Undo
 // removes the node when it is still the childless tail (ids stay
 // stable); otherwise the node is tombstoned (hidden + def detached).
@@ -2068,8 +2068,8 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 
 // ---------------------------------------------------------------------------
 // Delete (Del key / Edit menu, Maya delete): remove a node from the LIVE
-// scene. Links drop � the mesh/material tables (draw state), lightForNode
-// (light census/gizmos/cook), drawItems (draws/picks/box-select) � and the
+// scene. Links drop — the mesh/material tables (draw state), lightForNode
+// (light census/gizmos/cook), drawItems (draws/picks/box-select) — and the
 // node id joins m_deletedNodes so the outliner filters it. NO hiding, NO
 // renumbering: ids stay stable (later commands still address the node) and
 // pool resources are never reclaimed, only the links. A terrain GROUP
@@ -2097,7 +2097,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			git->second.tileNodes.end());
 	}
 	// Capture the exact prior state ONCE (first forward exec; redos
-	// reuse � LIFO undo guarantees the live vectors are back to this
+	// reuse — LIFO undo guarantees the live vectors are back to this
 	// exact state whenever the capture is needed again).
 	if (c.delNodeMaps.empty()) {
 		auto captureMaps = [&](uint32_t id) {
@@ -2124,7 +2124,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			? double(lit->light) : -1.0;
 		// GI-volume def (created or replayed): node-local floats ride
 		// beforeVec4 (priority, spacing, inside, outside) + presence
-		// rides beforeFlag � the light-index precedent for the exact
+		// rides beforeFlag — the light-index precedent for the exact
 		// undo below.
 		auto cvit = FindGiVolume(scene, n);
 		c.beforeFlag = (cvit);
@@ -2134,7 +2134,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 				cvit->volume.outsideFade);
 		// Cubemap capture def (created or replayed): presence rides
 		// beforeCubemap, the radius rides beforeNum (the light index
-		// in c.number above is exclusive � a capture node has no
+		// in c.number above is exclusive — a capture node has no
 		// light; a light node has no capture).
 		auto cmit = FindCubemap(scene, n);
 		c.beforeCubemap = (cmit);
@@ -2148,7 +2148,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		c.beforeCamIdx = c.beforeCamera ? double(camit->camera) : -1.0;
 		// Audio-source payload (created or replayed): the row's WHOLE
 		// inline payload rides beforeAudio + presence rides
-		// beforeAudioSource � the camera precedent minus the pool
+		// beforeAudioSource — the camera precedent minus the pool
 		// index (there is none: the payload IS the row, so the capture
 		// is the value itself).
 		auto auit = FindAudioSource(scene, n);
@@ -2201,7 +2201,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 	RemoveLight(scene, n);
 	m_world->flagLists.clear();
 	Log("Deleted '" + getNodeName(scene, int(n)) + "' (#" +
-		std::to_string(n) + ") � Ctrl+Z restores it.");
+		std::to_string(n) + ") — Ctrl+Z restores it.");
 }
 
 void EditorApp::ExecUndelete(EditCmd& c) {
@@ -2242,7 +2242,7 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 		&& c.beforeCamIdx < double(m_world->cameraLocations.size()))
 		SetCamera(scene, n, uint32_t(c.beforeCamIdx));
 	// Audio-source payload: restored EXACTLY from the captured value
-	// (no pool to rebind � the row is the payload).
+	// (no pool to rebind — the row is the payload).
 	if (c.beforeAudioSource)
 		SetAudioSource(scene, n, c.beforeAudio);
 	if (c.beforeAudioRoom)
@@ -2354,7 +2354,7 @@ void EditorApp::DeleteSelection() {
 				m_refPlaceholders.end(), n);
 			if (it == m_refPlaceholders.end()) {
 				Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
-					"' is a reference placeholder � remove the reference "
+					"' is a reference placeholder — remove the reference "
 					"itself (References panel).");
 				continue;
 			}
@@ -2366,14 +2366,14 @@ void EditorApp::DeleteSelection() {
 			continue;
 		}
 		// A node inside a reference subtree that is itself being
-		// removed vanishes with the reference � a per-node delete
+		// removed vanishes with the reference — a per-node delete
 		// on top would only leave an orphan command behind.
 		if (underRefRemoval(n)) {
 			Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
 				"' goes away with its reference (skipped).");
 			continue;
 		}
-		// Terrain TILE (viewport picks select tiles � the group node
+		// Terrain TILE (viewport picks select tiles — the group node
 		// carries no mesh): resolve to the GROUP. Deleting part of a
 		// terrain deletes the terrain.
 		const uint32_t group = TerrainGroupOf(n);
@@ -2439,20 +2439,20 @@ void EditorApp::DuplicateSelection() {
 			|| m_deletedNodes.contains(t))
 			continue;
 		if (IsRefPlaceholder(t)) {
-			// The placeholder IS the reference binding anchor �
+			// The placeholder IS the reference binding anchor —
 			// duplicating the reference is the References panel's job.
 			++skippedRef;
 			continue;
 		}
 		// Terrain: groups/tiles ride one CreateTerrain (immutable params
 		// + TerrainPaint stamps). A duplicate would silently drop the
-		// painted state � skip with a log line instead.
+		// painted state — skip with a log line instead.
 		if (TerrainGroupOf(t) != UINT32_MAX) {
 			++skippedTerrain;
 			continue;
 		}
 		// Cluster-backed mesh nodes own no create verb (imported
-		// geometry � a duplicate needs an instancing system).
+		// geometry — a duplicate needs an instancing system).
 		if (FindMesh(m_world->scene, t) != nullptr) {
 			++skippedMesh;
 			continue;
@@ -2496,7 +2496,7 @@ void EditorApp::DuplicateSelection() {
 		}
 		else if (FindAudioSource(m_world->scene, t) != nullptr) {
 			// Audio source: the payload is INLINE (no pool), so
-			// duplication seeds audioDupFrom � ExecCreateAudioSource
+			// duplication seeds audioDupFrom — ExecCreateAudioSource
 			// copies the source node's LIVE row, and post-creation
 			// property/slot edits ride along exactly like the camera
 			// duplicate's live lens.
@@ -2536,7 +2536,7 @@ void EditorApp::DuplicateSelection() {
 		}
 		else {
 			// Plain transform: created transforms AND imported empty
-			// group nodes (no links) � both are just a DAG transform.
+			// group nodes (no links) — both are just a DAG transform.
 			c.verb = EditVerb::CreateTransform;
 			c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
 			c.afterText = name;
@@ -2581,7 +2581,7 @@ void EditorApp::DuplicateSelection() {
 
 // ---------------------------------------------------------------------------
 // CreateTransform: plain transform nodes (Maya group locators). No mesh,
-// no light, no pool entry � the reference system uses them as
+// no light, no pool entry — the reference system uses them as
 // displacement placeholders for created content parented under a
 // reference that gets disabled (see editor_references.cpp).
 // ---------------------------------------------------------------------------
@@ -2629,7 +2629,7 @@ void EditorApp::ExecUncreateTransform(EditCmd& c) {
 	// A transform node carries no links. Epoch 6b: the slot RETIRES
 	// anywhere in the graph (the old physical path only worked on the
 	// childless tail); a parented-into node keeps its slot for the
-	// children under it (hide � the created-light tombstone precedent).
+	// children under it (hide — the created-light tombstone precedent).
 	const bool childless = scene.hierarchy[n].firstChild < 0;
 	if (childless) {
 		RetireCreatedNode(n);
@@ -2731,7 +2731,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	} else if (attr == "cookie") {
 		// Spot gobo ref: the string persists verbatim (the light build
 		// resolves it to the bindless index; empty = none). Unresolved
-		// refs warn + drop there � never fatal (none/black on error).
+		// refs warn + drop there — never fatal (none/black on error).
 		L->cookieUri = text;
 	} else if (attr == "function") {
 		L->functionType = uint32_t(
@@ -2864,7 +2864,7 @@ bool EditorApp::GiVolumeOBB(uint32_t node, glm::vec3& center, glm::mat3& axes,
 		return false;
 	// Authoring box: center = global translate, half extents = half the
 	// global basis lengths, axes = the NORMALIZED basis columns (the
-	// node's world rotation � an OBB; the bake rotates the six box
+	// node's world rotation — an OBB; the bake rotates the six box
 	// planes with it, CvBoxPlanesRotated).
 	const glm::mat4& g = scene.globalTransform[node];
 	center = glm::vec3(g[3]);
@@ -3052,7 +3052,7 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node, const std::string& attr,
 bool EditorApp::ReadNodeAudioSourceAttr(uint32_t node,
 	const std::string& attr, glm::vec4& v4, double& num, bool& flag,
 	std::string& text) const {
-	// The audio-source payload's property channels � the camera-attr
+	// The audio-source payload's property channels — the camera-attr
 	// shape plus the bool channels (spatial/playOnLoad). The payload
 	// is INLINE in the audioSources row (the EnvVolumeRow pattern): no
 	// pool indirection, FindAudioSource IS the whole resolution.
@@ -3078,7 +3078,7 @@ bool EditorApp::ReadNodeAudioSourceAttr(uint32_t node,
 	} else if (attr == "maxDistance") {
 		num = double(def.maxDistance);
 	} else if (attr == "name") {
-		// The NODE's name (the payload carries none) � the camera
+		// The NODE's name (the payload carries none) — the camera
 		// pattern: the rename re-indexes nodeNames on write.
 		text = getNodeName(scene, int(node));
 	} else if (attr == "position") {
@@ -3136,7 +3136,7 @@ bool EditorApp::WriteNodeAudioSourceAttr(uint32_t node,
 bool EditorApp::ReadNodeAudioRoomAttr(uint32_t node,
 	const std::string& attr, glm::vec4& v4, double& num, bool& flag,
 	std::string& text) const {
-	// The audio-room payload's property channels � the givolume-attr
+	// The audio-room payload's property channels — the givolume-attr
 	// shape (name + the position/rotation/size TRS channels) plus the
 	// scalar/bool room fields. INLINE in the audioRooms row:
 	// FindAudioRoom IS the whole resolution.
@@ -3245,7 +3245,7 @@ void EditorApp::AddNodeAudioSound(uint32_t node,
 	const std::string& slotName, const std::string& assetPath,
 	float gain, bool loop) {
 	// UPSERT by slot NAME (the tour addAudioSound contract: the slot
-	// identifier is stable � reordering the collection never breaks
+	// identifier is stable — reordering the collection never breaks
 	// addressing). Gain clamps into the emitter contract's 0..16
 	// window (the tour parser enforces the same).
 	if (!m_world)
@@ -3291,7 +3291,7 @@ bool EditorApp::RemoveNodeAudioSound(uint32_t node,
 void EditorApp::Do(EditCmd c) {
 	ExecCmd(c, true);
 	// THE VERB TOAST: a minimal popup message over the view panels'
-	// rect � the command's action, at a glance (the "did that register"
+	// rect — the command's action, at a glance (the "did that register"
 	// feedback the gesture-driven UI owes; the status bar is a look-
 	// away surface, the stage is where the eyes are).
 	ShowVerbToast(c);
@@ -3376,8 +3376,8 @@ void EditorApp::ClearHistory() {
 }
 
 // Save-time coalescing (see SaveTourTo): the saved .tour keeps only
-// the state that survives � last occurrence per class at its original
-// position � so toggle pairs like hide/show/hide collapse to the final
+// the state that survives — last occurrence per class at its original
+// position — so toggle pairs like hide/show/hide collapse to the final
 // state in the FILE. Same classes as CoalesceHistory; structural
 // commands (creates, paints, deletes, uuids) always stay. The live
 // stack, undo and the autosave are untouched (temporal memory keeps
@@ -3483,8 +3483,8 @@ size_t EditorApp::CoalesceHistory() {
 	// Last-occurrence collapse. Every kept command stays at its ORIGINAL
 	// position; only superseded same-key predecessors (and the redo tail)
 	// drop. Correctness rests on two replay properties: (1) every
-	// collapsible class is last-wins � the tour's transform pass collects
-	// per-channel triples and attr/material assignments overwrite � so an
+	// collapsible class is last-wins — the tour's transform pass collects
+	// per-channel triples and attr/material assignments overwrite — so an
 	// earlier same-key command contributes nothing once a later one
 	// exists; (2) keeping the LAST occurrence at its own position
 	// preserves the replay-time context (recorded verify names, refs)
@@ -3676,13 +3676,13 @@ std::string EditorApp::RedoLabel() const {
 bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	smvk::tour::Command& out) {
 	// Cluster id for a create's LIVE parent, NORMALIZED (the six create
-	// families below share it): the SCENE-ROOT parent (world node 0 � the
+	// families below share it): the SCENE-ROOT parent (world node 0 — the
 	// synthetic root ABOVE the cluster base, so WorldToCluster(0) reads
 	// -1) maps to the CLUSTER ROOT (id 0): the tour id space has no
 	// world-0, and the cluster root is the closest valid parent. The
 	// un-normalized -1 leaked into the create lines as -p 4294967295
-	// (uint32_t(-1)) � those files then failed replay (resolveNode's
-	// create-ref check) � 10/6. A lambda for the private member access.
+	// (uint32_t(-1)) — those files then failed replay (resolveNode's
+	// create-ref check) — 10/6. A lambda for the private member access.
 	auto createParentClusterId = [&app](uint32_t liveParent) {
 		int pp = app.WorldToCluster(liveParent);
 		if (pp < 0 && liveParent == 0)
@@ -3775,7 +3775,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.verb = smvk::tour::Verb::Rename;
 		out.text = c.afterText;
 		// The -name KEY must name the node AS THE FRESH IMPORT KNOWS
-		// it � the name BEFORE this rename (the replay resolves keys
+		// it — the name BEFORE this rename (the replay resolves keys
 		// against the pre-command state; the current name is the thing
 		// this command CHANGES). beforeText is exactly that.
 		if (!c.beforeText.empty())
@@ -3933,7 +3933,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!needNode())
 			return false;
 		// Reference placeholders are owned by the reference line's
-		// `enabled` bool � their visibility never persists as a
+		// `enabled` bool — their visibility never persists as a
 		// command (this also purges legacy placeholder lines).
 		if (app.IsRefPlaceholder(c.node))
 			return false;
@@ -3949,7 +3949,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 				pn = 0; // world root: the primary cluster's root (id 0)
 			else {
 				// Editor-created new parent: symbolic -p emission (see
-				// the CreateLight case) � the reparent survives saves
+				// the CreateLight case) — the reparent survives saves
 				// instead of silently vanishing from the cooked scene.
 				if (parentRefFor(c.node2).empty()
 					|| !EditorApp::ParentResolvesInTour(app, c.node2))
@@ -3975,7 +3975,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (!L)
 			return false; // detached (tombstoned): nothing to persist
 		// Parent = the LIVE parent (reparents ride the create line
-		// itself � see CreateEmitParent; Parent verbs on created
+		// itself — see CreateEmitParent; Parent verbs on created
 		// children skip silently at save).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
 		int pp = createParentClusterId(liveParent);
@@ -3983,7 +3983,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			// Editor-created parent (no cluster id until replay): emit
 			// the SYMBOLIC -p form (name/path; the parent's own create
 			// lands earlier in file order, so replay resolves it)
-			// instead of dropping the create � the drop desynced the
+			// instead of dropping the create — the drop desynced the
 			// family -ref spaces ("setLightAttr ref out of range").
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
@@ -4018,7 +4018,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 			|| created >= app.m_world->scene.hierarchy.size())
 			return false;
 		// Deleted (tombstoned) group: drop the creation from the file
-		// entirely � the created-light detached precedent.
+		// entirely — the created-light detached precedent.
 		{
 			auto git = app.m_terrainGroups.find(created);
 			if (git != app.m_terrainGroups.end() && git->second.deleted)
@@ -4026,13 +4026,13 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		}
 		int pp = 0;
 		// Parent = the LIVE parent (reparents ride the create line
-		// itself � see CreateEmitParent; Parent verbs on created
+		// itself — see CreateEmitParent; Parent verbs on created
 		// children skip silently at save).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
 		pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) � never drop the terrain silently.
+			// CreateLight case) — never drop the terrain silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -4058,7 +4058,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 	}
 	case EditVerb::CreateTransform: {
 		// Emit the LIVE create state (transform nodes carry no links,
-		// so a deleted one must not emit � same tombstone contract as
+		// so a deleted one must not emit — same tombstone contract as
 		// the detached-light check).
 		const uint32_t created = c.node;
 		if (created == UINT32_MAX
@@ -4067,12 +4067,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		if (app.m_deletedNodes.contains(created))
 			return false;
 		// Parent = the LIVE parent (reparents ride the create line
-		// itself � see CreateEmitParent).
+		// itself — see CreateEmitParent).
 		const uint32_t liveParent = EditorApp::CreateEmitParent(app, c);
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) � never drop the transform silently.
+			// CreateLight case) — never drop the transform silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -4132,7 +4132,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// Emit the LIVE create state: the node may have moved/scaled
 		// and its params may have been attr-edited after creation
 		// (those later SetGiVolumeAttr commands re-emit harmlessly and
-		// idempotently � the light precedent).
+		// idempotently — the light precedent).
 		const uint32_t created = c.node;
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
@@ -4147,7 +4147,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) � never drop the GI volume silently.
+			// CreateLight case) — never drop the GI volume silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -4211,7 +4211,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent (e.g. the auto-selected previous
-			// create � DraftCreateCubemap parents under the selection):
+			// create — DraftCreateCubemap parents under the selection):
 			// emit the SYMBOLIC -p form instead of dropping the create.
 			// The historical drop is what produced orphaned
 			// "setCubemapAttr -ref k" lines and the cook failure
@@ -4270,7 +4270,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) � never drop the camera silently.
+			// CreateLight case) — never drop the camera silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -4317,7 +4317,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// translate + name, so post-creation pose/name edits ride
 		// along); the PAYLOAD (properties + sound slots) rides the
 		// later SetAudioAttr/AddAudioSound/RemoveAudioSound commands,
-		// which re-emit idempotently � the exportSettings pattern.
+		// which re-emit idempotently — the exportSettings pattern.
 		const uint32_t created = c.node;
 		if (created == UINT32_MAX
 			|| created >= app.m_world->scene.hierarchy.size())
@@ -4331,7 +4331,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) � never drop the create silently.
+			// CreateLight case) — never drop the create silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -4486,7 +4486,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		int pp = createParentClusterId(liveParent);
 		if (pp < 0 && liveParent != 0) {
 			// Editor-created parent: symbolic -p emission (see the
-			// CreateLight case) � never drop the node silently.
+			// CreateLight case) — never drop the node silently.
 			if (!parentRefFor(liveParent).empty()
 				&& EditorApp::ParentResolvesInTour(app, liveParent))
 				pp = 0; // numeric fallback unused (writer prefers -pStr)
@@ -4533,7 +4533,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// delete target by the SaveTourTo pre-pass), name (secondary,
 		// via needNode's verify-name side effect), numeric id as the
 		// legacy fallback/disambiguator. Editor-created nodes (created
-		// lights, GI volumes, terrain groups/tiles � no cluster id) are
+		// lights, GI volumes, terrain groups/tiles — no cluster id) are
 		// never written: their creates are dropped by the live-state
 		// emission above, removing them from the file entirely.
 		if (!needNode())
@@ -4616,11 +4616,11 @@ void EditorApp::CheckAutosaveOffer() {
 	m_recoverTour = tour;
 	m_recoverStamp = FileStamp(m_recoverAutosave);
 		Log("Autosave found (" + m_recoverStamp
-			+ ") � newer than " + tour + ".");
+			+ ") — newer than " + tour + ".");
 }
 
 // Per-edit persistence target: the full tour state lands in an autosave
-// file under %APPDATA% (never the project's .tour � explicit saves,
+// file under %APPDATA% (never the project's .tour — explicit saves,
 // save-as, incremental saves and scene close are the only writers of
 // that; see AutosaveTour vs SaveTour). Crash recovery: LoadTour prefers
 // the autosave when it is newer than the target file.
@@ -4746,7 +4746,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// instead); internal temp snapshots (cook/reload) and the APPDATA
 	// autosave slot pass allowExternal.
 	if (!allowExternal && !m_projectRoot.empty() && !InProjectDir(tp)) {
-		Log("Tour save refused: '" + tp + "' is outside the project � "
+		Log("Tour save refused: '" + tp + "' is outside the project — "
 			"scenes live inside '" + m_projectRoot + "' (Save As into "
 			"content/scenes/).");
 		return false;
@@ -4761,10 +4761,10 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	}
 	smvk::tour::Doc doc;
 	// THE DEFINITION IS SELF-CONTAINED: no `source` line, no
-	// fingerprint � the scene's glTF rides as reference #0 (a ROOT
+	// fingerprint — the scene's glTF rides as reference #0 (a ROOT
 	// reference), bound identically by the editor and the cooker.
 	// m_gltfPath/m_gltfHostPath stay editor-side identity/picking
-	// state only. (VFS paths use forward slashes � the cooker's
+	// state only. (VFS paths use forward slashes — the cooker's
 	// resolver expects POSIX separators.)
 	doc.source.clear();
 	doc.fingerprint.clear();
@@ -4780,17 +4780,17 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		if (!rel.empty())
 			posix = rel;
 		// ROOT = THE DERIVED .GEOMETRY DATA BLOB (the preprocessed scene
-		// graph � see asset_export.h): the tour references the ASSET, not
+		// graph — see asset_export.h): the tour references the ASSET, not
 		// the glTF; the bind imports the sibling source glTF (the
 		// derivation wrote them next to each other; node ids are
-		// identical � the same deterministic import). GUID = the geometry
+		// identical — the same deterministic import). GUID = the geometry
 		// entry's manifest GUID (stable across reimports). Falls back to
 		// the glTF when no .geometry was derived yet (a pre-rename
-		// derivation's legacy ".mesh" blob still binds � the loader takes
-		// both � but the next re-import derives ".geometry" and the swap
+		// derivation's legacy ".mesh" blob still binds — the loader takes
+		// both — but the next re-import derives ".geometry" and the swap
 		// below re-targets it).
 		// The root GUID starts as the SOURCE CONTENT identity (the same
-		// one the derived .meta records � see ImportMeshArtifactFor /
+		// one the derived .meta records — see ImportMeshArtifactFor /
 		// asset_export.h): project sessions and from-zero re-imports
 		// agree on ONE identity (the project DB's guid is separate
 		// bookkeeping, not the artifact identity).
@@ -4807,7 +4807,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		// source and GUID must stay a CONSISTENT pair. Switching the source
 		// to .geometry while keeping the glTF GUID (manifest entry missing)
 		// produced a mismatch the heal loop below rewrote EVERY save (the
-		// "Tour save: reference ..." log spam � SaveTourTo runs per edit,
+		// "Tour save: reference ..." log spam — SaveTourTo runs per edit,
 		// per snapshot, per close), re-derived to .geometry again next save.
 		if (std::filesystem::is_regular_file(geometrySibling, mec)) {
 			const std::string geometryGuid =
@@ -4835,7 +4835,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// file-stable identity recorded. Assign missing ones NOW into the
 	// world scene (deterministic from here: already-assigned ids are
 	// kept). Covers Delete targets AND symbolic parent targets (a
-	// parent addressed by uuid must exist in the file) � named parents
+	// parent addressed by uuid must exist in the file) — named parents
 	// resolve by name and need nothing.
 	Scene& scene = m_world->scene;
 	auto held = [&](const std::string& hex, uint32_t except) {
@@ -4849,7 +4849,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	auto ensureUuid = [&](uint32_t wnode) {
 		if (wnode >= scene.hierarchy.size())
 			return;
-		// Named nodes ride names/paths in the symbolic -p slot � only
+		// Named nodes ride names/paths in the symbolic -p slot — only
 		// UNNAMED targets need a recorded uuid to stay addressable.
 		if (!getNodeName(scene, int(wnode)).empty())
 			return;
@@ -4867,7 +4867,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		SetNodeUuidRaw(scene, wnode, hex);
 	};
 	// NODE-VERB TARGET KEYS (the Item-6 layer): a target whose name is
-	// empty or AMBIGUOUS cannot ride the -name key � mint its uuid so
+	// empty or AMBIGUOUS cannot ride the -name key — mint its uuid so
 	// the recorded command carries the strong key (named-unique targets
 	// resolve by name; the numeric -n stays the disambiguator either
 	// way). The identity map below persists the minted uuid as a uuid
@@ -4945,7 +4945,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			ensureUuid(CreateEmitParent(*this, c));
 		}
 	}
-	// Emit the whole identity map (cluster-backed, node-id order �
+	// Emit the whole identity map (cluster-backed, node-id order —
 	// deterministic files): these feed the delete lines AND survive
 	// reloads. Without this, a reload drops the identities and the
 	// next save mints fresh ones (uuid churn: -uuid links would never
@@ -4978,7 +4978,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	const std::vector<size_t> kept = CoalescedSaveIndices();
 	for (size_t i : kept) {
 		// Editor-created Delete targets (no cluster id: created lights,
-		// terrain groups/tiles) never persist � their creates are
+		// terrain groups/tiles) never persist — their creates are
 		// dropped by the live-state emission, which removes them from
 		// the file. Skipped silently here: the unmapped-command log
 		// below is for translation misses. Cluster-backed deletes map
@@ -4987,7 +4987,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			&& WorldToCluster(m_history[i].node) < 0)
 			continue;
 		// Placeholder visibility rides the reference line's `enabled`
-		// bool � never the command log (purges legacy toggle lines).
+		// bool — never the command log (purges legacy toggle lines).
 		if (m_history[i].verb == EditVerb::SetVisibility
 			&& IsRefPlaceholder(m_history[i].node))
 			continue;
@@ -4995,7 +4995,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		// IsCreatedChild): when the child's create emits, the create
 		// line carries the live parent; when it doesn't, the child
 		// isn't in the file at all. Skip silently either way (no
-		// "unmapped command" spam � the outcome is structural, not a
+		// "unmapped command" spam — the outcome is structural, not a
 		// translation miss).
 		if (m_history[i].verb == EditVerb::Parent
 			&& IsCreatedChild(*this, m_history[i].node))
@@ -5007,7 +5007,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 		}
 		doc.commands.push_back(std::move(tc));
 	}
-	// Orphans (unresolved at the last replay � e.g. edits on a replaced
+	// Orphans (unresolved at the last replay — e.g. edits on a replaced
 	// or failed reference): re-emit VERBATIM so they resolve again when
 	// their nodes come back. A reference round-trip must never erase
 	// edits from the file. EXCEPT family-ref attr orphans pointing past
@@ -5015,7 +5015,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// setCubemapAttr/setCamAttr/setAudioAttr/addAudioSound/
 	// removeAudioSound/terrainPaint with -ref k >= the
 	// family's emitted creates): a create set is fixed per file, so a
-	// past-the-end -ref can never resolve again � re-emitting it only
+	// past-the-end -ref can never resolve again — re-emitting it only
 	// poisons every cook with "ref out of range" (the strict replay
 	// aborts). Drop those with a log line instead.
 	{
@@ -5043,7 +5043,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 					// The audio-room family: the attr verb + the attach/
 					// remove association verbs address the audioRoom base;
 					// attach/remove may ALSO carry the givolume base (the -owner
-					// givolume form) � the emitted-count match below uses the
+					// givolume form) — the emitted-count match below uses the
 					// base, so a single case set covers both.
 					case Verb::SetAudioRoomAttr:
 						return smvk::tour::kCreateAudioRoomRefBase;
@@ -5101,7 +5101,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 			if (familyRefOutOfRange(m_orphanTourCmds[oi])) {
 				Log("tour: dropping orphan '" + smvk::tour::Describe(
 						m_orphanTourCmds[oi])
-					+ "' (family -ref past this save's create set � it "
+					+ "' (family -ref past this save's create set — it "
 					"can never resolve).");
 				m_orphanTourCmds.erase(m_orphanTourCmds.begin()
 					+ ptrdiff_t(oi));
@@ -5113,12 +5113,12 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	doc.commands.insert(doc.commands.end(),
 		m_orphanTourCmds.begin(), m_orphanTourCmds.end());
 	SaveOverridesToDoc(doc);
-	SaveEnvToDoc(doc); // editor IBL / env nodes � never applied at cook
+	SaveEnvToDoc(doc); // editor IBL / env nodes — never applied at cook
 	SaveDefaultCameraToDoc(doc); // world default camera (typed ref field)
-	SavePlacementToDoc(doc); // scatter graphs � editor-only, never cooked
-	SaveImagesToDoc(doc); // image definitions � editor-only, never cooked
+	SavePlacementToDoc(doc); // scatter graphs — editor-only, never cooked
+	SaveImagesToDoc(doc); // image definitions — editor-only, never cooked
 	// (Texture relinks no longer ride the tour: they are INPUT PLUGS on
-	// the source assets' .meta sidecars � the importer applies them.)
+	// the source assets' .meta sidecars — the importer applies them.)
 	// Save-time healing (project workflow): reference -source slots
 	// carry project-relative posix paths, never absolute ones. A
 	// recorded absolute/out-of-project source whose GUID resolves to
@@ -5127,7 +5127,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// the rewrite is stable (no log spam on later saves).
 	// Unresolvable sources persist verbatim (the bind reports them).
 	// The ROOT entry skips: its source+GUID pair is freshly (and
-	// consistently) derived above, so it can never be stale � healing
+	// consistently) derived above, so it can never be stale — healing
 	// it would only fight the derivation.
 	for (auto& r : m_references) {
 		if (r.root)
@@ -5148,7 +5148,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	doc.references = m_references; // scene references (loader binds them)
 	// Material-asset POOL imports (ordered; see MaterialAssetCmd): the
 	// records mirror the session's pool creations so reload/cook rebuild
-	// the identical pool � the tour's assignMaterial/-m indices recorded
+	// the identical pool — the tour's assignMaterial/-m indices recorded
 	// against this pool resolve on both sides.
 	doc.materialAssets = m_materialAssets;
 	// Texture-asset POOL imports (ordered; see TextureAssetCmd): the
@@ -5156,14 +5156,14 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget,
 	// BEFORE the material records so refs resolve identically.
 	doc.textureAssets = m_textureAssets;
 	// GI-asset bindings (the scene's HARD baked-GI identification; see
-	// GiAssetCmd): the session mirror rides the doc � only the bake
+	// GiAssetCmd): the session mirror rides the doc — only the bake
 	// owner's stamps update it (the cook / Bake GI flows), reload
 	// round-trips it verbatim (the orphan-command contract: a reload
 	// must never erase records).
 	doc.giAssets = m_giAssets;
 	// Cook/export knobs ride the scene's exportSettings NODE (emitted by
 	// the history replay above as createNode -at exportSettings +
-	// setExportAttr lines); outPak/contentDir stay session-only � a
+	// setExportAttr lines); outPak/contentDir stay session-only — a
 	// checked-in .tour must not pin a local output path.
 	std::string err;
 	if (!smvk::tour::SaveTour(tp, doc, err)) {
@@ -5185,7 +5185,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 	if (!app.m_world)
 		return false;
 	// Target resolution: generic verbs address cluster ids OR created-
-	// terrain refs (kCreateTerrainRefBase | k, creation order � the same
+	// terrain refs (kCreateTerrainRefBase | k, creation order — the same
 	// scheme ApplyTourToCluster's resolveNode uses). Resolved once here;
 	// every generic case below uses `node`. Create*/SetLightAttr/SetMatAttr
 	// own their targeting and ignore it.
@@ -5204,10 +5204,10 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		return true;
 	};
 	// LOGICAL TARGET KEYS (the Item-6 layer): the COMMAND target may
-	// carry -uuid/-name keys � uuid exact, then unique name / DAG
+	// carry -uuid/-name keys — uuid exact, then unique name / DAG
 	// path, against the LIVE world scene (the same chain the cook
 	// replay runs on the cluster side; a stale numeric id under a key
-	// must NOT win � the whole point is surviving id shifts). The
+	// must NOT win — the whole point is surviving id shifts). The
 	// PARENT slot (Verb::Parent's node2) never resolves through the
 	// command's keys: they describe the CHILD (its symbolic parent
 	// lane is tc.parentRef).
@@ -5799,7 +5799,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		// properties + sound slots ride the tabulated setAudioAttr/
 		// addAudioSound lines that follow. The created node joins
 		// m_tourCreatedAudioNodes at forward execution (ExecCmd ->
-		// ExecCreateAudioSource, the m_replayingTour gate) � the same
+		// ExecCreateAudioSource, the m_replayingTour gate) — the same
 		// place camera creates register.
 		out.verb = EditVerb::CreateAudioSource;
 		out.node = UINT32_MAX; // assigned at forward execution
@@ -5862,8 +5862,8 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.audioPath = tc.name; // the asset path (-source)
 		out.number = tc.number;  // the slot gain
 		out.afterFlag = tc.flag; // the slot loop default
-		// (The slot before-state � audioSlotHad/beforeText/beforeNum/
-		// beforeFlag � is captured at FORWARD EXECUTION: ExecCmd reads
+		// (The slot before-state — audioSlotHad/beforeText/beforeNum/
+		// beforeFlag — is captured at FORWARD EXECUTION: ExecCmd reads
 		// the live slot right before the upsert, idempotently under
 		// redo. Nothing to pre-read here.)
 		return true;
@@ -5887,7 +5887,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.node = target;
 		out.afterText = tc.text; // the slot name to remove
 		// (The removed slot's before-state is captured at forward
-		// execution � the ExecCmd RemoveAudioSound case.)
+		// execution — the ExecCmd RemoveAudioSound case.)
 		return true;
 	}
 	case smvk::tour::Verb::CreateAudioRoom: {
@@ -6041,7 +6041,7 @@ bool EditorApp::LoadTour() {
 		return false;
 	if (!std::filesystem::exists(tp))
 		return true; // no tour yet: clean history (an autosave, if any,
-	                 // is offered separately � never silently preferred)
+	                 // is offered separately — never silently preferred)
 	smvk::tour::Doc doc;
 	std::string err;
 	std::vector<std::string> warns;
@@ -6063,7 +6063,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 		if (!now.empty() && now != doc.fingerprint)
 			Log("tour: source changed since save (ids may have shifted)");
 	}
-	// The scene's exportSettings NODE restores the cook knobs � the
+	// The scene's exportSettings NODE restores the cook knobs — the
 	// tour carries it as createNode -at exportSettings + setExportAttr
 	// lines (replayed below like any create). outPak/contentDir stay
 	// session-only (never persisted).
@@ -6075,12 +6075,12 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// records): the records mirror the session's texture pool imports,
 	// so .texture pool entries (light cookies, material tex refs) resolve
 	// exactly as authored. Failed records stay in the mirror (the next
-	// save re-emits them verbatim � the orphan-command contract: a reload
+	// save re-emits them verbatim — the orphan-command contract: a reload
 	// must never erase records; restoring the file heals the next replay).
 	m_textureAssets = doc.textureAssets; // session mirror (save re-emits)
 	// Replay mode FIRST: the import loops below call the shared imports,
 	// and their record pushes must stay gated (the records arrive from
-	// the doc here � a second push would duplicate every entry).
+	// the doc here — a second push would duplicate every entry).
 	m_replayingTour = true;
 	for (const auto& ta : doc.textureAssets) {
 		// Resolve: project-relative records against the PROJECT ROOT
@@ -6115,12 +6115,12 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	// session's pool creations in order, so the pool indices the later
 	// assignMaterial/-m commands carry resolve exactly as authored.
 	// Failed records stay in the mirror (the next save re-emits them
-	// verbatim � the orphan-command contract: a reload must never erase
+	// verbatim — the orphan-command contract: a reload must never erase
 	// records; restoring the file heals the next replay).
 	m_materialAssets = doc.materialAssets; // session mirror (save re-emits)
 	// Replay mode FIRST: the materialAsset loop below calls
 	// EnsureDefaultMaterial + the shared import, and their record pushes
-	// must stay gated (the records arrive from the doc there � a second
+	// must stay gated (the records arrive from the doc there — a second
 	// push would duplicate every entry in the next save).
 	for (const auto& ma : doc.materialAssets) {
 		if (ma.editorDefault) {
@@ -6131,7 +6131,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 			continue;
 		}
 		// Resolve: project-relative records against the PROJECT ROOT
-		// first (the record's in-project convention � as-is/CWD would hit
+		// first (the record's in-project convention — as-is/CWD would hit
 		// the bundled content tree over the project for same-named
 		// sources), then as-is for absolute/out-of-project records.
 		std::filesystem::path hp;
@@ -6154,7 +6154,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 				+ "': " + (imErr.empty()
 					? "not found (under the project root, then as-is)"
 					: imErr)
-				+ " � later material indices may shift.");
+				+ " — later material indices may shift.");
 			continue;
 		}
 		RebuildTexHandleMap();
@@ -6212,11 +6212,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	}
 	// GI-asset bindings (the session mirror + the LIVE-SCENE resolution):
 	// the mirror round-trips through save (the records are doc state,
-	// never derived here � only the bake owner writes them); the
+	// never derived here — only the bake owner writes them); the
 	// per-volume bindings resolve onto the live scene through the SAME
 	// family list the setGiVolumeAttr replay used (m_tourCreatedGiVolumeNodes,
 	// filled in command order above), so the editor's loaders (the GI-volume
-	// preview) read exactly what the scene carries � no stem guessing.
+	// preview) read exactly what the scene carries — no stem guessing.
 	// Clear-first keeps a re-replay idempotent (stale bindings from the
 	// previous pass die).
 	m_giAssets = doc.giAssets;
@@ -6235,7 +6235,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 			def.bakeInputHash.clear();
 		}
 		// Mirrors ApplyTourToCluster's giAsset pass EXACTLY (the
-		// tour.cpp loop is the authoritative semantics � World /
+		// tour.cpp loop is the authoritative semantics — World /
 		// Captures / per-volume records; this editor mirror drifted:
 		// the Captures branch was missing entirely, so every captures
 		// record fell into the GI-volume ref check with ref 0 and
@@ -6265,7 +6265,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 				ga.ref & ~smvk::tour::kCreateGiVolumeRefBase;
 			if ((ga.ref & smvk::tour::kCreateGiVolumeRefBase) == 0
 					|| k >= m_tourCreatedGiVolumeNodes.size()) {
-				Log("tour: giAsset GI-volume ref out of range (dropped � '"
+				Log("tour: giAsset GI-volume ref out of range (dropped — '"
 					+ ga.source + "')");
 				continue;
 			}
@@ -6299,7 +6299,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 	if (!doc.references.empty())
 		m_references = doc.references;
 	// Auto-seed the exportSettings singleton: every open scene carries
-	// exactly one (WorldSettings scaffold). Idempotent � a doc that
+	// exactly one (WorldSettings scaffold). Idempotent — a doc that
 	// already created it (createNode -at exportSettings) is untouched.
 	EnsureExportSettingsNode();
 	// Re-resolve the convex-volume preview AFTER the replay: the
@@ -6314,7 +6314,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc,
 
 // ---------------------------------------------------------------------------
 // Scene image definitions (Maya file nodes): images live OUTSIDE the DAG
-// like materials � authoring references (path + tiling/colorspace/filter)
+// like materials — authoring references (path + tiling/colorspace/filter)
 // persisted as img.* editorSettings (legacy) AND cooked fileNode records
 // (the cooker reads them for KTX conversion; fileNodes win on load). A
 // material using one mints the cluster texture resource at use time.
@@ -6359,7 +6359,7 @@ void EditorApp::SaveImagesToDoc(smvk::tour::Doc& doc) const {
 		put(base + ".cs", std::to_string(img.colorspace));
 		put(base + ".filter", std::to_string(img.filter));
 	}
-	// Cooked twin: image defs ARE file nodes � the cooker reads these
+	// Cooked twin: image defs ARE file nodes — the cooker reads these
 	// for KTX conversion (path + colorspace + sampler intent). The img.*
 	// settings above stay for older builds; fileNodes win on load.
 	for (const ImageDef& img : m_images) {
@@ -6485,10 +6485,10 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 	if (!doc.source.empty()) {
 		const std::string src = ResolveTourSource(path, doc.source);
 		if (!src.empty() && src != m_gltfPath) {
-			// Source scenes only (paks are refused � they run in the App).
+			// Source scenes only (paks are refused — they run in the App).
 			if (HasPakExtension(src)) {
 				Log("tour open: source '" + src
-					+ "' is a cooked pak � open the source scene instead.");
+					+ "' is a cooked pak — open the source scene instead.");
 				return false;
 			}
 			if (!LoadGltfIntoWorld(src)) {
@@ -6501,7 +6501,7 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 		}
 	} else {
 		// Definition tour (the scene's glTF rides as root reference
-		// #0): ALWAYS rebuild the world from the document � the bind
+		// #0): ALWAYS rebuild the world from the document — the bind
 		// and the replay below need the fresh deterministic ids, never
 		// whatever scene happens to be open.
 		if (!LoadGltfIntoWorld({}, path)) {
@@ -6520,14 +6520,14 @@ bool EditorApp::OpenTourFile(const std::string& path) {
 //
 // A created terrain is a GROUP world node plus tilesX*tilesZ tile child
 // nodes, each with a StaticMesh upload in the primary cluster linked
-// through world mesh locations � the outliner, inspector, gizmos and
+// through world mesh locations — the outliner, inspector, gizmos and
 // picking all pick it up with no special cases. The GLOBAL height grid
 // (TerrainGroupData) is the authoritative state: painting edits it and
 // rebuilds the touched tile meshes (world mesh indices stay stable);
 // the placement Terrain domain samples it so scatter previews land on
 // the PAINTED surface.
 //
-// Undo tombstones the GROUP (hidden + tile draw entries removed � the
+// Undo tombstones the GROUP (hidden + tile draw entries removed — the
 // subtree stays hidden through IsVisibleNode's hierarchical walk);
 // ids stay stable, matching the created-light precedent.
 // Tour persistence: CreateTerrain carries the creation (CmdToTour emits
@@ -6635,7 +6635,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 		1u, smvk::placement::kTerrainMaxTiles);
 	g.data.heights = smvk::placement::BuildTerrainHeights(g.data.params);
 	// Tile split clamp: every tile needs >= one sample interval per axis
-	// (BuildTerrainTileUpload rejects finer splits � a one-sample tile
+	// (BuildTerrainTileUpload rejects finer splits — a one-sample tile
 	// cannot tile UVs). Clamping HERE (not just rejecting the mesh) keeps
 	// the group creation atomic: every tile node gets its mesh. The tour
 	// replay clamps identically, so editor and cook agree by construction.
@@ -6652,7 +6652,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 		? c.material : EnsureDefaultMaterial();
 	tour::Cluster* cl = m_world->clusters[0].get();
 	// Tile children: node + mesh + world wiring + draw entry each.
-	// Tile position = its ACTUAL first sample (TerrainTileOrigin � the
+	// Tile position = its ACTUAL first sample (TerrainTileOrigin — the
 	// integer sample split does not align with the even metric split
 	// unless tiles divide the interval count; see the seam contract in
 	// placement_terrain.h).
@@ -6749,7 +6749,7 @@ void EditorApp::ExecUncreateTerrain(EditCmd& c) {
 void EditorApp::ExecTerrainPaint(EditCmd& c) {
 	auto it = m_terrainGroups.find(c.node);
 	if (it == m_terrainGroups.end() || it->second.deleted)
-		return; // deleted group: its tiles don't draw � stamps are moot
+		return; // deleted group: its tiles don't draw — stamps are moot
 	TerrainGroup& g = it->second;
 	smvk::placement::TerrainBrushOp op;
 	if (c.terrainOp == "raise")
@@ -6786,7 +6786,7 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 		|| !m_context)
 		return -1;
 	// Read the payload first (the cluster keeps the source bytes for
-	// cook re-embeds; the URI IS the file path � a filepath ref).
+	// cook re-embeds; the URI IS the file path — a filepath ref).
 	std::ifstream in(path, std::ios::binary);
 	if (!in) {
 		Log("Material editor: cannot open texture '" + path + "'.");
@@ -6802,7 +6802,7 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 	// KTX2 payload passes through; other image sources (PNG/JPG/...)
 	// transcode to KTX2 (the importer's own conversion) so the Path
 	// editor + material slots can relink against the ORIGINAL source
-	// files too � a bare PNG used to fail the KTX load with no way to
+	// files too — a bare PNG used to fail the KTX load with no way to
 	// fix a broken texture link. HDR needs a float transcode (skip).
 	std::vector<uint8_t> payload = bytes; // what the GPU gets
 	const bool isKtx2 = bytes.size() >= 8
@@ -6821,7 +6821,7 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
 		}
 		std::string terr;
 		std::vector<uint8_t> ktx;
-		// sRGB transfer (color textures): normal maps want linear �
+		// sRGB transfer (color textures): normal maps want linear —
 		// prefer a pre-converted .ktx2 for those.
 		if (!TranscodeImageToKtx2(bytes.data(), bytes.size(), true,
 				path, ktx, terr)) {
@@ -6869,7 +6869,7 @@ std::string EditorApp::DerivedAssetGuid(const std::string& assetPath) {
 		if (ec || !it->is_regular_file(ec))
 			continue;
 		const std::string n = it->path().filename().string();
-		// ANY mesh source's identity ledger (<stem>.<srcext>.meta �
+		// ANY mesh source's identity ledger (<stem>.<srcext>.meta —
 		// .gltf/.glb/.obj; see IsMeshSourceMetaSidecar).
 		if (!smvk::assets::IsMeshSourceMetaSidecar(n))
 			continue;
@@ -6891,7 +6891,7 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
 	// build resolves it through FindTextureByUri) + a textureAsset
 	// record rides the tour (the cook replays it before the command
 	// list). Empty clears the slot (no import); non-.texture refs are
-	// refused with a log (a raw image is not cluster-registered �
+	// refused with a log (a raw image is not cluster-registered —
 	// import it as a .texture first). NOT during replay (the tour's
 	// records replay there). The record dedupes by path (one .texture
 	// cooks cookies on any number of lights).
@@ -6905,7 +6905,7 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
 		for (char& c : ext)
 			c = char(std::tolower((unsigned char)c));
 		if (ext != ".texture") {
-			Log("Cookie: '" + cookieRef + "' is not a .texture asset � "
+			Log("Cookie: '" + cookieRef + "' is not a .texture asset — "
 				"reference a .texture (Browse to import an image, or "
 				"select an image file + 'Import as .texture').");
 			return;
@@ -6933,7 +6933,7 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
 		return;
 	}
 	RebuildTexHandleMap();
-	// Record the pool import (the tour's textureAsset list � deduped by
+	// Record the pool import (the tour's textureAsset list — deduped by
 	// path so one .texture cooks every light's cookie).
 	{
 		std::string posix = cookieRef;
@@ -6960,7 +6960,7 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
 void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
 	// MATERIAL ASSET drop (browser -> viewport): load the .material
 	// file, create the cluster material (values + textures from its
-	// refs � the image files beside the source glTF), assign it to the
+	// refs — the image files beside the source glTF), assign it to the
 	// SELECTED subtree (one undoable AssignMaterial).
 	if (!m_world || m_world->clusters.empty()
 		|| !m_world->clusters[0] || !m_context)
@@ -6979,7 +6979,7 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
 	}
 	tour::Cluster* cl = m_world->clusters[0].get();
 	// SHARED import (the cook replays the same path from the tour's
-	// materialAsset records � pool determinism across the session and
+	// materialAsset records — pool determinism across the session and
 	// the cook replay; see ImportMaterialAssetToCluster).
 	tour::ClusterMaterialHandle imported{};
 	{
@@ -6994,7 +6994,7 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
 		// Pool->RHI-handle refresh (editor-side maps; the shared import
 		// touched the cluster pools).
 		RebuildTexHandleMap();
-		// Record the pool import (the tour's materialAsset list � in
+		// Record the pool import (the tour's materialAsset list — in
 		// creation order so replay reproduces the pool order). NOT during
 		// tour replay: the records arrive from the doc there.
 		if (!m_replayingTour) {
@@ -7058,7 +7058,7 @@ uint32_t EditorApp::EnsureDefaultMaterial() {
 		return m_defaultMatWorld;
 	tour::Cluster* cl = m_world->clusters[0].get();
 	// Reuse an existing pool entry when the URI is already registered
-	// (e.g. a pak scene cooked from a tour that minted one) � NO pool
+	// (e.g. a pak scene cooked from a tour that minted one) — NO pool
 	// growth, so no tour record (records mirror pool CREATIONS only).
 	if (auto hit = cl->FindMaterialByUri("editor://default")) {
 		const uint32_t worldIdx = uint32_t(m_world->materialLocations.size());
@@ -7067,12 +7067,12 @@ uint32_t EditorApp::EnsureDefaultMaterial() {
 		return worldIdx;
 	}
 	// SHARED seed creation (the deterministic material; cooks replay it
-	// from the tour's materialAsset records � EnsureClusterDefaultMaterial).
+	// from the tour's materialAsset records — EnsureClusterDefaultMaterial).
 	const tour::ClusterMaterialHandle h =
 		smvk::assets::EnsureClusterDefaultMaterial(*cl);
 	if (h.empty())
 		return UINT32_MAX;
-	// Pool creation: record it (ordered � the record order IS the pool
+	// Pool creation: record it (ordered — the record order IS the pool
 	// order; a later materialAsset import lands after this one). NOT
 	// during tour replay: the record arrives from the doc there.
 	if (!m_replayingTour)
