@@ -650,10 +650,21 @@ namespace {
 				sdlExtensions + sdlExtensionCount);
 		}
 
-		if (enableValidationLayers) {
-			extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		if (enableValidationLayers) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+#if defined(TOURMALINE_NSIGHT_MARKERS)
+		else {
+			uint32_t n = 0;
+			if (vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr) == VK_SUCCESS && n) {
+				std::vector<VkExtensionProperties> available(n);
+				if (vkEnumerateInstanceExtensionProperties(nullptr, &n, available.data()) == VK_SUCCESS)
+					for (const auto& e : available)
+						if (std::strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
+							extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+							break;
+						}
+			}
 		}
-
+#endif
 		return extensions;
 	}
 
@@ -13656,6 +13667,14 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		// sorted pos + stream make the returned marker unambiguous).
 		RgEmitPassCheckpoint(dstCmd, fb.frameIndex, static_cast<uint32_t>(pos),
 			passes_[sIdx].name_);
+#if defined(TOURMALINE_NSIGHT_MARKERS)
+		const bool nsightLabelActive = vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT;
+		if (nsightLabelActive) {
+			VkDebugUtilsLabelEXT label{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
+			label.pLabelName = passes_[sIdx].name_ ? passes_[sIdx].name_ : "UnnamedRenderPass";
+			vkCmdBeginDebugUtilsLabelEXT(dstCmd, &label);
+		}
+#endif
 		// Per-pass CPU+GPU scope covering barriers + recording. RenderPass
 		// names may be null (default ctor); Optick hashes the name and a
 		// null pointer crashes the profiler, so substitute a stable literal.
@@ -14074,6 +14093,9 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 			// async, split mode); the rest stay on the graphics CBs.
 			CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr };
 			if (pass.recordingFunction_) pass.recordingFunction_(cb);
+#if defined(TOURMALINE_NSIGHT_MARKERS)
+			if (nsightLabelActive) vkCmdEndDebugUtilsLabelEXT(dstCmd);
+#endif
 			if (passIsAsync) {
 				// ---- Per-pass timeline-chained C submit ----
 				// Simple hard dependency for chained compute tasks (the
@@ -14175,6 +14197,9 @@ void smvk::RenderGraph::Execute(Framebuffer& fb)
 		CommandBuffer cb{ reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr };
 		if (pass.recordingFunction_) pass.recordingFunction_(cb);
 		vkCmdEndRendering(dstCmd);
+#if defined(TOURMALINE_NSIGHT_MARKERS)
+		if (nsightLabelActive) vkCmdEndDebugUtilsLabelEXT(dstCmd);
+#endif
 	}
 
 	// C-stream bookkeeping: the per-pass submits already happened in the
