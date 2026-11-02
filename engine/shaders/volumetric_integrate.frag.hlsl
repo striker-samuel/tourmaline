@@ -629,15 +629,16 @@ PSOut mainPS(PSIn IN)
         float3 volAcc = float3(0.0, 0.0, 0.0);
         float volTrans = 1.0;
         if (volumeGiOn)
-            SgGiVolumeRayComposite(frame, rayPrep, t, wpos, volAcc, volTrans);
+            SgGiVolumeRayComposite(frame, rayPrep, t, giRefreshDist, wpos,
+                volAcc, volTrans);
         // GI BLEND: evaluate the B set's composite independently and
         // interpolate the RESULT (the volAcc/transmission pair).
         if (giBlendOn)
         {
             float3 volAccB = float3(0.0, 0.0, 0.0);
             float volTransB = 1.0;
-            SgGiVolumeRayCompositeB(frame, rayPrepB, t, wpos,
-                volAccB, volTransB);
+            SgGiVolumeRayCompositeB(frame, rayPrepB, t, giRefreshDist,
+                wpos, volAccB, volTransB);
             volAcc = lerp(volAcc, volAccB, giBlendA);
             volTrans = lerp(volTrans, volTransB, giBlendA);
         }
