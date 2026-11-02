@@ -18,6 +18,22 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
 endif()
 project(Tourmaline LANGUAGES C CXX)
 
+# Keep the ordinary Release preset lean for shipping. Opt in to native PDBs
+# for optimized diagnostic builds without changing Release /O2 /Ob2 /DNDEBUG.
+# /DEBUG disables some linker optimizations by default; restore Release's
+# /OPT:REF and /OPT:ICF so the symbols flavor keeps shipping code generation.
+option(TOURMALINE_NATIVE_SYMBOLS
+    "Emit MSVC PDBs for optimized Release builds" OFF)
+if(MSVC AND TOURMALINE_NATIVE_SYMBOLS)
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options(
+        "$<$<CONFIG:Release>:/DEBUG:FULL>"
+        "$<$<CONFIG:Release>:/INCREMENTAL:NO>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>"
+    )
+endif()
+
 # SUBPROJECT-SAFE self-references: game hosts (F:/REPOS/asteroids,
 # spybotics_tourmaline) add_subdirectory() this tree through a pinned git
 # submodule — CMAKE_SOURCE_DIR/CMAKE_BINARY_DIR are THEIR roots there, so
