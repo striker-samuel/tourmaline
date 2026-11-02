@@ -214,7 +214,7 @@ struct CandidateSelection {
     const glm::dvec3 local(inst->localSphere);
     const glm::dvec3 center =
         translation + bx * local.x + by * local.y + bz * local.z;
-    const double radius = double(local.w) *
+    const double radius = double(inst->localSphere.w) *
         std::sqrt(glm::dot(bx, bx) + glm::dot(by, by) + glm::dot(bz, bz));
     if (!std::isfinite(radius) || radius < 0.0)
         return true;

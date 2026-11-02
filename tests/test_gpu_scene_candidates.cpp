@@ -31,7 +31,7 @@ Handle<Instance> Add(RenderDatabase& db, LeafRegistry& leaves,
                      Handle<Mesh> mesh, glm::dvec3 where,
                      float localRadius = 0.5f) {
     Instance value{};
-    value.worldPosition = math::SplitDoubleFloat(where);
+    value.worldPosition = tour::math::SplitDoubleFloat(where);
     value.localSphere = glm::vec4(0, 0, 0, localRadius);
     value.refs = glm::uvec4(mesh.slot, mesh.generation, 0, 0);
     const auto id = db.instances.Insert(value);
@@ -125,7 +125,7 @@ void CheckCoarse() {
     // dirty the persistent scene registry.
     const auto before = leaves.Tickets(db);
     auto changed = *db.instances.Get(near);
-    changed.worldPosition = math::SplitDoubleFloat(glm::dvec3(3, 0, 0));
+    changed.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(3, 0, 0));
     assert(db.instances.Update(near, changed));
     leaves.Upsert(near, db);
     assert(leaves.Flush(db));
@@ -161,7 +161,7 @@ void CheckLargeWorld() {
     assert(out.Valid() && out.candidateCount == 1);
     assert(out.rejectedLeaves == 1);
     assert(ReferenceInstanceVisible(db, visible, view));
-    assert(math::JoinDoubleFloat(db.instances.Get(visible)->worldPosition).x >
+    assert(tour::math::JoinDoubleFloat(db.instances.Get(visible)->worldPosition).x >
            9.0e11);
 }
 }
