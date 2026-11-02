@@ -2487,6 +2487,9 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			: static_cast<engine::AmbientMode>(
 				std::clamp(m_renderQuality.giMode, 0, 5)));
 		m_wysiwyg->SetGiDebug(baked ? 1 : 0);
+		// Selection bounds now belong to WorldRenderer's own render pass:
+		// the editor-only gizmo pass is skipped for the composited view.
+		m_wysiwyg->SetSelectedNode(m_selected);
 		m_wysiwyg->Tick(dt);
 		// The render extent: the Live tab's content rect (captured by
 		// DrawLiveViewTab, one frame of lag) through the protective
