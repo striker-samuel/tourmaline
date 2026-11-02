@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1567,6 +1568,9 @@ public:
     void SetBenchmarkSourceArgs(std::vector<std::string> args) {
         m_benchmarkSourceArgs = std::move(args);
     }
+    void SetBenchmarkAppArgs(std::vector<std::string> args) {
+        m_benchmarkAppArgs = std::move(args);
+    }
 	// Pass-set config (the framegraph shape). Everything else about the
 	// world arrives through the host's loader below.
 	// The RunConfig overload applies the central TOURMALINE_* environment
@@ -2951,6 +2955,7 @@ public:
     // The source-controlled benchmark export is never armed in embedded
     // editors, because their worlds do not have a stable cooked scene path.
     std::vector<std::string> m_benchmarkSourceArgs;
+    std::vector<std::string> m_benchmarkAppArgs;
     char m_benchmarkLabel[128] = {};
     char m_benchmarkSubsystem[64] = {};
     char m_benchmarkNotes[256] = {};
