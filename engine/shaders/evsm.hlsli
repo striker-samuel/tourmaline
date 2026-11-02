@@ -3,6 +3,7 @@
 
 #pragma once
 #include "gpu_platform.hlsli"
+#include "shadow_bias.hlsli"
 
 // EVSM (Exponential Variance Shadow Maps) shared helpers.
 //
@@ -414,7 +415,12 @@ float SampleEvsmSpotTileSoft(
     out bool valid)
 {
     valid = false;
-    float3 biasedWorld = worldPos + faceNormal * t.normalBias;
+    // Match PCF/PCSS: normalBias is a cap, not a fixed 2 cm offset.
+    const float4 unbiasedClip = mul(t.lightVP, float4(worldPos, 1.0f));
+    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
+    const float normalBias = PerspectiveShadowNormalBias(
+        unbiasedClip.w, tanOuter, t.invShadowSize.x, t.normalBias);
+    float3 biasedWorld = worldPos + faceNormal * normalBias;
     float4 clip = mul(t.lightVP, float4(biasedWorld, 1.0f));
     if (clip.w <= 1e-6f)
         return 1.0f;
@@ -458,7 +464,6 @@ float SampleEvsmSpotTileSoft(
     // cone half angle: the tile spans 2*z*tanOuter at eye depth z.
     const float lightSize = max(t.pad2.x, 0.0f);
     const float softness = max(t.pad2.y, 0.0f);
-    const float tanOuter = max(tan(min(outerAngle, 1.45f)), 1e-3f);
     float rPenUV = lightSize * softness * (zRecv - zBlocker)
         / max(zBlocker * 2.0f * zRecv * tanOuter, 1e-4f);
     // Below ~0.5 texel the prefiltered center tap is already the soft

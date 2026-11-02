@@ -583,21 +583,19 @@ struct CascadedShadowAtlas {
 		std::memcpy(dir.cascades[i].lightVP, glm::value_ptr(lvp), sizeof(dir.cascades[i].lightVP));
 		dir.cascades[i].splitEnd = splits[i + 1];
 		// Per-cascade bake (Sec. 4.2): shadowmaps render with no HW bias.
-		//  - normalBias (world units): ~2 texels of the cascade ortho, so
-		//    far cascades with fat texels push more than near ones. Seals
-		//    thin/colliding trim without detaching contact shadows.
+		//  - normalBias (world units): at most 0.75 cascade texels, without
+		//    a fixed minimum that would erase sub-texel near-field details.
 		//  - bias (NDC): worldBias/depthRange with the actual ortho depth
 		//    range, so the shader's slope-scaled offset has a uniform
 		//    world-space effect per cascade (far acne fix).
-		// normalBias clamps keep near cascades from going to zero and far
-		// ones from washing out tile detail (too much normal offset erases
-		// sub-texel self-shadowing, which reads as "barely shadowed").
+		// Both biases scale with the actual shadow texel: no fixed minimum
+		// world displacement on near/high-resolution cascades.
 		const float orthoW = (lp[0][0] != 0.0f) ? 2.0f / lp[0][0] : 1.0f;
 		const float orthoH = (lp[1][1] != 0.0f) ? 2.0f / std::abs(lp[1][1]) : 1.0f;
 		const float texelWorld = (std::max)(orthoW, orthoH)
 			/ static_cast<float>(tileExtent.width);
-		const float normalBiasW = (std::min)((std::max)(texelWorld * 1.25f, 0.005f), 0.03f);
-		const float depthWorld = (std::min)((std::max)(texelWorld * 0.5f, 0.001f), 0.015f);
+		const float normalBiasW = (std::min)(texelWorld * 0.75f, 0.03f);
+		const float depthWorld = (std::min)(texelWorld * 0.5f, 0.015f);
 		dir.cascades[i].bias = (depthRange > 1e-6f) ? depthWorld / depthRange : 0.0f;
 		dir.cascades[i].normalBias = normalBiasW;
 		dir.cascades[i].pad_ = 0.0f;

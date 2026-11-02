@@ -99,11 +99,9 @@ float DsComputeLightVisibility(ForwardPlusLight L, float3 worldPos, float3 faceN
     if (evsm != 0u)
         return GetSpotShadowFactorEvsmTile(0u, worldPos, faceNormal,
             L.direction, L.outerAngle, t, atlasIdx, EVSM_EXPONENT, pix);
-    // PCF depth atlas is handled inside GetPointShadowFactorTile above
-    // (comparison sampler). The PCSS spot path below needs RAW depths for
-    // its blocker search, so it keeps the REGULAR sampler (0) — its
-    // SampleLevel fetches read depth values, not comparisons.
-    return PcssSpotShadow(0u, worldPos, faceNormal, L.direction, t, atlasIdx,
+    // PCSS spots point-fetch RAW blocker depths, then use the fixed
+    // hardware comparison sampler (slot 1) for penumbra visibility.
+    return PcssSpotShadow(1u, worldPos, faceNormal, L.direction, t, atlasIdx,
         pcDS.pcssLightSize, pcDS.spotShadowNear, L.outerAngle);
 }
 
