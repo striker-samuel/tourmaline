@@ -8,7 +8,7 @@ Source paths in `source_args` are relative to the executable's build directory, 
 
 ## Workflow
 
-1. Build/run the **App** viewer with a cooked pak, fly to a costly camera location, tune renderer options, and press **TAB**.
+1. Build/run the **App** viewer with a cooked pak, fly to a costly camera location, tune renderer options, and press **TAB** and **I** to enable the UI cursor (if still in FPS mode).
 2. Type a descriptive **label**, **subsystem**, and optional **notes**. Press **Export for benchmark**. The UI reports the assigned unique ID (repeated labels get `-2`, etc.). Commit the resulting JSON change.
 3. Build the dedicated, sample-free `Benchmark` CMake target. Use the Python harness to list and run the saved location.
 
