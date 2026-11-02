@@ -6506,6 +6506,9 @@ namespace engine {
 				// (promote/evict) frame.
 				SMVK_PROFILE_STREAM("GeoStreaming_RebuildLodChains");
 				m_world->RebuildLodChains();
+				// The physical residency changed even when GfxFilter is off.
+				// Mesh metadata must still republish the resident mask.
+				++m_gpuSceneGeometryRevision;
 				m_world->RebuildLightmapChartTable();
 			}
 			if (m_gfxFilterAvailable) {
