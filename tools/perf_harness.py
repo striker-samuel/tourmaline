@@ -77,7 +77,7 @@ def main(argv=None):
         parser.error(f"scene input does not exist: {source}")
     if args.warmup != 10:
         parser.error("App currently has exactly 10 internal warmup frames")
-    if args.capture_frame >= args.frames + args.warmup:
+    if args.capture_frame < 2 or args.capture_frame >= args.frames + args.warmup:
         parser.error("capture frame must occur before the benchmark exits")
     workdir = (args.workdir or args.exe.parent).resolve()
     if not workdir.is_dir():
@@ -121,7 +121,7 @@ def main(argv=None):
         # of presents; samples are NOT a trustworthy standalone FPS benchmark.
         invocations = [[ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
                         f'--exe={args.exe.resolve()}', '--args=' + subprocess.list2cmdline(argv_app[1:]),
-                        f'--start-after-frames={args.warmup}', '--auto-export']]
+                        f'--start-after-frames={args.warmup}', "--limit-to-frames=1", '--auto-export']]
     else:
         capture = args.ngfx_capture or shutil.which("ngfx-capture")
         if not capture:
@@ -129,7 +129,7 @@ def main(argv=None):
         # Capture CLI syntax may differ across Nsight versions; check --help.
         invocations = [[capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
                         "--args", subprocess.list2cmdline(argv_app[1:]),
-                        "--capture-after-frames", str(args.capture_frame)]]
+                        "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(out)]]
     failed = False
     try:
         for i, invocation in enumerate(invocations, 1):
@@ -166,7 +166,7 @@ def main(argv=None):
             report["summary"] = {"median_ms": statistics.median(samples), "mean_ms": statistics.mean(samples),
                                  "min_ms": min(samples), "max_ms": max(samples),
                                  "estimated_fps": 1000 / statistics.median(samples)}
-        report["ok"] = not failed
+        report["ok"] = not failed\n        if args.mode in ("capture", "trace"):\n            report["note"] = "Nsight runs are instrumented; do not compare their FPS against bench mode. Inspect the Nsight output/log for capture artifacts."
     finally:
         (out / "result.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return 1 if failed else 0
