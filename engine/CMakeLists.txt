@@ -140,6 +140,10 @@ if(DS_VIZ_ON)
     target_compile_definitions(engine PRIVATE DS_DEBUG_VIZ=1)
 endif()
 
+if(TOURMALINE_NSIGHT_MARKERS)
+    target_compile_definitions(engine PRIVATE TOURMALINE_NSIGHT_MARKERS=1)
+endif()
+
 # Nsight Aftermath shader debug tables (crash symbolication): when this
 # tree's SPIR-V carries DXC -Zi debug info (root CMakeLists resolves
 # SHADER_DEBUG_INFO_ON: Debug trees / TOURMALINE_SHADER_DEBUG=ON preset),
@@ -159,7 +163,6 @@ target_link_libraries(engine
         imgui_core
         meshoptimizer
         xatlas
-        OptickCore
         spirv_reflect
     PRIVATE
         directxtex_bc
@@ -169,6 +172,12 @@ target_link_libraries(engine
         imgui_backend_vulkan
         lz4
 )
+if(ENABLE_OPTICK)
+    target_link_libraries(engine PUBLIC OptickCore)
+else()
+    target_include_directories(engine PUBLIC "${TOURMALINE_SOURCE_DIR}/external/optick/src")
+    target_compile_definitions(engine PUBLIC USE_OPTICK=0)
+endif()
 if(WIN32)
     # Windows system libs. (winhttp/bcrypt were linked historically; the
     # tree no longer references them, but the link stays to keep the
@@ -231,11 +240,13 @@ endif()
 # OptickCore builds SHARED upstream -> its runtime (DLL on Windows, .so
 # on Linux) must sit next to the exes (build root, same staging target
 # as DXC above - the host-staging in cmake/HostSetup.cmake mirrors it).
+if(ENABLE_OPTICK)
 add_custom_command(TARGET engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:OptickCore>"
         "${TOURMALINE_BINARY_DIR}"
 )
+endif()
 
 # SDL3 is SHARED (vendored prebuilt on Windows / built as a subproject or
 # system on Linux) -> same build-root staging.
