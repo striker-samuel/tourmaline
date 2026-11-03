@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace tour::placement {
@@ -1891,8 +1892,10 @@ struct PlacementWorldRuntime {
 			std::vector<RankedTile> candidates;
 			for (int64_t z = z0; z <= z1; ++z) {
 				for (int64_t x = x0; x <= x1; ++x) {
-					if (x < INT32_MIN || x > INT32_MAX ||
-						z < INT32_MIN || z > INT32_MAX) continue;
+					if (x < std::numeric_limits<int32_t>::min() ||
+						x > std::numeric_limits<int32_t>::max() ||
+						z < std::numeric_limits<int32_t>::min() ||
+						z > std::numeric_limits<int32_t>::max()) continue;
 					const TileID key{ int32_t(x), 0, int32_t(z) };
 					if (std::find(keys.begin(), keys.end(), key) != keys.end())
 						continue;
