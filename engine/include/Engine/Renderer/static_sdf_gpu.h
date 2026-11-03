@@ -71,6 +71,7 @@ public:
 	void Clear();
 
 	uint32_t InstanceCount() const { return m_instanceCount; }
+	uint64_t Generation() const { return m_generation; }
 	uint64_t SceneAddress(ResourceManager& ctx) const;
 	bool Ready() const {
 		return m_instanceCount != 0 &&
@@ -82,6 +83,7 @@ private:
 	Holder<BufferHandle> m_instances;
 	Holder<BufferHandle> m_samples;
 	uint32_t m_instanceCount = 0;
+	uint64_t m_generation = 0; // republished static SDF scene generation
 	const tour::World* m_world = nullptr;
 	uint64_t m_worldRevision = std::numeric_limits<uint64_t>::max();
 	glm::vec3 m_cachedEye{0.0f};

@@ -3667,6 +3667,7 @@ public:
 	// existing SSR classify/intersect/blur/temporal/composite chain.
 	bool m_staticSdfReflectionsEnabled = false;
 	bool m_staticSdfLastEnabled = false;
+	uint64_t m_staticSdfSeenGeneration = 0;
 	smvk::StaticSdfGpuScene m_staticSdfGpu;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8

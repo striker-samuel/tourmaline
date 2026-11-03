@@ -15375,12 +15375,22 @@ namespace engine {
 				// The frozen volume set is rebuilt on world topology changes.
 				// Inactive/no-bake scenes keep both addresses zero: the shader
 				// never dereferences them, and original SSR is unchanged.
-				if (m_staticSdfReflectionsEnabled && m_world &&
-					m_staticSdfGpu.Update(*m_context, *m_world,
-						glm::vec3(m_cameraPositioner.cameraPosition_))) {
-					// One scene-header BDA, keeping the SSR push at 128 B.
-					ssrDesc.staticSdfSceneAddr =
-						m_staticSdfGpu.SceneAddress(*m_context);
+				if (m_staticSdfReflectionsEnabled && m_world) {
+					const bool sdfReady = m_staticSdfGpu.Update(
+						*m_context, *m_world,
+						glm::vec3(m_cameraPositioner.cameraPosition_));
+					// Camera-cell republishing changes the set of
+					// reflected objects; old SSSR temporal history is
+					// not compatible with a different instance list.
+					if (m_staticSdfGpu.Generation() != m_staticSdfSeenGeneration) {
+						m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
+						smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+					}
+					if (sdfReady) {
+						// One scene-header BDA, keeping SSR at 128 B.
+						ssrDesc.staticSdfSceneAddr =
+							m_staticSdfGpu.SceneAddress(*m_context);
+					}
 				}
 				// Receiver-material layer availability: the thin G-buffer
 				// (oct normal + roughness + metal) is written by the Forward+

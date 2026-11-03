@@ -106,7 +106,7 @@ float StaticSdfTap(uint linearIndex, uint sampleWordOffset,
     uint packed = samples.Get().words[sampleWordOffset + (linearIndex >> 1u)];
     uint shift = (linearIndex & 1u) * 16u;
     // Sign-extend the chosen two's-complement R16 word.
-    int signedSample = int(packed << (16u - shift)) >> 16;
+    int signedSample = asint(packed << (16u - shift)) >> 16;
     return float(signedSample) / 32767.0f;
 }
 

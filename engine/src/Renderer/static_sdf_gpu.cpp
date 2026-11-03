@@ -57,6 +57,7 @@ std::vector<uint32_t> PackStaticSdfWords(std::span<const int16_t> samples) {
 }
 
 void StaticSdfGpuScene::Clear() {
+	++m_generation; // old temporal reflection history is invalid
 	m_header = {};
 	m_instances = {};
 	m_samples = {};
@@ -230,6 +231,16 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 		StaticSdfSceneHeader gpuHeader{};
 		gpuHeader.instancesAddress = ctx.GetBufferDeviceAddress(instanceBuffer);
 		gpuHeader.samplesAddress = ctx.GetBufferDeviceAddress(sampleBuffer);
+		// A non-BDA storage allocation cannot be published as a valid
+		// scene: a zero address would cause an unsafe shader dereference.
+		if (gpuHeader.instancesAddress == 0 || gpuHeader.samplesAddress == 0) {
+			Clear();
+			m_world = &world;
+			m_worldRevision = world.gpuSceneTopologyRevision;
+			m_cachedEye = cameraWorldPos;
+			m_cachedEyeValid = eyeFinite;
+			return false;
+		}
 		gpuHeader.instanceCount = uint32_t(instances.size());
 		ctx.UploadDataToBuffer(headerBuffer, &gpuHeader, sizeof(gpuHeader),
 			PipelineStageBit_Compute, AccessFlags::ShaderRead);
@@ -238,6 +249,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 	m_instances = std::move(instanceBuffer);
 	m_samples = std::move(sampleBuffer);
 	m_instanceCount = uint32_t(instances.size());
+	++m_generation;
 	m_world = &world;
 	m_worldRevision = world.gpuSceneTopologyRevision;
 	m_cachedEye = cameraWorldPos;
