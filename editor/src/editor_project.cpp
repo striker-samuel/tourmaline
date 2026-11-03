@@ -885,7 +885,7 @@ void EditorApp::ReimportAsset(const std::string& path) {
     if (ext == ".texture") {
         smvk::assets::TextureAsset texture;
         std::string err;
-        if (!smvk::assets::LoadTextureAsset(fs::path(path), texture, err)) {
+        if (!smvk::assets::LoadTextureAsset(path, texture, err)) {
             Log("Reimport: invalid texture asset: " + err);
             return;
         }
