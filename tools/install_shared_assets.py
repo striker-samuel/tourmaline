@@ -29,6 +29,7 @@ def default_config():
 
 def configure(source, archive, cache, config=None, *, listen_lan=False,
               port=8765, poll=3.0, settle=2.0, cache_gib=20.0, token=None):
+    sys.path.insert(0, str(ROOT))
     from tools.shared_asset_repository import SharedArchive
     source_path = Path(source).expanduser()
     if not source_path.is_dir():
@@ -226,8 +227,9 @@ def main(argv=None):
     if args.source or args.archive or args.cache:
         if not (args.source and args.archive and args.cache):
             parser.error("--source, --archive and --cache must be supplied together")
+        config_target = (args.config or "/etc/tourmaline/shared-assets.json") if args.install_systemd_system else args.config
         config, token = configure(
-            args.source,args.archive,args.cache,config=args.config,
+            args.source,args.archive,args.cache,config=config_target,
             listen_lan=args.listen_lan,port=args.port)
         if args.install_systemd_system:
             print("Systemd unit:",install_systemd_system(config,args.service_user))
