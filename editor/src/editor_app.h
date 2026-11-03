@@ -145,16 +145,8 @@ inline constexpr float kEditorFovYDeg = 45.0f;
 inline constexpr float kEditorNearClip = 0.05f;
 inline constexpr float kEditorFarClip = 2000.0f;
 
-// Panel layout constants shared by editor_ui.cpp / editor_render.cpp /
-// editor_gizmo.cpp: the 3D viewport is the CENTRAL rect between the
-// panels (panels are siblings in one layout — they never overlap the
-// rendered view). kEditorBottomH is the Overrides/Console dock height;
-// kEditorStatusH is the Maya-like bottom status strip (process progress).
-// 28 = one text line + the bar's (6,3) padding + a spare pixel (24 clipped
-// the text into the window's bottom edge — the collision report).
-inline constexpr float kEditorLeftW = 330.0f;
-inline constexpr float kEditorRightW = 370.0f;
-inline constexpr float kEditorBottomH = 230.0f;
+// ImGui docking reserves the top toolbar and this bottom status strip.
+// The Vulkan viewport follows the user-positioned dock window client rect.
 inline constexpr float kEditorStatusH = 28.0f;
 
 // Central viewport rect in window pixels (x/y = top-left offset).
@@ -2104,6 +2096,7 @@ private:
 	std::string m_gltfHostPath;
 	std::string m_pendingGltf; // --gltf path queued before Initialize
 	std::string m_prefsPath;   // Documents/tourmalineEditor/editor.prefs
+	std::string m_dockIniPath; // Layout persistence, separate from .tour
 	// Scene id (the open scene's stem): names the gi/ bake files
 	// the cooks/bakes write and the bake flows read back
 	// (gi/<stem>.*, textures/cubemaps/<stem>.cubemanifest - see
@@ -2656,28 +2649,14 @@ private:
 	void DrawBakeDensityOverlay(); // ImGui foreground markers + captions
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
-	// ---- panel sizes (drag the splitters to resize; constants above
-	// are the defaults) ----
-	float m_outlinerW = kEditorLeftW;
-	// The stacked left column's SPLIT: the Outliner (always visible, the
-	// upper window) owns this much height; the tabbed browser (Assets /
-	// Console / Overrides) fills the rest below. Absolute px like the
-	// dock-era height (clamped at draw time against the column height —
-	// the window can resize under the saved value).
-	float m_outlinerH = 380.0f;
-	float m_inspectorW = kEditorRightW;
-	float m_bottomDockH = kEditorBottomH;
-	// The bottom dock's EFFECTIVE height: ZERO since the dock was
-	// RETIRED (the layout rework's final form — the Live view moved
-	// into the CENTER view panel, the authoring tabs into the left
-	// column, so nothing hosts the strip anymore). The helper + the
-	// m_bottomDockH member + the [bottomDock] prefs keys stay wired so
-	// a future output strip can re-host the layout slot without
-	// touching every consumer again; until then every layout reader
-	// (panel heights, viewport rects, splitters) goes through this and
-	// gets 0.
-	float BottomDockH() const { return 0.0f; }
-	void DrawPanelSplitters(); // left/right/bottom resize handles
+	// ---- dockable editor workspace -----------------------------------
+	// ImGui owns user positioning/tabbing. The Vulkan renderer reads the
+	// last completed Viewport client rectangle (one-frame drag latency).
+	// No authored-scene or asset content is affected by workspace layout.
+	ViewportRect m_dockViewportRect{};
+	bool m_dockViewportVisible = false;
+	bool m_dockViewportHovered = false;
+	bool m_dockResetRequested = false;
 	// ---- ground grid + snapping (gizmo) ----
 	bool m_showGrid = true;
 	float m_gridSize = 1.0f;   // cell size in meters (snap step too)
@@ -3022,8 +3001,6 @@ private:
 	float m_verbToastAge = -1.0f; // -1 = none; seconds since the verb
 	void ShowVerbToast(const EditCmd& c);
 	void DrawVerbToast();
-	int m_rightTab = 0; // Inspector | Render | Material (the UV tab is retired)
-	int m_leftTab = 0;  // Assets | Console | Overrides (the left column's LOWER tabbed panel — the Outliner above it is always visible, not a tab)
 	// ---- SIDECAR MATERIAL BALL PREVIEW (editor_matball.cpp) -----------
 	// An offscreen 256x256 pass — a unit sphere wearing the material's
 	// PBR look under a FIXED default sky (matball.vert/frag.hlsl — one
