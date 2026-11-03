@@ -1,5 +1,10 @@
 # AGENTS.md — instructions for AI coding agents and human collaborators.
 
+## Agent command-line tooling manual
+
+**Start with [docs/agent_cli_tools.md](docs/agent_cli_tools.md)** for headless package inspection (`tools/tourinfo.py`), Unix pipe / JSONL / glob / regex workflows, decoded-pixel screenshot comparisons (`tools/pixel_compare.py`), golden-capture regression gates, benchmark comparison, and HZB diagnostics. This manual is the canonical discoverable entry point for agent-facing CLI commands. Prefer it to invoking a GUI for artifact inspection; keep existing content IDs and SMP8 compatibility rules intact.
+
+
 ## Benchmarking and performance regression workflow
 
 - Build `Benchmark` explicitly with the same CMake build directory and shader configuration used for the test: `cmake --build out/build/x64-Release --target Benchmark` (Linux uses `Benchmark`, Windows `Benchmark.exe`). It is a separate cooked-pak host with **no gameplay/audio sample elements** and requires a positive `--bench` budget; an interactive test belongs in `App`.

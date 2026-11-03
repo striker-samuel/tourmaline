@@ -1,0 +1,5 @@
+{"action":"key","key":"tab"}
+{"action":"key_down","key":"w"}
+{"action":"wait","seconds":0.25}
+{"action":"key_up","key":"w"}
+{"action":"screenshot","path":"out/input-smoke.png"}
