@@ -21,6 +21,8 @@ from tourmaline_asset_cache import AssetClient, load_client_settings
 
 DEFAULT_SERVER = "http://127.0.0.1:8765"
 WINDOW = "tourmalineAssetVersionsWindow"
+_SHARED_CLIENT = None
+_SHARED_CLIENT_KEY = None
 ATTRS = {
     "asset_path": "tourmalineAssetPath",
     "source_id": "tourmalineSourceAssetId",
@@ -62,7 +64,17 @@ def _client():
     if not token:
         return None
     cache = os.environ.get("TOURMALINE_ASSET_CACHE_DIR") or settings.get("cache")
-    return AssetClient(url, token, cache=cache)
+    global _SHARED_CLIENT, _SHARED_CLIENT_KEY
+    key = (url, token, cache)
+    if _SHARED_CLIENT is None or key != _SHARED_CLIENT_KEY:
+        if _SHARED_CLIENT is not None:
+            _SHARED_CLIENT.close()
+        label = os.environ.get("TOURMALINE_CONSUMER_LABEL", "Maya")
+        _SHARED_CLIENT = AssetClient(
+            url, token, cache=cache, consumer_kind="maya",
+            consumer_label=label)
+        _SHARED_CLIENT_KEY = key
+    return _SHARED_CLIENT
 
 
 def _api(endpoint, **params):

@@ -57,7 +57,8 @@ def configure(source, archive, cache, config=None, *, listen_lan=False,
         "port": port,
         "poll_seconds": poll,
         "settle_seconds": settle,
-        "cache_gib": cache_gib
+        "cache_gib": cache_gib,
+        "consumer_ttl_seconds": 90
     }
     temporary = output.with_suffix(".tmp")
     try:

@@ -34,6 +34,7 @@ The framework is under active development. APIs and asset formats are evolving, 
 - **Content as code:** `Project.exe` resolves `.tourrecipe` builds, cooks and verifies multiple `.pak` files, publishes a `.tapp` runtime manifest, and generates a typed, `constexpr` `project.h` catalog of persistent asset IDs.
 - **C++-first runtime:** Scene loading by asset ID, additive scene instances, asset prefetch, typed generational handles for mesh instances/animators/audio emitters, and scene-aware spatial audio. Game code owns the gameplay objects.
 - **Editor and offline tools:** An ImGui scene editor plus command-line import, cooking, GI baking, packaging, asset inspection, and debugging tools. The editor also offers a full-renderer baked-GI view and fallback inspectors for unrecognized files. Jolt Physics is vendored and tested; engine-level rigid-body/collider integration is still in progress.
+- **Optional shared asset repository:** Run an offline/local or Windows/Linux NAS-hosted source history service, publish separate immutable asset representations, use verified Maya caches, and inspect advisory consumer read-presence without file locks. See [Asset repository manual](docs/asset_repository_manual.md).
 - **Repeatable benchmarks:** A standalone `Benchmark` target, in-viewer scenario export to a source-controlled catalog, a Python A/B performance harness, and optional NVIDIA Nsight Graphics trace/capture workflows.
 
 ## Screenshots
@@ -49,6 +50,8 @@ Renderer inspection and debugging panels:
 *These captures use the Sponza demonstration scene. Its cooked content is not committed to the repository — it ships as a one-command download from the [demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) (see [Demo content](#demo-content-sponza)).*
 
 **Sponza attribution:** The model is Crytek-derived, with upstream contributions by Frank Meinl, Marko Dabrovic, Morgan McGuire and Alexandre Pestana. See [Sponza credits and license status](SPONZA-CREDITS.md).
+
+The optional [asset repository](docs/asset_repository_manual.md) manages working source revisions and published representations **before** cooking. It is deliberately separate from the project catalog: `project.h` describes **cooked build content** and does not track source/product versions or client read activity.
 
 ## How it fits together
 
