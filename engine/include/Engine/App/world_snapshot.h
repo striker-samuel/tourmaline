@@ -19,6 +19,7 @@
 namespace tour::snapshot {
 
 inline uint32_t Bits(float value) { return std::bit_cast<uint32_t>(value); }
+inline uint64_t Bits64(double value) { return std::bit_cast<uint64_t>(value); }
 inline Json Vec3(const glm::vec3& value) {
     return Json::array({Bits(value.x), Bits(value.y), Bits(value.z)});
 }
@@ -282,6 +283,93 @@ inline Json WorldState(const tour::World& world, const tour::RandomService& rng,
     for (const auto& location : world.decalLocations)
         assets["decals"].push_back(location.cluster
             ? OwnedUri(location.cluster->GetDecalUri(location.handle)) : "");
+
+    // Runtime engine-owned entities (not just authored scene nodes).
+    // Generational slot metadata and free-list order matter for the
+    // determinism of the NEXT Spawn/Destroy operation. Raw pointers,
+    // transient GPU handles and arbitrary gameplay objects are omitted.
+    const auto ownerId = [&world](const tour::Cluster* owner) -> uint64_t {
+        if (!owner) return 0;
+        const auto it = world.gpuSceneClusterIds.find(owner);
+        return it == world.gpuSceneClusterIds.end() ? 0 : it->second;
+    };
+    Json entities = {
+        {"audio", Json::array()},
+        {"meshes", Json::array()},
+        {"material_instances", Json::array()},
+        {"animators", Json::array()},
+        {"audio_free", world.audioEntityFree},
+        {"mesh_free", world.meshEntityFree},
+        {"material_instance_free", world.materialInstanceFree},
+        {"animator_free", world.animatorFree},
+        {"material_user_data", world.materialUserData},
+        {"material_shader_family", world.materialShaderFamily},
+        {"next_gpu_scene_cluster_id", world.nextGpuSceneClusterId}
+    };
+    for (const auto& entity : world.audioEntities) {
+        entities["audio"].push_back({
+            {"alive", entity.alive}, {"generation", entity.generation},
+            {"owner_cluster_id", ownerId(entity.owner)},
+            {"cluster_node", entity.clusterNode},
+            {"merged_node", entity.mergedNode}
+        });
+    }
+    for (const auto& entity : world.meshEntities) {
+        entities["meshes"].push_back({
+            {"alive", entity.alive}, {"generation", entity.generation},
+            {"transform_owner_cluster_id", ownerId(entity.transformOwner)},
+            {"mesh_owner_cluster_id", ownerId(entity.meshOwner)},
+            {"cluster_node", entity.clusterNode},
+            {"merged_node", entity.mergedNode},
+            {"mesh_uri", entity.meshOwner
+                ? OwnedUri(entity.meshOwner->GetMeshUri(entity.mesh)) : ""},
+            {"animator_slot", entity.animatorSlot},
+            {"material_instance_handle", entity.materialInstance.value}
+        });
+    }
+    for (const auto& instance : world.materialInstances) {
+        entities["material_instances"].push_back({
+            {"alive", instance.alive}, {"generation", instance.generation},
+            {"owner_cluster_id", ownerId(instance.baseOwner)},
+            {"base_material_uri", instance.baseOwner
+                ? OwnedUri(instance.baseOwner->GetMaterialUri(instance.base)) : ""},
+            {"user_data", instance.userData},
+            {"overrides_user_data", instance.overridesUserData}
+        });
+    }
+    const auto animatorLayer = [](const tour::AnimatorLayer& layer) -> Json {
+        return {
+            {"clip_name", layer.clip.name},
+            {"clip_duration_f64", Bits64(layer.clip.duration)},
+            {"clip_fps_f64", Bits64(layer.clip.fps)},
+            {"cursor_f64", Bits64(layer.cursor)},
+            {"weight_f32", Bits(layer.weight)},
+            {"loop", layer.loop}, {"active", layer.active}
+        };
+    };
+    for (const auto& entity : world.animators) {
+        const auto& playback = entity.state;
+        Json rest = Json::array();
+        for (const auto& transform : playback.restLocals)
+            rest.push_back(Mat4(transform));
+        Json joints = Json::array();
+        for (const auto& transform : playback.jointLocals)
+            joints.push_back(Mat4(transform));
+        entities["animators"].push_back({
+            {"alive", entity.alive}, {"generation", entity.generation},
+            {"mesh_entity_slot", entity.meshEntitySlot},
+            {"current", animatorLayer(playback.current)},
+            {"fade", animatorLayer(playback.fade)},
+            {"fade_duration_f32", Bits(playback.fadeDuration)},
+            {"fade_t_f32", Bits(playback.fadeT)},
+            {"fading", playback.fading}, {"speed_f32", Bits(playback.speed)},
+            {"paused", playback.paused}, {"playing", playback.playing},
+            {"mesh_handle", playback.mesh.value},
+            {"target_cluster_id", ownerId(playback.target)},
+            {"rest_locals", std::move(rest)}, {"joint_locals", std::move(joints)}
+        });
+    }
+    state["runtime_entities"] = std::move(entities);
 
     const auto checkpoint = rng.Capture();
     state["rng"]["algorithm"] = "pcg32-xsh-rr-v1";
