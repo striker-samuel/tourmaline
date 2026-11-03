@@ -3,6 +3,16 @@
 
 project(AssetTests)
 
+# CPU-only, graphics-free immediate-mode debug primitive regression.
+add_executable(DebugDrawTests test_debug_draw.cpp)
+target_include_directories(DebugDrawTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm
+)
+set_target_properties(DebugDrawTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME debug_draw_tests COMMAND DebugDrawTests)
+
 add_executable(EditorGameSessionTests test_editor_game_session.cpp)
 target_link_libraries(EditorGameSessionTests PRIVATE tourmaline::editor_entry)
 set_target_properties(EditorGameSessionTests PROPERTIES

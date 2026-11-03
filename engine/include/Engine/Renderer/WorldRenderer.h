@@ -42,6 +42,7 @@
 #include <Engine/GI/regular_volume.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/DebugDraw.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
@@ -2156,6 +2157,10 @@ protected:
 	// Installed extra-UI hook (see SetExtraUi): app-owned overlay draw,
 	// invoked inside the ImGui frame build.
 	std::function<void()> m_extraUi;
+	// Caller-owned, optional CPU-only producer; evaluated only when enabled.
+	std::function<void(tour::DebugDrawList&)> m_debugDrawSource;
+	tour::DebugDrawList m_debugDrawCpu;
+	bool m_debugDrawEnabled = false;
 	// Same-frame game HUD, composited before UiComposite; no backend API in games.
 	std::function<void(tour::GameUiRenderer&, smvk::Extent2D)> m_extraGameUi;
 	tour::GameUiRenderer m_gameUi;
@@ -2169,6 +2174,13 @@ public:
 	// renderer subclass. No-op unless installed; runs only when the UI
 	// pass runs (m_passes.ui + a live overlay).
 	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
+	// Caller is responsible for the producer lifetime. No physics or scene
+	// dependency; the list is discarded/rebuilt while drawing is enabled.
+	void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
+		m_debugDrawSource = std::move(fn);
+	}
+	void SetDebugDrawEnabled(bool enabled) { m_debugDrawEnabled = enabled; }
+	[[nodiscard]] bool DebugDrawEnabled() const { return m_debugDrawEnabled; }
 	// Host-owned game UI callback. Draws through the native render graph,
 	// after ImGui and before the scene's UI composite (no SDL renderer).
 	void SetExtraGameUi(std::function<void(tour::GameUiRenderer&,
@@ -3062,6 +3074,9 @@ public:
 	engine::GfxRenderer m_gfxRenderer{};
 	uint32_t m_selectedNode = UINT32_MAX; // editor selection; no App overlay
 	smvk::Holder<smvk::BufferHandle> m_selectionLineBuffer;
+	// Temporary debug-line uploads are isolated by frame-in-flight.
+	std::vector<smvk::Holder<smvk::BufferHandle>> m_debugDrawGpuLines;
+	std::vector<uint32_t> m_debugDrawGpuCapacity;
 
 	// The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
 	// legacy direct draws) is gone. This latch is setup-time availability
