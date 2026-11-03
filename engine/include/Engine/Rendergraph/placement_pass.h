@@ -1114,6 +1114,96 @@ struct PlacementMeshGpu {
 	}
 };
 
+// Painted point-cloud GPU data: two tightly packed float4 arrays with
+// the same BDA format as mesh vertices, but no triangles or alias table.
+// PointCount is exactly the number of independent candidate positions.
+struct PlacementPointCloudGpu {
+	smvk::Holder<smvk::BufferHandle> positions, normals;
+	smvk::LogicalBufferHandle positionsL{}, normalsL{};
+	uint32_t pointCount = 0;
+	bool hasNormals = false;
+
+	[[nodiscard]] bool Valid() const {
+		return pointCount > 0 && !positions.empty() && !positionsL.empty()
+			&& (!hasNormals || (!normals.empty() && !normalsL.empty()));
+	}
+	void Destroy(smvk::RenderGraph& rg) {
+		if (!positionsL.empty()) rg.FreeBuffer(positionsL);
+		if (!normalsL.empty()) rg.FreeBuffer(normalsL);
+		positionsL = {}; normalsL = {};
+		positions = {}; normals = {};
+		pointCount = 0;
+		hasNormals = false;
+	}
+	bool Upload(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
+		const PlacementPointCloudData& cloud) {
+		Destroy(rg);
+		// PlacementPosBuffer in HLSL has exactly 65,536 float4 slots.
+		if (!cloud.valid() || cloud.positions.size() > kPlacementMaxTileInstances)
+			return false;
+		const size_t count = cloud.positions.size();
+		std::vector<glm::vec4> packed(count);
+		for (size_t i = 0; i < count; ++i) {
+			const glm::vec3 p = cloud.positions[i];
+			if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+				return false;
+			packed[i] = glm::vec4(p, 0.0f);
+		}
+		positions = ctx.CreateBuffer(sizeof(glm::vec4) * count,
+			smvk::BufferType_Storage, "placement point cloud");
+		hasNormals = !cloud.normals.empty();
+		if (hasNormals) {
+			for (size_t i = 0; i < count; ++i) {
+				const glm::vec3 n = cloud.normals[i];
+				if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z))
+					return false;
+				packed[i] = glm::vec4(n, 0.0f);
+			}
+			normals = ctx.CreateBuffer(sizeof(glm::vec4) * count,
+				smvk::BufferType_Storage, "placement point normals");
+		}
+		if (positions.empty() || (hasNormals && normals.empty())) {
+			smvk::OnResourceExhaustion("placement point domain buffers");
+			Destroy(rg);
+			return false;
+		}
+		positionsL = rg.AddExternalBuffer(positions, "placement point cloud");
+		if (hasNormals)
+			normalsL = rg.AddExternalBuffer(normals, "placement point normals");
+		if (positionsL.empty() || (hasNormals && normalsL.empty())) {
+			smvk::OnResourceExhaustion("placement point domain logicals");
+			Destroy(rg);
+			return false;
+		}
+		// Normals were packed over the scratch above; rebuild positions for
+		// the first upload so the data stays source-of-truth even with normals.
+		for (size_t i = 0; i < count; ++i)
+			packed[i] = glm::vec4(cloud.positions[i], 0.0f);
+		ctx.UploadDataToBuffer(positions, packed.data(), sizeof(glm::vec4) * count,
+			smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
+		if (hasNormals) {
+			for (size_t i = 0; i < count; ++i)
+				packed[i] = glm::vec4(cloud.normals[i], 0.0f);
+			ctx.UploadDataToBuffer(normals, packed.data(), sizeof(glm::vec4) * count,
+				smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead, 0, 0);
+		}
+		pointCount = uint32_t(count);
+		return true;
+	}
+	ScatterBDAs Addresses(smvk::ResourceManager& ctx) const {
+		ScatterBDAs b{};
+		b.pos = ctx.GetBufferDeviceAddress(positions);
+		b.nrm = hasNormals ? ctx.GetBufferDeviceAddress(normals) : 0;
+		return b;
+	}
+	std::vector<smvk::LogicalBufferHandle> ReadLogicals() const {
+		std::vector<smvk::LogicalBufferHandle> out;
+		if (!positionsL.empty()) out.push_back(positionsL);
+		if (!normalsL.empty()) out.push_back(normalsL);
+		return out;
+	}
+};
+
 struct PlacementHeightfieldGpu {
 	smvk::Holder<smvk::BufferHandle> heights;
 	smvk::LogicalBufferHandle heightsL{};
@@ -1237,6 +1327,20 @@ inline bool FillScatterParams(const PlacementSystem::LayerBinding& layer,
 		out.idxBDA = bdas.idx; out.probBDA = bdas.prob; out.aliasBDA = bdas.alias;
 		return out.triCount > 0;
 	}
+	if (layer.domainKind == DomainKind::PointCloud && layer.pointCloud) {
+		if (!layer.pointCloud->valid() ||
+			layer.pointCloud->pointCount() > kPlacementMaxTileInstances ||
+			bdas.pos == 0 ||
+			(!layer.pointCloud->normals.empty() && bdas.nrm == 0))
+			return false;
+		out.domainKind = kPlacementScatterDomain_PointCloud;
+		out.vertCount = layer.pointCloud->pointCount();
+		out.posBDA = bdas.pos;
+		out.nrmBDA = bdas.nrm;
+		if (!layer.pointCloud->normals.empty())
+			out.flags |= kPlacementFlag_HasNormals;
+		return true;
+	}
 	if (layer.domainKind == DomainKind::Heightfield && layer.heightfield
 		&& layer.heightfield->field) {
 		const HeightfieldData* hf = layer.heightfield->field;
@@ -1273,16 +1377,18 @@ inline bool BuildScatterPush(const PlacementSystem::LayerBinding& layer,
 // outside PlacementPass (which owns the tile slots) because domain data
 // has its own lifetime (asset-cooked, shared across slots).
 struct PlacementScatterPrograms {
-	smvk::Holder<smvk::ShaderModuleHandle> meshModule, hfModule;
-	smvk::ShaderProgram meshProgram{}, hfProgram{};
+	smvk::Holder<smvk::ShaderModuleHandle> meshModule, hfModule, pointModule;
+	smvk::ShaderProgram meshProgram{}, hfProgram{}, pointProgram{};
 
 	[[nodiscard]] bool Valid() const {
 		return meshProgram.shaderCount != 0 && hfProgram.shaderCount != 0
-			&& !meshModule.empty() && !hfModule.empty();
+			&& pointProgram.shaderCount != 0
+			&& !meshModule.empty() && !hfModule.empty() && !pointModule.empty();
 	}
 	bool Ensure(smvk::ResourceManager& ctx,
 		const char* meshCsPath = kPlacementMeshTileCsPath,
-		const char* hfCsPath = kPlacementHfTileCsPath) {
+		const char* hfCsPath = kPlacementHfTileCsPath,
+		const char* pointCsPath = kPlacementPointTileCsPath) {
 		if (Valid()) return true;
 		try {
 			if (meshModule.empty())
@@ -1293,21 +1399,29 @@ struct PlacementScatterPrograms {
 				hfModule = ctx.CreateShaderModule(
 					readFile(hfCsPath ? hfCsPath : kPlacementHfTileCsPath),
 					"placementHfTileCS");
+			if (pointModule.empty())
+				pointModule = ctx.CreateShaderModule(
+					readFile(pointCsPath ? pointCsPath : kPlacementPointTileCsPath),
+					"placementPointTileCS");
 		} catch (...) {
 			return false;
 		}
-		if (meshModule.empty() || hfModule.empty()) return false;
+		if (meshModule.empty() || hfModule.empty() || pointModule.empty()) return false;
 		smvk::Shader mcs{ .module = meshModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		meshProgram = { .shaders = { mcs }, .shaderCount = 1 };
 		smvk::Shader hcs{ .module = hfModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
 		hfProgram = { .shaders = { hcs }, .shaderCount = 1 };
+		smvk::Shader pcs{ .module = pointModule, .entryPoint = "mainCS", .stage = smvk::ShaderStage::Compute };
+		pointProgram = { .shaders = { pcs }, .shaderCount = 1 };
 		return true;
 	}
 	void Destroy() {
 		meshProgram = smvk::ShaderProgram();
 		hfProgram = smvk::ShaderProgram();
+		pointProgram = smvk::ShaderProgram();
 		meshModule = {};
 		hfModule = {};
+		pointModule = {};
 	}
 
 	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
@@ -1322,10 +1436,13 @@ struct PlacementScatterPrograms {
 			"placementMeshTileCS", meshModule, retired);
 		any |= SwapShaderModule(ctx, kPlacementHfTileCsPath,
 			"placementHfTileCS", hfModule, retired);
+		any |= SwapShaderModule(ctx, kPlacementPointTileCsPath,
+			"placementPointTileCS", pointModule, retired);
 		if (!any)
 			return false;
 		meshProgram = smvk::ShaderProgram();
 		hfProgram = smvk::ShaderProgram();
+		pointProgram = smvk::ShaderProgram();
 		Ensure(ctx);
 		return true;
 	}
