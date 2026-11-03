@@ -3497,6 +3497,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						"selected terrain instead of picking. Each stamp "
 						"is one undoable command; paint persists as tour "
 						"terrainPaint verbs (deterministic replay).")) {
+					if (m_paintTerrain) m_paintScatter = false;
 					// (The old "surface the Terrain toolbar tab" hint went
 					// with the tabs — the paint cluster is ALWAYS in the
 					// top toolbar's Terrain section now.)
