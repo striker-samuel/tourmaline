@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """CPU-only search scoring and image-fab request tests (no live API calls)."""
 import base64
+from contextlib import redirect_stdout
+import copy
 import io
 import json
 import os
@@ -169,6 +171,54 @@ class ReverseSearchTests(unittest.TestCase):
         path.write_text("mesh=object.geometry\n", encoding="utf-8")
         with self.assertRaises(search.SearchError):
             search.resolve_geometry(path)
+
+
+    def test_material_channels_are_scored_independently(self):
+        original = self.doc["assets"][0]
+        changed = copy.deepcopy(original)
+        for view in changed["features"].values():
+            count = self.doc["grid"] ** 2
+            view["orm"] = base64.b64encode(bytes([0, 220, 255] * count)).decode()
+            view["normal"] = base64.b64encode(bytes([255, 127, 127] * count)).decode()
+            view["emissive"] = base64.b64encode(bytes([255, 255, 255] * count)).decode()
+        scores = search.visual_scores(original, changed, self.doc["grid"])
+        self.assertEqual(scores["shape"], 1)
+        self.assertEqual(scores["color"], 1)
+        for name in ("normal", "roughness", "metallic", "occlusion", "emissive"):
+            self.assertLess(scores[name], 0.75, name)
+
+    def test_cli_json_search_and_mock_geometry_query(self):
+        target = self.root / "new.geometry"
+        target.write_bytes(b"HSEM\x03\x00\x00\x00")
+        tiles = {}
+        for view in search.VIEWS:
+            tiles[view] = {}
+            for name, rgba in (("coverage", (255, 255, 255, 255)),
+                               ("albedo", (250, 20, 20, 255)),
+                               ("normal", (127, 127, 255, 255)),
+                               ("orm", (255, 100, 25, 255)),
+                               ("emissive", (0, 0, 0, 255))):
+                tiles[view][name] = search.Image.new("RGBA", (6, 6), rgba)
+        fake = {"guid": "generated", "aabb_min": [0, 0, 0], "aabb_max": [1, 1, 1],
+                "captures": tiles}
+        with patch.object(search.capture, "prepare", return_value=fake) as prepare:
+            d = search.descriptor_for_geometry(target, self.doc)
+            prepare.assert_called_once_with(target, self.doc["face_size"])
+            self.assertEqual(d["bounds"]["size"], [1, 1, 1])
+            scores = search.search(self.doc, d, limit=2)
+            self.assertEqual(scores[0]["score"], 100)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(search.cli(["search", "--index", str(self.index_path),
+                                         "--asset", "red.geometry", "--json"]), 0)
+        cli_result = json.loads(output.getvalue())
+        self.assertEqual(cli_result["results"][0]["source"], "assets/red_copy.geometry")
+
+    def test_invalid_size_ratio_rejected(self):
+        with self.assertRaises(search.SearchError):
+            search.search(self.doc, self.doc["assets"][0], size_ratio=.5)
+        with self.assertRaises(search.SearchError):
+            search.search(self.doc, self.doc["assets"][0], size_ratio=-1)
 
 
 if __name__ == "__main__":
