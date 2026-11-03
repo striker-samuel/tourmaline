@@ -22,6 +22,12 @@ enum class DebugDepthMode : uint8_t {
     Always  // X-ray overlay, still rendered as wireframe
 };
 
+struct DebugPoint {
+    glm::vec3 position{ 0.0f };
+    glm::vec3 color{ 1.0f };
+    DebugDepthMode depth = DebugDepthMode::Tested;
+};
+
 struct DebugLine {
     glm::vec3 a{ 0.0f };
     glm::vec3 b{ 0.0f };
@@ -33,14 +39,29 @@ class DebugDrawList {
 public:
     // Bounds memory and GPU upload work if a debug producer misbehaves.
     static constexpr size_t MaxLines = 65536;
+    static constexpr size_t MaxPoints = 65536;
 
     void Clear() {
         m_lines.clear();
+        m_points.clear();
         m_dropped = 0;
+        m_droppedPoints = 0;
     }
-    [[nodiscard]] bool Empty() const { return m_lines.empty(); }
+    [[nodiscard]] bool Empty() const { return m_lines.empty() && m_points.empty(); }
     [[nodiscard]] size_t Size() const { return m_lines.size(); }
     [[nodiscard]] size_t DroppedLines() const { return m_dropped; }
+    [[nodiscard]] size_t PointCount() const { return m_points.size(); }
+    [[nodiscard]] size_t DroppedPoints() const { return m_droppedPoints; }
+    [[nodiscard]] std::span<const DebugPoint> Points() const { return m_points; }
+
+    void Point(glm::vec3 position, glm::vec3 color,
+               DebugDepthMode depth = DebugDepthMode::Tested) {
+        if (m_points.size() == MaxPoints) {
+            ++m_droppedPoints;
+            return;
+        }
+        m_points.push_back({position, color, depth});
+    }
     [[nodiscard]] std::span<const DebugLine> Lines() const { return m_lines; }
 
     void Line(glm::vec3 a, glm::vec3 b, glm::vec3 color,
@@ -162,7 +183,9 @@ private:
     }
 
     std::vector<DebugLine> m_lines;
+    std::vector<DebugPoint> m_points;
     size_t m_dropped = 0;
+    size_t m_droppedPoints = 0;
 };
 
 } // namespace tour
