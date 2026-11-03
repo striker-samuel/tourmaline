@@ -8,6 +8,7 @@
 // change across standard-library implementations.
 
 #include <cstdint>
+#include <map>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -106,6 +107,34 @@ public:
     }
 
     RandomStream& Gameplay() { return Stream("gameplay"); }
+
+    // Deterministic checkpoint over all persistent named streams. Sorted by
+    // name so that serialized state is independent of unordered_map order.
+    // By-value MakeStream() streams belong to their caller and are not tracked.
+    struct Snapshot {
+        uint64_t seed = 0;
+        std::map<std::string, RandomStream::State> streams;
+    };
+    [[nodiscard]] Snapshot Capture() const {
+        Snapshot snapshot;
+        snapshot.seed = seed_;
+        for (const auto& [name, stream] : streams_)
+            snapshot.streams.emplace(name, stream.Save());
+        return snapshot;
+    }
+
+    // Strong exception safety: validate every stream before replacing the
+    // active collection. Retained Stream() references are invalidated.
+    void Restore(const Snapshot& snapshot) {
+        std::unordered_map<std::string, RandomStream> restored;
+        for (const auto& [name, state] : snapshot.streams) {
+            RandomStream stream;
+            stream.Restore(state); // throws on an invalid even increment
+            restored.emplace(name, stream);
+        }
+        streams_.swap(restored);
+        seed_ = snapshot.seed;
+    }
 
     // Entropy is used only to choose the initial seed for unpinned launches.
     // The resulting numeric seed must be logged/stored for later replay.

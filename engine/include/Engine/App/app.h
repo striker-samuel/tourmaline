@@ -80,6 +80,19 @@ public:
 	// Opt-in platform-neutral input tape. Called before Run().
 	bool ConfigureInputRecording(std::string path, std::string& error);
 	bool ConfigureInputReplay(std::string path, std::string& error);
+	// Snapshot sequences collect input without requiring a sidecar tape.
+	// An already configured replay or explicit recording remains active.
+	bool ConfigureSnapshotInputCapture(std::string& error);
+	[[nodiscard]] const input::RecordedInputFrame* CurrentInputFrame() const {
+		return m_inputTapeMode == InputTapeMode::Live ? nullptr
+			: m_inputTape.Frame(m_inputTapeFrame);
+	}
+	[[nodiscard]] uint64_t InputTick() const { return m_inputTapeFrame; }
+	void SetTotalFrameLimit(uint64_t frames) { m_totalFrameLimit = frames; }
+	// Called after the final GPU submit but BEFORE renderer detach.
+	void SetRunFinalizer(std::function<std::string()> fn) {
+		m_runFinalizer = std::move(fn);
+	}
 
 	// Window helpers (SDL3).
 	SDL_Window* GetWindow() const { return window; }
@@ -194,6 +207,8 @@ protected:
 	std::string m_inputTapeError;
 	uint64_t m_inputTapeFrame = 0;
 	uint64_t m_inputTapeTimeNs = 0;
+	uint64_t m_totalFrameLimit = 0;
+	std::function<std::string()> m_runFinalizer;
 	// An actual OS close aborts replay immediately; recorded Escape does not.
 	bool m_replayOsClose = false;
 	bool windowShouldClose_ = false;

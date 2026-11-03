@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -680,6 +681,75 @@ namespace app {
 					: app.ConfigureInputReplay(cfg.cli.inputReplayPath, inputError);
 				if (!ok)
 					throw std::runtime_error("input tape: " + inputError);
+			}
+			if (!cfg.cli.snapshotSequenceDir.empty()) {
+				std::string snapshotError;
+				if (!app.ConfigureSnapshotInputCapture(snapshotError))
+					throw std::runtime_error("snapshot input: " + snapshotError);
+				std::error_code ec;
+				const std::filesystem::path directory(cfg.cli.snapshotSequenceDir);
+				std::filesystem::create_directories(directory, ec);
+				if (ec)
+					throw std::runtime_error("cannot create snapshot directory: " + ec.message());
+				const auto captureTime = std::chrono::system_clock::now();
+				const auto captureUnixMs = std::chrono::duration_cast<
+					std::chrono::milliseconds>(captureTime.time_since_epoch()).count();
+				const auto identity = std::to_string(seed) + "-" +
+					std::to_string(captureTime.time_since_epoch().count());
+				const auto sequenceId = tour::snapshot::Fnv64(identity);
+				tour::snapshot::Json provenance = {
+					{"rng_seed", seed},
+					{"rng_algorithm", "pcg32-xsh-rr-v1"},
+					{"source_args", cfg.cli.project.empty()
+						? tour::snapshot::Json(cfg.cli.pakPaths)
+						: tour::snapshot::Json(cfg.cli.project)},
+					{"source_kind", cfg.cli.project.empty() ? "pak" : "project"},
+					{"scene", sceneId},
+					{"code_identity", cfg.cli.snapshotCodeId.empty()
+						? "unspecified" : cfg.cli.snapshotCodeId},
+					{"game_code_included", false},
+					{"catalog_fingerprint", session
+						? std::to_string(session->Registry().RecordFingerprint()) : "unavailable"},
+					{"catalog_manifest_version", session
+						? session->Manifest().version : 0u},
+					{"catalog_generation_timestamp_unix_ms", nullptr},
+					{"capture_unix_time_ms", captureUnixMs},
+					{"catalog_source_mtime", nullptr},
+					{"state_scope", "engine-scene-graph-v1"}
+				};
+				if (!cfg.cli.project.empty()) {
+					const auto time = std::filesystem::last_write_time(
+						std::filesystem::path(cfg.cli.project), ec);
+					if (!ec)
+						provenance["catalog_source_mtime"] =
+							std::to_string(time.time_since_epoch().count());
+				}
+				// Record available source-file timestamps, including all
+				// discovered paks. File-clock ticks are for provenance,
+				// not a portable content fingerprint.
+				provenance["pak_sources"] = tour::snapshot::Json::array();
+				for (const auto& pakPath : launchPaks) {
+					std::error_code stampError;
+					const auto stamp = std::filesystem::last_write_time(
+						std::filesystem::path(pakPath), stampError);
+					provenance["pak_sources"].push_back({
+						{"path", pakPath},
+						{"modified_file_clock_ticks", stampError
+							? tour::snapshot::Json(nullptr) : tour::snapshot::Json(
+								std::to_string(stamp.time_since_epoch().count()))}
+					});
+				}
+				if (!renderer.ConfigureSnapshotSequence(directory,
+					cfg.cli.snapshotKeyframeInterval, cfg.cli.snapshotCount,
+					sequenceId, std::move(provenance), snapshotError))
+					throw std::runtime_error("snapshot sequence: " + snapshotError);
+				app.SetRunFinalizer([&renderer]() {
+					return renderer.FinishSnapshotSequence();
+				});
+				// Snapshot count is exact, unlike benchmark's 10 warmup
+				// + measured budget. Bench users may explicitly run longer.
+				if (cfg.cli.benchFrames <= 0)
+					app.SetTotalFrameLimit(cfg.cli.snapshotCount);
 			}
 			int benchFrames = cfg.cli.benchFrames;
 			if (benchFrames > 0) {

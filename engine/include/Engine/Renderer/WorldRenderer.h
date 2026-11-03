@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,6 +31,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/App/app.h>
+#include <Engine/App/snapshot_sequence.h>
 #include <Engine/App/keybindings.h>
 #include <Engine/App/RunConfig.h>
 #include <Engine/App/world.h>
@@ -1782,6 +1784,21 @@ public:
 	// acquire); it stalls (device idle) and exports the PNG only on the
 	// pending frame.
 	void PollCaptureReadback();
+	// Optional logical state exported by a BYOC host or an allocator-aware
+	// provider. Never dumps/executes the game's code or raw pointer memory.
+	void SetSnapshotStateExtension(std::function<tour::snapshot::Json()> provider) {
+		m_snapshotStateExtension = std::move(provider);
+	}
+	// Game-code-agnostic snapshot export: a PNG for each simulation tick
+	// with keyframe/delta scene state, RNG stream state and input events.
+	bool ConfigureSnapshotSequence(const std::filesystem::path& directory,
+		uint32_t interval, uint32_t count, const std::string& sequenceId,
+		tour::snapshot::Json provenance, std::string& error);
+	[[nodiscard]] const std::string& SnapshotSequenceError() const {
+		return m_snapshotError;
+	}
+	// Flushes the LAST submitted image before App detaches the renderer.
+	std::string FinishSnapshotSequence();
 	// Direct debug-view selection (the F1..F6/F9..F11 keys, the Debug
 	// tab's view combo, the editor): a direct selection TAKES OVER —
 	// the cycled overlay views (the GI debug views R/F8, the DS
@@ -3887,6 +3904,15 @@ public:
 	bool EnsureInlineTarget(smvk::Extent2D extent);
 	bool m_captureQueued = false; // emit the capture pass this frame
 	bool m_captureReadbackPending = false; // read back after the submit (DrawFrame)
+	// Sequence data is sampled while the captured frame is being built,
+	// then paired with the GPU readback at the next frame boundary.
+	tour::snapshot::SequenceWriter m_snapshotSequence;
+	std::function<tour::snapshot::Json()> m_snapshotStateExtension;
+	tour::snapshot::Json m_snapshotProvenance;
+	std::string m_snapshotError;
+	bool m_sequenceCaptureArmed = false;
+	bool m_sequenceReadbackPending = false;
+	void ExportSequenceScreenshot(smvk::Extent2D extent);
 
 	void ScanLutFiles();
 	bool LoadLut(const std::string& file);

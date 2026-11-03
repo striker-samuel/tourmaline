@@ -85,6 +85,10 @@ struct ViewerOptions {
 	// Relative paths resolve from the executable working directory.
 	std::string inputRecordPath;
 	std::string inputReplayPath;
+	std::string snapshotSequenceDir; // --snapshot-sequence
+	uint32_t snapshotCount = 120;
+	uint32_t snapshotKeyframeInterval = 60;
+	std::string snapshotCodeId; // optional BYOC code/revision digest (not source bytes)
 	bool useOptick = false;
 	bool useOptickGpu = false;
 	bool noDlss = false;

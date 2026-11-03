@@ -40,11 +40,17 @@ bool tour::App::Run() {
 		}
 	}
 	MainLoop();
+	if (m_runFinalizer) {
+		const std::string result = m_runFinalizer();
+		if (!result.empty() && m_inputTapeError.empty())
+			m_inputTapeError = "snapshot sequence: " + result;
+	}
 	if (m_inputTapeMode == InputTapeMode::Replay &&
 		m_inputTapeFrame != m_inputTape.Frames().size() &&
 		m_inputTapeError.empty())
 		m_inputTapeError = "replay interrupted before all recorded ticks were consumed";
 	if (m_inputTapeError.empty() && m_inputTapeMode == InputTapeMode::Record &&
+		!m_inputTapePath.empty() &&
 		!m_inputTape.Save(m_inputTapePath, m_inputTapeError))
 		std::cerr << "[InputTape] save failed: " << m_inputTapeError << "\n";
 	if (!m_inputTapeError.empty())
@@ -77,6 +83,16 @@ bool tour::App::ConfigureInputReplay(std::string path, std::string& error) {
 		return false;
 	m_inputTapePath = std::move(path);
 	m_inputTapeMode = InputTapeMode::Replay;
+	return true;
+}
+
+bool tour::App::ConfigureSnapshotInputCapture(std::string& error) {
+	(void)error;
+	if (m_inputTapeMode == InputTapeMode::Live) {
+		m_inputTape.Clear();
+		m_inputTapeMode = InputTapeMode::Record;
+		m_inputTapePath.clear(); // no sidecar; all events go into PNGs
+	}
 	return true;
 }
 
@@ -328,6 +344,8 @@ void tour::App::MainLoop() {
 			benchDrawMs += ms(t3 - t2).count();
 		}
 		++m_inputTapeFrame;
+		if (m_totalFrameLimit != 0 && m_inputTapeFrame >= m_totalFrameLimit)
+			windowShouldClose_ = true;
 		if (m_inputTapeMode == InputTapeMode::Replay &&
 			m_inputTapeFrame >= m_inputTape.Frames().size())
 			windowShouldClose_ = true;

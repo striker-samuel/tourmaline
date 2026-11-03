@@ -44,6 +44,23 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(mod.command(opts)[-8:], ["--pak", str(opts.pak.resolve()), "--disable_control",
                                                     "--bench", "64", "--present", "immediate", "--no-vfs"])
 
+    def test_snapshot_command(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            opts = SimpleNamespace(
+                exe=root / "App", pak=root / "world.pak", project=None,
+                mode="snapshot", output=root / "exports", frames=123,
+                keyframe_interval=60, code_id="commit-123", app_arg=["--no-vfs"],
+                source_args=[])
+            argv = mod.command(opts)
+            self.assertIn("--snapshot-count=123", argv)
+            self.assertIn("--snapshot-keyframe=60", argv)
+            self.assertIn("--snapshot-code-id=commit-123", argv)
+            self.assertIn("--snapshot-sequence=" + str((root / "exports" / "sequence").resolve()), argv)
+            self.assertNotIn("--disable_control", argv)
+            self.assertNotIn("--bench", argv)
+
     def test_parse_resolutions(self):
         import math
         presets = mod.parse_resolutions("720p,1080p,1440p,4k")

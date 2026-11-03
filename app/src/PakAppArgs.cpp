@@ -51,6 +51,8 @@ void PrintUsage(const char* prog) {
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
 		<< "  --input-record <path> writes an engine input tape at exit\n"
 		<< "  --input-replay <path> replays engine input + timestep by tick\n"
+		<< "  --snapshot-sequence <dir> exports Frame_0001.png ... with embedded state\n"
+		<< "  [--snapshot-count N] [--snapshot-keyframe N] [--snapshot-code-id HASH]\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --capture is the one-flag RenderDoc launch config: --no-dlss plus\n"
@@ -229,6 +231,40 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 		else if (std::strncmp(a, "--input-replay=", 15) == 0) {
 			opts.inputReplayPath = a + 15;
 		}
+		else if (std::strcmp(a, "--snapshot-sequence") == 0 && i + 1 < argc) {
+			opts.snapshotSequenceDir = argv[++i];
+		}
+		else if (std::strncmp(a, "--snapshot-sequence=", 20) == 0) {
+			opts.snapshotSequenceDir = a + 20;
+		}
+		else if ((std::strcmp(a, "--snapshot-count") == 0 ||
+			std::strcmp(a, "--snapshot-keyframe") == 0) && i + 1 < argc) {
+			const bool count = std::strcmp(a, "--snapshot-count") == 0;
+			const char* v = argv[++i];
+			long long parsed = 0;
+			if (!ParseInt(v, 1, 1000000, parsed))
+				return RejectNumeric(count ? "--snapshot-count" : "--snapshot-keyframe",
+					v, "a positive frame count 1..1000000", exitCode);
+			if (count) opts.snapshotCount = static_cast<uint32_t>(parsed);
+			else opts.snapshotKeyframeInterval = static_cast<uint32_t>(parsed);
+		}
+		else if (std::strncmp(a, "--snapshot-count=", 17) == 0 ||
+			std::strncmp(a, "--snapshot-keyframe=", 20) == 0) {
+			const bool count = std::strncmp(a, "--snapshot-count=", 17) == 0;
+			const char* v = a + (count ? 17 : 20);
+			long long parsed = 0;
+			if (!ParseInt(v, 1, 1000000, parsed))
+				return RejectNumeric(count ? "--snapshot-count" : "--snapshot-keyframe",
+					v, "a positive frame count 1..1000000", exitCode);
+			if (count) opts.snapshotCount = static_cast<uint32_t>(parsed);
+			else opts.snapshotKeyframeInterval = static_cast<uint32_t>(parsed);
+		}
+		else if (std::strcmp(a, "--snapshot-code-id") == 0 && i + 1 < argc) {
+			opts.snapshotCodeId = argv[++i];
+		}
+		else if (std::strncmp(a, "--snapshot-code-id=", 19) == 0) {
+			opts.snapshotCodeId = a + 19;
+		}
 		else if (std::strcmp(a, "--disable_control") == 0 || std::strcmp(a, "--disable-control") == 0) {
 			opts.disableControl = true;
 		}
@@ -259,6 +295,11 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			exitCode = EXIT_FAILURE;
 			return false;
 		}
+	}
+	if (opts.snapshotCodeId.size() > 256) {
+		std::cerr << "--snapshot-code-id exceeds 256 characters.\n";
+		exitCode = EXIT_FAILURE;
+		return false;
 	}
 	if (!opts.inputRecordPath.empty() && !opts.inputReplayPath.empty()) {
 		std::cerr << "--input-record and --input-replay are mutually exclusive.\n";

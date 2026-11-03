@@ -1,0 +1,92 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+
+// CPU-only PNG chunk + keyframe/delta codec + RNG checkpoint tests.
+// No renderer, GPU or SDL initialization.
+#include <Engine/App/snapshot_sequence.h>
+#include <Engine/Core/Random.h>
+#include <Engine/App/input_tape.h>
+
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#define CHECK(condition) do { if (!(condition)) { \
+    std::cerr << "CHECK failed: " << #condition << " line " << __LINE__ << "\n"; \
+    std::abort(); \
+} } while (false)
+
+using tour::snapshot::SequenceWriter;
+using tour::snapshot::Json;
+
+int main() {
+    tour::RandomService service(42);
+    const uint32_t first = service.Stream("combat").NextU32();
+    (void)first;
+    const auto checkpoint = service.Capture();
+    const auto next = service.Stream("combat").NextU32();
+    (void)service.Stream("other").NextU32();
+    service.Restore(checkpoint);
+    CHECK(service.Seed() == 42);
+    CHECK(service.Stream("combat").NextU32() == next);
+    CHECK(service.Capture().streams.size() == 1);
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("tour_snapshot_test_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const uint8_t png[] = {
+        137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,
+        0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,
+        120,156,99,16,84,50,118,1,0,1,89,0,171,19,42,37,171,
+        0,0,0,0,73,69,78,68,174,66,96,130
+    };
+    std::string error;
+    SequenceWriter writer;
+    CHECK(writer.Configure(root, 2, 0, 3, "sequence-test", error));
+    CHECK(!writer.Configure(root, 0, 0, 3, "invalid", error));
+
+    const std::vector<uint8_t> rgba{0x11,0x22,0x33,0x44};
+    for (uint64_t i = 0; i < 3; ++i) {
+        Json state = {
+            {"scope", "engine-scene-graph-v1"},
+            {"nodes", {{"0:0", {{"x", i}, {"alive", true}}}}},
+            {"rng", {{"seed", 42}}}
+        };
+        Json events = Json::array();
+        if (i == 0)
+            events.push_back({{"type", 3}, {"key", 26}});
+        CHECK(writer.Stage(i, 16666667, state, events,
+                           Json{{"code_identity", "test"}}, error));
+        CHECK(writer.Written() == i); // only a successful PNG advances
+        const auto target = writer.FramePath();
+        const auto pending = target.string() + ".pending.png";
+        {
+            std::ofstream output(pending, std::ios::binary);
+            CHECK(bool(output));
+            output.write(reinterpret_cast<const char*>(png), sizeof(png));
+            CHECK(bool(output));
+        }
+        CHECK(writer.Complete(pending, rgba, error));
+        std::filesystem::rename(pending, target);
+        // FramePath already advanced: the stored output was i+1.
+        const auto expected = root / (
+            "Frame_000" + std::to_string(i + 1) + ".png");
+        CHECK(std::filesystem::is_regular_file(expected));
+        const auto size = std::filesystem::file_size(expected);
+        CHECK(size > sizeof(png) + 50);
+        std::ifstream input(expected, std::ios::binary);
+        std::string contents((std::istreambuf_iterator<char>(input)), {});
+        CHECK(contents.find("tsNp") != std::string::npos);
+        CHECK(contents.find(i == 1 ? "delta" : "key") != std::string::npos);
+    }
+    CHECK(writer.Written() == 3);
+    CHECK(writer.FramePath().filename() == "Frame_0004.png");
+    std::filesystem::remove_all(root);
+    std::cout << "snapshot_sequence_tests: passed\n";
+    return 0;
+}

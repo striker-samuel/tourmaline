@@ -429,3 +429,15 @@ The first three are CPU-only, with image tests requiring Pillow; the
 existing perf harness unit tests do not require a GPU. A production
 rendering regression gate additionally needs a valid graphical
 environment, matching scene and driver, and a fresh capture.
+
+## Replayable PNG snapshot sequences
+
+`App --snapshot-sequence DIR --snapshot-count N --snapshot-keyframe K`
+exports numbered PNGs with embedded engine-scene-graph keyframes, per-tick
+input and RNG checkpoints, and incremental JSON patches. The GPU-free
+`tools/snapshot_sequence.py` can inspect, verify, extract reconstructed
+state, compare an agent's independent state, and convert the input stream to
+`.tinp`. `tools/perf_harness.py snapshot --scenario ID --exe App --frames N`
+provides scenario orchestration and a fail-closed artifact check.
+Read [docs/snapshot_sequences.md](snapshot_sequences.md) for the format,
+commands, fidelity boundary, and verification tests.

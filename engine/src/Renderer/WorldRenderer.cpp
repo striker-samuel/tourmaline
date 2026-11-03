@@ -68,6 +68,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/App/world_snapshot.h>
 #include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
@@ -10186,6 +10187,67 @@ namespace engine {
 			: smvk::Format::Undefined;
 	}
 
+	bool WorldRenderer::ConfigureSnapshotSequence(
+		const std::filesystem::path& directory, uint32_t interval, uint32_t count,
+		const std::string& sequenceId, tour::snapshot::Json provenance, std::string& error) {
+		if (!m_snapshotSequence.Configure(directory, interval, 0, count, sequenceId, error))
+			return false;
+		m_snapshotProvenance = std::move(provenance);
+		return true;
+	}
+
+	std::string WorldRenderer::FinishSnapshotSequence() {
+		PollCaptureReadback(); // final presented frame has no following update
+		if (!m_snapshotError.empty())
+			return m_snapshotError;
+		if (m_snapshotSequence.Enabled() &&
+			m_snapshotSequence.Written() != m_snapshotSequence.Count()) {
+			return "sequence ended after " + std::to_string(m_snapshotSequence.Written()) +
+				" of " + std::to_string(m_snapshotSequence.Count()) + " PNG frames";
+		}
+		return {};
+	}
+
+	void WorldRenderer::ExportSequenceScreenshot(smvk::Extent2D extent) {
+		if (!m_snapshotError.empty())
+			return;
+		if (m_captureImage.empty() || extent.width == 0 || extent.height == 0) {
+			m_snapshotError = "missing GPU capture image";
+			return;
+		}
+		std::vector<uint8_t> rgba(static_cast<size_t>(extent.width) *
+			static_cast<size_t>(extent.height) * 4u);
+		if (!m_context->DownloadDataFromImage(m_captureImage,
+			smvk::ImageLayout::ColorAttachmentOptimal, rgba.data(), rgba.size())) {
+			m_snapshotError = "GPU capture readback failed";
+			return;
+		}
+		const auto destination = m_snapshotSequence.FramePath();
+		const std::filesystem::path staging = destination.string() + ".pending.png";
+		if (std::filesystem::exists(destination) || std::filesystem::exists(staging)) {
+			m_snapshotError = "snapshot PNG already exists: " + destination.string();
+			return;
+		}
+		if (!LutWritePng(staging.string().c_str(), extent.width, extent.height,
+			rgba.data())) {
+			m_snapshotError = "PNG encoding failed: " + destination.string();
+			return;
+		}
+		if (!m_snapshotSequence.Complete(staging.string(), rgba, m_snapshotError)) {
+			std::error_code ec;
+			std::filesystem::remove(staging, ec);
+			return;
+		}
+		std::error_code ec;
+		std::filesystem::rename(staging, destination, ec);
+		if (ec) {
+			m_snapshotError = "cannot publish snapshot PNG: " + ec.message();
+			std::filesystem::remove(staging, ec);
+			return;
+		}
+		std::cout << "[Snapshot] exported " << destination.string() << "\n";
+	}
+
 	void WorldRenderer::ExportScreenshot(smvk::Extent2D extent) {
 		if (m_captureImage.empty()) {
 			std::cerr << "[WorldRenderer] capture target unavailable - screenshot skipped\n";
@@ -10438,7 +10500,12 @@ namespace engine {
 		// landed - safe to stall for the readback.
 		m_captureReadbackPending = false;
 		m_host.WaitForDeviceIdle();
-		ExportScreenshot(m_captureExtent);
+		if (m_sequenceReadbackPending) {
+			m_sequenceReadbackPending = false;
+			ExportSequenceScreenshot(m_captureExtent);
+		} else {
+			ExportScreenshot(m_captureExtent);
+		}
 	}
 	
 	// Scene->frame environment mapping (see tour::scene::SceneEnv): the scene authors
@@ -16704,6 +16771,10 @@ namespace engine {
 			// Env-requested capture (TOURMALINE_CAPTURE=<frame>): F7-less A/B.
 			if (m_captureAtFrame >= 0 && m_frameCounter == (uint64_t)m_captureAtFrame)
 				m_captureQueued = true;
+			m_sequenceCaptureArmed = m_snapshotError.empty() &&
+				m_snapshotSequence.WantsTick(m_host.InputTick());
+			if (m_sequenceCaptureArmed)
+				m_captureQueued = true;
 			// The hot-swap one-shot (TOURMALINE_GI_HOTSWAP=<frame>): the
 			// mid-bench generation swap (between records - this site is
 			// ahead of the graph Execute, so no frame is recording).
@@ -20306,11 +20377,60 @@ namespace engine {
 			s_benchExecute += msd(rfT5 - rfT4).count();
 		}
 		if (m_captureQueued) {
+			// Match CPU state to the SAME tick as the queued TonemapCapture.
+			// The next onUpdate downloads its pixels before another render.
+			if (m_sequenceCaptureArmed) {
+				const auto* inputFrame = m_host.CurrentInputFrame();
+				if (!m_world || !inputFrame ||
+					inputFrame->tick != m_host.InputTick() ||
+					m_captureLogical.empty()) {
+					m_snapshotError = "sequence input/world/capture target not ready";
+				} else {
+					try {
+						tour::snapshot::Json events = tour::snapshot::Json::array();
+						for (const auto& e : inputFrame->events)
+							events.push_back({
+								{"type", static_cast<uint32_t>(e.type)},
+								{"key", static_cast<uint32_t>(e.key)},
+								{"mouseButton", static_cast<uint32_t>(e.mouseButton)},
+								{"gamepadButton", static_cast<uint32_t>(e.gamepadButton)},
+								{"gamepadAxis", static_cast<uint32_t>(e.gamepadAxis)},
+								{"gamepadId", e.gamepadId}, {"mods", e.mods},
+								{"axis", e.axis}, {"x", e.x}, {"y", e.y},
+								{"xrel", e.xrel}, {"yrel", e.yrel},
+								{"repeat", e.repeat}, {"text", e.text}
+							});
+						const auto cameraPos = m_cameraPositioner.cameraPosition_;
+						const auto cameraFwd = m_cameraPositioner.getForward();
+						auto world = tour::snapshot::WorldState(*m_world, m_host.Random(),
+							cameraPos, cameraFwd);
+						if (m_snapshotStateExtension) {
+							auto extension = m_snapshotStateExtension();
+							if (!extension.is_object())
+								throw std::runtime_error(
+									"snapshot state extension must return a JSON object");
+							world["extensions"] = std::move(extension);
+						}
+						auto provenance = m_snapshotProvenance;
+						provenance["image_width"] = m_captureExtent.width;
+						provenance["image_height"] = m_captureExtent.height;
+						provenance["render_scale_f32"] = tour::snapshot::Bits(m_renderScale);
+						provenance["aa_mode"] = static_cast<int>(m_aaMode);
+						if (m_snapshotSequence.Stage(inputFrame->tick,
+							inputFrame->deltaTimeNs, world, std::move(events),
+							std::move(provenance), m_snapshotError))
+							m_sequenceReadbackPending = true;
+					} catch (const std::exception& e) {
+						m_snapshotError = std::string("snapshot capture failed: ") + e.what();
+					}
+				}
+			}
+			m_sequenceCaptureArmed = false;
 			// The capture target was written by the frame's commands, but the
 			// submit happens in EndAndPresentFramebuffer (after RenderFrame
-			// returns) - the readback must wait for it. DrawFrame picks this up.
+			// returns) - the readback must wait for it.
 			m_captureQueued = false;
-			m_captureReadbackPending = true;
+			m_captureReadbackPending = m_snapshotError.empty();
 		}
 		m_context->ProcessDeferrredTasks();
 		// Eye adaptation already ran at record time (before this frame's
