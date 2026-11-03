@@ -3502,6 +3502,12 @@ namespace engine {
 	};
 
 	void WorldRenderer::onDetach() {
+		// Providers borrow members of this renderer. Drop their registration
+		// and GPU callback before resources are torn down; onAttach can then
+		// register them again without duplicate provider pointers.
+		m_worldPartition.ClearProviders();
+		m_placementStreamProvider.SetCommitCallback({});
+		m_worldFieldProvider.SetContext(nullptr);
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		m_host.WaitForDeviceIdle();
 		if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
@@ -3547,7 +3553,11 @@ namespace engine {
 		m_viewportResources.contactShadows.Destroy(*m_rendergraph);
         // RT shadow BLAS/TLAS may reference the static heap. This renderer
         // has already waited for device idle at the top of onDetach.
-        if (m_context) m_context->ClearRayTracingWorld();
+        // Only the renderer that enabled this experimental path owns the
+        // shared RHI TLAS. A secondary (raster-only) viewport must not
+        // clear another viewport's acceleration structure on detach.
+        if (m_context && m_rayTracedSunShadowsEnabled)
+            m_context->ClearRayTracingWorld();
         m_rayTracingCachedInstances.clear();
         m_rayTracingCachedWorld = nullptr;
         m_rayTracingCacheValid = false;
@@ -11163,7 +11173,9 @@ namespace engine {
 				m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
 			}
 			m_worldPartition.SetInterests(interests, interestCount);
-			m_worldPartition.UpdateFrame(fb.frameIndex);
+			// Residency/LRU clocks require a monotonic simulation frame, not the
+			// swapchain's cycling frames-in-flight slot (fb.frameIndex).
+			m_worldPartition.UpdateFrame(m_frameCounter);
 		}
 		// The renderer owns no environment: the frame's look is built
 		// from the WORLD's scene env here, once per frame (the main

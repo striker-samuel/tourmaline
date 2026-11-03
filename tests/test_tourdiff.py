@@ -104,6 +104,18 @@ class DiffTests(unittest.TestCase):
         items = json.loads(output)["items"]
         self.assertEqual({x["record_type"] for x in items}, {"asset", "entry"})
 
+    def test_entry_added_or_removed_between_pak_and_manifest(self):
+        # The native tooling API treats absent/present entry metadata as a
+        # modification. Python's diff must agree in both directions.
+        release = self.manifest(self.left, "world-a.pak")
+        self.manifest(self.right, "world-b.pak")
+        bare_pak = self.right / "world-b.pak"
+        for older, newer in ((release, bare_pak), (bare_pak, release)):
+            status, output = self.cli(str(older), str(newer), "--json")
+            self.assertEqual(status, 1)
+            items = json.loads(output)["items"]
+            self.assertEqual([x["record_type"] for x in items], ["entry"])
+
     def test_missing_manifest_pak_is_an_error(self):
         a = self.manifest(self.left, "world-a.pak")
         b = self.manifest(self.right, "world-b.pak")

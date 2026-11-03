@@ -127,6 +127,14 @@ struct PlacementPass {
 		std::vector<smvk::LogicalBufferHandle> cntL;
 		inst.reserve(d.maxTiles); cnt.reserve(d.maxTiles);
 		instL.reserve(d.maxTiles); cntL.reserve(d.maxTiles);
+		// These logical registrations outlive local GPU holders. Roll back
+		// every successful registration on any partial allocation failure.
+		auto rollback = [&] {
+			for (auto handle : instL)
+				if (!handle.empty()) rg.FreeBuffer(handle);
+			for (auto handle : cntL)
+				if (!handle.empty()) rg.FreeBuffer(handle);
+		};
 		for (uint32_t s = 0; s < d.maxTiles; ++s) {
 			smvk::Holder<smvk::BufferHandle> ib = ctx.CreateBuffer(
 				sizeof(RenderInstance) * d.maxInstancesPerTile,
@@ -138,6 +146,7 @@ struct PlacementPass {
 				// never decides policy); strict turns it into a loud abort
 				// at the call site (see AGENTS.md — the error contract).
 				smvk::OnResourceExhaustion("placement tile buffers");
+				rollback();
 				return false;
 			}
 			smvk::LogicalBufferHandle il = rg.AddExternalBuffer(ib, "placement tile instances");
@@ -146,6 +155,7 @@ struct PlacementPass {
 				rg.FreeBuffer(il);
 				rg.FreeBuffer(cl);
 				smvk::OnResourceExhaustion("placement tile logicals");
+				rollback();
 				return false;
 			}
 			inst.push_back(std::move(ib));
@@ -164,7 +174,11 @@ struct PlacementPass {
 		// churn — the UploadDataToBuffer zero-on-creation convention; the
 		// kernels' capacity guard reads it back).
 		for (uint32_t s = 0; s < tileSlots; ++s) ClearTile(ctx, s);
-		return EnsureShaders(ctx, tileCsPath);
+		if (!EnsureShaders(ctx, tileCsPath)) {
+			Destroy(rg);
+			return false;
+		}
+		return true;
 	}
 
 	void Destroy(smvk::RenderGraph& rg) {

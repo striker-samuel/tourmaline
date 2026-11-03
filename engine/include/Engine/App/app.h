@@ -194,6 +194,8 @@ protected:
 	std::string m_inputTapeError;
 	uint64_t m_inputTapeFrame = 0;
 	uint64_t m_inputTapeTimeNs = 0;
+	// An actual OS close aborts replay immediately; recorded Escape does not.
+	bool m_replayOsClose = false;
 	bool windowShouldClose_ = false;
 	bool relativeMouseMode_ = false;
 	int frameBudget_ = 0;   // benchmark frame budget (0 = interactive)

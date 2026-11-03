@@ -220,6 +220,29 @@ int main()
 			"frame.request-carries-frame");
 	}
 
+	// ---- renderer-style provider detach + reattach ----
+	{
+		wp::WorldPartition p;
+		RecordingProvider rec;
+		wp::StreamingInterest interest{};
+		p.AddProvider(&rec);
+		p.SetInterests(&interest, 1);
+		p.UpdateFrame(10);
+		Check(p.ProviderCount() == 1 && rec.commitCalls == 1,
+			"frame.first-attachment");
+		p.ClearProviders();
+		Check(p.ProviderCount() == 0 && p.InterestCount() == 0
+			&& p.RequestCount() == 0 && p.DroppedRequestCount() == 0,
+			"frame.detach-clears-borrowed-provider-and-observations");
+		p.AddProvider(&rec);
+		p.SetInterests(&interest, 1);
+		p.UpdateFrame(11);
+		Check(p.ProviderCount() == 1 && rec.commitCalls == 2
+			&& rec.retireCalls == 2 && p.RequestCount() == 1
+			&& p.Requests()[0].frameRequested == 11,
+			"frame.reattach-does-not-duplicate-provider");
+	}
+
 	// ---- request recording GROWS past the initial 256-slot scratch ----
 	// (the silent-truncation regression: providers collectively pushing
 	// more than the initial capacity must have EVERY request recorded —

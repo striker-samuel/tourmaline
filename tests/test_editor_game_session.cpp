@@ -1,8 +1,17 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <TourmalineEditorEntry.h>
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
+
+// CHECK must evaluate its operand in optimized builds (unlike assert).
+#define CHECK(expr) do { \
+    if (!(expr)) { \
+        std::fprintf(stderr, "CHECK failed: %s at line %d\n", #expr, __LINE__); \
+        std::abort(); \
+    } \
+} while (false)
 
 int main() {
     editor::GameSessionRunner runner;
@@ -10,25 +19,25 @@ int main() {
     float total = 0.0f;
     runner.Stop();
     runner.Tick(1.0f);
-    assert(!runner.Active());
+    CHECK(!runner.Active());
     auto state = std::make_shared<int>(42);
-    assert(runner.Start({
+    CHECK(runner.Start({
         .onUpdate = [&, state](float dt) {
             ++updates;
             total += dt;
-            assert(*state == 42);
+            CHECK(*state == 42);
         },
-        .onStop = [&, state] { ++stops; assert(*state == 42); }
+        .onStop = [&, state] { ++stops; CHECK(*state == 42); }
     }));
-    assert(!runner.Start({})); // cannot replace a running game
+    CHECK(!runner.Start({})); // cannot replace a running game
     runner.Tick(0.25f);
     runner.Tick(0.75f);
-    assert(updates == 2 && total == 1.0f);
+    CHECK(updates == 2 && total == 1.0f);
     runner.Stop();
     runner.Stop();
     runner.Tick(1.0f);
-    assert(stops == 1 && updates == 2 && !runner.Active());
-    assert(runner.Start({})); // entry-only game without callbacks
+    CHECK(stops == 1 && updates == 2 && !runner.Active());
+    CHECK(runner.Start({})); // entry-only game without callbacks
     runner.Stop();
     return 0;
 }
