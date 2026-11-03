@@ -1,5 +1,10 @@
 # Offline asset history service (first slice)
 
+For a **shared Windows/Linux NAS repository**, immutable published
+representations, stable source UUIDs, workstation-local caches and active
+reader visibility, see the [Asset repository manual](asset_repository_manual.md).
+The NAS-capable service can also run entirely on localhost for offline use.
+
 This is an **offline-first** revision archive for arbitrary source files on a
 mapped SMB share such as `G:\\project`, a mounted Linux share, or a local folder.
 The origin host OS is not part of the protocol; normal file I/O is enough.
