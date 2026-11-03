@@ -129,6 +129,9 @@ namespace editor {
 			DrawMenuBar();
 			ImGui::EndMainMenuBar();
 		}
+		// A normal floating project configuration window must not be
+		// nested in ImGui's main menu-bar window stack.
+		DrawProjectExportWindow();
 		// Tool topbar: tabbed toolbar directly under the menu bar (hidden
 		// with the panels via m_uiMode). Everything below keys off the
 		// combined menu+toolbar offset (m_menuH), so panels, splitters and
@@ -907,7 +910,6 @@ namespace editor {
 			m_showSaveDialog = false;
 		}
 		DrawSaveDialog();
-		DrawProjectExportWindow();
 		if (m_showRecoverDialog) {
 			ImGui::OpenPopup("Recover autosave");
 			m_showRecoverDialog = false;
