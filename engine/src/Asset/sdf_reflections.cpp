@@ -123,8 +123,18 @@ bool TraceOne(const StaticSdfInstance& instance, const glm::vec3& origin,
 	// is the safe change-of-units for any affine scale, including
 	// nonuniform transforms. Short steps hedge tri-linear interpolation
 	// error and the finite resolution of the narrow-band samples.
+	// The int16-quantized, trilinearly interpolated field resolves a
+	// surface no finer than a conservative fraction of ONE VOXEL. The
+	// true surface can fall between voxel planes (half-voxel floor),
+	// and near-diagonal geometry mixes off-surface corner taps into
+	// the interpolated value - observed ~0.6*voxelSize along an
+	// open-triangle edge trace. A tighter epsilon floor makes
+	// convergence unreachable: the tracer steps through the flat zone
+	// and reports a miss (the open-triangle trace in test_sdf). The
+	// 0.75*voxelSize floor keeps every hit within three quarters of a
+	// voxel of the true surface.
 	const float localEpsilon = std::max(options.hitEpsilon * localSpeed,
-		0.2f * v.voxelSize);
+		0.75f * v.voxelSize);
 	float t = enter;
 	for (uint32_t step = 0; step < options.maxSteps && t <= exit; ++step) {
 		const glm::vec3 p = lo + t * ld;
