@@ -43,6 +43,8 @@ struct GiKey { Id id = 0; constexpr operator Id() const { return id; } };
 // docs/audio_graph.md - loadable through the audio facade
 // into a runtime AudioInstance handle).
 struct SpriteSetKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct StateMachineKey { Id id = 0; constexpr operator Id() const { return id; } };
+struct NavMeshKey { Id id = 0; constexpr operator Id() const { return id; } };
 struct AudioGraphKey { Id id = 0; constexpr operator Id() const { return id; } };
 // ONE CUE of an authored audio graph: the (graph id, cue
 // ordinal) pair (the ordinal indexes the authored file's
@@ -68,9 +70,9 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 5ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793666129ULL;
-inline constexpr std::string_view ContentHash = "9eabc643b759b257";
+inline constexpr std::uint64_t Generation = 6ULL;
+inline constexpr std::uint64_t GeneratedAt = 1793669417ULL;
+inline constexpr std::string_view ContentHash = "ad0cac7f766b29a0";
 
 namespace scenes {
     inline constexpr SceneKey game{0x1000ULL};
@@ -101,6 +103,12 @@ namespace audiographs {
 namespace spritesets {
 }
 
+namespace statemachines {
+}
+
+namespace navmeshes {
+}
+
 // The authored audio-graph CUES (docs/audio_graph.md):
 // each constant bundles (graph id, cue ordinal) - the
 // ordinal indexes the authored file's cue list. Feed
@@ -125,14 +133,16 @@ inline constexpr std::array Paks = {
 // catalog-fingerprint fold + the .tapp validation agree on
 // these bytes; do not renumber - AudioGraph is APPENDED, 6).
 enum class AssetKind : std::uint8_t {
-    Scene      = 0,
-    Texture    = 1,
-    Mesh       = 2,
-    Sound      = 3,
-    Shader     = 4,
-    Gi         = 5,
-    AudioGraph = 6,
-    SpriteSet  = 7,
+    Scene        = 0,
+    Texture      = 1,
+    Mesh         = 2,
+    Sound        = 3,
+    Shader       = 4,
+    Gi           = 5,
+    AudioGraph   = 6,
+    SpriteSet    = 7,
+    StateMachine = 8,
+    NavMesh      = 9,
 };
 
 // The FLAT TYPED CATALOG: plain compile-time POD records -
@@ -281,6 +291,16 @@ struct project_pipeline::query::AssetTraits<project::SpriteSetKey> {
     static constexpr bool Matches(project::AssetKind k)
         { return k == project::AssetKind::SpriteSet; }
 };
+template<>
+struct project_pipeline::query::AssetTraits<project::StateMachineKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::StateMachine; }
+};
+template<>
+struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
+    static constexpr bool Matches(project::AssetKind k)
+        { return k == project::AssetKind::NavMesh; }
+};
 
 // Optional build-generated local shader reflection catalog.
 #if __has_include("project_compiled_shaders.h")
@@ -297,8 +317,8 @@ struct project_pipeline::query::AssetTraits<project::SpriteSetKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=5 timestamp=1793666129
-// catalog hash=9eabc643b759b257
+// generator generation=6 timestamp=1793669417
+// catalog hash=ad0cac7f766b29a0
 //
 // [assets]
 // asset 0x1000 path="content/scenes/game.tour" pak="world"

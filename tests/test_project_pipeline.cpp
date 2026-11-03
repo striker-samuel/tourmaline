@@ -3264,7 +3264,11 @@ void TestProjectCatalog() {
 					!= std::string::npos,
 				"catalog.header-symbol-table");
 			Check(text.find("struct GiKey") != std::string::npos
-				&& text.find("    Gi         = 5,") != std::string::npos,
+				// The AssetKind enumerators are column-aligned to the
+				// LONGEST kind name (#57's StateMachine/NavMesh widened
+				// the column): match name + padding + value, never a
+				// single-space literal.
+				&& FindNameValue(text, "Gi", "= 5,"),
 				"catalog.header-gi-kind-lane");
 		}
 	}
