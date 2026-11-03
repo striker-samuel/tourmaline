@@ -1368,7 +1368,8 @@ inline bool BuildScatterPush(const PlacementSystem::LayerBinding& layer,
 	out.seedLo = (uint32_t)(layer.program.graphSeed & 0xFFFFFFFFull);
 	out.seedHi = (uint32_t)(layer.program.graphSeed >> 32);
 	out.nodeId = layer.program.nodeId;
-	out.candidateCount = layer.config.candidatesPerTile;
+	out.candidateCount = layer.domainKind == DomainKind::PointCloud && layer.pointCloud
+		? layer.pointCloud->pointCount() : layer.config.candidatesPerTile;
 	out.tileX = tile.x; out.tileY = tile.y; out.tileZ = tile.z;
 	return true;
 }
