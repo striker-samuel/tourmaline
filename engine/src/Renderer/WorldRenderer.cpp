@@ -11491,7 +11491,7 @@ namespace engine {
 					static bool logged = false;
 					if (!logged) {
 						std::fprintf(stderr,
-							"[GpuSceneCompact] shader unavailable; compaction skipped\\n");
+							"[GpuSceneCompact] shader unavailable; compaction skipped\n");
 						logged = true;
 					}
 				}
