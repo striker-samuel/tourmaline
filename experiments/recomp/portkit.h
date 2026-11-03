@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "recomp_abi.h"
+#include "external_assets.h"
 // Experimental N64 recomp hosting primitives; no game code or game assets.
 #include <algorithm>
 #include <array>
@@ -317,12 +318,20 @@ public:
     ~Session(){Shutdown();}
     Session(const Session&)=delete;
     Session& operator=(const Session&)=delete;
-    bool Boot(const std::filesystem::path& romPath,
+    // User supplies an explicit repository root, and ROM/save locations
+    // OUTSIDE it. A validated, legally obtained ROM is a boot input,
+    // never a ProjectRuntime asset or a cooked pak payload.
+    bool Boot(const ExternalAssets& locations,
               const std::filesystem::path& savePath,
               Bridge bridge,std::string& error,
               TourRecompHostV1 callbacks={sizeof(TourRecompHostV1)}) {
         Shutdown();
-        if(!LoadSm64UsRom(romPath,rom_,error) ||
+        if(locations.rom.empty() || !locations.Validate(error) ||
+           !CanonicalExternal(savePath,locations.repoRoot,"EEPROM save",error)){
+            if(error.empty())error="External ROM path is required";
+            return false;
+        }
+        if(!LoadSm64UsRom(locations.rom,rom_,error) ||
            !save_.Load(savePath,error)){
             rom_.clear();return false;
         }
