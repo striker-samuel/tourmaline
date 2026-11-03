@@ -682,17 +682,15 @@ namespace editor {
 	}
 
 	void EditorApp::ComputeViewportRects(smvk::Extent2D extent) {
-		// Central area between the panels (m_vp in single layout = vp[0]).
-		ViewportRect area;
-		area.y = m_menuH;
-		area.h = float(extent.height) - area.y;
-		area.x = 0.0f;
-		area.w = float(extent.width);
-	if (m_uiMode) {
-		area.x = m_outlinerW;
-		area.w = float(extent.width) - m_outlinerW - m_inspectorW;
-		area.h -= BottomDockH() + kEditorStatusH;
-	}
+		// The RenderFrame pass graph is recorded BEFORE this frame's ImGui
+		// workspace. Use the previous completed dock window content rect
+		// (one-frame resize latency, no second render pass or realloc).
+		ViewportRect area{ 0.0f, m_menuH, float(extent.width),
+			float(extent.height) - m_menuH };
+		if (m_uiMode)
+			area = m_dockViewportVisible
+				? m_dockViewportRect
+				: ViewportRect{ 0.0f, m_menuH, 1.0f, 1.0f };
 		// A docked prefab world occupies the right portion of the
 		// CENTRAL editor stage, independently from the Inspector and
 		// asset browser. Keep the scene's native 4:3 aspect and camera
@@ -767,10 +765,9 @@ namespace editor {
 			if (on) {
 				const ViewportRect& s = m_viewports[0].rect;
 				std::fprintf(stderr,
-					"[LAYOUT] area %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect %.3f | dockH %.0f outlinerW %.0f inspectorW %.0f\n",
+					"[LAYOUT] dock stage %.0fx%.0f@%.0f,%.0f | vp0 %.0fx%.0f@%.0f,%.0f aspect %.3f\n",
 					area.w, area.h, area.x, area.y,
-					s.w, s.h, s.x, s.y, s.w / std::max(s.h, 1.0f),
-					BottomDockH(), m_outlinerW, m_inspectorW);
+					s.w, s.h, s.x, s.y, s.w / std::max(s.h, 1.0f));
 			}
 		}
 	}
@@ -2024,7 +2021,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		const bool inVp = lmx >= 0.0f && lmy >= 0.0f && lmx < vp.w && lmy < vp.h;
 		const bool altNav = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
-		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse();
+		const bool uiEats = m_imgui && m_imgui->WantsCaptureMouse()
+			&& !(m_uiMode && m_dockViewportHovered && inVp);
 		const bool shiftHeld = m_input.isKeyHeld(TOUR_KEY_LEFT_SHIFT) ||
 			m_input.isKeyHeld(TOUR_KEY_RIGHT_SHIFT);
 		uint32_t insetXAbs = 0;
