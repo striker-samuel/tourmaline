@@ -182,6 +182,61 @@ desktop windows. If the process loses focus mid-script, it fails rather
 than clicking the wrong target. Live input does not work in headless CI;
 use `validate` there.
 
+## project_init: name-and-path project scaffolding
+
+Tourmaline already owns project creation in the **native** `Project init`
+command: it mints and preserves the persistent GUID in `project.tourproj`,
+creates `content/models`, `content/scenes`, `.tourmaline`, `paks`,
+and writes native build defaults. **Do not implement a second GUID or
+marker format.** The new `tools/project_init.py` is the agent-facing
+scaffolding wrapper around that canonical executable.
+
+```bash
+# Preview a new named project at an arbitrary destination (zero writes):
+python tools/project_init.py --name "My Game" --path ~/games/my-game \
+  --recipe-name game --pak world --bake-gi off --bake-cubemaps off \
+  --dry-run --json
+
+# Create it (choose the native Project binary from your build):
+python tools/project_init.py --name "My Game" --path ~/games/my-game \
+  --project-exe out/build/linux-Release/Project \
+  --recipe-name game --pak world --readme --gitignore --json
+
+# Create and import a model plus its existing authored .tour scene:
+python tools/project_init.py --name "Test World" --path ~/games/test-world \
+  --project-exe out/build/linux-Release/Project \
+  --from-gltf /assets/world.glb --from-scene /assets/world.tour \
+  --bake-gi on --json
+
+# Explicitly adopt an existing project (keeps identity and existing files):
+python tools/project_init.py --name "Existing Project" \
+  --path ~/games/existing --adopt --recipe-name game --json
+```
+
+The wrapper creates `<recipe-name>.tourrecipe` with recipe grammar v1,
+`entry content/scenes/main.tour` and one `[pak world]` by default.
+Flags `--name`, `--path`, `--recipe-name`, `--pak`,
+`--entry-scene`, `--bake-gi on|off`, `--bake-cubemaps on|off`,
+`--from-gltf`, `--from-scene`, `--readme`, `--gitignore`, and
+`--no-recipe` customize the scaffold. On `--from-scene`, the entry
+references the native seed destination `content/scenes/<source>.tour`.
+Scene seeding requires `--from-gltf` because the native implementation
+repoints the imported geometry. Without a real, valid entry scene, the
+recipe is **only a scaffold**: `Project validate/build` will refuse
+the unresolved artifact. The CLI reports `scene_ready=false`; it
+does not claim a ready-to-cook project.
+
+New projects may target a fresh directory or empty folder. Existing
+projects require `--adopt` and a matching name/valid marker GUID;
+the tool **never overwrites** existing recipes, README or .gitignore.
+Use `--dry-run --json` first for unattended automation.
+The native binary can be passed with `--project-exe` or found on
+PATH / common repo build paths. Exit 0 = scaffold succeeded; 2 =
+bad arguments, missing executable, native init error or unsafe write.
+A failure during native import may leave a partly initialized project
+from the canonical init; inspect it rather than blindly deleting it.
+
+
 ## tourdiff: compare cooked releases without filename churn
 
 `tools/tourdiff.py` compares SMP8 `.pak` files or appmanifest v2
@@ -271,6 +326,7 @@ reusable core parser/decoder over multiple inconsistent pipelines.
 python -m unittest discover -s tests -p 'test_tourinfo.py' -v
 python -m unittest discover -s tests -p 'test_tourdiff.py' -v
 python -m unittest discover -s tests -p 'test_tourcapture.py' -v
+python -m unittest discover -s tests -p 'test_project_init.py' -v
 python -m unittest discover -s tests -p 'test_pak_browser.py' -v
 python -m unittest discover -s tests -p 'test_pixel_compare.py' -v
 python -m unittest discover -s tests -p 'test_input_emulator.py' -v
