@@ -448,7 +448,7 @@ void EditorApp::LoadPlacementFromDoc(const smvk::tour::Doc& doc) {
 		else if (key.rfind("place.paint.", 0) == 0) {
 			uint64_t gid = 0;
 			std::string rest;
-			if (!gidOf(key, 11, gid, rest)) continue;
+			if (!gidOf(key, 12, gid, rest)) continue;
 			PaintStamp stamp;
 			int erase = 0;
 			std::istringstream in(val);
