@@ -274,10 +274,17 @@ bool AttachCompiledCatalog(ProjectRuntime& rt,
 			" count";
 		return false;
 	}
-	return rt.AttachCompiledCatalog(
-		reinterpret_cast<
-			const ProjectRuntime::CompiledAssetDesc*>(assets),
-		assetCount, fingerprint, err);
+	// Layout compatibility does not permit type-punning through an
+	// unrelated struct pointer: GCC's strict-aliasing optimization may
+	// assume the generated Desc is never a CompiledAssetDesc. Copy into
+	// the runtime's actual descriptor type before validating it.
+	std::vector<ProjectRuntime::CompiledAssetDesc> mirror;
+	mirror.reserve(assetCount);
+	for (size_t i = 0; i < assetCount; ++i)
+		mirror.push_back({ assets[i].id, assets[i].kind,
+			assets[i].path, assets[i].sceneName });
+	return rt.AttachCompiledCatalog(mirror.data(), mirror.size(),
+		fingerprint, err);
 }
 
 } // namespace app
