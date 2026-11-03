@@ -65,6 +65,18 @@ public:
         return {uint32_t(index), slot.generation};
     }
 
+    // In-memory source lane for content-registry / pak consumers. The host
+    // owns resolution and supplies the decoded .shape bytes as UTF-8 text.
+    [[nodiscard]] ShapeInstanceHandle LoadText(
+        const std::string& text, const glm::mat4& transform,
+        const glm::vec3& color, std::string& error,
+        DebugDepthMode depth = DebugDepthMode::Tested) {
+        asset::ShapeAsset shape;
+        if (!asset::ParseShapeAsset(text, shape, error))
+            return {};
+        return Add(shape, transform, color, error, depth);
+    }
+
     // Authoring/dev path: read a .shape document and instantiate it once.
     // Production packages should provide decoded text through the content
     // registry instead of relying on absolute host filesystem paths.
@@ -92,10 +104,7 @@ public:
             error = "failed to read shape source";
             return {};
         }
-        asset::ShapeAsset shape;
-        if (!asset::ParseShapeAsset(source, shape, error))
-            return {};
-        return Add(shape, transform, color, error, depth);
+        return LoadText(source, transform, color, error, depth);
     }
 
     [[nodiscard]] const ShapeInstance* Get(ShapeInstanceHandle handle) const {
