@@ -318,8 +318,8 @@ def show_picker():
                            pos="midCenterTop", fade=True)
 
     def do_resolve(*_):
-        path, rev = selected_asset(), selected_revision()
-        if path is None or rev is None:
+        asset, rev = selected_asset(), selected_revision()
+        if asset is None or rev is None:
             cmds.warning("Select a source asset and a revision")
             return
         try:
