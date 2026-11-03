@@ -139,6 +139,22 @@ int main() {
 		WriteFile(tmp / "broken.pak", garbage.data(), garbage.size());
 	}
 
+	// A zero-initialized kind must never be accepted as a scene.
+	// This is a new on-disk kind ABI: stale tables fail validation.
+	{
+		const std::vector<tour::asset::PakAssetIdRow> nilRows = {
+			{ 0x1000, smvk::kCatalogKindNil,
+				"content/scenes/church.tour", "" },
+		};
+		const std::vector<uint8_t> blob =
+			tour::asset::WriteAssetIdsBlob(nilRows);
+		std::vector<tour::asset::PakAssetIdRow> parsed;
+		std::string parseErr;
+		Check(!tour::asset::ParseAssetIdsBlob(blob, parsed, parseErr)
+			&& parseErr.find("kind byte") != std::string::npos,
+			"cr.identity-nil-kind-rejected");
+	}
+
 	// ---- DISCOVERY (the record source: the paks' own tables) ---------
 	// base.pak joins through its OWN identity table; brokenids.pak
 	// carries a table whose ARCHIVE is garbage — the corrupt-owner
