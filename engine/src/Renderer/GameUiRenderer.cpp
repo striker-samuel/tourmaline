@@ -137,10 +137,14 @@ bool GameUiRenderer::DrawNineSlice(const asset::SpriteSet& set,
 	const float sy = scaleBorders(float(b[1]), float(b[3]), bounds.size.y);
 	const float dstX[4] = {bounds.origin.x,
 		bounds.origin.x + float(b[0]) * sx,
-		bounds.Right() - float(b[2]) * sx, bounds.Right()};
+		(float(b[0]) + float(b[2]) >= bounds.size.x)
+			? bounds.origin.x + float(b[0]) * sx
+			: bounds.Right() - float(b[2]) * sx, bounds.Right()};
 	const float dstY[4] = {bounds.origin.y,
 		bounds.origin.y + float(b[1]) * sy,
-		bounds.Bottom() - float(b[3]) * sy, bounds.Bottom()};
+		(float(b[1]) + float(b[3]) >= bounds.size.y)
+			? bounds.origin.y + float(b[1]) * sy
+			: bounds.Bottom() - float(b[3]) * sy, bounds.Bottom()};
 	// Preflight to guarantee atomic submission at the fixed instance limit.
 	size_t count = 0;
 	for (int y = 0; y < 3; ++y)
