@@ -3,9 +3,11 @@
 
 #include <Engine/Asset/sdf.h>
 #include <Engine/Asset/sdf_reflections.h>
+#include <Engine/Renderer/static_sdf_gpu.h>
 #include <Engine/Asset/pak.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -37,6 +39,20 @@ int main() {
 		"closed cube bake");
 	Check(v.signedDistance, "cube has watertight sign");
 	Check(v.samples.size()==16*16*16, "voxel count");
+	const auto packedSamples = smvk::PackStaticSdfWords(v.samples);
+	Check(packedSamples.size() == (v.samples.size() + 1) / 2,
+		"static SDF GPU word count");
+	for (size_t i = 0; i < v.samples.size(); ++i) {
+		const uint32_t shift = uint32_t(i & 1u) * 16u;
+		const uint16_t bits = uint16_t(packedSamples[i / 2] >> shift);
+		Check(std::bit_cast<int16_t>(bits) == v.samples[i],
+			"static SDF GPU sample bit-for-bit parity");
+	}
+	const std::array<int16_t, 3> oddSamples{-32767, 32767, -1};
+	const auto oddPacked = smvk::PackStaticSdfWords(oddSamples);
+	Check(oddPacked.size() == 2 && oddPacked[0] == 0x7fff8001u &&
+		oddPacked[1] == 0x0000ffffu,
+		"static SDF odd word padding and signed-endian packing");
 	auto index=[](int x,int y,int z) {return size_t(x+16*(y+16*z));};
 	Check(v.samples[index(8,8,8)]<0, "cube center is inside");
 	Check(v.samples[index(0,0,0)]>0, "outside corner positive");

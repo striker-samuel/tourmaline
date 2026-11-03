@@ -48,6 +48,7 @@
 #include <Engine/Placement/placement_gpu.h>
 #include <Engine/Placement/placement_stream_provider.h>
 #include <Engine/Renderer/geometry_streamer.h>
+#include <Engine/Renderer/static_sdf_gpu.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Rendergraph/bloom.h>
@@ -3661,6 +3662,12 @@ public:
 	// the UI as SSGI reflections (it rides the SSGI block's shared HZB);
 	// the builder/code tokens stay SSR. Default ON.
 	bool m_ssrEnabled = true;
+	// Static-only TSDF off-screen fallback (opt-in, disabled by default).
+	// Uploads baked sidecars for frozen opaque instances and runs the
+	// existing SSR classify/intersect/blur/temporal/composite chain.
+	bool m_staticSdfReflectionsEnabled = false;
+	bool m_staticSdfLastEnabled = false;
+	smvk::StaticSdfGpuScene m_staticSdfGpu;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
 	float m_ssrMaxDistance = 50.0f; // ray length (m)

@@ -2496,6 +2496,26 @@ std::unique_ptr<Cluster> DeserializeCluster(
 	}
 	if (bakeBorrowedAny)
 		cluster->PinPakImage(imagePin); // lvalue: shared copy, digest pass may still move
+	// Mesh-local SDF sidecars are derived, non-texture payloads. Keep
+	// their bytes with the owning cluster (borrow pinned uncompressed pak
+	// spans, own the LZ4 case), exactly like GI bake payloads. This makes
+	// .geometry.sdf discoverable through World::ReadBakeBytes for the
+	// static reflection uploader without a second VFS or pak scan.
+	bool sdfBorrowedAny = false;
+	for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::Sdf)) {
+		const auto payload = reader.Payload(*e);
+		if (payload.empty()) continue;
+		if ((e->flags & PakEntryFlag_Lz4) != 0 || !imagePin) {
+			cluster->AddBakePayload(e->path,
+				std::vector<uint8_t>(payload.begin(), payload.end()));
+		} else {
+			cluster->AddBakePayloadBorrowed(e->path, payload);
+			sdfBorrowedAny = true;
+		}
+	}
+	if (sdfBorrowedAny)
+		cluster->PinPakImage(imagePin);
+
 	struct TexLoad {
 		std::string uri; // full asset uri (== file part for textures)
 		PakTexturePayload payload;
