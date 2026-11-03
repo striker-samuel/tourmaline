@@ -497,20 +497,6 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
 		break;
 	}
-	case EditVerb::SetPhysicsBodyAttr: {
-		if (const int t = app.CreatedTransformIndex(c.node); t >= 0)
-			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
-		else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0)
-			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
-		else if (const int a = app.CreatedAudioRoomIndex(c.node); a >= 0)
-			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(a);
-		else if (!needNode()) return false;
-		out.verb = smvk::tour::Verb::SetPhysicsBodyAttr;
-		out.text = c.physicsAttr;
-		out.number = c.number;
-		out.flag = c.afterFlag;
-		return true;
-	}
 	case EditVerb::SetTriggerVolumeAttr: {
 		if (forward)
 			WriteNodeTriggerVolumeAttr(c.node, c.triggerVolumeAttr, c.number,
@@ -4774,6 +4760,20 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.text = c.triggerVolumeAttr;
 		out.flag = c.afterFlag;
 		out.name = c.afterText; // tag string
+		return true;
+	}
+	case EditVerb::SetPhysicsBodyAttr: {
+		if (const int t = app.CreatedTransformIndex(c.node); t >= 0)
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
+		else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0)
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
+		else if (const int a = app.CreatedAudioRoomIndex(c.node); a >= 0)
+			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(a);
+		else if (!needNode()) return false;
+		out.verb = smvk::tour::Verb::SetPhysicsBodyAttr;
+		out.text = c.physicsAttr;
+		out.number = c.number;
+		out.flag = c.afterFlag;
 		return true;
 	}
 	case EditVerb::AttachPhysicsBody:
