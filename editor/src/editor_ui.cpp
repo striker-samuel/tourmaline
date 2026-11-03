@@ -68,9 +68,15 @@ namespace editor {
 			if (ImGui::Selectable(p.name.c_str())) {
 				std::snprintf(m_brushPresetName, sizeof(m_brushPresetName), "%s",
 					p.name.c_str());
-				m_paintRadius = p.radius;
-				m_paintStrength = p.strength;
-				m_paintStrokeSpacing = p.spacing;
+				if (scatter) {
+					m_scatterBrushRadius = p.radius;
+					m_scatterBrushStrength = std::clamp(p.strength, 0.0f, 1.0f);
+					m_scatterBrushSpacing = p.spacing;
+				} else {
+					m_paintRadius = p.radius;
+					m_paintStrength = p.strength;
+					m_paintStrokeSpacing = p.spacing;
+				}
 				if (!scatter) {
 					m_paintOp = p.operation;
 				} else if (auto* graph = m_placement.current()) {
@@ -94,7 +100,7 @@ namespace editor {
 	}
 	ImGui::InputText("Asset name", m_brushPresetName, sizeof(m_brushPresetName));
 	if (scatter)
-		ImGui::TextDisabled("Applies to Density, Transform and Spacing nodes.");
+		ImGui::TextDisabled("Applies to Density, Transform and Spacing nodes; brush shape controls viewport mask painting.");
 	else
 		ImGui::DragFloat("Stroke spacing", &m_paintStrokeSpacing, 0.02f, 0.05f, 2.0f,
 			"%.2f radius");
@@ -102,9 +108,9 @@ namespace editor {
 		Preset p;
 		p.name = m_brushPresetName;
 		p.kind = scatter ? Kind::Scatter : Kind::Terrain;
-		p.radius = m_paintRadius;
-		p.strength = m_paintStrength;
-		p.spacing = m_paintStrokeSpacing;
+		p.radius = scatter ? m_scatterBrushRadius : m_paintRadius;
+		p.strength = scatter ? m_scatterBrushStrength : m_paintStrength;
+		p.spacing = scatter ? m_scatterBrushSpacing : m_paintStrokeSpacing;
 		p.operation = m_paintOp;
 		if (scatter) {
 			if (const auto* graph = m_placement.current()) {
