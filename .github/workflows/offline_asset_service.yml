@@ -1,0 +1,39 @@
+name: Offline asset service
+
+on:
+  push:
+    paths:
+      - 'tools/offline_asset_service.py'
+      - 'tools/install_offline_assets.py'
+      - 'tools/tests/test_offline_asset_service.py'
+      - 'tools/maya/tourmaline_asset_versions.py'
+      - 'tools/tests/test_maya_asset_versions.py'
+      - '.github/workflows/offline_asset_service.yml'
+  pull_request:
+    paths:
+      - 'tools/offline_asset_service.py'
+      - 'tools/install_offline_assets.py'
+      - 'tools/tests/test_offline_asset_service.py'
+      - 'tools/maya/tourmaline_asset_versions.py'
+      - 'tools/tests/test_maya_asset_versions.py'
+      - '.github/workflows/offline_asset_service.yml'
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Offline asset service regression tests
+        run: python -m unittest discover -s tools/tests -p "test_offline_asset_service.py" -v
+      - name: Maya client contract tests (Maya not required)
+        run: python -m unittest discover -s tools/tests -p "test_maya_asset_versions.py" -v
+      - name: Syntax checks
+        run: python -m compileall -q tools/offline_asset_service.py tools/install_offline_assets.py tools/maya/tourmaline_asset_versions.py
