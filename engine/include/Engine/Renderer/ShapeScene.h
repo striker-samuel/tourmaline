@@ -8,6 +8,10 @@
 #include <Engine/Renderer/ShapeDebugDraw.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <utility>
 #include <limits>
 #include <string>
 #include <vector>
@@ -59,6 +63,39 @@ public:
         ++count_;
         error.clear();
         return {uint32_t(index), slot.generation};
+    }
+
+    // Authoring/dev path: read a .shape document and instantiate it once.
+    // Production packages should provide decoded text through the content
+    // registry instead of relying on absolute host filesystem paths.
+    [[nodiscard]] ShapeInstanceHandle LoadFile(
+        const std::filesystem::path& path, const glm::mat4& transform,
+        const glm::vec3& color, std::string& error,
+        DebugDepthMode depth = DebugDepthMode::Tested) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            error = "unable to open shape source: " + path.generic_string();
+            return {};
+        }
+        // Bound input file size before allocating a source string.
+        file.seekg(0, std::ios::end);
+        const auto bytes = file.tellg();
+        if (bytes < 0 || bytes > std::streamoff(8 * 1024 * 1024)) {
+            error = "shape source exceeds 8 MiB limit";
+            return {};
+        }
+        file.seekg(0);
+        std::string source(static_cast<size_t>(bytes), '\0');
+        if (!source.empty())
+            file.read(source.data(), static_cast<std::streamsize>(source.size()));
+        if (!file) {
+            error = "failed to read shape source";
+            return {};
+        }
+        asset::ShapeAsset shape;
+        if (!asset::ParseShapeAsset(source, shape, error))
+            return {};
+        return Add(shape, transform, color, error, depth);
     }
 
     [[nodiscard]] const ShapeInstance* Get(ShapeInstanceHandle handle) const {
