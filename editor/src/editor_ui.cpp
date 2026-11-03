@@ -2967,34 +2967,31 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				"The node's local translation (m)");
 			const bool tOwn = TrackDrag(EditVerb::Translate, node,
 				scene.localTransform[node], tv.activated);
-			if (tOwn) {
+			if (tOwn && tv.edited)
 				WriteLocalTRS(node, glm::vec3(ts[0], ts[1], ts[2]), r, s);
-				if (tv.finished) {
-					m_pending.cmd.afterVec = glm::vec3(ts[0], ts[1], ts[2]);
-					FinishDrag();
-				}
+			if (tOwn && tv.finished) {
+				m_pending.cmd.afterVec = glm::vec3(ts[0], ts[1], ts[2]);
+				FinishDrag();
 			}
 			const attr::Vec3Result rv = attr::Vec3("Rotate (deg)", rs, 0.5f,
 				"The node's local Euler rotation (degrees)");
 			const bool rOwn = TrackDrag(EditVerb::Rotate, node,
 				scene.localTransform[node], rv.activated);
-			if (rOwn) {
+			if (rOwn && rv.edited)
 				WriteLocalTRS(node, t, glm::vec3(rs[0], rs[1], rs[2]), s);
-				if (rv.finished) {
-					m_pending.cmd.afterVec = glm::vec3(rs[0], rs[1], rs[2]);
-					FinishDrag();
-				}
+			if (rOwn && rv.finished) {
+				m_pending.cmd.afterVec = glm::vec3(rs[0], rs[1], rs[2]);
+				FinishDrag();
 			}
 			const attr::Vec3Result sv = attr::Vec3("Scale", ss, 0.02f,
 				"The node's local scale (uniform per axis)");
 			const bool sOwn = TrackDrag(EditVerb::Scale, node,
 				scene.localTransform[node], sv.activated);
-			if (sOwn) {
+			if (sOwn && sv.edited)
 				WriteLocalTRS(node, t, r, glm::vec3(ss[0], ss[1], ss[2]));
-				if (sv.finished) {
-					m_pending.cmd.afterVec = glm::vec3(ss[0], ss[1], ss[2]);
-					FinishDrag();
-				}
+			if (sOwn && sv.finished) {
+				m_pending.cmd.afterVec = glm::vec3(ss[0], ss[1], ss[2]);
+				FinishDrag();
 			}
 		}
 

@@ -8,6 +8,7 @@
 // boundary (CmdToTour / TourToCmd).
 
 #include "editor_app.h"
+#include "editor_transform_trs.h"
 
 #include <algorithm>
 #include <chrono>
@@ -101,18 +102,18 @@ void EditorApp::ApplyGiAssetBindingsToScene() {
 
 void EditorApp::ReadLocalTRS(uint32_t node, glm::vec3& t,
 	glm::vec3& rDeg, glm::vec3& s) const {
-	const glm::mat4& m = m_world->scene.localTransform[node];
-	t = glm::vec3(m[3]);
-	glm::vec3 skew;
-	glm::vec4 persp;
-	glm::quat q;
-	glm::decompose(m, s, q, t, skew, persp);
-	rDeg = glm::degrees(glm::eulerAngles(q));
+	transform::ReadLocalTRS(m_world->scene.localTransform[node], t, rDeg, s);
 }
 
 void EditorApp::WriteLocalTRS(uint32_t node, const glm::vec3& t,
 	const glm::vec3& rDeg, const glm::vec3& s) {
-	m_world->scene.localTransform[node] = LocalMatrixFromTRS(t, rDeg, s);
+	if (!transform::Finite(t) || !transform::Finite(rDeg) ||
+		!transform::Finite(s))
+		return;
+	const glm::mat4 candidate = LocalMatrixFromTRS(t, rDeg, s);
+	if (!transform::Finite(candidate))
+		return;
+	m_world->scene.localTransform[node] = candidate;
 	markAsChanged(m_world->scene, int(node));
 	recalculateGlobalTransforms(m_world->scene);
 }
@@ -310,9 +311,17 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 				r = c.afterVec;
 			else
 				s = c.afterVec;
-			scene.localTransform[c.node] = LocalMatrixFromTRS(t, r, s);
+			if (!transform::Finite(t) || !transform::Finite(r)
+				|| !transform::Finite(s))
+				break;
+			const glm::mat4 candidate = LocalMatrixFromTRS(t, r, s);
+			if (!transform::Finite(candidate))
+				break;
+			scene.localTransform[c.node] = candidate;
 		}
 		else {
+			if (!transform::Finite(c.beforeMat))
+				break;
 			scene.localTransform[c.node] = c.beforeMat;
 		}
 		markAsChanged(scene, int(c.node));
