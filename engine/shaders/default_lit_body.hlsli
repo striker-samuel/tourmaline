@@ -1055,6 +1055,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     float3 lightColor = light.color.rgb * light.intensity;
 
+    // Raster plane, not smooth vertex normals: the slope bias must
+    // describe the depth actually written by the shadow caster. Keep this
+    // independent of the normal map and of the opt-in shading-normal fix.
+    // Derivatives are evaluated before the per-pixel shadow mode branch.
+    float3 shadowFaceN = ScreenSpaceFaceNormal(IN.worldPos, V, geomN);
     float shadow = 1.0f;
     if (light.shadow_map_index >= 0)
     {
@@ -1066,13 +1071,13 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             // pad2.x scale, pad2.y softness UI).
             uint evsm = hot.evsmMode;
             if (evsm != 0u)
-                shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, geomN, light,
+                shadow = GetShadowFactorEvsmCascadedFromPC(0, IN.worldPos, shadowFaceN, light,
                     (uint) light.shadow_map_index, EVSM_EXPONENT, clipPos.xy);
             else
                 // PCF depth atlas: hardware SampleCmpLevelZero (visibility
                 // interpolation) — the COMPARISON sampler
                 // (pc.comparisonSamplerId), never the regular sampler.
-                shadow = GetShadowFactorCascadedFromPC(pc.comparisonSamplerId, IN.worldPos, geomN, light);
+                shadow = GetShadowFactorCascadedFromPC(pc.comparisonSamplerId, IN.worldPos, shadowFaceN, light);
         }
         // PARKED: legacy single-map path kept in shadows.hlsli but disabled.
         // else
