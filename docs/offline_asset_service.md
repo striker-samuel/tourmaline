@@ -11,7 +11,8 @@ The origin host OS is not part of the protocol; normal file I/O is enough.
 - Headless: `python3 tools/install_offline_assets.py --terminal`.
 
 The wizard asks for the mounted source folder, a **protected archive outside the
-share**, and a per-user local cache. By default the archive and cache are under
+share**, a per-user local cache, and whether to install the Maya picker script
+into the user's scripts directory. By default the archive and cache are under
 the user's local Tourmaline data folder. Select auto-start for a user-login
 launcher on Windows or a systemd **user** service on Linux. There is no database
 server or internet dependency. The repository and Python interpreter must remain
@@ -49,12 +50,11 @@ never placed in the source tree. Do not let share users write to the archive.
 ## Maya version picker
 
 Run the installer wizard first, on the **same workstation** that runs Maya.
-Start Maya, then execute this once in the **Python** tab of Maya's Script Editor
-(adapt the directory to your Tourmaline checkout):
+If **Install Maya version picker script** was selected, the module is copied to
+the user's Maya scripts folder and can be imported directly. Start Maya, then
+execute in the **Python** tab of Maya's Script Editor:
 
 ```python
-import sys
-sys.path.insert(0, r"C:\src\tourmaline\tools\maya")
 import tourmaline_asset_versions as tm
 tm.show_picker()
 ```
@@ -65,9 +65,10 @@ Optional permanent Maya shelf button:
 tm.install_shelf_button()
 ```
 
-Keep the module directory on Maya's Python path (or copy
-`tools/maya/tourmaline_asset_versions.py` to Maya's user scripts directory)
-so the shelf command can import it on later restarts.
+If the wizard's Maya option was disabled, manually add
+`tools/maya/` to Maya's Python path or copy `tourmaline_asset_versions.py`
+to Maya's user scripts directory. The module must remain importable for a
+persistent shelf button.
 
 - Browse any archived path (including a file deleted from the share).
 - Select a specific immutable revision and **Import** OBJ / FBX / Maya scene,
@@ -79,7 +80,9 @@ so the shelf command can import it on later restarts.
   location. It does not write any metadata alongside shared source assets.
 - API users can call `tm.version_records()` to list scene records and
   `tm.switch_reference_version(record_node, revision)` to switch an existing
-  Maya scene reference to a different pinned revision. Imported mesh geometry
+  Maya scene reference to a different pinned revision. Use the **Repair this
+  scene's pinned Maya references** button to rebind local cache paths after
+  opening a scene from another workstation. Imported mesh geometry
   is not live-updated; import the alternate revision as a new object.
 
 The picker communicates with the local service at
