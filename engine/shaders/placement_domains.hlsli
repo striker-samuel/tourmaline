@@ -38,7 +38,7 @@ struct PlacementDomainParams
     float minScale;   // 12
     float maxScale;   // 16
     uint protoCount;  // 20
-    uint padA;        // 24
+    uint slopeToRock;  // 24 (formerly padA)
     float weights0;   // 32
     float weights1;   // 36
     float weights2;   // 40
@@ -77,7 +77,7 @@ struct PlacementDomainParams
     uint ecoW;         // 200
     uint ecoH;         // 204
     uint ecoChannels;  // 208
-    uint padEco;       // 212
+    float slopeThresholdDeg; // 212 (formerly padEco)
     float ecoOX;       // 216
     float ecoOZ;       // 220
     float ecoSX;       // 224
