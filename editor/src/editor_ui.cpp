@@ -716,6 +716,17 @@ namespace editor {
 			if (ImGui::MenuItem("Quad viewports (4 panels)", "V",
 				m_vpLayout == 1))
 				m_vpLayout = 1;
+			if (ImGui::MenuItem("Reset panel layout")) {
+				// Only the editor chrome resets: preserve the project, open
+				// scene, viewport mode, selection and tool configuration.
+				m_outlinerW = kEditorLeftW;
+				m_outlinerH = 380.0f;
+				m_inspectorW = kEditorRightW;
+				SavePrefs();
+				Log("Editor panel layout restored to defaults.");
+			}
+			ImGui::SetItemTooltip("Restore Outliner, Assets and Inspector sizes; "
+				"keep the current scene and tool settings.");
 			ImGui::Separator();
 			ImGui::MenuItem("Ground grid", nullptr, &m_showGrid);
 			{
