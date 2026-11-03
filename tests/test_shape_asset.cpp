@@ -50,6 +50,12 @@ int main() {
     assert(!ParseShapeAsset("shape 1\nkind box\nsegments 10000000\n", result, error));
     assert(!ParseShapeAsset("shape 1\nkind unknown\n", result, error));
     assert(!ParseShapeAsset("shape 1\nkind box\nunknown 0\n", result, error));
+    ShapeAsset oversized = DefaultShapeAsset(ShapeKind::Spline);
+    oversized.points.resize(2000);
+    oversized.segments = 256;
+    ShapeGeometry capped;
+    assert(!TessellateShape(oversized, capped, error));
+    assert(capped.vertices.empty());
     ShapeAsset invalid = DefaultShapeAsset(ShapeKind::PointCloud);
     invalid.points[0].x = std::numeric_limits<float>::infinity();
     ShapeGeometry untouched;
