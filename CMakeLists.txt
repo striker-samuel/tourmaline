@@ -510,23 +510,20 @@ target_link_libraries(engine PRIVATE Jolt)
 add_subdirectory(tools/gltf_import)
 add_subdirectory(tools/project_pipeline) # the canonical project pipeline (Project.exe + the editor use it)
 add_subdirectory(tools/tooling) # linkable project/package/capture tooling core
-# gltf_import is the ONLY tool every host builds (the viewer app + the
-# game hosts link it for the glTF import helpers). Everything below is
-# REPO-ONLY: subproject hosts (the game repos pinning this tree as a
-# submodule) skip the cook/bake tooling, the editor, the tests and the
-# samples — they want the engine + shaders + their own target.
+# Opt-in native game host for external game repositories embedding Tourmaline.
+# The editor/benchmarks/samples remain top-level only.
+option(TOURMALINE_ENABLE_GAME_HOST
+    "Build native game host and project tools when embedded" OFF)
+if(TOURMALINE_IS_TOP_LEVEL OR TOURMALINE_ENABLE_GAME_HOST)
+  add_subdirectory(tools/artifact_cache)
+  add_subdirectory(tools/project)
+  add_subdirectory(tools/pak_cooker)
+  add_subdirectory(app)
+endif()
 if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/import)
-add_subdirectory(tools/project)            # Project.exe: the project-pipeline CLI
-  add_subdirectory(tools/tourinit)            # tourinit: thin native project scaffold CLI
-  add_subdirectory(tools/artifact_cache)
+  add_subdirectory(tools/tourinit)
   add_subdirectory(tools/cook)
-  # pak_cooker BEFORE the hosts: it owns the ENGINE SHADER PACKAGE
-  # target (EngineScene_shaderpak over the declared compiled-output
-  # list — see tools/pak_cooker/CMakeLists.txt), and HostSetup's
-  # deploy branch needs the target to exist when each host is set up.
-  add_subdirectory(tools/pak_cooker)
-  add_subdirectory(app)               # App.exe: the plain pak-viewer host
   # Demo content fetch: downloads the rolling 'demo-content' GitHub
   # release (the cooked sponza_10 project - .tapp manifest + its
   # content-addressed pak, SHA-256 verified, stale paks cleaned up)
