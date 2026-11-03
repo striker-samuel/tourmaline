@@ -5578,11 +5578,10 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				+ publisher.generic_string());
 			return;
 		}
-		auto buildError = std::make_shared<std::string>();
 		m_dccPublishRunning = true;
 		const std::string output = asset.published;
 		if (!m_fibers.Post("dcc-publish",
-				[asset, script = publisher.generic_string(), buildError]() {
+				[asset, script = publisher.generic_string()]() {
 					std::string error;
 					if (!RunDccPublish(asset, script, error))
 						throw std::runtime_error(error);
