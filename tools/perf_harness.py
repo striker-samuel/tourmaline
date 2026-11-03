@@ -224,13 +224,21 @@ def command(args):
     # The exe requires its working directory to be the build root.
     source = getattr(args, "source_args", []) or (["--project", str(args.project.resolve())] if args.project else
            ["--pak", str(args.pak.resolve())])
+    if getattr(args, "mode", "") == "snapshot":
+        dest = (args.output / "sequence").resolve()
+        return [str(args.exe.resolve()), *source,
+                f"--snapshot-sequence={dest}",
+                f"--snapshot-count={args.frames}",
+                f"--snapshot-keyframe={args.keyframe_interval}",
+                f"--snapshot-code-id={args.code_id or 'unspecified'}",
+                "--present", "immediate", *args.app_arg]
     return [str(args.exe.resolve()), *source, "--disable_control", "--bench", str(args.frames),
             "--present", "immediate", *args.app_arg]
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("bench", "trace", "capture", "compare", "list", "cull"))
+    parser.add_argument("mode", choices=("bench", "trace", "capture", "compare", "list", "cull", "snapshot"))
     parser.add_argument("--exe", type=Path, help="Viewer App or dedicated Benchmark binary")
     parser.add_argument("--catalog", type=Path, default=Path(__file__).resolve().parents[1] / "benchmarks/scenarios.json")
     parser.add_argument("--scenario", help="Named source-controlled benchmark scenario id")
@@ -245,7 +253,11 @@ def main(argv=None):
     parser.add_argument("--save-paths", action="store_true", help="Persist capture and scratch settings")
     parser.add_argument("--show-paths", action="store_true", help="Display current paths without starting Nsight")
     parser.add_argument("--dry-run", action="store_true", help="Print the planned Nsight command and destinations without running it")
-    parser.add_argument("--frames", type=positive, help="Measured frames; overrides scenario default (120 otherwise)")
+    parser.add_argument("--frames", type=positive, help="Measured frames (snapshot mode: exactly this many PNGs)")
+    parser.add_argument("--keyframe-interval", type=positive, default=60,
+                        help="snapshot mode: full world checkpoint every N frames")
+    parser.add_argument("--code-id", default="",
+                        help="snapshot mode: BYOC game/code commit or content hash (no source embedded)")
     parser.add_argument("--repeat", type=positive, default=3)
     parser.add_argument("--warmup", type=positive, default=10, help="App internally uses 10 warmup frames")
     parser.add_argument("--capture-frame", type=positive, default=20)
@@ -359,7 +371,8 @@ def main(argv=None):
             parser.error("--pak, --project or --scenario required")
     if args.exe is None:
         binary = "Benchmark.exe" if os.name == "nt" else "Benchmark"
-        args.exe = Path("out/build/x64-Release") / (binary if scenario else ("App.exe" if os.name == "nt" else "App"))
+        host = "App.exe" if os.name == "nt" else "App"
+        args.exe = Path("out/build/x64-Release") / (host if args.mode == "snapshot" else (binary if scenario else host))
     if not args.exe.is_file():
         parser.error(f"executable does not exist: {args.exe}")
     workdir = (args.workdir or args.exe.parent).resolve()
@@ -404,6 +417,9 @@ def main(argv=None):
         # overrides a scenario's AA pin (the sponza-atrium canon pins AA=off
         # for golden determinism). An explicit --env TOURMALINE_AA=... wins.
         pins["TOURMALINE_AA"] = "msaa2x"
+    if args.mode == "snapshot" and "TOURMALINE_RNG_SEED" not in pins:
+        # In a replayable scenario, do not depend on process entropy.
+        pins["TOURMALINE_RNG_SEED"] = "0"
     env.update(pins)
     if args.mode == "cull":
         if not args.scenario:
@@ -454,7 +470,14 @@ def main(argv=None):
             parser.error("--shader-debug requires a Debug build or CMake -DTOURMALINE_SHADER_DEBUG=ON (verified in CMakeCache.txt)")
         report["shader_debug_requested"] = True
 
-    if args.mode == "bench":
+    if args.mode == "snapshot":
+        report["snapshot_dir"] = str(out / "sequence")
+        report["keyframe_interval"] = args.keyframe_interval
+        # One unprimed App run: snapshots capture gameplay rather than
+        # benchmark's stripped extension stack and 10 warmup frames.
+        plan = [{"invocation": argv_app, "env": env,
+                 "name": "snapshot-01.log", "resolution": None}]
+    elif args.mode == "bench":
         if resolutions:
             # One repeat-set per resolution: the render scale rides the
             # environment (never the command line), so each run's log and
@@ -594,6 +617,20 @@ def main(argv=None):
                     item["error"] = "expected one matching [perf] summary and successful exit"
             elif rc != 0:
                 failed = True
+            if args.mode == "snapshot" and rc == 0:
+                try:
+                    import snapshot_sequence
+                    frames = snapshot_sequence.reconstruct(out / "sequence")
+                    if len(frames) != args.frames:
+                        raise snapshot_sequence.SnapshotError(
+                            f"expected {args.frames} PNGs; received {len(frames)}")
+                    item["snapshots"] = len(frames)
+                    item["keyframes"] = [i + 1 for i, (r, _) in enumerate(frames)
+                                         if r["kind"] == "key"]
+                    item["first_tick"] = frames[0][0]["tick"]
+                except (snapshot_sequence.SnapshotError, OSError, ValueError) as exc:
+                    failed = True
+                    item["error"] = f"invalid/missing snapshot sequence: {exc}"
             report["runs"].append(item)
             print(json.dumps(item), flush=True)
             if failed:

@@ -1400,3 +1400,11 @@ target_link_libraries(SdfTests PRIVATE engine)
 tourmaline_stage_sdl3(SdfTests)
 set_target_properties(SdfTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME sdf_tests COMMAND SdfTests)
+
+
+# Platform-neutral PNG checkpoint/delta codec (no GPU required).
+add_executable(SnapshotSequenceTests test_snapshot_sequence.cpp)
+target_link_libraries(SnapshotSequenceTests PRIVATE engine)
+set_target_properties(SnapshotSequenceTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME snapshot_sequence_tests COMMAND SnapshotSequenceTests)
