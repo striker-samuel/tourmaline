@@ -70,6 +70,8 @@ compile_shaders(
         "${CMAKE_CURRENT_SOURCE_DIR}/project/content/shaders"
         "${TOURMALINE_SOURCE_DIR}/engine/shaders"
     VARIANTS ${GAME_PROJECT_LIT_VARIANTS}
+    OUTPUT_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/project_compiled_shaders.h"
+    RUNTIME_ROOT "${CMAKE_BINARY_DIR}"
 )
 
 add_executable(GameProject
@@ -79,6 +81,8 @@ add_executable(GameProject
 # onAttach loads them best-effort); the exe sits in the build root, so
 # the BINARY_DIR tree above is already exe-relative content/shaders.
 add_dependencies(GameProject GameProjectLit_shaders)
+target_include_directories(GameProject PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # The full HOST setup (the same one App.exe gets): runtime output dir,
 # the staged shared DLLs (KTX/OptickCore/SDL3 — this exe renders at
