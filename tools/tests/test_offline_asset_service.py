@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 import json
+from http.server import ThreadingHTTPServer
+import threading
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from pathlib import Path
 import sys
 import tempfile
@@ -117,6 +122,37 @@ class OfflineAssetTests(unittest.TestCase):
         self.assertTrue(installed.is_file())
         self.assertIn("def show_picker(", installed.read_text(encoding="utf-8"))
         self.assertEqual(list(self.source.rglob("*")), [])
+
+    def test_localhost_api_reads_versions_and_resolves_cache(self):
+        self.put("artists/hero.obj", b"version-1")
+        self.assertEqual(self.store.scan()["captured"], 1)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.store))
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        root = "http://127.0.0.1:%d" % httpd.server_port
+
+        def read(endpoint, **params):
+            url = root + endpoint
+            if params:
+                url += "?" + urlencode(params)
+            with urlopen(url, timeout=3) as response:
+                return json.load(response)
+
+        try:
+            self.assertEqual(read("/health")["status"], "ok")
+            self.assertEqual(read("/v1/status")["revisions"], 1)
+            self.assertEqual(read("/v1/assets")["assets"][0]["path"], "artists/hero.obj")
+            self.assertEqual(read("/v1/versions", path="artists/hero.obj")[
+                "versions"][0]["revision"], 1)
+            r = read("/v1/resolve", path="artists/hero.obj", revision=1, pin=1)
+            self.assertEqual(Path(r["local_path"]).read_bytes(), b"version-1")
+            with self.assertRaises(HTTPError) as result:
+                read("/v1/versions", path="../outside.obj")
+            self.assertEqual(result.exception.code, 400)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
 
     def test_setup_roundtrip(self):
         config = configure(str(self.source), str(self.archive), str(self.cache),
