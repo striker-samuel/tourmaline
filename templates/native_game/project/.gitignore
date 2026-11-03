@@ -1,0 +1,10 @@
+.tourmaline/
+*.meta
+*.geometry
+*.cooked
+*.material
+*.meshlet*
+*.tourAnim
+project.h
+project_c.h
+project_plans.h
