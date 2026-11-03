@@ -157,8 +157,8 @@ def load_geometry(path: Path):
         raise GeometryError("node array counts differ")
     instance_count = r.count(12)
     instances = [(r.u32(), r.u32(), r.string()) for _ in range(instance_count)]
-    for _ in range(r.count(44)):  # light: node/type/color/4 params/flags/name
-        r.take(44)
+    for _ in range(r.count(40)):  # light: node/type/color/4 params/flags/name
+        r.take(40)
         r.string()
     for _ in range(r.count(24)):  # camera: node/projection/4 params/name
         r.take(24)
