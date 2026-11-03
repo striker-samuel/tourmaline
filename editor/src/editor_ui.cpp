@@ -8,6 +8,7 @@
 // coalesce into one command per gesture via m_pending.
 
 #include "editor_app.h"
+#include "editor_brush_presets.h"
 #include "modal_bindings.h"
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 #include "editor_asset_browser_nav.h" // collection folders belong at root
@@ -55,7 +56,77 @@ namespace editor {
 	// the central viewport rect is computed from them in RenderFrame.
 
 	// Coalesced drag helpers (member functions for world access).
-	void EditorApp::FinalizePending() {
+	void EditorApp::DrawBrushPresetControls(bool scatter) {
+	using namespace brush;
+	ImGui::PushID(scatter ? "scatter_preset" : "terrain_preset");
+	ImGui::SeparatorText(scatter ? "Scatter brush presets" : "Terrain brush presets");
+	if (ImGui::BeginCombo("Brush preset", m_brushPresetName)) {
+		for (const auto& path : Assets()) {
+			Preset p;
+			if (!Load(path, p) || p.kind != (scatter ? Kind::Scatter : Kind::Terrain))
+				continue;
+			if (ImGui::Selectable(p.name.c_str())) {
+				std::snprintf(m_brushPresetName, sizeof(m_brushPresetName), "%s",
+					p.name.c_str());
+				m_paintRadius = p.radius;
+				m_paintStrength = p.strength;
+				m_paintStrokeSpacing = p.spacing;
+				if (!scatter) {
+					m_paintOp = p.operation;
+				} else if (auto* graph = m_placement.current()) {
+					m_placement.pushUndo();
+					for (auto& [id, node] : graph->nodes) {
+						using placement::NodeKind;
+						if (node.kind == NodeKind::Density)
+							placement::SetAttr(node, "value", p.density);
+						else if (node.kind == NodeKind::Transform) {
+							placement::SetAttr(node, "minScale", p.minScale);
+							placement::SetAttr(node, "maxScale", p.maxScale);
+						} else if (node.kind == NodeKind::Spacing)
+							placement::SetAttr(node, "minSpacing", p.minDistance);
+					}
+					MarkPlacementDirty();
+				}
+				Log("Loaded brush preset: " + p.name);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::InputText("Asset name", m_brushPresetName, sizeof(m_brushPresetName));
+	if (scatter)
+		ImGui::TextDisabled("Applies to Density, Transform and Spacing nodes.");
+	else
+		ImGui::DragFloat("Stroke spacing", &m_paintStrokeSpacing, 0.02f, 0.05f, 2.0f,
+			"%.2f radius");
+	if (ImGui::Button("Save brush preset")) {
+		Preset p;
+		p.name = m_brushPresetName;
+		p.kind = scatter ? Kind::Scatter : Kind::Terrain;
+		p.radius = m_paintRadius;
+		p.strength = m_paintStrength;
+		p.spacing = m_paintStrokeSpacing;
+		p.operation = m_paintOp;
+		if (scatter) {
+			if (const auto* graph = m_placement.current()) {
+				for (const auto& [id, node] : graph->nodes) {
+					using placement::NodeKind;
+					if (node.kind == NodeKind::Density)
+						p.density = float(placement::GetAttr(node, "value"));
+					else if (node.kind == NodeKind::Transform) {
+						p.minScale = float(placement::GetAttr(node, "minScale"));
+						p.maxScale = float(placement::GetAttr(node, "maxScale"));
+					} else if (node.kind == NodeKind::Spacing)
+						p.minDistance = float(placement::GetAttr(node, "minSpacing"));
+				}
+			}
+		}
+		Log(Save(p) ? "Saved brush preset asset: " + p.name
+			: "Brush preset save failed (check name and parameter ranges).");
+	}
+	ImGui::PopID();
+}
+
+void EditorApp::FinalizePending() {
 		if (!m_pending.active)
 			return;
 		EditCmd& c = m_pending.cmd;
@@ -3414,6 +3485,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					"%.1f", "The brush radius (m)");
 				attr::Float("Strength", &m_paintStrength, 0.01f, 0.01f,
 					64.0f, "%.2f", "The per-stamp height delta scale");
+				DrawBrushPresetControls(false);
 				if (attr::Check("Paint mode", &m_paintTerrain,
 						"While on, LMB in a 3D viewport paints the "
 						"selected terrain instead of picking. Each stamp "
