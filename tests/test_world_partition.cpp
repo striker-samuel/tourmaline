@@ -21,6 +21,7 @@
 #include <glm/glm.hpp>
 
 #include <Engine/WorldPartition/WorldPartition.h>
+#include <Engine/Placement/placement_stream_provider.h>
 
 namespace wp = engine::worldpartition;
 
