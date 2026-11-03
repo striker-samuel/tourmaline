@@ -31,7 +31,8 @@ int main() {
 	opt.bandVoxels = 6;
 	std::string err;
 	SdfVolume v;
-	Check(BakeMeshSdf(p,tris,opt,v,err), "closed cube bake");
+	Check(BakeMeshSdf(p.data(),p.size(),tris.data(),tris.size(),opt,v,err),
+		"closed cube bake");
 	Check(v.signedDistance, "cube has watertight sign");
 	Check(v.samples.size()==16*16*16, "voxel count");
 	auto index=[](int x,int y,int z) {return size_t(x+16*(y+16*z));};
@@ -42,39 +43,41 @@ int main() {
 	a.meshes.push_back({"mesh.0/prim.0",v});
 	std::vector<uint8_t> bytes = WriteSdfAsset(a);
 	SdfAsset decoded;
-	Check(ParseSdfAsset(bytes,decoded,err), "SDF roundtrip");
+	Check(ParseSdfAsset(bytes.data(),bytes.size(),decoded,err), "SDF roundtrip");
 	Check(decoded.meshes.size()==1 && decoded.meshes[0].volume.samples==v.samples
 		&& decoded.meshes[0].fragment=="mesh.0/prim.0", "SDF contents");
 	SdfAsset unchanged = decoded;
 	bytes[0]='X';
-	Check(!ParseSdfAsset(bytes,decoded,err), "reject corrupted magic");
+	Check(!ParseSdfAsset(bytes.data(),bytes.size(),decoded,err), "reject corrupted magic");
 	Check(decoded.meshes.size()==unchanged.meshes.size(), "parse failure transactional");
 	bytes=WriteSdfAsset(a);
 	bytes.pop_back();
-	Check(!ParseSdfAsset(bytes,decoded,err), "reject truncated samples");
+	Check(!ParseSdfAsset(bytes.data(),bytes.size(),decoded,err), "reject truncated samples");
 	std::vector<uint32_t> open(tris.begin(),tris.begin()+3);
-	Check(BakeMeshSdf(p,open,opt,v,err) && !v.signedDistance,
-		"open triangle unsigned fallback");
+	Check(BakeMeshSdf(p.data(),p.size(),open.data(),open.size(),opt,v,err)
+		&& !v.signedDistance, "open triangle unsigned fallback");
 	for(auto sample : v.samples) Check(sample>=0,"unsigned samples nonnegative");
 	SdfBakeOptions invalid=opt;
 	invalid.resolution=4;
-	Check(!BakeMeshSdf(p,tris,invalid,v,err),"reject invalid resolution");
+	Check(!BakeMeshSdf(p.data(),p.size(),tris.data(),tris.size(),invalid,v,err),
+		"reject invalid resolution");
 	std::vector<uint32_t> broken={0,1,900};
-	Check(!BakeMeshSdf(p,broken,opt,v,err),"reject invalid indices");
+	Check(!BakeMeshSdf(p.data(),p.size(),broken.data(),broken.size(),opt,v,err),
+		"reject invalid indices");
 	// Pak kind and serving contract: no texture envelope is applied.
-	smvk::PakWriter writer;
+	PakWriter writer;
 	bytes=WriteSdfAsset(a);
-	Check(writer.AddBlob(smvk::PakAssetKind::Sdf,"content/models/cube.geometry.sdf",bytes),
+	Check(writer.AddBlob(PakAssetKind::Sdf,"content/models/cube.geometry.sdf",bytes),
 		"pak embeds sdf kind");
 	std::vector<uint8_t> pak=writer.Finalize();
-	auto reader=smvk::PakReader::Open(pak,err);
+	auto reader=PakReader::Open(pak,err);
 	Check(bool(reader),"pak opens");
 	if(reader) {
-		auto entry=reader->Find(smvk::PakAssetKind::Sdf,
+		auto entry=reader->Find(PakAssetKind::Sdf,
 			"content/models/cube.geometry.sdf");
 		Check(entry!=nullptr,"pak sdf lookup");
 		if(entry) {
-			auto raw=smvk::PakServeVfsBytes(smvk::PakAssetKind::Sdf,
+			auto raw=PakServeVfsBytes(PakAssetKind::Sdf,
 				reader->Payload(*entry),"content/models/cube.geometry.sdf");
 			Check(raw.has_value() && *raw==bytes,"pak serves verbatim sdf bytes");
 		}

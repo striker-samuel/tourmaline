@@ -1367,5 +1367,6 @@ add_test(NAME input_tape_tests COMMAND InputTapeTests)
 # CPU-only SDF artifact and pak representation regression.
 add_executable(SdfTests test_sdf.cpp)
 target_link_libraries(SdfTests PRIVATE engine)
+tourmaline_stage_sdl3(SdfTests)
 set_target_properties(SdfTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME sdf_tests COMMAND SdfTests)

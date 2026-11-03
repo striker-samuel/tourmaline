@@ -381,7 +381,7 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 						" words", err);
 			if (toks[0] != "gi" && toks[0] != "cubemaps" && toks[0] != "sdf")
 				return Fail(lineNo, "bake",
-					"unknown bake target '" + toks[0] + "' (only gi and"
+					"unknown bake target '" + toks[0] + "' (only gi,"
 						" cubemaps and sdf exist)", err);
 			bool on = true;
 			if (toks.size() == 2) {

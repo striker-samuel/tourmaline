@@ -9,8 +9,8 @@
 // Samples are R16_SNORM: world distance = sample / 32767 * maxDistance.
 // If signedDistance is false, the source was not watertight and samples
 // are UNSIGNED; consumers must not interpret them as interior occupancy.
+#include <cstddef>
 #include <cstdint>
-#include <span>
 #include <string>
 #include <vector>
 #include <glm/vec3.hpp>
@@ -49,16 +49,18 @@ struct SdfBakeOptions {
 
 // Indexed triangles, mesh-local positions, CPU-only. On open or
 // nonmanifold meshes the bake succeeds but returns unsigned distances.
-// Rejects empty/degenerate input and impossible settings.
-bool BakeMeshSdf(std::span<const glm::vec3> positions,
-	std::span<const uint32_t> indices, const SdfBakeOptions& options,
-	SdfVolume& out, std::string& err);
+// Rejects empty/degenerate input and impossible settings. Raw pointer +
+// count at the boundary (the caller owns the memory; {nullptr, 0} is a
+// valid empty input that fails validation loudly).
+bool BakeMeshSdf(const glm::vec3* positions, size_t positionCount,
+	const uint32_t* indices, size_t indexCount,
+	const SdfBakeOptions& options, SdfVolume& out, std::string& err);
 
 // TSDF v1, little-endian, bounds-checked, no struct padding or host
 // endianness dependencies. A single sidecar groups a .geometry family's
 // primitive volumes by stable URI fragment. Parse is transactional.
 std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset);
-bool ParseSdfAsset(std::span<const uint8_t> bytes, SdfAsset& out,
+bool ParseSdfAsset(const uint8_t* bytes, size_t byteCount, SdfAsset& out,
 	std::string& err);
 
 } // namespace tour::asset

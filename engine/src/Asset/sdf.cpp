@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <map>
+#include <span>
 #include <tuple>
 #include <utility>
 
@@ -132,10 +133,12 @@ bool GetF32(std::span<const uint8_t> b, size_t& at, float& out) {
 
 } // namespace
 
-bool BakeMeshSdf(std::span<const glm::vec3> positions,
-	std::span<const uint32_t> indices, const SdfBakeOptions& options,
-	SdfVolume& out, std::string& err) {
+bool BakeMeshSdf(const glm::vec3* positionData, size_t positionCount,
+	const uint32_t* indexData, size_t indexCount,
+	const SdfBakeOptions& options, SdfVolume& out, std::string& err) {
 	err.clear();
+	std::span<const glm::vec3> positions(positionData, positionCount);
+	std::span<const uint32_t> indices(indexData, indexCount);
 	if (options.resolution < 8 || options.resolution > 128 ||
 		options.padding < 1 || options.padding * 2 + 2 >= options.resolution ||
 		options.bandVoxels < 1 || options.bandVoxels > 128 ||
@@ -265,9 +268,10 @@ std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset) {
 	return out;
 }
 
-bool ParseSdfAsset(std::span<const uint8_t> bytes, SdfAsset& out,
+bool ParseSdfAsset(const uint8_t* byteData, size_t byteCount, SdfAsset& out,
 	std::string& err) {
 	err.clear();
+	std::span<const uint8_t> bytes(byteData, byteCount);
 	auto fail=[&](const char* why) { err=why; return false; };
 	if (bytes.size()<12 || bytes[0]!='T' || bytes[1]!='S' ||
 		bytes[2]!='D' || bytes[3]!='F') return fail("bad SDF magic/header");

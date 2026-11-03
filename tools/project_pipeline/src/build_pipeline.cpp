@@ -368,7 +368,10 @@ static bool BakePlanSdfs(const Project& project, const BuildPlan& plan,
 			err = "SDF cannot read '" + name + "': " + err;
 			return false;
 		}
-		tour::asset::SdfAsset baked;
+		// (::tour::asset — the leading :: is required inside smvk::project,
+		// where tour.h's `namespace tour = ::tour::asset` alias shadows the
+		// global tour namespace).
+		::tour::asset::SdfAsset baked;
 		for (const auto& geometry : mesh.geometry) {
 			if (geometry.indices.empty() || geometry.positions.empty())
 				continue;
@@ -376,16 +379,17 @@ static bool BakePlanSdfs(const Project& project, const BuildPlan& plan,
 			positions.reserve(geometry.positions.size());
 			for (const auto& v : geometry.positions)
 				positions.push_back(v.pos);
-			tour::asset::SdfMesh entry;
+			::tour::asset::SdfMesh entry;
 			entry.fragment = geometry.uriFragment;
-			if (!tour::asset::BakeMeshSdf(positions, geometry.indices,
-					tour::asset::SdfBakeOptions{}, entry.volume, err)) {
+			if (!::tour::asset::BakeMeshSdf(positions.data(), positions.size(),
+					geometry.indices.data(), geometry.indices.size(),
+					::tour::asset::SdfBakeOptions{}, entry.volume, err)) {
 				err = "SDF bake '" + name + "#" + entry.fragment + "': " + err;
 				return false;
 			}
 			baked.meshes.push_back(std::move(entry));
 		}
-		const std::vector<uint8_t> bytes = tour::asset::WriteSdfAsset(baked);
+		const std::vector<uint8_t> bytes = ::tour::asset::WriteSdfAsset(baked);
 		const fs::path dest = source.generic_string() + ".sdf";
 		const fs::path temp = dest.generic_string() + ".tmp";
 		{

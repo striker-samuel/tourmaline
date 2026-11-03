@@ -37,9 +37,12 @@ KINDS = {
     5: "Light", 6: "Gi", 7: "Camera", 8: "Decal",
     9: "Terrain", 10: "Level", 11: "Sound", 12: "Shader",
     13: "Plan", 14: "Schema", 15: "Identity", 16: "AudioGraph",
+    17: "SpriteSet", 18: "StateMachine", 19: "NavMesh", 20: "Sdf",
 }
 KIND_BY_NAME = {name: kind for kind, name in KINDS.items()}
-VFS_KINDS = frozenset((4, 11, 12, 16))
+# The kinds PakServeVfsBytes serves by VFS path (keep in lockstep with
+# engine/src/Asset/pak.cpp's blob-kind list).
+VFS_KINDS = frozenset((4, 11, 12, 16, 17, 18, 19, 20))
 # The catalog kind ABI (PR #64): byte 0 is Nil — the invalid/unset
 # kind, never stored; the real kinds start at 1. Kept in lockstep with
 # the engine's kCatalogKind* constants (engine/include/Engine/Asset/
