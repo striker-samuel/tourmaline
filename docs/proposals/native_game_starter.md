@@ -1,8 +1,25 @@
 # RFC: one-command native Tourmaline game starter (renderer-backend agnostic)
 
-**Status:** proposal / request for implementation, not a completed template  
+**Status:** implementation source committed in [PR #85](https://github.com/striker-samuel/tourmaline/pull/85); full cook/GPU smoke test pending  
 **Target:** standalone C++20 game in a separate repository, consuming Tourmaline as a pinned Git submodule  
 **Related (avoid duplication):** [editor source hot reload PR #84](https://github.com/striker-samuel/tourmaline/pull/84)
+
+## Implementation included in PR #85
+
+- `templates/native_game/` contains a copyable CMake/game/scene/glTF
+  example using `app::RunGame`, the real `WorldRenderer` and
+  `GameUiRenderer`.
+- `TOURMALINE_ENABLE_GAME_HOST` is an opt-in subproject path for the
+  Tourmaline game host, `Project` cooker and shader pack while omitting
+  repository-only editor/sample targets.
+- `WorldRenderer::SetExtraGameUi` records `GameUiRenderer` into the
+  existing UI target after the engine's UI pass and before final composite.
+- The template documents how to register Tourmaline as a Git submodule;
+  the checked-in `.gitmodules` template is not itself a registered gitlink.
+- The authored cube/floor scene, data-URI glTF geometry, PNG texture,
+  CMake/recipe wiring, CPU tests and static verifier are included.
+- **Not yet verified:** full native engine compile, cook, and live GPU
+  rendering in the authoring environment. Review against the checklist.
 
 ## Problem observed in a real game prototype
 
