@@ -1240,7 +1240,12 @@ void TestRecipeResolution() {
 			for (const std::string& n : nested) {
 				smvk::tour::ReferenceCmd ref;
 				ref.source = n;
-				ref.name = "REF " + n;
+				// Slash-free placeholder name: ValidNodeName (PR #101)
+				// rejects '/' in node names, and this fixture's older
+				// path-shaped names made SaveTour silently refuse to
+				// write the DAG files (the fixture ignores the return),
+				// failing all three resolve checks on missing inputs.
+				ref.name = "REF " + fs::path(n).stem().string();
 				doc.references.push_back(ref);
 			}
 			std::string sErr;
