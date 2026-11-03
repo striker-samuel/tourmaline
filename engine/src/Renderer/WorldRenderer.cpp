@@ -3537,6 +3537,7 @@ namespace engine {
 		m_selectionLineBuffer = {};
 		m_debugDrawGpuLines.clear();
 		m_debugDrawGpuCapacity.clear();
+		m_debugDrawGpuRevisions.clear();
 		m_debugDrawCpu.Clear();
 		m_selectedNode = UINT32_MAX;
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
@@ -13708,11 +13709,12 @@ namespace engine {
         };
         std::vector<DebugDrawRange> debugDrawRanges;
         uint32_t debugDrawFlight = 0;
-        if (((m_debugDrawEnabled && m_debugDrawSource)
-                || m_shapeScene.Size() != 0)
+        const bool transientDebugDraw = m_debugDrawEnabled &&
+            static_cast<bool>(m_debugDrawSource);
+        if ((transientDebugDraw || m_shapeScene.Size() != 0)
             && m_gfxRenderer.LineProgram().shaderCount == 2) {
             m_debugDrawCpu.Clear();
-            if (m_debugDrawEnabled && m_debugDrawSource)
+            if (transientDebugDraw)
                 m_debugDrawSource(m_debugDrawCpu);
             // Retained shape instances are visible even if transient game
             // debug drawing is disabled. Tessellation is cached at Add().
@@ -13756,6 +13758,7 @@ namespace engine {
                 if (m_debugDrawGpuLines.size() != flights) {
                     m_debugDrawGpuLines.resize(flights);
                     m_debugDrawGpuCapacity.resize(flights, 0);
+                    m_debugDrawGpuRevisions.assign(flights, 0);
                 }
                 debugDrawFlight = fb.frameIndex % flights;
                 const uint32_t count = uint32_t(vertices.size());
@@ -13768,13 +13771,24 @@ namespace engine {
                             smvk::BufferType_Vertex, "game debug draw lines");
                     m_debugDrawGpuCapacity[debugDrawFlight] =
                         m_debugDrawGpuLines[debugDrawFlight].empty() ? 0 : capacity;
+                    m_debugDrawGpuRevisions[debugDrawFlight] = 0;
                 }
                 if (!m_debugDrawGpuLines[debugDrawFlight].empty()) {
-                    m_context->UploadDataToBuffer(
-                        m_debugDrawGpuLines[debugDrawFlight],
-                        vertices.data(), vertices.size() * sizeof(vertices[0]),
-                        smvk::PipelineStageBit_Vertex,
-                        smvk::AccessFlags::VertexAttributeRead);
+                    // Retained-only geometry is static until its instance
+                    // registry revision changes. Cache uploads per flight,
+                    // never share a mutable GPU buffer with an in-flight
+                    // frame. Transient debug streams always re-upload.
+                    const uint64_t revision = m_shapeScene.Revision();
+                    if (transientDebugDraw ||
+                        m_debugDrawGpuRevisions[debugDrawFlight] != revision) {
+                        m_context->UploadDataToBuffer(
+                            m_debugDrawGpuLines[debugDrawFlight],
+                            vertices.data(), vertices.size() * sizeof(vertices[0]),
+                            smvk::PipelineStageBit_Vertex,
+                            smvk::AccessFlags::VertexAttributeRead);
+                        m_debugDrawGpuRevisions[debugDrawFlight] =
+                            transientDebugDraw ? 0 : revision;
+                    }
                 } else {
                     debugDrawRanges.clear();
                 }
