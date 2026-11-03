@@ -288,6 +288,9 @@ void EditorApp::UpdateModalInput() {
 		{ TOUR_KEY_1, kModalCtrl, kScopeGlobal,
 			&EditorApp::ModalIsolateSelect,
 			"viewport: isolate selected (toggle)", "Ctrl+1" },
+		{ TOUR_KEY_C, kModalCtrl | kModalShift, kScopeGlobal,
+			&EditorApp::ModalExportProject,
+			"project: configure/export from .tourrecipe", "Ctrl+Shift+C" },
 		{ TOUR_KEY_H, kModalCtrl, kScopeGlobal,
 			&EditorApp::ModalToggleVisibility,
 			"visibility: hide/unhide selection", "Ctrl+H" },
@@ -348,7 +351,10 @@ void EditorApp::ModalModeProfile() { SetMode(EditorMode::Profile); }
 
 // ---- global handlers ----
 
-void EditorApp::ModalViewLit() { ActiveViewMode() = ViewMode::Lit; }
+void EditorApp::ModalViewLit() {
+	ActiveViewMode() = ViewMode::Lit;
+	m_litView = 0; // F1 means the same Fully Lit preset as View > Fully Lit.
+}
 void EditorApp::ModalViewUnlit() { ActiveViewMode() = ViewMode::Unlit; }
 
 void EditorApp::ModalFrameHistogramToggle() {
@@ -481,6 +487,7 @@ void EditorApp::ModalToggleVisibility() {
 
 void EditorApp::ModalUndo() { Undo(); }
 void EditorApp::ModalRedo() { Redo(); }
+void EditorApp::ModalExportProject() { OpenProjectExportWindow(); }
 void EditorApp::ModalSave() {
 	if (SaveTour())
 		Log("Tour saved: " + TourTarget());

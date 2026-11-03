@@ -689,6 +689,145 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
 		});
 }
 
+// File > Export Project: the recipe, not the live single-pak CookSettings,
+// owns all package outputs, dependencies, and bake switches. The worker
+// drives the SAME shared resolver/executor as Project.exe, through the
+// in-process EditorStageAdapter. Do not run any expensive stage on the UI
+// thread, and do not silently fall back to a one-scene synthetic recipe.
+void EditorApp::StartProjectRecipeBuild(const std::string& recipePath,
+	const std::string& recipeText) {
+	if (m_projectRoot.empty() || m_cookRunning || m_bakeRunning
+		|| m_dccPublishRunning) {
+		m_projectExportStatus = "Cannot build: no open project or a task is running.";
+		return;
+	}
+	if (m_world && m_tourDirty) {
+		m_projectExportStatus = "Save current scene changes before building.";
+		return;
+	}
+	const std::string root = m_projectRoot;
+	const std::string manifestName =
+		std::filesystem::path(recipePath).stem().generic_string();
+	const std::string registryDir =
+		m_store ? m_store->Root() : std::string();
+	auto feed = std::make_shared<CookFeed>();
+	m_cookFeed = feed;
+	auto buildLog = std::make_shared<BakeLogFile>(root, "export-project");
+	m_cookRunning = true;
+	m_cookJustFinished = false;
+	m_cookLastOk = false;
+	TaskWindowBegin("Export Project",
+		"Resolving .tourrecipe and preparing project paks...");
+	m_taskWindow.logPath = buildLog->Path();
+	m_projectExportStatus = "Building " + recipePath;
+	Log("Export Project started: " + recipePath);
+
+	auto result = std::make_shared<CookResult>();
+	const bool posted = m_fibers.Post("export-project",
+		[root, recipePath, recipeText, manifestName, registryDir,
+			feed, buildLog, result]() {
+			CookResult output{};
+			auto push = [feed, buildLog](const std::string& line,
+				bool isError = false) {
+				buildLog->Write(line, isError);
+				std::lock_guard<std::mutex> lock(feed->mutex);
+				feed->lines.push_back(line);
+				if (isError) {
+					feed->errLines.push_back(line);
+					if (feed->errLines.size() > 8)
+						feed->errLines.erase(feed->errLines.begin());
+				}
+			};
+			std::string err;
+			smvk::project::Project project =
+				smvk::project::Project::Open(root, err);
+			if (!project.Valid()) {
+				output.log = "export: project open failed: " + err;
+				push(output.log, true);
+				*result = std::move(output);
+				return;
+			}
+			smvk::project::ProjectRecipe recipe;
+			smvk::project::RecipeDiagnostic diagnostic;
+			if (!smvk::project::ParseProjectRecipeText(recipeText, recipe,
+					diagnostic)) {
+				output.log = "export: " + diagnostic.Format(recipePath);
+				push(output.log, true);
+				*result = std::move(output);
+				return;
+			}
+			smvk::project::BuildPlan plan;
+			push("export: resolving recipe packages, dependencies and assets");
+			if (!smvk::project::ResolveRecipe(project, recipe, plan, err)) {
+				output.log = "export: recipe resolution failed: " + err;
+				push(output.log, true);
+				*result = std::move(output);
+				return;
+			}
+			smvk::project::BuildPlanOptions opts;
+			opts.publishDir = (std::filesystem::path(root) / "build")
+				.generic_string();
+			opts.manifestName = manifestName;
+			opts.registryDir = registryDir;
+			smvk::project::BuildPlanReport report;
+			EditorStageAdapter adapter;
+			push("export: executing " + std::to_string(plan.paks.size())
+				+ " pak(s) -> " + opts.publishDir);
+			// The tool line sink is process-wide. The m_cookRunning gate
+			// guarantees only one cook/export at a time. Always clear
+			// it, including when a stage throws.
+			struct ClearToolSink {
+				~ClearToolSink() { tool::SetLineSink(nullptr); }
+			} resetSink;
+			tool::SetLineSink([&push](const std::string& line, bool isError) {
+				push(line, isError);
+			});
+			output.ok = smvk::project::ExecuteBuildPlan(project, plan,
+				adapter, opts, report, err);
+			if (output.ok) {
+				output.log = "export: built " + std::to_string(report.paks.size())
+					+ " verified pak(s), manifest: " + report.manifest;
+				push(output.log);
+			}
+			else {
+				output.log = "export: build failed: " + err;
+				push(output.log, true);
+			}
+			*result = std::move(output);
+		},
+		[this, result, feed](
+			const editor::FiberBackend::Completion& completion) {
+			m_cookRunning = false;
+			m_cookJustFinished = true;
+			m_cookLastOk = completion.ok && result->ok;
+			std::vector<std::string> remaining;
+			{
+				std::lock_guard<std::mutex> lock(feed->mutex);
+				remaining.swap(feed->lines);
+			}
+			for (const std::string& line : remaining) {
+				Log(line);
+				TaskWindowPush(line);
+			}
+			const std::string summary = completion.ok
+				? result->log
+				: "export: worker failed: " + completion.error;
+			m_projectExportStatus = summary;
+			if (!summary.empty())
+				Log(summary);
+			TaskWindowFinish(m_cookLastOk,
+				m_cookLastOk ? "Project export succeeded. " + summary
+					: "Project export FAILED. " + summary);
+		});
+	if (!posted) {
+		m_cookRunning = false;
+		m_cookJustFinished = true;
+		m_projectExportStatus = "Export Project failed: worker pool unavailable.";
+		TaskWindowFinish(false, m_projectExportStatus);
+		Log(m_projectExportStatus);
+	}
+}
+
 // The inspector's "Optimize grid layout" button (see editor_app.h): the
 // LIVE editor world is the input — no tour snapshot, no tour replay, no
 // cook, no GI rebake. The geometry snapshot comes from the resident
