@@ -16,6 +16,21 @@ file(GLOB_RECURSE EDITOR_SOURCES CONFIGURE_DEPENDS
 
 add_executable(Editor ${EDITOR_SOURCES})
 
+# Opt-in statically linked game entry. Generic Editor has no game symbol.
+add_library(tourmaline_editor_entry INTERFACE)
+add_library(tourmaline::editor_entry ALIAS tourmaline_editor_entry)
+target_include_directories(tourmaline_editor_entry INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(Editor PRIVATE tourmaline_editor_entry)
+
+function(tourmaline_editor_link_game GAME_TARGET)
+    if(NOT TARGET Editor OR NOT TARGET "${GAME_TARGET}")
+        message(FATAL_ERROR "tourmaline_editor_link_game requires Editor and ${GAME_TARGET}")
+    endif()
+    target_link_libraries(Editor PRIVATE ${GAME_TARGET})
+    target_compile_definitions(Editor PRIVATE TOURMALINE_EDITOR_GAME_LINKED=1)
+endfunction()
+
 target_compile_definitions(Editor PRIVATE ENGINE_VULKAN)
 
 # MUST match the engine's DS_DEBUG_VIZ gate (engine/CMakeLists.txt) — the
