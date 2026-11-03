@@ -2066,8 +2066,19 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			if (fl.at == "spotLight")
 				fl.at = "spot";
 		}
-		if (effVerb == "rename" && (fl.hasN || fl.hasUuid || fl.hasName)
-				&& !fl.t.empty()) {
+		if (effVerb == "rename" && (fl.hasN || fl.hasUuid || fl.hasName)) {
+			// A rename without a positional name - either dropped
+			// entirely or an explicit empty quoted string - is a LOUD
+			// parse error, never the unknown-verb warn-skip: the load
+			// used to silently succeed on `rename -n 0 "";` because the
+			// empty token failed the !fl.t.empty() gate and the line
+			// fell through to the skip path (tour_tests: rename cannot
+			// erase node name).
+			if (fl.t.empty()) {
+				err = "line " + std::to_string(lineNo)
+					+ ": rename requires a non-empty node name";
+				return false;
+			}
 			c.verb = Verb::Rename;
 			c.node = fl.n;
 			c.text = fl.t[0];

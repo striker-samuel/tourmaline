@@ -4004,9 +4004,14 @@ void TestSceneFlagTables() {
 	// every later section (a latent legacy-format asymmetry - production
 	// scenes always carry names; this test populates them like real
 	// content so it exercises the flag sections' own bytes).
+	// The pool may already carry names from the earlier fixture, so
+	// address "root" by its PUSHED index - a hardcoded 0 pointed at
+	// the first pre-existing name and the compaction faithfully
+	// roundtripped THAT instead.
 	scene.nodeNames.push_back("root");
-	SetNodeNameIndex(scene, 0, 0);
-	SetNodeNameIndex(scene, 2, 0);
+	const uint32_t rootName = uint32_t(scene.nodeNames.size() - 1);
+	SetNodeNameIndex(scene, 0, rootName);
+	SetNodeNameIndex(scene, 2, rootName);
 	{
 		saveScene(TempTour().c_str(), scene);
 		Scene loaded;
