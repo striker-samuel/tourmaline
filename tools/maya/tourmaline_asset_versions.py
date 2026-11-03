@@ -181,6 +181,25 @@ def switch_reference_version(record_node, revision):
     return item
 
 
+def rehydrate_scene_references():
+    """Reconnect saved Maya reference pins to this workstation's local cache.
+
+    Useful after opening a scene authored on another machine: the previous
+    user's cache path is not portable, but asset path + revision are. This
+    deliberately leaves ordinary imported geometry unchanged.
+    """
+    resolved, errors = [], []
+    for record in version_records():
+        if record["mode"] != "reference":
+            continue
+        try:
+            item = switch_reference_version(record["node"], int(record["revision"]))
+            resolved.append({"node": record["node"], "local_path": item["local_path"]})
+        except (ValueError, OSError, RuntimeError) as exc:
+            errors.append({"node": record["node"], "error": str(exc)})
+    return {"resolved": resolved, "errors": errors}
+
+
 def show_picker():
     """Native Maya GUI: choose a source path, choose an immutable revision."""
     cmds = _maya()
@@ -240,6 +259,14 @@ def show_picker():
             available[label] = path
             cmds.textScrollList(asset_list, edit=True, append=label)
 
+    def do_rehydrate(*_):
+        result = rehydrate_scene_references()
+        cmds.inViewMessage(amg="Tourmaline: reloaded %s pinned references; %s errors" %
+                           (len(result["resolved"]), len(result["errors"])),
+                           pos="midCenterTop", fade=True)
+        for error in result["errors"]:
+            cmds.warning("%s: %s" % (error["node"], error["error"]))
+
     def do_import(*_):
         path, rev = selected_asset(), selected_revision()
         if path is None or rev is None:
@@ -273,6 +300,8 @@ def show_picker():
     cmds.button(label="Resolve texture / file", command=do_resolve)
     cmds.button(label="Import / Reference selected", command=do_import)
     cmds.setParent("..")
+    cmds.button(label="Repair this scene's pinned Maya references",
+                command=do_rehydrate)
     cmds.showWindow(window)
     refresh_assets()
     return window
