@@ -1,0 +1,12 @@
+# Small controlled terrain detail brush
+version=1
+kind=terrain
+name=Detail Sculpt
+radius=3
+strength=0.12
+spacing=0.15
+operation=3
+density=0.5
+minScale=0.8
+maxScale=1.2
+minDistance=0
