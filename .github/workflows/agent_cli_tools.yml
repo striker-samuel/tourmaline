@@ -7,6 +7,7 @@ on:
     branches: [master]
     paths:
       - 'tools/tourinfo.py'
+      - 'tools/project_init.py'
       - 'tools/tourdiff.py'
       - 'tools/tourcapture.py'
       - 'tools/pak_browser.py'
@@ -16,6 +17,7 @@ on:
       - 'tests/test_pak_browser.py'
       - 'tests/test_pixel_compare.py'
       - 'tests/test_input_emulator.py'
+      - 'tests/test_project_init.py'
       - '.github/workflows/agent_cli_tools.yml'
   pull_request:
     paths:
@@ -49,6 +51,8 @@ jobs:
         run: python -m pip install Pillow
       - name: Tourmaline package & capture CLI tests
         run: python -m unittest discover -s tests -p "test_tour*.py" -v
+      - name: Project scaffold contract tests
+        run: python -m unittest discover -s tests -p "test_project_init.py" -v
       - name: Existing package browser tests
         run: python -m unittest discover -s tests -p "test_pak_browser.py" -v
       - name: Existing pixel and input CLI tests
