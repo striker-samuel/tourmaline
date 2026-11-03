@@ -1,0 +1,48 @@
+name: Shared asset repository
+
+on:
+  push:
+    paths:
+      - 'tools/shared_asset_repository.py'
+      - 'tools/shared_asset_server.py'
+      - 'tools/install_shared_assets.py'
+      - 'tools/configure_asset_client.py'
+      - 'tools/install_offline_assets.py'
+      - 'tools/maya/tourmaline_asset_cache.py'
+      - 'tools/maya/tourmaline_asset_versions.py'
+      - 'tools/tests/test_shared_asset_repository.py'
+      - 'tools/tests/test_maya_asset_versions.py'
+      - '.github/workflows/shared_asset_repository.yml'
+  pull_request:
+    paths:
+      - 'tools/shared_asset_repository.py'
+      - 'tools/shared_asset_server.py'
+      - 'tools/install_shared_assets.py'
+      - 'tools/configure_asset_client.py'
+      - 'tools/install_offline_assets.py'
+      - 'tools/maya/tourmaline_asset_cache.py'
+      - 'tools/maya/tourmaline_asset_versions.py'
+      - 'tools/tests/test_shared_asset_repository.py'
+      - 'tools/tests/test_maya_asset_versions.py'
+      - '.github/workflows/shared_asset_repository.yml'
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Shared repository service and client integration
+        run: python -m unittest discover -s tools/tests -p "test_shared_asset_repository.py" -v
+      - name: Existing offline service regressions
+        run: python -m unittest discover -s tools/tests -p "test_offline_asset_service.py" -v
+      - name: Maya client contract tests (Maya not installed)
+        run: python -m unittest discover -s tools/tests -p "test_maya_asset_versions.py" -v
+      - name: Compile Python modules
+        run: python -m compileall -q tools/shared_asset_repository.py tools/shared_asset_server.py tools/install_shared_assets.py tools/configure_asset_client.py tools/maya/tourmaline_asset_cache.py tools/maya/tourmaline_asset_versions.py
