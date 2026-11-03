@@ -57,7 +57,14 @@ class HarnessTests(unittest.TestCase):
             self.assertIn("--snapshot-count=123", argv)
             self.assertIn("--snapshot-keyframe=60", argv)
             self.assertIn("--snapshot-code-id=commit-123", argv)
-            self.assertIn("--snapshot-sequence=" + str((root / "exports" / "sequence").resolve()), argv)
+            # Path-form tolerance (CI runners use SHORT-name temp roots -
+            # RUNNER~1 - while resolve() canonicalizes to runneradmin):
+            # compare both sides through resolve().
+            seq = next(a for a in argv
+                if a.startswith("--snapshot-sequence="))
+            self.assertEqual(
+                Path(seq.split("=", 1)[1]).resolve(),
+                (root / "exports" / "sequence").resolve())
             self.assertNotIn("--disable_control", argv)
             self.assertNotIn("--bench", argv)
 

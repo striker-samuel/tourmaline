@@ -199,7 +199,14 @@ class SnapshotCliTests(unittest.TestCase):
             self.assertEqual(stderr, cli.subprocess.STDOUT)
             self.assertFalse(check)
             self.assertEqual(timeout, 30)
-            self.assertIn("--snapshot-sequence=" + str(output), argv)
+            # Path-form tolerance: the CLI may resolve the temp root to
+            # its canonical form (CI runners hand tempfile SHORT names
+            # like RUNNER~1 while the CLI emits runneradmin) - compare
+            # both sides through resolve().
+            seq = next(a for a in argv
+                if a.startswith("--snapshot-sequence="))
+            self.assertEqual(
+                Path(seq.split("=", 1)[1]).resolve(), output.resolve())
             stdout.write("fake render complete\n")
             write_sequence(output, count=2, interval=1)
             return SimpleNamespace(returncode=0)
