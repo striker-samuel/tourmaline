@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 // House test convention (AGENTS.md): the CHECK macro ALWAYS evaluates its
 // condition, in every build flavor. This file originally used CHECK(),
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
@@ -60,6 +61,40 @@ void CheckDoubleView() {
     CHECK(!PackInstanceCullView(disabled, packed));
 }
 
+void CheckMalformedDoubleFrusta() {
+    const glm::dvec3 origin(1.0e12, -1.0e12, 0.0);
+
+    // A zero/degenerate VP must never become six disabled planes.
+    // Before this regression fix it produced an apparently valid
+    // all-pass frustum and allowed unsafe GPU-cull dispatch.
+    const auto zero = DoubleRelativeFrustum(glm::dmat4(0.0), origin);
+    CHECK(!zero.Valid());
+    InstanceCullGpuView packed{};
+    CHECK(!PackInstanceCullView(zero, packed));
+
+    // Side-plane degeneracy cannot represent an infinite far plane.
+    glm::dmat4 noHorizontal(1.0);
+    noHorizontal[0] = glm::dvec4(0.0);
+    CHECK(!DoubleRelativeFrustum(noHorizontal, origin).Valid());
+
+    // Non-finite VP components are invalid even in depth planes.
+    glm::dmat4 nanVP(1.0);
+    nanVP[0][0] = std::numeric_limits<double>::quiet_NaN();
+    CHECK(!DoubleRelativeFrustum(nanVP, origin).Valid());
+
+    // A standard infinite-far reversed-Z projection has a disabled
+    // positive depth half-space. Retain that legitimate case.
+    glm::dmat4 infiniteReverseZ(1.0);
+    infiniteReverseZ[2][2] = 0.0;
+    infiniteReverseZ[3][2] = 1.0;
+    infiniteReverseZ[2][3] = -1.0;
+    infiniteReverseZ[3][3] = 0.0;
+    const auto infinite = DoubleRelativeFrustum(infiniteReverseZ,
+                                                glm::dvec3(0.0));
+    CHECK(infinite.Valid());
+    CHECK(PackInstanceCullView(infinite, packed));
+}
+
 void CheckLegacyRebasing() {
     smvk::RenderView view{};
     // Absolute plane: world x <= 103, but origin is world x=100.
@@ -106,6 +141,7 @@ void CheckLegacyRebasing() {
 }
 int main() {
     CheckDoubleView();
+    CheckMalformedDoubleFrusta();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
