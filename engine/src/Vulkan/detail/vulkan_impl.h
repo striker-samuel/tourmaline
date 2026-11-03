@@ -1362,10 +1362,10 @@ namespace smvk {
 		uint32_t currentFrame_ = 0;
 
 		// Presentation mode: requested (next Create/Recreate) vs active.
-		// Immediate default: uncapped, lowest latency. Fallback chain on
-		// unsupported: mailbox (tear-free, no FIFO halving) -> relaxed ->
-		// spec-guaranteed FIFO.
-		VkPresentModeKHR requestedPresentMode_ = VK_PRESENT_MODE_IMMEDIATE_KHR;
+		// Match App's FIFO default at initial creation; otherwise the
+		// first frame unnecessarily rebuilds, and the custom editor pump
+		// could keep an unintended Immediate swapchain indefinitely.
+		VkPresentModeKHR requestedPresentMode_ = VK_PRESENT_MODE_FIFO_KHR;
 		VkPresentModeKHR activePresentMode_ = VK_PRESENT_MODE_FIFO_KHR;
 
 		// Per-frame timestamp query pools (2 queries each: frame start/end)

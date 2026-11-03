@@ -12,6 +12,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
 #include <Engine/App/Element.h>
+#include <Engine/App/FramePacer.h>
 #include <Engine/Audio/audio.h>
 #include <Engine/Core/Random.h>
 #include <Engine/Memory/memory.h>
@@ -20,6 +21,7 @@
 #include "input_tape.h"
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <functional>
 #include <future>
 #include <memory>
@@ -108,6 +110,9 @@ public:
 	// (`--bench N` in App/main.cpp). 0 = run interactively (default).
 	void SetFrameBudget(int n) { frameBudget_ = n; }
 	int GetFrameBudget() const { return frameBudget_; }
+	// Optional CPU frame cap (0 = uncapped); benchmark runs bypass it.
+	void SetMaxFps(uint32_t fps) { m_framePacer.SetTargetFps(fps); }
+	uint32_t GetMaxFps() const { return m_framePacer.GetTargetFps(); }
 	// True while the measured window runs (post warmup) — element-side
 	// bench accounting (WorldRenderer's [perf] phase split) keys on it.
 	bool BenchMeasuring() const { return frameBudget_ > 0 && benchWarmup_ >= 10; }
@@ -164,6 +169,13 @@ protected:
 	// 60 Hz step during --bench for capture determinism (spawn quotas,
 	// animation clocks). Measuring the pin would report 16.67 ms forever.
 	double real_delta_time_s = 0.0;
+	// Session-owned monotonic timestamps (never function-static: hosts may
+	// run sequentially). A long stall is preserved in real_delta_time_s
+	// but clamped for the live simulation delta.
+	std::chrono::steady_clock::time_point m_clockStart{};
+	std::chrono::steady_clock::time_point m_lastFrameStart{};
+	bool m_clockInitialized = false;
+	FramePacer m_framePacer{};
 #pragma endregion
 
 #pragma region ===[ Graphics State ]===
