@@ -554,6 +554,7 @@ add_subdirectory(tools/project)            # Project.exe: the project-pipeline C
   add_subdirectory(samples/02_blur)
   add_subdirectory(samples/03_fuzz) # the target-recreate/deferred-destroy hard fuzzer (see its .cpp header)
   add_subdirectory(samples/04_project_game) # the content-as-code sample (the generated project.h + the on-demand pak cook)
+  add_subdirectory(samples/05_grass) # one-million-blade GPU instancing stress sample
   include(CTest)
   if(BUILD_TESTING)
     add_subdirectory(tests)
