@@ -53,9 +53,10 @@ not Tourmaline WorldRenderer's internal push constants or .tour scenes.
 
 Configure the full Tourmaline source using the usual KTX, Embree and Vulkan dependencies, with:
 
-    cmake -S . -B out/build/recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DTOURMALINE_RECOMP_DIAGNOSTIC=ON
-    cmake --build out/build/recomp --target RecompDiagnostic
-    cd out/build/recomp
+    # BUILD is an external directory, e.g. "$HOME/tourmaline-recomp-build"
+    cmake -S . -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DTOURMALINE_RECOMP_DIAGNOSTIC=ON
+    cmake --build "$BUILD" --target RecompDiagnostic
+    cd "$BUILD"
     ./RecompDiagnostic --synthetic
 
 On Windows use RecompDiagnostic.exe instead. Controls: WASD/left stick = stick, Space/South = A, Left Shift/East = B, Enter/Start = Start. The optional target defaults OFF. Hosted CI compiles it on the experiment branch, but GPU runtime smoke tests require a Vulkan-capable desktop session.
