@@ -427,12 +427,12 @@ bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
 bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
 	const WorldMaskGrid& masks,
 	const glm::vec2& rectMin, const glm::vec2& rectMax,
-	EcotopeMaskData& out) {
+	EcotopeMaskData& out, uint32_t halo) {
 	out = EcotopeMaskData{};	if (!masks.Valid()) return false;
 	const float texel = meta.gBlock / float(masks.tileRes);
 	const uint32_t worldTexels = masks.tilesPerAxis * masks.tileRes;
 	int32_t ix0, ix1, iz0, iz1;
-	if (!WorldTexelWindow(meta, texel, rectMin, rectMax, 0,
+	if (!WorldTexelWindow(meta, texel, rectMin, rectMax, int32_t(halo),
 			worldTexels, ix0, ix1, iz0, iz1))
 		return false;
 	const uint32_t w = uint32_t(ix1 - ix0 + 1);
@@ -490,10 +490,14 @@ bool BuildWorldTileDomain(const smvk::terrain::TerrainHField& field,
 	out.domain.field = &out.heights;
 	out.domain.extentMin = rectMin;
 	out.domain.extentMax = rectMax;
-	// The paint window: the same rect (the eco sampler edge-clamps into
-	// the halo naturally; a window halo keeps the mask's edge reads off
-	// the clamped border when the halo was earned).
-	if (!HarvestWorldEcotope(meta, masks, rectMin, rectMax, out.eco))
+	// Keep a paint halo too: without it, bilinear samples within the
+	// last half-texel of each placement tile clamp to different edge
+	// values, causing visible instance-density seams between tiles.
+	const float maskTexel = meta.gBlock / float(masks.tileRes);
+	const uint32_t maskHalo = haloMeters > 0.0f
+		? uint32_t(std::ceil(haloMeters / maskTexel)) : 1u;
+	if (!HarvestWorldEcotope(meta, masks, rectMin, rectMax, out.eco,
+			std::max(maskHalo, 1u)))
 		return false;
 	return true;
 }
