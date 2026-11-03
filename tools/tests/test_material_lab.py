@@ -108,6 +108,44 @@ class MaterialLabTests(unittest.TestCase):
                 tour = (project / "content/scenes" / f"{env}.tour").read_text()
                 self.assertIn("env.default.sunIntensity", tour)
                 self.assertIn(f"content/models/{env}/{env}.geometry", tour)
+                ref = json.loads(path.with_suffix(".refscene.json").read_text())
+                self.assertEqual(ref["schema_version"], 1)
+                self.assertEqual(len(ref["positions"]), len(ref["normals"]))
+                self.assertEqual(len(ref["indices"]) % 3, 0)
+                self.assertEqual(len(ref["indices"]) // 3,
+                                 len(ref["triangle_materials"]))
+                self.assertEqual(len(ref["materials"]), len(gl["materials"]))
+                self.assertLess(max(ref["indices"]), len(ref["positions"]))
+                self.assertLess(max(ref["triangle_materials"]), len(ref["materials"]))
+                if env == "cornell":
+                    self.assertEqual(len(ref["environment"]["spots"]), 1)
+
+    def test_cpu_reference_command_uses_same_fixture_and_camera(self):
+        case = material_lab.plans(self.suite, "studio", "metal_smooth", "lit")[0]
+        cmd = material_lab.reference_command(
+            case, Path("ReferenceScene"), Path("out/material-lab/source"),
+            Path("out/reference/studio/metal_smooth/lit"), 128, 16, 2)
+        self.assertIn("studio.refscene.json", " ".join(cmd))
+        self.assertIn("--camera-pos", cmd)
+        self.assertEqual(cmd[cmd.index("--spp") + 1], "16")
+        self.assertEqual(cmd[cmd.index("--bounces") + 1], "2")
+        with self.assertRaises(material_lab.SuiteError):
+            material_lab.reference_command(
+                material_lab.plans(self.suite, "ibl_softbox",
+                                   "metal_smooth", "lit")[0],
+                "ReferenceScene", "src", Path("out"))
+
+    def test_reference_dry_run_does_not_launch_or_write(self):
+        case = material_lab.plans(self.suite, "studio", "metal_smooth", "lit")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(exe=Path("ReferenceScene"), project=Path(tmp),
+                output=Path(tmp) / "out", resolution=128, spp=4, bounces=2,
+                exposure=0.001, fail_fast=True, dry_run=True)
+            with patch.object(material_lab.subprocess, "run") as process:
+                report = material_lab.run_reference(args, [case])
+                process.assert_not_called()
+            self.assertEqual(report["status"], "planned")
+            self.assertFalse(args.output.exists())
 
     def test_fixture_project_disables_the_cubemap_capture_bake(self):
         # The legacy single-scene build lane would otherwise run Cook's
