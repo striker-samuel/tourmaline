@@ -46,10 +46,34 @@ resolvable by the installed OpenUSD plugins. Import with the existing CLI
 
 This is an initial conversion backend, **not support for every USD schema**.
 The importer rejects unsupported or ambiguous data instead of producing a
-plausible but corrupted native scene. Unimplemented features include:
+plausible but corrupted native scene. Planar concave polygons and quads are
+triangulated by an ear-clipping pass that preserves face-varying normals and UVs;
+non-planar or degenerate polygons are rejected. Meshes with materialBind
+GeomSubset face assignments are split into material-grouped glTF primitives,
+while overlapping and invalid subset assignments fail closed.
 
-- Polygon faces with more than three corners, subdivision surfaces,
-  GeomSubset per-face material bindings, and animated point samples.
+For identities across reimports, optionally author
+`custom string tourmaline:stableId = "asset-identifier"` on mesh, transform,
+camera, and material prims. IDs must be unique within the composed stage and
+consist of ASCII letters, digits, `_`, `-`, `.`, or `:` (up to 128 chars).
+These become stable logical names (`usd-id:asset-identifier`) in the imported
+model. Without an authored ID, the composed USD prim path is used. Siblings
+are visited in deterministic order using stable ID, then path, rather than
+source-authored child order, reducing numeric node-ID churn.
+
+**Identity scope:** Existing source-family IDs and named material GUIDs are
+carried across reimports using the existing `.meta` ledger. Stable prim IDs
+improve naming across reorder/rename operations; they do **not** yet provide
+a complete per-node UUID mapping into `.tour` overrides. Inserting/removing
+nodes or changing hierarchy may still shift numeric cluster node IDs. Before
+relying on stable overrides under structural scene edits, implement the
+UUID-based resolver at the editor/cooker `.tour` boundary. Renames without
+`tourmaline:stableId` also change logical names.
+
+Unimplemented features include:
+
+- Non-planar/degenerate polygon faces, subdivision surfaces, non-materialBind
+  GeomSubset behavior, and animated point samples.
 - PointInstancers, instance proxies, skinned animation, skeletons, USD
   physics and other non-mesh typed schemas.
 - Connected shader graphs, texture/MDL networks, multiple material
@@ -67,8 +91,9 @@ can be parsed: its *authored meaning* must survive native conversion.
    face-varying attributes and normals.
 2. Shader-network conversion: `UsdUVTexture`, material bindings,
    UV sets, colorspaces, and MDL policy.
-3. Per-prim stable identity across reorders/renames and richer USD
-   layer dependency fingerprinting, including external resolvers.
+3. Connect authored `tourmaline:stableId` to persistent `.tour` UUID resolution;
+   preserve node edits across hierarchy/cluster index shifts. Improve external
+   layer resolver dependency fingerprints.
 4. USD skeletal and time-sampled animation into native `.anim` assets.
 5. PointInstancer and physics conversion, plus authoring/editor sync.
 
