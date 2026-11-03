@@ -20,9 +20,11 @@
 //     the AO/SSR companion exports or downstream composites — effects
 //     needing full post-composite consistency belong in a post pass.
 //
-// The contract in one line: ONE uint32 of runtime userdata, delivered
-// flat per draw, edited by ordinary functions. The bit layout of
-// userData belongs to gameplay code — the engine never interprets it.
+// The contract in one line: ONE uint32 of GAME-OWNED runtime userdata,
+// delivered flat per draw, edited by ordinary functions. The API also
+// supplies already-existing readonly material/lightmap context without
+// adding draw fields, descriptor bindings or vertex attributes. The
+// bit layout of userData belongs to gameplay code.
 //
 // v1 deliberately EXCLUDES: the unlit early-return branch (no promise
 // unlit/debug paths honor hooks), coverage/alpha edits (no dissolve
@@ -46,6 +48,19 @@ struct TMLitInput
     float3 normalWS;
     // The frame clock (FramePSHot::time) in seconds.
     float time;
+
+    // Resolved material ID. This is a draw-ring varying on the mesh path
+    // and a fragment push on direct / GPU-indexed paths; projects should
+    // never need to know which GPU backend supplied it.
+    uint materialId;
+    // Atlas-space UV, already reconstructed from the optional chart
+    // stream by the producing VS/MS. Not the chart-local UV and not a
+    // guarantee that the fragment has sampled a lightmap.
+    float2 lightmapAtlasUv;
+    // Cooked SG lobe count (5, 6, 9, 12) or TM_LM_NONE when absent.
+    // Presence != runtime lightmap use: GI_NONE, lmEnabled, atlas
+    // availability and material blending can affect sampling.
+    uint lightmapLobes;
 };
 
 struct TMSurface
