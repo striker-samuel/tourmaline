@@ -334,6 +334,14 @@ private:
 // directory) fails the load LOUDLY — every consumer needs the file.
 // `extraDeps` (optional out) receives source dependencies the synthetic
 // model cannot express: today the .mtl files an OBJ source consumed.
+// Native OpenUSD stage adapter; compiled only when TOURMALINE_WITH_USD=ON.
+// The output is the SAME in-memory interchange as the OBJ adapter: the
+// existing artifact derivation owns all asset serialization and packaging.
+#ifdef TOURMALINE_WITH_USD
+bool LoadUsdFileAsModel(tinygltf::Model& model,
+    const std::filesystem::path& path, std::vector<std::string>& dependencies);
+#endif
+
 bool LoadModelFromSourceFile(
 	tinygltf::Model& model,
 	const char* filename,
