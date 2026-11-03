@@ -162,7 +162,9 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
         VkAccelerationStructureGeometryKHR geo{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
         geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        // Geometry-level FORCE_OPAQUE overrides the attached OMM;
+        // masked triangles must let hardware honor transparent microcells.
+        geo.flags = inst.opacityMode == 1u ? 0u : VK_GEOMETRY_OPAQUE_BIT_KHR;
         geo.geometry.triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         geo.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
