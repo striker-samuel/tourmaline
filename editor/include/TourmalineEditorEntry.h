@@ -55,5 +55,30 @@ private:
 } // namespace editor
 
 // The game supplies EXACTLY this named C++ symbol when opted in.
+//
+// Example (MyGame and its methods are defined by the game, not Tourmaline):
+//
+//   editor::GameSession TourmalineEditorEntry(
+//       const editor::GameEntryContext& ctx)
+//   {
+//       auto game = std::make_shared<MyGame>();
+//
+//       // The GAME decides how to interpret editor content.
+//       game->initializeFromEditor(
+//           ctx.authoredWorld,
+//           std::string(ctx.projectRoot)
+//       );
+//
+//       return {
+//           .onUpdate = [game](float dt) {
+//               game->update(dt);
+//           },
+//           .onStop = [game] {
+//               game->shutdown();
+//           }
+//       };
+//   }
+//
+// The implementation file needs <memory> and <string> for this example.
 editor::GameSession TourmalineEditorEntry(
     const editor::GameEntryContext& context);
