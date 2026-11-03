@@ -52,39 +52,39 @@ Run the installer wizard first, on the **same workstation** that runs Maya.
 Start Maya, then execute this once in the **Python** tab of Maya's Script Editor
 (adapt the directory to your Tourmaline checkout):
 
-\`\`\`python
+```python
 import sys
 sys.path.insert(0, r"C:\src\tourmaline\tools\maya")
 import tourmaline_asset_versions as tm
 tm.show_picker()
-\`\`\`
+```
 
 Optional permanent Maya shelf button:
 
-\`\`\`python
+```python
 tm.install_shelf_button()
-\`\`\`
+```
 
 Keep the module directory on Maya's Python path (or copy
-\`tools/maya/tourmaline_asset_versions.py\` to Maya's user scripts directory)
+`tools/maya/tourmaline_asset_versions.py` to Maya's user scripts directory)
 so the shelf command can import it on later restarts.
 
 - Browse any archived path (including a file deleted from the share).
 - Select a specific immutable revision and **Import** OBJ / FBX / Maya scene,
-  or **Reference** an \`.ma\` or \`.mb\` scene.
+  or **Reference** an `.ma` or `.mb` scene.
 - For textures and other non-scene assets, click **Resolve texture / file**
   to obtain an absolute, pinned local path for a Maya file/texture node.
-- Each import/reference writes a small \`network\` metadata node **inside the
+- Each import/reference writes a small `network` metadata node **inside the
   Maya scene** recording logical source path, revision, hash and local cache
   location. It does not write any metadata alongside shared source assets.
-- API users can call \`tm.version_records()\` to list scene records and
-  \`tm.switch_reference_version(record_node, revision)\` to switch an existing
+- API users can call `tm.version_records()` to list scene records and
+  `tm.switch_reference_version(record_node, revision)` to switch an existing
   Maya scene reference to a different pinned revision. Imported mesh geometry
   is not live-updated; import the alternate revision as a new object.
 
 The picker communicates with the local service at
-\`http://127.0.0.1:8765\` by default. To override the port, set
-\`TOURMALINE_ASSET_URL=http://127.0.0.1:PORT\` in Maya's environment.
+`http://127.0.0.1:8765` by default. To override the port, set
+`TOURMALINE_ASSET_URL=http://127.0.0.1:PORT` in Maya's environment.
 
 ## CLI
 
