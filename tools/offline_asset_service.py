@@ -6,6 +6,7 @@ overwrites need host-level snapshots or filesystem interception.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape
@@ -78,12 +79,23 @@ class Archive:
                     PRIMARY KEY(sha256, extension));
             """)
 
+    @contextmanager
     def connect(self):
+        # sqlite3.Connection's context manager commits but does NOT close.
+        # Explicit close matters on Windows, where open DB files cannot be
+        # removed and long-lived handles can pin WAL files indefinitely.
         db = sqlite3.connect(self.db_path, timeout=30)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=30000")
-        db.execute("PRAGMA journal_mode=WAL")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=30000")
+            db.execute("PRAGMA journal_mode=WAL")
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     @staticmethod
     def blob(base: Path, digest: str, extension: str = "") -> Path:
