@@ -5074,6 +5074,106 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::TextDisabled("Binary or non-UTF-8 file (metadata only).");
 			return;
 		}
+		if (path.extension() == ".shape") {
+			// Per-selection editing state: changes are only persisted on Save.
+			// A truncated preview cannot safely round-trip the source.
+			static std::string shapePath;
+			static tour::asset::ShapeAsset shape;
+			static std::string shapeError;
+			static bool shapeLoaded = false;
+			static bool shapeDirty = false;
+			if (shapePath != m_assetsSel) {
+				shapePath = m_assetsSel;
+				shapeLoaded = !preview.truncated &&
+					tour::asset::ParseShapeAsset(preview.text, shape, shapeError);
+				shapeDirty = false;
+				if (preview.truncated)
+					shapeError = "Shape file exceeds the 64 KiB inspector limit.";
+			}
+			if (!shapeLoaded) {
+				ImGui::TextWrapped("Shape parse error: %s", shapeError.c_str());
+				return;
+			}
+			ImGui::Text("Shape: %s%s",
+				tour::asset::ShapeKindName(shape.kind),
+				shapeDirty ? " (unsaved)" : "");
+			if (shape.kind == tour::asset::ShapeKind::Spline)
+				shapeDirty |= ImGui::Checkbox("Closed", &shape.closed);
+			int segments = static_cast<int>(shape.segments);
+			if (ImGui::SliderInt("Segments", &segments, 1, 256)) {
+				shape.segments = static_cast<uint32_t>(segments);
+				shapeDirty = true;
+			}
+			if (shape.kind == tour::asset::ShapeKind::Sphere ||
+				shape.kind == tour::asset::ShapeKind::Cylinder ||
+				shape.kind == tour::asset::ShapeKind::Cone) {
+				shapeDirty |= ImGui::DragFloat("Radius", &shape.radius, 0.02f, 0.01f, 10000.0f);
+				if (shape.kind != tour::asset::ShapeKind::Sphere)
+					shapeDirty |= ImGui::DragFloat("Height", &shape.height, 0.02f, 0.01f, 10000.0f);
+			}
+			if (shape.kind == tour::asset::ShapeKind::Spline ||
+				shape.kind == tour::asset::ShapeKind::PointCloud) {
+				ImGui::Text("Control points: %zu", shape.points.size());
+				if (ImGui::Button("Add point") && shape.points.size() < 100000) {
+					shape.points.push_back(shape.points.empty()
+						? tour::asset::ShapePoint{} : shape.points.back());
+					shapeDirty = true;
+				}
+				if (shape.points.size() > 256)
+					ImGui::TextDisabled("Showing first 256 points (of %zu).", shape.points.size());
+				ImGui::BeginChild("##shape_points", ImVec2(0, 220), true);
+				const size_t shown = std::min(shape.points.size(), size_t(256));
+				for (size_t i = 0; i < shown; ++i) {
+					ImGui::PushID(static_cast<int>(i));
+					float xyz[3] = {shape.points[i].x, shape.points[i].y, shape.points[i].z};
+					if (ImGui::DragFloat3("XYZ", xyz, 0.02f)) {
+						shape.points[i] = {xyz[0], xyz[1], xyz[2]};
+						shapeDirty = true;
+					}
+					ImGui::SameLine();
+					const bool canRemove = shape.points.size() >
+						(shape.kind == tour::asset::ShapeKind::PointCloud ? 1u :
+						(shape.closed ? 3u : 2u));
+					ImGui::BeginDisabled(!canRemove);
+					if (ImGui::SmallButton("X")) {
+						shape.points.erase(shape.points.begin() + static_cast<std::ptrdiff_t>(i));
+						shapeDirty = true;
+						ImGui::EndDisabled();
+						ImGui::PopID();
+						break;
+					}
+					ImGui::EndDisabled();
+					ImGui::PopID();
+				}
+				ImGui::EndChild();
+			}
+			std::string validation;
+			const bool valid = tour::asset::ValidShape(shape, validation);
+			if (!valid) ImGui::TextWrapped("Invalid shape: %s", validation.c_str());
+			ImGui::BeginDisabled(!shapeDirty || !valid);
+			if (ImGui::Button("Save shape")) {
+				// Only this authored source file is written; no cooked
+				// geometry or GPU resource is modified by the inspector.
+				std::ofstream file(path, std::ios::binary | std::ios::trunc);
+				file << tour::asset::SerializeShapeAsset(shape);
+				file.close();
+				if (file) {
+					shapeDirty = false;
+					m_assetGenericPreview = ReadBrowserFilePreview(path);
+					Log("Saved shape: " + path.generic_string());
+				} else {
+					Log("Failed to save shape: " + path.generic_string());
+				}
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Revert")) {
+				shapeLoaded = tour::asset::ParseShapeAsset(
+					preview.text, shape, shapeError);
+				shapeDirty = false;
+			}
+			return;
+		}
 		if (ClassifyBrowserInspector(path) == BrowserInspectorKind::SpriteSet) {
 			::tour::asset::SpriteSet sheet;
 			std::string parseError;
