@@ -24,12 +24,14 @@
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Asset/sdf.h>
 #include <Engine/Asset/tour.h>
 
 #include <artifact_cache/assetdb.h>
 #include <artifact_cache/artifact_cache.h>
 
 #include <gltf_import/source_formats.h>
+#include <gltf_import/asset_export.h>
 
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
@@ -345,6 +347,72 @@ bool RefreshPlanImports(const Project& project, const BuildPlan& plan,
 	return true;
 }
 
+// Mesh-local distance fields are DERIVED from already imported .geometry,
+// after any Cook writeback and before pak assembly. Each geometry family
+// owns one sibling .geometry.sdf, containing all base primitives (not the
+// LOD chain). Re-running the recipe deterministically replaces the sibling.
+static bool BakePlanSdfs(const Project& project, const BuildPlan& plan,
+	std::string& err) {
+	std::set<std::string> families;
+	for (const PlanPak& pak : plan.paks)
+		for (const PlanAsset& a : pak.assets)
+			if (a.kind == PlanAssetKind::Geometry)
+				families.insert(a.path);
+	for (const PlanPak& pak : plan.paks)
+		for (const std::string& p : pak.sceneArtifacts)
+			families.insert(p);
+	for (const std::string& name : families) {
+		const fs::path source = fs::path(project.root) / fs::path(name);
+		smvk::assets::MeshAsset mesh;
+		if (!smvk::assets::LoadMeshAsset(source, mesh, err)) {
+			err = "SDF cannot read '" + name + "': " + err;
+			return false;
+		}
+		tour::asset::SdfAsset baked;
+		for (const auto& geometry : mesh.geometry) {
+			if (geometry.indices.empty() || geometry.positions.empty())
+				continue;
+			std::vector<glm::vec3> positions;
+			positions.reserve(geometry.positions.size());
+			for (const auto& v : geometry.positions)
+				positions.push_back(v.pos);
+			tour::asset::SdfMesh entry;
+			entry.fragment = geometry.uriFragment;
+			if (!tour::asset::BakeMeshSdf(positions, geometry.indices,
+					tour::asset::SdfBakeOptions{}, entry.volume, err)) {
+				err = "SDF bake '" + name + "#" + entry.fragment + "': " + err;
+				return false;
+			}
+			baked.meshes.push_back(std::move(entry));
+		}
+		const std::vector<uint8_t> bytes = tour::asset::WriteSdfAsset(baked);
+		const fs::path dest = source.generic_string() + ".sdf";
+		const fs::path temp = dest.generic_string() + ".tmp";
+		{
+			std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+			f.write(reinterpret_cast<const char*>(bytes.data()),
+				static_cast<std::streamsize>(bytes.size()));
+			f.close();
+			if (!f) {
+				err = "SDF sidecar write failed: " + temp.generic_string();
+				return false;
+			}
+		}
+		std::error_code ec;
+		// Windows rename does not replace; only remove the old derived
+		// file once the NEW temporary output has been fully written.
+		fs::remove(dest, ec);
+		ec.clear();
+		fs::rename(temp, dest, ec);
+		if (ec) {
+			err = "SDF sidecar publish failed: " + dest.generic_string()
+				+ ": " + ec.message();
+			return false;
+		}
+	}
+	return true;
+}
+
 bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 	StageAdapter& adapter, const BuildPlanOptions& options,
 	BuildPlanReport& out, std::string& err) {
@@ -418,6 +486,12 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 			}
 		}
 	}
+
+	// ---- 2.25) optional mesh-local SDF bake -----------------------------
+	// Sidecars belong to their .geometry family, never to a scene or
+	// runtime mutable mesh. The original render meshes stay unchanged.
+	if (plan.bakeSdf && !BakePlanSdfs(project, plan, err))
+		return false;
 
 	// ---- 2.5) the pre-stage catalog ensure --------------------------------
 	// The cooked scenes' audio sections stamp STABLE 0x4xxx ids, so the
@@ -514,6 +588,18 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		stage.outPak = stagedPath.generic_string();
 		staged.files.push_back(stagedPath);
 		stage.verify = true;
+		// Pack the derived companion alongside its owning geometry.
+		// Generated paths never enter authored include ownership/catal​​ogs.
+		if (plan.bakeSdf) {
+			std::set<std::string> sdfFamilies;
+			for (const PlanAsset& asset : pak.assets)
+				if (asset.kind == PlanAssetKind::Geometry)
+					sdfFamilies.insert(asset.path);
+			for (const auto& artifact : pak.sceneArtifacts)
+				sdfFamilies.insert(artifact);
+			for (const auto& family : sdfFamilies)
+				stage.contentSet.push_back(family + ".sdf");
+		}
 		if (pak.scene.empty()) {
 			// ASSET-ONLY pak (the recipe spec's shared package): the
 			// owned VFS assets embed directly as Texture blobs — no
