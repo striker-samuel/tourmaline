@@ -535,6 +535,12 @@ namespace editor {
 				DraftCreateLight(true);
 			if (ImGui::MenuItem("Spatial Volume", nullptr, false, canCreate))
 				DraftCreateSpatialVolume();
+			if (ImGui::MenuItem("Draw Spatial Volume Box", nullptr,
+				m_volumeBrushArmed, canCreate)) {
+				m_volumeBrushArmed = !m_volumeBrushArmed;
+				m_volumeBrushDragging = false;
+				m_volumeBrushStage = 0;
+			}
 			if (ImGui::MenuItem("Convex volume (GI)", nullptr, false,
 				canCreate))
 				DraftCreateGiVolume();

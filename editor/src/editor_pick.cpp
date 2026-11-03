@@ -232,6 +232,54 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx, float mouseX,
 	return best;
 }
 
+// Choose a world-space anchor near a strong scene-depth discontinuity.
+// Sample a small pixel cross around the cursor using the editor's exact
+// mesh picker; this works without a synchronous GPU depth-buffer readback.
+// An occlusion/silhouette edge is a >10% AND >0.5 m range jump. If the
+// center is on the distant side, prefer the nearer surface within 6 px.
+// Ordinary continuous surfaces keep the exact center hit. The caller can
+// fall back to its working plane when all samples miss.
+bool EditorApp::SpatialVolumeBrushDepthPoint(int viewport, float x, float y,
+	glm::vec3& point) const {
+	const EditorViewport& vp = m_viewports[std::clamp(viewport, 0, kMaxViewports - 1)];
+	const smvk::Extent2D ext{ uint32_t(vp.rect.w), uint32_t(vp.rect.h) };
+	if (!ext.width || !ext.height)
+		return false;
+	constexpr float radius = 6.0f;
+	const glm::vec2 offsets[] = {
+		{0,0}, {-radius,0}, {radius,0}, {0,-radius}, {0,radius}
+	};
+	struct Sample { glm::vec3 point{}; float distance = FLT_MAX; bool hit = false; };
+	Sample samples[5];
+	for (int i = 0; i < 5; ++i) {
+		const float sx = x + offsets[i].x, sy = y + offsets[i].y;
+		if (sx < 0.0f || sy < 0.0f || sx >= vp.rect.w || sy >= vp.rect.h)
+			continue;
+		const auto hit = PickNode(viewport, sx, sy, ext);
+		if (!hit)
+			continue;
+		glm::vec3 origin;
+		const glm::vec3 ray = MouseRay(sx, sy, ext, vp.viewProj, origin);
+		samples[i] = {origin + ray * hit->t, hit->t, true};
+	}
+	int best = samples[0].hit ? 0 : -1;
+	for (int i = 1; i < 5; ++i) {
+		if (!samples[i].hit)
+			continue;
+		// Missing center is a silhouette. Otherwise snap only to a
+		// substantial foreground/background split, never surface noise.
+		if (best < 0 || (samples[i].distance < samples[best].distance &&
+			(samples[best].distance - samples[i].distance > 0.5f &&
+			 samples[best].distance - samples[i].distance >
+			 0.1f * samples[best].distance)))
+			best = i;
+	}
+	if (best < 0)
+		return false;
+	point = samples[best].point;
+	return true;
+}
+
 // ---- gizmo-marker picking (nodes with no mesh to raycast) -------------
 // Lights, GI volume centers and cubemap pins draw as X-ray markers with no
 // geometry behind them, so the triangle walk can never hit them. This

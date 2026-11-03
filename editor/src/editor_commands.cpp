@@ -1409,6 +1409,43 @@ void EditorApp::DraftCreateSpatialVolume() {
 	Do(c);
 }
 
+void EditorApp::FinishSpatialVolumeBrush() {
+	if (!m_world)
+		return;
+	const glm::vec3 a = m_volumeBrushStart;
+	const glm::vec3 b = m_volumeBrushEnd;
+	const float h = m_volumeBrushHeight;
+	// No degenerate boxes: cancel the gesture rather than creating a
+	// zero-scale transform that cannot be manipulated with a gizmo.
+	if (std::fabs(b.x - a.x) < 0.01f ||
+		std::fabs(b.z - a.z) < 0.01f || std::fabs(h) < 0.01f) {
+		Log("Spatial volume box: width, depth and height must be nonzero.");
+		return;
+	}
+	std::string name = "SpatialVolume";
+	for (uint32_t suffix = 2;; ++suffix) {
+		bool taken = false;
+		for (size_t i = 0; i < m_world->scene.hierarchy.size(); ++i)
+			if (getNodeName(m_world->scene, int(i)) == name) {
+				taken = true;
+				break;
+			}
+		if (!taken)
+			break;
+		name = "SpatialVolume" + std::to_string(suffix);
+	}
+	EditCmd c{};
+	c.verb = EditVerb::CreateTransform;
+	c.node = UINT32_MAX;
+	c.node2 = DefaultCreateParent();
+	c.afterText = name;
+	c.afterVec = glm::vec3((a.x + b.x) * 0.5f,
+		a.y + h * 0.5f, (a.z + b.z) * 0.5f);
+	c.svec = glm::vec3(std::fabs(b.x - a.x), std::fabs(h),
+		std::fabs(b.z - a.z));
+	Do(c);
+}
+
 void EditorApp::DraftCreateLocator() {
 	if (!m_world) {
 		Log("Create locator: no scene open.");

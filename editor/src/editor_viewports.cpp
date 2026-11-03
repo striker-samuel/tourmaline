@@ -541,6 +541,40 @@ void EditorApp::DrawViewportChrome() {
 			}
 		}
 	}
+	// Brush preview: clipped three-dimensional wire box in the viewport,
+	// using the same full-frustum clipper as other editor overlays.
+	if (m_volumeBrushArmed && m_world && m_volumeBrushVp >= 0 &&
+		m_volumeBrushVp < kMaxViewports) {
+		const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
+		const ViewportRect& rect = brushVp.rect;
+		const glm::vec3 a = m_volumeBrushStart;
+		const glm::vec3 b = m_volumeBrushEnd;
+		const float x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
+		const float z0 = std::min(a.z, b.z), z1 = std::max(a.z, b.z);
+		const float y0 = std::min(a.y, a.y + m_volumeBrushHeight);
+		const float y1 = std::max(a.y, a.y + m_volumeBrushHeight);
+		const glm::vec3 corners[8] = {
+			{x0,y0,z0}, {x1,y0,z0}, {x0,y0,z1}, {x1,y0,z1},
+			{x0,y1,z0}, {x1,y1,z0}, {x0,y1,z1}, {x1,y1,z1}
+		};
+		dl->PushClipRect(ImVec2(rect.x, rect.y),
+			ImVec2(rect.x + rect.w, rect.y + rect.h), true);
+		for (int i = 0; i < 8; ++i)
+			for (int axis = 0; axis < 3; ++axis) {
+				const int j = i ^ (1 << axis);
+				if (i >= j) continue;
+				glm::vec4 p, q;
+				if (ClipSegmentToCamera(brushVp.viewProj, corners[i],
+					corners[j], p, q))
+					dl->AddLine(OverlayPx(p, rect), OverlayPx(q, rect),
+						IM_COL32(80, 230, 170, 240), 2.0f);
+			}
+		const char* hint = m_volumeBrushStage == 0 ? "Drag width (X)" :
+			m_volumeBrushStage == 1 ? "Drag depth (Z)" : "Drag height (Y)";
+		dl->AddText(ImVec2(rect.x + 14.0f, rect.y + 30.0f),
+			IM_COL32(80, 230, 170, 255), hint);
+		dl->PopClipRect();
+	}
 	// Rubber-band box (window pixels), clipped to its viewport: a drag
 	// past the viewport edge used to paint the selection tint over the
 	// neighboring panels (same foreground-layer defect as the borders

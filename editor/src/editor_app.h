@@ -1471,6 +1471,22 @@ private:
 	// (findNodeByName — the name IS the locator's identity).
 	void DraftCreateLocator();
 	void DraftCreateSpatialVolume(); // generic transform with full box extents
+	// SketchUp-style spatial-volume box brush: X width, Z depth, Y height.
+	// Each stage is a separate click-drag; the final release creates one
+	// undoable transform and leaves the brush armed for another box.
+	bool m_volumeBrushArmed = false;
+	bool m_volumeBrushDragging = false;
+	int m_volumeBrushStage = 0; // 0 width, 1 depth, 2 height
+	int m_volumeBrushVp = 0;
+	glm::vec3 m_volumeBrushStart{0.0f};
+	glm::vec3 m_volumeBrushEnd{0.0f};
+	float m_volumeBrushHeight = 0.0f;
+	float m_volumeBrushMouseY = 0.0f;
+	void FinishSpatialVolumeBrush();
+	// Prefer surface depth breaks (silhouettes/occlusion edges) close to
+	// the pointer; no geometry returns false for construction-plane fallback.
+	bool SpatialVolumeBrushDepthPoint(int viewport, float x, float y,
+		glm::vec3& point) const;
 	// True when the node is a bare transform: no mesh/light/camera/decal/
 	// givolume/cubemap/export/env link — the "locator" definition. Used
 	// by the outliner tag, the gizmo marker, and the click pick. NOTE:
