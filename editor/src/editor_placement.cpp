@@ -603,7 +603,15 @@ CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId) {
 		r.terrainBind = (dn->i.size() > 1 && dn->i[1] >= 0)
 			? (uint32_t)dn->i[1] : UINT32_MAX;
 	}
-	else { r.error = "Layer.domain must come from a Grid, Mesh or Terrain node"; return r; }
+	else if (dn->kind == NodeKind::PointCloud) {
+		r.domainKind = DomainKind::PointCloud;
+		r.pointStroke = dn->i.empty() ? -1 : dn->i[0];
+		if (r.pointStroke < -1) {
+			r.error = "PointCloud stroke index must be -1 (all) or >= 0";
+			return r;
+		}
+	}
+	else { r.error = "Layer.domain must come from Grid, Mesh, Terrain or PointCloud"; return r; }
 	// Density expression (Accept preferred, field auto-wrapped at scale 1).
 	const PLink* yl = doc.inputLink(layer.id, "density");
 	if (!yl) { r.error = "Layer.density is unlinked"; return r; }
