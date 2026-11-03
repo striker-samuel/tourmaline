@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "portkit.h"
 #include "trace.h"
+#include "external_assets.h"
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -170,6 +171,34 @@ int main(){
     Check(mock.boots==1,"no original ROM => no adapter boot");
     // Frame parity signatures: hash, input, dimensions and tick are all
     // part of the comparison. No frame pixels enter the trace/CSV.
+    // External project/ROM/publish locations must not alias this source
+    // repository (including a symlink or a string-prefix lookalike).
+    namespace fs=std::filesystem;
+    const auto scratch=fs::temp_directory_path()/"tour_recomp_path_test";
+    const auto repoDir=scratch/"repo";
+    fs::create_directories(repoDir/"nested");
+    const auto externalDir=scratch/"repo-sibling";
+    fs::create_directories(externalDir);
+    Check(PathWithin(repoDir/"nested",repoDir),"component containment");
+    Check(!PathWithin(externalDir,repoDir),"prefix lookalike outside");
+    ExternalAssets layout;
+    layout.repoRoot=repoDir;
+    layout.rom=externalDir/"sm64.us.z64";
+    layout.project=externalDir/"content";
+    layout.manifest=externalDir/"publish"/"game.tapp";
+    layout.artifacts=externalDir/"recompiled";
+    Check(layout.Validate(error),"external user content accepted");
+    layout.rom=repoDir/"private.z64";
+    Check(!layout.Validate(error),"source-tree ROM rejected");
+    layout.rom.clear();
+    layout.manifest=repoDir/"output.tapp";
+    Check(!layout.Validate(error),"source-tree cooked pak rejected");
+    layout.manifest.clear();
+    layout.artifacts=repoDir/"output";
+    Check(!layout.Validate(error),"source-tree recomp artifacts rejected");
+    layout.artifacts=externalDir/"recompiled";
+    Check(layout.Validate(error),"external artifact dir accepted");
+    fs::remove_all(scratch);
     Check(Fnv1a64({})==0xcbf29ce484222325ull,"FNV64 empty");
     const std::array<Byte,5> hello{'h','e','l','l','o'};
     Check(Fnv1a64(hello)==0xa430d84680aabd0bull,"FNV64 hello");
