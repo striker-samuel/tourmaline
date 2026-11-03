@@ -38,11 +38,10 @@
 // DofIsBackgroundOrGarbage (NaN fails both range tests, garbage texels
 // classify as sky and never occlude).
 //
-// What v1 deliberately does NOT do (documented gaps, not surprises):
-//   - no screen-edge FADING: a march that leaves the frustum keeps
-//     visibility 1 (untestable = lit, the conservative choice);
-//   - no temporal filtering (the initial tuning table pins it off -
-//     the IGN-dithered start offset is the noise mitigation for now);
+// Screen-space limitations (both modes): depth outside the viewport is
+// untestable; the optional longer ray fades hits near the viewport edge,
+// whereas the original contact mode stays binary. No temporal filtering
+// is applied in either mode.
 //   - no normal-based grazing guard: a receiver facing away from the
 //     sun marches anyway - its NdotL is 0, the wasted march is the
 //     cost, the result is inert.
@@ -63,7 +62,7 @@
 RWTexture2D<float> contactStorage[];
 
 // Must match Engine/Rendergraph/contact_shadow.h ContactShadowPush
-// (56 bytes). uint64 BDA leads, all-scalar after (the spirv-val
+// (64 bytes). uint64 BDA leads, all-scalar after (the spirv-val
 // straddling-vector hazard discipline).
 struct ContactShadowPush
 {
@@ -77,9 +76,11 @@ struct ContactShadowPush
     float maxDistance;       // march length (m, world units)
     float thickness;         // thin-occluder acceptance band (m)
     float startBias;         // ray start offset + self-hit delta floor (m)
-    uint steps;              // march sample count (4..32)
+    uint steps;              // march sample count (4..32 contact / 8..96 ray)
     uint samplerIndex;       // point/clamp (hard depth taps, no filtering)
-    uint pad0;
+    uint traceMode;          // 0 = contact, 1 = screen-space ray trace
+    float edgeFade;          // UV margin for screen-edge fading
+    uint refineSteps;        // depth-crossing bisection steps
 };
 
 GPU_PUSH(ContactShadowPush, sp);
@@ -115,48 +116,117 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
     float4 world = mul(frame.invViewProj, float4(ndc, ndcD, 1.0f));
     const float3 worldPos = world.xyz / max(world.w, 1e-9f);
 
+    const bool longRange = sp.traceMode != 0u;
     const float3 toSun = normalize(frame.env.sunDirection.xyz + 1e-9f);
     const float nearPlane = max(frame.nearPlane, 1e-4f);
-    const float stepSize = max(sp.maxDistance, 1e-4f) / float(max(sp.steps, 1u));
+    const float rayLength = max(sp.maxDistance, 1e-4f);
+    float previousTravel = 0.0f;
+    float previousDelta = 0.0f;
+    bool previousValid = false;
 
-    // The march: fixed step, IGN-free v1 (the initial tuning table - no
-    // temporal accumulation to converge, so a per-pixel dither would only
-    // shimmer). [loop]: steps is a push uniform, not a compile constant.
+    // Preserve the original uniform contact march when traceMode == 0.
+    // The optional long-range ray trace concentrates samples near the
+    // receiver (quadratic spacing) and refines depth crossings so a thin
+    // occluder is not skipped by a coarse step.
     [loop]
     for (uint i = 1u; i <= sp.steps; ++i)
     {
-        const float3 p = worldPos
-            + toSun * (float(i) * stepSize + sp.startBias);
+        const float u = float(i) / float(max(sp.steps, 1u));
+        const float travel = sp.startBias + rayLength *
+            (longRange ? u * u : u);
+        const float3 p = worldPos + toSun * travel;
 
         const float4 clip = mul(frame.viewProj, float4(p, 1.0f));
-        // Behind the camera (w <= 0): untestable, stay lit.
         if (clip.w <= 0.0f)
             break;
 
         const float2 tapUv = (clip.xy / clip.w) * 0.5f + 0.5f;
-        // Offscreen: untestable, stay lit (v1 has no edge fade).
+        // Depth outside the viewport is unavailable. The CSM/EVSM
+        // remains responsible for off-screen casters.
         if (any(tapUv < 0.0f) || any(tapUv > 1.0f))
             break;
 
         const float tapD = depthTex.SampleLevel(hardSmp, tapUv, 0).r;
-        // Sky taps never occlude (NaN fails the range test too).
         if (DofIsBackgroundOrGarbage(tapD))
+        {
+            previousValid = false;
             continue;
+        }
 
-        // LINEAR view-space distances on both sides of the comparison
-        // (the reversed-Z identity dist = near / ndcZ): the march point
-        // and the sampled surface measured in the same meters.
+        // Reversed-Z distances in linear view-space meters on both
+        // sides. Positive delta: the ray sample is behind the visible
+        // surface at this UV.
         const float rayDist = nearPlane / max(clip.z / clip.w, kDofBackgroundEps);
         const float sceneDist = nearPlane / max(tapD, kDofBackgroundEps);
         const float delta = rayDist - sceneDist;
+        bool hit = delta > sp.startBias && delta < sp.thickness;
+        float2 hitUv = tapUv;
 
-        // In front of the march point (delta > 0), past the self-hit
-        // floor, inside the thin-occluder band: the sun is blocked.
-        if (delta > sp.startBias && delta < sp.thickness)
+        if (longRange && !hit && previousValid &&
+            previousDelta <= sp.startBias && delta >= sp.thickness)
         {
-            visibility = 0.0f;
+            // A coarse ray step crossed visible depth. Binary search
+            // between the last front sample and this back sample,
+            // accepting only a thin depth intersection (never a
+            // distant, unrelated surface behind the ray).
+            float low = previousTravel;
+            float high = travel;
+            [loop]
+            for (uint j = 0u; j < sp.refineSteps; ++j)
+            {
+                const float mid = 0.5f * (low + high);
+                const float4 midClip = mul(frame.viewProj,
+                    float4(worldPos + toSun * mid, 1.0f));
+                if (midClip.w <= 0.0f)
+                {
+                    low = mid;
+                    continue;
+                }
+                const float2 midUv = (midClip.xy / midClip.w) * 0.5f + 0.5f;
+                if (any(midUv < 0.0f) || any(midUv > 1.0f))
+                {
+                    low = mid;
+                    continue;
+                }
+                const float midDepth = depthTex.SampleLevel(hardSmp, midUv, 0).r;
+                if (DofIsBackgroundOrGarbage(midDepth))
+                {
+                    low = mid;
+                    continue;
+                }
+                const float midDelta =
+                    nearPlane / max(midClip.z / midClip.w, kDofBackgroundEps) -
+                    nearPlane / max(midDepth, kDofBackgroundEps);
+                if (midDelta > sp.startBias)
+                {
+                    high = mid;
+                    if (midDelta < sp.thickness)
+                    {
+                        hit = true;
+                        hitUv = midUv;
+                    }
+                }
+                else
+                    low = mid;
+            }
+        }
+
+        if (hit)
+        {
+            // The original contact mode remains binary. Long-range
+            // screen-space rays lose information near the viewport
+            // boundary; fade their contribution there instead of
+            // drawing a hard discontinuity.
+            const float edge = min(min(hitUv.x, hitUv.y),
+                min(1.0f - hitUv.x, 1.0f - hitUv.y));
+            visibility = longRange
+                ? (1.0f - saturate(edge / max(sp.edgeFade, 1e-5f)))
+                : 0.0f;
             break;
         }
+        previousValid = true;
+        previousTravel = travel;
+        previousDelta = delta;
     }
 
     contactStorage[sp.outImageIndex][tid.xy] = visibility;

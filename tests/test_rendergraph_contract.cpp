@@ -413,6 +413,23 @@ int main() {
 	// 7. The GI volume layer table capacity/pack contract (§1.1).
 	TestGiVolumeLayerTableContract();
 
+	// 8. Sun-shadow compute push ABI and optional ray-trace defaults.
+	// These run without Vulkan or a GPU; shader/CPU layout must agree.
+	Check(sizeof(smvk::ContactShadowPush) == 64, "contract.sun-ray-push-size");
+	Check(offsetof(smvk::ContactShadowPush, traceMode) == 52, "contract.sun-ray-mode-offset");
+	Check(offsetof(smvk::ContactShadowPush, edgeFade) == 56, "contract.sun-ray-edge-offset");
+	Check(offsetof(smvk::ContactShadowPush, refineSteps) == 60, "contract.sun-ray-refine-offset");
+	{
+		const smvk::ContactShadowDesc d{};
+		Check(!d.traceLongRange && d.maxDistance == 0.35f && d.steps == 12u,
+			"contract.sun-ray-legacy-default");
+		const engine::RenderQualityConfig q{};
+		Check(!q.screenSpaceRayShadowsEnabled && q.screenSpaceRayShadowSteps == 64,
+			"contract.sun-ray-opt-in-default");
+		const smvk::Extent2D half = smvk::SunContactShadows::VisExtentFor({ 1920, 1080 }, 2);
+		Check(half.width == 960 && half.height == 540, "contract.sun-ray-half-resolution");
+	}
+
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

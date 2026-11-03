@@ -408,6 +408,15 @@ struct RenderQualityConfig {
 	float contactShadowStartBias = 0.01f;
 	int contactShadowSteps = 12;
 	int contactShadowResolutionDivisor = 2; // 1 full | 2 half
+	// Optional longer sun rays through the visible depth buffer. This is
+	// screen-space tracing, NOT Vulkan acceleration-structure ray tracing.
+	bool screenSpaceRayShadowsEnabled = false;
+	float screenSpaceRayShadowDistance = 12.0f;
+	float screenSpaceRayShadowThickness = 0.12f;
+	int screenSpaceRayShadowSteps = 64;
+	int screenSpaceRayShadowRefineSteps = 4;
+	float screenSpaceRayShadowEdgeFade = 0.03f;
+	int screenSpaceRayShadowResolutionDivisor = 2;
 	// Diffuse screen-space GI (ssgi_diffuse.h; experimental, default off).
 	bool ssgiDiffuseEnabled = false;
 	float ssgiDiffuseIntensity = 1.0f;
@@ -1914,6 +1923,14 @@ public:
 		m_contactShadowSteps = std::clamp(q.contactShadowSteps, 4, 32);
 		m_contactShadowResolutionDivisor =
 			(q.contactShadowResolutionDivisor == 1) ? 1 : 2;
+		m_screenSpaceRayShadowsEnabled = q.screenSpaceRayShadowsEnabled;
+		m_screenSpaceRayShadowDistance = std::clamp(q.screenSpaceRayShadowDistance, 0.5f, 30.0f);
+		m_screenSpaceRayShadowThickness = std::clamp(q.screenSpaceRayShadowThickness, 0.01f, 0.5f);
+		m_screenSpaceRayShadowSteps = std::clamp(q.screenSpaceRayShadowSteps, 8, 96);
+		m_screenSpaceRayShadowRefineSteps = std::clamp(q.screenSpaceRayShadowRefineSteps, 0, 8);
+		m_screenSpaceRayShadowEdgeFade = std::clamp(q.screenSpaceRayShadowEdgeFade, 0.001f, 0.25f);
+		m_screenSpaceRayShadowResolutionDivisor =
+			(q.screenSpaceRayShadowResolutionDivisor == 1) ? 1 : 2;
 		// Diffuse SSGI.
 		m_ssgiDiffuseEnabled = q.ssgiDiffuseEnabled;
 		m_ssgiDiffuseIntensity = std::clamp(q.ssgiDiffuseIntensity, 0.0f, 4.0f);
@@ -2952,9 +2969,22 @@ public:
 	// contribution view SAMPLES the visibility - the pass stays live
 	// under it (the Ssgi-views-keep-their-inputs pattern; the SSR
 	// contribution view chose re-tracing instead - this is cheaper).
+	smvk::ContactShadowDesc SunShadowTraceDesc() const {
+		smvk::ContactShadowDesc d{};
+		d.traceLongRange = m_screenSpaceRayShadowsEnabled;
+		d.maxDistance = d.traceLongRange ? m_screenSpaceRayShadowDistance : m_contactShadowMaxDistance;
+		d.thickness = d.traceLongRange ? m_screenSpaceRayShadowThickness : m_contactShadowThickness;
+		d.startBias = m_contactShadowStartBias;
+		d.steps = uint32_t(d.traceLongRange ? m_screenSpaceRayShadowSteps : m_contactShadowSteps);
+		d.resolutionDivisor = uint32_t(d.traceLongRange
+			? m_screenSpaceRayShadowResolutionDivisor : m_contactShadowResolutionDivisor);
+		d.refineSteps = uint32_t(m_screenSpaceRayShadowRefineSteps);
+		d.edgeFade = m_screenSpaceRayShadowEdgeFade;
+		return d;
+	}
 	bool ContactShadowsActive() const {
 		return m_passes.contactShadows
-			&& m_contactShadowsEnabled
+			&& (m_contactShadowsEnabled || m_screenSpaceRayShadowsEnabled)
 			&& m_viewportResources.contactShadows.Valid()
 			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
 			&& !m_viewportResources.renderDepth.logicalView.empty()
@@ -3722,6 +3752,15 @@ public:
 	float m_contactShadowStartBias = 0.01f; // ray start + self-hit floor (m)
 	int m_contactShadowSteps = 12; // march samples 4..32
 	int m_contactShadowResolutionDivisor = 2; // 1 full | 2 half (benchmark both)
+	// Optional long-range depth-ray mode; OFF by default so legacy
+	// contact shading and its cost remain unchanged.
+	bool m_screenSpaceRayShadowsEnabled = false;
+	float m_screenSpaceRayShadowDistance = 12.0f;
+	float m_screenSpaceRayShadowThickness = 0.12f;
+	int m_screenSpaceRayShadowSteps = 64;
+	int m_screenSpaceRayShadowRefineSteps = 4;
+	float m_screenSpaceRayShadowEdgeFade = 0.03f;
+	int m_screenSpaceRayShadowResolutionDivisor = 2;
 	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
 	// virtual world volume system). World-space (NOT viewport-scoped):
 	// follows the frame's camera (PrepareFrame's interest point),

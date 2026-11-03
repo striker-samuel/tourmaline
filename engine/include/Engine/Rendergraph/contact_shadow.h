@@ -54,12 +54,13 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
 namespace smvk {
 
-// Must match contact_shadow.cs.hlsl ContactShadowPush (56 bytes).
+// Must match contact_shadow.cs.hlsl ContactShadowPush (64 bytes).
 // uint64 BDA leads; all-scalar after (the spirv-val straddling-vector
 // hazard discipline - same shape as every SSR/godrays push).
 struct ContactShadowPush {
@@ -75,9 +76,14 @@ struct ContactShadowPush {
 	float startBias = 0.01f;          // ray start + self-hit delta floor (m)
 	uint32_t steps = 12;              // march samples, 4..32
 	uint32_t samplerIndex = 0;        // point/clamp (hard depth taps)
-	uint32_t pad0 = 0;
+	uint32_t traceMode = 0;           // 0 = contact; 1 = screen-space ray shadow
+	float edgeFade = 0.03f;          // screen-edge fade UV distance
+	uint32_t refineSteps = 4;        // depth-crossing bisection
 };
-static_assert(sizeof(ContactShadowPush) == 56);
+static_assert(sizeof(ContactShadowPush) == 64);
+static_assert(offsetof(ContactShadowPush, traceMode) == 52);
+static_assert(offsetof(ContactShadowPush, edgeFade) == 56);
+static_assert(offsetof(ContactShadowPush, refineSteps) == 60);
 
 // ---- desc ----
 
@@ -92,6 +98,9 @@ struct ContactShadowDesc {
 	float startBias = 0.01f;
 	uint32_t steps = 12;         // 4..32
 	uint32_t resolutionDivisor = 2; // 1 = full, 2 = half (benchmark both)
+	bool traceLongRange = false;    // experimental screen-space sun rays
+	float edgeFade = 0.03f;       // UV margin; no fade in contact mode
+	uint32_t refineSteps = 4;     // bisection of crossed depth segments
 };
 
 inline constexpr const char* kContactShadowCsPath =
@@ -318,9 +327,11 @@ struct SunContactShadows {
 		push.maxDistance = (std::max)(d.maxDistance, 0.01f);
 		push.thickness = (std::max)(d.thickness, 0.001f);
 		push.startBias = (std::max)(d.startBias, 0.0f);
-		push.steps = std::clamp(d.steps, 4u, 32u);
+		push.steps = std::clamp(d.steps, 4u, d.traceLongRange ? 96u : 32u);
 		push.samplerIndex = pointSamplerIndex;
-		push.pad0 = 0;
+		push.traceMode = d.traceLongRange ? 1u : 0u;
+		push.edgeFade = std::clamp(d.edgeFade, 0.001f, 0.25f);
+		push.refineSteps = d.traceLongRange ? std::clamp(d.refineSteps, 0u, 8u) : 0u;
 
 		RenderPass& pass = rg.AddComputePass(name ? name : "SunContactShadows");
 		{

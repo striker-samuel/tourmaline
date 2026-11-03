@@ -10827,14 +10827,7 @@ namespace engine {
 				// unconditionally like the god-rays pair - the EMISSION
 				// gate (ContactShadowsActive) decides whether the pass
 				// runs and whether the frame uniform publishes the index.
-				smvk::ContactShadowDesc frameCsDesc{};
-				frameCsDesc.maxDistance = m_contactShadowMaxDistance;
-				frameCsDesc.thickness = m_contactShadowThickness;
-				frameCsDesc.startBias = m_contactShadowStartBias;
-				frameCsDesc.steps = (uint32_t)std::clamp(
-					m_contactShadowSteps, 4, 32);
-				frameCsDesc.resolutionDivisor = (m_contactShadowResolutionDivisor == 1)
-					? 1u : 2u;
+				const smvk::ContactShadowDesc frameCsDesc = SunShadowTraceDesc();
 				m_viewportResources.contactShadows.Ensure(*m_context,
 					*m_rendergraph, renderExtent, frameCsDesc);
 			}
@@ -13102,13 +13095,7 @@ namespace engine {
 		// ---------------------------------------------------------------------
 		const bool contactShadowsOn = ContactShadowsActive();
 		if (contactShadowsOn) {
-			smvk::ContactShadowDesc csDesc{};
-			csDesc.maxDistance = m_contactShadowMaxDistance;
-			csDesc.thickness = m_contactShadowThickness;
-			csDesc.startBias = m_contactShadowStartBias;
-			csDesc.steps = (uint32_t)std::clamp(m_contactShadowSteps, 4, 32);
-			csDesc.resolutionDivisor = (m_contactShadowResolutionDivisor == 1)
-				? 1u : 2u;
+			const smvk::ContactShadowDesc csDesc = SunShadowTraceDesc();
 			m_viewportResources.contactShadows.AddPass(*m_rendergraph,
 				m_viewportResources.renderDepth.logicalView,
 				m_viewportResources.renderDepth.bindlessIndex,
@@ -16708,6 +16695,22 @@ namespace engine {
 							int contactResIdx = (m_contactShadowResolutionDivisor == 1) ? 0 : 1;
 							if (ImGui::Combo("Contact resolution", &contactResIdx, contactRes, 2))
 								m_contactShadowResolutionDivisor = (contactResIdx == 0) ? 1 : 2;
+						}
+						ImGui::Checkbox("Screen-space ray-traced sun shadows (experimental)",
+							&m_screenSpaceRayShadowsEnabled);
+						if (ImGui::IsItemHovered())
+							ImGui::SetTooltip("Traces the visible depth buffer; off-screen casters still use CSM/EVSM. Replaces the contact march when enabled.");
+						if (m_screenSpaceRayShadowsEnabled) {
+							ImGui::SliderFloat("Ray shadow distance (m)", &m_screenSpaceRayShadowDistance, 0.5f, 30.0f);
+							ImGui::SliderFloat("Ray shadow thickness (m)", &m_screenSpaceRayShadowThickness, 0.01f, 0.5f);
+							ImGui::SliderInt("Ray shadow steps", &m_screenSpaceRayShadowSteps, 8, 96);
+							ImGui::SliderInt("Ray shadow refinement", &m_screenSpaceRayShadowRefineSteps, 0, 8);
+							ImGui::SliderFloat("Ray shadow edge fade (UV)", &m_screenSpaceRayShadowEdgeFade, 0.001f, 0.25f);
+							ImGui::SliderFloat("Ray shadow start bias (m)", &m_contactShadowStartBias, 0.0f, 0.05f);
+							const char* rayRes[2] = { "Full", "Half" };
+							int rayResIdx = (m_screenSpaceRayShadowResolutionDivisor == 1) ? 0 : 1;
+							if (ImGui::Combo("Ray shadow resolution", &rayResIdx, rayRes, 2))
+								m_screenSpaceRayShadowResolutionDivisor = (rayResIdx == 0) ? 1 : 2;
 						}
 						// Diffuse screen-space GI (see ssgi_diffuse.h): one
 						// cosine-hemisphere bounce that REPLACES the diffuse
