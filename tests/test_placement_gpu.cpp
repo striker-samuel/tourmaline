@@ -492,6 +492,70 @@ int main()
 	}
 
 	// =====================================================================
+	// Painted point-cloud source -> GPU candidate -> common field/prototype
+	// evaluator -> instance buffer (same CPU oracle/stable IDs).
+	// Intentionally set layer candidates below point count: point-cloud
+	// sources never silently truncate their authored input.
+	// =====================================================================
+	PlacementPointCloudGpu cloudGpu;
+	{
+		PlacementPointCloudData cloud;
+		for (uint32_t i = 0; i < 48; ++i) {
+			cloud.positions.push_back(glm::vec3(
+				float(i % 8) * 2.0f, 1.0f + float(i % 3), float(i / 8) * 2.0f));
+			cloud.normals.push_back(i % 2
+				? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0));
+		}
+		ok = cloudGpu.Upload(rm, rg, cloud);
+		Check(ok && cloudGpu.Valid(), "gpu.cloud-upload");
+
+		auto lb = MakeLayer(20, 0.6f, 12);
+		lb.domainKind = DomainKind::PointCloud;
+		lb.pointCloud = &cloud;
+		Prototype p0; p0.weight = 1.0f;
+		Prototype p1; p1.weight = 3.0f;
+		lb.prototypes.add(p0);
+		lb.prototypes.add(p1);
+		const TileID tile{ 1, 0, -2 };
+		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
+		Check(!oracle.empty() && oracle.size() <= 48,
+			"gpu.cloud-oracle");
+		PlacementProgramGpu prog;
+		Check(prog.Upload(rm, rg, lb, 0) && prog.Valid(),
+			"gpu.cloud-field-upload");
+		PlacementParamsGpu paramsGpu;
+		PlacementDomainParams params;
+		const ScatterBDAs bdas = cloudGpu.Addresses(rm);
+		ok = FillScatterParams(lb, prog.View(rm), PlacementEcoView{}, bdas, params);
+		Check(ok && params.domainKind == kPlacementScatterDomain_PointCloud &&
+			params.vertCount == 48 && (params.flags & kPlacementFlag_HasNormals),
+			"gpu.cloud-params");
+		Check(paramsGpu.Upload(rm, rg, params), "gpu.cloud-params-upload");
+		pass.ClearTile(rm, 3);
+		PlacementScatterPush push{};
+		BuildScatterPush(lb, tile, pass.TileInstancesAddress(rm, 3),
+			pass.TileCountAddress(rm, 3), paramsGpu.Address(rm), push);
+		Check(push.candidateCount == 48, "gpu.cloud-point-count-dispatch");
+		host.RunFrame([&](smvk::RenderGraph& g) {
+			smvk::RenderPass& eval = PlacementScatterPrograms::AddScatterPass(
+				g, pass, 3, cloudGpu.ReadLogicals(),
+				paramsGpu.logical, "PlacementScatterPaintedPoints");
+			eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+				PlacementScatterPrograms::PushAndDispatchScatter(cmd,
+					scatter.pointProgram, push);
+			});
+		});
+		rm.FlushUploads();
+		rm.WaitForUploads();
+		std::vector<RenderInstance> gpu;
+		uint32_t overflow = 1;
+		const uint32_t count = pass.DownloadTile(rm, 3, gpu, 4096, &overflow);
+		Check(count == oracle.size(), "gpu.cloud-count-parity");
+		Check(overflow == 0, "gpu.cloud-no-overflow");
+		Check(SortedEqual(gpu, oracle), "gpu.cloud-multiset-parity");
+	}
+
+	// =====================================================================
 	// 4) The capacity guard: tiny capacity under full density. The raw
 	//    count grows past capacity, overflow counts EVERY dropped
 	//    accepted candidate, the readback clamps, and the survivors are
