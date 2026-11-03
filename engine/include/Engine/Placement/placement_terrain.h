@@ -207,13 +207,13 @@ bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
 	const glm::vec2& rectMin, const glm::vec2& rectMax, uint32_t halo,
 	HeightfieldData& out);
 
-// Harvests the same window (no halo — the mask is a direct read) of the
-// S-tile paint channels into a placement EcotopeMaskData (4 channels,
+// Harvests the same window (optional halo — needed for bilinear
+// continuity at placement tile boundaries) of the S-tile paint channels into a placement EcotopeMaskData (4 channels,
 // 0..255 -> 0..1). Returns false on an invalid grid/rect.
 bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
 	const WorldMaskGrid& masks,
 	const glm::vec2& rectMin, const glm::vec2& rectMax,
-	EcotopeMaskData& out);
+	EcotopeMaskData& out, uint32_t halo = 0);
 
 } // namespace tour::placement
 
