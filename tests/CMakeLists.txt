@@ -1,3 +1,10 @@
+# Header-only brush sampling core: no renderer/device needed.
+add_executable(BrushPrimitivesTests test_brush_primitives.cpp)
+target_include_directories(BrushPrimitivesTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME brush_primitives_tests COMMAND BrushPrimitivesTests)
+
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
