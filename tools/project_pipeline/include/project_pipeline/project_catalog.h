@@ -82,6 +82,8 @@ struct ProjectCatalog {
 	// metadata).
 	std::vector<CatalogEntry> audiographs;
 	std::vector<CatalogEntry> spritesets;
+	std::vector<CatalogEntry> statemachines; // 0x9xxx
+	std::vector<CatalogEntry> navmeshes;      // 0xAxxx
 	// The per-graph CUE tables (parsed from the authored text at
 	// catalog time — the same loud-validation discipline as the schema
 	// collection): cue names in authored (ordinal) order, id-sorted

@@ -84,6 +84,8 @@ inline constexpr uint8_t kCatalogKindGi = 5;
 // bundling (graph id, cue ordinal) in project::audiocues).
 inline constexpr uint8_t kCatalogKindAudioGraph = 6;
 inline constexpr uint8_t kCatalogKindSpriteSet = 7;
+inline constexpr uint8_t kCatalogKindStateMachine = 8;
+inline constexpr uint8_t kCatalogKindNavMesh = 9;
 // The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
 // "shader"/"gi"/"audiograph"; false for any other spelling).
 [[nodiscard]] bool CatalogKindFromString(const std::string& kind,

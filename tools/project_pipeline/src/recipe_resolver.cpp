@@ -89,6 +89,10 @@ PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
 	// AudioGraphKey; the strict parser validates it at pack time).
 	if (ext == ".audiograph")
 		return PlanAssetKind::AudioGraph;
+	if (ext == ".statemachine")
+		return PlanAssetKind::StateMachine;
+	if (ext == ".navmesh")
+		return PlanAssetKind::NavMesh;
 	if (ext == ".spriteset")
 		return PlanAssetKind::SpriteSet;
 	known = false;
