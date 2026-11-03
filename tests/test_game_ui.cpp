@@ -127,6 +127,21 @@ sprite cropped 80 0 8 8 trim 16 16 4 2
 	CHECK(ui.DrawSprite(atlas, "cropped", {{0, 0}, {32, 32}}, handle));
 	CHECK(ui.DrawNineSlice(atlas, "panel", {{10, 20}, {100, 60}}, handle));
 	CHECK(!ui.DrawNineSlice(atlas, "absent", {{0, 0}, {10, 10}}, handle));
+	CHECK(ui.PendingRects().size() == 11); // two sprites + nine slices
+	const auto pending = ui.PendingRects();
+	CHECK(pending[0].uvMin == glm::vec2(0.5f, 0.0f));
+	CHECK(pending[1].bounds.origin == glm::vec2(8, 4));
+	CHECK(pending[1].bounds.size == glm::vec2(16, 16));
+	CHECK(pending[2].bounds.origin == glm::vec2(10, 20));
+	CHECK(pending[2].bounds.size == glm::vec2(6, 5));
+	CHECK(pending[3].bounds.origin == glm::vec2(16, 20));
+	CHECK(pending[3].bounds.size == glm::vec2(84, 5));
+	CHECK(pending[4].bounds.size == glm::vec2(10, 5));
+	CHECK(pending[6].bounds.size == glm::vec2(84, 48));
+	CHECK(std::abs(pending[2].uvMin.x - 0.125f) < 0.0001f);
+	CHECK(std::abs(pending[2].uvMax.x - 0.171875f) < 0.0001f);
+	CHECK(pending[6].clip == std::nullopt);
+
 	// The expansion is represented as ordinary painter-ordered rectangles
 	// and can be inspected without access to a GPU device.
 	const auto* region = atlas.Find("panel");
@@ -136,6 +151,12 @@ sprite cropped 80 0 8 8 trim 16 16 4 2
 	CHECK(std::abs(uv[0] - 0.125f) < 0.0001f);
 	CHECK(std::abs(uv[1] - 0.125f) < 0.0001f);
 	CHECK(ui.DrawNineSlice(atlas, "panel", {{0, 0}, {8, 7}}, handle));
+	CHECK(ui.PendingRects().size() == 20);
+	const auto small = ui.PendingRects();
+	CHECK(std::abs(small[11].bounds.size.x - 3.0f) < 0.0001f);
+	CHECK(std::abs(small[11].bounds.size.y - (35.0f / 12.0f)) < 0.0001f);
+	CHECK(small[12].bounds.size.x == 0.0f || small[12].bounds.size.x > 0.0f);
+
 	CHECK(ui.DrawNineSlice(atlas, "icon", {{0, 0}, {16, 16}}, handle));
 	CHECK(!ui.DrawNineSlice(atlas, "panel", {{0, 0}, {0, 16}}, handle));
 	CHECK(!ui.DrawNineSlice(atlas, "panel",
