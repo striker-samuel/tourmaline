@@ -3532,6 +3532,9 @@ namespace engine {
 		// otherwise the regions leak and VMA asserts at heap teardown.
 		m_gfxRenderer.Destroy(*m_rendergraph);
 		m_selectionLineBuffer = {};
+		m_debugDrawGpuLines.clear();
+		m_debugDrawGpuCapacity.clear();
+		m_debugDrawCpu.Clear();
 		m_selectedNode = UINT32_MAX;
 		m_viewportResources.forwardPlus.Destroy(*m_rendergraph);
 		m_viewportResources.exposure.Destroy(*m_rendergraph);
@@ -13441,6 +13444,67 @@ namespace engine {
 				}
 			}
 		}
+
+        // Universal game/debug draw: pull CPU-only world-space wire lines
+        // after gameplay update. Nothing is retained in the scene, physics,
+        // or a persistent GPU collider registry. A separate vertex buffer
+        // per flight slot avoids overwriting in-flight GPU reads.
+        struct DebugDrawRange {
+            uint32_t first, count;
+            glm::vec3 color;
+            tour::DebugDepthMode depth;
+        };
+        std::vector<DebugDrawRange> debugDrawRanges;
+        uint32_t debugDrawFlight = 0;
+        if (m_debugDrawEnabled && m_debugDrawSource
+            && m_gfxRenderer.LineProgram().shaderCount == 2) {
+            m_debugDrawCpu.Clear();
+            m_debugDrawSource(m_debugDrawCpu);
+            if (!m_debugDrawCpu.Empty()) {
+                std::vector<smvk::DebugLineVertex> vertices;
+                vertices.reserve(m_debugDrawCpu.Size() * 2);
+                for (const tour::DebugLine& line : m_debugDrawCpu.Lines()) {
+                    // The existing shader takes a flat push color; coalesce
+                    // adjacent equal-color/depth lines into a single draw.
+                    if (debugDrawRanges.empty()
+                        || debugDrawRanges.back().color != line.color
+                        || debugDrawRanges.back().depth != line.depth) {
+                        debugDrawRanges.push_back({
+                            uint32_t(vertices.size()), 0, line.color, line.depth
+                        });
+                    }
+                    vertices.push_back({ line.a });
+                    vertices.push_back({ line.b });
+                    debugDrawRanges.back().count += 2;
+                }
+                const uint32_t flights = std::max(1u, FrameFlights(fb));
+                if (m_debugDrawGpuLines.size() != flights) {
+                    m_debugDrawGpuLines.resize(flights);
+                    m_debugDrawGpuCapacity.resize(flights, 0);
+                }
+                debugDrawFlight = fb.frameIndex % flights;
+                const uint32_t count = uint32_t(vertices.size());
+                if (m_debugDrawGpuCapacity[debugDrawFlight] < count) {
+                    const uint32_t capacity = std::max(count,
+                        m_debugDrawGpuCapacity[debugDrawFlight] * 2u);
+                    m_debugDrawGpuLines[debugDrawFlight] =
+                        m_context->CreateBuffer(size_t(capacity) *
+                            sizeof(smvk::DebugLineVertex),
+                            smvk::BufferType_Vertex, "game debug draw lines");
+                    m_debugDrawGpuCapacity[debugDrawFlight] =
+                        m_debugDrawGpuLines[debugDrawFlight].empty() ? 0 : capacity;
+                }
+                if (!m_debugDrawGpuLines[debugDrawFlight].empty()) {
+                    m_context->UploadDataToBuffer(
+                        m_debugDrawGpuLines[debugDrawFlight],
+                        vertices.data(), vertices.size() * sizeof(vertices[0]),
+                        smvk::PipelineStageBit_Vertex,
+                        smvk::AccessFlags::VertexAttributeRead);
+                } else {
+                    debugDrawRanges.clear();
+                }
+            }
+        }
 		const glm::mat4 frameViewProj = frameData.viewProj; // debug pushes (value)
 		// Task-less mesh leg (build-time gate): device support + enabled +
 		// programs + opaque state (no wireframe). Execute-time eligibility
@@ -13480,7 +13544,7 @@ namespace engine {
 				mainPass.AddBufferHint(vs->indirectL, indirectRead);
 			}
 		}
-		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid, placementFlight = fb.frameIndex](smvk::CommandBuffer& cmd)
+		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, debugDrawRanges, debugDrawFlight, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid, placementFlight = fb.frameIndex](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
 			// 2x: transient depth is cleared above, main writes it
@@ -14663,6 +14727,38 @@ namespace engine {
 				cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
 				cmd.Draw(coneLineVerts, 1, 0, 0);
 			}
+
+            // CPU-authored immediate debug lines: same HDR target, depth,
+            // camera and exposure path as the other Main line overlays.
+            if (!debugDrawRanges.empty()
+                && debugDrawFlight < m_debugDrawGpuLines.size()
+                && !m_debugDrawGpuLines[debugDrawFlight].empty()) {
+                cmd.BindVertexBuffer(m_debugDrawGpuLines[debugDrawFlight], 0, 0);
+                const float exposure = FrameExposure();
+                const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
+                for (const auto& r : debugDrawRanges) {
+                    const bool tested =
+                        r.depth == tour::DebugDepthMode::Tested;
+                    cmd.BindRenderPipeline(
+                        m_gfxRenderer.LineProgram(),
+                        smvk::VertexLayoutId::DebugLine,
+                        tested ? transparentDepth : smvk::DepthSettings{
+                            .depthFunc = smvk::CompareOp::Always,
+                            .writeEnable = false, .depthTestEnable = false },
+                        noStencil, smvk::BlendSettings::Opaque(),
+                        msaaSettings,
+                        smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
+                        smvk::PrimitiveTopology::LineList);
+                    LineDebugPush lp{};
+                    std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
+                    lp.color[0] = r.color.x * gain;
+                    lp.color[1] = r.color.y * gain;
+                    lp.color[2] = r.color.z * gain;
+                    lp.color[3] = 1.0f;
+                    cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+                    cmd.Draw(r.count, 1, r.first, 0);
+                }
+            }
 			// The selection box shares the live renderer's matrix/target
 			// (HDR gain compensated like the cone overlay). It draws last
 			// and depth-disabled: an editor outline must remain visible
@@ -17416,6 +17512,7 @@ namespace engine {
 						// views section above / ViewMode::MotionVectors. A
 						// view owns the pixel; an overlay stacked over the
 						// scene read as neither one nor the other.)
+						ImGui::Checkbox("Game debug lines", &m_debugDrawEnabled);
 						ImGui::Checkbox("Light points overlay", &m_showLightPoints);
 						ImGui::Checkbox("Light numbers overlay", &m_showLightNumbers);
 						if (m_showLightPoints || m_showLightNumbers) {
