@@ -1605,10 +1605,14 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				DrawWorldNodes(cmd, pc, true, true, false);
 			}
 		});
-		// The matching tonemap layer for this viewport rect (declared right
-		// after the scene pass: the topo sort orders the HDR read after this
-		// write, and the stable declaration order keeps it under the gizmo/
-		// imgui overlays - see RenderFrame).
+		// The authored GI probe lattice is an HDR overlay. It MUST be
+		// recorded before the viewport tonemap, otherwise the spheres
+		// are written after HDR has already been resolved to the swapchain
+		// and "Lattice (pre-bake)" appears to do nothing.
+		if (viaHdr)
+			RecordGiProbeLatticePass(vpIdx);
+		// The matching tonemap layer resolves the scene AND the lattice.
+		// Stable declaration order keeps it below gizmo/ImGui overlays.
 		if (viaHdr)
 			RecordViewportTonemap(swapView, vp, "EditorTonemap");
 	}
@@ -2247,11 +2251,9 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
 				if (vpIdx == liveVp)
 					continue; // panel 0's rect shows the live view's composite
+				// RecordMainPass also records its HDR lattice overlay BEFORE
+				// the per-viewport tonemap. Do not append HDR overlays here.
 				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
-				// The pre-bake probe lattice rides every viewport's tail
-				// (own gating inside; no-op unless 'J' mode 4 + authored
-				// volumes).
-				RecordGiProbeLatticePass(vpIdx);
 			}
 			// The gizmo + inset ride the ACTIVE viewport — they skip only
 			// while the ACTIVE one IS the live host (panel 0 in Lit): their
