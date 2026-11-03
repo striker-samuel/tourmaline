@@ -51,7 +51,11 @@ constexpr uint32_t kSwapImagesMax = 8;
 class GrassApp final : public smvk::App {
     using Super = smvk::App;
 public:
-    ~GrassApp() override {
+    // The App::Run() loop invokes Shutdown BEFORE destroying the Vulkan
+    // device. GPU holders must be retired here, not in the derived dtor:
+    // destructing them after App::Shutdown would hit a dead allocator.
+    void Shutdown() override {
+        if (m_context) WaitForDeviceIdle();
         if (m_runtime && m_rendergraph)
             m_runtime->Destroy(*m_rendergraph);
         delete m_runtime;
@@ -59,6 +63,7 @@ public:
         m_draw.Destroy();
         m_groundProgram = smvk::ShaderProgram();
         m_groundVsModule = {};
+        m_views.Destroy();
         if (m_rendergraph) {
             if (!m_viewsLogical.empty())
                 m_rendergraph->FreeBuffer(m_viewsLogical);
@@ -68,7 +73,13 @@ public:
                 if (!m_swapViews[i].empty())
                     m_rendergraph->FreeImageView(m_swapViews[i]);
         }
+        m_viewsLogical = {};
+        m_depthLogical = {};
+        m_depthView = {};
+        m_depthImage = {};
         delete m_cluster;
+        m_cluster = nullptr;
+        Super::Shutdown();
     }
 
 private:
