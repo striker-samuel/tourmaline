@@ -10,6 +10,7 @@ set_target_properties(05_grass PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 target_link_libraries(05_grass PRIVATE engine KTX::ktx)
+add_dependencies(05_grass EngineScene_shaders)
 
 add_custom_command(TARGET 05_grass POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
