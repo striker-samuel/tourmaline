@@ -175,6 +175,7 @@ bool CatalogKindFromString(const std::string& kind, uint8_t& out) {
 	if (kind == "spriteset") { out = kCatalogKindSpriteSet; return true; }
 	if (kind == "statemachine") { out = kCatalogKindStateMachine; return true; }
 	if (kind == "navmesh") { out = kCatalogKindNavMesh; return true; }
+	if (kind == "shape") { out = kCatalogKindShape; return true; }
 	return false;
 }
 
@@ -190,6 +191,7 @@ const char* CatalogKindToString(uint8_t kind) {
 	case kCatalogKindSpriteSet: return "spriteset";
 	case kCatalogKindStateMachine: return "statemachine";
 	case kCatalogKindNavMesh: return "navmesh";
+	case kCatalogKindShape: return "shape";
 	default: return "";
 	}
 }
