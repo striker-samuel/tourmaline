@@ -79,3 +79,16 @@ tourmaline_host_setup(App)
 add_executable(Benchmark src/benchmark_main.cpp)
 target_link_libraries(Benchmark PRIVATE tourmaline_apphost)
 tourmaline_host_setup(Benchmark)
+
+# Convenience launcher for saved Nsight GPU Trace scenarios. It is a tiny
+# Windows-only exe that invokes the existing stdlib-only Python harness,
+# so we don't duplicate scene validation or link any GPU profiler SDK.
+# Strictly excluded from shipping build graphs.
+if(WIN32 AND NOT TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
+    add_executable(NsightTrace "${TOURMALINE_SOURCE_DIR}/tools/nsight_trace_cli.cpp")
+    target_compile_features(NsightTrace PRIVATE cxx_std_20)
+    set_target_properties(NsightTrace PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    add_dependencies(NsightTrace Benchmark)
+endif()

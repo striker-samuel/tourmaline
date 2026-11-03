@@ -12,6 +12,48 @@ import statistics
 import subprocess
 import sys
 
+
+def default_paths_config():
+    # User-local settings, not in the Git repository or distributed content.
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return root / "Tourmaline" / "nsight_trace_paths.json"
+
+
+def resolve_paths(parser, args):
+    config_file = (args.paths_config or default_paths_config()).expanduser().resolve()
+    chosen = {"schema_version": 1}
+    if config_file.is_file():
+        try:
+            saved = json.loads(config_file.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict) or saved.get("schema_version") != 1:
+                raise ValueError("unexpected preferences schema")
+            for key in ("capture_dir", "scratch_dir"):
+                if key in saved:
+                    if not isinstance(saved[key], str):
+                        raise ValueError("invalid directory in preferences")
+                    chosen[key] = saved[key]
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"cannot read Nsight preferences {config_file}: {exc}")
+    if args.capture_dir is not None:
+        chosen["capture_dir"] = str(args.capture_dir.expanduser().resolve())
+    if args.scratch_dir is not None:
+        chosen["scratch_dir"] = str(args.scratch_dir.expanduser().resolve())
+    if args.save_paths:
+        if args.capture_dir is None and args.scratch_dir is None:
+            parser.error("--save-paths requires --capture-dir and/or --scratch-dir")
+        try:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            pending = config_file.with_suffix(".tmp")
+            pending.write_text(json.dumps(chosen, indent=2) + chr(10), encoding="utf-8")
+            pending.replace(config_file)
+        except OSError as exc:
+            parser.error(f"cannot save Nsight preferences: {exc}")
+    return config_file, chosen
+
+
 PERF = re.compile(r"\[perf\] avg frame ([0-9]+(?:\.[0-9]+)?) ms over ([0-9]+) frames")
 SECTIONS = re.compile(r"\[perf\] sections poll ([0-9.]+) ms game ([0-9.]+) ms draw ([0-9.]+) ms")
 CULL_DUMP_WROTE = re.compile(r"\[CullDump\] wrote (\S+)")
@@ -196,7 +238,13 @@ def main(argv=None):
     scene.add_argument("--pak", type=Path)
     scene.add_argument("--project", type=Path)
     parser.add_argument("--workdir", type=Path, help="App working directory (defaults to exe directory)")
-    parser.add_argument("--output", type=Path, default=Path("out/perf"))
+    parser.add_argument("--output", type=Path, default=Path("out/perf"), help="Run logs and result.json")
+    parser.add_argument("--capture-dir", type=Path, help="Root folder for Nsight exports (overrides saved preference)")
+    parser.add_argument("--scratch-dir", type=Path, help="Fast disk for scratch (TMP, TEMP, TMPDIR; Linux XDG_CACHE_HOME)")
+    parser.add_argument("--paths-config", type=Path, help="Alternative user-local preferences JSON")
+    parser.add_argument("--save-paths", action="store_true", help="Persist capture and scratch settings")
+    parser.add_argument("--show-paths", action="store_true", help="Display current paths without starting Nsight")
+    parser.add_argument("--dry-run", action="store_true", help="Print the planned Nsight command and destinations without running it")
     parser.add_argument("--frames", type=positive, help="Measured frames; overrides scenario default (120 otherwise)")
     parser.add_argument("--repeat", type=positive, default=3)
     parser.add_argument("--warmup", type=positive, default=10, help="App internally uses 10 warmup frames")
@@ -223,6 +271,23 @@ def main(argv=None):
     parser.add_argument("--app-arg", action="append", default=[], help="Additional App flag (repeat, one token per flag)")
     parser.add_argument("--timeout", type=positive, default=600)
     args = parser.parse_args(argv)
+    if args.mode in ("trace", "capture") or args.save_paths or args.show_paths:
+        config_file, chosen = resolve_paths(parser, args)
+        if args.save_paths or args.show_paths:
+            print(json.dumps({"config": str(config_file),
+                              "capture_dir": chosen.get("capture_dir", str((args.output / "nsight").resolve())),
+                              "scratch_dir": chosen.get("scratch_dir", "system temp"),
+                              "saved": args.save_paths}, indent=2))
+            return 0
+        args.capture_dir = Path(chosen.get("capture_dir") or (args.output / "nsight")).expanduser().resolve()
+        args.scratch_dir = Path(chosen["scratch_dir"]).expanduser().resolve() if chosen.get("scratch_dir") else None
+        # Keep reports and logs on the chosen capture drive by default,
+        # not just the larger Nsight trace artifacts.
+        if chosen.get("capture_dir") and args.output == Path("out/perf"):
+            args.output = args.capture_dir / "_runs"
+    else:
+        args.capture_dir = None
+        args.scratch_dir = None
 
     if args.mode == "list":
         try:
@@ -287,9 +352,9 @@ def main(argv=None):
             parser.error(str(exc))
         args.source_args = scenario["source_args"]
         args.app_arg = scenario.get("app_args", []) + args.app_arg
-        args.frames = args.frames or scenario["frames"]
+        args.frames = args.frames or (args.trace_frames + 2 if args.mode == "trace" else scenario["frames"])
     else:
-        args.frames = args.frames or 120
+        args.frames = args.frames or (args.trace_frames + 2 if args.mode == "trace" else 120)
         if not args.pak and not args.project:
             parser.error("--pak, --project or --scenario required")
     if args.exe is None:
@@ -349,10 +414,26 @@ def main(argv=None):
         # the environment so result.json records exactly what was armed.
         pins["TOURMALINE_CULL_DUMP"] = str(args.cull_frame)
         env["TOURMALINE_CULL_DUMP"] = str(args.cull_frame)
+    if args.scratch_dir is not None:
+        if not args.dry_run:
+            try:
+                args.scratch_dir.mkdir(parents=True, exist_ok=True)
+                if not args.scratch_dir.is_dir():
+                    raise OSError("scratch path is not a directory")
+            except OSError as exc:
+                parser.error(f"invalid scratch directory {args.scratch_dir}: {exc}")
+        # Nsight GPU Trace does not document a dedicated scratch-dir flag.
+        # Let child/descendant processes resolve OS temp files onto this disk.
+        # Internal NVIDIA caches may still use their own fixed locations.
+        for name in ("TMP", "TEMP", "TMPDIR"):
+            env[name] = str(args.scratch_dir)
+        if os.name != "nt":
+            env["XDG_CACHE_HOME"] = str(args.scratch_dir)
     # Prevent a user shell's shader hot reload from mutating the benchmark.
     env.pop("TOURMALINE_SHADER_RELOAD", None)
     env.pop("TOURMALINE_SHADER_RELOAD_SRC", None)
-    args.output.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        args.output.mkdir(parents=True, exist_ok=True)
     out = args.output.resolve()
     argv_app = command(args)
     report = {"schema_version": 1, "mode": args.mode, "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -400,18 +481,25 @@ def main(argv=None):
                     for i in range(1, args.repeat + 1)]
     elif args.mode == "trace":
         ngfx = args.ngfx or shutil.which("ngfx")
-        if not ngfx:
+        if not ngfx and not args.dry_run:
             parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
+        ngfx = ngfx or "ngfx"
         # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
         # of presents; samples are NOT a trustworthy standalone FPS benchmark.
-    elif args.mode == "trace":
-        ngfx = args.ngfx or shutil.which("ngfx")
-        if not ngfx:
-            parser.error("GPU trace requires Nsight Graphics ngfx executable (--ngfx)")
-        # Nsight Graphics GPU Trace CLI. Trace starts after a fixed number
-        # of presents; samples are NOT a trustworthy standalone FPS benchmark.
-        trace_dir = out / "nsight"
-        trace_dir.mkdir(parents=True, exist_ok=True)
+        trace_root = args.capture_dir or (out / "nsight")
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        slug = re.sub(r"[^a-zA-Z0-9_-]", "_", args.scenario or "manual")
+        trace_dir = trace_root / f"{slug}-{stamp}"
+        if not args.dry_run:
+            try:
+                trace_dir.mkdir(parents=True, exist_ok=False)
+            except OSError as exc:
+                parser.error(f"cannot create capture directory {trace_dir}: {exc}")
+        report["capture_dir"] = str(trace_dir)
+        report["scratch_dir"] = str(args.scratch_dir) if args.scratch_dir else None
+        target_pins = dict(pins)
+        if args.scratch_dir is not None:
+            target_pins.update({k: str(args.scratch_dir) for k in ("TMP", "TEMP", "TMPDIR")})
         plan = [{"invocation": [ngfx, '--activity=GPU Trace Profiler', f'--platform={args.platform}',
                                 f'--exe={args.exe.resolve()}', f'--dir={workdir}',
                                 '--args=' + subprocess.list2cmdline(argv_app[1:]),
@@ -419,7 +507,8 @@ def main(argv=None):
                                 f'--start-after-frames={args.warmup}',
                                 f'--limit-to-frames={args.trace_frames}',
                                 f'--num-frames={args.trace_frames}',
-                                f'--max-duration-ms={args.trace_duration_ms}', '--auto-export'],
+                                f'--max-duration-ms={args.trace_duration_ms}', '--auto-export',
+                                *(['--env=' + '; '.join(f'{k}={v}' for k, v in target_pins.items())] if target_pins else [])],
                  "env": env, "name": "trace-01.log", "resolution": None}]
     elif args.mode == "cull":
         # One invocation at the scenario camera; the engine's
@@ -431,11 +520,19 @@ def main(argv=None):
         if not capture:
             parser.error("graphics capture requires ngfx-capture executable (--ngfx-capture)")
         # Capture CLI syntax may differ across Nsight versions; check --help.
+        cap_root = args.capture_dir or out
+        cap_root.mkdir(parents=True, exist_ok=True)
+        report["capture_dir"] = str(cap_root)
+        report["scratch_dir"] = str(args.scratch_dir) if args.scratch_dir else None
         plan = [{"invocation": [capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
                                 "--args", subprocess.list2cmdline(argv_app[1:]),
-                                "--capture-frame", str(args.capture_frame), "--frame-count", "1",
-                                "--output-dir", str(out)],
+                                "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(cap_root)],
                  "env": env, "name": "capture-01.log", "resolution": None}]
+    if args.dry_run:
+        print(json.dumps({"mode": args.mode, "command": plan[0]["invocation"],
+                          "cwd": str(workdir), "capture_dir": report.get("capture_dir"),
+                          "scratch_dir": str(args.scratch_dir) if args.scratch_dir else "system temp"}, indent=2))
+        return 0
     failed = False
     try:
         # Warm runs first (bench only): compilation and first-use cache
