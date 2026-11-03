@@ -13,6 +13,7 @@
 //   4. cook assets note that the blob payload stays.
 //   5. directories plan recursively; execution removes everything.
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -24,6 +25,7 @@
 #include "editor_live_preview_policy.h"
 #include "editor_asset_inspect.h"
 #include "editor_watch_routes.h"
+#include "editor_asset_dcc.h"
 
 namespace {
 
@@ -121,6 +123,54 @@ void TestWatchRoutes() {
 				== R::Other, "watchroute.upper-png-no-asset");
 	}
 	fs::remove_all(dir, ec);
+}
+
+void TestDccSourcePublishing() {
+	namespace fs = std::filesystem;
+	const std::string root = Root();
+	const fs::path native = fs::path(root) / "content" / "models" / "ship.ma";
+	const fs::path published = fs::path(root) / "content" / "models" / "ship.gltf";
+	Write(native.generic_string(), "Maya ASCII source");
+	{
+		editor::DccAsset resolved;
+		std::string err;
+		Check(editor::ResolveDccAsset(native.generic_string(), resolved, err)
+			&& resolved.linked && resolved.fromNative
+			&& resolved.document == native.generic_string()
+			&& resolved.published == published.generic_string(),
+			"dcc.native-source-maps-to-gltf");
+	}
+	Write(published.generic_string(), "{\"asset\":{\"version\":\"2.0\"}}");
+	{
+		std::string err;
+		Check(editor::LinkDccSource(published.generic_string(),
+				native.generic_string(), err),
+			"dcc.link-source-to-publication");
+		editor::DccAsset resolved;
+		Check(editor::ResolveDccAsset(published.generic_string(),
+				resolved, err) && resolved.linked
+				&& resolved.document == native.generic_string(),
+			"dcc.published-source-round-trip");
+		Check(editor::UnlinkDccSource(published.generic_string(), err),
+			"dcc.unlink-source");
+		Check(editor::ResolveDccAsset(published.generic_string(),
+				resolved, err) && !resolved.linked
+				&& resolved.document == resolved.published,
+			"dcc.unlinked-falls-back-to-published");
+	}
+	{
+		std::string err;
+		Check(editor::LinkDccSource(published.generic_string(),
+				native.generic_string(), err), "dcc.relink-before-delete");
+		editor::AssetDeletePlan plan;
+		Check(editor::PlanAssetDelete(published.generic_string(),
+				root, plan, err)
+				&& std::find(plan.also.begin(), plan.also.end(),
+					published.generic_string() + ".dccsource") != plan.also.end(),
+			"dcc.delete-removes-authoring-link");
+	}
+	std::error_code ec;
+	fs::remove_all(root, ec);
 }
 
 void TestStandaloneFile() {	const std::string root = Root();
@@ -405,6 +455,7 @@ void TestLiveBakedPreviewRouting() {
 } // namespace
 
 int main() {
+	TestDccSourcePublishing();
 	TestStandaloneFile();
 	TestRefusals();
 	TestDerivedSet();
