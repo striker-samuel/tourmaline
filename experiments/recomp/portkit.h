@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "recomp_abi.h"
 // Experimental N64 recomp hosting primitives; no game code or game assets.
 #include <algorithm>
 #include <array>
@@ -228,76 +229,127 @@ public:
         err.clear();return true;
     }
 private:
-    std::vector<Byte> bytes_;
-};
-// An external GPL runtime can implement this ABI without vendoring game code.
-// Frame capture is a correctness/debug fallback; a real RT64 port needs GPU interop.
-constexpr std::uint32_t BridgeAbi=1;
-struct Bridge {
-    std::uint32_t abi=BridgeAbi;
-    void* user=nullptr;
-    bool (*boot)(void*,const Byte*,std::size_t,Byte*,std::size_t,
-                 Byte*,std::size_t)=nullptr;
-    void (*step)(void*,Controller)=nullptr;
-    bool (*capture)(void*,VideoView&)=nullptr;
-    void (*shutdown)(void*)=nullptr;
-};
-class Session {
+    std::// The adapter below is a generic testable host-side runner. Unlike Session,
+// it deliberately does not enforce any game identity. This makes synthetic
+// adapter tests possible with legally clean dummy bytes and lets this layer
+// serve future 3DS/PS4/other recomp experiments without ROM-specific rules.
+//
+// Memory, EEPROM and input buffers are borrowed; they must outlive Stop().
+// There is no thread safety in ABI v1. Graphics must be called by the owner.
+using Bridge=TourRecompApiV1;
+constexpr std::uint32_t BridgeAbi=TOUR_RECOMP_ABI_VERSION;
+class BridgeRunner {
 public:
-    ~Session(){Shutdown();}
-    Session()=default;
-    Session(const Session&)=delete;
-    Session& operator=(const Session&)=delete;
-    bool Boot(const std::filesystem::path& romPath,const std::filesystem::path& savePath,
-              Bridge bridge,std::string& error){
-        Shutdown();
-        if(bridge.abi!=BridgeAbi || !bridge.boot || !bridge.step ||
-           !bridge.capture || !bridge.shutdown){
-            error="Invalid recomp bridge ABI";return false;
-        }
-        if(!LoadSm64UsRom(romPath,rom_,error) || !save_.Load(savePath,error))
+    BridgeRunner()=default;
+    ~BridgeRunner(){Stop();}
+    BridgeRunner(const BridgeRunner&)=delete;
+    BridgeRunner& operator=(const BridgeRunner&)=delete;
+    bool Start(Bridge api, std::span<const Byte> content,
+               GuestMemory& memory, Eeprom& eeprom,
+               TourRecompHostV1 host, std::string& error) {
+        Stop();
+        if(api.abi_version!=BridgeAbi || api.struct_bytes!=sizeof(Bridge) ||
+           api.reserved!=0 || !api.boot || !api.step || !api.shutdown ||
+           !(api.capabilities&TOUR_RECOMP_CAP_RGBA_FRAME) || !api.frame_rgba){
+            error="Unsupported recomp adapter ABI/capabilities";
             return false;
-        ram_=GuestMemory{};clock_=FixedClock{};video_=VideoFrame{};
-        bridge_=bridge;savePath_=savePath;
-        if(!bridge_.boot(bridge_.user,rom_.data(),rom_.size(),ram_.Data(),ram_.Size(),
-                         save_.Data(),save_.Size())){
-            bridge_.shutdown(bridge_.user);
-            bridge_={};rom_.clear();error="Recomp adapter boot failed";return false;
         }
-        running_=true;error.clear();return true;
+        if(host.struct_bytes!=sizeof(TourRecompHostV1)){
+            error="Unsupported recomp host callbacks ABI";
+            return false;
+        }
+        if(content.empty()){
+            error="Adapter input content must not be empty";return false;
+        }
+        host_=host;
+        api_=api;
+        clock_=FixedClock{};
+        video_=VideoFrame{};
+        if(!api_.boot(api_.user,content.data(),content.size(),
+                      memory.Data(),memory.Size(),eeprom.Data(),eeprom.Size(),
+                      &host_)){
+            api_.shutdown(api_.user);
+            api_={};
+            error="Recomp adapter boot failed";
+            return false;
+        }
+        ready_=true;error.clear();return true;
     }
-    bool Pump(double seconds,Controller input,std::string& error){
-        if(!running_){error="Session not running";return false;}
-        const auto count=clock_.Advance(seconds);
-        for(std::uint32_t i=0;i<count;++i) bridge_.step(bridge_.user,input);
-        if(count){
-            VideoView frame{};
-            if(!bridge_.capture(bridge_.user,frame)){
-                error="Recomp renderer capture failed";return false;
+    bool Pump(double seconds,Controller pad,std::string& error){
+        if(!ready_){error="Recomp adapter is not running";return false;}
+        const auto ticks=clock_.Advance(seconds);
+        // Borrowed N64 controller state is passed by value.
+        const TourRecompControllerV1 input{pad.buttons,pad.x,pad.y};
+        for(std::uint32_t i=0;i<ticks;++i) api_.step(api_.user,input);
+        if(ticks){
+            TourRecompFrameV1 frame{};
+            if(!api_.frame_rgba(api_.user,&frame)){
+                error="Recomp adapter did not produce an RGBA frame";
+                return false;
             }
-            return video_.Copy(frame,error);
+            return video_.Copy({frame.pixels,frame.width,frame.height,frame.pitch},
+                               error);
         }
         error.clear();return true;
     }
+    void Stop(){
+        if(ready_) api_.shutdown(api_.user);
+        ready_=false;api_={};host_={};
+        clock_=FixedClock{};video_=VideoFrame{};
+    }
+    bool Running() const{return ready_;}
+    const VideoFrame& Video() const{return video_;}
+    const FixedClock& Clock() const{return clock_;}
+private:
+    Bridge api_{};
+    TourRecompHostV1 host_{};
+    FixedClock clock_{};
+    VideoFrame video_{};
+    bool ready_=false;
+};
+// SM64-specific gate. The game can only enter BridgeRunner when the user
+// supplied the exact USA ROM. No media is embedded, extracted, or uploaded.
+class Session {
+public:
+    Session()=default;
+    ~Session(){Shutdown();}
+    Session(const Session&)=delete;
+    Session& operator=(const Session&)=delete;
+    bool Boot(const std::filesystem::path& romPath,
+              const std::filesystem::path& savePath,
+              Bridge bridge,std::string& error,
+              TourRecompHostV1 callbacks={sizeof(TourRecompHostV1)}) {
+        Shutdown();
+        if(!LoadSm64UsRom(romPath,rom_,error) ||
+           !save_.Load(savePath,error)){
+            rom_.clear();return false;
+        }
+        ram_=GuestMemory{};
+        if(!runner_.Start(bridge,rom_,ram_,save_,callbacks,error)){
+            rom_.clear();return false;
+        }
+        savePath_=savePath;error.clear();return true;
+    }
+    bool Pump(double seconds,Controller input,std::string& error){
+        return runner_.Pump(seconds,input,error);
+    }
     bool Save(std::string& error) const {
-        if(!running_){error="Session not running";return false;}
+        if(!runner_.Running()){
+            error="Session not running";return false;
+        }
         return save_.Save(savePath_,error);
     }
     void Shutdown(){
-        if(running_){bridge_.shutdown(bridge_.user);running_=false;}
-        bridge_={};rom_.clear();savePath_.clear();
+        runner_.Stop();rom_.clear();savePath_.clear();
     }
-    bool Running() const{return running_;}
-    const VideoFrame& Video() const{return video_;}
-    const FixedClock& Clock() const{return clock_;}
+    bool Running() const{return runner_.Running();}
+    const VideoFrame& Video() const{return runner_.Video();}
+    const FixedClock& Clock() const{return runner_.Clock();}
 private:
     std::vector<Byte> rom_;
     GuestMemory ram_;
     Eeprom save_;
-    FixedClock clock_;
-    VideoFrame video_;
-    Bridge bridge_{};
+    BridgeRunner runner_;
     std::filesystem::path savePath_;
-    bool running_=false;
 };
 } // namespace tour::recomp
