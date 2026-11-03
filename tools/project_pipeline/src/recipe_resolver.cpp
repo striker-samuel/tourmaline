@@ -95,6 +95,8 @@ PlanAssetKind ClassifyAsset(const std::string& path, bool& known) {
 		return PlanAssetKind::NavMesh;
 	if (ext == ".spriteset")
 		return PlanAssetKind::SpriteSet;
+	if (ext == ".shape")
+		return PlanAssetKind::Shape;
 	known = false;
 	return PlanAssetKind::Texture;
 }
