@@ -52,8 +52,8 @@
 #endif
 
 namespace editor {
-	// Panel widths/heights live in editor_app.h (kEditorLeftW/RightW/BottomH):
-	// the central viewport rect is computed from them in RenderFrame.
+	// Dock windows own their placement and tabs. RenderFrame consumes the
+	// last completed "Viewport" client rectangle for its GPU scene pass.
 
 	// Coalesced drag helpers (member functions for world access).
 	void EditorApp::FinalizePending() {
@@ -130,10 +130,9 @@ namespace editor {
 			DrawMenuBar();
 			ImGui::EndMainMenuBar();
 		}
-		// Tool topbar: tabbed toolbar directly under the menu bar (hidden
-		// with the panels via m_uiMode). Everything below keys off the
-		// combined menu+toolbar offset (m_menuH), so panels, splitters and
-		// the rendered viewport rects stay in lockstep.
+		// Tool topbar stays pinned under the menu. The dockspace occupies
+		// the remaining space above the status strip; moving its Viewport
+		// window changes the GPU render rectangle on the following frame.
 		const float menuBarH = ImGui::GetFrameHeight();
 		const float toolbarH = m_uiMode ? DrawToolTabs(menuBarH) : 0.0f;
 		m_menuH = menuBarH + toolbarH;
@@ -270,11 +269,8 @@ namespace editor {
 			DrawComponentTable();
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
-		// THE LIVE VIEW LIVES IN THE VIEW PANEL NOW (the center 4:3
-		// stage): the capture + the LIVE badge + the unavailable hint.
-		// The bottom dock is RETIRED — nothing hosts it anymore (the
-		// Left-column tabs took the authoring panels, the world render
-		// took the stage).
+		// The live compositor still renders under ImGui in the dockable
+		// Viewport client; the viewport's presentation aspect is 4:3.
 		DrawLiveViewStage();
 		DrawVerbToast();
 		// UV editor window retired (the Live view window replaced the
@@ -287,8 +283,7 @@ namespace editor {
 		DrawPrefabWindow(); // separate .tour World + source editor
 		DrawPathsPanel(); // consolidated file/path view (File menu)
 		DrawGiVizWindow(); // GI-authoring legend + probe overlay controls
-		// (The WYSIWYG live view is no floating window: it is the bottom
-		// dock's "Live view" TAB — see the BottomDock block above.)
+		// The WYSIWYG view is part of the dockable Viewport window.
 		if (m_placement.showGraph)
 			DrawPlacementGraph();
 		if (m_stateGraph.show) {
