@@ -301,6 +301,10 @@ void PlacementSystem::UpdateResidency(uint64_t programId, float tileSize,
 	}
 }
 
+void PlacementSystem::ForgetTile(const TileKey& key) {
+	tiles_.erase(key);
+}
+
 void PlacementSystem::InvalidateRegion(uint64_t programId, float tileSize,
 	const glm::vec2& rectMin, const glm::vec2& rectMax, float haloMeters) {
 	if (tileSize <= 0.0f) return;
@@ -413,6 +417,8 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& layer) {
 	ConstraintVolume vol;
 	vol.spacing = layer.config.minSpacing;
+	if (!(vol.spacing > 0.0f) || !std::isfinite(vol.spacing))
+		return vol;
 	// Constraint volume covers the tile that spawned these candidates.
 	// Grid candidates live in [grid.origin, +extent]; mesh candidates
 	// may overshoot and skip via the out-of-volume rule (same on GPU).
@@ -422,20 +428,23 @@ ConstraintVolume ConstraintVolumeForLayer(const PlacementSystem::LayerBinding& l
 		vol.dimX = (uint32_t)(layer.grid->extent.x / vol.spacing) + 2;
 		vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
 		vol.dimZ = (uint32_t)(layer.grid->extent.y / vol.spacing) + 2;
-	} else if (layer.domainKind == DomainKind::Heightfield && layer.heightfield) {
-		// The WORLD-TILE case (the runtime's layers): the volume spans the
-		// tile's harvested scatter rect + a spacing of slack, over a Y
-		// band anchored at 0 (heightfields carry no Y origin; the band is
-		// the GPU gate's dimY<=64 limit anyway — a 128 m band only fits
-		// spacing >= ~2.2, exactly the Grid case's shape). Terrain living
-		// outside the band skips the constraint on BOTH sides (the CPU
-		// oracle and the GPU trio share this volume — parity by
-		// construction), so the approximation never splits the two.
+	} else if (layer.domainKind == DomainKind::Heightfield && layer.heightfield
+		&& layer.heightfield->field && layer.heightfield->field->valid()) {
+		// Bound Y from the ACTUAL height samples, not an arbitrary [-64,64]
+		// band. This permits GPU min-distance for flat/rolling terrain even
+		// at 1-2m spacing and never excludes a sampled candidate height.
+		// The CPU oracle shares this exact volume and cell ownership.
+		const HeightfieldData& hf = *layer.heightfield->field;
+		float lo = hf.heights[0], hi = hf.heights[0];
+		for (size_t i = 1; i < hf.heights.size(); ++i) {
+			if (hf.heights[i] < lo) lo = hf.heights[i];
+			if (hf.heights[i] > hi) hi = hf.heights[i];
+		}
 		const glm::vec2 emin = layer.heightfield->extentMin;
 		const glm::vec2 emax = layer.heightfield->extentMax;
-		vol.origin = glm::vec3(emin.x, -64.0f, emin.y);
+		vol.origin = glm::vec3(emin.x, lo - vol.spacing, emin.y);
 		vol.dimX = (uint32_t)((emax.x - emin.x) / vol.spacing) + 2;
-		vol.dimY = (uint32_t)(128.0f / vol.spacing) + 2;
+		vol.dimY = (uint32_t)((hi - lo) / vol.spacing) + 3;
 		vol.dimZ = (uint32_t)((emax.y - emin.y) / vol.spacing) + 2;
 	}
 	return vol;
