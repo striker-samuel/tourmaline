@@ -66,7 +66,7 @@ std::vector<uint32_t> PackStaticSdfWords(std::span<const int16_t> samples);
 // explicitly edited frozen scene. Failed/missing uploads degrade to SSR.
 class StaticSdfGpuScene {
 public:
-	bool Update(ResourceManager& ctx, const tour::World& world, const glm::vec3& cameraWorldPos);
+	bool Update(ResourceManager& ctx, const ::tour::World& world, const glm::vec3& cameraWorldPos);
 	void Invalidate() { m_worldRevision = std::numeric_limits<uint64_t>::max(); }
 	void Clear();
 
@@ -84,7 +84,7 @@ private:
 	Holder<BufferHandle> m_samples;
 	uint32_t m_instanceCount = 0;
 	uint64_t m_generation = 0; // republished static SDF scene generation
-	const tour::World* m_world = nullptr;
+	const ::tour::World* m_world = nullptr;
 	uint64_t m_worldRevision = std::numeric_limits<uint64_t>::max();
 	glm::vec3 m_cachedEye{0.0f};
 	bool m_cachedEyeValid = false;

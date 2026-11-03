@@ -33,7 +33,7 @@ bool ValidTransform(const glm::mat4& m) {
 	return std::isfinite(det) && std::abs(det) > 1e-10f;
 }
 
-bool ValidVolume(const tour::asset::SdfVolume& v) {
+bool ValidVolume(const ::tour::asset::SdfVolume& v) {
 	const size_t r = v.resolution;
 	return r >= 8 && r <= 128 && v.samples.size() == r * r * r &&
 		std::isfinite(v.voxelSize) && v.voxelSize > 0.0f &&
@@ -71,7 +71,7 @@ uint64_t StaticSdfGpuScene::SceneAddress(ResourceManager& ctx) const {
 	return Ready() ? ctx.GetBufferDeviceAddress(m_header) : 0;
 }
 
-bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
+bool StaticSdfGpuScene::Update(ResourceManager& ctx, const ::tour::World& world,
 	const glm::vec3& cameraWorldPos) {
 	// Keep a bounded set near the camera instead of the first 128
 	// material-sorted scene items. A frozen world only needs republishing
@@ -86,7 +86,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 	// De-duplicate SDF grids across instanced static meshes. Each sidecar
 	// groups all base primitives in one .geometry family; fragment names
 	// match the suffix of the cooked mesh URI (before optional /lodN).
-	std::unordered_map<std::string, tour::asset::SdfAsset> families;
+	std::unordered_map<std::string, ::tour::asset::SdfAsset> families;
 	std::unordered_map<std::string, uint32_t> wordOffsets;
 	std::vector<StaticSdfGpuInstance> instances;
 	std::vector<uint32_t> words;
@@ -96,13 +96,13 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 	// Deterministic closest-first upload order. Selecting from a scene's
 	// material-sorted draw list would often fill the cap with invisible
 	// distant geometry before any nearby reflective object is reached.
-	std::vector<std::pair<float, const tour::World::RenderItem*>> candidates;
+	std::vector<std::pair<float, const ::tour::World::RenderItem*>> candidates;
 	for (const auto& item : world.drawItems) {
-		if ((item.flags & (tour::IteratorFlagBit_Static |
-			tour::IteratorFlagBit_Opaque | tour::IteratorFlagBit_StaticVertexFmt))
-			!= (tour::IteratorFlagBit_Static |
-				tour::IteratorFlagBit_Opaque | tour::IteratorFlagBit_StaticVertexFmt) ||
-			(item.flags & tour::IteratorFlagBit_Masked) != 0)
+		if ((item.flags & (::tour::IteratorFlagBit_Static |
+			::tour::IteratorFlagBit_Opaque | ::tour::IteratorFlagBit_StaticVertexFmt))
+			!= (::tour::IteratorFlagBit_Static |
+				::tour::IteratorFlagBit_Opaque | ::tour::IteratorFlagBit_StaticVertexFmt) ||
+			(item.flags & ::tour::IteratorFlagBit_Masked) != 0)
 			continue;
 		if (item.node >= world.scene.globalTransform.size()) continue;
 		const StaticMesh* mesh = world.GetMesh(item.mesh);
@@ -148,10 +148,10 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 			fragment.resize(lodSuffix);
 		auto familyIt = families.find(family);
 		if (familyIt == families.end()) {
-			tour::asset::SdfAsset decoded;
+			::tour::asset::SdfAsset decoded;
 			std::string error;
 			const auto bytes = world.ReadBakeBytes(family + ".sdf");
-			if (!bytes.empty() && !tour::asset::ParseSdfAsset(
+			if (!bytes.empty() && !::tour::asset::ParseSdfAsset(
 				bytes.data(), bytes.size(), decoded, error))
 				std::fprintf(stderr,
 					"[StaticSdf] invalid sidecar '%s.sdf': %s\n",
@@ -159,7 +159,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx, const tour::World& world,
 			familyIt = families.emplace(family, std::move(decoded)).first;
 		}
 		const auto it = std::find_if(familyIt->second.meshes.begin(),
-			familyIt->second.meshes.end(), [&](const tour::asset::SdfMesh& m) {
+			familyIt->second.meshes.end(), [&](const ::tour::asset::SdfMesh& m) {
 				return m.fragment == fragment;
 			});
 		if (it == familyIt->second.meshes.end() || !ValidVolume(it->volume))
