@@ -1400,3 +1400,14 @@ target_link_libraries(SdfTests PRIVATE engine)
 tourmaline_stage_sdl3(SdfTests)
 set_target_properties(SdfTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME sdf_tests COMMAND SdfTests)
+
+# Reusable terrain / scatter brush asset serialization, no GPU dependency.
+add_executable(BrushPresetTests test_brush_presets.cpp)
+target_include_directories(BrushPresetTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/src
+)
+set_target_properties(BrushPresetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME brush_preset_tests COMMAND BrushPresetTests)
+
