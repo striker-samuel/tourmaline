@@ -1,0 +1,6 @@
+// A lit placeholder cube and floor, sourced from a self-contained glTF.
+reference -root -n 0 -source "content/models/placeholder/cube.geometry" -name "ROOT";
+fileInfo -k "application" -v "tourmaline-tour;;;;;;;;;";
+fileInfo -k "product" -v "Tourmaline;;;;;;;;;";
+fileInfo -k "version" -v "1;;;;;;;;;";
+materialAsset -default -name "default";
