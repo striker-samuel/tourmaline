@@ -1292,6 +1292,9 @@ void TestScatterParams() {
 		&& offsetof(PlacementDomainParams, instrCount) == 184
 		&& offsetof(PlacementDomainParams, acceptIndex) == 188,
 		"place.scatter.program-tail");
+	Check(offsetof(PlacementDomainParams, slopeToRock) == 24
+		&& offsetof(PlacementDomainParams, slopeThresholdDeg) == 212,
+		"place.scatter.slope-reuses-reserved-slots");
 	Check(offsetof(PlacementDomainParams, ecoBDA) == 192
 		&& offsetof(PlacementDomainParams, ecoW) == 200
 		&& offsetof(PlacementDomainParams, ecoChannels) == 208
@@ -1332,6 +1335,11 @@ void TestScatterParams() {
 	Check((prm.flags & kPlacementFlag_HasUVs) == 0, "place.scatter.mesh-no-uvs");
 	Check(prm.posBDA == 11 && prm.idxBDA == 33 && prm.probBDA == 44, "place.scatter.mesh-bda");
 	Check(prm.densityScale == 1.25f, "place.scatter.mesh-density-scale");
+	mlb.config.slopeToRock = true;
+	mlb.config.slopeThresholdDeg = 42.0f;
+	Check(FillScatterParams(mlb, view, ecoView, b, prm)
+		&& prm.slopeToRock == 1 && prm.slopeThresholdDeg == 42.0f,
+		"place.scatter.mesh-slope-rule-upload");
 	Check(prm.instrBDA == 0x500 && prm.instrCount == 1 && prm.acceptIndex == 0,
 		"place.scatter.program-fields");
 	// An empty program view refuses (explicit CPU fallback).
@@ -1362,6 +1370,11 @@ void TestScatterParams() {
 	Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
 	Check(hprm.hfSX == 2.0f && hprm.extMaxX == 104.0f, "place.scatter.hf-extent");
 	Check(hprm.heightsBDA == 77, "place.scatter.hf-bda");
+	hlb.config.slopeToRock = true;
+	hlb.config.slopeThresholdDeg = 31.0f;
+	Check(FillScatterParams(hlb, view, ecoView, hb, hprm)
+		&& hprm.slopeToRock == 1 && hprm.slopeThresholdDeg == 31.0f,
+		"place.scatter.hf-slope-rule-upload");
 	// Grid layer refuses scatter params (has its own kernel+push).
 	GridDomain grid;
 	PlacementSystem::LayerBinding glb;
@@ -2623,6 +2636,32 @@ void TestWorldResidency() {
 		// Release + re-find.
 		gpuTiles.Release(sc);
 		Check(gpuTiles.Find(kC) == -1, "place.gpu-tiles-released");
+	}
+
+	// Runtime revision invalidates live tile generation on scalar and
+	// prototype-weight edits even when the caller's dependency counter
+	// is unchanged (the old revision only hashed SSA instructions).
+	{
+		PlacementSystem::LayerBinding versioned;
+		versioned.programId = 202;
+		versioned.program.graphSeed = 6;
+		versioned.program.instrs = { OpConst(1.0f) };
+		versioned.program.acceptIndex = 0;
+		DependencyVersions ver{};
+		const uint64_t base =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		versioned.config.densityScale = 0.25f;
+		const uint64_t density =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		versioned.config.slopeToRock = true;
+		const uint64_t slope =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		Prototype proto;
+		versioned.prototypes.add(proto);
+		const uint64_t prototype =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		Check(base != density && density != slope && slope != prototype,
+			"place.res.gpu-program-revision-includes-scalar-and-proto-edits");
 	}
 
 	// ---- the full world flow: fake world -> tile domain -> meadow. ----
