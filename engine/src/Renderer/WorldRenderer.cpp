@@ -11161,7 +11161,9 @@ namespace engine {
 				m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
 			}
 			m_worldPartition.SetInterests(interests, interestCount);
-			m_worldPartition.UpdateFrame(fb.frameIndex);
+			// Residency/LRU clocks require a monotonic simulation frame, not the
+			// swapchain's cycling frames-in-flight slot (fb.frameIndex).
+			m_worldPartition.UpdateFrame(m_frameCounter);
 		}
 		// The renderer owns no environment: the frame's look is built
 		// from the WORLD's scene env here, once per frame (the main
