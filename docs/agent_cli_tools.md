@@ -270,6 +270,8 @@ glTF/geometry are authored/imported; `ready_to_build` only indicates
 entry file existence, not successful plan resolution. Use
 `Project validate --project <path> --recipe <recipe>` before cooking.
 
+For a Python entry point, `python tools/project_init.py --name Demo --path ../projects/Demo --project-exe out/build/linux-Release/Project --json` delegates to the existing native `Project init` executable. That helper is useful for shell automation but **not statically linkable**; use `tourinit` or `InitializeProject` for native consumers.
+
 ## Statically linkable tooling functions (C++20)
 
 For native code, use the `tourmaline::tooling` CMake target and
