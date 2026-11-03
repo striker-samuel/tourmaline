@@ -4,6 +4,9 @@
 // The element shares Tourmaline's *existing* App, ResourceManager, RenderGraph,
 // GameUiRenderer, SDL3 input and swapchain ownership. No game data is shipped.
 #include "../portkit.h"
+#include "../external_assets.h"
+#include "../trace.h"
+#include "project_asset_provider.h"
 #include <Engine/App/app.h>
 #include <Engine/App/Element.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -15,6 +18,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +33,8 @@ struct DiagnosticGame {
     std::array<Byte,W*H*4> pixels{};
     TourRecompControllerV1 pad{};
     std::uint64_t ticks=0;
+    std::uint64_t contentHash=0;
+    std::uint64_t assetId=0; // optional stable ID from generated project.h
     void Draw() {
         // Pattern visibly changes with analog input, A/B and original ticks.
         const unsigned ax=unsigned(int(pad.stick_x)+80);
@@ -35,7 +42,7 @@ struct DiagnosticGame {
         for(std::uint32_t y=0;y<H;++y) for(std::uint32_t x=0;x<W;++x) {
             const auto p=(std::size_t(y)*W+x)*4;
             const bool checker=(((x/16)+(y/16)+(ticks/8))%2)!=0;
-            pixels[p+0]=Byte((x+ticks*3+ax)&0xff);
+            pixels[p+0]=Byte((x+ticks*3+ax+(contentHash&255))&0xff);
             pixels[p+1]=Byte((y+ticks+ay)&0xff);
             pixels[p+2]=Byte(checker?(pad.buttons&0x8000?255:170):
                                          (pad.buttons&0x4000?210:40));
@@ -49,7 +56,19 @@ extern "C" int DemoBoot(void* u,const Byte* rom,size_t romLen,
     if(!u||!rom||romLen!=16||!mem||memLen!=tour::recomp::RdramBytes||
        !save||saveLen!=512||!callbacks)return 0;
     auto& g=*static_cast<DiagnosticGame*>(u);
-    g.ticks=0;g.Draw();
+    g.ticks=0;g.contentHash=0;
+    if(g.assetId){
+        if(!callbacks->asset_read)return 0;
+        const auto need=callbacks->asset_read(callbacks->user,g.assetId,nullptr,0);
+        if(!need || need>(128u*1024u*1024u))return 0;
+        std::vector<Byte> bytes(need);
+        if(callbacks->asset_read(callbacks->user,g.assetId,
+                                 bytes.data(),bytes.size())!=need)return 0;
+        // The user-owned cooked asset alters the diagnostic output, proving
+        // its source was a ProjectRuntime catalog lookup, not a file open.
+        g.contentHash=tour::recomp::Fnv1a64(bytes);
+    }
+    g.Draw();
     if(callbacks->log)callbacks->log(callbacks->user,1,
                                     "Synthetic adapter booted (NOT SM64)");
     return 1;
@@ -71,7 +90,11 @@ void DemoLog(void*,std::uint32_t level,const char* msg) {
 
 class DiagnosticElement final:public engine::IAppElement {
 public:
-    explicit DiagnosticElement(tour::App& host):host_(host) {}
+    explicit DiagnosticElement(tour::App& host,std::string manifest,
+                               std::uint64_t assetId)
+        :host_(host),manifestPath_(std::move(manifest)){
+        game_.assetId=assetId;
+    }
     const char* ElementName() const override {return "RecompDiagnostic";}
     bool onAttach() override {
         auto* ctx=host_.GetResourceManager();
@@ -80,6 +103,15 @@ public:
         if(!ui_.EnsureShaders(*ctx)) {
             std::fprintf(stderr,"Missing gameui shaders; stage engine-shaders.pak\n");
             return false;
+        }
+        if(!manifestPath_.empty()){
+            if(!assets_.Open(manifestPath_,error_)){
+                std::fprintf(stderr,"Cannot load external project: %s\n",
+                             error_.c_str());
+                return false;
+            }
+            std::fprintf(stderr,
+                "[RecompDiagnostic] External Tourmaline content catalog loaded\n");
         }
         game_.Draw();
         TourRecompApiV1 api{};
@@ -94,6 +126,10 @@ public:
         TourRecompHostV1 callbacks{};
         callbacks.struct_bytes=sizeof(callbacks);
         callbacks.log=DemoLog;
+        if(assets_.Ready()){
+            callbacks.user=&assets_;
+            callbacks.asset_read=tour::recomp::ProjectAssetProvider::ReadCallback;
+        }
         if(!runner_.Start(api,syntheticContent_,memory_,save_,callbacks,error_)){
             std::fprintf(stderr,"Synthetic adapter rejected: %s\n",error_.c_str());
             return false;
@@ -205,18 +241,50 @@ private:
     smvk::Holder<smvk::TextureHandle> texture_;
     std::vector<smvk::LogicalImageViewHandle> views_;
     std::string error_;
+    std::string manifestPath_;
+    tour::recomp::ProjectAssetProvider assets_;
 };
 } // namespace
 
 int main(int argc,const char** argv){
-    if(argc!=2||std::string(argv[1])!="--synthetic"){
+    bool synthetic=false;
+    std::string manifest;
+    std::uint64_t assetId=0;
+    for(int i=1;i<argc;++i) {
+        const std::string a=argv[i];
+        if(a=="--synthetic")synthetic=true;
+        else if(a=="--assets" && i+1<argc)manifest=argv[++i];
+        else if(a=="--asset-id" && i+1<argc){
+            try {
+                const std::string id=argv[++i];
+                std::size_t used=0;
+                assetId=std::stoull(id,&used,0);
+                if(used!=id.size()||!assetId)throw std::invalid_argument("id");
+            }catch(...){std::fprintf(stderr,"Invalid --asset-id\n");return 2;}
+        }else {
+            std::fprintf(stderr,"Unexpected flag '%s'\n",a.c_str());
+            return 2;
+        }
+    }
+    if(!synthetic || (assetId&&!manifest.size())){
         std::fprintf(stderr,
-          "Usage: RecompDiagnostic --synthetic\n"
-          "This is a generated pattern, NOT Super Mario 64.\n"
-          "A playable SM64 recomp needs an external licensed runtime/RT64 bridge.\n");
+            "Usage: RecompDiagnostic --synthetic [--assets OUTSIDE/game.tapp"
+            " --asset-id 0x...]\n"
+            "Asset IDs come from Project.exe ids; ROMs are never packaged.\n"
+            "This is only a generated pattern, NOT Super Mario 64.\n");
         return 2;
     }
+    if(!manifest.empty()){
+        tour::recomp::ExternalAssets locations{};
+        locations.repoRoot=TOUR_RECOMP_SOURCE_ROOT;
+        locations.manifest=manifest;
+        std::string error;
+        if(!locations.Validate(error)){
+            std::fprintf(stderr,"%s\n",error.c_str());return 2;
+        }
+    }
     tour::App app;
-    app.AddElement(std::make_shared<DiagnosticElement>(app));
+    app.AddElement(std::make_shared<DiagnosticElement>(
+        app,std::move(manifest),assetId));
     return app.Run()?0:1;
 }
