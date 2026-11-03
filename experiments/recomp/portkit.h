@@ -245,6 +245,9 @@ struct Bridge {
 class Session {
 public:
     ~Session(){Shutdown();}
+    Session()=default;
+    Session(const Session&)=delete;
+    Session& operator=(const Session&)=delete;
     bool Boot(const std::filesystem::path& romPath,const std::filesystem::path& savePath,
               Bridge bridge,std::string& error){
         Shutdown();
@@ -254,6 +257,7 @@ public:
         }
         if(!LoadSm64UsRom(romPath,rom_,error) || !save_.Load(savePath,error))
             return false;
+        ram_=GuestMemory{};clock_=FixedClock{};video_=VideoFrame{};
         bridge_=bridge;savePath_=savePath;
         if(!bridge_.boot(bridge_.user,rom_.data(),rom_.size(),ram_.Data(),ram_.Size(),
                          save_.Data(),save_.Size())){
