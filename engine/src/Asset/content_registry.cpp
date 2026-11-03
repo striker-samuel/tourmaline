@@ -58,6 +58,9 @@ bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
 	case smvk::kCatalogKindNavMesh:
 		out = smvk::PakAssetKind::NavMesh;
 		return true;
+	case smvk::kCatalogKindShape:
+		out = smvk::PakAssetKind::Shape;
+		return true;
 	case smvk::kCatalogKindSpriteSet:
 		out = smvk::PakAssetKind::SpriteSet;
 		return true;
