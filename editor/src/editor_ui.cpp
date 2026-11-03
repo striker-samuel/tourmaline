@@ -599,6 +599,17 @@ namespace editor {
 			ImGui::Separator();
 			ImGui::TextDisabled("Modal (vi-style): the active mode interprets");
 			ImGui::TextDisabled("keys; the viewport legend shows the mode line.");
+			ImGui::Separator();
+#if defined(TOURMALINE_EDITOR_GAME_LINKED)
+			if (ImGui::MenuItem("Run linked game code", nullptr, false,
+					m_world && !m_gameSession.Active()))
+				m_gamePlayRequest = true;
+			if (ImGui::MenuItem("Stop linked game code", nullptr, false,
+					m_gameSession.Active()))
+				m_gamePlayRequest = false;
+#else
+			ImGui::TextDisabled("Game entry: not statically linked");
+#endif
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View")) {
