@@ -588,6 +588,10 @@ void TestReferences() {
 	r.name = "wheel";
 	r.translate = glm::vec3(1.0f, 2.0f, 3.0f);
 	r.hasTranslate = true;
+	r.rotate = glm::vec3(0.0f, 90.0f, 0.0f);
+	r.hasRotate = true;
+	r.scale = glm::vec3(2.0f, 3.0f, 4.0f);
+	r.hasScale = true;
 	doc.references.push_back(r);
 	std::string err;
 	const std::string masterTour = (dir / "master.tour").string();
@@ -602,7 +606,12 @@ void TestReferences() {
 			back.references[0].name == "wheel" &&
 			back.references[0].parent == 0 &&
 			back.references[0].hasTranslate &&
-			back.references[0].translate.y == 2.0f, "ref fields");
+			back.references[0].translate.y == 2.0f &&
+			back.references[0].hasRotate &&
+			back.references[0].rotate.y == 90.0f &&
+			back.references[0].hasScale &&
+			back.references[0].scale.z == 4.0f,
+			"ref fields and prefab TRS roundtrip");
 	}
 	// Apply to a offline cluster: wheel inlined + nested gear (BFS).
 	// NOTE: heap-allocated (Cluster embeds multi-MB pools).
@@ -617,6 +626,15 @@ void TestReferences() {
 		nullptr, &resolved);
 	Check(applied == 2, "ref nested applied (wheel + gear)");
 	Check(ph.size() == 1, "ref placeholder list");
+	if (ph.size() == 1 && ph[0] >= 0) {
+		const glm::mat4& placement =
+			cluster->scene.localTransform[size_t(ph[0])];
+		Check(std::abs(placement[3].x - 1.0f) < 1e-4f
+			&& std::abs(placement[3].y - 2.0f) < 1e-4f
+			&& std::abs(placement[0].z + 2.0f) < 1e-4f
+			&& std::abs(placement[1].y - 3.0f) < 1e-4f,
+			"ref prefab placeholder T*R*S");
+	}
 	Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
 	// Reference namespaces (Maya): the subtree takes '<ref>:' — root
 	// namespace is the master tour (its nodes carry no prefix).
@@ -971,6 +989,42 @@ void TestTourReferences() {
 		"tourref nested placeholder");
 	Check(findNodeByName(cluster->scene, "sub:gear:Gear") >= 0,
 		"tourref nested namespaced chain");
+
+	// Multiple instances of the SAME .tour source must remain distinct:
+	// each has an independent namespace and a different placement frame.
+	{
+		smvk::tour::Doc multiple;
+		smvk::tour::ReferenceCmd a = r;
+		a.name = "left";
+		a.translate = glm::vec3(11.0f, 0.0f, 0.0f);
+		a.hasTranslate = true;
+		multiple.references.push_back(a);
+		smvk::tour::ReferenceCmd b = a;
+		b.name = "right";
+		b.translate = glm::vec3(-11.0f, 0.0f, 0.0f);
+		multiple.references.push_back(b);
+		auto c = freshCluster();
+		std::vector<int> placeholders;
+		const size_t count = ApplySceneReferences(*c, multiple,
+			dir.generic_string(), nullptr, nullptr, nullptr,
+			smvk::MeshOptConfig{}, smvk::MeshletConfig{}, 0,
+			&placeholders);
+		Check(count == 4 && placeholders.size() == 2,
+			"prefab authored two nested instances");
+		Check(findNodeByName(c->scene, "left:BoxRenamed") >= 0
+			&& findNodeByName(c->scene, "right:BoxRenamed") >= 0
+			&& findNodeByName(c->scene, "left:gear:Gear") >= 0
+			&& findNodeByName(c->scene, "right:gear:Gear") >= 0,
+			"prefab authored namespace isolation");
+		if (placeholders.size() == 2
+			&& placeholders[0] >= 0 && placeholders[1] >= 0) {
+			Check(c->scene.localTransform[size_t(placeholders[0])][3].x
+					== 11.0f
+				&& c->scene.localTransform[size_t(placeholders[1])][3].x
+					== -11.0f,
+				"prefab authored placement isolation");
+		}
+	}
 
 	// Disabled reference: nothing binds.
 	smvk::tour::Doc offDoc;

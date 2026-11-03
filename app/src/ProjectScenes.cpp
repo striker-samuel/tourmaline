@@ -23,6 +23,7 @@
 #include <Engine/Vfs/vfs.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <future>
 #include <iostream>
@@ -44,6 +45,13 @@ std::string StemOf(const std::string& p) {
 	const size_t dot = file.find_last_of('.');
 	return (dot == std::string::npos || dot == 0)
 		? file : file.substr(0, dot);
+}
+
+bool FiniteFrame(const glm::mat4& frame) {
+	for (int column = 0; column < 4; ++column)
+		for (int row = 0; row < 4; ++row)
+			if (!std::isfinite(frame[column][row])) return false;
+	return true;
 }
 
 std::string HexId(uint64_t id) {
@@ -268,6 +276,52 @@ SceneHandle ProjectScenes::LoadScene(tour::World& world,
 	return LoadInternal(world, ctx, streamer, sceneId, err);
 }
 
+SceneHandle ProjectScenes::InstantiatePrefab(tour::World& world,
+	smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
+	uint64_t sceneId, const glm::mat4& frame, std::string& err) {
+	err.clear();
+	if (!FiniteFrame(frame)) {
+		err = "prefab transform must contain only finite values";
+		return {};
+	}
+	return LoadInternal(world, ctx, streamer, sceneId, err, &frame);
+}
+
+bool ProjectScenes::SetPrefabTransform(SceneHandle prefab, tour::World& world,
+	const glm::mat4& frame, std::string& err) {
+	err.clear();
+	SceneInstance* instance = Instance(prefab);
+	if (!instance || !instance->prefab || instance->owner != &world
+			|| !instance->cluster) {
+		err = "unknown prefab instance, stale handle or wrong world";
+		return false;
+	}
+	if (!FiniteFrame(frame)) {
+		err = "prefab transform must contain only finite values";
+		return false;
+	}
+	auto& scene = instance->cluster->scene;
+	const uint32_t root = instance->prefabRoot;
+	if (!tour::scene::IsLiveSlot(scene, root)
+			|| root >= scene.localTransform.size()) {
+		err = "the prefab instance root is no longer live";
+		return false;
+	}
+	scene.localTransform[root] = frame * instance->prefabSourceRoot;
+	instance->prefabFrame = frame;
+	tour::scene::MarkAllRootsChanged(scene);
+	tour::scene::recalculateGlobalTransforms(scene);
+	world.ResolveAndFixup_clusters();
+	return true;
+}
+
+std::optional<glm::mat4> ProjectScenes::PrefabTransform(
+	SceneHandle prefab) const {
+	const SceneInstance* instance = Instance(prefab);
+	if (!instance || !instance->prefab) return std::nullopt;
+	return instance->prefabFrame;
+}
+
 SceneHandle ProjectScenes::LoadSceneAdditive(tour::World& world,
 	smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 	uint64_t sceneId, std::string& err) {
@@ -277,7 +331,8 @@ SceneHandle ProjectScenes::LoadSceneAdditive(tour::World& world,
 
 SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 	smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
-	uint64_t sceneId, std::string& err) {
+	uint64_t sceneId, std::string& err,
+	const glm::mat4* prefabFrame) {
 	if (!m_openError.empty()) {
 		err = "the project's paks did not all open: " + m_openError;
 		return {};
@@ -348,6 +403,7 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 	inst->pak = target->pak;
 	inst->sceneName = target->sceneName;
 	inst->sceneIndex = target->sceneIndex;
+	inst->owner = &world;
 	tour::Cluster* cluster = clusterLoader(world, ctx,
 		backend->Reader(), target->sceneIndex, streamer,
 		backend->Image(), &resolver, err);
@@ -358,6 +414,31 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
 		return {};
 	}
 	inst->cluster = cluster;
+	if (prefabFrame) {
+		// World::ResolveAndFixup_clusters() folds the FIRST live cluster
+		// node as its independent world child. Pre-multiplying THAT
+		// node (and only that node) preserves every authored child frame.
+		tour::scene::Scene& source = cluster->scene;
+		uint32_t root = UINT32_MAX;
+		for (uint32_t n = 0; n < source.hierarchy.size(); ++n)
+			if (tour::scene::IsLiveSlot(source, n)) {
+				root = n;
+				break;
+			}
+		if (root == UINT32_MAX || root >= source.localTransform.size()) {
+			err = "the prefab scene has no live root transform";
+			world.UnloadCluster(*cluster);
+			FreeHandle(handle);
+			return {};
+		}
+		inst->prefab = true;
+		inst->prefabRoot = root;
+		inst->prefabSourceRoot = source.localTransform[root];
+		inst->prefabFrame = *prefabFrame;
+		source.localTransform[root] = *prefabFrame * inst->prefabSourceRoot;
+		tour::scene::MarkAllRootsChanged(source);
+		tour::scene::recalculateGlobalTransforms(source);
+	}
 	// The shared post-load tail: anim attach (through the SESSION —
 	// the registry's provider union; the overlay is no longer a
 	// content source on any runtime path), cooked static flags, the
@@ -568,6 +649,11 @@ void ProjectScenes::FreeHandle(SceneHandle scene) {
 	slot.sceneName.clear();
 	slot.sceneIndex = 0;
 	slot.cluster = nullptr;
+	slot.owner = nullptr;
+	slot.prefab = false;
+	slot.prefabRoot = UINT32_MAX;
+	slot.prefabSourceRoot = glm::mat4(1.0f);
+	slot.prefabFrame = glm::mat4(1.0f);
 	slot.ownedAssets.clear();
 	// The generation bump is the stale-handle guarantee: a freed slot
 	// mints generation+1 on its next allocation, so every copy of the

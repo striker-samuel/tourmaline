@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -1140,6 +1141,52 @@ void TestProjectScenes() {
 		&& world.lightLocations.size() == 2,
 		"pscenes.second-instance");
 
+	// ---- Prefabs are independent scene instances (no new asset kind) --
+	// Each .tour scene occurrence gets its own cluster root/frame.
+	{
+		glm::mat4 aFrame(1.0f);
+		aFrame[3] = glm::vec4(10.0f, 2.0f, 3.0f, 1.0f);
+		glm::mat4 bFrame(1.0f);
+		bFrame[3] = glm::vec4(-7.0f, 0.0f, 9.0f, 1.0f);
+		app::SceneHandle prefabA = scenes.InstantiatePrefab(
+			world, nullptr, nullptr, 0x1000, aFrame, err);
+		app::SceneHandle prefabB = scenes.InstantiatePrefab(
+			world, nullptr, nullptr, 0x1000, bFrame, err);
+		Check(prefabA && prefabB && prefabA != prefabB
+			&& world.lightLocations.size() == 4, "prefab.two-occurrences");
+		const auto* ca = scenes.SceneCluster(prefabA);
+		const auto* cb = scenes.SceneCluster(prefabB);
+		Check(ca && cb && ca != cb
+			&& ca->scene.localTransform[0][3].x == 10.0f
+			&& cb->scene.localTransform[0][3].x == -7.0f,
+			"prefab.placement-isolated");
+		glm::mat4 moved(1.0f);
+		moved[3] = glm::vec4(22.0f, 0.0f, 0.0f, 1.0f);
+		Check(scenes.SetPrefabTransform(prefabA, world, moved, err)
+			&& scenes.SetPrefabTransform(prefabA, world, moved, err)
+			&& scenes.SceneCluster(prefabA)->scene.localTransform[0][3].x == 22.0f
+			&& scenes.SceneCluster(prefabB)->scene.localTransform[0][3].x == -7.0f,
+			"prefab.absolute-move-no-drift");
+		Check(scenes.PrefabTransform(prefabA).has_value()
+			&& (*scenes.PrefabTransform(prefabA))[3].x == 22.0f,
+			"prefab.query-transform");
+		glm::mat4 invalid(1.0f);
+		invalid[0][0] = std::numeric_limits<float>::infinity();
+		const auto previous = scenes.SceneCluster(prefabA)->scene.localTransform[0];
+		Check(!scenes.SetPrefabTransform(prefabA, world, invalid, err)
+			&& scenes.SceneCluster(prefabA)->scene.localTransform[0][3].x
+				== previous[3].x, "prefab.nonfinite-rejected");
+		Check(!scenes.SetPrefabTransform(h1, world, moved, err),
+			"prefab.normal-scene-refused");
+		Check(scenes.RemoveScene(prefabA, world, err)
+			&& !scenes.PrefabTransform(prefabA).has_value()
+			&& !scenes.SetPrefabTransform(prefabA, world, moved, err)
+			&& scenes.IsLoaded(prefabB) && world.lightLocations.size() == 3,
+			"prefab.destroy-one-doesnt-touch-other");
+		Check(scenes.RemoveScene(prefabB, world, err)
+			&& scenes.LoadedSceneCount() == 2
+			&& world.lightLocations.size() == 2, "prefab.cleanup");
+	}
 	// --- remove + the stale-handle guarantee ---
 	{
 		std::vector<uint64_t> released;

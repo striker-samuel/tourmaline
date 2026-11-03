@@ -421,6 +421,13 @@ struct ReferenceCmd {
 	std::string name;         // placeholder node name ("REF <name>")
 	glm::vec3 translate{ 0.0f }; // optional placement offset
 	bool hasTranslate = false;
+	// Authored .tour scene occurrences can be fully placed without
+	// flattening the referenced scene. Rotation is XYZ Euler degrees,
+	// composed as T * Rx * Ry * Rz * S at the placeholder group.
+	glm::vec3 rotate{ 0.0f };
+	glm::vec3 scale{ 1.0f };
+	bool hasRotate = false;
+	bool hasScale = false;
 	bool enabled = true;      // false = unloaded (kept in the list, not
 	                          // bound; Maya-style load/unload)
 	// ROOT reference: the scene's OWN source glTF, kept in the document
