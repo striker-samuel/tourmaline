@@ -52,8 +52,15 @@ def publish(source: Path, output: Path, runner: str, *,
         raise ValueError("Blender runner requires a .blend scene")
     tools = tool_dir or Path(__file__).resolve().parent
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".tourmaline-dcc-", dir=output.parent) as tmp:
-        staged = Path(tmp) / output.name
+    # The native file watcher suppresses filenames containing ".tmp".
+    # Stage a single embedded glTF sibling (same filesystem for atomic
+    # replace) without a visible temporary directory in the asset browser.
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{output.stem}.tmp-", suffix=".gltf", dir=output.parent)
+    os.close(fd)
+    staged = Path(temp_name)
+    staged.unlink()  # exporters write their own file
+    try:
         if runner == "maya":
             executable = maya_exe or os.environ.get("TOURMALINE_MAYAPY", "mayapy")
             argv = [executable, str(tools / "maya_export_gltf.py"), str(source), str(staged)]
@@ -72,6 +79,8 @@ def publish(source: Path, output: Path, runner: str, *,
         validate_gltf(staged)
         # os.replace is atomic within the same destination filesystem.
         os.replace(staged, output)
+    finally:
+        staged.unlink(missing_ok=True)
     print("Published glTF:", output, flush=True)
 
 
