@@ -564,9 +564,19 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView) {
 				? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)
 				: glm::vec4(0.9f, 0.3f, 1.0f, 1.0f);
 			AddDiamond(b, p, s);
-			// Influence ring (horizontal): the weight-tie radius.
-			AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
-				def.radius, 48);
+			// Only the selected probe shows its influence. Three great
+			// circles represent a world-space sphere rather than the old
+			// misleading always-on horizontal ring. The line batch is
+			// depth-tested so geometry hides the far side of the guide.
+			if (node == m_selected && def.radius > 0.0f) {
+				b.depthTest = true;
+				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 0, 1),
+					def.radius, 48);
+				AddCircle(b, p, glm::vec3(1, 0, 0), glm::vec3(0, 1, 0),
+					def.radius, 48);
+				AddCircle(b, p, glm::vec3(0, 1, 0), glm::vec3(0, 0, 1),
+					def.radius, 48);
+			}
 			if (!b.verts.empty())
 				batches.push_back(std::move(b));
 		}
