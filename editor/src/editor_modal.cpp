@@ -236,9 +236,9 @@ void EditorApp::UpdateModalInput() {
 			"profile: placeholder", "O" },
 		// GLOBAL: mode switches, App-parity debug views (F1/F2/F3/F4/F5/
 		// F6/F9/F10/F11 — the same keys the standalone App uses, wired
-		// straight through to the editor passes), wireframe (P -
-		// App parity; Z stays as the LAYOUT alias), window toggles,
-		// document ops — reachable from ANY mode.
+		// straight through to the editor passes), window toggles and
+		// document ops. P is the global parent-selection shortcut;
+		// wireframe belongs to Z in Layout mode.
 		{ TOUR_KEY_1, 0, kScopeGlobal, &EditorApp::ModalModeLayout,
 			"mode: LAYOUT", "1" },
 		{ TOUR_KEY_2, 0, kScopeGlobal, &EditorApp::ModalModeLighting,

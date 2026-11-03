@@ -695,7 +695,7 @@ namespace editor {
 					meshletModes, 2);
 			}
 			ImGui::Separator();
-			ImGui::MenuItem("Wireframe (hidden-line)", "P / Z", &m_wireframeAll);
+			ImGui::MenuItem("Wireframe (hidden-line)", "Z (Layout)", &m_wireframeAll);
 			ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
 				"prepass — lines never draw over the objects in front.");
 			ImGui::Separator();
@@ -749,7 +749,7 @@ namespace editor {
 			ImGui::Separator();
 			if (ImGui::MenuItem(
 				("UV inset: " + std::string(SecondViewName(m_secondView))).c_str(),
-				"F5 (LIGHTING)"))
+				"Shift+F5 (Lighting)"))
 				m_secondView = SecondView((int(m_secondView) + 1) % 3);
 			ImGui::Separator();
 			if (ImGui::MenuItem("Translate gizmo", "W",
@@ -785,11 +785,8 @@ namespace editor {
 				FrameSelection();
 			if (ImGui::MenuItem("Frame all", "Shift+F"))
 				FrameAll();
-			// UV editor window retired (see the DrawUvEditorWindow note).
-			//if (m_showUvEditor && ImGui::MenuItem("Reset UV window (zoom 1)")) {
-			//	m_uvWinZoom = 1.0f;
-			//	m_uvWinPan = glm::vec2(0.0f);
-			//}
+			// The old floating UV editor is retired; UV0/UV1 use the
+			// current viewport modes and the integrated inset.
 			ImGui::Separator();
 			if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 				m_placement.showGraph = !m_placement.showGraph;
@@ -861,9 +858,7 @@ namespace editor {
 			}
 			if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
 				m_uiMode = !m_uiMode;
-			// UV editor window retired (see the DrawUvEditorWindow note).
-			//if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
-			//	m_showUvEditor = !m_showUvEditor;
+			
 			if (ImGui::MenuItem("Cook & bake window", nullptr,
 					m_showCookWindow))
 				m_showCookWindow = !m_showCookWindow;
