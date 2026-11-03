@@ -57,12 +57,25 @@ namespace tour::gpu_scene {
     RelativeFrustum out{};
     out.originWorld = origin;
     for (size_t i=0;i<6;++i) {
-        const glm::dvec3 n(raw[i]);
+        const glm::dvec4 clipPlane = raw[i];
+        bool finite = true;
+        for (int axis = 0; axis < 4; ++axis)
+            finite &= std::isfinite(clipPlane[axis]);
+        const glm::dvec3 n(clipPlane);
         const double len=glm::length(n);
-        if (!(len>1e-16) || !std::isfinite(len)) {
-            out.planes[i]=glm::dvec4(0,0,0,1e30);
+        if (!finite || !std::isfinite(len) || !(len>1e-16)) {
+            // Only a depth plane may be omitted by an infinite-far
+            // projection. Reversed-Z swaps which depth plane vanishes.
+            // Side-plane degeneracy, NaNs and zero matrices are invalid:
+            // never turn a broken VP into an all-pass culling frustum.
+            if (finite && i>=4 && !(len>1e-16) &&
+                clipPlane.w>0.0) {
+                out.planes[i]=glm::dvec4(0,0,0,1e30);
+            } else {
+                out.planes[i]=glm::dvec4(0.0); // !Valid()
+            }
         } else {
-            const glm::dvec4 p=raw[i]/len;
+            const glm::dvec4 p=clipPlane/len;
             out.planes[i]=glm::dvec4(glm::dvec3(p),
                 p.w+glm::dot(glm::dvec3(p),origin));
         }
