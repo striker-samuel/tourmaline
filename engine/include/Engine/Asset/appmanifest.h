@@ -87,6 +87,7 @@ inline constexpr uint8_t kCatalogKindAudioGraph = 7;
 inline constexpr uint8_t kCatalogKindSpriteSet = 8;
 inline constexpr uint8_t kCatalogKindStateMachine = 9;
 inline constexpr uint8_t kCatalogKindNavMesh = 10;
+inline constexpr uint8_t kCatalogKindShape = 11;
 // The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
 // "shader"/"gi"/"audiograph"; false for any other spelling).
 [[nodiscard]] bool CatalogKindFromString(const std::string& kind,
