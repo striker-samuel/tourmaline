@@ -1,6 +1,5 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-#pragma once
 
 // Stable, PROJECT-FACING lit-fragment compile-time helpers.
 //
@@ -13,6 +12,15 @@
 // TM_LIT_MATERIAL_ID(IN) is only valid inside the lit fragment entry
 // (where both PSIn IN and the scene push pc are in scope). Project hook
 // functions must use TMLitInput.materialId instead.
+//
+// Classic #ifndef guard (NOT #pragma once): this header is shared across
+// the engine/project include boundary, where lit_dependencies.hlsli
+// resolves it includer-relative while a project's hook file resolves it
+// through -I — DXC's #pragma once treats those as two different files
+// and the TM_LmIsValidLobeCount definition would collide.
+#ifndef TM_PROJECT_SHADER_MACROS_HLSLI
+#define TM_PROJECT_SHADER_MACROS_HLSLI
+
 #if defined(GFXMESH_FS_PASS)
 #define TM_LIT_MESH_FRAGMENT 1
 #define TM_LIT_MATERIAL_ID(input) ((input).meshMaterial)
@@ -56,3 +64,5 @@ bool TM_LmIsValidLobeCount(uint lobeCount)
         || lobeCount == 9u || lobeCount == 12u;
 }
 #define TM_LM_VALID_LOBE_COUNT(n) TM_LmIsValidLobeCount((n))
+
+#endif // TM_PROJECT_SHADER_MACROS_HLSLI
