@@ -13,6 +13,7 @@
 
 #include <pxr/pxr.h>
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/vt/array.h>
@@ -23,6 +24,7 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/primvar.h>
 #include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xformable.h>
@@ -138,16 +140,16 @@ struct Converter {
             m.pbrMetallicRoughness.baseColorFactor = {
                 color[0], color[1], color[2], 1.0};
             float f = 0.f;
-            if (shader.GetInput(TfToken("metallic")).Get(&f))
+            if (auto input = shader.GetInput(TfToken("metallic")); input && input.Get(&f))
                 m.pbrMetallicRoughness.metallicFactor = std::clamp(double(f), 0., 1.);
-            if (shader.GetInput(TfToken("roughness")).Get(&f))
+            if (auto input = shader.GetInput(TfToken("roughness")); input && input.Get(&f))
                 m.pbrMetallicRoughness.roughnessFactor = std::clamp(double(f), 0., 1.);
-            if (shader.GetInput(TfToken("opacity")).Get(&f)) {
+            if (auto input = shader.GetInput(TfToken("opacity")); input && input.Get(&f)) {
                 m.pbrMetallicRoughness.baseColorFactor[3] = std::clamp(double(f), 0., 1.);
                 if (f < 1.f) m.alphaMode = "BLEND";
             }
             GfVec3f emission(0.f);
-            if (shader.GetInput(TfToken("emissiveColor")).Get(&emission))
+            if (auto input = shader.GetInput(TfToken("emissiveColor")); input && input.Get(&emission))
                 m.emissiveFactor = {emission[0], emission[1], emission[2]};
         }
         if (!previewFound)
@@ -169,8 +171,8 @@ struct Converter {
         if (points.empty() || counts.empty())
             return Fail("empty mesh: " + prim.GetPath().GetString());
 
-        // A subset's per-face binding cannot be expressed by this single
-        // primitive yet. Refuse rather than applying a wrong material.
+        // Per-face subsets cannot be expressed by this single primitive
+        // yet. Refuse rather than applying an incorrect material.
         for (const UsdPrim& child : prim.GetChildren())
             if (child.GetTypeName() == TfToken("GeomSubset"))
                 return Fail("GeomSubset material assignments not yet supported: "
@@ -188,22 +190,23 @@ struct Converter {
         std::vector<float> pos, nrm, tex;
         std::vector<uint32_t> indices;
         size_t cornerOffset = 0;
-        const bool reverse = mesh.GetOrientationAttr().Get(&orientation_)
-            && orientation_ == UsdGeomTokens->leftHanded;
+        TfToken orientation;
+        mesh.GetOrientationAttr().Get(&orientation);
+        const bool reverse = orientation == UsdGeomTokens->leftHanded;
         for (size_t f = 0; f < counts.size(); ++f) {
             const int n = counts[f];
             if (n < 3 || cornerOffset + size_t(n) > vertices.size())
                 return Fail("invalid polygon: " + prim.GetPath().GetString());
-            // Triangle fan: handles convex polygon faces. Non-convex
-            // topology needs a proper triangulator and is rejected below.
-            // USD subdivision meshes also require tessellation first.
+            // Only native triangle faces can be copied losslessly here.
+            // Subdivision and polygons require an explicit tessellation pass.
             TfToken scheme;
             mesh.GetSubdivisionSchemeAttr().Get(&scheme);
             if (scheme != UsdGeomTokens->none && !scheme.IsEmpty())
                 return Fail("subdivision mesh needs tessellation: "
                     + prim.GetPath().GetString());
-            if (n > 4)
-                return Fail("n-gon requires tessellation: " + prim.GetPath().GetString());
+            if (n > 3)
+                return Fail("non-triangle face needs a robust tessellator: "
+                    + prim.GetPath().GetString());
             for (int t = 1; t < n - 1; ++t) {
                 const std::array<size_t, 3> cs = reverse
                     ? std::array<size_t, 3>{0, size_t(t+1), size_t(t)}
@@ -339,8 +342,6 @@ struct Converter {
         return true;
     }
 
-private:
-    TfToken orientation_;
 };
 
 } // namespace
