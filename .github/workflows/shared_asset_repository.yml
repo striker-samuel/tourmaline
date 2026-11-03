@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - 'tools/shared_asset_repository.py'
+      - 'tools/asset_read_presence.py'
+      - 'tools/asset_consumers_dashboard.html'
+      - 'tools/tests/test_asset_read_presence.py'
+      - 'docs/asset_repository_manual.md'
       - 'tools/shared_asset_server.py'
       - 'tools/install_shared_assets.py'
       - 'tools/configure_asset_client.py'
@@ -16,6 +20,10 @@ on:
   pull_request:
     paths:
       - 'tools/shared_asset_repository.py'
+      - 'tools/asset_read_presence.py'
+      - 'tools/asset_consumers_dashboard.html'
+      - 'tools/tests/test_asset_read_presence.py'
+      - 'docs/asset_repository_manual.md'
       - 'tools/shared_asset_server.py'
       - 'tools/install_shared_assets.py'
       - 'tools/configure_asset_client.py'
@@ -40,9 +48,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Shared repository service and client integration
         run: python -m unittest discover -s tools/tests -p "test_shared_asset_repository.py" -v
+      - name: Advisory consumer presence tests
+        run: python -m unittest discover -s tools/tests -p "test_asset_read_presence.py" -v
       - name: Existing offline service regressions
         run: python -m unittest discover -s tools/tests -p "test_offline_asset_service.py" -v
       - name: Maya client contract tests (Maya not installed)
         run: python -m unittest discover -s tools/tests -p "test_maya_asset_versions.py" -v
       - name: Compile Python modules
-        run: python -m compileall -q tools/shared_asset_repository.py tools/shared_asset_server.py tools/install_shared_assets.py tools/configure_asset_client.py tools/maya/tourmaline_asset_cache.py tools/maya/tourmaline_asset_versions.py
+        run: python -m compileall -q tools/shared_asset_repository.py tools/asset_read_presence.py tools/shared_asset_server.py tools/install_shared_assets.py tools/configure_asset_client.py tools/maya/tourmaline_asset_cache.py tools/maya/tourmaline_asset_versions.py
