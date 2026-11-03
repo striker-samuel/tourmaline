@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "portkit.h"
+#include "trace.h"
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -167,5 +168,21 @@ int main(){
     abi.capabilities=TOUR_RECOMP_CAP_RGBA_FRAME;
     Check(!session.Boot(badRom,path,abi,error),"session ROM gate");
     Check(mock.boots==1,"no original ROM => no adapter boot");
+    // Frame parity signatures: hash, input, dimensions and tick are all
+    // part of the comparison. No frame pixels enter the trace/CSV.
+    Check(Fnv1a64({})==0xcbf29ce484222325ull,"FNV64 empty");
+    const std::array<Byte,5> hello{'h','e','l','l','o'};
+    Check(Fnv1a64(hello)==0xa430d84680aabd0bull,"FNV64 hello");
+    FrameTrace traceA(2),traceB(2);
+    tour::recomp::Controller tracePad{A,11,-12};
+    Check(traceA.Record(1,tracePad,frame) &&
+          traceB.Record(1,tracePad,frame),"trace sample");
+    Check(!traceA.FirstMismatch(traceB).has_value(),"trace equality");
+    Check(traceA.Csv().find("rgba_fnv64")!=std::string::npos,"trace CSV");
+    Check(traceA.Record(2,tracePad,frame) &&
+          traceA.Record(3,tracePad,frame),"bounded trace");
+    Check(traceA.Dropped()==1 && traceA.Entries().size()==2,"trace cap");
+    Check(traceA.FirstMismatch(traceB).value()==0,"trace first mismatch");
+
     std::cout<<"portkit: asset-free tests passed\n";
 }
