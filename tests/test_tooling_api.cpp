@@ -4,12 +4,15 @@
 // GPU-free contracts for the composable native tooling library.
 #include <tourmaline/tooling.h>
 #include <project_pipeline/project.h>
+#include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/pak.h>
 
 #include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -73,6 +76,41 @@ int main() {
         return std::string(std::istreambuf_iterator<char>(in),
                            std::istreambuf_iterator<char>());
     }(root / "sandbox.tourrecipe"), "recipe bytes preserved");
+
+    // Real file-backed SMP8 reader smoke test: this checks the shared
+    // engine's TOC parsing and the #ids parser, not a duplicate reader.
+    tour::asset::PakWriter writer;
+    const std::vector<tour::asset::PakAssetIdRow> ids = {
+        {0x1001, 1, "content/scenes/main.tour", "main"}
+    };
+    Check(writer.AddBlob(tour::asset::PakAssetKind::Identity,
+                         "#ids", tour::asset::WriteAssetIdsBlob(ids)),
+          "identity page added to synthetic SMP8 pak");
+    Check(writer.AddBlob(tour::asset::PakAssetKind::Sound,
+                         "content/audio/tone.wav", {82, 73, 70, 70}),
+          "sound page added to synthetic SMP8 pak");
+    const fs::path pakPath = root / "world-1234.pak";
+    const auto bytes = writer.Finalize();
+    {
+        std::ofstream stream(pakPath, std::ios::binary);
+        stream.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+    }
+    smvk::AppManifest manifest;
+    manifest.version = smvk::kAppManifestVersion;
+    manifest.entryPak = "world-1234.pak";
+    manifest.entryScene = "main";
+    manifest.paks = {"world-1234.pak"};
+    const fs::path manifestPath = root / "sample.tapp";
+    Check(smvk::SaveAppManifest(manifestPath.generic_string(), manifest, error),
+          "synthetic manifest written");
+    PackageSnapshot opened;
+    Check(ReadPackageSnapshot(manifestPath, opened, error, true),
+          "read package snapshot from real engine reader with deep CRC");
+    Check(opened.assets.size() == 1 && opened.assets[0].id == 0x1001,
+          "reader exposes persistent #ids identity");
+    Check(opened.pages.size() == 2 && opened.entryMount == 0,
+          "reader exposes physical page and entry mount");
 
     PackageSnapshot before, after;
     before.source = "old.tapp";
