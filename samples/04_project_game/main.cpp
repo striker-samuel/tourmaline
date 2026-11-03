@@ -16,7 +16,16 @@
 #include "Runtime.h"
 #include "AudioRuntime.h"
 
-#include "project.h"
+// Include the source-tree path explicitly so Visual Studio F12 can
+// navigate to the committed header without relying on include-path lookup.
+#include "project/project.h"
+
+// project.h includes the optional compiled SPIR-V reflection catalog when
+// the shader target generated project_compiled_shaders.h (CMake dependency).
+// The path is exe-relative, and the id is NOT an assets.db ShaderKey.
+static_assert(project::compiled_shaders::project_lit_frag_hlsl.stage ==
+    project::compiled_shaders::Stage::Fragment);
+static_assert(!project::compiled_shaders::project_lit_frag_hlsl.path.empty());
 
 #include <Engine/App/world.h>
 #include <Engine/Audio/audio.h> // tour::audio::AudioInstance (the graph facade)

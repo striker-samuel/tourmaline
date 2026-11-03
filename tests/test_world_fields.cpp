@@ -120,8 +120,12 @@ struct LinearFieldSource final : wf::IWorldFieldBrickSource
 		}
 
 		const uint32_t stored = wf::kBrickStoredRes;
-		assert(payloadBytes == size_t(stored) * stored * stored
-			&& field.format == smvk::Format::R8_UNorm);
+		// House convention: Check (never assert - NDEBUG makes Release
+		// runs vacuous). The brick-size invariant this guards runs for
+		// every validated brick.
+		Check(payloadBytes == size_t(stored) * stored * stored
+			&& field.format == smvk::Format::R8_UNorm,
+			"wf.brick-payload-shape");
 		const float voxel = field.baseVoxelSizeMeters * float(1u << lod);
 		const glm::vec3 brickMin = field.originMeters
 			+ glm::vec3(float(x), float(y), float(z))

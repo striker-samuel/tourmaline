@@ -77,14 +77,16 @@ Source assets (glTF / textures / WAV)     Scene edits (.tour / .tourAnim)
 
 A checked-in `.tourrecipe` declares entry scenes, package ownership, cross-pak dependencies, and GI/cubemap bake switches. The pipeline resolves those dependencies, validates outputs, and publishes content-addressed pak files with a runtime manifest. Stable content IDs come from the project's asset database and asset GUIDs, rather than being derived from paths.
 
-The generated `project.h` contains typed asset keys, a compile-time asset table, a catalog fingerprint, and generation metadata. The catalog and deployed manifest can be checked for identity mismatches. Catalog refresh, forced restamping, content cooking, and executable compilation are separate build operations.
+The generated `project.h` contains typed asset keys, a compile-time asset table, a catalog fingerprint, and generation metadata. The catalog and deployed manifest can be checked for identity mismatches. Catalog refresh, forced restamping, content cooking, and executable compilation are separate build operations. The generator vertically aligns the columns of multi-field collections (`Paks`, `Assets`, and `AssetKind` enum entries) and the value initializers of generated key, audio-cue, and retired-key groups. Alignment widths are computed from the current contents, not fixed constants; single-column arrays remain unchanged. This is presentation-only, preserving identifiers, order, values, and ABI.
 
 **IDE and source control:** By default, `tourmaline_add_project` writes `project.h` next to the recipe, in the project source directory (for the example: `samples/04_project_game/project/project.h`). `tourmaline_attach_project` lists it under **Generated Catalogs** in CMake target views and marks it `GENERATED` / `HEADER_FILE_ONLY`. After the first `GameProject_ids` or `GameProject` build, run `git add samples/04_project_game/project/project.h` to version it alongside game code; subsequent clones receive the committed header immediately. **Never edit it by hand:** the `<Name>_ids` custom target runs on *every* game build and replaces manual edits before compiling. When the generated content is unchanged, it leaves the file timestamp intact, avoiding pointless rebuilds; the explicit `<Name>_stamp` target forces a new generation. The generated header also carries a prominent overwrite warning. Visual Studio's CMake/Ninja integration has no portable per-file read-only switch; we deliberately do not apply filesystem read-only flags because they can block Git operations and regeneration. The header's generation stamp and asset/pak fingerprints can change with local content/build state; inspect generated diffs before committing. The private `project_plans.h` remains ignored. Set `HEADER_DIR` explicitly on `tourmaline_add_project` if you prefer to generate the headers in a build-only directory.
+
+**Visual Studio navigation:** Include a source-controlled catalog using its source-relative path, such as `#include "project/project.h"` in `samples/04_project_game/main.cpp`, instead of the ambiguous bare `#include "project.h"`. This points F12 at the actual tracked file. The CMake helper adds both the header directory and its parent to the consuming target's include paths; existing bare includes still compile. If Visual Studio has a stale IntelliSense configuration after the change, use **Project > Configure Cache** (or close and reopen the CMake folder).
 
 ### Example: code refers to assets, not filenames
 
 ```cpp
-#include "project.h"
+#include "project/project.h"
 
 static_assert(project::Contains(project::EntryScene));
 static_assert(project::Contains(project::textures::stone));

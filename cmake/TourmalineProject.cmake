@@ -130,7 +130,14 @@ function(tourmaline_attach_project TARGET NAME)
 		GENERATED TRUE HEADER_FILE_ONLY TRUE)
 	target_sources(${TARGET} PRIVATE "${header}")
 	source_group("Generated Catalogs" FILES "${header}")
-	target_include_directories(${TARGET} PRIVATE "${include_dir}")
+	# Expose both include styles:
+	#   #include "project.h"          (legacy users of HEADER_DIR)
+	#   #include "project/project.h"  (source-tree-relative, IDE-friendly)
+	# This makes explicit paths work even from source files in other
+	# directories, and gives Visual Studio the same paths as the compiler.
+	get_filename_component(include_parent "${include_dir}" DIRECTORY)
+	target_include_directories(${TARGET} PRIVATE
+		"${include_dir}" "${include_parent}")
 	# The publish dir = the consuming exe's dir (where <Name>_paks
 	# lands the paks and the runtime loads them exe-relative).
 	set(TP_PAK_DIR "$<TARGET_FILE_DIR:${TARGET}>")

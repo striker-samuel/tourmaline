@@ -1632,6 +1632,39 @@ std::vector<char> ReadAllBytes(const fs::path& p) {
 // classification (.spv), the catalog bucket + ShaderKey emission, the
 // content-set packing (validated SPIR-V only) and the manifest's
 // shader kind rows.
+
+// The generated header's columns are WIDTH-ALIGNED (the catalog emitter
+// pads every cell to the longest entry in its column): an enumerator
+// line is "Name<padding> = value" and an audio-cue constant is
+// "name<padding>{...}". These matchers tolerate the padding instead of
+// pinning single-space literals (the pre-alignment checks broke the
+// moment the emitter started aligning).
+bool FindNameValue(const std::string& text, const std::string& name,
+		const std::string& value) {
+	size_t at = text.find(name);
+	while (at != std::string::npos) {
+		size_t i = at + name.size();
+		while (i < text.size() && text[i] == ' ')
+			++i;
+		if (text.compare(i, value.size(), value) == 0)
+			return true;
+		at = text.find(name, at + 1);
+	}
+	return false;
+}
+bool FindNameBrace(const std::string& text, const std::string& name) {
+	size_t at = text.find(name);
+	while (at != std::string::npos) {
+		size_t i = at + name.size();
+		while (i < text.size() && text[i] == ' ')
+			++i;
+		if (i < text.size() && text[i] == '{')
+			return true;
+		at = text.find(name, at + 1);
+	}
+	return false;
+}
+
 void TestShaderAssets() {
 	const fs::path tmp = fs::temp_directory_path()
 		/ "tourmaline_pp_shaders";
@@ -1740,7 +1773,7 @@ void TestShaderAssets() {
 			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
 		Check(header.find("namespace shaders") != std::string::npos
 			&& header.find("struct ShaderKey") != std::string::npos
-			&& header.find("Shader = 4") != std::string::npos
+			&& FindNameValue(header, "Shader", "= 4")
 			&& header.find("AssetKind::Shader") != std::string::npos
 			&& header.find("shaders::"
 				+ catalog.shaders[0].symbol) != std::string::npos,
@@ -1948,7 +1981,7 @@ void TestAudioGraphAssets() {
 			&& header.find("struct AudioGraphKey")
 				!= std::string::npos
 			&& header.find("struct AudioCueKey") != std::string::npos
-			&& header.find("AudioGraph = 6") != std::string::npos
+			&& FindNameValue(header, "AudioGraph", "= 6")
 			&& header.find("AssetKind::AudioGraph")
 				!= std::string::npos
 			&& header.find("audiographs::"
@@ -1956,10 +1989,10 @@ void TestAudioGraphAssets() {
 				!= std::string::npos,
 			"audiograph.header-emits-key");
 		Check(header.find("namespace audiocues") != std::string::npos
-			&& header.find(catalog.audiographs[0].symbol + "_calm{")
-				!= std::string::npos
-			&& header.find(catalog.audiographs[0].symbol + "_storm{")
-				!= std::string::npos,
+			&& FindNameBrace(header,
+				catalog.audiographs[0].symbol + "_calm")
+			&& FindNameBrace(header,
+				catalog.audiographs[0].symbol + "_storm"),
 			"audiograph.header-emits-cues");
 	}
 	// The packer: the content-set embeds the authored text VERBATIM as
@@ -3191,10 +3224,10 @@ void TestProjectCatalog() {
 				&& text.find("struct AssetDesc")
 					!= std::string::npos
 				&& text.find(
-					"AssetDesc{scenes::_class, AssetKind::Scene,")
+					"AssetDesc{scenes::_class,")
 					!= std::string::npos
 				&& text.find(
-					"AssetDesc{textures::_compl, AssetKind::Texture,")
+					"AssetDesc{textures::_compl,")
 					!= std::string::npos
 				&& text.find(
 					"constexpr const AssetDesc* Find(Id id)")
@@ -3231,7 +3264,7 @@ void TestProjectCatalog() {
 					!= std::string::npos,
 				"catalog.header-symbol-table");
 			Check(text.find("struct GiKey") != std::string::npos
-				&& text.find("    Gi = 5,") != std::string::npos,
+				&& text.find("    Gi         = 5,") != std::string::npos,
 				"catalog.header-gi-kind-lane");
 		}
 	}
@@ -3354,6 +3387,122 @@ void TestProjectCatalog() {
 				"catalog.malformed-sidecar-untouched");
 		}
 	}
+	// Every generated multi-column collection is padded from the
+	// longest emitted C++ token, not a hard-coded width. This includes
+	// packages, assets, keys, cue names and retired declarations.
+	{
+		smvk::project::ProjectCatalog aligned;
+		aligned.projectName = "Alignment";
+		aligned.paks = { { "s", "short.pak" },
+			{ "long_package", "longer_package_file.pak" } };
+		aligned.scenes.push_back({ 0x1000, "x",
+			"content/s.tour", "s" });
+		aligned.scenes.push_back({ 0x1001, "long_scene_name",
+			"content/long_scene.tour", "s" });
+		aligned.textures.push_back({ 0x2000, "long_symbol",
+			"content/textures/long_texture_name.png", "s" });
+		aligned.audiographs.push_back({ 0x7000, "forest",
+			"content/audio/forest.audiograph", "s" });
+		aligned.audiographCues.push_back({
+			0x7000, "forest", { "a", "very_long_cue" } });
+		aligned.retired.push_back({
+			0x4000, "s", "", "", "sound" });
+		aligned.retired.push_back({
+			0x2001, "long_retired_name", "", "", "texture" });
+		smvk::project::GenerationStamp ver;
+		ver.generation = 1;
+		ver.timestamp = 1793451600;
+		ver.contentHash = smvk::project::ComputeCatalogContentHash(aligned);
+		const std::string printed =
+			smvk::project::EmitProjectHeader(aligned, ver, {}, {});
+		const auto lineFor = [&](const std::string& needle) {
+			const size_t at = printed.find(needle);
+			if (at == std::string::npos)
+				return std::string();
+			const size_t start = printed.rfind('\n', at);
+			const size_t first = start == std::string::npos
+				? 0 : start + 1;
+			const size_t end = printed.find('\n', at);
+			return printed.substr(first, end == std::string::npos
+				? std::string::npos : end - first);
+		};
+		const std::string scene =
+			lineFor("AssetDesc{scenes::x,");
+		const std::string texture =
+			lineFor("AssetDesc{textures::long_symbol,");
+		const std::string graph =
+			lineFor("AssetDesc{audiographs::forest,");
+		const std::string enumScene = lineFor("    Scene");
+		const std::string enumGraph = lineFor("    AudioGraph");
+		Check(!enumScene.empty() && !enumGraph.empty()
+			&& enumScene.find("= 0,") == enumGraph.find("= 6,"),
+			"catalog.aligned-enum");
+		Check(!scene.empty() && !texture.empty() && !graph.empty()
+			&& scene.find("AssetKind::Scene,")
+				== texture.find("AssetKind::Texture,")
+			&& scene.find("AssetKind::Scene,")
+				== graph.find("AssetKind::AudioGraph,")
+			&& scene.find("\"content/s.tour\",")
+				== texture.find("\"content/textures/long_texture_name.png\",")
+			&& scene.find("\"\"},") == texture.find("\"\"},"),
+			"catalog.aligned-assets");
+		const std::string pakA = lineFor("Pak{\"s\",");
+		const std::string pakB = lineFor("Pak{\"long_package\",");
+		Check(!pakA.empty() && !pakB.empty()
+			&& pakA.find("\"short.pak\"") ==
+				pakB.find("\"longer_package_file.pak\""),
+			"catalog.aligned-paks");
+		const std::string keyA =
+			lineFor("inline constexpr SceneKey x");
+		const std::string keyB =
+			lineFor("inline constexpr SceneKey long_scene_name");
+		Check(!keyA.empty() && !keyB.empty()
+			&& keyA.find("{0x") == keyB.find("{0x"),
+			"catalog.aligned-keys");
+		const std::string cueA =
+			lineFor("inline constexpr AudioCueKey forest_a");
+		const std::string cueB =
+			lineFor("inline constexpr AudioCueKey forest_very_long_cue");
+		Check(!cueA.empty() && !cueB.empty()
+			&& cueA.find("{0x") == cueB.find("{0x"),
+			"catalog.aligned-audiocues");
+		// The retired declarations: scope the search to the RETIRED
+		// namespace - the active textures namespace emits the same
+		// "inline constexpr TextureKey " prefix EARLIER in the header,
+		// and the unscoped first-match comparison collides with the
+		// active constant's (unaligned) column.
+		const size_t retiredSection =
+			printed.find("namespace retired {");
+		const auto retiredLineFor = [&](const std::string& needle) {
+			const size_t at = printed.find(needle, retiredSection);
+			if (at == std::string::npos
+					|| retiredSection == std::string::npos)
+				return std::string();
+			const size_t start = printed.rfind('\n', at);
+			const size_t first = start == std::string::npos
+				? 0 : start + 1;
+			const size_t end = printed.find('\n', at);
+			return printed.substr(first, end == std::string::npos
+				? std::string::npos : end - first);
+		};
+		const std::string retiredA =
+			retiredLineFor("inline constexpr SoundKey ");
+		// (The PR follow-up disambiguated the needle by symbol name; the
+		// in-merge fix scopes the whole lookup to the retired namespace,
+		// which covers both needles - kept.)
+		const std::string retiredB =
+			retiredLineFor("inline constexpr TextureKey ");
+		Check(!retiredA.empty() && !retiredB.empty()
+			&& retiredA.find("{0x") == retiredB.find("{0x")
+			&& retiredA.find(" s ") != std::string::npos,
+			"catalog.aligned-retired");
+		Check(smvk::project::EmitProjectHeader(aligned, ver, {}, {})
+				== printed
+			&& printed.find("std::string_view(\"x\"),")
+				!= std::string::npos,
+			"catalog.aligned-deterministic");
+	}
+
 	// String-literal escaping: quotes/backslashes in names/paths never
 	// break the emitted header.
 	{

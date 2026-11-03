@@ -463,6 +463,11 @@ bloom/tonemap/AA/UI → swapchain.
   read-only attribute: it would obstruct Git checkout and generation.
   The private sibling `project_plans.h`
   stays ignored; explicit `HEADER_DIR` can select build-only output.
+  For navigable game includes, prefer a source-relative spelling like
+  `#include "project/project.h"` (sample's `main.cpp`), not bare
+  `#include "project.h"`: `tourmaline_attach_project` adds both the
+  header folder and its parent to the consuming target's include path
+  so Visual Studio F12 and the compiler resolve the same file.
   The header is a GENERATION-STAMPED,
   self-contained C++ catalog: `project::Generation` / `GeneratedAt` /
   `ContentHash` constexpr plus an EOF machine-readable COMMENT section
@@ -473,7 +478,13 @@ bloom/tonemap/AA/UI → swapchain.
   of unchanged content.
 - The stamp moves ONLY on a generation EVENT (any change to the emitted
   text, or a forced refresh); an unchanged generation re-emits
-  byte-identical text. `<Name>_stamp` (`--stamp`) forces a new
+  byte-identical text. Tabular output (`Paks`, `Assets`) is
+  width-aligned by the longest emitted cell in each column, as
+  are `AssetKind` enumerators; typed
+  namespaces, audio cues and retired declarations align their value
+  braces. One-column collections need no alignment. Never reorder
+  rows or alter literals in a formatting-only change.
+  `<Name>_stamp` (`--stamp`) forces a new
   generation every run; `<Name>_paks` cooks content WITHOUT building
   C++ and re-stamps the header (its pak records go `state=verified`; a
   catalog-only refresh can never upgrade a state, only preserve or

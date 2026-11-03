@@ -67,8 +67,8 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 2ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793663639ULL;
+inline constexpr std::uint64_t Generation = 4ULL;
+inline constexpr std::uint64_t GeneratedAt = 1793665654ULL;
 inline constexpr std::string_view ContentHash = "34699166b0b10260";
 
 namespace scenes {
@@ -102,7 +102,7 @@ namespace audiographs {
 // ordinal indexes the authored file's cue list. Feed
 // these to the audio facade's PlayCue/CrossFade.
 namespace audiocues {
-    inline constexpr AudioCueKey forest_calm{0x7000ULL, 0u};
+    inline constexpr AudioCueKey forest_calm {0x7000ULL, 0u};
     inline constexpr AudioCueKey forest_storm{0x7000ULL, 1u};
 } // namespace audiocues
 
@@ -114,19 +114,19 @@ struct Pak {
 
 inline constexpr std::array Paks = {
     Pak{"shared", "shared.pak"},
-    Pak{"world", "game.pak"},
+    Pak{"world",  "game.pak"},
 };
 
 // The asset KIND enum - the values are an ABI (the runtime's
 // catalog-fingerprint fold + the .tapp validation agree on
 // these bytes; do not renumber - AudioGraph is APPENDED, 6).
 enum class AssetKind : std::uint8_t {
-    Scene = 0,
-    Texture = 1,
-    Mesh = 2,
-    Sound = 3,
-    Shader = 4,
-    Gi = 5,
+    Scene      = 0,
+    Texture    = 1,
+    Mesh       = 2,
+    Sound      = 3,
+    Shader     = 4,
+    Gi         = 5,
     AudioGraph = 6,
 };
 
@@ -146,11 +146,11 @@ struct AssetDesc {
 };
 
 inline constexpr std::array Assets = {
-    AssetDesc{scenes::game, AssetKind::Scene, "content/scenes/game.tour", ""},
-    AssetDesc{textures::stone, AssetKind::Texture, "content/models/game/shared/stone.png", ""},
-    AssetDesc{meshes::game_2, AssetKind::Mesh, "content/models/game/game.geometry", ""},
-    AssetDesc{sounds::bells, AssetKind::Sound, "content/audio/bells.wav", ""},
-    AssetDesc{audiographs::forest, AssetKind::AudioGraph, "content/audio/forest.audiograph", ""},
+    AssetDesc{scenes::game,        AssetKind::Scene,      "content/scenes/game.tour",             ""},
+    AssetDesc{textures::stone,     AssetKind::Texture,    "content/models/game/shared/stone.png", ""},
+    AssetDesc{meshes::game_2,      AssetKind::Mesh,       "content/models/game/game.geometry",    ""},
+    AssetDesc{sounds::bells,       AssetKind::Sound,      "content/audio/bells.wav",              ""},
+    AssetDesc{audiographs::forest, AssetKind::AudioGraph, "content/audio/forest.audiograph",      ""},
 };
 
 // The SYMBOL-NAME table (compile-time query metadata; the
@@ -271,6 +271,11 @@ struct project_pipeline::query::AssetTraits<project::AudioGraphKey> {
         { return k == project::AssetKind::AudioGraph; }
 };
 
+// Optional build-generated local shader reflection catalog.
+#if __has_include("project_compiled_shaders.h")
+#include "project_compiled_shaders.h"
+#endif
+
 // =====================================================================
 // TOURMALINE-METADATA-BEGIN 1
 //
@@ -281,7 +286,7 @@ struct project_pipeline::query::AssetTraits<project::AudioGraphKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=2 timestamp=1793663639
+// generator generation=4 timestamp=1793665654
 // catalog hash=34699166b0b10260
 //
 // [assets]
