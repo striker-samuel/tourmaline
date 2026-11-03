@@ -21,6 +21,7 @@
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Rendergraph/terrain_pack.h>
 #include <Engine/Utils/shader_library.h>
+#include <SDL3/SDL_video.h> // SDL_SetWindowTitle (SDL3 window API)
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
