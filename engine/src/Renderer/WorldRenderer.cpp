@@ -67,6 +67,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Renderer/WorldRenderer.h>
+#include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/Utils/shader_hot_reload.h> // the frame-tick consume (the hot-reload seam)
@@ -3462,6 +3463,17 @@ namespace engine {
 	void WorldRenderer::onDetach() {
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		m_host.WaitForDeviceIdle();
+		if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
+			m_gpuPlacementRuntime->Destroy(*m_rendergraph);
+		if (m_gpuPlacementDraw) {
+			m_gpuPlacementDraw->Destroy();
+			delete m_gpuPlacementDraw;
+			m_gpuPlacementDraw = nullptr;
+		}
+		if (!m_gpuPlacementViewLogical.empty())
+			m_rendergraph->FreeBuffer(m_gpuPlacementViewLogical);
+		m_gpuPlacementViewLogical = {};
+		m_gpuPlacementReady = false;
 		// World fields: drain every in-flight async generation and
 		// detach the work pool BEFORE it dies (member destruction order
 		// would otherwise leave the system pointing at a dead pool).
@@ -11304,6 +11316,55 @@ namespace engine {
 		const uint64_t renderViewsAddress =
 			m_renderViews.DeviceAddress(*m_context, fb.frameIndex);
 
+		// Optional production-frame GPU vegetation consumer. It shares the
+		// existing flight-safe RenderView slab and static vertex heap, but
+		// owns separate placement bins, instance buffers and indirect
+		// commands. Nothing about the GfxFilter / GPU-scene validator path
+		// changes while the feature is absent (the default).
+		m_gpuPlacementReady = false;
+		if (m_gpuPlacementRuntime && m_gpuPlacementSeedCount > 0
+			&& mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+			auto& rt = *m_gpuPlacementRuntime;
+			if (!rt.hfield && m_terrain.valid)
+				rt.hfield = &m_terrain.hfield;
+			if (rt.layer && rt.hfield && rt.masks) {
+				if (!rt.Valid())
+					(void)rt.Create(*m_context, *m_rendergraph);
+				if (rt.Valid() && !m_gpuPlacementDraw)
+					m_gpuPlacementDraw = new tour::placement::PlacementDrawPrograms();
+				if (rt.Valid() && m_gpuPlacementDraw
+					&& m_gpuPlacementDraw->Ensure(*m_context)) {
+					if (m_gpuPlacementViewLogical.empty())
+						m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
+							m_renderViews.Buffer(), "GpuPlacementRenderViews");
+					if (!m_gpuPlacementViewLogical.empty()) {
+						const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
+						const auto& meta = rt.hfield->meta;
+						const float r = m_gpuPlacementRadius;
+						const glm::vec4 interest(
+							std::max(meta.originX, eye.x - r),
+							std::max(meta.originZ, eye.z - r),
+							std::min(meta.originX + meta.worldSize, eye.x + r),
+							std::min(meta.originZ + meta.worldSize, eye.z + r));
+						if (interest.z > interest.x && interest.w > interest.y
+							&& rt.SeedIndirect(*m_context, 0,
+								m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
+							tour::placement::DependencyVersions deps{};
+							deps.terrain = m_gpuPlacementTerrainRevision;
+							rt.BeginFrame(*m_context, *m_rendergraph,
+								&interest, 1, deps);
+							rt.RecordCullChain(*m_context, *m_rendergraph,
+								0, m_gpuPlacementViewLogical, renderViewsAddress,
+								mainRenderView, eye,
+								tour::placement::kPlacementCullFrustum |
+								tour::placement::kPlacementCullDistance);
+							m_gpuPlacementReady = true;
+						}
+					}
+				}
+			}
+		}
+
 		// Shared frame context for IFrameRenderers (filled incrementally;
 		// pc-dependent fields arrive once pc is built below).
 		AppFrameContext fc{};
@@ -13257,6 +13318,29 @@ namespace engine {
 		const uint64_t mainSkinBda = fc.skinDeformedBda;
 		const uint32_t mainSkinBase = fc.skinDeformedBase;
 		const bool mainSkinValid = fc.skinDeformedValid;
+		// Pair the placement compute writes with Main's VS BDA fetches
+		// and fixed-function indirect-command reads. DrawIndirect uses its
+		// OWN stage, not AllGraphics; absent this edge the first-frame
+		// instance count can be stale and the new tile won't rasterize.
+		if (m_gpuPlacementReady) {
+			smvk::BufferSyncRequest vertRead{};
+			vertRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+			vertRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+			smvk::BufferSyncRequest indirectRead{};
+			indirectRead.barrierMasks.accessMask =
+				smvk::AccessFlags::IndirectCommandRead;
+			indirectRead.barrierMasks.stageMask =
+				smvk::PipelineStageBit_DrawIndirect;
+			mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertRead);
+			const auto& rt = *m_gpuPlacementRuntime;
+			for (size_t s = 0; s < rt.active.size(); ++s) {
+				const auto* vs = rt.VisSet(int32_t(s));
+				if (!vs) continue;
+				mainPass.AddBufferHint(rt.pass.instanceLogicals[s], vertRead);
+				mainPass.AddBufferHint(vs->visibleL, vertRead);
+				mainPass.AddBufferHint(vs->indirectL, indirectRead);
+			}
+		}
 		mainPass.SetRecordingFunc([this, pc, useMsaa, gfxSlot, renderViewsAddress, mainRenderView, coneLineVerts, selectionLineVerts, frameViewProj, transparentCullView, meshActiveForFrame, mainSkinBda, mainSkinBase, mainSkinValid](smvk::CommandBuffer& cmd)
 		{
 			// 1x: depth was filled by the Forward+ prepass, main is read-only.
@@ -14288,6 +14372,38 @@ namespace engine {
 						// (instances bind to mesh entities, which ride
 						// the opaque paths in v1).
 						m_world->MaterialUserData(d.materialId));
+				}
+			}
+
+			// GPU-PLACED WORLD VEGETATION: zero per-instance CPU work.
+			// GPU cull -> prefix -> visible compaction -> complete indirect
+			// commands are already ordered by graph buffer hints above.
+			// This opt-in path currently uses the diagnostic unlit FS;
+			// PBR materials/lighting and shadows are a subsequent step.
+			if (m_gpuPlacementReady && m_gpuPlacementRuntime
+				&& m_gpuPlacementDraw) {
+				auto& rt = *m_gpuPlacementRuntime;
+				cmd.BindStaticVertexFmt();
+				cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
+					smvk::VertexLayoutId::Static,
+					opaqueDepth, noStencil,
+					smvk::BlendSettings::Opaque(), msaaSettings,
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+				cmd.PushConstants(0, sizeof(IRenderer::PushConstants),
+					&pc, smvk::ShaderStage::All);
+				for (size_t s = 0; s < rt.active.size(); ++s) {
+					const auto* vs = rt.VisSet(int32_t(s));
+					if (!vs) continue;
+					const tour::placement::PlacementVsPush tail{
+						vs->VisibleAddress(*m_context),
+						rt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
+						renderViewsAddress, mainRenderView, 0u };
+					cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+						sizeof(tail), &tail, smvk::ShaderStage::All);
+					for (uint32_t proto = 0; proto < m_gpuPlacementSeedCount; ++proto)
+						cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
+							uint64_t(proto) * tour::placement::kPlacementIndirectStride,
+							1, tour::placement::kPlacementIndirectStride);
 				}
 			}
 
