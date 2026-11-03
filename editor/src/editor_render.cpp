@@ -2076,39 +2076,39 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					const float y = std::clamp(float(m_input.getMouseY()) - rect.y, 0.0f, rect.h);
 					if (m_volumeBrushStage < 2) {
 						glm::vec3 origin;
-						const glm::vec3 ray = MouseRay(x, y,
-							smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
+						const smvk::Extent2D brushExt{
+							uint32_t(rect.w), uint32_t(rect.h)};
+						const glm::vec3 ray = MouseRay(x, y, brushExt,
 							brushVp.viewProj, origin);
 						const float planeY = m_volumeBrushStart.y;
+						glm::vec3 hit{};
+						bool valid = false;
 						if (std::fabs(ray.y) > 1e-5f) {
 							const float t = (planeY - origin.y) / ray.y;
 							if (t >= 0.0f) {
-								glm::vec3 hit = origin + t * ray;
-								// Pull the active extent toward nearby foreground
-								// boundaries; preserve the anchor's working height.
-								glm::vec3 depthPoint;
-								if (SpatialVolumeBrushDepthPoint(m_volumeBrushVp,
-									x, y, depthPoint))
-									hit = depthPoint;
-								if (m_volumeBrushStage == 0) {
-									if (pressed && glm::length(m_volumeBrushEnd - m_volumeBrushStart) < 1e-5f) {
-										// No geometry under the initial click: use the
-										// projected point on the construction plane.
-										glm::vec3 anchorOrigin;
-										const glm::vec3 anchorRay = MouseRay(x, y,
-											smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
-											brushVp.viewProj, anchorOrigin);
-										if (std::fabs(anchorRay.y) > 1e-5f) {
-											const float anchorT = (planeY - anchorOrigin.y) / anchorRay.y;
-											if (anchorT >= 0.0f && !SpatialVolumeBrushDepthPoint(m_volumeBrushVp, x, y, depthPoint))
-												m_volumeBrushStart = anchorOrigin + anchorT * anchorRay;
-										}
-									}
-									m_volumeBrushEnd = m_volumeBrushStart;
-									m_volumeBrushEnd.x = hit.x;
-								} else {
-									m_volumeBrushEnd.z = hit.z;
-								}
+								hit = origin + t * ray;
+								valid = true;
+							}
+						}
+						// Visible surfaces provide depth anchors. Strong
+						// discontinuities pull the cursor toward foreground edges.
+						glm::vec3 depthPoint;
+						const bool depthHit = SpatialVolumeBrushDepthPoint(
+							m_volumeBrushVp, x, y, depthPoint);
+						if (depthHit) {
+							hit = depthPoint;
+							valid = true;
+						}
+						if (valid) {
+							if (m_volumeBrushStage == 0) {
+								// Keep the first click fixed; in the absence of
+								// geometry that first point is on the working plane.
+								if (pressed && !depthHit)
+									m_volumeBrushStart = hit;
+								m_volumeBrushEnd = m_volumeBrushStart;
+								m_volumeBrushEnd.x = hit.x;
+							} else {
+								m_volumeBrushEnd.z = hit.z;
 							}
 						}
 					} else {
