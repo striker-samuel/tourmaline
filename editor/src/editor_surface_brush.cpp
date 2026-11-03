@@ -68,6 +68,7 @@ void EditorApp::SurfaceBrushFinish() {
             m_surfaceStrokes.erase(m_surfaceStrokes.begin());
         m_surfaceStrokes.push_back(std::move(m_surfaceActive));
         m_surfaceRedo.clear();
+        MarkPlacementDirty();
         AutosaveTour();
     }
     m_surfaceActive = {};
@@ -121,12 +122,14 @@ void EditorApp::DrawSurfaceBrushPanel() {
         if (ImGui::Button("Undo stroke") && !m_surfaceStrokes.empty()) {
             m_surfaceRedo.push_back(std::move(m_surfaceStrokes.back()));
             m_surfaceStrokes.pop_back();
+            MarkPlacementDirty();
             AutosaveTour();
         }
         ImGui::SameLine();
         if (ImGui::Button("Redo stroke") && !m_surfaceRedo.empty()) {
             m_surfaceStrokes.push_back(std::move(m_surfaceRedo.back()));
             m_surfaceRedo.pop_back();
+            MarkPlacementDirty();
             AutosaveTour();
         }
         if (ImGui::Button("Bake points as locators") && m_world) {
