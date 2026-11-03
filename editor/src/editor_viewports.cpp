@@ -1204,9 +1204,14 @@ void EditorApp::DrawCaptureBallOverlay() {
 		};
 		dl->PushClipRect(ImVec2(vp.rect.x, vp.rect.y),
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
-		// ---- half 1: App-parity probe overlay ----
+		// The live Lit view draws baked probes as real, depth-tested mirror
+		// spheres in WorldRenderer. Do not paint 2D dots over those spheres;
+		// fallback/non-Lit viewports retain compact location markers.
+		const bool liveMirrorView = i == LiveViewViewport()
+			&& m_wysiwygValid && m_wysiwygLayerRenderable;
+		// ---- half 1: baked probe locations (fallback views only) ----
 		uint32_t drawn = 0;
-		if (m_showProbeOverlay) {
+		if (m_showProbeOverlay && !liveMirrorView) {
 			uint32_t ci = 0;
 			for (const auto& pr : rows) {
 				const uint32_t idx = ci++;
@@ -1227,30 +1232,9 @@ void EditorApp::DrawCaptureBallOverlay() {
 					col = IM_COL32(255, 220, 80, 230);
 				else
 					col = IM_COL32(120, 140, 160, 160);
-				// Influence ring: project a world-X offset of one radius
-				// (the App's trick); fade ring scales from it. The rings
-				// declutter switch lives in the GI probe viz window.
-				if (m_probeRings) {
-					ImVec2 ept;
-					if (projectInView(pr.center + glm::vec3(
-							std::max(pr.influence, 0.01f), 0.0f, 0.0f),
-							ept)) {
-						const float dx = ept.x - cpt.x, dy = ept.y - cpt.y;
-						const float rPx = std::sqrt(dx * dx + dy * dy);
-						if (rPx > 2.0f && rPx < 4000.0f) {
-							dl->AddCircle(cpt, rPx,
-								col & IM_COL32(255, 255, 255, 90), 48);
-							if (pr.fade > 0.0f) {
-								const float fr = rPx
-									* (pr.influence + pr.fade)
-									/ std::max(pr.influence, 1e-3f);
-								if (fr < 4000.0f)
-									dl->AddCircle(cpt, fr,
-										col & IM_COL32(255, 255, 255, 45), 48);
-							}
-						}
-					}
-				}
+				// Influence is a world-space volume, not a screen-space
+				// circle; the selected authored probe's 3D guide lives in
+				// RecordGizmoPass instead.
 				if (m_showProbeOctahedra) {
 					DrawProbeOctahedron(dl, cpt, m_probeMarkerSize, col);
 				} else {
@@ -1292,16 +1276,13 @@ void EditorApp::DrawCaptureBallOverlay() {
 				if (!project(p, s))
 					continue;
 				const bool selected = (node == m_selected);
-				// Big readable balls: halo + thick ring so pins read on
-				// any background.
-				const float r = selected ? 17.0f : 13.0f;
-				dl->AddCircleFilled(s, r + 5.0f,
-					IM_COL32(255, 255, 255, 26));
-				dl->AddCircleFilled(s, r, IM_COL32(0, 0, 0, 255));
-				dl->AddCircle(s, r,
-					selected ? IM_COL32(255, 220, 80, 255)
-					: IM_COL32(255, 255, 255, 230), 0,
-					selected ? 3.5f : 2.5f);
+				// Unbaked capture pins should be distinct from real baked
+				// reflection spheres and should not obscure the scene.
+				const ImU32 pinColor = selected
+					? IM_COL32(255, 220, 80, 255)
+					: IM_COL32(180, 140, 200, 220);
+				DrawProbeOctahedron(dl, s, selected ? 8.0f : 6.0f,
+					pinColor);
 			}
 		}
 		dl->PopClipRect();
