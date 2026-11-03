@@ -2,8 +2,9 @@
 
 `Engine/Asset/shape_asset.h` provides a **CPU-only** source format and
 tessellator. This first increment does not yet register `.shape` in the
-project asset database, pak/catalog cooker, editor Create menu, or Vulkan
-point/line rendering.
+project asset database, pak/catalog cooker, or Vulkan
+point/line rendering. The editor asset browser **New... → New Procedural Shape**
+menu creates editable source documents, but they do not render yet.
 
 The supported kinds are `spline` (open/closed Catmull–Rom, indexed lines),
 `point_cloud` (authored XYZ positions, point topology), and `plane`,
