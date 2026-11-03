@@ -152,7 +152,8 @@ struct GfxDraw
     // base (this draw's first (draw x cluster) candidate slot, 0xFFFFFFFF
     // = the build dropped the draw); w = the ADDITIVE lightmap-heap delta
     // (lightmapBase - meshVertexBase, fetched at (vi + misc2.w) * 2 in the
-    // mesh-shader leg; 0xFFFFFFFF = the mesh carries no lightmap stream).
+    // mesh-shader leg). A valid delta can equal 0xFFFFFFFF (-1 modulo
+    // uint32): misc.w, not misc2.w, indicates presence.
     // The VS resolves the atlas UV as
     // chartUv * xforms[misc2.x + chartId].xy + xforms[misc2.x + chartId].zw.
     uint4 misc2;

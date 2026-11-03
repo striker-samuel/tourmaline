@@ -1835,23 +1835,27 @@ namespace engine {
 			// table for the SELECTED LOD sibling (each level owns its chart
 			// list; unlightmapped meshes resolve 0 and gate on lmChunk).
 			const uint32_t chartOffset = world.ChartOffsetFor(worldMesh, lodIdx);
-			// Per-draw lightmap-heap delta (HLSL misc2.w): the sibling's
-			// lightmap window base minus its heap vertexBase (the global
-			// vertex ids the cluster-ordered index streams carry; the
-			// mesh-shader fetch maps vi + delta into the stream). Sentinel
-			// (0xFFFFFFFF) when the mesh carries no lightmap data at all.
-			uint32_t lmDelta = 0xFFFFFFFFu;
+			// The per-draw unsigned lightmap-heap delta is NOT a presence
+			// sentinel: -1 in modular arithmetic equals UINT32_MAX and
+			// is a valid offset. Publish stream presence via lmChunk.
+			uint32_t lmDelta = 0u;
+			bool lmResident = false;
 			if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
 				const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
 				if (const smvk::StaticMesh* m
 					= lmLoc->cluster->staticMeshes.get(h);
-					m && m->lightmapBase != 0xFFFFFFFFu) {
+					m && m->lightmapBase != UINT32_MAX
+					&& !m->lmChartXforms.empty()) {
 					const uint32_t vb =
 						lmLoc->cluster->GetMeshHeapVertexBase(h);
-					if (vb != 0xFFFFFFFFu)
+					if (vb != UINT32_MAX) {
 						lmDelta = m->lightmapBase - vb;
+						lmResident = true;
+					}
 				}
 			}
+			if (!lmResident)
+				lmChunk = UINT32_MAX;
 			smvk::gfx::PushDraw(gfx, slot, gfxMesh, model,
 				item.material, drawFlags, drawSet, lmChunk, chartOffset,
 				lmDelta,

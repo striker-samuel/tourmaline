@@ -31,6 +31,7 @@
 #include "vertex_pack.hlsli"
 #include "gfxmesh.hlsli"
 #include "gpu_platform.hlsli"
+#include "lightmap_pull.hlsli"
 
 // Single push block [0, 240): the full scene push head (192B,
 // preserved) + the SAME 32B tail the indexed VS takes at byte 192
@@ -336,11 +337,10 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
             }
             // The OPTIONAL lightmap stream (chartUv + chartId, 2 words per
             // LIGHTMAPMED vertex — unlightmapped meshes carry NO stream):
-            // fetched through the per-draw additive delta
-            // (GfxDraw.misc2.w = lightmapBase - meshVertexBase; 0xFFFFFFFF
-            // = none), guarded ALSO by draw.misc.w (the chunk gate — the
-            // FS falls back to probe/grid ambient with it).
-            if (draw.misc.w != 0xFFFFFFFFu && draw.misc2.w != 0xFFFFFFFFu) {
+            // fetched through the per-draw additive delta. misc.w gates
+            // stream presence: misc2.w may validly equal 0xFFFFFFFF (-1
+            // modulo uint32), so never interpret it as an absent stream.
+            if (draw.misc.w != LM_PULL_NO_LOBES) {
                 uint lb = (vi + draw.misc2.w) * 2;
                 chUW = P.lightmap.Get().words[lb + 0];
                 chW  = P.lightmap.Get().words[lb + 1];
@@ -363,12 +363,12 @@ void mainMS(uint3 gtid : SV_GroupThreadID, uint3 gid : SV_GroupID,
                 (float)((cW >> 16) & 0xFFu),
                 (float)((cW >> 24) & 0xFFu)) * (1.0f / 255.0f);
             v.uv = float2(f16tof32(uvW & 0xFFFFu), f16tof32((uvW >> 16) & 0xFFFFu));
-            float2 chartUv = float2(
-                (float)(chUW & 0xFFFFu),
-                (float)((chUW >> 16) & 0xFFFFu)) * (1.0f / 65535.0f);
-            v.lightmapUv = (draw.misc.w == 0xFFFFFFFFu)
+            const LightmapPullVertex chart =
+                DecodeLightmapPullVertex(uint2(chUW, chW));
+            v.lightmapUv = (draw.misc.w == LM_PULL_NO_LOBES)
                 ? float2(0.0f, 0.0f)
-                : GfxLightmapUv(chartUv, chW, draw.misc2.x, P.lmXforms);
+                : GfxLightmapUv(chart.chartUv, chart.chartId,
+                    draw.misc2.x, P.lmXforms);
             v.lmChunk = draw.misc.w;
             v.meshMaterial = draw.misc2.y;
             v.ditherCloseup = (draw.misc.y & GFX_DRAW_DITHER_CLOSEUP) ? 1u : 0u;

@@ -18,6 +18,13 @@
 #include "gfxfilter.hlsli"
 #include "gfxmesh.hlsli"
 #include "gpu_platform.hlsli"
+#include "lightmap_pull.hlsli"
+
+#ifndef TOURMALINE_DXIL
+// Immutable Vulkan set-0 descriptor for independently packed chart words.
+// Hardware vertex fetch remains active for position/shading.
+[[vk::binding(7, 0)]] ByteAddressBuffer g_vertexLightmapHeap;
+#endif
 
 struct FilteredVsMainPush
 {
@@ -62,11 +69,8 @@ struct VSIn
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
-    // Lightmaps are deprecated: StaticLayout no longer binds the
-    // second UV channel (TexCoord1/ChartId would be locations 5/6), so
-    // this VS declares neither. The gated-off StaticLightmappedLayout
-    // keeps the option; the MESH leg (gfxfilter.mesh.hlsl) still reads the
-    // chart words straight from the shading heap, untouched.
+    // Optional chart UV + chart ID are pulled from the independent
+    // storage heap; no extra fixed-function vertex-input attributes.
     uint instanceID : SV_InstanceID;
     // Global heap vertex id (the index buffer carries GLOBAL ids, so the
     // fixed-function vertex fetch AND the storage fetch below address the
@@ -152,15 +156,24 @@ VSOut mainVS(VSIn IN)
 
     OUT.color = IN.color;
     OUT.uv = IN.uv;
-    // Lightmaps deprecated: no chart UV rides this format (see VSIn) —
-    // the atlas unpack the draw's lmChunk would gate stays a constant
-    // zero (the FS gates on lmChunk none and never samples it). The
-    // lmXforms BDA stays declared in the push tail for layout identity
-    // with the C++ mirror; nothing reads it here.
+    // Pull ONLY optional chart words. Their independently packed heap
+    // is not addressable by the static input layout's shared vertex base.
+    // A valid lobe count proves that the CPU published a resident stream;
+    // misc2.w is an unsigned delta, NOT an absence flag (-1 is valid).
     OUT.lightmapUv = float2(0.0f, 0.0f);
-
-    // Lightmap chunk rides the draw record (misc.w; 0xFFFFFFFF = none).
     OUT.lmChunk = draw.misc.w;
+#ifndef TOURMALINE_DXIL
+    if (OUT.lmChunk != LM_PULL_NO_LOBES) {
+        const uint2 words = LightmapPullLoadWords(g_vertexLightmapHeap,
+            IN.vertexID, draw.misc2.w);
+        const LightmapPullVertex chart = DecodeLightmapPullVertex(words);
+        OUT.lightmapUv = GfxLightmapUv(chart.chartUv, chart.chartId,
+            draw.misc2.x, pcFV.lmXforms);
+    }
+#else
+    // DX12 needs its own descriptor-table equivalent before enabling LM.
+    OUT.lmChunk = LM_PULL_NO_LOBES;
+#endif
 
     // Dither-on-closeup per-draw flag rides the ring (misc.y bit 1 —
     // GFX_DRAW_DITHER_CLOSEUP; set at PushDraw time together with the
