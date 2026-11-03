@@ -4322,48 +4322,68 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		m_matThumbs.clear();
 	}
 
-	// The asset browser's SIDECAR thumbnails (the .material ball previews):
-	// the <file>.material.png the matball pass writes, loaded as an engine
-	// texture + bound for ImGui (the cubeface pattern). Path + mtime keyed —
-	// a refreshed sidecar (the Ball preview button re-rendered it) reloads,
-	// a deleted sidecar drops the entry and the tile falls back to the
-	// generic icon. stb_image (the loader half of the branding pair).
-	ImTextureID EditorApp::AssetSidecarThumb(const std::string& pngPath) {
+	// Browser thumbnail cache: material-ball sidecars and regular source images
+	// share one path+mtime keyed GPU texture path. Decode is bounded to prevent
+	// a huge source image from turning the asset explorer into a GPU memory sink.
+	ImTextureID EditorApp::AssetSidecarThumb(const std::string& imagePath) {
 		namespace fs = std::filesystem;
 		std::error_code ec;
-		if (!m_context || !m_imgui || !fs::is_regular_file(pngPath, ec))
+		if (!m_context || !m_imgui || !fs::is_regular_file(imagePath, ec))
 			return 0;
-		const auto mt = fs::last_write_time(pngPath, ec);
+		const auto mt = fs::last_write_time(imagePath, ec);
 		if (ec)
 			return 0;
 		auto it = std::find_if(m_assetThumbs.begin(), m_assetThumbs.end(),
-			[&](const AssetThumb& t) { return t.path == pngPath; });
+			[&](const AssetThumb& t) { return t.path == imagePath; });
 		if (it != m_assetThumbs.end()) {
 			if (it->hasMtime && mt == it->mtime && it->imgui != 0)
-				return it->imgui; // current
-			// Stale (the sidecar re-rendered) or half-initialized: drop,
-			// rebuild below.
+				return it->imgui;
 			if (it->imgui != 0)
 				ImGui_ImplVulkan_RemoveTexture(
 					reinterpret_cast<VkDescriptorSet>(ImU64(it->imgui)));
 			it->tex = {};
 			m_assetThumbs.erase(it);
 		}
-		int w = 0, h = 0, comp = 0;
-		stbi_uc* data = stbi_load(pngPath.c_str(), &w, &h, &comp, 4);
-		if (!data || w <= 0 || h <= 0) {
-			stbi_image_free(data);
+		// Do not decode arbitrarily large/untrusted image files into memory.
+		constexpr int maxSourceSide = 8192;
+		constexpr int side = 128;
+		const auto bytes = fs::file_size(imagePath, ec);
+		if (ec || bytes > 32ull * 1024ull * 1024ull)
 			return 0;
+		int w = 0, h = 0, comp = 0;
+		if (!stbi_info(imagePath.c_str(), &w, &h, &comp)
+			|| w <= 0 || h <= 0 || w > maxSourceSide || h > maxSourceSide
+			|| uint64_t(w) * uint64_t(h) > 16000000ull)
+			return 0;
+		stbi_uc* data = stbi_load(imagePath.c_str(), &w, &h, &comp, 4);
+		if (!data)
+			return 0;
+		// Letterbox into a fixed-size RGBA tile, preserving aspect ratio.
+		const float scale = std::min(float(side) / float(w),
+			float(side) / float(h));
+		const int dw = std::max(1, int(float(w) * scale));
+		const int dh = std::max(1, int(float(h) * scale));
+		const int ox = (side - dw) / 2, oy = (side - dh) / 2;
+		std::vector<unsigned char> rgba(size_t(side) * side * 4, 0);
+		for (int y = 0; y < dh; ++y) {
+			const int sy = std::min(h - 1, y * h / dh);
+			for (int x = 0; x < dw; ++x) {
+				const int sx = std::min(w - 1, x * w / dw);
+				const size_t from = (size_t(sy) * size_t(w) + size_t(sx)) * 4;
+				const size_t to = (size_t(y + oy) * side + size_t(x + ox)) * 4;
+				for (int c = 0; c < 4; ++c)
+					rgba[to + c] = data[from + c];
+			}
 		}
+		stbi_image_free(data);
 		smvk::ImageCreateInfo ci{};
-		ci.extent = smvk::Extent3D{ uint32_t(w), uint32_t(h), 1 };
-		ci.format = smvk::Format::RGBA8_SRGB; // the matball PNG is display-ready
+		ci.extent = smvk::Extent3D{ side, side, 1 };
+		ci.format = smvk::Format::RGBA8_SRGB;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
-		ci.name = "asset sidecar thumb";
+		ci.name = "asset browser thumbnail";
 		AssetThumb t;
-		t.tex = m_context->CreateTexture(ci, data);
-		stbi_image_free(data);
+		t.tex = m_context->CreateTexture(ci, rgba.data());
 		if (t.tex.empty())
 			return 0;
 		const void* vkView = m_context->GetTextureVkImageView(t.tex);
@@ -4392,7 +4412,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		if (t.imgui == 0)
 			return 0;
-		t.path = pngPath;
+		// A fixed-size LRU-like FIFO bounds descriptor and GPU resource count.
+		constexpr size_t maxThumbs = 128;
+		if (m_assetThumbs.size() >= maxThumbs) {
+			AssetThumb& oldest = m_assetThumbs.front();
+			if (oldest.imgui)
+				ImGui_ImplVulkan_RemoveTexture(
+					reinterpret_cast<VkDescriptorSet>(ImU64(oldest.imgui)));
+			oldest.tex = {};
+			m_assetThumbs.erase(m_assetThumbs.begin());
+		}
+		t.path = imagePath;
 		t.mtime = mt;
 		t.hasMtime = true;
 		m_assetThumbs.push_back(std::move(t));
@@ -6482,9 +6512,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			// button renders it). Missing/stale = the generic icon (the
 			// button regenerates on demand).
 			ImTextureID sidecar = 0;
-			if (!e.dir && e.name.size() > 9
-				&& e.name.Str().compare(e.name.size() - 9, 9, ".material") == 0)
-				sidecar = AssetSidecarThumb(e.abs.Str() + ".png");
+			if (!e.dir) {
+				const std::string name = e.name.Str();
+				std::string ext = fs::path(name).extension().string();
+				for (char& c : ext)
+					c = char(std::tolower((unsigned char)c));
+				if (ext == ".material")
+					sidecar = AssetSidecarThumb(e.abs.Str() + ".png");
+				else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+					|| ext == ".bmp" || ext == ".tga")
+					sidecar = AssetSidecarThumb(e.abs.Str());
+			}
 			if (sidecar != 0) {
 				dl->AddImage(sidecar, ico,
 					ImVec2(ico.x + iconS, ico.y + iconS));
