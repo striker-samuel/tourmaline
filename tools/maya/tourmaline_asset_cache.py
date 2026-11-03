@@ -23,6 +23,24 @@ _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ALLOWED_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*\Z")
 
 
+def default_client_config():
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return root / "Tourmaline" / "SharedAssets" / "client.json"
+
+
+def load_client_settings():
+    config = default_client_config()
+    if not config.is_file():
+        return {}
+    data = json.loads(config.read_text(encoding="utf-8"))
+    if data.get("schema_version") != 1:
+        raise ValueError("unsupported workstation asset client config")
+    return data
+
+
 def default_cache():
     base = (os.environ.get("LOCALAPPDATA")
             if os.name == "nt" else os.environ.get("XDG_CACHE_HOME"))
