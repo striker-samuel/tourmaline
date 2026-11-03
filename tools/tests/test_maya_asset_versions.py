@@ -145,10 +145,33 @@ class MayaContractTests(unittest.TestCase):
             maya_versions._api("/v1/assets", path="my folder/a&b.obj")
         self.assertIn("my+folder%2Fa%26b.obj", call.call_args[0][0])
 
-    def test_remote_service_not_accepted(self):
-        with patch.dict(os.environ, {"TOURMALINE_ASSET_URL": "http://example.com:8765"}):
+    def test_remote_service_requires_token(self):
+        with patch.dict(os.environ, {"TOURMALINE_ASSET_URL": "http://nas.example:8765",
+                                     "TOURMALINE_ASSET_TOKEN": ""}), \
+             patch.object(maya_versions, "load_client_settings", return_value={}):
             with self.assertRaises(ValueError):
-                maya_versions._server()
+                maya_versions._client()
+
+    def test_remote_source_identity_kept_separate_from_path(self):
+        source_id = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"
+        class FakeClient:
+            def sources(self):
+                return [{"asset_id": source_id, "current_path": "artists/hero.ma",
+                         "missing": 0, "revision": 3}]
+            def revisions(self, ident):
+                assert ident == source_id
+                return [{"revision": 3, "size": 19, "captured_at": "today"}]
+            def resolve_source(self, ident, rev, pin=True):
+                assert ident == source_id and rev == 3 and pin
+                return {"asset_id": ident, "revision": 3,
+                        "local_path": str(self_path), "sha256": "x" * 64}
+        self_path = self.cache_file
+        with patch.object(maya_versions, "_client", return_value=FakeClient()):
+            items = maya_versions.available_assets("hero")
+            self.assertEqual(items[0]["source_id"], source_id)
+            self.assertEqual(maya_versions.versions(items[0]["path"], source_id)[0]["revision"], 3)
+            self.assertEqual(maya_versions.resolve(items[0]["path"], 3,
+                                                    source_id=source_id)["asset_id"], source_id)
 
 
 if __name__ == "__main__":
