@@ -45,57 +45,54 @@
 
 namespace editor {
 
-// The editor's ImGui THEME (applied once after the overlay init, before
-// the DPI scale — ApplyDpiScale copies sizing, the colors here own the
-// look): a rounded, blue-accented dark palette. The color set carries
-// opaque top-level surfaces by design (the 3D viewport must not bleed
-// through menus); the two surfaces it does NOT define (MenuBarBg,
-// TitleBgCollapsed) keep the default theme's and are alpha-forced opaque
-// at the call site below.
+// The editor's charcoal authoring palette: dense, neutral surfaces and a
+// restrained warm accent for the selected tool, tabs and input controls.
+// All top-level surfaces are opaque so panels never show the viewport through.
 void ApplyEditorStyle()
 {
 	ImGuiStyle& s = ImGui::GetStyle();
-
-	s.WindowRounding    = 6.0f;
-	s.ChildRounding     = 5.0f;
-	s.FrameRounding     = 4.0f;
-	s.PopupRounding     = 5.0f;
-	s.ScrollbarRounding = 6.0f;
-	s.GrabRounding      = 4.0f;
-	s.TabRounding       = 4.0f;
-
-	s.WindowPadding    = ImVec2(10, 10);
-	s.FramePadding     = ImVec2(8, 5);
-	s.ItemSpacing      = ImVec2(8, 6);
-	s.ItemInnerSpacing = ImVec2(6, 5);
-	s.ScrollbarSize    = 12.0f;
-	s.GrabMinSize      = 10.0f;
+	s.WindowRounding    = 3.0f;
+	s.ChildRounding     = 3.0f;
+	s.FrameRounding     = 3.0f;
+	s.PopupRounding     = 3.0f;
+	s.ScrollbarRounding = 4.0f;
+	s.GrabRounding      = 3.0f;
+	s.TabRounding       = 3.0f;
+	s.WindowPadding     = ImVec2(8, 8);
+	s.FramePadding      = ImVec2(7, 4);
+	s.ItemSpacing       = ImVec2(7, 5);
+	s.ItemInnerSpacing  = ImVec2(5, 4);
+	s.ScrollbarSize     = 11.0f;
+	s.GrabMinSize       = 10.0f;
 
 	ImVec4* c = s.Colors;
-
-	c[ImGuiCol_WindowBg]          = ImVec4(.09f, .10f, .13f, 1);
-	c[ImGuiCol_ChildBg]           = ImVec4(.11f, .12f, .15f, 1);
-	c[ImGuiCol_PopupBg]           = ImVec4(.13f, .14f, .18f, 1);
-	c[ImGuiCol_Border]            = ImVec4(.20f, .22f, .28f, 1);
-	c[ImGuiCol_FrameBg]           = ImVec4(.15f, .17f, .21f, 1);
-	c[ImGuiCol_FrameBgHovered]    = ImVec4(.21f, .24f, .31f, 1);
-	c[ImGuiCol_FrameBgActive]     = ImVec4(.25f, .29f, .39f, 1);
-	c[ImGuiCol_TitleBg]           = ImVec4(.10f, .11f, .14f, 1);
-	c[ImGuiCol_TitleBgActive]     = ImVec4(.13f, .15f, .20f, 1);
-	c[ImGuiCol_Button]            = ImVec4(.23f, .27f, .39f, 1);
-	c[ImGuiCol_ButtonHovered]     = ImVec4(.32f, .38f, .56f, 1);
-	c[ImGuiCol_ButtonActive]      = ImVec4(.39f, .46f, .68f, 1);
-	c[ImGuiCol_Header]            = ImVec4(.22f, .26f, .39f, 1);
-	c[ImGuiCol_HeaderHovered]     = ImVec4(.29f, .34f, .49f, 1);
-	c[ImGuiCol_HeaderActive]      = ImVec4(.33f, .39f, .57f, 1);
-	c[ImGuiCol_Tab]               = ImVec4(.13f, .15f, .20f, 1);
-	c[ImGuiCol_TabHovered]        = ImVec4(.30f, .36f, .53f, 1);
-	c[ImGuiCol_TabSelected]       = ImVec4(.22f, .27f, .40f, 1);
-	c[ImGuiCol_CheckMark]         = ImVec4(.58f, .65f, 1.0f, 1);
-	c[ImGuiCol_SliderGrab]        = ImVec4(.48f, .57f, .91f, 1);
-	c[ImGuiCol_SliderGrabActive]  = ImVec4(.62f, .69f, 1.0f, 1);
-	c[ImGuiCol_Separator]         = ImVec4(.20f, .22f, .28f, 1);
-	c[ImGuiCol_SeparatorHovered]  = ImVec4(.38f, .44f, .64f, 1);
+	c[ImGuiCol_WindowBg]          = ImVec4(.082f, .088f, .094f, 1);
+	c[ImGuiCol_ChildBg]           = ImVec4(.100f, .106f, .113f, 1);
+	c[ImGuiCol_PopupBg]           = ImVec4(.115f, .121f, .129f, 1);
+	c[ImGuiCol_MenuBarBg]         = ImVec4(.092f, .097f, .102f, 1);
+	c[ImGuiCol_Border]            = ImVec4(.19f, .20f, .21f, 1);
+	c[ImGuiCol_FrameBg]           = ImVec4(.145f, .153f, .163f, 1);
+	c[ImGuiCol_FrameBgHovered]    = ImVec4(.22f, .23f, .24f, 1);
+	c[ImGuiCol_FrameBgActive]     = ImVec4(.29f, .30f, .31f, 1);
+	c[ImGuiCol_TitleBg]           = ImVec4(.085f, .092f, .098f, 1);
+	c[ImGuiCol_TitleBgActive]     = ImVec4(.125f, .132f, .140f, 1);
+	c[ImGuiCol_TitleBgCollapsed]  = ImVec4(.085f, .092f, .098f, 1);
+	c[ImGuiCol_Button]            = ImVec4(.17f, .18f, .19f, 1);
+	c[ImGuiCol_ButtonHovered]     = ImVec4(.27f, .28f, .29f, 1);
+	c[ImGuiCol_ButtonActive]      = ImVec4(.33f, .33f, .32f, 1);
+	c[ImGuiCol_Header]            = ImVec4(.20f, .21f, .22f, 1);
+	c[ImGuiCol_HeaderHovered]     = ImVec4(.28f, .29f, .30f, 1);
+	c[ImGuiCol_HeaderActive]      = ImVec4(.35f, .32f, .27f, 1);
+	c[ImGuiCol_Tab]               = ImVec4(.13f, .14f, .15f, 1);
+	c[ImGuiCol_TabHovered]        = ImVec4(.29f, .27f, .23f, 1);
+	c[ImGuiCol_TabSelected]       = ImVec4(.26f, .23f, .19f, 1);
+	c[ImGuiCol_CheckMark]         = ImVec4(.97f, .61f, .24f, 1);
+	c[ImGuiCol_SliderGrab]        = ImVec4(.83f, .49f, .19f, 1);
+	c[ImGuiCol_SliderGrabActive]  = ImVec4(.98f, .65f, .30f, 1);
+	c[ImGuiCol_Separator]         = ImVec4(.20f, .21f, .22f, 1);
+	c[ImGuiCol_SeparatorHovered]  = ImVec4(.77f, .49f, .25f, 1);
+	c[ImGuiCol_SeparatorActive]   = ImVec4(.95f, .60f, .27f, 1);
+	c[ImGuiCol_TextDisabled]      = ImVec4(.55f, .57f, .58f, 1);
 }
 
 bool EditorApp::HasPakExtension(const std::string& path) {
