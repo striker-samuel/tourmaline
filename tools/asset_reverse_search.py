@@ -343,3 +343,121 @@ def match_asset(doc, needle):
     return rows[0]
 
 
+def rgb_means(asset, grid):
+    sums = {"albedo": [0.0, 0.0, 0.0], "orm": [0.0, 0.0, 0.0],
+            "emissive": [0.0, 0.0, 0.0]}
+    count = 0.0
+    for view in asset["features"].values():
+        d = decoded_view(view, grid)
+        for i, alpha in enumerate(d["coverage"]):
+            weight = alpha / 255
+            if not weight:
+                continue
+            for ch in sums:
+                if ch in d:
+                    for k in range(3):
+                        sums[ch][k] += weight * d[ch][3 * i + k] / 255
+            count += weight
+    return {ch: [clamp(c / max(count, 1e-8)) for c in value] for ch, value in sums.items()}
+
+
+def asset_description(doc, asset, style="game-ready PBR concept art"):
+    """Deterministic description from measured data; no invented semantics."""
+    a, b, c = ((asset.get("bounds") or {}).get("size") or [0, 0, 0])
+    dims = [float(a), float(b), float(c)]
+    largest = max(dims) if dims else 0
+    if largest == 0:
+        proportions = "unknown proportions"
+    elif min(dims) < largest * 0.2:
+        proportions = "thin or planar proportions"
+    elif max(dims) / max(min(dims), 1e-6) < 1.5:
+        proportions = "roughly equal width, height, and depth"
+    else:
+        proportions = "elongated proportions"
+    cols = rgb_means(asset, doc["grid"])
+    rgb = cols["albedo"]
+    colors = (("red", (1, 0, 0)), ("green", (0, 1, 0)), ("blue", (0, 0, 1)),
+              ("yellow", (1, 1, 0)), ("cyan", (0, 1, 1)), ("magenta", (1, 0, 1)),
+              ("gray", (.5, .5, .5)))
+    color = min(colors, key=lambda item: sum((x - y) ** 2 for x, y in zip(rgb, item[1])))[0]
+    roughness, metallic = cols["orm"][1], cols["orm"][2]
+    surface = "rough" if roughness >= .65 else "glossy" if roughness <= .32 else "satin"
+    surface += ", metallic" if metallic >= .6 else ", nonmetallic" if metallic <= .4 else ", mixed metallic"
+    size_str = " × ".join(f"{x:.3g}" for x in dims)
+    label = Path(asset["source"]).stem
+    description = (f"Reference asset {label!r}: approximate local-space dimensions {size_str} "
+                   f"(units as authored); {proportions}. Predominantly {color} base color, "
+                   f"{surface} surface. {len(asset.get('materials', []))} referenced material(s).")
+    prompt = (f"Produce one isolated {style} of a single 3D prop, orthographic +Z reference view, "
+              f"transparent background and no text. Preserve the measurable characteristics "
+              f"of this asset: {description} Keep the object centered with a consistent silhouette. "
+              "This is a proposed visual concept; do not claim to reproduce unknown fine geometry.")
+    return {"source": asset["source"], "geometry_guid": asset.get("geometry_guid", ""),
+            "description": description, "prompt": prompt,
+            "measured": {"size": dims, "albedo_rgb": rgb, "roughness": roughness,
+                         "metallic": metallic, "proportions": proportions}}
+
+
+def generate_image_request(payload, api_key, opener=None):
+    """Only called by an explicit --execute action; API key never goes to disk."""
+    if not api_key:
+        raise SearchError("OPENAI_API_KEY is required for fab --execute")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/images/generations",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        method="POST")
+    fn = opener or urllib.request.urlopen
+    try:
+        with fn(req, timeout=180) as response:
+            data = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        # Do not log request headers or credentials.
+        raise SearchError(f"image generation HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise SearchError(f"image generation connection failed: {exc.reason}") from exc
+    if not isinstance(data.get("data"), list) or not data["data"]:
+        raise SearchError("image API returned no images")
+    images = []
+    for image in data["data"]:
+        try:
+            images.append(base64.b64decode(image["b64_json"], validate=True))
+        except (KeyError, ValueError, base64.binascii.Error) as exc:
+            raise SearchError("image API returned invalid base64 image data") from exc
+    return images
+
+
+def fab(doc, asset, output, style, model, size, quality, count, execute=False,
+        background="transparent", search_count=0, opener=None):
+    """Materialize a reproducible prompt plan; optionally purchase generated images."""
+    if not 1 <= count <= 10:
+        raise SearchError("image count must be 1..10")
+    description = asset_description(doc, asset, style)
+    request = {"model": model, "prompt": description["prompt"], "n": count,
+               "size": size, "quality": quality, "background": background,
+               "output_format": "png"}
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    metadata = {"schema": "tourmaline.asset-fab.v1", "asset": description,
+                "request": request, "status": "planned" if not execute else "generated",
+                "images": []}
+    if execute:
+        images = generate_image_request(request, os.getenv("OPENAI_API_KEY"), opener=opener)
+        require_pillow()
+        for i, image in enumerate(images, 1):
+            # Fail closed on invalid image payloads and avoid arbitrary formats.
+            with Image.open(io.BytesIO(image)) as decoded:
+                if decoded.format != "PNG":
+                    raise SearchError("image API returned a non-PNG image")
+                decoded.verify()
+            filename = f"fab_{i:03}.png"
+            (output / filename).write_bytes(image)
+            row = {"file": filename, "sha256": hashlib.sha256(image).hexdigest()}
+            if search_count:
+                q = descriptor_for_image(output / filename, doc)
+                row["similar_assets"] = search(doc, q, limit=search_count, size_ratio=0)
+            metadata["images"].append(row)
+    (output / "fab.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return metadata
+
+
