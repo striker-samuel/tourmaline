@@ -45,6 +45,7 @@
 #include <Engine/Asset/cook_asset.h> // GI/lightmap cook assets (browser creation)
 #include "editor_asset_inspect.h"
 #include "editor_live_preview_policy.h"
+#include <TourmalineEditorEntry.h>
 #include "editor_asset_ops.h" // browser delete planning (pending plan member)
 #include "editor_fibers.h" // EDITOR-ONLY job pool (see editor_fibers.cpp)
 #include <Engine/Vfs/vfs.h>
@@ -1603,6 +1604,10 @@ private:
 	// state work: lifecycle, Tick, camera, the extent settle + the
 	// extent-change flag) and the LAYER half (onRender: between acquire
 	// and present at the between-rounds position — the record only).
+	void ApplyGamePlayRequest();
+	void StopGamePlay();
+	GameSessionRunner m_gameSession;
+	std::optional<bool> m_gamePlayRequest; // true=start, false=stop
 	void UpdateWysiwygBoundary(float dt);   // WorldLayer::onUpdate
 	void RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent); // WorldLayer::onRender
 	void RecordLiveViewComposePass(smvk::LogicalImageViewHandle swapView); // editor_render.cpp, after the imgui pass

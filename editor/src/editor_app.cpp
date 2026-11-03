@@ -297,6 +297,7 @@ bool EditorApp::Initialize() {
 }
 
 void EditorApp::Shutdown() {
+	StopGamePlay(); // game state dies before authored scene
 	// Flush the working tour to the project .tour on exit (per-edit
 	// saves went to the %APPDATA% autosave) — same contract as
 	// CloseScene, so closing the editor never loses edits.
@@ -538,6 +539,7 @@ bool EditorApp::OpenCacheDb() {
 }
 
 void EditorApp::CloseScene() {
+	StopGamePlay();
 	if (!m_world)
 		return;
 	SavePrefs();
@@ -608,6 +610,7 @@ void EditorApp::CloseScene() {
 
 	bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn,
 		const std::string& tourOverride) {
+		StopGamePlay(); // all load funnels invalidate active gameplay
 		// Empty path = sourceless tour (DEPRECATED source mechanism): no
 		// source to import — an empty world whose geometry comes entirely
 		// from references. tourOverride pins the reference lookup to the

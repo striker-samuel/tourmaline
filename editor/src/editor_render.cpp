@@ -2693,6 +2693,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 	// editor_app.h). Thin forwarding: the editor owns the state; the
 	// element supplies the synchronized tick's phase boundaries.
 	void WorldLayer::onUpdate(float dt) {
+		m_app->ApplyGamePlayRequest();
+		m_app->m_gameSession.Tick(dt);
 		m_app->UpdateWysiwygBoundary(dt);
 	}
 
