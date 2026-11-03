@@ -196,7 +196,7 @@ def terminal_setup():
     else:
         run_detached(config)
         print("Started in background for this session")
-    print("Start manually with: " ".join(server_command(config)))
+    print("Start manually with:", " ".join(server_command(config)))
 
 
 def gui_setup():
