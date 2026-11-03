@@ -637,7 +637,10 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		// bounce throughput, the ambient-closure outFirstAlbedo) shades
 		// the actual surface texel, not the material's average — the
 		// "captures see textured albedo" contract.
-		const glm::vec3 vertexAlbedo = AlbedoAt(m, h.tri, h.baryUV);
+		const glm::vec3 vertexAlbedo = referenceCamera
+			? BaseColorAt(m, h.tri, h.baryUV)
+				* (1.0f - MetallicRoughnessAt(m, h.tri, h.baryUV).x)
+			: AlbedoAt(m, h.tri, h.baryUV);
 		// First non-transmissive hit's albedo: the ambient-closure blend
 		// (the cubemap baker) keys on the visible surface's bounce.
 		if (outFirstAlbedo && m.transmission.x + m.transmission.y + m.transmission.z <= 1e-4f) {
@@ -995,7 +998,8 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 		// per-hit path multiplies the texel — see MetallicRoughnessAt).
 		float metallic = std::clamp(mat.values.params.y, 0.0f, 1.0f);
 		float roughness = std::clamp(mat.values.params.z, 0.04f, 1.0f);
-		if (mat.values.textures.y >= 0) {
+		if (mat.values.textures.y >= 0 && !(opts.referenceMaterialSampling
+			&& opts.texelData.contains(uint32_t(mat.values.textures.y)))) {
 			if (auto it = opts.texelAvg.find(uint32_t(mat.values.textures.y));
 				it != opts.texelAvg.end()) {
 				metallic *= it->second.b;
