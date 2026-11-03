@@ -974,6 +974,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         hookIn.worldPos = IN.worldPos;
         hookIn.normalWS = N;
         hookIn.time = hot.time;
+        hookIn.materialId = TM_LIT_MATERIAL_ID(IN);
+        hookIn.lightmapAtlasUv = IN.lightmapUv;
+        hookIn.lightmapLobes = IN.lmChunk;
         TM_ModifySurface(surface, hookIn);
         baseColor = surface.baseColor;
         metallic = surface.metallic;
@@ -1586,6 +1589,9 @@ float envVis = 1.0f;
         hookIn.worldPos = IN.worldPos;
         hookIn.normalWS = N;
         hookIn.time = hot.time;
+        hookIn.materialId = TM_LIT_MATERIAL_ID(IN);
+        hookIn.lightmapAtlasUv = IN.lightmapUv;
+        hookIn.lightmapLobes = IN.lmChunk;
         TM_ModifyLitColor(color, hookIn);
         if (!(dot(color, color) >= 0.0f))
             color = float3(0.0f, 0.0f, 0.0f);

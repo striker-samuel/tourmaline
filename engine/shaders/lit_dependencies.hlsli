@@ -24,5 +24,9 @@
 #include "sg_lightmap.hlsli"
 #include "sg_regular.hlsli"
 #include "sg_gi_volume.hlsli"
+// Public compile-time helpers for project fragment wrappers and hooks.
+// All variant defines (GFXMESH_FS_PASS, MAT_STANDARD, SG_LM_LOBE_COUNT,
+// ALPHA_TO_COVERAGE) must be set by the wrapper/build BEFORE this include.
+#include "tm_project_shader_macros.hlsli"
 
 #endif // TM_LIT_DEPENDENCIES_HLSLI

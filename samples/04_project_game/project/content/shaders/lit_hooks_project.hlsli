@@ -18,8 +18,27 @@
 //   0..7   = damage flash amount
 //   8..15  = wetness amount
 //   16..31 = available
+//
+// The hook input also exposes i.materialId, i.lightmapAtlasUv,
+// i.lightmapLobes. The sample doesn't need to read those values, so it
+// adds no per-pixel effect work or material permutations.
 
 #include "lit_hooks_api.hlsli"
+#include "tm_project_shader_macros.hlsli"
+
+// These public compile-time switches are available to a project's hook
+// library through lit_dependencies.hlsli. Prove that the wrapper's
+// compile-time path agrees with the public macro without adding runtime
+// branches or changing the wetness/damage examples.
+#if defined(GFXMESH_FS_PASS) && !TM_LIT_MESH_FRAGMENT
+#error "ProjectLit mesh fragment must advertise TM_LIT_MESH_FRAGMENT"
+#endif
+#if defined(MAT_STANDARD) && TM_LIT_LAYERING_SUPPORTED
+#error "MAT_STANDARD variant must not advertise layering support"
+#endif
+#if defined(SG_LM_LOBE_COUNT) && TM_LM_COMPILED_LOBES == 0
+#error "Fixed-lobe variant must advertise its lobe count"
+#endif
 
 #include "effects/damage.hlsli"
 #include "effects/wetness.hlsli"
