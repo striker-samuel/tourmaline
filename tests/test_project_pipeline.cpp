@@ -3487,6 +3487,9 @@ void TestProjectCatalog() {
 		};
 		const std::string retiredA =
 			retiredLineFor("inline constexpr SoundKey ");
+		// (The PR follow-up disambiguated the needle by symbol name; the
+		// in-merge fix scopes the whole lookup to the retired namespace,
+		// which covers both needles - kept.)
 		const std::string retiredB =
 			retiredLineFor("inline constexpr TextureKey ");
 		Check(!retiredA.empty() && !retiredB.empty()
