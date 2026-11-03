@@ -312,7 +312,14 @@ python3 tools/offline_asset_service.py --config PATH/TO/config.json serve
 
 The local/offline archive can resolve previously captured revisions with the
 source share disconnected; it does NOT automatically sync history to the
-shared repository. See offline_asset_service.md for details.
+shared repository. See [offline_asset_service.md](offline_asset_service.md).
+
+**Full-featured offline alternative:** you can also run the newer shared
+repository stack on **one machine** with a local source folder and
+bind=127.0.0.1 (do NOT enable LAN). Configure that same machine as a
+workstation using http://127.0.0.1:8765 and its generated token. You then get
+source IDs, published products, the verified cache and read-presence dashboard
+with **no NAS, Internet, external service or other machine required**.
 
 The scanner currently uses polling and a settle interval, not an SMB
 write-interception transaction hook. Rapid intermediate overwrites can be
