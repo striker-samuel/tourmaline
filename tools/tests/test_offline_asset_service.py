@@ -76,6 +76,19 @@ class OfflineAssetTests(unittest.TestCase):
             self.store.scan()
         self.assertEqual(len(self.store.versions("a.obj")), 1)
 
+    def test_restart_with_disconnected_share_can_resolve_history(self):
+        self.put("characters/hero.obj", b"version one")
+        self.store.scan()
+        self.source.rename(self.source.with_name("unmounted"))
+        # A new process must still open protected history without an SMB mount.
+        reopened = Archive(str(self.source), str(self.archive), str(self.cache),
+                           settle=0)
+        self.assertEqual(reopened.status()["revisions"], 1)
+        resolved = reopened.resolve("characters/hero.obj", 1)
+        self.assertEqual(Path(resolved["local_path"]).read_bytes(), b"version one")
+        with self.assertRaises(OSError):
+            reopened.scan()
+
     def test_cache_repairs_corruption_and_pins(self):
         self.put("a.obj", b"A" * 30)
         self.put("b.obj", b"B" * 30)
