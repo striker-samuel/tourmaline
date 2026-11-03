@@ -45,6 +45,7 @@
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
+#include <Engine/Placement/placement_gpu.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
@@ -92,6 +93,11 @@
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/App/Element.h>
+
+namespace tour::placement {
+    struct PlacementWorldRuntime;
+    struct PlacementDrawPrograms;
+}
 
 namespace engine {
 
@@ -2061,6 +2067,16 @@ protected:
 	// borrowed = the host's live pointer (kept alive by the host).
 	smvk::World* m_world = nullptr;
 	// Persistent, per-flight scene database — no render consumer yet.
+	// Separate opt-in vegetation path: never overrides the GPU-scene
+	// validation culler or the renderer's normal scene draw list.
+	tour::placement::PlacementWorldRuntime* m_gpuPlacementRuntime = nullptr;
+	tour::placement::PlacementDrawPrograms* m_gpuPlacementDraw = nullptr;
+	smvk::LogicalBufferHandle m_gpuPlacementViewLogical{};
+	tour::placement::PlacementIndirectCmd m_gpuPlacementSeeds[8]{};
+	uint32_t m_gpuPlacementSeedCount = 0;
+	float m_gpuPlacementRadius = 64.0f;
+	uint64_t m_gpuPlacementTerrainRevision = 0;
+	bool m_gpuPlacementReady = false;
 	tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
 	tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
 	tour::gpu_scene::Uploader m_gpuSceneUploader;
@@ -2127,6 +2143,25 @@ public:
 	// renderer subclass. No-op unless installed; runs only when the UI
 	// pass runs (m_passes.ui + a live overlay).
 	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
+
+	// Optional GPU-placed vegetation draw feed. Host owns the runtime,
+	// its LayerBinding and WorldMaskGrid for the full attachment lifetime.
+	// The renderer creates/destroys only its GPU resources, records
+	// BeginFrame -> cull/compaction/indirect, and consumes the commands
+	// in Main. The source meshes MUST already live in the static vertex
+	// heap; seeds are their absolute indexed-draw ranges. Off by default.
+	void SetGpuPlacementRuntime(tour::placement::PlacementWorldRuntime* runtime,
+		const tour::placement::PlacementIndirectCmd* seeds,
+		uint32_t seedCount, float interestRadius = 64.0f) {
+		m_gpuPlacementRuntime = runtime;
+		m_gpuPlacementSeedCount = seedCount > 8 ? 8 : seedCount;
+		for (uint32_t i = 0; i < m_gpuPlacementSeedCount; ++i)
+			m_gpuPlacementSeeds[i] = seeds[i];
+		m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
+	}
+	// The host calls this after changing the world's height/mask data;
+	// every interested placement tile will then regenerate.
+	void InvalidateGpuPlacementTerrain() { ++m_gpuPlacementTerrainRevision; }
 protected:
 	// Configurable resolution knobs (see "Resolution config" in the .cpp).
 	float m_renderScale = 1.0f;
