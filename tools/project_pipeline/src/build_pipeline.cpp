@@ -547,7 +547,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					|| asset.kind == PlanAssetKind::AudioGraph
 					|| asset.kind == PlanAssetKind::SpriteSet
 					|| asset.kind == PlanAssetKind::StateMachine
-					|| asset.kind == PlanAssetKind::NavMesh)
+					|| asset.kind == PlanAssetKind::NavMesh
+					|| asset.kind == PlanAssetKind::Shape)
 				vfsOwner[asset.path] = pak.id;
 
 	// The staged set: every pak writes under publish/.staging/ with its
@@ -661,7 +662,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 							|| asset.kind == PlanAssetKind::AudioGraph
 					|| asset.kind == PlanAssetKind::SpriteSet
 					|| asset.kind == PlanAssetKind::StateMachine
-					|| asset.kind == PlanAssetKind::NavMesh)
+					|| asset.kind == PlanAssetKind::NavMesh
+					|| asset.kind == PlanAssetKind::Shape)
 						stage.excludeVfs.push_back(asset.path);
 			}
 		}
@@ -701,13 +703,14 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					+ perr;
 				return false;
 			}
-			const smvk::PakAssetKind policeKinds[7] = {
+			const smvk::PakAssetKind policeKinds[8] = {
 				smvk::PakAssetKind::Texture, smvk::PakAssetKind::Sound,
 			smvk::PakAssetKind::Shader,
 			smvk::PakAssetKind::AudioGraph,
 				smvk::PakAssetKind::SpriteSet,
 				smvk::PakAssetKind::StateMachine,
-				smvk::PakAssetKind::NavMesh };
+				smvk::PakAssetKind::NavMesh,
+				smvk::PakAssetKind::Shape };
 			for (const smvk::PakAssetKind kind : policeKinds)
 			for (const smvk::PakTocEntry* e : reader->BlobsOfKind(kind)) {
 				auto ownerIt = vfsOwner.find(e->path);
