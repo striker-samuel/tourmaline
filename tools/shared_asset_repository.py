@@ -30,6 +30,11 @@ except ModuleNotFoundError:
     from offline_asset_service import Archive, handler_for
 
 
+try:
+    from tools.asset_read_presence import ConsumerPresence
+except ModuleNotFoundError:
+    from asset_read_presence import ConsumerPresence
+
 _TOKEN_HEADER = "Bearer "
 _HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PRODUCT_KIND = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -315,12 +320,13 @@ class SharedArchive(Archive):
         return path
 
 
-def handler_for_shared(store, token):
+def handler_for_shared(store, token, consumer_ttl_seconds=90):
     """Bearer-protected LAN endpoints + compatibility with /v1 browser API."""
     base = handler_for(store)
     token = str(token)
     if len(token) < 24:
         raise ValueError("shared service access token must be at least 24 characters")
+    readers = ConsumerPresence(store, ttl_seconds=consumer_ttl_seconds)
 
     class Handler(base):
         def authenticated(self):
@@ -331,11 +337,21 @@ def handler_for_shared(store, token):
             self.reply({"error": "unauthorized"}, 401)
 
         def do_GET(self):
+            # Static dashboard contains no asset data and never embeds a
+            # credential. Browser users enter their token into the page.
+            if urlsplit(self.path).path == "/consumers":
+                page = (Path(__file__).with_name("asset_consumers_dashboard.html")
+                        .read_text(encoding="utf-8"))
+                return self.reply(page, kind="text/html")
             if not self.authenticated() and urlsplit(self.path).path != "/health":
                 return self.deny()
             url = urlsplit(self.path)
             query = parse_qs(url.query)
             try:
+                if url.path == "/v2/consumers":
+                    kind = query.get("resource_kind", [None])[0]
+                    ident = query.get("resource_id", [None])[0]
+                    return self.reply(readers.active(kind, ident))
                 if url.path == "/v2/sources":
                     return self.reply({"sources": store.sources()})
                 if url.path.startswith("/v2/sources/") and url.path.endswith("/revisions"):
@@ -372,6 +388,31 @@ def handler_for_shared(store, token):
                 return self.reply({"error": str(exc)}, 500)
             return super().do_GET()
 
+        def do_POST(self):
+            if not self.authenticated():
+                return self.deny()
+            path = urlsplit(self.path).path
+            if path not in ("/v2/consumers/heartbeat", "/v2/consumers/release"):
+                return self.reply({"error": "not found"}, 404)
+            try:
+                length = int(self.headers.get("Content-Length", "-1"))
+                if length < 0 or length > 65536:
+                    raise ValueError("body must be a JSON object of at most 65536 bytes")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("body must be a JSON object")
+                if path.endswith("/heartbeat"):
+                    result = readers.heartbeat(
+                        body.get("session_id"), body.get("label"),
+                        body.get("kind"), body.get("reads"))
+                else:
+                    result = readers.release(body.get("session_id"))
+                return self.reply(result)
+            except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                return self.reply({"error": str(exc)}, 400)
+            except OSError as exc:
+                return self.reply({"error": str(exc)}, 500)
+
         def do_PUT(self):
             if not self.authenticated():
                 return self.deny()
@@ -397,7 +438,8 @@ def handler_for_shared(store, token):
     return Handler
 
 
-def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0):
+def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0,
+                 consumer_ttl_seconds=90):
     if not token or len(token) < 24:
         raise ValueError("access_token of at least 24 characters required")
     if bind not in ("127.0.0.1", "0.0.0.0"):
@@ -415,7 +457,7 @@ def serve_shared(store, token, bind="127.0.0.1", port=8765, poll=3.0):
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
     try:
-        with ThreadingHTTPServer((bind, port), handler_for_shared(store, token)) as server:
+        with ThreadingHTTPServer((bind, port), handler_for_shared(store, token, consumer_ttl_seconds)) as server:
             print(f"Tourmaline shared asset repository listening on {bind}:{port}",
                   flush=True)
             server.serve_forever()
