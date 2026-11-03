@@ -1842,19 +1842,20 @@ namespace engine {
 			bool lmResident = false;
 			// No chart-transform BDA means the vertex shader must not
 			// dereference xforms. Keep the lobe sentinel and dynamic GI.
-			if (ChartXformsAddress() != 0 && !world.lmChartTable.empty())
-			if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
-				const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
-				if (const smvk::StaticMesh* m
-					= lmLoc->cluster->staticMeshes.get(h);
-					m && !m->skinned // baked charts are STATIC-only
-					&& m->lightmapBase != UINT32_MAX
-					&& !m->lmChartXforms.empty()) {
-					const uint32_t vb =
-						lmLoc->cluster->GetMeshHeapVertexBase(h);
-					if (vb != UINT32_MAX) {
-						lmDelta = m->lightmapBase - vb;
-						lmResident = true;
+			if (ChartXformsAddress() != 0 && !world.lmChartTable.empty()) {
+				if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
+					const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
+					if (const smvk::StaticMesh* m
+						= lmLoc->cluster->staticMeshes.get(h);
+						m && !m->skinned // baked charts are STATIC-only
+						&& m->lightmapBase != UINT32_MAX
+						&& !m->lmChartXforms.empty()) {
+						const uint32_t vb =
+							lmLoc->cluster->GetMeshHeapVertexBase(h);
+						if (vb != UINT32_MAX) {
+							lmDelta = m->lightmapBase - vb;
+							lmResident = true;
+						}
 					}
 				}
 			}
