@@ -470,6 +470,7 @@ int main() {
 			{
 				::Scene s;
 				s.defaultEnvironment.volumetricDensity = 0.0f;
+				s.environment.volumetricDensity = 0.0f;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
 					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
 				if (EnvRow* row = FindEnv(s, z))
@@ -486,6 +487,7 @@ int main() {
 			{
 				::Scene s;
 				s.defaultEnvironment.volumetricDensity = 0.0f;
+				s.environment.volumetricDensity = 0.0f;
 				const uint32_t z = makeTileZone(s, glm::vec3(32, 5, 32),
 					glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
 				if (EnvRow* row = FindEnv(s, z))
