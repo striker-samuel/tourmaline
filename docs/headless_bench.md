@@ -38,7 +38,7 @@ python tools/perf_harness.py list
 python tools/perf_harness.py bench --scenario bistro-ssr-stress --exe out/build/x64-Release/Benchmark.exe --repeat 5
 ```
 
-The catalog example needs a **separately cooked Bistro pak** in the benchmark build directory. Export new views from `App` using **TAB → Benchmark scenarios → Export for benchmark** (press **I** to enable UI cursor if needed). Each saved entry captures camera, cooked launch identity, supported startup pins, and a consolidated `--with` / `--without` pass graph; live-only controls may not be reproducible. See [scenario catalog](../benchmarks/README.md) and [performance harness](perf_harness.md). The harness runs from the repository root, but the renderer runs with the binary's directory as CWD.
+The catalog example needs a **separately cooked Bistro pak** in the benchmark build directory. Export new views from `App` using **TAB → Benchmarks → Export for benchmark** (press **I** to enable UI cursor if needed). Each saved entry captures camera, cooked launch identity, supported startup pins, and a consolidated `--with` / `--without` pass graph; live-only controls may not be reproducible. See [scenario catalog](../benchmarks/README.md) and [performance harness](perf_harness.md). The harness runs from the repository root, but the renderer runs with the binary's directory as CWD.
 
 ## Quality A/B pins
 

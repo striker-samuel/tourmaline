@@ -1,6 +1,6 @@
 # Source-controlled benchmark scenarios
 
-The canonical scenario catalog is [scenarios.json](scenarios.json). It is **tracked in git**: the viewer's **TAB → Benchmark scenarios → Export for benchmark** control appends a labeled entry directly to this file. Review and commit the diff like any other renderer performance change; no hidden user profile database is involved.
+The canonical scenario catalog is [scenarios.json](scenarios.json). It is **tracked in git**: the viewer's **TAB → Benchmarks → Export for benchmark** control appends a labeled entry directly to this file. Review and commit the diff like any other renderer performance change; no hidden user profile database is involved.
 
 Each scenario includes `id` (stable agent selector), `label` (human-friendly), `subsystem` (the stressed system, e.g. SSR, foliage, Forward+, fog), `notes`, `source_args` (cooked pak paths or a `.tapp` manifest, plus optional scene selector), `camera.position`, `camera.forward`, `environment` (replayable `TOURMALINE_*` startup pins), `app_args` (host and pass-graph options), and the measured `frames` budget (120 by default). The catalog uses `schema_version: 1`.
 
@@ -8,7 +8,7 @@ Source paths in `source_args` are relative to the executable's build directory, 
 
 ## Workflow
 
-1. Build/run the **App** viewer with a cooked pak, fly to a costly camera location, tune renderer options, and press **TAB** and **I** to enable the UI cursor (if still in FPS mode).
+1. Build/run the **App** viewer with a cooked pak, fly to a costly camera location, tune renderer options, and press **TAB**, select the **Benchmarks** tab, and press **I** to enable the UI cursor (if still in FPS mode).
 2. Type a descriptive **label**, **subsystem**, and optional **notes**. Press **Export for benchmark**. The UI slugifies the label into a stable ID, appending `-2`, `-3`, etc. when needed (there is no separate ID field). Commit the resulting JSON change.
 3. Build the dedicated, sample-free `Benchmark` CMake target. Use the Python harness to list and run the saved location.
 
