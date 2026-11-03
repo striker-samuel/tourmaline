@@ -43,6 +43,17 @@ endif()
 # target + nothing else.
 set(TOURMALINE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(TOURMALINE_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+# The EXE ROOT: hosts (cmake/HostSetup.cmake), the editor, and the embedded
+# game-host cook tools all set RUNTIME_OUTPUT_DIRECTORY to the TOP-LEVEL
+# build dir (CMAKE_BINARY_DIR), and Windows loads a staged runtime DLL from
+# the exe dir only. In a top-level engine build this equals the engine
+# binary dir above; when a game repo embeds this tree (add_subdirectory
+# through a pinned submodule) the exes run from the GAME's build root while
+# this tree's own binary dir sits one level deeper. Shared-runtime DLL
+# staging (DXC, OptickCore, SDL3, prebuilt Embree + its TBB, Aftermath)
+# must therefore target CMAKE_BINARY_DIR or the embedded Cook/GiBaker/Pak/
+# Project tools fail to launch (0xC0000135, DLL not found).
+set(TOURMALINE_RUNTIME_DIR ${CMAKE_BINARY_DIR})
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(TOURMALINE_IS_TOP_LEVEL ON)
 else()
@@ -136,13 +147,49 @@ add_subdirectory(external/lz4)
 #     engine/CMakeLists.txt). The CI uses this on Windows - the Embree
 #     TUs are the majority of the full-tree compile time there.
 #
-#   SOURCE (the default): the vendored external/embree tree - upstream
+#   SOURCE (the fallback): the vendored external/embree tree - upstream
 #     master snapshot, 2026-10-01 era (still versioned 4.4.1), trimmed:
 #     no docs/tutorials/tests/superbuild. Static lib, internal tasking
 #     (no TBB), triangle geometry only (the bake only traces triangles -
 #     the rest of Embree's geometry types stay off to keep the build
 #     lean). Fetched by install_dependencies.(ps1|sh); see
 #     THIRD_PARTY_NOTICES.md.
+#
+# PREBUILT-FIRST DEFAULT: the vendored Embree source is this tree's
+# largest single compile (~400 TUs; ci.yml notes 2.5+ HOURS on the
+# AVX-512 kernels without sccache). When EMBREE_PREBUILT_DIR is not set,
+# probe the canonical prebuilt locations before paying that cost:
+#   1. $ENV{EMBREE_PREBUILT_DIR}  - a machine-wide default, no -D needed
+#   2. external/embree-prebuilt   - install_dependencies.ps1 fetches the
+#      official 4.4.1 x64 Windows binary package here (subset: bin/lib/
+#      include)
+#   3. C:/embree                  - the CI cache location (ci.yml/tests.yml)
+# Nothing probed -> the vendored source route, exactly as before. The
+# probe re-runs whenever EMBREE_PREBUILT_DIR is empty (a package fetched
+# AFTER a first configure is picked up on reconfigure); to force the
+# source route on a machine with a probed package, remove it (or unset
+# $ENV{EMBREE_PREBUILT_DIR}) so the probe finds nothing.
+if(NOT EMBREE_PREBUILT_DIR)
+    set(_embree_probe "")
+    if(DEFINED ENV{EMBREE_PREBUILT_DIR} AND NOT "$ENV{EMBREE_PREBUILT_DIR}" STREQUAL "")
+        set(_embree_probe "$ENV{EMBREE_PREBUILT_DIR}")
+    elseif(WIN32)
+        if(EXISTS "${TOURMALINE_SOURCE_DIR}/external/embree-prebuilt/lib/cmake")
+            set(_embree_probe "${TOURMALINE_SOURCE_DIR}/external/embree-prebuilt")
+        elseif(EXISTS "C:/embree/lib/cmake")
+            set(_embree_probe "C:/embree")
+        endif()
+    endif()
+    if(_embree_probe)
+        # A normal variable, deliberately NOT persisted to the cache: a
+        # wiped/deleted package dir simply re-falls-back to source on the
+        # next configure instead of pointing the cache at a ghost path.
+        set(EMBREE_PREBUILT_DIR "${_embree_probe}")
+        message(STATUS "Embree: prebuilt package auto-detected at ${_embree_probe} "
+            "(pass -DEMBREE_PREBUILT_DIR=\"\" for the vendored source route)")
+    endif()
+    unset(_embree_probe)
+endif()
 set(EMBREE_PREBUILT_DIR "" CACHE PATH
     "Prebuilt Embree package root (contains lib/cmake/embree*); overrides the vendored source build")
 if(EMBREE_PREBUILT_DIR)

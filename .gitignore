@@ -564,3 +564,6 @@ project_plans.h
 
 # Editor bake/cook live log files in project roots.
 .tourmaline/logs/
+# embree prebuilt binary package (install_dependencies.ps1; the root
+# CMakeLists auto-prefers it over the vendored source build)
+/external/embree-prebuilt/**

@@ -180,7 +180,7 @@ if(TOURMALINE_AFTERMATH_SDK)
     endif()
     add_custom_command(TARGET engine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${AFTERMATH_DLL}" "${TOURMALINE_BINARY_DIR}")
+        "${AFTERMATH_DLL}" "${TOURMALINE_RUNTIME_DIR}")
 endif()
 
 target_link_libraries(engine
@@ -224,10 +224,15 @@ endif()
 # Linux: the vendored external/dxc linux package (lib/libdxcompiler.so +
 # libdxil.so), staged at the build root too; the exes' $ORIGIN rpath
 # (cmake/HostSetup.cmake + editor/CMakeLists) keeps them loadable.
-# Staging targets ${TOURMALINE_BINARY_DIR} (the build root), where every
-# host exe runs from (RUNTIME_OUTPUT_DIRECTORY convention) - NOT the
-# static lib's own dir ($<TARGET_FILE_DIR:engine> would drop the DLLs in
-# engine/ where no loader searches).
+# Staging targets ${TOURMALINE_RUNTIME_DIR} (the TOP-LEVEL build root,
+# CMAKE_BINARY_DIR), where every host exe runs from (the
+# RUNTIME_OUTPUT_DIRECTORY convention in cmake/HostSetup.cmake + the
+# game-host cook tools) - NOT the static lib's own dir
+# ($<TARGET_FILE_DIR:engine> would drop the DLLs in engine/ where no
+# loader searches) and NOT this tree's own binary dir
+# (${TOURMALINE_BINARY_DIR}): a game repo embedding this tree through a
+# submodule places the exes in the GAME's build root, one level above
+# this tree's dir, and Windows loads staged DLLs from the exe dir only.
 set(DXC_DIR "${TOURMALINE_SOURCE_DIR}/external/dxc")
 
 target_include_directories(engine PRIVATE
@@ -242,11 +247,11 @@ if(WIN32)
     add_custom_command(TARGET engine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DXC_DIR}/bin/x64/dxcompiler.dll"
-            "${TOURMALINE_BINARY_DIR}"
+            "${TOURMALINE_RUNTIME_DIR}"
 
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DXC_DIR}/bin/x64/dxil.dll"
-            "${TOURMALINE_BINARY_DIR}"
+            "${TOURMALINE_RUNTIME_DIR}"
     )
 else()
     target_link_libraries(engine PRIVATE
@@ -256,11 +261,11 @@ else()
     add_custom_command(TARGET engine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DXC_DIR}/lib/libdxcompiler.so"
-            "${TOURMALINE_BINARY_DIR}"
+            "${TOURMALINE_RUNTIME_DIR}"
 
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DXC_DIR}/lib/libdxil.so"
-            "${TOURMALINE_BINARY_DIR}"
+            "${TOURMALINE_RUNTIME_DIR}"
     )
 endif()
 
@@ -271,7 +276,7 @@ if(ENABLE_OPTICK)
 add_custom_command(TARGET engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:OptickCore>"
-        "${TOURMALINE_BINARY_DIR}"
+        "${TOURMALINE_RUNTIME_DIR}"
 )
 endif()
 
@@ -280,7 +285,7 @@ endif()
 add_custom_command(TARGET engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:SDL3::SDL3>"
-        "${TOURMALINE_BINARY_DIR}"
+        "${TOURMALINE_RUNTIME_DIR}"
 )
 
 # Prebuilt-Embree route (root CMakeLists find_package): the shared
@@ -295,7 +300,7 @@ if(embree_FOUND)
             add_custom_command(TARGET engine POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${_EMBREE_BIN_DIR}/${_embree_dll}"
-                    "${TOURMALINE_BINARY_DIR}"
+                    "${TOURMALINE_RUNTIME_DIR}"
                 COMMENT "Staging the prebuilt Embree runtime ${_embree_dll} at the build root"
             )
         else()
