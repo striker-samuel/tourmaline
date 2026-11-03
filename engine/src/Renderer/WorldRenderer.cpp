@@ -3564,6 +3564,8 @@ namespace engine {
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
+		m_gameUi.Destroy(*m_rendergraph);
+		m_extraGameUi = {};
 		m_viewportResources.ui.Destroy(*m_rendergraph);
 		m_viewportResources.uiComposite.DestroyShaders();
 		// Probe pre-mix module (frees its graph logical views + resources;
@@ -19603,6 +19605,16 @@ namespace engine {
 			m_imgui->AddPass(*m_rendergraph,
 				m_viewportResources.ui.logicalView, uiExtent,
 				smvk::AttachmentLoadOp::Clear, smvk::ClearColor(0, 0, 0, 0));
+			// Native game HUD uses the SAME offscreen UI target and rendergraph
+			// as the authored scene. SDL is window/input only, never a renderer.
+			if (m_extraGameUi) {
+				m_gameUi.BeginFrame();
+				m_extraGameUi(m_gameUi, uiExtent);
+				if (!m_gameUi.AppendPass(*m_context, *m_rendergraph,
+					m_viewportResources.ui.logicalView, uiExtent, fb.frameIndex))
+					std::fprintf(stderr,
+						"[GameUI] failed to append native game overlay pass\n");
+			}
 			m_viewportResources.uiComposite.AddCompositePass(*m_rendergraph,
 				m_viewportResources.ui.logicalView,
 				m_viewportResources.ui.bindlessIndex,
