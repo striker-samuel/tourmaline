@@ -65,27 +65,28 @@ struct AppManifest {
 // The catalog identity KIND BYTES — an ABI shared by three writers:
 // the generated project.h's AssetKind enum values, the per-pak
 // identity tables' kind bytes, and the runtime's validation.
-// Do not renumber - new kinds APPEND.
-inline constexpr uint8_t kCatalogKindScene = 0;
-inline constexpr uint8_t kCatalogKindTexture = 1;
-inline constexpr uint8_t kCatalogKindMesh = 2;
-inline constexpr uint8_t kCatalogKindSound = 3;
+// Zero is the invalid/unset kind; real kinds start at 1. New kinds APPEND.
+inline constexpr uint8_t kCatalogKindNil = 0;
+inline constexpr uint8_t kCatalogKindScene = 1;
+inline constexpr uint8_t kCatalogKindTexture = 2;
+inline constexpr uint8_t kCatalogKindMesh = 3;
+inline constexpr uint8_t kCatalogKindSound = 4;
 // PROJECT-AUTHORED SHADER assets (compiled .spv the project owns —
 // distinct from the ENGINE-NATIVE set the engine-shaders.pak carries;
 // project recipes never control mandatory engine shader inclusion).
-inline constexpr uint8_t kCatalogKindShader = 4;
+inline constexpr uint8_t kCatalogKindShader = 5;
 // GI bake SETS (.givolumemanifest — a baked lighting set of one or
 // more GI volumes; loaded by GiKey through AssetManager::LoadGI,
 // blendable across two resident sets).
-inline constexpr uint8_t kCatalogKindGi = 5;
+inline constexpr uint8_t kCatalogKindGi = 6;
 // AUTHORED AUDIO GRAPHS (.audiograph — the audio system's node-graph
 // + cue asset; docs/audio_graph.md. The graph asset carries ALL of its
 // cues — the generated header additionally emits per-cue constants
 // bundling (graph id, cue ordinal) in project::audiocues).
-inline constexpr uint8_t kCatalogKindAudioGraph = 6;
-inline constexpr uint8_t kCatalogKindSpriteSet = 7;
-inline constexpr uint8_t kCatalogKindStateMachine = 8;
-inline constexpr uint8_t kCatalogKindNavMesh = 9;
+inline constexpr uint8_t kCatalogKindAudioGraph = 7;
+inline constexpr uint8_t kCatalogKindSpriteSet = 8;
+inline constexpr uint8_t kCatalogKindStateMachine = 9;
+inline constexpr uint8_t kCatalogKindNavMesh = 10;
 // The kind string <-> byte mapping ("scene"/"texture"/"mesh"/"sound"/
 // "shader"/"gi"/"audiograph"; false for any other spelling).
 [[nodiscard]] bool CatalogKindFromString(const std::string& kind,
