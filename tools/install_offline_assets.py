@@ -35,6 +35,10 @@ def configure(source: str, archive: str, cache: str, config: Path | None = None,
 
     if not 1024 <= port <= 65535 or poll < 0.5 or settle < 0.5 or cache_gib < 0:
         raise ValueError("invalid port, polling interval, settle window or cache size")
+    # Setup must validate an accessible source; unlike first-time setup,
+    # a previously configured service may restart while SMB is offline.
+    if not Path(source).expanduser().is_dir():
+        raise ValueError("select an accessible project folder before installing")
     Archive(source, archive, cache, settle=settle, max_cache_bytes=int(cache_gib * 1024**3))
     destination = (config or default_config()).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
