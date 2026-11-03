@@ -253,6 +253,10 @@ namespace editor {
 		// dock's "Live view" TAB — see the BottomDock block above.)
 		if (m_placement.showGraph)
 			DrawPlacementGraph();
+		if (m_stateGraph.show) {
+			m_stateGraph.Draw();
+			m_imguiFocusInPlacementGraph |= m_stateGraph.Focused();
+		}
 		// Frame-time histogram (View menu / F12): a SEPARATE bottom strip —
 		// full-width horizontal bucket graph pinned to the bottom of the
 		// screen, drawn last so it sits on top of the panels/docks. Zero cost
@@ -749,6 +753,8 @@ namespace editor {
 			ImGui::Separator();
 			if (ImGui::MenuItem("Placement graph", nullptr, m_placement.showGraph))
 				m_placement.showGraph = !m_placement.showGraph;
+			if (ImGui::MenuItem("State machine graph...", nullptr, m_stateGraph.show))
+				m_stateGraph.show = !m_stateGraph.show;
 			ImGui::MenuItem("Component Spreadsheet...", nullptr, &m_showComponentTable);
 			if (ImGui::MenuItem("Reference editor...", nullptr,
 				m_showReferencesPanel))
@@ -4996,6 +5002,15 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					ImGui::EndTable();
 				}
 			}
+		}
+		if (path.extension() == ".statemachine") {
+			if (ImGui::Button("Edit state machine graph...")) {
+				if (!m_stateGraph.show || m_stateGraph.Path() != path.string())
+					m_stateGraph.Open(path.string());
+				m_stateGraph.show = true;
+			}
+			if (m_stateGraph.Dirty() && m_stateGraph.Path() == path.string())
+				ImGui::TextDisabled("This graph has unsaved edits in the graph window.");
 		}
 		ImGui::TextDisabled("Text preview (read-only)%s",
 			preview.truncated ? " - first 64 KiB" : "");
