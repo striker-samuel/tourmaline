@@ -2120,6 +2120,10 @@ protected:
 	tour::gpu_scene::CandidateValidator m_gpuSceneValidator;
 	smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneCullModule{};
 	smvk::ShaderProgram m_gpuSceneCullProgram{};
+	// Three deterministic verdict-compaction stages (count/prefix/scatter).
+	// Only loaded by the explicit GPU-scene validation path.
+	std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneCompactModules{};
+	std::array<smvk::ShaderProgram, 3> m_gpuSceneCompactPrograms{};
 	bool m_gpuSceneDatabaseReady = false;
 	// Transient gfx registration indices are reassigned on each rebuild.
 	// Republish all mesh links when the source registration changes.
