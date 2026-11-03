@@ -382,7 +382,8 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 			s = layer.heightfield->sample(id);
 			break;
 		case DomainKind::PointCloud:
-			if (!layer.pointCloud || !layer.pointCloud->valid() ||
+			if (!layer.pointCloud || !(layer.pointCloud->tile == tile) ||
+				!layer.pointCloud->valid() ||
 				i >= layer.pointCloud->pointCount()) continue;
 			s = layer.pointCloud->sample(i);
 			break;
