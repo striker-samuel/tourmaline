@@ -543,13 +543,13 @@ void EditorApp::CloseScene() {
 	if (!m_world)
 		return;
 	SavePrefs();
+	// Never persist temporary prefab live-preview transforms into the
+	// parent document; restore the original source state first.
+	RestorePrefabPreview();
 	// Commit the live scene BEFORE clearing its world. Previously this
 	// save ran after m_world.reset(), making SaveTourTo a no-op.
 	if (!TourTarget().empty())
 		SaveTour();
-	// World replacement must never strand a temporary prefab preview
-	// in a dropped parent scene or retain pointers to its node IDs.
-	RestorePrefabPreview();
 	m_world.reset();
 	// The material-page thumbnails' bindings reference the cluster's
 	// texture views — the pool dies with the world (see TextureThumb).
