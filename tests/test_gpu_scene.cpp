@@ -7,12 +7,20 @@
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+// House test convention (AGENTS.md): the CHECK macro ALWAYS evaluates its
+// condition, in every build flavor. This file originally used CHECK(),
+// whose NDEBUG no-op makes Release runs vacuous - and any side effect
+// inside an assert (see test_gpu_scene_candidates.cpp:
+// assert(leaves.Flush(db))) was silently skipped, crashing the run.
+#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
+    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
+    while (0)
+namespace { int g_checks = 0; int g_failures = 0; }
 
 namespace {
 using namespace tour::gpu_scene;
@@ -26,7 +34,7 @@ struct FakeGpu {
     std::array<std::vector<std::pair<size_t, size_t>>, Flights> copies{};
 
     bool Upload(uint32_t f, size_t offset, const void* src, size_t bytes) {
-        assert(offset % sizeof(Entry) == 0 && bytes % sizeof(Entry) == 0);
+        CHECK(offset % sizeof(Entry) == 0 && bytes % sizeof(Entry) == 0);
         auto& data = mirror[f];
         const size_t need = (offset + bytes) / sizeof(Entry);
         if (data.size() < need)
@@ -55,87 +63,87 @@ void CheckDatabase() {
     a.refs.x = 3;
 
     const auto one = db.instances.Insert(a);
-    assert(one.slot == 0 && one.generation == 1);
-    assert(db.instances.Contains(one));
-    assert(db.instances.LiveCount() == 1);
+    CHECK(one.slot == 0 && one.generation == 1);
+    CHECK(db.instances.Contains(one));
+    CHECK(db.instances.LiveCount() == 1);
     for (uint32_t f = 0; f < Flights; ++f)
-        assert(db.instances.PendingRows(f) == 1);
+        CHECK(db.instances.PendingRows(f) == 1);
 
     // Publish the first flight. Nothing in any other flight is lost.
-    assert(gpu.Publish(db.instances, 0, true));
-    assert(db.instances.PendingRows(0) == 0);
-    assert(gpu.mirror[0][0].identity.x == 1);
-    assert(gpu.mirror[0][0].identity.y == 1);
+    CHECK(gpu.Publish(db.instances, 0, true));
+    CHECK(db.instances.PendingRows(0) == 0);
+    CHECK(gpu.mirror[0][0].identity.x == 1);
+    CHECK(gpu.mirror[0][0].identity.y == 1);
 
     // Change the same slot repeatedly before flight 1 is reused.
     a.refs.x = 6;
-    assert(db.instances.Update(one, a));
+    CHECK(db.instances.Update(one, a));
     a.refs.x = 7;
-    assert(db.instances.Update(one, a));
-    assert(db.instances.PendingRows(0) == 1);
-    assert(db.instances.PendingRows(1) == 1);
+    CHECK(db.instances.Update(one, a));
+    CHECK(db.instances.PendingRows(0) == 1);
+    CHECK(db.instances.PendingRows(1) == 1);
     gpu.copies[0].clear();
-    assert(gpu.Publish(db.instances, 0));
-    assert(gpu.copies[0].size() == 1);
-    assert(gpu.copies[0][0].second == sizeof(Row<Instance>));
-    assert(gpu.mirror[0][0].value.refs.x == 7);
+    CHECK(gpu.Publish(db.instances, 0));
+    CHECK(gpu.copies[0].size() == 1);
+    CHECK(gpu.copies[0][0].second == sizeof(Row<Instance>));
+    CHECK(gpu.mirror[0][0].value.refs.x == 7);
 
     // A flight which missed three edits still receives the final value.
-    assert(gpu.Publish(db.instances, 1, true));
-    assert(gpu.mirror[1][0].value.refs.x == 7);
-    assert(db.instances.PendingRows(1) == 0);
+    CHECK(gpu.Publish(db.instances, 1, true));
+    CHECK(gpu.mirror[1][0].value.refs.x == 7);
+    CHECK(db.instances.PendingRows(1) == 0);
 
     // After delete, stale handles must never refer to the new occupant.
-    assert(db.instances.Erase(one));
-    assert(!db.instances.Contains(one));
-    assert(db.instances.Get(one) == nullptr);
-    assert(!db.instances.Update(one, a));
-    assert(!db.instances.Erase(one));
-    assert(gpu.Publish(db.instances, 0));
-    assert(gpu.mirror[0][0].identity.y == 0);
-    assert(gpu.mirror[0][0].identity.x == 2);
+    CHECK(db.instances.Erase(one));
+    CHECK(!db.instances.Contains(one));
+    CHECK(db.instances.Get(one) == nullptr);
+    CHECK(!db.instances.Update(one, a));
+    CHECK(!db.instances.Erase(one));
+    CHECK(gpu.Publish(db.instances, 0));
+    CHECK(gpu.mirror[0][0].identity.y == 0);
+    CHECK(gpu.mirror[0][0].identity.x == 2);
     const auto two = db.instances.Insert(a);
-    assert(two.slot == one.slot && two.generation == 2);
-    assert(!db.instances.Contains(one) && db.instances.Contains(two));
-    assert(gpu.Publish(db.instances, 0));
-    assert(gpu.mirror[0][0].identity.y == 1);
-    assert(gpu.mirror[0][0].identity.x == two.generation);
+    CHECK(two.slot == one.slot && two.generation == 2);
+    CHECK(!db.instances.Contains(one) && db.instances.Contains(two));
+    CHECK(gpu.Publish(db.instances, 0));
+    CHECK(gpu.mirror[0][0].identity.y == 1);
+    CHECK(gpu.mirror[0][0].identity.x == two.generation);
 
     // Coalesce adjacent dirty rows even when changed in reverse order.
     const auto three = db.instances.Insert({});
     const auto four = db.instances.Insert({});
-    assert(gpu.Publish(db.instances, 0, true));
+    CHECK(gpu.Publish(db.instances, 0, true));
     gpu.copies[0].clear();
-    assert(db.instances.Update(four, a));
-    assert(db.instances.Update(three, a));
-    assert(gpu.Publish(db.instances, 0));
-    assert(gpu.copies[0].size() == 1);
-    assert(gpu.copies[0][0].second == 2 * sizeof(Row<Instance>));
-    assert(db.instances.PendingRows(0) == 0);
+    CHECK(db.instances.Update(four, a));
+    CHECK(db.instances.Update(three, a));
+    CHECK(gpu.Publish(db.instances, 0));
+    CHECK(gpu.copies[0].size() == 1);
+    CHECK(gpu.copies[0][0].second == 2 * sizeof(Row<Instance>));
+    CHECK(db.instances.PendingRows(0) == 0);
     gpu.copies[0].clear();
-    assert(gpu.Publish(db.instances, 0));
-    assert(gpu.copies[0].empty());
+    CHECK(gpu.Publish(db.instances, 0));
+    CHECK(gpu.copies[0].empty());
 
     // A failed writer cannot acknowledge dirty state; retry succeeds.
     a.refs.x = 99;
-    assert(db.instances.Update(two, a));
+    CHECK(db.instances.Update(two, a));
     const bool failed = db.instances.Publish(0, false,
         [](size_t, const void*, size_t) { return false; });
-    assert(!failed && db.instances.PendingRows(0) == 1);
-    assert(gpu.Publish(db.instances, 0));
-    assert(gpu.mirror[0][0].value.refs.x == 99);
+    CHECK(!failed && db.instances.PendingRows(0) == 1);
+    CHECK(gpu.Publish(db.instances, 0));
+    CHECK(gpu.mirror[0][0].value.refs.x == 99);
 
     // Reallocation of a GPU mirror forces the entire current snapshot.
-    assert(gpu.Publish(db.instances, 1, true));
-    assert(gpu.mirror[1].size() == db.instances.Size());
-    assert(gpu.mirror[1][two.slot].value.refs.x == 99);
+    CHECK(gpu.Publish(db.instances, 1, true));
+    CHECK(gpu.mirror[1].size() == db.instances.Size());
+    CHECK(gpu.mirror[1][two.slot].value.refs.x == 99);
 
     // No camera-dependent invalidation: unchanged scene = no copies.
     for (uint32_t f = 0; f < Flights; ++f) {
-        assert(gpu.Publish(db.instances, f, true));
+        CHECK(gpu.Publish(db.instances, f, true));
         gpu.copies[f].clear();
-        assert(gpu.Publish(db.instances, f));
-        assert(gpu.copies[f].empty());
+        CHECK(gpu.Publish(db.instances, f));
+        CHECK(gpu.copies[f].empty());
     }
 
     // Mesh/LOD/submesh/leaf tables are independently versioned.
@@ -143,14 +151,14 @@ void CheckDatabase() {
     const auto lod = db.lods.Insert(Lod{0, 1, 0.05f, 0});
     const auto submesh = db.submeshes.Insert(Submesh{22, 9, 1, 0xFu});
     const auto leaf = db.leaves.Insert(Leaf{});
-    assert(db.meshes.Contains(mesh));
-    assert(db.lods.Contains(lod));
-    assert(db.submeshes.Contains(submesh));
-    assert(db.leaves.Contains(leaf));
-    assert(db.meshes.PendingRows(0) == 1);
-    assert(db.lods.PendingRows(0) == 1);
-    assert(db.submeshes.PendingRows(0) == 1);
-    assert(db.leaves.PendingRows(0) == 1);
+    CHECK(db.meshes.Contains(mesh));
+    CHECK(db.lods.Contains(lod));
+    CHECK(db.submeshes.Contains(submesh));
+    CHECK(db.leaves.Contains(leaf));
+    CHECK(db.meshes.PendingRows(0) == 1);
+    CHECK(db.lods.PendingRows(0) == 1);
+    CHECK(db.submeshes.PendingRows(0) == 1);
+    CHECK(db.leaves.PendingRows(0) == 1);
 }
 
 void CheckLargeScene() {
@@ -163,24 +171,24 @@ void CheckLargeScene() {
         v.refs.x = i;
         ids.push_back(table.Insert(v));
     }
-    assert(table.Size() == 100000);
-    assert(table.LiveCount() == 100000);
-    assert(gpu.Publish(table, 0, true));
+    CHECK(table.Size() == 100000);
+    CHECK(table.LiveCount() == 100000);
+    CHECK(gpu.Publish(table, 0, true));
     gpu.copies[0].clear();
     Instance one = *table.Get(ids[54321]);
     one.refs.x = 77;
-    assert(table.Update(ids[54321], one));
-    assert(table.PendingRows(0) == 1);
-    assert(gpu.Publish(table, 0));
-    assert(gpu.copies[0].size() == 1);
-    assert(gpu.copies[0][0].first == size_t(54321) * sizeof(Row<Instance>));
-    assert(gpu.copies[0][0].second == sizeof(Row<Instance>));
+    CHECK(table.Update(ids[54321], one));
+    CHECK(table.PendingRows(0) == 1);
+    CHECK(gpu.Publish(table, 0));
+    CHECK(gpu.copies[0].size() == 1);
+    CHECK(gpu.copies[0][0].first == size_t(54321) * sizeof(Row<Instance>));
+    CHECK(gpu.copies[0][0].second == sizeof(Row<Instance>));
 }
 } // namespace
 
 int main() {
     CheckDatabase();
     CheckLargeScene();
-    std::puts("gpu scene database: PASS");
-    return 0;
+    std::printf("checks=%d failures=%d\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
 }

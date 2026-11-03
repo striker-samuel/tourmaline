@@ -3,12 +3,20 @@
 
 #include <Engine/Core/double_float.h>
 
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
+// House test convention (AGENTS.md): the CHECK macro ALWAYS evaluates its
+// condition, in every build flavor. This file originally used CHECK(),
+// whose NDEBUG no-op makes Release runs vacuous - and any side effect
+// inside an assert (see test_gpu_scene_candidates.cpp:
+// assert(leaves.Flush(db))) was silently skipped, crashing the run.
+#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
+    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
+    while (0)
+namespace { int g_checks = 0; int g_failures = 0; }
 
 namespace {
 using tour::math::DoubleFloat3;
@@ -31,8 +39,8 @@ void CheckRelative(const glm::dvec3& world, const glm::dvec3& eye,
                    double tolerance) {
     const DoubleFloat3 gpuWorld = SplitDoubleFloat(world);
     const DoubleFloat3 gpuEye = SplitDoubleFloat(eye);
-    assert(gpuWorld.high.w == 0.0f && gpuWorld.low.w == 0.0f);
-    assert(gpuEye.high.w == 0.0f && gpuEye.low.w == 0.0f);
+    CHECK(gpuWorld.high.w == 0.0f && gpuWorld.low.w == 0.0f);
+    CHECK(gpuEye.high.w == 0.0f && gpuEye.low.w == 0.0f);
     const glm::vec3 delta = DoubleFloatRelative(gpuWorld, gpuEye);
     const glm::dvec3 truth = world - eye;
     for (int i = 0; i != 3; ++i)
@@ -46,21 +54,21 @@ void CheckRelative(const glm::dvec3& world, const glm::dvec3& eye,
 int main() {
     // Conversion layout and exact zeros.
     const DoubleFloat3 zero = SplitDoubleFloat(glm::dvec3(0.0));
-    assert(zero.high == glm::vec4(0.0f));
-    assert(zero.low == glm::vec4(0.0f));
+    CHECK(zero.high == glm::vec4(0.0f));
+    CHECK(zero.low == glm::vec4(0.0f));
 
     // A small offset at one trillion world units is invisible if absolute
     // world and eye positions are independently converted to float32.
     const glm::dvec3 eye(1.0e12, -1.0e12, 1.0e12);
     const glm::dvec3 world = eye + glm::dvec3(0.125, -3.25, 7.5);
     const glm::vec3 broken = glm::vec3(world) - glm::vec3(eye);
-    assert(broken == glm::vec3(0.0f));
+    CHECK(broken == glm::vec3(0.0f));
     CheckRelative(world, eye, 0.02);
 
     const DoubleFloat3 packed = SplitDoubleFloat(world);
     const glm::dvec3 restored = JoinDoubleFloat(packed);
     for (int i = 0; i != 3; ++i)
-        assert(std::abs(restored[i] - world[i]) < 0.02);
+        CHECK(std::abs(restored[i] - world[i]) < 0.02);
 
     // Exercise both signs, the high-part rounding boundary and hundreds
     // of nearby offsets. 2 cm is a conservative bound at 1e12 units,
@@ -81,14 +89,15 @@ int main() {
     const glm::mat4 relativeModel = RelativeModel(model, eye);
     for (int i = 0; i != 3; ++i)
         CheckNear(relativeModel[3][i], (world - eye)[i], 0.0002);
-    assert(relativeModel[3].w == 1.0f);
+    CHECK(relativeModel[3].w == 1.0f);
 
     // Snapping must be stable around positive and negative grid edges.
     const glm::dvec3 snapped = SnapRenderOrigin(
         glm::dvec3(-0.5, 4096.0, -4096.125));
-    assert(snapped == glm::dvec3(-4096.0, 4096.0, -8192.0));
-    assert(SnapRenderOrigin(glm::dvec3(4095.99, 0.0, 8191.0))
+    CHECK(snapped == glm::dvec3(-4096.0, 4096.0, -8192.0));
+    CHECK(SnapRenderOrigin(glm::dvec3(4095.99, 0.0, 8191.0))
            == glm::dvec3(0.0, 0.0, 4096.0));
 
-    std::puts("doublefloat scaffolding: PASS");
+    std::printf("checks=%d failures=%d\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
 }

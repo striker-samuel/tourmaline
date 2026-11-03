@@ -4,6 +4,16 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <cstdio>
+// House test convention (AGENTS.md): the CHECK macro ALWAYS evaluates its
+// condition, in every build flavor. This file originally used CHECK(),
+// whose NDEBUG no-op makes Release runs vacuous - and any side effect
+// inside an assert (see test_gpu_scene_candidates.cpp:
+// assert(leaves.Flush(db))) was silently skipped, crashing the run.
+#define CHECK(cond) do { ++g_checks; if (!(cond)) { ++g_failures; \
+    std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } \
+    while (0)
+namespace { int g_checks = 0; int g_failures = 0; }
 
 using namespace tour::vertexpull;
 
@@ -37,6 +47,6 @@ int main() {
         std::cerr << "vertex byte range failed\n";
         return 1;
     }
-    std::cout << "Vertex pulling contracts OK\n";
-    return 0;
+    std::printf("checks=%d failures=%d\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
 }
