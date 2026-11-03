@@ -52,12 +52,16 @@ fs::path Sidecar(const std::string& published) {
 }
 
 bool ValidDocument(const fs::path& p) {
-	// Opening a document through its OS association must never become
-	// a shell/script/executable launch from a hand-edited sidecar.
+	// A hand-edited .dccsource must not launch scripts or executables
+	// merely because the OS has a file association. Extend this
+	// explicit set for additional DCC applications.
 	const std::string e = LowerExt(p);
-	return e != ".exe" && e != ".com" && e != ".bat"
-		&& e != ".cmd" && e != ".ps1" && e != ".sh"
-		&& e != ".msi" && e != ".app" && e != ".desktop";
+	return e == ".ma" || e == ".mb" || e == ".blend"
+		|| e == ".obj" || e == ".gltf" || e == ".glb"
+		|| e == ".fbx" || e == ".usd" || e == ".usda"
+		|| e == ".usdc" || e == ".hip" || e == ".hiplc"
+		|| e == ".hipnc" || e == ".max" || e == ".c4d"
+		|| e == ".dae" || e == ".abc";
 }
 } // namespace
 
@@ -340,6 +344,20 @@ bool RunDccPublish(const DccAsset& asset, const std::string& publishScript,
 			|| !Regular(fs::path(publishScript))) {
 		err = "DCC authoring document or staged export runner is missing";
 		return false;
+	}
+	// Native-file first publish must not silently overwrite an
+	// unrelated or manually imported glTF that happens to share a stem.
+	if (asset.fromNative && Regular(fs::path(asset.published))) {
+		DccAsset existing;
+		std::string linkError;
+		if (!ResolveDccAsset(asset.published, existing, linkError)
+				|| !existing.linked
+				|| existing.document != asset.document) {
+			err = "published glTF already exists and is not linked to "
+				"this native scene; select the glTF and explicitly "
+				"link its DCC source before publishing";
+			return false;
+		}
 	}
 	const char* configured = std::getenv("TOURMALINE_PYTHON");
 	const std::string python = (configured && *configured)
