@@ -184,17 +184,17 @@ def _scaffold(recipe, name, entry, pak, gi, cubemaps):
 
 def _readme(info):
     return (f"# {info['project']}\n\n"
-            f"Tourmaline project created with \`tools/project_init.py\`.\n\n"
-            f"- Scene: \`{info['entry_scene']}\`\n"
-            f"- Recipe: \`{Path(info['recipe']).name if info['recipe'] else '(not generated)'}\`\n"
-            f"- Cooked pak: \`{info['pak_output']}\`\n\n"
+            f"Tourmaline project created with `tools/project_init.py`.\n\n"
+            f"- Scene: `{info['entry_scene']}`\n"
+            f"- Recipe: `{Path(info['recipe']).name if info['recipe'] else '(not generated)'}`\n"
+            f"- Cooked pak: `{info['pak_output']}`\n\n"
             "Import a model and author a scene if the entry file does not exist yet.\n"
             "A recipe scaffold is not buildable until its root scene references real geometry.\n\n"
             "Then validate and build with the native Project executable:\n\n"
-            "\`\`\`bash\n"
+            "```bash\n"
             f"Project validate --project . --recipe {Path(info['recipe']).name if info['recipe'] else 'game.tourrecipe'}\n"
             f"Project build --project . --recipe {Path(info['recipe']).name if info['recipe'] else 'game.tourrecipe'}\n"
-            "\`\`\`\n")
+            "```\n")
 
 
 def _emit(info, structured):
