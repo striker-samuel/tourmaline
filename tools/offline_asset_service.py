@@ -46,8 +46,11 @@ class Archive:
         self.source = Path(source).expanduser().resolve()
         self.archive = Path(archive).expanduser().resolve()
         self.cache = Path(cache).expanduser().resolve()
-        if not self.source.is_dir():
-            raise ValueError(f"source share is inaccessible: {self.source}")
+        # Local revision access must survive an offline/unmounted SMB share.
+        # Scan reports a transient error, but the archive can still serve
+        # already captured versions after restarting the service.
+        if self.source.exists() and not self.source.is_dir():
+            raise ValueError(f"source must be a directory: {self.source}")
         for a, b in ((self.source, self.archive), (self.source, self.cache),
                      (self.archive, self.cache)):
             if is_inside(a, b) or is_inside(b, a):
