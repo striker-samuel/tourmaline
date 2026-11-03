@@ -196,6 +196,15 @@ bool EditorApp::OpenProject(const std::string& dir) {
 		Log("Project already open: " + m_projectName);
 		return true;
 	}
+	// A recipe configuration belongs to one project root. Never keep
+	// the prior project's editable recipe pointed at the new root.
+	if (m_showProjectExportWindow && m_projectExportDirty)
+		Log("Export Project: closing unsaved recipe draft on project switch.");
+	m_showProjectExportWindow = false;
+	m_projectExportRecipes.clear();
+	m_projectExportRecipeText.fill('\0');
+	m_projectExportDirty = false;
+	m_projectExportStatus.clear();
 	// A project switch drops the live scene (its live view dies with
 	// it — CloseScene suspends + retires safely; the tour autosave
 	// contract in CloseScene keeps edits safe).

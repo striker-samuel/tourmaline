@@ -756,38 +756,38 @@ namespace editor {
 				"Shift+F5 (LIGHTING)"))
 				ModalUvInsetCycle();
 			ImGui::Separator();
-			if (ImGui::MenuItem("Translate gizmo", "W",
+			if (ImGui::MenuItem("Translate gizmo", "W (Layout/Lighting)",
 				m_gizmoMode == GizmoMode::Translate))
 				m_gizmoMode = GizmoMode::Translate;
-			if (ImGui::MenuItem("Rotate gizmo", "E",
+			if (ImGui::MenuItem("Rotate gizmo", "E (Layout/Lighting)",
 				m_gizmoMode == GizmoMode::Rotate))
 				m_gizmoMode = GizmoMode::Rotate;
-			if (ImGui::MenuItem("Scale gizmo", "R",
+			if (ImGui::MenuItem("Scale gizmo", "R (Layout/Lighting)",
 				m_gizmoMode == GizmoMode::Scale))
 				m_gizmoMode = GizmoMode::Scale;
 			ImGui::Separator();
 			if (ImGui::MenuItem("Selection radial...", "Q"))
 				m_showSelRadial = true;
-			if (ImGui::MenuItem("Select: Mesh", "Q,1",
+			if (ImGui::MenuItem("Select: Mesh", "Q > 1",
 				m_selMode == SelMode::Mesh)) {
 				m_selMode = SelMode::Mesh;
 				ClearSubSelection();
 			}
-			if (ImGui::MenuItem("Select: Face", "Q,2",
+			if (ImGui::MenuItem("Select: Face", "Q > 2",
 				m_selMode == SelMode::Face)) {
 				m_selMode = SelMode::Face;
 				ClearSubSelection();
 			}
-			if (ImGui::MenuItem("Select: Vertex", "Q,3",
+			if (ImGui::MenuItem("Select: Vertex", "Q > 3",
 				m_selMode == SelMode::Vertex)) {
 				m_selMode = SelMode::Vertex;
 				ClearSubSelection();
 			}
 			ImGui::TextDisabled("mode: %s (highlight only)", SelModeName(m_selMode));
 			ImGui::Separator();
-			if (ImGui::MenuItem("Frame selection", "F"))
+			if (ImGui::MenuItem("Frame selection", "F (Layout/Lighting)"))
 				FrameSelection();
-			if (ImGui::MenuItem("Frame all", "Shift+F"))
+			if (ImGui::MenuItem("Frame all", "Shift+F (Layout/Lighting)"))
 				FrameAll();
 			// UV editor window retired (see the DrawUvEditorWindow note).
 			//if (m_showUvEditor && ImGui::MenuItem("Reset UV window (zoom 1)")) {

@@ -155,8 +155,9 @@ bool EditorApp::LoadProjectExportRecipe(const std::string& filename) {
 }
 
 void EditorApp::OpenProjectExportWindow() {
-    if (m_projectRoot.empty()) {
-        Log("Export Project: open a project first.");
+    if (m_projectRoot.empty() || m_cookRunning || m_bakeRunning
+        || m_dccPublishRunning) {
+        Log("Export Project: open a project and finish active tasks first.");
         return;
     }
     // Opening the menu twice must never silently discard unsaved edits.
