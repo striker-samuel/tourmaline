@@ -202,7 +202,7 @@ bool InitializeProject(const ProjectInitOptions& options,
         result.imported = true;
         if (!options.fromScene.empty()) {
             const std::string seeded = smvk::project::SeedProjectScene(
-                project, options.fromScene,
+                project, options.fromScene.string(),
                 options.fromGltf.stem().generic_string(), error);
             if (seeded.empty()) {
                 error = "scene seed failed: " + error;

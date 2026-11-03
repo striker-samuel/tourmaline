@@ -70,8 +70,8 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 8ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793701499ULL;
+inline constexpr std::uint64_t Generation = 9ULL;
+inline constexpr std::uint64_t GeneratedAt = 1793701773ULL;
 inline constexpr std::string_view ContentHash = "ad0cac7f766b29a0";
 
 namespace scenes {
@@ -318,12 +318,12 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=8 timestamp=1793701499
+// generator generation=9 timestamp=1793701773
 // catalog hash=ad0cac7f766b29a0
 //
 // [assets]
 // asset 0x1000 path="content/scenes/game.tour" pak="world"
-//   mtime_s=1793701499 size=746 hash=fnv1a64:1a79beb6c48bb20b
+//   mtime_s=1793701544 size=757 hash=fnv1a64:b7b17d694f5a47b5
 // asset 0x2000 path="content/models/game/shared/stone.png" pak="shared"
 //   mtime_s=1793447799 size=73 hash=fnv1a64:c602ab332a5e2cb5
 // asset 0x3001 path="content/models/game/game.geometry" pak="world"
@@ -337,7 +337,7 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
 // pak file="shared-84eb45c16e76f776.pak"
 //   mtime_s=1793701499 size=59734 hash=fnv1a64:84eb45c16e76f776 state=verified
 // pak file="game-0be231047c5eb76d.pak"
-//   mtime_s=1793701499 size=10236 hash=fnv1a64:0be231047c5eb76d state=verified
+//   mtime_s=1793701499 size=10236 hash=fnv1a64:0be231047c5eb76d state=stale
 //
 // TOURMALINE-METADATA-END 1
 // =====================================================================
