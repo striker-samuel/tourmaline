@@ -57,6 +57,9 @@
 #include <gltf_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Camera/camera.h>
+#include <Engine/Renderer/ReferenceSceneRenderer.h>
+#include <atomic>
+#include <future>
 #include <Engine/GI/lightmap.h>
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Renderer/cubemap_placement.h>
@@ -367,7 +370,7 @@ class EditorApp : public tour::App {
 	friend class WorldLayer;
 public:
 	EditorApp();
-	~EditorApp() override = default;
+	~EditorApp() override;
 
 	// Source-scene open (paks are refused — they run in the App; the
 	// editor is the WYSIWYG authoring tool over sources/assets).
@@ -3024,6 +3027,25 @@ private:
 	void DrawVerbToast();
 	int m_rightTab = 0; // Inspector | Render | Material (the UV tab is retired)
 	int m_leftTab = 0;  // Assets | Console | Overrides (the left column's LOWER tabbed panel — the Outliner above it is always visible, not a tab)
+	// ---- ENGINE REFERENCE SCENE RENDERER (editor_reference.cpp) ----
+	// Live-world snapshot is extracted synchronously; Embree BVH build and
+	// camera sampling run off the UI thread. A finished frame is saved as
+	// a PNG plus a scene-linear HDR PFM. The cache is a normal asset-sidecar
+	// image, displayed with AssetSidecarThumb in the Reference tab.
+	std::future<tour::renderer::ReferenceImage> m_referenceJob;
+	std::atomic_bool m_referenceCancel{false};
+	std::atomic<uint32_t> m_referenceRows{0};
+	bool m_referenceRunning = false;
+	bool m_referenceHaveImage = false;
+	int m_referenceResolution = 256;
+	int m_referenceSpp = 32;
+	int m_referenceBounces = 3;
+	float m_referenceExposure = 0.001f;
+	std::string m_referencePath;
+	std::string m_referenceStatus = "No reference render yet";
+	void StartReferenceRender();
+	void CancelReferenceRender();
+	void DrawReferencePanel();
 	// ---- SIDECAR MATERIAL BALL PREVIEW (editor_matball.cpp) -----------
 	// An offscreen 256x256 pass — a unit sphere wearing the material's
 	// PBR look under a FIXED default sky (matball.vert/frag.hlsl — one
