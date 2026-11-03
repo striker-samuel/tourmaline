@@ -5,6 +5,8 @@
 // at the centroids of its 16 subdivision-2 microtriangles, then encode the
 // 2-state OMM bits in Vulkan's bird-curve order. This is a one-time
 // per-BLAS bake (not a per-frame ray-tracing shader).
+// Standalone compute pass: suppress the common material push-constant block.
+#define CONTACT_SHADOW_PASS
 #include "common.hlsli"
 #include "gpu_platform.hlsli"
 
