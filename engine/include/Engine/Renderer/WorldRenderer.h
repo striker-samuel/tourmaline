@@ -70,6 +70,7 @@
 #include <Engine/Rendergraph/ssgi.h>
 #include <Engine/Rendergraph/ssgi_diffuse.h>
 #include <Engine/Rendergraph/ssr.h>
+#include <Engine/Rendergraph/planar_reflection.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Rendergraph/probeball.h>
 #include <Engine/Rendergraph/giprobe.h>
@@ -1504,6 +1505,7 @@ struct ViewportResources {
 	smvk::MotionBlur motionBlur; // blurred HDR output + velocity-gather program + pass
 	smvk::DepthOfField dof; // DOF HDR output + CoC target + low/bokeh programs + passes
 	smvk::ScreenSpaceReflections ssr; // SSR HDR composite output + program + pass
+	smvk::PlanarReflections planarReflections; // optional host-supplied mirror capture composite
 	smvk::VolumetricFog volumetric; // GI-probe raymarched fog HDR output + program + pass
 	smvk::ExposureMeter exposure; // histogram meter + compute program (auto-exposure)
 	smvk::Ssgi ssgi; // SSGI post chain: shared MAX-HZB + AO raw/blur/compose + Main's aoTerm MRT targets
@@ -1602,6 +1604,14 @@ public:
 	// The scene-lens FOV override (degrees). The embedded host drives
 	// the camera externally; this aligns the renderer's lens with the
 	// host's own camera so the framed view matches.
+	// Install a reflected-camera capture. The host registers logicalView in
+	// this renderer's rendergraph and keeps the underlying image/bindless
+	// descriptor alive until frame execution. Nullopt disables the pass.
+	// No scene render is launched recursively by this setter.
+	void SetPlanarReflectionCapture(std::optional<smvk::PlanarReflectionCapture> capture) {
+		m_planarReflectionCapture = std::move(capture);
+	}
+
 	void SetSceneFovY(float degrees) {
 		m_sceneFovYDeg = degrees > 1.0f ? degrees : kCameraFovYDegrees;
 	}
@@ -3660,6 +3670,9 @@ public:
 	// case (default Bistro view looks down the road at it). Presented in
 	// the UI as SSGI reflections (it rides the SSGI block's shared HZB);
 	// the builder/code tokens stay SSR. Default ON.
+	// Host-managed planar capture is intentionally opt-in: no capture means
+	// no extra targets, shader loads, or rendergraph passes.
+	std::optional<smvk::PlanarReflectionCapture> m_planarReflectionCapture;
 	bool m_ssrEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
