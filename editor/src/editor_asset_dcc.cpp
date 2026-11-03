@@ -10,6 +10,20 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <cstdlib>
+#include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+#include <cerrno>
+#include <cstring>
+extern char** environ;
+#endif
 
 namespace editor {
 namespace {
@@ -156,15 +170,15 @@ bool LinkDccSource(const std::string& selected,
 	// Relative paths preserve portability when the source and output
 	// move together. This file is editor metadata, not an importer input.
 	const fs::path sidecar = Sidecar(published);
-	std::ofstream out(sidecar, std::ios::binary | std::ios::trunc);
-	if (!out) {
-		err = "cannot write DCC link: " + sidecar.generic_string();
-		return false;
-	}
 	const std::string name = saved.generic_string();
 	if (name.find('\n') != std::string::npos
 			|| name.find('\r') != std::string::npos) {
 		err = "DCC document path cannot contain a newline";
+		return false;
+	}
+	std::ofstream out(sidecar, std::ios::binary | std::ios::trunc);
+	if (!out) {
+		err = "cannot write DCC link: " + sidecar.generic_string();
 		return false;
 	}
 	out << "version=1\nsource=" << name << "\n";
@@ -189,6 +203,141 @@ bool UnlinkDccSource(const std::string& selected, std::string& err) {
 	}
 	err.clear();
 	return true;
+}
+
+
+namespace {
+#ifdef _WIN32
+std::wstring Wide(const std::string& utf8) {
+	const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		utf8.c_str(), -1, nullptr, 0);
+	if (n < 1)
+		return {};
+	std::wstring w(size_t(n), L'\0');
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+			utf8.c_str(), -1, w.data(), n))
+		return {};
+	w.pop_back();
+	return w;
+}
+
+std::wstring QuoteWindowsArg(const std::wstring& arg) {
+	std::wstring out = L"\"";
+	size_t slashes = 0;
+	for (wchar_t c : arg) {
+		if (c == L'\\') { ++slashes; continue; }
+		if (c == L'"') {
+			out.append(slashes * 2 + 1, L'\\');
+			out += L'"';
+		}
+		else {
+			out.append(slashes, L'\\');
+			out += c;
+		}
+		slashes = 0;
+	}
+	out.append(slashes * 2, L'\\');
+	out += L'"';
+	return out;
+}
+#endif
+
+bool RunProcess(const std::vector<std::string>& argv, std::string& err) {
+#ifdef _WIN32
+	std::wstring cmd;
+	for (const auto& arg : argv) {
+		const auto wide = Wide(arg);
+		if (wide.empty()) { err = "invalid UTF-8 command argument"; return false; }
+		if (!cmd.empty()) cmd += L" ";
+		cmd += QuoteWindowsArg(wide);
+	}
+	std::vector<wchar_t> buffer(cmd.begin(), cmd.end());
+	buffer.push_back(L'\0');
+	STARTUPINFOW si{};
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi{};
+	if (!CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE,
+			CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+		err = "cannot start DCC runner (Win32 error "
+			+ std::to_string(GetLastError()) + ")";
+		return false;
+	}
+	WaitForSingleObject(pi.hProcess, INFINITE);
+	DWORD exitCode = 1;
+	(void)GetExitCodeProcess(pi.hProcess, &exitCode);
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
+	if (exitCode != 0) {
+		err = "DCC build process exited with code " + std::to_string(exitCode);
+		return false;
+	}
+#else
+	std::vector<char*> raw;
+	raw.reserve(argv.size() + 1);
+	for (const auto& arg : argv)
+		raw.push_back(const_cast<char*>(arg.c_str()));
+	raw.push_back(nullptr);
+	pid_t pid = 0;
+	const int rc = posix_spawnp(&pid, raw.front(),
+		nullptr, nullptr, raw.data(), environ);
+	if (rc) {
+		err = std::string("cannot spawn DCC runner: ") + std::strerror(rc);
+		return false;
+	}
+	int status = 0;
+	pid_t finished;
+	do {
+		finished = waitpid(pid, &status, 0);
+	} while (finished == -1 && errno == EINTR);
+	if (finished != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		err = "DCC build process failed (exit code "
+			+ std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1) + ")";
+		return false;
+	}
+#endif
+	err.clear();
+	return true;
+}
+} // namespace
+
+bool RunDccPublish(const DccAsset& asset, const std::string& publishScript,
+	std::string& err) {
+	if (!asset.linked) {
+		err = "asset has no DCC authoring source link";
+		return false;
+	}
+	if (LowerExt(fs::path(asset.published)) != ".gltf") {
+		err = "the basic DCC build runner only publishes .gltf outputs";
+		return false;
+	}
+	std::string runner;
+	const std::string ext = LowerExt(fs::path(asset.document));
+	if (ext == ".ma" || ext == ".mb")
+		runner = "maya";
+	else if (ext == ".blend")
+		runner = "blender";
+	else {
+		err = "no glTF build runner for " + ext
+			+ " (only Maya and Blender are configured)";
+		return false;
+	}
+	if (!Regular(fs::path(asset.document))
+			|| !Regular(fs::path(publishScript))) {
+		err = "DCC authoring document or staged export runner is missing";
+		return false;
+	}
+	const char* configured = std::getenv("TOURMALINE_PYTHON");
+	const std::string python = (configured && *configured)
+		? configured : (
+#ifdef _WIN32
+			"python"
+#else
+			"python3"
+#endif
+		);
+	return RunProcess({ python, publishScript,
+		"--runner", runner, "--source", asset.document,
+		"--output", asset.published }, err);
 }
 
 } // namespace editor
