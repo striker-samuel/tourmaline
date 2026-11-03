@@ -80,6 +80,34 @@ int main() {
     bridge.Clear(db);
     CHECK(db.instances.LiveCount() == 0 && db.meshes.LiveCount() == 0);
 
+    // Double-authored transforms must reach the GPU scene without first
+    // collapsing into float32 absolute-world matrix translation.
+    RenderDatabase largeDb{};
+    SceneRegistry largeBridge{};
+    SourceRecord large{};
+    large.instance = {900, 1, 1};
+    large.mesh = {900, 2, 1};
+    large.globalModel = glm::dmat4(1.0);
+    const glm::dvec3 largeOrigin(1.0e12, -1.0e12, 1.0e12);
+    large.globalModel[3] = glm::dvec4(
+        largeOrigin + glm::dvec3(0.25, -0.125, 0.5), 1.0);
+    const auto added = largeBridge.Reconcile(
+        std::span<const SourceRecord>(&large, 1), largeDb);
+    CHECK(added.created == 1);
+    const auto largeId = largeBridge.Find(large.instance);
+    CHECK(largeId);
+    const auto worldPosition =
+        tour::math::JoinDoubleFloat(largeDb.instances.Get(largeId)->worldPosition);
+    CHECK(glm::length(worldPosition -
+        glm::dvec3(large.globalModel[3])) < 0.01);
+    glm::dmat4 movedDouble = large.globalModel;
+    movedDouble[3].x += 0.125;
+    CHECK(largeBridge.UpdateGlobal(large.instance, movedDouble, largeDb));
+    const auto movedPosition =
+        tour::math::JoinDoubleFloat(largeDb.instances.Get(largeId)->worldPosition);
+    CHECK(std::abs(movedPosition.x - (largeOrigin.x + 0.375)) < 0.01);
+    CHECK(!largeBridge.UpdateGlobal(large.instance, movedDouble, largeDb));
+
     // Recalculation clears the existing dirty-at-level queues, but the
     // GPU scene journal keeps the successfully recomputed parent + child.
     Scene scene{};
