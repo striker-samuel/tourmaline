@@ -1844,7 +1844,8 @@ namespace engine {
 				const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
 				if (const smvk::StaticMesh* m
 					= lmLoc->cluster->staticMeshes.get(h);
-					m && m->lightmapBase != UINT32_MAX
+					m && !m->skinned // baked charts are STATIC-only
+					&& m->lightmapBase != UINT32_MAX
 					&& !m->lmChartXforms.empty()) {
 					const uint32_t vb =
 						lmLoc->cluster->GetMeshHeapVertexBase(h);
