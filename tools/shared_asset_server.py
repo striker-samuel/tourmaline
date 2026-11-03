@@ -12,8 +12,10 @@ import json
 from pathlib import Path
 
 try:
+    from tools.asset_read_presence import ConsumerPresence
     from tools.shared_asset_repository import SharedArchive, serve_shared
 except ModuleNotFoundError:
+    from asset_read_presence import ConsumerPresence
     from shared_asset_repository import SharedArchive, serve_shared
 
 
@@ -30,7 +32,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Tourmaline shared NAS asset repository")
     parser.add_argument("--config", required=True)
     sub = parser.add_subparsers(dest="command")
-    for cmd in ("serve", "scan", "sources", "products", "status"):
+    for cmd in ("serve", "scan", "sources", "products", "status", "consumers"):
         sub.add_parser(cmd)
     versions = sub.add_parser("versions")
     versions.add_argument("source_asset_id")
@@ -51,7 +53,8 @@ def main(argv=None):
             serve_shared(store, settings["access_token"],
                          bind=settings.get("bind", "127.0.0.1"),
                          port=int(settings.get("port", 8765)),
-                         poll=float(settings.get("poll_seconds", 3)))
+                         poll=float(settings.get("poll_seconds", 3)),
+                         consumer_ttl_seconds=float(settings.get("consumer_ttl_seconds", 90)))
         except KeyboardInterrupt:
             return 0
     elif action == "scan":
@@ -64,6 +67,9 @@ def main(argv=None):
         print(json.dumps(store.products(), indent=2))
     elif action == "status":
         print(json.dumps(store.status(), indent=2))
+    elif action == "consumers":
+        readers = ConsumerPresence(store, float(settings.get("consumer_ttl_seconds", 90)))
+        print(json.dumps(readers.active(), indent=2))
     elif action == "publish":
         path = Path(args.file)
         if not path.is_file() or path.is_symlink():
