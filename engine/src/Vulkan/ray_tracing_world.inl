@@ -6,6 +6,7 @@
 // Prototype uses a blocking build on world/transform changes. Static worlds
 // are cached by WorldRenderer; the per-frame ray pass itself is asynchronous.
 #include <array>
+#include <bit>
 #include <map>
 
 bool smvk::VulkanResourceManager::SupportsRayQueries() const {
@@ -31,6 +32,14 @@ void smvk::VulkanResourceManager::ClearRayTracingWorld() {
     for (RtAcceleration& as : rtBlas_)
         release(as);
     rtBlas_.clear();
+    for (RtOpacityMicromap& mm : rtOpacityMicromaps_) {
+        if (mm.handle)
+            vkDestroyMicromapEXT(device_, mm.handle, nullptr);
+        if (mm.buffer)
+            vmaDestroyBuffer(m_allocator, mm.buffer, mm.allocation);
+        mm = {};
+    }
+    rtOpacityMicromaps_.clear();
     rtWorldReady_ = false;
 }
 
@@ -49,7 +58,7 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
 
     // Each unique indexed surface needs one BLAS. Transform-only copies
     // share that BLAS and become distinct TLAS instances.
-    std::map<std::array<uint32_t, 4>, uint32_t> geometryIndex;
+    std::map<std::array<uint32_t, 8>, uint32_t> geometryIndex;
     std::vector<RayTracingInstance> uniqueGeometry, accepted;
     std::vector<uint32_t> blasForInstance;
     for (const RayTracingInstance& inst : input) {
@@ -60,8 +69,11 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
         const uint64_t indexEnd = (uint64_t(inst.firstIndex) + inst.indexCount) * 4ull;
         if (vertexEnd > positions->allocBytes || indexEnd > indices->allocBytes)
             continue;
-        const std::array<uint32_t, 4> key{ inst.firstIndex, inst.indexCount,
-            uint32_t(inst.baseVertex), inst.vertexCount };
+        // A mesh shared by two materials has different opacity patterns.
+        const std::array<uint32_t, 8> key{ inst.firstIndex, inst.indexCount,
+            uint32_t(inst.baseVertex), inst.vertexCount, inst.opacityMode,
+            inst.opacityTextureIndex, std::bit_cast<uint32_t>(inst.opacityFactor),
+            std::bit_cast<uint32_t>(inst.opacityCutoff) };
         auto [it, added] = geometryIndex.emplace(key, uint32_t(uniqueGeometry.size()));
         if (added) uniqueGeometry.push_back(inst);
         accepted.push_back(inst);
@@ -77,6 +89,14 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
     if (vkDeviceWaitIdle(device_) != VK_SUCCESS)
         return false;
     ClearRayTracingWorld();
+
+    // Micromaps must exist BEFORE any BLAS size query or build; the
+    // optional builder runs compute alpha classification on device and
+    // waits for VK_EXT_opacity_micromap construction to complete.
+    if (!BuildOpacityMicromaps(uniqueGeometry)) {
+        ClearRayTracingWorld();
+        return false;
+    }
 
     struct TempBuffer {
         VkBuffer buffer = VK_NULL_HANDLE;
@@ -142,7 +162,9 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
         VkAccelerationStructureGeometryKHR geo{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
         geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        // Geometry-level FORCE_OPAQUE overrides the attached OMM;
+        // masked triangles must let hardware honor transparent microcells.
+        geo.flags = inst.opacityMode == 1u ? 0u : VK_GEOMETRY_OPAQUE_BIT_KHR;
         geo.geometry.triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         geo.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -170,10 +192,35 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
     // The scratch buffer is shared between builds; barriers serialize
     // scratch reuse. A single submission builds all BLAS and the TLAS.
     std::vector<VkAccelerationStructureBuildSizesInfoKHR> blasSizes(uniqueGeometry.size());
+    // Keep pNext attachment/usage structures stable through BOTH the
+    // BLAS size query and the recorded build command.
+    std::vector<VkMicromapUsageEXT> ommUsages(uniqueGeometry.size());
+    std::vector<VkAccelerationStructureTrianglesOpacityMicromapEXT>
+        ommAttachments(uniqueGeometry.size());
+    for (size_t i = 0; i < uniqueGeometry.size(); ++i) {
+        if (i >= rtOpacityMicromaps_.size() || !rtOpacityMicromaps_[i].handle)
+            continue;
+        auto& u = ommUsages[i];
+        u.count = uniqueGeometry[i].indexCount / 3u;
+        u.subdivisionLevel = 2u;
+        u.format = VK_OPACITY_MICROMAP_FORMAT_2_STATE_EXT;
+        auto& a = ommAttachments[i];
+        a.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_EXT;
+        a.indexType = VK_INDEX_TYPE_NONE_KHR;
+        a.baseTriangle = 0;
+        a.usageCountsCount = 1;
+        a.pUsageCounts = &u;
+        a.micromap = rtOpacityMicromaps_[i].handle;
+    }
+    auto attachOpacity = [&](VkAccelerationStructureGeometryKHR& geo, size_t i) {
+        if (i < ommAttachments.size() && ommAttachments[i].micromap)
+            geo.geometry.triangles.pNext = &ommAttachments[i];
+    };
     VkDeviceSize scratchMax = 0;
     rtBlas_.resize(uniqueGeometry.size());
     for (size_t i = 0; i < uniqueGeometry.size(); ++i) {
         auto geo = getGeometry(uniqueGeometry[i]);
+        attachOpacity(geo, i);
         auto bi = getInfo(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, &geo);
         auto& sz = blasSizes[i];
         sz.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
@@ -280,12 +327,15 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
     inputBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
     inputBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     inputBarrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    if (SupportsOpacityMicromaps())
+        inputBarrier.dstAccessMask |= VK_ACCESS_2_MICROMAP_READ_BIT_EXT;
     VkDependencyInfo inputDependency{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
     inputDependency.memoryBarrierCount = 1;
     inputDependency.pMemoryBarriers = &inputBarrier;
     vkCmdPipelineBarrier2(cmd, &inputDependency);
     for (size_t i = 0; i < uniqueGeometry.size(); ++i) {
         auto geo = getGeometry(uniqueGeometry[i]);
+        attachOpacity(geo, i);
         auto bi = getInfo(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, &geo);
         bi.dstAccelerationStructure = rtBlas_[i].handle;
         bi.scratchData.deviceAddress = scratchAddress;

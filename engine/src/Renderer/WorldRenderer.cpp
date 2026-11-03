@@ -6452,6 +6452,10 @@ namespace engine {
 		}
 		const smvk::TextureStreamingStats stats = m_textureStreamer->GetStats();
 		if (stats.upgradesLastUpdate > 0 || stats.downgradesLastUpdate > 0) {
+            // Streamed base-color mip ranges can change in-place behind a
+            // stable bindless descriptor: refresh their baked alpha OMMs.
+            if (m_rayTracedSunShadowsEnabled && m_opacityMicromapsEnabled)
+                m_rayTracingCacheValid = false;
 			SMVK_PROFILE_STREAM("TexStreamingFlushUploads");
 			m_context->FlushUploads();
 		}
@@ -11152,15 +11156,37 @@ namespace engine {
         // correct blocking rebuild (see the RHI's v1 limitations).
         if (m_rayTracedSunShadowsEnabled && m_context->SupportsRayQueries() && m_world) {
             std::vector<smvk::RayTracingInstance> rtInstances;
+            // MaterialValues.tex stores pool IDs, NOT sampled descriptor
+            // indices. Resolve before building micromaps so the alpha
+            // compute bake accesses the same base-color texture as raster.
+            const auto texBindless = BuildPoolToBindlessMap();
             m_world->forEachRenderItem(
                 smvk::IteratorFlagBit_StaticVertexFmt |
-                smvk::IteratorFlagBit_CastShadow |
-                smvk::IteratorFlagBit_Opaque,
+                smvk::IteratorFlagBit_CastShadow,
                 [&](const smvk::World::RenderItem& item) {
+                    const smvk::Material* mat = item.material != smvk::World::kInvalidIndex
+                        ? m_world->GetMaterial(item.material) : nullptr;
+                    const bool masked = mat && mat->alphaMode == smvk::AlphaMode::Mask;
+                    // A masked material without OMM support MUST NOT be
+                    // added as an opaque BLAS (the raster CSM/EVSM already
+                    // handles cutout shadows correctly on these devices).
+                    if (masked && (!m_opacityMicromapsEnabled ||
+                            !m_context->SupportsOpacityMicromaps() ||
+                            mat->values.layerMaterials.w > 1))
+                        return;
+                    if (!masked && !(item.flags & smvk::IteratorFlagBit_Opaque))
+                        return;
                     const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
                     if (!mesh || mesh->skinned ||
                         mesh->geometry.topology != smvk::PrimitiveTopology::TriangleList)
                         return;
+                    uint32_t maskedTexture = UINT32_MAX;
+                    if (masked && mat->values.textures.x >= 0) {
+                        const auto it = texBindless.find(uint32_t(mat->values.textures.x));
+                        if (it == texBindless.end())
+                            return; // texture not resident; raster fallback
+                        maskedTexture = it->second;
+                    }
                     const glm::mat4& model = m_world->scene.globalTransform[item.node];
                     for (const auto& surface : mesh->geometry.surfaces) {
                         if (surface.indexCount < 3 || (surface.indexCount % 3))
@@ -11170,6 +11196,12 @@ namespace engine {
                         inst.indexCount = surface.indexCount;
                         inst.baseVertex = surface.baseVertex;
                         inst.vertexCount = mesh->geometry.vertexCount;
+                        if (masked) {
+                            inst.opacityMode = 1;
+                            inst.opacityTextureIndex = maskedTexture;
+                            inst.opacityFactor = mat->values.diffuse.a;
+                            inst.opacityCutoff = mat->alphaCutoff;
+                        }
                         for (int row = 0; row < 3; ++row)
                             for (int col = 0; col < 4; ++col)
                                 inst.transform[row * 4 + col] = model[col][row];
@@ -16866,6 +16898,14 @@ namespace engine {
                                 ImGui::SetTooltip("VK_KHR_acceleration_structure + VK_KHR_ray_query not available");
                             ImGui::EndDisabled();
                         } else if (m_rayTracedSunShadowsEnabled) {
+                            if (m_context->SupportsOpacityMicromaps()) {
+                                ImGui::Checkbox("Opacity micromaps (alpha MASK foliage)",
+                                    &m_opacityMicromapsEnabled);
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("VK_EXT_opacity_micromap: GPU-baked 16 microtriangles per masked triangle. Rebuilds BLAS/TLAS on changes.");
+                            } else {
+                                ImGui::TextDisabled("Opacity micromaps unsupported (VK_EXT_opacity_micromap)");
+                            }
                             ImGui::SliderFloat("Hardware ray distance (m)",
                                 &m_rayTracedSunShadowDistance, 1.0f, 2000.0f);
                             ImGui::SliderFloat("Hardware ray origin bias (m)",

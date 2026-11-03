@@ -130,6 +130,7 @@ static bool g_deviceFaultSupported = false;
 // fallback stays otherwise.
 static bool g_meshShaderSupported = false;
 static bool g_rayQueriesSupported = false;
+static bool g_opacityMicromapsSupported = false;
 // The ACTIVE physical device's name (captured at the device pick from
 // the real VkPhysicalDeviceProperties — never guessed, never hardcoded;
 // the single-device engine makes the process-global the honest scope).
@@ -2511,6 +2512,9 @@ bool smvk::VulkanCore::Init() {
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
             VkPhysicalDeviceRayQueryFeaturesKHR rtRayFeatures{
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR };
+            bool enableOpacityMicromaps = false;
+            VkPhysicalDeviceOpacityMicromapFeaturesEXT ommFeatures{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT };
             {
                 uint32_t extCount = 0;
                 vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr);
@@ -2537,6 +2541,24 @@ bool smvk::VulkanCore::Init() {
                 if (enableRayQueries) {
                     rtAsFeatures.accelerationStructure = VK_TRUE;
                     rtRayFeatures.rayQuery = VK_TRUE;
+                    // Optional on top of ray query. The 2-state OMM
+                    // path needs subdivision level >=2.
+                    if (has(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)) {
+                        VkPhysicalDeviceOpacityMicromapFeaturesEXT queriedOmm{
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT };
+                        VkPhysicalDeviceFeatures2 queried{
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &queriedOmm };
+                        vkGetPhysicalDeviceFeatures2(physicalDevice_, &queried);
+                        VkPhysicalDeviceOpacityMicromapPropertiesEXT mmProps{
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT };
+                        VkPhysicalDeviceProperties2 mmProperties{
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &mmProps };
+                        vkGetPhysicalDeviceProperties2(physicalDevice_, &mmProperties);
+                        enableOpacityMicromaps = queriedOmm.micromap == VK_TRUE
+                            && mmProps.maxOpacity2StateSubdivisionLevel >= 2u;
+                        if (enableOpacityMicromaps)
+                            ommFeatures.micromap = VK_TRUE;
+                    }
                 }
             }
 
@@ -2613,6 +2635,10 @@ bool smvk::VulkanCore::Init() {
                 rtRayFeatures.pNext = feats2.pNext;
                 rtAsFeatures.pNext = &rtRayFeatures;
                 feats2.pNext = &rtAsFeatures;
+            }
+            if (enableOpacityMicromaps) {
+                ommFeatures.pNext = feats2.pNext;
+                feats2.pNext = &ommFeatures;
             }
 
 			// Indirect multi-draw (per-view filter emits one command per
@@ -2816,6 +2842,8 @@ bool smvk::VulkanCore::Init() {
             enabledExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             enabledExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
         }
+        if (enableOpacityMicromaps)
+            enabledExtensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
 		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 		if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
@@ -2873,6 +2901,10 @@ bool smvk::VulkanCore::Init() {
 			}
 			g_meshShaderSupported = enableMeshShader;
             g_rayQueriesSupported = enableRayQueries;
+            g_opacityMicromapsSupported = enableOpacityMicromaps;
+            std::fprintf(stderr, "[Vulkan] opacity micromaps %s\n",
+                enableOpacityMicromaps ? "enabled (masked ray shadows)" :
+                    "unavailable (CSM masked fallback)");
             std::fprintf(stderr, "[Vulkan] KHR ray queries %s\n",
                 enableRayQueries ? "enabled (hardware sun shadows available)"
                                  : "unsupported (CSM/EVSM fallback)");
@@ -15062,3 +15094,4 @@ void ShutdownBackend(ResourceManager& ctx)
 
 // Optional hardware RT scene implementation (keeps Vk/VMA private to the backend).
 #include "ray_tracing_world.inl"
+#include "opacity_micromap_world.inl"

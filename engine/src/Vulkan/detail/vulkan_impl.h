@@ -845,6 +845,8 @@ namespace smvk {
 		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer", VmaAllocationCreateFlags vmaAllocFlags = 0);
 		// KHR_acceleration_structure + KHR_ray_query, optional.
 		[[nodiscard]] bool SupportsRayQueries() const;
+        [[nodiscard]] bool SupportsOpacityMicromaps() const;
+        [[nodiscard]] bool BuildOpacityMicromaps(std::span<const RayTracingInstance> uniqueGeometry);
 		[[nodiscard]] bool BuildRayTracingWorld(std::span<const RayTracingInstance> instances);
 		[[nodiscard]] bool RayTracingWorldReady() const { return rtWorldReady_; }
 		void ClearRayTracingWorld();
@@ -1036,6 +1038,13 @@ namespace smvk {
 			VmaAllocation allocation = VK_NULL_HANDLE;
 		};
 		std::vector<RtAcceleration> rtBlas_;
+        // Micromaps must remain alive through the BLAS' lifetime.
+        struct RtOpacityMicromap {
+            VkMicromapEXT handle = VK_NULL_HANDLE;
+            VkBuffer buffer = VK_NULL_HANDLE;
+            VmaAllocation allocation = VK_NULL_HANDLE;
+        };
+        std::vector<RtOpacityMicromap> rtOpacityMicromaps_;
 		RtAcceleration rtTlas_{};
 		bool rtWorldReady_ = false;
 

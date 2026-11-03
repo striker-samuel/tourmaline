@@ -56,10 +56,12 @@ must not use this experimental path concurrently.
 
 ## Coverage and limitations
 
-* The TLAS currently contains **static, opaque, shadow-casting** triangle
-  surfaces from `World::forEachRenderItem`. Skinned meshes, transparent
-  surfaces, alpha-tested any-hit, and procedural terrain are not covered
-  by the hardware ray query. Existing shadow maps still cast their shadows.
+* The TLAS contains static opaque shadow-casting triangles and, on
+  `VK_EXT_opacity_micromap` devices, optional alpha-MASK geometry baked
+  into 2-state micromaps. See [opacity_micromaps.md](opacity_micromaps.md)
+  for the GPU bake, alpha coverage approximation and fallback semantics.
+  Skinned meshes, transparent alpha-BLEND materials, layered MASK and
+  procedural terrain still depend on existing raster shadow maps.
 * The hardware path traverses off-screen geometry, unlike contact
   shadows. It still uses the opaque depth prepass to determine receiving
   pixels and shares the per-material contact-shadow receive bit.

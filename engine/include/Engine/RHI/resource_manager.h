@@ -35,8 +35,14 @@ struct RayTracingInstance {
     int32_t baseVertex = 0;
     uint32_t vertexCount = 0;
     std::array<float, 12> transform{};
+    // Optional masked cutout material. 0=opaque, 1=alpha MASK.
+    // Texture slot is the bindless sampled-image index, NOT a pool ID.
+    uint32_t opacityMode = 0;
+    uint32_t opacityTextureIndex = UINT32_MAX;
+    float opacityFactor = 1.0f;
+    float opacityCutoff = 0.5f;
 };
-static_assert(sizeof(RayTracingInstance) == 64);
+static_assert(sizeof(RayTracingInstance) == 80);
 
 // True when the device was created with VK_EXT_mesh_shader enabled
 // (taskShader + meshShader features, probed, never required). Gates the
@@ -258,6 +264,8 @@ public:
     // world triangles. World changes trigger a synchronous rebuild (GPU
     // idle); unsupported devices retain the raster shadow-map fallback.
     bool SupportsRayQueries() const;
+    // VK_EXT_opacity_micromap is optional even on KHR ray-query GPUs.
+    bool SupportsOpacityMicromaps() const;
     bool BuildRayTracingWorld(std::span<const RayTracingInstance> instances);
     bool RayTracingWorldReady() const;
     void ClearRayTracingWorld();

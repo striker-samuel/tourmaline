@@ -23,6 +23,7 @@
 // the test_gfxfilter.cpp pattern; headless goldens via
 // tools/golden_capture.py (TOURMALINE_CAPTURE + --bench + PNG hash).
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -416,13 +417,20 @@ int main() {
     // 8. Hardware ray-query RHI input and opt-in defaults (CPU-only).
     // The backend consumes exactly one 3x4 row-major VkTransformMatrixKHR,
     // and the world shader reuses the existing 56-byte contact push block.
-    Check(sizeof(smvk::RayTracingInstance) == 64, "contract.rt-instance-size");
+    Check(sizeof(smvk::RayTracingInstance) == 80, "contract.rt-instance-size");
     Check(offsetof(smvk::RayTracingInstance, transform) == 16,
         "contract.rt-instance-transform-offset");
+    Check(offsetof(smvk::RayTracingInstance, opacityMode) == 64,
+        "contract.omm-input-offset");
+    Check(smvk::RayTracingInstance{}.opacityMode == 0,
+        "contract.omm-default-opaque");
+    Check(smvk::RayTracingInstance{}.opacityTextureIndex == UINT32_MAX,
+        "contract.omm-no-texture-default");
     {
         const engine::RenderQualityConfig q{};
         Check(!q.rayTracedSunShadowsEnabled,
             "contract.rt-shadow-default-off");
+        Check(q.opacityMicromapsEnabled, "contract.omm-default-on-within-rt");
         Check(q.rayTracedSunShadowDistance == 200.0f,
             "contract.rt-shadow-max-distance-default");
         Check(q.rayTracedSunShadowResolutionDivisor == 2,
@@ -430,6 +438,65 @@ int main() {
     }
     Check(sizeof(smvk::ContactShadowPush) == 56,
         "contract.rt-shadow-reuses-contact-abi");
+
+    // Vulkan's level-2 bird-curve maps each of the 16 subtriangles to a
+    // UNIQUE index, but does not use row-major order. This independently
+    // checks the OMM bake shader's mapping against the Khronos reference.
+    {
+        auto spreadBits = [](uint32_t x) {
+            x = (x | (x << 8u)) & 0x00ff00ffu;
+            x = (x | (x << 4u)) & 0x0f0f0f0fu;
+            x = (x | (x << 2u)) & 0x33333333u;
+            x = (x | (x << 1u)) & 0x55555555u;
+            return x;
+        };
+        auto birdIndex = [spreadBits](float u, float v) {
+            const uint32_t levelScale = 4u;
+            const float fu = u * float(levelScale);
+            const float fv = v * float(levelScale);
+            uint32_t iu = uint32_t(fu);
+            uint32_t iv = uint32_t(fv);
+            const float uf = fu - float(iu);
+            const float vf = fv - float(iv);
+            if (iu >= levelScale) iu = levelScale - 1u;
+            if (iv >= levelScale) iv = levelScale - 1u;
+            const uint32_t iuv = iu + iv;
+            if (iuv >= levelScale) iu -= iuv - levelScale + 1u;
+            uint32_t iw = ~(iu + iv);
+            if (uf + vf >= 1.0f && iuv < levelScale - 1u) --iw;
+            uint32_t b0 = ~(iu ^ iw) & (levelScale - 1u);
+            const uint32_t t = (iu ^ iv) & b0;
+            uint32_t f = t;
+            f ^= f >> 1u;
+            f ^= f >> 2u;
+            f ^= f >> 4u;
+            f ^= f >> 8u;
+            const uint32_t b1 = ((f ^ iu) & ~b0) | t;
+            return spreadBits(b0) | (spreadBits(b1) << 1u);
+        };
+        constexpr std::array<uint32_t, 16> expected{{
+            0u, 1u, 2u, 7u, 8u, 9u, 10u, 3u,
+            4u, 5u, 6u, 11u, 14u, 13u, 12u, 15u
+        }};
+        uint32_t visited = 0u;
+        uint32_t order = 0u;
+        for (uint32_t y = 0u; y < 4u; ++y) {
+            for (uint32_t x = 0u; x + y < 4u; ++x) {
+                for (uint32_t inverted = 0u; inverted < 2u; ++inverted) {
+                    if (inverted != 0u && x + y >= 3u) continue;
+                    const float offset = inverted ? (2.0f / 3.0f) : (1.0f / 3.0f);
+                    const uint32_t idx = birdIndex((float(x) + offset) * 0.25f,
+                        (float(y) + offset) * 0.25f);
+                    Check(idx < 16u && idx == expected[order],
+                        "contract.omm-bird-order");
+                    if (idx < 16u) visited |= (1u << idx);
+                    ++order;
+                }
+            }
+        }
+        Check(order == 16u && visited == 0xffffu,
+            "contract.omm-bird-bijection");
+    }
 
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
