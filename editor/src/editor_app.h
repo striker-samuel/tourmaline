@@ -1472,6 +1472,10 @@ private:
 	float m_volumeBrushHeight = 0.0f;
 	float m_volumeBrushMouseY = 0.0f;
 	void FinishSpatialVolumeBrush();
+	// Prefer surface depth breaks (silhouettes/occlusion edges) close to
+	// the pointer; no geometry returns false for construction-plane fallback.
+	bool SpatialVolumeBrushDepthPoint(int viewport, float x, float y,
+		glm::vec3& point) const;
 	// True when the node is a bare transform: no mesh/light/camera/decal/
 	// givolume/cubemap/export/env link — the "locator" definition. Used
 	// by the outliner tag, the gizmo marker, and the click pick. NOTE:
