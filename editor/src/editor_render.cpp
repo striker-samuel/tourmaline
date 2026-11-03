@@ -2503,6 +2503,11 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// Selection bounds now belong to WorldRenderer's own render pass:
 		// the editor-only gizmo pass is skipped for the composited view.
 		m_wysiwyg->SetSelectedNode(m_selected);
+		// Use the renderer's existing depth-tested, cubemap-sampling mirror
+		// spheres instead of foreground vector circles in the Lit viewport.
+		// Keep them editor-only and gated by the probe overlay control.
+		m_wysiwyg->SetCubemapProbePreview(
+			m_mode == EditorMode::Lighting && m_showProbeOverlay);
 		m_wysiwyg->Tick(dt);
 		// The render extent: the Live tab's content rect (captured by
 		// DrawLiveViewTab, one frame of lag) through the protective
