@@ -3673,6 +3673,10 @@ public:
 	// Host-managed planar capture is intentionally opt-in: no capture means
 	// no extra targets, shader loads, or rendergraph passes.
 	std::optional<smvk::PlanarReflectionCapture> m_planarReflectionCapture;
+	// Keep imported aliases alive until teardown: an in-flight graph may
+	// still reference a previous physical capture after a host swap.
+	std::vector<std::pair<smvk::ImageViewHandle,
+		smvk::LogicalImageViewHandle>> m_planarCaptureImports;
 	bool m_ssrEnabled = true;
 	int m_ssrSteps = 32; // raymarch steps 1..128 (half-res trace)
 	int m_ssrRefineSteps = 4; // binary refine iterations 0..8
