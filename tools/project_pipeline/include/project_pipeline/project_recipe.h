@@ -25,7 +25,8 @@
 //   entry <scene.tour>        REQUIRED, project-relative; must be some
 //                              [pak]'s 'scene' (the entry has to ship)
 //   bake gi [on|off]          the GI volume bake (bare = on)
-//   bake cubemaps [on|off]    the cubemap capture bake (bare = on)
+//   bake cubemaps [on|off]
+//   bake sdf [on|off]         per-geometry mesh-local distance sidecars    the cubemap capture bake (bare = on)
 //
 //   [pak <id>]                one section per package; ids unique
 //   output <file.pak>         REQUIRED per pak; unique across paks
@@ -77,6 +78,7 @@ struct ProjectRecipe {
 	std::string entry;    // project-relative entry scene tour
 	bool bakeGi = false;
 	bool bakeCubemaps = false;
+	bool bakeSdf = false;
 	std::vector<RecipePak> paks; // authored order
 
 	[[nodiscard]] const RecipePak* FindPak(const std::string& id) const;
