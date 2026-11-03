@@ -45,6 +45,7 @@
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/DebugDraw.h>
+#include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/gfx_filter.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
@@ -2202,6 +2203,9 @@ protected:
 	// Caller-owned, optional CPU-only producer; evaluated only when enabled.
 	std::function<void(tour::DebugDrawList&)> m_debugDrawSource;
 	tour::DebugDrawList m_debugDrawCpu;
+	// Persistent authored curve/point instances live independently of the
+	// immediate-mode debug producer and its visibility toggle.
+	tour::renderer::ShapeScene m_shapeScene;
 	bool m_debugDrawEnabled = false;
 	// Same-frame game HUD, composited before UiComposite; no backend API in games.
 	std::function<void(tour::GameUiRenderer&, smvk::Extent2D)> m_extraGameUi;
@@ -2221,6 +2225,11 @@ public:
 	void SetDebugDrawSource(std::function<void(tour::DebugDrawList&)> fn) {
 		m_debugDrawSource = std::move(fn);
 	}
+	// Retained world-space spline and point-cloud instances. Updates retain
+	// their handles until explicitly removed or the renderer is destroyed.
+	// Kept independent of SetDebugDrawEnabled().
+	[[nodiscard]] tour::renderer::ShapeScene& Shapes() { return m_shapeScene; }
+	[[nodiscard]] const tour::renderer::ShapeScene& Shapes() const { return m_shapeScene; }
 	void SetDebugDrawEnabled(bool enabled) { m_debugDrawEnabled = enabled; }
 	[[nodiscard]] bool DebugDrawEnabled() const { return m_debugDrawEnabled; }
 	// Host-owned game UI callback. Draws through the native render graph,
