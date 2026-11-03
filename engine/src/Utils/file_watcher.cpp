@@ -145,7 +145,8 @@ FileWatcher::Policy FileWatcher::Policy::ProjectDefault() {
 		".dll",
 		".pdb",
 		".db",
-		".obj",
+		// .obj is an AUTHORING mesh source inside projects. Compiled
+		// C++ .obj products are ignored via out/build dirs instead.
 		".lib",
 	};
 	// NOTE: .meta sidecars (incl. the .gltf.meta manifest) are NOT
