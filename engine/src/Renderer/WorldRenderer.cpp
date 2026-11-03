@@ -13697,9 +13697,9 @@ namespace engine {
 		}
 
         // Universal game/debug draw: pull CPU-only world-space wire lines
-        // after gameplay update. Nothing is retained in the scene, physics,
-        // or a persistent GPU collider registry. A separate vertex buffer
-        // per flight slot avoids overwriting in-flight GPU reads.
+        // after gameplay update. Immediate debug producers and renderer-
+        // retained ShapeScene instances share the native point/line pass.
+        // A buffer per flight slot avoids overwriting in-flight GPU reads.
         struct DebugDrawRange {
             uint32_t first, count;
             glm::vec3 color;
@@ -13708,10 +13708,15 @@ namespace engine {
         };
         std::vector<DebugDrawRange> debugDrawRanges;
         uint32_t debugDrawFlight = 0;
-        if (m_debugDrawEnabled && m_debugDrawSource
+        if (((m_debugDrawEnabled && m_debugDrawSource)
+                || m_shapeScene.Size() != 0)
             && m_gfxRenderer.LineProgram().shaderCount == 2) {
             m_debugDrawCpu.Clear();
-            m_debugDrawSource(m_debugDrawCpu);
+            if (m_debugDrawEnabled && m_debugDrawSource)
+                m_debugDrawSource(m_debugDrawCpu);
+            // Retained shape instances are visible even if transient game
+            // debug drawing is disabled. Tessellation is cached at Add().
+            m_shapeScene.AppendDraws(m_debugDrawCpu);
             if (!m_debugDrawCpu.Empty()) {
                 std::vector<smvk::DebugLineVertex> vertices;
                 vertices.reserve(m_debugDrawCpu.Size() * 2 +
