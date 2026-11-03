@@ -3502,6 +3502,12 @@ namespace engine {
 	};
 
 	void WorldRenderer::onDetach() {
+		// Providers borrow members of this renderer. Drop their registration
+		// and GPU callback before resources are torn down; onAttach can then
+		// register them again without duplicate provider pointers.
+		m_worldPartition.ClearProviders();
+		m_placementStreamProvider.SetCommitCallback({});
+		m_worldFieldProvider.SetContext(nullptr);
 		// Ensure GPU idle before destroying ImGui Vulkan resources/Holders.
 		m_host.WaitForDeviceIdle();
 		if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
