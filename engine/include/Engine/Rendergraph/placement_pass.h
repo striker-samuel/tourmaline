@@ -1585,9 +1585,17 @@ struct PlacementConstraint {
 	// scratch grid. Anything else (mesh overshoot, tiny spacings) falls
 	// back to the CPU constraint — same result class, caller decides.
 	static bool VolumeFitsGpu(const ConstraintVolume& vol) {
-		return vol.dimX > 0 && vol.dimY > 0 && vol.dimZ > 0 && vol.spacing > 0.0f
-			&& vol.dimX <= 64 && vol.dimY <= 64 && vol.dimZ <= 64
-			&& (uint64_t)vol.dimX * vol.dimY * vol.dimZ <= kPlacementConMaxCells;
+		// Head cells are FLATTENED in the shader. There is no 64-cell
+		// limit on individual axes, only the allocation's total capacity.
+		// Support e.g. a 66x4x66 tile at 1m spacing without increasing
+		// GPU memory; divide before multiplying to avoid integer overflow.
+		if (vol.dimX == 0 || vol.dimY == 0 || vol.dimZ == 0
+			|| !(vol.spacing > 0.0f) || !std::isfinite(vol.spacing))
+			return false;
+		if (vol.dimX > kPlacementConMaxCells / vol.dimY)
+			return false;
+		const uint64_t xy = uint64_t(vol.dimX) * vol.dimY;
+		return vol.dimZ <= kPlacementConMaxCells / xy;
 	}
 	// Pure-CPU con params fill (headless-testable). The tile rides along:
 	// the kernels RECOMPUTE StableIDs from (seed, node, tile, customB) —
@@ -1710,6 +1718,8 @@ struct PlacementWorldRuntime {
 			aliveBuffer = {};
 			aliveBDA = 0;
 			data = WorldTileData{};
+			key = TileKey{};
+			generation = 0;
 			slot = -1;
 			published = false;
 		}
