@@ -16,7 +16,9 @@
 #include "Runtime.h"
 #include "AudioRuntime.h"
 
-#include "project.h"
+// Include the source-tree path explicitly so Visual Studio F12 can
+// navigate to the committed header without relying on include-path lookup.
+#include "project/project.h"
 
 #include <Engine/App/world.h>
 #include <Engine/Audio/audio.h> // tour::audio::AudioInstance (the graph facade)

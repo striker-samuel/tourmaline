@@ -463,6 +463,11 @@ bloom/tonemap/AA/UI → swapchain.
   read-only attribute: it would obstruct Git checkout and generation.
   The private sibling `project_plans.h`
   stays ignored; explicit `HEADER_DIR` can select build-only output.
+  For navigable game includes, prefer a source-relative spelling like
+  `#include "project/project.h"` (sample's `main.cpp`), not bare
+  `#include "project.h"`: `tourmaline_attach_project` adds both the
+  header folder and its parent to the consuming target's include path
+  so Visual Studio F12 and the compiler resolve the same file.
   The header is a GENERATION-STAMPED,
   self-contained C++ catalog: `project::Generation` / `GeneratedAt` /
   `ContentHash` constexpr plus an EOF machine-readable COMMENT section
