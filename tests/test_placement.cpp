@@ -2604,6 +2604,36 @@ void TestWorldResidency() {
 			"place.res.gpu-eviction-reactivates");
 	}
 
+	// A 64m-radius camera rect off a tile boundary covers 3x3 world
+	// tiles. The GPU runtime defaults to eight resident slots: request
+	// exactly eight distinct nearest tiles, not nine competing tenants.
+	{
+		std::vector<glm::vec4> bounded;
+		const glm::vec4 nine(10.0f - 64.0f, 10.0f - 64.0f,
+			10.0f + 64.0f, 10.0f + 64.0f);
+		PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 8, bounded);
+		Check(bounded.size() == 8, "place.res.budget-eight-not-nine");
+		bool unique = true;
+		for (size_t i = 0; i < bounded.size(); ++i) {
+			Check(bounded[i].z - bounded[i].x == 64.0f
+				&& bounded[i].w - bounded[i].y == 64.0f,
+				"place.res.budget-rect-is-one-tile");
+			for (size_t j = i + 1; j < bounded.size(); ++j)
+				if (bounded[i] == bounded[j]) unique = false;
+		}
+		Check(unique, "place.res.budget-no-duplicates");
+		std::vector<glm::vec4> repeat;
+		PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 8, repeat);
+		Check(repeat == bounded, "place.res.budget-deterministic");
+		const glm::vec4 second(128.0f, 0.0f, 192.0f, 64.0f);
+		const glm::vec4 prioritized[2]{ second, nine };
+		PlacementWorldRuntime::BudgetTileInterests(prioritized, 2, 64.0f, 1, bounded);
+		Check(bounded.size() == 1 && bounded[0] == second,
+			"place.res.budget-priority-before-nearness");
+		PlacementWorldRuntime::BudgetTileInterests(&nine, 1, 64.0f, 0, bounded);
+		Check(bounded.empty(), "place.res.budget-zero");
+	}
+
 	// ---- the GPU slot map. ----
 	{
 		PlacementGpuTiles gpuTiles;
