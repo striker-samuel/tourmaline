@@ -432,12 +432,34 @@ environment, matching scene and driver, and a fresh capture.
 
 ## Replayable PNG snapshot sequences
 
-`App --snapshot-sequence DIR --snapshot-count N --snapshot-keyframe K`
-exports numbered PNGs with embedded engine-scene-graph keyframes, per-tick
-input and RNG checkpoints, and incremental JSON patches. The GPU-free
-`tools/snapshot_sequence.py` can inspect, verify, extract reconstructed
-state, compare an agent's independent state, and convert the input stream to
-`.tinp`. `tools/perf_harness.py snapshot --scenario ID --exe App --frames N`
-provides scenario orchestration and a fail-closed artifact check.
-Read [docs/snapshot_sequences.md](snapshot_sequences.md) for the format,
-commands, fidelity boundary, and verification tests.
+**Use the supported agent CLI:** [agent_snapshot_cli.md](agent_snapshot_cli.md)
+documents all commands, machine-readable JSON, exit statuses, BYOC
+boundaries, capture provenance, input replay and failure diagnosis.
+
+```sh
+# GPU only for record; provide a cooked .tapp/.pak and a built App.
+python tools/toursnapshot.py record --app out/build/x64-Release/App \
+  --project out/build/x64-Release/content/game.tapp \
+  --output out/agent-a/frames --frames 123 --keyframe-interval 60 \
+  --seed 42 --code-id my-game-build --dry-run --json
+
+# CPU-only operations on self-describing PNGs.
+python tools/toursnapshot.py verify out/agent-a/frames --json
+python tools/toursnapshot.py inspect out/agent-a/frames --json
+python tools/toursnapshot.py extract out/agent-a/frames \
+  --frame 61 --output out/frame61.json --json
+python tools/toursnapshot.py compare out/agent-a/frames \
+  --frame 61 --candidate out/agent-b-state.json --json
+python tools/toursnapshot.py compare-sequence out/agent-a/frames \
+  --candidate out/agent-b/frames --json
+python tools/toursnapshot.py input-tape out/agent-a/frames \
+  --output out/replay.tinp --json
+```
+
+`--json` writes exactly one result object to stdout, and `record`
+redirects App output to a log. Exit 0 = success, 1 = invalid artifact or
+runtime failure, 2 = valid comparison differs, 64 = CLI usage error.
+The lower-level `tools/snapshot_sequence.py` decoder and
+`tools/perf_harness.py snapshot` remain supported for existing scripts.
+For the `tsNp` PNG wire format and engine scene-state scope, see
+[snapshot_sequences.md](snapshot_sequences.md).

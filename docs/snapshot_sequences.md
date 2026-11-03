@@ -1,5 +1,12 @@
 # Replayable PNG snapshot sequences
 
+**Agent-facing CLI and manual:** [agent_snapshot_cli.md](agent_snapshot_cli.md)
+defines `python tools/toursnapshot.py record|inspect|verify|extract|compare|compare-sequence|input-tape`,
+its JSON envelope, deterministic seed/pin planning, complete CLI examples
+and exit-code contract. Prefer it for new agent integrations. The commands
+below describe the native App flags and original low-level utilities.
+
+
 Tourmaline's App host can export **one PNG per simulation tick**, each with a
 private PNG ancillary chunk containing a versioned scene-state checkpoint or
 incremental JSON Patch delta, RNG stream state, engine input events, and image

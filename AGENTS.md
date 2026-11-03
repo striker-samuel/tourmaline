@@ -2,6 +2,17 @@
 
 ## Agent command-line tooling manual
 
+**Snapshot recording and cross-agent verification:** Read
+[docs/agent_snapshot_cli.md](docs/agent_snapshot_cli.md) first. The supported
+GPU/CPU entry point is `python tools/toursnapshot.py record|inspect|verify|extract|compare|compare-sequence|input-tape`.
+Use `record --dry-run --json` to inspect a reproducible plan, then
+`verify --json` (with `--pixels` when Pillow is available) before comparing
+captured engine-observable world states. Return code **2** is a semantic
+difference, **1** is invalid/corrupt/failed work, **64** is CLI misuse.
+The snapshot includes no user game code; compatible gameplay rules and assets
+are still required for actual re-simulation.
+
+
 **Native C++ consumers:** [docs/tooling_api.md](docs/tooling_api.md) documents the `tourmaline::tooling` STATIC CMake target and its project init, SMP8 snapshot/diff and capture/pixel helper APIs; the `tourinit` executable is a thin frontend over this library. Existing Python CLIs remain supported and are not yet bindings to the native API.
 
 **Start with [docs/agent_cli_tools.md](docs/agent_cli_tools.md)** for headless package inspection (`tools/tourinfo.py`), native-backed named project scaffolding (`tools/project_init.py`), stable-ID release comparisons (`tools/tourdiff.py`), repeatable fresh-frame renderer capture (`tools/tourcapture.py`), Unix pipe / JSONL / glob / regex workflows, and decoded-pixel screenshot comparisons (`tools/pixel_compare.py`), golden-capture regression gates, benchmark comparison, and HZB diagnostics. This manual is the canonical discoverable entry point for agent-facing CLI commands. Prefer it to invoking a GUI for artifact inspection; keep existing content IDs and SMP8 compatibility rules intact.
