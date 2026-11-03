@@ -237,6 +237,57 @@ A failure during native import may leave a partly initialized project
 from the canonical init; inspect it rather than blindly deleting it.
 
 
+## tourinit: native C++ project scaffolding
+
+`tourinit` is a **compiled native CLI** backed by the reusable
+`tourmaline::tooling` **STATIC** CMake library. It calls the canonical
+`project_pipeline` initialization/import/scene-seeding functions;
+no Python or GUI is required to run it.
+
+```bash
+cmake --build out/build/linux-Release --target tourinit
+
+out/build/linux-Release/tourinit \
+  --name 'Forest Game' --path ../projects/ForestGame \
+  --recipe forest --pak world --entry content/scenes/main.tour --json
+
+out/build/linux-Release/tourinit \
+  --name 'Forest Game' --path ../projects/ForestGame \
+  --from-gltf /assets/forest.glb --from-scene /assets/forest.tour --json
+
+# Inspect the creation plan without changing the disk:
+out/build/linux-Release/tourinit --name Demo --path ../projects/Demo \
+  --dry-run --json
+```
+
+Optional flags: `--bake-gi`, `--bake-cubemaps`,
+`--no-gitignore` and `--adopt` (explicitly use an existing project
+directory without rewriting authored files or a valid GUID).
+CLI exits 0 success, 1 initialize/import error, 2 argument error.
+The generated `.tourrecipe` is **syntactically valid** but an empty
+scaffold is **not cookable** until a real scene `.tour` and referenced
+glTF/geometry are authored/imported; `ready_to_build` only indicates
+entry file existence, not successful plan resolution. Use
+`Project validate --project <path> --recipe <recipe>` before cooking.
+
+## Statically linkable tooling functions (C++20)
+
+For native code, use the `tourmaline::tooling` CMake target and
+`#include <tourmaline/tooling.h>`. The public API provides:
+
+- `InitializeProject` (project marker/recipe scaffold; canonical GUID)
+- `ReadPackageSnapshot` (native file-backed SMP8 TOC, IDTR, manifest)
+- `DiffPackageSnapshots` (pure stable-ID/page comparison)
+- `BuildCapturePlan` (validated invocation and renderer pin overrides)
+- `CompareRgb8` (decoded RGB8 pixel-difference kernel)
+
+**Complete API examples, failure contracts, and static-link caveats:**
+[docs/tooling_api.md](tooling_api.md). This is an in-process, C++ API,
+not a shell wrapper. Existing Python `tourinfo.py`,
+`tourdiff.py` and `tourcapture.py` are still available; live
+capture orchestration and JSONL frontends have not yet been ported
+to C++.
+
 ## tourdiff: compare cooked releases without filename churn
 
 `tools/tourdiff.py` compares SMP8 `.pak` files or appmanifest v2
@@ -326,6 +377,21 @@ reusable core parser/decoder over multiple inconsistent pipelines.
 python -m unittest discover -s tests -p 'test_tourinfo.py' -v
 python -m unittest discover -s tests -p 'test_tourdiff.py' -v
 python -m unittest discover -s tests -p 'test_tourcapture.py' -v
+# Native API (after configuring the CMake build):
+cmake --build out/build/linux-Release --target ToolingApiTests
+ctest --test-dir out/build/linux-Release -R '^tooling_api_tests
+python -m unittest discover -s tests -p 'test_project_init.py' -v
+python -m unittest discover -s tests -p 'test_pak_browser.py' -v
+python -m unittest discover -s tests -p 'test_pixel_compare.py' -v
+python -m unittest discover -s tests -p 'test_input_emulator.py' -v
+python -m unittest discover -s tools/tests -v
+```
+
+The first three are CPU-only, with image tests requiring Pillow; the
+existing perf harness unit tests do not require a GPU. A production
+rendering regression gate additionally needs a valid graphical
+environment, matching scene and driver, and a fresh capture.
+ --output-on-failure
 python -m unittest discover -s tests -p 'test_project_init.py' -v
 python -m unittest discover -s tests -p 'test_pak_browser.py' -v
 python -m unittest discover -s tests -p 'test_pixel_compare.py' -v
