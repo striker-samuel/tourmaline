@@ -2143,6 +2143,10 @@ protected:
 	// Only loaded by the explicit GPU-scene validation path.
 	std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneCompactModules{};
 	std::array<smvk::ShaderProgram, 3> m_gpuSceneCompactPrograms{};
+	// Per-flight GPU work generation: resident LOD select, prefix and
+	// stable per-submesh expansion. Still validation-only.
+	std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneWorkModules{};
+	std::array<smvk::ShaderProgram, 3> m_gpuSceneWorkPrograms{};
 	bool m_gpuSceneDatabaseReady = false;
 	// Transient gfx registration indices are reassigned on each rebuild.
 	// Republish all mesh links when the source registration changes.
