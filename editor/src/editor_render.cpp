@@ -2041,7 +2041,74 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// radius-spaced intervals along the surface.
 		const bool painting = m_world && m_paintTerrain
 			&& !altNav && !inInset && inVp && !uiEats;
-		if (painting) {
+		// Three independent drags: width on the horizontal construction
+		// plane, depth on the same plane, then height in screen space.
+		// This branch owns LMB while armed (no pick, box select or gizmo).
+		if (m_volumeBrushArmed && m_world) {
+			if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+				m_volumeBrushArmed = false;
+				m_volumeBrushDragging = false;
+				m_volumeBrushStage = 0;
+			}
+			else {
+				const bool pressed = m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT);
+				const bool held = m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT);
+				if (!m_volumeBrushDragging && pressed && inVp && !inInset &&
+					!uiEats && !altNav) {
+					m_volumeBrushVp = m_activeVp;
+					m_volumeBrushDragging = true;
+					m_volumeBrushMouseY = lmy;
+				}
+				if (m_volumeBrushDragging) {
+					const EditorViewport& brushVp = m_viewports[m_volumeBrushVp];
+					const ViewportRect& rect = brushVp.rect;
+					const float x = std::clamp(float(m_input.getMouseX()) - rect.x, 0.0f, rect.w);
+					const float y = std::clamp(float(m_input.getMouseY()) - rect.y, 0.0f, rect.h);
+					if (m_volumeBrushStage < 2) {
+						glm::vec3 origin;
+						const glm::vec3 ray = MouseRay(x, y,
+							smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
+							brushVp.viewProj, origin);
+						const float planeY = (m_volumeBrushStage == 0)
+							? ActiveCam().target.y : m_volumeBrushStart.y;
+						if (std::fabs(ray.y) > 1e-5f) {
+							const float t = (planeY - origin.y) / ray.y;
+							if (t >= 0.0f) {
+								const glm::vec3 hit = origin + t * ray;
+								if (m_volumeBrushStage == 0) {
+									if (pressed) m_volumeBrushStart = hit;
+									m_volumeBrushEnd = m_volumeBrushStart;
+									m_volumeBrushEnd.x = hit.x;
+								} else {
+									m_volumeBrushEnd.z = hit.z;
+								}
+							}
+						}
+					} else {
+						// Measure projected one-meter vertical displacement. Unlike
+						// a hardcoded pixels/meter factor this adapts to zoom/FOV.
+						const glm::vec3 corner(m_volumeBrushEnd.x,
+							m_volumeBrushStart.y, m_volumeBrushEnd.z);
+						const glm::vec4 p0 = brushVp.viewProj * glm::vec4(corner, 1.0f);
+						const glm::vec4 p1 = brushVp.viewProj * glm::vec4(corner + glm::vec3(0,1,0), 1.0f);
+						if (p0.w > 1e-5f && p1.w > 1e-5f) {
+							const float pixelsPerMeter = (p0.y / p0.w - p1.y / p1.w) * rect.h * 0.5f;
+							if (std::fabs(pixelsPerMeter) > 1e-3f)
+								m_volumeBrushHeight = (y - m_volumeBrushMouseY) / pixelsPerMeter;
+						}
+					}
+					if (!held) {
+						m_volumeBrushDragging = false;
+						if (++m_volumeBrushStage == 3) {
+							FinishSpatialVolumeBrush();
+							m_volumeBrushStage = 0;
+							m_volumeBrushHeight = 0.0f;
+						}
+					}
+				}
+			}
+		}
+		else if (painting) {
 			// Fresh press always stamps (drag spacing applies within one
 			// stroke only).
 			if (m_input.isMouseButtonPressed(TOUR_MOUSE_BUTTON_LEFT))
@@ -2100,7 +2167,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				m_vpBoxDragging = false;
 			}
 		}
-		if (m_vpBoxDragging) {
+		if (!m_volumeBrushArmed && m_vpBoxDragging) {
 			if (m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT)) {
 				m_vpBoxX1 = std::clamp(float(m_input.getMouseX()) - vp.x,
 					0.0f, vp.w);
@@ -2151,8 +2218,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 				m_vpBoxDragging = false;
 			}
 		}
-		else if (m_gizmoDragging || (inVp && !altNav &&
-			m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) && !uiEats)) {
+		else if (!m_volumeBrushArmed && (m_gizmoDragging || (inVp && !altNav &&
+			m_input.isMouseButtonHeld(TOUR_MOUSE_BUTTON_LEFT) && !uiEats))) {
 			GizmoHandleInput();
 		}
 
