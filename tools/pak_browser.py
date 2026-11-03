@@ -40,7 +40,23 @@ KINDS = {
 }
 KIND_BY_NAME = {name: kind for kind, name in KINDS.items()}
 VFS_KINDS = frozenset((4, 11, 12, 16))
-CATALOG_KINDS = ("scene", "texture", "mesh", "sound", "shader", "gi", "audiograph")
+# The catalog kind ABI (PR #64): byte 0 is Nil — the invalid/unset
+# kind, never stored; the real kinds start at 1. Kept in lockstep with
+# the engine's kCatalogKind* constants (engine/include/Engine/Asset/
+# appmanifest.h); new kinds APPEND here too.
+CATALOG_KINDS = (
+    "nil",
+    "scene",
+    "texture",
+    "mesh",
+    "sound",
+    "shader",
+    "gi",
+    "audiograph",
+    "spriteset",
+    "statemachine",
+    "navmesh",
+)
 
 KTX2_PREFIX = bytes([0xAB, 0x4B, 0x54, 0x58, 0x20])
 KTX2_SUFFIX = bytes([0xBB, 0x0D, 0x0A, 0x1A, 0x0A])
@@ -371,7 +387,11 @@ def decode_ids(payload: bytes) -> dict:
                 raise ValueError("invalid scene name length")
             name = payload[off:off + name_len].decode("utf-8")
             off += name_len
-            if not asset_id or kind >= len(CATALOG_KINDS) or (name and kind != 0):
+            # Row invariants (the engine's ParseAssetIdsBlob is the
+            # mirror): a nonzero id, a non-Nil kind inside the ABI,
+            # and the scene-name rule — names ride SCENE rows only
+            # (kind 1 since the Nil-is-zero shift, PR #64).
+            if not asset_id or kind < 1 or kind >= len(CATALOG_KINDS) or (name and kind != 1):
                 raise ValueError("invalid identity row")
             rows.append({
                 "id": f"0x{asset_id:X}", "kind": CATALOG_KINDS[kind],

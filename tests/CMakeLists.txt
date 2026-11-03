@@ -1239,6 +1239,16 @@ if(Python3_FOUND)
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
             -p test_tourinfo.py)
+    # The release-diff and capture CLIs (PR #65): GPU-free regression
+    # suites over synthetic packages / a mocked renderer.
+    add_test(NAME tourdiff_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_tourdiff.py)
+    add_test(NAME tourcapture_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_tourcapture.py)
     add_test(NAME pixel_compare_tests
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests

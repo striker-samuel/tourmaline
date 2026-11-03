@@ -53,8 +53,8 @@ class DiffTests(unittest.TestCase):
     def manifest(self, folder, pak_name, payload=b"same", scene="main"):
         (folder / pak_name).write_bytes(pak_bytes([
             (11, "audio/signal.wav", payload),
-            (15, "#ids", ids_blob([(0x1001, 0, "world.tour", scene),
-                                   (0x1002, 1, "textures/base.ktx", "")]))]))
+            (15, "#ids", ids_blob([(0x1001, 1, "world.tour", scene),
+                                   (0x1002, 2, "textures/base.ktx", "")]))]))
         release = folder / "game.tapp"
         release.write_text(f"appmanifest 2\nentry {pak_name} {scene}\n[paks]\n{pak_name}\n")
         return release

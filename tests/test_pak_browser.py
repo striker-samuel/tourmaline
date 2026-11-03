@@ -38,7 +38,8 @@ def pak_bytes(entries):
 def ids_blob(scene="main"):
     path = b"world.tour"
     name = scene.encode()
-    return (struct.pack("<IIIQBI", 0x52544449, 1, 1, 0x1001, 0, len(path))
+    # kind byte 1 = Scene under the #64 ABI (0 is Nil).
+    return (struct.pack("<IIIQBI", 0x52544449, 1, 1, 0x1001, 1, len(path))
             + path + struct.pack("<I", len(name)) + name)
 
 
