@@ -12,6 +12,7 @@
 #include "editor_attr_ui.h" // the attribute-widget stubs (attr::Bool/...)
 #include "editor_asset_browser_nav.h" // collection folders belong at root
 #include "editor_asset_inspect.h" // generic file/directory inspector
+#include "editor_asset_dcc.h" // DCC source link + export build stage
 
 #include <cstring>
 #include <algorithm>
@@ -19,6 +20,8 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
+#include <stdexcept>
 #include <unordered_map>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -30,6 +33,7 @@
 #include <Engine/Asset/spriteset.h>
 #include <imgui.h>
 #include <SDL3/SDL_misc.h> // SDL_OpenURL: launch the local asset history UI
+#include <SDL3/SDL_filesystem.h> // SDL_GetBasePath (staged export scripts)
 #include <imgui_impl_vulkan.h> // ImGui_ImplVulkan_AddTexture (TextureThumb)
 #include <stb_image.h>         // stbi_load (AssetSidecarThumb; impl in editor_branding)
 
@@ -5508,6 +5512,98 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				"Open Project...).");
 	}
 
+	// DCC edits the authoring file; the explicit build stage exports
+	// a validated glTF publication. The content server observes the
+	// atomic replace and routes it through normal selective reimport.
+	void EditorApp::OpenAssetInDcc(const std::string& selected) {
+		DccAsset asset;
+		std::string err;
+		if (!ResolveDccAsset(selected, asset, err)) {
+			Log("Open in DCC: " + err);
+			return;
+		}
+		if (!NativeOpenExternalDocument(asset.document, err)) {
+			Log("Open in DCC: " + err + " (" + asset.document + ")");
+			return;
+		}
+		Log("Open in DCC: '" + asset.document + "'"
+			+ (asset.linked
+				? " (linked authoring source; use Publish glTF to rebuild)"
+				: " (no DCC source link; opens the published source directly)"));
+	}
+
+	void EditorApp::LinkAssetToDcc(const std::string& selected) {
+		std::string published, err;
+		if (!ResolveDccPublishedAsset(selected, published, err)
+				|| !IsDccPublishable(published)) {
+			Log("Link DCC source: " + (err.empty()
+				? "select a published mesh/image or a derived asset" : err));
+			return;
+		}
+		std::string source;
+		if (!NativeOpenFile(source, false, true))
+			return;
+		if (!LinkDccSource(selected, source, err)) {
+			Log("Link DCC source: " + err);
+			return;
+		}
+		Log("Linked DCC authoring document: '" + source
+			+ "' -> published asset '" + published + "'.");
+	}
+
+	void EditorApp::UnlinkAssetFromDcc(const std::string& selected) {
+		std::string err;
+		if (!UnlinkDccSource(selected, err))
+			Log("Unlink DCC source: " + err);
+		else
+			Log("DCC source unlinked for '" + selected + "'.");
+	}
+
+	void EditorApp::PublishAssetFromDcc(const std::string& selected) {
+		if (m_dccPublishRunning || m_cookRunning) {
+			Log("Publish glTF: a DCC publish or cook is already running.");
+			return;
+		}
+		DccAsset asset;
+		std::string err;
+		if (!ResolveDccAsset(selected, asset, err)) {
+			Log("Publish glTF: " + err);
+			return;
+		}
+		const char* basePath = SDL_GetBasePath();
+		const std::filesystem::path publisher = std::filesystem::path(
+			basePath ? basePath : ".") / "tools" / "dcc" / "publish_gltf.py";
+		if (!std::filesystem::is_regular_file(publisher)) {
+			Log("Publish glTF: runner script not staged beside Editor: "
+				+ publisher.generic_string());
+			return;
+		}
+		auto buildError = std::make_shared<std::string>();
+		m_dccPublishRunning = true;
+		const std::string output = asset.published;
+		if (!m_fibers.Post("dcc-publish",
+				[asset, script = publisher.generic_string(), buildError]() {
+					std::string error;
+					if (!RunDccPublish(asset, script, error))
+						throw std::runtime_error(error);
+				},
+				[this, output](const FiberBackend::Completion& completion) {
+					m_dccPublishRunning = false;
+					if (completion.ok)
+						Log("Publish glTF succeeded: '" + output
+							+ "' — awaiting content-server hot reload.");
+					else
+						Log("Publish glTF failed: " + completion.error
+							+ " — previous publication retained.");
+				})) {
+			m_dccPublishRunning = false;
+			Log("Publish glTF: editor worker pool is not available.");
+			return;
+		}
+		Log("Publish glTF: exporting '" + asset.document + "' -> '"
+			+ asset.published + "' (background build stage).");
+	}
+
 	void EditorApp::DrawAssetsPanel() {
 		// Asset browser: a GRID directory explorer of the project folder
 		// (Unity Project window style). Breadcrumb + Up; folders first;
@@ -5768,6 +5864,24 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			if (ImGui::SmallButton("Reveal##sel"))
 				RevealInExplorer(m_assetsSel);
 			ImGui::EndDisabled();
+			SameLineIfFits("Open in DCC");
+			ImGui::BeginDisabled(!selFile);
+			if (ImGui::SmallButton("Open in DCC##sel"))
+				OpenAssetInDcc(m_assetsSel);
+			ImGui::EndDisabled();
+			SameLineIfFits("Link DCC...");
+			ImGui::BeginDisabled(!selFile);
+			if (ImGui::SmallButton("Link DCC...##sel"))
+				LinkAssetToDcc(m_assetsSel);
+			ImGui::EndDisabled();
+			SameLineIfFits("Publish glTF");
+			ImGui::BeginDisabled(!selFile || m_dccPublishRunning);
+			if (ImGui::SmallButton("Publish glTF##sel"))
+				PublishAssetFromDcc(m_assetsSel);
+			ImGui::EndDisabled();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Build from linked .ma/.blend through a DCC runner, "
+					"then hot reload the exported glTF.");
 			// Add-to-scene (mesh/geometry selection): the click twin of the
 			// viewport drag-drop (AddSceneReference asset-bind). Imports
 			// land in-project first (ImportAsset), so this only ever adds
@@ -6562,6 +6676,20 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			// Real assets use the same confirm dialog as the header.
 			if (!e.back && e.vfilter < 0
 				&& ImGui::BeginPopupContextItem("##assettile_ctx")) {
+				// DCC link resolves manifest-derived tiles to their source.
+				std::error_code dccEc;
+				if (fs::is_regular_file(e.abs.Str(), dccEc) && !dccEc) {
+					if (ImGui::MenuItem("Open in DCC"))
+						OpenAssetInDcc(e.abs.Str());
+					if (ImGui::MenuItem("Link DCC source..."))
+						LinkAssetToDcc(e.abs.Str());
+					if (ImGui::MenuItem("Publish glTF", nullptr, false,
+							!m_dccPublishRunning))
+						PublishAssetFromDcc(e.abs.Str());
+					if (ImGui::MenuItem("Unlink DCC source"))
+						UnlinkAssetFromDcc(e.abs.Str());
+					ImGui::Separator();
+				}
 				// MULTI-AWARE: deleting a tile that sits in a multi-
 				// selection (>1) requests the WHOLE set (one confirm,
 				// every plan executes); a single/unselected tile keeps
