@@ -97,6 +97,9 @@ void TestPolicy() {
 			/ "knight.gltf").generic_string()),
 		"policy.watches-gltf-source");
 	Check(!pol.Ignored((tmp / "content" / "models" / "knight"
+			/ "knight.obj").generic_string()),
+		"policy.watches-obj-as-authoring-mesh");
+	Check(!pol.Ignored((tmp / "content" / "models" / "knight"
 			/ "knight.gltf.meta").generic_string()),
 		"policy.watches-identity-sidecar");
 	Check(!pol.Ignored((tmp / "content" / "scenes" / "scene.tour")

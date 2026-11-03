@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // CPU-only content-server routing and live watcher regression tests.
 #include "editor_content_server.h"
+#include "editor_hot_reload_targets.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -70,6 +71,21 @@ void TestRouting(const fs::path& root) {
 	Check(Has(root / "content" / "missing.png",
 		Route::Removed, Event::Removed), "removed route wins");
 }
+void TestBindingTargets(const fs::path& root) {
+	const std::string src = (root / "content" / "ship.gltf").generic_string();
+	const std::string blob = (root / "content" / "ship.geometry").generic_string();
+	Check(editor::IsPublishedMeshBound(src, blob),
+		"published glTF matches bound geometry artifact");
+	Check(editor::IsPublishedMeshBound(src, src),
+		"published glTF matches direct source binding");
+	Check(!editor::IsPublishedMeshBound(src,
+		(root / "content" / "other.geometry").generic_string()),
+		"unrelated scene binding not reloaded");
+	Check(editor::IsPublishedMeshBound(
+		(root / "content" / "ship.obj").generic_string(), blob),
+		"OBJ and glTF use the same derived geometry binding");
+}
+
 void TestLive(const fs::path& root) {
 	const fs::path source = root / "content" / "models" / "fresh.gltf";
 	std::error_code ec;
@@ -99,6 +115,7 @@ int main() {
 	std::error_code ec;
 	fs::create_directories(root, ec);
 	TestRouting(root);
+	TestBindingTargets(root);
 	TestLive(root);
 	fs::remove_all(root, ec);
 	return failures ? 1 : 0;

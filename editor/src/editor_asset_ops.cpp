@@ -89,6 +89,12 @@ std::string OwningGltf(const std::string& fileAbs) {
 
 } // namespace
 
+// Shared with the DCC bridge: a clicked derived asset resolves to its
+// manifest's authoritative publish source (not the binary derived file).
+std::string FindOwningMeshSource(const std::string& derivedAssetPath) {
+	return OwningGltf(derivedAssetPath);
+}
+
 bool PlanAssetDelete(const std::string& absPath,
 	const std::string& projectRoot, AssetDeletePlan& out,
 	std::string& err) {
@@ -166,6 +172,10 @@ bool PlanAssetDelete(const std::string& absPath,
 	// stays as a missing retarget for reference diagnostics).
 	if (fs::is_regular_file(fs::path(abs + ".meta"), ec) && !ec)
 		out.also.push_back(abs + ".meta");
+	// The DCC authoring link belongs to the published source file.
+	// Never leave a dangling path to a deleted publish output.
+	if (fs::is_regular_file(fs::path(abs + ".dccsource"), ec) && !ec)
+		out.also.push_back(abs + ".dccsource");
 	// (the .gicook/.lmcook bake classes passed the derived check above)
 	const std::string name = fs::path(abs).filename().generic_string();
 	if (smvk::assets::IsMeshSourceFile(fs::path(abs))) {

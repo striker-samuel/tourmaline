@@ -25,7 +25,8 @@ inline bool HideAssetBrowserFile(const std::filesystem::path& path,
     const std::string ext = lower(path.extension().string());
     const std::string kind = lower(std::string(assetKind));
     return ext == ".cubemap" || ext == ".cubemanifest"
-        || ext == ".gicook" || kind == "cubemap" || kind == "gicook";
+        || ext == ".gicook" || ext == ".dccsource"
+        || kind == "cubemap" || kind == "gicook";
 }
 
 // Root navigation is valid even though InProjectDir excludes the root
