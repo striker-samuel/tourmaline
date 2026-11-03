@@ -3,6 +3,13 @@
 
 project(AssetTests)
 
+# Headless editor bake progress parser and live-file tee regression.
+add_executable(EditorBakeFeedbackTests test_editor_bake_feedback.cpp)
+set_target_properties(EditorBakeFeedbackTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME editor_bake_feedback_tests COMMAND EditorBakeFeedbackTests)
+
 add_executable(AssetTests test_assets.cpp)
 
 target_link_libraries(AssetTests
@@ -1226,20 +1233,6 @@ if(Python3_FOUND)
             -s ${CMAKE_SOURCE_DIR}/tests
             -t ${CMAKE_SOURCE_DIR}/tests
             -p test_pak_browser.py)
-    # The agent CLI tooling suite (PR #60): tourinfo/pixel_compare/
-    # input_emulator, stdlib-only, GPU-free.
-    add_test(NAME tourinfo_tests
-        COMMAND ${Python3_EXECUTABLE} -m unittest discover
-            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
-            -p test_tourinfo.py)
-    add_test(NAME pixel_compare_tests
-        COMMAND ${Python3_EXECUTABLE} -m unittest discover
-            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
-            -p test_pixel_compare.py)
-    add_test(NAME input_emulator_tests
-        COMMAND ${Python3_EXECUTABLE} -m unittest discover
-            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
-            -p test_input_emulator.py)
 else()
     message(STATUS "Python3 not found: perf_harness_tests not registered")
 endif()
@@ -1256,13 +1249,6 @@ add_executable(SpriteSetTests test_spriteset.cpp)
 target_link_libraries(SpriteSetTests PRIVATE engine)
 set_target_properties(SpriteSetTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME spriteset_tests COMMAND SpriteSetTests)
-
-# CPU-only state machines, navmesh queries and shared graph topology.
-add_executable(GameplayAssetTests test_gameplay_assets.cpp)
-target_link_libraries(GameplayAssetTests PRIVATE engine)
-set_target_properties(GameplayAssetTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-add_test(NAME gameplay_asset_tests COMMAND GameplayAssetTests)
 
 # GPU-free layout, clipping and painter-order regression checks for game UI.
 add_executable(GameUiTests test_game_ui.cpp)

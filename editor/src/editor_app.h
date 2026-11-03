@@ -2869,6 +2869,7 @@ private:
 		bool done = false;       // process finished (success or failure)
 		bool ok = false;         // result flag
 		std::string result;      // one-line result for the footer
+		std::string logPath;     // flushed per-job log (if writable)
 	};
 	ModalTaskWindow m_taskWindow;
 	// True while the task popup blocks the UI (armed or up, not

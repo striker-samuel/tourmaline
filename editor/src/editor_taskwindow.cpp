@@ -35,6 +35,7 @@ void EditorApp::TaskWindowBegin(const std::string& title,
 	m_taskWindow.done = false;
 	m_taskWindow.ok = false;
 	m_taskWindow.result.clear();
+	m_taskWindow.logPath.clear();
 }
 
 void EditorApp::TaskWindowPush(const std::string& line) {
@@ -83,6 +84,12 @@ void EditorApp::DrawTaskWindow() {
 	ImGui::Text("%s", m_taskWindow.title.c_str());
 	ImGui::Separator();
 	ImGui::Text("%s", m_taskWindow.stage.c_str());
+	if (!m_taskWindow.logPath.empty()) {
+		ImGui::TextDisabled("Live log: %s", m_taskWindow.logPath.c_str());
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Copy path"))
+			ImGui::SetClipboardText(m_taskWindow.logPath.c_str());
+	}
 	if (m_taskWindow.progress < 0.0f)
 		ImGui::ProgressBar(-1.0f, ImVec2(-1, 0), "");
 	else
@@ -99,8 +106,8 @@ void EditorApp::DrawTaskWindow() {
 		ImGui::EndChild();
 	}
 	if (!m_taskWindow.done) {
-		// Running: the only exit is the background hatch (workers are
-		// not cancellable — _popen blocks to completion).
+		// Running: the background hatch hides the modal without
+		// stopping the in-process baker (no safe cancellation API yet).
 		if (ImGui::Button("Run in background")) {
 			m_taskWindow.inBackground = true;
 			ImGui::CloseCurrentPopup();

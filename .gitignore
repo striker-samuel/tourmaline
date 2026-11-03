@@ -561,3 +561,6 @@ releases/paks/*.pak
 
 # Private compiled plan header (project.h itself can be committed).
 project_plans.h
+
+# Editor bake/cook live log files in project roots.
+.tourmaline/logs/
