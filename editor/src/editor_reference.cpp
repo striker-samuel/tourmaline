@@ -47,6 +47,9 @@ void EditorApp::StartReferenceRender() {
 	tour::gi::GiSceneBuildOptions opts{};
 	engine::FrameUniforms frame{};
 	ApplyEnvToFrame(frame, opts.env);
+	// A CPU reference is always a fully lit material evaluation, even
+	// when the editor viewport is temporarily in its Unlit debug mode.
+	opts.env.sunIntensity = CurrentEnv().sunIntensity;
 	opts.includeDynamicLights = true;
 	opts.staticLights = true;
 	opts.retainVertexNormals = true;
@@ -101,7 +104,7 @@ void EditorApp::StartReferenceRender() {
 	settings.maxBounces = uint32_t(std::clamp(m_referenceBounces, 0, 16));
 	settings.exposure = std::clamp(m_referenceExposure, 0.000001f, 1.0f);
 	settings.seed = 0x2026u;
-	m_referenceExposure = settings.exposure;
+	m_referenceJobExposure = settings.exposure;
 
 	namespace fs = std::filesystem;
 	m_referencePath = (fs::path(ResolveVfsRoot()) /
@@ -136,7 +139,7 @@ void EditorApp::DrawReferencePanel() {
 				namespace fs = std::filesystem;
 				std::error_code ec;
 				fs::create_directories(fs::path(m_referencePath).parent_path(), ec);
-				const auto png = frame.ToRgba8(m_referenceExposure);
+				const auto png = frame.ToRgba8(m_referenceJobExposure);
 				const bool saved = !png.empty() && stbi_write_png(
 					m_referencePath.c_str(), int(frame.width), int(frame.height),
 					4, png.data(), int(frame.width * 4)) != 0;
