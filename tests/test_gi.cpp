@@ -1041,21 +1041,25 @@ void TestGiVolume() {
 				mid = false;
 		Check(mid, "GI volume no-vis midpoint is the plain trilerp blend");
 
-		// The rejection: hand-author the 6-axis vis (a wall just behind
-		// voxel #1 — its -x obstacle at 0.05 m) + no clean flags. A
-		// sample at the boundary now REJECTS voxel #1 (the offset 0.5
-		// spacing units along its blocked axis exceeds dist+slack) and
-		// reads voxel #0's value alone: the through-wall behavior.
+		// The rejection: hand-author a wall behind voxel #1 on -x.
+		// At the midpoint its offset is exactly the minimum reach
+		// (0.5 spacing units), so the GPU-matching factor is still 1.
+		// Farther toward voxel #0 the ramp attenuates, then rejects it.
 		strip.vis.assign(2 * 6, 15.0f * strip.spacing); // open everywhere
 		strip.vis[1 * 6 + 1] = 0.05f; // voxel #1's -x obstacle (a wall)
 		strip.visCellClean.clear();    // no fast-path flags
 		Check(strip.Sample(glm::vec3(0.0f, 0.5f, 0.5f), amps),
 			"GI volume strip covered (vis)");
-		bool rej = true;
-		for (uint32_t i = 0; i < kSgLobeCount; ++i)
-			if (std::abs(amps[i].x - 0.0f) > 1e-4f)
-				rej = false;
-		Check(rej, "GI volume blocked-side tap rejects across the wall");
+		CheckNear(amps[0].x, 1.0f, 1e-4f,
+			"GI volume midpoint visibility matches GPU texel offsets");
+		Check(strip.Sample(glm::vec3(-0.30f, 0.5f, 0.5f), amps),
+			"GI volume strip covered (visibility ramp)");
+		CheckNear(amps[0].x, 2.0f / 13.0f, 1e-4f,
+			"GI volume 0.45-width visibility ramp matches normalized taps");
+		Check(strip.Sample(glm::vec3(-0.48f, 0.5f, 0.5f), amps),
+			"GI volume strip covered (blocked)");
+		CheckNear(amps[0].x, 0.0f, 1e-4f,
+			"GI volume blocked-side tap rejects beyond the ramp");
 
 		// File round trip (priority + planes + coeffs + the vis data).
 		const auto tmp = std::filesystem::temp_directory_path()

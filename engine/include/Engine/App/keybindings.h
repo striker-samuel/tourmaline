@@ -107,7 +107,7 @@ constexpr int DS_VIZ_CYCLE = TOUR_KEY_Y;             // deferred-shadow visualiz
 constexpr int HUD_TOGGLE = TOUR_KEY_T;
 
 // Shared GI-debug cycle length: flat irradiance, source palette,
-// isolated level, dominant level, + off. HandleShortcuts and UpdateCamera
+// probe distance, visibility weight sum, + off. HandleShortcuts and UpdateCamera
 // used to disagree here (%3 vs %5) and double-fired R in FPS mode; the
 // single CycleGiDebug helper below is the only owner.
 constexpr int GI_DEBUG_MODE_COUNT = 5;

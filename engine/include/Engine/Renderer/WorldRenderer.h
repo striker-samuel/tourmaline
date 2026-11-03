@@ -3309,10 +3309,8 @@ public:
 	// Baked — see AmbientMode); R / F8 cycle the baked-GI debug
 	// views. ----
 	AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
-	int m_giDebug = 0;             // R / F8 cycle: 0 off, 1 baked irradiance,
-	                                // 2 GI source palette (the octree's
-	                                // level-isolation/argmax debug modes died
-	                                // with the walker; 3/4 read as 1 here)
+	int m_giDebug = 0;             // R / F8: 0 off, 1 flat irradiance,
+	                                // 2 source, 3 probe distance, 4 visibility wSum
 	int m_giDebugLevel = 0;        // (retired with the octree level debugs —
 	                                // feeds the frame's legacy giDebug byte,
 	                                // always 0)

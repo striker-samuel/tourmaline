@@ -1834,22 +1834,15 @@ namespace engine {
 			else if (lm == "0" || lm == "off") m_lmEnabled = false;
 			else std::cerr << "[WorldRenderer] unknown TOURMALINE_LIGHTMAP value: " << lm << " (0|1)\n";
 		}
-		// GI debug view for headless runs (same modes the R key cycles;
-		// F8 is the legacy alias): 0 off, 1 baked irradiance,
-		// 2 source palette. (The octree's level-isolation/argmax modes
-		// 3/4 are RETIRED with the .sggi walker — a pinned 3/4 reads as
-		// the probe-distance view (the coplanarity check).)
+		// GI debug view for headless runs (also cycled by R / F8):
+		// 0 off, 1 flat irradiance, 2 source, 3 probe distance,
+		// 4 pre-normalization visibility weight sum (wSum).
 		if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
 			const int mode = std::atoi(giDbgEnv);
-			if (mode >= 0 && mode <= 3)
+			if (mode >= 0 && mode <= 4)
 				m_giDebug = mode;
-			else if (mode == 4) {
-				m_giDebug = 1;
-				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG mode 4"
-					<< " retired (octree) — flat view\n";
-			}
 			else
-				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..3\n";
+				std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
 		}
 		// GI probe spheres for headless runs (the "Probe points" panel
 		// checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
@@ -5595,11 +5588,9 @@ namespace engine {
 		// GI debug view + shared intensity ride EVERY frame regardless of
 		// which source is active: the lit shader's F8/I debug block colors
 		// lightmap / grid / probe pixels alike (mode 1 flat irradiance,
-		// 2 source palette, 3 isolated level, 4 dominant level - the
-		// sggi walk's level-isolation + argmax debugs), so the views must
-		// survive source isolation (e.g. Lightmaps mode with no probe
-		// volume loaded). The level byte carries the mode-3 isolated
-		// level (see SgGiSample's dbgLvl).
+		// 2 source palette, 3 probe clearance, 4 visibility wSum), so
+		// the views must survive source isolation. The level byte is
+		// retained for the retired octree shader ABI.
 		data.giIntensity = m_giIntensity;
 		data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu)
 			| (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
@@ -9537,15 +9528,13 @@ namespace engine {
 				lines[0] = "nearest probe's obstacle distance: red = on/in a surface,";
 				lines[1] = "yellow = near (< 1 m), green = open.";
 				break;
+			case 4:
+				title = "GI debug: visibility wSum (R/F8)";
+				lines[0] = "pre-normalization probe weight total: red = 0 (blocked),";
+				lines[1] = "yellow = 0.5, green = 1 (clean / no rejection).";
+				lines[2] = "magenta = no GI volume at this pixel.";
+				break;
 			default:
-				// Mode 4 (the octree's dominant-level argmax) retired with
-				// the .sggi walk: the shader falls through to the source
-				// palette (default_lit_body's note) — the cycle stop stays
-				// reachable (GI_DEBUG_MODE_COUNT 5), so label what it
-				// ACTUALLY shows.
-				title = "GI debug: dominant level (retired, R/F8)";
-				lines[0] = "retired with the octree walk - renders the source palette";
-				lines[1] = "(same colors as mode 2).";
 				break;
 			}
 		}
@@ -17631,21 +17620,11 @@ namespace engine {
 						}
 						ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
 						if (m_regLoaded || m_giVolumesLoaded) {
-							// GI debug views (R / F8 cycle, ALL
-							// GI_DEBUG_MODE_COUNT=5 stops): 0 off, 1 baked
-							// irradiance, 2 source palette, 3 probe
-							// distance, 4 the retired dominant level
-							// (renders the source palette — the octree
-							// argmax went with the .sggi walk). The combo
-							// used to clamp to 0..3, so the R-reachable
-							// mode 4 showed no selection; the list now
-							// mirrors the cycle exactly. They render
-							// through the LIT shader: selecting one snaps
-							// the base view to Lit (invisible under a
-							// flat mode otherwise).
+							// All five R / F8 stops (including off).
+							// Select Lit so the debug shader is visible.
 							const char* dbgNames[5] = { "Off", "Baked irradiance",
 								"GI source", "Probe distance",
-								"Dominant level (retired = palette)" };
+								"Visibility weight sum (wSum)" };
 							int dbgIdx = m_giDebug;
 							if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 5)) {
 								m_giDebug = std::clamp(dbgIdx, 0, 4);

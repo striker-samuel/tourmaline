@@ -1451,9 +1451,8 @@ float envVis = 1.0f;
     //       in the frame's giDebug level byte — per-level captures: what
     //       each octave contributes alone; the full-volume fast path
     //       short-circuits the walk, so its flat stays the volume field).
-    //   4 = dominant octree level (the walk's argmax over per-level
-    //       weight sums — which octave carries this pixel; falls back to
-    //       the source palette where no walk ran).
+    //   4 = visibility weight sum (wSum): red = 0, yellow = 0.5,
+    //       green = 1 (clean/unfiltered).
     //   Magenta = no baked source at this pixel (sky fallback only).
     // The old probe-bisect modes (level isolation, coverage palettes,
     // disagreement heat, ...) are gone — bake-side analysis belongs to
@@ -1475,9 +1474,9 @@ float envVis = 1.0f;
                 * max(frame.exposure, 1e-6f)), 1.0f);
             return OUT;
         }
-        if (giDbgMode == 3u)
+        if (giDbgMode == 3u || giDbgMode == 4u)
         {
-            // PROBE DISTANCE: the nearest probe's minimum 6-axis
+            // PROBE DISTANCE / WEIGHT SUM: the nearest probe's minimum 6-axis
             // obstacle distance for the pixel's cell in the first
             // covering volume (the coplanarity check). Red = the
             // probe is ON or IN a surface (dist 0, blocked), yellow
@@ -1517,20 +1516,31 @@ float envVis = 1.0f;
                     * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
                 return OUT;
             }
-            const float probeDist =
-                SgGiVolumeDebugProbeDistance(frame, dbgVol, IN.worldPos);
-            // Color ramp: red (0) -> yellow (0.3) -> green (1.0)
-            const float3 dbgCol = probeDist < 0.3
-                ? lerp(float3(1, 0, 0), float3(1, 1, 0), probeDist / 0.3)
-                : lerp(float3(1, 1, 0), float3(0, 1, 0),
-                    (probeDist - 0.3) / 0.7);
+            float3 dbgCol;
+            if (giDbgMode == 3u)
+            {
+                const float probeDist =
+                    SgGiVolumeDebugProbeDistance(frame, dbgVol, IN.worldPos);
+                dbgCol = probeDist < 0.3
+                    ? lerp(float3(1, 0, 0), float3(1, 1, 0), probeDist / 0.3)
+                    : lerp(float3(1, 1, 0), float3(0, 1, 0),
+                        (probeDist - 0.3) / 0.7);
+            }
+            else
+            {
+                // Pre-normalization sum from the same eight weighted taps
+                // as SgGiVolumeSample. Low values show coverage holes.
+                const float wSum =
+                    SgGiVolumeDebugWeightSum(frame, dbgVol, IN.worldPos);
+                dbgCol = wSum < 0.5
+                    ? lerp(float3(1, 0, 0), float3(1, 1, 0), wSum * 2.0)
+                    : lerp(float3(1, 1, 0), float3(0, 1, 0),
+                        (wSum - 0.5) * 2.0);
+            }
             OUT.outColor = float4(SanitizeHdr(dbgCol
                 * max(frame.exposure, 1e-6f)), 1.0f);
             return OUT;
         }
-        // (Mode 4 — the octree's dominant-level palette — retired with
-        // the octree walk: dbgBestLvl has no writer, the mode falls
-        // through to the source palette below.)
         float3 pal = (giSource == 1u) ? float3(1.0f, 0.0f, 0.0f)
             : (giSource == 2u) ? float3(0.0f, 1.0f, 0.0f)
             : (giSource == 4u) ? float3(0.0f, 1.0f, 1.0f)

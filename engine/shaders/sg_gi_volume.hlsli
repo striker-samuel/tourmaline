@@ -154,17 +154,14 @@ float SgGiVolumeVisAxis(float along, float dist)
     // The floor (max(dist * 1.5, 0.5)) ensures near-surface probes
     // always reach at least 0.5 spacing units (0.25 m at 0.5 m
     // spacing) — enough for same-side wall pixels to read them.
-    // Through-thin-wall leak: a probe 0.1 m from a thin wall
-    // reaches 0.25 m; a pixel on the other side at 0.05 m from the
-    // wall has offset 0.25 m — right at the reach boundary, the
-    // ramp midpoint (~50% leak, a smooth transition, vs the old
-    // 100% absolute-slack leak and the 0% pure-proportional black).
-    // The RAMP width is also floor-clamped: max(0.5 * dist, 0.3)
-    // — near-surface probes ramp over 0.3 units (smooth), open
-    // probes proportionally.
+    // The minimum reach can bleed across thin walls: a tap exactly at
+    // the reach boundary still has full weight. Widening the falloff
+    // avoids lattice-aligned dark cliffs at the cost of a larger
+    // partially-visible region; compare thin-wall leakage in captures.
+    // Near-surface probes ramp over at least 0.45 spacing units.
     const float reach = max(dist * 1.5, 0.5);
     if (along > reach)
-        return max(0.0, 1.0 - (along - reach) / max(0.5 * dist, 0.3));
+        return max(0.0, 1.0 - (along - reach) / max(0.5 * dist, 0.45));
     return 1.0;
 }
 
@@ -235,6 +232,48 @@ float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
     const float mn = min(min(min(d0, d1), min(d2, d3)), min(d4, d5));
     return saturate(mn / max(kCapUnits, 0.1));
 }
+
+// Diagnostic: pre-normalization sum of the eight trilinear corner
+// weights after visibility rejection. The production weighted sampler
+// returns black when this is <= 1e-4. A clean cell (or missing visibility
+// data) has the ordinary trilinear sum of 1. This is intentionally
+// debug-only: the normal GI path does not do a second visibility walk.
+float SgGiVolumeDebugWeightSum(FrameUniforms frame, uint vol, float3 pos)
+{
+    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    if (visSlotA == 0xffffffffu || visSlotB == 0xffffffffu)
+        return 1.0;
+
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    if (any(dims < 2.0))
+        return 1.0;
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    if (volumeTextures[visSlotB].Load(int4(b, 0)).z >= 0.5)
+        return 1.0;
+
+    const float3 f = saturate(rel - 0.5 - float3(b));
+    float wSum = 0.0;
+    [unroll]
+    for (uint corner = 0; corner < 8; ++corner)
+    {
+        const int3 cc = b + int3((corner & 1u) != 0u ? 1 : 0,
+            (corner & 2u) != 0u ? 1 : 0, (corner & 4u) != 0u ? 1 : 0);
+        const float3 dRel = rel - (float3(cc) + 0.5);
+        const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+        const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+        const float visibility = SgGiVolumeVisFactor(dRel, visA, visB);
+        const float3 t3 = float3((corner & 1u) != 0u ? f.x : 1.0 - f.x,
+            (corner & 2u) != 0u ? f.y : 1.0 - f.y,
+            (corner & 4u) != 0u ? f.z : 1.0 - f.z);
+        wSum += visibility * (t3.x * t3.y * t3.z);
+    }
+    return saturate(wSum);
+}
+
 // Samples one volume's dense grid at world pos. Two paths:
 //  - FAST (the common cell): the bake's per-voxel clean flag
 //    (visB.b, point-fetched at the cell's base corner) proves every

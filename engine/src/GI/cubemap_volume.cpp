@@ -240,13 +240,15 @@ bool GiVolume::Sample(
 	// proportional went to ~zero for near-surface probes — wall
 	// pixels lost their nearest probes → black shadows. The floor
 	// (max(dist * 1.5, 0.5)) ensures 0.5 spacing units of minimum
-	// reach. The ramp width is also floor-clamped: max(0.5*dist, 0.3).
+	// reach. The ramp width is also floor-clamped: max(0.5*dist, 0.45).
 	const auto visFactor = [&](int x, int y, int z) {
 		if (!haveVis)
 			return 1.0f;
 		const size_t c = idx(x, y, z);
-		const glm::vec3 dRel(gx - (float(x) + 0.5f),
-			gy - (float(y) + 0.5f), gz - (float(z) + 0.5f));
+		// gx = rel - 0.5, so subtracting the texel index gives
+		// the GPU's rel - (cc + 0.5) offset in spacing units.
+		const glm::vec3 dRel(gx - float(x),
+			gy - float(y), gz - float(z));
 		float w = 1.0f;
 		static const float kAxes[6][3] = {
 			{ 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
@@ -260,7 +262,7 @@ bool GiVolume::Sample(
 			if (along > reach) {
 				w *= std::max(0.0f,
 					1.0f - (along - reach)
-						/ std::max(0.5f * dist, 0.3f));
+						/ std::max(0.5f * dist, 0.45f));
 				if (w <= 0.0f)
 					return 0.0f;
 			}
