@@ -1,0 +1,12 @@
+# Soft terrain sculpt brush
+version=1
+kind=terrain
+name=Soft Sculpt
+radius=12
+strength=0.35
+spacing=0.2
+operation=0
+density=0.5
+minScale=0.8
+maxScale=1.2
+minDistance=0

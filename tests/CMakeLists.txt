@@ -1439,3 +1439,14 @@ target_compile_features(FramePacerTests PRIVATE cxx_std_20)
 set_target_properties(FramePacerTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME frame_pacer_tests COMMAND FramePacerTests)
+
+# Reusable terrain / scatter brush asset serialization, no GPU dependency.
+add_executable(BrushPresetTests test_brush_presets.cpp)
+target_include_directories(BrushPresetTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/editor/src
+)
+set_target_properties(BrushPresetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME brush_preset_tests COMMAND BrushPresetTests)
+
