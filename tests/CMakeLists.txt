@@ -1400,3 +1400,12 @@ target_link_libraries(SdfTests PRIVATE engine)
 tourmaline_stage_sdl3(SdfTests)
 set_target_properties(SdfTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME sdf_tests COMMAND SdfTests)
+
+# CPU-only frame pacing math: absolute deadlines, missed-frame recovery,
+# runtime cap changes and uncapped/reset behavior (no SDL/Vulkan required).
+add_executable(FramePacerTests test_frame_pacer.cpp)
+target_include_directories(FramePacerTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+target_compile_features(FramePacerTests PRIVATE cxx_std_20)
+set_target_properties(FramePacerTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME frame_pacer_tests COMMAND FramePacerTests)

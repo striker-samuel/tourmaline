@@ -28,7 +28,7 @@ void PrintUsage(const char* prog) {
 		<< "  " << (prog ? prog : "App")
 		<< " --project <path.tapp> (the generated appmanifest launch)\n"
 		<< "  [--minimal] [--filter-only] [--with <csv>] [--without <csv>]\n"
-		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--disable_control] [--no-dlss]\n"
+		<< "  [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--max-fps N] [--disable_control] [--no-dlss]\n"
 		<< "  [--capture] [--use_optick] [--use_optick_gpu] [--no-vfs]\n"
 		<< "  --pak runs cooked paks — REQUIRED (or --project), there is\n"
 		<< "  no default (no entry-point pak = the App refuses to run).\n"
@@ -49,6 +49,7 @@ void PrintUsage(const char* prog) {
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
+		<< "  --max-fps N caps interactive CPU frames to 1..1000 FPS (omitted = uncapped; ignored by --bench)\n"
 		<< "  --input-record <path> writes an engine input tape at exit\n"
 		<< "  --input-replay <path> replays engine input + timestep by tick\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
@@ -208,6 +209,22 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			if (!ParseFloat(v, 0.01f, 1000.0f, opts.benchMoveSpeed))
 				return RejectNumeric("--bench_move", v,
 					"a speed in m/s, 0.01..1000", exitCode);
+		}
+		else if (std::strcmp(a, "--max-fps") == 0 && i + 1 < argc) {
+			const char* v = argv[++i];
+			long long n = 0;
+			if (!ParseInt(v, 1, 1000, n))
+				return RejectNumeric("--max-fps", v,
+					"an FPS limit, 1..1000", exitCode);
+			opts.maxFps = int(n);
+		}
+		else if (std::strncmp(a, "--max-fps=", 10) == 0) {
+			const char* v = a + 10;
+			long long n = 0;
+			if (!ParseInt(v, 1, 1000, n))
+				return RejectNumeric("--max-fps", v,
+					"an FPS limit, 1..1000", exitCode);
+			opts.maxFps = int(n);
 		}
 		else if ((std::strcmp(a, "--present") == 0) && i + 1 < argc) {
 			opts.presentMode = argv[++i];

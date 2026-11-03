@@ -24,7 +24,7 @@
 //   App [--pak <path.pak>] [--scene-index N] [--no-vfs]
 //   App --project <path.tapp> [--no-vfs]
 //   [--minimal] [--filter-only] [--with <csv>] [--without <csv>]
-//   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>]
+//   [--bench <frames>] [--bench_move <m/s>] [--present <fifo|mailbox|immediate>] [--max-fps N]
 //   [--disable_control] [--no-dlss] [--capture] [--use_optick] [--use_optick_gpu]
 
 #include <functional>
@@ -80,6 +80,7 @@ struct ViewerOptions {
 	float benchMoveSpeed = 0.0f;
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
 	bool presentSet = false; // --present given explicitly (wins over the --bench vsync-off force)
+	int maxFps = 0; // --max-fps N: optional interactive cap; ignored by --bench
 	bool disableControl = false;
 	// Engine-normalized input events indexed by simulation tick.
 	// Relative paths resolve from the executable working directory.

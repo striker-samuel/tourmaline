@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
+#include <algorithm>
 #include <iostream>
 #include <chrono>
 #include <cmath>
@@ -112,18 +113,25 @@ void tour::App::DrainFreeQueue(uint32_t flight) {
 }
 
 void tour::App::UpdateDeltaTime() {
-
-	static auto lastFrameTime = std::chrono::high_resolution_clock::now();
-	static auto startTime = std::chrono::high_resolution_clock::now();
-	auto currentTime = std::chrono::high_resolution_clock::now();
-
-	time_since_start_s = std::chrono::duration<float, std::chrono::seconds::period>(
-		currentTime - startTime).count();
-
-	delta_time_s = std::chrono::duration<float, std::chrono::seconds::period>(
-		currentTime - lastFrameTime).count();
-
-	lastFrameTime = currentTime;
+	const auto currentTime = std::chrono::steady_clock::now();
+	if (!m_clockInitialized) {
+		m_clockStart = currentTime;
+		m_lastFrameStart = currentTime;
+		m_clockInitialized = true;
+		// The first simulation tick needs a valid dt for input recording.
+		real_delta_time_s = 0.0;
+		delta_time_s = 1.0f / 60.0f;
+	} else {
+		real_delta_time_s = std::chrono::duration<double>(
+			currentTime - m_lastFrameStart).count();
+		m_lastFrameStart = currentTime;
+		// Keep wall time for metrics, but do not feed multi-second
+		// minimize/resize/GPU stalls directly into variable-step gameplay.
+		delta_time_s = static_cast<float>(
+			std::clamp(real_delta_time_s, 1e-6, 0.1));
+	}
+	time_since_start_s = std::chrono::duration<float>(
+		currentTime - m_clockStart).count();
 
 	// Bench determinism: pin the element dt to a fixed 60 Hz step while
 	// measuring. The real dt varies run to run (vsync jitter, uncapped
@@ -135,7 +143,6 @@ void tour::App::UpdateDeltaTime() {
 	// measured frames pixel-comparable again. The bench WALL-time
 	// accounting below is untouched (it accumulates the real wall delta
 	// captured here - measuring the pin would report 16.67 ms forever).
-	real_delta_time_s = static_cast<double>(delta_time_s);
 	if (frameBudget_ > 0)
 		delta_time_s = 1.0f / 60.0f;
 	if (m_inputTapeMode == InputTapeMode::Replay) {
@@ -264,8 +271,12 @@ void tour::App::DrawFrame() {
 void tour::App::MainLoop() {
 	SMVK_PROFILE_THREAD("MainThread");
 	windowShouldClose_ = false;
+	m_clockInitialized = false;
+	m_framePacer.Reset();
 	double benchPollMs = 0.0, benchGameMs = 0.0, benchDrawMs = 0.0;
 	while (!windowShouldClose_) {
+		if (frameBudget_ == 0)
+			m_framePacer.BeginFrame();
 		if (m_inputTapeMode == InputTapeMode::Record &&
 			!m_inputTape.BeginFrame(m_inputTapeFrame, m_inputTapeError))
 			break;
@@ -367,5 +378,8 @@ void tour::App::MainLoop() {
 				}
 			}
 		}
+		// Pacing is outside the measured frame and is never used by --bench.
+		if (frameBudget_ == 0 && !windowShouldClose_)
+			m_framePacer.EndFrame();
 	}
 }

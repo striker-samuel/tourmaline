@@ -672,6 +672,8 @@ namespace app {
 				else
 					app.SetPresentMode(smvk::PresentMode::Immediate);
 			}
+			if (cfg.cli.maxFps > 0)
+				app.SetMaxFps(static_cast<uint32_t>(cfg.cli.maxFps));
 			if (!cfg.cli.inputRecordPath.empty() ||
 				!cfg.cli.inputReplayPath.empty()) {
 				std::string inputError;
