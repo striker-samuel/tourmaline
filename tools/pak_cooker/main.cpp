@@ -85,6 +85,7 @@
 #include <Engine/Asset/audiograph.h>
 #include <Engine/Asset/spriteset.h>
 #include <Engine/Asset/state_machine.h>
+#include <Engine/Asset/shape_asset.h>
 #include <Engine/Asset/navmesh.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
@@ -2983,6 +2984,25 @@ int Run(const PakArgs& c) {
 			}
 			tool::out() << "Embedded content-set shader " << vfsPath
 				<< " (" << spvBytes << " B spv)\n";
+			continue;
+		}
+		if (ext == ".shape") {
+			// First-class .shape content: validate source before storing
+			// verbatim, so corrupt assets never reach packaged games.
+			tour::asset::ShapeAsset shape;
+			std::string reason;
+			if (!tour::asset::ParseShapeAsset(
+					std::string(bytes->begin(), bytes->end()), shape, reason)) {
+				tool::err() << "Content-set shape invalid: " << reason
+					<< " (" << vfsPath << ")" << std::endl;
+				return 1;
+			}
+			if (!writer.AddBlob(smvk::PakAssetKind::Shape,
+					vfsPath, std::move(*bytes))) {
+				tool::err() << "Content-set shape AddBlob failed: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
 			continue;
 		}
 		if (ext == ".statemachine" || ext == ".navmesh") {
