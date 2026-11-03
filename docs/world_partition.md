@@ -200,3 +200,33 @@ scene resources, or cracks where LODs meet; coarse terrain stays
 present while finer resources fetch. (The WorldFields instance of this
 gate is `tests/test_world_fields.cpp`'s churn + teleport invariants
 plus `WorldFieldsGpuTests`' device readbacks.)
+
+## Placement provider (GPU terrain instances)
+
+The optional `PlacementStreamProvider` is a WorldPartition client
+(`StreamLayer::Placement`). `WorldRenderer` installs its commit callback
+and submits a camera interest for the placement layer beside the WorldFields
+interest. The provider clips interests against the current heightfield,
+records diagnostic root-cell requests, and invokes
+`PlacementWorldRuntime::BeginFrame` at the partition commit point.
+GPU view culling and indirect draw recording happen later, after the
+render-view slab is ready. A missing/disabled placement runtime submits no
+requests and records no placement dispatches.
+
+The runtime still owns its GPU buffers, activation tokens, uploaded height
+and paint windows, and per-flight visibility scratch. It now bounds the
+requested placement-tile working set by `slotBudget` before residency
+selection, prioritizing the shared partition's interest order and then
+distance to each interest center. This prevents an overfull interest window
+from evicting its own tenants repeatedly. **It does not guarantee full
+radius coverage when demand exceeds slots**; configure the budget from
+the desired visible radius and VRAM cap, and inspect partial coverage.
+
+Current limits: `StreamRequest` requests are root-cell diagnostics,
+not a shared budget/dependency arbiter. Terrain and paint are still loaded
+as direct world sources; provider-level terrain readiness/dirty region
+dependencies, cross-tile min-spacing arbitration, scene GPU database
+merging, physics promotion synchronization, shadows/PBR/LOD, and true
+large-world instance transforms require subsequent work. In particular,
+sampling halos do not enforce min-distance between candidates belonging
+to different placement tiles.
