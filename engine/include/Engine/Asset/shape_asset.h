@@ -312,4 +312,31 @@ inline bool TessellateShape(const ShapeAsset& shape, ShapeGeometry& out,
     error.clear();
     return true;
 }
+// Export triangle primitives as a standard Wavefront OBJ text mesh so the
+// existing OBJ source-import path can consume procedural geometry without
+// changing .geometry, meshlets or pak formats. Point/line topology is
+// deliberately rejected: the mesh importer is triangle-oriented.
+inline bool ShapeToObj(const ShapeAsset& shape, std::string& output,
+                       std::string& error) {
+    ShapeGeometry geometry;
+    if (!TessellateShape(shape, geometry, error)) return false;
+    if (geometry.topology != ShapeGeometry::Topology::Triangles) {
+        error = "OBJ mesh export supports triangle primitives only";
+        return false;
+    }
+    std::ostringstream stream;
+    stream << std::setprecision(std::numeric_limits<float>::max_digits10);
+    stream << "# Tourmaline procedural shape: " << ShapeKindName(shape.kind) << '\n';
+    stream << "o procedural_" << ShapeKindName(shape.kind) << '\n';
+    for (const auto& p : geometry.vertices)
+        stream << "v " << p.x << ' ' << p.y << ' ' << p.z << '\n';
+    for (size_t i = 0; i + 2 < geometry.indices.size(); i += 3)
+        stream << "f " << geometry.indices[i] + 1 << ' '
+               << geometry.indices[i + 1] + 1 << ' '
+               << geometry.indices[i + 2] + 1 << '\n';
+    output = stream.str();
+    error.clear();
+    return true;
+}
+
 } // namespace tour::asset
