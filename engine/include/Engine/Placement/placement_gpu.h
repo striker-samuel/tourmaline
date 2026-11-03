@@ -217,6 +217,7 @@ inline uint32_t PlacementDispatchGroups(uint32_t candidateCount) {
 inline constexpr const char* kPlacementTileCsPath = "content/shaders/placement_tile.cs.hlsl.spv";
 inline constexpr const char* kPlacementMeshTileCsPath = "content/shaders/placement_mesh_tile.cs.hlsl.spv";
 inline constexpr const char* kPlacementHfTileCsPath = "content/shaders/placement_hf_tile.cs.hlsl.spv";
+inline constexpr const char* kPlacementPointTileCsPath = "content/shaders/placement_point_tile.cs.hlsl.spv";
 inline constexpr const char* kPlacementConBuildCsPath = "content/shaders/placement_con_build.cs.hlsl.spv";
 inline constexpr const char* kPlacementConElectCsPath = "content/shaders/placement_con_elect.cs.hlsl.spv";
 inline constexpr const char* kPlacementConKillCsPath = "content/shaders/placement_con_kill.cs.hlsl.spv";
@@ -260,6 +261,7 @@ static_assert(sizeof(PlacementConPush) == 64, "PlacementConPush moved — update
 
 inline constexpr uint32_t kPlacementScatterDomain_Mesh = 1;
 inline constexpr uint32_t kPlacementScatterDomain_Heightfield = 2;
+inline constexpr uint32_t kPlacementScatterDomain_PointCloud = 3;
 
 inline constexpr uint32_t kPlacementFlag_HasNormals = 1u << 0;
 inline constexpr uint32_t kPlacementFlag_HasUVs = 1u << 1;
@@ -500,6 +502,8 @@ namespace smvk::placement {
 	using ::tour::placement::kPlacementMaxTileInstances;
 	using ::tour::placement::kPlacementScatterDomain_Heightfield;
 	using ::tour::placement::kPlacementScatterDomain_Mesh;
+	using ::tour::placement::kPlacementScatterDomain_PointCloud;
+	using ::tour::placement::kPlacementPointTileCsPath;
 	using ::tour::placement::kPlacementTileThreads;
 	using ::tour::placement::PlacementBinsGpu;
 	using ::tour::placement::PlacementConParams;
