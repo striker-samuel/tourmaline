@@ -75,6 +75,38 @@ def server_command(config):
             "--config", str(config), "serve"]
 
 
+def run_detached(config):
+    kwargs = {"cwd": str(ROOT), "stdin": subprocess.DEVNULL,
+              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS |
+                                   subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(server_command(config), **kwargs)
+
+
+def install_windows_boot_task(config):
+    """Always-on Windows NAS: start at boot as SYSTEM, not at user logon.
+
+    Only use host-local paths (not per-user mapped drives); SYSTEM needs read
+    access to sources and write access to archive/cache/config.
+    """
+    if os.name != "nt":
+        raise OSError("Windows scheduled task installation requires Windows")
+    launcher = Path(config).parent / "start-shared-assets.cmd"
+    launcher.write_text('@echo off\ncd /d "' + str(ROOT) +
+        '"\n"' + str(sys.executable) + '" "' +
+        str(ROOT / "tools" / "shared_asset_server.py") + '" --config "' +
+        str(config) + '" serve\n', encoding="utf-8")
+    subprocess.run([
+        "schtasks.exe", "/Create", "/F", "/TN", "TourmalineSharedAssetRepository",
+        "/SC", "ONSTART", "/RU", "SYSTEM", "/TR",
+        'cmd.exe /c "' + str(launcher) + '"'
+    ], check=True)
+    return launcher
+
+
 def install_user_autostart(config):
     if os.name == "nt":
         root = (Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" /
@@ -88,6 +120,7 @@ def install_user_autostart(config):
             '"\nstart "" /min "' + str(interpreter) + '" "' +
             str(ROOT / "tools" / "shared_asset_server.py") + '" --config "' +
             str(config) + '" serve\n', encoding="utf-8")
+        run_detached(config)
         return launcher
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +193,10 @@ def terminal_setup():
     print("HTTP over LAN is not encrypted. Configure HTTPS/reverse proxy for production.")
     if input("Install per-user autostart? [y/N]: ").strip().lower() in ("y", "yes"):
         print("Launcher:", install_user_autostart(config))
-    print("Start manually with:", " ".join(server_command(config)))
+    else:
+        run_detached(config)
+        print("Started in background for this session")
+    print("Start manually with: " ".join(server_command(config)))
 
 
 def gui_setup():
@@ -197,8 +233,11 @@ def gui_setup():
         try:
             config, token = configure(*(fields[k].get().strip()
                 for k in ("source","archive","cache")), listen_lan=lan.get())
-            status = ("Startup launcher: " + str(install_user_autostart(config))
-                      if auto.get() else "Run the service manually or install a system service.")
+            if auto.get():
+                status = "Startup launcher: " + str(install_user_autostart(config))
+            else:
+                run_detached(config)
+                status = "Started for this session. Install a system service for always-on operation."
         except Exception as exc:
             messagebox.showerror("Setup failed", str(exc))
             return
@@ -223,6 +262,7 @@ def main(argv=None):
     parser.add_argument("--service-user", default="tourmaline")
     parser.add_argument("--install-systemd-system", action="store_true")
     parser.add_argument("--user-autostart", action="store_true")
+    parser.add_argument("--install-windows-task", action="store_true")
     args = parser.parse_args(argv)
     if args.source or args.archive or args.cache:
         if not (args.source and args.archive and args.cache):
@@ -233,13 +273,15 @@ def main(argv=None):
             listen_lan=args.listen_lan,port=args.port)
         if args.install_systemd_system:
             print("Systemd unit:",install_systemd_system(config,args.service_user))
+        elif args.install_windows_task:
+            print("Windows boot task:",install_windows_boot_task(config))
         elif args.user_autostart:
             print("User launcher:",install_user_autostart(config))
         print("Config:",config)
         print("Client token:",token)
         return 0
-    if args.install_systemd_system:
-        parser.error("--install-systemd-system requires --source, --archive and --cache")
+    if args.install_systemd_system or args.install_windows_task:
+        parser.error("system service installation requires --source, --archive and --cache")
     if args.terminal:
         terminal_setup()
     else:
