@@ -162,8 +162,9 @@ enum class StreamLayer : uint8_t
 	WorldField = 3,
 	Collision = 4,
 	Navigation = 5,
+	Placement = 6,
 };
-inline constexpr uint32_t kStreamLayerCount = 6;
+inline constexpr uint32_t kStreamLayerCount = 7;
 
 inline constexpr uint32_t StreamLayerBit(StreamLayer l)
 {
