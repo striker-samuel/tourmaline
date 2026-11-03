@@ -77,6 +77,9 @@ DomainSample SampleMeshSurface(const PlacementMeshData& mesh, StableID id);
 // Built from parent-relative editor strokes by resolving their current
 // object transforms; the GPU uploads these world-space positions as float4.
 struct PlacementPointCloudData {
+	// One logical placement tile owns the source. Without a unique tile
+	// a streamed GPU layer would emit the same cloud in every tile.
+	TileID tile{};
 	std::vector<glm::vec3> positions;
 	std::vector<glm::vec3> normals; // empty, or one per point
 	bool valid() const { return !positions.empty() &&
