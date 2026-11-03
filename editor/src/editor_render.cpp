@@ -1367,9 +1367,10 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
 				0.01f);
 			const float* phase =
 				cvg.optSpacing > 0.0f ? cvg.optPhase : nullptr;
-			BuildGiProbeLatticeRows(center, axes, half, spacing, lattice,
-				smvk::giprobe::kGiProbeMaxInstances, phase);
-			if (lattice.empty())
+			const uint32_t latticeRows =
+				BuildGiProbeLatticeRows(center, axes, half, spacing, lattice,
+					smvk::giprobe::kGiProbeMaxInstances, phase);
+			if (latticeRows == 0)
 				continue;
 			if (m_giProbeDraftBuf[ni].empty()) {
 				m_giProbeDraftBuf[ni] = m_context->CreateBuffer(

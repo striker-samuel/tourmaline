@@ -2815,7 +2815,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		Scene& scene = m_world->scene;
 		const uint32_t node = m_selected;
-		const attr::ScopedID nodeId(int(node));
+		const attr::ScopedID nodeId{int(node)};
 		if (m_selection.size() > 1)
 			ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)",
 				m_selection.size(), node);
@@ -4398,7 +4398,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 	// pre-revamp presentation. Now one body, the attr stubs everywhere.)
 	void EditorApp::DrawMaterialBody(uint32_t mat) {
 		const attr::ScopedID materialScope("material_body");
-		const attr::ScopedID materialId(int(mat));
+		const attr::ScopedID materialId{int(mat)};
 		smvk::Material* m = m_world ? m_world->GetMaterial(mat) : nullptr;
 		if (!m) {
 			ImGui::TextDisabled("Material resolve failed.");

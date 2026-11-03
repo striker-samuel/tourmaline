@@ -6014,8 +6014,9 @@ namespace engine {
 				&& m_frameCounter >= toggleFrames[toggleIdx]) {
 				m_sdsmEnabled = !m_sdsmEnabled;
 				++toggleIdx;
-				std::fprintf(stderr, "[SDSMtrace] f=%u TOGGLE -> %d\n",
-					m_frameCounter, m_sdsmEnabled ? 1 : 0);
+				std::fprintf(stderr, "[SDSMtrace] f=%llu TOGGLE -> %d\n",
+					(unsigned long long)m_frameCounter,
+					m_sdsmEnabled ? 1 : 0);
 			}
 		}
 		// Directional sun driven by the frame environment (single source
@@ -6178,10 +6179,11 @@ namespace engine {
 				const uint64_t statsAge = m_sdsmStatsValid
 					? (m_frameCounter - m_sdsmMeasureFrame) : 0u;
 				std::fprintf(stderr,
-					"[SDSMtrace] f=%u on=%d armed=%d tkt=%llu valid=%d age=%u "
+					"[SDSMtrace] f=%llu on=%d armed=%d tkt=%llu valid=%d age=%u "
 					"applied=%d near=%.2f far=%.2f splits=%.2f..%.2f | "
 					"shared=%llu expAct=%d expAdapt=%.5f clamp=[%.5f..%.5f]\n",
-					m_frameCounter, m_sdsmEnabled ? 1 : 0,
+					(unsigned long long)m_frameCounter,
+					m_sdsmEnabled ? 1 : 0,
 					m_sdsmStatsArmed ? 1 : 0,
 					(unsigned long long)m_sdsmReadbackTicket,
 					m_sdsmStatsValid ? 1 : 0, (unsigned)statsAge,
@@ -16110,9 +16112,11 @@ namespace engine {
 								? cvg.optSpacing : cvg.spacing, 0.01f);
 						const float* phase =
 							cvg.optSpacing > 0.0f ? cvg.optPhase : nullptr;
-						BuildGiProbeLatticeRows(c, axes, half, spacing, rows,
-							smvk::giprobe::kGiProbeMaxInstances, phase);
-						if (rows.empty())
+						const uint32_t rowCount =
+							BuildGiProbeLatticeRows(c, axes, half, spacing,
+								rows, smvk::giprobe::kGiProbeMaxInstances,
+								phase);
+						if (rowCount == 0)
 							continue;
 						if (m_giProbeDraftBuf[ni].empty()) {
 							m_giProbeDraftBuf[ni] = m_context->CreateBuffer(
