@@ -1639,8 +1639,10 @@ void EditorApp::UpdateCamera(float dt) {
 		EditorCamEye(cam) - cam.target);
 	// Docked Viewport is an ImGui window, not a tool: orbit gestures
 	// still belong to the scene when its content is hovered.
-	const bool imguiEats = m_imgui && m_imgui->WantsCaptureMouse()
-		&& !(m_uiMode && m_dockViewportHovered);
+	const bool sceneHovered = m_viewports[m_activeVp].hovered;
+	const bool imguiEats = !sceneHovered ||
+		(m_imgui && m_imgui->WantsCaptureMouse() &&
+			!(m_uiMode && m_dockViewportHovered));
 	const bool alt = m_input.isKeyHeld(TOUR_KEY_LEFT_ALT) ||
 		m_input.isKeyHeld(TOUR_KEY_RIGHT_ALT);
 	if (!imguiEats && !m_gizmoDragging) {
