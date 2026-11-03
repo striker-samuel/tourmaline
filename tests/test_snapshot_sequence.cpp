@@ -4,6 +4,7 @@
 // CPU-only PNG chunk + keyframe/delta codec + RNG checkpoint tests.
 // No renderer, GPU or SDL initialization.
 #include <Engine/App/snapshot_sequence.h>
+#include <Engine/App/world_snapshot.h>
 #include <Engine/Core/Random.h>
 #include <Engine/App/input_tape.h>
 
@@ -34,6 +35,30 @@ int main() {
     CHECK(service.Seed() == 42);
     CHECK(service.Stream("combat").NextU32() == next);
     CHECK(service.Capture().streams.size() == 1);
+
+    // The snapshot used by the renderer is stable, typed, and includes
+    // engine RNG plus the scene's generational identity, not pointer data.
+    {
+        tour::World world;
+        const int node = tour::scene::addNode(world.scene, -1, 0);
+        CHECK(node >= 0);
+        auto before = tour::snapshot::WorldState(world, service,
+            glm::vec3(1.0f, 2.0f, 3.0f), glm::vec3(0.0f, 0.0f, -1.0f));
+        CHECK(before["scope"] == "engine-scene-graph-v1");
+        CHECK(before["rng"]["seed"] == 42);
+        CHECK(before["nodes"].size() == 1);
+        CHECK(before["scene"]["node_free_list"].is_array());
+        CHECK(before["scene"]["node_slot_generations"].is_array());
+        CHECK(before["asset_references"]["meshes"].is_array());
+        world.scene.localTransform[static_cast<size_t>(node)][3][0] = 7.0f;
+        auto after = tour::snapshot::WorldState(world, service,
+            glm::vec3(1.0f, 2.0f, 3.0f), glm::vec3(0.0f, 0.0f, -1.0f));
+        auto patch = Json::diff(before, after);
+        CHECK(!patch.empty());
+        CHECK(before.patch(patch) == after);
+        CHECK(tour::snapshot::Fnv64(before.dump()) !=
+              tour::snapshot::Fnv64(after.dump()));
+    }
 
     const auto root = std::filesystem::temp_directory_path() /
         ("tour_snapshot_test_" + std::to_string(

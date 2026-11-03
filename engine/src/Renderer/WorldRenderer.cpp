@@ -20404,6 +20404,20 @@ namespace engine {
 						const auto cameraFwd = m_cameraPositioner.getForward();
 						auto world = tour::snapshot::WorldState(*m_world, m_host.Random(),
 							cameraPos, cameraFwd);
+						world["renderer_state"] = {
+							{"debug_view", static_cast<uint32_t>(m_debugView)},
+							{"aa_mode", static_cast<uint32_t>(m_aaMode)},
+							{"ambient_mode", static_cast<uint32_t>(m_ambientMode)},
+							{"tonemap_mode", m_tonemapMode},
+							{"wireframe", m_wireframe},
+							{"gi_debug", m_giDebug},
+							{"auto_exposure_pin", m_autoExposurePin},
+							{"render_scale_f32", tour::snapshot::Bits(m_renderScale)},
+							{"delta_time_f32", tour::snapshot::Bits(m_deltaTime)},
+							{"renderer_time_f32", tour::snapshot::Bits(m_timeSinceStart)},
+							{"lut_uri", m_lutFile},
+							{"lut_intensity_f32", tour::snapshot::Bits(m_lutIntensity)}
+						};
 						if (m_snapshotStateExtension) {
 							auto extension = m_snapshotStateExtension();
 							if (!extension.is_object())
