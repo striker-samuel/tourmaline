@@ -61,6 +61,7 @@ public:
         slot.instance = {std::move(geometry), transform, color, depth};
         slot.active = true;
         ++count_;
+        ++revision_;
         error.clear();
         return {uint32_t(index), slot.generation};
     }
@@ -123,22 +124,26 @@ public:
         ++slot.generation;
         if (!slot.generation) ++slot.generation;
         --count_;
+        ++revision_;
         return true;
     }
 
     bool SetTransform(ShapeInstanceHandle handle, const glm::mat4& transform) {
         if (!Get(handle)) return false;
         slots_[handle.index].instance.worldFromLocal = transform;
+        ++revision_;
         return true;
     }
 
     bool SetColor(ShapeInstanceHandle handle, const glm::vec3& color) {
         if (!Get(handle)) return false;
         slots_[handle.index].instance.color = color;
+        ++revision_;
         return true;
     }
 
     [[nodiscard]] size_t Size() const { return count_; }
+    [[nodiscard]] uint64_t Revision() const { return revision_; }
 
     void Clear() {
         for (Slot& slot : slots_) {
@@ -148,6 +153,7 @@ public:
             ++slot.generation;
             if (!slot.generation) ++slot.generation;
         }
+        if (count_ != 0) ++revision_;
         count_ = 0;
     }
 
@@ -193,6 +199,7 @@ private:
     };
     std::vector<Slot> slots_;
     size_t count_ = 0;
+    uint64_t revision_ = 1;
 };
 
 } // namespace tour::renderer
