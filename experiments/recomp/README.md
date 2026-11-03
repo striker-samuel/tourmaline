@@ -101,14 +101,17 @@ The supported content path is now the *existing* Tourmaline pipeline:
    `asset_read` callback exposes a two-pass, caller-owned byte copy by
    numeric catalog ID to a separately built adapter.
 
-Example (all `$CONTENT`, `$PUBLISH`, `$ROM`, and `$RECOMP_OUT`
+Example (all `$BUILD`, `$CONTENT`, `$PUBLISH`, `$ROM`, and `$RECOMP_OUT`
 paths **outside** the Tourmaline checkout):
 
 ```sh
-# From the Tourmaline source checkout, after building target Project.
-cmake --build out/build/recomp --target Project
+# From the Tourmaline source checkout. BUILD, CONTENT, PUBLISH,
+# RECOMP_OUT and ROM must all resolve OUTSIDE this checkout.
+cmake -S . -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTOURMALINE_RECOMP_DIAGNOSTIC=ON
+cmake --build "$BUILD" --target Project RecompDiagnostic
 python3 experiments/recomp/scaffold_external.py bootstrap \
-  --root "$CONTENT" --project-tool "$PWD/out/build/recomp/Project" \
+  --root "$CONTENT" --project-tool "$BUILD/Project" \
   --rom "$ROM" --artifacts "$RECOMP_OUT"
 
 # User independently converts their owned game assets into one of
@@ -116,13 +119,13 @@ python3 experiments/recomp/scaffold_external.py bootstrap \
 # "$CONTENT/content/extracted/" (possibly with subdirectories).
 
 python3 experiments/recomp/scaffold_external.py build \
-  --root "$CONTENT" --project-tool "$PWD/out/build/recomp/Project" \
+  --root "$CONTENT" --project-tool "$BUILD/Project" \
   --publish "$PUBLISH" --rom "$ROM" --artifacts "$RECOMP_OUT"
 
 # The ID comes from $CONTENT/generated/project.h. This is a SYNTHETIC
 # diagnostic display, not SM64 gameplay: loaded asset bytes change
 # the generated test pattern (via a hash).
-cd out/build/recomp
+cd "$BUILD"
 ./RecompDiagnostic --synthetic \
   --assets "$PUBLISH/recomp_assets.tapp" --asset-id 0x2000
 ```
