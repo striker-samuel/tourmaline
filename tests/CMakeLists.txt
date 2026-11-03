@@ -1349,7 +1349,10 @@ add_test(NAME tooling_api_tests COMMAND ToolingApiTests)
 
 # GPU-free normalized input serialization and deterministic replay.
 add_executable(InputTapeTests test_input_tape.cpp)
-target_include_directories(InputTapeTests PRIVATE ${PROJECT_SOURCE_DIR}/engine/include)
+# CMAKE_SOURCE_DIR, NOT PROJECT_SOURCE_DIR: tests/CMakeLists.txt
+# declares project(AssetTests) above, which repoints PROJECT_SOURCE_DIR
+# at tests/ (the same trap the engine-include siblings avoid).
+target_include_directories(InputTapeTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 target_compile_features(InputTapeTests PRIVATE cxx_std_20)
 set_target_properties(InputTapeTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
