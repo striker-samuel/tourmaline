@@ -147,12 +147,75 @@ verify MIN reduction. It is a diagnostic visualizer rather than an
 A/B screenshot comparator; its NumPy/Pillow dependencies are separate
 from \`tourinfo\`.
 
+## GUI input emulator: scriptable smoke tests
+
+\`tools/input_emulator.py\` accepts **JSONL event scripts** or a pipe and
+defaults to **validation only**, never desktop input. Use this to script
+repeatable editor/viewer interaction, with a human-controlled active window.
+Validation requires only Python; live execution currently requires Windows
+and \`pip install pyautogui pygetwindow\`.
+
+\`\`\`bash
+python tools/input_emulator.py validate tools/input_example.jsonl --json
+cat tools/input_example.jsonl | python tools/input_emulator.py run --stdin --dry-run --jsonl
+python tools/input_emulator.py run tools/input_example.jsonl --execute --window Tourmaline
+\`\`\`
+
+Actions: \`key\`, \`key_down\`, \`key_up\`, \`wait\`, \`move\`,
+\`click\`, \`scroll\`, \`text\`, and \`screenshot\`. Sample JSONL:
+
+\`\`\`jsonl
+{"action":"key","key":"tab"}
+{"action":"key_down","key":"w"}
+{"action":"wait","seconds":0.25}
+{"action":"key_up","key":"w"}
+{"action":"screenshot","path":"out/input-smoke.png"}
+\`\`\`
+
+Coordinate events use desktop screen pixels. \`--execute\` requires
+\`--window\` and checks the currently foreground window before **each**
+action. Input scripting has fixed action/field allowlists, 1000-event
+and 60-second accumulated wait budgets, no shell execution, balanced
+key-down/up validation, mouse-corner failsafe and key release in a
+\`finally\` block. Do not use it to send input to unattended or unknown
+desktop windows. If the process loses focus mid-script, it fails rather
+than clicking the wrong target. Live input does not work in headless CI;
+use \`validate\` there.
+
+## Suggested next agent CLIs (not yet implemented)
+
+Ordered by value to the project; these are proposals, **not existing commands**:
+
+1. **\`tourdiff\`** — compare two \`.tapp\` deployments by stable asset
+   ID and SMP8 slot/CRC; JSONL changed/added/removed assets, with no
+   false positives from content-addressed filename churn.
+2. **\`tourdeps\`** — query forward/reverse dependency edges from
+   \`.tourrecipe\` and the content registry; \`why\` and \`affected\`
+   queries explain precisely what needs recooking.
+3. **\`tourdoctor\`** — read-only project build health checks, with
+   fix suggestions, source-location diagnostics, and structured exit
+   codes; no automatic modifications.
+4. **\`tourcapture\`** — launch a controlled rendering scenario, grab
+   fresh screenshots and send them directly into \`pixel_compare\`;
+   record camera/driver/frame pins in a machine-readable manifest.
+5. **\`tourshaders\`** — enumerate cooked shader variants, SPIR-V
+   metadata, bindings and layout mismatches without a graphics device.
+6. **\`tourtrace\`** — normalize saved Nsight, benchmark and cull artifacts
+   into queryable JSONL events without inventing GPU timings.
+7. **\`tourasset\`** — bounded, typed extraction/inspection of specific
+   assets by ID and format; never dump arbitrary multigigabyte blobs
+   to stdout accidentally.
+
+Keep implementations small, bounded and directly composable. Favor one
+reusable core parser/decoder over multiple inconsistent pipelines.
+
 ## Testing
 
 \`\`\`bash
 python -m unittest discover -s tests -p 'test_tourinfo.py' -v
 python -m unittest discover -s tests -p 'test_pak_browser.py' -v
 python -m unittest discover -s tests -p 'test_pixel_compare.py' -v
+python -m unittest discover -s tests -p 'test_input_emulator.py' -v
 python -m unittest discover -s tools/tests -v
 \`\`\`
 
