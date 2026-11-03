@@ -83,6 +83,8 @@ def load_suite(path):
     for name, material in materials.items():
         _id(name, "material ID")
         _object(material, f"material {name}")
+        if material.get("shader_family") not in (None, "project_lit"):
+            raise SuiteError(f"material {name} has unknown shader_family")
         camera = _object(material.get("camera"), f"material {name} camera")
         _vec(camera.get("position"), f"material {name} camera.position")
         _vec(camera.get("forward"), f"material {name} camera.forward", nonzero=True)
@@ -125,6 +127,10 @@ def load_suite(path):
                         "threshold": threshold, "stride": stride,
                         "max_difference_fraction": fraction}
     data["views"] = selected_views
+    revision = data.get("fixture_revision", 1)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise SuiteError("fixture_revision must be a positive integer")
+    data["fixture_revision"] = revision
     return data
 
 
@@ -153,9 +159,14 @@ def plans(suite, environment=None, material=None, view=None):
                     pins["TOURMALINE_DEBUGVIEW"] = VIEWS[v]
                 elif "TOURMALINE_DEBUGVIEW" in pins:
                     raise SuiteError("lit view cannot inherit a debug-view pin")
+                family = suite["materials"][m].get("shader_family")
+                if family == "project_lit":
+                    pins["TOURMALINE_EXTRA_ELEMENT_BENCH"] = "1"
                 name = f"{e}/{m}/{v}"
                 identity = {"name": name, "source": env["source"],
                             "camera": camera, "pins": pins,
+                            "shader_family": family,
+                            "fixture_revision": suite["fixture_revision"],
                             "app_args": env.get("app_args", []),
                             "defaults": suite["defaults"]}
                 signature = hashlib.sha256(json.dumps(identity, sort_keys=True,
@@ -233,6 +244,9 @@ def contact_sheet(output, results, filename="capture.png"):
 
 
 def run(args, suite, cases):
+    if (any(c.get("shader_family") == "project_lit" for c in cases)
+            and args.exe.stem.lower() != "materiallab"):
+        raise SuiteError("toon materials require the MaterialLab executable with ProjectLit shaders")
     output = args.output.resolve()
     baseline_root = args.baseline_dir.resolve() if args.baseline_dir else None
     if baseline_root and (output == baseline_root or baseline_root in output.parents or

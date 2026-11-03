@@ -90,6 +90,25 @@ class MaterialLabTests(unittest.TestCase):
             self.assertEqual(result["status"], "planned")
             self.assertFalse(args.output.exists())
 
+    def test_toon_case_requires_material_lab_runner(self):
+        case = material_lab.plans(self.suite, environment="studio",
+                                  material="toon_cel", view="lit")[0]
+        self.assertEqual(case["shader_family"], "project_lit")
+        self.assertEqual(case["pins"]["TOURMALINE_EXTRA_ELEMENT_BENCH"], "1")
+        self.assertIn("TOURMALINE_EXTRA_ELEMENT_BENCH=1",
+                      material_lab.capture_command(case, "MaterialLab", "out"))
+        regular = material_lab.plans(self.suite, environment="studio",
+                                     material="dielectric_rough", view="lit")[0]
+        self.assertNotIn("TOURMALINE_EXTRA_ELEMENT_BENCH", regular["pins"])
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(output=Path(tmp) / "out", baseline_dir=None,
+                gpu_tag=None, dry_run=True, exe=Path("App"), overwrite=False,
+                fail_fast=False)
+            with patch.object(material_lab.subprocess, "run") as process:
+                with self.assertRaisesRegex(material_lab.SuiteError, "MaterialLab"):
+                    material_lab.run(args, self.suite, [case])
+                process.assert_not_called()
+
     def test_fixture_generator_outputs_valid_gltf_accessors(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = material_lab_fixtures.generate(Path(tmp))
@@ -98,7 +117,10 @@ class MaterialLabTests(unittest.TestCase):
                 gl = json.loads(path.read_text(encoding="utf-8"))
                 blob = path.with_suffix(".bin").read_bytes()
                 self.assertEqual(len(blob), gl["buffers"][0]["byteLength"])
-                self.assertEqual(len(gl["materials"]), 14 if env == "cornell" else 10)
+                self.assertEqual(len(gl["materials"]), 15 if env == "cornell" else 11)
+                self.assertIn("toon_cel", [m["name"] for m in gl["materials"]])
+                toon = next(n for n in gl["nodes"] if n["name"] == "toon_cel")
+                self.assertEqual(toon["translation"], [-3.2, 4.7, -2.15])
                 for accessor in gl["accessors"]:
                     view = gl["bufferViews"][accessor["bufferView"]]
                     size = {5123: 2, 5126: 4}[accessor["componentType"]]

@@ -574,6 +574,7 @@ if(TOURMALINE_IS_TOP_LEVEL OR TOURMALINE_ENABLE_GAME_HOST)
   # HostSetup's deploy branch needs the target to exist at host setup.
   add_subdirectory(tools/pak_cooker)
   add_subdirectory(app)
+  add_subdirectory(material_lab) # isolated toon material capture host
 endif()
 if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/import)

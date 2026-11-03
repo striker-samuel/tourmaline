@@ -24,10 +24,13 @@ MATERIALS = [
     ("mixed_metal", [0.7, 0.65, 0.5, 1], 0.5, 0.25),
     ("roughness_clamp", [0.78, 0.2, 0.1, 1], 0.0, 0.01),
     ("white_warning", [0.98, 0.98, 0.98, 1], 0.0, 0.6),
+    ("toon_cel", [0.27, 0.57, 0.92, 1], 0.0, 0.85),
 ]
 # Fixed positions referenced by material_lab/suite.json camera bookmarks.
 POSITIONS = [(float(col - 1) * 2.15, 4.7 - float(row) * 1.8, 0.0)
              for row in range(3) for col in range(3)]
+# Leave original bookmarks intact; extra sphere stands behind the grid.
+POSITIONS.append((-3.2, 4.7, -2.15))
 
 ENVIRONMENT_SETTINGS = {
     "studio": {"sunIntensity": "6500", "sunAzimuth": "25", "sunElevation": "47",
