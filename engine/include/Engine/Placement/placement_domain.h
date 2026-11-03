@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// PlacementGraph domains: Grid + MeshSurface + Heightfield (MVP set).
+// PlacementGraph domains: Grid, MeshSurface, Heightfield and painted PointCloud.
 // Each domain exposes deterministic sampling from (StableID, candidateIndex).
 // CPU here is the reference oracle; the GPU kernels in Phase 3 mirror it
 // (same hashes, same alias-walk, same bilinear filtering).
@@ -16,7 +16,7 @@
 
 namespace tour::placement {
 
-enum class DomainKind : uint32_t { Grid = 0, MeshSurface = 1, Heightfield = 2 };
+enum class DomainKind : uint32_t { Grid = 0, MeshSurface = 1, Heightfield = 2, PointCloud = 3 };
 
 struct DomainSample {
 	glm::vec3 p{ 0.0f };    // world position
@@ -70,6 +70,20 @@ DomainSample SampleMeshSurface(const PlacementMeshData& mesh,
 
 // Convenience: derive r1/r2/bx/by from a StableID (CPU oracle path).
 DomainSample SampleMeshSurface(const PlacementMeshData& mesh, StableID id);
+
+// ---- Painted point-cloud domain --------------------------------------
+// Each input point is one candidate, indexed directly (no random
+// resampling or wrapping). Normals are optional: absent means world-up.
+// Built from parent-relative editor strokes by resolving their current
+// object transforms; the GPU uploads these world-space positions as float4.
+struct PlacementPointCloudData {
+	std::vector<glm::vec3> positions;
+	std::vector<glm::vec3> normals; // empty, or one per point
+	bool valid() const { return !positions.empty() &&
+		(normals.empty() || normals.size() == positions.size()); }
+	uint32_t pointCount() const { return uint32_t(positions.size()); }
+	DomainSample sample(uint32_t candidateIndex) const;
+};
 
 // ---- Heightfield domain ---------------------------------------------
 // Minimal heightmap: regular XZ grid, bilinear height + central-difference
@@ -136,6 +150,7 @@ namespace smvk::placement {
 	using ::tour::placement::HeightfieldData;
 	using ::tour::placement::HeightfieldDomain;
 	using ::tour::placement::PlacementMeshData;
+	using ::tour::placement::PlacementPointCloudData;
 	using ::tour::placement::SampleMeshSurface;
 	using ::tour::placement::TriangleArea;
 }
