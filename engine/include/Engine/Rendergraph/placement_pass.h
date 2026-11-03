@@ -1862,6 +1862,62 @@ struct PlacementWorldRuntime {
 		}
 		return h;
 	}
+	// Convert priority-ordered world interests to a bounded set of whole
+	// placement tiles. Never request more active tiles than GPU slots:
+	// otherwise adjacent interested tenants evict/regenerate each other
+	// every frame (e.g. 64m camera radius => 3x3 tiles for 8 slots).
+	// Within each interest prefer tiles nearest its center; ties have a
+	// stable coordinate order so motion/teleports do not shuffle arbitrarily.
+	// Output consists of half-open one-tile rects, directly consumable by
+	// the existing UpdateResidency contract.
+	static void BudgetTileInterests(const glm::vec4* interests,
+		size_t interestCount, float tileSize, size_t maxTiles,
+		std::vector<glm::vec4>& out) {
+		out.clear();
+		if (!interests || !(tileSize > 0.0f) || maxTiles == 0)
+			return;
+		std::vector<TileID> keys;
+		keys.reserve(maxTiles);
+		struct RankedTile { TileID key; double distanceSquared; };
+		for (size_t r = 0; r < interestCount && keys.size() < maxTiles; ++r) {
+			const glm::vec4 rect = interests[r];
+			if (!(rect.z > rect.x && rect.w > rect.y)) continue;
+			const int64_t x0 = int64_t(std::floor(double(rect.x) / tileSize));
+			const int64_t z0 = int64_t(std::floor(double(rect.y) / tileSize));
+			const int64_t x1 = int64_t(std::ceil(double(rect.z) / tileSize)) - 1;
+			const int64_t z1 = int64_t(std::ceil(double(rect.w) / tileSize)) - 1;
+			const double cx = (double(rect.x) + rect.z) * 0.5;
+			const double cz = (double(rect.y) + rect.w) * 0.5;
+			std::vector<RankedTile> candidates;
+			for (int64_t z = z0; z <= z1; ++z) {
+				for (int64_t x = x0; x <= x1; ++x) {
+					if (x < INT32_MIN || x > INT32_MAX ||
+						z < INT32_MIN || z > INT32_MAX) continue;
+					const TileID key{ int32_t(x), 0, int32_t(z) };
+					if (std::find(keys.begin(), keys.end(), key) != keys.end())
+						continue;
+					const double dx = (double(x) + 0.5) * tileSize - cx;
+					const double dz = (double(z) + 0.5) * tileSize - cz;
+					candidates.push_back({ key, dx * dx + dz * dz });
+				}
+			}
+			std::sort(candidates.begin(), candidates.end(),
+				[](const RankedTile& a, const RankedTile& b) {
+					if (a.distanceSquared != b.distanceSquared)
+						return a.distanceSquared < b.distanceSquared;
+					if (a.key.z != b.key.z) return a.key.z < b.key.z;
+					return a.key.x < b.key.x;
+				});
+			for (const RankedTile& tile : candidates) {
+				if (keys.size() == maxTiles) break;
+				keys.push_back(tile.key);
+				const float x = float(tile.key.x) * tileSize;
+				const float z = float(tile.key.z) * tileSize;
+				out.emplace_back(x, z, x + tileSize, z + tileSize);
+			}
+		}
+	}
+
 	void BeginFrame(smvk::ResourceManager& ctx, smvk::RenderGraph& rg,
 		const glm::vec4* interests, size_t interestCount,
 		const DependencyVersions& deps) {
@@ -1892,8 +1948,12 @@ struct PlacementWorldRuntime {
 		}
 		// 1) The residency tick (tokens + half-open interest math).
 		std::vector<PlacementSystem::ActivationRequest> acts;
+		std::vector<glm::vec4> boundedInterests;
+		BudgetTileInterests(interests, interestCount, tileSize,
+			size_t(slotBudget), boundedInterests);
 		system.UpdateResidency(layer->programId, tileSize,
-			interests, interestCount, deps, size_t(slotBudget), acts);
+			boundedInterests.data(), boundedInterests.size(),
+			deps, size_t(slotBudget), acts);
 		// Keep the GPU slot map consistent with CPU residency evictions:
 		// otherwise old GPU tenants stay visible forever and a later
 		// return to an evicted tile may skip regeneration.
