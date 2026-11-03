@@ -93,6 +93,7 @@
 #include <Engine/Rendergraph/contact_shadow.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/GfxRenderer.h>
+#include <Engine/Renderer/GameUiRenderer.h>
 #include <Engine/App/Element.h>
 
 namespace tour::placement {
@@ -2155,6 +2156,9 @@ protected:
 	// Installed extra-UI hook (see SetExtraUi): app-owned overlay draw,
 	// invoked inside the ImGui frame build.
 	std::function<void()> m_extraUi;
+	// Same-frame game HUD, composited before UiComposite; no backend API in games.
+	std::function<void(tour::GameUiRenderer&, smvk::Extent2D)> m_extraGameUi;
+	tour::GameUiRenderer m_gameUi;
 public:
 	void SetUiModeHint(bool ui) { m_uiModeHint = ui; }
 	void SetInputForUi(Input* in) { m_inputUi = in; }
@@ -2165,6 +2169,10 @@ public:
 	// renderer subclass. No-op unless installed; runs only when the UI
 	// pass runs (m_passes.ui + a live overlay).
 	void SetExtraUi(std::function<void()> fn) { m_extraUi = std::move(fn); }
+	// Host-owned game UI callback. Draws through the native render graph,
+	// after ImGui and before the scene's UI composite (no SDL renderer).
+	void SetExtraGameUi(std::function<void(tour::GameUiRenderer&,
+		smvk::Extent2D)> fn) { m_extraGameUi = std::move(fn); }
 
 	// Optional GPU-placed vegetation draw feed. Host owns the runtime,
 	// its LayerBinding and WorldMaskGrid for the full attachment lifetime.

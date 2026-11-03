@@ -54,6 +54,8 @@ target_link_libraries(tourmaline_apphost
         artifact_cache
 )
 
+# Only the reusable tourmaline_apphost is built for external game projects.
+if(TOURMALINE_IS_TOP_LEVEL)
 # ---------------------------------------------------------------------------
 # App.exe: the plain viewer main over the host library.
 # ---------------------------------------------------------------------------
@@ -92,3 +94,5 @@ if(WIN32 AND NOT TOURMALINE_BUILD_PROFILE STREQUAL "shipping")
     )
     add_dependencies(NsightTrace Benchmark)
 endif()
+
+endif() # TOURMALINE_IS_TOP_LEVEL

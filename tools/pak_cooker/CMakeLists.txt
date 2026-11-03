@@ -10,8 +10,8 @@ add_library(PakLib STATIC main.cpp terrain_cook.cpp)
 target_compile_definitions(PakLib PRIVATE ENGINE_VULKAN PAK_LIB_BUILD)
 target_include_directories(PakLib
 PRIVATE
-${CMAKE_SOURCE_DIR}/external/stb
-${CMAKE_SOURCE_DIR}/tools/common
+${TOURMALINE_SOURCE_DIR}/external/stb
+${TOURMALINE_SOURCE_DIR}/tools/common
 PUBLIC
 ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -29,7 +29,7 @@ target_compile_definitions(Pak PRIVATE ENGINE_VULKAN)
 
 # stb_image_write (cook-time atlas debug PNG, see lm_png.cpp; the same
 # vendored header the editor uses for its PNG export).
-target_include_directories(Pak PRIVATE ${CMAKE_SOURCE_DIR}/external/stb ${CMAKE_SOURCE_DIR}/tools/common)
+target_include_directories(Pak PRIVATE ${TOURMALINE_SOURCE_DIR}/external/stb ${TOURMALINE_SOURCE_DIR}/tools/common)
 
 target_link_libraries(Pak
     PRIVATE
