@@ -23,7 +23,7 @@ class TestPublishGltf(unittest.TestCase):
         self.published.write_text("old good output", encoding="utf-8")
 
     def _run(self, valid=True, returncode=0):
-        def fake_run(args, check):
+        def fake_run(args, **kwargs):
             staging = Path(args[-1])
             if returncode == 0:
                 staging.write_text(
@@ -31,8 +31,8 @@ class TestPublishGltf(unittest.TestCase):
                                 "buffers": [{"uri": "data:application/octet-stream;base64,AA=="}]})
                     if valid else '{"asset":{"version":"1.0"}}',
                     encoding="utf-8")
-            return type("Result", (), {"returncode": returncode})()
-        with patch("publish_gltf.subprocess.run", side_effect=fake_run):
+            return type("Result", (), {"returncode": returncode, "stdout": ""})()
+        with patch("dcc_runner.subprocess.run", side_effect=fake_run):
             publish(self.source, self.published, "maya", maya_exe="fake-mayapy")
 
     def test_success_replaces_existing_publication(self):
@@ -54,12 +54,12 @@ class TestPublishGltf(unittest.TestCase):
             publish(self.source, self.root / "model.obj", "maya")
 
     def test_rejects_non_embedded_dependencies(self):
-        def fake_run(args, check):
+        def fake_run(args, **kwargs):
             Path(args[-1]).write_text(
                 json.dumps({"asset": {"version": "2.0"}, "scenes": [],
                             "buffers": [{"uri": "../outside.bin"}]}))
-            return type("Result", (), {"returncode": 0})()
-        with patch("publish_gltf.subprocess.run", side_effect=fake_run):
+            return type("Result", (), {"returncode": 0, "stdout": ""})()
+        with patch("dcc_runner.subprocess.run", side_effect=fake_run):
             with self.assertRaises(ValueError):
                 publish(self.source, self.published, "maya", maya_exe="fake")
         self.assertEqual(self.published.read_text(), "old good output")
