@@ -5166,6 +5166,29 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				}
 			}
 			ImGui::EndDisabled();
+			if (shape.kind != tour::asset::ShapeKind::Spline &&
+				shape.kind != tour::asset::ShapeKind::PointCloud) {
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!valid || shapeDirty);
+				if (ImGui::Button("Export OBJ...")) {
+					std::string obj, exportError;
+					const fs::path destination = UniqueAssetCreatePath(
+						path.parent_path(), path.stem().string(), ".obj");
+					if (tour::asset::ShapeToObj(shape, obj, exportError)
+						&& !destination.empty()) {
+						std::ofstream file(destination, std::ios::binary);
+						file << obj;
+						file.close();
+						if (file)
+							Log("Exported procedural OBJ: " + destination.generic_string());
+						else
+							Log("Failed to export OBJ: " + destination.generic_string());
+					} else {
+						Log("OBJ export failed: " + exportError);
+					}
+				}
+				ImGui::EndDisabled();
+			}
 			ImGui::SameLine();
 			if (ImGui::Button("Revert")) {
 				shapeLoaded = tour::asset::ParseShapeAsset(
