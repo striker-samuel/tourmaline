@@ -258,6 +258,14 @@ bool EditorApp::Initialize() {
 		// Keep window placement next to the editor tool preferences.
 		m_dockIniPath = std::filesystem::path(m_prefsPath)
 			.replace_extension(".imgui.ini").string();
+		// ImGui writes its ini lazily; ensure fresh editor installations
+		// have a directory before the first automatic layout save.
+		const std::filesystem::path dockDir =
+			std::filesystem::path(m_dockIniPath).parent_path();
+		if (!dockDir.empty()) {
+			std::error_code ec;
+			std::filesystem::create_directories(dockDir, ec);
+		}
 		ImGuiIO& io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 		io.IniFilename = m_dockIniPath.c_str();
