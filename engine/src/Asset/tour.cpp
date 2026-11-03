@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
+#include <iterator>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>

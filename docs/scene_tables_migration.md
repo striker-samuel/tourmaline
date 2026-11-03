@@ -395,6 +395,15 @@ deltas are marked.
 - 9 — `refactor(editor): migrate typed authoring and tour commands`
   (the main-architecture gate; .tour verbs keep working, implemented
   against the tables).
+- Physics authoring foundation (2026-11): the editor's selected-node
+  Physics Body / Collider section now authors motion (static/dynamic/
+  kinematic), shape (box/sphere/capsule), physical material parameters,
+  collider dimensions and sensor mode. The association uses a typed
+  ScenePhysicsBody row, .tour attach/remove/property commands, undo/redo,
+  cluster resolve and the cooked scene tail. No Jolt runtime simulation,
+  collision geometry cooking or physics preview is implemented by this
+  authoring-only change. Previously cooked paks must be recooked to
+  include the mandatory physics row-count tail.
 - 10–14 — physics epochs as planned (authored RBOD/COLL rows →
   runtime `PhysicsWorld` behind Tourmaline-owned handles → fixed-step
   + transform sync (respecting `staticRoot`: a dynamic body never
