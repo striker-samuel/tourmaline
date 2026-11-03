@@ -3547,7 +3547,11 @@ namespace engine {
 		m_viewportResources.contactShadows.Destroy(*m_rendergraph);
         // RT shadow BLAS/TLAS may reference the static heap. This renderer
         // has already waited for device idle at the top of onDetach.
-        if (m_context) m_context->ClearRayTracingWorld();
+        // Only the renderer that enabled this experimental path owns the
+        // shared RHI TLAS. A secondary (raster-only) viewport must not
+        // clear another viewport's acceleration structure on detach.
+        if (m_context && m_rayTracedSunShadowsEnabled)
+            m_context->ClearRayTracingWorld();
         m_rayTracingCachedInstances.clear();
         m_rayTracingCachedWorld = nullptr;
         m_rayTracingCacheValid = false;
