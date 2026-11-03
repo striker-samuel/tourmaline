@@ -101,7 +101,10 @@ uint PlacementSlopeToRock(uint weightedProto, float3 normal,
     uint protoCount, uint enabled, float thresholdDeg) {
     if (enabled == 0u || protoCount <= 1u)
         return weightedProto;
-    const float slopeDeg = acos(clamp(normal.y, -1.0f, 1.0f)) * 57.29578f;
+    // The CPU oracle caps down-facing normals at 90 degrees.
+    const float slopeDeg = normal.y >= 1.0f ? 0.0f
+        : (normal.y <= 0.0f ? 90.0f
+           : acos(clamp(normal.y, 0.0f, 1.0f)) * 57.29578f);
     return slopeDeg > thresholdDeg ? 1u : weightedProto;
 }
 
