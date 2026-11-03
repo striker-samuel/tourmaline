@@ -368,6 +368,7 @@ bool ResourceManager::NeedsProjectionYFlip() const {
 }
 void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
 bool ResourceManager::SupportsRayQueries() const { return impl_->vulkan.SupportsRayQueries(); }
+bool ResourceManager::SupportsOpacityMicromaps() const { return impl_->vulkan.SupportsOpacityMicromaps(); }
 bool ResourceManager::BuildRayTracingWorld(std::span<const RayTracingInstance> instances) {
     if (!SupportsRayQueries()) return false;
     // The build reads the static monoblocks, which may still be uploading.

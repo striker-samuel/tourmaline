@@ -416,13 +416,20 @@ int main() {
     // 8. Hardware ray-query RHI input and opt-in defaults (CPU-only).
     // The backend consumes exactly one 3x4 row-major VkTransformMatrixKHR,
     // and the world shader reuses the existing 56-byte contact push block.
-    Check(sizeof(smvk::RayTracingInstance) == 64, "contract.rt-instance-size");
+    Check(sizeof(smvk::RayTracingInstance) == 80, "contract.rt-instance-size");
     Check(offsetof(smvk::RayTracingInstance, transform) == 16,
         "contract.rt-instance-transform-offset");
+    Check(offsetof(smvk::RayTracingInstance, opacityMode) == 64,
+        "contract.omm-input-offset");
+    Check(smvk::RayTracingInstance{}.opacityMode == 0,
+        "contract.omm-default-opaque");
+    Check(smvk::RayTracingInstance{}.opacityTextureIndex == UINT32_MAX,
+        "contract.omm-no-texture-default");
     {
         const engine::RenderQualityConfig q{};
         Check(!q.rayTracedSunShadowsEnabled,
             "contract.rt-shadow-default-off");
+        Check(q.opacityMicromapsEnabled, "contract.omm-default-on-within-rt");
         Check(q.rayTracedSunShadowDistance == 200.0f,
             "contract.rt-shadow-max-distance-default");
         Check(q.rayTracedSunShadowResolutionDivisor == 2,

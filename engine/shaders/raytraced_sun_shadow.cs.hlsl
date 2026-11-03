@@ -66,7 +66,9 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
         ray.TMin = 0.001f;
         ray.TMax = max(sp.maxDistance, 0.01f);
 
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OPAQUE> q;
+        // Do not FORCE_OPAQUE: it would override the transparent subtriangles
+        // classified by attached opacity micromaps.
+        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
         q.TraceRayInline(rayScene, RAY_FLAG_NONE, 0xff, ray);
         while (q.Proceed()) { }
         visibility = (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0f : 1.0f;

@@ -412,6 +412,8 @@ struct RenderQualityConfig {
     // contacts and disabled by default. Static world TLAS rebuilds when
     // the opaque caster list or transforms change.
     bool rayTracedSunShadowsEnabled = false;
+    // Applies alpha-masked geometry to the hardware TLAS on EXT devices.
+    bool opacityMicromapsEnabled = true;
     float rayTracedSunShadowDistance = 200.0f;
     float rayTracedSunShadowBias = 0.02f;
     int rayTracedSunShadowResolutionDivisor = 2;
@@ -1922,6 +1924,7 @@ public:
 		m_contactShadowResolutionDivisor =
 			(q.contactShadowResolutionDivisor == 1) ? 1 : 2;
         m_rayTracedSunShadowsEnabled = q.rayTracedSunShadowsEnabled;
+        m_opacityMicromapsEnabled = q.opacityMicromapsEnabled;
         m_rayTracedSunShadowDistance = std::clamp(q.rayTracedSunShadowDistance, 1.0f, 2000.0f);
         m_rayTracedSunShadowBias = std::clamp(q.rayTracedSunShadowBias, 0.001f, 0.2f);
         m_rayTracedSunShadowResolutionDivisor =
@@ -3759,6 +3762,7 @@ public:
     // Optional hardware ray-query shading (full-scene TLAS, not a
     // screen-space depth march). Contact remains the baseline fallback.
     bool m_rayTracedSunShadowsEnabled = false;
+    bool m_opacityMicromapsEnabled = true;
     float m_rayTracedSunShadowDistance = 200.0f;
     float m_rayTracedSunShadowBias = 0.02f;
     int m_rayTracedSunShadowResolutionDivisor = 2;
