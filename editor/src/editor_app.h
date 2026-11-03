@@ -1548,6 +1548,13 @@ private:
 	// viewport), so quad-view F8 works without migrating the editor
 	// preview's legacy shader/frame ABI.
 	int LiveViewViewport() const {
+		// The pre-bake lattice is authored geometry (no baked GI data)
+		// drawn by the editor's HDR probe pass, not the live renderer.
+		// Temporarily park WYSIWYG in this diagnostic mode so the Lit
+		// viewport records that pass. The live renderer retains its
+		// temporal/exposure state and resumes when the mode changes.
+		if (m_mode == EditorMode::Lighting && m_giVolumePreviewMode == 4)
+			return -1;
 		return SelectLivePreviewViewport(ViewportCount(), m_activeVp,
 			[this](int vp) { return m_viewports[vp].viewMode; },
 			ViewMode::Lit, ViewMode::Baked);
