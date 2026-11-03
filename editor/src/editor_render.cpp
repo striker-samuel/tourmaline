@@ -1434,6 +1434,8 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
 
 void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		uint32_t flight, bool selectedWireOverlay) {
+		if (m_uiMode && !m_dockViewportVisible)
+			return; // no scene pass behind an inactive dock tab
 		const ViewportRect& vp = m_viewports[vpIdx].rect;
 		// View mode is PER VIEWPORT (UV views are panel types too).
 		const ViewMode mode = m_viewports[vpIdx].viewMode;
@@ -1624,6 +1626,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 
 	void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView,
 		uint32_t flight) {
+		if (m_uiMode && !m_dockViewportVisible)
+			return;
 		// Second viewport: UV debug side-strip INSIDE viewport 0 (single
 		// layout only; same camera, strip aspect via the inset frame slice).
 		// Color loads (empty areas keep the main view = PiP); depth clears
@@ -2255,10 +2259,8 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			SMVK_PROFILE_RENDER("Editor_Round2Scene");
 			const int liveVp = LiveViewViewport();
 			for (int vpIdx = 0; vpIdx < ViewportCount(); ++vpIdx) {
-				if (m_uiMode && !m_dockViewportVisible)
-					continue; // Viewport tab hidden behind another dock tool
 				if (vpIdx == liveVp)
-					continue; // live view composites its own image
+					continue; // panel 0's rect shows the live view's composite
 				RecordMainPass(m_swapViews[fb.imageIndex], vpIdx, flight, m_wireOverlay);
 				// The pre-bake probe lattice rides every viewport's tail
 				// (own gating inside; no-op unless 'J' mode 4 + authored
@@ -2268,7 +2270,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			// The gizmo + inset ride the ACTIVE viewport — they skip only
 			// while the ACTIVE one IS the live host (panel 0 in Lit): their
 			// depth comes from the scene pass that no longer ran there.
-			if ((!m_uiMode || m_dockViewportVisible) && m_activeVp != liveVp) {
+			if (m_activeVp != liveVp) {
 				RecordInsetPass(m_swapViews[fb.imageIndex], flight);
 				RecordGizmoPass(m_swapViews[fb.imageIndex]);
 			}
