@@ -10,6 +10,7 @@ struct SDL_Window;
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/spirv_reflection.h>
 #include <memory>
+#include <array>
 #include <vector>
 #include <span>
 
@@ -24,6 +25,18 @@ namespace smvk {
 // on the source image; render targets add that usage flag only when this
 // returns true, so the normal path keeps the leanest usage set.
 bool DebugImageDumpArmed();
+
+// Hardware ray-query input: one opaque triangle surface in the static
+// vertex/index monoblocks and its ROW-major VkTransformMatrixKHR 3x4.
+// firstIndex/baseVertex are the absolute raster draw offsets.
+struct RayTracingInstance {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    int32_t baseVertex = 0;
+    uint32_t vertexCount = 0;
+    std::array<float, 12> transform{};
+};
+static_assert(sizeof(RayTracingInstance) == 64);
 
 // True when the device was created with VK_EXT_mesh_shader enabled
 // (taskShader + meshShader features, probed, never required). Gates the
@@ -241,6 +254,13 @@ public:
     const void* GetVkSamplerOpaque(uint32_t samplerIndex) const;
     uint64_t GetBufferDeviceAddress(BufferHandle handle) const;
     // Flush batched uploads (256MB threshold, or manual at end of scene)
+    // Optional Vulkan KHR ray-query scene: hardware BLAS/TLAS from static
+    // world triangles. World changes trigger a synchronous rebuild (GPU
+    // idle); unsupported devices retain the raster shadow-map fallback.
+    bool SupportsRayQueries() const;
+    bool BuildRayTracingWorld(std::span<const RayTracingInstance> instances);
+    bool RayTracingWorldReady() const;
+    void ClearRayTracingWorld();
     void FlushUploads();
     // Flush + block until every upload batch (transfer + graphics acquire)
     // has retired. Required before destroying resources that may still be

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Engine/smvk.h>
+#include <Engine/RHI/resource_manager.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/linear_vector.h>
@@ -842,6 +843,11 @@ namespace smvk {
 		ImageViewHandle               RecreateImageView(ImageViewHandle handle, ImageHandle image, const ImageViewCreateInfo& createInfo);
 		ImageHandle                   RecreateImage(ImageHandle handle, const ImageCreateInfo& createInfo, const void* data = nullptr);
 		Holder<BufferHandle>         CreateBuffer(VkDeviceSize size, BufferType bufferType, const char* debugName = "Buffer", VmaAllocationCreateFlags vmaAllocFlags = 0);
+		// KHR_acceleration_structure + KHR_ray_query, optional.
+		[[nodiscard]] bool SupportsRayQueries() const;
+		[[nodiscard]] bool BuildRayTracingWorld(std::span<const RayTracingInstance> instances);
+		[[nodiscard]] bool RayTracingWorldReady() const { return rtWorldReady_; }
+		void ClearRayTracingWorld();
 		Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes, const char* debugName = "DescriptorPool");
 
 		Holder<ShaderModuleHandle>   CreateShaderModule(std::vector<char> code, const char* debugName = "ShaderModule");
@@ -1024,6 +1030,14 @@ namespace smvk {
 		// never rewritten after init, so in-flight siblings never see each
 		// other's slices.
 		VkDescriptorSet defaultDescriptorSets_[smvk::limits::MaxFramesInFlight]{};
+		struct RtAcceleration {
+			VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+			VkBuffer buffer = VK_NULL_HANDLE;
+			VmaAllocation allocation = VK_NULL_HANDLE;
+		};
+		std::vector<RtAcceleration> rtBlas_;
+		RtAcceleration rtTlas_{};
+		bool rtWorldReady_ = false;
 
 		// Resources – one local shard per thread, no pool locks (see pool.h).
 		// create() allocates in the calling thread's shard; get()/destroy()

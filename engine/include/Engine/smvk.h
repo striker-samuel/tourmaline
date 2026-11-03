@@ -1439,7 +1439,9 @@ void OnResourceExhaustion(const char* site);
 		kBinding_MsaaTextures = 6,
 		// Immutable optional lightmap storage heap for indexed vertex pulling.
 		kBinding_VertexLightmap = 7,
-		kBinding_NumBindings = 8 // this should be # of all other
+		// Optional hardware ray-query TLAS, one scene per RHI context.
+		kBinding_RayTracingScene = 8,
+		kBinding_NumBindings = 9 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {
