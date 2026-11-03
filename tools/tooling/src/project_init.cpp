@@ -57,7 +57,8 @@ bool SaveNewFile(const fs::path& path, const std::string& body, std::string& err
 }
 
 std::string DisplayName(const fs::path& root, const std::string& requested) {
-    return requested.empty() ? root.filename().generic_string() : requested;
+    const fs::path base = root.filename().empty() ? root.parent_path().filename() : root.filename();
+    return requested.empty() ? base.generic_string() : requested;
 }
 
 std::string Settings() {
@@ -144,6 +145,12 @@ bool InitializeProject(const ProjectInitOptions& options,
         error = "--from-scene requires --from-gltf so the root reference can be repointed";
         return false;
     }
+    if (!options.fromScene.empty() &&
+        options.entryScene != "content/scenes/main.tour" &&
+        options.entryScene != "content/scenes/" + options.fromScene.filename().generic_string()) {
+        error = "entryScene conflicts with the path created by --from-scene";
+        return false;
+    }
     if (!options.fromGltf.empty() && (
             (options.fromGltf.extension() != ".gltf" && options.fromGltf.extension() != ".glb") ||
             !fs::is_regular_file(options.fromGltf))) {
@@ -177,6 +184,9 @@ bool InitializeProject(const ProjectInitOptions& options,
     result.entryScene = options.entryScene;
     result.dryRun = options.dryRun;
     result.created = !alreadyExists;
+    if (!options.fromScene.empty())
+        result.entryScene = "content/scenes/" + options.fromScene.filename().generic_string();
+    result.readyToBuild = fs::is_regular_file(root / result.entryScene);
     if (options.dryRun) {
         out = std::move(result);
         return true;
