@@ -34,7 +34,7 @@ int main() {
         assert(ShapeToObj(box, obj, error));
         assert(obj.find("o procedural_box") != std::string::npos);
         assert(obj.find("v -1 -1 -1") != std::string::npos);
-        assert(obj.find("\\nf ") != std::string::npos);
+        assert(obj.find("f ") != std::string::npos);
         assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::PointCloud), obj, error));
         assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::Spline), obj, error));
     }
