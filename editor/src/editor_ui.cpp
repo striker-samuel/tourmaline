@@ -695,6 +695,12 @@ namespace editor {
 					meshletModes, 2);
 			}
 			ImGui::Separator();
+			if (ImGui::MenuItem("Isolate Selected", "Ctrl+1",
+					m_isolateVisibility.active(), m_world != nullptr))
+				ModalIsolateSelect();
+			ImGui::SetItemTooltip("Temporarily show only selected nodes and "
+				"their descendants. Ctrl+1 again (or with no selection) "
+				"restores authored visibility; not saved to the scene.");
 			ImGui::MenuItem("Wireframe (hidden-line)", "P / Z", &m_wireframeAll);
 			ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
 				"prepass — lines never draw over the objects in front.");

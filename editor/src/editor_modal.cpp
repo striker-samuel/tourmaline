@@ -285,6 +285,9 @@ void EditorApp::UpdateModalInput() {
 			"delete: selection", "Del" },
 		{ TOUR_KEY_D, kModalCtrl, kScopeGlobal, &EditorApp::ModalDuplicate,
 			"duplicate: selection", "Ctrl+D" },
+		{ TOUR_KEY_1, kModalCtrl, kScopeGlobal,
+			&EditorApp::ModalIsolateSelect,
+			"viewport: isolate selected (toggle)", "Ctrl+1" },
 		{ TOUR_KEY_H, kModalCtrl, kScopeGlobal,
 			&EditorApp::ModalToggleVisibility,
 			"visibility: hide/unhide selection", "Ctrl+H" },
@@ -387,7 +390,49 @@ void EditorApp::ModalDuplicate() {
 	DuplicateSelection();
 }
 
+void EditorApp::RestoreIsolation() {
+	if (m_isolateVisibility.active() && m_world)
+		m_isolateVisibility.restore(m_world->scene.hidden);
+	else
+		m_isolateVisibility.abandon();
+}
+
+void EditorApp::ModalIsolateSelect() {
+	if (!m_world) {
+		m_isolateVisibility.abandon();
+		return;
+	}
+	// Same shortcut restores the whole view. An empty selection also
+	// restores visibility, even when the mode was already active.
+	if (m_isolateVisibility.active() || m_selection.empty()) {
+		RestoreIsolation();
+		Log("Isolate Select: off (original visibility restored).");
+		return;
+	}
+	const Scene& scene = m_world->scene;
+	std::vector<int> parents;
+	parents.reserve(scene.hierarchy.size());
+	for (const auto& node : scene.hierarchy)
+		parents.push_back(node.parent);
+	// Filter retired or disabled-reference nodes: they must never
+	// unexpectedly reappear as a result of isolation.
+	std::vector<uint32_t> targets;
+	for (uint32_t node : m_selection)
+		if (node < scene.hierarchy.size()
+			&& !m_deletedNodes.contains(node)
+			&& !InDisabledRefSubtree(node))
+			targets.push_back(node);
+	if (m_isolateVisibility.begin(m_world->scene.hidden, parents, targets))
+		Log("Isolate Select: " + std::to_string(targets.size())
+			+ " selected root(s); Ctrl+1 to restore.");
+	else
+		Log("Isolate Select: no valid nodes selected; full scene visible.");
+}
+
 void EditorApp::ModalToggleVisibility() {
+	// An authored hide/unhide command must operate on the original flags,
+	// never on the temporary isolate mask.
+	RestoreIsolation();
 	// Ctrl+H: toggle the selection's self-hidden flag. All nodes follow
 	// the PRIMARY's inverse (a mixed selection hides when the primary
 	// is visible, unhides when it is hidden) — predictable bulk edit.

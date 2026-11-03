@@ -5,6 +5,7 @@
 // creating a NaN transform, including when loading an already bad matrix.
 #include "editor_numeric.h"
 #include "editor_gizmo_rotation.h"
+#include "editor_isolate_visibility.h"
 #include "editor_transform_trs.h"
 
 #include <cmath>
@@ -98,5 +99,26 @@ int main() {
     Check(Near((worldRing * glm::vec3(1, 0, 0)).y, 1.0f),
         "world ring angle remains in radians");
 
+    // Isolate Select modifies only the temporary viewport mask and
+    // restores the author's original per-node hidden flags on toggle.
+    editor::IsolateVisibility isolated;
+    // 0 root; 1/2 branches; 3 child of 1; 4 child of 2.
+    const std::vector<int> parents = {-1, 0, 0, 1, 2};
+    std::vector<uint8_t> hidden = {0, 0, 1, 0, 0};
+    Check(isolated.begin(hidden, parents, {3}), "isolate selected descendant");
+    Check(isolated.active() && hidden == std::vector<uint8_t>({0, 0, 1, 0, 1}),
+        "selected path shown, unrelated branch hidden");
+    isolated.restore(hidden);
+    Check(!isolated.active() && hidden == std::vector<uint8_t>({0, 0, 1, 0, 0}),
+        "isolate toggle restores authored visibility");
+    Check(isolated.begin(hidden, parents, {2}), "isolate originally hidden node");
+    Check(hidden[2] == 0 && hidden[4] == 0 && hidden[1] == 1,
+        "isolated hidden node and descendants become temporarily visible");
+    isolated.restore(hidden);
+    Check(hidden[2] == 1 && hidden[4] == 0,
+        "authored hidden state survives isolate");
+    Check(!isolated.begin(hidden, parents, {}), "empty selection does not isolate");
+    Check(hidden[2] == 1, "empty selection preserves original visibility");
+    Check(!isolated.begin(hidden, parents, {999}), "invalid selection does not isolate");
     return failures ? 1 : 0;
 }

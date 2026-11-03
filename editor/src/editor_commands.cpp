@@ -377,6 +377,9 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 		break;
 	}
 	case EditVerb::SetVisibility: {
+		// Undo/redo and commands may run while isolation is active. End
+		// the temporary mask before mutating authoritative visibility.
+		RestoreIsolation();
 		const bool hidden = forward ? c.afterFlag : c.beforeFlag;
 		if (hidden)
 			MarkHidden(scene, int(c.node));
