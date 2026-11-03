@@ -229,7 +229,9 @@ public:
         err.clear();return true;
     }
 private:
-    std::// The adapter below is a generic testable host-side runner. Unlike Session,
+    std::vector<Byte> bytes_;
+};
+// The adapter below is a generic testable host-side runner. Unlike Session,
 // it deliberately does not enforce any game identity. This makes synthetic
 // adapter tests possible with legally clean dummy bytes and lets this layer
 // serve future 3DS/PS4/other recomp experiments without ROM-specific rules.
