@@ -39,10 +39,52 @@ The API binds **127.0.0.1 only**. It does not expose the share over HTTP.
   content cache with native file extensions for DCC tools. SHA-256 verifies
   cache reads; frequently accessed/pinned files survive size-based eviction.
 - A disconnected share does not delete its history. The archive and local
-  resolver continue to function without network access.
+  resolver continue to function without network access, including after a
+  service restart.
 
 The source folder is **never edited** by the agent. The protected archive is
 never placed in the source tree. Do not let share users write to the archive.
+
+
+## Maya version picker
+
+Run the installer wizard first, on the **same workstation** that runs Maya.
+Start Maya, then execute this once in the **Python** tab of Maya's Script Editor
+(adapt the directory to your Tourmaline checkout):
+
+\`\`\`python
+import sys
+sys.path.insert(0, r"C:\src\tourmaline\tools\maya")
+import tourmaline_asset_versions as tm
+tm.show_picker()
+\`\`\`
+
+Optional permanent Maya shelf button:
+
+\`\`\`python
+tm.install_shelf_button()
+\`\`\`
+
+Keep the module directory on Maya's Python path (or copy
+\`tools/maya/tourmaline_asset_versions.py\` to Maya's user scripts directory)
+so the shelf command can import it on later restarts.
+
+- Browse any archived path (including a file deleted from the share).
+- Select a specific immutable revision and **Import** OBJ / FBX / Maya scene,
+  or **Reference** an \`.ma\` or \`.mb\` scene.
+- For textures and other non-scene assets, click **Resolve texture / file**
+  to obtain an absolute, pinned local path for a Maya file/texture node.
+- Each import/reference writes a small \`network\` metadata node **inside the
+  Maya scene** recording logical source path, revision, hash and local cache
+  location. It does not write any metadata alongside shared source assets.
+- API users can call \`tm.version_records()\` to list scene records and
+  \`tm.switch_reference_version(record_node, revision)\` to switch an existing
+  Maya scene reference to a different pinned revision. Imported mesh geometry
+  is not live-updated; import the alternate revision as a new object.
+
+The picker communicates with the local service at
+\`http://127.0.0.1:8765\` by default. To override the port, set
+\`TOURMALINE_ASSET_URL=http://127.0.0.1:PORT\` in Maya's environment.
 
 ## CLI
 
@@ -73,9 +115,9 @@ of them. Guaranteeing *every* historical write requires SMB-server snapshots,
 write interception, or a server-owned write path, regardless of whether that
 server uses Linux or Windows.
 
-The first slice has **no Maya plug-in yet**, no remote worker/cooker, no cross-
-machine service API, no credentials/authentication and no guaranteed coherent
-multi-file snapshot. It supplies the offline service, source archival, cache,
+The Maya version browser is included (see below). There is no C++ Tourmaline
+editor integration yet, no remote worker/cooker, no cross-machine service API,
+no credentials/authentication and no guaranteed coherent multi-file snapshot. It supplies the offline service, source archival, cache,
 localhost API, and installer that the future Maya/Editor version picker can use.
 Only run one scanning instance for a given archive database. Back up the
 protected archive independently.
