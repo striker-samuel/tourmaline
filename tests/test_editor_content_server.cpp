@@ -78,6 +78,8 @@ void TestLive(const fs::path& root) {
 	std::string err;
 	Check(server.Start(root.generic_string(), err), "start content server");
 	Check(server.Running(), "watcher running");
+	// The native watcher thread may still be arming recursive roots.
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	Write(source, "{}");
 	Check(Await(server, source, Route::GltfSource),
 		"new source delivered as typed change");
