@@ -126,7 +126,10 @@ class Archive:
         if path.is_symlink() or not is_inside(path, self.source):
             return None
         before = path.stat()
-        if time.time() - before.st_mtime < self.settle:
+        # A disabled settle window really means immediate capture. Windows
+        # filesystem timestamps may be slightly ahead of wall-clock time;
+        # do not defer a zero-settle capture because of clock rounding.
+        if self.settle > 0 and time.time() - before.st_mtime < self.settle:
             return None
         fd, temp = tempfile.mkstemp(prefix=".capture-", dir=self.archive)
         h = hashlib.sha256()
