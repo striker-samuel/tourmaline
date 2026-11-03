@@ -1283,6 +1283,13 @@ set_target_properties(World2DTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME world2d_tests COMMAND World2DTests)
 
+# GPU-free prefab live preview propagation/override/undo semantics.
+add_executable(PrefabLiveSyncTests test_prefab_live_sync.cpp)
+target_link_libraries(PrefabLiveSyncTests PRIVATE engine)
+set_target_properties(PrefabLiveSyncTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME prefab_live_sync_tests COMMAND PrefabLiveSyncTests)
+
 # CPU-only authored sprite-set parsing, bounds, grid and animation validation.
 add_executable(SpriteSetTests test_spriteset.cpp)
 target_link_libraries(SpriteSetTests PRIVATE engine)

@@ -682,7 +682,7 @@ bool EditorApp::ReloadReferencesViaTemp() {
 void EditorApp::DrawReferencesPanel() {
 	if (!m_showReferencesPanel)
 		return;
-	ImGui::SetNextWindowSize(ImVec2(720, 420), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(870, 470), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Reference editor", &m_showReferencesPanel)) {
 		ImGui::End();
 		return;
@@ -721,7 +721,7 @@ void EditorApp::DrawReferencesPanel() {
 		ImGui::TableSetupColumn("Nodes", ImGuiTableColumnFlags_WidthFixed,
 			52.0f);
 		ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed,
-			218.0f);
+			295.0f);
 		ImGui::TableHeadersRow();
 		for (size_t i = 0; i < m_references.size(); ++i) {
 			const smvk::tour::ReferenceCmd& r = m_references[i];
@@ -790,6 +790,12 @@ void EditorApp::DrawReferencesPanel() {
 					: 0);
 			ImGui::TableSetColumnIndex(5);
 			if (!isRoot) {
+				if (isTour && fileOk && ImGui::SmallButton("Edit prefab")) {
+					const std::string file = !resolved.empty() ? resolved
+						: (std::filesystem::path(m_projectRoot) / r.source).string();
+					RequestOpenPrefab(file);
+				}
+				if (isTour && fileOk) ImGui::SameLine();
 				if (bound && ImGui::SmallButton("Select"))
 					m_selected = ph;
 				ImGui::SameLine();
@@ -880,6 +886,14 @@ void EditorApp::DrawReferenceSection(uint32_t node) {
 		ImGui::TextDisabled("source: %s", r.source.c_str());
 		ImGui::TextDisabled("uuid: %s",
 			r.guid.empty() ? "(none)" : r.guid.c_str());
+		if (RefExt(r.source)=="tour" && !r.root) {
+			const std::string file=idx<m_refResolved.size()
+				&& !m_refResolved[idx].empty() ? m_refResolved[idx]
+				: (std::filesystem::path(m_projectRoot)/r.source).string();
+			if (ImGui::Button("Open prefab world"))
+				RequestOpenPrefab(file);
+		}
+
 		ImGui::TextDisabled("[%s] %s",
 			RefExt(r.source) == "tour" ? "tour" : "gltf",
 			r.enabled ? "shown" : "hidden (kept in the scene)");

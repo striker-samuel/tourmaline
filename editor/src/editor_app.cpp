@@ -303,6 +303,14 @@ void EditorApp::Shutdown() {
 	if (m_world && !TourTarget().empty())
 		SaveTour();
 	SavePrefs(); // save editor pr on close
+	// Same shutdown contract as the parent scene: flush unsaved prefab
+	// source edits before destroying the second world. Explicit Revert
+	// is available in the prefab pane before closing the application.
+	if (m_prefab.world && m_prefab.dirty && !SavePrefab())
+		Log("Prefab: automatic shutdown save failed: " + m_prefab.error);
+	// The secondary .tour world and its renderer share the RHI:
+	// tear them down before device resources and ImGui are destroyed.
+	ClosePrefabWorld();
 	WaitForDeviceIdle();
 	m_textureStreamer.reset();
 	// Fibers shutdown: deliver any queued completions, wait for
@@ -533,6 +541,9 @@ void EditorApp::CloseScene() {
 	if (!m_world)
 		return;
 	SavePrefs();
+	// World replacement must never strand a temporary prefab preview
+	// in a dropped parent scene or retain pointers to its node IDs.
+	RestorePrefabPreview();
 	m_world.reset();
 	// The material-page thumbnails' bindings reference the cluster's
 	// texture views — the pool dies with the world (see TextureThumb).
@@ -673,6 +684,11 @@ void EditorApp::CloseScene() {
 	// A rebuilt world gets new clusters; no payload from the prior world
 	// can be retired through the newly created scene's carrier.
 	m_editorGiInjectedPaths.clear();
+	// The parent world may be rebound while the prefab source remains
+	// open (reference reload, project asset watcher, or another scene).
+	// Drop temporary per-node preview ownership BEFORE node indices die;
+	// the prefab boundary applies unsaved source poses to the new world.
+	RestorePrefabPreview();
 	m_world = tour::mem::MakeProcess<tour::World>();
 	tour::Cluster& cluster = m_world->LoadCluster(*m_context);
 	// CPU geometry mirror (the editor's picking/UV/placement source):

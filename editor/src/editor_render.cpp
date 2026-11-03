@@ -693,6 +693,13 @@ namespace editor {
 		area.w = float(extent.width) - m_outlinerW - m_inspectorW;
 		area.h -= BottomDockH() + kEditorStatusH;
 	}
+		// A docked prefab world occupies the right portion of the
+		// CENTRAL editor stage, independently from the Inspector and
+		// asset browser. Keep the scene's native 4:3 aspect and camera
+		// projection inside the remaining left region.
+		if (m_prefabDocked && m_showPrefabWindow && m_prefab.world
+			&& m_vpLayout==0 && area.w>=800.0f)
+			area.w*=0.54f;
 		area.w = std::max(area.w, 1.0f);
 		area.h = std::max(area.h, 1.0f);
 
@@ -2221,6 +2228,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 			// WorldRenderer's whole update + pass append + Execute).
 			SMVK_PROFILE_RENDER("Editor_Wysiwyg");
 			RenderWysiwygLayer(fb, extent);
+			RenderPrefabLayer(fb, extent);
 		}
 
 		// ---- scene passes (per viewport) + overlay ---------------------
@@ -2297,6 +2305,10 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 					RecordLiveViewComposePass(m_swapViews[fb.imageIndex]);
 				m_imgui->AddPass(*m_rendergraph, m_swapViews[fb.imageIndex], extent,
 					smvk::AttachmentLoadOp::Load, smvk::ClearColor(0, 0, 0, 1));
+				// Prefab's child viewport is an opaque image region. Compose
+				// only that rect after its window background; inspector text
+				// stays outside the image and is never overwritten.
+				RecordPrefabComposePass(m_swapViews[fb.imageIndex]);
 			}
 			// Flush bindless descriptor writes (scene texture views, samplers)
 			// BEFORE Execute records — App does the same (see WorldRenderer).
@@ -2405,6 +2417,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 		// the load — never a per-frame project scan). Runs even when
 		// the live view is PARKED.
 		ConsumeWatchedProjectChanges();
+		UpdatePrefabBoundary(dt);
 		// Launch housekeeping, lazy per frame: launch while a world + the
 		// LIT MODE (panel 0's) are on; relaunch when the world OBJECT or
 		// the scene stem swaps (open/close/load) or right after a bake
