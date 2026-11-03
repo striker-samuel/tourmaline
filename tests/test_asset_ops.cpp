@@ -151,7 +151,10 @@ void TestDccSourcePublishing() {
 				resolved, err) && resolved.linked
 				&& resolved.document == native.generic_string(),
 			"dcc.published-source-round-trip");
-		Check(editor::UnlinkDccSource(published.generic_string(), err),
+		Check(editor::HideAssetBrowserFile(
+			published.generic_string() + ".dccsource"),
+			"dcc.link-sidecar-hidden-from-browser");
+			Check(editor::UnlinkDccSource(published.generic_string(), err),
 			"dcc.unlink-source");
 		Check(editor::ResolveDccAsset(published.generic_string(),
 				resolved, err) && !resolved.linked
