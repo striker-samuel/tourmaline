@@ -1437,7 +1437,9 @@ void OnResourceExhaustion(const char* site);
 		// views get mirrored, and Texture2D[]-typed code never indexes
 		// those slots. HLSL: Texture2DMS<float4> texturesMS[] (common.hlsli).
 		kBinding_MsaaTextures = 6,
-		kBinding_NumBindings = 7 // this should be # of all other
+		// Immutable optional lightmap storage heap for indexed vertex pulling.
+		kBinding_VertexLightmap = 7,
+		kBinding_NumBindings = 8 // this should be # of all other
 	};
 
 	struct QueueFamilyIndices {
