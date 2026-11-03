@@ -474,7 +474,8 @@ bloom/tonemap/AA/UI → swapchain.
 - The stamp moves ONLY on a generation EVENT (any change to the emitted
   text, or a forced refresh); an unchanged generation re-emits
   byte-identical text. Tabular output (`Paks`, `Assets`) is
-  width-aligned by the longest emitted cell in each column; typed
+  width-aligned by the longest emitted cell in each column, as
+  are `AssetKind` enumerators; typed
   namespaces, audio cues and retired declarations align their value
   braces. One-column collections need no alignment. Never reorder
   rows or alter literals in a formatting-only change.
