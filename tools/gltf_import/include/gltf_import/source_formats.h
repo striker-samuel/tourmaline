@@ -15,7 +15,7 @@
 // classifiers (editor_watch_routes.h) can use it from any TU.
 //
 // NOT model sources: .geometry (the DERIVED artifact), .tour (scenes),
-// images (their own import lane), .fbx/.dae/.usd (no adapter yet).
+// images (their own import lane), .fbx/.dae (no adapter yet); USD when TOURMALINE_WITH_USD=ON.
 
 #pragma once
 
@@ -41,7 +41,11 @@ namespace smvk::assets {
 				return false;
 		return true;
 	};
-	return eq(".gltf") || eq(".glb") || eq(".obj");
+	return eq(".gltf") || eq(".glb") || eq(".obj")
+#ifdef TOURMALINE_WITH_USD
+        || eq(".usd") || eq(".usda") || eq(".usdc") || eq(".usdz")
+#endif
+        ;
 }
 
 // The lowercase extension of `p` ("" when none) — the helper for
