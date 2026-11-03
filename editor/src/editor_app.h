@@ -2656,8 +2656,8 @@ private:
 	void DrawBakeDensityOverlay(); // ImGui foreground markers + captions
 	bool m_wireframeAll = false; // Z: whole-scene wireframe (wire program)
 	int m_debugMeshletMode = 0; // F4 color mode: 0 random, 1 cone heat
-	// ---- panel sizes (drag the splitters to resize; constants above
-	// are the defaults) ----
+	// ---- editable panel sizes (drag the splitters; View > Reset panel layout
+	// restores these defaults without resetting tools or project state) ----
 	float m_outlinerW = kEditorLeftW;
 	// The stacked left column's SPLIT: the Outliner (always visible, the
 	// upper window) owns this much height; the tabbed browser (Assets /
@@ -2666,16 +2666,9 @@ private:
 	// the window can resize under the saved value).
 	float m_outlinerH = 380.0f;
 	float m_inspectorW = kEditorRightW;
-	float m_bottomDockH = kEditorBottomH;
-	// The bottom dock's EFFECTIVE height: ZERO since the dock was
-	// RETIRED (the layout rework's final form — the Live view moved
-	// into the CENTER view panel, the authoring tabs into the left
-	// column, so nothing hosts the strip anymore). The helper + the
-	// m_bottomDockH member + the [bottomDock] prefs keys stay wired so
-	// a future output strip can re-host the layout slot without
-	// touching every consumer again; until then every layout reader
-	// (panel heights, viewport rects, splitters) goes through this and
-	// gets 0.
+	// No bottom dock: authoring tabs live in the left column and
+	// the live renderer occupies the central viewport. Retain the query
+	// for shared panel/viewport math, without persisting a dead height.
 	float BottomDockH() const { return 0.0f; }
 	void DrawPanelSplitters(); // left/right/bottom resize handles
 	// ---- ground grid + snapping (gizmo) ----
