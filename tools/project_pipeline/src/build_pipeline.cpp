@@ -466,7 +466,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					|| asset.kind == PlanAssetKind::BakeFile
 					|| asset.kind == PlanAssetKind::Sound
 					|| asset.kind == PlanAssetKind::Shader
-					|| asset.kind == PlanAssetKind::AudioGraph)
+					|| asset.kind == PlanAssetKind::AudioGraph
+					|| asset.kind == PlanAssetKind::SpriteSet)
 				vfsOwner[asset.path] = pak.id;
 
 	// The staged set: every pak writes under publish/.staging/ with its
@@ -565,7 +566,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 							|| asset.kind == PlanAssetKind::BakeFile
 							|| asset.kind == PlanAssetKind::Sound
 							|| asset.kind == PlanAssetKind::Shader
-							|| asset.kind == PlanAssetKind::AudioGraph)
+							|| asset.kind == PlanAssetKind::AudioGraph
+					|| asset.kind == PlanAssetKind::SpriteSet)
 						stage.excludeVfs.push_back(asset.path);
 			}
 		}
@@ -605,10 +607,11 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					+ perr;
 				return false;
 			}
-			const smvk::PakAssetKind policeKinds[4] = {
+			const smvk::PakAssetKind policeKinds[5] = {
 				smvk::PakAssetKind::Texture, smvk::PakAssetKind::Sound,
 			smvk::PakAssetKind::Shader,
-			smvk::PakAssetKind::AudioGraph };
+			smvk::PakAssetKind::AudioGraph,
+				smvk::PakAssetKind::SpriteSet };
 			for (const smvk::PakAssetKind kind : policeKinds)
 			for (const smvk::PakTocEntry* e : reader->BlobsOfKind(kind)) {
 				auto ownerIt = vfsOwner.find(e->path);
@@ -674,7 +677,8 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 						|| !addRows(catalog.sounds)
 						|| !addRows(catalog.shaders)
 						|| !addRows(catalog.gi)
-						|| !addRows(catalog.audiographs))
+						|| !addRows(catalog.audiographs)
+				|| !addRows(catalog.spritesets))
 					return false;
 				const std::vector<uint8_t> blob =
 					::tour::asset::WriteAssetIdsBlob(rows);

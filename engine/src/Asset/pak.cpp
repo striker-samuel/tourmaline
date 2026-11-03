@@ -1383,7 +1383,7 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 				" no-identity value)";
 			return false;
 		}
-		if (row.kind > smvk::kCatalogKindAudioGraph) {
+		if (row.kind > smvk::kCatalogKindSpriteSet) {
 			err = "identity table row kind byte out of the catalog ABI";
 			return false;
 		}
@@ -1433,7 +1433,8 @@ bool PakBackend::Exists(const VfsPath& path) const {
 	return reader_->Find(PakAssetKind::Texture, n) != nullptr
 		|| reader_->Find(PakAssetKind::Sound, n) != nullptr
 		|| reader_->Find(PakAssetKind::Shader, n) != nullptr
-		|| reader_->Find(PakAssetKind::AudioGraph, n) != nullptr;
+		|| reader_->Find(PakAssetKind::AudioGraph, n) != nullptr
+		|| reader_->Find(PakAssetKind::SpriteSet, n) != nullptr;
 }
 
 std::optional<std::vector<uint8_t>> PakServeVfsBytes(
@@ -1455,7 +1456,7 @@ std::optional<std::vector<uint8_t>> PakServeVfsBytes(
 			parsed.ktxBytes.end());
 	}
 	if (kind == PakAssetKind::Sound || kind == PakAssetKind::Shader
-		|| kind == PakAssetKind::AudioGraph)
+		|| kind == PakAssetKind::AudioGraph || kind == PakAssetKind::SpriteSet)
 		return std::vector<uint8_t>(payload.begin(), payload.end());
 	return std::nullopt;
 }
@@ -1468,7 +1469,7 @@ std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) con
 	// served through the shared per-kind helper.
 	for (const PakAssetKind kind : { PakAssetKind::Texture,
 			PakAssetKind::Sound, PakAssetKind::Shader,
-			PakAssetKind::AudioGraph }) {
+			PakAssetKind::AudioGraph, PakAssetKind::SpriteSet }) {
 		const PakTocEntry* e = reader_->Find(kind, n);
 		if (!e)
 			continue;
@@ -1488,7 +1489,8 @@ std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
 	all.reserve(reader_->BlobsOfKind(PakAssetKind::Texture).size()
 		+ reader_->BlobsOfKind(PakAssetKind::Sound).size()
 		+ reader_->BlobsOfKind(PakAssetKind::Shader).size()
-		+ reader_->BlobsOfKind(PakAssetKind::AudioGraph).size());
+		+ reader_->BlobsOfKind(PakAssetKind::AudioGraph).size()
+		+ reader_->BlobsOfKind(PakAssetKind::SpriteSet).size());
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Texture))
 		all.push_back(e);
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Sound))
@@ -1496,6 +1498,8 @@ std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Shader))
 		all.push_back(e);
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::AudioGraph))
+		all.push_back(e);
+	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::SpriteSet))
 		all.push_back(e);
 	for (const PakTocEntry* e : all) {
 		const std::string& p = e->path;
@@ -1546,6 +1550,14 @@ std::optional<VfsStat> PakBackend::Stat(const VfsPath& path) const {
 		return s;
 	}
 	e = reader_->Find(PakAssetKind::AudioGraph, n);
+	if (e) {
+		VfsStat s;
+		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());
+		s.backend = Name();
+		s.source = name_ + ":" + n;
+		return s;
+	}
+	e = reader_->Find(PakAssetKind::SpriteSet, n);
 	if (e) {
 		VfsStat s;
 		s.size = static_cast<uint64_t>(reader_->Payload(*e).size());

@@ -19,7 +19,7 @@ namespace editor {
 
 enum class BrowserInspectorKind {
 	Material, Geometry, Texture, GiCook, LmCook, Cubemap, Givolume,
-	TextureSource, Generic
+	TextureSource, SpriteSet, Generic
 };
 
 inline BrowserInspectorKind ClassifyBrowserInspector(
@@ -27,6 +27,7 @@ inline BrowserInspectorKind ClassifyBrowserInspector(
 	std::string ext = path.extension().string();
 	for (char& c : ext)
 		c = char(std::tolower(static_cast<unsigned char>(c)));
+	if (ext == ".spriteset") return BrowserInspectorKind::SpriteSet;
 	if (ext == ".material") return BrowserInspectorKind::Material;
 	if (ext == ".geometry" || ext == ".mesh")
 		return BrowserInspectorKind::Geometry; // legacy .mesh files

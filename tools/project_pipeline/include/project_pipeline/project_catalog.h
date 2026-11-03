@@ -81,6 +81,7 @@ struct ProjectCatalog {
 	// the authored text, OUTSIDE the catalog ABI like the query
 	// metadata).
 	std::vector<CatalogEntry> audiographs;
+	std::vector<CatalogEntry> spritesets;
 	// The per-graph CUE tables (parsed from the authored text at
 	// catalog time — the same loud-validation discipline as the schema
 	// collection): cue names in authored (ordinal) order, id-sorted

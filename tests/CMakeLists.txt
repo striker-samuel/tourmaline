@@ -1237,6 +1237,12 @@ set_target_properties(World2DTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME world2d_tests COMMAND World2DTests)
 
+# CPU-only authored sprite-set parsing, bounds, grid and animation validation.
+add_executable(SpriteSetTests test_spriteset.cpp)
+target_link_libraries(SpriteSetTests PRIVATE engine)
+set_target_properties(SpriteSetTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME spriteset_tests COMMAND SpriteSetTests)
+
 # GPU-free layout, clipping and painter-order regression checks for game UI.
 add_executable(GameUiTests test_game_ui.cpp)
 target_link_libraries(GameUiTests PRIVATE engine)

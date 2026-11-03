@@ -27,6 +27,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Profile/profile.h>
 
+#include <Engine/Asset/spriteset.h>
 #include <imgui.h>
 #include <imgui_impl_vulkan.h> // ImGui_ImplVulkan_AddTexture (TextureThumb)
 #include <stb_image.h>         // stbi_load (AssetSidecarThumb; impl in editor_branding)
@@ -4954,6 +4955,47 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		if (!preview.isText) {
 			ImGui::TextDisabled("Binary or non-UTF-8 file (metadata only).");
 			return;
+		}
+		if (ClassifyBrowserInspector(path) == BrowserInspectorKind::SpriteSet) {
+			::tour::asset::SpriteSet sheet;
+			std::string parseError;
+			if (!::tour::asset::ParseSpriteSetText(preview.text, sheet, parseError)) {
+				ImGui::TextWrapped("SpriteSet error: %s", parseError.c_str());
+			} else {
+				ImGui::Text("Texture: %s (%u x %u)", sheet.texture.c_str(), sheet.width, sheet.height);
+				ImGui::Text("%zu sprites / %zu animations", sheet.sprites.size(), sheet.animations.size());
+				const float width = std::min(360.0f, ImGui::GetContentRegionAvail().x);
+				const float scale = width / float(sheet.width);
+				const float height = float(sheet.height) * scale;
+				const ImVec2 origin = ImGui::GetCursorScreenPos();
+				ImDrawList* draw = ImGui::GetWindowDrawList();
+				draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height),
+					IM_COL32(28, 31, 37, 255));
+				for (const auto& sprite : sheet.sprites) {
+					const auto& r = sprite.rect;
+					const ImVec2 a(origin.x + r.x * scale, origin.y + r.y * scale);
+					const ImVec2 b(a.x + r.width * scale, a.y + r.height * scale);
+					draw->AddRect(a, b, IM_COL32(120, 220, 170, 255));
+					if (r.width * scale >= 40)
+						draw->AddText(a, IM_COL32(235, 240, 245, 255), sprite.name.c_str());
+				}
+				ImGui::Dummy(ImVec2(width, height));
+				if (ImGui::BeginTable("##sprites", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+					ImVec2(0, 160))) {
+					ImGui::TableSetupColumn("Sprite");
+					ImGui::TableSetupColumn("Rect");
+					ImGui::TableSetupColumn("Pivot");
+					ImGui::TableHeadersRow();
+					for (const auto& sprite : sheet.sprites) {
+						ImGui::TableNextRow();
+						ImGui::TableNextColumn(); ImGui::TextUnformatted(sprite.name.c_str());
+						ImGui::TableNextColumn(); ImGui::Text("%u,%u %ux%u", sprite.rect.x, sprite.rect.y,
+							sprite.rect.width, sprite.rect.height);
+						ImGui::TableNextColumn(); ImGui::Text("%.2f, %.2f", sprite.pivotX, sprite.pivotY);
+					}
+					ImGui::EndTable();
+				}
+			}
 		}
 		ImGui::TextDisabled("Text preview (read-only)%s",
 			preview.truncated ? " - first 64 KiB" : "");

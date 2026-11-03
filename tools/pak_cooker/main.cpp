@@ -82,7 +82,8 @@
 #include <Engine/App/cluster.h>
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/tour.h>
-#include <Engine/Asset/audiograph.h> // ParseAudioGraphText (the --content audiograph gate)
+#include <Engine/Asset/audiograph.h>
+#include <Engine/Asset/spriteset.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -2960,6 +2961,23 @@ int Run(const PakArgs& c) {
 			}
 			tool::out() << "Embedded content-set shader " << vfsPath
 				<< " (" << spvBytes << " B spv)\n";
+			continue;
+		}
+		if (ext == ".spriteset") {
+			tour::asset::SpriteSet sheet;
+			std::string reason;
+			if (!tour::asset::ParseSpriteSetText(std::string(bytes->begin(), bytes->end()), sheet, reason)) {
+				tool::err() << "Content-set spriteset invalid: " << reason << ": " << vfsPath << std::endl;
+				return 1;
+			}
+			if (!vfs.Exists(sheet.texture)) {
+				tool::err() << "Content-set spriteset texture missing: " << sheet.texture << std::endl;
+				return 1;
+			}
+			if (!writer.AddBlob(smvk::PakAssetKind::SpriteSet, vfsPath, std::move(*bytes))) {
+				tool::err() << "Content-set AddBlob failed: " << vfsPath << std::endl;
+				return 1;
+			}
 			continue;
 		}
 		if (ext == ".audiograph") {

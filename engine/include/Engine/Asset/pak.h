@@ -214,6 +214,7 @@ enum class PakAssetKind : uint32_t {
 	// assets by VFS path (resolved loudly at instance create through
 	// the same registry), never by stamped numeric id.
 	AudioGraph = 16,
+	SpriteSet = 17,
 };
 
 enum PakEntryFlags : uint32_t {

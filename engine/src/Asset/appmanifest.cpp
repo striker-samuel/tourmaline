@@ -172,6 +172,7 @@ bool CatalogKindFromString(const std::string& kind, uint8_t& out) {
 	if (kind == "shader") { out = kCatalogKindShader; return true; }
 	if (kind == "gi") { out = kCatalogKindGi; return true; }
 	if (kind == "audiograph") { out = kCatalogKindAudioGraph; return true; }
+	if (kind == "spriteset") { out = kCatalogKindSpriteSet; return true; }
 	return false;
 }
 
@@ -184,6 +185,7 @@ const char* CatalogKindToString(uint8_t kind) {
 	case kCatalogKindShader: return "shader";
 	case kCatalogKindGi: return "gi";
 	case kCatalogKindAudioGraph: return "audiograph";
+	case kCatalogKindSpriteSet: return "spriteset";
 	default: return "";
 	}
 }

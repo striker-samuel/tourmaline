@@ -64,6 +64,7 @@ enum class PlanAssetKind : uint8_t {
 	// .wav Sound assets by VFS path — resolved at instance create
 	// through the same registry.
 	AudioGraph,
+	SpriteSet,
 };
 
 struct PlanAsset {

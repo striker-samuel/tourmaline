@@ -817,6 +817,7 @@ bool IdRangeForKind(const std::string& kind, uint64_t& base,
 		// range — the next free after GI.
 		base = 0x7000;
 	}
+	else if (kind == "spriteset") base = 0x8000;
 	else
 		return false;
 	last = base + 0xFFF;
@@ -902,7 +903,7 @@ bool AssetDatabase::EnsureContentId(const std::string& guid,
 	}
 	uint64_t base = 0, last = 0;
 	if (!IdRangeForKind(kind, base, last)) {
-		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound|shader|gi|audiograph)";
+		err = "unknown content kind '" + kind + "' (scene|texture|mesh|sound|shader|gi|audiograph|spriteset)";
 		return false;
 	}
 	try {
