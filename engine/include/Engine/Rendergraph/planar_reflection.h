@@ -77,12 +77,16 @@ inline bool MakePlanarReflectionCamera(const glm::mat4& view,
     return true;
 }
 
-// External capture owned by the host. 'logicalView' must be registered in
-// WorldRenderer's RenderGraph and remain alive through execution; 'bindlessIndex' is a shader-readable Texture2D slot in the SAME
+// External capture owned by the host. Supply a physicalView (the renderer
+// imports it) or a logicalView already registered in its graph. The source
+// view must stay alive through all in-flight frames; 'bindlessIndex' is a shader-readable Texture2D slot in the SAME
 // ResourceManager. viewProjection must match the capture's camera (including
 // its Vulkan Y flip). A producer must not sample the output of this pass.
 struct PlanarReflectionCapture {
+    // Optional ready-to-use logical view. Otherwise WorldRenderer imports the
+    // host's physical image view once into its own rendergraph.
     LogicalImageViewHandle logicalView{};
+    ImageViewHandle physicalView{};
     uint32_t bindlessIndex = UINT32_MAX;
     Format format = Format::RGBA16_Float;
     glm::mat4 viewProjection{1.0f};
