@@ -113,6 +113,21 @@ bool ResolveDccPublishedAsset(const std::string& selected,
 bool ResolveDccAsset(const std::string& selected,
 	DccAsset& asset, std::string& err) {
 	asset = {};
+	// First publication: a native Maya/Blender scene in the project
+	// can create <stem>.gltf without needing a placeholder file.
+	// The runner publishes that glTF, then an authoring link is saved.
+	const std::string nativeExt = LowerExt(fs::path(selected));
+	if ((nativeExt == ".ma" || nativeExt == ".mb"
+			|| nativeExt == ".blend") && Regular(fs::path(selected))) {
+		asset.document = Absolute(selected);
+		fs::path gltf = fs::path(asset.document);
+		gltf.replace_extension(".gltf");
+		asset.published = gltf.generic_string();
+		asset.linked = true;
+		asset.fromNative = true;
+		err.clear();
+		return true;
+	}
 	if (!ResolveDccPublishedAsset(selected, asset.published, err))
 		return false;
 	asset.document = asset.published;
