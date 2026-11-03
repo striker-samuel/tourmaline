@@ -576,7 +576,7 @@ glm::vec3 GiTraceScene::SkyAmbient() const {
 
 glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 	Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist,
-	glm::vec3* outFirstAlbedo) const {
+	glm::vec3* outFirstAlbedo, bool referenceCamera) const {
 	// Baked field: the FULL glTF metallic-roughness BSDF transport —
 	// sun + static spot NEE at every vertex on BOTH lobes (the
 	// Lambertian diffuse with the vertex albedo, including the primary
@@ -612,9 +612,26 @@ glm::vec3 GiTraceScene::TraceIncoming(const glm::vec3& origin, const glm::vec3& 
 		if (depth == 0 && outPrimaryDist)
 			*outPrimaryDist = h.t;
 		const glm::vec3 pos = p + d * h.t;
-		glm::vec3 tn = bvh_.TriangleNormal(h.tri);
-		const glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
+		const glm::vec3 tn = bvh_.TriangleNormal(h.tri);
+		glm::vec3 n = glm::dot(tn, d) < 0.0f ? tn : -tn;
+		// Camera images interpolate transformed authoring normals; bake
+		// transport keeps its historical geometric-normal convention.
+		if (referenceCamera && normals.size() == positions.size()) {
+			const uint32_t i = 3u * h.tri;
+			const glm::vec3 sn = normals[indices[i]] * (1.0f - h.baryUV.x - h.baryUV.y)
+				+ normals[indices[i + 1]] * h.baryUV.x
+				+ normals[indices[i + 2]] * h.baryUV.y;
+			if (glm::dot(sn, sn) > 1e-8f) {
+				const glm::vec3 oriented = glm::normalize(sn);
+				n = glm::dot(oriented, n) >= 0.0f ? oriented : -oriented;
+			}
+		}
 		const GiTraceMaterial& m = materials[triMaterial[h.tri]];
+		// Emission is visible to camera rays and indirect camera paths.
+		// Bake products continue to exclude it until their transport is
+		// explicitly upgraded and re-baselined.
+		if (referenceCamera)
+			L += throughput * m.emissive;
 		// The VERTEX albedo (textured at the interpolated hit UV, or the
 		// flat averaged color): every term below (the NEE direct, the
 		// bounce throughput, the ambient-closure outFirstAlbedo) shades
@@ -849,7 +866,8 @@ namespace {
 // replay and a live editor snapshot treat lights identically.
 template <typename LightFn>
 GiStaticLightCounts CollectStaticBakeLightsImpl(const ::Scene& scene,
-	LightFn&& lightAt, GiTraceScene& out, const glm::vec3& aimAxis) {
+	LightFn&& lightAt, GiTraceScene& out, const glm::vec3& aimAxis,
+	bool includeDynamic = false) {
 	GiStaticLightCounts counts{};
 
 	// Deterministic node order (the table's row storage order is not).
@@ -866,7 +884,8 @@ GiStaticLightCounts CollectStaticBakeLightsImpl(const ::Scene& scene,
 		if (node >= scene.globalTransform.size())
 			continue;
 		const SceneLight* lp = lightAt(node, lit->light);
-		if (!lp || (lp->flags & SceneLight::kSceneLightFlag_Static) == 0)
+		if (!lp || (!includeDynamic
+			&& (lp->flags & SceneLight::kSceneLightFlag_Static) == 0))
 			continue; // runtime-only light: never baked
 		const SceneLight& L = *lp;
 		const glm::mat4& G = scene.globalTransform[node];
@@ -961,6 +980,10 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 	out.indices.clear();
 	out.materials.clear();
 	out.triMaterial.clear();
+	out.uvs.clear();
+	out.normals.clear();
+	out.textures.clear();
+	out.spots.clear();
 
 	// Node-material pairs first so materials vector indices are stable.
 	auto internMaterial = [&](const Material& mat) -> uint32_t {
@@ -1161,6 +1184,8 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 	for (const NodeGeo& g : geos)
 		triCount += uint32_t(g.upload->indices.size() / 3);
 	out.positions.reserve(size_t(triCount) * 3);
+	if (opts.retainVertexNormals)
+		out.normals.reserve(size_t(triCount) * 3);
 	out.indices.reserve(size_t(triCount) * 3);
 	out.triMaterial.reserve(triCount);
 
@@ -1185,9 +1210,17 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 
 	for (const NodeGeo& g : geos) {
 		const uint32_t base = uint32_t(out.positions.size());
+		// Inverse transpose is essential for nonuniformly scaled scene nodes.
+		const glm::mat3 normalMatrix = opts.retainVertexNormals
+			? glm::transpose(glm::inverse(glm::mat3(g.global))) : glm::mat3(1.0f);
 		for (const ImportStaticVertex& v : g.upload->vertices) {
 			const glm::vec4 wp = g.global * glm::vec4(v.pos, 1.0f);
 			out.positions.push_back(glm::vec3(wp));
+			if (opts.retainVertexNormals) {
+				const glm::vec3 n = normalMatrix * v.normal;
+				out.normals.push_back(glm::dot(n, n) > 1e-12f
+					? glm::normalize(n) : glm::vec3(0, 1, 0));
+			}
 			if (anyTextured)
 				out.uvs.push_back(v.texCoord);
 		}
@@ -1213,8 +1246,9 @@ void AssembleTraceScene(const ::Scene& scene, const GiSceneBuildOptions& opts,
 	// sources — spots/points join the NEE list, the first static
 	// directional overrides the env-seeded sun. Callers (PakCooker /
 	// GiBaker) append their CLI spots AFTER this, so both sets bake.
-	if (opts.staticLights)
-		CollectStaticBakeLightsImpl(scene, lightAt, out, opts.punctualAimAxis);
+	if (opts.staticLights || opts.includeDynamicLights)
+		CollectStaticBakeLightsImpl(scene, lightAt, out,
+			opts.punctualAimAxis, opts.includeDynamicLights);
 
 	out.SetTraceBackend(opts.traceBackendEmbree ? TraceBackend::Embree : TraceBackend::Builtin);
 }
