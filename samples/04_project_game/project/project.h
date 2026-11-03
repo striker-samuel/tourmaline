@@ -121,12 +121,12 @@ inline constexpr std::array Paks = {
 // catalog-fingerprint fold + the .tapp validation agree on
 // these bytes; do not renumber - AudioGraph is APPENDED, 6).
 enum class AssetKind : std::uint8_t {
-    Scene = 0,
-    Texture = 1,
-    Mesh = 2,
-    Sound = 3,
-    Shader = 4,
-    Gi = 5,
+    Scene      = 0,
+    Texture    = 1,
+    Mesh       = 2,
+    Sound      = 3,
+    Shader     = 4,
+    Gi         = 5,
     AudioGraph = 6,
 };
 
