@@ -63,6 +63,26 @@ int main() {
     draw.Clear();
     assert(scene.AppendDraws(draw) == 0 && draw.Empty());
 
+    // Authored .shape file becomes a retained instance, with no callback
+    // and with no dependency on the editor or a Vulkan device.
+    const auto temp = std::filesystem::temp_directory_path()
+        / "tourmaline_shape_scene_test.shape";
+    {
+        std::ofstream file(temp, std::ios::binary);
+        file << asset::SerializeShapeAsset(
+            asset::DefaultShapeAsset(asset::ShapeKind::PointCloud));
+        assert(file.good());
+    }
+    const auto loaded = scene.LoadFile(temp, glm::mat4(1.0f), {0,1,1}, error);
+    assert(loaded && scene.Get(loaded));
+    assert(scene.Get(loaded)->geometry.vertices.size() == 4);
+    std::filesystem::remove(temp);
+    assert(scene.Get(loaded)); // source is owned after load
+    const auto absent = scene.LoadFile(temp, transform, {1,1,1}, error);
+    assert(!absent && !error.empty());
+    assert(scene.Size() == 1);
+    scene.Clear();
+
     // Admission is not partial: a dataset that exceeds the per-pass budget
     // is retained as an instance but skipped by this bounded draw stream.
     auto cloud = asset::DefaultShapeAsset(asset::ShapeKind::PointCloud);
