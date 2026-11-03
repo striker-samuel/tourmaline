@@ -158,6 +158,8 @@ public:
                                 readback.size()*sizeof(readback[0]))) {
             std::fprintf(stderr,"[GpuSceneValidate] readback failed\n");
             f.expected.clear();
+            f.expectedCompact.clear();
+            f.compactPrepared = false;
             return;
         }
         uint64_t wrong=0;
@@ -186,18 +188,18 @@ public:
             if (!ctx.DownloadDataFromBuffer(f.offsets, &gpuCount,
                     sizeof(gpuCount), size_t(f.groupCount)*sizeof(uint32_t))) {
                 ++compactMismatches_;
-                std::fprintf(stderr, "[GpuSceneCompact] count readback failed\\n");
+                std::fprintf(stderr, "[GpuSceneCompact] count readback failed\n");
             } else if (gpuCount != expectedCount) {
                 ++compactMismatches_;
                 std::fprintf(stderr,
-                    "[GpuSceneCompact] visible count gpu=%u cpu=%u\\n",
+                    "[GpuSceneCompact] visible count gpu=%u cpu=%u\n",
                     gpuCount, expectedCount);
             } else if (gpuCount != 0u) {
                 std::vector<InstanceCullVerdict> compact(gpuCount);
                 if (!ctx.DownloadDataFromBuffer(f.compact, compact.data(),
                         compact.size()*sizeof(compact[0]))) {
                     ++compactMismatches_;
-                    std::fprintf(stderr, "[GpuSceneCompact] data readback failed\\n");
+                    std::fprintf(stderr, "[GpuSceneCompact] data readback failed\n");
                 } else {
                     for (size_t i=0; i<compact.size(); ++i) {
                         const auto& a=compact[i].value;
@@ -206,13 +208,13 @@ public:
                             ++compactMismatches_;
                             if (compactMismatches_ <= 4)
                                 std::fprintf(stderr,
-                                    "[GpuSceneCompact] mismatch at %zu\\n", i);
+                                    "[GpuSceneCompact] mismatch at %zu\n", i);
                         }
                     }
                 }
             }
             std::fprintf(stderr,
-                "[GpuSceneCompact] expected=%u errors=%llu\\n",
+                "[GpuSceneCompact] expected=%u errors=%llu\n",
                 expectedCount, (unsigned long long)compactMismatches_);
             f.expectedCompact.clear();
         }
