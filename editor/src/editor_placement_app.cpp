@@ -143,7 +143,7 @@ void EditorApp::CheckSurfaceBrushPlacementChanges() {
         usesCloud |= node.kind == placement::NodeKind::PointCloud;
     if (!usesCloud || !m_world) return;
     uint64_t hash = 14695981039346656037ull;
-    const auto mix = [&](uint8_t b) mutable {
+    const auto mix = [&](uint8_t b) {
         hash ^= b;
         hash *= 1099511628211ull;
     };
@@ -208,6 +208,7 @@ void EditorApp::RefreshPlacementPreview() {
 	lb.domainKind = cr.domainKind;
 	GridDomain gridStorage;
 	PlacementMeshData meshStorage;
+	PlacementPointCloudData pointCloudStorage;
 	HeightfieldData terrainStorage;
 	HeightfieldDomain terrainDom;
 	if (cr.domainKind == DomainKind::Grid) {
@@ -246,6 +247,22 @@ void EditorApp::RefreshPlacementPreview() {
 		pv.terrainDom = terrainDom;
 		pv.terrainDom.field = &pv.terrainField; // re-point at the cache copy
 	}
+	else if (cr.domainKind == DomainKind::PointCloud) {
+		std::string error;
+		if (!BuildPlacementPointCloud(cr.pointStroke, pointCloudStorage, error)) {
+			pv.ok = false;
+			pv.error = error;
+			pv.dirty = false;
+			return;
+		}
+		pv.pointCloud = std::move(pointCloudStorage);
+		lb.pointCloud = &pv.pointCloud;
+		// Point clouds are an exact candidate source, not an area domain.
+		// One painted sample = one candidate; never repeat or truncate silently.
+		cr.config.candidatesPerTile = pv.pointCloud.pointCount();
+		lb.config.candidatesPerTile = cr.config.candidatesPerTile;
+		pv.compiled.config.candidatesPerTile = cr.config.candidatesPerTile;
+	}
 	else {
 		if (!ExtractPlacementMesh(cr.meshNode, meshStorage)) {
 			pv.ok = false;
@@ -280,7 +297,9 @@ void EditorApp::RefreshPlacementPreview() {
 			? gridStorage.sample(id, i)
 			: (cr.domainKind == DomainKind::Heightfield
 				? terrainDom.sample(id)
-				: SampleMeshSurface(meshStorage, id));
+				: (cr.domainKind == DomainKind::PointCloud
+					? pv.pointCloud.sample(i)
+					: SampleMeshSurface(meshStorage, id)));
 		std::vector<float> values = EvaluateProgram(cr.program, s);
 		if (!AcceptCandidate(values[cr.program.acceptIndex], id, cr.config.densityScale)) {
 			pv.rejected.push_back(PreviewPoint{ s.p, 0, i, id });
@@ -310,6 +329,8 @@ void EditorApp::RefreshPlacementPreview() {
 		pv.stats += "  [mesh: " + std::to_string(pv.meshTris) + " tris]";
 	if (cr.domainKind == DomainKind::Heightfield)
 		pv.stats += "  [terrain: " + std::to_string(cr.terrain.res) + "^2]";
+	if (cr.domainKind == DomainKind::PointCloud)
+		pv.stats += "  [painted cloud: " + std::to_string(pv.pointCloud.pointCount()) + " source pts]";
 	for (const auto& [proto, cnt] : perProto)
 		pv.stats += "  p" + std::to_string(proto) + ":" + std::to_string(cnt);
 	pv.ok = true;
