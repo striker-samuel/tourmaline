@@ -5097,6 +5097,62 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			ImGui::Text("Shape: %s%s",
 				tour::asset::ShapeKindName(shape.kind),
 				shapeDirty ? " (unsaved)" : "");
+			// Lightweight CPU preview, intentionally independent of the
+			// Vulkan scene: usable before line/point draw pipelines exist.
+			// Project onto a fixed oblique view (X + 0.4 Z, Y - 0.3 Z).
+			{
+				tour::asset::ShapeGeometry geometry;
+				std::string tessError;
+				if (tour::asset::TessellateShape(shape, geometry, tessError)
+					&& !geometry.vertices.empty()) {
+					const float width = std::max(80.0f,
+						std::min(ImGui::GetContentRegionAvail().x, 440.0f));
+					const float height = 180.0f;
+					const ImVec2 origin = ImGui::GetCursorScreenPos();
+					const size_t maxScan = std::min(geometry.vertices.size(), size_t(200000));
+					float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
+					auto project = [](const tour::asset::ShapePoint& p) {
+						return ImVec2(p.x + 0.4f*p.z, p.y - 0.3f*p.z);
+					};
+					for (size_t i=0; i<maxScan; ++i) {
+						const ImVec2 p = project(geometry.vertices[i]);
+						minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+						minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
+					}
+					const float scale = std::min((width-24.0f)/std::max(0.01f,maxX-minX),
+						(height-24.0f)/std::max(0.01f,maxY-minY));
+					auto screen = [&](uint32_t idx) {
+						const ImVec2 p = project(geometry.vertices[idx]);
+						return ImVec2(origin.x + width*0.5f +
+							(p.x-(minX+maxX)*0.5f)*scale,
+							origin.y + height*0.5f -
+							(p.y-(minY+maxY)*0.5f)*scale);
+					};
+					ImDrawList* draw = ImGui::GetWindowDrawList();
+					draw->AddRectFilled(origin, ImVec2(origin.x+width,origin.y+height),
+						IM_COL32(25,28,34,255), 5.0f);
+					const ImU32 tint = IM_COL32(110,205,220,255);
+					if (geometry.topology == tour::asset::ShapeGeometry::Topology::Points) {
+						for (size_t i=0; i<std::min(geometry.vertices.size(),size_t(2048)); ++i)
+							draw->AddCircleFilled(screen(static_cast<uint32_t>(i)),2.0f,tint);
+					} else if (geometry.topology == tour::asset::ShapeGeometry::Topology::Lines) {
+						for (size_t i=0; i+1<geometry.indices.size() && i<8192; i+=2)
+							draw->AddLine(screen(geometry.indices[i]),
+								screen(geometry.indices[i+1]),tint,1.4f);
+					} else {
+						for (size_t i=0; i+2<geometry.indices.size() && i<12000; i+=3) {
+							const ImVec2 a=screen(geometry.indices[i]);
+							const ImVec2 b=screen(geometry.indices[i+1]);
+							const ImVec2 c=screen(geometry.indices[i+2]);
+							draw->AddLine(a,b,tint);
+							draw->AddLine(b,c,tint);
+							draw->AddLine(c,a,tint);
+						}
+					}
+					ImGui::Dummy(ImVec2(width,height));
+				} else if (!tessError.empty())
+					ImGui::TextDisabled("Preview: %s", tessError.c_str());
+			}
 			if (shape.kind == tour::asset::ShapeKind::Spline)
 				shapeDirty |= ImGui::Checkbox("Closed", &shape.closed);
 			int segments = static_cast<int>(shape.segments);
