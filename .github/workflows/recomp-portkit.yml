@@ -30,3 +30,5 @@ jobs:
         run: cmake --build out/portkit --config ${{ matrix.build_type }}
       - name: Run tests
         run: ctest --test-dir out/portkit -C ${{ matrix.build_type }} --output-on-failure
+      - name: Check external project scaffold (no source assets)
+        run: python experiments/recomp/test_scaffold.py
