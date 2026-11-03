@@ -34,6 +34,8 @@
 #include <Engine/platform.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -2000,6 +2002,19 @@ struct PlacementWorldRuntime {
 					cancel();
 					continue;
 				}
+				// C-heap scratch, not an STL allocation. Stage the whole
+				// zeroed mask before replacing the previous GPU tenant.
+				void* zeros = std::calloc(aliveElems, sizeof(uint32_t));
+				if (!zeros) {
+					pending.Destroy(rg);
+					cancel();
+					continue;
+				}
+				ctx.UploadDataToBuffer(pending.aliveBuffer, zeros,
+					sizeof(uint32_t) * aliveElems,
+					smvk::PipelineStageBit_Transfer,
+					smvk::AccessFlags::TransferWrite, 0, 0);
+				std::free(zeros);
 			}
 			// Only a successfully staged activation may claim/replace a
 			// slot; old draws remain valid throughout failure/retry.
@@ -2020,17 +2035,6 @@ struct PlacementWorldRuntime {
 			at.generation = a.generation;
 			at.slot = slot;
 			at.data.domain.field = &at.data.heights; // rebind after move
-			if (wantsCon) {
-				// The constraint triad writes this per-tenant alive mask.
-				// Its initial zero fill must precede GPU reads.
-				const size_t aliveElems =
-					2 * size_t(pass.desc.maxInstancesPerTile);
-				const std::vector<uint32_t> zeros(aliveElems, 0u);
-				ctx.UploadDataToBuffer(at.aliveBuffer, zeros.data(),
-					sizeof(uint32_t) * zeros.size(),
-					smvk::PipelineStageBit_Transfer,
-					smvk::AccessFlags::TransferWrite, 0, 0);
-			}
 			pass.ClearTile(ctx, uint32_t(slot));
 			PlacementScatterPush push{};
 			BuildScatterPush(tileLayer, a.key.tile,
