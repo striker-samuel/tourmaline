@@ -461,3 +461,108 @@ def fab(doc, asset, output, style, model, size, quality, count, execute=False,
     return metadata
 
 
+def cli(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    build = commands.add_parser("index", help="build compact descriptors from a capture atlas")
+    build.add_argument("--atlas", type=Path, required=True, help="capture atlas folder or its index.json")
+    build.add_argument("--output", type=Path, required=True, help="self-contained descriptor JSON")
+    build.add_argument("--mip", type=int, default=None, help="capture mip level (default: closest to 32px)")
+    build.add_argument("--grid", type=int, default=8, help="spatial samples per axis (2..32)")
+
+    lookup = commands.add_parser("search", help="rank similar assets in multiple dimensions")
+    lookup.add_argument("--index", type=Path, required=True)
+    query = lookup.add_mutually_exclusive_group(required=True)
+    query.add_argument("--asset", help="indexed full path, filename, SHA-256 or geometry GUID")
+    query.add_argument("--geometry", "--mesh", type=Path, help="MESH v3 geometry or a .mesh geometry= reference")
+    query.add_argument("--image", type=Path, help="single-view PNG/JPEG image query")
+    lookup.add_argument("--view", choices=VIEWS, default="+Z", help="view for --image (default +Z)")
+    lookup.add_argument("--dimensions", help="X,Y,Z authored units for --image (enables size matching)")
+    lookup.add_argument("--size-ratio", type=float, default=2.0, help="max per-axis size ratio, 0 disables (default 2)")
+    lookup.add_argument("--weights", help="comma-separated shape=0.3,color=0.2,... overrides")
+    lookup.add_argument("--limit", type=int, default=10)
+    lookup.add_argument("--include-self", action="store_true", help="include exact source of --asset/--geometry")
+    lookup.add_argument("--json", action="store_true", help="machine-readable ranked rows")
+
+    describe = commands.add_parser("describe", help="create measured description and fab prompt")
+    describe.add_argument("--index", type=Path, required=True)
+    describe.add_argument("--asset", required=True)
+    describe.add_argument("--style", default="game-ready PBR concept art")
+    describe.add_argument("--output", type=Path, help="optional JSON output file")
+
+    fabricate = commands.add_parser("fab", help="plan or execute image generation from an asset")
+    fabricate.add_argument("--index", type=Path, required=True)
+    fabricate.add_argument("--asset", required=True)
+    fabricate.add_argument("--output", type=Path, required=True)
+    fabricate.add_argument("--style", default="game-ready PBR concept art")
+    fabricate.add_argument("--model", default="gpt-image-2.5-flare")
+    fabricate.add_argument("--size", choices=("1024x1024", "1536x1024", "1024x1536"), default="1024x1024")
+    fabricate.add_argument("--quality", choices=("low", "medium", "high", "xhigh", "max", "auto"), default="medium")
+    fabricate.add_argument("--background", choices=("transparent", "opaque", "auto"), default="transparent")
+    fabricate.add_argument("--count", type=int, default=1)
+    fabricate.add_argument("--execute", action="store_true", help="explicitly call paid OpenAI Images API")
+    fabricate.add_argument("--search-results", type=int, default=0, help="reverse search generated images (0 disables)")
+
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "index":
+            if not 2 <= args.grid <= 32:
+                raise SearchError("--grid must be in [2,32]")
+            atlas_path = args.atlas / "index.json" if args.atlas.is_dir() else args.atlas
+            result = atlas_to_search_index(atlas_path, args.output, args.mip, args.grid)
+            print(f"Indexed {len(result['assets'])} assets from capture mip {result['mip']} -> {args.output}")
+        elif args.command == "search":
+            doc = load_search_index(args.index)
+            exclude = None
+            if args.asset:
+                q = match_asset(doc, args.asset)
+                exclude = None if args.include_self else q["source"]
+            elif args.geometry:
+                q = descriptor_for_geometry(args.geometry, doc)
+                # Exclude only the exact same source, not identical-content copies.
+                exclude = None if args.include_self else q["source"]
+            else:
+                dims = None
+                if args.dimensions:
+                    try:
+                        dims = [float(v) for v in args.dimensions.split(",")]
+                    except ValueError as exc:
+                        raise SearchError("--dimensions must be X,Y,Z numeric values") from exc
+                    if len(dims) != 3:
+                        raise SearchError("--dimensions must have exactly three values")
+                q = descriptor_for_image(args.image, doc, args.view, dims)
+            result = search(doc, q, args.limit, weights_from_string(args.weights), args.size_ratio, exclude)
+            if args.json:
+                print(json.dumps({"query": q["source"], "results": result}, indent=2))
+            else:
+                print("Similarity scores: weighted likeness 0–100, not calibrated probability")
+                for row in result:
+                    parts = " ".join(f"{k}={v:.1f}" for k, v in row["dimensions"].items() if v is not None)
+                    print(f"{row['rank']:>3}. {row['score']:6.2f}  {row['source']}  {parts}")
+                if not result:
+                    print("No candidates meet the size/identity filters")
+        elif args.command == "describe":
+            doc = load_search_index(args.index)
+            result = asset_description(doc, match_asset(doc, args.asset), args.style)
+            if args.output:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps(result, indent=2))
+        else:
+            if args.search_results < 0:
+                raise SearchError("--search-results must be >= 0")
+            doc = load_search_index(args.index)
+            metadata = fab(doc, match_asset(doc, args.asset), args.output, args.style,
+                           args.model, args.size, args.quality, args.count,
+                           execute=args.execute, background=args.background,
+                           search_count=args.search_results)
+            print(json.dumps({"status": metadata["status"], "output": str(args.output),
+                              "images": metadata["images"], "prompt": metadata["asset"]["prompt"]}, indent=2))
+    except (SearchError, capture.GeometryError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"asset_reverse_search: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())
