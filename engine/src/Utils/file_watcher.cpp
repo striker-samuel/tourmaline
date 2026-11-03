@@ -558,6 +558,12 @@ struct FileWatcher::Impl {
 					reinterpret_cast<const inotify_event*>(
 						buf + off);
 				off += sizeof *ev + ev->len;
+				// IN_Q_OVERFLOW has wd == -1: check it BEFORE resolving
+				// the watch descriptor or it is silently discarded.
+				if (ev->mask & IN_Q_OVERFLOW) {
+					overflowed.store(true);
+					continue;
+				}
 				std::string watchedDir;
 				{
 					std::lock_guard<std::mutex> lock(wdMtx);
@@ -565,10 +571,6 @@ struct FileWatcher::Impl {
 					if (wit == pathByWd.end())
 						continue;
 					watchedDir = wit->second;
-				}
-				if (ev->mask & IN_Q_OVERFLOW) {
-					overflowed.store(true);
-					continue;
 				}
 				const std::string name = ev->len ? ev->name : "";
 				const std::string path =

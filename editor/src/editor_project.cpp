@@ -19,13 +19,13 @@
 // render pipeline — no manual staging, no global cache.
 
 #include "editor_app.h"
-#include "editor_watch_routes.h"
+
 
 #include <artifact_cache/artifact_kind.h>
 #include <artifact_cache/assetdb.h>
 
 #include <Engine/Asset/tour.h>
-#include <Engine/Utils/file_watcher.h>
+
 // (gltf_import/asset_export.h rides editor_app.h — the import funnel's
 // shared header.)
 
@@ -823,29 +823,19 @@ void EditorApp::ArmProjectWatcher() {
 	m_projectWatcherEnabled = true;
 	if (const char* e = std::getenv("TOURMALINE_EDITOR_WATCH"))
 		m_projectWatcherEnabled = std::atoi(e) != 0;
-	if (!m_projectWatcherEnabled || m_projectRoot.empty()) {
-		m_projectWatcher.reset();
+	m_contentServer.reset(); // Stop old roots on project switches.
+	if (!m_projectWatcherEnabled || m_projectRoot.empty())
 		return;
-	}
-	auto watcher = std::make_unique<smvk::FileWatcher>();
-	smvk::FileWatcher::Policy policy =
-		smvk::FileWatcher::Policy::ProjectDefault();
-	// The editor's own output trees (never watch what we write):
-	// artifacts/ (the owned bake dir) + gi/ (the cooker's loose bake
-	// files) — feedback loops die here.
-	for (const char* d : { "artifacts", "gi" })
-		policy.ignoredDirNames.push_back(d);
+	auto server = std::make_unique<EditorContentServer>();
 	std::string err;
-	if (!watcher->Start(policy, err)
-			|| !watcher->AddDirectory(m_projectRoot, err)) {
-		Log("Project watcher: not armed (" + err + ") — the manual "
-			"Rescan + re-import paths stand.");
-		m_projectWatcher.reset();
+	if (!server->Start(m_projectRoot, err)) {
+		Log("Content server: not armed (" + err + ") — the manual "
+			"Rescan + re-import paths remain available.");
 		return;
 	}
-	m_projectWatcher = std::move(watcher);
-	Log("Project watcher armed (sources + .meta + .tour; generated "
-		"outputs invisible).");
+	m_contentServer = std::move(server);
+	Log("Content server armed (authoritative sources only; "
+		"generated output excluded).");
 }
 
 // Consume: drain SETTLED changes + route them through the EXISTING
@@ -874,13 +864,14 @@ void EditorApp::ArmProjectWatcher() {
 //                 contract) — reload the scene to apply it
 //   anything else -> the log
 void EditorApp::ConsumeWatchedProjectChanges() {
-	if (!m_projectWatcher || !m_projectWatcher->Running())
+	if (!m_contentServer || !m_contentServer->Running())
 		return;
-	const std::vector<smvk::FileWatcher::Change> changes =
-		m_projectWatcher->Poll(150);
-	if (changes.empty())
-		return;
-	for (const smvk::FileWatcher::Change& c : changes) {
+	const EditorContentServer::Batch batch = m_contentServer->Poll(150);
+	if (!batch.warning.empty())
+		Log("Content server: " + batch.warning);
+	if (batch.recoveredOverflow)
+		Log("Content server: recovered missed source events after overflow.");
+	for (const EditorContentServer::Change& c : batch.changes) {
 		const std::string name =
 			std::filesystem::path(c.path).filename().generic_string();
 		// A removed source keeps its rows (the registry heals on the
@@ -892,7 +883,7 @@ void EditorApp::ConsumeWatchedProjectChanges() {
 				"reconciles the registry.");
 			continue;
 		}
-		switch (ClassifyWatchedChange(std::filesystem::path(c.path))) {
+		switch (c.route) {
 		case editor::WatchRoute::Removed:
 			// Unreachable (the event check above owns removals); kept
 			// so the switch is exhaustive over the classifier.
