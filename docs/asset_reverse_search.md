@@ -1,14 +1,13 @@
 # Asset reverse search and image fabbing CLI
 
-This is a **stacked follow-up to PR #89** (`geometry_capture_atlas.py`).
-It uses that tool's `index.json` and mipmapped material-channel PNG
-atlases. It never mutates `.geometry`, `.material`, cooked paks, or asset
+This CLI consumes `geometry_capture_atlas.py`'s `index.json` and mipmapped
+material-channel PNG atlases. It never mutates `.geometry`, `.material`, cooked paks, or asset
 catalog IDs. Only Pillow is needed for local operations:
 
 ```sh
 python -m pip install pillow
 
-# 1. Bake six signed-axis material captures (from PR #89).
+# 1. Bake six signed-axis material captures.
 python tools/geometry_capture_atlas.py content/models \
     --output out/capture --face-size 128 --atlas-width 2048 --padding 8
 
@@ -52,8 +51,8 @@ OPENAI_API_KEY=... python tools/asset_reverse_search.py fab \
 
 The `index` command reads **actual per-view pixel rectangles** at the chosen
 capture mip, extracts a small spatial grid from each axis view and channel,
-and writes a standalone `search.json`. Descriptors are base64-packed RGBA8
-material-channel samples, together with geometry GUID, bounds/size,
+and writes a standalone `search.json`. Descriptors contain base64-packed coverage alpha and RGB material-channel
+samples, together with geometry GUID, bounds/size,
 material GUIDs, hash and source path. No GPU, external database or remote API
 is needed to build or search the index. The default mip is the one closest to
 32 pixels per view; `--mip N` forces a particular capture level and

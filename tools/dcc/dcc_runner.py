@@ -10,6 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+import math
 import os
 import re
 import subprocess
@@ -83,8 +84,8 @@ def run_local(job: ProcessJob) -> None:
     """
     environment = os.environ.copy()
     environment.update(validate_environment(job.environment))
-    if job.timeout_seconds <= 0:
-        raise ValueError("DCC job timeout must be positive")
+    if not math.isfinite(job.timeout_seconds) or job.timeout_seconds <= 0:
+        raise ValueError("DCC job timeout must be positive and finite")
     argv = job.command()
     print(f"[DCC] {job.name} ({job.software}, priority {job.priority})",
           flush=True)
