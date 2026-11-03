@@ -65,3 +65,8 @@ The diagnostic's UpdateTexture path recreates images every simulation tick: inte
 ## Verified upstream integration boundary
 
 The candidate upstream n64hub/super-mario-64-recomp has SDL2/RT64 graphics startup in src/main/main.cpp, game-specific recomp replacement functions in src/game/recomp_api.cpp, static RecompiledFuncs/PatchesLib libraries in CMakeLists.txt, and tools/recompile.sh for generating native game code from a user's ROM. These are not portable adapter callbacks. Its N64ModernRuntime thread scheduler, RSP/RDP execution and RT64 Vulkan ownership must be integrated separately with Tourmaline. All upstream GPL-3.0 and game-asset rights remain separate obligations.
+
+
+## Parity tracing
+
+trace.h provides a bounded FrameTrace of 30-Hz tick index, N64 pad state, RGBA FNV-1a64 hash and frame dimensions. Traces can be exported to CSV or compared to locate the first differing retained frame. It deliberately stores neither framebuffer pixels nor any ROM data. This is a diagnostic building block; matching image hashes does not by itself prove accurate audio, physics or RDP behavior.
