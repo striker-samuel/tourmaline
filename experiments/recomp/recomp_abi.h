@@ -41,6 +41,14 @@ typedef struct TourRecompHostV1 {
     void (*log)(void* user, uint32_t level, const char* message);
     void (*audio)(void* user, const TourRecompAudioV1* chunk);
     void (*rumble)(void* user, float low, float high, uint32_t duration_ms);
+    // Tourmaline content-catalog hook. asset_id is a stable Project.exe
+    // ID from a user-owned .tapp/.pak deployment. ROM bytes are NEVER
+    // requested through this hook (they are a separate boot input).
+    // Two-pass: dst=NULL/capacity=0 queries size. Return 0 if absent,
+    // on I/O error, or if the caller's destination is too small.
+    // Payloads are copied into caller-owned buffers; no loaned pointer.
+    size_t (*asset_read)(void* user, uint64_t asset_id,
+                         uint8_t* dst, size_t capacity);
 } TourRecompHostV1;
 
 typedef struct TourRecompApiV1 {
