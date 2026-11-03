@@ -49,6 +49,8 @@ void PrintUsage(const char* prog) {
 		<< "  --bench_move flies forward at constant velocity (default 4 m/s) past warmup\n"
 		<< "  --bench also pins fixed manual exposure (no auto-exposure)\n"
 		<< "  --bench also forces vsync off (uncapped immediate present; --present wins)\n"
+		<< "  --input-record <path> writes an engine input tape at exit\n"
+		<< "  --input-replay <path> replays engine input + timestep by tick\n"
 		<< "  --no-dlss keeps the Streamline interposer out of the Vulkan chain\n"
 		<< "  (RenderDoc captures crash through the SL layer + NGX cubins)\n"
 		<< "  --capture is the one-flag RenderDoc launch config: --no-dlss plus\n"
@@ -215,6 +217,18 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			opts.presentMode = a + 10;
 			opts.presentSet = true;
 		}
+		else if (std::strcmp(a, "--input-record") == 0 && i + 1 < argc) {
+			opts.inputRecordPath = argv[++i];
+		}
+		else if (std::strncmp(a, "--input-record=", 15) == 0) {
+			opts.inputRecordPath = a + 15;
+		}
+		else if (std::strcmp(a, "--input-replay") == 0 && i + 1 < argc) {
+			opts.inputReplayPath = argv[++i];
+		}
+		else if (std::strncmp(a, "--input-replay=", 15) == 0) {
+			opts.inputReplayPath = a + 15;
+		}
 		else if (std::strcmp(a, "--disable_control") == 0 || std::strcmp(a, "--disable-control") == 0) {
 			opts.disableControl = true;
 		}
@@ -245,6 +259,11 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts,
 			exitCode = EXIT_FAILURE;
 			return false;
 		}
+	}
+	if (!opts.inputRecordPath.empty() && !opts.inputReplayPath.empty()) {
+		std::cerr << "--input-record and --input-replay are mutually exclusive.\n";
+		exitCode = EXIT_FAILURE;
+		return false;
 	}
 	// The entry-point gate: --pak (one or more) OR --project (one entry
 	// point, no silent defaults). The appmanifest path is exclusive with

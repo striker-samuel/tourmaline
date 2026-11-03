@@ -81,6 +81,10 @@ struct ViewerOptions {
 	std::string presentMode; // empty = default; fifo|mailbox|immediate
 	bool presentSet = false; // --present given explicitly (wins over the --bench vsync-off force)
 	bool disableControl = false;
+	// Engine-normalized input events indexed by simulation tick.
+	// Relative paths resolve from the executable working directory.
+	std::string inputRecordPath;
+	std::string inputReplayPath;
 	bool useOptick = false;
 	bool useOptickGpu = false;
 	bool noDlss = false;

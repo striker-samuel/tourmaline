@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <cmath>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_events.h>
@@ -39,12 +40,45 @@ bool tour::App::Run() {
 		}
 	}
 	MainLoop();
+	if (m_inputTapeMode == InputTapeMode::Replay &&
+		m_inputTapeFrame != m_inputTape.Frames().size() &&
+		m_inputTapeError.empty())
+		m_inputTapeError = "replay interrupted before all recorded ticks were consumed";
+	if (m_inputTapeError.empty() && m_inputTapeMode == InputTapeMode::Record &&
+		!m_inputTape.Save(m_inputTapePath, m_inputTapeError))
+		std::cerr << "[InputTape] save failed: " << m_inputTapeError << "\n";
+	if (!m_inputTapeError.empty())
+		std::cerr << "[InputTape] " << m_inputTapeError << "\n";
+	const bool tapeOk = m_inputTapeError.empty();
 	// Ensure GPU idle and elements are released while object is
 	// still fully constructed (all members alive). This avoids destroying
 	// VkImage/Buffer-backed Holders after the device/allocator is gone.
 	Shutdown();
-	return true;
+	return tapeOk;
 };
+
+bool tour::App::ConfigureInputRecording(std::string path, std::string& error) {
+	if (path.empty() || m_inputTapeMode != InputTapeMode::Live) {
+		error = "record path missing or input mode already configured";
+		return false;
+	}
+	m_inputTape.Clear();
+	m_inputTapePath = std::move(path);
+	m_inputTapeMode = InputTapeMode::Record;
+	return true;
+}
+
+bool tour::App::ConfigureInputReplay(std::string path, std::string& error) {
+	if (path.empty() || m_inputTapeMode != InputTapeMode::Live) {
+		error = "replay path missing or input mode already configured";
+		return false;
+	}
+	if (!m_inputTape.Load(path, error))
+		return false;
+	m_inputTapePath = std::move(path);
+	m_inputTapeMode = InputTapeMode::Replay;
+	return true;
+}
 
 void tour::App::AddElement(const std::shared_ptr<engine::IAppElement>& element) {
 	if (element)
@@ -104,6 +138,14 @@ void tour::App::UpdateDeltaTime() {
 	real_delta_time_s = static_cast<double>(delta_time_s);
 	if (frameBudget_ > 0)
 		delta_time_s = 1.0f / 60.0f;
+	if (m_inputTapeMode == InputTapeMode::Replay) {
+		const auto* frame = m_inputTape.Frame(m_inputTapeFrame);
+		if (frame) {
+			delta_time_s = static_cast<float>(frame->deltaTimeNs * 1e-9);
+			m_inputTapeTimeNs += frame->deltaTimeNs;
+			time_since_start_s = static_cast<float>(m_inputTapeTimeNs * 1e-9);
+		}
+	}
 }
 
 void tour::App::SetRelativeMouseMode(bool enabled) {
@@ -120,7 +162,7 @@ void tour::App::SetRelativeMouseMode(bool enabled) {
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
 		// Let ImGui consume UI events first (hook set by ImGuiOverlay::Init).
-		if (imguiEventHook_)
+		if (imguiEventHook_ && m_inputTapeMode != InputTapeMode::Replay)
 			imguiEventHook_(&e);
 		if ((e.type == SDL_EVENT_WINDOW_RESIZED ||
 				e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) &&
@@ -130,9 +172,38 @@ void tour::App::SetRelativeMouseMode(bool enabled) {
 		// Normalize at the bridge: hosts + Input see only input::Event.
 		input::Event inputEvent;
 		if (m_sdlInput && m_sdlInput->Translate(e, inputEvent)) {
+			// Only live OS close events survive replay; suppress all
+			// physical gameplay input while the tape is authoritative.
+			if (m_inputTapeMode == InputTapeMode::Replay) {
+				if (inputEvent.type == input::EventType::Quit ||
+					inputEvent.type == input::EventType::WindowClose)
+					windowShouldClose_ = true;
+				continue;
+			}
+			if (m_inputTapeMode == InputTapeMode::Record &&
+				!m_inputTape.Record(inputEvent, m_inputTapeError)) {
+				windowShouldClose_ = true;
+				break;
+			}
 			OnInputEvent(inputEvent);
 			if (m_input.onEvent(inputEvent))
 				windowShouldClose_ = true;
+		}
+	}
+	if (m_inputTapeMode == InputTapeMode::Replay && !windowShouldClose_) {
+		const auto* frame = m_inputTape.Frame(m_inputTapeFrame);
+		if (!frame) {
+			m_inputTapeError = "replay exhausted before scheduled tick";
+			windowShouldClose_ = true;
+		} else {
+			for (const auto& event : frame->events) {
+				OnInputEvent(event);
+				if (m_input.onEvent(event)) {
+					m_inputTapeError = "replay contains an unexpected close event";
+					windowShouldClose_ = true;
+					break;
+				}
+			}
 		}
 	}
 	if (m_input.isQuitRequested())
@@ -193,6 +264,9 @@ void tour::App::MainLoop() {
 	windowShouldClose_ = false;
 	double benchPollMs = 0.0, benchGameMs = 0.0, benchDrawMs = 0.0;
 	while (!windowShouldClose_) {
+		if (m_inputTapeMode == InputTapeMode::Record &&
+			!m_inputTape.BeginFrame(m_inputTapeFrame, m_inputTapeError))
+			break;
 		SMVK_PROFILE_FRAME("MainThread");
 		auto t0 = std::chrono::steady_clock::now();
 		{
@@ -200,7 +274,19 @@ void tour::App::MainLoop() {
 			m_input.beginFrame();
 			PollEvents();
 		}
+		if (!m_inputTapeError.empty())
+			break;
+		if (windowShouldClose_ && m_inputTapeMode == InputTapeMode::Replay)
+			break;
 		UpdateDeltaTime();
+		if (m_inputTapeMode == InputTapeMode::Record) {
+			// Record the simulation timestep, not perf wall time.
+			const double ns = std::round(double(delta_time_s) * 1e9);
+			if (!std::isfinite(ns) || ns <= 0 ||
+				ns > 10'000'000'000.0 ||
+				!m_inputTape.SetDeltaTime(static_cast<uint64_t>(ns), m_inputTapeError))
+				break;
+		}
 		// Frame-arena rewind at the frame boundary: everything frame-
 		// allocated last frame is dead by definition (the frame presented;
 		// the acquire fence gates reuse). Hosts + elements rely on this —
@@ -237,6 +323,10 @@ void tour::App::MainLoop() {
 			benchGameMs += ms(t2 - t1).count();
 			benchDrawMs += ms(t3 - t2).count();
 		}
+		++m_inputTapeFrame;
+		if (m_inputTapeMode == InputTapeMode::Replay &&
+			m_inputTapeFrame >= m_inputTape.Frames().size())
+			windowShouldClose_ = true;
 		if (frameBudget_ > 0) {
 			// Benchmark accounting: skip warmup (pipeline creation hitches),
 			// then average delta_time_s (present throttle included).

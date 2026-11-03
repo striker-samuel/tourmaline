@@ -17,6 +17,7 @@
 #include <Engine/Memory/memory.h>
 
 #include "input.h"
+#include "input_tape.h"
 #include <algorithm>
 #include <cassert>
 #include <functional>
@@ -75,6 +76,10 @@ public:
 	virtual bool Run();
 	void MainLoop();
 	void UpdateDeltaTime();
+
+	// Opt-in platform-neutral input tape. Called before Run().
+	bool ConfigureInputRecording(std::string path, std::string& error);
+	bool ConfigureInputReplay(std::string path, std::string& error);
 
 	// Window helpers (SDL3).
 	SDL_Window* GetWindow() const { return window; }
@@ -182,6 +187,13 @@ protected:
 
 #pragma region ===[ SDL3 / Window State ]===
 	SDL_Window* window = nullptr;
+	enum class InputTapeMode : uint8_t { Live, Record, Replay };
+	InputTapeMode m_inputTapeMode = InputTapeMode::Live;
+	input::InputTape m_inputTape;
+	std::string m_inputTapePath;
+	std::string m_inputTapeError;
+	uint64_t m_inputTapeFrame = 0;
+	uint64_t m_inputTapeTimeNs = 0;
 	bool windowShouldClose_ = false;
 	bool relativeMouseMode_ = false;
 	int frameBudget_ = 0;   // benchmark frame budget (0 = interactive)
