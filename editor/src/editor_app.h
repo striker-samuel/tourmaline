@@ -2050,6 +2050,9 @@ private:
 	std::string m_fullPrefabParentSnapshot;
 	std::string m_fullPrefabParentTarget;
 	bool m_fullPrefabParentDirty = false;
+	std::vector<EditorCam> m_fullPrefabParentCameras;
+	std::vector<uint32_t> m_fullPrefabParentSelection;
+	uint32_t m_fullPrefabParentSelected = UINT32_MAX;
 	bool m_fullPrefabReturnRequested = false;
 	bool m_fullPrefabReturnSave = false;
 	bool m_fullPrefabDiscardConfirm = false;
