@@ -13704,6 +13704,7 @@ namespace engine {
             uint32_t first, count;
             glm::vec3 color;
             tour::DebugDepthMode depth;
+            smvk::PrimitiveTopology topology;
         };
         std::vector<DebugDrawRange> debugDrawRanges;
         uint32_t debugDrawFlight = 0;
@@ -13713,20 +13714,38 @@ namespace engine {
             m_debugDrawSource(m_debugDrawCpu);
             if (!m_debugDrawCpu.Empty()) {
                 std::vector<smvk::DebugLineVertex> vertices;
-                vertices.reserve(m_debugDrawCpu.Size() * 2);
+                vertices.reserve(m_debugDrawCpu.Size() * 2 +
+                    m_debugDrawCpu.PointCount());
                 for (const tour::DebugLine& line : m_debugDrawCpu.Lines()) {
                     // The existing shader takes a flat push color; coalesce
                     // adjacent equal-color/depth lines into a single draw.
                     if (debugDrawRanges.empty()
                         || debugDrawRanges.back().color != line.color
-                        || debugDrawRanges.back().depth != line.depth) {
+                        || debugDrawRanges.back().depth != line.depth
+                        || debugDrawRanges.back().topology != smvk::PrimitiveTopology::LineList) {
                         debugDrawRanges.push_back({
-                            uint32_t(vertices.size()), 0, line.color, line.depth
+                            uint32_t(vertices.size()), 0, line.color, line.depth,
+                            smvk::PrimitiveTopology::LineList
                         });
                     }
                     vertices.push_back({ line.a });
                     vertices.push_back({ line.b });
                     debugDrawRanges.back().count += 2;
+                }
+                // Point-list primitives use the same position-only vertex
+                // layout and shader; pipeline topology is part of its key.
+                for (const tour::DebugPoint& point : m_debugDrawCpu.Points()) {
+                    if (debugDrawRanges.empty()
+                        || debugDrawRanges.back().color != point.color
+                        || debugDrawRanges.back().depth != point.depth
+                        || debugDrawRanges.back().topology != smvk::PrimitiveTopology::PointList) {
+                        debugDrawRanges.push_back({
+                            uint32_t(vertices.size()), 0, point.color, point.depth,
+                            smvk::PrimitiveTopology::PointList
+                        });
+                    }
+                    vertices.push_back({point.position});
+                    debugDrawRanges.back().count += 1;
                 }
                 const uint32_t flights = std::max(1u, FrameFlights(fb));
                 if (m_debugDrawGpuLines.size() != flights) {
@@ -14999,7 +15018,7 @@ namespace engine {
                         noStencil, smvk::BlendSettings::Opaque(),
                         msaaSettings,
                         smvk::RasterSettings{ .cullMode = smvk::CullMode::None },
-                        smvk::PrimitiveTopology::LineList);
+                        r.topology);
                     LineDebugPush lp{};
                     std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
                     lp.color[0] = r.color.x * gain;
