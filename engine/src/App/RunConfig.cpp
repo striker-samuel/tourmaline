@@ -8,6 +8,7 @@
 #include <Engine/App/RunConfig.h>
 
 #include <cstdio>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm> // std::clamp (the giIntensity pin bound)
@@ -93,6 +94,18 @@ bool ParseVec3(const char* v, float& x, float& y, float& z) {
 RunConfig RunConfig::Parse() {
 	RunConfig c;
 	const char* v = nullptr;
+
+	// Strict unsigned-decimal seed. 0 is valid, unlike a truthy/falsey pin.
+	if ((v = Get("TOURMALINE_RNG_SEED")) != nullptr) {
+		const std::string raw = Trimmed(v);
+		uint64_t seed = 0;
+		const auto [end, error] = std::from_chars(raw.data(),
+			raw.data() + raw.size(), seed, 10);
+		if (error == std::errc{} && end == raw.data() + raw.size())
+			c.rngSeed = seed;
+		else
+			std::fprintf(stderr, "[RunConfig] bad TOURMALINE_RNG_SEED (want uint64 decimal): %s\n", v);
+	}
 
 	// Camera (WorldRenderer.cpp:530,545,556).
 	if ((v = Get("TOURMALINE_CAM_FWD")) != nullptr)
@@ -611,6 +624,8 @@ void RunConfig::Log() const {
 		if (o)
 			std::fprintf(stderr, " %s=%s", n, o->c_str());
 	};
+	if (rngSeed)
+		std::fprintf(stderr, " RNG_SEED=%llu", static_cast<unsigned long long>(*rngSeed));
 	if (aa)
 		std::fprintf(stderr, " AA=%s", aaStr(*aa));
 	if (ssr)
@@ -679,7 +694,7 @@ void RunConfig::WarnUnknown() {
 	// names that are legitimately unset at runtime, plus the dead #if 0
 	// TMP-DIAG names (warn would be noise; they stay out of Parse).
 	static const char* kKnown[] = {
-		"TOURMALINE_AA", "TOURMALINE_A2C", "TOURMALINE_TEXTURE_FILTER", "TOURMALINE_TERRAIN",
+		"TOURMALINE_RNG_SEED", "TOURMALINE_AA", "TOURMALINE_A2C", "TOURMALINE_TEXTURE_FILTER", "TOURMALINE_TERRAIN",
 		"TOURMALINE_TEXSTREAM_MIP_BIAS", "TOURMALINE_CULL_DUMP",
 		"TOURMALINE_TERRAIN_HFSHADOW", "TOURMALINE_TERRAIN_HFSHADOW_STEPS",
 		"TOURMALINE_CAM_FWD", "TOURMALINE_CAM_YAW", "TOURMALINE_CAM_POS",

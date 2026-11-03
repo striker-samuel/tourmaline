@@ -447,6 +447,12 @@ namespace app {
 		// renderer never acquires/presents on its own).
 		tour::App app;
 		try {
+			// Seed BEFORE service/game elements attach, and record the effective
+			// seed even on unpinned launches so it can be replayed later.
+			const uint64_t seed = cfg.run.rngSeed ? *cfg.run.rngSeed
+				: tour::RandomService::GenerateSeed();
+			app.Random().Reseed(seed);
+			std::cerr << "[Rng] algorithm=pcg32-xsh-rr-v1 seed=" << seed << "\n";
 			// The ELEMENT owns the control layer (input, keybinds, camera drive,
 			// UI mode, lifecycle) and wraps the pure frame renderer (see
 			// WorldRendererElement.h). Host config drives the renderer through

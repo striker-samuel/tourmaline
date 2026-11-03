@@ -65,6 +65,23 @@ int main() {
 		Check(!c.terrainPinned, "runconfig.default-terrain-unpinned");
 	}
 
+	// The gameplay seed is a strict unsigned 64-bit decimal, including zero.
+	UnsetVar("TOURMALINE_RNG_SEED");
+	Check(!engine::RunConfig::Parse().rngSeed.has_value(),
+		"runconfig.default-rng-seed-unset");
+	SetVar("TOURMALINE_RNG_SEED", "0");
+	Check(engine::RunConfig::Parse().rngSeed == 0,
+		"runconfig.rng-zero-valid");
+	SetVar("TOURMALINE_RNG_SEED", "18446744073709551615");
+	Check(engine::RunConfig::Parse().rngSeed == UINT64_MAX,
+		"runconfig.rng-max-uint64-valid");
+	for (const char* invalid : {"18446744073709551616", "-1", "12oops", ""}) {
+		SetVar("TOURMALINE_RNG_SEED", invalid);
+		Check(!engine::RunConfig::Parse().rngSeed.has_value(),
+			"runconfig.rng-invalid-rejected");
+	}
+	UnsetVar("TOURMALINE_RNG_SEED");
+
 	// Validated pin parsing (authored scene wins invalid values).
 	SetVar("TOURMALINE_AA", "msaa2x");
 	SetVar("TOURMALINE_MESH", "0");

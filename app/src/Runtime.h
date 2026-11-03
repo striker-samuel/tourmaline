@@ -97,6 +97,9 @@ public:
 	// Lazily built at first use (one per context).
 	[[nodiscard]] app::AudioGraphs& audio();
 
+	// Engine-owned, per-run gameplay random streams (seeded before onStart).
+	[[nodiscard]] tour::RandomService& random() { return m_host.Random(); }
+
 private:
 	app::ProjectRuntime& m_session;
 	tour::App& m_host;

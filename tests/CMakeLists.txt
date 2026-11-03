@@ -721,6 +721,14 @@ set_target_properties(PushConstantLayoutTests PROPERTIES
 
 add_test(NAME push_constant_tests COMMAND PushConstantLayoutTests)
 
+# CPU-only deterministic gameplay RNG contract (no Vulkan/window setup).
+add_executable(RandomTests test_random.cpp)
+target_link_libraries(RandomTests PRIVATE engine)
+set_target_properties(RandomTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME random_tests COMMAND RandomTests)
+
 # Central run-config contract (TOURMALINE_* parse/log/warn).
 add_executable(RunConfigTests test_runconfig.cpp)
 
