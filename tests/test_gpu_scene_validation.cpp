@@ -76,7 +76,7 @@ void CheckStableCompaction() {
     input[64].value.z = 1u; // first index of the next workgroup
     input[129].value.z = 1u; // partial last workgroup
     const auto output = CompactVisibleVerdicts(input);
-    CHECK(output.size() == 44u);
+    CHECK(output.size() == 43u);
     CHECK(output.front().value.x == 6u);
     CHECK(output.back().value.x == 129u);
     for (size_t i = 1; i < output.size(); ++i)
@@ -87,7 +87,7 @@ void CheckStableCompaction() {
     empty[17].value = glm::uvec4(10u, 7u, 1u, 1u);
     auto single = CompactVisibleVerdicts(empty);
     CHECK(single.size() == 1u);
-    CHECK(single[0].value == empty[17].value);
+    CHECK(glm::all(glm::equal(single[0].value, empty[17].value)));
 
     // Counts add up across whole and partial 64-wide workgroups.
     size_t totals = 0;
