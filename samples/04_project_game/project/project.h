@@ -131,18 +131,19 @@ inline constexpr std::array Paks = {
 
 // The asset KIND enum - the values are an ABI (the runtime's
 // catalog-fingerprint fold + the .tapp validation agree on
-// these bytes; do not renumber - AudioGraph is APPENDED, 6).
+// these bytes; zero is Nil, real kinds start at one).
 enum class AssetKind : std::uint8_t {
-    Scene        = 0,
-    Texture      = 1,
-    Mesh         = 2,
-    Sound        = 3,
-    Shader       = 4,
-    Gi           = 5,
-    AudioGraph   = 6,
-    SpriteSet    = 7,
-    StateMachine = 8,
-    NavMesh      = 9,
+    Nil          = 0,
+    Scene        = 1,
+    Texture      = 2,
+    Mesh         = 3,
+    Sound        = 4,
+    Shader       = 5,
+    Gi           = 6,
+    AudioGraph   = 7,
+    SpriteSet    = 8,
+    StateMachine = 9,
+    NavMesh      = 10,
 };
 
 // The FLAT TYPED CATALOG: plain compile-time POD records -
@@ -154,8 +155,8 @@ enum class AssetKind : std::uint8_t {
 // identity is cook-state, not stable identity, so it stays
 // deployment-side - the field is reserved and emitted empty.
 struct AssetDesc {
-    Id id;
-    AssetKind kind;
+    Id id = 0;
+    AssetKind kind = AssetKind::Nil;
     std::string_view path;
     std::string_view sceneName;
 };
@@ -187,7 +188,7 @@ inline constexpr std::array AssetSymbols = {
 // rows; ProjectRuntime::AttachCompiledCatalog compares them,
 // so a compiled game and its deployed content can never
 // silently disagree.
-inline constexpr std::uint64_t CatalogFingerprint = 0xd8dc713a3c7363b3ULL;
+inline constexpr std::uint64_t CatalogFingerprint = 0x284380f03692325eULL;
 
 // Compile-time lookup over the flat table (a constexpr
 // linear walk - the tables are tiny and the query is

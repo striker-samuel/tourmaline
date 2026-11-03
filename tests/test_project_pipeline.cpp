@@ -1451,6 +1451,13 @@ void TestAppManifest() {
 		// carries no package data at all (id, kind, path — identity
 		// only; the physical half cannot reach this proof).
 		// The kind-string <-> byte mapping (the ABI).
+		Check(smvk::kCatalogKindNil == 0
+			&& smvk::kCatalogKindScene == 1
+			&& smvk::kCatalogKindAudioGraph == 7
+			&& smvk::kCatalogKindNavMesh == 10
+			&& std::string(smvk::CatalogKindToString(
+				smvk::kCatalogKindNil)).empty(),
+			"tapp.fold-kind-zero-reserved");
 		{
 			uint8_t k = 0xFF;
 			Check(smvk::CatalogKindFromString("scene", k)
@@ -3246,7 +3253,7 @@ void TestProjectCatalog() {
 		// THE QUERY API BLOCK (docs/content_as_code.md): the symbol
 		// table (rows' order), the AssetCatalog carrier, the
 		// MatchAssets binding, the AssetTraits specializations, and
-		// the Gi kind lane (GiKey + the appended AssetKind::Gi = 5).
+		// the Gi kind lane (GiKey + AssetKind::Gi = 6).
 		{
 			Check(text.find("#include <Engine/Asset/asset_query.h>")
 					!= std::string::npos
@@ -3268,7 +3275,10 @@ void TestProjectCatalog() {
 				// LONGEST kind name (#57's StateMachine/NavMesh widened
 				// the column): match name + padding + value, never a
 				// single-space literal.
-				&& FindNameValue(text, "Gi", "= 5,"),
+				&& FindNameValue(text, "Nil", "= 0,")
+				&& FindNameValue(text, "Scene", "= 1,")
+				&& FindNameValue(text, "Gi", "= 6,")
+				&& FindNameValue(text, "NavMesh", "= 10,"),
 				"catalog.header-gi-kind-lane");
 		}
 	}

@@ -55,17 +55,18 @@ struct ShaderKey { Id id = 0; constexpr operator Id() const { return id; } };
 struct GiKey { Id id = 0; constexpr operator Id() const { return id; } };
 
 enum class AssetKind : std::uint8_t {
-	Scene = 0,
-	Texture = 1,
-	Mesh = 2,
-	Sound = 3,
-	Shader = 4,
-	Gi = 5,
+	Nil = 0,
+	Scene = 1,
+	Texture = 2,
+	Mesh = 3,
+	Sound = 4,
+	Shader = 5,
+	Gi = 6,
 };
 
 struct AssetDesc {
-	Id id;
-	AssetKind kind;
+	Id id = 0;
+	AssetKind kind = AssetKind::Nil;
 	std::uint32_t pakIndex;
 	std::string_view path;
 	std::string_view sceneName;
@@ -167,6 +168,9 @@ consteval auto MatchAssets() {
 // Compile-time pins (static_assert - the API's whole point).
 // ---------------------------------------------------------------------------
 namespace pq = project_pipeline::query;
+
+static_assert(project::AssetKind{} == project::AssetKind::Nil);
+static_assert(project::AssetKind{} != project::AssetKind::Scene);
 
 // Exact-size typed results.
 static_assert(project::MatchAssets<project::MeshKey, "^world_.*$">()

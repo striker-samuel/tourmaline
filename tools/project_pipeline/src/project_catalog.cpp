@@ -1071,20 +1071,21 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 	os << "};\n\n"
 		<< "// The asset KIND enum - the values are an ABI (the runtime's\n"
 		<< "// catalog-fingerprint fold + the .tapp validation agree on\n"
-		<< "// these bytes; do not renumber - AudioGraph is APPENDED, 6).\n"
+		<< "// these bytes; zero is Nil, real kinds start at one).\n"
 		<< "enum class AssetKind : std::uint8_t {\n";
 	// Enum labels are also a two-column collection: align their '='.
 	EmitAlignedRows(os, {
-		{ "Scene", "= 0," },
-		{ "Texture", "= 1," },
-		{ "Mesh", "= 2," },
-		{ "Sound", "= 3," },
-		{ "Shader", "= 4," },
-		{ "Gi", "= 5," },
-		{ "AudioGraph", "= 6," },
-		{ "SpriteSet", "= 7," },
-		{ "StateMachine", "= 8," },
-		{ "NavMesh", "= 9," }
+		{ "Nil", "= 0," },
+		{ "Scene", "= 1," },
+		{ "Texture", "= 2," },
+		{ "Mesh", "= 3," },
+		{ "Sound", "= 4," },
+		{ "Shader", "= 5," },
+		{ "Gi", "= 6," },
+		{ "AudioGraph", "= 7," },
+		{ "SpriteSet", "= 8," },
+		{ "StateMachine", "= 9," },
+		{ "NavMesh", "= 10," }
 	});
 	os << "};\n\n"
 		<< "// The FLAT TYPED CATALOG: plain compile-time POD records -\n"
@@ -1096,8 +1097,8 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "// identity is cook-state, not stable identity, so it stays\n"
 		<< "// deployment-side - the field is reserved and emitted empty.\n"
 		<< "struct AssetDesc {\n"
-		<< "    Id id;\n"
-		<< "    AssetKind kind;\n"
+		<< "    Id id = 0;\n"
+		<< "    AssetKind kind = AssetKind::Nil;\n"
 		<< "    std::string_view path;\n"
 		<< "    std::string_view sceneName;\n"
 		<< "};\n\n"

@@ -144,7 +144,7 @@ public:
 	// never part of the catalog's contract.
 	struct CompiledAssetDesc {
 		uint64_t id = 0;
-		uint8_t kind = 0;            // smvk::kCatalogKind*
+		uint8_t kind = smvk::kCatalogKindNil; // zero-invalid catalog kind
 		std::string_view path;
 		std::string_view sceneName;  // reserved (deployment-side)
 	};
