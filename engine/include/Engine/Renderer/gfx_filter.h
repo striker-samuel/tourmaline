@@ -616,6 +616,20 @@ struct UvFlatVsPushTail {
 };
 static_assert(sizeof(UvFlatVsPushTail) == 16);
 
+// DIRECT static-geometry LM metadata at bytes 224..240. This overlaps
+// the 16-byte unused padding of DepthSkinTail (208..240). The Main
+// direct draw publishes this AFTER the per-draw skin tail. A magic word
+// makes existing non-main uses of the same vertex module fail closed.
+static constexpr uint32_t kDirectLightmapPullOffset = 224;
+static constexpr uint32_t kDirectLightmapPullMagic = 0x4C4D5055u; // 'LMPU'
+struct DirectLightmapPullTail {
+    uint32_t delta = 0;
+    uint32_t lobeCount = 0xFFFFFFFFu;
+    uint32_t magic = 0;
+    uint32_t reserved = 0;
+};
+static_assert(sizeof(DirectLightmapPullTail) == 16);
+
 // One indirect command range per (material, lightmap lobe class)
 // (commands sorted by both keys): a single multi-draw per range, and
 // the Main filtered leg binds the matching lit program (the generic

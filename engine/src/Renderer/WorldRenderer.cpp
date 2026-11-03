@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cfloat>
 #include <unordered_set>
+#include <unordered_map>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -668,7 +669,8 @@ namespace engine {
 		// permutation (base/a2c/sgN/giN/std/giNstd) + the project family
 		// twins. The starts_with matches cover the whole variant matrix
 		// (the .sgN/.giN/.std/.giNstd suffixes ride the same stems).
-		if (spvPath == "content/shaders/default.vert.hlsl.spv")
+		if (spvPath == "content/shaders/default.vert.hlsl.spv"
+			|| spvPath == "content/shaders/default_lightmap.vert.hlsl.spv")
 			return true;
 		if (spvPath.starts_with("content/shaders/default_lit"))
 			return true;
@@ -812,6 +814,9 @@ namespace engine {
 		if (litSet) {
 			swapModule(m_resources.vertShader,
 				"content/shaders/default.vert.hlsl.spv", "vert");
+			swapModule(m_resources.vertLightmapShader,
+				"content/shaders/default_lightmap.vert.hlsl.spv",
+				"vertLightmap");
 			swapModule(m_resources.fragShader,
 				"content/shaders/default_lit.frag.hlsl.spv", "fragLit");
 			swapModule(m_resources.fragA2CShader,
@@ -2033,6 +2038,13 @@ namespace engine {
 		auto vertCode = smvk::shaders::Read("content/shaders/default.vert.hlsl.spv");
 		auto fragCode = smvk::shaders::Read("content/shaders/default_lit.frag.hlsl.spv");
 		m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
+		try {
+			m_resources.vertLightmapShader = m_context->CreateShaderModule(
+				smvk::shaders::Read("content/shaders/default_lightmap.vert.hlsl.spv"),
+				"vertLightmap");
+		} catch (...) {
+			std::cerr << "[WorldRenderer] optional direct lightmap VS unavailable\n";
+		}
 		m_resources.fragShader = m_context->CreateShaderModule(fragCode, "fragLit");
 
 		auto vert = smvk::Shader{
@@ -13124,6 +13136,11 @@ namespace engine {
 		if (m_viewportResources.spotShadows.Valid())
 			mainInputs.push_back(m_viewportResources.spotShadows.logicalView);
 		const auto rfTM = bench_clk::now();
+		// The GPU filter normally publishes chart xforms, but direct
+		// fallback draws must also work when no filtered slot exists.
+		// Ensure caches by scene version; this does not upload each frame.
+		if (m_world && !m_world->lmChartTable.empty())
+			m_gfxRenderer.EnsureChartXforms(*m_world, *m_context);
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(mainInputs)
@@ -13427,8 +13444,42 @@ namespace engine {
 				return prog;
 			};
 
+			// The optional direct LM variant is only considered for STATIC
+			// selected LODs with a resident packed chart stream. Fast-fail
+			// an unbaked scene without touching the GPU program cache.
+			auto directLmEligible = [&](NodeId node, uint32_t meshId) -> bool {
+				if (m_resources.vertLightmapShader.empty() || m_wireframe
+					|| !m_world || m_world->lmChartTable.empty()
+					|| m_gfxRenderer.ChartXformsAddress() == 0)
+					return false;
+				const smvk::StaticMesh* mesh = LodMeshForNode(node, meshId);
+				if (!mesh || mesh->skinned || mesh->lmChunk == UINT32_MAX
+					|| mesh->lightmapBase == UINT32_MAX
+					|| mesh->lmChartXforms.empty())
+					return false;
+				const uint32_t lod = LodIndexForNode(node, meshId);
+				if (auto loc = m_world->ResolveLodMesh(meshId, lod))
+					return loc->cluster->GetMeshHeapVertexBase(loc->handle)
+						!= UINT32_MAX;
+				return false;
+			};
+			// Opt-in VS/FS pairs are created only after a baked direct draw
+			// appears. The regular VS + PSO selection is untouched otherwise.
+			std::unordered_map<const smvk::ShaderProgram*,
+				smvk::ShaderProgram> lmDirectPrograms;
+			auto directLmProgram = [&](smvk::ShaderProgram& regular,
+				bool withLightmap) -> smvk::ShaderProgram& {
+				if (!withLightmap || regular.shaderCount != 2)
+					return regular;
+				auto [it, inserted] =
+					lmDirectPrograms.try_emplace(&regular, regular);
+				if (inserted)
+					it->second.shaders[0].module = m_resources.vertLightmapShader;
+				return it->second;
+			};
+
 			auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId,
-			uint32_t userData = 0) {
+			uint32_t userData = 0, bool withLightmap = false) {
 				auto& model = m_world->scene.globalTransform[node];
 				smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
 				if (!meshDesc)
@@ -13446,6 +13497,41 @@ namespace engine {
 				}
 				cmd.PushConstants(kDepthSkinTailOffset, sizeof(DepthSkinTail),
 					&skinTail, smvk::ShaderStage::All);
+				// The normal shader never reads these tail bytes and never
+				// pays for the two additional push-constant writes.
+				if (withLightmap && !meshDesc->skinned) {
+					smvk::gfx::UvFlatVsPushTail chartTail{};
+					smvk::gfx::DirectLightmapPullTail lmTail{};
+					const uint32_t lod = LodIndexForNode(node, meshId);
+					if (auto loc = m_world->ResolveLodMesh(meshId, lod)) {
+						const auto h = loc->handle;
+						if (const smvk::StaticMesh* lmMesh =
+							loc->cluster->staticMeshes.get(h);
+							lmMesh && !lmMesh->skinned
+							&& lmMesh->lmChunk != UINT32_MAX
+							&& lmMesh->lightmapBase != UINT32_MAX
+							&& !lmMesh->lmChartXforms.empty()
+							&& m_gfxRenderer.ChartXformsAddress() != 0) {
+							const uint32_t vertexBase =
+								loc->cluster->GetMeshHeapVertexBase(h);
+							if (vertexBase != UINT32_MAX) {
+								chartTail.hasXforms = 1u;
+								chartTail.chartOffset =
+									m_world->ChartOffsetFor(meshId, lod);
+								chartTail.lmXforms =
+									m_gfxRenderer.ChartXformsAddress();
+								lmTail.delta = lmMesh->lightmapBase - vertexBase;
+								lmTail.lobeCount = lmMesh->lmChunk;
+								lmTail.magic =
+									smvk::gfx::kDirectLightmapPullMagic;
+							}
+						}
+					}
+				cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
+					sizeof(chartTail), &chartTail, smvk::ShaderStage::All);
+				cmd.PushConstants(smvk::gfx::kDirectLightmapPullOffset,
+					sizeof(lmTail), &lmTail, smvk::ShaderStage::All);
+				}
 				// Dither-on-closeup (Scene::ditherCloseup; per frame, per
 				// draw): Hidden draws never reach here (the leg loops skip
 				// them below); Fade draws carry the per-draw flag
@@ -14094,7 +14180,9 @@ namespace engine {
 				const uint32_t materialId = item.material;
 				const bool itemProjectLit = !shadingDbg && !vertexLitLevel
 					&& MaterialUsesProjectLit(materialId);
-				smvk::ShaderProgram& prog = shadingDbg
+				const bool useDirectLm = !vertexLitLevel
+					&& directLmEligible(item.node, item.mesh);
+				smvk::ShaderProgram& baseProg = shadingDbg
 					? m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
 					: vertexLitLevel
 					? m_resources.vertexLitProgram
@@ -14103,13 +14191,17 @@ namespace engine {
 					: itemProjectLit
 					? m_resources.mainProjectProgram
 					: m_resources.mainProgram;
-				smvk::ShaderProgram& progA2c = (shadingDbg || vertexLitLevel)
+				smvk::ShaderProgram& baseA2c = (shadingDbg || vertexLitLevel)
 					? noA2CProgram
 					: (farSpec && farSpec->a2c.shaderCount == 2)
 					? farSpec->a2c
 					: itemProjectLit
 					? m_resources.mainProjectProgramA2C
 					: m_resources.mainProgramA2C;
+				smvk::ShaderProgram& prog =
+					directLmProgram(baseProg, useDirectLm);
+				smvk::ShaderProgram& progA2c =
+					directLmProgram(baseA2c, useDirectLm);
 				if (materialId != boundMaterial
 					|| (&prog != boundProgram && &progA2c != boundProgram)) {
 					smvk::ShaderProgram& bound =
@@ -14122,7 +14214,7 @@ namespace engine {
 				drawNode(item.node, item.mesh, materialId,
 					// The resolved material userdata (instance override
 					// or base default — the lit hooks' runtime input).
-					m_world->ResolvedItemUserData(item));
+					m_world->ResolvedItemUserData(item), useDirectLm);
 				}
 				);
 			}
@@ -14374,8 +14466,14 @@ namespace engine {
 						++m_lodShaderDraws;
 						continue;
 					}
+					// Ordinary transparent direct materials get exactly the
+					// same opt-in static lightmap VS as opaque direct ones.
+					// Vertex-lit and far-quality branches remain unchanged.
+					const bool useDirectLm =
+						directLmEligible(d.node, d.meshId);
 					smvk::ShaderProgram* const prog =
-						&litTransProg(d.materialId);
+						&directLmProgram(litTransProg(d.materialId),
+							useDirectLm);
 					if (d.materialId != boundMaterial || boundProgram != prog) {
 						if (ditheredTransp) {
 							// Opaque state: the shader discard did the work.
@@ -14408,7 +14506,7 @@ namespace engine {
 						// material default is the resolved value
 						// (instances bind to mesh entities, which ride
 						// the opaque paths in v1).
-						m_world->MaterialUserData(d.materialId));
+						m_world->MaterialUserData(d.materialId), useDirectLm);
 				}
 			}
 
