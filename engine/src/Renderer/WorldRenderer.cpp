@@ -17095,6 +17095,12 @@ namespace engine {
 							m_volumetricEnabled = false;
 						}
 						if (m_world && m_world->scene.environment.fogQuality == 2) {
+							// Re-declared for this block: the se/authored pair above
+							// lives inside the earlier `if (m_world)` scope, which
+							// MSVC leaks but GCC (correctly) does not - the Linux CI
+							// build failed with "'se' was not declared in this scope".
+							tour::scene::SceneEnv& se = m_world->scene.environment;
+							auto authored = [&]() { m_world->scene.envAuthored = true; };
 							static const char* const kVolNames[5] = {
 								"Low (8 steps)", "Medium (16 steps)", "High (32 steps)",
 								"Ultra (64 steps)", "Custom"
