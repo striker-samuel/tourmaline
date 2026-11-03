@@ -280,7 +280,12 @@ bool AttachCompiledCatalog(ProjectRuntime& rt,
 	std::vector<ProjectRuntime::CompiledAssetDesc> mirror;
 	mirror.reserve(assetCount);
 	for (size_t i = 0; i < assetCount; ++i)
-		mirror.push_back({ assets[i].id, assets[i].kind,
+		// The generated kind is a scoped enum (enum class AssetKind :
+		// std::uint8_t) - it does not implicitly convert to the runtime
+		// descriptor's plain uint8_t inside a braced initializer, so
+		// spell the cast.
+		mirror.push_back({ assets[i].id,
+			static_cast<uint8_t>(assets[i].kind),
 			assets[i].path, assets[i].sceneName });
 	return rt.AttachCompiledCatalog(mirror.data(), mirror.size(),
 		fingerprint, err);
