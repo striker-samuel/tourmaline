@@ -42,8 +42,8 @@ constexpr uint32_t kTerrainSize = 256;
 constexpr uint32_t kTileSize = 64;
 constexpr uint32_t kTilesPerAxis = kTerrainSize / kTileSize;
 constexpr uint32_t kSlotCount = kTilesPerAxis * kTilesPerAxis;
-constexpr uint32_t kHeightTileRes = 64;
-constexpr uint32_t kMaskTileRes = 128;
+constexpr uint32_t kDemoHeightRes = 64;
+constexpr uint32_t kDemoMaskRes = 128;
 constexpr uint32_t kSwapImagesMax = 8;
 }
 
@@ -71,7 +71,7 @@ public:
 private:
     bool Initialize() override {
         if (!Super::Initialize()) return false;
-        if (!smvk::AllocateStaticVertexFmt(*m_context)) return false;
+        smvk::AllocateStaticVertexFmt(*m_context);
         m_density = EnvBounded("GRASS_DENSITY", 16, 1, 16);
         m_distance = float(EnvBounded("GRASS_DISTANCE", 190, 32, 512));
         if (!BuildTerrain() || !BuildBladeMesh()) return false;
@@ -106,7 +106,7 @@ private:
         m_hfield.meta.originX = -float(kTerrainSize) * 0.5f;
         m_hfield.meta.originZ = -float(kTerrainSize) * 0.5f;
         m_hfield.meta.hTileSize = float(kTileSize);
-        m_hfield.meta.hRes = kHeightTileRes;
+        m_hfield.meta.hRes = kDemoHeightRes;
         m_hfield.meta.gBlock = float(kTerrainSize) / 2.0f;
         m_hfield.meta.baseY = kTerrainBaseY;
         m_hfield.meta.range = kTerrainRange;
@@ -114,18 +114,18 @@ private:
         for (uint32_t tz = 0; tz < kTilesPerAxis; ++tz) {
             for (uint32_t tx = 0; tx < kTilesPerAxis; ++tx) {
                 auto& tile = m_hfield.tiles[tz * kTilesPerAxis + tx];
-                tile.resize(kHeightTileRes * kHeightTileRes * 4);
-                for (uint32_t z = 0; z < kHeightTileRes; ++z)
-                    for (uint32_t x = 0; x < kHeightTileRes; ++x) {
-                        const float wx = float(tx * kHeightTileRes + x) - 127.5f;
-                        const float wz = float(tz * kHeightTileRes + z) - 127.5f;
+                tile.resize(kDemoHeightRes * kDemoHeightRes * 4);
+                for (uint32_t z = 0; z < kDemoHeightRes; ++z)
+                    for (uint32_t x = 0; x < kDemoHeightRes; ++x) {
+                        const float wx = float(tx * kDemoHeightRes + x) - 127.5f;
+                        const float wz = float(tz * kDemoHeightRes + z) - 127.5f;
                         const float y = 2.5f * std::sin(wx * 0.035f)
                             * std::cos(wz * 0.04f)
                             + 0.6f * std::sin((wx + wz) * 0.13f);
                         const float h01 = (y - kTerrainBaseY) / kTerrainRange;
                         uint8_t r = 0, g = 0;
                         EncodeRG16(h01, r, g);
-                        const size_t o = (size_t(z) * kHeightTileRes + x) * 4;
+                        const size_t o = (size_t(z) * kDemoHeightRes + x) * 4;
                         tile[o] = r; tile[o + 1] = g;
                         tile[o + 2] = 0; tile[o + 3] = 255;
                     }
@@ -136,7 +136,7 @@ private:
         m_maskTiles.resize(4);
         for (uint32_t tile = 0; tile < 4; ++tile) {
             auto& px = m_maskTiles[tile];
-            px.resize(kMaskTileRes * kMaskTileRes * 4);
+            px.resize(kDemoMaskRes * kDemoMaskRes * 4);
             for (size_t i = 0; i < px.size(); i += 4) {
                 px[i] = 255;
                 px[i + 1] = 0;
@@ -145,7 +145,7 @@ private:
             }
         }
         m_maskGrid = tour::placement::WorldMaskGrid{
-            &m_maskTiles, 2u, kMaskTileRes };
+            &m_maskTiles, 2u, kDemoMaskRes };
         if (!m_hfield.valid() || !m_maskGrid.Valid()) return false;
 
         m_layer.programId = 0x4752415353ull; // "GRASS"
