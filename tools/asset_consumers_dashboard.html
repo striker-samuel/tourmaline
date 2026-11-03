@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tourmaline | Asset Consumers</title>
+<style>
+:root{color-scheme:dark;font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:#111722;color:#e7edf7}
+*{box-sizing:border-box}
+body{max-width:1100px;margin:0 auto;padding:28px 22px}
+header{display:flex;gap:20px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
+h1{font-size:28px;font-weight:640;margin:0} h2{font-size:19px;margin:14px 0}
+p{color:#9eacc0;margin:7px 0}
+aside{background:#192333;border:1px solid #30425a;border-radius:12px;padding:16px;margin:22px 0}
+form{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+label{display:flex;gap:6px;flex-direction:column;font-size:13px;color:#b8c4d5}
+input{background:#101826;border:1px solid #44546a;padding:10px;border-radius:8px;color:white;min-width:210px;font:inherit}
+button{background:#3a6bc3;border:0;border-radius:8px;color:white;padding:11px 17px;cursor:pointer;font:inherit}
+button.secondary{background:#2b384c}
+.small{font-size:12px}
+#status{color:#bac9db}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{border:1px solid #36445c;border-radius:11px;padding:14px;background:#172031;overflow-wrap:anywhere}
+.chip{display:inline-block;border:1px solid #45628b;border-radius:30px;padding:2px 8px;font-size:12px;color:#c9dcf4}
+time{color:#aebacd;font-size:12px}
+.muted{color:#a1b0c6}
+code{font-size:12px;color:#b9c9e7}
+#summary{margin:15px 0}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:12px}
+th{text-align:left;font-weight:600;color:#b5c2d7}
+td,th{padding:11px 9px;border-bottom:1px solid #2b394c}
+td:last-child{white-space:nowrap}
+a{color:#8fbafe}
+.error{color:#ffaca7}
+</style>
+</head>
+<body>
+<header>
+<div><h1>Tourmaline Asset Consumers</h1>
+<p>Read-presence for shared source versions and published representations</p></div>
+<a href="/">Asset repository</a>
+</header>
+<aside>
+<strong>Advisory visibility only</strong>
+<p>This dashboard shows clients that voluntarily announce selected asset versions. It does not inspect raw SMB file handles, prevent writes, enforce locks, or prove files are currently held open. Sessions disappear when heartbeats expire.</p>
+<form id="login" autocomplete="off">
+<label>Repository access token<input id="token" type="password" required autocomplete="off" placeholder="Paste NAS token"></label>
+<button type="submit">Connect</button>
+<button type="button" class="secondary" id="clear">Disconnect</button>
+</form>
+<div id="status" role="status">Enter the repository token to view active readers.</div>
+</aside>
+<div class="grid" id="summary"></div>
+<section>
+<h2>Who is reading what?</h2>
+<label>Filter by consumer, source path or representation
+<input id="filter" type="search" placeholder="e.g. hero.ma, mesh, maya" style="width:100%">
+</label>
+<div class="table-wrap"><table>
+<thead><tr><th>Resource</th><th>Version</th><th>Consumer</th><th>Kind</th><th>Last heartbeat</th><th>Expiry</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Not connected.</td></tr></tbody>
+</table></div>
+</section>
+<script>
+(function(){
+"use strict";
+var token="", sessions=[], refreshing=false, ttl=90;
+var input=document.getElementById("token");
+var status=document.getElementById("status");
+var rows=document.getElementById("rows");
+var summary=document.getElementById("summary");
+var filter=document.getElementById("filter");
+function cell(parent,text,tag){
+ var el=document.createElement(tag||"td");
+ el.textContent=String(text==null?"":text);
+ parent.appendChild(el); return el;
+}
+function stamp(epoch){
+ return new Date(epoch*1000).toLocaleTimeString();
+}
+function render(){
+ rows.replaceChildren();summary.replaceChildren();
+ var count=0,unique=new Set(),q=filter.value.toLowerCase();
+ sessions.forEach(function(session){
+ (session.reads||[]).forEach(function(asset){
+  var name=asset.path||asset.id;
+  var desc=asset.kind==="product"?"published "+(asset.representation||"product")+
+    (asset.variant?" / "+asset.variant:""):"working source";
+  var text=(name+" "+desc+" "+session.label+" "+session.kind).toLowerCase();
+  if(q&&!text.includes(q))return;
+  var tr=document.createElement("tr");
+  cell(tr,name+" ("+desc+")");
+  cell(tr,"v"+asset.version);
+  cell(tr,session.label);
+  cell(tr,session.kind);
+  cell(tr,stamp(session.last_seen));
+  cell(tr,stamp(session.expires_at));
+  rows.appendChild(tr);count++;
+  unique.add(asset.kind+":"+asset.id);
+ });
+ });
+ if(!count){var tr=document.createElement("tr");var td=cell(tr,
+  token?"No active reads match this filter.":"Not connected.");td.colSpan=6;td.className="muted";rows.appendChild(tr);}
+ [["Active consumers",sessions.length],["Visible reads",count],["Resources",unique.size],
+  ["Heartbeat expiry",ttl+" seconds"]].forEach(function(pair){
+  var card=document.createElement("div");card.className="card";
+  cell(card,pair[0],"p");var headline=cell(card,pair[1],"h2");headline.style.margin="0";
+  summary.appendChild(card);
+ });
+}
+async function update(){
+ if(!token||refreshing)return;
+ refreshing=true;
+ try{
+  var response=await fetch("/v2/consumers",{headers:{"Authorization":"Bearer "+token},
+                                            cache:"no-store"});
+  if(!response.ok)throw Error("HTTP "+response.status+(response.status===401?" — invalid token":""));
+  var data=await response.json();sessions=data.consumers||[];ttl=data.ttl_seconds||90;
+  status.className="";
+  status.textContent="Connected. Last updated "+new Date().toLocaleTimeString()+
+    ". Refreshing every 10 seconds.";
+  render();
+ }catch(error){status.className="error";status.textContent="Cannot load consumers: "+error.message;}
+ finally{refreshing=false;}
+}
+document.getElementById("login").addEventListener("submit",function(e){
+ e.preventDefault();token=input.value;input.value="";update();
+});
+document.getElementById("clear").addEventListener("click",function(){
+ token="";sessions=[];status.textContent="Disconnected. Enter a token to reconnect.";render();
+});
+filter.addEventListener("input",render);
+setInterval(update,10000);
+render();
+})();
+</script>
+</body>
+</html>

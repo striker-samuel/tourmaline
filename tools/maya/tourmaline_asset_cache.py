@@ -7,6 +7,7 @@ Requires only Python's standard library, including inside Autodesk Maya.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import atexit
 import hashlib
 from http.client import HTTPConnection, HTTPSConnection
 import json
@@ -15,7 +16,9 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import tempfile
+import threading
 import time
+import uuid
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
@@ -51,7 +54,8 @@ def default_cache():
 
 
 class AssetClient:
-    def __init__(self, url, token, cache=None, max_bytes=20 * 1024**3):
+    def __init__(self, url, token, cache=None, max_bytes=20 * 1024**3,
+                 consumer_kind="tool", consumer_label="AssetClient"):
         value = url.rstrip("/")
         parts = urlsplit(value)
         if (parts.scheme not in ("http", "https") or not parts.hostname
@@ -69,6 +73,13 @@ class AssetClient:
         self.cache.mkdir(parents=True, exist_ok=True)
         (self.cache / "blobs").mkdir(exist_ok=True)
         self.max_bytes = int(max_bytes)
+        self.consumer_kind = consumer_kind
+        self.consumer_label = consumer_label[:80]
+        self.session_id = str(uuid.uuid4())
+        self._reads = set()
+        self._read_lock = threading.Lock()
+        self._presence_stop = threading.Event()
+        self._presence_thread = None
         self.db_path = self.cache / "local_cache.sqlite3"
         with self.connect() as db:
             db.executescript("""
@@ -102,6 +113,85 @@ class AssetClient:
     def get(self, endpoint, **params):
         with urlopen(self.request(endpoint, params), timeout=30) as fd:
             return json.load(fd)
+
+    def _post(self, endpoint, payload):
+        request = self.request(endpoint)
+        request.method = "POST"
+        request.add_header("Content-Type", "application/json")
+        request.data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        with urlopen(request, timeout=8) as fd:
+            return json.load(fd)
+
+    def consumers(self, resource_kind=None, resource_id=None):
+        """Observed current readers; advisory data, NEVER lock state."""
+        params = {}
+        if resource_kind:
+            params["resource_kind"] = resource_kind
+        if resource_id:
+            params["resource_id"] = resource_id
+        return self.get("/v2/consumers", **params)
+
+    def _announce(self):
+        with self._read_lock:
+            readings = [{"kind": kind, "id": ident, "version": version}
+                        for kind, ident, version in sorted(self._reads)]
+        return self._post("/v2/consumers/heartbeat",
+                          {"session_id": self.session_id,
+                           "kind": self.consumer_kind,
+                           "label": self.consumer_label,
+                           "reads": readings})
+
+    def _presence_loop(self):
+        while not self._presence_stop.wait(30):
+            try:
+                self._announce()
+            except (OSError, ValueError, RuntimeError):
+                # Reporting must never stop Maya from reading cached assets.
+                # The server expires stale sessions if heartbeats cannot reach it.
+                pass
+
+    def track_read(self, kind, ident, version):
+        """Report an actual selection and refresh while this client runs.
+
+        Does not change the source share, impose locks, or grant permissions.
+        The client can later clear this set when objects are unloaded.
+        """
+        if kind not in ("source", "product") or type(version) is not int or version < 1:
+            raise ValueError("read tracking requires kind, UUID and positive version")
+        with self._read_lock:
+            self._reads.add((kind, ident, version))
+            if len(self._reads) > 256:
+                # Server accepts a bounded snapshot; fail closed on bookkeeping,
+                # not on asset availability.
+                self._reads.discard((kind, ident, version))
+                return
+        if self._presence_thread is None:
+            self._presence_thread = threading.Thread(
+                target=self._presence_loop, name="TourmalineReadPresence", daemon=True)
+            self._presence_thread.start()
+            atexit.register(self.close)
+        try:
+            self._announce()
+        except (OSError, ValueError, RuntimeError):
+            pass
+
+    def clear_reads(self):
+        with self._read_lock:
+            self._reads.clear()
+        if self._presence_thread is not None:
+            try:
+                self._announce()
+            except (OSError, ValueError, RuntimeError):
+                pass
+
+    def close(self):
+        """Explicitly release advertised presence; never needed for read access."""
+        self._presence_stop.set()
+        if self._presence_thread is not None:
+            try:
+                self._post("/v2/consumers/release", {"session_id": self.session_id})
+            except (OSError, ValueError, RuntimeError):
+                pass
 
     def sources(self):
         return self.get("/v2/sources")["sources"]
@@ -185,6 +275,7 @@ class AssetClient:
         entry = self.get("/v2/resolve", **args)
         entry["local_path"] = self.fetch(
             entry["sha256"], entry["source_path"], entry["size"], pin=pin)
+        self.track_read("source", source_asset_id, int(entry["revision"]))
         return entry
 
     def resolve_path(self, path, revision=None, pin=True):
@@ -252,4 +343,5 @@ class AssetClient:
             raise FileNotFoundError("published product version is missing")
         item["local_path"] = self.fetch(
             item["artifact_sha256"], item["filename"], item["size"], pin=pin)
+        self.track_read("product", product_id, int(item["version"]))
         return item
