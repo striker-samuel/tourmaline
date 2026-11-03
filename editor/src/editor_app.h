@@ -1292,6 +1292,11 @@ private:
 	// spacing / fades via undoable SetGiVolumeAttr; shape via the transform).
 	void DrawGiVolumeSection(uint32_t node);
 	void DrawTriggerVolumeSection(uint32_t node);
+	void DrawPhysicsBodySection(uint32_t node);
+	bool ReadNodePhysicsBodyAttr(uint32_t node, const std::string& attr,
+		double& number, bool& flag) const;
+	bool WriteNodePhysicsBodyAttr(uint32_t node, const std::string& attr,
+		double number, bool flag);
 	bool ReadNodeTriggerVolumeAttr(uint32_t node, const std::string& attr,
 		double& num, bool& flag, std::string& text) const;
 	bool WriteNodeTriggerVolumeAttr(uint32_t node, const std::string& attr,

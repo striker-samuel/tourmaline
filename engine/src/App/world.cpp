@@ -1415,6 +1415,9 @@ using namespace ::smvk;
 			for (const tour::scene::AudioRoomRow& row : cs.tables.audioRooms)
 				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
 					tour::scene::SetAudioRoom(scene, nodeMap[row.node], row.room);
+			for (const tour::scene::PhysicsBodyRow& row : cs.tables.physicsBodies)
+				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
+					tour::scene::SetPhysicsBody(scene, nodeMap[row.node], row.body);
 			for (const tour::scene::TriggerVolumeRow& row : cs.tables.triggerVolumes)
 				if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
 					tour::scene::SetTriggerVolume(scene, nodeMap[row.node], row.trigger);

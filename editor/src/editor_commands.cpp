@@ -441,6 +441,35 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 			ExecUncreateGiVolume(c);
 		break;
 	}
+	case EditVerb::AttachPhysicsBody: {
+		if (forward) {
+			if (const auto* row = tour::scene::FindPhysicsBody(scene, c.node)) {
+				c.beforePhysicsBody = true;
+				c.beforePhysics = row->body;
+			} else c.beforePhysicsBody = false;
+			tour::scene::SetPhysicsBody(scene, c.node, tour::scene::ScenePhysicsBody{});
+		} else if (c.beforePhysicsBody)
+			tour::scene::SetPhysicsBody(scene, c.node, c.beforePhysics);
+		else
+			tour::scene::RemovePhysicsBody(scene, c.node);
+		break;
+	}
+	case EditVerb::RemovePhysicsBodyVerb: {
+		if (forward) {
+			if (const auto* row = tour::scene::FindPhysicsBody(scene, c.node)) {
+				c.beforePhysicsBody = true;
+				c.beforePhysics = row->body;
+				tour::scene::RemovePhysicsBody(scene, c.node);
+			} else c.beforePhysicsBody = false;
+		} else if (c.beforePhysicsBody)
+			tour::scene::SetPhysicsBody(scene, c.node, c.beforePhysics);
+		break;
+	}
+	case EditVerb::SetPhysicsBodyAttr:
+		WriteNodePhysicsBodyAttr(c.node, c.physicsAttr,
+			forward ? c.number : c.beforeNum,
+			forward ? c.afterFlag : c.beforeFlag);
+		break;
 	case EditVerb::AttachTriggerVolume: {
 		if (forward) {
 			c.beforeTriggerVolume = false;
@@ -466,6 +495,20 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 		} else if (c.beforeTriggerVolume)
 			tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
 		break;
+	}
+	case EditVerb::SetPhysicsBodyAttr: {
+		if (const int t = app.CreatedTransformIndex(c.node); t >= 0)
+			out.node = smvk::tour::kCreateTransformRefBase | uint32_t(t);
+		else if (const int g = app.CreatedGiVolumeIndex(c.node); g >= 0)
+			out.node = smvk::tour::kCreateGiVolumeRefBase | uint32_t(g);
+		else if (const int a = app.CreatedAudioRoomIndex(c.node); a >= 0)
+			out.node = smvk::tour::kCreateAudioRoomRefBase | uint32_t(a);
+		else if (!needNode()) return false;
+		out.verb = smvk::tour::Verb::SetPhysicsBodyAttr;
+		out.text = c.physicsAttr;
+		out.number = c.number;
+		out.flag = c.afterFlag;
+		return true;
 	}
 	case EditVerb::SetTriggerVolumeAttr: {
 		if (forward)
@@ -2336,6 +2379,10 @@ void EditorApp::ExecDelete(EditCmd& c) {
 			c.beforeAudioRoom = true;
 			c.beforeRoom = aroom->room;
 		}
+		if (const auto* physics = tour::scene::FindPhysicsBody(scene, n)) {
+			c.beforePhysicsBody = true;
+			c.beforePhysics = physics->body;
+		}
 		if (const auto* trigger = tour::scene::FindTriggerVolume(scene, n)) {
 			c.beforeTriggerVolume = true;
 			c.beforeTrigger = trigger->trigger;
@@ -2369,6 +2416,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 		RemoveAudioSource(scene, id);
 		tour::scene::RemoveAudioRoom(scene, id);
 		tour::scene::RemoveTriggerVolume(scene, id);
+		tour::scene::RemovePhysicsBody(scene, id);
 		m_deletedNodes.insert(id);
 		for (size_t i = m_world->drawItems.size(); i-- > 0;)
 			if (m_world->drawItems[i].node == id) {
@@ -2432,6 +2480,8 @@ void EditorApp::ExecUndelete(EditCmd& c) {
 		tour::scene::SetAudioRoom(scene, n, c.beforeRoom);
 	if (c.beforeTriggerVolume)
 		tour::scene::SetTriggerVolume(scene, n, c.beforeTrigger);
+	if (c.beforePhysicsBody)
+		tour::scene::SetPhysicsBody(scene, n, c.beforePhysics);
 	std::vector<size_t> order;
 	for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
 		order.push_back(k);
@@ -2942,6 +2992,49 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node, const std::string& attr,
 	} else {
 		return false;
 	}
+	return true;
+}
+
+bool EditorApp::ReadNodePhysicsBodyAttr(uint32_t node,
+		const std::string& attr, double& number, bool& flag) const {
+	number = 0;
+	flag = false;
+	if (!m_world) return false;
+	const auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
+	if (!row) return false;
+	const auto& b = row->body;
+	if (attr == "motion") number = b.motion;
+	else if (attr == "shape") number = b.shape;
+	else if (attr == "mass") number = b.mass;
+	else if (attr == "friction") number = b.friction;
+	else if (attr == "restitution") number = b.restitution;
+	else if (attr == "halfX") number = b.halfExtents.x;
+	else if (attr == "halfY") number = b.halfExtents.y;
+	else if (attr == "halfZ") number = b.halfExtents.z;
+	else if (attr == "radius") number = b.radius;
+	else if (attr == "height") number = b.height;
+	else if (attr == "sensor") flag = b.sensor;
+	else return false;
+	return true;
+}
+bool EditorApp::WriteNodePhysicsBodyAttr(uint32_t node,
+		const std::string& attr, double number, bool flag) {
+	if (!m_world) return false;
+	auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
+	if (!row || !std::isfinite(number)) return false;
+	auto& b = row->body;
+	if (attr == "motion") b.motion = uint32_t(std::clamp(number, 0.0, 2.0));
+	else if (attr == "shape") b.shape = uint32_t(std::clamp(number, 0.0, 2.0));
+	else if (attr == "mass") b.mass = float(std::max(0.001, number));
+	else if (attr == "friction") b.friction = float(std::clamp(number, 0.0, 1.0));
+	else if (attr == "restitution") b.restitution = float(std::clamp(number, 0.0, 1.0));
+	else if (attr == "halfX") b.halfExtents.x = float(std::max(0.001, number));
+	else if (attr == "halfY") b.halfExtents.y = float(std::max(0.001, number));
+	else if (attr == "halfZ") b.halfExtents.z = float(std::max(0.001, number));
+	else if (attr == "radius") b.radius = float(std::max(0.001, number));
+	else if (attr == "height") b.height = float(std::max(0.001, number));
+	else if (attr == "sensor") b.sensor = flag;
+	else return false;
 	return true;
 }
 
@@ -4682,6 +4775,8 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		out.name = c.afterText; // tag string
 		return true;
 	}
+	case EditVerb::AttachPhysicsBody:
+	case EditVerb::RemovePhysicsBodyVerb:
 	case EditVerb::AttachTriggerVolume:
 	case EditVerb::RemoveTriggerVolumeVerb:
 	case EditVerb::AttachGiVolume:
@@ -4691,7 +4786,11 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c,
 		// The association verbs: the target may be a created room, a
 		// created GIVOLUME (a room hung on a GI volume — the -owner
 		// givolume addressing) or a cluster-backed node.
-		out.verb = c.verb == EditVerb::AttachTriggerVolume
+		out.verb = c.verb == EditVerb::AttachPhysicsBody
+			? smvk::tour::Verb::AttachPhysicsBody
+			: c.verb == EditVerb::RemovePhysicsBodyVerb
+			? smvk::tour::Verb::RemovePhysicsBody
+			: c.verb == EditVerb::AttachTriggerVolume
 			? smvk::tour::Verb::AttachTriggerVolume
 			: c.verb == EditVerb::RemoveTriggerVolumeVerb
 			? smvk::tour::Verb::RemoveTriggerVolume
@@ -6222,6 +6321,33 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		}
 		return true;
 	}
+	case smvk::tour::Verb::SetPhysicsBodyAttr: {
+		uint32_t target = UINT32_MAX;
+		const uint32_t family = tc.node & smvk::tour::kCreateRefFamilyMask;
+		if (family == smvk::tour::kCreateTransformRefBase
+			|| family == smvk::tour::kCreateGiVolumeRefBase
+			|| family == smvk::tour::kCreateAudioRoomRefBase) {
+			const auto& nodes = family == smvk::tour::kCreateTransformRefBase
+				? app.m_tourCreatedTransformNodes
+				: family == smvk::tour::kCreateGiVolumeRefBase
+				? app.m_tourCreatedGiVolumeNodes
+				: app.m_tourCreatedAudioRoomNodes;
+			const uint32_t k = tc.node & ~family;
+			if (k >= nodes.size()) return false;
+			target = nodes[k];
+		} else target = app.ClusterToWorld(tc.node);
+		if (target == UINT32_MAX
+			|| !tour::scene::FindPhysicsBody(app.m_world->scene, target))
+			return false;
+		out.verb = EditVerb::SetPhysicsBodyAttr;
+		out.node = target;
+		out.physicsAttr = tc.text;
+		if (!app.ReadNodePhysicsBodyAttr(target, tc.text, out.beforeNum,
+				out.beforeFlag)) return false;
+		out.number = tc.number;
+		out.afterFlag = tc.flag;
+		return true;
+	}
 	case smvk::tour::Verb::SetTriggerVolumeAttr: {
 		uint32_t target = UINT32_MAX;
 		const uint32_t family = tc.node & smvk::tour::kCreateRefFamilyMask;
@@ -6249,6 +6375,8 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		out.afterText = tc.name;
 		return true;
 	}
+	case smvk::tour::Verb::AttachPhysicsBody:
+	case smvk::tour::Verb::RemovePhysicsBody:
 	case smvk::tour::Verb::AttachTriggerVolume:
 	case smvk::tour::Verb::RemoveTriggerVolume:
 	case smvk::tour::Verb::AttachGiVolume:
@@ -6285,7 +6413,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
 		if (target == UINT32_MAX
 			|| target >= app.m_world->scene.hierarchy.size())
 			return false;
-		out.verb = tc.verb == smvk::tour::Verb::AttachTriggerVolume
+		out.verb = tc.verb == smvk::tour::Verb::AttachPhysicsBody
+			? EditVerb::AttachPhysicsBody
+			: tc.verb == smvk::tour::Verb::RemovePhysicsBody
+			? EditVerb::RemovePhysicsBodyVerb
+			: tc.verb == smvk::tour::Verb::AttachTriggerVolume
 			? EditVerb::AttachTriggerVolume
 			: tc.verb == smvk::tour::Verb::RemoveTriggerVolume
 			? EditVerb::RemoveTriggerVolumeVerb

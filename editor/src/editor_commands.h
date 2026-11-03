@@ -96,6 +96,9 @@ enum class EditVerb : uint8_t {
   	AttachTriggerVolume, // attach a trigger to the selected volume
   RemoveTriggerVolumeVerb, // detach trigger, retain volume
   SetTriggerVolumeAttr, // enabled, once or tag
+  AttachPhysicsBody,
+  RemovePhysicsBodyVerb,
+  SetPhysicsBodyAttr,
   AttachGiVolume, // add a default GI component to a transform
   RemoveGiVolumeVerb, // detach GI, retain node and any other components
   SetGiVolumeAttr, // GI volume property edit; c.node = GI volume node
@@ -246,6 +249,9 @@ struct EditCmd {
 	// beforeText.
 	std::string giVolumeAttr;
 	std::string triggerVolumeAttr;
+	std::string physicsAttr;
+	bool beforePhysicsBody = false;
+	tour::scene::ScenePhysicsBody beforePhysics{};
 	bool beforeTriggerVolume = false;
 	tour::scene::SceneTriggerVolume beforeTrigger{};
 	bool beforeGiVolume = false;

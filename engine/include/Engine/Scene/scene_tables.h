@@ -149,6 +149,12 @@ struct AudioRoomRow {
 	SceneAudioRoom room{};
 };
 
+// Node -> authored rigid-body and collider settings.
+struct PhysicsBodyRow {
+	NodeId node = 0;
+	ScenePhysicsBody body{};
+};
+
 // Node -> optional spatial trigger component.
 struct TriggerVolumeRow {
 	NodeId node = 0;
@@ -202,6 +208,7 @@ struct SceneTables {
 	std::vector<AudioSourceRow> audioSources;
 	std::vector<AudioRoomRow> audioRooms;
 	std::vector<TriggerVolumeRow> triggerVolumes;
+	std::vector<PhysicsBodyRow> physicsBodies;
 	std::vector<SchemaAssocRow> schemaAssocs;
 	// Rigid bodies + colliders arrive at Epoch 10.
 };
@@ -227,7 +234,7 @@ struct NodeRows {
 	RowId audioRoom = InvalidRow;
 	RowId triggerVolume = InvalidRow;
 	RowId schemaAssoc = InvalidRow;
-	RowId body = InvalidRow;
+	RowId body = InvalidRow; // physics body association
 };
 
 // Dense per-node IDENTITY metadata (Epoch 5: replaced nameForNode +
@@ -276,6 +283,8 @@ const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node);
 AudioSourceRow* FindAudioSource(Scene& scene, NodeId node);
 const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node);
 AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node);
+PhysicsBodyRow* FindPhysicsBody(Scene& scene, NodeId node);
+const PhysicsBodyRow* FindPhysicsBody(const Scene& scene, NodeId node);
 TriggerVolumeRow* FindTriggerVolume(Scene& scene, NodeId node);
 const TriggerVolumeRow* FindTriggerVolume(const Scene& scene, NodeId node);
 const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node);
@@ -299,6 +308,7 @@ bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
 bool SetAudioSource(Scene& scene, NodeId node,
 	const SceneAudioSource& source);
 bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room);
+bool SetPhysicsBody(Scene& scene, NodeId node, const ScenePhysicsBody& body);
 bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigger);
 // The schema association (node_schema.h): the cooked value block is
 // stored verbatim — the schema id names the layout (the pak's
@@ -320,6 +330,7 @@ bool RemoveEnv(Scene& scene, NodeId node);
 bool RemoveEnvVolume(Scene& scene, NodeId node);
 bool RemoveAudioSource(Scene& scene, NodeId node);
 bool RemoveAudioRoom(Scene& scene, NodeId node);
+bool RemovePhysicsBody(Scene& scene, NodeId node);
 bool RemoveTriggerVolume(Scene& scene, NodeId node);
 bool RemoveSchemaAssoc(Scene& scene, NodeId node);
 
