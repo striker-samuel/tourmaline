@@ -1299,6 +1299,8 @@ struct AppResources {
 	// read by the lit FS only.
 	smvk::Holder<smvk::BufferHandle> dsVizParamsBuffer;
 	smvk::Holder<smvk::ShaderModuleHandle> vertShader;
+	// Only static baked direct draws bind this optional VS module.
+	smvk::Holder<smvk::ShaderModuleHandle> vertLightmapShader;
 	smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
 	smvk::ShaderProgram mainProgram;
 	// Alpha-to-coverage lit FS (default_lit_a2c): same VS, coverage-from-

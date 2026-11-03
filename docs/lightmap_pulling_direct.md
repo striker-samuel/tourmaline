@@ -1,47 +1,49 @@
-# Direct/fallback lightmap pulling — static geometry only
+# Direct lightmap vertex pulling is opt-in
 
-Stacked on the indexed runtime PR; this does not expand the material,
-vertex-input or SG PSO families.
+## Ordinary nonlightmapped direct draws
 
-## Direct draw implementation
+The original `default.vert.hlsl` compiles with the constant
+no-lightmap sentinel. There is no chart-buffer binding, fetch,
+decode or runtime branch in the *normal direct vertex shader*.
+The direct draw path does not push extra chart metadata for those
+draws. Skinned meshes never choose the lightmap variant.
 
-The DefaultLit direct VS reads the same Vulkan set-0, binding-7 optional
-chart heap as the GPU-driven indexed VS. The selected LOD's mesh publishes:
+## Baked static direct draws
 
-- UvFlatVsPushTail at bytes 192..208: chart transform base + BDA.
-- DirectLightmapPullTail at bytes 224..240: independent heap delta,
-  cooked SG count and opt-in magic.
-- DepthSkinTail is pushed first at 208..240; the second tail replaces
-  **only its padding**, never the skinned/deformed input words.
+Only a resident static selected LOD with baked SG charts opts into
+`default_lightmap.vert.hlsl` (which defines DIRECT_LIGHTMAP_PASS
+and includes the same base direct vertex shader). The renderer
+pairs that vertex module with the existing fragment shader,
+including normal opaque/ProjectLit/A2C and ordinary transparent
+lit families; material shading behavior is otherwise unchanged.
 
-Both direct tails are pushed for **every** draw to prevent stale state.
-The vertex shader verifies the magic and stream/lobe presence before
-loading. It also refuses lightmaps when the draw is skinned, even if
-the tail is accidentally nonzero.
+- Byte 192..208: chart transform pointer/base (per selected LOD).
+- Byte 224..240: optional stream offset/lobe class/magic; overlaps
+  only DepthSkinTail's padding and is pushed after it.
+- The variant cache is empty until an eligible baked direct draw.
+- Far vertex-lit and special quality transparent routes remain on
+  their existing shader programs, without baked lightmaps.
+- Wireframe deliberately uses the ordinary direct vertex stage.
 
-This keeps lightmaps strictly static. Animated geometry always uses
-regular GI sources.
+## Performance considerations
 
-## Direct-only culling fallback
+Ordinary unbaked direct geometry incurs no extra GPU vertex
+instructions, no optional attribute memory traffic, no new
+push commands and no lightmap-specific PSO selection.
 
-EnsureChartXforms is run before Main even if the GPU-driven filter did
-not create a slot. It caches the GPU table by world chart-version.
+There remains a cheap CPU eligibility check per direct draw and a
+separate shader module to load; baked direct draws pay for their
+own vertex fetches, push commands and additional PSO variants.
 
-## Not included
-
-- DX12 optional lightmap storage SRV support; DXIL retains no-lightmap
-  behavior until that platform binding is implemented.
-- Full position/shading vertex pulling, material-family changes, cooked
-  asset migrations or changes to GPU-skinned geometry.
+The global 64MiB optional lightmap heap/binding is introduced
+by upstream PR #52, irrespective of this change.
 
 ## Validation required
 
-The branch is unverified without DXC and a Vulkan GPU. Build and run:
-
-1. Direct-render fallback and all existing Main non-filterable meshes.
-2. Dynamic skinned + baked static objects interleaved by material.
-3. A selected LOD with an independently allocated chart stream.
-4. GPU-driven indexed VS vs direct VS UV1 and irradiance parity.
-5. Scene change/reload, chart atlas off, and absent chart data.
-6. Vulkan validation with MSAA, transparent and ProjectLit materials.
-7. Confirm bytes 224..240 are correctly owned through shader reload.
+Not compiled or GPU tested by the assistant. Before merge:
+- Compare ordinary direct SPIR-V against master: no chart reads.
+- Ensure wrapper compiles under DXC with matching VS outputs.
+- Test mixed baked static / skinned scenes with equal materials.
+- Test F10 UV1, A2C, ProjectLit, transparent, LODs, shader reload.
+- Test negative delta, atlas scene reload, missing shader module.
+- Benchmark nonlightmapped scenes for unchanged GPU main-pass time.
