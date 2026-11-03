@@ -31,7 +31,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID,
     GroupMemoryBarrierWithGroupSync();
     [unroll]
     for (uint stride = 1u; stride < 64u; stride *= 2u) {
-        const uint prior = lane.x >= stride ? prefix[lane.x - stride] : 0u;
+        uint prior = 0u;
+        if (lane.x >= stride) prior = prefix[lane.x - stride];
         GroupMemoryBarrierWithGroupSync();
         prefix[lane.x] += prior;
         GroupMemoryBarrierWithGroupSync();
