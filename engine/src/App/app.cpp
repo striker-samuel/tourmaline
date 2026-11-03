@@ -176,8 +176,10 @@ void tour::App::SetRelativeMouseMode(bool enabled) {
 			// physical gameplay input while the tape is authoritative.
 			if (m_inputTapeMode == InputTapeMode::Replay) {
 				if (inputEvent.type == input::EventType::Quit ||
-					inputEvent.type == input::EventType::WindowClose)
+					inputEvent.type == input::EventType::WindowClose) {
 					windowShouldClose_ = true;
+					m_replayOsClose = true;
+				}
 				continue;
 			}
 			if (m_inputTapeMode == InputTapeMode::Record &&
@@ -276,7 +278,9 @@ void tour::App::MainLoop() {
 		}
 		if (!m_inputTapeError.empty())
 			break;
-		if (windowShouldClose_ && m_inputTapeMode == InputTapeMode::Replay)
+		// Recorded Escape is part of the last simulation frame. Only an
+		// *live OS* close interrupts replay before consuming that frame.
+		if (m_inputTapeMode == InputTapeMode::Replay && m_replayOsClose)
 			break;
 		UpdateDeltaTime();
 		if (m_inputTapeMode == InputTapeMode::Record) {
