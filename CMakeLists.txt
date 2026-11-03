@@ -509,6 +509,7 @@ target_link_libraries(engine PRIVATE embree)
 target_link_libraries(engine PRIVATE Jolt)
 add_subdirectory(tools/gltf_import)
 add_subdirectory(tools/project_pipeline) # the canonical project pipeline (Project.exe + the editor use it)
+add_subdirectory(tools/tooling) # linkable project/package/capture tooling core
 # gltf_import is the ONLY tool every host builds (the viewer app + the
 # game hosts link it for the glTF import helpers). Everything below is
 # REPO-ONLY: subproject hosts (the game repos pinning this tree as a
@@ -517,6 +518,7 @@ add_subdirectory(tools/project_pipeline) # the canonical project pipeline (Proje
 if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/import)
 add_subdirectory(tools/project)            # Project.exe: the project-pipeline CLI
+  add_subdirectory(tools/tourinit)            # tourinit: thin native project scaffold CLI
   add_subdirectory(tools/artifact_cache)
   add_subdirectory(tools/cook)
   # pak_cooker BEFORE the hosts: it owns the ENGINE SHADER PACKAGE
