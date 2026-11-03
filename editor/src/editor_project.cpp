@@ -20,6 +20,7 @@
 
 #include "editor_app.h"
 #include "editor_hot_reload_targets.h"
+#include "editor_asset_creation.h"
 
 
 #include <artifact_cache/artifact_kind.h>
@@ -293,6 +294,76 @@ bool EditorApp::NewProjectOrOpen(const std::string& dir) {
 		out << "version=" << kProjVersion << "\n";
 	}
 	return OpenProject(root);
+}
+
+std::string EditorApp::CreateSceneAsset(const std::string& dir) {
+    if (m_projectRoot.empty() || m_cookRunning) {
+        Log("New scene: open a project and finish any active cook first.");
+        return {};
+    }
+    namespace fs = std::filesystem;
+    const fs::path folder = AssetCreateDirectory(
+        m_projectRoot, dir, "scenes");
+    if (folder.empty()) {
+        Log("New scene: could not resolve a safe project directory.");
+        return {};
+    }
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    if (ec) {
+        Log("New scene: cannot create directory: " + ec.message());
+        return {};
+    }
+    const fs::path path = UniqueAssetCreatePath(
+        folder, "New Scene", ".tour");
+    if (path.empty()) {
+        Log("New scene: could not allocate a unique filename.");
+        return {};
+    }
+    smvk::tour::Doc empty;
+    std::string err;
+    if (!smvk::tour::SaveTour(path.generic_string(), empty, err)) {
+        Log("New scene: " + err);
+        return {};
+    }
+    AdoptProjectAsset(path.generic_string(), "scene");
+    m_assetsSel = path.generic_string();
+    m_assetsSelSet = {m_assetsSel};
+    Log("New scene: created '" + path.generic_string() + "'.");
+    if (!OpenTourFile(path.generic_string()))
+        Log("New scene: created on disk, but the editor could not open it.");
+    return path.generic_string();
+}
+
+std::string EditorApp::CreateAssetFolder(const std::string& dir) {
+    if (m_projectRoot.empty()) {
+        Log("New folder: open a project first.");
+        return {};
+    }
+    namespace fs = std::filesystem;
+    const fs::path folder = AssetCreateDirectory(
+        m_projectRoot, dir);
+    if (folder.empty()) {
+        Log("New folder: could not resolve a safe content directory.");
+        return {};
+    }
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    if (ec) {
+        Log("New folder: cannot create parent directory: " + ec.message());
+        return {};
+    }
+    const fs::path path = UniqueAssetCreatePath(folder, "New Folder");
+    if (path.empty() || !fs::create_directory(path, ec)) {
+        Log("New folder: " + (ec ? ec.message() : "cannot create directory"));
+        return {};
+    }
+    m_assetsDir = path.generic_string();
+    m_assetsSel.clear();
+    m_assetsSelSet.clear();
+    m_assetsAnchor.clear();
+    Log("New folder: created '" + path.generic_string() + "'.");
+    return path.generic_string();
 }
 
 void EditorApp::PrimeProjectCookDefaults() {
