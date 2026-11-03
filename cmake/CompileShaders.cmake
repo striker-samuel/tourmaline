@@ -104,7 +104,7 @@ endfunction()
 
 function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   set(options)
-  set(oneValueArgs)
+  set(oneValueArgs OUTPUT_HEADER RUNTIME_ROOT)
   set(multiValueArgs INCLUDE_DIRS VARIANTS HEADER_DIRS)
   cmake_parse_arguments(CS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
   # Per-file -O3 pins for Debug builds (file names, no directory):
@@ -392,7 +392,40 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
     list(APPEND COMPILED_SHADERS "${OUTPUT_FILE}")
     endforeach()
 
-    add_custom_target(${TARGET_NAME}_shaders ALL DEPENDS ${COMPILED_SHADERS})
+    # Optional build-time reflection: the generated header is downstream
+    # of every SPIR-V output (including VARIANTS). Shader changes rebuild
+    # the corresponding .spv and then refresh the header, write-if-changed.
+    # Runtime-relative paths/ids are separate from assets.db ShaderKey.
+    set(_SHADER_TARGET_OUTPUTS ${COMPILED_SHADERS})
+    if(CS_OUTPUT_HEADER)
+        if(NOT TARGET tourmaline_shader_header)
+            message(FATAL_ERROR "[Shaders] tourmaline_shader_header target missing")
+        endif()
+        if(NOT CS_RUNTIME_ROOT)
+            set(CS_RUNTIME_ROOT "${CMAKE_BINARY_DIR}")
+        endif()
+        get_filename_component(_HEADER "${CS_OUTPUT_HEADER}" ABSOLUTE)
+        set(_REFLECT_INPUTS)
+        foreach(_SHADER_OUTPUT IN LISTS COMPILED_SHADERS)
+            if(_SHADER_OUTPUT MATCHES "\\.spv$")
+                list(APPEND _REFLECT_INPUTS --shader "${_SHADER_OUTPUT}")
+            endif()
+        endforeach()
+        if(NOT _REFLECT_INPUTS)
+            message(FATAL_ERROR "[Shaders] OUTPUT_HEADER requires SPIR-V outputs")
+        endif()
+        add_custom_command(
+            OUTPUT "${_HEADER}"
+            COMMAND "$<TARGET_FILE:tourmaline_shader_header>"
+                --output "${_HEADER}" --runtime-root "${CS_RUNTIME_ROOT}"
+                ${_REFLECT_INPUTS}
+            DEPENDS tourmaline_shader_header ${COMPILED_SHADERS}
+            COMMENT "Reflecting ${TARGET_NAME} SPIR-V into ${_HEADER}"
+            VERBATIM
+        )
+        list(APPEND _SHADER_TARGET_OUTPUTS "${_HEADER}")
+    endif()
+    add_custom_target(${TARGET_NAME}_shaders ALL DEPENDS ${_SHADER_TARGET_OUTPUTS})
     set(COMPILED_SHADER_OUTPUTS ${COMPILED_SHADERS} PARENT_SCOPE)
 endfunction()
 

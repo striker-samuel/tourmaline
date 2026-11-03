@@ -441,6 +441,12 @@ target_include_directories(spirv_reflect PUBLIC
 )
 set_target_properties(spirv_reflect PROPERTIES C_STANDARD 11 LINKER_LANGUAGE C)
 
+# CPU-only build tool: reflect compiled project HLSL/SPIR-V into a constexpr
+# header. This does not depend on a Vulkan device or the engine renderer.
+add_executable(tourmaline_shader_header tools/shader_header/main.cpp)
+target_compile_features(tourmaline_shader_header PRIVATE cxx_std_20)
+target_link_libraries(tourmaline_shader_header PRIVATE spirv_reflect)
+
 # Jolt Physics (pinned git submodule, v5.6.0) — the CPU rigid-body backend
 # for the scene-tables migration (docs/scene_tables_migration.md). Initial
 # integration: CPU simulation ONLY — no GPU compute/hair (the v5.6

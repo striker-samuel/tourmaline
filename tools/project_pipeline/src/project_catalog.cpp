@@ -1189,6 +1189,14 @@ std::string EmitProjectHeader(const ProjectCatalog& c,
 		<< "};\n"
 		<< "\n";
 
+	// The shader interface supplement is optional: projects that compile
+	// local HLSL can expose the reflection constants without modifying the
+	// stable assets.db catalog or its .tapp fingerprint.
+	os << "// Optional build-generated local shader reflection catalog.\n"
+		<< "#if __has_include(\"project_compiled_shaders.h\")\n"
+		<< "#include \"project_compiled_shaders.h\"\n"
+		<< "#endif\n\n";
+
 	// ---- the EOF metadata (the tools' half of the file) --------------
 	// A machine-readable COMMENT: the compiler never sees it, nothing
 	// codes against it. It carries the generation stamp + the last
