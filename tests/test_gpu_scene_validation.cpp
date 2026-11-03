@@ -95,6 +95,45 @@ void CheckMalformedDoubleFrusta() {
     CHECK(PackInstanceCullView(infinite, packed));
 }
 
+void CheckStableCompaction() {
+    CHECK(sizeof(CompactCountPush) == 24);
+    CHECK(sizeof(CompactPrefixPush) == 24);
+    CHECK(sizeof(CompactScatterPush) == 32);
+
+    // The same predicate is used in the count and scatter shaders.
+    // Invalid tombstones and invisible rows must not reach draw expansion.
+    std::vector<InstanceCullVerdict> input(130);
+    for (uint32_t i = 0; i < input.size(); ++i) {
+        input[i].value = glm::uvec4(i, 1u, i % 3u == 0u ? 1u : 0u, 0u);
+    }
+    input[0].value.x = InvalidIndex;
+    input[3].value.y = 0u;
+    input[64].value.z = 1u; // first index of the next workgroup
+    input[129].value.z = 1u; // partial last workgroup
+    const auto output = CompactVisibleVerdicts(input);
+    CHECK(output.size() == 43u);
+    CHECK(output.front().value.x == 6u);
+    CHECK(output.back().value.x == 129u);
+    for (size_t i = 1; i < output.size(); ++i)
+        CHECK(output[i-1].value.x < output[i].value.x);
+
+    std::vector<InstanceCullVerdict> empty(64);
+    CHECK(CompactVisibleVerdicts(empty).empty());
+    empty[17].value = glm::uvec4(10u, 7u, 1u, 1u);
+    auto single = CompactVisibleVerdicts(empty);
+    CHECK(single.size() == 1u);
+    CHECK(glm::all(glm::equal(single[0].value, empty[17].value)));
+
+    // Counts add up across whole and partial 64-wide workgroups.
+    size_t totals = 0;
+    for (size_t first = 0; first < input.size(); first += 64u) {
+        const size_t last = std::min(first + 64u, input.size());
+        totals += CompactVisibleVerdicts(std::span<const InstanceCullVerdict>(
+            input.data() + first, last - first)).size();
+    }
+    CHECK(totals == output.size());
+}
+
 void CheckLegacyRebasing() {
     smvk::RenderView view{};
     // Absolute plane: world x <= 103, but origin is world x=100.
@@ -142,6 +181,7 @@ void CheckLegacyRebasing() {
 int main() {
     CheckDoubleView();
     CheckMalformedDoubleFrusta();
+    CheckStableCompaction();
     CheckLegacyRebasing();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
