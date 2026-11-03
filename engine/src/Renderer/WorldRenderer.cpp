@@ -11464,6 +11464,38 @@ namespace engine {
 					}
 				}
 			}
+			// Load compaction kernels alongside the existing opt-in cull
+			// program; they have no production-frame allocation or dispatch.
+			static constexpr const char* compactPaths[3] = {
+				"content/shaders/gpu_scene_compact_count.cs.hlsl.spv",
+				"content/shaders/gpu_scene_compact_prefix.cs.hlsl.spv",
+				"content/shaders/gpu_scene_compact_scatter.cs.hlsl.spv"
+			};
+			for (uint32_t i = 0; i < 3u; ++i) {
+				if (m_gpuSceneCompactPrograms[i].shaderCount != 0) continue;
+				try {
+					auto bytes = smvk::shaders::Read(compactPaths[i]);
+					m_gpuSceneCompactModules[i] = m_context->CreateShaderModule(
+						std::move(bytes), "gpuSceneCompactCS");
+					if (!m_gpuSceneCompactModules[i].empty()) {
+						smvk::Shader cs{
+							.module = m_gpuSceneCompactModules[i],
+							.entryPoint = "mainCS",
+							.stage = smvk::ShaderStage::Compute
+						};
+						m_gpuSceneCompactPrograms[i] = {
+							.shaders = { cs }, .shaderCount = 1
+						};
+					}
+				} catch (...) {
+					static bool logged = false;
+					if (!logged) {
+						std::fprintf(stderr,
+							"[GpuSceneCompact] shader unavailable; compaction skipped\\n");
+						logged = true;
+					}
+				}
+			}
 			if (m_gpuSceneCullProgram.shaderCount == 1) {
 				// This is a validation bridge, NOT true large-world camera
 				// authority. The source VP remains float32; we only change
@@ -11481,16 +11513,44 @@ namespace engine {
 						m_gpuSceneDatabase,
 						m_gpuSceneUploader.DeviceAddresses(*m_context,fb.frameIndex),
 						selected, frustum, gpuPush)) {
+					tour::gpu_scene::CompactCountPush countPush{};
+					tour::gpu_scene::CompactPrefixPush prefixPush{};
+					tour::gpu_scene::CompactScatterPush scatterPush{};
+					const bool compactAvailable =
+						m_gpuSceneCompactPrograms[0].shaderCount == 1 &&
+						m_gpuSceneCompactPrograms[1].shaderCount == 1 &&
+						m_gpuSceneCompactPrograms[2].shaderCount == 1;
+					const bool compactReady = compactAvailable &&
+						m_gpuSceneValidator.PrepareCompaction(*m_context, fb.frameIndex,
+							selected.candidateCount, countPush, prefixPush, scatterPush);
 					auto& pass = m_rendergraph->AddComputePass("GpuSceneValidate");
-					// House pattern (the DS phases above): a non-const program
-					// copy captured by a mutable lambda - a const local would
-					// capture as const and fail BindComputePipeline(ShaderProgram&).
+					// ShaderProgram copies must be mutable for BindComputePipeline.
 					auto program = m_gpuSceneCullProgram;
+					auto compactPrograms = m_gpuSceneCompactPrograms;
 					const uint32_t groups = (selected.candidateCount+63u)/64u;
-					pass.SetRecordingFunc([program, gpuPush, groups](
+					pass.SetRecordingFunc([program, compactPrograms, gpuPush,
+						countPush, prefixPush, scatterPush, groups, compactReady](
 						smvk::CommandBuffer& cmd) mutable {
 						cmd.BindComputePipeline(program);
 						cmd.PushConstants(0, sizeof(gpuPush), &gpuPush,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(groups,1,1);
+						if (!compactReady) return;
+						// All inputs are BDA-only. Explicit shader-write/read
+						// barriers are required between dependent dispatches.
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(compactPrograms[0]);
+						cmd.PushConstants(0, sizeof(countPush), &countPush,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(groups,1,1);
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(compactPrograms[1]);
+						cmd.PushConstants(0, sizeof(prefixPush), &prefixPush,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(1,1,1);
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(compactPrograms[2]);
+						cmd.PushConstants(0, sizeof(scatterPush), &scatterPush,
 							smvk::ShaderStage::Compute);
 						cmd.Dispatch(groups,1,1);
 					});
