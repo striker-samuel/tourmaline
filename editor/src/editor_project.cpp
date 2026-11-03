@@ -165,6 +165,7 @@ void EditorApp::PushRecentProject(const std::string& dir) {
 }
 
 bool EditorApp::OpenProject(const std::string& dir) {
+	StopGamePlay();
 	const std::string root = Normalized(dir);
 	if (!IsProjectDir(root)) {
 		Log("Not a project (no " + std::string(kProjMarker) + "): "
