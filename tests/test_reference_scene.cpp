@@ -49,7 +49,12 @@ int main() {
 
 	opts.threads = 4;
 	const auto multi = renderer::ReferenceSceneRenderer::Render(scene, camera, opts);
-	assert(first.linearRadiance == multi.linearRadiance);
+	assert(first.linearRadiance.size() == multi.linearRadiance.size());
+	for (size_t i = 0; i < first.linearRadiance.size(); ++i) {
+		const auto& a = first.linearRadiance[i];
+		const auto& b = multi.linearRadiance[i];
+		assert(a.x == b.x && a.y == b.y && a.z == b.z);
+	}
 	opts.threads = 1;
 	camera.orthoHalfHeight = 1.0f;
 	const auto ortho = renderer::ReferenceSceneRenderer::Render(scene, camera, opts);
