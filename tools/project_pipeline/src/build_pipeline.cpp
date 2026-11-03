@@ -467,7 +467,9 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					|| asset.kind == PlanAssetKind::Sound
 					|| asset.kind == PlanAssetKind::Shader
 					|| asset.kind == PlanAssetKind::AudioGraph
-					|| asset.kind == PlanAssetKind::SpriteSet)
+					|| asset.kind == PlanAssetKind::SpriteSet
+					|| asset.kind == PlanAssetKind::StateMachine
+					|| asset.kind == PlanAssetKind::NavMesh)
 				vfsOwner[asset.path] = pak.id;
 
 	// The staged set: every pak writes under publish/.staging/ with its
@@ -567,7 +569,9 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 							|| asset.kind == PlanAssetKind::Sound
 							|| asset.kind == PlanAssetKind::Shader
 							|| asset.kind == PlanAssetKind::AudioGraph
-					|| asset.kind == PlanAssetKind::SpriteSet)
+					|| asset.kind == PlanAssetKind::SpriteSet
+					|| asset.kind == PlanAssetKind::StateMachine
+					|| asset.kind == PlanAssetKind::NavMesh)
 						stage.excludeVfs.push_back(asset.path);
 			}
 		}
@@ -607,11 +611,13 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					+ perr;
 				return false;
 			}
-			const smvk::PakAssetKind policeKinds[5] = {
+			const smvk::PakAssetKind policeKinds[7] = {
 				smvk::PakAssetKind::Texture, smvk::PakAssetKind::Sound,
 			smvk::PakAssetKind::Shader,
 			smvk::PakAssetKind::AudioGraph,
-				smvk::PakAssetKind::SpriteSet };
+				smvk::PakAssetKind::SpriteSet,
+				smvk::PakAssetKind::StateMachine,
+				smvk::PakAssetKind::NavMesh };
 			for (const smvk::PakAssetKind kind : policeKinds)
 			for (const smvk::PakTocEntry* e : reader->BlobsOfKind(kind)) {
 				auto ownerIt = vfsOwner.find(e->path);
@@ -678,7 +684,9 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 						|| !addRows(catalog.shaders)
 						|| !addRows(catalog.gi)
 						|| !addRows(catalog.audiographs)
-				|| !addRows(catalog.spritesets))
+				|| !addRows(catalog.spritesets)
+				|| !addRows(catalog.statemachines)
+				|| !addRows(catalog.navmeshes))
 					return false;
 				const std::vector<uint8_t> blob =
 					::tour::asset::WriteAssetIdsBlob(rows);

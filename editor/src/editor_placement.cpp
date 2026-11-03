@@ -9,6 +9,7 @@
 #include "editor_placement.h"
 
 #include "editor_dg.h"
+#include <Engine/Graph/graph.h>
 
 #include <algorithm>
 #include <cmath>
@@ -533,6 +534,30 @@ struct Ctx {
 
 CompileResult CompileGraph(const GraphDoc& doc, uint64_t graphId) {
 	CompileResult r;
+	// Reuse the engine's shared structural graph validation. Placement
+	// supplies its pin schemas and its own instruction compiler below;
+	// other graph consumers can choose different schemas/evaluators.
+	::tour::graph::Document topology;
+	for (const auto& [id, node] : doc.nodes) {
+		::tour::graph::Node n;
+		n.id = id;
+		n.type = NodeKindName(node.kind);
+		for (const PinDef& p : NodeInputs(node.kind))
+			n.ports.push_back({p.name, PinTypeName(p.type),
+				::tour::graph::PortDirection::Input});
+		for (const PinDef& p : NodeOutputs(node.kind))
+			n.ports.push_back({p.name, PinTypeName(p.type),
+				::tour::graph::PortDirection::Output});
+		topology.nodes.emplace(id, std::move(n));
+	}
+	for (const auto& [id, link] : doc.links)
+		topology.links.emplace(id, ::tour::graph::Link{
+			id, link.from, link.to, link.fromPin, link.toPin});
+	const auto validated = ::tour::graph::Validate(topology);
+	if (!validated.ok) {
+		r.error = "placement graph: " + validated.error;
+		return r;
+	}
 	// Exactly one Layer (MVP: single-layer preview).
 	std::vector<uint32_t> layers;
 	for (const auto& [id, n] : doc.nodes)

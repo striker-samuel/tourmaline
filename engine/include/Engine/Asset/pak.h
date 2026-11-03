@@ -215,6 +215,8 @@ enum class PakAssetKind : uint32_t {
 	// the same registry), never by stamped numeric id.
 	AudioGraph = 16,
 	SpriteSet = 17,
+	StateMachine = 18, // immutable authored gameplay transition graph
+	NavMesh = 19,      // immutable precomputed navigation triangles
 };
 
 enum PakEntryFlags : uint32_t {

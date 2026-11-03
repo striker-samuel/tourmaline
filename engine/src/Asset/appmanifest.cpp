@@ -173,6 +173,8 @@ bool CatalogKindFromString(const std::string& kind, uint8_t& out) {
 	if (kind == "gi") { out = kCatalogKindGi; return true; }
 	if (kind == "audiograph") { out = kCatalogKindAudioGraph; return true; }
 	if (kind == "spriteset") { out = kCatalogKindSpriteSet; return true; }
+	if (kind == "statemachine") { out = kCatalogKindStateMachine; return true; }
+	if (kind == "navmesh") { out = kCatalogKindNavMesh; return true; }
 	return false;
 }
 
@@ -186,6 +188,8 @@ const char* CatalogKindToString(uint8_t kind) {
 	case kCatalogKindGi: return "gi";
 	case kCatalogKindAudioGraph: return "audiograph";
 	case kCatalogKindSpriteSet: return "spriteset";
+	case kCatalogKindStateMachine: return "statemachine";
+	case kCatalogKindNavMesh: return "navmesh";
 	default: return "";
 	}
 }

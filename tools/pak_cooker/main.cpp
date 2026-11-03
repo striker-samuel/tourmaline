@@ -83,7 +83,9 @@
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/audiograph.h>
-#include <Engine/Asset/spriteset.h> // ParseAudioGraphText (the --content audiograph gate)
+#include <Engine/Asset/spriteset.h>
+#include <Engine/Asset/state_machine.h>
+#include <Engine/Asset/navmesh.h> // ParseAudioGraphText (the --content audiograph gate)
 #include <Engine/Scene/scene.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
@@ -2961,6 +2963,34 @@ int Run(const PakArgs& c) {
 			}
 			tool::out() << "Embedded content-set shader " << vfsPath
 				<< " (" << spvBytes << " B spv)\n";
+			continue;
+		}
+		if (ext == ".statemachine" || ext == ".navmesh") {
+			std::string reason;
+			const std::string text(bytes->begin(), bytes->end());
+			if (ext == ".statemachine") {
+				tour::asset::StateMachineAsset graph;
+				if (!tour::asset::ParseStateMachineText(text, graph, reason)) {
+					tool::err() << "Content-set statemachine invalid: "
+						<< reason << " (" << vfsPath << ")" << std::endl;
+					return 1;
+				}
+			} else {
+				tour::asset::NavMeshAsset nav;
+				if (!tour::asset::ParseNavMeshText(text, nav, reason)) {
+					tool::err() << "Content-set navmesh invalid: "
+						<< reason << " (" << vfsPath << ")" << std::endl;
+					return 1;
+				}
+			}
+			const auto kind = ext == ".statemachine"
+				? smvk::PakAssetKind::StateMachine
+				: smvk::PakAssetKind::NavMesh;
+			if (!writer.AddBlob(kind, vfsPath, std::move(*bytes))) {
+				tool::err() << "Content-set gameplay graph/navmesh AddBlob failed: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
 			continue;
 		}
 		if (ext == ".spriteset") {

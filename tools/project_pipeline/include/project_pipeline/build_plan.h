@@ -64,6 +64,8 @@ enum class PlanAssetKind : uint8_t {
 	// .wav Sound assets by VFS path — resolved at instance create
 	// through the same registry.
 	AudioGraph,
+	StateMachine, // immutable generic transition graph
+	NavMesh,      // precomputed CPU navigation triangle mesh
 	SpriteSet,
 };
 
