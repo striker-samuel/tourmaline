@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace app {
@@ -664,6 +665,15 @@ namespace app {
 					app.SetPresentMode(smvk::PresentMode::Mailbox);
 				else
 					app.SetPresentMode(smvk::PresentMode::Immediate);
+			}
+			if (!cfg.cli.inputRecordPath.empty() ||
+				!cfg.cli.inputReplayPath.empty()) {
+				std::string inputError;
+				const bool ok = !cfg.cli.inputRecordPath.empty()
+					? app.ConfigureInputRecording(cfg.cli.inputRecordPath, inputError)
+					: app.ConfigureInputReplay(cfg.cli.inputReplayPath, inputError);
+				if (!ok)
+					throw std::runtime_error("input tape: " + inputError);
 			}
 			int benchFrames = cfg.cli.benchFrames;
 			if (benchFrames > 0) {

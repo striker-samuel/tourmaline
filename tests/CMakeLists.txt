@@ -1330,3 +1330,12 @@ set_target_properties(ToolingApiTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 add_test(NAME tooling_api_tests COMMAND ToolingApiTests)
+
+
+# GPU-free normalized input serialization and deterministic replay.
+add_executable(InputTapeTests test_input_tape.cpp)
+target_include_directories(InputTapeTests PRIVATE ${PROJECT_SOURCE_DIR}/engine/include)
+target_compile_features(InputTapeTests PRIVATE cxx_std_20)
+set_target_properties(InputTapeTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME input_tape_tests COMMAND InputTapeTests)
