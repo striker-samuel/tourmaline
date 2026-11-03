@@ -1,38 +1,50 @@
-# Optional indexed lightmap pulling — runtime integration
+# Lightmap vertex pulling — current Vulkan runtime
 
-## Enabled
+## Enabled on Vulkan
 
-- Vulkan initializes the optional chart heap before the global set-0
-  descriptors, binds it at storage-buffer binding 7 for every flight,
-  and leaves the descriptor stable for in-flight frames.
-- AllocateStaticVertexFmt reuses the preallocated heap. No dummy chart
-  allocation is made for unlightmapped meshes.
-- gfxfiltered.vert.hlsl pulls chart UV and chart ID (8 bytes/vertex)
-  while hardware-fetching the 12-byte position and 16-byte shading data.
-- The selected LOD's resident chart stream is published via misc.w;
-  misc2.x selects its chart transforms and misc2.w is a wrapping delta.
-- gfxfilter.mesh.hlsl shares the chart decoder and accepts valid -1 deltas.
+- The optional packed chart-vertex heap is allocated before global descriptors,
+  is bound at set 0 / binding 7 for each flight, and remains descriptor-stable
+  while frames are in flight.
+- The indexed `gfxfiltered.vert.hlsl` uses hardware position/shading fetch,
+  pulling only chart UV and chart ID (8 bytes per vertex) for selected LODs
+  with resident baked streams. The mesh shader shares the packed decoder.
+- A **separate** `default_lightmap.vert.hlsl` shader enables opt-in
+  lightmaps for eligible static direct opaque/ProjectLit/A2C and ordinary
+  transparent draws (merged in #53). The regular `default.vert.hlsl`
+  remains unchanged and performs no lightmap fetch on unbaked draws.
+- Chart transforms are indexed by the selected LOD's scene-table offset.
+  Direct metadata is pushed at bytes 192–208 and 224–240, after the skin
+  tail. Both direct and filtered paths preserve valid wrapping -1 deltas
+  (`0xFFFFFFFF`) separately from the absent-stream sentinel.
+- Skinned meshes do not use baked lightmaps. Far vertex-lit, specialized
+  transparent, wireframe, and debug routes keep their existing behavior.
+
+## Scene changes and failure behavior
+
+- Each chart-table rebuild receives a process-unique revision; the GPU upload
+  cache checks world identity and revision so a new scene cannot reuse stale
+  chart transforms from the old one.
+- Changed chart tables use a fresh GPU buffer instead of overwriting data
+  that earlier GPU frames may still read. Old resource holders retire safely.
+- If the chart-transform buffer is unavailable, lightmap eligibility fails
+  closed for both direct and filtered draws; the renderer uses dynamic GI
+  instead of dereferencing a null chart-transform device address.
+- The lightmap heap must fit the Vulkan device's `maxStorageBufferRange`.
 
 ## Not enabled
 
-- Direct/fallback vertex shader lightmap fetching (requires explicit
-  per-mesh lobe/delta metadata and careful overlap handling with the
-  208..240 skinning push tail).
-- DXIL shader storage-buffer binding (DXIL path gates out lightmaps).
-- Full position/shading pulling, pipeline-family changes or PSO resorting.
+- The equivalent DXIL/D3D12 lightmap storage descriptor and direct shader
+  integration are not implemented. DXIL lightmap shader paths remain gated off.
+- Full position/shading pulling, new material families, and skinned baked
+  lightmaps are not part of this work.
 
-## GPU validation required
+## Validation
 
-This draft was authored without a Vulkan/DXC runtime in the environment.
-Before merging, compile Vulkan shaders and run with validation enabled:
+The CPU regression in `world_entity_tests` checks distinct chart-table
+revisions across two worlds and repeated rebuilds. Full shader compilation
+and GPU rendering were not performed while authoring this fix.
 
-1. Baked UV1 debug and indexed-vs-mesh rendering image parity.
-2. Mix lightmapped and unlightmapped meshes with the same material.
-3. All 5/6/9/12 lobe PSOs and GI variant fallbacks.
-4. Independently packed negative deltas, especially -1 (0xFFFFFFFF).
-5. Skinned objects, LOD sibling selection, scene reload, atlas missing.
-6. On NVIDIA, confirm filtered vertex-stage pipeline creation completes.
-
-The configured lightmap heap must fit maxStorageBufferRange for the
-single storage-buffer descriptor; an unsupported configuration now
-fails during Vulkan initialization with a clear diagnostic.
+On a Vulkan GPU, additionally test scene reloads with different atlas charts,
+LOD switching, mixed lightmapped/unlightmapped static and skinned geometry,
+masked A2C / ProjectLit / transparent variants, chart-buffer creation failure,
+and device validation warnings. Compare indexed, mesh, and direct UV1 rendering.

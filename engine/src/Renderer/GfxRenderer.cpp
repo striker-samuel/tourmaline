@@ -1840,6 +1840,9 @@ namespace engine {
 			// is a valid offset. Publish stream presence via lmChunk.
 			uint32_t lmDelta = 0u;
 			bool lmResident = false;
+			// No chart-transform BDA means the vertex shader must not
+			// dereference xforms. Keep the lobe sentinel and dynamic GI.
+			if (ChartXformsAddress() != 0 && !world.lmChartTable.empty())
 			if (auto lmLoc = world.ResolveLodMesh(worldMesh, lodIdx)) {
 				const smvk::ClusterStaticMeshHandle h = lmLoc->handle;
 				if (const smvk::StaticMesh* m
@@ -1945,12 +1948,20 @@ namespace engine {
 
 	uint64_t GfxRenderer::EnsureChartXforms(smvk::World& world,
 		smvk::ResourceManager& ctx) {
-		if (world.lmChartVersion == lmXformsVersion_ && !lmXformsBuf_.empty())
+		// A new world can have the same revision as an older one. Never
+		// reuse chart data uploaded for a different scene.
+		const bool tableChanged = lmXformsWorld_ != &world
+			|| world.lmChartVersion != lmXformsVersion_;
+		if (!tableChanged && !lmXformsBuf_.empty())
 			return lmXformsAddr_;
+		lmXformsWorld_ = &world;
 		lmXformsVersion_ = world.lmChartVersion;
 		const size_t count = std::max<size_t>(world.lmChartTable.size(), 1);
 		const size_t bytes = count * sizeof(glm::vec4);
-		if (lmXformsBuf_.empty() || lmXformsCap_ < bytes) {
+		// Allocate a fresh buffer when chart data changes. In-place uploads
+		// can overwrite transforms still read by in-flight GPU frames.
+		// The prior holder retires through the resource manager.
+		if (tableChanged || lmXformsBuf_.empty() || lmXformsCap_ < bytes) {
 			lmXformsBuf_ = ctx.CreateBuffer(bytes,
 				smvk::BufferType_Storage, "lm chart xforms");
 			lmXformsCap_ = bytes;

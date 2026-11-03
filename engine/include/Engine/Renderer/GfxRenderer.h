@@ -891,6 +891,9 @@ private:
 	// Lightmap chart transform GPU mirror (see EnsureChartXforms).
 	smvk::Holder<smvk::BufferHandle> lmXformsBuf_;
 	uint64_t lmXformsAddr_ = 0;
+	// Cache keyed by both world identity and process-unique revision.
+	// The pointer is only compared, never dereferenced.
+	const smvk::World* lmXformsWorld_ = nullptr;
 	uint64_t lmXformsVersion_ = ~uint64_t(0);
 	size_t lmXformsCap_ = 0;
 };

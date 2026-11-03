@@ -1173,6 +1173,24 @@ void TestResolveHoledCluster()
 		"holedresolve.default-camera-through-map");
 }
 
+// Renderer instances can survive a scene switch. Two newly constructed
+// worlds used to publish the same revision (1) after their first rebuild,
+// making the renderer reuse the previous scene's chart-transform buffer.
+void TestLightmapChartRevisionAcrossWorlds() {
+	smvk::World first;
+	smvk::World second;
+	first.RebuildLightmapChartTable();
+	const uint64_t firstRevision = first.lmChartVersion;
+	second.RebuildLightmapChartTable();
+	Check(firstRevision != 0 && second.lmChartVersion != 0
+		&& firstRevision != second.lmChartVersion,
+		"lightmap.revision-distinguishes-scene-switch");
+	first.RebuildLightmapChartTable();
+	Check(first.lmChartVersion != firstRevision
+		&& first.lmChartVersion != second.lmChartVersion,
+		"lightmap.revision-distinguishes-rebuild");
+}
+
 } // namespace
 
 int main() {
@@ -1188,6 +1206,7 @@ int main() {
 	TestResolveCarriesInlineTables();
 	TestResolveHoledCluster();
 	TestSchemaAssocFold();
+	TestLightmapChartRevisionAcrossWorlds();
 	std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " ("
 		<< g_checks << " checks)\n";
 	return g_failures == 0 ? 0 : 1;

@@ -754,6 +754,8 @@ namespace tour {
 		// at the end of ResolveAndFixup_clusters(); lmChartVersion bumps
 		// on every rebuild so renderers re-upload only on change.
 		std::vector<glm::vec4> lmChartTable;
+		// Process-unique rebuild revision, not a counter local to this World:
+		// the GPU chart-transform cache survives scene switches.
 		uint64_t lmChartVersion = 0;
 		struct LmChartKey {
 			const Cluster* cluster = nullptr;
