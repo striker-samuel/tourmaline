@@ -438,6 +438,7 @@ void EditorApp::DrawPlacementGraph() {
 		ImGui::Checkbox("Overlay", &m_placement.showOverlay);
 		ImGui::SameLine();
 		ImGui::Checkbox("Rejected", &m_placement.showRejected);
+		DrawBrushPresetControls(true);
 		if (!doc) {
 			ImGui::TextDisabled("No graph: create one to start scattering.");
 			ImGui::End();
