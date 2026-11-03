@@ -140,6 +140,93 @@ static_assert(sizeof(CompactScatterPush) == 32);
     return out;
 }
 
+// One GPU work record per selected, registered submesh. These records
+// are intermediate GPU-scene work, not Vulkan indirect draw commands.
+struct alignas(16) SceneSubmeshWork {
+    glm::uvec4 identity{InvalidIndex, 0u, InvalidIndex, InvalidIndex};
+    glm::uvec4 detail{InvalidIndex, InvalidIndex, InvalidIndex, 0u};
+};
+static_assert(sizeof(SceneSubmeshWork) == 32);
+struct WorkSelectPush {
+    uint64_t compact = 0, compactOffsets = 0;
+    uint64_t instances = 0, meshes = 0, lods = 0, submeshes = 0;
+    uint64_t choices = 0, counts = 0;
+    alignas(16) glm::uvec4 limits{0u};
+    glm::uvec4 limits2{0u};
+};
+struct WorkPrefixPush {
+    uint64_t counts = 0, offsets = 0;
+    uint32_t candidateCount = 0, reserved = 0;
+};
+struct WorkScatterPush {
+    uint64_t choices = 0, offsets = 0, submeshes = 0, output = 0;
+    alignas(16) glm::uvec4 limits{0u};
+};
+static_assert(sizeof(WorkSelectPush) == 96);
+static_assert(offsetof(WorkSelectPush, limits) == 64);
+static_assert(sizeof(WorkPrefixPush) == 24);
+static_assert(sizeof(WorkScatterPush) == 48);
+static_assert(offsetof(WorkScatterPush, limits) == 32);
+
+// CPU oracle: exactly mirrors the GPU's current finest-registered-resident
+// LOD policy and preserves visible-instance/LOD-submesh order. This is not
+// screen-space error LOD selection yet.
+[[nodiscard]] inline std::vector<SceneSubmeshWork> ReferenceExpandWork(
+    const RenderDatabase& db,
+    std::span<const InstanceCullVerdict> compacted) {
+    std::vector<SceneSubmeshWork> result;
+    for (const auto& verdict : compacted) {
+        if (verdict.value.x == InvalidIndex || verdict.value.y == 0u ||
+            verdict.value.z == 0u)
+            continue;
+        const Instance* inst = db.instances.Get({
+            verdict.value.x, verdict.value.y});
+        if (!inst) continue;
+        const Mesh* mesh = db.meshes.Get({
+            inst->refs.x, inst->refs.y});
+        if (!mesh || mesh->lodCount == 0u || mesh->lodCount > 16u ||
+            mesh->firstLod >= db.lods.Size() ||
+            mesh->lodCount > db.lods.Size() - mesh->firstLod)
+            continue;
+
+        for (uint32_t level = 0; level < mesh->lodCount; ++level) {
+            if ((mesh->residentMask & (1u << level)) == 0u)
+                continue;
+            const auto& lodRow = db.lods.Rows()[mesh->firstLod + level];
+            const Lod& lod = lodRow.value;
+            if (lodRow.identity.y != 1u ||
+                (lod.flags & (LodFlagResident | LodFlagFilterable)) !=
+                    (LodFlagResident | LodFlagFilterable) ||
+                lod.submeshCount == 0u || lod.submeshCount > 16u ||
+                lod.firstSubmesh >= db.submeshes.Size() ||
+                lod.submeshCount > db.submeshes.Size() - lod.firstSubmesh)
+                continue;
+
+            std::vector<SceneSubmeshWork> selected;
+            for (uint32_t sub = 0; sub < lod.submeshCount; ++sub) {
+                const uint32_t slot = lod.firstSubmesh + sub;
+                const auto& subRow = db.submeshes.Rows()[slot];
+                if (subRow.identity.y != 1u ||
+                    subRow.value.geometryId == InvalidIndex)
+                    continue;
+                SceneSubmeshWork work{};
+                work.identity = glm::uvec4(
+                    verdict.value.x, verdict.value.y,
+                    subRow.value.geometryId, subRow.value.materialId);
+                work.detail = glm::uvec4(
+                    level, slot, subRow.value.pipelineGroup,
+                    subRow.value.passMask);
+                selected.push_back(work);
+            }
+            if (!selected.empty()) {
+                result.insert(result.end(), selected.begin(), selected.end());
+                break;
+            }
+        }
+    }
+    return result;
+}
+
 class CandidateValidator {
 public:
     static constexpr uint32_t Flights=smvk::limits::MaxFramesInFlight;
@@ -159,7 +246,9 @@ public:
             std::fprintf(stderr,"[GpuSceneValidate] readback failed\n");
             f.expected.clear();
             f.expectedCompact.clear();
+            f.expectedWork.clear();
             f.compactPrepared = false;
+            f.workPrepared = false;
             return;
         }
         uint64_t wrong=0;
@@ -216,6 +305,50 @@ public:
             std::fprintf(stderr,
                 "[GpuSceneCompact] expected=%u errors=%llu\n",
                 expectedCount, (unsigned long long)compactMismatches_);
+            if (f.workPrepared) {
+                f.workPrepared = false;
+                const uint32_t expectedWork =
+                    static_cast<uint32_t>(f.expectedWork.size());
+                uint32_t gpuWork = UINT32_MAX;
+                if (!ctx.DownloadDataFromBuffer(f.workOffsets, &gpuWork,
+                    sizeof(gpuWork),
+                    size_t(f.workCandidates)*sizeof(uint32_t))) {
+                    ++workMismatches_;
+                    std::fprintf(stderr,
+                        "[GpuSceneWork] count readback failed\n");
+                } else if (gpuWork != expectedWork) {
+                    ++workMismatches_;
+                    std::fprintf(stderr,
+                        "[GpuSceneWork] count gpu=%u cpu=%u\n",
+                        gpuWork, expectedWork);
+                } else if (gpuWork != 0u) {
+                    std::vector<SceneSubmeshWork> downloaded(gpuWork);
+                    if (!ctx.DownloadDataFromBuffer(f.workOutput,
+                        downloaded.data(),
+                        downloaded.size()*sizeof(SceneSubmeshWork))) {
+                        ++workMismatches_;
+                        std::fprintf(stderr,
+                            "[GpuSceneWork] records readback failed\n");
+                    } else {
+                        for (size_t i=0; i<downloaded.size(); ++i) {
+                            const auto& a=downloaded[i];
+                            const auto& b=f.expectedWork[i];
+                            if (!glm::all(glm::equal(a.identity,b.identity)) ||
+                                !glm::all(glm::equal(a.detail,b.detail))) {
+                                ++workMismatches_;
+                                if (workMismatches_ <= 4)
+                                    std::fprintf(stderr,
+                                        "[GpuSceneWork] mismatch at %zu\n", i);
+                            }
+                        }
+                    }
+                }
+                std::fprintf(stderr,
+                    "[GpuSceneWork] expected=%u mismatches=%llu\n",
+                    expectedWork,
+                    (unsigned long long)workMismatches_);
+                f.expectedWork.clear();
+            }
             f.expectedCompact.clear();
         }
         f.expected.clear();
@@ -320,6 +453,80 @@ public:
         return true;
     }
 
+    // The three work-generation stages consume the compacted output of
+    // the same flight. Their input count remains entirely GPU-resident.
+    [[nodiscard]] bool PrepareWorkExpansion(smvk::ResourceManager& ctx,
+        uint32_t flight, const RenderDatabase& db,
+        const Addresses& addresses, uint32_t candidateCount,
+        WorkSelectPush& select, WorkPrefixPush& prefix,
+        WorkScatterPush& scatter) {
+        // This pipeline is validation-only and must not silently allocate
+        // hundreds of megabytes at the production million-candidate cap.
+        if (flight>=Flights || candidateCount==0u ||
+            candidateCount>32768u ||
+            db.instances.Size()>MaxShaderRowSlots ||
+            db.meshes.Size()>MaxShaderRowSlots ||
+            db.lods.Size()>MaxShaderRowSlots ||
+            db.submeshes.Size()>MaxShaderRowSlots ||
+            !addresses.instances || !addresses.meshes ||
+            !addresses.lods || !addresses.submeshes)
+            return false;
+        auto& f=flight_[flight];
+        if (!f.compactPrepared || f.expected.size()!=candidateCount)
+            return false;
+        constexpr uint32_t MaxSubmeshesPerLod=16u;
+        const size_t maxWork=size_t(candidateCount)*MaxSubmeshesPerLod;
+        if (!Ensure(ctx,f.workChoices,f.workChoicesSize,
+                    size_t(candidateCount)*32u,"scene work choices") ||
+            !Ensure(ctx,f.workCounts,f.workCountsSize,
+                    size_t(candidateCount)*sizeof(uint32_t),
+                    "scene work counts") ||
+            !Ensure(ctx,f.workOffsets,f.workOffsetsSize,
+                    size_t(candidateCount+1u)*sizeof(uint32_t),
+                    "scene work offsets") ||
+            !Ensure(ctx,f.workOutput,f.workOutputSize,
+                    maxWork*sizeof(SceneSubmeshWork),"scene submesh work"))
+            return false;
+        const uint64_t compact=ctx.GetBufferDeviceAddress(f.compact);
+        const uint64_t compactOffsets=ctx.GetBufferDeviceAddress(f.offsets);
+        const uint64_t choices=ctx.GetBufferDeviceAddress(f.workChoices);
+        const uint64_t counts=ctx.GetBufferDeviceAddress(f.workCounts);
+        const uint64_t offsets=ctx.GetBufferDeviceAddress(f.workOffsets);
+        const uint64_t output=ctx.GetBufferDeviceAddress(f.workOutput);
+        if (!compact || !compactOffsets || !choices || !counts ||
+            !offsets || !output)
+            return false;
+
+        f.expectedWork=ReferenceExpandWork(db,f.expectedCompact);
+        if (f.expectedWork.size()>maxWork) {
+            f.expectedWork.clear();
+            return false;
+        }
+        select={};
+        select.compact=compact;
+        select.compactOffsets=compactOffsets;
+        select.instances=addresses.instances;
+        select.meshes=addresses.meshes;
+        select.lods=addresses.lods;
+        select.submeshes=addresses.submeshes;
+        select.choices=choices;
+        select.counts=counts;
+        select.limits=glm::uvec4(candidateCount,f.groupCount,
+                                 db.instances.Size(),db.meshes.Size());
+        select.limits2=glm::uvec4(db.lods.Size(),db.submeshes.Size(),0u,0u);
+        prefix={counts,offsets,candidateCount,0u};
+        scatter={};
+        scatter.choices=choices;
+        scatter.offsets=offsets;
+        scatter.submeshes=addresses.submeshes;
+        scatter.output=output;
+        scatter.limits=glm::uvec4(candidateCount,db.submeshes.Size(),
+                                  uint32_t(maxWork),0u);
+        f.workCandidates=candidateCount;
+        f.workPrepared=true;
+        return true;
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight>=Flights) return;
         auto& f=flight_[flight];
@@ -329,6 +536,7 @@ public:
     [[nodiscard]] uint64_t Compared() const { return tested_; }
     [[nodiscard]] uint64_t Mismatches() const { return mismatches_; }
     [[nodiscard]] uint64_t CompactMismatches() const { return compactMismatches_; }
+    [[nodiscard]] uint64_t WorkMismatches() const { return workMismatches_; }
 
 private:
     struct Flight {
@@ -338,6 +546,13 @@ private:
         uint32_t groupCount=0;
         std::vector<InstanceCullVerdict> expectedCompact{};
         bool compactPrepared=false;
+        smvk::Holder<smvk::BufferHandle> workChoices{},workCounts{},
+            workOffsets{},workOutput{};
+        size_t workChoicesSize=0,workCountsSize=0,
+            workOffsetsSize=0,workOutputSize=0;
+        std::vector<SceneSubmeshWork> expectedWork{};
+        uint32_t workCandidates=0;
+        bool workPrepared=false;
         size_t rangesSize=0,verdictSize=0;
         std::vector<InstanceCullVerdict> expected{};
         bool pending=false,prepared=false;
@@ -358,7 +573,7 @@ private:
         return true;
     }
     std::array<Flight,Flights> flight_{};
-    uint64_t tested_=0,mismatches_=0,compactMismatches_=0;
+    uint64_t tested_=0,mismatches_=0,compactMismatches_=0,workMismatches_=0;
 };
 
 } // namespace tour::gpu_scene
