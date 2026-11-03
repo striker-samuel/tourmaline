@@ -138,6 +138,15 @@ add_custom_command(TARGET Editor POST_BUILD
     COMMENT "Syncing the Tourmaline logo next to Editor.exe"
 )
 
+# DCC export runner scripts are executable build inputs, staged beside
+# Editor; they are not part of the cooked/published asset runtime.
+add_custom_command(TARGET Editor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/tools/dcc"
+        "$<TARGET_FILE_DIR:Editor>/tools/dcc"
+    COMMENT "Staging DCC glTF export runners"
+)
+
 tourmaline_stage_sdl3(Editor)
 
 # ---------------------------------------------------------------------------
