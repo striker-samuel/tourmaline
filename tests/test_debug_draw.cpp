@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Renderer/DebugDraw.h>
+#include <Engine/Renderer/ShapeDebugDraw.h>
 
 #include <cmath>
 #include <cstdio>
@@ -21,6 +22,34 @@ int main() {
     CHECK(draw.Lines()[0].color == green);
     CHECK(draw.Lines()[0].depth == tour::DebugDepthMode::Always);
 
+    draw.Point({0,1,2}, yellow, tour::DebugDepthMode::Always);
+    CHECK(!draw.Empty());
+    CHECK(draw.PointCount() == 1);
+    CHECK(draw.Points()[0].position == glm::vec3(0,1,2));
+    CHECK(draw.Points()[0].depth == tour::DebugDepthMode::Always);
+    draw.Clear();
+    CHECK(draw.PointCount() == 0 && draw.DroppedPoints() == 0);
+    {
+        std::string error;
+        auto cloud = tour::asset::DefaultShapeAsset(tour::asset::ShapeKind::PointCloud);
+        glm::mat4 moved = glm::translate(glm::mat4(1.0f), glm::vec3(3,4,5));
+        CHECK(tour::renderer::AppendShapeDebug(cloud, moved, green, draw, error));
+        CHECK(draw.PointCount() == cloud.points.size());
+        CHECK(draw.Points()[0].position == glm::vec3(3,4,5));
+        CHECK(draw.Size() == 0);
+        draw.Clear();
+        auto spline = tour::asset::DefaultShapeAsset(tour::asset::ShapeKind::Spline);
+        spline.segments = 4;
+        CHECK(tour::renderer::AppendShapeDebug(spline, moved, green, draw, error));
+        CHECK(draw.Size() == 8);
+        CHECK(draw.Lines()[0].a == glm::vec3(2,4,5));
+        CHECK(draw.Lines()[7].b == glm::vec3(4,4,5));
+        draw.Clear();
+        CHECK(!tour::renderer::AppendShapeDebug(
+            tour::asset::DefaultShapeAsset(tour::asset::ShapeKind::Box),
+            moved, green, draw, error));
+        CHECK(draw.Empty());
+    }
     draw.Clear();
     glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(3, 4, 5));
     draw.Box(transform, {1, 2, 3}, green);
@@ -65,6 +94,13 @@ int main() {
     CHECK(draw.DroppedLines() == 3);
     draw.Clear();
     CHECK(draw.Empty() && draw.DroppedLines() == 0);
+    for (size_t i = 0; i < tour::DebugDrawList::MaxPoints + 2; ++i)
+        draw.Point({0,0,0}, yellow);
+    CHECK(draw.PointCount() == tour::DebugDrawList::MaxPoints);
+    CHECK(draw.DroppedPoints() == 2);
+    CHECK(!draw.Empty());
+    draw.Clear();
+    CHECK(draw.PointCount() == 0 && draw.DroppedPoints() == 0);
     std::printf("debug draw: %d checks, %d failures\\n", checks, failures);
     return failures ? 1 : 0;
 }
