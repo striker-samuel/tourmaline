@@ -1444,3 +1444,10 @@ add_test(NAME frame_pacer_tests COMMAND FramePacerTests)
 add_executable(ShapeAssetTests test_shape_asset.cpp)
 target_include_directories(ShapeAssetTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 add_test(NAME shape_asset_tests COMMAND ShapeAssetTests)
+
+# Renderer-owned persistent line/point shape instances (CPU-only).
+add_executable(ShapeSceneTests test_shape_scene.cpp)
+target_include_directories(ShapeSceneTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME shape_scene_tests COMMAND ShapeSceneTests)
