@@ -367,6 +367,15 @@ bool ResourceManager::NeedsProjectionYFlip() const {
     return true;
 }
 void ResourceManager::FlushUploads() { impl_->vulkan.FlushUploads(); }
+bool ResourceManager::SupportsRayQueries() const { return impl_->vulkan.SupportsRayQueries(); }
+bool ResourceManager::BuildRayTracingWorld(std::span<const RayTracingInstance> instances) {
+    if (!SupportsRayQueries()) return false;
+    // The build reads the static monoblocks, which may still be uploading.
+    impl_->vulkan.WaitForUploads();
+    return impl_->vulkan.BuildRayTracingWorld(instances);
+}
+bool ResourceManager::RayTracingWorldReady() const { return impl_->vulkan.RayTracingWorldReady(); }
+void ResourceManager::ClearRayTracingWorld() { impl_->vulkan.ClearRayTracingWorld(); }
 void ResourceManager::WaitForUploads() { impl_->vulkan.WaitForUploads(); }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     auto* buf = impl_->vulkan.buffers_.get(handle);

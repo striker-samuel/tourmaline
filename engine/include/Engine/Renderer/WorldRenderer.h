@@ -408,6 +408,13 @@ struct RenderQualityConfig {
 	float contactShadowStartBias = 0.01f;
 	int contactShadowSteps = 12;
 	int contactShadowResolutionDivisor = 2; // 1 full | 2 half
+    // Hardware KHR ray-query shadows: independent of screen-space
+    // contacts and disabled by default. Static world TLAS rebuilds when
+    // the opaque caster list or transforms change.
+    bool rayTracedSunShadowsEnabled = false;
+    float rayTracedSunShadowDistance = 200.0f;
+    float rayTracedSunShadowBias = 0.02f;
+    int rayTracedSunShadowResolutionDivisor = 2;
 	// Diffuse screen-space GI (ssgi_diffuse.h; experimental, default off).
 	bool ssgiDiffuseEnabled = false;
 	float ssgiDiffuseIntensity = 1.0f;
@@ -1914,6 +1921,11 @@ public:
 		m_contactShadowSteps = std::clamp(q.contactShadowSteps, 4, 32);
 		m_contactShadowResolutionDivisor =
 			(q.contactShadowResolutionDivisor == 1) ? 1 : 2;
+        m_rayTracedSunShadowsEnabled = q.rayTracedSunShadowsEnabled;
+        m_rayTracedSunShadowDistance = std::clamp(q.rayTracedSunShadowDistance, 1.0f, 2000.0f);
+        m_rayTracedSunShadowBias = std::clamp(q.rayTracedSunShadowBias, 0.001f, 0.2f);
+        m_rayTracedSunShadowResolutionDivisor =
+            (q.rayTracedSunShadowResolutionDivisor == 1) ? 1 : 2;
 		// Diffuse SSGI.
 		m_ssgiDiffuseEnabled = q.ssgiDiffuseEnabled;
 		m_ssgiDiffuseIntensity = std::clamp(q.ssgiDiffuseIntensity, 0.0f, 4.0f);
@@ -2952,9 +2964,31 @@ public:
 	// contribution view SAMPLES the visibility - the pass stays live
 	// under it (the Ssgi-views-keep-their-inputs pattern; the SSR
 	// contribution view chose re-tracing instead - this is cheaper).
+    bool RayTracedSunShadowsActive() const {
+        return m_rayTracedSunShadowsEnabled
+            && m_context && m_context->SupportsRayQueries()
+            && m_context->RayTracingWorldReady()
+            && m_viewportResources.contactShadows.RayShadersValid();
+    }
+    smvk::ContactShadowDesc SunShadowTraceDesc() const {
+        smvk::ContactShadowDesc d{};
+        const bool ray = RayTracedSunShadowsActive();
+        const bool wantsRay = m_rayTracedSunShadowsEnabled
+            && m_context && m_context->SupportsRayQueries()
+            && m_viewportResources.contactShadows.RayShadersValid();
+        d.maxDistance = ray ? m_rayTracedSunShadowDistance : m_contactShadowMaxDistance;
+        d.thickness = m_contactShadowThickness;
+        d.startBias = ray ? m_rayTracedSunShadowBias : m_contactShadowStartBias;
+        d.steps = uint32_t(m_contactShadowSteps);
+        d.resolutionDivisor = uint32_t(wantsRay
+            ? m_rayTracedSunShadowResolutionDivisor : m_contactShadowResolutionDivisor);
+        return d;
+    }
 	bool ContactShadowsActive() const {
 		return m_passes.contactShadows
-			&& m_contactShadowsEnabled
+			&& (m_contactShadowsEnabled || (m_rayTracedSunShadowsEnabled
+                && m_context && m_context->SupportsRayQueries()
+                && m_viewportResources.contactShadows.RayShadersValid()))
 			&& m_viewportResources.contactShadows.Valid()
 			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX
 			&& !m_viewportResources.renderDepth.logicalView.empty()
@@ -3722,6 +3756,15 @@ public:
 	float m_contactShadowStartBias = 0.01f; // ray start + self-hit floor (m)
 	int m_contactShadowSteps = 12; // march samples 4..32
 	int m_contactShadowResolutionDivisor = 2; // 1 full | 2 half (benchmark both)
+    // Optional hardware ray-query shading (full-scene TLAS, not a
+    // screen-space depth march). Contact remains the baseline fallback.
+    bool m_rayTracedSunShadowsEnabled = false;
+    float m_rayTracedSunShadowDistance = 200.0f;
+    float m_rayTracedSunShadowBias = 0.02f;
+    int m_rayTracedSunShadowResolutionDivisor = 2;
+    std::vector<smvk::RayTracingInstance> m_rayTracingCachedInstances;
+    const smvk::World* m_rayTracingCachedWorld = nullptr;
+    bool m_rayTracingCacheValid = false;
 	// ---- World voxel fields (Engine/WorldFields — the atlas-backed
 	// virtual world volume system). World-space (NOT viewport-scoped):
 	// follows the frame's camera (PrepareFrame's interest point),

@@ -413,6 +413,24 @@ int main() {
 	// 7. The GI volume layer table capacity/pack contract (§1.1).
 	TestGiVolumeLayerTableContract();
 
+    // 8. Hardware ray-query RHI input and opt-in defaults (CPU-only).
+    // The backend consumes exactly one 3x4 row-major VkTransformMatrixKHR,
+    // and the world shader reuses the existing 56-byte contact push block.
+    Check(sizeof(smvk::RayTracingInstance) == 64, "contract.rt-instance-size");
+    Check(offsetof(smvk::RayTracingInstance, transform) == 16,
+        "contract.rt-instance-transform-offset");
+    {
+        const engine::RenderQualityConfig q{};
+        Check(!q.rayTracedSunShadowsEnabled,
+            "contract.rt-shadow-default-off");
+        Check(q.rayTracedSunShadowDistance == 200.0f,
+            "contract.rt-shadow-max-distance-default");
+        Check(q.rayTracedSunShadowResolutionDivisor == 2,
+            "contract.rt-shadow-default-half-res");
+    }
+    Check(sizeof(smvk::ContactShadowPush) == 56,
+        "contract.rt-shadow-reuses-contact-abi");
+
 	std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
 	return g_failures == 0 ? 0 : 1;
 }

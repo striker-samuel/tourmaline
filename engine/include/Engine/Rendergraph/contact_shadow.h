@@ -96,6 +96,8 @@ struct ContactShadowDesc {
 
 inline constexpr const char* kContactShadowCsPath =
 	"content/shaders/contact_shadow.cs.hlsl.spv";
+inline constexpr const char* kRayTracedSunShadowCsPath =
+    "content/shaders/raytraced_sun_shadow.cs.hlsl.spv";
 
 struct SunContactShadows {
 	// The house Target: image + view + bindless + logical, lifecycle
@@ -119,10 +121,33 @@ struct SunContactShadows {
 
 	Holder<ShaderModuleHandle> csModule;
 	ShaderProgram program{};
+    Holder<ShaderModuleHandle> rayCsModule;
+    ShaderProgram rayProgram{};
 
 	[[nodiscard]] bool TargetsValid() const { return visibility.Valid(); }
 	[[nodiscard]] bool ShadersValid() const { return program.shaderCount != 0 && !csModule.empty(); }
 	[[nodiscard]] bool Valid() const { return TargetsValid() && ShadersValid(); }
+    [[nodiscard]] bool RayShadersValid() const {
+        return rayProgram.shaderCount != 0 && !rayCsModule.empty();
+    }
+    bool EnsureRayShaders(ResourceManager& ctx) {
+        if (RayShadersValid()) return true;
+        if (!ctx.SupportsRayQueries()) return false;
+        try {
+            if (rayCsModule.empty())
+                rayCsModule = ctx.CreateShaderModule(
+                    readFile(kRayTracedSunShadowCsPath), "raytracedSunShadowCS");
+        } catch (...) {
+            std::fprintf(stderr, "[RayShadows] shader unavailable (%s)\n",
+                kRayTracedSunShadowCsPath);
+            return false;
+        }
+        if (rayCsModule.empty()) return false;
+        Shader cs{ .module = rayCsModule, .entryPoint = "mainCS",
+            .stage = ShaderStage::Compute };
+        rayProgram = { .shaders = { cs }, .shaderCount = 1 };
+        return true;
+    }
 
 	// Consumer accessors: the lit body's bindless fetch index and the
 	// Main read-hint's logical view.
@@ -164,6 +189,8 @@ struct SunContactShadows {
 	void DestroyShaders() {
 		program = ShaderProgram();
 		csModule = {};
+        rayProgram = ShaderProgram();
+        rayCsModule = {};
 	}
 
 	// HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
@@ -177,6 +204,13 @@ struct SunContactShadows {
 			return false;
 		program = ShaderProgram();
 		EnsureShaders(ctx);
+        // Optional hardware variant: only touch a standing module.
+        if (!rayCsModule.empty()) {
+            (void)SwapShaderModule(ctx, kRayTracedSunShadowCsPath,
+                "raytracedSunShadowCS", rayCsModule, retired);
+            rayProgram = ShaderProgram();
+            EnsureRayShaders(ctx);
+        }
 		return true;
 	}
 
@@ -301,8 +335,9 @@ struct SunContactShadows {
 		uint64_t frameUniformsAddr,
 		uint32_t pointSamplerIndex,
 		const ContactShadowDesc& d,
-		const char* name = "SunContactShadows") const {
+		const char* name = "SunContactShadows", bool rayTraced = false) const {
 		assert(Valid());
+        assert(!rayTraced || RayShadersValid());
 		assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
 		assert(frameUniformsAddr != 0);
 		assert(visExtent.width != 0 && visExtent.height != 0);
@@ -342,7 +377,7 @@ struct SunContactShadows {
 			pass.AddImageHint(visibility.logical, visReq);
 		}
 
-		ShaderProgram progCopy = program; // copyable (handles only)
+		ShaderProgram progCopy = rayTraced ? rayProgram : program; // copyable (handles only)
 		const uint32_t w = visExtent.width;
 		const uint32_t h = visExtent.height;
 		pass.SetRecordingFunc([progCopy, push, w, h](CommandBuffer& cmd) mutable {

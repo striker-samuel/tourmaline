@@ -3504,6 +3504,12 @@ namespace engine {
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.godrays.Destroy(*m_rendergraph);
 		m_viewportResources.contactShadows.Destroy(*m_rendergraph);
+        // RT shadow BLAS/TLAS may reference the static heap. This renderer
+        // has already waited for device idle at the top of onDetach.
+        if (m_context) m_context->ClearRayTracingWorld();
+        m_rayTracingCachedInstances.clear();
+        m_rayTracingCachedWorld = nullptr;
+        m_rayTracingCacheValid = false;
 		m_viewportResources.motionVectors.Destroy(*m_rendergraph);
 		m_viewportResources.renderDepth.Destroy(*m_rendergraph);
 		m_viewportResources.hizDepth.Destroy(*m_rendergraph);
@@ -10827,16 +10833,11 @@ namespace engine {
 				// unconditionally like the god-rays pair - the EMISSION
 				// gate (ContactShadowsActive) decides whether the pass
 				// runs and whether the frame uniform publishes the index.
-				smvk::ContactShadowDesc frameCsDesc{};
-				frameCsDesc.maxDistance = m_contactShadowMaxDistance;
-				frameCsDesc.thickness = m_contactShadowThickness;
-				frameCsDesc.startBias = m_contactShadowStartBias;
-				frameCsDesc.steps = (uint32_t)std::clamp(
-					m_contactShadowSteps, 4, 32);
-				frameCsDesc.resolutionDivisor = (m_contactShadowResolutionDivisor == 1)
-					? 1u : 2u;
+				const smvk::ContactShadowDesc frameCsDesc = SunShadowTraceDesc();
 				m_viewportResources.contactShadows.Ensure(*m_context,
 					*m_rendergraph, renderExtent, frameCsDesc);
+                if (m_rayTracedSunShadowsEnabled && m_context->SupportsRayQueries())
+                    m_viewportResources.contactShadows.EnsureRayShaders(*m_context);
 			}
 			smvk::UiDesc frameUiDesc{};
 			frameUiDesc.format = LdrUnormSibling(fb);
@@ -11132,6 +11133,59 @@ namespace engine {
 		const auto rfT0b = bench_clk::now();
 		UpdateTextureStreaming(frameData, renderExtent);
 		UpdateGeometryStreaming();
+        // Hardware sun shadows: build BLAS from the SHARED static position/
+        // index heaps and TLAS from opaque world-space shadow casters.
+        // Source geometry is finished streaming at this point. An unchanged
+        // list is a fast no-op; moving casters trigger an expensive but
+        // correct blocking rebuild (see the RHI's v1 limitations).
+        if (m_rayTracedSunShadowsEnabled && m_context->SupportsRayQueries() && m_world) {
+            std::vector<smvk::RayTracingInstance> rtInstances;
+            m_world->forEachRenderItem(
+                smvk::IteratorFlagBit_StaticVertexFmt |
+                smvk::IteratorFlagBit_CastShadow |
+                smvk::IteratorFlagBit_Opaque,
+                [&](const smvk::World::RenderItem& item) {
+                    const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+                    if (!mesh || mesh->skinned ||
+                        mesh->geometry.topology != smvk::PrimitiveTopology::TriangleList)
+                        return;
+                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                    for (const auto& surface : mesh->geometry.surfaces) {
+                        if (surface.indexCount < 3 || (surface.indexCount % 3))
+                            continue;
+                        smvk::RayTracingInstance inst{};
+                        inst.firstIndex = surface.firstIndex;
+                        inst.indexCount = surface.indexCount;
+                        inst.baseVertex = surface.baseVertex;
+                        inst.vertexCount = mesh->geometry.vertexCount;
+                        for (int row = 0; row < 3; ++row)
+                            for (int col = 0; col < 4; ++col)
+                                inst.transform[row * 4 + col] = model[col][row];
+                        rtInstances.push_back(inst);
+                    }
+                });
+            const bool changed = !m_rayTracingCacheValid
+                || m_rayTracingCachedWorld != m_world
+                || rtInstances.size() != m_rayTracingCachedInstances.size()
+                || (!rtInstances.empty() &&
+                    std::memcmp(rtInstances.data(), m_rayTracingCachedInstances.data(),
+                        rtInstances.size() * sizeof(smvk::RayTracingInstance)) != 0);
+            if (changed) {
+                if (rtInstances.empty()) {
+                    m_host.WaitForDeviceIdle();
+                    m_context->ClearRayTracingWorld();
+                } else if (!m_context->BuildRayTracingWorld(rtInstances)) {
+                    // A failed build must not expose the previous world's TLAS.
+                    m_host.WaitForDeviceIdle();
+                    m_context->ClearRayTracingWorld();
+                    std::fprintf(stderr,
+                        "[RayShadows] BLAS/TLAS build unavailable; retaining contact/CSM fallback\n");
+                }
+                m_rayTracingCachedInstances = std::move(rtInstances);
+                m_rayTracingCachedWorld = m_world;
+                m_rayTracingCacheValid = true;
+            }
+        }
 		// Diagnostic parity readback ONLY after this flight's acquire fence:
 		// verdict buffers are never overwritten while GPU work can read them.
 		static const bool s_gpuSceneValidate = [] {
@@ -13102,19 +13156,14 @@ namespace engine {
 		// ---------------------------------------------------------------------
 		const bool contactShadowsOn = ContactShadowsActive();
 		if (contactShadowsOn) {
-			smvk::ContactShadowDesc csDesc{};
-			csDesc.maxDistance = m_contactShadowMaxDistance;
-			csDesc.thickness = m_contactShadowThickness;
-			csDesc.startBias = m_contactShadowStartBias;
-			csDesc.steps = (uint32_t)std::clamp(m_contactShadowSteps, 4, 32);
-			csDesc.resolutionDivisor = (m_contactShadowResolutionDivisor == 1)
-				? 1u : 2u;
+            const bool hardwareRay = RayTracedSunShadowsActive();
+            const smvk::ContactShadowDesc csDesc = SunShadowTraceDesc();
 			m_viewportResources.contactShadows.AddPass(*m_rendergraph,
 				m_viewportResources.renderDepth.logicalView,
 				m_viewportResources.renderDepth.bindlessIndex,
-				frameUniformsAddress,
-				pointSampler,
-				csDesc);
+				frameUniformsAddress, pointSampler, csDesc,
+                hardwareRay ? "HardwareRayTracedSunShadows" : "SunContactShadows",
+                hardwareRay);
 		}
 
 		// useMsaa is hoisted above the fc fill (the stencil layer gate + the
@@ -16709,6 +16758,25 @@ namespace engine {
 							if (ImGui::Combo("Contact resolution", &contactResIdx, contactRes, 2))
 								m_contactShadowResolutionDivisor = (contactResIdx == 0) ? 1 : 2;
 						}
+                        const bool raySupported = m_context && m_context->SupportsRayQueries();
+                        if (!raySupported)
+                            ImGui::BeginDisabled();
+                        ImGui::Checkbox("Hardware ray-traced sun shadows (KHR ray query)",
+                            &m_rayTracedSunShadowsEnabled);
+                        if (!raySupported) {
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("VK_KHR_acceleration_structure + VK_KHR_ray_query not available");
+                            ImGui::EndDisabled();
+                        } else if (m_rayTracedSunShadowsEnabled) {
+                            ImGui::SliderFloat("Hardware ray distance (m)",
+                                &m_rayTracedSunShadowDistance, 1.0f, 2000.0f);
+                            ImGui::SliderFloat("Hardware ray origin bias (m)",
+                                &m_rayTracedSunShadowBias, 0.001f, 0.2f);
+                            const char* rtRes[2] = { "Full", "Half" };
+                            int rtResIdx = m_rayTracedSunShadowResolutionDivisor == 1 ? 0 : 1;
+                            if (ImGui::Combo("Hardware ray resolution", &rtResIdx, rtRes, 2))
+                                m_rayTracedSunShadowResolutionDivisor = rtResIdx == 0 ? 1 : 2;
+                        }
 						// Diffuse screen-space GI (see ssgi_diffuse.h): one
 						// cosine-hemisphere bounce that REPLACES the diffuse
 						// ambient slice (never an additive stack over the

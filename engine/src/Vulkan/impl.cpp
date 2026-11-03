@@ -129,6 +129,7 @@ static bool g_deviceFaultSupported = false;
 // mesh-shader gfx filter path (DrawMeshTasks); the compute+indexed CPU
 // fallback stays otherwise.
 static bool g_meshShaderSupported = false;
+static bool g_rayQueriesSupported = false;
 // The ACTIVE physical device's name (captured at the device pick from
 // the real VkPhysicalDeviceProperties — never guessed, never hardcoded;
 // the single-device engine makes the process-global the honest scope).
@@ -2503,6 +2504,42 @@ bool smvk::VulkanCore::Init() {
 			if (meshExtPresent && meshKilled)
 				printf("[Vulkan] VK_EXT_mesh_shader disabled (TOURMALINE_MESH=0)\n");
 
+            // Optional Vulkan KHR hardware ray query + acceleration structures.
+            // Probe extensions AND feature bits; CSM/EVSM work without RT.
+            bool enableRayQueries = false;
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR rtAsFeatures{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
+            VkPhysicalDeviceRayQueryFeaturesKHR rtRayFeatures{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR };
+            {
+                uint32_t extCount = 0;
+                vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, nullptr);
+                std::vector<VkExtensionProperties> exts(extCount);
+                vkEnumerateDeviceExtensionProperties(physicalDevice_, nullptr, &extCount, exts.data());
+                auto has = [&](const char* name) {
+                    return std::any_of(exts.begin(), exts.end(), [name](const auto& e) {
+                        return std::strcmp(e.extensionName, name) == 0;
+                    });
+                };
+                if (has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)
+                    && has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)
+                    && has(VK_KHR_RAY_QUERY_EXTENSION_NAME)) {
+                    VkPhysicalDeviceAccelerationStructureFeaturesKHR queriedAs{
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
+                    VkPhysicalDeviceRayQueryFeaturesKHR queriedRay{
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR, &queriedAs };
+                    VkPhysicalDeviceFeatures2 queried{
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &queriedRay };
+                    vkGetPhysicalDeviceFeatures2(physicalDevice_, &queried);
+                    enableRayQueries = queriedAs.accelerationStructure == VK_TRUE
+                        && queriedRay.rayQuery == VK_TRUE;
+                }
+                if (enableRayQueries) {
+                    rtAsFeatures.accelerationStructure = VK_TRUE;
+                    rtRayFeatures.rayQuery = VK_TRUE;
+                }
+            }
+
 			VkPhysicalDeviceHostImageCopyFeaturesEXT deviceHostCopyFeatures{
 				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
 				enableMeshShader ? (void*)&deviceMeshFeatures : nullptr,
@@ -2571,7 +2608,12 @@ bool smvk::VulkanCore::Init() {
 					.textureCompressionBC = VK_TRUE,
 				},
 			};
-			computeDerivativesFeatures.pNext = &deviceFeatures13;
+            computeDerivativesFeatures.pNext = &deviceFeatures13;
+            if (enableRayQueries) {
+                rtRayFeatures.pNext = feats2.pNext;
+                rtAsFeatures.pNext = &rtRayFeatures;
+                feats2.pNext = &rtAsFeatures;
+            }
 
 			// Indirect multi-draw (per-view filter emits one command per
 			// surviving cluster, drawn with a single call per material range).
@@ -2769,6 +2811,11 @@ bool smvk::VulkanCore::Init() {
 		std::vector<const char*> enabledExtensions = config_.deviceExtensions;
 		if (enableHostCopy) enabledExtensions.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
 		if (enableMeshShader) enabledExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+        if (enableRayQueries) {
+            enabledExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+            enabledExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            enabledExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        }
 		if (enableLowLatency2) enabledExtensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 		if (enableDeviceFault) enabledExtensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
 		if (enableDiagnosticsConfig) enabledExtensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
@@ -2825,6 +2872,10 @@ bool smvk::VulkanCore::Init() {
 				throw std::runtime_error("failed to create logical device!");
 			}
 			g_meshShaderSupported = enableMeshShader;
+            g_rayQueriesSupported = enableRayQueries;
+            std::fprintf(stderr, "[Vulkan] KHR ray queries %s\n",
+                enableRayQueries ? "enabled (hardware sun shadows available)"
+                                 : "unsupported (CSM/EVSM fallback)");
 			std::fprintf(stderr, "[Vulkan] VK_EXT_mesh_shader %s\n",
 				enableMeshShader ? "supported - enabling (task+mesh gfx filter path)"
 				: meshKilled ? "off (TOURMALINE_MESH=0, compute+indexed CPU fallback)"
@@ -3200,6 +3251,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		getDSLBinding(kBinding_MsaaTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, smvk::limits::MaxTextures, stageFlags),
 		// Stable optional vertex stream: no per-indirect-draw buffer rebinding.
 		getDSLBinding(kBinding_VertexLightmap, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
+        getDSLBinding(kBinding_RayTracingScene,
+            g_rayQueriesSupported ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+                                  : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -3209,7 +3263,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 
 	VkDescriptorBindingFlags bindingFlags[kBinding_NumBindings];
 	for (int i = 0; i < kBinding_NumBindings; ++i) {
-		bindingFlags[i] = flags;
+		// TLAS updates happen at device idle; no AS update-after-bind feature.
+		bindingFlags[i] = (i == kBinding_RayTracingScene)
+            ? VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT : flags;
 	}
 	const VkDescriptorSetLayoutBindingFlagsCreateInfo setLayoutBindingFlagsCI = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT,
@@ -3277,6 +3333,9 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   (2 * smvk::limits::MaxFramesInFlight + 1) * smvk::limits::MaxFramesInFlight }, // globals + feedback + lightmap
 	  }
 	};
+    if (g_rayQueriesSupported)
+        poolSizes.push_back({ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+            smvk::limits::MaxFramesInFlight });
 	// Device limits for update-after-bind sets: the plain per-set limits
 	// do NOT govern UAB pools - the descriptor-indexing properties'
 	// update-after-bind variants do (fetched through the properties2
@@ -3420,6 +3479,7 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
 	// The device is idle, so every retire point is trivially satisfied and no
 	// readiness query (which would touch the dead semaphore) may run.
 	FlushDeferredTasks();
+	ClearRayTracingWorld();
 	// StaticVertexFmt
 	destroy(this, staticVertexFmtHeap.m_staticVertexPosBuffer);
 	destroy(this, staticVertexFmtHeap.m_staticVertexShadingBuffer);
@@ -7960,6 +8020,8 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 	VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	ci.size = size;
 	ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
+    if (g_rayQueriesSupported && (bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage))
+        ci.usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
 	// For frequently updated resources (vertex/index) use CONCURRENT when dedicated transfer exists to avoid ownership ping-pong
 	bool concurrentSharing = m_transferSubmitter && m_transferSubmitter != m_submitter &&
 		(bufferType == BufferType_Vertex || bufferType == BufferType_Index || bufferType == BufferType_Storage);
@@ -8024,7 +8086,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
 		bufferType == BufferType_Index)
 		? vkGetBufferDeviceAddress(device_, &ai) : 0;
 	vmaGetAllocationMemoryProperties(m_allocator, desc.vma_alloc, &desc.memoryFlags);
-	desc.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
+	desc.usage = ci.usage;
 	desc.isConcurrent = concurrentSharing;
 #if defined(_DEBUG)
 	if (debugName) {
@@ -14997,3 +15059,6 @@ void ShutdownBackend(ResourceManager& ctx)
 }
 
 } // namespace smvk::ui
+
+// Optional hardware RT scene implementation (keeps Vk/VMA private to the backend).
+#include "ray_tracing_world.inl"
