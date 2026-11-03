@@ -599,6 +599,119 @@ def Xform "Root" {
     Check(!smvk::assets::MeshArtifactStale(usd, cfg), "import.usd.not-stale");
     fs::remove_all(dir, ec);
 }
+
+void TestUsdReimportIdentityAndPolygons() {
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "tourmaline_usd_identity";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const fs::path usd = dir / "scene.usda";
+    // Authoring order and prim names change, but authored stableIds should
+    // keep imported logical names and material GUIDs the same.
+    auto stage = [](bool swapped, bool renamed) {
+        const std::string one = R"USD(
+    def Mesh "PanelA" {
+        custom string tourmaline:stableId = "panel-a"
+        uniform token subdivisionScheme = "none"
+        int[] faceVertexCounts = [5]
+        int[] faceVertexIndices = [0, 1, 2, 3, 4]
+        point3f[] points = [(0, 0, 0), (2, 0, 0), (2, 2, 0), (1, 1, 0), (0, 2, 0)]
+        rel material:binding = </Looks/Red>
+    }
+)USD";
+        std::string two = R"USD(
+    def Mesh "PanelB" {
+        custom string tourmaline:stableId = "panel-b"
+        uniform token subdivisionScheme = "none"
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+    }
+)USD";
+        if (renamed) {
+            const size_t p = one.find("PanelA");
+            one.replace(p, 6, "NewPanel");
+        }
+        return std::string(R"USD(#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Scope "Looks" {
+    def Material "Red" {
+        custom string tourmaline:stableId = "surface-red"
+        token outputs:surface.connect = </Looks/Red/Pbr.outputs:surface>
+        def Shader "Pbr" {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (0.8, 0.1, 0.1)
+            float inputs:metallic = 0.2
+            float inputs:roughness = 0.6
+            token outputs:surface
+        }
+    }
+}
+def Xform "Root" {
+)USD") + (swapped ? two + one : one + two) + "}\n";
+    };
+    WriteText(usd, stage(false, false));
+    tinygltf::Model before;
+    std::vector<std::string> deps;
+    Check(LoadModelFromSourceFile(before, usd.string().c_str(), &deps),
+        "usd.polygons.initial-load");
+    Check(before.meshes.size() == 2, "usd.polygons.two-meshes");
+    if (before.meshes.size() == 2) {
+        const auto& a = before.meshes.front();
+        const auto& b = before.meshes.back();
+        Check(a.name == "usd-id:panel-a" && b.name == "usd-id:panel-b",
+            "usd.identity.sorted-stable-ids");
+        Check(a.primitives.size() == 1 && b.primitives.size() == 1,
+            "usd.polygons.primitive-counts");
+        if (a.primitives.size() == 1 && b.primitives.size() == 1)
+            Check(before.accessors[size_t(a.primitives.front().indices)].count == 9
+                && before.accessors[size_t(b.primitives.front().indices)].count == 6,
+                "usd.polygons.concave-and-quad-triangulated");
+    }
+    smvk::assets::DeriveConfig cfg{};
+    smvk::assets::AssetManifest previous, updated;
+    std::string err;
+    Check(smvk::assets::ImportMeshSource(usd, "", nullptr, cfg,
+        previous, nullptr, &err), "usd.identity.first-derive");
+    WriteText(usd, stage(true, true));
+    tinygltf::Model after;
+    Check(LoadModelFromSourceFile(after, usd.string().c_str(), &deps),
+        "usd.identity.renamed-reordered-load");
+    Check(after.meshes.size() == 2
+        && before.meshes.size() == after.meshes.size()
+        && before.meshes[0].name == after.meshes[0].name
+        && before.meshes[1].name == after.meshes[1].name,
+        "usd.identity.renamed-reordered-logical-names");
+    Check(smvk::assets::ImportMeshSource(usd, "", nullptr, cfg,
+        updated, nullptr, &err), "usd.identity.second-derive");
+    Check(!previous.guid.empty() && previous.guid == updated.guid,
+        "usd.identity.family-guid-carried");
+    auto materialGuid = [](const smvk::assets::AssetManifest& m) {
+        for (const auto& entry : m.entries)
+            if (entry.kind == smvk::assets::AssetKind::Material)
+                return entry.guid;
+        return std::string();
+    };
+    Check(!materialGuid(previous).empty()
+        && materialGuid(previous) == materialGuid(updated),
+        "usd.identity.material-guid-carried");
+
+    const std::string duplicate = stage(false, false);
+    std::string bad = duplicate;
+    const size_t duplicateAt = bad.find("panel-b");
+    if (duplicateAt != std::string::npos)
+        bad.replace(duplicateAt, 7, "panel-a");
+    WriteText(usd, bad);
+    tinygltf::Model rejected;
+    Check(!LoadModelFromSourceFile(rejected, usd.string().c_str(), &deps),
+        "usd.identity.duplicate-id-refused");
+    fs::remove_all(dir, ec);
+}
+
 #endif
 
 } // namespace
@@ -611,6 +724,7 @@ int main() {
 	TestObjMissingMtl();
 #ifdef TOURMALINE_WITH_USD
 	TestUsdNativeConversion();
+	TestUsdReimportIdentityAndPolygons();
 #endif
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << std::endl;
