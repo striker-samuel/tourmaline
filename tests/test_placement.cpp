@@ -77,6 +77,8 @@ void TestPaintedPointCloud() {
 		exact &= p.customB < cloud.pointCount() &&
 			glm::distance(p.position, cloud.positions[p.customB]) < 1e-6f;
 	Check(exact, "place.pointcloud.one-candidate-per-point");
+	Check(EvaluateTile(lb, TileID{ 2, 0, 0 }).empty(),
+		"place.pointcloud.no-replication-in-other-tiles");
 
 	PlacementProgramView program{ 0x100, 1, 0 };
 	PlacementDomainParams params{};
@@ -89,6 +91,8 @@ void TestPaintedPointCloud() {
 	PlacementScatterPush push{};
 	Check(BuildScatterPush(lb, TileID{}, 0xAA, 0xBB, 0xCC, push) &&
 		push.candidateCount == 3, "place.pointcloud.gpu-dispatch-count");
+	Check(BuildScatterPush(lb, TileID{ 1, 0, 0 }, 0xAA, 0xBB, 0xCC, push)
+		&& push.candidateCount == 0, "place.pointcloud.gpu-other-tile-empty");
 	cloud.normals = { {0, 1, 0}, {1, 0, 0}, {0, 1, 0} };
 	Check(!FillScatterParams(lb, program, PlacementEcoView{}, bda, params),
 		"place.pointcloud.normals-require-device-buffer");
