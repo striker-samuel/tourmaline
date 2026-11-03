@@ -97,16 +97,31 @@ void EditorApp::ProcessFullPrefabNavigation() {
         const std::string snapshot = m_fullPrefabParentSnapshot;
         const std::string target = m_fullPrefabParentTarget;
         const bool dirty = m_fullPrefabParentDirty;
+        const std::vector<EditorCam> parentCameras = m_fullPrefabParentCameras;
+        const std::vector<uint32_t> parentSelection = m_fullPrefabParentSelection;
+        const uint32_t parentSelected = m_fullPrefabParentSelected;
         if (!OpenTourFile(snapshot)) {
             Log("Prefab: could not restore parent snapshot: " + snapshot);
             return;
         }
         m_tourPath = target;
         m_tourDirty = dirty;
+        if (!parentCameras.empty())
+            m_editorCams = parentCameras;
+        if (m_world && parentSelected < m_world->scene.hierarchy.size()) {
+            m_selected = parentSelected;
+            m_selection.clear();
+            for (uint32_t n : parentSelection)
+                if (n < m_world->scene.hierarchy.size())
+                    m_selection.push_back(n);
+        }
         std::error_code ec;
         fs::remove(snapshot, ec);
         m_fullPrefabParentSnapshot.clear();
         m_fullPrefabParentTarget.clear();
+        m_fullPrefabParentCameras.clear();
+        m_fullPrefabParentSelection.clear();
+        m_fullPrefabParentSelected = UINT32_MAX;
         Log("Prefab: returned to parent scene (working edits restored).");
         return;
     }
@@ -141,6 +156,9 @@ void EditorApp::ProcessFullPrefabNavigation() {
     // dirty flag. Never call CloseScene (which writes the parent file).
     const std::string previousTarget = TourTarget();
     const bool previousDirty = m_tourDirty;
+    const std::vector<EditorCam> previousCameras = m_editorCams;
+    const std::vector<uint32_t> previousSelection = m_selection;
+    const uint32_t previousSelected = m_selected;
     if (!SaveTourTo(tmp.generic_string(), false, true)) {
         Log("Prefab: parent snapshot failed; nothing switched.");
         return;
@@ -148,6 +166,7 @@ void EditorApp::ProcessFullPrefabNavigation() {
     if (m_prefab.world)
         ClosePrefabWorld();
     m_showPrefabWindow = false;
+    m_prefabRequestedPath.clear();
     if (!OpenTourFile(prefabPath)) {
         Log("Prefab: failed to open source; recovering parent snapshot.");
         (void)OpenTourFile(tmp.generic_string());
@@ -159,6 +178,9 @@ void EditorApp::ProcessFullPrefabNavigation() {
     m_fullPrefabParentSnapshot = tmp.generic_string();
     m_fullPrefabParentTarget = previousTarget;
     m_fullPrefabParentDirty = previousDirty;
+    m_fullPrefabParentCameras = previousCameras;
+    m_fullPrefabParentSelection = previousSelection;
+    m_fullPrefabParentSelected = previousSelected;
     Log("Prefab: full editor mode for '" + prefabPath
         + "' (Save & Return or Discard & Return in File).");
 }
