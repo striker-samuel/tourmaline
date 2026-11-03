@@ -407,7 +407,15 @@ void EditorApp::UpdatePrefabBoundary(float dt) {
         }
         m_prefabRenderer=std::move(renderer);
         m_prefabRendererValid=true;
-        m_prefabRenderer->PushRenderQuality(m_renderQuality);
+        // The RHI exposes one active TLAS per ResourceManager. The main
+        // WYSIWYG and prefab views share that manager, so enabling ray queries
+        // in both would let the prefab overwrite the main world's TLAS.
+        // Keep the prefab on the existing contact/CSM fallback until TLAS
+        // ownership becomes per-world/per-view.
+        auto prefabQuality = m_renderQuality;
+        prefabQuality.rayTracedSunShadowsEnabled = false;
+        prefabQuality.opacityMicromapsEnabled = false;
+        m_prefabRenderer->PushRenderQuality(prefabQuality);
     }
     SyncPrefabPreview(); // recovers after the parent world was rebound
     const glm::vec3 offset(
