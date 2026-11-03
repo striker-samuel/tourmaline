@@ -4276,7 +4276,7 @@ void TestPhysicsAuthoring() {
 		"setPhysicsBodyAttr -n 0 -at shape -v 2;\n"
 		"setPhysicsBodyAttr -n 0 -at radius -v 0.75;\n"
 		"setPhysicsBodyAttr -n 0 -at mass -v 12.5;\n"
-		"setPhysicsBodyAttr -n 0 -at sensor -type \\"bool\\" -v on;\n",
+		"setPhysicsBodyAttr -n 0 -at sensor -type \"bool\" -v on;\n",
 		doc, err), "physics: parse authored commands");
 	Check(doc.commands.size() == 6, "physics: parsed command count");
 	Check(SaveTour(TempTour(), doc, err), "physics: tour save");
