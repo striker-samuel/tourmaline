@@ -51,7 +51,7 @@
 #include <Engine/Vfs/vfs.h>
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
-#include <Engine/Utils/file_watcher.h>
+#include "editor_content_server.h"
 #include <gltf_import/gltf.h> // GltfGuidResolver (the hook below)
 #include <gltf_import/asset_export.h> // the preprocessed asset derivation
 #include <gltf_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
@@ -2382,7 +2382,7 @@ private:
 	// Boundary) drains SETTLED changes and routes them through the
 	// EXISTING selective funnels — never a per-frame project scan.
 	// TOURMALINE_EDITOR_WATCH=0 disables.
-	std::unique_ptr<smvk::FileWatcher> m_projectWatcher;
+	std::unique_ptr<EditorContentServer> m_contentServer;
 	bool m_projectWatcherEnabled = true;
 	// Arms (or re-arms) the watcher for the open project. EditorApp
 	// side (editor_project.cpp).
