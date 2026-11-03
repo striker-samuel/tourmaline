@@ -1520,6 +1520,8 @@ std::vector<VfsPath> PakBackend::ListDir(const VfsPath& dir) const {
 		all.push_back(e);
 	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Sdf))
 		all.push_back(e);
+	for (const PakTocEntry* e : reader_->BlobsOfKind(PakAssetKind::Shape))
+		all.push_back(e);
 	for (const PakTocEntry* e : all) {
 		const std::string& p = e->path;
 		if (n.empty()) {
