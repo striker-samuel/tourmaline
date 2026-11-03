@@ -510,8 +510,10 @@ struct FramePSHot
     float  fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
     float  giIntensity;      // 68
     uint   giDebug;          // 72
-    uint   giVolumesEnabled;  // 76
-    uint   pad_[3];          // 80 -> 96 (16-byte aligned total)
+    uint   giVolumesEnabled; // 76
+    float  deltaTime;        // 80 (seconds since previous update)
+    float  fps;              // 84 (instantaneous 1 / deltaTime; 0 if no advance)
+    uint   pad_[2];          // 88 -> 96 (16-byte aligned total)
 };
 
 // Moved below the Forward+ light structs so it can carry typed pointers

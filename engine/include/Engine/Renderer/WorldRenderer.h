@@ -1246,7 +1246,7 @@ static_assert(sizeof(FrameUniforms) == 3152, "FrameUniforms size: HLSL mirror (t
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
 // Uploaded as a separate buffer slice per frame to keep PS register pressure low.
-struct FramePSHot
+struct alignas(16) FramePSHot
 {
 	glm::vec3 cameraPos;        // 0
 	float     time;             // 12 -> 16
@@ -1263,11 +1263,13 @@ struct FramePSHot
 	float     fogEndAndFlags_w; // 64 (env.fogEndAndFlags.w = iblEnabled)
 	float     giIntensity;      // 68
 	uint32_t  giDebug;          // 72
-	uint32_t  giVolumesEnabled;      // 76
-	uint32_t  pad_[3];          // 80 -> 96 (16-byte aligned total)
+	uint32_t  giVolumesEnabled; // 76
+	float     deltaTime;        // 80 (seconds since previous update)
+	float     fps;              // 84 (instantaneous 1 / deltaTime; 0 if no advance)
+	uint32_t  pad_[2];          // 88 -> 96 (16-byte aligned total)
 };
-#if 0 // Lightmaps deprecated - size/offsets changed
 static_assert(sizeof(FramePSHot) == 96);
+static_assert(alignof(FramePSHot) == 16);
 static_assert(offsetof(FramePSHot, cameraPos) == 0);
 static_assert(offsetof(FramePSHot, time) == 12);
 static_assert(offsetof(FramePSHot, viewportSize) == 16);
@@ -1283,9 +1285,9 @@ static_assert(offsetof(FramePSHot, dsTileCountX) == 60);
 static_assert(offsetof(FramePSHot, fogEndAndFlags_w) == 64);
 static_assert(offsetof(FramePSHot, giIntensity) == 68);
 static_assert(offsetof(FramePSHot, giDebug) == 72);
-static_assert(offsetof(FramePSHot, lmEnabled) == 76);
-static_assert(offsetof(FramePSHot, giVolumesEnabled) == 80);
-#endif
+static_assert(offsetof(FramePSHot, giVolumesEnabled) == 76);
+static_assert(offsetof(FramePSHot, deltaTime) == 80);
+static_assert(offsetof(FramePSHot, fps) == 84);
 
 // Resources
 struct AppResources {

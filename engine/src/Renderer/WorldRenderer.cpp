@@ -5990,6 +5990,8 @@ namespace engine {
 		hot.giIntensity = data.giIntensity;
 		hot.giDebug = data.giDebug;
 		hot.giVolumesEnabled = data.giVolumesEnabled;
+		hot.deltaTime = m_deltaTime;
+		hot.fps = (m_deltaTime > 0.0f) ? (1.0f / m_deltaTime) : 0.0f;
 		hot.pad_[0] = 0;
 		hot.pad_[1] = 0;
 
