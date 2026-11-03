@@ -109,6 +109,16 @@ class MaterialLabTests(unittest.TestCase):
                 self.assertIn("env.default.sunIntensity", tour)
                 self.assertIn(f"content/models/{env}/{env}.geometry", tour)
 
+    def test_fixture_project_disables_the_cubemap_capture_bake(self):
+        # The legacy single-scene build lane would otherwise run Cook's
+        # --cubemap stage: the auto probe lands inside the centre sphere,
+        # the capture bakes black and the pak gate refuses the empty
+        # manifest. These are analytic-sky environments by design.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = material_lab_fixtures.generate(Path(tmp))
+            text = (project / ".tourmaline/build-settings.txt").read_text()
+            self.assertIn("cubemap=off", text)
+
 
 if __name__ == "__main__":
     unittest.main()

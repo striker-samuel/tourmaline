@@ -44,6 +44,12 @@ This makes a project marker, three .gltf/.bin source pairs under
 The materials include dielectric and metallic roughness extremes,
 copper, an intermediate metallic case, and deliberate roughness/albedo
 warnings. The case camera positions live in `material_lab/suite.json`.
+The generator also writes `.tourmaline/build-settings.txt` with
+`cubemap=off`: these are analytic-sky environments, so Cook's baked
+capture stage must not run (the auto probe lands inside the centre
+sphere and the pak gate refuses the resulting empty capture manifest).
+Keep that setting off unless you deliberately switch a suite to baked
+probe references.
 
 Import the source glTFs into the native geometry family, then cook each
 scene into its own pak. Linux example:
@@ -64,9 +70,11 @@ done
 On Windows run equivalent commands in Developer PowerShell using
 `out/build/x64-Release/Project.exe`. The paks are consumed relative to
 the `App` executable working directory, as in `tourcapture`.
-If your published scene names differ, update the suite's source `scene`
-field. Generated assets and captures should remain under `out/` rather
-than being committed.
+The bundled suites address their scene as `"scene"` — the name the
+single-scene legacy cook stamps into the pak (scenes load by cooked
+identity, and a miss fails loudly). If your published scene names
+differ, update the suite's source `scene` field. Generated assets and
+captures should remain under `out/` rather than being committed.
 
 **GPU smoke steps still need executing on a Vulkan-capable development
 machine.** The CPU unit tests do not prove the glTF cook, lighting, camera

@@ -179,6 +179,19 @@ def generate(project):
     (project / "project.tourproj").write_text(
         "name=MaterialLab\nguid=08a662b4a11a46ca865b899efb0ef202\nversion=2\n",
         encoding="utf-8")
+    # The legacy single-scene build lane reads this file and would
+    # otherwise run Cook's --cubemap capture stage. These fixtures are
+    # ANALYTIC-SKY environments by design: the auto probe lands inside
+    # the centre sphere (bounds centre + 1.5 m), bakes a black capture
+    # and the pak gate refuses the empty manifest. A baked single-probe
+    # cubemap of a sphere grid is also the wrong lighting reference for
+    # these suites — the renderer's analytic sky is the intended one.
+    settings = project / ".tourmaline"
+    settings.mkdir(parents=True, exist_ok=True)
+    (settings / "build-settings.txt").write_text(
+        "# material_lab: analytic-sky environments; no baked captures\n"
+        "cubemap=off\n",
+        encoding="utf-8")
     for env in ("studio", "cornell", "outdoor"):
         make_gltf(project / "content" / "models" / env / f"{env}.gltf", env)
         make_tour(project / "content" / "scenes" / f"{env}.tour", env)

@@ -148,7 +148,7 @@
       "description": "Neutral analytic-sky studio; not baked HDR IBL",
       "source": {
         "pak": "content/paks/material_lab_studio.pak",
-        "scene": "studio"
+        "scene": "scene"
       },
       "pins": {
         "TOURMALINE_AMBIENT": "skyibl",
@@ -159,7 +159,7 @@
       "description": "Cornell-style red/green enclosure with authored point light, not a path-traced reference",
       "source": {
         "pak": "content/paks/material_lab_cornell.pak",
-        "scene": "cornell"
+        "scene": "scene"
       },
       "pins": {
         "TOURMALINE_AMBIENT": "skyibl",
@@ -170,7 +170,7 @@
       "description": "Outdoor analytic sky with a fixed sun and ground",
       "source": {
         "pak": "content/paks/material_lab_outdoor.pak",
-        "scene": "outdoor"
+        "scene": "scene"
       },
       "pins": {
         "TOURMALINE_AMBIENT": "skyibl",
