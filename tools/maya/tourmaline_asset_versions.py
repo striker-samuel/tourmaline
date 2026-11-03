@@ -17,7 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import urlopen
 
-from tourmaline_asset_cache import AssetClient
+from tourmaline_asset_cache import AssetClient, load_client_settings
 
 DEFAULT_SERVER = "http://127.0.0.1:8765"
 WINDOW = "tourmalineAssetVersionsWindow"
@@ -42,7 +42,9 @@ def _maya():
 
 def _server():
     """Local archive by default, or a configured authenticated NAS endpoint."""
-    value = os.environ.get("TOURMALINE_ASSET_URL", DEFAULT_SERVER).rstrip("/")
+    settings = load_client_settings()
+    value = (os.environ.get("TOURMALINE_ASSET_URL") or
+             settings.get("url") or DEFAULT_SERVER).rstrip("/")
     parts = urlsplit(value)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError("invalid TOURMALINE_ASSET_URL")
@@ -52,13 +54,15 @@ def _server():
 def _client():
     """None in legacy localhost mode; NAS mode requires a bearer token."""
     url = _server()
-    token = os.environ.get("TOURMALINE_ASSET_TOKEN", "")
+    settings = load_client_settings()
+    token = os.environ.get("TOURMALINE_ASSET_TOKEN") or settings.get("token", "")
     host = urlsplit(url).hostname
     if not token and host not in ("127.0.0.1", "localhost"):
         raise ValueError("set TOURMALINE_ASSET_TOKEN for the shared repository")
     if not token:
         return None
-    return AssetClient(url, token, cache=os.environ.get("TOURMALINE_ASSET_CACHE_DIR"))
+    cache = os.environ.get("TOURMALINE_ASSET_CACHE_DIR") or settings.get("cache")
+    return AssetClient(url, token, cache=cache)
 
 
 def _api(endpoint, **params):
