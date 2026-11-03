@@ -244,11 +244,10 @@ private:
 // ---- THE TYPED CATALOG HELPER (the generated header's own types) --------
 // The compiled catalog's Assets array is a GENERATED POD table
 // (project.h); the validation mirror (CompiledAssetDesc) must stay
-// LAYOUT-IDENTICAL to it. This helper does the proof ONCE (member
-// order + types, static_asserted at every instantiation) and the
-// pointer cast in ONE audited place — game code never
-// reinterpret_cast's its generated data again (the sample's old
-// hand-rolled proof lived at its call site).
+// LAYOUT-IDENTICAL to it. This helper checks member layout and then
+// copies each field into the runtime's own descriptor type. The
+// one-time copy avoids violating strict aliasing by treating a
+// generated Desc object as an unrelated CompiledAssetDesc object.
 template <typename Desc>
 bool AttachCompiledCatalog(ProjectRuntime& rt,
 	const Desc* assets, size_t assetCount, uint64_t fingerprint,
