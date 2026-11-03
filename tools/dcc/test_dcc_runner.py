@@ -94,6 +94,17 @@ class TestDccRunner(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "timed out"):
             run_local(job)
 
+    def test_nonfinite_and_nonpositive_timeouts_are_rejected(self):
+        source = self.root / "noop.py"
+        source.write_text("pass\n", encoding="utf-8")
+        for timeout in (float("nan"), float("inf"), float("-inf"), 0, -1):
+            with self.subTest(timeout=timeout):
+                job = ProcessJob(name="invalid-timeout", software="python",
+                                 executable=sys.executable, script=source,
+                                 timeout_seconds=timeout)
+                with self.assertRaisesRegex(ValueError, "positive and finite"):
+                    run_local(job)
+
     def test_environment_validation(self):
         self.assertEqual(validate_environment({"PATH": "some path"}),
                          {"PATH": "some path"})

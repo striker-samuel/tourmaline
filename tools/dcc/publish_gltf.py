@@ -23,20 +23,32 @@ from dcc_runner import run_local, validate_environment
 
 
 def validate_gltf(path: Path) -> None:
+    """Check the basic single-file glTF handoff before replacing published data."""
     with path.open("r", encoding="utf-8") as file:
         doc = json.load(file)
-    if not isinstance(doc, dict) or not str(doc.get("asset", {}).get("version", "")).startswith("2."):
-        raise ValueError("export did not produce a glTF 2.x document")
-    if "scenes" not in doc and "nodes" not in doc and "meshes" not in doc:
+    asset = doc.get("asset") if isinstance(doc, dict) else None
+    if not isinstance(asset, dict) or asset.get("version") != "2.0":
+        raise ValueError("export did not produce a glTF 2.0 document")
+    if not any(isinstance(doc.get(key), list) for key in ("scenes", "nodes", "meshes")):
         raise ValueError("export has no scene content")
-    # Atomic single-file handoff: nothing should reference staging paths.
+    # Atomic single-file handoff: a .gltf has no GLB binary chunk. Buffers
+    # must have embedded data URIs; images may use those or bufferViews.
     for group in ("buffers", "images"):
-        for item in doc.get(group, []):
-            uri = item.get("uri", "")
-            if uri and not uri.startswith("data:"):
+        entries = doc.get(group, [])
+        if not isinstance(entries, list):
+            raise ValueError("export has an invalid " + group + " array")
+        for item in entries:
+            if not isinstance(item, dict):
+                raise ValueError("export has an invalid " + group + " entry")
+            uri = item.get("uri")
+            if group == "buffers" and not uri:
+                raise ValueError("export has a buffer without an embedded data URI")
+            if group == "images" and uri is None and "bufferView" not in item:
+                raise ValueError("export has an image without embedded data or bufferView")
+            if uri is not None and (not isinstance(uri, str) or not uri.startswith("data:")):
                 raise ValueError(
-                    "export contains external " + group
-                    + " dependency: " + uri
+                    "export contains external or invalid " + group
+                    + " dependency: " + str(uri)
                     + " (use embedded glTF for this basic runner)")
 
 

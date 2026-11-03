@@ -320,14 +320,19 @@ def search(doc, query, limit=10, weights=None, size_ratio=2.0, exclude_source=No
             raise SearchError("no weighted similarity dimensions exist for this query")
         total_weight = sum(w for _, w in active)
         score = 100 * sum(w * parts[name] for name, w in active) / total_weight
-        found.append({"source": candidate["source"], "geometry_guid": candidate.get("geometry_guid", ""),
-                      "sha256": candidate.get("sha256", ""),
-                      "score": round(score, 2),
-                      "dimensions": {name: None if parts.get(name) is None else round(100 * parts[name], 2)
-                                     for name in DIMENSIONS},
-                      "bounds": candidate.get("bounds"), "materials": candidate.get("materials", [])})
-    found.sort(key=lambda item: (-item["score"], item["source"]))
-    return [dict(rank=i + 1, **item) for i, item in enumerate(found[:limit])]
+        # Rank on unrounded likeness; display rounding must not turn close
+        # results into alphabetical ties.
+        found.append((score, {"source": candidate["source"],
+                              "geometry_guid": candidate.get("geometry_guid", ""),
+                              "sha256": candidate.get("sha256", ""),
+                              "score": round(score, 2),
+                              "dimensions": {
+                                  name: None if parts.get(name) is None else round(100 * parts[name], 2)
+                                  for name in DIMENSIONS},
+                              "bounds": candidate.get("bounds"),
+                              "materials": candidate.get("materials", [])}))
+    found.sort(key=lambda pair: (-pair[0], pair[1]["source"]))
+    return [dict(rank=i + 1, **item) for i, (_, item) in enumerate(found[:limit])]
 
 
 def match_asset(doc, needle):
@@ -385,7 +390,7 @@ def asset_description(doc, asset, style="game-ready PBR concept art"):
     surface += ", metallic" if metallic >= .6 else ", nonmetallic" if metallic <= .4 else ", mixed metallic"
     size_str = " × ".join(f"{x:.3g}" for x in dims)
     label = Path(asset["source"]).stem
-    description = (f"Reference asset {label!r}: approximate local-space dimensions {size_str} "
+    description = (f"Reference asset {label!r}: approximate transformed-geometry dimensions {size_str} "
                    f"(units as authored); {proportions}. Predominantly {color} base color, "
                    f"{surface} surface. {len(asset.get('materials', []))} referenced material(s).")
     prompt = (f"Produce one isolated {style} of a single 3D prop, orthographic +Z reference view, "

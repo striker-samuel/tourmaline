@@ -214,6 +214,17 @@ class ReverseSearchTests(unittest.TestCase):
         cli_result = json.loads(output.getvalue())
         self.assertEqual(cli_result["results"][0]["source"], "assets/red_copy.geometry")
 
+    def test_ranking_uses_unrounded_similarity(self):
+        # Both display as 50.00, but the genuinely better match must win.
+        doc = {"grid": 2, "assets": [{"source": "a.geometry"},
+                                     {"source": "z.geometry"}]}
+        def fake_scores(query, candidate, grid):
+            return {"shape": .50004 if candidate["source"] == "z.geometry" else .5}
+        with patch.object(search, "visual_scores", side_effect=fake_scores):
+            rows = search.search(doc, {}, weights={"shape": 1}, size_ratio=0)
+        self.assertEqual([r["source"] for r in rows], ["z.geometry", "a.geometry"])
+        self.assertEqual([r["score"] for r in rows], [50.0, 50.0])
+
     def test_invalid_size_ratio_rejected(self):
         with self.assertRaises(search.SearchError):
             search.search(self.doc, self.doc["assets"][0], size_ratio=.5)

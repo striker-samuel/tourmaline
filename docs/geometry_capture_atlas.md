@@ -62,10 +62,11 @@ then every source asset's SHA-256, optional geometry GUID from its nearby
 triangle count, material GUID → local ID mapping, and the pixel-space
 `rect` and `views` rectangles for **every mip**. Rectangle coordinates
 have top-left origin, in pixels; the dimensions are explicit and may differ
-between levels. A reverse-search backend can crop a chosen view and channel
+between levels. A reverse-search consumer can crop a chosen view and channel
 at the desired mip, compare coverage/material features, and map matches
-to stable geometry/material identities in this manifest. Build the ANN index,
-descriptors, or similarity scoring in a downstream consumer; this command
+to stable geometry/material identities in this manifest. The companion
+`tools/asset_reverse_search.py` builds compact descriptors and offers
+exact linear similarity ranking; it is not an ANN index. This command
 only generates the capture corpus.
 
 The current format is a file-per-channel, file-per-mip set of PNGs plus JSON,
