@@ -1540,6 +1540,11 @@ private:
 	// viewport), so quad-view F8 works without migrating the editor
 	// preview's legacy shader/frame ABI.
 	int LiveViewViewport() const {
+		// A Viewport tab hidden behind another tool should not drive the
+		// heavyweight WYSIWYG renderer in the background. Fullscreen (I)
+		// deliberately keeps rendering without the dock windows.
+		if (m_uiMode && !m_dockViewportVisible)
+			return -1;
 		return SelectLivePreviewViewport(ViewportCount(), m_activeVp,
 			[this](int vp) { return m_viewports[vp].viewMode; },
 			ViewMode::Lit, ViewMode::Baked);
