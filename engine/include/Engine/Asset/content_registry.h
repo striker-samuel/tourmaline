@@ -90,7 +90,7 @@ namespace tour::asset {
 // provider selection answers "who supplies it NOW").
 struct ContentRecord {
 	uint64_t id = 0;        // the stable content id (the catalog identity)
-	uint8_t kind = 0;       // smvk::kCatalogKind* (the ABI kind byte)
+	uint8_t kind = smvk::kCatalogKindNil; // invalid until assigned a real kind
 	std::string path;       // the LOGICAL path (VFS-normalized; the join key)
 	std::string pak;        // the manifest-declared owner pak (diagnostics)
 	std::string sceneName;  // scene rows: the cooked scene name (the id->scene join)
