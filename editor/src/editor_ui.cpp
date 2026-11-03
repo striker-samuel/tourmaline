@@ -226,6 +226,11 @@ namespace editor {
 						DrawMaterialEditor();
 						ImGui::EndTabItem();
 					}
+					if (ImGui::BeginTabItem("Reference")) {
+						m_rightTab = 6;
+						DrawReferencePanel();
+						ImGui::EndTabItem();
+					}
 					ImGui::EndTabBar();
 				}
 			}
