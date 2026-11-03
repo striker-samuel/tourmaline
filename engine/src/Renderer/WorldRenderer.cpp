@@ -11496,6 +11496,36 @@ namespace engine {
 					}
 				}
 			}
+			static constexpr const char* workPaths[3] = {
+				"content/shaders/gpu_scene_work_select.cs.hlsl.spv",
+				"content/shaders/gpu_scene_work_prefix.cs.hlsl.spv",
+				"content/shaders/gpu_scene_work_scatter.cs.hlsl.spv"
+			};
+			for (uint32_t i=0; i<3u; ++i) {
+				if (m_gpuSceneWorkPrograms[i].shaderCount != 0) continue;
+				try {
+					auto bytes = smvk::shaders::Read(workPaths[i]);
+					m_gpuSceneWorkModules[i] = m_context->CreateShaderModule(
+						std::move(bytes), "gpuSceneWorkCS");
+					if (!m_gpuSceneWorkModules[i].empty()) {
+						smvk::Shader cs{
+							.module = m_gpuSceneWorkModules[i],
+							.entryPoint = "mainCS",
+							.stage = smvk::ShaderStage::Compute
+						};
+						m_gpuSceneWorkPrograms[i] = {
+							.shaders = { cs }, .shaderCount = 1
+						};
+					}
+				} catch (...) {
+					static bool logged = false;
+					if (!logged) {
+						std::fprintf(stderr,
+							"[GpuSceneWork] shader unavailable; stage skipped\n");
+						logged=true;
+					}
+				}
+			}
 			if (m_gpuSceneCullProgram.shaderCount == 1) {
 				// This is a validation bridge, NOT true large-world camera
 				// authority. The source VP remains float32; we only change
@@ -11523,13 +11553,27 @@ namespace engine {
 					const bool compactReady = compactAvailable &&
 						m_gpuSceneValidator.PrepareCompaction(*m_context, fb.frameIndex,
 							selected.candidateCount, countPush, prefixPush, scatterPush);
+					tour::gpu_scene::WorkSelectPush workSelect{};
+					tour::gpu_scene::WorkPrefixPush workPrefix{};
+					tour::gpu_scene::WorkScatterPush workScatter{};
+					const bool workProgramsAvailable =
+						m_gpuSceneWorkPrograms[0].shaderCount == 1 &&
+						m_gpuSceneWorkPrograms[1].shaderCount == 1 &&
+						m_gpuSceneWorkPrograms[2].shaderCount == 1;
+					const bool workReady = compactReady && workProgramsAvailable &&
+						m_gpuSceneValidator.PrepareWorkExpansion(*m_context, fb.frameIndex,
+							m_gpuSceneDatabase,
+							m_gpuSceneUploader.DeviceAddresses(*m_context,fb.frameIndex),
+							selected.candidateCount, workSelect, workPrefix, workScatter);
 					auto& pass = m_rendergraph->AddComputePass("GpuSceneValidate");
 					// ShaderProgram copies must be mutable for BindComputePipeline.
 					auto program = m_gpuSceneCullProgram;
 					auto compactPrograms = m_gpuSceneCompactPrograms;
+					auto workPrograms = m_gpuSceneWorkPrograms;
 					const uint32_t groups = (selected.candidateCount+63u)/64u;
-					pass.SetRecordingFunc([program, compactPrograms, gpuPush,
-						countPush, prefixPush, scatterPush, groups, compactReady](
+					pass.SetRecordingFunc([program, compactPrograms, workPrograms, gpuPush,
+						countPush, prefixPush, scatterPush, workSelect, workPrefix,
+						workScatter, groups, compactReady, workReady](
 						smvk::CommandBuffer& cmd) mutable {
 						cmd.BindComputePipeline(program);
 						cmd.PushConstants(0, sizeof(gpuPush), &gpuPush,
@@ -11551,6 +11595,22 @@ namespace engine {
 						cmd.EmitGlobalMemoryBarrier();
 						cmd.BindComputePipeline(compactPrograms[2]);
 						cmd.PushConstants(0, sizeof(scatterPush), &scatterPush,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(groups,1,1);
+						if (!workReady) return;
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(workPrograms[0]);
+						cmd.PushConstants(0, sizeof(workSelect), &workSelect,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(groups,1,1);
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(workPrograms[1]);
+						cmd.PushConstants(0, sizeof(workPrefix), &workPrefix,
+							smvk::ShaderStage::Compute);
+						cmd.Dispatch(1,1,1);
+						cmd.EmitGlobalMemoryBarrier();
+						cmd.BindComputePipeline(workPrograms[2]);
+						cmd.PushConstants(0, sizeof(workScatter), &workScatter,
 							smvk::ShaderStage::Compute);
 						cmd.Dispatch(groups,1,1);
 					});
