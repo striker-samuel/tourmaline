@@ -13058,6 +13058,11 @@ namespace engine {
 		if (m_viewportResources.spotShadows.Valid())
 			mainInputs.push_back(m_viewportResources.spotShadows.logicalView);
 		const auto rfTM = bench_clk::now();
+		// The GPU filter normally publishes chart xforms, but direct
+		// fallback draws must also work when no filtered slot exists.
+		// Ensure caches by scene version; this does not upload each frame.
+		if (m_world && !m_world->lmChartTable.empty())
+			m_gfxRenderer.EnsureChartXforms(*m_world, *m_context);
 		auto& mainPass = m_rendergraph->AddPass("Main")
 			.SetOffset(0, 0)
 			.SetInputImages(mainInputs)
@@ -13357,6 +13362,44 @@ namespace engine {
 				}
 				cmd.PushConstants(kDepthSkinTailOffset, sizeof(DepthSkinTail),
 					&skinTail, smvk::ShaderStage::All);
+				// Main direct lightmaps are STATIC-only. The chart table
+				// occupies 192..208; the extra 16B at 224..240 overlays
+				// only DepthSkinTail's padding and is pushed AFTER it.
+				// Always reset both tails to prevent stale optional
+				// stream addresses leaking between static/skinned draws.
+				smvk::gfx::UvFlatVsPushTail chartTail{};
+				smvk::gfx::DirectLightmapPullTail lmTail{};
+				if (!meshDesc->skinned) {
+					const uint32_t lod = LodIndexForNode(node, meshId);
+					if (auto loc = m_world->ResolveLodMesh(meshId, lod)) {
+						const auto h = loc->handle;
+						if (const smvk::StaticMesh* lmMesh =
+							loc->cluster->staticMeshes.get(h);
+							lmMesh && !lmMesh->skinned
+							&& lmMesh->lmChunk != UINT32_MAX
+							&& lmMesh->lightmapBase != UINT32_MAX
+							&& !lmMesh->lmChartXforms.empty()
+							&& m_gfxRenderer.ChartXformsAddress() != 0) {
+							const uint32_t vertexBase =
+								loc->cluster->GetMeshHeapVertexBase(h);
+							if (vertexBase != UINT32_MAX) {
+								chartTail.hasXforms = 1u;
+								chartTail.chartOffset =
+									m_world->ChartOffsetFor(meshId, lod);
+								chartTail.lmXforms =
+									m_gfxRenderer.ChartXformsAddress();
+								lmTail.delta = lmMesh->lightmapBase - vertexBase;
+								lmTail.lobeCount = lmMesh->lmChunk;
+								lmTail.magic =
+									smvk::gfx::kDirectLightmapPullMagic;
+							}
+						}
+					}
+				}
+				cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
+					sizeof(chartTail), &chartTail, smvk::ShaderStage::All);
+				cmd.PushConstants(smvk::gfx::kDirectLightmapPullOffset,
+					sizeof(lmTail), &lmTail, smvk::ShaderStage::All);
 				// Dither-on-closeup (Scene::ditherCloseup; per frame, per
 				// draw): Hidden draws never reach here (the leg loops skip
 				// them below); Fade draws carry the per-draw flag

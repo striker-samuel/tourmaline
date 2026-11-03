@@ -17,6 +17,12 @@
 #include "vertex_pack.hlsli"
 #include "gfxfilter.hlsli"
 #include "gpu_platform.hlsli"
+#include "lightmap_pull.hlsli"
+
+#ifndef TOURMALINE_DXIL
+[[vk::binding(7, 0)]] ByteAddressBuffer g_vertexLightmapHeap;
+#endif
+#define DIRECT_LM_PULL_MAGIC 0x4C4D5055u
 
 struct DefaultVsPush
 {
@@ -62,7 +68,12 @@ struct DefaultVsPush
     uint skinned;      // 208: 1 = fetch from the deformed heap
     uint deformedBase; // 212: the skinned span's heap-id base
     GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed; // 216: the frame's deformed heap
-    uint4 _padSkin;    // 224..240: layout filler
+    // Main's STATIC lightmap metadata overlays this spare skin tail.
+    // Skinned draws always publish the disabled lobe sentinel instead.
+    uint lmDelta;      // 224: wrapping lightmap vertex-index delta
+    uint lmChunk;      // 228: SG lobe count, UINT32_MAX means absent
+    uint lmMagic;      // 232: LMPU, avoids stale prevModel interpretation
+    uint lmPad;        // 236
     uint ditherCloseup; // 240
     // Byte 244 = PushConstants::padEnd_.y: the DIRECT legs' per-draw
     // RESOLVED material userdata (docs/shader_library_design.md Phase A
@@ -176,15 +187,24 @@ VSOut mainVS(VSIn IN)
     // material carries layerMaterials (see default_lit.frag.hlsl).
     OUT.color = IN.color;
     OUT.uv = IN.uv;
-    // Lightmaps deprecated: no chart UV rides this format (see VSIn) and
-    // direct draws are never lightmapped — the constant sentinel pair
-    // (uv 0, chunk none) keeps the FS interpolant contract alive for the
-    // gated-off StaticLightmappedLayout option. The chart tail
-    // words in the push (hasXforms/chartOffset/lmXforms at 192..208) stay
-    // declared for layout identity with the C++ mirror; nothing reads
-    // them here.
+    // Static-only direct lightmaps: no draw ring, so the renderer pushes
+    // the selected LOD's optional heap delta and chart-table base.
+    // The skinned path ALWAYS takes the dynamic-GI fallback; neither
+    // lightmap sampling nor its optional vertex fetch is allowed.
     OUT.lightmapUv = float2(0.0f, 0.0f);
-    OUT.lmChunk = 0xFFFFFFFFu;
+    OUT.lmChunk = LM_PULL_NO_LOBES;
+#ifndef TOURMALINE_DXIL
+    if (pcDB.skinned == 0u && pcDB.hasXforms != 0u
+        && pcDB.lmMagic == DIRECT_LM_PULL_MAGIC
+        && pcDB.lmChunk != LM_PULL_NO_LOBES) {
+        const uint2 words = LightmapPullLoadWords(g_vertexLightmapHeap,
+            IN.vertexID, pcDB.lmDelta);
+        const LightmapPullVertex chart = DecodeLightmapPullVertex(words);
+        OUT.lightmapUv = GfxLightmapUv(chart.chartUv, chart.chartId,
+            pcDB.chartOffset, pcDB.lmXforms);
+        OUT.lmChunk = pcDB.lmChunk;
+    }
+#endif
 
     // Dither-on-closeup per-draw flag (byte 240 of this push — see the
     // struct tail above; the direct legs push it per draw).
