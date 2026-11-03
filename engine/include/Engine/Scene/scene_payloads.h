@@ -310,6 +310,21 @@ struct SceneEnv {
 	std::string skyboxUri;     // stored (skybox sampling is TODO)
 };
 
+// The runtime Fog mode/enable controls must be able to turn on an
+// authored volumetric tier whose intensity was zero (the SceneEnv default).
+// Preserve a positive authored value; use the live intensity or a visible
+// 1.0 fallback for the zero-intensity case. Disabling records the authored
+// off state so a later scene rebind does not silently re-enable it.
+inline void SetVolumetricFogActive(SceneEnv& env, bool active,
+	float fallbackIntensity) {
+	if (!active) {
+		env.volumetrics = 0.0f;
+		return;
+	}
+	if (!(env.volumetrics > 0.0f))
+		env.volumetrics = fallbackIntensity > 0.0f ? fallbackIntensity : 1.0f;
+}
+
 // Authored-environment binary record (see saveEnvFloats/loadEnvFloats
 // in Scene.cpp): 16 base floats + zonePriority, fixed order. Shrunk when
 // the postfx block split into SceneRenderSettings (old files fail the
