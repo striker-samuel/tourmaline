@@ -1062,6 +1062,13 @@ void TestPushBridge() {
 		"place.bridge.program-tail");
 	Check(push.protoCount == 2 && push.weightsA.x == 3.0f && push.weightsA.y == 1.0f,
 		"place.bridge.weights");
+	lb.config.slopeToRock = true;
+	lb.config.slopeThresholdDeg = 37.0f;
+	Check(PlacementPass::BuildTilePush(lb, TileID{}, view, ecoView,
+		0x1000, 0x2000, push) && push.slopeToRock == 1
+		&& push.slopeThresholdDeg == 37.0f,
+		"place.bridge.slope-rule-upload");
+	lb.config.slopeToRock = false;
 	Check(push.outInstances == 0x1000 && push.outCount == 0x2000, "place.bridge.bda");
 	// An empty program view refuses honestly (invalid-for-GPU layers run
 	// the CPU oracle — never a silent approximation).
@@ -2649,6 +2656,8 @@ void TestWorldResidency() {
 			"place.res.tile-extent");
 		Check(td.heights.valid() && td.eco.valid() && td.eco.channels == 4,
 			"place.res.tile-data-valid");
+		Check(td.eco.width > 8 && td.eco.height > 8,
+			"place.res.tile-ecotope-halo");
 		// The halo grew the heights window past the 8m tile.
 		Check(td.heights.width > 8 && td.heights.height > 8,
 			"place.res.tile-window-halo");
