@@ -13611,6 +13611,38 @@ namespace engine {
 					m_terrainHfSteps
 				);
 			}
+			// GPU-PLACED WORLD VEGETATION: zero per-instance CPU work.
+			// GPU cull -> prefix -> visible compaction -> complete indirect
+			// commands are already ordered by graph buffer hints above.
+			// This opt-in path currently uses the diagnostic unlit FS;
+			// PBR materials/lighting and shadows are a subsequent step.
+			if (m_gpuPlacementReady && m_gpuPlacementRuntime
+				&& m_gpuPlacementDraw) {
+				auto& rt = *m_gpuPlacementRuntime;
+				cmd.BindStaticVertexFmt();
+				cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
+					smvk::VertexLayoutId::Static,
+					opaqueDepth, noStencil,
+					smvk::BlendSettings::Opaque(), msaaSettings,
+					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+				cmd.PushConstants(0, sizeof(IRenderer::PushConstants),
+					&pc, smvk::ShaderStage::All);
+				for (size_t s = 0; s < rt.active.size(); ++s) {
+					const auto* vs = rt.VisSet(int32_t(s), placementFlight);
+					if (!vs) continue;
+					const tour::placement::PlacementVsPush tail{
+						vs->VisibleAddress(*m_context),
+						rt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
+						renderViewsAddress, mainRenderView, 0u };
+					cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+						sizeof(tail), &tail, smvk::ShaderStage::All);
+					for (uint32_t proto = 0; proto < m_gpuPlacementSeedCount; ++proto)
+						cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
+							uint64_t(proto) * tour::placement::kPlacementIndirectStride,
+							1, tour::placement::kPlacementIndirectStride);
+				}
+			}
+
 			cmd.BindRenderPipeline(
 				// Initial bind: the flat-line twin of main while P is on.
 				wireTwinOf(m_resources.mainProgram),
@@ -14377,38 +14409,6 @@ namespace engine {
 						// (instances bind to mesh entities, which ride
 						// the opaque paths in v1).
 						m_world->MaterialUserData(d.materialId));
-				}
-			}
-
-			// GPU-PLACED WORLD VEGETATION: zero per-instance CPU work.
-			// GPU cull -> prefix -> visible compaction -> complete indirect
-			// commands are already ordered by graph buffer hints above.
-			// This opt-in path currently uses the diagnostic unlit FS;
-			// PBR materials/lighting and shadows are a subsequent step.
-			if (m_gpuPlacementReady && m_gpuPlacementRuntime
-				&& m_gpuPlacementDraw) {
-				auto& rt = *m_gpuPlacementRuntime;
-				cmd.BindStaticVertexFmt();
-				cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
-					smvk::VertexLayoutId::Static,
-					opaqueDepth, noStencil,
-					smvk::BlendSettings::Opaque(), msaaSettings,
-					smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
-				cmd.PushConstants(0, sizeof(IRenderer::PushConstants),
-					&pc, smvk::ShaderStage::All);
-				for (size_t s = 0; s < rt.active.size(); ++s) {
-					const auto* vs = rt.VisSet(int32_t(s), placementFlight);
-					if (!vs) continue;
-					const tour::placement::PlacementVsPush tail{
-						vs->VisibleAddress(*m_context),
-						rt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
-						renderViewsAddress, mainRenderView, 0u };
-					cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
-						sizeof(tail), &tail, smvk::ShaderStage::All);
-					for (uint32_t proto = 0; proto < m_gpuPlacementSeedCount; ++proto)
-						cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
-							uint64_t(proto) * tour::placement::kPlacementIndirectStride,
-							1, tour::placement::kPlacementIndirectStride);
 				}
 			}
 
