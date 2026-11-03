@@ -25,6 +25,19 @@ DomainSample GridDomain::sample(StableID id, uint32_t candidateIndex) const {
 	return s;
 }
 
+DomainSample PlacementPointCloudData::sample(uint32_t candidateIndex) const {
+	DomainSample s;
+	if (!valid() || candidateIndex >= positions.size()) return s;
+	s.p = positions[candidateIndex];
+	if (!normals.empty()) {
+		const glm::vec3 n = normals[candidateIndex];
+		if (glm::dot(n, n) > 1e-12f)
+			s.n = glm::normalize(n);
+	}
+	s.primitiveId = candidateIndex;
+	return s;
+}
+
 float TriangleArea(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
 	return 0.5f * glm::length(glm::cross(b - a, c - a));
 }
