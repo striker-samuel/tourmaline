@@ -37,6 +37,8 @@ the runtime renderer.
 ```sh
 cmake -S . -B out/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 # Asset IDs can be generated independently; the executable depends on ids.
+# (ids first imports the authored cube.gltf through Project — idempotent,
+# stale-gated — because the scene references the derived .geometry.)
 cmake --build out/build --target NativeGame_ids
 # Source glTF/PNG -> .geometry/.material + game.pak + game.tapp beside exe.
 cmake --build out/build --target NativeGame_paks
@@ -80,7 +82,9 @@ explicitly if users enable an alternative scale.
 ## Asset replacement
 
 The initial named cube, floor and light are inside
-`project/content/models/placeholder/cube.gltf`. Replace the model or its
+`project/content/models/cube/cube.gltf` (the importer publishes derived
+families into `content/models/<stem>/`, so keep the glTF in its own
+stem-named directory). Replace the model or its
 embedded PNG while retaining the source path, then run
 `NativeGame_paks` and rebuild `NativeGame`. The authored scene
 `project/content/scenes/main.tour` references the stable imported

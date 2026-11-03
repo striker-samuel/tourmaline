@@ -9,8 +9,8 @@ add_library(CookLib STATIC src/main.cpp src/lm_png.cpp src/cube_png.cpp)
 target_compile_definitions(CookLib PRIVATE ENGINE_VULKAN COOK_LIB_BUILD)
 target_include_directories(CookLib
 PRIVATE
-${CMAKE_SOURCE_DIR}/external/stb
-${CMAKE_SOURCE_DIR}/tools/common
+${TOURMALINE_SOURCE_DIR}/external/stb
+${TOURMALINE_SOURCE_DIR}/tools/common
 PUBLIC
 ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -26,7 +26,7 @@ add_executable(Cook src/main.cpp src/lm_png.cpp src/cube_png.cpp)
 target_compile_definitions(Cook PRIVATE ENGINE_VULKAN)
 # stb_image_write (cook-time atlas debug PNG, see lm_png.cpp; the same
 # vendored header the editor uses for its PNG export).
-target_include_directories(Cook PRIVATE ${CMAKE_SOURCE_DIR}/external/stb ${CMAKE_SOURCE_DIR}/tools/common)
+target_include_directories(Cook PRIVATE ${TOURMALINE_SOURCE_DIR}/external/stb ${TOURMALINE_SOURCE_DIR}/tools/common)
 target_link_libraries(Cook
 PRIVATE
 engine

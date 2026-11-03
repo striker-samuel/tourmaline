@@ -9,4 +9,4 @@ bake cubemaps off
 [pak world]
 output game.pak
 scene content/scenes/main.tour
-include content/models/placeholder/**
+include content/models/cube/**

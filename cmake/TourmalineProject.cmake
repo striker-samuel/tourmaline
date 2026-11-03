@@ -197,6 +197,11 @@ function(tourmaline_attach_project TARGET NAME)
 		# the exe, and the generated project.h re-stamps with the
 		# paks' fingerprints at state=verified. No BYPRODUCTS for the
 		# source-owned header: it must survive clean.
+		# The stage tools (Cook/GiBaker/Pak) are DEPENDENCIES: the
+		# build spawns them as subprocesses, and in EMBEDDED game-host
+		# builds nothing else pulls them in — building _paks alone must
+		# produce a runnable pipeline (at top level the all-target
+		# hides this gap).
 		add_custom_target(${NAME}_paks
 			COMMAND $<TARGET_FILE:Project>
 				build
@@ -204,7 +209,7 @@ function(tourmaline_attach_project TARGET NAME)
 				--recipe "${recipe}"
 				--publish "${TP_PAK_DIR}"
 				--header "${header}"
-			DEPENDS Project ${NAME}_ids
+			DEPENDS Project Cook GiBaker Pak ${NAME}_ids
 			COMMENT "Building ${NAME} content (recipe build -> paks + appmanifest + project.h re-stamp)"
 			VERBATIM
 		)

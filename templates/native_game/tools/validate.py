@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-gltf_path = root / "project/content/models/placeholder/cube.gltf"
+gltf_path = root / "project/content/models/cube/cube.gltf"
 scene = (root / "project/content/scenes/main.tour").read_text()
 recipe = (root / "project/game.tourrecipe").read_text()
 source = (root / "src/main.cpp").read_text()
@@ -23,9 +23,15 @@ for view in data["bufferViews"]:
 for image in data["images"]:
     if image["uri"].startswith("data:"):
         assert base64.b64decode(image["uri"].split(",", 1)[1]).startswith(b"\x89PNG\r\n\x1a\n")
-assert "cube.geometry" in scene
+# The importer PUBLISHES into content/models/<stem>/ — the gltf must live
+# in its own stem-named family dir and the tour must reference the derived
+# .geometry the import actually produces (a mismatch fails the resolver).
+assert gltf_path.parent.name == gltf_path.stem, gltf_path
+expected_geometry = f"content/models/{gltf_path.stem}/{gltf_path.stem}.geometry"
+assert expected_geometry in scene, expected_geometry
 assert "bake gi off" in recipe
-assert "content/models/placeholder/**" in recipe
+assert "bake cubemaps off" in recipe
+assert f"content/models/{gltf_path.stem}/**" in recipe
 assert "app::RunGame" in source and "SetExtraGameUi" in source
 assert "tourmaline_apphost" in cmake
 for file in (root / "src").rglob("*"):

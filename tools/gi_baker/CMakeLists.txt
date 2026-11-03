@@ -13,7 +13,7 @@ target_compile_definitions(GiBakerLib PRIVATE ENGINE_VULKAN GIBAKER_LIB_BUILD)
 target_include_directories(GiBakerLib
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/tools/common
+        ${TOURMALINE_SOURCE_DIR}/tools/common
 )
 
 target_link_libraries(GiBakerLib
@@ -30,12 +30,12 @@ target_compile_definitions(GiBaker PRIVATE ENGINE_VULKAN)
 
 target_include_directories(GiBaker
     PRIVATE
-        ${CMAKE_SOURCE_DIR}/tools/common
+        ${TOURMALINE_SOURCE_DIR}/tools/common
 )
 
 target_include_directories(GiBaker
     PRIVATE
-        ${CMAKE_SOURCE_DIR}/tools/common
+        ${TOURMALINE_SOURCE_DIR}/tools/common
 )
 
 target_link_libraries(GiBaker

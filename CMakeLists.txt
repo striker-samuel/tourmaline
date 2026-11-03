@@ -517,13 +517,20 @@ option(TOURMALINE_ENABLE_GAME_HOST
 if(TOURMALINE_IS_TOP_LEVEL OR TOURMALINE_ENABLE_GAME_HOST)
   add_subdirectory(tools/artifact_cache)
   add_subdirectory(tools/project)
+  # The full stage-tool spawn set Project.exe build uses (Cook/GiBaker/Pak):
+  # an embedded game project without Cook.exe or GiBaker.exe fails its own
+  # recipe build at the first Cook stage (bake gi on needs GiBaker).
+  add_subdirectory(tools/cook)
+  add_subdirectory(tools/gi_baker)
+  # pak_cooker BEFORE the hosts: it owns the ENGINE SHADER PACKAGE target
+  # (EngineScene_shaderpak over the declared compiled-output list), and
+  # HostSetup's deploy branch needs the target to exist at host setup.
   add_subdirectory(tools/pak_cooker)
   add_subdirectory(app)
 endif()
 if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/import)
   add_subdirectory(tools/tourinit)
-  add_subdirectory(tools/cook)
   # Demo content fetch: downloads the rolling 'demo-content' GitHub
   # release (the cooked sponza_10 project - .tapp manifest + its
   # content-addressed pak, SHA-256 verified, stale paks cleaned up)
@@ -547,7 +554,8 @@ if(TOURMALINE_IS_TOP_LEVEL)
       VERBATIM)
   endif()
   add_subdirectory(editor)
-  add_subdirectory(tools/gi_baker)
+  # (tools/gi_baker moved into the shared game-host block above: embedded
+  # game projects need the GiBaker stage tool for 'bake gi' recipes.)
   add_subdirectory(tools/cubemap_baker)
   add_subdirectory(samples/01_triangle)
   add_subdirectory(samples/02_blur)
