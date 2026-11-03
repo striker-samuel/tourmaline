@@ -132,3 +132,62 @@ Run `GpuSceneValidationTests` for headless reference-order coverage,
 then enable `TOURMALINE_GPU_SCENE_VALIDATE=1` on a Vulkan device to
 verify GPU readback and compiled shader behavior. CI has not been
 verified for this change.
+
+## GPU Scene v8: resident LOD and submesh work expansion
+
+The opt-in validation pass extends the stable compacted visible-instance
+records with three further compute stages:
+
+- `gpu_scene_work_select.cs.hlsl`: fetch each compacted instance through its
+  generation-checked GPU-scene row, validate the referenced shared mesh,
+  then select the **finest fully registered resident LOD** (lowest index).
+  Check both the shared-mesh residency bit and the individual LOD flags.
+  Validate the LOD's contiguous submesh span and count only live submesh
+  rows with a registered geometry ID. The shader writes one choice and one
+  uint32 count for **every input candidate**, including zero for invisible
+  or invalid indices, so stale frame memory cannot leak into the prefix.
+- `gpu_scene_work_prefix.cs.hlsl`: compute exclusive per-candidate output
+  offsets, with total work count in `offsets[candidateCount]`.
+- `gpu_scene_work_scatter.cs.hlsl`: expand each chosen LOD's valid submeshes
+  into 32-byte `SceneSubmeshWork` records in **stable instance/submesh
+  order**. Each record contains the instance slot + generation, transient
+  registered geometry ID, material ID, selected LOD index, persistent
+  submesh slot, pipeline group and pass mask.
+
+The count is read from the *GPU-produced compact offsets*, not from a CPU
+visibility list; the CPU list exists only as an independent validation
+oracle. The pipeline uses explicit compute memory barriers between each
+BDA-dependent dispatch.
+
+`CandidateValidator` owns choices, counts, offsets, and expanded-work
+buffers **per flight** and reads both total count and all compacted work
+records on flight reuse, after its acquire fence. The CPU reference walks
+the same generational scene rows and residency rules, including fallback
+when the finer LOD is not ready. Tests exercise multiple submeshes,
+unregistered geometry, residency change, stale generation and invisible
+instances.
+
+### Important constraints
+
+- **Still validation-only**: it never issues indirect draws, and does not
+  replace GfxDraw, HZB, seed/remainder, main raster, or shadow rendering.
+- The temporary LOD policy deliberately chooses the finest eligible
+  resident LOD. This is a correct residency selector but **not yet
+  screen-space-error LOD**; the production selector must share the
+  renderer's per-view error budget and switch policy.
+- The validator remains limited to 32,768 candidates, with at most 16
+  submeshes per selected LOD and 524,288 potential work rows. It allocates
+  space for this upper bound before any GPU write.
+- The per-candidate exclusive scan is serial and intentionally bounded to
+  validation usage. Replace both serial scans with scalable hierarchical
+  GPU scans before enabling a million candidates.
+- Existing World scene/global transforms and RenderView matrices are
+  still float32 absolute-world; the DoubleFloat row encoding cannot
+  reconstruct precision already lost there. A new authoritative double
+  scene/camera path is required before using GPU work for production
+  rendering at large world offsets.
+
+For GPU parity run with `TOURMALINE_GPU_SCENE_VALIDATE=1` and inspect
+`[GpuSceneWork]` count/record mismatches. Headless unit coverage lives in
+`GpuSceneValidationTests`. HLSL compilation and Vulkan-device verification
+must pass before enabling a production consumer.
