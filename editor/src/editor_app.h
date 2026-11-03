@@ -3041,6 +3041,7 @@ private:
 	int m_referenceSpp = 32;
 	int m_referenceBounces = 3;
 	float m_referenceExposure = 0.001f;
+	float m_referenceJobExposure = 0.001f;
 	std::string m_referencePath;
 	std::string m_referenceStatus = "No reference render yet";
 	void StartReferenceRender();
