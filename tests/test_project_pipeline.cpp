@@ -3436,7 +3436,7 @@ void TestProjectCatalog() {
 		const std::string retiredA =
 			lineFor("inline constexpr SoundKey ");
 		const std::string retiredB =
-			lineFor("inline constexpr TextureKey ");
+			lineFor("inline constexpr TextureKey long_retired_name");
 		Check(!retiredA.empty() && !retiredB.empty()
 			&& retiredA.find("{0x") == retiredB.find("{0x")
 			&& retiredA.find(" s ") != std::string::npos,
