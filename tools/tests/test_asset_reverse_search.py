@@ -219,6 +219,8 @@ class ReverseSearchTests(unittest.TestCase):
             search.search(self.doc, self.doc["assets"][0], size_ratio=.5)
         with self.assertRaises(search.SearchError):
             search.search(self.doc, self.doc["assets"][0], size_ratio=-1)
+        with self.assertRaises(search.SearchError):
+            search.search(self.doc, self.doc["assets"][0], size_ratio=float("nan"))
 
 
 if __name__ == "__main__":
