@@ -2071,10 +2071,6 @@ private:
 	// its own document/undo history, separate from the .tour scene.
 	StateMachineGraphEditor m_stateGraph;
 
-	// .statemachine authoring uses the shared graph canvas and keeps
-	// its own document/undo history, separate from the .tour scene.
-	StateMachineGraphEditor m_stateGraph;
-
 	// ---- source scene ----
 	// m_gltfPath is the scene identity (a local file path);
 	// m_gltfHostPath is the resolved file used for loading and

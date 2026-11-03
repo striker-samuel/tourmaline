@@ -48,6 +48,7 @@
 #include "AudioGraphs.h"
 
 #include <Engine/App/Element.h>
+#include <Engine/Core/Random.h> // tour::RandomService (the ctx.random() facade)
 
 #include <cstdint>
 #include <functional>
@@ -98,7 +99,9 @@ public:
 	[[nodiscard]] app::AudioGraphs& audio();
 
 	// Engine-owned, per-run gameplay random streams (seeded before onStart).
-	[[nodiscard]] tour::RandomService& random() { return m_host.Random(); }
+	// Definition out-of-line (Runtime.cpp): tour::App is only forward
+	// declared here (Host.h) — an inline body would need the full type.
+	[[nodiscard]] tour::RandomService& random();
 
 private:
 	app::ProjectRuntime& m_session;

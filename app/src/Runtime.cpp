@@ -8,6 +8,8 @@
 
 #include "Runtime.h"
 
+#include <Engine/App/app.h> // tour::App's full type (the random() defn)
+
 #include <cstring>
 #include <filesystem>
 
@@ -50,6 +52,12 @@ app::AudioGraphs& Context::audio() {
 		m_audio = std::make_unique<app::AudioGraphs>(m_session,
 			m_host);
 	return *m_audio;
+}
+
+tour::RandomService& Context::random() {
+	// The engine's session-owned gameplay RNG service (tour::App
+	// members outlive every game element).
+	return m_host.Random();
 }
 
 // ---- GameElement -----------------------------------------------------------
