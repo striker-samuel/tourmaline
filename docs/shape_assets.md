@@ -51,3 +51,42 @@ per-project identity/meta registration; triangle mesh conversion into the
 existing geometry importer; separate Vulkan line/point draw pipelines;
 cooked persistence and runtime loading. This PR establishes the source
 data and CPU geometry only.
+
+## Persistent renderer instances
+
+`WorldRenderer::Shapes()` exposes a renderer-owned
+`tour::renderer::ShapeScene` registry for spline and point-cloud instances.
+It holds tessellated local-space geometry, transform, flat color and depth
+mode until explicitly removed or cleared. Instance handles contain a slot
+index plus generation, so stale handles cannot modify recycled instances.
+Instances render in the Main HDR point/line pass even when game debug
+drawing is disabled. The native Vulkan `PointList` and `LineList`
+pipeline variants are reused.
+
+```cpp
+std::string error;
+auto cloud = renderer.Shapes().LoadFile(
+    "content/shapes/cloud.shape", glm::mat4(1.0f),
+    glm::vec3(0.3f, 0.8f, 1.0f), error);
+// Or create from already parsed/tessellated source:
+auto curve = renderer.Shapes().Add(
+    tour::asset::DefaultShapeAsset(tour::asset::ShapeKind::Spline),
+    glm::mat4(1.0f), glm::vec3(1.0f, 0.8f, 0.2f), error);
+if (curve)
+    renderer.Shapes().SetTransform(curve, newTransform);
+renderer.Shapes().Remove(cloud);
+```
+
+`LoadFile` reads at most 8 MiB from the local authoring filesystem and
+retains decoded geometry; subsequent file changes do not implicitly reload
+the shape. The registry supports 4096 instances, with 65536 points and
+65536 line segments per frame through the shared overlay pass. Instances
+which cannot fit are skipped whole. GPU vertex data is currently
+re-uploaded each rendered frame through the existing per-flight buffer;
+persistent **GPU-side** residency and scene-file associations remain
+future optimizations.
+
+This is the first **persistent scene-renderer instance path**, but NOT
+a serialized `.tour` DAG node, cooked `.pak` asset, or a general purpose
+scene-component type. Automatic scene-reload / scene-unload ownership and
+runtime content-registry integration are still to be added.
