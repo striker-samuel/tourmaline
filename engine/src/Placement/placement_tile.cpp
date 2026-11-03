@@ -380,6 +380,11 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
 			if (!layer.heightfield) continue;
 			s = layer.heightfield->sample(id);
 			break;
+		case DomainKind::PointCloud:
+			if (!layer.pointCloud || !layer.pointCloud->valid() ||
+				i >= layer.pointCloud->pointCount()) continue;
+			s = layer.pointCloud->sample(i);
+			break;
 		}
 		if (!layer.program.valid()) continue;
 		auto values = EvaluateProgram(layer.program, s, layer.ecotope);
