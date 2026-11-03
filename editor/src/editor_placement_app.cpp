@@ -7,6 +7,8 @@
 #include "editor_app.h"
 #include "editor_placement.h"
 
+#include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <sstream>
@@ -77,6 +79,117 @@ bool EditorApp::ExtractPlacementMesh(uint32_t worldNode,
 
 void EditorApp::MarkPlacementDirty() {
 	m_placement.preview.dirty = true;
+}
+
+
+// Wire the painted ecotope mask into the existing density graph. Using
+// the regular EcotopeMask field (rather than a preview-only rejection
+// filter) means CPU and GPU placement compilers see the same expression.
+void EditorApp::EnsureScatterMaskGraph() {
+	GraphDoc* graph = m_placement.current();
+	if (!graph) return;
+	for (const auto& [id, node] : graph->nodes)
+		if (node.kind == NodeKind::EcotopeMask)
+			return; // already wired, preserve authored graph
+	PNode* layer = nullptr;
+	for (auto& [id, node] : graph->nodes)
+		if (node.kind == NodeKind::Layer) { layer = &node; break; }
+	if (!layer) { Log("Scatter paint: graph has no output layer."); return; }
+	const PLink* link = graph->inputLink(layer->id, "density");
+	if (!link) { Log("Scatter paint: connect a density field first."); return; }
+	uint32_t target = layer->id;
+	std::string pin = "density";
+	const auto* src = graph->find(link->from);
+	if (src && src->kind == NodeKind::Accept) {
+		target = src->id;
+		link = graph->inputLink(target, "density");
+		if (!link) { Log("Scatter paint: Accept has no density input."); return; }
+	}
+	const uint32_t source = link->from;
+	const std::string sourcePin = link->fromPin;
+	const uint32_t oldLink = link->id;
+	m_placement.pushUndo();
+	graph->removeLink(oldLink);
+	const uint32_t mask = graph->addNode(NodeKind::EcotopeMask, 260, 640);
+	const uint32_t mul = graph->addNode(NodeKind::Mul, 470, 640);
+	graph->addLink(source, sourcePin, mul, "a");
+	graph->addLink(mask, "out", mul, "b");
+	graph->addLink(mul, "out", target, pin);
+	MarkPlacementDirty();
+	Log("Scatter paint: connected editable density mask to Placement Graph.");
+}
+
+// World-space stamps are stored sparsely (one line each in the .tour).
+// Both GPU and CPU placement use the EcotopeMask instruction; this is its
+// deterministic editor-side backing texture.
+bool EditorApp::PaintScatterAt(const glm::vec3& origin, const glm::vec3& dir) {
+	GraphDoc* graph = m_placement.current();
+	if (!graph || !m_placement.preview.compiled.ok) return false;
+	glm::vec3 hit{};
+	bool found = false;
+	const auto& cr = m_placement.preview.compiled;
+	if (cr.domainKind == smvk::placement::DomainKind::Heightfield &&
+		m_placement.preview.terrainField.width > 1) {
+		float t = 0.0f;
+		if (smvk::placement::TerrainRaycast(
+			m_placement.preview.terrainField, origin, dir, 5000.0f, t)) {
+			hit = origin + dir * t;
+			found = true;
+		}
+	}
+	if (!found && cr.domainKind == smvk::placement::DomainKind::MeshSurface) {
+		const auto& vp = m_viewports[m_activeVp].rect;
+		if (auto pick = PickNode(m_activeVp,
+			float(m_input.getMouseX()) - vp.x,
+			float(m_input.getMouseY()) - vp.y,
+			smvk::Extent2D{uint32_t(vp.w), uint32_t(vp.h)})) {
+			hit = origin + dir * pick->t;
+			found = true;
+		}
+	}
+	if (!found && std::fabs(dir.y) > 1e-5f) {
+		const float planeY = cr.domainKind == smvk::placement::DomainKind::Grid
+			? cr.grid.origin.y : 0.0f;
+		const float t = (planeY - origin.y) / dir.y;
+		if (t > 0.0f) { hit = origin + dir * t; found = true; }
+	}
+	if (!found) return false;
+	auto& strokes = m_placement.paintStamps[m_placement.active];
+	if (strokes.size() >= 8192) { Log("Scatter paint: stroke cap reached."); return false; }
+	strokes.push_back(PaintStamp{hit.x, hit.z,
+		m_scatterBrushRadius, m_scatterBrushStrength, m_eraseScatter});
+	MarkPlacementDirty();
+	return true;
+}
+
+// Rebuild a bounded per-graph mask using compact world-space stamps.
+static void BuildScatterPaintMask(smvk::placement::EcotopeMaskData& mask,
+	const std::vector<PaintStamp>& stamps, glm::vec2 origin, glm::vec2 extent) {
+	mask.width = mask.height = 256;
+	mask.channels = 1;
+	mask.origin = origin;
+	mask.spacing = glm::max(extent, glm::vec2(1.0f)) / 255.0f;
+	mask.weights.assign(size_t(mask.width) * mask.height, 0.0f);
+	for (const auto& stamp : stamps) {
+		const float cx = (stamp.x - origin.x) / mask.spacing.x;
+		const float cz = (stamp.z - origin.y) / mask.spacing.y;
+		const float rx = stamp.radius / mask.spacing.x;
+		const float rz = stamp.radius / mask.spacing.y;
+		const int x0 = std::max(0, int(std::floor(cx - rx)));
+		const int x1 = std::min(255, int(std::ceil(cx + rx)));
+		const int z0 = std::max(0, int(std::floor(cz - rz)));
+		const int z1 = std::min(255, int(std::ceil(cz + rz)));
+		for (int z = z0; z <= z1; ++z)
+			for (int x = x0; x <= x1; ++x) {
+				const float dx = (float(x) - cx) * mask.spacing.x;
+				const float dz = (float(z) - cz) * mask.spacing.y;
+				const float t = std::clamp(1.0f - std::sqrt(dx*dx + dz*dz)
+					/ std::max(stamp.radius, 0.001f), 0.0f, 1.0f);
+				const float w = stamp.opacity * t * t * (3.0f - 2.0f*t);
+				float& value = mask.weights[size_t(z) * mask.width + size_t(x)];
+				value = std::clamp(value + (stamp.erase ? -w : w), 0.0f, 1.0f);
+			}
+	}
 }
 
 void EditorApp::RefreshPlacementPreview() {
@@ -160,6 +273,37 @@ void EditorApp::RefreshPlacementPreview() {
 		pv.meshTris = (uint32_t)meshStorage.triangleCount();
 		lb.mesh = &meshStorage;
 	}
+	// The same mask that compiles as EcotopeMask for GPU placement also
+	// feeds the CPU oracle and the rejected-candidate preview.
+	bool usesPaintMask = false;
+	for (const auto& instr : cr.program.instrs)
+		if (instr.op == smvk::placement::FieldOp::EcotopeMask)
+			usesPaintMask = true;
+	if (usesPaintMask) {
+		glm::vec2 origin(0.0f), extent(64.0f);
+		if (cr.domainKind == DomainKind::Grid) {
+			origin = glm::vec2(cr.grid.origin.x, cr.grid.origin.z);
+			extent = cr.grid.extent;
+		} else if (cr.domainKind == DomainKind::Heightfield) {
+			origin = pv.terrainDom.extentMin;
+			extent = pv.terrainDom.extentMax - origin;
+		} else if (!meshStorage.positions.empty()) {
+			glm::vec2 lo(meshStorage.positions[0].x, meshStorage.positions[0].z);
+			glm::vec2 hi = lo;
+			for (const auto& pos : meshStorage.positions) {
+				lo = glm::min(lo, glm::vec2(pos.x, pos.z));
+				hi = glm::max(hi, glm::vec2(pos.x, pos.z));
+			}
+			origin = lo;
+			extent = hi - lo;
+		}
+		const auto it = m_placement.paintStamps.find(m_placement.active);
+		static const std::vector<PaintStamp> empty;
+		BuildScatterPaintMask(pv.paintMask,
+			it != m_placement.paintStamps.end() ? it->second : empty,
+			origin, extent);
+		lb.ecotope = &pv.paintMask;
+	}
 	const uint32_t want = cr.config.candidatesPerTile;
 	const uint32_t n = std::min(want, m_placement.previewCap);
 	lb.config.candidatesPerTile = n;
@@ -184,7 +328,7 @@ void EditorApp::RefreshPlacementPreview() {
 			: (cr.domainKind == DomainKind::Heightfield
 				? terrainDom.sample(id)
 				: SampleMeshSurface(meshStorage, id));
-		std::vector<float> values = EvaluateProgram(cr.program, s);
+		std::vector<float> values = EvaluateProgram(cr.program, s, lb.ecotope);
 		if (!AcceptCandidate(values[cr.program.acceptIndex], id, cr.config.densityScale)) {
 			pv.rejected.push_back(PreviewPoint{ s.p, 0, i, id });
 			++shown;
@@ -236,12 +380,23 @@ void EditorApp::SavePlacementToDoc(smvk::tour::Doc& doc) const {
 		for (const auto& [lid, l] : g.links)
 			put(base + ".link." + std::to_string(lid), SerializeLink(l));
 	}
+	for (const auto& [gid, strokes] : m_placement.paintStamps)
+		for (size_t i = 0; i < strokes.size(); ++i) {
+			const auto& s = strokes[i];
+			std::ostringstream out;
+			out.precision(9);
+			out << s.x << ' ' << s.z << ' ' << s.radius << ' '
+				<< s.opacity << ' ' << (s.erase ? 1 : 0);
+			put("place.paint." + std::to_string(gid) + "." + std::to_string(i),
+				out.str());
+		}
 	put("place.ui.active", std::to_string(m_placement.active));
 	put("place.ui.open", m_placement.showGraph ? "1" : "0");
 }
 
 void EditorApp::LoadPlacementFromDoc(const smvk::tour::Doc& doc) {
 	m_placement.graphs.clear();
+	m_placement.paintStamps.clear();
 	m_placement.undoStack.clear();
 	m_placement.undoPos = -1;
 	struct Acc {
@@ -288,6 +443,23 @@ void EditorApp::LoadPlacementFromDoc(const smvk::tour::Doc& doc) {
 					l.id = lid;
 					a.g.links[lid] = l;
 				}
+			}
+		}
+		else if (key.rfind("place.paint.", 0) == 0) {
+			uint64_t gid = 0;
+			std::string rest;
+			if (!gidOf(key, 12, gid, rest)) continue;
+			PaintStamp stamp;
+			int erase = 0;
+			std::istringstream in(val);
+			if (in >> stamp.x >> stamp.z >> stamp.radius >> stamp.opacity >> erase &&
+				std::isfinite(stamp.x) && std::isfinite(stamp.z) &&
+				std::isfinite(stamp.radius) && stamp.radius >= 0.5f &&
+				stamp.radius <= 256.0f && std::isfinite(stamp.opacity) &&
+				stamp.opacity >= 0.0f && stamp.opacity <= 1.0f &&
+				m_placement.paintStamps[gid].size() < 8192) {
+				stamp.erase = erase != 0;
+				m_placement.paintStamps[gid].push_back(stamp);
 			}
 		}
 		else if (key == "place.ui.active") {
