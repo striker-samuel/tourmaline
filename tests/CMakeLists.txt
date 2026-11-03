@@ -1439,3 +1439,8 @@ target_compile_features(FramePacerTests PRIVATE cxx_std_20)
 set_target_properties(FramePacerTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME frame_pacer_tests COMMAND FramePacerTests)
+
+# CPU-only authored spline/point cloud/primitive regression tests.
+add_executable(ShapeAssetTests test_shape_asset.cpp)
+target_include_directories(ShapeAssetTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+add_test(NAME shape_asset_tests COMMAND ShapeAssetTests)
