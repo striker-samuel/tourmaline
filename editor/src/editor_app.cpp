@@ -416,7 +416,7 @@ void EditorApp::LoadPrefs() {
 			// TOOLBAR MODES PERSIST: the select level, the gizmo mode and
 			// the editor mode restore across sessions (the toolbar's
 			// sections are the state's UI — same keys the letters show).
-			else if (section == "tools" && key == "sel")
+			if (section == "tools" && key == "sel")
 				m_selMode = SelMode(std::clamp(std::stoi(val), 0, 2));
 			else if (section == "tools" && key == "gizmo")
 				m_gizmoMode = GizmoMode(std::clamp(std::stoi(val), 0, 2));
