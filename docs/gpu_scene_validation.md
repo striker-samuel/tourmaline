@@ -90,3 +90,45 @@ camera, world unload/reload, streamed LODs and shadow views, complete
 the authoritative double-transform and double-camera migration,
 promote this path to multi-view selection, then GPU prefix compaction,
 LOD transitions and submesh draw generation.
+
+## Stable GPU verdict compaction (follow-up to #37)
+
+The validation path now follows the instance-cull dispatch with **three
+ordered compute stages**, all using persistent candidate order:
+
+1. `gpu_scene_compact_count.cs.hlsl`: count visible, generation-valid
+   verdicts in each 64-candidate group.
+2. `gpu_scene_compact_prefix.cs.hlsl`: exclusive prefix over group counts;
+   slot `offsets[groupCount]` publishes the total visible count.
+3. `gpu_scene_compact_scatter.cs.hlsl`: group-local parallel inclusive scan,
+   then scatter visible `uint4` verdicts to unique contiguous positions.
+   Their original order is preserved, including across group boundaries.
+
+A verdict is kept only when `instanceSlot != InvalidIndex`,
+`generation != 0` and `visible != 0`. Conservative bounds bypass
+verdicts remain visible. The output is an ordered list of full
+`InstanceCullVerdict` records, not yet submesh commands.
+
+The three shader dispatches run in the **same RenderGraph compute pass**
+following the cull kernel. Explicit `EmitGlobalMemoryBarrier` calls
+separate cull -> count -> prefix -> scatter: these dependencies are BDA
+buffer accesses, not inferred graph resources. Per-flight scratch and
+output buffers live in `CandidateValidator` and are read back only
+after that flight's acquire fence. Both the output count and every
+retained verdict are compared to the CPU stable-compaction oracle.
+Missing shaders or allocation failure bypass compaction rather than
+affecting production rendering.
+
+The opt-in validator currently caps input to **32,768 candidates**
+(512 workgroups). The group-prefix shader deliberately uses a
+single-invocation scan: this is suitable for parity development at
+that scale, but must be replaced with a hierarchical parallel scan
+before scaling to the 1,048,576 candidate maximum. It would be
+incorrect to call this production-ready GPU-driven rendering or to
+consume its output for draws without authoritative double camera /
+scene transforms, residency/LOD expansion, and performance testing.
+
+Run `GpuSceneValidationTests` for headless reference-order coverage,
+then enable `TOURMALINE_GPU_SCENE_VALIDATE=1` on a Vulkan device to
+verify GPU readback and compiled shader behavior. CI has not been
+verified for this change.
