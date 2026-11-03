@@ -119,6 +119,19 @@ class MayaContractTests(unittest.TestCase):
         self.assertEqual(self.cmds.files[-1][1]["loadReference"], "existingReferenceRN")
         self.assertEqual(self.cmds.attrs[record + ".tourmalineRevision"], "2")
 
+    def test_rehydrate_scene_reference_from_another_machine(self):
+        rows = [
+            {"node": "refRecord", "mode": "reference", "revision": "4"},
+            {"node": "importRecord", "mode": "import", "revision": "2"},
+        ]
+        with patch.object(maya_versions, "version_records", return_value=rows), \
+             patch.object(maya_versions, "switch_reference_version",
+                          return_value={"local_path": str(self.cache_file)}) as switch:
+            report = maya_versions.rehydrate_scene_references()
+        self.assertEqual(len(report["resolved"]), 1)
+        self.assertEqual(report["errors"], [])
+        switch.assert_called_once_with("refRecord", 4)
+
     def test_reference_rejects_obj(self):
         with patch.object(maya_versions, "_maya", return_value=self.cmds), \
              patch.object(maya_versions, "resolve", return_value=self.item):
