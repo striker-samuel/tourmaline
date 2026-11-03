@@ -8,7 +8,7 @@
 // CHECK must evaluate its operand in optimized builds (unlike assert).
 #define CHECK(expr) do { \
     if (!(expr)) { \
-        std::fprintf(stderr, "CHECK failed: %s at line %d\\n", #expr, __LINE__); \
+        std::fprintf(stderr, "CHECK failed: %s at line %d\n", #expr, __LINE__); \
         std::abort(); \
     } \
 } while (false)
