@@ -20,6 +20,32 @@
 
 namespace tour::scene {
 
+std::string UniqueSiblingNodeName(const Scene& scene, int node,
+	const std::string& requested)
+{
+	if (node < 0 || size_t(node) >= scene.hierarchy.size())
+		return requested;
+	const int parent = scene.hierarchy[size_t(node)].parent;
+	auto taken = [&](const std::string& name) {
+		for (size_t i = 0; i < scene.hierarchy.size(); ++i) {
+			if (i != size_t(node) && IsLiveSlot(scene, uint32_t(i))
+					&& scene.hierarchy[i].parent == parent
+					&& getNodeName(scene, int(i)) == name)
+				return true;
+		}
+		return false;
+	};
+	if (!taken(requested))
+		return requested;
+	for (uint32_t suffix = 1; suffix != 0; ++suffix) {
+		const std::string candidate = requested + std::to_string(suffix);
+		if (!taken(candidate))
+			return candidate;
+	}
+	assert(false && "exhausted scene name suffixes");
+	return requested;
+}
+
 int addNode(Scene& scene, int parent, int level)
 {
   const int nodeCount = (int)scene.hierarchy.size();
@@ -103,6 +129,9 @@ int addNode(Scene& scene, int parent, int level)
   scene.hierarchy[node].level       = level;
   scene.hierarchy[node].nextSibling = -1;
   scene.hierarchy[node].firstChild  = -1;
+  // Names exist from allocation, including the synthetic root, mesh
+  // primitives and recycled slots. Importers may replace this default.
+  setNodeName(scene, node, "node" + std::to_string(node));
   return node;
 }
 
@@ -724,6 +753,12 @@ void loadScene(const char* fileName, Scene& scene)
 
   fclose(f);
 
+  // Loading an older/corrupt scene must not leave holes in the live
+  // naming invariant. Cooked scenes otherwise retain their names.
+  for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
+    if (IsLiveSlot(scene, n) && getNodeName(scene, int(n)).empty())
+      setNodeName(scene, int(n), "node" + std::to_string(n));
+
   MarkAllRootsChanged(scene);
   recalculateGlobalTransforms(scene);
 }
@@ -1159,6 +1194,7 @@ void mergeScenes(
   scene.tables = {};
   scene.rowsForNode.clear();
   scene.metadata.clear();
+  setNodeName(scene, 0, "World");
 
   if (scenes.empty())
     return;
