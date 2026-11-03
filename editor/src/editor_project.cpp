@@ -330,8 +330,8 @@ std::string EditorApp::CreateSceneAsset(const std::string& dir) {
     m_assetsSel = path.generic_string();
     m_assetsSelSet = {m_assetsSel};
     Log("New scene: created '" + path.generic_string() + "'.");
-    if (m_world && m_tourDirty) {
-        Log("New scene: existing scene has unsaved work; created and "
+    if ((m_world && m_tourDirty) || m_prefab.dirty) {
+        Log("New scene: current scene/prefab has unsaved work; created and "
             "selected the new scene without switching. Save the current "
             "scene before opening it.");
     }
