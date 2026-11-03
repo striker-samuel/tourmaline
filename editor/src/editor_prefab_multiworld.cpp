@@ -65,6 +65,104 @@ bool SameSource(const std::string& a, const std::string& b) {
 }
 } // namespace
 
+// Entering full editor mode is deliberately a frame-boundary operation:
+// the normal editor owns the entire scene toolset, viewport and history.
+// A temporary .tour holds the PARENT's unsaved state without modifying it.
+void EditorApp::RequestFullPrefabEdit(const std::string& path) {
+    if (path.empty() || !m_fullPrefabParentSnapshot.empty())
+        return;
+    if (m_prefab.dirty) {
+        m_prefab.error = "Save or Revert pane edits before full-scene editing.";
+        return;
+    }
+    m_fullPrefabRequestedPath = path;
+}
+
+void EditorApp::RequestReturnFromPrefab(bool save) {
+    if (m_fullPrefabParentSnapshot.empty())
+        return;
+    m_fullPrefabReturnRequested = true;
+    m_fullPrefabReturnSave = save;
+}
+
+void EditorApp::ProcessFullPrefabNavigation() {
+    if (m_fullPrefabReturnRequested) {
+        m_fullPrefabReturnRequested = false;
+        if (m_fullPrefabParentSnapshot.empty())
+            return;
+        if (m_fullPrefabReturnSave && !SaveTour()) {
+            Log("Prefab: save failed; staying in prefab edit mode.");
+            return;
+        }
+        const std::string snapshot = m_fullPrefabParentSnapshot;
+        const std::string target = m_fullPrefabParentTarget;
+        const bool dirty = m_fullPrefabParentDirty;
+        if (!OpenTourFile(snapshot)) {
+            Log("Prefab: could not restore parent snapshot: " + snapshot);
+            return;
+        }
+        m_tourPath = target;
+        m_tourDirty = dirty;
+        std::error_code ec;
+        fs::remove(snapshot, ec);
+        m_fullPrefabParentSnapshot.clear();
+        m_fullPrefabParentTarget.clear();
+        Log("Prefab: returned to parent scene (working edits restored).");
+        return;
+    }
+    if (m_fullPrefabRequestedPath.empty())
+        return;
+    const std::string prefabPath = std::move(m_fullPrefabRequestedPath);
+    m_fullPrefabRequestedPath.clear();
+    if (!m_world || TourTarget().empty() || m_cookRunning) {
+        Log("Prefab: open a scene and finish cooking before editing a prefab.");
+        return;
+    }
+    if (!InProjectDir(prefabPath)) {
+        Log("Prefab: source must be inside the current project.");
+        return;
+    }
+    if (SameSource(prefabPath, TourTarget())) {
+        Log("Prefab: this scene is already open in the main editor.");
+        return;
+    }
+    if (m_prefab.dirty) {
+        Log("Prefab: save/revert pending pane changes first.");
+        return;
+    }
+    std::error_code ec;
+    fs::path tmp = fs::temp_directory_path(ec);
+    if (ec) {
+        Log("Prefab: cannot obtain temporary directory.");
+        return;
+    }
+    tmp /= "tourmaline_parent_" + smvk::tour::GenerateUuid() + ".tour";
+    // Save a copy of the live document, preserving original path and
+    // dirty flag. Never call CloseScene (which writes the parent file).
+    const std::string previousTarget = TourTarget();
+    const bool previousDirty = m_tourDirty;
+    if (!SaveTourTo(tmp.generic_string(), false, true)) {
+        Log("Prefab: parent snapshot failed; nothing switched.");
+        return;
+    }
+    if (m_prefab.world)
+        ClosePrefabWorld();
+    m_showPrefabWindow = false;
+    if (!OpenTourFile(prefabPath)) {
+        Log("Prefab: failed to open source; recovering parent snapshot.");
+        (void)OpenTourFile(tmp.generic_string());
+        m_tourPath = previousTarget;
+        m_tourDirty = previousDirty;
+        fs::remove(tmp, ec);
+        return;
+    }
+    m_fullPrefabParentSnapshot = tmp.generic_string();
+    m_fullPrefabParentTarget = previousTarget;
+    m_fullPrefabParentDirty = previousDirty;
+    Log("Prefab: full editor mode for '" + prefabPath
+        + "' (Save & Return or Discard & Return in File).");
+}
+
 void EditorApp::RequestOpenPrefab(const std::string& path) {
     if (path.empty()) return;
     m_showPrefabWindow=true;
@@ -377,6 +475,7 @@ bool EditorApp::PrefabSetTRS(uint32_t node,
     return true;
 }
 void EditorApp::UpdatePrefabBoundary(float dt) {
+    ProcessFullPrefabNavigation();
     m_prefabRendererRenderable=false;
     if (m_prefabRequestClose) {
         if (m_prefab.dirty) {
