@@ -1376,14 +1376,15 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 		off += nameLen;
 		// The row invariants (the same ones the manifest's [ids]
 		// validation enforces — the shared ABI never drifts):
-		// a nonzero id, a kind byte inside the catalog ABI, and the
+		// a nonzero id, a non-Nil kind byte inside the catalog ABI, and the
 		// scene-name rule (names ride SCENE rows only).
 		if (row.id == 0) {
 			err = "identity table row carries id 0 (the reserved"
 				" no-identity value)";
 			return false;
 		}
-		if (row.kind > smvk::kCatalogKindNavMesh) {
+		if (row.kind == smvk::kCatalogKindNil
+				|| row.kind > smvk::kCatalogKindNavMesh) {
 			err = "identity table row kind byte out of the catalog ABI";
 			return false;
 		}
