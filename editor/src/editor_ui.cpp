@@ -59,14 +59,15 @@ namespace editor {
 	void EditorApp::DrawBrushPresetControls(bool scatter) {
 	using namespace brush;
 	ImGui::PushID(scatter ? "scatter_preset" : "terrain_preset");
+	char* nameBuf = scatter ? m_scatterPresetName : m_terrainPresetName;
 	ImGui::SeparatorText(scatter ? "Scatter brush presets" : "Terrain brush presets");
-	if (ImGui::BeginCombo("Brush preset", m_brushPresetName)) {
+	if (ImGui::BeginCombo("Brush preset", nameBuf)) {
 		for (const auto& path : Assets()) {
 			Preset p;
 			if (!Load(path, p) || p.kind != (scatter ? Kind::Scatter : Kind::Terrain))
 				continue;
 			if (ImGui::Selectable(p.name.c_str())) {
-				std::snprintf(m_brushPresetName, sizeof(m_brushPresetName), "%s",
+				std::snprintf(nameBuf, 64, "%s",
 					p.name.c_str());
 				if (scatter) {
 					m_scatterBrushRadius = p.radius;
@@ -98,7 +99,7 @@ namespace editor {
 		}
 		ImGui::EndCombo();
 	}
-	ImGui::InputText("Asset name", m_brushPresetName, sizeof(m_brushPresetName));
+	ImGui::InputText("Asset name", nameBuf, 64);
 	if (scatter)
 		ImGui::TextDisabled("Applies to Density, Transform and Spacing nodes; brush shape controls viewport mask painting.");
 	else
@@ -106,7 +107,7 @@ namespace editor {
 			"%.2f radius");
 	if (ImGui::Button("Save brush preset")) {
 		Preset p;
-		p.name = m_brushPresetName;
+		p.name = nameBuf;
 		p.kind = scatter ? Kind::Scatter : Kind::Terrain;
 		p.radius = scatter ? m_scatterBrushRadius : m_paintRadius;
 		p.strength = scatter ? m_scatterBrushStrength : m_paintStrength;
