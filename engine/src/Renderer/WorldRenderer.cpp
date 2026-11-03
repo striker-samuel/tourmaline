@@ -13411,8 +13411,8 @@ namespace engine {
 				// The normal shader never reads these tail bytes and never
 				// pays for the two additional push-constant writes.
 				if (withLightmap && !meshDesc->skinned) {
-				smvk::gfx::UvFlatVsPushTail chartTail{};
-				smvk::gfx::DirectLightmapPullTail lmTail{};
+					smvk::gfx::UvFlatVsPushTail chartTail{};
+					smvk::gfx::DirectLightmapPullTail lmTail{};
 					const uint32_t lod = LodIndexForNode(node, meshId);
 					if (auto loc = m_world->ResolveLodMesh(meshId, lod)) {
 						const auto h = loc->handle;
@@ -13438,7 +13438,6 @@ namespace engine {
 							}
 						}
 					}
-				}
 				cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
 					sizeof(chartTail), &chartTail, smvk::ShaderStage::All);
 				cmd.PushConstants(smvk::gfx::kDirectLightmapPullOffset,
