@@ -17,7 +17,15 @@ float g_sinTime(float time, float period)  { return sin(time * 6.2831853 / max(p
 float g_cosTime(float time, float period)  { return cos(time * 6.2831853 / max(period, 1e-4)); }
 float g_timeFrac(float time, float period) { return frac(time / max(period, 1e-4)); }
 
-// Legacy accessor shims (take time explicitly)
-float g_time(float time)       { return time; }
-float g_deltaTime(float)       { return 0.0f; }
-float g_fps(float)             { return 0.0f; }
+// Scene shader convenience macros. These require the standard scene push
+// constant `pc` to be in scope. Project lit hooks receive time separately
+// through TMLitInput::time (their function scope does not have `pc`).
+#define TM_TIME       (pc.frameUniforms.Get().frameHot.Get().time)
+#define TM_DELTA_TIME (pc.frameUniforms.Get().frameHot.Get().deltaTime)
+#define TM_FPS        (pc.frameUniforms.Get().frameHot.Get().fps)
+
+// Explicit-value helpers for code without access to scene push constants.
+// Pass the values from FramePSHot; no shader-side implicit clock exists.
+float g_time(float time)           { return time; }
+float g_deltaTime(float deltaTime) { return deltaTime; }
+float g_fps(float fps)             { return fps; }
