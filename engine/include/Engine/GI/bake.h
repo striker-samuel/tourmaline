@@ -460,6 +460,9 @@ struct GiSceneBuildOptions {
 	// Preserve transformed vertex normals for camera rays. GI bakes do not
 	// need the extra storage or change to their geometric-normal shading.
 	bool retainVertexNormals = false;
+	// Camera material references sample MR from per-hit texels; GI bakes
+	// preserve their historic average-factor fallback by default.
+	bool referenceMaterialSampling = false;
 	// Punctual-light aim axis in engine node-local space (the import
 	// bakes node transforms through a basis change, so the local aim
 	// axis depends on it — see tools/gltf_import): the harvest resolves
