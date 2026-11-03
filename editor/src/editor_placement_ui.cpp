@@ -439,6 +439,36 @@ void EditorApp::DrawPlacementGraph() {
 		ImGui::SameLine();
 		ImGui::Checkbox("Rejected", &m_placement.showRejected);
 		DrawBrushPresetControls(true);
+		if (doc) {
+			if (ImGui::Checkbox("Paint GPU instancer density", &m_paintScatter)) {
+				if (m_paintScatter) {
+					EnsureScatterMaskGraph();
+					m_paintTerrain = false;
+				} else m_scatterPaintLast = glm::vec2(-1e9f, -1e9f);
+			}
+			ImGui::SameLine();
+			ImGui::Checkbox("Erase", &m_eraseScatter);
+			ImGui::DragFloat("Brush radius##scatter", &m_scatterBrushRadius,
+				0.25f, 0.5f, 256.0f, "%.1f m");
+			ImGui::SameLine();
+			ImGui::DragFloat("Opacity##scatter", &m_scatterBrushStrength,
+				0.01f, 0.0f, 1.0f, "%.2f");
+			ImGui::SameLine();
+			ImGui::DragFloat("Spacing##scatter", &m_scatterBrushSpacing,
+				0.01f, 0.05f, 2.0f, "%.2f radius");
+			auto& strokes = m_placement.paintStamps[m_placement.active];
+			if (ImGui::Button("Undo scatter stamp") && !strokes.empty()) {
+				strokes.pop_back();
+				MarkPlacementDirty();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Clear scatter mask") && !strokes.empty()) {
+				strokes.clear();
+				MarkPlacementDirty();
+			}
+			ImGui::SameLine();
+			ImGui::TextDisabled("%zu strokes | LMB in viewport, Esc via toggle", strokes.size());
+		}
 		if (!doc) {
 			ImGui::TextDisabled("No graph: create one to start scattering.");
 			ImGui::End();
