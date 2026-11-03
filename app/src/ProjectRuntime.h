@@ -244,11 +244,10 @@ private:
 // ---- THE TYPED CATALOG HELPER (the generated header's own types) --------
 // The compiled catalog's Assets array is a GENERATED POD table
 // (project.h); the validation mirror (CompiledAssetDesc) must stay
-// LAYOUT-IDENTICAL to it. This helper does the proof ONCE (member
-// order + types, static_asserted at every instantiation) and the
-// pointer cast in ONE audited place — game code never
-// reinterpret_cast's its generated data again (the sample's old
-// hand-rolled proof lived at its call site).
+// LAYOUT-IDENTICAL to it. This helper checks member layout and then
+// copies each field into the runtime's own descriptor type. The
+// one-time copy avoids violating strict aliasing by treating a
+// generated Desc object as an unrelated CompiledAssetDesc object.
 template <typename Desc>
 bool AttachCompiledCatalog(ProjectRuntime& rt,
 	const Desc* assets, size_t assetCount, uint64_t fingerprint,
@@ -274,10 +273,22 @@ bool AttachCompiledCatalog(ProjectRuntime& rt,
 			" count";
 		return false;
 	}
-	return rt.AttachCompiledCatalog(
-		reinterpret_cast<
-			const ProjectRuntime::CompiledAssetDesc*>(assets),
-		assetCount, fingerprint, err);
+	// Layout compatibility does not permit type-punning through an
+	// unrelated struct pointer: GCC's strict-aliasing optimization may
+	// assume the generated Desc is never a CompiledAssetDesc. Copy into
+	// the runtime's actual descriptor type before validating it.
+	std::vector<ProjectRuntime::CompiledAssetDesc> mirror;
+	mirror.reserve(assetCount);
+	for (size_t i = 0; i < assetCount; ++i)
+		// The generated kind is a scoped enum (enum class AssetKind :
+		// std::uint8_t) - it does not implicitly convert to the runtime
+		// descriptor's plain uint8_t inside a braced initializer, so
+		// spell the cast.
+		mirror.push_back({ assets[i].id,
+			static_cast<uint8_t>(assets[i].kind),
+			assets[i].path, assets[i].sceneName });
+	return rt.AttachCompiledCatalog(mirror.data(), mirror.size(),
+		fingerprint, err);
 }
 
 } // namespace app

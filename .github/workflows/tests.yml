@@ -66,7 +66,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev \
             libdbus-1-dev libudev-dev libunwind-dev libpipewire-0.3-dev \
-            libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev libinput-dev
+            libdecor-0-dev libgbm-dev libdrm-dev libv4l-dev libinput-dev gdb
 
       - name: Cache KTX-Software install
         id: ktx-cache
@@ -117,8 +117,13 @@ jobs:
           # probepremix_gpu + rhi_upload_barriers excluded: real SDL
           # window + offscreen Vulkan device - hosted runners have no
           # display / ICD (see the header).
-          ctest --test-dir out/build/tests --output-on-failure \
-            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"
+          if ! ctest --test-dir out/build/tests --output-on-failure \
+            -E "^(retirement_fuzz_tests|world_fields_gpu_tests|placement_gpu_tests|probepremix_gpu_tests|rhi_upload_barriers_gpu_tests)$"; then
+            # Capture a Linux-only stack trace instead of hiding the failure.
+            gdb --batch -ex "set pagination off" -ex run -ex "thread apply all bt 20" \
+              --args out/build/tests/PakHostTests
+            exit 1
+          fi
         env:
           TOURMALINE_CONTENT_DIR: ${{ github.workspace }}/.ci-content
 

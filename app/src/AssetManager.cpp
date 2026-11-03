@@ -325,7 +325,21 @@ bool AssetManager::UnloadMesh(MeshHandle handle) {
 void AssetManager::UnloadAllMeshes() {
 	if (!m_impl)
 		return;
-	for (auto& [key, handle] : m_impl->meshByKey)
+	// SNAPSHOT the handles before unloading: UnloadMesh ERASES the
+	// slot's meshByKey/meshByPlan entries (every non-keepResident
+	// slot), so unloading while range-iterating meshByKey is iterator
+	// invalidation - the erased node's successor links are followed by
+	// the next increment. libstdc++ segfaults there (the Linux CI
+	// pak_host_tests SIGSEGV in std::_Rb_tree_increment <- here);
+	// MSVC's erase leaves the walkable links intact, which is why
+	// Windows passed. keepResident slots stay in the map through the
+	// loop and are wiped by the clear() below - same contract as
+	// before, minus the UB.
+	std::vector<MeshHandle> handles;
+	handles.reserve(m_impl->meshByKey.size());
+	for (const auto& [key, handle] : m_impl->meshByKey)
+		handles.push_back(handle);
+	for (const MeshHandle handle : handles)
 		(void)UnloadMesh(handle);
 	m_impl->meshByKey.clear();
 	m_impl->meshByPlan.clear();
