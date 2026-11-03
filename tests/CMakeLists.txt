@@ -304,6 +304,12 @@ set_target_properties(GiTests PROPERTIES
 
 add_test(NAME gi_tests COMMAND GiTests)
 
+add_executable(ReferenceSceneTests test_reference_scene.cpp)
+target_link_libraries(ReferenceSceneTests PRIVATE engine)
+set_target_properties(ReferenceSceneTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME reference_scene_tests COMMAND ReferenceSceneTests)
+
 add_executable(StreamingTests test_streaming.cpp)
 
 target_link_libraries(StreamingTests

@@ -207,13 +207,13 @@ def _baseline(case, base):
     return manifest
 
 
-def contact_sheet(output, results):
+def contact_sheet(output, results, filename="capture.png"):
     """Best-effort thumbnail index; full-resolution captures remain canonical."""
     try:
         from PIL import Image, ImageDraw
     except ImportError:
         return
-    captures = [(r["name"], output / r["directory"] / "capture.png") for r in results]
+    captures = [(r["name"], output / r["directory"] / filename) for r in results]
     captures = [(name, path) for name, path in captures if path.is_file()]
     if not captures:
         return
@@ -293,25 +293,99 @@ def run(args, suite, cases):
     return report
 
 
+def reference_command(case, exe, project, out_dir, resolution=256,
+                      spp=64, bounces=3, exposure=0.001):
+    """Run the engine's CPU reference backend on the matching fixture."""
+    env, mat, view = case["name"].split("/")
+    if view != "lit" or case.get("external"):
+        raise SuiteError("CPU reference requires a bundled lit fixture")
+    source = Path(project) / "content" / "models" / env / (env + ".refscene.json")
+    camera = case["camera"]
+    xyz = lambda values: ",".join(str(v) for v in values)
+    return [str(exe), "--scene", str(source), "--output",
+            str(out_dir / "reference.png"), "--camera-pos", xyz(camera["position"]),
+            "--camera-fwd", xyz(camera["forward"]),
+            "--width", str(resolution), "--height", str(resolution),
+            "--spp", str(spp), "--bounces", str(bounces),
+            "--exposure", str(exposure), "--seed", "8230"]
+
+
+def run_reference(args, cases):
+    if args.resolution < 16 or args.resolution > 4096 or not 1 <= args.spp <= 4096:
+        raise SuiteError("reference resolution/spp out of range")
+    if not 0 <= args.bounces <= 16 or not 0 < args.exposure <= 1:
+        raise SuiteError("reference bounces/exposure out of range")
+    output = args.output.resolve()
+    commands = []
+    for case in cases:
+        command = reference_command(case, args.exe, args.project,
+                                    output / case["name"],
+                                    args.resolution, args.spp,
+                                    args.bounces, args.exposure)
+        if not args.dry_run and not Path(command[2]).is_file():
+            raise SuiteError("reference fixture missing: " + command[2] +
+                             " (run material_lab_fixtures.py)")
+        commands.append((case, command))
+    if args.dry_run:
+        return {"schema_version": 1, "status": "planned", "cases": [
+            {"name": c["name"], "command": cmd} for c, cmd in commands]}
+    results = []
+    for case, command in commands:
+        folder = output / case["name"]
+        folder.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        good = proc.returncode == 0 and (folder / "reference.png").is_file()
+        status = "captured" if good else "failed"
+        if good:
+            (folder / "reference.json").write_text(json.dumps({
+                "case_signature": case["signature"], "command": command,
+                "source": command[2], "backend": "Embree",
+                "reference_model": "engine_GI_metallic_roughness",
+                "exposure": args.exposure, "spp": args.spp,
+                "bounces": args.bounces}, indent=2) + "\n", encoding="utf-8")
+        results.append({"name": case["name"], "status": status,
+                        "directory": case["name"], "exit_code": proc.returncode,
+                        "message": (proc.stderr or proc.stdout).strip()[:1000]})
+        print(f"{status.upper():8s} reference {case['name']}", file=sys.stderr)
+        if not good and args.fail_fast:
+            break
+    failed = sum(r["status"] == "failed" for r in results)
+    report = {"schema_version": 1, "status": "failed" if failed else "captured",
+              "case_count": len(results), "failed": failed, "cases": results}
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "reference-report.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    contact_sheet(output, results, filename="reference.png")
+    return report
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--suite", type=Path, default=DEFAULT_SUITE)
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="list available materials, environments and views")
-    for name in ("plan", "run"):
+    for name in ("plan", "run", "reference"):
         q = sub.add_parser(name, help="plan or execute a deterministic capture matrix")
         q.add_argument("--environment", help="comma-separated IDs (default: bundled)")
         q.add_argument("--material", help="comma-separated material IDs")
         q.add_argument("--view", help="comma-separated view IDs")
         q.add_argument("--json", action="store_true")
-        if name == "run":
+        if name in ("run", "reference"):
             q.add_argument("--exe", type=Path, required=True)
             q.add_argument("--output", type=Path, required=True)
+            q.add_argument("--fail-fast", action="store_true")
+            q.add_argument("--dry-run", action="store_true")
+        if name == "run":
             q.add_argument("--baseline-dir", type=Path)
             q.add_argument("--gpu-tag")
             q.add_argument("--overwrite", action="store_true")
-            q.add_argument("--fail-fast", action="store_true")
-            q.add_argument("--dry-run", action="store_true")
+        if name == "reference":
+            q.add_argument("--project", type=Path, required=True,
+                           help="generated source project root from material_lab_fixtures.py")
+            q.add_argument("--resolution", type=int, default=256)
+            q.add_argument("--spp", type=int, default=64)
+            q.add_argument("--bounces", type=int, default=3)
+            q.add_argument("--exposure", type=float, default=0.001)
     return p
 
 
@@ -325,18 +399,23 @@ def main(argv=None):
                                  for k, v in suite["environments"].items()},
                 "views": suite["views"]}, indent=2))
             return 0
-        cases = plans(suite, args.environment, args.material, args.view)
+        cases = plans(suite, args.environment, args.material,
+                      "lit" if args.command == "reference" else args.view)
         if not cases:
             raise SuiteError("selection is empty")
         if args.command == "plan":
             data = {"case_count": len(cases), "cases": cases}
+        elif args.command == "reference":
+            data = run_reference(args, cases)
         else:
             data = run(args, suite, cases)
-        if args.json or args.command == "plan" or (args.command == "run" and args.dry_run):
+        if args.json or args.command == "plan" or (
+                args.command in ("run", "reference") and args.dry_run):
             print(json.dumps(data, indent=2))
-        elif args.command == "run":
+        elif args.command in ("run", "reference"):
+            report = "reference-report.json" if args.command == "reference" else "report.json"
             print(f"material_lab: {data['status']}, {data['case_count']} cases, "
-                  f"{data['failed']} failed. Report: {args.output / 'report.json'}")
+                  f"{data['failed']} failed. Report: {args.output / report}")
         return 1 if data.get("status") == "failed" else 0
     except (SuiteError, OSError) as exc:
         print(f"material_lab: {exc}", file=sys.stderr)

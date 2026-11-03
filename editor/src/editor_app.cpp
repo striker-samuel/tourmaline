@@ -530,6 +530,10 @@ bool EditorApp::OpenCacheDb() {
 
 void EditorApp::CloseScene() {
 	RestoreIsolation();
+	CancelReferenceRender();
+	m_referenceHaveImage = false;
+	m_referencePath.clear();
+	m_referenceStatus = "No reference render yet";
 	StopGamePlay();
 	if (!m_world)
 		return;

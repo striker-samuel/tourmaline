@@ -6,8 +6,10 @@ It reuses `tools/tourcapture.py` for fresh-frame capture and strict GPU/driver
 baseline comparisons, plus the existing `TOURMALINE_DEBUGVIEW` PBR diagnostics.
 It does not substitute the editor's approximate matball shader for real shading.
 
-This initial PR is a headless/CLI harness and generated content fixtures,
-**not** a new in-editor material inspector.
+The Vulkan capture harness remains a headless regression tool. A separate
+engine-level Embree CPU reference renderer now also serves the editor's
+**Reference** inspector tab and reproducible headless captures. See
+[CPU reference scene renderer](../docs/reference_scene_renderer.md).
 
 ## Environments
 
@@ -135,6 +137,31 @@ capture, never a missing or failed renderer run. The initial run is
 reported as **captured**, not as a passed regression. PBR Health green
 means configured heuristics pass, not proof of physically accurate
 material properties.
+
+## CPU reference renders
+
+Generate fixtures as above, then use the `ReferenceScene` executable to render
+the same material sphere geometry without Vulkan or a cooked pak:
+
+```sh
+cmake --build out/build/linux-Release --target ReferenceScene
+python tools/material_lab.py reference \
+    --exe out/build/linux-Release/ReferenceScene \
+    --project out/material-lab/source \
+    --environment studio,cornell,outdoor \
+    --material metal_smooth,copper_brushed \
+    --resolution 256 --spp 64 --bounces 3 \
+    --output out/material-lab/reference
+```
+
+The generated source tree includes a `.refscene.json` for each environment.
+Reference images are exported to `environment/material/lit/reference.png`
+and HDR `reference.pfm`, with metadata and a contact sheet. Use them as
+**diagnostic comparisons**, not physically calibrated truth: the CPU path
+shares the existing GI BSDF conventions, and normal maps, photographic IBL,
+shader hooks and refractive glass are not reproduced. Camera-facing
+emissive geometry and vertex-normal interpolation are reference-only and do
+not alter GI-bake outputs.
 
 ## Tests
 

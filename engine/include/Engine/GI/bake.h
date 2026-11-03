@@ -214,6 +214,9 @@ public:
 	// no UVs: every hit shades with the flat averaged albedo (the
 	// pre-textured behavior).
 	std::vector<glm::vec2> uvs;
+	// Optional world-space vertex normals for camera/reference rendering.
+	// GI baking deliberately keeps its geometric-normal transport.
+	std::vector<glm::vec3> normals;
 	// Decoded baseColor textures keyed by the cluster cook texture id
 	// (GiTraceMaterial::baseTexId). Sparse: only the ids the build found
 	// decodable texel data for; a material whose id is missing shades
@@ -268,9 +271,11 @@ public:
 	// Optional outFirstAlbedo: the first NON-transmissive hit's diffuse
 	// albedo (the ambient-closure blend needs it; sky / transmissive-only
 	// paths leave the caller's value untouched).
+	// referenceCamera: camera-visible emission and interpolated vertex normals
+	// when present. Kept opt-in so existing GI/lightmap products stay unchanged.
 	glm::vec3 TraceIncoming(const glm::vec3& origin, const glm::vec3& dir,
 		Pcg32& rng, uint32_t maxDepth, float* outPrimaryDist = nullptr,
-		glm::vec3* outFirstAlbedo = nullptr) const;
+		glm::vec3* outFirstAlbedo = nullptr, bool referenceCamera = false) const;
 
 	// Monte-Carlo cosine-hemisphere irradiance estimate at a point
 	// (reference for the error-driven refinement; same sources as
@@ -449,6 +454,15 @@ struct GiSceneBuildOptions {
 	// default: flagged lights exist to be baked. Callers that only want
 	// the geometry/BVH (pick raycasts) can turn it off.
 	bool staticLights = true;
+	// Reference snapshots include authored dynamic lights as direct sources;
+	// normal GI bakes must remain static-only.
+	bool includeDynamicLights = false;
+	// Preserve transformed vertex normals for camera rays. GI bakes do not
+	// need the extra storage or change to their geometric-normal shading.
+	bool retainVertexNormals = false;
+	// Camera material references sample MR from per-hit texels; GI bakes
+	// preserve their historic average-factor fallback by default.
+	bool referenceMaterialSampling = false;
 	// Punctual-light aim axis in engine node-local space (the import
 	// bakes node transforms through a basis change, so the local aim
 	// axis depends on it — see tools/gltf_import): the harvest resolves

@@ -245,9 +245,14 @@ namespace editor {
 
 			// Previously nested tabs are now first-class dock windows:
 			// users can move EACH panel to a side, float it, or tab it
-			// with the viewport / another tool.
+			// with the viewport / another tool. The Embree reference
+			// render rides the same pattern (dock it beside
+			// Render/Material or tab it with them).
 			if (ImGui::Begin("Outliner"))
 				DrawOutliner();
+			ImGui::End();
+			if (ImGui::Begin("Reference"))
+				DrawReferencePanel();
 			ImGui::End();
 			if (ImGui::Begin("Assets"))
 				DrawAssetsPanel();

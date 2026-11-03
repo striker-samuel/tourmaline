@@ -29,6 +29,15 @@ MATERIALS = [
 POSITIONS = [(float(col - 1) * 2.15, 4.7 - float(row) * 1.8, 0.0)
              for row in range(3) for col in range(3)]
 
+ENVIRONMENT_SETTINGS = {
+    "studio": {"sunIntensity": "6500", "sunAzimuth": "25", "sunElevation": "47",
+               "skyColor": "0.6 0.65 0.72", "skyIntensity": "550"},
+    "cornell": {"sunIntensity": "0", "sunAzimuth": "25", "sunElevation": "47",
+                "skyColor": "0.25 0.25 0.25", "skyIntensity": "100"},
+    "outdoor": {"sunIntensity": "11000", "sunAzimuth": "45", "sunElevation": "62",
+                "skyColor": "0.27 0.45 0.85", "skyIntensity": "700"},
+}
+
 
 def sphere(slices=24, stacks=16):
     positions, normals, indices = [], [], []
@@ -61,6 +70,9 @@ class Gltf:
                     "scene": 0, "scenes": [{"nodes": []}], "nodes": [],
                     "meshes": [], "materials": [], "buffers": [],
                     "bufferViews": [], "accessors": []}
+        self.ref_meshes = []
+        self.ref_positions, self.ref_normals = [], []
+        self.ref_indices, self.ref_tri_materials = [], []
 
     def accessor(self, values, fmt, kind, target):
         align = 4 if fmt == "f" else 2
@@ -88,6 +100,7 @@ class Gltf:
         norm = self.accessor(normals, "f", "VEC3", 34962)
         ind = self.accessor(indices, "H", "SCALAR", 34963)
         mi = len(self.doc["meshes"])
+        self.ref_meshes.append((positions, normals, indices, material))
         self.doc["meshes"].append({"name": name, "primitives": [
             {"attributes": {"POSITION": pos, "NORMAL": norm},
              "indices": ind, "material": material}]})
@@ -100,6 +113,13 @@ class Gltf:
         idx = len(self.doc["nodes"])
         self.doc["nodes"].append(node)
         self.doc["scenes"][0]["nodes"].append(idx)
+        positions, normals, indices, material = self.ref_meshes[mesh]
+        offset = len(self.ref_positions)
+        t = translation or (0, 0, 0)
+        self.ref_positions.extend([[p[i] + t[i] for i in range(3)] for p in positions])
+        self.ref_normals.extend(normals)
+        self.ref_indices.extend(offset + index for index in indices)
+        self.ref_tri_materials.extend([material] * (len(indices) // 3))
 
     def material(self, name, color, metal=0.0, rough=1.0):
         idx = len(self.doc["materials"])
@@ -109,12 +129,44 @@ class Gltf:
                                      "roughnessFactor": rough}})
         return idx
 
-    def save(self, path):
+    def save(self, path, environment):
         self.doc["buffers"] = [{"uri": path.with_suffix(".bin").name,
                                 "byteLength": len(self.data)}]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.doc, indent=2) + "\n", encoding="utf-8")
         path.with_suffix(".bin").write_bytes(self.data)
+
+        # The CPU reference consumes the SAME authored mesh/node geometry
+        # used for the Vulkan scene, without relying on a cooked GPU pak.
+        env = ENVIRONMENT_SETTINGS[environment]
+        az, el = math.radians(float(env["sunAzimuth"])), math.radians(float(env["sunElevation"]))
+        cos_el = math.cos(el)
+        sky = [float(v) for v in env["skyColor"].split()]
+        spots = []
+        if environment == "cornell":
+            spots = [{"position": [0, 5.5, 1.2], "direction": [0, -1, 0],
+                      "color": [3000, 2880, 2640], "range": 15.0,
+                      "cosInner": -1.0, "cosOuter": -1.0}]
+        ref = {
+            "schema_version": 1, "positions": self.ref_positions,
+            "normals": self.ref_normals, "indices": self.ref_indices,
+            "triangle_materials": self.ref_tri_materials,
+            "materials": [{"baseColor": m["pbrMetallicRoughness"]["baseColorFactor"][:3],
+                           "metallic": m["pbrMetallicRoughness"]["metallicFactor"],
+                           "roughness": m["pbrMetallicRoughness"]["roughnessFactor"]}
+                          for m in self.doc["materials"]],
+            "environment": {
+                "sunDirection": [math.sin(az) * cos_el, math.sin(el), math.cos(az) * cos_el],
+                "sunColor": [1.0, 0.95, 0.90],
+                "sunIntensity": float(env["sunIntensity"]),
+                "skyZenith": sky, "skyHorizon": sky,
+                "skyGround": [0.5 * v for v in sky],
+                "skyIntensity": float(env["skyIntensity"]),
+                "skyExponent": 2.0, "spots": spots,
+            },
+        }
+        path.with_suffix(".refscene.json").write_text(
+            json.dumps(ref, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def make_gltf(path, environment):
@@ -144,18 +196,11 @@ def make_gltf(path, environment):
         for name, geom, color in walls:
             material = gl.material(name, color)
             gl.node(name, gl.mesh(name, geom, material))
-    gl.save(path)
+    gl.save(path, environment)
 
 
 def make_tour(path, environment):
-    settings = {
-        "studio": {"sunIntensity": "6500", "sunAzimuth": "25", "sunElevation": "47",
-                   "skyColor": "0.6 0.65 0.72", "skyIntensity": "550"},
-        "cornell": {"sunIntensity": "0", "sunAzimuth": "25", "sunElevation": "47",
-                    "skyColor": "0.25 0.25 0.25", "skyIntensity": "100"},
-        "outdoor": {"sunIntensity": "11000", "sunAzimuth": "45", "sunElevation": "62",
-                    "skyColor": "0.27 0.45 0.85", "skyIntensity": "700"},
-    }
+    settings = ENVIRONMENT_SETTINGS
     lines = [
         f"//Name: {environment}.tour",
         f'reference -root -n 0 -source "content/models/{environment}/{environment}.geometry" -name "ROOT";',
