@@ -111,6 +111,18 @@ bool EditorApp::EnsureSvgIcons() {
 		{ IconType::Animation, "animation.svg" },
 		{ IconType::Timeline, "timeline.svg" },
 		{ IconType::Settings, "settings.svg" },
+		{ IconType::ToolObject, "tool_object.svg" },
+		{ IconType::ToolFace, "tool_face.svg" },
+		{ IconType::ToolVertex, "tool_vertex.svg" },
+		{ IconType::ToolFrame, "tool_frame.svg" },
+		{ IconType::ToolClear, "tool_clear.svg" },
+		{ IconType::ToolMove, "tool_move.svg" },
+		{ IconType::ToolRotate, "tool_rotate.svg" },
+		{ IconType::ToolScale, "tool_scale.svg" },
+		{ IconType::ToolLayout, "tool_layout.svg" },
+		{ IconType::ToolLighting, "tool_lighting.svg" },
+		{ IconType::ToolTest, "tool_test.svg" },
+		{ IconType::ToolProfile, "tool_profile.svg" },
 	};
 	// The user-texture sampler: linear + clamp-to-edge.
 	const uint32_t samplerIdx = m_context->GetOrCreateSampler(

@@ -923,177 +923,113 @@ namespace editor {
 		// straight into the --project pick.)
 	}
 
-	// ---- tool topbar --------------------------------------------------------
-	// Tab strip of tool types + one row of the active tab's controls. Returns
-	// the toolbar's height (0 when the window fails to draw). The toolbar is
-	// chrome: NoMove/NoBringToFront, fixed under the menu bar, hidden with
-	// the panels (m_uiMode) so fullscreen viewports keep only the menu bar.
+	// Compact, icon-led authoring toolbar. Tool actions reuse the editor's
+	// existing selection/gizmo/mode commands, preserving keyboard shortcuts.
 	float EditorApp::DrawToolTabs(float top) {
-		// THE TOP TOOLBAR (the rework): ONE bar — every tool section
-		// (Select / Transform / Modes / Terrain / Placement) is a GROUP of
-		// letter buttons separated by verticals, no tabs. The letters are
-		// PLACEHOLDER icons (the asset browser's SVG machinery will host
-		// the real set later) — and they double as the hotkeys the legend
-		// documents: the MAYA-STYLE dim strip under the buttons maps them
-		// at a glance. MODES PERSIST: the section states save + restore
-		// across sessions ([tools] prefs — sel/gizmo/mode).
-		const float btnH = 26.0f;
-		const float legendH = ImGui::GetTextLineHeightWithSpacing() + 5.0f;
-		const float h = btnH + 10.0f + legendH;
+		const float h = 64.0f;
 		ImGui::SetNextWindowPos(ImVec2(0.0f, top), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(
 			ImVec2(float(ImGui::GetIO().DisplaySize.x), h), ImGuiCond_Always);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(9.0f, 5.0f));
 		if (!ImGui::Begin("##toptoolbar", nullptr,
 			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
 			ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
 			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
 			ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav)) {
 			ImGui::End();
+			ImGui::PopStyleVar();
 			return 0.0f;
 		}
-		// The letter button: square, ACTIVE reads as the theme's selected
-		// accent (the TabSelected blues) so the current tool group state
-		// is the bar's loudest signal. Tooltip carries the words + the
-		// hotkey the letter doubles as.
-		auto letterTool = [&](const char* letter, bool active,
-				const char* tip) {
-			if (active) {
-				ImGui::PushStyleColor(ImGuiCol_Button,
-					ImGui::GetStyleColorVec4(ImGuiCol_TabSelected));
-				ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-					ImGui::GetStyleColorVec4(ImGuiCol_TabHovered));
-				ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-					ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+		const auto tool = [&](const char* id, IconType icon,
+			bool active, const char* tooltip) {
+			ImGui::PushID(id);
+			const ImVec2 size(31.0f, 31.0f);
+			const bool pressed = ImGui::InvisibleButton("##tool", size);
+			const bool hover = ImGui::IsItemHovered();
+			const ImVec2 p = ImGui::GetItemRectMin();
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			if (active || hover) {
+				dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y),
+					active ? IM_COL32(111, 71, 33, 255)
+					       : IM_COL32(67, 70, 72, 255), 3.0f);
+				dl->AddRect(p, ImVec2(p.x + size.x, p.y + size.y),
+					active ? IM_COL32(237, 157, 73, 255)
+					       : IM_COL32(100, 104, 106, 255), 3.0f);
 			}
-			const bool clicked = ImGui::Button(letter, ImVec2(0.0f, btnH));
-			if (active)
-				ImGui::PopStyleColor(3);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("%s", tip);
-			return clicked;
+			const ImVec2 a(p.x + 4.0f, p.y + 4.0f);
+			const ImVec2 b(p.x + size.x - 4.0f, p.y + size.y - 4.0f);
+			const IconTex& image = m_icons[size_t(icon)];
+			if (image.imgui != 0)
+				dl->AddImage(image.imgui, a, b,
+					ImVec2(0, 0), ImVec2(1, 1),
+					active ? IM_COL32(255, 220, 171, 255)
+					       : IM_COL32(214, 218, 219, 255));
+			else
+				DrawAssetIconFallback(dl, a, 23.0f, icon);
+			if (hover)
+				ImGui::SetTooltip("%s", tooltip);
+			ImGui::PopID();
+			return pressed;
 		};
-		// The vertical between groups (Maya's group dividers). (A dim
-		// text pipe: SeparatorEx is not exposed by this ImGui build.)
-		auto vsep = [&]() {
-			ImGui::SameLine();
+		const auto next = []() { ImGui::SameLine(0.0f, 4.0f); };
+		const auto split = []() {
+			ImGui::SameLine(0.0f, 11.0f);
 			ImGui::TextDisabled("|");
-			ImGui::SameLine();
+			ImGui::SameLine(0.0f, 11.0f);
 		};
 
-		// ---- SELECT: M mesh / F face / V vertex + frame + clear -------
-		ImGui::PushID("secSelect");
-		{
-			static const char* kLetters[3] = { "M", "F", "V" };
-			static const char* kTips[3] = {
-				"Select MESH (Q: the radial wheel)",
-				"Select FACE (Q: the radial wheel)",
-				"Select VERTEX (Q: the radial wheel)" };
-			for (int i = 0; i < 3; ++i) {
-				if (i > 0)
-					ImGui::SameLine();
-				if (letterTool(kLetters[i], int(m_selMode) == i, kTips[i])
-						&& int(m_selMode) != i) {
-					m_selMode = SelMode(i);
-					ClearSubSelection();
-				}
+		ImGui::PushID("select");
+		const IconType selectionIcons[3] = {
+			IconType::ToolObject, IconType::ToolFace, IconType::ToolVertex };
+		const char* selectionLabels[3] = { "Mesh", "Face", "Vertex" };
+		for (int i = 0; i < 3; ++i) {
+			if (i) next();
+			if (tool(selectionLabels[i], selectionIcons[i],
+				int(m_selMode) == i, selectionLabels[i])
+				&& int(m_selMode) != i) {
+				m_selMode = SelMode(i);
+				ClearSubSelection();
 			}
-			ImGui::SameLine();
-			if (letterTool("Frm", false, "Frame the selection (F)"))
-				FrameSelection();
-			ImGui::SameLine();
-			if (letterTool("Clr", false, "Clear the selection"))
-				ClearSelection();
+		}
+		next();
+		if (tool("frame", IconType::ToolFrame, false, "Frame selection (F)"))
+			FrameSelection();
+		next();
+		if (tool("clear", IconType::ToolClear, false, "Clear selection"))
+			ClearSelection();
+		ImGui::PopID();
+
+		split();
+		ImGui::PushID("transform");
+		const IconType transformIcons[3] = {
+			IconType::ToolMove, IconType::ToolRotate, IconType::ToolScale };
+		const char* transformNames[3] = { "Move (W)", "Rotate (E)", "Scale (R)" };
+		for (int i = 0; i < 3; ++i) {
+			if (i) next();
+			if (tool(transformNames[i], transformIcons[i],
+				int(m_gizmoMode) == i, transformNames[i]))
+				m_gizmoMode = GizmoMode(i);
 		}
 		ImGui::PopID();
-		vsep();
-		//// ---- TRANSFORM: W move / E rotate / R scale (the hotkeys ARE
-		//// the letters — Maya's convention, the legend's anchor row) ------
-		//ImGui::PushID("secXform");
-		//{
-		//	static const char* kLetters[3] = { "W", "E", "R" };
-		//	static const char* kTips[3] = { "MOVE (W)",
-		//		"ROTATE (E)", "SCALE (R)" };
-		//	for (int i = 0; i < 3; ++i) {
-		//		if (i > 0)
-		//			ImGui::SameLine();
-		//		if (letterTool(kLetters[i], int(m_gizmoMode) == i, kTips[i])
-		//				&& int(m_gizmoMode) != i)
-		//			m_gizmoMode = GizmoMode(i);
-		//	}
-		//	ImGui::SameLine();
-		//	ImGui::TextDisabled("click gizmo axes to drag | sel: %s",
-		//		(m_world && m_selected != UINT32_MAX)
-		//		? getNodeName(m_world->scene, int(m_selected)).c_str()
-		//		: "-");
-		//}
-		//ImGui::PopID();
-		//vsep();
-		//// ---- MODES: 1-4 (Layout/Lighting/Test/Profile; the numbers ARE
-		//// the anywhere-hotkeys, the bar shows which one is live) ---------
-		//ImGui::PushID("secModes");
-		//{
-		//	static const char* kLetters[4] = { "1", "2", "3", "4" };
-		//	static const char* kTips[4] = { "LAYOUT mode (1)",
-		//		"LIGHTING mode (2)", "TEST mode (3)", "PROFILE mode (4)" };
-		//	for (int i = 0; i < 4; ++i) {
-		//		if (i > 0)
-		//			ImGui::SameLine();
-		//		if (letterTool(kLetters[i], int(m_mode) == i, kTips[i])
-		//				&& int(m_mode) != i)
-		//			SetMode(EditorMode(i));
-		//	}
-		//}
-		//ImGui::PopID();
-		//vsep();
-		//// ---- TERRAIN: the paint cluster (the brush controls live while
-		//// a terrain group is selected; CREATION lives in the Create menu
-		//// — the bar's job is the live tool state, not spawning) ---------
-		//ImGui::PushID("secTerrain");
-		//{
-		//	const bool hasWorld = m_world != nullptr;
-		//	const uint32_t group = hasWorld
-		//		? TerrainGroupOf(m_selected) : UINT32_MAX;
-		//	if (!hasWorld || group == UINT32_MAX)
-		//		ImGui::TextDisabled("(select a terrain)");
-		//	else {
-		//		ImGui::SameLine();
-		//		if (letterTool("P", m_paintTerrain,
-		//				"Paint the selected terrain group (LMB in a 3D "
-		//				"viewport)"))
-		//			m_paintTerrain = !m_paintTerrain;
-		//		static const char* kOps[4] = { "R", "L", "F", "S" };
-		//		static const char* kOpTips[4] = { "RAISE brush", "LOWER brush",
-		//			"FLATTEN brush", "SMOOTH brush" };
-		//		for (int k = 0; k < 4; ++k) {
-		//			ImGui::SameLine();
-		//			if (letterTool(kOps[k], m_paintOp == k, kOpTips[k]))
-		//				m_paintOp = k;
-		//		}
-		//		ImGui::SameLine();
-		//		ImGui::SetNextItemWidth(90.0f);
-		//		ImGui::DragFloat("R##terr", &m_paintRadius, 0.25f, 0.5f,
-		//			256.0f, "%.1f m");
-		//		if (ImGui::IsItemHovered())
-		//			ImGui::SetTooltip("Brush radius (m)");
-		//		ImGui::SameLine();
-		//		ImGui::SetNextItemWidth(90.0f);
-		//		ImGui::DragFloat("S##terr", &m_paintStrength, 0.01f, 0.01f,
-		//			64.0f, "%.2f");
-		//		if (ImGui::IsItemHovered())
-		//			ImGui::SetTooltip("Brush strength");
-		//	}
-		//}
-		//ImGui::PopID();
-		//// (The PLACEMENT section is out of the bar: its toggles + refresh
-		//// live in the placement graph window's own controls - the bar
-		//// carries the authoring tools, not every subsystem's panel state.
-		//// Creation was already in the Create menu.)
-		//// ---- THE LEGEND (Maya-style): the letter/hotkey map under the
-		//// buttons - everything the bar can do, one dim line.
-		//ImGui::TextDisabled(
-		//	"Q select | W move  E rotate  R scale | F frame | 1-4 modes"
-		//	" | M/F/V mesh-face-vertex | P paint  R/L/F/S brush");
+
+		split();
+		ImGui::PushID("workspace");
+		const IconType modeIcons[4] = { IconType::ToolLayout,
+			IconType::ToolLighting, IconType::ToolTest, IconType::ToolProfile };
+		const char* modeNames[4] = {
+			"Layout (1)", "Lighting (2)", "Test (3)", "Profile (4)" };
+		for (int i = 0; i < 4; ++i) {
+			if (i) next();
+			if (tool(modeNames[i], modeIcons[i], int(m_mode) == i,
+				modeNames[i]) && int(m_mode) != i)
+				SetMode(EditorMode(i));
+		}
+		ImGui::PopID();
+		// Second line is a quiet navigation legend, not more buttons.
+		ImGui::SetCursorPosY(43.0f);
+		ImGui::TextDisabled("SELECT  M / F / V       TRANSFORM  W / E / R       WORKSPACE  1 - 4");
 		ImGui::End();
+		ImGui::PopStyleVar();
 		return h;
 	}
 
@@ -4384,48 +4320,68 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		m_matThumbs.clear();
 	}
 
-	// The asset browser's SIDECAR thumbnails (the .material ball previews):
-	// the <file>.material.png the matball pass writes, loaded as an engine
-	// texture + bound for ImGui (the cubeface pattern). Path + mtime keyed —
-	// a refreshed sidecar (the Ball preview button re-rendered it) reloads,
-	// a deleted sidecar drops the entry and the tile falls back to the
-	// generic icon. stb_image (the loader half of the branding pair).
-	ImTextureID EditorApp::AssetSidecarThumb(const std::string& pngPath) {
+	// Browser thumbnail cache: material-ball sidecars and regular source images
+	// share one path+mtime keyed GPU texture path. Decode is bounded to prevent
+	// a huge source image from turning the asset explorer into a GPU memory sink.
+	ImTextureID EditorApp::AssetSidecarThumb(const std::string& imagePath) {
 		namespace fs = std::filesystem;
 		std::error_code ec;
-		if (!m_context || !m_imgui || !fs::is_regular_file(pngPath, ec))
+		if (!m_context || !m_imgui || !fs::is_regular_file(imagePath, ec))
 			return 0;
-		const auto mt = fs::last_write_time(pngPath, ec);
+		const auto mt = fs::last_write_time(imagePath, ec);
 		if (ec)
 			return 0;
 		auto it = std::find_if(m_assetThumbs.begin(), m_assetThumbs.end(),
-			[&](const AssetThumb& t) { return t.path == pngPath; });
+			[&](const AssetThumb& t) { return t.path == imagePath; });
 		if (it != m_assetThumbs.end()) {
 			if (it->hasMtime && mt == it->mtime && it->imgui != 0)
-				return it->imgui; // current
-			// Stale (the sidecar re-rendered) or half-initialized: drop,
-			// rebuild below.
+				return it->imgui;
 			if (it->imgui != 0)
 				ImGui_ImplVulkan_RemoveTexture(
 					reinterpret_cast<VkDescriptorSet>(ImU64(it->imgui)));
 			it->tex = {};
 			m_assetThumbs.erase(it);
 		}
-		int w = 0, h = 0, comp = 0;
-		stbi_uc* data = stbi_load(pngPath.c_str(), &w, &h, &comp, 4);
-		if (!data || w <= 0 || h <= 0) {
-			stbi_image_free(data);
+		// Do not decode arbitrarily large/untrusted image files into memory.
+		constexpr int maxSourceSide = 8192;
+		constexpr int side = 128;
+		const auto bytes = fs::file_size(imagePath, ec);
+		if (ec || bytes > 32ull * 1024ull * 1024ull)
 			return 0;
+		int w = 0, h = 0, comp = 0;
+		if (!stbi_info(imagePath.c_str(), &w, &h, &comp)
+			|| w <= 0 || h <= 0 || w > maxSourceSide || h > maxSourceSide
+			|| uint64_t(w) * uint64_t(h) > 16000000ull)
+			return 0;
+		stbi_uc* data = stbi_load(imagePath.c_str(), &w, &h, &comp, 4);
+		if (!data)
+			return 0;
+		// Letterbox into a fixed-size RGBA tile, preserving aspect ratio.
+		const float scale = std::min(float(side) / float(w),
+			float(side) / float(h));
+		const int dw = std::max(1, int(float(w) * scale));
+		const int dh = std::max(1, int(float(h) * scale));
+		const int ox = (side - dw) / 2, oy = (side - dh) / 2;
+		std::vector<unsigned char> rgba(size_t(side) * side * 4, 0);
+		for (int y = 0; y < dh; ++y) {
+			const int sy = std::min(h - 1, y * h / dh);
+			for (int x = 0; x < dw; ++x) {
+				const int sx = std::min(w - 1, x * w / dw);
+				const size_t from = (size_t(sy) * size_t(w) + size_t(sx)) * 4;
+				const size_t to = (size_t(y + oy) * side + size_t(x + ox)) * 4;
+				for (int c = 0; c < 4; ++c)
+					rgba[to + c] = data[from + c];
+			}
 		}
+		stbi_image_free(data);
 		smvk::ImageCreateInfo ci{};
-		ci.extent = smvk::Extent3D{ uint32_t(w), uint32_t(h), 1 };
-		ci.format = smvk::Format::RGBA8_SRGB; // the matball PNG is display-ready
+		ci.extent = smvk::Extent3D{ side, side, 1 };
+		ci.format = smvk::Format::RGBA8_SRGB;
 		ci.mipLevels = 1;
 		ci.arrayLayers = 1;
-		ci.name = "asset sidecar thumb";
+		ci.name = "asset browser thumbnail";
 		AssetThumb t;
-		t.tex = m_context->CreateTexture(ci, data);
-		stbi_image_free(data);
+		t.tex = m_context->CreateTexture(ci, rgba.data());
 		if (t.tex.empty())
 			return 0;
 		const void* vkView = m_context->GetTextureVkImageView(t.tex);
@@ -4454,7 +4410,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		if (t.imgui == 0)
 			return 0;
-		t.path = pngPath;
+		// A fixed-size LRU-like FIFO bounds descriptor and GPU resource count.
+		constexpr size_t maxThumbs = 128;
+		if (m_assetThumbs.size() >= maxThumbs) {
+			AssetThumb& oldest = m_assetThumbs.front();
+			if (oldest.imgui)
+				ImGui_ImplVulkan_RemoveTexture(
+					reinterpret_cast<VkDescriptorSet>(ImU64(oldest.imgui)));
+			oldest.tex = {};
+			m_assetThumbs.erase(m_assetThumbs.begin());
+		}
+		t.path = imagePath;
 		t.mtime = mt;
 		t.hasMtime = true;
 		m_assetThumbs.push_back(std::move(t));
@@ -6544,9 +6510,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			// button renders it). Missing/stale = the generic icon (the
 			// button regenerates on demand).
 			ImTextureID sidecar = 0;
-			if (!e.dir && e.name.size() > 9
-				&& e.name.Str().compare(e.name.size() - 9, 9, ".material") == 0)
-				sidecar = AssetSidecarThumb(e.abs.Str() + ".png");
+			if (!e.dir) {
+				const std::string name = e.name.Str();
+				std::string ext = fs::path(name).extension().string();
+				for (char& c : ext)
+					c = char(std::tolower((unsigned char)c));
+				if (ext == ".material")
+					sidecar = AssetSidecarThumb(e.abs.Str() + ".png");
+				else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+					|| ext == ".bmp" || ext == ".tga")
+					sidecar = AssetSidecarThumb(e.abs.Str());
+			}
 			if (sidecar != 0) {
 				dl->AddImage(sidecar, ico,
 					ImVec2(ico.x + iconS, ico.y + iconS));

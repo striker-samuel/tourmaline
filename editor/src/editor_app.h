@@ -2222,7 +2222,10 @@ private:
 	enum class IconType : int {
 		Folder, Pak, Model, Scene, Texture, File,
 		Light, Camera, Env, GI, Character, Skeleton,
-		Animation, Timeline, Settings, Count
+		Animation, Timeline, Settings,
+		ToolObject, ToolFace, ToolVertex, ToolFrame, ToolClear,
+		ToolMove, ToolRotate, ToolScale, ToolLayout, ToolLighting,
+		ToolTest, ToolProfile, Count
 	};
 	struct IconTex {
 		smvk::Holder<smvk::TextureHandle> tex; // keeps the image alive
