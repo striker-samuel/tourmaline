@@ -3547,6 +3547,7 @@ namespace engine {
 		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 		m_viewportResources.dof.Destroy(*m_rendergraph);
 		m_viewportResources.ssr.Destroy(*m_rendergraph);
+		m_viewportResources.planarReflections.Destroy(*m_rendergraph);
 		m_viewportResources.ssgiDiffuse.Destroy(*m_rendergraph);
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.godrays.Destroy(*m_rendergraph);
@@ -15695,6 +15696,32 @@ namespace engine {
 						}
 					}
 				} // (no-HZB skip: ssrOn but the shared pyramid failed - see above)
+			}
+		}
+
+		// Optional planar mirror composite. The host renders a reflected
+		// camera into an independent sampled HDR image and registers its
+		// logical view in THIS rendergraph. This pass simply resolves
+		// receiver-plane pixels with main depth and projects those pixels
+		// into the supplied capture. After SSR, before motion blur/DOF:
+		// mirror reflections participate in the rest of the post chain.
+		// Absent capture: no shader, target allocation or graph work.
+		if (m_planarReflectionCapture && !DebugVisualizationActive()
+			&& m_planarReflectionCapture->logicalView != sceneHdrView
+			&& m_planarReflectionCapture->bindlessIndex != UINT32_MAX
+			&& !m_viewportResources.renderDepth.logicalView.empty()
+			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX) {
+			auto& planar = m_viewportResources.planarReflections;
+			if (planar.Ensure(*m_context, *m_rendergraph, renderExtent)
+				&& planar.AddCompositePass(*m_rendergraph, sceneHdrView,
+					sceneHdrBindless, m_planarReflectionCapture->logicalView,
+					m_planarReflectionCapture->bindlessIndex,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress, linearSampler,
+					*m_planarReflectionCapture)) {
+				sceneHdrView = planar.OutputView();
+				sceneHdrBindless = planar.OutputBindless();
 			}
 		}
 
