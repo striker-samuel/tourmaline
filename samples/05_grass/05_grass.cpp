@@ -319,6 +319,16 @@ private:
         if (!extent.height) return;
         m_rendergraph->NewFrame();
         m_frame += 1;
+        if ((m_frame % 120u) == 0u) {
+            char title[192] = {};
+            const double fps = delta_time_s > 0.0f
+                ? 1.0 / double(delta_time_s) : 0.0;
+            std::snprintf(title, sizeof(title),
+                "Tourmaline grass | %u candidates | %.1f FPS | "
+                "GPU cull + indirect", kSlotCount * m_layer.config.candidatesPerTile,
+                fps);
+            SDL_SetWindowTitle(window, title);
+        }
         const float angle = 0.42f + 0.002f * float(m_frame);
         const glm::vec3 eye(
             105.0f * std::sin(angle), 31.0f,
