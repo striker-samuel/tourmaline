@@ -40,7 +40,10 @@ struct SourceKeyHash {
 struct SourceRecord {
     SourceKey instance{};
     SourceKey mesh{};
-    glm::mat4 globalModel{1.0f};
+    // Preserve authoritative double translation at the CPU -> GPU boundary.
+    // The current World synchronizer can still supply glm::mat4 (converted
+    // explicitly), but callers with doubles never round before splitting.
+    glm::dmat4 globalModel{1.0};
     glm::vec4 localSphere{0.0f};
     uint32_t material = InvalidIndex;
     uint32_t flags = 0;
@@ -155,17 +158,16 @@ public:
         return true;
     }
 
-    static void SetTransform(Instance& out, const glm::mat4& model) {
-        // Existing Scene authority is mat4(float); DoubleFloat cannot
-        // reconstruct world precision already lost before this boundary.
-        out.worldPosition = tour::math::SplitDoubleFloat(
-            glm::dvec3(glm::vec3(model[3])));
+    static void SetTransform(Instance& out, const glm::dmat4& model) {
+        // The translation stays double until SplitDoubleFloat; only the
+        // affine basis is rounded. Never convert the entire dmat4 to mat4.
+        out.worldPosition = tour::math::SplitDoubleFloat(glm::dvec3(model[3]));
         out.basisX = glm::vec4(glm::vec3(model[0]), 0.0f);
         out.basisY = glm::vec4(glm::vec3(model[1]), 0.0f);
         out.basisZ = glm::vec4(glm::vec3(model[2]), 0.0f);
     }
 
-    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::mat4& model,
+    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::dmat4& model,
                                      RenderDatabase& db) {
         auto it = instances_.find(key);
         if (it == instances_.end()) return false;
@@ -178,6 +180,14 @@ public:
         const bool updated = db.instances.Update(it->second, next);
         if (updated) changed_.push_back(it->second);
         return updated;
+    }
+
+    // Current Scene journals still publish float matrices. This adapter
+    // is deliberate and isolated; the dmat4 overload is authoritative
+    // when a double transform source is available.
+    [[nodiscard]] bool UpdateGlobal(SourceKey key, const glm::mat4& model,
+                                    RenderDatabase& db) {
+        return UpdateGlobal(key, glm::dmat4(model), db);
     }
 
     SyncStats Reconcile(std::span<const SourceRecord> sources,
@@ -311,7 +321,7 @@ public:
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
                 meshWorldIndices.try_emplace(record.mesh, item.mesh);
-                record.globalModel = world.scene.globalTransform[item.node];
+                record.globalModel = glm::dmat4(world.scene.globalTransform[item.node]);
                 record.material = item.material; // interim World index
                 record.flags = static_cast<uint32_t>(item.flags);
                 // Union the bounds of EVERY cooked LOD, including payloads
