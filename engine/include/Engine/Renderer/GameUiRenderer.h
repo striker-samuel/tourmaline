@@ -73,6 +73,8 @@ public:
 	// rebuilds every frame, or may reuse its own retained widget tree.
 	void BeginFrame() { m_rects.clear(); }
 	void Reserve(size_t count) { m_rects.reserve(count); }
+	// Read-only pending submissions for CPU diagnostics and geometry tests.
+	[[nodiscard]] std::span<const UiDrawRect2D> PendingRects() const { return m_rects; }
 	void DrawRect(const UiDrawRect2D& rect) {
 		if (m_rects.size() >= kMaxRects) {
 			if (!m_overflowLogged) {
