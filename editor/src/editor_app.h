@@ -1231,6 +1231,14 @@ private:
 	float m_paintRadius = 8.0f;
 	float m_paintStrength = 0.5f;
 	float m_paintStrokeSpacing = 0.5f; // radius fraction between stamps
+	bool m_paintScatter = false;
+	bool m_eraseScatter = false;
+	float m_scatterBrushRadius = 10.0f;
+	float m_scatterBrushStrength = 0.8f;
+	float m_scatterBrushSpacing = 0.25f;
+	glm::vec2 m_scatterPaintLast{-1e9f, -1e9f};
+	bool PaintScatterAt(const glm::vec3& origin, const glm::vec3& dir);
+	void EnsureScatterMaskGraph();
 	char m_brushPresetName[64] = "Custom";
 	// Shared .brushpreset asset picker for sculpting and PlacementGraph.
 	void DrawBrushPresetControls(bool scatter);
