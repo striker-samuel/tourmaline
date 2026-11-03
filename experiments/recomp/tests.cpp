@@ -119,7 +119,15 @@ int main(){
     Check(!LoadSm64UsRom(badRom,out,error)&&out.empty(),"SHA1 game gate");
     fs::remove(badRom);
     Session session;
-    Check(!session.Boot(badRom,path,{},error),"must have an adapter");
+    ExternalAssets sessionPaths{};
+    sessionPaths.repoRoot=fs::current_path();
+    sessionPaths.rom=badRom;
+    Check(!session.Boot(sessionPaths,path,{},error),"must have a valid external ROM");
+    sessionPaths.rom=fs::current_path()/"forbidden.n64";
+    Check(!session.Boot(sessionPaths,path,{},error) &&
+          error.find("OUTSIDE")!=std::string::npos,
+          "session refuses repository-local ROM before attempting to read it");
+    sessionPaths.rom=badRom;
     // Exercise a complete adapter with synthetic content, zero ROMs.
     MockGame mock;
     std::array<Byte,16> dummy{};
@@ -167,7 +175,7 @@ int main(){
           "empty content rejected");
     // Game-specific Session cannot bypass SM64 USA verification.
     abi.capabilities=TOUR_RECOMP_CAP_RGBA_FRAME;
-    Check(!session.Boot(badRom,path,abi,error),"session ROM gate");
+    Check(!session.Boot(sessionPaths,path,abi,error),"session ROM gate");
     Check(mock.boots==1,"no original ROM => no adapter boot");
     // Frame parity signatures: hash, input, dimensions and tick are all
     // part of the comparison. No frame pixels enter the trace/CSV.
