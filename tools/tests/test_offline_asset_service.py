@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tools.offline_asset_service import Archive, relative_asset_path, handler_for
-from tools.install_offline_assets import configure
+from tools.install_offline_assets import configure, install_maya_script
 
 
 class OfflineAssetTests(unittest.TestCase):
@@ -109,6 +109,14 @@ class OfflineAssetTests(unittest.TestCase):
         for name in ("../secret", "/etc/passwd", "C:/x", "sub/../secret", "./a", "a//b"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 relative_asset_path(name)
+
+    def test_installer_copies_maya_picker_without_touching_share(self):
+        destination = Path(self.tmp.name) / "maya-user" / "scripts"
+        installed = install_maya_script(destination)
+        self.assertEqual(installed.parent, destination)
+        self.assertTrue(installed.is_file())
+        self.assertIn("def show_picker(", installed.read_text(encoding="utf-8"))
+        self.assertEqual(list(self.source.rglob("*")), [])
 
     def test_setup_roundtrip(self):
         config = configure(str(self.source), str(self.archive), str(self.cache),
