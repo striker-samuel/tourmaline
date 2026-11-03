@@ -22,7 +22,7 @@ typedef struct TourRecompControllerV1 {
 } TourRecompControllerV1;
 
 typedef struct TourRecompFrameV1 {
-    const uint8_t* pixels; // borrowed until frame_rgba returns
+    const uint8_t* pixels; // valid until next step/capture/shutdown; host copies promptly
     uint32_t width;
     uint32_t height;
     uint32_t pitch; // bytes/row, >= width * 4
