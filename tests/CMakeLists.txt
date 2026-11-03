@@ -434,6 +434,7 @@ project(AssetOpsTests)
 
 add_executable(AssetOpsTests test_asset_ops.cpp
     ../editor/src/editor_asset_ops.cpp
+    ../editor/src/editor_asset_dcc.cpp
 )
 
 target_include_directories(AssetOpsTests
