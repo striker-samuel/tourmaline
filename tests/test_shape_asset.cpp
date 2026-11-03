@@ -28,6 +28,16 @@ int main() {
             assert(!mesh.indices.empty() && mesh.indices.size() % 3 == 0);
         }
     }
+    {
+        std::string obj;
+        auto box = DefaultShapeAsset(ShapeKind::Box);
+        assert(ShapeToObj(box, obj, error));
+        assert(obj.find("o procedural_box") != std::string::npos);
+        assert(obj.find("v -1 -1 -1") != std::string::npos);
+        assert(obj.find("\\nf ") != std::string::npos);
+        assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::PointCloud), obj, error));
+        assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::Spline), obj, error));
+    }
     ShapeAsset loop = DefaultShapeAsset(ShapeKind::Spline);
     loop.closed = true; loop.segments = 5;
     ShapeGeometry curve;
