@@ -13,6 +13,14 @@ set_target_properties(DebugDrawTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME debug_draw_tests COMMAND DebugDrawTests)
 
+# Planar reflection camera math (CPU only; no Vulkan device required).
+add_executable(PlanarReflectionTests test_planar_reflection.cpp)
+target_link_libraries(PlanarReflectionTests PRIVATE engine)
+set_target_properties(PlanarReflectionTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME planar_reflection_tests COMMAND PlanarReflectionTests)
+
+
 add_executable(EditorGameSessionTests test_editor_game_session.cpp)
 target_link_libraries(EditorGameSessionTests PRIVATE tourmaline::editor_entry)
 set_target_properties(EditorGameSessionTests PROPERTIES

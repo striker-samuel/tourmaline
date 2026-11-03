@@ -962,6 +962,10 @@ namespace engine {
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.ssr
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		// Planar captures use the same fresh-first/retirement contract.
+		if (m_viewportResources.planarReflections.program.shaderCount != 0)
+			moved += m_viewportResources.planarReflections
+				.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.volumetric
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.exposure
@@ -3556,6 +3560,10 @@ namespace engine {
 		m_viewportResources.dof.Destroy(*m_rendergraph);
 		m_viewportResources.ssr.Destroy(*m_rendergraph);
 		m_staticSdfGpu.Clear();
+		m_viewportResources.planarReflections.Destroy(*m_rendergraph);
+		for (const auto& imported : m_planarCaptureImports)
+			m_rendergraph->FreeImageView(imported.second);
+		m_planarCaptureImports.clear();
 		m_viewportResources.ssgiDiffuse.Destroy(*m_rendergraph);
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.godrays.Destroy(*m_rendergraph);
@@ -15823,6 +15831,57 @@ namespace engine {
 						}
 					}
 				} // (no-HZB skip: ssrOn but the shared pyramid failed - see above)
+			}
+		}
+
+		// Optional planar mirror composite. The host renders a reflected
+		// camera into an independent sampled HDR image and registers its
+		// logical view in THIS rendergraph. This pass simply resolves
+		// receiver-plane pixels with main depth and projects those pixels
+		// into the supplied capture. After SSR, before motion blur/DOF:
+		// mirror reflections participate in the rest of the post chain.
+		// Absent capture: no shader, target allocation or graph work.
+		if (m_planarReflectionCapture && !DebugVisualizationActive()
+			&& m_planarReflectionCapture->strength > 0.0f
+			&& m_planarReflectionCapture->logicalView != sceneHdrView
+			&& m_planarReflectionCapture->bindlessIndex != UINT32_MAX
+			&& !m_viewportResources.renderDepth.logicalView.empty()
+			&& m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX) {
+			auto& planar = m_viewportResources.planarReflections;
+			// Allow the normal host integration to supply a physical image
+			// view, not just a view already registered in this private graph.
+			// Cache aliases; keep old ones through in-flight GPU work.
+			smvk::LogicalImageViewHandle captureLogical =
+				m_planarReflectionCapture->logicalView;
+			if (captureLogical.empty()
+				&& !m_planarReflectionCapture->physicalView.empty()) {
+				for (const auto& imported : m_planarCaptureImports) {
+					if (imported.first == m_planarReflectionCapture->physicalView) {
+						captureLogical = imported.second;
+						break;
+					}
+				}
+				if (captureLogical.empty()) {
+					captureLogical = m_rendergraph->AddExternalImageView(
+						m_planarReflectionCapture->physicalView,
+						m_planarReflectionCapture->format,
+						"planarCaptureExternal");
+					if (!captureLogical.empty())
+						m_planarCaptureImports.emplace_back(
+							m_planarReflectionCapture->physicalView, captureLogical);
+				}
+			}
+			if (!captureLogical.empty()
+				&& planar.Ensure(*m_context, *m_rendergraph, renderExtent)
+				&& planar.AddCompositePass(*m_rendergraph, sceneHdrView,
+					sceneHdrBindless, captureLogical,
+					m_planarReflectionCapture->bindlessIndex,
+					m_viewportResources.renderDepth.logicalView,
+					m_viewportResources.renderDepth.bindlessIndex,
+					frameUniformsAddress, linearSampler,
+					*m_planarReflectionCapture)) {
+				sceneHdrView = planar.OutputView();
+				sceneHdrBindless = planar.OutputBindless();
 			}
 		}
 
