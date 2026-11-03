@@ -3231,7 +3231,7 @@ void TestProjectCatalog() {
 					!= std::string::npos,
 				"catalog.header-symbol-table");
 			Check(text.find("struct GiKey") != std::string::npos
-				&& text.find("    Gi = 5,") != std::string::npos,
+				&& text.find("    Gi         = 5,") != std::string::npos,
 				"catalog.header-gi-kind-lane");
 		}
 	}
@@ -3399,6 +3399,11 @@ void TestProjectCatalog() {
 			lineFor("AssetDesc{textures::long_symbol,");
 		const std::string graph =
 			lineFor("AssetDesc{audiographs::forest,");
+		const std::string enumScene = lineFor("    Scene");
+		const std::string enumGraph = lineFor("    AudioGraph");
+		Check(!enumScene.empty() && !enumGraph.empty()
+			&& enumScene.find("= 0,") == enumGraph.find("= 6,"),
+			"catalog.aligned-enum");
 		Check(!scene.empty() && !texture.empty() && !graph.empty()
 			&& scene.find("AssetKind::Scene,")
 				== texture.find("AssetKind::Texture,")
