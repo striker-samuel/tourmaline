@@ -2201,6 +2201,12 @@ private:
 		float size, IconType k) const;
 	// Windows explorer /select reveal (no-op + log on failure).
 	void RevealInExplorer(const std::string& absPath);
+	// External DCC source link and on-demand source -> glTF build.
+	void OpenAssetInDcc(const std::string& selected);
+	void LinkAssetToDcc(const std::string& selected);
+	void UnlinkAssetFromDcc(const std::string& selected);
+	void PublishAssetFromDcc(const std::string& selected);
+	bool m_dccPublishRunning = false;
 	// MATERIAL ASSET drop (browser -> viewport): loads the .material
 	// file, creates a cluster material (values + textures from its
 	// refs, loaded from the files beside it) and assigns it to the
@@ -3066,7 +3072,10 @@ private:
 // Native Windows dialogs (editor_native_dialog.cpp): single entry
 // points for scenes (.gltf/.glb/.tour), outputs (.pak) and
 // project folders. False on cancel/failure.
-	bool NativeOpenFile(std::string& outPath, bool images = false);
+	// allFiles enables the generic DCC-document picker (Maya/Blender/etc).
+bool NativeOpenFile(std::string& outPath, bool images = false,
+	bool allFiles = false);
+bool NativeOpenExternalDocument(const std::string& file, std::string& err);
 	bool NativeSaveFile(std::string& outPath,
 		const std::string& suggestedName = {});
 	bool NativePickFolder(std::string& outPath);

@@ -18,11 +18,18 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <shobjidl.h> // IFileOpenDialog
+#include <shellapi.h> // ShellExecuteW (OS-associated DCC document)
 #else
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cerrno>
 #include <iostream>
 #include <string>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <thread>
+extern char** environ;
 #endif
 
 #include <string>
@@ -30,7 +37,7 @@
 #ifdef _WIN32
 namespace editor {
 
-bool NativeOpenFile(std::string& outPath, bool images) {
+bool NativeOpenFile(std::string& outPath, bool images, bool allFiles) {
 	// COM for the shell dialog (the editor otherwise avoids COM).
 	const HRESULT coInit = CoInitializeEx(nullptr,
 		COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -47,16 +54,24 @@ bool NativeOpenFile(std::string& outPath, bool images) {
 			{ L"Tour files", L"*.tour" },
 			{ L"All files", L"*.*" },
 		};
+		static const COMDLG_FILTERSPEC kDccFilters[] = {
+			{ L"All authoring documents", L"*.*" },
+			{ L"DCC scenes and mesh exports",
+				L"*.ma;*.mb;*.blend;*.obj;*.gltf;*.glb;*.fbx;*.usd;*.usda;*.usdc;*.hip;*.max;*.c4d" },
+		};
 		static const COMDLG_FILTERSPEC kImageFilters[] = {
 			{ L"Image files", L"*.ktx2;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.exr;*.hdr" },
 			{ L"KTX2 textures", L"*.ktx2" },
 			{ L"PNG", L"*.png" },
 			{ L"All files", L"*.*" },
 		};
-		const COMDLG_FILTERSPEC* filters = images ? kImageFilters : kFilters;
-		UINT filterCount = images
-			? static_cast<UINT>(sizeof(kImageFilters) / sizeof(kImageFilters[0]))
-			: static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0]));
+		const COMDLG_FILTERSPEC* filters = allFiles ? kDccFilters
+			: (images ? kImageFilters : kFilters);
+		UINT filterCount = allFiles
+			? static_cast<UINT>(sizeof(kDccFilters) / sizeof(kDccFilters[0]))
+			: (images
+				? static_cast<UINT>(sizeof(kImageFilters) / sizeof(kImageFilters[0]))
+				: static_cast<UINT>(sizeof(kFilters) / sizeof(kFilters[0])));
 		dlg->SetFileTypes(filterCount, filters);
 		dlg->SetFileTypeIndex(1);
 		// Start in C:/; fall back to the default folder on failure.
@@ -91,6 +106,32 @@ bool NativeOpenFile(std::string& outPath, bool images) {
 	if (coOwns)
 		CoUninitialize();
 	return ok;
+}
+
+// Launch the user's OS-associated DCC application with the document,
+// never via a shell command. Windows gets UTF-8->UTF-16 for project paths.
+bool NativeOpenExternalDocument(const std::string& file, std::string& err) {
+	const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		file.c_str(), -1, nullptr, 0);
+	if (n <= 1) {
+		err = "invalid UTF-8 DCC path";
+		return false;
+	}
+	std::wstring path(size_t(n), L'\0');
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+			file.c_str(), -1, path.data(), n)) {
+		err = "cannot decode DCC path";
+		return false;
+	}
+	path.pop_back();
+	const auto launched = ::ShellExecuteW(nullptr, L"open", path.c_str(),
+		nullptr, nullptr, SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(launched) <= 32) {
+		err = "the OS has no application associated with the DCC document";
+		return false;
+	}
+	err.clear();
+	return true;
 }
 
 // Native Windows file-SAVE dialog (IFileSaveDialog): for choosing an
@@ -288,15 +329,40 @@ bool PromptPath(const char* what, std::string& outPath) {
 
 namespace editor {
 
-bool NativeOpenFile(std::string& outPath, bool images) {
-	const char* filter = images
-		? "--file-filter='Images | *.ktx2 *.png *.jpg *.jpeg *.tga *.bmp *.exr *.hdr' "
-		  "--file-filter='All files | *'"
-		: "--file-filter='Scene files | *.gltf *.glb *.obj *.tour' "
-		  "--file-filter='All files | *'";
+bool NativeOpenFile(std::string& outPath, bool images, bool allFiles) {
+	const char* filter = allFiles
+		? "--file-filter='All files | *'"
+		: (images
+			? "--file-filter='Images | *.ktx2 *.png *.jpg *.jpeg *.tga *.bmp *.exr *.hdr' "
+			  "--file-filter='All files | *'"
+			: "--file-filter='Scene files | *.gltf *.glb *.obj *.tour' "
+			  "--file-filter='All files | *'");
 	if (HaveZenity())
 		return RunZenity(outPath, filter);
 	return PromptPath("Open scene/image file", outPath);
+}
+
+// xdg-open uses desktop file associations. Spawn argv directly so paths
+// containing quotes/spaces/metacharacters cannot become shell commands.
+bool NativeOpenExternalDocument(const std::string& file, std::string& err) {
+	const char* app = "xdg-open";
+	char* const args[] = {
+		const_cast<char*>(app), const_cast<char*>(file.c_str()), nullptr
+	};
+	pid_t pid = 0;
+	const int rc = ::posix_spawnp(&pid, app, nullptr, nullptr, args, environ);
+	if (rc != 0) {
+		err = std::string("xdg-open launch failed: ") + std::strerror(rc);
+		return false;
+	}
+	// Reap the desktop opener without stalling editor frames (xdg-open
+	// may wait for the associated application).
+	std::thread([pid]() {
+		int status = 0;
+		while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+	}).detach();
+	err.clear();
+	return true;
 }
 
 bool NativeSaveFile(std::string& outPath, const std::string& suggestedName) {

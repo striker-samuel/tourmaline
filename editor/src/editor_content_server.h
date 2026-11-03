@@ -41,6 +41,9 @@ public:
 		auto policy = smvk::FileWatcher::Policy::ProjectDefault();
 		for (const char* dir : { "artifacts", "gi" })
 			policy.ignoredDirNames.emplace_back(dir);
+		// Editor-only authoring link metadata cannot trigger a source
+		// reimport or a self-induced watcher feedback loop.
+		policy.ignoredExtensions.emplace_back(".dccsource");
 		if (!watcher->Start(policy, err)
 				|| !watcher->AddDirectory(projectRoot, err))
 			return false;

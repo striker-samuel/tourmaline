@@ -19,6 +19,7 @@
 // render pipeline — no manual staging, no global cache.
 
 #include "editor_app.h"
+#include "editor_hot_reload_targets.h"
 
 
 #include <artifact_cache/artifact_kind.h>
@@ -903,39 +904,42 @@ void EditorApp::ConsumeWatchedProjectChanges() {
 			}
 			break;
 		case editor::WatchRoute::GltfSource: {
-			Log("Watcher: glTF source '" + name + "' changed — "
-				"re-importing (identity preserved).");
+			Log("Watcher: published mesh source '" + name
+				+ "' changed — checking the artifact.");
 			bool rederived = false;
-			(void)ImportMeshArtifactFor(c.path, &rederived);
-			// THE GEOMETRY RE-OPEN FLOW: the old funnel stopped at the
-			// artifact + told the user to re-open. When the changed
-			// source IS the loaded scene's source and the artifact
-			// actually re-derived, rebind NOW through the temp-tour
-			// snapshot (ReloadReferencesViaTemp preserves cameras,
-			// selection, the dirty flag + every unsaved edit — a fresh
-			// import + replay, never a save).
-			std::error_code ec;
-			const bool isSceneSource = !m_gltfPath.empty() && m_world
-				&& std::filesystem::equivalent(
-					std::filesystem::path(c.path),
-					std::filesystem::path(m_gltfPath), ec)
-				&& !ec;
-			if (rederived && isSceneSource) {
-				if (ReloadReferencesViaTemp())
-					Log("Watcher: geometry reloaded LIVE (unsaved edits "
-						"preserved through the temp snapshot).");
-				else
-					Log("Watcher: geometry reload failed — re-open the "
-						"scene to apply.");
+			const std::string artifact = ImportMeshArtifactFor(c.path, &rederived);
+			if (artifact.empty()) {
+				Log("Watcher: mesh import failed — keeping the live world.");
+				break;
 			}
-			else if (rederived) {
-				Log("Watcher: referenced model re-imported — use the "
-					"reference editor's Reload (or re-open) to see the "
-					"fresh geometry.");
+			if (!rederived) {
+				Log("Watcher: artifact already current — no reload needed.");
+				break;
+			}
+			// The scene points at DERIVED .geometry, not the .gltf/.obj
+			// that triggered the source event. Include bound asset
+			// references so DCC-published geometry updates visibly.
+			bool bound = m_world && !m_gltfPath.empty()
+				&& IsPublishedMeshBound(c.path, m_gltfPath);
+			if (m_world && !bound) {
+				for (const std::string& ref : m_refResolved) {
+					if (IsPublishedMeshBound(c.path, ref)) {
+						bound = true;
+						break;
+					}
+				}
+			}
+			if (bound) {
+				if (ReloadReferencesViaTemp())
+					Log("Watcher: published geometry refreshed LIVE "
+						"(working .tour changes preserved).");
+				else
+					Log("Watcher: geometry rebind failed — old world "
+						"retained where possible; reopen scene to retry.");
 			}
 			else {
-				Log("Watcher: artifact already current — no reload "
-					"needed.");
+				Log("Watcher: new geometry derived; will bind on the "
+					"next scene/reference load.");
 			}
 			break;
 		}
