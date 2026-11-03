@@ -102,6 +102,20 @@ jobs:
       - name: Build (all non-test targets)
         run: cmake --build out/build/ci
 
+      - name: Smoke-test external Tourmaline project import and pak cooking
+        # Asset-free generated triangle; all source, cache and publish bytes
+        # stay in RUNNER_TEMP, never in this checkout or PR artifacts.
+        run: |
+          python3 experiments/recomp/scaffold_external.py bootstrap \
+            --root "$RUNNER_TEMP/recomp-assets" \
+            --project-tool "$PWD/out/build/ci/Project"
+          python3 experiments/recomp/scaffold_external.py build \
+            --root "$RUNNER_TEMP/recomp-assets" \
+            --publish "$RUNNER_TEMP/recomp-publish" \
+            --project-tool "$PWD/out/build/ci/Project"
+          test -f "$RUNNER_TEMP/recomp-publish/recomp_assets.tapp"
+          test -f "$RUNNER_TEMP/recomp-assets/generated/project.h"
+
       - name: Compiler cache stats
         run: sccache --show-stats
 
