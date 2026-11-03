@@ -307,7 +307,7 @@ bool ParseMeshPlanBlob(std::span<const uint8_t> blob,
 // refuse at load time, recook).
 struct PakAssetIdRow {
 	uint64_t id = 0;
-	uint8_t kind = 0;          // smvk::kCatalogKind* (the shared kind ABI)
+	uint8_t kind = 0;          // Nil until assigned a real catalog kind
 	std::string path;          // the logical path (project-relative)
 	std::string sceneName;     // scene rows: the cooked name (may be empty)
 };
@@ -317,7 +317,7 @@ struct PakAssetIdRow {
 [[nodiscard]] std::vector<uint8_t> WriteAssetIdsBlob(
 	const std::vector<PakAssetIdRow>& rows);
 // False + err on: short/malformed input, a bad magic/version, a row
-// whose id is 0, whose kind byte exceeds the ABI, or whose path is
+// whose id is 0, whose kind is Nil/unknown, or whose path is
 // empty. End-exact (trailing bytes = malformed).
 bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 	std::vector<PakAssetIdRow>& out, std::string& err);
