@@ -99,6 +99,14 @@ int main() {
     CHECK(draw.PointCount() == tour::DebugDrawList::MaxPoints);
     CHECK(draw.DroppedPoints() == 2);
     CHECK(!draw.Empty());
+    {
+        std::string error;
+        auto cloud = tour::asset::DefaultShapeAsset(tour::asset::ShapeKind::PointCloud);
+        CHECK(!tour::renderer::AppendShapeDebug(cloud, glm::mat4(1.0f),
+            green, draw, error));
+        CHECK(draw.PointCount() == tour::DebugDrawList::MaxPoints);
+        CHECK(draw.DroppedPoints() == 2); // refusal does not partially append
+    }
     draw.Clear();
     CHECK(draw.PointCount() == 0 && draw.DroppedPoints() == 0);
     std::printf("debug draw: %d checks, %d failures\\n", checks, failures);
