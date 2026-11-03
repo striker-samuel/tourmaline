@@ -589,7 +589,7 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 		staged.files.push_back(stagedPath);
 		stage.verify = true;
 		// Pack the derived companion alongside its owning geometry.
-		// Generated paths never enter authored include ownership/catal​​ogs.
+		// Generated paths never enter authored include ownership/catalogs.
 		if (plan.bakeSdf) {
 			std::set<std::string> sdfFamilies;
 			for (const PlanAsset& asset : pak.assets)
