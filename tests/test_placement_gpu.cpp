@@ -512,11 +512,12 @@ int main()
 		auto lb = MakeLayer(20, 0.6f, 12);
 		lb.domainKind = DomainKind::PointCloud;
 		lb.pointCloud = &cloud;
+		const TileID tile{ 1, 0, -2 };
+		cloud.tile = tile;
 		Prototype p0; p0.weight = 1.0f;
 		Prototype p1; p1.weight = 3.0f;
 		lb.prototypes.add(p0);
 		lb.prototypes.add(p1);
-		const TileID tile{ 1, 0, -2 };
 		std::vector<RenderInstance> oracle = EvaluateTile(lb, tile);
 		Check(!oracle.empty() && oracle.size() <= 48,
 			"gpu.cloud-oracle");
