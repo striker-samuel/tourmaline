@@ -247,6 +247,7 @@ namespace editor {
 		DrawCookWindow(); // floating cook/bake tools (View menu)
 		DrawSelectionRadial(); // Q radial: Mesh/Face/Vertex highlight modes
 		DrawReferencesPanel(); // Maya-style reference list (View menu)
+		DrawPrefabWindow(); // separate .tour World + source editor
 		DrawPathsPanel(); // consolidated file/path view (File menu)
 		DrawGiVizWindow(); // GI-authoring legend + probe overlay controls
 		// (The WYSIWYG live view is no floating window: it is the bottom
@@ -756,6 +757,12 @@ namespace editor {
 			if (ImGui::MenuItem("State machine graph...", nullptr, m_stateGraph.show))
 				m_stateGraph.show = !m_stateGraph.show;
 			ImGui::MenuItem("Component Spreadsheet...", nullptr, &m_showComponentTable);
+			if (ImGui::MenuItem("Prefab World...", nullptr, m_showPrefabWindow)) {
+				if (m_showPrefabWindow && m_prefab.dirty)
+					m_prefab.error = "Save or Revert unsaved prefab edits before closing.";
+				else
+					m_showPrefabWindow = !m_showPrefabWindow;
+			}
 			if (ImGui::MenuItem("Reference editor...", nullptr,
 				m_showReferencesPanel))
 				m_showReferencesPanel = !m_showReferencesPanel;
@@ -4957,6 +4964,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 			return;
 		}
 		ImGui::Separator();
+		if (path.extension() == ".tour" && preview.readOk) {
+			if (ImGui::Button("Edit as prefab world..."))
+				RequestOpenPrefab(path.string());
+			ImGui::SameLine();
+			ImGui::TextDisabled("Opens a separate live-edit world");
+		}
 		if (!preview.readOk)
 			return;
 		if (!preview.isText) {

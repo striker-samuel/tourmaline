@@ -1245,6 +1245,13 @@ if(Python3_FOUND)
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
             -p test_tourdiff.py)
+    # Project-init scaffolding checks (PR #65): CPU-only, the Project
+    # process is mocked; the separate agent-CLI workflow runs the same
+    # entry, ctest keeps the local gate honest.
+    add_test(NAME project_init_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_project_init.py)
     add_test(NAME tourcapture_tests
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
@@ -1267,6 +1274,13 @@ target_link_libraries(World2DTests PRIVATE engine)
 set_target_properties(World2DTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME world2d_tests COMMAND World2DTests)
+
+# GPU-free prefab live preview propagation/override/undo semantics.
+add_executable(PrefabLiveSyncTests test_prefab_live_sync.cpp)
+target_link_libraries(PrefabLiveSyncTests PRIVATE engine)
+set_target_properties(PrefabLiveSyncTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME prefab_live_sync_tests COMMAND PrefabLiveSyncTests)
 
 # CPU-only authored sprite-set parsing, bounds, grid and animation validation.
 add_executable(SpriteSetTests test_spriteset.cpp)
@@ -1315,3 +1329,11 @@ target_link_libraries(GpuSceneValidationTests PRIVATE engine)
 set_target_properties(GpuSceneValidationTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_validation_tests COMMAND GpuSceneValidationTests)
+
+# Native agent-facing tooling library: no renderer/device required.
+add_executable(ToolingApiTests test_tooling_api.cpp)
+target_link_libraries(ToolingApiTests PRIVATE tourmaline::tooling)
+set_target_properties(ToolingApiTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_test(NAME tooling_api_tests COMMAND ToolingApiTests)

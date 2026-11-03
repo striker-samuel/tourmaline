@@ -2008,6 +2008,69 @@ private:
 	bool ExtractPlacementMesh(uint32_t worldNode,
 		smvk::placement::PlacementMeshData& out) const;
 	placement::EditorDoc m_placement;
+	// ---- parallel .tour prefab edit session ----
+	// Secondary WORLD and DOCUMENT. The parent world keeps ownership of
+	// its own reference instances, selection/history, and renderer.
+	// The prefab editor writes ONLY the source .tour; live previews are
+	// reversible per-node transforms in the parent world, not commands
+	// in the parent's history/overlay.
+	struct PrefabSnapshot {
+		smvk::tour::Doc doc;
+		std::vector<glm::mat4> locals;
+	};
+	struct PrefabWorldSession {
+		std::string path; // absolute source .tour identity
+		smvk::tour::Doc document, saved;
+		tour::mem::LinearPtr<tour::World> world;
+		std::vector<glm::mat4> savedLocals;
+		std::vector<PrefabSnapshot> undo, redo;
+		std::unordered_map<uint32_t, glm::mat4> parentOriginal;
+		std::unordered_map<uint32_t, glm::mat4> parentApplied;
+		tour::World* parentWitness = nullptr;
+		uint32_t selected = UINT32_MAX; // prefab-local, never parent id
+		uint32_t dragNode = UINT32_MAX;
+		int dragField = -1;
+		glm::vec3 focus{0.0f};
+		float yaw = 0.6f, pitch = -0.3f, distance = 7.0f;
+		bool dirty = false;
+		std::string error;
+	};
+	PrefabWorldSession m_prefab;
+	std::string m_prefabRequestedPath;
+	bool m_prefabRequestClose = false;
+	bool m_showPrefabWindow = false;
+	bool m_prefabDocked = true; // share the central stage with parent world
+	tour::mem::LinearPtr<engine::WorldRenderer> m_prefabRenderer;
+	bool m_prefabRendererValid = false;
+	bool m_prefabRendererRenderable = false;
+	ImVec2 m_prefabRectMin{0,0}, m_prefabRectMax{0,0};
+	ImVec2 m_prefabCanvasSize{0,0};
+	bool m_prefabRectFresh = false;
+	smvk::UiComposite m_prefabComposite;
+	smvk::LogicalImageViewHandle m_prefabComposeLogical{};
+	smvk::ImageViewHandle m_prefabComposePhysical{};
+	void RequestOpenPrefab(const std::string& path);
+	bool LoadPrefabWorld(const std::string& path);
+	void ClosePrefabWorld();
+	void UpdatePrefabBoundary(float dt);
+	void RenderPrefabLayer(smvk::Framebuffer& fb, smvk::Extent2D extent);
+	void DrawPrefabWindow();
+	void RecordPrefabComposePass(smvk::LogicalImageViewHandle swapView);
+	void SyncPrefabPreview();
+	void RestorePrefabPreview();
+	void CapturePrefabUndo();
+	void PrefabUndo();
+	void PrefabRedo();
+	void RevertPrefab();
+	bool SavePrefab();
+	bool PrefabSetTRS(uint32_t node, const glm::vec3& translation,
+		const glm::vec3& rotation, const glm::vec3& scale);
+	bool ParentHasTransformOverride(uint32_t node) const;
+
+	// .statemachine authoring uses the shared graph canvas and keeps
+	// its own document/undo history, separate from the .tour scene.
+	StateMachineGraphEditor m_stateGraph;
+
 	// .statemachine authoring uses the shared graph canvas and keeps
 	// its own document/undo history, separate from the .tour scene.
 	StateMachineGraphEditor m_stateGraph;
