@@ -34,6 +34,8 @@
 #include <Engine/platform.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -311,6 +313,8 @@ struct PlacementPass {
 		// noiseAmpRetired/noiseFreqRetired stay 0 (the program subsumes).
 		out.minScale = layer.config.minScale;
 		out.maxScale = layer.config.maxScale;
+		out.slopeToRock = layer.config.slopeToRock ? 1u : 0u;
+		out.slopeThresholdDeg = layer.config.slopeThresholdDeg;
 		// Weighted prototype shares, clamped to the kernel's 8 slots.
 		const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();
 		out.protoCount = (uint32_t)n;
@@ -1200,6 +1204,8 @@ inline bool FillScatterParams(const PlacementSystem::LayerBinding& layer,
 	out.ecoSX = eco.sx; out.ecoSZ = eco.sz;
 	out.minScale = layer.config.minScale;
 	out.maxScale = layer.config.maxScale;
+	out.slopeToRock = layer.config.slopeToRock ? 1u : 0u;
+	out.slopeThresholdDeg = layer.config.slopeThresholdDeg;
 	const size_t n = layer.prototypes.size() > 8 ? 8 : layer.prototypes.size();
 	out.protoCount = (uint32_t)(n == 0 ? 1 : n);
 	for (size_t i = 0; i < n; ++i) out.weights[i] = layer.prototypes.at(i).weight;
@@ -1581,9 +1587,17 @@ struct PlacementConstraint {
 	// scratch grid. Anything else (mesh overshoot, tiny spacings) falls
 	// back to the CPU constraint — same result class, caller decides.
 	static bool VolumeFitsGpu(const ConstraintVolume& vol) {
-		return vol.dimX > 0 && vol.dimY > 0 && vol.dimZ > 0 && vol.spacing > 0.0f
-			&& vol.dimX <= 64 && vol.dimY <= 64 && vol.dimZ <= 64
-			&& (uint64_t)vol.dimX * vol.dimY * vol.dimZ <= kPlacementConMaxCells;
+		// Head cells are FLATTENED in the shader. There is no 64-cell
+		// limit on individual axes, only the allocation's total capacity.
+		// Support e.g. a 66x4x66 tile at 1m spacing without increasing
+		// GPU memory; divide before multiplying to avoid integer overflow.
+		if (vol.dimX == 0 || vol.dimY == 0 || vol.dimZ == 0
+			|| !(vol.spacing > 0.0f) || !std::isfinite(vol.spacing))
+			return false;
+		if (vol.dimX > kPlacementConMaxCells / vol.dimY)
+			return false;
+		const uint64_t xy = uint64_t(vol.dimX) * vol.dimY;
+		return vol.dimZ <= kPlacementConMaxCells / xy;
 	}
 	// Pure-CPU con params fill (headless-testable). The tile rides along:
 	// the kernels RECOMPUTE StableIDs from (seed, node, tile, customB) —
@@ -1706,6 +1720,8 @@ struct PlacementWorldRuntime {
 			aliveBuffer = {};
 			aliveBDA = 0;
 			data = WorldTileData{};
+			key = TileKey{};
+			generation = 0;
 			slot = -1;
 			published = false;
 		}
@@ -1827,6 +1843,18 @@ struct PlacementWorldRuntime {
 		mix(deps.gameplay);
 		mix(layer.program.graphSeed); mix(layer.program.nodeId);
 		mix(layer.program.acceptIndex); mix(ecoChannels);
+		// An edit to any generation input must invalidate resident tiles
+		// even when the caller has not bumped a dependency version.
+		mix(layer.config.candidatesPerTile);
+		mix(glm::floatBitsToUint(layer.config.densityScale));
+		mix(glm::floatBitsToUint(layer.config.minScale));
+		mix(glm::floatBitsToUint(layer.config.maxScale));
+		mix(glm::floatBitsToUint(layer.config.minSpacing));
+		mix(layer.config.slopeToRock ? 1u : 0u);
+		mix(glm::floatBitsToUint(layer.config.slopeThresholdDeg));
+		mix(layer.prototypes.size());
+		for (size_t i = 0; i < layer.prototypes.size(); ++i)
+			mix(glm::floatBitsToUint(layer.prototypes.at(uint32_t(i)).weight));
 		for (const FieldInstr& i : layer.program.instrs) {
 			mix(static_cast<uint64_t>(i.op)); mix(i.a); mix(i.b);
 			for (int k = 0; k < 4; ++k)
@@ -1857,6 +1885,8 @@ struct PlacementWorldRuntime {
 					// layer until the graph is evaluable again).
 					return;
 				}
+				if (programRevision != 0 && programRevision != rev)
+					system.invalidateLayer(layer->programId);
 				programRevision = rev;
 			}
 		}
@@ -1864,112 +1894,149 @@ struct PlacementWorldRuntime {
 		std::vector<PlacementSystem::ActivationRequest> acts;
 		system.UpdateResidency(layer->programId, tileSize,
 			interests, interestCount, deps, size_t(slotBudget), acts);
-		// 2) Per activation: slot claim -> harvest -> upload -> dispatch.
+		// Keep the GPU slot map consistent with CPU residency evictions:
+		// otherwise old GPU tenants stay visible forever and a later
+		// return to an evicted tile may skip regeneration.
+		for (size_t s = 0; s < active.size(); ++s) {
+			if (!active[s].published) continue;
+			if (system.findTile(active[s].key.programId,
+					active[s].key.tile)) continue;
+			active[s].Destroy(rg);
+			slots.Release(int32_t(s));
+		}
+		// 2) Preflight the complete tenant before touching a live GPU slot.
+		// Failed harvests/uploads/constraints cancel their CPU token and
+		// leave the previous published tile intact for the next retry.
 		uint32_t conTrioThisFrame = 0;
 		const bool wantsCon = layer->config.minSpacing > 0.0f;
 		for (const auto& a : acts) {
-			// The constraint pacing — checked BEFORE the slot claim so a
-			// deferred tile never holds a generating claim. The CPU
-			// activation is CANCELED (a Generating tile with matching deps
-			// never re-requests — the deferral would leak it), so the
-			// tile re-enters fresh on the next residency tick.
+			const auto cancel = [&]() {
+				(void)system.CancelActivation(a.key, a.generation, a.regenerate);
+			};
 			if (wantsCon && conTrioThisFrame >= 1) {
-				// FRESH activations erase clean; REGENERATIONS revert to
-				// Dirty (their stale content keeps serving until the
-				// deferred trio runs).
-				(void)system.CancelActivation(a.key, a.generation,
-					a.regenerate);
+				cancel();
 				continue;
 			}
-			// Finish the claim of any PREVIOUS dispatch for this key
-			// first (a re-activation supersedes it; the old slot
-			// contents get rebuilt in place below).
-			const int32_t existing = slots.Find(a.key);
-			if (existing >= 0 && !active[size_t(existing)].published) {
-				slots.Finish(existing, a.key,
-					slots.slots[size_t(existing)].generation);
-			}
-			const int32_t slot = existing >= 0 ? existing : slots.Claim(a.key);
-			if (slot < 0) {
-				std::fprintf(stderr, "[Placement] world tile {%d,%d} "
-					"activation DROPPED — every GPU slot is mid-generation\n",
-					a.key.tile.x, a.key.tile.z);
-				continue;
-			}
-			ActiveTile& at = active[size_t(slot)];
-			// Out with the old tenant's uploads FIRST (Destroy resets the
-			// bookkeeping fields), then rebind the slot to this claim.
-			at.Destroy(rg);
-			at.key = a.key;
-			at.generation = a.generation;
-			at.slot = slot;
-			at.published = false;
-			// The per-tile constraint ALIVE buffer (the kill pass's
-			// verdicts the cull reads every frame until eviction) —
-			// creation-zeroed per the zero-on-creation convention.
-			if (wantsCon) {
-				const size_t aliveElems =
-					2 * size_t(pass.desc.maxInstancesPerTile);
-				at.aliveBuffer = ctx.CreateBuffer(
-					sizeof(uint32_t) * aliveElems, smvk::BufferType_Storage,
-					"placement con alive");
-				at.aliveL = at.aliveBuffer.empty() ? smvk::LogicalBufferHandle{}
-					: rg.AddExternalBuffer(at.aliveBuffer,
-						"placement con alive");
-				if (at.aliveBuffer.empty() || at.aliveL.empty()) {
-					smvk::OnResourceExhaustion("placement con alive");
-					at.Destroy(rg);
-					continue; // retried next frame (the request persists)
-				}
-				const std::vector<uint32_t> zeros(aliveElems, 0u);
-				ctx.UploadDataToBuffer(at.aliveBuffer, zeros.data(),
-					sizeof(uint32_t) * zeros.size(),
-					smvk::PipelineStageBit_Transfer, smvk::AccessFlags::TransferWrite,
-					0, 0);
-				at.aliveBDA = ctx.GetBufferDeviceAddress(at.aliveBuffer);
-			}
-			// The harvest (the heights window + halo + the paint).
+			// Assemble resources away from the current slot tenant. The
+			// staging object's rendergraph handles are explicitly released
+			// on failure; no failed job leaves a generating CPU token.
+			ActiveTile pending;
 			if (!BuildWorldTileDomain(*hfield, *masks, tileSize,
-					a.key.tile.x, a.key.tile.z, haloMeters, at.data)) {
+					a.key.tile.x, a.key.tile.z, haloMeters, pending.data)) {
 				std::fprintf(stderr, "[Placement] world tile {%d,%d} "
-					"outside the terrain — dropped\n",
+					"harvest refused; activation will retry\\n",
 					a.key.tile.x, a.key.tile.z);
+				cancel();
 				continue;
 			}
-			// The uploads: heights + paint + params (+ the program is
-			// uploaded once at Create — cached per (programId, revision)).
-			if (!at.hf.Upload(ctx, rg, at.data.heights)) continue;
-			const bool wantsEco =
-				ProgramUsesEcotopeMask(layer->program) && masks;
-			if (wantsEco && !at.eco.Upload(ctx, rg, at.data.eco)) continue;
+			if (!pending.hf.Upload(ctx, rg, pending.data.heights)) {
+				pending.Destroy(rg);
+				cancel();
+				continue;
+			}
+			const bool wantsEco = ProgramUsesEcotopeMask(layer->program);
+			if (wantsEco && !pending.eco.Upload(ctx, rg, pending.data.eco)) {
+				pending.Destroy(rg);
+				cancel();
+				continue;
+			}
 			const PlacementProgramView pv = program.View(ctx);
 			PlacementEcoView ecoView;
 			if (wantsEco) {
-				ecoView = at.eco.View(ctx);
+				ecoView = pending.eco.View(ctx);
 				const PlacementEcoView cpuSide =
-					PlacementEcoMaskGpu::ViewOf(at.data.eco);
+					PlacementEcoMaskGpu::ViewOf(pending.data.eco);
 				ecoView.ox = cpuSide.ox; ecoView.oz = cpuSide.oz;
 				ecoView.sx = cpuSide.sx; ecoView.sz = cpuSide.sz;
 			}
-			// The per-tile scatter params: the LAYER with the tile's
-			// domain repointed (the extent + the harvested field).
 			PlacementSystem::LayerBinding tileLayer = *layer;
-			HeightfieldDomain tileDom = at.data.domain;
-			tileDom.field = &at.data.heights;
+			HeightfieldDomain tileDom = pending.data.domain;
+			tileDom.field = &pending.data.heights;
 			tileLayer.heightfield = &tileDom;
-			tileLayer.ecotope = wantsEco ? &at.data.eco : nullptr;
+			tileLayer.ecotope = wantsEco ? &pending.data.eco : nullptr;
 			ScatterBDAs bdas{};
-			bdas.heights = at.hf.Address(ctx);
-			PlacementDomainParams prm;
-			if (!FillScatterParams(tileLayer, pv, ecoView, bdas, prm)) {
+			bdas.heights = pending.hf.Address(ctx);
+			PlacementDomainParams prm{};
+			if (!FillScatterParams(tileLayer, pv, ecoView, bdas, prm)
+				|| !pending.params.Upload(ctx, rg, prm)) {
 				std::fprintf(stderr, "[Placement] world tile {%d,%d} "
-					"params refused — dropped\n", a.key.tile.x, a.key.tile.z);
+					"scatter params refused; activation will retry\\n",
+					a.key.tile.x, a.key.tile.z);
+				pending.Destroy(rg);
+				cancel();
 				continue;
 			}
-			if (!at.params.Upload(ctx, rg, prm)) continue;
-			// The scatter dispatch (the counter zeroed first).
+
+			PlacementConParams conPrm{};
+			if (wantsCon) {
+				const ConstraintVolume vol = ConstraintVolumeForLayer(tileLayer);
+				if (!PlacementConstraint::FillConParams(tileLayer,
+						a.key.tile, vol, conPrm)) {
+					// An unsupported constraint must NEVER publish a zeroed
+					// alive mask: that would silently cull every instance.
+					std::fprintf(stderr, "[Placement] world tile {%d,%d} "
+						"constraint volume exceeds GPU limits; no GPU draw\\n",
+						a.key.tile.x, a.key.tile.z);
+					pending.Destroy(rg);
+					cancel();
+					continue;
+				}
+				const size_t aliveElems =
+					2 * size_t(pass.desc.maxInstancesPerTile);
+				pending.aliveBuffer = ctx.CreateBuffer(
+					sizeof(uint32_t) * aliveElems, smvk::BufferType_Storage,
+					"placement con alive");
+				pending.aliveL = pending.aliveBuffer.empty()
+					? smvk::LogicalBufferHandle{}
+					: rg.AddExternalBuffer(pending.aliveBuffer,
+						"placement con alive");
+				if (pending.aliveBuffer.empty() || pending.aliveL.empty()) {
+					smvk::OnResourceExhaustion("placement con alive");
+					pending.Destroy(rg);
+					cancel();
+					continue;
+				}
+				pending.aliveBDA = ctx.GetBufferDeviceAddress(pending.aliveBuffer);
+				if (pending.aliveBDA == 0) {
+					pending.Destroy(rg);
+					cancel();
+					continue;
+				}
+				// C-heap scratch, not an STL allocation. Stage the whole
+				// zeroed mask before replacing the previous GPU tenant.
+				void* zeros = std::calloc(aliveElems, sizeof(uint32_t));
+				if (!zeros) {
+					pending.Destroy(rg);
+					cancel();
+					continue;
+				}
+				ctx.UploadDataToBuffer(pending.aliveBuffer, zeros,
+					sizeof(uint32_t) * aliveElems,
+					smvk::PipelineStageBit_Transfer,
+					smvk::AccessFlags::TransferWrite, 0, 0);
+				std::free(zeros);
+			}
+			// Only a successfully staged activation may claim/replace a
+			// slot; old draws remain valid throughout failure/retry.
+			const int32_t existing = slots.Find(a.key);
+			const int32_t slot = existing >= 0
+				? existing : slots.Claim(a.key);
+			if (slot < 0) {
+				pending.Destroy(rg);
+				cancel();
+				continue;
+			}
+			ActiveTile& at = active[size_t(slot)];
+			if (existing < 0 && at.key.programId != 0)
+				system.ForgetTile(at.key); // GPU LRU replaced its CPU mirror
+			at.Destroy(rg);
+			at = std::move(pending);
+			at.key = a.key;
+			at.generation = a.generation;
+			at.slot = slot;
+			at.data.domain.field = &at.data.heights; // rebind after move
 			pass.ClearTile(ctx, uint32_t(slot));
-			PlacementScatterPush push;
+			PlacementScatterPush push{};
 			BuildScatterPush(tileLayer, a.key.tile,
 				pass.TileInstancesAddress(ctx, uint32_t(slot)),
 				pass.TileCountAddress(ctx, uint32_t(slot)),
@@ -1982,78 +2049,48 @@ struct PlacementWorldRuntime {
 				PlacementScatterPrograms::PushAndDispatchScatter(cmd,
 					scatter.hfProgram, push);
 			});
-			// The constraint trio when the layer min-spaces (bounded grid
-			// volumes; dispatch width = the candidate upper bound). The
-			// trio's flag2 is the PER-TILE alive buffer (the kill pass
-			// writes its verdicts there — the cull chain reads them every
-			// frame until eviction); the shared scratch (head/next) and
-			// params are serialized by the one-trio pacing above.
 			if (wantsCon) {
-				const ConstraintVolume vol = ConstraintVolumeForLayer(tileLayer);
-				PlacementConParams conPrm;
-				if (PlacementConstraint::FillConParams(tileLayer,
-						a.key.tile, vol, conPrm)) {
-					constraint.UploadParams(ctx, conPrm);
-					constraint.Clear(ctx);
-					PlacementConPush conPush;
-					PlacementConstraint::BuildConPush(
-						pass.TileInstancesAddress(ctx, uint32_t(slot)),
-						constraint.HeadAddress(ctx),
-						constraint.NextAddress(ctx),
-						at.aliveBDA,
-						constraint.ParamsAddress(ctx),
-						pass.TileCountAddress(ctx, uint32_t(slot)), conPush);
-					const uint32_t width = tileLayer.config.candidatesPerTile;
-					smvk::RenderPass& cBuild = PlacementConstraint::AddBuildPass(
-						rg, constraint, pass.instanceLogicals[size_t(slot)],
-						pass.countLogicals[size_t(slot)]);
-					cBuild.SetRecordingFunc([this, conPush, width](
-							smvk::CommandBuffer& cmd) {
-						PlacementConstraint::PushAndDispatchCon(cmd,
-							constraint.buildProgram, conPush, width);
-					});
-					smvk::RenderPass& cElect = PlacementConstraint::AddElectPass(
-						rg, constraint, pass.instanceLogicals[size_t(slot)],
-						pass.countLogicals[size_t(slot)], at.aliveL);
-					cElect.SetRecordingFunc([this, conPush, width](
-							smvk::CommandBuffer& cmd) {
-						PlacementConstraint::PushAndDispatchCon(cmd,
-							constraint.electProgram, conPush, width);
-					});
-					smvk::RenderPass& cKill = PlacementConstraint::AddKillPass(
-						rg, constraint, pass.instanceLogicals[size_t(slot)],
-						pass.countLogicals[size_t(slot)], at.aliveL);
-					cKill.SetRecordingFunc([this, conPush, width](
-							smvk::CommandBuffer& cmd) {
-						PlacementConstraint::PushAndDispatchCon(cmd,
-							constraint.killProgram, conPush, width);
-					});
-					++conTrioThisFrame;
-				}
+				constraint.UploadParams(ctx, conPrm);
+				constraint.Clear(ctx);
+				PlacementConPush conPush{};
+				PlacementConstraint::BuildConPush(
+					pass.TileInstancesAddress(ctx, uint32_t(slot)),
+					constraint.HeadAddress(ctx),
+					constraint.NextAddress(ctx),
+					at.aliveBDA,
+					constraint.ParamsAddress(ctx),
+					pass.TileCountAddress(ctx, uint32_t(slot)), conPush);
+				const uint32_t width = tileLayer.config.candidatesPerTile;
+				smvk::RenderPass& cBuild = PlacementConstraint::AddBuildPass(
+					rg, constraint, pass.instanceLogicals[size_t(slot)],
+					pass.countLogicals[size_t(slot)]);
+				cBuild.SetRecordingFunc([this, conPush, width](
+						smvk::CommandBuffer& cmd) {
+					PlacementConstraint::PushAndDispatchCon(cmd,
+						constraint.buildProgram, conPush, width);
+				});
+				smvk::RenderPass& cElect = PlacementConstraint::AddElectPass(
+					rg, constraint, pass.instanceLogicals[size_t(slot)],
+					pass.countLogicals[size_t(slot)], at.aliveL);
+				cElect.SetRecordingFunc([this, conPush, width](
+						smvk::CommandBuffer& cmd) {
+					PlacementConstraint::PushAndDispatchCon(cmd,
+						constraint.electProgram, conPush, width);
+				});
+				smvk::RenderPass& cKill = PlacementConstraint::AddKillPass(
+					rg, constraint, pass.instanceLogicals[size_t(slot)],
+					pass.countLogicals[size_t(slot)], at.aliveL);
+				cKill.SetRecordingFunc([this, conPush, width](
+						smvk::CommandBuffer& cmd) {
+					PlacementConstraint::PushAndDispatchCon(cmd,
+						constraint.killProgram, conPush, width);
+				});
+				++conTrioThisFrame;
 			}
-			// Published: the chain that reads it (this frame's cull or a
-			// later one) is ordered by the graph's buffer edges. Finishing
-			// the slot claim HERE (not just on reactivation) is what
-			// makes the slot eviction-eligible — without it every
-			// successfully published slot stayed "generating" forever,
-			// and once the budget filled, Claim() could only refuse (the
-			// review's stuck-slot finding). The scatter/trio dispatches
-			// are recorded into THIS frame's graph, so the publication
-			// point is exactly the claim's completion.
 			at.published = true;
-			// NOTE: Finish matches the SLOT's own generation (the
-			// PlacementGpuTiles claim token), not the activation request's
-			// system token — two independent counters.
 			(void)slots.Finish(slot, a.key,
 				slots.slots[size_t(slot)].generation);
-			// NO seed upload at publish: the prototype table is PUSH-
-			// carried metadata (SeedIndirect's cache, captured by
-			// RecordCullChain below), and draw-build single-scope-writes
-			// the complete command — the publish frame's draw is
-			// drawable immediately (the old publication-time upload was
-			// the stranded-upload-write hazard; see todo.txt).
-			// The CPU token publish (the CPU-side tile mirror).
-			system.PublishActivation(a.key, a.generation);
+			(void)system.PublishActivation(a.key, a.generation);
 		}
 	}
 

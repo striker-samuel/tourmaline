@@ -67,6 +67,8 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     // ---- Prototype + transform (own channels). ----
     float rv = PlacementRandom01(id, PLACEMENT_CH_VARIANT);
     uint proto = PlacementScatterProto(rv, pc.prm.Get());
+    proto = PlacementSlopeToRock(proto, nrm, pc.prm.Get().protoCount,
+        pc.prm.Get().slopeToRock, pc.prm.Get().slopeThresholdDeg);
     float yaw = (PlacementRandom01(id, PLACEMENT_CH_ROTATION) * 2.0f - 1.0f) * 3.14159265f;
     float sc = pc.prm.Get().minScale
         + PlacementRandom01(id, PLACEMENT_CH_SCALE)

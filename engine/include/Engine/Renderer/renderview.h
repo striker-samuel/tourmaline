@@ -224,6 +224,9 @@ public:
 	}
 
 	[[nodiscard]] bool Valid() const { return !buffer_.empty(); }
+	// Allows GPU placement and other compute consumers to import the
+	// persistent view slab as a rendergraph dependency (no hidden BDA read).
+	[[nodiscard]] BufferHandle Buffer() const { return buffer_; }
 
 	// ---------------------------------------------------------------
 	// CPU-side per-frame allocation
@@ -346,7 +349,7 @@ public:
 			buffer_,
 			slab,
 			frameStride,
-			PipelineStage(PipelineStageBit_Vertex | PipelineStageBit_Fragment),
+			PipelineStage(PipelineStageBit_Compute | PipelineStageBit_Vertex | PipelineStageBit_Fragment),
 			AccessFlags::ShaderRead,
 			0,
 			frameIndex * frameStride);

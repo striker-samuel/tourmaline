@@ -168,8 +168,13 @@ struct WorldMaskGrid {
 	uint32_t tilesPerAxis = 0;
 	uint32_t tileRes = 0;
 	[[nodiscard]] bool Valid() const {
-		return tiles && tilesPerAxis > 0 && tileRes > 0
-			&& tiles->size() >= size_t(tilesPerAxis) * size_t(tilesPerAxis);
+		if (!tiles || tilesPerAxis == 0 || tileRes == 0) return false;
+		const size_t count = size_t(tilesPerAxis) * size_t(tilesPerAxis);
+		const size_t bytes = size_t(tileRes) * size_t(tileRes) * 4;
+		if (tiles->size() < count) return false;
+		for (size_t i = 0; i < count; ++i)
+			if ((*tiles)[i].size() != bytes) return false;
+		return true;
 	}
 };
 
@@ -207,13 +212,13 @@ bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
 	const glm::vec2& rectMin, const glm::vec2& rectMax, uint32_t halo,
 	HeightfieldData& out);
 
-// Harvests the same window (no halo — the mask is a direct read) of the
-// S-tile paint channels into a placement EcotopeMaskData (4 channels,
+// Harvests the same window (optional halo — needed for bilinear
+// continuity at placement tile boundaries) of the S-tile paint channels into a placement EcotopeMaskData (4 channels,
 // 0..255 -> 0..1). Returns false on an invalid grid/rect.
 bool HarvestWorldEcotope(const smvk::terrain::TerrainMeta& meta,
 	const WorldMaskGrid& masks,
 	const glm::vec2& rectMin, const glm::vec2& rectMax,
-	EcotopeMaskData& out);
+	EcotopeMaskData& out, uint32_t halo = 0);
 
 } // namespace tour::placement
 

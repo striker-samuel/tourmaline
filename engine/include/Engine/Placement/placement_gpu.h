@@ -185,11 +185,11 @@ struct PlacementTilePush {
 	float densityScale = 1.0f;   // was: density (the const-extracted shortcut)
 	float noiseAmpRetired = 0.0f;   // RETIRED: must stay 0 (program subsumes)
 	float noiseFreqRetired = 0.0f;   // RETIRED: must stay 0
-	uint32_t pad2 = 0;
+	float slopeThresholdDeg = 45.0f; // occupies the former pad2 slot
 	float minScale = 0.8f;
 	float maxScale = 1.2f;
 	uint32_t protoCount = 1; // <= 8
-	uint32_t pad3 = 0;
+	uint32_t slopeToRock = 0; // occupies the former pad3 slot
 	glm::vec4 weightsA{ 1, 0, 0, 0 }; // prototypes 0..3
 	glm::vec4 weightsB{ 0, 0, 0, 0 }; // prototypes 4..7
 	// ---- the program tail (PR02: the graph SSA) ----
@@ -277,7 +277,7 @@ struct PlacementDomainParams {
 	float minScale = 0.8f;
 	float maxScale = 1.0f;
 	uint32_t protoCount = 1;
-	uint32_t padA = 0;
+	uint32_t slopeToRock = 0; // former padA; no ABI size change
 	float weights[8] = { 1, 0, 0, 0, 0, 0, 0, 0 };
 	uint32_t domainKind = 0;
 	uint32_t triCount = 0;
@@ -305,7 +305,7 @@ struct PlacementDomainParams {
 	uint32_t ecoW = 0;
 	uint32_t ecoH = 0;
 	uint32_t ecoChannels = 0;
-	uint32_t padEco = 0;
+	float slopeThresholdDeg = 45.0f; // former padEco, same offset
 	float ecoOX = 0.0f, ecoOZ = 0.0f; // world XZ of texel (0,0)
 	float ecoSX = 1.0f, ecoSZ = 1.0f; // meters per texel
 };

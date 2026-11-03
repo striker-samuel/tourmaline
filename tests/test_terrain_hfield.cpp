@@ -104,6 +104,23 @@ int main() {
 				SampleH01(f, -2048.0f, 2047.0f), 1e-6f),
 			"hfield.clamp-edge");
 	}
+	// H-tile boundaries must interpolate between texels from adjacent
+	// tiles (the same values sampled by the GPU height atlas and placement).
+	{
+		TerrainHField f = MakeField(0.0f);
+		for (size_t i = 0; i < f.tiles[1].size(); i += 4) {
+			f.tiles[1][i] = 255;
+			f.tiles[1][i + 1] = 255;
+		}
+		const float seamX = f.meta.originX + f.meta.hTileSize;
+		const float seamZ = f.meta.originZ + 4.5f *
+			(f.meta.hTileSize / float(f.meta.hRes));
+		Check(Near(SampleH01(f, seamX, seamZ), 0.5f, 1e-4f),
+			"hfield.cross-tile-bilinear-mid");
+		Check(SampleH01(f, seamX - 1.0f, seamZ) < 0.5f
+			&& SampleH01(f, seamX + 1.0f, seamZ) > 0.5f,
+			"hfield.cross-tile-continuity");
+	}
 	// Bilinear: horizontal ramp inside one tile, sampled at a texel center
 	// (exact) and halfway between centers (average).
 	{

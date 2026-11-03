@@ -7,8 +7,8 @@
 // yaw + uniform scale, atomic append. customB carries the candidate index
 // for the downstream constraint passes.
 //
-// Slope-to-rock and CPU min-distance have no GPU form yet: run them as a
-// post readback step, or wait for the constraint kernels.
+// The optional slope-to-rock rule follows the CPU oracle. Min-distance
+// is handled by the separate constraint kernels.
 
 #include "placement_common.hlsli"
 #include "placement_field.hlsli"
@@ -70,6 +70,8 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     // ---- Prototype + transform (own channels). ----
     float rv = PlacementRandom01(id, PLACEMENT_CH_VARIANT);
     uint proto = PlacementScatterProto(rv, pc.prm.Get());
+    proto = PlacementSlopeToRock(proto, nrm, pc.prm.Get().protoCount,
+        pc.prm.Get().slopeToRock, pc.prm.Get().slopeThresholdDeg);
     float yaw = (PlacementRandom01(id, PLACEMENT_CH_ROTATION) * 2.0f - 1.0f) * 3.14159265f;
     float sc = pc.prm.Get().minScale
         + PlacementRandom01(id, PLACEMENT_CH_SCALE)

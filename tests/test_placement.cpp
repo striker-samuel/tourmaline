@@ -1062,6 +1062,13 @@ void TestPushBridge() {
 		"place.bridge.program-tail");
 	Check(push.protoCount == 2 && push.weightsA.x == 3.0f && push.weightsA.y == 1.0f,
 		"place.bridge.weights");
+	lb.config.slopeToRock = true;
+	lb.config.slopeThresholdDeg = 37.0f;
+	Check(PlacementPass::BuildTilePush(lb, TileID{}, view, ecoView,
+		0x1000, 0x2000, push) && push.slopeToRock == 1
+		&& push.slopeThresholdDeg == 37.0f,
+		"place.bridge.slope-rule-upload");
+	lb.config.slopeToRock = false;
 	Check(push.outInstances == 0x1000 && push.outCount == 0x2000, "place.bridge.bda");
 	// An empty program view refuses honestly (invalid-for-GPU layers run
 	// the CPU oracle — never a silent approximation).
@@ -1285,6 +1292,9 @@ void TestScatterParams() {
 		&& offsetof(PlacementDomainParams, instrCount) == 184
 		&& offsetof(PlacementDomainParams, acceptIndex) == 188,
 		"place.scatter.program-tail");
+	Check(offsetof(PlacementDomainParams, slopeToRock) == 24
+		&& offsetof(PlacementDomainParams, slopeThresholdDeg) == 212,
+		"place.scatter.slope-reuses-reserved-slots");
 	Check(offsetof(PlacementDomainParams, ecoBDA) == 192
 		&& offsetof(PlacementDomainParams, ecoW) == 200
 		&& offsetof(PlacementDomainParams, ecoChannels) == 208
@@ -1325,6 +1335,11 @@ void TestScatterParams() {
 	Check((prm.flags & kPlacementFlag_HasUVs) == 0, "place.scatter.mesh-no-uvs");
 	Check(prm.posBDA == 11 && prm.idxBDA == 33 && prm.probBDA == 44, "place.scatter.mesh-bda");
 	Check(prm.densityScale == 1.25f, "place.scatter.mesh-density-scale");
+	mlb.config.slopeToRock = true;
+	mlb.config.slopeThresholdDeg = 42.0f;
+	Check(FillScatterParams(mlb, view, ecoView, b, prm)
+		&& prm.slopeToRock == 1 && prm.slopeThresholdDeg == 42.0f,
+		"place.scatter.mesh-slope-rule-upload");
 	Check(prm.instrBDA == 0x500 && prm.instrCount == 1 && prm.acceptIndex == 0,
 		"place.scatter.program-fields");
 	// An empty program view refuses (explicit CPU fallback).
@@ -1355,6 +1370,11 @@ void TestScatterParams() {
 	Check(hprm.hfOX == 100.0f && hprm.hfOZ == 200.0f, "place.scatter.hf-origin");
 	Check(hprm.hfSX == 2.0f && hprm.extMaxX == 104.0f, "place.scatter.hf-extent");
 	Check(hprm.heightsBDA == 77, "place.scatter.hf-bda");
+	hlb.config.slopeToRock = true;
+	hlb.config.slopeThresholdDeg = 31.0f;
+	Check(FillScatterParams(hlb, view, ecoView, hb, hprm)
+		&& hprm.slopeToRock == 1 && hprm.slopeThresholdDeg == 31.0f,
+		"place.scatter.hf-slope-rule-upload");
 	// Grid layer refuses scatter params (has its own kernel+push).
 	GridDomain grid;
 	PlacementSystem::LayerBinding glb;
@@ -1514,8 +1534,12 @@ void TestConBridge() {
 	unbounded.spacing = 4.0f;
 	Check(!PlacementConstraint::VolumeFitsGpu(unbounded), "place.con.unbounded-refuses");
 	ConstraintVolume huge = ok;
-	huge.dimX = 65;
-	Check(!PlacementConstraint::VolumeFitsGpu(huge), "place.con.dim-refuses");
+	huge.dimX = 65; // flattened grid: X may exceed 64 when total fits
+	Check(PlacementConstraint::VolumeFitsGpu(huge),
+		"place.con.rectangular-axis-fits");
+	huge.dimX = 9999;
+	Check(!PlacementConstraint::VolumeFitsGpu(huge),
+		"place.con.oversized-axis-refuses");
 	ConstraintVolume cells = ok;
 	cells.dimX = 64; cells.dimY = 64; cells.dimZ = 64; // 262144 cells exactly
 	Check(PlacementConstraint::VolumeFitsGpu(cells), "place.con.max-exact-fits");
@@ -1554,6 +1578,25 @@ void TestConBridge() {
 	mlb.config.minSpacing = 4.0f;
 	ConstraintVolume mv = ConstraintVolumeForLayer(mlb);
 	Check(mv.dimX == 0 && mv.spacing == 4.0f, "place.con.layer-mesh-unbounded");
+	HeightfieldData hf;
+	hf.width = 4; hf.height = 4;
+	hf.origin = glm::vec3(0.0f);
+	hf.spacing = glm::vec2(1.0f);
+	hf.heights.assign(16, 10.0f);
+	HeightfieldDomain hd;
+	hd.field = &hf;
+	hd.extentMin = glm::vec2(0.0f);
+	hd.extentMax = glm::vec2(64.0f);
+	PlacementSystem::LayerBinding hlb;
+	hlb.domainKind = DomainKind::Heightfield;
+	hlb.heightfield = &hd;
+	hlb.config.minSpacing = 1.0f;
+	const ConstraintVolume hv = ConstraintVolumeForLayer(hlb);
+	Check(hv.dimX == 66 && hv.dimY == 3 && hv.dimZ == 66
+		&& hv.origin.y == 9.0f,
+		"place.con.heightfield-tight-vertical-band");
+	Check(PlacementConstraint::VolumeFitsGpu(hv),
+		"place.con.heightfield-one-meter-fits");
 }
 
 namespace {
@@ -2546,6 +2589,19 @@ void TestWorldResidency() {
 		sys.PublishActivation(acts[0].key, acts[0].generation);
 		// Old non-interest residents evicted (3 residents, budget 2).
 		Check(sys.residentTileCount() == 2, "place.res.evict-beyond-budget");
+		// A GPU slot eviction must also forget the CPU mirror: neither
+		// the stale activation nor a cache hit may resurrect that tenant.
+		const TileKey evicted = acts[0].key;
+		const uint64_t oldGeneration = acts[0].generation;
+		sys.ForgetTile(evicted);
+		Check(sys.findTile(evicted.programId, evicted.tile) == nullptr,
+			"place.res.gpu-eviction-removes-cpu-mirror");
+		Check(!sys.PublishActivation(evicted, oldGeneration),
+			"place.res.gpu-eviction-stale-token-refuses");
+		sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts);
+		Check(acts.size() == 1 && acts[0].key == evicted
+			&& acts[0].generation != oldGeneration,
+			"place.res.gpu-eviction-reactivates");
 	}
 
 	// ---- the GPU slot map. ----
@@ -2580,6 +2636,32 @@ void TestWorldResidency() {
 		// Release + re-find.
 		gpuTiles.Release(sc);
 		Check(gpuTiles.Find(kC) == -1, "place.gpu-tiles-released");
+	}
+
+	// Runtime revision invalidates live tile generation on scalar and
+	// prototype-weight edits even when the caller's dependency counter
+	// is unchanged (the old revision only hashed SSA instructions).
+	{
+		PlacementSystem::LayerBinding versioned;
+		versioned.programId = 202;
+		versioned.program.graphSeed = 6;
+		versioned.program.instrs = { OpConst(1.0f) };
+		versioned.program.acceptIndex = 0;
+		DependencyVersions ver{};
+		const uint64_t base =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		versioned.config.densityScale = 0.25f;
+		const uint64_t density =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		versioned.config.slopeToRock = true;
+		const uint64_t slope =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		Prototype proto;
+		versioned.prototypes.add(proto);
+		const uint64_t prototype =
+			PlacementWorldRuntime::ProgramRevisionHash(versioned, ver, 4);
+		Check(base != density && density != slope && slope != prototype,
+			"place.res.gpu-program-revision-includes-scalar-and-proto-edits");
 	}
 
 	// ---- the full world flow: fake world -> tile domain -> meadow. ----
@@ -2649,6 +2731,8 @@ void TestWorldResidency() {
 			"place.res.tile-extent");
 		Check(td.heights.valid() && td.eco.valid() && td.eco.channels == 4,
 			"place.res.tile-data-valid");
+		Check(td.eco.width > 8 && td.eco.height > 8,
+			"place.res.tile-ecotope-halo");
 		// The halo grew the heights window past the 8m tile.
 		Check(td.heights.width > 8 && td.heights.height > 8,
 			"place.res.tile-window-halo");

@@ -36,11 +36,11 @@ struct PlacementTilePush
     float densityScale; // 80 (was: the const-extracted density shortcut)
     float noiseAmpRetired;  // 84 RETIRED: 0 (the program subsumes noise)
     float noiseFreqRetired; // 88 RETIRED: 0
-    uint pad2;        // 92
+    float slopeThresholdDeg; // 92 (formerly pad2)
     float minScale;   // 96
     float maxScale;   // 100
     uint protoCount;  // 104
-    uint pad3;        // 108
+    uint slopeToRock;  // 108 (formerly pad3)
     float4 weightsA;  // 112
     float4 weightsB;  // 128
     // ---- the program tail (PR02: the graph SSA) ----
@@ -129,6 +129,8 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
     // ---- Prototype + transform (own channels). ----
     float rv = PlacementRandom01(id, PLACEMENT_CH_VARIANT);
     uint proto = PlacementSelectProto(rv, pc.protoCount, pc.weightsA, pc.weightsB);
+    proto = PlacementSlopeToRock(proto, nrm, pc.protoCount,
+        pc.slopeToRock, pc.slopeThresholdDeg);
     float yaw = (PlacementRandom01(id, PLACEMENT_CH_ROTATION) * 2.0f - 1.0f) * 3.14159265f;
     float sc = pc.minScale + PlacementRandom01(id, PLACEMENT_CH_SCALE) * (pc.maxScale - pc.minScale);
 

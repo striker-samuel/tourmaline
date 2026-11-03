@@ -94,6 +94,20 @@ bool PlacementPriorityBeats(uint2 a, uint2 b) {
     return (a.y > b.y) || (a.y == b.y && a.x > b.x);
 }
 
+// CPU SelectBySlope parity: retain the weighted choice on gentle slopes,
+// and use prototype 1 for rock when a layer has >= 2 prototypes.
+// Uses the same clamped acos degrees as SlopeDegFromNormal on CPU.
+uint PlacementSlopeToRock(uint weightedProto, float3 normal,
+    uint protoCount, uint enabled, float thresholdDeg) {
+    if (enabled == 0u || protoCount <= 1u)
+        return weightedProto;
+    // The CPU oracle caps down-facing normals at 90 degrees.
+    const float slopeDeg = normal.y >= 1.0f ? 0.0f
+        : (normal.y <= 0.0f ? 90.0f
+           : acos(clamp(normal.y, 0.0f, 1.0f)) * 57.29578f);
+    return slopeDeg > thresholdDeg ? 1u : weightedProto;
+}
+
 // Must match C++ RenderInstance (40 bytes): pos(12) yaw(4) scale(12)
 // proto(4) stableLow(4) customB(4).
 struct PlacementRenderInstance {

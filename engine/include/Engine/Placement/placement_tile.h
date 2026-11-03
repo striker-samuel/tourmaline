@@ -210,6 +210,10 @@ public:
 	bool CancelActivation(const TileKey& key, uint64_t generation,
 		bool revertToDirty);
 
+	// GPU slot eviction: forget the CPU residency mirror for the old
+	// tenant. Any delayed publish for that key must then fail closed.
+	void ForgetTile(const TileKey& key);
+
 	// Transient per-frame feed: visible resident tiles → draws.
 	// frustumTest(center, radius) returns true when kept; LOD pick via callback.
 	// Scene is NEVER touched — output is a scratch vector the caller maps
