@@ -18,7 +18,12 @@ struct FrameSignature {
     std::uint64_t rgbaHash=0;
     Controller input{};
     std::uint32_t width=0,height=0;
-    bool operator==(const FrameSignature&) const=default;
+    bool operator==(const FrameSignature& r) const {
+        return tick==r.tick && rgbaHash==r.rgbaHash &&
+               width==r.width && height==r.height &&
+               input.buttons==r.input.buttons && input.x==r.input.x &&
+               input.y==r.input.y;
+    }
 };
 class FrameTrace {
 public:
