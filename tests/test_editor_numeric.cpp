@@ -4,6 +4,7 @@
 // CPU-only inspector regression: zero scale must remain editable without
 // creating a NaN transform, including when loading an already bad matrix.
 #include "editor_numeric.h"
+#include "editor_gizmo_rotation.h"
 #include "editor_transform_trs.h"
 
 #include <cmath>
@@ -70,5 +71,32 @@ int main() {
         "invalid stored number has editable finite display value");
     Check(!editor::numeric::Finite(std::numeric_limits<float>::quiet_NaN()),
         "reject NaN scalar");
+    // Bounds-center pivot regression. Identity drag must not move a
+    // pre-rotated object, and a 90-degree delta orbits the pivot once.
+    using namespace editor::gizmo_rotation;
+    const glm::vec3 baseT(2, 0, 0);
+    const glm::vec3 pivot(1, 0, 0);
+    const glm::vec3 baseR(0, 0, 45);
+    const glm::quat unchanged = LocalDelta(baseR, baseR);
+    const glm::vec3 sameT = RotatePosition(baseT, pivot, unchanged);
+    Check(glm::length(sameT - baseT) < 1e-4f,
+        "bounds-center unchanged rotation does not move node");
+    const glm::quat quarterTurn = LocalDelta(baseR, glm::vec3(0, 0, 135));
+    const glm::vec3 orbit = RotatePosition(baseT, pivot, quarterTurn);
+    Check(Near(orbit.x, 1) && Near(orbit.y, 1),
+        "bounds-center uses drag delta to orbit pivot");
+    const glm::quat parentQ = Orientation(glm::vec3(0, 0, 30));
+    const glm::quat worldDelta =
+        parentQ * quarterTurn * glm::inverse(parentQ);
+    const glm::quat nextParentQ = Orientation(glm::vec3(0, 25, 0));
+    const glm::quat nextDelta = InFrame(worldDelta, nextParentQ);
+    const glm::vec3 multiT = RotatePosition(baseT, pivot, nextDelta);
+    Check(Finite(multiT) && Near(glm::length(multiT - pivot), 1),
+        "multi-select rotation preserves distance to shared pivot");
+    const float angleRad = glm::radians(90.0f);
+    const glm::quat worldRing = glm::angleAxis(angleRad, glm::vec3(0, 0, 1));
+    Check(Near((worldRing * glm::vec3(1, 0, 0)).y, 1.0f),
+        "world ring angle remains in radians");
+
     return failures ? 1 : 0;
 }

@@ -6,6 +6,8 @@
 // node's LOCAL frame, translate in WORLD axes (noted in the overlay).
 
 #include "editor_app.h"
+#include "editor_gizmo_rotation.h"
+#include "editor_transform_trs.h"
 
 #include <cfloat>
 #include <cmath>
@@ -220,16 +222,30 @@ void EditorApp::ApplyMultiDragRotate() {
 	// selection rotates about the SHARED pivot).
 	if (m_dragMulti.empty() || !m_world)
 		return;
-	const glm::quat qBase = glm::quat_cast(glm::mat3(m_dragBaseMat));
-	const glm::quat qNew = glm::quat(glm::radians(m_dragCurR));
-	const glm::quat dqW = qNew * glm::inverse(qBase);
+	// Convert the primary's parent-local rotation delta into a WORLD
+	// delta, then map it to each other node's parent frame. Do not
+	// quaternion-cast a scaled matrix: that is not a pure rotation.
+	const int primaryParent = m_world->scene.hierarchy[m_selected].parent;
+	glm::vec3 pt(0.0f), pr(0.0f), ps(1.0f);
+	if (primaryParent >= 0)
+		transform::ReadLocalTRS(
+			m_world->scene.globalTransform[size_t(primaryParent)],
+			pt, pr, ps);
+	const glm::quat primaryParentQ = gizmo_rotation::Orientation(pr);
+	const glm::quat primaryDelta = gizmo_rotation::LocalDelta(
+		m_dragBaseR, m_dragCurR);
+	const glm::quat worldDelta =
+		primaryParentQ * primaryDelta * glm::inverse(primaryParentQ);
 	for (const auto& ms : m_dragMulti) {
-		const glm::quat qPW = glm::quat_cast(glm::mat3(ms.parentWorld));
-		const glm::quat qB = glm::quat_cast(glm::mat3(ms.baseMat));
-		const glm::quat qL = glm::inverse(qPW) * dqW * qPW * qB;
-		const glm::vec3 r = glm::degrees(glm::eulerAngles(qL));
-		const glm::vec3 t =
-			ms.pivotP + qL * (ms.t - ms.pivotP);
+		glm::vec3 parentT, parentR, parentS;
+		transform::ReadLocalTRS(ms.parentWorld, parentT, parentR, parentS);
+		const glm::quat parentQ = gizmo_rotation::Orientation(parentR);
+		const glm::quat delta = gizmo_rotation::InFrame(
+			worldDelta, parentQ);
+		const glm::quat localQ = delta * gizmo_rotation::Orientation(ms.r);
+		const glm::vec3 r = glm::degrees(glm::eulerAngles(localQ));
+		const glm::vec3 t = gizmo_rotation::RotatePosition(
+			ms.t, ms.pivotP, delta);
 		WriteLocalTRS(ms.node, t, r, ms.s);
 	}
 }
@@ -1345,11 +1361,14 @@ bool EditorApp::GizmoHandleInput() {
 		auto applyPivotRotate = [&]() {
 			if (!m_dragHasPivot)
 				return;
-			// qTotal from the accumulated eulers (the Rz*Ry*Rx write
-			// convention of LocalMatrixFromTRS).
-			const glm::quat qT = glm::quat(glm::radians(m_dragCurR));
-			m_dragCurT = m_dragPivotL
-				+ qT * (m_dragBaseT - m_dragPivotL);
+			// The pivot is in the node's PARENT frame. Only the drag's
+			// local rotation delta moves the translation. Using the
+			// absolute rotation makes a pre-rotated node jump at drag
+			// start and moves it incorrectly around the bounds center.
+			const glm::quat delta = gizmo_rotation::LocalDelta(
+				m_dragBaseR, m_dragCurR);
+			m_dragCurT = gizmo_rotation::RotatePosition(
+				m_dragBaseT, m_dragPivotL, delta);
 		};
 		if (axIdx == 6 || !useLocal) {
 			// World-frame rotation (arcball or a WORLD-axis ring): the
@@ -1409,11 +1428,10 @@ bool EditorApp::GizmoHandleInput() {
 				const float dx = mx - m_dragLastX;
 				m_dragLastX = mx;
 				m_dragBaseAngle += dx * 0.008f; // radians per pixel
-				float angle = m_dragBaseAngle;
+				float angle = m_dragBaseAngle; // already radians
 				if (shiftHeld && m_snapRotateDeg > 0.0f)
-					angle = std::round(glm::degrees(angle)
-						/ m_snapRotateDeg) * m_snapRotateDeg;
-				angle = glm::radians(angle);
+					angle = glm::radians(std::round(glm::degrees(angle)
+						/ m_snapRotateDeg) * m_snapRotateDeg);
 				dq = glm::angleAxis(angle, axesW[axIdx]);
 			}
 			// Camera/world delta -> parent-local delta: the node's
@@ -1423,10 +1441,12 @@ bool EditorApp::GizmoHandleInput() {
 			const glm::mat4& pwM = (parent >= 0)
 				? m_world->scene.globalTransform[parent]
 				: glm::mat4(1.0f);
-			const glm::quat qParentW = glm::quat_cast(glm::mat3(pwM));
+			glm::vec3 parentT, parentR, parentS;
+			transform::ReadLocalTRS(pwM, parentT, parentR, parentS);
+			const glm::quat qParentW = gizmo_rotation::Orientation(parentR);
 			const glm::quat qLocal =
-				glm::inverse(qParentW) * dq * qParentW
-				* glm::quat_cast(glm::mat3(m_dragBaseMat));
+				gizmo_rotation::InFrame(dq, qParentW)
+				* gizmo_rotation::Orientation(m_dragBaseR);
 			// Back to the editor's euler storage (same order
 			// fidelity as ReadLocalTRS: eulerAngles XYZ read,
 			// Rz*Ry*Rx write — see LocalMatrixFromTRS).
