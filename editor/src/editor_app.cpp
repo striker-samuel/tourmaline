@@ -376,7 +376,6 @@ void EditorApp::LoadPrefs() {
 	m_outlinerW = kEditorLeftW;
 	m_outlinerH = 380.0f;
 	m_inspectorW = kEditorRightW;
-	m_bottomDockH = kEditorBottomH;
 	m_selMode = SelMode::Mesh;
 	m_gizmoMode = GizmoMode::Translate;
 	m_mode = EditorMode::Layout;
@@ -423,8 +422,6 @@ void EditorApp::LoadPrefs() {
 				m_mode = EditorMode(std::clamp(std::stoi(val), 0, 3));
 			else if (section == "inspector" && key == "width")
 				m_inspectorW = std::clamp(std::stof(val), 200.0f, 720.0f);
-			else if (section == "bottomDock" && key == "height")
-				m_bottomDockH = std::clamp(std::stof(val), 120.0f, 600.0f);
 			// [scratch] dir retired: no scratch disk anymore (the cache
 			// is project-owned) — a stale entry is ignored.
 			else if (section == "project" && key == "dir")
@@ -462,7 +459,6 @@ void EditorApp::SavePrefs() {
 	out << "[tools]\nsel=" << int(m_selMode) << "\ngizmo=" << int(m_gizmoMode)
 		<< "\nmode=" << int(m_mode) << "\n";
 	out << "[inspector]\nwidth=" << m_inspectorW << "\n";
-	out << "[bottomDock]\nheight=" << m_bottomDockH << "\n";
 	if (!m_projectRoot.empty())
 		out << "[project]\ndir=" << m_projectRoot << "\n";
 	if (!m_recentProjects.empty()) {
