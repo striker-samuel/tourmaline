@@ -70,3 +70,81 @@ The candidate upstream n64hub/super-mario-64-recomp has SDL2/RT64 graphics start
 ## Parity tracing
 
 trace.h provides a bounded FrameTrace of 30-Hz tick index, N64 pad state, RGBA FNV-1a64 hash and frame dimensions. Traces can be exported to CSV or compared to locate the first differing retained frame. It deliberately stores neither framebuffer pixels nor any ROM data. This is a diagnostic building block; matching image hashes does not by itself prove accurate audio, physics or RDP behavior.
+
+
+## Tourmaline-managed assets (external user project)
+
+The user-controlled ROM is **never imported into Tourmaline**. It remains
+an absolute external file path, validated by `Session::Boot` before an
+independent static recomp adapter can execute it. No ROM or Nintendo
+extracted assets are checked in. **There is no SM64 asset extractor in
+this experiment**; conversion from any original game data into
+Tourmaline-supported formats is a separate, user-local process.
+
+The supported content path is now the *existing* Tourmaline pipeline:
+
+1. `Project.exe init/import` creates an external project and imports a
+   nonproprietary one-triangle bootstrap scene, because recipes currently
+   require a scene entry (there is no asset-only appmanifest entry).
+2. The user places already-converted assets under the **external**
+   `content/extracted/` directory. Supported extension classes include
+   images (.png/.jpg/.jpeg/.tga/.bmp/.ktx2), .wav, compiled .spv,
+   .audiograph, .spriteset, and .givolumemanifest. Unknown types fail
+   loudly. This does not magically transform N64 models, textures or
+   audio into Tourmaline-ready files.
+3. `Project.exe validate/ids/build` owns recipe resolution, stable ID
+   allocation in assets.db, the generated catalog header, cooking,
+   CRC-verifiable SMP8 paks and the .tapp release manifest.
+4. The host uses **ProjectRuntime::Load** and **ReadAsset(id)**, hence
+   the shared ContentRegistry provider selection and pager. It does not
+   read loose assets directly or reimplement a packer. The C ABI's
+   `asset_read` callback exposes a two-pass, caller-owned byte copy by
+   numeric catalog ID to a separately built adapter.
+
+Example (all `$CONTENT`, `$PUBLISH`, `$ROM`, and `$RECOMP_OUT`
+paths **outside** the Tourmaline checkout):
+
+```sh
+# From the Tourmaline source checkout, after building target Project.
+cmake --build out/build/recomp --target Project
+python3 experiments/recomp/scaffold_external.py bootstrap \
+  --root "$CONTENT" --project-tool "$PWD/out/build/recomp/Project" \
+  --rom "$ROM" --artifacts "$RECOMP_OUT"
+
+# User independently converts their owned game assets into one of
+# Tourmaline's supported source formats, and places them in:
+# "$CONTENT/content/extracted/" (possibly with subdirectories).
+
+python3 experiments/recomp/scaffold_external.py build \
+  --root "$CONTENT" --project-tool "$PWD/out/build/recomp/Project" \
+  --publish "$PUBLISH" --rom "$ROM" --artifacts "$RECOMP_OUT"
+
+# The ID comes from $CONTENT/generated/project.h. This is a SYNTHETIC
+# diagnostic display, not SM64 gameplay: loaded asset bytes change
+# the generated test pattern (via a hash).
+cd out/build/recomp
+./RecompDiagnostic --synthetic \
+  --assets "$PUBLISH/recomp_assets.tapp" --asset-id 0x2000
+```
+
+On Windows use `python`, `Project.exe` and
+`RecompDiagnostic.exe`; the commands and paths are illustrative.
+**Do not assume `0x2000` is the generated ID** — inspect the
+generated `project.h` and pass the value actually allocated for an
+extracted asset. An optional `--assets ...` without
+`--asset-id` verifies opening the project session alone.
+
+External path policy is enforced by `external_assets.h` in C++ for the
+diagnostic host and by `scaffold_external.py` in Python. They reject
+paths inside the checkout, including symlink-resolved aliases and
+prefix-lookalike mistakes. The pipeline itself can still ingest
+improperly placed data if invoked **directly without this wrapper**;
+the guard applies to the experimental commands, not arbitrary
+Tourmaline tools. Saves and native recomp output remain user-owned.
+
+**Unsolved for a real game:** mapping game-specific resource requests
+to generated catalog IDs, cooking unsupported N64-specific material and
+geometry formats, validating extracted content, and integrating the
+external N64ModernRuntime/RT64 rendering/scheduling stack. The
+diagnostic host intentionally proves content access and presentation
+only, not a playable port.
