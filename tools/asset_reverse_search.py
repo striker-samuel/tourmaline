@@ -303,7 +303,7 @@ def weights_from_string(spec):
 
 def search(doc, query, limit=10, weights=None, size_ratio=2.0, exclude_source=None):
     """Exact linear ranking; scores are relative likeness, not probabilities."""
-    if limit < 1 or size_ratio < 0 or (0 < size_ratio < 1):
+    if limit < 1 or not math.isfinite(size_ratio) or size_ratio < 0 or (0 < size_ratio < 1):
         raise SearchError("limit must be positive and size ratio must be 0 or >= 1")
     weights = dict(DEFAULT_WEIGHTS) if weights is None else weights
     found = []
