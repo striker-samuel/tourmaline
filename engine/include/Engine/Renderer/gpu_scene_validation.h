@@ -108,6 +108,38 @@ namespace tour::gpu_scene {
     return result;
 }
 
+// GPU Scene stable verdict compaction. Each stage is dispatched in order
+// with an explicit compute memory barrier; BDA pointers alone do not
+// establish RenderGraph dependencies.
+struct CompactCountPush {
+    uint64_t verdicts = 0, counts = 0;
+    uint32_t candidateCount = 0, groupCount = 0;
+};
+struct CompactPrefixPush {
+    uint64_t counts = 0, offsets = 0;
+    uint32_t groupCount = 0, unused = 0;
+};
+struct CompactScatterPush {
+    uint64_t verdicts = 0, offsets = 0, output = 0;
+    uint32_t candidateCount = 0, groupCount = 0;
+};
+static_assert(sizeof(CompactCountPush) == 24);
+static_assert(sizeof(CompactPrefixPush) == 24);
+static_assert(sizeof(CompactScatterPush) == 32);
+
+// Stable order is essential for future LOD/submesh expansion: atomics
+// would return a nondeterministic permutation of visible instances.
+[[nodiscard]] inline std::vector<InstanceCullVerdict> CompactVisibleVerdicts(
+    std::span<const InstanceCullVerdict> verdicts) {
+    std::vector<InstanceCullVerdict> out;
+    out.reserve(verdicts.size());
+    for (const auto& verdict : verdicts)
+        if (verdict.value.x != InvalidIndex &&
+            verdict.value.y != 0u && verdict.value.z != 0u)
+            out.push_back(verdict);
+    return out;
+}
+
 class CandidateValidator {
 public:
     static constexpr uint32_t Flights=smvk::limits::MaxFramesInFlight;
@@ -146,6 +178,44 @@ public:
           "[GpuSceneValidate] flight=%u compared=%zu mismatches=%llu total=%llu/%llu\n",
           flight,readback.size(),(unsigned long long)wrong,
           (unsigned long long)mismatches_,(unsigned long long)tested_);
+        if (f.compactPrepared) {
+            f.compactPrepared = false;
+            const uint32_t expectedCount =
+                static_cast<uint32_t>(f.expectedCompact.size());
+            uint32_t gpuCount = UINT32_MAX;
+            if (!ctx.DownloadDataFromBuffer(f.offsets, &gpuCount,
+                    sizeof(gpuCount), size_t(f.groupCount)*sizeof(uint32_t))) {
+                ++compactMismatches_;
+                std::fprintf(stderr, "[GpuSceneCompact] count readback failed\\n");
+            } else if (gpuCount != expectedCount) {
+                ++compactMismatches_;
+                std::fprintf(stderr,
+                    "[GpuSceneCompact] visible count gpu=%u cpu=%u\\n",
+                    gpuCount, expectedCount);
+            } else if (gpuCount != 0u) {
+                std::vector<InstanceCullVerdict> compact(gpuCount);
+                if (!ctx.DownloadDataFromBuffer(f.compact, compact.data(),
+                        compact.size()*sizeof(compact[0]))) {
+                    ++compactMismatches_;
+                    std::fprintf(stderr, "[GpuSceneCompact] data readback failed\\n");
+                } else {
+                    for (size_t i=0; i<compact.size(); ++i) {
+                        const auto& a=compact[i].value;
+                        const auto& b=f.expectedCompact[i].value;
+                        if (a.x!=b.x || a.y!=b.y || a.z!=b.z || a.w!=b.w) {
+                            ++compactMismatches_;
+                            if (compactMismatches_ <= 4)
+                                std::fprintf(stderr,
+                                    "[GpuSceneCompact] mismatch at %zu\\n", i);
+                        }
+                    }
+                }
+            }
+            std::fprintf(stderr,
+                "[GpuSceneCompact] expected=%u errors=%llu\\n",
+                expectedCount, (unsigned long long)compactMismatches_);
+            f.expectedCompact.clear();
+        }
         f.expected.clear();
     }
 
@@ -212,6 +282,42 @@ public:
         return true;
     }
 
+    // Allocate scratch and produce BDA push blocks for the three-pass
+    // compaction. No resources survive a flight reuse without its fence.
+    [[nodiscard]] bool PrepareCompaction(smvk::ResourceManager& ctx,
+        uint32_t flight, uint32_t candidateCount,
+        CompactCountPush& count, CompactPrefixPush& prefix,
+        CompactScatterPush& scatter) {
+        if (flight >= Flights || candidateCount == 0u ||
+            candidateCount > MaxPassedInstanceCandidates)
+            return false;
+        auto& f = flight_[flight];
+        if (!f.prepared || f.expected.size() != candidateCount)
+            return false;
+        const uint32_t groups = (candidateCount + 63u) / 64u;
+        if (!Ensure(ctx, f.counts, f.countsSize,
+                    size_t(groups)*sizeof(uint32_t), "scene compact counts") ||
+            !Ensure(ctx, f.offsets, f.offsetsSize,
+                    size_t(groups+1u)*sizeof(uint32_t), "scene compact offsets") ||
+            !Ensure(ctx, f.compact, f.compactSize,
+                    size_t(candidateCount)*sizeof(InstanceCullVerdict),
+                    "scene compact output"))
+            return false;
+        const uint64_t verdicts = ctx.GetBufferDeviceAddress(f.verdicts);
+        const uint64_t counts = ctx.GetBufferDeviceAddress(f.counts);
+        const uint64_t offsets = ctx.GetBufferDeviceAddress(f.offsets);
+        const uint64_t output = ctx.GetBufferDeviceAddress(f.compact);
+        if (!verdicts || !counts || !offsets || !output)
+            return false;
+        count = {verdicts, counts, candidateCount, groups};
+        prefix = {counts, offsets, groups, 0u};
+        scatter = {verdicts, offsets, output, candidateCount, groups};
+        f.groupCount = groups;
+        f.expectedCompact = CompactVisibleVerdicts(f.expected);
+        f.compactPrepared = true;
+        return true;
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight>=Flights) return;
         auto& f=flight_[flight];
@@ -220,10 +326,16 @@ public:
 
     [[nodiscard]] uint64_t Compared() const { return tested_; }
     [[nodiscard]] uint64_t Mismatches() const { return mismatches_; }
+    [[nodiscard]] uint64_t CompactMismatches() const { return compactMismatches_; }
 
 private:
     struct Flight {
         smvk::Holder<smvk::BufferHandle> ranges{},view{},verdicts{};
+        smvk::Holder<smvk::BufferHandle> counts{},offsets{},compact{};
+        size_t countsSize=0,offsetsSize=0,compactSize=0;
+        uint32_t groupCount=0;
+        std::vector<InstanceCullVerdict> expectedCompact{};
+        bool compactPrepared=false;
         size_t rangesSize=0,verdictSize=0;
         std::vector<InstanceCullVerdict> expected{};
         bool pending=false,prepared=false;
@@ -244,7 +356,7 @@ private:
         return true;
     }
     std::array<Flight,Flights> flight_{};
-    uint64_t tested_=0,mismatches_=0;
+    uint64_t tested_=0,mismatches_=0,compactMismatches_=0;
 };
 
 } // namespace tour::gpu_scene
