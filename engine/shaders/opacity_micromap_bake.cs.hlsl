@@ -1,14 +1,17 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-// One GPU invocation per opaque MASK triangle. Sample its baseColor alpha
+// One GPU invocation per opaque MASK triIndex. Sample its baseColor alpha
 // at the centroids of its 16 subdivision-2 microtriangles, then encode the
 // 2-state OMM bits in Vulkan's bird-curve order. This is a one-time
 // per-BLAS bake (not a per-frame ray-tracing shader).
 #include "common.hlsli"
 #include "gpu_platform.hlsli"
 
-struct OmmWords { uint words[]; };
+// Explicit BDA array capacity: DXC rejects unsized struct members.
+// Matches the filter heap's large bounded-buffer convention; actual
+// address bounds are checked by CPU before the BLAS/OMM build.
+struct OmmWords { uint words[128 * 1024 * 1024]; };
 struct OmmBakePush
 {
     GPU_PTR_READ(OmmWords) indices;
@@ -69,11 +72,11 @@ uint birdIndex(float u, float v)
 [numthreads(64, 1, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID)
 {
-    const uint triangle = tid.x;
-    if (triangle >= sp.triangleCount)
+    const uint triIndex = tid.x;
+    if (triIndex >= sp.triangleCount)
         return;
 
-    const uint i = sp.firstIndex + triangle * 3u;
+    const uint i = sp.firstIndex + triIndex * 3u;
     const uint a = uint(sp.baseVertex) + sp.indices.Get().words[i + 0u];
     const uint b = uint(sp.baseVertex) + sp.indices.Get().words[i + 1u];
     const uint c = uint(sp.baseVertex) + sp.indices.Get().words[i + 2u];
@@ -109,7 +112,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID)
             }
         }
     }
-    // One 32-bit word per triangle (16 little-endian 2-state bits,
-    // upper 16 zero). Each VkMicromapTriangleEXT points at +4*triangle.
-    sp.output.Get().words[triangle] = mask;
+    // One 32-bit word per triIndex (16 little-endian 2-state bits,
+    // upper 16 zero). Each VkMicromapTriangleEXT points at +4*triIndex.
+    sp.output.Get().words[triIndex] = mask;
 }
