@@ -636,6 +636,11 @@ bool ExecuteBuildPlan(const Project& project, const BuildPlan& plan,
 					? (projectRoot / fs::path(pak.scene))
 					: fs::path(options.sceneSnapshot))
 				.lexically_normal().generic_string();
+			// Authored shape assets are VFS-addressable and may be
+			// owned by a scene pak (not just asset-only packages).
+			for (const PlanAsset& asset : pak.assets)
+				if (asset.kind == PlanAssetKind::Shape)
+					stage.contentSet.push_back(asset.path);
 			stage.levelName = options.levelName;
 			stage.registryDir = options.registryDir;
 			// The sound-id table (the pre-stage catalog ensure above):
