@@ -64,6 +64,7 @@ std::vector<GameUiPreparedRect> PrepareGameUiRects(
 		instance.clipMin[1] = clip.origin.y;
 		instance.clipMax[0] = clip.Right();
 		instance.clipMax[1] = clip.Bottom();
+		instance.pad = d.effect; // 72-byte instance ABI: previously unused word
 		p.texture = d.texture;
 		prepared.push_back(p);
 	}
@@ -79,7 +80,7 @@ bool GameUiRenderer::EnsureShaders(smvk::ResourceManager& ctx) {
 				"gameuiVS");
 		if (m_fs.empty())
 			m_fs = ctx.CreateShaderModule(
-				shaders::Read("content/shaders/gameui.frag.hlsl.spv"),
+				shaders::Read(m_fragmentShaderPath),
 				"gameuiPS");
 	} catch (...) {
 		return false;
@@ -130,7 +131,14 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
 		smvk::SamplerCreateInfo sampler{};
 		sampler.addressU = smvk::AddressMode::ClampToEdge;
 		sampler.addressV = smvk::AddressMode::ClampToEdge;
+
 		sampler.addressW = smvk::AddressMode::ClampToEdge;
+        if (m_pixelArtSampling) {
+            sampler.minFilter = smvk::Filter::Nearest;
+            sampler.magFilter = smvk::Filter::Nearest;
+            sampler.mipmapMode = smvk::MipmapMode::Nearest;
+            sampler.maxLod = 0.0f;
+        }
 		m_sampler = ctx.GetOrCreateSampler(sampler);
 		if (m_sampler == UINT32_MAX) return false;
 	}

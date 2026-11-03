@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <optional>
 #include <span>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace tour {
@@ -26,6 +28,7 @@ struct UiDrawRect2D {
 	glm::vec2 uvMin{0.0f};
 	glm::vec2 uvMax{1.0f};
 	std::optional<UiRect2D> clip{}; // null: viewport; e.g. layoutItem.clip
+	uint32_t effect = 0; // project custom fragment shader payload, stock ignores
 };
 
 // GPU layout must mirror engine/shaders/gameui.hlsli GameUiRectInstance.
@@ -82,6 +85,11 @@ public:
 
 	// Called on the render thread. Shaders are packed automatically by
 	// the existing engine shaders build. Textures are owned by the host.
+	// Optional project PS, same GameUI VS/PS linkage as the engine's default.
+	// Configure before the first frame's EnsureShaders.
+	void SetFragmentShaderPath(std::string path) { m_fragmentShaderPath = std::move(path); }
+	// Keep text/pixel sprites sharp; other hosts retain linear sampling.
+	void SetPixelArtSampling(bool nearest) { m_pixelArtSampling = nearest; }
 	[[nodiscard]] bool EnsureShaders(smvk::ResourceManager& ctx);
 
 	// Appends AFTER the scene/world pass to render on top. The host owns
@@ -116,6 +124,8 @@ private:
 	smvk::Holder<smvk::ShaderModuleHandle> m_vs;
 	smvk::Holder<smvk::ShaderModuleHandle> m_fs;
 	smvk::ShaderProgram m_program{};
+	std::string m_fragmentShaderPath = "content/shaders/gameui.frag.hlsl.spv";
+	bool m_pixelArtSampling = false;
 	uint32_t m_sampler = UINT32_MAX;
 };
 

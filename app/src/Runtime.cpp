@@ -84,6 +84,12 @@ bool GameElement::onAttach() {
 	return true;
 }
 
+void GameElement::onDetach() {
+    if (m_context && m_game)
+        m_game->onStop(*m_context);
+    m_context.reset();
+}
+
 void GameElement::onUpdate(float dt) {
 	if (m_context && m_game)
 		m_game->onUpdate(*m_context, dt);
