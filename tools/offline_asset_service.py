@@ -33,13 +33,12 @@ def is_inside(path: Path, parent: Path) -> bool:
 
 
 def relative_asset_path(path: str) -> str:
-    if not isinstance(path, str) or not path or "\\\\" in path or "\\x00" in path:
+    if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
         raise ValueError("use a nonempty forward-slash project-relative path")
     if (PurePosixPath(path).is_absolute() or ":" in path
             or any(part in ("", ".", "..") for part in path.split("/"))):
         raise ValueError("asset path must not escape the project")
     return path
-
 
 class Archive:
     def __init__(self, source: str, archive: str, cache: str,
