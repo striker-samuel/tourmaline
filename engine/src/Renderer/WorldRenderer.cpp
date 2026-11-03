@@ -962,6 +962,10 @@ namespace engine {
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.ssr
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
+		// Planar captures use the same fresh-first/retirement contract.
+		if (m_viewportResources.planarReflections.program.shaderCount != 0)
+			moved += m_viewportResources.planarReflections
+				.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.volumetric
 			.ReloadShaders(*m_context, retired) ? 1 : 0;
 		moved += m_viewportResources.exposure
