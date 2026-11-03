@@ -46,6 +46,7 @@
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Placement/placement_gpu.h>
+#include <Engine/Placement/placement_stream_provider.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/texture_streamer.h>
@@ -2094,6 +2095,7 @@ protected:
 	float m_gpuPlacementRadius = 64.0f;
 	uint64_t m_gpuPlacementTerrainRevision = 0;
 	bool m_gpuPlacementReady = false;
+	tour::placement::PlacementStreamProvider m_placementStreamProvider;
 	tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
 	tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
 	tour::gpu_scene::Uploader m_gpuSceneUploader;

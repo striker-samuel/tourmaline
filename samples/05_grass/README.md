@@ -48,8 +48,13 @@ remain alive and whose optional `hfield` points at the world
 heightfield (or is null to borrow WorldRenderer's built terrain).
 The `seeds` table contains absolute static index ranges from the
 mesh heap; the renderer copies these small command headers, not
-instance data. The renderer then drives
-`BeginFrame → RecordCullChain → Main DrawIndexedIndirect`.
+instance data. The renderer registers a WorldPartition placement provider. Its shared
+interest/commit sequence records `BeginFrame`, then the renderer drives
+`RecordCullChain → Main DrawIndexedIndirect`. The residency pass limits
+its active tile requests to `slotBudget`: if the camera window crosses
+more tiles than fit, it chooses nearest tiles deterministically rather than
+regenerating overcommitted tiles every frame. Raise `slotBudget` for
+full-radius coverage.
 `InvalidateGpuPlacementTerrain()` increments the terrain dependency
 revision on edits.
 

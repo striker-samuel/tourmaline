@@ -2880,6 +2880,35 @@ namespace engine {
 		}
 		m_worldFieldProvider.SetContext(m_context);
 		m_worldPartition.AddProvider(&m_worldFieldProvider);
+		// Placement receives the SAME prioritized interest stream and commits
+		// its generation passes at the partition publication point. The
+		// renderer still owns Vulkan resources and records view-specific
+		// culling after the RenderView slab is built.
+		m_placementStreamProvider.SetCommitCallback(
+			[this](const glm::vec4* rects, size_t rectCount, uint64_t frameIndex) {
+				auto* rt = m_gpuPlacementRuntime;
+				if (!rt || !rt->layer || !rt->hfield || !rt->masks
+					|| m_gpuPlacementSeedCount == 0)
+					return false;
+				if (!rt->Valid()) {
+					if (rt->viewBudget < m_swapchain->framesInFlight())
+						rt->viewBudget = m_swapchain->framesInFlight();
+					if (!rt->Create(*m_context, *m_rendergraph))
+						return false;
+				}
+				if (!m_gpuPlacementDraw)
+					m_gpuPlacementDraw = new tour::placement::PlacementDrawPrograms();
+				if (rt->viewBudget < m_swapchain->framesInFlight()
+					|| !m_gpuPlacementDraw->Ensure(*m_context)
+					|| !rt->SeedIndirect(*m_context, uint32_t(frameIndex % rt->viewBudget),
+						m_gpuPlacementSeeds, m_gpuPlacementSeedCount))
+					return false;
+				tour::placement::DependencyVersions deps{};
+				deps.terrain = m_gpuPlacementTerrainRevision;
+				rt->BeginFrame(*m_context, *m_rendergraph, rects, rectCount, deps);
+				return true;
+			});
+		m_worldPartition.AddProvider(&m_placementStreamProvider);
 		// Debug: force the World Map (C) window open — headless smoke
 		// evidence. Frame captures are scene-only BY DESIGN (the grading
 		// reference — ImGui layers never appear in exports), so the map's
@@ -11108,7 +11137,30 @@ namespace engine {
 			interest.desired = engine::worldpartition::DesiredResidency::GpuReady;
 			m_worldFieldPrevEye = m_cameraPositioner.cameraPosition_;
 			m_worldFieldPrevEyeValid = true;
-			m_worldPartition.SetInterests(&interest, 1);
+
+			// Placement's optional interest is a separate layer, but shares
+			// the partition's priority ordering and commit sequence.
+			engine::worldpartition::StreamingInterest interests[2]{ interest, interest };
+			size_t interestCount = 1;
+			auto* rt = m_gpuPlacementRuntime;
+			if (rt && !rt->hfield && m_terrain.valid)
+				rt->hfield = &m_terrain.hfield;
+			const bool placementConfigured = rt && rt->layer && rt->hfield
+				&& rt->masks && m_gpuPlacementSeedCount > 0;
+			if (placementConfigured) {
+				const auto& meta = rt->hfield->meta;
+				m_placementStreamProvider.SetFrameSource(true, glm::vec4(
+					meta.originX, meta.originZ,
+					meta.originX + meta.worldSize,
+					meta.originZ + meta.worldSize));
+				interests[1].radiusMeters = double(m_gpuPlacementRadius);
+				interests[1].layerMask = engine::worldpartition::StreamLayerBit(
+					engine::worldpartition::StreamLayer::Placement);
+				++interestCount;
+			} else {
+				m_placementStreamProvider.SetFrameSource(false, glm::vec4(0.0f));
+			}
+			m_worldPartition.SetInterests(interests, interestCount);
 			m_worldPartition.UpdateFrame(fb.frameIndex);
 		}
 		// The renderer owns no environment: the frame's look is built
@@ -11420,51 +11472,19 @@ namespace engine {
 		// commands. Nothing about the GfxFilter / GPU-scene validator path
 		// changes while the feature is absent (the default).
 		m_gpuPlacementReady = false;
-		if (m_gpuPlacementRuntime && m_gpuPlacementSeedCount > 0
+		if (m_placementStreamProvider.CommittedThisFrame()
+			&& m_gpuPlacementRuntime && m_gpuPlacementDraw
 			&& mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
-			auto& rt = *m_gpuPlacementRuntime;
-			if (!rt.hfield && m_terrain.valid)
-				rt.hfield = &m_terrain.hfield;
-			if (rt.layer && rt.hfield && rt.masks) {
-				if (!rt.Valid()) {
-					// Scratch belongs to a frame-in-flight, not a camera alone.
-					if (rt.viewBudget < m_swapchain->framesInFlight())
-						rt.viewBudget = m_swapchain->framesInFlight();
-					(void)rt.Create(*m_context, *m_rendergraph);
-				}
-				if (rt.Valid() && !m_gpuPlacementDraw)
-					m_gpuPlacementDraw = new tour::placement::PlacementDrawPrograms();
-				if (rt.Valid() && rt.viewBudget >= m_swapchain->framesInFlight()
-					&& m_gpuPlacementDraw
-					&& m_gpuPlacementDraw->Ensure(*m_context)) {
-					if (m_gpuPlacementViewLogical.empty())
-						m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
-							m_renderViews.Buffer(), "GpuPlacementRenderViews");
-					if (!m_gpuPlacementViewLogical.empty()) {
-						const glm::vec3 eye = m_cameraPositioner.cameraPosition_;
-						const auto& meta = rt.hfield->meta;
-						const float r = m_gpuPlacementRadius;
-						const glm::vec4 interest(
-							std::max(meta.originX, eye.x - r),
-							std::max(meta.originZ, eye.z - r),
-							std::min(meta.originX + meta.worldSize, eye.x + r),
-							std::min(meta.originZ + meta.worldSize, eye.z + r));
-						if (interest.z > interest.x && interest.w > interest.y
-							&& rt.SeedIndirect(*m_context, fb.frameIndex,
-								m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
-							tour::placement::DependencyVersions deps{};
-							deps.terrain = m_gpuPlacementTerrainRevision;
-							rt.BeginFrame(*m_context, *m_rendergraph,
-								&interest, 1, deps);
-							rt.RecordCullChain(*m_context, *m_rendergraph,
-								fb.frameIndex, m_gpuPlacementViewLogical, renderViewsAddress,
-								mainRenderView, eye,
-								tour::placement::kPlacementCullFrustum |
-								tour::placement::kPlacementCullDistance);
-							m_gpuPlacementReady = true;
-						}
-					}
-				}
+			if (m_gpuPlacementViewLogical.empty())
+				m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
+					m_renderViews.Buffer(), "GpuPlacementRenderViews");
+			if (!m_gpuPlacementViewLogical.empty()) {
+				m_gpuPlacementRuntime->RecordCullChain(*m_context, *m_rendergraph,
+					fb.frameIndex, m_gpuPlacementViewLogical, renderViewsAddress,
+					mainRenderView, m_cameraPositioner.cameraPosition_,
+					tour::placement::kPlacementCullFrustum |
+					tour::placement::kPlacementCullDistance);
+				m_gpuPlacementReady = true;
 			}
 		}
 
