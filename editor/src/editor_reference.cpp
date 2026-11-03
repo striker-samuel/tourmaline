@@ -5,6 +5,8 @@
 #include "editor_app.h"
 
 #include <Engine/GI/bake.h>
+#include <Engine/App/cluster.h>
+#include <span>
 #include <Engine/Renderer/ReferenceSceneRenderer.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Scene/scene.h>
@@ -51,6 +53,21 @@ void EditorApp::StartReferenceRender() {
 	// All visible meshes, not just GI-shadow-casting surfaces.
 	opts.excludeDecalOverlays = false;
 	opts.traceBackendEmbree = true;
+	// Decode the same source KTX data as the GI baker: texture samples
+	// are evaluated at camera hits, not reduced to flat material factors.
+	for (const auto& cluster : m_world->clusters) {
+		if (!cluster) continue;
+		for (const auto& [uri, handle] : cluster->ListTextureUris()) {
+			const auto* source = cluster->GetTextureSource(uri);
+			if (!source || source->empty()) continue;
+			const std::span<const uint8_t> bytes(*source);
+			if (auto avg = tour::gi::GiAverageKtxTexel(bytes))
+				opts.texelAvg[handle.index()] = *avg;
+			if (auto data = tour::gi::GiDecodeKtxTexelData(
+					bytes, tour::gi::kGiBakeTexelMaxDim))
+				opts.texelData[handle.index()] = std::move(*data);
+		}
+	}
 	std::string error;
 	tour::gi::ExtractTraceSceneFromWorld(*m_world, opts, *scene, error);
 	if (!error.empty()) {
