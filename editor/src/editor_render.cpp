@@ -2064,7 +2064,13 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						hit = rayOrigin + rayDir * t;
 						valid = true;
 					}
-				} else if (std::fabs(rayDir.y) > 1e-5f) {
+				} else if (cr.domainKind == smvk::placement::DomainKind::MeshSurface) {
+					if (auto pick = PickNode(m_activeVp, lmx, lmy, vpExt)) {
+						hit = rayOrigin + rayDir * pick->t;
+						valid = true;
+					}
+				}
+				if (!valid && std::fabs(rayDir.y) > 1e-5f) {
 					const float y = cr.domainKind == smvk::placement::DomainKind::Grid
 						? cr.grid.origin.y : 0.0f;
 					const float t = (y - rayOrigin.y) / rayDir.y;
