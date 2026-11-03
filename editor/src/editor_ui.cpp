@@ -32,6 +32,7 @@
 
 #include <Engine/Asset/spriteset.h>
 #include <imgui.h>
+#include <imgui_internal.h> // DockBuilder: initial workspace graph + user reset
 #include <SDL3/SDL_misc.h> // SDL_OpenURL: launch the local asset history UI
 #include <SDL3/SDL_filesystem.h> // SDL_GetBasePath (staged export scripts)
 #include <imgui_impl_vulkan.h> // ImGui_ImplVulkan_AddTexture (TextureThumb)
@@ -145,97 +146,128 @@ namespace editor {
 		// Window title tracks the scene + dirty star (change-detected).
 		UpdateWindowTitle();
 
-		// Panels are siblings of the central viewport (never on top of it):
-		// RenderFrame renders only the rect between them. I hides every
-		// panel for a fullscreen viewport (the menu bar + overlay remain).
-		if (m_uiMode) {
-			// LEFT COLUMN, STACKED (the layout rework's final form): the
-			// world Outliner is ALWAYS VISIBLE on top (an authoring
-			// constant — selection context at every glance), and the
-			// tabbed browser panel (Assets / Console / Overrides) fills
-			// the column below it. The horizontal splitter between them
-			// (DrawPanelSplitters' ##splitOut) adjusts the split; the
-			// draw-time clamp keeps both panels usable at any window
-			// size. The browser wraps its header actions + tiles to the
-			// host width (SameLineIfFits inside); the console + the
-			// override rule table scroll in the narrow column — width
-			// was the dock-era trade, the column layout takes it back.
-			const float colH = vh - menuH - BottomDockH() - kEditorStatusH;
-			const float outH = std::clamp(m_outlinerH, 160.0f,
-				std::max(colH - 140.0f, 200.0f));
-			ImGui::SetNextWindowPos(ImVec2(0, menuH), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, outH),
-				ImGuiCond_Always);
-			if (ImGui::Begin("Outliner", nullptr,
-				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-				ImGuiWindowFlags_NoResize)) {
-				DrawOutliner();
+		// A real ImGui dockspace replaces the old fixed-position columns.
+		// Panels can be docked, tabbed, split and floated WITHIN the editor
+		// window; ImGui saves the workspace to editor.imgui.ini. We keep
+		// platform multi-viewport disabled: the renderer still owns one
+		// Vulkan swapchain (undocking into a second OS window is not wired).
+		ImGui::SetNextWindowPos(ImVec2(0.0f, menuH), ImGuiCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x,
+			std::max(1.0f, vh - menuH - kEditorStatusH)), ImGuiCond_Always);
+		const ImGuiWindowFlags hostFlags =
+			ImGuiWindowFlags_NoDocking |
+			ImGuiWindowFlags_NoTitleBar |
+			ImGuiWindowFlags_NoCollapse |
+			ImGuiWindowFlags_NoResize |
+			ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoBringToFrontOnFocus |
+			ImGuiWindowFlags_NoNavFocus |
+			ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoScrollbar |
+			ImGuiWindowFlags_NoBackground |
+			(m_uiMode ? 0 : ImGuiWindowFlags_NoInputs);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+		const bool hostVisible = ImGui::Begin("##TourmalineDockHost",
+			nullptr, hostFlags);
+		if (hostVisible) {
+			const ImGuiID dockId = ImGui::GetID("TourmalineDockspace");
+			// Build once, only for a new user or an explicit reset.
+			// Existing ImGui .ini nodes win over the compiled defaults.
+			if (m_uiMode && (m_dockResetRequested ||
+				!ImGui::DockBuilderGetNode(dockId))) {
+				ImGui::DockBuilderRemoveNode(dockId);
+				ImGui::DockBuilderAddNode(dockId,
+					ImGuiDockNodeFlags_DockSpace |
+					ImGuiDockNodeFlags_PassthruCentralNode);
+				ImGui::DockBuilderSetNodePos(dockId,
+					ImVec2(0.0f, menuH));
+				ImGui::DockBuilderSetNodeSize(dockId,
+					ImVec2(ImGui::GetIO().DisplaySize.x,
+						std::max(1.0f, vh - menuH - kEditorStatusH)));
+				ImGuiID center = dockId;
+				ImGuiID left = ImGui::DockBuilderSplitNode(center,
+					ImGuiDir_Left, 0.24f, nullptr, &center);
+				ImGuiID right = ImGui::DockBuilderSplitNode(center,
+					ImGuiDir_Right, 0.28f, nullptr, &center);
+				ImGuiID leftUpper = ImGui::DockBuilderSplitNode(left,
+					ImGuiDir_Up, 0.54f, nullptr, &left);
+				ImGui::DockBuilderDockWindow("Viewport", center);
+				ImGui::DockBuilderDockWindow("Outliner", leftUpper);
+				ImGui::DockBuilderDockWindow("Assets", left);
+				ImGui::DockBuilderDockWindow("Console", left);
+				ImGui::DockBuilderDockWindow("Overrides", left);
+				ImGui::DockBuilderDockWindow("Inspector", right);
+				ImGui::DockBuilderDockWindow("Render", right);
+				ImGui::DockBuilderDockWindow("Material", right);
+				ImGui::DockBuilderFinish(dockId);
+				m_dockResetRequested = false;
 			}
-			ImGui::End();
-			ImGui::SetNextWindowPos(ImVec2(0, menuH + outH), ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(m_outlinerW, colH - outH),
-				ImGuiCond_Always);
-			if (ImGui::Begin("Assets", nullptr,
-				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-				ImGuiWindowFlags_NoResize)) {
-				if (ImGui::BeginTabBar("##leftTabs")) {
-					if (ImGui::BeginTabItem("Assets")) {
-						m_leftTab = 0;
-						DrawAssetsPanel();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Console")) {
-						m_leftTab = 1;
-						DrawConsolePanel();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Overrides")) {
-						m_leftTab = 2;
-						DrawOverridesPanel();
-						ImGui::EndTabItem();
-					}
-					ImGui::EndTabBar();
+			// Submitting KeepAliveOnly while panels are hidden preserves
+			// dock assignments, even if the user toggles fullscreen with I.
+			ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f),
+				m_uiMode ? ImGuiDockNodeFlags_PassthruCentralNode
+					: ImGuiDockNodeFlags_KeepAliveOnly);
+		}
+		ImGui::End();
+		ImGui::PopStyleVar();
+
+		m_dockViewportHovered = false;
+		if (m_uiMode) {
+			// A transparent, dockable viewport client: render directly into
+			// its previous-frame rect under ImGui's tab chrome. No offscreen
+			// scene texture, no extra GPU copy and no scene serialization.
+			m_dockViewportVisible = false;
+			ImGui::SetNextWindowSize(ImVec2(880, 620), ImGuiCond_FirstUseEver);
+			if (ImGui::Begin("Viewport", nullptr,
+					ImGuiWindowFlags_NoBackground |
+					ImGuiWindowFlags_NoScrollbar |
+					ImGuiWindowFlags_NoScrollWithMouse |
+					ImGuiWindowFlags_NoCollapse)) {
+				const ImVec2 pos = ImGui::GetCursorScreenPos();
+				const ImVec2 avail = ImGui::GetContentRegionAvail();
+				if (avail.x >= 8.0f && avail.y >= 8.0f) {
+					m_dockViewportRect = ViewportRect{ pos.x, pos.y,
+						avail.x, avail.y };
+					m_dockViewportVisible = true;
+					const ImVec2 mouse = ImGui::GetMousePos();
+					m_dockViewportHovered = ImGui::IsWindowHovered()
+						&& mouse.x >= pos.x && mouse.x < pos.x + avail.x
+						&& mouse.y >= pos.y && mouse.y < pos.y + avail.y;
+					ImGui::Dummy(avail); // reserve canvas space, no ImGui pixels
 				}
 			}
 			ImGui::End();
 
-			ImGui::SetNextWindowPos(
-				ImVec2(float(ImGui::GetIO().DisplaySize.x) - m_inspectorW, menuH),
-				ImGuiCond_Always);
-		ImGui::SetNextWindowSize(ImVec2(m_inspectorW, vh - menuH - BottomDockH() - kEditorStatusH),
-			ImGuiCond_Always);
-			if (ImGui::Begin("Inspector", nullptr,
-				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-				ImGuiWindowFlags_NoResize)) {
-				if (ImGui::BeginTabBar("##rightTabs")) {
-					if (ImGui::BeginTabItem("Inspector")) {
-						m_rightTab = 0;
-						DrawInspector();
-						ImGui::EndTabItem();
-					}
-					if (ImGui::BeginTabItem("Render")) {
-						m_rightTab = 2;
-						DrawRenderSettingsPanel();
-						ImGui::EndTabItem();
-					}
-					// (The UV tab is retired: the atlas/lightmap readouts
-					// live in the Inspector's material page, the view-mode
-					// toggles ride the F5/F8/F9/F10 shortcuts.)
-					if (ImGui::BeginTabItem("Material")) {
-						m_rightTab = 5;
-						DrawMaterialEditor();
-						ImGui::EndTabItem();
-					}
-					ImGui::EndTabBar();
-				}
-			}
+			// Previously nested tabs are now first-class dock windows:
+			// users can move EACH panel to a side, float it, or tab it
+			// with the viewport / another tool.
+			if (ImGui::Begin("Outliner"))
+				DrawOutliner();
 			ImGui::End();
-			DrawStatusBar();
-		} // m_uiMode (panel columns)
+			if (ImGui::Begin("Assets"))
+				DrawAssetsPanel();
+			ImGui::End();
+			if (ImGui::Begin("Console"))
+				DrawConsolePanel();
+			ImGui::End();
+			if (ImGui::Begin("Overrides"))
+				DrawOverridesPanel();
+			ImGui::End();
+			if (ImGui::Begin("Inspector"))
+				DrawInspector();
+			ImGui::End();
+			if (ImGui::Begin("Render"))
+				DrawRenderSettingsPanel();
+			ImGui::End();
+			if (ImGui::Begin("Material"))
+				DrawMaterialEditor();
+			ImGui::End();
+
+			DrawStatusBar(); // pinned editor chrome, never docked
+		} // m_uiMode
 
 		if (m_showComponentTable)
 			DrawComponentTable();
-		DrawPanelSplitters(); // resize handles between panels and viewport
 		DrawInsetTag();
 		DrawViewportChrome(); // borders, camera chips, box-select rect
 		// THE LIVE VIEW LIVES IN THE VIEW PANEL NOW (the center 4:3
@@ -716,6 +748,10 @@ namespace editor {
 			if (ImGui::MenuItem("Quad viewports (4 panels)", "V",
 				m_vpLayout == 1))
 				m_vpLayout = 1;
+			if (ImGui::MenuItem("Reset dock layout"))
+				m_dockResetRequested = true;
+			ImGui::SetItemTooltip("Restore the default Viewport, Outliner, "
+				"Assets, Console, Overrides, Inspector, Render and Material positions.");
 			ImGui::Separator();
 			ImGui::MenuItem("Ground grid", nullptr, &m_showGrid);
 			{
@@ -859,7 +895,7 @@ namespace editor {
 					ImGui::EndCombo();
 				}
 			}
-			if (ImGui::MenuItem("Panels visible", nullptr, m_uiMode))
+			if (ImGui::MenuItem("Workspace panels", "I", m_uiMode))
 				m_uiMode = !m_uiMode;
 			// UV editor window retired (see the DrawUvEditorWindow note).
 			//if (ImGui::MenuItem("UV editor window", nullptr, m_showUvEditor))
@@ -4152,7 +4188,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 					esNode);
 				if (ImGui::Button("Select ExportSettings node")) {
 					SetSelection(esNode);
-					m_rightTab = 0;
+					ImGui::SetWindowFocus("Inspector");
 				}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("Quality/GI knobs (meshopt, LODs,\n"
