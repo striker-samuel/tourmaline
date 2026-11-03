@@ -5580,17 +5580,27 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		}
 		m_dccPublishRunning = true;
 		const std::string output = asset.published;
+		const std::string document = asset.document;
+		const bool needsLink = asset.fromNative;
 		if (!m_fibers.Post("dcc-publish",
 				[asset, script = publisher.generic_string()]() {
 					std::string error;
 					if (!RunDccPublish(asset, script, error))
 						throw std::runtime_error(error);
 				},
-				[this, output](const FiberBackend::Completion& completion) {
+				[this, output, document, needsLink](
+						const FiberBackend::Completion& completion) {
 					m_dccPublishRunning = false;
-					if (completion.ok)
+					if (completion.ok) {
+						if (needsLink) {
+							std::string linkError;
+							if (!LinkDccSource(output, document, linkError))
+								Log("Publish glTF: could not persist DCC source "
+									"association: " + linkError);
+						}
 						Log("Publish glTF succeeded: '" + output
 							+ "' — awaiting content-server hot reload.");
+					}
 					else
 						Log("Publish glTF failed: " + completion.error
 							+ " — previous publication retained.");
