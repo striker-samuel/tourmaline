@@ -3153,6 +3153,23 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 	).release();
 	m_globalsStartTime = std::chrono::steady_clock::now();
 
+	// Preallocate the optional chart heap before constructing immutable
+	// per-flight descriptor sets. AllocateStaticVertexFmt will reuse it.
+	// This does NOT allocate chart windows for unlightmapped meshes.
+	if (!staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid()) {
+		const uint64_t bytes = mem::config::Runtime().staticLightmapHeap;
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+		if (bytes == 0 || bytes > props.limits.maxStorageBufferRange)
+			throw std::runtime_error(
+				"static lightmap heap exceeds maxStorageBufferRange "
+				"(TOURMALINE_MEM_STATIC_LIGHTMAP_MB)");
+		staticVertexFmtHeap.m_staticVertexLightmapBuffer =
+			CreateBuffer(bytes, BufferType_Storage, "static vertex lightmap").release();
+		if (!staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid())
+			throw std::runtime_error("failed to allocate static lightmap heap");
+	}
+
 	// ============================================================================
 	// Hardcoded Bindless Setup
 	// ============================================================================
@@ -3181,6 +3198,8 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// slot space as kBinding_Textures; UpdateDescriptors mirrors MSAA
 		// views here (Texture2DMS-typed shaders only reach those slots).
 		getDSLBinding(kBinding_MsaaTextures, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, smvk::limits::MaxTextures, stageFlags),
+		// Stable optional vertex stream: no per-indirect-draw buffer rebinding.
+		getDSLBinding(kBinding_VertexLightmap, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags),
 	};
 
 	const uint32_t flags =
@@ -3255,7 +3274,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    (3 * smvk::limits::MaxTextures + smvk::limits::MaxVolumeTextures) * smvk::limits::MaxFramesInFlight },
 		{ VK_DESCRIPTOR_TYPE_SAMPLER,          smvk::limits::MaxSamplers * smvk::limits::MaxFramesInFlight },
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,    smvk::limits::MaxTextures * smvk::limits::MaxFramesInFlight },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   2 * smvk::limits::MaxFramesInFlight * smvk::limits::MaxFramesInFlight }, // engine globals + texture-feedback slices, per set
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,   (2 * smvk::limits::MaxFramesInFlight + 1) * smvk::limits::MaxFramesInFlight }, // globals + feedback + lightmap
 	  }
 	};
 	// Device limits for update-after-bind sets: the plain per-set limits
@@ -3285,7 +3304,7 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		// device-wide budget the replicated table now has to fit.
 		const uint64_t needPoolTotal =
 			uint64_t(needSampled) + smvk::limits::MaxTextures + smvk::limits::MaxSamplers
-			+ 2 * smvk::limits::MaxFramesInFlight;
+			+ 2 * smvk::limits::MaxFramesInFlight + 1;
 		if (indexingProps.maxUpdateAfterBindDescriptorsInAllPools
 			< needPoolTotal * smvk::limits::MaxFramesInFlight) {
 			throw std::runtime_error(
@@ -3331,30 +3350,39 @@ smvk::VulkanResourceManager::VulkanResourceManager(
 		throw std::runtime_error("bindless descriptor set allocation failed");
 	}
 
-	// Bake each flight's kBinding_EngineGlobals to its own slice, ONCE.
-	// FlushEngineGlobals afterwards only uploads fresh values into the
-	// (retired) slice - the descriptor side never changes again, so
-	// sibling flights still executing keep reading their own slices.
+	// Bake immutable storage-buffer bindings ONCE for every flight. The
+	// global lightmap heap is never descriptor-rebound during rendering.
 	{
 		const Buffer* globalsBuffer = buffers_.get(m_engineGlobalsBuffer);
+		const Buffer* lightmapBuffer = buffers_.get(
+			staticVertexFmtHeap.m_staticVertexLightmapBuffer);
 		assert(globalsBuffer && globalsBuffer->vkBuffer != VK_NULL_HANDLE);
-		VkDescriptorBufferInfo bufferInfos[smvk::limits::MaxFramesInFlight];
-		VkWriteDescriptorSet writes[smvk::limits::MaxFramesInFlight];
+		assert(lightmapBuffer && lightmapBuffer->vkBuffer != VK_NULL_HANDLE);
+		VkDescriptorBufferInfo globalsInfos[smvk::limits::MaxFramesInFlight]{};
+		VkDescriptorBufferInfo lightmapInfo{
+			lightmapBuffer->vkBuffer, 0, VK_WHOLE_SIZE };
+		VkWriteDescriptorSet writes[2 * smvk::limits::MaxFramesInFlight]{};
 		for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f) {
-			bufferInfos[f].buffer = globalsBuffer->vkBuffer;
-			bufferInfos[f].offset = f * sizeof(smvk::EngineGlobals);
-			bufferInfos[f].range = sizeof(smvk::EngineGlobals);
-			VkWriteDescriptorSet& write = writes[f];
-			write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			write.pNext = nullptr;
-			write.dstSet = defaultDescriptorSets_[f];
-			write.dstBinding = smvk::Bindings::kBinding_EngineGlobals;
-			write.dstArrayElement = 0;
-			write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			write.descriptorCount = 1;
-			write.pBufferInfo = &bufferInfos[f];
+			globalsInfos[f].buffer = globalsBuffer->vkBuffer;
+			globalsInfos[f].offset = f * sizeof(smvk::EngineGlobals);
+			globalsInfos[f].range = sizeof(smvk::EngineGlobals);
+			VkWriteDescriptorSet& globals = writes[2 * f];
+			globals.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			globals.dstSet = defaultDescriptorSets_[f];
+			globals.dstBinding = smvk::Bindings::kBinding_EngineGlobals;
+			globals.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			globals.descriptorCount = 1;
+			globals.pBufferInfo = &globalsInfos[f];
+			VkWriteDescriptorSet& lightmap = writes[2 * f + 1];
+			lightmap.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			lightmap.dstSet = defaultDescriptorSets_[f];
+			lightmap.dstBinding = smvk::Bindings::kBinding_VertexLightmap;
+			lightmap.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			lightmap.descriptorCount = 1;
+			lightmap.pBufferInfo = &lightmapInfo;
 		}
-		vkUpdateDescriptorSets(device_, smvk::limits::MaxFramesInFlight, writes, 0, nullptr);
+		vkUpdateDescriptorSets(device_, 2 * smvk::limits::MaxFramesInFlight,
+			writes, 0, nullptr);
 	}
 
 	// ============================================================================

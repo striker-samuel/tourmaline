@@ -118,10 +118,14 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx)
 		ctx.CreateBuffer(vertexHeapBytes,
 		                 smvk::BufferType_Vertex, "static vertex shading")
 			.release();
-	staticVertexFmtHeap.m_staticVertexLightmapBuffer =
-		ctx.CreateBuffer(lightmapHeapBytes,
-		                 smvk::BufferType_Storage, "static vertex lightmap")
-			.release();
+	// Vulkan creates the lightmap heap before the global descriptor sets.
+	// Reuse that stable buffer; the D3D12 path still creates it here.
+	if (!staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid()) {
+		staticVertexFmtHeap.m_staticVertexLightmapBuffer =
+			ctx.CreateBuffer(lightmapHeapBytes,
+			                 smvk::BufferType_Storage, "static vertex lightmap")
+				.release();
+	}
 	staticVertexFmtHeap.m_staticIndexBuffer =
 		ctx.CreateBuffer(indexHeapBytes,
 		                 smvk::BufferType_Storage, "static index")
