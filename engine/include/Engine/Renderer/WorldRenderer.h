@@ -2913,7 +2913,7 @@ public:
 	// cascades concentrate where the slider says.
 	float m_cascadeMaxDistance = 0.0f;
 	// Multipliers over the engine's per-cascade auto bias (texel-scaled:
-	// normalBias ~1.25 texels world, depth bias ~0.5 texels / depthRange).
+	// normalBias = 1 world-space texel; depth bias = 0.5 texel / actual Z range).
 	float m_cascadeDepthBiasScale = 1.0f;
 	float m_cascadeNormalBiasScale = 1.0f;
 	// Effective split far plane (see m_cascadeMaxDistance).
