@@ -1521,8 +1521,12 @@ void TestConBridge() {
 	unbounded.spacing = 4.0f;
 	Check(!PlacementConstraint::VolumeFitsGpu(unbounded), "place.con.unbounded-refuses");
 	ConstraintVolume huge = ok;
-	huge.dimX = 65;
-	Check(!PlacementConstraint::VolumeFitsGpu(huge), "place.con.dim-refuses");
+	huge.dimX = 65; // flattened grid: X may exceed 64 when total fits
+	Check(PlacementConstraint::VolumeFitsGpu(huge),
+		"place.con.rectangular-axis-fits");
+	huge.dimX = 9999;
+	Check(!PlacementConstraint::VolumeFitsGpu(huge),
+		"place.con.oversized-axis-refuses");
 	ConstraintVolume cells = ok;
 	cells.dimX = 64; cells.dimY = 64; cells.dimZ = 64; // 262144 cells exactly
 	Check(PlacementConstraint::VolumeFitsGpu(cells), "place.con.max-exact-fits");
@@ -1561,6 +1565,25 @@ void TestConBridge() {
 	mlb.config.minSpacing = 4.0f;
 	ConstraintVolume mv = ConstraintVolumeForLayer(mlb);
 	Check(mv.dimX == 0 && mv.spacing == 4.0f, "place.con.layer-mesh-unbounded");
+	HeightfieldData hf;
+	hf.width = 4; hf.height = 4;
+	hf.origin = glm::vec3(0.0f);
+	hf.spacing = glm::vec2(1.0f);
+	hf.heights.assign(16, 10.0f);
+	HeightfieldDomain hd;
+	hd.field = &hf;
+	hd.extentMin = glm::vec2(0.0f);
+	hd.extentMax = glm::vec2(64.0f);
+	PlacementSystem::LayerBinding hlb;
+	hlb.domainKind = DomainKind::Heightfield;
+	hlb.heightfield = &hd;
+	hlb.config.minSpacing = 1.0f;
+	const ConstraintVolume hv = ConstraintVolumeForLayer(hlb);
+	Check(hv.dimX == 66 && hv.dimY == 3 && hv.dimZ == 66
+		&& hv.origin.y == 9.0f,
+		"place.con.heightfield-tight-vertical-band");
+	Check(PlacementConstraint::VolumeFitsGpu(hv),
+		"place.con.heightfield-one-meter-fits");
 }
 
 namespace {
@@ -2553,6 +2576,19 @@ void TestWorldResidency() {
 		sys.PublishActivation(acts[0].key, acts[0].generation);
 		// Old non-interest residents evicted (3 residents, budget 2).
 		Check(sys.residentTileCount() == 2, "place.res.evict-beyond-budget");
+		// A GPU slot eviction must also forget the CPU mirror: neither
+		// the stale activation nor a cache hit may resurrect that tenant.
+		const TileKey evicted = acts[0].key;
+		const uint64_t oldGeneration = acts[0].generation;
+		sys.ForgetTile(evicted);
+		Check(sys.findTile(evicted.programId, evicted.tile) == nullptr,
+			"place.res.gpu-eviction-removes-cpu-mirror");
+		Check(!sys.PublishActivation(evicted, oldGeneration),
+			"place.res.gpu-eviction-stale-token-refuses");
+		sys.UpdateResidency(101, 64.0f, far1, 1, deps2, 2, acts);
+		Check(acts.size() == 1 && acts[0].key == evicted
+			&& acts[0].generation != oldGeneration,
+			"place.res.gpu-eviction-reactivates");
 	}
 
 	// ---- the GPU slot map. ----
