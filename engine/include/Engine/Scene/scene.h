@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cmath>
 #include <string>
 #include <string_view>
@@ -784,21 +785,31 @@ void RebuildStaticCache(Scene& scene);
 
 int findNodeByName(const Scene& scene, const std::string& name);
 
-// Node name via the dense metadata (nameForNode is gone — see
-// NodeMetadata). Empty string = unnamed.
+// Every live node has a non-empty name. Names are unique among siblings,
+// but can be reused in other branches; DAG paths carry the ancestry.
+// addNode assigns an initial deterministic name, and import/authoring may
+// replace it. Like Maya, a collision is resolved by a numeric suffix.
+std::string UniqueSiblingNodeName(const Scene& scene, int node,
+	const std::string& requested);
 inline std::string getNodeName(const Scene& scene, int node)
 {
+	if (node < 0 || size_t(node) >= scene.hierarchy.size())
+		return {};
 	const uint32_t strID = GetNodeNameIndex(scene, NodeId(node));
-	return (strID != 0xFFFFFFFFu) ? scene.nodeNames[strID] : std::string();
+	return (strID < scene.nodeNames.size()) ? scene.nodeNames[strID]
+		: std::string();
 }
 
-// Names append to the pool (the old setNodeName contract: every call
-// mints a new pool entry; callers that re-name in place rely on the
-// append-only pool never shrinking).
+// Preserve the append-only name pool; a rejected empty rename leaves the
+// existing name intact instead of creating an unnamed node.
 inline void setNodeName(Scene& scene, int node, const std::string& name)
 {
+	assert(!name.empty() && "every scene node must have a name");
+	if (name.empty() || node < 0 || size_t(node) >= scene.hierarchy.size())
+		return;
+	const std::string unique = UniqueSiblingNodeName(scene, node, name);
 	uint32_t stringID = (uint32_t)scene.nodeNames.size();
-	scene.nodeNames.push_back(name);
+	scene.nodeNames.push_back(unique);
 	SetNodeNameIndex(scene, NodeId(node), stringID);
 }
 

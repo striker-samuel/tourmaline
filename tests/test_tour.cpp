@@ -659,12 +659,13 @@ void TestReferences() {
 	{
 		std::ofstream f(dir / "self.tour", std::ios::binary | std::ios::trunc);
 		f << "source -p \"self.geometry\";\n"
-			"reference -n 0 -source \"self.tour\";\n";
+			"reference -n 0 -source \"self.tour\" -name \"self\";\n";
 	}
 	smvk::tour::Doc selfDoc;
 	smvk::tour::ReferenceCmd sr{};
 	sr.parent = 0;
 	sr.source = "self.tour";
+	sr.name = "self";
 	selfDoc.references.push_back(sr);
 	auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
 	cluster2->SetOfflineMode(true);
@@ -1894,7 +1895,7 @@ void TestDelete() {
 void TestIdentityLayers() {
 	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
 	cluster->SetOfflineMode(true);
-	const int root = addNode(cluster->scene, -1, 0); // unnamed root
+	const int root = addNode(cluster->scene, -1, 0); // named root
 	const int grpA = addNode(cluster->scene, root, 1);
 	const int grpB = addNode(cluster->scene, root, 1);
 	const int meshA = addNode(cluster->scene, grpA, 2);
@@ -1907,10 +1908,11 @@ void TestIdentityLayers() {
 	setNodeName(cluster->scene, solo, "Solo");
 	Scene& scene = cluster->scene;
 	// MDagPath: full path (unnamed root contributes nothing)...
-	Check(smvk::tour::DagFullPath(scene, uint32_t(meshA)) == "grpA/Mesh",
+	Check(smvk::tour::DagFullPath(scene, uint32_t(meshA))
+		== getNodeName(scene, root) + "/grpA/Mesh",
 		"dag full path");
-	Check(smvk::tour::DagFullPath(scene, uint32_t(root)).empty(),
-		"dag full path root empty");
+	Check(smvk::tour::DagFullPath(scene, uint32_t(root))
+		== getNodeName(scene, root), "dag root has a name");
 	// ...and shortest unique path (bare name when it already is unique).
 	Check(smvk::tour::DagShortestUniquePath(scene, uint32_t(meshA))
 		== "grpA/Mesh", "dag shortest duplicated");
@@ -3446,8 +3448,8 @@ void TestTourFuzz() {
 		"reference -n 1 -source \"a.tour\" -name \"a\";",
 		"reference -root -n 0 -source \"a.geometry\";",
 		"source -n 1 -p \"b.geometry\" -name \"b\";",
-		"reference -n 2 -source \"b.tour\" -guid 0123456789abcdef0123456789abcdef;",
-		"source -n 1 -p \"c.geometry\" -t 1 2 3;",
+		"reference -n 2 -source \"b.tour\" -name \"other\" -guid 0123456789abcdef0123456789abcdef;",
+		"source -n 1 -p \"c.geometry\" -name \"otherMesh\" -t 1 2 3;",
 	};
 	static const char* kMutIds[] = {
 		"0", "1", "2", "3", "999999", "4294967295", "-1", "2147483647",
@@ -3621,7 +3623,7 @@ void TestTourFuzz() {
 		writeTour("mixed.tour", "source -p \"a.geometry\";\n"
 			"source -n 0 -p \"b.geometry\" -name \"bb\";\n"
 			"reference -n 0 -source \"cycle.tour\" -name \"cy\";\n");
-		writeTour("nosrc.tour", "reference -n 0 -source \"nest_c.tour\";\n");
+		writeTour("nosrc.tour", "reference -n 0 -source \"nest_c.tour\" -name \"nest\";\n");
 		writeTour("missing.tour", "source -p \"nope.geometry\";\n");
 
 		static const char* kNestSources[] = {
@@ -3779,7 +3781,7 @@ void TestTourFuzz() {
 				smvk::tour::Doc doc;
 				std::string err;
 				Check(smvk::tour::LoadTourFromString(
-						"reference -n 0 -source \"b.geometry\";\n",
+						"reference -n 0 -source \"b.geometry\" -name \"b\";\n",
 						doc, err),
 					"tour fuzz nesting legacy line parses");
 				Check(doc.references.size() == 1
@@ -4266,7 +4268,96 @@ void TestTextureAssetForceImport() {
 	fs::remove_all(dir, ec);
 }
 
+
+void TestRequiredNodeNames() {
+	using namespace smvk::tour;
+	std::string err;
+	Doc parsed;
+	for (const char* kind : { "transform", "pointLight", "spotLight",
+			"terrain", "givolume", "cubemap", "camera",
+			"audioSource", "audioRoom", "exportSettings",
+			"material", "file", "image" }) {
+		Check(!LoadTourFromString(std::string("createNode -at ")
+				+ kind + " -p 0;\n", parsed, err),
+			"all createNode kinds require -name");
+		Check(!LoadTourFromString(std::string("createNode -at ")
+				+ kind + " -p 0 -name \"\";\n", parsed, err),
+			"all createNode kinds reject empty names");
+	}
+	Check(!LoadTourFromString(
+			"createLight -p 0 -at point -t 0 0 0 10 5 0 0 0 0;\n",
+			parsed, err), "legacy create also requires name");
+	Check(!LoadTourFromString(
+			"rename -n 0 \"\";\n", parsed, err),
+			"rename cannot erase node name");
+	Check(!LoadTourFromString(
+			"reference -n 0 -source \"child.tour\";\n",
+			parsed, err), "scene reference requires name");
+	Check(!LoadTourFromString(
+			"source -n 0 -p \"mesh.geometry\";\n",
+			parsed, err), "sourced node requires name");
+	Check(!LoadTourFromString(
+			"fileNode -path \"tex.png\";\n",
+			parsed, err), "fileNode requires name");
+	Check(LoadTourFromString(
+			"reference -root -n 0 -source \"root.geometry\";\n",
+			parsed, err), "root reference has no placeholder node");
+	Doc invalid;
+	Command unnamed{};
+	unnamed.verb = Verb::CreateNode;
+	unnamed.nodeType = "image";
+	invalid.commands.push_back(unnamed);
+	Check(!SaveTour(TempTour(), invalid, err),
+		"writer refuses unnamed nodes before writing");
+	auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+	cluster->SetOfflineMode(true);
+	addNode(cluster->scene, -1, 0);
+	Check(!ApplyTourToCluster(*cluster, invalid, nullptr, &err),
+		"replay refuses programmatic unnamed nodes");
+}
+
+void TestMayaNodeNamePropagation() {
+	using namespace smvk::tour;
+	Scene scene;
+	const int root = addNode(scene, -1, 0);
+	const int a = addNode(scene, root, 1);
+	const int b = addNode(scene, root, 1);
+	const int leaf = addNode(scene, a, 2);
+	Check(!getNodeName(scene, root).empty()
+		&& !getNodeName(scene, a).empty()
+		&& !getNodeName(scene, leaf).empty(),
+		"every allocated node has a nonempty name");
+	setNodeName(scene, a, "Group");
+	setNodeName(scene, b, "Group");
+	Check(getNodeName(scene, b) == "Group1",
+		"sibling collision receives Maya-style suffix");
+	setNodeName(scene, leaf, "Mesh");
+	const std::string rootPath = getNodeName(scene, root);
+	Check(DagFullPath(scene, uint32_t(leaf))
+		== rootPath + "/Group/Mesh", "child full DAG path");
+	setNodeName(scene, a, "Renamed");
+	Check(DagFullPath(scene, uint32_t(leaf))
+		== rootPath + "/Renamed/Mesh", "ancestor rename propagates path");
+	TourReparent(scene, uint32_t(leaf), uint32_t(b));
+	Check(DagFullPath(scene, uint32_t(leaf))
+		== rootPath + "/Group1/Mesh", "reparent propagates path");
+	const int other = addNode(scene, a, 2);
+	setNodeName(scene, other, "Mesh");
+	TourReparent(scene, uint32_t(leaf), uint32_t(a));
+	Check(getNodeName(scene, leaf) == "Mesh1",
+		"reparent collision gives child unique sibling name");
+	Check(DagFullPath(scene, uint32_t(leaf))
+		== rootPath + "/Renamed/Mesh1", "reparent collision propagates path");
+	uint32_t resolved = UINT32_MAX;
+	Check(ResolveParentTarget(scene, "Renamed/Mesh1", resolved)
+		&& resolved == uint32_t(leaf), "path lookup uses moved name");
+	Check(!ResolveParentTarget(scene, "Renamed/Mesh", resolved)
+		|| resolved == uint32_t(other), "paths never target stale leaf");
+}
+
 int main() {
+	TestRequiredNodeNames();
+	TestMayaNodeNamePropagation();
 	TestRoundTrip();
 	TestFileNodes();
 	TestCamera();
