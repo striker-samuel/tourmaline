@@ -82,10 +82,11 @@ from a content-registry/pak read without filesystem access;\n`LoadFile` reads at
 retains decoded geometry; subsequent file changes do not implicitly reload
 the shape. The registry supports 4096 instances, with 65536 points and
 65536 line segments per frame through the shared overlay pass. Instances
-which cannot fit are skipped whole. GPU vertex data is currently
-re-uploaded each rendered frame through the existing per-flight buffer;
-persistent **GPU-side** residency and scene-file associations remain
-future optimizations.
+which cannot fit are skipped whole. GPU vertex data uses the existing per-flight buffer pool; the renderer
+caches each flight's last shape revision and skips GPU re-uploads when
+retained instances are unchanged. Transient debug-draw sources still
+upload every frame. Dedicated per-instance GPU allocations, point-cloud
+streaming and scene-file associations remain future optimizations.
 
 This is the first **persistent scene-renderer instance path**, but NOT
 a serialized `.tour` DAG node, cooked `.pak` asset, or a general purpose
