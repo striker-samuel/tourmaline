@@ -2059,7 +2059,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView, int vpIdx,
 						rayOrigin, rayDir, 5000.0f, tHit)) {
 					const glm::vec3 hit = rayOrigin + rayDir * tHit;
 					const glm::vec2 hitXZ(hit.x, hit.z);
-					const float spacing = std::max(m_paintRadius * 0.5f, 0.25f);
+					const float spacing = std::max(m_paintRadius * m_paintStrokeSpacing, 0.1f);
 					if (m_paintLast.x < -1e8f
 						|| glm::length(hitXZ - m_paintLast) >= spacing) {
 						PaintTerrainAt(rayOrigin, rayDir);
