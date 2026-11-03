@@ -77,7 +77,8 @@ if (curve)
 renderer.Shapes().Remove(cloud);
 ```
 
-`LoadFile` reads at most 8 MiB from the local authoring filesystem and
+`LoadText(text, transform, color, error)` accepts decoded `.shape` source
+from a content-registry/pak read without filesystem access;\n`LoadFile` reads at most 8 MiB from the local authoring filesystem and
 retains decoded geometry; subsequent file changes do not implicitly reload
 the shape. The registry supports 4096 instances, with 65536 points and
 65536 line segments per frame through the shared overlay pass. Instances
