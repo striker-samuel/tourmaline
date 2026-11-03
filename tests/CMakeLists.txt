@@ -1226,6 +1226,20 @@ if(Python3_FOUND)
             -s ${CMAKE_SOURCE_DIR}/tests
             -t ${CMAKE_SOURCE_DIR}/tests
             -p test_pak_browser.py)
+    # The agent CLI tooling suite (PR #60): tourinfo/pixel_compare/
+    # input_emulator, stdlib-only, GPU-free.
+    add_test(NAME tourinfo_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_tourinfo.py)
+    add_test(NAME pixel_compare_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_pixel_compare.py)
+    add_test(NAME input_emulator_tests
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
+            -p test_input_emulator.py)
 else()
     message(STATUS "Python3 not found: perf_harness_tests not registered")
 endif()
