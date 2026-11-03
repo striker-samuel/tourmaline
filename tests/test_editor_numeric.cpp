@@ -50,7 +50,8 @@ int main() {
         Check(Finite(roundTrip), "singular transform round-trip stays finite");
         const glm::mat4 restored = Compose(t, r, glm::vec3(1, 2, 3));
         Check(Finite(restored), "scale can be edited back from zero");
-        if (originalS == glm::vec3(0, 2, 3))
+        if (Near(originalS.x, 0) && Near(originalS.y, 2)
+            && Near(originalS.z, 3))
             Check(Near(roundTrip[1][0], before[1][0])
                 && Near(roundTrip[2][1], before[2][1]),
                 "single collapsed axis preserves surviving rotation");
