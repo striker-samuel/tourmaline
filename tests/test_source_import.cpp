@@ -205,8 +205,16 @@ void TestFormatGate() {
 			&& IsMeshSourceExtension(".obj"), "formats.gate.sources");
 	Check(IsMeshSourceExtension(".GLB") && IsMeshSourceExtension(".Obj"),
 		"formats.gate.case-insensitive");
+	#ifdef TOURMALINE_WITH_USD
+	Check(IsMeshSourceExtension(".usd") && IsMeshSourceExtension(".usda")
+		&& IsMeshSourceExtension(".usdc") && IsMeshSourceExtension(".USDZ"),
+		"formats.gate.usd");
+	Check(IsMeshSourceMetaSidecar("stage.usd.meta"), "formats.gate.usd.meta");
+#else
+	Check(!IsMeshSourceExtension(".usd"), "formats.gate.usd.disabled");
+#endif
 	Check(!IsMeshSourceExtension(".fbx") && !IsMeshSourceExtension(".dae")
-			&& !IsMeshSourceExtension(".usd") && !IsMeshSourceExtension("")
+			&& !IsMeshSourceExtension("")
 			&& !IsMeshSourceExtension(".geometry")
 			&& !IsMeshSourceExtension(".tour"),
 		"formats.gate.non-sources");
