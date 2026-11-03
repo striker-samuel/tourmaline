@@ -80,6 +80,7 @@
 #include "editor_commands.h"
 
 #include "editor_placement.h"
+#include "editor_state_machine.h"
 
 namespace editor {
 
@@ -2007,6 +2008,9 @@ private:
 	bool ExtractPlacementMesh(uint32_t worldNode,
 		smvk::placement::PlacementMeshData& out) const;
 	placement::EditorDoc m_placement;
+	// .statemachine authoring uses the shared graph canvas and keeps
+	// its own document/undo history, separate from the .tour scene.
+	StateMachineGraphEditor m_stateGraph;
 
 	// ---- source scene ----
 	// m_gltfPath is the scene identity (a local file path);

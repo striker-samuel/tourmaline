@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/Asset/state_machine.h>
+#include <Engine/Asset/state_machine_writer.h>
 #include <Engine/Asset/navmesh.h>
 #include <Engine/Graph/graph.h>
 #include <cmath>
@@ -42,6 +43,38 @@ param die trigger
     Check(!a.Tick(), "state.trigger consumed");
     Check(!a.SetBool("speed", true), "state.typed-param");
     Check(!a.SetFloat("speed", std::numeric_limits<double>::infinity()), "state.nan");
+    // The editor emits this canonical text before writing it. Reparse
+    // through the real runtime parser, including bool/int/trigger types.
+    graph.parameters.push_back({"on",tour::asset::StateParamKind::Bool,1});
+    graph.parameters.push_back({"lives",tour::asset::StateParamKind::Integer,3});
+    graph.transitions.push_back({0,2,2,tour::asset::StateCompare::Equal,1});
+    graph.transitions.push_back({1,0,3,tour::asset::StateCompare::LessEqual,2});
+    const std::string authored=tour::asset::SerializeStateMachineText(graph);
+    tour::asset::StateMachineAsset restored;
+    Check(!authored.empty()
+        && tour::asset::ParseStateMachineText(authored,restored,err)
+        && restored.states==graph.states
+        && restored.entry==graph.entry
+        && restored.transitions.size()==graph.transitions.size()
+        && restored.parameters.size()==graph.parameters.size()
+        && restored.parameters[2].kind==tour::asset::StateParamKind::Bool
+        && restored.parameters[3].kind==tour::asset::StateParamKind::Integer
+        && restored.transitions.back().threshold==2,
+        "state.editor-authoring-roundtrip");
+    if (restored.states.size()==3) {
+        tour::asset::StateMachineInstance instance(restored);
+        Check(instance.CurrentName()=="idle"
+            && instance.SetFloat("speed",0.8)
+            && instance.Tick().has_value()
+            && instance.CurrentName()=="move",
+            "state.editor-output-runtime");
+    }
+    // Layout is stored as comments, not a second asset format.
+    restored={};
+    Check(tour::asset::ParseStateMachineText(
+        authored + "# editor-pos idle 12.5 -8\n",restored,err)
+        && restored.states.size()==3,"state.editor-layout-comment");
+
     auto reject = [&](const char* source) {
         Check(!tour::asset::ParseStateMachineText(source, graph, err)
             && !err.empty() && graph.states.size() == 3, "state.bad");
