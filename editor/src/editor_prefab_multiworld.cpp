@@ -65,6 +65,126 @@ bool SameSource(const std::string& a, const std::string& b) {
 }
 } // namespace
 
+// Entering full editor mode is deliberately a frame-boundary operation:
+// the normal editor owns the entire scene toolset, viewport and history.
+// A temporary .tour holds the PARENT's unsaved state without modifying it.
+void EditorApp::RequestFullPrefabEdit(const std::string& path) {
+    if (path.empty() || !m_fullPrefabParentSnapshot.empty())
+        return;
+    if (m_prefab.dirty) {
+        m_prefab.error = "Save or Revert pane edits before full-scene editing.";
+        return;
+    }
+    m_fullPrefabRequestedPath = path;
+}
+
+void EditorApp::RequestReturnFromPrefab(bool save) {
+    if (m_fullPrefabParentSnapshot.empty())
+        return;
+    m_fullPrefabReturnRequested = true;
+    m_fullPrefabReturnSave = save;
+}
+
+void EditorApp::ProcessFullPrefabNavigation() {
+    if (m_fullPrefabReturnRequested) {
+        m_fullPrefabReturnRequested = false;
+        if (m_fullPrefabParentSnapshot.empty())
+            return;
+        if (m_fullPrefabReturnSave && !SaveTour()) {
+            Log("Prefab: save failed; staying in prefab edit mode.");
+            return;
+        }
+        const std::string snapshot = m_fullPrefabParentSnapshot;
+        const std::string target = m_fullPrefabParentTarget;
+        const bool dirty = m_fullPrefabParentDirty;
+        const std::vector<EditorCam> parentCameras = m_fullPrefabParentCameras;
+        const std::vector<uint32_t> parentSelection = m_fullPrefabParentSelection;
+        const uint32_t parentSelected = m_fullPrefabParentSelected;
+        if (!OpenTourFile(snapshot)) {
+            Log("Prefab: could not restore parent snapshot: " + snapshot);
+            return;
+        }
+        m_tourPath = target;
+        m_tourDirty = dirty;
+        if (!parentCameras.empty())
+            m_editorCams = parentCameras;
+        if (m_world && parentSelected < m_world->scene.hierarchy.size()) {
+            m_selected = parentSelected;
+            m_selection.clear();
+            for (uint32_t n : parentSelection)
+                if (n < m_world->scene.hierarchy.size())
+                    m_selection.push_back(n);
+        }
+        std::error_code ec;
+        fs::remove(snapshot, ec);
+        m_fullPrefabParentSnapshot.clear();
+        m_fullPrefabParentTarget.clear();
+        m_fullPrefabParentCameras.clear();
+        m_fullPrefabParentSelection.clear();
+        m_fullPrefabParentSelected = UINT32_MAX;
+        Log("Prefab: returned to parent scene (working edits restored).");
+        return;
+    }
+    if (m_fullPrefabRequestedPath.empty())
+        return;
+    const std::string prefabPath = std::move(m_fullPrefabRequestedPath);
+    m_fullPrefabRequestedPath.clear();
+    if (!m_world || TourTarget().empty() || m_cookRunning) {
+        Log("Prefab: open a scene and finish cooking before editing a prefab.");
+        return;
+    }
+    if (!InProjectDir(prefabPath)) {
+        Log("Prefab: source must be inside the current project.");
+        return;
+    }
+    if (SameSource(prefabPath, TourTarget())) {
+        Log("Prefab: this scene is already open in the main editor.");
+        return;
+    }
+    if (m_prefab.dirty) {
+        Log("Prefab: save/revert pending pane changes first.");
+        return;
+    }
+    std::error_code ec;
+    fs::path tmp = fs::temp_directory_path(ec);
+    if (ec) {
+        Log("Prefab: cannot obtain temporary directory.");
+        return;
+    }
+    tmp /= "tourmaline_parent_" + smvk::tour::GenerateUuid() + ".tour";
+    // Save a copy of the live document, preserving original path and
+    // dirty flag. Never call CloseScene (which writes the parent file).
+    const std::string previousTarget = TourTarget();
+    const bool previousDirty = m_tourDirty;
+    const std::vector<EditorCam> previousCameras = m_editorCams;
+    const std::vector<uint32_t> previousSelection = m_selection;
+    const uint32_t previousSelected = m_selected;
+    if (!SaveTourTo(tmp.generic_string(), false, true)) {
+        Log("Prefab: parent snapshot failed; nothing switched.");
+        return;
+    }
+    if (m_prefab.world)
+        ClosePrefabWorld();
+    m_showPrefabWindow = false;
+    m_prefabRequestedPath.clear();
+    if (!OpenTourFile(prefabPath)) {
+        Log("Prefab: failed to open source; recovering parent snapshot.");
+        (void)OpenTourFile(tmp.generic_string());
+        m_tourPath = previousTarget;
+        m_tourDirty = previousDirty;
+        fs::remove(tmp, ec);
+        return;
+    }
+    m_fullPrefabParentSnapshot = tmp.generic_string();
+    m_fullPrefabParentTarget = previousTarget;
+    m_fullPrefabParentDirty = previousDirty;
+    m_fullPrefabParentCameras = previousCameras;
+    m_fullPrefabParentSelection = previousSelection;
+    m_fullPrefabParentSelected = previousSelected;
+    Log("Prefab: full editor mode for '" + prefabPath
+        + "' (Save & Return or Discard & Return in File).");
+}
+
 void EditorApp::RequestOpenPrefab(const std::string& path) {
     if (path.empty()) return;
     m_showPrefabWindow=true;
@@ -377,6 +497,7 @@ bool EditorApp::PrefabSetTRS(uint32_t node,
     return true;
 }
 void EditorApp::UpdatePrefabBoundary(float dt) {
+    ProcessFullPrefabNavigation();
     m_prefabRendererRenderable=false;
     if (m_prefabRequestClose) {
         if (m_prefab.dirty) {
@@ -552,6 +673,14 @@ void EditorApp::DrawPrefabWindow() {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(.96f,.73f,.3f,1),"UNSAVED");
         }
+        if (ImGui::Button("Edit in main editor")) {
+            RequestFullPrefabEdit(m_prefab.path);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Use the full outliner, inspector, gizmos and scene tools. "
+                "The current scene is snapshotted; File > Save prefab & return "
+                "restores it without losing pending changes.");
+        ImGui::SameLine();
         if (ImGui::Button("Save prefab")) SavePrefab();
         ImGui::SameLine();
         if (ImGui::Button("Undo")) PrefabUndo();
@@ -590,15 +719,63 @@ void EditorApp::DrawPrefabWindow() {
         ImGui::BeginChild("##prefabInspector",ImVec2(-1,panelH),true);
         ImGui::TextDisabled("Prefab nodes (not parent instances)");
         const Scene& source=m_prefab.world->scene;
-        if (ImGui::BeginChild("##prefabTree",ImVec2(-1,170),true)) {
-            for (uint32_t i=1;i<source.hierarchy.size();++i) {
-                if (!IsLiveSlot(source,i)) continue;
+        static char filter[128] = {};
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##prefabFilter", "Filter prefab nodes...",
+            filter, sizeof(filter));
+        if (ImGui::BeginChild("##prefabTree",ImVec2(-1,190),true)) {
+            // Match the main Outliner's parent/child structure, expand
+            // arrows, selection highlighting and filtered flat results.
+            // Nodes keep their own prefab-local selection identity.
+            const auto drawNode = [&](auto&& self, uint32_t i) -> void {
+                if (i >= source.hierarchy.size() || !IsLiveSlot(source,i))
+                    return;
                 ImGui::PushID(int(i));
-                const std::string name=getNodeName(source,int(i));
-                if (ImGui::Selectable(name.c_str(),
-                    m_prefab.selected==i))
-                    m_prefab.selected=i;
+                std::string name = getNodeName(source,int(i));
+                if (name.empty()) name = "(node)";
+                bool hasChildren = false;
+                for (int child = source.hierarchy[i].firstChild;
+                    child >= 0; child = source.hierarchy[child].nextSibling) {
+                    if (IsLiveSlot(source,uint32_t(child))) {
+                        hasChildren = true;
+                        break;
+                    }
+                }
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                    ImGuiTreeNodeFlags_OpenOnDoubleClick;
+                if (m_prefab.selected == i)
+                    flags |= ImGuiTreeNodeFlags_Selected;
+                if (!hasChildren)
+                    flags |= ImGuiTreeNodeFlags_Leaf;
+                const bool opened = ImGui::TreeNodeEx(
+                    (name + "###prefabNode").c_str(),flags);
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+                    m_prefab.selected = i;
+                if (opened) {
+                    for (int child = source.hierarchy[i].firstChild;
+                        child >= 0; child = source.hierarchy[child].nextSibling)
+                        self(self,uint32_t(child));
+                    ImGui::TreePop();
+                }
                 ImGui::PopID();
+            };
+            if (filter[0]) {
+                for (uint32_t i=1;i<source.hierarchy.size();++i) {
+                    if (!IsLiveSlot(source,i)) continue;
+                    std::string name = getNodeName(source,int(i));
+                    if (name.find(filter)==std::string::npos) continue;
+                    ImGui::PushID(int(i));
+                    if (ImGui::Selectable(
+                        (name.empty() ? "(node)" : name).c_str(),
+                        m_prefab.selected==i))
+                        m_prefab.selected=i;
+                    ImGui::PopID();
+                }
+            }
+            else {
+                for (int child = source.hierarchy[0].firstChild;
+                    child >= 0; child = source.hierarchy[child].nextSibling)
+                    drawNode(drawNode,uint32_t(child));
             }
         }
         ImGui::EndChild();

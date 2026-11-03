@@ -614,7 +614,7 @@ uint32_t EditorApp::RefPlaceholderNode(size_t idx) const {
 }
 
 bool EditorApp::ReloadReferencesViaTemp() {
-	if (m_gltfPath.empty() || !m_world)
+	if (!m_world || (m_gltfPath.empty() && TourTarget().empty()))
 		return false;
 	// Snapshot the UI + save state a full rebind would otherwise reset:
 	// cameras (the loader refits viewport 0), selection (ids are
@@ -634,7 +634,8 @@ bool EditorApp::ReloadReferencesViaTemp() {
 	namespace fs = std::filesystem;
 	std::string stem = "scene";
 	try {
-		stem = fs::path(m_gltfPath).stem().string();
+		stem = fs::path(m_gltfPath.empty() ? TourTarget() : m_gltfPath)
+			.stem().string();
 		if (stem.empty())
 			stem = "scene";
 	}
@@ -653,7 +654,9 @@ bool EditorApp::ReloadReferencesViaTemp() {
 	m_tourPath = savedTourPath;
 	m_tourDirty = savedDirty;
 	Log("Reference reload: rebinding through a temp snapshot (the tour file is untouched).");
-	const bool ok = LoadGltfIntoWorld(m_gltfPath, tmp.generic_string());
+	const bool ok = m_gltfPath.empty()
+		? OpenTourFile(tmp.generic_string())
+		: LoadGltfIntoWorld(m_gltfPath, tmp.generic_string());
 	std::error_code rmEc;
 	fs::remove(tmp, rmEc);
 	// Restore the session frame around the fresh bind (ids are stable

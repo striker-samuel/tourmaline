@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "editor_asset_ops.h"
+#include "editor_asset_creation.h"
 #include "editor_asset_browser_nav.h"
 #include "editor_live_preview_policy.h"
 #include "editor_asset_inspect.h"
@@ -455,10 +456,57 @@ void TestLiveBakedPreviewRouting() {
 		"preview.zero-views");
 }
 
+void TestAssetCreationPaths() {
+    namespace fs = std::filesystem;
+    const fs::path root(Root());
+    const fs::path content = root / "content";
+    const fs::path scenes = content / "scenes";
+    const fs::path models = content / "models";
+    Check(editor::AssetCreateDirectory(root, {}) == scenes.parent_path(),
+        "create.default-content");
+    Check(editor::AssetCreateDirectory(root, {}, "scenes") == scenes,
+        "create.scene-default");
+    Check(editor::AssetCreateDirectory(root, scenes) == scenes,
+        "create.in-project");
+    Check(editor::AssetCreateDirectory(root, root) == content,
+        "create.project-root-fallback");
+    Check(editor::AssetCreateDirectory(root, root.parent_path()) == content,
+        "create.outside-fallback");
+    const fs::path first = editor::UniqueAssetCreatePath(
+        scenes, "New Scene", ".tour");
+    Check(first.filename() == "New Scene.tour", "create.first-scene");
+    Write(first.generic_string(), "test");
+    const fs::path second = editor::UniqueAssetCreatePath(
+        scenes, "New Scene", ".tour");
+    Check(second.filename() == "New Scene 2.tour",
+        "create.unique-scene");
+    Write((scenes / "New Scene 3.tour.meta").generic_string(), "x");
+    Write(second.generic_string(), "test");
+    const fs::path fourth = editor::UniqueAssetCreatePath(
+        scenes, "New Scene", ".tour");
+    Check(fourth.filename() == "New Scene 4.tour",
+        "create.avoid-orphan-meta");
+    const fs::path folder = editor::UniqueAssetCreatePath(
+        models, "New Folder");
+    Check(folder.filename() == "New Folder", "create.folder");
+    std::error_code ec;
+    const fs::path outside = fs::temp_directory_path(ec) /
+        "tourmaline_creation_outside";
+    fs::create_directories(outside, ec);
+    const fs::path link = content / "escape";
+    fs::create_directory_symlink(outside, link, ec);
+    if (!ec)
+        Check(editor::AssetCreateDirectory(root, link) == content,
+            "create.symlink-escape-fallback");
+    fs::remove(link, ec);
+    fs::remove_all(outside, ec);
+}
+
 } // namespace
 
 int main() {
 	TestDccSourcePublishing();
+	TestAssetCreationPaths();
 	TestStandaloneFile();
 	TestRefusals();
 	TestDerivedSet();

@@ -420,7 +420,11 @@ namespace editor {
 					NewProjectOrOpen(picked);
 			}
 			if (!m_projectRoot.empty()) {
-				if (ImGui::MenuItem("Import asset...", nullptr, false,
+                if (ImGui::MenuItem("New scene...", nullptr, false,
+                    !m_cookRunning))
+                    CreateSceneAsset((std::filesystem::path(m_projectRoot) /
+                        "content" / "scenes").generic_string());
+                if (ImGui::MenuItem("Import asset...", nullptr, false,
 					!m_cookRunning)) {
 					std::string picked;
 					if (NativeOpenFile(picked) && !picked.empty())
@@ -456,7 +460,15 @@ namespace editor {
 				if (NativeOpenFile(picked) && !picked.empty())
 					AddSceneReference(picked, {});
 			}
-			if (ImGui::MenuItem("Save tour...")) {
+			if (!m_fullPrefabParentSnapshot.empty()) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Save prefab && return to scene"))
+                    RequestReturnFromPrefab(true);
+                if (ImGui::MenuItem("Discard prefab edits && return"))
+                    RequestReturnFromPrefab(false);
+                ImGui::Separator();
+            }
+            if (ImGui::MenuItem("Save tour...")) {
 				std::snprintf(m_savePathBuf, sizeof(m_savePathBuf),
 					"%s", TourTarget().c_str());
 				m_showSaveDialog = true;
@@ -5818,6 +5830,12 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		// The toolbar and grid context menu share the same creation
 		// actions; new assets are placed in the browsed directory.
 		const auto drawNewAssetMenu = [&]() {
+            if (ImGui::MenuItem("New Scene (.tour)", nullptr, false,
+                    !m_cookRunning))
+                CreateSceneAsset(m_assetsDir);
+            if (ImGui::MenuItem("New Folder"))
+                CreateAssetFolder(m_assetsDir);
+            ImGui::Separator();
 			if (ImGui::MenuItem("New GI Volume Asset (.givolume)"))
 				CreateGivolumeAsset(m_assetsDir);
 			if (ImGui::MenuItem("New Texture (from image)...")) {
@@ -5868,7 +5886,17 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 						"finish.");
 			}
 			ImGui::EndDisabled();
-			SameLineIfFits("Reveal");
+			SameLineIfFits("Reimport");
+            const std::string selectedExt =
+                fs::path(m_assetsSel).extension().string();
+            const bool canReimport = selFile && !m_cookRunning
+                && (smvk::assets::IsMeshSourceFile(fs::path(m_assetsSel))
+                    || selectedExt == ".texture");
+            ImGui::BeginDisabled(!canReimport);
+            if (ImGui::SmallButton("Reimport##sel"))
+                ReimportAsset(m_assetsSel);
+            ImGui::EndDisabled();
+            SameLineIfFits("Reveal");
 			ImGui::BeginDisabled(m_assetsSel.empty());
 			if (ImGui::SmallButton("Reveal##sel"))
 				RevealInExplorer(m_assetsSel);
@@ -6688,7 +6716,18 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 				// DCC link resolves manifest-derived tiles to their source.
 				std::error_code dccEc;
 				if (fs::is_regular_file(e.abs.Str(), dccEc) && !dccEc) {
-					if (ImGui::MenuItem("Open in DCC"))
+					const std::string assetExt =
+                        fs::path(e.abs.Str()).extension().string();
+                    if (ImGui::MenuItem("Reimport", nullptr, false,
+                        !m_cookRunning &&
+                        (smvk::assets::IsMeshSourceFile(fs::path(e.abs.Str()))
+                            || assetExt == ".texture")))
+                        ReimportAsset(e.abs.Str());
+                    if (assetExt == ".tour" &&
+                        ImGui::MenuItem("Edit in main editor", nullptr, false,
+                            m_fullPrefabParentSnapshot.empty()))
+                        RequestFullPrefabEdit(e.abs.Str());
+                    if (ImGui::MenuItem("Open in DCC"))
 						OpenAssetInDcc(e.abs.Str());
 					if (ImGui::MenuItem("Link DCC source..."))
 						LinkAssetToDcc(e.abs.Str());

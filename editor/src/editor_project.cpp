@@ -20,6 +20,7 @@
 
 #include "editor_app.h"
 #include "editor_hot_reload_targets.h"
+#include "editor_asset_creation.h"
 
 
 #include <artifact_cache/artifact_kind.h>
@@ -293,6 +294,82 @@ bool EditorApp::NewProjectOrOpen(const std::string& dir) {
 		out << "version=" << kProjVersion << "\n";
 	}
 	return OpenProject(root);
+}
+
+std::string EditorApp::CreateSceneAsset(const std::string& dir) {
+    if (m_projectRoot.empty() || m_cookRunning) {
+        Log("New scene: open a project and finish any active cook first.");
+        return {};
+    }
+    namespace fs = std::filesystem;
+    const fs::path folder = AssetCreateDirectory(
+        m_projectRoot, dir, "scenes");
+    if (folder.empty()) {
+        Log("New scene: could not resolve a safe project directory.");
+        return {};
+    }
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    if (ec) {
+        Log("New scene: cannot create directory: " + ec.message());
+        return {};
+    }
+    const fs::path path = UniqueAssetCreatePath(
+        folder, "New Scene", ".tour");
+    if (path.empty()) {
+        Log("New scene: could not allocate a unique filename.");
+        return {};
+    }
+    smvk::tour::Doc empty;
+    std::string err;
+    if (!smvk::tour::SaveTour(path.generic_string(), empty, err)) {
+        Log("New scene: " + err);
+        return {};
+    }
+    AdoptProjectAsset(path.generic_string(), "scene");
+    m_assetsSel = path.generic_string();
+    m_assetsSelSet = {m_assetsSel};
+    Log("New scene: created '" + path.generic_string() + "'.");
+    if ((m_world && m_tourDirty) || m_prefab.dirty) {
+        Log("New scene: current scene/prefab has unsaved work; created and "
+            "selected the new scene without switching. Save the current "
+            "scene before opening it.");
+    }
+    else if (!OpenTourFile(path.generic_string())) {
+        Log("New scene: created on disk, but the editor could not open it.");
+    }
+    return path.generic_string();
+}
+
+std::string EditorApp::CreateAssetFolder(const std::string& dir) {
+    if (m_projectRoot.empty()) {
+        Log("New folder: open a project first.");
+        return {};
+    }
+    namespace fs = std::filesystem;
+    const fs::path folder = AssetCreateDirectory(
+        m_projectRoot, dir);
+    if (folder.empty()) {
+        Log("New folder: could not resolve a safe content directory.");
+        return {};
+    }
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    if (ec) {
+        Log("New folder: cannot create parent directory: " + ec.message());
+        return {};
+    }
+    const fs::path path = UniqueAssetCreatePath(folder, "New Folder");
+    if (path.empty() || !fs::create_directory(path, ec)) {
+        Log("New folder: " + (ec ? ec.message() : "cannot create directory"));
+        return {};
+    }
+    m_assetsDir = path.generic_string();
+    m_assetsSel.clear();
+    m_assetsSelSet.clear();
+    m_assetsAnchor.clear();
+    Log("New folder: created '" + path.generic_string() + "'.");
+    return path.generic_string();
 }
 
 void EditorApp::PrimeProjectCookDefaults() {
@@ -662,7 +739,7 @@ void EditorApp::HandleDroppedFiles(const std::vector<std::string>& files) {
 // the SINGLE place a .gltf turns into a session: opens (direct or
 // tour-recorded), drops and the project import all land here.
 std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
-	bool* rederived) {
+	bool* rederived, bool force) {
 	namespace fs = std::filesystem;
 	if (rederived)
 		*rederived = false;
@@ -682,7 +759,7 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
 	// opt-in only; the ShaderLodPolicy default keeps vertex-lit off.
 	if (const char* e = std::getenv("TOURMALINE_EDITOR_SHADERLODS"))
 		cfg.shaderLods = std::atoi(e) != 0;
-	if (!smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
+	if (!force && !smvk::assets::MeshArtifactStale(gltfPath, cfg)) {
 		Log("Import: artifact current — opening '" + geometry.generic_string()
 			+ "' (no re-import).");
 		return geometry.generic_string();
@@ -768,6 +845,66 @@ std::string EditorApp::ImportMeshArtifactFor(const std::string& gltfPath,
 			+ " derived artifact(s) in the artifact DB.");
 	}
 	return geometry.generic_string();
+}
+
+void EditorApp::ReimportAsset(const std::string& path) {
+    namespace fs = std::filesystem;
+    if (m_cookRunning) {
+        Log("Reimport: finish the current cook first.");
+        return;
+    }
+    if (m_projectRoot.empty() || !InProjectDir(path)) {
+        Log("Reimport: select a source in this project's content tree.");
+        return;
+    }
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) {
+        Log("Reimport: selected source is not a regular file.");
+        return;
+    }
+    std::string ext = fs::path(path).extension().string();
+    for (char& c : ext)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (smvk::assets::IsMeshSourceExtension(ext)) {
+        // Explicit Reimport bypasses the timestamp/config stale gate.
+        // The importer keeps the existing source/subasset GUID ledger.
+        const std::string artifact = ImportMeshArtifactFor(path, nullptr, true);
+        if (artifact.empty())
+            return;
+        Log("Reimport: rebuilt mesh assets for '" + path + "'.");
+        bool bound = m_world && !m_gltfPath.empty()
+            && IsPublishedMeshBound(path, m_gltfPath);
+        if (m_world && !bound)
+            for (const std::string& ref : m_refResolved)
+                if (IsPublishedMeshBound(path, ref)) {
+                    bound = true;
+                    break;
+                }
+        if (bound) {
+            if (ReloadReferencesViaTemp())
+                Log("Reimport: refreshed the live scene with unsaved edits preserved.");
+            else
+                Log("Reimport: rebuilt source; live reload failed. Reopen the scene.");
+        }
+        return;
+    }
+    if (ext == ".texture") {
+        smvk::assets::TextureAsset texture;
+        std::string err;
+        if (!smvk::assets::LoadTextureAsset(path, texture, err)) {
+            Log("Reimport: invalid texture asset: " + err);
+            return;
+        }
+        const fs::path source = fs::path(path).parent_path() / texture.source;
+        if (!fs::is_regular_file(source, ec)) {
+            Log("Reimport: missing texture source: " + source.generic_string());
+            return;
+        }
+        LiveRefreshTextureAsset(source.generic_string());
+        return;
+    }
+    Log("Reimport: only source models (.gltf/.glb/.obj) and .texture assets "
+        "support explicit reimport. Scenes use Open/Reload.");
 }
 
 bool EditorApp::ImportAsset(const std::string& srcPath) {

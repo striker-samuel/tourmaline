@@ -374,6 +374,9 @@ public:
 	bool OpenScene(const std::string& path);
 	// Open-dialog dispatch: .tour replays (OpenTourFile), else OpenScene.
 	bool OpenAnySceneFile(const std::string& path);
+	// Full-editor prefab mode uses the normal outliner and command stack.
+	void RequestFullPrefabEdit(const std::string& path);
+	void RequestReturnFromPrefab(bool save);
 	bool LoadSglm(const std::string& sglmPath); // manual lightmap atlas inspect
 	void SetOutPak(const std::string& p) { m_cook.outPak = p; }
 	// The REQUIRED --project pick (EditorLauncher's): set before Run,
@@ -2041,6 +2044,19 @@ private:
 	};
 	PrefabWorldSession m_prefab;
 	std::string m_prefabRequestedPath;
+	// Full-editor prefab mode snapshots the parent into a temporary .tour
+	// and restores its session target/dirty state on return.
+	std::string m_fullPrefabRequestedPath;
+	std::string m_fullPrefabParentSnapshot;
+	std::string m_fullPrefabParentTarget;
+	bool m_fullPrefabParentDirty = false;
+	std::vector<EditorCam> m_fullPrefabParentCameras;
+	std::vector<uint32_t> m_fullPrefabParentSelection;
+	uint32_t m_fullPrefabParentSelected = UINT32_MAX;
+	bool m_fullPrefabReturnRequested = false;
+	bool m_fullPrefabReturnSave = false;
+	bool m_fullPrefabDiscardConfirm = false;
+	void ProcessFullPrefabNavigation();
 	bool m_prefabRequestClose = false;
 	bool m_showPrefabWindow = false;
 	bool m_prefabDocked = true; // share the central stage with parent world
@@ -2137,7 +2153,10 @@ private:
 	// watcher's geometry re-open flow keys on it (no re-derive = no
 	// reload).
 	std::string ImportMeshArtifactFor(const std::string& gltfPath,
-		bool* rederived = nullptr);
+		bool* rederived = nullptr, bool force = false);
+	void ReimportAsset(const std::string& path);
+	std::string CreateSceneAsset(const std::string& dir);
+	std::string CreateAssetFolder(const std::string& dir);
 	// Asset browser (the LEFT column's "Assets" tab — moved from the
 	// bottom dock in the layout rework): a GRID directory
 	// explorer of the project folder (Unity Project window style):
