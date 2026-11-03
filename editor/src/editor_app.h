@@ -3066,7 +3066,10 @@ private:
 // Native Windows dialogs (editor_native_dialog.cpp): single entry
 // points for scenes (.gltf/.glb/.tour), outputs (.pak) and
 // project folders. False on cancel/failure.
-	bool NativeOpenFile(std::string& outPath, bool images = false);
+	// allFiles enables the generic DCC-document picker (Maya/Blender/etc).
+bool NativeOpenFile(std::string& outPath, bool images = false,
+	bool allFiles = false);
+bool NativeOpenExternalDocument(const std::string& file, std::string& err);
 	bool NativeSaveFile(std::string& outPath,
 		const std::string& suggestedName = {});
 	bool NativePickFolder(std::string& outPath);
