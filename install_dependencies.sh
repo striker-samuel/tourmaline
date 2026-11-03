@@ -242,8 +242,8 @@ install_archive optick optick tar \
     771582d71050630c76aecb1a759443eeb902cef3a16620b8167e5223cd892466 \
     '*' '' "$MAN/optick.exclude" "$MAN/optick.overlay" '' || fail optick
 install_archive imgui imgui tar \
-    'https://codeload.github.com/ocornut/imgui/tar.gz/1c544ee941' \
-    d56a25a7b0594e391b79e7d3cb47a46cb87387de20a8dd1b6dd28b3b7def4dc7 \
+    'https://codeload.github.com/ocornut/imgui/tar.gz/62275e877a691bd2e51d1ca86bdfed49fa5cb297' \
+    1ffd96bd103ce35a9cb0119c099eb63d07645276fb9aa1cd851c2e6ad8bbbbbd \
     '*' '' "$MAN/imgui.exclude" "$MAN/imgui.overlay" '' || fail imgui
 install_archive xatlas xatlas tar \
     'https://codeload.github.com/jpcy/xatlas/tar.gz/1f101e2983b0bb91f5cebff80306d0ee8710f11e' \

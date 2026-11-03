@@ -109,9 +109,12 @@ $Pins = @(
        url='https://codeload.github.com/bombomby/optick/tar.gz/362d3952d35982f2037e4a74df4706486d590cfe';
        sha256='771582d71050630c76aecb1a759443eeb902cef3a16620b8167e5223cd892466' }
     @{ name='imgui';      type='tar';  target='imgui';
-       # docking branch, "Version 1.92.3" sync commit
-       url='https://codeload.github.com/ocornut/imgui/tar.gz/1c544ee941';
-       sha256='d56a25a7b0594e391b79e7d3cb47a46cb87387de20a8dd1b6dd28b3b7def4dc7' }
+       # docking branch, v1.92.3-docking tag (the previous pin
+       # 1c544ee941 was the MAINLINE 1.92.3 sync commit - no
+       # IMGUI_HAS_DOCK, so ImGuiConfigFlags_DockingEnable and the
+       # DockBuilder API never compiled).
+       url='https://codeload.github.com/ocornut/imgui/tar.gz/62275e877a691bd2e51d1ca86bdfed49fa5cb297';
+       sha256='1ffd96bd103ce35a9cb0119c099eb63d07645276fb9aa1cd851c2e6ad8bbbbbd' }
     @{ name='xatlas';     type='tar';  target='xatlas';
        url='https://codeload.github.com/jpcy/xatlas/tar.gz/1f101e2983b0bb91f5cebff80306d0ee8710f11e';
        sha256='5c7c3dfff9e40e32c31f1ecc3e8f6af376545008a03dfdb1fddbf5491f1b4dcb' }
