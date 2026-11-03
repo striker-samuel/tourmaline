@@ -999,9 +999,16 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
 			f << " -guid " << r.guid;
 		if (!r.name.empty())
 			f << " -name " << Quote(r.name);
-		if (r.hasTranslate)
+		if (r.hasTranslate || (!sourceVerb && r.hasRotate)) {
 			f << " -t " << r.translate.x << " " << r.translate.y
 				<< " " << r.translate.z;
+			if (!sourceVerb && r.hasRotate)
+				f << " " << r.rotate.x << " " << r.rotate.y
+					<< " " << r.rotate.z;
+		}
+		if (!sourceVerb && r.hasScale)
+			f << " -s " << r.scale.x << " " << r.scale.y
+				<< " " << r.scale.z;
 		if (!r.enabled)
 			f << " -enabled off";
 		f << ";\n";
@@ -2157,6 +2164,14 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			r.root = fl.hasRoot;
 			if (fl.hasName)
 				r.name = fl.name;
+			if (!fl.t.empty() && fl.t.size() != 3 && fl.t.size() != 6) {
+				err = "tour:" + std::to_string(lineNo) + ": reference -t requires 3 or 6 numbers";
+				return false;
+			}
+			if (fl.hasS && fl.svec.size() != 3) {
+				err = "tour:" + std::to_string(lineNo) + ": reference -s requires 3 numbers";
+				return false;
+			}
 			if (fl.t.size() >= 3) {
 				double x = 0, y = 0, z = 0;
 				if (!ParseDouble(fl.t[0], x) || !ParseDouble(fl.t[1], y) ||
@@ -2166,6 +2181,26 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				}
 				r.translate = glm::vec3(float(x), float(y), float(z));
 				r.hasTranslate = true;
+				if (fl.t.size() == 6) {
+					double rx = 0, ry = 0, rz = 0;
+					if (!ParseDouble(fl.t[3], rx) || !ParseDouble(fl.t[4], ry)
+						|| !ParseDouble(fl.t[5], rz)) {
+						err = "tour:" + std::to_string(lineNo) + ": bad reference rotation";
+						return false;
+					}
+					r.rotate = glm::vec3(float(rx), float(ry), float(rz));
+					r.hasRotate = true;
+				}
+			}
+			if (fl.hasS) {
+				double sx = 0, sy = 0, sz = 0;
+				if (!ParseDouble(fl.svec[0], sx) || !ParseDouble(fl.svec[1], sy)
+					|| !ParseDouble(fl.svec[2], sz)) {
+					err = "tour:" + std::to_string(lineNo) + ": bad reference scale";
+					return false;
+				}
+				r.scale = glm::vec3(float(sx), float(sy), float(sz));
+				r.hasScale = true;
 			}
 			r.enabled = fl.hasEnabled ? fl.enabled : true;
 			doc.references.push_back(std::move(r));

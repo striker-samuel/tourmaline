@@ -64,6 +64,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <glm/mat4x4.hpp>
 #include <map>
 #include <memory>
 #include <optional>
@@ -167,6 +168,22 @@ public:
 	SceneHandle LoadSceneAdditive(tour::World& world,
 		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
 		uint64_t sceneId, std::string& err);
+	// A prefab is an ordinary cooked .tour SCENE, not a new asset kind.
+	// Each call creates a DISTINCT cluster/SceneHandle; the authored
+	// transforms and resource references are kept, and the frame is
+	// applied outside the source root transform. Remove with RemoveScene().
+	// No extra ECS/prefab registry; instance edits never touch the source.
+	SceneHandle InstantiatePrefab(tour::World& world,
+		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
+		uint64_t sceneId, const glm::mat4& frame, std::string& err);
+	// Absolute placement: always uses the ORIGINAL authored root frame,
+	// not the previous pose (avoids cumulative transformation drift).
+	// Rebuilds the world fold, main/update thread only.
+	bool SetPrefabTransform(SceneHandle prefab, tour::World& world,
+		const glm::mat4& frame, std::string& err);
+	[[nodiscard]] std::optional<glm::mat4> PrefabTransform(
+		SceneHandle prefab) const;
+
 	// Unloads the scene's cluster from `world` and releases its owned
 	// assets. releasedAssets (optional out) receives the asset ids
 	// whose last owner went away and that carry no explicit prefetch
@@ -229,6 +246,11 @@ private:
 		uint32_t sceneIndex = 0;
 		tour::Cluster* cluster = nullptr; // dead after RemoveScene
 		std::vector<uint64_t> ownedAssets;
+		tour::World* owner = nullptr;
+		bool prefab = false;
+		uint32_t prefabRoot = UINT32_MAX;
+		glm::mat4 prefabSourceRoot{1.0f};
+		glm::mat4 prefabFrame{1.0f};
 	};
 
 	[[nodiscard]] SceneInstance* Instance(SceneHandle scene);
@@ -238,7 +260,8 @@ private:
 
 	SceneHandle LoadInternal(tour::World& world,
 		smvk::ResourceManager* ctx, tour::TextureStreamer* streamer,
-		uint64_t sceneId, std::string& err);
+		uint64_t sceneId, std::string& err,
+		const glm::mat4* prefabFrame = nullptr);
 
 	ProjectRuntime& m_runtime;
 	smvk::OverlayVfs& m_vfs;

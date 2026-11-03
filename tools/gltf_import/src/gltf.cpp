@@ -33,6 +33,7 @@
 #include <string>
 #include <iostream>
 #include <filesystem>
+#include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 
 namespace {
@@ -3574,9 +3575,17 @@ size_t ApplySceneReferences(
 			if (!isRoot) {
 				ph = addNode(cluster.scene, parentNode, level);
 				setNodeName(cluster.scene, ph, "REF " + name);
-				if (r.hasTranslate) {
+				if (r.hasTranslate || r.hasRotate || r.hasScale) {
+					// Each occurrence gets its OWN placeholder frame. The
+					// referenced scene's local transforms remain unchanged.
 					glm::mat4 m(1.0f);
-					m[3] = glm::vec4(r.translate, 1.0f);
+					if (r.hasTranslate) m = glm::translate(m, r.translate);
+					if (r.hasRotate) {
+						m = glm::rotate(m, glm::radians(r.rotate.x), glm::vec3(1, 0, 0));
+						m = glm::rotate(m, glm::radians(r.rotate.y), glm::vec3(0, 1, 0));
+						m = glm::rotate(m, glm::radians(r.rotate.z), glm::vec3(0, 0, 1));
+					}
+					if (r.hasScale) m = glm::scale(m, r.scale);
 					cluster.scene.localTransform[size_t(ph)] = m;
 				}
 			}
