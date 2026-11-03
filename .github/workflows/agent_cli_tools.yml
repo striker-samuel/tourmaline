@@ -1,0 +1,57 @@
+# Fast, GPU-free agent CLI contract suite. Kept separate from the Vulkan
+# build/test workflows so Python tool failures are visible immediately.
+name: Agent CLI tools
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'tools/tourinfo.py'
+      - 'tools/tourdiff.py'
+      - 'tools/tourcapture.py'
+      - 'tools/pak_browser.py'
+      - 'tools/pixel_compare.py'
+      - 'tools/input_emulator.py'
+      - 'tests/test_tour*.py'
+      - 'tests/test_pak_browser.py'
+      - 'tests/test_pixel_compare.py'
+      - 'tests/test_input_emulator.py'
+      - '.github/workflows/agent_cli_tools.yml'
+  pull_request:
+    paths:
+      - 'tools/tourinfo.py'
+      - 'tools/tourdiff.py'
+      - 'tools/tourcapture.py'
+      - 'tools/pak_browser.py'
+      - 'tools/pixel_compare.py'
+      - 'tools/input_emulator.py'
+      - 'tests/test_tour*.py'
+      - 'tests/test_pak_browser.py'
+      - 'tests/test_pixel_compare.py'
+      - 'tests/test_input_emulator.py'
+      - '.github/workflows/agent_cli_tools.yml'
+  workflow_dispatch:
+
+jobs:
+  cli:
+    name: Python CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pixel decoder
+        run: python -m pip install Pillow
+      - name: Tourmaline package & capture CLI tests
+        run: python -m unittest discover -s tests -p "test_tour*.py" -v
+      - name: Existing package browser tests
+        run: python -m unittest discover -s tests -p "test_pak_browser.py" -v
+      - name: Existing pixel and input CLI tests
+        run: |
+          python -m unittest discover -s tests -p "test_pixel_compare.py" -v
+          python -m unittest discover -s tests -p "test_input_emulator.py" -v

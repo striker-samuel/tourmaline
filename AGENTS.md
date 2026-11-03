@@ -2,7 +2,7 @@
 
 ## Agent command-line tooling manual
 
-**Start with [docs/agent_cli_tools.md](docs/agent_cli_tools.md)** for headless package inspection (`tools/tourinfo.py`), Unix pipe / JSONL / glob / regex workflows, decoded-pixel screenshot comparisons (`tools/pixel_compare.py`), golden-capture regression gates, benchmark comparison, and HZB diagnostics. This manual is the canonical discoverable entry point for agent-facing CLI commands. Prefer it to invoking a GUI for artifact inspection; keep existing content IDs and SMP8 compatibility rules intact.
+**Start with [docs/agent_cli_tools.md](docs/agent_cli_tools.md)** for headless package inspection (`tools/tourinfo.py`), stable-ID release comparisons (`tools/tourdiff.py`), repeatable fresh-frame renderer capture (`tools/tourcapture.py`), Unix pipe / JSONL / glob / regex workflows, and decoded-pixel screenshot comparisons (`tools/pixel_compare.py`), golden-capture regression gates, benchmark comparison, and HZB diagnostics. This manual is the canonical discoverable entry point for agent-facing CLI commands. Prefer it to invoking a GUI for artifact inspection; keep existing content IDs and SMP8 compatibility rules intact.
 
 
 ## Benchmarking and performance regression workflow
