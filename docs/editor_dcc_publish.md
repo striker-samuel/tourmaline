@@ -38,6 +38,10 @@ In the **Assets** panel header or an asset tile's context menu:
   published change; it does not watch or import `.ma` as geometry.
 - **Unlink DCC source** deletes the authoring-link sidecar only.
 
+A native DCC tile never overwrites an existing, unrelated glTF just
+because it has the same stem; an existing output must already be linked
+to that native file or be explicitly linked from the glTF tile.
+
 **First publication:** place `hero.ma` (or `hero.blend`) under the
 project's content tree, select it and choose **Publish glTF**. The
 runner creates `hero.gltf` beside the native file and records the
