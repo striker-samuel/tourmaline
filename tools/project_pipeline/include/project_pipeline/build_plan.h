@@ -112,6 +112,7 @@ struct BuildPlan {
 	std::string entryPak;   // the pak owning the entry scene
 	bool bakeGi = false;
 	bool bakeCubemaps = false;
+	bool bakeSdf = false;
 	// TOPOLOGICAL order: dependencies first, so mounting/packing in
 	// plan order is always correct. Authored order is the deterministic
 	// tiebreak (RES-03: same inputs -> same order, every time).
@@ -123,6 +124,7 @@ struct BuildPlan {
 		return projectName == o.projectName
 			&& entryScene == o.entryScene && entryPak == o.entryPak
 			&& bakeGi == o.bakeGi && bakeCubemaps == o.bakeCubemaps
+			&& bakeSdf == o.bakeSdf
 			&& paks == o.paks;
 	}
 };

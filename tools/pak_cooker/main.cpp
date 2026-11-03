@@ -111,6 +111,8 @@
 #include <artifact_cache/store_adapter.h>
 #include <Engine/Vfs/vfs.h>
 #include <meshoptimizer.h>
+#include <Engine/Asset/sdf.h>
+#include <Engine/Asset/sdf.h>
 
 namespace paktool {
 
@@ -2924,6 +2926,41 @@ int Run(const PakArgs& c) {
 		std::string ext = vfsPath.substr(vfsPath.rfind('.'));
 		for (char& ch : ext)
 			ch = char(std::tolower(static_cast<unsigned char>(ch)));
+		if (ext == ".sdf") {
+			// A first-class binary SDF blob, not an image texture.
+			// Validate before publishing; runtime reads verbatim by VFS path.
+			tour::asset::SdfAsset sdf;
+			std::string reason;
+			if (!tour::asset::ParseSdfAsset(*bytes, sdf, reason)) {
+				tool::err() << "Content-set SDF invalid: " << reason
+					<< " (" << vfsPath << ")" << std::endl;
+				return 1;
+			}
+			if (!writer.AddBlob(smvk::PakAssetKind::Sdf, vfsPath,
+					std::move(*bytes))) {
+				tool::err() << "Content-set SDF AddBlob failed: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
+			continue;
+		}
+		if (ext == ".sdf") {
+			// Versioned mesh-local SDF sidecar; validate before publish.
+			tour::asset::SdfAsset sdf;
+			std::string reason;
+			if (!tour::asset::ParseSdfAsset(*bytes, sdf, reason)) {
+				tool::err() << "Content-set SDF invalid: " << reason
+					<< " (" << vfsPath << ")" << std::endl;
+				return 1;
+			}
+			if (!writer.AddBlob(smvk::PakAssetKind::Sdf, vfsPath,
+					std::move(*bytes))) {
+				tool::err() << "Content-set SDF AddBlob failed: "
+					<< vfsPath << std::endl;
+				return 1;
+			}
+			continue;
+		}
 		if (ext == ".wav") {
 			// A SOUND asset: raw .wav bytes as a Sound-kind blob (the
 			// second VFS-addressable kind - PakBackend serves it by

@@ -217,6 +217,7 @@ enum class PakAssetKind : uint32_t {
 	SpriteSet = 17,
 	StateMachine = 18, // immutable authored gameplay transition graph
 	NavMesh = 19,      // immutable precomputed navigation triangles
+	Sdf = 20,          // versioned mesh-local .geometry.sdf derived volume
 };
 
 enum PakEntryFlags : uint32_t {

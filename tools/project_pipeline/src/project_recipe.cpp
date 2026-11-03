@@ -377,12 +377,12 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 			const std::vector<std::string> toks = SplitTokens(rest);
 			if (toks.empty() || toks.size() > 2)
 				return Fail(lineNo, "bake",
-					"'bake <gi|cubemaps> [on|off]' takes one or two"
+					"'bake <gi|cubemaps|sdf> [on|off]' takes one or two"
 						" words", err);
-			if (toks[0] != "gi" && toks[0] != "cubemaps")
+			if (toks[0] != "gi" && toks[0] != "cubemaps" && toks[0] != "sdf")
 				return Fail(lineNo, "bake",
 					"unknown bake target '" + toks[0] + "' (only gi and"
-						" cubemaps exist)", err);
+						" cubemaps and sdf exist)", err);
 			bool on = true;
 			if (toks.size() == 2) {
 				if (toks[1] != "on" && toks[1] != "off")
@@ -396,8 +396,10 @@ bool ParseText(const std::string& text, ProjectRecipe& out,
 					"duplicate bake line for '" + toks[0] + "'", err);
 			if (toks[0] == "gi")
 				out.bakeGi = on;
-			else
+			else if (toks[0] == "cubemaps")
 				out.bakeCubemaps = on;
+			else
+				out.bakeSdf = on;
 		}
 		else if (directive == "output") {
 			if (!inPak)
