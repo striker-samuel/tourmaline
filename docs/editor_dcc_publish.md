@@ -56,7 +56,8 @@ switching an existing OBJ asset's identity to glTF is not implicit.
 
 Editor CMake stages `tools/dcc` beside the executable. The
 `publish_gltf.py` CLI accepts `--source`, `--output`, and
-`--runner maya|blender`. It starts the DCC-specific script with
+`--runner <plugin-name>` (built-ins: `maya` and `blender`).
+The plugin runner starts the DCC-specific script with
 argument arrays (no shell), checks its exit status, validates glTF
 version and embedded dependency URIs, and atomically replaces the
 published representation. No partial export overwrites the prior
@@ -83,6 +84,71 @@ python tools/dcc/publish_gltf.py \
   --output /project/content/models/hero.gltf \
   --runner maya
 ```
+
+## Python plugin jobs (Deadline-style local executor)
+
+The native Editor is a *client*: it still calls `Publish glTF` through its
+worker pool. The Python publisher now discovers trusted DCC export plugins
+by filename and builds an explicit **process job** rather than hard-coding
+Maya/Blender in the publish transaction.
+
+```text
+tools/dcc/
+  publish_gltf.py         # publish transaction: stage -> validate -> replace
+  dcc_plugins.py          # find/load trusted Python plugin files
+  dcc_runner.py           # ProcessJob + run_local (no shell)
+  plugins/
+    maya.py               # mayapy + Maya environment + script/args
+    blender.py            # blender --background + --python + script/args
+  maya_export_gltf.py     # the script that runs INSIDE mayapy
+  blender_export_gltf.py  # the script that runs INSIDE Blender
+```
+
+A plugin describes a `ProcessJob`: job name/software, executable,
+executable arguments, optional script switch, Python script, script
+arguments, environment overrides, working directory, timeout, priority,
+and tags. `run_local` starts the executable with the merged job
+environment and argument **array**, waits for completion, and propagates
+the exit code and a bounded output diagnostic. No shell string is built
+from paths or user input. The same job description can be consumed by a
+future Deadline/farm executor; **this PR does not submit farm jobs**.
+
+To add a DCC, place a studio-managed Python module
+`tools/dcc/plugins/<name>.py` exporting `Plugin(ExportPlugin)`. Set
+`name`, `software`, `extensions`, optional `priority`/`tags`,
+and implement `build_job(source, staged, tools_dir, *, executable,
+environment)`. No switch/case needs to be added to
+`publish_gltf.py`. Plugin files are **trusted pipeline code shipped
+with the editor**, not untrusted scripts loaded from asset folders.
+
+```sh
+# List installed Python export plugins (no DCC required)
+python tools/dcc/publish_gltf.py --list-runners
+
+# Override the DCC executable and the per-job environment:
+python tools/dcc/publish_gltf.py \
+  --runner maya \
+  --source "/project/content/models/hero.ma" \
+  --output "/project/content/models/hero.gltf" \
+  --dcc-exe "/opt/autodesk/maya/bin/mayapy" \
+  --env "MAYA_PLUG_IN_PATH=/studio/maya/plugins" \
+  --env "PYTHONPATH=/studio/pipeline/python" \
+  --timeout 1800
+```
+
+`--env NAME=VALUE` is repeatable and only modifies the **child**
+environment. The Maya plugin also disables Maya's customer feedback /
+error-reporting startup popups by default. Blender uses the same
+executor with `--background <scene> --python <script> -- <output>`.
+The publish stage remains atomic and is the only writer to the
+published `.gltf`: the content server sees a complete replacement and
+reimports as usual.
+
+**Regression tests:** `python -m unittest discover -s tools/dcc
+-p 'test_*.py' -v` covers plugin discovery, environment/argument passing,
+process failure/timeout, bad exports preserving the previous publication,
+and a real fake-Python-executable child, without Maya or Blender installed.
+The Tests GitHub workflow runs them on Linux and Windows.
 
 ## Shared registry boundary
 
