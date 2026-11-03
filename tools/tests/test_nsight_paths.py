@@ -70,9 +70,15 @@ class NsightTracePathTests(unittest.TestCase):
             self.assertIn("--limit-to-frames=10", cmd)
             self.assertIn("--num-frames=10", cmd)
             self.assertIn("--bench 12", " ".join(cmd))
-            self.assertTrue(any(x.startswith("--output-dir=" + str(captures)) for x in cmd))
+            # The harness RESOLVES the capture/scratch dirs before
+            # planning (resolve_paths/expanduser().resolve()) - on hosts
+            # whose temp root carries an 8.3 short name (GitHub Windows
+            # runners: C:\Users\RUNNER~1), the raw str() never matches.
+            # Compare the resolved forms, like the save-paths test above.
+            self.assertTrue(any(x.startswith("--output-dir=" + str(captures.resolve()))
+                                for x in cmd))
             self.assertTrue(any("TOURMALINE_SSR=1" in x for x in cmd))
-            self.assertTrue(any("TMP=" + str(scratch) in x for x in cmd))
+            self.assertTrue(any("TMP=" + str(scratch.resolve()) in x for x in cmd))
             self.assertFalse(captures.exists(), "dry-run must not write outputs")
             self.assertFalse(scratch.exists(), "dry-run must not write scratch files")
 

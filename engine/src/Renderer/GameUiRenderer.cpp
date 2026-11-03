@@ -195,7 +195,9 @@ void GameUiRenderer::Destroy(smvk::RenderGraph& rg) {
 		if (!f.logical.empty()) rg.FreeBuffer(f.logical);
 		f = {};
 	}
-	m_program = {};
+	// NOTE: the paren form (never `= {}` / `= ShaderProgram{}`) - GCC
+	// gimplify rejects brace-init of this aggregate (smvk.h ShaderProgram).
+	m_program = smvk::ShaderProgram();
 	m_vs = {};
 	m_fs = {};
 	m_sampler = UINT32_MAX;

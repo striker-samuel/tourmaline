@@ -275,7 +275,9 @@ void World2DRenderer::Destroy(smvk::RenderGraph& rg) {
 	m_pages.clear();
 	m_uploadedRevision = UINT64_MAX;
 	m_sampler = UINT32_MAX;
-	m_program = {};
+	// NOTE: the paren form (never `= {}` / `= ShaderProgram{}`) - GCC
+	// gimplify rejects brace-init of this aggregate (smvk.h ShaderProgram).
+	m_program = smvk::ShaderProgram();
 	m_vs = {};
 	m_fs = {};
 }
