@@ -25,6 +25,30 @@ Commands are run from the **repository root**. Paths below are examples.
   pipeline's `Project ids` and `Project explain` may reconcile asset
   registry state: they are **not** equivalent to these read-only queries.
 
+## Geometry visual search and image fabbing (Pillow, offline-first)
+
+Generate signed-axis material capture atlases with
+`tools/geometry_capture_atlas.py` (PR #89), then build a descriptor index
+and query it using `tools/asset_reverse_search.py`:
+
+```bash
+python tools/geometry_capture_atlas.py content/models --output out/geometry-atlas
+python tools/asset_reverse_search.py index --atlas out/geometry-atlas --output out/search.json
+python tools/asset_reverse_search.py search --index out/search.json --geometry content/models/rock/rock.geometry --size-ratio 1.5 --json
+python tools/asset_reverse_search.py describe --index out/search.json --asset rock.geometry
+python tools/asset_reverse_search.py fab --index out/search.json --asset rock.geometry --output out/fab/rock
+```
+
+Search accepts `--geometry`/`--mesh`, an indexed `--asset`, or a
+single-view `--image`. Its ranked output includes eight dimension scores
+(shape, color, normal, roughness, metallic, occlusion, emissive, size).
+`fab` generates a local JSON description/prompt plan by default; only
+`--execute` invokes a paid image API with `OPENAI_API_KEY`. See
+[geometry capture](geometry_capture_atlas.md) and
+[reverse search/fabbing](asset_reverse_search.md) for limitations and
+data contracts. These commands are asset analysis tools, not cooked
+package inspectors or 3D mesh generators.
+
 ## tourinfo: package explorer
 
 `tools/tourinfo.py` reuses the SMP8 and IDTR readers/decoders in
