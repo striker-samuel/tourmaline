@@ -105,7 +105,6 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 	//     those backends keeps ONE pak image per archive in memory
 	//     whatever constructs first (the façade's cache gets them via
 	//     AdoptPakBackend, so its reads serve through the same image).
-	std::cerr << "[pakdiag] ctor start\n";
 	std::map<std::string, std::shared_ptr<smvk::PakBackend>> mounted;
 	for (const smvk::VfsMount& m : contentVfs.Mounts()) {
 		if (auto pb = std::dynamic_pointer_cast<smvk::PakBackend>(
@@ -116,9 +115,7 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 	//     counts as opened — HasPak, no double read). The session's PAK
 	//     NAMES drive the loop (the manifest's [paks] or the discovered
 	//     providers — one authority, whatever lane built the session).
-	std::cerr << "[pakdiag] prior to PakNames\n";
 	const std::vector<std::string> pakNames = runtime.PakNames();
-	std::cerr << "[pakdiag] PakNames count " << pakNames.size() << "\n";
 	std::vector<std::string> missing;
 	for (const std::string& pak : pakNames) {
 		if (mounted.count(pak) || runtime.HasPak(pak))
@@ -127,16 +124,12 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 	}
 	std::map<std::string, std::shared_ptr<smvk::PakBackend>> opened;
 	std::vector<std::future<PakPreload>> futures;
-	for (const std::string& pak : missing) {
-		std::cerr << "[pakdiag] kick " << pak << "\n";
+	for (const std::string& pak : missing)
 		futures.push_back(KickPakPreload(runtime.PakPath(pak)));
-	}
 	for (size_t i = 0; i < futures.size(); ++i) {
 		// Join ALL futures regardless of failures (a std::future
 		// destructor blocks — never leave one undrained).
-		std::cerr << "[pakdiag] waiting future " << i << "\n";
 		PakPreload pre = futures[i].get();
-		std::cerr << "[pakdiag] got future " << i << "\n";
 		if (pre.backend)
 			opened.emplace(missing[i], std::move(pre.backend));
 		else
@@ -147,9 +140,7 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 	//     order the overlay's cross-pak resolution depends on). First
 	//     failure poisons the layer (Valid() == false) but keeps
 	//     mounting — the error names the pak.
-	std::cerr << "[pakdiag] adopt pass\n";
 	for (const std::string& pak : pakNames) {
-		std::cerr << "[pakdiag] adopting " << pak << "\n";
 		std::shared_ptr<smvk::PakBackend> backend;
 		if (auto it = mounted.find(pak); it != mounted.end())
 			backend = it->second;
@@ -164,12 +155,9 @@ ProjectScenes::ProjectScenes(ProjectRuntime& runtime,
 		}
 		if (!backend)
 			continue;
-		std::cerr << "[pakdiag] before AdoptPakBackend " << pak << "\n";
 		runtime.AdoptPakBackend(pak, backend);
-		std::cerr << "[pakdiag] after AdoptPakBackend " << pak << "\n";
 		if (!mounted.count(pak))
 			contentVfs.Mount(backend, 10, pak);
-		std::cerr << "[pakdiag] mounted " << pak << "\n";
 	}
 	if (m_openError.empty()) {
 		std::cerr << "[Scenes] project ready: " << pakNames.size()
