@@ -541,6 +541,71 @@ void EditorApp::DrawViewportChrome() {
 			}
 		}
 	}
+	// World-space brush footprint for terrain and scatter painting. Use
+	// the same scene raycast as stamping, not a fixed pixel-size cursor.
+	if (m_world && (m_paintTerrain || m_paintScatter)) {
+		const int index = m_activeVp;
+		const EditorViewport& brushVp = m_viewports[index];
+		const ViewportRect& rect = brushVp.rect;
+		const float x = float(m_input.getMouseX()) - rect.x;
+		const float y = float(m_input.getMouseY()) - rect.y;
+		if (x >= 0 && y >= 0 && x < rect.w && y < rect.h) {
+			const smvk::Extent2D ext{uint32_t(rect.w), uint32_t(rect.h)};
+			glm::vec3 origin;
+			const glm::vec3 dir = MouseRay(x, y, ext, brushVp.viewProj, origin);
+			glm::vec3 center{};
+			bool found = false;
+			const smvk::placement::HeightfieldData* field = nullptr;
+			float radius = m_paintTerrain ? m_paintRadius : m_scatterBrushRadius;
+			if (m_paintScatter) {
+				if (m_placement.preview.domainKind ==
+					smvk::placement::DomainKind::Heightfield &&
+					m_placement.preview.terrainField.width > 1)
+					field = &m_placement.preview.terrainField;
+			} else {
+				const uint32_t group = TerrainGroupOf(m_selected);
+				const auto it = m_terrainGroups.find(group);
+				if (it != m_terrainGroups.end())
+					field = &it->second.data.heights;
+			}
+			float t = 0;
+			if (field && smvk::placement::TerrainRaycast(
+					*field, origin, dir, 5000.0f, t)) {
+				center = origin + dir * t;
+				found = true;
+			} else if (m_paintScatter && std::fabs(dir.y) > 1e-5f) {
+				const float h = m_placement.preview.domainKind ==
+					smvk::placement::DomainKind::Grid
+					? m_placement.preview.grid.origin.y : 0.0f;
+				const float planeT = (h - origin.y) / dir.y;
+				if (planeT > 0) { center = origin + dir * planeT; found = true; }
+			}
+			if (found) {
+				dl->PushClipRect(ImVec2(rect.x, rect.y),
+					ImVec2(rect.x + rect.w, rect.y + rect.h), true);
+				constexpr int segments = 40;
+				for (int k = 0; k < segments; ++k) {
+					const float a = float(k) * (6.283185307f / segments);
+					const float b = float(k + 1) * (6.283185307f / segments);
+					glm::vec3 p = center + glm::vec3(std::cos(a) * radius,
+						0, std::sin(a) * radius);
+					glm::vec3 q = center + glm::vec3(std::cos(b) * radius,
+						0, std::sin(b) * radius);
+					if (field) {
+						p.y = field->sampleHeight(p.x, p.z);
+						q.y = field->sampleHeight(q.x, q.z);
+					}
+					glm::vec4 clipP, clipQ;
+					if (ClipSegmentToCamera(brushVp.viewProj, p, q, clipP, clipQ))
+						dl->AddLine(OverlayPx(clipP, rect),
+							OverlayPx(clipQ, rect),
+							m_paintScatter ? IM_COL32(96, 235, 168, 235)
+								: IM_COL32(255, 190, 80, 235), 2.0f);
+				}
+				dl->PopClipRect();
+			}
+		}
+	}
 	// Rubber-band box (window pixels), clipped to its viewport: a drag
 	// past the viewport edge used to paint the selection tint over the
 	// neighboring panels (same foreground-layer defect as the borders
