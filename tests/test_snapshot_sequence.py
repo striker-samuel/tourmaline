@@ -107,6 +107,40 @@ class SnapshotSequenceTests(unittest.TestCase):
             ]), 2)
         self.assertEqual(json.loads(output.getvalue())["first_difference"], "/rng/seed")
 
+    def test_compare_sequence_state_and_pixels(self):
+        with tempfile.TemporaryDirectory() as otherdir:
+            other = Path(otherdir)
+            for file in self.paths:
+                (other / file.name).write_bytes(file.read_bytes())
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(snapshots.main([
+                    "compare-sequence", str(self.root),
+                    "--candidate", str(other)
+                ]), 0)
+            rec, _ = snapshots.read_snapshot(other / "Frame_0002.png")
+            rec["pixels_fnv64"] = "0" * 16
+            write_png(other / "Frame_0002.png", rec)
+            # The later frame's chain must also reflect changed metadata.
+            rec3, _ = snapshots.read_snapshot(other / "Frame_0003.png")
+            rec3["previous_payload_fnv64"] = snapshots.fnv64(
+                snapshots.payload_of_chunk((other / "Frame_0002.png").read_bytes()))
+            write_png(other / "Frame_0003.png", rec3)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(snapshots.main([
+                    "compare-sequence", str(self.root),
+                    "--candidate", str(other)
+                ]), 2)
+            self.assertEqual(json.loads(output.getvalue())["type"], "pixels")
+
+    def test_inspect_exposes_provenance(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(snapshots.main([
+                "inspect", str(self.root), "--json"
+            ]), 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["provenance"]["code_identity"], "test")
+        self.assertEqual(report["rng_seed"], 42)
+
     def test_convert_input_tape(self):
         path = self.root / "replay.tinp"
         with contextlib.redirect_stdout(io.StringIO()):

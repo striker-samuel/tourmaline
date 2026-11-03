@@ -1408,3 +1408,10 @@ target_link_libraries(SnapshotSequenceTests PRIVATE engine)
 set_target_properties(SnapshotSequenceTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME snapshot_sequence_tests COMMAND SnapshotSequenceTests)
+
+# CPU-only cross-language PNG metadata reconstruction and corruption tests.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME snapshot_sequence_python_tests
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_snapshot_sequence.py")
+endif()

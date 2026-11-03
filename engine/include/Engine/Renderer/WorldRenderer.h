@@ -1782,6 +1782,11 @@ public:
 	// acquire); it stalls (device idle) and exports the PNG only on the
 	// pending frame.
 	void PollCaptureReadback();
+	// Optional logical state exported by a BYOC host or an allocator-aware
+	// provider. Never dumps/executes the game's code or raw pointer memory.
+	void SetSnapshotStateExtension(std::function<tour::snapshot::Json()> provider) {
+		m_snapshotStateExtension = std::move(provider);
+	}
 	// Game-code-agnostic snapshot export: a PNG for each simulation tick
 	// with keyframe/delta scene state, RNG stream state and input events.
 	bool ConfigureSnapshotSequence(const std::filesystem::path& directory,
@@ -3902,6 +3907,7 @@ public:
 	// Sequence data is sampled while the captured frame is being built,
 	// then paired with the GPU readback at the next frame boundary.
 	tour::snapshot::SequenceWriter m_snapshotSequence;
+	std::function<tour::snapshot::Json()> m_snapshotStateExtension;
 	tour::snapshot::Json m_snapshotProvenance;
 	std::string m_snapshotError;
 	bool m_sequenceCaptureArmed = false;

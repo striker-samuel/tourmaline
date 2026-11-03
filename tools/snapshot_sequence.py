@@ -357,16 +357,39 @@ def to_input_tape(frames, destination: Path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("inspect", "verify", "extract", "compare", "input-tape"))
+    parser.add_argument("action", choices=("inspect", "verify", "extract", "compare",
+                                           "compare-sequence", "input-tape"))
     parser.add_argument("folder", type=Path)
     parser.add_argument("--pixels", action="store_true", help="verify decoded RGBA pixels (needs Pillow)")
     parser.add_argument("--frame", type=int, help="one-based frame index")
-    parser.add_argument("--candidate", type=Path, help="agent-produced state JSON for comparison")
+    parser.add_argument("--candidate", type=Path,
+                        help="compare: agent-produced JSON state; compare-sequence: agent PNG folder")
     parser.add_argument("--output", type=Path, help="destination JSON or input tape")
     parser.add_argument("--json", action="store_true", help="machine-readable JSON result")
     args = parser.parse_args(argv)
     try:
         frames = reconstruct(args.folder, pixels=args.pixels)
+        if args.action == "compare-sequence":
+            if not args.candidate:
+                _fail("compare-sequence requires --candidate DIRECTORY")
+            candidate = reconstruct(args.candidate, pixels=args.pixels)
+            if len(candidate) != len(frames):
+                print(json.dumps({"status": "different", "type": "frame_count",
+                                  "baseline": len(frames), "candidate": len(candidate)}))
+                return 2
+            for index, ((reference_record, reference), (observed_record, observed)) in enumerate(
+                    zip(frames, candidate), 1):
+                if reference_record["tick"] != observed_record["tick"]:
+                    print(json.dumps({"status": "different", "type": "tick", "frame": index}))
+                    return 2
+                diff = _first_difference(reference, observed)
+                if diff is not None:
+                    print(json.dumps({"status": "different", "type": "state",
+                                      "frame": index, "first_difference": diff}))
+                    return 2
+                if reference_record["pixels_fnv64"] != observed_record["pixels_fnv64"]:
+                    print(json.dumps({"status": "different", "type": "pixels", "frame": index}))
+                    return 2
         if args.action == "extract":
             if not args.frame or not args.output or not 1 <= args.frame <= len(frames):
                 _fail("extract requires --frame N and --output FILE")
@@ -393,6 +416,12 @@ def main(argv=None):
                   "last_tick": frames[-1][0]["tick"],
                   "keyframes": [i + 1 for i, (r, _) in enumerate(frames) if r["kind"] == "key"],
                   "pixels_checked": args.pixels}
+        if args.action == "inspect":
+            report["provenance"] = frames[0][0]["provenance"]
+            report["state_scope"] = frames[0][1].get("scope", "unknown")
+            report["rng_seed"] = frames[0][1].get("rng", {}).get("seed")
+            report["first_state_fnv64"] = frames[0][0]["state_fnv64"]
+            report["last_state_fnv64"] = frames[-1][0]["state_fnv64"]
         print(json.dumps(report) if args.json else f"OK: {report}")
         return 0
     except (SnapshotError, OSError, OverflowError, MemoryError) as exc:

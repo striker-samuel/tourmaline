@@ -20422,6 +20422,13 @@ namespace engine {
 						const auto cameraFwd = m_cameraPositioner.getForward();
 						auto world = tour::snapshot::WorldState(*m_world, m_host.Random(),
 							cameraPos, cameraFwd);
+						if (m_snapshotStateExtension) {
+							auto extension = m_snapshotStateExtension();
+							if (!extension.is_object())
+								throw std::runtime_error(
+									"snapshot state extension must return a JSON object");
+							world["extensions"] = std::move(extension);
+						}
 						auto provenance = m_snapshotProvenance;
 						provenance["image_width"] = m_captureExtent.width;
 						provenance["image_height"] = m_captureExtent.height;

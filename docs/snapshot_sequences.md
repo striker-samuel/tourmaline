@@ -52,6 +52,8 @@ python tools/snapshot_sequence.py compare out/snapshots/atrium/sequence \
     --frame 61 --candidate out/agent2_state.json --json
 python tools/snapshot_sequence.py input-tape out/snapshots/atrium/sequence \
     --output out/replay.tinp
+python tools/snapshot_sequence.py compare-sequence out/snapshots/atrium/sequence \
+    --candidate out/agent2/sequence --pixels --json
 ```
 
 `--pixels` requires Pillow and checks SHA-style **FNV-1a 64-bit** hashes
@@ -93,8 +95,15 @@ temporal-history buffers, GPU particles, or allocator heap bytes. The
 `physics_authoring` block is authoring state, **not** a live Jolt solver
 snapshot. Full binary-perfect cross-GPU images are not guaranteed; compare
 decoded pixels on compatible machines or apply deliberate image tolerances.
-Allocator snapshots remain a future **opt-in** provider; never serialize
-raw pointer-bearing memory as a mandatory replay requirement.
+Allocator snapshots are optional through
+`WorldRenderer::SetSnapshotStateExtension(std::function<tour::snapshot::Json()>)`.
+A BYOC host can register a provider returning logically named state
+(including its own allocator-aware or relocatable data) as a JSON object; it
+then appears under `state.extensions` and participates in every keyframe,
+delta and state checksum. No provider is installed by default, and Tourmaline
+never guesses what raw pointers mean. Automatic snapshots of raw pool/arena
+memory remain future work; never serialize raw pointer-bearing memory as a
+mandatory replay requirement.
 
 A game can always export its independently tracked game state via its own
 format beside the PNGs, but the engine will not capture or run arbitrary
@@ -103,7 +112,7 @@ game code. The PNGs alone preserve the engine-observable state above.
 ## Test
 
 ```sh
-python -m unittest tests/test_snapshot_sequence.py -v
+python -m unittest discover -s tests -p test_snapshot_sequence.py -v
 cmake --build <build-dir> --target SnapshotSequenceTests
 ctest --test-dir <build-dir> -R '^snapshot_sequence_tests$' --output-on-failure
 ```

@@ -8,6 +8,7 @@
 // explicit providers/asset catalogs. Every float is its IEEE-754 bit pattern
 // so cross-language state hashing and NaN/negative-zero fidelity are stable.
 #include <Engine/App/world.h>
+#include <Engine/App/cluster.h>
 #include <Engine/Core/Random.h>
 #include <Engine/App/snapshot_sequence.h>
 
@@ -30,6 +31,9 @@ inline Json Mat4(const glm::mat4& value) {
 }
 inline uint32_t NodeFlag(const std::vector<uint8_t>& values, uint32_t node) {
     return node < values.size() ? values[node] : 0u;
+}
+inline std::string OwnedUri(smvk::StringViewT view) {
+    return view.valid() ? view.Str() : std::string{};
 }
 
 inline Json EnvState(const tour::scene::SceneEnv& env) {
@@ -61,6 +65,38 @@ inline Json EnvState(const tour::scene::SceneEnv& env) {
     };
 }
 
+inline Json RenderState(const tour::scene::SceneRenderSettings& r) {
+    return {
+        {"bloom_enabled", r.bloomEnabled},
+        {"bloom_intensity_f32", Bits(r.bloomIntensity)},
+        {"bloom_threshold_f32", Bits(r.bloomThreshold)},
+        {"tonemap_mode", r.tonemapMode},
+        {"auto_exposure", r.autoExposure},
+        {"manual_exposure_f32", Bits(r.manualExposure)},
+        {"exposure_ev_bias_f32", Bits(r.exposureEvBias)},
+        {"exposure_speed_to_dark_f32", Bits(r.exposureSpeedToDark)},
+        {"exposure_speed_to_bright_f32", Bits(r.exposureSpeedToBright)},
+        {"exposure_min_f32", Bits(r.exposureMin)},
+        {"exposure_max_f32", Bits(r.exposureMax)},
+        {"ao_mode", r.aoMode},
+        {"ao_radius_f32", Bits(r.aoRadius)},
+        {"ao_bias_f32", Bits(r.aoBias)},
+        {"ao_intensity_f32", Bits(r.aoIntensity)},
+        {"ao_max_distance_f32", Bits(r.aoMaxDistance)},
+        {"ao_ssao_samples", r.aoSsaoSamples},
+        {"ao_blur_sharpness_f32", Bits(r.aoBlurSharpness)},
+        {"ao_sao_samples", r.aoSaoSamples},
+        {"ao_sao_spiral_turns", r.aoSaoSpiralTurns},
+        {"ssr_enabled", r.ssrEnabled},
+        {"ssr_intensity_f32", Bits(r.ssrIntensity)},
+        {"motion_blur_enabled", r.motionBlurEnabled},
+        {"dof_enabled", r.dofEnabled},
+        {"aa_mode", r.aaMode},
+        {"cubemap_enabled", r.cubemapEnabled},
+        {"cubemap_intensity_f32", Bits(r.cubemapIntensity)}
+    };
+}
+
 // Captures associations in a canonical slot+generation namespace; a reused
 // slot is a different entity and therefore a remove+add in subsequent deltas.
 inline Json WorldState(const tour::World& world, const tour::RandomService& rng,
@@ -75,9 +111,18 @@ inline Json WorldState(const tour::World& world, const tour::RandomService& rng,
         {"scene", {
             {"default_camera_node", graph.defaultCameraNode},
             {"active_environment", graph.activeEnvironment},
+            {"node_slot_generations", graph.nodeGeneration},
+            {"node_free_list", graph.nodeFreeList},
+            {"node_names", graph.nodeNames},
+            {"material_names", graph.materialNames},
+            {"static_roots_serialized", graph.staticRootsSerialized},
             {"env_authored", graph.envAuthored},
             {"env_zones_enabled", graph.envZonesEnabled},
             {"environment", EnvState(graph.environment)},
+            {"default_environment", EnvState(graph.defaultEnvironment)},
+            {"has_render_settings", graph.hasRenderSettings},
+            {"render_settings", RenderState(graph.renderSettings)},
+            {"default_render_settings", RenderState(graph.defaultRenderSettings)},
             {"gi_world_source", graph.giWorldSource},
             {"gi_world_guid", graph.giWorldGuid},
             {"gi_world_input_hash", graph.giWorldInputHash},
@@ -208,6 +253,35 @@ inline Json WorldState(const tour::World& world, const tour::RandomService& rng,
             };
         state["nodes"][std::to_string(n) + ":" + std::to_string(generation)] = std::move(node);
     }
+
+
+    // World-local numeric mesh/material/light ids are meaningful only
+    // when paired with their URI catalog. Capture the authored reverse
+    // lookup wherever one exists, not transient GPU/pool handles.
+    // Empty URIs are deliberate: unnamed runtime/procedural resources
+    // require an opt-in game/provider identity to recreate.
+    state["asset_references"] = Json::object();
+    auto& assets = state["asset_references"];
+    assets["meshes"] = Json::array();
+    for (const auto& location : world.meshLocations)
+        assets["meshes"].push_back(location.cluster
+            ? OwnedUri(location.cluster->GetMeshUri(location.handle)) : "");
+    assets["materials"] = Json::array();
+    for (const auto& location : world.materialLocations)
+        assets["materials"].push_back(location.cluster
+            ? OwnedUri(location.cluster->GetMaterialUri(location.handle)) : "");
+    assets["lights"] = Json::array();
+    for (const auto& location : world.lightLocations)
+        assets["lights"].push_back(location.cluster
+            ? OwnedUri(location.cluster->GetLightUri(location.handle)) : "");
+    assets["cameras"] = Json::array();
+    for (const auto& location : world.cameraLocations)
+        assets["cameras"].push_back(location.cluster
+            ? OwnedUri(location.cluster->GetCameraUri(location.handle)) : "");
+    assets["decals"] = Json::array();
+    for (const auto& location : world.decalLocations)
+        assets["decals"].push_back(location.cluster
+            ? OwnedUri(location.cluster->GetDecalUri(location.handle)) : "");
 
     const auto checkpoint = rng.Capture();
     state["rng"]["algorithm"] = "pcg32-xsh-rr-v1";

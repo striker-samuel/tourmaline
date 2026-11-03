@@ -691,8 +691,11 @@ namespace app {
 				std::filesystem::create_directories(directory, ec);
 				if (ec)
 					throw std::runtime_error("cannot create snapshot directory: " + ec.message());
+				const auto captureTime = std::chrono::system_clock::now();
+				const auto captureUnixMs = std::chrono::duration_cast<
+					std::chrono::milliseconds>(captureTime.time_since_epoch()).count();
 				const auto identity = std::to_string(seed) + "-" +
-					std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+					std::to_string(captureTime.time_since_epoch().count());
 				const auto sequenceId = tour::snapshot::Fnv64(identity);
 				tour::snapshot::Json provenance = {
 					{"rng_seed", seed},
@@ -707,6 +710,10 @@ namespace app {
 					{"game_code_included", false},
 					{"catalog_fingerprint", session
 						? std::to_string(session->Registry().RecordFingerprint()) : "unavailable"},
+					{"catalog_manifest_version", session
+						? session->Manifest().version : 0u},
+					{"catalog_generation_timestamp_unix_ms", nullptr},
+					{"capture_unix_time_ms", captureUnixMs},
 					{"catalog_source_mtime", nullptr},
 					{"state_scope", "engine-scene-graph-v1"}
 				};
@@ -716,6 +723,21 @@ namespace app {
 					if (!ec)
 						provenance["catalog_source_mtime"] =
 							std::to_string(time.time_since_epoch().count());
+				}
+				// Record available source-file timestamps, including all
+				// discovered paks. File-clock ticks are for provenance,
+				// not a portable content fingerprint.
+				provenance["pak_sources"] = tour::snapshot::Json::array();
+				for (const auto& pakPath : launchPaks) {
+					std::error_code stampError;
+					const auto stamp = std::filesystem::last_write_time(
+						std::filesystem::path(pakPath), stampError);
+					provenance["pak_sources"].push_back({
+						{"path", pakPath},
+						{"modified_file_clock_ticks", stampError
+							? tour::snapshot::Json(nullptr) : tour::snapshot::Json(
+								std::to_string(stamp.time_since_epoch().count()))}
+					});
 				}
 				if (!renderer.ConfigureSnapshotSequence(directory,
 					cfg.cli.snapshotKeyframeInterval, cfg.cli.snapshotCount,
