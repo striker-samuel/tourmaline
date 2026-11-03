@@ -96,6 +96,7 @@ jobs:
           -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
           -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           -DKTX_ROOT=$HOME/ktx
+          -DTOURMALINE_RECOMP_DIAGNOSTIC=ON
           -DBUILD_TESTING=OFF .
 
       - name: Build (all non-test targets)
@@ -196,6 +197,7 @@ jobs:
           cmake -B out/build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DEMBREE_PREBUILT_DIR=C:/embree
           -DKTX_ROOT=C:/ktx
+          -DTOURMALINE_RECOMP_DIAGNOSTIC=ON
           -DBUILD_TESTING=OFF .
 
       - name: Build (all non-test targets)
