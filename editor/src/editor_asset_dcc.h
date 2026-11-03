@@ -14,6 +14,7 @@ struct DccAsset {
 	std::string published; // in-project file the content server watches
 	std::string document;  // DCC-authoring file (same as published if unlinked)
 	bool linked = false;
+	bool fromNative = false; // native .ma/.mb/.blend tile, first publish
 };
 
 // Resolve a clicked asset (including a manifest-derived .geometry,
