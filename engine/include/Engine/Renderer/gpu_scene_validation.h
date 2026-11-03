@@ -70,6 +70,23 @@ namespace tour::gpu_scene {
     return out;
 }
 
+// The future authoritative camera contract: projection and rotation are
+// evaluated in double, with no large absolute translation in the matrix.
+// The view origin is carried separately as dvec3 and split for the GPU.
+// This avoids large-world cancellation in a conventional double VP too.
+[[nodiscard]] inline RelativeFrustum AuthoritativeRelativeFrustum(
+    const glm::dmat4& projection,
+    const glm::dmat4& worldToViewRotation,
+    const glm::dvec3& cameraWorld) {
+    // Projection * rotation acts on (worldPosition - cameraWorld).
+    // Pass a zero origin to the plane extractor because the matrix is
+    // ALREADY relative. Only then attach the actual absolute origin.
+    RelativeFrustum view = DoubleRelativeFrustum(
+        projection * worldToViewRotation, glm::dvec3(0.0));
+    view.originWorld = cameraWorld;
+    return view;
+}
+
 [[nodiscard]] inline bool PackInstanceCullView(
     const RelativeFrustum& view, InstanceCullGpuView& out) {
     if (!view.Valid()) return false;
