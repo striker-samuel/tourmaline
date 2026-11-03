@@ -20,6 +20,7 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Rendergraph/terrain_pack.h>
+#include <Engine/Utils/shader_library.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
@@ -56,6 +57,8 @@ public:
         delete m_runtime;
         m_runtime = nullptr;
         m_draw.Destroy();
+        m_groundProgram = smvk::ShaderProgram();
+        m_groundVsModule = {};
         if (m_rendergraph) {
             if (!m_viewsLogical.empty())
                 m_rendergraph->FreeBuffer(m_viewsLogical);
@@ -90,6 +93,15 @@ private:
         m_runtime->viewBudget = m_swapchain->framesInFlight();
         if (!m_runtime->Create(*m_context, *m_rendergraph)) return false;
         if (!m_draw.Ensure(*m_context)) return false;
+        m_groundVsModule = m_context->CreateShaderModule(
+            smvk::shaders::Read("content/shaders/grass_ground.vert.hlsl.spv"),
+            "grassGroundVS");
+        if (m_groundVsModule.empty()) return false;
+        m_groundProgram.shaders[0] = smvk::Shader{
+            .module = m_groundVsModule, .entryPoint = "mainVS",
+            .stage = smvk::ShaderStage::Vertex };
+        m_groundProgram.shaders[1] = m_draw.program.shaders[1];
+        m_groundProgram.shaderCount = 2;
         if (!m_runtime->SeedIndirect(*m_context, 0, &m_seed, 1)) return false;
         const uint32_t count = kSlotCount * m_layer.config.candidatesPerTile;
         std::fprintf(stderr,
@@ -182,10 +194,12 @@ private:
         up.vertices[2].pos = glm::vec3(-0.02f, 0.95f, 0.0f);
         up.vertices[3].pos = glm::vec3( 0.02f, 0.95f, 0.0f);
         for (auto& v : up.vertices) {
-            v.color = glm::vec4(0.24f, 0.70f, 0.18f, 1.0f);
+            v.color = glm::vec4(0.14f, 0.36f, 0.08f, 1.0f);
             v.normal = glm::vec3(0.0f, 0.0f, 1.0f);
             v.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
         }
+        up.vertices[2].color = glm::vec4(0.35f, 0.78f, 0.16f, 1.0f);
+        up.vertices[3].color = glm::vec4(0.35f, 0.78f, 0.16f, 1.0f);
         up.indices = { 0, 1, 2, 2, 1, 3 };
         up.aabbMin = glm::vec3(-0.085f, 0.0f, -0.01f);
         up.aabbMax = glm::vec3(0.085f, 0.95f, 0.01f);
@@ -197,6 +211,43 @@ private:
         m_seed.indexCount = uint32_t(up.indices.size());
         m_seed.firstIndex = surface.firstIndex;
         m_seed.vertexOffset = surface.baseVertex;
+        // The compact 128x128 static terrain grid is only the surface
+        // under the grass; all 1M blade instances remain GPU-generated.
+        constexpr uint32_t grid = 128;
+        constexpr uint32_t row = grid + 1;
+        smvk::StaticMeshUpload ground{};
+        ground.vertices.resize(size_t(row) * row);
+        ground.indices.resize(size_t(grid) * grid * 6);
+        for (uint32_t z = 0; z <= grid; ++z)
+            for (uint32_t x = 0; x <= grid; ++x) {
+                const float wx = -128.0f + float(x) * 2.0f;
+                const float wz = -128.0f + float(z) * 2.0f;
+                auto& v = ground.vertices[size_t(z) * row + x];
+                v.pos = glm::vec3(wx,
+                    smvk::terrain::SampleHeight(m_hfield, wx, wz) - 0.015f, wz);
+                v.color = glm::vec4(0.12f, 0.27f, 0.085f, 1.0f);
+                v.texCoord = glm::vec2(float(x) / grid, float(z) / grid);
+                v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+                v.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
+        size_t k = 0;
+        for (uint32_t z = 0; z < grid; ++z)
+            for (uint32_t x = 0; x < grid; ++x) {
+                const uint32_t a = z * row + x;
+                ground.indices[k++] = a;
+                ground.indices[k++] = a + row;
+                ground.indices[k++] = a + 1;
+                ground.indices[k++] = a + 1;
+                ground.indices[k++] = a + row;
+                ground.indices[k++] = a + row + 1;
+            }
+        ground.aabbMin = glm::vec3(-128.0f, -12.0f, -128.0f);
+        ground.aabbMax = glm::vec3(128.0f, 12.0f, 128.0f);
+        const auto groundHandle = m_cluster->UploadStaticMesh(ground);
+        if (groundHandle.empty()) return false;
+        const auto* groundMesh = m_cluster->staticMeshes.get(groundHandle);
+        if (!groundMesh || groundMesh->geometry.surfaces.empty()) return false;
+        m_groundSurface = groundMesh->geometry.surfaces[0];
         m_context->FlushUploads();
         m_context->WaitForUploads();
         return true;
@@ -308,9 +359,20 @@ private:
             pass.AddBufferHint(vis->visibleL, vertexRead);
             pass.AddBufferHint(vis->indirectL, indirectRead);
         }
-        pass.SetRecordingFunc([this, mainView, frameIndex = fb.frameIndex](
+        pass.SetRecordingFunc([this, mainView, vp, frameIndex = fb.frameIndex](
                 smvk::CommandBuffer& cmd) {
             cmd.BindStaticVertexFmt();
+            const smvk::DepthSettings depth{
+                .depthFunc = smvk::CompareOp::LessEqual,
+                .writeEnable = true, .depthTestEnable = true };
+            cmd.BindRenderPipeline(m_groundProgram,
+                smvk::VertexLayoutId::Static, depth,
+                smvk::StencilSettings{}, smvk::BlendSettings::Opaque(),
+                smvk::MSAASettings::Count1(),
+                smvk::RasterSettings{ .cullMode = smvk::CullMode::None });
+            cmd.PushConstants(0, sizeof(vp), &vp, smvk::ShaderStage::All);
+            cmd.DrawIndexed(m_groundSurface.indexCount, 1,
+                m_groundSurface.firstIndex, m_groundSurface.baseVertex);
             cmd.BindRenderPipeline(m_draw.program,
                 smvk::VertexLayoutId::Static,
                 smvk::DepthSettings{
@@ -346,6 +408,9 @@ private:
     tour::placement::DependencyVersions m_deps{};
     tour::placement::PlacementWorldRuntime* m_runtime = nullptr;
     tour::placement::PlacementDrawPrograms m_draw{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_groundVsModule{};
+    smvk::ShaderProgram m_groundProgram{};
+    smvk::Surface m_groundSurface{};
     tour::placement::PlacementIndirectCmd m_seed{};
     smvk::RenderViewSet m_views{};
     smvk::LogicalBufferHandle m_viewsLogical{};
