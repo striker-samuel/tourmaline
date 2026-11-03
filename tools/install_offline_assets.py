@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -21,6 +22,27 @@ def default_home() -> Path:
     else:
         base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return base / "Tourmaline" / "OfflineAssets"
+
+
+def install_maya_script(scripts_dir: Path | None = None) -> Path:
+    """Copy Maya's native version picker to the user scripts folder.
+
+    This does not edit Maya preferences, write to the project share, or
+    require Maya to be running. A shelf button can be created from Maya later.
+    """
+    if scripts_dir is None:
+        base = os.environ.get("MAYA_APP_DIR")
+        if base:
+            scripts_dir = Path(base) / "scripts"
+        elif os.name == "nt":
+            scripts_dir = Path.home() / "Documents" / "maya" / "scripts"
+        else:
+            scripts_dir = Path.home() / "maya" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    source = ROOT / "tools" / "maya" / "tourmaline_asset_versions.py"
+    target = scripts_dir / source.name
+    shutil.copy2(source, target)
+    return target
 
 
 def default_config() -> Path:
@@ -112,8 +134,8 @@ def install_startup(config: Path) -> str:
         subprocess.run(["systemctl", "--user", "enable", "--now", unit.name],
                        check=True, capture_output=True)
     except (OSError, subprocess.CalledProcessError):
-        return (f"Created {unit}; systemd user service unavailable. "
-                f"Start manually: {' '.join(command(config))}")
+        run_detached(config)
+        return f"Started standalone (systemd user service unavailable); startup file: {unit}"
     return f"Installed and started {unit.name}"
 
 
@@ -131,6 +153,8 @@ def terminal_setup() -> None:
     else:
         run_detached(config)
         print("Started for this login session")
+    if input("Install Maya version picker script? [Y/n]: ").strip().lower() in ("", "y", "yes"):
+        print(f"Maya picker installed: {install_maya_script()}")
     print("Asset browser: http://127.0.0.1:8765/")
 
 
@@ -141,7 +165,7 @@ def gui_setup() -> None:
     base = default_home()
     app = tk.Tk()
     app.title("Tourmaline Offline Asset Service — Install")
-    app.geometry("720x330")
+    app.geometry("720x370")
     app.columnconfigure(1, weight=1)
     tk.Label(app, text="Unrestricted SMB share + protected version history",
              font=("Arial", 12, "bold")).grid(
@@ -164,10 +188,16 @@ def gui_setup() -> None:
     tk.Checkbutton(app, text="Run automatically at login", variable=auto).grid(
         row=4, column=0, columnspan=3, sticky="w", padx=16, pady=9)
 
+    maya = tk.BooleanVar(value=True)
+    tk.Checkbutton(app, text="Install Maya version picker script", variable=maya).grid(
+        row=5, column=0, columnspan=3, sticky="w", padx=16)
+
     def install():
         try:
             config = configure(*(fields[k].get().strip() for k in ("source", "archive", "cache")))
             info = install_startup(config) if auto.get() else "Started for this session"
+            if maya.get():
+                info += "\\nMaya picker: " + str(install_maya_script())
             if not auto.get():
                 run_detached(config)
         except Exception as exc:
@@ -178,7 +208,7 @@ def gui_setup() -> None:
         app.destroy()
 
     tk.Button(app, text="Install and Start", command=install, padx=20, pady=9
-              ).grid(row=5, column=0, columnspan=3, pady=15)
+              ).grid(row=6, column=0, columnspan=3, pady=15)
     app.mainloop()
 
 
@@ -191,7 +221,9 @@ def main(argv=None):
         return
     try:
         gui_setup()
-    except (ImportError, RuntimeError) as exc:
+    except Exception as exc:
+        # Tkinter can be importable on headless Linux but Tk() still fails
+        # with TclError when DISPLAY or an X server is unavailable.
         print(f"GUI unavailable ({exc}); using terminal setup")
         terminal_setup()
 
