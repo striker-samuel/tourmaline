@@ -578,6 +578,7 @@ endif()
 if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/import)
   add_subdirectory(tools/tourinit)
+  add_subdirectory(tools/reference_scene) # CPU Embree reference scene renderer for Material Lab
   # Demo content fetch: downloads the rolling 'demo-content' GitHub
   # release (the cooked sponza_10 project - .tapp manifest + its
   # content-addressed pak, SHA-256 verified, stale paks cleaned up)
