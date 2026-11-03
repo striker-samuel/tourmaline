@@ -1780,7 +1780,8 @@ void TestShaderAssets() {
 			smvk::project::EmitProjectHeader(catalog, stamp, {}, {});
 		Check(header.find("namespace shaders") != std::string::npos
 			&& header.find("struct ShaderKey") != std::string::npos
-			&& FindNameValue(header, "Shader", "= 4")
+// #64: catalog kind 0 is Nil, real kinds start at 1 - Shader is 5.
+			&& FindNameValue(header, "Shader", "= 5")
 			&& header.find("AssetKind::Shader") != std::string::npos
 			&& header.find("shaders::"
 				+ catalog.shaders[0].symbol) != std::string::npos,
@@ -1988,7 +1989,7 @@ void TestAudioGraphAssets() {
 			&& header.find("struct AudioGraphKey")
 				!= std::string::npos
 			&& header.find("struct AudioCueKey") != std::string::npos
-			&& FindNameValue(header, "AudioGraph", "= 6")
+			&& FindNameValue(header, "AudioGraph", "= 7")
 			&& header.find("AssetKind::AudioGraph")
 				!= std::string::npos
 			&& header.find("audiographs::"

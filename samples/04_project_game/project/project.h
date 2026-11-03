@@ -70,8 +70,8 @@ inline constexpr std::string_view Name = "GameProject";
 // paks, entry scene) - a texture repixel keeps it; the EOF
 // metadata at the bottom of this file carries the new file
 // hash instead.
-inline constexpr std::uint64_t Generation = 6ULL;
-inline constexpr std::uint64_t GeneratedAt = 1793669417ULL;
+inline constexpr std::uint64_t Generation = 8ULL;
+inline constexpr std::uint64_t GeneratedAt = 1793701499ULL;
 inline constexpr std::string_view ContentHash = "ad0cac7f766b29a0";
 
 namespace scenes {
@@ -318,12 +318,12 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
 // only what mtime+size say moved. An unknown version reads
 // as absent (a fresh scan, never a stale-cache reuse).
 //
-// generator generation=6 timestamp=1793669417
+// generator generation=8 timestamp=1793701499
 // catalog hash=ad0cac7f766b29a0
 //
 // [assets]
 // asset 0x1000 path="content/scenes/game.tour" pak="world"
-//   mtime_s=1793656613 size=757 hash=fnv1a64:b7b17d694f5a47b5
+//   mtime_s=1793701499 size=746 hash=fnv1a64:1a79beb6c48bb20b
 // asset 0x2000 path="content/models/game/shared/stone.png" pak="shared"
 //   mtime_s=1793447799 size=73 hash=fnv1a64:c602ab332a5e2cb5
 // asset 0x3001 path="content/models/game/game.geometry" pak="world"
@@ -334,10 +334,10 @@ struct project_pipeline::query::AssetTraits<project::NavMeshKey> {
 //   mtime_s=1793623253 size=1550 hash=fnv1a64:611f86fe650f7eff
 //
 // [paks]
-// pak file="shared-5e31c45b2d70dd60.pak"
-//   mtime_s=1793623378 size=59734 hash=fnv1a64:5e31c45b2d70dd60 state=verified
-// pak file="game-15780f668a15728d.pak"
-//   mtime_s=1793623378 size=10236 hash=fnv1a64:15780f668a15728d state=stale
+// pak file="shared-84eb45c16e76f776.pak"
+//   mtime_s=1793701499 size=59734 hash=fnv1a64:84eb45c16e76f776 state=verified
+// pak file="game-0be231047c5eb76d.pak"
+//   mtime_s=1793701499 size=10236 hash=fnv1a64:0be231047c5eb76d state=verified
 //
 // TOURMALINE-METADATA-END 1
 // =====================================================================
