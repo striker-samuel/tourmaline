@@ -1793,6 +1793,9 @@ public:
 	// WorldRenderer owns the OBB line pass so it uses the SAME camera,
 	// world transforms and color target as the shaded scene.
 	void SetSelectedNode(uint32_t node) { m_selectedNode = node; }
+	// The editor's Lighting preview opts into the existing, depth-tested
+	// cubemap mirror spheres without changing the App's default-off view.
+	void SetCubemapProbePreview(bool enabled) { m_cubemapShowBalls = enabled; }
 
 	void SetAmbientMode(AmbientMode m) { m_ambientMode = m; }
 	void SetAaMode(AaMode m) { m_aaMode = m; }

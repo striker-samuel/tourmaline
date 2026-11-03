@@ -815,7 +815,7 @@ namespace editor {
 			m_showGiVizWindow = !m_showGiVizWindow;
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Legend + controls: the probe overlay,\n"
-				"octahedra markers, rings, labels, density previews,\n"
+				"octahedra markers, labels, density previews,\n"
 				"sizes/distances, and the probe counts (in level /\n"
 				"in view / per octree level) — LIGHTING only.");
 		// (The WYSIWYG live view needs NO toggle anymore: it IS the Lit
@@ -3996,7 +3996,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
 		ImGui::Checkbox("Cubemap probe overlay", &m_showProbeOverlay);
 		ImGui::Checkbox("Octahedra markers (all probe sets)",
 			&m_showProbeOctahedra);
-		ImGui::Checkbox("Influence/fade rings", &m_probeRings);
+		ImGui::TextDisabled("Selected capture: 3D influence guide (viewport)");
 		ImGui::Checkbox("C<idx>/P<idx> labels", &m_probeLabels);
 		ImGui::SliderFloat("Marker size", &m_probeMarkerSize, 1.0f, 12.0f,
 			"%.1f px");

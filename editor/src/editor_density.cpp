@@ -53,7 +53,6 @@ constexpr float kDensityGridSpacing = 8.0f; // --cubemap-grid default (m)
 constexpr float kDensityGridHeight = 1.5f;  // --cubemap-height default (m)
 constexpr float kDensityEmbedDist = 0.3f;   // occupancy cull reach (m)
 constexpr uint32_t kDensityMaxProbes = 32;  // runtime scan budget
-constexpr uint32_t kDensityRingCap = 64;    // influence rings drawn (dots: all)
 
 void DensityCaption(ImDrawList* dl, float rectX, float rectY, float rowY,
 	const char* text, ImU32 col = IM_COL32_WHITE) {
@@ -244,7 +243,6 @@ void EditorApp::DrawBakeDensityOverlay() {
 			ImVec2(vp.rect.x + vp.rect.w, vp.rect.y + vp.rect.h), true);
 		// ---- cubemap density: predicted probes, depth-colored ----
 		{
-			uint32_t rings = 0;
 			uint32_t idx = 0;
 			for (const CubemapDensityProbe& pr : m_cubemapDensity) {
 				const uint32_t pi = idx++;
@@ -257,30 +255,8 @@ void EditorApp::DrawBakeDensityOverlay() {
 				DrawProbeOctahedron(dl, cpt, m_probeMarkerSize, col);
 			else
 				dl->AddCircleFilled(cpt, 2.5f, col);
-			if (pi >= kDensityRingCap)
-				continue;
-			// Influence ring: project a world-X offset of one
-			// radius (the App's trick); fade ring scales from it.
-			if (m_probeRings) {
-				ImVec2 ept;
-				if (project(pr.center + glm::vec3(
-						std::max(pr.influence, 0.01f), 0.0f, 0.0f), ept)) {
-					const float dx = ept.x - cpt.x, dy = ept.y - cpt.y;
-					const float rPx = std::sqrt(dx * dx + dy * dy);
-					if (rPx > 2.0f && rPx < 4000.0f) {
-						dl->AddCircle(cpt, rPx,
-							col & IM_COL32(255, 255, 255, 90), 48);
-						if (pr.fade > 0.0f) {
-							const float fr = rPx * (pr.influence + pr.fade)
-								/ std::max(pr.influence, 1e-3f);
-							if (fr < 4000.0f)
-								dl->AddCircle(cpt, fr,
-									col & IM_COL32(255, 255, 255, 45), 48);
-						}
-						++rings;
-					}
-				}
-			}
+			// Predicted locations have no cubemap yet. A projected circle
+			// cannot show their actual 3D influence radius or fade.
 			if (m_probeLabels) {
 				char plab[16];
 				std::snprintf(plab, sizeof(plab), "P%u", pi);
@@ -296,9 +272,8 @@ void EditorApp::DrawBakeDensityOverlay() {
 			else
 				std::snprintf(ccap, sizeof(ccap),
 					"CubeDensity: %zu predicted vs %zu baked manifest "
-					"(depth red->pink, rings first %u)",
-					m_cubemapDensity.size(), bakedRows.size(),
-					kDensityRingCap);
+					"(depth red->pink, placement markers)",
+					m_cubemapDensity.size(), bakedRows.size());
 			DensityCaption(dl, vp.rect.x, vp.rect.y, 52.0f, ccap);
 			if (!m_cubemapDensityInfo.empty())
 				DensityCaption(dl, vp.rect.x, vp.rect.y, 68.0f, m_cubemapDensityInfo.c_str(),
