@@ -459,7 +459,13 @@ void TestLiveBakedPreviewRouting() {
 void TestAssetCreationPaths() {
     namespace fs = std::filesystem;
     const fs::path root(Root());
-    const fs::path content = root / "content";
+    // AssetCreateDirectory canonicalizes its result (weakly_canonical).
+    // The expectations must be canonicalized too: on hosts whose temp
+    // path carries a short-name or symlink form (GitHub Windows runners
+    // resolve RUNNER~1 -> runneradmin), the raw and canonical spellings
+    // differ and every comparison would fail there while passing on
+    // canonical-path dev machines.
+    const fs::path content = fs::weakly_canonical(root / "content");
     const fs::path scenes = content / "scenes";
     const fs::path models = content / "models";
     Check(editor::AssetCreateDirectory(root, {}) == scenes.parent_path(),
