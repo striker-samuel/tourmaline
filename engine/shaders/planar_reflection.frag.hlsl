@@ -24,7 +24,7 @@ struct PSOut
 struct PlanarReflectionPush
 {
     GPU_PTR_READ(FrameUniforms) frameUniforms;  // 0
-    uint64_t reserved;                          // 8, align the matrix
+    uint2 reserved;                             // 8, align the matrix
     float4x4 reflectedViewProjection;           // 16
     float4 receiverPlane;                       // 80, normalized xyz
     uint hdrTextureIndex;                       // 96
