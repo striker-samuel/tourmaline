@@ -137,7 +137,7 @@ float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
 
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
     bool hdrHit = false;
-    float4 projected = mul(frame.viewProj, float4(hit.point, 1.0f));
+    float4 projected = mul(frame.viewProj, float4(hit.hitPoint, 1.0f));
     if (projected.w > 1e-5f)
     {
         float3 ndc = projected.xyz / projected.w;
@@ -159,7 +159,7 @@ float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
                 // visible at the projected SDF point. Reject occluding
                 // foreground geometry, disocclusions and the sky.
                 float tolerance = max(2.0f * hit.worldVoxel, 0.15f);
-                if (distance(surfaceWorld, hit.point) < tolerance)
+                if (distance(surfaceWorld, hit.hitPoint) < tolerance)
                 {
                     Texture2D hdrTex = textures[NonUniformResourceIndex(sp.hdrTextureIndex)];
                     SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];

@@ -51,7 +51,7 @@ struct StaticSdfSceneHeader
 struct StaticSdfRayHit
 {
     float t;
-    float3 point;
+    float3 hitPoint;
     float3 normal;
     float3 baseColor;
     float roughness;
@@ -208,7 +208,7 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 if (dot(n, worldDir) > 0.0f) n = -n;
                 best.valid = true;
                 best.t = t;
-                best.point = worldOrigin + t * worldDir;
+                best.hitPoint = worldOrigin + t * worldDir;
                 best.normal = n;
                 best.baseColor = max(v.surface.xyz, 0.0f);
                 best.roughness = v.surface.w;
