@@ -1045,6 +1045,17 @@ bool LoadModelFromSourceFile(tinygltf::Model& model, const char* filename,
 		return LoadObjFileAsModel(model, path, extraDeps ? *extraDeps : sink);
 	}
 
+	if (ext == ".usd" || ext == ".usda" || ext == ".usdc" || ext == ".usdz") {
+#ifdef TOURMALINE_WITH_USD
+		std::vector<std::string> sink;
+		return LoadUsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
+#else
+		std::cerr << "USD import disabled; configure -DTOURMALINE_WITH_USD=ON"
+			<< std::endl;
+		return false;
+#endif
+	}
+
 	tinygltf::TinyGLTF loader;
 	loader.SetImageLoader(&KeepImageBytesAsIs, nullptr);
 	std::string err;

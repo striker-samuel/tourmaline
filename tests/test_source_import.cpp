@@ -205,8 +205,16 @@ void TestFormatGate() {
 			&& IsMeshSourceExtension(".obj"), "formats.gate.sources");
 	Check(IsMeshSourceExtension(".GLB") && IsMeshSourceExtension(".Obj"),
 		"formats.gate.case-insensitive");
+	#ifdef TOURMALINE_WITH_USD
+	Check(IsMeshSourceExtension(".usd") && IsMeshSourceExtension(".usda")
+		&& IsMeshSourceExtension(".usdc") && IsMeshSourceExtension(".USDZ"),
+		"formats.gate.usd");
+	Check(IsMeshSourceMetaSidecar("stage.usd.meta"), "formats.gate.usd.meta");
+#else
+	Check(!IsMeshSourceExtension(".usd"), "formats.gate.usd.disabled");
+#endif
 	Check(!IsMeshSourceExtension(".fbx") && !IsMeshSourceExtension(".dae")
-			&& !IsMeshSourceExtension(".usd") && !IsMeshSourceExtension("")
+			&& !IsMeshSourceExtension("")
 			&& !IsMeshSourceExtension(".geometry")
 			&& !IsMeshSourceExtension(".tour"),
 		"formats.gate.non-sources");
@@ -543,6 +551,56 @@ void TestObjMissingMtl() {
 	fs::remove_all(dir, ec);
 }
 
+
+#ifdef TOURMALINE_WITH_USD
+void TestUsdNativeConversion() {
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "tourmaline_srcimport_usd";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const fs::path usd = dir / "triangle.usda";
+    WriteText(usd, R"USD(#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "Root" {
+    def Mesh "Triangle" {
+        uniform token subdivisionScheme = "none"
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+            interpolation = "vertex"
+        )
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (0, 1)] (
+            interpolation = "vertex"
+        )
+    }
+}
+)USD");
+    tinygltf::Model model;
+    std::vector<std::string> dependencies;
+    Check(LoadModelFromSourceFile(model, usd.string().c_str(), &dependencies),
+        "import.usd.composed-stage");
+    Check(model.meshes.size() == 1 && model.meshes[0].primitives.size() == 1,
+        "import.usd.mesh");
+    Check(!model.meshes.empty()
+        && model.meshes.front().primitives.front().attributes.count("TEXCOORD_0") == 1,
+        "import.usd.uv");
+    smvk::assets::AssetManifest manifest;
+    smvk::assets::DeriveConfig cfg{};
+    std::string err;
+    Check(smvk::assets::ImportMeshSource(usd, "", nullptr, cfg,
+        manifest, nullptr, &err), "import.usd.derive-native-artifacts");
+    Check(fs::exists(dir / "triangle.geometry"),
+        "import.usd.geometry-written");
+    Check(!smvk::assets::MeshArtifactStale(usd, cfg), "import.usd.not-stale");
+    fs::remove_all(dir, ec);
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -551,6 +609,9 @@ int main() {
 	TestGlbEmbeddedTexture();
 	TestObj();
 	TestObjMissingMtl();
+#ifdef TOURMALINE_WITH_USD
+	TestUsdNativeConversion();
+#endif
 	std::cout << "checks=" << g_checks
 		<< " failures=" << g_failures << std::endl;
 	return g_failures == 0 ? 0 : 1;
