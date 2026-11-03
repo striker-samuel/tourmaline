@@ -197,7 +197,7 @@ def gui_setup() -> None:
             config = configure(*(fields[k].get().strip() for k in ("source", "archive", "cache")))
             info = install_startup(config) if auto.get() else "Started for this session"
             if maya.get():
-                info += "\\nMaya picker: " + str(install_maya_script())
+                info += "\nMaya picker: " + str(install_maya_script())
             if not auto.get():
                 run_detached(config)
         except Exception as exc:
