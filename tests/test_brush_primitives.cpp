@@ -15,7 +15,13 @@ int main() {
 	const glm::vec3 center(1.0f, 2.0f, 3.0f);
 	const auto ball = Scatter(s, center, 1, 3);
 	check(!ball.empty(), "brush.ball.not-empty");
-	check(ball == Scatter(s, center, 1, 3), "brush.ball.deterministic");
+	const auto repeat = Scatter(s, center, 1, 3);
+	bool same = ball.size() == repeat.size();
+	for (size_t i = 0; same && i < ball.size(); ++i)
+		same = glm::all(glm::equal(ball[i].position, repeat[i].position))
+			&& glm::all(glm::equal(ball[i].normal, repeat[i].normal))
+			&& ball[i].weight == repeat[i].weight;
+	check(same, "brush.ball.deterministic");
 	for (const auto& x : ball) {
 		check(glm::length(x.position - center) <= s.radius + 0.0001f,
 			"brush.ball.inside");
