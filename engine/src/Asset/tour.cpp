@@ -112,6 +112,32 @@ bool ParseDouble(const std::string& s, double& out) {
 
 const char* FlagVal(bool b) { return b ? "1" : "0"; }
 
+// A name is a single DAG component (not a path). '/' is reserved for
+// MDagPath-like lookup, and whitespace-only names cannot identify nodes.
+static bool ValidNodeName(const std::string& name) {
+	return name.find_first_not_of(" \t\r\n") != std::string::npos
+		&& name.find('/') == std::string::npos;
+}
+
+static bool CreatesNode(Verb v) {
+	return v == Verb::CreateNode || v == Verb::CreateTransform
+		|| v == Verb::CreateLight || v == Verb::CreateTerrain
+		|| v == Verb::CreateGiVolume || v == Verb::CreateCubemap
+		|| v == Verb::CreateCamera || v == Verb::CreateAudioSource
+		|| v == Verb::CreateAudioRoom;
+}
+
+static bool ValidCommandNodeName(const Command& c) {
+	if (CreatesNode(c.verb) || c.verb == Verb::Rename)
+		return ValidNodeName(c.text);
+	if ((c.verb == Verb::SetLightAttr || c.verb == Verb::SetGiVolumeAttr
+			|| c.verb == Verb::SetCubemapAttr || c.verb == Verb::SetCamAttr
+			|| c.verb == Verb::SetAudioAttr || c.verb == Verb::SetAudioRoomAttr)
+			&& c.text == "name")
+		return ValidNodeName(c.name);
+	return true;
+}
+
 // One command line (Maya setAttr flavor: non-scalar values carry an
 // explicit -type — double3/float4/string/bool/enum; plain scalars stay
 // bare). `indent` prefixes the line: "" top-level, "\t" for -ref
@@ -976,6 +1002,26 @@ std::string Fingerprint(const std::string& path) {
 }
 
 bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
+	// Validate before truncating the destination; invalid authored names
+	// are an error, never a request to generate a fallback identity.
+	for (const Command& c : doc.commands) {
+		if (!ValidCommandNodeName(c)) {
+			err = "tour: create/rename requires a non-empty node name (no '/')";
+			return false;
+		}
+	}
+	for (const ReferenceCmd& r : doc.references) {
+		if (!r.root && !ValidNodeName(r.name)) {
+			err = "tour: non-root reference/source requires -name";
+			return false;
+		}
+	}
+	for (const FileNode& n : doc.fileNodes) {
+		if (!ValidNodeName(n.name)) {
+			err = "tour: fileNode requires -name";
+			return false;
+		}
+	}
 	std::ofstream f(path, std::ios::binary | std::ios::trunc);
 	if (!f) {
 		err = "cannot write: " + path;
@@ -1693,6 +1739,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					}
 				}
 				if (!r.source.empty()) {
+					if (!ValidNodeName(r.name)) {
+						err = "line " + std::to_string(lineNo)
+							+ ": sourced asset requires non-empty -name";
+						return false;
+					}
 					doc.references.push_back(std::move(r));
 					continue;
 				}
@@ -1795,6 +1846,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 					fn.filter = (v == "nearest" || v == "1") ? 1 : 0;
 				}
 			}
+		if (!ValidNodeName(fn.name)) {
+			err = "line " + std::to_string(lineNo)
+				+ ": fileNode requires non-empty -name";
+			return false;
+		}
 		if (!fn.path.empty())
 			doc.fileNodes.push_back(std::move(fn));
 		else
@@ -1927,6 +1983,18 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		Flags fl{};
 		if (!ParseFlags(toks, 1, fl, err, lineNo))
 			return false;
+		// No unnamed nodes in the .tour language. A missing or empty
+		// -name is invalid on ALL create types (including exportSettings).
+		const bool creates = verb == "createNode" || verb == "createTransform"
+			|| verb == "createLight" || verb == "createTerrain"
+			|| verb == "createGiVolume" || verb == "createCubemap"
+			|| verb == "createCamera" || verb == "createAudioSource"
+			|| verb == "createAudioRoom";
+		if (creates && (!fl.hasName || !ValidNodeName(fl.name))) {
+			err = "line " + std::to_string(lineNo)
+				+ ": " + verb + " requires non-empty -name (no '/')";
+			return false;
+		}
 		// createNode lowers DAG types to their legacy per-type verb
 		// (single payload path per shape downstream); system types
 		// (material/file/image) stay CreateNode for the editor.
@@ -1963,8 +2031,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				// node with NO payload on the create line — the settings
 				// ride setExportAttr lines tabulated under the create
 				// (the createLight + setLightAttr pattern). -name is
-				// optional (the scaffold node defaults its name; the
-				// editor always writes "ExportSettings"). Stays
+				// required exactly like every other createNode. Stays
 				// CreateNode downstream (no legacy verb to lower to —
 				// the replay + the editor both special-case the type).
 				c.verb = Verb::CreateNode;
@@ -1972,7 +2039,7 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 				c.node = fl.hasP ? fl.p : 0;
 				if (fl.hasPStr)
 					c.parentRef = fl.pStr;
-				c.text = fl.hasName ? fl.name : "ExportSettings";
+				c.text = fl.name;
 				doc.commands.push_back(std::move(c));
 				continue;
 			}
@@ -2185,6 +2252,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 			r.root = fl.hasRoot;
 			if (fl.hasName)
 				r.name = fl.name;
+			if (!r.root && !ValidNodeName(r.name)) {
+				err = "line " + std::to_string(lineNo)
+					+ ": reference requires non-empty -name";
+				return false;
+			}
 			if (!fl.t.empty() && fl.t.size() != 3 && fl.t.size() != 6) {
 				err = "tour:" + std::to_string(lineNo) + ": reference -t requires 3 or 6 numbers";
 				return false;
@@ -3249,6 +3321,11 @@ bool LoadTourFromString(const std::string& text, Doc& doc, std::string& err,
 		if (IsLogicalNodeVerb(c.verb) && !fl.hasN && !fl.hasRef
 				&& (c.node & kCreateRefFamilyMask) == 0)
 			c.node = UINT32_MAX;
+		if (!ValidCommandNodeName(c)) {
+			err = "line " + std::to_string(lineNo)
+				+ ": node names must be non-empty (no '/')";
+			return false;
+		}
 		doc.commands.push_back(std::move(c));
 	}
 	return true;
@@ -3320,6 +3397,13 @@ void TourReparent(Scene& scene, uint32_t node, uint32_t newParent) {
 		np.lastSibling = int(node);
 	}
 	scene.hierarchy[node].lastSibling = int(node);
+	// Maya DAG sibling-name rule after a move. This only renames on
+	// collision; descendants retain local names and inherit the new path.
+	const std::string oldName = getNodeName(scene, int(node));
+	const std::string uniqueName =
+		UniqueSiblingNodeName(scene, int(node), oldName);
+	if (uniqueName != oldName)
+		setNodeName(scene, int(node), uniqueName);
 	// Levels.
 	{
 		std::vector<uint32_t> stack{ node };
@@ -3780,6 +3864,13 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 	return true;
 };
 	for (const Command& c : doc.commands) {
+		if (!ValidCommandNodeName(c)) {
+			if (err)
+				*err = "tour: unnamed create/rename is invalid";
+			if (!failCmd(c))
+				return false;
+			continue;
+		}
 		switch (c.verb) {
 		case Verb::Rename: {
 			uint32_t target = 0;
@@ -3788,9 +3879,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					return false;
 				break;
 			}
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.text);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.text);
 			break;
 		}
 		case Verb::SetTranslate:
@@ -3995,9 +4084,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			m = glm::rotate(m, glm::radians(c.vec4.x), glm::vec3(1, 0, 0));
 			m = glm::scale(m, c.svec);
 			scene.localTransform[size_t(newId)] = m;
-			const uint32_t nameId = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.text);
-			SetNodeNameIndex(scene, uint32_t(newId), nameId);
+			setNodeName(scene, int(uint32_t(newId)), c.text);
 			createdTransforms.push_back(uint32_t(newId));
 			break;
 		}
@@ -4038,9 +4125,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			def.name = c.text;
 			const uint32_t poolIdx =
 				cluster.lights.create(std::move(def)).index();
-			const uint32_t nameId = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.text);
-			SetNodeNameIndex(scene, uint32_t(newId), nameId);
+			setNodeName(scene, newId, c.text);
+			if (SceneLight* liveDef = cluster.lights.get(
+					cluster.lights.getHandle(poolIdx)))
+				liveDef->name = getNodeName(scene, newId);
 		SetLight(scene, uint32_t(newId), poolIdx);
 		createdLights.push_back(uint32_t(newId));
 		break;
@@ -4078,9 +4166,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		def.insideFade = std::max(c.vec4.z, 0.0f);
 		def.outsideFade = std::max(c.vec4.w, 0.0f);
 		SetGiVolume(scene, uint32_t(newId), def);
-		const uint32_t nameId = uint32_t(scene.nodeNames.size());
-		scene.nodeNames.push_back(c.text);
-		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		setNodeName(scene, int(uint32_t(newId)), c.text);
 		createdGiVolumes.push_back(uint32_t(newId));
 		break;
 	}
@@ -4110,9 +4196,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		SceneCubemap def{};
 		def.radius = std::max(float(c.number), 1e-2f);
 		SetCubemap(scene, uint32_t(newId), def);
-		const uint32_t nameId = uint32_t(scene.nodeNames.size());
-		scene.nodeNames.push_back(c.text);
-		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		setNodeName(scene, int(uint32_t(newId)), c.text);
 		createdCubemaps.push_back(uint32_t(newId));
 		break;
 	}
@@ -4155,9 +4239,10 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		def.name = c.text;
 		const uint32_t poolIdx =
 			cluster.cameras.create(std::move(def)).index();
-		const uint32_t nameId = uint32_t(scene.nodeNames.size());
-		scene.nodeNames.push_back(c.text);
-		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		setNodeName(scene, newId, c.text);
+		if (SceneCamera* liveDef = cluster.cameras.get(
+				cluster.cameras.getHandle(poolIdx)))
+			liveDef->name = getNodeName(scene, newId);
 		SetCamera(scene, uint32_t(newId), poolIdx);
 		createdCameras.push_back(uint32_t(newId));
 		break;
@@ -4189,9 +4274,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		scene.localTransform[size_t(newId)] =
 			glm::translate(glm::mat4(1.0f), c.vec);
 		SetAudioSource(scene, uint32_t(newId), SceneAudioSource{});
-		const uint32_t nameId = uint32_t(scene.nodeNames.size());
-		scene.nodeNames.push_back(c.text);
-		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		setNodeName(scene, int(uint32_t(newId)), c.text);
 		createdAudioSources.push_back(uint32_t(newId));
 		break;
 	}
@@ -4230,9 +4313,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		if (c.text == "name") {
 			// The NODE's name (the payload carries none): rename +
 			// re-index like the camera path.
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.name);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.name);
 		}
 		else if (c.text == "position") {
 			// Rebuild the node's local TRS with the translate replaced
@@ -4386,9 +4467,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		m = glm::scale(m, glm::max(c.svec, glm::vec3(1e-3f)));
 		scene.localTransform[size_t(newId)] = m;
 		tour::scene::SetAudioRoom(scene, uint32_t(newId), tour::scene::SceneAudioRoom{});
-		const uint32_t nameId = uint32_t(scene.nodeNames.size());
-		scene.nodeNames.push_back(c.text);
-		SetNodeNameIndex(scene, uint32_t(newId), nameId);
+		setNodeName(scene, int(uint32_t(newId)), c.text);
 		createdAudioRooms.push_back(uint32_t(newId));
 		break;
 	}
@@ -4584,9 +4663,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		tour::scene::SceneAudioRoom& def = row->room;
 		if (c.text == "name") {
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.name);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.name);
 		}
 		else if (c.text == "position" || c.text == "rotation"
 				|| c.text == "size") {
@@ -4693,9 +4770,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 			scene.localTransform[size_t(newId)] =
 				glm::translate(glm::mat4(1.0f), c.vec);
-			const uint32_t nameId = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.text);
-			SetNodeNameIndex(scene, uint32_t(newId), nameId);
+			setNodeName(scene, int(uint32_t(newId)), c.text);
 			createdTerrains.push_back(uint32_t(newId));
 			// Tile child nodes (positioned by their grid offset).
 			TourTerrainGroup& state = terrainGroups.emplace_back();
@@ -4734,10 +4809,8 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 					scene.localTransform[size_t(tileId)] = glm::translate(
 						glm::mat4(1.0f),
 						glm::vec3(tileOrigin.x, 0.0f, tileOrigin.y));
-					const uint32_t tileNameId = uint32_t(scene.nodeNames.size());
-					scene.nodeNames.push_back(c.text + "_" + std::to_string(tx)
+					setNodeName(scene, int(uint32_t(tileId)), c.text + "_" + std::to_string(tx)
 						+ "_" + std::to_string(tz));
-					SetNodeNameIndex(scene, uint32_t(tileId), tileNameId);
 					state.tileNodes[size_t(tz) * state.data.tilesX + tx] =
 						uint32_t(tileId);
 				}
@@ -4854,9 +4927,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			}
 		else if (c.text == "name") {
 			def->name = c.name;
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.name);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.name);
 		}
 		else if (c.text == "cookie") {
 			// Spot gobo ref (a .texture path or image URI; the light
@@ -4968,9 +5039,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			def.outsideFade = std::max(float(c.number), 0.0f);
 		}
 		else if (c.text == "name") {
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.name);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.name);
 		}
 		else if (c.text == "position" || c.text == "rotation"
 			|| c.text == "size") {
@@ -5037,9 +5106,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 			def.radius = std::max(float(c.number), 1e-2f);
 		}
 		else if (c.text == "name") {
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.name);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.name);
 		}
 		else if (c.text == "position") {
 			// Rebuild the node's local TRS with the translate channel
@@ -5103,9 +5170,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 		}
 		if (c.text == "name") {
 			def->name = c.name;
-			const uint32_t id = uint32_t(scene.nodeNames.size());
-			scene.nodeNames.push_back(c.name);
-			SetNodeNameIndex(scene, target, id);
+			setNodeName(scene, int(target), c.name);
 		}
 		else if (c.text == "position" || c.text == "rotation") {
 			// Rebuild the node's local TRS with one channel replaced
@@ -5222,10 +5287,7 @@ bool ApplyTourToCluster(Cluster& cluster, const Doc& doc,
 				// Identity transform (a config node — no shape), default
 				// payload (attrs below override field by field).
 				SetExport(scene, uint32_t(newId), SceneExportSettings{});
-				const uint32_t nameId = uint32_t(scene.nodeNames.size());
-				scene.nodeNames.push_back(
-					c.text.empty() ? "ExportSettings" : c.text);
-				SetNodeNameIndex(scene, uint32_t(newId), nameId);
+				setNodeName(scene, int(uint32_t(newId)), c.text.empty() ? "ExportSettings" : c.text);
 				createdExports.push_back(uint32_t(newId));
 				if (createdExports.size() > 1)
 					warn("tour: duplicate exportSettings node '"
@@ -6039,7 +6101,8 @@ std::string DagShortestUniquePath(const Scene& scene, uint32_t node) {
 		return {};
 	size_t unique = 0;
 	for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
-		if (getNodeName(scene, int(n)) == leaf && ++unique > 1)
+		if (IsLiveSlot(scene, n)
+				&& getNodeName(scene, int(n)) == leaf && ++unique > 1)
 			break;
 	if (unique == 1)
 		return leaf;
@@ -6049,7 +6112,8 @@ std::string DagShortestUniquePath(const Scene& scene, uint32_t node) {
 		std::vector<std::string> suffix(comps.end() - len, comps.end());
 		size_t count = 0;
 		for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
-			if (NodeMatchesSuffix(scene, n, suffix) && ++count > 1)
+			if (IsLiveSlot(scene, n)
+					&& NodeMatchesSuffix(scene, n, suffix) && ++count > 1)
 				break;
 		if (count == 1) {
 			std::string out;
@@ -6069,12 +6133,16 @@ static bool MatchDagPathSuffix(const Scene& scene, const std::string& path,
 	const std::vector<std::string> comps = SplitDagPath(path);
 	if (comps.empty())
 		return false;
-	for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
-		if (NodeMatchesSuffix(scene, n, comps)) {
-			out = n;
-			return true;
-		}
-	return false;
+	bool found = false;
+	for (uint32_t n = 0; n < scene.hierarchy.size(); ++n) {
+		if (!IsLiveSlot(scene, n) || !NodeMatchesSuffix(scene, n, comps))
+			continue;
+		if (found)
+			return false; // ambiguous suffix, never choose first
+		out = n;
+		found = true;
+	}
+	return found;
 }
 
 bool ResolveDagPath(const Scene& scene, const std::string& path,
@@ -6130,7 +6198,7 @@ bool ResolveDeleteTarget(const Scene& scene, const std::string& uuid,
 	if (!name.empty()) {
 		std::vector<uint32_t> hits;
 		for (uint32_t n = 0; n < scene.hierarchy.size(); ++n)
-			if (getNodeName(scene, int(n)) == name)
+			if (IsLiveSlot(scene, n) && getNodeName(scene, int(n)) == name)
 				hits.push_back(n);
 		if (hits.size() == 1) {
 			out = hits[0];

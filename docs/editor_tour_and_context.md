@@ -347,7 +347,18 @@ createNode -at cubemap -p 0 -name "Cube_1" -t 0 1.5 0 -v 1.5;
 * DAG types **lower to legacy verbs at parse** (single payload path downstream);
   system types stay `Verb::CreateNode`.
 * Legacy aliases `point/spot` accepted for `pointLight/spotLight`.
-* System types require `-name`. Unknown `-at` is a hard error.
+* **Every node is named**: all `createNode` types (DAG and system),
+  every non-root `reference` / per-node `source`, and `fileNode`
+  require a non-empty `-name`. No implicit exportSettings name. A
+  `rename` or typed `name` edit cannot assign an empty name. Missing
+  or whitespace-only names and '/' in a local name are hard errors at
+  parse, save and replay, not compatibility warnings.
+* Maya-style propagation: names are unique within a sibling set (numeric
+  suffix on collisions); each node has a default name from allocation,
+  including the root and generated mesh primitives. Descendant DAG
+  paths are computed from current hierarchy and update automatically
+  on ancestor rename or reparent. UUIDs remain stable.
+* Unknown `-at` is a hard error.
 
 ### 5.5 Wide overrides (Clarisse-style)
 

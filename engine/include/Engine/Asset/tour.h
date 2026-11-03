@@ -47,6 +47,13 @@
 // later rules win over earlier ones. Rule order in the file is the
 // precedence order.
 //
+// Every node MUST carry a non-empty -name on creation (DAG and system
+// createNode types, non-root references, sourced assets and fileNode).
+// rename and typed name attributes must also provide a non-empty value.
+// Names are sibling-unique like Maya ASCII: collisions get numeric suffixes,
+// child DAG paths follow ancestor renames/reparents, and UUIDs are unaffected.
+// The synthetic root and generated glTF primitive nodes are also named.
+//
 // Node/material ids are CLUSTER-space: the importer builds clusters
 // deterministically from the source file, so the same source always yields
 // the same ids on both sides. LOGICAL TARGET KEYS ride on top (the
