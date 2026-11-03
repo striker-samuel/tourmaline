@@ -1,0 +1,11 @@
+# Minimal Tourmaline project; assets are cooked into a native pak.
+recipe 1
+project NativeGame
+entry content/scenes/main.tour
+
+bake gi off
+bake cubemaps off
+
+[pak world]
+output game.pak
+scene content/scenes/main.tour
