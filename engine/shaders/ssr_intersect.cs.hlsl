@@ -8,6 +8,7 @@
 #include "vertex_pack.hlsli"
 #include "hzb.hlsli"
 #include "ssr_compute.hlsli"
+#include "static_sdf_trace.hlsli"
 #include "gpu_platform.hlsli"
 
 // SSR intersect (SSSR intersect port — see FidelityFX-SDK-v1.1.4
@@ -40,7 +41,7 @@
 // miss-silence keeps the analytic sky IBL the sole sky contributor —
 // no envmap double-count).
 
-// Must match Engine/Rendergraph/ssr.h SsrIntersectPush (120 bytes).
+// Must match Engine/Rendergraph/ssr.h SsrIntersectPush (128 bytes).
 // uint64 BDAs lead (see ssr.h — scalars never precede a BDA).
 struct SsrIntersectPush
 {
@@ -68,7 +69,8 @@ struct SsrIntersectPush
     uint minOccupancy;     // wave early-out (non-mirror only)
     uint ssrHzbMipCount;
     uint gbuffer2TextureIndex; // F0-chroma layer 2; 0xffffffff = flat F0
-    uint pad1;
+    uint staticSdfEnabled;
+    GPU_PTR_READ(StaticSdfSceneHeader) staticSdfScene;
 };
 
 GPU_PUSH(SsrIntersectPush, sp);
@@ -103,6 +105,112 @@ SsrGb SsrGbTap(int2 fullPx)
     g.roughness = gb.z;
     g.metal = (gb.w >= 0.5f) ? 1.0f : 0.0f;
     return g;
+}
+
+// A missed or rejected screen-space trace may still intersect STATIC
+// off-screen geometry. Trace the SDF sidecars and shade the winning hit
+// into the SAME radiance/confidence contract as SSR's normal hit. Where
+// the SDF point is visible in the HDR/depth images, reuse the exact HDR
+// pixel; otherwise use conservative, unshadowed material-base-color
+// lighting (the SDF sidecar has no UVs or material textures).
+float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
+    float3 Rview, float3 N, float3 V, SsrGb receiver,
+    int2 receiverPx, float2 fullExtent)
+{
+    if (sp.staticSdfEnabled == 0u)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    StaticSdfSceneHeader scene = sp.staticSdfScene.Get();
+    if (scene.instanceCount == 0u)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float3 worldOrigin = mul(frame.invView, float4(viewPos, 1.0f)).xyz;
+    float3 worldDir = normalize(mul((float3x3)frame.invView, Rview));
+    float bias = max(scene.originBias, 2.0f * scene.epsilon);
+    float maxTrace = sp.maxDistance - bias;
+    if (maxTrace <= 0.0f)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    StaticSdfRayHit hit = StaticSdfTrace(worldOrigin + bias * worldDir,
+        worldDir, maxTrace, scene.epsilon,
+        scene.maxSteps, scene.instanceCount,
+        scene.instances, scene.samples);
+    if (!hit.valid)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    float3 radiance = float3(0.0f, 0.0f, 0.0f);
+    bool hdrHit = false;
+    float4 projected = mul(frame.viewProj, float4(hit.hitPoint, 1.0f));
+    if (projected.w > 1e-5f)
+    {
+        float3 ndc = projected.xyz / projected.w;
+        float2 uv = ndc.xy * 0.5f + 0.5f; // y-down Vulkan NDC
+        if (all(uv >= 0.0f) && all(uv < 1.0f) &&
+            ndc.z >= 0.0f && ndc.z <= 1.0f)
+        {
+            int2 px = int2(clamp(uv * fullExtent, float2(0.0f, 0.0f),
+                fullExtent - 1.0f));
+            Texture2D depthTex = textures[NonUniformResourceIndex(sp.depthTextureIndex)];
+            float d = depthTex.Load(int3(px, 0)).r;
+            if (!DofIsBackgroundOrGarbage(d))
+            {
+                float3 surfaceView = SsrUnprojectView(
+                    uv * 2.0f - 1.0f, d, frame.invProj);
+                float3 surfaceWorld = mul(frame.invView,
+                    float4(surfaceView, 1.0f)).xyz;
+                // Only borrow radiance from the surface actually
+                // visible at the projected SDF point. Reject occluding
+                // foreground geometry, disocclusions and the sky.
+                float tolerance = max(2.0f * hit.worldVoxel, 0.15f);
+                if (distance(surfaceWorld, hit.hitPoint) < tolerance)
+                {
+                    Texture2D hdrTex = textures[NonUniformResourceIndex(sp.hdrTextureIndex)];
+                    SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
+                    radiance = hdrTex.SampleLevel(smp, uv, 0.0f).rgb;
+                    hdrHit = true;
+                }
+            }
+        }
+    }
+    if (!hdrHit)
+    {
+        // The off-screen approximation deliberately omits dynamic
+        // lights/shadows/textured albedo: those need a material/radiance
+        // surface cache. A static hit still contributes a plausible
+        // silhouette and tone instead of an invented screen-space pixel.
+        float3 sky = EvaluateIrradiance(hit.normal, frame.env);
+        float3 sunDir = frame.env.sunDirection.xyz;
+        float sunDir2 = dot(sunDir, sunDir);
+        float ndl = sunDir2 > 1e-8f
+            ? saturate(dot(hit.normal, sunDir) * rsqrt(sunDir2))
+            : 0.0f;
+        float3 sun = frame.env.sunColor.rgb *
+            max(frame.env.sunColor.w, 0.0f) * (ndl / 3.14159265f);
+        radiance = max(hit.baseColor, 0.0f) * max(sky + sun, 0.0f);
+    }
+    radiance = min(max(radiance, 0.0f), 65504.0f);
+
+    // Same receiver F0 tint, Schlick Fresnel and dielectric gloss gate
+    // as the regular SSR hit; the existing blur, temporal and composite
+    // passes can consume this without any special-case shader.
+    float ndv = saturate(dot(N, V));
+    float3 f0 = lerp(float3(sp.f0, sp.f0, sp.f0),
+        float3(1.0f, 1.0f, 1.0f), receiver.metal);
+    if (sp.gbuffer2TextureIndex != 0xffffffffu)
+    {
+        Texture2D f0Tex = textures[NonUniformResourceIndex(sp.gbuffer2TextureIndex)];
+        float3 chroma = f0Tex.Load(int3(receiverPx, 0)).rgb;
+        f0 = lerp(float3(sp.f0, sp.f0, sp.f0), chroma, receiver.metal);
+    }
+    float3 fres = f0 + (1.0f - f0) * pow(1.0f - ndv, 5.0f);
+    float gloss = 1.0f - receiver.roughness;
+    float specFade = lerp(gloss * gloss, 1.0f, receiver.metal);
+    radiance = min(radiance * fres * specFade * sp.intensity,
+        float3(kSsrMaxReflected, kSsrMaxReflected, kSsrMaxReflected));
+    // Prefer actual SSR crossings: only missing rays pay the fallback
+    // and distance/voxel confidence damps coarse far-field artifacts.
+    float distanceConfidence = saturate(1.0f - (hit.t + bias) /
+        max(sp.maxDistance, 0.001f));
+    float voxelConfidence = saturate(1.0f - hit.worldVoxel * 0.5f);
+    float confidence = 0.85f * distanceConfidence * voxelConfidence;
+    return float4(radiance, confidence);
 }
 
 // Full-res pixel-center NDC (framebuffer y-down: top = -1 — NO y flip,
@@ -308,7 +416,20 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     // the frustum reject below; safe as a bare return, the slot was
     // zeroed at the top).
     if (!isfinite(screenDir.x + screenDir.y) || length(screenDir.xy) <= 1e-9f)
+    {
+        // Projected screen direction is undefined or subpixel, but the
+        // WORLD-SPACE reflection direction is valid. This is exactly
+        // where an off-screen SDF trace can recover a real static hit.
+        // Store the same quad-owned result as SSR_MISS below.
+        float4 fallback = SsrStaticSdfMiss(
+            frame, viewPos, Rview, N, V, gbuf, fullPxC, fullExtent);
+        uint2 sibling = coords ^ 1u;
+        sp.radiance.Get().v[coords.y * sp.halfW + coords.x] = fallback;
+        if (copyH) sp.radiance.Get().v[coords.y * sp.halfW + sibling.x] = fallback;
+        if (copyV) sp.radiance.Get().v[sibling.y * sp.halfW + coords.x] = fallback;
+        if (copyD) sp.radiance.Get().v[sibling.y * sp.halfW + sibling.x] = fallback;
         return;
+    }
 
     // ---- The classic Hi-Z traversal (the SDK's
     // FFX_SSSR_HierarchicalRaymarch, adapted): cell-exit mip walk over
@@ -424,7 +545,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     const uint missVert = ((coords.y ^ 1u) * sp.halfW) + coords.x;
     const uint missDiag = ((coords.y ^ 1u) * sp.halfW) + (coords.x ^ 1u);
 #define SSR_MISS() { \
-        float4 miss_ = float4(0.0f, 0.0f, 0.0f, 0.0f); \
+        float4 miss_ = SsrStaticSdfMiss(frame, viewPos, Rview, N, V, gbuf, fullPxC, fullExtent); \
         sp.radiance.Get().v[missIdx] = miss_; \
         if (copyH) sp.radiance.Get().v[missHoriz] = miss_; \
         if (copyV) sp.radiance.Get().v[missVert] = miss_; \

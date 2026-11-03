@@ -1716,6 +1716,11 @@ namespace engine {
 		if (const char* ssrBlurEnv = std::getenv("TOURMALINE_SSR_BLUR")) {
 			m_ssrBlurMode = std::atoi(ssrBlurEnv) != 0 ? 1 : 0;
 		}
+		// Static SDF reflections: CPU-baked sidecars, GPU volume upload,
+		// and a STATIC-ONLY compute fallback for failed screen-space rays.
+		// Opt-in until SDF resolution/performance are validated on GPU.
+		if (const char* sdfEnv = std::getenv("TOURMALINE_SDF_REFLECTIONS"))
+			m_staticSdfReflectionsEnabled = std::atoi(sdfEnv) != 0;
 
 		if (const char* iblEnv = std::getenv("TOURMALINE_IBL")) {
 			// Mute the analytic sky ambient (any ambient mode -> off;
@@ -3550,6 +3555,7 @@ namespace engine {
 		m_viewportResources.motionBlur.Destroy(*m_rendergraph);
 		m_viewportResources.dof.Destroy(*m_rendergraph);
 		m_viewportResources.ssr.Destroy(*m_rendergraph);
+		m_staticSdfGpu.Clear();
 		m_viewportResources.ssgiDiffuse.Destroy(*m_rendergraph);
 		m_viewportResources.volumetric.Destroy(*m_rendergraph);
 		m_viewportResources.godrays.Destroy(*m_rendergraph);
@@ -11082,6 +11088,12 @@ namespace engine {
 			m_ssrLastBlurMode = m_ssrBlurMode;
 			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
 		}
+		// A mode flip changes the reflection source even if the camera and
+		// blur filter did not: discard incompatible old SSR history.
+		if (m_staticSdfLastEnabled != m_staticSdfReflectionsEnabled) {
+			m_staticSdfLastEnabled = m_staticSdfReflectionsEnabled;
+			smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+		}
 		// Detect cuts at render cadence, before the temporal snapshots and
 		// the frame uniforms read previous-view state. External camera drives
 		// and explicit NotifyCameraCut() calls share this reset path.
@@ -15456,6 +15468,26 @@ namespace engine {
 				&& m_ssrIntensity > 0.0f
 				&& !DebugVisualizationActive();
 			if (ssrOn) {
+				// The frozen volume set is rebuilt on world topology changes.
+				// Inactive/no-bake scenes keep both addresses zero: the shader
+				// never dereferences them, and original SSR is unchanged.
+				if (m_staticSdfReflectionsEnabled && m_world) {
+					const bool sdfReady = m_staticSdfGpu.Update(
+						*m_context, *m_world,
+						glm::vec3(m_cameraPositioner.cameraPosition_));
+					// Camera-cell republishing changes the set of
+					// reflected objects; old SSSR temporal history is
+					// not compatible with a different instance list.
+					if (m_staticSdfGpu.Generation() != m_staticSdfSeenGeneration) {
+						m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
+						smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+					}
+					if (sdfReady) {
+						// One scene-header BDA, keeping SSR at 128 B.
+						ssrDesc.staticSdfSceneAddr =
+							m_staticSdfGpu.SceneAddress(*m_context);
+					}
+				}
 				// Receiver-material layer availability: the thin G-buffer
 				// (oct normal + roughness + metal) is written by the Forward+
 				// depth prepass when fc.ssrGbufferWanted (see
@@ -16987,6 +17019,11 @@ namespace engine {
 						}
 						ImGui::Checkbox("Screen-space reflections (SSR)", &m_ssrEnabled);
 						if (m_ssrEnabled) {
+							ImGui::Checkbox("Static SDF off-screen reflections (experimental)",
+								&m_staticSdfReflectionsEnabled);
+							if (m_staticSdfReflectionsEnabled)
+								ImGui::TextDisabled("GPU SDF: %u static opaque instances (baked sidecars only)",
+									m_staticSdfGpu.InstanceCount());
 							ImGui::SliderInt("Ray steps", &m_ssrSteps, 1, 128);
 							ImGui::SliderInt("Refine steps", &m_ssrRefineSteps, 0, 8);
 							ImGui::SliderFloat("Max distance (m)", &m_ssrMaxDistance, 1.0f, 200.0f);

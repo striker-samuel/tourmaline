@@ -175,6 +175,10 @@ struct SsrDesc {
 	// tone map. Wasteful by design (a second full-res RGBA16F target +
 	// write), debug-only. The Ensure recreates the chain on flips of
 	// this flag (the target exists only while on).
+	// Optional STATIC SDF geometry fallback when screen-space rays miss.
+	// Both BDAs must be nonzero and count > 0; default OFF, byte-for-byte
+	// legacy SSR otherwise. The SDF uploader owns the frozen buffers.
+	uint64_t staticSdfSceneAddr = 0; // BDA of 32-byte static-scene header
 	bool debugContrib = false;
 	const char* name = "ssr";
 	const char* viewName = "ssrView";
@@ -211,7 +215,7 @@ struct SsrIndirectPush {
 };
 static_assert(sizeof(SsrIndirectPush) == 16);
 
-// Must match ssr_intersect.cs.hlsl SsrIntersectPush (120 bytes) — the
+// Must match ssr_intersect.cs.hlsl SsrIntersectPush (128 bytes) — the
 // SSSR intersect (GGX VNDF + the classic Hi-Z traversal), indirect
 // compute dispatch driven by the classify's ray count. uint64s first
 // (see SsrClassifyPush).
@@ -243,9 +247,11 @@ struct SsrIntersectPush {
 	// tinted-Fresnel source. UINT32_MAX = the flat-F0 fallback (the
 	// layer absent / the G-buffer leg off) — today's behavior.
 	uint32_t gbuffer2TextureIndex = UINT32_MAX;
-	uint32_t pad1 = 0;
+	uint32_t staticSdfEnabled = 0; // 0 = no SDF scene pointer
+	uint64_t staticSdfSceneAddr = 0; // offset 120, 8-aligned, push totals 128 B
 };
-static_assert(sizeof(SsrIntersectPush) == 120);
+static_assert(sizeof(SsrIntersectPush) == 128);
+static_assert(offsetof(SsrIntersectPush, staticSdfSceneAddr) == 120);
 
 // Must match ssr_copy.frag.hlsl SsrCopyPush (24 bytes) — the
 // radiance-buffer -> raw blit.
@@ -1612,6 +1618,8 @@ ShaderProgram progCopy = indirectProgram;
 		push.rayCounterAddr = rayCounterAddr;
 		push.radianceAddr = radianceAddr;
 		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
+		push.staticSdfEnabled = overrideDesc.staticSdfSceneAddr != 0 ? 1u : 0u;
+		push.staticSdfSceneAddr = overrideDesc.staticSdfSceneAddr;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
  		push.samplerIndex = linearSamplerIndex;
@@ -1976,6 +1984,8 @@ void AddSsrTemporalPasses(RenderGraph& rg,
 		push.rayCounterAddr = rayCounterAddr;
 		push.radianceAddr = radianceAddr;
 		push.ssrHzbAddr = hzbOn ? hzbAddr : 0;
+		push.staticSdfEnabled = overrideDesc.staticSdfSceneAddr != 0 ? 1u : 0u;
+		push.staticSdfSceneAddr = overrideDesc.staticSdfSceneAddr;
 		push.hdrTextureIndex = hdrBindlessIndex;
 		push.depthTextureIndex = depthBindlessIndex;
  		push.samplerIndex = linearSamplerIndex;
